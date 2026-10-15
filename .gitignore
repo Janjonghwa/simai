@@ -1,13 +1,26 @@
-# 환경변수
+# 환경변수 (RTSP 카메라 계정, JWT, VAPID, RunPod·AWS 키 등)
 .env
 .env.*
 !.env.example
 
-# Node
+# 키·인증서 (TLS, Let's Encrypt)
+*.pem
+*.key
+*.crt
+*.p12
+certbot/
+letsencrypt/
+
+# Node / React (Vite, PWA)
 node_modules/
 dist/
 build/
 .pnpm-store/
+.vite/
+coverage/
+*.local
+# vite-plugin-pwa 개발용 Service Worker
+dev-dist/
 *.log
 
 # Python
@@ -16,11 +29,53 @@ venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
 
-# Java / Gradle
+# Java / Spring Boot
 .gradle/
 out/
 target/
+*.class
+HELP.md
+application-local.yml
+application-local.properties
+
+# 모델 가중치 (YOLO26, TensorRT, VLM)
+*.pt
+*.pth
+*.onnx
+*.engine
+*.trt
+*.safetensors
+*.ckpt
+**/.cache/
+**/.huggingface/
+# ultralytics 학습·추론 결과
+runs/
+
+# 영상·카메라 데이터 (사람이 찍힌 데이터라 커밋 금지)
+*.mp4
+*.mkv
+*.avi
+*.h264
+*.h265
+recordings/
+datasets/
+
+# 런타임 데이터 (이벤트 저널, 체크포인트)
+journal/
+checkpoints/
+
+# 생성 결과물 (MapAnything glTF 등). 직접 만든 3D 자산은 커밋한다.
+output/
+outputs/
+
+# Docker / DB
+docker-compose.override.yml
+pgdata/
 
 # Claude Code 개인 설정
 .claude/settings.local.json

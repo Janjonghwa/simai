@@ -4,12 +4,11 @@
 
 | 경로 | 설명 |
 | --- | --- |
-| `front-end/` | 프론트엔드 |
-| `web/` | 백엔드 |
-| `ai/` | AI |
+| `front/` | 프론트엔드 (React + Three.js 뷰어, 반장 PWA) |
+| `server/` | 백엔드 (Spring Boot) |
+| `ai/` | AI (노트북 중계, RunPod Tier 0, 분석 워커) |
 | `deploy/` | 배포 설정 |
-| `docs/til/` | 팀원별 TIL |
-| `exec/` | 제출 문서 (포팅 매뉴얼, 시연 시나리오 등) |
+| `docs/` | 프로젝트 문서 |
 
 ## 브랜치 전략
 
