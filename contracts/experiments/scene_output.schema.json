@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/experiments/scene_output.schema.json",
+  "title": "정적 장면 결과 (EXP-01, static_reconstruct)",
+  "description": "정적 3D 복원 결과 한 건 (명세 5.3, 20.2, 20.4). 보기용 Visual Geometry이며 안전 판단용 Operational Geometry(실측 평면도 + 보수적 OBB)가 아니다.",
+  "type": "object",
+  "required": [
+    "schema_version", "scene_version", "state", "geometry_role", "created_at",
+    "calibration_version", "coordinate_frame", "input_provenance", "reproducibility",
+    "method", "assets", "quality"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "../common/defs.schema.json#/$defs/semver" },
+    "scene_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+    "state": { "$ref": "../common/defs.schema.json#/$defs/scene_state" },
+    "geometry_role": { "const": "VISUAL", "description": "안전 판단에 쓰지 않는다" },
+    "created_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+    "experiment_id": { "type": "string", "description": "EXP-01 등. 제품 경로에서 만든 결과면 생략" },
+    "calibration_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+    "coordinate_frame": { "$ref": "../common/defs.schema.json#/$defs/coordinate_frame" },
+    "input_provenance": { "$ref": "../common/defs.schema.json#/$defs/input_provenance" },
+    "reproducibility": { "$ref": "../common/defs.schema.json#/$defs/reproducibility" },
+
+    "method": {
+      "type": "object",
+      "required": ["reconstructor", "uses_known_pose"],
+      "properties": {
+        "reconstructor": { "enum": ["MAPANYTHING_NATIVE", "MAPANYTHING_EXTERNAL", "MOGE3", "VGGT", "FLOOR_PLAN_PRIMITIVES", "OTHER"] },
+        "reconstructor_detail": { "type": "string" },
+        "uses_known_pose": { "type": "boolean", "description": "보정 K·pose를 입력으로 썼는지 (명세 16: MapAnything Native 우선 이유)" },
+        "human_removal": { "enum": ["EMPTY_ROOM", "MASK_COMPOSITE", "NONE"], "description": "사람 제거 방식 (명세 5.3 촬영 조건)" },
+        "postprocess": {
+          "type": "array",
+          "items": { "enum": ["DEPTH_ALIGNMENT", "OUTLIER_REMOVAL", "TSDF_FUSION", "POISSON", "TEXTURE", "DECIMATION", "WORLD_ALIGNMENT"] },
+          "description": "적용한 후처리 순서"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["kind", "uri", "sha256"],
+        "properties": {
+          "kind": { "enum": ["GLTF_VISUAL", "POINT_CLOUD", "DEPTH_MAPS", "MESH_RAW", "PREVIEW_IMAGE"] },
+          "uri": { "$ref": "../common/defs.schema.json#/$defs/uri" },
+          "sha256": { "$ref": "../common/defs.schema.json#/$defs/sha256" },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "axis_convention": {
+            "enum": ["WORLD_Z_UP", "GLTF_Y_UP"],
+            "description": "GLTF_VISUAL은 glTF 규약(+Y 상방, World (x,y,z) → (x, z, −y))으로 내보낸다. 변환은 내보내기 어댑터 한 곳에서만 한다"
+          },
+          "triangle_count": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
+    },
+
+    "quality": {
+      "type": "object",
+      "description": "G4 지표 (명세 15.1). 측정하지 못한 항목은 null로 두고 이유를 notes에 적는다",
+      "required": ["wall_deviation_m", "observed_surface_ratio"],
+      "properties": {
+        "wall_deviation_m": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["median", "p95", "max"],
+              "properties": {
+                "median": { "type": "number", "minimum": 0 },
+                "p95": { "type": "number", "minimum": 0 },
+                "max": { "type": "number", "minimum": 0 }
+              },
+              "additionalProperties": false
+            },
+            { "type": "null" }
+          ],
+          "description": "평면도 벽 대비 차이. G4 목표 5cm 이하"
+        },
+        "desk_top_height_error_m": { "type": ["number", "null"] },
+        "desk_position_error_m": { "type": ["number", "null"] },
+        "coobserved_point_disagreement_median_m": { "type": ["number", "null"] },
+        "scale_factor_vs_floor_plan": { "type": ["number", "null"], "description": "1.0이 정확. MoGe-3 PoC의 뷰별 0.94~1.23 같은 흔들림을 기록" },
+        "observed_surface_ratio": {
+          "type": "number", "minimum": 0, "maximum": 1,
+          "description": "관측된 표면 비율. 나머지는 추정·보간 (관측과 추정 구분, 원칙 8)"
+        },
+        "failure_cases": { "type": "array", "items": { "type": "string" }, "description": "가림, 반사, 저텍스처 등" },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "performance": {
+      "type": "object",
+      "properties": {
+        "stage_latency_ms": {
+          "type": "object",
+          "additionalProperties": { "$ref": "../common/defs.schema.json#/$defs/percentiles_ms" },
+          "description": "단계 이름 → p50/p95 (inference, io, postprocess, render 등)"
+        },
+        "vram_peak_mb": { "type": "number", "minimum": 0 },
+        "gpu_model": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+
+  "allOf": [
+    {
+      "description": "COMMITTED는 정답·시뮬레이션 입력이 아닌 결과만 가능 (명세 20.4 규칙 3·4)",
+      "if": { "properties": { "state": { "const": "COMMITTED" } }, "required": ["state"] },
+      "then": { "properties": { "input_provenance": { "properties": { "is_upper_bound": { "const": false } } } } }
+    }
+  ]
+}

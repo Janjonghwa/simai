@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0.0",
+  "record_type": "avatar_asset",
+  "world_id": "w-0001",
+  "experiment_id": "EXP-02",
+  "calibration_version": "panoptic-gt-0",
+  "coordinate_frame": { "frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z" },
+  "input_provenance": {
+    "frames": { "source": "DATASET", "dataset_id": "cmu_panoptic/160422_ultimatum1" },
+    "calibration": { "source": "DATASET_GT", "calibration_version": "panoptic-gt-0" },
+    "tracks": { "source": "DATASET_GT", "provider_version": "panoptic-adapter-0.1.0" },
+    "is_upper_bound": true
+  },
+  "reproducibility": {
+    "run_id": "exp02-20261021-0003",
+    "model_version": "Fast-SAM-3D-Body@d72aa36 + sam-3d-body-dinov3",
+    "input_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "appearance_version": 0,
+  "previous_appearance_version": null,
+  "created_at": 1760342400500,
+  "mesh_geometry": {
+    "format": "GLB_SKINNED",
+    "uri": "volume://US-KS-2/exp02/runs/exp02-20261021-0003/w-0001/avatar_v0.glb",
+    "sha256": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "vertex_count": 18439,
+    "face_count": 36874,
+    "axis_convention": "GLTF_Y_UP"
+  },
+  "shape": {
+    "representation": "MHR",
+    "params_uri": "volume://US-KS-2/exp02/runs/exp02-20261021-0003/w-0001/shape_v0.npz",
+    "frozen": true,
+    "frames_used": 30
+  },
+  "texture": null,
+  "surface_source": {
+    "mask_uri": "volume://US-KS-2/exp02/runs/exp02-20261021-0003/w-0001/surface_source_v0.png",
+    "ratios": { "OBSERVED": 0.0, "INTERPOLATED": 0.0, "UNOBSERVED": 1.0 }
+  },
+  "face_policy": "EXCLUDED",
+  "observation_summary": {
+    "frames_used": 30,
+    "cameras_used": ["hd_00_00", "hd_00_03"],
+    "first_observed_at": 1760342397100,
+    "last_observed_at": 1760342400100
+  }
+}

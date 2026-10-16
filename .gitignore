@@ -86,3 +86,6 @@ pgdata/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Orca 개인 설정 (팀원 중 한 명만 사용)
+.claude/orca/

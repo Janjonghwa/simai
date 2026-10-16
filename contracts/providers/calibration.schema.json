@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/providers/calibration.schema.json",
+  "title": "CalibrationProvider 출력",
+  "description": "보정 한 버전 (명세 4장, 20.4 입력 대체 계약). G1 자동 보정과 대체 구현(MANUAL_PNP, CHARUCO, DATASET_GT, SIM)이 같은 형식을 낸다.",
+  "type": "object",
+  "required": [
+    "schema_version", "calibration_version", "provider_source", "state",
+    "created_at", "coordinate_frame", "scale_basis", "extrinsic_convention", "cameras"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "../common/defs.schema.json#/$defs/semver" },
+    "calibration_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+    "provider_source": { "$ref": "../common/defs.schema.json#/$defs/calibration_source" },
+    "provider_version": { "type": "string" },
+    "state": { "$ref": "../common/defs.schema.json#/$defs/calibration_state" },
+    "created_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+    "coordinate_frame": { "$ref": "../common/defs.schema.json#/$defs/coordinate_frame" },
+    "scale_basis": {
+      "enum": ["FLOOR_PLAN", "HUMAN_HEIGHT_STATS", "STANDARD_OBJECT", "MODEL_ESTIMATE", "DATASET_GT", "MARKER"],
+      "description": "스케일 근거 (명세 4.3 우선순위)"
+    },
+    "extrinsic_convention": {
+      "const": "OPENCV_WORLD_TO_CAMERA",
+      "description": "x_cam = R · x_world + t. 카메라 좌표는 OpenCV 규약(x 오른쪽, y 아래, z 앞)"
+    },
+    "cameras": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/camera_calibration" }
+    },
+    "validation": {
+      "type": "object",
+      "description": "독립 검증 결과 (명세 4.4 CALIBRATED 기준). 보정에 쓰지 않은 검증점 기준",
+      "properties": {
+        "checkpoint_count": { "type": "integer", "minimum": 0 },
+        "max_position_error_m": { "type": "number", "minimum": 0 },
+        "max_head_height_error_m": { "type": "number", "minimum": 0 },
+        "floor_plane_disagreement_m": { "type": "number", "minimum": 0 },
+        "floor_coverage_ratio": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "content_hash": { "$ref": "../common/defs.schema.json#/$defs/sha256" }
+  },
+  "additionalProperties": false,
+
+  "allOf": [
+    {
+      "description": "공개 데이터 정답·시뮬레이터 보정은 우리 현장의 보정이 아니므로 CALIBRATED가 될 수 없다 (명세 20.4 규칙 4)",
+      "if": {
+        "properties": { "provider_source": { "enum": ["DATASET_GT", "SIM"] } },
+        "required": ["provider_source"]
+      },
+      "then": { "properties": { "state": { "enum": ["UNCALIBRATED", "PROVISIONAL"] } } }
+    },
+    {
+      "description": "CALIBRATED는 출처(G1_AUTO, MANUAL_PNP, CHARUCO)와 관계없이 독립 검증점 결과가 있어야 한다 (명세 4.4)",
+      "if": {
+        "properties": { "state": { "const": "CALIBRATED" } },
+        "required": ["state"]
+      },
+      "then": {
+        "required": ["validation"],
+        "properties": {
+          "validation": { "required": ["checkpoint_count", "max_position_error_m", "max_head_height_error_m"] }
+        }
+      }
+    }
+  ],
+
+  "$defs": {
+    "camera_calibration": {
+      "type": "object",
+      "required": ["camera_id", "image_size", "K", "distortion", "R", "t"],
+      "properties": {
+        "camera_id": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+        "image_size": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "[width, height] 픽셀. 스트림 해상도가 바뀌면 이 보정은 DRIFTED"
+        },
+        "K": { "$ref": "../common/defs.schema.json#/$defs/mat3" },
+        "distortion": {
+          "type": "object",
+          "required": ["model", "coeffs"],
+          "properties": {
+            "model": { "enum": ["OPENCV_PINHOLE", "OPENCV_FISHEYE", "NONE"] },
+            "coeffs": {
+              "type": "array",
+              "items": { "type": "number" },
+              "description": "OPENCV_PINHOLE: [k1, k2, p1, p2, k3, ...], OPENCV_FISHEYE: [k1, k2, k3, k4], NONE: []"
+            }
+          },
+          "additionalProperties": false
+        },
+        "R": { "$ref": "../common/defs.schema.json#/$defs/mat3", "description": "World → 카메라 회전. 직교·det=+1은 계약 시험에서 검사" },
+        "t": { "$ref": "../common/defs.schema.json#/$defs/vec3", "description": "World → 카메라 이동, 미터" },
+        "camera_height_m": { "type": "number", "description": "바닥(Z=0)에서 카메라 중심까지 높이. 검산용" },
+        "reprojection_error_px": {
+          "type": "object",
+          "properties": {
+            "median": { "type": "number", "minimum": 0 },
+            "p95": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
