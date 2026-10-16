@@ -1,0 +1,2 @@
+# 셸 스크립트는 RunPod(Linux)에서 실행하므로 Windows checkout 에서도 LF 로 둔다
+*.sh text eol=lf
