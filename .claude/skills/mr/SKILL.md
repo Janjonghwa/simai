@@ -1,6 +1,6 @@
 ---
 name: mr
-description: 현재 작업 브랜치를 팀 Git 규칙(docs/git-convention.md)에 맞춰 GitLab MR 로 올린다. MR 템플릿의 To People / To AI 칸을 커밋·diff 근거로 채우고, 라벨과 Closes 키를 붙여 dev 로 보낸다. "MR 올려줘", "머지 리퀘스트 만들어줘", "/mr" 같은 요청에 사용한다.
+description: 현재 작업 브랜치를 팀 Git 규칙(docs/git-convention.md)에 맞춰 GitLab MR 로 올린다. MR 템플릿의 To People / To AI 칸을 커밋·diff 근거로 채우고, 라벨과 Closes(또는 Refs) 키를 붙여 dev 로 보낸다. "MR 올려줘", "머지 리퀘스트 만들어줘", "/mr" 같은 요청에 사용한다.
 ---
 
 # MR 올리기
@@ -66,6 +66,7 @@ git diff origin/dev...HEAD
 
 - `<!-- -->` 안내 주석은 지운다.
 - 맨 아래 `Closes S15P31A101-XX` 의 `XX` 를 실제 번호로 바꾼다.
+- 이 MR 로 이슈가 끝나는지 사용자에게 확인한다. 이슈가 이어지면(같은 키의 MR 이 더 남았으면) `Closes` 대신 `Refs` 를 쓴다. `Closes` 는 merge 시 이슈를 완료로 바꾼다.
 
 **To People** — 리뷰어가 30초 안에 이해할 수 있게 쓴다.
 - 작업 내용: 무엇을 했는지 1~3줄.
@@ -75,7 +76,7 @@ git diff origin/dev...HEAD
 
 **To AI** — diff 를 읽는 AI 가 diff 만으로는 알 수 없는 것을 쓴다.
 - 의도와 근거: 이 구조를 고른 이유, 검토했다 버린 대안과 이유.
-- 관련 명세·계약: 따른 SENTIA 명세 절, 인터페이스(I0~I5), 이벤트·저널 계약 등. 없으면 "해당 없음".
+- 관련 명세·계약: 따른 simai 기획서 절, 인터페이스(I0~I5), 이벤트·저널 계약 등. 없으면 "해당 없음".
 - 가정과 불변 조건: 이 코드가 전제하는 것, 깨지면 안 되는 것.
 - 영향 범위: 바뀐 모듈·인터페이스와 영향받는 파트(front / server / ai / deploy).
 - 검증: **실제로 실행한** 명령과 결과만 쓴다. 실행하지 않았으면 "실행한 검증 없음" 이라고 쓴다.
@@ -91,6 +92,7 @@ git diff origin/dev...HEAD
 - 소스 → 대상: `{브랜치}` → `dev`
 - 제목
 - 라벨과 고른 이유 한 줄
+- `Closes` 인지 `Refs` 인지
 - 본문 전체
 
 수정 요청이 있으면 반영해 다시 보여 준다.
@@ -128,7 +130,7 @@ curl -s --request POST --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
 
 ### 토큰이 없을 때
 
-push 옵션으로 MR 을 만든다. push 옵션에는 여러 줄 본문을 넣을 수 없으므로 본문은 `Closes` 한 줄만 넣는다.
+push 옵션으로 MR 을 만든다. push 옵션에는 여러 줄 본문을 넣을 수 없으므로 본문은 `Closes`(또는 `Refs`) 한 줄만 넣는다.
 
 ```bash
 git push -u origin HEAD \
@@ -136,7 +138,7 @@ git push -u origin HEAD \
   -o merge_request.target=dev \
   -o "merge_request.title={제목}" \
   -o "merge_request.label={라벨}" \
-  -o "merge_request.description=Closes S15P31A101-{번호}" \
+  -o "merge_request.description={Closes 또는 Refs} S15P31A101-{번호}" \
   -o merge_request.remove_source_branch
 ```
 
