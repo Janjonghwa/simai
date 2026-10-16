@@ -1,0 +1,7 @@
+# front/ 파일이 스테이징되지 않았으면 검사하지 않는다(server·ai 커밋을 막지 않는다).
+git diff --cached --name-only | grep -q '^front/' || exit 0
+
+cd front || exit 1
+
+pnpm exec lint-staged
+pnpm -r --if-present run typecheck

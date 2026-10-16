@@ -1,0 +1,4 @@
+# 공통 항목(node_modules, dist, .env 등)은 저장소 루트 .gitignore에 있다.
+.turbo/
+*.tsbuildinfo
+.eslintcache

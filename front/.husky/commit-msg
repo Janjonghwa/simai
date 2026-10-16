@@ -1,0 +1,13 @@
+first_line=$(head -n 1 "$1")
+
+case "$first_line" in
+  'Merge '* | 'Revert '* | 'fixup! '* | 'squash! '*) exit 0 ;;
+esac
+
+if ! printf '%s\n' "$first_line" | grep -Eq '^\[S15P31A101-[0-9]+\] [^ ]'; then
+  echo '커밋 메시지는 "[S15P31A101-번호] 한국어 한 줄" 형식으로 쓴다.' >&2
+  echo '예: [S15P31A101-147] front 워크스페이스와 개발 도구를 세팅한다' >&2
+  echo "지금 메시지: $first_line" >&2
+  echo '규칙: docs/git-convention.md' >&2
+  exit 1
+fi
