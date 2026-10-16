@@ -1,0 +1,54 @@
+{
+  "name": "podium",
+  "description": "단상: 앞쪽에 높이 0.2 m 단상, 교사는 단상 위를 오가고 학생 한 명은 바닥에서 단상에 올랐다 내려온다",
+  "seed": 46002,
+  "start_time_ms": 1760342400000,
+  "duration_ms": 12000,
+  "world_rate_hz": 10,
+  "site_id": "sim-classroom",
+  "room": { "size_m": [9.0, 7.5], "ceiling_height_m": 3.0 },
+  "surfaces": [
+    { "id": "podium-1", "box_min": [2.5, 6.2, 0.0], "box_max": [6.5, 7.3, 0.2] }
+  ],
+  "camera_defaults": {
+    "_note": "Tapo C110 stream1 (명세 3.3). 가로 화각 105도(1.832596 rad)는 판매처 정보로 미확인이다",
+    "image_size": [2304, 1296],
+    "fps": 25,
+    "hfov_rad": 1.832596,
+    "distortion": { "model": "NONE", "coeffs": [] },
+    "capture_jitter_ms": 3,
+    "timestamp_error_ms": 2
+  },
+  "cameras": [
+    { "id": "cam1", "position": [0.3, 0.3, 2.7], "look_at": [4.5, 3.75, 0.9], "time_offset_ms": 0 },
+    { "id": "cam2", "position": [8.7, 0.3, 2.7], "look_at": [4.5, 3.75, 0.9], "time_offset_ms": 7 },
+    { "id": "cam3", "position": [8.7, 7.2, 2.7], "look_at": [4.5, 3.75, 0.9], "time_offset_ms": 13 },
+    { "id": "cam4", "position": [0.3, 7.2, 2.7], "look_at": [4.5, 3.75, 0.9], "time_offset_ms": 21 }
+  ],
+  "people": [
+    {
+      "id": "teacher",
+      "height_m": 1.75,
+      "initial_heading_rad": -1.570796,
+      "waypoints": [
+        { "t_ms": 0, "xy": [3.0, 6.8] },
+        { "t_ms": 1000, "xy": [3.0, 6.8] },
+        { "t_ms": 3500, "xy": [6.0, 6.8] },
+        { "t_ms": 5000, "xy": [6.0, 6.8] },
+        { "t_ms": 6000, "xy": [5.0, 6.8] }
+      ]
+    },
+    {
+      "id": "student",
+      "height_m": 1.60,
+      "waypoints": [
+        { "t_ms": 0, "xy": [1.5, 5.4] },
+        { "t_ms": 2500, "xy": [4.0, 5.4] },
+        { "t_ms": 3700, "xy": [4.0, 6.6] },
+        { "t_ms": 6000, "xy": [4.0, 6.6] },
+        { "t_ms": 7300, "xy": [4.0, 5.0] },
+        { "t_ms": 10300, "xy": [7.5, 5.0] }
+      ]
+    }
+  ]
+}
