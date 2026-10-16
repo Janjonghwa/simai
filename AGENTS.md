@@ -9,7 +9,8 @@
 
 | 문서 | 내용 |
 |---|---|
-| `docs/git-convention.md` | 브랜치·커밋·MR·Jira 규칙 (팀 공통, 정본) |
+| `docs/git-convention.md` | 브랜치·커밋·MR 규칙과 Jira 연동 (팀 공통, 정본) |
+| `docs/jira-convention.md` | Jira 에픽·스토리 작성, 포인트, 라벨, 상태, 스프린트 규칙 |
 | `ai/CONVENTION.md`, `server/CONVENTION.md`, `front/CONVENTION.md` | 파트별 코드 규칙 |
 | `contracts/README.md` | 구간 계약 스키마와 검증 방법 |
 
