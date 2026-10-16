@@ -39,6 +39,9 @@ __pycache__/
 out/
 target/
 *.class
+*.iml
+*.iws
+*.ipr
 HELP.md
 application-local.yml
 application-local.properties
