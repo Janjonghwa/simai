@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/experiments/human_mesh_output.schema.json",
+  "title": "인체 메시 결과 (EXP-02, hmr_refine / hmr_appearance_update)",
+  "description": "두 종류의 기록. avatar_asset은 world_id별 체형·텍스처 자산(가끔 갱신), pose_frame은 시각별 포즈(자주 갱신). 안전 판단 권한이 없는 Tier 1 시각화 결과이며 Tier 0 위치를 덮어쓰지 않는다 (명세 5.6, 20.3, 20.4).",
+  "type": "object",
+  "required": ["schema_version", "record_type"],
+  "properties": {
+    "schema_version": { "$ref": "../common/defs.schema.json#/$defs/semver" },
+    "record_type": { "enum": ["avatar_asset", "pose_frame"] }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/avatar_asset" },
+    { "$ref": "#/$defs/pose_frame" }
+  ],
+
+  "$defs": {
+    "common_fields": {
+      "type": "object",
+      "required": [
+        "world_id", "calibration_version", "coordinate_frame",
+        "input_provenance", "reproducibility"
+      ],
+      "properties": {
+        "world_id": { "$ref": "../common/defs.schema.json#/$defs/world_id" },
+        "experiment_id": { "type": "string" },
+        "calibration_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "scene_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "coordinate_frame": { "$ref": "../common/defs.schema.json#/$defs/coordinate_frame" },
+        "input_provenance": {
+          "allOf": [
+            { "$ref": "../common/defs.schema.json#/$defs/input_provenance" },
+            { "required": ["tracks"] }
+          ]
+        },
+        "reproducibility": { "$ref": "../common/defs.schema.json#/$defs/reproducibility" }
+      }
+    },
+
+    "avatar_asset": {
+      "allOf": [{ "$ref": "#/$defs/common_fields" }],
+      "type": "object",
+      "required": [
+        "record_type", "appearance_version", "created_at", "mesh_geometry",
+        "shape", "surface_source", "face_policy", "observation_summary"
+      ],
+      "properties": {
+        "record_type": { "const": "avatar_asset" },
+        "appearance_version": { "type": "integer", "minimum": 0, "description": "같은 world_id 안에서 단조 증가. 덮어쓰지 않고 새 버전 추가" },
+        "previous_appearance_version": { "type": ["integer", "null"] },
+        "created_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "mesh_geometry": {
+          "type": "object",
+          "required": ["format", "uri", "sha256", "vertex_count", "face_count"],
+          "properties": {
+            "format": { "enum": ["GLTF_SKINNED", "GLB_SKINNED", "MHR_NATIVE"], "description": "Three.js 렌더링에는 스키닝된 glTF가 필요" },
+            "uri": { "$ref": "../common/defs.schema.json#/$defs/uri" },
+            "sha256": { "$ref": "../common/defs.schema.json#/$defs/sha256" },
+            "vertex_count": { "type": "integer", "minimum": 1 },
+            "face_count": { "type": "integer", "minimum": 1 },
+            "axis_convention": { "enum": ["WORLD_Z_UP", "GLTF_Y_UP"] }
+          },
+          "additionalProperties": false
+        },
+        "shape": {
+          "type": "object",
+          "required": ["representation", "params_uri", "frozen"],
+          "properties": {
+            "representation": { "enum": ["MHR", "SOMA_X", "OTHER"] },
+            "params_uri": { "$ref": "../common/defs.schema.json#/$defs/uri" },
+            "frozen": { "type": "boolean", "description": "N프레임 누적 후 체형을 고정했는지" },
+            "frames_used": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "texture": {
+          "type": ["object", "null"],
+          "description": "외형 텍스처. 별도 동의 승인 전에는 null (명세 11.5, 17)",
+          "required": ["uri", "sha256"],
+          "properties": {
+            "uri": { "$ref": "../common/defs.schema.json#/$defs/uri" },
+            "sha256": { "$ref": "../common/defs.schema.json#/$defs/sha256" },
+            "resolution": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 }
+          },
+          "additionalProperties": false
+        },
+        "surface_source": {
+          "type": "object",
+          "description": "표면 출처 지도. 텍셀·정점마다 OBSERVED/INTERPOLATED/UNOBSERVED를 담은 마스크와 비율",
+          "required": ["mask_uri", "ratios"],
+          "properties": {
+            "mask_uri": { "$ref": "../common/defs.schema.json#/$defs/uri" },
+            "ratios": {
+              "type": "object",
+              "required": ["OBSERVED", "INTERPOLATED", "UNOBSERVED"],
+              "properties": {
+                "OBSERVED": { "type": "number", "minimum": 0, "maximum": 1 },
+                "INTERPOLATED": { "type": "number", "minimum": 0, "maximum": 1 },
+                "UNOBSERVED": { "type": "number", "minimum": 0, "maximum": 1 }
+              },
+              "additionalProperties": false
+            },
+            "last_observed_map_uri": { "$ref": "../common/defs.schema.json#/$defs/uri" }
+          },
+          "additionalProperties": false
+        },
+        "face_policy": {
+          "enum": ["EXCLUDED", "BLURRED"],
+          "description": "얼굴 영역 처리. 원본 얼굴 픽셀은 저장하지 않는다 (명세 20.3). 다른 값은 허용하지 않음"
+        },
+        "observation_summary": {
+          "type": "object",
+          "required": ["frames_used", "cameras_used", "first_observed_at", "last_observed_at"],
+          "properties": {
+            "frames_used": { "type": "integer", "minimum": 0 },
+            "cameras_used": { "type": "array", "items": { "$ref": "../common/defs.schema.json#/$defs/camera_id" } },
+            "first_observed_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+            "last_observed_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" }
+          },
+          "additionalProperties": false
+        },
+        "consent_ref": { "type": "string", "description": "외형 데이터에 적용된 동의 기록 ID. texture가 있으면 필수" }
+      },
+      "if": { "properties": { "texture": { "type": "object" } }, "required": ["texture"] },
+      "then": { "required": ["consent_ref"] }
+    },
+
+    "pose_frame": {
+      "allOf": [{ "$ref": "#/$defs/common_fields" }],
+      "type": "object",
+      "required": [
+        "record_type", "t", "appearance_version", "root", "native_pose",
+        "canonical_motion", "observation_state", "per_camera_sources", "timing"
+      ],
+      "properties": {
+        "record_type": { "const": "pose_frame" },
+        "t": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "이 포즈가 해당하는 촬영 시각 (estimated_capture_time 기준, 명세 3.9)"
+        },
+        "appearance_version": { "type": "integer", "minimum": 0, "description": "이 포즈를 입힐 avatar_asset 버전" },
+        "root": {
+          "type": "object",
+          "description": "아바타 구동 규칙: root 위치와 접지는 Tier 0가 정한다 (명세 20.4 아바타 구동)",
+          "required": ["source", "tier0_pelvis_xyz", "tier0_ground_anchor_xyz", "tier0_t"],
+          "properties": {
+            "source": { "const": "TIER0", "description": "HMR 자체 translation을 root로 쓰지 않는다" },
+            "tier0_pelvis_xyz": { "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/world_xyz" }, { "type": "null" }] },
+            "tier0_ground_anchor_xyz": {
+              "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/world_xyz" }, { "type": "null" }],
+              "description": "접지 미확인이면 null. 발을 Z=0에 붙이지 않는다"
+            },
+            "tier0_t": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "참조한 Tier 0 상태의 시각" },
+            "hmr_root_offset_m": { "type": ["number", "null"], "description": "HMR translation과 Tier 0 pelvis의 거리 (진단용)" }
+          },
+          "additionalProperties": false
+        },
+        "native_pose": {
+          "type": "object",
+          "required": ["representation", "format_version", "params"],
+          "properties": {
+            "representation": { "enum": ["MHR", "OTHER"] },
+            "format_version": { "type": "string" },
+            "params": { "type": "object", "description": "모델 원본 포즈 파라미터 (스키마는 representation별 문서)" }
+          },
+          "additionalProperties": false
+        },
+        "canonical_motion": {
+          "type": "object",
+          "description": "공통 관절 (Tier 0 skeleton과 같은 layout). 관절 회전은 HMR에서, 위치 비교는 진단용",
+          "required": ["joint_layout", "joints", "joint_source"],
+          "properties": {
+            "joint_layout": { "$ref": "../common/defs.schema.json#/$defs/joint_layout" },
+            "joints": {
+              "type": "array",
+              "items": { "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/world_xyz" }, { "type": "null" }] }
+            },
+            "rotations": {
+              "type": "array",
+              "description": "관절별 회전 (axis-angle, 라디안)",
+              "items": { "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/vec3" }, { "type": "null" }] }
+            },
+            "joint_source": {
+              "type": "array",
+              "items": { "$ref": "../common/defs.schema.json#/$defs/joint_source" },
+              "description": "Tier 0 삼각측량에서 온 관절은 observed, HMR이 채운 관절은 inferred"
+            }
+          },
+          "additionalProperties": false
+        },
+        "observation_state": { "$ref": "../common/defs.schema.json#/$defs/observation_state" },
+        "per_camera_sources": {
+          "type": "array",
+          "description": "이 포즈에 쓴 카메라별 입력",
+          "items": {
+            "type": "object",
+            "required": ["camera_id", "local_track_id", "estimated_capture_time", "timestamp_source"],
+            "properties": {
+              "camera_id": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+              "local_track_id": { "type": "string" },
+              "estimated_capture_time": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+              "timestamp_source": { "$ref": "../common/defs.schema.json#/$defs/timestamp_source" },
+              "used_for": { "type": "array", "items": { "enum": ["POSE", "SHAPE", "APPEARANCE"] } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "timing": {
+          "type": "object",
+          "required": ["hmr_latency_ms", "lag_vs_tier0_ms", "fallback"],
+          "properties": {
+            "hmr_latency_ms": { "$ref": "../common/defs.schema.json#/$defs/duration_ms" },
+            "lag_vs_tier0_ms": { "$ref": "../common/defs.schema.json#/$defs/duration_ms", "description": "Tier 0 최신 상태 대비 지연" },
+            "fallback": {
+              "type": "boolean",
+              "description": "lag가 기준(초기값 500ms)을 넘거나 실패해 뷰어가 기본 아바타로 돌아가야 하면 true"
+            }
+          },
+          "additionalProperties": false
+        },
+        "quality": {
+          "type": "object",
+          "properties": {
+            "leave_one_camera_out_reproj_px": { "type": ["number", "null"] },
+            "silhouette_iou": { "type": ["number", "null"] },
+            "foot_to_anchor_error_m": { "type": ["number", "null"], "description": "G5 발-바닥 기준 5cm" }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  }
+}

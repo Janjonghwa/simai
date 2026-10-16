@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/common/defs.schema.json",
+  "title": "simai 공통 정의",
+  "description": "모든 계약이 공유하는 타입. World는 미터, 오른손, +Z 상방, 바닥 Z=0. 시각은 UTC int64 ms. 각도는 라디안. (명세 4.1, 4.2, 12.1)",
+  "$defs": {
+    "timestamp_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "UTC epoch 밀리초"
+    },
+    "duration_ms": { "type": "number", "minimum": 0 },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "semver": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "uri": {
+      "type": "string",
+      "minLength": 1,
+      "description": "객체 저장소 주소(s3://...) 또는 Network Volume 경로(volume://<datacenter>/<path>). 영상·가중치·대형 산출물은 저장소에 넣지 않는다."
+    },
+
+    "camera_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+    "world_id": { "type": "string", "minLength": 1, "description": "세션 단위 익명 World ID (예: w-0012)" },
+    "version_id": { "type": "string", "minLength": 1, "description": "calibration_version, scene_version, config_version 등 (예: cal-7)" },
+
+    "vec2": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+    "vec3": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+    "world_xyz": { "$ref": "#/$defs/vec3", "description": "World 좌표 [x, y, z], 미터, Z-up" },
+    "mat3": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/vec3" },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "행 우선 3x3 행렬"
+    },
+    "bbox_xyxy": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 4,
+      "maxItems": 4,
+      "description": "픽셀 [x1, y1, x2, y2], 원본 해상도 기준"
+    },
+    "keypoint_2d": {
+      "oneOf": [
+        { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "[u, v, confidence]" },
+        { "type": "null", "description": "검출되지 않음" }
+      ]
+    },
+
+    "validity": { "enum": ["VALID", "UNCERTAIN", "UNAVAILABLE"] },
+    "observation_state": { "enum": ["OBSERVED", "PREDICTED", "UNKNOWN"], "description": "명세 6.1" },
+    "track_lifecycle": { "enum": ["TENTATIVE", "CONFIRMED", "OCCLUDED", "LOST"], "description": "명세 5.2. 관측 상태와 별도" },
+    "identity_confidence": { "enum": ["HIGH", "MEDIUM", "LOW", "IDENTITY_UNCERTAIN"] },
+    "calibration_state": { "enum": ["UNCALIBRATED", "PROVISIONAL", "CALIBRATED", "DRIFTED"], "description": "명세 4.4" },
+    "scene_state": { "enum": ["CANDIDATE", "VALIDATING", "COMMITTED", "REJECTED"], "description": "명세 6.2" },
+    "timestamp_source": { "enum": ["CAMERA_STREAM", "RECEIVE_ESTIMATED", "FILE", "SIM"], "description": "명세 3.9" },
+    "joint_source": { "enum": ["observed", "inferred"], "description": "observed=Tier 0 삼각측량, inferred=Tier 1 HMR" },
+    "surface_source": {
+      "enum": ["OBSERVED", "INTERPOLATED", "UNOBSERVED"],
+      "description": "메시 표면·텍스처의 출처. OBSERVED는 실제 관측 픽셀, INTERPOLATED는 주변 관측으로 보간, UNOBSERVED는 관측 없음(기본 재질)"
+    },
+    "joint_layout": {
+      "enum": ["COCO17", "HALPE26", "MHR70", "MHR_NATIVE"],
+      "description": "COCO17 순서: nose, l_eye, r_eye, l_ear, r_ear, l_shoulder, r_shoulder, l_elbow, r_elbow, l_wrist, r_wrist, l_hip, r_hip, l_knee, r_knee, l_ankle, r_ankle"
+    },
+
+    "frame_source": { "enum": ["LIVE", "FILE", "SIM", "DATASET"], "description": "FrameSource 출처 (명세 20.4)" },
+    "calibration_source": { "enum": ["G1_AUTO", "MANUAL_PNP", "CHARUCO", "DATASET_GT", "SIM"], "description": "CalibrationProvider 출처 (명세 20.4)" },
+    "track_source": { "enum": ["TIER0_LOG", "TIER0_LIVE", "DATASET_GT", "SIM"], "description": "WorldTrackProvider 출처 (명세 20.4)" },
+
+    "coordinate_frame": {
+      "type": "object",
+      "description": "결과물의 좌표계 선언. World 외의 좌표계는 쓰지 않는다. Three.js 변환은 뷰어 어댑터에서만 한다.",
+      "required": ["frame", "unit", "handedness", "up_axis"],
+      "properties": {
+        "frame": { "const": "WORLD" },
+        "unit": { "const": "m" },
+        "handedness": { "const": "right" },
+        "up_axis": { "const": "+Z" },
+        "site_id": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "input_provenance": {
+      "type": "object",
+      "description": "결과물을 만든 입력의 출처 (명세 20.4 입력 대체 계약 규칙 2·3)",
+      "required": ["frames", "calibration", "is_upper_bound"],
+      "properties": {
+        "frames": {
+          "type": "object",
+          "required": ["source"],
+          "properties": {
+            "source": { "$ref": "#/$defs/frame_source" },
+            "dataset_id": { "type": "string", "description": "예: cmu_panoptic/160422_ultimatum1, scenario/2026-10-20_a" },
+            "dataset_hash": { "$ref": "#/$defs/sha256" },
+            "camera_ids": { "type": "array", "items": { "$ref": "#/$defs/camera_id" } }
+          },
+          "additionalProperties": false
+        },
+        "calibration": {
+          "type": "object",
+          "required": ["source", "calibration_version"],
+          "properties": {
+            "source": { "$ref": "#/$defs/calibration_source" },
+            "calibration_version": { "$ref": "#/$defs/version_id" }
+          },
+          "additionalProperties": false
+        },
+        "tracks": {
+          "type": "object",
+          "description": "사람 관련 결과물에서 필수",
+          "required": ["source", "provider_version"],
+          "properties": {
+            "source": { "$ref": "#/$defs/track_source" },
+            "provider_version": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "is_upper_bound": {
+          "type": "boolean",
+          "description": "입력 중 하나라도 DATASET_GT 또는 SIM이면 true. true인 결과의 지표는 '입력이 완벽할 때의 상한'이며 제품 성능으로 주장하지 않는다."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "reproducibility": {
+      "type": "object",
+      "description": "재현과 감사 추적 메타데이터 (명세 20.4, 20.5)",
+      "required": ["run_id", "model_version", "input_hash"],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "model_version": { "type": "string", "minLength": 1 },
+        "weights_hash": { "$ref": "#/$defs/sha256" },
+        "input_hash": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+
+    "percentiles_ms": {
+      "type": "object",
+      "required": ["p50", "p95"],
+      "properties": {
+        "p50": { "type": "number", "minimum": 0 },
+        "p95": { "type": "number", "minimum": 0 },
+        "p99": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/envelope.schema.json",
+  "title": "공통 봉투",
+  "description": "I0의 영상 프레임(바이너리)을 제외한 모든 구간 메시지의 봉투 (명세 12.1). 수신 측은 모르는 필드를 무시한다.",
+  "type": "object",
+  "required": ["schema_version", "msg_type", "msg_id", "sent_at", "source_id", "payload"],
+  "properties": {
+    "schema_version": { "$ref": "../common/defs.schema.json#/$defs/semver" },
+    "msg_type": { "type": "string", "minLength": 1 },
+    "msg_id": { "$ref": "../common/defs.schema.json#/$defs/uuid", "description": "중복 수신 제거용" },
+    "sent_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+    "source_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "실제 송신 주체 (tier0-01, laptop-01, ec2). Tier 0가 보내는 메시지의 source_id는 이벤트의 gateway_id와 같다."
+    },
+    "payload": { "type": "object" }
+  }
+}

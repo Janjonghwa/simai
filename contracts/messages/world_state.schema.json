@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/world_state.schema.json",
+  "title": "I1 world_state",
+  "description": "RunPod Tier 0 → EC2, 10 Hz (명세 12.3, 5.2). I1 LIVE 계약이므로 Lead 승인 없이 의미를 바꾸지 않는다.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "world_state" },
+    "payload": {
+      "type": "object",
+      "required": ["t_latest_global", "calibration_version", "scene_version", "tracks"],
+      "properties": {
+        "t_latest_global": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "시간 동기화가 유효한 카메라들 중 실제 처리된 최신 촬영 시각 (명세 6.1)"
+        },
+        "calibration_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "scene_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "tracks": { "type": "array", "items": { "$ref": "#/$defs/world_track" } }
+      }
+    }
+  },
+
+  "$defs": {
+    "skeleton": {
+      "type": "object",
+      "description": "관절 배열은 모두 같은 길이, joint_layout 순서. 2대 미만에서 보인 관절은 null (지어내지 않음).",
+      "required": ["joint_layout", "joints", "visible", "validity", "joint_source"],
+      "properties": {
+        "joint_layout": { "$ref": "../common/defs.schema.json#/$defs/joint_layout" },
+        "joints": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "$ref": "../common/defs.schema.json#/$defs/world_xyz" },
+              { "type": "null" }
+            ]
+          }
+        },
+        "visible": { "type": "array", "items": { "type": "boolean" } },
+        "validity": { "type": "array", "items": { "$ref": "../common/defs.schema.json#/$defs/validity" } },
+        "joint_source": { "type": "array", "items": { "$ref": "../common/defs.schema.json#/$defs/joint_source" } }
+      },
+      "additionalProperties": false
+    },
+
+    "world_track": {
+      "type": "object",
+      "description": "사람 한 명의 World 상태 (명세 5.2 World 위치의 정의)",
+      "required": [
+        "world_id", "t_last_valid", "observation_state", "track_lifecycle",
+        "identity_confidence", "identity_revision",
+        "position_xy", "position_xy_sigma",
+        "pelvis_xyz", "ground_anchor_xyz", "support_surface_id", "support_surface_validity",
+        "contact_validity", "z_validity", "head_z", "cameras"
+      ],
+      "properties": {
+        "world_id": { "$ref": "../common/defs.schema.json#/$defs/world_id" },
+        "t_last_valid": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "observation_state": { "$ref": "../common/defs.schema.json#/$defs/observation_state" },
+        "track_lifecycle": { "$ref": "../common/defs.schema.json#/$defs/track_lifecycle" },
+        "identity_confidence": { "$ref": "../common/defs.schema.json#/$defs/identity_confidence" },
+        "identity_revision": { "type": "integer", "minimum": 0 },
+        "frame_age_ms": { "$ref": "../common/defs.schema.json#/$defs/duration_ms" },
+
+        "position_xy": {
+          "$ref": "../common/defs.schema.json#/$defs/vec2",
+          "description": "구역 판정용 수평 위치. 기본은 골반 XY, 없으면 검증된 접지점 XY, 둘 다 없으면 예측값(observation_state=PREDICTED)"
+        },
+        "position_xy_sigma": { "$ref": "../common/defs.schema.json#/$defs/vec2" },
+
+        "pelvis_xyz": {
+          "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/world_xyz" }, { "type": "null" }],
+          "description": "삼각측량한 골반. 2대 이상 유효 관측이 없으면 null"
+        },
+        "ground_anchor_xyz": {
+          "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/world_xyz" }, { "type": "null" }],
+          "description": "검증된 지지 표면 위의 위치. 접지 미확인이면 null. Z=0으로 채우지 않는다."
+        },
+        "ground_anchor_sigma": {
+          "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/vec3" }, { "type": "null" }]
+        },
+        "support_surface_id": { "type": ["string", "null"], "description": "floor 또는 등록 작업면 ID" },
+        "support_surface_validity": {
+          "enum": ["VALID", "UNCERTAIN", "UNKNOWN"],
+          "description": "명세 5.2: 근거가 부족하면 UNKNOWN"
+        },
+        "contact_validity": { "$ref": "../common/defs.schema.json#/$defs/validity" },
+        "z_validity": { "$ref": "../common/defs.schema.json#/$defs/validity" },
+        "head_z": { "type": ["number", "null"] },
+        "head_z_sigma": { "type": ["number", "null"] },
+        "velocity": { "$ref": "../common/defs.schema.json#/$defs/vec3" },
+        "cameras": {
+          "type": "array",
+          "items": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+          "description": "이번 상태에 기여한 카메라"
+        },
+        "skeleton": { "$ref": "#/$defs/skeleton" }
+      },
+
+      "allOf": [
+        {
+          "description": "지지 표면이 VALID가 아니면 ground_anchor_xyz는 null (Z=0 대체 금지)",
+          "if": {
+            "properties": { "support_surface_validity": { "not": { "const": "VALID" } } },
+            "required": ["support_surface_validity"]
+          },
+          "then": { "properties": { "ground_anchor_xyz": { "type": "null" } } }
+        },
+        {
+          "description": "z_validity가 UNAVAILABLE이면 ground_anchor_xyz는 null",
+          "if": {
+            "properties": { "z_validity": { "const": "UNAVAILABLE" } },
+            "required": ["z_validity"]
+          },
+          "then": { "properties": { "ground_anchor_xyz": { "type": "null" } } }
+        }
+      ]
+    }
+  }
+}

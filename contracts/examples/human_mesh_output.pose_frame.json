@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0.0",
+  "record_type": "pose_frame",
+  "world_id": "w-0001",
+  "experiment_id": "EXP-02",
+  "calibration_version": "panoptic-gt-0",
+  "coordinate_frame": { "frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z" },
+  "input_provenance": {
+    "frames": { "source": "DATASET", "dataset_id": "cmu_panoptic/160422_ultimatum1" },
+    "calibration": { "source": "DATASET_GT", "calibration_version": "panoptic-gt-0" },
+    "tracks": { "source": "DATASET_GT", "provider_version": "panoptic-adapter-0.1.0" },
+    "is_upper_bound": true
+  },
+  "reproducibility": {
+    "run_id": "exp02-20261021-0003",
+    "model_version": "Fast-SAM-3D-Body@d72aa36 + sam-3d-body-dinov3",
+    "input_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "t": 1760342400100,
+  "appearance_version": 0,
+  "root": {
+    "source": "TIER0",
+    "tier0_pelvis_xyz": [1.20, 0.40, 0.95],
+    "tier0_ground_anchor_xyz": [1.21, 0.41, 0.0],
+    "tier0_t": 1760342400100,
+    "hmr_root_offset_m": 0.07
+  },
+  "native_pose": {
+    "representation": "MHR",
+    "format_version": "sam-3d-body@b5c765a",
+    "params": { "body_pose_uri": "volume://US-KS-2/exp02/runs/exp02-20261021-0003/w-0001/1760342400100.npz" }
+  },
+  "canonical_motion": {
+    "joint_layout": "COCO17",
+    "joints": [[1.21, 0.42, 1.64], [1.18, 0.38, 1.66]],
+    "joint_source": ["observed", "inferred"]
+  },
+  "observation_state": "OBSERVED",
+  "per_camera_sources": [
+    { "camera_id": "hd_00_00", "local_track_id": "gt-0", "estimated_capture_time": 1760342400100, "timestamp_source": "FILE", "used_for": ["POSE", "SHAPE"] }
+  ],
+  "timing": { "hmr_latency_ms": 288, "lag_vs_tier0_ms": 310, "fallback": false },
+  "quality": { "leave_one_camera_out_reproj_px": 9.4, "silhouette_iou": 0.81, "foot_to_anchor_error_m": 0.04 }
+}

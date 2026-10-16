@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/providers/world_tracks.schema.json",
+  "title": "WorldTrackProvider 출력 (한 시각)",
+  "description": "촬영 시각 하나의 사람 목록. 파일로는 시각 순서의 JSONL(한 줄에 이 객체 하나)로 저장한다. I1 world_state의 트랙 필드에 observation_2d의 카메라별 연결을 더한 형식이다 (명세 20.4). TIER0_LOG와 대체 구현(DATASET_GT, SIM)이 같은 형식을 낸다.",
+  "type": "object",
+  "required": [
+    "schema_version", "t", "provider_source", "provider_version",
+    "calibration_version", "coordinate_frame", "tracks"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "../common/defs.schema.json#/$defs/semver" },
+    "t": {
+      "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+      "description": "공통 시각 (카메라별 2D keypoint를 이 시각으로 시간 보간한 기준, 명세 3.9)"
+    },
+    "provider_source": { "$ref": "../common/defs.schema.json#/$defs/track_source" },
+    "provider_version": { "type": "string", "minLength": 1 },
+    "calibration_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+    "scene_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+    "coordinate_frame": { "$ref": "../common/defs.schema.json#/$defs/coordinate_frame" },
+    "tracks": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          { "$ref": "../messages/world_state.schema.json#/$defs/world_track" },
+          {
+            "type": "object",
+            "required": ["per_camera"],
+            "properties": {
+              "per_camera": {
+                "type": "array",
+                "description": "이 사람이 보인 카메라별 관측. 같은 카메라는 한 번만 (같은 카메라의 두 검출을 한 World ID에 묶지 않음, 명세 5.2)",
+                "items": { "$ref": "#/$defs/camera_observation" }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "additionalProperties": false,
+
+  "$defs": {
+    "camera_observation": {
+      "type": "object",
+      "required": ["camera_id", "local_track_id", "bbox", "frame_ref", "estimated_capture_time", "timestamp_source"],
+      "properties": {
+        "camera_id": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+        "local_track_id": {
+          "type": "string",
+          "description": "카메라 내 트랙 ID. 출처 보존용이며 사람 정체성의 정본이 아니다 (명세 20.3)"
+        },
+        "bbox": { "$ref": "../common/defs.schema.json#/$defs/bbox_xyxy" },
+        "keypoints_2d": {
+          "type": "array",
+          "items": { "$ref": "../common/defs.schema.json#/$defs/keypoint_2d" },
+          "description": "joint_layout 순서 (skeleton과 같은 배치)"
+        },
+        "joint_layout": { "$ref": "../common/defs.schema.json#/$defs/joint_layout" },
+        "frame_ref": {
+          "type": "object",
+          "description": "이 관측이 나온 프레임. LIVE/녹화는 I0 식별자, 데이터셋은 파일 프레임 번호",
+          "oneOf": [
+            {
+              "required": ["stream_epoch", "frame_sequence"],
+              "properties": {
+                "stream_epoch": { "type": "integer", "minimum": 0 },
+                "frame_sequence": { "type": "integer", "minimum": 0 }
+              }
+            },
+            {
+              "required": ["file_uri", "frame_index"],
+              "properties": {
+                "file_uri": { "$ref": "../common/defs.schema.json#/$defs/uri" },
+                "frame_index": { "type": "integer", "minimum": 0 }
+              }
+            }
+          ]
+        },
+        "estimated_capture_time": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "timestamp_source": { "$ref": "../common/defs.schema.json#/$defs/timestamp_source" },
+        "timestamp_uncertainty_ms": { "$ref": "../common/defs.schema.json#/$defs/duration_ms" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

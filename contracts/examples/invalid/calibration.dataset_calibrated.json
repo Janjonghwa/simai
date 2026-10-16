@@ -1,0 +1,22 @@
+{
+  "_expect_error": "공개 데이터 정답 보정을 CALIBRATED로 표시 (명세 20.4 규칙 4 위반)",
+  "schema_version": "1.0.0",
+  "calibration_version": "panoptic-gt-0",
+  "provider_source": "DATASET_GT",
+  "state": "CALIBRATED",
+  "created_at": 1760342400000,
+  "coordinate_frame": { "frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z" },
+  "scale_basis": "DATASET_GT",
+  "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
+  "cameras": [
+    {
+      "camera_id": "hd_00_00",
+      "image_size": [1920, 1080],
+      "K": [[1400.0, 0.0, 960.0], [0.0, 1400.0, 540.0], [0.0, 0.0, 1.0]],
+      "distortion": { "model": "NONE", "coeffs": [] },
+      "R": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+      "t": [0.0, 0.0, 3.0]
+    }
+  ],
+  "validation": { "checkpoint_count": 0, "max_position_error_m": 0.0, "max_head_height_error_m": 0.0 }
+}

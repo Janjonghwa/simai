@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/experiments/run_record.schema.json",
+  "title": "실험 Run 기록",
+  "description": "실험 Run 한 번의 재현·감사 기록 (명세 20.5 재현·측정·운영 비용). 리뷰어는 이 기록만으로 재현할 수 있어야 한다 (명세 20.1 리뷰 체크리스트 1).",
+  "type": "object",
+  "required": [
+    "schema_version", "run_id", "experiment_id", "jira_key", "owner",
+    "git_commit", "branch", "env_hash", "model_version", "config",
+    "input_provenance", "gpu", "started_at", "status", "experiment_state", "metrics", "results"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "../common/defs.schema.json#/$defs/semver" },
+    "run_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$", "description": "예: exp01-20261020-0001" },
+    "experiment_id": { "enum": ["EXP-01", "EXP-02", "INT-01"] },
+    "e_gate": { "enum": ["E-GATE-0", "E-GATE-1", "E-GATE-2", "E-GATE-3", "E-GATE-4"], "description": "이 Run이 근거가 되는 게이트" },
+    "jira_key": { "type": "string" },
+    "owner": { "type": "string", "description": "사람 기준 Owner (명세 20.1)" },
+
+    "git_commit": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+    "branch": { "type": "string" },
+    "dirty_worktree": { "type": "boolean", "description": "커밋되지 않은 변경이 있었으면 true. true인 Run은 리뷰 근거로 쓰지 않는다" },
+    "env_hash": { "type": "string", "description": "Docker 이미지 다이제스트 (sha256:...)" },
+    "model_version": { "type": "string" },
+    "weights_hash": { "$ref": "../common/defs.schema.json#/$defs/sha256" },
+    "config": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "description": "저장소 상대 경로" },
+        "sha256": { "$ref": "../common/defs.schema.json#/$defs/sha256" },
+        "overrides": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "input_provenance": { "$ref": "../common/defs.schema.json#/$defs/input_provenance" },
+
+    "gpu": {
+      "type": "object",
+      "required": ["model", "driver", "cuda", "provider"],
+      "properties": {
+        "model": { "type": "string", "description": "실제 GPU 모델명 (nvidia-smi 기준)" },
+        "driver": { "type": "string" },
+        "cuda": { "type": "string" },
+        "provider": { "enum": ["RUNPOD", "LOCAL"] },
+        "region": { "type": "string", "description": "예: US, JP" },
+        "datacenter": { "type": "string" },
+        "shared_with_tier0": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+
+    "started_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+    "finished_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+    "status": { "enum": ["SUCCEEDED", "FAILED", "ABORTED"] },
+    "failure_reason": { "type": "string" },
+    "experiment_state": { "enum": ["PLAN", "BASELINE", "ITERATE", "BENCHMARK", "REVIEW", "ADOPT", "HOLD", "REJECT"] },
+
+    "metrics": {
+      "type": "object",
+      "description": "실험별 지표. 이름은 실험 설계 문서에 미리 정의한 것만 쓴다",
+      "additionalProperties": { "type": ["number", "string", "boolean", "null"] }
+    },
+    "performance": {
+      "type": "object",
+      "properties": {
+        "stage_latency_ms": {
+          "type": "object",
+          "additionalProperties": { "$ref": "../common/defs.schema.json#/$defs/percentiles_ms" }
+        },
+        "vram_peak_mb": { "type": "number", "minimum": 0 },
+        "throughput": { "type": "number", "minimum": 0 },
+        "failure_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "storage_used_gb": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "results": {
+      "type": "array",
+      "description": "산출물 (scene_output, human_mesh_output, 보고서, 렌더링)",
+      "items": {
+        "type": "object",
+        "required": ["kind", "uri"],
+        "properties": {
+          "kind": { "enum": ["SCENE_OUTPUT", "HUMAN_MESH_OUTPUT", "REPORT", "RENDER", "LOG", "OTHER"] },
+          "uri": { "$ref": "../common/defs.schema.json#/$defs/uri" },
+          "sha256": { "$ref": "../common/defs.schema.json#/$defs/sha256" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "cost": {
+      "type": "object",
+      "properties": {
+        "gpu_hours": { "type": "number", "minimum": 0 },
+        "credits": { "type": "number", "minimum": 0 },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "review": {
+      "type": ["object", "null"],
+      "required": ["reviewer", "verdict", "reviewed_at", "report_path"],
+      "properties": {
+        "reviewer": { "type": "string", "description": "사람 또는 독립 리뷰 에이전트. 작성자와 달라야 한다" },
+        "verdict": { "enum": ["PASS", "FAIL", "CHANGES_REQUESTED"] },
+        "reviewed_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "report_path": { "type": "string" },
+        "reproduced": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "notes": { "type": "string" }
+  },
+  "additionalProperties": false
+}
