@@ -1,0 +1,27 @@
+{
+  "_note": "EXP-01 E-GATE-0 C1: 이미지만 입력, 보정 입력 없음(input_provenance.calibration 생략)",
+  "schema_version": "1.1.0",
+  "run_id": "C1_room4_bf16",
+  "experiment_id": "EXP-01",
+  "e_gate": "E-GATE-0",
+  "jira_key": "S15P31A101-74",
+  "owner": "EXP-01 Owner",
+  "git_commit": "d665da2",
+  "branch": "S15P31A101-74-exp01-egate0",
+  "dirty_worktree": false,
+  "env_hash": "sha256:19393d30e86caa33000000000000000000000000000000000000000000000000",
+  "model_version": "map-anything@3d10cf7 + map-anything",
+  "config": { "path": "ai/experiments/static_scene/run_mapanything.py", "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "overrides": { "mode": "images", "amp": 1, "amp_dtype": "bf16" } },
+  "input_provenance": {
+    "frames": { "source": "FILE", "dataset_id": "room4/2026-10-07" },
+    "is_upper_bound": false
+  },
+  "gpu": { "model": "NVIDIA A40", "driver": "595.91.07", "cuda": "12.6", "provider": "RUNPOD", "region": "CA", "datacenter": "ca-mtl-1", "shared_with_tier0": false },
+  "started_at": 1760598000000,
+  "status": "SUCCEEDED",
+  "experiment_state": "BASELINE",
+  "metrics": { "infer_ms_warm": 783.2, "metric_scaling_factor": 2.939 },
+  "performance": { "vram_peak_mb": 8871 },
+  "results": [ { "kind": "OTHER", "uri": "volume://ca-mtl-1/simai/runs/exp01/C1_room4_bf16/metrics.json" } ],
+  "review": null
+}

@@ -47,9 +47,9 @@
 
   "allOf": [
     {
-      "description": "공개 데이터 정답·시뮬레이터 보정은 우리 현장의 보정이 아니므로 CALIBRATED가 될 수 없다 (명세 20.4 규칙 4)",
+      "description": "공개 데이터 정답·시뮬레이터·모델 추정 카메라는 우리 현장의 검증된 보정이 아니므로 CALIBRATED가 될 수 없다 (명세 20.4 규칙 4)",
       "if": {
-        "properties": { "provider_source": { "enum": ["DATASET_GT", "SIM"] } },
+        "properties": { "provider_source": { "enum": ["DATASET_GT", "SIM", "MODEL_ESTIMATE"] } },
         "required": ["provider_source"]
       },
       "then": { "properties": { "state": { "enum": ["UNCALIBRATED", "PROVISIONAL"] } } }

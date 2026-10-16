@@ -68,7 +68,7 @@
     },
 
     "frame_source": { "enum": ["LIVE", "FILE", "SIM", "DATASET"], "description": "FrameSource 출처 (명세 20.4)" },
-    "calibration_source": { "enum": ["G1_AUTO", "MANUAL_PNP", "CHARUCO", "DATASET_GT", "SIM"], "description": "CalibrationProvider 출처 (명세 20.4)" },
+    "calibration_source": { "enum": ["G1_AUTO", "MANUAL_PNP", "CHARUCO", "DATASET_GT", "SIM", "MODEL_ESTIMATE"], "description": "CalibrationProvider 출처 (명세 20.4). MODEL_ESTIMATE = 이전 Run에서 모델(MapAnything 등)이 추정한 카메라를 입력으로 다시 쓴 경우" },
     "track_source": { "enum": ["TIER0_LOG", "TIER0_LIVE", "DATASET_GT", "SIM"], "description": "WorldTrackProvider 출처 (명세 20.4)" },
 
     "coordinate_frame": {
@@ -88,7 +88,7 @@
     "input_provenance": {
       "type": "object",
       "description": "결과물을 만든 입력의 출처 (명세 20.4 입력 대체 계약 규칙 2·3)",
-      "required": ["frames", "calibration", "is_upper_bound"],
+      "required": ["frames", "is_upper_bound"],
       "properties": {
         "frames": {
           "type": "object",
@@ -103,6 +103,7 @@
         },
         "calibration": {
           "type": "object",
+          "description": "보정 입력. 이미지만 넣어 모델이 카메라를 스스로 추정하는 Run에는 생략한다",
           "required": ["source", "calibration_version"],
           "properties": {
             "source": { "$ref": "#/$defs/calibration_source" },
