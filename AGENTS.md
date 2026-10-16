@@ -56,4 +56,6 @@ docs/        팀 규칙, 실험 설계, 결정 기록, 데이터 manifest (명�
 - MR은 `/mr` 스킬로 올린다. 공개 전에 사용자 승인을 받는다.
 - 자기 이슈 범위 밖의 파일은 고치지 않는다.
 - 실험 Run마다 `contracts/experiments/run_record.schema.json` 형식의 기록을 남긴다.
-- RunPod는 한 시점에 한 리전만 쓴다(개발: 미국 A40, 시연 전 시연 리전으로 이전). GPU Pod는 하나이며 Tier 0가 자원을 먼저 쓴다. LIVE 관제 시간에 EXP Job을 돌리지 않는다.
+- RunPod는 한 시점에 한 리전만 쓴다(개발·시연: 일본 AP-JP-1 H100 + 같은 데이터센터 Network Volume). GPU Pod는 하나이며 Tier 0가 자원을 먼저 쓴다. LIVE 관제 시간에 EXP Job을 돌리지 않는다.
+- GPU Pod는 검증할 때만 켠다. 코드·설치 스크립트·실험 큐는 노트북에서 완성하고, Pod에서 큐를 실행한 뒤 바로 Stop 한다.
+- 노트북↔Pod는 Pod 공개 IP:포트 SSH 직접 연결(기본)이나 RunPod HTTPS 프록시 443(예비, 토큰 인증)으로 잇는다. Tailscale은 쓰지 않는다.
