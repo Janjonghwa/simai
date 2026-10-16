@@ -1,0 +1,80 @@
+[project]
+name = "simai-ai"
+version = "0.1.0"
+description = "simai AI 파트: Tier 0 파이프라인, Risk Engine, 작업 서버 기능 패키지"
+requires-python = ">=3.11,<3.12"
+# 기본 설치는 비워 둔다. EC2 컨테이너는 extras 없이 Risk Engine(simai_ai.risk)만 쓴다.
+dependencies = []
+
+[project.optional-dependencies]
+# 무거운 의존성은 기능별로 나눈다. CUDA·Torch 빌드는 deploy/의 Docker 이미지가 고정한다.
+io = ["opencv-python-headless>=4.9"]
+detection = ["ultralytics>=8.4"]
+geometry = ["numpy>=1.26"]
+calibration = ["numpy>=1.26", "opencv-python-headless>=4.9"]
+scene = ["torch>=2.4"]
+hmr = ["torch>=2.4"]
+# 배포 단위 묶음 (services/)
+tier0 = ["simai-ai[io,detection,geometry,calibration]"]
+worker = ["simai-ai[scene,hmr]"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "import-linter>=2.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.12"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--import-mode=importlib", "-ra"]
+markers = [
+    "gpu: GPU가 있어야 도는 테스트 (CI는 GPU 없이 돈다)",
+]
+
+# 의존 방향 검사: ai/ 에서 `uv run lint-imports`
+# services 는 설치 대상이 아니라 ai/ 를 작업 디렉터리로 두고 찾는다.
+[tool.importlinter]
+root_packages = ["simai_ai", "services"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+id = "risk-isolated"
+name = "risk 는 다른 기능 패키지를 import 하지 않는다 (contracts 생성 타입만 허용)"
+type = "forbidden"
+source_modules = ["simai_ai.risk"]
+# simai_ai 의 하위 패키지 중 risk, contracts 를 뺀 전부. 새 기능 패키지를 만들면 여기에 넣는다
+# (tests/architecture 가 빠진 패키지를 잡는다). 아래 서드파티는 기본 설치에 없으므로 함께 막는다.
+forbidden_modules = [
+    "simai_ai.io",
+    "simai_ai.detection",
+    "simai_ai.tracking",
+    "simai_ai.geometry",
+    "simai_ai.contact",
+    "simai_ai.calibration",
+    "simai_ai.scene",
+    "simai_ai.hmr",
+    "simai_ai.vlm",
+    "simai_ai.providers",
+    "numpy",
+    "cv2",
+    "torch",
+    "ultralytics",
+]
+
+[[tool.importlinter.contracts]]
+id = "no-experiments"
+name = "src 와 services 는 experiments 를 import 하지 않는다"
+type = "forbidden"
+source_modules = ["simai_ai", "services"]
+forbidden_modules = ["experiments"]
+
+[[tool.importlinter.contracts]]
+id = "src-not-services"
+name = "src 는 services 를 import 하지 않는다"
+type = "forbidden"
+source_modules = ["simai_ai"]
+forbidden_modules = ["services"]
