@@ -34,6 +34,15 @@ ai/
 - `services/`에는 판정·추정 로직을 넣지 않는다. 조립과 설정만 둔다.
 - 상류 입력(보정, World 상태)은 Provider 인터페이스로만 받는다. 오프라인용 삼각측량·추적을 따로 만들지 않는다.
 
+## 로컬 데이터 위치
+
+커밋하지 않는 데이터는 저장소 최상위가 아니라 `ai/` 안에 둔다(`.gitignore`의 `recordings/`, `runs/` 패턴으로 제외됨).
+
+| 위치 | 내용 |
+|---|---|
+| `ai/experiments/recordings/` | 카메라 녹화, RTSP 측정 보고서, 촬영 사진(실험 공용 입력) |
+| `ai/experiments/<실험>/runs/` | RunPod에서 가져온 실험 결과 사본(원본은 Network Volume `/workspace/simai/runs/`) |
+
 ## 코드
 
 - Python 3.11, 의존성은 잠금 파일로 고정한다. 모델별 CUDA·Torch 환경은 `deploy/`의 Docker 이미지로 고정한다.
