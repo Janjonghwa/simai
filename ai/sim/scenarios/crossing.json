@@ -1,0 +1,43 @@
+{
+  "name": "crossing",
+  "description": "교차: 두 사람이 0.6 m 떨어진 평행선을 마주 보고 걸어 교실 가운데에서 엇갈린다. 엇갈릴 때 카메라에 따라 한 사람이 다른 사람을 가린다",
+  "seed": 46003,
+  "start_time_ms": 1760342400000,
+  "duration_ms": 7000,
+  "world_rate_hz": 10,
+  "site_id": "sim-classroom",
+  "room": { "size_m": [9.0, 7.5], "ceiling_height_m": 3.0 },
+  "camera_defaults": {
+    "_note": "Tapo C110 stream1 (명세 3.3). 가로 화각 105도(1.832596 rad)는 판매처 정보로 미확인이다",
+    "image_size": [2304, 1296],
+    "fps": 25,
+    "hfov_rad": 1.832596,
+    "distortion": { "model": "NONE", "coeffs": [] },
+    "capture_jitter_ms": 3,
+    "timestamp_error_ms": 4
+  },
+  "cameras": [
+    { "id": "cam1", "position": [0.3, 0.3, 2.7], "look_at": [4.5, 3.75, 0.9], "time_offset_ms": 0 },
+    { "id": "cam2", "position": [8.7, 0.3, 2.7], "look_at": [4.5, 3.75, 0.9], "time_offset_ms": 7 },
+    { "id": "cam3", "position": [8.7, 7.2, 2.7], "look_at": [4.5, 3.75, 0.9], "time_offset_ms": 13 },
+    { "id": "cam4", "position": [0.3, 7.2, 2.7], "look_at": [4.5, 3.75, 0.9], "time_offset_ms": 21 }
+  ],
+  "people": [
+    {
+      "id": "east",
+      "height_m": 1.70,
+      "waypoints": [
+        { "t_ms": 0, "xy": [1.5, 3.45] },
+        { "t_ms": 6000, "xy": [7.5, 3.45] }
+      ]
+    },
+    {
+      "id": "west",
+      "height_m": 1.68,
+      "waypoints": [
+        { "t_ms": 0, "xy": [7.5, 4.05] },
+        { "t_ms": 6000, "xy": [1.5, 4.05] }
+      ]
+    }
+  ]
+}
