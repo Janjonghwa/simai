@@ -16,7 +16,7 @@
       "distortion": { "model": "OPENCV_PINHOLE", "coeffs": [-0.30, 0.09, 0.0, 0.0, -0.01] },
       "R": [[0.7071, -0.7071, 0.0], [-0.3062, -0.3062, -0.9014], [0.6374, 0.6374, -0.4330]],
       "t": [0.0, 2.43, 0.0],
-      "camera_height_m": 2.7,
+      "camera_height_m": 2.19,
       "reprojection_error_px": { "median": 1.8, "p95": 4.6 }
     }
   ],

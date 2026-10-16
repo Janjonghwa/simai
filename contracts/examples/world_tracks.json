@@ -29,7 +29,7 @@
           "local_track_id": "gt-0",
           "bbox": [812.0, 210.0, 1020.0, 760.0],
           "joint_layout": "COCO17",
-          "keypoints_2d": [[915.0, 240.0, 1.0], null],
+          "keypoints_2d": [[915.0, 240.0, 1.0], null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null],
           "frame_ref": { "file_uri": "volume://US-KS-2/datasets/panoptic/160422_ultimatum1/hd_00_00.mp4", "frame_index": 3012 },
           "estimated_capture_time": 1760342400100,
           "timestamp_source": "FILE",
