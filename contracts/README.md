@@ -1,6 +1,6 @@
 # contracts
 
-구간 계약의 정본(JSON Schema, draft 2020-12). 명세 12장, 20.4, 21.2 기준. **초안 v1.0.0.**
+구간 계약의 정본(JSON Schema, draft 2020-12). 명세 12장, 20.4, 21.2 기준. **v1.1.0** (1.1.0: 보정 입력 선택 항목화, `MODEL_ESTIMATE` 출처 추가 — S15P31A101-148).
 
 | 경로 | 내용 | 명세 |
 |---|---|---|
@@ -18,7 +18,8 @@
 ## 스키마로 막는 불변 규칙
 
 - 지지 표면이 VALID가 아니거나 `z_validity`가 UNAVAILABLE이면 `ground_anchor_xyz`는 null (Z=0 대체 금지)
-- `DATASET_GT`·`SIM` 보정은 CALIBRATED 불가, CALIBRATED는 독립 검증점 결과 필수
+- `DATASET_GT`·`SIM`·`MODEL_ESTIMATE` 보정은 CALIBRATED 불가, CALIBRATED는 독립 검증점 결과 필수
+- 이미지만 넣어 모델이 카메라를 추정하는 Run은 `input_provenance.calibration`을 생략한다. 이전 Run의 추정 카메라를 다시 넣으면 출처는 `MODEL_ESTIMATE`다
 - 정답·시뮬레이션 입력(`is_upper_bound: true`) 결과는 COMMITTED Scene 불가
 - HMR 포즈의 root 출처는 `TIER0`만 허용, 외형 텍스처는 `face_policy`(EXCLUDED/BLURRED)와 `consent_ref` 필수
 - 좌표계 선언은 World(m, 오른손, +Z)만 허용

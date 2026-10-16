@@ -1,0 +1,22 @@
+{
+  "_expect_error": "모델이 추정한 카메라를 CALIBRATED로 표시 (명세 20.4 규칙 4 위반)",
+  "schema_version": "1.1.0",
+  "calibration_version": "C1_room4_bf16/cameras.json",
+  "provider_source": "MODEL_ESTIMATE",
+  "state": "CALIBRATED",
+  "created_at": 1760598000000,
+  "coordinate_frame": { "frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z" },
+  "scale_basis": "MODEL_ESTIMATE",
+  "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
+  "cameras": [
+    {
+      "camera_id": "camera_a",
+      "image_size": [1920, 1080],
+      "K": [[1300.0, 0.0, 960.0], [0.0, 1300.0, 540.0], [0.0, 0.0, 1.0]],
+      "distortion": { "model": "NONE", "coeffs": [] },
+      "R": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+      "t": [0.0, 0.0, 0.0]
+    }
+  ],
+  "validation": { "checkpoint_count": 0, "max_position_error_m": 0.0, "max_head_height_error_m": 0.0 }
+}
