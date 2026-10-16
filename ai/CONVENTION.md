@@ -46,6 +46,7 @@ ai/
 ## 코드
 
 - Python 3.11, 의존성은 잠금 파일로 고정한다. 모델별 CUDA·Torch 환경은 `deploy/`의 Docker 이미지로 고정한다.
+- 가상환경은 uv(`uv venv`, `uv pip`, 노트북은 `uv run --with`)가 기본이다. CUDA 컴파일러(nvcc)나 시스템 라이브러리가 필요한 경우에만 micromamba로 Python·CUDA toolkit을 깔고, 패키지는 그 위에 설치한다(예: EXP-02 Detectron2 빌드). RunPod 환경은 Network Volume의 `/workspace/simai/envs/<이름>`에 둔다.
 - 시계는 주입받는다. Risk Engine과 Tier 0 코드에서 현재 시각을 직접 읽지 않는다.
 - GPU가 필요한 테스트는 pytest marker `gpu`로 표시한다. CI는 GPU 없이 돈다.
 - 포맷터·린터와 이름 규칙은 첫 코드가 들어올 때 정한다(기본안: ruff).
