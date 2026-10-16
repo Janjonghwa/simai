@@ -1,7 +1,0 @@
-# 저장소의 텍스트 파일 줄바꿈을 LF 로 통일한다 (Windows·Mac 혼용 대비)
-* text=auto eol=lf
-
-# Windows 전용 스크립트는 CRLF 를 유지한다
-*.bat text eol=crlf
-*.cmd text eol=crlf
-*.ps1 text eol=crlf
