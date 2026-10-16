@@ -1,0 +1,78 @@
+{
+  "format_version": "1.0.0",
+  "vector_id": "no-rules",
+  "description": "구역 안에 사람이 있어도(관측·예측 각 1명, 접지 미확인 포함) 등록된 규칙이 없으면 판정이 없다",
+  "origin": "LIVE",
+  "rules": [],
+  "zones": [
+    {
+      "zone_id": "z-04",
+      "zone_version": "zone-1",
+      "judge_type": "GROUND_FOOTPRINT",
+      "polygon_xy": [[3.0, 4.5], [4.0, 4.5], [4.0, 5.5], [3.0, 5.5]],
+      "z_range": null,
+      "severity": "HIGH",
+      "zone_type": "RESTRICTED"
+    }
+  ],
+  "steps": [
+    {
+      "clock_ms": 1760342400200,
+      "world_state": {
+        "t_latest_global": 1760342400100,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0012",
+            "t_last_valid": 1760342400080,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 2,
+            "frame_age_ms": 140,
+            "position_xy": [3.40, 5.01],
+            "position_xy_sigma": [0.08, 0.08],
+            "pelvis_xyz": [3.40, 5.01, 0.92],
+            "ground_anchor_xyz": [3.41, 5.02, 0.0],
+            "ground_anchor_sigma": [0.06, 0.06, 0.03],
+            "support_surface_id": "floor",
+            "support_surface_validity": "VALID",
+            "contact_validity": "VALID",
+            "z_validity": "VALID",
+            "head_z": 1.68,
+            "head_z_sigma": 0.05,
+            "velocity": [0.9, 0.1, 0.0],
+            "cameras": ["cam1", "cam3"],
+            "skeleton": {
+              "joint_layout": "COCO17",
+              "joints": [[3.40, 5.01, 1.62], null],
+              "visible": [true, false],
+              "validity": ["VALID", "UNAVAILABLE"],
+              "joint_source": ["observed", "observed"]
+            }
+          },
+          {
+            "world_id": "w-0013",
+            "t_last_valid": 1760342400000,
+            "observation_state": "PREDICTED",
+            "track_lifecycle": "OCCLUDED",
+            "identity_confidence": "MEDIUM",
+            "identity_revision": 0,
+            "position_xy": [3.60, 4.80],
+            "position_xy_sigma": [0.25, 0.25],
+            "pelvis_xyz": null,
+            "ground_anchor_xyz": null,
+            "support_surface_id": null,
+            "support_surface_validity": "UNKNOWN",
+            "contact_validity": "UNAVAILABLE",
+            "z_validity": "UNAVAILABLE",
+            "head_z": null,
+            "cameras": []
+          }
+        ]
+      },
+      "expect": { "findings": [] }
+    }
+  ]
+}
