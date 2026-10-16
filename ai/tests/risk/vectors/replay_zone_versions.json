@@ -1,0 +1,49 @@
+{
+  "format_version": "1.0.0",
+  "vector_id": "replay-zone-versions",
+  "description": "REPLAY 출처, 고정 시계로 두 단계 진행. 구역 버전이 판정 시각에 따라 바뀌어도 규칙이 없으면 판정이 없다",
+  "origin": "REPLAY",
+  "rules": [],
+  "zones": [
+    {
+      "zone_id": "z-04",
+      "zone_version": "zone-1",
+      "judge_type": "VOLUME_3D",
+      "polygon_xy": [[3.0, 4.5], [4.0, 4.5], [4.0, 5.5], [3.0, 5.5]],
+      "z_range": [0.0, 2.5],
+      "severity": "CRITICAL",
+      "valid_to": 1760342401000
+    },
+    {
+      "zone_id": "z-04",
+      "zone_version": "zone-2",
+      "judge_type": "VOLUME_3D",
+      "polygon_xy": [[3.0, 4.0], [4.5, 4.0], [4.5, 5.5], [3.0, 5.5]],
+      "z_range": [0.0, 2.5],
+      "severity": "CRITICAL",
+      "valid_from": 1760342401000
+    }
+  ],
+  "steps": [
+    {
+      "clock_ms": 1760342400900,
+      "world_state": {
+        "t_latest_global": 1760342400800,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": []
+      },
+      "expect": { "findings": [] }
+    },
+    {
+      "clock_ms": 1760342401100,
+      "world_state": {
+        "t_latest_global": 1760342401000,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": []
+      },
+      "expect": { "findings": [] }
+    }
+  ]
+}
