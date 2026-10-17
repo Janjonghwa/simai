@@ -7,8 +7,9 @@ RunPod Tier 0 가 LIVE 로 판정한 CRITICAL·HIGH 경보(`local_alert`)를 I0 
 |---|---|
 | 3.10 노트북 로컬 경보 | `local_alert` RAISED·UPDATED 에 화면 표시와 등급별 소리 반복. 소리는 확인까지, 표시는 해소(RESOLVED)까지 |
 | 7.3 채널 표, AGENTS.md 규칙 5 | `source` 가 LIVE 가 아니거나(없으면 포함) `severity` 가 CRITICAL·HIGH 가 아니면 거부. 신뢰도 LOW 는 등급을 그대로 두고 '확인 필요' |
-| 3.2 운영자 ACK, `alarm_stop` | 소리만 멈추고 표시는 유지. 누가 확인했는지(채널·계정 ID) 표시. 확인 뒤 같은 이벤트가 HIGH → CRITICAL 로 올라가면 확인을 풀고 다시 울림(같은 등급·하향은 유지) |
-| 3.10 현장 확인, `site_ack` | 버튼을 누르면 즉시 소리 정지 → `site_ack` 송신. Tier 0 기록(`alarm_stop`)이나 해소를 받기 전에 끊기면 재접속 때 같은 봉투(같은 `ack_id`)로 다시 보냄 |
+| 3.2 운영자 ACK, `alarm_stop` | 소리만 멈추고 표시는 유지. 누가 확인했는지(채널·계정 ID) 표시. 확인 뒤 같은 이벤트가 HIGH → CRITICAL 로 올라가면 확인을 풀고 다시 울림(같은 등급·하향은 유지). `event_sequence`(확인 대상 상태)가 그 경보 단계 시작(상향·재개)보다 앞이면 늦은 정지로 보고 멈추지 않음 |
+| 3.10 현장 확인, `site_ack` | 버튼을 누르면 즉시 소리 정지 → `site_ack`(누를 때 표시하던 `event_sequence` 포함) 송신. Tier 0 기록(`alarm_stop`)이나 해소를 받기 전에 끊기면 재접속 때 같은 봉투(같은 `ack_id`)로 다시 보냄 |
+| 3.10 재동기화, `health.active_site_alerts` | 목록에 맞춰 켜고 끔: 처음 보는 이벤트는 표시, `acknowledged` 면 소리만 정지·아니면 반복, 빠진 이벤트는 해소. `active_site_alerts_as_of` 와 같거나 뒤에 보낸 `local_alert` 로 켠 경보는 목록에 없어도 유지, 확인은 `as_of` 보다 뒤에 보낸 `alarm_stop`·`local_alert` 만 유지 |
 | 3.10 시험 알림, 18.2 시작 절차 | 시작할 때 시험 경보(“시험” 표시, 실제 경보와 다른 소리). RiskEvent·`site_ack` 를 만들지 않음 |
 | 계약 `event_sequence` | `(event_id, event_sequence)` 로 중복·역순 무시. 해소된 이벤트의 sequence 도 기억해 늦은 RAISED 로 되살리지 않음 |
 | 부록 D-G0-04 | 수신 → 소리 시작 호출 지연을 `bench` 로 잰다 |
@@ -54,8 +55,24 @@ tests/          시험 (소리를 내지 않는다)
 
 ### 상태 모델과 재동기화
 
-상태는 '활성 경보 집합'이다. `health.active_site_alerts` 로 이 집합을 맞추는 재동기화(목록에 있으면 표시, `acknowledged`
-면 소리만 정지, 빠지면 해소)는 S15P31A101-161 에서 붙인다. 지금은 `health` 를 받아 `core.last_health` 에 두기만 한다.
+상태는 '활성 경보 집합'(event_id → `ActiveAlert`)이다. Tier 0 가 (재)접속 직후와 1Hz `health` 마다 보내는
+`active_site_alerts` 로 이 집합을 맞춘다(S15P31A101-161). `local_alert`·`alarm_stop`·해소를 놓치거나 끊겼다 붙어도
+다음 목록에서 Tier 0 활성 경보와 같아진다.
+
+- 목록의 `event_sequence` 가 반영한 것보다 낮으면 무시(화면을 되돌리지 않음), 높으면 등급·문구를 맞춘다. 등급이 올라갔으면
+  (놓친 상향) 확인을 풀고 다시 울린다. 해소로 기억한 sequence 이하의 항목으로 되살리지 않는다.
+- 목록의 `acknowledged` 가 false 인데 노트북이 확인 상태면 다시 울린다(놓친 재개 등). 단 Tier 0 기록 전인 현장 확인,
+  `as_of` 보다 뒤에 보낸 `alarm_stop`·`local_alert` 로 받은 확인은 유지한다. 같은 ms 는 유지하지 않는다(소리를 다시 켜는 쪽).
+- 목록에서 빠진 경보는 해소로 보고 내린다. `as_of` 와 같거나 뒤에 보낸 `local_alert` 로 켠 경보, 형식이 틀려 판단할 수 없는 항목의
+  경보는 이번 목록으로 끄지 않는다. `active_site_alerts` 가 없는 `health`, `event_id` 를 읽을 수 없는 항목이 있는 목록으로도
+  끄지 않는다. LIVE·CRITICAL·HIGH 가 아닌 항목은 켜지 않는다.
+- 각 경보는 지금 경보 단계를 시작한 sequence(`alarm_sequence`: 처음 받은 경보·상향·재개)를 기억한다. `alarm_stop.event_sequence`
+  가 그보다 낮으면 상향 전 상태에 대한 늦은 정지라 멈추지 않는다. 계약 `alarm_stop.event_sequence` 는 확인 대상 상태다.
+  Tier 0 내부 `AlarmStop.event_sequence`(ACKNOWLEDGED 전이 번호)가 아니라 `target_sequence` 를 옮긴 값이다
+  (`simai_ai.risk.alarm_stop_contract_payload`).
+- 한계: 해소(RESOLVED)를 놓친 뒤의 재개는 UPDATED 로 와서 노트북은 재개인지 알 수 없다. 확인된 경보가 재개돼도 다음 목록
+  (최대 약 1초)까지 조용하고, 그 사이 옛 단계를 대상으로 한 늦은 `alarm_stop` 도 적용된다. 다음 목록이 바로잡는다.
+
 `core.alarm_status()` 는 `laptop_heartbeat.alarm` 형식이다(하트비트 송신은 이 티켓 밖).
 
 ## 설치와 시험
@@ -97,6 +114,5 @@ uv run simai-site-alert bench --sound win --count 100  # 실제 winsound (짧은
 ## 하지 않는 것 (다른 티켓)
 
 - 카메라 영상 TLS 연결(공개키 고정 검사는 `pinning.PinnedPeerVerifier` 를 같이 쓴다), RunPod HTTPS 프록시 예비 경로.
-- 활성 현장 경보 목록 재동기화(S15P31A101-161).
 - `laptop_heartbeat` 송신, 장애별 현장 표시(“관제 중단”·“원격 관제 장애”) 판정, 시계 차이 교환.
 - 실제 Tier 0 연결.

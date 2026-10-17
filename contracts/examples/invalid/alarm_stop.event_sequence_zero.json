@@ -1,0 +1,19 @@
+{
+  "_expect_error": "alarm_stop.event_sequence 는 1 이상이다 (local_alert·active_site_alerts 의 event_sequence 와 같은 값)",
+  "schema_version": "2.1.0",
+  "msg_type": "alarm_stop",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000110",
+  "sent_at": 1760342402130,
+  "source_id": "tier0-01",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "event_sequence": 0,
+    "ack": {
+      "ack_id": "6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f",
+      "channel": "CONTROL_ROOM",
+      "actor_role": "ADMIN",
+      "actor_id": "user-0003",
+      "acked_at": 1760342402100
+    }
+  }
+}

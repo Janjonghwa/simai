@@ -1,0 +1,19 @@
+{
+  "_expect_error": "site_ack.event_sequence 는 1 이상이다 (local_alert·active_site_alerts 의 event_sequence 와 같은 값)",
+  "schema_version": "2.1.0",
+  "msg_type": "site_ack",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000111",
+  "sent_at": 1760342402501,
+  "source_id": "laptop-01",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "event_sequence": 0,
+    "ack": {
+      "ack_id": "7a2b3c4d-5e6f-4a7b-9c8d-1e2f3a4b5c6d",
+      "channel": "SITE_BUTTON",
+      "actor_role": "SITE",
+      "actor_id": "laptop-01",
+      "acked_at": 1760342402500
+    }
+  }
+}

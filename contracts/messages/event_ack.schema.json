@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/event_ack.schema.json",
   "title": "I1 event_ack",
-  "description": "EC2 → RunPod Tier 0. 운영자 확인(관제 화면의 관리자 또는 반장 PWA) 전달 (명세 3.2, 12.2). Tier 0 는 확인을 저널에 ACKNOWLEDGED 로 기록하고(risk_event_transition) 노트북에 alarm_stop 을 보내 반복 소리를 멈춘다. 점멸 표시는 해소까지 유지한다. 확인은 해소가 아니다(6.4). 현장 확인 버튼은 이 메시지가 아니라 I0 site_ack 로 들어온다. I1 LIVE 계약.",
+  "description": "EC2 → RunPod Tier 0. 운영자 확인(관제 화면의 관리자 또는 반장 PWA) 전달 (명세 3.2, 12.2). Tier 0 는 확인을 저널에 ACKNOWLEDGED 로 기록하고(risk_event_transition) 노트북에 alarm_stop 을 보내 반복 소리를 멈춘다. 점멸 표시는 해소까지 유지한다. 확인은 해소가 아니다(6.4). 현장 확인 버튼은 이 메시지가 아니라 I0 site_ack 로 들어온다. 확인한 사람이 본 이벤트 상태(event_sequence)를 실어, 등급이 오르기 전 상태에 대한 늦은 확인이 상향된 경보 소리까지 멈추지 않게 한다(2.1.0, 3.10). I1 LIVE 계약.",
   "allOf": [{ "$ref": "envelope.schema.json" }],
   "type": "object",
   "properties": {
@@ -12,6 +12,11 @@
       "required": ["event_id", "ack"],
       "properties": {
         "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "event_sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "확인 버튼을 누를 때 관제 화면·PWA 가 보여 주던 그 이벤트의 event_sequence (EC2 가 받은 마지막 전이 또는 푸시의 sequence). EC2 가 채운다. Tier 0 는 이 값을 확인 대상 상태로 기록하고 alarm_stop.event_sequence 로 노트북에 돌려준다. 이 값 뒤에 등급이 올라가거나 재개된 경보는 이 확인으로 확인된 것이 아니다(소리를 멈추지 않음, 3.10). 없으면(이전 송신 측) Tier 0 가 기록할 때의 상태를 대상으로 본다"
+        },
         "ack": {
           "allOf": [{ "$ref": "../common/defs.schema.json#/$defs/operator_ack" }],
           "properties": { "channel": { "enum": ["CONTROL_ROOM", "FOREMAN_PWA"] } }

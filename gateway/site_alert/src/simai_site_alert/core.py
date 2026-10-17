@@ -1,19 +1,35 @@
 """현장 경보 코어: 받은 메시지 → 활성 경보 집합 → 소리·화면 상태. 전송·화면 구현과 분리돼 있다.
 
-규칙 (명세 3.10, 7.3, 계약 local_alert·alarm_stop·site_ack):
+규칙 (명세 3.10, 7.3, 계약 local_alert·alarm_stop·site_ack·health.active_site_alerts):
 - local_alert RAISED·UPDATED 에 표시를 켜고, 확인 전이면 소리를 반복한다. RESOLVED 에 표시를 내린다.
 - 소리는 확인(alarm_stop, 현장 확인 버튼, acknowledged=true)까지 반복하고, 표시는 해소까지 유지한다. 확인은 해소가 아니다.
 - 확인은 이벤트에 붙는다. 한 번 확인된 이벤트는 해소 전까지 다시 울리지 않는다(뒤이은 UPDATED 의 acknowledged 가
   아직 false 여도: 현장 확인을 Tier 0 가 저널에 쓰기 전에 보낸 갱신일 수 있다). 예외로 등급이 올라가면(HIGH → CRITICAL)
   확인을 풀고 다시 울린다. 같은 등급 재전송·하향은 확인을 유지한다. 해소 뒤 재개된 이벤트는 새로 판단한다.
+- alarm_stop 에 확인 대상 event_sequence 가 있으면, 그보다 뒤에 다시 울리기 시작한 경보(등급 상향·재개, alarm_sequence)는
+  멈추지 않는다. 등급 상향 전 상태에 대한 늦은 정지가 상향된 경보 소리까지 멈추지 않게 한다(S15P31A101-161).
 - (event_id, event_sequence) 로 중복·역순을 거른다. 같은 event_id 에서 이미 반영한 것 이하의 sequence 는 무시해
   화면을 되돌리지 않는다. 해소된 이벤트의 sequence 도 기억해 늦게 온 RAISED 가 경보를 되살리지 않게 한다.
 - LIVE·CRITICAL·HIGH 가 아닌 local_alert 는 거부한다(messages.py).
 - 소리 장치가 실패하면 sound_fault 로 화면에 크게 알리고, 다음 판단 때(tick 포함) 다시 시도한다.
 - 시험 경보는 RiskEvent·site_ack 를 만들지 않는 별도 경로다. 실제 경보가 있으면 실제 경보 소리가 먼저다.
 
-상태 모델은 '활성 경보 집합'(event_id → ActiveAlert)이다. 활성 현장 경보 목록(health.active_site_alerts)으로 이 집합을
-맞추는 재동기화는 S15P31A101-161 에서 붙인다(여기서는 health 를 받아 두기만 한다).
+상태 모델은 '활성 경보 집합'(event_id → ActiveAlert)이다.
+
+재동기화 (명세 3.10, S15P31A101-161): Tier 0 가 (재)접속 직후와 1Hz health 마다 보내는 활성 현장 경보 목록
+(active_site_alerts)으로 이 집합을 맞춘다. local_alert·alarm_stop·해소를 놓치거나 끊겼다 다시 붙어도 다음 목록에서
+Tier 0 상태와 같아진다.
+- 목록에 있고 처음 보는 이벤트(놓친 local_alert)는 표시하고, acknowledged 가 false 면 소리를 반복한다.
+- 목록의 event_sequence 가 반영한 것보다 낮으면 무시한다(화면을 되돌리지 않음). 높으면 등급·문구를 맞추고, 등급이
+  올라갔으면(놓친 상향) 확인을 풀고 다시 울린다. 해소된 이벤트는 기억한 sequence 이하의 항목으로 되살리지 않는다.
+- 확인 상태: 목록이 true 면 소리를 멈춘다. false 면 확인을 풀고 다시 울린다(Tier 0 기준으로 지금 경보 단계의 확인이
+  없다: 놓친 상향·재개). 단 아직 Tier 0 기록을 받지 못한 현장 확인과, as_of 보다 뒤에 보낸 alarm_stop·local_alert 로
+  받은 확인은 유지한다(목록에 반영되지 않았을 수 있다). 같은 ms 는 유지하지 않는다(소리를 다시 켜는 쪽).
+- 한계: 해소(RESOLVED)를 놓친 뒤 재개는 UPDATED 로 와서 노트북이 재개인지 알 수 없다. 확인된 경보가 재개돼도 다음 목록
+  (최대 약 1초)까지 조용하고, 그 사이 옛 단계를 대상으로 한 늦은 alarm_stop 도 적용된다. 다음 목록이 바로잡는다.
+- 목록에서 빠진 이벤트는 해소로 보고 표시를 내린다. 단 as_of 와 같거나 뒤에 보낸 local_alert 로 켜거나 갱신한 경보는
+  끄지 않는다(다음 목록에서 다시 판단). 형식이 틀려 판단할 수 없는 항목의 이벤트, event_id 도 읽을 수 없는 항목이 있는 목록,
+  active_site_alerts 가 없는 health(이전 송신 측)로는 끄지 않는다.
 """
 
 from __future__ import annotations
@@ -34,6 +50,7 @@ from simai_site_alert.messages import (
     LocalAlert,
     Other,
     Rejected,
+    SiteAlertItem,
     build_site_ack,
     parse_message,
 )
@@ -71,6 +88,13 @@ class ActiveAlert:
     observation_time: int | None
     first_received_ms: int
     last_received_ms: int
+    # 지금 경보 단계를 시작한 event_sequence: 처음 받은 경보·등급 상향·재개(목록으로 확인이 풀렸으면 그 목록의 값).
+    # 확인 대상 sequence 가 이보다 낮은 alarm_stop 은 이 경보를 멈추지 않는다.
+    alarm_sequence: int = 0
+    # 이 경보를 마지막으로 켜거나 갱신한 local_alert 의 봉투 sent_at(Tier 0 시계). 목록으로만 알면 None.
+    last_sent_at: int | None = None
+    # 확인을 알려 준 alarm_stop·local_alert 의 봉투 sent_at(Tier 0 시계). 목록·현장 버튼으로 확인했으면 None.
+    ack_sent_at: int | None = None
 
     @property
     def sounding(self) -> bool:
@@ -96,11 +120,20 @@ class ScreenState:
     pending_site_acks: int  # 보냈지만 Tier 0 기록을 아직 받지 못한 현장 확인 수
 
 
+@dataclass(frozen=True)
+class _EarlyAck:
+    """local_alert 보다 먼저 온 alarm_stop."""
+
+    ack: AckInfo
+    target: int | None
+    sent_at: int | None
+
+
 class Outcome(Enum):
     APPLIED = "APPLIED"
     STALE = "STALE"  # 중복 또는 늦게 온 낮은 sequence
     REJECTED = "REJECTED"
-    IGNORED = "IGNORED"  # 단말이 쓰지 않는 메시지(health, clock_sync 등)
+    IGNORED = "IGNORED"  # 단말이 쓰지 않는 메시지(clock_sync 등), 목록 없는 health
 
 
 @dataclass(frozen=True)
@@ -121,7 +154,7 @@ class SiteAlertCore:
         self._lock = threading.RLock()
         self._active: dict[str, ActiveAlert] = {}
         self._resolved: OrderedDict[str, int] = OrderedDict()
-        self._early_acks: OrderedDict[str, AckInfo] = OrderedDict()
+        self._early_acks: OrderedDict[str, _EarlyAck] = OrderedDict()
         self._seen_msg_ids: OrderedDict[str, None] = OrderedDict()
         self._pending_site_acks: dict[str, dict[str, Any]] = {}
         self._playing: SoundPattern | None = None
@@ -130,7 +163,7 @@ class SiteAlertCore:
         self._test: TestAlertState | None = None
         self._control_connected: bool | None = None
         self._listeners: list[Callable[[ScreenState], None]] = []
-        self.last_health: Health | None = None  # S15P31A101-161 재동기화가 쓴다
+        self.last_health: Health | None = None  # 마지막으로 받은 health(재동기화 부분)
         self.rejected: Counter[str] = Counter()
         self.latency_samples_s: deque[float] = deque(maxlen=100_000)
 
@@ -181,8 +214,7 @@ class SiteAlertCore:
             if isinstance(msg, AlarmStop):
                 return self._on_alarm_stop(msg)
             if isinstance(msg, Health):
-                self.last_health = msg
-                return HandleResult(Outcome.IGNORED, "health (재동기화는 S15P31A101-161)")
+                return self._on_health(msg, received_mono)
             return HandleResult(Outcome.IGNORED, f"{msg.msg_type} 는 단말이 쓰지 않는다")
 
     def _reject(self, e: Rejected) -> HandleResult:
@@ -215,21 +247,26 @@ class SiteAlertCore:
             prev = self._active.get(msg.event_id)
             ack: AckInfo | None = prev.ack if prev else None
             acknowledged = bool(prev and prev.acknowledged)
+            ack_sent_at = prev.ack_sent_at if prev else None
+            alarm_sequence = prev.alarm_sequence if prev else msg.event_sequence
             if not reopened:
                 early = self._early_acks.pop(msg.event_id, None)
-                if early is not None:
-                    ack, acknowledged = early, True
+                if early is not None and prev is None and (early.target is None or early.target >= alarm_sequence):
+                    ack, acknowledged, ack_sent_at = early.ack, True, early.sent_at
             else:
                 self._resolved.pop(msg.event_id)
             escalated = prev is not None and _SEVERITY_RANK[msg.severity] < _SEVERITY_RANK[prev.severity]
+            if escalated:
+                alarm_sequence = msg.event_sequence
             if escalated and acknowledged:
                 # 확인 뒤 등급이 올라가면(HIGH → CRITICAL) 확인을 풀고 다시 울린다. Tier 0 도 실제 상향이면 경보를 다시
                 # 보낸다(S15P31A101-73). 같은 등급 재전송·하향은 확인을 유지한다. 상향 전 확인으로 보낸 site_ack 는 다시
-                # 보내지 않는다(Tier 0 가 기록하면 alarm_stop 으로 상향된 경보까지 멈추게 되므로).
-                acknowledged, ack = False, None
+                # 보내지 않는다(그 확인은 상향 전 상태가 대상이라 상향된 경보를 멈추지 못한다, alarm_stop.event_sequence).
+                acknowledged, ack, ack_sent_at = False, None, None
                 self._pending_site_acks.pop(msg.event_id, None)
             elif msg.acknowledged and not acknowledged:
                 acknowledged = True  # 누가 확인했는지는 alarm_stop 으로 온다
+                ack_sent_at = msg.sent_at
             self._active[msg.event_id] = ActiveAlert(
                 event_id=msg.event_id,
                 event_sequence=msg.event_sequence,
@@ -245,6 +282,9 @@ class SiteAlertCore:
                 observation_time=msg.observation_time,
                 first_received_ms=prev.first_received_ms if prev else now_ms,
                 last_received_ms=now_ms,
+                alarm_sequence=alarm_sequence,
+                last_sent_at=msg.sent_at,
+                ack_sent_at=ack_sent_at,
             )
             latency = self._reconcile(received_mono)
         self._notify()
@@ -256,23 +296,158 @@ class SiteAlertCore:
         while len(self._resolved) > _RESOLVED_MEMORY:
             self._resolved.popitem(last=False)
 
+    def _drop_pending_site_ack(self, event_id: str, ack_id: str | None = None) -> None:
+        """보낸 현장 확인을 Tier 0 가 기록했다. ack_id 를 주면 그 확인일 때만 지운다."""
+        envelope = self._pending_site_acks.get(event_id)
+        if envelope is None:
+            return
+        if ack_id is None or envelope["payload"]["ack"]["ack_id"] == ack_id:
+            del self._pending_site_acks[event_id]
+
     def _on_alarm_stop(self, msg: AlarmStop) -> HandleResult:
         ack = AckInfo(msg.ack.channel, msg.ack.actor_role, msg.ack.actor_id, msg.ack.acked_at, local=False)
-        self._pending_site_acks.pop(msg.event_id, None)  # 저널에 기록됐다(누가 확인했든)
         alert = self._active.get(msg.event_id)
         if alert is None:
             if msg.event_id in self._resolved:
                 return HandleResult(Outcome.STALE, "이미 해소된 이벤트의 alarm_stop")
-            # local_alert 보다 먼저 왔다. 그 이벤트가 오면 확인된 상태로 시작한다.
-            self._early_acks[msg.event_id] = ack
+            # local_alert 보다 먼저 왔다. 그 이벤트가 오면(대상 sequence 가 맞으면) 확인된 상태로 시작한다.
+            self._early_acks[msg.event_id] = _EarlyAck(ack, msg.event_sequence, msg.sent_at)
             while len(self._early_acks) > _EARLY_ACK_MEMORY:
                 self._early_acks.popitem(last=False)
             self._notify()
             return HandleResult(Outcome.APPLIED, "alarm_stop (이벤트 도착 전)")
-        self._active[msg.event_id] = replace(alert, acknowledged=True, ack=ack)
+        if msg.event_sequence is not None and msg.event_sequence < alert.alarm_sequence:
+            # 등급 상향·재개 전 상태에 대한 늦은 정지. 다시 울리기 시작한 경보는 멈추지 않는다. 그 확인이 이 노트북의
+            # 현장 확인이었다면 Tier 0 가 기록한 것이므로 다시 보내지 않는다.
+            self._drop_pending_site_ack(msg.event_id, msg.ack.ack_id)
+            return HandleResult(
+                Outcome.STALE,
+                f"alarm_stop 대상 event_sequence {msg.event_sequence} < 경보 단계 시작 {alert.alarm_sequence} (상향 전 확인)",
+            )
+        self._drop_pending_site_ack(msg.event_id)  # 지금 경보 단계의 확인이 저널에 기록됐다(누가 확인했든)
+        self._active[msg.event_id] = replace(alert, acknowledged=True, ack=ack, ack_sent_at=msg.sent_at)
         self._reconcile(None)
         self._notify()
         return HandleResult(Outcome.APPLIED, "alarm_stop")
+
+    # ---- 재동기화 (health.active_site_alerts) ---------------------------------------------------------------------
+
+    def _on_health(self, msg: Health, received_mono: float) -> HandleResult:
+        self.last_health = msg
+        if msg.contract_warnings:
+            log.warning("health.active_site_alerts 계약 위반: %s", ", ".join(msg.contract_warnings))
+        if msg.active_site_alerts is None:
+            return HandleResult(Outcome.IGNORED, "active_site_alerts 없는 health 로는 경보를 바꾸지 않는다")
+        as_of = msg.active_site_alerts_as_of
+        now_ms = self._clock.now_ms()
+        changed = 0
+        listed = set()
+        for item in msg.active_site_alerts:
+            listed.add(item.event_id)
+            changed += self._apply_list_item(item, as_of, now_ms)
+        if not msg.partial:
+            for event_id, alert in list(self._active.items()):
+                if event_id in listed or event_id in msg.undecidable_event_ids:
+                    continue
+                if as_of is not None and alert.last_sent_at is not None and alert.last_sent_at >= as_of:
+                    # 목록을 만든 뒤(같은 ms 포함, 끄지 않는 쪽)에 보낸 local_alert 로 켠 경보. 다음 목록에서 다시 판단한다
+                    continue
+                # 목록에서 빠졌다: 해소로 본다(RESOLVED 를 놓쳤다).
+                del self._active[event_id]
+                self._drop_pending_site_ack(event_id)
+                self._early_acks.pop(event_id, None)
+                self._remember_resolved(event_id, alert.event_sequence)
+                changed += 1
+        latency = None
+        if changed:
+            latency = self._reconcile(received_mono)
+            self._notify()
+        return HandleResult(Outcome.APPLIED, f"active_site_alerts 재동기화 (바뀐 경보 {changed})", latency)
+
+    def _apply_list_item(self, item: SiteAlertItem, as_of: int | None, now_ms: int) -> bool:
+        """목록 항목 하나를 활성 경보 집합에 맞춘다. 바뀌었으면 True."""
+        event_id = item.event_id
+        alert = self._active.get(event_id)
+        if alert is None:
+            resolved_seq = self._resolved.get(event_id)
+            if resolved_seq is not None and item.event_sequence <= resolved_seq:
+                return False  # 이미 해소를 반영했다. 늦은 목록으로 되살리지 않는다
+            early = None
+            if resolved_seq is not None:
+                self._resolved.pop(event_id)  # 해소 뒤 재개(놓친 local_alert)
+            else:
+                early = self._early_acks.pop(event_id, None)
+            acknowledged, ack, ack_sent_at = item.acknowledged, None, None
+            if (
+                early is not None
+                and (early.target is None or early.target >= item.event_sequence)
+                and (item.acknowledged or (as_of is not None and early.sent_at is not None and early.sent_at > as_of))
+            ):
+                acknowledged, ack, ack_sent_at = True, early.ack, early.sent_at
+            self._active[event_id] = ActiveAlert(
+                event_id=event_id,
+                event_sequence=item.event_sequence,
+                severity=item.severity,
+                summary=item.summary,
+                rule_id=item.rule_id,
+                zone_id=item.zone_id,
+                confidence=None,
+                needs_check=False,
+                world_ids=(),
+                acknowledged=acknowledged,
+                ack=ack,
+                observation_time=None,
+                first_received_ms=now_ms,
+                last_received_ms=now_ms,
+                alarm_sequence=item.event_sequence,
+                last_sent_at=None,
+                ack_sent_at=ack_sent_at,
+            )
+            return True
+        if item.event_sequence < alert.event_sequence:
+            return False  # 노트북이 더 새 상태를 받았다(목록 뒤에 보낸 local_alert). 되돌리지 않는다
+        new = alert
+        escalated = False
+        if item.event_sequence > alert.event_sequence:
+            escalated = _SEVERITY_RANK[item.severity] < _SEVERITY_RANK[alert.severity]
+            new = replace(
+                new,
+                event_sequence=item.event_sequence,
+                severity=item.severity,
+                summary=item.summary,
+                rule_id=item.rule_id or alert.rule_id,
+                zone_id=item.zone_id if item.zone_id is not None else alert.zone_id,
+                last_received_ms=now_ms,
+                alarm_sequence=item.event_sequence if escalated else alert.alarm_sequence,
+            )
+        if escalated and new.acknowledged:
+            # 놓친 상향. 상향 전 확인은 상향된 경보를 멈추지 못한다(local_alert 상향과 같다).
+            new = replace(new, acknowledged=False, ack=None, ack_sent_at=None)
+            self._pending_site_acks.pop(event_id, None)
+        if item.acknowledged:
+            if not new.acknowledged:
+                new = replace(new, acknowledged=True, ack=None, ack_sent_at=None)
+            elif new.ack is not None and new.ack.local:
+                new = replace(new, ack=None)  # Tier 0 가 지금 경보 단계의 확인을 기록했다
+            self._drop_pending_site_ack(event_id)
+        elif new.acknowledged:
+            keep = (new.ack is not None and new.ack.local) or (
+                as_of is not None and new.ack_sent_at is not None and new.ack_sent_at > as_of
+            )  # 같은 ms 는 유지하지 않는다(목록이 미확인이라면 소리를 다시 켜는 쪽). 목록에서 빼는 쪽만 >= 다
+            if not keep:
+                # Tier 0 기준으로 지금 경보 단계의 확인이 없다(놓친 재개·상향 뒤 하향 등). 다시 울린다. 이 목록 이전
+                # 상태를 대상으로 한 늦은 alarm_stop 이 다시 멈추지 않게 경보 단계 시작을 이 목록 sequence 로 올린다.
+                new = replace(
+                    new,
+                    acknowledged=False,
+                    ack=None,
+                    ack_sent_at=None,
+                    alarm_sequence=max(new.alarm_sequence, item.event_sequence),
+                )
+        if new == alert:
+            return False
+        self._active[event_id] = new
+        return True
 
     # ---- 현장 확인 버튼 ------------------------------------------------------------------------------------------
 
@@ -287,7 +462,9 @@ class SiteAlertCore:
             if alert is None or alert.acknowledged:
                 return None
             now_ms = self._clock.now_ms()
-            envelope = build_site_ack(event_id=event_id, laptop_id=self.laptop_id, now_ms=now_ms)
+            envelope = build_site_ack(
+                event_id=event_id, laptop_id=self.laptop_id, now_ms=now_ms, event_sequence=alert.event_sequence
+            )
             ack = AckInfo("SITE_BUTTON", "SITE", self.laptop_id, now_ms, local=True)
             self._active[event_id] = replace(alert, acknowledged=True, ack=ack)
             self._pending_site_acks[event_id] = envelope

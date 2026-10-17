@@ -18,6 +18,7 @@ extras 없는 기본 설치만으로 import·테스트가 돌아야 한다. 현�
 | event_id | event_id(UUIDv7) 생성기 EventIdFactory |
 | alerting | 심각도 × 신뢰도 → 채널(7.3 표), 현장 경보 신호 LocalAlert·AlarmStop·AlertClear(LIVE 만) |
 | lifecycle | RiskEvent 생명주기 LifecycleTracker(발생 지속 조건·재개 포함), 전이 기록 EventTransition(저널 재료) |
+| site_alerts | 활성 현장 경보 목록 health.active_site_alerts(3.10 재동기화, LIVE·CRITICAL·HIGH·해소 전)을 활성 이벤트 상태로 만드는 순수 함수 |
 | vectors | 공통 테스트 벡터 형식과 실행기 (`python -m simai_ai.risk.vectors <경로>`) |
 
 vectors 는 `python -m` 으로 실행하므로 여기서 import 하지 않는다.
@@ -30,8 +31,11 @@ from simai_ai.risk.alerting import (
     Channel,
     ChannelPlan,
     Confidence,
+    ContractAck,
     LocalAlert,
     LocalSignal,
+    ack_from_contract,
+    alarm_stop_contract_payload,
     channels_for,
 )
 from simai_ai.risk.clock import Clock, FixedClock, SystemClock
@@ -62,6 +66,7 @@ from simai_ai.risk.rule import Finding, FindingTarget, Rule, RuleContext, RuleSp
 from simai_ai.risk.rules.r1_zone_entry import ZoneEntryRule
 from simai_ai.risk.rules.r6_observation_loss import ObservationLossHold
 from simai_ai.risk.rules.r7_monitoring import ZoneMonitoringRule
+from simai_ai.risk.site_alerts import build_active_site_alerts, default_summary, is_site_alert
 from simai_ai.risk.world import WorldState, WorldTrack
 from simai_ai.risk.zone import Zone, ZoneJudgeType
 from simai_ai.risk.zone_geometry import HorizontalRange
@@ -80,6 +85,7 @@ __all__ = [
     "Clock",
     "Confidence",
     "ConfidenceReason",
+    "ContractAck",
     "Evaluation",
     "EventIdFactory",
     "EventKey",
@@ -121,6 +127,11 @@ __all__ = [
     "ZoneEntryRule",
     "ZoneJudgeType",
     "ZoneMonitoringRule",
+    "ack_from_contract",
+    "alarm_stop_contract_payload",
+    "build_active_site_alerts",
     "channels_for",
     "default_registry",
+    "default_summary",
+    "is_site_alert",
 ]

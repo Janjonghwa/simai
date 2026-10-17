@@ -36,7 +36,7 @@
         "evaluated_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
         "acknowledged": {
           "type": "boolean",
-          "description": "이미 확인된 이벤트의 갱신이면 true. 노트북은 반복 소리를 다시 켜지 않고 표시만 갱신한다"
+          "description": "이미 확인된 이벤트의 갱신이면 true. 노트북은 반복 소리를 다시 켜지 않고 표시만 갱신한다. 지금 경보 단계(마지막 발생·등급 상향·해소 후 재개) 이후 상태를 대상으로 한 확인만 센다. 상향 전 상태에 대한 확인은 저널에 남지만 여기서는 false 다(alarm_stop.event_sequence, 3.10)"
         }
       }
     }
