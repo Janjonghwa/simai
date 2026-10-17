@@ -12,6 +12,7 @@ RunPod Tier 0 가 LIVE 로 판정한 CRITICAL·HIGH 경보(`local_alert`)를 I0 
 | 3.10 시험 알림, 18.2 시작 절차 | 시작할 때 시험 경보(“시험” 표시, 실제 경보와 다른 소리). RiskEvent·`site_ack` 를 만들지 않음 |
 | 계약 `event_sequence` | `(event_id, event_sequence)` 로 중복·역순 무시. 해소된 이벤트의 sequence 도 기억해 늦은 RAISED 로 되살리지 않음 |
 | 부록 D-G0-04 | 수신 → 소리 시작 호출 지연을 `bench` 로 잰다 |
+| 3.12 엔드포인트 등록, 12.7·14 공개키 고정 | Tier 0 주소·포트는 EC2 `GET /api/endpoints/tier0`(기기 토큰)로 조회해 붙고, 끊기거나 연결 중 재조회(30초)에서 바뀌면 다시 붙음. 서버 공개키 지문이 미리 고정한 값과 다르면 기기 토큰을 보내기 전에 끊음(S15P31A101-159) |
 
 ## 구조
 
@@ -25,7 +26,9 @@ src/simai_site_alert/
   messages.py   I0 메시지 해석(local_alert·alarm_stop·health)과 site_ack 생성
   sound.py      등급별 소리 패턴, 소리 백엔드(WinSound / Fake / Null)
   display.py    화면 문구(순수 함수, 헤드리스 시험)와 tkinter 창
-  transport.py  I0 제어 채널 인터페이스와 WebSocket 구현(wss, 기기 토큰), 시험용 InMemory 채널
+  transport.py  I0 제어 채널 인터페이스와 WebSocket 구현(wss, 기기 토큰, 엔드포인트 조회·재접속), 시험용 InMemory 채널
+  endpoint.py   EC2 엔드포인트 조회(tier0_endpoint 해석)와 고정 지문 확인 → 접속 대상
+  pinning.py    Tier 0 TLS 공개키 지문(SPKI SHA-256) 계산과 고정 검사
   app.py        조립: 제어 채널 → 코어 → 소리·화면, 주기 tick, 재접속 때 site_ack 재전송
   bench.py      수신 → 소리 시작 지연 측정 (loopback WebSocket)
   config.py     .env 설정
@@ -70,7 +73,8 @@ tkinter 시험은 창을 잠깐 띄웠다 닫는다(화면이 없으면 건너�
 ## 실행
 
 1. 저장소 루트 `.env` 에 설정을 넣는다(`gateway/site_alert/.env.example` 참고, 커밋 금지).
-   `SIMAI_TIER0_CONTROL_URL`(wss), `SIMAI_DEVICE_TOKEN`(비밀), `SIMAI_LAPTOP_ID`.
+   `SIMAI_EC2_BASE_URL`(https), `SIMAI_DEVICE_TOKEN`(비밀), `SIMAI_TIER0_PINNED_SPKI_SHA256`(미리 고정한 Tier 0 공개키 지문),
+   `SIMAI_LAPTOP_ID`. Tier 0 주소·포트는 적지 않는다(Pod 가 바뀌면 EC2 에서 새 값을 받는다).
 2. 실행하면 먼저 시험 경보가 4초 울린다. 소리가 들리고 “시험” 화면이 보이는지 확인한다. 창의 '시험 경보' 버튼으로 다시 울릴 수 있다.
 
 ```sh
@@ -92,8 +96,7 @@ uv run simai-site-alert bench --sound win --count 100  # 실제 winsound (짧은
 
 ## 하지 않는 것 (다른 티켓)
 
-- Tier 0 공개키 지문 고정과 EC2 엔드포인트 조회(S15P31A101-159). `WebSocketControlChannel(peer_verifier=...)` 자리만 있다.
-  인증서 검증을 끄는 경로는 없고, `ws://` 는 loopback 시험에서만 허용한다.
+- 카메라 영상 TLS 연결(공개키 고정 검사는 `pinning.PinnedPeerVerifier` 를 같이 쓴다), RunPod HTTPS 프록시 예비 경로.
 - 활성 현장 경보 목록 재동기화(S15P31A101-161).
 - `laptop_heartbeat` 송신, 장애별 현장 표시(“관제 중단”·“원격 관제 장애”) 판정, 시계 차이 교환.
 - 실제 Tier 0 연결.
