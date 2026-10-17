@@ -4,13 +4,28 @@
 저널에 그대로 넘길 수 있는 순수 데이터(EventTransition)와 현장 경보 신호(alerting.LocalSignal)를 돌려준다.
 LIVE 이벤트의 생명주기 정본은 RunPod Tier 0 의 이 추적기 하나다. EC2 는 전이를 새로 만들지 않는다.
 
-**생명주기.** RAISED → UPDATED → RESOLVED.
-- 발생: 이벤트 키(EventKey)에 해당하는 판정이 발생 임계값을 넘으면(Finding.holding=False) 바로 만든다.
+**생명주기.** RAISED → UPDATED → RESOLVED (→ 재개 시 UPDATED).
+- 발생: 이벤트 키(EventKey)에 해당하는 발생 판정(Finding.holding=False)이 발생 지속 조건(6.4)을 채우면 만든다.
+  초기값은 판정 프레임 최근 3개 중 2개(정상 10Hz 에서 +100~200ms 를 더한다. 운영 p95 는 실측으로 판정한다).
+  재개 시간은 지속 조건을 채운(이벤트를 여는) 판정의 관측 시각으로 잰다. 프레임은 관측 시각
+  (observation_time)이 앞으로 간 판정 하나다. 같은 관측을 다시 판정해도 프레임을 세지 않는다(멈춘 영상 하나로
+  지속 조건을 채우지 않게). 규칙별로 바꿀 수 있고 R7 은 즉시(1프레임)다(아래 LifecyclePolicy).
+- 지속 대기 중 관측 상실·정지: 발생 판정이 한 번 이상 있었는데(지속 조건 미충족) 이후 판정 주기에 새 관측의 발생
+  판정이 없거나 관측 시각이 멈췄고(영상 정지) 대상을 유효하게 관측할 수 없으면(UNKNOWN·트랙 없음·gap·lag 초과)
+  그 자리에서 발생시킨다. 프레임 집계와 달리 이 검사는 관측 시각이 멈춰도 판정 주기마다 한다(주입 시계는 간다, 6.1).
+  마지막 발생 판정으로 만들고 검증 상태는 UNVERIFIABLE, 확인 필요 이유에 PREDICTED 를 더한다. 진입 직후 관측을 잃은 사람이 R6 holding(유지만 함)만 남아
+  경보 없이 끝나는 틈을 막는 안전 쪽 처리다(S15P31A101-73 리뷰).
+- 재개(6.4, 7.4): 같은 키가 해소 후 재개 시간(초기값 10초, 관측 시각 기준) 안에 다시 발생 조건을 채우면 새 이벤트를
+  만들지 않고 해소된 이벤트를 다시 활성으로 돌린다. 같은 event_id 로 UPDATED 전이(변경 사유 RESUMED, I1 resumed=true)를
+  내고 event_sequence 를 이어 올린다. 재개는 새 위험 발생처럼 다룬다: 확인 기록(acks)을 비워 미확인으로 되돌리고
+  (이전 확인은 저널에 남는다) CRITICAL·HIGH 면 다시 울린다. 재개 시간이 지난 재발생은 새 이벤트다.
 - 유지: 판정이 있으면(holding=True 포함) 해소 확인을 처음부터 다시 센다. holding 은 유지만 하므로 새 이벤트의
   등급을 정하지 않고, 활성 이벤트의 등급을 올리지도 내리지도 않는다(7.2 R6 '원래 규칙 유지', 7.3).
 - 해소: 판정이 없고 대상이 유효하게 관측되는(VERIFIED) 상태가 해소 유지 시간 동안 이어질 때만 확정한다.
   시간은 관측 시각(observation_time)으로 잰다. 영상이 멈추면 관측 시각이 멈추므로 해소도 멈춘다.
 - 관측 상실: 대상을 유효하게 관측할 수 없으면 검증 상태만 UNVERIFIABLE 이 되고 자동 해소하지 않는다(6.4, G3).
+- 확인 필요(7.1): 이벤트의 confidence_reasons 가 비어 있지 않은 상태다. needs_check 는 그 결과로 맞춰 둔다
+  (common.normalize_confidence). 이유 목록이 바뀌면 CONFIDENCE 변경 사유로 UPDATED 를 낸다.
 - ACKNOWLEDGED 는 상태가 아니라 속성이다. 확인은 UPDATED 전이(변경 사유 ACKNOWLEDGED)로 저널에 남고
   해소가 아니다. 누가 확인하든(관리자·반장·현장 버튼) 반복 소리 정지(AlarmStop)를 내고 표시는 해소까지 둔다.
 - ID 교정(identity_revision 증가, 명시적 교정)은 해소 확인을 처음부터 다시 세게 할 뿐 해소하지 않는다(5.2, G3).
@@ -36,6 +51,7 @@ RAISED 가 1 이고 전이마다 1 씩 오른다. 체크포인트 복원(restore
 - R6 처럼 관측을 잃은 사람에게 원래 규칙 판정을 유지하려면 규칙이 holding 판정을 내면 된다.
 """
 
+from collections import deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -54,11 +70,15 @@ from simai_ai.risk.alerting import (
     channels_for,
 )
 from simai_ai.risk.clock import Clock
-from simai_ai.risk.common import Origin, Severity
+from simai_ai.risk.common import ConfidenceReason, Origin, Severity, normalize_confidence
 from simai_ai.risk.engine import Evaluation
 from simai_ai.risk.event_id import EventIdFactory
 from simai_ai.risk.rule import Finding, FindingTarget
+from simai_ai.risk.rules.r7_monitoring import R7_RULE_ID
 from simai_ai.risk.world import IdentityConfidence, ObservationState, WorldState, WorldTrack
+
+# 지속 대기 중 관측 상실로 발생시킨 이벤트의 근거 코드(Finding.reasons 끝에 붙인다).
+REASON_PENDING_OBSERVATION_LOST = "observation_lost_before_persistence"
 
 _SEVERITY_RANK = {Severity.INFO: 0, Severity.CAUTION: 1, Severity.HIGH: 2, Severity.CRITICAL: 3}
 
@@ -82,6 +102,7 @@ class Change(StrEnum):
     """전이 사유. 한 전이에 여러 개가 붙을 수 있다(정해진 순서로 정렬)."""
 
     RAISED = "RAISED"
+    RESUMED = "RESUMED"  # 해소 후 재개 시간 안 재발생으로 같은 이벤트를 다시 활성으로 돌림(6.4)
     RESTORED = "RESTORED"
     IDENTITY_REVISED = "IDENTITY_REVISED"  # world_state 의 identity_revision 증가
     IDENTITY_CORRECTED = "IDENTITY_CORRECTED"  # 명시적 교정으로 World ID 가 바뀜
@@ -229,6 +250,16 @@ class EventState:
     acks: tuple[AckRecord, ...] = ()
     related_event_id: str | None = None
     local_alerted: bool = False
+    confidence_reasons: tuple[ConfidenceReason, ...] = ()
+    resume_count: int = 0  # 해소 후 재개한 횟수(6.4)
+
+    def __post_init__(self) -> None:
+        # 확인 필요 = 이유 목록이 비어 있지 않음(7.1). 이유 없는 needs_check(이전 체크포인트)도 여기서 맞춘다.
+        needs_check, reasons = normalize_confidence(
+            self.needs_check, self.confidence_reasons, f"EventState {self.key.rule_id}"
+        )
+        object.__setattr__(self, "needs_check", needs_check)
+        object.__setattr__(self, "confidence_reasons", reasons)
 
     @property
     def rule_id(self) -> str:
@@ -258,6 +289,7 @@ class EventState:
             "severity": str(self.severity),
             "confidence": str(self.confidence),
             "needs_check": self.needs_check,
+            "confidence_reasons": [str(r) for r in self.confidence_reasons],
             "verification": str(self.verification),
             "world_ids": list(self.world_ids),
             "origin_world_ids": list(self.origin_world_ids),
@@ -265,6 +297,7 @@ class EventState:
             "group_key": self.group_key,
             "metrics": dict(self.metrics),
             "reasons": list(self.reasons),
+            "resume_count": self.resume_count,
             "raised_at": self.raised_at,
             "evaluated_at": self.evaluated_at,
             "observation_time": self.observation_time,
@@ -323,6 +356,7 @@ class EventTransition:
             "severity": str(s.severity),
             "confidence": str(s.confidence),
             "needs_check": s.needs_check,
+            "confidence_reasons": [str(r) for r in s.confidence_reasons],
             "verification": str(s.verification),
             "world_ids": list(s.world_ids),
             "origin_world_ids": list(s.origin_world_ids),
@@ -335,7 +369,13 @@ class EventTransition:
             "related_event_id": s.related_event_id,
             "evidence": [e.to_payload() for e in self.evidence],
             "evidence_ref": self.evidence_ref,
+            "resumed": self.resumed,
         }
+
+    @property
+    def resumed(self) -> bool:
+        """해소된 이벤트를 다시 활성으로 돌린 전이인지(I1 resumed)."""
+        return Change.RESUMED in self.changes
 
 
 @dataclass(frozen=True)
@@ -347,28 +387,85 @@ class LifecycleStep:
 
 
 @dataclass(frozen=True)
+class Persistence:
+    """발생 지속 조건(6.4): 판정 프레임 최근 window_frames 개 중 min_frames 개 이상에서 발생 판정이 있어야 발생한다.
+
+    (1, 1) 은 지속 조건 없이 즉시 발생이다.
+    """
+
+    min_frames: int = 2
+    window_frames: int = 3
+
+    def __post_init__(self) -> None:
+        as_int(self.min_frames, "Persistence.min_frames", minimum=1)
+        as_int(self.window_frames, "Persistence.window_frames", minimum=1)
+        if self.min_frames > self.window_frames:
+            raise RiskInputError(
+                f"Persistence: min_frames {self.min_frames} 가 window_frames {self.window_frames} 보다 크다"
+            )
+
+    @property
+    def immediate(self) -> bool:
+        return self.min_frames == 1
+
+
+IMMEDIATE = Persistence(1, 1)
+
+
+def _default_persistence_by_rule() -> dict[str, Persistence]:
+    # R7(구역 감시 능력 저하)은 즉시 발생한다. 카메라 장애는 순간 오검출이 아니라 상태 보고와 camera_stall_ms(500ms)로
+    # 이미 걸러진 판정이고, G3 '카메라 분리 → 구역 저하 표시 1초 이내' 예산을 지속 조건 지연으로 줄이지 않는다.
+    return {R7_RULE_ID: IMMEDIATE}
+
+
+@dataclass(frozen=True)
 class LifecyclePolicy:
     """생명주기 설정(초기 예시값, 7장 머리말: 실제 안전 기준이 아니며 시나리오 데이터셋으로 조정한다).
 
     - clear_hold_ms: 해소 유지 시간. 판정 없이 유효 관측이 이만큼 이어져야 해소한다(7.2 예시 3초).
     - clear_hold_ms_by_rule: 규칙별 해소 유지 시간.
     - metrics_update_interval_ms: 수치(metrics)만 바뀐 UPDATED 의 최소 간격. 등급·신뢰도·검증 상태 변화는 바로 낸다.
+    - persistence: 발생 지속 조건(6.4, 초기값 3프레임 중 2프레임). persistence_by_rule 로 규칙별로 바꾼다
+      (기본 R7 즉시). 비우면 모든 규칙이 persistence 를 쓴다.
+    - resume_window_ms: 해소 후 이 시간(관측 시각 기준, 이하) 안의 재발생은 기존 이벤트를 재개한다(6.4, 초기값 10초).
+      None 이면 재개하지 않는다(항상 새 이벤트).
     """
 
     clear_hold_ms: int = 3000
     clear_hold_ms_by_rule: Mapping[str, int] = field(default_factory=dict, hash=False)
     metrics_update_interval_ms: int = 1000
+    persistence: Persistence = Persistence()
+    persistence_by_rule: Mapping[str, Persistence] = field(default_factory=_default_persistence_by_rule, hash=False)
+    resume_window_ms: int | None = 10_000
 
     def __post_init__(self) -> None:
         as_int(self.clear_hold_ms, "LifecyclePolicy.clear_hold_ms", minimum=0)
         as_int(self.metrics_update_interval_ms, "LifecyclePolicy.metrics_update_interval_ms", minimum=0)
+        if self.resume_window_ms is not None:
+            as_int(self.resume_window_ms, "LifecyclePolicy.resume_window_ms", minimum=0)
+        if not isinstance(self.persistence, Persistence):
+            raise RiskInputError("LifecyclePolicy.persistence 는 Persistence 여야 한다")
         by_rule = {}
         for rule_id, hold in sorted(self.clear_hold_ms_by_rule.items()):
             by_rule[rule_id] = as_int(hold, f"LifecyclePolicy.clear_hold_ms_by_rule.{rule_id}", minimum=0)
         object.__setattr__(self, "clear_hold_ms_by_rule", MappingProxyType(by_rule))
+        persistence = {}
+        for rule_id, value in sorted(self.persistence_by_rule.items()):
+            if not isinstance(value, Persistence):
+                raise RiskInputError(f"LifecyclePolicy.persistence_by_rule.{rule_id} 는 Persistence 여야 한다")
+            persistence[rule_id] = value
+        object.__setattr__(self, "persistence_by_rule", MappingProxyType(persistence))
 
     def hold_ms(self, rule_id: str) -> int:
         return self.clear_hold_ms_by_rule.get(rule_id, self.clear_hold_ms)
+
+    def persistence_for(self, rule_id: str) -> Persistence:
+        return self.persistence_by_rule.get(rule_id, self.persistence)
+
+
+# 지속 조건·재개 없이 발생 판정 한 번에 새 이벤트를 만드는 설정(S15P31A101-156 이전 동작). 생명주기 기본 동작만 보는
+# 시험과 format_version 1.3 미만 벡터가 쓴다. 제품 기본값이 아니다.
+LEGACY_IMMEDIATE_POLICY = LifecyclePolicy(persistence=IMMEDIATE, persistence_by_rule={}, resume_window_ms=None)
 
 
 @runtime_checkable
@@ -476,7 +573,10 @@ class LifecycleTracker:
         self._verification = ObservedTracksPolicy() if verification is None else verification
         self._by_key: dict[EventKey, _Active] = {}
         self._by_id: dict[str, _Active] = {}
+        self._pending: dict[EventKey, _Pending] = {}  # 발생 지속 조건을 세는 중인 키
+        self._resolved: dict[EventKey, _Resolved] = {}  # 재개 시간 안의 해소 이벤트(6.4)
         self._last_evaluated_at = -1
+        self._last_observation_time: int | None = None
 
     @property
     def origin(self) -> Origin:
@@ -530,20 +630,155 @@ class LifecycleTracker:
         tracks = {t.world_id: t for t in world.tracks}
         frame = _Frame(evaluation, config_version, evidence_ref, self._clock.now_ms())
 
+        # 관측 시각이 앞으로 간 판정만 지속 조건의 프레임으로 센다(같은 관측을 다시 판정해도 한 프레임이다).
+        advancing = self._last_observation_time is None or evaluation.observation_time > self._last_observation_time
+        if advancing:
+            self._last_observation_time = evaluation.observation_time
+        self._prune_resolved(evaluation.observation_time)
+
         transitions: list[EventTransition] = []
         signals: list[LocalSignal] = []
-        for key in sorted(set(grouped) | set(self._by_key), key=lambda k: k.sort_key):
+        # 대기 중인 키는 관측 시각이 멈춘 판정에서도 안전 검사한다(_persist).
+        keys = set(grouped) | set(self._by_key) | set(self._pending)
+        for key in sorted(keys, key=lambda k: k.sort_key):
             findings = grouped.get(key, [])
             active = self._by_key.get(key)
             if active is None:
                 # holding 은 기존 이벤트 유지용이다. 새 이벤트의 등급·구역은 발생 판정에서만 고른다.
                 raising = [f for f in findings if not f.holding]
-                if raising:
-                    self._raise(key, _representative(raising), world, tracks, frame, transitions, signals)
+                opening = self._persist(key, raising, advancing, world, evaluation.evaluated_at)
+                if opening is not None:
+                    self._open(key, opening, world, tracks, frame, transitions, signals)
             else:
                 finding = _maintaining(findings, active.state) if findings else None
                 self._advance(active, finding, world, tracks, frame, transitions, signals)
         return LifecycleStep(tuple(transitions), tuple(signals))
+
+    def pending(self) -> Mapping[EventKey, int]:
+        """발생 지속 조건을 세는 중인 키 → 창 안의 발생 판정 프레임 수(시험·진단용)."""
+        return MappingProxyType({k: p.count for k, p in sorted(self._pending.items(), key=lambda kv: kv[0].sort_key)})
+
+    def _persist(
+        self, key: EventKey, raising: list[Finding], advancing: bool, world: WorldState, now_ms: int
+    ) -> Finding | None:
+        """발생 지속 조건(6.4)을 센다. 이번 판정으로 이벤트를 열어야 하면 그 대표 판정을, 아니면 None 을 돌려준다.
+
+        두 단계로 나눈다.
+        1. 프레임 집계: 관측 시각이 앞으로 간 판정만 센다(같은 관측을 다시 판정해도 한 프레임).
+        2. 안전 검사: 이번 판정 전부터 대기 중이던 키는 판정 주기마다(관측 시각이 멈춰도) 검사한다. 이번 판정에
+           새 관측의 발생 판정이 없거나(사라짐) 관측 시각이 멈췄는데(영상 정지·지연) 대상을 유효하게 관측할 수 없으면
+           (UNKNOWN·PREDICTED·트랙 없음·gap 초과·lag 초과, VerificationPolicy) 마지막 발생 판정으로 바로 발생시킨다.
+           판정 주기 시계(주입 시계)는 영상이 멈춰도 간다(6.1). 그래서 전체 정지 중에도 늦어도 lag 기준
+           (ObservedTracksPolicy.max_lag_ms, 초기 600ms)을 넘는 첫 판정 주기에 발생한다.
+        """
+        persistence = self._policy.persistence_for(key.rule_id)
+        if raising and persistence.immediate:
+            self._pending.pop(key, None)
+            return _representative(raising)
+        pending = self._pending.get(key)
+        was_pending = pending is not None
+        if advancing:
+            if pending is None:
+                if not raising:
+                    return None
+                pending = self._pending[key] = _Pending(persistence.window_frames)
+            pending.push(_representative(raising) if raising else None)
+            if raising and pending.count >= persistence.min_frames:
+                del self._pending[key]
+                return _representative(raising)
+            if pending.count == 0:
+                # 창 안에 발생 판정이 남지 않았다(순간 오검출). 이벤트 없이 끝낸다.
+                del self._pending[key]
+                return None
+        if pending is None or not was_pending or pending.last is None:
+            return None
+        if (raising and advancing) or self._verification.verifiable(key, key.world_ids, world, now_ms):
+            return None
+        # 지속 대기 중 관측 상실·정지: 발생 판정이 사라진(또는 새로 나지 않는) 까닭이 위험이 사라져서인지 보이지 않아서인지
+        # 모른다. 안전 쪽으로 마지막 발생 판정으로 발생시키고(검증 상태는 UNVERIFIABLE) 확인 필요 이유 PREDICTED 를 더한다
+        # (위치가 현재 관측이 아니라 마지막 추정값이다). 재개 시간 안이면 _open 이 재개로 처리한다.
+        del self._pending[key]
+        last = pending.last
+        return replace(
+            last,
+            confidence_reasons=last.confidence_reasons + (ConfidenceReason.PREDICTED,),
+            reasons=last.reasons + (REASON_PENDING_OBSERVATION_LOST,),
+        )
+
+    def _open(
+        self,
+        key: EventKey,
+        finding: Finding,
+        world: WorldState,
+        tracks: Mapping[str, WorldTrack],
+        frame: "_Frame",
+        transitions: list[EventTransition],
+        signals: list[LocalSignal],
+    ) -> None:
+        """발생 조건을 채운 키의 이벤트를 연다. 재개 시간 안에 해소된 같은 키 이벤트가 있으면 재개한다(6.4)."""
+        resolved = self._resolved.pop(key, None)
+        window = self._policy.resume_window_ms
+        if (
+            resolved is not None
+            and window is not None
+            and frame.evaluation.observation_time - resolved.observation_time <= window
+        ):
+            self._resume(resolved.state, finding, world, tracks, frame, transitions, signals)
+        else:
+            self._raise(key, finding, world, tracks, frame, transitions, signals)
+
+    def _resume(
+        self,
+        previous: EventState,
+        finding: Finding,
+        world: WorldState,
+        tracks: Mapping[str, WorldTrack],
+        frame: "_Frame",
+        transitions: list[EventTransition],
+        signals: list[LocalSignal],
+    ) -> None:
+        """해소된 이벤트를 같은 event_id 로 다시 활성으로 돌린다. 새 위험 발생처럼 미확인으로 되돌리고 다시 울린다."""
+        key = previous.key
+        evaluation = frame.evaluation
+        verified = self._verification.verifiable(key, key.world_ids, world, evaluation.evaluated_at)
+        revisions = dict(previous.identity_revisions)
+        revisions |= {w: tracks[w].identity_revision for w in key.world_ids if w in tracks}
+        state = replace(
+            previous,
+            event_sequence=previous.event_sequence + 1,
+            lifecycle=Lifecycle.UPDATED,
+            rule_version=finding.rule_version,
+            severity=finding.severity,
+            needs_check=finding.needs_check,
+            confidence_reasons=finding.confidence_reasons,
+            verification=Verification.VERIFIED if verified else Verification.UNVERIFIABLE,
+            zone_id=finding.zone_id,
+            metrics=finding.metrics,
+            reasons=finding.reasons,
+            evaluated_at=evaluation.evaluated_at,
+            observation_time=evaluation.observation_time,
+            config_version=frame.config_version,
+            calibration_version=evaluation.calibration_version,
+            scene_version=evaluation.scene_version,
+            identity_revisions=MappingProxyType(revisions),
+            acks=(),
+            local_alerted=False,
+            resume_count=previous.resume_count + 1,
+        )
+        active = _Active(state)
+        self._by_key[key] = active
+        self._by_id[state.event_id] = active
+        self._alert_if_needed(active, frame.occurred_at, signals)
+        transitions.append(self._emit(active, Lifecycle.UPDATED, (Change.RESUMED,), frame, tracks))
+
+    def _prune_resolved(self, observation_time: int) -> None:
+        """재개 시간이 지난 해소 이벤트를 잊는다. 그 뒤의 재발생은 새 이벤트다."""
+        window = self._policy.resume_window_ms
+        if window is None:
+            self._resolved.clear()
+            return
+        for key in [k for k, r in self._resolved.items() if observation_time - r.observation_time > window]:
+            del self._resolved[key]
 
     def _raise(
         self,
@@ -566,6 +801,7 @@ class LifecycleTracker:
             rule_version=finding.rule_version,
             severity=finding.severity,
             needs_check=finding.needs_check,
+            confidence_reasons=finding.confidence_reasons,
             verification=Verification.VERIFIED if verified else Verification.UNVERIFIABLE,
             world_ids=key.world_ids,
             origin_world_ids=key.world_ids,
@@ -650,7 +886,7 @@ class LifecycleTracker:
             active.clear_since = None
             if finding.severity is not state.severity:
                 changes.add(Change.SEVERITY)
-            if finding.needs_check != state.needs_check:
+            if finding.confidence_reasons != state.confidence_reasons:
                 changes.add(Change.CONFIDENCE)
             if finding.zone_id != state.zone_id:
                 changes.add(Change.ZONE)
@@ -667,6 +903,7 @@ class LifecycleTracker:
                 "rule_version": finding.rule_version,
                 "severity": finding.severity,
                 "needs_check": finding.needs_check,
+                "confidence_reasons": finding.confidence_reasons,
                 "zone_id": finding.zone_id,
                 "metrics": finding.metrics,
                 "reasons": finding.reasons,
@@ -696,6 +933,8 @@ class LifecycleTracker:
         transitions.append(self._emit(active, lifecycle, _ordered(changes), frame, tracks))
         if resolved:
             self._drop(active)
+            if self._policy.resume_window_ms is not None:
+                self._resolved[active.state.key] = _Resolved(active.state, evaluation.observation_time)
             if active.state.local_alerted:
                 signals.append(AlertClear(**self._signal_fields(active.state, frame.occurred_at)))
 
@@ -789,6 +1028,8 @@ class LifecycleTracker:
         """체크포인트·저널에서 되살린 활성 이벤트를 넣는다(명세 3.2 재시작 복구).
 
         복원한 이벤트는 UNVERIFIABLE 로 두고 자동 해소하지 않는다. event_sequence 는 이어서 올린다.
+        지속 조건 대기 중인 키와 재개 시간 안의 해소 이벤트는 체크포인트에 없어 복원하지 않는다(재시작 직후의
+        재발생은 지속 조건을 다시 세고 새 이벤트가 된다).
         이미 활성 이벤트가 있는 추적기에는 복원하지 않는다(재시작 직후 한 번만 쓴다).
         """
         if self._by_id:
@@ -883,6 +1124,31 @@ class LifecycleTracker:
             "severity": state.severity,
             "needs_check": state.needs_check,
         }
+
+
+class _Pending:
+    """발생 지속 조건을 세는 중인 키. 최근 프레임들의 발생 판정 여부와 마지막 발생 판정을 기억한다."""
+
+    def __init__(self, window_frames: int) -> None:
+        self.frames: deque[bool] = deque(maxlen=window_frames)
+        self.last: Finding | None = None
+
+    def push(self, finding: Finding | None) -> None:
+        self.frames.append(finding is not None)
+        if finding is not None:
+            self.last = finding
+
+    @property
+    def count(self) -> int:
+        return sum(self.frames)
+
+
+@dataclass(frozen=True)
+class _Resolved:
+    """재개 시간 안의 해소 이벤트. observation_time 은 해소를 확정한 판정의 관측 시각이다."""
+
+    state: EventState
+    observation_time: int
 
 
 @dataclass(frozen=True)

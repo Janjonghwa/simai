@@ -20,8 +20,10 @@
   이 경우는 lag 로 잡히며 System Health(UNSAFE_UNKNOWN)가 맡는다. 그동안 활성 R7 이벤트는 lifecycle 검증 정책
   (lag 초과 → UNVERIFIABLE)으로 해소되지 않는다.
 - 지연: 카메라가 끊기면 상태가 NO_SIGNAL 로 오는 즉시, 늦어도 마지막 프레임 뒤 camera_stall_ms 가 지나면 판정한다.
-  발생 지속 조건이 없으므로(S15P31A101-156 에서 추가) 그 판정 주기에 이벤트가 생긴다. G3 '카메라 분리 → 구역
-  저하 표시 1초 이내'의 규칙 쪽 몫은 camera_stall_ms + 판정 주기다.
+  lifecycle 의 발생 지속 조건(6.4, 3프레임 중 2)은 R7 에 기본으로 적용하지 않으므로(LifecyclePolicy.persistence_by_rule
+  기본값 R7 즉시, S15P31A101-156) 그 판정 주기에 이벤트가 생긴다. 카메라 장애는 순간 오검출이 아니라 상태 보고와
+  camera_stall_ms 로 이미 걸러진 판정이다. G3 '카메라 분리 → 구역 저하 표시 1초 이내'의 규칙 쪽 몫은
+  camera_stall_ms + 판정 주기다.
 
 근거(reasons)는 첫 값이 monitoring_degraded 이고 뒤에 원인이 붙는다(coverage_insufficient, 그다음 카메라 ID 순).
 | 근거 | 뜻 |

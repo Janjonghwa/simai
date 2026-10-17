@@ -1,6 +1,7 @@
 """RiskEvent 생명주기 (명세 3.2, 6.4, 7.3, 7.4, 5.2 ID 교정, 수정 6 ACK, G3)."""
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -16,7 +17,6 @@ from simai_ai.risk import (
     IdentityCorrection,
     Lifecycle,
     LifecycleError,
-    LifecyclePolicy,
     LifecycleTracker,
     LocalAlert,
     NonLiveAlertError,
@@ -26,6 +26,7 @@ from simai_ai.risk import (
     WorldState,
 )
 from simai_ai.risk.event_id import is_uuid7
+from simai_ai.risk.lifecycle import LEGACY_IMMEDIATE_POLICY
 
 T0 = 1760342400100  # conftest 의 T0 와 같다
 
@@ -45,8 +46,16 @@ def finding(rule_id="R1", world_ids=("w-0012",), zone_id="z-04", severity=Severi
     )
 
 
+def legacy(**kwargs):
+    """지속 조건·재개 없는 설정(생명주기 기본 동작만 본다). 지속 조건·재개는 test_persistence_resume.py 가 본다."""
+    return replace(LEGACY_IMMEDIATE_POLICY, **kwargs)
+
+
 class Harness:
-    """주입 시계 하나로 판정을 만들어 추적기에 넣는다. 관측 시각은 판정 시각보다 100ms 앞이다."""
+    """주입 시계 하나로 판정을 만들어 추적기에 넣는다. 관측 시각은 판정 시각보다 100ms 앞이다.
+
+    policy 를 주지 않으면 지속 조건·재개 없는 설정(legacy())을 쓴다.
+    """
 
     def __init__(self, track_json, origin=Origin.LIVE, policy=None):
         self.clock = FixedClock(T0)
@@ -56,7 +65,7 @@ class Harness:
             origin=origin,
             gateway_id=GATEWAY,
             clock=self.clock,
-            policy=policy,
+            policy=legacy() if policy is None else policy,
             id_factory=EventIdFactory(self.clock, randbits=lambda n: 0),
         )
 
@@ -287,7 +296,7 @@ def test_zone_target_event_is_keyed_by_zone(harness):
 
 
 def test_resolves_only_after_clear_hold_with_valid_observation(harness):
-    h = harness(policy=LifecyclePolicy(clear_hold_ms=3000))
+    h = harness(policy=legacy(clear_hold_ms=3000))
     (raised,) = h.step([finding()]).transitions
     before = h.hold(3000)  # 해소 확인 시작부터 2900ms 까지
     assert transitions(before) == []
@@ -301,7 +310,7 @@ def test_resolves_only_after_clear_hold_with_valid_observation(harness):
 
 
 def test_rule_specific_hold(harness):
-    h = harness(policy=LifecyclePolicy(clear_hold_ms=3000, clear_hold_ms_by_rule={"R1": 500}))
+    h = harness(policy=legacy(clear_hold_ms=3000, clear_hold_ms_by_rule={"R1": 500}))
     h.step([finding()])
     steps = h.hold(700)
     assert [t.transition for t in transitions(steps)] == [Lifecycle.RESOLVED]
@@ -324,7 +333,7 @@ def test_holding_keeps_event_alive(harness):
 
 
 def test_new_raise_after_resolution_is_new_event(harness):
-    h = harness(policy=LifecyclePolicy(clear_hold_ms=0))
+    h = harness(policy=legacy(clear_hold_ms=0))
     (first,) = h.step([finding()]).transitions
     assert h.step().transitions[0].transition is Lifecycle.RESOLVED
     (second,) = h.step([finding()]).transitions
@@ -344,7 +353,7 @@ def test_new_raise_after_resolution_is_new_event(harness):
     ],
 )
 def test_observation_loss_is_unverifiable_and_never_auto_resolves(harness, track_json, lost):
-    h = harness(policy=LifecyclePolicy(clear_hold_ms=3000))
+    h = harness(policy=legacy(clear_hold_ms=3000))
     (raised,) = h.step([finding()]).transitions
     (t,) = h.step(tracks=lost(track_json)).transitions
     assert t.transition is Lifecycle.UPDATED and t.changes == (Change.VERIFICATION,)
@@ -361,7 +370,7 @@ def test_observation_loss_is_unverifiable_and_never_auto_resolves(harness, track
 
 def test_stale_observed_track_is_unverifiable_and_never_auto_resolves(harness, track_json):
     """6.1: OBSERVED 도 최신이라는 뜻이 아니다. 다른 카메라 영상만 진행하고 대상의 새 관측이 없으면 해소하지 않는다."""
-    h = harness(policy=LifecyclePolicy(clear_hold_ms=3000))
+    h = harness(policy=legacy(clear_hold_ms=3000))
     (raised,) = h.step([finding()]).transitions
     last_seen = h.clock.now_ms() - 100
     stale = [track_json(t_last_valid=last_seen)]  # observation_state 는 OBSERVED 그대로
@@ -379,7 +388,7 @@ def test_stale_observed_track_is_unverifiable_and_never_auto_resolves(harness, t
 
 def test_whole_video_stall_is_unverifiable_and_never_auto_resolves(harness):
     """6.1: 영상이 모두 멈추면 lag 가 커진다. 멈춘 관측으로는 해소를 확인하지 않는다."""
-    h = harness(policy=LifecyclePolicy(clear_hold_ms=3000))
+    h = harness(policy=legacy(clear_hold_ms=3000))
     (raised,) = h.step([finding()]).transitions
     frozen = h.clock.now_ms() - 100
     stalled = [h.step(observed_at=frozen) for _ in range(600)]  # 판정 시계만 60초 진행
@@ -404,7 +413,7 @@ def test_unverifiable_while_finding_present(harness, track_json):
 
 
 def test_identity_revision_resets_clear_hold_and_does_not_resolve(harness, track_json):
-    h = harness(policy=LifecyclePolicy(clear_hold_ms=3000))
+    h = harness(policy=legacy(clear_hold_ms=3000))
     h.step([finding()], tracks=[track_json(identity_revision=2)])
     assert transitions(h.hold(2900, tracks=[track_json(identity_revision=2)])) == []
     (revised,) = h.step(tracks=[track_json(identity_revision=3)]).transitions  # 해소 직전에 ID 교정
@@ -472,7 +481,7 @@ def test_every_ack_is_recorded(harness):
 
 
 def test_ack_of_inactive_event_is_ignored(harness):
-    h = harness(policy=LifecyclePolicy(clear_hold_ms=0))
+    h = harness(policy=legacy(clear_hold_ms=0))
     (raised,) = h.step([finding()]).transitions
     h.step()
     assert h.tracker.acknowledge(raised.event_id, AckActor.ADMIN, "admin-1", T0) is None
@@ -487,7 +496,7 @@ def test_ack_without_local_alert_has_no_alarm_stop(harness):
 
 
 def test_resolution_after_ack_clears_display(harness):
-    h = harness(policy=LifecyclePolicy(clear_hold_ms=0))
+    h = harness(policy=legacy(clear_hold_ms=0))
     (raised,) = h.step([finding()]).transitions
     h.tracker.acknowledge(raised.event_id, AckActor.SITE_BUTTON, "laptop-01", T0)
     (clear,) = h.step().local_signals
@@ -523,7 +532,7 @@ def test_confidence_change_is_an_update(harness):
 
 
 def test_metrics_only_updates_are_throttled(harness):
-    h = harness(policy=LifecyclePolicy(metrics_update_interval_ms=1000))
+    h = harness(policy=legacy(metrics_update_interval_ms=1000))
     h.step([finding(metrics={"d_m": 1.0})])
     steps = [h.step([finding(metrics={"d_m": 1.0 - i / 100})]) for i in range(1, 21)]  # 2초, 100ms 간격
     updates = transitions(steps)
@@ -533,7 +542,7 @@ def test_metrics_only_updates_are_throttled(harness):
 
 def test_metrics_change_settling_within_interval_is_emitted_later(harness):
     """수치가 제한 간격 안에 한 번 바뀌고 고정돼도, 간격이 지나면 최신 수치로 전이를 낸다."""
-    h = harness(policy=LifecyclePolicy(metrics_update_interval_ms=1000))
+    h = harness(policy=legacy(metrics_update_interval_ms=1000))
     h.step([finding(metrics={"d_m": 1.0})])
     steps = [h.step([finding(metrics={"d_m": 0.5})]) for _ in range(21)]
     (t,) = transitions(steps)
@@ -556,7 +565,7 @@ def test_rule_version_change_is_recorded(harness):
 @pytest.mark.parametrize("origin", NON_LIVE)
 def test_non_live_never_emits_local_signals(harness, origin, track_json):
     """PLANNED·WHAT_IF·REPLAY 는 전이는 만들되 현장 경보 신호는 절대 내지 않는다."""
-    h = harness(origin=origin, policy=LifecyclePolicy(clear_hold_ms=0))
+    h = harness(origin=origin, policy=legacy(clear_hold_ms=0))
     steps = [h.step([finding(severity=Severity.CAUTION)]), h.step([finding(severity=Severity.CRITICAL)])]
     event_id = h.tracker.active()[0].event_id
     steps.append(h.tracker.acknowledge(event_id, AckActor.SITE_BUTTON, "laptop-01", T0))
@@ -636,7 +645,7 @@ def test_restore_marks_unverifiable_continues_sequence_and_does_not_resolve(harn
 
 def _journal_restore_then_ack_and_resolve(harness, journal):
     """저널의 마지막 전이 상태로 복원한 뒤 ACK·해소가 현장 신호를 내는지 본다."""
-    restarted = harness(policy=LifecyclePolicy(clear_hold_ms=0))
+    restarted = harness(policy=legacy(clear_hold_ms=0))
     restarted.tracker.restore([journal.state])
     ack = restarted.tracker.acknowledge(journal.event_id, AckActor.ADMIN, "admin-1", T0)
     resolved = restarted.step()  # 판정 없이 재관측(해소 유지 시간 0)

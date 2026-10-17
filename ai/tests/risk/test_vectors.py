@@ -356,3 +356,93 @@ def test_r7_vectors_use_control_screen_notice_only():
                 assert Channel.CONTROL_SCREEN_NOTICE in plan.channels, name
                 assert not plan.channels & {Channel.LOCAL_ALERT, Channel.CONTROL_SCREEN_ALERT, Channel.FOREMAN_PWA}
         assert run_vector(vector, default_registry()).passed, name
+
+
+# --- 발생 지속 조건·재개·확인 필요 이유(형식 1.3) ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda v: v["lifecycle"]["policy"].update(resume_window_ms=1000), id="resume-key-in-1.1"),
+        pytest.param(
+            lambda v: v["lifecycle"]["policy"].update(persistence={"min_frames": 2, "window_frames": 3}),
+            id="persistence-key-in-1.1",
+        ),
+        pytest.param(
+            lambda v: v["steps"][0]["inject_findings"][0].update(confidence_reasons=["PREDICTED"]),
+            id="confidence-reasons-in-1.1",
+        ),
+    ],
+)
+def test_v13_keys_are_rejected_below_1_3(mutate):
+    vector = _lifecycle_vector()
+    assert vector["format_version"].startswith("1.1")
+    mutate(vector)
+    with pytest.raises(RiskInputError):
+        parse_vector(vector)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda v: v["lifecycle"]["policy"].update(resume_window_ms=-1), id="negative-resume"),
+        pytest.param(
+            lambda v: v["lifecycle"]["policy"].update(persistence={"min_frames": 3, "window_frames": 2}),
+            id="min-over-window",
+        ),
+        pytest.param(
+            lambda v: v["lifecycle"]["policy"].update(persistence={"min_frames": 2}), id="persistence-missing-key"
+        ),
+        pytest.param(
+            lambda v: v["steps"][0]["inject_findings"][0].update(confidence_reasons=["LOW_SCORE"]),
+            id="unknown-confidence-reason",
+        ),
+        pytest.param(
+            lambda v: v["steps"][0]["expect"]["transitions"][0].pop("confidence_reasons"),
+            id="transition-needs-confidence-reasons",
+        ),
+    ],
+)
+def test_bad_v13_vector_is_rejected(mutate):
+    vector = _lifecycle_vector("lifecycle_persistence_boundary.json")
+    vector["steps"][0]["inject_findings"][0].setdefault("confidence_reasons", [])
+    mutate(vector)
+    with pytest.raises(RiskInputError):
+        parse_vector(vector)
+
+
+def test_v13_vectors_use_product_defaults_and_old_vectors_stay_immediate():
+    """1.3 미만은 지속 조건·재개 없는 설정, 1.3 이상은 제품 기본값(3프레임 중 2, R7 즉시, 재개 10초)."""
+    old = parse_vector(_lifecycle_vector())
+    assert old.lifecycle.policy.persistence.immediate and old.lifecycle.policy.resume_window_ms is None
+    new = parse_vector(_lifecycle_vector("lifecycle_resume_window.json"))
+    policy = new.lifecycle.policy
+    assert (policy.persistence.min_frames, policy.persistence.window_frames) == (2, 3)
+    assert policy.persistence_for("R7").immediate and policy.resume_window_ms == 10_000
+
+
+@pytest.mark.parametrize(
+    ("name", "mutate"),
+    [
+        pytest.param(
+            "lifecycle_resume_window.json",
+            lambda v: v["lifecycle"]["policy"].update(resume_window_ms=None),
+            id="resume-disabled-makes-new-event",
+        ),
+        pytest.param(
+            "lifecycle_persistence_boundary.json",
+            lambda v: v["lifecycle"]["policy"].update(persistence={"min_frames": 1, "window_frames": 1}),
+            id="immediate-raises-spike",
+        ),
+        pytest.param(
+            "lifecycle_confidence_reasons.json",
+            lambda v: v["steps"][1]["expect"]["transitions"][0].update(confidence_reasons=["SINGLE_VIEW", "Z_UNKNOWN"]),
+            id="reason-order",
+        ),
+    ],
+)
+def test_v13_vectors_detect_behavior_change(name, mutate):
+    vector = _lifecycle_vector(name)
+    mutate(vector)
+    assert not run_vector(parse_vector(vector)).passed

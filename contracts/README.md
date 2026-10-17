@@ -7,7 +7,7 @@
 | `common/defs.schema.json` | 공통 타입(좌표, 시각, 상태 enum, `input_provenance`, `reproducibility`). `calibration_source` 를 쓰는 계약(calibration, calibration_update, run_record, scene_output, human_mesh_output)은 2.0.0 | 4.1, 6.2, 12.1, 20.4 |
 | `messages/envelope.schema.json` | 공통 봉투 | 12.1 |
 | `messages/world_state.schema.json` | I1 `world_state` (LIVE 계약, Lead 승인 필요) | 5.2, 12.3 |
-| `messages/risk_event_transition.schema.json` | I1 Tier 0 → EC2 LIVE 이벤트 전이(저널 기록, 운영자 확인 포함) | 3.2, 6.4, 12.3 |
+| `messages/risk_event_transition.schema.json` | I1 Tier 0 → EC2 LIVE 이벤트 전이(저널 기록, 운영자 확인 포함). 1.3.0: 확인 필요 이유 `confidence_reasons`, 해소 후 재개 `resumed` | 3.2, 6.4, 7.1, 12.3 |
 | `messages/event_state_snapshot.schema.json` | I1 Tier 0 → EC2 재동기화 후 활성 이벤트 최종 상태 | 3.2 |
 | `messages/health.schema.json` | I1 Tier 0 → EC2(및 I0 노트북) 1 Hz 상태·손실 3종 | 3.11, 5.1, 6.2, 12.3, 12.7 |
 | `messages/observation_batch.schema.json` | Tier 0 카메라별 2D 관측 묶음(RunPod Network Volume 보관 형식, EC2 로는 `observation_summary`) | 5.1, 11.2 |
@@ -27,7 +27,7 @@
 | `messages/clock_sync_request.schema.json` | I0 Tier 0 → 노트북 시계 차이 교환 요청(t1) | 3.9, 6.1 |
 | `messages/clock_sync_response.schema.json` | I0 노트북 → Tier 0 시계 차이 교환 응답(t1·t2·t3) | 3.9, 6.1 |
 | `messages/laptop_heartbeat.schema.json` | 노트북 → Tier 0(I0)·EC2(HTTPS) 1초 하트비트, Tier 0 연결 상태 | 3.2, 6.5 |
-| `messages/risk_event.schema.json` | I2 EC2 → 뷰어 `/topic/events` | 12.4 |
+| `messages/risk_event.schema.json` | I2 EC2 → 뷰어 `/topic/events`. 1.3.0: `confidence_reasons`, 재개 횟수 `resume_count` | 6.4, 7.1, 12.4 |
 | `messages/risk_alert.schema.json` | I3 EC2 → 반장 PWA Web Push | 10.1, 12.4 |
 | `messages/job_lease_request.schema.json` | I5 분석 워커 → EC2 작업 대여 요청(HTTPS long-poll, 워커 토큰). I5 전송·인증 규칙 | 12.2, 12.5, 14 |
 | `messages/job_request.schema.json` | I5 EC2 → 분석 워커 대여 응답: 작업 하나와 lease_id·만료 시각, 재할당 규칙 (2.0.0 메이저) | 12.5 |
