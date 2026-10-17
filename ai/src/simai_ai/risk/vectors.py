@@ -6,8 +6,9 @@
     python -m simai_ai.risk.vectors ai/tests/risk/vectors     # 모두 통과하면 종료 코드 0
 
 벡터 형식(JSON, format_version 1.x). 형식은 ai/tests/risk/vectors/README.md 에도 적는다.
-1.1 은 생명주기(lifecycle) 시나리오를, 1.2 는 단계별 감시 상태(monitoring, R7 입력)를 더했다. 이전 벡터는 그대로 읽힌다.
-monitoring 키는 format_version 1.2 이상에서만 받는다(낮은 버전에 있으면 오류).
+1.1 은 생명주기(lifecycle) 시나리오를, 1.2 는 단계별 감시 상태(monitoring, R7 입력)를, 1.3 은 발생 지속 조건·재개
+설정과 확인 필요 이유(confidence_reasons)를 더했다. 이전 벡터는 그대로 읽힌다.
+monitoring 키는 format_version 1.2 이상에서만, 1.3 키는 1.3 이상에서만 받는다(낮은 버전에 있으면 오류).
 
     {
       "format_version": "1.0.0",
@@ -52,6 +53,16 @@ metrics 는 절대 오차 METRIC_ABS_TOL 안에서 같으면 통과다(플랫폼
 - lifecycle 이 있으면 expect.transitions·local_signals 를 반드시 적는다(빈 배열 가능).
 - 불변 규칙도 함께 검사한다: LIVE 가 아니면 현장 경보 신호 0건, event_id 는 UUIDv7, gateway_id 일치,
   event_sequence 는 이벤트별로 1 부터 1 씩 증가.
+
+발생 지속 조건·재개(1.3, 선택). format_version 1.3 미만 생명주기 벡터는 지속 조건·재개 없는 설정
+(lifecycle.LEGACY_IMMEDIATE_POLICY: 발생 판정 한 번에 새 이벤트)으로 돌린다. 1.3 이상은 제품 기본값
+(LifecyclePolicy(): 3프레임 중 2프레임, R7 즉시, 재개 10초)에서 policy 로 적은 값만 바꾼다.
+
+    "policy": {..., "persistence": {"min_frames": 2, "window_frames": 3},
+               "persistence_by_rule": {"R7": {"min_frames": 1, "window_frames": 1}},   # 적으면 기본값(R7 즉시)을 대신한다
+               "resume_window_ms": 10000}                                              # null 이면 재개하지 않는다
+    Finding 에 "confidence_reasons": ["PREDICTED", ...] (선택, 기본 []) 를 적을 수 있다.
+    expect.transitions[] 에 "confidence_reasons" 가 필수다. 재개 전이는 changes ["RESUMED"] 로 보인다.
 """
 
 import argparse
@@ -80,10 +91,16 @@ from simai_ai.risk._parse import (
 )
 from simai_ai.risk.alerting import AckActor, LocalSignal
 from simai_ai.risk.clock import FixedClock
-from simai_ai.risk.common import Origin, Severity
+from simai_ai.risk.common import ConfidenceReason, Origin, Severity
 from simai_ai.risk.engine import Evaluation, RiskEngine, RuleContractError
 from simai_ai.risk.event_id import EventIdFactory, is_uuid7
-from simai_ai.risk.lifecycle import EventTransition, LifecyclePolicy, LifecycleTracker
+from simai_ai.risk.lifecycle import (
+    LEGACY_IMMEDIATE_POLICY,
+    EventTransition,
+    LifecyclePolicy,
+    LifecycleTracker,
+    Persistence,
+)
 from simai_ai.risk.monitoring import MonitoringState
 from simai_ai.risk.registry import RuleRegistry, default_registry
 from simai_ai.risk.rule import Finding
@@ -92,6 +109,7 @@ from simai_ai.risk.zone import Zone
 
 FORMAT_MAJOR = 1
 MONITORING_MIN_MINOR = 2  # steps[].monitoring 을 더한 마이너 버전
+PERSISTENCE_MIN_MINOR = 3  # 발생 지속 조건·재개 설정, confidence_reasons 를 더한 마이너 버전
 METRIC_ABS_TOL = 1e-9
 
 
@@ -121,6 +139,7 @@ class LifecycleSpec:
     gateway_id: str
     config_version: str
     policy: LifecyclePolicy
+    with_reasons: bool = False  # 기대 전이에 confidence_reasons 를 적는지(1.3 이상)
 
 
 @dataclass(frozen=True)
@@ -168,7 +187,10 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
         reject_unknown_keys(r, {"rule_id", "rule_version"}, at)
         rules.append((as_str(require(r, "rule_id", at), at), as_int(require(r, "rule_version", at), at, minimum=1)))
 
-    lifecycle = None if obj.get("lifecycle") is None else _parse_lifecycle(obj["lifecycle"], f"{where}.lifecycle")
+    lifecycle = (
+        None if obj.get("lifecycle") is None else _parse_lifecycle(obj["lifecycle"], f"{where}.lifecycle", minor)
+    )
+    transition_keys = _TRANSITION_KEYS + (("confidence_reasons",) if minor >= PERSISTENCE_MIN_MINOR else ())
 
     steps = []
     last_clock = -1
@@ -195,19 +217,19 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
             clock_ms=clock_ms,
             world_state=WorldState.from_payload(require(s, "world_state", at), f"{at}.world_state"),
             monitoring=_parse_monitoring(s.get("monitoring"), f"{at}.monitoring"),
-            expected=_parse_findings(require(expect, "findings", f"{at}.expect"), f"{at}.expect.findings"),
+            expected=_parse_findings(require(expect, "findings", f"{at}.expect"), f"{at}.expect.findings", minor),
         )
         if lifecycle is not None:
             transitions = as_list(require(expect, "transitions", f"{at}.expect"), f"{at}.expect.transitions")
             signals = as_list(require(expect, "local_signals", f"{at}.expect"), f"{at}.expect.local_signals")
             step = replace(
                 step,
-                injected=_parse_findings(s.get("inject_findings", []), f"{at}.inject_findings"),
+                injected=_parse_findings(s.get("inject_findings", []), f"{at}.inject_findings", minor),
                 acks=tuple(
                     _parse_ack(a, f"{at}.acks[{j}]") for j, a in enumerate(as_list(s.get("acks", []), f"{at}.acks"))
                 ),
                 expected_transitions=tuple(
-                    _parse_expected(t, _TRANSITION_KEYS, f"{at}.expect.transitions[{j}]")
+                    _parse_expected(t, transition_keys, f"{at}.expect.transitions[{j}]")
                     for j, t in enumerate(transitions)
                 ),
                 expected_signals=tuple(
@@ -266,6 +288,7 @@ class _LifecycleRun:
         )
         self._labels: dict[str, str] = {}
         self._sequences: dict[str, int] = {}
+        self._with_reasons = spec.with_reasons
 
     def step(self, evaluation: Evaluation, step: VectorStep) -> list[str]:
         out: list[str] = []
@@ -309,7 +332,7 @@ class _LifecycleRun:
         if s.event_sequence != expected_sequence:
             out.append(f"{label}: event_sequence {s.event_sequence} != {expected_sequence}(1 씩 증가해야 한다)")
         self._sequences[s.event_id] = s.event_sequence
-        return {
+        shown = {
             "event": label,
             "event_sequence": s.event_sequence,
             "transition": str(t.transition),
@@ -322,6 +345,9 @@ class _LifecycleRun:
             "zone_id": s.zone_id,
             "acknowledged": s.acknowledged,
         }
+        if self._with_reasons:
+            shown["confidence_reasons"] = [str(r) for r in s.confidence_reasons]
+        return shown
 
     def _show_signal(self, signal: LocalSignal) -> dict[str, Any]:
         return {
@@ -371,7 +397,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0 if failed == 0 else 1
 
 
-def _parse_finding(obj: Any, where: str) -> Finding:
+def _parse_finding(obj: Any, where: str, minor: int) -> Finding:
     obj = as_mapping(obj, where)
     keys = {
         "rule_id",
@@ -384,6 +410,8 @@ def _parse_finding(obj: Any, where: str) -> Finding:
         "metrics",
         "holding",
     }
+    if minor >= PERSISTENCE_MIN_MINOR:
+        keys.add("confidence_reasons")
     reject_unknown_keys(obj, keys, where)
     metrics = as_mapping(require(obj, "metrics", where), f"{where}.metrics")
     return Finding(
@@ -402,12 +430,16 @@ def _parse_finding(obj: Any, where: str) -> Finding:
         ),
         metrics={k: as_number(v, f"{where}.metrics.{k}") for k, v in metrics.items()},
         holding=as_bool(obj.get("holding", False), f"{where}.holding"),
+        confidence_reasons=tuple(
+            as_enum(ConfidenceReason, r, f"{where}.confidence_reasons[{i}]")
+            for i, r in enumerate(as_list(obj.get("confidence_reasons", []), f"{where}.confidence_reasons"))
+        ),
     )
 
 
-def _parse_findings(items: Any, where: str) -> tuple[Finding, ...]:
+def _parse_findings(items: Any, where: str, minor: int) -> tuple[Finding, ...]:
     """판정 목록을 읽어 정렬한다(순서 무관 비교)."""
-    parsed = (_parse_finding(f, f"{where}[{j}]") for j, f in enumerate(as_list(items, where)))
+    parsed = (_parse_finding(f, f"{where}[{j}]", minor) for j, f in enumerate(as_list(items, where)))
     return tuple(sorted(parsed, key=lambda f: f.sort_key))
 
 
@@ -427,14 +459,32 @@ _TRANSITION_KEYS = (
 _SIGNAL_KEYS = ("kind", "event", "severity", "needs_check")
 
 
-def _parse_lifecycle(obj: Any, where: str) -> LifecycleSpec:
+def _parse_lifecycle(obj: Any, where: str, minor: int) -> LifecycleSpec:
     obj = as_mapping(obj, where)
     reject_unknown_keys(obj, {"gateway_id", "config_version", "policy"}, where)
     at = f"{where}.policy"
     policy = as_mapping(obj.get("policy", {}), at)
-    reject_unknown_keys(policy, {"clear_hold_ms", "clear_hold_ms_by_rule", "metrics_update_interval_ms"}, at)
-    default = LifecyclePolicy()
+    keys = {"clear_hold_ms", "clear_hold_ms_by_rule", "metrics_update_interval_ms"}
+    with_persistence = minor >= PERSISTENCE_MIN_MINOR
+    if with_persistence:
+        keys |= {"persistence", "persistence_by_rule", "resume_window_ms"}
+    reject_unknown_keys(policy, keys, at)
+    # 1.3 미만은 지속 조건·재개 없는 설정, 1.3 이상은 제품 기본값에서 적은 값만 바꾼다.
+    default = LifecyclePolicy() if with_persistence else LEGACY_IMMEDIATE_POLICY
     by_rule = as_mapping(policy.get("clear_hold_ms_by_rule", {}), f"{at}.clear_hold_ms_by_rule")
+    persistence = default.persistence
+    if "persistence" in policy:
+        persistence = _parse_persistence(policy["persistence"], f"{at}.persistence")
+    persistence_by_rule = dict(default.persistence_by_rule)
+    if "persistence_by_rule" in policy:
+        items = as_mapping(policy["persistence_by_rule"], f"{at}.persistence_by_rule")
+        persistence_by_rule = {
+            k: _parse_persistence(v, f"{at}.persistence_by_rule.{k}") for k, v in items.items()
+        }
+    resume_window_ms = default.resume_window_ms
+    if "resume_window_ms" in policy:
+        raw = policy["resume_window_ms"]
+        resume_window_ms = None if raw is None else as_int(raw, f"{at}.resume_window_ms", minimum=0)
     return LifecycleSpec(
         gateway_id=as_str(require(obj, "gateway_id", where), f"{where}.gateway_id"),
         config_version=as_str(require(obj, "config_version", where), f"{where}.config_version"),
@@ -448,7 +498,20 @@ def _parse_lifecycle(obj: Any, where: str) -> LifecycleSpec:
                 f"{at}.metrics_update_interval_ms",
                 minimum=0,
             ),
+            persistence=persistence,
+            persistence_by_rule=persistence_by_rule,
+            resume_window_ms=resume_window_ms,
         ),
+        with_reasons=with_persistence,
+    )
+
+
+def _parse_persistence(obj: Any, where: str) -> Persistence:
+    obj = as_mapping(obj, where)
+    reject_unknown_keys(obj, {"min_frames", "window_frames"}, where)
+    return Persistence(
+        min_frames=as_int(require(obj, "min_frames", where), f"{where}.min_frames", minimum=1),
+        window_frames=as_int(require(obj, "window_frames", where), f"{where}.window_frames", minimum=1),
     )
 
 
@@ -497,7 +560,17 @@ def _compare(evaluation: Evaluation, step: VectorStep) -> list[str]:
 
 
 def _same(a: Finding, e: Finding) -> bool:
-    plain = ("rule_id", "rule_version", "severity", "world_ids", "zone_id", "needs_check", "reasons", "holding")
+    plain = (
+        "rule_id",
+        "rule_version",
+        "severity",
+        "world_ids",
+        "zone_id",
+        "needs_check",
+        "confidence_reasons",
+        "reasons",
+        "holding",
+    )
     if any(getattr(a, k) != getattr(e, k) for k in plain):
         return False
     if a.metrics.keys() != e.metrics.keys():
@@ -513,6 +586,7 @@ def _show(f: Finding) -> dict[str, Any]:
         "world_ids": list(f.world_ids),
         "zone_id": f.zone_id,
         "needs_check": f.needs_check,
+        "confidence_reasons": [str(r) for r in f.confidence_reasons],
         "reasons": list(f.reasons),
         "metrics": dict(f.metrics),
         "holding": f.holding,

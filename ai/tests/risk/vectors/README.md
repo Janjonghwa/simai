@@ -53,6 +53,14 @@ uv run pytest tests/risk                                   # 위 실행을 포�
 - 실행기는 불변 규칙도 함께 본다: LIVE 가 아니면 현장 경보 신호 0건, event_id 는 UUIDv7, gateway_id 일치, event_sequence 는 이벤트별로 1부터 1씩 증가.
 - 해소 유지 시간은 관측 시각(`world_state.t_latest_global`)으로 잰다.
 
+## 발생 지속 조건·재개·확인 필요 이유 (format_version 1.3)
+
+- `format_version` 1.3 미만 생명주기 벡터는 지속 조건·재개 없는 설정(`LEGACY_IMMEDIATE_POLICY`, 발생 판정 한 번에 새 이벤트)으로 돌린다. 1.3 이상은 제품 기본값(3프레임 중 2프레임, R7 즉시, 재개 10초)에서 `policy` 에 적은 값만 바꾼다(명세 6.4).
+- `lifecycle.policy` 에 더하는 키(1.3 이상만): `persistence` `{min_frames, window_frames}`, `persistence_by_rule` `{rule_id: {min_frames, window_frames}}`(적으면 기본값 R7 즉시를 대신한다), `resume_window_ms`(정수 또는 null = 재개 안 함).
+- 프레임은 관측 시각(`t_latest_global`)이 앞으로 간 단계다. 같은 관측을 다시 판정한 단계는 지속 조건에서 세지 않는다. 다만 대기 중인 키의 안전 검사(관측 상실·lag 초과 → 발생)는 관측 시각이 멈춘 단계에서도 한다. 재개 시간은 지속 조건을 채운 단계의 관측 시각으로 잰다.
+- 판정(`inject_findings`, `expect.findings`)에 `confidence_reasons`(선택, 기본 `[]`)를 적을 수 있고, `expect.transitions[]` 에는 `confidence_reasons` 가 필수다. 이유가 있으면 `needs_check` 는 true, 이유 없는 `needs_check: true` 는 원인 미상 `UNSPECIFIED` 가 붙는다(명세 7.1, 원인을 지어내지 않음).
+- 재개 전이는 `transition: UPDATED`, `changes: ["RESUMED"]` 로 보이고 같은 이벤트 별칭의 `event_sequence` 가 이어진다.
+
 ## 현재 벡터
 
 | 파일 | 확인하는 것 |
@@ -72,5 +80,12 @@ uv run pytest tests/risk                                   # 위 실행을 포�
 | `r7_sync_invalid_replay.json` | REPLAY R7: 시간 동기화 무효 → 저하, 회복 → 해소, 현장 경보 신호 0건 (7.4, G3) |
 | `r7_live_without_monitoring.json` | LIVE R7: 감시 상태 없음 → '모름'으로 모든 구역 저하(monitoring_unknown, CAUTION) |
 | `r7_planned_without_monitoring.json` | PLANNED R7: 카메라 개념이 없어 감시 상태가 없으면 판정 0건 |
+| `lifecycle_persistence_boundary.json` | LIVE 1.3 발생 지속 조건(D-G6-07): 순간 검출 한 프레임 → 이벤트 0건, 같은 관측 재판정은 프레임으로 세지 않음, `[T,F,T]` 에서 발생, R7 은 즉시 |
+| `lifecycle_resume_window.json` | LIVE 1.3 재개(D-G6-08): 확인·해소 뒤 정확히 10초에 재발생 → 같은 이벤트 재개(UPDATED RESUMED, 미확인으로 되돌리고 다시 울림), 해소 뒤 10.1초 → 새 이벤트 |
+| `lifecycle_flicker_no_new_event.json` | LIVE 1.3 경계 깜빡임(G6 10초 안 재발생 새 이벤트 0건): 활성 중 들락날락은 이벤트 하나, 해소 뒤 10초 안 재발생은 모두 재개, RAISED 한 번 |
+| `lifecycle_confidence_reasons.json` | LIVE 1.3 확인 필요 이유(7.1): 이유 목록 변경 → CONFIDENCE 갱신(선언 순서 정렬), 이유가 사라지면 확인 필요 해제(등급 유지), 이유 없는 needs_check → UNSPECIFIED |
+| `lifecycle_pending_observation_lost.json`, `lifecycle_pending_observation_lost_what_if.json` | 1.3 지속 대기 중 관측 상실: 발생 판정 한 프레임 뒤 관측 상실 → 바로 발생(UNVERIFIABLE, PREDICTED), 1분 동안 자동 해소 0건, 관측되며 판정이 사라진 사람은 이벤트 0건. WHAT_IF 는 현장 경보 신호 0건 |
+| `lifecycle_pending_stall.json`, `lifecycle_pending_stall_replay.json` | 1.3 지속 대기 중 영상 전체 정지: 같은 관측 재판정은 프레임으로 세지 않지만 lag 600ms 를 넘는 첫 판정 주기에 발생(UNVERIFIABLE, PREDICTED), 정지 1분 자동 해소 0건. REPLAY 는 현장 경보 신호 0건 |
+| `lifecycle_resume_pending_lost.json` | LIVE 1.3 재개 대기 중 트랙 소실 → 같은 이벤트 재개(UNVERIFIABLE, PREDICTED, 다시 울림) |
 
 R6 은 구역 규칙을 감싸는 방식(`ObservationLossHold`)이라 R1 이 등록되면(S15P31A101-71) R6 벡터의 `inject_findings`를 실제 규칙 판정(`rules`, `expect.findings`)으로 바꾼다. 다른 구체 규칙도 등록되면 해당 이슈에서 규칙별 벡터를 이 디렉터리에 추가한다.

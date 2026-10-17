@@ -10,7 +10,7 @@
 2. ObservationLossHold(이 모듈): 구역 규칙을 감싸, UNKNOWN 이 된 사람이 마지막 위치 기준으로 구역 안(불확실성
    범위 포함)이면 그 규칙 이름으로 holding 판정을 더한다. holding 은 활성 이벤트를 유지만 하고 새 이벤트를 만들거나
    등급을 올리거나 내리지 않는다(lifecycle). 그래서 원래 규칙의 이벤트에
-   - 확인 필요(needs_check=True)와 근거(observation_lost, last_seen_in_zone)가 붙고,
+   - 확인 필요(confidence_reasons=PREDICTED, needs_check=True)와 근거(observation_lost, last_seen_in_zone)가 붙고,
    - 구역(zone_id)은 원래 이벤트의 구역으로 남는다. 2σ 원이 여러 구역에 걸치면 구역마다 holding 을 내고,
      lifecycle 이 이벤트의 현재 구역과 같은 holding 을 먼저 고른다. 다른 구역의 holding 만 있어도(마지막 추정이
      이웃 구역 쪽으로 밀린 경우) lifecycle 은 holding 으로 구역·등급·수치를 바꾸지 않고 유지·확인 필요만 반영한다.
@@ -36,7 +36,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 
 from simai_ai.risk._parse import RiskInputError
-from simai_ai.risk.common import Severity
+from simai_ai.risk.common import ConfidenceReason, Severity
 from simai_ai.risk.rule import Finding, Rule, RuleContext, RuleSpec
 from simai_ai.risk.world import ObservationState, WorldTrack
 from simai_ai.risk.zone import Zone
@@ -96,7 +96,8 @@ class ObservationLossHold:
                     severity=zone.severity if self._severity is None else self._severity,
                     world_ids=(track.world_id,),
                     zone_id=zone.zone_id,
-                    needs_check=True,
+                    # 위치는 관측이 아니라 마지막 추정값이다(7.1 PREDICTED).
+                    confidence_reasons=(ConfidenceReason.PREDICTED,),
                     reasons=(REASON_OBSERVATION_LOST, REASON_LAST_SEEN_IN_ZONE),
                     # 관측 상실 경과(gap)는 매 판정 바뀌어 수치 갱신 전이를 1초마다 만들므로 싣지 않는다.
                     # 경과는 전이 근거(TrackEvidence.t_last_valid)와 observation_time 으로 알 수 있다.

@@ -23,6 +23,7 @@ from simai_ai.risk import (
     Zone,
 )
 from simai_ai.risk._parse import RiskInputError
+from simai_ai.risk.lifecycle import LEGACY_IMMEDIATE_POLICY
 from simai_ai.risk.rules.r6_observation_loss import distance_to_polygon, point_in_polygon
 
 T0 = 1760342400100
@@ -179,7 +180,13 @@ class Run:
     def __init__(self, origin=Origin.LIVE):
         self.clock = FixedClock(T0)
         self.engine = RiskEngine([ObservationLossHold(InsideZoneRule())], self.clock)
-        self.tracker = LifecycleTracker(origin=origin, gateway_id="tier0-01", clock=self.clock)
+        self.tracker = LifecycleTracker(
+            # 발생 판정 한 번에 발생시켜 R6 holding 만 본다. 지속 대기 중 관측 상실은 test_persistence_resume.py 가 본다.
+            origin=origin,
+            gateway_id="tier0-01",
+            clock=self.clock,
+            policy=LEGACY_IMMEDIATE_POLICY,
+        )
         self.origin = origin
 
     def step(self, t, tracks):
@@ -301,7 +308,7 @@ def test_holding_keeps_original_severity_when_rule_severity_differs_from_zone():
     """구역 HIGH, 규칙 CRITICAL: 관측 상실 중 CRITICAL 유지, 확인(ACK)한 이벤트는 재관측 때 다시 울리지 않는다."""
     clock = FixedClock(T0)
     engine = RiskEngine([ObservationLossHold(CriticalInZoneRule())], clock)
-    tracker = LifecycleTracker(origin=Origin.LIVE, gateway_id="tier0-01", clock=clock)
+    tracker = LifecycleTracker(origin=Origin.LIVE, gateway_id="tier0-01", clock=clock, policy=LEGACY_IMMEDIATE_POLICY)
     zones = [Zone.from_json(ZONE_A)]  # 구역 등급 HIGH
 
     def step(t, tracks):

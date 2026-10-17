@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/risk_event.schema.json",
   "title": "I2 risk_event",
-  "description": "EC2 → 뷰어, STOMP /topic/events (명세 12.4, 12.2). EC2 가 저장한 RiskEvent 의 화면용 projection 이다. LIVE 는 Tier 0 전이(risk_event_transition)로만 갱신하고, PLANNED·REPLAY·WHAT_IF 는 EC2 옆 Risk Engine 컨테이너 결과로 보고서·시뮬레이션 화면에만 쓴다. rationale 은 VLM 결과가 오면 갱신으로 채워진다. VLM 은 proposed_severity 로 상향 의견만 내고 severity 를 바꾸지 못한다.",
+  "description": "EC2 → 뷰어, STOMP /topic/events (명세 12.4, 12.2). EC2 가 저장한 RiskEvent 의 화면용 projection 이다. LIVE 는 Tier 0 전이(risk_event_transition)로만 갱신하고, PLANNED·REPLAY·WHAT_IF 는 EC2 옆 Risk Engine 컨테이너 결과로 보고서·시뮬레이션 화면에만 쓴다. rationale 은 VLM 결과가 오면 갱신으로 채워진다. VLM 은 proposed_severity 로 상향 의견만 내고 severity 를 바꾸지 못한다. 1.3.0 필드 추가(마이너): confidence_reasons(확인 필요 이유, 7.1), resume_count(해소 후 재개 횟수, 6.4).",
   "allOf": [{ "$ref": "envelope.schema.json" }],
   "type": "object",
   "properties": {
@@ -26,7 +26,16 @@
           "description": "규칙 결과. VLM 의견으로 바뀌지 않는다. 상향은 검증된 규칙 조건이나 운영자 확인을 거쳐 새 전이로만 반영한다 (5.4)"
         },
         "confidence": { "$ref": "../common/defs.schema.json#/$defs/risk_confidence" },
-        "needs_check": { "type": "boolean" },
+        "needs_check": { "type": "boolean", "description": "확인 필요 (7.1). confidence_reasons 가 있으면 그 목록이 비어 있지 않은 것과 같다" },
+        "confidence_reasons": {
+          "$ref": "../common/defs.schema.json#/$defs/confidence_reasons",
+          "description": "확인 필요의 이유 (명세 7.1, 13.2 화면 표시, 1.3.0). 없으면(이전 버전) needs_check 만으로 읽는다"
+        },
+        "resume_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "해소 후 재개 시간 안 재발생으로 이 이벤트를 다시 활성으로 돌린 횟수 (6.4 이벤트 재개, 1.3.0). LIVE 는 resumed 전이 수와 같다. 없으면 0"
+        },
         "world_ids": {
           "type": "array",
           "items": { "$ref": "../common/defs.schema.json#/$defs/world_id" },
@@ -63,6 +72,7 @@
       },
       "allOf": [
         { "$ref": "../common/defs.schema.json#/$defs/severity_upward_only" },
+        { "$ref": "../common/defs.schema.json#/$defs/needs_check_matches_reasons" },
         {
           "description": "해소는 관측으로 확인했을 때만 (6.4)",
           "if": { "properties": { "lifecycle": { "const": "RESOLVED" } }, "required": ["lifecycle"] },

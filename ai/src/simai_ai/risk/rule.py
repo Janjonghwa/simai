@@ -20,7 +20,7 @@ from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
 from simai_ai.risk._parse import RiskInputError
-from simai_ai.risk.common import Severity
+from simai_ai.risk.common import ConfidenceReason, Severity, normalize_confidence
 from simai_ai.risk.monitoring import MonitoringState
 from simai_ai.risk.world import WorldState, WorldTrack
 from simai_ai.risk.zone import Zone
@@ -66,6 +66,9 @@ class Finding:
 
     - severity: 위험 정도. 신뢰도가 낮아도 내리지 않는다(명세 7.3).
     - needs_check: "확인 필요". 모르면 진입하지 않았다고 확정하지 않고 이 표시를 붙인다(명세 8.2, 7.2).
+      "확인 필요"는 confidence_reasons 가 비어 있지 않은 상태라(7.1) 생성 시 둘을 맞춘다(common.normalize_confidence).
+      이유가 있으면 needs_check=True 가 되고, needs_check=True 인데 이유가 없으면(하위 호환) UNSPECIFIED 를 붙인다.
+    - confidence_reasons: "확인 필요"의 이유(ConfidenceReason, 7.1). 규칙은 아는 이유를 직접 적는다.
     - reasons: 판정 근거 코드(예: "xy_inside_polygon", "z_unknown"). 순서를 지킨다.
     - metrics: 수치 근거(예: edge_distance_m). 단위는 키 이름에 붙인다.
     - holding: 발생 임계값은 넘지 않았지만 해소 임계값 안쪽이다(히스테리시스 띠, 불확실성 범위 포함).
@@ -83,10 +86,19 @@ class Finding:
     # 읽기 전용 mapping 은 해시가 안 되므로 해시에서만 뺀다(비교에는 들어간다).
     metrics: Mapping[str, float] = field(default_factory=dict, hash=False)
     holding: bool = False
+    confidence_reasons: tuple[ConfidenceReason, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.world_ids and self.zone_id is None:
             raise RiskInputError(f"Finding {self.rule_id}: world_ids 와 zone_id 가 모두 비었다(판정 대상이 없다)")
+        try:
+            needs_check, confidence_reasons = normalize_confidence(
+                self.needs_check, self.confidence_reasons, f"Finding {self.rule_id}"
+            )
+        except ValueError as e:
+            raise RiskInputError(f"Finding {self.rule_id}: confidence_reasons 에 모르는 값이 있다 ({e})") from e
+        object.__setattr__(self, "needs_check", needs_check)
+        object.__setattr__(self, "confidence_reasons", confidence_reasons)
         metrics = {}
         for name, value in sorted(self.metrics.items()):
             if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
