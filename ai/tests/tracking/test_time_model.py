@@ -3,7 +3,10 @@
 import pytest
 
 from simai_ai.tracking.time_model import (
+    SAME_CLOCK,
     CameraClock,
+    ClockOffset,
+    LagStatus,
     ObservationState,
     TimeAges,
     TimeModelConfig,
@@ -12,8 +15,10 @@ from simai_ai.tracking.time_model import (
     classify_observation,
     compute_ages,
     compute_t_latest_global,
+    estimate_lag,
     evaluate_track,
     require_ms,
+    to_tier0_ms,
 )
 
 T0 = 1_760_342_400_000
@@ -288,3 +293,95 @@ def test_reobservation_returns_to_observed():
     renewed = _track(t_last_valid=advance_ms(T0, T0 + 700))
     fresh = evaluate_track(renewed, t_latest_global=T0 + 700, t_risk_now=T0 + 720)
     assert fresh.observation_state is OBSERVED
+
+
+# --- 노트북–Pod 시계 차이로 T_lag 보정 (명세 6.1, 3.9) ---
+
+
+def test_to_tier0_ms_subtracts_offset_and_rounds():
+    assert to_tier0_ms(T0, ClockOffset(300.0, 10.0)) == T0 - 300
+    assert to_tier0_ms(T0, ClockOffset(-12.5, 10.0)) == T0 + 13  # 12.5 반올림
+    assert to_tier0_ms(T0, ClockOffset(12.4, 10.0)) == T0 - 12
+
+
+def test_estimate_lag_records_raw_and_corrected():
+    # 노트북이 300ms 빠르다: 촬영 시각(노트북 시계)이 판정 시계보다 앞서 보정 전 lag 는 음수
+    lag = estimate_lag(T0 + 150, T0 + 300, ClockOffset(300.0, 20.0))
+    assert lag.status is LagStatus.CORRECTED
+    assert lag.raw_lag_ms == -150
+    assert lag.lag_ms == 150
+    assert lag.uncertainty_ms == 20.0
+    assert lag.upper_ms == 170.0
+
+
+def test_estimate_lag_same_clock_is_unchanged():
+    lag = estimate_lag(T0 + 400, T0 + 250)
+    assert (lag.raw_lag_ms, lag.lag_ms, lag.uncertainty_ms, lag.status) == (150, 150, 0.0, LagStatus.SAME_CLOCK)
+    assert estimate_lag(T0 + 400, T0 + 250, SAME_CLOCK) == lag
+    with pytest.raises(ValueError, match="lag"):
+        estimate_lag(T0, T0 + 1)
+
+
+def test_estimate_lag_unknown_offset_is_left_empty():
+    lag = estimate_lag(T0 + 400, T0 + 250, None)
+    assert lag.status is LagStatus.OFFSET_UNKNOWN
+    assert lag.raw_lag_ms == 150
+    assert lag.lag_ms is None and lag.uncertainty_ms is None and lag.upper_ms is None
+
+
+def test_estimate_lag_negative_within_uncertainty_is_clamped_to_zero():
+    lag = estimate_lag(T0, T0 + 10, ClockOffset(0.0, 15.0))
+    assert lag.status is LagStatus.CORRECTED
+    assert lag.lag_ms == 0
+    assert lag.upper_ms == 15.0
+
+
+def test_estimate_lag_negative_beyond_uncertainty_is_inconsistent():
+    lag = estimate_lag(T0, T0 + 100, ClockOffset(0.0, 15.0))
+    assert lag.status is LagStatus.OFFSET_INCONSISTENT
+    assert lag.lag_ms is None
+    assert lag.raw_lag_ms == -100
+
+
+def test_estimate_lag_rejects_other_types():
+    with pytest.raises(TypeError):
+        estimate_lag(T0, T0, 12.0)
+    with pytest.raises(ValueError):
+        ClockOffset(float("nan"), 1.0)
+    with pytest.raises(ValueError):
+        ClockOffset(0.0, -1.0)
+
+
+def test_compute_ages_with_offset():
+    ages = compute_ages(T0, T0 + 250, T0 + 100, ClockOffset(300.0, 20.0))
+    assert ages == TimeAges(gap_ms=250, lag_ms=150, staleness_ms=400, lag_uncertainty_ms=20.0)
+    with pytest.raises(ValueError, match="lag"):
+        compute_ages(T0, T0 + 250, T0 + 100, None)
+
+
+def test_evaluate_track_uses_corrected_lag_and_its_uncertainty():
+    track = _track(velocity=(1.0, 0.0, 0.0))
+    state = evaluate_track(track, t_latest_global=T0 + 100, t_risk_now=T0 - 200, capture_clock=ClockOffset(500.0, 50.0))
+    assert state.observation_state is OBSERVED
+    assert state.ages == TimeAges(gap_ms=100, lag_ms=200, staleness_ms=300, lag_uncertainty_ms=50.0)
+    assert state.position_xy == pytest.approx((3.3, 5.0))
+    # 불확실성 확대는 staleness + lag 불확실성 (2.0 m/s * 0.35 s)
+    assert state.position_xy_sigma == pytest.approx((0.1 + 0.7, 0.1 + 0.7))
+
+
+def test_evaluate_track_unknown_offset_keeps_gap_state_without_time_reference():
+    """시계 차이를 모르면 관측 상태는 gap 그대로, 위치는 t_latest_global 시점까지만 예측한다(현재로 옮기지 않음)."""
+    track = _track(velocity=(1.0, 0.0, 0.0))
+    for clock in (None, ClockOffset(0.0, 5.0)):  # 모름, 맞지 않음(보정 후 lag -100)
+        state = evaluate_track(track, t_latest_global=T0 + 100, t_risk_now=T0, capture_clock=clock)
+        assert state.observation_state is OBSERVED
+        assert state.gap_ms == 100 and state.ages is None and not state.time_reference
+        assert state.position_xy == pytest.approx((3.1, 5.0))  # gap 100ms 만큼만
+        assert state.position_xy_sigma == pytest.approx((0.1 + 0.2, 0.1 + 0.2))
+    lost = evaluate_track(_track(), t_latest_global=T0 + 600, t_risk_now=T0, capture_clock=None)
+    assert lost.observation_state is UNKNOWN and lost.position_xy is None
+    known = evaluate_track(_track(), t_latest_global=T0 + 100, t_risk_now=T0 + 200)
+    assert known.time_reference and known.gap_ms == 100
+    assert not evaluate_track(_track(), t_latest_global=None, t_risk_now=T0).time_reference
+    with pytest.raises(ValueError, match="gap"):
+        evaluate_track(_track(T0 + 200), t_latest_global=T0 + 100, t_risk_now=T0, capture_clock=None)
