@@ -20,7 +20,7 @@ S15P31A101-34. 기획서 §5.2(추적 3계층, 계산 순서, 2대 관측 경쟁
 | 항목 | 형식 |
 |---|---|
 | 입력 | `Observation2DFrame`(Local Tracker 출력) → `LocalTrackletBuffer.views_at(t)` → `LocalView(camera_id, local_track_id, InterpolatedView)` 목록. 보정은 `CameraRig` |
-| 출력 | `AssociationFrame(t, calibration_version, clusters, pairs)`. `ViewCluster(association_id, views, skeleton, uncertain_reasons, competitors)`, `PairEvidence(a, b, common_joints, epipolar_px, floor_gap_m, residual_px, consistent_joints, reject, marginal, cost)` |
+| 출력 | `AssociationFrame(t, calibration_version, clusters, pairs)`. `ViewCluster(association_id, views, skeleton, uncertain_reasons, competitors, undistorted)`(undistorted 는 view 별 왜곡 제거 결과, 관절 게이트가 다시 쓴다), `PairEvidence(a, b, common_joints, epipolar_px, floor_gap_m, residual_px, consistent_joints, reject, marginal, cost)` |
 
 `ViewCluster.identity_uncertain` 이 참이면 World Track Manager 가 `identity_confidence = IDENTITY_UNCERTAIN` 으로 낸다. `association_id` 는 World ID 가 아니다.
 
@@ -78,7 +78,7 @@ S15P31A101-34. 기획서 §5.2(추적 3계층, 계산 순서, 2대 관측 경쟁
 - SIM 시험의 fragmented 변형은 시드 1 만 CI 에서 돈다(시드 2·3 은 측정 스크립트). 시간 여유가 생기면 시드 하나를 더 넣는다.
 
 - 실제 녹화(A0)·G2 로 문턱과 비용 척도를 조정한다. SIM 잡음(σ=1 px)이 실제보다 작아 지금 값은 SIM 결론이 아니다.
-- 처리 시간: 리뷰 측정(노트북 CPU)으로 무작위 10명·40 view 에서 tick 당 평균 175 ms(최대 194 ms)라 10 Hz 예산을 넘는다. 약 2/3 가 클러스터 최종 `triangulate_skeleton`(관절별 가우스-뉴턴)이다. Pod(H100 노드) CPU 에서 다시 재고, 필요하면 최종 삼각측량을 벡터화한다.
+- 처리 시간: 리뷰 측정(노트북 CPU)으로 무작위 10명·40 view 에서 tick 당 평균 175 ms(최대 194 ms)라 10 Hz 예산을 넘었다. S15P31A101-168 에서 왜곡 제거를 카메라마다 묶고, 후보 근거를 카메라 쌍마다, 클러스터 삼각측량을 클러스터 전체 한 번으로 묶어 같은 조건(광각 왜곡 장면) 평균 31 ms(p95 36 ms)가 됐다. 결과는 이전 구현과 같다(수치 오차 범위). 측정·목표는 `tier0-geometry-budget.md`.
 - 붙어 걷는 두 사람의 구성 흔들림: 위 표 side_by_side fragmented 에서 85 tick 중 10~14 tick, 리뷰의 잡음 1.5 px 실험에서 50 tick 중 16~20회. 잘못 합치지는 않지만 World Track Manager 로 넘길 때 애매한 tick 에 직전 구성을 유지하는 장치를 -37 과 함께 검토한다.
 - 평균 병합 비용은 맞는 view 수를 보상하지 않는다. 카메라 기준선과 평행하게 선 배치에서는 3대가 맞는 클러스터와 2-view 허상 쌍이 동점이 되어 계속 갈라진다(안전하지만 G2 ID 유지율에 불리). 다른 카메라가 허상 쌍에 반대 근거를 내는지 보는 방식이나 view 수 가중을 G2 전에 검토한다.
 - World Track Manager(S15P31A101-37)가 `association_id`·클러스터를 받아 World ID, `identity_revision`, 늦은 재연결을 만든다. 이전 프레임 3D 재투영(기존 World Track 궤적) 근거는 World Track 이 생긴 뒤 비용에 더한다.

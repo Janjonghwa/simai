@@ -123,4 +123,5 @@ S15P31A101-29. 기획서 §5.2(3D 관절 유효성 게이트, World 위치의 �
 - 속도 상한은 관절 하나에 하나다. 손목처럼 빠른 관절에 따로 둘지는 교실 동작 녹화로 정한다.
 - 불확실성은 픽셀 잡음만 본다. 보정 오차와 시간 보간 오차(촬영 시각 불확실성 × 속도)는 넣지 않았다.
 - `head_z` 오프셋의 불확실성은 `sigma_m` 에 넣지 않았다. World Track 조립에서 `head_z_sigma` 로 쓸 때 정한다.
+- 처리 시간: 공분산은 관절 전체를 한 번에 계산하고, Cross-view 클러스터의 왜곡 제거·삼각측량 결과(`undistorted`, `others_undistorted`, `skeleton`)를 넘기면 입력이 같을 때만 다시 쓴다(S15P31A101-168, `tier0-geometry-budget.md`). World Track Manager 는 이 인자로 넘겨야 10명 기준 10 Hz 예산 안에 든다.
 - 게이트 결과를 World Track(`world_state`)에 싣고 `IDENTITY_UNCERTAIN` 을 identity_confidence 에 반영하는 조립은 World Track Manager·Tier 0 서비스 조립에서 한다.

@@ -12,6 +12,9 @@ UNAVAILABLE 을 정하고 사유 코드를 남긴다.
 - 2대 관측 경쟁 후보: 관측 카메라가 2대뿐이고 그 관절의 에피폴라선 위에 다른 사람의 같은 관절이 있으면 VALID 로
   두지 않는다. UNCERTAIN 으로 두고 그 연결을 IDENTITY_UNCERTAIN 후보로 표시한다(D-G2-06).
 
+왜곡 제거는 view 마다 한 번 하고(`RigCamera.undistort_keypoints`) 삼각측량과 경쟁 후보 검사가 그 결과를 같이 쓴다.
+호출자가 Cross-view 등에서 이미 푼 결과를 `undistorted` 로 넘기면 다시 풀지 않는다(S15P31A101-168).
+
 이 모듈의 관절은 모두 Tier 0 관측(joint_source = observed)이다. HMR 등 Tier 1 결과를 받지 않는다. 게이트는 등급을
 낮추기만 한다(삼각측량이 UNCERTAIN·UNAVAILABLE 로 둔 관절을 VALID 로 올리지 않는다). 현재 시각을 읽지 않고
 skeleton 의 공통 시각 t 만 쓴다. 임계값은 `JointGateConfig` 에 있고 모두 초기값이다(G2·A0 에서 조정).
@@ -30,7 +33,7 @@ from typing import Any
 import numpy as np
 
 from simai_ai.geometry.interpolation import InterpolatedView, Keypoint
-from simai_ai.geometry.rig import CameraRig, RigCamera
+from simai_ai.geometry.rig import CameraRig, RigCamera, UndistortedKeypoints
 from simai_ai.geometry.triangulation import (
     COCO17_L_HIP,
     COCO17_R_HIP,
@@ -39,7 +42,7 @@ from simai_ai.geometry.triangulation import (
     JointValidity,
     SkeletonEstimate,
     TriangulationConfig,
-    triangulate_point,
+    triangulate_normalized_many,
     triangulate_skeleton,
 )
 
@@ -255,6 +258,10 @@ class JointGate:
         others: Mapping[str, Sequence[Sequence[Keypoint]]] | None,
         joint_layout: str = "COCO17",
         sync_invalid_cameras: Collection[str] = (),
+        *,
+        undistorted: Mapping[str, UndistortedKeypoints] | None = None,
+        others_undistorted: Mapping[str, Sequence[UndistortedKeypoints]] | None = None,
+        skeleton: SkeletonEstimate | None = None,
     ) -> GatedSkeleton:
         """같은 사람의 카메라별 보간 keypoint 를 삼각측량하고 게이트를 적용한다.
 
@@ -264,6 +271,13 @@ class JointGate:
         (`COMPETITOR_CHECK_UNAVAILABLE`). keypoint 목록 길이가 관절 배치와 다르면 ValueError.
         sync_invalid_cameras: 시간 동기화가 무효인 카메라(`SystemHealthReport.sync_invalid_cameras`). 그 카메라의
         관측은 삼각측량과 경쟁 후보 검사에서 뺀다(명세 3.9: 동기화가 무효이면 다시점 3D 를 안전용으로 확정하지 않는다).
+        undistorted: 카메라 ID → 이 사람 view 를 이미 왜곡 제거한 결과(`RigCamera.undistort_keypoints`, 예: Cross-view
+        클러스터의 `ViewCluster.undistorted`). 그 view 의 keypoint 로 만든 것만 쓰고, 없거나 맞지 않으면 여기서 푼다.
+        others_undistorted: others 와 같은 카메라·같은 순서의 왜곡 제거 결과(다른 사람 클러스터의 `ViewCluster.undistorted`).
+        경쟁 후보 검사에서 다른 사람 keypoint 를 다시 풀지 않는다. 그 검출의 keypoint 로 만든 것만 쓴다.
+        skeleton: 이 view 들로 이미 만든 삼각측량 결과(예: Cross-view 클러스터의 `ViewCluster.skeleton`). 동기화 무효 카메라를
+        뺀 뒤의 view·보정·관절 배치·`config.triangulation` 이 모두 같을 때만 쓰고(`SkeletonEstimate.reusable_for`),
+        아니면 여기서 다시 삼각측량한다.
         """
         excluded = set(sync_invalid_cameras)
         view_list = [
@@ -271,7 +285,21 @@ class JointGate:
         ]
         if not view_list:
             raise ValueError("동기화가 유효한 카메라의 view 가 없다")
-        skeleton = triangulate_skeleton(view_list, rig, joint_layout, self.config.triangulation)
+        if skeleton is not None and skeleton.reusable_for(view_list, rig, joint_layout, self.config.triangulation):
+            assert skeleton.inputs is not None
+            und = {u.camera_id: u for u in skeleton.inputs.undistorted}
+        else:
+            # view 마다 한 번 왜곡 제거해 삼각측량과 경쟁 후보 검사가 같이 쓴다. 보정에 없는 카메라는 삼각측량이 KeyError 로 막는다
+            und = {}
+            for v in view_list:
+                camera = rig.cameras.get(v.camera_id)
+                if camera is None:
+                    continue
+                cached = undistorted.get(v.camera_id) if undistorted is not None else None
+                if cached is None or not cached.matches(camera, v.keypoints):
+                    cached = camera.undistort_keypoints(v.keypoints)
+                und[v.camera_id] = cached
+            skeleton = triangulate_skeleton(view_list, rig, joint_layout, self.config.triangulation, undistorted=und)
         if others is not None:
             others = {cid: kps for cid, kps in others.items() if cid not in excluded}
             for cid, detections in others.items():
@@ -283,7 +311,7 @@ class JointGate:
         if self._last_t is not None and skeleton.t <= self._last_t:
             raise ValueError(f"공통 시각이 앞으로 가지 않는다: {skeleton.t} <= {self._last_t} (이력이 섞이면 reset)")
         pixels = {v.camera_id: v.keypoints for v in view_list}  # 경쟁 후보 검사용 이 사람의 관측
-        gated = self._gate(skeleton, rig, pixels, others)
+        gated = self._gate(skeleton, rig, pixels, others, und, others_undistorted)
         self._last_t = skeleton.t
         return gated
 
@@ -293,14 +321,16 @@ class JointGate:
         rig: CameraRig,
         pixels: Mapping[str, Sequence[Keypoint]],
         others: Mapping[str, Sequence[Sequence[Keypoint]]] | None,
+        undistorted: Mapping[str, UndistortedKeypoints],
+        others_undistorted: Mapping[str, Sequence[UndistortedKeypoints]] | None = None,
     ) -> GatedSkeleton:
         cfg = self.config
         t = skeleton.t
         n = len(skeleton.joints)
         reasons: list[list[GateReason]] = [list(j.issues) for j in skeleton.joints]
-        sigma_xyz: list[tuple[float, float, float] | None] = [None] * n
-        sigma_max: list[float | None] = [None] * n
         speeds: list[float | None] = [None] * n
+        # 삼각측량 불확실성: 좌표가 있는 관절을 한 번에 계산한다
+        sigma_xyz, sigma_max = _position_sigmas(skeleton, rig, cfg.keypoint_sigma_px)
 
         for j, est in enumerate(skeleton.joints):
             if est.xyz is None:
@@ -309,13 +339,6 @@ class JointGate:
             cams = rig.subset(est.camera_ids)
             if len(est.camera_ids) < cfg.min_views_for_valid:
                 reasons[j].append(GateIssue.FEW_VIEWS_FOR_VALID)
-            # 삼각측량 불확실성
-            cov = triangulation_covariance(cams, X, cfg.keypoint_sigma_px)
-            if cov is None:
-                sigma_xyz[j], sigma_max[j] = (math.inf,) * 3, math.inf
-            else:
-                sigma_xyz[j] = tuple(float(math.sqrt(max(v, 0.0))) for v in np.diag(cov))  # type: ignore[assignment]
-                sigma_max[j] = float(math.sqrt(max(float(np.linalg.eigvalsh(cov).max()), 0.0)))
             if not sigma_max[j] <= cfg.max_position_sigma_m:  # type: ignore[operator]
                 reasons[j].append(GateIssue.HIGH_TRIANGULATION_UNCERTAINTY)
             # 속도 상한 (직전 VALID 위치 대비)
@@ -326,7 +349,11 @@ class JointGate:
                     reasons[j].append(GateIssue.SPEED_LIMIT)
             # 2대 관측 경쟁 후보. 확인할 수 없으면(None) 경쟁 후보가 없다고 보지 않는다
             if len(est.camera_ids) == MIN_VIEWS:
-                competitor = None if others is None else _has_epipolar_competitor(j, cams, pixels, others, cfg)
+                competitor = (
+                    None
+                    if others is None
+                    else _has_epipolar_competitor(j, cams, pixels, others, cfg, undistorted, others_undistorted)
+                )
                 if competitor is None:
                     reasons[j].append(GateIssue.COMPETITOR_CHECK_UNAVAILABLE)
                 elif competitor:
@@ -398,23 +425,79 @@ def triangulation_covariance(cameras: Sequence[RigCamera], X: np.ndarray, sigma_
 
     해가 퇴화했거나(정보 행렬 특이) 점이 카메라 뒤면 None.
     """
-    X = np.asarray(X, dtype=float)
-    rows = []
-    for cam in cameras:
-        xc, yc, zc = cam.R @ X + cam.t
-        if zc <= 0:
-            return None
-        fx, s = cam.K[0][0], cam.K[0][1]
-        fy = cam.K[1][1]
-        du = np.array([fx / zc, s / zc, -(fx * xc + s * yc) / zc**2])
-        dv = np.array([0.0, fy / zc, -fy * yc / zc**2])
-        rows.append(du @ cam.R)
-        rows.append(dv @ cam.R)
-    J = np.array(rows)
-    info = J.T @ J
-    if np.linalg.cond(info) > 1e12:
-        return None
-    return sigma_px**2 * np.linalg.inv(info)
+    X = np.asarray(X, dtype=float).reshape(1, 3)
+    cov, ok = triangulation_covariances(cameras, np.ones((1, len(cameras)), dtype=bool), X, sigma_px)
+    return cov[0] if ok[0] else None
+
+
+def triangulation_covariances(
+    cameras: Sequence[RigCamera], mask: np.ndarray, X: np.ndarray, sigma_px: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """점 M 개의 `triangulation_covariance` 를 한 번에. mask (M, C) 는 점마다 쓴 카메라, X 는 (M, 3).
+
+    (공분산 (M, 3, 3), 구했는지 (M,)). 구하지 못한 점(퇴화, 쓴 카메라 뒤)의 공분산 행은 NaN 이다.
+    """
+    X = np.asarray(X, dtype=float).reshape(-1, 3)
+    mask = np.asarray(mask, dtype=bool)
+    M = len(X)
+    R = np.stack([cam.R for cam in cameras])
+    t = np.stack([cam.t for cam in cameras])
+    K = np.stack([cam.K for cam in cameras])
+    xc = np.einsum("cij,mj->mci", R, X) + t
+    x, y, z = xc[..., 0], xc[..., 1], xc[..., 2]
+    front = ((z > 0) | ~mask).all(axis=1)
+    z = np.where(mask & (z > 0), z, 1.0)
+    fx, s, fy = K[:, 0, 0], K[:, 0, 1], K[:, 1, 1]
+    zero = np.zeros_like(z)
+    du = np.stack([fx / z, s / z, -(fx * x + s * y) / z**2], axis=2)
+    dv = np.stack([zero, fy / z, -fy * y / z**2], axis=2)
+    J = np.stack([np.einsum("mck,ckj->mcj", du, R), np.einsum("mck,ckj->mcj", dv, R)], axis=2)
+    J = np.where(mask[:, :, None, None], J, 0.0).reshape(M, -1, 3)
+    info = np.einsum("mri,mrj->mij", J, J)
+    cov = np.full((M, 3, 3), np.nan)
+    ok = front.copy()
+    if ok.any():
+        with np.errstate(divide="ignore", invalid="ignore"):
+            cond = np.linalg.cond(info[ok])
+        idx = np.flatnonzero(ok)
+        ok[idx[~(cond <= 1e12)]] = False
+    if ok.any():
+        cov[ok] = sigma_px**2 * np.linalg.inv(info[ok])
+    return cov, ok
+
+
+def _position_sigmas(
+    skeleton: SkeletonEstimate, rig: CameraRig, sigma_px: float
+) -> tuple[list[tuple[float, float, float] | None], list[float | None]]:
+    """관절마다 (공분산 대각 표준편차 (X, Y, Z), 가장 큰 축 표준편차). 좌표가 없으면 None, 공분산을 못 구하면 inf."""
+    n = len(skeleton.joints)
+    sigma_xyz: list[tuple[float, float, float] | None] = [None] * n
+    sigma_max: list[float | None] = [None] * n
+    solved = [j for j, est in enumerate(skeleton.joints) if est.xyz is not None]
+    if not solved:
+        return sigma_xyz, sigma_max
+    cam_ids = sorted({cid for j in solved for cid in skeleton.joints[j].camera_ids})
+    column = {cid: k for k, cid in enumerate(cam_ids)}
+    mask = np.zeros((len(solved), len(cam_ids)), dtype=bool)
+    for row, j in enumerate(solved):
+        mask[row, [column[cid] for cid in skeleton.joints[j].camera_ids]] = True
+    X = np.array([skeleton.joints[j].xyz for j in solved])
+    cov, ok = _triangulation_covariances(rig.subset(cam_ids), mask, X, sigma_px)
+    diag = np.sqrt(np.maximum(np.diagonal(cov, axis1=1, axis2=2), 0.0))
+    biggest = np.full(len(solved), math.inf)
+    if ok.any():
+        biggest[ok] = np.sqrt(np.maximum(np.linalg.eigvalsh(cov[ok]).max(axis=1), 0.0))
+    for row, j in enumerate(solved):
+        if ok[row]:
+            sigma_xyz[j] = (float(diag[row, 0]), float(diag[row, 1]), float(diag[row, 2]))
+            sigma_max[j] = float(biggest[row])
+        else:
+            sigma_xyz[j], sigma_max[j] = (math.inf, math.inf, math.inf), math.inf
+    return sigma_xyz, sigma_max
+
+
+# 시험이 이전 구현과 바꿔 끼울 수 있게 모듈 안에서는 이 이름으로 부른다
+_triangulation_covariances = triangulation_covariances
 
 
 def epipolar_distance_px(cam_a: RigCamera, uv_a: Sequence[float], cam_b: RigCamera, uv_b: Sequence[float]) -> float:
@@ -422,18 +505,38 @@ def epipolar_distance_px(cam_a: RigCamera, uv_a: Sequence[float], cam_b: RigCame
 
     두 픽셀 중 하나라도 왜곡을 제거할 수 없으면(`RigCamera.normalize` 가 NaN) NaN 이다(거리를 모른다).
     """
+    xa = cam_a.normalize(np.asarray(uv_a[:2], dtype=float))[0]
+    xb = cam_b.normalize(np.asarray(uv_b[:2], dtype=float))
+    return float(epipolar_distances_normalized(cam_a, xa, cam_b, xb)[0])
+
+
+def epipolar_distances_normalized(
+    cam_a: RigCamera, xa: np.ndarray, cam_b: RigCamera, xb: np.ndarray
+) -> np.ndarray:
+    """cam_a 정규화 좌표 xa (2,) 의 에피폴라선과 cam_b 정규화 좌표 xb (M, 2) 각각의 거리(cam_b 이상적 핀홀 픽셀).
+
+    `epipolar_distance_px` 의 왜곡 제거 뒤 단계를 여러 점에 한 번에 한다. xa 나 그 행의 xb 가 유한하지 않으면 NaN.
+    """
+    xb = np.asarray(xb, dtype=float).reshape(-1, 2)
+    xa_h = np.append(np.asarray(xa, dtype=float).reshape(2), 1.0)
+    if not np.all(np.isfinite(xa_h)):
+        return np.full(len(xb), math.nan)
     R = cam_b.R @ cam_a.R.T
     t = cam_b.t - R @ cam_a.t
     tx = np.array([[0.0, -t[2], t[1]], [t[2], 0.0, -t[0]], [-t[1], t[0], 0.0]])
     E = tx @ R
-    xa = np.append(cam_a.normalize(np.asarray(uv_a[:2], dtype=float))[0], 1.0)
-    line_n = E @ xa  # cam_b 정규화 좌표의 직선
+    line_n = E @ xa_h  # cam_b 정규화 좌표의 직선
     line_px = np.linalg.inv(cam_b.K).T @ line_n  # 이상적 핀홀 픽셀 좌표의 직선
-    xb = np.append(cam_b.ideal_pixels(cam_b.normalize(np.asarray(uv_b[:2], dtype=float)))[0], 1.0)
-    if not (np.all(np.isfinite(xa)) and np.all(np.isfinite(xb))):
-        return math.nan
     norm = math.hypot(line_px[0], line_px[1])
-    return math.inf if norm == 0 else abs(float(line_px @ xb)) / norm
+    out = np.full(len(xb), math.nan)
+    finite = np.isfinite(xb).all(axis=1)
+    if finite.any():
+        px = cam_b.ideal_pixels(xb[finite])
+        if norm == 0:
+            out[finite] = math.inf
+        else:
+            out[finite] = np.abs(px[:, 0] * line_px[0] + px[:, 1] * line_px[1] + line_px[2]) / norm
+    return out
 
 
 def _has_epipolar_competitor(
@@ -442,20 +545,25 @@ def _has_epipolar_competitor(
     pixels: Mapping[str, Sequence[Keypoint]],
     others: Mapping[str, Sequence[Sequence[Keypoint]]],
     cfg: JointGateConfig,
+    undistorted: Mapping[str, UndistortedKeypoints],
+    others_undistorted: Mapping[str, Sequence[UndistortedKeypoints]] | None = None,
 ) -> bool | None:
     """두 카메라 중 한쪽의 이 사람 관측과 다른 쪽의 다른 사람 같은 관절이 에피폴라 조건을 만족하는지.
 
     에피폴라선은 카메라 앞뒤를 가리지 않으므로, 그렇게 짝지은 두 시선이 두 카메라 앞에서 만날 때만 후보로 센다.
     다른 사람의 그 관절 값(u, v, 신뢰도)에 유한하지 않은 값이 있거나 그 픽셀의 왜곡을 제거할 수 없으면 후보인지
-    알 수 없으므로 None 이다(안전 쪽).
+    알 수 없으므로 None 이다(안전 쪽). 이 사람 관측은 `undistorted`(view 마다 한 번 푼 값)를 쓰고, 다른 사람의 그
+    관절은 `others_undistorted` 에 그 검출의 결과가 있으면 쓰고 없으면 카메라마다 한 번에 왜곡 제거한다.
     """
     min_conf = cfg.triangulation.min_keypoint_confidence
     unknown = False
     for own, other in ((cams[0], cams[1]), (cams[1], cams[0])):
-        uv = pixels[own.camera_id][j]
-        if uv is None:
+        if pixels[own.camera_id][j] is None:
             continue
-        for kps in others.get(other.camera_id, ()):
+        known = others_undistorted.get(other.camera_id, ()) if others_undistorted is not None else ()
+        rows: list[np.ndarray | None] = []
+        pending: list[tuple[float, float]] = []
+        for n, kps in enumerate(others.get(other.camera_id, ())):
             c = kps[j]
             if c is None:
                 continue
@@ -464,13 +572,22 @@ def _has_epipolar_competitor(
                 continue
             if c[2] < min_conf:
                 continue
-            distance = epipolar_distance_px(own, uv, other, c)
-            if math.isnan(distance):
-                unknown = True
-                continue
-            if distance > cfg.competitor_epipolar_px:
-                continue
-            if triangulate_point([own, other], np.array([uv[:2], c[:2]])) is not None:
+            if n < len(known) and known[n].matches(other, kps):
+                rows.append(known[n].normalized[j])
+            else:
+                rows.append(None)
+                pending.append((float(c[0]), float(c[1])))
+        if not rows:
+            continue
+        solved = iter(other.normalize(np.array(pending)) if pending else ())
+        xb = np.array([next(solved) if row is None else row for row in rows])
+        xa = undistorted[own.camera_id].normalized[j]
+        distance = epipolar_distances_normalized(own, xa, other, xb)
+        unknown = unknown or bool(np.isnan(distance).any())
+        near = np.flatnonzero(distance <= cfg.competitor_epipolar_px)
+        if len(near):
+            pairs = np.stack([np.broadcast_to(xa, (len(near), 2)), xb[near]], axis=1)
+            if np.isfinite(triangulate_normalized_many([own, other], pairs)).all(axis=1).any():
                 return True
     return None if unknown else False
 
