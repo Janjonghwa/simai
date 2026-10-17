@@ -1,12 +1,13 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.2.0",
   "calibration_version": "manual-0",
   "provider_source": "MANUAL_PNP",
   "provider_version": "0.1.0",
   "state": "PROVISIONAL",
   "created_at": 1760342400000,
   "coordinate_frame": { "frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z", "site_id": "classroom-1" },
-  "scale_basis": "FLOOR_PLAN",
+  "scale_basis": "MEASURED_OBJECT",
+  "scale_cross_check_basis": ["KNOWN_PERSON_HEIGHT"],
   "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
   "cameras": [
     {
@@ -22,8 +23,10 @@
   ],
   "validation": {
     "checkpoint_count": 4,
-    "max_position_error_m": 0.21,
-    "max_head_height_error_m": 0.09
+    "max_pairwise_position_disagreement_m": 0.12,
+    "max_head_height_error_m": 0.09,
+    "floor_plane_disagreement_m": 0.02,
+    "floor_coverage_ratio": 0.85
   },
   "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 }

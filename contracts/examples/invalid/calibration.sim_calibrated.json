@@ -1,0 +1,30 @@
+{
+  "_expect_error": "시뮬레이터 보정을 CALIBRATED로 표시. 실측 정물·교차 확인 근거가 있어도 현장 보정이 아니다 (명세 20.4 규칙 4 위반)",
+  "schema_version": "1.2.0",
+  "calibration_version": "sim-classroom-0",
+  "provider_source": "SIM",
+  "state": "CALIBRATED",
+  "created_at": 1760598000000,
+  "coordinate_frame": { "frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z" },
+  "scale_basis": "MEASURED_OBJECT",
+  "scale_cross_check_basis": ["KNOWN_PERSON_HEIGHT"],
+  "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
+  "cameras": [
+    {
+      "camera_id": "cam1",
+      "image_size": [1920, 1080],
+      "K": [[1000.0, 0.0, 960.0], [0.0, 1000.0, 540.0], [0.0, 0.0, 1.0]],
+      "distortion": { "model": "NONE", "coeffs": [] },
+      "R": [[0.5932, -0.8051, 0.0], [-0.2728, -0.201, -0.9408], [0.7574, 0.5581, -0.3388]],
+      "t": [0.0424, 2.4468, 0.5839],
+      "reprojection_error_px": { "median": 0.0, "p95": 0.0 }
+    }
+  ],
+  "validation": {
+    "checkpoint_count": 4,
+    "max_pairwise_position_disagreement_m": 0.0,
+    "max_head_height_error_m": 0.0,
+    "floor_plane_disagreement_m": 0.0,
+    "floor_coverage_ratio": 1.0
+  }
+}

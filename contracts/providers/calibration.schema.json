@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/providers/calibration.schema.json",
   "title": "CalibrationProvider 출력",
-  "description": "보정 한 버전 (명세 4장, 20.4 입력 대체 계약). G1 자동 보정과 대체 구현(MANUAL_PNP, CHARUCO, DATASET_GT, SIM)이 같은 형식을 낸다.",
+  "description": "보정 한 버전 (명세 4장, 20.4 입력 대체 계약). G1 자동 보정과 대체 구현(CHARUCO, DATASET_GT, SIM, 연구용 MANUAL_PNP)이 같은 형식을 낸다.",
   "type": "object",
   "required": [
     "schema_version", "calibration_version", "provider_source", "state",
@@ -16,9 +16,13 @@
     "state": { "$ref": "../common/defs.schema.json#/$defs/calibration_state" },
     "created_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
     "coordinate_frame": { "$ref": "../common/defs.schema.json#/$defs/coordinate_frame" },
-    "scale_basis": {
-      "enum": ["FLOOR_PLAN", "HUMAN_HEIGHT_STATS", "STANDARD_OBJECT", "MODEL_ESTIMATE", "DATASET_GT", "MARKER"],
-      "description": "스케일 근거 (명세 4.3 우선순위)"
+    "scale_basis": { "$ref": "#/$defs/scale_basis", "description": "스케일을 정한 주 근거" },
+    "scale_cross_check_basis": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/scale_basis" },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "주 근거(scale_basis)와 교차 확인해 일치한 다른 근거, 우선순위 순 (명세 4.3 둘 이상 교차 확인, 4.4). 교차 확인하지 않았으면 생략"
     },
     "extrinsic_convention": {
       "const": "OPENCV_WORLD_TO_CAMERA",
@@ -34,7 +38,16 @@
       "description": "독립 검증 결과 (명세 4.4 CALIBRATED 기준). 보정에 쓰지 않은 검증점 기준",
       "properties": {
         "checkpoint_count": { "type": "integer", "minimum": 0 },
-        "max_position_error_m": { "type": "number", "minimum": 0 },
+        "max_position_error_m": {
+          "type": "number",
+          "minimum": 0,
+          "description": "실측 기준점 대비 절대 위치 오차 최대값. 실측 기준점이 있을 때만(개발 교실 G1·G2). 수정 6 이후 현장 CALIBRATED 판정에는 max_pairwise_position_disagreement_m 를 쓴다"
+        },
+        "max_pairwise_position_disagreement_m": {
+          "type": "number",
+          "minimum": 0,
+          "description": "검산점마다 카메라 쌍별로 구한 위치끼리의 불일치 최대값 (명세 4.4 수정 6, 표본이 적어 p95 가 아니라 최대값)"
+        },
         "max_head_height_error_m": { "type": "number", "minimum": 0 },
         "floor_plane_disagreement_m": { "type": "number", "minimum": 0 },
         "floor_coverage_ratio": { "type": "number", "minimum": 0, "maximum": 1 }
@@ -55,7 +68,7 @@
       "then": { "properties": { "state": { "enum": ["UNCALIBRATED", "PROVISIONAL"] } } }
     },
     {
-      "description": "CALIBRATED는 출처(G1_AUTO, MANUAL_PNP, CHARUCO)와 관계없이 독립 검증점 결과가 있어야 한다 (명세 4.4)",
+      "description": "CALIBRATED는 출처와 관계없이 독립 검증점 결과(검산점 수, 머리 높이 오차, 위치 불일치)가 있어야 한다 (명세 4.4). 이전 문서 호환을 위해 위치는 쌍별 불일치와 절대 위치 오차 중 하나만 있어도 스키마는 통과하고, 수정 6 기준(쌍별 불일치 필수, 출처 G1_AUTO·CHARUCO)은 계약 시험에서 본다",
       "if": {
         "properties": { "state": { "const": "CALIBRATED" } },
         "required": ["state"]
@@ -63,13 +76,26 @@
       "then": {
         "required": ["validation"],
         "properties": {
-          "validation": { "required": ["checkpoint_count", "max_position_error_m", "max_head_height_error_m"] }
+          "validation": {
+            "required": ["checkpoint_count", "max_head_height_error_m"],
+            "anyOf": [
+              { "required": ["max_pairwise_position_disagreement_m"] },
+              { "required": ["max_position_error_m"] }
+            ]
+          }
         }
       }
     }
   ],
 
   "$defs": {
+    "scale_basis": {
+      "enum": [
+        "FLOOR_PLAN", "HUMAN_HEIGHT_STATS", "STANDARD_OBJECT", "MODEL_ESTIMATE", "DATASET_GT", "MARKER",
+        "MEASURED_OBJECT", "KNOWN_PERSON_HEIGHT"
+      ],
+      "description": "스케일 근거 (명세 4.3 우선순위: 실측 정물 > 키를 아는 사람 > 사람 키 통계 > 표준 사물 크기 > 모델 자체 추정). MEASURED_OBJECT = 치수를 미리 잰 정물(안전봉·라바콘 등), KNOWN_PERSON_HEIGHT = 키를 미리 잰 사람의 보정 걷기, HUMAN_HEIGHT_STATS = 지나간 여러 사람의 키 통계, STANDARD_OBJECT = 문·책상 같은 표준 사물 크기, MODEL_ESTIMATE = 모델(MapAnything 등) 메트릭 추정, MARKER = ChArUco 보드 등 치수를 아는 마커, DATASET_GT = 공개 데이터 정답. FLOOR_PLAN 은 수정 6 이후 쓰지 않는다(실측 평면도 제거). 이전 문서 호환을 위해 값만 남긴다"
+    },
     "camera_calibration": {
       "type": "object",
       "required": ["camera_id", "image_size", "K", "distortion", "R", "t"],
