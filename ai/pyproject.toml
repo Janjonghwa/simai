@@ -8,7 +8,8 @@ dependencies = []
 
 [project.optional-dependencies]
 # 무거운 의존성은 기능별로 나눈다. CUDA·Torch 빌드는 deploy/의 Docker 이미지가 고정한다.
-io = ["opencv-python-headless>=4.9"]
+# pyarrow: 2D 관측(observation_2d) Parquet 보관 (simai_ai.io.obs2d_parquet, 명세 11.2)
+io = ["opencv-python-headless>=4.9", "pyarrow>=17"]
 # lap: ultralytics.trackers 가 import 시점에 요구한다(없으면 런타임에 pip 자동 설치를 시도한다)
 # ultralytics 8.4.178 이상: TrackTrack 추적기와 추적기 인스턴스별 ID 카운터에 기댄다
 detection = ["ultralytics>=8.4.178", "lap>=0.5.12"]
@@ -28,6 +29,8 @@ dev = [
     "jsonschema>=4.23",
     # geometry 시험(삼각측량)용. 기능 설치는 extras geometry 가 같은 범위를 선언한다
     "numpy>=1.26",
+    # 2D 관측 Parquet 시험용. 기능 설치는 extras io 가 같은 범위를 선언한다
+    "pyarrow>=17",
 ]
 
 [build-system]
@@ -71,6 +74,7 @@ forbidden_modules = [
     "ultralytics",
     "jsonschema",
     "referencing",
+    "pyarrow",
 ]
 
 [[tool.importlinter.contracts]]
