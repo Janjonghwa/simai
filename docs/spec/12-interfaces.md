@@ -107,7 +107,7 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 ```
 
 - `rationale`은 VLM 결과가 오면 `risk_event` 갱신으로 채워진다.
-- I3 `risk_alert`와 I4 `watch_alert`는 `event_id`, 등급, 구역, 방향(워치), 한 줄 요약만 담는다.
+- I3 `risk_alert`와 I4 `watch_alert`는 `event_id`, 등급, 구역, 방향(워치), 한 줄 요약(규칙 근거)만 담는다.
 - I4 `ack`는 `event_id`, 진동 시각, 수신 확인 시각을 담는다.
 
 ## 12.5 I5 작업 유형
@@ -140,7 +140,7 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 | POST | /api/scenes/rebuild | 정적 3D 재생성 요청 | 관리자 |
 | GET · POST | /api/layouts, /api/layouts/\{id\}/evaluate | 가상 레이아웃, 계획 모드 평가 | 관리자 |
 | POST | /api/reports/tbm | TBM 보고서 생성 요청 | 관리자 |
-| GET · PATCH | /api/tickets, /api/tickets/\{id\} | 조치 티켓 조회·상태 변경 | 반장 |
+| GET · PATCH | /api/tickets, /api/tickets/\{id\} | 조치 티켓 조회·상태 변경 | 반장(조회는 관리자도) |
 | POST | /api/uploads/sign | 사진·프레임·클립 임시 업로드 주소 | 기기·반장 |
 | POST | /api/push/subscribe | Web Push 구독 등록 | 반장 |
 | GET | /api/metrics | 시스템 지표 조회 | 관리자 |
