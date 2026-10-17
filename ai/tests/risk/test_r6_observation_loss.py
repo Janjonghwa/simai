@@ -24,7 +24,7 @@ from simai_ai.risk import (
 )
 from simai_ai.risk._parse import RiskInputError
 from simai_ai.risk.lifecycle import LEGACY_IMMEDIATE_POLICY
-from simai_ai.risk.rules.r6_observation_loss import distance_to_polygon, point_in_polygon
+from simai_ai.risk.zone_geometry import distance_to_polygon, point_in_polygon
 
 T0 = 1760342400100
 

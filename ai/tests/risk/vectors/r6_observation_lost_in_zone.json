@@ -1,9 +1,14 @@
 {
-  "format_version": "1.1.0",
+  "format_version": "1.3.0",
   "vector_id": "r6-observation-lost-in-zone",
-  "description": "LIVE R6: 구역 안 위험 중 PREDICTED → UNKNOWN → 트랙 없음이 1분 넘게 이어져도 자동 해소 0건(UNVERIFIABLE). UNKNOWN 동안 R6 holding(ObservationLossHold 출력)은 원래 규칙(R1) 이벤트에 확인 필요만 붙이고 새 이벤트를 만들지 않는다. 재관측 뒤 다시 상실하면 해소 확인을 처음부터 다시 센다. R1 출력은 inject_findings 로 흉내 낸다(R1 은 -71)",
+  "description": "LIVE R6: 구역 안 위험 중 PREDICTED → UNKNOWN → 트랙 없음이 1분 넘게 이어져도 자동 해소 0건(UNVERIFIABLE). PREDICTED 동안 R1 은 확인 필요(PREDICTED, SINGLE_VIEW)로 판정하고, UNKNOWN 동안 R6 holding(ObservationLossHold 출력)은 원래 규칙(R1) 이벤트를 확인 필요로 유지만 하며 새 이벤트를 만들지 않는다(관측 상실한 다른 사람 w-0031 은 이벤트 없음). 재관측 뒤 다시 상실하면 해소 확인을 처음부터 다시 센다. R1 은 실제 규칙(등록부 R1 v1 = ObservationLossHold(ZoneEntryRule))이 판정한다 기본 생명주기 정책(3프레임 중 2)이라 첫 관측 프레임을 하나 더 두어 원래 첫 단계에서 발생한다.",
   "origin": "LIVE",
-  "rules": [],
+  "rules": [
+    {
+      "rule_id": "R1",
+      "rule_version": 1
+    }
+  ],
   "zones": [
     {
       "zone_id": "z-04",
@@ -39,6 +44,74 @@
     }
   },
   "steps": [
+    {
+      "clock_ms": 1760342400100,
+      "world_state": {
+        "t_latest_global": 1760342400000,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0012",
+            "t_last_valid": 1760342400000,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              3.4,
+              5.0
+            ],
+            "position_xy_sigma": [
+              0.08,
+              0.08
+            ],
+            "pelvis_xyz": [
+              3.4,
+              5.0,
+              0.92
+            ],
+            "ground_anchor_xyz": [
+              3.4,
+              5.0,
+              0.0
+            ],
+            "support_surface_id": "floor",
+            "support_surface_validity": "VALID",
+            "contact_validity": "VALID",
+            "z_validity": "VALID",
+            "head_z": 1.68,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "findings": [
+          {
+            "rule_id": "R1",
+            "rule_version": 1,
+            "severity": "HIGH",
+            "world_ids": [
+              "w-0012"
+            ],
+            "zone_id": "z-04",
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "xy_inside_polygon"
+            ],
+            "metrics": {
+              "zone_distance_m": 0.0
+            }
+          }
+        ],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
     {
       "clock_ms": 1760342400200,
       "world_state": {
@@ -83,24 +156,26 @@
           }
         ]
       },
-      "inject_findings": [
-        {
-          "rule_id": "R1",
-          "rule_version": 1,
-          "severity": "HIGH",
-          "world_ids": [
-            "w-0012"
-          ],
-          "zone_id": "z-04",
-          "needs_check": false,
-          "reasons": [
-            "xy_inside_polygon"
-          ],
-          "metrics": {}
-        }
-      ],
       "expect": {
-        "findings": [],
+        "findings": [
+          {
+            "rule_id": "R1",
+            "rule_version": 1,
+            "severity": "HIGH",
+            "world_ids": [
+              "w-0012"
+            ],
+            "zone_id": "z-04",
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "xy_inside_polygon"
+            ],
+            "metrics": {
+              "zone_distance_m": 0.0
+            }
+          }
+        ],
         "transitions": [
           {
             "event": "e1",
@@ -117,7 +192,8 @@
               "w-0012"
             ],
             "zone_id": "z-04",
-            "acknowledged": false
+            "acknowledged": false,
+            "confidence_reasons": []
           }
         ],
         "local_signals": [
@@ -167,41 +243,51 @@
           }
         ]
       },
-      "inject_findings": [
-        {
-          "rule_id": "R1",
-          "rule_version": 1,
-          "severity": "HIGH",
-          "world_ids": [
-            "w-0012"
-          ],
-          "zone_id": "z-04",
-          "needs_check": false,
-          "reasons": [
-            "xy_inside_polygon"
-          ],
-          "metrics": {}
-        }
-      ],
       "expect": {
-        "findings": [],
+        "findings": [
+          {
+            "rule_id": "R1",
+            "rule_version": 1,
+            "severity": "HIGH",
+            "world_ids": [
+              "w-0012"
+            ],
+            "zone_id": "z-04",
+            "needs_check": true,
+            "confidence_reasons": [
+              "PREDICTED",
+              "SINGLE_VIEW"
+            ],
+            "reasons": [
+              "xy_inside_polygon"
+            ],
+            "metrics": {
+              "zone_distance_m": 0.0
+            }
+          }
+        ],
         "transitions": [
           {
             "event": "e1",
             "event_sequence": 2,
             "transition": "UPDATED",
             "changes": [
+              "CONFIDENCE",
               "VERIFICATION"
             ],
             "rule_id": "R1",
             "severity": "HIGH",
-            "needs_check": false,
+            "needs_check": true,
             "verification": "UNVERIFIABLE",
             "world_ids": [
               "w-0012"
             ],
             "zone_id": "z-04",
-            "acknowledged": false
+            "acknowledged": false,
+            "confidence_reasons": [
+              "PREDICTED",
+              "SINGLE_VIEW"
+            ]
           }
         ],
         "local_signals": []
@@ -264,46 +350,51 @@
           }
         ]
       },
-      "inject_findings": [
-        {
-          "rule_id": "R1",
-          "rule_version": 1,
-          "severity": "HIGH",
-          "world_ids": [
-            "w-0012"
-          ],
-          "zone_id": "z-04",
-          "needs_check": true,
-          "reasons": [
-            "observation_lost",
-            "last_seen_in_zone"
-          ],
-          "metrics": {
-            "zone_distance_m": 0.0
-          },
-          "holding": true
-        },
-        {
-          "rule_id": "R1",
-          "rule_version": 1,
-          "severity": "HIGH",
-          "world_ids": [
-            "w-0031"
-          ],
-          "zone_id": "z-04",
-          "needs_check": true,
-          "reasons": [
-            "observation_lost",
-            "last_seen_in_zone"
-          ],
-          "metrics": {
-            "zone_distance_m": 0.0
-          },
-          "holding": true
-        }
-      ],
       "expect": {
-        "findings": [],
+        "findings": [
+          {
+            "rule_id": "R1",
+            "rule_version": 1,
+            "severity": "HIGH",
+            "world_ids": [
+              "w-0012"
+            ],
+            "zone_id": "z-04",
+            "needs_check": true,
+            "confidence_reasons": [
+              "PREDICTED"
+            ],
+            "reasons": [
+              "observation_lost",
+              "last_seen_in_zone"
+            ],
+            "metrics": {
+              "zone_distance_m": 0.0
+            },
+            "holding": true
+          },
+          {
+            "rule_id": "R1",
+            "rule_version": 1,
+            "severity": "HIGH",
+            "world_ids": [
+              "w-0031"
+            ],
+            "zone_id": "z-04",
+            "needs_check": true,
+            "confidence_reasons": [
+              "PREDICTED"
+            ],
+            "reasons": [
+              "observation_lost",
+              "last_seen_in_zone"
+            ],
+            "metrics": {
+              "zone_distance_m": 0.0
+            },
+            "holding": true
+          }
+        ],
         "transitions": [
           {
             "event": "e1",
@@ -320,7 +411,10 @@
               "w-0012"
             ],
             "zone_id": "z-04",
-            "acknowledged": false
+            "acknowledged": false,
+            "confidence_reasons": [
+              "PREDICTED"
+            ]
           }
         ],
         "local_signals": []
@@ -359,28 +453,30 @@
           }
         ]
       },
-      "inject_findings": [
-        {
-          "rule_id": "R1",
-          "rule_version": 1,
-          "severity": "HIGH",
-          "world_ids": [
-            "w-0012"
-          ],
-          "zone_id": "z-04",
-          "needs_check": true,
-          "reasons": [
-            "observation_lost",
-            "last_seen_in_zone"
-          ],
-          "metrics": {
-            "zone_distance_m": 0.0
-          },
-          "holding": true
-        }
-      ],
       "expect": {
-        "findings": [],
+        "findings": [
+          {
+            "rule_id": "R1",
+            "rule_version": 1,
+            "severity": "HIGH",
+            "world_ids": [
+              "w-0012"
+            ],
+            "zone_id": "z-04",
+            "needs_check": true,
+            "confidence_reasons": [
+              "PREDICTED"
+            ],
+            "reasons": [
+              "observation_lost",
+              "last_seen_in_zone"
+            ],
+            "metrics": {
+              "zone_distance_m": 0.0
+            },
+            "holding": true
+          }
+        ],
         "transitions": [],
         "local_signals": []
       }
@@ -443,24 +539,26 @@
           }
         ]
       },
-      "inject_findings": [
-        {
-          "rule_id": "R1",
-          "rule_version": 1,
-          "severity": "HIGH",
-          "world_ids": [
-            "w-0012"
-          ],
-          "zone_id": "z-04",
-          "needs_check": false,
-          "reasons": [
-            "xy_inside_polygon"
-          ],
-          "metrics": {}
-        }
-      ],
       "expect": {
-        "findings": [],
+        "findings": [
+          {
+            "rule_id": "R1",
+            "rule_version": 1,
+            "severity": "HIGH",
+            "world_ids": [
+              "w-0012"
+            ],
+            "zone_id": "z-04",
+            "needs_check": false,
+            "confidence_reasons": [],
+            "reasons": [
+              "xy_inside_polygon"
+            ],
+            "metrics": {
+              "zone_distance_m": 0.0
+            }
+          }
+        ],
         "transitions": [
           {
             "event": "e1",
@@ -479,7 +577,8 @@
               "w-0012"
             ],
             "zone_id": "z-04",
-            "acknowledged": false
+            "acknowledged": false,
+            "confidence_reasons": []
           }
         ],
         "local_signals": []
@@ -586,7 +685,8 @@
               "w-0012"
             ],
             "zone_id": "z-04",
-            "acknowledged": false
+            "acknowledged": false,
+            "confidence_reasons": []
           }
         ],
         "local_signals": []
@@ -654,7 +754,8 @@
               "w-0012"
             ],
             "zone_id": "z-04",
-            "acknowledged": false
+            "acknowledged": false,
+            "confidence_reasons": []
           }
         ],
         "local_signals": []
@@ -772,7 +873,8 @@
               "w-0012"
             ],
             "zone_id": "z-04",
-            "acknowledged": false
+            "acknowledged": false,
+            "confidence_reasons": []
           }
         ],
         "local_signals": [
