@@ -15,7 +15,8 @@ io = ["opencv-python-headless>=4.9", "pyarrow>=17"]
 detection = ["ultralytics>=8.4.178", "lap>=0.5.12"]
 geometry = ["numpy>=1.26"]
 # jsonschema: 보정 버전 저장소가 저장 전에 contracts/providers/calibration.schema.json 으로 직접 검증한다
-calibration = ["numpy>=1.26", "opencv-python-headless>=4.9", "jsonschema>=4.23"]
+# scipy: 사람 keypoint 번들 조정(simai_ai.calibration.bundle)의 희소 행렬·연결 성분·회전 계산
+calibration = ["numpy>=1.26", "opencv-python-headless>=4.9", "jsonschema>=4.23", "scipy>=1.11"]
 scene = ["torch>=2.4"]
 hmr = ["torch>=2.4"]
 # 배포 단위 묶음 (services/)
@@ -31,6 +32,8 @@ dev = [
     "numpy>=1.26",
     # 2D 관측 Parquet 시험용. 기능 설치는 extras io 가 같은 범위를 선언한다
     "pyarrow>=17",
+    # 번들 조정 시험용. 기능 설치는 extras calibration 이 같은 범위를 선언한다
+    "scipy>=1.11",
 ]
 
 [build-system]
@@ -75,6 +78,7 @@ forbidden_modules = [
     "jsonschema",
     "referencing",
     "pyarrow",
+    "scipy",
 ]
 
 [[tool.importlinter.contracts]]
