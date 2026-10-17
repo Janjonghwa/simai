@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.2.0",
+  "msg_type": "config_ack",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000010c",
+  "sent_at": 1760342409000,
+  "source_id": "tier0-01",
+  "payload": {
+    "config_version": "cfg-14",
+    "bundle_hash": "sha256:f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "result": "REJECTED",
+    "reject_reason": "HASH_MISMATCH",
+    "reject_detail": "zones.json 해시 불일치",
+    "active_config_version": "cfg-13"
+  }
+}

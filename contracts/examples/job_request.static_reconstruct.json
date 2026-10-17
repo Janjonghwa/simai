@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.2.0",
+  "msg_type": "job_request",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000119",
+  "sent_at": 1760342400400,
+  "source_id": "ec2",
+  "payload": {
+    "job_type": "static_reconstruct",
+    "priority": "BACKGROUND",
+    "timeout_ms": 1800000,
+    "callback_url": "https://ec2.simai.dev/callbacks/jobs/{job_id}",
+    "input": {
+      "calibration_version": "cal-7",
+      "frame_uris": [
+        "s3://simai-site/empty/cam1-0001.jpg"
+      ]
+    }
+  }
+}

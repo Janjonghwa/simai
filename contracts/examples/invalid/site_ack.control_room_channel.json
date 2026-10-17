@@ -1,0 +1,18 @@
+{
+  "_expect_error": "노트북 site_ack 의 channel 이 CONTROL_ROOM 이다. 현장 확인은 SITE_BUTTON 만",
+  "schema_version": "1.2.0",
+  "msg_type": "site_ack",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000111",
+  "sent_at": 1760342402501,
+  "source_id": "laptop-01",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "ack": {
+      "ack_id": "6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f",
+      "channel": "CONTROL_ROOM",
+      "actor_role": "ADMIN",
+      "actor_id": "user-0003",
+      "acked_at": 1760342402100
+    }
+  }
+}

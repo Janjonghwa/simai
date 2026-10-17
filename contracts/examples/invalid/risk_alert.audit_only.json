@@ -1,0 +1,24 @@
+{
+  "_expect_error": "재동기화 중 해소된 이벤트(AUDIT_ONLY)를 푸시했다. 감사 기록으로만 복원한다 (명세 3.2)",
+  "schema_version": "1.2.0",
+  "msg_type": "risk_alert",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000117",
+  "sent_at": 1760342400450,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "source": "LIVE",
+    "severity": "CRITICAL",
+    "needs_check": false,
+    "zone_id": "z-04",
+    "zone_name": "단상 가장자리",
+    "position_xy": [
+      3.4,
+      5.01
+    ],
+    "summary": "R2 가장자리 근접 0.82m",
+    "summary_source": "RULE",
+    "delivery": "AUDIT_ONLY",
+    "observation_time": 1760342400100
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/event_state_snapshot.schema.json",
+  "title": "I1 event_state_snapshot",
+  "description": "RunPod Tier 0 → EC2. 재접속 후 outbox 재전송이 끝나면 보내는 활성 이벤트의 최종 상태 (명세 3.2 재동기화 알림 규칙). EC2 는 이 메시지를 받은 뒤에만 동기화 완료로 전환하고, 여기 있고 최근 유효 관측 근거가 있는 이벤트만 DELAYED_ACTIVE 로 알린다. 해소된 이벤트는 여기 없으며 감사 기록으로만 복원한다. 경과 시간만으로 알림을 억제하지 않는다. I1 LIVE 계약.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "event_state_snapshot" },
+    "payload": {
+      "type": "object",
+      "required": ["gateway_id", "snapshot_at", "journal_offset", "config_version", "active_events"],
+      "properties": {
+        "gateway_id": { "$ref": "../common/defs.schema.json#/$defs/instance_id" },
+        "snapshot_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "journal_offset": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "이 스냅샷이 반영한 마지막 저널 offset. EC2 가 받은 전이가 여기에 못 미치면 빈 구간을 다시 요청한다"
+        },
+        "config_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "active_events": {
+          "type": "array",
+          "description": "스냅샷 시점에 활성(RESOLVED 아님)인 LIVE 이벤트 전부",
+          "items": { "$ref": "#/$defs/active_event" }
+        }
+      }
+    }
+  },
+
+  "$defs": {
+    "active_event": {
+      "type": "object",
+      "required": [
+        "event_id", "event_sequence", "lifecycle", "rule_id", "rule_version", "severity", "confidence",
+        "verification", "needs_check", "world_ids", "zone_id", "raised_at", "last_valid_observation_at", "acknowledged"
+      ],
+      "properties": {
+        "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "event_sequence": { "type": "integer", "minimum": 1, "description": "이 이벤트의 마지막 전이 sequence" },
+        "lifecycle": {
+          "enum": ["RAISED", "UPDATED"],
+          "description": "활성 이벤트만 싣는다. RESOLVED 는 여기 오지 않는다"
+        },
+        "rule_id": { "type": "string", "minLength": 1 },
+        "rule_version": { "type": "integer", "minimum": 1 },
+        "severity": { "$ref": "../common/defs.schema.json#/$defs/severity" },
+        "confidence": { "$ref": "../common/defs.schema.json#/$defs/risk_confidence" },
+        "verification": { "$ref": "../common/defs.schema.json#/$defs/risk_verification" },
+        "needs_check": { "type": "boolean" },
+        "world_ids": {
+          "type": "array",
+          "items": { "$ref": "../common/defs.schema.json#/$defs/world_id" },
+          "uniqueItems": true
+        },
+        "zone_id": { "type": ["string", "null"], "minLength": 1 },
+        "raised_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "last_valid_observation_at": {
+          "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" }, { "type": "null" }],
+          "description": "위험 조건을 마지막으로 유효 관측한 촬영 시각. 재시작 직후처럼 근거가 없으면 null (DELAYED_ACTIVE 판단 근거)"
+        },
+        "acknowledged": { "type": "boolean", "description": "운영자 확인(EC2 ACK 또는 site_ack)이 저널에 있는지" }
+      }
+    }
+  }
+}

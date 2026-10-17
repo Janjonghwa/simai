@@ -1,0 +1,38 @@
+{
+  "_expect_error": "Tier 0 연결 상태 없는 하트비트. EC2 가 'Tier 0 정지'와 '원격 전달 단절'을 구분할 수 없다 (명세 3.2, 6.5)",
+  "schema_version": "1.2.0",
+  "msg_type": "laptop_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000112",
+  "sent_at": 1760342401000,
+  "source_id": "laptop-01",
+  "payload": {
+    "heartbeat_seq": 3600,
+    "tier0": {
+      "last_message_at": 1760342400900,
+      "video_cameras": [
+        "cam1",
+        "cam2",
+        "cam3",
+        "cam4"
+      ]
+    },
+    "site_display": "REMOTE_FAULT",
+    "alarm": {
+      "sounding_event_ids": [
+        "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f"
+      ],
+      "displayed_event_ids": [
+        "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f"
+      ]
+    },
+    "cameras": [
+      {
+        "camera_id": "cam1",
+        "rtsp": "CONNECTED",
+        "stream_epoch": 12,
+        "last_frame_sequence": 10349,
+        "camera_to_gateway_gap_max_ms": 80
+      }
+    ]
+  }
+}

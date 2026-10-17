@@ -1,0 +1,29 @@
+{
+  "_expect_error": "proposed_severity 가 현재 등급과 같다. 상향이 아니면 null 로 둔다",
+  "schema_version": "1.2.0",
+  "msg_type": "risk_event",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000114",
+  "sent_at": 1760342400420,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "rule_id": "R2",
+    "rule_version": 3,
+    "source": "LIVE",
+    "lifecycle": "RAISED",
+    "verification": "VERIFIED",
+    "severity": "CRITICAL",
+    "confidence": "HIGH",
+    "needs_check": false,
+    "world_ids": [
+      "w-0012"
+    ],
+    "zone_id": "z-04",
+    "metrics": {
+      "edge_distance_m": 0.82,
+      "height_diff_m": 2.1
+    },
+    "rationale": null,
+    "proposed_severity": "CRITICAL"
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "_expect_error": "VLM 입력 frame_uri 에 data: URI 로 이미지 본문을 넣었다 (명세 12장 머리말)",
+  "schema_version": "1.2.0",
+  "msg_type": "job_request",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000118",
+  "sent_at": 1760342400500,
+  "source_id": "ec2",
+  "payload": {
+    "job_type": "vlm_rationale",
+    "priority": "VLM_FAST",
+    "timeout_ms": 5000,
+    "callback_url": "https://ec2.simai.dev/callbacks/jobs/{job_id}",
+    "input": {
+      "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+      "event_sequence": 1,
+      "rule_id": "R2",
+      "rule_version": 3,
+      "severity": "HIGH",
+      "confidence": "HIGH",
+      "needs_check": false,
+      "world_ids": [
+        "w-0012"
+      ],
+      "zone_id": "z-04",
+      "metrics": {
+        "edge_distance_m": 1.4,
+        "height_diff_m": 2.1
+      },
+      "observation_time": 1760342400100,
+      "frames": [
+        {
+          "camera_id": "cam1",
+          "frame_uri": "data:image/jpeg;base64,/9j/2Q==",
+          "estimated_capture_time_ms": 1760342400100,
+          "timestamp_source": "RECEIVE_ESTIMATED",
+          "timestamp_uncertainty_ms": 18,
+          "face_policy": "BLURRED"
+        },
+        {
+          "camera_id": "cam1",
+          "frame_uri": "s3://simai-events/0192a6f0/cam1-10249-blur.jpg",
+          "estimated_capture_time_ms": 1760342397000,
+          "timestamp_source": "RECEIVE_ESTIMATED",
+          "timestamp_uncertainty_ms": 18,
+          "face_policy": "BLURRED"
+        }
+      ],
+      "structured_state": {
+        "tracks": [
+          {
+            "world_id": "w-0012",
+            "position_xy": [
+              3.4,
+              5.01
+            ],
+            "head_z": 1.68
+          }
+        ],
+        "zone": {
+          "zone_id": "z-04",
+          "judge_type": "GROUND_FOOTPRINT"
+        }
+      },
+      "world_state_ref": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f"
+    }
+  }
+}

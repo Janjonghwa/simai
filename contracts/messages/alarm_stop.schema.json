@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/alarm_stop.schema.json",
+  "title": "I0 alarm_stop",
+  "description": "RunPod Tier 0 → 노트북, I0 제어 WebSocket. 운영자 확인이 저널에 기록되면 보내 노트북 반복 소리를 멈춘다 (명세 3.2, 3.10). 관리자(관제 화면)·반장(PWA)·현장 확인 버튼 중 누가 확인해도 같다. 소리만 멈추고 점멸 표시는 RESOLVED 까지 유지한다.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "alarm_stop" },
+    "payload": {
+      "type": "object",
+      "required": ["event_id", "ack"],
+      "properties": {
+        "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "ack": { "$ref": "../common/defs.schema.json#/$defs/operator_ack", "description": "저널에 기록한 확인. 노트북 화면에 누가 확인했는지 표시할 수 있다" }
+      }
+    }
+  }
+}

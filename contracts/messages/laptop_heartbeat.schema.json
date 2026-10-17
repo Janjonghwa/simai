@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/laptop_heartbeat.schema.json",
+  "title": "노트북 하트비트",
+  "description": "노트북 → RunPod Tier 0(I0 제어 WebSocket)과 노트북 → EC2(HTTPS, 기기 토큰)에 1초마다 같은 형식으로 보낸다 (명세 3.2 이중 감시, 6.5, 수정 6). 노트북 ID 는 봉투 source_id, 시각은 봉투 sent_at 이다. EC2 는 Tier 0 health 가 끊겼을 때 이 메시지로 둘을 구분한다: tier0.control 이 CONNECTED 면 '원격 전달 단절(현장 경보 동작 중)', DISCONNECTED 면 '관제 정지'. 이 메시지마저 끊기면 '현장 장비 응답 없음'. 세 경우 모두 System Health 는 UNSAFE_UNKNOWN 이다.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "laptop_heartbeat" },
+    "payload": {
+      "type": "object",
+      "required": ["heartbeat_seq", "tier0", "site_display"],
+      "properties": {
+        "heartbeat_seq": { "type": "integer", "minimum": 0, "description": "노트북 앱 시작 후 단조 증가" },
+        "tier0": {
+          "type": "object",
+          "description": "노트북이 본 Tier 0 연결 상태",
+          "required": ["control", "last_message_at", "video_cameras"],
+          "properties": {
+            "control": {
+              "$ref": "../common/defs.schema.json#/$defs/link_state",
+              "description": "I0 제어 WebSocket(local_alert 경로). 기준 시간 안에 Tier 0 health 를 받고 있으면 CONNECTED"
+            },
+            "last_message_at": {
+              "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" }, { "type": "null" }],
+              "description": "Tier 0 에서 마지막으로 받은 메시지의 노트북 수신 시각. 받은 적 없으면 null"
+            },
+            "video_cameras": {
+              "type": "array",
+              "items": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+              "uniqueItems": true,
+              "description": "영상 연결(카메라별 TLS)이 살아 있는 카메라"
+            }
+          },
+          "additionalProperties": false
+        },
+        "ec2": {
+          "type": "object",
+          "description": "노트북이 본 EC2 연결 상태. Tier 0 로 보내는 하트비트에만 의미가 있다",
+          "required": ["state"],
+          "properties": {
+            "state": { "$ref": "../common/defs.schema.json#/$defs/link_state" },
+            "last_response_at": {
+              "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" }, { "type": "null" }]
+            }
+          },
+          "additionalProperties": false
+        },
+        "site_display": {
+          "enum": ["NORMAL", "CONTROL_HALTED", "REMOTE_FAULT", "AI_DELAY"],
+          "description": "노트북 현장 표시 (3.10 표). CONTROL_HALTED='관제 중단', REMOTE_FAULT='원격 관제 장애', AI_DELAY='AI 분석 지연'"
+        },
+        "alarm": {
+          "type": "object",
+          "description": "현장 경보 상태",
+          "required": ["sounding_event_ids", "displayed_event_ids"],
+          "properties": {
+            "sounding_event_ids": {
+              "type": "array",
+              "items": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+              "uniqueItems": true,
+              "description": "반복 소리 중인 이벤트(확인 전)"
+            },
+            "displayed_event_ids": {
+              "type": "array",
+              "items": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+              "uniqueItems": true,
+              "description": "점멸 표시 중인 이벤트(해소 전)"
+            }
+          },
+          "additionalProperties": false
+        },
+        "cameras": {
+          "type": "array",
+          "description": "카메라 → 노트북 RTSP 수신 상태",
+          "items": {
+            "type": "object",
+            "required": ["camera_id", "rtsp"],
+            "properties": {
+              "camera_id": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+              "rtsp": { "$ref": "../common/defs.schema.json#/$defs/link_state" },
+              "stream_epoch": { "type": "integer", "minimum": 0 },
+              "last_frame_sequence": { "type": "integer", "minimum": 0 },
+              "camera_to_gateway_gap_max_ms": {
+                "$ref": "../common/defs.schema.json#/$defs/duration_ms",
+                "description": "직전 하트비트 이후 프레임 도착 간격의 최대값. RTSP over TCP 손실은 번호 빈칸이 아니라 이 끊김으로 나타난다 (12.7)"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  }
+}

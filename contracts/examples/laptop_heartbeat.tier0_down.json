@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.2.0",
+  "msg_type": "laptop_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000113",
+  "sent_at": 1760342501000,
+  "source_id": "laptop-01",
+  "payload": {
+    "heartbeat_seq": 3700,
+    "tier0": {
+      "control": "DISCONNECTED",
+      "last_message_at": 1760342490000,
+      "video_cameras": []
+    },
+    "ec2": {
+      "state": "CONNECTED",
+      "last_response_at": 1760342500900
+    },
+    "site_display": "CONTROL_HALTED"
+  }
+}

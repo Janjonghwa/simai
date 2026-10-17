@@ -1,0 +1,36 @@
+{
+  "_expect_error": "FAILED 인데 result 가 있다. 실패·시간 초과 콜백은 error 만 싣는다 (error 는 있음)",
+  "schema_version": "1.2.0",
+  "msg_type": "job_callback",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000011a",
+  "sent_at": 1760342403910,
+  "source_id": "runpod-worker",
+  "payload": {
+    "job_id": "job-20261017-0042",
+    "job_type": "vlm_rationale",
+    "status": "FAILED",
+    "started_at": 1760342400600,
+    "finished_at": 1760342403900,
+    "result": {
+      "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+      "event_sequence": 1,
+      "severity": "HIGH",
+      "rationale": "작업자가 단상 가장자리 쪽으로 몸을 기울이고 있고 난간이 보이지 않는다.",
+      "proposed_severity": "CRITICAL",
+      "clause_ids": [
+        "KOSHA-G-123-4.2"
+      ],
+      "model_version": "qwen3-vl-32b@2026-10",
+      "latency_ms": 3300
+    },
+    "error": {
+      "code": "VLM_TIMEOUT",
+      "message": "모델 응답이 제한 시간을 넘었다"
+    },
+    "signature": {
+      "alg": "HMAC-SHA256",
+      "key_id": "worker-k1",
+      "value": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
+    }
+  }
+}

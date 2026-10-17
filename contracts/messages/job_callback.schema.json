@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/job_callback.schema.json",
+  "title": "I5 job_callback",
+  "description": "RunPod 분석 워커 → EC2, REST POST /callbacks/jobs/{job_id} 본문 (명세 12.2 I5, NFR-12). HMAC 서명(payload.signature)을 검증하지 못한 콜백은 버린다. 같은 job_id 의 콜백은 한 번만 반영한다. vlm_rationale 결과는 상향 의견만 담을 수 있다.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "job_callback" },
+    "payload": {
+      "type": "object",
+      "required": ["job_id", "job_type", "status", "finished_at", "signature"],
+      "properties": {
+        "job_id": { "type": "string", "minLength": 1, "description": "POST /jobs 가 돌려준 ID. 경로의 {job_id} 와 같다" },
+        "job_type": { "$ref": "job_request.schema.json#/$defs/job_type" },
+        "status": { "enum": ["SUCCEEDED", "FAILED", "TIMED_OUT"] },
+        "started_at": { "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" }, { "type": "null" }] },
+        "finished_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "result": { "type": "object" },
+        "error": {
+          "type": "object",
+          "required": ["code", "message"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1 },
+            "message": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "signature": { "$ref": "../common/defs.schema.json#/$defs/hmac_signature" }
+      },
+      "allOf": [
+        {
+          "description": "성공이면 result 만, 실패·시간 초과면 error 만",
+          "if": { "properties": { "status": { "const": "SUCCEEDED" } }, "required": ["status"] },
+          "then": { "required": ["result"], "not": { "required": ["error"] } },
+          "else": { "required": ["error"], "not": { "required": ["result"] } }
+        },
+        {
+          "if": { "properties": { "job_type": { "const": "vlm_rationale" } }, "required": ["job_type"] },
+          "then": { "properties": { "result": { "$ref": "vlm_rationale.schema.json#/$defs/result" } } }
+        }
+      ]
+    }
+  }
+}

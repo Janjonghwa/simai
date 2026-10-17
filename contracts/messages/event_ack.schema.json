@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/event_ack.schema.json",
+  "title": "I1 event_ack",
+  "description": "EC2 → RunPod Tier 0. 운영자 확인(관제 화면의 관리자 또는 반장 PWA) 전달 (명세 3.2, 12.2). Tier 0 는 확인을 저널에 ACKNOWLEDGED 로 기록하고(risk_event_transition) 노트북에 alarm_stop 을 보내 반복 소리를 멈춘다. 점멸 표시는 해소까지 유지한다. 확인은 해소가 아니다(6.4). 현장 확인 버튼은 이 메시지가 아니라 I0 site_ack 로 들어온다. I1 LIVE 계약.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "event_ack" },
+    "payload": {
+      "type": "object",
+      "required": ["event_id", "ack"],
+      "properties": {
+        "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "ack": {
+          "allOf": [{ "$ref": "../common/defs.schema.json#/$defs/operator_ack" }],
+          "properties": { "channel": { "enum": ["CONTROL_ROOM", "FOREMAN_PWA"] } }
+        }
+      }
+    }
+  }
+}

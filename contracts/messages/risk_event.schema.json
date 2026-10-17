@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/risk_event.schema.json",
+  "title": "I2 risk_event",
+  "description": "EC2 → 뷰어, STOMP /topic/events (명세 12.4, 12.2). EC2 가 저장한 RiskEvent 의 화면용 projection 이다. LIVE 는 Tier 0 전이(risk_event_transition)로만 갱신하고, PLANNED·REPLAY·WHAT_IF 는 EC2 옆 Risk Engine 컨테이너 결과로 보고서·시뮬레이션 화면에만 쓴다. rationale 은 VLM 결과가 오면 갱신으로 채워진다. VLM 은 proposed_severity 로 상향 의견만 내고 severity 를 바꾸지 못한다.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "risk_event" },
+    "payload": {
+      "type": "object",
+      "required": [
+        "event_id", "rule_id", "rule_version", "source", "lifecycle", "verification", "severity",
+        "confidence", "needs_check", "world_ids", "zone_id", "metrics", "rationale", "proposed_severity"
+      ],
+      "properties": {
+        "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "event_sequence": { "type": "integer", "minimum": 1, "description": "반영한 마지막 전이의 sequence (LIVE)" },
+        "rule_id": { "type": "string", "minLength": 1 },
+        "rule_version": { "type": "integer", "minimum": 1 },
+        "source": { "$ref": "../common/defs.schema.json#/$defs/risk_origin" },
+        "lifecycle": { "$ref": "../common/defs.schema.json#/$defs/risk_lifecycle" },
+        "verification": { "$ref": "../common/defs.schema.json#/$defs/risk_verification" },
+        "severity": {
+          "$ref": "../common/defs.schema.json#/$defs/severity",
+          "description": "규칙 결과. VLM 의견으로 바뀌지 않는다. 상향은 검증된 규칙 조건이나 운영자 확인을 거쳐 새 전이로만 반영한다 (5.4)"
+        },
+        "confidence": { "$ref": "../common/defs.schema.json#/$defs/risk_confidence" },
+        "needs_check": { "type": "boolean" },
+        "world_ids": {
+          "type": "array",
+          "items": { "$ref": "../common/defs.schema.json#/$defs/world_id" },
+          "uniqueItems": true
+        },
+        "zone_id": { "type": ["string", "null"], "minLength": 1 },
+        "metrics": { "$ref": "../common/defs.schema.json#/$defs/rule_metrics" },
+        "rationale": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "VLM 근거 문장. 아직 없으면 null. 이벤트 상세 화면에만 쓰고 푸시를 다시 보내지 않는다 (10.1)"
+        },
+        "proposed_severity": {
+          "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/severity" }, { "type": "null" }],
+          "description": "VLM 상향 의견. severity 보다 높은 등급만 허용, 하향·해소 의견은 표현할 수 없다"
+        },
+        "gateway_id": { "$ref": "../common/defs.schema.json#/$defs/instance_id", "description": "LIVE 이벤트를 만든 Tier 0 인스턴스" },
+        "config_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "calibration_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "scene_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "raised_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "updated_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "resolved_at": { "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" }, { "type": "null" }] },
+        "acks": {
+          "type": "array",
+          "items": { "$ref": "../common/defs.schema.json#/$defs/operator_ack" },
+          "description": "운영자 확인 기록(누가·어디서). 비어 있으면 미확인. 확인은 해소가 아니다"
+        },
+        "delivery": {
+          "enum": ["REALTIME", "DELAYED_ACTIVE", "AUDIT_ONLY"],
+          "description": "LIVE 전달 구분 (3.2 재동기화). DELAYED_ACTIVE: 재동기화 후에도 활성이라 지연 알림. AUDIT_ONLY: 재동기화 중 해소돼 감사 기록으로만 복원"
+        },
+        "related_event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" }
+      },
+      "allOf": [
+        { "$ref": "../common/defs.schema.json#/$defs/severity_upward_only" },
+        {
+          "description": "해소는 관측으로 확인했을 때만 (6.4)",
+          "if": { "properties": { "lifecycle": { "const": "RESOLVED" } }, "required": ["lifecycle"] },
+          "then": { "properties": { "verification": { "const": "VERIFIED" } } }
+        },
+        {
+          "description": "delivery 는 알림 대상인 LIVE 이벤트에만 있다 (7.4 출처 분리)",
+          "if": { "properties": { "source": { "not": { "const": "LIVE" } } }, "required": ["source"] },
+          "then": { "not": { "required": ["delivery"] } }
+        }
+      ]
+    }
+  }
+}

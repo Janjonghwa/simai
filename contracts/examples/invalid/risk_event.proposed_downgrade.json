@@ -1,0 +1,29 @@
+{
+  "_expect_error": "VLM 이 CRITICAL 을 CAUTION 으로 하향 제안했다. 상향 의견만 가능 (명세 5.4, AGENTS.md 규칙 4)",
+  "schema_version": "1.2.0",
+  "msg_type": "risk_event",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000114",
+  "sent_at": 1760342400420,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "rule_id": "R2",
+    "rule_version": 3,
+    "source": "LIVE",
+    "lifecycle": "RAISED",
+    "verification": "VERIFIED",
+    "severity": "CRITICAL",
+    "confidence": "HIGH",
+    "needs_check": false,
+    "world_ids": [
+      "w-0012"
+    ],
+    "zone_id": "z-04",
+    "metrics": {
+      "edge_distance_m": 0.82,
+      "height_diff_m": 2.1
+    },
+    "rationale": "사람이 가장자리에서 멀어 보인다",
+    "proposed_severity": "CAUTION"
+  }
+}

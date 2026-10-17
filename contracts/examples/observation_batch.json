@@ -1,0 +1,51 @@
+{
+  "schema_version": "1.2.0",
+  "msg_type": "observation_batch",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000107",
+  "sent_at": 1760342400400,
+  "source_id": "tier0-01",
+  "payload": {
+    "calibration_version": "cal-7",
+    "joint_layout": "COCO17",
+    "frames": [
+      {
+        "camera_id": "cam1",
+        "stream_epoch": 12,
+        "frame_sequence": 10324,
+        "estimated_capture_time_ms": 1760342400100,
+        "timestamp_source": "RECEIVE_ESTIMATED",
+        "timestamp_uncertainty_ms": 18,
+        "detections": [
+          {
+            "local_track_id": "cam1-t7",
+            "bbox": [
+              812,
+              300,
+              1020,
+              860
+            ],
+            "score": 0.91,
+            "keypoints_2d": [
+              [
+                910,
+                340,
+                0.95
+              ],
+              null
+            ],
+            "world_id": "w-0012"
+          }
+        ]
+      },
+      {
+        "camera_id": "cam3",
+        "stream_epoch": 9,
+        "frame_sequence": 88411,
+        "estimated_capture_time_ms": 1760342400112,
+        "timestamp_source": "RECEIVE_ESTIMATED",
+        "timestamp_uncertainty_ms": 21,
+        "detections": []
+      }
+    ]
+  }
+}

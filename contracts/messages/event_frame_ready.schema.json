@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/event_frame_ready.schema.json",
+  "title": "I1 event_frame_ready",
+  "description": "RunPod Tier 0 → EC2. EC2 가 발급한 임시 업로드 주소(POST /api/uploads/sign)로 이벤트 프레임을 올린 뒤 그 객체의 저장소 주소(s3://, 만료되는 서명 주소가 아님)와 촬영 시각·카메라만 보낸다 (명세 12.3, 14장). 이미지는 메시지에 넣지 않는다. VLM 근거(vlm_rationale)의 입력 프레임이다. I1 LIVE 계약.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "event_frame_ready" },
+    "payload": {
+      "type": "object",
+      "required": ["event_id", "frames"],
+      "properties": {
+        "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "frames": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "description": "프레임 하나. 촬영 시각 세 값은 I0 프레임 헤더 값을 그대로 쓴다 (3.9, 12.7)",
+            "allOf": [{ "$ref": "../common/defs.schema.json#/$defs/capture_time" }],
+            "required": ["camera_id", "frame_uri"],
+            "properties": {
+              "camera_id": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+              "frame_uri": { "$ref": "../common/defs.schema.json#/$defs/object_uri" },
+              "estimated_capture_time_ms": true,
+              "timestamp_source": true,
+              "timestamp_uncertainty_ms": true
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  }
+}
