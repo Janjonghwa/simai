@@ -1,0 +1,27 @@
+{
+  "_expect_error": "frame_uri 에 원시 Base64 이미지 본문을 넣었다 (명세 12장 머리말)",
+  "schema_version": "1.2.0",
+  "msg_type": "event_frame_ready",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000109",
+  "sent_at": 1760342400400,
+  "source_id": "tier0-01",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "frames": [
+      {
+        "camera_id": "cam1",
+        "frame_uri": "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2Q==",
+        "estimated_capture_time_ms": 1760342400100,
+        "timestamp_source": "RECEIVE_ESTIMATED",
+        "timestamp_uncertainty_ms": 18
+      },
+      {
+        "camera_id": "cam3",
+        "frame_uri": "s3://simai-events/0192a6f0/cam3-88411.jpg",
+        "estimated_capture_time_ms": 1760342400112,
+        "timestamp_source": "RECEIVE_ESTIMATED",
+        "timestamp_uncertainty_ms": 22
+      }
+    ]
+  }
+}

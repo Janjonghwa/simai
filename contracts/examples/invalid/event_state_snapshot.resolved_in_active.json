@@ -1,0 +1,50 @@
+{
+  "_expect_error": "해소된 이벤트를 활성 목록에 실었다. 해소분은 감사 기록으로만 복원한다 (명세 3.2 재동기화)",
+  "schema_version": "1.2.0",
+  "msg_type": "event_state_snapshot",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000105",
+  "sent_at": 1760342460010,
+  "source_id": "tier0-01",
+  "payload": {
+    "gateway_id": "tier0-01",
+    "snapshot_at": 1760342460000,
+    "journal_offset": 1051,
+    "config_version": "cfg-12",
+    "active_events": [
+      {
+        "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+        "event_sequence": 4,
+        "lifecycle": "RESOLVED",
+        "rule_id": "R2",
+        "rule_version": 3,
+        "severity": "CRITICAL",
+        "confidence": "HIGH",
+        "verification": "VERIFIED",
+        "needs_check": false,
+        "world_ids": [
+          "w-0012"
+        ],
+        "zone_id": "z-04",
+        "raised_at": 1760342395000,
+        "last_valid_observation_at": 1760342459900,
+        "acknowledged": true
+      },
+      {
+        "event_id": "0192a6f1-0a00-7c00-8a00-000000000002",
+        "event_sequence": 1,
+        "lifecycle": "RAISED",
+        "rule_id": "R7",
+        "rule_version": 1,
+        "severity": "HIGH",
+        "confidence": "HIGH",
+        "verification": "UNVERIFIABLE",
+        "needs_check": false,
+        "world_ids": [],
+        "zone_id": "z-02",
+        "raised_at": 1760342403000,
+        "last_valid_observation_at": null,
+        "acknowledged": false
+      }
+    ]
+  }
+}

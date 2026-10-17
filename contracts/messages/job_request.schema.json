@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/job_request.schema.json",
+  "title": "I5 job_request",
+  "description": "EC2 → RunPod 분석 워커, REST POST /jobs 본문 (명세 12.2 I5, 12.5). 워커는 job_id 를 돌려주고 결과는 POST /callbacks/jobs/{job_id} 로 job_callback 을 보낸다. 작업은 시간 제한(timeout_ms)을 두고 넘기면 실패로 처리한다. 분석 워커 실패는 VLM·정적 3D·보고서에만 영향을 주고 위치·경보에는 영향이 없다. 우선순위는 Tier 0 > VLM 빠른 경로 > 보고서·사후 요약 > 그 밖의 작업 (3.2). vlm_rationale 외 작업 유형의 input 형식은 각 작업 티켓에서 정한다.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "job_request" },
+    "payload": {
+      "type": "object",
+      "required": ["job_type", "priority", "timeout_ms", "callback_url", "input"],
+      "properties": {
+        "job_type": { "$ref": "#/$defs/job_type" },
+        "priority": {
+          "enum": ["VLM_FAST", "REPORT", "BACKGROUND"],
+          "description": "VLM_FAST: 이벤트 근거 빠른 경로. REPORT: 보고서·사후 요약. BACKGROUND: 정적 3D·보정·HMR 등"
+        },
+        "timeout_ms": { "type": "integer", "minimum": 1 },
+        "callback_url": { "type": "string", "pattern": "^https://", "description": "EC2 콜백 주소 (/callbacks/jobs/{job_id})" },
+        "input": { "type": "object" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "job_type": { "const": "vlm_rationale" } }, "required": ["job_type"] },
+          "then": {
+            "properties": {
+              "input": { "$ref": "vlm_rationale.schema.json#/$defs/input" },
+              "priority": { "const": "VLM_FAST" }
+            }
+          }
+        }
+      ]
+    }
+  },
+
+  "$defs": {
+    "job_type": {
+      "enum": ["vlm_rationale", "tbm_report", "static_reconstruct", "calibration_ba", "hmr_refine", "hmr_appearance_update"],
+      "description": "12.5 작업 유형. hmr_refine·hmr_appearance_update 는 확장·EXP-02"
+    }
+  }
+}

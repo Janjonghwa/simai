@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/journal_ack.schema.json",
+  "title": "I1 journal_ack",
+  "description": "EC2 → RunPod Tier 0. 저널 전송 확인과 빈 구간 재요청 (명세 3.2 저널 계약·재동기화 알림 규칙). Tier 0 는 받을 때마다 acked_offset 을 Network Volume 에 영속 저장하고, outbox(acked_offset 이후 구간)를 줄인다. EC2 가 journal_offset 빈 구간을 발견하면 resend_from_offset 으로 그 offset 부터 다시 요청한다. 운영자 확인(event_ack)과는 다른 전송 단계의 확인이다. 12.2 표에 이름이 없는 메시지로, 저널 계약을 구현하려고 추가했다. I1 LIVE 계약.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "journal_ack" },
+    "payload": {
+      "type": "object",
+      "required": ["gateway_id", "acked_offset"],
+      "properties": {
+        "gateway_id": { "$ref": "../common/defs.schema.json#/$defs/instance_id", "description": "확인 대상 Tier 0 인스턴스" },
+        "acked_offset": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "EC2 가 빠짐없이 영속 저장한 마지막 journal_offset. 이 offset 까지 다시 보내지 않아도 된다"
+        },
+        "resend_from_offset": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "빈 구간이 있으면 이 offset 부터 다시 보낸다. acked_offset 보다 크다"
+        },
+        "sync_mode": {
+          "type": "boolean",
+          "description": "EC2 가 재동기화 모드인지(받은 전이를 기록만 하고 실시간 알림 보류). event_state_snapshot 을 받으면 false"
+        }
+      }
+    }
+  }
+}

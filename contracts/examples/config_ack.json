@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.2.0",
+  "msg_type": "config_ack",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000010b",
+  "sent_at": 1760342405810,
+  "source_id": "tier0-01",
+  "payload": {
+    "config_version": "cfg-13",
+    "bundle_hash": "sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "result": "APPLIED",
+    "applied_at": 1760342405800,
+    "active_config_version": "cfg-13"
+  }
+}

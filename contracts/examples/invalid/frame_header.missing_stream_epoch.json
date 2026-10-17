@@ -1,0 +1,11 @@
+{
+  "_expect_error": "stream_epoch 가 없다. (camera_id, stream_epoch, frame_sequence) 가 프레임 유일 식별자다 (명세 12.7)",
+  "camera_id": "cam_A",
+  "frame_sequence": 10324,
+  "source_pts": 9876543,
+  "pts_timebase": "1/90000",
+  "estimated_capture_time_ms": 1760342400100,
+  "timestamp_source": "RECEIVE_ESTIMATED",
+  "timestamp_uncertainty_ms": 18,
+  "keyframe": true
+}

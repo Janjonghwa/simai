@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/risk_alert.schema.json",
+  "title": "I3 risk_alert",
+  "description": "EC2 → 반장 PWA, Web Push(VAPID) (명세 12.4, 10.1, 7.3). event_id, 등급, 구역, 위치, 근거 한 줄만 담는다. 근거 한 줄은 Risk Engine 규칙 근거(규칙 이름과 측정값)로 바로 보내고, VLM 근거는 나오면 이벤트 상세 화면에만 더하며 푸시를 다시 보내지 않는다(수정 6). 실제 알림이므로 LIVE 만 보낸다 (AGENTS.md 규칙 5, 11.4-3). 재동기화 중 해소된 이벤트(AUDIT_ONLY)는 푸시하지 않는다.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "risk_alert" },
+    "payload": {
+      "type": "object",
+      "required": ["event_id", "source", "severity", "needs_check", "zone_id", "summary", "summary_source", "delivery"],
+      "properties": {
+        "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "source": { "const": "LIVE" },
+        "severity": {
+          "enum": ["CRITICAL", "HIGH"],
+          "description": "반장 PWA 는 CRITICAL·HIGH 만 (7.3 표). 신뢰도가 낮으면 같은 경보에 needs_check"
+        },
+        "needs_check": { "type": "boolean", "description": "'확인 필요' 표시" },
+        "zone_id": { "type": ["string", "null"], "minLength": 1 },
+        "zone_name": { "type": "string", "description": "화면 표시용 구역 이름" },
+        "position_xy": {
+          "$ref": "../common/defs.schema.json#/$defs/vec2",
+          "description": "World XY(m). 10.1 의 '위치'. 12.4 목록에는 없어 선택 항목으로 둔다"
+        },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 120, "description": "규칙 근거 한 줄 (예: 'R2 가장자리 근접 0.82m')" },
+        "summary_source": {
+          "const": "RULE",
+          "description": "푸시 근거는 규칙 근거만. VLM 문장은 푸시에 넣지 않는다 (10.1, 수정 6)"
+        },
+        "delivery": {
+          "enum": ["REALTIME", "DELAYED_ACTIVE"],
+          "description": "DELAYED_ACTIVE: 재동기화 후 최종 상태가 활성으로 확인된 지연 알림 (3.2)"
+        },
+        "observation_time": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "capture_to_remote_delivery 측정 기준 (6.6)" }
+      }
+    }
+  }
+}

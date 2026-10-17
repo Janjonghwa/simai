@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/local_alert.schema.json",
+  "title": "I0 local_alert",
+  "description": "RunPod Tier 0 → 노트북, I0 제어 WebSocket. LIVE 판정 직후 EC2 를 거치지 않고 보내는 현장 경보 (명세 3.2, 3.10, 7.3). 노트북은 RAISED·UPDATED 에 소리·화면을 켜고, 소리는 확인(alarm_stop)까지 반복, 표시는 RESOLVED 를 받을 때까지 유지한다. 실제 알림이므로 LIVE 만, 노트북 로컬 경보 대상인 CRITICAL·HIGH 만 보낸다(7.3 표, AGENTS.md 규칙 5).",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "local_alert" },
+    "payload": {
+      "type": "object",
+      "required": [
+        "event_id", "event_sequence", "lifecycle", "source", "severity", "confidence", "needs_check",
+        "rule_id", "zone_id", "world_ids", "summary", "observation_time", "evaluated_at", "acknowledged"
+      ],
+      "properties": {
+        "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "event_sequence": { "type": "integer", "minimum": 1, "description": "늦게 온 낮은 sequence 로 화면을 되돌리지 않는다" },
+        "lifecycle": { "$ref": "../common/defs.schema.json#/$defs/risk_lifecycle" },
+        "source": { "const": "LIVE", "description": "PLANNED·WHAT_IF·REPLAY 는 현장 경보로 보내지 않는다" },
+        "severity": { "enum": ["CRITICAL", "HIGH"], "description": "노트북 로컬 경보는 CRITICAL·HIGH 만 (7.3)" },
+        "confidence": { "$ref": "../common/defs.schema.json#/$defs/risk_confidence", "description": "LOW 여도 같은 경보에 '확인 필요'를 붙인다(등급을 내리지 않음)" },
+        "needs_check": { "type": "boolean" },
+        "rule_id": { "type": "string", "minLength": 1 },
+        "zone_id": { "type": ["string", "null"], "minLength": 1 },
+        "world_ids": {
+          "type": "array",
+          "items": { "$ref": "../common/defs.schema.json#/$defs/world_id" },
+          "uniqueItems": true
+        },
+        "summary": { "type": "string", "minLength": 1, "description": "규칙 근거 한 줄 (규칙 이름과 측정값). 화면 표시용" },
+        "observation_time": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "판정에 쓴 관측의 촬영 시각. capture_to_site_alert 는 이 시각부터 잰다 (6.6)"
+        },
+        "evaluated_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "acknowledged": {
+          "type": "boolean",
+          "description": "이미 확인된 이벤트의 갱신이면 true. 노트북은 반복 소리를 다시 켜지 않고 표시만 갱신한다"
+        }
+      }
+    }
+  }
+}

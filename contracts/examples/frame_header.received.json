@@ -1,0 +1,12 @@
+{
+  "camera_id": "cam_A",
+  "stream_epoch": 12,
+  "frame_sequence": 10325,
+  "source_pts": 9876543,
+  "pts_timebase": "1/90000",
+  "estimated_capture_time_ms": 1760342400140,
+  "timestamp_source": "RECEIVE_ESTIMATED",
+  "timestamp_uncertainty_ms": 18,
+  "keyframe": false,
+  "received_at_ms": 1760342400290
+}

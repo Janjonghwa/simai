@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.2.0",
+  "msg_type": "journal_ack",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000010e",
+  "sent_at": 1760342460020,
+  "source_id": "ec2",
+  "payload": {
+    "gateway_id": "tier0-01",
+    "acked_offset": 1042,
+    "resend_from_offset": 1045,
+    "sync_mode": true
+  }
+}

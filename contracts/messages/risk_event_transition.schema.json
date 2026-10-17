@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/risk_event_transition.schema.json",
+  "title": "I1 risk_event_transition",
+  "description": "RunPod Tier 0 → EC2. LIVE RiskEvent 전이를 확정할 때마다 이벤트 저널에 기록하고 outbox(acked_offset 이후 저널 구간)로 보낸다 (명세 3.2, 12.3). LIVE RiskEvent 생명주기의 정본은 Tier 0 서비스이며 EC2 는 전이를 새로 만들지 않는다. EC2 는 (event_id, event_sequence)로 중복을 제거하고 순서를 검증하며, 처리한 journal_offset 을 journal_ack 로 돌려준다. I1 LIVE 계약.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "risk_event_transition" },
+    "payload": {
+      "type": "object",
+      "required": [
+        "event_id", "event_sequence", "journal_offset", "transition", "occurred_at", "gateway_id",
+        "observation_time", "evaluated_at", "rule_id", "rule_version", "config_version",
+        "calibration_version", "scene_version", "source", "severity", "confidence", "verification",
+        "needs_check", "world_ids", "zone_id", "metrics", "evidence_ref", "resent"
+      ],
+      "properties": {
+        "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "event_sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "이벤트별 단조 증가값. RAISED 가 1. Network Volume 에 저장해 Pod 교체 후에도 이어진다"
+        },
+        "journal_offset": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "이벤트 저널 전역 단조 증가 offset. event_sequence 와 다른 값이다 (3.2 저널 계약)"
+        },
+        "transition": {
+          "enum": ["RAISED", "UPDATED", "RESOLVED", "ACKNOWLEDGED"],
+          "description": "RAISED·UPDATED·RESOLVED 는 생명주기 전이(6.4). ACKNOWLEDGED 는 생명주기를 바꾸지 않는 운영자 확인 기록이며 ack 를 함께 싣는다 (3.2: 운영자 확인도 저널 이벤트)"
+        },
+        "occurred_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "전이를 확정한 시각" },
+        "gateway_id": { "$ref": "../common/defs.schema.json#/$defs/instance_id", "description": "전이를 만든 Tier 0 인스턴스. 봉투 source_id 와 같다" },
+        "observation_time": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "판정에 쓴 관측의 촬영 시각(t_latest_global)" },
+        "evaluated_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "Risk Engine 판정 시각(주입 시계)" },
+        "rule_id": { "type": "string", "minLength": 1 },
+        "rule_version": { "type": "integer", "minimum": 1 },
+        "config_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "calibration_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "scene_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "source": {
+          "const": "LIVE",
+          "description": "Tier 0 는 LIVE 만 판정한다. PLANNED·REPLAY·WHAT_IF 는 EC2 옆 컨테이너에서 계산하고 이 메시지로 오지 않는다 (3.2)"
+        },
+        "severity": { "$ref": "../common/defs.schema.json#/$defs/severity" },
+        "confidence": { "$ref": "../common/defs.schema.json#/$defs/risk_confidence" },
+        "verification": { "$ref": "../common/defs.schema.json#/$defs/risk_verification" },
+        "needs_check": { "type": "boolean", "description": "확인 필요 (명세 7.2, 8.2). Z 미확인·관절 UNCERTAIN 등" },
+        "world_ids": {
+          "type": "array",
+          "items": { "$ref": "../common/defs.schema.json#/$defs/world_id" },
+          "uniqueItems": true,
+          "description": "발생 당시의 원본 World ID (ID 교정 후에도 보존, 5.2). 구역·시스템 판정(R7)은 빈 배열"
+        },
+        "zone_id": { "type": ["string", "null"], "minLength": 1 },
+        "metrics": { "$ref": "../common/defs.schema.json#/$defs/rule_metrics" },
+        "evidence_ref": {
+          "$ref": "../common/defs.schema.json#/$defs/uuid",
+          "description": "판정 근거가 된 world_state 메시지의 msg_id"
+        },
+        "resent": { "type": "boolean", "description": "재접속·재시작 후 outbox 재전송이면 true" },
+        "related_event_id": {
+          "$ref": "../common/defs.schema.json#/$defs/uuid_v7",
+          "description": "재시작 복구 중 복원 Track 매칭이 애매해 새 이벤트를 만들었을 때 이전 이벤트 (3.2 재시작 복구)"
+        },
+        "ack": { "$ref": "../common/defs.schema.json#/$defs/operator_ack" }
+      },
+      "allOf": [
+        {
+          "description": "사람 대상이면 world_ids, 구역·시스템 대상이면 zone_id. 둘 다 비면 무엇에 대한 판정인지 알 수 없다",
+          "anyOf": [
+            { "properties": { "world_ids": { "minItems": 1 } } },
+            { "properties": { "zone_id": { "type": "string" } } }
+          ]
+        },
+        {
+          "description": "해소는 유효 관측으로 위험 조건이 사라진 것을 확인했을 때만이다. UNVERIFIABLE 이벤트는 자동 해소하지 않는다 (6.4)",
+          "if": { "properties": { "transition": { "const": "RESOLVED" } }, "required": ["transition"] },
+          "then": { "properties": { "verification": { "const": "VERIFIED" } } }
+        },
+        {
+          "description": "ACKNOWLEDGED 는 누가 확인했는지(ack)를 싣는다. 다른 전이에는 ack 를 싣지 않는다",
+          "if": { "properties": { "transition": { "const": "ACKNOWLEDGED" } }, "required": ["transition"] },
+          "then": { "required": ["ack"] },
+          "else": { "not": { "required": ["ack"] } }
+        }
+      ]
+    }
+  }
+}

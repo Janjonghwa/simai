@@ -21,6 +21,12 @@
       "minLength": 1,
       "description": "객체 저장소 주소(s3://...) 또는 Network Volume 경로(volume://<datacenter>/<path>). 영상·가중치·대형 산출물은 저장소에 넣지 않는다."
     },
+    "object_uri": {
+      "type": "string",
+      "pattern": "^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/\\S+$",
+      "maxLength": 1093,
+      "description": "객체 저장소(S3 또는 S3 호환 Lightsail 버킷)의 객체 주소 s3://<bucket>/<key> (명세 3.1, 12장 머리말). 이미지·클립은 메시지에 넣지 않고 이 주소로만 주고받는다. data: URI·Base64 본문·임시 서명 HTTPS 주소는 받지 않는다. 길이 한도는 s3:// + 버킷 63자 + / + 키 1024바이트"
+    },
 
     "camera_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
     "world_id": { "type": "string", "minLength": 1, "description": "세션 단위 익명 World ID (예: w-0012)" },
@@ -149,6 +155,136 @@
         "p50": { "type": "number", "minimum": 0 },
         "p95": { "type": "number", "minimum": 0 },
         "p99": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+
+    "uuid_v7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "UUIDv7 (시간 순서, 재시작·여러 현장에서도 충돌 없음). event_id 에 쓴다 (명세 3.2 식별자 규칙)"
+    },
+    "instance_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "송신 주체 식별자 (tier0-01, laptop-01, ec2). Tier 0 인스턴스 식별자가 이벤트의 gateway_id 다 (명세 12.1)"
+    },
+
+    "risk_origin": {
+      "enum": ["LIVE", "PLANNED", "REPLAY", "WHAT_IF"],
+      "description": "판정 출처 (명세 7.1). 실제 알림 채널로 가는 것은 LIVE 뿐이다 (7.4, 11.4)"
+    },
+    "severity": {
+      "enum": ["CRITICAL", "HIGH", "CAUTION", "INFO"],
+      "description": "위험 정도 (명세 7.1). 신뢰도가 낮아도 내려가지 않는다 (7.3)"
+    },
+    "risk_confidence": {
+      "enum": ["HIGH", "LOW"],
+      "description": "증거 신뢰도 (명세 7.3). severity 와 독립이다"
+    },
+    "risk_lifecycle": { "enum": ["RAISED", "UPDATED", "RESOLVED"], "description": "명세 6.2, 6.4" },
+    "risk_verification": {
+      "enum": ["VERIFIED", "UNVERIFIABLE"],
+      "description": "해소 여부를 관측으로 확인할 수 있는지 (명세 6.2, 6.4). UNVERIFIABLE 이면 자동 해소하지 않는다"
+    },
+    "system_health": { "enum": ["NOMINAL", "DEGRADED", "UNSAFE_UNKNOWN"], "description": "명세 6.2" },
+    "config_sync": {
+      "enum": ["CURRENT", "PENDING", "UNVERIFIED", "STALE"],
+      "description": "명세 6.2, 3.2. 어느 상태든 판정은 계속한다"
+    },
+    "link_state": { "enum": ["CONNECTED", "DISCONNECTED"] },
+
+    "rule_metrics": {
+      "type": "object",
+      "description": "규칙의 수치 근거. 단위는 키 이름에 붙인다 (예: edge_distance_m, height_diff_m)",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
+      "additionalProperties": { "type": "number" }
+    },
+
+    "severity_upward_only": {
+      "description": "같은 객체의 proposed_severity 는 severity 보다 높은 등급이거나 null 이다. VLM 은 상향 의견만 내고 경보를 낮추거나 끄지 못한다 (명세 5.4, 원칙 6, AGENTS.md 규칙 4). 같은 등급도 의견이 아니므로 null 로 둔다",
+      "allOf": [
+        {
+          "if": { "properties": { "severity": { "const": "CRITICAL" } }, "required": ["severity"] },
+          "then": { "properties": { "proposed_severity": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "severity": { "const": "HIGH" } }, "required": ["severity"] },
+          "then": { "properties": { "proposed_severity": { "enum": [null, "CRITICAL"] } } }
+        },
+        {
+          "if": { "properties": { "severity": { "const": "CAUTION" } }, "required": ["severity"] },
+          "then": { "properties": { "proposed_severity": { "enum": [null, "CRITICAL", "HIGH"] } } }
+        },
+        {
+          "if": { "properties": { "severity": { "const": "INFO" } }, "required": ["severity"] },
+          "then": { "properties": { "proposed_severity": { "enum": [null, "CRITICAL", "HIGH", "CAUTION"] } } }
+        }
+      ]
+    },
+
+    "ack_channel": {
+      "enum": ["CONTROL_ROOM", "FOREMAN_PWA", "SITE_BUTTON"],
+      "description": "운영자 확인이 들어온 곳: 관제 화면, 반장 PWA, 노트북 현장 확인 버튼 (명세 3.2, 3.10)"
+    },
+    "operator_ack": {
+      "type": "object",
+      "description": "운영자 확인(ACKNOWLEDGED) 한 건. 확인은 해소가 아니다 (명세 6.4). 누가 확인해도 노트북 반복 소리를 멈추고, 점멸 표시는 해소까지 유지한다. 누가 확인했는지는 저널에 남긴다 (3.2)",
+      "required": ["ack_id", "channel", "actor_role", "actor_id", "acked_at"],
+      "properties": {
+        "ack_id": { "$ref": "#/$defs/uuid", "description": "확인을 만든 쪽(EC2 또는 노트북)이 발급. 중복 수신 제거용" },
+        "channel": { "$ref": "#/$defs/ack_channel" },
+        "actor_role": { "enum": ["ADMIN", "FOREMAN", "SITE"], "description": "SITE 는 현장 확인 버튼(노트북)" },
+        "actor_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "계정 ID 또는 노트북 기기 ID. 사람 이름을 넣지 않는다 (명세 11.4-5)"
+        },
+        "acked_at": { "$ref": "#/$defs/timestamp_ms" }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "현장 확인 버튼은 노트북 기기만, 관제 화면·PWA 는 계정(관리자·반장)만",
+          "if": { "properties": { "channel": { "const": "SITE_BUTTON" } }, "required": ["channel"] },
+          "then": { "properties": { "actor_role": { "const": "SITE" } } },
+          "else": { "properties": { "actor_role": { "enum": ["ADMIN", "FOREMAN"] } } }
+        }
+      ]
+    },
+
+    "frame_key": {
+      "type": "object",
+      "description": "프레임의 유일 식별자 (camera_id, stream_epoch, frame_sequence) (명세 12.7)",
+      "required": ["camera_id", "stream_epoch", "frame_sequence"],
+      "properties": {
+        "camera_id": { "$ref": "#/$defs/camera_id" },
+        "stream_epoch": { "type": "integer", "minimum": 0, "description": "카메라 스트림이 재연결될 때마다 증가" },
+        "frame_sequence": { "type": "integer", "minimum": 0, "description": "같은 stream_epoch 안에서 단조 증가. 빈 구간은 gateway_to_runpod_loss" }
+      }
+    },
+    "capture_time": {
+      "type": "object",
+      "description": "촬영 시각 계약 (명세 3.9). 모든 프레임·관측에 붙인다. C110 기본값은 RECEIVE_ESTIMATED",
+      "required": ["estimated_capture_time_ms", "timestamp_source", "timestamp_uncertainty_ms"],
+      "properties": {
+        "estimated_capture_time_ms": { "$ref": "#/$defs/timestamp_ms" },
+        "timestamp_source": { "$ref": "#/$defs/timestamp_source" },
+        "timestamp_uncertainty_ms": {
+          "$ref": "#/$defs/duration_ms",
+          "description": "기준(초기값 25ms)을 넘는 카메라는 그 시각의 삼각측량에서 뺀다"
+        }
+      }
+    },
+
+    "hmac_signature": {
+      "type": "object",
+      "description": "I5 콜백 서명 (명세 12.2 I5, NFR-12). value = HMAC-SHA256(key_id 의 비밀 키, 이 필드를 뺀 메시지 전체의 RFC 8785 정규화 JSON) 의 소문자 16진수. 수신 측(EC2)은 서명과 sent_at 허용 범위, msg_id 중복을 함께 검사한다",
+      "required": ["alg", "key_id", "value"],
+      "properties": {
+        "alg": { "const": "HMAC-SHA256" },
+        "key_id": { "type": "string", "minLength": 1, "description": "키 교체용 식별자. 비밀 키 자체는 .env 에만 둔다" },
+        "value": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       },
       "additionalProperties": false
     }

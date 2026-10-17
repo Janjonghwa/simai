@@ -1,0 +1,38 @@
+{
+  "_expect_error": "ACKNOWLEDGED 인데 누가 확인했는지(ack)가 없다 (명세 3.2 수정 6)",
+  "schema_version": "1.2.0",
+  "msg_type": "risk_event_transition",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000102",
+  "sent_at": 1760342400400,
+  "source_id": "tier0-01",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "event_sequence": 4,
+    "journal_offset": 1050,
+    "transition": "ACKNOWLEDGED",
+    "occurred_at": 1760342402510,
+    "gateway_id": "tier0-01",
+    "observation_time": 1760342402300,
+    "evaluated_at": 1760342402500,
+    "rule_id": "R2",
+    "rule_version": 3,
+    "config_version": "cfg-12",
+    "calibration_version": "cal-7",
+    "scene_version": "scene-3",
+    "source": "LIVE",
+    "severity": "CRITICAL",
+    "confidence": "HIGH",
+    "verification": "VERIFIED",
+    "needs_check": false,
+    "world_ids": [
+      "w-0012"
+    ],
+    "zone_id": "z-04",
+    "metrics": {
+      "edge_distance_m": 0.82,
+      "height_diff_m": 2.1
+    },
+    "evidence_ref": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "resent": true
+  }
+}

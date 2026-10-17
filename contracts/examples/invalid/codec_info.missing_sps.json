@@ -1,0 +1,12 @@
+{
+  "_expect_error": "SPS 없이 연결을 시작했다. 코덱 정보와 키프레임이 모두 와야 관측을 시작한다 (명세 12.7)",
+  "camera_id": "cam_A",
+  "stream_epoch": 12,
+  "codec": "H264",
+  "profile": "High",
+  "pps": "aO48sA==",
+  "pts_timebase": "1/90000",
+  "width": 2304,
+  "height": 1296,
+  "nominal_fps": 25
+}

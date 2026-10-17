@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/frame_header.schema.json",
+  "title": "I0 프레임 헤더",
+  "description": "노트북 → RunPod Tier 0, 카메라별 영상 연결. 노트북은 디코딩하지 않고 카메라가 보낸 압축 프레임(H.264 접근 단위) 하나마다 이 헤더를 붙여 같은 메시지에 싣는다 (명세 12.7). 영상과 시각을 다른 채널로 보내면 촬영 시각이 엉뚱한 프레임에 붙을 수 있기 때문이다. I0 영상은 바이너리라 공통 봉투를 쓰지 않는다(12.1 예외). 전송 규칙(길이 접두, 카메라별 TLS 연결, 기기 토큰)은 contracts/README.md 의 I0 절에 있다.",
+  "allOf": [
+    { "$ref": "../common/defs.schema.json#/$defs/frame_key" },
+    { "$ref": "../common/defs.schema.json#/$defs/capture_time" }
+  ],
+  "type": "object",
+  "required": ["source_pts", "pts_timebase", "keyframe"],
+  "properties": {
+    "camera_id": true,
+    "stream_epoch": true,
+    "frame_sequence": true,
+    "estimated_capture_time_ms": true,
+    "timestamp_source": true,
+    "timestamp_uncertainty_ms": true,
+    "source_pts": {
+      "type": ["integer", "null"],
+      "description": "카메라 스트림의 PTS(RTP 타임스탬프 기준). 없으면 null. 카메라 → 노트북 끊김(camera_to_gateway_gap) 측정에 쓴다"
+    },
+    "pts_timebase": { "$ref": "#/$defs/timebase" },
+    "keyframe": { "type": "boolean" },
+    "received_at_ms": {
+      "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+      "description": "노트북 수신 시각. RECEIVE_ESTIMATED 면 estimated_capture_time_ms 는 이 값에서 추정 지연을 뺀 값이다 (3.9)"
+    }
+  },
+  "additionalProperties": false,
+
+  "$defs": {
+    "timebase": {
+      "type": "string",
+      "pattern": "^1/[1-9][0-9]*$",
+      "description": "PTS 단위 (예: 1/90000)"
+    }
+  }
+}

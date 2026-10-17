@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.2.0",
+  "msg_type": "risk_event",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000116",
+  "sent_at": 1760342400400,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f2-0000-7000-8000-000000000010",
+    "rule_id": "R5",
+    "rule_version": 1,
+    "source": "WHAT_IF",
+    "lifecycle": "RAISED",
+    "verification": "VERIFIED",
+    "severity": "CAUTION",
+    "confidence": "HIGH",
+    "needs_check": false,
+    "world_ids": [
+      "w-0901"
+    ],
+    "zone_id": "z-04",
+    "metrics": {
+      "time_to_entry_s": 1.7
+    },
+    "rationale": null,
+    "proposed_severity": null
+  }
+}

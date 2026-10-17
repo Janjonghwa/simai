@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/calibration_update.schema.json",
+  "title": "I1 calibration_update",
+  "description": "RunPod Tier 0 → EC2. 보정 상태나 버전이 바뀔 때 보낸다 (명세 12.2, 4.4, 4.5). 보정 전체(K·왜곡·R·t)는 메시지에 넣지 않고 CalibrationProvider 출력 문서(contracts/providers/calibration.schema.json)의 주소와 해시만 싣는다. 새 버전은 원자적으로 전환하고 덮어쓰지 않는다. I1 LIVE 계약.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "calibration_update" },
+    "payload": {
+      "type": "object",
+      "required": [
+        "calibration_version", "previous_calibration_version", "calibration_state", "provider_source",
+        "reason", "effective_at", "calibration_ref", "calibration_hash"
+      ],
+      "properties": {
+        "calibration_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "previous_calibration_version": {
+          "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/version_id" }, { "type": "null" }],
+          "description": "첫 보정이면 null"
+        },
+        "calibration_state": { "$ref": "../common/defs.schema.json#/$defs/calibration_state" },
+        "provider_source": { "$ref": "../common/defs.schema.json#/$defs/calibration_source" },
+        "reason": {
+          "enum": ["INITIAL", "RECALIBRATED", "STATE_CHANGED", "DRIFT_DETECTED", "STREAM_CHANGED"],
+          "description": "STREAM_CHANGED: 스트림 해상도·화각 변경 (4.4 DRIFTED 조건)"
+        },
+        "effective_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "Tier 0 가 이 버전으로 전환한 시각" },
+        "calibration_ref": { "$ref": "../common/defs.schema.json#/$defs/uri", "description": "CalibrationProvider 출력 문서 주소" },
+        "calibration_hash": { "$ref": "../common/defs.schema.json#/$defs/sha256" },
+        "cameras": {
+          "type": "array",
+          "description": "카메라별 운영 중 재투영 오차 (4.5: 지나가는 사람의 keypoint 로 계속 계산)",
+          "items": {
+            "type": "object",
+            "required": ["camera_id", "reprojection_error_px"],
+            "properties": {
+              "camera_id": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+              "reprojection_error_px": {
+                "type": "object",
+                "required": ["median", "p95"],
+                "properties": {
+                  "median": { "type": "number", "minimum": 0 },
+                  "p95": { "type": "number", "minimum": 0 }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "allOf": [
+        {
+          "description": "공개 데이터 정답·시뮬레이터·모델 추정 카메라는 CALIBRATED 가 될 수 없다 (명세 20.4 규칙 4, calibration.schema.json 과 같은 규칙)",
+          "if": {
+            "properties": { "provider_source": { "enum": ["DATASET_GT", "SIM", "MODEL_ESTIMATE"] } },
+            "required": ["provider_source"]
+          },
+          "then": { "properties": { "calibration_state": { "enum": ["UNCALIBRATED", "PROVISIONAL"] } } }
+        }
+      ]
+    }
+  }
+}

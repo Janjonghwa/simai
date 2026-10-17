@@ -1,0 +1,12 @@
+{
+  "camera_id": "cam_A",
+  "stream_epoch": 12,
+  "codec": "H264",
+  "profile": "High",
+  "sps": "Z2QAKqw0yAoA9sBEAAADAAQAAAMA8jxgykA=",
+  "pps": "aO48sA==",
+  "pts_timebase": "1/90000",
+  "width": 2304,
+  "height": 1296,
+  "nominal_fps": 25
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.2.0",
+  "msg_type": "risk_event_transition",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000104",
+  "sent_at": 1760342400400,
+  "source_id": "tier0-01",
+  "payload": {
+    "event_id": "0192a6f1-0a00-7c00-8a00-000000000002",
+    "event_sequence": 1,
+    "journal_offset": 1051,
+    "transition": "RAISED",
+    "occurred_at": 1760342403000,
+    "gateway_id": "tier0-01",
+    "observation_time": 1760342402900,
+    "evaluated_at": 1760342402990,
+    "rule_id": "R7",
+    "rule_version": 1,
+    "config_version": "cfg-12",
+    "calibration_version": "cal-7",
+    "scene_version": "scene-3",
+    "source": "LIVE",
+    "severity": "HIGH",
+    "confidence": "HIGH",
+    "verification": "VERIFIED",
+    "needs_check": false,
+    "world_ids": [],
+    "zone_id": "z-02",
+    "metrics": {
+      "observing_cameras": 1
+    },
+    "evidence_ref": "0192a6f0-7c1e-7b3a-9f2d-000000000103",
+    "resent": false
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.2.0",
+  "msg_type": "risk_event",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000115",
+  "sent_at": 1760342407610,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f1-0a00-7c00-8a00-000000000002",
+    "event_sequence": 2,
+    "rule_id": "R1",
+    "rule_version": 2,
+    "source": "LIVE",
+    "lifecycle": "UPDATED",
+    "verification": "VERIFIED",
+    "severity": "HIGH",
+    "confidence": "LOW",
+    "needs_check": true,
+    "world_ids": [
+      "w-0013"
+    ],
+    "zone_id": "z-01",
+    "metrics": {
+      "inside_margin_m": 0.12
+    },
+    "rationale": "작업자가 위험 구역 경계 안쪽 단상 위에 서 있다. 난간이 보이지 않는다.",
+    "proposed_severity": "CRITICAL",
+    "gateway_id": "tier0-01",
+    "config_version": "cfg-12",
+    "calibration_version": "cal-7",
+    "scene_version": "scene-3",
+    "raised_at": 1760342403000,
+    "updated_at": 1760342407600,
+    "resolved_at": null,
+    "acks": [
+      {
+        "ack_id": "6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f",
+        "channel": "CONTROL_ROOM",
+        "actor_role": "ADMIN",
+        "actor_id": "user-0003",
+        "acked_at": 1760342402100
+      }
+    ],
+    "delivery": "REALTIME"
+  }
+}

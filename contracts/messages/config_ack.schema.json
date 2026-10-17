@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/config_ack.schema.json",
+  "title": "I1 config_ack",
+  "description": "RunPod Tier 0 → EC2. config_bundle 검증·전환 결과 (명세 3.2, 11.1 현장 적용 시각). EC2 는 APPLIED 를 받은 뒤에만 '현장 적용됨'으로 표시한다. 거부하면 Tier 0 는 마지막 검증 묶음(active_config_version)으로 판정을 계속한다. I1 LIVE 계약.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "config_ack" },
+    "payload": {
+      "type": "object",
+      "required": ["config_version", "bundle_hash", "result", "active_config_version"],
+      "properties": {
+        "config_version": { "$ref": "../common/defs.schema.json#/$defs/version_id", "description": "응답하는 묶음" },
+        "bundle_hash": { "$ref": "../common/defs.schema.json#/$defs/sha256", "description": "Tier 0 가 내려받아 계산한 해시" },
+        "result": { "enum": ["APPLIED", "REJECTED"] },
+        "applied_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "원자적 전환 시각" },
+        "reject_reason": {
+          "enum": ["SCHEMA_INVALID", "HASH_MISMATCH", "REFERENCE_INVALID", "DOWNLOAD_FAILED"],
+          "description": "스키마·해시·참조 무결성 검증 실패, 또는 내려받기 실패"
+        },
+        "reject_detail": { "type": "string" },
+        "active_config_version": {
+          "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/version_id" }, { "type": "null" }],
+          "description": "응답 시점에 판정에 쓰는 묶음. 아직 검증 묶음이 하나도 없으면 null"
+        }
+      },
+      "allOf": [
+        {
+          "description": "APPLIED 는 적용 시각이 있고 거부 사유가 없다. REJECTED 는 거부 사유가 있고 적용 시각이 없다",
+          "if": { "properties": { "result": { "const": "APPLIED" } }, "required": ["result"] },
+          "then": { "required": ["applied_at"], "not": { "required": ["reject_reason"] } },
+          "else": { "required": ["reject_reason"], "not": { "required": ["applied_at"] } }
+        }
+      ]
+    }
+  }
+}

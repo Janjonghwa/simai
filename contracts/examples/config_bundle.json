@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.2.0",
+  "msg_type": "config_bundle",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000010a",
+  "sent_at": 1760342405001,
+  "source_id": "ec2",
+  "payload": {
+    "config_version": "cfg-13",
+    "previous_config_version": "cfg-12",
+    "issued_at": 1760342405000,
+    "bundle_uri": "s3://simai-site/config/cfg-13/manifest.json",
+    "bundle_hash": "sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "components": {
+      "zones": {
+        "version": "zones-5",
+        "sha256": "sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "uri": "s3://simai-site/config/cfg-13/zones.json"
+      },
+      "rules": {
+        "version": "rules-4",
+        "sha256": "sha256:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+        "uri": "s3://simai-site/config/cfg-13/rules.json",
+        "rule_versions": [
+          {
+            "rule_id": "R1",
+            "rule_version": 2
+          },
+          {
+            "rule_id": "R2",
+            "rule_version": 3
+          }
+        ]
+      },
+      "calibration": {
+        "version": "cal-7",
+        "sha256": "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "uri": "s3://simai-site/calibration/cal-7.json"
+      },
+      "operational_geometry": {
+        "version": "geom-2",
+        "sha256": "sha256:e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
+        "uri": "s3://simai-site/config/cfg-13/geometry.json"
+      }
+    }
+  }
+}
