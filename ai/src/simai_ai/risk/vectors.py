@@ -6,6 +6,7 @@
     python -m simai_ai.risk.vectors ai/tests/risk/vectors     # 모두 통과하면 종료 코드 0
 
 벡터 형식(JSON, format_version 1.x). 형식은 ai/tests/risk/vectors/README.md 에도 적는다.
+1.1 은 생명주기(lifecycle) 시나리오를 더했다. 1.0 벡터는 그대로 읽힌다.
 
     {
       "format_version": "1.0.0",
@@ -24,17 +25,40 @@
     }
 
 Finding 은 rule_id, rule_version, severity, world_ids, zone_id, needs_check, reasons, metrics 를 모두 적는다.
+holding(히스테리시스 띠, 기본 false)은 선택이다(1.1).
 사람 없는 구역·시스템 판정(R7 형태)은 world_ids 를 [] 로, zone_id 를 채운다. 둘 다 비울 수는 없다.
 metrics 는 절대 오차 METRIC_ABS_TOL 안에서 같으면 통과다(플랫폼별 libm 끝자리 차이). 나머지는 정확히 같아야 한다.
 모든 단계에서 "LIVE 가 아니면 알림 후보 0건" 불변 규칙도 함께 검사한다.
+
+생명주기 시나리오(1.1, 선택). 최상위에 lifecycle 이 있으면 단계마다 LifecycleTracker 에 판정을 넣고 전이·현장
+경보 신호를 비교한다.
+
+    "lifecycle": {"gateway_id": "tier0-01", "config_version": "cfg-12",
+                  "policy": {"clear_hold_ms": 3000, "clear_hold_ms_by_rule": {}, "metrics_update_interval_ms": 1000}},
+    steps[] 에 더하는 필드:
+      "inject_findings": [ Finding ],    # 규칙 출력 대신 넣는 판정(구체 규칙 등록 전 생명주기 시험용). 선택
+      "acks": [{"event": "e1", "actor": "SITE_BUTTON", "actor_id": "laptop-01", "acked_at": 1760342400500}],  # 선택
+      "expect": {"findings": [...],      # 규칙이 낸 판정만(inject_findings 제외)
+                 "transitions": [{"event": "e1", "event_sequence": 1, "transition": "RAISED", "changes": ["RAISED"],
+                                  "rule_id": "R1", "severity": "HIGH", "needs_check": false,
+                                  "verification": "VERIFIED", "world_ids": ["w-0012"], "zone_id": "z-04",
+                                  "acknowledged": false}],
+                 "local_signals": [{"kind": "LOCAL_ALERT", "event": "e1", "severity": "HIGH", "needs_check": false}]}
+
+- event 는 이벤트 별칭이다. 실행기가 RAISED 순서대로 e1, e2, … 를 붙인다(event_id 는 UUIDv7 이라 적지 않는다).
+- 확인(acks)은 그 단계의 판정을 반영한 뒤 같은 시계로 적용한다. 전이·신호는 판정 → 확인 순서로 비교한다.
+- lifecycle 이 있으면 expect.transitions·local_signals 를 반드시 적는다(빈 배열 가능).
+- 불변 규칙도 함께 검사한다: LIVE 가 아니면 현장 경보 신호 0건, event_id 는 UUIDv7, gateway_id 일치,
+  event_sequence 는 이벤트별로 1 부터 1 씩 증가.
 """
 
 import argparse
 import json
 import math
+import random
 import sys
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -52,9 +76,12 @@ from simai_ai.risk._parse import (
     reject_unknown_keys,
     require,
 )
+from simai_ai.risk.alerting import AckActor, LocalSignal
 from simai_ai.risk.clock import FixedClock
 from simai_ai.risk.common import Origin, Severity
 from simai_ai.risk.engine import Evaluation, RiskEngine, RuleContractError
+from simai_ai.risk.event_id import EventIdFactory, is_uuid7
+from simai_ai.risk.lifecycle import EventTransition, LifecyclePolicy, LifecycleTracker
 from simai_ai.risk.registry import RuleRegistry, default_registry
 from simai_ai.risk.rule import Finding
 from simai_ai.risk.world import WorldState
@@ -65,10 +92,30 @@ METRIC_ABS_TOL = 1e-9
 
 
 @dataclass(frozen=True)
+class VectorAck:
+    event: str  # 이벤트 별칭(e1, e2, …)
+    actor: AckActor
+    actor_id: str
+    acked_at: int
+
+
+@dataclass(frozen=True)
 class VectorStep:
     clock_ms: int
     world_state: WorldState
     expected: tuple[Finding, ...]
+    injected: tuple[Finding, ...] = ()
+    acks: tuple[VectorAck, ...] = ()
+    # 생명주기 기대값. 비교용 dict(키는 _TRANSITION_KEYS·_SIGNAL_KEYS). lifecycle 이 없으면 None.
+    expected_transitions: tuple[Mapping[str, Any], ...] | None = None
+    expected_signals: tuple[Mapping[str, Any], ...] | None = None
+
+
+@dataclass(frozen=True)
+class LifecycleSpec:
+    gateway_id: str
+    config_version: str
+    policy: LifecyclePolicy
 
 
 @dataclass(frozen=True)
@@ -80,6 +127,7 @@ class Vector:
     zones: tuple[Zone, ...]
     steps: tuple[VectorStep, ...]
     path: Path | None = None
+    lifecycle: LifecycleSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -96,7 +144,9 @@ class VectorResult:
 def parse_vector(obj: Any, path: Path | None = None) -> Vector:
     where = str(path) if path else "vector"
     obj = as_mapping(obj, where)
-    reject_unknown_keys(obj, {"format_version", "vector_id", "description", "origin", "rules", "zones", "steps"}, where)
+    reject_unknown_keys(
+        obj, {"format_version", "vector_id", "description", "origin", "rules", "zones", "steps", "lifecycle"}, where
+    )
 
     version = as_str(require(obj, "format_version", where), f"{where}.format_version")
     if version.split(".")[0] != str(FORMAT_MAJOR):
@@ -109,31 +159,48 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
         reject_unknown_keys(r, {"rule_id", "rule_version"}, at)
         rules.append((as_str(require(r, "rule_id", at), at), as_int(require(r, "rule_version", at), at, minimum=1)))
 
+    lifecycle = None if obj.get("lifecycle") is None else _parse_lifecycle(obj["lifecycle"], f"{where}.lifecycle")
+
     steps = []
     last_clock = -1
     for i, s in enumerate(as_list(require(obj, "steps", where), f"{where}.steps")):
         at = f"{where}.steps[{i}]"
         s = as_mapping(s, at)
-        reject_unknown_keys(s, {"clock_ms", "world_state", "expect"}, at)
+        step_keys = {"clock_ms", "world_state", "expect"}
+        if lifecycle is not None:
+            step_keys |= {"inject_findings", "acks"}
+        reject_unknown_keys(s, step_keys, at)
         clock_ms = as_timestamp_ms(require(s, "clock_ms", at), f"{at}.clock_ms")
         if clock_ms < last_clock:
             raise RiskInputError(f"{at}.clock_ms: 단계의 시계가 뒤로 갔다 ({last_clock} → {clock_ms})")
         last_clock = clock_ms
         expect = as_mapping(require(s, "expect", at), f"{at}.expect")
-        reject_unknown_keys(expect, {"findings"}, f"{at}.expect")
-        findings = as_list(require(expect, "findings", f"{at}.expect"), f"{at}.expect.findings")
-        steps.append(
-            VectorStep(
-                clock_ms=clock_ms,
-                world_state=WorldState.from_payload(require(s, "world_state", at), f"{at}.world_state"),
-                expected=tuple(
-                    sorted(
-                        (_parse_finding(f, f"{at}.expect.findings[{j}]") for j, f in enumerate(findings)),
-                        key=lambda f: f.sort_key,
-                    )
+        reject_unknown_keys(
+            expect, {"findings"} if lifecycle is None else {"findings", "transitions", "local_signals"}, f"{at}.expect"
+        )
+        step = VectorStep(
+            clock_ms=clock_ms,
+            world_state=WorldState.from_payload(require(s, "world_state", at), f"{at}.world_state"),
+            expected=_parse_findings(require(expect, "findings", f"{at}.expect"), f"{at}.expect.findings"),
+        )
+        if lifecycle is not None:
+            transitions = as_list(require(expect, "transitions", f"{at}.expect"), f"{at}.expect.transitions")
+            signals = as_list(require(expect, "local_signals", f"{at}.expect"), f"{at}.expect.local_signals")
+            step = replace(
+                step,
+                injected=_parse_findings(s.get("inject_findings", []), f"{at}.inject_findings"),
+                acks=tuple(
+                    _parse_ack(a, f"{at}.acks[{j}]") for j, a in enumerate(as_list(s.get("acks", []), f"{at}.acks"))
+                ),
+                expected_transitions=tuple(
+                    _parse_expected(t, _TRANSITION_KEYS, f"{at}.expect.transitions[{j}]")
+                    for j, t in enumerate(transitions)
+                ),
+                expected_signals=tuple(
+                    _parse_expected(t, _SIGNAL_KEYS, f"{at}.expect.local_signals[{j}]") for j, t in enumerate(signals)
                 ),
             )
-        )
+        steps.append(step)
     if not steps:
         raise RiskInputError(f"{where}.steps: 단계가 하나 이상 있어야 한다")
 
@@ -148,6 +215,7 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
         ),
         steps=tuple(steps),
         path=path,
+        lifecycle=lifecycle,
     )
 
 
@@ -160,13 +228,94 @@ def run_vector(vector: Vector, registry: RuleRegistry | None = None) -> VectorRe
     registry = default_registry() if registry is None else registry
     clock = FixedClock(vector.steps[0].clock_ms)
     engine = RiskEngine((registry.create(rule_id, version) for rule_id, version in vector.rules), clock)
+    lifecycle = None if vector.lifecycle is None else _LifecycleRun(vector, vector.lifecycle, clock)
 
     mismatches: list[str] = []
     for i, step in enumerate(vector.steps):
         clock.set(step.clock_ms)
         evaluation = engine.evaluate(step.world_state, vector.zones, vector.origin)
         mismatches += [f"steps[{i}]: {m}" for m in _compare(evaluation, step)]
+        if lifecycle is not None:
+            mismatches += [f"steps[{i}]: {m}" for m in lifecycle.step(evaluation, step)]
     return VectorResult(vector.vector_id, vector.path, tuple(mismatches))
+
+
+class _LifecycleRun:
+    """벡터 하나의 생명주기 실행. 이벤트 별칭(e1, e2, …)과 이벤트별 마지막 event_sequence 를 기억한다."""
+
+    def __init__(self, vector: Vector, spec: LifecycleSpec, clock: FixedClock) -> None:
+        self._spec = spec
+        # 같은 벡터면 같은 event_id 가 나오도록 난수를 고정한다. 비교는 별칭으로 한다.
+        ids = EventIdFactory(clock, randbits=random.Random(vector.vector_id).getrandbits)
+        self._tracker = LifecycleTracker(
+            origin=vector.origin, gateway_id=spec.gateway_id, clock=clock, policy=spec.policy, id_factory=ids
+        )
+        self._labels: dict[str, str] = {}
+        self._sequences: dict[str, int] = {}
+
+    def step(self, evaluation: Evaluation, step: VectorStep) -> list[str]:
+        out: list[str] = []
+        if step.injected:
+            findings = tuple(sorted(evaluation.findings + step.injected, key=lambda f: f.sort_key))
+            evaluation = replace(evaluation, findings=findings)
+        result = self._tracker.apply(evaluation, step.world_state, config_version=self._spec.config_version)
+        transitions = list(result.transitions)
+        signals = list(result.local_signals)
+        for t in transitions:  # 같은 단계의 확인이 방금 생긴 이벤트를 별칭으로 가리킬 수 있게 먼저 붙인다
+            self._labels.setdefault(t.event_id, f"e{len(self._labels) + 1}")
+        for ack in step.acks:
+            event_id = next((e for e, label in self._labels.items() if label == ack.event), None)
+            acked = None
+            if event_id is not None:
+                acked = self._tracker.acknowledge(event_id, ack.actor, ack.actor_id, ack.acked_at)
+            if acked is None:
+                out.append(f"확인 대상 {ack.event} 가 활성 이벤트가 아니다")
+                continue
+            transitions += acked.transitions
+            signals += acked.local_signals
+
+        actual_transitions = [self._show_transition(t, out) for t in transitions]
+        actual_signals = [self._show_signal(s) for s in signals]
+        if not evaluation.origin.alertable and signals:
+            out.append(f"{evaluation.origin} 생명주기에서 현장 경보 신호 {len(signals)}건이 나왔다(LIVE 만 알린다)")
+        if actual_transitions != list(step.expected_transitions or ()):
+            out.append(f"전이 실제 {actual_transitions} != 기대 {list(step.expected_transitions or ())}")
+        if actual_signals != list(step.expected_signals or ()):
+            out.append(f"현장 경보 신호 실제 {actual_signals} != 기대 {list(step.expected_signals or ())}")
+        return out
+
+    def _show_transition(self, t: EventTransition, out: list[str]) -> dict[str, Any]:
+        s = t.state
+        label = self._labels.setdefault(s.event_id, f"e{len(self._labels) + 1}")
+        if not is_uuid7(s.event_id):
+            out.append(f"{label}: event_id {s.event_id} 가 UUIDv7 이 아니다")
+        if s.gateway_id != self._spec.gateway_id:
+            out.append(f"{label}: gateway_id {s.gateway_id} != {self._spec.gateway_id}")
+        expected_sequence = self._sequences.get(s.event_id, 0) + 1
+        if s.event_sequence != expected_sequence:
+            out.append(f"{label}: event_sequence {s.event_sequence} != {expected_sequence}(1 씩 증가해야 한다)")
+        self._sequences[s.event_id] = s.event_sequence
+        return {
+            "event": label,
+            "event_sequence": s.event_sequence,
+            "transition": str(t.transition),
+            "changes": [str(c) for c in t.changes],
+            "rule_id": s.rule_id,
+            "severity": str(s.severity),
+            "needs_check": s.needs_check,
+            "verification": str(s.verification),
+            "world_ids": list(s.world_ids),
+            "zone_id": s.zone_id,
+            "acknowledged": s.acknowledged,
+        }
+
+    def _show_signal(self, signal: LocalSignal) -> dict[str, Any]:
+        return {
+            "kind": str(signal.kind),
+            "event": self._labels.get(signal.event_id, signal.event_id),
+            "severity": str(signal.severity),
+            "needs_check": signal.needs_check,
+        }
 
 
 def discover(paths: Iterable[Path]) -> list[Path]:
@@ -210,7 +359,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _parse_finding(obj: Any, where: str) -> Finding:
     obj = as_mapping(obj, where)
-    keys = {"rule_id", "rule_version", "severity", "world_ids", "zone_id", "needs_check", "reasons", "metrics"}
+    keys = {
+        "rule_id",
+        "rule_version",
+        "severity",
+        "world_ids",
+        "zone_id",
+        "needs_check",
+        "reasons",
+        "metrics",
+        "holding",
+    }
     reject_unknown_keys(obj, keys, where)
     metrics = as_mapping(require(obj, "metrics", where), f"{where}.metrics")
     return Finding(
@@ -228,7 +387,73 @@ def _parse_finding(obj: Any, where: str) -> Finding:
             for i, r in enumerate(as_list(require(obj, "reasons", where), f"{where}.reasons"))
         ),
         metrics={k: as_number(v, f"{where}.metrics.{k}") for k, v in metrics.items()},
+        holding=as_bool(obj.get("holding", False), f"{where}.holding"),
     )
+
+
+def _parse_findings(items: Any, where: str) -> tuple[Finding, ...]:
+    """판정 목록을 읽어 정렬한다(순서 무관 비교)."""
+    parsed = (_parse_finding(f, f"{where}[{j}]") for j, f in enumerate(as_list(items, where)))
+    return tuple(sorted(parsed, key=lambda f: f.sort_key))
+
+
+_TRANSITION_KEYS = (
+    "event",
+    "event_sequence",
+    "transition",
+    "changes",
+    "rule_id",
+    "severity",
+    "needs_check",
+    "verification",
+    "world_ids",
+    "zone_id",
+    "acknowledged",
+)
+_SIGNAL_KEYS = ("kind", "event", "severity", "needs_check")
+
+
+def _parse_lifecycle(obj: Any, where: str) -> LifecycleSpec:
+    obj = as_mapping(obj, where)
+    reject_unknown_keys(obj, {"gateway_id", "config_version", "policy"}, where)
+    at = f"{where}.policy"
+    policy = as_mapping(obj.get("policy", {}), at)
+    reject_unknown_keys(policy, {"clear_hold_ms", "clear_hold_ms_by_rule", "metrics_update_interval_ms"}, at)
+    default = LifecyclePolicy()
+    by_rule = as_mapping(policy.get("clear_hold_ms_by_rule", {}), f"{at}.clear_hold_ms_by_rule")
+    return LifecycleSpec(
+        gateway_id=as_str(require(obj, "gateway_id", where), f"{where}.gateway_id"),
+        config_version=as_str(require(obj, "config_version", where), f"{where}.config_version"),
+        policy=LifecyclePolicy(
+            clear_hold_ms=as_int(policy.get("clear_hold_ms", default.clear_hold_ms), f"{at}.clear_hold_ms", minimum=0),
+            clear_hold_ms_by_rule={
+                k: as_int(v, f"{at}.clear_hold_ms_by_rule.{k}", minimum=0) for k, v in by_rule.items()
+            },
+            metrics_update_interval_ms=as_int(
+                policy.get("metrics_update_interval_ms", default.metrics_update_interval_ms),
+                f"{at}.metrics_update_interval_ms",
+                minimum=0,
+            ),
+        ),
+    )
+
+
+def _parse_ack(obj: Any, where: str) -> VectorAck:
+    obj = as_mapping(obj, where)
+    reject_unknown_keys(obj, {"event", "actor", "actor_id", "acked_at"}, where)
+    return VectorAck(
+        event=as_str(require(obj, "event", where), f"{where}.event"),
+        actor=as_enum(AckActor, require(obj, "actor", where), f"{where}.actor"),
+        actor_id=as_str(require(obj, "actor_id", where), f"{where}.actor_id"),
+        acked_at=as_timestamp_ms(require(obj, "acked_at", where), f"{where}.acked_at"),
+    )
+
+
+def _parse_expected(obj: Any, keys: tuple[str, ...], where: str) -> dict[str, Any]:
+    """기대 전이·신호. 모든 키를 적어야 하고, 실행 결과를 같은 키의 JSON 값으로 바꿔 그대로 비교한다."""
+    obj = as_mapping(obj, where)
+    reject_unknown_keys(obj, set(keys), where)
+    return {k: require(obj, k, where) for k in keys}
 
 
 def _compare(evaluation: Evaluation, step: VectorStep) -> list[str]:
@@ -250,7 +475,7 @@ def _compare(evaluation: Evaluation, step: VectorStep) -> list[str]:
 
 
 def _same(a: Finding, e: Finding) -> bool:
-    plain = ("rule_id", "rule_version", "severity", "world_ids", "zone_id", "needs_check", "reasons")
+    plain = ("rule_id", "rule_version", "severity", "world_ids", "zone_id", "needs_check", "reasons", "holding")
     if any(getattr(a, k) != getattr(e, k) for k in plain):
         return False
     if a.metrics.keys() != e.metrics.keys():
@@ -268,6 +493,7 @@ def _show(f: Finding) -> dict[str, Any]:
         "needs_check": f.needs_check,
         "reasons": list(f.reasons),
         "metrics": dict(f.metrics),
+        "holding": f.holding,
     }
 
 

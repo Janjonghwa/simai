@@ -1,0 +1,906 @@
+"""RiskEvent 생명주기 (명세 3.2 이벤트 소유권·식별자 규칙·저널 계약, 6.4, 7.3, 7.4, 5.2 ID 교정).
+
+엔진의 판정(Evaluation)과 같은 시각의 World 상태를 받아 이벤트 전이를 확정한다. 저장·전송은 하지 않고,
+저널에 그대로 넘길 수 있는 순수 데이터(EventTransition)와 현장 경보 신호(alerting.LocalSignal)를 돌려준다.
+LIVE 이벤트의 생명주기 정본은 RunPod Tier 0 의 이 추적기 하나다. EC2 는 전이를 새로 만들지 않는다.
+
+**생명주기.** RAISED → UPDATED → RESOLVED.
+- 발생: 이벤트 키(EventKey)에 해당하는 판정이 발생 임계값을 넘으면(Finding.holding=False) 바로 만든다.
+- 유지: 판정이 있으면(holding=True 포함) 해소 확인을 처음부터 다시 센다. holding 은 유지만 하므로 새 이벤트의
+  등급을 정하거나 활성 이벤트의 등급을 올리지 않는다.
+- 해소: 판정이 없고 대상이 유효하게 관측되는(VERIFIED) 상태가 해소 유지 시간 동안 이어질 때만 확정한다.
+  시간은 관측 시각(observation_time)으로 잰다. 영상이 멈추면 관측 시각이 멈추므로 해소도 멈춘다.
+- 관측 상실: 대상을 유효하게 관측할 수 없으면 검증 상태만 UNVERIFIABLE 이 되고 자동 해소하지 않는다(6.4, G3).
+- ACKNOWLEDGED 는 상태가 아니라 속성이다. 확인은 UPDATED 전이(변경 사유 ACKNOWLEDGED)로 저널에 남고
+  해소가 아니다. 누가 확인하든(관리자·반장·현장 버튼) 반복 소리 정지(AlarmStop)를 내고 표시는 해소까지 둔다.
+- ID 교정(identity_revision 증가, 명시적 교정)은 해소 확인을 처음부터 다시 세게 할 뿐 해소하지 않는다(5.2, G3).
+  이벤트에는 발생 당시의 원본 World ID(origin_world_ids)를 보존한다.
+
+**병합(7.4).** 같은 규칙·같은 사람(World ID 묶음)은 이벤트 하나를 갱신한다. 사람 대상은 구역이 바뀌어도 같은
+이벤트다(zone_id 는 갱신). 사람 없는 구역·시스템 판정(R7 형태)은 (규칙, 구역)이 키다. 한 사람에게 걸린 여러
+규칙은 group_key 가 같아 화면에서 한 묶음으로 보일 수 있다.
+
+**식별자(3.2).** event_id 는 UUIDv7(event_id.EventIdFactory), gateway_id 는 함께 싣는다. event_sequence 는 이벤트별로
+RAISED 가 1 이고 전이마다 1 씩 오른다. 체크포인트 복원(restore) 뒤에도 이어진다.
+
+**출처(7.4).** 추적기 하나는 한 출처만 다룬다. PLANNED·WHAT_IF·REPLAY 도 같은 규칙으로 전이를 만들지만
+(보고서·시뮬레이션 화면용) 현장 경보 신호는 절대 내지 않는다. 채널은 alerting.channels_for(7.3 표)로만 정한다.
+
+**확장 지점(S15P31A101-73 R6·R7).**
+- VerificationPolicy: 검증 가능 판단을 바꿔 끼운다. 기본 ObservedTracksPolicy 는 상태·신원·최신성(6.1)만 본다.
+  규칙에 필요한 관측 필드(예: R3 의 Z)가 있으면 그 규칙이 불확실할 때 holding·needs_check 판정을 내거나,
+  규칙별 정책으로 바꿔 끼운다.
+- 구역 대상 판정(world_ids 없음)은 (규칙, 구역) 키 이벤트가 된다. R7 이 그대로 쓴다.
+- R6 처럼 관측을 잃은 사람에게 원래 규칙 판정을 유지하려면 규칙이 holding 판정을 내면 된다.
+"""
+
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
+from enum import StrEnum
+from types import MappingProxyType
+from typing import Any, Protocol, runtime_checkable
+
+from simai_ai.risk._parse import RiskInputError, as_int
+from simai_ai.risk.alerting import (
+    AckActor,
+    AlarmStop,
+    AlertClear,
+    Channel,
+    Confidence,
+    LocalAlert,
+    LocalSignal,
+    channels_for,
+)
+from simai_ai.risk.clock import Clock
+from simai_ai.risk.common import Origin, Severity
+from simai_ai.risk.engine import Evaluation
+from simai_ai.risk.event_id import EventIdFactory
+from simai_ai.risk.rule import Finding, FindingTarget
+from simai_ai.risk.world import IdentityConfidence, ObservationState, WorldState, WorldTrack
+
+_SEVERITY_RANK = {Severity.INFO: 0, Severity.CAUTION: 1, Severity.HIGH: 2, Severity.CRITICAL: 3}
+
+
+class Lifecycle(StrEnum):
+    """RiskEvent 생명주기(명세 6.2). ACKNOWLEDGED 는 여기 없다(속성이다)."""
+
+    RAISED = "RAISED"
+    UPDATED = "UPDATED"
+    RESOLVED = "RESOLVED"
+
+
+class Verification(StrEnum):
+    """해소 여부를 관측으로 확인할 수 있는지(명세 6.2)."""
+
+    VERIFIED = "VERIFIED"
+    UNVERIFIABLE = "UNVERIFIABLE"
+
+
+class Change(StrEnum):
+    """전이 사유. 한 전이에 여러 개가 붙을 수 있다(정해진 순서로 정렬)."""
+
+    RAISED = "RAISED"
+    RESTORED = "RESTORED"
+    IDENTITY_REVISED = "IDENTITY_REVISED"  # world_state 의 identity_revision 증가
+    IDENTITY_CORRECTED = "IDENTITY_CORRECTED"  # 명시적 교정으로 World ID 가 바뀜
+    IDENTITY_CONFLICT = "IDENTITY_CONFLICT"  # 교정 대상 키에 이미 이벤트가 있어 연결만 남김
+    SEVERITY = "SEVERITY"
+    CONFIDENCE = "CONFIDENCE"
+    VERIFICATION = "VERIFICATION"
+    ZONE = "ZONE"
+    METRICS = "METRICS"
+    VERSION = "VERSION"  # 규칙·구성·보정·Scene 버전이 바뀜(근거 감사)
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    CLEARED = "CLEARED"  # 해소 확정
+
+
+_CHANGE_ORDER = {c: i for i, c in enumerate(Change)}
+
+
+@dataclass(frozen=True)
+class EventKey:
+    """이벤트 병합 키(명세 7.4). 사람 대상은 (규칙, World ID 묶음), 구역 대상은 (규칙, 구역)."""
+
+    rule_id: str
+    world_ids: tuple[str, ...]
+    zone_id: str | None
+
+    @classmethod
+    def of(cls, finding: Finding) -> "EventKey":
+        if finding.target is FindingTarget.PERSON:
+            return cls(finding.rule_id, finding.world_ids, None)
+        return cls(finding.rule_id, (), finding.zone_id)
+
+    @property
+    def target(self) -> FindingTarget:
+        return FindingTarget.PERSON if self.world_ids else FindingTarget.ZONE
+
+    @property
+    def group_key(self) -> str:
+        """화면 묶음 키. 한 사람에게 걸린 여러 규칙이 같은 값을 갖는다."""
+        if self.world_ids:
+            return "person:" + ",".join(self.world_ids)
+        return f"zone:{self.zone_id}"
+
+    @property
+    def sort_key(self) -> tuple[str, tuple[str, ...], str]:
+        return (self.rule_id, self.world_ids, self.zone_id or "")
+
+
+@dataclass(frozen=True)
+class AckRecord:
+    """확인 기록(수정 6). acked_at 은 확인한 시각(보낸 쪽 기준), recorded_at 은 Tier 0 가 기록한 시각."""
+
+    actor: AckActor
+    actor_id: str
+    acked_at: int
+    recorded_at: int
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "actor": str(self.actor),
+            "actor_id": self.actor_id,
+            "acked_at": self.acked_at,
+            "recorded_at": self.recorded_at,
+        }
+
+
+@dataclass(frozen=True)
+class TrackEvidence:
+    """전이 근거(명세 6.4): 대상 한 명의 카메라·좌표·관측 상태. 대상이 World 상태에 없으면 present=False."""
+
+    world_id: str
+    present: bool
+    observation_state: ObservationState | None = None
+    identity_revision: int | None = None
+    identity_confidence: IdentityConfidence | None = None
+    t_last_valid: int | None = None
+    cameras: tuple[str, ...] = ()
+    position_xy: tuple[float, ...] | None = None
+    pelvis_xyz: tuple[float, ...] | None = None
+    ground_anchor_xyz: tuple[float, ...] | None = None
+    head_z: float | None = None
+
+    @classmethod
+    def of(cls, world_id: str, track: WorldTrack | None) -> "TrackEvidence":
+        if track is None:
+            return cls(world_id=world_id, present=False)
+        return cls(
+            world_id=world_id,
+            present=True,
+            observation_state=track.observation_state,
+            identity_revision=track.identity_revision,
+            identity_confidence=track.identity_confidence,
+            t_last_valid=track.t_last_valid,
+            cameras=track.cameras,
+            position_xy=track.position_xy,
+            pelvis_xyz=track.pelvis_xyz,
+            ground_anchor_xyz=track.ground_anchor_xyz,
+            head_z=track.head_z,
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        def vec(v: tuple[float, ...] | None) -> list[float] | None:
+            return None if v is None else list(v)
+
+        return {
+            "world_id": self.world_id,
+            "present": self.present,
+            "observation_state": None if self.observation_state is None else str(self.observation_state),
+            "identity_revision": self.identity_revision,
+            "identity_confidence": None if self.identity_confidence is None else str(self.identity_confidence),
+            "t_last_valid": self.t_last_valid,
+            "cameras": list(self.cameras),
+            "position_xy": vec(self.position_xy),
+            "pelvis_xyz": vec(self.pelvis_xyz),
+            "ground_anchor_xyz": vec(self.ground_anchor_xyz),
+            "head_z": self.head_z,
+        }
+
+
+@dataclass(frozen=True)
+class EventState:
+    """활성 이벤트의 현재 상태. 체크포인트와 event_state_snapshot(3.2 재동기화)의 재료다."""
+
+    event_id: str
+    gateway_id: str
+    origin: Origin
+    event_sequence: int
+    lifecycle: Lifecycle
+    key: EventKey
+    rule_version: int
+    severity: Severity
+    needs_check: bool
+    verification: Verification
+    world_ids: tuple[str, ...]
+    origin_world_ids: tuple[str, ...]
+    zone_id: str | None
+    metrics: Mapping[str, float] = field(hash=False)
+    reasons: tuple[str, ...]
+    raised_at: int
+    evaluated_at: int
+    observation_time: int
+    config_version: str
+    calibration_version: str
+    scene_version: str
+    identity_revisions: Mapping[str, int] = field(hash=False)
+    acks: tuple[AckRecord, ...] = ()
+    related_event_id: str | None = None
+    local_alerted: bool = False
+
+    @property
+    def rule_id(self) -> str:
+        return self.key.rule_id
+
+    @property
+    def confidence(self) -> Confidence:
+        return Confidence.from_needs_check(self.needs_check)
+
+    @property
+    def acknowledged(self) -> bool:
+        return bool(self.acks)
+
+    @property
+    def group_key(self) -> str:
+        return self.key.group_key
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "event_id": self.event_id,
+            "gateway_id": self.gateway_id,
+            "source": str(self.origin),
+            "event_sequence": self.event_sequence,
+            "lifecycle": str(self.lifecycle),
+            "rule_id": self.rule_id,
+            "rule_version": self.rule_version,
+            "severity": str(self.severity),
+            "confidence": str(self.confidence),
+            "needs_check": self.needs_check,
+            "verification": str(self.verification),
+            "world_ids": list(self.world_ids),
+            "origin_world_ids": list(self.origin_world_ids),
+            "zone_id": self.zone_id,
+            "group_key": self.group_key,
+            "metrics": dict(self.metrics),
+            "reasons": list(self.reasons),
+            "raised_at": self.raised_at,
+            "evaluated_at": self.evaluated_at,
+            "observation_time": self.observation_time,
+            "config_version": self.config_version,
+            "calibration_version": self.calibration_version,
+            "scene_version": self.scene_version,
+            "identity_revisions": dict(self.identity_revisions),
+            "acknowledged": self.acknowledged,
+            "acks": [a.to_payload() for a in self.acks],
+            "related_event_id": self.related_event_id,
+            "local_alerted": self.local_alerted,
+        }
+
+
+@dataclass(frozen=True)
+class EventTransition:
+    """확정된 전이 하나(I1 risk_event_transition 의 재료, 저널 기록 단위).
+
+    occurred_at 은 전이를 확정한 주입 시계 시각이다. 판정 근거 시각은 observation_time·evaluated_at 이다.
+    evidence 는 전이 시점의 대상별 근거(카메라·좌표)다. 전송 여부(resent)와 journal_offset 은 저널이 붙인다.
+    """
+
+    state: EventState
+    transition: Lifecycle
+    changes: tuple[Change, ...]
+    occurred_at: int
+    evidence: tuple[TrackEvidence, ...] = ()
+    ack: AckRecord | None = None
+    evidence_ref: str | None = None
+
+    @property
+    def event_id(self) -> str:
+        return self.state.event_id
+
+    @property
+    def event_sequence(self) -> int:
+        return self.state.event_sequence
+
+    def to_payload(self) -> dict[str, Any]:
+        s = self.state
+        return {
+            "event_id": s.event_id,
+            "event_sequence": s.event_sequence,
+            "transition": str(self.transition),
+            "changes": [str(c) for c in self.changes],
+            "occurred_at": self.occurred_at,
+            "gateway_id": s.gateway_id,
+            "observation_time": s.observation_time,
+            "evaluated_at": s.evaluated_at,
+            "rule_id": s.rule_id,
+            "rule_version": s.rule_version,
+            "config_version": s.config_version,
+            "calibration_version": s.calibration_version,
+            "scene_version": s.scene_version,
+            "source": str(s.origin),
+            "severity": str(s.severity),
+            "confidence": str(s.confidence),
+            "needs_check": s.needs_check,
+            "verification": str(s.verification),
+            "world_ids": list(s.world_ids),
+            "origin_world_ids": list(s.origin_world_ids),
+            "zone_id": s.zone_id,
+            "group_key": s.group_key,
+            "metrics": dict(s.metrics),
+            "reasons": list(s.reasons),
+            "acknowledged": s.acknowledged,
+            "ack": None if self.ack is None else self.ack.to_payload(),
+            "related_event_id": s.related_event_id,
+            "evidence": [e.to_payload() for e in self.evidence],
+            "evidence_ref": self.evidence_ref,
+        }
+
+
+@dataclass(frozen=True)
+class LifecycleStep:
+    """한 번의 입력(판정·확인·교정·복원)이 낳은 전이와 현장 경보 신호. 순서는 저널 기록 순서다."""
+
+    transitions: tuple[EventTransition, ...] = ()
+    local_signals: tuple[LocalSignal, ...] = ()
+
+
+@dataclass(frozen=True)
+class LifecyclePolicy:
+    """생명주기 설정(초기 예시값, 7장 머리말: 실제 안전 기준이 아니며 시나리오 데이터셋으로 조정한다).
+
+    - clear_hold_ms: 해소 유지 시간. 판정 없이 유효 관측이 이만큼 이어져야 해소한다(7.2 예시 3초).
+    - clear_hold_ms_by_rule: 규칙별 해소 유지 시간.
+    - metrics_update_interval_ms: 수치(metrics)만 바뀐 UPDATED 의 최소 간격. 등급·신뢰도·검증 상태 변화는 바로 낸다.
+    """
+
+    clear_hold_ms: int = 3000
+    clear_hold_ms_by_rule: Mapping[str, int] = field(default_factory=dict, hash=False)
+    metrics_update_interval_ms: int = 1000
+
+    def __post_init__(self) -> None:
+        as_int(self.clear_hold_ms, "LifecyclePolicy.clear_hold_ms", minimum=0)
+        as_int(self.metrics_update_interval_ms, "LifecyclePolicy.metrics_update_interval_ms", minimum=0)
+        by_rule = {}
+        for rule_id, hold in sorted(self.clear_hold_ms_by_rule.items()):
+            by_rule[rule_id] = as_int(hold, f"LifecyclePolicy.clear_hold_ms_by_rule.{rule_id}", minimum=0)
+        object.__setattr__(self, "clear_hold_ms_by_rule", MappingProxyType(by_rule))
+
+    def hold_ms(self, rule_id: str) -> int:
+        return self.clear_hold_ms_by_rule.get(rule_id, self.clear_hold_ms)
+
+
+@runtime_checkable
+class VerificationPolicy(Protocol):
+    def verifiable(self, key: EventKey, world_ids: tuple[str, ...], world: WorldState, now_ms: int) -> bool:
+        """이 이벤트의 해소 여부를 지금 관측으로 확인할 수 있는지."""
+        ...
+
+
+@dataclass(frozen=True)
+class ObservedTracksPolicy:
+    """기본 검증 정책.
+
+    공통: 입력이 최신이어야 한다. T_lag = now - t_latest_global 이 max_lag_ms 를 넘으면(영상 전체 중단·지연)
+    멈춘 관측으로 해소를 확인하지 않는다.
+    사람 대상: 대상 World ID 가 모두 World 상태에 있고 OBSERVED 이며 신원이 IDENTITY_UNCERTAIN 이 아니고,
+    대상 자신의 관측이 최신이어야 한다(T_gap = t_latest_global - t_last_valid ≤ max_gap_ms). OBSERVED 도 최신이라는
+    뜻이 아니므로(6.1) 상류 상태 문자열만 믿지 않는다. PREDICTED·UNKNOWN 위치나 불확실한 신원으로는 위험이
+    사라졌다고 확인하지 않는다.
+    구역 대상: 규칙(R7)이 카메라 커버리지를 직접 판정하므로 lag 만 본다.
+
+    초기값은 6.1 의 OBSERVED 경계(gap 200ms)와 System Health DEGRADED lag 기준(600ms)이다(실험용 초기값).
+    """
+
+    max_gap_ms: int = 200
+    max_lag_ms: int = 600
+
+    def __post_init__(self) -> None:
+        as_int(self.max_gap_ms, "ObservedTracksPolicy.max_gap_ms", minimum=0)
+        as_int(self.max_lag_ms, "ObservedTracksPolicy.max_lag_ms", minimum=0)
+
+    def verifiable(self, key: EventKey, world_ids: tuple[str, ...], world: WorldState, now_ms: int) -> bool:
+        if now_ms - world.t_latest_global > self.max_lag_ms:
+            return False
+        tracks = {t.world_id: t for t in world.tracks}
+        for world_id in world_ids:
+            track = tracks.get(world_id)
+            if track is None or track.observation_state is not ObservationState.OBSERVED:
+                return False
+            if track.identity_confidence is IdentityConfidence.IDENTITY_UNCERTAIN:
+                return False
+            if world.t_latest_global - track.t_last_valid > self.max_gap_ms:
+                return False
+        return True
+
+
+@dataclass(frozen=True)
+class IdentityCorrection:
+    """World Track Manager 의 ID 교정 기록(명세 5.2): previous_world_id 가 world_id 로 바뀌었다."""
+
+    previous_world_id: str
+    world_id: str
+    identity_revision: int
+
+    def __post_init__(self) -> None:
+        if not self.previous_world_id or not self.world_id:
+            raise RiskInputError("IdentityCorrection: World ID 가 비었다")
+        if self.previous_world_id == self.world_id:
+            raise RiskInputError(f"IdentityCorrection: 같은 World ID 로 교정할 수 없다 ({self.world_id})")
+        as_int(self.identity_revision, "IdentityCorrection.identity_revision", minimum=0)
+
+
+class LifecycleError(RuntimeError):
+    """추적기 사용 순서·출처가 계약과 다르다(다른 출처 판정, 시각 역행 등)."""
+
+
+class _Active:
+    """추적기 안의 활성 이벤트(가변). 밖으로는 EventState 로만 낸다."""
+
+    def __init__(self, state: EventState) -> None:
+        self.state = state
+        self.clear_since: int | None = None  # 해소 확인을 시작한 관측 시각
+        self.metrics_emitted_at = state.evaluated_at
+        self.mark_emitted()
+
+    def update(self, **changes: Any) -> None:
+        self.state = replace(self.state, **changes)
+
+    def mark_emitted(self) -> None:
+        """전이로 내보낸 수치·근거를 기억한다. 제한 간격 때문에 미룬 변경을 나중에 내기 위해서다."""
+        self.emitted_metrics = dict(self.state.metrics)
+        self.emitted_reasons = self.state.reasons
+
+
+class LifecycleTracker:
+    """한 출처의 RiskEvent 생명주기. LIVE 는 Tier 0 인스턴스(gateway_id)마다 하나를 쓴다."""
+
+    def __init__(
+        self,
+        *,
+        origin: Origin,
+        gateway_id: str,
+        clock: Clock,
+        policy: LifecyclePolicy | None = None,
+        id_factory: EventIdFactory | None = None,
+        verification: VerificationPolicy | None = None,
+    ) -> None:
+        if not gateway_id:
+            raise RiskInputError("LifecycleTracker: gateway_id 가 비었다")
+        self._origin = Origin(origin)
+        self._gateway_id = gateway_id
+        self._clock = clock
+        self._policy = LifecyclePolicy() if policy is None else policy
+        self._ids = EventIdFactory(clock) if id_factory is None else id_factory
+        self._verification = ObservedTracksPolicy() if verification is None else verification
+        self._by_key: dict[EventKey, _Active] = {}
+        self._by_id: dict[str, _Active] = {}
+        self._last_evaluated_at = -1
+
+    @property
+    def origin(self) -> Origin:
+        return self._origin
+
+    @property
+    def gateway_id(self) -> str:
+        return self._gateway_id
+
+    def active(self) -> tuple[EventState, ...]:
+        """활성 이벤트(event_state_snapshot 재료). 키 순서로 정렬."""
+        return tuple(a.state for a in self._sorted_active())
+
+    def get(self, event_id: str) -> EventState | None:
+        active = self._by_id.get(event_id)
+        return None if active is None else active.state
+
+    def groups(self) -> Mapping[str, tuple[EventState, ...]]:
+        """group_key → 활성 이벤트. 한 사람에게 걸린 여러 규칙을 화면에서 한 묶음으로 보일 때 쓴다(7.4)."""
+        out: dict[str, list[EventState]] = {}
+        for state in self.active():
+            out.setdefault(state.group_key, []).append(state)
+        return MappingProxyType({k: tuple(v) for k, v in sorted(out.items())})
+
+    # --- 판정 반영 -----------------------------------------------------------------
+
+    def apply(
+        self,
+        evaluation: Evaluation,
+        world: WorldState,
+        *,
+        config_version: str,
+        evidence_ref: str | None = None,
+    ) -> LifecycleStep:
+        """한 번의 판정을 반영한다. world 는 그 판정의 입력 World 상태다."""
+        if evaluation.origin is not self._origin:
+            raise LifecycleError(f"{self._origin} 추적기에 {evaluation.origin} 판정이 들어왔다")
+        if world.t_latest_global != evaluation.observation_time:
+            raise LifecycleError(
+                f"판정의 관측 시각 {evaluation.observation_time} 과 World 상태 {world.t_latest_global} 가 다르다"
+            )
+        if evaluation.evaluated_at < self._last_evaluated_at:
+            raise LifecycleError(f"판정 시각이 뒤로 갔다 ({self._last_evaluated_at} → {evaluation.evaluated_at})")
+        if not config_version:
+            raise RiskInputError("apply: config_version 이 비었다")
+        self._last_evaluated_at = evaluation.evaluated_at
+
+        grouped: dict[EventKey, list[Finding]] = {}
+        for finding in evaluation.findings:
+            grouped.setdefault(EventKey.of(finding), []).append(finding)
+        tracks = {t.world_id: t for t in world.tracks}
+        frame = _Frame(evaluation, config_version, evidence_ref, self._clock.now_ms())
+
+        transitions: list[EventTransition] = []
+        signals: list[LocalSignal] = []
+        for key in sorted(set(grouped) | set(self._by_key), key=lambda k: k.sort_key):
+            findings = grouped.get(key, [])
+            active = self._by_key.get(key)
+            if active is None:
+                # holding 은 기존 이벤트 유지용이다. 새 이벤트의 등급·구역은 발생 판정에서만 고른다.
+                raising = [f for f in findings if not f.holding]
+                if raising:
+                    self._raise(key, _representative(raising), world, tracks, frame, transitions, signals)
+            else:
+                finding = _maintaining(findings, active.state.severity) if findings else None
+                self._advance(active, finding, world, tracks, frame, transitions, signals)
+        return LifecycleStep(tuple(transitions), tuple(signals))
+
+    def _raise(
+        self,
+        key: EventKey,
+        finding: Finding,
+        world: WorldState,
+        tracks: Mapping[str, WorldTrack],
+        frame: "_Frame",
+        transitions: list[EventTransition],
+        signals: list[LocalSignal],
+    ) -> None:
+        verified = self._verification.verifiable(key, key.world_ids, world, frame.evaluation.evaluated_at)
+        state = EventState(
+            event_id=self._ids.new(),
+            gateway_id=self._gateway_id,
+            origin=self._origin,
+            event_sequence=1,
+            lifecycle=Lifecycle.RAISED,
+            key=key,
+            rule_version=finding.rule_version,
+            severity=finding.severity,
+            needs_check=finding.needs_check,
+            verification=Verification.VERIFIED if verified else Verification.UNVERIFIABLE,
+            world_ids=key.world_ids,
+            origin_world_ids=key.world_ids,
+            zone_id=finding.zone_id,
+            metrics=finding.metrics,
+            reasons=finding.reasons,
+            raised_at=frame.evaluation.evaluated_at,
+            evaluated_at=frame.evaluation.evaluated_at,
+            observation_time=frame.evaluation.observation_time,
+            config_version=frame.config_version,
+            calibration_version=frame.evaluation.calibration_version,
+            scene_version=frame.evaluation.scene_version,
+            identity_revisions=MappingProxyType({w: tracks[w].identity_revision for w in key.world_ids if w in tracks}),
+        )
+        active = _Active(state)
+        self._by_key[key] = active
+        self._by_id[state.event_id] = active
+        # 경보 발행 여부(local_alerted)까지 확정한 상태를 전이에 싣는다. 저널 전이로 복원해도 ACK·해소 신호가 맞다.
+        self._alert_if_needed(active, frame.occurred_at, signals)
+        transitions.append(self._emit(active, Lifecycle.RAISED, (Change.RAISED,), frame, tracks))
+
+    def _advance(
+        self,
+        active: _Active,
+        finding: Finding | None,
+        world: WorldState,
+        tracks: Mapping[str, WorldTrack],
+        frame: "_Frame",
+        transitions: list[EventTransition],
+        signals: list[LocalSignal],
+    ) -> None:
+        state = active.state
+        evaluation = frame.evaluation
+        changes: set[Change] = set()
+
+        # ID 교정(identity_revision 증가)은 해소 확인을 처음부터 다시 세게 한다. 해소하지 않는다(5.2, G3).
+        revisions = dict(state.identity_revisions)
+        for world_id in state.world_ids:
+            track = tracks.get(world_id)
+            if track is None:
+                continue
+            seen = revisions.get(world_id)
+            if seen is not None and track.identity_revision > seen:
+                changes.add(Change.IDENTITY_REVISED)
+            if seen is None or track.identity_revision > seen:
+                revisions[world_id] = track.identity_revision
+        identity_revised = Change.IDENTITY_REVISED in changes
+
+        verified = self._verification.verifiable(state.key, state.world_ids, world, evaluation.evaluated_at)
+        verification = Verification.VERIFIED if verified else Verification.UNVERIFIABLE
+        if verification is not state.verification:
+            changes.add(Change.VERIFICATION)
+
+        updates: dict[str, Any] = {
+            "verification": verification,
+            "identity_revisions": MappingProxyType(revisions),
+            "evaluated_at": evaluation.evaluated_at,
+            "observation_time": evaluation.observation_time,
+            "config_version": frame.config_version,
+            "calibration_version": evaluation.calibration_version,
+            "scene_version": evaluation.scene_version,
+        }
+        if (frame.config_version, evaluation.calibration_version, evaluation.scene_version) != (
+            state.config_version,
+            state.calibration_version,
+            state.scene_version,
+        ):
+            changes.add(Change.VERSION)
+        previous_severity = state.severity
+        resolved = False
+        if finding is not None:
+            active.clear_since = None
+            if finding.severity is not state.severity:
+                changes.add(Change.SEVERITY)
+            if finding.needs_check != state.needs_check:
+                changes.add(Change.CONFIDENCE)
+            if finding.zone_id != state.zone_id:
+                changes.add(Change.ZONE)
+            if finding.rule_version != state.rule_version:
+                changes.add(Change.VERSION)
+            # 마지막으로 내보낸 값과 비교한다. 간격 안에서 바뀌고 고정된 값도 간격이 지나면 낸다.
+            metrics_changed = (
+                dict(finding.metrics) != active.emitted_metrics or finding.reasons != active.emitted_reasons
+            )
+            interval = self._policy.metrics_update_interval_ms
+            if metrics_changed and evaluation.evaluated_at - active.metrics_emitted_at >= interval:
+                changes.add(Change.METRICS)
+            updates |= {
+                "rule_version": finding.rule_version,
+                "severity": finding.severity,
+                "needs_check": finding.needs_check,
+                "zone_id": finding.zone_id,
+                "metrics": finding.metrics,
+                "reasons": finding.reasons,
+            }
+        elif verified and not identity_revised:
+            if active.clear_since is None:
+                active.clear_since = evaluation.observation_time
+            resolved = evaluation.observation_time - active.clear_since >= self._policy.hold_ms(state.rule_id)
+        else:
+            # 관측으로 확인할 수 없거나 신원이 바뀌었다. 해소 확인을 처음부터 다시 센다(자동 해소 없음).
+            active.clear_since = None
+
+        if resolved:
+            changes.add(Change.CLEARED)
+        if not changes:
+            # 전이 없이 최신 판정 값만 반영한다(저널에 남지 않는 값은 다음 전이·스냅샷에 실린다).
+            active.update(**updates)
+            return
+        if changes & {Change.METRICS, Change.SEVERITY, Change.CONFIDENCE, Change.ZONE}:
+            active.metrics_emitted_at = evaluation.evaluated_at
+        lifecycle = Lifecycle.RESOLVED if resolved else Lifecycle.UPDATED
+        active.update(**updates, event_sequence=state.event_sequence + 1, lifecycle=lifecycle)
+        if not resolved and Change.SEVERITY in changes and _rank(active.state.severity) > _rank(previous_severity):
+            # 등급이 올라가면 그 등급으로 다시 울린다(이미 확인했어도 새 위험 등급이다).
+            # 전이보다 먼저 정해 local_alerted 를 전이 상태에 싣는다(_raise 와 같다).
+            self._alert_if_needed(active, frame.occurred_at, signals, force=True)
+        transitions.append(self._emit(active, lifecycle, _ordered(changes), frame, tracks))
+        if resolved:
+            self._drop(active)
+            if active.state.local_alerted:
+                signals.append(AlertClear(**self._signal_fields(active.state, frame.occurred_at)))
+
+    # --- 확인(ACK) -------------------------------------------------------------------
+
+    def acknowledge(self, event_id: str, actor: AckActor, actor_id: str, acked_at: int) -> LifecycleStep | None:
+        """확인을 기록한다. 활성 이벤트가 아니면(이미 해소됐거나 모르는 ID) None 이고 아무것도 기록하지 않는다.
+
+        확인은 해소가 아니다. UPDATED 전이(ACKNOWLEDGED)로 누가 확인했는지 저널에 남기고, 현장 경보를 낸
+        LIVE 이벤트면 반복 소리 정지(AlarmStop)를 낸다. 같은 이벤트를 여러 번 확인해도 모두 기록한다.
+        """
+        active = self._by_id.get(event_id)
+        if active is None:
+            return None
+        actor = AckActor(actor)
+        if not actor_id:
+            raise RiskInputError("acknowledge: actor_id 가 비었다")
+        occurred_at = self._clock.now_ms()
+        ack = AckRecord(
+            actor=actor,
+            actor_id=actor_id,
+            acked_at=as_int(acked_at, "acknowledge.acked_at", minimum=0),
+            recorded_at=occurred_at,
+        )
+        state = active.state
+        active.update(acks=state.acks + (ack,), event_sequence=state.event_sequence + 1, lifecycle=Lifecycle.UPDATED)
+        active.mark_emitted()
+        transition = EventTransition(
+            state=active.state,
+            transition=Lifecycle.UPDATED,
+            changes=(Change.ACKNOWLEDGED,),
+            occurred_at=occurred_at,
+            ack=ack,
+        )
+        signals: tuple[LocalSignal, ...] = ()
+        if active.state.local_alerted:
+            signals = (AlarmStop(**self._signal_fields(active.state, occurred_at), acked_by=actor, actor_id=actor_id),)
+        return LifecycleStep((transition,), signals)
+
+    # --- ID 교정 ---------------------------------------------------------------------
+
+    def correct_identity(self, correction: IdentityCorrection) -> LifecycleStep:
+        """명시적 ID 교정을 반영한다(명세 5.2). 진행 중인 위험은 해소하지 않는다(G3).
+
+        previous_world_id 를 대상으로 하는 활성 이벤트의 World ID 를 world_id 로 바꾼다. 원본 World ID 는
+        origin_world_ids 에 남는다. 바뀐 키에 이미 활성 이벤트가 있으면 키를 바꾸지 않고 related_event_id 로
+        연결만 남긴다(그 이벤트는 옛 ID 가 더는 관측되지 않으므로 UNVERIFIABLE 로 남는다).
+        """
+        occurred_at = self._clock.now_ms()
+        transitions: list[EventTransition] = []
+        targets = [a for a in self._sorted_active() if correction.previous_world_id in a.state.world_ids]
+        for active in targets:
+            state = active.state
+            world_ids = tuple(
+                sorted({correction.world_id if w == correction.previous_world_id else w for w in state.world_ids})
+            )
+            new_key = EventKey(state.rule_id, world_ids, state.key.zone_id)
+            other = self._by_key.get(new_key)
+            active.clear_since = None
+            if other is not None and other is not active:
+                active.update(
+                    related_event_id=other.state.event_id,
+                    event_sequence=state.event_sequence + 1,
+                    lifecycle=Lifecycle.UPDATED,
+                )
+                change = Change.IDENTITY_CONFLICT
+            else:
+                revisions = {w: r for w, r in state.identity_revisions.items() if w != correction.previous_world_id}
+                revisions[correction.world_id] = correction.identity_revision
+                del self._by_key[state.key]
+                active.update(
+                    key=new_key,
+                    world_ids=world_ids,
+                    identity_revisions=MappingProxyType(revisions),
+                    event_sequence=state.event_sequence + 1,
+                    lifecycle=Lifecycle.UPDATED,
+                )
+                self._by_key[new_key] = active
+                change = Change.IDENTITY_CORRECTED
+            active.mark_emitted()
+            transitions.append(
+                EventTransition(
+                    state=active.state, transition=Lifecycle.UPDATED, changes=(change,), occurred_at=occurred_at
+                )
+            )
+        return LifecycleStep(tuple(transitions))
+
+    # --- 체크포인트 복원 -------------------------------------------------------------
+
+    def restore(self, states: Iterable[EventState]) -> LifecycleStep:
+        """체크포인트·저널에서 되살린 활성 이벤트를 넣는다(명세 3.2 재시작 복구).
+
+        복원한 이벤트는 UNVERIFIABLE 로 두고 자동 해소하지 않는다. event_sequence 는 이어서 올린다.
+        이미 활성 이벤트가 있는 추적기에는 복원하지 않는다(재시작 직후 한 번만 쓴다).
+        """
+        if self._by_id:
+            raise LifecycleError("restore 는 활성 이벤트가 없는 추적기에서만 한다")
+        occurred_at = self._clock.now_ms()
+        restored: list[_Active] = []
+        for state in states:
+            if state.origin is not self._origin:
+                raise LifecycleError(f"{self._origin} 추적기에 {state.origin} 이벤트를 복원하려 했다")
+            if state.lifecycle is Lifecycle.RESOLVED:
+                raise LifecycleError(f"해소된 이벤트는 복원하지 않는다: {state.event_id}")
+            if state.key in self._by_key or state.event_id in self._by_id:
+                raise LifecycleError(f"복원할 이벤트가 겹친다: {state.event_id}")
+            active = _Active(state)
+            self._by_key[state.key] = active
+            self._by_id[state.event_id] = active
+            restored.append(active)
+        transitions = []
+        for active in sorted(restored, key=lambda a: a.state.key.sort_key):
+            state = active.state
+            changes = (
+                (Change.RESTORED, Change.VERIFICATION)
+                if state.verification is Verification.VERIFIED
+                else (Change.RESTORED,)
+            )
+            active.update(
+                verification=Verification.UNVERIFIABLE,
+                event_sequence=state.event_sequence + 1,
+                lifecycle=Lifecycle.UPDATED,
+            )
+            transitions.append(
+                EventTransition(
+                    state=active.state, transition=Lifecycle.UPDATED, changes=changes, occurred_at=occurred_at
+                )
+            )
+        return LifecycleStep(tuple(transitions))
+
+    # --- 내부 -------------------------------------------------------------------------
+
+    def _sorted_active(self) -> list[_Active]:
+        return sorted(self._by_key.values(), key=lambda a: a.state.key.sort_key)
+
+    def _drop(self, active: _Active) -> None:
+        del self._by_key[active.state.key]
+        del self._by_id[active.state.event_id]
+
+    def _emit(
+        self,
+        active: _Active,
+        lifecycle: Lifecycle,
+        changes: tuple[Change, ...],
+        frame: "_Frame",
+        tracks: Mapping[str, WorldTrack],
+    ) -> EventTransition:
+        active.mark_emitted()
+        return EventTransition(
+            state=active.state,
+            transition=lifecycle,
+            changes=changes,
+            occurred_at=frame.occurred_at,
+            evidence=tuple(TrackEvidence.of(w, tracks.get(w)) for w in active.state.world_ids),
+            evidence_ref=frame.evidence_ref,
+        )
+
+    def _alert_if_needed(
+        self, active: _Active, occurred_at: int, signals: list[LocalSignal], force: bool = False
+    ) -> None:
+        state = active.state
+        plan = channels_for(state.severity, state.confidence, state.origin)
+        if Channel.LOCAL_ALERT not in plan.channels or (state.local_alerted and not force):
+            return
+        active.update(local_alerted=True)
+        state = active.state
+        signals.append(
+            LocalAlert(
+                **self._signal_fields(state, occurred_at),
+                rule_id=state.rule_id,
+                zone_id=state.zone_id,
+                world_ids=state.world_ids,
+                observation_time=state.observation_time,
+            )
+        )
+
+    @staticmethod
+    def _signal_fields(state: EventState, occurred_at: int) -> dict[str, Any]:
+        return {
+            "origin": state.origin,
+            "event_id": state.event_id,
+            "gateway_id": state.gateway_id,
+            "event_sequence": state.event_sequence,
+            "issued_at": occurred_at,
+            "severity": state.severity,
+            "needs_check": state.needs_check,
+        }
+
+
+@dataclass(frozen=True)
+class _Frame:
+    evaluation: Evaluation
+    config_version: str
+    evidence_ref: str | None
+    occurred_at: int
+
+
+def _rank(severity: Severity) -> int:
+    return _SEVERITY_RANK[Severity(severity)]
+
+
+def _representative(findings: list[Finding]) -> Finding:
+    """같은 키의 판정이 여럿이면(예: 한 사람이 같은 규칙의 두 구역에 걸침) 가장 높은 등급을 대표로 쓴다.
+
+    등급이 같으면 발생 판정(holding=False)을, 그다음 정렬 순서가 앞선 것을 고른다.
+    """
+    return min(findings, key=lambda f: (-_rank(f.severity), f.holding, f.sort_key))
+
+
+def _maintaining(findings: list[Finding], current: Severity) -> Finding:
+    """활성 이벤트의 대표 판정. holding 은 유지만 하므로 현재 등급 위로 올리지 않는다(올리는 것은 발생 판정뿐이다).
+
+    현재 등급보다 높은 holding 은 현재 등급으로 낮춰 본 뒤 _representative 와 같은 순서로 고른다.
+    """
+    capped = [replace(f, severity=current) if f.holding and _rank(f.severity) > _rank(current) else f for f in findings]
+    return _representative(capped)
+
+
+def _ordered(changes: set[Change]) -> tuple[Change, ...]:
+    return tuple(sorted(changes, key=_CHANGE_ORDER.__getitem__))

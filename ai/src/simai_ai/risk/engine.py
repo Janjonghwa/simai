@@ -7,7 +7,8 @@ Evaluation 으로 돌려준다.
 LIVE 만 실제 알림 대상이라는 불변 규칙(AGENTS.md 규칙 5, 명세 7.4·11.4-3)은 두 겹으로 드러낸다.
 1. Evaluation.alert_candidates() 는 출처가 LIVE 가 아니면 빈 튜플이다.
 2. AlertCandidate 는 출처가 LIVE 가 아니면 만들 수 없다(NonLiveAlertError).
-알림 채널로 보내는 코드는 AlertCandidate 만 받는다. 이벤트 생명주기·저널·outbox 는 이 골격 범위 밖이다.
+알림 채널로 보내는 코드는 AlertCandidate 나 alerting 의 현장 경보 신호(같은 LIVE 검사)만 받는다.
+이벤트 생명주기는 lifecycle 이 맡고, 저널·outbox 는 이 패키지 밖(저장·전송 이슈)이다.
 """
 
 from collections.abc import Iterable
