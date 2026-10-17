@@ -2,8 +2,21 @@
 
 import pytest
 
-from simai_ai.tracking.system_health import CalibrationState, HealthReason, SystemHealth, evaluate_health
-from simai_ai.tracking.time_model import CameraClock, ObservationState, TimeModelConfig, TrackTimeInput, evaluate_track
+from simai_ai.tracking.system_health import (
+    CalibrationState,
+    HealthReason,
+    ProgressWatchdog,
+    SystemHealth,
+    evaluate_health,
+)
+from simai_ai.tracking.time_model import (
+    CameraClock,
+    ClockOffset,
+    ObservationState,
+    TimeModelConfig,
+    TrackTimeInput,
+    evaluate_track,
+)
 
 T0 = 1_760_342_400_000
 CAMS = ("cam1", "cam2", "cam3", "cam4")
@@ -279,3 +292,138 @@ def test_restart_recovery_sequence():
 
     # 재관측으로 t_last_valid 가 갱신된 뒤에만 OBSERVED
     assert evaluate_track(_track(300), report.t_latest_global, T0 + 350).observation_state is ObservationState.OBSERVED
+
+
+# --- 노트북–Pod 시계 차이 (명세 3.9, 6.1, 6.5) ---
+
+
+def _clock_health(now_offset, capture_clock, config=None):
+    kwargs = {} if config is None else {"config": config}
+    return evaluate_health(
+        _cams([100] * 4),
+        CalibrationState.CALIBRATED,
+        True,
+        True,
+        T0 + now_offset,
+        capture_clock=capture_clock,
+        **kwargs,
+    )
+
+
+def test_corrected_lag_allows_negative_raw_lag():
+    # 노트북이 300ms 빠르면 보정 전 lag 는 음수지만 오류가 아니다
+    report = _clock_health(0, ClockOffset(300.0, 20.0))
+    assert report.raw_lag_ms == -100
+    assert report.lag_ms == 200
+    assert report.lag_uncertainty_ms == 20.0
+    assert report.system_health is NOMINAL
+
+
+def test_corrected_lag_removes_false_degraded():
+    # 노트북이 500ms 늦으면 보정 전 lag 700ms(DEGRADED)지만 실제는 200ms
+    report = _clock_health(800, ClockOffset(-500.0, 20.0))
+    assert report.raw_lag_ms == 700
+    assert report.lag_ms == 200
+    assert report.system_health is NOMINAL
+
+
+@pytest.mark.parametrize(
+    ("lag", "uncertainty", "expected", "reasons"),
+    [
+        (560, 40.0, NOMINAL, ()),
+        (561, 40.0, DEGRADED, (HealthReason.LAG_DEGRADED,)),  # 상한 601 > 600
+        (1960, 40.0, DEGRADED, (HealthReason.LAG_DEGRADED,)),
+        (1961, 40.0, UNSAFE, (HealthReason.LAG_UNSAFE,)),
+    ],
+)
+def test_lag_thresholds_use_upper_bound(lag, uncertainty, expected, reasons):
+    report = _clock_health(100 + lag, ClockOffset(0.0, uncertainty))
+    assert report.lag_ms == lag
+    assert report.system_health is expected
+    assert report.reasons == reasons
+
+
+def test_large_clock_uncertainty_is_degraded():
+    assert _clock_health(200, ClockOffset(0.0, 100.0)).system_health is NOMINAL
+    report = _clock_health(200, ClockOffset(0.0, 100.5))
+    assert report.system_health is DEGRADED
+    assert report.reasons == (HealthReason.CLOCK_OFFSET_UNCERTAIN,)
+    config = TimeModelConfig(clock_uncertainty_degraded_ms=200.0)
+    assert _clock_health(200, ClockOffset(0.0, 150.0), config).system_health is NOMINAL
+
+
+def test_unknown_offset_is_unsafe_and_lag_left_empty():
+    """시계 차이를 모르면 판정 시각 기준 지연을 알 수 없다: 판정 불가를 숨기지 않는다(UNSAFE_UNKNOWN)."""
+    report = _clock_health(200, None)
+    assert report.system_health is UNSAFE
+    assert report.reasons == (HealthReason.CLOCK_OFFSET_UNKNOWN,)
+    assert report.lag_ms is None and report.lag_uncertainty_ms is None
+    assert report.raw_lag_ms == 100  # 기록만 한다
+
+
+def test_raw_lag_is_not_used_for_judgement():
+    # 노트북이 37s 늦으면 raw lag 는 크지만 판정에 쓰지 않는다(LAG_* 원인 없음)
+    report = _clock_health(100 + 37_100, None)
+    assert report.reasons == (HealthReason.CLOCK_OFFSET_UNKNOWN,)
+
+
+def test_inconsistent_offset_is_unsafe_without_error():
+    report = _clock_health(0, ClockOffset(0.0, 10.0))  # 보정 후 lag -100, 불확실성 10
+    assert report.system_health is UNSAFE
+    assert report.reasons == (HealthReason.CLOCK_OFFSET_INCONSISTENT,)
+    assert report.lag_ms is None and report.raw_lag_ms == -100
+
+
+@pytest.mark.parametrize("laptop_offset", [37_000.0, -37_000.0, 300.0, 0.0])
+@pytest.mark.parametrize("capture_known", [True, False])
+@pytest.mark.parametrize(("stall_ms", "lag_reason"), [(0, None), (700, "LAG_DEGRADED"), (2500, "LAG_UNSAFE")])
+def test_stall_watchdog_is_independent_of_offset(laptop_offset, capture_known, stall_ms, lag_reason):
+    """영상 전체 정체를 Tier 0 단조 시계로 감시한다. 시계 차이의 부호·크기, 시계 차이를 아는지와 무관하다."""
+    true_lag = 100  # 정체 전 처리 지연
+    dog = ProgressWatchdog()
+    mono = 5_000_000_000
+    capture = T0 + int(laptop_offset)  # 노트북 시계 촬영 시각
+    dog.observe(capture, mono)
+    mono += stall_ms * 1_000_000
+    dog.observe(capture, mono)  # 정체: 값이 늘지 않는다
+    t_risk_now = T0 + true_lag + stall_ms  # Tier 0 시계
+    clock = ClockOffset(laptop_offset, 20.0) if capture_known else None
+    cams = [CameraClock(c, capture, True) for c in CAMS]
+    report = evaluate_health(
+        cams,
+        CalibrationState.CALIBRATED,
+        True,
+        True,
+        t_risk_now,
+        capture_clock=clock,
+        progress_age_ms=dog.age_ms(mono),
+    )
+    assert report.progress_age_ms == stall_ms
+    lag_reasons = [r for r in report.reasons if r.startswith("LAG_")]
+    if capture_known:
+        # 보정 lag 상한(100 + stall + 20)과 정체 하한 중 큰 값
+        upper = true_lag + stall_ms + 20
+        expected = "LAG_UNSAFE" if upper > 2000 else "LAG_DEGRADED" if upper > 600 else None
+        assert lag_reasons == ([] if expected is None else [expected])
+    else:
+        assert lag_reasons == ([] if lag_reason is None else [lag_reason])
+        assert HealthReason.CLOCK_OFFSET_UNKNOWN in report.reasons
+
+
+def test_progress_watchdog():
+    dog = ProgressWatchdog()
+    assert dog.age_ms(0) is None
+    dog.observe(None, 0)
+    assert dog.age_ms(10) is None
+    dog.observe(T0, 1_000_000)
+    dog.observe(T0 - 50, 2_000_000)  # 늦게 온 작은 값은 진행이 아니다
+    assert dog.age_ms(3_000_000) == 2.0
+    dog.observe(T0 + 40, 3_000_000)
+    assert dog.age_ms(3_500_000) == 0.5
+    with pytest.raises(ValueError, match="단조"):
+        dog.observe(T0 + 80, 1)
+
+
+def test_same_clock_default_reports_raw_lag():
+    report = _health(_cams([100] * 4), 300)
+    assert (report.lag_ms, report.raw_lag_ms, report.lag_uncertainty_ms) == (200, 200, 0.0)
