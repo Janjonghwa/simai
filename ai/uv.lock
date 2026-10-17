@@ -994,6 +994,7 @@ worker = [
 dev = [
     { name = "import-linter" },
     { name = "jsonschema" },
+    { name = "numpy" },
     { name = "pytest" },
 ]
 
@@ -1015,6 +1016,7 @@ provides-extras = ["io", "detection", "geometry", "calibration", "scene", "hmr",
 dev = [
     { name = "import-linter", specifier = ">=2.1" },
     { name = "jsonschema", specifier = ">=4.23" },
+    { name = "numpy", specifier = ">=1.26" },
     { name = "pytest", specifier = ">=8.3" },
 ]
 

@@ -23,6 +23,8 @@ dev = [
     "pytest>=8.3",
     "import-linter>=2.1",
     "jsonschema>=4.23",
+    # geometry 시험(삼각측량)용. 기능 설치는 extras geometry 가 같은 범위를 선언한다
+    "numpy>=1.26",
 ]
 
 [build-system]
