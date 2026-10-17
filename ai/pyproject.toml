@@ -9,7 +9,9 @@ dependencies = []
 [project.optional-dependencies]
 # 무거운 의존성은 기능별로 나눈다. CUDA·Torch 빌드는 deploy/의 Docker 이미지가 고정한다.
 io = ["opencv-python-headless>=4.9"]
-detection = ["ultralytics>=8.4"]
+# lap: ultralytics.trackers 가 import 시점에 요구한다(없으면 런타임에 pip 자동 설치를 시도한다)
+# ultralytics 8.4.178 이상: TrackTrack 추적기와 추적기 인스턴스별 ID 카운터에 기댄다
+detection = ["ultralytics>=8.4.178", "lap>=0.5.12"]
 geometry = ["numpy>=1.26"]
 # jsonschema: 보정 버전 저장소가 저장 전에 contracts/providers/calibration.schema.json 으로 직접 검증한다
 calibration = ["numpy>=1.26", "opencv-python-headless>=4.9", "jsonschema>=4.23"]
