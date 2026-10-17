@@ -71,6 +71,7 @@ forbidden_modules = [
     "simai_ai.hmr",
     "simai_ai.vlm",
     "simai_ai.providers",
+    "simai_ai.config",
     "numpy",
     "cv2",
     "torch",
