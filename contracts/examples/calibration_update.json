@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.2.0",
+  "schema_version": "2.0.0",
   "msg_type": "calibration_update",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000108",
   "sent_at": 1760342400400,

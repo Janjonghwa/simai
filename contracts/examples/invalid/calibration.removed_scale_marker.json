@@ -1,0 +1,92 @@
+{
+  "_expect_error": "v1.3 에서 뺀 마커 보드 스케일 근거(2.0.0 삭제)를 다시 썼다 (명세 4.3)",
+  "schema_version": "2.0.0",
+  "calibration_version": "cal-0",
+  "provider_source": "G1_AUTO",
+  "provider_version": "0.1.0",
+  "state": "PROVISIONAL",
+  "created_at": 1760342400000,
+  "coordinate_frame": {
+    "frame": "WORLD",
+    "unit": "m",
+    "handedness": "right",
+    "up_axis": "+Z",
+    "site_id": "classroom-1"
+  },
+  "scale_basis": "MARKER",
+  "scale_cross_check_basis": [
+    "KNOWN_PERSON_HEIGHT"
+  ],
+  "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
+  "cameras": [
+    {
+      "camera_id": "cam1",
+      "image_size": [
+        1920,
+        1080
+      ],
+      "K": [
+        [
+          1000.0,
+          0.0,
+          960.0
+        ],
+        [
+          0.0,
+          1000.0,
+          540.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion": {
+        "model": "OPENCV_PINHOLE",
+        "coeffs": [
+          -0.3,
+          0.09,
+          0.0,
+          0.0,
+          -0.01
+        ]
+      },
+      "R": [
+        [
+          0.7071,
+          -0.7071,
+          0.0
+        ],
+        [
+          -0.3062,
+          -0.3062,
+          -0.9014
+        ],
+        [
+          0.6374,
+          0.6374,
+          -0.433
+        ]
+      ],
+      "t": [
+        0.0,
+        2.43,
+        0.0
+      ],
+      "camera_height_m": 2.19,
+      "reprojection_error_px": {
+        "median": 1.8,
+        "p95": 4.6
+      }
+    }
+  ],
+  "validation": {
+    "checkpoint_count": 4,
+    "max_pairwise_position_disagreement_m": 0.12,
+    "max_head_height_error_m": 0.09,
+    "floor_plane_disagreement_m": 0.02,
+    "floor_coverage_ratio": 0.85
+  },
+  "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+}

@@ -108,12 +108,6 @@ CASES = [
         C.SCALE_CROSS_CHECK,
     ),
     (
-        "scale-cross-check-floor-plan",
-        None,
-        {"scale_estimates": _scales((MO, 1.0, 1), (MO, 1.0, 1), (ScaleBasis.FLOOR_PLAN, 1.0, 1))},
-        C.SCALE_CROSS_CHECK,
-    ),
-    (
         "scale-residual",
         None,
         {"scale_estimates": _scales((MO, 1.03, 1), (MO, 1.03, 1), (KP, 1.03, 1))},
@@ -226,25 +220,23 @@ def test_never_calibrated_sources_with_perfect_numbers(cameras, evidence, source
     assert result.failed_criteria == {C.SOURCE}
 
 
-def test_manual_pnp_not_calibrated_after_rev6(cameras, evidence):
-    result = _judge(cameras, evidence, source="MANUAL_PNP")
+def test_unlisted_source_not_calibrated(cameras, evidence):
+    """계약 출처 값에 없는 출처(v1.3 에서 뺀 대체 경로 등)는 수치가 좋아도 CALIBRATED 불가."""
+    result = _judge(cameras, evidence, source="UNLISTED_SOURCE")
     assert result.state is CalibrationState.PROVISIONAL
     assert result.failed_criteria == {C.SOURCE}
 
 
-def test_charuco_alternative_path_can_be_calibrated(cameras, evidence):
-    assert _judge(cameras, evidence, source="CHARUCO").state is CalibrationState.CALIBRATED
-
-
-def test_calibrated_sources_rev6():
-    assert contract.CALIBRATED_SOURCES == {"G1_AUTO", "CHARUCO"}
+def test_calibrated_sources_v13():
+    """v1.3 대체 경로는 걷기 재수행·실측 정물 추가 뒤 G1 재보정뿐이라 G1_AUTO 만 CALIBRATED 출처다 (4.3)."""
+    assert contract.CALIBRATED_SOURCES == {"G1_AUTO"}
     assert contract.CALIBRATED_SOURCES.isdisjoint(contract.NEVER_CALIBRATED_SOURCES)
 
 
 def test_scale_bases_consistent_with_contract():
     assert {MO, HS} == contract.PRIMARY_SCALE_BASES
     assert CROSS_CHECK_BASES == set(SCALE_PRIORITY)
-    assert ScaleBasis.DATASET_GT not in CROSS_CHECK_BASES and ScaleBasis.FLOOR_PLAN not in CROSS_CHECK_BASES
+    assert ScaleBasis.DATASET_GT not in CROSS_CHECK_BASES
 
 
 def test_all_failures_collected(cameras, evidence):

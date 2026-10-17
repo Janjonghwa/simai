@@ -116,21 +116,20 @@ def test_never_calibrated_sources_may_be_provisional(calibration_doc, source):
     assert contract.check_calibration_state(calibration_doc) == []
 
 
-@pytest.mark.parametrize("source", ["G1_AUTO", "CHARUCO"])
-def test_calibrated_sources_with_passing_validation(calibration_doc, source):
-    calibration_doc.update(provider_source=source, state="CALIBRATED")
+def test_g1_auto_calibrated_with_passing_validation(calibration_doc):
+    calibration_doc.update(provider_source="G1_AUTO", state="CALIBRATED")
     assert_no_violations(contract.check_calibration(calibration_doc))
 
 
-def test_manual_pnp_not_calibrated_after_rev6(calibration_doc):
-    """평면도 점 PnP 는 수정 6 에서 대체 경로에서 빠졌다. 계약 값은 남지만 CALIBRATED 는 안 된다."""
-    calibration_doc["state"] = "CALIBRATED"
-    _has(contract.check_calibration_state(calibration_doc), "MANUAL_PNP", "CALIBRATED 가 될 수 없다")
-    assert contract.check_calibration_schema(calibration_doc) == [], "스키마는 막지 않는다(계약 시험이 막는다)"
+def test_unlisted_source_not_calibrated(calibration_doc):
+    """계약 출처 값에 없는 출처(v1.3 에서 뺀 대체 경로 등)는 스키마와 계약 시험이 둘 다 막는다."""
+    calibration_doc.update(provider_source="UNLISTED_SOURCE", state="CALIBRATED")
+    _has(contract.check_calibration_state(calibration_doc), "UNLISTED_SOURCE", "CALIBRATED 가 될 수 없다")
+    assert contract.check_calibration_schema(calibration_doc), "스키마도 막는다"
 
 
-def test_manual_pnp_may_be_provisional(calibration_doc):
-    assert calibration_doc["provider_source"] == "MANUAL_PNP"
+def test_g1_auto_may_be_provisional(calibration_doc):
+    assert (calibration_doc["provider_source"], calibration_doc["state"]) == ("G1_AUTO", "PROVISIONAL")
     assert_no_violations(contract.check_calibration(calibration_doc))
 
 
@@ -199,7 +198,7 @@ def test_calibrated_requires_reprojection_within_criteria(calibration_doc):
     ("basis", "cross", "needle"),
     [
         pytest.param("STANDARD_OBJECT", ["KNOWN_PERSON_HEIGHT"], "주 근거가 될 수 없다", id="weak-primary"),
-        pytest.param("FLOOR_PLAN", ["KNOWN_PERSON_HEIGHT"], "주 근거가 될 수 없다", id="floor-plan"),
+        pytest.param("KNOWN_PERSON_HEIGHT", ["MEASURED_OBJECT"], "주 근거가 될 수 없다", id="known-person-primary"),
         pytest.param("MEASURED_OBJECT", None, "교차 확인", id="no-cross-check"),
         pytest.param("MEASURED_OBJECT", ["MEASURED_OBJECT"], "교차 확인", id="cross-check-same-basis"),
         pytest.param("MEASURED_OBJECT", ["DATASET_GT"], "교차 확인", id="cross-check-dataset-gt"),
@@ -215,10 +214,10 @@ def test_calibrated_requires_scale_bases(calibration_doc, basis, cross, needle):
 
 def test_height_stats_primary_accepted(calibration_doc):
     calibration_doc.update(
-        provider_source="CHARUCO",
+        provider_source="G1_AUTO",
         state="CALIBRATED",
         scale_basis="HUMAN_HEIGHT_STATS",
-        scale_cross_check_basis=["MEASURED_OBJECT", "MARKER"],
+        scale_cross_check_basis=["MEASURED_OBJECT", "STANDARD_OBJECT"],
     )
     assert_no_violations(contract.check_calibration(calibration_doc))
 

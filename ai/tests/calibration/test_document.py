@@ -50,9 +50,9 @@ def test_provisional_doc_without_scale_uses_fallback(cameras, t0):
     assert doc["validation"] == {"checkpoint_count": 0}
 
 
-def test_charuco_fallback_marker(cameras, t0):
-    doc = _build(cameras, CalibrationEvidence(), t0, source="CHARUCO", fallback="MARKER")
-    assert doc["scale_basis"] == "MARKER"
+def test_fallback_scale_basis_recorded(cameras, t0):
+    doc = _build(cameras, CalibrationEvidence(), t0, fallback="STANDARD_OBJECT")
+    assert doc["scale_basis"] == "STANDARD_OBJECT"
 
 
 @pytest.mark.parametrize("source", sorted(contract.NEVER_CALIBRATED_SOURCES))
@@ -88,4 +88,6 @@ def test_examples_cover_new_scale_bases():
     g1 = load_example("calibration.g1_auto.json")
     assert (g1["provider_source"], g1["state"], g1["scale_basis"]) == ("G1_AUTO", "CALIBRATED", "MEASURED_OBJECT")
     assert_no_violations(contract.check_calibration(g1))
-    assert load_example("calibration.json")["scale_basis"] != "FLOOR_PLAN"
+    base = load_example("calibration.json")
+    assert (base["provider_source"], base["state"], base["scale_basis"]) == ("G1_AUTO", "PROVISIONAL", "MEASURED_OBJECT")
+    assert_no_violations(contract.check_calibration(base))

@@ -1,7 +1,7 @@
 """입력 대체 계약의 Provider 인터페이스 (명세 20.4, 5.1 입력 추상화).
 
 상류 입력(프레임, 보정, World 상태)은 이 인터페이스로만 받는다. 지금은 대체 구현(DATASET_GT, SIM,
-MANUAL_PNP 등)으로 개발하고, 상류가 준비되면 설정만 바꿔 실제 구현(G1_AUTO, TIER0_LOG)으로 바꾼다.
+MODEL_ESTIMATE 등)으로 개발하고, 상류가 준비되면 설정만 바꿔 실제 구현(G1_AUTO, TIER0_LOG)으로 바꾼다.
 
 - CalibrationProvider·WorldTrackProvider 출력은 `contracts/providers/*.schema.json` 문서 그대로의
   dict(JSON 호환)다. 스키마 생성 타입(S15P31A101-24)이 생기면 별칭만 그 타입으로 바꾼다.

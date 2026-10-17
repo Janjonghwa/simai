@@ -5,7 +5,7 @@
 문서 검사(`check_calibration_state`)와 판정이 같은 값을 보게 하기 위함이다.
 
 | 항목              | 기준(초기값, `CalibratedCriteria`)                                       |
-| 출처              | G1_AUTO 또는 CHARUCO. DATASET_GT·SIM·MODEL_ESTIMATE 는 값과 관계없이 불가 |
+| 출처              | G1_AUTO. DATASET_GT·SIM·MODEL_ESTIMATE 는 값과 관계없이 불가               |
 | 카메라 집합        | 설치 카메라 전체(기본 4대), camera_id 중복 없음                            |
 | 재투영 오차        | 카메라마다 중앙값 2px·p95 5px 이하                                        |
 | 바닥 커버리지      | 사람 관측이 바닥 면적의 80% 이상                                          |
@@ -17,7 +17,7 @@
 | 머리 높이 오차     | 검산점마다 15cm 이내 (표본이 적어 p95 가 아니라 최대값)                    |
 | 카메라 쌍별 불일치 | 검산점마다 15cm 이내 (최대값)                                             |
 
-MANUAL_PNP(평면도 점 PnP)는 수정 6 에서 대체 경로에서 빠졌으므로 CALIBRATED 출처로 인정하지 않는다.
+v1.3 의 대체 경로는 걷기 재수행·실측 정물 추가 뒤 G1 재보정뿐이라(4.3) G1_AUTO 만 CALIBRATED 출처다.
 스케일 반영 항목은 명세 조건의 전제를 확인하려고 둔 것이다. 근거끼리 일치해도 보정 배율이 그와 다르면 미달이다.
 
 스케일 근거 하나(`ScaleEstimate.scale`)는 그 근거가 말하는 "실제 길이 / 보정 World 길이" 배율이다.
@@ -60,19 +60,16 @@ class ScaleBasis(StrEnum):
     HUMAN_HEIGHT_STATS = "HUMAN_HEIGHT_STATS"
     STANDARD_OBJECT = "STANDARD_OBJECT"
     MODEL_ESTIMATE = "MODEL_ESTIMATE"
-    MARKER = "MARKER"
     DATASET_GT = "DATASET_GT"
-    FLOOR_PLAN = "FLOOR_PLAN"  # 수정 6 이후 쓰지 않는다. 이전 문서 호환용
 
 
-# 명세 4.3 우선순위(앞이 높다). MARKER(ChArUco 보드)는 우선순위 목록에 없어 뒤에 둔다.
+# 명세 4.3 우선순위(앞이 높다).
 SCALE_PRIORITY: tuple[ScaleBasis, ...] = (
     ScaleBasis.MEASURED_OBJECT,
     ScaleBasis.KNOWN_PERSON_HEIGHT,
     ScaleBasis.HUMAN_HEIGHT_STATS,
     ScaleBasis.STANDARD_OBJECT,
     ScaleBasis.MODEL_ESTIMATE,
-    ScaleBasis.MARKER,
 )
 CROSS_CHECK_BASES = frozenset(ScaleBasis(b) for b in CROSS_CHECK_SCALE_BASES)
 
@@ -236,7 +233,7 @@ def judge_calibration(
         )
     elif provider_source not in CALIBRATED_SOURCES:
         failures.append(
-            Failure(Criterion.SOURCE, f"{provider_source} 는 CALIBRATED 출처가 아니다 (G1_AUTO·CHARUCO 만, 수정 6)")
+            Failure(Criterion.SOURCE, f"{provider_source} 는 CALIBRATED 출처가 아니다 (G1_AUTO 만, 4.3)")
         )
 
     camera_ids = [cam.get("camera_id") for cam in cameras]

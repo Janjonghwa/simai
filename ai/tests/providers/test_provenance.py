@@ -29,14 +29,14 @@ class _Frames(FrameSource):
 @pytest.mark.parametrize(
     ("frames", "calibration", "tracks", "upper"),
     [
-        ("FILE", "MANUAL_PNP", None, False),
+        ("FILE", "G1_AUTO", None, False),
         ("FILE", "MODEL_ESTIMATE", None, False),
         ("FILE", None, None, False),
         ("LIVE", "G1_AUTO", "TIER0_LIVE", False),
         ("FILE", "G1_AUTO", "TIER0_LOG", False),
         ("DATASET", "DATASET_GT", "DATASET_GT", True),
-        ("DATASET", "MANUAL_PNP", None, False),
-        ("FILE", "MANUAL_PNP", "SIM", True),
+        ("DATASET", "G1_AUTO", None, False),
+        ("FILE", "G1_AUTO", "SIM", True),
         ("FILE", "SIM", None, True),
         ("SIM", None, None, True),
     ],
@@ -100,7 +100,7 @@ def test_provenance_from_providers_carries_sources():
     prov = provenance_from_providers(frames, calibration, tracks)
     assert prov == {
         "frames": {"source": "FILE", "camera_ids": ["hd_00_00", "hd_00_03"]},
-        "calibration": {"source": "MANUAL_PNP", "calibration_version": "manual-0"},
+        "calibration": {"source": "G1_AUTO", "calibration_version": "cal-0"},
         "tracks": {"source": "DATASET_GT", "provider_version": "panoptic-adapter-0.1.0"},
         "is_upper_bound": True,
     }
@@ -120,7 +120,7 @@ def test_carries_catches_missing_and_changed():
     prov = provenance_from_providers(frames, calibration)
     assert any("tracks 가 없다" in v for v in check_provenance_carries(prov, frames, calibration, tracks))
 
-    prov["calibration"]["calibration_version"] = "manual-1"
+    prov["calibration"]["calibration_version"] = "cal-9"
     assert any("calibration" in v for v in check_provenance_carries(prov, frames, calibration))
 
 

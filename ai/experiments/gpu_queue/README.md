@@ -71,7 +71,7 @@ Pod 에 저장소가 있으면 git 정보를 저장소에서 직접 읽고, 없�
 
 | Job 파일 `record` | Run 기록 | 비고 |
 |---|---|---|
-| `experiment_id`, `e_gate`, `jira_key`, `owner`, `experiment_state`, `model_version`, `schema_version` | 같은 이름 | `schema_version` 기본 1.1.0. `e_gate` 외 필수 |
+| `experiment_id`, `e_gate`, `jira_key`, `owner`, `experiment_state`, `model_version`, `schema_version` | 같은 이름 | `schema_version` 기본 2.0.0(run_record 계약 버전). `e_gate` 외 필수 |
 | `input_provenance` | `input_provenance` | **필수.** Job 정의에서 그대로 받는다. 정답·시뮬레이션 입력이면 `is_upper_bound: true` |
 | `dataset`: 경로 목록 | `input_provenance.frames.dataset_hash` | 이미 적혀 있으면 덮지 않음 |
 | `weights`: 경로 목록 | `weights_hash` | 파일 하나면 그 해시, 여럿·폴더면 (경로, 해시) 목록의 해시. 없는 경로가 있으면 비운다 |

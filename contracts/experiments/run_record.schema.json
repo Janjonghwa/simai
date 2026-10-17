@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/experiments/run_record.schema.json",
   "title": "실험 Run 기록",
-  "description": "실험 Run 한 번의 재현·감사 기록 (명세 20.5 재현·측정·운영 비용). 리뷰어는 이 기록만으로 재현할 수 있어야 한다 (명세 20.1 리뷰 체크리스트 1).",
+  "description": "실험 Run 한 번의 재현·감사 기록 (명세 20.5 재현·측정·운영 비용). 리뷰어는 이 기록만으로 재현할 수 있어야 한다 (명세 20.1 리뷰 체크리스트 1). 2.0.0 의미 변경(메이저): input_provenance.calibration.source(common/defs calibration_source)에서 v1.3 에서 쓰지 않는 마커 보정·평면도 대응점 출처 값을 뺐다.",
   "type": "object",
   "required": [
     "schema_version", "run_id", "experiment_id", "jira_key", "owner",

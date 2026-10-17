@@ -1,7 +1,7 @@
 {
-  "schema_version": "1.2.0",
-  "calibration_version": "manual-0",
-  "provider_source": "MANUAL_PNP",
+  "schema_version": "2.0.0",
+  "calibration_version": "cal-0",
+  "provider_source": "G1_AUTO",
   "provider_version": "0.1.0",
   "state": "PROVISIONAL",
   "created_at": 1760342400000,

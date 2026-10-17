@@ -87,13 +87,13 @@ Jira는 **EXP-01 / EXP-02**를 큰 Feature 티켓으로 유지하고, 티켓 하
 | Provider | 지금(대체) | 상류 준비 후(실제) |
 |---|---|---|
 | FrameSource | 공개 다시점 데이터, 시나리오 녹화 파일, 시뮬레이터 | 같음(녹화·라이브) |
-| CalibrationProvider | `DATASET_GT`(공개 데이터의 정답 카메라), `MANUAL_PNP`(수동 대응점. 연구용이며 제품 경로에서는 빠짐), `SIM`, `MODEL_ESTIMATE`(이전 Run 에서 모델이 추정한 카메라를 다시 입력. 예: EXP-01 known 모드 시험) | `G1_AUTO`(G1 자동 보정 결과) |
+| CalibrationProvider | `DATASET_GT`(공개 데이터의 정답 카메라), `SIM`, `MODEL_ESTIMATE`(이전 Run 에서 모델이 추정한 카메라를 다시 입력. 예: EXP-01 known 모드 시험) | `G1_AUTO`(G1 자동 보정 결과) |
 | WorldTrackProvider | `DATASET_GT`(공개 데이터의 정답 3D 자세·ID), `SIM` | `TIER0_LOG`(Tier 0를 녹화 입력으로 돌린 결과, 또는 Spatial DB에 기록된 `world_state`와 Network Volume 의 2D 관측 Parquet(11.2)) |
 
 1. **같은 필드 의미.** 대체 구현도 실제 구현과 같은 의미를 지킨다. 접지를 모르면 `ground_anchor_xyz`를 비우고 Z=0으로 채우지 않는다. World 좌표는 미터, 오른손, Z-up이다.
 2. **출처 기록.** 모든 Provider 출력에 `provider_source`(위 표의 값)와 버전을 붙이고, 이를 소비한 결과물(`scene_output`, `human_mesh_output`, Run 기록)에 `input_provenance`로 그대로 남긴다.
 3. **정답 입력은 상한 성능.** `DATASET_GT`나 `SIM` 입력으로 얻은 지표는 "입력이 완벽할 때의 상한"으로 보고하고 제품 성능으로 주장하지 않는다. 채택 판정(E-GATE-4)에는 `TIER0_LOG`·`G1_AUTO` 입력으로 다시 잰 결과가 필요하며, 그 전에는 HOLD 이하로만 판정한다.
-4. **제품 Scene의 조건.** COMMITTED Scene은 4.5대로 CALIBRATED 보정에서만 생성한다. CALIBRATED는 `G1_AUTO` 보정이 4.4의 독립 검증점을 통과했을 때만 된다. 계약의 보정 출처 값 중 v1.3 에서 쓰지 않는 마커 보정 값의 정리는 후속 계약 변경으로 한다. `DATASET_GT`·`SIM`·`MODEL_ESTIMATE` 보정은 검증된 현장 보정이 아니므로 CALIBRATED가 될 수 없고, 그 보정으로 만든 결과는 연구 근거로만 쓴다. 보정 버전이 바뀌면 해당 Scene을 재생성 대상으로 표시한다.
+4. **제품 Scene의 조건.** COMMITTED Scene은 4.5대로 CALIBRATED 보정에서만 생성한다. CALIBRATED는 `G1_AUTO` 보정이 4.4의 독립 검증점을 통과했을 때만 된다. 계약의 보정 출처 값(`calibration_source`)은 `G1_AUTO`·`DATASET_GT`·`SIM`·`MODEL_ESTIMATE` 뿐이다(마커 보정·평면도 대응점 출처는 v1.3 에서 뺐다, 4.3). `DATASET_GT`·`SIM`·`MODEL_ESTIMATE` 보정은 검증된 현장 보정이 아니므로 CALIBRATED가 될 수 없고, 그 보정으로 만든 결과는 연구 근거로만 쓴다. 보정 버전이 바뀌면 해당 Scene을 재생성 대상으로 표시한다.
 5. **Tier 0 코드를 복제하지 않는다.** 오프라인용으로 삼각측량·추적을 따로 구현하지 않는다. `TIER0_LOG`는 Tier 0 서비스를 파일 입력 모드로 돌려 얻는다.
 6. **계약 시험.** 모든 Provider 구현은 같은 계약 시험(스키마 검증, R의 직교성, 단위·축 검사, Z=0 대체 금지)을 통과해야 한다(21.3).
 7. **데이터 출처.** 공개 데이터는 라이선스(연구용 여부)를 확인한 뒤 쓰고 현장 데이터와 분리해 평가한다(15.4). 우리 녹화는 11.5 동의 범위 안에서만 쓰고, 외형 실험은 별도 동의 승인 뒤에 쓴다.

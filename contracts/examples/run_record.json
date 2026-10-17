@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "2.0.0",
   "run_id": "exp01-20261020-0001",
   "experiment_id": "EXP-01",
   "e_gate": "E-GATE-0",
@@ -17,7 +17,7 @@
   },
   "input_provenance": {
     "frames": { "source": "FILE", "dataset_id": "classroom-empty/2026-10-20" },
-    "calibration": { "source": "MANUAL_PNP", "calibration_version": "manual-0" },
+    "calibration": { "source": "G1_AUTO", "calibration_version": "cal-0" },
     "is_upper_bound": false
   },
   "gpu": {

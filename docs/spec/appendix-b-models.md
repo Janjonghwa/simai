@@ -1,13 +1,17 @@
 # 부록 B. 모델·도구·라이선스 목록
 
-교육 프로젝트라 상업화 제약은 없지만 출처와 조건을 기록한다. “확인 필요”는 채택 전 저장소에서 라이선스 파일을 확인한다.
+교육 프로젝트라 상업화 제약은 없지만 출처와 조건을 기록한다. “확인 필요”는 채택 전 저장소에서 라이선스 파일을 확인한다. 내부 파라미터 추정 후보의 조사 근거는 `docs/design/markerless-intrinsics.md`(2026-10-17 확인)다.
 
 | 이름 | 용도 | 단계 | 라이선스 |
 |---|---|---|---|
 | YOLO26x-pose(E2E) | Tier 0 검출·keypoint, 발 6점 미세조정(23점) | MVP | AGPL-3.0(Ultralytics) |
 | COCO-WholeBody 발 주석 | 발 6점 미세조정 데이터·주석 형식 | MVP | 연구·비상업 |
 | TrackTrack | Tier 0 Local Tracker(Ultralytics `tracktrack.yaml`) | MVP | AGPL-3.0(Ultralytics 구현) |
-| GeoCalib / AnyCalib 류 | 교실 직선으로 단일 이미지 내부 파라미터 초기값 추정 | MVP | 확인 필요 |
+| 고전 기준(plumb-line + 소실점, 저장소 코드) | 교실 직선으로 단일 이미지 내부 파라미터 초기값 추정(잠정 기본, 4.3) | MVP | 저장소 코드(numpy, 가중치 없음) |
+| AnyCalib (ICCV 2025) | 내부 파라미터 추정 학습 모델, 비교·대체 1순위 | 비교·대체 | 코드 Apache-2.0, 가중치 Apache-2.0 |
+| GeoCalib (ECCV 2024) | 내부 파라미터 추정 학습 모델, 비교·대체 2순위 | 비교·대체 | 코드 Apache-2.0, 가중치 CC-BY-4.0(출처 표시 의무) |
+| Perspective Fields (CVPR 2023) | 내부 파라미터 추정 후보 | 제외 | Adobe Research License(비상업 전용, 재배포 금지). 렌즈 왜곡도 내지 않음 |
+| WildCamera (NeurIPS 2023) | 내부 파라미터 추정 후보 | 제외 | 코드 Apache-2.0, 가중치 라이선스 표기 없음. 렌즈 왜곡을 내지 않음 |
 | HumanCalib | 사람 기반 자동 보정(번들 조정) | MVP | 코드 MIT. 기본 3D lifter MeTRAbs 는 비상업, VideoPose3D 는 CC BY-NC |
 | MapAnything | 초기 보정 추정, 정적 3D | MVP | 코드 Apache 2.0. 가중치 `facebook/map-anything`은 CC-BY-NC 4.0, `facebook/map-anything-apache`는 Apache 2.0(선행 PoC에서 품질 크게 낮음) |
 | Depth Anything 3 | 정적 3D 비교군(pose-conditioned, MapAnything 외부 모델 인터페이스) | 비교 | DA3NESTED-GIANT-LARGE-1.1 은 CC BY-NC, Metric-Large 는 Apache 2.0 |

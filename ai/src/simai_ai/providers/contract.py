@@ -1,6 +1,6 @@
 """Provider 공통 계약 시험의 검사 함수 (명세 20.4 규칙 6, 21.3).
 
-모든 Provider 구현(DATASET_GT, SIM, MANUAL_PNP, CHARUCO, G1_AUTO, TIER0_LOG 등)이 같은 검사를 통과해야 한다.
+모든 Provider 구현(DATASET_GT, SIM, MODEL_ESTIMATE, G1_AUTO, TIER0_LOG 등)이 같은 검사를 통과해야 한다.
 검사 함수는 위반 설명 목록을 돌려준다(빈 목록이면 통과). pytest 에서 쓰는 묶음은 `simai_ai.providers.testing`.
 
 검사 범주:
@@ -56,17 +56,21 @@ MIN_TRIANGULATION_CAMERAS = 2
 # 바로 선 카메라는 0 이하다(천장에서 수직으로 내려다보면 0 근처라 여유를 둔다). 카메라 roll 은 계약이 제한하지 않는다.
 CAMERA_DOWN_MAX_Z = 0.1
 
-# CALIBRATED 가 될 수 있는 출처 (명세 20.4 규칙 4, 4.3 대체 경로. 수정 6).
-# MANUAL_PNP(평면도 점 PnP)는 수정 6 에서 대체 경로에서 빠졌다.
-# 계약 값은 연구용 수동 대응점으로 남지만 CALIBRATED 는 안 된다.
-CALIBRATED_SOURCES = frozenset({"G1_AUTO", "CHARUCO"})
+# CalibrationProvider 출력 문서(contracts/providers/calibration.schema.json)의 계약 버전. 보정 문서를 만드는 코드
+# (calibration.document, providers.dataset_gt)는 이 값을 쓴다. 2.0.0 은 v1.3 에서 쓰지 않는 보정 출처·스케일 근거
+# 값을 뺀 메이저 버전이다. world_tracks 등 다른 계약의 버전과는 따로 간다.
+CALIBRATION_SCHEMA_VERSION = "2.0.0"
+
+# CALIBRATED 가 될 수 있는 출처 (명세 20.4 규칙 4, 4.3 대체 경로).
+# v1.3 의 대체 경로는 걷기 재수행·실측 정물 추가 뒤 G1 재보정뿐이라 G1_AUTO 만 남는다.
+CALIBRATED_SOURCES = frozenset({"G1_AUTO"})
 NEVER_CALIBRATED_SOURCES = frozenset({"DATASET_GT", "SIM", "MODEL_ESTIMATE"})
 
 # 스케일 근거 (명세 4.3, 4.4 수정 6). 주 근거는 실측 정물(2개 이상 일치) 또는 사람 키 통계(20명 이상)다.
-# 교차 확인 근거는 4.3 우선순위 목록과 ChArUco 마커다. 공개 데이터 정답·실측 평면도는 현장 근거가 아니어서 뺀다.
+# 교차 확인 근거는 4.3 우선순위 목록이다. 공개 데이터 정답은 현장 근거가 아니어서 뺀다.
 PRIMARY_SCALE_BASES = frozenset({"MEASURED_OBJECT", "HUMAN_HEIGHT_STATS"})
 CROSS_CHECK_SCALE_BASES = frozenset(
-    {"MEASURED_OBJECT", "KNOWN_PERSON_HEIGHT", "HUMAN_HEIGHT_STATS", "STANDARD_OBJECT", "MODEL_ESTIMATE", "MARKER"}
+    {"MEASURED_OBJECT", "KNOWN_PERSON_HEIGHT", "HUMAN_HEIGHT_STATS", "STANDARD_OBJECT", "MODEL_ESTIMATE"}
 )
 
 
@@ -387,7 +391,7 @@ def check_calibration_state(
 ) -> list[str]:
     """calibration_source 별 CALIBRATED 규칙 (명세 20.4 규칙 4, 4.4. 수정 6).
 
-    검사 범위: DATASET_GT·SIM·MODEL_ESTIMATE 는 CALIBRATED 불가, CALIBRATED 출처는 G1_AUTO·CHARUCO 뿐이다.
+    검사 범위: DATASET_GT·SIM·MODEL_ESTIMATE 는 CALIBRATED 불가, CALIBRATED 출처는 G1_AUTO 뿐이다.
     CALIBRATED 문서는 문서로 표현되는 4.4 조건을 모두 갖춰야 한다(값이 없으면 위반): 검산점 수, 머리 높이 오차,
     카메라 쌍별 위치 불일치, 바닥 평면 차이, 바닥 커버리지, 카메라별 재투영 오차, 스케일 주 근거와 교차 확인 근거.
     정물끼리의 일치·사람 수·근거 배율처럼 문서에 없는 조건은 보지 않는다(`simai_ai.calibration` 판정이 본다).
