@@ -30,7 +30,7 @@ ai/
     contracts/             #   contracts/ 스키마에서 생성한 타입 (손으로 고치지 않음)
   services/                # 배포 단위 = 기능 조립과 설정
     tier0/                 #   io → detection → tracking → geometry → contact → risk
-    worker/                #   I5 작업 서버 (scene, hmr, vlm)
+    worker/                #   I5 작업 워커: EC2 에서 작업을 가져감 (scene, hmr, vlm)
   experiments/             # 채택 전 실험 코드
     static_scene/{configs,eval,reports}
     hmr/{configs,eval,reports}
@@ -49,7 +49,7 @@ docs/                      # 팀 규칙(git-convention), 실험 설계, 결정 �
   - `experiments/`는 `src/`를 import할 수 있지만 `src/`와 `services/`는 `experiments/`를 import하지 않는다. 채택된 실험 코드는 리뷰를 거쳐 `src/`로 옮긴다(20.6).
   - `services/`에는 판정·추정 로직을 넣지 않는다.
 - 영상, 가중치, 데이터셋, 대형 산출물은 저장소에 넣지 않는다. 운영 리전의 Network Volume(3.12)에 두고 저장소에는 파일 목록과 해시(manifest)만 둔다.
-- 기획서와 요구사항 명세서의 정본은 저장소 `docs/spec/`, `docs/requirements.md` 다(수정 5). Notion 에는 정본 링크와 발표·제출용 내보낸 사본만 둔다. 명세를 바꾸는 MR 은 `docs/spec/README.md` 개정 이력에 한 줄을 더한다.
+- 기획서와 요구사항 명세서의 정본은 저장소 `docs/spec/`, `docs/requirements.md` 다. Notion 에는 정본 링크와 발표·제출용 내보낸 사본만 둔다. 명세를 바꾸는 MR 은 `docs/spec/README.md` 개정 이력에 한 줄을 더한다.
 
 ## 21.2 계약 우선
 
@@ -64,12 +64,14 @@ docs/                      # 팀 규칙(git-convention), 실험 설계, 결정 �
 |---|---|---|
 | 단위 | 좌표 어댑터 왕복(4.2), 시간 모델 전이(6.1), 상태 전이, Risk Engine 규칙, 저널 offset 계산 | CI (CPU) |
 | 계약 | 각 모듈이 만드는 메시지와 `contracts/examples/`의 스키마 검증, Provider 계약 시험(20.4) | CI (CPU) |
-| Risk Engine 공통 벡터 | 같은 입력에 같은 이벤트가 나오는지. Tier 0 배포 이미지와 EC2 컨테이너 이미지 양쪽에서 실행(15.1 G3) | CI (CPU) |
+| Risk Engine 공통 벡터 | 같은 입력에 같은 이벤트가 나오는지. Tier 0 배포 이미지와 EC2 컨테이너 이미지 양쪽에서 실행(부록 D-G3-04) | CI (CPU) |
 | 시나리오 재생 | 녹화·시뮬레이터 입력을 파일 모드 Tier 0에 넣어 기대 이벤트(정답 파일)와 비교. 시계는 주입식으로 고정해 결과가 매번 같게 | CI (시뮬레이터, CPU 가능 범위) + RunPod (실제 모델) |
 | 통합 | Docker Compose로 EC2 스택 + 가짜 Tier 0 송신기 → 뷰어 수신, DB 제약(LIVE만 알림, 11.4) | CI 또는 로컬 |
-| 장애 주입 | 강제 종료 복구, 저널 영속성, 재동기화(15.1 G3) | RunPod Network Volume에서 수동·주기 실행 |
+| 장애 주입 | 강제 종료 복구, 저널 영속성, 재동기화, 현장 경보 재동기화, 하트비트(부록 D.4) | RunPod Network Volume에서 수동·주기 실행 |
 | GPU | 모델 추론 정확도·지연(G0), EXP 벤치 | RunPod에서 수동 실행, 결과는 Run 기록으로 |
+| 현장 측정 | LED ms 카운터 판·240fps 촬영(glass-to-alarm)·줄자 실측(15.1 측정 방법) | 개발 교실에서 수동 실행, 결과는 Run 기록으로 |
 
+- 회귀 시험 항목과 시험 ID(D-Gx-nn)는 부록 D 가 정본이다. 테스트 코드와 Run 기록은 이 ID 로 가리킨다.
 - Risk Engine과 Tier 0는 시계를 주입받는다. 실제 시각에 기대는 테스트를 만들지 않는다.
 - GPU가 필요한 테스트는 표시해서(예: pytest marker `gpu`) CI에서 제외한다.
 
@@ -82,6 +84,6 @@ docs/                      # 팀 규칙(git-convention), 실험 설계, 결정 �
 
 ## 21.5 개발 환경
 
-- 기본안: Python 3.11(의존성 잠금 파일로 고정), Java 17·Spring Boot 3, Node LTS.
+- 기본안: Python 3.11(의존성 잠금 파일로 고정), Java 21·Spring Boot 4(`server/`), Node LTS.
 - 모델별 Python·CUDA·Torch 환경은 `deploy/`의 Docker 이미지로 고정하고, 이미지 다이제스트를 Run 기록의 `env_hash`로 쓴다(20.5).
 - 장비 없이 개발할 때는 시뮬레이터와 공개 데이터를 FrameSource로 쓴다(20.4).
