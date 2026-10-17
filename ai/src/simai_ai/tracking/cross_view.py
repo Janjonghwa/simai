@@ -36,6 +36,12 @@ MV3DT 원칙(공유 World 좌표, tracklet 연결, 전체 1:1 배정)을 Python 
    없음) 역시 표시한다. 잘못 합친 ID 보다 갈라진 ID 가 덜 위험하다.
 6. 클러스터 전체 삼각측량에서 대부분의 관절이 이상치로 빠지는 view 는 떼어 낸다.
 
+계산 묶음(S15P31A101-168, docs/design/tier0-geometry-budget.md): 왜곡 제거는 카메라마다 view 전체를 한 번에 하고
+(`RigCamera.undistort_many`), 후보 근거는 카메라 쌍마다 에피폴라 거리 행렬·2-view DLT 를 한 번에, 클러스터 삼각측량은
+클러스터 전체를 `triangulate_skeletons` 한 번으로 푼다. 배정은 비용 행렬에서 합친 클러스터의 행·열만 다시 계산한다.
+결과는 쌍·클러스터마다 따로 계산한 것과 같다. 클러스터의 왜곡 제거 결과(`ViewCluster.undistorted`)와 삼각측량
+(`ViewCluster.skeleton`)은 관절 게이트가 다시 쓴다.
+
 입력 계약: 동기화가 무효인 카메라(System Health 의 `HealthReport.sync_invalid_cameras`)는 융합에서 빼야 한다.
 호출자(Tier 0 조립부)가 `associate(..., exclude_cameras=...)` 로 넘기면 그 카메라의 view 는 이 시각 연결에 쓰지
 않는다. 프레임별 촬영 시각 불확실성은 보간 단계(`LocalTrackletBuffer`)가 거른다.
@@ -50,7 +56,7 @@ from __future__ import annotations
 import itertools
 import math
 import statistics
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -63,8 +69,13 @@ from simai_ai.geometry.interpolation import (
     KeypointBuffer,
     KeypointSample,
 )
-from simai_ai.geometry.rig import CameraRig, RigCamera
-from simai_ai.geometry.triangulation import SkeletonEstimate, TriangulationConfig, triangulate_skeleton
+from simai_ai.geometry.rig import CameraRig, RigCamera, UndistortedKeypoints
+from simai_ai.geometry.triangulation import (
+    SkeletonEstimate,
+    TriangulationConfig,
+    triangulate_skeleton,
+    triangulate_skeletons,
+)
 from simai_ai.tracking.assignment import linear_sum_assignment
 from simai_ai.tracking.local_tracker import Observation2DFrame
 from simai_ai.tracking.time_model import require_ms
@@ -217,6 +228,8 @@ class ViewCluster:
     skeleton: SkeletonEstimate | None
     uncertain_reasons: tuple[UncertainReason, ...] = ()
     competitors: tuple[TrackKey, ...] = ()
+    undistorted: Mapping[str, UndistortedKeypoints] = field(default_factory=dict, compare=False, repr=False)
+    """카메라 ID → 그 view 를 왜곡 제거한 결과. 관절 게이트(`JointGate.update(undistorted=...)`)가 다시 풀지 않고 쓴다"""
 
     @property
     def identity_uncertain(self) -> bool:
@@ -256,6 +269,8 @@ class _Prepared:
     camera: RigCamera
     mask: np.ndarray
     """신뢰도 기준 이상인 관절"""
+    undistorted: UndistortedKeypoints
+    """view keypoint 를 한 번에 왜곡 제거한 결과. 후보 근거·클러스터 삼각측량·관절 게이트가 같이 쓴다"""
     normalized: np.ndarray
     """왜곡을 제거한 정규화 좌표 (관절 수, 2). mask 가 False 인 행은 의미 없음"""
     floor_ray: tuple[np.ndarray, np.ndarray] | None
@@ -334,11 +349,16 @@ class CrossViewAssociator:
         dropped = tuple(sorted(v.key for v in views if v.camera_id in excluded))
 
         used = sorted((v for v in views if v.camera_id not in excluded), key=lambda v: v.key)
-        prepared = {v.key: self._prepare(v) for v in used}
-        pairs: dict[tuple[TrackKey, TrackKey], PairEvidence] = {}
-        for ka, kb in itertools.combinations(sorted(prepared), 2):
-            if ka[0] != kb[0]:
-                pairs[(ka, kb)] = self._pair(prepared[ka], prepared[kb])
+        # 왜곡 제거는 카메라마다 그 카메라의 view 전체를 한 번에 한다
+        by_camera: dict[str, list[LocalView]] = {}
+        for v in used:
+            by_camera.setdefault(v.camera_id, []).append(v)
+        undistorted: dict[TrackKey, UndistortedKeypoints] = {}
+        for cid, cam_views in by_camera.items():
+            results = self.rig.cameras[cid].undistort_many([v.view.keypoints for v in cam_views])
+            undistorted.update((v.key, u) for v, u in zip(cam_views, results))
+        prepared = {v.key: self._prepare(v, undistorted[v.key]) for v in used}
+        pairs = self._pairs(prepared)
 
         flags: list[_Flag] = []
         works = self._assign(prepared, pairs, flags)
@@ -357,23 +377,18 @@ class CrossViewAssociator:
 
     # ------------------------------------------------------------------ 2단계: 후보 근거
 
-    def _prepare(self, lv: LocalView) -> _Prepared:
+    def _prepare(self, lv: LocalView, undistorted: UndistortedKeypoints | None = None) -> _Prepared:
         camera = self.rig.cameras[lv.camera_id]
-        thr = self.config.min_keypoint_confidence
-        kps = lv.view.keypoints
+        if undistorted is None:
+            undistorted = camera.undistort_keypoints(lv.view.keypoints)
         # 값이 유한하지 않거나 왜곡을 제거할 수 없는 keypoint 는 관측으로 세지 않는다(모르면 비움)
-        mask = np.array(
-            [kp is not None and all(math.isfinite(float(x)) for x in kp[:3]) and kp[2] >= thr for kp in kps],
-            dtype=bool,
-        )
-        pixels = np.array([kp[:2] if m else (0.0, 0.0) for kp, m in zip(kps, mask)], dtype=float)
-        normalized, undistorted = camera.normalize_with_mask(pixels)
-        mask &= undistorted
+        mask = undistorted.usable(self.config.min_keypoint_confidence)
+        normalized = undistorted.normalized
         floor_ray = None
         ankles = [j for j in ANKLES[self.joint_layout] if mask[j]]
         if ankles:
             floor_ray = _floor_ray(camera, normalized[ankles].mean(axis=0))
-        return _Prepared(lv, camera, mask, normalized, floor_ray)
+        return _Prepared(lv, camera, mask, undistorted, normalized, floor_ray)
 
     def _essential_matrix(self, a: RigCamera, b: RigCamera) -> np.ndarray:
         """x_b·E·x_a = 0 인 E (정규화 좌표). x_b = R_ab x_a + t_ab."""
@@ -387,26 +402,78 @@ class CrossViewAssociator:
             self._essential[key] = E
         return E
 
+    def _pairs(self, prepared: dict[TrackKey, _Prepared]) -> dict[tuple[TrackKey, TrackKey], PairEvidence]:
+        """카메라가 다른 view 쌍 전체의 근거. 카메라 쌍마다 에피폴라 거리와 2-view 삼각측량을 한 번에 계산한다.
+
+        쌍 하나씩 `_pair` 로 계산한 것과 결과가 같다(부동소수 연산 순서만 다르다).
+        """
+        cfg = self.config
+        by_camera: dict[str, list[TrackKey]] = {}
+        for key in sorted(prepared):
+            by_camera.setdefault(key[0], []).append(key)
+        found: dict[tuple[TrackKey, TrackKey], PairEvidence] = {}
+        for cam_a, cam_b in itertools.combinations(sorted(by_camera), 2):
+            pas = [prepared[k] for k in by_camera[cam_a]]
+            pbs = [prepared[k] for k in by_camera[cam_b]]
+            epi, common = self._epipolar_matrix(pas, pbs)
+            counts = common.sum(axis=2)
+            queued = [
+                (i, k)
+                for i in range(len(pas))
+                for k in range(len(pbs))
+                if counts[i, k] >= cfg.min_common_joints and not epi[i, k] > cfg.epipolar_gate_px
+            ]
+            tri = _two_view_triangulation_many([(pas[i], pbs[k], common[i, k]) for i, k in queued])
+            solved = dict(zip(queued, tri))
+            for i, pa in enumerate(pas):
+                for k, pb in enumerate(pbs):
+                    key = (pa.view.key, pb.view.key)
+                    n = int(counts[i, k])
+                    # 대부분의 쌍(다른 사람)은 앞의 두 탈락 조건에서 끝난다. `_evidence` 의 처음 두 분기와 같다
+                    if n < cfg.min_common_joints:
+                        found[key] = PairEvidence(*key, n, reject=RejectReason.FEW_COMMON_JOINTS)
+                    elif epi[i, k] > cfg.epipolar_gate_px:
+                        found[key] = PairEvidence(*key, n, epipolar_px=float(epi[i, k]), reject=RejectReason.EPIPOLAR)
+                    else:
+                        found[key] = self._evidence(pa, pb, common[i, k], float(epi[i, k]), solved[(i, k)])
+        return {key: found[key] for key in sorted(found)}
+
     def _pair(self, pa: _Prepared, pb: _Prepared) -> PairEvidence:
+        """view 쌍 하나의 근거 (`_pairs` 의 쌍 하나)."""
+        common = pa.mask & pb.mask
+        if int(common.sum()) < self.config.min_common_joints:
+            return self._evidence(pa, pb, common, math.nan, None)
+        epi = self._epipolar_px(pa, pb, common)
+        tri = _two_view_triangulation(pa, pb, common) if not epi > self.config.epipolar_gate_px else None
+        return self._evidence(pa, pb, common, epi, tri)
+
+    def _evidence(
+        self,
+        pa: _Prepared,
+        pb: _Prepared,
+        common: np.ndarray,
+        epi: float,
+        tri: tuple[np.ndarray, np.ndarray] | None,
+    ) -> PairEvidence:
+        """공통 관절·에피폴라 거리·2-view 삼각측량(공통 관절 순서의 XYZ, 재투영 오차)으로 쌍 근거를 정한다."""
         cfg = self.config
         a, b = pa.view.key, pb.view.key
-        common = pa.mask & pb.mask
         n_common = int(common.sum())
         if n_common < cfg.min_common_joints:
             return PairEvidence(a, b, n_common, reject=RejectReason.FEW_COMMON_JOINTS)
 
-        epi = self._epipolar_px(pa, pb, common)
         if epi > cfg.epipolar_gate_px:
             return PairEvidence(a, b, n_common, epipolar_px=epi, reject=RejectReason.EPIPOLAR)
+        assert tri is not None
 
         gap = None
         if pa.floor_ray is not None and pb.floor_ray is not None:
             # 기록만 한다. 가설 높이보다 높은 면 위 사람일 수 있으므로 이 값으로는 탈락시키지 않는다
             gap = _floor_gap(pa.floor_ray, pb.floor_ray, cfg.floor_hypothesis_max_height_m)
 
-        xyz, err = _two_view_triangulation(pa, pb, common)
-        tri = cfg.triangulation
-        solved = np.isfinite(err) & (err <= tri.outlier_reprojection_error_px)
+        xyz, err = tri
+        tri_cfg = cfg.triangulation
+        solved = np.isfinite(err) & (err <= tri_cfg.outlier_reprojection_error_px)
         n_ok = int(solved.sum())
         base = {"common_joints": n_common, "epipolar_px": epi, "floor_gap_m": gap, "consistent_joints": n_ok}
         if n_ok < max(cfg.min_common_joints, cfg.min_consistent_joint_ratio * n_common):
@@ -426,7 +493,10 @@ class CrossViewAssociator:
         )
 
     def _epipolar_px(self, pa: _Prepared, pb: _Prepared, common: np.ndarray) -> float:
-        """공통 관절의 대칭 에피폴라 거리 평균. 정규화 좌표 거리에 초점 거리를 곱한 근사 픽셀이다."""
+        """공통 관절의 대칭 에피폴라 거리 평균. 정규화 좌표 거리에 초점 거리를 곱한 근사 픽셀이다.
+
+        쌍 하나용이다. 시각마다 전체 쌍은 `_epipolar_matrix` 가 같은 식을 카메라 쌍마다 한 번에 계산한다.
+        """
         E = self._essential_matrix(pa.camera, pb.camera)
         xa = np.column_stack([pa.normalized[common], np.ones(int(common.sum()))])
         xb = np.column_stack([pb.normalized[common], np.ones(int(common.sum()))])
@@ -436,6 +506,27 @@ class CrossViewAssociator:
         db = alg / np.maximum(np.hypot(lb[:, 0], lb[:, 1]), 1e-12) * _focal(pb.camera)
         da = alg / np.maximum(np.hypot(la[:, 0], la[:, 1]), 1e-12) * _focal(pa.camera)
         return float(np.mean((da + db) / 2.0))
+
+    def _epipolar_matrix(self, pas: Sequence[_Prepared], pbs: Sequence[_Prepared]) -> tuple[np.ndarray, np.ndarray]:
+        """카메라 a 의 view 들 × 카메라 b 의 view 들의 대칭 에피폴라 거리 평균 (len(pas), len(pbs))과 공통 관절
+        (len(pas), len(pbs), 관절 수). 공통 관절이 없으면 NaN. 거리는 정규화 좌표 거리 × 초점 거리(근사 픽셀)다."""
+        E = self._essential_matrix(pas[0].camera, pbs[0].camera)
+        mask_a = np.stack([p.mask for p in pas])
+        mask_b = np.stack([p.mask for p in pbs])
+        common = mask_a[:, None, :] & mask_b[None, :, :]
+        xa = np.concatenate([np.stack([p.normalized for p in pas]), np.ones((len(pas), self._n_joints, 1))], axis=2)
+        xb = np.concatenate([np.stack([p.normalized for p in pbs]), np.ones((len(pbs), self._n_joints, 1))], axis=2)
+        xa = np.where(mask_a[:, :, None], xa, 0.0)  # 관측이 아닌 관절(NaN 일 수 있다)은 계산만 막는다
+        xb = np.where(mask_b[:, :, None], xb, 0.0)
+        lb = xa @ E.T  # b 영상의 에피폴라선 (len(pas), J, 3)
+        la = xb @ E  # a 영상의 에피폴라선 (len(pbs), J, 3)
+        alg = np.abs(np.einsum("kjc,ijc->ikj", xb, lb))
+        db = alg / np.maximum(np.hypot(lb[..., 0], lb[..., 1]), 1e-12)[:, None, :] * _focal(pbs[0].camera)
+        da = alg / np.maximum(np.hypot(la[..., 0], la[..., 1]), 1e-12)[None, :, :] * _focal(pas[0].camera)
+        n = common.sum(axis=2)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            epi = np.where(common, (da + db) / 2.0, 0.0).sum(axis=2) / n
+        return np.where(n > 0, epi, np.nan), common
 
     # ------------------------------------------------------------------ 4·5단계: 배정
 
@@ -491,25 +582,26 @@ class CrossViewAssociator:
         cfg = self.config
         works = [_Work([k]) for k in sorted(prepared)]
         blocked: set[frozenset[frozenset[TrackKey]]] = set()
-        memo: dict[frozenset[frozenset[TrackKey]], tuple[float, bool]] = {}
+        # 클러스터 쌍 병합 비용 (cost, marginal). 병합하면 합친 클러스터의 행·열만 다시 계산한다(나머지 쌍은 그대로다)
+        n = len(works)
+        cost = np.full((n, n), math.inf)
+        marginal = np.zeros((n, n), dtype=bool)
+        for i, j in itertools.combinations(range(n), 2):
+            cost[i, j], marginal[i, j] = self._linkage(works[i].keys, works[j].keys, pairs)
+            cost[j, i], marginal[j, i] = cost[i, j], marginal[i, j]
         while True:
             n = len(works)
-            link = {}
-            for i, j in itertools.combinations(range(n), 2):
-                bk = _block_key(works[i], works[j])
-                if bk not in memo:
-                    memo[bk] = self._linkage(works[i].keys, works[j].keys, pairs)
-                link[(i, j)] = link[(j, i)] = memo[bk]
+            upper = np.triu(cost < cfg.new_cluster_cost, k=1)
             candidates = sorted(
-                (cost, min(works[i].keys + works[j].keys), i, j)
-                for (i, j), (cost, _) in link.items()
-                if i < j and cost < cfg.new_cluster_cost and _block_key(works[i], works[j]) not in blocked
+                (float(cost[i, j]), min(works[i].keys + works[j].keys), int(i), int(j))
+                for i, j in zip(*np.nonzero(upper))
+                if _block_key(works[i], works[j]) not in blocked
             )
             if not candidates:
                 return works
-            cost, _, i, j = candidates[0]
+            c, _, i, j = candidates[0]
             a, b = works[i], works[j]
-            if link[(i, j)][1]:
+            if marginal[i, j]:
                 keys = frozenset(a.keys + b.keys)
                 flags.append(_Flag(UncertainReason.MARGINAL_RESIDUAL, keys, keys, keys))
                 blocked.add(_block_key(a, b))
@@ -521,8 +613,8 @@ class CrossViewAssociator:
                     if k in (i, j):
                         continue
                     cams_k = {key[0] for key in works[k].keys}
-                    if (cams_k & cams_b and link[(i, k)][0] - cost < cfg.ambiguity_margin) or (
-                        cams_k & cams_a and link[(j, k)][0] - cost < cfg.ambiguity_margin
+                    if (cams_k & cams_b and cost[i, k] - c < cfg.ambiguity_margin) or (
+                        cams_k & cams_a and cost[j, k] - c < cfg.ambiguity_margin
                     ):
                         rivals.extend(works[k].keys)
             if rivals:
@@ -532,6 +624,12 @@ class CrossViewAssociator:
                 continue
             a.keys.extend(b.keys)
             del works[j]
+            cost = np.delete(np.delete(cost, j, axis=0), j, axis=1)
+            marginal = np.delete(np.delete(marginal, j, axis=0), j, axis=1)
+            for k in range(len(works)):
+                if k != i:
+                    cost[i, k], marginal[i, k] = self._linkage(works[i].keys, works[k].keys, pairs)
+                    cost[k, i], marginal[k, i] = cost[i, k], marginal[i, k]
 
     # ------------------------------------------------------------------ 3·6단계: 클러스터 검증
 
@@ -540,16 +638,39 @@ class CrossViewAssociator:
     ) -> dict[int, SkeletonEstimate]:
         """클러스터 전체를 삼각측량하고, 대부분의 관절에서 이상치로 빠진 view 를 떼어 낸다."""
         skeletons: dict[int, SkeletonEstimate] = {}
+
+        def triangulable(w: _Work) -> bool:
+            # 1대, 또는 (음성 대조에서) 같은 카메라가 겹친 클러스터는 삼각측량하지 않는다
+            cams = [k[0] for k in w.keys]
+            return len(cams) >= 2 and len(set(cams)) == len(cams)
+
+        def inputs(members: list[TrackKey]) -> tuple[list[InterpolatedView], dict[str, UndistortedKeypoints]]:
+            # view 는 키 순서(= ViewCluster.views 순서)로 넘긴다. 관절 게이트가 같은 순서의 view 로 이 결과를 다시 쓴다
+            return [prepared[k].view.view for k in members], {k[0]: prepared[k].undistorted for k in members}
+
+        # 처음 클러스터 전체를 한 번에 삼각측량해 두고, view 를 떼어 낸 클러스터만 다시 푼다(결과는 클러스터마다 같다)
+        first = [sorted(w.keys) for w in works if triangulable(w)]
+        batch = triangulate_skeletons(
+            [inputs(m)[0] for m in first],
+            self.rig,
+            self.joint_layout,
+            self.config.triangulation,
+            undistorted=[inputs(m)[1] for m in first],
+        )
+        done = {tuple(m): sk for m, sk in zip(first, batch)}
         i = 0
         while i < len(works):
             w = works[i]
             cams = [k[0] for k in w.keys]
-            if len(cams) < 2 or len(set(cams)) != len(cams):
-                i += 1  # 1대, 또는 (음성 대조에서) 같은 카메라가 겹친 클러스터는 삼각측량하지 않는다
+            if not triangulable(w):
+                i += 1
                 continue
-            sk = triangulate_skeleton(
-                [prepared[k].view.view for k in w.keys], self.rig, self.joint_layout, self.config.triangulation
-            )
+            members = sorted(w.keys)
+            sk = done.get(tuple(members))
+            if sk is None:
+                views, und = inputs(members)
+                tri = self.config.triangulation
+                sk = triangulate_skeleton(views, self.rig, self.joint_layout, tri, undistorted=und)
             used = {c: sum(1 for j in sk.joints if c in j.camera_ids) for c in cams}
             rejected = {c: sum(1 for j in sk.joints if c in j.rejected_camera_ids) for c in cams}
             worst = max(cams, key=lambda c: (rejected[c] - used[c], c))
@@ -614,6 +735,7 @@ class CrossViewAssociator:
                     skeleton=skeletons.get(i),
                     uncertain_reasons=tuple(sorted(reasons)),
                     competitors=tuple(sorted(competitors)),
+                    undistorted={k[0]: prepared[k].undistorted for k in keys},
                 )
             )
         self._previous = {c.association_id: frozenset(c.keys) for c in clusters}
@@ -738,32 +860,53 @@ def _two_view_triangulation(pa: _Prepared, pb: _Prepared, common: np.ndarray) ->
     정밀화는 하지 않는다. 오차는 두 카메라 중 큰 쪽의 왜곡 제거 픽셀 거리이고, 해가 없거나 어느 카메라 뒤면 inf 다.
     이 결과는 연결 판단에만 쓰고 내보내지 않는다(클러스터 관절은 `triangulate_skeleton` 결과).
     """
-    idx = np.flatnonzero(common)
-    w_a = np.array([pa.view.view.keypoints[j][2] for j in idx])
-    w_b = np.array([pb.view.view.keypoints[j][2] for j in idx])
+    return _two_view_triangulation_many([(pa, pb, common)])[0]
+
+
+def _two_view_triangulation_many(
+    jobs: Sequence[tuple[_Prepared, _Prepared, np.ndarray]],
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """같은 카메라 쌍(a, b)의 여러 view 쌍을 `_two_view_triangulation` 한 번으로 푼다. 관절마다 독립인 식이라
+    쌍들의 공통 관절을 이어 붙여 계산하고 쌍마다 나눠 돌려준다."""
+    if not jobs:
+        return []
+    cam_a, cam_b = jobs[0][0].camera, jobs[0][1].camera
+    idx = [np.flatnonzero(common) for _, _, common in jobs]
+    sizes = [len(i) for i in idx]
+    preps = []
+    for side in (0, 1):
+        normalized = np.concatenate([job[side].normalized[i] for job, i in zip(jobs, idx)])
+        weight = np.concatenate([job[side].undistorted.confidence[i] for job, i in zip(jobs, idx)])
+        target = np.concatenate([job[side].undistorted.ideal_pixels[i] for job, i in zip(jobs, idx)])
+        preps.append((cam_a if side == 0 else cam_b, normalized, weight, target))
     rows = []
-    for prep, w in ((pa, w_a), (pb, w_b)):
-        P = np.hstack([prep.camera.R, prep.camera.t[:, None]])
-        x, y = prep.normalized[idx, 0], prep.normalized[idx, 1]
+    for camera, normalized, w, _ in preps:
+        P = np.hstack([camera.R, camera.t[:, None]])
+        x, y = normalized[:, 0], normalized[:, 1]
         rows.append(w[:, None] * (x[:, None] * P[2] - P[0]))
         rows.append(w[:, None] * (y[:, None] * P[2] - P[1]))
     A = np.stack(rows, axis=1)  # (n, 4, 4)
     _, s, vt = np.linalg.svd(A)
     h = vt[:, -1, :]
     ok = (s[:, 0] > 0) & (s[:, -2] > 1e-9 * s[:, 0]) & (np.abs(h[:, 3]) > 1e-12)
-    xyz = np.full((len(idx), 3), np.nan)
+    total = len(A)
+    xyz = np.full((total, 3), np.nan)
     xyz[ok] = h[ok, :3] / h[ok, 3:4]
-    err = np.full(len(idx), np.inf)
-    worst = np.zeros(len(idx))
-    for prep in (pa, pb):
-        xc = prep.camera.to_camera(np.nan_to_num(xyz))
+    err = np.full(total, np.inf)
+    worst = np.zeros(total)
+    for camera, _, _, target in preps:
+        xc = camera.to_camera(np.nan_to_num(xyz))
         front = xc[:, 2] > 0
         ok &= front
-        proj = prep.camera.ideal_pixels(xc[:, :2] / np.where(front, xc[:, 2], 1.0)[:, None])
-        target = prep.camera.ideal_pixels(prep.normalized[idx])
+        proj = camera.ideal_pixels(xc[:, :2] / np.where(front, xc[:, 2], 1.0)[:, None])
         worst = np.maximum(worst, np.linalg.norm(proj - target, axis=1))
     err[ok] = worst[ok]
-    return xyz, err
+    out = []
+    start = 0
+    for size in sizes:
+        out.append((xyz[start : start + size], err[start : start + size]))
+        start += size
+    return out
 
 
 def _focal(camera: RigCamera) -> float:

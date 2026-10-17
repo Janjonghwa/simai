@@ -6,7 +6,12 @@
 - 유효 관측(신뢰도 기준 이상)이 2대 이상인 관절만 삼각측량한다. 1대 이하는 null, visible=false, UNAVAILABLE 이다.
   값(u, v, 신뢰도)이 유한하지 않거나 렌즈 왜곡을 제거할 수 없는(`RigCamera.normalize_with_mask`) keypoint 는
   관측으로 세지 않는다. 예외로 멈추지 않고 관측 수가 줄어든 대로 판정한다.
-- 선형 DLT(왜곡 제거 정규화 좌표)로 초기값을 구하고 가우스-뉴턴으로 픽셀 재투영 오차를 줄인다.
+- 왜곡 제거는 view(카메라)마다 keypoint 전체를 한 번에 한다(`RigCamera.undistort_keypoints`). 관절·카메라마다 1점씩
+  풀면 호출 고정 비용 때문에 10명 기준 10 Hz 를 넘는다(S15P31A101-168). 호출자가 이미 푼 결과를 `undistorted` 로
+  넘기면 다시 풀지 않는다(Cross-view·관절 게이트가 같은 view 를 다시 쓴다). 점별 결과는 1점씩 풀 때와 같다.
+- 선형 DLT(왜곡 제거 정규화 좌표)로 초기값을 구하고 가우스-뉴턴으로 픽셀 재투영 오차를 줄인다. 사람 한 명의 관절은
+  먼저 한 번에(관절 묶음 행렬 연산) 풀고, 이상치·퇴화가 있는 관절만 관절별 순차 경로로 다시 푼다. 관절마다의 판단
+  (해 유무, 카메라 앞, 감쇠·멈춤)은 관절 하나씩 풀 때와 같다.
 - 재투영 오차가 이상치 기준을 넘는 카메라는 빼고 다시 푼다. 빼고 나서 기준 안의 관측이 2대 미만이면 null 이다
   (2대를 채우려고 이상치 관측을 세지 않는다).
 - 시선이 같은 직선이면(공선) 해가 유일하지 않아 null 이다. 시선각은 방향이 아니라 직선 사이 각(0~90°)으로 본다.
@@ -18,17 +23,16 @@
 
 from __future__ import annotations
 
-import itertools
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
 import numpy as np
 
 from simai_ai.geometry.interpolation import InterpolatedView
-from simai_ai.geometry.rig import CameraRig, RigCamera
+from simai_ai.geometry.rig import CameraRig, RigCamera, UndistortedKeypoints
 
 # 명세 5.2: 2대 이상에서 보인 관절만 삼각측량한다
 MIN_VIEWS = 2
@@ -108,6 +112,17 @@ class JointEstimate:
         return self.xyz is not None
 
 
+@dataclass(frozen=True, eq=False)
+class SkeletonInputs:
+    """삼각측량 결과를 만든 입력. 다른 단계가 같은 입력의 결과를 다시 쓸 수 있는지 확인하는 데만 쓴다."""
+
+    config: TriangulationConfig
+    calibration_version: str
+    calibration_state: str
+    undistorted: tuple[UndistortedKeypoints, ...]
+    """view 순서의 왜곡 제거 결과 (카메라 모델·원본 keypoint 포함)"""
+
+
 @dataclass(frozen=True)
 class SkeletonEstimate:
     """사람 한 명의 공통 시각 t 관절 3D. World 미터, 오른손, +Z 상방."""
@@ -118,6 +133,32 @@ class SkeletonEstimate:
     calibration_version: str
     camera_ids: tuple[str, ...] = ()
     """하나 이상의 관절 삼각측량에 쓴 카메라 (world_track.cameras)"""
+    inputs: SkeletonInputs | None = field(default=None, compare=False, repr=False)
+    """이 결과를 만든 입력 (`reusable_for`). 직접 만든 SkeletonEstimate 는 None 이다"""
+
+    def reusable_for(
+        self,
+        views: Sequence[InterpolatedView],
+        rig: CameraRig,
+        joint_layout: str,
+        config: TriangulationConfig,
+    ) -> bool:
+        """같은 view(순서·카메라·keypoint·시각)·같은 보정(버전·상태·카메라 모델)·같은 관절 배치·같은 설정으로
+        `triangulate_skeleton` 을 부르면 이 결과와 같은지. 확인할 수 없으면 False(다시 계산한다)."""
+        inputs = self.inputs
+        if inputs is None or self.joint_layout != joint_layout or inputs.config != config:
+            return False
+        if (inputs.calibration_version, inputs.calibration_state) != (rig.calibration_version, rig.state):
+            return False
+        if len(views) != len(inputs.undistorted):
+            return False
+        for view, und in zip(views, inputs.undistorted):
+            camera = rig.cameras.get(view.camera_id)
+            if view.t != self.t or camera is None or view.camera_id != und.camera_id:
+                return False
+            if not und.matches(camera, view.keypoints):
+                return False
+        return True
 
     def to_skeleton(self) -> dict[str, Any]:
         """`world_state.schema.json#/$defs/skeleton` 문서. 관절은 모두 Tier 0 관측(observed)이다."""
@@ -150,39 +191,188 @@ def triangulate_skeleton(
     rig: CameraRig,
     joint_layout: str = "COCO17",
     config: TriangulationConfig = TriangulationConfig(),
+    *,
+    undistorted: Mapping[str, UndistortedKeypoints] | None = None,
 ) -> SkeletonEstimate:
-    """같은 사람의 카메라별 보간 keypoint 로 관절 3D 를 만든다. 모든 view 는 같은 공통 시각이어야 한다."""
-    view_list = list(views.values()) if isinstance(views, Mapping) else list(views)
-    if not view_list:
-        raise ValueError("view 가 없다")
-    n_joints = JOINT_COUNTS.get(joint_layout)
-    if n_joints is None:
-        raise ValueError(f"지원하지 않는 관절 배치: {joint_layout}")
-    times = {v.t for v in view_list}
-    if len(times) > 1:
-        raise ValueError(f"공통 시각이 다른 view 가 섞여 있다: {sorted(times)}")
-    ids = [v.camera_id for v in view_list]
-    if len(ids) != len(set(ids)):
-        raise ValueError(f"같은 카메라의 관측이 두 번 있다 (한 사람에 같은 카메라의 두 검출을 묶지 않는다): {ids}")
-    for v in view_list:
-        if len(v.keypoints) != n_joints:
-            raise ValueError(f"{v.camera_id}: {joint_layout} 는 keypoint {n_joints}개인데 {len(v.keypoints)}개다")
-    cameras = rig.subset(ids)
-    trusted = rig.state not in UNTRUSTED_CALIBRATION_STATES
+    """같은 사람의 카메라별 보간 keypoint 로 관절 3D 를 만든다. 모든 view 는 같은 공통 시각이어야 한다.
 
-    usable = [_usable_keypoints(cam, v.keypoints, config) for cam, v in zip(cameras, view_list)]
-    joints = []
-    for j in range(n_joints):
-        obs = [(cam, v.keypoints[j]) for cam, v, ok in zip(cameras, view_list, usable) if ok[j]]
-        joints.append(_triangulate_joint(obs, trusted, config))
-    used = sorted({cid for j in joints for cid in j.camera_ids})
-    return SkeletonEstimate(
-        t=view_list[0].t,
-        joint_layout=joint_layout,
-        joints=tuple(joints),
-        calibration_version=rig.calibration_version,
-        camera_ids=tuple(used),
-    )
+    undistorted: 카메라 ID → 그 view keypoint 를 이미 왜곡 제거한 결과(`RigCamera.undistort_keypoints`). 이 보정의
+    카메라로 그 view 의 keypoint 를 푼 것만 쓰고(`UndistortedKeypoints.matches`), 없거나 맞지 않으면 여기서 푼다.
+    """
+    return triangulate_skeletons([views], rig, joint_layout, config, undistorted=[undistorted])[0]
+
+
+def triangulate_skeletons(
+    people: Sequence[Mapping[str, InterpolatedView] | Sequence[InterpolatedView]],
+    rig: CameraRig,
+    joint_layout: str = "COCO17",
+    config: TriangulationConfig = TriangulationConfig(),
+    *,
+    undistorted: Sequence[Mapping[str, UndistortedKeypoints] | None] | None = None,
+) -> list[SkeletonEstimate]:
+    """여러 사람의 `triangulate_skeleton` 을 한 번에 한다. 결과는 사람 순서이고 사람마다 따로 부른 것과 같다.
+
+    관절 1차 풀이를 사람 전체에 대해 행렬 연산 한 번으로 해 호출 고정 비용을 한 번만 낸다(같은 시각 클러스터 전체 등).
+    undistorted: 사람마다 `triangulate_skeleton` 의 undistorted (없으면 None).
+    """
+    if undistorted is None:
+        undistorted = [None] * len(people)
+    if len(undistorted) != len(people):
+        raise ValueError(f"undistorted 는 사람 수({len(people)})와 같아야 한다: {len(undistorted)}")
+    view_lists = [list(views.values()) if isinstance(views, Mapping) else list(views) for views in people]
+    # 넘겨받지 않은 view 는 카메라마다 모아 한 번에 왜곡 제거한다(보정에 없는 카메라는 아래 검증이 KeyError 로 막는다)
+    merged = [dict(und) if und is not None else {} for und in undistorted]
+    missing: dict[str, list[tuple[int, InterpolatedView]]] = {}
+    for n, views in enumerate(view_lists):
+        for v in views:
+            camera = rig.cameras.get(v.camera_id)
+            cached = merged[n].get(v.camera_id)
+            if camera is not None and (cached is None or not cached.matches(camera, v.keypoints)):
+                missing.setdefault(v.camera_id, []).append((n, v))
+    for cid, items in missing.items():
+        for (n, v), und in zip(items, rig.cameras[cid].undistort_many([v.keypoints for _, v in items])):
+            merged[n][cid] = und
+    inputs = [_PersonInput.prepare(views, rig, joint_layout, config, und) for views, und in zip(view_lists, merged)]
+    first = _first_pass(inputs, rig, config)
+    return [inp.assemble(first.get(n, {}), rig, joint_layout, config) for n, inp in enumerate(inputs)]
+
+
+@dataclass(frozen=True)
+class _PersonInput:
+    """사람 한 명의 삼각측량 입력 (검증·왜곡 제거를 마친 것). 배열은 (view, 관절) 순서다."""
+
+    views: list[InterpolatedView]
+    cameras: list[RigCamera]
+    undistorted: list[UndistortedKeypoints]
+    usable: np.ndarray
+    normalized: np.ndarray
+    targets: np.ndarray
+    confidence: np.ndarray
+
+    @classmethod
+    def prepare(
+        cls,
+        views: Mapping[str, InterpolatedView] | Sequence[InterpolatedView],
+        rig: CameraRig,
+        joint_layout: str,
+        config: TriangulationConfig,
+        undistorted: Mapping[str, UndistortedKeypoints] | None,
+    ) -> _PersonInput:
+        view_list = list(views.values()) if isinstance(views, Mapping) else list(views)
+        if not view_list:
+            raise ValueError("view 가 없다")
+        n_joints = JOINT_COUNTS.get(joint_layout)
+        if n_joints is None:
+            raise ValueError(f"지원하지 않는 관절 배치: {joint_layout}")
+        times = {v.t for v in view_list}
+        if len(times) > 1:
+            raise ValueError(f"공통 시각이 다른 view 가 섞여 있다: {sorted(times)}")
+        ids = [v.camera_id for v in view_list]
+        if len(ids) != len(set(ids)):
+            raise ValueError(f"같은 카메라의 관측이 두 번 있다 (한 사람에 같은 카메라의 두 검출을 묶지 않는다): {ids}")
+        for v in view_list:
+            if len(v.keypoints) != n_joints:
+                raise ValueError(f"{v.camera_id}: {joint_layout} 는 keypoint {n_joints}개인데 {len(v.keypoints)}개다")
+        cameras = rig.subset(ids)
+        und = [undistort_view(cam, v, undistorted) for cam, v in zip(cameras, view_list)]
+        return cls(
+            views=view_list,
+            cameras=cameras,
+            undistorted=und,
+            usable=np.array([u.usable(config.min_keypoint_confidence) for u in und]),
+            normalized=np.stack([u.normalized for u in und]),
+            targets=np.stack([u.ideal_pixels for u in und]),
+            confidence=np.stack([u.confidence for u in und]),
+        )
+
+    def assemble(
+        self,
+        first: Mapping[int, tuple[np.ndarray, np.ndarray, float]],
+        rig: CameraRig,
+        joint_layout: str,
+        config: TriangulationConfig,
+    ) -> SkeletonEstimate:
+        """1차 풀이로 확정한 관절은 그대로, 나머지는 관절별 순차 경로로 푼다."""
+        trusted = rig.state not in UNTRUSTED_CALIBRATION_STATES
+        joints = []
+        for j in range(self.usable.shape[1]):
+            idx = np.flatnonzero(self.usable[:, j])
+            cams = [self.cameras[k] for k in idx]
+            if j in first:
+                X_j, errs, angle = first[j]
+                joints.append(_estimate(cams, X_j, errs, angle, (), trusted, config))
+            else:
+                obs = _Observations(cams, self.normalized[idx, j], self.targets[idx, j], self.confidence[idx, j])
+                joints.append(_triangulate_joint(obs, trusted, config))
+        used = sorted({cid for j in joints for cid in j.camera_ids})
+        return SkeletonEstimate(
+            t=self.views[0].t,
+            joint_layout=joint_layout,
+            joints=tuple(joints),
+            calibration_version=rig.calibration_version,
+            camera_ids=tuple(used),
+            inputs=SkeletonInputs(config, rig.calibration_version, rig.state, tuple(self.undistorted)),
+        )
+
+
+def _first_pass(
+    inputs: Sequence[_PersonInput], rig: CameraRig, config: TriangulationConfig
+) -> dict[int, dict[int, tuple[np.ndarray, np.ndarray, float]]]:
+    """1차: 유효 관측이 충분한 관절을 사람 전체에 걸쳐 한 번에 푼다(관절마다 쓴 카메라는 마스크).
+
+    이상치·퇴화가 없는 관절만 (사람 → 관절 → (XYZ, view 순서 재투영 오차, 시선각))으로 돌려준다. 나머지 관절은
+    관절별 순차 경로(`_triangulate_joint`, 이상치 카메라를 하나씩 빼고 다시 푼다)로 넘긴다. 1차 풀이는 순차 경로의
+    첫 반복과 같은 식이라 확정한 관절의 결과는 순차 경로와 같다.
+    """
+    cam_ids = sorted({cam.camera_id for inp in inputs for cam in inp.cameras})
+    column = {cid: c for c, cid in enumerate(cam_ids)}
+    rows: list[tuple[int, int, np.ndarray]] = []  # (사람, 관절, 그 사람 view 의 열 번호)
+    for n, inp in enumerate(inputs):
+        cols = np.array([column[cam.camera_id] for cam in inp.cameras])
+        for j in np.flatnonzero(inp.usable.sum(axis=0) >= config.min_views):
+            rows.append((n, int(j), cols))
+    if not rows:
+        return {}
+    M, C = len(rows), len(cam_ids)
+    mask = np.zeros((M, C), dtype=bool)
+    xn = np.zeros((M, C, 2))
+    tg = np.zeros((M, C, 2))
+    w = np.zeros((M, C))
+    for r, (n, j, cols) in enumerate(rows):
+        inp = inputs[n]
+        ok = inp.usable[:, j]
+        mask[r, cols[ok]] = True
+        xn[r, cols[ok]] = inp.normalized[ok, j]
+        tg[r, cols[ok]] = inp.targets[ok, j]
+        w[r, cols[ok]] = inp.confidence[ok, j]
+    stack = _CameraStack.of(rig.subset(cam_ids))
+    X = _solve_batch(stack, xn, tg, w, mask, config.refine_iterations)
+    solved = np.isfinite(X).all(axis=1)
+    errors = np.full((M, C), np.nan)
+    angles = np.full(M, np.nan)
+    if solved.any():
+        errors[solved] = _errors_batch(stack, tg[solved], mask[solved], X[solved])
+        angles[solved] = _max_ray_angles_batch(stack, mask[solved], X[solved])
+    out: dict[int, dict[int, tuple[np.ndarray, np.ndarray, float]]] = {}
+    for r, (n, j, cols) in enumerate(rows):
+        if not solved[r]:
+            continue
+        errs = errors[r, cols[inputs[n].usable[:, j]]]  # 그 사람 view 순서
+        if float(errs.max()) <= config.outlier_reprojection_error_px:
+            out.setdefault(n, {})[j] = (X[r], errs, float(angles[r]))
+    return out
+
+
+def undistort_view(
+    camera: RigCamera, view: InterpolatedView, undistorted: Mapping[str, UndistortedKeypoints] | None = None
+) -> UndistortedKeypoints:
+    """view 의 keypoint 를 한 번에 왜곡 제거한다. undistorted 에 같은 카메라·같은 keypoint 결과가 있으면 그것을 쓴다."""
+    if camera.camera_id != view.camera_id:
+        raise ValueError(f"카메라 {camera.camera_id} 와 view 카메라 {view.camera_id} 가 다르다")
+    cached = undistorted.get(view.camera_id) if undistorted is not None else None
+    if cached is not None and cached.matches(camera, view.keypoints):
+        return cached
+    return camera.undistort_keypoints(view.keypoints)
 
 
 def triangulate_point(
@@ -195,34 +385,65 @@ def triangulate_point(
     if len(cameras) < MIN_VIEWS:
         raise ValueError(f"삼각측량에는 카메라가 {MIN_VIEWS}대 이상 필요하다: {len(cameras)}대")
     pixels = np.asarray(pixels, dtype=float).reshape(-1, 2)
-    w = np.ones(len(cameras)) if weights is None else np.asarray(weights, dtype=float)
     normalized = np.vstack([cam.normalize(px) for cam, px in zip(cameras, pixels)])
-    if not (np.all(np.isfinite(normalized)) and np.all(np.isfinite(w))):
-        return None
-    X = _dlt(cameras, normalized, w)
-    if X is None or not _in_front(cameras, X):
-        return None
-    targets = np.vstack([cam.ideal_pixels(n) for cam, n in zip(cameras, normalized)])
-    X = _refine(cameras, targets, w, X, refine_iterations)
-    if not _in_front(cameras, X):
-        return None
-    return X
+    return triangulate_normalized(cameras, normalized, weights, refine_iterations)
+
+
+def triangulate_normalized(
+    cameras: Sequence[RigCamera],
+    normalized: np.ndarray,
+    weights: np.ndarray | None = None,
+    refine_iterations: int = 10,
+    targets: np.ndarray | None = None,
+) -> np.ndarray | None:
+    """왜곡을 제거한 정규화 좌표 (N, 2) 관측으로 World 점 하나를 푼다 (`triangulate_point` 의 왜곡 제거 뒤 단계).
+
+    정규화 좌표·가중치가 유한하지 않은 관측이 하나라도 있으면 None 이다. targets 는 그 관측의 이상적 핀홀 픽셀
+    (N, 2, `UndistortedKeypoints.ideal_pixels`)이고 없으면 normalized 로 계산한다.
+    """
+    normalized = np.asarray(normalized, dtype=float).reshape(1, -1, 2)
+    w = None if weights is None else np.asarray(weights, dtype=float).reshape(1, -1)
+    t = None if targets is None else np.asarray(targets, dtype=float).reshape(1, -1, 2)
+    X = triangulate_normalized_many(cameras, normalized, w, refine_iterations, t)[0]
+    return X if np.isfinite(X).all() else None
+
+
+def triangulate_normalized_many(
+    cameras: Sequence[RigCamera],
+    normalized: np.ndarray,
+    weights: np.ndarray | None = None,
+    refine_iterations: int = 10,
+    targets: np.ndarray | None = None,
+) -> np.ndarray:
+    """같은 카메라 N 대로 본 점 M 개를 한 번에 푼다. normalized (M, N, 2), weights (M, N), targets (M, N, 2).
+
+    점마다 `triangulate_normalized` 와 같고, 해가 없는 점의 행은 NaN 이다. 결과는 (M, 3).
+    """
+    if len(cameras) < MIN_VIEWS:
+        raise ValueError(f"삼각측량에는 카메라가 {MIN_VIEWS}대 이상 필요하다: {len(cameras)}대")
+    normalized = np.asarray(normalized, dtype=float).reshape(-1, len(cameras), 2)
+    M = len(normalized)
+    w = np.ones((M, len(cameras))) if weights is None else np.asarray(weights, dtype=float).reshape(M, -1)
+    if targets is None:
+        targets = np.stack([cam.ideal_pixels(normalized[:, c]) for c, cam in enumerate(cameras)], axis=1)
+    targets = np.asarray(targets, dtype=float).reshape(M, -1, 2)
+    mask = np.ones((M, len(cameras)), dtype=bool)
+    return _solve_batch(_CameraStack.of(cameras), normalized, targets, w, mask, refine_iterations)
 
 
 def reprojection_errors(cameras: Sequence[RigCamera], pixels: np.ndarray, X: np.ndarray) -> np.ndarray:
     """카메라별 재투영 오차(왜곡 제거 픽셀). 카메라 뒤이거나 그 관측의 왜곡을 제거할 수 없으면 inf."""
     pixels = np.asarray(pixels, dtype=float).reshape(-1, 2)
-    out = np.empty(len(cameras))
-    for i, (cam, px) in enumerate(zip(cameras, pixels)):
-        xc = cam.to_camera(X)[0]
-        if xc[2] <= 0:
-            out[i] = math.inf
-            continue
-        target = cam.ideal_pixels(cam.normalize(px))[0]
-        proj = cam.ideal_pixels(xc[:2] / xc[2])[0]
-        err = float(np.linalg.norm(proj - target))
-        out[i] = err if math.isfinite(err) else math.inf
-    return out
+    targets = np.vstack([cam.ideal_pixels(cam.normalize(px)) for cam, px in zip(cameras, pixels)])
+    return reprojection_errors_ideal(cameras, targets, X)
+
+
+def reprojection_errors_ideal(cameras: Sequence[RigCamera], targets: np.ndarray, X: np.ndarray) -> np.ndarray:
+    """관측의 이상적 핀홀 픽셀 (N, 2) 기준 카메라별 재투영 오차. 카메라 뒤이거나 기준점이 유한하지 않으면 inf."""
+    targets = np.asarray(targets, dtype=float).reshape(1, -1, 2)
+    mask = np.ones((1, len(cameras)), dtype=bool)
+    X = np.asarray(X, dtype=float).reshape(1, 3)
+    return _errors_batch(_CameraStack.of(cameras), targets, mask, X)[0]
 
 
 def max_ray_angle(cameras: Sequence[RigCamera], X: np.ndarray) -> float:
@@ -231,40 +452,48 @@ def max_ray_angle(cameras: Sequence[RigCamera], X: np.ndarray) -> float:
     시선은 방향이 없는 직선으로 본다. 서로 마주 보는 두 카메라의 반대 방향 시선(180° 근처)도 같은 방향(0° 근처)처럼
     거의 같은 직선이라 깊이가 불안정하다.
     """
-    dirs = [(X - cam.center) / np.linalg.norm(X - cam.center) for cam in cameras]
-    best = 0.0
-    for a, b in itertools.combinations(dirs, 2):
-        best = max(best, math.acos(float(np.clip(abs(a @ b), 0.0, 1.0))))
-    return best
+    mask = np.ones((1, len(cameras)), dtype=bool)
+    X = np.asarray(X, dtype=float).reshape(1, 3)
+    return float(_max_ray_angles_batch(_CameraStack.of(cameras), mask, X)[0])
 
 
-def _usable_keypoints(cam: RigCamera, keypoints: Sequence[Any], config: TriangulationConfig) -> list[bool]:
-    """관절마다 관측으로 셀 수 있는지: 값이 있고 (u, v, 신뢰도) 모두 유한하고 신뢰도 기준 이상이며 왜곡을 제거할 수 있다."""
-    candidate = []
-    pixels = np.zeros((len(keypoints), 2))
-    for j, kp in enumerate(keypoints):
-        ok = kp is not None and all(math.isfinite(float(x)) for x in kp[:3]) and kp[2] >= config.min_keypoint_confidence
-        candidate.append(ok)
-        if ok:
-            pixels[j] = kp[:2]
-    if not any(candidate):
-        return candidate
-    _, undistorted = cam.normalize_with_mask(pixels)
-    return [bool(c and u) for c, u in zip(candidate, undistorted)]
+@dataclass(frozen=True)
+class _Observations:
+    """관절 하나의 유효 관측 (카메라 순서). 왜곡 제거는 view 마다 한 번 해 둔 값이다."""
+
+    cameras: list[RigCamera]
+    normalized: np.ndarray
+    """(N, 2) 정규화 좌표"""
+    targets: np.ndarray
+    """(N, 2) 이상적 핀홀 픽셀 (재투영 오차 기준)"""
+    weights: np.ndarray
+    """(N,) keypoint 신뢰도"""
+
+    def __len__(self) -> int:
+        return len(self.cameras)
+
+    def without(self, i: int) -> _Observations:
+        keep = np.arange(len(self.cameras)) != i
+        return _Observations(
+            self.cameras[:i] + self.cameras[i + 1 :], self.normalized[keep], self.targets[keep], self.weights[keep]
+        )
+
+    def solve(self, refine_iterations: int) -> np.ndarray | None:
+        return triangulate_normalized(self.cameras, self.normalized, self.weights, refine_iterations, self.targets)
+
+    def errors(self, X: np.ndarray) -> np.ndarray:
+        return reprojection_errors_ideal(self.cameras, self.targets, X)
 
 
-def _triangulate_joint(
-    obs: list[tuple[RigCamera, tuple[float, float, float]]], trusted_calibration: bool, config: TriangulationConfig
-) -> JointEstimate:
+def _triangulate_joint(obs: _Observations, trusted_calibration: bool, config: TriangulationConfig) -> JointEstimate:
+    """관절 하나의 순차 경로: 재투영 오차가 이상치 기준을 넘는 카메라를 하나씩 빼며 다시 푼다."""
     if len(obs) < config.min_views:
         return JointEstimate(None, JointValidity.UNAVAILABLE, issues=(JointIssue.TOO_FEW_VIEWS,))
     rejected: list[str] = []
     while True:
-        cameras = [cam for cam, _ in obs]
-        pixels = np.array([kp[:2] for _, kp in obs])
-        weights = np.array([kp[2] for _, kp in obs])
-        X = triangulate_point(cameras, pixels, weights, config.refine_iterations)
-        errors = reprojection_errors(cameras, pixels, X) if X is not None else None
+        cameras = obs.cameras
+        X = obs.solve(config.refine_iterations)
+        errors = obs.errors(X) if X is not None else None
         if errors is not None and float(errors.max()) > config.outlier_reprojection_error_px:
             if len(obs) == config.min_views:
                 # 더 빼면 최소 관측 수 미만이다. 이상치 관측을 세어 좌표를 남기지 않는다
@@ -279,8 +508,8 @@ def _triangulate_joint(
             worst = _worst_view(obs, config)  # 해가 없거나 어느 카메라 뒤에 있다
         else:
             break
-        rejected.append(obs[worst][0].camera_id)
-        obs = obs[:worst] + obs[worst + 1 :]
+        rejected.append(cameras[worst].camera_id)
+        obs = obs.without(worst)
     if X is None or errors is None:
         return JointEstimate(
             None,
@@ -288,8 +517,20 @@ def _triangulate_joint(
             rejected_camera_ids=tuple(rejected),
             issues=(JointIssue.DEGENERATE,),
         )
+    return _estimate(cameras, X, errors, max_ray_angle(cameras, X), tuple(rejected), trusted_calibration, config)
+
+
+def _estimate(
+    cameras: Sequence[RigCamera],
+    X: np.ndarray,
+    errors: np.ndarray,
+    angle: float,
+    rejected: tuple[str, ...],
+    trusted_calibration: bool,
+    config: TriangulationConfig,
+) -> JointEstimate:
+    """좌표를 얻은 관절의 최소 기준 판정 (재투영 오차, 시선각, 보정 상태)."""
     reproj = float(errors.max())
-    angle = max_ray_angle(cameras, X)
     issues = []
     if reproj > config.max_reprojection_error_px:
         issues.append(JointIssue.HIGH_REPROJECTION_ERROR)
@@ -301,101 +542,229 @@ def _triangulate_joint(
         xyz=(float(X[0]), float(X[1]), float(X[2])),
         validity=JointValidity.UNCERTAIN if issues else JointValidity.VALID,
         camera_ids=tuple(cam.camera_id for cam in cameras),
-        rejected_camera_ids=tuple(rejected),
+        rejected_camera_ids=rejected,
         reprojection_error_px=reproj,
         ray_angle_rad=angle,
         issues=tuple(issues),
     )
 
 
-def _worst_view(obs: list[tuple[RigCamera, tuple[float, float, float]]], config: TriangulationConfig) -> int:
+def _worst_view(obs: _Observations, config: TriangulationConfig) -> int:
     """해가 없을 때 뺄 카메라: 하나씩 빼고 풀어 남은 카메라 재투영 오차가 가장 작은 경우의 빠진 카메라."""
     best_i, best_err = 0, math.inf
     for i in range(len(obs)):
-        rest = obs[:i] + obs[i + 1 :]
-        cams = [cam for cam, _ in rest]
-        px = np.array([kp[:2] for _, kp in rest])
-        X = triangulate_point(cams, px, np.array([kp[2] for _, kp in rest]), config.refine_iterations)
+        rest = obs.without(i)
+        X = rest.solve(config.refine_iterations)
         if X is None:
             continue
-        err = float(reprojection_errors(cams, px, X).max())
+        err = float(rest.errors(X).max())
         if err < best_err:
             best_i, best_err = i, err
     return best_i
 
 
-def _dlt(cameras: Sequence[RigCamera], normalized: np.ndarray, weights: np.ndarray) -> np.ndarray | None:
-    """정규화 좌표의 선형 삼각측량. 행마다 x·P₃ − P₁, y·P₃ − P₂ (P = [R | t]).
-
-    두 번째로 작은 특이값도 0 에 가까우면 해 공간이 2차원 이상(시선 공선)이라 해가 유일하지 않다: None.
-    """
-    rows = []
-    for cam, (x, y), w in zip(cameras, normalized, weights):
-        P = np.hstack([cam.R, cam.t[:, None]])
-        rows.append(w * (x * P[2] - P[0]))
-        rows.append(w * (y * P[2] - P[1]))
-    try:
-        _, s, vt = np.linalg.svd(np.array(rows))
-    except np.linalg.LinAlgError:
-        return None
-    if not s[0] > 0 or s[-2] <= DLT_RANK_TOLERANCE * s[0]:
-        return None
-    h = vt[-1]
-    if abs(h[3]) < 1e-12 or not np.all(np.isfinite(h)):
-        return None
-    return h[:3] / h[3]
+# ---------------------------------------------------------------- 묶음 계산
+# 점 M 개를 카메라 C 대로 한 번에 푼다. 점마다 쓴 카메라는 mask (M, C) 로 고르고, 쓰지 않는 칸은 가중치 0 이라
+# 식에 0 만 더한다. 점마다의 판단(해 유무, 카메라 앞, 감쇠 계수, 멈춤 조건)은 점 하나씩 풀 때와 같다.
 
 
-def _refine(
-    cameras: Sequence[RigCamera], targets: np.ndarray, weights: np.ndarray, X: np.ndarray, iterations: int
+@dataclass(frozen=True)
+class _CameraStack:
+    """카메라 C 대의 행렬을 쌓은 것."""
+
+    R: np.ndarray
+    """(C, 3, 3)"""
+    t: np.ndarray
+    """(C, 3)"""
+    P: np.ndarray
+    """(C, 3, 4) = [R | t]"""
+    K: np.ndarray
+    """(C, 3, 3)"""
+    KP: np.ndarray
+    """(C, 3, 4) = K · [R | t]. World 점 → 이상적 핀홀 픽셀 동차 좌표"""
+    center: np.ndarray
+    """(C, 3) 카메라 중심 (World)"""
+
+    @classmethod
+    def of(cls, cameras: Sequence[RigCamera]) -> _CameraStack:
+        R = np.stack([cam.R for cam in cameras])
+        t = np.stack([cam.t for cam in cameras])
+        P = np.concatenate([R, t[:, :, None]], axis=2)
+        K = np.stack([cam.K for cam in cameras])
+        return cls(R=R, t=t, P=P, K=K, KP=K @ P, center=np.stack([cam.center for cam in cameras]))
+
+    def project(self, X: np.ndarray) -> np.ndarray:
+        """World 점 (M, 3) → 카메라마다 이상적 핀홀 픽셀 동차 좌표 (M, C, 3). 셋째 성분이 카메라 좌표 z 다."""
+        return np.einsum("cij,mj->mci", self.KP[:, :, :3], X) + self.KP[:, :, 3]
+
+
+def _solve_batch(
+    stack: _CameraStack,
+    normalized: np.ndarray,
+    targets: np.ndarray,
+    weights: np.ndarray,
+    mask: np.ndarray,
+    iterations: int,
 ) -> np.ndarray:
-    """가중 픽셀 재투영 오차 제곱합을 가우스-뉴턴(레벤버그-마콰트 감쇠)으로 줄인다."""
-    sw = np.sqrt(weights)
+    """점 M 개의 삼각측량. normalized·targets (M, C, 2), weights·mask (M, C). 해가 없는 점의 행은 NaN.
 
-    def residuals(P: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
-        r = np.empty(2 * len(cameras))
-        J = np.empty((2 * len(cameras), 3))
-        for i, cam in enumerate(cameras):
-            xc, yc, zc = cam.R @ P + cam.t
-            if zc <= 0:
-                return None
-            fx, s, cx = cam.K[0]
-            fy, cy = cam.K[1][1], cam.K[1][2]
-            u = fx * xc / zc + s * yc / zc + cx
-            v = fy * yc / zc + cy
-            du = np.array([fx / zc, s / zc, -(fx * xc + s * yc) / zc**2])
-            dv = np.array([0.0, fy / zc, -fy * yc / zc**2])
-            r[2 * i : 2 * i + 2] = sw[i] * (np.array([u, v]) - targets[i])
-            J[2 * i] = sw[i] * (du @ cam.R)
-            J[2 * i + 1] = sw[i] * (dv @ cam.R)
-        return r, J
+    선형 DLT → 카메라 앞 확인 → 가우스-뉴턴(레벤버그-마콰트 감쇠) → 카메라 앞 확인. 쓴 관측의 정규화 좌표·가중치에
+    유한하지 않은 값이 있으면 해가 없다.
+    """
+    M = mask.shape[0]
+    out = np.full((M, 3), np.nan)
+    with np.errstate(invalid="ignore"):
+        finite = np.where(mask, np.isfinite(normalized).all(axis=2) & np.isfinite(weights), True).all(axis=1)
+    xn = np.where(mask[:, :, None], normalized, 0.0)
+    w = np.where(mask, weights, 0.0)
+    tg = np.where(mask[:, :, None], targets, 0.0)
+    X, ok = _dlt_batch(stack, xn, w)
+    ok &= finite
+    ok[ok] = _in_front_batch(stack, X[ok], mask[ok])
+    if not ok.any():
+        return out
+    idx = np.flatnonzero(ok)
+    X = _refine_batch(stack, tg[idx], w[idx], mask[idx], X[idx], iterations)
+    front = _in_front_batch(stack, X, mask[idx])
+    out[idx[front]] = X[front]
+    return out
 
-    current = residuals(X)
-    if current is None:
-        return X
-    damping = 1e-3
-    for _ in range(iterations):
-        r, J = current
-        cost = float(r @ r)
-        H = J.T @ J
-        g = J.T @ r
+
+def _dlt_batch(stack: _CameraStack, xn: np.ndarray, w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """정규화 좌표의 선형 삼각측량. 카메라마다 두 행 x·P₃ − P₁, y·P₃ − P₂ (P = [R | t], 신뢰도 가중).
+
+    두 번째로 작은 특이값도 0 에 가까우면 해 공간이 2차원 이상(시선 공선)이라 해가 유일하지 않다. 돌려주는 값은
+    (점 (M, 3), 해가 있는지 (M,)). 쓰지 않는 카메라는 가중치 0 인 행(0 행)이라 특이값을 바꾸지 않는다.
+    """
+    P = stack.P[None]
+    rows_x = w[:, :, None] * (xn[:, :, 0:1] * P[:, :, 2] - P[:, :, 0])
+    rows_y = w[:, :, None] * (xn[:, :, 1:2] * P[:, :, 2] - P[:, :, 1])
+    A = np.stack([rows_x, rows_y], axis=2).reshape(len(xn), -1, 4)
+    try:
+        _, s, vt = np.linalg.svd(A)
+    except np.linalg.LinAlgError:
+        return _dlt_one_by_one(A)
+    return _dlt_solution(s, vt)
+
+
+def _dlt_one_by_one(A: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """묶음 SVD 가 수렴하지 않으면 점마다 풀고, 수렴하지 않는 점만 해가 없다고 본다."""
+    X = np.full((len(A), 3), np.nan)
+    ok = np.zeros(len(A), dtype=bool)
+    for m in range(len(A)):
         try:
-            step = np.linalg.solve(H + damping * np.diag(np.diag(H)), -g)
+            _, s, vt = np.linalg.svd(A[m])
         except np.linalg.LinAlgError:
-            break
-        candidate = X + step
-        trial = residuals(candidate)
-        if trial is not None and float(trial[0] @ trial[0]) < cost:
-            X, current = candidate, trial
-            damping = max(damping / 10, 1e-9)
-            if float(np.linalg.norm(step)) < 1e-9:
+            continue
+        Xm, okm = _dlt_solution(s[None], vt[None])
+        X[m], ok[m] = Xm[0], okm[0]
+    return X, ok
+
+
+def _dlt_solution(s: np.ndarray, vt: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ok = (s[:, 0] > 0) & ~(s[:, -2] <= DLT_RANK_TOLERANCE * s[:, 0])
+        h = vt[:, -1]
+        ok &= ~(np.abs(h[:, 3]) < 1e-12) & np.isfinite(h).all(axis=1)
+        X = np.full((len(h), 3), np.nan)
+        X[ok] = h[ok, :3] / h[ok, 3:4]
+    return X, ok
+
+
+def _in_front_batch(stack: _CameraStack, X: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """(M,) 점이 쓴 카메라 모두의 앞(카메라 좌표 z > 0)에 있는지."""
+    z = stack.project(X)[..., 2]
+    return ((z > 0) | ~mask).all(axis=1)
+
+
+def _residuals_batch(
+    stack: _CameraStack, targets: np.ndarray, sw: np.ndarray, mask: np.ndarray, X: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """가중 픽셀 재투영 잔차 r (M, 2C), 야코비안 J (M, 2C, 3), 쓴 카메라 모두의 앞인지 (M,).
+
+    이상적 핀홀 픽셀 (u, v) = (U/Z, V/Z), [U V Z] = K·[R | t]·[X 1]. ∂u/∂X = (KP₀ − u·KP₂)/Z, ∂v/∂X = (KP₁ − v·KP₂)/Z.
+    """
+    M = len(X)
+    h = stack.project(X)
+    z = h[..., 2]
+    front = ((z > 0) | ~mask).all(axis=1)
+    z = np.where(mask & (z != 0), z, 1.0)  # 쓰지 않는 카메라·z = 0 은 나눗셈만 막는다 (앞이 아니라 받아들이지 않는다)
+    uv = h[..., :2] / z[..., None]
+    r = (sw[..., None] * (uv - targets)).reshape(M, -1)
+    KP = stack.KP[None, :, :, :3]
+    J = (KP[:, :, :2] - uv[..., None] * KP[:, :, 2:3]) * (sw / z)[..., None, None]
+    return r, J.reshape(M, -1, 3), front
+
+
+def _refine_batch(
+    stack: _CameraStack, targets: np.ndarray, w: np.ndarray, mask: np.ndarray, X: np.ndarray, iterations: int
+) -> np.ndarray:
+    """가중 픽셀 재투영 오차 제곱합을 가우스-뉴턴(레벤버그-마콰트 감쇠)으로 줄인다. 점마다 감쇠·멈춤을 따로 한다.
+
+    점마다: 걸음이 비용을 줄이고 모든 카메라 앞이면 받아들이고 감쇠를 1/10(하한 1e-9), 걸음 크기 < 1e-9 이면 멈춘다.
+    아니면 감쇠 ×10, 1e6 을 넘으면 멈춘다. 정규 방정식이 특이하면 그 점은 멈춘다(현재 값 유지).
+    """
+    sw = np.sqrt(w)
+    r, J, front = _residuals_batch(stack, targets, sw, mask, X)
+    active = front.copy()  # 시작점이 어느 카메라 뒤면 다듬지 않는다
+    damping = np.full(len(X), 1e-3)
+    eye = np.eye(3)
+    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
+        for _ in range(iterations):
+            if not active.any():
                 break
-        else:
-            damping *= 10
-            if damping > 1e6:
-                break
+            # 멈춘 점도 같이 계산하지만 값을 바꾸지 않는다(행 수가 작아 골라내는 비용이 더 크다)
+            cost = np.einsum("mr,mr->m", r, r)
+            H = np.einsum("mri,mrj->mij", J, J)
+            g = np.einsum("mri,mr->mi", J, r)
+            step, solvable = _solve_3x3(H + damping[:, None, None] * (H * eye), -g)
+            cand = X + step
+            tr, tJ, tfront = _residuals_batch(stack, targets, sw, mask, cand)
+            accept = active & solvable & tfront & (np.einsum("mr,mr->m", tr, tr) < cost)
+            reject = active & solvable & ~accept
+            X = np.where(accept[:, None], cand, X)
+            r = np.where(accept[:, None], tr, r)
+            J = np.where(accept[:, None, None], tJ, J)
+            damping = np.where(accept, np.maximum(damping / 10, 1e-9), np.where(reject, damping * 10, damping))
+            converged = accept & (np.linalg.norm(step, axis=1) < 1e-9)
+            active &= solvable & ~converged & ~(reject & (damping > 1e6))
     return X
 
 
-def _in_front(cameras: Sequence[RigCamera], X: np.ndarray) -> bool:
-    return all(float((cam.R @ X + cam.t)[2]) > 0 for cam in cameras)
+def _solve_3x3(A: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(M, 3, 3)·(M, 3) 연립방정식. 특이한 행렬의 점은 (0, False)."""
+    try:
+        return np.linalg.solve(A, b[:, :, None])[:, :, 0], np.ones(len(A), dtype=bool)
+    except np.linalg.LinAlgError:
+        out = np.zeros_like(b)
+        ok = np.zeros(len(A), dtype=bool)
+        for m in range(len(A)):
+            try:
+                out[m] = np.linalg.solve(A[m], b[m])
+                ok[m] = True
+            except np.linalg.LinAlgError:
+                pass
+        return out, ok
+
+
+def _errors_batch(stack: _CameraStack, targets: np.ndarray, mask: np.ndarray, X: np.ndarray) -> np.ndarray:
+    """(M, C) 이상적 핀홀 픽셀 재투영 오차. 카메라 뒤이거나 유한하지 않으면 inf, 쓰지 않는 카메라는 NaN."""
+    h = stack.project(X)
+    z = h[..., 2]
+    front = z > 0
+    with np.errstate(invalid="ignore", divide="ignore"):
+        d = h[..., :2] / np.where(front, z, 1.0)[..., None] - targets
+        err = np.sqrt(d[..., 0] * d[..., 0] + d[..., 1] * d[..., 1])
+    err = np.where(front & np.isfinite(err), err, np.inf)
+    return np.where(mask, err, np.nan)
+
+
+def _max_ray_angles_batch(stack: _CameraStack, mask: np.ndarray, X: np.ndarray) -> np.ndarray:
+    """(M,) 쓴 카메라 쌍마다 시선 직선 사이 각(0~π/2)의 최댓값. 쌍이 없으면 0."""
+    d = X[:, None, :] - stack.center[None]
+    d = d / np.linalg.norm(d, axis=2, keepdims=True)
+    cos = np.abs(np.einsum("mai,mbi->mab", d, d))
+    angle = np.arccos(np.clip(cos, 0.0, 1.0))
+    C = mask.shape[1]
+    pair = mask[:, :, None] & mask[:, None, :] & ~np.eye(C, dtype=bool)
+    return np.where(pair, angle, 0.0).max(axis=(1, 2))
