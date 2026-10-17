@@ -28,6 +28,9 @@ LIVE 이벤트의 생명주기 정본은 RunPod Tier 0 의 이 추적기 하나�
   (common.normalize_confidence). 이유 목록이 바뀌면 CONFIDENCE 변경 사유로 UPDATED 를 낸다.
 - ACKNOWLEDGED 는 상태가 아니라 속성이다. 확인은 UPDATED 전이(변경 사유 ACKNOWLEDGED)로 저널에 남고
   해소가 아니다. 누가 확인하든(관리자·반장·현장 버튼) 반복 소리 정지(AlarmStop)를 내고 표시는 해소까지 둔다.
+  확인은 대상 상태(target_sequence, 확인한 사람이 본 event_sequence)와 함께 기록한다. 현장 경보는 지금 경보 단계
+  (마지막 발생·등급 상향·재개, site_alarm_sequence) 이후 상태를 대상으로 한 확인으로만 멈춘다(site_acknowledged, 3.10).
+  상향 전 상태에 대한 늦은 확인은 저널에 남지만 상향된 경보 소리를 멈추지 않는다(S15P31A101-161).
 - ID 교정(identity_revision 증가, 명시적 교정)은 해소 확인을 처음부터 다시 세게 할 뿐 해소하지 않는다(5.2, G3).
   이벤트에는 발생 당시의 원본 World ID(origin_world_ids)를 보존한다.
 
@@ -158,6 +161,11 @@ class AckRecord:
     actor_id: str
     acked_at: int
     recorded_at: int
+    # 확인 대상 상태의 event_sequence(확인한 사람이 본 상태). 현장 확인은 site_ack.event_sequence, 대상이 없으면
+    # 기록할 때의 마지막 전이 sequence. 현장 경보 소리를 멈추는지 판단할 때 쓴다(EventState.site_acknowledged).
+    target_sequence: int | None = None
+    # 확인이 들어온 계약 채널(CONTROL_ROOM·FOREMAN_PWA·SITE_BUTTON). 받은 값을 그대로 남긴다. 모르면 None.
+    channel: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -165,6 +173,8 @@ class AckRecord:
             "actor_id": self.actor_id,
             "acked_at": self.acked_at,
             "recorded_at": self.recorded_at,
+            "target_sequence": self.target_sequence,
+            "channel": self.channel,
         }
 
 
@@ -252,6 +262,9 @@ class EventState:
     local_alerted: bool = False
     confidence_reasons: tuple[ConfidenceReason, ...] = ()
     resume_count: int = 0  # 해소 후 재개한 횟수(6.4)
+    # 현장 경보(소리)를 마지막으로 (다시) 시작한 전이의 event_sequence: 발생·등급 상향·재개(3.10). 현장 경보를 낸 적
+    # 없으면 None.
+    site_alarm_sequence: int | None = None
 
     def __post_init__(self) -> None:
         # 확인 필요 = 이유 목록이 비어 있지 않음(7.1). 이유 없는 needs_check(이전 체크포인트)도 여기서 맞춘다.
@@ -272,6 +285,17 @@ class EventState:
     @property
     def acknowledged(self) -> bool:
         return bool(self.acks)
+
+    @property
+    def site_acknowledged(self) -> bool:
+        """현장 경보 소리를 멈출 확인이 있는지(health.active_site_alerts·local_alert 의 acknowledged, 3.10).
+
+        지금 경보 단계(site_alarm_sequence) 이후 상태를 대상으로 한 확인만 센다. 등급이 올라가기 전 상태에 대한 확인은
+        저널에 남고 acknowledged(I1)에는 반영되지만 상향된 경보 소리는 멈추지 않는다.
+        """
+        if self.site_alarm_sequence is None:
+            return self.acknowledged
+        return any(a.target_sequence is None or a.target_sequence >= self.site_alarm_sequence for a in self.acks)
 
     @property
     def group_key(self) -> str:
@@ -309,6 +333,9 @@ class EventState:
             "acks": [a.to_payload() for a in self.acks],
             "related_event_id": self.related_event_id,
             "local_alerted": self.local_alerted,
+            # 저널·체크포인트에서 되살린 상태로도 site_acknowledged 가 맞도록 싣는다(상향 전 확인이 상향 경보를 멈추지
+            # 않게). 복원하는 쪽은 이 값과 acks[].target_sequence 를 함께 읽어야 한다(S15P31A101-161).
+            "site_alarm_sequence": self.site_alarm_sequence,
         }
 
 
@@ -763,6 +790,7 @@ class LifecycleTracker:
             identity_revisions=MappingProxyType(revisions),
             acks=(),
             local_alerted=False,
+            site_alarm_sequence=None,
             resume_count=previous.resume_count + 1,
         )
         active = _Active(state)
@@ -940,11 +968,23 @@ class LifecycleTracker:
 
     # --- 확인(ACK) -------------------------------------------------------------------
 
-    def acknowledge(self, event_id: str, actor: AckActor, actor_id: str, acked_at: int) -> LifecycleStep | None:
+    def acknowledge(
+        self,
+        event_id: str,
+        actor: AckActor,
+        actor_id: str,
+        acked_at: int,
+        target_sequence: int | None = None,
+        channel: str | None = None,
+    ) -> LifecycleStep | None:
         """확인을 기록한다. 활성 이벤트가 아니면(이미 해소됐거나 모르는 ID) None 이고 아무것도 기록하지 않는다.
 
         확인은 해소가 아니다. UPDATED 전이(ACKNOWLEDGED)로 누가 확인했는지 저널에 남기고, 현장 경보를 낸
         LIVE 이벤트면 반복 소리 정지(AlarmStop)를 낸다. 같은 이벤트를 여러 번 확인해도 모두 기록한다.
+        target_sequence 는 확인 대상 상태(확인한 사람이 본 event_sequence, site_ack.event_sequence)다. 없으면 지금
+        마지막 전이를 대상으로 본다. 지금보다 큰 값은 지금 값으로 줄인다(본 적 없는 상태를 확인할 수 없다).
+        대상이 지금 경보 단계보다 앞이면(상향 전 확인) 기록하고 AlarmStop 도 내지만(대상 sequence 로 노트북이 거른다)
+        site_acknowledged 는 바뀌지 않는다.
         """
         active = self._by_id.get(event_id)
         if active is None:
@@ -953,13 +993,18 @@ class LifecycleTracker:
         if not actor_id:
             raise RiskInputError("acknowledge: actor_id 가 비었다")
         occurred_at = self._clock.now_ms()
+        state = active.state
+        target = state.event_sequence
+        if target_sequence is not None:
+            target = min(as_int(target_sequence, "acknowledge.target_sequence", minimum=1), state.event_sequence)
         ack = AckRecord(
             actor=actor,
             actor_id=actor_id,
             acked_at=as_int(acked_at, "acknowledge.acked_at", minimum=0),
             recorded_at=occurred_at,
+            target_sequence=target,
+            channel=channel,
         )
-        state = active.state
         active.update(acks=state.acks + (ack,), event_sequence=state.event_sequence + 1, lifecycle=Lifecycle.UPDATED)
         active.mark_emitted()
         transition = EventTransition(
@@ -971,7 +1016,16 @@ class LifecycleTracker:
         )
         signals: tuple[LocalSignal, ...] = ()
         if active.state.local_alerted:
-            signals = (AlarmStop(**self._signal_fields(active.state, occurred_at), acked_by=actor, actor_id=actor_id),)
+            signals = (
+                AlarmStop(
+                    **self._signal_fields(active.state, occurred_at),
+                    acked_by=actor,
+                    actor_id=actor_id,
+                    target_sequence=target,
+                    acked_at=ack.acked_at,
+                    channel=channel,
+                ),
+            )
         return LifecycleStep((transition,), signals)
 
     # --- ID 교정 ---------------------------------------------------------------------
@@ -1101,7 +1155,7 @@ class LifecycleTracker:
         plan = channels_for(state.severity, state.confidence, state.origin)
         if Channel.LOCAL_ALERT not in plan.channels or (state.local_alerted and not force):
             return
-        active.update(local_alerted=True)
+        active.update(local_alerted=True, site_alarm_sequence=state.event_sequence)
         state = active.state
         signals.append(
             LocalAlert(

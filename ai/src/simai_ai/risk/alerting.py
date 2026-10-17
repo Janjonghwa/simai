@@ -15,13 +15,17 @@ LIVE 만 실제 알림 대상이다(AGENTS.md 규칙 5). 세 신호는 출처가
 내부 형식이고, 스키마가 머지되면 to_payload 결과를 스키마로 검증하는 시험을 붙인다.
 """
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from simai_ai.risk._parse import RiskInputError, as_int, as_mapping, as_str
 from simai_ai.risk.common import Origin, Severity
 from simai_ai.risk.engine import NonLiveAlertError
+
+_log = logging.getLogger(__name__)
 
 
 class Confidence(StrEnum):
@@ -152,17 +156,135 @@ class LocalAlert(_LocalSignal):
 
 @dataclass(frozen=True, kw_only=True)
 class AlarmStop(_LocalSignal):
-    """확인(ACK). 반복 소리만 멈춘다. 표시는 해소까지 유지한다."""
+    """확인(ACK). 반복 소리만 멈춘다. 표시는 해소까지 유지한다.
+
+    **이름 주의.** 내부 event_sequence 는 ACKNOWLEDGED 전이 자신의 sequence(저널 번호)이고, 계약
+    alarm_stop.event_sequence 는 target_sequence(확인 대상 상태, 확인한 사람이 본 sequence)다. I0 로 보낼 때는
+    to_payload() 가 아니라 alarm_stop_contract_payload() 를 쓴다. event_sequence 를 계약 필드로 옮기면 늦은 정지가 항상
+    통과해 상향 전 확인이 상향된 경보를 멈춘다. 노트북은 target_sequence 뒤에 다시 울리기 시작한 경보(등급 상향·재개)는
+    멈추지 않는다(명세 3.10, S15P31A101-161).
+    """
 
     acked_by: AckActor
     actor_id: str
+    target_sequence: int | None = None  # None: 대상 상태를 모름(노트북은 지금 경보를 멈춘다)
+    acked_at: int | None = None  # 확인한 시각(보낸 쪽 기준). 계약 operator_ack.acked_at
+    channel: str | None = None  # 확인이 들어온 계약 채널(받은 값 그대로). None 이면 확인 주체의 기본 채널
 
     @property
     def kind(self) -> LocalSignalKind:
         return LocalSignalKind.ALARM_STOP
 
     def to_payload(self) -> dict[str, Any]:
-        return super().to_payload() | {"acked_by": str(self.acked_by), "actor_id": self.actor_id}
+        return super().to_payload() | {
+            "acked_by": str(self.acked_by),
+            "actor_id": self.actor_id,
+            "target_sequence": self.target_sequence,
+            "acked_at": self.acked_at,
+            "channel": self.channel,
+        }
+
+
+# 확인 주체 → 계약 operator_ack.actor_role 과, 받은 채널을 모를 때 쓰는 기본 채널
+_ACK_ROLE = {AckActor.ADMIN: "ADMIN", AckActor.FOREMAN: "FOREMAN", AckActor.SITE_BUTTON: "SITE"}
+_DEFAULT_CHANNEL = {AckActor.ADMIN: "CONTROL_ROOM", AckActor.FOREMAN: "FOREMAN_PWA", AckActor.SITE_BUTTON: "SITE_BUTTON"}
+
+
+@dataclass(frozen=True)
+class ContractAck:
+    """I1 event_ack·I0 site_ack 의 확인 하나 → LifecycleTracker.acknowledge 인자(acknowledge_args)와 ack_id.
+
+    target_sequence 는 계약 event_sequence(확인한 사람이 본 상태)다. 없으면 None(Tier 0 가 기록할 때의 상태를 대상).
+    """
+
+    event_id: str
+    actor: AckActor
+    actor_id: str
+    acked_at: int
+    target_sequence: int | None
+    ack_id: str
+    channel: str  # 받은 채널 그대로(저널·alarm_stop 에 보존)
+
+    def acknowledge_args(self) -> dict[str, Any]:
+        return {
+            "event_id": self.event_id,
+            "actor": self.actor,
+            "actor_id": self.actor_id,
+            "acked_at": self.acked_at,
+            "target_sequence": self.target_sequence,
+            "channel": self.channel,
+        }
+
+
+# 계약이 메시지마다 허용하는 채널과 역할(event_ack.schema.json, site_ack.schema.json, defs.operator_ack).
+# 확인 주체는 actor_role 로 정한다. event_ack 은 CONTROL_ROOM·FOREMAN_PWA 채널에 ADMIN·FOREMAN 역할 아무 조합이나
+# 계약상 유효하다(관리자가 PWA 로, 반장이 관제 화면으로 확인할 수 있다). 채널은 받은 값을 그대로 남긴다.
+_CONTRACT_ACK_RULES: dict[str, tuple[frozenset[str], Mapping[str, AckActor]]] = {
+    "event_ack": (
+        frozenset({"CONTROL_ROOM", "FOREMAN_PWA"}),
+        {"ADMIN": AckActor.ADMIN, "FOREMAN": AckActor.FOREMAN},
+    ),
+    "site_ack": (frozenset({"SITE_BUTTON"}), {"SITE": AckActor.SITE_BUTTON}),
+}
+
+
+def ack_from_contract(msg_type: str, payload: Mapping[str, Any]) -> ContractAck:
+    """event_ack(EC2 → Tier 0)·site_ack(노트북 → Tier 0) payload → ContractAck.
+
+    계약이 거부하는 채널·역할(현장 버튼이 event_ack 로 오는 등)이면 RiskInputError. 확인 주체는 actor_role 로 정하고
+    channel 은 받은 값을 그대로 남긴다. event_sequence 가 있으면 1 이상의 정수여야 한다. event_ack 에 event_sequence 가
+    없으면(이전 EC2) 대상 미지정 확인으로 경고를 남긴다: Tier 0 가 기록할 때의 상태를 대상으로 보므로 상향 뒤 늦게
+    도착하면 상향된 경보까지 멈출 수 있다(EC2 가 항상 채워야 한다). 쓰는 쪽: tracker.acknowledge(**ack.acknowledge_args()) 후 나온 AlarmStop 을
+    alarm_stop_contract_payload(signal, ack_id=ack.ack_id) 로 보낸다(계약 alarm_stop.event_sequence = 이 target_sequence).
+    """
+    rules = _CONTRACT_ACK_RULES.get(msg_type)
+    if rules is None:
+        raise RiskInputError(f"확인 메시지가 아니다: {msg_type}")
+    channels, roles = rules
+    payload = as_mapping(payload, msg_type)
+    ack = as_mapping(payload.get("ack"), f"{msg_type}.ack")
+    channel, role = ack.get("channel"), ack.get("actor_role")
+    if channel not in channels or role not in roles:
+        raise RiskInputError(f"{msg_type}: 채널·역할 ({channel}, {role}) 은 이 메시지로 받지 않는다")
+    event_id = as_str(payload.get("event_id"), f"{msg_type}.event_id")
+    target = payload.get("event_sequence")
+    if target is None and msg_type == "event_ack":
+        _log.warning(
+            "대상 미지정 확인: event_ack %s 에 event_sequence 가 없다(이전 EC2). 기록할 때의 상태를 대상으로 본다", event_id
+        )
+    return ContractAck(
+        event_id=event_id,
+        actor=roles[role],
+        channel=channel,
+        actor_id=as_str(ack.get("actor_id"), f"{msg_type}.ack.actor_id"),
+        acked_at=as_int(ack.get("acked_at"), f"{msg_type}.ack.acked_at", minimum=0),
+        target_sequence=None if target is None else as_int(target, f"{msg_type}.event_sequence", minimum=1),
+        ack_id=as_str(ack.get("ack_id"), f"{msg_type}.ack.ack_id"),
+    )
+
+
+def alarm_stop_contract_payload(signal: AlarmStop, *, ack_id: str) -> dict[str, Any]:
+    """내부 AlarmStop → I0 alarm_stop payload (contracts/messages/alarm_stop.schema.json).
+
+    계약 event_sequence 는 signal.target_sequence(확인 대상 상태)다. signal.event_sequence(ACKNOWLEDGED 전이 번호)가
+    아니다. 대상을 모르면(None) 필드를 싣지 않는다(노트북은 지금 경보를 멈춘다). ack_id 는 확인을 처음 받은 쪽(EC2
+    event_ack 또는 노트북 site_ack)이 발급한 값을 그대로 넘긴다.
+    """
+    if signal.acked_at is None:
+        raise ValueError("alarm_stop: acked_at 이 없다")
+    actor = AckActor(signal.acked_by)
+    channel, actor_role = signal.channel or _DEFAULT_CHANNEL[actor], _ACK_ROLE[actor]
+    payload: dict[str, Any] = {"event_id": signal.event_id}
+    if signal.target_sequence is not None:
+        payload["event_sequence"] = signal.target_sequence
+    payload["ack"] = {
+        "ack_id": ack_id,
+        "channel": channel,
+        "actor_role": actor_role,
+        "actor_id": signal.actor_id,
+        "acked_at": signal.acked_at,
+    }
+    return payload
 
 
 @dataclass(frozen=True, kw_only=True)

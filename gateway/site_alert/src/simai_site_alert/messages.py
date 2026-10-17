@@ -10,6 +10,10 @@
 - 화면 표시용 필드(summary, rule_id 등)가 빠지거나 형식이 틀려도 경보 자체는 버리지 않는다. 진짜 CRITICAL 을 표시용
   필드 하나 때문에 조용히 버리는 쪽이 더 위험하다. 대신 contract_warnings 에 남겨 로그로 알린다.
 - 수신 측은 모르는 필드를 무시한다(envelope 계약).
+- health.active_site_alerts 항목도 같은 기준이다. 실제 알림 여부를 가르는 필드(event_id, event_sequence, source,
+  severity, acknowledged)가 틀린 항목은 쓰지 않는다. event_id 를 읽을 수 있으면 그 이벤트는 '이번 목록으로 판단 못 함'
+  (undecidable)으로, event_id 도 못 읽으면 목록 전체를 '빠진 이벤트를 해소로 볼 수 없음'(partial)으로 표시한다.
+  틀린 항목 하나 때문에 진짜 경보를 끄지 않기 위해서다.
 """
 
 from __future__ import annotations
@@ -19,8 +23,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-# site_ack 를 정의한 계약 버전(contracts/examples/site_ack.json 과 같다).
-SITE_ACK_SCHEMA_VERSION = "1.2.0"
+# site_ack 를 정의한 계약 버전(contracts/examples/site_ack.json 과 같다). 2.1.0: 확인 대상 event_sequence.
+SITE_ACK_SCHEMA_VERSION = "2.1.0"
 
 SITE_SEVERITIES = ("CRITICAL", "HIGH")  # 노트북 로컬 경보 대상 (명세 7.3)
 LIFECYCLES = ("RAISED", "UPDATED", "RESOLVED")
@@ -78,16 +82,40 @@ class OperatorAck:
 class AlarmStop:
     event_id: str
     ack: OperatorAck
+    # 확인 대상 상태의 event_sequence(계약 2.1.0). 이보다 뒤에 다시 울리기 시작한 경보(상향·재개)는 멈추지 않는다.
+    # None 은 이전 송신 측(대상 모름): 지금 경보를 멈춘다.
+    event_sequence: int | None = None
+    sent_at: int | None = None
     contract_warnings: tuple[str, ...] = field(default=())
 
 
 @dataclass(frozen=True)
+class SiteAlertItem:
+    """활성 현장 경보 하나 (health.$defs.active_site_alert). source 는 LIVE, severity 는 CRITICAL·HIGH 로 확인했다."""
+
+    event_id: str
+    event_sequence: int
+    acknowledged: bool
+    severity: Literal["CRITICAL", "HIGH"]
+    summary: str
+    rule_id: str | None
+    zone_id: str | None
+
+
+@dataclass(frozen=True)
 class Health:
-    """health 는 지금 받기만 한다. active_site_alerts 재동기화는 S15P31A101-161 몫이라 원본 목록만 들고 있다."""
+    """health 의 현장 경보 재동기화 부분 (명세 3.10, 계약 health.active_site_alerts).
+
+    active_site_alerts 가 None 이면 필드가 없거나 배열이 아니다(이전 송신 측). 빈 목록과 다르다: None 으로는 경보를
+    끄지 않는다.
+    """
 
     sent_at: int | None
-    active_site_alerts: list[dict[str, Any]] | None  # 필드가 없으면 None(빈 목록과 다르다: 없으면 경보를 끄지 않는다)
+    active_site_alerts: tuple[SiteAlertItem, ...] | None
     active_site_alerts_as_of: int | None
+    undecidable_event_ids: frozenset[str] = frozenset()  # 항목이 틀려 이번 목록으로 판단하지 않는 이벤트
+    partial: bool = False  # event_id 도 읽을 수 없는 항목이 있다: 목록에서 빠진 이벤트를 해소로 보지 않는다
+    contract_warnings: tuple[str, ...] = field(default=())
 
 
 @dataclass(frozen=True)
@@ -204,8 +232,14 @@ def parse_alarm_stop(env: Envelope) -> AlarmStop:
         return v if isinstance(v, str) and v else None
 
     acked_at = ack.get("acked_at")
+    seq = p.get("event_sequence")
+    if seq is not None and (not _is_int(seq) or seq < 1):
+        # 대상 상태를 잘못 실은 정지로 상향된 경보를 멈추면 위험하다. 쓰지 않는다(다음 health 목록이 확인 상태를 맞춘다).
+        raise Rejected("MALFORMED", "alarm_stop: event_sequence 가 1 이상의 정수가 아니다")
     return AlarmStop(
         event_id=event_id,
+        event_sequence=seq,
+        sent_at=env.sent_at,
         ack=OperatorAck(
             ack_id=s("ack_id"),
             channel=s("channel"),
@@ -217,14 +251,67 @@ def parse_alarm_stop(env: Envelope) -> AlarmStop:
     )
 
 
+def _parse_site_alert_item(raw: Any) -> SiteAlertItem | str | None:
+    """항목 하나. 쓸 수 있으면 SiteAlertItem, event_id 만 읽히면 그 event_id(판단 못 함), 아무것도 못 읽으면 None."""
+    if not isinstance(raw, dict):
+        return None
+    event_id = raw.get("event_id")
+    if not isinstance(event_id, str) or not _UUID_V7.match(event_id):
+        return None
+    seq = raw.get("event_sequence")
+    acknowledged = raw.get("acknowledged")
+    severity = raw.get("severity")
+    if (
+        raw.get("source") != "LIVE"  # PLANNED·WHAT_IF·REPLAY 는 현장 경보로 울리지 않는다(AGENTS.md 규칙 5)
+        or severity not in SITE_SEVERITIES
+        or not _is_int(seq)
+        or seq < 1
+        or not isinstance(acknowledged, bool)
+    ):
+        return event_id
+    rule_id = raw.get("rule_id")
+    rule_id = rule_id if isinstance(rule_id, str) and rule_id else None
+    zone_id = raw.get("zone_id")
+    zone_id = zone_id if isinstance(zone_id, str) and zone_id else None
+    summary = raw.get("summary")
+    summary = summary if isinstance(summary, str) and summary else (rule_id or "현장 경보")
+    return SiteAlertItem(event_id, seq, acknowledged, severity, summary, rule_id, zone_id)
+
+
 def parse_health(env: Envelope) -> Health:
     p = env.payload
-    alerts = p.get("active_site_alerts")
+    raw_alerts = p.get("active_site_alerts")
     as_of = p.get("active_site_alerts_as_of")
+    as_of = as_of if _is_int(as_of) else None
+    if not isinstance(raw_alerts, list):
+        return Health(sent_at=env.sent_at, active_site_alerts=None, active_site_alerts_as_of=as_of)
+    items: dict[str, SiteAlertItem] = {}
+    undecidable: set[str] = set()
+    partial = False
+    warnings: list[str] = []
+    for raw in raw_alerts:
+        parsed = _parse_site_alert_item(raw)
+        if parsed is None:
+            partial = True
+            warnings.append("event_id 를 읽을 수 없는 항목")
+        elif isinstance(parsed, str):
+            undecidable.add(parsed)
+            warnings.append(f"{parsed} 항목 형식 오류(LIVE·CRITICAL·HIGH·event_sequence·acknowledged)")
+        else:
+            prev = items.get(parsed.event_id)
+            if prev is not None:
+                warnings.append(f"{parsed.event_id} 가 두 번 나왔다")
+            if prev is None or parsed.event_sequence > prev.event_sequence:
+                items[parsed.event_id] = parsed
+    for event_id in undecidable:
+        items.pop(event_id, None)
     return Health(
         sent_at=env.sent_at,
-        active_site_alerts=alerts if isinstance(alerts, list) else None,
-        active_site_alerts_as_of=as_of if _is_int(as_of) else None,
+        active_site_alerts=tuple(items.values()),
+        active_site_alerts_as_of=as_of,
+        undecidable_event_ids=frozenset(undecidable),
+        partial=partial,
+        contract_warnings=tuple(warnings),
     )
 
 
@@ -239,13 +326,16 @@ def parse_message(obj: Any) -> Message:
     return Other(env.msg_type)
 
 
-def build_site_ack(*, event_id: str, laptop_id: str, now_ms: int) -> dict[str, Any]:
+def build_site_ack(*, event_id: str, laptop_id: str, now_ms: int, event_sequence: int | None = None) -> dict[str, Any]:
     """현장 확인 버튼 → site_ack 봉투 (contracts/messages/site_ack.schema.json).
 
     ack_id 는 노트북이 발급한다. 다시 보낼 때는 같은 봉투(같은 ack_id·msg_id)를 보내므로 Tier 0 는 한 번만 기록한다.
+    event_sequence 는 누를 때 표시하던 경보의 sequence 다(확인 대상 상태, 계약 2.1.0). Tier 0 는 alarm_stop 에 돌려준다.
     """
     if not _UUID_V7.match(event_id):
         raise ValueError("event_id 가 UUIDv7 이 아니다")
+    if event_sequence is not None and (not _is_int(event_sequence) or event_sequence < 1):
+        raise ValueError("event_sequence 는 1 이상의 정수다")
     msg_id = str(uuid.uuid4())
     ack_id = str(uuid.uuid4())
     assert _UUID.match(msg_id) and _UUID.match(ack_id)
@@ -257,6 +347,7 @@ def build_site_ack(*, event_id: str, laptop_id: str, now_ms: int) -> dict[str, A
         "source_id": laptop_id,
         "payload": {
             "event_id": event_id,
+            **({} if event_sequence is None else {"event_sequence": event_sequence}),
             "ack": {
                 "ack_id": ack_id,
                 "channel": "SITE_BUTTON",

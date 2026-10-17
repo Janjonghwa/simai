@@ -34,12 +34,32 @@ def test_alarm_stop_example(core: SiteAlertCore, sound) -> None:
     assert sound.playing is None
 
 
-def test_health_example_is_accepted_but_not_resynced(core: SiteAlertCore, sound) -> None:
-    """active_site_alerts 재동기화는 S15P31A101-161 몫. 지금은 받아 두기만 하고 경보를 바꾸지 않는다."""
+def test_health_example_resyncs_active_alerts(core: SiteAlertCore, sound) -> None:
+    """활성 현장 경보 목록 예시: 확인된 CRITICAL 은 표시만, 확인 전 HIGH 는 표시 + 소리(명세 3.10)."""
     health = load_example("health")
-    assert core.handle(health).outcome is Outcome.IGNORED
-    assert core.last_health is not None and len(core.last_health.active_site_alerts) == 2
-    assert core.screen_state().alerts == () and sound.calls == []
+    assert core.handle(health).outcome is Outcome.APPLIED
+    items = health["payload"]["active_site_alerts"]
+    alerts = core.active_alerts()
+    assert set(alerts) == {i["event_id"] for i in items}
+    for item in items:
+        alert = alerts[item["event_id"]]
+        assert (alert.event_sequence, alert.severity, alert.acknowledged, alert.summary) == (
+            item["event_sequence"], item["severity"], item["acknowledged"], item["summary"])
+    assert sound.playing.name == "HIGH"
+
+
+@pytest.mark.parametrize(
+    "name", ["health.site_alert_caution", "health.site_alert_replay_source", "health.site_alert_missing_sequence"]
+)
+def test_invalid_site_alert_items_never_alarm(core: SiteAlertCore, sound, name: str) -> None:
+    """계약 위반 항목(CAUTION·REPLAY·sequence 없음)은 표시·소리로 내지 않는다(AGENTS.md 규칙 5)."""
+    path = contracts_dir() / "examples" / "invalid" / f"{name}.json"
+    msg = {k: v for k, v in json.loads(path.read_text(encoding="utf-8")).items() if not k.startswith("_")}
+    core.handle(msg)
+    bad = {i.get("event_id") for i in msg["payload"]["active_site_alerts"]
+           if i.get("source") != "LIVE" or i.get("severity") not in ("CRITICAL", "HIGH") or "event_sequence" not in i}
+    assert bad and not (bad & set(core.active_alerts()))
+    assert all(a.severity in ("CRITICAL", "HIGH") for a in core.active_alerts().values())
 
 
 @pytest.mark.parametrize("name", ["local_alert.replay_source", "local_alert.caution_severity"])
@@ -55,6 +75,7 @@ def test_built_site_ack_matches_contract(core: SiteAlertCore, contract_validator
     core.handle(local_alert(eid, 1, "RAISED"))
     envelope = core.site_ack(eid)
     contract_validator("site_ack", envelope)
+    assert envelope["payload"]["event_sequence"] == 1  # 누를 때 표시하던 상태(확인 대상)
     assert envelope["schema_version"] == SITE_ACK_SCHEMA_VERSION == load_example("site_ack")["schema_version"]
 
 
