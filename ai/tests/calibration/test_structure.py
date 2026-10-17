@@ -1,16 +1,23 @@
-"""보정 문서 형식 검사(structure)가 계약 스키마와 같은 범위인지 대조한다 (리뷰 r2 F1).
+"""보정 문서 형식 검사(structure) = 계약 스키마 직접 검증 (명세 21.2 계약 우선, S15P31A101-152).
 
-버전 저장소는 jsonschema 없이 저장 전 계약 전체를 검사하므로, 형식 검사가 스키마보다 느슨하면 잘못된 후보가 채택된다.
-여기서는 스키마 파일의 enum·필수 항목과 상수를 맞추고, 같은 문서 변형에 대해 jsonschema 와 판정이 같은지 본다.
+형식 규칙은 `contracts/providers/calibration.schema.json` 이 정본이고 코드로 옮기지 않는다. 여기서는
+- 계약 예시와 문서 변형을 스키마대로 거절·허용하는지(이전 손 검사 대조 시험의 변형 목록을 회귀 시험으로 유지),
+- `$ref`(common/defs) 가 해석되는지, 스키마 사본만 바꿔도 저장소의 저장 전 검사가 따라가는지,
+- jsonschema 가 없을 때 import 가 설치 방법을 알려 주는지 본다.
 """
 
 import copy
 import json
+import os
+import shutil
+import subprocess
+import sys
 
 import pytest
+import referencing.exceptions
 
-from simai_ai.calibration import CalibrationVersionStore, structure
-from simai_ai.calibration.structure import check_calibration_structure
+from simai_ai.calibration import CalibrationVersionStore, RejectReason
+from simai_ai.calibration.structure import INSTALL_HINT, check_calibration_structure
 from simai_ai.providers import contract
 
 
@@ -19,39 +26,18 @@ def _schema(name):
 
 
 CAL = _schema("providers/calibration.schema.json")
-DEFS = _schema("common/defs.schema.json")["$defs"]
 CAM = CAL["$defs"]["camera_calibration"]
 
 
-def test_enums_match_schema():
-    assert structure.CALIBRATION_SOURCES == set(DEFS["calibration_source"]["enum"])
-    assert structure.CALIBRATION_STATES == set(DEFS["calibration_state"]["enum"])
-    assert structure.SCALE_BASES == set(CAL["$defs"]["scale_basis"]["enum"])
-    assert structure.DISTORTION_MODELS == set(CAM["properties"]["distortion"]["properties"]["model"]["enum"])
-    assert structure.EXTRINSIC_CONVENTION == CAL["properties"]["extrinsic_convention"]["const"]
-    never = CAL["allOf"][0]["if"]["properties"]["provider_source"]["enum"]
-    assert contract.NEVER_CALIBRATED_SOURCES == set(never)
-
-
-def test_keys_match_schema():
-    assert structure._TOP_REQUIRED == tuple(CAL["required"])
-    assert structure._TOP_KEYS == set(CAL["properties"])
-    assert structure._CAMERA_REQUIRED == tuple(CAM["required"])
-    assert structure._CAMERA_KEYS == set(CAM["properties"])
-    assert structure._VALIDATION_KEYS == set(CAL["properties"]["validation"]["properties"])
-    frame = DEFS["coordinate_frame"]
-    assert structure._FRAME_CONSTS == {k: frame["properties"][k]["const"] for k in frame["required"]}
-    assert structure._SEMVER.pattern == DEFS["semver"]["pattern"]
-    assert structure._CAMERA_ID.pattern == DEFS["camera_id"]["pattern"]
-    assert structure._SHA256.pattern == DEFS["sha256"]["pattern"]
+def _propose(store, cameras, evidence, at_ms):
+    return store.propose(
+        provider_source="G1_AUTO", provider_version="g1", cameras=cameras, evidence=evidence, at_ms=at_ms
+    )
 
 
 @pytest.fixture
 def base(cameras, evidence, t0):
-    store = CalibrationVersionStore(site_id="classroom-1")
-    result = store.propose(
-        provider_source="G1_AUTO", provider_version="g1", cameras=cameras, evidence=evidence, at_ms=t0
-    )
+    result = _propose(CalibrationVersionStore(site_id="classroom-1"), cameras, evidence, t0)
     assert result.adopted and result.doc["state"] == "CALIBRATED"
     return result.doc
 
@@ -68,13 +54,11 @@ def _examples(invalid):
 
 @pytest.mark.parametrize("doc", _examples(invalid=False))
 def test_valid_examples_pass(doc):
-    assert contract.check_calibration_schema(doc) == []
     assert check_calibration_structure(doc) == []
 
 
 @pytest.mark.parametrize("doc", _examples(invalid=True))
 def test_invalid_examples_rejected(doc):
-    assert contract.check_calibration_schema(doc)
     assert check_calibration_structure(doc)
 
 
@@ -184,36 +168,144 @@ def _ids(cases):
 
 
 @pytest.mark.parametrize(("path", "value"), INVALID, ids=_ids(INVALID))
-def test_structure_rejects_what_schema_rejects(base, path, value):
+def test_rejects_schema_violation(base, path, value):
     doc = copy.deepcopy(base)
     _set(doc, path, value)
-    assert contract.check_calibration_schema(doc), "변형이 스키마 위반이어야 시험이 의미가 있다"
     assert check_calibration_structure(doc)
 
 
 @pytest.mark.parametrize(("path", "value"), VALID, ids=_ids(VALID))
-def test_structure_accepts_what_schema_accepts(base, path, value):
+def test_accepts_what_schema_allows(base, path, value):
     doc = copy.deepcopy(base)
     _set(doc, path, value)
-    assert contract.check_calibration_schema(doc) == []
     assert check_calibration_structure(doc) == []
 
 
 @pytest.mark.parametrize("source", sorted(contract.NEVER_CALIBRATED_SOURCES))
-@pytest.mark.parametrize("state", ["CALIBRATED", "DRIFTED"])
-def test_never_calibrated_sources_match_schema(base, source, state):
-    doc = {**base, "provider_source": source, "state": state}
-    assert bool(contract.check_calibration_schema(doc)) == bool(check_calibration_structure(doc))
+def test_never_calibrated_sources(base, source):
+    """allOf 1: 정답·시뮬레이터·모델 추정 출처는 CALIBRATED·DRIFTED 불가 (명세 20.4 규칙 4)."""
+    for state in ("CALIBRATED", "DRIFTED"):
+        assert check_calibration_structure({**base, "provider_source": source, "state": state})
+    assert check_calibration_structure({**base, "provider_source": source, "state": "PROVISIONAL"}) == []
 
 
 def test_calibrated_without_position_check_requires_one(base):
     doc = copy.deepcopy(base)
     del doc["validation"]["max_pairwise_position_disagreement_m"]
     doc["validation"].pop("max_position_error_m", None)
-    assert contract.check_calibration_schema(doc) and check_calibration_structure(doc)
+    assert check_calibration_structure(doc)
     doc["validation"]["max_position_error_m"] = 0.1
-    assert contract.check_calibration_schema(doc) == [] == check_calibration_structure(doc)
+    assert check_calibration_structure(doc) == []
 
 
-def test_non_object_root():
-    assert check_calibration_structure([]) == ["<root>: 객체가 아니다"]
+@pytest.mark.parametrize("doc", [[], "doc", None, 3])
+def test_non_object_root(doc):
+    assert check_calibration_structure(doc)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("cameras", 0, "camera_id"), "cam 1"),  # defs camera_id
+        (("schema_version",), "1.2"),  # defs semver
+        (("provider_source",), "BOGUS"),  # defs calibration_source
+        (("coordinate_frame", "unit"), "cm"),  # defs coordinate_frame
+    ],
+)
+def test_defs_refs_are_resolved(base, path, value):
+    """calibration.schema.json 의 상대 $ref(../common/defs.schema.json) 가 defs 의 $id 로 해석된다."""
+    doc = copy.deepcopy(base)
+    _set(doc, path, value)
+    errors = check_calibration_structure(doc)
+    assert errors and all("/".join(map(str, path)) in e for e in errors), errors
+
+
+# ------------------------------------------------------------------ 스키마가 정본
+# 스키마는 contracts/ 위치별로 한 번 읽어 캐시한다(providers.contract._schemas). 그래서 사본을 먼저 고친 뒤
+# SIMAI_CONTRACTS_DIR 로 가리키고, 같은 문서를 원본 위치와 사본 위치에서 각각 검사해 결과를 비교한다.
+
+
+@pytest.fixture
+def edited_contracts(tmp_path, monkeypatch):
+    """contracts/ 스키마 사본을 고치고 SIMAI_CONTRACTS_DIR 로 가리키는 함수를 준다."""
+
+    def make(rel, change):
+        root = tmp_path / "contracts"
+        shutil.copytree(contract.contracts_dir(), root, ignore=shutil.ignore_patterns("examples", "scripts"))
+        path = root / rel
+        if change is None:
+            path.unlink()
+        else:
+            schema = json.loads(path.read_text(encoding="utf-8"))
+            change(schema)
+            path.write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setenv(contract.CONTRACTS_DIR_ENV, str(root))
+        return root
+
+    return make
+
+
+def test_store_follows_defs_change(edited_contracts, cameras, evidence, t0):
+    """defs 의 camera_id 패턴만 바꾸면 코드 수정 없이 저장 전 검사가 따라간다($ref 경유)."""
+    assert _propose(CalibrationVersionStore(site_id="classroom-1"), cameras, evidence, t0).adopted
+
+    edited_contracts("common/defs.schema.json", lambda s: s["$defs"]["camera_id"].update(pattern="^CAM[0-9]+$"))
+    store = CalibrationVersionStore(site_id="classroom-1")
+    result = _propose(store, cameras, evidence, t0)
+    assert not result.adopted and result.reject_reason is RejectReason.CONTRACT_VIOLATION
+    assert any("cameras/0/camera_id" in v for v in result.violations), result.violations
+    assert store.versions == () and store.snapshot() is None
+
+
+def test_store_follows_calibration_schema_change(edited_contracts, base):
+    """calibration.schema.json 의 규칙(필수 항목·허용 범위)을 바꾸면 결과가 바뀐다."""
+    doc = copy.deepcopy(base)
+    del doc["provider_version"]
+    doc["cameras"][0]["image_size"] = [640, 480]
+    assert check_calibration_structure(doc) == []
+
+    def change(schema):
+        schema["required"].append("provider_version")
+        schema["$defs"]["camera_calibration"]["properties"]["image_size"]["items"]["minimum"] = 1280
+
+    edited_contracts("providers/calibration.schema.json", change)
+    errors = check_calibration_structure(doc)
+    assert any("provider_version" in e for e in errors), errors
+    assert any("cameras/0/image_size/0" in e for e in errors), errors
+
+
+def test_unresolvable_ref_fails_loudly(edited_contracts, cameras, evidence, t0):
+    """defs 를 찾지 못하면 형식 검사를 건너뛰어 통과시키지 않고 예외를 낸다. 저장소는 바뀌지 않는다."""
+    edited_contracts("common/defs.schema.json", None)
+    store = CalibrationVersionStore(site_id="classroom-1")
+    with pytest.raises(referencing.exceptions.Unresolvable):
+        _propose(store, cameras, evidence, t0)
+    assert store.versions == () and store.transitions == () and store.snapshot() is None
+
+
+# ------------------------------------------------------------------ extras 없는 설치
+
+
+def test_import_without_jsonschema_explains_install():
+    """jsonschema 가 없는 설치(extras calibration 없음)에서 import 하면 설치 방법을 적은 ImportError 가 난다."""
+    code = "\n".join(
+        [
+            "import sys",
+            "sys.modules['jsonschema'] = None",
+            "try:",
+            "    import simai_ai.calibration",
+            "except ImportError as e:",
+            "    print(e)",
+            "    sys.exit(3)",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONUTF8": "1"},
+    )
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert result.stdout.strip() == INSTALL_HINT
+    assert "--extra calibration" in result.stdout

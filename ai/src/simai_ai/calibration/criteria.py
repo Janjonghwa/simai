@@ -223,7 +223,12 @@ def judge_calibration(
     c = criteria
     failures: list[Failure] = []
 
-    if provider_source in NEVER_CALIBRATED_SOURCES:
+    if not isinstance(provider_source, str):
+        # 리스트·딕셔너리처럼 해시할 수 없는 값이 집합 비교에서 TypeError 를 내지 않게 먼저 거른다
+        failures.append(
+            Failure(Criterion.SOURCE, f"provider_source 는 문자열이어야 한다: {provider_source!r}", invalid=True)
+        )
+    elif provider_source in NEVER_CALIBRATED_SOURCES:
         failures.append(
             Failure(
                 Criterion.SOURCE, f"{provider_source} 는 현장의 검증된 보정이 아니므로 CALIBRATED 불가 (20.4 규칙 4)"

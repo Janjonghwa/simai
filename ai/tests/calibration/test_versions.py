@@ -272,6 +272,30 @@ def test_unknown_provider_source_rejected(store, cameras, t0):
     assert _state_of(store) == before
 
 
+@pytest.mark.parametrize(
+    "source", [["G1_AUTO"], {"name": "G1_AUTO"}, 3, None, True], ids=["list", "dict", "int", "none", "bool"]
+)
+def test_wrong_type_provider_source_rejected(store, cameras, evidence, t0, source):
+    """잘못된 타입의 provider_source 는 TypeError 가 아니라 CONTRACT_VIOLATION 이다 (-115 리뷰 r3 권장).
+
+    DRIFTED 상태(어떤 후보든 전환 가능)에서 넣어도 이전 버전이 그대로 남는다.
+    """
+    assert _propose(store, cameras, evidence, t0).adopted
+    store.observe([CameraObservation("cam1", field_of_view_changed=True)], t0 + 1)
+    before = _state_of(store)
+    result = _propose(store, cameras, evidence, t0 + 2, source=source)
+    assert not result.adopted and result.reject_reason is RejectReason.CONTRACT_VIOLATION
+    assert any("provider_source" in v for v in result.violations), result.violations
+    assert _state_of(store) == before
+
+
+def test_wrong_type_provider_version_rejected(store, cameras, t0):
+    result = store.propose(provider_source="G1_AUTO", provider_version=["g1"], cameras=cameras, evidence=WEAK, at_ms=t0)
+    assert not result.adopted and result.reject_reason is RejectReason.CONTRACT_VIOLATION
+    assert any("provider_version" in v for v in result.violations), result.violations
+    assert store.versions == ()
+
+
 def test_evidence_record_keeps_raw_scale_basis(store, cameras, evidence, t0):
     """채택한 버전마다 스케일 근거 원자료(정물 이름·배율·표본 수)와 검산점 관측을 감사 기록으로 남긴다."""
     assert _propose(store, _cams(cameras, 3.0), WEAK, t0).adopted
