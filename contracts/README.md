@@ -6,7 +6,7 @@
 |---|---|---|
 | `common/defs.schema.json` | 공통 타입(좌표, 시각, 상태 enum, `input_provenance`, `reproducibility`). `calibration_source` 를 쓰는 계약(calibration, calibration_update, run_record, scene_output, human_mesh_output)은 2.0.0 | 4.1, 6.2, 12.1, 20.4 |
 | `messages/envelope.schema.json` | 공통 봉투 | 12.1 |
-| `messages/world_state.schema.json` | I1 `world_state` (LIVE 계약, Lead 승인 필요) | 5.2, 12.3 |
+| `messages/world_state.schema.json` | I1 `world_state` (LIVE 계약, Lead 승인 필요). 1.1.0: 입력 출처 `input_provenance`(선택), `position_xy` 관측 공백 때 시각 기준 설명 보강 | 5.2, 6.1, 12.3, 20.4 |
 | `messages/risk_event_transition.schema.json` | I1 Tier 0 → EC2 LIVE 이벤트 전이(저널 기록, 운영자 확인 포함). 1.3.0: 확인 필요 이유 `confidence_reasons`, 해소 후 재개 `resumed` | 3.2, 6.4, 7.1, 12.3 |
 | `messages/event_state_snapshot.schema.json` | I1 Tier 0 → EC2 재동기화 후 활성 이벤트 최종 상태 | 3.2 |
 | `messages/health.schema.json` | I1 Tier 0 → EC2(및 I0 노트북) 1 Hz 상태·손실 3종 | 3.11, 5.1, 6.2, 12.3, 12.7 |
