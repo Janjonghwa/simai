@@ -1,9 +1,9 @@
 # simai — 에이전트 작업 지침
 
 고정 카메라 4대로 교실을 미터 좌표 3D 디지털 트윈에 올리고 위험을 판정하는 안전 관제 플랫폼이다.
-기획서(simai System Specification v1.2 r4)와 요구사항명세서의 원본은 Notion이며 저장소에는 사본을 두지 않는다.
-작업에 필요한 규칙은 이 문서, 아래 규칙 문서, `contracts/`에 있고, 그 밖의 명세 내용이 필요하면 작업 지시에 해당 절을 함께 받는다.
-명세와 이 문서가 다르면 명세가 우선하며, 차이를 발견하면 보고한다. 이 문서의 "명세 x.y"는 기획서의 절 번호다.
+기획서(simai System Specification v1.2 r4)의 정본은 `docs/spec/`(장별 파일), 요구사항 명세서의 정본은 `docs/requirements.md` 다. Notion 에는 링크와 내보낸 사본만 있다.
+작업에 필요한 규칙은 이 문서, 아래 규칙 문서, `contracts/`, `docs/spec/` 에 있다. 명세가 필요하면 `docs/spec/README.md` 의 장 목록과 에픽별 표에서 해당 장 파일만 읽는다.
+명세와 이 문서가 다르면 명세가 우선하며, 차이를 발견하면 보고한다. 이 문서의 "명세 x.y"는 기획서의 절 번호이고 `docs/spec/` 의 장 파일과 일대일이다(예: 5.2 → `05-processing.md`).
 
 ## 먼저 읽을 규칙 문서
 
@@ -13,6 +13,7 @@
 | `docs/jira-convention.md` | Jira 에픽·스토리 작성, 포인트, 라벨, 상태, 스프린트 규칙 |
 | `ai/CONVENTION.md`, `server/CONVENTION.md`, `front/CONVENTION.md` | 파트별 코드 규칙 |
 | `contracts/README.md` | 구간 계약 스키마와 검증 방법 |
+| `docs/spec/README.md` | 기획서 장 목록, 개정 이력, 에픽별로 읽을 장, 명세 갱신 규칙 |
 
 ## 깨면 안 되는 규칙
 
@@ -44,7 +45,7 @@ gateway/     노트북 중계·현장 경보 앱
 server/      EC2 Spring Boot
 front/       Three.js 뷰어, 반장 PWA
 deploy/      모델별 Docker 이미지, Compose, RunPod 템플릿
-docs/        팀 규칙, 실험 설계, 결정 기록, 데이터 manifest (명세 사본은 두지 않음)
+docs/        기획서(spec/), 요구사항 명세서(requirements.md), 팀 규칙, 실험 설계, 결정 기록, 데이터 manifest
 ```
 
 - 영상·사진·가중치·데이터셋·대형 3D 산출물은 커밋하지 않는다. RunPod Network Volume에 두고 저장소에는 manifest(경로·해시)만 둔다.
