@@ -14,9 +14,11 @@
 
 ## 구조
 
-`ai/` 패키지와 분리된 독립 uv 프로젝트다(`pyproject.toml`, `uv.lock`). 노트북 게이트웨이에는 PyAV 만 있으면 되고
+`ai/` 패키지와 분리된 독립 uv 프로젝트다(`pyproject.toml`, `uv.lock`). 노트북 게이트웨이에는 PyAV 와 jsonschema 만 있으면 되고
 `simai_ai`(Tier 0·Risk Engine)를 설치할 필요가 없다. `simai_ai` 를 import 하지 않으며 `ai/` 도 이 패키지를 import 하지 않는다.
-두 쪽을 잇는 것은 파일 형식(아래)과 계약(`contracts/messages/frame_header`, `codec_info`)뿐이다.
+두 쪽을 잇는 것은 파일 형식(아래)과 계약(`contracts/messages/frame_header`, `codec_info`, `contracts/data/recording_manifest`)뿐이다.
+manifest 검증은 저장소 루트의 `contracts/` 스키마를 직접 읽는다(복사하지 않는다). 저장소 밖에서 돌리면 `SIMAI_CONTRACTS_DIR` 로 위치를 준다.
+스키마를 찾지 못하면(저장소 밖 실행, 틀린 `SIMAI_CONTRACTS_DIR`) 모든 명령이 녹화·검사 전에 `설정 오류: ...` 를 알리고 종료 코드 2 로 멈춘다.
 
 ```
 src/simai_recorder/
@@ -24,7 +26,8 @@ src/simai_recorder/
   recorder.py      카메라별 녹화 루프(스레드 하나씩)와 4대 동시 세션
   capture_time.py  촬영 시각 추정 (RECEIVE_ESTIMATED)
   segment.py       세그먼트 쓰기·읽기 (녹화 형식)
-  manifest.py      manifest 계산·자체 검증·해시 확인
+  manifest.py      manifest 계산·검증(계약 스키마 + 스키마 밖 규칙)·해시 확인
+  contract.py      contracts/data/recording_manifest.schema.json 검증 (오류 문장에 받은 값을 넣지 않음)
   config.py        세션 설정(TOML)과 카메라 계정(.env)
   clock.py         주입하는 시계 (코드가 현재 시각을 직접 읽지 않는다)
 sessions/          세션 설정 예시 (example.toml: 실제 카메라, dry-run.toml: 카메라 없이 시험)
@@ -42,8 +45,8 @@ uv run pytest
 
 시험은 카메라 없이 돈다. 시험용 영상은 그때그때 만든 막대 무늬 H.264 이고(사람 이미지 없음), 4대 동시 녹화 시험은
 합성 스트림 3대 + 로컬 파일 1대에 지연·멈춤·끊김·재접속 실패를 넣어 실제 시계로 약 3초 돈다.
-I0 계약 검증 시험은 `contracts/messages/frame_header.schema.json`(S15P31A101-20)이 없으면 건너뛴다.
-머지 전 스키마로 돌리려면 `SIMAI_CONTRACTS_DIR=<경로>/contracts uv run pytest` 를 준다.
+시험은 저장소의 `contracts/` 스키마와 예시(`contracts/examples/recording_manifest*.json`)를 읽는다.
+다른 브랜치의 스키마로 돌리려면 `SIMAI_CONTRACTS_DIR=<경로>/contracts uv run pytest` 를 준다.
 
 ## 실행
 
@@ -82,7 +85,7 @@ uv run simai-recorder manifest <세션 디렉터리>   # 중간에 끊긴 세션
 ```
 <session_id>/
   session.json                        세션 설정 스냅숏 (계정 없음). manifest 를 다시 계산할 때 쓴다
-  manifest.json                       docs/data/recording-manifest.md
+  manifest.json                       contracts/data/recording_manifest.schema.json (설명 docs/data/recording-manifest.md)
   <camera_id>/
     events.jsonl                      접속·끊김·재접속 실패·키프레임 전 버림 기록
     epoch_NNNN.codec_info.json        I0 codec_info (contracts/messages/codec_info.schema.json)
@@ -94,7 +97,7 @@ uv run simai-recorder manifest <세션 디렉터리>   # 중간에 끊긴 세션
 그 epoch 의 파일은 없다), `frame_sequence` 는 epoch 안에서 0 부터 센다. `(camera_id, stream_epoch, frame_sequence)` 가
 프레임의 유일 식별자다(명세 12.7).
 
-`frames.jsonl` 한 줄:
+`frames.jsonl` 한 줄(계약 `recording_manifest.schema.json#/$defs/frame_line`):
 
 ```json
 {"header":{"camera_id":"cam_A","stream_epoch":0,"frame_sequence":0,"source_pts":0,"pts_timebase":"1/90000",
@@ -122,14 +125,15 @@ PTS 간격(카메라 RTP 시계)은 믿고 원점만 수신 시각에 맞추므�
 `latency_ms`(노출 → 수신 고정 지연)와 `timestamp_uncertainty_ms` 는 **G0 LED 시험 전 잠정값**이다(기본 0, 20, PTS 없음 45).
 원본 `received_at_ms`·`source_pts` 를 함께 남기므로 G0 에서 값이 정해지면 사이드카를 다시 계산할 수 있다.
 
-### Tier 0 에서 다시 읽기 (S15P31A101-21 연결 전)
+### Tier 0 에서 다시 읽기
 
--21 의 녹화 입력은 아직 이 형식을 직접 읽지 않는다. 연결 방법은 두 가지이고 -21 머지 뒤 별도로 한다.
+방법은 두 가지다. 2 는 연결돼 있고(S15P31A101-158), 1 은 아직 없다.
 
 1. **I0 재생(권장).** 세그먼트마다 `codec_info` → `(header, 압축 프레임)` 순서로 I0 메시지(`I0CodecInfo`, `I0Frame`)를 만들어
    `I0Ingest` 에 넣는다. 프레임별 촬영 시각·epoch·키프레임이 LIVE 와 같은 경로로 들어간다. 읽는 순서는
    `simai_recorder.segment.read_segment` 와 같다(ai 는 gateway 를 import 하지 않으므로 형식만 따른다).
-2. **VideoFileFrameSource.** `Recording(camera_id, path=epoch_NNNN.h264, start_time_ms=첫 헤더의 estimated_capture_time_ms, fps=codec_info.nominal_fps)`.
+2. **VideoFileFrameSource.** `VideoFileFrameSource.from_manifest(<세션 디렉터리>, epochs={...})` 가 manifest 를 녹화 도구와 같은 판정(계약 스키마 + 스키마 밖 규칙)으로 검사하고
+   카메라마다 `Recording(camera_id, path=epoch_NNNN.h264, start_time_ms=세그먼트 첫 추정 촬영 시각, fps=settings.nominal_fps)` 를 만든다.
    간단하지만 촬영 시각을 `start + index/fps` 로 다시 만들므로 도착 끊김·epoch 사이 공백이 사라진다. 프레임별 시각이 필요하면 1 을 쓴다.
 
 ## 하지 않는 것

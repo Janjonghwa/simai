@@ -16,6 +16,7 @@ from pathlib import Path
 from simai_recorder import __version__
 from simai_recorder.clock import SystemClock
 from simai_recorder.config import DEFAULT_OUT, REPO_ROOT, ConfigError, load_env, load_session
+from simai_recorder.contract import ContractsNotFoundError
 from simai_recorder.manifest import validate_manifest, verify, write_manifest
 from simai_recorder.recorder import record_session
 
@@ -99,4 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     ver.add_argument("session_dir")
     ver.set_defaults(func=cmd_verify)
     args = ap.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except ContractsNotFoundError as e:  # 계약 스키마 위치 설정 오류: 녹화·검사 전에 멈춘다
+        print(f"설정 오류: {e}", file=sys.stderr)
+        return 2

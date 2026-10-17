@@ -171,22 +171,22 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "av" },
+    { name = "jsonschema" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "jsonschema" },
     { name = "pytest" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "av", specifier = ">=14" }]
+requires-dist = [
+    { name = "av", specifier = ">=14" },
+    { name = "jsonschema", specifier = ">=4.23" },
+]
 
 [package.metadata.requires-dev]
-dev = [
-    { name = "jsonschema", specifier = ">=4.23" },
-    { name = "pytest", specifier = ">=8.3" },
-]
+dev = [{ name = "pytest", specifier = ">=8.3" }]
 
 [[package]]
 name = "typing-extensions"

@@ -18,7 +18,7 @@ from typing import Any
 
 from simai_recorder.capture_time import CaptureTimeModel
 from simai_recorder.clock import Clock
-from simai_recorder.manifest import STORAGE_URI, validate_consent
+from simai_recorder.manifest import validate_consent, validate_storage_uri
 from simai_recorder.recorder import CameraSpec, SessionSpec
 from simai_recorder.sources import (
     FaultPlan,
@@ -108,7 +108,7 @@ def load_session(path: Path, clock: Clock, env: Mapping[str, str], session_id: s
     if not scenario:
         raise ConfigError("[session] scenario 가 없다")
     storage = sess.get("storage_uri", "")
-    if not STORAGE_URI.match(storage):
+    if not isinstance(storage, str) or validate_storage_uri(storage):
         raise ConfigError("[session] storage_uri 는 volume://<datacenter>/<path> 또는 s3:// 여야 한다")
     cams = data.get("cameras", [])
     if not cams:

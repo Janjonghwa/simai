@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "simai 게이트웨이(노트북) 4대 동기화 녹화 도구와 녹화 manifest (S15P31A101-107)"
 requires-python = ">=3.11,<3.12"
 # PyAV: RTSP 수신·파일 디먹스(디코딩 없음)와 합성 스트림 인코딩(libx264). 휠에 FFmpeg 이 들어 있다.
-dependencies = ["av>=14"]
+# jsonschema: manifest 를 저장소의 계약 스키마(contracts/data/recording_manifest.schema.json)로 검증한다.
+dependencies = ["av>=14", "jsonschema>=4.23"]
 
 [project.scripts]
 simai-recorder = "simai_recorder.cli:main"
@@ -12,7 +13,6 @@ simai-recorder = "simai_recorder.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8.3",
-    "jsonschema>=4.23",
 ]
 
 [build-system]
