@@ -1,0 +1,30 @@
+{
+  "_expect_error": "CALIBRATED인데 독립 검산의 위치 불일치(쌍별 불일치 또는 절대 위치 오차)가 없다 (명세 4.4 위반)",
+  "schema_version": "1.2.0",
+  "calibration_version": "cal-1",
+  "provider_source": "G1_AUTO",
+  "state": "CALIBRATED",
+  "created_at": 1760598000000,
+  "coordinate_frame": { "frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z", "site_id": "classroom-1" },
+  "scale_basis": "MEASURED_OBJECT",
+  "scale_cross_check_basis": ["KNOWN_PERSON_HEIGHT"],
+  "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
+  "cameras": [
+    {
+      "camera_id": "cam1",
+      "image_size": [1920, 1080],
+      "K": [[1010.0, 0.0, 960.0], [0.0, 1010.0, 540.0], [0.0, 0.0, 1.0]],
+      "distortion": { "model": "OPENCV_PINHOLE", "coeffs": [-0.29, 0.088, 0.0, 0.0, -0.011] },
+      "R": [[0.5932, -0.8051, 0.0], [-0.2728, -0.201, -0.9408], [0.7574, 0.5581, -0.3388]],
+      "t": [0.0424, 2.4468, 0.5839],
+      "camera_height_m": 2.4998,
+      "reprojection_error_px": { "median": 1.2, "p95": 3.4 }
+    }
+  ],
+  "validation": {
+    "checkpoint_count": 4,
+    "max_head_height_error_m": 0.06,
+    "floor_plane_disagreement_m": 0.018,
+    "floor_coverage_ratio": 0.86
+  }
+}

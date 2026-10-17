@@ -24,12 +24,12 @@ class TestFileCalibrationExample(CalibrationProviderContract):
 
 
 class TestFileCalibrationCalibrated(CalibrationProviderContract):
-    """독립 검증 기준을 통과한 MANUAL_PNP 보정은 CALIBRATED 가 될 수 있다."""
+    """독립 검증 기준(수정 6)을 통과한 G1_AUTO 보정은 CALIBRATED 가 될 수 있다."""
 
     @pytest.fixture
     def provider(self, tmp_path):
         doc = load_example("calibration.json")
-        doc["state"] = "CALIBRATED"
+        doc.update(provider_source="G1_AUTO", state="CALIBRATED")
         path = tmp_path / "calibration.json"
         path.write_text(json.dumps(doc), encoding="utf-8")
         return FileCalibrationProvider(path)

@@ -116,82 +116,172 @@ def test_never_calibrated_sources_may_be_provisional(calibration_doc, source):
     assert contract.check_calibration_state(calibration_doc) == []
 
 
-@pytest.mark.parametrize("source", ["G1_AUTO", "MANUAL_PNP", "CHARUCO"])
+@pytest.mark.parametrize("source", ["G1_AUTO", "CHARUCO"])
 def test_calibrated_sources_with_passing_validation(calibration_doc, source):
     calibration_doc.update(provider_source=source, state="CALIBRATED")
     assert_no_violations(contract.check_calibration(calibration_doc))
+
+
+def test_manual_pnp_not_calibrated_after_rev6(calibration_doc):
+    """평면도 점 PnP 는 수정 6 에서 대체 경로에서 빠졌다. 계약 값은 남지만 CALIBRATED 는 안 된다."""
+    calibration_doc["state"] = "CALIBRATED"
+    _has(contract.check_calibration_state(calibration_doc), "MANUAL_PNP", "CALIBRATED 가 될 수 없다")
+    assert contract.check_calibration_schema(calibration_doc) == [], "스키마는 막지 않는다(계약 시험이 막는다)"
+
+
+def test_manual_pnp_may_be_provisional(calibration_doc):
+    assert calibration_doc["provider_source"] == "MANUAL_PNP"
+    assert_no_violations(contract.check_calibration(calibration_doc))
+
+
+_GOOD_VALIDATION = {
+    "checkpoint_count": 4,
+    "max_pairwise_position_disagreement_m": 0.1,
+    "max_head_height_error_m": 0.1,
+    "floor_plane_disagreement_m": 0.02,
+    "floor_coverage_ratio": 0.85,
+}
+
+
+def _without(key):
+    return {k: v for k, v in _GOOD_VALIDATION.items() if k != key}
 
 
 @pytest.mark.parametrize(
     ("validation", "needle"),
     [
         pytest.param(None, "validation", id="missing"),
+        pytest.param({**_GOOD_VALIDATION, "checkpoint_count": 2}, "검증점", id="too-few-checkpoints"),
         pytest.param(
-            {"checkpoint_count": 2, "max_position_error_m": 0.1, "max_head_height_error_m": 0.1},
-            "검증점",
-            id="too-few-checkpoints",
+            {**_GOOD_VALIDATION, "max_pairwise_position_disagreement_m": 0.16},
+            "max_pairwise_position_disagreement_m",
+            id="pairwise-position",
         ),
         pytest.param(
-            {"checkpoint_count": 4, "max_position_error_m": 0.31, "max_head_height_error_m": 0.1},
-            "max_position_error_m",
-            id="position-error",
+            _without("max_pairwise_position_disagreement_m"),
+            "max_pairwise_position_disagreement_m 이 없다",
+            id="pairwise-position-missing",
         ),
+        pytest.param({**_GOOD_VALIDATION, "max_head_height_error_m": 0.16}, "max_head_height_error_m", id="head-error"),
+        pytest.param(_without("max_head_height_error_m"), "max_head_height_error_m 이 없다", id="head-error-missing"),
+        pytest.param({**_GOOD_VALIDATION, "floor_coverage_ratio": 0.5}, "floor_coverage_ratio", id="coverage"),
+        pytest.param(_without("floor_coverage_ratio"), "floor_coverage_ratio 이 없다", id="coverage-missing"),
+        pytest.param({**_GOOD_VALIDATION, "floor_plane_disagreement_m": 0.05}, "floor_plane", id="floor-plane"),
         pytest.param(
-            {"checkpoint_count": 4, "max_position_error_m": 0.1, "max_head_height_error_m": 0.16},
-            "max_head_height_error_m",
-            id="head-error",
-        ),
-        pytest.param(
-            {"checkpoint_count": 4, "max_position_error_m": 0.1},
-            "max_head_height_error_m 이 없다",
-            id="head-error-missing",
-        ),
-        pytest.param(
-            {
-                "checkpoint_count": 4,
-                "max_position_error_m": 0.1,
-                "max_head_height_error_m": 0.1,
-                "floor_coverage_ratio": 0.5,
-            },
-            "floor_coverage_ratio",
-            id="coverage",
-        ),
-        pytest.param(
-            {
-                "checkpoint_count": 4,
-                "max_position_error_m": 0.1,
-                "max_head_height_error_m": 0.1,
-                "floor_plane_disagreement_m": 0.05,
-            },
-            "floor_plane",
-            id="floor-plane",
+            _without("floor_plane_disagreement_m"), "floor_plane_disagreement_m 이 없다", id="floor-plane-missing"
         ),
     ],
 )
 def test_calibrated_requires_independent_validation(calibration_doc, validation, needle):
-    calibration_doc["state"] = "CALIBRATED"
+    calibration_doc.update(provider_source="G1_AUTO", state="CALIBRATED")
     calibration_doc.pop("validation")
     if validation is not None:
         calibration_doc["validation"] = validation
     _has(contract.check_calibration_state(calibration_doc), needle)
 
 
+def test_absolute_position_error_not_a_calibrated_criterion(calibration_doc):
+    """절대 위치 오차는 개발 교실 G1·G2 실측 지표다. 수정 6 이후 CALIBRATED 조건이 아니다."""
+    calibration_doc.update(provider_source="G1_AUTO", state="CALIBRATED")
+    calibration_doc["validation"]["max_position_error_m"] = 0.5
+    assert_no_violations(contract.check_calibration(calibration_doc))
+
+
 def test_calibrated_requires_reprojection_within_criteria(calibration_doc):
-    calibration_doc["state"] = "CALIBRATED"
+    calibration_doc.update(provider_source="G1_AUTO", state="CALIBRATED")
     calibration_doc["cameras"][0]["reprojection_error_px"] = {"median": 2.5, "p95": 4.0}
     _has(contract.check_calibration_state(calibration_doc), "재투영 오차 median")
+    calibration_doc["cameras"][0].pop("reprojection_error_px")
+    _has(contract.check_calibration_state(calibration_doc), "재투영 오차 median 이 없다", "재투영 오차 p95 이 없다")
+
+
+@pytest.mark.parametrize(
+    ("basis", "cross", "needle"),
+    [
+        pytest.param("STANDARD_OBJECT", ["KNOWN_PERSON_HEIGHT"], "주 근거가 될 수 없다", id="weak-primary"),
+        pytest.param("FLOOR_PLAN", ["KNOWN_PERSON_HEIGHT"], "주 근거가 될 수 없다", id="floor-plan"),
+        pytest.param("MEASURED_OBJECT", None, "교차 확인", id="no-cross-check"),
+        pytest.param("MEASURED_OBJECT", ["MEASURED_OBJECT"], "교차 확인", id="cross-check-same-basis"),
+        pytest.param("MEASURED_OBJECT", ["DATASET_GT"], "교차 확인", id="cross-check-dataset-gt"),
+    ],
+)
+def test_calibrated_requires_scale_bases(calibration_doc, basis, cross, needle):
+    calibration_doc.update(provider_source="G1_AUTO", state="CALIBRATED", scale_basis=basis)
+    calibration_doc.pop("scale_cross_check_basis")
+    if cross is not None:
+        calibration_doc["scale_cross_check_basis"] = cross
+    _has(contract.check_calibration_state(calibration_doc), needle)
+
+
+def test_height_stats_primary_accepted(calibration_doc):
+    calibration_doc.update(
+        provider_source="CHARUCO",
+        state="CALIBRATED",
+        scale_basis="HUMAN_HEIGHT_STATS",
+        scale_cross_check_basis=["MEASURED_OBJECT", "MARKER"],
+    )
+    assert_no_violations(contract.check_calibration(calibration_doc))
 
 
 def test_calibrated_criteria_override(calibration_doc):
-    calibration_doc["state"] = "CALIBRATED"
-    strict = contract.CalibratedCriteria(max_position_error_m=0.2)
-    _has(contract.check_calibration_state(calibration_doc, strict), "max_position_error_m")
+    calibration_doc.update(provider_source="G1_AUTO", state="CALIBRATED")
+    strict = contract.CalibratedCriteria(max_pairwise_position_disagreement_m=0.1)
+    _has(contract.check_calibration_state(calibration_doc, strict), "max_pairwise_position_disagreement_m")
 
 
-@pytest.mark.parametrize("name", ["calibration.dataset_calibrated.json", "calibration.model_estimate_calibrated.json"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "calibration.dataset_calibrated.json",
+        "calibration.model_estimate_calibrated.json",
+        "calibration.sim_calibrated.json",
+    ],
+)
 def test_invalid_calibration_examples_fail(name):
     doc = load_example(f"invalid/{name}")
     _has(contract.check_calibration(doc), "CALIBRATED 가 될 수 없다")
+
+
+@pytest.mark.parametrize(
+    "key", ["max_head_height_error_m", "max_pairwise_position_disagreement_m", "floor_plane_disagreement_m"]
+)
+def test_calibrated_rejects_nan_validation(calibration_doc, key):
+    """NaN 은 대소 비교가 모두 거짓이라 상한 검사를 통과하던 결함. jsonschema 도 NaN 을 막지 않는다."""
+    calibration_doc.update(provider_source="G1_AUTO", state="CALIBRATED")
+    calibration_doc["validation"][key] = float("nan")
+    _has(contract.check_calibration_state(calibration_doc), key)
+    _has(contract.check_calibration(calibration_doc), "유한")
+
+
+def test_calibrated_rejects_nan_coverage_and_reprojection(calibration_doc):
+    calibration_doc.update(provider_source="G1_AUTO", state="CALIBRATED")
+    calibration_doc["validation"]["floor_coverage_ratio"] = float("nan")
+    calibration_doc["cameras"][0]["reprojection_error_px"] = {"median": float("nan"), "p95": 3.0}
+    _has(contract.check_calibration_state(calibration_doc), "floor_coverage_ratio", "재투영 오차 median")
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "needle"),
+    [
+        pytest.param(("cameras", 0, "t", 0), float("inf"), "유한", id="t-inf"),
+        pytest.param(("cameras", 0, "K", 0, 0), float("nan"), "유한", id="K-nan"),
+        pytest.param(("validation", "floor_plane_disagreement_m"), -0.01, "floor_plane_disagreement_m", id="neg"),
+        pytest.param(("validation", "floor_coverage_ratio"), 1.2, "floor_coverage_ratio", id="coverage-over-1"),
+        pytest.param(("cameras", 0, "reprojection_error_px", "p95"), -1.0, "p95", id="p95-negative"),
+    ],
+)
+def test_calibration_values_must_be_finite_and_in_range(calibration_doc, path, value, needle):
+    """스키마 없이 도는 기하 검사(버전 저장소가 쓴다)도 비유한 수치·범위 밖 값을 잡는다."""
+    target = calibration_doc
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    _has(contract.check_calibration_geometry(calibration_doc), needle)
+
+
+def test_calibration_camera_ids_unique(calibration_doc):
+    calibration_doc["cameras"].append(copy.deepcopy(calibration_doc["cameras"][0]))
+    _has(contract.check_calibration_geometry(calibration_doc), "camera_id", "중복")
 
 
 # --------------------------------------------------------------------------- World 트랙

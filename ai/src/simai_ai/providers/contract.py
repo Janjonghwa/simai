@@ -56,21 +56,66 @@ MIN_TRIANGULATION_CAMERAS = 2
 # 바로 선 카메라는 0 이하다(천장에서 수직으로 내려다보면 0 근처라 여유를 둔다). 카메라 roll 은 계약이 제한하지 않는다.
 CAMERA_DOWN_MAX_Z = 0.1
 
-CALIBRATED_SOURCES = frozenset({"G1_AUTO", "MANUAL_PNP", "CHARUCO"})
+# CALIBRATED 가 될 수 있는 출처 (명세 20.4 규칙 4, 4.3 대체 경로. 수정 6).
+# MANUAL_PNP(평면도 점 PnP)는 수정 6 에서 대체 경로에서 빠졌다.
+# 계약 값은 연구용 수동 대응점으로 남지만 CALIBRATED 는 안 된다.
+CALIBRATED_SOURCES = frozenset({"G1_AUTO", "CHARUCO"})
 NEVER_CALIBRATED_SOURCES = frozenset({"DATASET_GT", "SIM", "MODEL_ESTIMATE"})
+
+# 스케일 근거 (명세 4.3, 4.4 수정 6). 주 근거는 실측 정물(2개 이상 일치) 또는 사람 키 통계(20명 이상)다.
+# 교차 확인 근거는 4.3 우선순위 목록과 ChArUco 마커다. 공개 데이터 정답·실측 평면도는 현장 근거가 아니어서 뺀다.
+PRIMARY_SCALE_BASES = frozenset({"MEASURED_OBJECT", "HUMAN_HEIGHT_STATS"})
+CROSS_CHECK_SCALE_BASES = frozenset(
+    {"MEASURED_OBJECT", "KNOWN_PERSON_HEIGHT", "HUMAN_HEIGHT_STATS", "STANDARD_OBJECT", "MODEL_ESTIMATE", "MARKER"}
+)
 
 
 @dataclass(frozen=True)
 class CalibratedCriteria:
-    """명세 4.4 CALIBRATED 기준(초기값). 독립 검증점 결과는 필수, 나머지는 값이 있을 때만 본다."""
+    """명세 4.4 CALIBRATED 기준(초기값, 수정 6). 현장·G1 결과에 맞게 바꿀 수 있는 설정값이다.
 
-    min_checkpoints: int = 3
-    max_position_error_m: float = 0.30
-    max_head_height_error_m: float = 0.15
+    보정 판정(`simai_ai.calibration.criteria`)과 문서 검사(`check_calibration_state`)가 이 값 하나를 같이 쓴다.
+    measured_object_agreement: 정물끼리 배율이 평균에서 벗어날 수 있는 상대 오차 (정물 예상 정확도 약 1%).
+    cross_check_tolerance: 교차 확인 근거가 주 근거 배율과 다를 수 있는 상대 오차 (사람 키 통계 2~5%).
+    max_scale_residual: 주 근거 배율과 1.0 의 상대 차이 상한(근거가 보정 스케일에 실제로 반영됐는지).
+    min_cameras: 제품 보정이 갖춰야 할 카메라 수(명세 4.4 "4대의 바닥 평면 차이"). 설치 카메라 목록이 없을 때 쓴다.
+    정물 일치·사람 수·배율·카메라 수는 문서에 없거나(N대 연구 문서 호환) 판정에서만 본다.
+    """
+
     max_reprojection_median_px: float = 2.0
     max_reprojection_p95_px: float = 5.0
-    max_floor_plane_disagreement_m: float = 0.03
     min_floor_coverage_ratio: float = 0.8
+    max_floor_plane_disagreement_m: float = 0.03
+    min_measured_objects: int = 2
+    measured_object_agreement: float = 0.02
+    min_height_stats_people: int = 20
+    cross_check_tolerance: float = 0.05
+    max_scale_residual: float = 0.02
+    min_checkpoints: int = 3
+    max_head_height_error_m: float = 0.15
+    max_pairwise_position_disagreement_m: float = 0.15
+    min_cameras: int = 4
+
+    def __post_init__(self) -> None:
+        """기준값이 NaN·무한대·음수면 모든 비교가 뜻을 잃으므로 만들 때 거절한다. 비율은 0~1."""
+        ratios = {
+            "min_floor_coverage_ratio",
+            "measured_object_agreement",
+            "cross_check_tolerance",
+            "max_scale_residual",
+        }
+        counts = {"min_measured_objects", "min_height_stats_people", "min_checkpoints", "min_cameras"}
+        for name, value in vars(self).items():
+            if name in counts:
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise ValueError(f"CalibratedCriteria.{name} 는 1 이상의 정수여야 한다: {value!r}")
+            elif not is_finite_number(value) or value < 0 or (name in ratios and value > 1):
+                raise ValueError(f"CalibratedCriteria.{name} 는 유한한 0 이상의 수(비율은 1 이하)여야 한다: {value!r}")
+
+
+def is_finite_number(value: Any) -> bool:
+    """JSON 수치로 쓸 수 있는 유한한 수인지(bool 제외). NaN 은 모든 대소 비교가 거짓이라 상·하한 검사를 빠져나간다."""
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
 
 
 DEFAULT_CALIBRATED_CRITERIA = CalibratedCriteria()
@@ -191,8 +236,12 @@ def check_calibration_schema(doc: Mapping[str, Any]) -> list[str]:
 
 
 def check_calibration_geometry(doc: Mapping[str, Any], ranges: PlausibleRanges = DEFAULT_RANGES) -> list[str]:
-    """회전과 단위·축, 카메라 내부 파라미터를 본다. 카메라 설치 자세(roll)는 보지 않는다(check_cameras_upright)."""
-    out: list[str] = []
+    """수치 유효성, 회전과 단위·축, 카메라 내부 파라미터를 본다. 설치 자세(roll)는 보지 않는다(check_cameras_upright).
+
+    jsonschema 없이 돌므로 버전 저장소가 저장 전에 쓴다. 그래서 스키마의 수치 범위(validation·재투영 오차 0 이상,
+    바닥 커버리지 0~1)와, 스키마로는 막을 수 없는 NaN·무한대를 여기서도 본다.
+    """
+    out = _check_calibration_values(doc)
     seen: set[str] = set()
     for i, cam in enumerate(doc.get("cameras", [])):
         where = f"cameras[{i}]({cam.get('camera_id')})"
@@ -219,6 +268,40 @@ def check_calibration_geometry(doc: Mapping[str, Any], ranges: PlausibleRanges =
                 )
 
         out += _check_intrinsics(cam, where)
+    return out
+
+
+def _non_finite_paths(value: Any, path: str) -> list[str]:
+    if isinstance(value, float) and not math.isfinite(value):
+        return [path]
+    if isinstance(value, Mapping):
+        return [p for k, v in value.items() for p in _non_finite_paths(v, f"{path}/{k}")]
+    if isinstance(value, list | tuple):
+        return [p for i, v in enumerate(value) for p in _non_finite_paths(v, f"{path}/{i}")]
+    return []
+
+
+def _check_calibration_values(doc: Mapping[str, Any]) -> list[str]:
+    out = [f"{p or '<root>'}: 유한한 수가 아니다 (NaN·무한대는 JSON 수치가 아니다)" for p in _non_finite_paths(doc, "")]
+    bounds: list[tuple[str, Any, float | None]] = []
+    for i, cam in enumerate(doc.get("cameras", [])):
+        rep = cam.get("reprojection_error_px") or {}
+        bounds += [(f"cameras[{i}].reprojection_error_px.{k}", rep.get(k), None) for k in ("median", "p95")]
+    v = doc.get("validation") or {}
+    for key in (
+        "max_position_error_m",
+        "max_pairwise_position_disagreement_m",
+        "max_head_height_error_m",
+        "floor_plane_disagreement_m",
+    ):
+        bounds.append((f"validation.{key}", v.get(key), None))
+    bounds.append(("validation.floor_coverage_ratio", v.get("floor_coverage_ratio"), 1.0))
+    for name, value, upper in bounds:
+        if is_finite_number(value) and (value < 0 or (upper is not None and value > upper)):
+            out.append(f"{name} = {value}: 0 이상{'' if upper is None else f' {upper} 이하'}여야 한다")
+    count = v.get("checkpoint_count")
+    if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0):
+        out.append(f"validation.checkpoint_count = {count!r}: 0 이상의 정수여야 한다")
     return out
 
 
@@ -262,12 +345,13 @@ def _check_intrinsics(cam: Mapping[str, Any], where: str) -> list[str]:
 def check_calibration_state(
     doc: Mapping[str, Any], criteria: CalibratedCriteria = DEFAULT_CALIBRATED_CRITERIA
 ) -> list[str]:
-    """calibration_source 별 CALIBRATED 규칙 (명세 20.4 규칙 4, 4.4).
+    """calibration_source 별 CALIBRATED 규칙 (명세 20.4 규칙 4, 4.4. 수정 6).
 
-    검사 범위: DATASET_GT·SIM·MODEL_ESTIMATE 는 CALIBRATED 불가, 그 밖의 출처는 독립 검증점 결과(개수·위치 오차·
-    머리 높이 오차)가 필수다. 재투영 오차·바닥 평면 차이·커버리지는 문서에 값이 있을 때만 본다.
-    스케일 근거의 세부 조건(사람 20명 이상의 키 통계 등)처럼 스키마에 표현되지 않은 4.4 조건은 보지 않는다.
-    이 검사를 통과했다고 운영 CALIBRATED 조건 전부를 검증한 것은 아니다.
+    검사 범위: DATASET_GT·SIM·MODEL_ESTIMATE 는 CALIBRATED 불가, CALIBRATED 출처는 G1_AUTO·CHARUCO 뿐이다.
+    CALIBRATED 문서는 문서로 표현되는 4.4 조건을 모두 갖춰야 한다(값이 없으면 위반): 검산점 수, 머리 높이 오차,
+    카메라 쌍별 위치 불일치, 바닥 평면 차이, 바닥 커버리지, 카메라별 재투영 오차, 스케일 주 근거와 교차 확인 근거.
+    정물끼리의 일치·사람 수·근거 배율처럼 문서에 없는 조건은 보지 않는다(`simai_ai.calibration` 판정이 본다).
+    절대 위치 오차(max_position_error_m)는 수정 6 이후 CALIBRATED 조건이 아니라 보지 않는다.
     """
     source, state = doc.get("provider_source"), doc.get("state")
     if state != "CALIBRATED":
@@ -275,35 +359,56 @@ def check_calibration_state(
     if source in NEVER_CALIBRATED_SOURCES:
         return [f"{source} 보정은 우리 현장의 검증된 보정이 아니므로 CALIBRATED 가 될 수 없다"]
     if source not in CALIBRATED_SOURCES:
-        return [f"알 수 없는 출처 {source} 는 CALIBRATED 가 될 수 없다"]
+        return [f"{source} 는 CALIBRATED 가 될 수 없다 (CALIBRATED 출처는 {sorted(CALIBRATED_SOURCES)}, 수정 6)"]
 
     v = doc.get("validation")
     if not v:
         return ["CALIBRATED 는 독립 검증점 결과(validation)가 있어야 한다"]
     out: list[str] = []
     c = criteria
-    if v.get("checkpoint_count", 0) < c.min_checkpoints:
-        out.append(f"CALIBRATED: 독립 검증점 {v.get('checkpoint_count', 0)}곳 < {c.min_checkpoints}곳")
-    _at_most(out, v, "max_position_error_m", c.max_position_error_m, required=True)
+    count = v.get("checkpoint_count", 0)
+    if not is_finite_number(count) or count < c.min_checkpoints:
+        out.append(f"CALIBRATED: 독립 검증점 {count}곳 < {c.min_checkpoints}곳")
     _at_most(out, v, "max_head_height_error_m", c.max_head_height_error_m, required=True)
-    _at_most(out, v, "floor_plane_disagreement_m", c.max_floor_plane_disagreement_m)
-    if v.get("floor_coverage_ratio") is not None and v["floor_coverage_ratio"] < c.min_floor_coverage_ratio:
-        out.append(f"CALIBRATED: floor_coverage_ratio {v['floor_coverage_ratio']} < {c.min_floor_coverage_ratio}")
+    _at_most(out, v, "max_pairwise_position_disagreement_m", c.max_pairwise_position_disagreement_m, required=True)
+    _at_most(out, v, "floor_plane_disagreement_m", c.max_floor_plane_disagreement_m, required=True)
+    coverage = v.get("floor_coverage_ratio")
+    if coverage is None:
+        out.append("CALIBRATED: floor_coverage_ratio 이 없다")
+    elif not is_finite_number(coverage) or not c.min_floor_coverage_ratio <= coverage <= 1.0:
+        out.append(f"CALIBRATED: floor_coverage_ratio {coverage} 가 {c.min_floor_coverage_ratio}~1 밖이다")
     for cam in doc.get("cameras", []):
         rep = cam.get("reprojection_error_px") or {}
-        _at_most(out, rep, "median", c.max_reprojection_median_px, label=f"{cam.get('camera_id')} 재투영 오차")
-        _at_most(out, rep, "p95", c.max_reprojection_p95_px, label=f"{cam.get('camera_id')} 재투영 오차")
+        label = f"{cam.get('camera_id')} 재투영 오차"
+        _at_most(out, rep, "median", c.max_reprojection_median_px, required=True, label=label)
+        _at_most(out, rep, "p95", c.max_reprojection_p95_px, required=True, label=label)
+    out += _check_scale_bases(doc)
+    return out
+
+
+def _check_scale_bases(doc: Mapping[str, Any]) -> list[str]:
+    """CALIBRATED 의 스케일 근거: 주 근거가 실측 정물·사람 키 통계이고, 다른 근거 하나 이상과 교차 확인됐는지."""
+    basis = doc.get("scale_basis")
+    out = []
+    if basis not in PRIMARY_SCALE_BASES:
+        out.append(f"CALIBRATED: scale_basis {basis} 는 주 근거가 될 수 없다 ({sorted(PRIMARY_SCALE_BASES)})")
+    others = [b for b in doc.get("scale_cross_check_basis") or [] if b != basis and b in CROSS_CHECK_SCALE_BASES]
+    if not others:
+        out.append("CALIBRATED: scale_cross_check_basis 에 주 근거와 다른 교차 확인 근거가 없다")
     return out
 
 
 def _at_most(
     out: list[str], d: Mapping[str, Any], key: str, limit: float, required: bool = False, label: str = ""
 ) -> None:
+    """상한 검사. NaN·무한대·음수는 상한 안이라고 볼 수 없으므로 위반이다."""
     value = d.get(key)
     name = f"{label} {key}".strip()
     if value is None:
         if required:
             out.append(f"CALIBRATED: {name} 이 없다")
+    elif not is_finite_number(value) or value < 0:
+        out.append(f"CALIBRATED: {name} = {value} 는 유효한 측정값이 아니다")
     elif value > limit:
         out.append(f"CALIBRATED: {name} = {value} > {limit}")
 
