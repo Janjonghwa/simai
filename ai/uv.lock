@@ -963,6 +963,7 @@ source = { editable = "." }
 
 [package.optional-dependencies]
 calibration = [
+    { name = "jsonschema" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
 ]
@@ -982,6 +983,7 @@ scene = [
     { name = "torch" },
 ]
 tier0 = [
+    { name = "jsonschema" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
     { name = "ultralytics" },
@@ -1000,6 +1002,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "jsonschema", marker = "extra == 'calibration'", specifier = ">=4.23" },
     { name = "numpy", marker = "extra == 'calibration'", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'geometry'", specifier = ">=1.26" },
     { name = "opencv-python-headless", marker = "extra == 'calibration'", specifier = ">=4.9" },

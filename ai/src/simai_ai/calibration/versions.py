@@ -17,10 +17,10 @@
 어느 쪽이든 값을 모르면 줄지 않은 것으로 본다.
 
 후보는 위 표보다 먼저 계약 검사를 통과해야 한다. 실패하면 버전 목록·전이 기록·활성 버전을 그대로 둔다.
-계약 검사는 모두 jsonschema 없이 돈다: 스키마와 같은 범위의 형식 검사(`structure`: 필수·허용 항목, 행렬·벡터 크기,
-enum·패턴, 수치 범위, 조건부 필수), 형식이 맞을 때만 하는 기하·상태 검사(NaN·무한대, 회전, 내부 파라미터, 카메라
-중심, CALIBRATED 조건), 판정이 찾은 유효하지 않은 입력(NaN·음수 측정값, camera_id 중복)이다. 형식 검사가 스키마와
-같은 범위인지는 시험이 스키마 파일·jsonschema 와 대조한다. 저장은 NaN·무한대를 허용하지 않는 엄격한 JSON 으로 한다.
+계약 검사는 계약 스키마(`contracts/providers/calibration.schema.json`) 직접 검증(`structure`, jsonschema, extras
+calibration), 형식이 맞을 때만 하는 기하·상태 검사(NaN·무한대, 회전, 내부 파라미터, 카메라 중심, CALIBRATED 조건),
+판정이 찾은 유효하지 않은 입력(provider_source 타입, NaN·음수 측정값, camera_id 중복)이다. 형식 규칙은 스키마 파일이
+정본이라 스키마만 고치면 저장 전 검사가 따라간다. 저장은 NaN·무한대를 허용하지 않는 엄격한 JSON 으로 한다.
 
 DRIFTED 는 운영 상태 표시이며 보정 값이 바뀌지 않으므로 새 버전을 만들지 않는다. 상태 기록(transitions, 추가만)에
 남기고 `current()` 문서의 state 에만 반영한다. DATASET_GT·SIM·MODEL_ESTIMATE 보정은 계약상 DRIFTED 가 될 수 없어
