@@ -203,7 +203,7 @@ flowchart TB
 | 노트북 | 수신·중계 | Python 3, PyAV(디코딩 없이 압축 프레임 단위로 읽기), 프레임 헤더 + 카메라별 TLS 연결(12.7) | 기본안 |
 | 노트북 | 현장 경보·감시 | 소리·화면 경보 앱, 하트비트, 교실망 NTP 서버 | 기본안 |
 | RunPod Tier 0 | 검출·keypoint | YOLO26x-pose(비교군 RTMO), TensorRT FP16, imgsz 1280 | 확정(수정 5, 크기 비교 안 함) |
-| RunPod Tier 0 | 카메라별 추적 | 카메라별 독립 ByteTrack(BoT-SORT + ReID는 선택) | 기본안 |
+| RunPod Tier 0 | 카메라별 추적 | 카메라별 독립 TrackTrack(Ultralytics `tracktrack.yaml`). ByteTrack·BoT-SORT + ReID 는 설정으로 전환(수정 7) | 기본안 |
 | RunPod Tier 0 | 사람 연결·삼각측량 | NumPy, OpenCV, SciPy(헝가리안 배정) | 기본안 |
 | RunPod Tier 0 | LIVE 판정 | Risk Engine Python 라이브러리, 이벤트 저널·outbox(Network Volume) | 확정 |
 | RunPod Tier 0 | PPE 검출(확장) | YOLO26 검출 미세조정(분류는 비교군) | 확정(YOLO26) |

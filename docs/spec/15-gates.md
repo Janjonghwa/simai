@@ -130,7 +130,7 @@ G5의 “한 카메라 제외 재투영”은 3대로 삼각측량한 관절을 
 
 | 실험 | 구성 | 확인할 것 |
 |---|---|---|
-| A0 기준선 | YOLO26x-pose + 카메라별 ByteTrack + 기하 융합 | 현재 성능 |
+| A0 기준선 | YOLO26x-pose + 카메라별 TrackTrack + 기하 융합(수정 7) | 현재 성능 |
 | A1 관절 개선 | 미세조정 YOLO26x-pose + 같은 추적 | 2D 관절·World XYZ 정확도 |
 | A2 ID 개선 | A1 + 선택적 ReID·궤적 매칭 | ID 전환, IDF1, HOTA |
 | A3 연구 고도화 | TrackTacular 또는 MVTrajecter | 가림·교차에서 추가 개선 |

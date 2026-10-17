@@ -26,7 +26,7 @@
 
 - 입력: 노트북이 중계한 카메라 4대 영상(RTSP over TCP)과 촬영 시각 메타데이터(3.9)
 - 모델: YOLO26-pose 하나로 사람 검출과 COCO 17관절 2D keypoint를 한 번의 추론으로 낸다. **기준선은 YOLO26x-pose, TensorRT FP16, imgsz 1280**(수정 5). 운영 GPU(H100 80GB)에서 카메라 4대 동시 입력 38 ms(카메라당 약 26 FPS)로 목표를 넘고, 크기별 정확도는 공식 벤치마크와 COCO 측정 모두 x 가 가장 높다. 크기 비교를 다시 하지 않는다. NMS 경로는 잠정 NMS 사용(conf 0.25)이고 교실 밀집·가림 장면에서 NMS-free 와 다시 본다. RTMO는 가림 상황 비교군이고, 발 접지 판단이 부족하면 발 keypoint가 있는 RTMPose Halpe-26을 검토한다.
-- 추적: 카메라별로 독립된 ByteTrack 상태(추적기 설정은 명시 지정). 추론 모델은 공유해 묶음 추론하되 ID 공간·시간 기록·추적 상태는 카메라마다 분리한다. 카메라 간 통합은 5.2의 추적 3계층이 맡는다
+- 추적: 카메라별로 독립된 TrackTrack 상태(추적기 설정은 명시 지정, 수정 7). 추론 모델은 공유해 묶음 추론하되 ID 공간·시간 기록·추적 상태는 카메라마다 분리한다. 카메라 간 통합은 5.2의 추적 3계층이 맡는다
 - 검출 클래스: 사람(MVP). 확장: 장비 대체물(카트), 책상·의자, 방향 마커
 - 출력: 카메라별 `observation_2d`(bbox, 카메라 내 트랙 ID, keypoint 배열과 신뢰도)
 - 2D keypoint는 카메라 간 연결, 삼각측량, PPE crop 위치, 자동 보정, 워치 움직임 대조, SAM 3D Body 프롬프트의 공통 입력이라 단일 실패점이다. 가림 시 신뢰도 동작을 G0·G2에서 검증하고 bbox와 트랙 이력을 독립 근거로 함께 쓴다. 마스크는 분석 워커의 YOLO26-seg를 쓰는 확장 단계부터 쓴다.
@@ -58,13 +58,14 @@
 
 | 계층 | 담당 | 구현 |
 |---|---|---|
-| Local Tracker | 같은 카메라 안에서 프레임 간 사람 연결 | 카메라별 독립 ByteTrack(기준선), 선택: BoT-SORT + ReID |
+| Local Tracker | 같은 카메라 안에서 프레임 간 사람 연결 | 카메라별 독립 TrackTrack(기본, 수정 7). 설정 전환: ByteTrack(단순 기준), BoT-SORT + ReID(가림·재등장 개선용, 고정 카메라라 카메라 움직임 보정 `gmc_method: none`) |
 | Cross-view Association | 네 카메라의 트랙이 같은 사람인지 판단 | MV3DT 원칙의 Python 구현. 근거: World 위치(유효 접지·다시점 관절), 1\~2초 궤적·속도, 관절 재투영·에피폴라 오차, 필요 시 ReID, 가림·불확실성 |
 | World Track Manager | 최종 World ID, XYZ, 속도, 가림·재관측 | World 칼만 필터, tracklet 이력, 늦은 재연결(late re-association), ID 교정 |
 
 - 같은 카메라의 서로 다른 두 검출을 한 World ID에 동시에 묶지 않는다. World XY가 가깝다는 이유만으로 합치지 않는다.
 - 매칭이 애매하면 합치지 않고 새 ID를 만들거나 `IDENTITY_UNCERTAIN`을 표시한다. 잘못 합친 ID보다 갈라진 ID가 덜 위험하다.
 - Track 생명주기 TENTATIVE → CONFIRMED → OCCLUDED → LOST는 관리용 속성이며, 위험 판단용 관측 상태(OBSERVED/PREDICTED/UNKNOWN)와 별도다. ID 확신과 위치 확신도 별도로 관리한다.
+- Local Tracker 선택 근거(수정 7): TrackTrack(CVPR 2025)은 추적 관점 연결(TPA)과 추적 인지 초기화(TAI)로 혼잡·가림에서 중복 ID 와 잘못된 연결을 줄였다고 MOT17·MOT20·DanceTrack 에서 보고됐다. 공식 벤치마크로 답이 있으므로 크기 비교처럼 별도 비교 실험은 하지 않고, 교실 ID 전환·IDF1 은 G2·A0 측정으로 확인한다. 문제가 있으면 A2 에서 BoT-SORT + ReID 로 넘어간다.
 - ReID는 보조 근거다. 비슷한 복장이 많으면 외형만으로 구분할 수 없으므로 기하와 궤적이 주 근거다.
 - DeepStream MV3DT를 직접 붙이지 않고 원칙(공유 World 좌표, tracklet 연결, 가림 상태 관리, 늦은 재연결)을 Python으로 구현한다.
 - Pod를 여러 개로 늘리면 World Association 상태가 나뉘므로, 확장 시 카메라·시간 단위 분할과 상태 소유권을 따로 설계한다.
