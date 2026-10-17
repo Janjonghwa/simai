@@ -1,0 +1,28 @@
+[project]
+name = "simai-relay"
+version = "0.1.0"
+description = "simai 노트북 영상 중계: 카메라별 RTSP 압축 프레임 수신과 I0 촬영 시각 헤더 (S15P31A101-80)"
+requires-python = ">=3.11,<3.12"
+# simai-recorder: RTSP·파일·합성 입력(PyAV, 디코딩 없음), 촬영 시각 추정(capture_time), I0 헤더·코덱 정보 만들기(i0)를
+# 녹화 도구와 같은 코드로 쓴다(중복 구현하지 않는다). 저장소 안 경로 의존이다.
+dependencies = ["simai-recorder"]
+
+[project.scripts]
+simai-relay = "simai_relay.cli:main"
+
+[tool.uv.sources]
+simai-recorder = { path = "../recorder", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.12"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = ["--import-mode=importlib", "-ra"]

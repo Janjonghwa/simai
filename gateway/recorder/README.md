@@ -25,6 +25,7 @@ src/simai_recorder/
   sources.py       입력: RtspSource(실제 카메라), FileSource(로컬 영상), SyntheticSource(합성), FaultySource(지연·끊김 흉내)
   recorder.py      카메라별 녹화 루프(스레드 하나씩)와 4대 동시 세션
   capture_time.py  촬영 시각 추정 (RECEIVE_ESTIMATED)
+  i0.py            I0 기록(codec_info, frame_header) 만들기. gateway/relay 와 같이 쓴다
   segment.py       세그먼트 쓰기·읽기 (녹화 형식)
   manifest.py      manifest 계산·검증(계약 스키마 + 스키마 밖 규칙)·해시 확인
   contract.py      contracts/data/recording_manifest.schema.json 검증 (오류 문장에 받은 값을 넣지 않음)
@@ -141,4 +142,4 @@ PTS 간격(카메라 RTP 시계)은 믿고 원점만 수신 시각에 맞추므�
 - 디코딩·재인코딩·얼굴 처리. 원본 압축 프레임을 그대로 남긴다(사람이 찍힌 녹화는 동의 범위 안에서만 다룬다, 명세 11.5).
 - 영상·사람 이미지 커밋. 출력은 `.gitignore` 된 곳에 쓰고, 저장소에는 manifest 만 둔다.
 - 비밀 값 기록. RTSP 계정은 `.env` 에서만 읽고 `session.json`·`manifest.json`·`events.jsonl`·오류 메시지에 넣지 않는다.
-- 노트북 → RunPod I0 전송. 이 도구는 녹화만 한다(전송은 게이트웨이 중계 앱 몫).
+- 노트북 → RunPod I0 전송. 이 도구는 녹화만 한다(LIVE 수신·헤더·전송은 [`gateway/relay`](../relay/README.md) 몫).

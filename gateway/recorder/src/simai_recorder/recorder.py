@@ -18,15 +18,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
 
-from simai_recorder.annexb import b64, has_parameter_sets, parameter_sets
 from simai_recorder.capture_time import CaptureTimeModel, ReceiveTimeEstimator
 from simai_recorder.clock import Clock
+from simai_recorder.i0 import build_codec_info, build_frame_header, pts_timebase_string
 from simai_recorder.segment import SegmentWriter
 from simai_recorder.sources import PacketSource, SourceError, StreamInfo, release
 
 SESSION_FILE = "session.json"
 EVENTS_FILE = "events.jsonl"
-DEFAULT_PTS_TIMEBASE = "1/90000"
 SESSION_ID = re.compile(r"[a-z0-9][a-z0-9-]*")
 CAMERA_ID = re.compile(r"[A-Za-z0-9_-]+")
 
@@ -128,25 +127,11 @@ class CameraRecorder:
                 break
             self._wait(self._delays[0])
 
-    def _codec_info(self, info: StreamInfo, epoch: int, keyframe: bytes) -> tuple[dict[str, Any], bool] | None:
-        sps, pps = parameter_sets(keyframe, info.extradata)
-        if sps is None or pps is None:
-            return None
-        codec: dict[str, Any] = {"camera_id": self.spec.camera_id, "stream_epoch": epoch, "codec": info.codec}
-        if info.profile:
-            codec["profile"] = info.profile
-        codec.update(sps=b64(sps), pps=b64(pps),
-                     pts_timebase=f"1/{info.pts_timebase.denominator}" if info.pts_timebase else DEFAULT_PTS_TIMEBASE,
-                     width=info.width, height=info.height)
-        if info.nominal_fps:
-            codec["nominal_fps"] = info.nominal_fps
-        return codec, not has_parameter_sets(keyframe)
-
     def _record_epoch(self, source: PacketSource, info: StreamInfo, epoch: int) -> str:
         model = self.spec.capture_time
         estimator = ReceiveTimeEstimator(model, info.pts_timebase)
         writer: SegmentWriter | None = None
-        timebase = f"1/{info.pts_timebase.denominator}" if info.pts_timebase else DEFAULT_PTS_TIMEBASE
+        timebase = pts_timebase_string(info)
         dropped = 0
         try:
             while True:
@@ -164,25 +149,15 @@ class CameraRecorder:
                     return "eof"
                 received_at_ms = self._clock.now_ms()
                 if writer is None:
-                    codec = self._codec_info(info, epoch, packet.data) if packet.keyframe else None
+                    codec = build_codec_info(self.spec.camera_id, info, epoch, packet.data) if packet.keyframe else None
                     if codec is None:
                         dropped += 1
                         continue
                     writer = SegmentWriter(self.camera_dir, codec[0], prefix_parameter_sets=codec[1])
                     self._event("segment_started", stream_epoch=epoch, dropped_before_keyframe=dropped)
                 t = estimator.estimate(received_at_ms, packet.pts)
-                header = {
-                    "camera_id": self.spec.camera_id,
-                    "stream_epoch": epoch,
-                    "frame_sequence": writer.frame_count,
-                    "source_pts": packet.pts,
-                    "pts_timebase": timebase,
-                    "estimated_capture_time_ms": t.estimated_capture_time_ms,
-                    "timestamp_source": model.timestamp_source,
-                    "timestamp_uncertainty_ms": t.timestamp_uncertainty_ms,
-                    "keyframe": packet.keyframe,
-                    "received_at_ms": received_at_ms,
-                }
+                header = build_frame_header(self.spec.camera_id, epoch, writer.frame_count, packet, timebase,
+                                            model, t, received_at_ms)
                 writer.write(header, packet.data)
         finally:
             if writer is not None:
