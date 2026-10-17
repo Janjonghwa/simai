@@ -1,0 +1,20 @@
+{
+  "schema_version": "2.0.0",
+  "msg_type": "job_callback",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000208",
+  "sent_at": 1760342401710,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261017-0044",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001c1",
+    "job_type": "static_reconstruct",
+    "status": "FAILED",
+    "started_at": 1760342400700,
+    "finished_at": 1760342401700,
+    "error": {
+      "code": "INPUT_FETCH_FAILED",
+      "message": "s3://simai-site/empty/cam1-0001.jpg 내려받기 실패",
+      "retryable": true
+    }
+  }
+}

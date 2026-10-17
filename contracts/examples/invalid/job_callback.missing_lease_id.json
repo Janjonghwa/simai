@@ -1,10 +1,10 @@
 {
-  "_expect_error": "HMAC 서명 없는 콜백 (명세 12.2 I5, NFR-12)",
-  "schema_version": "1.2.0",
+  "_expect_error": "결과 제출에 lease_id 가 없다. EC2 가 유효한 대여의 제출인지 가릴 수 없다",
+  "schema_version": "2.0.0",
   "msg_type": "job_callback",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000011a",
   "sent_at": 1760342403910,
-  "source_id": "runpod-worker",
+  "source_id": "worker-01",
   "payload": {
     "job_id": "job-20261017-0042",
     "job_type": "vlm_rationale",

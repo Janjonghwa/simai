@@ -1,0 +1,12 @@
+{
+  "schema_version": "2.0.0",
+  "msg_type": "job_lease_status",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000204",
+  "sent_at": 1760342403920,
+  "source_id": "ec2",
+  "payload": {
+    "job_id": "job-20261017-0042",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001a1",
+    "status": "ACCEPTED"
+  }
+}

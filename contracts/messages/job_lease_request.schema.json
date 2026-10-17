@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/job_lease_request.schema.json",
+  "title": "I5 job_lease_request",
+  "description": "분석 워커 → EC2 작업 대여(lease) 요청. 명세 12.2 I5, 12.5, 14, FR-101. I5 는 워커가 EC2 로 먼저 접속해 작업을 가져가는 방식이라 Pod 로 들어오는 포트·IP 제한·HMAC 콜백이 없다(계약 2.0.0 에서 EC2 → 워커 POST /jobs 와 HMAC 콜백을 대체). 【전송】 HTTPS long-poll 이 기본이다. 경로는 기본안이고 확정본은 서버 OpenAPI 문서다. (1) 대여: POST /api/worker/jobs/lease 본문 job_lease_request. EC2 는 내줄 작업이 생길 때까지 최대 wait_ms 동안 응답을 붙잡고, 작업이 있으면 200 + job_request(대여 정보 포함), wait_ms 안에 없으면 204(본문 없음)를 돌려준다. 워커의 HTTP 읽기 시간 제한은 wait_ms 보다 길게 둔다. (2) 하트비트: POST /api/worker/jobs/{job_id}/heartbeat 본문 job_heartbeat → job_lease_status. (3) 결과·실패 제출: POST /api/worker/jobs/{job_id}/result 본문 job_callback → job_lease_status. 거부(status REJECTED)는 409 와 함께 본문 job_lease_status 로 알린다. 워커는 HTTP 상태보다 본문 status 를 따른다. 네트워크 오류·429·5xx 는 워커가 지수 백오프(상한 있음)로 다시 보내고, 400(형식 오류)은 다시 보내지 않는다. 대안: 같은 메시지를 WebSocket 한 연결의 프레임으로 주고받을 수 있으나(명세 3.8, 12.2 ‘long-poll 또는 WebSocket’) 이 계약은 long-poll 기준이다. 【인증】 모든 요청은 TLS 위에서 헤더 Authorization: Bearer <워커 토큰> 을 싣는다. 토큰 값은 .env(SIMAI_WORKER_TOKEN)에만 두고 메시지에는 넣지 않는다. EC2 는 토큰에 묶인 워커 ID 와 봉투 source_id(예: worker-01)가 같은지 확인하고, 틀리면 401 이다. 대여는 그 워커 ID 에 묶이며 다른 워커가 같은 lease_id 로 하트비트·제출하면 UNKNOWN_LEASE 로 거부한다. 【우선순위】 EC2 는 job_types 에 든 작업 중 priority VLM_FAST > REPORT > BACKGROUND 순, 같은 우선순위는 먼저 만든 작업부터 내준다(명세 3.2). Tier 0 지연이 6.6 목표를 넘으면 새 작업을 내주지 않는다(3.2. EC2 가 멈출지 워커가 대여 요청을 멈출지는 후속에서 정한다).",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "job_lease_request" },
+    "payload": {
+      "type": "object",
+      "required": ["job_types", "wait_ms"],
+      "properties": {
+        "job_types": {
+          "type": "array",
+          "items": { "$ref": "job_request.schema.json#/$defs/job_type" },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "이 워커가 처리기를 가진 작업 유형. EC2 는 이 목록 밖의 작업을 내주지 않는다"
+        },
+        "wait_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000,
+          "description": "long-poll 로 기다릴 최대 시간. 0 이면 바로 응답한다. 프록시 유휴 연결 끊김을 피하려고 30초를 넘기지 않는다"
+        }
+      }
+    }
+  }
+}
