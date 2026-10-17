@@ -1,12 +1,13 @@
 {
   "_expect_error": "VLM 결과로 이벤트 해소를 요청했다. VLM 은 해소·끄기 권한이 없다 (명세 5.4)",
-  "schema_version": "1.2.0",
+  "schema_version": "2.0.0",
   "msg_type": "job_callback",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000011a",
   "sent_at": 1760342403910,
-  "source_id": "runpod-worker",
+  "source_id": "worker-01",
   "payload": {
     "job_id": "job-20261017-0042",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001a1",
     "job_type": "vlm_rationale",
     "status": "SUCCEEDED",
     "started_at": 1760342400600,
@@ -23,11 +24,6 @@
       "model_version": "qwen3-vl-32b@2026-10",
       "latency_ms": 3300,
       "resolve": true
-    },
-    "signature": {
-      "alg": "HMAC-SHA256",
-      "key_id": "worker-k1",
-      "value": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
     }
   }
 }

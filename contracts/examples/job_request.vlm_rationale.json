@@ -1,14 +1,20 @@
 {
-  "schema_version": "1.2.0",
+  "schema_version": "2.0.0",
   "msg_type": "job_request",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000118",
   "sent_at": 1760342400500,
   "source_id": "ec2",
   "payload": {
+    "job_id": "job-20261017-0042",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001a1",
+    "attempt": 1,
+    "max_attempts": 2,
     "job_type": "vlm_rationale",
     "priority": "VLM_FAST",
     "timeout_ms": 5000,
-    "callback_url": "https://ec2.simai.dev/callbacks/jobs/{job_id}",
+    "leased_at": 1760342400500,
+    "lease_expires_at": 1760342430500,
+    "heartbeat_interval_ms": 10000,
     "input": {
       "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
       "event_sequence": 1,

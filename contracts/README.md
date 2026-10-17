@@ -29,8 +29,11 @@
 | `messages/laptop_heartbeat.schema.json` | 노트북 → Tier 0(I0)·EC2(HTTPS) 1초 하트비트, Tier 0 연결 상태 | 3.2, 6.5 |
 | `messages/risk_event.schema.json` | I2 EC2 → 뷰어 `/topic/events` | 12.4 |
 | `messages/risk_alert.schema.json` | I3 EC2 → 반장 PWA Web Push | 10.1, 12.4 |
-| `messages/job_request.schema.json` | I5 EC2 → 분석 워커 `POST /jobs` | 12.5 |
-| `messages/job_callback.schema.json` | I5 분석 워커 → EC2 `POST /callbacks/jobs/{id}` (HMAC 서명) | 12.2 |
+| `messages/job_lease_request.schema.json` | I5 분석 워커 → EC2 작업 대여 요청(HTTPS long-poll, 워커 토큰). I5 전송·인증 규칙 | 12.2, 12.5, 14 |
+| `messages/job_request.schema.json` | I5 EC2 → 분석 워커 대여 응답: 작업 하나와 lease_id·만료 시각, 재할당 규칙 (2.0.0 메이저) | 12.5 |
+| `messages/job_heartbeat.schema.json` | I5 분석 워커 → EC2 대여 연장 | 12.5 |
+| `messages/job_callback.schema.json` | I5 분석 워커 → EC2 결과·실패 제출, 중복·만료 대여 제출 처리 (2.0.0 메이저, HMAC 서명 없음) | 12.2, 12.5 |
+| `messages/job_lease_status.schema.json` | I5 EC2 → 분석 워커 하트비트·제출 응답(ACTIVE·ACCEPTED·DUPLICATE·REJECTED) | 12.5 |
 | `messages/vlm_rationale.schema.json` | I5 `vlm_rationale` 입력·결과 정의(메시지는 job_request·job_callback) | 5.4, 12.5 |
 | `providers/calibration.schema.json` | CalibrationProvider 출력 | 4장, 20.4 |
 | `providers/world_tracks.schema.json` | WorldTrackProvider 출력 (JSONL 한 줄) | 5.2, 20.4 |
@@ -45,7 +48,7 @@ I4(워치, 확장)와 I2 `/topic/world`·`/topic/health` 토픽 형식은 아직
 
 - I0 영상 기록(`frame_header`, `codec_info`)을 뺀 모든 메시지는 공통 봉투(`envelope`)를 쓴다. 메시지 스키마는 `allOf`로 봉투를 가져오고 `msg_type`을 고정한다.
 - 수신 측은 모르는 필드를 무시하므로 `payload`와 주요 항목(트랙, 카메라, 이벤트) 객체는 열어 둔다. 값 객체(확인 기록, 서명, 집계, VLM 결과 등)는 `additionalProperties: false`로 닫는다.
-- 송신 주체 `source_id`: Tier 0 는 `tier0-01`(이벤트의 `gateway_id`와 같다), 노트북은 `laptop-01`, EC2 는 `ec2`.
+- 송신 주체 `source_id`: Tier 0 는 `tier0-01`(이벤트의 `gateway_id`와 같다), 노트북은 `laptop-01`, EC2 는 `ec2`, 분석 워커는 `worker-01`(워커 토큰에 묶인 워커 ID).
 - `event_id`는 UUIDv7, `msg_id`·`ack_id`는 UUID(버전 무관)다.
 
 ## I0 전송 규칙 (스키마 밖)
@@ -68,7 +71,7 @@ I4(워치, 확장)와 I2 `/topic/world`·`/topic/health` 토픽 형식은 아직
 - `event_id`는 UUIDv7. 해소(RESOLVED)는 `verification`이 VERIFIED일 때만, 재동기화 스냅샷에는 활성 이벤트만
 - 운영자 확인은 누가(`actor_role`·`actor_id`)·어디서(`channel`) 했는지 필수. 현장 확인 버튼은 `site_ack`로만, 관제 화면·PWA 확인은 `event_ack`로만
 - VLM `proposed_severity`는 `severity`보다 높은 등급이거나 null(하향·같은 등급 불가). VLM 결과에는 해소·끄기 필드가 없다. 푸시 근거 한 줄은 규칙 근거(`summary_source: RULE`)만
-- VLM 입력 프레임은 얼굴 흐림·제외(`face_policy`) 필수. I5 콜백은 HMAC 서명 필수
+- VLM 입력 프레임은 얼굴 흐림·제외(`face_policy`) 필수. I5 대여 응답·하트비트·제출은 `lease_id` 필수, 대여 응답과 ACTIVE 응답은 만료 시각 필수, REJECTED 는 이유 필수
 - I0 프레임 헤더는 (`camera_id`, `stream_epoch`, `frame_sequence`)와 촬영 시각 계약(`timestamp_source`, `timestamp_uncertainty_ms`) 필수. 손실 3종은 섞지 않는다
 - 이미지는 메시지에 넣지 않고 주소로만. 이벤트·VLM 프레임 주소(`frame_uri`)는 객체 저장소 주소 `s3://<bucket>/<key>`(`object_uri`)만 받는다. `data:` URI·Base64 본문·임시 서명 HTTPS 주소 불가
 - 이벤트·VLM 프레임(`event_frame_ready`, `vlm_rationale` 입력)도 촬영 시각 계약(`estimated_capture_time_ms`, `timestamp_source`, `timestamp_uncertainty_ms`) 필수 (3.9)
@@ -79,7 +82,7 @@ I4(워치, 확장)와 I2 `/topic/world`·`/topic/health` 토픽 형식은 아직
 - 좌표계 선언은 World(m, 오른손, +Z)만 허용
 - 녹화 manifest: 실제 카메라(RTSP) 녹화는 동의·보관 기한(`consent`) 필수, 사람이 찍히면 동의서 ID·범위 필수(11.5). RTSP 주소에 계정 불가, 저장 위치는 `volume://`·`s3://`만, 파일 경로는 세션 디렉터리 기준 상대 경로만. `input_kinds` 는 카메라 입력 종류(`cameras[].source.kind`)를 모두 담고, RTSP 가 아닌 입력이 있으면 `is_test_input: true`(그때만). 세그먼트 무결성 검사는 모두 true
 
-스키마로 표현할 수 없는 규칙(R의 직교성, 관절 배열 길이 일치, `is_upper_bound`와 출처의 일치, 봉투 `source_id`와 `gateway_id`의 일치, `event_sequence`·`journal_offset` 단조 증가, `codec_info`와 `frame_header`의 `stream_epoch` 일치, HMAC 값 검증, `health.active_site_alerts` 의 `event_id` 유일, 시계 교환의 `t3_ms ≥ t2_ms`·`uncertainty_ms ≥ round_trip_ms/2`, `observation_summary` 의 `window_end_ms > window_start_ms`, `tier0_endpoint` 의 VIDEO `camera_id` 유일과 `gateway_id`·`source_id` 일치, 녹화 manifest 시각 범위의 from ≤ to·`camera_id` 중복 등)은 각 모듈의 계약 시험에서 검사한다(명세 21.3).
+스키마로 표현할 수 없는 규칙(R의 직교성, 관절 배열 길이 일치, `is_upper_bound`와 출처의 일치, 봉투 `source_id`와 `gateway_id`의 일치, `event_sequence`·`journal_offset` 단조 증가, `codec_info`와 `frame_header`의 `stream_epoch` 일치, I5 대여의 `lease_expires_at > leased_at`·`attempt ≤ max_attempts`, `health.active_site_alerts` 의 `event_id` 유일, 시계 교환의 `t3_ms ≥ t2_ms`·`uncertainty_ms ≥ round_trip_ms/2`, `observation_summary` 의 `window_end_ms > window_start_ms`, `tier0_endpoint` 의 VIDEO `camera_id` 유일과 `gateway_id`·`source_id` 일치, 녹화 manifest 시각 범위의 from ≤ to·`camera_id` 중복 등)은 각 모듈의 계약 시험에서 검사한다(명세 21.3).
 
 ## 검증
 

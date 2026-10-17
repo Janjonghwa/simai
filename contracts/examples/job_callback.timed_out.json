@@ -1,11 +1,12 @@
 {
-  "schema_version": "1.2.0",
+  "schema_version": "2.0.0",
   "msg_type": "job_callback",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000011b",
   "sent_at": 1760342405710,
-  "source_id": "runpod-worker",
+  "source_id": "worker-01",
   "payload": {
     "job_id": "job-20261017-0043",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001a3",
     "job_type": "vlm_rationale",
     "status": "TIMED_OUT",
     "started_at": 1760342400700,
@@ -13,11 +14,6 @@
     "error": {
       "code": "TIMEOUT",
       "message": "5000ms 초과"
-    },
-    "signature": {
-      "alg": "HMAC-SHA256",
-      "key_id": "worker-k1",
-      "value": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
     }
   }
 }

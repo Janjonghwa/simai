@@ -1,0 +1,72 @@
+{
+  "_expect_error": "대여 응답에 만료 시각(lease_expires_at)이 없다. 워커가 대여를 언제 잃는지 알 수 없다",
+  "schema_version": "2.0.0",
+  "msg_type": "job_request",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000118",
+  "sent_at": 1760342400500,
+  "source_id": "ec2",
+  "payload": {
+    "job_id": "job-20261017-0042",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001a1",
+    "attempt": 1,
+    "max_attempts": 2,
+    "job_type": "vlm_rationale",
+    "priority": "VLM_FAST",
+    "timeout_ms": 5000,
+    "leased_at": 1760342400500,
+    "heartbeat_interval_ms": 10000,
+    "input": {
+      "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+      "event_sequence": 1,
+      "rule_id": "R2",
+      "rule_version": 3,
+      "severity": "HIGH",
+      "confidence": "HIGH",
+      "needs_check": false,
+      "world_ids": [
+        "w-0012"
+      ],
+      "zone_id": "z-04",
+      "metrics": {
+        "edge_distance_m": 1.4,
+        "height_diff_m": 2.1
+      },
+      "observation_time": 1760342400100,
+      "frames": [
+        {
+          "camera_id": "cam1",
+          "frame_uri": "s3://simai-events/0192a6f0/cam1-10324-blur.jpg",
+          "estimated_capture_time_ms": 1760342400100,
+          "timestamp_source": "RECEIVE_ESTIMATED",
+          "timestamp_uncertainty_ms": 18,
+          "face_policy": "BLURRED"
+        },
+        {
+          "camera_id": "cam1",
+          "frame_uri": "s3://simai-events/0192a6f0/cam1-10249-blur.jpg",
+          "estimated_capture_time_ms": 1760342397000,
+          "timestamp_source": "RECEIVE_ESTIMATED",
+          "timestamp_uncertainty_ms": 18,
+          "face_policy": "BLURRED"
+        }
+      ],
+      "structured_state": {
+        "tracks": [
+          {
+            "world_id": "w-0012",
+            "position_xy": [
+              3.4,
+              5.01
+            ],
+            "head_z": 1.68
+          }
+        ],
+        "zone": {
+          "zone_id": "z-04",
+          "judge_type": "GROUND_FOOTPRINT"
+        }
+      },
+      "world_state_ref": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f"
+    }
+  }
+}

@@ -1,14 +1,20 @@
 {
-  "schema_version": "1.2.0",
+  "schema_version": "2.0.0",
   "msg_type": "job_request",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000119",
   "sent_at": 1760342400400,
   "source_id": "ec2",
   "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "attempt": 1,
+    "max_attempts": 2,
     "job_type": "static_reconstruct",
     "priority": "BACKGROUND",
     "timeout_ms": 1800000,
-    "callback_url": "https://ec2.simai.dev/callbacks/jobs/{job_id}",
+    "leased_at": 1760342400400,
+    "lease_expires_at": 1760342430400,
+    "heartbeat_interval_ms": 10000,
     "input": {
       "calibration_version": "cal-7",
       "frame_uris": [
