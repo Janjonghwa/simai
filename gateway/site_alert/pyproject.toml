@@ -1,0 +1,26 @@
+[project]
+name = "simai-site-alert"
+version = "0.1.0"
+description = "simai 노트북 현장 경보 단말: I0 local_alert 를 받아 노트북 소리·화면으로 울린다 (S15P31A101-90)"
+requires-python = ">=3.11,<3.12"
+# websockets: I0 제어 채널(wss) 클라이언트. 소리(winsound)·화면(tkinter)은 표준 라이브러리만 쓴다.
+dependencies = ["websockets>=14"]
+
+[project.scripts]
+simai-site-alert = "simai_site_alert.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    # 시험에서 만든 site_ack 와 계약 예시를 저장소의 contracts/ 스키마로 검증한다(실행 시에는 쓰지 않음).
+    "jsonschema>=4.23",
+]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.12"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = ["--import-mode=importlib", "-ra"]
