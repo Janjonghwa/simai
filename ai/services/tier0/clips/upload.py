@@ -14,7 +14,8 @@
   파일은 올리지 않고 지운다(개인정보 보관 최소화). 기동 때(해시까지 확인)와 sweep_interval_ms 마다(구조만 확인) 정리한다.
 - 서명기·전송·임시 저장소·기록 출구가 어떤 예외를 내도 그 작업의 실패로 기록하고 백오프한다. Tier 0 루프로 전파하지
   않는다. 로그에는 예외 종류 이름만 남긴다(서명 주소가 섞이지 않게).
-- 업로드·임시 저장은 얼굴 흐림을 거친 RedactedClip 만 받는다(media.py). 그 밖의 영상은 이 모듈로 들어오지 않는다.
+- 업로드·임시 저장은 이벤트 클립 경로(media.prepare_for_export)가 만든 ExportClip 만 받는다. 그 밖의 영상은 이 모듈로
+  들어오지 않는다. 얼굴 흐림은 기본으로 하지 않는다(사용자 결정, media.py).
 - 업로드가 끝나면 MediaClipRecord 를 기록 출구(ClipRecordSink, 이벤트 저널·outbox 쪽)로 내고 임시 저장본을 지운다.
 """
 
@@ -35,7 +36,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from services.tier0.clips.media import RedactedClip
+from services.tier0.clips.media import ExportClip
 from services.tier0.clips.record import RETENTION_REASON_CRITICAL, ClipDraft, ClipRetentionUpdate, MediaClipRecord
 from simai_ai.risk.clock import Clock
 
@@ -103,15 +104,15 @@ class ClipRecordSink(Protocol):
 
 @runtime_checkable
 class ClipSpool(Protocol):
-    """Network Volume 임시 저장소(EC2 단절 중 클립만). 얼굴 흐림을 거친 클립만 받는다."""
+    """Network Volume 임시 저장소(EC2 단절 중 이벤트 클립만). ExportClip 만 받는다."""
 
-    def save(self, clip: RedactedClip, draft: ClipDraft) -> None: ...
+    def save(self, clip: ExportClip, draft: ClipDraft) -> None: ...
 
     def update_draft(self, draft: ClipDraft) -> None: ...
 
     def drafts(self) -> list[ClipDraft]: ...
 
-    def load(self, clip_id: str) -> RedactedClip: ...
+    def load(self, clip_id: str) -> ExportClip: ...
 
     def delete(self, clip_id: str) -> None: ...
 
@@ -158,7 +159,7 @@ def _is_loopback(host: str) -> bool:
 
 
 class DirectoryClipSpool:
-    """Network Volume 폴더 임시 저장소. `<clip_id>.clip`(흐림 클립) + `<clip_id>.json`(기록 초안).
+    """Network Volume 폴더 임시 저장소. `<clip_id>.clip`(이벤트 클립) + `<clip_id>.json`(기록 초안).
 
     임시 파일에 쓰고 fsync 뒤 이름을 바꿔, 중간에 멈춰도 반쯤 쓴 클립을 올리지 않는다. 내용 파일이 먼저, 초안이 나중이라
     초안(.json)이 있으면 내용도 있다. 읽을 때 내용 해시가 초안과 다르면 올리지 않는다. 보관 기간 판단(삭제 예정일)은
@@ -186,7 +187,7 @@ class DirectoryClipSpool:
         os.replace(tmp, path)
 
     @staticmethod
-    def _meta(clip: RedactedClip, draft: ClipDraft) -> bytes:
+    def _meta(clip: ExportClip, draft: ClipDraft) -> bytes:
         meta = {
             "draft": draft.to_payload(),
             "clip": {"content_type": clip.content_type, "container": clip.container,
@@ -194,9 +195,9 @@ class DirectoryClipSpool:
         }
         return json.dumps(meta, ensure_ascii=False).encode("utf-8")
 
-    def save(self, clip: RedactedClip, draft: ClipDraft) -> None:
-        if not isinstance(clip, RedactedClip):
-            raise TypeError("임시 저장소는 얼굴 흐림을 거친 RedactedClip 만 받는다")
+    def save(self, clip: ExportClip, draft: ClipDraft) -> None:
+        if not isinstance(clip, ExportClip):
+            raise TypeError("임시 저장소는 이벤트 클립 경로가 만든 ExportClip 만 받는다")
         content_path, meta_path = self._paths(draft.clip_id)
         self.root.mkdir(parents=True, exist_ok=True)
         self._write_atomic(content_path, clip.content)
@@ -222,11 +223,11 @@ class DirectoryClipSpool:
                 log.error("임시 저장 클립 초안 %s 를 읽지 못했다: %s", meta_path.name, type(e).__name__)
         return out
 
-    def load(self, clip_id: str) -> RedactedClip:
+    def load(self, clip_id: str) -> ExportClip:
         meta = self._read_meta(clip_id)
         draft = ClipDraft.from_payload(meta["draft"])
         c = meta["clip"]
-        clip = RedactedClip(self._paths(clip_id)[0].read_bytes(), c["content_type"], c["container"],
+        clip = ExportClip(self._paths(clip_id)[0].read_bytes(), c["content_type"], c["container"],
                             c["face_redaction"], c["redactor_version"])
         if clip.sha256 != draft.sha256:
             raise ValueError(f"임시 저장 클립 {clip_id} 의 해시가 기록과 다르다")
@@ -307,7 +308,7 @@ class RetryPolicy:
 @dataclass
 class _Job:
     draft: ClipDraft
-    content: RedactedClip | None  # None 이면 임시 저장소에만 있다(시도할 때 읽는다)
+    content: ExportClip | None  # None 이면 임시 저장소에만 있다(시도할 때 읽는다)
     next_attempt_ms: int
     failures: int = 0  # 시도 상한에 넣는 실패(서명 거부·전송 실패, 임시 저장 못 한 단절, 그 밖의 예외)
     outages: int = 0  # 임시 저장한 뒤 EC2 단절로 미룬 횟수(상한에 넣지 않는다)
@@ -329,7 +330,7 @@ class UploaderStats:
 
 
 class ClipUploader:
-    """흐림 클립 대기열. enqueue 로 넣고 poll 로 시도한다(Tier 0 루프에서 주기적으로 부른다). poll 은 예외를 내지 않는다."""
+    """이벤트 클립 대기열. enqueue 로 넣고 poll 로 시도한다(Tier 0 루프에서 주기적으로 부른다). poll 은 예외를 내지 않는다."""
 
     def __init__(
         self,
@@ -360,9 +361,9 @@ class ClipUploader:
         """메모리에 들고 있는 클립 내용 바이트(임시 저장한 클립은 넣지 않는다)."""
         return sum(j.content.size_bytes for j in self._jobs.values() if j.content is not None)
 
-    def enqueue(self, clip: RedactedClip, draft: ClipDraft) -> None:
-        if not isinstance(clip, RedactedClip):
-            raise TypeError("업로드는 얼굴 흐림을 거친 RedactedClip 만 받는다")
+    def enqueue(self, clip: ExportClip, draft: ClipDraft) -> None:
+        if not isinstance(clip, ExportClip):
+            raise TypeError("업로드는 이벤트 클립 경로가 만든 ExportClip 만 받는다")
         job = _Job(draft, clip, next_attempt_ms=self._clock.now_ms())
         if self.memory_bytes() + clip.size_bytes > self._retry.max_queue_bytes and not self._spool_job(job):
             self.stats.dropped += 1
@@ -531,7 +532,7 @@ class ClipUploader:
         if job.spooled:
             self._discard_spooled(job.draft.clip_id)
 
-    def _load(self, job: _Job) -> RedactedClip:
+    def _load(self, job: _Job) -> ExportClip:
         if self._spool is None:
             raise RuntimeError("임시 저장소 없이 내용이 없는 작업")
         return self._spool.load(job.draft.clip_id)

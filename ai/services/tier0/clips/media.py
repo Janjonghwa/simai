@@ -1,14 +1,15 @@
-"""잘라낸 패킷을 클립 파일 내용으로 묶기(재다중화)와 얼굴 흐림 단계 (명세 5.1, 11.5, 5.4, 1.4).
+"""잘라낸 패킷을 클립 파일 내용으로 묶기(재다중화)와 선택 사항인 얼굴 흐림 단계 (명세 5.1, 11.5, 1.4).
 
 **재다중화.** AnnexBMuxer 는 디코딩 없이 H.264 Annex B 기본 스트림을 만든다: 구간(ClipSegment)마다 SPS·PPS 를
 시작 코드와 함께 앞에 두고, 받은 접근 단위(이미 Annex B, 12.7)를 받은 순서대로 이어 붙인다. 각 구간이 키프레임으로
 시작하므로 그대로 재생·디코딩할 수 있다. 녹화기(gateway/recorder)의 epoch_NNNN.h264 와 같은 형식이다.
 MP4 같은 컨테이너가 필요하면 ClipMuxer 를 바꿔 끼운다.
 
-**얼굴 흐림.** 명세 11.5 는 클립의 얼굴을 흐림 처리한다고 정했지만 '저장 전에 할지 열람 때 할지'는 확인 필요다.
-결정 전에는 안전한 쪽을 기본으로 한다: **메모리 밖(Network Volume 임시 저장, 객체 저장소 업로드)으로 나가는 클립은
-모두 이 단계(FaceRedactor)를 거친다.** 흐림 단계가 조립되지 않으면 클립을 내보내지 않는다(EventClipService 가 막는다).
-업로드·임시 저장 경로는 RedactedClip 만 받는다. 얼굴을 복원·식별하지 않는다(1.4).
+**얼굴 흐림.** 사용자 결정(2026-10-18)으로 이벤트 클립은 얼굴을 흐리지 않는다(명세 11.5 '확인 필요' 항목 확정,
+명세 반영은 후속 명세 정리). 기본 조립은 흐림 단계 없이 클립을 내보내고 media_clip.face_redaction 에 NONE 을 남긴다.
+FaceRedactor 는 나중에 다시 켤 수 있게 선택 사항으로 남긴다. 켜면 업로드·임시 저장 전에 반드시 거치고, 실패하면
+흐리지 않은 클립으로 대신하지 않는다. 어느 경우에도 얼굴을 복원·식별하지 않는다(AGENTS.md 규칙 8, 1.4).
+업로드·임시 저장 경로는 이 모듈의 prepare_for_export 가 만든 ExportClip 만 받는다(링 버퍼 패킷이 그대로 나가지 않게).
 """
 
 from __future__ import annotations
@@ -21,7 +22,8 @@ from services.tier0.clips.ring_buffer import CameraCut
 
 ANNEXB_START = b"\x00\x00\x00\x01"
 H264_CONTENT_TYPE = "video/h264"
-# 업로드 직전 흐림을 거친 클립의 처리 방식 표시(media_clip.face_redaction). 열람 때 흐림으로 정해지면 값이 늘어난다.
+# media_clip.face_redaction 값. 기본은 흐림 없음(사용자 결정), 흐림 단계를 켜면 BLURRED_BEFORE_EXPORT.
+FACE_REDACTION_NONE = "NONE"
 FACE_BLUR_BEFORE_EXPORT = "BLURRED_BEFORE_EXPORT"
 
 
@@ -31,7 +33,7 @@ class ClipMuxError(ValueError):
 
 @dataclass(frozen=True)
 class MuxedClip:
-    """흐림 전 클립 내용. 메모리에만 있다. 이 형태 그대로는 업로드·임시 저장하지 않는다."""
+    """재다중화한 클립 내용. 메모리에만 있다. prepare_for_export 를 거쳐 ExportClip 이 된 뒤에만 내보낸다."""
 
     content: bytes = field(repr=False)
     content_type: str
@@ -65,20 +67,29 @@ class AnnexBMuxer:
 
 
 @dataclass(frozen=True)
-class RedactedClip:
-    """얼굴 흐림을 거친 클립. 업로드·Network Volume 임시 저장은 이 형태만 받는다."""
+class ExportClip:
+    """내보낼(업로드·Network Volume 임시 저장) 이벤트 클립. face_redaction 이 흐림 여부를 밝힌다.
+
+    흐림 없음(NONE)이면 redactor_version 은 None, 흐림을 거쳤으면 그 단계의 버전이다(어느 쪽인지 지어내지 않는다).
+    """
 
     content: bytes = field(repr=False)
     content_type: str
     container: str
-    face_redaction: str
-    redactor_version: str
+    face_redaction: str = FACE_REDACTION_NONE
+    redactor_version: str | None = None
 
     def __post_init__(self) -> None:
         if not self.content:
-            raise ValueError("RedactedClip.content 가 비었다")
-        if not self.redactor_version:
-            raise ValueError("RedactedClip.redactor_version 이 비었다(어느 흐림 단계를 거쳤는지 남긴다)")
+            raise ValueError("ExportClip.content 가 비었다")
+        if self.face_redaction == FACE_REDACTION_NONE:
+            if self.redactor_version is not None:
+                raise ValueError("흐림 없음(NONE) 클립에 redactor_version 이 있다")
+        elif self.face_redaction == FACE_BLUR_BEFORE_EXPORT:
+            if not self.redactor_version:
+                raise ValueError("흐림 클립에 redactor_version 이 없다(어느 흐림 단계를 거쳤는지 남긴다)")
+        else:
+            raise ValueError(f"모르는 face_redaction: {self.face_redaction!r}")
 
     @property
     def size_bytes(self) -> int:
@@ -91,10 +102,10 @@ class RedactedClip:
 
 @runtime_checkable
 class FaceRedactor(Protocol):
-    """업로드 직전 얼굴 흐림 단계. 운영 구현(디코딩 → 머리 영역 흐림 → 재인코딩)은 후속 티켓이다.
+    """선택 사항인 업로드 직전 얼굴 흐림 단계(기본 조립에는 없다). 다시 켤 때 운영 구현을 붙인다.
 
-    5.4 VLM 입력과 같은 원칙으로 안전모가 보이도록 머리 윗부분은 남기는 것을 기본으로 한다.
-    흐림에 실패하면 예외를 낸다(흐리지 않은 클립을 돌려주지 않는다). version 은 media_clip 에 남는다.
+    켜면 5.4 VLM 입력과 같은 원칙으로 안전모가 보이도록 머리 윗부분은 남긴다. 흐림에 실패하면 예외를 낸다
+    (흐리지 않은 클립을 돌려주지 않는다). version 은 media_clip 에 남는다.
     """
 
     version: str
@@ -102,15 +113,11 @@ class FaceRedactor(Protocol):
     def redact(self, clip: MuxedClip, cut: CameraCut) -> MuxedClip: ...
 
 
-class FaceRedactionUnavailable(RuntimeError):
-    """흐림 단계가 조립되지 않았다. 결정(11.5) 전 기본값으로 클립을 내보내지 않는다."""
-
-
-def redact_for_export(clip: MuxedClip, cut: CameraCut, redactor: FaceRedactor | None) -> RedactedClip:
-    """메모리 밖으로 나갈 클립을 만든다. 흐림 단계가 없으면 FaceRedactionUnavailable."""
+def prepare_for_export(clip: MuxedClip, cut: CameraCut, redactor: FaceRedactor | None = None) -> ExportClip:
+    """메모리 밖으로 나갈 클립을 만든다. 흐림 단계가 없으면(기본) 흐림 없이, 있으면 반드시 거친다."""
     if redactor is None:
-        raise FaceRedactionUnavailable("얼굴 흐림 단계가 없어 클립을 내보내지 않는다(명세 11.5 흐림 시점 결정 전 기본값)")
+        return ExportClip(clip.content, clip.content_type, clip.container)
     out = redactor.redact(clip, cut)
     if not isinstance(out, MuxedClip):
         raise TypeError(f"FaceRedactor.redact 는 MuxedClip 을 돌려줘야 한다 (받은 값 {type(out).__name__})")
-    return RedactedClip(out.content, out.content_type, out.container, FACE_BLUR_BEFORE_EXPORT, str(redactor.version))
+    return ExportClip(out.content, out.content_type, out.container, FACE_BLUR_BEFORE_EXPORT, str(redactor.version))
