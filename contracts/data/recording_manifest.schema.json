@@ -1,0 +1,402 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/data/recording_manifest.schema.json",
+  "title": "녹화 manifest",
+  "description": "4대 동기화 녹화 세션 하나의 파일 목록·해시·프레임 수·시각 범위·카메라 설정·보정 버전·동의 범위·보관 기한·저장 위치 (명세 15.3 시나리오 데이터셋, 11.5 보관과 개인정보, 12.7 I0 프레임 식별, 21.1). 녹화 도구 gateway/recorder 가 세션 디렉터리의 manifest.json 으로 쓰고, Tier 0 녹화 입력(FrameSource, 20.4)이 읽는다. 영상은 Network Volume 에 두고 저장소에는 이 문서만 둔다. 메시지가 아니라 저장 문서라 공통 봉투를 쓰지 않는다. 시각은 UTC int64 ms, 경로는 세션 디렉터리 기준 상대 POSIX 경로다. 모르는 값은 null 로 둔다(지어내지 않는다). 설명 문서는 docs/data/recording-manifest.md.",
+  "type": "object",
+  "required": [
+    "manifest_version", "session_id", "scenario", "input_kinds", "is_test_input",
+    "started_at_ms", "ended_at_ms", "common_capture_window_ms", "calibration_version",
+    "consent", "storage", "recorded_by", "cameras"
+  ],
+  "properties": {
+    "manifest_version": {
+      "$ref": "../common/defs.schema.json#/$defs/semver",
+      "pattern": "^1\\.\\d+\\.\\d+$",
+      "description": "이 형식의 버전(메이저 1, 현재 1.1.0). 필드 추가는 마이너, 삭제·의미 변경은 메이저. 1.1.0: input_kinds 가 cameras[].source.kind 를 모두 담는지 스키마가 검사한다(설명된 뜻 그대로라 1.0.0 녹화 도구 출력은 그대로 통과)"
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "기본 rec-<UTC yyyymmdd-hhmmss>z-<시나리오>"
+    },
+    "scenario": { "type": "string", "minLength": 1, "description": "15.3 시나리오 이름 (예: empty_room_10min, walk_calibration, position_grid)" },
+    "description": { "type": "string" },
+    "notes": { "type": "string" },
+    "input_kinds": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/input_kind" },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "카메라 입력 종류 (cameras[].source.kind 의 집합). 카메라에 있는 종류가 빠지면 위반 ($defs/input_kinds_cover_sources)"
+    },
+    "is_test_input": {
+      "type": "boolean",
+      "description": "RTSP 가 아닌 입력이 하나라도 있으면 true. 제품 성능·게이트 판정에 쓰지 않는다 (AGENTS 규칙 7)"
+    },
+    "started_at_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "녹화 시작(노트북 시계)" },
+    "ended_at_ms": {
+      "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" }, { "type": "null" }],
+      "description": "녹화 끝(노트북 시계). 중간에 끊긴 세션을 파일에서 다시 계산했으면 null"
+    },
+    "requested_duration_s": {
+      "type": ["number", "null"],
+      "exclusiveMinimum": 0,
+      "description": "요청한 녹화 시간. null = Ctrl+C 까지"
+    },
+    "common_capture_window_ms": {
+      "oneOf": [{ "$ref": "#/$defs/time_range_ms" }, { "type": "null" }],
+      "description": "네 카메라가 모두 찍고 있던 추정 촬영 시각 구간. 겹치는 구간이 없거나 프레임이 없는 카메라가 있으면 null"
+    },
+    "calibration_version": {
+      "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/version_id" }, { "type": "null" }],
+      "description": "이 녹화에 쓸 보정 버전. 모르면 null"
+    },
+    "consent": true,
+    "storage": {
+      "type": "object",
+      "required": ["uri", "layout"],
+      "properties": {
+        "uri": {
+          "type": "string",
+          "pattern": "^(volume|s3)://\\S+$",
+          "description": "세션 디렉터리를 둔 곳 volume://<datacenter>/<path>/ 또는 s3://<bucket>/<key>/. 로컬 경로 금지 (21.1)"
+        },
+        "layout": { "type": "string", "minLength": 1, "description": "세션 디렉터리 안 파일 배치" }
+      },
+      "additionalProperties": false
+    },
+    "recorded_by": {
+      "type": "object",
+      "properties": {
+        "tool": { "type": "string", "minLength": 1, "description": "예: gateway/recorder" },
+        "version": { "type": "string" },
+        "git_commit": { "type": ["string", "null"], "pattern": "^[0-9a-f]{7,40}$", "description": "녹화 도구 커밋. 모르면 null" },
+        "gateway_id": { "type": ["string", "null"], "description": "녹화한 노트북 식별자 (예: laptop-01)" }
+      },
+      "additionalProperties": false
+    },
+    "deleted_at_ms": {
+      "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+      "description": "보관 기한이 지나 Network Volume 에서 세션 디렉터리를 지운 시각. 저장소의 manifest 는 지우지 않고 이 필드를 더한다 (AGENTS 규칙 6)"
+    },
+    "cameras": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/camera" },
+      "minItems": 1
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    { "$ref": "#/$defs/consent_requirement" },
+    { "$ref": "#/$defs/test_input_rule" },
+    { "$ref": "#/$defs/input_kinds_cover_sources" }
+  ],
+
+  "$defs": {
+    "input_kind": { "enum": ["RTSP", "FILE", "SYNTHETIC"], "description": "RTSP = 실제 카메라, FILE = 로컬 영상 파일, SYNTHETIC = 합성 스트림" },
+
+    "time_range_ms": {
+      "type": "array",
+      "items": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+      "minItems": 2,
+      "maxItems": 2,
+      "description": "[from, to], UTC ms. from <= to 는 스키마로 표현할 수 없어 읽는 쪽 검사(gateway/recorder validate_manifest)가 본다"
+    },
+
+    "relative_path": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$",
+      "description": "세션 디렉터리 기준 상대 POSIX 경로. 절대 경로·드라이브 문자·역슬래시·'.'·'..' 경로 조각 불가"
+    },
+
+    "file_entry": {
+      "type": "object",
+      "description": "세션 디렉터리 안 파일 하나. verify 가 크기·sha256 을 다시 계산해 비교한다",
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relative_path" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "../common/defs.schema.json#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+
+    "consent": {
+      "type": "object",
+      "description": "참여자 동의 범위와 보관 기한 (명세 11.5). 동의서 원본은 저장소 밖에 둔다",
+      "required": ["contains_people", "retention_until"],
+      "properties": {
+        "contains_people": { "type": "boolean", "description": "사람이 찍혔는지. 사람 없는 교실 녹화는 false" },
+        "consent_ref": { "type": "string", "minLength": 1, "description": "참여자 동의서 문서 ID. 사람 이름을 넣지 않는다" },
+        "scope": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/consent_scope" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "retention_until": {
+          "type": "string",
+          "format": "date",
+          "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$",
+          "description": "YYYY-MM-DD. 이 날이 지나면 Network Volume 에서 세션 디렉터리를 지운다"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "사람이 찍히는 녹화는 동의서 ID 와 동의 범위가 있어야 한다",
+          "if": { "properties": { "contains_people": { "const": true } }, "required": ["contains_people"] },
+          "then": { "required": ["consent_ref", "scope"] }
+        }
+      ]
+    },
+    "consent_scope": {
+      "enum": ["dataset_internal", "runpod_ap_jp_1", "runpod_us", "aws_seoul", "presentation", "hmr_texture"],
+      "description": "동의 범위(용도·전송 리전). dataset_internal 팀 내부 개발·게이트 평가(15.3), runpod_ap_jp_1 RunPod 일본 리전 전송·보관(3.12), runpod_us RunPod 미국 리전, aws_seoul AWS 서울 리전, presentation 발표·시연 자료, hmr_texture EXP-02 외형·텍스처 실험(별도 동의, 11.5·5.6). 코드 추가는 마이너"
+    },
+    "consent_requirement": {
+      "description": "동의·보관 규칙 (명세 11.5). 실제 카메라(RTSP) 녹화는 consent(보관 기한·사람 포함 여부)가 있어야 한다. 녹화 도구는 녹화 시작 전에 세션 설정을 이 정의로 검사한다",
+      "type": "object",
+      "properties": {
+        "consent": {
+          "type": ["object", "null"],
+          "if": { "type": "object" },
+          "then": { "$ref": "#/$defs/consent" }
+        }
+      },
+      "if": {
+        "properties": { "input_kinds": { "contains": { "const": "RTSP" } } },
+        "required": ["input_kinds"]
+      },
+      "then": {
+        "required": ["consent"],
+        "properties": { "consent": { "type": "object", "description": "실제 카메라(RTSP) 녹화는 consent(보관 기한·사람 포함 여부)가 있어야 한다 (명세 11.5)" } }
+      }
+    },
+    "test_input_rule": {
+      "description": "is_test_input 은 RTSP 가 아닌 입력이 하나라도 있을 때만, 그리고 그때는 반드시 true 다 (AGENTS 규칙 7)",
+      "if": {
+        "properties": { "input_kinds": { "contains": { "not": { "const": "RTSP" } } } },
+        "required": ["input_kinds"]
+      },
+      "then": { "properties": { "is_test_input": { "const": true } } },
+      "else": { "properties": { "is_test_input": { "const": false } } }
+    },
+
+    "input_kinds_cover_sources": {
+      "description": "카메라 입력 종류가 input_kinds 에 모두 있어야 한다. test_input_rule 이 input_kinds 만 보므로, 이 규칙이 없으면 로컬 파일·합성 카메라가 섞인 세션이 is_test_input: false 로 통과한다 (AGENTS 규칙 7)",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "cameras": { "contains": { "properties": { "source": { "properties": { "kind": { "const": "RTSP" } }, "required": ["kind"] } }, "required": ["source"] } }
+            },
+            "required": ["cameras"]
+          },
+          "then": {
+            "properties": { "input_kinds": { "contains": { "const": "RTSP" }, "description": "RTSP 카메라가 있으면 input_kinds 에 RTSP가 있어야 한다" } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cameras": { "contains": { "properties": { "source": { "properties": { "kind": { "const": "FILE" } }, "required": ["kind"] } }, "required": ["source"] } }
+            },
+            "required": ["cameras"]
+          },
+          "then": {
+            "properties": { "input_kinds": { "contains": { "const": "FILE" }, "description": "FILE 카메라가 있으면 input_kinds 에 FILE이 있어야 한다" } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cameras": { "contains": { "properties": { "source": { "properties": { "kind": { "const": "SYNTHETIC" } }, "required": ["kind"] } }, "required": ["source"] } }
+            },
+            "required": ["cameras"]
+          },
+          "then": {
+            "properties": { "input_kinds": { "contains": { "const": "SYNTHETIC" }, "description": "SYNTHETIC 카메라가 있으면 input_kinds 에 SYNTHETIC이 있어야 한다" } }
+          }
+        }
+      ]
+    },
+
+    "source": {
+      "type": "object",
+      "description": "카메라 입력 설명. 비밀 값(RTSP 계정)은 넣지 않는다",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/input_kind" },
+        "url": {
+          "type": "string",
+          "pattern": "^rtsp://[^\\s@/]+(/[^\\s@]*)?$",
+          "description": "rtsp://<host>:<port>/<path>. 계정(user:pass@)을 넣지 않는다 (.env 에만)"
+        },
+        "file_name": { "type": "string", "minLength": 1, "description": "로컬 영상 파일 이름(경로 없이)" },
+        "realtime": { "type": "boolean" },
+        "loop": { "type": "boolean" },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "fps": { "type": "number", "exclusiveMinimum": 0 },
+        "faults": {
+          "type": "object",
+          "description": "장애 흉내 설정(지연·멈춤·끊김·재접속 실패). 실제 카메라에는 쓰지 않는다",
+          "properties": {
+            "jitter_ms": { "type": "number", "minimum": 0 },
+            "stalls": { "type": "object", "propertyNames": { "pattern": "^[0-9]+$" }, "additionalProperties": { "type": "number", "minimum": 0 } },
+            "disconnect_after": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+            "failed_reopens": { "type": "integer", "minimum": 0 },
+            "seed": { "type": "integer" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "RTSP" } }, "required": ["kind"] },
+          "then": {
+            "required": ["url"],
+            "properties": { "file_name": false, "realtime": false, "loop": false, "width": false, "height": false, "fps": false, "faults": false }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "FILE" } }, "required": ["kind"] },
+          "then": { "required": ["file_name"], "properties": { "url": false, "width": false, "height": false, "fps": false } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "SYNTHETIC" } }, "required": ["kind"] },
+          "then": { "properties": { "url": false, "file_name": false, "realtime": false, "loop": false } }
+        }
+      ]
+    },
+
+    "settings": {
+      "type": "object",
+      "description": "카메라 설정. codec·profile·해상도·fps 는 첫 세그먼트의 codec_info 에서, firmware 는 세션 설정에서 사람이 적은 값. 모르면 null",
+      "required": ["codec", "profile", "width", "height", "nominal_fps", "firmware", "resolution_changed"],
+      "properties": {
+        "codec": { "enum": ["H264", null] },
+        "profile": { "type": ["string", "null"] },
+        "width": { "type": ["integer", "null"], "minimum": 1 },
+        "height": { "type": ["integer", "null"], "minimum": 1 },
+        "nominal_fps": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "firmware": { "type": ["string", "null"] },
+        "resolution_changed": { "type": "boolean", "description": "epoch 사이 해상도가 바뀌었는지" }
+      },
+      "additionalProperties": false
+    },
+
+    "capture_time_model": {
+      "type": "object",
+      "description": "촬영 시각 추정 설정 (명세 3.9). G0 LED 시험 전 잠정값",
+      "required": ["timestamp_source", "latency_ms", "uncertainty_ms", "uncertainty_no_pts_ms", "window_ms"],
+      "properties": {
+        "timestamp_source": { "$ref": "../common/defs.schema.json#/$defs/timestamp_source" },
+        "latency_ms": { "$ref": "../common/defs.schema.json#/$defs/duration_ms", "description": "노출 → 노트북 수신 고정 지연" },
+        "uncertainty_ms": { "$ref": "../common/defs.schema.json#/$defs/duration_ms" },
+        "uncertainty_no_pts_ms": { "$ref": "../common/defs.schema.json#/$defs/duration_ms" },
+        "window_ms": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+
+    "camera_to_gateway_gap": {
+      "type": "object",
+      "description": "카메라 → 노트북 도착 끊김 (명세 12.7). 도착 간격이 공칭 간격의 1.5배(threshold_ms)를 넘은 횟수",
+      "required": ["threshold_ms", "count", "max_ms", "arrival_interval_ms_p95"],
+      "properties": {
+        "threshold_ms": { "type": ["number", "null"], "minimum": 0 },
+        "count": { "type": "integer", "minimum": 0 },
+        "max_ms": { "type": ["number", "null"], "minimum": 0 },
+        "arrival_interval_ms_p95": { "type": ["number", "null"], "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+
+    "segment": {
+      "type": "object",
+      "description": "stream_epoch 하나 = 세그먼트 하나 (명세 12.7). 재접속마다 새 epoch",
+      "required": [
+        "stream_epoch", "video", "frames", "codec_info", "frame_count", "keyframe_count",
+        "frame_sequence_range", "capture_time_range_ms", "received_time_range_ms", "timestamp_sources",
+        "timestamp_uncertainty_ms_max", "keyframe_interval_s_p50", "camera_to_gateway_gap", "integrity"
+      ],
+      "properties": {
+        "stream_epoch": { "type": "integer", "minimum": 0 },
+        "video": { "$ref": "#/$defs/file_entry", "description": "epoch_NNNN.h264 (H.264 Annex B)" },
+        "frames": { "$ref": "#/$defs/file_entry", "description": "epoch_NNNN.frames.jsonl. 한 줄 형식은 #/$defs/frame_line" },
+        "codec_info": { "$ref": "#/$defs/file_entry", "description": "epoch_NNNN.codec_info.json (contracts/messages/codec_info.schema.json)" },
+        "frame_count": { "type": "integer", "minimum": 0 },
+        "keyframe_count": { "type": "integer", "minimum": 0 },
+        "frame_sequence_range": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "integer", "minimum": 0 }, "minItems": 2, "maxItems": 2 },
+            { "type": "null" }
+          ],
+          "description": "[0, frame_count-1]"
+        },
+        "capture_time_range_ms": { "oneOf": [{ "$ref": "#/$defs/time_range_ms" }, { "type": "null" }], "description": "추정 촬영 시각 범위" },
+        "received_time_range_ms": { "oneOf": [{ "$ref": "#/$defs/time_range_ms" }, { "type": "null" }], "description": "노트북 수신 시각 범위" },
+        "timestamp_sources": {
+          "type": "array",
+          "items": { "$ref": "../common/defs.schema.json#/$defs/timestamp_source" },
+          "uniqueItems": true
+        },
+        "timestamp_uncertainty_ms_max": { "type": ["number", "null"], "minimum": 0 },
+        "keyframe_interval_s_p50": { "type": ["number", "null"], "minimum": 0 },
+        "camera_to_gateway_gap": { "$ref": "#/$defs/camera_to_gateway_gap" },
+        "integrity": {
+          "type": "object",
+          "description": "세그먼트 무결성. 하나라도 false 면 manifest 가 계약을 통과하지 못한다",
+          "required": ["sequence_contiguous", "first_is_keyframe", "bytes_covered"],
+          "properties": {
+            "sequence_contiguous": { "const": true, "description": "frame_sequence 빈칸 없음" },
+            "first_is_keyframe": { "const": true, "description": "세그먼트가 키프레임으로 시작해 단독으로 디코딩된다" },
+            "bytes_covered": { "const": true, "description": "마지막 프레임이 영상 파일 끝까지" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "camera": {
+      "type": "object",
+      "required": [
+        "camera_id", "source", "settings", "timestamp_source", "capture_time_model", "frame_count",
+        "capture_time_range_ms", "reconnects", "open_failures", "dropped_before_keyframe", "errors", "events", "segments"
+      ],
+      "properties": {
+        "camera_id": { "$ref": "../common/defs.schema.json#/$defs/camera_id", "description": "보정·I0 와 같은 ID" },
+        "source": { "$ref": "#/$defs/source" },
+        "settings": { "$ref": "#/$defs/settings" },
+        "timestamp_source": { "$ref": "../common/defs.schema.json#/$defs/timestamp_source", "description": "이 카메라 헤더의 timestamp_source. C110 기본 RECEIVE_ESTIMATED (3.9)" },
+        "capture_time_model": { "$ref": "#/$defs/capture_time_model" },
+        "frame_count": { "type": "integer", "minimum": 0, "description": "모든 세그먼트의 프레임 수 합" },
+        "capture_time_range_ms": { "oneOf": [{ "$ref": "#/$defs/time_range_ms" }, { "type": "null" }], "description": "첫·마지막 추정 촬영 시각" },
+        "reconnects": { "type": "integer", "minimum": 0, "description": "끊긴 횟수" },
+        "open_failures": { "type": "integer", "minimum": 0, "description": "접속 실패 횟수" },
+        "dropped_before_keyframe": { "type": "integer", "minimum": 0, "description": "새 epoch 에서 키프레임 전에 버린 패킷 수 합" },
+        "errors": { "type": "array", "items": { "type": "string" }, "description": "녹화 루프가 멈춘 오류 문장. 정상이면 빈 배열" },
+        "events": { "oneOf": [{ "$ref": "#/$defs/file_entry" }, { "type": "null" }], "description": "events.jsonl" },
+        "segments": { "type": "array", "items": { "$ref": "#/$defs/segment" } }
+      },
+      "additionalProperties": false
+    },
+
+    "frame_line": {
+      "type": "object",
+      "description": "frames.jsonl 한 줄 = 한 프레임. header 는 I0 프레임 헤더 계약 그대로, .h264[offset : offset+size] 가 그 프레임의 압축 바이트",
+      "required": ["header", "offset", "size"],
+      "properties": {
+        "header": { "$ref": "../messages/frame_header.schema.json" },
+        "offset": { "type": "integer", "minimum": 0 },
+        "size": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

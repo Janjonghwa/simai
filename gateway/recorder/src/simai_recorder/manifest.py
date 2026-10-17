@@ -1,6 +1,8 @@
 """녹화 manifest: 세션 하나의 파일 목록·해시·프레임 수·시각 범위·카메라 설정·동의 범위·저장 위치.
 
-형식 정본은 docs/data/recording-manifest.md 다(계약 스키마는 S15P31A101-20 머지 뒤 별도 티켓에서 contracts/ 에 넣는다).
+형식 정본은 계약 스키마 contracts/data/recording_manifest.schema.json 이고(S15P31A101-158), 설명은
+docs/data/recording-manifest.md 에 있다. 검증은 그 스키마로 하고(contract.schema_errors), 스키마로 표현할 수 없는
+규칙(시각 범위 from <= to, camera_id 중복)만 여기서 더 본다.
 영상은 저장소에 넣지 않고 Network Volume 에 두며, 저장소에는 manifest 만 둔다(명세 21.1).
 
 manifest 는 세션 디렉터리의 파일에서 다시 계산할 수 있다(write_manifest). 올린 뒤에는 verify 로 해시를 다시 확인한다.
@@ -8,22 +10,19 @@ manifest 는 세션 디렉터리의 파일에서 다시 계산할 수 있다(wri
 
 from __future__ import annotations
 
-import datetime as dt
 import hashlib
 import json
-import re
 import statistics
 from pathlib import Path
 from typing import Any
 
-from simai_recorder.recorder import EVENTS_FILE, SESSION_FILE, SESSION_ID
+from simai_recorder.contract import schema_errors
+from simai_recorder.recorder import EVENTS_FILE, SESSION_FILE
 from simai_recorder.segment import SegmentPaths, camera_segments, read_frames
 
 MANIFEST_FILE = "manifest.json"
-MANIFEST_VERSION = "1.0.0"
+MANIFEST_VERSION = "1.1.0"  # 계약 스키마 manifest_version (1.1.0: input_kinds 가 카메라 입력 종류를 모두 담는지 검사)
 GAP_FACTOR = 1.5  # 도착 간격이 공칭 프레임 간격의 1.5배를 넘으면 camera_to_gateway_gap (-9 측정 도구와 같은 기준)
-STORAGE_URI = re.compile(r"^(volume|s3)://[^\s]+$")
-SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def sha256_file(path: Path) -> str:
@@ -169,55 +168,45 @@ def build_manifest(session_dir: Path) -> dict[str, Any]:
 
 
 def validate_consent(consent: dict[str, Any] | None, kinds: list[str]) -> list[str]:
-    """동의·보관 규칙(명세 11.5).
+    """동의·보관 규칙(명세 11.5). 녹화 시작 전에 세션 설정을 계약의 consent_requirement 정의로 검사한다.
 
     실제 카메라(RTSP) 녹화는 보관 기한이 있어야 하고, 사람이 찍히면 동의서 ID 와 동의 범위가 있어야 한다.
     """
-    errors: list[str] = []
-    if consent is None:
-        if "RTSP" in kinds:
-            errors.append("consent: RTSP 녹화는 consent(보관 기한·사람 포함 여부)가 있어야 한다")
-        return errors
-    if not isinstance(consent.get("contains_people"), bool):
-        errors.append("consent.contains_people: true/false 로 적는다")
-    retention = consent.get("retention_until")
-    try:
-        dt.date.fromisoformat(str(retention))
-    except ValueError:
-        errors.append(f"consent.retention_until: YYYY-MM-DD 날짜여야 한다 (받은 값 {retention!r})")
-    if consent.get("contains_people"):
-        if not consent.get("consent_ref"):
-            errors.append("consent.consent_ref: 사람이 찍히는 녹화는 참여자 동의서 ID 가 있어야 한다")
-        if not consent.get("scope"):
-            errors.append("consent.scope: 사람이 찍히는 녹화는 동의 범위(용도·전송 리전)가 있어야 한다")
-    return errors
+    return schema_errors({"input_kinds": kinds, "consent": consent}, "#/$defs/consent_requirement")
+
+
+def validate_storage_uri(uri: str) -> list[str]:
+    """저장 위치가 volume:// 또는 s3:// 인지(로컬 경로 금지, 명세 21.1). 계약의 storage.uri 정의로 검사한다."""
+    return schema_errors(uri, "#/properties/storage/properties/uri")
+
+
+def _range_errors(where: str, rng: Any) -> list[str]:
+    if isinstance(rng, list) and len(rng) == 2 and all(isinstance(x, int) for x in rng) and rng[0] > rng[1]:
+        return [f"{where}: 범위가 거꾸로다 (from > to)"]
+    return []
 
 
 def validate_manifest(m: dict[str, Any]) -> list[str]:
-    """manifest 자체 검증. 오류 문장 목록(비면 통과)."""
-    errors: list[str] = []
-    if not SESSION_ID.fullmatch(str(m.get("session_id", ""))):
-        errors.append("session_id: 영문 소문자·숫자·- 만 쓴다")
-    if not m.get("scenario"):
-        errors.append("scenario: 비어 있다")
-    if not STORAGE_URI.match(str(m.get("storage", {}).get("uri", ""))):
-        errors.append("storage.uri: volume://<datacenter>/<path> 또는 s3:// 여야 한다 (로컬 경로 금지)")
-    errors += validate_consent(m.get("consent"), list(m.get("input_kinds", [])))
-    for cam in m.get("cameras", []):
-        cid = cam.get("camera_id")
-        src = cam.get("source", {})
-        if "url" in src and "@" in str(src["url"]):
-            errors.append(f"{cid}: source.url 에 계정이 들어 있다")
-        for seg in cam.get("segments", []):
-            for key in ("video", "frames", "codec_info"):
-                f = seg[key]
-                if not SHA256.match(f["sha256"]):
-                    errors.append(f"{cid}: {f['path']} sha256 형식이 아니다")
-                if Path(f["path"]).is_absolute() or ".." in Path(f["path"]).parts:
-                    errors.append(f"{cid}: {f['path']} 는 세션 디렉터리 기준 상대 경로여야 한다")
-            for k, ok in seg["integrity"].items():
-                if not ok:
-                    errors.append(f"{cid}: epoch {seg['stream_epoch']} 무결성 검사 실패: {k}")
+    """manifest 검증. 오류 문장 목록(비면 통과).
+
+    계약 스키마 검증에 더해 스키마로 표현할 수 없는 규칙(시각·프레임 번호 범위의 from <= to, camera_id 중복)을 본다.
+    """
+    errors = schema_errors(m)
+    errors += _range_errors("common_capture_window_ms", m.get("common_capture_window_ms"))
+    cameras = m.get("cameras") if isinstance(m.get("cameras"), list) else []
+    ids = [c.get("camera_id") for c in cameras if isinstance(c, dict)]
+    for dup in sorted({i for i in ids if ids.count(i) > 1}, key=str):
+        errors.append(f"cameras: camera_id {dup} 가 겹친다")
+    for ci, cam in enumerate(cameras):
+        if not isinstance(cam, dict):
+            continue
+        errors += _range_errors(f"cameras/{ci}/capture_time_range_ms", cam.get("capture_time_range_ms"))
+        segments = cam.get("segments") if isinstance(cam.get("segments"), list) else []
+        for si, seg in enumerate(segments):
+            if not isinstance(seg, dict):
+                continue
+            for key in ("frame_sequence_range", "capture_time_range_ms", "received_time_range_ms"):
+                errors += _range_errors(f"cameras/{ci}/segments/{si}/{key}", seg.get(key))
     return errors
 
 

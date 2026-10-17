@@ -1,0 +1,270 @@
+{
+  "manifest_version": "1.1.0",
+  "session_id": "rec-test-dry-run",
+  "scenario": "dry-run",
+  "description": "카메라 없이 녹화 경로 시험",
+  "input_kinds": [
+    "FILE",
+    "SYNTHETIC"
+  ],
+  "is_test_input": true,
+  "started_at_ms": 1792486800000,
+  "ended_at_ms": 1792486803100,
+  "requested_duration_s": 3.0,
+  "common_capture_window_ms": [
+    1792486800041,
+    1792486803000
+  ],
+  "calibration_version": null,
+  "consent": null,
+  "storage": {
+    "uri": "volume://AP-JP-1/simai/recordings/rec-test-dry-run/",
+    "layout": "<camera_id>/epoch_NNNN.{h264,frames.jsonl,codec_info.json}"
+  },
+  "recorded_by": {
+    "tool": "gateway/recorder",
+    "version": "0.1.0",
+    "git_commit": null,
+    "gateway_id": "laptop-01"
+  },
+  "notes": "",
+  "cameras": [
+    {
+      "camera_id": "cam_A",
+      "source": {
+        "kind": "SYNTHETIC",
+        "width": 96,
+        "height": 64,
+        "fps": 25.0
+      },
+      "settings": {
+        "codec": "H264",
+        "profile": "High",
+        "width": 96,
+        "height": 64,
+        "nominal_fps": 25.0,
+        "firmware": null,
+        "resolution_changed": false
+      },
+      "timestamp_source": "RECEIVE_ESTIMATED",
+      "capture_time_model": {
+        "timestamp_source": "RECEIVE_ESTIMATED",
+        "latency_ms": 0.0,
+        "uncertainty_ms": 20.0,
+        "uncertainty_no_pts_ms": 45.0,
+        "window_ms": 30000
+      },
+      "frame_count": 75,
+      "capture_time_range_ms": [
+        1792486800040,
+        1792486803000
+      ],
+      "reconnects": 0,
+      "open_failures": 0,
+      "dropped_before_keyframe": 0,
+      "errors": [],
+      "events": {
+        "path": "cam_A/events.jsonl",
+        "bytes": 812,
+        "sha256": "sha256:418252fcf599d88e4f2f9347c2e7da9f9e4339e83e111851162da6ecf3857b3c"
+      },
+      "segments": [
+        {
+          "stream_epoch": 0,
+          "video": {
+            "path": "cam_A/epoch_0000.h264",
+            "bytes": 427500,
+            "sha256": "sha256:c24c62533a39d94022cf7a4a21540a4b1d0eee97ba3e25c8fb68bd92ba1cba48"
+          },
+          "frames": {
+            "path": "cam_A/epoch_0000.frames.jsonl",
+            "bytes": 19800,
+            "sha256": "sha256:f661f106e7fa03f580ff5e21aa673013909db308c404c0a3ed0b684b99dac8fa"
+          },
+          "codec_info": {
+            "path": "cam_A/epoch_0000.codec_info.json",
+            "bytes": 310,
+            "sha256": "sha256:e549b614c322aecb485a6f6f28200b434b5058c63d2b29b1bec4f2ac0d6f2d3d"
+          },
+          "frame_count": 75,
+          "keyframe_count": 2,
+          "frame_sequence_range": [
+            0,
+            74
+          ],
+          "capture_time_range_ms": [
+            1792486800040,
+            1792486803000
+          ],
+          "received_time_range_ms": [
+            1792486800040,
+            1792486803000
+          ],
+          "timestamp_sources": [
+            "RECEIVE_ESTIMATED"
+          ],
+          "timestamp_uncertainty_ms_max": 20.0,
+          "keyframe_interval_s_p50": 2.0,
+          "camera_to_gateway_gap": {
+            "threshold_ms": 60.0,
+            "count": 0,
+            "max_ms": 41,
+            "arrival_interval_ms_p95": 40
+          },
+          "integrity": {
+            "sequence_contiguous": true,
+            "first_is_keyframe": true,
+            "bytes_covered": true
+          }
+        }
+      ]
+    },
+    {
+      "camera_id": "cam_D",
+      "source": {
+        "kind": "FILE",
+        "file_name": "loop.mp4",
+        "realtime": true,
+        "loop": true,
+        "faults": {
+          "jitter_ms": 0.0,
+          "stalls": {},
+          "disconnect_after": [
+            50
+          ],
+          "failed_reopens": 1,
+          "seed": 0
+        }
+      },
+      "settings": {
+        "codec": "H264",
+        "profile": null,
+        "width": 96,
+        "height": 64,
+        "nominal_fps": null,
+        "firmware": null,
+        "resolution_changed": false
+      },
+      "timestamp_source": "RECEIVE_ESTIMATED",
+      "capture_time_model": {
+        "timestamp_source": "RECEIVE_ESTIMATED",
+        "latency_ms": 0.0,
+        "uncertainty_ms": 20.0,
+        "uncertainty_no_pts_ms": 45.0,
+        "window_ms": 30000
+      },
+      "frame_count": 70,
+      "capture_time_range_ms": [
+        1792486800041,
+        1792486803010
+      ],
+      "reconnects": 1,
+      "open_failures": 1,
+      "dropped_before_keyframe": 7,
+      "errors": [],
+      "events": {
+        "path": "cam_D/events.jsonl",
+        "bytes": 812,
+        "sha256": "sha256:ebcf5af6418ac1807733a0f7aba6271e311d4c518c3df218b780828489c321db"
+      },
+      "segments": [
+        {
+          "stream_epoch": 0,
+          "video": {
+            "path": "cam_D/epoch_0000.h264",
+            "bytes": 285000,
+            "sha256": "sha256:8ea42e11802db279f29ce58c35dfd440d8802fe227faebeda1f7f76768c9c7a3"
+          },
+          "frames": {
+            "path": "cam_D/epoch_0000.frames.jsonl",
+            "bytes": 13200,
+            "sha256": "sha256:c759eb103264d3b95927b6eb7cc4b7e2cb15799cb391dd1241c8b8172395d0d4"
+          },
+          "codec_info": {
+            "path": "cam_D/epoch_0000.codec_info.json",
+            "bytes": 310,
+            "sha256": "sha256:1dd5812b77a63e7d6e422680b7215935f2d9edbc316b630fc5a9d416d83b9539"
+          },
+          "frame_count": 50,
+          "keyframe_count": 5,
+          "frame_sequence_range": [
+            0,
+            49
+          ],
+          "capture_time_range_ms": [
+            1792486800041,
+            1792486802001
+          ],
+          "received_time_range_ms": [
+            1792486800041,
+            1792486802001
+          ],
+          "timestamp_sources": [
+            "RECEIVE_ESTIMATED"
+          ],
+          "timestamp_uncertainty_ms_max": 20.0,
+          "keyframe_interval_s_p50": 2.0,
+          "camera_to_gateway_gap": {
+            "threshold_ms": null,
+            "count": 0,
+            "max_ms": 40,
+            "arrival_interval_ms_p95": 40
+          },
+          "integrity": {
+            "sequence_contiguous": true,
+            "first_is_keyframe": true,
+            "bytes_covered": true
+          }
+        },
+        {
+          "stream_epoch": 1,
+          "video": {
+            "path": "cam_D/epoch_0001.h264",
+            "bytes": 114000,
+            "sha256": "sha256:9e561337a185094fb7ebe51732e9cc7bd68cda3ef5597ecb3ea59373c58781db"
+          },
+          "frames": {
+            "path": "cam_D/epoch_0001.frames.jsonl",
+            "bytes": 5280,
+            "sha256": "sha256:ecf4ea1289392c46a12f62626d7c271311879ce0f0760739a6dacb392d65a874"
+          },
+          "codec_info": {
+            "path": "cam_D/epoch_0001.codec_info.json",
+            "bytes": 310,
+            "sha256": "sha256:867a89818d685a7bded73feb9e6d1f8f149bb729158b99c9d9c62a4a6e9f65f0"
+          },
+          "frame_count": 20,
+          "keyframe_count": 2,
+          "frame_sequence_range": [
+            0,
+            19
+          ],
+          "capture_time_range_ms": [
+            1792486802400,
+            1792486803010
+          ],
+          "received_time_range_ms": [
+            1792486802400,
+            1792486803010
+          ],
+          "timestamp_sources": [
+            "RECEIVE_ESTIMATED"
+          ],
+          "timestamp_uncertainty_ms_max": 20.0,
+          "keyframe_interval_s_p50": 2.0,
+          "camera_to_gateway_gap": {
+            "threshold_ms": null,
+            "count": 0,
+            "max_ms": 40,
+            "arrival_interval_ms_p95": 40
+          },
+          "integrity": {
+            "sequence_contiguous": true,
+            "first_is_keyframe": true,
+            "bytes_covered": true
+          }
+        }
+      ]
+    }
+  ]
+}

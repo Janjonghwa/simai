@@ -6,6 +6,8 @@
 - SimObservationFrameSource: `python -m sim.run` 출력의 observations/*.jsonl 을 읽는다. 2D keypoint 단계부터 넣는다.
   simai_ai 는 sim 을 import 하지 않으므로 파일 형식만 따른다(sim/README.md).
 - VideoFileFrameSource: 녹화 파일을 처음부터 끝까지 모두 낸다(오프라인·시나리오 재생). 기본 리더는 OpenCV(io extra).
+  gateway/recorder 녹화 세션은 manifest(contracts/data/recording_manifest.schema.json)를 계약으로 검증해 읽는다
+  (`VideoFileFrameSource.from_manifest`, `recordings_from_manifest`).
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from typing import Any, Protocol
 from simai_ai.io.freshness import InferenceTicket
 from simai_ai.io.ingest import I0Ingest
 from simai_ai.providers.base import Detection2D, Frame, FrameSource, FramesProvenance
+from simai_ai.providers.contract import schema_violations
 from simai_ai.tracking.time_model import require_ms
 
 
@@ -261,6 +264,26 @@ class VideoFileFrameSource(FrameSource):
         finally:
             reader.close()
 
+    @classmethod
+    def from_manifest(
+        cls,
+        session_dir: Path | str,
+        open_reader: Callable[[Path], VideoReader] = OpenCvVideoReader,
+        epochs: Mapping[str, int] | None = None,
+    ) -> VideoFileFrameSource:
+        """gateway/recorder 녹화 세션 디렉터리에서 만든다. manifest 를 계약으로 검증하고 카메라마다 세그먼트 하나를 읽는다.
+
+        dataset_id 는 recording/<session_id>. manifest 의 is_test_input 이 true(로컬 파일·합성 입력)인 세션은
+        제품 성능·게이트 판정 근거로 쓰지 않는다(AGENTS 규칙 7).
+        """
+        manifest = load_recording_manifest(session_dir)
+        return cls(
+            recordings_from_manifest(session_dir, manifest, epochs),
+            source="FILE",
+            open_reader=open_reader,
+            dataset_id=f"recording/{manifest['session_id']}",
+        )
+
     def frames(self) -> Iterator[Frame]:
         return merge_by_capture_time([self._read(r) for r in self._recordings])
 
@@ -270,3 +293,112 @@ class VideoFileFrameSource(FrameSource):
             prov["dataset_id"] = self._dataset_id
         prov["camera_ids"] = list(self.camera_ids)
         return prov
+
+
+# --------------------------------------------------------------------------- 녹화 manifest (gateway/recorder)
+
+RECORDING_MANIFEST_FILE = "manifest.json"
+RECORDING_MANIFEST_SCHEMA = "recording_manifest"  # contracts/data/recording_manifest.schema.json
+
+
+def _range_errors(where: str, rng: Any) -> list[str]:
+    if isinstance(rng, list) and len(rng) == 2 and all(isinstance(x, int) for x in rng) and rng[0] > rng[1]:
+        return [f"{where}: 범위가 거꾸로다 (from > to)"]
+    return []
+
+
+def recording_manifest_rule_errors(manifest: Mapping[str, Any]) -> list[str]:
+    """스키마로 표현할 수 없는 manifest 규칙: 시각·프레임 번호 범위의 from <= to, camera_id 중복.
+
+    녹화 도구 `simai_recorder.manifest.validate_manifest` 와 같은 규칙·같은 문장이다(받은 값은 camera_id 만 적는다).
+    jsonschema 가 필요 없다.
+    """
+    errors = _range_errors("common_capture_window_ms", manifest.get("common_capture_window_ms"))
+    cameras = manifest.get("cameras") if isinstance(manifest.get("cameras"), list) else []
+    ids = [c.get("camera_id") for c in cameras if isinstance(c, Mapping)]
+    for dup in sorted({i for i in ids if ids.count(i) > 1}, key=str):
+        errors.append(f"cameras: camera_id {dup} 가 겹친다")
+    for ci, cam in enumerate(cameras):
+        if not isinstance(cam, Mapping):
+            continue
+        errors += _range_errors(f"cameras/{ci}/capture_time_range_ms", cam.get("capture_time_range_ms"))
+        segments = cam.get("segments") if isinstance(cam.get("segments"), list) else []
+        for si, seg in enumerate(segments):
+            if not isinstance(seg, Mapping):
+                continue
+            for key in ("frame_sequence_range", "capture_time_range_ms", "received_time_range_ms"):
+                errors += _range_errors(f"cameras/{ci}/segments/{si}/{key}", seg.get(key))
+    return errors
+
+
+def recording_manifest_errors(manifest: Any) -> list[str]:
+    """manifest 계약 검사: 스키마(format 포함) + 스키마 밖 규칙. 비면 통과. 녹화 도구 validate_manifest 와 같은 판정이다.
+
+    위반 문장에는 받은 값을 넣지 않는다(경로·위반 규칙만. RTSP 주소의 계정이 예외·로그로 나가지 않게).
+    """
+    errors = schema_violations(manifest, RECORDING_MANIFEST_SCHEMA)
+    if isinstance(manifest, Mapping):
+        errors += recording_manifest_rule_errors(manifest)
+    return errors
+
+
+def load_recording_manifest(session_dir: Path | str) -> dict[str, Any]:
+    """녹화 세션의 manifest.json 을 읽고 계약으로 검사한다(recording_manifest_errors). 위반이면 ValueError.
+
+    jsonschema 가 필요하다(extras calibration → tier0 묶음, 또는 dev 그룹. io extra 만으로는 없다).
+    """
+    path = Path(session_dir) / RECORDING_MANIFEST_FILE
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    if errors := recording_manifest_errors(manifest):
+        raise ValueError(f"{path}: 녹화 manifest 계약 위반: " + "; ".join(errors))
+    return manifest
+
+
+def recordings_from_manifest(
+    session_dir: Path | str,
+    manifest: Mapping[str, Any] | None = None,
+    epochs: Mapping[str, int] | None = None,
+) -> list[Recording]:
+    """manifest 의 카메라마다 세그먼트(stream_epoch) 하나를 Recording 으로 만든다.
+
+    start_time_ms = 세그먼트 첫 추정 촬영 시각, fps = settings.nominal_fps(모르면 파일 메타데이터),
+    file_uri = storage.uri + 세그먼트 영상 경로, timestamp_uncertainty_ms = 세그먼트 헤더 불확실성 최댓값.
+    VideoFileFrameSource 는 촬영 시각을 start + index/fps 로 다시 만들므로 도착 끊김·epoch 사이 공백은 사라진다.
+    재접속으로 세그먼트가 여럿인 카메라는 epochs 로 하나를 고른다(프레임별 시각이 필요하면 I0 재생으로 읽는다).
+    manifest 를 직접 넘겨도 스키마 밖 규칙(camera_id 중복, 범위 역전)은 다시 본다. 스키마 검증은 manifest 가 없을 때
+    load_recording_manifest 가 한다.
+    """
+    session_dir = Path(session_dir)
+    if manifest is None:
+        manifest = load_recording_manifest(session_dir)
+    elif errors := recording_manifest_rule_errors(manifest):
+        raise ValueError("녹화 manifest 계약 위반: " + "; ".join(errors))
+    epochs = dict(epochs or {})
+    base_uri = str(manifest["storage"]["uri"]).rstrip("/")
+    recordings = []
+    for cam in manifest["cameras"]:
+        cid = cam["camera_id"]
+        segments = cam["segments"]
+        if cid in epochs:
+            epoch = epochs.pop(cid)
+            segments = [s for s in segments if s["stream_epoch"] == epoch]
+        if len(segments) != 1:
+            raise ValueError(
+                f"{cid}: 세그먼트를 하나로 정할 수 없다 (후보 {len(segments)}개). epochs={{{cid!r}: stream_epoch}} 로 고른다"
+            )
+        seg = segments[0]
+        if seg["capture_time_range_ms"] is None:
+            raise ValueError(f"{cid}: stream_epoch {seg['stream_epoch']} 에 프레임이 없다")
+        recordings.append(
+            Recording(
+                camera_id=cid,
+                path=session_dir / seg["video"]["path"],
+                start_time_ms=seg["capture_time_range_ms"][0],
+                file_uri=f"{base_uri}/{seg['video']['path']}",
+                fps=cam["settings"]["nominal_fps"],
+                timestamp_uncertainty_ms=seg["timestamp_uncertainty_ms_max"],
+            )
+        )
+    if epochs:
+        raise ValueError(f"manifest 에 없는 카메라: {sorted(epochs)}")
+    return recordings

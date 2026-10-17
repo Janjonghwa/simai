@@ -4,9 +4,13 @@
 (명세 15.3 시나리오 데이터셋, 11.5 보관과 개인정보, 21.1). 녹화 도구 `gateway/recorder` 가 만든다(S15P31A101-107).
 
 - 영상·사람 이미지는 저장소에 넣지 않는다. 세션 디렉터리는 Network Volume 에 두고, 저장소에는 `manifest.json` 만 둔다.
-- 이 문서가 형식의 정본이다. 계약 스키마(`contracts/`)는 S15P31A101-20 머지 뒤 별도 티켓에서 추가한다. 그 전까지 검사는
-  녹화 도구의 자체 검증(`simai_recorder.manifest.validate_manifest`, `simai-recorder verify`)으로 한다.
+- **형식의 정본은 계약 스키마 [`contracts/data/recording_manifest.schema.json`](../../contracts/data/recording_manifest.schema.json) 이다**(S15P31A101-158).
+  이 문서는 필드 뜻과 운용을 설명하며, 스키마와 다르면 스키마가 우선한다. 필드를 바꿀 때는 스키마를 먼저 고치고
+  `contracts/examples/recording_manifest*.json` 과 이 문서를 같이 고친다(필드 추가는 마이너, 삭제·의미 변경은 메이저).
+- 예시: 정상 [`contracts/examples/recording_manifest.json`](../../contracts/examples/recording_manifest.json)(RTSP, 사람 포함),
+  [`recording_manifest.test_input.json`](../../contracts/examples/recording_manifest.test_input.json)(합성·로컬 파일), 위반 `contracts/examples/invalid/recording_manifest.*.json`.
 - 녹화 파일 형식(세그먼트·프레임 헤더 사이드카)은 [`gateway/recorder/README.md`](../../gateway/recorder/README.md) 의 "녹화 형식"에 있다.
+  사이드카 한 줄은 스키마의 `$defs/frame_line` 이고, 그 안의 `header` 는 I0 `frame_header` 계약 그대로다.
 
 ## 어디에 두나
 
@@ -28,12 +32,12 @@ Network Volume 에 올린 뒤 `uv run simai-recorder verify <세션 디렉터리
 
 | 필드 | 형식 | 내용 |
 |---|---|---|
-| `manifest_version` | `"1.0.0"` | 이 형식의 버전. 필드 추가는 마이너, 삭제·의미 변경은 메이저 |
+| `manifest_version` | `"1.x.y"` | 이 형식의 버전(현재 `1.1.0`). 필드 추가는 마이너, 삭제·의미 변경은 메이저. 1.1.0 은 `input_kinds` 가 카메라 입력 종류를 모두 담는지 검사를 더했다(1.0.0 녹화 도구 출력은 그대로 통과) |
 | `session_id` | `^[a-z0-9][a-z0-9-]*$` | 기본 `rec-<UTC yyyymmdd-hhmmss>z-<시나리오>` |
 | `scenario` | 문자열 | 15.3 시나리오 이름(예: `empty_room_10min`, `walk_calibration`, `position_grid`) |
 | `description`, `notes` | 문자열 | 사람이 읽는 설명 |
-| `input_kinds` | `RTSP` / `FILE` / `SYNTHETIC` 목록 | 카메라 입력 종류 |
-| `is_test_input` | bool | RTSP 가 아닌 입력이 하나라도 있으면 true. **제품 성능·게이트 판정에 쓰지 않는다**(AGENTS 규칙 7) |
+| `input_kinds` | `RTSP` / `FILE` / `SYNTHETIC` 목록 | 카메라 입력 종류(`cameras[].source.kind` 의 집합). 카메라에 있는 종류가 빠지면 위반(스키마가 강제) |
+| `is_test_input` | bool | RTSP 가 아닌 입력이 하나라도 있으면 true, 아니면 false(스키마가 강제). **true 인 세션은 제품 성능·게이트 판정에 쓰지 않는다**(AGENTS 규칙 7) |
 | `started_at_ms`, `ended_at_ms` | int | 녹화 시작·끝(노트북 시계) |
 | `requested_duration_s` | number / null | 요청한 녹화 시간. null = Ctrl+C 까지 |
 | `common_capture_window_ms` | `[from, to]` / null | 네 카메라가 모두 찍고 있던 촬영 시각 구간 |
@@ -42,6 +46,7 @@ Network Volume 에 올린 뒤 `uv run simai-recorder verify <세션 디렉터리
 | `storage.uri` | `volume://…/` 또는 `s3://…/` | 세션 디렉터리를 둔 곳. 로컬 경로 금지 |
 | `storage.layout` | 문자열 | 세션 디렉터리 안 파일 배치 |
 | `recorded_by` | 객체 | `tool`, `version`, `git_commit`(녹화 도구 커밋), `gateway_id`(노트북) |
+| `deleted_at_ms` | int (선택) | 보관 기한이 지나 Network Volume 에서 지운 시각. 아래 "동의와 보관" |
 | `cameras` | 배열 | 카메라별 항목 |
 
 ### 카메라 (`cameras[]`)
@@ -87,7 +92,7 @@ Network Volume 에 올린 뒤 `uv run simai-recorder verify <세션 디렉터리
 | `scope` | 동의 범위(용도·전송 리전) 코드 목록. `contains_people` 이 true 면 필수 |
 | `retention_until` | `YYYY-MM-DD`. 이 날이 지나면 Network Volume 에서 세션 디렉터리를 지운다. RTSP 녹화는 필수 |
 
-`scope` 코드(필요하면 이 표에 더한다):
+`scope` 코드(스키마 `$defs/consent_scope`. 코드를 더하려면 스키마에 먼저 더한다, 마이너):
 
 | 코드 | 뜻 |
 |---|---|
@@ -101,92 +106,29 @@ Network Volume 에 올린 뒤 `uv run simai-recorder verify <세션 디렉터리
 녹화 도구는 RTSP 세션에 `consent` 가 없거나, 보관 기한이 없거나, 사람이 찍히는데 동의서 ID·범위가 없으면 녹화를 시작하지 않는다.
 보관 기한이 지나 지우면 저장소의 manifest 는 지우지 않고(추가만, AGENTS 규칙 6) 같은 파일에 `deleted_at_ms` 를 더하는 커밋을 한다.
 
-## 예시
-
-RTSP 4대, 사람 없는 교실(값은 형식 예시다. 카메라 1대만 펼쳐 적었다).
-
-```json
-{
-  "manifest_version": "1.0.0",
-  "session_id": "rec-20261020-090000z-empty-room-10min",
-  "scenario": "empty_room_10min",
-  "description": "사람 없는 교실 10분 시험 녹화",
-  "input_kinds": ["RTSP"],
-  "is_test_input": false,
-  "started_at_ms": 1792486800000,
-  "ended_at_ms": 1792487401250,
-  "requested_duration_s": 600,
-  "common_capture_window_ms": [1792486800310, 1792487400920],
-  "calibration_version": null,
-  "consent": {
-    "contains_people": false,
-    "retention_until": "2027-01-31"
-  },
-  "storage": {
-    "uri": "volume://AP-JP-1/simai/recordings/rec-20261020-090000z-empty-room-10min/",
-    "layout": "<camera_id>/epoch_NNNN.{h264,frames.jsonl,codec_info.json}"
-  },
-  "recorded_by": {"tool": "gateway/recorder", "version": "0.1.0", "git_commit": "f26edcd6ada41a14b6c8401c4c77311f73e470ae", "gateway_id": "laptop-01"},
-  "notes": "",
-  "cameras": [
-    {
-      "camera_id": "cam_A",
-      "source": {"kind": "RTSP", "url": "rtsp://192.168.0.11:554/stream1"},
-      "settings": {"codec": "H264", "profile": "High", "width": 2304, "height": 1296, "nominal_fps": 25.0, "firmware": "1.3.2 Build 241012", "resolution_changed": false},
-      "timestamp_source": "RECEIVE_ESTIMATED",
-      "capture_time_model": {"timestamp_source": "RECEIVE_ESTIMATED", "latency_ms": 0.0, "uncertainty_ms": 20.0, "uncertainty_no_pts_ms": 45.0, "window_ms": 30000},
-      "frame_count": 14988,
-      "capture_time_range_ms": [1792486800212, 1792487400950],
-      "reconnects": 1,
-      "open_failures": 0,
-      "dropped_before_keyframe": 0,
-      "errors": [],
-      "events": {"path": "cam_A/events.jsonl", "bytes": 812, "sha256": "sha256:5d1c…(64자)"},
-      "segments": [
-        {
-          "stream_epoch": 0,
-          "video": {"path": "cam_A/epoch_0000.h264", "bytes": 52011230, "sha256": "sha256:9a0e…(64자)"},
-          "frames": {"path": "cam_A/epoch_0000.frames.jsonl", "bytes": 2410552, "sha256": "sha256:1b7f…(64자)"},
-          "codec_info": {"path": "cam_A/epoch_0000.codec_info.json", "bytes": 310, "sha256": "sha256:c3e2…(64자)"},
-          "frame_count": 9120,
-          "keyframe_count": 183,
-          "frame_sequence_range": [0, 9119],
-          "capture_time_range_ms": [1792486800212, 1792487165010],
-          "received_time_range_ms": [1792486800212, 1792487165061],
-          "timestamp_sources": ["RECEIVE_ESTIMATED"],
-          "timestamp_uncertainty_ms_max": 20.0,
-          "keyframe_interval_s_p50": 2.0,
-          "camera_to_gateway_gap": {"threshold_ms": 60.0, "count": 188, "max_ms": 353, "arrival_interval_ms_p95": 81},
-          "integrity": {"sequence_contiguous": true, "first_is_keyframe": true, "bytes_covered": true}
-        },
-        {
-          "stream_epoch": 1,
-          "…": "끊긴 뒤 다시 연 세그먼트. 형식은 위와 같다"
-        }
-      ]
-    }
-  ]
-}
-```
-
-사람이 찍히는 세션의 `consent`:
-
-```json
-{
-  "contains_people": true,
-  "consent_ref": "CF-2026-10-001",
-  "scope": ["dataset_internal", "runpod_ap_jp_1"],
-  "retention_until": "2027-01-31"
-}
-```
-
 ## 검사
 
-`simai-recorder record`·`manifest`·`verify` 가 아래를 검사한다(`validate_manifest`).
+`simai-recorder record`·`manifest`·`verify` 가 `simai_recorder.manifest.validate_manifest` 로 검사한다. 검사는 계약 스키마로 하고
+(저장소 루트의 `contracts/` 를 직접 읽는다. 다른 위치면 `SIMAI_CONTRACTS_DIR`), 스키마가 막는 것은 다음과 같다.
 
-- `session_id` 형식, `scenario` 있음, `storage.uri` 가 `volume://`·`s3://`
-- 동의와 보관 규칙(위 표)
-- `source.url` 에 계정(`user:pass@`)이 없음
-- 파일 경로가 세션 디렉터리 기준 상대 경로, 해시 형식
+- 필수 필드, `session_id` 형식, `scenario` 있음, `storage.uri` 가 `volume://`·`s3://`
+- 동의와 보관 규칙(위 표): RTSP 녹화는 `consent` 필수, 보관 기한은 실제 있는 날짜, 사람이 찍히면 `consent_ref`·`scope` 필수
+- `source.url` 에 계정(`user:pass@`)이 없음, 실제 카메라(RTSP)에 장애 흉내(`faults`) 없음
+- 파일 경로가 세션 디렉터리 기준 상대 경로(`..`·절대 경로 불가), 해시 형식 `sha256:<64자 소문자 16진수>`
+- `input_kinds` 가 `cameras[].source.kind` 를 모두 담음, `is_test_input` 이 입력 종류와 맞음(로컬 파일·합성 카메라가 섞인 세션은 `is_test_input: true`)
 - 세그먼트 `integrity` 가 모두 true
-- `verify` 는 여기에 더해 파일마다 크기·sha256 을 다시 계산해 비교한다
+
+스키마로 표현할 수 없는 규칙은 `validate_manifest` 가 더 본다: 시각·프레임 번호 범위의 from ≤ to, `camera_id` 중복.
+`verify` 는 여기에 더해 파일마다 크기·sha256 을 다시 계산해 비교한다. 녹화 시작 전에는 세션 설정의 `consent`·`storage_uri` 를
+같은 스키마 정의(`$defs/consent_requirement`, `storage.uri`)로 검사하고, 어긋나면 녹화를 시작하지 않는다.
+오류 문장에는 받은 값을 넣지 않는다(RTSP 주소의 계정이 화면·로그에 찍히지 않게). 스키마를 찾지 못하면(저장소 밖 실행, 틀린 `SIMAI_CONTRACTS_DIR`)
+그 경로를 적은 설정 오류로 멈춘다.
+
+## Tier 0 에서 읽기
+
+`simai_ai.io.VideoFileFrameSource.from_manifest(<세션 디렉터리>, epochs=...)` 가 manifest 를 녹화 도구와 같은 판정(같은 스키마·`format: date` 검사·스키마 밖 규칙, `simai_ai.io.recording_manifest_errors`)으로 검사한 뒤
+카메라마다 세그먼트 하나를 녹화 파일 입력(timestamp_source `FILE`, 명세 20.4)으로 읽는다(`dataset_id = recording/<session_id>`).
+재접속으로 세그먼트가 여럿인 카메라는 `epochs={"cam_A": 1}` 처럼 고른다. 프레임별 촬영 시각이 필요하면 I0 재생으로 읽는다
+([`gateway/recorder/README.md`](../../gateway/recorder/README.md) "Tier 0 에서 다시 읽기").
+위반이면 `ValueError` 이고, 문장에는 경로와 위반 규칙만 적는다(받은 값 없음). manifest 를 직접 넘기는 `recordings_from_manifest` 도
+`camera_id` 중복·범위 역전은 다시 본다. jsonschema 가 필요하다(extras `calibration` → `tier0` 묶음, 또는 dev 그룹).

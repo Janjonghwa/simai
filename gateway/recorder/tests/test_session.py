@@ -9,6 +9,7 @@ import pytest
 from videos import count_decoded, make_video
 
 from simai_recorder.clock import SystemClock
+from simai_recorder.contract import schema_errors
 from simai_recorder.config import load_session
 from simai_recorder.manifest import MANIFEST_FILE, validate_manifest, verify, write_manifest
 from simai_recorder.recorder import record_session
@@ -112,6 +113,14 @@ def test_manifest_fields(manifest, session_dir):
             headers = [r["header"] for r in read_frames(session_dir / seg["frames"]["path"])]
             assert len(headers) == seg["frame_count"]
             assert count_decoded(session_dir / seg["video"]["path"]) == seg["frame_count"]
+
+
+def test_sidecar_lines_match_contract(manifest, session_dir):
+    """frames.jsonl 한 줄은 계약의 frame_line(header = I0 frame_header) 형식이다."""
+    for cam in manifest["cameras"]:
+        for seg in cam["segments"]:
+            for row in read_frames(session_dir / seg["frames"]["path"]):
+                assert schema_errors(row, "#/$defs/frame_line") == []
 
 
 def test_file_loop_keeps_pts_increasing(manifest, session_dir):

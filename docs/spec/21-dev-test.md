@@ -12,6 +12,7 @@ contracts/                 # 모든 구간 계약의 정본 (JSON Schema)
   messages/                #   I0~I5 메시지 (12장)
   providers/               #   입력 대체 계약 (20.4)
   experiments/             #   scene_output, human_mesh_output, run_record
+  data/                    #   데이터 형식 계약 (녹화 세션 manifest 등, 15.3)
   examples/                #   스키마별 예시 (CI 검증 대상), invalid/는 실패해야 하는 예시
   scripts/                 #   예시 검증 스크립트
 ai/

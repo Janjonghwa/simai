@@ -188,6 +188,46 @@ def schema_errors(doc: Any, schema: str | Mapping[str, Any]) -> list[str]:
     ]
 
 
+def schema_violations(doc: Any, schema: str | Mapping[str, Any], *, check_formats: bool = True) -> list[str]:
+    """schema_errors 와 같은 검증이지만 위반 문장에 받은 값을 넣지 않는다.
+
+    외부에서 들어온 문서(녹화 manifest 등)에는 비밀 값(RTSP 계정)이 섞일 수 있어, jsonschema 기본 문장(e.message,
+    받은 값을 그대로 적는다) 대신 경로와 위반 규칙(validator) 이름, 스키마 쪽 기대값(빠진 필드 이름, const·enum·type·
+    format 값)만 적는다. check_formats 면 format(date 등)도 검사한다(jsonschema FormatChecker).
+    schema 가 이름인데 contracts/ 에 없으면 FileNotFoundError(찾은 contracts/ 위치와 SIMAI_CONTRACTS_DIR 를 적는다).
+    """
+    from jsonschema import Draft202012Validator
+    from jsonschema.exceptions import best_match
+
+    root = contracts_dir().resolve()
+    registry, by_name = _schemas(root)
+    if isinstance(schema, str):
+        if schema not in by_name:
+            raise FileNotFoundError(
+                f"{root} 에 {schema}.schema.json 이 없다. 저장소의 contracts/ 를 {CONTRACTS_DIR_ENV} 로 가리킨다"
+            )
+        schema = by_name[schema]
+    format_checker = Draft202012Validator.FORMAT_CHECKER if check_formats else None
+    validator = Draft202012Validator(dict(schema), registry=registry, format_checker=format_checker)
+    out: list[str] = []
+    for e in sorted(validator.iter_errors(doc), key=lambda e: list(map(str, e.absolute_path))):
+        while e.context:  # oneOf 등은 가장 그럴듯한 하위 위반으로 내려간다
+            e = best_match(e.context)
+        if e.validator is None:  # false 스키마: 이 자리에 쓸 수 없는 필드
+            rule = "false (쓸 수 없는 필드)"
+        elif e.validator == "required":
+            missing = [n for n in e.validator_value if isinstance(e.instance, Mapping) and n not in e.instance]
+            rule = f"required {json.dumps(missing, ensure_ascii=False)}"
+        elif e.validator in ("const", "enum", "type", "format", "contains"):
+            rule = f"{e.validator} {json.dumps(e.validator_value, ensure_ascii=False)}"
+        else:  # pattern, additionalProperties 등: 규칙 이름만 (받은 값·키를 적지 않는다)
+            rule = str(e.validator)
+        text = f"스키마 {'/'.join(map(str, e.absolute_path)) or '<root>'}: {rule}"
+        if text not in out:
+            out.append(text)
+    return out
+
+
 def defs_ref(name: str) -> dict[str, str]:
     """common/defs.schema.json 의 정의 하나를 가리키는 스키마."""
     return {"$ref": f"{DEFS_ID}#/$defs/{name}"}

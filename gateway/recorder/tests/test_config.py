@@ -7,7 +7,6 @@ import pytest
 
 from simai_recorder.clock import FakeClock
 from simai_recorder.config import ConfigError, credentials, default_session_id, load_session
-from simai_recorder.manifest import validate_manifest
 from simai_recorder.sources import RtspConfig, RtspSource, SourceError
 
 ENV = {"RTSP_USER": "simai", "RTSP_PASS": "p@ss:word", "RTSP_PASS_CAM_B": "other"}
@@ -116,14 +115,6 @@ def test_default_session_id_is_utc_and_slugged():
     assert default_session_id(FakeClock(1_760_342_400_000), "Walk Calibration!") == (
         "rec-20251013-080000z-walk-calibration"
     )
-
-
-def test_manifest_validation_catches_secret_in_url():
-    m = {"session_id": "rec-x", "scenario": "s", "storage": {"uri": "volume://AP-JP-1/x/"}, "input_kinds": ["RTSP"],
-         "consent": {"contains_people": False, "retention_until": "2027-01-31"},
-         "cameras": [{"camera_id": "cam_A", "source": {"kind": "RTSP", "url": "rtsp://u:p@10.0.0.1/stream1"},
-                      "segments": []}]}
-    assert validate_manifest(m) == ["cam_A: source.url 에 계정이 들어 있다"]
 
 
 def test_rtsp_connection_failure_is_source_error():

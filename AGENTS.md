@@ -39,7 +39,7 @@
 ## 저장소
 
 ```
-contracts/   JSON Schema 정본 (common, messages, providers, experiments, examples)
+contracts/   JSON Schema 정본 (common, messages, providers, experiments, data, examples)
 ai/          기능별 패키지(src/simai_ai), 배포 단위(services), 실험(experiments). 규칙은 ai/CONVENTION.md
 gateway/     노트북 중계·현장 경보 앱
 server/      EC2 Spring Boot

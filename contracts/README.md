@@ -37,6 +37,7 @@
 | `experiments/scene_output.schema.json` | EXP-01 정적 장면 결과 | 5.3, 20.2 |
 | `experiments/human_mesh_output.schema.json` | EXP-02 `avatar_asset` / `pose_frame` | 5.6, 20.3, 20.4 |
 | `experiments/run_record.schema.json` | 실험 Run 기록 | 20.5 |
+| `data/recording_manifest.schema.json` | 4대 동기화 녹화 세션 manifest(파일·해시·프레임 수·시각 범위·카메라 설정·동의·보관·저장 위치). 프레임 사이드카 한 줄은 `$defs/frame_line`(`frame_header` 재사용). 메시지·Provider 출력이 아닌 저장 문서라 `data/`에 둔다(설명은 `docs/data/`) | 11.5, 12.7, 15.3, 21.1 |
 
 I4(워치, 확장)와 I2 `/topic/world`·`/topic/health` 토픽 형식은 아직 없다. I5 `vlm_rationale` 외 작업 유형의 `input`·`result` 형식은 각 작업 티켓에서 정한다.
 
@@ -76,8 +77,9 @@ I4(워치, 확장)와 I2 `/topic/world`·`/topic/health` 토픽 형식은 아직
 - 정답·시뮬레이션 입력(`is_upper_bound: true`) 결과는 COMMITTED Scene 불가
 - HMR 포즈의 root 출처는 `TIER0`만 허용, 외형 텍스처는 `face_policy`(EXCLUDED/BLURRED)와 `consent_ref` 필수
 - 좌표계 선언은 World(m, 오른손, +Z)만 허용
+- 녹화 manifest: 실제 카메라(RTSP) 녹화는 동의·보관 기한(`consent`) 필수, 사람이 찍히면 동의서 ID·범위 필수(11.5). RTSP 주소에 계정 불가, 저장 위치는 `volume://`·`s3://`만, 파일 경로는 세션 디렉터리 기준 상대 경로만. `input_kinds` 는 카메라 입력 종류(`cameras[].source.kind`)를 모두 담고, RTSP 가 아닌 입력이 있으면 `is_test_input: true`(그때만). 세그먼트 무결성 검사는 모두 true
 
-스키마로 표현할 수 없는 규칙(R의 직교성, 관절 배열 길이 일치, `is_upper_bound`와 출처의 일치, 봉투 `source_id`와 `gateway_id`의 일치, `event_sequence`·`journal_offset` 단조 증가, `codec_info`와 `frame_header`의 `stream_epoch` 일치, HMAC 값 검증, `health.active_site_alerts` 의 `event_id` 유일, 시계 교환의 `t3_ms ≥ t2_ms`·`uncertainty_ms ≥ round_trip_ms/2`, `observation_summary` 의 `window_end_ms > window_start_ms`, `tier0_endpoint` 의 VIDEO `camera_id` 유일과 `gateway_id`·`source_id` 일치 등)은 각 모듈의 계약 시험에서 검사한다(명세 21.3).
+스키마로 표현할 수 없는 규칙(R의 직교성, 관절 배열 길이 일치, `is_upper_bound`와 출처의 일치, 봉투 `source_id`와 `gateway_id`의 일치, `event_sequence`·`journal_offset` 단조 증가, `codec_info`와 `frame_header`의 `stream_epoch` 일치, HMAC 값 검증, `health.active_site_alerts` 의 `event_id` 유일, 시계 교환의 `t3_ms ≥ t2_ms`·`uncertainty_ms ≥ round_trip_ms/2`, `observation_summary` 의 `window_end_ms > window_start_ms`, `tier0_endpoint` 의 VIDEO `camera_id` 유일과 `gateway_id`·`source_id` 일치, 녹화 manifest 시각 범위의 from ≤ to·`camera_id` 중복 등)은 각 모듈의 계약 시험에서 검사한다(명세 21.3).
 
 ## 검증
 
