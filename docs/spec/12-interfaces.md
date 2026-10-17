@@ -1,6 +1,6 @@
 # 12. 인터페이스 명세
 
-I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 봉투를 쓰고, 이미지는 메시지에 넣지 않고 객체 저장소 주소로 주고받는다. 아래 필드는 v1.0 기준이며 필드 정의의 정본은 저장소의 JSON Schema 파일로 관리한다. 스키마 파일은 저장소 `contracts/`에서 관리하며(21.2), 아직 스키마가 없는 메시지는 이 절의 예시가 기준이다.
+I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 봉투를 쓰고, 이미지는 메시지에 넣지 않고 객체 저장소 주소로 주고받는다. 아래 필드는 v1.0 기준 예시이며 필드 정의의 정본은 저장소 `contracts/`의 JSON Schema 파일이다(21.2). 아직 스키마가 없는 메시지는 이 절의 예시가 기준이다. v1.3 에서 바뀐 규칙 중 계약에 반영되지 않은 것(현장 경보 목록, `confidence_reasons`, I5 작업 가져가기, 2D 관측 보관, 엔드포인트 등록, 시계 차이 교환, 이벤트 재개)은 후속 계약 변경으로 맞춘다.
 
 ## 12.1 공통 봉투와 버전
 
@@ -23,12 +23,14 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 
 | ID | 구간 | 방식 | 메시지 |
 |---|---|---|---|
-| I1 | RunPod Tier 0 → EC2 | WebSocket + JSON | `world_state`(10 Hz), `health`(1 Hz), `observation_batch`(묶음), `calibration_update`, risk_event_transition, event_state_snapshot, 역방향 event_ack·config_bundle, `event_frame_ready` |
-| I2 | EC2 → 뷰어 | WebSocket(STOMP) + REST | 토픽 `/topic/world`, `/topic/events`, `/topic/health` / REST: 리플레이, 구역 CRUD, Scene 자산, 레이아웃 |
-| I3 | EC2 → PWA | Web Push + REST | 푸시 `risk_alert` / REST: 티켓 상태 변경, 사진 업로드 주소 발급 |
-| I4 | EC2 ↔︎ 워치 | WebSocket + JSON | 아래로 `watch_alert`, `heartbeat` / 위로 `ack`, `gait_features` |
-| I5 | EC2 ↔︎ RunPod | REST(비동기) | `POST /jobs` → `job_id` 반환 → RunPod이 `POST /callbacks/jobs/{id}`로 결과 전달(HMAC 서명) |
-| I0 | 노트북 ↔︎ RunPod Tier 0 | 카메라별 TLS 연결(프레임 헤더 + 압축 프레임), 제어는 WebSocket | 위로: 프레임 헤더를 붙인 카메라 4대 압축 프레임(12.7), 하트비트 / 아래로: local_alert, alarm_stop, health / 위로(제어): site_ack(현장 확인) |
+| I1 | RunPod Tier 0 ↔︎ EC2 | WebSocket + JSON | 위로(Tier 0 → EC2): `world_state`(10 Hz), `health`(1 Hz), `observation_batch`(필요 시 요약만. 2D 관측 원본은 RunPod 보관, 11.2), `calibration_update`, `risk_event_transition`, `event_state_snapshot`, `config_ack`, `event_frame_ready`, 엔드포인트 등록(3.12, 메시지 이름은 후속 계약) / 아래로(EC2 → Tier 0): `event_ack`, `journal_ack`, `config_bundle` |
+| I2 | EC2 → 뷰어 | WebSocket(STOMP) + REST | 토픽 `/topic/world`, `/topic/events`, `/topic/health` / REST: 리플레이, 구역 CRUD, 작업면 등록, Scene 자산, 레이아웃(12.6) |
+| I3 | EC2 ↔︎ PWA | Web Push + REST | 푸시 `risk_alert`, 시험 푸시 / REST: 티켓 상태 변경, 사진 업로드 주소 발급, 푸시 구독·해지, 수신 확인(12.6) |
+| I4 | EC2 ↔︎ 워치 | — | 이동(v1.3) → 부록 C |
+| I5 | RunPod 분석 워커 → EC2 | 작업 가져가기(long-poll 또는 WebSocket), TLS + 워커 토큰 | 워커가 EC2 에 먼저 접속해 `job_request`를 받고, 결과를 `job_callback` 형식으로 제출한다(12.5) |
+| I0 | 노트북 ↔︎ RunPod Tier 0 | 카메라별 TLS 연결(프레임 헤더 + 압축 프레임), 제어는 WebSocket(wss) | 위로: 프레임 헤더를 붙인 카메라 4대 압축 프레임(`frame_header`, 12.7), `codec_info`, `laptop_heartbeat` / 위로(제어): `site_ack`(현장 확인) / 아래로: `local_alert`, `alarm_stop`, `health`(활성 현장 경보 목록 포함, 3.10) / 양방향: 노트북–Pod 시계 차이 교환(3.9) |
+
+노트북 → EC2 는 HTTPS(기기 토큰)로 `laptop_heartbeat`(1초)를 보내고 Tier 0 엔드포인트를 조회한다(12.6).
 
 ## 12.3 I1 주요 메시지
 
@@ -61,6 +63,7 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 {
   "msg_type": "health",
   "payload": {
+    "system_health": "NOMINAL",
     "cameras": [{"id": "cam1", "fps": 14.8, "last_capture": 1760342400100, "sync_offset_ms": 6, "status": "OK"}],
     "pipeline_lag_ms": 120,
     "calibration_state": "CALIBRATED",
@@ -69,9 +72,11 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 }
 ```
 
+`health`는 노트북–Pod 시계 차이와 그 불확실성(3.9)도 싣는다(필드는 후속 계약).
+
 `event_frame_ready`는 EC2가 발급한 임시 업로드 주소로 프레임을 올린 뒤 그 주소와 촬영 시각·카메라만 보낸다.
 
-`risk_event_transition`은 RunPod Tier 0 서비스가 전이를 확정할 때마다 outbox를 거쳐 보낸다(3.2).
+`risk_event_transition`은 RunPod Tier 0 서비스가 전이를 확정할 때마다 저널·outbox를 거쳐 보낸다(3.2).
 
 ```json
 {
@@ -90,7 +95,7 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 }
 ```
 
-## 12.4 I2·I3·I4 주요 메시지
+## 12.4 I2·I3 주요 메시지
 
 ```json
 {
@@ -107,17 +112,19 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 ```
 
 - `rationale`은 VLM 결과가 오면 `risk_event` 갱신으로 채워진다.
-- I3 `risk_alert`와 I4 `watch_alert`는 `event_id`, 등급, 구역, 방향(워치), 한 줄 요약(규칙 근거)만 담는다.
-- I4 `ack`는 `event_id`, 진동 시각, 수신 확인 시각을 담는다.
+- “확인 필요”는 `confidence_reasons[]`로 바꾼다(7.1). 위 예시의 `needs_check`는 계약 변경 전 표기다.
+- I3 `risk_alert`는 `event_id`, 등급, 구역, 한 줄 요약(규칙 근거)만 담는다. 시험 푸시는 `risk_alert`가 아니며 “시험”을 표시한다(3.10).
 
 ## 12.5 I5 작업 유형
+
+**작업 가져가기.** 분석 워커가 EC2 로 먼저 접속해(long-poll 또는 WebSocket) 작업을 가져가 실행하고 결과를 제출한다. 그래서 Pod 로 들어오는 포트, IP 제한, HMAC 서명 콜백이 필요 없다. 연결은 TLS 와 워커 토큰으로 보호한다(14장). 계약(`job_request`·`job_callback`의 콜백 주소·서명 필드)은 후속 계약 변경으로 맞춘다.
 
 | `job_type` | 입력 | 출력 |
 |---|---|---|
 | `vlm_rationale` | 이벤트 프레임 주소, 구조화 상태 | 근거 문장, 상향 의견 |
-| `tbm_report` | 규칙 계산 결과, RAG 질의 | 보고서 본문, 인용 조항 ID |
+| `tbm_report` | 규칙 계산 결과, RAG 질의 | 보고서 본문(LLM 외부 API, 텍스트만), 인용 조항 ID |
 | `static_reconstruct` | 카메라 프레임 주소, 보정 버전 | glTF 주소, 품질 지표 |
-| `calibration_ba` | 2D 관측 묶음, 초기 보정 | 보정 후보 |
+| `calibration_ba` | 2D 관측 묶음(Network Volume), 초기 보정 | 보정 후보 |
 | `hmr_refine` (확장·EXP-02) | 프레임·마스크·keypoint, World ID·보정 버전 | MHR 메시·포즈, 관절 출처, 품질 메타데이터 |
 | `hmr_appearance_update` (EXP-02 실험) | 동일 World ID의 동의된 관측 샘플, 이전 시각 자산 | 신규 텍스처/외형 버전, 관측 영역·불확실성·아티팩트 참조 |
 
@@ -129,20 +136,29 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 
 | 메서드 | 경로 | 용도 | 권한 |
 |---|---|---|---|
-| POST | /api/auth/login | 로그인, JWT 발급 | 공개 |
+| POST | /api/auth/login | 로그인, JWT·갱신 토큰 발급 | 공개 |
 | GET | /api/health | 현재 System Health | 열람 |
 | GET | /api/world?at=\{t\} | 시각 t의 World 상태 스냅샷 | 열람 |
-| GET | /api/replay?from=\{t1\}&amp;to=\{t2\} | 구간 궤적·골격·이벤트 | 열람 |
+| GET | /api/replay?from=\{t1\}&amp;to=\{t2\} | 구간 궤적·이벤트(최소 리플레이, 골격·버전은 확장) | 열람 |
 | GET · POST · PUT | /api/zones | 구역 조회·생성·새 버전 | 쓰기는 관리자 |
+| GET · POST · PUT | /api/static-objects | 정적 객체·작업면(OBB, 상판 높이) 조회·등록·새 버전(7.5) | 쓰기는 관리자 |
 | GET | /api/rules | 규칙 버전 조회 | 열람 |
+| POST · GET | /api/config-bundles, /api/config-bundles/\{version\} | 구성 묶음 발행, 현장 적용 상태 조회 | 발행은 관리자, 조회는 열람 |
 | GET · POST | /api/events, /api/events/\{id\}/ack | 이벤트 목록, 확인 | 반장·관리자 |
 | GET | /api/scenes/current | COMMITTED Scene과 glTF 주소 | 열람 |
 | POST | /api/scenes/rebuild | 정적 3D 재생성 요청 | 관리자 |
-| GET · POST | /api/layouts, /api/layouts/\{id\}/evaluate | 가상 레이아웃, 계획 모드 평가 | 관리자 |
+| GET · POST | /api/layouts | 가상 레이아웃 | 관리자 |
+| POST | /api/layouts/\{id\}/evaluate | 계획 모드 단독 평가(확장. M3 TBM 보고서에서 계산을 어떻게 요청할지는 확인 필요) | 관리자 |
 | POST | /api/reports/tbm | TBM 보고서 생성 요청 | 관리자 |
 | GET · PATCH | /api/tickets, /api/tickets/\{id\} | 조치 티켓 조회·상태 변경 | 반장(조회는 관리자도) |
 | POST | /api/uploads/sign | 사진·프레임·클립 임시 업로드 주소 | 기기·반장 |
-| POST | /api/push/subscribe | Web Push 구독 등록 | 반장 |
+| GET | /api/clips/\{id\} | 이벤트 클립 조회(임시 서명 주소) | 관리자 |
+| PUT | /api/clips/\{id\}/retention | 클립 보존 표시 붙이기·떼기 | 관리자 |
+| POST · DELETE | /api/push/subscribe | Web Push 구독 등록·해지 | 반장 |
+| POST | /api/push/receipts | 푸시 수신 확인(Service Worker) | 반장 기기 |
+| POST | /api/push/test | 시험 푸시(RiskEvent 아님, “시험” 표시) | 관리자 |
+| POST | /api/devices/heartbeat | 노트북 하트비트(`laptop_heartbeat`, 1초) | 기기 |
+| GET | /api/endpoints/tier0 | Tier 0 공개 IP·포트 조회(등록은 I1) | 기기 |
 | GET | /api/metrics | 시스템 지표 조회 | 관리자 |
 
 ## 12.7 I0 프레임 식별과 전송
@@ -166,8 +182,11 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 ```
 
 - `stream_epoch`는 카메라 스트림이 재연결될 때마다 증가한다. `(camera_id, stream_epoch, frame_sequence)`가 프레임의 유일 식별자다.
-- 전송: 헤더 + 프레임을 길이 접두 방식으로 카메라별 독립 TLS over TCP 연결에 싣는다(기본안: 한 카메라의 지연이 다른 카메라를 막지 않도록). 4대를 하나로 묶은 다중화 연결은 G0 비교군이다. RunPod Pod의 Direct TCP 포트를 쓰고, TLS는 Tier 0 서비스가 직접 종료하며, 접속 시 노트북 기기 토큰으로 인증한다. 제어 메시지(local_alert, alarm_stop, health)는 같은 방식으로 인증한 WebSocket으로 주고받는다.
-- 누락: frame_sequence 빈 구간은 노트북 → RunPod 구간의 손실(gateway_to_runpod_loss)로 기록하고 재요청하지 않는다(실시간 우선). 카메라 → 노트북 구간은 RTSP over TCP라 손실이 번호 빈칸이 아니라 도착 간격의 끊김으로 나타나므로, 프레임 도착 간격과 RTP 타임스탬프 간격으로 camera_to_gateway_gap을 잰다. 정책상 건너뛴 프레임(skipped_by_policy)은 손실이 아니다. 카메라 내부에서 버린 프레임은 관측할 수 없으므로 상류 구간의 실제 손실률은 확정할 수 없다. 세 값은 health와 G0에 따로 보고한다.
+- 접속: 노트북은 EC2 에서 받은 현재 엔드포인트(3.12)로 접속한다.
+- 전송: 헤더 + 프레임을 길이 접두 방식으로 카메라별 독립 TLS over TCP 연결에 싣는다(한 카메라의 지연이 다른 카메라를 막지 않도록). RunPod Pod의 Direct TCP 포트를 쓰고, TLS는 Tier 0 서비스가 직접 종료하며, 접속 시 노트북 기기 토큰으로 인증한다. 제어 메시지(local_alert, alarm_stop, health, site_ack, laptop_heartbeat, 시계 차이 교환)는 같은 방식으로 인증한 WebSocket(wss)으로 주고받는다.
+- 서버 확인(공개키 고정): Tier 0 TLS 키는 한 번 만들어 Network Volume 비밀 폴더에 둔다. 노트북은 그 공개키 지문만 신뢰한다(또는 팀 사설 CA). 인증서 검증을 끄는 구현은 금지한다(14장).
+- 송신 큐: 노트북은 카메라별 송신 큐에 상한을 두고 소켓 송신 버퍼를 작게 잡는다. 큐가 넘치면 다음 키프레임까지 버리고, 버린 프레임은 노트북 쪽 skipped 로 따로 센다(필드 이름은 후속 계약). 이것은 전송 손실(gateway_to_runpod_loss)이나 Tier 0 의 skipped_by_policy 와 다르다.
+- 누락: frame_sequence 빈 구간은 노트북 → RunPod 구간의 손실(gateway_to_runpod_loss)로 기록하고 재요청하지 않는다(실시간 우선). 카메라 → 노트북 구간은 RTSP over TCP라 손실이 번호 빈칸이 아니라 도착 간격의 끊김으로 나타나므로, 프레임 도착 간격과 RTP 타임스탬프 간격으로 camera_to_gateway_gap을 잰다. 정책상 건너뛴 프레임(skipped_by_policy)은 손실이 아니다. 카메라 내부에서 버린 프레임은 관측할 수 없으므로 상류 구간의 실제 손실률은 확정할 수 없다. 이 값들은 health와 G0에 따로 보고한다.
 - 역순·지연 도착: 시간 보간 창(예: 200ms) 안이면 정렬해 쓰고, 창을 넘긴 프레임은 버리고 기록만 한다.
-- 재접속: 새 stream_epoch로 시작하고, 노트북은 연결 직후 코덱 정보(코덱 종류, SPS/PPS, PTS timebase)를 먼저 보낸 뒤 키프레임부터 전송한다. 코덱 정보와 키프레임이 모두 도착할 때까지 그 카메라는 관측 없음으로 처리한다. 핵심 요구는 연결 개수가 아니라 프레임과 시각이 잘못 결합되지 않고 카메라별 최신성이 유지되는 것이다.
-- 촬영 시각은 3.9의 촬영 시각 계약을 따른다.
+- 재접속: 새 stream_epoch로 시작하고, 노트북은 연결 직후 코덱 정보(`codec_info`: 코덱 종류, SPS/PPS, PTS timebase)를 먼저 보낸 뒤 키프레임부터 전송한다. 코덱 정보와 키프레임이 모두 도착할 때까지 그 카메라는 관측 없음으로 처리한다. 핵심 요구는 연결 개수가 아니라 프레임과 시각이 잘못 결합되지 않고 카메라별 최신성이 유지되는 것이다.
+- 촬영 시각은 3.9의 촬영 시각 추정과 촬영 시각 계약을 따른다.
