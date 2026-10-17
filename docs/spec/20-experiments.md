@@ -27,11 +27,11 @@ Jira는 **EXP-01 / EXP-02**를 큰 Feature 티켓으로 유지하고, 티켓 하
 
 ## 20.2 EXP-01 — Static Scene Reconstruction
 
-**연구 질문:** MapAnything Native의 결과를 10×10m, 4대 고정 카메라 관측과 실제 평면도에 정합해 COMMITTED Scene에 사용할 수 있는 시각 배경(glTF)으로 만들 수 있는가?
+**연구 질문:** MapAnything Native의 결과를 10×10m, 4대 고정 카메라 관측과 World 좌표(4.1)에 정합해 COMMITTED Scene에 사용할 수 있는 시각 배경(glTF)으로 만들 수 있는가?
 
 1. **Baseline:** 소수의 빈 교실 프레임, K·pose, 가중치·CUDA 환경을 고정하고 depth/point map/camera 출력을 기록.
 2. **복원:** 뷰 간 정합→이상점 제거→표면 생성/메시/텍스처→단순화. 동적 사람 영역은 마스크로 제거.
-3. **정렬:** §4의 월드 미터/Z-up, 평면도 원점/축/스케일, calibration_version에 정렬. 관측된 형상과 추정된 공간 구분.
+3. **정렬:** §4의 월드 미터/Z-up, World 원점/축/스케일, calibration_version에 정렬. 관측된 형상과 추정된 공간 구분.
 4. **검증:** G4 벽 차이 5cm, 상판 높이/위치 및 공동 관측 점의 기존 목표를 유지. 실패/가림/반사/저텍스처 사례도 보고.
 5. **통합:** glTF와 Scene 버전/해시/검증 결과를 내보내고 Three.js 실제 화면에서 배경을 확인.
 
@@ -69,7 +69,7 @@ Jira는 **EXP-01 / EXP-02**를 큰 Feature 티켓으로 유지하고, 티켓 하
 | model_version, input_hash, run_id | 재현과 감사 추적 메타데이터 |
 | 아바타 구동 | root 위치와 접지는 Tier 0(5.2)가 정하고, HMR은 관절 회전과 체형만 제공한다. 메시의 발은 접지가 확인되면 `ground_anchor_xyz`에 맞춘다. HMR 결과가 Tier 0 최신 상태보다 기준(초기값 500ms) 넘게 늦거나 실패하면 Tier 0 골격 구동 기본 아바타로 돌아간다. G5의 발-바닥 오차 기준(5cm)은 HMR 아바타에도 적용한다 |
 
-별도 버전의 실험 메시지로 시작하되, I5의 Job 유형/콜백 결과만 변경하고 I1 LIVE World 계약은 Reviewer 승인 없이 수정하지 않는다. HMR 업데이트가 늦으면 마지막 유효 시각 자산을 표시하되 staleness를 노출하고, 실패하면 §13의 기본 아바타 또는 비상 2D 화면을 유지한다.
+별도 버전의 실험 메시지로 시작하되, I5의 Job 유형/콜백 결과만 변경하고 I1 LIVE World 계약은 Reviewer 검토와 Lead 승인 없이 수정하지 않는다(수정 6). HMR 업데이트가 늦으면 마지막 유효 시각 자산을 표시하되 staleness를 노출하고, 실패하면 §13의 기본 아바타 또는 비상 2D 화면을 유지한다.
 
 **입력 대체 계약.** EXP와 개발 작업은 아직 없는 상류 결과(G1 보정, Tier 0 World 상태)를 기다리지 않도록, 상류 입력을 Provider 인터페이스 뒤에서 받는다. 지금은 대체 구현으로 개발하고, 상류가 준비되면 설정만 바꿔 실제 구현으로 교체한다. 소비하는 코드는 바뀌지 않는다.
 
@@ -82,13 +82,13 @@ Jira는 **EXP-01 / EXP-02**를 큰 Feature 티켓으로 유지하고, 티켓 하
 | Provider | 지금(대체) | 상류 준비 후(실제) |
 |---|---|---|
 | FrameSource | 공개 다시점 데이터, 시나리오 녹화 파일, 시뮬레이터 | 같음(녹화·라이브) |
-| CalibrationProvider | `DATASET_GT`(공개 데이터의 정답 카메라), `MANUAL_PNP`(평면도 점), `CHARUCO`, `SIM` | `G1_AUTO`(G1 자동 보정 결과) |
+| CalibrationProvider | `DATASET_GT`(공개 데이터의 정답 카메라), `MANUAL_PNP`(수동 대응점. 실측 평면도를 쓰지 않아 제품 경로에서는 빠짐, 수정 6), `CHARUCO`, `SIM`, `MODEL_ESTIMATE`(이전 Run 에서 모델이 추정한 카메라를 다시 입력. 예: EXP-01 known 모드 시험) | `G1_AUTO`(G1 자동 보정 결과) |
 | WorldTrackProvider | `DATASET_GT`(공개 데이터의 정답 3D 자세·ID), `SIM` | `TIER0_LOG`(Tier 0를 녹화 입력으로 돌린 결과, 또는 Spatial DB에 기록된 `world_state`·`observation_batch`) |
 
 1. **같은 필드 의미.** 대체 구현도 실제 구현과 같은 의미를 지킨다. 접지를 모르면 `ground_anchor_xyz`를 비우고 Z=0으로 채우지 않는다. World 좌표는 미터, 오른손, Z-up이다.
 2. **출처 기록.** 모든 Provider 출력에 `provider_source`(위 표의 값)와 버전을 붙이고, 이를 소비한 결과물(`scene_output`, `human_mesh_output`, Run 기록)에 `input_provenance`로 그대로 남긴다.
 3. **정답 입력은 상한 성능.** `DATASET_GT`나 `SIM` 입력으로 얻은 지표는 "입력이 완벽할 때의 상한"으로 보고하고 제품 성능으로 주장하지 않는다. 채택 판정(E-GATE-4)에는 `TIER0_LOG`·`G1_AUTO` 입력으로 다시 잰 결과가 필요하며, 그 전에는 HOLD 이하로만 판정한다.
-4. **제품 Scene의 조건.** COMMITTED Scene은 4.5대로 CALIBRATED 보정에서만 생성한다. CALIBRATED는 출처(`G1_AUTO`, 4.3 대체 경로인 `MANUAL_PNP`·`CHARUCO`)와 관계없이 4.4의 독립 검증점을 통과해야 한다. `DATASET_GT`·`SIM` 보정은 우리 현장의 보정이 아니므로 CALIBRATED가 될 수 없고, 그 보정으로 만든 결과는 연구 근거로만 쓴다. 보정 버전이 바뀌면 해당 Scene을 재생성 대상으로 표시한다.
+4. **제품 Scene의 조건.** COMMITTED Scene은 4.5대로 CALIBRATED 보정에서만 생성한다. CALIBRATED는 출처(`G1_AUTO`, 4.3 대체 경로인 `CHARUCO`)와 관계없이 4.4의 독립 검증점을 통과해야 한다. `DATASET_GT`·`SIM`·`MODEL_ESTIMATE` 보정은 검증된 현장 보정이 아니므로 CALIBRATED가 될 수 없고, 그 보정으로 만든 결과는 연구 근거로만 쓴다. 보정 버전이 바뀌면 해당 Scene을 재생성 대상으로 표시한다.
 5. **Tier 0 코드를 복제하지 않는다.** 오프라인용으로 삼각측량·추적을 따로 구현하지 않는다. `TIER0_LOG`는 Tier 0 서비스를 파일 입력 모드로 돌려 얻는다.
 6. **계약 시험.** 모든 Provider 구현은 같은 계약 시험(스키마 검증, R의 직교성, 단위·축 검사, Z=0 대체 금지)을 통과해야 한다(21.3).
 7. **데이터 출처.** 공개 데이터는 라이선스(연구용 여부)를 확인한 뒤 쓰고 현장 데이터와 분리해 평가한다(15.4). 우리 녹화는 11.5 동의 범위 안에서만 쓰고, 외형 실험은 별도 동의 승인 뒤에 쓴다.

@@ -2,7 +2,7 @@
 
 | 용어 | 정의 |
 |---|---|
-| World | 평면도에 묶인 단일 미터 좌표계(오른손, Z-up, 바닥 Z=0) |
+| World | 첫 CALIBRATED 때 교실 바닥·벽으로 정한 단일 미터 좌표계(오른손, Z-up, 바닥 Z=0) |
 | World ID | 카메라 간에 연결된 한 사람·객체의 세션 단위 익명 번호 |
 | Tier 0 | 실시간 안전 경로. 관측에서 World 상태까지, RunPod Tier 0 서비스에서 실행(v1.2), 위치의 정본(5장). Tier 1은 비동기 3D 인체 강화(SAM 3D Body 등), 안전 판단 권한 없음 |
 | 게이트웨이 | 교실망에서 카메라 영상을 받아 촬영 시각을 붙여 RunPod로 중계하고 현장 경보를 울리는 노트북 |
@@ -38,7 +38,7 @@
 | MHR | SAM 3D Body의 파라메트릭 바디 표현 |
 | 3DGS | 3D Gaussian Splatting. 시각용 정적 장면 표현 |
 | Scene | 정적 3D 장면의 한 버전. 자산 주소, 생성에 쓴 보정 버전, 상태(CANDIDATE\~REJECTED)로 구성 |
-| Operational Geometry | 안전 판단에 쓰는 검증된 형상(평면도의 벽·바닥·고정 구조물, 사물의 보수적 OBB). 보기용 형상(glTF, 3DGS)과 구분 |
+| Operational Geometry | 안전 판단에 쓰는 검증된 형상(보정으로 확정한 바닥 평면, 등록 정적 객체의 보수적 OBB, 위험 구역). 보기용 형상(glTF, 3DGS)과 구분 |
 | 링 버퍼 | RunPod Tier 0 서비스가 카메라별 최근 영상을 메모리에 잠시 보관하는 순환 저장 공간. 이벤트 클립의 출처 |
 | 관제 화면 경보 | MVP의 현장 경보. 관제 화면의 소리·점멸 알림(3.10) |
 | outbox | 이벤트 저널에서 아직 EC2 ACK를 받지 않은 구간(acked_offset 이후). 별도 저장소가 아님 |
@@ -58,3 +58,4 @@
 | 이벤트 저널 | 모든 이벤트 전이를 추가만 하는 내구성 로그. 재시작 복구의 정본이며 min(acked_offset, last_applied_journal_offset) 이전만 정리. outbox는 acked_offset 이후 구간 |
 | journal_offset / acked_offset | 저널 전체의 전역 단조 증가 위치 / EC2가 받았다고 확인한 마지막 저널 위치. 이벤트별 event_sequence와 다름 |
 | site_ack | 노트북 현장 확인 버튼의 확인. EC2 단절 중에도 소리를 멈추고 저널에 기록 |
+| BEV 평면도 | 카메라·정적 3D 를 위에서 본 화면으로 자동 생성한 간략한 2D 개요. 좌표·스케일 기준이 아니며 안전 판단에 쓰지 않음(수정 6) |
