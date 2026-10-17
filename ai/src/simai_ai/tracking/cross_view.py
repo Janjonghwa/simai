@@ -361,9 +361,14 @@ class CrossViewAssociator:
         camera = self.rig.cameras[lv.camera_id]
         thr = self.config.min_keypoint_confidence
         kps = lv.view.keypoints
-        mask = np.array([kp is not None and kp[2] >= thr for kp in kps], dtype=bool)
-        pixels = np.array([kp[:2] if kp is not None else (0.0, 0.0) for kp in kps], dtype=float)
-        normalized = camera.normalize(pixels)
+        # 값이 유한하지 않거나 왜곡을 제거할 수 없는 keypoint 는 관측으로 세지 않는다(모르면 비움)
+        mask = np.array(
+            [kp is not None and all(math.isfinite(float(x)) for x in kp[:3]) and kp[2] >= thr for kp in kps],
+            dtype=bool,
+        )
+        pixels = np.array([kp[:2] if m else (0.0, 0.0) for kp, m in zip(kps, mask)], dtype=float)
+        normalized, undistorted = camera.normalize_with_mask(pixels)
+        mask &= undistorted
         floor_ray = None
         ankles = [j for j in ANKLES[self.joint_layout] if mask[j]]
         if ankles:

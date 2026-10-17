@@ -10,6 +10,7 @@ from dataclasses import FrozenInstanceError, replace
 import numpy as np
 import pytest
 
+from simai_ai.geometry import distortion
 from simai_ai.geometry.coordinates import PinholeCamera
 from simai_ai.geometry.interpolation import InterpolatedView
 from simai_ai.geometry.joint_gate import (
@@ -546,3 +547,54 @@ def test_config_is_explicit_and_frozen():
     with pytest.raises(FrozenInstanceError):
         cfg.max_joint_speed_mps = 1.0  # type: ignore[misc]
     assert replace(cfg, max_joint_speed_mps=1.0).max_joint_speed_mps == 1.0
+
+
+# --------------------------------------------------------------------------- 풀 수 없는 관측 (S15P31A101-166)
+
+
+def test_non_finite_own_keypoint_is_dropped_without_crash():
+    """이 사람 keypoint 에 NaN·inf 가 있으면 update 가 예외로 죽지 않고 그 관측만 빠진다(-29 리뷰)."""
+    rig = corner_rig()
+    X = standing_joints()
+
+    def with_bad(views, value):
+        return [
+            replace(
+                v,
+                keypoints=tuple(
+                    value if (v.camera_id == "cam1" and j == L_WRIST) else kp for j, kp in enumerate(v.keypoints)
+                ),
+            )
+            for v in views
+        ]
+
+    for bad in [(math.nan, 500.0, 0.9), (500.0, math.inf, 0.9), (500.0, 500.0, math.nan)]:
+        sk = JointGate().update(with_bad(views_of(rig, X, cameras=["cam1", "cam2", "cam3"]), bad), rig, NO_OTHERS)
+        assert sk.joints[L_WRIST].xyz is not None
+        assert "cam1" not in sk.joints[L_WRIST].camera_ids
+        sk = JointGate().update(with_bad(views_of(rig, X, cameras=["cam1", "cam2"]), bad), rig, NO_OTHERS)
+        assert sk.joints[L_WRIST].xyz is None
+        assert sk.joints[L_WRIST].validity == JointValidity.UNAVAILABLE
+
+
+def test_competitor_that_cannot_be_undistorted_makes_check_unknown():
+    """다른 사람 keypoint 가 왜곡 식이 접히는 영역에 있으면 경쟁 후보 여부를 모른다: 2대 관절 UNCERTAIN."""
+    base = corner_rig()
+    folding = RigCamera("cam2", base.cameras["cam2"].pinhole, SIZE, "OPENCV_PINHOLE", (-0.3, 0.0, 0.0, 0.0, 0.0))
+    cams = {**base.cameras, "cam2": folding}
+    rig = CameraRig(base.calibration_version, "SIM", "PROVISIONAL", cams, base.calibration_provenance)
+    X = standing_joints()
+    views = []
+    for cid in ("cam1", "cam2"):
+        cam = rig.cameras[cid]
+        xc = cam.to_camera(X)
+        uv = cam.ideal_pixels(distortion.distort(xc[:, :2] / xc[:, 2:3], cam.distortion_model, cam.distortion_coeffs))
+        views.append(InterpolatedView(cid, T, tuple((float(u), float(v), 0.9) for u, v in uv), "SIM", 0.0, (T,)))
+    sk = JointGate().update(views, rig, NO_OTHERS)
+    assert all(gj.validity == JointValidity.VALID for gj in sk.joints)
+    other = [None] * 17
+    other[L_WRIST] = (0.0, 0.0, 0.9)  # cam2 영상 모서리: 접히는 영역
+    assert math.isnan(epipolar_distance_px(rig.cameras["cam1"], views[0].keypoints[L_WRIST], folding, other[L_WRIST]))
+    sk = JointGate().update(views, rig, {"cam2": [tuple(other)]})
+    assert is_flagged(sk.joints[L_WRIST], GateIssue.COMPETITOR_CHECK_UNAVAILABLE)
+    assert all(gj.validity == JointValidity.VALID for j, gj in enumerate(sk.joints) if j != L_WRIST)

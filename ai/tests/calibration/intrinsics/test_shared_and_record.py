@@ -269,3 +269,18 @@ def test_slightly_off_fourth_camera_is_not_no_consensus():
     shared = combine_shared_lens(estimates)
     assert shared.consensus is True and shared.common.status == STATUS_OK
     assert set(shared.outlier_camera_ids) <= {"cam4"}
+
+
+def test_unmeasurable_discrepancy_is_outlier_and_record_stays_strict_json():
+    """공통 모델이 영상 안에서 접혀 재투영 차이를 잴 수 없으면(inf) 이상치로 보고, 기록에서는 값을 비운다 (-166)."""
+    # ρ_d = ρ(1 − 0.6ρ²) 는 ρ ≈ 0.745 에서 접힌다(ρ_d 최대 ≈ 0.50 < 모서리 1): 모서리 픽셀은 광선이 없다
+    estimates = [_fake(cid, 442.0, b=(-0.6, 0.0)) for cid in CAMERA_IDS]
+    shared = combine_shared_lens(estimates)
+    assert not shared.consensus
+    for d in shared.deviations:
+        assert d.discrepancy_p95_px == float("inf") and d.outlier
+        rec = d.to_record()
+        assert "discrepancy_p95_px" not in rec and "discrepancy_rel" not in rec
+        assert any("잴 수 없음" in r for r in rec["reasons"])
+    record = build_intrinsics_record(created_at=T0, frames=FRAMES_SIM, estimates=estimates, shared=shared)
+    json.dumps(record, allow_nan=False)
