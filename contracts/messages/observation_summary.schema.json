@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/observation_summary.schema.json",
+  "title": "I1 observation_summary",
+  "description": "RunPod Tier 0 → EC2, I1, 필요할 때. 2D 관측의 카메라별 요약 (명세 11.2, 12.2 I1 observation_batch '필요 시 요약만', FR-129, FR-141). 2D 관측 원본(observation_batch 형식의 bbox·keypoint)은 RunPod Network Volume 에 Parquet 로 보관하고(보관 구현은 S15P31A101-162) EC2 로 보내지 않는다. 이 메시지에는 원본 2D 값(frames, detections 배열, bbox, keypoints_2d 등)을 싣지 않으며, 그래서 payload 와 카메라 집계 객체를 닫아(additionalProperties: false) 정의된 집계 값 말고는 받지 않는다. 보고 구간은 [window_start_ms, window_end_ms) 이고 시각은 촬영 시각(Tier 0 시계로 옮긴 값) 기준이다. 보내는 주기는 구현이 정한다.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "observation_summary" },
+    "payload": {
+      "type": "object",
+      "required": ["window_start_ms", "window_end_ms", "cameras"],
+      "properties": {
+        "window_start_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "window_end_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "calibration_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "cameras": { "type": "array", "items": { "$ref": "#/$defs/camera_summary" } },
+        "archive_uri": {
+          "allOf": [{ "$ref": "../common/defs.schema.json#/$defs/uri" }, { "pattern": "^volume://" }],
+          "description": "이 구간 원본이 보관된 Network Volume 위치(volume://<datacenter>/<path>). calibration_ba 작업 입력을 가리킬 때 쓴다 (12.5). volume:// 만 받는다(data: URI 등으로 원본을 실을 수 없게). 보관하지 않았으면 생략"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+
+  "$defs": {
+    "camera_summary": {
+      "type": "object",
+      "description": "카메라 하나의 보고 구간 집계",
+      "required": ["camera_id", "frames_processed", "detections", "local_tracks"],
+      "properties": {
+        "camera_id": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+        "frames_processed": { "type": "integer", "minimum": 0, "description": "검출·자세 추정을 마친 프레임 수" },
+        "detections": { "type": "integer", "minimum": 0, "description": "사람 검출 수 합계" },
+        "max_detections_per_frame": { "type": "integer", "minimum": 0 },
+        "local_tracks": { "type": "integer", "minimum": 0, "description": "구간 안에 나타난 카메라 내 트랙(local_track_id, 카메라별 Local Tracker) 수" },
+        "linked_tracks": { "type": "integer", "minimum": 0, "description": "그중 World ID 에 연결된 트랙 수" },
+        "frame_age_ms": { "$ref": "../common/defs.schema.json#/$defs/percentiles_ms", "description": "촬영 → 추론 시점 경과 (5.1)" },
+        "last_capture": {
+          "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" }, { "type": "null" }],
+          "description": "구간 안 마지막 처리 프레임의 촬영 시각. 없으면 null"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

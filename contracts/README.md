@@ -10,9 +10,11 @@
 | `messages/risk_event_transition.schema.json` | I1 Tier 0 → EC2 LIVE 이벤트 전이(저널 기록, 운영자 확인 포함) | 3.2, 6.4, 12.3 |
 | `messages/event_state_snapshot.schema.json` | I1 Tier 0 → EC2 재동기화 후 활성 이벤트 최종 상태 | 3.2 |
 | `messages/health.schema.json` | I1 Tier 0 → EC2(및 I0 노트북) 1 Hz 상태·손실 3종 | 3.11, 5.1, 6.2, 12.3, 12.7 |
-| `messages/observation_batch.schema.json` | I1 Tier 0 → EC2 카메라별 2D 관측 묶음 | 5.1, 11.2 |
+| `messages/observation_batch.schema.json` | Tier 0 카메라별 2D 관측 묶음(RunPod Network Volume 보관 형식, EC2 로는 `observation_summary`) | 5.1, 11.2 |
+| `messages/observation_summary.schema.json` | I1 Tier 0 → EC2 2D 관측 카메라별 요약(원본은 RunPod 보관) | 11.2, 12.2 |
 | `messages/calibration_update.schema.json` | I1 Tier 0 → EC2 보정 상태·버전 변경 | 4.4, 4.5 |
 | `messages/event_frame_ready.schema.json` | I1 Tier 0 → EC2 이벤트 프레임 업로드 완료(주소만) | 12.3 |
+| `messages/tier0_endpoint.schema.json` | I1 Tier 0 → EC2 Pod 엔드포인트 등록(공개 IP·포트·공개키 지문). 노트북 조회 응답도 이 형식 | 3.12, 12.6, 12.7 |
 | `messages/config_bundle.schema.json` | I1 EC2 → Tier 0 구성 묶음 발행 | 3.2, 11.1 |
 | `messages/config_ack.schema.json` | I1 Tier 0 → EC2 구성 묶음 적용·거부 | 3.2 |
 | `messages/event_ack.schema.json` | I1 EC2 → Tier 0 운영자 확인(관리자·반장) | 3.2 |
@@ -22,6 +24,8 @@
 | `messages/local_alert.schema.json` | I0 Tier 0 → 노트북 현장 경보 | 3.10, 7.3 |
 | `messages/alarm_stop.schema.json` | I0 Tier 0 → 노트북 반복 소리 정지(누가 확인했는지 포함) | 3.2, 3.10 |
 | `messages/site_ack.schema.json` | I0 노트북 → Tier 0 현장 확인 버튼 | 3.10 |
+| `messages/clock_sync_request.schema.json` | I0 Tier 0 → 노트북 시계 차이 교환 요청(t1) | 3.9, 6.1 |
+| `messages/clock_sync_response.schema.json` | I0 노트북 → Tier 0 시계 차이 교환 응답(t1·t2·t3) | 3.9, 6.1 |
 | `messages/laptop_heartbeat.schema.json` | 노트북 → Tier 0(I0)·EC2(HTTPS) 1초 하트비트, Tier 0 연결 상태 | 3.2, 6.5 |
 | `messages/risk_event.schema.json` | I2 EC2 → 뷰어 `/topic/events` | 12.4 |
 | `messages/risk_alert.schema.json` | I3 EC2 → 반장 PWA Web Push | 10.1, 12.4 |
@@ -51,6 +55,7 @@ I4(워치, 확장)와 I2 `/topic/world`·`/topic/health` 토픽 형식은 아직
 - **기록 순서:** 연결(또는 새 `stream_epoch`) 직후 `codec_info` 한 번, 그 뒤 키프레임부터 `frame_header` + 압축 프레임(H.264 접근 단위)을 길이 접두 방식으로 싣는다. 헤더와 프레임은 같은 기록에 싣는다. 코덱 정보와 키프레임이 모두 오기 전까지 그 카메라는 관측 없음이다.
 - **누락:** `frame_sequence` 빈 구간은 `gateway_to_runpod_loss`로 기록하고 재요청하지 않는다. 카메라 → 노트북 끊김(`camera_to_gateway_gap`)과 정책상 건너뛴 프레임(`skipped_by_policy`)은 따로 센다.
 - **제어:** `local_alert`, `alarm_stop`, `health`(아래로), `site_ack`, `laptop_heartbeat`(위로)는 같은 기기 토큰으로 인증한 WebSocket 으로 주고받는다.
+- **시계 차이·엔드포인트:** 시계 차이 교환(`clock_sync_request`·`clock_sync_response`)도 같은 제어 WebSocket 으로 주고받는다. 노트북은 `GET /api/endpoints/tier0`(기기 토큰)로 받은 `tier0_endpoint` 로 접속하고, 공개키 지문이 미리 고정한 값과 다르면 접속하지 않는다.
 - **예비 경로:** 막힌 망에서는 RunPod HTTPS 프록시(443) WebSocket 을 쓰고 토큰 인증이 필수다.
 - 노트북 → EC2 `laptop_heartbeat`는 HTTPS(기기 토큰)로 1초마다 보낸다.
 
@@ -58,6 +63,7 @@ I4(워치, 확장)와 I2 `/topic/world`·`/topic/health` 토픽 형식은 아직
 
 - 지지 표면이 VALID가 아니거나 `z_validity`가 UNAVAILABLE이면 `ground_anchor_xyz`는 null (Z=0 대체 금지)
 - I1 전이·현장 경보·푸시(`risk_event_transition`, `local_alert`, `risk_alert`)의 `source`는 LIVE만. 현장 경보·푸시는 CRITICAL·HIGH만 (7.3)
+- 활성 현장 경보 목록(`health.active_site_alerts`)은 LIVE·CRITICAL·HIGH 만, `(event_id, event_sequence)`·`acknowledged` 필수. 시계 차이는 불확실성과 함께, 모르면 null. 엔드포인트 등록은 공개키 지문과 대칭 매핑(70000 이상) 포트, 영상 포트는 카메라별, 비밀 값 불가(payload 닫힘). `observation_summary` 에는 2D 원본(frames·detections·bbox·keypoint 등)을 싣지 않는다(payload·카메라 집계 닫힘)
 - `event_id`는 UUIDv7. 해소(RESOLVED)는 `verification`이 VERIFIED일 때만, 재동기화 스냅샷에는 활성 이벤트만
 - 운영자 확인은 누가(`actor_role`·`actor_id`)·어디서(`channel`) 했는지 필수. 현장 확인 버튼은 `site_ack`로만, 관제 화면·PWA 확인은 `event_ack`로만
 - VLM `proposed_severity`는 `severity`보다 높은 등급이거나 null(하향·같은 등급 불가). VLM 결과에는 해소·끄기 필드가 없다. 푸시 근거 한 줄은 규칙 근거(`summary_source: RULE`)만
@@ -71,7 +77,7 @@ I4(워치, 확장)와 I2 `/topic/world`·`/topic/health` 토픽 형식은 아직
 - HMR 포즈의 root 출처는 `TIER0`만 허용, 외형 텍스처는 `face_policy`(EXCLUDED/BLURRED)와 `consent_ref` 필수
 - 좌표계 선언은 World(m, 오른손, +Z)만 허용
 
-스키마로 표현할 수 없는 규칙(R의 직교성, 관절 배열 길이 일치, `is_upper_bound`와 출처의 일치, 봉투 `source_id`와 `gateway_id`의 일치, `event_sequence`·`journal_offset` 단조 증가, `codec_info`와 `frame_header`의 `stream_epoch` 일치, HMAC 값 검증 등)은 각 모듈의 계약 시험에서 검사한다(명세 21.3).
+스키마로 표현할 수 없는 규칙(R의 직교성, 관절 배열 길이 일치, `is_upper_bound`와 출처의 일치, 봉투 `source_id`와 `gateway_id`의 일치, `event_sequence`·`journal_offset` 단조 증가, `codec_info`와 `frame_header`의 `stream_epoch` 일치, HMAC 값 검증, `health.active_site_alerts` 의 `event_id` 유일, 시계 교환의 `t3_ms ≥ t2_ms`·`uncertainty_ms ≥ round_trip_ms/2`, `observation_summary` 의 `window_end_ms > window_start_ms`, `tier0_endpoint` 의 VIDEO `camera_id` 유일과 `gateway_id`·`source_id` 일치 등)은 각 모듈의 계약 시험에서 검사한다(명세 21.3).
 
 ## 검증
 

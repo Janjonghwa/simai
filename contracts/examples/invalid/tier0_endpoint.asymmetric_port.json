@@ -1,0 +1,47 @@
+{
+  "_expect_error": "70000 미만 번호로 요청한 포트다. 대칭 매핑(70000 이상)만 쓴다 (명세 3.12)",
+  "schema_version": "1.3.0",
+  "msg_type": "tier0_endpoint",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000304",
+  "sent_at": 1760340000120,
+  "source_id": "tier0-01",
+  "payload": {
+    "gateway_id": "tier0-01",
+    "public_ip": "203.0.113.24",
+    "ports": [
+      {
+        "role": "CONTROL",
+        "requested_port": 8443,
+        "public_port": 44464
+      },
+      {
+        "role": "VIDEO",
+        "camera_id": "cam1",
+        "requested_port": 70001,
+        "public_port": 44465
+      },
+      {
+        "role": "VIDEO",
+        "camera_id": "cam2",
+        "requested_port": 70002,
+        "public_port": 44466
+      },
+      {
+        "role": "VIDEO",
+        "camera_id": "cam3",
+        "requested_port": 70003,
+        "public_port": 44467
+      },
+      {
+        "role": "VIDEO",
+        "camera_id": "cam4",
+        "requested_port": 70004,
+        "public_port": 44468
+      }
+    ],
+    "tls_public_key_sha256": "sha256:5f2c8a0d4e6b7c9a1f3e5d7c9b1a3f5e7d9c1b3a5f7e9d1c3b5a7f9e1d3c5b7a",
+    "registered_at": 1760340000100,
+    "pod_id": "abc123xyz",
+    "datacenter": "AP-JP-1"
+  }
+}
