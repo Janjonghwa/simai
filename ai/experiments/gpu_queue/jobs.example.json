@@ -1,0 +1,68 @@
+{
+  "queue": {
+    "name": "exp02-egate0",
+    "workdir": "/workspace/simai",
+    "continue_on_failure": true,
+    "poll_s": 1,
+    "kill_grace_s": 10,
+    "vram_wait_s": 300,
+    "lock": { "heartbeat_s": 15, "ttl_s": 120 },
+    "live_guard": {
+      "marker_files": ["state/tier0.live"],
+      "process_patterns": ["-m\\s+services\\.tier0\\b"],
+      "on_live": "stop",
+      "poll_s": 15,
+      "max_wait_s": 3600
+    },
+    "volume": { "root": "/workspace", "datacenter": "AP-JP-1" }
+  },
+  "record": {
+    "experiment_id": "EXP-02",
+    "e_gate": "E-GATE-0",
+    "jira_key": "S15P31A101-XX",
+    "owner": "EXP-02 Owner",
+    "experiment_state": "BASELINE",
+    "gpu": { "provider": "RUNPOD", "region": "JP", "datacenter": "AP-JP-1", "shared_with_tier0": false },
+    "env": { "freeze_cmd": ["envs/fast_sam3db/bin/python", "-m", "pip", "freeze"] },
+    "input_provenance": {
+      "frames": { "source": "DATASET", "dataset_id": "hmr_poc14" },
+      "is_upper_bound": false
+    }
+  },
+  "jobs": [
+    {
+      "name": "H2_bench_opt",
+      "command": ["envs/fast_sam3db/bin/python", "setup/hmr/benchmark.py", "--run-id", "H2_bench_opt", "--preset", "opt", "--modes", "split", "split_pose", "--e2e"],
+      "expected_s": 600,
+      "timeout_s": 1800,
+      "vram_mb": 0,
+      "record": {
+        "model_version": "sam-3d-body-dinov3-fastcfg + YOLO26x-pose",
+        "weights": ["weights/sam-3d-body-dinov3-fastcfg", "weights/yolo/yolo26x-pose.pt"],
+        "dataset": ["datasets/hmr_poc14"],
+        "config": {
+          "path": "ai/experiments/hmr/benchmark.py",
+          "file": "setup/hmr/benchmark.py",
+          "overrides": { "preset": "opt", "modes": ["split", "split_pose"], "e2e": true }
+        }
+      }
+    },
+    {
+      "name": "H4_bench_opt_compile",
+      "command": "envs/fast_sam3db/bin/python setup/hmr/benchmark.py --run-id H4_bench_opt_compile --preset opt_compile --modes split_pose --e2e",
+      "expected_s": 900,
+      "timeout_s": 2400,
+      "vram_mb": 0,
+      "record": {
+        "model_version": "sam-3d-body-dinov3-fastcfg + YOLO26x-pose",
+        "weights": ["weights/sam-3d-body-dinov3-fastcfg", "weights/yolo/yolo26x-pose.pt"],
+        "dataset": ["datasets/hmr_poc14"],
+        "config": {
+          "path": "ai/experiments/hmr/benchmark.py",
+          "file": "setup/hmr/benchmark.py",
+          "overrides": { "preset": "opt_compile", "modes": ["split_pose"], "e2e": true }
+        }
+      }
+    }
+  ]
+}
