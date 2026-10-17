@@ -74,7 +74,14 @@ uv run pytest tests/risk                                   # 위 실행을 포�
 | `lifecycle_identity_revision.json` | LIVE: 해소 직전 ID 교정 → 해소하지 않고 다시 3초를 센다 (G3) |
 | `lifecycle_merge.json` | LIVE: 같은 사람·같은 규칙 병합(높은 등급), 규칙별 별도 이벤트, holding 만으로는 발생 안 함, 낮은 신뢰도는 등급 유지 |
 | `lifecycle_planned_no_alert.json`, `lifecycle_what_if_no_alert.json`, `lifecycle_replay_no_alert.json` | 비 LIVE: 같은 시나리오의 전이는 만들지만 현장 경보 신호 0건 (7.4, G3) |
-| `r6_observation_lost_in_zone.json` | LIVE R6: 구역 안 위험 중 PREDICTED → UNKNOWN → 트랙 없음이 1분 넘게 이어져도 자동 해소 0건(UNVERIFIABLE). UNKNOWN 동안 R6 holding 은 원래 규칙 이벤트에 확인 필요만 붙이고 새 이벤트를 만들지 않음. 재관측 뒤 다시 상실하면 해소 확인을 처음부터 (G3). R1 출력은 `inject_findings`로 흉내 낸다 |
+| `r1_boundary_entry_exit.json` | LIVE R1 GROUND_FOOTPRINT(1.3 기본 정책): 경계 밖 유지 띠는 이벤트 없음, 불확실성 범위(k=2 타원 + 0.3m)가 걸린 둘째 프레임에 발생·현장 경보(3프레임 중 2), 0.3m 띠 안은 유지, 띠 밖 1.5초 뒤 띠로 돌아오는 깜빡임은 새 이벤트 없이 해소 확인 재시작, 띠 밖 3초 유지로 해소 (7.1, 7.2, 8.2) |
+| `r1_boundary_entry_exit_what_if.json`, `r1_boundary_entry_exit_replay.json` | 비 LIVE R1: 같은 시나리오의 판정·전이는 같고 현장 경보 신호 0건 (7.4) |
+| `r1_uncertain_person.json` | LIVE R1: 같은 위치에서 불확실성 큰 사람만 발생, 예측 위치·카메라 0대는 확인 필요(PREDICTED, SINGLE_VIEW)로 발생·경보, 신원 애매는 IDENTITY_UNCERTAIN |
+| `r1_volume_z_unknown.json` | LIVE R1 VOLUME_3D: XY 안인데 서 있는 면이나 위 끝 중 하나라도 모르면 아는 끝과 관계없이 발생 + 확인 필요(Z_UNKNOWN), 높이를 알게 되면 겹침(확인 필요 해제)·밖(3초 뒤 해소) (8.2, D-G6-04) |
+| `r1_volume_podium.json` | LIVE R1 VOLUME_3D: 같은 XY 의 바닥 위 사람은 판정 없음, 0.4m 단상 위는 발생. 추정(inferred) 관절 미사용, 높이 간격 0.3m 안은 유지 (8.2, D-G6-04) |
+| `r1_persistence_resume.json` | LIVE R1 + 기본 생명주기 정책: 구역 안 순간 검출 한 프레임은 이벤트 0건, `[T,F,T]` 에서 발생, 해소 뒤 10초 안 재진입은 같은 이벤트 재개(RESUMED, 다시 울림), 10초 넘어 재진입은 새 이벤트 (6.4, D-G6-07·08) |
+| `r1_footprint_position_or_anchor.json` | LIVE R1 GROUND_FOOTPRINT 보수적 결합: position_xy 만 안, 접지점만 안 모두 발생, 둘 다 띠 밖이면 판정 없음 (8.2) |
+| `r6_observation_lost_in_zone.json` | LIVE R6: 구역 안 위험 중 PREDICTED → UNKNOWN → 트랙 없음이 1분 넘게 이어져도 자동 해소 0건(UNVERIFIABLE). PREDICTED 동안 R1 은 확인 필요로 판정하고, UNKNOWN 동안 R6 holding 은 원래 R1 이벤트를 확인 필요로 유지만 하며 새 이벤트를 만들지 않음. 재관측 뒤 다시 상실하면 해소 확인을 처음부터 (G3). R1 은 실제 등록부 규칙(`ObservationLossHold(ZoneEntryRule())`)이 판정한다 |
 | `r6_observation_lost_in_zone_what_if.json` | WHAT_IF R6: 같은 시나리오, 현장 경보 신호 0건 (7.4, G3) |
 | `r7_camera_disconnect.json` | LIVE R7: 카메라 분리 → 구역 감시 저하 이벤트(CAUTION, 관제 화면 안내만, 분리 후 1초 안). 현장 경보 신호 0건(7.2, 7.3), 다른 구역은 별도 이벤트, 복구 후 3초 유지로 해소 (G3) |
 | `r7_sync_invalid_replay.json` | REPLAY R7: 시간 동기화 무효 → 저하, 회복 → 해소, 현장 경보 신호 0건 (7.4, G3) |
@@ -88,4 +95,4 @@ uv run pytest tests/risk                                   # 위 실행을 포�
 | `lifecycle_pending_stall.json`, `lifecycle_pending_stall_replay.json` | 1.3 지속 대기 중 영상 전체 정지: 같은 관측 재판정은 프레임으로 세지 않지만 lag 600ms 를 넘는 첫 판정 주기에 발생(UNVERIFIABLE, PREDICTED), 정지 1분 자동 해소 0건. REPLAY 는 현장 경보 신호 0건 |
 | `lifecycle_resume_pending_lost.json` | LIVE 1.3 재개 대기 중 트랙 소실 → 같은 이벤트 재개(UNVERIFIABLE, PREDICTED, 다시 울림) |
 
-R6 은 구역 규칙을 감싸는 방식(`ObservationLossHold`)이라 R1 이 등록되면(S15P31A101-71) R6 벡터의 `inject_findings`를 실제 규칙 판정(`rules`, `expect.findings`)으로 바꾼다. 다른 구체 규칙도 등록되면 해당 이슈에서 규칙별 벡터를 이 디렉터리에 추가한다.
+R6 은 구역 규칙을 감싸는 방식(`ObservationLossHold`)이라 등록부의 R1 v1 이 `ObservationLossHold(ZoneEntryRule())` 이고(S15P31A101-71), R6 벡터도 실제 R1 판정을 쓴다. R1·R6 벡터는 1.3 형식(기본 생명주기 정책, 판정·전이에 `confidence_reasons`)이다. 다른 구체 규칙도 등록되면 해당 이슈에서 규칙별 벡터를 이 디렉터리에 추가한다.

@@ -40,6 +40,7 @@ from simai_ai.risk.common import ConfidenceReason, Severity
 from simai_ai.risk.rule import Finding, Rule, RuleContext, RuleSpec
 from simai_ai.risk.world import ObservationState, WorldTrack
 from simai_ai.risk.zone import Zone
+from simai_ai.risk.zone_geometry import distance_to_polygon, point_in_polygon
 
 R6_RULE_ID = "R6"  # 명세 7.2 의 규칙 번호. 이벤트의 rule_id 는 감싼 규칙의 ID 다.
 
@@ -113,35 +114,3 @@ class ObservationLossHold:
         distance = distance_to_polygon(point, zone.polygon_xy)
         margin = self._sigma_k * max(abs(s) for s in track.position_xy_sigma)
         return distance if distance <= margin else None
-
-
-def point_in_polygon(point: tuple[float, ...], polygon: tuple[tuple[float, ...], ...]) -> bool:
-    """수평 다각형 안(경계 포함)인지. 짝수-홀수 규칙."""
-    if distance_to_polygon(point, polygon) == 0.0:
-        return True
-    x, y = point
-    inside = False
-    n = len(polygon)
-    for i in range(n):
-        x1, y1 = polygon[i]
-        x2, y2 = polygon[(i + 1) % n]
-        if (y1 > y) != (y2 > y):
-            x_cross = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
-            if x < x_cross:
-                inside = not inside
-    return inside
-
-
-def distance_to_polygon(point: tuple[float, ...], polygon: tuple[tuple[float, ...], ...]) -> float:
-    """점에서 다각형 경계까지의 수평 거리(m)."""
-    x, y = point
-    best = math.inf
-    n = len(polygon)
-    for i in range(n):
-        x1, y1 = polygon[i]
-        x2, y2 = polygon[(i + 1) % n]
-        dx, dy = x2 - x1, y2 - y1
-        length2 = dx * dx + dy * dy
-        t = 0.0 if length2 == 0 else max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / length2))
-        best = min(best, math.hypot(x - (x1 + t * dx), y - (y1 + t * dy)))
-    return best
