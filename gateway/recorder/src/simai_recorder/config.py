@@ -73,7 +73,8 @@ def _capture_model(base: Mapping[str, Any], override: Mapping[str, Any] | None) 
     return CaptureTimeModel(**{**base, **(override or {})})
 
 
-def _source(cam: Mapping[str, Any], clock: Clock, env: Mapping[str, str], config_dir: Path) -> PacketSource:
+def build_source(cam: Mapping[str, Any], clock: Clock, env: Mapping[str, str], config_dir: Path) -> PacketSource:
+    """[[cameras]] 한 항목 → 입력. 녹화 도구와 영상 중계(gateway/relay)가 같은 설정 형식을 쓴다. 계정은 env 에서만."""
     kind = cam.get("kind")
     cid = cam["camera_id"]
     source: PacketSource
@@ -121,7 +122,7 @@ def load_session(path: Path, clock: Clock, env: Mapping[str, str], session_id: s
     cameras = [
         CameraSpec(
             camera_id=c["camera_id"],
-            source=_source(c, clock, env, path.parent),
+            source=build_source(c, clock, env, path.parent),
             capture_time=_capture_model(base_model, c.get("capture_time")),
             firmware=c.get("firmware") or None,
         )
