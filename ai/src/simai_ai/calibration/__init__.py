@@ -7,6 +7,8 @@
 - `structure`: 보정 문서의 계약 형식 검사(계약 스키마 직접 검증). 버전 저장소가 저장 전에 쓴다
 - `versions`: 보정 버전 저장소(추가만, 원자적 전환)와 calibration_version 태깅, 판정 근거 감사 기록,
   VersionedCalibrationProvider
+- `intrinsics`(하위 패키지): 교실 직선으로 무마커 내부 파라미터 초기값 추정, 같은 렌즈 4대 공유, 번들 조정 초기값
+  넘김 (명세 4.3 1단계). 여기서 다시 내보내지 않는다(`simai_ai.calibration.intrinsics` 로 import)
 
 자동 보정 알고리즘(HumanCalib·번들 조정)은 아직 없다. 그 결과(카메라별 K·왜곡·R·t·재투영 오차와 검산 근거)를
 `CameraCalibration`·`CalibrationEvidence` 로 넣으면 판정·버전 전환·계약 출력이 된다.
