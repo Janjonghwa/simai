@@ -74,7 +74,7 @@
     },
 
     "frame_source": { "enum": ["LIVE", "FILE", "SIM", "DATASET"], "description": "FrameSource 출처 (명세 20.4)" },
-    "calibration_source": { "enum": ["G1_AUTO", "MANUAL_PNP", "CHARUCO", "DATASET_GT", "SIM", "MODEL_ESTIMATE"], "description": "CalibrationProvider 출처 (명세 20.4). MODEL_ESTIMATE = 이전 Run에서 모델(MapAnything 등)이 추정한 카메라를 입력으로 다시 쓴 경우" },
+    "calibration_source": { "enum": ["G1_AUTO", "DATASET_GT", "SIM", "MODEL_ESTIMATE"], "description": "CalibrationProvider 출처 (명세 20.4). G1_AUTO = 무마커 자동 보정(4.3), MODEL_ESTIMATE = 이전 Run에서 모델(MapAnything 등)이 추정한 카메라를 입력으로 다시 쓴 경우. 2.0.0 의미 변경(메이저): v1.3 에서 쓰지 않는 마커 보정·평면도 대응점 출처 값을 뺐다(명세 4.3 대체 경로, 16장)" },
     "track_source": { "enum": ["TIER0_LOG", "TIER0_LIVE", "DATASET_GT", "SIM"], "description": "WorldTrackProvider 출처 (명세 20.4)" },
 
     "coordinate_frame": {
@@ -275,18 +275,6 @@
           "description": "기준(초기값 25ms)을 넘는 카메라는 그 시각의 삼각측량에서 뺀다"
         }
       }
-    },
-
-    "hmac_signature": {
-      "type": "object",
-      "description": "I5 콜백 서명 (명세 12.2 I5, NFR-12). value = HMAC-SHA256(key_id 의 비밀 키, 이 필드를 뺀 메시지 전체의 RFC 8785 정규화 JSON) 의 소문자 16진수. 수신 측(EC2)은 서명과 sent_at 허용 범위, msg_id 중복을 함께 검사한다",
-      "required": ["alg", "key_id", "value"],
-      "properties": {
-        "alg": { "const": "HMAC-SHA256" },
-        "key_id": { "type": "string", "minLength": 1, "description": "키 교체용 식별자. 비밀 키 자체는 .env 에만 둔다" },
-        "value": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
-      },
-      "additionalProperties": false
     }
   }
 }

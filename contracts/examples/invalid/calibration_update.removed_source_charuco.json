@@ -1,0 +1,27 @@
+{
+  "_expect_error": "v1.3 에서 뺀 마커 보정 출처(2.0.0 삭제)로 보정 변경을 알렸다 (명세 4.3)",
+  "schema_version": "2.0.0",
+  "msg_type": "calibration_update",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000108",
+  "sent_at": 1760342400400,
+  "source_id": "tier0-01",
+  "payload": {
+    "calibration_version": "cal-8",
+    "previous_calibration_version": "cal-7",
+    "calibration_state": "DRIFTED",
+    "provider_source": "CHARUCO",
+    "reason": "DRIFT_DETECTED",
+    "effective_at": 1760342401000,
+    "calibration_ref": "s3://simai-site/calibration/cal-8.json",
+    "calibration_hash": "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "cameras": [
+      {
+        "camera_id": "cam2",
+        "reprojection_error_px": {
+          "median": 3.4,
+          "p95": 8.9
+        }
+      }
+    ]
+  }
+}

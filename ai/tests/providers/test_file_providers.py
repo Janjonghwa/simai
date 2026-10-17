@@ -1,6 +1,6 @@
 """참조 구현(파일 Provider)이 공통 계약 시험 묶음을 통과하는지 본다.
 
-다른 구현(SIM -46, MANUAL_PNP -100 등)도 같은 방식으로 계약 시험 클래스를 상속해 쓴다.
+다른 구현(SIM -46 등)도 같은 방식으로 계약 시험 클래스를 상속해 쓴다.
 """
 
 import copy
@@ -85,7 +85,7 @@ def test_calibration_current_is_a_copy():
 
 def test_calibration_provenance_matches_document():
     provider = FileCalibrationProvider(example_path("calibration.json"))
-    assert provider.provenance() == {"source": "MANUAL_PNP", "calibration_version": "manual-0"}
+    assert provider.provenance() == {"source": "G1_AUTO", "calibration_version": "cal-0"}
 
 
 def test_calibration_rejects_non_object(tmp_path):

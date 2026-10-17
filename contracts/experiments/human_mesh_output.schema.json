@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/experiments/human_mesh_output.schema.json",
   "title": "인체 메시 결과 (EXP-02, hmr_refine / hmr_appearance_update)",
-  "description": "두 종류의 기록. avatar_asset은 world_id별 체형·텍스처 자산(가끔 갱신), pose_frame은 시각별 포즈(자주 갱신). 안전 판단 권한이 없는 Tier 1 시각화 결과이며 Tier 0 위치를 덮어쓰지 않는다 (명세 5.6, 20.3, 20.4).",
+  "description": "두 종류의 기록. avatar_asset은 world_id별 체형·텍스처 자산(가끔 갱신), pose_frame은 시각별 포즈(자주 갱신). 안전 판단 권한이 없는 Tier 1 시각화 결과이며 Tier 0 위치를 덮어쓰지 않는다 (명세 5.6, 20.3, 20.4). 2.0.0 의미 변경(메이저): input_provenance.calibration.source(common/defs calibration_source)에서 v1.3 에서 쓰지 않는 마커 보정·평면도 대응점 출처 값을 뺐다.",
   "type": "object",
   "required": ["schema_version", "record_type"],
   "properties": {

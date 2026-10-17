@@ -140,8 +140,10 @@ def test_never_calibrated_sources_stay_provisional(store, cameras, evidence, t0,
     assert store.state is S.PROVISIONAL, "계약상 DRIFTED 가 될 수 없다"
 
 
-def test_manual_pnp_stays_provisional(store, cameras, evidence, t0):
-    assert _propose(store, cameras, evidence, t0, source="MANUAL_PNP").doc["state"] == "PROVISIONAL"
+def test_unlisted_source_rejected(store, cameras, evidence, t0):
+    """계약 출처 값에 없는 출처(v1.3 에서 뺀 대체 경로 등)는 계약 위반으로 거절한다."""
+    result = _propose(store, cameras, evidence, t0, source="UNLISTED_SOURCE")
+    assert not result.adopted and result.reject_reason is RejectReason.CONTRACT_VIOLATION
 
 
 def test_contract_violation_rejected(store, cameras, t0):
@@ -431,10 +433,10 @@ class TestG1AutoProvisionalProvider(CalibrationProviderContract):
         return VersionedCalibrationProvider(store)
 
 
-class TestCharucoDriftedProvider(CalibrationProviderContract):
+class TestG1AutoDriftedProvider(CalibrationProviderContract):
     @pytest.fixture
     def provider(self, cameras, evidence, t0):
         store = CalibrationVersionStore()
-        _propose(store, cameras, evidence, t0, source="CHARUCO")
+        _propose(store, cameras, evidence, t0)
         store.observe([CameraObservation("cam1", (1280, 720))], t0 + 1)
         return VersionedCalibrationProvider(store)

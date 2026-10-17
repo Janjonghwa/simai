@@ -8,7 +8,11 @@ import pytest
 
 from simai_ai.geometry.coordinates import PinholeCamera
 from simai_ai.providers import build_input_provenance
-from simai_ai.providers.contract import check_provenance_carries, check_tracks_match_calibration
+from simai_ai.providers.contract import (
+    CALIBRATION_SCHEMA_VERSION,
+    check_provenance_carries,
+    check_tracks_match_calibration,
+)
 from simai_ai.providers.dataset_gt import PanopticCalibrationProvider, PanopticWorldTrackProvider
 from simai_ai.providers.dataset_gt.panoptic import (
     ADAPTER_VERSION,
@@ -115,6 +119,7 @@ def test_calibration_document():
     doc = provider.current()
     assert provider.camera_ids == ("hd_00_00", "hd_00_01", "hd_00_02", "hd_00_03")  # VGA 01_01 은 빠진다
     assert doc["provider_source"] == "DATASET_GT"
+    assert doc["schema_version"] == CALIBRATION_SCHEMA_VERSION  # calibration 계약 2.0.0
     assert doc["state"] == "PROVISIONAL"  # DATASET_GT 는 CALIBRATED 불가
     assert doc["scale_basis"] == "DATASET_GT"
     assert doc["created_at"] == DEFAULT_EPOCH_MS

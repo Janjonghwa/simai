@@ -1,15 +1,15 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "2.0.0",
   "scene_version": "scene-cand-0001",
   "state": "CANDIDATE",
   "geometry_role": "VISUAL",
   "created_at": 1760342400000,
   "experiment_id": "EXP-01",
-  "calibration_version": "manual-0",
+  "calibration_version": "cal-0",
   "coordinate_frame": { "frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z", "site_id": "classroom-1" },
   "input_provenance": {
     "frames": { "source": "FILE", "dataset_id": "classroom-empty/2026-10-20", "dataset_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "camera_ids": ["cam1", "cam2", "cam3", "cam4"] },
-    "calibration": { "source": "MANUAL_PNP", "calibration_version": "manual-0" },
+    "calibration": { "source": "G1_AUTO", "calibration_version": "cal-0" },
     "is_upper_bound": false
   },
   "reproducibility": {

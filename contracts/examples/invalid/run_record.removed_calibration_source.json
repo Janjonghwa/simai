@@ -1,0 +1,66 @@
+{
+  "_expect_error": "입력 출처에 v1.3 에서 뺀 평면도 대응점 보정 출처(2.0.0 삭제)를 적었다 (명세 20.4)",
+  "schema_version": "2.0.0",
+  "run_id": "exp01-20261020-0001",
+  "experiment_id": "EXP-01",
+  "e_gate": "E-GATE-0",
+  "jira_key": "S15P31A101-123",
+  "owner": "EXP-01 Owner",
+  "git_commit": "ebbacea",
+  "branch": "feature/S15P31A101-123-exp01-static-scene",
+  "dirty_worktree": false,
+  "env_hash": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "model_version": "map-anything@3d10cf7",
+  "weights_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "config": {
+    "path": "ai/experiments/static_scene/configs/baseline.yaml",
+    "sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+  },
+  "input_provenance": {
+    "frames": {
+      "source": "FILE",
+      "dataset_id": "classroom-empty/2026-10-20"
+    },
+    "calibration": {
+      "source": "MANUAL_PNP",
+      "calibration_version": "cal-0"
+    },
+    "is_upper_bound": false
+  },
+  "gpu": {
+    "model": "NVIDIA A40",
+    "driver": "550.x",
+    "cuda": "12.4",
+    "provider": "RUNPOD",
+    "region": "US",
+    "datacenter": "US-KS-2",
+    "shared_with_tier0": false
+  },
+  "started_at": 1760342000000,
+  "finished_at": 1760342400000,
+  "status": "SUCCEEDED",
+  "experiment_state": "BASELINE",
+  "metrics": {
+    "wall_deviation_median_m": 0.031,
+    "scale_factor_vs_floor_plan": 1.01
+  },
+  "performance": {
+    "stage_latency_ms": {
+      "inference": {
+        "p50": 2450,
+        "p95": 2610
+      }
+    },
+    "vram_peak_mb": 11800
+  },
+  "results": [
+    {
+      "kind": "SCENE_OUTPUT",
+      "uri": "volume://US-KS-2/exp01/runs/exp01-20261020-0001/scene_output.json"
+    }
+  ],
+  "cost": {
+    "gpu_hours": 0.2
+  },
+  "review": null
+}

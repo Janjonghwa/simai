@@ -58,7 +58,7 @@ from typing import Any
 
 from simai_ai.geometry.coordinates import PinholeCamera
 from simai_ai.providers.base import CalibrationDoc, CalibrationProvider, WorldTrackProvider, WorldTracksDoc
-from simai_ai.providers.contract import MIN_TRIANGULATION_CAMERAS
+from simai_ai.providers.contract import CALIBRATION_SCHEMA_VERSION, MIN_TRIANGULATION_CAMERAS
 
 ADAPTER_VERSION = "panoptic-adapter-0.1.0"
 CONTRACTS_VERSION = "1.1.0"
@@ -186,7 +186,7 @@ class PanopticCalibrationProvider(CalibrationProvider):
         key = {"source": self.source_sha256, "cameras": ids, "floor_y_cm": self.floor_y_cm, "adapter": ADAPTER_VERSION}
         digest = hashlib.sha256(json.dumps(key, sort_keys=True).encode("utf-8")).hexdigest()
         self._doc: CalibrationDoc = {
-            "schema_version": CONTRACTS_VERSION,
+            "schema_version": CALIBRATION_SCHEMA_VERSION,
             "calibration_version": f"panoptic-{self.sequence}-{digest[:12]}",
             "provider_source": SOURCE,
             "provider_version": ADAPTER_VERSION,

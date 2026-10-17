@@ -22,6 +22,8 @@ from sim.scenario import Scenario
 from sim.visibility import Box, Cylinder, face_turned_away, is_occluded
 
 CONTRACTS_VERSION = "1.1.0"
+# calibration 문서의 계약 버전 (contracts/providers/calibration.schema.json 2.0.0: v1.3 제외 보정 출처·스케일 근거 값 삭제)
+CALIBRATION_SCHEMA_VERSION = "2.0.0"
 PROVIDER_VERSION = f"simai-sim-{__version__}"
 STREAM_EPOCH = 0
 
@@ -217,7 +219,7 @@ class Simulation:
             for c in self.cameras
         ]
         doc = {
-            "schema_version": CONTRACTS_VERSION,
+            "schema_version": CALIBRATION_SCHEMA_VERSION,
             "calibration_version": f"sim-{self.sc.name}-{canonical_sha256(cams)[7:15]}",
             "provider_source": "SIM",
             "provider_version": PROVIDER_VERSION,

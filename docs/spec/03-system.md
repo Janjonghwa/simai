@@ -227,8 +227,8 @@ flowchart TB
 | RunPod 분석 | 마스크 | YOLO26-seg, 새 물체·실측 정물은 YOLOE-26 | 기본안 |
 | RunPod 분석 | 정적 3D | MapAnything Native, trimesh로 glTF (EXP-01) | 기본안·선행 실험 |
 | RunPod 분석 | 인체 메시·외형 | Fast SAM 3D Body, MHR 메시, 연속 관측 기반 외형 갱신 (EXP-02) | 실험 후보·확장 채택 별도 승인 |
-| RunPod 분석 | 자동 보정 | 단일 이미지 내부 파라미터 추정(GeoCalib·AnyCalib 류, 라이선스 확인 필요), HumanCalib, OpenCV solvePnP, SciPy least_squares | 기본안 |
-| RunPod 분석 | 작업 워커(I5) | Python, EC2 작업 가져가기(long-poll 또는 WebSocket) | 기본안 |
+| RunPod 분석 | 자동 보정 | 무마커 내부 파라미터 추정(교실 직선 고전 기준 plumb-line·소실점이 기본, AnyCalib·GeoCalib 은 비교·대체, 부록 B), HumanCalib, OpenCV solvePnP, SciPy least_squares | 기본안 |
+| RunPod 분석 | 작업 워커(I5) | Python, EC2 작업 가져가기(HTTPS long-poll 기본, WebSocket 대안, 12.5) | 기본안 |
 | EC2 | 백엔드 | Java 21, Spring Boot 4(`server/`) | 확정 |
 | EC2 | 실시간·API | Spring WebSocket(STOMP), Spring Web(REST) | 기본안 |
 | EC2 | 인증 | Spring Security + JWT | 기본안 |
@@ -261,6 +261,9 @@ flowchart TB
 
 **노트북–Pod 시계 차이.** Tier 0 는 I0 제어 채널에서 NTP 식 4-타임스탬프 교환(요청 송신·수신, 응답 송신·수신 시각)으로 노트북 시계와 자기 시계의 차이와 그 불확실성을 추정하고 `health` 로 보고한다. 왕복 시간이 가장 짧은 표본을 쓴다. 6.1 의 T_lag 계산은 이 값으로 노트북이 붙인 촬영 시각을 Tier 0 시계로 옮겨 쓴다.
 
+- 계약: Tier 0 가 `clock_sync_request`(t1)를 보내면 노트북은 `clock_sync_response`(t1 그대로, 노트북 시계의 t2·t3)로 바로 답하고, Tier 0 는 응답 수신 시각 t4 를 자기 시계로 적는다. 결과는 `health.laptop_clock_offset`(`offset_ms` = 노트북 시계 − Tier 0 시계, `uncertainty_ms` ≥ 왕복/2, `round_trip_ms`, `sample_count`, `estimated_at`)이다.
+- 교환에 성공한 표본이 없거나 노트북 제어 채널이 끊기면 `laptop_clock_offset` 은 null 이다. 0 으로 채우지 않고 이전 추정도 유지하지 않는다.
+
 **촬영 시각 계약.** NTP로 시계가 맞아도 카메라마다 노출 순간은 다르다(25 fps에서 프레임 간격 40ms). 그래서 다음을 규칙으로 둔다.
 
 - 모든 프레임·관측에 `timestamp_source`(CAMERA_STREAM / RECEIVE_ESTIMATED / FILE / SIM), `estimated_capture_time`, `timestamp_uncertainty_ms`를 붙인다(I1 포함).
@@ -283,7 +286,7 @@ MVP의 현장 경보는 노트북 로컬 경보(1차)와 관제 화면 경보(2�
 - Tier 0 는 노트북이 (재)접속한 직후와 1Hz `health` 마다 활성 현장 경보 목록(`event_id`, `event_sequence`, `acknowledged`)을 노트북에 보낸다.
 - 노트북은 이 목록에 맞춰 소리·표시를 켜고 끈다. 목록에 있으면 표시하고, `acknowledged`이면 소리만 멈추며, 목록에서 빠지면(해소) 표시를 내린다.
 - 중복 판단은 `(event_id, event_sequence)`로 한다.
-- 계약 반영(목록 필드)은 후속 계약 변경으로 한다.
+- 계약: `health.active_site_alerts`(항목은 `event_id`, `event_sequence`, `source`=LIVE, `acknowledged`, `severity`=CRITICAL·HIGH, `summary`)와 목록을 만든 시각 `active_site_alerts_as_of`. 노트북 제어 채널이 (재)접속되면 Tier 0 는 1Hz 주기를 기다리지 않고 바로 `health` 를 보낸다. 빈 배열은 ‘활성 현장 경보 없음’이고, 이 필드가 없는 `health`(이전 버전 송신 측)로는 경보를 끄지 않는다. 노트북은 자기 소리·표시 상태를 `laptop_heartbeat.alarm` 으로 다시 알린다.
 
 **시험 알림.** 시작 절차의 소리·푸시 확인(18.1·18.2)은 RiskEvent 를 만들지 않는 별도 경로로 한다. 노트북은 로컬 시험음을 재생하고, 반장 PWA 는 `POST /api/push/test`로 시험 푸시를 받는다. 모든 시험 알림에는 “시험”을 표시한다. LIVE 출처만 실제 알림으로 나간다는 규칙(2장 원칙 10)을 지키기 위해서다.
 
@@ -320,8 +323,8 @@ MVP의 현장 경보는 노트북 로컬 경보(1차)와 관제 화면 경보(2�
 **엔드포인트 등록.** RunPod 문서에 따르면 Pod 가 재설정될 때마다 외부 포트 매핑이 바뀐다(“External port mappings change whenever your Pod resets”, https://docs.runpod.io/pods/configuration/expose-ports). 그래서 노트북에 주소를 고정해 두지 않는다.
 
 - 포트는 70000 이상 번호로 요청하는 대칭 매핑을 쓰고, 실제 공개 포트는 `RUNPOD_TCP_PORT_*` 환경 변수로 얻는다.
-- Tier 0 는 기동할 때 공개 IP 와 `RUNPOD_TCP_PORT_*` 값을 I1 으로 EC2 에 등록한다(메시지 이름은 후속 계약).
-- 노트북은 EC2 REST(기기 토큰, 12.6)로 현재 엔드포인트를 받아 접속한다.
+- Tier 0 는 기동할 때(그리고 I1 이 다시 연결될 때) 공개 IP, `RUNPOD_TCP_PORT_*` 값, TLS 공개키 지문(`tls_public_key_sha256`)을 I1 `tier0_endpoint` 로 EC2 에 등록한다. EC2 는 등록을 추가만 하고 가장 최근 것을 현재 엔드포인트로 본다. 메시지에는 비밀 값(기기·워커 토큰, TLS 비밀 키, RunPod API 키)을 넣지 않는다.
+- 노트북은 EC2 REST(`GET /api/endpoints/tier0`, 기기 토큰, 12.6)로 같은 `tier0_endpoint` 형식의 현재 엔드포인트를 받아 접속한다. 공개키 지문이 노트북에 미리 고정한 값과 다르면 접속하지 않는다.
 
 **시연장 망 위험.** Direct TCP 는 임의 포트를 쓰므로 시연장 망에서 막힐 수 있고, 443 프록시는 연결이 최대 100초로 끊긴다. 시연장 망에서 Direct TCP 와 프록시를 각각 10분 이상 연속 시험하고, LTE 테더링을 두 번째 업링크로 준비한다(18.1, 부록 E).
 
@@ -336,7 +339,7 @@ MVP의 현장 경보는 노트북 로컬 경보(1차)와 관제 화면 경보(2�
 **저장소 규칙.**
 
 - Network Volume은 데이터센터에 묶여 있다. Pod는 볼륨과 같은 데이터센터에서만 띄운다.
-- 이벤트 저널, 체크포인트, `acked_offset`, 2D 관측 Parquet(11.2)은 Tier 0 Pod와 같은 데이터센터의 Network Volume에 둔다(3.2 저널 계약).
+- 이벤트 저널, 체크포인트, `acked_offset`, 2D 관측 Parquet(11.2)은 Tier 0 Pod와 같은 데이터센터의 Network Volume에 둔다(3.2 저널 계약). 2D 관측 Parquet 의 위치는 19.1 볼륨 구조의 `obs2d` 다.
 - RunPod 글로벌 볼륨(베타)은 쓰지 않는다(16장).
 - Python·CUDA·Torch 환경은 모델별 Docker 이미지로 만들고 볼륨에 설치하지 않는다. 볼륨에는 가중치, 데이터, 실험 산출물, TensorRT 엔진 캐시만 둔다. 리전을 옮길 때 이미지는 다시 받기만 하면 된다. E-GATE-0은 예외로 볼륨 환경 + 잠금 파일(env_hash)을 쓰고, Docker 이미지는 E-GATE-1 전에 만든다.
 - 가중치 해시 목록과 Run 요약은 GitLab에도 남겨, 볼륨을 잃어도 무엇을 다시 받아야 하는지 알 수 있게 한다.

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/providers/calibration.schema.json",
   "title": "CalibrationProvider 출력",
-  "description": "보정 한 버전 (명세 4장, 20.4 입력 대체 계약). G1 자동 보정과 대체 구현(CHARUCO, DATASET_GT, SIM, 연구용 MANUAL_PNP)이 같은 형식을 낸다.",
+  "description": "보정 한 버전 (명세 4장, 20.4 입력 대체 계약). G1 자동 보정과 대체 구현(DATASET_GT, SIM, MODEL_ESTIMATE)이 같은 형식을 낸다. 2.0.0 의미 변경(메이저): v1.3 에서 쓰지 않는 마커 보정·평면도 대응점 출처 값(common/defs calibration_source)과 마커·실측 평면도 스케일 근거 값(scale_basis)을 뺐다.",
   "type": "object",
   "required": [
     "schema_version", "calibration_version", "provider_source", "state",
@@ -68,7 +68,7 @@
       "then": { "properties": { "state": { "enum": ["UNCALIBRATED", "PROVISIONAL"] } } }
     },
     {
-      "description": "CALIBRATED는 출처와 관계없이 독립 검증점 결과(검산점 수, 머리 높이 오차, 위치 불일치)가 있어야 한다 (명세 4.4). 이전 문서 호환을 위해 위치는 쌍별 불일치와 절대 위치 오차 중 하나만 있어도 스키마는 통과하고, 수정 6 기준(쌍별 불일치 필수, 출처 G1_AUTO·CHARUCO)은 계약 시험에서 본다",
+      "description": "CALIBRATED는 출처와 관계없이 독립 검증점 결과(검산점 수, 머리 높이 오차, 위치 불일치)가 있어야 한다 (명세 4.4). 이전 문서 호환을 위해 위치는 쌍별 불일치와 절대 위치 오차 중 하나만 있어도 스키마는 통과하고, 수정 6 기준(쌍별 불일치 필수, 출처 G1_AUTO)은 계약 시험에서 본다",
       "if": {
         "properties": { "state": { "const": "CALIBRATED" } },
         "required": ["state"]
@@ -91,10 +91,10 @@
   "$defs": {
     "scale_basis": {
       "enum": [
-        "FLOOR_PLAN", "HUMAN_HEIGHT_STATS", "STANDARD_OBJECT", "MODEL_ESTIMATE", "DATASET_GT", "MARKER",
-        "MEASURED_OBJECT", "KNOWN_PERSON_HEIGHT"
+        "MEASURED_OBJECT", "KNOWN_PERSON_HEIGHT", "HUMAN_HEIGHT_STATS", "STANDARD_OBJECT", "MODEL_ESTIMATE",
+        "DATASET_GT"
       ],
-      "description": "스케일 근거 (명세 4.3 우선순위: 실측 정물 > 키를 아는 사람 > 사람 키 통계 > 표준 사물 크기 > 모델 자체 추정). MEASURED_OBJECT = 치수를 미리 잰 정물(안전봉·라바콘 등), KNOWN_PERSON_HEIGHT = 키를 미리 잰 사람의 보정 걷기, HUMAN_HEIGHT_STATS = 지나간 여러 사람의 키 통계, STANDARD_OBJECT = 문·책상 같은 표준 사물 크기, MODEL_ESTIMATE = 모델(MapAnything 등) 메트릭 추정, MARKER = ChArUco 보드 등 치수를 아는 마커, DATASET_GT = 공개 데이터 정답. FLOOR_PLAN 은 수정 6 이후 쓰지 않는다(실측 평면도 제거). 이전 문서 호환을 위해 값만 남긴다"
+      "description": "스케일 근거 (명세 4.3 우선순위: 실측 정물 > 키를 아는 사람 > 사람 키 통계 > 표준 사물 크기 > 모델 자체 추정). MEASURED_OBJECT = 치수를 미리 잰 정물(안전봉·라바콘 등), KNOWN_PERSON_HEIGHT = 키를 미리 잰 사람의 보정 걷기, HUMAN_HEIGHT_STATS = 지나간 여러 사람의 키 통계, STANDARD_OBJECT = 문·책상 같은 표준 사물 크기, MODEL_ESTIMATE = 모델(MapAnything 등) 메트릭 추정, DATASET_GT = 공개 데이터 정답. 2.0.0 에서 마커 보드 값과 실측 평면도 값(수정 6 에서 제거)을 뺐다"
     },
     "camera_calibration": {
       "type": "object",

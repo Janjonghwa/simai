@@ -15,7 +15,7 @@
 | 게이지 고정 | 번들 조정 결과가 매번 통째로 이동·회전·축척되지 않도록 좌표계를 제약으로 묶는 것 |
 | 실측 정물 | 치수를 미리 잰 단단한 시연용 안전 장비(안전봉·라바콘 등). 1순위 스케일 근거(4.3) |
 | observation_gap | 전체 카메라 최신 촬영 시각 − 객체의 마지막 유효 관측 시각 |
-| pipeline_lag | 판정 시각 − 전체 카메라 최신 촬영 시각 |
+| pipeline_lag | 판정 시각 − 전체 카메라 최신 촬영 시각(노트북–Pod 시계 차이 `laptop_clock_offset` 으로 Tier 0 시계에 옮긴 값, 6.1) |
 | staleness | gap + lag. 객체 정보의 총 경과 시간 |
 | OBSERVED / PREDICTED / UNKNOWN | 객체 관측 상태(6.1) |
 | NOMINAL / DEGRADED / UNSAFE_UNKNOWN | System Health(6.2) |

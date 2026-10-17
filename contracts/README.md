@@ -1,10 +1,10 @@
 # contracts
 
-구간 계약의 정본(JSON Schema, draft 2020-12). 명세 12장, 20.4, 21.2 기준. **v1.1.0** (1.1.0: 보정 입력 선택 항목화, `MODEL_ESTIMATE` 출처 추가 — S15P31A101-148).
+구간 계약의 정본(JSON Schema, draft 2020-12). 명세 12장, 20.4, 21.2 기준. **v2.0.0** (2.0.0: v1.3 에서 쓰지 않는 보정 출처(CHARUCO·MANUAL_PNP)·스케일 근거(MARKER·FLOOR_PLAN)와 `hmac_signature` 삭제, I5 작업 대여 방식 — S15P31A101-167·-157. 그 사이 추가: 녹화 manifest(-158), I0·I1 현장 경보 재동기화·시계 교환·엔드포인트 등록·2D 관측 요약(-155). 1.1.0: 보정 입력 선택 항목화, `MODEL_ESTIMATE` 출처 추가 — S15P31A101-148).
 
 | 경로 | 내용 | 명세 |
 |---|---|---|
-| `common/defs.schema.json` | 공통 타입(좌표, 시각, 상태 enum, `input_provenance`, `reproducibility`) | 4.1, 6.2, 12.1, 20.4 |
+| `common/defs.schema.json` | 공통 타입(좌표, 시각, 상태 enum, `input_provenance`, `reproducibility`). `calibration_source` 를 쓰는 계약(calibration, calibration_update, run_record, scene_output, human_mesh_output)은 2.0.0 | 4.1, 6.2, 12.1, 20.4 |
 | `messages/envelope.schema.json` | 공통 봉투 | 12.1 |
 | `messages/world_state.schema.json` | I1 `world_state` (LIVE 계약, Lead 승인 필요) | 5.2, 12.3 |
 | `messages/risk_event_transition.schema.json` | I1 Tier 0 → EC2 LIVE 이벤트 전이(저널 기록, 운영자 확인 포함) | 3.2, 6.4, 12.3 |
@@ -12,7 +12,7 @@
 | `messages/health.schema.json` | I1 Tier 0 → EC2(및 I0 노트북) 1 Hz 상태·손실 3종 | 3.11, 5.1, 6.2, 12.3, 12.7 |
 | `messages/observation_batch.schema.json` | Tier 0 카메라별 2D 관측 묶음(RunPod Network Volume 보관 형식, EC2 로는 `observation_summary`) | 5.1, 11.2 |
 | `messages/observation_summary.schema.json` | I1 Tier 0 → EC2 2D 관측 카메라별 요약(원본은 RunPod 보관) | 11.2, 12.2 |
-| `messages/calibration_update.schema.json` | I1 Tier 0 → EC2 보정 상태·버전 변경 | 4.4, 4.5 |
+| `messages/calibration_update.schema.json` | I1 Tier 0 → EC2 보정 상태·버전 변경 (2.0.0 메이저: v1.3 에서 쓰지 않는 보정 출처 값 삭제) | 4.4, 4.5 |
 | `messages/event_frame_ready.schema.json` | I1 Tier 0 → EC2 이벤트 프레임 업로드 완료(주소만) | 12.3 |
 | `messages/tier0_endpoint.schema.json` | I1 Tier 0 → EC2 Pod 엔드포인트 등록(공개 IP·포트·공개키 지문). 노트북 조회 응답도 이 형식 | 3.12, 12.6, 12.7 |
 | `messages/config_bundle.schema.json` | I1 EC2 → Tier 0 구성 묶음 발행 | 3.2, 11.1 |
@@ -35,11 +35,11 @@
 | `messages/job_callback.schema.json` | I5 분석 워커 → EC2 결과·실패 제출, 중복·만료 대여 제출 처리 (2.0.0 메이저, HMAC 서명 없음) | 12.2, 12.5 |
 | `messages/job_lease_status.schema.json` | I5 EC2 → 분석 워커 하트비트·제출 응답(ACTIVE·ACCEPTED·DUPLICATE·REJECTED) | 12.5 |
 | `messages/vlm_rationale.schema.json` | I5 `vlm_rationale` 입력·결과 정의(메시지는 job_request·job_callback) | 5.4, 12.5 |
-| `providers/calibration.schema.json` | CalibrationProvider 출력 | 4장, 20.4 |
+| `providers/calibration.schema.json` | CalibrationProvider 출력 (2.0.0 메이저: v1.3 에서 쓰지 않는 보정 출처·스케일 근거 값 삭제) | 4장, 20.4 |
 | `providers/world_tracks.schema.json` | WorldTrackProvider 출력 (JSONL 한 줄) | 5.2, 20.4 |
-| `experiments/scene_output.schema.json` | EXP-01 정적 장면 결과 | 5.3, 20.2 |
-| `experiments/human_mesh_output.schema.json` | EXP-02 `avatar_asset` / `pose_frame` | 5.6, 20.3, 20.4 |
-| `experiments/run_record.schema.json` | 실험 Run 기록 | 20.5 |
+| `experiments/scene_output.schema.json` | EXP-01 정적 장면 결과 (2.0.0 메이저: 공통 보정 출처 값 삭제) | 5.3, 20.2 |
+| `experiments/human_mesh_output.schema.json` | EXP-02 `avatar_asset` / `pose_frame` (2.0.0 메이저: 공통 보정 출처 값 삭제) | 5.6, 20.3, 20.4 |
+| `experiments/run_record.schema.json` | 실험 Run 기록 (2.0.0 메이저: 공통 보정 출처 값 삭제) | 20.5 |
 | `data/recording_manifest.schema.json` | 4대 동기화 녹화 세션 manifest(파일·해시·프레임 수·시각 범위·카메라 설정·동의·보관·저장 위치). 프레임 사이드카 한 줄은 `$defs/frame_line`(`frame_header` 재사용). 메시지·Provider 출력이 아닌 저장 문서라 `data/`에 둔다(설명은 `docs/data/`) | 11.5, 12.7, 15.3, 21.1 |
 
 I4(워치, 확장)와 I2 `/topic/world`·`/topic/health` 토픽 형식은 아직 없다. I5 `vlm_rationale` 외 작업 유형의 `input`·`result` 형식은 각 작업 티켓에서 정한다.

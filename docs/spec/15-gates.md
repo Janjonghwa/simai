@@ -59,7 +59,7 @@ PPE·워치 게이트는 이동(v1.3) → 부록 C.
 
 ## 15.3 시나리오 데이터셋
 
-4대 동기화 녹화를 한 번에 촬영해 모든 게이트 비교에 재사용한다.
+4대 동기화 녹화를 한 번에 촬영해 모든 게이트 비교에 재사용한다. 녹화 세션마다 `recording_manifest`(파일·해시·프레임 수·시각 범위·카메라 설정·보정 버전·동의 범위·보관 기한·저장 위치, `contracts/data/`)를 남기고, 영상은 Network Volume 의 `recordings/<session_id>/`(19.1)에 둔다. 저장소에는 영상 없이 manifest 사본(`docs/data/sessions/<session_id>.json`)만 커밋한다(설명은 `docs/data/recording-manifest.md`).
 
 - 시간 동기화: 네 카메라가 함께 보는 위치의 LED ms 카운터 판, 종단 지연용 LED + 240fps 휴대폰 촬영
 - 보정: 한 명이 교실 전체를 1\~2분 걷기(실측 정물 2\~3개 배치)
