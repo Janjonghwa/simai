@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/clock_sync_response.schema.json",
+  "title": "I0 clock_sync_response",
+  "description": "노트북 → RunPod Tier 0, I0 제어 WebSocket. clock_sync_request 에 대한 응답 (명세 3.9, 12.2 I0 양방향, FR-139). t1_ms 는 요청 값을 그대로 돌려주고, t2_ms·t3_ms 는 노트북 시계(인터넷 NTP 로 UTC 에 맞춘 시계)로 적는다. 응답은 받은 즉시 보낸다. 노트북 처리 시간(t3 - t2)은 왕복 계산에서 빠진다. t4(응답 수신)는 Tier 0 가 자기 시계로 적고 메시지에 싣지 않는다. 계산식은 health.schema.json 의 clock_offset_estimate 에 있다. t3_ms 가 t2_ms 보다 작지 않다는 것은 계약 시험에서 검사한다.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "clock_sync_response" },
+    "payload": {
+      "type": "object",
+      "required": ["exchange_id", "t1_ms", "t2_ms", "t3_ms"],
+      "properties": {
+        "exchange_id": { "$ref": "../common/defs.schema.json#/$defs/uuid", "description": "요청의 exchange_id" },
+        "t1_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "요청의 t1_ms (Tier 0 시계) 그대로" },
+        "t2_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "노트북 시계의 요청 수신 시각" },
+        "t3_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "노트북 시계의 응답 송신 시각" }
+      }
+    }
+  }
+}

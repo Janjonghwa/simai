@@ -1,0 +1,90 @@
+{
+  "_expect_error": "활성 현장 경보 목록에 REPLAY 출처 경보가 있다. 현장 경보는 LIVE 만 (AGENTS.md 규칙 5, 명세 3.10)",
+  "schema_version": "1.3.0",
+  "msg_type": "health",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000106",
+  "sent_at": 1760342400400,
+  "source_id": "tier0-01",
+  "payload": {
+    "system_health": "NOMINAL",
+    "t_latest_global": 1760342400100,
+    "cameras": [
+      {
+        "id": "cam1",
+        "fps": 14.8,
+        "last_capture": 1760342400100,
+        "sync_offset_ms": 6,
+        "status": "OK",
+        "stream_epoch": 12,
+        "timestamp_source": "RECEIVE_ESTIMATED",
+        "timestamp_uncertainty_ms": 18,
+        "frame_age_ms": {
+          "p50": 120,
+          "p95": 210
+        },
+        "queue_wait_ms": {
+          "p50": 8,
+          "p95": 40
+        },
+        "max_result_gap_ms": 160,
+        "frames": {
+          "received": 25,
+          "gateway_to_runpod_loss": 0,
+          "skipped_by_policy": 10,
+          "late_dropped": 0,
+          "camera_to_gateway_gap_max_ms": 80
+        }
+      },
+      {
+        "id": "cam2",
+        "fps": 0,
+        "last_capture": null,
+        "sync_offset_ms": null,
+        "status": "WAITING_KEYFRAME",
+        "stream_epoch": 3
+      }
+    ],
+    "pipeline_lag_ms": 120,
+    "capture_to_risk_ms": {
+      "p50": 310,
+      "p95": 480
+    },
+    "calibration_state": "CALIBRATED",
+    "calibration_version": "cal-7",
+    "config_version": "cfg-12",
+    "config_sync": "CURRENT",
+    "gateway_link": "CONNECTED",
+    "gpu_util": 0.71,
+    "gpu_memory_used_ratio": 0.62,
+    "active_site_alerts": [
+      {
+        "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+        "event_sequence": 3,
+        "source": "LIVE",
+        "acknowledged": true,
+        "severity": "CRITICAL",
+        "summary": "R2 가장자리 근접 0.82m (높이차 2.1m)",
+        "rule_id": "R2",
+        "zone_id": "z-04"
+      },
+      {
+        "event_id": "0192a6f1-0a2b-7c3d-8e4f-5a6b7c8d9e0f",
+        "event_sequence": 1,
+        "source": "REPLAY",
+        "acknowledged": false,
+        "severity": "HIGH",
+        "summary": "R1 위험 구역 진입 1.4s",
+        "rule_id": "R1",
+        "zone_id": "z-02"
+      }
+    ],
+    "active_site_alerts_as_of": 1760342400395,
+    "laptop_clock_offset": {
+      "offset_ms": -12.5,
+      "uncertainty_ms": 21.5,
+      "round_trip_ms": 43,
+      "sample_count": 12,
+      "estimated_at": 1760342399870
+    }
+  }
+}

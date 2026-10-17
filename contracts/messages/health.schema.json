@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/health.schema.json",
   "title": "I1 health",
-  "description": "RunPod Tier 0 → EC2, 1 Hz (명세 12.3, 3.11, 6.2). EC2 는 이 메시지를 Tier 0 하트비트로도 쓴다. 같은 형식을 I0 제어 채널로 노트북에도 보낸다(12.2 I0 아래로 health). 손실은 세 값(camera_to_gateway_gap, gateway_to_runpod_loss, skipped_by_policy)을 따로 보고한다 (12.7, 5.1). I1 LIVE 계약.",
+  "description": "RunPod Tier 0 → EC2, 1 Hz (명세 12.3, 3.11, 6.2). EC2 는 이 메시지를 Tier 0 하트비트로도 쓴다. 같은 형식을 I0 제어 채널로 노트북에도 보낸다(12.2 I0 아래로 health). 손실은 세 값(camera_to_gateway_gap, gateway_to_runpod_loss, skipped_by_policy)을 따로 보고한다 (12.7, 5.1). 활성 현장 경보 목록(active_site_alerts)과 노트북–Pod 시계 차이(laptop_clock_offset)를 함께 싣는다(3.9, 3.10). 노트북 I0 제어 채널이 (재)접속되면 Tier 0 는 1 Hz 주기를 기다리지 않고 바로 health 를 한 번 보내 현장 경보를 재동기화한다(3.10). I1 LIVE 계약.",
   "allOf": [{ "$ref": "envelope.schema.json" }],
   "type": "object",
   "properties": {
@@ -28,12 +28,62 @@
           "description": "노트북(I0 제어 채널) 연결 상태. 끊기면 UNSAFE_UNKNOWN"
         },
         "gpu_util": { "type": "number", "minimum": 0, "maximum": 1 },
-        "gpu_memory_used_ratio": { "type": "number", "minimum": 0, "maximum": 1 }
+        "gpu_memory_used_ratio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "active_site_alerts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/active_site_alert" },
+          "description": "활성 현장 경보 목록 (명세 3.10 현장 경보 재동기화, 12.2 I0, FR-137). 현장 경보 대상(LIVE, CRITICAL·HIGH, 7.3)이고 아직 RESOLVED 가 아닌 이벤트 전부를 싣는다. 노트북이 끊겨 local_alert 를 받지 못한 이벤트도 포함하고, 일부만 싣지 않는다. 노트북은 local_alert·alarm_stop 을 놓치거나 재접속해도 이 목록에 맞춰 소리·표시를 켜고 끈다: 목록에 있으면 표시하고, acknowledged 가 true 면 소리만 멈추고(표시는 유지), false 면 소리를 반복하며, 목록에서 빠진 이벤트는 해소로 보고 표시를 내린다. 빈 배열은 '활성 현장 경보 없음'이다. 이 필드가 없는 health(이전 버전 송신 측)로는 경보를 끄지 않는다. 중복·순서 판단은 (event_id, event_sequence)로 하며, 같은 event_id 에서 이미 반영한 것보다 낮은 event_sequence 로 화면을 되돌리지 않는다. 같은 event_id 가 두 번 나오지 않는다(계약 시험에서 검사). 노트북의 소리·표시 상태는 laptop_heartbeat.alarm 으로 다시 알린다. 경합 방지: Tier 0 는 목록을 보내기 직전에 만들고, local_alert·alarm_stop 과 같은 제어 WebSocket 송신 순서(한 줄 대기열)로 보낸다. active_site_alerts_as_of 가 있으면, 노트북은 봉투 sent_at 이 그 값보다 늦은 local_alert(RAISED·UPDATED)로 켠 경보는 목록에 없어도 끄지 않는다(다음 목록에서 다시 판단)"
+        },
+        "active_site_alerts_as_of": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "active_site_alerts 를 만든 시각 (Tier 0 시계, local_alert 봉투 sent_at 과 같은 시계). 목록의 기준점이며 이보다 뒤에 보낸 local_alert·alarm_stop 은 목록에 반영되지 않았을 수 있다 (3.10)"
+        },
+        "laptop_clock_offset": {
+          "oneOf": [{ "$ref": "#/$defs/clock_offset_estimate" }, { "type": "null" }],
+          "description": "노트북–Pod 시계 차이 추정 (명세 3.9, 6.1, FR-139). I0 제어 채널의 clock_sync_request·clock_sync_response 교환으로 구한다. 아직 교환에 성공한 표본이 없으면 null 이며 0 으로 채우지 않는다. 노트북 I0 제어 채널이 끊기면 이전 추정을 유지하지 않고 null 로 보고(모르면 비움), 재접속 뒤 새 표본이 생기면 다시 채운다"
+        }
       }
     }
   },
 
   "$defs": {
+    "active_site_alert": {
+      "type": "object",
+      "description": "활성 현장 경보 하나 (명세 3.10). 값은 그 이벤트의 마지막 전이와 저널의 확인 기록 기준이다(local_alert 와 같은 값). severity·summary 는 노트북이 local_alert 를 받지 못한 이벤트도 표시할 수 있게 싣는다",
+      "required": ["event_id", "event_sequence", "source", "acknowledged", "severity", "summary"],
+      "properties": {
+        "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "event_sequence": { "type": "integer", "minimum": 1, "description": "이 이벤트의 마지막 전이 sequence. local_alert.event_sequence 와 같은 값" },
+        "source": { "const": "LIVE", "description": "PLANNED·WHAT_IF·REPLAY 는 현장 경보 목록에 넣지 않는다 (local_alert 와 같음, AGENTS.md 규칙 5)" },
+        "acknowledged": {
+          "type": "boolean",
+          "description": "운영자 확인(EC2 ACK 또는 site_ack)이 저널에 있는지. true 면 노트북은 반복 소리를 멈추고 표시만 유지한다"
+        },
+        "severity": { "enum": ["CRITICAL", "HIGH"], "description": "현장 경보는 CRITICAL·HIGH 만 (7.3)" },
+        "summary": { "type": "string", "minLength": 1, "description": "규칙 근거 한 줄. local_alert.summary 와 같다" },
+        "rule_id": { "type": "string", "minLength": 1 },
+        "zone_id": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "clock_offset_estimate": {
+      "type": "object",
+      "description": "NTP 식 4-타임스탬프 교환의 추정값 (명세 3.9). t1 = Tier 0 요청 송신, t2 = 노트북 요청 수신, t3 = 노트북 응답 송신, t4 = Tier 0 응답 수신 (t1·t4 는 Tier 0 시계, t2·t3 는 노트북 시계, 모두 UTC ms). 표본마다 offset = ((t2 - t1) + (t3 - t4)) / 2, round_trip = (t4 - t1) - (t3 - t2) 이고, 추정 창 안에서 round_trip 이 가장 짧은 표본을 쓴다. 노트북이 붙인 촬영 시각은 (촬영 시각 - offset_ms) 로 Tier 0 시계로 옮겨 T_lag 계산에 쓴다 (6.1)",
+      "required": ["offset_ms", "uncertainty_ms", "round_trip_ms", "sample_count", "estimated_at"],
+      "properties": {
+        "offset_ms": { "type": "number", "description": "노트북 시계 - Tier 0 시계 (부호 있음). 노트북이 빠르면 양수" },
+        "uncertainty_ms": {
+          "$ref": "../common/defs.schema.json#/$defs/duration_ms",
+          "description": "offset_ms 의 불확실성 반폭. 쓴 표본의 round_trip_ms / 2 이상"
+        },
+        "round_trip_ms": { "$ref": "../common/defs.schema.json#/$defs/duration_ms", "description": "쓴 표본(왕복 최소)의 네트워크 왕복 시간" },
+        "sample_count": { "type": "integer", "minimum": 1, "description": "추정 창 안의 유효 표본 수" },
+        "estimated_at": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "쓴 표본의 t4 (Tier 0 시계). 오래된 추정인지 판단하는 데 쓴다"
+        }
+      },
+      "additionalProperties": false
+    },
     "camera_health": {
       "type": "object",
       "required": ["id", "fps", "last_capture", "sync_offset_ms", "status"],

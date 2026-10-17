@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/clock_sync_request.schema.json",
+  "title": "I0 clock_sync_request",
+  "description": "RunPod Tier 0 → 노트북, I0 제어 WebSocket. 노트북–Pod 시계 차이를 재는 NTP 식 4-타임스탬프 교환의 요청 (명세 3.9, 6.1, 12.2 I0 양방향, FR-139). Tier 0 가 보내기 직전 자기 시계로 t1_ms 를 적는다. 노트북은 받자마자 수신 시각(t2)을 적고 clock_sync_response 로 바로 답한다. Tier 0 는 응답 수신 시각(t4)을 자기 시계로 적어 표본 하나를 만들고, 추정 창 안에서 왕복이 가장 짧은 표본으로 health.laptop_clock_offset 을 보고한다. 교환 주기와 창 길이는 구현이 정한다(초기값은 결정 기록에 남긴다). 시각은 모두 UTC int64 ms 다.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "clock_sync_request" },
+    "payload": {
+      "type": "object",
+      "required": ["exchange_id", "t1_ms"],
+      "properties": {
+        "exchange_id": { "$ref": "../common/defs.schema.json#/$defs/uuid", "description": "교환 식별자. 응답이 같은 값을 돌려준다. 늦게 온 응답이나 모르는 exchange_id 의 응답은 버린다" },
+        "t1_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "Tier 0 시계의 요청 송신 시각" }
+      }
+    }
+  }
+}
