@@ -18,6 +18,7 @@ simai는 고정 카메라 4대로 작업 공간의 사람·장비·정적 구조
 | v1.2 r3 (Errata 3) | 2026-10-13 | 기획서 v1.2 r3 Errata 3 를 표로 요약(Notion, 개발 기준선) |
 | v1.2 r4 | 2026-10-17 | 저장소로 이전(S15P31A101-150), ID 고정(FR-n/NFR-n). 기획서 r4 수정 1~5 전체와 정합: 기존 행 수치·API·게이트·단계 보강(카메라 C110, YOLO26x-pose, RunPod 일본 단일 Pod, SAM 3D Body·정적 3D 를 EXP-02·EXP-01 실험 트랙으로 등). 기획서 §20.7 의 FR-102~111, NFR-18~23 작성. 기획서에 있으나 표에 없던 FR-112~132, NFR-24~32 추가. 단계 변경: FR-23 [MVP]→[M1], FR-63 [MVP]→[M1](G1·G2 가 M1 완료 조건) |
 | v1.2 r4 수정 6 | 2026-10-17 | 기획서 수정 6 반영(S15P31A101-151): 영상 I0 경로(NFR-11), I1 승인(FR-105), GPU 대안(NFR-19), MODEL_ESTIMATE(FR-111), ACK 범위(FR-9·39), 푸시 근거(FR-37), 조치 티켓·보존(FR-40·99), 단절 구분(FR-11, NFR-9), 시간 모델 초기값(FR-65), 단계 확정(FR-122·123·130·131), 신규 FR-133·134·135(실측 정물 스케일 정합). 실측 평면도 제거·BEV 평면도(FR-22 를 'BEV 평면도 생성'으로 변경, FR-23·24·27·90·102·112, NFR-6·7·22) |
+| v1.2 r4 수정 7 | 2026-10-17 | 기획서 수정 7 반영(S15P31A101-153): FR-57 Local Tracker 를 TrackTrack 으로, FR-104 외형 누적을 ID 불확실 시 중지 |
 
 **사용 대상**
 
@@ -92,7 +93,7 @@ simai는 고정 카메라 4대로 작업 공간의 사람·장비·정적 구조
 | FR-54 | | | 장애별 표시 | EC2만 단절 "원격 관제 장애", Tier 0·영상 단절 "관제 중단", 분석 워커 중단 "AI 분석 지연" | [MVP] 영상 단절 시 "관제 중단" 5초 이내 |
 | FR-55 | | | 시험 경보 | 시작 시 시험 경보로 소리 출력 확인 | [MVP] |
 | FR-56 | 시스템 (Tier 0) | 관측 | 사람 검출·keypoint | YOLO26x-pose(TensorRT FP16, imgsz 1280)로 사람 검출과 COCO 17관절 2D keypoint 추출 | [MVP] 카메라당 12 FPS 이상(G0). H100 에서 4대 동시 38ms(카메라당 약 26 FPS). 크기 비교는 다시 하지 않음. NMS 경로를 잠정 사용(conf 0.25)하고 G0 에서 NMS-free 와 비교. 관절 정확도(PCK·OKS)는 G0 에서 측정·기록. 기획서 5.1, 16 |
-| FR-57 | | | 카메라별 추적 | 카메라별 독립 ByteTrack | [MVP] |
+| FR-57 | | | 카메라별 추적 | 카메라별 독립 TrackTrack(ByteTrack·BoT-SORT + ReID 는 설정 전환) | [MVP] 기획서 5.1, 5.2, 수정 7 |
 | FR-58 |  |  | 프레임 최신성 | 최신 프레임만 추론(latest-frame-wins), 최대 대기 시간(초기값 150ms) 초과 프레임은 버림 | [MVP] SKIPPED_BY_POLICY 와 NETWORK_LOSS 를 따로 기록(손실률에는 NETWORK_LOSS 만). frame_age_ms 와 최대 결과 간격을 측정. GPU 가 포화되면 PPE 프레임부터 건너뜀. queue_wait_ms 가 150ms 를 넘는 추론 0건(G0). 기획서 5.1 |
 | FR-59 | | | 이벤트 클립 | 카메라별 최근 영상(예: 60초)을 메모리 링 버퍼에 보관, CRITICAL·HIGH 시 앞뒤 구간(예: 각 20초) 저장 | [MVP] 원본 영상은 저장 안 함 |
 | FR-60 |  | 3D 위치 | 사람 연결(World ID) | 4대 카메라 트랙을 같은 사람으로 묶어 익명 World ID 유지 | [M1] ID 유지 시간 비율 95% 이상, 같은 카메라의 두 검출을 한 World ID 로 묶는 경우 0건(G2). 매칭이 애매하면 합치지 않고 새 ID 또는 IDENTITY_UNCERTAIN. 추적 3계층(Local·Cross-view·World Track Manager), Track 생명주기 TENTATIVE→CONFIRMED→OCCLUDED→LOST. 기획서 5.2, 6.2 |
@@ -139,7 +140,7 @@ simai는 고정 카메라 4대로 작업 공간의 사람·장비·정적 구조
 | FR-101 | | 분석 작업 | 작업 요청 | 분석 워커에 비동기 작업 요청, HMAC 서명 콜백으로 결과 수신 | [MVP] 시간 초과 시 실패 처리 |
 | FR-102 | 시스템 (분석 워커) | 3D 고도화 실험 | EXP-01 정적 배경 복원 실험 | MapAnything Native 로 빈 교실 깊이·점군·카메라 추정 → 정합·표면 복원·glTF → World 정렬, MoGe-3 비교군과 같은 기준으로 평가 | [실험] E-GATE 통과 후 FR-27·FR-90 에 채택. G4(개발 교실 실측 대비 10cm). 사람 영역은 마스크로 제거. 점군·깊이가 정상 생성됐다는 것만으로 glTF 성공으로 판정하지 않음. 필수 산출물: 재현 명령·모델/입력 해시·p50/p95·VRAM peak·실패 기록·Reviewer 판정. 기획서 20.2 |
 | FR-103 |  |  | EXP-02 인체 메시 복원 실험 | Fast SAM 3D Body 로 MHR 메시·포즈를 복원해 World ID 에 결합한 동적 메시 아바타. root·접지는 Tier 0 가 정하고 HMR 은 관절 회전·체형만 제공 | [실험] 판정에 미사용(inferred). 불합격: 메시만 만들고 동적 아바타를 못 보여줌, 추정 외형을 실측으로 표현, 외형으로 Tier 0 규칙 변경. 기획서 20.3, 5.6 |
-| FR-104 | | | 관측 누적 외형 갱신 | 같은 인물의 연속 관측으로 표면 텍스처를 누적하고 관측·보간 영역을 구분(surface_source). 얼굴 원본 픽셀 미저장 | [실험] 별도 동의 후에만 실인물. 기획서 20.3, 11.5 |
+| FR-104 |  |  | 관측 누적 외형 갱신 | 같은 인물의 연속 관측으로 표면 텍스처를 누적하고 관측·보간 영역을 구분(surface_source). 얼굴 원본 픽셀 미저장. ID 불확실(IDENTITY_UNCERTAIN)·교정 직후에는 누적 중지 | [실험] 별도 동의 후에만 실인물. 기획서 20.3, 11.5 |
 | FR-105 |  |  | 공간·인체 인터페이스 계약(INT-01) | 정적 Scene(scene_output)과 인체 메시(human_mesh_output)를 같은 World 좌표·시각·버전으로 연결하는 계약 | [실험] contracts/ 가 정본. I5 Job 유형·콜백만 바꾸고 I1 LIVE World 계약은 Reviewer 검토와 Lead 승인 없이 수정하지 않음. 통합 게이트: Tier 0 결과 무변경, G5 영향, 계약 테스트 + Reviewer/Lead 통과. 기획서 20.4, 15.2 |
 | FR-106 |  |  | GPU 실험 큐·자원 보호 | 무거운 GPU Job 을 공유 큐로 순서대로 실행(잠금, TTL/heartbeat, 타임아웃, 종료 시 메모리 회수, 재시작 시 상태 복구)하고 Tier 0 자원(큐·GPU 메모리)을 침범하지 않음. LIVE 관제 시간에는 EXP 추론 금지 | [실험] 기획서 20.5, 3.2 |
 | FR-107 |  |  | 실험 Run 기록 | Run 마다 run_id·experiment_id·owner·git_commit·env_hash(이미지 다이제스트)·model_version·weights_hash·dataset_hash·config·source_camera/calibration_version·결과 URI·지표·리뷰 의견과 GPU 모델명·드라이버·CUDA·p50/p95·VRAM peak 를 run_record 형식으로 남김 | [실험] 기획서 20.5, 21.5 |
