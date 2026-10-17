@@ -1,0 +1,89 @@
+{
+  "format_version": "1.2.0",
+  "vector_id": "r7-planned-without-monitoring",
+  "description": "PLANNED R7: 계획 입력에는 카메라 개념이 없어 감시 상태(monitoring)가 없으면 R7 을 판정하지 않는다(계획 보고서에 의미 없는 R7 이벤트 0건)",
+  "origin": "PLANNED",
+  "rules": [
+    {
+      "rule_id": "R7",
+      "rule_version": 1
+    }
+  ],
+  "zones": [
+    {
+      "zone_id": "z-04",
+      "zone_version": "zone-1",
+      "judge_type": "GROUND_FOOTPRINT",
+      "polygon_xy": [
+        [
+          3.0,
+          4.5
+        ],
+        [
+          4.0,
+          4.5
+        ],
+        [
+          4.0,
+          5.5
+        ],
+        [
+          3.0,
+          5.5
+        ]
+      ],
+      "z_range": null,
+      "severity": "HIGH"
+    }
+  ],
+  "steps": [
+    {
+      "clock_ms": 1760342400200,
+      "world_state": {
+        "t_latest_global": 1760342400100,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0012",
+            "t_last_valid": 1760342400100,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              3.4,
+              5.0
+            ],
+            "position_xy_sigma": [
+              0.08,
+              0.08
+            ],
+            "pelvis_xyz": [
+              3.4,
+              5.0,
+              0.92
+            ],
+            "ground_anchor_xyz": [
+              3.4,
+              5.0,
+              0.0
+            ],
+            "support_surface_id": "floor",
+            "support_surface_validity": "VALID",
+            "contact_validity": "VALID",
+            "z_validity": "VALID",
+            "head_z": 1.68,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "findings": []
+      }
+    }
+  ]
+}

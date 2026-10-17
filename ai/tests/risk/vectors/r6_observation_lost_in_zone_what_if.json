@@ -1,0 +1,775 @@
+{
+  "format_version": "1.1.0",
+  "vector_id": "r6-observation-lost-in-zone-what-if",
+  "description": "WHAT_IF R6: LIVE 와 같은 관측 상실 시나리오의 전이는 같고 현장 경보 신호는 0건(7.4, G3)",
+  "origin": "WHAT_IF",
+  "rules": [],
+  "zones": [
+    {
+      "zone_id": "z-04",
+      "zone_version": "zone-1",
+      "judge_type": "GROUND_FOOTPRINT",
+      "polygon_xy": [
+        [
+          3.0,
+          4.5
+        ],
+        [
+          4.0,
+          4.5
+        ],
+        [
+          4.0,
+          5.5
+        ],
+        [
+          3.0,
+          5.5
+        ]
+      ],
+      "z_range": null,
+      "severity": "HIGH"
+    }
+  ],
+  "lifecycle": {
+    "gateway_id": "tier0-01",
+    "config_version": "cfg-12",
+    "policy": {
+      "clear_hold_ms": 3000
+    }
+  },
+  "steps": [
+    {
+      "clock_ms": 1760342400200,
+      "world_state": {
+        "t_latest_global": 1760342400100,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0012",
+            "t_last_valid": 1760342400100,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              3.4,
+              5.0
+            ],
+            "position_xy_sigma": [
+              0.08,
+              0.08
+            ],
+            "pelvis_xyz": [
+              3.4,
+              5.0,
+              0.92
+            ],
+            "ground_anchor_xyz": [
+              3.4,
+              5.0,
+              0.0
+            ],
+            "support_surface_id": "floor",
+            "support_surface_validity": "VALID",
+            "contact_validity": "VALID",
+            "z_validity": "VALID",
+            "head_z": 1.68,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "inject_findings": [
+        {
+          "rule_id": "R1",
+          "rule_version": 1,
+          "severity": "HIGH",
+          "world_ids": [
+            "w-0012"
+          ],
+          "zone_id": "z-04",
+          "needs_check": false,
+          "reasons": [
+            "xy_inside_polygon"
+          ],
+          "metrics": {}
+        }
+      ],
+      "expect": {
+        "findings": [],
+        "transitions": [
+          {
+            "event": "e1",
+            "event_sequence": 1,
+            "transition": "RAISED",
+            "changes": [
+              "RAISED"
+            ],
+            "rule_id": "R1",
+            "severity": "HIGH",
+            "needs_check": false,
+            "verification": "VERIFIED",
+            "world_ids": [
+              "w-0012"
+            ],
+            "zone_id": "z-04",
+            "acknowledged": false
+          }
+        ],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342400500,
+      "world_state": {
+        "t_latest_global": 1760342400400,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0012",
+            "t_last_valid": 1760342400100,
+            "observation_state": "PREDICTED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              3.4,
+              5.0
+            ],
+            "position_xy_sigma": [
+              0.3,
+              0.3
+            ],
+            "pelvis_xyz": [
+              3.4,
+              5.0,
+              0.92
+            ],
+            "ground_anchor_xyz": null,
+            "support_surface_id": null,
+            "support_surface_validity": "UNKNOWN",
+            "contact_validity": "UNCERTAIN",
+            "z_validity": "UNCERTAIN",
+            "head_z": 1.68,
+            "cameras": []
+          }
+        ]
+      },
+      "inject_findings": [
+        {
+          "rule_id": "R1",
+          "rule_version": 1,
+          "severity": "HIGH",
+          "world_ids": [
+            "w-0012"
+          ],
+          "zone_id": "z-04",
+          "needs_check": false,
+          "reasons": [
+            "xy_inside_polygon"
+          ],
+          "metrics": {}
+        }
+      ],
+      "expect": {
+        "findings": [],
+        "transitions": [
+          {
+            "event": "e1",
+            "event_sequence": 2,
+            "transition": "UPDATED",
+            "changes": [
+              "VERIFICATION"
+            ],
+            "rule_id": "R1",
+            "severity": "HIGH",
+            "needs_check": false,
+            "verification": "UNVERIFIABLE",
+            "world_ids": [
+              "w-0012"
+            ],
+            "zone_id": "z-04",
+            "acknowledged": false
+          }
+        ],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342400800,
+      "world_state": {
+        "t_latest_global": 1760342400700,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0012",
+            "t_last_valid": 1760342400100,
+            "observation_state": "UNKNOWN",
+            "track_lifecycle": "OCCLUDED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              3.4,
+              5.0
+            ],
+            "position_xy_sigma": [
+              0.6,
+              0.6
+            ],
+            "pelvis_xyz": null,
+            "ground_anchor_xyz": null,
+            "support_surface_id": null,
+            "support_surface_validity": "UNKNOWN",
+            "contact_validity": "UNAVAILABLE",
+            "z_validity": "UNAVAILABLE",
+            "head_z": null,
+            "cameras": []
+          },
+          {
+            "world_id": "w-0031",
+            "t_last_valid": 1760342400100,
+            "observation_state": "UNKNOWN",
+            "track_lifecycle": "OCCLUDED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              3.6,
+              4.8
+            ],
+            "position_xy_sigma": [
+              0.6,
+              0.6
+            ],
+            "pelvis_xyz": null,
+            "ground_anchor_xyz": null,
+            "support_surface_id": null,
+            "support_surface_validity": "UNKNOWN",
+            "contact_validity": "UNAVAILABLE",
+            "z_validity": "UNAVAILABLE",
+            "head_z": null,
+            "cameras": []
+          }
+        ]
+      },
+      "inject_findings": [
+        {
+          "rule_id": "R1",
+          "rule_version": 1,
+          "severity": "HIGH",
+          "world_ids": [
+            "w-0012"
+          ],
+          "zone_id": "z-04",
+          "needs_check": true,
+          "reasons": [
+            "observation_lost",
+            "last_seen_in_zone"
+          ],
+          "metrics": {
+            "zone_distance_m": 0.0
+          },
+          "holding": true
+        },
+        {
+          "rule_id": "R1",
+          "rule_version": 1,
+          "severity": "HIGH",
+          "world_ids": [
+            "w-0031"
+          ],
+          "zone_id": "z-04",
+          "needs_check": true,
+          "reasons": [
+            "observation_lost",
+            "last_seen_in_zone"
+          ],
+          "metrics": {
+            "zone_distance_m": 0.0
+          },
+          "holding": true
+        }
+      ],
+      "expect": {
+        "findings": [],
+        "transitions": [
+          {
+            "event": "e1",
+            "event_sequence": 3,
+            "transition": "UPDATED",
+            "changes": [
+              "CONFIDENCE"
+            ],
+            "rule_id": "R1",
+            "severity": "HIGH",
+            "needs_check": true,
+            "verification": "UNVERIFIABLE",
+            "world_ids": [
+              "w-0012"
+            ],
+            "zone_id": "z-04",
+            "acknowledged": false
+          }
+        ],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342460800,
+      "world_state": {
+        "t_latest_global": 1760342460700,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0012",
+            "t_last_valid": 1760342400100,
+            "observation_state": "UNKNOWN",
+            "track_lifecycle": "OCCLUDED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              3.4,
+              5.0
+            ],
+            "position_xy_sigma": [
+              0.6,
+              0.6
+            ],
+            "pelvis_xyz": null,
+            "ground_anchor_xyz": null,
+            "support_surface_id": null,
+            "support_surface_validity": "UNKNOWN",
+            "contact_validity": "UNAVAILABLE",
+            "z_validity": "UNAVAILABLE",
+            "head_z": null,
+            "cameras": []
+          }
+        ]
+      },
+      "inject_findings": [
+        {
+          "rule_id": "R1",
+          "rule_version": 1,
+          "severity": "HIGH",
+          "world_ids": [
+            "w-0012"
+          ],
+          "zone_id": "z-04",
+          "needs_check": true,
+          "reasons": [
+            "observation_lost",
+            "last_seen_in_zone"
+          ],
+          "metrics": {
+            "zone_distance_m": 0.0
+          },
+          "holding": true
+        }
+      ],
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342460900,
+      "world_state": {
+        "t_latest_global": 1760342460800,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": []
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342461000,
+      "world_state": {
+        "t_latest_global": 1760342460900,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0012",
+            "t_last_valid": 1760342460900,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              3.4,
+              5.0
+            ],
+            "position_xy_sigma": [
+              0.08,
+              0.08
+            ],
+            "pelvis_xyz": [
+              3.4,
+              5.0,
+              0.92
+            ],
+            "ground_anchor_xyz": [
+              3.4,
+              5.0,
+              0.0
+            ],
+            "support_surface_id": "floor",
+            "support_surface_validity": "VALID",
+            "contact_validity": "VALID",
+            "z_validity": "VALID",
+            "head_z": 1.68,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "inject_findings": [
+        {
+          "rule_id": "R1",
+          "rule_version": 1,
+          "severity": "HIGH",
+          "world_ids": [
+            "w-0012"
+          ],
+          "zone_id": "z-04",
+          "needs_check": false,
+          "reasons": [
+            "xy_inside_polygon"
+          ],
+          "metrics": {}
+        }
+      ],
+      "expect": {
+        "findings": [],
+        "transitions": [
+          {
+            "event": "e1",
+            "event_sequence": 4,
+            "transition": "UPDATED",
+            "changes": [
+              "CONFIDENCE",
+              "VERIFICATION",
+              "METRICS"
+            ],
+            "rule_id": "R1",
+            "severity": "HIGH",
+            "needs_check": false,
+            "verification": "VERIFIED",
+            "world_ids": [
+              "w-0012"
+            ],
+            "zone_id": "z-04",
+            "acknowledged": false
+          }
+        ],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342461100,
+      "world_state": {
+        "t_latest_global": 1760342461000,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0012",
+            "t_last_valid": 1760342461000,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              6.0,
+              5.0
+            ],
+            "position_xy_sigma": [
+              0.08,
+              0.08
+            ],
+            "pelvis_xyz": [
+              6.0,
+              5.0,
+              0.92
+            ],
+            "ground_anchor_xyz": [
+              6.0,
+              5.0,
+              0.0
+            ],
+            "support_surface_id": "floor",
+            "support_surface_validity": "VALID",
+            "contact_validity": "VALID",
+            "z_validity": "VALID",
+            "head_z": 1.68,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342463100,
+      "world_state": {
+        "t_latest_global": 1760342463000,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0012",
+            "t_last_valid": 1760342461000,
+            "observation_state": "UNKNOWN",
+            "track_lifecycle": "OCCLUDED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              6.0,
+              5.0
+            ],
+            "position_xy_sigma": [
+              0.6,
+              0.6
+            ],
+            "pelvis_xyz": null,
+            "ground_anchor_xyz": null,
+            "support_surface_id": null,
+            "support_surface_validity": "UNKNOWN",
+            "contact_validity": "UNAVAILABLE",
+            "z_validity": "UNAVAILABLE",
+            "head_z": null,
+            "cameras": []
+          }
+        ]
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [
+          {
+            "event": "e1",
+            "event_sequence": 5,
+            "transition": "UPDATED",
+            "changes": [
+              "VERIFICATION"
+            ],
+            "rule_id": "R1",
+            "severity": "HIGH",
+            "needs_check": false,
+            "verification": "UNVERIFIABLE",
+            "world_ids": [
+              "w-0012"
+            ],
+            "zone_id": "z-04",
+            "acknowledged": false
+          }
+        ],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342463600,
+      "world_state": {
+        "t_latest_global": 1760342463500,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0012",
+            "t_last_valid": 1760342463500,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              6.0,
+              5.0
+            ],
+            "position_xy_sigma": [
+              0.08,
+              0.08
+            ],
+            "pelvis_xyz": [
+              6.0,
+              5.0,
+              0.92
+            ],
+            "ground_anchor_xyz": [
+              6.0,
+              5.0,
+              0.0
+            ],
+            "support_surface_id": "floor",
+            "support_surface_validity": "VALID",
+            "contact_validity": "VALID",
+            "z_validity": "VALID",
+            "head_z": 1.68,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [
+          {
+            "event": "e1",
+            "event_sequence": 6,
+            "transition": "UPDATED",
+            "changes": [
+              "VERIFICATION"
+            ],
+            "rule_id": "R1",
+            "severity": "HIGH",
+            "needs_check": false,
+            "verification": "VERIFIED",
+            "world_ids": [
+              "w-0012"
+            ],
+            "zone_id": "z-04",
+            "acknowledged": false
+          }
+        ],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342466500,
+      "world_state": {
+        "t_latest_global": 1760342466400,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0012",
+            "t_last_valid": 1760342466400,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              6.0,
+              5.0
+            ],
+            "position_xy_sigma": [
+              0.08,
+              0.08
+            ],
+            "pelvis_xyz": [
+              6.0,
+              5.0,
+              0.92
+            ],
+            "ground_anchor_xyz": [
+              6.0,
+              5.0,
+              0.0
+            ],
+            "support_surface_id": "floor",
+            "support_surface_validity": "VALID",
+            "contact_validity": "VALID",
+            "z_validity": "VALID",
+            "head_z": 1.68,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342466600,
+      "world_state": {
+        "t_latest_global": 1760342466500,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0012",
+            "t_last_valid": 1760342466500,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              6.0,
+              5.0
+            ],
+            "position_xy_sigma": [
+              0.08,
+              0.08
+            ],
+            "pelvis_xyz": [
+              6.0,
+              5.0,
+              0.92
+            ],
+            "ground_anchor_xyz": [
+              6.0,
+              5.0,
+              0.0
+            ],
+            "support_surface_id": "floor",
+            "support_surface_validity": "VALID",
+            "contact_validity": "VALID",
+            "z_validity": "VALID",
+            "head_z": 1.68,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [
+          {
+            "event": "e1",
+            "event_sequence": 7,
+            "transition": "RESOLVED",
+            "changes": [
+              "CLEARED"
+            ],
+            "rule_id": "R1",
+            "severity": "HIGH",
+            "needs_check": false,
+            "verification": "VERIFIED",
+            "world_ids": [
+              "w-0012"
+            ],
+            "zone_id": "z-04",
+            "acknowledged": false
+          }
+        ],
+        "local_signals": []
+      }
+    }
+  ]
+}

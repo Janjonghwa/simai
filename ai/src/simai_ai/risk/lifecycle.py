@@ -7,7 +7,7 @@ LIVE 이벤트의 생명주기 정본은 RunPod Tier 0 의 이 추적기 하나�
 **생명주기.** RAISED → UPDATED → RESOLVED.
 - 발생: 이벤트 키(EventKey)에 해당하는 판정이 발생 임계값을 넘으면(Finding.holding=False) 바로 만든다.
 - 유지: 판정이 있으면(holding=True 포함) 해소 확인을 처음부터 다시 센다. holding 은 유지만 하므로 새 이벤트의
-  등급을 정하거나 활성 이벤트의 등급을 올리지 않는다.
+  등급을 정하지 않고, 활성 이벤트의 등급을 올리지도 내리지도 않는다(7.2 R6 '원래 규칙 유지', 7.3).
 - 해소: 판정이 없고 대상이 유효하게 관측되는(VERIFIED) 상태가 해소 유지 시간 동안 이어질 때만 확정한다.
   시간은 관측 시각(observation_time)으로 잰다. 영상이 멈추면 관측 시각이 멈추므로 해소도 멈춘다.
 - 관측 상실: 대상을 유효하게 관측할 수 없으면 검증 상태만 UNVERIFIABLE 이 되고 자동 해소하지 않는다(6.4, G3).
@@ -17,7 +17,9 @@ LIVE 이벤트의 생명주기 정본은 RunPod Tier 0 의 이 추적기 하나�
   이벤트에는 발생 당시의 원본 World ID(origin_world_ids)를 보존한다.
 
 **병합(7.4).** 같은 규칙·같은 사람(World ID 묶음)은 이벤트 하나를 갱신한다. 사람 대상은 구역이 바뀌어도 같은
-이벤트다(zone_id 는 갱신). 사람 없는 구역·시스템 판정(R7 형태)은 (규칙, 구역)이 키다. 한 사람에게 걸린 여러
+이벤트다(zone_id 는 발생 판정으로 갱신). holding 판정은 활성 이벤트를 유지만 하므로 구역을 바꾸지 않는다.
+대표 판정을 고를 때 이벤트의 현재 구역과 같은 holding 을 먼저 고르고, 다른 구역의 holding 만 있으면 유지·확인 필요·
+근거만 반영하고 구역과 그 구역에서 나온 등급·수치는 그대로 둔다(R6 이 인접 구역에 걸칠 때). 사람 없는 구역·시스템 판정(R7 형태)은 (규칙, 구역)이 키다. 한 사람에게 걸린 여러
 규칙은 group_key 가 같아 화면에서 한 묶음으로 보일 수 있다.
 
 **식별자(3.2).** event_id 는 UUIDv7(event_id.EventIdFactory), gateway_id 는 함께 싣는다. event_sequence 는 이벤트별로
@@ -26,7 +28,7 @@ RAISED 가 1 이고 전이마다 1 씩 오른다. 체크포인트 복원(restore
 **출처(7.4).** 추적기 하나는 한 출처만 다룬다. PLANNED·WHAT_IF·REPLAY 도 같은 규칙으로 전이를 만들지만
 (보고서·시뮬레이션 화면용) 현장 경보 신호는 절대 내지 않는다. 채널은 alerting.channels_for(7.3 표)로만 정한다.
 
-**확장 지점(S15P31A101-73 R6·R7).**
+**확장 지점.** S15P31A101-73 이 아래 지점으로 R6(rules.r6_observation_loss)·R7(rules.r7_monitoring)을 붙였다.
 - VerificationPolicy: 검증 가능 판단을 바꿔 끼운다. 기본 ObservedTracksPolicy 는 상태·신원·최신성(6.1)만 본다.
   규칙에 필요한 관측 필드(예: R3 의 Z)가 있으면 그 규칙이 불확실할 때 holding·needs_check 판정을 내거나,
   규칙별 정책으로 바꿔 끼운다.
@@ -539,7 +541,7 @@ class LifecycleTracker:
                 if raising:
                     self._raise(key, _representative(raising), world, tracks, frame, transitions, signals)
             else:
-                finding = _maintaining(findings, active.state.severity) if findings else None
+                finding = _maintaining(findings, active.state) if findings else None
                 self._advance(active, finding, world, tracks, frame, transitions, signals)
         return LifecycleStep(tuple(transitions), tuple(signals))
 
@@ -634,6 +636,16 @@ class LifecycleTracker:
             changes.add(Change.VERSION)
         previous_severity = state.severity
         resolved = False
+        if finding is not None and finding.holding and finding.zone_id != state.zone_id:
+            # 다른 구역의 holding: 유지(해소 확인 재시작)와 확인 필요·근거만 반영한다. holding 은 발생 판정이 아니므로
+            # 이벤트의 구역과 그 구역에서 나온 등급·수치를 바꾸지 않는다(관측을 잃은 사람이 들어간 적 없는 구역으로
+            # 옮겨 가지 않게 한다).
+            finding = replace(
+                finding,
+                severity=state.severity,
+                zone_id=state.zone_id,
+                metrics=state.metrics,
+            )
         if finding is not None:
             active.clear_since = None
             if finding.severity is not state.severity:
@@ -893,13 +905,20 @@ def _representative(findings: list[Finding]) -> Finding:
     return min(findings, key=lambda f: (-_rank(f.severity), f.holding, f.sort_key))
 
 
-def _maintaining(findings: list[Finding], current: Severity) -> Finding:
-    """활성 이벤트의 대표 판정. holding 은 유지만 하므로 현재 등급 위로 올리지 않는다(올리는 것은 발생 판정뿐이다).
+def _maintaining(findings: list[Finding], state: EventState) -> Finding:
+    """활성 이벤트의 대표 판정. holding 은 유지만 하므로 등급을 바꾸지 않는다(바꾸는 것은 발생 판정뿐이다).
 
-    현재 등급보다 높은 holding 은 현재 등급으로 낮춰 본 뒤 _representative 와 같은 순서로 고른다.
+    holding 의 등급을 판정 값과 관계없이 현재 등급으로 맞춘 뒤 _representative 와 같은 순서로 고른다. 그래서
+    현재 등급보다 높은 발생 판정만 등급을 올리고, 현재 등급보다 낮은 발생 판정은 holding 이 있으면 등급을
+    내리지 못한다. 등급과 발생 여부가 같으면 이벤트의 현재 구역과 같은 holding 을 먼저 고른다(holding 은 구역을
+    바꾸지 않는다). 발생 판정끼리의 순서는 _representative 와 같다.
     """
-    capped = [replace(f, severity=current) if f.holding and _rank(f.severity) > _rank(current) else f for f in findings]
-    return _representative(capped)
+    current = state.severity
+    held = [replace(f, severity=current) if f.holding else f for f in findings]
+    return min(
+        held,
+        key=lambda f: (-_rank(f.severity), f.holding, f.holding and f.zone_id != state.zone_id, f.sort_key),
+    )
 
 
 def _ordered(changes: set[Change]) -> tuple[Change, ...]:

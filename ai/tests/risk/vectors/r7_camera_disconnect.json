@@ -1,0 +1,888 @@
+{
+  "format_version": "1.2.0",
+  "vector_id": "r7-camera-disconnect",
+  "description": "LIVE R7: cam3 분리(마지막 프레임 뒤 600ms, 상태 OK 라도 수신 중단) → z-04 감시 저하 발생(분리 후 1초 안). R7 은 CAUTION(시스템)이라 관제 화면 안내만 쓰고 현장 경보 신호(LOCAL_ALERT·ALERT_CLEAR)는 0건(7.2, 7.3). NO_SIGNAL 보고에도 같은 이벤트 유지, cam2 추가 분리로 z-07 별도 구역 이벤트, 복구 후 3초 유지로 각각 해소. 사람이 없어도 구역 대상(world_ids 없음) 판정",
+  "origin": "LIVE",
+  "rules": [
+    {
+      "rule_id": "R7",
+      "rule_version": 1
+    }
+  ],
+  "zones": [
+    {
+      "zone_id": "z-04",
+      "zone_version": "zone-1",
+      "judge_type": "GROUND_FOOTPRINT",
+      "polygon_xy": [
+        [
+          3.0,
+          4.5
+        ],
+        [
+          4.0,
+          4.5
+        ],
+        [
+          4.0,
+          5.5
+        ],
+        [
+          3.0,
+          5.5
+        ]
+      ],
+      "z_range": null,
+      "severity": "HIGH"
+    },
+    {
+      "zone_id": "z-07",
+      "zone_version": "zone-1",
+      "judge_type": "GROUND_FOOTPRINT",
+      "polygon_xy": [
+        [
+          6.0,
+          1.0
+        ],
+        [
+          8.0,
+          1.0
+        ],
+        [
+          8.0,
+          3.0
+        ],
+        [
+          6.0,
+          3.0
+        ]
+      ],
+      "z_range": null,
+      "severity": "CRITICAL"
+    }
+  ],
+  "lifecycle": {
+    "gateway_id": "tier0-01",
+    "config_version": "cfg-12",
+    "policy": {
+      "clear_hold_ms": 3000
+    }
+  },
+  "steps": [
+    {
+      "clock_ms": 1760342400200,
+      "world_state": {
+        "t_latest_global": 1760342400100,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": []
+      },
+      "monitoring": {
+        "cameras": [
+          {
+            "id": "cam1",
+            "fps": 10.0,
+            "last_capture": 1760342400100,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam2",
+            "fps": 10.0,
+            "last_capture": 1760342400100,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam3",
+            "fps": 10.0,
+            "last_capture": 1760342400100,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam4",
+            "fps": 10.0,
+            "last_capture": 1760342400100,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          }
+        ],
+        "zone_cameras": {
+          "z-04": [
+            "cam1",
+            "cam3"
+          ],
+          "z-07": [
+            "cam1",
+            "cam2",
+            "cam3"
+          ]
+        }
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342400300,
+      "world_state": {
+        "t_latest_global": 1760342400200,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": []
+      },
+      "monitoring": {
+        "cameras": [
+          {
+            "id": "cam1",
+            "fps": 10.0,
+            "last_capture": 1760342400200,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam2",
+            "fps": 10.0,
+            "last_capture": 1760342400200,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam3",
+            "fps": 10.0,
+            "last_capture": 1760342400100,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam4",
+            "fps": 10.0,
+            "last_capture": 1760342400200,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          }
+        ],
+        "zone_cameras": {
+          "z-04": [
+            "cam1",
+            "cam3"
+          ],
+          "z-07": [
+            "cam1",
+            "cam2",
+            "cam3"
+          ]
+        }
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342400700,
+      "world_state": {
+        "t_latest_global": 1760342400600,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": []
+      },
+      "monitoring": {
+        "cameras": [
+          {
+            "id": "cam1",
+            "fps": 10.0,
+            "last_capture": 1760342400600,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam2",
+            "fps": 10.0,
+            "last_capture": 1760342400600,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam3",
+            "fps": 10.0,
+            "last_capture": 1760342400100,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam4",
+            "fps": 10.0,
+            "last_capture": 1760342400600,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          }
+        ],
+        "zone_cameras": {
+          "z-04": [
+            "cam1",
+            "cam3"
+          ],
+          "z-07": [
+            "cam1",
+            "cam2",
+            "cam3"
+          ]
+        }
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342400800,
+      "world_state": {
+        "t_latest_global": 1760342400700,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": []
+      },
+      "monitoring": {
+        "cameras": [
+          {
+            "id": "cam1",
+            "fps": 10.0,
+            "last_capture": 1760342400700,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam2",
+            "fps": 10.0,
+            "last_capture": 1760342400700,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam3",
+            "fps": 10.0,
+            "last_capture": 1760342400100,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam4",
+            "fps": 10.0,
+            "last_capture": 1760342400700,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          }
+        ],
+        "zone_cameras": {
+          "z-04": [
+            "cam1",
+            "cam3"
+          ],
+          "z-07": [
+            "cam1",
+            "cam2",
+            "cam3"
+          ]
+        }
+      },
+      "expect": {
+        "findings": [
+          {
+            "rule_id": "R7",
+            "rule_version": 1,
+            "severity": "CAUTION",
+            "world_ids": [],
+            "zone_id": "z-04",
+            "needs_check": false,
+            "reasons": [
+              "monitoring_degraded",
+              "camera_stalled:cam3"
+            ],
+            "metrics": {
+              "healthy_cameras": 1,
+              "required_cameras": 2,
+              "covering_cameras": 2
+            }
+          }
+        ],
+        "transitions": [
+          {
+            "event": "e1",
+            "event_sequence": 1,
+            "transition": "RAISED",
+            "changes": [
+              "RAISED"
+            ],
+            "rule_id": "R7",
+            "severity": "CAUTION",
+            "needs_check": false,
+            "verification": "VERIFIED",
+            "world_ids": [],
+            "zone_id": "z-04",
+            "acknowledged": false
+          }
+        ],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342400900,
+      "world_state": {
+        "t_latest_global": 1760342400800,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": []
+      },
+      "monitoring": {
+        "cameras": [
+          {
+            "id": "cam1",
+            "fps": 10.0,
+            "last_capture": 1760342400800,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam2",
+            "fps": 10.0,
+            "last_capture": 1760342400800,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam3",
+            "fps": 10.0,
+            "last_capture": 1760342400100,
+            "sync_offset_ms": 3.0,
+            "status": "NO_SIGNAL"
+          },
+          {
+            "id": "cam4",
+            "fps": 10.0,
+            "last_capture": 1760342400800,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          }
+        ],
+        "zone_cameras": {
+          "z-04": [
+            "cam1",
+            "cam3"
+          ],
+          "z-07": [
+            "cam1",
+            "cam2",
+            "cam3"
+          ]
+        }
+      },
+      "expect": {
+        "findings": [
+          {
+            "rule_id": "R7",
+            "rule_version": 1,
+            "severity": "CAUTION",
+            "world_ids": [],
+            "zone_id": "z-04",
+            "needs_check": false,
+            "reasons": [
+              "monitoring_degraded",
+              "camera_no_signal:cam3"
+            ],
+            "metrics": {
+              "healthy_cameras": 1,
+              "required_cameras": 2,
+              "covering_cameras": 2
+            }
+          }
+        ],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342401000,
+      "world_state": {
+        "t_latest_global": 1760342400900,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": []
+      },
+      "monitoring": {
+        "cameras": [
+          {
+            "id": "cam1",
+            "fps": 10.0,
+            "last_capture": 1760342400900,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam2",
+            "fps": 10.0,
+            "last_capture": 1760342400850,
+            "sync_offset_ms": 3.0,
+            "status": "NO_SIGNAL"
+          },
+          {
+            "id": "cam3",
+            "fps": 10.0,
+            "last_capture": 1760342400100,
+            "sync_offset_ms": 3.0,
+            "status": "NO_SIGNAL"
+          },
+          {
+            "id": "cam4",
+            "fps": 10.0,
+            "last_capture": 1760342400900,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          }
+        ],
+        "zone_cameras": {
+          "z-04": [
+            "cam1",
+            "cam3"
+          ],
+          "z-07": [
+            "cam1",
+            "cam2",
+            "cam3"
+          ]
+        }
+      },
+      "expect": {
+        "findings": [
+          {
+            "rule_id": "R7",
+            "rule_version": 1,
+            "severity": "CAUTION",
+            "world_ids": [],
+            "zone_id": "z-04",
+            "needs_check": false,
+            "reasons": [
+              "monitoring_degraded",
+              "camera_no_signal:cam3"
+            ],
+            "metrics": {
+              "healthy_cameras": 1,
+              "required_cameras": 2,
+              "covering_cameras": 2
+            }
+          },
+          {
+            "rule_id": "R7",
+            "rule_version": 1,
+            "severity": "CAUTION",
+            "world_ids": [],
+            "zone_id": "z-07",
+            "needs_check": false,
+            "reasons": [
+              "monitoring_degraded",
+              "camera_no_signal:cam2",
+              "camera_no_signal:cam3"
+            ],
+            "metrics": {
+              "healthy_cameras": 1,
+              "required_cameras": 2,
+              "covering_cameras": 3
+            }
+          }
+        ],
+        "transitions": [
+          {
+            "event": "e2",
+            "event_sequence": 1,
+            "transition": "RAISED",
+            "changes": [
+              "RAISED"
+            ],
+            "rule_id": "R7",
+            "severity": "CAUTION",
+            "needs_check": false,
+            "verification": "VERIFIED",
+            "world_ids": [],
+            "zone_id": "z-07",
+            "acknowledged": false
+          }
+        ],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342401900,
+      "world_state": {
+        "t_latest_global": 1760342401800,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": []
+      },
+      "monitoring": {
+        "cameras": [
+          {
+            "id": "cam1",
+            "fps": 10.0,
+            "last_capture": 1760342401800,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam2",
+            "fps": 10.0,
+            "last_capture": 1760342401800,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam3",
+            "fps": 10.0,
+            "last_capture": 1760342400100,
+            "sync_offset_ms": 3.0,
+            "status": "NO_SIGNAL"
+          },
+          {
+            "id": "cam4",
+            "fps": 10.0,
+            "last_capture": 1760342401800,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          }
+        ],
+        "zone_cameras": {
+          "z-04": [
+            "cam1",
+            "cam3"
+          ],
+          "z-07": [
+            "cam1",
+            "cam2",
+            "cam3"
+          ]
+        }
+      },
+      "expect": {
+        "findings": [
+          {
+            "rule_id": "R7",
+            "rule_version": 1,
+            "severity": "CAUTION",
+            "world_ids": [],
+            "zone_id": "z-04",
+            "needs_check": false,
+            "reasons": [
+              "monitoring_degraded",
+              "camera_no_signal:cam3"
+            ],
+            "metrics": {
+              "healthy_cameras": 1,
+              "required_cameras": 2,
+              "covering_cameras": 2
+            }
+          }
+        ],
+        "transitions": [
+          {
+            "event": "e1",
+            "event_sequence": 2,
+            "transition": "UPDATED",
+            "changes": [
+              "METRICS"
+            ],
+            "rule_id": "R7",
+            "severity": "CAUTION",
+            "needs_check": false,
+            "verification": "VERIFIED",
+            "world_ids": [],
+            "zone_id": "z-04",
+            "acknowledged": false
+          }
+        ],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342404900,
+      "world_state": {
+        "t_latest_global": 1760342404800,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": []
+      },
+      "monitoring": {
+        "cameras": [
+          {
+            "id": "cam1",
+            "fps": 10.0,
+            "last_capture": 1760342404800,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam2",
+            "fps": 10.0,
+            "last_capture": 1760342404800,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam3",
+            "fps": 10.0,
+            "last_capture": 1760342400100,
+            "sync_offset_ms": 3.0,
+            "status": "NO_SIGNAL"
+          },
+          {
+            "id": "cam4",
+            "fps": 10.0,
+            "last_capture": 1760342404800,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          }
+        ],
+        "zone_cameras": {
+          "z-04": [
+            "cam1",
+            "cam3"
+          ],
+          "z-07": [
+            "cam1",
+            "cam2",
+            "cam3"
+          ]
+        }
+      },
+      "expect": {
+        "findings": [
+          {
+            "rule_id": "R7",
+            "rule_version": 1,
+            "severity": "CAUTION",
+            "world_ids": [],
+            "zone_id": "z-04",
+            "needs_check": false,
+            "reasons": [
+              "monitoring_degraded",
+              "camera_no_signal:cam3"
+            ],
+            "metrics": {
+              "healthy_cameras": 1,
+              "required_cameras": 2,
+              "covering_cameras": 2
+            }
+          }
+        ],
+        "transitions": [
+          {
+            "event": "e2",
+            "event_sequence": 2,
+            "transition": "RESOLVED",
+            "changes": [
+              "CLEARED"
+            ],
+            "rule_id": "R7",
+            "severity": "CAUTION",
+            "needs_check": false,
+            "verification": "VERIFIED",
+            "world_ids": [],
+            "zone_id": "z-07",
+            "acknowledged": false
+          }
+        ],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342405100,
+      "world_state": {
+        "t_latest_global": 1760342405000,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": []
+      },
+      "monitoring": {
+        "cameras": [
+          {
+            "id": "cam1",
+            "fps": 10.0,
+            "last_capture": 1760342405000,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam2",
+            "fps": 10.0,
+            "last_capture": 1760342405000,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam3",
+            "fps": 10.0,
+            "last_capture": 1760342405000,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam4",
+            "fps": 10.0,
+            "last_capture": 1760342405000,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          }
+        ],
+        "zone_cameras": {
+          "z-04": [
+            "cam1",
+            "cam3"
+          ],
+          "z-07": [
+            "cam1",
+            "cam2",
+            "cam3"
+          ]
+        }
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342408000,
+      "world_state": {
+        "t_latest_global": 1760342407900,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": []
+      },
+      "monitoring": {
+        "cameras": [
+          {
+            "id": "cam1",
+            "fps": 10.0,
+            "last_capture": 1760342407900,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam2",
+            "fps": 10.0,
+            "last_capture": 1760342407900,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam3",
+            "fps": 10.0,
+            "last_capture": 1760342407900,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam4",
+            "fps": 10.0,
+            "last_capture": 1760342407900,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          }
+        ],
+        "zone_cameras": {
+          "z-04": [
+            "cam1",
+            "cam3"
+          ],
+          "z-07": [
+            "cam1",
+            "cam2",
+            "cam3"
+          ]
+        }
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342408100,
+      "world_state": {
+        "t_latest_global": 1760342408000,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": []
+      },
+      "monitoring": {
+        "cameras": [
+          {
+            "id": "cam1",
+            "fps": 10.0,
+            "last_capture": 1760342408000,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam2",
+            "fps": 10.0,
+            "last_capture": 1760342408000,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam3",
+            "fps": 10.0,
+            "last_capture": 1760342408000,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          },
+          {
+            "id": "cam4",
+            "fps": 10.0,
+            "last_capture": 1760342408000,
+            "sync_offset_ms": 3.0,
+            "status": "OK"
+          }
+        ],
+        "zone_cameras": {
+          "z-04": [
+            "cam1",
+            "cam3"
+          ],
+          "z-07": [
+            "cam1",
+            "cam2",
+            "cam3"
+          ]
+        }
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [
+          {
+            "event": "e1",
+            "event_sequence": 3,
+            "transition": "RESOLVED",
+            "changes": [
+              "CLEARED"
+            ],
+            "rule_id": "R7",
+            "severity": "CAUTION",
+            "needs_check": false,
+            "verification": "VERIFIED",
+            "world_ids": [],
+            "zone_id": "z-04",
+            "acknowledged": false
+          }
+        ],
+        "local_signals": []
+      }
+    }
+  ]
+}

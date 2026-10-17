@@ -16,9 +16,13 @@ from dataclasses import dataclass
 
 from simai_ai.risk.clock import Clock
 from simai_ai.risk.common import Origin
+from simai_ai.risk.monitoring import MonitoringState
 from simai_ai.risk.rule import Finding, Rule, RuleContext, RuleSpec
 from simai_ai.risk.world import WorldState
 from simai_ai.risk.zone import Zone
+
+# 카메라 영상에서 온 입력. PLANNED·WHAT_IF 는 계획·가상 입력이라 카메라 감시 상태라는 개념이 없다.
+_CAMERA_ORIGINS = frozenset({Origin.LIVE, Origin.REPLAY})
 
 
 class NonLiveAlertError(ValueError):
@@ -96,7 +100,19 @@ class RiskEngine:
     def rules(self) -> tuple[RuleSpec, ...]:
         return tuple(r.spec for r in self._rules)
 
-    def evaluate(self, world: WorldState, zones: Iterable[Zone], origin: Origin) -> Evaluation:
+    def evaluate(
+        self,
+        world: WorldState,
+        zones: Iterable[Zone],
+        origin: Origin,
+        *,
+        monitoring: MonitoringState | None = None,
+    ) -> Evaluation:
+        """monitoring 은 같은 판정 시각의 감시 상태(R7 입력)다. 없으면 None 으로 규칙에 넘긴다.
+
+        PLANNED·WHAT_IF 는 카메라가 없는 입력이라 monitoring_expected=False 로 넘긴다. 그때 monitoring 이 없으면
+        R7 은 판정하지 않는다(가상 카메라 장애를 보려면 monitoring 을 넘긴다). LIVE·REPLAY 에서 없으면 '모름'(저하)이다.
+        """
         origin = Origin(origin)
         now_ms = self._clock.now_ms()
         # 구역은 판정 시각에 유효한 버전만 쓴다. REPLAY·WHAT_IF 는 고정 시계로 그 시각을 준다.
@@ -104,7 +120,13 @@ class RiskEngine:
         active_ids = [z.zone_id for z in active]
         if len(set(active_ids)) != len(active_ids):
             raise RuleContractError(f"같은 시각에 유효한 구역 버전이 둘 이상이다 {sorted(active_ids)}")
-        ctx = RuleContext(now_ms=now_ms, world=world, zones=active)
+        ctx = RuleContext(
+            now_ms=now_ms,
+            world=world,
+            zones=active,
+            monitoring=monitoring,
+            monitoring_expected=origin in _CAMERA_ORIGINS,
+        )
 
         findings: list[Finding] = []
         for rule in self._rules:
