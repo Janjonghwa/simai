@@ -6,7 +6,9 @@
 - 규칙은 판정 출처(Origin)를 보지 못한다. RuleContext 에 출처가 없으므로 같은 입력은 출처와 관계없이
   같은 판정을 낸다(명세 7장: 같은 규칙을 네 가지 입력에 적용). 알림 여부는 엔진이 출처로만 정한다.
 - 판정 시각은 RuleContext.now_ms(주입 시계)만 쓴다. 규칙이 시계를 직접 읽지 않는다.
-- 발생·해소 히스테리시스와 RiskEvent 생명주기(RAISED/UPDATED/RESOLVED)는 이 골격 범위 밖이다(명세 6.4).
+- 규칙은 상태를 갖지 않는다. 발생·해소 임계값 분리(히스테리시스, 명세 6.4·7.1)는 Finding.holding 으로 낸다.
+  발생 임계값을 넘으면 holding=False, 해소 임계값 안쪽(띠 안)이면 holding=True 로 낸다. 활성 이벤트가
+  있는지는 규칙이 몰라도 되고, 이벤트 생성·유지·해소 시간 확인은 lifecycle 이 한다.
 """
 
 import math
@@ -64,6 +66,9 @@ class Finding:
     - needs_check: "확인 필요". 모르면 진입하지 않았다고 확정하지 않고 이 표시를 붙인다(명세 8.2, 7.2).
     - reasons: 판정 근거 코드(예: "xy_inside_polygon", "z_unknown"). 순서를 지킨다.
     - metrics: 수치 근거(예: edge_distance_m). 단위는 키 이름에 붙인다.
+    - holding: 발생 임계값은 넘지 않았지만 해소 임계값 안쪽이다(히스테리시스 띠, 불확실성 범위 포함).
+      활성 이벤트를 유지만 하고 새 이벤트를 만들지 않는다(lifecycle). 예: R2 발생 1.0m / 해소 1.3m 이면
+      1.0~1.3m 에서 holding=True.
     """
 
     rule_id: str
@@ -75,6 +80,7 @@ class Finding:
     reasons: tuple[str, ...] = ()
     # 읽기 전용 mapping 은 해시가 안 되므로 해시에서만 뺀다(비교에는 들어간다).
     metrics: Mapping[str, float] = field(default_factory=dict, hash=False)
+    holding: bool = False
 
     def __post_init__(self) -> None:
         if not self.world_ids and self.zone_id is None:

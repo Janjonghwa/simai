@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from simai_ai.risk import UnknownRuleError, default_registry
+from simai_ai.risk import NonLiveAlertError, Origin, UnknownRuleError, default_registry
 from simai_ai.risk._parse import RiskInputError
 from simai_ai.risk.vectors import discover, load_vector, main, parse_vector, run_paths, run_vector
 
@@ -16,8 +16,29 @@ VECTOR_DIR = Path(__file__).resolve().parent / "vectors"
 VECTOR_FILES = discover([VECTOR_DIR])
 
 
+LIFECYCLE_VECTORS = {
+    "lifecycle_live_ack_resolve.json",
+    "lifecycle_observation_lost.json",
+    "lifecycle_stale_observed.json",
+    "lifecycle_identity_revision.json",
+    "lifecycle_merge.json",
+    "lifecycle_planned_no_alert.json",
+    "lifecycle_what_if_no_alert.json",
+    "lifecycle_replay_no_alert.json",
+}
+
+
 def test_vectors_exist():
-    assert {p.name for p in VECTOR_FILES} >= {"empty_scene.json", "no_rules.json", "replay_zone_versions.json"}
+    assert {p.name for p in VECTOR_FILES} >= {
+        "empty_scene.json",
+        "no_rules.json",
+        "replay_zone_versions.json",
+    } | LIFECYCLE_VECTORS
+
+
+def test_lifecycle_vectors_cover_every_origin():
+    origins = {load_vector(VECTOR_DIR / name).origin for name in LIFECYCLE_VECTORS}
+    assert origins == set(Origin)
 
 
 @pytest.mark.parametrize("path", VECTOR_FILES, ids=lambda p: p.stem)
@@ -213,6 +234,79 @@ def test_cli_exit_codes(tmp_path, probe_vector, capsys):
     empty = tmp_path / "empty"
     empty.mkdir()
     assert main([str(empty)]) == 1
+
+
+# --- 생명주기 시나리오(형식 1.1) ---------------------------------------------------------
+
+
+def _lifecycle_vector(name="lifecycle_live_ack_resolve.json"):
+    return json.loads((VECTOR_DIR / name).read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        pytest.param(
+            lambda v: v["steps"][0]["expect"]["transitions"][0].update(severity="CRITICAL"), "전이 실제", id="severity"
+        ),
+        pytest.param(
+            lambda v: v["steps"][0]["expect"]["transitions"][0].update(event_sequence=2), "전이 실제", id="sequence"
+        ),
+        pytest.param(lambda v: v["steps"][4]["expect"].update(transitions=[]), "전이 실제", id="missing-resolve"),
+        pytest.param(lambda v: v["steps"][1]["expect"].update(local_signals=[]), "현장 경보 신호", id="missing-stop"),
+        pytest.param(
+            lambda v: v["steps"][2]["expect"]["local_signals"].append(
+                {"kind": "ALERT_CLEAR", "event": "e1", "severity": "HIGH", "needs_check": False}
+            ),
+            "현장 경보 신호",
+            id="extra-signal",
+        ),
+        pytest.param(lambda v: v["steps"][1]["acks"][0].update(event="e9"), "활성 이벤트가 아니다", id="ack-unknown"),
+    ],
+)
+def test_lifecycle_runner_reports_mismatch(mutate, message):
+    vector = _lifecycle_vector()
+    mutate(vector)
+    result = run_vector(parse_vector(vector))
+    assert not result.passed
+    assert any(message in m for m in result.mismatches), result.mismatches
+
+
+def test_lifecycle_runner_rejects_non_live_alert(monkeypatch):
+    """채널 표가 잘못돼 비 LIVE 에 현장 경보를 고르더라도 신호 자체를 만들 수 없다(이중 장치)."""
+    from simai_ai.risk import alerting, lifecycle
+
+    def broken(severity, confidence, origin):
+        return alerting.ChannelPlan(channels=frozenset({alerting.Channel.LOCAL_ALERT}), needs_check=False)
+
+    monkeypatch.setattr(lifecycle, "channels_for", broken)
+    with pytest.raises(NonLiveAlertError):
+        run_vector(parse_vector(_lifecycle_vector("lifecycle_replay_no_alert.json")))
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda v: v["steps"][0]["expect"].pop("transitions"), id="transitions-required"),
+        pytest.param(lambda v: v["steps"][0]["expect"].pop("local_signals"), id="signals-required"),
+        pytest.param(lambda v: v["lifecycle"].update(typo=1), id="lifecycle-unknown-key"),
+        pytest.param(lambda v: v["lifecycle"]["policy"].update(clear_hold_ms=-1), id="negative-hold"),
+        pytest.param(lambda v: v["steps"][1]["acks"][0].update(actor="WATCH"), id="bad-actor"),
+        pytest.param(lambda v: v["steps"][0]["expect"]["transitions"][0].pop("changes"), id="transition-missing-key"),
+        pytest.param(lambda v: v["steps"][0]["inject_findings"][0].update(holding="yes"), id="holding-not-bool"),
+        pytest.param(lambda v: v.pop("lifecycle"), id="lifecycle-fields-without-lifecycle"),
+    ],
+)
+def test_bad_lifecycle_vector_is_rejected(mutate):
+    vector = _lifecycle_vector()
+    mutate(vector)
+    with pytest.raises(RiskInputError):
+        parse_vector(vector)
+
+
+def test_holding_in_expected_finding_is_compared(probe_vector, probe_registry):
+    probe_vector["steps"][0]["expect"]["findings"][0]["holding"] = True
+    assert not run_vector(parse_vector(probe_vector), probe_registry).passed
 
 
 def test_cli_module_entrypoint():
