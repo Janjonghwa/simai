@@ -1,0 +1,39 @@
+# 카메라 없이 녹화 경로를 시험하는 설정: 합성 스트림 3대(지연·끊김 흉내) + 로컬 영상 파일 1대.
+# 결과 manifest 는 is_test_input = true 다. 제품 성능·게이트 판정에 쓰지 않는다.
+#   uv run simai-recorder record --config sessions/dry-run.toml --seconds 30
+
+[session]
+scenario = "dry_run"
+description = "합성·파일 입력으로 4대 동시 녹화 경로 시험"
+storage_uri = "volume://AP-JP-1/simai/recordings/dry-run"
+
+[[cameras]]
+camera_id = "cam_A"
+kind = "synthetic"
+width = 640
+height = 360
+fps = 25
+
+[[cameras]]
+camera_id = "cam_B"
+kind = "synthetic"
+width = 640
+height = 360
+faults = { jitter_ms = 40, stalls = { 100 = 350 }, seed = 1 }   # Wi-Fi 도착 지터, 350ms 멈춤
+
+[[cameras]]
+camera_id = "cam_C"
+kind = "synthetic"
+width = 640
+height = 360
+faults = { disconnect_after = [200, 300], failed_reopens = 1 }   # 두 번 끊기고, 다시 열기 1번 실패
+
+[[cameras]]
+camera_id = "cam_D"
+kind = "synthetic"
+width = 640
+height = 360
+# 로컬 영상으로 바꾸려면 위 두 줄 대신:
+# kind = "file"
+# file = "C:/path/to/video.mp4"   # H.264 (raw .h264, MP4, MKV). 사람이 찍힌 영상은 쓰지 않는다
+# loop = true

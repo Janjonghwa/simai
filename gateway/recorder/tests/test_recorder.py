@@ -1,0 +1,179 @@
+"""카메라 한 대 녹화 루프. FakeClock 으로 실제로 기다리지 않고 결정적으로 돌린다."""
+
+from __future__ import annotations
+
+import json
+import threading
+from pathlib import Path
+
+from videos import count_decoded
+
+from simai_recorder.annexb import NAL_PPS, NAL_SPS, START_CODE, nal_type, split_annexb
+from simai_recorder.capture_time import CaptureTimeModel
+from simai_recorder.clock import FakeClock
+from simai_recorder.recorder import CameraRecorder, CameraSpec
+from simai_recorder.segment import camera_segments, read_frames, read_segment
+from simai_recorder.sources import (
+    FaultPlan,
+    FaultySource,
+    FileSource,
+    PacketSource,
+    SourcePacket,
+    StreamInfo,
+    SyntheticSource,
+)
+
+
+def _record(tmp_path: Path, source: PacketSource, clock: FakeClock, seconds: float | None = None,
+            model: CaptureTimeModel | None = None) -> CameraRecorder:
+    spec = CameraSpec("cam_A", source, model or CaptureTimeModel())
+    deadline = clock.monotonic() + seconds if seconds is not None else None
+    rec = CameraRecorder(spec, tmp_path, clock, threading.Event(), deadline, reconnect_delays_s=(1.0, 2.0))
+    rec.run()
+    assert rec.error is None
+    return rec
+
+
+def _events(tmp_path: Path) -> list[dict]:
+    return [json.loads(x) for x in (tmp_path / "cam_A" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+def _headers(tmp_path: Path) -> list[list[dict]]:
+    return [[r["header"] for r in read_frames(p.frames)] for p in camera_segments(tmp_path / "cam_A")]
+
+
+def test_reconnect_starts_new_epoch_from_keyframe(tmp_path):
+    clock = FakeClock()
+    synth = SyntheticSource(clock, width=64, height=48, fps=25, keyframe_interval_s=1.0)
+    source = FaultySource(synth, FaultPlan(disconnect_after=(30,), failed_reopens=1), clock)
+    _record(tmp_path, source, clock, seconds=4.0)
+
+    kinds = [e["event"] for e in _events(tmp_path)]
+    assert kinds[:4] == ["connected", "segment_started", "disconnected", "open_failed"]
+    assert kinds.count("connected") == 2 and kinds[-2:] == ["stopped", "closed"]
+
+    epochs = _headers(tmp_path)
+    assert [h[0]["stream_epoch"] for h in epochs] == [0, 1]
+    assert len(epochs[0]) == 30
+    for headers in epochs:
+        assert headers[0]["keyframe"] is True
+        assert [h["frame_sequence"] for h in headers] == list(range(len(headers)))
+        for h in headers:
+            assert h["timestamp_source"] == "RECEIVE_ESTIMATED"
+            # FakeClock 은 지연이 없으므로 추정 촬영 시각이 실제 촬영 시각과 같다
+            assert abs(h["estimated_capture_time_ms"] - synth.capture_time_ms(h["source_pts"])) <= 1
+    # 끊긴 동안(재접속 대기 1s + 실패 후 1s) 카메라가 찍은 프레임은 받지 못했다
+    lost_ms = (epochs[1][0]["source_pts"] - epochs[0][-1]["source_pts"]) / 90
+    assert lost_ms >= 2000
+
+
+def test_file_resume_mid_gop_drops_until_keyframe(tmp_path, mp4_video):
+    clock = FakeClock()
+    source = FaultySource(FileSource(mp4_video, clock), FaultPlan(disconnect_after=(13,)), clock)
+    _record(tmp_path, source, clock)
+
+    started = [e for e in _events(tmp_path) if e["event"] == "segment_started"]
+    assert [e["dropped_before_keyframe"] for e in started] == [0, 7]  # 13~19번 패킷(키프레임 20 전)
+    epochs = _headers(tmp_path)
+    assert [len(h) for h in epochs] == [13, 40]
+    assert all(h[0]["keyframe"] for h in epochs)
+    assert _events(tmp_path)[-2]["event"] == "eof"
+
+    # 세그먼트 파일만으로 디코딩되고, 사이드카의 (offset, size) 로 프레임을 그대로 꺼낼 수 있다
+    for paths, headers in zip(camera_segments(tmp_path / "cam_A"), epochs, strict=True):
+        assert count_decoded(paths.h264) == len(headers)
+        codec, frames = read_segment(paths)
+        assert codec["stream_epoch"] == headers[0]["stream_epoch"]
+        payloads = [p for _, p in frames]
+        assert len(payloads) == len(headers)
+        assert all(split_annexb(p) for p in payloads)  # MP4 avcC 를 Annex B 로 바꿨다
+
+
+def test_headers_and_codec_info_match_i0_contract(tmp_path, mp4_video, contract_validator):
+    clock = FakeClock()
+    _record(tmp_path, FileSource(mp4_video, clock), clock)
+    for paths in camera_segments(tmp_path / "cam_A"):
+        codec, frames = read_segment(paths)
+        contract_validator("codec_info", codec)
+        for header, _ in frames:
+            contract_validator("frame_header", header)
+
+
+def test_raw_h264_without_pts_leaves_source_pts_null(tmp_path, raw_video):
+    clock = FakeClock()
+    model = CaptureTimeModel(latency_ms=10)
+    _record(tmp_path, FileSource(raw_video, clock, fps=25), clock, model=model)
+    (headers,) = _headers(tmp_path)
+    assert len(headers) == 60
+    assert all(h["source_pts"] is None for h in headers)
+    assert all(h["timestamp_uncertainty_ms"] == model.uncertainty_no_pts_ms for h in headers)
+    assert all(h["estimated_capture_time_ms"] == h["received_at_ms"] - 10 for h in headers)
+    # 25 fps 속도로 흘렸다
+    assert headers[-1]["received_at_ms"] - headers[0]["received_at_ms"] == 59 * 40
+
+
+class _StripParameterSets(PacketSource):
+    """키프레임에 SPS/PPS 를 싣지 않고 extradata 로만 주는 카메라 흉내 (RTSP SDP sprop-parameter-sets 와 같은 경우)."""
+
+    kind = "SYNTHETIC"
+
+    def __init__(self, inner: SyntheticSource) -> None:
+        self._inner = inner
+        self._pending: SourcePacket | None = None
+
+    @staticmethod
+    def _split(p: SourcePacket) -> tuple[bytes, SourcePacket]:
+        nals = split_annexb(p.data)
+        params = b"".join(START_CODE + n for n in nals if nal_type(n) in (NAL_SPS, NAL_PPS))
+        body = b"".join(START_CODE + n for n in nals if nal_type(n) not in (NAL_SPS, NAL_PPS))
+        return params, SourcePacket(body, p.pts, p.keyframe)
+
+    def open(self) -> StreamInfo:
+        info = self._inner.open()
+        extradata, self._pending = self._split(self._inner.read())
+        return StreamInfo(**{**info.__dict__, "extradata": extradata})
+
+    def read(self) -> SourcePacket | None:
+        if self._pending is not None:
+            p, self._pending = self._pending, None
+            return p
+        return self._split(self._inner.read())[1]
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def describe(self) -> dict:
+        return {"kind": self.kind}
+
+
+def test_parameter_sets_from_extradata_are_prefixed(tmp_path):
+    clock = FakeClock()
+    _record(tmp_path, _StripParameterSets(SyntheticSource(clock, width=64, height=48)), clock, seconds=1.0)
+
+    (paths,) = camera_segments(tmp_path / "cam_A")
+    rows = list(read_frames(paths.frames))
+    assert rows[0]["offset"] > 0  # 파일 앞에 SPS/PPS 를 붙였다
+    codec, frames = read_segment(paths)
+    assert codec["sps"] and codec["pps"]
+    first_payload = next(frames)[1]
+    assert {nal_type(n) for n in split_annexb(first_payload)}.isdisjoint({NAL_SPS, NAL_PPS})  # 받은 그대로
+    assert count_decoded(paths.h264) == len(rows)
+
+
+def test_stop_event_ends_recording(tmp_path):
+    clock = FakeClock()
+    stop = threading.Event()
+    synth = SyntheticSource(clock, width=64, height=48)
+
+    class StopAfter(FaultySource):
+        def read(self):
+            if self._count == 10:
+                stop.set()
+            return super().read()
+
+    spec = CameraSpec("cam_A", StopAfter(synth, FaultPlan(), clock))
+    rec = CameraRecorder(spec, tmp_path, clock, stop, deadline=None)
+    rec.run()
+    (headers,) = _headers(tmp_path)
+    assert len(headers) == 11
+    assert _events(tmp_path)[-2]["event"] == "stopped"
