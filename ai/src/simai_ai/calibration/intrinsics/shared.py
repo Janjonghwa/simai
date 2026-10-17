@@ -81,7 +81,8 @@ class CameraDeviation:
         }
         for key in ("focal_rel_dev", "k1_dev", "k2_dev", "discrepancy_p95_px", "discrepancy_rel"):
             value = getattr(self, key)
-            if value is not None:
+            # 잴 수 없는 값(inf: 공통 모델로 광선을 만들 수 없는 픽셀이 있음)은 비운다. 사유는 reasons 에 있다
+            if value is not None and math.isfinite(value):
                 rec[key] = value
         if self.reasons:
             rec["reasons"] = list(self.reasons)
@@ -306,7 +307,9 @@ def _deviations(
     for e, fdev, k1d, k2d, disc, reasons in rows:
         rel = None if disc is None else disc / D
         outlier = rel is not None and rel > limit
-        if outlier:
+        if outlier and not math.isfinite(rel):
+            reasons = [*reasons, "공통 모델로 광선을 만들 수 없는 격자 픽셀이 있어 재투영 차이를 잴 수 없음(왜곡 식이 접힘)"]
+        elif outlier:
             reasons = [
                 *reasons,
                 f"공통 모델과 재투영 차이 p95 {disc:.1f}px(반대각선의 {rel:.3f}) > 한도 {limit:.3f}",

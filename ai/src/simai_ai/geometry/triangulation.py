@@ -4,6 +4,8 @@
 사람 한 명의 관절 3D 를 만든다. 카메라 간 연결(같은 사람 묶기)은 호출자가 이미 했다고 본다.
 
 - 유효 관측(신뢰도 기준 이상)이 2대 이상인 관절만 삼각측량한다. 1대 이하는 null, visible=false, UNAVAILABLE 이다.
+  값(u, v, 신뢰도)이 유한하지 않거나 렌즈 왜곡을 제거할 수 없는(`RigCamera.normalize_with_mask`) keypoint 는
+  관측으로 세지 않는다. 예외로 멈추지 않고 관측 수가 줄어든 대로 판정한다.
 - 선형 DLT(왜곡 제거 정규화 좌표)로 초기값을 구하고 가우스-뉴턴으로 픽셀 재투영 오차를 줄인다.
 - 재투영 오차가 이상치 기준을 넘는 카메라는 빼고 다시 푼다. 빼고 나서 기준 안의 관측이 2대 미만이면 null 이다
   (2대를 채우려고 이상치 관측을 세지 않는다).
@@ -168,13 +170,10 @@ def triangulate_skeleton(
     cameras = rig.subset(ids)
     trusted = rig.state not in UNTRUSTED_CALIBRATION_STATES
 
+    usable = [_usable_keypoints(cam, v.keypoints, config) for cam, v in zip(cameras, view_list)]
     joints = []
     for j in range(n_joints):
-        obs = [
-            (cam, kp)
-            for cam, v in zip(cameras, view_list)
-            if (kp := v.keypoints[j]) is not None and kp[2] >= config.min_keypoint_confidence
-        ]
+        obs = [(cam, v.keypoints[j]) for cam, v, ok in zip(cameras, view_list, usable) if ok[j]]
         joints.append(_triangulate_joint(obs, trusted, config))
     used = sorted({cid for j in joints for cid in j.camera_ids})
     return SkeletonEstimate(
@@ -189,12 +188,17 @@ def triangulate_skeleton(
 def triangulate_point(
     cameras: Sequence[RigCamera], pixels: np.ndarray, weights: np.ndarray | None = None, refine_iterations: int = 10
 ) -> np.ndarray | None:
-    """원본 픽셀 (N, 2) 관측으로 World 점 하나를 푼다. 해가 없거나 어느 카메라 뒤에 있으면 None."""
+    """원본 픽셀 (N, 2) 관측으로 World 점 하나를 푼다. 해가 없거나 어느 카메라 뒤에 있으면 None.
+
+    픽셀·가중치가 유한하지 않거나 왜곡을 제거할 수 없는 관측이 하나라도 있으면 None 이다(어느 관측을 뺄지는 호출자 몫).
+    """
     if len(cameras) < MIN_VIEWS:
         raise ValueError(f"삼각측량에는 카메라가 {MIN_VIEWS}대 이상 필요하다: {len(cameras)}대")
     pixels = np.asarray(pixels, dtype=float).reshape(-1, 2)
     w = np.ones(len(cameras)) if weights is None else np.asarray(weights, dtype=float)
     normalized = np.vstack([cam.normalize(px) for cam, px in zip(cameras, pixels)])
+    if not (np.all(np.isfinite(normalized)) and np.all(np.isfinite(w))):
+        return None
     X = _dlt(cameras, normalized, w)
     if X is None or not _in_front(cameras, X):
         return None
@@ -206,7 +210,7 @@ def triangulate_point(
 
 
 def reprojection_errors(cameras: Sequence[RigCamera], pixels: np.ndarray, X: np.ndarray) -> np.ndarray:
-    """카메라별 재투영 오차(왜곡 제거 픽셀). 카메라 뒤면 inf."""
+    """카메라별 재투영 오차(왜곡 제거 픽셀). 카메라 뒤이거나 그 관측의 왜곡을 제거할 수 없으면 inf."""
     pixels = np.asarray(pixels, dtype=float).reshape(-1, 2)
     out = np.empty(len(cameras))
     for i, (cam, px) in enumerate(zip(cameras, pixels)):
@@ -216,7 +220,8 @@ def reprojection_errors(cameras: Sequence[RigCamera], pixels: np.ndarray, X: np.
             continue
         target = cam.ideal_pixels(cam.normalize(px))[0]
         proj = cam.ideal_pixels(xc[:2] / xc[2])[0]
-        out[i] = float(np.linalg.norm(proj - target))
+        err = float(np.linalg.norm(proj - target))
+        out[i] = err if math.isfinite(err) else math.inf
     return out
 
 
@@ -231,6 +236,21 @@ def max_ray_angle(cameras: Sequence[RigCamera], X: np.ndarray) -> float:
     for a, b in itertools.combinations(dirs, 2):
         best = max(best, math.acos(float(np.clip(abs(a @ b), 0.0, 1.0))))
     return best
+
+
+def _usable_keypoints(cam: RigCamera, keypoints: Sequence[Any], config: TriangulationConfig) -> list[bool]:
+    """관절마다 관측으로 셀 수 있는지: 값이 있고 (u, v, 신뢰도) 모두 유한하고 신뢰도 기준 이상이며 왜곡을 제거할 수 있다."""
+    candidate = []
+    pixels = np.zeros((len(keypoints), 2))
+    for j, kp in enumerate(keypoints):
+        ok = kp is not None and all(math.isfinite(float(x)) for x in kp[:3]) and kp[2] >= config.min_keypoint_confidence
+        candidate.append(ok)
+        if ok:
+            pixels[j] = kp[:2]
+    if not any(candidate):
+        return candidate
+    _, undistorted = cam.normalize_with_mask(pixels)
+    return [bool(c and u) for c, u in zip(candidate, undistorted)]
 
 
 def _triangulate_joint(
@@ -314,7 +334,10 @@ def _dlt(cameras: Sequence[RigCamera], normalized: np.ndarray, weights: np.ndarr
         P = np.hstack([cam.R, cam.t[:, None]])
         rows.append(w * (x * P[2] - P[0]))
         rows.append(w * (y * P[2] - P[1]))
-    _, s, vt = np.linalg.svd(np.array(rows))
+    try:
+        _, s, vt = np.linalg.svd(np.array(rows))
+    except np.linalg.LinAlgError:
+        return None
     if not s[0] > 0 or s[-2] <= DLT_RANK_TOLERANCE * s[0]:
         return None
     h = vt[-1]

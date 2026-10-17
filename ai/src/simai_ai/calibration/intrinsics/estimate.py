@@ -24,6 +24,8 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
+from simai_ai.geometry import distortion
+
 # 추정 방법 (이 모듈의 형식. 계약 값이 아니다)
 METHOD_PLUMB_LINE_VP = "PLUMB_LINE_VP"
 METHOD_GEOCALIB = "GEOCALIB"
@@ -235,39 +237,19 @@ def radial_pixel_from_opencv(
 
 def distort_normalized(xy: np.ndarray, coeffs: Sequence[float]) -> np.ndarray:
     """정규화 좌표(왜곡 없음) (N, 2) → 왜곡 좌표. cv2.projectPoints 의 OPENCV_PINHOLE 식(5계수까지)."""
-    xy = np.asarray(xy, dtype=float).reshape(-1, 2)
-    k = list(coeffs) + [0.0] * (5 - len(coeffs))
-    k1, k2, p1, p2, k3 = k[:5]
-    x, y = xy[:, 0], xy[:, 1]
-    r2 = x * x + y * y
-    radial = 1 + r2 * (k1 + r2 * (k2 + r2 * k3))
-    return np.column_stack(
-        [x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x), y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y]
-    )
+    return distortion.distort(xy, distortion.MODEL_PINHOLE, _pinhole5(coeffs))
 
 
-def undistort_radii(rho_d: np.ndarray, b1: float, b2: float, iterations: int = 30) -> tuple[np.ndarray, bool]:
-    """ρ_d = ρ_u (1 + b1 ρ_u² + b2 ρ_u⁴) 를 ρ_u 에 대해 뉴턴법으로 푼다.
+def undistort_radii(rho_d: np.ndarray, b1: float, b2: float) -> tuple[np.ndarray, bool]:
+    """ρ_d = ρ_u (1 + b1 ρ_u² + b2 ρ_u⁴) 를 ρ_u 에 대해 푼다(`geometry.distortion.undistort_radius`, 구간 보호 뉴턴법).
 
-    돌려주는 bool 은 모든 점에서 단조(도함수 > 0)이고 수렴했는지다. 단조가 아니면 모델이 영상 안에서 접히므로
-    그 계수는 쓸 수 없다.
+    돌려주는 bool 은 모든 점이 식이 단조인 첫 가지 안에서 풀렸는지다. 아니면 모델이 영상 안에서 접히므로
+    그 계수는 쓸 수 없다. 풀지 못한 점은 NaN 이다.
     """
     rho_d = np.asarray(rho_d, dtype=float)
-    r = rho_d.copy()
-    for _ in range(iterations):
-        r2 = r * r
-        f = r * (1 + b1 * r2 + b2 * r2 * r2) - rho_d
-        df = 1 + 3 * b1 * r2 + 5 * b2 * r2 * r2
-        df = np.where(np.abs(df) < 1e-9, 1e-9, df)
-        r = r - f / df
-    r2 = r * r
-    ok = bool(
-        np.all(np.isfinite(r))
-        and np.all(r >= 0)
-        and np.all(1 + 3 * b1 * r2 + 5 * b2 * r2 * r2 > 1e-6)
-        and np.allclose(r * (1 + b1 * r2 + b2 * r2 * r2), rho_d, atol=1e-7)
-    )
-    return r, ok
+    coeffs = (float(b1), float(b2), 0.0, 0.0, 0.0)
+    r = distortion.undistort_radius(rho_d, distortion.MODEL_PINHOLE, coeffs)
+    return r, bool(np.all(np.isfinite(r)))
 
 
 def radial_monotonic(b1: float, b2: float, rho_u_max: float, samples: int = 64) -> bool:
@@ -279,19 +261,15 @@ def radial_monotonic(b1: float, b2: float, rho_u_max: float, samples: int = 64) 
 def undistort_pixels(
     uv: np.ndarray, focal_px: float, coeffs: Sequence[float], principal_point: Sequence[float]
 ) -> np.ndarray:
-    """원본 픽셀 (N, 2) → 왜곡을 제거한 정규화 좌표 (N, 2). 방사 k1·k2 만 쓴다(이 패키지가 내는 형식)."""
+    """원본 픽셀 (N, 2) → 왜곡을 제거한 정규화 좌표 (N, 2). 방사 k1·k2 만 쓴다(이 패키지가 내는 형식).
+
+    풀 수 없는 점(왜곡 식이 접히는 영역 등)은 NaN 이다(`undistort_normalized`).
+    """
     uv = np.asarray(uv, dtype=float).reshape(-1, 2)
-    xd = (uv - np.asarray(principal_point, dtype=float)) / focal_px
-    k1 = coeffs[0] if len(coeffs) > 0 else 0.0
-    k2 = coeffs[1] if len(coeffs) > 1 else 0.0
     if any(abs(c) > 0 for c in list(coeffs)[2:]):
         raise ValueError("undistort_pixels 는 방사 k1·k2 만 지원한다(p1·p2·k3 = 0)")
-    rd = np.hypot(xd[:, 0], xd[:, 1])
-    ru, _ = undistort_radii(rd, k1, k2)
-    scale = np.ones_like(rd)
-    nz = rd > 1e-12
-    scale[nz] = ru[nz] / rd[nz]
-    return xd * scale[:, None]
+    xd = (uv - np.asarray(principal_point, dtype=float)) / focal_px
+    return undistort_normalized(xd, coeffs)
 
 
 def project_normalized(
@@ -321,6 +299,7 @@ def model_discrepancy_px(
     reference·other 는 계약 `camera_calibration` 의 내부 파라미터 부분(K, distortion, image_size) 또는 추정 결과다.
     자세(R)를 다시 맞추지 않으므로 자세가 일부 흡수할 수 있는 차이도 그대로 드러나는 엄격한 지표다.
     reference 가 왜곡 OPENCV_PINHOLE 5계수 전체(p1·p2·k3 포함)를 써도 된다(정답 카메라).
+    reference 모델로 광선을 만들 수 없는 격자 픽셀(왜곡 식이 접히는 영역 등)이 있으면 모두 inf 다(같다고 보지 않는다).
     """
     ref = _as_contract(reference)
     oth = _as_contract(other)
@@ -336,6 +315,8 @@ def model_discrepancy_px(
     xd = distort_normalized(xn, oth["distortion"]["coeffs"])
     proj = np.column_stack([K[0, 0] * xd[:, 0] + K[0, 2], K[1, 1] * xd[:, 1] + K[1, 2]])
     err = np.hypot(*(proj - uv).T)
+    if not np.all(np.isfinite(err)):
+        return ModelDiscrepancy(math.inf, math.inf, math.inf)
     return ModelDiscrepancy(float(np.median(err)), float(np.percentile(err, 95)), float(err.max()))
 
 
@@ -346,60 +327,33 @@ def _as_contract(value: Mapping[str, Any] | IntrinsicsEstimate) -> Mapping[str, 
 
 
 def _normalize_any(camera: Mapping[str, Any], uv: np.ndarray) -> np.ndarray:
-    """계약 카메라로 픽셀 → 정규화 좌표.
+    """계약 카메라로 픽셀 → 정규화 좌표. 왜곡 제거는 geometry 의 `RigCamera.normalize` 와 같은 함수다.
 
-    OPENCV_PINHOLE 5계수 이하는 `undistort_normalized`(뉴턴법)로 푼다. geometry.rig 의 고정점 반복은 광각 렌즈의
-    영상 모서리에서 수렴하지 않을 수 있어(강한 배럴 왜곡) 기준 모델 계산에 쓰지 않는다. 그 밖의 모델(어안, 8계수)은
-    geometry.rig 를 쓴다.
+    풀 수 없는 픽셀(왜곡 식이 접히는 영역 등)은 NaN 이다.
     """
     K = np.asarray(camera["K"], dtype=float)
-    distortion = camera["distortion"]
+    distortion_ = camera["distortion"]
     uv = np.asarray(uv, dtype=float).reshape(-1, 2)
     xd = np.column_stack([(uv[:, 0] - K[0, 2]) / K[0, 0], (uv[:, 1] - K[1, 2]) / K[1, 1]])
-    if distortion["model"] == "NONE":
-        return xd
-    if distortion["model"] == "OPENCV_PINHOLE" and len(distortion["coeffs"]) <= 5:
-        return undistort_normalized(xd, distortion["coeffs"])
-    from simai_ai.geometry.rig import RigCamera
-
-    cam = dict(camera)
-    cam.setdefault("R", [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-    cam.setdefault("t", [0.0, 0.0, 0.0])
-    return RigCamera.from_calibration(cam).normalize(uv)
+    xn, _ = distortion.undistort(xd, distortion_["model"], [float(c) for c in distortion_["coeffs"]])
+    return xn
 
 
-def undistort_normalized(xd: np.ndarray, coeffs: Sequence[float], iterations: int = 30) -> np.ndarray:
+def undistort_normalized(xd: np.ndarray, coeffs: Sequence[float]) -> np.ndarray:
     """왜곡 정규화 좌표 (N, 2) → 왜곡 없는 정규화 좌표. OPENCV_PINHOLE 5계수 이하.
 
-    방사 부분을 반지름 뉴턴법으로 풀어 시작점으로 쓰고, 접선(p1·p2)까지 2차원 뉴턴법으로 다듬는다.
+    `geometry.distortion.undistort`(반지름 구간 보호 뉴턴법 + 접선 2차원 뉴턴법)와 같다. 풀 수 없는 점(왜곡 식이
+    접히는 영역, 미수렴, 왕복 오차 > 1e-9)은 NaN 이다.
     """
-    xd = np.asarray(xd, dtype=float).reshape(-1, 2)
-    k = list(coeffs) + [0.0] * (5 - len(coeffs))
-    k1, k2, p1, p2, k3 = k[:5]
-    rd = np.hypot(xd[:, 0], xd[:, 1])
-    r = rd.copy()
-    for _ in range(iterations):
-        r2 = r * r
-        f = r * (1 + r2 * (k1 + r2 * (k2 + r2 * k3))) - rd
-        df = 1 + r2 * (3 * k1 + r2 * (5 * k2 + 7 * k3 * r2))
-        r = r - f / np.where(np.abs(df) < 1e-9, 1e-9, df)
-    scale = np.ones_like(rd)
-    nz = rd > 1e-12
-    scale[nz] = r[nz] / rd[nz]
-    x = xd * scale[:, None]
-    if p1 == 0.0 and p2 == 0.0:
-        return x
-    h = 1e-7
-    for _ in range(10):
-        res = distort_normalized(x, k) - xd
-        jx = (distort_normalized(x + [h, 0.0], k) - distort_normalized(x - [h, 0.0], k)) / (2 * h)
-        jy = (distort_normalized(x + [0.0, h], k) - distort_normalized(x - [0.0, h], k)) / (2 * h)
-        det = jx[:, 0] * jy[:, 1] - jy[:, 0] * jx[:, 1]
-        det = np.where(np.abs(det) < 1e-12, 1e-12, det)
-        dx = (jy[:, 1] * res[:, 0] - jy[:, 0] * res[:, 1]) / det
-        dy = (-jx[:, 1] * res[:, 0] + jx[:, 0] * res[:, 1]) / det
-        x = x - np.column_stack([dx, dy])
-    return x
+    xn, _ = distortion.undistort(xd, distortion.MODEL_PINHOLE, _pinhole5(coeffs))
+    return xn
+
+
+def _pinhole5(coeffs: Sequence[float]) -> tuple[float, ...]:
+    """5계수 이하 → [k1 k2 p1 p2 k3] 5개(빈 자리는 0)."""
+    if len(coeffs) > 5:
+        raise ValueError(f"OPENCV_PINHOLE 5계수까지만 지원한다: {len(coeffs)}개")
+    return tuple(float(c) for c in coeffs) + (0.0,) * (5 - len(coeffs))
 
 
 def to_gray(image: np.ndarray) -> np.ndarray:

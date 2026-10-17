@@ -2,7 +2,10 @@
 
 보정은 CalibrationProvider 로만 받는다(`contracts/providers/calibration.schema.json` 문서).
 핀홀 모델은 `coordinates.PinholeCamera` 를 그대로 쓰고, 이 모듈은 그 위에 렌즈 왜곡 제거와
-numpy 행렬 캐시만 더한다. 왜곡 제거 식은 OpenCV(`cv2.undistortPoints`, `cv2.fisheye.undistortPoints`)와 같다.
+numpy 행렬 캐시만 더한다. 왜곡 식은 OpenCV 와 같고, 왜곡 제거는 `distortion.undistort`(구간 보호 뉴턴법)로 푼다.
+
+- 왜곡 제거가 실패한 픽셀(왜곡 식이 접히는 영역, 미수렴, 왕복 오차가 허용치 초과, 유한하지 않은 입력)은 지어내지 않고
+  NaN 으로 돌려준다(모르면 비움). 호출자는 그 관측을 빼야 한다. 실패 마스크가 필요하면 `normalize_with_mask` 를 쓴다.
 
 - 픽셀 좌표는 원본 해상도 기준 (u, v) 다. 보정의 `image_size` 와 다른 해상도의 keypoint 는 받지 않는다(호출자 책임).
 - 재투영 오차는 왜곡을 제거한 이상적 핀홀 픽셀 공간에서 잰다. 왜곡이 작은 렌즈에서는 원본 픽셀 오차와 거의 같다.
@@ -10,20 +13,18 @@ numpy 행렬 캐시만 더한다. 왜곡 제거 식은 OpenCV(`cv2.undistortPoin
 
 from __future__ import annotations
 
-import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
+from simai_ai.geometry import distortion
 from simai_ai.geometry.coordinates import PinholeCamera
 from simai_ai.providers.base import CalibrationProvenance, CalibrationProvider
 
-# 반복 왜곡 제거 횟수. cv2.undistortPoints 기본(5회)보다 넉넉히 둔다(광각 가장자리).
-UNDISTORT_ITERATIONS = 20
-# OPENCV_PINHOLE 계수 개수: [k1 k2 p1 p2], [k1 k2 p1 p2 k3], [k1 k2 p1 p2 k3 k4 k5 k6] (유리 모델)
-_PINHOLE_COEFF_COUNTS = (0, 4, 5, 8)
+# 왜곡 제거 왕복 오차 허용치 기본값(원본 픽셀). 다시 왜곡한 픽셀이 입력 픽셀과 이만큼 넘게 다르면 그 점은 NaN 이다
+DEFAULT_UNDISTORT_TOLERANCE_PX = 0.01
 
 
 @dataclass(frozen=True)
@@ -35,14 +36,22 @@ class RigCamera:
     image_size: tuple[int, int]
     distortion_model: str = "NONE"
     distortion_coeffs: tuple[float, ...] = ()
+    undistort_tolerance_px: float = DEFAULT_UNDISTORT_TOLERANCE_PX
+    """왜곡 제거 왕복 오차 허용치(원본 픽셀)"""
     K: np.ndarray = field(init=False, repr=False, compare=False)
     R: np.ndarray = field(init=False, repr=False, compare=False)
     t: np.ndarray = field(init=False, repr=False, compare=False)
     center: np.ndarray = field(init=False, repr=False, compare=False)
     _K_inv: np.ndarray = field(init=False, repr=False, compare=False)
+    _branch: distortion.RadialBranch = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        _check_distortion(self.camera_id, self.distortion_model, self.distortion_coeffs)
+        try:
+            distortion.check_model(self.distortion_model, self.distortion_coeffs)
+        except ValueError as exc:
+            raise ValueError(f"{self.camera_id}: {exc}") from None
+        if not self.undistort_tolerance_px > 0:
+            raise ValueError(f"{self.camera_id}: undistort_tolerance_px 는 양수여야 한다: {self.undistort_tolerance_px}")
         K = np.array(self.pinhole.K, dtype=float)
         R = np.array(self.pinhole.R, dtype=float)
         t = np.array(self.pinhole.t, dtype=float)
@@ -51,9 +60,12 @@ class RigCamera:
         object.__setattr__(self, "t", t)
         object.__setattr__(self, "center", np.array(self.pinhole.center_world, dtype=float))
         object.__setattr__(self, "_K_inv", np.linalg.inv(K))
+        object.__setattr__(self, "_branch", distortion.radial_branch(self.distortion_model, self.distortion_coeffs))
 
     @classmethod
-    def from_calibration(cls, camera: Mapping[str, Any]) -> RigCamera:
+    def from_calibration(
+        cls, camera: Mapping[str, Any], undistort_tolerance_px: float = DEFAULT_UNDISTORT_TOLERANCE_PX
+    ) -> RigCamera:
         """보정 계약의 `cameras[]` 항목 하나로 만든다."""
         distortion = camera["distortion"]
         width, height = camera["image_size"]
@@ -63,18 +75,30 @@ class RigCamera:
             image_size=(int(width), int(height)),
             distortion_model=distortion["model"],
             distortion_coeffs=tuple(float(c) for c in distortion["coeffs"]),
+            undistort_tolerance_px=undistort_tolerance_px,
         )
 
     def normalize(self, uv: np.ndarray) -> np.ndarray:
-        """원본 픽셀 (N, 2) → 왜곡을 제거한 정규화 좌표 (N, 2). 카메라 좌표의 (x/z, y/z) 다."""
+        """원본 픽셀 (N, 2) → 왜곡을 제거한 정규화 좌표 (N, 2). 카메라 좌표의 (x/z, y/z) 다.
+
+        왜곡을 제거할 수 없는 픽셀의 행은 NaN 이다(`normalize_with_mask`).
+        """
+        return self.normalize_with_mask(uv)[0]
+
+    def normalize_with_mask(self, uv: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """원본 픽셀 (N, 2) → (정규화 좌표 (N, 2), 성공 마스크 (N,)). 실패한 행은 NaN 이다.
+
+        실패: 유한하지 않은 입력, 왜곡 식이 접히는 영역(단조성이 깨지는 반지름 너머), 미수렴,
+        다시 왜곡한 픽셀과 입력 픽셀의 차이가 `undistort_tolerance_px` 초과.
+        """
         uv = np.asarray(uv, dtype=float).reshape(-1, 2)
-        homo = np.column_stack([uv, np.ones(len(uv))]) @ self._K_inv.T
-        xd = homo[:, :2] / homo[:, 2:3]
-        if self.distortion_model == "OPENCV_PINHOLE" and self.distortion_coeffs:
-            return _undistort_pinhole(xd, self.distortion_coeffs)
-        if self.distortion_model == "OPENCV_FISHEYE":
-            return _undistort_fisheye(xd, self.distortion_coeffs)
-        return xd
+        with np.errstate(invalid="ignore"):  # 유한하지 않은 입력은 아래에서 실패로 표시한다
+            homo = np.column_stack([uv, np.ones(len(uv))]) @ self._K_inv.T
+            xd = homo[:, :2] / homo[:, 2:3]
+        # 정규화 좌표 잔차 → 픽셀 잔차의 최대 배율(K 왼쪽 위 2x2 의 스펙트럼 노름)로 나눠
+        # 어느 방향으로도 픽셀 허용치를 넘지 않게 한다(비등방 초점·비대칭 계수 포함)
+        max_residual = self.undistort_tolerance_px / float(np.linalg.norm(self.K[:2, :2], 2))
+        return distortion.undistort(xd, self.distortion_model, self.distortion_coeffs, max_residual, self._branch)
 
     def ideal_pixels(self, normalized: np.ndarray) -> np.ndarray:
         """정규화 좌표 (N, 2) → 왜곡 없는 이상적 핀홀 픽셀 (N, 2)."""
@@ -98,8 +122,13 @@ class CameraRig:
     calibration_provenance: CalibrationProvenance
 
     @classmethod
-    def from_provider(cls, provider: CalibrationProvider) -> CameraRig:
-        """보정 Provider 의 현재 버전으로 만든다. World 좌표계·OpenCV 외부 파라미터 규약이 아니면 받지 않는다."""
+    def from_provider(
+        cls, provider: CalibrationProvider, undistort_tolerance_px: float = DEFAULT_UNDISTORT_TOLERANCE_PX
+    ) -> CameraRig:
+        """보정 Provider 의 현재 버전으로 만든다. World 좌표계·OpenCV 외부 파라미터 규약이 아니면 받지 않는다.
+
+        undistort_tolerance_px: 카메라마다 왜곡 제거 왕복 오차 허용치(원본 픽셀).
+        """
         doc = provider.current()
         frame = doc["coordinate_frame"]
         if (frame["frame"], frame["unit"], frame["handedness"], frame["up_axis"]) != ("WORLD", "m", "right", "+Z"):
@@ -110,7 +139,7 @@ class CameraRig:
         for cam in doc["cameras"]:
             if cam["camera_id"] in cameras:
                 raise ValueError(f"같은 camera_id 가 두 번 있다: {cam['camera_id']}")
-            cameras[cam["camera_id"]] = RigCamera.from_calibration(cam)
+            cameras[cam["camera_id"]] = RigCamera.from_calibration(cam, undistort_tolerance_px)
         return cls(
             calibration_version=doc["calibration_version"],
             provider_source=doc["provider_source"],
@@ -125,47 +154,3 @@ class CameraRig:
         if missing:
             raise KeyError(f"보정 {self.calibration_version} 에 없는 카메라: {missing}")
         return [self.cameras[cid] for cid in camera_ids]
-
-
-def _check_distortion(camera_id: str, model: str, coeffs: tuple[float, ...]) -> None:
-    if model == "NONE":
-        if any(c != 0.0 for c in coeffs):
-            raise ValueError(f"{camera_id}: 왜곡 모델 NONE 인데 계수가 있다: {coeffs}")
-    elif model == "OPENCV_PINHOLE":
-        if len(coeffs) not in _PINHOLE_COEFF_COUNTS:
-            raise ValueError(f"{camera_id}: OPENCV_PINHOLE 계수는 4·5·8개만 지원한다: {len(coeffs)}개")
-    elif model == "OPENCV_FISHEYE":
-        if len(coeffs) != 4:
-            raise ValueError(f"{camera_id}: OPENCV_FISHEYE 계수는 [k1, k2, k3, k4] 4개여야 한다: {len(coeffs)}개")
-    else:
-        raise ValueError(f"{camera_id}: 모르는 왜곡 모델 {model}")
-
-
-def _undistort_pinhole(xd: np.ndarray, coeffs: tuple[float, ...]) -> np.ndarray:
-    """OpenCV 핀홀 왜곡의 역변환 (cv2.undistortPoints 와 같은 고정점 반복)."""
-    k = list(coeffs) + [0.0] * (8 - len(coeffs))
-    k1, k2, p1, p2, k3, k4, k5, k6 = k
-    x = xd.copy()
-    for _ in range(UNDISTORT_ITERATIONS):
-        r2 = (x**2).sum(axis=1)
-        icdist = (1 + ((k6 * r2 + k5) * r2 + k4) * r2) / (1 + ((k3 * r2 + k2) * r2 + k1) * r2)
-        dx = 2 * p1 * x[:, 0] * x[:, 1] + p2 * (r2 + 2 * x[:, 0] ** 2)
-        dy = p1 * (r2 + 2 * x[:, 1] ** 2) + 2 * p2 * x[:, 0] * x[:, 1]
-        x = np.column_stack([(xd[:, 0] - dx) * icdist, (xd[:, 1] - dy) * icdist])
-    return x
-
-
-def _undistort_fisheye(xd: np.ndarray, coeffs: tuple[float, ...]) -> np.ndarray:
-    """OpenCV 어안 왜곡의 역변환. θ_d = θ(1 + k1θ² + k2θ⁴ + k3θ⁶ + k4θ⁸) 를 뉴턴법으로 푼다."""
-    k1, k2, k3, k4 = coeffs
-    theta_d = np.clip(np.hypot(xd[:, 0], xd[:, 1]), -math.pi / 2, math.pi / 2)
-    theta = theta_d.copy()
-    for _ in range(UNDISTORT_ITERATIONS):
-        t2 = theta * theta
-        f = theta * (1 + t2 * (k1 + t2 * (k2 + t2 * (k3 + t2 * k4)))) - theta_d
-        df = 1 + t2 * (3 * k1 + t2 * (5 * k2 + t2 * (7 * k3 + 9 * t2 * k4)))
-        theta = theta - f / df
-    scale = np.ones_like(theta_d)
-    nz = theta_d > 1e-12
-    scale[nz] = np.tan(theta[nz]) / theta_d[nz]
-    return xd * scale[:, None]

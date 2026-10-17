@@ -436,3 +436,68 @@ def test_input_validation():
         triangulate_skeleton([view("cam9", views[0].keypoints)], rig)
     with pytest.raises(ValueError):
         TriangulationConfig(min_views=1)
+
+
+# --------------------------------------------------------------------------- 풀 수 없는 관측 (S15P31A101-166)
+
+FOLDING = {"model": "OPENCV_PINHOLE", "coeffs": [-0.30, 0.0, 0.0, 0.0, 0.0]}  # 정규화 왜곡 반지름 ≈ 0.703 너머에서 접힌다
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        (math.nan, 500.0, 0.9),
+        (500.0, math.inf, 0.9),
+        (-math.inf, 0.0, 0.9),
+        (500.0, 500.0, math.nan),
+        (500.0, 500.0, math.inf),
+    ],
+)
+def test_non_finite_keypoint_is_dropped_without_crash(bad):
+    """이 사람 keypoint 에 NaN·inf 가 있으면 그 관측만 빼고 판정한다(이전에는 LinAlgError)."""
+    rig = rig_of()
+    X = standing_joints()
+    views = [
+        view(v.camera_id, [bad, *v.keypoints[1:]]) if v.camera_id == "cam1" else v for v in skeleton_views(rig, X)
+    ]
+    sk = triangulate_skeleton(views, rig)
+    est = sk.joints[0]
+    assert est.validity == JointValidity.VALID
+    assert est.camera_ids == ("cam2", "cam3", "cam4")
+    np.testing.assert_allclose(est.xyz, X[0], atol=1e-6)
+    # 2대 중 1대가 풀 수 없으면 관측 1대: 지어내지 않는다
+    sk = triangulate_skeleton([v for v in views if v.camera_id in ("cam1", "cam2")], rig)
+    assert sk.joints[0].xyz is None
+    assert sk.joints[0].issues == (JointIssue.TOO_FEW_VIEWS,)
+    assert all(j.validity == JointValidity.VALID for j in sk.joints[1:])
+
+
+def test_keypoint_in_folding_region_is_dropped():
+    """왜곡 식이 접히는 영역의 keypoint(영상 모서리)는 광선을 지어내지 않고 관측에서 뺀다."""
+    rig = rig_of(distortion=FOLDING)
+    assert np.isnan(rig.cameras["cam1"].normalize(np.array([[0.0, 0.0]]))).all()
+    X = standing_joints()
+    views = skeleton_views(rig, X)
+    sk = triangulate_skeleton(views, rig)
+    assert all(j.validity == JointValidity.VALID for j in sk.joints)  # 가운데 사람은 접히는 영역 밖이다
+    views = [
+        view(v.camera_id, [(0.0, 0.0, 0.9), *v.keypoints[1:]]) if v.camera_id == "cam1" else v for v in views
+    ]
+    sk = triangulate_skeleton(views, rig)
+    assert sk.joints[0].camera_ids == ("cam2", "cam3", "cam4")
+    assert sk.joints[0].validity == JointValidity.VALID
+    np.testing.assert_allclose(sk.joints[0].xyz, X[0], atol=1e-6)
+
+
+def test_triangulate_point_and_errors_with_unusable_pixel():
+    rig = rig_of()
+    cams = [rig.cameras["cam1"], rig.cameras["cam2"]]
+    X = np.array(POINTS[0])
+    good = np.array([project(c, X) for c in cams])
+    assert triangulate_point(cams, good) is not None
+    bad = good.copy()
+    bad[0, 0] = math.nan
+    assert triangulate_point(cams, bad) is None
+    assert triangulate_point(cams, good, weights=np.array([math.nan, 1.0])) is None
+    errors = reprojection_errors(cams, bad, X)
+    assert errors[0] == math.inf and errors[1] < 1e-6

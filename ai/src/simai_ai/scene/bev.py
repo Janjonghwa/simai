@@ -38,6 +38,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from simai_ai.geometry import distortion
 from simai_ai.geometry.rig import CameraRig, RigCamera
 from simai_ai.providers.base import FRAME_SOURCES, CalibrationProvider, Frame
 from simai_ai.providers.provenance import build_input_provenance
@@ -376,36 +377,12 @@ def generate_bev(
 
 
 def distort_normalized(xy: np.ndarray, model: str, coeffs: tuple[float, ...]) -> np.ndarray:
-    """정규화 좌표 (N, 2) 에 OpenCV 왜곡 모델을 적용한다 (cv2.projectPoints 와 같은 식).
+    """정규화 좌표 (N, 2) 에 OpenCV 왜곡 모델을 적용한다 (cv2.projectPoints 와 같은 식, `geometry.distortion.distort`).
 
     OPENCV_PINHOLE: [k1 k2 p1 p2 (k3 (k4 k5 k6))], OPENCV_FISHEYE: [k1 k2 k3 k4], NONE: 그대로.
-    역변환은 `geometry.rig.RigCamera.normalize` 다.
+    역변환은 `geometry.rig.RigCamera.normalize` 다(풀 수 없는 픽셀은 NaN).
     """
-    xy = np.asarray(xy, dtype=float).reshape(-1, 2)
-    if model == "NONE" or not coeffs:
-        return xy.copy()
-    x, y = xy[:, 0], xy[:, 1]
-    if model == "OPENCV_PINHOLE":
-        k1, k2, p1, p2, k3, k4, k5, k6 = list(coeffs) + [0.0] * (8 - len(coeffs))
-        r2 = x * x + y * y
-        radial = (1 + ((k3 * r2 + k2) * r2 + k1) * r2) / (1 + ((k6 * r2 + k5) * r2 + k4) * r2)
-        return np.column_stack(
-            [
-                x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x),
-                y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y,
-            ]
-        )
-    if model == "OPENCV_FISHEYE":
-        k1, k2, k3, k4 = coeffs
-        r = np.hypot(x, y)
-        theta = np.arctan(r)
-        t2 = theta * theta
-        theta_d = theta * (1 + t2 * (k1 + t2 * (k2 + t2 * (k3 + t2 * k4))))
-        scale = np.ones_like(r)
-        nz = r > 1e-12
-        scale[nz] = theta_d[nz] / r[nz]
-        return xy * scale[:, None]
-    raise ValueError(f"모르는 왜곡 모델 {model}")
+    return distortion.distort(xy, model, coeffs)
 
 
 def project_floor_points(cam: RigCamera, points: np.ndarray, config: BevConfig) -> tuple[np.ndarray, np.ndarray]:

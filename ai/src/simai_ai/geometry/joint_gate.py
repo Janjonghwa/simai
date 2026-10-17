@@ -418,7 +418,10 @@ def triangulation_covariance(cameras: Sequence[RigCamera], X: np.ndarray, sigma_
 
 
 def epipolar_distance_px(cam_a: RigCamera, uv_a: Sequence[float], cam_b: RigCamera, uv_b: Sequence[float]) -> float:
-    """cam_a 픽셀 uv_a 의 에피폴라선(cam_b 이상적 핀홀 픽셀 공간)과 cam_b 픽셀 uv_b 사이 거리."""
+    """cam_a 픽셀 uv_a 의 에피폴라선(cam_b 이상적 핀홀 픽셀 공간)과 cam_b 픽셀 uv_b 사이 거리.
+
+    두 픽셀 중 하나라도 왜곡을 제거할 수 없으면(`RigCamera.normalize` 가 NaN) NaN 이다(거리를 모른다).
+    """
     R = cam_b.R @ cam_a.R.T
     t = cam_b.t - R @ cam_a.t
     tx = np.array([[0.0, -t[2], t[1]], [t[2], 0.0, -t[0]], [-t[1], t[0], 0.0]])
@@ -427,6 +430,8 @@ def epipolar_distance_px(cam_a: RigCamera, uv_a: Sequence[float], cam_b: RigCame
     line_n = E @ xa  # cam_b 정규화 좌표의 직선
     line_px = np.linalg.inv(cam_b.K).T @ line_n  # 이상적 핀홀 픽셀 좌표의 직선
     xb = np.append(cam_b.ideal_pixels(cam_b.normalize(np.asarray(uv_b[:2], dtype=float)))[0], 1.0)
+    if not (np.all(np.isfinite(xa)) and np.all(np.isfinite(xb))):
+        return math.nan
     norm = math.hypot(line_px[0], line_px[1])
     return math.inf if norm == 0 else abs(float(line_px @ xb)) / norm
 
@@ -441,7 +446,8 @@ def _has_epipolar_competitor(
     """두 카메라 중 한쪽의 이 사람 관측과 다른 쪽의 다른 사람 같은 관절이 에피폴라 조건을 만족하는지.
 
     에피폴라선은 카메라 앞뒤를 가리지 않으므로, 그렇게 짝지은 두 시선이 두 카메라 앞에서 만날 때만 후보로 센다.
-    다른 사람의 그 관절 값(u, v, 신뢰도)에 유한하지 않은 값이 있으면 후보인지 알 수 없으므로 None 이다(안전 쪽).
+    다른 사람의 그 관절 값(u, v, 신뢰도)에 유한하지 않은 값이 있거나 그 픽셀의 왜곡을 제거할 수 없으면 후보인지
+    알 수 없으므로 None 이다(안전 쪽).
     """
     min_conf = cfg.triangulation.min_keypoint_confidence
     unknown = False
@@ -458,7 +464,11 @@ def _has_epipolar_competitor(
                 continue
             if c[2] < min_conf:
                 continue
-            if epipolar_distance_px(own, uv, other, c) > cfg.competitor_epipolar_px:
+            distance = epipolar_distance_px(own, uv, other, c)
+            if math.isnan(distance):
+                unknown = True
+                continue
+            if distance > cfg.competitor_epipolar_px:
                 continue
             if triangulate_point([own, other], np.array([uv[:2], c[:2]])) is not None:
                 return True

@@ -407,3 +407,19 @@ def test_tracklet_buffer_interpolates_to_common_time(rig):
     assert buf.add(frame("cam1", 2, T - 500, kps))  # 보간 창을 넘겨 늦게 온 프레임은 기록만
     buf.prune(T + 1000)
     assert buf.keys == ()
+
+
+@pytest.mark.parametrize("bad", [(math.nan, 500.0, 0.9), (500.0, math.inf, 0.9), (500.0, 500.0, math.nan)])
+def test_non_finite_keypoint_is_not_an_observation(rig, bad):
+    """풀 수 없는 keypoint(NaN·inf)는 관측으로 세지 않는다. 연결과 삼각측량이 예외 없이 그 관절만 뺀다 (-166)."""
+    views = views_of(rig, {"a": skeleton(3.0, 3.0), "b": skeleton(6.0, 4.5)})
+    views = [
+        lv(v.camera_id, v.local_track_id, (bad, *v.view.keypoints[1:])) if v.local_track_id == "cam1-a" else v
+        for v in views
+    ]
+    frame = CrossViewAssociator(rig).associate(T, views)
+    assert_pure_and_exclusive(frame)
+    a = next(c for c in frame.clusters if ("cam1", "cam1-a") in c.keys)
+    assert len(a.keys) == 4 and not a.identity_uncertain
+    assert "cam1" not in a.skeleton.joints[0].camera_ids
+    assert a.skeleton.joints[0].xyz is not None

@@ -57,4 +57,4 @@ C110 실제 프레임에서 세 방법(고전·AnyCalib·GeoCalib)을 비교해 
 
 ## 발견 사항
 
-`geometry.rig.RigCamera.normalize` 의 왜곡 제거(고정점 20회)는 강한 광각 배럴 왜곡(예: k1 −0.30, k2 0.09, f 884, 2304x1296)의 영상 모서리에서 수렴하지 않는다(모서리 픽셀이 수백 픽셀 어긋난 광선으로 돌아감). 이 패키지는 반지름 뉴턴법(`undistort_normalized`)을 따로 쓴다. 삼각측량·BEV 가 같은 함수를 쓰므로 C110 실제 왜곡이 이 정도면 geometry 쪽 수정이 필요하다(범위 밖, MR 남은 일).
+`geometry.rig.RigCamera.normalize` 의 왜곡 제거(고정점 20회)는 강한 광각 배럴 왜곡(예: k1 −0.30, k2 0.09, f 884, 2304x1296)의 영상 모서리에서 수렴하지 않았다(모서리 픽셀이 수백 픽셀 어긋난 광선으로 돌아감). S15P31A101-166 에서 geometry 쪽을 구간 보호 뉴턴법(`geometry.distortion`)으로 고쳤고, 이 패키지의 `distort_normalized`·`undistort_normalized`·`undistort_radii`·`undistort_pixels` 도 같은 함수를 쓴다. 풀 수 없는 점(왜곡 식이 접히는 영역 등)은 NaN 이고, 같은 광선 재투영 차이는 기준 모델이 격자 안에서 접히면 inf 다.
