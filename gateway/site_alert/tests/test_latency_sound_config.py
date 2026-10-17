@@ -64,21 +64,28 @@ def test_winsound_backend_prepares_wavs(tmp_path: Path) -> None:
     assert sorted(p.name for p in tmp_path.iterdir()) == ["critical.wav", "high.wav", "test.wav"]
 
 
+SETTING_KEYS = ("SIMAI_LAPTOP_ID", "SIMAI_EC2_BASE_URL", "SIMAI_DEVICE_TOKEN", "SIMAI_TIER0_PINNED_SPKI_SHA256",
+                "SIMAI_TIER0_CONTROL_PATH", "SIMAI_TIER0_CA_FILE")
+
+
 def test_settings_from_env_file(tmp_path: Path, monkeypatch) -> None:
-    for key in ("SIMAI_LAPTOP_ID", "SIMAI_TIER0_CONTROL_URL", "SIMAI_DEVICE_TOKEN", "SIMAI_TIER0_CA_FILE"):
+    for key in SETTING_KEYS:
         monkeypatch.delenv(key, raising=False)
     env = tmp_path / ".env"
-    env.write_text("SIMAI_LAPTOP_ID=laptop-02\nSIMAI_TIER0_CONTROL_URL=wss://t:70001/c\nSIMAI_DEVICE_TOKEN='s3cret'\n",
-                   encoding="utf-8")
+    pin = "sha256:" + "ab" * 32
+    env.write_text(f"SIMAI_LAPTOP_ID=laptop-02\nSIMAI_EC2_BASE_URL=https://ec2.example\nSIMAI_DEVICE_TOKEN='s3cret'\n"
+                   f"SIMAI_TIER0_PINNED_SPKI_SHA256={pin}\n", encoding="utf-8")
     s = load_settings(env)
-    assert (s.laptop_id, s.control_url, s.device_token, s.ca_file) == ("laptop-02", "wss://t:70001/c", "s3cret", None)
+    assert (s.laptop_id, s.ec2_base_url, s.device_token, s.pinned_spki, s.control_path, s.ca_file) == (
+        "laptop-02", "https://ec2.example", "s3cret", pin, "/control", None)
     assert "s3cret" not in repr(s)
     monkeypatch.setenv("SIMAI_LAPTOP_ID", "laptop-09")
     assert load_settings(env).laptop_id == "laptop-09"
 
 
 def test_settings_defaults(tmp_path: Path, monkeypatch) -> None:
-    for key in ("SIMAI_LAPTOP_ID", "SIMAI_TIER0_CONTROL_URL", "SIMAI_DEVICE_TOKEN", "SIMAI_TIER0_CA_FILE"):
+    for key in SETTING_KEYS:
         monkeypatch.delenv(key, raising=False)
     s = load_settings(tmp_path / "missing.env")
-    assert s.laptop_id == "laptop-01" and s.control_url is None and s.device_token is None
+    assert s.laptop_id == "laptop-01" and s.ec2_base_url is None and s.device_token is None
+    assert s.pinned_spki is None and s.control_path == "/control"

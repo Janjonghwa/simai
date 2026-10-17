@@ -7,8 +7,13 @@ import logging
 import sys
 from pathlib import Path
 
-from simai_site_alert.config import DEFAULT_ENV_FILE, load_settings
+from typing import TYPE_CHECKING
+
+from simai_site_alert.config import DEFAULT_ENV_FILE, Settings, load_settings
 from simai_site_alert.sound import FakeSoundBackend, NullSoundBackend, SoundBackend, WinSoundBackend
+
+if TYPE_CHECKING:
+    from simai_site_alert.transport import WebSocketControlChannel
 
 
 def _sound(kind: str) -> SoundBackend:
@@ -19,24 +24,34 @@ def _sound(kind: str) -> SoundBackend:
     return NullSoundBackend("소리 백엔드를 끈 상태로 실행했다(--sound none)")
 
 
+def build_control_channel(settings: Settings) -> WebSocketControlChannel:
+    """EC2 엔드포인트 조회 + 공개키 고정으로 I0 제어 채널을 만든다. 설정이 모자라면 ValueError(값은 문장에 넣지 않는다)."""
+    from simai_site_alert.endpoint import Ec2EndpointLookup, EndpointResolver
+    from simai_site_alert.pinning import parse_pins
+    from simai_site_alert.transport import WebSocketControlChannel
+
+    missing = [name for name, value in (("SIMAI_EC2_BASE_URL", settings.ec2_base_url),
+                                        ("SIMAI_DEVICE_TOKEN", settings.device_token),
+                                        ("SIMAI_TIER0_PINNED_SPKI_SHA256", settings.pinned_spki)) if not value]
+    if missing:
+        raise ValueError(", ".join(missing) + " 를 .env 에 넣는다")
+    assert settings.ec2_base_url and settings.device_token
+    lookup = Ec2EndpointLookup(settings.ec2_base_url, device_token=settings.device_token)
+    resolver = EndpointResolver(lookup.fetch, parse_pins(settings.pinned_spki), control_path=settings.control_path)
+    return WebSocketControlChannel(resolver=resolver, device_token=settings.device_token, ca_file=settings.ca_file)
+
+
 def _run(args: argparse.Namespace) -> int:
     from simai_site_alert.app import SiteAlertApp
     from simai_site_alert.core import SiteAlertCore
     from simai_site_alert.display import TextDisplay, TkDisplay
-    from simai_site_alert.transport import WebSocketControlChannel
-
     settings = load_settings(Path(args.env_file))
     channel = None
     if not args.offline:
-        if not settings.control_url or not settings.device_token:
-            print("설정 오류: SIMAI_TIER0_CONTROL_URL 과 SIMAI_DEVICE_TOKEN 을 .env 에 넣거나 --offline 으로 실행한다",
-                  file=sys.stderr)
-            return 2
         try:
-            channel = WebSocketControlChannel(settings.control_url, device_token=settings.device_token,
-                                              ca_file=settings.ca_file)
+            channel = build_control_channel(settings)
         except ValueError as e:
-            print(f"설정 오류: {e}", file=sys.stderr)
+            print(f"설정 오류: {e} (또는 --offline 으로 실행한다)", file=sys.stderr)
             return 2
     core = SiteAlertCore(_sound(args.sound), laptop_id=settings.laptop_id)
     app = SiteAlertApp(core, channel)
