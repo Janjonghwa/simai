@@ -211,6 +211,60 @@ def test_zone_change_updates_same_event(harness):
     assert updated.event_id == raised.event_id and updated.changes == (Change.ZONE,) and updated.event_sequence == 2
 
 
+def test_holding_in_other_zone_keeps_zone_severity_and_metrics(harness):
+    """holding 은 발생 판정이 아니므로 구역을 바꾸지 않는다. 확인 필요·근거만 반영하고 유지한다."""
+    h = harness()
+    (raised,) = h.step([finding(zone_id="z-01", metrics={"zone_distance_m": 0.0})]).transitions
+    held = [
+        finding(
+            zone_id="z-02",
+            severity=Severity.CAUTION,
+            needs_check=True,
+            holding=True,
+            reasons=("observation_lost",),
+            metrics={"zone_distance_m": 0.3},
+        )
+    ]
+    (updated,) = h.step(held).transitions
+    assert updated.event_id == raised.event_id and updated.changes == (Change.CONFIDENCE,)
+    assert updated.state.zone_id == "z-01" and updated.state.severity is Severity.HIGH
+    assert dict(updated.state.metrics) == {"zone_distance_m": 0.0} and updated.state.needs_check
+    later = transitions(h.hold(10_000, held))
+    assert all(t.transition is Lifecycle.UPDATED and Change.ZONE not in t.changes for t in later)
+    [state] = h.tracker.active()  # 해소되지 않고 원래 구역으로 유지
+    assert state.event_id == raised.event_id and state.zone_id == "z-01" and state.severity is Severity.HIGH
+
+
+def test_lower_holding_in_same_zone_does_not_lower_severity(harness):
+    """holding 은 등급을 올리지도 내리지도 않는다(7.2 R6 '원래 규칙 유지', 7.3 등급 유지)."""
+    h = harness()
+    h.step([finding(severity=Severity.CRITICAL)])
+    steps = h.hold(1000, [finding(severity=Severity.HIGH, holding=True)])
+    assert all(Change.SEVERITY not in t.changes for t in transitions(steps)) and signals(steps) == []
+    assert h.tracker.active()[0].severity is Severity.CRITICAL
+
+
+def test_holding_prefers_event_zone_over_other_zone(harness):
+    h = harness()
+    h.step([finding(zone_id="z-02")])
+    (t,) = h.step(
+        [
+            finding(zone_id="z-01", needs_check=True, holding=True),  # 정렬 순서는 z-01 이 앞선다
+            finding(zone_id="z-02", needs_check=True, holding=True, metrics={"zone_distance_m": 0.0}),
+        ]
+    ).transitions
+    assert t.changes == (Change.CONFIDENCE,) and t.state.zone_id == "z-02"
+    assert dict(t.state.metrics) == {"zone_distance_m": 0.0}
+
+
+def test_raising_finding_in_other_zone_still_changes_zone(harness):
+    """발생 판정의 구역 변경(7.4)은 그대로다. 같은 등급이면 발생 판정이 holding 보다 앞선다."""
+    h = harness()
+    h.step([finding(zone_id="z-02")])
+    (t,) = h.step([finding(zone_id="z-03"), finding(zone_id="z-02", holding=True)]).transitions
+    assert t.changes == (Change.ZONE,) and t.state.zone_id == "z-03"
+
+
 def test_same_person_multiple_rules_share_group_key(harness, track_json):
     h = harness()
     tracks = [track_json(world_id="w-0012"), track_json(world_id="w-0013")]

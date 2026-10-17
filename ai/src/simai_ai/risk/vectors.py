@@ -6,7 +6,8 @@
     python -m simai_ai.risk.vectors ai/tests/risk/vectors     # 모두 통과하면 종료 코드 0
 
 벡터 형식(JSON, format_version 1.x). 형식은 ai/tests/risk/vectors/README.md 에도 적는다.
-1.1 은 생명주기(lifecycle) 시나리오를 더했다. 1.0 벡터는 그대로 읽힌다.
+1.1 은 생명주기(lifecycle) 시나리오를, 1.2 는 단계별 감시 상태(monitoring, R7 입력)를 더했다. 이전 벡터는 그대로 읽힌다.
+monitoring 키는 format_version 1.2 이상에서만 받는다(낮은 버전에 있으면 오류).
 
     {
       "format_version": "1.0.0",
@@ -19,6 +20,7 @@
         {
           "clock_ms": 1760342400200,                     # 고정 시계의 판정 시각. 단계마다 줄지 않는다
           "world_state": { I1 world_state payload },     # contracts/messages/world_state.schema.json
+          "monitoring": { MonitoringState },             # 선택(1.2). simai_ai.risk.monitoring.MonitoringState.from_json
           "expect": {"findings": [ Finding ]}            # 순서 무관. 정렬해 비교한다
         }
       ]
@@ -82,12 +84,14 @@ from simai_ai.risk.common import Origin, Severity
 from simai_ai.risk.engine import Evaluation, RiskEngine, RuleContractError
 from simai_ai.risk.event_id import EventIdFactory, is_uuid7
 from simai_ai.risk.lifecycle import EventTransition, LifecyclePolicy, LifecycleTracker
+from simai_ai.risk.monitoring import MonitoringState
 from simai_ai.risk.registry import RuleRegistry, default_registry
 from simai_ai.risk.rule import Finding
 from simai_ai.risk.world import WorldState
 from simai_ai.risk.zone import Zone
 
 FORMAT_MAJOR = 1
+MONITORING_MIN_MINOR = 2  # steps[].monitoring 을 더한 마이너 버전
 METRIC_ABS_TOL = 1e-9
 
 
@@ -104,6 +108,7 @@ class VectorStep:
     clock_ms: int
     world_state: WorldState
     expected: tuple[Finding, ...]
+    monitoring: MonitoringState | None = None
     injected: tuple[Finding, ...] = ()
     acks: tuple[VectorAck, ...] = ()
     # 생명주기 기대값. 비교용 dict(키는 _TRANSITION_KEYS·_SIGNAL_KEYS). lifecycle 이 없으면 None.
@@ -149,8 +154,12 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
     )
 
     version = as_str(require(obj, "format_version", where), f"{where}.format_version")
-    if version.split(".")[0] != str(FORMAT_MAJOR):
+    parts = version.split(".")
+    if parts[0] != str(FORMAT_MAJOR):
         raise RiskInputError(f"{where}: format_version {version} 은 지원하지 않는다(지원: {FORMAT_MAJOR}.x)")
+    if len(parts) < 2 or not parts[1].isdigit():
+        raise RiskInputError(f"{where}: format_version {version} 에 마이너 버전이 없다(예: {FORMAT_MAJOR}.2.0)")
+    minor = int(parts[1])
 
     rules = []
     for i, r in enumerate(as_list(require(obj, "rules", where), f"{where}.rules")):
@@ -166,10 +175,14 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
     for i, s in enumerate(as_list(require(obj, "steps", where), f"{where}.steps")):
         at = f"{where}.steps[{i}]"
         s = as_mapping(s, at)
-        step_keys = {"clock_ms", "world_state", "expect"}
+        step_keys = {"clock_ms", "world_state", "monitoring", "expect"}
         if lifecycle is not None:
             step_keys |= {"inject_findings", "acks"}
         reject_unknown_keys(s, step_keys, at)
+        if "monitoring" in s and minor < MONITORING_MIN_MINOR:
+            raise RiskInputError(
+                f"{at}.monitoring: format_version {FORMAT_MAJOR}.{MONITORING_MIN_MINOR} 이상에서만 쓴다(이 벡터 {version})"
+            )
         clock_ms = as_timestamp_ms(require(s, "clock_ms", at), f"{at}.clock_ms")
         if clock_ms < last_clock:
             raise RiskInputError(f"{at}.clock_ms: 단계의 시계가 뒤로 갔다 ({last_clock} → {clock_ms})")
@@ -181,6 +194,7 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
         step = VectorStep(
             clock_ms=clock_ms,
             world_state=WorldState.from_payload(require(s, "world_state", at), f"{at}.world_state"),
+            monitoring=_parse_monitoring(s.get("monitoring"), f"{at}.monitoring"),
             expected=_parse_findings(require(expect, "findings", f"{at}.expect"), f"{at}.expect.findings"),
         )
         if lifecycle is not None:
@@ -233,7 +247,7 @@ def run_vector(vector: Vector, registry: RuleRegistry | None = None) -> VectorRe
     mismatches: list[str] = []
     for i, step in enumerate(vector.steps):
         clock.set(step.clock_ms)
-        evaluation = engine.evaluate(step.world_state, vector.zones, vector.origin)
+        evaluation = engine.evaluate(step.world_state, vector.zones, vector.origin, monitoring=step.monitoring)
         mismatches += [f"steps[{i}]: {m}" for m in _compare(evaluation, step)]
         if lifecycle is not None:
             mismatches += [f"steps[{i}]: {m}" for m in lifecycle.step(evaluation, step)]
@@ -436,6 +450,14 @@ def _parse_lifecycle(obj: Any, where: str) -> LifecycleSpec:
             ),
         ),
     )
+
+
+def _parse_monitoring(obj: Any, where: str) -> MonitoringState | None:
+    """단계별 감시 상태(1.2, 선택). 없으면 None 으로 규칙에 넘긴다.
+
+    R7 은 LIVE·REPLAY 면 '모름'으로 저하 판정하고, PLANNED·WHAT_IF 면 판정하지 않는다.
+    """
+    return None if obj is None else MonitoringState.from_json(obj, where)
 
 
 def _parse_ack(obj: Any, where: str) -> VectorAck:

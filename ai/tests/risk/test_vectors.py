@@ -8,7 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from simai_ai.risk import NonLiveAlertError, Origin, UnknownRuleError, default_registry
+from simai_ai.risk import (
+    Channel,
+    Confidence,
+    NonLiveAlertError,
+    Origin,
+    UnknownRuleError,
+    channels_for,
+    default_registry,
+)
 from simai_ai.risk._parse import RiskInputError
 from simai_ai.risk.vectors import discover, load_vector, main, parse_vector, run_paths, run_vector
 
@@ -27,13 +35,24 @@ LIFECYCLE_VECTORS = {
     "lifecycle_replay_no_alert.json",
 }
 
+# R6·R7 시나리오(S15P31A101-73, G3): 구역 안 관측 상실 자동 해소 0건, 카메라 분리 1초 안 저하 표시, 복구 시 해소,
+# 비 LIVE 출처 현장 경보 0건.
+RULE_VECTORS = {
+    "r6_observation_lost_in_zone.json",
+    "r6_observation_lost_in_zone_what_if.json",
+    "r7_camera_disconnect.json",
+    "r7_sync_invalid_replay.json",
+    "r7_live_without_monitoring.json",
+    "r7_planned_without_monitoring.json",
+}
+
 
 def test_vectors_exist():
     assert {p.name for p in VECTOR_FILES} >= {
         "empty_scene.json",
         "no_rules.json",
         "replay_zone_versions.json",
-    } | LIFECYCLE_VECTORS
+    } | LIFECYCLE_VECTORS | RULE_VECTORS
 
 
 def test_lifecycle_vectors_cover_every_origin():
@@ -52,9 +71,14 @@ def test_vector_ids_are_unique():
     assert len(ids) == len(set(ids))
 
 
-def test_default_registry_is_empty_until_rules_land():
-    # R1~R7 은 후속 이슈에서 등록한다. 등록되면 이 시험을 지우고 규칙별 벡터를 추가한다.
-    assert len(default_registry()) == 0
+def test_default_registry_rules():
+    # R7(S15P31A101-73). R6 은 구역 규칙을 감싸므로 따로 등록하지 않는다. R1 등은 후속 이슈에서 더한다.
+    assert list(default_registry()) == [("R7", 1)]
+
+
+def test_rule_vectors_include_non_live_origins():
+    origins = {load_vector(VECTOR_DIR / name).origin for name in RULE_VECTORS}
+    assert Origin.LIVE in origins and origins - {Origin.LIVE}
 
 
 # --- 실행기 자체 ---------------------------------------------------------------
@@ -200,6 +224,10 @@ def test_unknown_rule_is_an_error(probe_vector):
     "mutate",
     [
         pytest.param(lambda v: v.update(format_version="2.0.0"), id="format-major"),
+        pytest.param(lambda v: v.update(format_version="1"), id="format-no-minor"),
+        pytest.param(
+            lambda v: v["steps"][0].update(monitoring={"cameras": [], "zone_cameras": {}}), id="monitoring-before-1.2"
+        ),
         pytest.param(lambda v: v.update(typo=1), id="unknown-top-key"),
         pytest.param(lambda v: v.update(steps=[]), id="no-steps"),
         pytest.param(lambda v: v.update(origin="TEST"), id="bad-origin"),
@@ -314,3 +342,17 @@ def test_cli_module_entrypoint():
         [sys.executable, "-m", "simai_ai.risk.vectors", str(VECTOR_DIR)], capture_output=True, text=True
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_r7_vectors_use_control_screen_notice_only():
+    """R7 은 CAUTION(시스템): 관제 화면 안내만 쓰고 현장 경보·관제 화면 경보·반장 PWA 로 보내지 않는다(7.2, 7.3)."""
+    for name in sorted(n for n in RULE_VECTORS if n.startswith("r7_")):
+        vector = load_vector(VECTOR_DIR / name)
+        for step in vector.steps:
+            assert not step.expected_signals, f"{name}: R7 은 현장 경보 신호를 내지 않는다"
+            for finding in step.expected:
+                confidence = Confidence.LOW if finding.needs_check else Confidence.HIGH
+                plan = channels_for(finding.severity, confidence, Origin.LIVE)
+                assert Channel.CONTROL_SCREEN_NOTICE in plan.channels, name
+                assert not plan.channels & {Channel.LOCAL_ALERT, Channel.CONTROL_SCREEN_ALERT, Channel.FOREMAN_PWA}
+        assert run_vector(vector, default_registry()).passed, name

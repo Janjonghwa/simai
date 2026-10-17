@@ -3,8 +3,9 @@
 규칙 하나 = RuleSpec(규칙 ID·버전·읽는 상태·근거 조항) + evaluate(RuleContext) → Finding 목록.
 구체 규칙(R1~R7)은 후속 이슈(S15P31A101-71, -73 등)에서 이 형식으로 만들고 registry 에 등록한다.
 
-- 규칙은 판정 출처(Origin)를 보지 못한다. RuleContext 에 출처가 없으므로 같은 입력은 출처와 관계없이
-  같은 판정을 낸다(명세 7장: 같은 규칙을 네 가지 입력에 적용). 알림 여부는 엔진이 출처로만 정한다.
+- 규칙은 판정 출처(Origin)를 보지 못한다. RuleContext 에 출처가 없으므로, 엔진이 출처에서 정하는
+  RuleContext.monitoring_expected(카메라 감시 상태 개념이 있는 입력인지, R7 이 씀)를 빼면 같은 입력은 출처와
+  관계없이 같은 판정을 낸다(명세 7장: 같은 규칙을 네 가지 입력에 적용). 알림 여부는 엔진이 출처로만 정한다.
 - 판정 시각은 RuleContext.now_ms(주입 시계)만 쓴다. 규칙이 시계를 직접 읽지 않는다.
 - 규칙은 상태를 갖지 않는다. 발생·해소 임계값 분리(히스테리시스, 명세 6.4·7.1)는 Finding.holding 으로 낸다.
   발생 임계값을 넘으면 holding=False, 해소 임계값 안쪽(띠 안)이면 holding=True 로 낸다. 활성 이벤트가
@@ -20,6 +21,7 @@ from typing import Protocol, runtime_checkable
 
 from simai_ai.risk._parse import RiskInputError
 from simai_ai.risk.common import Severity
+from simai_ai.risk.monitoring import MonitoringState
 from simai_ai.risk.world import WorldState, WorldTrack
 from simai_ai.risk.zone import Zone
 
@@ -110,11 +112,20 @@ class RuleContext:
 
     시간 모델(명세 6.1): T_gap = t_latest_global - t_last_valid, T_lag = now - t_latest_global,
     T_staleness = T_gap + T_lag. 상태 임계값(200·500ms)은 규칙·후속 이슈에서 정한다.
+
+    monitoring: 같은 판정 시각의 카메라 상태·구역별 관측 카메라(R7 입력). world_state 에 없는 감시 상태라
+    따로 받는다. 넘기지 않으면 None 이고, 이 값을 읽는 규칙은 None 을 '모름'으로 다룬다(정상으로 채우지 않음).
+
+    monitoring_expected: 이 입력에 카메라 감시 상태라는 개념이 있는지. 카메라 영상에서 온 입력(LIVE·REPLAY)은 True,
+    카메라가 없는 계획·가상 입력(PLANNED·WHAT_IF)은 False 다(엔진이 출처에서 정한다). False 이고 monitoring 이
+    None 이면 감시 상태 규칙(R7)은 판정하지 않는다. 출처 자체는 넣지 않는다(규칙은 출처와 관계없이 같게 판정한다).
     """
 
     now_ms: int
     world: WorldState
     zones: tuple[Zone, ...]
+    monitoring: MonitoringState | None = None
+    monitoring_expected: bool = True
 
     @property
     def lag_ms(self) -> int:
