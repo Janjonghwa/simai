@@ -1,4 +1,4 @@
-"""이벤트 클립 조립: 링 버퍼 + 클립 대상 전이 → 자르기 → 재다중화 → 얼굴 흐림 → 업로드 (명세 5.1, 11.5, 14).
+"""이벤트 클립 조립: 링 버퍼 + 클립 대상 전이 → 자르기 → 재다중화 → (선택) 얼굴 흐림 → 업로드 (명세 5.1, 11.5, 14).
 
 Tier 0 루프가 부르는 순서:
 1. 수신 스레드: receive(I0 메시지) — 링 버퍼에만 넣는다(메모리).
@@ -6,8 +6,8 @@ Tier 0 루프가 부르는 순서:
 3. 주기적으로: poll() — 사후 구간이 다 찼거나(모든 카메라의 최신 촬영 시각 ≥ 기준 + post_ms) 마감(대기 시작 + post_ms
    + finalize_grace_ms)이 지나면 카메라마다 [기준 − pre_ms, 기준 + post_ms] 를 잘라 내보내고, 업로드 대기열을 돌린다.
 
-내보내기는 얼굴 흐림 단계(FaceRedactor)가 있을 때만 한다. 없으면 잘라낸 클립을 메모리에서 버리고 개수만 센다
-(명세 11.5 흐림 시점 '확인 필요' — 결정 전 안전한 기본값). 업로더가 없을 때도 같다. 어느 경우에도 링 버퍼와 클립 대상이
+얼굴 흐림은 기본으로 하지 않는다(사용자 결정, 명세 11.5 확인 필요 항목 확정). FaceRedactor 를 넘기면 내보내기 전에
+반드시 거친다. 업로더가 없으면 잘라낸 클립을 메모리에서 버리고 개수만 센다. 어느 경우에도 링 버퍼와 클립 대상이
 아닌 영상은 디스크·외부로 나가지 않는다.
 """
 
@@ -21,9 +21,8 @@ from dataclasses import dataclass, field, replace
 from services.tier0.clips.media import (
     AnnexBMuxer,
     ClipMuxer,
-    FaceRedactionUnavailable,
     FaceRedactor,
-    redact_for_export,
+    prepare_for_export,
 )
 from services.tier0.clips.record import DEFAULT_RETENTION_DAYS, ClipDraft
 from services.tier0.clips.ring_buffer import PacketRingBuffer
@@ -77,9 +76,8 @@ class ClipServiceStats:
     dropped_pending_full: int = 0
     cut: int = 0  # 잘라낸 카메라 클립
     no_footage: int = 0  # 그 구간 영상이 버퍼에 없었던 카메라
-    blocked_no_redactor: int = 0  # 흐림 단계가 없어 내보내지 않은 카메라 클립
     blocked_no_uploader: int = 0
-    failed: int = 0  # 재다중화·흐림 실패
+    failed: int = 0  # 재다중화·(켰을 때) 흐림 실패
     by_camera: dict[str, int] = field(default_factory=dict)
 
 
@@ -112,12 +110,10 @@ class EventClipService:
         self._seen: OrderedDict[tuple[str, int], _KeyState] = OrderedDict()
         self._held: OrderedDict[tuple[str, int], None] = OrderedDict()  # 보존 표시를 붙인 CRITICAL 위험 구간
         self.stats = ClipServiceStats()
-        if redactor is None:
-            log.warning("얼굴 흐림 단계가 없다: 이벤트 클립을 자르기만 하고 내보내지 않는다(명세 11.5 흐림 시점 결정 전 기본값)")
 
     @property
     def export_enabled(self) -> bool:
-        return self._redactor is not None and self._uploader is not None
+        return self._uploader is not None
 
     @property
     def pending(self) -> int:
@@ -214,10 +210,7 @@ class EventClipService:
             self.stats.cut += 1
             try:
                 muxed = self._muxer.mux(cut)
-                redacted = redact_for_export(muxed, cut, self._redactor)
-            except FaceRedactionUnavailable:
-                self.stats.blocked_no_redactor += 1
-                continue
+                exported = prepare_for_export(muxed, cut, self._redactor)
             except Exception as e:  # noqa: BLE001 - 한 카메라 실패가 다른 카메라·Tier 0 루프를 막지 않는다
                 self.stats.failed += 1
                 log.error("이벤트 %s 카메라 %s 클립을 만들지 못했다: %s", trigger.event_id, camera_id, type(e).__name__)
@@ -226,9 +219,9 @@ class EventClipService:
                 self.stats.blocked_no_uploader += 1
                 continue
             draft = ClipDraft.build(
-                clip_id=self._new_clip_id(), trigger=trigger, camera_id=camera_id, cut=cut, clip=redacted,
+                clip_id=self._new_clip_id(), trigger=trigger, camera_id=camera_id, cut=cut, clip=exported,
                 created_at_ms=now, retention_days=self.config.retention_days,
                 critical_auto_hold=self.config.critical_auto_hold,
             )
-            self._uploader.enqueue(redacted, draft)
+            self._uploader.enqueue(exported, draft)
             self.stats.by_camera[camera_id] = self.stats.by_camera.get(camera_id, 0) + 1

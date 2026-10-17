@@ -1,4 +1,4 @@
-"""이벤트 클립 생성·업로드(S15P31A101-57): 대상 이벤트, 앞뒤 구간, 얼굴 흐림 필수, 다시 시도, EC2 단절 임시 저장, 저장 경로 없음."""
+"""이벤트 클립 생성·업로드(S15P31A101-57): 대상 이벤트, 앞뒤 구간, 얼굴 흐림 기본 꺼짐(켜면 반드시 거침), 다시 시도, EC2 단절 임시 저장, 저장 경로 없음."""
 
 from __future__ import annotations
 
@@ -24,7 +24,12 @@ for p in (AI_DIR, Path(__file__).resolve().parent):
 
 from clip_stream import FRAME_MS, GOP, T0, Stream, transition  # noqa: E402
 
-from services.tier0.clips.media import FACE_BLUR_BEFORE_EXPORT, MuxedClip, RedactedClip  # noqa: E402
+from services.tier0.clips.media import (  # noqa: E402
+    FACE_BLUR_BEFORE_EXPORT,
+    FACE_REDACTION_NONE,
+    ExportClip,
+    MuxedClip,
+)
 from services.tier0.clips.record import DAY_MS  # noqa: E402
 from services.tier0.clips.ring_buffer import PacketRingBuffer  # noqa: E402
 from services.tier0.clips.service import ClipConfig, EventClipService  # noqa: E402
@@ -263,17 +268,37 @@ def test_clip_window_must_fit_in_the_ring():
         EventClipService(PacketRingBuffer(CAMS), FixedClock(T0), config=ClipConfig(pre_ms=30_000, post_ms=30_000))
 
 
-# ---------------------------------------------------------------------------- 얼굴 흐림 필수(11.5 결정 전 기본값)
+# ---------------------------------------------------------------------------- 얼굴 흐림: 기본 꺼짐(사용자 결정), 켜면 반드시 거침
 
 
-def test_without_redactor_nothing_is_exported():
-    clock, service, stream, signer, transport, sink, uploader = _setup(redactor=None)
-    assert not service.export_enabled
+def test_default_uploads_clips_without_face_blur():
+    clock, service, stream, signer, transport, sink, uploader = _setup()  # 흐림 단계 없음(기본 조립)
+    assert service.export_enabled
     _run(service, clock, stream, 25_000)
-    service.on_transitions([transition(severity=Severity.CRITICAL, observation_time=stream.t_ms)])
+    anchor = stream.t_ms
+    service.on_transitions([transition(severity=Severity.CRITICAL, observation_time=anchor)])
     _run(service, clock, stream, 30_000)
-    assert service.stats.blocked_no_redactor == len(CAMS)
-    assert signer.requests == [] and transport.calls == 0 and sink.records == [] and uploader.pending == 0
+    assert [r.draft.camera_id for r in sink.records] == list(CAMS) and uploader.pending == 0
+    for rec, (_, content, _) in zip(sink.records, transport.puts, strict=True):
+        d = rec.draft
+        assert d.face_redaction == FACE_REDACTION_NONE and d.redactor_version is None
+        assert d.retention_hold is True and d.source == "LIVE"
+        # 흐림 없이 재다중화한 내용 그대로다. 그래도 이벤트 구간 프레임뿐이다
+        marks = list(FRAME_MARK.finditer(content))
+        assert {m.group(1).decode() for m in marks} == {d.camera_id} and len(marks) == d.frame_count
+        times = [T0 + int(m.group(2)) * FRAME_MS for m in marks]
+        assert anchor - 20_000 - GOP_MS < min(times) and max(times) <= anchor + 20_000
+
+
+def test_enabled_redactor_is_always_applied_before_export():
+    redactor = FakeRedactor()
+    clock, service, stream, _, transport, sink, _ = _setup(redactor=redactor, cameras=("cam_A",))
+    _run(service, clock, stream, 25_000)
+    service.on_transitions([transition(observation_time=stream.t_ms)])
+    _run(service, clock, stream, 30_000)
+    (rec,) = sink.records
+    assert redactor.calls == 1 and transport.puts[0][1].startswith(BLUR_TAG) and b"|cam_" not in transport.puts[0][1]
+    assert rec.draft.face_redaction == FACE_BLUR_BEFORE_EXPORT and rec.draft.redactor_version == "fake-blur-1"
 
 
 def test_redactor_failure_does_not_upload_the_unblurred_clip():
@@ -285,7 +310,7 @@ def test_redactor_failure_does_not_upload_the_unblurred_clip():
     assert transport.calls == 0 and sink.records == []
 
 
-def test_upload_paths_accept_only_redacted_clips(tmp_path):
+def test_upload_paths_accept_only_export_clips(tmp_path):
     clock = FixedClock(T0)
     uploader = ClipUploader(FakeSigner(), FakeTransport(), Sink(), clock)
     raw = MuxedClip(b"raw", "video/h264", "h264-annexb")
@@ -294,7 +319,12 @@ def test_upload_paths_accept_only_redacted_clips(tmp_path):
     with pytest.raises(TypeError):
         DirectoryClipSpool(tmp_path).save(raw, None)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
-        RedactedClip(b"x", "video/h264", "h264-annexb", FACE_BLUR_BEFORE_EXPORT, "")
+        ExportClip(b"x", "video/h264", "h264-annexb", FACE_BLUR_BEFORE_EXPORT, "")  # 흐림인데 버전 없음
+    with pytest.raises(ValueError):
+        ExportClip(b"x", "video/h264", "h264-annexb", FACE_REDACTION_NONE, "v1")  # 흐림 없음인데 버전 있음
+    with pytest.raises(ValueError):
+        ExportClip(b"x", "video/h264", "h264-annexb", "BLURRED_AT_VIEW", None)
+    assert ExportClip(b"x", "video/h264", "h264-annexb").face_redaction == FACE_REDACTION_NONE
 
 
 # ---------------------------------------------------------------------------- 다시 시도·EC2 단절
@@ -346,7 +376,7 @@ def test_ec2_outage_spools_to_network_volume_and_uploads_after_recovery(tmp_path
     files = sorted(p.name for p in (tmp_path / "clips").iterdir())
     assert len(files) == 4 and {Path(f).suffix for f in files} == {".clip", ".json"}
     for f in (tmp_path / "clips").glob("*.clip"):
-        assert f.read_bytes().startswith(BLUR_TAG)  # 흐림 클립만 저장한다
+        assert f.read_bytes().startswith(BLUR_TAG)  # 흐림을 켰으면 흐림 단계 출력만 저장한다
     assert transport.calls == 0 and sink.records == [] and uploader.stats.spooled == 2
     _run(service, clock, stream, 120_000)  # 단절이 길어도 시도 상한으로 버리지 않는다
     assert uploader.pending == 2 and uploader.stats.dropped == 0
@@ -372,8 +402,7 @@ def test_spooled_clips_are_restored_after_restart(tmp_path):
     restarted.poll()
     (rec,) = sink.records
     assert rec.spooled and transport.puts[0][1].startswith(BLUR_TAG)
-    assert rec.draft.sha256 == RedactedClip(transport.puts[0][1], "video/h264", "h264-annexb",
-                                            FACE_BLUR_BEFORE_EXPORT, "v").sha256
+    assert rec.draft.sha256 == ExportClip(transport.puts[0][1], "video/h264", "h264-annexb").sha256
     assert list(tmp_path.iterdir()) == []
 
 
@@ -516,17 +545,18 @@ def test_target_event_with_working_upload_writes_nothing_to_disk(no_storage, tmp
         assert seqs == list(range(seqs[0], seqs[0] + len(seqs)))
 
 
-def test_without_redactor_nothing_leaves_memory(no_storage, tmp_path):
-    clock, service, stream, signer, transport, sink, _ = _setup(redactor=None, spool=DirectoryClipSpool(tmp_path))
-    signer.down = True  # EC2 단절이어도 흐림 없는 클립은 Network Volume 에도 쓰지 않는다
-    _run(service, clock, stream, 25_000)
+def test_default_unblurred_upload_writes_nothing_to_disk(no_storage, tmp_path):
+    # 흐림 없는 기본 조립에서도 EC2 가 살아 있으면 클립은 서명 주소 업로드로만 나가고 디스크에 쓰지 않는다
+    clock, service, stream, _, transport, sink, _ = _setup(spool=DirectoryClipSpool(tmp_path))
+    _run(service, clock, stream, 60_000)
     service.on_transitions([transition(severity=Severity.CRITICAL, observation_time=stream.t_ms)])
     _run(service, clock, stream, 30_000)
-    assert no_storage == [] and service.stats.blocked_no_redactor == len(CAMS) and transport.calls == 0
+    assert no_storage == [] and len(sink.records) == len(CAMS) == len(transport.puts)
+    assert all(r.draft.face_redaction == FACE_REDACTION_NONE for r in sink.records)
 
 
 def test_storage_guard_catches_a_real_write(no_storage, tmp_path):
-    """위 시험들의 막기 장치가 실제 쓰기를 잡는지 확인한다(EC2 단절 + 흐림 클립 → Network Volume 저장 시도)."""
+    """위 시험들의 막기 장치가 실제 쓰기를 잡는지 확인한다(EC2 단절 + 클립 → Network Volume 저장 시도)."""
     clock, service, stream, signer, _, _, _ = _setup(redactor=FakeRedactor(), spool=DirectoryClipSpool(tmp_path),
                                                      cameras=("cam_A",))
     signer.down = True

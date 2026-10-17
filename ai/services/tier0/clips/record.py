@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from services.tier0.clips.media import RedactedClip
+from services.tier0.clips.media import ExportClip
 from services.tier0.clips.ring_buffer import CameraCut
 from services.tier0.clips.trigger import ClipTrigger
 
@@ -54,14 +54,14 @@ class ClipDraft:
     size_bytes: int
     sha256: str
     face_redaction: str
-    redactor_version: str
+    redactor_version: str | None
     created_at_ms: int
     delete_after_ms: int
     retention_hold: bool
     source: str = SOURCE_LIVE
 
     @classmethod
-    def build(cls, *, clip_id: str, trigger: ClipTrigger, camera_id: str, cut: CameraCut, clip: RedactedClip,
+    def build(cls, *, clip_id: str, trigger: ClipTrigger, camera_id: str, cut: CameraCut, clip: ExportClip,
               created_at_ms: int, retention_days: int = DEFAULT_RETENTION_DAYS, critical_auto_hold: bool = True) -> "ClipDraft":
         return cls(
             clip_id=clip_id,
