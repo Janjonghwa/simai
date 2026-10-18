@@ -229,8 +229,9 @@ def test_occlusion_holds_position_grows_sigma_then_lost(rig):
     assert lost[-1][1].lifecycle is TrackLifecycle.LOST
     assert lost[-1][0] - t_last > cfg.lost_after_ms
     assert states[-1][1].track(seen.world_id) is None  # LOST 는 한 번만 낸다
-    # 다시 나타나면 새 ID 이고 이전 ID 를 다시 쓰지 않는다
-    again = _walk(m, rig, 1, start=45)[0].tracks[0]
+    assert m.lost_candidates == (seen.world_id,)  # 늦은 재연결 후보로만 남는다 (world_state 에는 없음)
+    # 로컬 트랙 연결 이력 없이(새 로컬 트랙 ID) 다시 나타나면 새 ID 이고 이전 ID 를 다시 쓰지 않는다
+    again = _walk(m, rig, 1, start=45, prefix="q")[0].tracks[0]
     assert again.world_id != seen.world_id
     assert again.lifecycle is TrackLifecycle.TENTATIVE
     assert m.issuer.issued == (seen.world_id, again.world_id)

@@ -19,8 +19,15 @@ G2 판정은 팀원이 단 ID 정답으로 실제 녹화에서 한다(명세 15.
     가렸던 카메라의 로컬 트랙 ID 를 새로 붙인다(Local Tracker 가 놓쳤다가 다시 잡은 경우).
   - exit_reentry: crossing 에서 east 를 2.0~3.5 s 동안 모든 카메라에서 지우고 새 로컬 트랙 ID 로 다시 나타나게 한다.
     소실 시간(lost_after_ms 3 s)보다 짧다.
-  - exit_long: 같은 방식으로 1.5~5.0 s 동안 지운다. 소실 시간보다 길어 새 ID 가 나와야 한다(늦은 재연결은
-    S15P31A101-40 범위라 ID 유지 비율이 낮게 나오는 것이 지금 동작이다).
+  - exit_long: 같은 방식으로 1.5~5.0 s 동안 지운다. 소실 시간보다 길고 다시 나올 때 로컬 트랙 근거(옛 로컬 트랙 ID)가
+    없으므로 새 ID 가 맞다(위치만으로 잇지 않는다, S15P31A101-40).
+  - occlusion_long: crossing 에서 east 를 1.5~5.0 s 동안 cam1 에만 보이게 가린다. 소실 시간을 넘겨 LOST 가 된다. 다시
+    보일 때 cam1 로컬 트랙이 이어져 있고 cam2 로컬 트래커도 옛 ID 를 되살리므로(두 카메라 근거) 같은 ID 로 잇는다
+    (늦은 재연결, S15P31A101-40).
+  - occlusion_long_single: occlusion_long 과 같되 cam2 는 새 로컬 트랙 ID 로 돌아온다. 옛 로컬 트랙이 cam1 하나뿐이라
+    로컬 ID 전환과 구별할 수 없어 잇지 않고 새 ID(IDENTITY_UNCERTAIN)다.
+  - exit_long_revive: exit_long 과 같이 1.5~5.0 s 동안 지우되 cam1·cam2 는 5.6 s 까지 가렸다가 옛 로컬 트랙 ID 로
+    되살린다(로컬 트래커가 놓친 트랙을 다시 잡음). 5.0 s 에 새 ID 를 받은 뒤 두 카메라 근거로 옛 ID 로 교정(병합)된다.
   - id_switch: crossing 에서 엇갈리는 3.0 s 부터 cam1 의 두 사람 로컬 트랙 ID 를 맞바꾼다(로컬 트래커 ID 전환). 같은
     로컬 트랙 ID 가 시각에 따라 다른 사람이라 정답은 시각별로 본다. 두 사람이 한 ID 로 합쳐지면 안 된다.
 
@@ -35,7 +42,8 @@ G2 판정은 팀원이 단 ID 정답으로 실제 녹화에서 한다(명세 15.
   ID 를 바꾼 tick 의 view 는 보간에 쓴 프레임 중 tick 에 가장 가까운 프레임 시각으로 정답을 붙인다).
 - undecided_updates: 붙은 클러스터에서 다수 사람이 없는(동수) (tick, Track) 수. 그 tick 은 누구에게 붙었는지 판정하지
   않는다(이름 순서로 다수를 정하지 않음).
-- id_reuse: LOST 로 나간 뒤 다시 나온 World ID 수 + 중복 발급 수. 목표 0.
+- id_reuse: LOST 로 나간 뒤 늦은 재연결·교정 기록 없이 다시 나온 World ID 수 + 중복 발급 수. 목표 0.
+- reassociations: LOST 를 낸 뒤 같은 ID 로 다시 이은 수(`WorldTrackFrame.reassociations` 또는 남는 ID 로 교정).
 - issued, revisions, uncertain_track_ticks: 발급 ID 수, ID 교정(병합) 수, IDENTITY_UNCERTAIN 인 (tick, Track) 수.
 - schema_errors: world_state 메시지를 계약 스키마로 검증한 오류 수 (validator 를 넘겼을 때만).
 """
@@ -68,19 +76,35 @@ from simai_ai.tracking.world_track import (
 )
 
 HERE = Path(__file__).resolve().parent
-SCENARIOS = ("crossing", "side_by_side", "occlusion", "exit_reentry", "exit_long", "id_switch")
+SCENARIOS = (
+    "crossing",
+    "side_by_side",
+    "occlusion",
+    "exit_reentry",
+    "exit_long",
+    "id_switch",
+    "occlusion_long",
+    "occlusion_long_single",
+    "exit_long_revive",
+)
 SEEDS = (1, 2, 3)
 ARRIVAL_LAG_MS = 60
 OBSERVED_GAP_MS = 200
-# (사람, 시작 ms, 끝 ms, 남길 카메라) — 시나리오 시작 시각 기준
+# (사람, 시작 ms, 끝 ms, 남길 카메라[, 되살릴 카메라 → 끝 ms]) — 시나리오 시작 시각 기준
 HIDE = {
     "occlusion": ("east", 2000, 3200, ("cam1",)),
     "exit_reentry": ("east", 2000, 3500, ()),
     "exit_long": ("east", 1500, 5000, ()),
+    "occlusion_long": ("east", 1500, 5000, ("cam1",), {"cam2": 5000}),
+    "occlusion_long_single": ("east", 1500, 5000, ("cam1",)),
+    "exit_long_revive": ("east", 1500, 5000, (), {"cam1": 5600, "cam2": 5600}),
 }
 BASE = {"crossing": "crossing", "side_by_side": "side_by_side", "occlusion": "crossing", "exit_reentry": "crossing"}
 BASE["exit_long"] = "crossing"
 BASE["id_switch"] = "crossing"
+BASE["occlusion_long"] = "crossing"
+BASE["occlusion_long_single"] = "crossing"
+BASE["exit_long_revive"] = "crossing"
 # (카메라, 시작 ms): 그 시각부터 이 카메라의 두 사람 로컬 트랙 ID 를 맞바꾼다 (교차 중 로컬 트래커 ID 전환)
 SWITCH = {"id_switch": ("cam1", 3000)}
 
@@ -108,8 +132,14 @@ def hide(
     start_ms: int,
     end_ms: int,
     keep: tuple[str, ...],
+    revive: dict[str, int] | None = None,
 ) -> list[Observation2DFrame]:
-    """[start, end) 동안 person 의 검출을 keep 밖 카메라에서 지우고, 그 카메라의 뒤 검출은 새 로컬 트랙 ID 로 바꾼다."""
+    """[start, end) 동안 person 의 검출을 keep 밖 카메라에서 지우고, 그 카메라의 뒤 검출은 새 로컬 트랙 ID 로 바꾼다.
+
+    revive: 카메라 → 끝 ms. 그 카메라는 [start, 끝) 동안 지우고 뒤 검출은 옛 로컬 트랙 ID 그대로 둔다(로컬 트래커가
+    놓친 트랙을 다시 잡은 경우).
+    """
+    revive = revive or {}
     t0 = min(f.estimated_capture_time_ms for f in frames)
     out = []
     for f in frames:
@@ -119,6 +149,10 @@ def hide(
             key = (f.camera_id, d.local_track_id)
             if truth.get(key) != person or f.camera_id in keep:
                 dets.append(d)
+                continue
+            if f.camera_id in revive:
+                if not start_ms <= rel < revive[f.camera_id]:
+                    dets.append(d)
                 continue
             if start_ms <= rel < end_ms:
                 continue
@@ -205,12 +239,17 @@ def evaluate(
             msg = world_state_message(payload, msg_id=str(uuid.UUID(int=t)), sent_at=t_latest)
             m["schema_errors"] += len(validator("world_state", msg))
         m["revisions"] += len(result.revisions)
+        returned = set(result.reassociations) | {r.world_id for r in result.revisions}
 
         clusters = {c.association_id: c for c in assoc.clusters}
         tick_person: dict[str, str] = {}
         for tr in result.tracks:
             if tr.world_id in lost_ids:
-                m["id_reuse"] += 1
+                if tr.world_id in returned:
+                    m["reassociations"] += 1  # 늦은 재연결·교정으로 같은 ID 를 이었다 (ID 재사용이 아니다)
+                    lost_ids.discard(tr.world_id)
+                else:
+                    m["id_reuse"] += 1
             seen_ids.add(tr.world_id)
             if tr.lifecycle is TrackLifecycle.LOST:
                 lost_ids.add(tr.world_id)
@@ -270,6 +309,7 @@ def evaluate(
         "id_changes",
         "duplicate_confirmed",
         "id_reuse",
+        "reassociations",
         "revisions",
         "impure_updates",
         "undecided_updates",
@@ -308,14 +348,14 @@ def run_all(scenarios: Iterable[str] = SCENARIOS, seeds: Iterable[int] = SEEDS) 
 def markdown(results: dict[str, dict[str, Any]]) -> str:
     lines = [
         "| 시나리오/시드 | ID 유지 비율 | (tick, 사람) | ID 바뀜 | 같은 사람 두 ID 동시 확정 | 두 사람 한 ID | ID 재사용 "
-        "| 발급 ID | ID 교정 | 섞인 클러스터 갱신 | 판정 불가 갱신 | IDENTITY_UNCERTAIN (tick, Track) |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| 늦은 재연결 | 발급 ID | ID 교정 | 섞인 클러스터 갱신 | 판정 불가 갱신 | IDENTITY_UNCERTAIN (tick, Track) |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for key, r in results.items():
         ratio = "-" if r["id_retention"] is None else f"{r['id_retention']:.3f}"
         lines.append(
             f"| {key} | {ratio} | {r['trackable']} | {r['id_changes']} | {r['duplicate_confirmed']} | {r['merged_ids']} "
-            f"| {r['id_reuse']} | {r['issued']} | {r['revisions']} | {r['impure_updates']} "
+            f"| {r['id_reuse']} | {r['reassociations']} | {r['issued']} | {r['revisions']} | {r['impure_updates']} "
             f"| {r['undecided_updates']} | {r['uncertain_track_ticks']} |"
         )
     lines.append("\nSIM 입력의 상한 성능(is_upper_bound = true)이다. 제품 성능·G2 결론이 아니다.")
