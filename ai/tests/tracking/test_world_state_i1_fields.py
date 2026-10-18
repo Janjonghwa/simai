@@ -82,7 +82,7 @@ def test_surface_source_only_with_anchor(contact, expected, contract_errors):
     assert doc.get("surface_source") == expected
     assert ("surface_source" in doc) == (doc["ground_anchor_xyz"] is not None)
     msg = _message([doc])
-    assert msg["schema_version"] == WORLD_STATE_SCHEMA_VERSION == "1.3.0"
+    assert msg["schema_version"] == WORLD_STATE_SCHEMA_VERSION == "1.4.0"
     assert contract_errors("world_state", msg) == []
 
 

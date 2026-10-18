@@ -45,13 +45,13 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
       "world_id": "w-0012",
       "t_last_valid": 1760342400080,
       "observation_state": "OBSERVED",
-      "track_lifecycle": "CONFIRMED", "identity_confidence": "HIGH", "identity_revision": 2,
+      "track_lifecycle": "CONFIRMED", "identity_confidence": "HIGH", "identity_revision": 2, "aliases": ["w-0009", "w-0011"],
       "contact_validity": "VALID", "frame_age_ms": 140,
       "position_xy": [3.40, 5.01], "pelvis_xyz": [3.40, 5.01, 0.92],
-      "ground_anchor_xyz": [3.41, 5.02, 0.0], "support_surface_id": "floor", "support_surface_validity": "VALID",
+      "ground_anchor_xyz": [3.41, 5.02, 0.0], "surface_source": "observed", "support_surface_id": "floor", "support_surface_validity": "VALID",
       "position_xy_sigma": [0.08, 0.08], "ground_anchor_sigma": [0.06, 0.06, 0.03], "head_z_sigma": 0.05,
       "velocity": [0.9, 0.1, 0.0],
-      "head_z": 1.68, "z_validity": "VALID",
+      "head_z": 1.68, "head_z_validity": "VALID", "z_validity": "VALID",
       "cameras": ["cam1", "cam3"],
       "skeleton": {"joints": [[3.40, 5.01, 0.92]], "visible": [true], "validity": ["VALID"], "joint_source": ["observed"]}
     }]

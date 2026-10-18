@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.3.0",
+  "msg_type": "event_state_snapshot",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000106",
+  "sent_at": 1760342460010,
+  "source_id": "tier0-01",
+  "payload": {
+    "gateway_id": "tier0-01",
+    "snapshot_at": 1760342460000,
+    "journal_offset": null,
+    "config_version": "cfg-12",
+    "active_events": []
+  }
+}

@@ -169,7 +169,10 @@ def test_snapshot_is_fold_of_sent_transitions_and_matches_contract(kit) -> None:
 
 def test_zero_active_events_and_empty_journal(kit) -> None:
     snap = kit.snapshot()
-    assert snap.payload() is None and snap.not_ready == "empty_journal"  # 반영한 offset 이 없다(지어내지 않음)
+    empty = snap.payload()  # 계약 1.3.0: 아직 저널 기록이 없음 = journal_offset null(0 이 아님), 활성 없음
+    assert empty is not None, snap.not_ready
+    contract_ok(empty)
+    assert empty["journal_offset"] is None and empty["active_events"] == [] and empty["config_version"] == CONFIG
     kit.site.step({"w-a": INSIDE})
     for _ in range(5):
         kit.site.step({"w-a": OUTSIDE})
@@ -188,6 +191,71 @@ def test_unknown_config_version_is_not_invented(kit) -> None:
     assert snap.payload() is None and snap.not_ready == "config_version_unknown"
     kit.config["version"] = CONFIG
     assert snap.payload() is not None and snap.not_ready is None
+
+
+# ---------------------------------------------------------------------------- 반례: 빈 저널(journal_offset null, -172)
+
+
+def test_counterexample_empty_journal_with_unsent_record_waits_for_offset(kit) -> None:
+    """커서 0 인데 저널에 보내지 않은 기록이 있으면 null('기록 없음')로 만들지 않는다. 보낸 뒤 offset 이 있는 스냅샷."""
+    snap = kit.snapshot()
+    kit.site.step({"w-a": INSIDE})  # 저널 offset 0, 아직 보내지 않음(커서 0)
+    assert kit.box.cursor == 0 and kit.journal.next_offset == 1
+    assert snap.payload() is None and snap.not_ready == "cursor_behind"  # 기록이 있는데 '없음'이라고 하지 않는다
+    kit.outbox().pump()
+    payload = snap.payload()
+    contract_ok(payload)
+    assert payload["journal_offset"] == 0 and len(payload["active_events"]) == 1
+
+
+def test_counterexample_empty_journal_with_active_seed_is_not_sent(tmp_path) -> None:
+    """저널이 빈데 활성 시작 상태가 있으면(맞지 않는 입력) null+활성 스냅샷을 만들지 않는다(계약이 막는 조합)."""
+    other = Kit(tmp_path / "other")
+    try:
+        other.site.step({"w-a": INSIDE})
+        states = other.site.tracker.active()
+    finally:
+        other.close()
+    k = Kit(tmp_path / "empty")
+    try:
+        snap = k.snapshot(seed=states, start_offset=0)
+        assert k.journal.next_offset == 0 and states
+        assert snap.payload() is None and snap.not_ready == "empty_journal"
+        # 같은 저널에 시작 상태가 없으면 null 스냅샷을 만든다(대조)
+        assert k.snapshot().payload()["journal_offset"] is None
+    finally:
+        k.close()
+
+
+def test_counterexample_empty_journal_snapshot_on_each_connection_before_first_risk(kit) -> None:
+    """빈 저널로 연결하면 health 뒤 바로 null 스냅샷(연결마다 한 번). 첫 위험 전이(offset 0)는 그 뒤 실시간으로 나가고
+    같은 연결에서 스냅샷을 다시 보내지 않는다. 다음 연결은 재전송(0) 뒤 offset 0 스냅샷이다."""
+    snap = kit.snapshot(outbox=False)
+    c1, c2 = FakeConn(), FakeConn()
+    link = wire_link(kit, snap, [c1, c2])
+    link.start()
+    try:
+        assert wait_until(lambda: snap.sent == 1)
+        assert [m["msg_type"] for m in c1.sent] == ["health", "event_state_snapshot"]
+        kit.site.step({"w-a": INSIDE})  # 첫 위험
+        assert wait_until(lambda: "risk_event_transition" in [m["msg_type"] for m in c1.sent])
+        time.sleep(0.2)
+        c1.close()
+        assert wait_until(lambda: snap.sent == 2)
+        time.sleep(0.1)
+    finally:
+        link.close()
+    for m in c1.sent + c2.sent:
+        assert schema_errors(m, m["msg_type"]) == [], m["msg_type"]
+    first = [m for m in c1.sent if m["msg_type"] != "health"]
+    assert [m["msg_type"] for m in first] == ["event_state_snapshot", "risk_event_transition"]
+    assert first[0]["schema_version"] == "1.3.0"
+    assert first[0]["payload"]["journal_offset"] is None and first[0]["payload"]["active_events"] == []
+    assert first[1]["payload"]["journal_offset"] == 0 and first[1]["payload"]["transition"] == "RAISED"
+    second = [m for m in c2.sent if m["msg_type"] != "health"]
+    assert [(m["msg_type"], m["payload"]["journal_offset"]) for m in second] == [
+        ("risk_event_transition", 0), ("event_state_snapshot", 0)]
+    assert len(second[1]["payload"]["active_events"]) == 1
 
 
 # ---------------------------------------------------------------------------- 반례: 경합
@@ -452,7 +520,8 @@ def test_counterexample_guarded_compaction_never_outruns_folding(tmp_path) -> No
         bypassed = EventStateSnapshot(k.journal, gateway_id=GATEWAY, clock=k.clock, config_version=lambda: CONFIG,
                                       start_offset=0)
         bypassed.bind(k.outbox())
-        assert guarded.payload() is None  # 빈 저널
+        empty = guarded.payload()  # 빈 저널: journal_offset null 스냅샷이지만 접은 것은 없다(정리 상한 없음)
+        assert empty is not None and empty["journal_offset"] is None and guarded.applied_offset is None
         for i in range(40):
             k.site.step({"w-a": INSIDE, f"w-{i}": INSIDE})
             for _ in range(4):

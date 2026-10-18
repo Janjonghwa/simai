@@ -59,7 +59,8 @@
 | CURRENT / PENDING / UNVERIFIED / STALE | Config Sync 상태. UNVERIFIED는 연결 단절로 최신 여부를 모르는 상태, STALE은 불일치가 확인된 상태. 어느 쪽이든 판정은 계속 |
 | DELAYED_ACTIVE | 재동기화 후 최종 상태가 여전히 활성으로 확인된 이벤트의 지연 알림 표시 |
 | observed / inferred | 관절 출처(`joint_source`). observed는 Tier 0 삼각측량, inferred는 Tier 1 HMR 보강. 위험 판단은 observed만 |
-| joint_source / surface_source | 관절 출처(observed/inferred) / 메시 표면 출처(관측/보간). 추정을 관측으로 표시하지 않기 위한 필드(20.4) |
+| joint_source / surface_source | 관절 출처(observed/inferred) / 메시 표면 출처(관측/보간, `human_mesh_output` 의 `surface_source`). 추정을 관측으로 표시하지 않기 위한 필드(20.4) |
+| 지지 표면 출처(`world_state` 의 `surface_source`) | I1 `world_state` 트랙의 접지점 출처. observed 는 이번 시각 Tier 0 가 관측한 VALID 발목 근거, inferred 는 가려진 동안 마지막 유효 지지 표면을 유지한 값(5.2). 접지점이 있을 때만 싣는다. 메시 표면 출처와 이름만 같고 다른 필드이며 값도 다르다(observed/inferred 와 관측/보간) |
 | input_provenance | 산출물이 소비한 Provider 출력의 출처(`provider_source`)와 버전 기록(20.4) |
 | DATASET_GT / SIM / MODEL_ESTIMATE | Provider 출처 값. 공개 데이터 정답 / 시뮬레이터 / 이전 Run 의 모델 추정. 이 입력으로 얻은 지표는 상한 성능이며 제품 성능으로 쓰지 않음(20.4) |
 | z_validity | 사람 높이(Z)의 유효성. 지지 표면을 모르면 UNAVAILABLE이며 Z=0을 가정하지 않음 |
@@ -68,7 +69,9 @@
 | IDENTITY_UNCERTAIN | 카메라 간 매칭이 애매해 같은 사람인지 확신할 수 없다는 표시. 합치지 않고 이 표시를 붙인다 |
 | stream_epoch | 카메라 스트림 재연결마다 증가하는 번호. camera_id·frame_sequence와 함께 프레임을 식별(12.7) |
 | pelvis_xyz / position_xy / ground_anchor_xyz | 삼각측량 골반 위치 / 구역 판정용 수평 위치 / 검증된 지지 표면 위 위치(모르면 비움). 정의는 5.2 |
-| head_z | 머리 꼭대기 높이 추정. 귀·눈 중점 높이 + 고정 오프셋(5.2) |
+| head_z / head_z_validity | 머리 꼭대기 높이 추정. 귀·눈 중점 높이 + 고정 오프셋(5.2). 관절 유효성 게이트가 VALID 로 낸 값만 싣고, 게이트 결과(VALID/UNCERTAIN/UNAVAILABLE)는 `head_z_validity` 로 싣는다 |
+| aliases | 병합(ID 교정)으로 이 World ID 에 합쳐진 이전 World ID 목록. 뒤에만 붙고 Track 이 살아 있는 동안 빠지지 않는다(5.2) |
+| 해소 기록(tombstone) | 재시작 복구용 체크포인트에 남기는 해소된 이벤트의 마지막 sequence·판정 시각. 저널을 다시 적용할 때 해소된 이벤트를 되살리지 않게 한다(3.2) |
 | queue_wait_ms / frame_age_ms | 추론 대기열에서 기다린 시간 / 촬영부터 추론 시점까지 전체 경과 시간 |
 | 원격 관제 장애 | EC2만 끊긴 상태의 노트북 표시. 판정과 현장 경보는 정상이고 PWA·관제 화면 전달만 지연 |
 | GROUND_FOOTPRINT / VOLUME_3D | 구역 판정 유형. 바닥 다각형만 보는 구역 / 높이 범위까지 보는 입체 구역(8.2) |

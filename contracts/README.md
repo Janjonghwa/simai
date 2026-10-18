@@ -1,14 +1,14 @@
 # contracts
 
-구간 계약의 정본(JSON Schema, draft 2020-12). 명세 12장, 20.4, 21.2 기준. **v2.2.0** (2.2.0: `world_state` 트랙의 지지 표면 출처 `surface_source`·병합 별칭 `aliases`, `health.ec2_world_state_drops`(Tier 0 → EC2 world_state 송신 버림 누적) — S15P31A101-170. 2.1.0: `world_state.config_version`, 판정이 아닌 전이의 `evidence_ref` null, health 노트북 버림 집계, 이벤트 클립 기록 `media_clip`·`media_clip_retention` — S15P31A101-169. 2.0.0: v1.3 에서 쓰지 않는 보정 출처(CHARUCO·MANUAL_PNP)·스케일 근거(MARKER·FLOOR_PLAN)와 `hmac_signature` 삭제, I5 작업 대여 방식 — S15P31A101-167·-157. 그 사이 추가: 녹화 manifest(-158), I0·I1 현장 경보 재동기화·시계 교환·엔드포인트 등록·2D 관측 요약(-155). 1.1.0: 보정 입력 선택 항목화, `MODEL_ESTIMATE` 출처 추가 — S15P31A101-148).
+구간 계약의 정본(JSON Schema, draft 2020-12). 명세 12장, 20.4, 21.2 기준. **v2.3.0** (2.3.0: `world_state` 트랙의 머리 높이 유효성 `head_z_validity`(값은 VALID 일 때만), `event_state_snapshot.journal_offset` null(아직 저널 기록 없음), `laptop_heartbeat` 처리 정체 해석 설명 보강 — S15P31A101-172. 2.2.0: `world_state` 트랙의 지지 표면 출처 `surface_source`·병합 별칭 `aliases`, `health.ec2_world_state_drops`(Tier 0 → EC2 world_state 송신 버림 누적) — S15P31A101-170. 2.1.0: `world_state.config_version`, 판정이 아닌 전이의 `evidence_ref` null, health 노트북 버림 집계, 이벤트 클립 기록 `media_clip`·`media_clip_retention` — S15P31A101-169. 2.0.0: v1.3 에서 쓰지 않는 보정 출처(CHARUCO·MANUAL_PNP)·스케일 근거(MARKER·FLOOR_PLAN)와 `hmac_signature` 삭제, I5 작업 대여 방식 — S15P31A101-167·-157. 그 사이 추가: 녹화 manifest(-158), I0·I1 현장 경보 재동기화·시계 교환·엔드포인트 등록·2D 관측 요약(-155). 1.1.0: 보정 입력 선택 항목화, `MODEL_ESTIMATE` 출처 추가 — S15P31A101-148).
 
 | 경로 | 내용 | 명세 |
 |---|---|---|
 | `common/defs.schema.json` | 공통 타입(좌표, 시각, 상태 enum, `input_provenance`, `reproducibility`). `calibration_source` 를 쓰는 계약(calibration, calibration_update, run_record, scene_output, human_mesh_output)은 2.0.0 | 4.1, 6.2, 12.1, 20.4 |
 | `messages/envelope.schema.json` | 공통 봉투 | 12.1 |
-| `messages/world_state.schema.json` | I1 `world_state` (LIVE 계약, Lead 승인 필요). 1.1.0: 입력 출처 `input_provenance`(선택), `position_xy` 관측 공백 때 시각 기준 설명 보강. 1.2.0: 구성 묶음 버전 `config_version`(선택, -169). 1.3.0: 트랙의 지지 표면 출처 `surface_source`(observed/inferred, 접지점이 있을 때만)·병합 별칭 `aliases`(선택, -170) | 3.2, 5.2, 6.1, 12.3, 20.4 |
+| `messages/world_state.schema.json` | I1 `world_state` (LIVE 계약, Lead 승인 필요). 1.1.0: 입력 출처 `input_provenance`(선택), `position_xy` 관측 공백 때 시각 기준 설명 보강. 1.2.0: 구성 묶음 버전 `config_version`(선택, -169). 1.3.0: 트랙의 지지 표면 출처 `surface_source`(observed/inferred, 접지점이 있을 때만)·병합 별칭 `aliases`(선택, -170). 1.4.0: 트랙의 머리 높이 유효성 `head_z_validity`(VALID/UNCERTAIN/UNAVAILABLE, 선택, -172. `head_z` 값은 VALID 일 때만) | 3.2, 5.2, 6.1, 12.3, 20.4 |
 | `messages/risk_event_transition.schema.json` | I1 Tier 0 → EC2 LIVE 이벤트 전이(저널 기록, 운영자 확인 포함). 1.3.0: 확인 필요 이유 `confidence_reasons`, 해소 후 재개 `resumed`. 1.4.0: 판정이 아닌 전이(확인·복원·ID 교정)의 `evidence_ref` null 허용(-169) | 3.2, 6.4, 7.1, 12.3 |
-| `messages/event_state_snapshot.schema.json` | I1 Tier 0 → EC2 재동기화 후 활성 이벤트 최종 상태 | 3.2 |
+| `messages/event_state_snapshot.schema.json` | I1 Tier 0 → EC2 재동기화 후 활성 이벤트 최종 상태. 1.3.0: `journal_offset` null = 아직 저널 기록이 없음(0 과 다름, 그때 활성 이벤트 없음, -172) | 3.2 |
 | `messages/health.schema.json` | I1 Tier 0 → EC2(및 I0 노트북) 1 Hz 상태·손실 3종. 1.4.0: 카메라별 노트북 송신 큐 버림 `laptop_skipped`·구분 불가 `unattributed_gap`(선택, -169). 1.5.0: Tier 0 → EC2 world_state 송신 버림 누적 `ec2_world_state_drops`(선택, -170) | 3.11, 5.1, 6.2, 12.3, 12.7 |
 | `messages/observation_batch.schema.json` | Tier 0 카메라별 2D 관측 묶음(RunPod Network Volume 보관 형식, EC2 로는 `observation_summary`) | 5.1, 11.2 |
 | `messages/observation_summary.schema.json` | I1 Tier 0 → EC2 2D 관측 카메라별 요약(원본은 RunPod 보관) | 11.2, 12.2 |
@@ -28,7 +28,7 @@
 | `messages/site_ack.schema.json` | I0 노트북 → Tier 0 현장 확인 버튼 | 3.10 |
 | `messages/clock_sync_request.schema.json` | I0 Tier 0 → 노트북 시계 차이 교환 요청(t1) | 3.9, 6.1 |
 | `messages/clock_sync_response.schema.json` | I0 노트북 → Tier 0 시계 차이 교환 응답(t1·t2·t3) | 3.9, 6.1 |
-| `messages/laptop_heartbeat.schema.json` | 노트북 → Tier 0(I0)·EC2(HTTPS) 1초 하트비트, Tier 0 연결 상태 | 3.2, 6.5 |
+| `messages/laptop_heartbeat.schema.json` | 노트북 → Tier 0(I0)·EC2(HTTPS) 1초 하트비트, Tier 0 연결 상태. 설명 보강(-172, 형식·버전 그대로): `tier0.control=CONNECTED` + `site_display=CONTROL_HALTED` 는 관제 정지(처리 정체·판정 불가·영상 단절)로 읽는다 | 3.2, 3.10, 6.5 |
 | `messages/risk_event.schema.json` | I2 EC2 → 뷰어 `/topic/events`. 1.3.0: `confidence_reasons`, 재개 횟수 `resume_count` | 6.4, 7.1, 12.4 |
 | `messages/risk_alert.schema.json` | I3 EC2 → 반장 PWA Web Push | 10.1, 12.4 |
 | `messages/job_lease_request.schema.json` | I5 분석 워커 → EC2 작업 대여 요청(HTTPS long-poll, 워커 토큰). I5 전송·인증 규칙 | 12.2, 12.5, 14 |
@@ -69,9 +69,10 @@ I4(워치, 확장)와 I2 `/topic/world`·`/topic/health` 토픽 형식은 아직
 
 - 지지 표면이 VALID가 아니거나 `z_validity`가 UNAVAILABLE이면 `ground_anchor_xyz`는 null (Z=0 대체 금지)
 - `ground_anchor_xyz` 가 null 이면 `surface_source`(지지 표면 출처)를 싣지 않는다. `aliases` 는 중복 없이, 별칭이 없으면 싣지 않는다(빈 배열 불가). `health.ec2_world_state_drops` 는 세기 시작한 시각(`since_ms`)과 함께, 값 객체는 닫힘
+- `head_z_validity` 가 VALID 면 `head_z` 는 수, UNCERTAIN·UNAVAILABLE 이면 `head_z`·`head_z_sigma` 는 null(UNCERTAIN 값을 싣지 않음). `head_z_validity` 가 없는 이전 버전 문서에는 적용하지 않는다
 - I1 전이·현장 경보·푸시(`risk_event_transition`, `local_alert`, `risk_alert`)의 `source`는 LIVE만. 현장 경보·푸시는 CRITICAL·HIGH만 (7.3)
 - 활성 현장 경보 목록(`health.active_site_alerts`)은 LIVE·CRITICAL·HIGH 만, `(event_id, event_sequence)`·`acknowledged` 필수. 시계 차이는 불확실성과 함께, 모르면 null. 엔드포인트 등록은 공개키 지문과 대칭 매핑(70000 이상) 포트, 영상 포트는 카메라별, 비밀 값 불가(payload 닫힘). `observation_summary` 에는 2D 원본(frames·detections·bbox·keypoint 등)을 싣지 않는다(payload·카메라 집계 닫힘)
-- `event_id`는 UUIDv7. 해소(RESOLVED)는 `verification`이 VERIFIED일 때만, 재동기화 스냅샷에는 활성 이벤트만
+- `event_id`는 UUIDv7. 해소(RESOLVED)는 `verification`이 VERIFIED일 때만, 재동기화 스냅샷에는 활성 이벤트만. 스냅샷 `journal_offset` 이 null(아직 저널 기록 없음)이면 활성 이벤트는 빈 배열
 - I1 전이의 `evidence_ref` 키는 늘 싣는다. RAISED·RESOLVED·재개(`resumed`)는 null 불가, 판정이 아닌 전이(확인·복원·ID 교정)는 근거를 모르면 null
 - 이벤트 클립(`media_clip`)은 LIVE·CRITICAL·HIGH 만, 영상은 객체 키로만(스킴·쿼리 있는 주소 불가, payload 닫힘), 삭제 예정일 필수, 흐림 없음(NONE)이면 `redactor_version` null·흐림이면 필수. 보존 표시 추가 기록(`media_clip_retention`)은 붙이기만(true), CRITICAL 자동 보존은 CRITICAL 만
 - 운영자 확인은 누가(`actor_role`·`actor_id`)·어디서(`channel`) 했는지 필수. 현장 확인 버튼은 `site_ack`로만, 관제 화면·PWA 확인은 `event_ack`로만
@@ -87,7 +88,7 @@ I4(워치, 확장)와 I2 `/topic/world`·`/topic/health` 토픽 형식은 아직
 - 좌표계 선언은 World(m, 오른손, +Z)만 허용
 - 녹화 manifest: 실제 카메라(RTSP) 녹화는 동의·보관 기한(`consent`) 필수, 사람이 찍히면 동의서 ID·범위 필수(11.5). RTSP 주소에 계정 불가, 저장 위치는 `volume://`·`s3://`만, 파일 경로는 세션 디렉터리 기준 상대 경로만. `input_kinds` 는 카메라 입력 종류(`cameras[].source.kind`)를 모두 담고, RTSP 가 아닌 입력이 있으면 `is_test_input: true`(그때만). 세그먼트 무결성 검사는 모두 true
 
-스키마로 표현할 수 없는 규칙(R의 직교성, 관절 배열 길이 일치, `is_upper_bound`와 출처의 일치, 봉투 `source_id`와 `gateway_id`의 일치, `event_sequence`·`journal_offset` 단조 증가, `codec_info`와 `frame_header`의 `stream_epoch` 일치, I5 대여의 `lease_expires_at > leased_at`·`attempt ≤ max_attempts`, `health.active_site_alerts` 의 `event_id` 유일, 시계 교환의 `t3_ms ≥ t2_ms`·`uncertainty_ms ≥ round_trip_ms/2`, `observation_summary` 의 `window_end_ms > window_start_ms`, `tier0_endpoint` 의 VIDEO `camera_id` 유일과 `gateway_id`·`source_id` 일치, 녹화 manifest 시각 범위의 from ≤ to·`camera_id` 중복, 판정 UPDATED(등급·수치·구역·검증 상태 변경)의 `evidence_ref` 존재, `media_clip` 의 `clip_end_capture_ms ≥ clip_start_capture_ms`·`delete_after_ms = created_at_ms + 보관 기간`·`gateway_id` 와 `source_id` 일치, `world_state` 1.3.0 이상에서 접지점이 있으면 `surface_source` 존재·`aliases` 에 자기 `world_id` 없음·한 번 실린 별칭이 Track 이 살아 있는 동안 빠지지 않음, `ec2_world_state_drops` 의 같은 `since_ms` 안 단조 증가 등)은 각 모듈의 계약 시험에서 검사한다(명세 21.3).
+스키마로 표현할 수 없는 규칙(R의 직교성, 관절 배열 길이 일치, `is_upper_bound`와 출처의 일치, 봉투 `source_id`와 `gateway_id`의 일치, `event_sequence`·`journal_offset` 단조 증가, `codec_info`와 `frame_header`의 `stream_epoch` 일치, I5 대여의 `lease_expires_at > leased_at`·`attempt ≤ max_attempts`, `health.active_site_alerts` 의 `event_id` 유일, 시계 교환의 `t3_ms ≥ t2_ms`·`uncertainty_ms ≥ round_trip_ms/2`, `observation_summary` 의 `window_end_ms > window_start_ms`, `tier0_endpoint` 의 VIDEO `camera_id` 유일과 `gateway_id`·`source_id` 일치, 녹화 manifest 시각 범위의 from ≤ to·`camera_id` 중복, 판정 UPDATED(등급·수치·구역·검증 상태 변경)의 `evidence_ref` 존재, `media_clip` 의 `clip_end_capture_ms ≥ clip_start_capture_ms`·`delete_after_ms = created_at_ms + 보관 기간`·`gateway_id` 와 `source_id` 일치, `world_state` 1.3.0 이상에서 접지점이 있으면 `surface_source` 존재·`aliases` 에 자기 `world_id` 없음·한 번 실린 별칭이 Track 이 살아 있는 동안 빠지지 않음, `ec2_world_state_drops` 의 같은 `since_ms` 안 단조 증가, `world_state` 1.4.0 이상 송신 측의 `head_z_validity` 늘 싣기와 관절 게이트 결과 일치, 스냅샷 `journal_offset` null 은 저널에 기록이 한 번도 없을 때만, 하트비트 `tier0.control` 과 `site_display` 를 함께 읽기 등)은 각 모듈의 계약 시험에서 검사한다(명세 21.3).
 
 ## 검증
 

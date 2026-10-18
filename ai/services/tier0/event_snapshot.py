@@ -47,8 +47,13 @@ EC2 연결이 복구되면 outbox 가 acked_offset 이후 전이를 오름차순
   알려 주고 그 sequence 가 접은 sequence 이하일 때만 올린다. 추적기의 observation_time 은 위험이 사라진 관측(해소 대기)일
   수 있어 쓰지 않는다.
 
-**만들지 않는 경우(None, not_ready 에 이유).** outbox 미연결, 막힌 기록(blocked), 커서가 접은 위치보다 뒤, 빈 저널(반영한
-offset 이 없다. 계약 journal_offset 은 0 이상), config_version 을 모름, raised_at 을 모르는 활성 이벤트, 접기 실패(broken).
+**빈 저널(계약 1.3.0, S15P31A101-172).** 저널에 기록이 한 번도 없으면 journal_offset=null(아직 저널 기록이 없음, 0 과
+다름)·active_events=[] 스냅샷을 보낸다. 그래서 EC2 는 첫 위험 전에도 연결마다 동기화를 마친다. null 은 만들 때 저널이
+정말 비었을 때만 쓴다: 보내지 않은 기록이 있으면(커서 0, 저널 끝 > 0) 그 기록을 보낸 뒤 offset 이 있는 스냅샷을 만든다.
+
+**만들지 않는 경우(None, not_ready 에 이유).** outbox 미연결, 막힌 기록(blocked), 커서가 접은 위치보다 뒤이거나 보내지 않은
+기록이 있음(cursor_behind), 저널이 비었는데 활성 시작 상태가 있음(empty_journal: 활성 이벤트는 저널 발생 전이가 있어야
+생기므로 맞지 않는 입력이다. 지어내지 않는다), config_version 을 모름, raised_at 을 모르는 활성 이벤트, 접기 실패(broken).
 
 스레드: attach 의 pump·payload·follow 는 I1 송신 스레드, SnapshotOutbox.on_journal_ack 는 수신 스레드, compact 는 조립의
 정리 주기에서 부른다. current_state·risk_observed_at 은 판정 스레드가 바꾸는 추적기를 읽으므로 조립이 판정 루프와 같은
@@ -69,6 +74,8 @@ from simai_ai.risk import Clock, EventState, Lifecycle, Origin
 
 log = logging.getLogger(__name__)
 
+EVENT_STATE_SNAPSHOT_SCHEMA_VERSION = "1.3.0"
+"""event_state_snapshot 계약이 마지막으로 바뀐 버전 (1.3.0: journal_offset null = 아직 저널 기록이 없음, -172)"""
 VERIFIED = "VERIFIED"
 DEFAULT_RESUME_WINDOW_MS = 10_000  # LifecyclePolicy.resume_window_ms 초기값(6.4). 조립은 실제 정책 값을 넘긴다
 # 발생 판정(finding)이 있을 때만 생기는 변경 사유(lifecycle._raise·_resume·_advance 의 finding 분기)
@@ -447,13 +454,14 @@ class EventStateSnapshot:
         payload = self.payload()
         if payload is None:
             return False
-        expected = payload["journal_offset"] + 1
+        offset = payload["journal_offset"]
+        expected = 0 if offset is None else offset + 1  # null: 아직 보낸 기록이 없다(커서 0)
         if self._rewind_count() != token or outbox.cursor != expected:
             self.discarded += 1
             log.info("event_state_snapshot 버림: 만드는 사이 재요청(커서 %d, 기대 %d)", outbox.cursor, expected)
             return False
         try:
-            message = envelope.make("event_state_snapshot", payload)
+            message = envelope.make("event_state_snapshot", payload, schema_version=EVENT_STATE_SNAPSHOT_SCHEMA_VERSION)
             client.send_on(link, message)
         except (SendFailed, Unserializable):
             return False  # 다음 pump·다음 연결에서 다시 만든다
@@ -478,8 +486,14 @@ class EventStateSnapshot:
         if self._next - 1 != upto:
             # 접은 위치가 보낸 커서보다 뒤(재요청으로 커서가 물러남). 다시 보낸 뒤에 만든다.
             return self._skip("cursor_behind")
+        journal_offset: int | None = upto
         if upto < 0:
-            return self._skip("empty_journal")  # 반영한 offset 이 없다(계약 journal_offset 은 0 이상)
+            # 반영한 offset 이 없다. 저널이 정말 비었을 때만 null(아직 저널 기록이 없음, 계약 1.3.0)로 보낸다
+            if self._journal.next_offset > 0:
+                return self._skip("cursor_behind")  # 보내지 않은 기록이 있다. 보낸 뒤에 만든다
+            if self._rows:
+                return self._skip("empty_journal")  # 저널 없이 활성 시작 상태: 맞지 않는 입력(계약: null 이면 활성 없음)
+            journal_offset = None
         config_version = self._config_version()
         if not config_version:
             return self._skip("config_version_unknown")
@@ -492,7 +506,7 @@ class EventStateSnapshot:
         return {
             "gateway_id": self._gateway_id,
             "snapshot_at": self._clock.now_ms(),
-            "journal_offset": upto,
+            "journal_offset": journal_offset,
             "config_version": config_version,
             "active_events": events,
         }
