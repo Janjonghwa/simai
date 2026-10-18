@@ -2,6 +2,7 @@
 
 보낸 메시지 계약 통과, world_state 10 Hz·health 1 Hz, 재연결 직후 health, 토큰 비노출, 인증서 검증 실패 시 토큰 미전송,
 수신 디스패치(journal_ack → outbox, config_bundle → ConfigSync → config_ack, event_ack → 확인 처리)를 본다.
+송신이 막힌 연결을 끊는 경로(Windows: 핸들을 닫지 않고 대기 입출력 취소)와 그 뒤 재연결도 본다(S15P31A101-173).
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ import datetime as dt
 import ipaddress
 import json
 import logging
+import socket
+import ssl
 import statistics
 import sys
 import threading
@@ -77,6 +80,43 @@ def wait_until(cond, timeout: float = 5.0, step: float = 0.01) -> bool:
     return cond()
 
 
+def server_tls_context(cert: Path, key: Path) -> ssl.SSLContext:
+    """시험 서버 TLS 컨텍스트. TLS 1.3 세션 티켓(NewSessionTicket)을 보내지 않는다.
+
+    websockets 동기 클라이언트는 수신 스레드가 SSL_read 에 들어가 있는 동안 연결 스레드가 업그레이드 요청을 SSL_write 한다.
+    핸드셰이크 직후 도착한 티켓을 SSL_read 가 처리하는 순간과 겹치면 한 SSL 객체를 두 스레드가 동시에 만져 요청 레코드가
+    깨지거나 사라진다(서버: 읽기 시간 초과·SSL record layer failure, 클라이언트: InvalidMessage). 이 경합은 I1 끊기 경로와
+    무관한 TLS 계층 문제다(S15P31A101-173 조사: 티켓을 끄거나 TLS 1.2 면 0 회). 시험은 티켓을 꺼 그 경합과 떼어 본다.
+    """
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    context.num_tickets = 0
+    return context
+
+
+def tls_client(port: int, cert: Path) -> ssl.SSLSocket:
+    """시험 인증서를 믿는 원시 TLS 클라이언트(블로킹)."""
+    raw = socket.create_connection(("127.0.0.1", port), timeout=5)
+    tls = ssl.create_default_context(cafile=str(cert)).wrap_socket(raw, server_hostname="127.0.0.1")
+    tls.settimeout(None)
+    return tls
+
+
+def upgrade_ok(port: int, cert: Path) -> bool:
+    """새 TLS 연결로 업그레이드 요청을 보내 101 을 받는다(새 연결이 깨지지 않았는지)."""
+    with tls_client(port, cert) as tls:
+        tls.settimeout(5)
+        tls.sendall(b"GET /ws/tier0 HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                    b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = tls.recv(4096)
+            if not chunk:
+                return False
+            data += chunk
+        return data.startswith(b"HTTP/1.1 101")
+
+
 def make_cert(directory: Path) -> tuple[Path, Path]:
     """127.0.0.1 용 자체 서명 인증서(시험 디렉터리에만, 커밋하지 않는다)."""
     from cryptography import x509
@@ -106,10 +146,7 @@ class Ec2Server:
     """EC2 흉내 wss 서버. 연결마다 받은 메시지(수신 단조 시각, 문서)와 Authorization 헤더를 남긴다."""
 
     def __init__(self, cert: Path, key: Path) -> None:
-        import ssl
-
-        self._ssl = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        self._ssl.load_cert_chain(cert, key)
+        self._ssl = server_tls_context(cert, key)
         self.requests = 0
         self.auth: list[str | None] = []
         self.connections: list[list[tuple[float, dict]]] = []
@@ -262,7 +299,8 @@ def test_i1_over_wss_contract_rates_reconnect_dispatch_and_secret(tls, tmp_path,
             server.send(example("config_bundle"))
             server.send(example("event_ack"))
             server.send(example("event_ack"))  # 같은 msg_id: 한 번만 넘긴다
-            assert wait_until(lambda: link.outbox.acked_offset == 1 and len(event_acks) == 1)
+            assert wait_until(lambda: link.outbox.acked_offset == 1 and len(event_acks) == 1
+                              and link.dispatcher.stats.duplicates == 1)
             assert wait_until(lambda: any(m["msg_type"] == "config_ack" for m in server.messages(0)))
 
             # 재연결: 서버가 끊으면 백오프 뒤 다시 붙고, 새 연결의 첫 메시지는 health
@@ -362,6 +400,8 @@ def test_server_close_reason_with_token_is_not_kept_or_logged(tls, caplog) -> No
     link.start()
     try:
         assert wait_until(lambda: len(server.messages(0)) >= 1)
+        # 서버가 첫 health 를 받은 뒤에도 송신 스레드가 관문을 여는 것은 조금 뒤다(타이밍 가정 대신 열릴 때까지 기다린다)
+        assert wait_until(lambda: open_link(link.client) is not None)
         stale = link.client.current_link()
         server.drop(0, code=1008, reason=TOKEN)
         assert wait_until(lambda: link.client.stats.disconnects >= 1)
@@ -373,17 +413,23 @@ def test_server_close_reason_with_token_is_not_kept_or_logged(tls, caplog) -> No
     assert TOKEN not in str(e.value) and TOKEN not in client_logs(caplog)
 
 
+def open_link(client):
+    from services.tier0.i1_client import SendFailed
+
+    try:
+        return client.current_link()
+    except SendFailed:
+        return None
+
+
 class SilentServer:
     """HTTP 101 까지만 응답하고 다시 읽지 않는 TLS 서버(EC2 앱이 멈춘 상태). 수신 버퍼를 작게 잡아 송신이 빨리 막힌다."""
 
     def __init__(self, cert: Path, key: Path) -> None:
         import base64
         import hashlib
-        import socket
-        import ssl
 
-        self._ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        self._ctx.load_cert_chain(cert, key)
+        self._ctx = server_tls_context(cert, key)
         self._listener = socket.socket()
         self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
         self._listener.bind(("127.0.0.1", 0))
@@ -475,9 +521,9 @@ def test_close_does_not_hang_when_ec2_stops_reading(silent) -> None:
     try:
         assert wait_until(lambda: link.client.connected)
         link.publisher.send_event("calibration_update", big_calibration_update())
-        assert wait_until(lambda: link.client._sending is not None, timeout=5)
-        time.sleep(0.5)
-        assert link.client._sending is not None  # 막혀 있다
+        # 막혀 있다: 같은 send 가 0.5 초 넘게 끝나지 않는다(고정 sleep 대신 그 send 의 경과로 본다)
+        assert wait_until(lambda: (s := link.client._sending) is not None and time.monotonic() - s[0] >= 0.5,
+                          timeout=5)
         t0 = time.monotonic()
         ok = link.close(timeout_s=2.0)
         took = time.monotonic() - t0
@@ -509,3 +555,161 @@ def test_send_watchdog_aborts_stuck_send_and_reconnects(silent) -> None:
     finally:
         assert link.close(timeout_s=2.0)
     assert link.client.stats.connects >= 2 and link.alive_threads() == []
+
+
+# ---------------------------------------------------------------------------- 끊기 경로 (S15P31A101-173)
+
+
+class OwnedConn:
+    """abort_connection 이 다루는 연결 흉내. close 는 원래 닫기 경로(websockets close_socket 자리)다."""
+
+    def __init__(self, sock, close=None) -> None:
+        self.socket = sock
+        self.closed = threading.Event()
+        self._close = close
+
+    def close(self) -> None:
+        if self._close is not None:
+            self._close()
+        self.closed.set()
+
+
+def blocked_reader(tls: ssl.SSLSocket) -> threading.Event:
+    """websockets 수신 스레드처럼 recv 에 막혀 있는 스레드. 풀리면 이벤트가 선다."""
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            tls.recv(1024)
+        except OSError:
+            pass
+        done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    return done
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows 끊기 경로")
+def test_windows_abort_keeps_handle_so_a_late_write_cannot_reach_a_socket_reusing_its_number(silent) -> None:
+    """반례: 끊은 뒤 같은 핸들 번호를 새 소켓이 받는 장면을 일부러 노린다.
+
+    예전 경로(C 수준 close)는 핸들을 바로 놓아 새 소켓이 그 번호를 받고, OpenSSL BIO 가 들고 있던 그 번호로 늦은 SSL_write
+    가 새 소켓에 써졌다. 지금 경로는 원래 닫기 경로 전까지 핸들을 쥐고 있어 번호가 재사용되지 않고, 늦은 쓰기는 끊긴 원래
+    소켓에서 오류로 끝난다.
+    """
+    from services.tier0.i1_client import abort_connection
+
+    server, cert = silent
+    tls = tls_client(server.port, cert)
+    handle = tls.fileno()
+    reader = blocked_reader(tls)
+    conn = OwnedConn(tls)  # 원래 닫기 경로는 시험이 끝에 직접 부른다(그 전까지 핸들은 이 소켓 것이어야 한다)
+    abort_connection(conn)
+    assert reader.wait(2)  # 막힌 recv 가 풀렸다
+    assert conn.closed.wait(2)  # close 는 별도 스레드에서 원래 경로로 넘겼다
+    assert tls.fileno() == handle  # abort 는 핸들을 닫지 않는다
+    pairs = [socket.socketpair() for _ in range(64)]  # 핸들 번호 재사용을 노린다
+    try:
+        assert all(handle not in (a.fileno(), b.fileno()) for a, b in pairs)
+        with pytest.raises(OSError):
+            tls.sendall(b"late write after abort")  # 끊긴 원래 소켓에서 오류로 끝난다
+        for a, b in pairs:  # 어느 새 소켓에도 늦은 쓰기가 닿지 않았다
+            for s in (a, b):
+                s.setblocking(False)
+                with pytest.raises(BlockingIOError):
+                    s.recv(64)
+    finally:
+        for a, b in pairs:
+            a.close()
+            b.close()
+        tls.close()
+    assert tls.fileno() == -1  # 원래 닫기 경로가 닫는다
+
+
+def test_abort_linux_path_only_shuts_down_and_leaves_closing_to_the_owner(monkeypatch) -> None:
+    """Linux(운영 Pod) 경로는 그대로다: OS 소켓 shutdown 과 별도 스레드 close 뿐, 핸들을 닫거나 입출력을 취소하지 않는다."""
+    from services.tier0 import i1_client
+
+    cancelled: list = []
+    monkeypatch.setattr(i1_client, "_cancel_pending_io", cancelled.append)
+    monkeypatch.setattr(i1_client, "_WINDOWS", False)
+    a, b = socket.socketpair()
+    try:
+        conn = OwnedConn(a)
+        i1_client.abort_connection(conn)
+        assert conn.closed.wait(2) and cancelled == []
+        assert a.fileno() != -1  # 핸들은 abort 가 닫지 않는다
+        b.settimeout(2)
+        assert b.recv(16) == b""  # 상대에게는 끊김(EOF)으로 보인다
+        with pytest.raises(OSError):
+            a.send(b"x")  # 쓰기 방향도 닫혔다
+    finally:
+        a.close()
+        b.close()
+
+    # Windows 경로: shutdown 에 더해 그 소켓의 대기 입출력 취소를 한 번 부른다(핸들은 역시 닫지 않는다)
+    monkeypatch.setattr(i1_client, "_WINDOWS", True)
+    a, b = socket.socketpair()
+    try:
+        conn = OwnedConn(a)
+        i1_client.abort_connection(conn)
+        assert conn.closed.wait(2) and cancelled == [a] and a.fileno() != -1
+    finally:
+        a.close()
+        b.close()
+
+
+def test_abort_racing_owner_close_and_other_aborts_does_not_break_new_connections(silent) -> None:
+    """반례(동시성): 원래 닫기 경로의 close 와 여러 abort 가 같은 순간에 겹쳐도 예외가 새지 않고 막힌 스레드가 풀리며,
+    그 직후 새 TLS 연결(핸들 번호를 이어받을 수 있는)이 깨지지 않는다. 연속으로 되풀이한다."""
+    from services.tier0.i1_client import abort_connection
+
+    server, cert = silent
+    errors: list[BaseException] = []
+    for _ in range(15):
+        tls = tls_client(server.port, cert)
+        reader = blocked_reader(tls)
+        conn = OwnedConn(tls, close=tls.close)
+        start = threading.Barrier(4)
+
+        def run(fn) -> None:
+            start.wait()
+            try:
+                fn()
+            except BaseException as e:  # noqa: BLE001 - 새는 예외를 모은다
+                errors.append(e)
+
+        racers = [threading.Thread(target=run, args=(fn,), daemon=True)
+                  for fn in (lambda: abort_connection(conn), lambda: abort_connection(conn), tls.close)]
+        for t in racers:
+            t.start()
+        start.wait()
+        for t in racers:
+            t.join(2)
+        assert reader.wait(2)
+        assert conn.closed.wait(2) and tls.fileno() == -1
+        assert upgrade_ok(server.port, cert)  # 새 연결이 깨지지 않았다
+    assert errors == []
+
+
+def test_watchdog_aborts_back_to_back_and_every_reconnect_handshakes(silent) -> None:
+    """반례(연속 재연결): 다시 보내는 신뢰 메시지가 연결마다 막혀 송신 감시가 잇달아 끊어도, 매번 새 연결의
+    TLS·업그레이드가 깨지지 않고(connect 실패 0) 첫 메시지는 health 이며, close 는 끊기·재연결 도중에도 제한 시간 안에 끝난다."""
+    server, cert = silent
+    link = build_i1_link(
+        WebSocketConnector(server.url, TOKEN, ca_file=str(cert)), Envelope(GATEWAY, SystemClock()),
+        health_payload=health_payload,
+        client_kwargs={"backoff": Backoff(initial_s=0.05, factor=1.0, max_s=0.05), "send_timeout_s": 0.3,
+                       "stable_after_s": 0.0},
+    )
+    link.start()
+    try:
+        assert wait_until(lambda: link.client.connected)
+        link.publisher.send_event("calibration_update", big_calibration_update())
+        # 연결마다 첫 health 가 나간다(connects 는 연결을 열기 전에 세므로 health 송신으로 본다)
+        assert wait_until(lambda: link.client.stats.send_timeouts >= 4 and link.client.stats.sent.get("health", 0) >= 5,
+                          timeout=20)
+        assert link.client.stats.connect_failures == 0, link.client.last_error
+    finally:
+        assert link.close(timeout_s=2.0)
+    assert link.alive_threads() == []

@@ -20,6 +20,7 @@
   막힌 send 를 풀고 다시 붙는다. 그렇게 끊긴 연결은 오래 붙어 있었어도 '안정 연결'로 보지 않는다(실패 횟수를 되돌리지
   않아 간격이 계속 는다 — 읽지 않는 상대에게 재연결 폭주를 막는다). websockets 의 close·ping 은 send 와 같은 잠금을 잡으므로
   끊을 때는 소켓을 먼저 shutdown 하고 close 는 별도 스레드에서 한다(close(timeout_s) 가 막힌 send 에 붙잡히지 않는다).
+  Windows 는 shutdown 에 더해 그 핸들의 대기 입출력을 취소(CancelIoEx)하고, 핸들은 원래 닫기 경로만 닫는다(abort_connection).
 - 연결 직후 on_connected 훅(연결 스레드)을 모두 부른 뒤 연결을 연다. 송신 스레드는 새 연결(세대)을 처음 볼 때 어떤
   송신보다 먼저 on_writer_open 훅(outbox.reset 등)을 부른다. 송신 스레드가 pump 를 부르는 유일한 스레드라 reset 이
   이전 pump 와 겹치지 않는다.
@@ -49,9 +50,10 @@
 
 from __future__ import annotations
 
+import ctypes
+import functools
 import json
 import logging
-import _socket
 import os
 import socket
 import ssl
@@ -925,11 +927,21 @@ class I1Client:
             abort_connection(conn)
 
 
+_WINDOWS = sys.platform == "win32"
+_ERROR_NOT_FOUND = 1168  # CancelIoEx: 취소할 대기 입출력이 없다
+
+
 def abort_connection(conn: Connection) -> None:
     """하위 소켓을 shutdown 해 막힌 send·recv 를 바로 풀고, close 는 별도 스레드에서 한다(호출자는 기다리지 않는다).
 
     websockets 동기 연결의 close 는 send 와 같은 잠금을 잡고 닫기 프레임을 보내므로 상대가 읽지 않으면 막힌다.
     SSLSocket.shutdown 은 TLS 객체를 떼어 내므로 쓰지 않고 OS 소켓의 shutdown 만 부른다. socket 이 없는 연결(시험용)은 close 만.
+
+    Windows 는 다른 스레드(websockets 수신)가 recv 에 막혀 있으면 shutdown 으로 막힌 send 가 풀리지 않는다. 그 핸들의 대기
+    입출력을 CancelIoEx 로 취소해 풀고, 핸들은 닫지 않는다. 핸들은 연결의 원래 닫기 경로(close_async → websockets
+    close_socket → SSLSocket.close)만 닫는다. 그 경로는 TLS 객체를 먼저 떼어 내므로 닫힌 뒤의 늦은 송수신이 OpenSSL 로
+    가지 않는다. C 수준 close 로 핸들을 먼저 닫으면 OpenSSL BIO 가 닫힌 핸들 번호를 계속 들고 있어, 그 번호를 이어받은
+    다른 소켓에 늦은 SSL_write 가 쓸 수 있다(S15P31A101-173).
     """
     sock = getattr(conn, "socket", None)
     if isinstance(sock, socket.socket):
@@ -937,14 +949,34 @@ def abort_connection(conn: Connection) -> None:
             socket.socket.shutdown(sock, socket.SHUT_RDWR)  # Linux: 막힌 send·recv 가 바로 풀린다
         except OSError:
             pass
-        if sys.platform == "win32":
-            # Windows 는 shutdown 으로 막힌 send 가 풀리지 않는다. OS 소켓을 닫아(closesocket) 풀어 준다.
-            # SSLSocket.close 는 TLS 객체를 떼어 내므로 C 수준 close 만 부른다.
-            try:
-                _socket.socket.close(sock)
-            except OSError:
-                pass
+        if _WINDOWS:
+            _cancel_pending_io(sock)
     close_async(conn)
+
+
+def _cancel_pending_io(sock: socket.socket) -> None:
+    """Windows: 이 프로세스가 그 소켓 핸들에 걸어 둔 대기 입출력(막힌 send·recv)을 모두 취소한다. 핸들은 닫지 않는다.
+
+    이미 닫힌 소켓(fileno -1)은 건너뛴다. fileno 를 읽은 뒤 CancelIoEx 를 부르기 전 그 사이에 원래 닫기 경로가 핸들을 닫고
+    같은 번호를 새 소켓이 받으면 새 소켓의 대기 입출력이 오류로 끝날 수 있다(마이크로초 구간, 데이터를 다른 소켓에 쓰지는 않는다).
+    """
+    handle = sock.fileno()
+    if handle < 0:
+        return
+    cancel = _cancel_io_ex()
+    if not cancel(handle, None):
+        error = ctypes.get_last_error()
+        if error != _ERROR_NOT_FOUND:
+            log.debug("I1 CancelIoEx 실패 (Windows 오류 %d)", error)
+
+
+@functools.cache
+def _cancel_io_ex() -> Any:
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    cancel = kernel32.CancelIoEx
+    cancel.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    cancel.restype = ctypes.c_int
+    return cancel
 
 
 def close_async(conn: Connection) -> None:
