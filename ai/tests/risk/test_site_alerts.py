@@ -385,3 +385,36 @@ def test_event_ack_without_target_logs_warning(h, caplog):
     with caplog.at_level("WARNING", logger="simai_ai.risk.alerting"):
         ack_from_contract("event_ack", _event_ack(t.event_id, target=1))
     assert caplog.text == ""
+
+
+# --- I0 local_alert payload (S15P31A101-171) ---
+
+
+def test_local_alert_payload_matches_signal_state_and_list_summary(h):
+    from simai_ai.risk import local_alert_payload
+
+    step = h.step([finding()])
+    [t] = step.transitions
+    payload = local_alert_payload(t.state)
+    assert payload["lifecycle"] == "RAISED" and payload["event_sequence"] == 1 and payload["source"] == "LIVE"
+    assert payload["summary"] == h.alerts()[0]["summary"] and payload["acknowledged"] is False
+    assert payload["observation_time"] == t.state.observation_time and payload["evaluated_at"] == t.state.evaluated_at
+
+
+@pytest.mark.parametrize("severity", [Severity.CAUTION, Severity.INFO])
+def test_local_alert_payload_refuses_non_site_severity(h, severity):
+    from simai_ai.risk import local_alert_payload
+
+    [t] = h.step([finding(severity=severity)]).transitions
+    with pytest.raises(ValueError):
+        local_alert_payload(t.state)
+
+
+@pytest.mark.parametrize("origin", NON_LIVE)
+def test_local_alert_payload_refuses_non_live(track_json, origin):
+    from simai_ai.risk import local_alert_payload
+
+    harness = Harness(track_json, origin=origin)
+    [t] = harness.step([finding()]).transitions
+    with pytest.raises(ValueError):
+        local_alert_payload(t.state)

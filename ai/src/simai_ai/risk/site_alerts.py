@@ -60,6 +60,36 @@ def site_alert_item(state: EventState, summarize: Summarize = default_summary) -
     }
 
 
+def local_alert_payload(state: EventState, summarize: Summarize = default_summary) -> dict[str, Any]:
+    """현장 경보 신호(LocalAlert·AlertClear)를 낳은 전이 뒤 상태 → I0 local_alert payload (계약 local_alert.schema.json).
+
+    lifecycle 은 그 전이 뒤 상태 그대로다(발생·상향·재개는 RAISED·UPDATED, 해소 신호는 RESOLVED). acknowledged 는
+    site_acknowledged(지금 경보 단계 이후 상태를 대상으로 한 확인만)이고, summary 는 active_site_alerts 와 같은 함수다.
+    LIVE 가 아니거나 등급이 CRITICAL·HIGH 가 아니면 계약이 받지 않으므로 ValueError(지어내지 않는다. 호출자는 보내지
+    않고 다음 active_site_alerts 목록으로 노트북을 맞춘다. 예: 현장 경보 뒤 CAUTION 으로 내려간 채 해소된 이벤트).
+    """
+    if not state.origin.alertable:
+        raise ValueError(f"{state.event_id}: {state.origin} 이벤트는 현장 경보로 보내지 않는다(LIVE 만)")
+    if str(state.severity) not in ("CRITICAL", "HIGH"):
+        raise ValueError(f"{state.event_id}: 등급 {state.severity} 는 현장 경보(local_alert) 등급이 아니다")
+    return {
+        "event_id": state.event_id,
+        "event_sequence": state.event_sequence,
+        "lifecycle": str(state.lifecycle),
+        "source": str(state.origin),
+        "severity": str(state.severity),
+        "confidence": str(state.confidence),
+        "needs_check": state.needs_check,
+        "rule_id": state.rule_id,
+        "zone_id": state.zone_id,
+        "world_ids": list(state.world_ids),
+        "summary": summarize(state) or state.rule_id,
+        "observation_time": state.observation_time,
+        "evaluated_at": state.evaluated_at,
+        "acknowledged": state.site_acknowledged,
+    }
+
+
 def build_active_site_alerts(
     states: Iterable[EventState], summarize: Summarize = default_summary
 ) -> list[dict[str, Any]]:

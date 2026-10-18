@@ -427,3 +427,17 @@ def test_progress_watchdog():
 def test_same_clock_default_reports_raw_lag():
     report = _health(_cams([100] * 4), 300)
     assert (report.lag_ms, report.raw_lag_ms, report.lag_uncertainty_ms) == (200, 200, 0.0)
+
+
+# --- 구성 묶음 없음 (S15P31A101-171) ---
+
+
+def test_no_active_config_is_unsafe():
+    """적용된 구성 묶음이 없으면 위험 판정을 하지 못하므로 다른 조건이 모두 정상이어도 UNSAFE_UNKNOWN 이다."""
+    report = evaluate_health(_cams([100] * 4), CalibrationState.CALIBRATED, True, True, T0 + 200, config_active=False)
+    assert report.system_health is UNSAFE
+    assert report.reasons == (HealthReason.NO_ACTIVE_CONFIG,)
+
+
+def test_config_active_default_keeps_previous_behaviour():
+    assert _health(_cams([100] * 4), 200).system_health is NOMINAL

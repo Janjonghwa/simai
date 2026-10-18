@@ -1,0 +1,794 @@
+"""Tier 0 서비스 조립: 기동 순서, 스레드, 종료 (명세 3.2 재시작 복구·저널 계약·구성 묶음, 3.10, 3.12, 18.2 시작 순서).
+
+스레드·lock 구조와 순서 불변식은 docs/design/tier0-service.md 에 그림과 함께 있다. 요약:
+
+기동(start, 한 스레드에서 차례로):
+ 1. 상태 디렉터리·표시 파일(state/tier0.live): 이전 실행이 남긴 표시 파일이 있으면 정상 종료하지 않은 것으로 로그에 남긴다.
+ 2. 보정(CalibrationProvider) → CameraRig, 시계(Tier0Clock → DecisionClock: 판정 시각은 앞으로만 간다).
+ 3. 저널을 쓰기 모드로 열고 recover(체크포인트 → 저널 재적용 → 활성 이벤트 UNVERIFIABLE 복원, 저널에 기록). 쓰기 스레드·
+    체크포인트·I0·I1 어느 것도 시작하기 전이다(단일 작성자, 복원 전 현장 경보 목록 금지).
+ 4. 구성 묶음 복구: 체크포인트의 config_version 을 BundleArchive 에서 같은 검증기로 다시 만든다. 결과(MATCHED·없음·거부)를
+    비교해 남긴다(config_check). 체크포인트가 없으면 보관소의 가장 최근 묶음, 그것도 없으면 설정의 시작 묶음(bootstrap).
+ 5. 인지·판정·스냅샷·health·I1 연결·체크포인트·클립을 만든다. 스냅샷 seed = 복원한 활성 이벤트, start_offset = 저널 끝.
+ 6. 시작: 저널 쓰기 스레드 → Checkpointer(정리는 SnapshotOutbox.compact 로만) → I1 → I0 제어 채널 → 정리 주기 → 판정 루프.
+
+종료(stop, 종료 신호): 판정 루프 → 정리 주기 → I0 → I1(더는 저널을 읽지 않는다) → 저널 쓰기 스레드 비우기(넣은 단계를 모두
+fsync) → 마지막 체크포인트 → 저널 닫기 → 표시 파일 지우기. 제한 시간 안에 끝나지 않은 스레드는 이름을 로그에 남긴다.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import threading
+import time
+import uuid
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import Any
+
+from services.tier0.clips.ring_buffer import PacketRingBuffer
+from services.tier0.clips.service import EventClipService
+from services.tier0.config_fetch import HttpsFetcher
+from services.tier0.endpoint_registration import EndpointRegistrar, read_cert_pem
+from services.tier0.event_snapshot import EventStateSnapshot
+from services.tier0.health import HealthReporter
+from services.tier0.i0_control import ControlServer
+from services.tier0.i1_client import Envelope, WebSocketConnector
+from services.tier0.i1_publisher import I1Link, build_i1_link, with_world_state_drops
+from services.tier0.judge import JudgmentLoop
+from services.tier0.perception import FrameFeed, Perception, SimObservationFeed
+from services.tier0.settings import Tier0Settings
+from services.tier0.site_alert_sync import SiteAlertResync
+from services.tier0.video_ingest import TokenVerifier, parse_token_hashes, server_context
+from simai_ai.calibration.monitor import BaselineRecord
+from simai_ai.config import BundleArchive, BundleRejected, BundleVerifier, ConfigBundle, ConfigSync
+from simai_ai.eventlog import ACKED_NAME, AckedOffsetStore, EventJournal, JournalWriter, Outbox, TransportError
+from simai_ai.geometry.rig import CameraRig
+from simai_ai.providers.files import FileCalibrationProvider
+from simai_ai.providers.provenance import build_input_provenance
+from simai_ai.recovery import Checkpointer, CheckpointStore, RecoveryHealthGate, RecoveryResult, recover
+from simai_ai.risk import LifecycleTracker, ObservedTracksPolicy, Origin, ack_from_contract, default_registry
+from simai_ai.risk._parse import RiskInputError
+from simai_ai.tracking.clock_sync import Tier0Clock, Tier0ClockSync
+from simai_ai.tracking.decision_time import ClockAwareVerification, DecisionClock
+from simai_ai.tracking.gateway_link import GatewayLinkMonitor
+from simai_ai.tracking.system_health import ProgressWatchdog
+from simai_ai.tracking.world_track import session_prefix_from_ms
+
+log = logging.getLogger("services.tier0")
+
+HOUSEKEEPING_S = 0.1
+STATUS_EVERY_S = 1.0
+MARKER_EVERY_S = 5.0
+
+
+class Tier0StartError(RuntimeError):
+    """시작할 수 없다. exit_code 로 진입점 종료 코드를 정한다(2 설정, 3 복구 거부, 4 입력·검출기)."""
+
+    def __init__(self, message: str, exit_code: int) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+# ---------------------------------------------------------------------------- 스레드 안전 어댑터
+
+
+class SharedTier0Clock(Tier0Clock):
+    """Tier0Clock.now 는 기준점·마지막 단조 시각을 바꾸므로 여러 스레드(판정·I0·I1·체크포인트)에서 부르려면 lock 이 필요하다."""
+
+    def __init__(self, monotonic_ns: Callable[[], int], wall_ms: Callable[[], int]) -> None:
+        super().__init__(monotonic_ns, wall_ms)
+        self._now_lock = threading.Lock()
+
+    def now(self):  # type: ignore[override]
+        with self._now_lock:
+            return super().now()
+
+
+class SharedDecisionClock(DecisionClock):
+    """DecisionClock(앞으로만 가는 판정 시각)을 여러 스레드에서 쓰게 lock 으로 감싼다(lock 순서: 이것 → Tier0Clock)."""
+
+    def __init__(self, clock: Tier0Clock) -> None:
+        super().__init__(clock)
+        self._now_lock = threading.Lock()
+
+    def now_ms(self) -> int:
+        with self._now_lock:
+            return super().now_ms()
+
+
+class LockedClockSync:
+    """Tier0ClockSync 는 스레드 안전하지 않다(요청은 정리 주기, 응답은 I0 수신, 추정은 판정·health). 한 lock 으로 감싼다."""
+
+    def __init__(self, sync: Tier0ClockSync) -> None:
+        self._sync = sync
+        self._lock = threading.Lock()
+
+    def request_due(self) -> bool:
+        with self._lock:
+            return self._sync.request_due()
+
+    def send_request(self) -> str:
+        with self._lock:
+            return self._sync.send_request()
+
+    def handle_response(self, message: Mapping[str, Any]) -> Any:
+        with self._lock:
+            return self._sync.handle_response(message)
+
+    def link_lost(self) -> None:
+        with self._lock:
+            self._sync.link_lost()
+
+    def capture_clock(self, gateway_link_ok: bool):
+        with self._lock:
+            return self._sync.capture_clock(gateway_link_ok)
+
+    def health_field(self, gateway_link_ok: bool):
+        with self._lock:
+            return self._sync.health_field(gateway_link_ok)
+
+    @property
+    def generation(self) -> int:
+        with self._lock:
+            return self._sync.generation
+
+
+class _ControlChannel:
+    """Tier0ClockSync 의 송신 채널(ClockSyncChannel) → I0 제어 채널 송신 대기열."""
+
+    def __init__(self, control: ControlServer) -> None:
+        self._control = control
+
+    def send(self, message: dict[str, Any]) -> None:
+        if not self._control.send_message(message):
+            raise ConnectionError("I0 제어 채널이 연결돼 있지 않다")
+
+
+class _NoTransport:
+    """엔드포인트 등록은 I1 메시지로만 한다(EndpointRegistrar.build 만 쓴다). HTTPS 임시안 전송은 쓰지 않는다."""
+
+    def post(self, path: str, body: Mapping[str, Any], timeout_s: float) -> int:  # pragma: no cover - 쓰지 않는다
+        raise RuntimeError("HTTPS 엔드포인트 등록은 쓰지 않는다(I1 tier0_endpoint)")
+
+
+def _quiet(fn: Callable[[], Any]) -> Callable[[], None]:
+    def run() -> None:
+        try:
+            fn()
+        except Exception:  # noqa: BLE001
+            pass
+
+    return run
+
+
+def _offline_transport(_messages: Any) -> None:
+    raise TransportError("EC2(I1) 설정이 없다: 오프라인")
+
+
+# ---------------------------------------------------------------------------- 보정 감시 기준선 저장(-117)
+
+
+def baselines_to_json(baselines: Mapping[str, BaselineRecord]) -> dict[str, Any]:
+    return {
+        version: {
+            "values_px": dict(rec.values_px),
+            "verified_camera_ids": list(rec.verified_camera_ids),
+            "sources": dict(rec.sources),
+        }
+        for version, rec in sorted(baselines.items())
+    }
+
+
+def baselines_from_json(doc: Any) -> dict[str, BaselineRecord]:
+    if not isinstance(doc, dict):
+        raise ValueError("기준선 파일은 객체다")
+    out = {}
+    for version, rec in doc.items():
+        out[version] = BaselineRecord(
+            calibration_version=version,
+            values_px={str(k): float(v) for k, v in rec["values_px"].items()},
+            verified_camera_ids=tuple(str(c) for c in rec.get("verified_camera_ids", ())),
+            sources={str(k): str(v) for k, v in rec.get("sources", {}).items()},
+        )
+    return out
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def load_baselines(path: Path) -> dict[str, BaselineRecord]:
+    """저장한 보정 감시 기준선(검증 여부 포함). 없으면 빈 dict, 깨졌으면 로그를 남기고 빈 dict(검증된 것으로 지어내지 않는다)."""
+    if not path.exists():
+        return {}
+    try:
+        return baselines_from_json(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, KeyError, TypeError):
+        log.error("보정 감시 기준선 파일을 읽지 못했다: %s (기준선 없이 다시 배운다, 미확정)", path)
+        return {}
+
+
+def save_baselines(path: Path, baselines: Mapping[str, BaselineRecord]) -> None:
+    _atomic_write(path, json.dumps(baselines_to_json(baselines), ensure_ascii=False, sort_keys=True).encode("utf-8"))
+
+
+# ---------------------------------------------------------------------------- 서비스
+
+
+class Tier0Service:
+    """Tier 0 한 프로세스. start → (실행) → stop."""
+
+    def __init__(
+        self,
+        settings: Tier0Settings,
+        *,
+        mono_ns: Callable[[], int] = time.monotonic_ns,
+        wall_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+        feed: FrameFeed | None = None,
+        drift_watch_factory: Callable[[dict[str, BaselineRecord]], Any] | None = None,
+        new_msg_id: Callable[[], str] = lambda: str(uuid.uuid4()),
+        journal_fsync: Callable[[int], None] = os.fsync,
+    ) -> None:
+        self.settings = settings
+        self._journal_fsync = journal_fsync
+        self._mono_ns = mono_ns
+        self._wall_ms = wall_ms
+        self._feed_override = feed
+        self._drift_watch_factory = drift_watch_factory
+        self.drift_watch: Any | None = None
+        self._new_msg_id = new_msg_id
+        self.judge_lock = threading.RLock()  # 판정 lock: 추적기·인지·클립·현장 경보 송신 순서
+        self._stop = threading.Event()
+        self._threads: list[threading.Thread] = []
+        self._restored = False
+        self.started = False
+        self.previous_unclean = False
+        self.events: list[str] = []  # 기동·종료 순서 기록(시험·로그)
+        self.config_check: dict[str, Any] = {}
+        self.recovery: RecoveryResult | None = None
+        self.link: I1Link | None = None
+        self.control: ControlServer | None = None
+        self.clock_sync: LockedClockSync | None = None
+        self._warned: dict[str, Any] = {}
+
+    def _event(self, name: str) -> None:
+        self.events.append(name)
+        log.info("tier0: %s", name)
+
+    def mono_ms(self) -> float:
+        return self._mono_ns() / 1e6
+
+    # --- 기동 ------------------------------------------------------------------------
+
+    def start(self) -> None:
+        s = self.settings
+        s.state_dir.mkdir(parents=True, exist_ok=True)
+        if s.live_marker.exists():
+            self.previous_unclean = True
+            log.warning("이전 Tier 0 실행이 정상 종료하지 않았다(%s 가 남아 있다). 저널·체크포인트로 복구한다", s.live_marker)
+        self.tier0_clock = SharedTier0Clock(self._mono_ns, self._wall_ms)
+        self.clock = SharedDecisionClock(self.tier0_clock)
+        now = self.clock.now_ms()
+
+        # 보정
+        try:
+            self.calibration = FileCalibrationProvider(s.calibration_file)
+            self.rig = CameraRig.from_provider(self.calibration)
+        except (OSError, ValueError, KeyError) as e:
+            raise Tier0StartError(f"보정 문서를 읽지 못했다: {s.calibration_file} ({type(e).__name__}: {e})", 2) from e
+
+        # 노트북 쪽(I0 제어 채널·시계 교환·연결 감시)
+        self.gateway_link = GatewayLinkMonitor()
+        if s.control is not None:
+            try:
+                tokens = TokenVerifier(parse_token_hashes(s.control.token_hashes))
+                context = server_context(s.control.cert_file, s.control.key_file)
+            except (OSError, ValueError) as e:
+                raise Tier0StartError(f"I0 제어 채널 TLS·토큰 설정 오류 ({type(e).__name__})", 2) from e
+            self.control = ControlServer(
+                host=s.control.host, port=s.control.port, ssl_context=context, tokens=tokens, source_id=s.gateway_id,
+                clock=self.clock, on_message=self._on_laptop_message, on_connected=self._on_laptop_connected,
+                on_disconnected=self._on_laptop_disconnected,
+            )
+            self.clock_sync = LockedClockSync(Tier0ClockSync(self.tier0_clock, _ControlChannel(self.control),
+                                                             source_id=s.gateway_id))
+            verification: Any = ClockAwareVerification(
+                offset_source=lambda: self.clock_sync.capture_clock(self._gateway_ok()),  # type: ignore[union-attr]
+                generation_source=lambda: self.clock_sync.generation,  # type: ignore[union-attr]
+            )
+        else:
+            verification = ObservedTracksPolicy()  # 노트북 없는 조립(SIM 오프라인): 촬영 시각이 판정 시계와 같다
+
+        # 3) 저널 → 복구 (쓰기 스레드·체크포인트·I0·I1 시작 전)
+        self.journal = EventJournal.open(s.journal_dir, clock=self.clock, fsync=self._journal_fsync)
+        try:
+            self.store = CheckpointStore(s.checkpoint_dir, gateway_id=s.gateway_id)
+            self.tracker = LifecycleTracker(origin=Origin.LIVE, gateway_id=s.gateway_id, clock=self.clock,
+                                            policy=s.lifecycle, verification=verification)
+            self.recovery = recover(journal=self.journal, store=self.store, tracker=self.tracker)
+        except Exception as e:
+            self.journal.close()
+            raise Tier0StartError(f"재시작 복구를 거부했다: {type(e).__name__}: {e} (docs/design/tier0-recovery.md 운영 절차)",
+                                  3) from e
+        self._restored = True
+        r = self.recovery
+        self._event(f"recovered:{r.source}:{len(r.restored)}")
+        for rej in r.rejected:
+            log.warning("체크포인트를 쓰지 않았다: %s (%s)", rej.name, rej.reason)
+        if r.stats.gaps or r.stats.unknown_updates or r.stats.duplicates or r.stats.stale:
+            log.warning("저널 재적용 이상: %s", r.stats)
+
+        try:
+            self._assemble_and_run(now)
+        except BaseException:
+            if not self.started:
+                self._abort_start()
+            raise
+
+    def _assemble_and_run(self, now: int) -> None:
+        s = self.settings
+        r = self.recovery
+        assert r is not None
+        # 4) 구성 묶음
+        registry = default_registry()
+        known = lambda version: version == self.rig.calibration_version  # noqa: E731
+        self.archive = BundleArchive(s.archive_dir)
+        restored = self._restore_config(r, registry, known)
+        verifier = BundleVerifier(HttpsFetcher(ca_file=(s.env.get("SIMAI_EC2_CA_FILE") or None)), registry, known,
+                                  self.clock)
+        self.config_sync = ConfigSync(verifier, self.clock, source_id=s.gateway_id, store=self.archive,
+                                      restored=restored, restored_applied_at=None if restored is None else now)
+
+        # 5) 인지·판정
+        feed = self._feed_override or self._build_feed(now)
+        provenance = build_input_provenance(feed.provenance(), calibration=self.rig.calibration_provenance)
+        self.perception = Perception(self.rig, feed, session=session_prefix_from_ms(now), scene_version=s.scene_version,
+                                     input_provenance=provenance)
+        self.writer = JournalWriter(self.journal)
+        self.watchdog = ProgressWatchdog()
+        self.clips = EventClipService(PacketRingBuffer(feed.camera_ids), self.clock)
+        self.snapshot = EventStateSnapshot(
+            self.journal, gateway_id=s.gateway_id, clock=self.clock, config_version=self._config_version,
+            start_offset=self.journal.next_offset, seed=self.tracker.active(),
+            current_state=lambda eid: self.judge.current_state(eid),
+            risk_observed_at=lambda eid: self.judge.risk_observed_at(eid),
+            resume_window_ms=s.lifecycle.resume_window_ms,
+        )
+        self.gate = RecoveryHealthGate()
+        self.health = HealthReporter(
+            perception=self.perception, now_ms=self.clock.now_ms, mono_ns=self._mono_ns, gate=self.gate,
+            watchdog=self.watchdog, ec2_connected=self._ec2_ok, gateway_ok=self._gateway_ok,
+            capture_clock=None if self.clock_sync is None else self.clock_sync.capture_clock,
+            laptop_clock_offset=None if self.clock_sync is None else self.clock_sync.health_field,
+            config_fields=self.config_sync.health_fields, config_active=lambda: self.config_sync.active is not None,
+            calibration_state=self._calibration_state, calibration_version=lambda: self.rig.calibration_version,
+            lock=self.judge_lock,
+        )
+        self.resync = SiteAlertResync(
+            active_states=lambda: self.judge.active_states(), send=self._send_laptop_health, clock=self.clock,
+            lock=self.judge_lock, ready=lambda: self._restored,
+        )
+        self.link = self._build_link() if s.i1 is not None else None
+        if self.link is not None:
+            self.snapshot.attach(self.link.client, self.link.publisher.envelope)
+            self.outbox = self.link.outbox
+        else:
+            self.outbox = self.snapshot.bind(Outbox(
+                self.journal, AckedOffsetStore(s.journal_dir / ACKED_NAME, gateway_id=s.gateway_id),
+                gateway_id=s.gateway_id, transport=_offline_transport, clock=self.clock))
+        # 정리는 SnapshotOutbox.compact 로만(스냅샷이 접지 않은 기록을 지우지 않게, -81)
+        self.checkpointer = Checkpointer(self.journal, self.store, r.projection, clock=self.clock,
+                                         compact=self.outbox.compact, interval_s=s.checkpoint_interval_s)
+        self.judge = JudgmentLoop(
+            lock=self.judge_lock, now_ms=self.clock.now_ms, config_sync=self.config_sync, perception=self.perception,
+            tracker=self.tracker, journal=self.journal, writer=self.writer,
+            send_i0=None if self.control is None else self.control.send,
+            offer_world_state=None if self.link is None else self.link.publisher.offer_world_state,
+            checkpoint_inputs=self.checkpointer.update_inputs, clips=self.clips, snapshot=self.snapshot,
+            observe_progress=lambda t: self.watchdog.observe(t, self._mono_ns()), new_msg_id=self._new_msg_id,
+        )
+        if self._drift_watch_factory is not None:
+            # 보정 감시(-117): 저장한 기준선을 검증 여부 그대로 돌려주고(CalibrationDriftWatch(baselines=...)), 정리 주기마다 저장한다
+            self.drift_watch = self._drift_watch_factory(load_baselines(s.baselines_file))
+
+        # 6) 시작
+        self.writer.start()
+        self._event("journal_writer")
+        self.checkpointer.start()
+        self._event("checkpointer")
+        if self.link is not None:
+            self.link.start()
+            self._event("i1")
+        if self.control is not None:
+            self.control.start()
+            self._event("i0_control")
+        self._spawn("tier0-housekeeping", self._run_housekeeping)
+        self._spawn("tier0-judge", self._run_judge)
+        self._event("judge")
+        self.started = True
+        self._write_marker()
+
+    def _abort_start(self) -> None:
+        """기동이 중간에 실패했다: 이미 시작한 스레드를 멈추고 저널을 닫는다. stop 과 같은 deadline 원칙(디스크가 멈춰도
+        기다리지 않는다)을 따르고, 마지막 체크포인트는 쓰지 않는다(시작하지 못한 상태다)."""
+        failures = self._shutdown(time.monotonic() + self.settings.drain_s, final_checkpoint=False)
+        if failures:
+            log.error("기동 실패 정리 중 끝나지 않은 단계: %s", failures)
+
+    def _restore_config(self, r: RecoveryResult, registry: Any, known: Callable[[str], bool]) -> ConfigBundle | None:
+        s = self.settings
+        check: dict[str, Any] = {"checkpoint_config_version": r.config_version, "result": None, "restored": None}
+        bundle: ConfigBundle | None = None
+        if r.config_version is not None:
+            try:
+                bundle = self.archive.restore(r.config_version, registry=registry, calibration_known=known, clock=self.clock)
+                check["result"] = "MATCHED"
+            except KeyError as e:
+                check["result"] = "MISSING_IN_ARCHIVE"
+                log.error("체크포인트의 구성 묶음 %s 를 보관소에서 찾지 못했다: %s", r.config_version, e)
+            except BundleRejected as e:
+                check["result"] = "ARCHIVE_REJECTED"
+                log.error("보관한 구성 묶음 %s 가 검증을 통과하지 못했다: %s", r.config_version, e)
+        else:
+            notices = self.archive.notices()
+            if notices:
+                newest = notices[-1]["payload"]
+                try:
+                    bundle = self.archive.restore(newest["config_version"], registry=registry, calibration_known=known,
+                                                  clock=self.clock, bundle_hash=newest["bundle_hash"])
+                    check["result"] = "ARCHIVE_NEWEST"
+                except (KeyError, BundleRejected) as e:
+                    check["result"] = "ARCHIVE_REJECTED"
+                    log.error("보관소의 최근 구성 묶음을 복구하지 못했다: %s", e)
+        if bundle is None and s.bootstrap_config_version is not None and s.bootstrap_archive is not None:
+            try:
+                bundle = BundleArchive(s.bootstrap_archive).restore(
+                    s.bootstrap_config_version, registry=registry, calibration_known=known, clock=self.clock)
+                check["result"] = (check["result"] or "NO_CHECKPOINT_BUNDLE") + "+BOOTSTRAP"
+                if r.config_version is not None and r.config_version != bundle.config_version:
+                    log.warning("체크포인트 묶음(%s)과 다른 시작 묶음(%s)으로 판정한다", r.config_version, bundle.config_version)
+                self.archive.save(bundle)
+            except (KeyError, BundleRejected, OSError) as e:
+                log.error("시작 구성 묶음 %s 를 복구하지 못했다: %s", s.bootstrap_config_version, e)
+        check["restored"] = None if bundle is None else bundle.config_version
+        if bundle is None:
+            log.error("적용할 구성 묶음이 없다: EC2 의 config_bundle 을 받기 전까지 위험 판정을 하지 않는다(health UNSAFE_UNKNOWN)")
+        self.config_check = check
+        self._event(f"config:{check['result']}:{check['restored']}")
+        return bundle
+
+    def _build_feed(self, now: int) -> FrameFeed:
+        s = self.settings
+        if s.input_mode == "sim":
+            assert s.sim is not None
+            anchor = s.sim.anchor_wall_ms if s.sim.anchor_wall_ms is not None else now
+            try:
+                return SimObservationFeed(s.sim.run_dir, anchor_wall_ms=anchor, arrival_lag_ms=s.sim.arrival_lag_ms,
+                                          max_backlog_ms=s.sim.max_backlog_ms)
+            except (OSError, ValueError) as e:
+                raise Tier0StartError(f"SIM 입력을 열지 못했다: {e}", 4) from e
+        return self._build_live_feed()
+
+    def _build_live_feed(self) -> FrameFeed:
+        """LIVE: I0 영상 수신 → 디코딩 → YOLO 엔진 → Local Tracker. 디코더(NVDEC)가 아직 없어 시작하지 않는다(남은 일)."""
+        from services.tier0.yolo_detector import DetectorUnavailable, UltralyticsPoseDetector
+        from simai_ai.io import NvdecDecoder
+
+        engine = self.settings.engine_path
+        if not engine or not Path(engine).exists():
+            raise Tier0StartError(f"LIVE 입력: 검출기 엔진이 없다(SIMAI_TIER0_ENGINE={engine!r})", 4)
+        try:
+            NvdecDecoder()
+        except NotImplementedError as e:
+            raise Tier0StartError(f"LIVE 입력: {e} (S15P31A101-171 남은 일)", 4) from e
+        try:  # pragma: no cover - 디코더가 생기면 이어서 조립한다
+            UltralyticsPoseDetector(engine)
+        except DetectorUnavailable as e:
+            raise Tier0StartError(f"LIVE 입력: {e}", 4) from e
+        raise Tier0StartError("LIVE 입력 조립은 디코더가 생긴 뒤 이어 한다", 4)  # pragma: no cover
+
+    def _build_link(self) -> I1Link:
+        s = self.settings
+        assert s.i1 is not None
+        connector = WebSocketConnector.from_settings(s.i1)
+        envelope = Envelope(s.gateway_id, self.clock)
+        registrar = EndpointRegistrar(_NoTransport(), clock_ms=self.clock.now_ms, sleep=lambda _s: None)
+        env = dict(s.env)
+        link_ref: dict[str, I1Link] = {}
+
+        def health_payload() -> dict[str, Any] | None:
+            link = link_ref.get("link")
+            drops = None if link is None else link.publisher.world_state_drops()
+            return with_world_state_drops(self.health.payload(), drops)
+
+        link = build_i1_link(
+            connector,
+            envelope,
+            health_payload=health_payload,
+            health_fields=[self._site_fields],
+            make_outbox=lambda transport: self.snapshot.bind(Outbox(
+                self.journal, AckedOffsetStore(s.journal_dir / ACKED_NAME, gateway_id=s.gateway_id),
+                gateway_id=s.gateway_id, transport=transport, clock=self.clock)),
+            config_sync=self.config_sync,
+            on_event_ack=lambda ack: self.judge.acknowledge(ack),
+            ack_seen=self.journal.has_ack_id,
+            endpoint_build=lambda: registrar.build(env, read_cert_pem(env)),
+        )
+        link_ref["link"] = link
+        return link
+
+    # --- 상태 조회 ------------------------------------------------------------------
+
+    def _gateway_ok(self) -> bool:
+        return self.control is not None and self.gateway_link.ok(self.mono_ms())
+
+    def _ec2_ok(self) -> bool:
+        return self.link is not None and self.link.client.connected
+
+    def _config_version(self) -> str | None:
+        active = self.config_sync.active
+        return None if active is None else active.config_version
+
+    def _calibration_state(self) -> str:
+        if self.drift_watch is not None:
+            return str(self.drift_watch.store.state)
+        return str(self.rig.state)
+
+    def _site_fields(self) -> dict[str, Any]:
+        """I1 health 의 active_site_alerts·as_of. 복원 전에는 싣지 않는다(빈 목록은 '경보 없음'이라 지어내지 않는다)."""
+        if not self._restored:
+            return {}
+        return self.resync.fields()
+
+    def _send_laptop_health(self, fields: dict[str, Any]) -> None:
+        """SiteAlertResync 의 송신: health 전체를 만들어 노트북 제어 채널 대기열에 넣는다(판정 lock 안에서 불린다)."""
+        if self.control is None:
+            return
+        drops = None if self.link is None else self.link.publisher.world_state_drops()
+        payload = with_world_state_drops(self.health.payload(), drops) or {}
+        payload.update(fields)
+        if not self.control.send("health", payload):
+            raise ConnectionError("I0 제어 채널이 끊겼다")
+
+    # --- 노트북 제어 채널 훅 ----------------------------------------------------------
+
+    def _on_laptop_connected(self, generation: int) -> None:
+        self.gateway_link.control_connected(self.mono_ms())
+        if self.clock_sync is not None:
+            self.clock_sync.link_lost()  # 이전 연결의 표본을 쓰지 않는다
+            try:
+                self.clock_sync.send_request()  # 접속 직후 바로 교환
+            except ConnectionError:
+                pass
+        self.resync.control_connected()  # 주기를 기다리지 않고 활성 현장 경보 목록(복원 뒤에만)
+
+    def _on_laptop_disconnected(self, generation: int) -> None:
+        self.gateway_link.control_disconnected(generation)
+        if self.clock_sync is not None:
+            self.clock_sync.link_lost()
+        self.resync.control_disconnected()
+
+    def _on_laptop_message(self, message: Mapping[str, Any], generation: int) -> None:
+        kind = message.get("msg_type")
+        if kind == "laptop_heartbeat":
+            self.gateway_link.heartbeat(self.mono_ms(), generation)
+        elif kind == "clock_sync_response":
+            if self.clock_sync is not None:
+                self.clock_sync.handle_response(message)
+        elif kind == "site_ack":
+            try:
+                ack = ack_from_contract("site_ack", message["payload"])
+            except RiskInputError as e:
+                log.warning("site_ack 를 받지 않았다: %s", e)
+                return
+            self.judge.acknowledge(ack)
+
+    # --- 스레드 ----------------------------------------------------------------------
+
+    def _spawn(self, name: str, target: Callable[[], None]) -> None:
+        t = threading.Thread(target=target, name=name, daemon=True)
+        self._threads.append(t)
+        t.start()
+
+    def _run_judge(self) -> None:
+        period = self.settings.tick_ms / 1000.0
+        next_at = time.monotonic()
+        while not self._stop.is_set():
+            try:
+                self.judge.tick()
+            except Exception:  # noqa: BLE001 - 한 tick 실패로 판정 루프를 멈추지 않는다(로그·통계)
+                self.judge.stats.errors += 1
+                log.exception("판정 tick 실패")
+            next_at += period
+            delay = next_at - time.monotonic()
+            if delay < 0:
+                next_at = time.monotonic()
+                delay = 0
+            self._stop.wait(delay)
+
+    def _run_housekeeping(self) -> None:
+        last_status = last_marker = time.monotonic()
+        while not self._stop.wait(HOUSEKEEPING_S):
+            try:
+                self.resync.tick()
+                if self.clock_sync is not None and self.control is not None and self.control.connected:
+                    if self.clock_sync.request_due():
+                        try:
+                            self.clock_sync.send_request()
+                        except ConnectionError:
+                            pass
+                now = time.monotonic()
+                if now - last_status >= STATUS_EVERY_S:
+                    last_status = now
+                    self.health.update_fps()
+                    with self.judge_lock:
+                        self.clips.poll()
+                    self._check_warnings()
+                    if self.drift_watch is not None:
+                        save_baselines(self.settings.baselines_file, self.drift_watch.baselines())
+                if now - last_marker >= MARKER_EVERY_S:
+                    last_marker = now
+                    self._write_marker()
+            except Exception:  # noqa: BLE001
+                log.exception("정리 주기 실패")
+
+    def _warn_change(self, key: str, value: Any, message: str) -> None:
+        if self._warned.get(key) != value:
+            self._warned[key] = value
+            if value:
+                log.warning(message, value)
+            else:
+                log.info("해소: %s", key)
+
+    def _check_warnings(self) -> None:
+        cp = self.checkpointer
+        self._warn_change("checkpointer_stalled", cp.stalled(), "체크포인트를 쓰지 못하고 있다(정체): %s")
+        self._warn_change("checkpointer_error", None if cp.last_error is None else repr(cp.last_error),
+                          "체크포인트 쓰기 오류: %s")
+        self._warn_change("journal_stalled", self.writer.stalled(), "저널 쓰기 정체: %s")
+        self._warn_change("journal_failed", None if self.writer.failed is None else repr(self.writer.failed),
+                          "저널 쓰기 실패(재시작으로 복구): %s")
+        blocked = self.outbox.blocked
+        self._warn_change("outbox_blocked", None if blocked is None else f"{blocked.journal_offset}:{blocked.reason}",
+                          "EC2 전송 보류(outbox blocked): %s")
+        snap = self.snapshot.status()
+        self._warn_change("snapshot_broken", snap["broken"], "event_state_snapshot 접기 중단: %s")
+
+    def status(self) -> dict[str, Any]:
+        """운영 상태(표시 파일·로그). health 계약에 필드가 없는 경고(체크포인트·저널·outbox·스냅샷)도 여기에 싣는다."""
+        cp = self.checkpointer
+        blocked = self.outbox.blocked
+        snap_health = self.health.last
+        return {
+            "gateway_id": self.settings.gateway_id,
+            "pid": os.getpid(),
+            "previous_unclean": self.previous_unclean,
+            "recovery": None if self.recovery is None else {
+                "source": str(self.recovery.source), "restored": len(self.recovery.restored),
+                "rejected": [r.name for r in self.recovery.rejected]},
+            "config_check": self.config_check,
+            "config_sync": self.config_sync.health_fields(),
+            "system_health": None if snap_health is None else str(snap_health.report.system_health),
+            "health_reasons": [] if snap_health is None else [str(x) for x in snap_health.report.reasons],
+            "checkpointer": {"stalled": cp.stalled(), "last_error": None if cp.last_error is None else repr(cp.last_error),
+                             "compacted": cp.compacted},
+            "journal": {"next_offset": self.journal.next_offset, "backlog": self.writer.backlog(),
+                        "stalled": self.writer.stalled(), "failed": None if self.writer.failed is None else repr(self.writer.failed)},
+            "outbox": {"acked_offset": self.outbox.acked_offset, "cursor": self.outbox.cursor,
+                       "blocked": None if blocked is None else {"journal_offset": blocked.journal_offset, "reason": blocked.reason}},
+            "snapshot": self.snapshot.status(),
+            "judge": vars(self.judge.stats).copy(),
+            "ec2_connected": self._ec2_ok(),
+            "laptop_connected": self.control is not None and self.control.connected,
+        }
+
+    def _write_marker(self, shutdown_failures: list[str] | None = None) -> None:
+        doc: dict[str, Any] = {"started": self.started, "engine": self.settings.engine_path}
+        if shutdown_failures is not None:
+            doc["shutdown_failed"] = shutdown_failures
+        try:
+            doc["status"] = self.status()
+        except Exception as e:  # noqa: BLE001 - 일부 객체가 없거나 멈춰도 표시 파일은 남긴다
+            doc["status_error"] = repr(e)
+        try:
+            _atomic_write(self.settings.live_marker, json.dumps(doc, ensure_ascii=False, default=str).encode("utf-8"))
+        except OSError:
+            log.exception("표시 파일을 쓰지 못했다: %s", self.settings.live_marker)
+
+    # --- 종료 ------------------------------------------------------------------------
+
+    def stop(self, timeout_s: float | None = None) -> bool:
+        """종료: 판정 → 정리 주기 → I0 → I1 → 저널 비우기 → 마지막 체크포인트 → 저널 닫기 → 표시 파일 지우기.
+
+        모든 단계가 공통 deadline(timeout_s, 기본 drain_s) 하나를 나눠 쓴다(리뷰 F3). 디스크가 멈춰 저널 쓰기·체크포인트가
+        시간 안에 끝나지 않으면 마지막 체크포인트와 저널 닫기를 동기로 다시 기다리지 않는다(둘 다 같은 쓰기 lock 을 기다리게
+        된다). 그때는 표시 파일에 실패를 남기고 False 다(다음 시작이 저널·체크포인트로 복구한다).
+        """
+        timeout = self.settings.drain_s if timeout_s is None else timeout_s
+        failures = self._shutdown(time.monotonic() + timeout, final_checkpoint=True)
+        ok = not failures
+        if ok:
+            try:
+                self.settings.live_marker.unlink(missing_ok=True)
+            except OSError:
+                log.exception("표시 파일을 지우지 못했다")
+        else:
+            log.error("정상 종료하지 못했다: %s", failures)
+            # 표시 파일도 같은 볼륨이다. 쓰기가 멈추면 짧게만 기다린다(실패는 로그에 이미 남겼다)
+            self._bounded(time.monotonic() + 1.0, "marker", lambda: self._write_marker(shutdown_failures=failures), [])
+        self._event("stopped")
+        return ok
+
+    def _bounded(self, deadline: float, name: str, fn: Callable[[], Any], failures: list[str]) -> bool:
+        """fn 을 별도 스레드에서 돌리고 deadline 까지만 기다린다. 끝나지 않거나 예외면 failures 에 이름을 남기고 False."""
+        error: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                fn()
+            except BaseException as exc:  # noqa: BLE001 - 호출자에게 실패로 알린다
+                error.append(exc)
+
+        t = threading.Thread(target=run, name=f"tier0-stop-{name}", daemon=True)
+        t.start()
+        t.join(max(0.0, deadline - time.monotonic()))
+        if t.is_alive():
+            failures.append(f"{name}:timeout")
+            return False
+        if error:
+            failures.append(f"{name}:{type(error[0]).__name__}")
+            log.error("종료 단계 %s 실패: %r", name, error[0])
+            return False
+        return True
+
+    def _shutdown(self, deadline: float, *, final_checkpoint: bool) -> list[str]:
+        """stop·_abort_start 공통. 만들지 않은 객체는 건너뛴다. 실패한 단계 이름 목록을 돌려준다."""
+        failures: list[str] = []
+        left = lambda: max(0.0, deadline - time.monotonic())  # noqa: E731
+        self._stop.set()
+        for t in self._threads:
+            t.join(left())
+        failures += [f"thread:{t.name}" for t in self._threads if t.is_alive()]
+        self._event("judge_stopped")
+        control, link = self.control, self.link
+        if control is not None and self._bounded(deadline, "i0", lambda: control.close(left()), failures):
+            failures += [f"thread:{n}" for n in control.alive_threads()]
+        if link is not None and self._bounded(deadline, "i1", lambda: link.close(left()), failures):
+            failures += [f"thread:{n}" for n in link.alive_threads()]
+        self._event("links_closed")
+        writer = getattr(self, "writer", None)
+        drained = True
+        if writer is not None:
+            self._bounded(deadline, "journal_writer", lambda: writer.stop(left()), failures)
+            backlog = writer.backlog()
+            drained = backlog == 0
+            if not drained:
+                failures.append(f"journal_backlog:{backlog}")
+            self._event(f"journal_flushed:{backlog}")
+        checkpointer = getattr(self, "checkpointer", None)
+        if checkpointer is not None:
+            checkpointer_stopped = self._bounded(deadline, "checkpointer", lambda: checkpointer.stop(left()), failures)
+            # 저널이 다 기록되지 않았거나 체크포인트 스레드가 멈췄으면 마지막 체크포인트를 다시 기다리지 않는다
+            if final_checkpoint and drained and checkpointer_stopped:
+                if self._bounded(deadline, "final_checkpoint", checkpointer.run_once, failures):
+                    self._event("final_checkpoint")
+        feed = getattr(getattr(self, "perception", None), "feed", None)
+        if feed is not None:
+            feed.close()
+        journal = getattr(self, "journal", None)
+        if journal is not None:
+            if drained and not any(f.startswith(("final_checkpoint", "checkpointer")) for f in failures):
+                self._bounded(deadline, "journal_close", journal.close, failures)
+            else:
+                # 쓰기 lock 을 쥔 기록·정리가 끝나지 않았다. 닫기를 기다리지 않는다(프로세스가 끝나면 OS 가 정리한다)
+                threading.Thread(target=_quiet(journal.close), name="tier0-stop-journal-close-late", daemon=True).start()
+                failures.append("journal_close:skipped")
+        return failures

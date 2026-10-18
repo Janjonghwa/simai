@@ -306,9 +306,12 @@ class EventStateSnapshot:
 
     @property
     def broken(self) -> str | None:
-        """접기를 멈춘 이유(정리로 기록이 사라짐, 형식 위반). None 이면 정상. 회복은 reseed."""
-        with self._lock:
-            return self._broken
+        """접기를 멈춘 이유(정리로 기록이 사라짐, 형식 위반). None 이면 정상. 회복은 reseed.
+
+        lock 없이 읽는다(참조 하나 읽기는 원자적). 판정 루프가 판정 lock 안에서 tick 마다 부르는데, 스냅샷 lock 은 접기(저널
+        읽기)·콜백 동안 쥐고 있을 수 있어 판정이 그 I/O 를 기다리지 않게 한다(S15P31A101-171 리뷰 F1).
+        """
+        return self._broken
 
     def status(self) -> dict[str, Any]:
         """밖(health·로그)에서 볼 상태. broken 이면 EC2 는 스냅샷을 못 받아 동기화 모드로 남는다."""

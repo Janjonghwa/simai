@@ -117,7 +117,7 @@ EXP-02 는 같은 볼륨에 `exp02-fs3db@sha256:...` 이미지로 Pod 를 띄우
 
 - 메타데이터의 키가 지금 것과 모두 같고 엔진 해시가 맞을 때만 쓴다. 다른 GPU(예: 예전 A40 sm_86)의 엔진은 경로부터 달라 고르지 않는다.
 - 같은 경로에 키가 다른 파일(손으로 복사 등)이 있으면 쓰지 않고 `*.conflict-<ms>` 로 옆에 옮긴 뒤(지우지 않음) 다시 만든다. 메타데이터가 없는 엔진(빌드 도중 종료)도 쓰지 않는다.
-- 엔진 경로는 Tier 0 프로세스에 `SIMAI_TIER0_ENGINE` 환경 변수로 넘긴다. Tier 0 조립(후속 티켓)이 이 값으로 엔진을 연다.
+- 엔진 경로는 Tier 0 프로세스에 `SIMAI_TIER0_ENGINE` 환경 변수로 넘긴다. Tier 0 설정(`services/tier0/settings.py`)이 이 값을 읽고 LIVE 입력의 검출기(`yolo_detector`)가 연다. 실행 중 상태는 `$SIMAI_ROOT/state/tier0.live`(정상 종료하면 지운다)에 5초마다 쓴다.
 - 종료 코드: 2 볼륨·가중치 없음·해시 불일치, 3 GPU·TensorRT 없음, 4 캐시 위치를 쓸 수 없음, 5 빌드 실패. 실패하면 Tier 0 를 띄우지 않는다.
 - 동적 프로파일은 `detection_baseline` 과 같다(min 1×3×32×32, opt 4×3×736×1280, max 4×3×1280×1280). 빌드는 `simplify=False`(onnxslim·onnxruntime 을 이미지에 넣지 않음).
 
@@ -162,8 +162,8 @@ eng = sorted(__import__("glob").glob("/workspace/simai/engines/yolo26x-pose/sm_9
 m = YOLO(eng, task="pose"); frames = [np.zeros((1296, 2304, 3), np.uint8)] * 4
 r = m.predict(frames, imgsz=1280, half=True, verbose=False); print(eng, len(r), r[0].orig_shape)
 PY
-# 5) 진입점 전체 (Tier 0 는 아직 골격이라 "아직 조립하지 않았다" 로 종료 코드 1 이 정상. 엔진 준비 로그가 먼저 나와야 한다)
-simai-tier0 --config /dev/null; echo "exit=$?"
+# 5) 진입점 전체 (엔진 준비 로그가 먼저 나와야 한다. LIVE 입력은 NVDEC 디코더가 아직 없어 종료 코드 4 가 정상, S15P31A101-171 남은 일)
+simai-tier0 --config /workspace/simai/tier0.json; echo "exit=$?"
 # 6) 반례: 가중치 해시 불일치·가중치 없음은 GPU 를 쓰지 않고 종료 코드 2
 SIMAI_TIER0_WEIGHTS_SHA256=$(printf '0%.0s' {1..64}) simai-tier0; echo "exit=$? (2 기대)"
 SIMAI_TIER0_WEIGHTS=/workspace/simai/weights/none.pt simai-tier0; echo "exit=$? (2 기대)"
