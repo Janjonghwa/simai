@@ -13,6 +13,7 @@ S15P31A101-51. 기획서 §3.2(재시작 복구·복구 순서·저널 계약), 
 | 체크포인트 | `Checkpointer` 가 1초마다 투영으로 쓴다. 활성 이벤트, 해소 기록(최근 1024개 + 밀려난 것의 판정 시각 watermark), last_applied_journal_offset·msg_id, config_version, 마지막 촬영 시각, Track(꺼내기만) |
 | 복구 | `recover`: 체크포인트 선택 → 그 offset 이후 저널 재적용 → 활성 이벤트를 UNVERIFIABLE 로 복원(저널에 기록) |
 | Health | `RecoveryHealthGate`: 재시작 뒤 촬영 시각이 앞으로 간 새 프레임과 시계 차이 추정이 함께 확인될 때까지 UNSAFE_UNKNOWN |
+| 복원 이벤트 해소 근거 | `LifecycleTracker.restore` 가 모든 복원 이벤트에 복원 보호를 건다(해소될 때까지, 체크포인트·저널에 싣지 않고 재시작마다 다시 건다). 사람 대상은 기존대로 대상 World ID 재관측으로, 구역 대상(R7)은 판정의 `Evaluation.zone_clear_evidence`(R7 이 그 구역의 정상 관측 카메라 확보를 확인)가 있는 판정에서만 VERIFIED 다. 판정이 없거나 규칙·구역이 구성에서 빠진 것은 근거가 아니다(-174) |
 | 복원 Track | `WorldTrackManager.restore(result.tracks, result.tracks_t)`: 재관측과 맞출 후보로만(새 ID, 30초 규칙). `RestoredEventLinker(result.restored)`: 새 이벤트의 related_event_id (-54, tier0-world-track.md "재시작 뒤 복원 Track 매칭") |
 
 체크포인트 형식(내부, `format_version` 2): `checkpoint-{세대}.json` = {format, format_version, sha256, body}. 형식 1(해소 기록 없음)은 읽지 않고 직전 세대·저널 전체로 물러선다.

@@ -18,7 +18,7 @@ from simai_ai.risk._parse import RiskInputError
 from simai_ai.risk.clock import Clock
 from simai_ai.risk.common import Origin
 from simai_ai.risk.monitoring import MonitoringState
-from simai_ai.risk.rule import Finding, Rule, RuleContext, RuleSpec, RuleState
+from simai_ai.risk.rule import Finding, Rule, RuleContext, RuleSpec, RuleState, ZoneClearEvidence
 from simai_ai.risk.work_surface import WorkSurface, check_unique_ids
 from simai_ai.risk.world import WorldState
 from simai_ai.risk.zone import Zone
@@ -57,6 +57,10 @@ class Evaluation:
 
     - evaluated_at: 주입 시계의 판정 시각. observation_time: 입력 World 상태의 t_latest_global.
     - findings: (rule_id, rule_version, zone_id, world_ids) 순으로 정렬. 같은 입력이면 순서까지 같다.
+    - zone_clear_evidence: (rule_id, zone_id) 쌍. 그 규칙이 이 판정의 유효 입력으로 그 구역에 조건이 없다고 확인했다
+      (rule.ZoneClearEvidence, R7: 정상 관측 카메라 확보). 판정 시각에 유효한 구역만 들어가고, 같은 규칙이 같은 구역에
+      판정을 냈으면 넣지 않는다. lifecycle 이 복원한 구역 대상 이벤트의 해소 근거로 쓴다(S15P31A101-174). 직접 만든
+      Evaluation 은 기본으로 비어 있다(근거 없음).
     """
 
     origin: Origin
@@ -67,6 +71,7 @@ class Evaluation:
     rules: tuple[RuleSpec, ...]
     zones: tuple[Zone, ...]
     findings: tuple[Finding, ...]
+    zone_clear_evidence: frozenset[tuple[str, str]] = frozenset()
 
     @property
     def alertable(self) -> bool:
@@ -149,8 +154,11 @@ class RiskEngine:
         )
 
         findings: list[Finding] = []
+        cleared: set[tuple[str, str]] = set()
+        active_set = set(active_ids)
         for rule in self._rules:
             spec = rule.spec
+            judged: set[str | None] = set()
             for finding in rule.evaluate(ctx):
                 if (finding.rule_id, finding.rule_version) != spec.key:
                     raise RuleContractError(
@@ -158,6 +166,14 @@ class RiskEngine:
                         f"{finding.rule_id} v{finding.rule_version} 판정을 냈다"
                     )
                 findings.append(finding)
+                judged.add(finding.zone_id)
+            if isinstance(rule, ZoneClearEvidence):
+                # 조건이 없다는 근거는 판정 시각에 유효한 구역이고 같은 규칙이 판정을 내지 않은 구역만 받는다(판정이 이긴다).
+                cleared |= {
+                    (spec.rule_id, zone_id)
+                    for zone_id in rule.clear_zones(ctx)
+                    if zone_id in active_set and zone_id not in judged
+                }
 
         return Evaluation(
             origin=origin,
@@ -168,4 +184,5 @@ class RiskEngine:
             rules=self.rules,
             zones=active,
             findings=tuple(sorted(findings, key=lambda f: f.sort_key)),
+            zone_clear_evidence=frozenset(cleared),
         )
