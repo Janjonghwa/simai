@@ -14,10 +14,12 @@ LIVE 만 실제 알림 대상이라는 불변 규칙(AGENTS.md 규칙 5, 명세 
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from simai_ai.risk._parse import RiskInputError
 from simai_ai.risk.clock import Clock
 from simai_ai.risk.common import Origin
 from simai_ai.risk.monitoring import MonitoringState
 from simai_ai.risk.rule import Finding, Rule, RuleContext, RuleSpec
+from simai_ai.risk.work_surface import WorkSurface, check_unique_ids
 from simai_ai.risk.world import WorldState
 from simai_ai.risk.zone import Zone
 
@@ -107,8 +109,12 @@ class RiskEngine:
         origin: Origin,
         *,
         monitoring: MonitoringState | None = None,
+        work_surfaces: Iterable[WorkSurface] = (),
     ) -> Evaluation:
         """monitoring 은 같은 판정 시각의 감시 상태(R7 입력)다. 없으면 None 으로 규칙에 넘긴다.
+
+        work_surfaces 는 활성 구성 묶음의 등록 작업면(명세 7.5, R2·R3·R5 입력)이다. ID 순으로 정렬해 넘기고, ID 가 겹치면
+        어느 것이 정본인지 모르므로 RuleContractError 다.
 
         PLANNED·WHAT_IF 는 카메라가 없는 입력이라 monitoring_expected=False 로 넘긴다. 그때 monitoring 이 없으면
         R7 은 판정하지 않는다(가상 카메라 장애를 보려면 monitoring 을 넘긴다). LIVE·REPLAY 에서 없으면 '모름'(저하)이다.
@@ -120,12 +126,18 @@ class RiskEngine:
         active_ids = [z.zone_id for z in active]
         if len(set(active_ids)) != len(active_ids):
             raise RuleContractError(f"같은 시각에 유효한 구역 버전이 둘 이상이다 {sorted(active_ids)}")
+        surfaces = tuple(sorted(work_surfaces, key=lambda s: s.surface_id))
+        try:
+            check_unique_ids(surfaces, "work_surfaces")
+        except RiskInputError as e:
+            raise RuleContractError(str(e)) from None
         ctx = RuleContext(
             now_ms=now_ms,
             world=world,
             zones=active,
             monitoring=monitoring,
             monitoring_expected=origin in _CAMERA_ORIGINS,
+            work_surfaces=surfaces,
         )
 
         findings: list[Finding] = []

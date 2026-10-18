@@ -11,10 +11,11 @@ extras 없는 기본 설치만으로 import·테스트가 돌아야 한다. 현�
 | monitoring | 감시 상태 입력(카메라 상태·구역별 관측 카메라). world_state 에 없는 R7 입력 |
 | zone | 구역 임시 형식. 구성 묶음 계약이 생기면 교체 |
 | zone_geometry | 구역 수평 기하(점·다각형), 위치 불확실성 범위 HorizontalRange(k=2 타원 + 점유 반경 0.3 m, 7.1) |
+| work_surface | 등록 작업면(OBB + 상판 높이, 7.5) 임시 형식. ContactEstimator 와 같은 구성 묶음 항목을 읽는다(R2·R3 입력) |
 | rule | 규칙 공통 형식: RuleSpec, RuleContext, Finding(사람 대상·구역 대상), Rule |
 | engine | RiskEngine, Evaluation, AlertCandidate(LIVE 만 생성 가능) |
 | registry | (규칙 ID, 버전) → 규칙 등록부 |
-| rules | 구체 규칙: R1(ZoneEntryRule), R5(EntryPredictionRule), R6(ObservationLossHold, 구역 규칙을 감쌈), R7(ZoneMonitoringRule) |
+| rules | 구체 규칙: R1(ZoneEntryRule), R2(EdgeProximityRule), R3(ElevatedPositionRule), R5(EntryPredictionRule), R6(ObservationLossHold, 구역 규칙을 감쌈), R7(ZoneMonitoringRule) |
 | event_id | event_id(UUIDv7) 생성기 EventIdFactory |
 | alerting | 심각도 × 신뢰도 → 채널(7.3 표), 현장 경보 신호 LocalAlert·AlarmStop·AlertClear(LIVE 만) |
 | lifecycle | RiskEvent 생명주기 LifecycleTracker(발생 지속 조건·재개 포함), 전이 기록 EventTransition(저널 재료) |
@@ -63,16 +64,22 @@ from simai_ai.risk.lifecycle import (
 from simai_ai.risk.monitoring import CameraMonitor, CameraStatus, MonitoringState
 from simai_ai.risk.registry import RuleRegistry, UnknownRuleError, default_registry
 from simai_ai.risk.rule import Finding, FindingTarget, Rule, RuleContext, RuleSpec
+from simai_ai.risk.rules.height_common import CLASSROOM_TEST_PROFILE, OPERATIONAL_HEIGHT_PROFILE, HeightProfile
 from simai_ai.risk.rules.r1_zone_entry import ZoneEntryRule
+from simai_ai.risk.rules.r2_edge_proximity import EdgeProximityRule
+from simai_ai.risk.rules.r3_elevated_position import ElevatedPositionRule
 from simai_ai.risk.rules.r5_entry_prediction import EntryPredictionRule
 from simai_ai.risk.rules.r6_observation_loss import ObservationLossHold
 from simai_ai.risk.rules.r7_monitoring import ZoneMonitoringRule
 from simai_ai.risk.site_alerts import build_active_site_alerts, default_summary, is_site_alert
+from simai_ai.risk.work_surface import WorkSurface, WorkSurfaceSet, work_surfaces_from_operational_geometry
 from simai_ai.risk.world import WorldState, WorldTrack
 from simai_ai.risk.zone import Zone, ZoneJudgeType
 from simai_ai.risk.zone_geometry import HorizontalRange
 
 __all__ = [
+    "CLASSROOM_TEST_PROFILE",
+    "OPERATIONAL_HEIGHT_PROFILE",
     "AckActor",
     "AckRecord",
     "AlarmStop",
@@ -87,15 +94,18 @@ __all__ = [
     "Confidence",
     "ConfidenceReason",
     "ContractAck",
+    "EdgeProximityRule",
+    "ElevatedPositionRule",
+    "EntryPredictionRule",
     "Evaluation",
     "EventIdFactory",
-    "EntryPredictionRule",
     "EventKey",
     "EventState",
     "EventTransition",
     "Finding",
     "FindingTarget",
     "FixedClock",
+    "HeightProfile",
     "HorizontalRange",
     "IdentityCorrection",
     "Lifecycle",
@@ -123,6 +133,8 @@ __all__ = [
     "UnknownRuleError",
     "Verification",
     "VerificationPolicy",
+    "WorkSurface",
+    "WorkSurfaceSet",
     "WorldState",
     "WorldTrack",
     "Zone",
@@ -136,4 +148,5 @@ __all__ = [
     "default_registry",
     "default_summary",
     "is_site_alert",
+    "work_surfaces_from_operational_geometry",
 ]

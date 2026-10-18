@@ -22,6 +22,7 @@ from typing import Protocol, runtime_checkable
 from simai_ai.risk._parse import RiskInputError
 from simai_ai.risk.common import ConfidenceReason, Severity, normalize_confidence
 from simai_ai.risk.monitoring import MonitoringState
+from simai_ai.risk.work_surface import WorkSurface
 from simai_ai.risk.world import WorldState, WorldTrack
 from simai_ai.risk.zone import Zone
 
@@ -131,6 +132,9 @@ class RuleContext:
     monitoring_expected: 이 입력에 카메라 감시 상태라는 개념이 있는지. 카메라 영상에서 온 입력(LIVE·REPLAY)은 True,
     카메라가 없는 계획·가상 입력(PLANNED·WHAT_IF)은 False 다(엔진이 출처에서 정한다). False 이고 monitoring 이
     None 이면 감시 상태 규칙(R7)은 판정하지 않는다. 출처 자체는 넣지 않는다(규칙은 출처와 관계없이 같게 판정한다).
+
+    work_surfaces: 판정 시각의 등록 작업면(명세 7.5, 활성 구성 묶음의 Operational Geometry). R2·R3 와 R5 의 가장자리
+    예측이 읽는다. 비어 있으면 등록 작업면이 없다는 뜻이고, 그 위의 가장자리·고소 위치는 판정할 근거가 없다.
     """
 
     now_ms: int
@@ -138,6 +142,7 @@ class RuleContext:
     zones: tuple[Zone, ...]
     monitoring: MonitoringState | None = None
     monitoring_expected: bool = True
+    work_surfaces: tuple[WorkSurface, ...] = ()
 
     @property
     def lag_ms(self) -> int:

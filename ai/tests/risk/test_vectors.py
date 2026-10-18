@@ -49,6 +49,10 @@ RULE_VECTORS = {
     "r1_volume_podium.json",
     "r1_persistence_resume.json",
     "r1_footprint_position_or_anchor.json",
+    "r2_r3_podium_live.json",
+    "r2_r3_podium_replay.json",
+    "r2_r3_podium_operational_profile.json",
+    "r5_r2_edge_stage_approach.json",
     "r5_approach_entry.json",
     "r5_approach_entry_what_if.json",
     "r5_approach_entry_replay.json",
@@ -92,8 +96,18 @@ def test_vector_ids_are_unique():
 
 
 def test_default_registry_rules():
-    # R1(S15P31A101-71, R6 으로 감쌈), R5(S15P31A101-98), R7(S15P31A101-73). R6 은 구역 규칙을 감싸므로 따로 등록하지 않는다.
-    assert list(default_registry()) == [("R1", 1), ("R5", 1), ("R7", 1)]
+    # R1(S15P31A101-71, R6 으로 감쌈), R2·R3(S15P31A101-93), R5(S15P31A101-98), R7(S15P31A101-73). R6 은 구역 규칙을 감싸므로
+    # 따로 등록하지 않는다. 높이 규칙과 그 가장자리를 예측하는 R5 는 교실 시험 프로파일(버전 + 1000, 명세 7.4)도 등록한다.
+    assert list(default_registry()) == [
+        ("R1", 1),
+        ("R2", 1),
+        ("R2", 1001),
+        ("R3", 1),
+        ("R3", 1001),
+        ("R5", 1),
+        ("R5", 1001),
+        ("R7", 1),
+    ]
 
 
 def test_rule_vectors_include_non_live_origins():

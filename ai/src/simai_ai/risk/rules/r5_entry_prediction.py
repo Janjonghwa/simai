@@ -57,14 +57,24 @@ JOINT_UNCERTAIN. PREDICTED 는 붙이지 않는다(Lead 결정): 판정에 쓰�
 트랙은 판정하지 않는다. 앞날을 내다보는 것은 이 규칙의 정의다. 속도를 모를 때의 holding 에도 PREDICTED 를 붙이지 않는다
 (PREDICTED·UNKNOWN 트랙의 활성 이벤트는 lifecycle 이 이미 UNVERIFIABLE 로 둔다).
 
-**R2 연결 자리.** 명세는 R1·R2 구역 진입을 예측한다. R2(등록 작업면 OBB 가장자리, 7.5)는 아직 규칙과 입력이 없어
-지금은 R1 구역(RuleContext.zones)만 본다. R2 가 생기면 `_targets` 가 가장자리 위험 띠(가장자리에서 1.0 m 안 다각형)도
-돌려주게 한다. 판정·선행 시간 계산은 그대로 쓴다.
+**R2 가장자리(7.2 'R1·R2 구역 진입').** 등록 작업면이 있으면(RuleContext.work_surfaces) R2 와 같은 위험 가장자리
+(height_common.hazard_edges, 높이 기준은 이 규칙의 프로파일)도 예측 대상이다. R2 의 발생 영역은 위험 가장자리 선분에서 1.0 m
+(R2_RAISE_DISTANCE_M) 안이므로, 불확실성 범위의 점유 반경을 그만큼 넓힌 범위가 선분에 처음 닿는 때를 같은 계산
+(first_touch_range_s, 두 점 다각형 = 선분)으로 구한다. 그래서 'R2 인계'도 R1 과 같다: 관측 범위가 이미 R2 발생 영역에 걸리면 R5 는
+내지 않는다(R2 가 맡는다). 가장자리는 그 작업면 위(같은 층)에 선 사람에게만 대상이다(R2 와 같다). 접지점이 있을 때(KNOWN·HELD)
+서 있는 층의 가장자리만 넣고, 접지점이 없으면(서 있는 층을 모름) 가장자리 예측을 하지 않는다. 그때 단상 footprint 위에 있을 수
+있는 사람은 R2 자체가 확인 필요(Z_UNKNOWN)로 판정한다. 서 있는 층이 가려진 동안 유지한 마지막 지지 표면(HELD,
+z_validity UNCERTAIN)이면 '그 층 위에 있다'는 전제가 마지막 추정값이라 가장자리 대상 판정에 확인 필요 PREDICTED 를 붙인다(R2·R3 와
+같다). contact_validity 만 UNCERTAIN 인 걷기(z VALID)는 높이가 관측값이라 붙이지 않고, R1 구역 대상 판정의 기존 의미(PREDICTED
+없음)는 그대로다. 가장자리 대상 판정은 zone_id 를 비우고 근거 코드 끝에 target_edge 를,
+수치에 zone_distance_m 대신 edge_distance_m(가장 가까운 위험 가장자리까지 수평 거리)을 싣는다. 가장자리가 어느 높이부터 위험한지가
+프로파일에 달려 있어 R5 도 운영(v1)·교실 시험(v1001) 프로파일 버전을 둔다. 작업면이 없으면 두 버전의 판정이 같다.
 
 판정 근거 코드(reasons): predicted_entry(발생) / predicted_entry_within_clear_horizon(유지), 판정 시각에 이미 걸린 예측이면
 predicted_touching_now 가 뒤따르고, VOLUME_3D 는 z_overlap / z_within_clear_margin 이 뒤따른다. 속도를 모를 때는
 input_unknown + 세부 코드. 수치(metrics): time_to_entry_s(판정 시각부터 예상 진입까지, ms 반올림), speed_mps(수평 속력),
-zone_distance_m(관측 position_xy·접지점 중 가까운 쪽에서 다각형까지 수평 거리). 속도를 모를 때는 zone_distance_m 만.
+zone_distance_m(관측 position_xy·접지점 중 가까운 쪽에서 다각형까지 수평 거리. 가장자리 대상은 edge_distance_m). 속도를 모를
+때는 zone_distance_m(가장자리 대상은 edge_distance_m) 만.
 """
 
 import math
@@ -74,12 +84,21 @@ from dataclasses import dataclass
 from simai_ai.risk._parse import RiskInputError
 from simai_ai.risk.common import ConfidenceReason, Severity
 from simai_ai.risk.rule import Finding, RuleContext, RuleSpec
+from simai_ai.risk.rules.height_common import (
+    OPERATIONAL_HEIGHT_PROFILE,
+    HazardEdge,
+    HeightProfile,
+    StandingBasis,
+    hazard_edges,
+    standing,
+)
 from simai_ai.risk.rules.r1_zone_entry import (
     OccupancyHeight,
     horizontal_ranges,
     occupancy_height,
     track_confidence_reasons,
 )
+from simai_ai.risk.rules.r2_edge_proximity import R2_RAISE_DISTANCE_M
 from simai_ai.risk.world import ObservationState, TrackLifecycle, WorldTrack
 from simai_ai.risk.zone import Zone, ZoneJudgeType
 from simai_ai.risk.zone_geometry import (
@@ -94,6 +113,7 @@ from simai_ai.risk.zone_geometry import (
 
 R5_RULE_ID = "R5"
 R5_RULE_VERSION = 1
+"""운영 프로파일 버전. 교실 시험 프로파일(가장자리 높이 기준 0.35 m)은 R5_RULE_VERSION + TEST_PROFILE_VERSION_OFFSET(1001)"""
 R5_SEVERITY = Severity.CAUTION
 """명세 7.2 R5 심각도. 구역 등급과 관계없이 CAUTION 이다(관제 화면 안내, 7.3)"""
 R5_HORIZON_MS = 2000
@@ -126,6 +146,7 @@ REASON_TRACK_NOT_CONFIRMED = "track_not_confirmed"
 REASON_VELOCITY_MISSING = "velocity_missing"
 REASON_SPEED_IMPLAUSIBLE = "speed_implausible"
 REASON_POSITION_STALE = "position_stale"
+REASON_TARGET_EDGE = "target_edge"
 
 _R5_READS = (
     "tracks.observation_state",
@@ -141,16 +162,39 @@ _R5_READS = (
     "tracks.skeleton",
     "tracks.cameras",
     "tracks.identity_confidence",
+    "tracks.support_surface_id",
+    "tracks.z_validity",
     "zones",
+    "work_surfaces",
 )
 
 
 @dataclass(frozen=True)
 class _Target:
-    """진입을 예측할 수평 영역. 지금은 R1 구역뿐이다(R2 가장자리 띠는 R2 가 생기면 더한다)."""
+    """진입을 예측할 수평 영역.
 
-    zone: Zone
+    - R1 구역: zone 이 있고 polygon 은 구역 다각형, reach_m = 0.
+    - R2 가장자리: zone 이 없고 polygon 은 위험 가장자리 선분(두 점), reach_m = R2 발생 거리. 범위의 점유 반경에 reach_m 을
+      더해 판정한다(선분에서 reach_m 안 = R2 발생 영역).
+    """
+
+    zone: Zone | None
     polygon: Polygon
+    reach_m: float = 0.0
+    held: bool = False  # 가장자리 대상: 서 있는 층이 HELD(마지막 추정 지지 표면)라 확인 필요 PREDICTED 를 붙인다
+
+    @property
+    def zone_id(self) -> str | None:
+        return None if self.zone is None else self.zone.zone_id
+
+    @property
+    def distance_metric(self) -> str:
+        return "zone_distance_m" if self.zone is not None else "edge_distance_m"
+
+    def ranges(self, ranges: tuple[HorizontalRange, ...]) -> tuple[HorizontalRange, ...]:
+        if self.reach_m == 0.0:
+            return ranges
+        return tuple(HorizontalRange(r.center, r.semi_axes, r.radius_m + self.reach_m) for r in ranges)
 
 
 class EntryPredictionRule:
@@ -165,6 +209,8 @@ class EntryPredictionRule:
     - k·occupancy_radius_m: 불확실성 범위(명세 7.1 k=2, 0.3 m). R1 과 같은 값이어야 'R1 이 맡음' 경계가 맞는다.
     - clear_margin_m: VOLUME_3D 높이 해소 간격.
     - tolerance_m: 경계 접촉 허용오차.
+    - profile: 가장자리 높이 기준(height_common). 규칙 버전은 profile.rule_version(R5_RULE_VERSION).
+    - edge_reach_m: R2 발생 거리(1.0 m). 위험 가장자리 선분에서 이 안이 R2 발생 영역이다.
     """
 
     def __init__(
@@ -180,6 +226,8 @@ class EntryPredictionRule:
         occupancy_radius_m: float = OCCUPANCY_RADIUS_M,
         clear_margin_m: float = R5_CLEAR_MARGIN_M,
         tolerance_m: float = BOUNDARY_TOLERANCE_M,
+        profile: HeightProfile = OPERATIONAL_HEIGHT_PROFILE,
+        edge_reach_m: float = R2_RAISE_DISTANCE_M,
     ) -> None:
         for name, value, minimum in (
             ("horizon_ms", horizon_ms, 1),
@@ -196,6 +244,7 @@ class EntryPredictionRule:
             ("occupancy_radius_m", occupancy_radius_m),
             ("clear_margin_m", clear_margin_m),
             ("tolerance_m", tolerance_m),
+            ("edge_reach_m", edge_reach_m),
         ):
             if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value < 0:
                 raise RiskInputError(f"R5.{name} 는 0 이상 유한한 수여야 한다")
@@ -211,18 +260,28 @@ class EntryPredictionRule:
         self._radius = float(occupancy_radius_m)
         self._margin = float(clear_margin_m)
         self._tol = float(tolerance_m)
-        self._spec = RuleSpec(rule_id=R5_RULE_ID, rule_version=R5_RULE_VERSION, reads=_R5_READS)
+        self._profile = profile
+        self._edge_reach = float(edge_reach_m)
+        self._spec = RuleSpec(rule_id=R5_RULE_ID, rule_version=profile.rule_version(R5_RULE_VERSION), reads=_R5_READS)
 
     @property
     def spec(self) -> RuleSpec:
         return self._spec
 
+    @property
+    def profile(self) -> HeightProfile:
+        return self._profile
+
     def evaluate(self, ctx: RuleContext) -> Iterator[Finding]:
-        targets = self._targets(ctx)
-        if not targets:
+        zone_targets = self._targets(ctx)
+        edges = hazard_edges(ctx.work_surfaces, self._profile.height_threshold_m) if ctx.work_surfaces else ()
+        if not zone_targets and not edges:
             return
         for track in sorted(ctx.world.tracks, key=lambda t: t.world_id):
             ranges = horizontal_ranges(track, k=self._k, radius_m=self._radius)
+            targets = zone_targets + self._edge_targets(track, ctx, edges, ranges)
+            if not targets:
+                continue
             staleness_ms = max(0, ctx.staleness_ms(track))
             unknown = self._unknown_input(track, staleness_ms)
             if unknown is not None:
@@ -241,8 +300,29 @@ class EntryPredictionRule:
                     yield finding
 
     def _targets(self, ctx: RuleContext) -> tuple[_Target, ...]:
-        """예측 대상 영역. R2 가 생기면 등록 작업면 가장자리 위험 띠를 여기에 더한다(R2 연결 자리)."""
+        """R1 구역 예측 대상."""
         return tuple(_Target(zone=z, polygon=z.polygon_xy) for z in ctx.zones)
+
+    def _edge_targets(
+        self,
+        track: WorldTrack,
+        ctx: RuleContext,
+        edges: tuple[HazardEdge, ...],
+        ranges: tuple[HorizontalRange, ...],
+    ) -> tuple[_Target, ...]:
+        """그 사람이 선 층의 R2 위험 가장자리 예측 대상. 접지점이 없으면(서 있는 층 모름) 비운다(R2 가 확인 필요로 맡는다)."""
+        if not edges:
+            return ()
+        st = standing(track, ctx.work_surfaces, ranges, tolerance_m=self._tol)
+        if st.basis is StandingBasis.UNKNOWN:
+            return ()
+        level = {s.surface_id for s in st.surfaces}
+        held = st.basis is StandingBasis.HELD
+        return tuple(
+            _Target(zone=None, polygon=e.segment, reach_m=self._edge_reach, held=held)
+            for e in edges
+            if e.surface_id in level
+        )
 
     def _unknown_input(self, track: WorldTrack, staleness_ms: int) -> str | None:
         """속도를 믿을 수 없으면 그 세부 코드, 믿을 수 있으면 None."""
@@ -264,7 +344,7 @@ class EntryPredictionRule:
         """속도를 모르는 사람의 유지 판정(가장 가까운 구역 하나). 지금 범위가 구역에 걸리면 R1 이 맡아 내지 않는다."""
         best: tuple[float, _Target] | None = None
         for target in targets:
-            gap = min(r.gap_to(target.polygon) for r in ranges)
+            gap = min(r.gap_to(target.polygon) for r in target.ranges(ranges))
             if gap <= self._tol:
                 return None
             if best is None or gap < best[0]:
@@ -272,15 +352,19 @@ class EntryPredictionRule:
         assert best is not None  # targets 가 비지 않는다
         target = best[1]
         confidence = track_confidence_reasons(track) - {ConfidenceReason.PREDICTED}
+        if target.held:
+            confidence.add(ConfidenceReason.PREDICTED)
+        reasons = (REASON_INPUT_UNKNOWN, code) + (() if target.zone is not None else (REASON_TARGET_EDGE,))
+        distance = min(distance_outside_polygon(r.center, target.polygon) for r in ranges)
         return Finding(
             rule_id=self._spec.rule_id,
             rule_version=self._spec.rule_version,
             severity=R5_SEVERITY,
             world_ids=(track.world_id,),
-            zone_id=target.zone.zone_id,
+            zone_id=target.zone_id,
             confidence_reasons=tuple(confidence),
-            reasons=(REASON_INPUT_UNKNOWN, code),
-            metrics={"zone_distance_m": min(distance_outside_polygon(r.center, target.polygon) for r in ranges)},
+            reasons=reasons,
+            metrics={target.distance_metric: distance},
             holding=True,
         )
 
@@ -294,14 +378,18 @@ class EntryPredictionRule:
         staleness_s: float,
     ) -> Finding | None:
         polygon = target.polygon
-        # 관측 위치의 범위가 이미 걸리면 R1 이 맡는다.
+        center_ranges = ranges
+        ranges = target.ranges(ranges)
+        # 관측 위치의 범위가 이미 걸리면 R1(가장자리 대상이면 R2)이 맡는다.
         if any(r.overlaps(polygon, tolerance_m=self._tol) for r in ranges):
             return None
         zone = target.zone
         reasons: list[str] = []
         confidence: set[ConfidenceReason] = set()
         z_holding = False
-        if zone.judge_type is ZoneJudgeType.VOLUME_3D and zone.z_range is not None:  # Zone 이 z_range 를 보장한다
+        volume = zone is not None and zone.judge_type is ZoneJudgeType.VOLUME_3D and zone.z_range is not None
+        if volume:
+            assert zone is not None and zone.z_range is not None  # Zone 이 z_range 를 보장한다
             if height.bottom is None or height.top is None:
                 confidence.add(ConfidenceReason.Z_UNKNOWN)
             else:
@@ -338,21 +426,25 @@ class EntryPredictionRule:
         reasons.append(REASON_PREDICTED_ENTRY if within_horizon else REASON_PREDICTED_CLEAR_HORIZON)
         if lead_s == 0.0:
             reasons.append(REASON_PREDICTED_TOUCHING_NOW)
-        if zone.judge_type is ZoneJudgeType.VOLUME_3D and height.bottom is not None and height.top is not None:
+        if volume and height.bottom is not None and height.top is not None:
             reasons.append(REASON_Z_CLEAR_MARGIN if z_holding else REASON_Z_OVERLAP)
+        if zone is None:
+            reasons.append(REASON_TARGET_EDGE)
 
         metrics = {
             "time_to_entry_s": round(lead_s, 3),  # 표시용 ms 반올림. 비교는 위에서 연속 값으로 했다
             "speed_mps": math.sqrt(vx * vx + vy * vy),
-            "zone_distance_m": min(distance_outside_polygon(r.center, polygon) for r in ranges),
+            target.distance_metric: min(distance_outside_polygon(r.center, polygon) for r in center_ranges),
         }
         confidence |= track_confidence_reasons(track)
+        if target.held:
+            confidence.add(ConfidenceReason.PREDICTED)
         return Finding(
             rule_id=self._spec.rule_id,
             rule_version=self._spec.rule_version,
             severity=R5_SEVERITY,
             world_ids=(track.world_id,),
-            zone_id=zone.zone_id,
+            zone_id=target.zone_id,
             confidence_reasons=tuple(confidence),  # Finding 이 선언 순서로 정렬하고 needs_check 를 맞춘다
             reasons=tuple(reasons),
             metrics=metrics,
