@@ -11,6 +11,9 @@
   reason 등)도 저장하거나 다시 던지기 전에 등록한 비밀 값을 가린다. websockets 는 DEBUG 로그에 요청 헤더를 그대로
   찍으므로 연결 로거에 가림 필터를 단다(DEBUG 를 켜도 토큰이 나가지 않는다).
 - 환경 프록시를 따르지 않는다(proxy=None). Pod 에서 EC2 로 바로 붙는다.
+- TLS 상태는 한 번에 한 스레드만 만진다(serial_tls.SerialTLSSocket, S15P31A101-175). websockets 동기 연결은 수신 스레드가
+  recv 에 머무는 동안 다른 스레드가 send 하므로, ssl.SSLSocket 이면 서버의 TLS 1.3 세션 티켓 처리와 업그레이드 요청 쓰기가
+  한 SSL 객체에서 겹쳐 요청이 깨지거나 프로세스가 죽는다. 메모리 BIO + SSLObject 를 잠금으로 감싸고 소켓 입출력은 잠금 밖에서 한다.
 
 재연결
 - 연결 실패·끊김마다 지수 백오프(endpoint_registration.Backoff: 1s·2s·4s… 상한 30s, 실패 횟수가 아무리 커도 상한으로
@@ -68,6 +71,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from services.tier0.endpoint_registration import DEFAULT_TIER0_ID, Backoff
+from services.tier0.serial_tls import SerialTLSContext, SerialTLSSocket
 from simai_ai.risk import Clock
 from simai_ai.tracking.world_state import WORLD_STATE_SCHEMA_VERSION
 
@@ -312,11 +316,16 @@ class I1ConnectError(ConnectionError):
 
 
 def client_ssl_context(ca_file: str | None = None) -> ssl.SSLContext:
-    """시스템 신뢰 저장소 + (선택) 사설 CA. 체인·호스트 이름 검증을 켠 컨텍스트만 만든다."""
+    """시스템 신뢰 저장소 + (선택) 사설 CA. 체인·호스트 이름 검증을 켠 컨텍스트만 만든다.
+
+    TLS 1.2 재협상은 받지 않는다(OP_NO_RENEGOTIATION). 받아들이면 쓰기 중에 읽기가 필요해지는데, SerialTLSSocket 은 그 상태를
+    지원하지 않고 끊는다. 재협상 요청은 경고로 거절하고 연결은 그대로 쓴다.
+    """
     context = ssl.create_default_context()
     if ca_file:
         context.load_verify_locations(cafile=ca_file)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.options |= ssl.OP_NO_RENEGOTIATION
     return context
 
 
@@ -327,7 +336,8 @@ def require_verifying(context: ssl.SSLContext) -> None:
 
 
 class WebSocketConnector:
-    """websockets 동기 클라이언트로 wss 에 붙는다. 토큰은 Authorization 헤더에만 싣는다.
+    """websockets 동기 클라이언트로 wss 에 붙는다. 토큰은 Authorization 헤더에만 싣는다. TLS 는 SerialTLSSocket 으로 한다
+    (연결의 socket 이 SerialTLSSocket 이다. 검증은 넘겨받은 SSLContext 그대로).
 
     ping_interval_s·ping_timeout_s: websockets keepalive(Pong 이 없으면 끊는다). I1 아래로는 상시 하트비트가 계약에 없어
     진행 판정(watchdog)은 서버와 맞출 일이다(MR 남은 일).
@@ -374,7 +384,7 @@ class WebSocketConnector:
             # 17.1 부터 connect() 는 with 로 쓰라고 경고한다. __enter__ 는 연결을 그대로 돌려준다(이전 판도 같다)
             return connect(
                 self._url,
-                ssl=self._ssl,
+                ssl=SerialTLSContext(self._ssl),  # type: ignore[arg-type]  # wrap_socket 만 쓴다(serial_tls)
                 additional_headers={"Authorization": f"Bearer {self._token}"},
                 open_timeout=self._open_timeout_s,
                 ping_interval=self._ping_interval_s,
@@ -935,23 +945,32 @@ def abort_connection(conn: Connection) -> None:
     """하위 소켓을 shutdown 해 막힌 send·recv 를 바로 풀고, close 는 별도 스레드에서 한다(호출자는 기다리지 않는다).
 
     websockets 동기 연결의 close 는 send 와 같은 잠금을 잡고 닫기 프레임을 보내므로 상대가 읽지 않으면 막힌다.
-    SSLSocket.shutdown 은 TLS 객체를 떼어 내므로 쓰지 않고 OS 소켓의 shutdown 만 부른다. socket 이 없는 연결(시험용)은 close 만.
+    TLS 객체는 건드리지 않고 OS 소켓의 shutdown 만 부른다(SerialTLSSocket 이면 그 OS 소켓, ssl.SSLSocket 이면 SSLSocket.shutdown
+    이 TLS 객체를 떼어 내므로 socket.socket.shutdown). socket 이 없는 연결(시험용)은 close 만.
 
     Windows 는 다른 스레드(websockets 수신)가 recv 에 막혀 있으면 shutdown 으로 막힌 send 가 풀리지 않는다. 그 핸들의 대기
     입출력을 CancelIoEx 로 취소해 풀고, 핸들은 닫지 않는다. 핸들은 연결의 원래 닫기 경로(close_async → websockets
-    close_socket → SSLSocket.close)만 닫는다. 그 경로는 TLS 객체를 먼저 떼어 내므로 닫힌 뒤의 늦은 송수신이 OpenSSL 로
-    가지 않는다. C 수준 close 로 핸들을 먼저 닫으면 OpenSSL BIO 가 닫힌 핸들 번호를 계속 들고 있어, 그 번호를 이어받은
-    다른 소켓에 늦은 SSL_write 가 쓸 수 있다(S15P31A101-173).
+    close_socket → 소켓 close)만 닫는다. C 수준 close 로 핸들을 먼저 닫으면 그 번호를 이어받은 다른 소켓에 늦은 쓰기가 닿을
+    수 있다(S15P31A101-173). SerialTLSSocket 은 OpenSSL 이 OS 핸들을 들고 있지 않아 닫힌 뒤의 늦은 쓰기는 파이썬 소켓에서
+    오류로 끝난다.
     """
     sock = getattr(conn, "socket", None)
+    if isinstance(sock, SerialTLSSocket):
+        sock = sock.raw
     if isinstance(sock, socket.socket):
-        try:
-            socket.socket.shutdown(sock, socket.SHUT_RDWR)  # Linux: 막힌 send·recv 가 바로 풀린다
-        except OSError:
-            pass
-        if _WINDOWS:
-            _cancel_pending_io(sock)
+        interrupt_socket(sock)
     close_async(conn)
+
+
+def interrupt_socket(sock: socket.socket) -> None:
+    """OS 소켓을 shutdown 해 막힌 send·recv 를 풀고(Linux), Windows 는 그 핸들의 대기 입출력도 취소한다. 핸들은 닫지 않는다
+    (닫기는 소켓 주인의 원래 경로가 한다). abort_connection 과 I0 제어 채널의 핸드셰이크 중단이 쓴다."""
+    try:
+        socket.socket.shutdown(sock, socket.SHUT_RDWR)  # Linux: 막힌 send·recv 가 바로 풀린다
+    except OSError:
+        pass
+    if _WINDOWS:
+        _cancel_pending_io(sock)
 
 
 def _cancel_pending_io(sock: socket.socket) -> None:
