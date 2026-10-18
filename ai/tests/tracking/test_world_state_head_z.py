@@ -9,6 +9,7 @@
 """
 
 import copy
+import dataclasses
 import json
 import math
 from pathlib import Path
@@ -143,7 +144,11 @@ def test_counterexample_head_joints_missing_is_unavailable(contract_errors):
 
 
 def test_previous_versions_still_pass_and_risk_input_ignores_new_field(contract_errors):
-    """이전 버전 문서(1.2.0·1.3.0, head_z_validity 없음)는 그대로 통과하고, Risk 입력은 새 필드를 무시한다."""
+    """이전 버전 문서(1.2.0·1.3.0, head_z_validity 없음)는 그대로 통과하고, Risk 입력은 새 필드만 더 읽는다.
+
+    S15P31A101-177 부터 Risk 입력(risk.world)은 head_z_validity 를 읽는다(R4 머리 높이 근거). 필드를 뺀 문서는 None(이전 버전,
+    이유 모름)이고 나머지 값은 같다.
+    """
     for name in ("world_state.pre_1_3.json", "world_state.surface_inferred.json"):
         old = json.loads((EXAMPLES / name).read_text(encoding="utf-8"))
         assert old["schema_version"] in {"1.2.0", "1.3.0"}
@@ -154,4 +159,9 @@ def test_previous_versions_still_pass_and_risk_input_ignores_new_field(contract_
     stripped = copy.deepcopy(new)
     for tr in stripped["payload"]["tracks"]:
         tr.pop("head_z_validity")
-    assert WorldState.from_payload(new["payload"]) == WorldState.from_payload(stripped["payload"])
+    parsed, legacy = WorldState.from_payload(new["payload"]), WorldState.from_payload(stripped["payload"])
+    assert [t.head_z_validity for t in legacy.tracks] == [None] * len(legacy.tracks)
+    assert [str(t.head_z_validity) for t in parsed.tracks] == [tr["head_z_validity"] for tr in new["payload"]["tracks"]]
+    assert parsed == dataclasses.replace(
+        legacy, tracks=tuple(dataclasses.replace(a, head_z_validity=b.head_z_validity) for a, b in zip(legacy.tracks, parsed.tracks))
+    )

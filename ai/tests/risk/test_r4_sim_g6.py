@@ -16,7 +16,9 @@
   표본 부족(`sample_short`)으로 함께 적는다. SIM 지표는 제품 성능으로 쓰지 않는다(AGENTS.md 규칙 7).
 
 변형: 정답 머리 높이, 잡음(머리 σ 0.05 m·접지 Z σ 0.02 m, G2 p95 10 cm 수준), 잡음 + 표본 30% 의 머리 근거 UNCERTAIN(head_z
-null, skeleton 귀·눈 UNCERTAIN → R4 가 귀·눈 + 오프셋으로 다시 만들고 JOINT_UNCERTAIN). 기본 시험은 짧게(2주기) 돈다. 길게 재려면:
+null, skeleton 귀·눈 UNCERTAIN → R4 가 귀·눈 + 오프셋으로 다시 만들고 JOINT_UNCERTAIN). 시뮬레이터 출력은 head_z_validity 가
+없는 이전 버전 형식이라, 같은 변형을 world_state 1.4.0 형식(head_z_validity VALID·UNCERTAIN·UNAVAILABLE, 송신 측
+tracking.world_state 와 같은 규칙)으로도 돌려 결과가 같은지 본다(S15P31A101-177). 기본 시험은 짧게(2주기) 돈다. 길게 재려면:
 
     SIMAI_G6R4_CYCLES=60 uv run pytest tests/risk/test_r4_sim_g6.py -s
 """
@@ -234,8 +236,11 @@ class G6R4Result:
         return values[min(len(values) - 1, max(0, math.ceil(q * len(values)) - 1))] if values else math.nan
 
 
-def _perturb(track: dict, rng: random.Random, head_sigma: float, anchor_sigma: float, uncertain_ratio: float) -> dict:
+def _perturb(
+    track: dict, rng: random.Random, head_sigma: float, anchor_sigma: float, uncertain_ratio: float, v14: bool = False
+) -> dict:
     track = json.loads(json.dumps(track))
+    made_uncertain = False
     if track["head_z"] is not None and head_sigma:
         track["head_z"] += rng.gauss(0.0, head_sigma)
     if track["ground_anchor_xyz"] is not None and anchor_sigma:
@@ -248,16 +253,25 @@ def _perturb(track: dict, rng: random.Random, head_sigma: float, anchor_sigma: f
                 skeleton["joints"][j][2] += rng.gauss(0.0, head_sigma)
     if uncertain_ratio and skeleton is not None and rng.random() < uncertain_ratio:
         # 관절 게이트가 머리 근거를 UNCERTAIN 으로 둔 표본: head_z 는 null(VALID 일 때만 실림), 귀·눈은 UNCERTAIN
+        made_uncertain = track["head_z"] is not None
         track["head_z"] = None
         for j in (1, 2, 3, 4):
             if skeleton["validity"][j] == "VALID":
                 skeleton["validity"][j] = "UNCERTAIN"
+    if v14:
+        # world_state 1.4.0: 값이 있으면 VALID, 게이트가 UNCERTAIN 귀·눈으로만 값을 만들었으면 UNCERTAIN(값 null), 좌표 있는
+        # 귀·눈이 없으면 UNAVAILABLE(tracking.world_state._head_z 와 같은 규칙)
+        if track["head_z"] is not None:
+            track["head_z_validity"] = "VALID"
+        else:
+            track["head_z_validity"] = "UNCERTAIN" if made_uncertain else "UNAVAILABLE"
+            track.pop("head_z_sigma", None)
     return track
 
 
 def measure(
     out: Path, *, head_sigma: float = 0.0, anchor_sigma: float = 0.0, uncertain_ratio: float = 0.0, seed: int = 0,
-    lag_ms: int = 200,
+    lag_ms: int = 200, v14: bool = False,
 ) -> G6R4Result:  # fmt: skip
     rng = random.Random(seed)
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
@@ -274,7 +288,7 @@ def measure(
     uncertain = 0
     lost_path = 0
     for row in rows:
-        tracks = [_perturb(t, rng, head_sigma, anchor_sigma, uncertain_ratio) for t in row["tracks"]]
+        tracks = [_perturb(t, rng, head_sigma, anchor_sigma, uncertain_ratio, v14) for t in row["tracks"]]
         world = WorldState.from_payload(
             {"t_latest_global": row["t"], "calibration_version": row["calibration_version"], "scene_version": "sim",
              "tracks": tracks}
@@ -370,3 +384,26 @@ def test_g6_r4_on_simulator(sim_outs, label, head_sigma, anchor_sigma, uncertain
         assert result.uncertain_events > 0  # UNCERTAIN 머리 근거로 난 낙상 의심에는 확인 필요가 붙는다
     else:
         assert result.uncertain_events == 0
+
+
+@pytest.mark.parametrize(
+    ("head_sigma", "anchor_sigma", "uncertain_ratio"),
+    [(0.0, 0.0, 0.0), (0.05, 0.02, 0.3)],
+    ids=["정답", "잡음+UNCERTAIN 30%"],
+)
+def test_g6_r4_v14_head_z_validity_matches_legacy(sim_outs, head_sigma, anchor_sigma, uncertain_ratio):
+    # 같은 SIM 입력을 world_state 1.4.0 형식(head_z_validity)으로 넣어도 결과가 이전 버전 형식과 같다(S15P31A101-177).
+    # VALID 는 head_z, UNCERTAIN 은 skeleton UNCERTAIN 귀·눈 + 오프셋, UNAVAILABLE 은 모름으로 읽는다.
+    def run_all(v14):
+        return G6R4Result.combine(
+            [
+                measure(out, head_sigma=head_sigma, anchor_sigma=anchor_sigma, uncertain_ratio=uncertain_ratio,
+                        seed=seed, v14=v14)
+                for out, seed in sim_outs
+            ]
+        )  # fmt: skip
+
+    new, legacy = run_all(True), run_all(False)
+    print(report(f"G6-R4 SIM 1.4.0({'잡음+UNCERTAIN' if uncertain_ratio else '정답'})", new))
+    assert new == legacy
+    assert new.status == STATUS_MET and sum(new.false_alarms.values()) == 0

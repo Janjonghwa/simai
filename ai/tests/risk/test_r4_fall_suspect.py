@@ -22,6 +22,7 @@ from simai_ai.risk.rules.r4_fall_suspect import (
     R4_HEAD_TOP_OFFSET_M,
     REASON_HEAD_DROP,
     REASON_HEAD_UNAVAILABLE,
+    REASON_HEAD_UNCERTAIN,
     REASON_INPUT_UNKNOWN,
     REASON_LOST_AFTER_DROP,
     REASON_LOW_POSTURE,
@@ -53,8 +54,12 @@ def track(
     world_id="w-0001",
     skeleton=None,
     cameras=("cam1", "cam2"),
+    validity=None,
 ):
-    """world_track JSON. head=None 이면 head_z null, support=None 이면 접지 모름(Z=0 으로 채우지 않음)."""
+    """world_track JSON. head=None 이면 head_z null, support=None 이면 접지 모름(Z=0 으로 채우지 않음).
+
+    validity 를 주면 head_z_validity(world_state 1.4.0)를 싣고, None 이면 싣지 않는다(이전 버전 문서).
+    """
     anchor = None if support is None else [1.0, 1.0, support]
     doc = {
         "world_id": world_id,
@@ -76,6 +81,8 @@ def track(
     }
     if skeleton is not None:
         doc["skeleton"] = skeleton
+    if validity is not None:
+        doc["head_z_validity"] = validity
     return doc
 
 
@@ -704,8 +711,221 @@ def test_low_started_inside_window_may_hold_past_window():
 
 
 def test_head_top_offset_matches_tier0_joint_gate():
-    # R4 가 UNCERTAIN 귀·눈으로 다시 만드는 머리 높이는 Tier 0 head_z 와 같은 오프셋이어야 한다(단차 방지)
+    # R4 가 UNCERTAIN 귀·눈으로 다시 만드는 머리 높이는 Tier 0 head_z 와 같은 오프셋이어야 한다(단차 방지).
+    # head_z_validity(1.4.0) 뒤에도 UNCERTAIN 값은 계약에 없어 이 경로가 남는다(모듈 설명).
     pytest.importorskip("numpy")
     from simai_ai.geometry.joint_gate import JointGateConfig
 
     assert JointGateConfig().head_top_offset_m == R4_HEAD_TOP_OFFSET_M
+
+
+# --- world_state 1.4.0 head_z_validity (S15P31A101-177) -------------------------------------------
+
+
+def v14(head, validity=None, **kwargs):
+    """1.4.0 문서의 트랙 kwargs. validity 를 안 주면 head 가 있으면 VALID, 없으면 UNAVAILABLE."""
+    if validity is None:
+        validity = "VALID" if head is not None else "UNAVAILABLE"
+    return {"head": head, "validity": validity, **kwargs}
+
+
+def uncertain(head_top, **kwargs):
+    """1.4.0 UNCERTAIN 표본: head_z null, skeleton 귀·눈 UNCERTAIN(Tier 0 게이트가 낸 그대로)."""
+    return {"head": None, "validity": "UNCERTAIN", "skeleton": head_skeleton(head_top), **kwargs}
+
+
+def no_value(validity):
+    """값 없는 1.4.0 표본(UNAVAILABLE, 또는 귀·눈 좌표가 실리지 않은 UNCERTAIN)."""
+    return {"head": None, "validity": validity}
+
+
+FALL_PROFILE = hold(0, 1000, HEIGHT) + ramp(1000, 1800, HEIGHT, 0.2) + hold(1800, 6000, 0.2)
+
+
+def summary(result):
+    """비교용: 발생·해소 전이(시각, 전이, 확인 필요 이유, 근거 코드)."""
+    return [
+        (dt, tr.transition, tr.state.confidence_reasons, tr.state.reasons)
+        for dt, tr in transitions(result)
+        if tr.transition in (Lifecycle.RAISED, Lifecycle.RESOLVED)
+    ]
+
+
+def test_v14_valid_fall_uses_head_z_and_does_not_reread_skeleton():
+    # VALID 면 head_z 를 그대로 쓴다. 이전 버전 문서였다면 'skeleton 에 VALID 귀·눈이 없음'으로 UNCERTAIN 이 됐을 장면에서도
+    # head_z_validity 가 VALID 라고 하므로 확정 근거다(skeleton 을 다시 보지 않는다).
+    no_valid_ears = head_skeleton(HEIGHT, validity="UNAVAILABLE")
+    result, _ = run([(dt, v14(h, skeleton=no_valid_ears)) for dt, h in FALL_PROFILE])
+    ((dt, tr),) = raised(result)
+    assert tr.state.confidence_reasons == () and tr.state.reasons == (REASON_HEAD_DROP, REASON_LOW_SUSTAINED)
+    legacy, _ = run([(dt, {"head": h, "skeleton": no_valid_ears}) for dt, h in FALL_PROFILE])
+    ((dt_legacy, tr_legacy),) = raised(legacy)
+    assert dt_legacy == dt and tr_legacy.state.confidence_reasons == (ConfidenceReason.JOINT_UNCERTAIN,)
+
+
+def test_v14_uncertain_head_raises_fall_with_joint_uncertain_like_legacy():
+    # 단상 낙상처럼 머리 근거가 내내 UNCERTAIN(계약에 값 없음): skeleton UNCERTAIN 귀·눈으로 다시 만들어 '낙상 의심 + 확인
+    # 필요'(CRITICAL 유지). 이전 버전 문서(head_z null + skeleton UNCERTAIN)와 발생·해소 전이가 같다.
+    profile = hold(0, 1000, 2.10) + ramp(1000, 1800, 2.10, 0.55) + hold(1800, 6000, 0.55)
+    standing = hold(6100, 10000, 2.10)
+    result, _ = run(
+        [(dt, uncertain(h, support=0.4)) for dt, h in profile] + frames(standing, validity="VALID", support=0.4)
+    )
+    ((_, tr),) = raised(result)
+    assert tr.state.severity is Severity.CRITICAL
+    assert tr.state.confidence_reasons == (ConfidenceReason.JOINT_UNCERTAIN,)
+    assert tr.state.metrics["head_height_m"] == pytest.approx(0.15)
+    legacy, _ = run(
+        [(dt, {"head": None, "skeleton": head_skeleton(h), "support": 0.4}) for dt, h in profile]
+        + frames(standing, support=0.4)
+    )
+    assert summary(result) == summary(legacy)
+    assert transitions(result)[-1][1].transition is Lifecycle.RESOLVED
+
+
+@pytest.mark.parametrize("ears", [("VALID", "observed"), ("UNCERTAIN", "inferred")], ids=["valid-ears", "inferred"])
+def test_v14_uncertain_uses_only_observed_uncertain_ears(ears):
+    # UNCERTAIN 은 게이트의 UNCERTAIN 값(관측 UNCERTAIN 귀·눈)만 다시 만든다. 어긋난 skeleton(VALID 귀·눈만)이나 추정
+    # (inferred) 귀·눈으로는 만들지 않고 머리 높이를 모름(head_uncertain)으로 둔다: 넘어지는 귀·눈이 보여도 발생 없음, 유지만.
+    validity, source = ears
+    scene = [
+        (dt, {"head": None, "validity": "UNCERTAIN", "skeleton": head_skeleton(h, validity, source)})
+        for dt, h in FALL_PROFILE
+    ]
+    result, _ = run(scene)
+    assert raised(result) == []
+    assert {f.reasons for _, fs, _, _ in result for f in fs} == {(REASON_INPUT_UNKNOWN, REASON_HEAD_UNCERTAIN)}
+    assert all(f.holding and ConfidenceReason.JOINT_UNCERTAIN in f.confidence_reasons for _, fs, _, _ in result for f in fs)
+
+
+def test_v14_unavailable_is_not_rebuilt_from_skeleton():
+    # UNAVAILABLE 이면 skeleton 에 귀·눈 좌표가 있어도 다시 만들지 않는다(송신 측이 값을 못 냈다고 했다). 이전 버전 문서였다면
+    # VALID 귀·눈으로 다시 만들어 발생했을 장면이다(대조).
+    profile = ramp(1100, 1800, 1.5, 0.2) + hold(1800, 6000, 0.2)
+    result, _ = run(
+        frames(hold(0, 1000, HEIGHT), validity="VALID")
+        + [(dt, v14(None, skeleton=head_skeleton(h, "VALID"))) for dt, h in profile]
+    )
+    assert raised(result) == []
+    assert {f.reasons for _, fs, _, _ in result for f in fs} == {(REASON_INPUT_UNKNOWN, REASON_HEAD_UNAVAILABLE)}
+    legacy, _ = run(
+        frames(hold(0, 1000, HEIGHT)) + [(dt, {"head": None, "skeleton": head_skeleton(h, "VALID")}) for dt, h in profile]
+    )
+    assert len(raised(legacy)) == 1
+
+
+@pytest.mark.parametrize("validity", ["UNAVAILABLE", "UNCERTAIN"])
+def test_v14_head_lost_right_after_drop_raises_joint_uncertain_and_holds(validity):
+    # 반례: 급하강(VALID) 직후 머리 근거가 UNAVAILABLE(또는 귀·눈 값 없는 UNCERTAIN)이 됨 → 바로 발생(급하강 직후 관측 상실,
+    # JOINT_UNCERTAIN). 근거가 없는 동안 해소하지 않고, 서 있는 VALID 머리가 보이면 판정 없이 3초 뒤 해소.
+    code = REASON_HEAD_UNAVAILABLE if validity == "UNAVAILABLE" else REASON_HEAD_UNCERTAIN
+    drop = frames(hold(0, 1000, HEIGHT) + ramp(1000, 1500, HEIGHT, 0.85), validity="VALID")
+    lost = [(dt, no_value(validity)) for dt in range(1600, 8000, STEP)]
+    standing = frames(hold(8000, 12000, HEIGHT), validity="VALID")
+    result, _ = run(drop + lost + standing)
+    ((dt, tr),) = raised(result)
+    assert dt == 1700  # 상실 첫 판정 + 지속 조건 2프레임째
+    assert tr.state.confidence_reasons == (ConfidenceReason.JOINT_UNCERTAIN,) and tr.state.needs_check
+    assert tr.state.reasons == (REASON_HEAD_DROP, REASON_LOST_AFTER_DROP, code)
+    assert tr.state.verification is Verification.VERIFIED  # 트랙은 보인다: 발생 판정이 해소를 막는다
+    ((dt_res, _),) = resolved(result)
+    assert dt_res == 8000 + 3000
+
+
+@pytest.mark.parametrize("validity", ["UNAVAILABLE", "UNCERTAIN"])
+def test_v14_head_unknown_after_fall_never_resolves(validity):
+    # 반례: 발생 뒤 머리 근거가 UNAVAILABLE·값 없는 UNCERTAIN 5초 → 모르는 상태로 해소하지 않는다(6.4)
+    scene = fall(validity="VALID") + [(dt, no_value(validity)) for dt in range(6100, 11100, STEP)]
+    result, _ = run(scene)
+    assert len(raised(result)) == 1 and resolved(result) == []
+
+
+def _gap(kind, head_top):
+    if kind == "uncertain-skeleton":
+        return uncertain(head_top)
+    return no_value("UNCERTAIN" if kind == "uncertain-no-value" else "UNAVAILABLE")
+
+
+GAPS = ["uncertain-skeleton", "uncertain-no-value", "unavailable"]
+
+
+@pytest.mark.parametrize("gap", GAPS)
+def test_v14_valid_uncertain_flicker_while_falling_still_raises(gap):
+    # 반례: VALID → UNCERTAIN → VALID 깜빡임(표본 절반) 중 넘어짐. 놓치지 않는다. UNCERTAIN 값이 급하강·낮은 자세 근거에
+    # 섞였으면 확인 필요다. 값 없는 표본은 급하강 직후 관측 상실(JOINT_UNCERTAIN)로 먼저 발생 판정을 내고, 다음 VALID 표본이
+    # 낮은 자세를 확인하면 그 근거(VALID)로 잇는다(이전 버전 문서의 head_z null 깜빡임과 같다).
+    scene = [(dt, v14(h) if (dt // STEP) % 2 == 0 else _gap(gap, h)) for dt, h in FALL_PROFILE]
+    result, _ = run(scene)
+    ((dt, tr),) = raised(result)
+    assert tr.state.severity is Severity.CRITICAL
+    plain, _ = run(frames(FALL_PROFILE, validity="VALID"))
+    assert dt <= raised(plain)[0][0]  # 깜빡임이 발생을 늦추지 않는다
+    if gap == "uncertain-skeleton":
+        assert ConfidenceReason.JOINT_UNCERTAIN in tr.state.confidence_reasons
+    else:
+        lost = [f for _, fs, _, _ in result for f in fs if REASON_LOST_AFTER_DROP in f.reasons]
+        assert lost and all(ConfidenceReason.JOINT_UNCERTAIN in f.confidence_reasons for f in lost)
+
+
+@pytest.mark.parametrize("gap", GAPS)
+def test_v14_valid_uncertain_flicker_while_standing_does_not_raise(gap):
+    # 반례: 서 있는 사람의 VALID·UNCERTAIN·UNAVAILABLE 깜빡임은 발생하지 않는다. 다시 만든 UNCERTAIN 값이 Tier 0 와 같은
+    # 오프셋이라 VALID head_z 와 단차(가짜 급하강)가 없다.
+    scene = [(dt, v14(HEIGHT) if (dt // STEP) % 2 == 0 else _gap(gap, HEIGHT)) for dt in range(0, 8000, STEP)]
+    result, _ = run(scene)
+    assert raised(result) == []
+    assert raising_findings(result) == []
+
+
+def test_v14_uncertain_gap_during_low_hold_keeps_fall():
+    # 반례: 급하강·낮은 자세(VALID) 뒤 유지 시간 중 1초 동안 UNCERTAIN(귀·눈 값 있음)이 끼어도 발생 시각이 같고 확인 필요가 붙는다
+    plain, _ = run(fall(validity="VALID"))
+    ((dt_plain, _),) = raised(plain)
+    scene = [(dt, uncertain(spec["head"]) if 2500 <= dt < 3500 else spec) for dt, spec in fall(validity="VALID")]
+    result, _ = run(scene)
+    ((dt, tr),) = raised(result)
+    assert dt == dt_plain
+    assert tr.state.confidence_reasons == (ConfidenceReason.JOINT_UNCERTAIN,)
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"head_z": None, "head_z_validity": "VALID"}, "VALID"),
+        ({"head_z": 1.7, "head_z_validity": "UNCERTAIN"}, "UNCERTAIN"),
+        ({"head_z": 1.7, "head_z_validity": "UNAVAILABLE"}, "UNAVAILABLE"),
+        ({"head_z": None, "head_z_sigma": 0.02, "head_z_validity": "UNCERTAIN"}, "head_z_sigma"),
+        ({"head_z": 1.7, "head_z_validity": None}, "head_z_validity"),
+        ({"head_z": 1.7, "head_z_validity": "valid"}, "head_z_validity"),
+    ],
+    ids=["valid-null", "uncertain-value", "unavailable-value", "uncertain-sigma", "explicit-null", "bad-enum"],
+)
+def test_v14_contract_violations_are_rejected(fields, message):
+    # 반례(계약 위반 입력): head_z_validity 와 head_z 가 어긋나면 지어내지 않고 입력 거부(스키마 조건부 규칙과 같다)
+    from simai_ai.risk._parse import RiskInputError
+
+    doc = track(t=T0)
+    doc.update(fields)
+    with pytest.raises(RiskInputError, match=message):
+        world([doc], T0)
+
+
+def test_v14_valid_without_value_bypassing_parser_is_unknown_not_invented():
+    # 반례: 파서를 우회해 VALID 인데 head_z 가 없는 트랙이 들어와도 값을 지어내지 않고 모름(head_unavailable)으로 둔다
+    import dataclasses
+
+    engine = RiskEngine([FallSuspectRule()], FixedClock(T0 + 100))
+    state = world([track(t=T0, validity="VALID")], T0)
+    broken = dataclasses.replace(state.tracks[0])
+    object.__setattr__(broken, "head_z", None)
+    findings = engine.evaluate(dataclasses.replace(state, tracks=(broken,)), [], Origin.LIVE).findings
+    assert [(f.holding, f.reasons) for f in findings] == [(True, (REASON_INPUT_UNKNOWN, REASON_HEAD_UNAVAILABLE))]
+
+
+def test_legacy_documents_keep_skeleton_reconstruction():
+    # 하위 호환: head_z_validity 가 없는 문서는 지금처럼 읽는다. head_z null + 관측 VALID 귀·눈이면 다시 만들어 확정 근거로 쓴다.
+    result, _ = run([(dt, {"head": None, "skeleton": head_skeleton(h, "VALID")}) for dt, h in FALL_PROFILE])
+    ((_, tr),) = raised(result)
+    assert tr.state.confidence_reasons == ()
+    plain, _ = run(frames(FALL_PROFILE))
+    assert summary(result) == summary(plain)
