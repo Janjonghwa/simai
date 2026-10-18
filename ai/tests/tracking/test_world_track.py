@@ -667,3 +667,34 @@ def test_time_input_uses_filter_sigma_at_t_last_valid(rig):
     assert ti.t_last_valid == tr.t_last_valid and ti.position_xy_sigma == tr.filter_sigma_xy
     state = evaluate_track(ti, tr.t, tr.t + 50)
     assert state.observation_state.value == "PREDICTED"
+
+
+# ---------------------------------------------------------------- 체크포인트 (S15P31A101-51)
+
+
+def test_export_tracks_round_trip_and_restored_state_is_never_observed(rig):
+    """3.2: Track 상태를 체크포인트로 내보내고 되살린다. 되살린 Track 은 재관측 전이므로 OBSERVED 가 아니다."""
+    from simai_ai.tracking.time_model import ObservationState
+    from simai_ai.tracking.world_track import TrackCheckpoint
+
+    m = _manager()
+    frames = _walk(m, rig, 6)
+    last = frames[-1].tracks[0]
+    assert world_track_document(last, last.t)["observation_state"] == "OBSERVED"  # 내보내기 직전에는 관측 중
+    before = m.export_tracks()
+    assert m.export_tracks() == before  # 상태를 바꾸지 않는다
+    (cp,) = before
+    assert (cp.world_id, cp.t_last_valid, cp.lifecycle) == (last.world_id, last.t_last_valid, last.lifecycle)
+    assert cp.position_xyz[:2] == pytest.approx(last.position_xy)
+    assert cp.filter_sigma_xyz[:2] == pytest.approx(last.filter_sigma_xy)
+    assert m.last_t == last.t
+    doc = json.loads(json.dumps(cp.to_record()))
+    restored = TrackCheckpoint.from_record(doc)
+    assert restored == cp and restored.observation_state is ObservationState.UNKNOWN
+    # 관측 상태를 기록에 끼워 넣어도(손상·위조) 받지 않는다
+    with pytest.raises(ValueError, match="모름"):
+        TrackCheckpoint.from_record(doc | {"observation_state": "OBSERVED"})
+    with pytest.raises(ValueError):
+        TrackCheckpoint.from_record(doc | {"position_xyz": [1.0, float("nan"), 0.0]})
+    with pytest.raises(ValueError, match="빠짐"):
+        TrackCheckpoint.from_record({k: v for k, v in doc.items() if k != "t_last_valid"})

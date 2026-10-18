@@ -12,6 +12,7 @@ RunPod Tier 0 전용이다(EC2 컨테이너는 Risk Engine 만 쓰고 저널을 
 
 from simai_ai.eventlog.acked import ACKED_NAME, AckedOffsetError, AckedOffsetStore
 from simai_ai.eventlog.journal import (
+    STATE_META_KEY,
     TRANSITION_KIND,
     EventJournal,
     JournalConfig,
@@ -43,6 +44,7 @@ from simai_ai.eventlog.writer import JournalTimeout, JournalWriter
 __all__ = [
     "ACKED_NAME",
     "SCHEMA_VERSION",
+    "STATE_META_KEY",
     "TRANSITION_KIND",
     "AckedOffsetError",
     "AckedOffsetStore",

@@ -17,6 +17,7 @@
 | 보정 PROVISIONAL / DRIFTED                   | DEGRADED        | 4.4       |
 | 게이트웨이(노트북) 연결 끊김                  | UNSAFE_UNKNOWN  | 6.5       |
 | EC2 연결 끊김(판정·현장 경보는 계속)          | DEGRADED        | 6.5       |
+| 재시작 뒤 재관측·시간 동기화 확보 전(RECOVERING, recovery.RecoveryHealthGate) | UNSAFE_UNKNOWN | 3.2 |
 
 현재 시각(t_risk_now)은 주입받는다. 카메라 수신 중단은 t_latest_global 대비 그 카메라의 경과로 본다.
 전체가 멈추면 카메라끼리의 차이는 없지만 판정 시계가 계속 가므로 lag 로 잡힌다(명세 6.1).
@@ -86,6 +87,8 @@ class HealthReason(StrEnum):
     CLOCK_OFFSET_UNKNOWN = "CLOCK_OFFSET_UNKNOWN"
     CLOCK_OFFSET_INCONSISTENT = "CLOCK_OFFSET_INCONSISTENT"
     CLOCK_OFFSET_UNCERTAIN = "CLOCK_OFFSET_UNCERTAIN"
+    # 재시작 복구 중: 재관측·시간 동기화를 아직 확보하지 못했다(3.2, recovery.RecoveryHealthGate 가 붙인다)
+    RECOVERING = "RECOVERING"
 
 
 _REASON_HEALTH = {
@@ -103,6 +106,7 @@ _REASON_HEALTH = {
     HealthReason.CLOCK_OFFSET_UNKNOWN: SystemHealth.UNSAFE_UNKNOWN,
     HealthReason.CLOCK_OFFSET_INCONSISTENT: SystemHealth.UNSAFE_UNKNOWN,
     HealthReason.CLOCK_OFFSET_UNCERTAIN: SystemHealth.DEGRADED,
+    HealthReason.RECOVERING: SystemHealth.UNSAFE_UNKNOWN,
 }
 
 _CALIBRATION_REASON = {

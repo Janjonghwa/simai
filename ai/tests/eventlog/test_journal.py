@@ -17,7 +17,7 @@ from simai_ai.eventlog import (
 )
 from simai_ai.eventlog._lock import WriterLockError
 from simai_ai.eventlog.journal import is_judgment_transition, segment_name
-from simai_ai.eventlog.record import HEADER_SIZE, decode_at, encode
+from simai_ai.eventlog.record import HEADER_SIZE, decode_at, encode, thaw
 
 ACK_ID = "5b0c7a1e-2f4d-4c8e-9a6b-1d2e3f405162"
 
@@ -88,8 +88,12 @@ def test_journal_records_lifecycle_transitions_and_acks_as_given(tmp_path, live_
         assert entries[1].payload["changes"] == ("ACKNOWLEDGED",)
         assert entries[1].payload["ack"]["actor_id"] == "acct-7"
         # payload 밖 덧붙임: 계약 ack_id, 확인 전이에 없는 판정 근거는 그 이벤트의 직전 근거
-        assert entries[1].meta == {"ack_id": ACK_ID, "evidence_ref": entries[0].payload["evidence_ref"]}
-        assert entries[0].meta == {} and j.has_ack_id(ACK_ID)
+        # meta.state 는 전이 뒤 이벤트의 완전한 상태(재시작 복구용, S15P31A101-51)이고 I1 로 보내지 않는다.
+        states = [t.state.to_record() for s in (raised, acked, *resolved) for t in s.transitions]
+        assert [thaw(e.meta["state"]) for e in entries] == states
+        meta = [{k: v for k, v in e.meta.items() if k != "state"} for e in entries]
+        assert meta[1] == {"ack_id": ACK_ID, "evidence_ref": entries[0].payload["evidence_ref"]}
+        assert meta[0] == {} and j.has_ack_id(ACK_ID)
         assert [e.payload_dict() for e in j.read(0)] == expected
 
 

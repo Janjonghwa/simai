@@ -61,7 +61,19 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
-from simai_ai.risk._parse import RiskInputError, as_int
+from simai_ai.risk._parse import (
+    RiskInputError,
+    as_bool,
+    as_enum,
+    as_int,
+    as_mapping,
+    as_number,
+    as_opt_str,
+    as_str,
+    as_timestamp_ms,
+    reject_unknown_keys,
+    require,
+)
 from simai_ai.risk.alerting import (
     AckActor,
     AlarmStop,
@@ -176,6 +188,26 @@ class AckRecord:
             "target_sequence": self.target_sequence,
             "channel": self.channel,
         }
+
+    @classmethod
+    def from_payload(cls, doc: Any, where: str = "AckRecord") -> "AckRecord":
+        """to_payload 의 역(체크포인트·저널 복원용). 모르는 필드·빠진 필드·형식 위반은 RiskInputError."""
+        doc = as_mapping(doc, where)
+        reject_unknown_keys(doc, set(_ACK_KEYS), where)
+        for key in _ACK_KEYS:
+            require(doc, key, where)
+        target = doc["target_sequence"]
+        return cls(
+            actor=as_enum(AckActor, doc["actor"], f"{where}.actor"),
+            actor_id=as_str(doc["actor_id"], f"{where}.actor_id"),
+            acked_at=as_timestamp_ms(doc["acked_at"], f"{where}.acked_at"),
+            recorded_at=as_timestamp_ms(doc["recorded_at"], f"{where}.recorded_at"),
+            target_sequence=None if target is None else as_int(target, f"{where}.target_sequence", minimum=1),
+            channel=as_opt_str(doc["channel"], f"{where}.channel"),
+        )
+
+
+_ACK_KEYS = ("actor", "actor_id", "acked_at", "recorded_at", "target_sequence", "channel")
 
 
 @dataclass(frozen=True)
@@ -337,6 +369,151 @@ class EventState:
             # 않게). 복원하는 쪽은 이 값과 acks[].target_sequence 를 함께 읽어야 한다(S15P31A101-161).
             "site_alarm_sequence": self.site_alarm_sequence,
         }
+
+    def to_record(self) -> dict[str, Any]:
+        """체크포인트·저널 meta 에 남기는 완전한 상태(S15P31A101-51). to_payload 에 병합 키(key)를 더한 것이다.
+
+        from_record 로 같은 EventState 를 되살린다. 계약 형식이 아니라 Tier 0 내부 형식이다.
+        """
+        doc = self.to_payload()
+        doc["key"] = {"rule_id": self.key.rule_id, "world_ids": list(self.key.world_ids), "zone_id": self.key.zone_id}
+        return doc
+
+    @classmethod
+    def from_record(cls, doc: Any, where: str = "EventState") -> "EventState":
+        """to_record 의 역. 빠진 필드·모르는 필드·형식 위반·파생 필드 불일치는 RiskInputError(지어내지 않는다).
+
+        되살린 상태를 다시 to_record 해 입력과 같은지 본다. 그래서 파생 필드(confidence, acknowledged, group_key,
+        rule_id, source)와 확인 필요 이유가 원래 값과 어긋난 기록(손상)은 받지 않는다.
+        """
+        doc = as_mapping(doc, where)
+        reject_unknown_keys(doc, set(_STATE_KEYS), where)
+        for key in _STATE_KEYS:
+            require(doc, key, where)
+        key_doc = as_mapping(doc["key"], f"{where}.key")
+        reject_unknown_keys(key_doc, {"rule_id", "world_ids", "zone_id"}, f"{where}.key")
+        for name in ("rule_id", "world_ids", "zone_id"):
+            require(key_doc, name, f"{where}.key")
+        key = EventKey(
+            rule_id=as_str(key_doc["rule_id"], f"{where}.key.rule_id"),
+            world_ids=_str_tuple(key_doc["world_ids"], f"{where}.key.world_ids"),
+            zone_id=as_opt_str(key_doc["zone_id"], f"{where}.key.zone_id"),
+        )
+        site_alarm = doc["site_alarm_sequence"]
+        try:
+            state = cls(
+                event_id=as_str(doc["event_id"], f"{where}.event_id"),
+                gateway_id=as_str(doc["gateway_id"], f"{where}.gateway_id"),
+                origin=as_enum(Origin, doc["source"], f"{where}.source"),
+                event_sequence=as_int(doc["event_sequence"], f"{where}.event_sequence", minimum=1),
+                lifecycle=as_enum(Lifecycle, doc["lifecycle"], f"{where}.lifecycle"),
+                key=key,
+                rule_version=as_int(doc["rule_version"], f"{where}.rule_version"),
+                severity=as_enum(Severity, doc["severity"], f"{where}.severity"),
+                needs_check=as_bool(doc["needs_check"], f"{where}.needs_check"),
+                verification=as_enum(Verification, doc["verification"], f"{where}.verification"),
+                world_ids=_str_tuple(doc["world_ids"], f"{where}.world_ids"),
+                origin_world_ids=_str_tuple(doc["origin_world_ids"], f"{where}.origin_world_ids"),
+                zone_id=as_opt_str(doc["zone_id"], f"{where}.zone_id"),
+                metrics=MappingProxyType(
+                    {
+                        as_str(k, f"{where}.metrics"): as_number(v, f"{where}.metrics.{k}")
+                        for k, v in as_mapping(doc["metrics"], f"{where}.metrics").items()
+                    }
+                ),
+                reasons=_str_tuple(doc["reasons"], f"{where}.reasons"),
+                raised_at=as_timestamp_ms(doc["raised_at"], f"{where}.raised_at"),
+                evaluated_at=as_timestamp_ms(doc["evaluated_at"], f"{where}.evaluated_at"),
+                observation_time=as_timestamp_ms(doc["observation_time"], f"{where}.observation_time"),
+                config_version=as_str(doc["config_version"], f"{where}.config_version"),
+                calibration_version=as_str(doc["calibration_version"], f"{where}.calibration_version"),
+                scene_version=as_str(doc["scene_version"], f"{where}.scene_version"),
+                identity_revisions=MappingProxyType(
+                    {
+                        as_str(k, f"{where}.identity_revisions"): as_int(
+                            v, f"{where}.identity_revisions.{k}", minimum=0
+                        )
+                        for k, v in as_mapping(doc["identity_revisions"], f"{where}.identity_revisions").items()
+                    }
+                ),
+                acks=tuple(
+                    AckRecord.from_payload(a, f"{where}.acks[{i}]")
+                    for i, a in enumerate(_sequence(doc["acks"], f"{where}.acks"))
+                ),
+                related_event_id=as_opt_str(doc["related_event_id"], f"{where}.related_event_id"),
+                local_alerted=as_bool(doc["local_alerted"], f"{where}.local_alerted"),
+                confidence_reasons=tuple(
+                    as_enum(ConfidenceReason, r, f"{where}.confidence_reasons[{i}]")
+                    for i, r in enumerate(_sequence(doc["confidence_reasons"], f"{where}.confidence_reasons"))
+                ),
+                resume_count=as_int(doc["resume_count"], f"{where}.resume_count", minimum=0),
+                site_alarm_sequence=None
+                if site_alarm is None
+                else as_int(site_alarm, f"{where}.site_alarm_sequence", minimum=1),
+            )
+        except ValueError as exc:  # normalize_confidence 등
+            if isinstance(exc, RiskInputError):
+                raise
+            raise RiskInputError(f"{where}: {exc}") from exc
+        if state.to_record() != _plain(doc):
+            raise RiskInputError(f"{where}: 파생 필드가 상태와 맞지 않는다(손상된 기록)")
+        return state
+
+
+_STATE_KEYS = (
+    "event_id",
+    "gateway_id",
+    "source",
+    "event_sequence",
+    "lifecycle",
+    "rule_id",
+    "rule_version",
+    "severity",
+    "confidence",
+    "needs_check",
+    "confidence_reasons",
+    "verification",
+    "world_ids",
+    "origin_world_ids",
+    "zone_id",
+    "group_key",
+    "metrics",
+    "reasons",
+    "resume_count",
+    "raised_at",
+    "evaluated_at",
+    "observation_time",
+    "config_version",
+    "calibration_version",
+    "scene_version",
+    "identity_revisions",
+    "acknowledged",
+    "acks",
+    "related_event_id",
+    "local_alerted",
+    "site_alarm_sequence",
+    "key",
+)
+
+
+def _sequence(value: Any, where: str) -> tuple[Any, ...]:
+    """JSON 배열(list) 또는 읽기 전용으로 얼린 배열(tuple, 저널 meta)."""
+    if not isinstance(value, list | tuple):
+        raise RiskInputError(f"{where}: 배열이어야 한다 (받은 값: {type(value).__name__})")
+    return tuple(value)
+
+
+def _str_tuple(value: Any, where: str) -> tuple[str, ...]:
+    return tuple(as_str(v, f"{where}[{i}]") for i, v in enumerate(_sequence(value, where)))
+
+
+def _plain(value: Any) -> Any:
+    """Mapping·tuple 을 dict·list 로 바꾼 복사본(기록 비교용)."""
+    if isinstance(value, Mapping):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_plain(v) for v in value]
+    return value
 
 
 @dataclass(frozen=True)
