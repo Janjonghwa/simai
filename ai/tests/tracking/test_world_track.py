@@ -625,7 +625,9 @@ def test_observation_state_is_separate_from_lifecycle():
 
 
 def test_support_contact_rules(contract_errors):
-    contact = SupportContact((1.0, 2.0, 0.4), (0.05, 0.05, 0.02), "podium", "VALID", "VALID", "VALID")
+    contact = SupportContact(
+        (1.0, 2.0, 0.4), (0.05, 0.05, 0.02), "podium", "VALID", "VALID", "VALID", surface_source="inferred"
+    )
     payload = {
         "t_latest_global": T,
         "calibration_version": "cal-1",

@@ -4,12 +4,22 @@ World Track Manager 결과(`world_track.WorldTrackFrame`)를 계약 형식으로
 
 - 관측 상태(observation_state)는 생명주기와 따로 시간 모델로 정한다: gap = t_latest_global − t_last_valid 를
   `time_model.classify_observation` 에 넣는다(0~200 ms OBSERVED, ~500 ms PREDICTED, 넘으면 UNKNOWN, 명세 6.1).
-- 모르는 값은 비운다. 접지(`ground_anchor_xyz`, 지지 표면)는 ContactEstimator 결과(`SupportContact`)가 있을 때만
-  싣고, 없으면 null·UNKNOWN·UNAVAILABLE 이다. Z=0 으로 채우지 않는다(AGENTS.md 규칙 2).
+- 모르는 값은 비운다. 접지(`ground_anchor_xyz`, 지지 표면)는 ContactEstimator(`simai_ai.contact`) 결과
+  (`SupportContact`)가 있을 때만 싣고, 없으면 null·UNKNOWN·UNAVAILABLE 이다. Z=0 으로 채우지 않는다(AGENTS.md 규칙 2).
+- 지지 표면 출처(`SupportContact.surface_source`: observed = 이번 시각 발목 근거, inferred = 가려진 동안 마지막 유효
+  지지 표면 유지)는 계약 1.1.0 에 필드가 없어 문서에 싣지 않는다(I1 LIVE 계약은 Lead 승인 없이 바꾸지 않는다). 유지
+  중이면 z_validity·contact_validity 가 UNCERTAIN 이고 ground_anchor_sigma 가 커진다. surface_source 는 후속 계약 티켓에서
+  world_state 선택 필드로 추가한다(2026-10-18 승인).
 - `head_z` 는 관절 유효성 게이트가 VALID 로 낸 값만 싣는다. UNCERTAIN·UNAVAILABLE 이면 null 이다(계약에
   head_z 유효성 필드가 없어 UNCERTAIN 값이 확정값처럼 실리지 않게, 사용자 결정·docs/design/tier0-joint-gate.md).
 - `skeleton`·`pelvis_xyz` 는 이번 시각에 클러스터가 붙은 Track 만 있고, 관절은 모두 Tier 0 관측(joint_source observed)이다.
-- `position_xy` 는 관측이 없을 때 t_last_valid 위치를 유지하고 σ 만 키운 값이다(계약 1.1.0 설명, world_track 이 만든다).
+- `position_xy` 는 명세 5.2 순서(골반 XY → 검증된 접지점 XY → 예측값)와 계약 1.1.0 설명(관측이 없으면 t_last_valid
+  시각의 위치를 유지하고 σ 를 속도 상한 × 공백만큼 키운다, 속도로 옮기지 않음)을 함께 따른다. 위치 관측은 두 가지다:
+  골반(world_track, 시각 = track.t_last_valid)과 ContactEstimator 가 발목으로 확인한 접지점(`SupportContact.observed_*`,
+  시각 = observed_at). 더 최근 관측 하나를 고르고, 문서의 위치·σ·t_last_valid·observation_state 를 모두 그 관측 시각
+  기준으로 맞춘다. 같은 시각이면 골반이 우선이다. 접지점을 고르면 σ = 접지점 σ + max_speed_mps × (t − observed_at)
+  이고, 속도(velocity, 선택 필드)는 그 시각의 값을 모르므로 싣지 않는다(골반 필터 속도는 더 이른 시각의 값이다).
+  유지 중(inferred)인 접지점은 위치 관측이 아니다: observed_at 은 마지막으로 발목으로 확인한 시각이다.
 - `input_provenance`(계약 1.1.0 선택 필드)는 `WorldTrackFrame.input_provenance` 가 있으면 payload 에 그대로 싣는다
   (관측과 추정 구분, SIM·DATASET_GT 입력이면 is_upper_bound true).
 현재 시각을 읽지 않는다. 메시지 봉투의 msg_id·sent_at 은 호출자가 넣는다.
@@ -32,15 +42,20 @@ WORLD_STATE_SCHEMA_VERSION = "1.1.0"
 DEFAULT_SOURCE_ID = "tier0-01"
 _VALIDITY = frozenset({"VALID", "UNCERTAIN", "UNAVAILABLE"})
 _SURFACE_VALIDITY = frozenset({"VALID", "UNCERTAIN", "UNKNOWN"})
+_SURFACE_SOURCE = frozenset({"observed", "inferred"})
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 @dataclass(frozen=True)
 class SupportContact:
-    """ContactEstimator 결과 한 사람분 (명세 5.2 접지 추정). 기본값은 "모름"이다.
+    """ContactEstimator(`simai_ai.contact.ContactEstimator`) 결과 한 사람분 (명세 5.2 접지 추정). 기본값은 "모름"이다.
 
     지지 표면이 VALID 가 아니거나 z_validity 가 UNAVAILABLE 이면 ground_anchor_xyz 는 None 이어야 한다(계약 불변 규칙).
-    ContactEstimator 는 아직 없으므로 지금은 기본값(`UNKNOWN_CONTACT`)만 쓴다.
+    surface_source 는 접지점이 있으면 반드시, 없으면 두지 않는다: observed(이번 시각 발목 근거) 또는 inferred(가려진
+    동안 마지막 유효 지지 표면 유지). 계약 1.1.0 에 없는 필드라 문서에 싣지 않는다(후속 계약 티켓에서 world_state
+    선택 필드로 추가한다, 2026-10-18 승인).
+    observed_xy·observed_xy_sigma·observed_at 은 마지막으로 발목으로 확인한 접지점의 수평 위치·σ·시각이다(지금 접지가
+    UNKNOWN 이어도 그 시각의 관측으로 남는다). position_xy 의 접지점 대체에 쓴다. 셋은 함께 있거나 함께 없다.
     """
 
     ground_anchor_xyz: tuple[float, float, float] | None = None
@@ -49,6 +64,11 @@ class SupportContact:
     support_surface_validity: str = "UNKNOWN"
     contact_validity: str = "UNAVAILABLE"
     z_validity: str = "UNAVAILABLE"
+    surface_source: str | None = None
+    observed_xy: tuple[float, float] | None = None
+    observed_xy_sigma: tuple[float, float] | None = None
+    observed_at: int | None = None
+    """마지막으로 발목으로 접지를 확인한 공통 시각(UTC ms). surface_source 가 observed 이면 이번 시각이다"""
 
     def __post_init__(self) -> None:
         if self.support_surface_validity not in _SURFACE_VALIDITY:
@@ -64,6 +84,19 @@ class SupportContact:
             raise ValueError("ground_anchor_xyz 가 없는데 ground_anchor_sigma 가 있다")
         if self.ground_anchor_sigma is not None:
             _require_finite("ground_anchor_sigma", self.ground_anchor_sigma, 3)
+        if (self.surface_source is None) != (self.ground_anchor_xyz is None):
+            raise ValueError("접지점(ground_anchor_xyz)이 있으면 surface_source 가 반드시 있고, 없으면 두지 않는다")
+        if self.surface_source is not None and self.surface_source not in _SURFACE_SOURCE:
+            raise ValueError(f"surface_source 값이 아니다: {self.surface_source}")
+        observed = (self.observed_xy, self.observed_xy_sigma, self.observed_at)
+        if any(v is None for v in observed) and not all(v is None for v in observed):
+            raise ValueError("observed_xy·observed_xy_sigma·observed_at 은 함께 있거나 함께 없다")
+        if self.observed_at is not None:
+            require_ms("observed_at", self.observed_at)
+            _require_finite("observed_xy", self.observed_xy, 2)
+            _require_finite("observed_xy_sigma", self.observed_xy_sigma, 2)
+        if self.surface_source == "observed" and self.observed_at is None:
+            raise ValueError("surface_source 가 observed 이면 observed_at 이 있어야 한다")
 
 
 UNKNOWN_CONTACT = SupportContact()
@@ -80,22 +113,35 @@ def world_track_document(
     t_latest_global 이 t_last_valid 보다 앞이면 입력 불일치라 ValueError 다(0 으로 덮지 않는다, time_model 과 같음).
     """
     require_ms("t_latest_global", t_latest_global)
-    gap = t_latest_global - track.t_last_valid
+    t_last_valid = track.t_last_valid
+    position_xy, position_sigma = track.position_xy, track.position_xy_sigma
+    velocity: tuple[float, float, float] | None = track.velocity
+    if contact.observed_at is not None and contact.observed_at > track.t_last_valid:
+        # 명세 5.2: 골반이 없으면 검증된 접지점 XY. 위치·σ·t_last_valid·관측 상태를 접지점 관측 시각 기준으로 맞춘다
+        if contact.observed_at > track.t:
+            raise ValueError(f"{track.world_id}: 접지점 관측 시각 {contact.observed_at} 가 Track 시각 {track.t} 보다 뒤다")
+        assert contact.observed_xy is not None and contact.observed_xy_sigma is not None
+        t_last_valid = contact.observed_at
+        grow = time_config.max_speed_mps * (track.t - contact.observed_at) / 1000.0
+        position_xy = contact.observed_xy
+        position_sigma = (contact.observed_xy_sigma[0] + grow, contact.observed_xy_sigma[1] + grow)
+        velocity = None  # 그 시각의 속도를 모른다 (모르면 비운다)
+    gap = t_latest_global - t_last_valid
     if gap < 0:
-        raise ValueError(f"{track.world_id}: t_last_valid {track.t_last_valid} 가 t_latest_global {t_latest_global} 보다 뒤다")
-    _require_finite("position_xy", track.position_xy, 2)
-    _require_finite("position_xy_sigma", track.position_xy_sigma, 2)
+        raise ValueError(f"{track.world_id}: t_last_valid {t_last_valid} 가 t_latest_global {t_latest_global} 보다 뒤다")
+    _require_finite("position_xy", position_xy, 2)
+    _require_finite("position_xy_sigma", position_sigma, 2)
     head = track.head_z
     head_valid = head is not None and head.value is not None and str(head.validity) == "VALID"
     doc: dict[str, Any] = {
         "world_id": track.world_id,
-        "t_last_valid": track.t_last_valid,
+        "t_last_valid": t_last_valid,
         "observation_state": str(classify_observation(gap, time_config)),
         "track_lifecycle": str(track.lifecycle),
         "identity_confidence": str(track.identity_confidence),
         "identity_revision": track.identity_revision,
-        "position_xy": [track.position_xy[0], track.position_xy[1]],
-        "position_xy_sigma": [track.position_xy_sigma[0], track.position_xy_sigma[1]],
+        "position_xy": [position_xy[0], position_xy[1]],
+        "position_xy_sigma": [position_sigma[0], position_sigma[1]],
         "pelvis_xyz": list(track.pelvis_xyz) if track.pelvis_xyz is not None else None,
         "ground_anchor_xyz": list(contact.ground_anchor_xyz) if contact.ground_anchor_xyz is not None else None,
         "support_surface_id": contact.support_surface_id,
@@ -104,9 +150,10 @@ def world_track_document(
         "z_validity": contact.z_validity,
         "head_z": head.value if head_valid else None,  # type: ignore[union-attr]
         "head_z_sigma": head.sigma_m if head_valid else None,  # type: ignore[union-attr]
-        "velocity": list(track.velocity),
         "cameras": list(track.cameras),
     }
+    if velocity is not None:
+        doc["velocity"] = list(velocity)
     if contact.ground_anchor_sigma is not None:
         doc["ground_anchor_sigma"] = list(contact.ground_anchor_sigma)
     if track.skeleton is not None:
