@@ -4,7 +4,7 @@
 codec_info 한 번 → 키프레임부터 (frame_header + 압축 프레임) 이다. 헤더와 프레임은 한 기록(I0Frame)에 같이 싣는다.
 
 RunPod Tier 0 로 보내는 TLS 전송(길이 접두, 카메라별 독립 TLS 연결, 기기 토큰, 공개키 고정, 송신 큐 상한)은
-S15P31A101-83 이 이 인터페이스를 구현해 붙인다. 이 티켓에는 시험·점검용 구현(MemorySink, CountingSink)만 있다.
+tls_sink.TlsCameraSink 다(S15P31A101-83). 여기에는 시험·점검용 구현(MemorySink, CountingSink)만 있다.
 
 구현 약속:
 - SinkFactory(camera_id) 는 카메라마다 독립된 CameraSink 를 만든다. 한 카메라의 전송 지연이 다른 카메라를 막지 않게

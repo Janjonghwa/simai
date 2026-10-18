@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from simai_recorder.capture_time import ReceiveTimeEstimator
@@ -24,6 +24,7 @@ from simai_recorder.i0 import build_codec_info, build_frame_header, pts_timebase
 from simai_recorder.recorder import CameraSpec
 from simai_recorder.sources import PacketSource, SourceError, StreamInfo, release
 
+from simai_relay.epoch_store import EpochStore
 from simai_relay.link_stats import CameraLinkStats
 from simai_relay.sink import CameraSink, I0CodecInfo, I0Frame, SinkFactory
 
@@ -36,11 +37,13 @@ class CameraRelay:
     """카메라 한 대의 수신 루프. run() 은 멈출 때까지 돌아오지 않는다(스레드 하나에서 돈다).
 
     initial_epoch: 첫 접속의 stream_epoch. 중계 프로세스를 다시 띄울 때 이어서 쓰려면 준다(기본 0).
+    epoch_allocator: 있으면 접속마다 이것으로 epoch 를 받는다(EpochStore.reserve, 프로세스 재시작·시계 역행에도 줄지 않음).
+      저장에 실패하면(OSError) 그 접속은 쓰지 않고 닫은 뒤 다시 시도한다(저장하지 못한 epoch 로 보내지 않는다).
     """
 
     def __init__(self, spec: CameraSpec, sink: CameraSink, clock: Clock, stop: threading.Event,
                  deadline: float | None = None, reconnect_delays_s: Sequence[float] = DEFAULT_RECONNECT_DELAYS_S,
-                 initial_epoch: int = 0) -> None:
+                 initial_epoch: int = 0, epoch_allocator: Callable[[], int] | None = None) -> None:
         if initial_epoch < 0:
             raise ValueError("initial_epoch 는 0 이상이다")
         self.spec = spec
@@ -51,6 +54,7 @@ class CameraRelay:
         self._deadline = deadline
         self._delays = tuple(reconnect_delays_s) or (1.0,)
         self._next_epoch = initial_epoch
+        self._allocate = epoch_allocator
         self.error: BaseException | None = None
 
     @property
@@ -98,9 +102,21 @@ class CameraRelay:
                 self._event(logging.WARNING, "open_failed", detail=str(e), retry_in_s=delay)
                 self._wait(delay)
                 continue
+            if self._allocate is not None:
+                try:
+                    epoch = self._allocate()
+                except OSError as e:
+                    source.close()
+                    delay = self._delays[min(failures, len(self._delays) - 1)]
+                    failures += 1
+                    self.stats.on_open_failed()
+                    self._event(logging.ERROR, "epoch_store_failed", kind=type(e).__name__, retry_in_s=delay)
+                    self._wait(delay)
+                    continue
+            else:
+                epoch = self._next_epoch
+                self._next_epoch += 1
             failures = 0
-            epoch = self._next_epoch
-            self._next_epoch += 1
             self.stats.on_connected(epoch)
             self._event(logging.INFO, "connected", stream_epoch=epoch, width=info.width, height=info.height,
                         nominal_fps=info.nominal_fps)
@@ -151,10 +167,18 @@ class CameraRelay:
 
 
 class RelaySession:
-    """카메라 여러 대를 동시에 중계한다. 카메라마다 독립 스레드와 독립 CameraSink(연결)."""
+    """카메라 여러 대를 동시에 중계한다. 카메라마다 독립 스레드와 독립 CameraSink(연결).
+
+    stream_epoch (S15P31A101-83): Tier 0 는 같은 (camera_id, stream_epoch, frame_sequence) 가 다른 프레임에 다시 붙지 않도록
+    줄어든 epoch 를 받지 않는다. 그래서 중계를 다시 띄워도 카메라마다 epoch 가 줄지 않아야 한다.
+    - epoch_store 가 있으면(운영, CLI 기본): 접속마다 max(저장된 최대 + 1, 세션 시작 UTC ms) 를 파일에 먼저 남기고 쓴다.
+      프로세스 재시작·시계 역행·같은 시작 ms 에도 줄지 않는다(저장 파일을 잃지 않는 한).
+    - 없으면: 첫 epoch 는 initial_epoch(주지 않으면 세션 시작 UTC ms), 재접속마다 +1. 재시작 보장은 시계에만 기댄다(시험용).
+    """
 
     def __init__(self, cameras: Sequence[CameraSpec], sink_factory: SinkFactory, clock: Clock,
-                 reconnect_delays_s: Sequence[float] = DEFAULT_RECONNECT_DELAYS_S) -> None:
+                 reconnect_delays_s: Sequence[float] = DEFAULT_RECONNECT_DELAYS_S,
+                 initial_epoch: int | None = None, epoch_store: EpochStore | None = None) -> None:
         ids = [c.camera_id for c in cameras]
         if not ids or len(set(ids)) != len(ids):
             raise ValueError("cameras 는 비어 있지 않고 camera_id 가 겹치지 않아야 한다")
@@ -163,6 +187,8 @@ class RelaySession:
         self._cameras = cameras
         self._sink_factory = sink_factory
         self._delays = reconnect_delays_s
+        self._initial_epoch = initial_epoch
+        self._epoch_store = epoch_store
         self.relays: list[CameraRelay] = []
         self._threads: list[threading.Thread] = []
 
@@ -170,8 +196,18 @@ class RelaySession:
         if self._threads:
             raise RuntimeError("이미 시작했다")
         deadline = self._clock.monotonic() + duration_s if duration_s is not None else None
+        start_ms = self._clock.now_ms()
+        epoch = start_ms if self._initial_epoch is None else self._initial_epoch
+        store = self._epoch_store
+
+        def allocator(camera_id: str) -> Callable[[], int] | None:
+            if store is None:
+                return None
+            return lambda: store.reserve(camera_id, floor=start_ms)
+
         self.relays = [CameraRelay(c, self._sink_factory(c.camera_id), self._clock, self.stop_event, deadline,
-                                   self._delays) for c in self._cameras]
+                                   self._delays, initial_epoch=epoch, epoch_allocator=allocator(c.camera_id))
+                       for c in self._cameras]
         self._threads = [threading.Thread(target=r.run, name=f"relay-{r.camera_id}", daemon=True)
                          for r in self.relays]
         for t in self._threads:
