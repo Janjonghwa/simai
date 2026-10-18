@@ -65,7 +65,7 @@ def world_payload(t: int) -> dict:
 
 def health_payload() -> dict:
     payload = copy.deepcopy(example("health")["payload"])
-    for key in ("active_site_alerts", "active_site_alerts_as_of", "config_sync", "config_version"):
+    for key in ("active_site_alerts", "active_site_alerts_as_of", "config_sync", "config_version", "ec2_world_state_drops"):
         payload.pop(key, None)
     return payload
 
@@ -262,9 +262,9 @@ def test_errors_after_connect_do_not_keep_token(caplog) -> None:
 def test_envelope_fields_and_versions() -> None:
     env = Envelope("tier0-01", FixedClock(T0), new_msg_id=lambda: "0192a6f0-7c1e-7b3a-9f2d-000000000001")
     msg = env.make("world_state", world_payload(T0 - 100))
-    assert msg["schema_version"] == "1.1.0" and msg["sent_at"] == T0 and msg["source_id"] == "tier0-01"
+    assert msg["schema_version"] == "1.3.0" and msg["sent_at"] == T0 and msg["source_id"] == "tier0-01"
     assert schema_errors(msg, "world_state") == []
-    assert env.make("health", health_payload())["schema_version"] == "1.3.0"
+    assert env.make("health", health_payload())["schema_version"] == "1.5.0"
     assert schema_errors(env.make("health", health_payload()), "health") == []
     for name in ("observation_summary", "calibration_update", "event_state_snapshot", "event_frame_ready"):
         doc = env.make(name, example(name)["payload"])
@@ -456,6 +456,10 @@ class FakeClient:
         self.fifo: list[tuple[dict, str | None]] = []
         self.connected = True
         self.reliable_limit = reliable_limit
+        self.drops = {"world_state": (0, 0), "health": (0, 0)}
+
+    def drop_counts(self, kind):
+        return self.drops[kind]
 
     def put_latest(self, message):
         self.latest.append(message)

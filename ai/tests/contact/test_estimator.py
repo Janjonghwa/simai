@@ -343,8 +343,10 @@ def test_world_state_with_contacts_matches_contract(contract_errors):
         ("UNKNOWN", "UNAVAILABLE"),
         ("UNKNOWN", "UNAVAILABLE"),
     ]
+    # 계약 1.3.0: 접지점이 있을 때만 출처를 싣는다(관측 → 유지 → 모름)
+    assert [d.get("surface_source") for d in docs] == [None, "observed", "inferred", "inferred", None, None]
     for d in docs:
-        assert "surface_source" not in d  # 계약 1.1.0 에 없는 필드는 싣지 않는다
+        assert ("surface_source" in d) == (d["ground_anchor_xyz"] is not None)
         if d["ground_anchor_xyz"] is not None:
             assert d["ground_anchor_xyz"][2] == pytest.approx(0.4) and d["ground_anchor_sigma"] is not None
 

@@ -579,13 +579,14 @@ def test_world_state_message_matches_contract(rig, contract_errors):
         payload = world_state_payload(f, t_latest, "scene-3")
         msg = world_state_message(payload, msg_id="0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f", sent_at=t_latest + 5)
         assert contract_errors("world_state", msg) == []
-        # 계약 1.1.0: 입력 출처를 payload 에 싣는다 (관측과 추정 구분)
-        assert msg["schema_version"] == "1.1.0"
+        # 계약 1.1.0: 입력 출처를 payload 에 싣는다 (관측과 추정 구분). 봉투 버전은 마지막 변경(1.3.0, -170)
+        assert msg["schema_version"] == "1.3.0"
         assert payload["input_provenance"] == {"frames": {"source": "SIM"}, "is_upper_bound": True}
         assert payload["input_provenance"] is not f.input_provenance  # 복사본
         for doc in payload["tracks"]:
             # 접지를 모르면 비운다 (Z=0 대체 금지)
-            assert doc["ground_anchor_xyz"] is None
+            assert doc["ground_anchor_xyz"] is None and "surface_source" not in doc
+            assert "aliases" not in doc  # 병합이 없었다
             assert doc["support_surface_validity"] == "UNKNOWN"
             assert doc["z_validity"] == "UNAVAILABLE" and doc["contact_validity"] == "UNAVAILABLE"
             if "skeleton" in doc:

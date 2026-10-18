@@ -30,8 +30,12 @@
 - 연결 고정(LinkRef): pump 의 배치는 시작할 때 잡은 연결·세대에만 보낸다(send_on). 그사이 연결이 바뀌면 남은 메시지는
   보내지 않고 SendFailed → outbox 는 TransportError 로 멈춘다. 이전 연결의 배치가 새 연결로 이어지지 않는다.
 - 최신 칸(latest): world_state·health. 아직 못 보낸 것을 새것이 밀어내면 버리고 센다(dropped). 끊긴 동안 들어온 것은
-  센 뒤 버린다(discarded_offline). 끊기면 칸을 비운다(6.5 "그 구간의 world_state 는 데이터 없음").
-  버림 수는 지금 로컬 집계(stats)뿐이다. 후속 계약 티켓에서 health 선택 필드로 추가할 예정이다.
+  센 뒤 버린다(discarded_offline). 끊기면 칸을 비우고 칸에 남아 있던 것과 보내다 연결이 끊긴 것을 센다
+  (lost_on_disconnect, 6.5 "그 구간의 world_state 는 데이터 없음"). 집계는 연결을 넘어 누적한다(재연결로 0 이 되지 않음).
+  새 연결은 이전 연결에서 보내던 최신 칸 메시지의 성패가 정해질 때까지(send_timeout_s + 여유 상한) 기다린 뒤 on_connected
+  훅(첫 health)을 부른다. 늦게 돌아온 send 실패가 첫 health 의 버림 수에서 빠지지 않는다.
+  world_state 버림 수는 drop_counts 로 꺼내 health 1.5.0 선택 필드 `ec2_world_state_drops` 로 싣는다
+  (i1_publisher.I1Publisher.world_state_drops·with_world_state_drops, S15P31A101-170).
 - 신뢰 대기열(reliable): config_ack·calibration_update·event_frame_ready·tier0_endpoint. 끊겨도 보관하고 버리지 않는다.
   상한(reliable_limit)에 차면 enqueue 가 QueueFull 을 내 호출자가 붙들고 다시 넣는다(backpressure). 보내다 실패하면
   맨 앞에 되돌린다(같은 msg_id, EC2 가 중복을 거른다, 12.1). replace_key 가 같은 대기 메시지는 새것으로 바꾼다.
@@ -73,8 +77,8 @@ CONTRACTS_VERSION = "2.0.0"
 # 봉투 schema_version: 그 메시지 계약이 마지막으로 바뀐 버전 (contracts/README.md, contracts/examples).
 # config_ack(ConfigSync)·tier0_endpoint(EndpointRegistrar)·risk_event_transition(outbox)은 만드는 모듈이 정한다.
 MESSAGE_SCHEMA_VERSIONS: Mapping[str, str] = {
-    "world_state": WORLD_STATE_SCHEMA_VERSION,  # 1.1.0
-    "health": "1.3.0",  # active_site_alerts·laptop_clock_offset (-155)
+    "world_state": WORLD_STATE_SCHEMA_VERSION,  # 1.3.0: 트랙의 surface_source·aliases (-170)
+    "health": "1.5.0",  # 1.3.0 active_site_alerts·laptop_clock_offset (-155), 1.5.0 ec2_world_state_drops (-170)
     "observation_summary": "1.3.0",  # -155
     "calibration_update": "2.0.0",  # 보정 출처 값 정리 (-167)
 }
@@ -94,6 +98,8 @@ UPSTREAM_TYPES = frozenset(
     }
 )
 LATEST_KINDS = ("health", "world_state")  # 최신 칸
+INFLIGHT_WAIT_GRACE_S = 0.5
+"""이전 연결의 최신 칸 송신 성패를 기다리는 여유(송신 감시 주기 0.25 s 이상)"""
 RELIABLE_TYPES = frozenset({"config_ack", "calibration_update", "event_frame_ready", "tier0_endpoint"})
 TELEMETRY_TYPES = frozenset({"observation_summary"})
 
@@ -248,6 +254,11 @@ class Envelope:
         self._new_msg_id = new_msg_id
         self._versions = dict(versions)
 
+    @property
+    def clock(self) -> Clock:
+        """sent_at 을 만드는 주입 시계 (i1_publisher 가 world_state 버림 누적 시작 시각에도 쓴다)."""
+        return self._clock
+
     def make(self, msg_type: str, payload: Mapping[str, Any], *, schema_version: str | None = None) -> dict[str, Any]:
         if msg_type not in UPSTREAM_TYPES:
             raise ValueError(f"I1 위로 보내는 메시지가 아니다: {msg_type}")
@@ -378,6 +389,15 @@ class QueueFull(RuntimeError):
     """신뢰 대기열이 찼다. 메시지를 버리지 않았다. 호출자가 붙들고 다시 넣는다."""
 
 
+@dataclass
+class _Inflight:
+    """최신 칸에서 꺼내 보내는 중인 메시지 하나. counted: 실패가 확정돼 이미 버림으로 셌다(send 결과가 와도 다시 세지 않음)."""
+
+    conn: Connection
+    kind: str
+    counted: bool = False
+
+
 @dataclass(frozen=True)
 class LinkRef:
     """송신이 열린 연결 하나와 그 세대. send_on 은 이 연결이 아직 현재일 때만 보낸다."""
@@ -388,9 +408,11 @@ class LinkRef:
 
 @dataclass
 class I1Stats:
-    """송신 집계. dropped: 최신 칸에서 못 보내고 새것에 밀려 버린 수. discarded_offline: 끊긴 동안 들어와 버린 수.
+    """송신 집계(연결을 넘어 누적). dropped: 최신 칸에서 못 보내고 새것에 밀려 버린 수. discarded_offline: 끊긴 동안
+    들어와 버린 수. lost_on_disconnect: 끊길 때 최신 칸에 남아 있던 것과 최신 칸에서 꺼내 보내다 연결이 끊긴 것.
 
-    dropped·discarded_offline 은 후속 계약 티켓에서 health 선택 필드로 추가할 예정이다(지금은 로컬 집계).
+    world_state 의 셋은 I1Client.drop_counts 로 health 1.5.0 `ec2_world_state_drops` 에 실린다(superseded = dropped,
+    disconnected = discarded_offline + lost_on_disconnect).
     """
 
     connects: int = 0
@@ -399,6 +421,9 @@ class I1Stats:
     sent: dict[str, int] = field(default_factory=dict)
     dropped: dict[str, int] = field(default_factory=lambda: {k: 0 for k in LATEST_KINDS})
     discarded_offline: dict[str, int] = field(default_factory=lambda: {k: 0 for k in LATEST_KINDS})
+    lost_on_disconnect: dict[str, int] = field(default_factory=lambda: {k: 0 for k in LATEST_KINDS})
+    inflight_wait_timeouts: int = 0
+    """새 연결을 열기 전 이전 연결의 최신 칸 송신 성패를 send_timeout_s + 여유 안에 확정하지 못한 횟수"""
     telemetry_overflow: int = 0
     reliable_full: int = 0
     unserializable: int = 0
@@ -415,6 +440,8 @@ class I1Stats:
             "sent": dict(self.sent),
             "dropped": dict(self.dropped),
             "discarded_offline": dict(self.discarded_offline),
+            "lost_on_disconnect": dict(self.lost_on_disconnect),
+            "inflight_wait_timeouts": self.inflight_wait_timeouts,
             "telemetry_overflow": self.telemetry_overflow,
             "reliable_full": self.reliable_full,
             "unserializable": self.unserializable,
@@ -463,6 +490,7 @@ class I1Client:
         self._send_timeout_s = send_timeout_s
         self._sending: tuple[float, Connection] | None = None  # 진행 중인 send 의 시작 시각과 연결
         self._timed_out: Connection | None = None  # 송신 시간 초과로 끊은 연결
+        self._inflight: _Inflight | None = None  # 최신 칸에서 꺼내 보내는 중인 메시지(성패가 아직 정해지지 않음)
         self._reliable_limit = reliable_limit
         self._telemetry_limit = telemetry_limit
         self._pump_interval_s = pump_interval_s
@@ -519,6 +547,18 @@ class I1Client:
         """지금까지 연 연결 수(연결마다 1 씩 는다)."""
         with self._cond:
             return self._generation
+
+    def drop_counts(self, kind: str) -> tuple[int, int]:
+        """최신 칸 종류 하나의 누적 버림 수 (superseded, disconnected). 연결을 넘어 누적하고 재연결로 0 이 되지 않는다.
+
+        superseded: 연결된 동안 보내기 전에 새것에 밀려 버린 수. disconnected: 끊긴 동안 들어와 버린 것 + 끊길 때 칸에
+        남아 있던 것 + 보내다 연결이 끊긴 것. 직렬화 실패(코드 결함)는 넣지 않는다(stats.unserializable).
+        """
+        if kind not in LATEST_KINDS:
+            raise ValueError(f"최신 칸 메시지가 아니다: {kind}")
+        with self._cond:
+            st = self.stats
+            return st.dropped[kind], st.discarded_offline[kind] + st.lost_on_disconnect[kind]
 
     def queue_sizes(self) -> dict[str, int]:
         with self._cond:
@@ -661,7 +701,36 @@ class I1Client:
             log.warning("I1 연결 끊김 (%s). %.1f 초 뒤 다시 붙는다", self.last_error, delay)
             self._closing.wait(delay)
 
+    def _await_previous_latest_send(self) -> None:
+        """이전 연결에서 최신 칸 메시지를 보내던 중이면 그 성패(실패면 버림 집계)가 정해질 때까지 기다린다.
+
+        새 연결의 on_connected 훅이 만드는 첫 health 의 ec2_world_state_drops 에 이전 연결의 버림이 빠지지 않게 한다
+        (health 1.5.0, S15P31A101-170).
+        - 송신 감시가 그 연결을 시간 초과로 끊었으면(_timed_out) 실패가 확정된 것이라 기다리지 않고 바로 버림으로 센다.
+          send 결과가 뒤에 와도 다시 세지 않는다(_Inflight.counted).
+        - 그 밖에는(상대가 먼저 끊어 send 가 곧 돌아올 때) 결과를 기다리되 send_timeout_s + 여유(INFLIGHT_WAIT_GRACE_S)를
+          넘기지 않는다. 그 사이 송신 감시가 끊으면 위처럼 바로 센다. 상한을 넘으면 기다리지 않고 연다(그 버림은 성패가
+          정해진 뒤 다음 health 부터 실린다. 미리 버림으로 세지 않는다 — 나중에 성공하면 없는 버림을 지어낸 것이 된다).
+        - close() 가 오면 바로 멈춘다.
+        """
+        deadline = self._mono() + self._send_timeout_s + INFLIGHT_WAIT_GRACE_S
+        with self._cond:
+            while self._inflight is not None and not self._closing.is_set():
+                inflight = self._inflight
+                if inflight.conn is self._timed_out:
+                    if not inflight.counted:
+                        inflight.counted = True
+                        self.stats.lost_on_disconnect[inflight.kind] += 1
+                    return
+                remaining = deadline - self._mono()
+                if remaining <= 0:
+                    self.stats.inflight_wait_timeouts += 1
+                    log.warning("I1 이전 연결의 송신 성패가 정해지지 않은 채 새 연결을 연다(첫 health 버림 수에 빠질 수 있다)")
+                    return
+                self._cond.wait(min(0.05, remaining))
+
     def _serve(self, conn: Connection) -> None:
+        self._await_previous_latest_send()
         self.stats.connects += 1
         with self._cond:
             self._accepting = True
@@ -690,7 +759,9 @@ class I1Client:
                     self._conn = None
                 self._accepting = False
                 self._gate_open = False
-                for k in LATEST_KINDS:  # 지난 상태는 다시 보내지 않는다
+                for k in LATEST_KINDS:  # 지난 상태는 다시 보내지 않는다(버린 수는 센다)
+                    if self._latest[k] is not None:
+                        self.stats.lost_on_disconnect[k] += 1
                     self._latest[k] = None
                 self._cond.notify_all()
             close_async(conn)
@@ -712,9 +783,11 @@ class I1Client:
             if msg is None:
                 return None
             self._latest[self._first] = None
+            self._inflight = _Inflight(link.conn, str(self._first))
             return link, "first", (None, msg)
         if self._latest["health"] is not None:
             msg, self._latest["health"] = self._latest["health"], None
+            self._inflight = _Inflight(link.conn, "health")
             return link, "latest", (None, msg)
         if self._reliable:
             return link, "reliable", self._reliable.popleft()
@@ -722,6 +795,7 @@ class I1Client:
             return link, "telemetry", self._telemetry.popleft()
         if self._latest["world_state"] is not None:
             msg, self._latest["world_state"] = self._latest["world_state"], None
+            self._inflight = _Inflight(link.conn, "world_state")
             return link, "latest", (None, msg)
         return None
 
@@ -758,13 +832,28 @@ class I1Client:
                 next_pump = self._mono()
 
     def _send_item(self, link: LinkRef, source: str, item: _Item) -> None:
+        try:
+            self._deliver(link, source, item)
+        finally:
+            if source in ("latest", "first"):  # 성패(버림 집계 포함)가 정해졌다: 다음 연결의 첫 health 가 기다린다
+                with self._cond:
+                    self._inflight = None
+                    self._cond.notify_all()
+
+    def _deliver(self, link: LinkRef, source: str, item: _Item) -> None:
         key, msg = item
         try:
             self._send(link.conn, msg)
         except Unserializable:
             return  # 기록은 _send 가 남겼다. 고칠 수 없으니 다시 넣지 않는다
         except SendFailed:
-            if source == "reliable":  # 다시 연결되면 같은 msg_id 로 다시 보낸다(버리지 않음)
+            if source in ("latest", "first"):  # 최신 칸은 다시 넣지 않는다(지난 상태). 버린 수는 센다
+                kind = msg.get("msg_type")
+                with self._cond:
+                    counted = self._inflight is not None and self._inflight.counted  # 새 연결이 이미 셌다
+                    if kind in self.stats.lost_on_disconnect and not counted:
+                        self.stats.lost_on_disconnect[kind] += 1
+            elif source == "reliable":  # 다시 연결되면 같은 msg_id 로 다시 보낸다(버리지 않음)
                 with self._cond:
                     self._reliable.appendleft((key, msg))
             elif source == "telemetry":

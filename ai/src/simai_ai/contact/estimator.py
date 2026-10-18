@@ -72,7 +72,7 @@ JOINT_LAYOUT = "COCO17"
 class SurfaceSource(StrEnum):
     """지지 표면 출처 (AGENTS 규칙 7). 표면이 바닥인지 등록 작업면인지는 support_surface_id 가 말한다.
 
-    I1 world_state 1.1.0 에는 이 필드가 없어 내보내지 않는다. 후속 계약 티켓에서 world_state 선택 필드로 추가한다(2026-10-18 승인).
+    I1 world_state 1.3.0 트랙의 surface_source 로 나간다(접지점이 있을 때만, S15P31A101-170).
     """
 
     OBSERVED = "observed"

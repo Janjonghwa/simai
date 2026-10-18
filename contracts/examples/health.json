@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.4.0",
+  "schema_version": "1.5.0",
   "msg_type": "health",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000106",
   "sent_at": 1760342400400,
@@ -55,6 +55,11 @@
     "config_version": "cfg-12",
     "config_sync": "CURRENT",
     "gateway_link": "CONNECTED",
+    "ec2_world_state_drops": {
+      "superseded": 3,
+      "disconnected": 41,
+      "since_ms": 1760340000000
+    },
     "gpu_util": 0.71,
     "gpu_memory_used_ratio": 0.62,
     "active_site_alerts": [
