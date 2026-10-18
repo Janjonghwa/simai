@@ -17,6 +17,7 @@ uv run pytest tests/risk                                   # 위 실행을 포�
 | `origin` | `LIVE` / `PLANNED` / `REPLAY` / `WHAT_IF`. LIVE 가 아니면 알림 후보 0건을 함께 검사한다 |
 | `rules` | `[{rule_id, rule_version}]`. 등록부(`default_registry`)에서 만든다 |
 | `zones` | 구역 목록. 판정 시각(`clock_ms`)에 유효한 버전만 쓴다 |
+| `work_surfaces` | 선택(1.4, 아래). 등록 작업면 목록 |
 | `steps[]` | `clock_ms`(고정 시계, 줄지 않음), `world_state`(I1 payload, `contracts/messages/world_state.schema.json`), 선택 `monitoring`(1.2, 아래), `expect.findings` |
 
 - 기대 판정은 `rule_id, rule_version, severity, world_ids, zone_id, needs_check, reasons, metrics`를 모두 적는다. 순서는 상관없다. `holding`(히스테리시스 띠, 기본 false)은 선택이다(1.1).
@@ -61,6 +62,21 @@ uv run pytest tests/risk                                   # 위 실행을 포�
 - 판정(`inject_findings`, `expect.findings`)에 `confidence_reasons`(선택, 기본 `[]`)를 적을 수 있고, `expect.transitions[]` 에는 `confidence_reasons` 가 필수다. 이유가 있으면 `needs_check` 는 true, 이유 없는 `needs_check: true` 는 원인 미상 `UNSPECIFIED` 가 붙는다(명세 7.1, 원인을 지어내지 않음).
 - 재개 전이는 `transition: UPDATED`, `changes: ["RESUMED"]` 로 보이고 같은 이벤트 별칭의 `event_sequence` 가 이어진다.
 
+## 등록 작업면 (format_version 1.4, 선택)
+
+최상위 `work_surfaces` 는 모든 단계에 같이 쓰는 등록 작업면(명세 7.5, 활성 구성 묶음의 Operational Geometry)이다. R2·R3 와 R5 의 가장자리 예측이 읽는다.
+
+| 필드 | 내용 |
+|---|---|
+| `surface_id` | 작업면 ID. `floor` 와 겹칠 수 없고 서로 겹칠 수 없다 |
+| `top_height_m` | 상판 높이(바닥 Z=0 기준, 0 보다 커야 한다) |
+| `center_xy`, `size_xy`, `yaw_rad` | OBB 바닥 투영(가운데, 가로·세로 전체 길이, +Z 축 회전 라디안. yaw 는 선택, 기본 0) |
+| `top_height_sigma_m` | 선택, 기본 0.02 |
+
+- 형식은 `simai_ai.risk.work_surface.WorkSurface.from_json`(ContactEstimator `contact.surfaces` 와 같은 임시 형식)이다. 다른 키는 무시한다.
+- `work_surfaces` 키는 `format_version` 1.4 이상에서만 쓴다. 없으면 등록 작업면이 없는 것으로 판정한다.
+- 높이 규칙의 교실 시험 프로파일은 규칙 버전 = 기본 버전 + 1000(R2·R3·R5 v1001, 높이차 0.35 m)이다(명세 7.4). 운영 프로파일은 v1(2 m).
+
 ## 현재 벡터
 
 | 파일 | 확인하는 것 |
@@ -81,6 +97,10 @@ uv run pytest tests/risk                                   # 위 실행을 포�
 | `r1_volume_podium.json` | LIVE R1 VOLUME_3D: 같은 XY 의 바닥 위 사람은 판정 없음, 0.4m 단상 위는 발생. 추정(inferred) 관절 미사용, 높이 간격 0.3m 안은 유지 (8.2, D-G6-04) |
 | `r1_persistence_resume.json` | LIVE R1 + 기본 생명주기 정책: 구역 안 순간 검출 한 프레임은 이벤트 0건, `[T,F,T]` 에서 발생, 해소 뒤 10초 안 재진입은 같은 이벤트 재개(RESUMED, 다시 울림), 10초 넘어 재진입은 새 이벤트 (6.4, D-G6-07·08) |
 | `r1_footprint_position_or_anchor.json` | LIVE R1 GROUND_FOOTPRINT 보수적 결합: position_xy 만 안, 접지점만 안 모두 발생, 둘 다 띠 밖이면 판정 없음 (8.2) |
+| `r2_r3_podium_live.json` | LIVE R2·R3 교실 시험 프로파일(v1001): 40 cm 단상 앞 바닥 사람(범위가 footprint 에 걸침)은 판정 없음, 단상 위 둘째 프레임에 R2 CRITICAL·R3 HIGH 발생·현장 경보. 단상 위에서 접지점이 사라지면(Z 모름) 확인 필요(Z_UNKNOWN)로 유지되고 5초 뒤에도 해소 없음, 가려진 채 유지(HELD)면 PREDICTED, 바닥으로 내려오면 3초 뒤 해소 (7.2, 5.2, 7.1, 7.4) |
+| `r2_r3_podium_replay.json` | REPLAY: 같은 장면의 판정·전이는 같고 현장 경보 신호 0건 (7.4) |
+| `r2_r3_podium_operational_profile.json` | LIVE 운영 프로파일(R2·R3 v1, 2 m): 같은 40 cm 단상 장면에서 판정·이벤트 0건 |
+| `r5_r2_edge_stage_approach.json` | LIVE R5·R2 v1001: 6 m 무대 위 가장자리로 접근. R5(CAUTION, target_edge)가 R2 발생 영역 진입 2초 전부터 발생 판정, R2 발생 영역(범위 간격 1.0 m)에 닿으면 R2 CRITICAL 이 맡고 R5 판정 없음, R5 이벤트가 R2 이벤트보다 2.1초 앞섬, 멈추면 둘 다 3초 뒤 해소 (7.2 R5 'R1·R2') |
 | `r5_approach_entry.json` | LIVE R5 + R1 접근(1 m/s): 선행 2.5초는 유지만, 2.0초 이하 발생 판정, 둘째 프레임에 CAUTION 이벤트(현장 경보 없음, 7.3 관제 화면 안내). 판정 시각으로 옮긴 범위만 걸리면 선행 0초(predicted_touching_now), 관측 범위가 구역에 걸리면 R1 이 맡아 R5 판정 없음(R1 HIGH 현장 경보), R5 는 판정 없이 3초 뒤 해소. R5 이벤트가 실제 진입보다 2초 앞섬 (7.2 R5, D-G6-03) |
 | `r5_approach_entry_what_if.json`, `r5_approach_entry_replay.json`, `r5_approach_entry_planned.json` | 비 LIVE R5: 같은 접근의 판정·전이는 같고 현장 경보 신호·알림 후보 0건 (7.4) |
 | `r5_pass_by_and_stationary.json` | LIVE R5 없음: 구역 0.75m 옆을 나란히 지나감, 0.5m 앞 정지(속력 0.2 m/s 미만), 속도 없음(발생 판정 없이 유지 판정 input_unknown 만). 이벤트 0건 |
@@ -102,4 +122,4 @@ uv run pytest tests/risk                                   # 위 실행을 포�
 | `lifecycle_pending_stall.json`, `lifecycle_pending_stall_replay.json` | 1.3 지속 대기 중 영상 전체 정지: 같은 관측 재판정은 프레임으로 세지 않지만 lag 600ms 를 넘는 첫 판정 주기에 발생(UNVERIFIABLE, PREDICTED), 정지 1분 자동 해소 0건. REPLAY 는 현장 경보 신호 0건 |
 | `lifecycle_resume_pending_lost.json` | LIVE 1.3 재개 대기 중 트랙 소실 → 같은 이벤트 재개(UNVERIFIABLE, PREDICTED, 다시 울림) |
 
-R6 은 구역 규칙을 감싸는 방식(`ObservationLossHold`)이라 등록부의 R1 v1 이 `ObservationLossHold(ZoneEntryRule())` 이고(S15P31A101-71), R6 벡터도 실제 R1 판정을 쓴다. R1·R6 벡터는 1.3 형식(기본 생명주기 정책, 판정·전이에 `confidence_reasons`)이다. 다른 구체 규칙도 등록되면 해당 이슈에서 규칙별 벡터를 이 디렉터리에 추가한다.
+R2·R3·R5 가장자리 벡터는 1.4 형식(`work_surfaces`)이다. R6 은 구역 규칙을 감싸는 방식(`ObservationLossHold`)이라 등록부의 R1 v1 이 `ObservationLossHold(ZoneEntryRule())` 이고(S15P31A101-71), R6 벡터도 실제 R1 판정을 쓴다. R1·R6 벡터는 1.3 형식(기본 생명주기 정책, 판정·전이에 `confidence_reasons`)이다. 다른 구체 규칙도 등록되면 해당 이슈에서 규칙별 벡터를 이 디렉터리에 추가한다.

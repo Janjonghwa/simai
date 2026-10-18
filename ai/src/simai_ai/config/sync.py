@@ -41,11 +41,23 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import cached_property
 from typing import Any, Protocol
 
 from simai_ai.config.bundle import BundleNotice, ConfigBundle
 from simai_ai.config.verify import BundleRejected, BundleVerifier, RejectReason, notice_header
-from simai_ai.risk import Clock, Evaluation, EventIdFactory, MonitoringState, Origin, RiskEngine, WorldState, Zone
+from simai_ai.risk import (
+    Clock,
+    Evaluation,
+    EventIdFactory,
+    MonitoringState,
+    Origin,
+    RiskEngine,
+    WorkSurfaceSet,
+    WorldState,
+    Zone,
+    work_surfaces_from_operational_geometry,
+)
 
 CONTRACTS_VERSION = "2.0.0"
 """보내는 config_ack 봉투의 schema_version (contracts/README.md 의 현재 계약 버전)"""
@@ -89,9 +101,17 @@ class ActiveConfig:
     def zones(self) -> tuple[Zone, ...]:
         return self.bundle.zones
 
+    @cached_property
+    def work_surfaces(self) -> WorkSurfaceSet:
+        """이 묶음 Operational Geometry 의 등록 작업면(명세 7.5, R2·R3·R5 입력). ContactEstimator 와 같은 항목을 읽고 형식이
+        틀린 항목은 똑같이 뺀다(rejected). 묶음은 읽기 전용이라 한 번만 읽는다."""
+        return work_surfaces_from_operational_geometry(self.bundle.operational_geometry, self.bundle.geometry_version)
+
     def evaluate(self, world: WorldState, origin: Origin, *, monitoring: MonitoringState | None = None) -> Evaluation:
-        """이 묶음의 규칙·구역으로 판정한다."""
-        return self.engine.evaluate(world, self.bundle.zones, origin, monitoring=monitoring)
+        """이 묶음의 규칙·구역·등록 작업면으로 판정한다."""
+        return self.engine.evaluate(
+            world, self.bundle.zones, origin, monitoring=monitoring, work_surfaces=self.work_surfaces.surfaces
+        )
 
 
 @dataclass(frozen=True)

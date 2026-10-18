@@ -135,6 +135,11 @@ class HorizontalRange:
         return [(cx + a * math.cos(i * step), cy + b * math.sin(i * step)) for i in range(_ELLIPSE_SIDES)]
 
 
+def region_distance(first: Polygon, second: Polygon) -> float:
+    """두 다각형 영역 사이 수평 거리(m). 겹치거나 닿으면 0. 작업면 footprint 끼리 맞붙었는지 볼 때 쓴다(R2·R3)."""
+    return _region_distance(first, second)
+
+
 def _region_distance(first: Polygon, second: Polygon) -> float:
     """두 다각형 영역 사이 거리. 한쪽 꼭짓점이 다른 쪽 안에 있거나 변이 만나면 0."""
     if any(point_in_polygon(p, second) for p in first) or any(point_in_polygon(p, first) for p in second):

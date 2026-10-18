@@ -7,8 +7,8 @@
 
 벡터 형식(JSON, format_version 1.x). 형식은 ai/tests/risk/vectors/README.md 에도 적는다.
 1.1 은 생명주기(lifecycle) 시나리오를, 1.2 는 단계별 감시 상태(monitoring, R7 입력)를, 1.3 은 발생 지속 조건·재개
-설정과 확인 필요 이유(confidence_reasons)를 더했다. 이전 벡터는 그대로 읽힌다.
-monitoring 키는 format_version 1.2 이상에서만, 1.3 키는 1.3 이상에서만 받는다(낮은 버전에 있으면 오류).
+설정과 확인 필요 이유(confidence_reasons)를, 1.4 는 등록 작업면(work_surfaces, R2·R3·R5 입력)을 더했다. 이전 벡터는 그대로 읽힌다.
+monitoring 키는 format_version 1.2 이상에서만, 1.3 키는 1.3 이상에서만, work_surfaces 는 1.4 이상에서만 받는다(낮은 버전에 있으면 오류).
 
     {
       "format_version": "1.0.0",
@@ -17,6 +17,7 @@ monitoring 키는 format_version 1.2 이상에서만, 1.3 키는 1.3 이상에�
       "origin": "LIVE",                                  # LIVE / PLANNED / REPLAY / WHAT_IF
       "rules": [{"rule_id": "R1", "rule_version": 1}],   # 등록부에서 만든다. 빈 배열 가능
       "zones": [ Zone ],                                 # simai_ai.risk.zone.Zone.from_json 형식
+      "work_surfaces": [ WorkSurface ],                  # 선택(1.4). simai_ai.risk.work_surface.WorkSurface.from_json 형식
       "steps": [
         {
           "clock_ms": 1760342400200,                     # 고정 시계의 판정 시각. 단계마다 줄지 않는다
@@ -63,6 +64,10 @@ metrics 는 절대 오차 METRIC_ABS_TOL 안에서 같으면 통과다(플랫폼
                "resume_window_ms": 10000}                                              # null 이면 재개하지 않는다
     Finding 에 "confidence_reasons": ["PREDICTED", ...] (선택, 기본 []) 를 적을 수 있다.
     expect.transitions[] 에 "confidence_reasons" 가 필수다. 재개 전이는 changes ["RESUMED"] 로 보인다.
+
+등록 작업면(1.4, 선택). 최상위 work_surfaces 는 모든 단계에 같이 쓰는 등록 작업면(명세 7.5, 활성 구성 묶음의 Operational
+Geometry)이다. 형식은 simai_ai.risk.work_surface.WorkSurface.from_json(ContactEstimator 와 같은 임시 형식)이고 ID 가 겹치면 오류다.
+없으면 등록 작업면이 없는 것으로 판정한다(R2·R3 는 판정 근거가 없다).
 """
 
 import argparse
@@ -104,12 +109,14 @@ from simai_ai.risk.lifecycle import (
 from simai_ai.risk.monitoring import MonitoringState
 from simai_ai.risk.registry import RuleRegistry, default_registry
 from simai_ai.risk.rule import Finding
+from simai_ai.risk.work_surface import WorkSurface, check_unique_ids
 from simai_ai.risk.world import WorldState
 from simai_ai.risk.zone import Zone
 
 FORMAT_MAJOR = 1
 MONITORING_MIN_MINOR = 2  # steps[].monitoring 을 더한 마이너 버전
 PERSISTENCE_MIN_MINOR = 3  # 발생 지속 조건·재개 설정, confidence_reasons 를 더한 마이너 버전
+WORK_SURFACES_MIN_MINOR = 4  # 최상위 work_surfaces(등록 작업면, R2·R3·R5 입력)를 더한 마이너 버전
 METRIC_ABS_TOL = 1e-9
 
 
@@ -152,6 +159,7 @@ class Vector:
     steps: tuple[VectorStep, ...]
     path: Path | None = None
     lifecycle: LifecycleSpec | None = None
+    work_surfaces: tuple[WorkSurface, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -169,7 +177,10 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
     where = str(path) if path else "vector"
     obj = as_mapping(obj, where)
     reject_unknown_keys(
-        obj, {"format_version", "vector_id", "description", "origin", "rules", "zones", "steps", "lifecycle"}, where
+        obj,
+        {"format_version", "vector_id", "description", "origin", "rules", "zones", "work_surfaces", "steps"}
+        | {"lifecycle"},
+        where,
     )
 
     version = as_str(require(obj, "format_version", where), f"{where}.format_version")
@@ -190,6 +201,15 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
     lifecycle = (
         None if obj.get("lifecycle") is None else _parse_lifecycle(obj["lifecycle"], f"{where}.lifecycle", minor)
     )
+    if "work_surfaces" in obj and minor < WORK_SURFACES_MIN_MINOR:
+        raise RiskInputError(
+            f"{where}.work_surfaces: format_version {FORMAT_MAJOR}.{WORK_SURFACES_MIN_MINOR} 이상에서만 쓴다(이 벡터 {version})"
+        )
+    work_surfaces = tuple(
+        WorkSurface.from_json(w, f"{where}.work_surfaces[{i}]")
+        for i, w in enumerate(as_list(obj.get("work_surfaces", []), f"{where}.work_surfaces"))
+    )
+    check_unique_ids(work_surfaces, f"{where}.work_surfaces")
     transition_keys = _TRANSITION_KEYS + (("confidence_reasons",) if minor >= PERSISTENCE_MIN_MINOR else ())
 
     steps = []
@@ -252,6 +272,7 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
         steps=tuple(steps),
         path=path,
         lifecycle=lifecycle,
+        work_surfaces=work_surfaces,
     )
 
 
@@ -269,7 +290,13 @@ def run_vector(vector: Vector, registry: RuleRegistry | None = None) -> VectorRe
     mismatches: list[str] = []
     for i, step in enumerate(vector.steps):
         clock.set(step.clock_ms)
-        evaluation = engine.evaluate(step.world_state, vector.zones, vector.origin, monitoring=step.monitoring)
+        evaluation = engine.evaluate(
+            step.world_state,
+            vector.zones,
+            vector.origin,
+            monitoring=step.monitoring,
+            work_surfaces=vector.work_surfaces,
+        )
         mismatches += [f"steps[{i}]: {m}" for m in _compare(evaluation, step)]
         if lifecycle is not None:
             mismatches += [f"steps[{i}]: {m}" for m in lifecycle.step(evaluation, step)]

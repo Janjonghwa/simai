@@ -1,0 +1,520 @@
+{
+  "format_version": "1.4.0",
+  "vector_id": "r2-r3-podium-operational-profile",
+  "description": "LIVE 운영 프로파일(R2·R3 v1, 높이차 2 m): 같은 40 cm 단상 장면에서 판정·이벤트 0건. 40 cm 는 운영 고소 기준이 아니다(7.2, 7.4)",
+  "origin": "LIVE",
+  "rules": [
+    {
+      "rule_id": "R2",
+      "rule_version": 1
+    },
+    {
+      "rule_id": "R3",
+      "rule_version": 1
+    }
+  ],
+  "zones": [],
+  "work_surfaces": [
+    {
+      "surface_id": "podium-1",
+      "top_height_m": 0.4,
+      "center_xy": [
+        4.5,
+        6.75
+      ],
+      "size_xy": [
+        4.0,
+        1.1
+      ],
+      "yaw_rad": 0.0
+    }
+  ],
+  "lifecycle": {
+    "gateway_id": "tier0-01",
+    "config_version": "cfg-12",
+    "policy": {
+      "clear_hold_ms": 3000
+    }
+  },
+  "steps": [
+    {
+      "clock_ms": 1760342400200,
+      "world_state": {
+        "t_latest_global": 1760342400100,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0031",
+            "t_last_valid": 1760342400100,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              4.5,
+              5.9
+            ],
+            "position_xy_sigma": [
+              0.05,
+              0.05
+            ],
+            "pelvis_xyz": [
+              4.5,
+              5.9,
+              0.92
+            ],
+            "ground_anchor_xyz": [
+              4.5,
+              5.9,
+              0.0
+            ],
+            "ground_anchor_sigma": [
+              0.05,
+              0.05,
+              0.02
+            ],
+            "support_surface_id": "floor",
+            "support_surface_validity": "VALID",
+            "contact_validity": "VALID",
+            "z_validity": "VALID",
+            "head_z": 1.68,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342400300,
+      "world_state": {
+        "t_latest_global": 1760342400200,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0031",
+            "t_last_valid": 1760342400200,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              4.5,
+              6.75
+            ],
+            "position_xy_sigma": [
+              0.05,
+              0.05
+            ],
+            "pelvis_xyz": [
+              4.5,
+              6.75,
+              1.32
+            ],
+            "ground_anchor_xyz": [
+              4.5,
+              6.75,
+              0.4
+            ],
+            "ground_anchor_sigma": [
+              0.05,
+              0.05,
+              0.02
+            ],
+            "support_surface_id": "podium-1",
+            "support_surface_validity": "VALID",
+            "contact_validity": "VALID",
+            "z_validity": "VALID",
+            "head_z": 2.08,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342400400,
+      "world_state": {
+        "t_latest_global": 1760342400300,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0031",
+            "t_last_valid": 1760342400300,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              4.5,
+              6.75
+            ],
+            "position_xy_sigma": [
+              0.05,
+              0.05
+            ],
+            "pelvis_xyz": [
+              4.5,
+              6.75,
+              1.32
+            ],
+            "ground_anchor_xyz": [
+              4.5,
+              6.75,
+              0.4
+            ],
+            "ground_anchor_sigma": [
+              0.05,
+              0.05,
+              0.02
+            ],
+            "support_surface_id": "podium-1",
+            "support_surface_validity": "VALID",
+            "contact_validity": "VALID",
+            "z_validity": "VALID",
+            "head_z": 2.08,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342400500,
+      "world_state": {
+        "t_latest_global": 1760342400400,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0031",
+            "t_last_valid": 1760342400400,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              4.5,
+              6.75
+            ],
+            "position_xy_sigma": [
+              0.05,
+              0.05
+            ],
+            "pelvis_xyz": [
+              4.5,
+              6.75,
+              1.32
+            ],
+            "ground_anchor_xyz": null,
+            "ground_anchor_sigma": null,
+            "support_surface_id": "podium-1",
+            "support_surface_validity": "UNCERTAIN",
+            "contact_validity": "UNCERTAIN",
+            "z_validity": "UNAVAILABLE",
+            "head_z": 2.08,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342405500,
+      "world_state": {
+        "t_latest_global": 1760342405400,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0031",
+            "t_last_valid": 1760342405400,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              4.5,
+              6.75
+            ],
+            "position_xy_sigma": [
+              0.05,
+              0.05
+            ],
+            "pelvis_xyz": [
+              4.5,
+              6.75,
+              1.32
+            ],
+            "ground_anchor_xyz": null,
+            "ground_anchor_sigma": null,
+            "support_surface_id": "podium-1",
+            "support_surface_validity": "UNCERTAIN",
+            "contact_validity": "UNCERTAIN",
+            "z_validity": "UNAVAILABLE",
+            "head_z": 2.08,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342405600,
+      "world_state": {
+        "t_latest_global": 1760342405500,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0031",
+            "t_last_valid": 1760342405500,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              4.5,
+              6.75
+            ],
+            "position_xy_sigma": [
+              0.05,
+              0.05
+            ],
+            "pelvis_xyz": [
+              4.5,
+              6.75,
+              1.32
+            ],
+            "ground_anchor_xyz": [
+              4.5,
+              6.75,
+              0.4
+            ],
+            "ground_anchor_sigma": [
+              0.05,
+              0.05,
+              0.02
+            ],
+            "support_surface_id": "podium-1",
+            "support_surface_validity": "VALID",
+            "contact_validity": "UNCERTAIN",
+            "z_validity": "UNCERTAIN",
+            "head_z": 2.08,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342405700,
+      "world_state": {
+        "t_latest_global": 1760342405600,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0031",
+            "t_last_valid": 1760342405600,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              4.5,
+              5.5
+            ],
+            "position_xy_sigma": [
+              0.05,
+              0.05
+            ],
+            "pelvis_xyz": [
+              4.5,
+              5.5,
+              0.92
+            ],
+            "ground_anchor_xyz": [
+              4.5,
+              5.5,
+              0.0
+            ],
+            "ground_anchor_sigma": [
+              0.05,
+              0.05,
+              0.02
+            ],
+            "support_surface_id": "floor",
+            "support_surface_validity": "VALID",
+            "contact_validity": "VALID",
+            "z_validity": "VALID",
+            "head_z": 1.68,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342408600,
+      "world_state": {
+        "t_latest_global": 1760342408500,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0031",
+            "t_last_valid": 1760342408500,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              4.5,
+              5.5
+            ],
+            "position_xy_sigma": [
+              0.05,
+              0.05
+            ],
+            "pelvis_xyz": [
+              4.5,
+              5.5,
+              0.92
+            ],
+            "ground_anchor_xyz": [
+              4.5,
+              5.5,
+              0.0
+            ],
+            "ground_anchor_sigma": [
+              0.05,
+              0.05,
+              0.02
+            ],
+            "support_surface_id": "floor",
+            "support_surface_validity": "VALID",
+            "contact_validity": "VALID",
+            "z_validity": "VALID",
+            "head_z": 1.68,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    },
+    {
+      "clock_ms": 1760342408700,
+      "world_state": {
+        "t_latest_global": 1760342408600,
+        "calibration_version": "cal-7",
+        "scene_version": "scene-3",
+        "tracks": [
+          {
+            "world_id": "w-0031",
+            "t_last_valid": 1760342408600,
+            "observation_state": "OBSERVED",
+            "track_lifecycle": "CONFIRMED",
+            "identity_confidence": "HIGH",
+            "identity_revision": 0,
+            "position_xy": [
+              4.5,
+              5.5
+            ],
+            "position_xy_sigma": [
+              0.05,
+              0.05
+            ],
+            "pelvis_xyz": [
+              4.5,
+              5.5,
+              0.92
+            ],
+            "ground_anchor_xyz": [
+              4.5,
+              5.5,
+              0.0
+            ],
+            "ground_anchor_sigma": [
+              0.05,
+              0.05,
+              0.02
+            ],
+            "support_surface_id": "floor",
+            "support_surface_validity": "VALID",
+            "contact_validity": "VALID",
+            "z_validity": "VALID",
+            "head_z": 1.68,
+            "cameras": [
+              "cam1",
+              "cam3"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "findings": [],
+        "transitions": [],
+        "local_signals": []
+      }
+    }
+  ]
+}
