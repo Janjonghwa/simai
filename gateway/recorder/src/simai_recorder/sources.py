@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import random
+import struct
 import urllib.parse
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping
@@ -47,11 +48,19 @@ class StreamInfo:
 
 @dataclass(frozen=True)
 class SourcePacket:
-    """H.264 접근 단위 하나 (Annex B). pts 는 pts_timebase 단위, 모르면 None."""
+    """H.264 접근 단위 하나 (Annex B). pts 는 pts_timebase 단위, 모르면 None.
+
+    camera_time_us: RTSP 의 RTCP Sender Report 로 환산한 이 프레임의 카메라 시각(UTC µs, FFmpeg PRFT). SR 을 받기 전이나
+      SR 이 없는 카메라·파일·합성 입력은 None (지어내지 않는다). C110 은 이 값이 흔들려 촬영 시각으로 쓰지 않는다(명세 3.9).
+      gateway/rtsp_probe 가 RTCP 시각 유무와 일관성을 잴 때만 쓴다.
+    sender_report: 이 패킷 바로 앞에 새 RTCP Sender Report 가 왔다.
+    """
 
     data: bytes
     pts: int | None
     keyframe: bool
+    camera_time_us: int | None = None
+    sender_report: bool = False
 
 
 class PacketSource(ABC):
@@ -78,6 +87,14 @@ class PacketSource(ABC):
 
 def _timebase_string(tb: Fraction) -> str:
     return f"1/{tb.denominator}"
+
+
+def _camera_time_us(packet: Any) -> int | None:
+    """FFmpeg 이 RTCP SR 로 환산해 붙인 카메라 시각(AV_PKT_DATA_PRFT 의 wallclock, UTC µs). 없으면 None."""
+    if not packet.has_sidedata("prft"):
+        return None
+    raw = bytes(packet.get_sidedata("prft"))
+    return struct.unpack_from("=q", raw)[0] if len(raw) >= 8 else None
 
 
 class _PyAvDemuxer:
@@ -122,7 +139,8 @@ class _PyAvDemuxer:
                     pts = round(pts * self._tb / RTP_VIDEO_TIMEBASE)
                 data = bytes(p)
                 # 패킷 플래그가 빠져도 IDR 슬라이스면 키프레임이다
-                yield SourcePacket(data=data, pts=pts, keyframe=bool(p.is_keyframe) or first_vcl_type(data) == NAL_IDR)
+                yield SourcePacket(data=data, pts=pts, keyframe=bool(p.is_keyframe) or first_vcl_type(data) == NAL_IDR,
+                                   camera_time_us=_camera_time_us(p), sender_report=p.has_sidedata("rtcp_sr"))
 
     def next(self) -> SourcePacket | None:
         return next(self._packets, None)

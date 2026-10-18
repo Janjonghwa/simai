@@ -125,6 +125,8 @@ PTS 간격(카메라 RTP 시계)은 믿고 원점만 수신 시각에 맞추므�
 창 안 최솟값을 쓰므로 카메라·노트북 시계의 느린 표류를 따라간다. PTS 가 없으면 `received_at_ms − latency_ms`.
 `latency_ms`(노출 → 수신 고정 지연)와 `timestamp_uncertainty_ms` 는 **G0 LED 시험 전 잠정값**이다(기본 0, 20, PTS 없음 45).
 원본 `received_at_ms`·`source_pts` 를 함께 남기므로 G0 에서 값이 정해지면 사이드카를 다시 계산할 수 있다.
+RTSP 입력은 RTCP SR 로 환산한 카메라 시각도 `SourcePacket.camera_time_us`(SR 전·파일·합성은 None)로 넘기지만 녹화·중계는 쓰지 않는다.
+이 값의 유무·흔들림은 측정 도구 [`gateway/rtsp_probe`](../rtsp_probe/README.md) 가 잰다.
 
 ### Tier 0 에서 다시 읽기
 
