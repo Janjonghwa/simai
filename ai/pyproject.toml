@@ -20,7 +20,8 @@ calibration = ["numpy>=1.26", "opencv-python-headless>=4.9", "jsonschema>=4.23",
 scene = ["torch>=2.4"]
 hmr = ["torch>=2.4"]
 # 배포 단위 묶음 (services/)
-tier0 = ["simai-ai[io,detection,geometry,calibration]"]
+# websockets: I1 WebSocket(wss) 클라이언트 (services/tier0/i1_client, 명세 12.2)
+tier0 = ["simai-ai[io,detection,geometry,calibration]", "websockets>=14"]
 worker = ["simai-ai[scene,hmr]"]
 
 [dependency-groups]
@@ -36,6 +37,8 @@ dev = [
     "scipy>=1.11",
     # I0 영상 수신 TLS 시험: 시험 중에 자체 서명 인증서를 만든다(커밋하지 않음). 실행 시에는 쓰지 않는다
     "cryptography>=43",
+    # I1 클라이언트 시험(로컬 wss 서버). 기능 설치는 extras tier0 가 같은 범위를 선언한다
+    "websockets>=14",
 ]
 
 [build-system]

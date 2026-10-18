@@ -9,7 +9,8 @@
 - 값을 모르면 지어내지 않는다. 빠진 환경 변수·설정은 이름을 모두 모아 `EndpointConfigError` 로 등록 실패를 보고하고 보내지 않는다.
 - 메시지에는 비밀 값(Tier 0·기기 토큰, TLS 비밀 키, RunPod API 키)을 싣지 않는다. 토큰은 Authorization 헤더에만 싣고
   로그·오류 문장에 넣지 않는다.
-- 전송은 주입한다(`Transport`). I1 WebSocket 클라이언트가 아직 없어 기본 구현은 HTTPS POST(`HttpTransport`) 다.
+- 전송은 주입한다(`Transport`). 여기 기본 구현은 HTTPS POST(`HttpTransport`, 임시안)다. 명세대로 I1 메시지로 보내려면
+  `EndpointRegistrar.build` 를 i1_publisher.EndpointI1Registration 에 넘긴다(I1 재연결마다 다시 등록).
   응답을 받지 못했거나(연결 실패·시간 초과) 429·5xx 면 지수 백오프로 같은 봉투(같은 msg_id)를 다시 보낸다.
 
 환경 변수(.env, 비밀 값은 커밋하지 않는다):
@@ -53,7 +54,7 @@ from typing import Any, Protocol
 
 SCHEMA_VERSION = "1.3.0"  # tier0_endpoint 가 들어온 계약 버전 (계약 예시와 같다)
 MSG_TYPE = "tier0_endpoint"
-# 등록 경로는 서버 OpenAPI 확정 전 기본안이다. 명세는 I1(WebSocket) 메시지로 정했고, I1 클라이언트가 들어오면 그쪽으로 보낸다.
+# 등록 경로는 서버 OpenAPI 확정 전 기본안이다. 명세는 I1(WebSocket) 메시지로 정했다(i1_publisher.EndpointI1Registration).
 REGISTER_PATH = "/api/endpoints/tier0"
 MIN_REQUESTED_PORT = 70000  # RunPod 대칭 매핑 (계약 port_mapping.requested_port)
 DEFAULT_TIER0_ID = "tier0-01"
@@ -393,7 +394,12 @@ class Backoff:
             raise ValueError("백오프 값이 올바르지 않다")
 
     def delay(self, failures: int) -> float:
-        return min(self.max_s, self.initial_s * self.factor ** max(0, failures - 1))
+        """실패 횟수가 아무리 커도 max_s 로 포화한다(지수를 먼저 자른다. I1 처럼 무기한 다시 붙는 쪽이 넘침으로 멈추지 않게)."""
+        exponent = min(max(0, failures - 1), 64)
+        try:
+            return min(self.max_s, self.initial_s * self.factor**exponent)
+        except OverflowError:
+            return self.max_s
 
 
 @dataclass(frozen=True)
