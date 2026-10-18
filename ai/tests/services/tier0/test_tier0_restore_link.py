@@ -8,6 +8,11 @@
 - 재시작 두 번 연속(두 번째 프로세스가 인지 전에 끝남): 체크포인트가 복구 결과(Track·시각)를 잃지 않아 세 번째가 같은 후보를 받는다.
 - 체크포인트 Track 거부(중복 ID): 후보 없이 시작하고 연결 시간은 연다.
 - 판정 루프 순서: 같은 tick 의 ID 교정 뒤, 판정 lock 안에서 연결 함수를 만들고, 입력 정지 tick 은 마지막 실제 World 의 frame 으로.
+
+장면 시각(S15P31A101-181): 재시작한 프로세스도 첫 프로세스와 같은 anchor 로 장면을 이어 간다(실제 재시작처럼 사람은 내려가 있던
+시간만큼만 움직인다). 첫 프로세스는 사람이 구역에 선 뒤의 위치가 체크포인트에 실린 다음에 끝낸다. 재시작 때 장면을 앞으로 건너뛰면
+사람이 최대 속도보다 빨리 '순간 이동'해 복원 Track 이 갈 수 없는 거리(restored_excluded)가 되고, -54 규칙대로 연결이 빠진다
+(첫 프로세스를 언제 끝냈는지에 따라 붙었다 빠졌다 하던 원인).
 """
 
 from __future__ import annotations
@@ -42,14 +47,15 @@ from simai_ai.tracking.world_track import (  # noqa: E402
     WorldTrackManager,
 )
 
-# 장면을 3 s 앞에서 시작한다: 재시작한 프로세스가 처음 보는 사람은 이미 R1 구역 안에 서 있다(복원 Track 자리)
-IN_ZONE_MS = 3000
+# 걷는 사람(tier0_site.scenario)은 2.5 s 에 (4.6, 3.8)에 선다. 첫 프로세스는 그 뒤의 관측을 체크포인트에 싣고 끝낸다
+STANDING_MS = 3000
+STANDING_XY = (4.6, 3.8)
 
 
 @pytest.fixture(scope="module")
 def sim_run(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("sim")
-    return ts.run_sim(tmp, ts.scenario(60_000))
+    return ts.run_sim(tmp, ts.scenario(120_000))
 
 
 def _r1(service: Tier0Service):
@@ -57,20 +63,31 @@ def _r1(service: Tier0Service):
 
 
 def _first_run(tmp_path, sim_run):
-    """첫 프로세스: R1 발생 → 정상 종료(마지막 체크포인트에 Track). 그 이벤트와 체크포인트 Track ID 를 돌려준다."""
-    first = Tier0Service(_settings(tmp_path, sim_run, anchor_ms=_now() + 300))
+    """첫 프로세스: R1 발생 → 사람이 선 뒤의 관측까지 처리 → 정상 종료(마지막 체크포인트에 Track).
+
+    그 이벤트, 체크포인트 Track ID, 장면 anchor 를 돌려준다. 재시작한 프로세스는 같은 anchor 로 장면을 이어 간다.
+    """
+    anchor = _now() + 300
+    first = Tier0Service(_settings(tmp_path, sim_run, anchor_ms=anchor))
     first.start()
     try:
         assert ts.wait_until(lambda: bool(_r1(first)), timeout=20)
         [event] = _r1(first)
-        # 체크포인트 재료에 그 사람의 Track 이 실린 뒤 끝낸다
-        assert ts.wait_until(lambda: set(event.world_ids) <= {t.world_id for t in first.perception.manager.export_tracks()},
-                             timeout=5)
+
+        def standing_seen() -> bool:  # 선 뒤의 관측을 처리했고 그 사람의 Track 이 체크포인트 재료에 있다
+            with first.judge_lock:
+                last_t = first.perception.manager.last_t
+                ids = {t.world_id for t in first.perception.manager.export_tracks()}
+            return last_t is not None and last_t >= anchor + STANDING_MS and set(event.world_ids) <= ids
+
+        assert ts.wait_until(standing_seen, timeout=20)
     finally:
         assert first.stop() is True
     tracks = first.checkpointer.last_checkpoint.tracks
-    assert set(event.world_ids) <= {t.world_id for t in tracks}
-    return event, tuple(t.world_id for t in tracks)
+    [subject] = [t for t in tracks if t.world_id in event.world_ids]
+    # 전제 확인: 복원 Track 은 선 자리다(재시작 뒤 같은 자리 관측이 갈 수 있는 거리 안)
+    assert abs(subject.position_xyz[0] - STANDING_XY[0]) < 0.3 and abs(subject.position_xyz[1] - STANDING_XY[1]) < 0.3, subject
+    return event, tuple(t.world_id for t in tracks), anchor
 
 
 def _new_r1(service: Tier0Service, old_id: str):
@@ -85,8 +102,8 @@ def _assert_previous_kept(service: Tier0Service, event) -> None:
 
 
 def test_restart_links_new_event_to_restored_event_without_moving_or_resolving_it(tmp_path, sim_run) -> None:
-    event, track_ids = _first_run(tmp_path, sim_run)
-    second = Tier0Service(_settings(tmp_path, sim_run, anchor_ms=_now() - IN_ZONE_MS))
+    event, track_ids, anchor = _first_run(tmp_path, sim_run)
+    second = Tier0Service(_settings(tmp_path, sim_run, anchor_ms=anchor))  # 장면을 이어 간다
     second.start()
     seen_world_ids: set[str] = set()
     try:
@@ -116,10 +133,10 @@ def test_restart_links_new_event_to_restored_event_without_moving_or_resolving_i
 
 def test_checkpoint_older_than_30s_discards_tracks_logs_reason_and_links_by_zone_only(tmp_path, sim_run, caplog) -> None:
     """반례: 30 s 넘은 체크포인트. 복원 Track 을 후보로 쓰지 않고(이유 로그) 같은 규칙·같은 구역 규칙으로만 잇는다."""
-    event, track_ids = _first_run(tmp_path, sim_run)
-    skew = 45_000  # 재시작이 45 s 뒤라고 본다(벽시계를 앞으로 민다)
+    event, track_ids, anchor = _first_run(tmp_path, sim_run)
+    skew = 45_000  # 재시작이 45 s 뒤라고 본다(벽시계를 앞으로 민다. 같은 anchor 라 장면도 45 s 뒤, 사람은 그대로 서 있다)
     wall = lambda: time.time_ns() // 1_000_000 + skew  # noqa: E731
-    second = Tier0Service(_settings(tmp_path, sim_run, anchor_ms=wall() - IN_ZONE_MS), wall_ms=wall)
+    second = Tier0Service(_settings(tmp_path, sim_run, anchor_ms=anchor), wall_ms=wall)
     caplog.set_level(logging.WARNING, logger="services.tier0.restore_link")
     second.start()
     try:
@@ -147,12 +164,12 @@ def _raising_fn(*_args, **_kwargs):
 @pytest.mark.parametrize("where", ["related_fn", "for_frame"])
 def test_related_failure_degrades_to_no_link_and_keeps_alert(tmp_path, sim_run, monkeypatch, where) -> None:
     """반례: 연결 함수가 예외를 내도(함수 자체·for_frame) 새 이벤트는 연결 없이 발생하고 현장 경보 경로가 막히지 않는다."""
-    event, _ = _first_run(tmp_path, sim_run)
+    event, _, anchor = _first_run(tmp_path, sim_run)
     if where == "related_fn":
         monkeypatch.setattr(RestoredEventLinker, "for_frame", lambda self, frame, status: _raising_fn)
     else:
         monkeypatch.setattr(RestoredEventLinker, "for_frame", _raising_fn)
-    second = Tier0Service(_settings(tmp_path, sim_run, anchor_ms=_now() - IN_ZONE_MS))
+    second = Tier0Service(_settings(tmp_path, sim_run, anchor_ms=anchor))
     second.start()
     try:
         assert ts.wait_until(lambda: bool(_new_r1(second, event.event_id)), timeout=20)
@@ -168,7 +185,7 @@ def test_related_failure_degrades_to_no_link_and_keeps_alert(tmp_path, sim_run, 
 
 def test_two_restarts_in_a_row_keep_checkpoint_tracks_for_the_third(tmp_path, sim_run) -> None:
     """반례: 두 번째 프로세스가 인지 tick 없이 끝나도 그 체크포인트가 복구 결과(Track·Track 시각)를 잃지 않는다."""
-    event, track_ids = _first_run(tmp_path, sim_run)
+    event, track_ids, anchor = _first_run(tmp_path, sim_run)
     second = Tier0Service(_settings(tmp_path, sim_run, anchor_ms=_now() + 120_000))  # 프레임이 오지 않는다
     second.start()
     try:
@@ -178,7 +195,7 @@ def test_two_restarts_in_a_row_keep_checkpoint_tracks_for_the_third(tmp_path, si
         assert second.stop() is True
     cp = second.checkpointer.last_checkpoint
     assert tuple(t.world_id for t in cp.tracks) == track_ids and cp.config_version == "cfg-1"
-    third = Tier0Service(_settings(tmp_path, sim_run, anchor_ms=_now() - IN_ZONE_MS))
+    third = Tier0Service(_settings(tmp_path, sim_run, anchor_ms=anchor))  # 첫 프로세스의 장면을 이어 간다
     third.start()
     try:
         assert ts.wait_until(lambda: bool(_new_r1(third, event.event_id)), timeout=20)
