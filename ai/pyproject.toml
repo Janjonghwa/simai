@@ -72,6 +72,7 @@ forbidden_modules = [
     "simai_ai.vlm",
     "simai_ai.providers",
     "simai_ai.config",
+    "simai_ai.eventlog",
     "numpy",
     "cv2",
     "torch",
