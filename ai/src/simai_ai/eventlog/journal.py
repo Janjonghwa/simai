@@ -46,6 +46,10 @@ EVIDENCE_NAME = "evidence_index.json"
 ACK_CHANNELS = frozenset({"CONTROL_ROOM", "FOREMAN_PWA", "SITE_BUTTON"})
 ACK_ACTOR_ROLE = {"ADMIN": "ADMIN", "FOREMAN": "FOREMAN", "SITE_BUTTON": "SITE"}
 TRANSITION_KIND = "risk_event_transition"
+# 판정이 아닌 전이(운영자 확인·재시작 복원·ID 교정)의 lifecycle 변경 사유. 이 전이는 world_state 판정 근거를 모를 수 있고,
+# 계약(risk_event_transition 1.4.0)은 그때 evidence_ref 를 null 로 둔다. VERIFICATION 은 복원 전이에 함께 붙는다.
+NON_JUDGMENT_CHANGES = frozenset({"ACKNOWLEDGED", "RESTORED", "IDENTITY_CORRECTED", "IDENTITY_CONFLICT"})
+_NON_JUDGMENT_ALLOWED = NON_JUDGMENT_CHANGES | {"VERIFICATION"}
 _SEGMENT_RE = re.compile(r"^(\d{20})\.journal$")
 
 Fsync = Callable[[int], None]
@@ -151,6 +155,23 @@ def ack_id_of(entry: JournalEntry) -> str | None:
 def evidence_ref_of(entry: JournalEntry) -> str | None:
     """판정 근거 world_state msg_id: payload.evidence_ref, 없으면 meta.evidence_ref(그 이벤트의 직전 근거)."""
     return _nonempty_str(entry.payload.get("evidence_ref")) or _nonempty_str(entry.meta.get("evidence_ref"))
+
+
+def is_judgment_transition(payload: Mapping[str, Any]) -> bool:
+    """판정 전이인지(근거 world_state 가 있어야 하는지). 모르면 판정으로 본다(근거 없이 보내지 않는 쪽).
+
+    판정이 아닌 전이: 확인(ack 를 싣거나 transition=ACKNOWLEDGED), 또는 재개가 아닌 UPDATED 중 변경 사유가 모두
+    복원·ID 교정(과 복원에 붙는 VERIFICATION)인 것. RAISED·RESOLVED·재개·판정 UPDATED 는 판정 전이다.
+    """
+    if payload.get("ack") is not None or payload.get("transition") == "ACKNOWLEDGED":
+        return False
+    if payload.get("transition") != "UPDATED" or payload.get("resumed") is True:
+        return True
+    changes = payload.get("changes")
+    if not isinstance(changes, (list, tuple)) or not changes:
+        return True
+    names = {str(c) for c in changes}
+    return not (names & NON_JUDGMENT_CHANGES and names <= _NON_JUDGMENT_ALLOWED)
 
 
 def _valid_record_after(data: bytes, pos: int) -> bool:
@@ -468,8 +489,8 @@ class EventJournal:
         """쓰기 전에(부르는 쪽 스레드에서) 단계를 검사하고, 확인 ack_id 와 판정 근거를 대기 중으로 올린다.
 
         잘못된 단계는 여기서 바로 오류를 내 쓰기 스레드에서 조용히 사라지거나 보낼 수 없는 기록(outbox 영구 보류)이
-        저널에 들어가지 않게 한다: LIVE 아님, 확인인데 ack_id·채널 없음, 채널과 확인 주체가 맞지 않음, 판정 근거
-        (evidence_ref)를 payload·저널·대기 중 어디서도 모름. 올린 ack_id 는 has_ack_id 가 바로 안다(같은 site_ack 를
+        저널에 들어가지 않게 한다: LIVE 아님, 확인인데 ack_id·채널 없음, 채널과 확인 주체가 맞지 않음, 판정 전이인데
+        판정 근거(evidence_ref)를 payload·저널·대기 중 어디서도 모름(판정이 아닌 전이는 근거 없이 기록, 계약 1.4.0). 올린 ack_id 는 has_ack_id 가 바로 안다(같은 site_ack 를
         fsync 전에 다시 받아도 한 번만 기록). 넣기가 실패하면 돌려준 Reservation 으로 release 해 되돌린다.
         """
         acks: list[str] = []
@@ -486,7 +507,7 @@ class EventJournal:
             ref = _nonempty_str(payload.get("evidence_ref"))
             if ref is not None:
                 evidence[event_id] = ref
-            elif event_id not in evidence and event_id not in known:
+            elif event_id not in evidence and event_id not in known and is_judgment_transition(payload):
                 raise JournalError(f"판정 근거(evidence_ref)를 모르는 전이: event_id={event_id} (지어내지 않는다)")
         with self._lock:
             self._check_writable()
@@ -514,7 +535,8 @@ class EventJournal:
         (has_ack_id)에 쓴다. 같은 ack_id 를 두 번 기록하지 않는 것은 부르는 쪽이 has_ack_id 로 먼저 확인한다.
 
         payload 의 evidence_ref 가 비었으면(확인·복원 전이) 그 이벤트의 직전 판정 근거를 meta.evidence_ref 로 남긴다.
-        근거를 모르면 지어내지 않고 기록 전에 거절한다(보낼 수 없는 기록이 저널에 남아 outbox 를 막지 않게).
+        판정 전이의 근거를 모르면 지어내지 않고 기록 전에 거절한다(보낼 수 없는 기록이 저널에 남아 outbox 를 막지 않게).
+        판정이 아닌 전이(확인·복원·ID 교정)는 근거를 몰라도 기록한다. outbox 가 evidence_ref=null 로 보낸다(계약 1.4.0).
         """
         payload = transition.to_payload()
         meta = self._transition_meta(payload, ack_id)
@@ -522,9 +544,10 @@ class EventJournal:
             event_id = str(payload.get("event_id"))
             with self._lock:
                 previous = self._evidence.get(event_id)
-            if previous is None:
+            if previous is not None:
+                meta["evidence_ref"] = previous
+            elif is_judgment_transition(payload):
                 raise JournalError(f"판정 근거(evidence_ref)를 모르는 전이: event_id={event_id} (지어내지 않는다)")
-            meta["evidence_ref"] = previous
         return self.append(TRANSITION_KIND, payload, meta)
 
     def append_step(self, step: StepLike, *, ack_id: str | None = None) -> tuple[JournalEntry, ...]:

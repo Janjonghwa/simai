@@ -1,7 +1,7 @@
 """media_clip 기록 (명세 11.3 `media_clip`: 이벤트 연결 영상 구간 주소, 삭제 예정일, 보존 표시. 11.5 보관).
 
-contracts/ 에 media_clip 스키마가 아직 없다. 필드 이름은 11.3·11.5 와 기존 계약 관례(UTC int64 ms, event_id·gateway_id,
-source)를 따른 내부 형식이고, 스키마가 생기면 to_payload 결과를 그 스키마로 검증하는 시험을 붙인다(MR 초안에 제안).
+계약: MediaClipRecord.to_payload 는 contracts/messages/media_clip.schema.json, ClipRetentionUpdate.to_payload 는
+media_clip_retention.schema.json 의 payload 다(S15P31A101-169, 시험 tests/services/tier0/test_event_clips.py 가 맞춰 본다).
 
 - 시각은 UTC int64 ms. 클립 구간은 촬영 시각(capture) 기준, created_at·uploaded_at 은 주입 시계 기준이다.
 - delete_after_ms = created_at_ms + 보관 기간(14일, 11.5·16). 실제 삭제는 객체 저장소 수명 주기 규칙이 한다.

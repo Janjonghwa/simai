@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/media_clip.schema.json",
+  "title": "I1 media_clip",
+  "description": "RunPod Tier 0 → EC2. 이벤트 클립 한 개(카메라 하나 × 위험 구간 하나)를 객체 저장소에 올린 뒤 보내는 기록 (명세 5.1 이벤트 클립 링 버퍼, 11.3 media_clip, 11.5 보관, 12.3). 영상은 메시지에 넣지 않고 객체 키로만 가리킨다. LIVE 의 CRITICAL·HIGH 이벤트가 발생(RAISED)·재개될 때 만들며, 같은 위험 구간(event_id, resume_count)이 HIGH 에서 CRITICAL 로 올라도 새 클립을 만들지 않는다. 시각은 UTC int64 ms, 클립 구간(*_capture_ms, requested_*)은 촬영 시각축이다. 한 번 보낸 기록은 고치지 않는다: 보낸 뒤 붙는 보존 표시는 추가 기록 media_clip_retention 으로 보낸다(AGENTS.md 규칙 6). 1.0.0 신설(Lead 승인 2026-10-18, S15P31A101-169. 형식은 S15P31A101-57 의 내부 형식 services/tier0/clips/record.py). I1 계약.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "media_clip" },
+    "payload": {
+      "type": "object",
+      "required": [
+        "clip_id", "event_id", "gateway_id", "event_sequence", "resume_count", "rule_id", "severity", "source",
+        "camera_id", "stream_epochs", "anchor_capture_ms", "requested_start_ms", "requested_end_ms",
+        "clip_start_capture_ms", "clip_end_capture_ms", "frame_count", "starts_with_keyframe",
+        "truncated_start", "truncated_end", "has_gaps", "content_type", "container", "size_bytes", "sha256",
+        "face_redaction", "redactor_version", "created_at_ms", "delete_after_ms", "retention_hold",
+        "object_key", "uploaded_at_ms"
+      ],
+      "properties": {
+        "clip_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7", "description": "클립 식별자 (GET /api/clips/{id}, PUT /api/clips/{id}/retention 의 id, 12.6)" },
+        "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "gateway_id": { "$ref": "../common/defs.schema.json#/$defs/instance_id", "description": "클립을 만든 Tier 0 인스턴스. 봉투 source_id 와 같다" },
+        "event_sequence": { "type": "integer", "minimum": 1, "description": "클립을 만들게 한 전이(발생·재개, 자르기 전 상향이면 그 전이)의 event_sequence" },
+        "resume_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "이벤트 재개 횟수 (명세 6.4, risk_event.resume_count). 0 은 처음 발생. (event_id, resume_count, camera_id)마다 클립은 하나다. 재개는 새 위험 발생처럼 다뤄 새 클립을 만든다"
+        },
+        "rule_id": { "type": "string", "minLength": 1 },
+        "severity": {
+          "enum": ["CRITICAL", "HIGH"],
+          "description": "클립을 보낼 때의 이벤트 등급. 클립은 CRITICAL·HIGH 이벤트에만 만든다 (7.3 채널 표, 5.1)"
+        },
+        "source": { "const": "LIVE", "description": "클립은 LIVE 이벤트에만 만든다. PLANNED·WHAT_IF·REPLAY 는 영상이 없다 (AGENTS.md 규칙 5)" },
+        "camera_id": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+        "stream_epochs": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "클립에 들어간 I0 stream_epoch (12.7). 구간 안에서 카메라 RTSP 스트림이 재연결되면 둘 이상(TLS 전송 재접속은 같은 epoch)"
+        },
+        "anchor_capture_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "기준 시각: 클립을 만들게 한 전이의 observation_time(촬영 시각)" },
+        "requested_start_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "요청 구간 시작(기준 − 사전 구간, 초기값 20초)" },
+        "requested_end_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "요청 구간 끝(기준 + 사후 구간, 초기값 20초)" },
+        "clip_start_capture_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "클립 첫 프레임의 촬영 시각" },
+        "clip_end_capture_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "클립 마지막 프레임의 촬영 시각 (≥ clip_start_capture_ms, 계약 시험)" },
+        "frame_count": { "type": "integer", "minimum": 1 },
+        "starts_with_keyframe": { "type": "boolean", "description": "링 버퍼는 키프레임부터 자른다(디코딩 없이 재생 가능)" },
+        "truncated_start": { "type": "boolean", "description": "버퍼에 요청 구간 앞부분이 없어 늦게 시작함 (지어내지 않음)" },
+        "truncated_end": { "type": "boolean", "description": "카메라가 멈췄거나 마감이 지나 요청 구간 끝까지 채우지 못함" },
+        "has_gaps": { "type": "boolean", "description": "클립 구간 안에 frame_sequence 빈칸(손실·버림)이 있음" },
+        "content_type": { "type": "string", "minLength": 1, "description": "예: video/h264" },
+        "container": { "type": "string", "minLength": 1, "description": "예: h264-annexb (H.264 Annex B 기본 스트림, 재인코딩 없음)" },
+        "size_bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "../common/defs.schema.json#/$defs/sha256", "description": "올린 객체 내용의 해시" },
+        "face_redaction": {
+          "enum": ["NONE", "BLURRED_BEFORE_EXPORT"],
+          "description": "얼굴 흐림 여부 (명세 11.5). 사용자 결정으로 이벤트 클립은 얼굴 흐림 없이 보관하므로 기본은 NONE 이다. BLURRED_BEFORE_EXPORT 는 선택 사항인 흐림 단계를 켜서 업로드 전에 흐린 경우다. 얼굴 복원·표정 추정·재식별은 어느 쪽이든 하지 않는다 (AGENTS.md 규칙 8)"
+        },
+        "redactor_version": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "흐림 단계 버전. NONE 이면 null, BLURRED_BEFORE_EXPORT 면 필수(어느 쪽인지 지어내지 않는다)"
+        },
+        "created_at_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "클립을 자른 시각(Tier 0 주입 시계)" },
+        "delete_after_ms": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "삭제 예정일 = created_at_ms + 보관 기간(14일, 11.5·16장). 보존 표시가 없으면 이 시각 뒤 객체 저장소 수명 주기 규칙으로 지운다. Tier 0 는 보존 표시가 없고 이 시각이 지난 미업로드 클립만 올리지 않고 지운다. 보존 표시가 있는 클립은 이 시각이 지나도 전체 파기 기한(11.5) 전까지 복원·업로드한다"
+        },
+        "retention_hold": {
+          "type": "boolean",
+          "description": "보존 표시 (11.5). CRITICAL 이벤트 연결분은 자동으로 true. 보낸 뒤 CRITICAL 로 오르면 이 기록을 고치지 않고 media_clip_retention 을 추가로 보낸다. 아차사고 보존 표시는 관리자가 EC2 에서 붙이고 뗀다(PUT /api/clips/{id}/retention)"
+        },
+        "object_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^(?![A-Za-z][A-Za-z0-9+.-]*:)(?!/)[^?#\\s]+$",
+          "description": "업로드 서명(POST /api/uploads/sign) 응답의 객체 키 (버킷 안 경로). URL·서명 주소·data: URI 가 아니다(스킴·쿼리 불가). 열람은 EC2 가 그때그때 임시 서명 주소를 발급한다(GET /api/clips/{id}, 14장)"
+        },
+        "uploaded_at_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "spooled": { "type": "boolean", "description": "EC2 단절로 Network Volume 에 먼저 저장했다가 복구 뒤 올렸는지 (5.1, 부록 D-G3-19)" },
+        "upload_attempts": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "흐림 없음(NONE)이면 redactor_version 은 null, 흐림(BLURRED_BEFORE_EXPORT)이면 그 단계의 버전이 있어야 한다",
+          "if": { "properties": { "face_redaction": { "const": "NONE" } }, "required": ["face_redaction"] },
+          "then": { "properties": { "redactor_version": { "type": "null" } } },
+          "else": { "properties": { "redactor_version": { "type": "string" } } }
+        }
+      ]
+    }
+  }
+}

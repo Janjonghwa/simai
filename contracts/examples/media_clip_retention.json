@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "media_clip_retention",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000155",
+  "sent_at": 1760342440100,
+  "source_id": "tier0-01",
+  "payload": {
+    "clip_id": "0192a6f1-3c4d-7e5f-8a6b-7c8d9e0f1a3c",
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "gateway_id": "tier0-01",
+    "resume_count": 0,
+    "severity": "CRITICAL",
+    "retention_hold": true,
+    "reason": "CRITICAL_AUTO",
+    "issued_at_ms": 1760342440000,
+    "source": "LIVE"
+  }
+}

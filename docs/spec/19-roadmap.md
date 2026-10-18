@@ -7,7 +7,8 @@
 - [ ] 공유기 환경에서 카메라 1대 10분 RTSP 측정(S15P31A101-9 완료 조건)
 - [ ] H100 에서 4대 동시 처리 FPS(G0)와 노트북 → RunPod 업로드 안정성
 - [x] VLM 확정: NVIDIA Cosmos3-Nano(16B) Reasoner 모드, vLLM `vllm-cosmos3`(5.4). G7 은 합격 여부만 판정
-- [ ] HumanCalib 를 실측 정물 스케일과 함께 쓰는 범위(4.3)와 라이선스 조건(기본 3D lifter 비상업)
+- [x] HumanCalib 사용 범위: 코드·3D lifter 를 쓰지 않고 원리만 따른 자체 번들 조정으로 정했다(4.3). 실측 정물·키를 아는 사람은 스케일 제약으로 넣는다
+- [ ] 해상도·화각이 바뀐 뒤 재보정 절차(내부 파라미터 재추정 → 번들 조정)와, 틀어짐 귀속이 불확실할 때 운영자가 할 일(4.4, 18장)
 - [ ] 무마커 내부 파라미터 추정의 기본 경로 확정: 후보 라이선스는 확인했다(부록 B). C110 실제 프레임에서 고전 기준·AnyCalib·GeoCalib 비교가 남았다(4.3)
 - [ ] 지급 EC2 의 디스크 용량과 네트워크 전송 한도(2D 관측은 RunPod 에 두므로 부담이 줄었다), EC2 와 Lightsail 중 어느 것인지
 - [x] RunPod 리전 확정: 개발·시연 일본 AP-JP-1 H100(3.12). 남은 일: D-14 GPU 확보 확인과 카메라 4대 기준 `capture_to_site_alert` 실측
@@ -20,7 +21,7 @@
 - [x] Network Volume 마운트 경로 `/workspace`(AP-JP-1, 볼륨 구조는 `/workspace/simai/{envs,third_party,weights,datasets,runs,logs,setup,tools,obs2d,recordings}`). `obs2d` 는 2D 관측 Parquet(11.2)이다: Tier 0 에 `SIMAI_OBS2D_ROOT=/workspace/simai/obs2d` 를 준다(코드 기본값 없음, 없으면 오류). 파일은 `{date}/{hour}/{camera_id}/obs2d.{camera_id}.{YYYYMMDDTHHMM}Z.{session_id}.{part:04d}.parquet`(UTC, 한 시간 단위)이고 기본 14일(7\~14일) 뒤 지운다. `recordings` 는 녹화 세션 디렉터리 `recordings/<session_id>/`(`volume://AP-JP-1/simai/recordings/<session_id>/`, 세션 목록·해시는 `recording_manifest`, 15.3)다
 - [ ] SSAFY GitLab CI 러너 사용 가능 여부(없으면 로컬 검사 스크립트로 대체)
 - [x] 요구사항 ID 추적 위치: 9장은 요약만 두고 세부 추적은 요구사항 명세서(`docs/requirements.md`) 비고 열에서 한다
-- [ ] 아직 계약에 없는 v1.3 규칙: `confidence_reasons`(7.1), 이벤트 재개 전이(6.4), 노트북 송신 큐에서 버린 프레임 수(12.7). `health.laptop_clock_offset` 이 null 일 때 T_lag 처리(6.1)도 정해야 한다. 계약에 반영한 것: 현장 경보 목록 `health.active_site_alerts`(3.10), 시계 차이 `clock_sync_request`·`clock_sync_response`·`health.laptop_clock_offset`(3.9), 엔드포인트 등록 `tier0_endpoint`(3.12), 2D 관측 요약 `observation_summary`(11.2), I5 작업 대여 `job_lease_request`·`job_request`·`job_heartbeat`·`job_callback`·`job_lease_status`(12.5), 녹화 manifest `recording_manifest`(15.3), 보정 출처 값 정리 `calibration_source`(20.4)
+- [ ] 아직 계약에 없는 v1.3 규칙: 시계 차이를 모를 때 필수 필드 `health.pipeline_lag_ms` 에 넣을 값(처리 방식은 6.1 로 정함), 노트북 송신 큐 버림·연결 없음 버림을 `laptop_heartbeat` 에 싣는 필드(Tier 0 수신 집계는 `health` 에 반영). 계약에 반영한 것: `confidence_reasons`(7.1), 이벤트 재개 `resumed`·`resume_count`(6.4), 확인 대상 `event_sequence`(3.10), `world_state.config_version`(3.2), 판정이 아닌 전이의 `evidence_ref` null(3.2), 노트북 송신 큐 버림 `health.cameras[].frames.laptop_skipped`·`unattributed_gap`(12.7), 이벤트 클립 `media_clip`·`media_clip_retention`(11.3), 현장 경보 목록 `health.active_site_alerts`(3.10), 시계 차이 `clock_sync_request`·`clock_sync_response`·`health.laptop_clock_offset`(3.9), 엔드포인트 등록 `tier0_endpoint`(3.12), 2D 관측 요약 `observation_summary`(11.2), I5 작업 대여 `job_lease_request`·`job_request`·`job_heartbeat`·`job_callback`·`job_lease_status`(12.5), 녹화 manifest `recording_manifest`(15.3), 보정 출처 값 정리 `calibration_source`(20.4)
 - [ ] G2 ID 정답 주석 분량, G7 사람 평가의 평가자 수·채점 기준(15.1)
 - [ ] 워치 지급 시점과 모델(확장, 부록 C)
 

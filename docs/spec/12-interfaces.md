@@ -1,6 +1,6 @@
 # 12. 인터페이스 명세
 
-I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 봉투를 쓰고, 이미지는 메시지에 넣지 않고 객체 저장소 주소로 주고받는다. 아래 필드는 v1.0 기준 예시이며 필드 정의의 정본은 저장소 `contracts/`의 JSON Schema 파일이다(21.2). 아직 스키마가 없는 메시지는 이 절의 예시가 기준이다. v1.3 에서 바뀐 규칙 중 현장 경보 목록(`health.active_site_alerts`), 시계 차이 교환(`clock_sync_request`·`clock_sync_response`, `health.laptop_clock_offset`), 엔드포인트 등록(`tier0_endpoint`), 2D 관측 요약(`observation_summary`), I5 작업 대여(`job_lease_request`·`job_request`·`job_heartbeat`·`job_callback`·`job_lease_status`)는 계약에 반영했다. 아직 계약에 없는 것(`confidence_reasons`, 이벤트 재개 전이, 노트북 송신 큐에서 버린 프레임 수)은 19.1 에 둔다.
+I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 봉투를 쓰고, 이미지는 메시지에 넣지 않고 객체 저장소 주소로 주고받는다. 아래 필드는 v1.0 기준 예시이며 필드 정의의 정본은 저장소 `contracts/`의 JSON Schema 파일이다(21.2). 아직 스키마가 없는 메시지는 이 절의 예시가 기준이다. v1.3 에서 바뀐 규칙 중 현장 경보 목록(`health.active_site_alerts`), 시계 차이 교환(`clock_sync_request`·`clock_sync_response`, `health.laptop_clock_offset`), 엔드포인트 등록(`tier0_endpoint`), 2D 관측 요약(`observation_summary`), I5 작업 대여(`job_lease_request`·`job_request`·`job_heartbeat`·`job_callback`·`job_lease_status`), 확인 필요 이유(`confidence_reasons`), 이벤트 재개(`resumed`·`resume_count`), 확인 대상(`site_ack`·`event_ack`·`alarm_stop` 의 `event_sequence`), `world_state.config_version`, 판정이 아닌 전이의 근거 null, 노트북 송신 큐 버림(`health` 의 `laptop_skipped`·`unattributed_gap`), 이벤트 클립 기록(`media_clip`·`media_clip_retention`)은 계약에 반영했다. 아직 계약에 없는 것은 19.1 에 둔다.
 
 ## 12.1 공통 봉투와 버전
 
@@ -23,7 +23,7 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 
 | ID | 구간 | 방식 | 메시지 |
 |---|---|---|---|
-| I1 | RunPod Tier 0 ↔︎ EC2 | WebSocket + JSON | 위로(Tier 0 → EC2): `world_state`(10 Hz), `health`(1 Hz), `observation_summary`(필요 시 카메라별 요약만. 2D 관측 원본 `observation_batch` 는 RunPod 에 Parquet 로 보관, 11.2), `calibration_update`, `risk_event_transition`, `event_state_snapshot`, `config_ack`, `event_frame_ready`, `tier0_endpoint`(엔드포인트 등록, 3.12) / 아래로(EC2 → Tier 0): `event_ack`, `journal_ack`, `config_bundle` |
+| I1 | RunPod Tier 0 ↔︎ EC2 | WebSocket + JSON | 위로(Tier 0 → EC2): `world_state`(10 Hz), `health`(1 Hz), `observation_summary`(필요 시 카메라별 요약만. 2D 관측 원본 `observation_batch` 는 RunPod 에 Parquet 로 보관, 11.2), `calibration_update`, `risk_event_transition`, `event_state_snapshot`, `config_ack`, `event_frame_ready`, `media_clip`·`media_clip_retention`(이벤트 클립 기록, 11.3), `tier0_endpoint`(엔드포인트 등록, 3.12) / 아래로(EC2 → Tier 0): `event_ack`, `journal_ack`, `config_bundle` |
 | I2 | EC2 → 뷰어 | WebSocket(STOMP) + REST | 토픽 `/topic/world`, `/topic/events`, `/topic/health` / REST: 리플레이, 구역 CRUD, 작업면 등록, Scene 자산, 레이아웃(12.6) |
 | I3 | EC2 ↔︎ PWA | Web Push + REST | 푸시 `risk_alert`, 시험 푸시 / REST: 티켓 상태 변경, 사진 업로드 주소 발급, 푸시 구독·해지, 수신 확인(12.6) |
 | I4 | EC2 ↔︎ 워치 | — | 이동(v1.3) → 부록 C |
@@ -75,9 +75,13 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 }
 ```
 
-`health`는 활성 현장 경보 목록(`active_site_alerts`, 3.10)과 노트북–Pod 시계 차이·불확실성(`laptop_clock_offset`, 3.9. 표본이 없으면 null)도 싣는다. `pipeline_lag_ms` 는 시계 차이를 보정한 T_lag 다(6.1).
+`world_state` 는 그 tick 에 적용돼 있던 구성 묶음 버전 `config_version`(선택)을 함께 싣는다(3.2).
+
+`health`는 활성 현장 경보 목록(`active_site_alerts`, 3.10)과 노트북–Pod 시계 차이·불확실성(`laptop_clock_offset`, 3.9. 모르면 null)도 싣는다. `pipeline_lag_ms` 는 시계 차이를 보정한 T_lag 다(6.1). 카메라별 프레임 집계(`cameras[].frames`)에는 손실 3종과 따로 노트북 송신 큐 버림(`laptop_skipped`)과 구분 불가 빈칸(`unattributed_gap`)을 싣는다(12.7).
 
 `event_frame_ready`는 EC2가 발급한 임시 업로드 주소로 프레임을 올린 뒤 그 주소와 촬영 시각·카메라만 보낸다.
+
+`media_clip` 은 이벤트 클립(카메라 하나 × 위험 구간 하나)을 임시 업로드 주소로 올린 뒤 객체 키, 촬영 시각 구간, 해시·크기, 얼굴 흐림 여부(`face_redaction`, 기본 NONE), 구간 안 빈칸(`has_gaps`), 삭제 예정일, 보존 표시를 보낸다. 영상은 싣지 않는다. 보낸 뒤 이벤트가 CRITICAL 로 오르면 기록을 고치지 않고 `media_clip_retention` 으로 보존 표시를 더한다(11.5).
 
 `risk_event_transition`은 RunPod Tier 0 서비스가 전이를 확정할 때마다 저널·outbox를 거쳐 보낸다(3.2).
 
@@ -98,6 +102,8 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 }
 ```
 
+`evidence_ref` 키는 늘 싣는다. 판정 전이는 판정에 쓴 `world_state` 의 msg_id 이고, 판정이 아닌 전이(운영자 확인·재시작 복원·ID 교정)는 근거를 모르면 null 이다(3.2 저널 계약).
+
 ## 12.4 I2·I3 주요 메시지
 
 ```json
@@ -115,7 +121,7 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 ```
 
 - `rationale`은 VLM 결과가 오면 `risk_event` 갱신으로 채워진다.
-- “확인 필요”는 `confidence_reasons[]`로 바꾼다(7.1). 위 예시의 `needs_check`는 계약 변경 전 표기다.
+- “확인 필요”는 `confidence_reasons[]`로 싣는다(7.1). 위 예시의 `needs_check`는 이전 버전 호환용으로 남은 같은 뜻의 값이다. 재개 횟수는 `resume_count` 다(6.4).
 - I3 `risk_alert`는 `event_id`, 등급, 구역, 한 줄 요약(규칙 근거)만 담는다. 시험 푸시는 `risk_alert`가 아니며 “시험”을 표시한다(3.10).
 
 ## 12.5 I5 작업 유형
@@ -190,11 +196,14 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 ```
 
 - `stream_epoch`는 카메라 스트림이 재연결될 때마다 증가한다. `(camera_id, stream_epoch, frame_sequence)`가 프레임의 유일 식별자다.
+- `stream_epoch` 는 재시작에도 줄지 않는다. 노트북 중계는 카메라마다 지금까지 쓴 가장 큰 epoch 를 로컬 파일에 먼저 저장한 뒤 쓰고(세션 시작 UTC ms 를 하한으로 둘 수 있어 작은 수가 아닐 수 있다), 저장 파일이 깨졌으면 0 부터 다시 세지 않고 시작을 멈춘다. 같은 epoch 안의 전송 재접속(TLS 연결만 바뀜)은 번호를 이어 센다.
+- Tier 0 는 그 카메라에서 이미 본 것보다 작은 epoch 를 받지 않는다(같은 식별자에 다른 프레임·시각이 붙을 수 있다). 그런 `codec_info` 가 오면 연결 기록 형식 안의 거절 알림(STREAM_REJECT)을 보내고 끊으며, 노트북은 더 큰 epoch 로 다시 시작할 때까지 그 카메라를 다시 붙이지 않는다. 새 TLS 연결이라는 이유로 epoch·번호 비교를 지우지 않는다.
 - 접속: 노트북은 EC2 에서 받은 현재 엔드포인트(`tier0_endpoint`, 3.12)로 접속한다.
 - 전송: 헤더 + 프레임을 길이 접두 방식으로 카메라별 독립 TLS over TCP 연결에 싣는다(한 카메라의 지연이 다른 카메라를 막지 않도록). RunPod Pod의 Direct TCP 포트를 쓰고, TLS는 Tier 0 서비스가 직접 종료하며, 접속 시 노트북 기기 토큰으로 인증한다. 제어 메시지(local_alert, alarm_stop, health, site_ack, laptop_heartbeat, clock_sync_request, clock_sync_response)는 같은 방식으로 인증한 WebSocket(wss)으로 주고받는다.
 - 서버 확인(공개키 고정): Tier 0 TLS 키는 한 번 만들어 Network Volume 비밀 폴더에 둔다. 노트북은 그 공개키 지문만 신뢰한다(또는 팀 사설 CA). 인증서 검증을 끄는 구현은 금지한다(14장).
-- 송신 큐: 노트북은 카메라별 송신 큐에 상한을 두고 소켓 송신 버퍼를 작게 잡는다. 큐가 넘치면 다음 키프레임까지 버리고, 버린 프레임은 노트북 쪽 skipped 로 따로 센다(보고 필드는 아직 계약에 없다, 19.1). 이것은 전송 손실(gateway_to_runpod_loss)이나 Tier 0 의 skipped_by_policy 와 다르다.
-- 누락: frame_sequence 빈 구간은 노트북 → RunPod 구간의 손실(gateway_to_runpod_loss)로 기록하고 재요청하지 않는다(실시간 우선). 카메라 → 노트북 구간은 RTSP over TCP라 손실이 번호 빈칸이 아니라 도착 간격의 끊김으로 나타나므로, 프레임 도착 간격과 RTP 타임스탬프 간격으로 camera_to_gateway_gap을 잰다. 정책상 건너뛴 프레임(skipped_by_policy)은 손실이 아니다. 카메라 내부에서 버린 프레임은 관측할 수 없으므로 상류 구간의 실제 손실률은 확정할 수 없다. 이 값들은 health와 G0에 따로 보고한다.
+- 송신 큐: 노트북은 카메라별 송신 큐에 상한을 두고 소켓 송신 버퍼를 작게 잡는다. 큐가 넘치면 다음 키프레임까지 버리고, 버린 프레임은 노트북 쪽 skipped 로 따로 센다. 이것은 전송 손실(gateway_to_runpod_loss)이나 Tier 0 의 skipped_by_policy 와 다르다.
+- 버림 알림(SKIP_NOTICE): 노트북은 버린 `frame_sequence` 범위를 연결 기록 형식 안의 알림으로 Tier 0 에 알린다(계약 스키마 밖, 형식 정본은 `gateway/relay` 의 `wire.py`). 지금 epoch 의 버린 구간은 겹치거나 맞닿은 것끼리 합친 구간 집합으로 들고 있다가 새 연결마다 다시 보낸다(같은 알림을 여러 번 받아도 늘지 않는다). Tier 0 는 알린 범위의 번호 빈칸을 손실로 세지 않고 `health.cameras[].frames.laptop_skipped` 로 보고한다. 구간 수가 상한을 넘거나 재시작으로 버림 기록이 잘려 손실인지 버림인지 모르는 빈칸은 `unattributed_gap`(구분 불가)으로 따로 세고, 처음 보는 epoch 의 첫 번호 앞은 세지 않는다(지어내지 않음).
+- 누락: frame_sequence 빈 구간은 노트북 → RunPod 구간의 손실(gateway_to_runpod_loss)로 기록하고 재요청하지 않는다(실시간 우선). 버림 알림 범위(laptop_skipped)와 구분 불가 빈칸(unattributed_gap)은 손실에서 뺀다. 카메라 → 노트북 구간은 RTSP over TCP라 손실이 번호 빈칸이 아니라 도착 간격의 끊김으로 나타나므로, 프레임 도착 간격과 RTP 타임스탬프 간격으로 camera_to_gateway_gap을 잰다. 정책상 건너뛴 프레임(skipped_by_policy)은 손실이 아니다. 카메라 내부에서 버린 프레임은 관측할 수 없으므로 상류 구간의 실제 손실률은 확정할 수 없다. 이 값들은 health와 G0에 따로 보고한다.
 - 역순·지연 도착: 시간 보간 창(예: 200ms) 안이면 정렬해 쓰고, 창을 넘긴 프레임은 버리고 기록만 한다.
-- 재접속: 새 stream_epoch로 시작하고, 노트북은 연결 직후 코덱 정보(`codec_info`: 코덱 종류, SPS/PPS, PTS timebase)를 먼저 보낸 뒤 키프레임부터 전송한다. 코덱 정보와 키프레임이 모두 도착할 때까지 그 카메라는 관측 없음으로 처리한다. 핵심 요구는 연결 개수가 아니라 프레임과 시각이 잘못 결합되지 않고 카메라별 최신성이 유지되는 것이다.
+- 재접속: 카메라 RTSP 스트림이 다시 연결되면 새 stream_epoch로 시작한다(노트북 → Tier 0 TLS 연결만 바뀐 전송 재접속은 위 규칙대로 같은 epoch·번호를 이어 쓴다). 어느 재접속이든 노트북은 연결 직후 코덱 정보(`codec_info`: 코덱 종류, SPS/PPS, PTS timebase)를 먼저 보낸 뒤 키프레임부터 전송한다. 코덱 정보와 키프레임이 모두 도착할 때까지 그 카메라는 관측 없음으로 처리한다. 핵심 요구는 연결 개수가 아니라 프레임과 시각이 잘못 결합되지 않고 카메라별 최신성이 유지되는 것이다.
 - 촬영 시각은 3.9의 촬영 시각 추정과 촬영 시각 계약을 따른다.

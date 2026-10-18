@@ -226,6 +226,39 @@ def test_unknown_evidence_is_held_not_sent_as_null(make, tmp_path, live_events, 
     assert outbox.blocked is not None and "evidence_ref" in outbox.blocked.reason
 
 
+def test_ack_with_unknown_evidence_is_sent_as_null_not_held(make, tmp_path, live_events, message_errors):
+    """판정이 아닌 전이(확인)는 그 이벤트의 판정 근거를 저널이 몰라도 보류하지 않고 evidence_ref=null 로 보낸다(계약 1.4.0)."""
+    ec2 = Ec2()
+    journal, _, outbox = make(tmp_path, live_events.clock, ec2)
+    raised = live_events.raise_event()  # 발생 기록은 이 저널에 없다(예: 체크포인트로만 아는 이벤트)
+    acked = live_events.tracker.acknowledge(
+        raised.transitions[0].event_id, "ADMIN", "acct-1", live_events.clock.now_ms(), channel="CONTROL_ROOM"
+    )
+    (entry,) = journal.append_step(acked, ack_id=ACK_ID)
+    assert "evidence_ref" not in entry.meta
+    assert outbox.pump() == 1 and outbox.blocked is None
+    msg = ec2.messages[0]
+    assert msg["schema_version"] == SCHEMA_VERSION == "1.4.0"
+    assert msg["payload"]["transition"] == "ACKNOWLEDGED" and msg["payload"]["evidence_ref"] is None
+    assert message_errors(msg) == [], msg
+
+
+def test_restored_transition_with_unknown_evidence_is_sent_as_null(make, tmp_path, live_events, message_errors):
+    """재시작 복원 전이도 판정이 아니다. 근거를 모르면 null 로 보내고, 그 뒤 판정 전이는 다시 근거를 싣는다."""
+    raised = live_events.raise_event()
+    restarted = type(live_events)()  # 재시작한 Tier 0: 새 추적기·새 저널
+    restored = restarted.tracker.restore(live_events.tracker.active())
+    ec2 = Ec2()
+    journal, _, outbox = make(tmp_path, restarted.clock, ec2)
+    journal.append_step(restored)
+    assert outbox.pump() == 1 and outbox.blocked is None
+    msg = ec2.messages[0]
+    assert msg["payload"]["transition"] == "UPDATED" and msg["payload"]["evidence_ref"] is None
+    assert msg["payload"]["verification"] == "UNVERIFIABLE"
+    assert message_errors(msg) == [], msg
+    assert raised.transitions[0].event_id == msg["payload"]["event_id"]
+
+
 def test_transport_failure_keeps_cursor_and_retries_same_message_ids(make, tmp_path, clock, append):
     ec2 = Ec2()
     journal, _, outbox = make(tmp_path, clock, ec2, batch_size=2)
