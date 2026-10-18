@@ -81,6 +81,13 @@ uv run pytest tests/risk                                   # 위 실행을 포�
 | `r1_volume_podium.json` | LIVE R1 VOLUME_3D: 같은 XY 의 바닥 위 사람은 판정 없음, 0.4m 단상 위는 발생. 추정(inferred) 관절 미사용, 높이 간격 0.3m 안은 유지 (8.2, D-G6-04) |
 | `r1_persistence_resume.json` | LIVE R1 + 기본 생명주기 정책: 구역 안 순간 검출 한 프레임은 이벤트 0건, `[T,F,T]` 에서 발생, 해소 뒤 10초 안 재진입은 같은 이벤트 재개(RESUMED, 다시 울림), 10초 넘어 재진입은 새 이벤트 (6.4, D-G6-07·08) |
 | `r1_footprint_position_or_anchor.json` | LIVE R1 GROUND_FOOTPRINT 보수적 결합: position_xy 만 안, 접지점만 안 모두 발생, 둘 다 띠 밖이면 판정 없음 (8.2) |
+| `r5_approach_entry.json` | LIVE R5 + R1 접근(1 m/s): 선행 2.5초는 유지만, 2.0초 이하 발생 판정, 둘째 프레임에 CAUTION 이벤트(현장 경보 없음, 7.3 관제 화면 안내). 판정 시각으로 옮긴 범위만 걸리면 선행 0초(predicted_touching_now), 관측 범위가 구역에 걸리면 R1 이 맡아 R5 판정 없음(R1 HIGH 현장 경보), R5 는 판정 없이 3초 뒤 해소. R5 이벤트가 실제 진입보다 2초 앞섬 (7.2 R5, D-G6-03) |
+| `r5_approach_entry_what_if.json`, `r5_approach_entry_replay.json`, `r5_approach_entry_planned.json` | 비 LIVE R5: 같은 접근의 판정·전이는 같고 현장 경보 신호·알림 후보 0건 (7.4) |
+| `r5_pass_by_and_stationary.json` | LIVE R5 없음: 구역 0.75m 옆을 나란히 지나감, 0.5m 앞 정지(속력 0.2 m/s 미만), 속도 없음(발생 판정 없이 유지 판정 input_unknown 만). 이벤트 0건 |
+| `r5_turn_back.json` | LIVE R5 되돌아감: 다가오다 발생, 돌아서면 판정이 사라지고 3초 뒤 해소. 진입하지 않아 G6-R5 오예측으로 센다 |
+| `r5_uncertain_velocity.json` | LIVE R5 속도를 믿을 수 없으면 발생 판정 안 함: TENTATIVE, PREDICTED, 속력 5 m/s 는 유지 판정(input_unknown)만, UNKNOWN 은 범위가 구역에 걸려 R1 몫. 신원 불확실·카메라 1대 OBSERVED 트랙은 확인 필요(SINGLE_VIEW, IDENTITY_UNCERTAIN)로 판정, 등급 CAUTION 그대로 |
+| `r5_velocity_lost_hold.json` | LIVE R5 활성 중 속도 상실: 위치는 관측되지만 velocity null 인 4초 동안 유지 판정으로 해소 안 함, 속도 0 이 관측되면 3초 뒤 해소 (6.4) |
+| `r5_anisotropic_sigma.json` | LIVE R5 축마다 다른 σ(0.05, 0.15): R1 과 같은 타원 범위로 예측. 멀어짐·변과 나란히 걷기는 판정 없음('진입 중' 0초 없음), 정면 접근은 x 반축으로 잰 선행 시간으로 발생 |
 | `r6_observation_lost_in_zone.json` | LIVE R6: 구역 안 위험 중 PREDICTED → UNKNOWN → 트랙 없음이 1분 넘게 이어져도 자동 해소 0건(UNVERIFIABLE). PREDICTED 동안 R1 은 확인 필요로 판정하고, UNKNOWN 동안 R6 holding 은 원래 R1 이벤트를 확인 필요로 유지만 하며 새 이벤트를 만들지 않음. 재관측 뒤 다시 상실하면 해소 확인을 처음부터 (G3). R1 은 실제 등록부 규칙(`ObservationLossHold(ZoneEntryRule())`)이 판정한다 |
 | `r6_observation_lost_in_zone_what_if.json` | WHAT_IF R6: 같은 시나리오, 현장 경보 신호 0건 (7.4, G3) |
 | `r7_camera_disconnect.json` | LIVE R7: 카메라 분리 → 구역 감시 저하 이벤트(CAUTION, 관제 화면 안내만, 분리 후 1초 안). 현장 경보 신호 0건(7.2, 7.3), 다른 구역은 별도 이벤트, 복구 후 3초 유지로 해소 (G3) |

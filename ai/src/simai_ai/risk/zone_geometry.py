@@ -121,6 +121,13 @@ class HorizontalRange:
         """범위가 다각형에 조금이라도 걸리는지(명세 7.1 발생 조건). 간격이 tolerance_m 이하면 닿은 것으로 본다."""
         return self.gap_to(polygon, exact_below=tolerance_m) <= tolerance_m
 
+    def ellipse_outline(self) -> list[tuple[float, float]]:
+        """gap_to 가 타원(σx ≠ σy) 대신 쓰는, 타원을 바깥에 접하는 48각형의 꼭짓점(점유 반경 제외).
+
+        움직이는 범위의 접촉 시각을 같은 기하로 구하려는 규칙(R5)이 쓴다.
+        """
+        return self._ellipse_polygon()
+
     def _ellipse_polygon(self) -> list[tuple[float, float]]:
         cx, cy = self.center
         a, b = self.semi_axes[0] * _CIRCUMSCRIBE, self.semi_axes[1] * _CIRCUMSCRIBE

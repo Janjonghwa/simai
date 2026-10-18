@@ -38,6 +38,8 @@ LIFECYCLE_VECTORS = {
 # R1 시나리오(S15P31A101-71, G6-R1): 경계 진입·이탈·깜빡임, 불확실성, Z 모름, 단상 위 VOLUME_3D.
 # R6·R7 시나리오(S15P31A101-73, G3): 구역 안 관측 상실 자동 해소 0건, 카메라 분리 1초 안 저하 표시, 복구 시 해소,
 # 비 LIVE 출처 현장 경보 0건.
+# R5 시나리오(S15P31A101-98, D-G6-03): 접근(발생·R1 인계·해소), 스쳐 지나감·정지, 되돌아감, 불확실 속도, 속도 상실 중 유지,
+# 축마다 다른 σ, 비 LIVE 경보 0건.
 RULE_VECTORS = {
     "r1_boundary_entry_exit.json",
     "r1_boundary_entry_exit_what_if.json",
@@ -47,6 +49,15 @@ RULE_VECTORS = {
     "r1_volume_podium.json",
     "r1_persistence_resume.json",
     "r1_footprint_position_or_anchor.json",
+    "r5_approach_entry.json",
+    "r5_approach_entry_what_if.json",
+    "r5_approach_entry_replay.json",
+    "r5_approach_entry_planned.json",
+    "r5_pass_by_and_stationary.json",
+    "r5_turn_back.json",
+    "r5_uncertain_velocity.json",
+    "r5_velocity_lost_hold.json",
+    "r5_anisotropic_sigma.json",
     "r6_observation_lost_in_zone.json",
     "r6_observation_lost_in_zone_what_if.json",
     "r7_camera_disconnect.json",
@@ -81,8 +92,8 @@ def test_vector_ids_are_unique():
 
 
 def test_default_registry_rules():
-    # R1(S15P31A101-71, R6 으로 감쌈), R7(S15P31A101-73). R6 은 구역 규칙을 감싸므로 따로 등록하지 않는다.
-    assert list(default_registry()) == [("R1", 1), ("R7", 1)]
+    # R1(S15P31A101-71, R6 으로 감쌈), R5(S15P31A101-98), R7(S15P31A101-73). R6 은 구역 규칙을 감싸므로 따로 등록하지 않는다.
+    assert list(default_registry()) == [("R1", 1), ("R5", 1), ("R7", 1)]
 
 
 def test_rule_vectors_include_non_live_origins():
