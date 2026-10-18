@@ -14,7 +14,7 @@ extras 없는 기본 설치만으로 import·테스트가 돌아야 한다. 현�
 | rule | 규칙 공통 형식: RuleSpec, RuleContext, Finding(사람 대상·구역 대상), Rule |
 | engine | RiskEngine, Evaluation, AlertCandidate(LIVE 만 생성 가능) |
 | registry | (규칙 ID, 버전) → 규칙 등록부 |
-| rules | 구체 규칙: R1(ZoneEntryRule), R6(ObservationLossHold, 구역 규칙을 감쌈), R7(ZoneMonitoringRule) |
+| rules | 구체 규칙: R1(ZoneEntryRule), R5(EntryPredictionRule), R6(ObservationLossHold, 구역 규칙을 감쌈), R7(ZoneMonitoringRule) |
 | event_id | event_id(UUIDv7) 생성기 EventIdFactory |
 | alerting | 심각도 × 신뢰도 → 채널(7.3 표), 현장 경보 신호 LocalAlert·AlarmStop·AlertClear(LIVE 만) |
 | lifecycle | RiskEvent 생명주기 LifecycleTracker(발생 지속 조건·재개 포함), 전이 기록 EventTransition(저널 재료) |
@@ -64,6 +64,7 @@ from simai_ai.risk.monitoring import CameraMonitor, CameraStatus, MonitoringStat
 from simai_ai.risk.registry import RuleRegistry, UnknownRuleError, default_registry
 from simai_ai.risk.rule import Finding, FindingTarget, Rule, RuleContext, RuleSpec
 from simai_ai.risk.rules.r1_zone_entry import ZoneEntryRule
+from simai_ai.risk.rules.r5_entry_prediction import EntryPredictionRule
 from simai_ai.risk.rules.r6_observation_loss import ObservationLossHold
 from simai_ai.risk.rules.r7_monitoring import ZoneMonitoringRule
 from simai_ai.risk.site_alerts import build_active_site_alerts, default_summary, is_site_alert
@@ -88,6 +89,7 @@ __all__ = [
     "ContractAck",
     "Evaluation",
     "EventIdFactory",
+    "EntryPredictionRule",
     "EventKey",
     "EventState",
     "EventTransition",
