@@ -33,14 +33,51 @@ ID 를 다시 쓰지 않는다.
 6. 배정되지 않은 클러스터 중 골반이 있는 것만 새 World Track(TENTATIVE)이 된다. 1대 클러스터나 골반 없는 클러스터로는
    만들지 않는다(2대 미만은 지어내지 않음). 다른 Track 의 예측 위치 가까이(`duplicate_radius_m`)에 생기면 같은 사람의
    두 번째 ID 일 수 있어 그 쌍을 POSSIBLE_DUPLICATE 후보로 둔다.
-7. 같은 사람 두 ID 로 보이는 Track 은 **합치지 않는다.** 붙인 클러스터에 이번 시각 갱신되지 않은 다른 Track 의 로컬
-   트랙이 들어 있고 그 Track 이 가까워도, 로컬 트래커 ID 전환(옆 사람에게 ID 가 넘어감)과 구별할 근거가 없으므로 둘 다
-   남기고 POSSIBLE_DUPLICATE 후보 쌍으로 둔다. 후보 쌍은 둘 다 살아 있고 가까운 동안 매 시각 IDENTITY_UNCERTAIN
-   (POSSIBLE_DUPLICATE)을 다시 붙인다. 병합·분할·교정과 늦은 재연결은 S15P31A101-40 이다. 여기서는 ID 교정 기록 자리
-   (`IdentityRevision`, `identity_revision`, 별칭)만 두고 교정은 내지 않는다(identity_revision 은 0 그대로).
+7. 같은 사람 두 ID 로 보이는 Track 은 **그 시각에는 합치지 않는다.** 붙인 클러스터에 이번 시각 갱신되지 않은 다른
+   Track 의 로컬 트랙이 들어 있고 그 Track 이 가까워도, 한 시각만으로는 로컬 트래커 ID 전환(옆 사람에게 ID 가 넘어감)과
+   구별할 근거가 없으므로 둘 다 남기고 POSSIBLE_DUPLICATE 후보 쌍으로 둔다. 후보 쌍은 둘 다 살아 있고 가까운 동안 매
+   시각 IDENTITY_UNCERTAIN(POSSIBLE_DUPLICATE)을 다시 붙인다. 근거가 쌓이면 아래 늦은 재연결의 병합으로 합친다.
 
 같은 카메라의 두 검출은 Cross-view 클러스터에서 이미 갈라져 있고(카메라당 view 하나), 여기서는 Track 하나에 시각마다
 클러스터 하나만 붙이므로 같은 카메라의 두 검출이 한 World ID 에 동시에 묶이지 않는다.
+
+**늦은 재연결과 ID 교정(S15P31A101-40, 명세 5.2).** 근거는 로컬 트랙 연결 이력(카메라 안 로컬 트래커가 이어 온 트랙
+ID)과 위치뿐이다. 외형·얼굴·재식별은 쓰지 않는다. 로컬 트랙 ID 는 다시 발급되지 않지만 로컬 트래커가 같은 ID 를 다른
+사람 검출에 붙이는 ID 전환은 막지 못한다. 그래서 **카메라 한 대의 옛 로컬 트랙은 같은 사람의 근거로 세지 않고**, 서로
+다른 카메라 `reconnect_min_cameras`(2) 대의 로컬 트래커가 같은 옛 Track 의 로컬 트랙을 이어 왔을 때만 근거로 본다.
+두 카메라가 같은 상황(사라진 자리에 다른 사람이 나타남)에서 함께 ID 를 바꾸면 이 기준도 뚫린다(완전한 독립 근거가
+아니다, 설계 문서 잔여 위험).
+애매하면 잇지 않는다(잘못 합친 ID 보다 갈라진 ID 가 덜 위험, 잘못 이은 신원은 옛 사람의 위험을 해소시킨다).
+
+- 소실 후보: CONFIRMED 였다가 LOST 가 된 Track 은 LOST 를 한 번 낸 뒤 마지막 측정부터 `reconnect_window_ms` 동안 소실
+  후보로 남는다(world_state 에는 내지 않는다). 로컬 트랙 연결 이력도 그동안 남긴다(위치 비용 보너스에 쓰는 이력은
+  `key_ttl_ms` 그대로). 1대 클러스터가 그 로컬 트랙을 계속 보이면 이력이 이어진다(5단계와 같다).
+- 같은 ID 로 잇기: 새 Track 이 될 클러스터(6단계)의 옛 로컬 트랙이 모두 한 소실·가림 Track X 의 것이고 2대 이상이면 새
+  ID 대신 X 에 붙인다. 조건: 클러스터가 IDENTITY_UNCERTAIN 이 아니고, 이번 시각 갱신된 다른 Track 의 로컬 트랙이 섞이지
+  않았고, X 의 다른 로컬 트랙이 이번 시각 다른 클러스터에 있지 않고, 클러스터 기준점이 X 의 마지막 위치에서 사람이 갈
+  수 있는 거리(`gate_base_m + max_speed_mps × 공백`) 안이고, X 의 마지막 위치 `reconnect_crowd_radius_m` 안에 다른
+  소실·가림 Track 이 없다(가까이 있던 두 사람이 함께 사라지면 로컬 트랙이 서로 넘어갔을 수 있다). ID 가 바뀌지 않으므로
+  identity_revision 은 그대로이고 `WorldTrackFrame.reassociations` 에 남는다.
+- 근거가 모자라면(옛 로컬 트랙 1대, 위 조건 위반) 새 ID 를 만들고, 넘겨받은 옛 로컬 트랙의 주인 X 가 그 뒤 따로
+  갱신되지 않고 남아 있는 동안(소실 후보 포함) 새 Track 에 IDENTITY_UNCERTAIN(REASSOCIATION_AMBIGUOUS)을 매 시각 붙인다.
+  Risk 는 IDENTITY_UNCERTAIN 이면 해소를 확인하지 않는다. X 의 위험은 X 가 관측되지 않으므로 그대로 남는다.
+- 병합(ID 교정): 이미 새 ID Y 를 받은 뒤 Y 에 붙은 클러스터에 갱신되지 않은 Track X 의 옛 로컬 트랙(지금 X 가 들고
+  있거나 Y 가 X 에게서 넘겨받은 것)이 2대 이상이면, 위 조건과 함께 X·Y 가 병합 금지 쌍이 아닐 때 근거로 센다. 근거
+  시각이 `merge_confirm_frames` 번 쌓이면 먼저 만든 ID 로 합친다. 도달 거리는 Y 의 위치 측정 전부(첫 관측부터)와 이번
+  시각 기준점으로 잰다(지금 시각으로만 재면 Y 가 제자리에 있어도 시간이 지나 통과한다). 한 번이라도 갈 수 없는 곳에서
+  관측됐으면, 그리고 같은 ID 로 잇기를 거리 때문에 거절했던 새 Track 이면 X·Y 를 병합 금지 쌍으로 둔다. 이어서 세기 전에 직전 근거가 `key_ttl_ms` 안인지 먼저
+  보고, 넘었거나 반대 근거가 나오면 처음부터 센다. 남는 ID 의 identity_revision 을 올리고 사라지는 ID 를 별칭(aliases)에
+  더하며 `IdentityRevision` 을 추가만 한다(덮어쓰지 않음).
+- 병합 금지 쌍: 같은 시각 같은 카메라의 서로 다른 검출이 가리키는 Track(그 로컬 트랙의 주인, 그 클러스터를 받은 Track)
+  은 서로 다른 사람이다. 위치 갱신 여부와 상관없이(1대 클러스터, 가림 중인 Track 포함) 병합 전에 기록하고, 병합하면
+  남는 ID 로 이어진다.
+- 잇거나 합친 Track 은 자기 로컬 트랙만으로(2대 이상) 위치가 갱신된 시각이 `merge_confirm_frames` 번 쌓일 때까지
+  IDENTITY_UNCERTAIN(LATE_REASSOCIATION)을 매 시각 다시 붙인다. 시간이 지났다고 풀지 않는다.
+- 분할(SPLIT)과 수동 교정(CORRECTION)은 내지 않는다(별도 티켓).
+
+**Risk 전달(G3).** Tier 0 조립부는 `WorldTrackFrame.revisions` 를 그 시각 판정을 `LifecycleTracker.apply` 하기 전에
+`LifecycleTracker.correct_identity(revision.to_correction())` 로 넘긴다. 진행 중인 이벤트는 사라지는 ID 에서 남는 ID 로
+이어지고(원본 World ID 는 origin_world_ids 에 남음) 자동 해소되지 않는다(D-G3-10).
 
 **World 칼만 필터.** 골반 XYZ 를 측정으로 받는 등속 모델(상태 x y z vx vy vz, 백색 가속도 잡음). 측정 잡음은 관절
 유효성 게이트의 두 엉덩이 삼각측량 표준편차로 만들고, 골반이 UNCERTAIN 이면 키운다. 골반이 없거나 UNAVAILABLE 이면
@@ -53,8 +90,10 @@ ID 를 다시 쓰지 않는다.
 (OBSERVED/PREDICTED/UNKNOWN)는 `world_state` 조립 때 시간 모델(`time_model.classify_observation`)로 따로 정한다.
 명세에 수치가 없어 확정·가림·소실 시간은 `WorldTrackConfig` 의 초기값이다(G2 에서 조정).
 
-관절 유효성 게이트(`geometry.joint_gate.JointGate`)는 Track 마다 하나씩 두고, 병합으로 `identity_revision` 이 오르면
-`reset()` 한다. 이 모듈의 관절·위치는 모두 Tier 0 관측(observed)이다. 접지(`ground_anchor_xyz`)는 만들지 않는다.
+관절 유효성 게이트(`geometry.joint_gate.JointGate`)는 Track 마다 하나씩 두고, 병합으로 `identity_revision` 이 오르거나
+소실 후보를 다시 이으면 `reset()` 한다. 게이트에는 Cross-view 클러스터의 왜곡 제거·삼각측량 결과(`ViewCluster.undistorted`,
+`ViewCluster.skeleton`)를 넘겨 다시 계산하지 않는다(S15P31A101-168, 입력이 같을 때만 다시 쓴다).
+이 모듈의 관절·위치는 모두 Tier 0 관측(observed)이다. 접지(`ground_anchor_xyz`)는 만들지 않는다.
 현재 시각을 읽지 않는다. 시각은 UTC int64 ms, 길이는 미터다.
 """
 
@@ -62,7 +101,8 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Collection, Mapping, Sequence
+from collections import Counter
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -70,8 +110,9 @@ from typing import Any
 import numpy as np
 
 from simai_ai.geometry.joint_gate import GatedSkeleton, GateIssue, HeadZ, JointGate, JointGateConfig
-from simai_ai.geometry.rig import CameraRig
+from simai_ai.geometry.rig import CameraRig, UndistortedKeypoints
 from simai_ai.geometry.triangulation import COCO17_L_HIP, COCO17_R_HIP, JointValidity, SkeletonEstimate
+from simai_ai.risk.lifecycle import IdentityCorrection
 from simai_ai.tracking.assignment import linear_sum_assignment
 from simai_ai.tracking.cross_view import AssociationFrame, TrackKey, ViewCluster
 from simai_ai.tracking.time_model import TimeModelConfig, TrackTimeInput, require_ms
@@ -113,19 +154,33 @@ class IdentityFlag(StrEnum):
     POSSIBLE_DUPLICATE = "POSSIBLE_DUPLICATE"
     """같은 사람의 두 번째 ID 일 수 있다: 다른 Track 가까이에 새 ID 가 생겼거나, 한 클러스터에 가까운 다른 Track 의 로컬
     트랙이 섞였다. 두 Track 이 가까운 동안 계속 붙는다"""
+    LATE_REASSOCIATION = "LATE_REASSOCIATION"
+    """소실·가림 Track 을 로컬 트랙 연결 이력으로 다시 이었거나 ID 를 병합했고, 아직 일관성 확인 중이다 (S15P31A101-40)"""
+    REASSOCIATION_AMBIGUOUS = "REASSOCIATION_AMBIGUOUS"
+    """갱신되지 않은 다른 Track 의 옛 로컬 트랙을 넘겨받았지만 근거가 모자라(카메라 1대, 여러 Track, 근처의 다른 소실
+    Track, 멀거나 다른 곳에도 보임) 잇지 않았다. 그 Track 이 남아 있는 동안 계속 붙는다(돌아온 사람일 수 있다)"""
 
 
 class RevisionKind(StrEnum):
-    """ID 교정 종류 (명세 5.2 병합·분할·교정). 기록 자리만 두고 지금은 내지 않는다(S15P31A101-40 이 채운다)."""
+    """ID 교정 종류 (명세 5.2 병합·분할·교정). 지금은 MERGE 만 낸다(SPLIT·CORRECTION 은 자리만)."""
 
     MERGE = "MERGE"
     SPLIT = "SPLIT"
     CORRECTION = "CORRECTION"
 
 
+class RevisionReason(StrEnum):
+    """병합 근거 (`IdentityRevision.reason`)."""
+
+    LATE_REASSOCIATION = "LATE_REASSOCIATION"
+    """소실 후보(LOST)의 로컬 트랙이 이미 새 ID 를 받은 Track 에 이어졌다"""
+    DUPLICATE_MERGE = "DUPLICATE_MERGE"
+    """가림 중인(LOST 전) Track 의 로컬 트랙이 다른 ID 의 Track 에 이어졌다 (POSSIBLE_DUPLICATE 쌍 포함)"""
+
+
 @dataclass(frozen=True)
 class IdentityRevision:
-    """ID 교정 기록 한 건. previous_world_id 가 world_id 로 합쳐졌다(별칭이 됐다).
+    """ID 교정 기록 한 건. previous_world_id 가 world_id 로 합쳐졌다(별칭이 됐다). 기록은 추가만 한다.
 
     필드 이름은 Risk Engine 의 `risk.lifecycle.IdentityCorrection`(previous_world_id, world_id, identity_revision)과
     같다. 이벤트에는 발생 당시의 원본 World ID 를 남기고, 교정이 진행 중인 위험을 자동 해소하지 않는다(명세 5.2).
@@ -138,6 +193,30 @@ class IdentityRevision:
     identity_revision: int
     """교정 뒤 world_id 의 identity_revision"""
     reason: str
+    evidence: tuple[TrackKey, ...] = ()
+    """근거가 된 (카메라, 로컬 트랙)"""
+
+    def to_correction(self) -> IdentityCorrection:
+        """Risk Engine 에 넘길 교정(`LifecycleTracker.correct_identity`). 병합만 넘길 수 있다."""
+        if self.kind is not RevisionKind.MERGE:
+            raise ValueError(f"{self.kind} 는 Risk 교정으로 넘길 형식이 없다 (MERGE 만)")
+        return IdentityCorrection(
+            previous_world_id=self.previous_world_id,
+            world_id=self.world_id,
+            identity_revision=self.identity_revision,
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        """저널·리플레이 기록용 순수 데이터 (I1 계약 형식이 아니다. 계약 제안은 설계 문서)."""
+        return {
+            "t": self.t,
+            "kind": str(self.kind),
+            "world_id": self.world_id,
+            "previous_world_id": self.previous_world_id,
+            "identity_revision": self.identity_revision,
+            "reason": self.reason,
+            "evidence": [list(k) for k in self.evidence],
+        }
 
 
 def session_prefix_from_ms(t_ms: int) -> str:
@@ -188,7 +267,19 @@ class WorldTrackConfig:
     occluded_after_ms: int = 200
     """CONFIRMED 가 이 시간 넘게 측정이 없으면 OCCLUDED (6.1 OBSERVED 상한과 같은 초기값)"""
     lost_after_ms: int = 3000
-    """OCCLUDED 가 마지막 측정 뒤 이 시간을 넘으면 LOST. 그 뒤 다시 보이면 새 ID 다(늦은 재연결은 S15P31A101-40)"""
+    """OCCLUDED 가 마지막 측정 뒤 이 시간을 넘으면 LOST. 그 뒤에는 늦은 재연결 근거가 있을 때만 같은 ID 로 잇는다"""
+    reconnect_window_ms: int = 10_000
+    """LOST 가 된 CONFIRMED Track 을 마지막 측정부터 이 시간 동안 소실 후보로 둔다(로컬 트랙 연결 이력도 이 시간 동안
+    남긴다). lost_after_ms 와 같게 두면 늦은 재연결을 끈다. 명세 6.4 재개 시간 초기값(10 s)과 같게 둔 초기값이다"""
+    reconnect_crowd_radius_m: float = 1.5
+    """잇거나 합칠 Track 의 마지막 위치 이 반경 안에 다른 소실·가림 Track 이 있으면 잇지 않는다(로컬 트랙이 서로
+    넘어갔을 수 있다). gate_max_m 과 같은 초기값"""
+    reconnect_min_cameras: int = 2
+    """늦은 재연결·병합에 필요한 옛 로컬 트랙의 카메라 수. 로컬 트래커는 같은 ID 를 다른 사람 검출에 붙일 수 있으므로
+    (ID 전환) 카메라 한 대의 로컬 트랙만으로는 같은 사람이라고 보지 않는다. 2 미만은 받지 않는다"""
+    merge_confirm_frames: int = 3
+    """이미 새 ID 를 받은 Track 과의 병합(ID 교정)에 필요한 근거 시각 수 (10 Hz 에서 0.3 s, confirm_hits 와 같음).
+    근거 로컬 트랙이 key_ttl_ms 넘게 빠지거나 반대 근거가 나오면 처음부터 센다"""
     gate_base_m: float = 0.5
     gate_max_m: float = 1.5
     gate_scale_m: float = 0.5
@@ -217,21 +308,26 @@ class WorldTrackConfig:
     joint_gate: JointGateConfig = field(default_factory=JointGateConfig)
 
     def __post_init__(self) -> None:
-        for name in ("confirm_hits",):
+        for name in ("confirm_hits", "merge_confirm_frames"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} 는 1 이상이어야 한다")
         for name in (
             "tentative_max_gap_ms",
             "occluded_after_ms",
             "lost_after_ms",
+            "reconnect_window_ms",
             "key_ttl_ms",
             "uncertain_hold_ms",
             "max_extrapolation_ms",
         ):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} 는 0 이상이어야 한다")
-        if not self.occluded_after_ms <= self.lost_after_ms:
-            raise ValueError("occluded_after_ms ≤ lost_after_ms 여야 한다")
+        if not self.occluded_after_ms <= self.lost_after_ms <= self.reconnect_window_ms:
+            raise ValueError("occluded_after_ms ≤ lost_after_ms ≤ reconnect_window_ms 여야 한다")
+        if self.reconnect_min_cameras < 2:
+            raise ValueError("reconnect_min_cameras 는 2 이상이어야 한다 (로컬 트랙 하나는 독립 근거가 아니다)")
+        if self.reconnect_crowd_radius_m < 0:
+            raise ValueError("reconnect_crowd_radius_m 은 0 이상이어야 한다")
         for name in (
             "gate_base_m",
             "gate_max_m",
@@ -370,10 +466,13 @@ class WorldTrackSnapshot:
 class WorldTrackFrame:
     """공통 시각 t 의 World Track Manager 결과.
 
-    tracks: LOST 가 아닌 Track 과 이번 시각에 LOST 가 된 Track(한 번만). world_id 순서.
-    revisions: 이번 시각에 생긴 ID 교정 기록. 지금은 늘 비어 있다(교정은 S15P31A101-40).
+    tracks: LOST 가 아닌 Track 과 이번 시각에 LOST 가 된 Track(한 번만). world_id 순서. 병합으로 사라진 ID 는 없다
+        (revisions 의 previous_world_id).
+    revisions: 이번 시각에 생긴 ID 교정 기록(병합). Risk 에는 판정 반영 전에 `to_correction()` 으로 넘긴다.
     input_provenance: 이 결과를 만든 입력 출처(`common/defs.schema.json#/$defs/input_provenance`). world_state 조립이
         payload.input_provenance(계약 1.1.0)로 싣는다. SIM·DATASET_GT 입력이면 is_upper_bound 가 참이다.
+    reassociations: 이번 시각에 소실 후보(LOST 를 낸 Track)를 같은 ID 로 다시 이은 World ID. ID 가 바뀌지 않으므로 교정
+        기록은 아니다.
     """
 
     t: int
@@ -381,6 +480,7 @@ class WorldTrackFrame:
     tracks: tuple[WorldTrackSnapshot, ...]
     revisions: tuple[IdentityRevision, ...] = ()
     input_provenance: Mapping[str, Any] | None = None
+    reassociations: tuple[str, ...] = ()
 
     def track(self, world_id: str) -> WorldTrackSnapshot | None:
         for tr in self.tracks:
@@ -402,11 +502,37 @@ class _Track:
     identity_revision: int = 0
     aliases: list[str] = field(default_factory=list)
     keys: dict[TrackKey, int] = field(default_factory=dict)
-    """로컬 트랙 → 마지막으로 이 Track 에 붙은 시각"""
+    """로컬 트랙 → 마지막으로 이 Track 에 붙은 시각. `reconnect_window_ms` 까지 남기고, 비용 보너스·주인 판단에는
+    `key_ttl_ms` 안의 것만 쓴다"""
     flags: dict[IdentityFlag, int] = field(default_factory=dict)
     """IDENTITY_UNCERTAIN 사유 → 마지막으로 붙은 시각"""
     reacquired_until: int = -1
     """연결 이력 없이 게이트만으로 다시 잡은 뒤 MEDIUM 으로 두는 시각"""
+    origin_of: dict[TrackKey, tuple[str, int]] = field(default_factory=dict)
+    """갱신되지 않은 다른 Track(가림·소실 후보)에게서 넘겨받은 로컬 트랙 → (그 Track, 넘겨받은 시각). 그 Track 이 그 뒤
+    다시 갱신되지 않고 남아 있는 동안 이 Track 은 그 사람일 수도 있어 IDENTITY_UNCERTAIN(REASSOCIATION_AMBIGUOUS)이고,
+    병합 근거를 셀 때 그 Track 의 로컬 트랙으로 본다"""
+    path: list[tuple[int, np.ndarray]] = field(default_factory=list)
+    """위치 측정 (시각, 골반 XY) 이력. `reconnect_window_ms` 까지 남긴다. 병합 근거의 도달 거리를 이 Track 의 관측
+    전부로 잰다(지금 시각으로만 재면 제자리에 있어도 시간이 지나 통과한다, 리뷰 F4)"""
+    confirm_left: int = 0
+    """늦은 재연결·병합 뒤 일관성 확인이 남은 시각 수. 0 이 될 때까지 IDENTITY_UNCERTAIN(LATE_REASSOCIATION)을 매 시각
+    다시 붙인다(시간이 지났다고 풀지 않는다)"""
+
+    @property
+    def last_xy(self) -> np.ndarray:
+        """t_last_valid 의 필터 XY (늦은 재연결 거리 기준)."""
+        return self.kf.x[:2]
+
+
+@dataclass
+class _Evidence:
+    """병합 근거: 갱신되지 않은 Track `stale` 의 로컬 트랙(keys)이 갱신된 Track 에 이어진 시각 수와 마지막 시각."""
+
+    stale: str
+    keys: frozenset[TrackKey]
+    count: int
+    last_t: int
 
 
 @dataclass
@@ -440,9 +566,15 @@ class WorldTrackManager:
         self.config = config if config is not None else WorldTrackConfig()
         self.input_provenance = dict(input_provenance) if input_provenance is not None else None
         self._tracks: dict[str, _Track] = {}
+        self._dormant: dict[str, _Track] = {}
+        """소실 후보: LOST 를 한 번 낸 CONFIRMED Track (늦은 재연결용. world_state 에는 내지 않는다)"""
         self._revisions: list[IdentityRevision] = []
         self._duplicates: set[frozenset[str]] = set()
         """같은 사람 두 ID 로 보이는 World ID 쌍 (POSSIBLE_DUPLICATE 를 다시 붙인다)"""
+        self._distinct: set[frozenset[str]] = set()
+        """같은 시각 같은 카메라의 다른 검출로 따로 보인 적이 있는 World ID 쌍. 서로 다른 두 사람이라 병합하지 않는다"""
+        self._evidence: dict[str, _Evidence] = {}
+        """갱신된 Track ID → 병합 근거 (갱신되지 않은 Track 의 로컬 트랙이 이어진 시각 수)"""
         self._last_t: int | None = None
         self._order = 0
 
@@ -450,6 +582,11 @@ class WorldTrackManager:
     def revisions(self) -> tuple[IdentityRevision, ...]:
         """지금까지의 ID 교정 기록 (추가만 한다)."""
         return tuple(self._revisions)
+
+    @property
+    def lost_candidates(self) -> tuple[str, ...]:
+        """늦은 재연결을 기다리는 소실 후보 World ID."""
+        return tuple(sorted(self._dormant))
 
     def update(
         self, frame: AssociationFrame, rig: CameraRig, sync_invalid_cameras: Collection[str] = ()
@@ -471,9 +608,22 @@ class WorldTrackManager:
         _check_clusters(frame)
         self._last_t = t
 
-        for tr in self._tracks.values():
-            tr.keys = {k: kt for k, kt in tr.keys.items() if t - kt <= cfg.key_ttl_ms}
-        owner = {k: tr.world_id for tr in self._tracks.values() for k in tr.keys}
+        keep_ms = max(cfg.key_ttl_ms, cfg.reconnect_window_ms)
+        for tr in self._all():
+            tr.keys = {k: kt for k, kt in tr.keys.items() if t - kt <= keep_ms}
+            tr.path = [(pt, xy) for pt, xy in tr.path if t - pt <= cfg.reconnect_window_ms]
+        for wid in [w for w, tr in self._dormant.items() if t - tr.t_last_valid > cfg.reconnect_window_ms]:
+            del self._dormant[wid]
+        self._forget_gone()
+        # 비용 보너스·주인 판단은 key_ttl_ms 안의 연결 이력만, 늦은 재연결 근거는 소실 후보까지 남긴 이력 전부
+        owner = {
+            k: tr.world_id for tr in self._tracks.values() for k, kt in tr.keys.items() if t - kt <= cfg.key_ttl_ms
+        }
+        holder = {k: tr.world_id for tr in self._all() for k in tr.keys}
+        held: dict[str, set[TrackKey]] = {}
+        for k, wid in holder.items():
+            held.setdefault(wid, set()).add(k)
+        cluster_of = {k: c for c in frame.clusters for k in c.keys}
         clusters = [_prepare(c) for c in frame.clusters]
         tracks = sorted(self._tracks.values(), key=lambda tr: tr.order)
         predicted = {tr.world_id: tr.kf.predict_xy(t) for tr in tracks}
@@ -566,8 +716,8 @@ class WorldTrackManager:
                 for tr in feasible:
                     flags[tr.world_id].add(IdentityFlag.CROSS_VIEW_UNCERTAIN)
 
-        # 7단계: 같은 사람 두 ID 로 보이는 Track 은 합치지 않고 둘 다 남긴 채 표시한다 (병합·교정은 S15P31A101-40).
-        # 로컬 트랙 ID 하나가 옆 사람에게 넘어간 경우(로컬 트래커 ID 전환)와 구별할 근거가 없기 때문이다.
+        # 7단계: 같은 사람 두 ID 로 보이는 Track 은 이 시각에는 합치지 않고 둘 다 남긴 채 표시한다.
+        # 로컬 트랙 ID 하나가 옆 사람에게 넘어간 경우(로컬 트래커 ID 전환)와 한 시각만으로는 구별할 근거가 없기 때문이다.
         for wid, c in assigned.items():
             for k in c.cluster.keys:
                 other_id = owner.get(k)
@@ -575,6 +725,27 @@ class WorldTrackManager:
                     continue
                 if np.linalg.norm(c.anchor - predicted[other_id]) <= cfg.duplicate_radius_m:
                     self._duplicates.add(frozenset((wid, other_id)))
+
+        # 같은 시각 같은 카메라의 서로 다른 검출은 서로 다른 사람이다: 위치 갱신과 상관없이 로컬 트랙 주인과 배정으로
+        # 병합 금지 쌍을 먼저 기록한다 (1대 클러스터로만 보인 Track 포함)
+        self._mark_distinct(frame, holder, {wid: c.cluster for wid, c in assigned.items()})
+
+        # 병합 근거 (S15P31A101-40): 갱신된 Track 에 갱신되지 않은 Track 의 로컬 트랙이 이어진 시각 수를 센다.
+        # 근거 로컬 트랙이 잠깐 빠진 시각(key_ttl_ms 안)은 세지 않고 넘기고, 반대 근거가 나오면 버린다
+        stale_ids = {tr.world_id for tr in tracks if tr.world_id not in assigned} | set(self._dormant)
+        found: dict[str, _Evidence] = {}
+        vetoed: set[str] = set()
+        for wid, c in assigned.items():
+            ev, veto = self._merge_evidence(wid, c, holder, held, cluster_of, stale_ids, t)
+            if ev is not None:
+                found[wid] = ev
+            elif veto:
+                vetoed.add(wid)
+        for wid, ev in self._evidence.items():
+            if wid not in found and wid not in vetoed and ev.stale in stale_ids and t - ev.last_t <= cfg.key_ttl_ms:
+                found[wid] = ev
+        claims = Counter(ev.stale for ev in found.values())
+        self._evidence = {wid: ev for wid, ev in found.items() if claims[ev.stale] == 1}  # 두 Track 이 다투면 애매
 
         # 갱신 적용 (관절 유효성 게이트 → 칼만 필터)
         applied: dict[str, _Applied] = {}
@@ -584,34 +755,55 @@ class WorldTrackManager:
             result = self._apply(tr, c.cluster, frame, rig, excluded, t)
             applied[wid] = result
             for k in c.cluster.keys:
-                old = owner.get(k)
-                if old is not None and old != wid and old in self._tracks:
-                    self._tracks[old].keys.pop(k, None)
-                tr.keys[k] = t
+                self._take_key(k, tr, t, set(assigned))
                 owner[k] = wid
             if _competitor_flag(result.gated, c.cluster):
                 flags[wid].add(IdentityFlag.TWO_VIEW_COMPETITOR_JOINT)
             if result.pelvis is not None and reacquired and tr.lifecycle is TrackLifecycle.OCCLUDED:
                 tr.reacquired_until = t + cfg.uncertain_hold_ms
 
-        # 5단계: 1대뿐인 클러스터(와 붙지 않은 클러스터)는 위치를 갱신하지 않고 연결 이력만 잇는다
+        # 5단계: 1대뿐인 클러스터(와 붙지 않은 클러스터)는 위치를 갱신하지 않고 연결 이력만 잇는다 (소실 후보 포함)
+        current = {k: tr for tr in self._all() for k in tr.keys}
         for c in clusters:
             if id(c) in taken:
                 continue
             for k in c.cluster.keys:
-                wid = owner.get(k)
-                if wid is not None and wid not in assigned:
-                    self._tracks[wid].keys[k] = t
+                tr = current.get(k)
+                if tr is not None and tr.world_id not in assigned:
+                    tr.keys[k] = t
 
-        # 6단계: 새 World Track. 기존 Track(예측 위치)과 이번 시각에 먼저 생긴 Track 가까이면 POSSIBLE_DUPLICATE
+        # 6단계: 새 World Track. 소실·가림 Track 의 로컬 트랙이면 먼저 같은 ID 로 잇는다(늦은 재연결).
+        # 기존 Track(예측 위치)과 이번 시각에 먼저 생긴 Track 가까이면 POSSIBLE_DUPLICATE
+        reassociated: list[str] = []
+        linked: set[str] = set()
+        """이번 시각 늦은 재연결·병합한 Track (일관성 확인은 다음 시각부터 센다)"""
         nearby: dict[str, np.ndarray] = dict(predicted)
         for c in anchored:
             if id(c) in taken or id(c) in blocked or not c.has_pelvis:
                 continue
+            target, ambiguous, unreachable = self._reconnect_target(c, holder, held, cluster_of, applied, t)
+            if target is not None:
+                was_lost = target in self._dormant
+                result = self._reconnect(target, c.cluster, frame, rig, excluded, t)
+                if result is not None:
+                    tr = self._tracks[target]
+                    applied[target] = result
+                    taken.add(id(c))
+                    for k in c.cluster.keys:
+                        self._take_key(k, tr, t, set(assigned) | set(applied))
+                        owner[k] = target
+                    tr.confirm_left = cfg.merge_confirm_frames
+                    linked.add(target)
+                    new_flags = flags.setdefault(target, set())
+                    if _competitor_flag(result.gated, c.cluster):
+                        new_flags.add(IdentityFlag.TWO_VIEW_COMPETITOR_JOINT)
+                    if was_lost:
+                        reassociated.append(target)
+                    if result.pelvis is not None:
+                        nearby[target] = np.array(result.pelvis[:2])
+                    continue
             gate = JointGate(cfg.joint_gate)
-            gated = gate.update(
-                [v.view for v in c.cluster.views], rig, _others(frame, c.cluster), JOINT_LAYOUT, excluded
-            )
+            gated = self._gate(gate, c.cluster, frame, rig, excluded)
             measurement = self._measurement(gated)
             if measurement is None:
                 continue
@@ -625,24 +817,59 @@ class WorldTrackManager:
                 gate=gate,
                 t_last_valid=t,
             )
+            tr.path.append((t, z[:2].copy()))
             self._tracks[tr.world_id] = tr
             for k in c.cluster.keys:
-                old = owner.get(k)
-                if old is not None and old in self._tracks:
-                    self._tracks[old].keys.pop(k, None)
-                tr.keys[k] = t
+                self._take_key(k, tr, t, set(assigned) | set(applied))
                 owner[k] = tr.world_id
+            if unreachable is not None:
+                # 첫 관측이 그 Track 의 마지막 관측에서 갈 수 없는 거리다: 같은 사람이 아니다(병합 근거로 세지 않는다)
+                self._distinct.add(frozenset((unreachable, tr.world_id)))
             applied[tr.world_id] = _Applied(c.cluster, gated, (float(z[0]), float(z[1]), float(z[2])))
             new_flags = set()
             if c.uncertain:
                 new_flags.add(IdentityFlag.CROSS_VIEW_UNCERTAIN)
             if _competitor_flag(gated, c.cluster):
                 new_flags.add(IdentityFlag.TWO_VIEW_COMPETITOR_JOINT)
+            if ambiguous:
+                new_flags.add(IdentityFlag.REASSOCIATION_AMBIGUOUS)
             for other_id, xy in nearby.items():
                 if np.linalg.norm(c.anchor - xy) <= cfg.duplicate_radius_m:
                     self._duplicates.add(frozenset((tr.world_id, other_id)))
             flags[tr.world_id] = new_flags
             nearby[tr.world_id] = z[:2]
+
+        # 병합 (ID 교정): 근거 시각이 merge_confirm_frames 번 쌓였으면 먼저 만든 ID 로 합친다
+        revisions: list[IdentityRevision] = []
+        for wid, ev in sorted(self._evidence.items()):
+            if ev.count < cfg.merge_confirm_frames or wid not in self._evidence:
+                continue
+            if ev.stale in applied or wid not in self._tracks or self._find(ev.stale) is None:
+                del self._evidence[wid]  # 이번 시각 따로 갱신됐거나 사라졌다
+                continue
+            rec = self._merge(ev.stale, wid, ev, t, applied, flags)
+            revisions.append(rec)
+            linked.add(rec.world_id)
+
+        # 병합 금지 쌍: 이번 시각 새로 생기거나 다시 이은 Track 까지 (다음 시각 근거에 쓴다)
+        self._mark_distinct(frame, holder, {wid: a.cluster for wid, a in applied.items()})
+
+        # 늦은 재연결·병합 뒤 일관성 확인: 자기 로컬 트랙만으로(reconnect_min_cameras 대 이상) 위치가 갱신된 시각을 센다.
+        # 다 셀 때까지 LATE_REASSOCIATION 을 매 시각 붙인다. 넘겨받은 로컬 트랙의 옛 주인이 남아 있으면 애매 표시
+        for wid, tr in self._tracks.items():
+            if tr.confirm_left > 0 and wid not in linked:
+                a = applied.get(wid)
+                if (
+                    a is not None
+                    and a.pelvis is not None
+                    and all(holder.get(k) == wid for k in a.cluster.keys)
+                    and _cameras(a.cluster.keys) >= cfg.reconnect_min_cameras
+                ):
+                    tr.confirm_left -= 1
+            if tr.confirm_left > 0:
+                flags.setdefault(wid, set()).add(IdentityFlag.LATE_REASSOCIATION)
+            if self._ambiguous(tr):
+                flags.setdefault(wid, set()).add(IdentityFlag.REASSOCIATION_AMBIGUOUS)
 
         # 같은 사람 두 ID 후보 쌍: 둘 다 살아 있고 가까운 동안 매 시각 다시 표시한다(한 사람 두 ID 가 표시 없이 남지 않게)
         for pair in list(self._duplicates):
@@ -665,9 +892,10 @@ class WorldTrackManager:
                 tr.flags[f] = t
 
         # 생명주기
-        newly_lost: list[_Track] = []
+        newly_lost: list[tuple[_Track, bool]] = []
         for tr in list(self._tracks.values()):
             gap = t - tr.t_last_valid
+            was_confirmed = tr.lifecycle is not TrackLifecycle.TENTATIVE
             if tr.lifecycle is TrackLifecycle.TENTATIVE:
                 if gap == 0 and tr.hits >= cfg.confirm_hits:
                     tr.lifecycle = TrackLifecycle.CONFIRMED
@@ -680,18 +908,296 @@ class WorldTrackManager:
             elif gap > cfg.occluded_after_ms:
                 tr.lifecycle = TrackLifecycle.OCCLUDED
             if tr.lifecycle is TrackLifecycle.LOST:
-                newly_lost.append(tr)
+                newly_lost.append((tr, was_confirmed))
 
         snapshots = [self._snapshot(tr, t, applied.get(tr.world_id)) for tr in self._tracks.values()]
-        for tr in newly_lost:
+        for tr, was_confirmed in newly_lost:
             self._tracks.pop(tr.world_id, None)
+            if was_confirmed and cfg.reconnect_window_ms > cfg.lost_after_ms:
+                self._dormant[tr.world_id] = tr  # LOST 는 한 번만 내고 소실 후보로 둔다
+        self._forget_gone()
         return WorldTrackFrame(
             t=t,
             calibration_version=frame.calibration_version,
             tracks=tuple(sorted(snapshots, key=lambda s: s.world_id)),
-            revisions=(),
+            revisions=tuple(revisions),
             input_provenance=self.input_provenance,
+            reassociations=tuple(sorted(reassociated)),
         )
+
+    # ------------------------------------------------------------------ 늦은 재연결·ID 교정
+
+    def _all(self) -> list[_Track]:
+        """살아 있는 Track 과 소실 후보."""
+        return [*self._tracks.values(), *self._dormant.values()]
+
+    def _find(self, world_id: str) -> _Track | None:
+        return self._tracks.get(world_id) or self._dormant.get(world_id)
+
+    def _forget_gone(self) -> None:
+        """사라진 ID 가 든 병합 금지 쌍·병합 근거를 지운다."""
+        alive = set(self._tracks) | set(self._dormant)
+        self._distinct = {p for p in self._distinct if p <= alive}
+        self._evidence = {w: ev for w, ev in self._evidence.items() if w in alive and ev.stale in alive}
+
+    def _take_key(self, key: TrackKey, tr: _Track, t: int, fresh: Collection[str]) -> None:
+        """로컬 트랙을 이 Track 으로 옮긴다. 한 로컬 트랙은 Track 하나(소실 후보 포함)에만 있다.
+
+        이번 시각 갱신되지 않은 Track(fresh 밖)에게서 넘겨받으면 그 출처를 `origin_of` 에 남긴다(그 사람일 수도 있다).
+        """
+        previous: _Track | None = None
+        for other in self._all():
+            if other is not tr and key in other.keys:
+                other.keys.pop(key)
+                other.origin_of.pop(key, None)
+                previous = other
+        if previous is not None:
+            if previous.world_id in fresh:
+                tr.origin_of.pop(key, None)
+            else:
+                tr.origin_of[key] = (previous.world_id, t)
+        tr.keys[key] = t
+
+    def _mark_distinct(
+        self, frame: AssociationFrame, holder: Mapping[TrackKey, str], attached: Mapping[str, ViewCluster]
+    ) -> None:
+        """같은 시각 같은 카메라의 서로 다른 검출이 가리키는 Track 들을 병합 금지 쌍으로 둔다.
+
+        검출 하나가 가리키는 Track 은 그 로컬 트랙의 주인(이번 시각 이전, 소실 후보 포함)과 그 클러스터를 받은 Track 이다.
+        위치 측정 여부와 상관없다. 같은 검출이 가리키는 두 Track(주인과 받은 Track)은 짝짓지 않는다(그것이 병합 근거다).
+        """
+        by_cluster = {id(c): wid for wid, c in attached.items()}
+        per_camera: dict[str, list[set[str]]] = {}
+        for c in frame.clusters:
+            got = by_cluster.get(id(c))
+            for v in c.views:
+                ids = {w for w in (holder.get(v.key), got) if w is not None}
+                if ids:
+                    per_camera.setdefault(v.camera_id, []).append(ids)
+        for detections in per_camera.values():
+            for i, a in enumerate(detections):
+                for b in detections[i + 1 :]:
+                    for p in a:
+                        for q in b:
+                            if p != q:
+                                self._distinct.add(frozenset((p, q)))
+
+    def _ambiguous(self, tr: _Track) -> bool:
+        """넘겨받은 로컬 트랙의 옛 주인이 그 뒤 다시 갱신되지 않고 남아 있어 이 Track 이 그 사람일 수도 있는지.
+
+        옛 주인이 사라졌거나(소실 후보 끝), 그 뒤 따로 갱신됐거나, 병합 금지 쌍이면 그 출처는 지운다.
+        """
+        for key, (origin, taken) in list(tr.origin_of.items()):
+            other = self._find(origin)
+            if (
+                key not in tr.keys
+                or other is None
+                or other is tr
+                or other.t_last_valid > taken
+                or frozenset((origin, tr.world_id)) in self._distinct
+            ):
+                del tr.origin_of[key]
+        return bool(tr.origin_of)
+
+    def _link_check(
+        self,
+        stale_id: str,
+        c: _Cluster,
+        held: Mapping[str, Collection[TrackKey]],
+        cluster_of: Mapping[TrackKey, ViewCluster],
+        crowd: Collection[str],
+        t: int,
+        observed: Sequence[tuple[int, np.ndarray]] = (),
+    ) -> str | None:
+        """갱신되지 않은 Track(stale_id)과 클러스터 c 를 같은 사람으로 이으면 안 되는 이유. 이어도 되면 None.
+
+        - "elsewhere": stale_id 의 다른 로컬 트랙이 이번 시각 다른 클러스터에 있다(그 사람은 다른 곳에 있다).
+        - "unreachable": 이번 시각 기준점, 또는 observed(잇거나 합칠 상대 Track 의 위치 측정) 중 stale_id 의 마지막 관측
+          뒤의 것 하나라도, 마지막 위치에서 그 시간에 갈 수 있는 거리(gate_base_m + max_speed_mps × (그 관측 시각 −
+          t_last_valid)) 밖이다. 병합은 상대의 첫 관측부터 재야 한다(지금 시각으로만 재면 기다리면 통과한다).
+        - "crowd": 마지막 위치 reconnect_crowd_radius_m 안에 다른 소실·가림 Track(crowd)이 있다(로컬 트랙이 서로
+          넘어갔을 수 있다).
+        """
+        cfg = self.config
+        tr = self._find(stale_id)
+        if tr is None or c.anchor is None:
+            return "elsewhere"
+        for k in held.get(stale_id, ()):
+            other = cluster_of.get(k)
+            if other is not None and other is not c.cluster:
+                return "elsewhere"
+        for when, xy in [*observed, (t, c.anchor)]:
+            if when < tr.t_last_valid:
+                continue
+            reach = cfg.gate_base_m + cfg.max_speed_mps * (when - tr.t_last_valid) / 1000.0
+            if float(np.linalg.norm(xy - tr.last_xy)) > reach:
+                return "unreachable"
+        for wid in crowd:
+            other_tr = self._find(wid)
+            if other_tr is None:
+                continue
+            if float(np.linalg.norm(other_tr.last_xy - tr.last_xy)) <= cfg.reconnect_crowd_radius_m:
+                return "crowd"
+        return None
+
+    def _merge_evidence(
+        self,
+        wid: str,
+        c: _Cluster,
+        holder: Mapping[TrackKey, str],
+        held: Mapping[str, Collection[TrackKey]],
+        cluster_of: Mapping[TrackKey, ViewCluster],
+        stale_ids: set[str],
+        t: int,
+    ) -> tuple[_Evidence | None, bool]:
+        """이번 시각 클러스터 c 를 받은 Track wid 의 병합 근거. (근거, 반대 근거가 있었는지).
+
+        c 의 로컬 트랙 중 갱신되지 않은 Track X 의 것(지금 X 가 들고 있거나, wid 가 X 에게서 넘겨받은 것)이 서로 다른
+        카메라 `reconnect_min_cameras` 대 이상이면 근거다. 한 대뿐이면 세지 않는다(로컬 ID 전환과 구별할 수 없음, 반대
+        근거도 아님). 클러스터가 IDENTITY_UNCERTAIN 이거나, 여러 Track 의 로컬 트랙이 섞였거나, X 가 이번 시각 따로
+        갱신됐거나, 병합 금지 쌍이거나, `_link_check` 를 못 채우면 반대 근거다(갈 수 없는 거리였으면 병합 금지 쌍으로 둔다). 직전 근거가 key_ttl_ms 안일 때만 이어서 센다
+        (합치기 전에 TTL 을 먼저 본다).
+        """
+        cfg = self.config
+        y = self._tracks[wid]
+        self._ambiguous(y)  # 무효가 된 출처를 지운다
+        claims: dict[str, set[TrackKey]] = {}
+        for k in c.cluster.keys:
+            h = holder.get(k)
+            if h is not None and h != wid:
+                claims.setdefault(h, set()).add(k)
+            elif h == wid and k in y.origin_of:
+                claims.setdefault(y.origin_of[k][0], set()).add(k)
+        claims = {x: ks for x, ks in claims.items() if self._find(x) is not None}
+        if not claims:
+            return None, False
+        if c.uncertain or len(claims) != 1:
+            return None, True
+        ((stale_id, keys),) = claims.items()
+        if stale_id not in stale_ids or frozenset((stale_id, wid)) in self._distinct:
+            return None, True
+        reason = self._link_check(stale_id, c, held, cluster_of, stale_ids - {stale_id}, t, y.path)
+        if reason == "unreachable":
+            self._distinct.add(frozenset((stale_id, wid)))  # 갈 수 없는 곳에서 관측된 적이 있다: 같은 사람이 아니다
+        if reason is not None:
+            return None, True
+        if _cameras(keys) < cfg.reconnect_min_cameras:
+            return None, False
+        prev = self._evidence.get(wid)
+        if prev is not None and prev.stale == stale_id and t - prev.last_t <= cfg.key_ttl_ms:
+            return _Evidence(stale_id, prev.keys | frozenset(keys), prev.count + 1, t), False
+        return _Evidence(stale_id, frozenset(keys), 1, t), False
+
+    def _reconnect_target(
+        self,
+        c: _Cluster,
+        holder: Mapping[TrackKey, str],
+        held: Mapping[str, Collection[TrackKey]],
+        cluster_of: Mapping[TrackKey, ViewCluster],
+        applied: Mapping[str, _Applied],
+        t: int,
+    ) -> tuple[str | None, bool, str | None]:
+        """새 Track 이 될 클러스터를 같은 ID 로 이을 소실·가림 Track.
+
+        (대상, 애매해서 잇지 않았는지, 갈 수 없는 거리라 잇지 않은 Track). 마지막 값은 새로 만든 Track 과 병합 금지 쌍이 된다.
+        """
+        if c.uncertain:
+            return None, False, None
+        holders = {holder[k] for k in c.cluster.keys if k in holder}
+        if not holders or holders & set(applied):
+            # 로컬 트랙 근거가 없거나, 이번 시각 갱신된 Track 의 로컬 트랙이 섞였다(갈라진 view·ID 전환): 지금 동작대로
+            return None, False, None
+        if len(holders) > 1:
+            return None, True, None
+        (stale_id,) = holders
+        crowd = [w for w in (*self._tracks, *self._dormant) if w != stale_id and w not in applied]
+        reason = self._link_check(stale_id, c, held, cluster_of, crowd, t)
+        if reason is not None:
+            return None, True, (stale_id if reason == "unreachable" else None)
+        if _cameras(k for k in c.cluster.keys if holder.get(k) == stale_id) < self.config.reconnect_min_cameras:
+            return None, True, None  # 카메라 한 대의 로컬 트랙: 로컬 ID 전환일 수 있다
+        return stale_id, False, None
+
+    def _reconnect(
+        self,
+        world_id: str,
+        cluster: ViewCluster,
+        frame: AssociationFrame,
+        rig: CameraRig,
+        excluded: frozenset[str],
+        t: int,
+    ) -> _Applied | None:
+        """클러스터를 Track 에 잇는다. 소실 후보는 위치 측정이 있을 때만 살리고 게이트 이력을 새로 시작한다."""
+        if world_id in self._tracks:
+            return self._apply(self._tracks[world_id], cluster, frame, rig, excluded, t)
+        tr = self._dormant[world_id]
+        gate = JointGate(self.config.joint_gate)
+        gated = self._gate(gate, cluster, frame, rig, excluded)
+        if self._measurement(gated) is None:
+            return None  # 위치 없이 살리면 다음 생명주기에서 다시 LOST 가 된다
+        del self._dormant[world_id]
+        self._tracks[world_id] = tr
+        tr.gate = gate
+        return self._apply(tr, cluster, frame, rig, excluded, t, gated)
+
+    def _merge(
+        self,
+        stale_id: str,
+        live_id: str,
+        ev: _Evidence,
+        t: int,
+        applied: dict[str, _Applied],
+        flags: dict[str, set[IdentityFlag]],
+    ) -> IdentityRevision:
+        """두 ID 를 먼저 만든 ID 로 합치고 교정 기록을 남긴다. 위치·필터는 이번 시각 측정을 받은 live 의 것을 잇는다."""
+        stale = self._find(stale_id)
+        live = self._tracks[live_id]
+        assert stale is not None
+        was_lost = stale_id in self._dormant
+        survivor, retired = (stale, live) if stale.order < live.order else (live, stale)
+        revision = max(stale.identity_revision, live.identity_revision) + 1
+        confirmed = not (stale.lifecycle is TrackLifecycle.TENTATIVE and live.lifecycle is TrackLifecycle.TENTATIVE)
+        if survivor is stale:
+            survivor.kf = live.kf
+            survivor.gate = live.gate
+            survivor.t_last_valid = live.t_last_valid
+            survivor.reacquired_until = live.reacquired_until
+            if live_id in applied:
+                applied[stale_id] = applied.pop(live_id)
+        survivor.lifecycle = TrackLifecycle.CONFIRMED if confirmed else TrackLifecycle.TENTATIVE
+        survivor.hits += retired.hits
+        survivor.path = sorted([*survivor.path, *retired.path], key=lambda p: p[0])
+        survivor.identity_revision = revision
+        survivor.aliases.extend([retired.world_id, *retired.aliases])
+        survivor.gate.reset()  # 이력이 다른 사람 것일 수 있다 (joint_gate)
+        for k, kt in retired.keys.items():
+            survivor.keys[k] = max(kt, survivor.keys.get(k, kt))
+        for f, ft in retired.flags.items():
+            survivor.flags[f] = max(ft, survivor.flags.get(f, ft))
+        origins = {**survivor.origin_of, **retired.origin_of}
+        survivor.origin_of = {k: v for k, v in origins.items() if v[0] not in (stale_id, live_id)}
+        survivor.confirm_left = self.config.merge_confirm_frames
+        merged_flags = flags.setdefault(survivor.world_id, set())
+        merged_flags |= flags.pop(retired.world_id, set())
+        self._tracks.pop(retired.world_id, None)
+        self._dormant.pop(retired.world_id, None)
+        self._dormant.pop(survivor.world_id, None)
+        self._tracks[survivor.world_id] = survivor
+        old, new = retired.world_id, survivor.world_id
+        self._duplicates = {p for p in (_rename(p, old, new) for p in self._duplicates) if len(p) == 2}
+        self._distinct = {p for p in (_rename(p, old, new) for p in self._distinct) if len(p) == 2}
+        self._evidence = {w: e for w, e in self._evidence.items() if {w, e.stale}.isdisjoint({old, new})}
+        record = IdentityRevision(
+            t=t,
+            kind=RevisionKind.MERGE,
+            world_id=new,
+            previous_world_id=old,
+            identity_revision=revision,
+            reason=str(RevisionReason.LATE_REASSOCIATION if was_lost else RevisionReason.DUPLICATE_MERGE),
+            evidence=tuple(sorted(ev.keys)),
+        )
+        self._revisions.append(record)
+        return record
 
     # ------------------------------------------------------------------ 내부
 
@@ -712,10 +1218,34 @@ class WorldTrackManager:
             sigma = sigma * self.config.uncertain_measurement_scale
         return np.array(pelvis, dtype=float), sigma
 
+    def _gate(
+        self, gate: JointGate, cluster: ViewCluster, frame: AssociationFrame, rig: CameraRig, excluded: frozenset[str]
+    ) -> GatedSkeleton:
+        """관절 유효성 게이트. Cross-view 클러스터의 왜곡 제거·삼각측량 결과를 넘긴다(입력이 같을 때만 게이트가 다시 쓴다)."""
+        others, others_undistorted = _others(frame, cluster)
+        return gate.update(
+            [v.view for v in cluster.views],
+            rig,
+            others,
+            JOINT_LAYOUT,
+            excluded,
+            undistorted=cluster.undistorted,
+            others_undistorted=others_undistorted,
+            skeleton=cluster.skeleton,
+        )
+
     def _apply(
-        self, tr: _Track, cluster: ViewCluster, frame: AssociationFrame, rig: CameraRig, excluded: frozenset[str], t: int
+        self,
+        tr: _Track,
+        cluster: ViewCluster,
+        frame: AssociationFrame,
+        rig: CameraRig,
+        excluded: frozenset[str],
+        t: int,
+        gated: GatedSkeleton | None = None,
     ) -> _Applied:
-        gated = tr.gate.update([v.view for v in cluster.views], rig, _others(frame, cluster), JOINT_LAYOUT, excluded)
+        if gated is None:
+            gated = self._gate(tr.gate, cluster, frame, rig, excluded)
         measurement = self._measurement(gated)
         if measurement is None:
             return _Applied(cluster, gated, None)
@@ -723,6 +1253,7 @@ class WorldTrackManager:
         tr.kf.update(t, z, sigma)
         tr.t_last_valid = t
         tr.hits += 1
+        tr.path.append((t, z[:2].copy()))
         return _Applied(cluster, gated, (float(z[0]), float(z[1]), float(z[2])))
 
     def _snapshot(self, tr: _Track, t: int, applied: _Applied | None) -> WorldTrackSnapshot:
@@ -820,12 +1351,34 @@ def _competitor_flag(gated: GatedSkeleton, cluster: ViewCluster) -> bool:
     )
 
 
-def _others(frame: AssociationFrame, cluster: ViewCluster) -> dict[str, list[Sequence[Any]]]:
-    """같은 시각 다른 클러스터의 카메라별 keypoint (관절 유효성 게이트의 2대 관측 경쟁 후보 검사용)."""
+def _others(
+    frame: AssociationFrame, cluster: ViewCluster
+) -> tuple[dict[str, list[Sequence[Any]]], dict[str, list[UndistortedKeypoints]]]:
+    """같은 시각 다른 클러스터의 카메라별 keypoint 와 그 왜곡 제거 결과 (관절 유효성 게이트의 2대 관측 경쟁 후보 검사용).
+
+    왜곡 제거 결과는 keypoint 와 같은 카메라·같은 순서다. 한 카메라에서 하나라도 없으면 그 카메라는 넣지 않는다(게이트가
+    순서가 어긋난 결과를 쓰지 않도록. 넣지 않은 카메라는 게이트가 다시 푼다).
+    """
     others: dict[str, list[Sequence[Any]]] = {}
+    undistorted: dict[str, list[UndistortedKeypoints]] = {}
+    missing: set[str] = set()
     for c in frame.clusters:
         if c is cluster:
             continue
         for v in c.views:
             others.setdefault(v.camera_id, []).append(v.view.keypoints)
-    return others
+            u = c.undistorted.get(v.camera_id)
+            if u is None:
+                missing.add(v.camera_id)
+            else:
+                undistorted.setdefault(v.camera_id, []).append(u)
+    return others, {cid: us for cid, us in undistorted.items() if cid not in missing}
+
+
+def _cameras(keys: Iterable[TrackKey]) -> int:
+    """로컬 트랙들이 나온 서로 다른 카메라 수."""
+    return len({k[0] for k in keys})
+
+
+def _rename(pair: frozenset[str], old: str, new: str) -> frozenset[str]:
+    return frozenset(new if w == old else w for w in pair)
