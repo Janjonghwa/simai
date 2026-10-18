@@ -13,8 +13,11 @@ World Track Manager 결과(`world_track.WorldTrackFrame`)를 계약 형식으로
 - 별칭(`aliases`, 계약 1.3.0 선택 필드)은 World Track Manager 가 병합 때 남는 Track 에 붙인 이전 ID(`WorldTrackSnapshot.aliases`)를
   순서대로 싣는다. 별칭이 없으면 두지 않는다. 별칭 목록은 Track 이 살아 있는 동안 뒤에만 붙고(world_track `_merge`), 여기서는
   고르거나 빼지 않는다(덮어쓰지 않음). 중복은 한 번만 싣고, 자기 world_id 가 들어 있으면 입력 불일치라 ValueError 다.
-- `head_z` 는 관절 유효성 게이트가 VALID 로 낸 값만 싣는다. UNCERTAIN·UNAVAILABLE 이면 null 이다(계약에
-  head_z 유효성 필드가 없어 UNCERTAIN 값이 확정값처럼 실리지 않게, 사용자 결정·docs/design/tier0-joint-gate.md).
+- `head_z` 는 관절 유효성 게이트가 VALID 로 낸 값만 싣는다. UNCERTAIN·UNAVAILABLE 이면 null 이다(UNCERTAIN 값이
+  확정값처럼 실리지 않게, 사용자 결정 2026-10-18·docs/design/tier0-joint-gate.md). 게이트가 낸 유효성은 계약 1.4.0
+  `head_z_validity` 로 늘 싣는다(S15P31A101-172): 값을 실으면 VALID, 게이트가 UNCERTAIN 귀·눈으로만 값을 만들었으면
+  UNCERTAIN(값은 null), 게이트가 값을 못 냈거나 이번 시각 클러스터가 붙지 않아 HeadZ 가 없으면 UNAVAILABLE 이다.
+  게이트가 VALID 라고 했는데 값이 없거나 유한하지 않으면 VALID 로 싣지 않고 UNAVAILABLE·null 이다(모르면 비움).
 - `skeleton`·`pelvis_xyz` 는 이번 시각에 클러스터가 붙은 Track 만 있고, 관절은 모두 Tier 0 관측(joint_source observed)이다.
 - `position_xy` 는 명세 5.2 순서(골반 XY → 검증된 접지점 XY → 예측값)와 계약 1.1.0 설명(관측이 없으면 t_last_valid
   시각의 위치를 유지하고 σ 를 속도 상한 × 공백만큼 키운다, 속도로 옮기지 않음)을 함께 따른다. 위치 관측은 두 가지다:
@@ -40,9 +43,9 @@ from typing import Any
 from simai_ai.tracking.time_model import TimeModelConfig, classify_observation, require_ms
 from simai_ai.tracking.world_track import WorldTrackFrame, WorldTrackSnapshot
 
-WORLD_STATE_SCHEMA_VERSION = "1.3.0"
+WORLD_STATE_SCHEMA_VERSION = "1.4.0"
 """world_state 계약이 마지막으로 바뀐 버전 (1.1.0: input_provenance, 1.2.0: config_version, 1.3.0: 트랙의
-surface_source·aliases 선택 필드)"""
+surface_source·aliases 선택 필드, 1.4.0: 트랙의 head_z_validity 선택 필드)"""
 DEFAULT_SOURCE_ID = "tier0-01"
 _VALIDITY = frozenset({"VALID", "UNCERTAIN", "UNAVAILABLE"})
 _SURFACE_VALIDITY = frozenset({"VALID", "UNCERTAIN", "UNKNOWN"})
@@ -134,8 +137,7 @@ def world_track_document(
         raise ValueError(f"{track.world_id}: t_last_valid {t_last_valid} 가 t_latest_global {t_latest_global} 보다 뒤다")
     _require_finite("position_xy", position_xy, 2)
     _require_finite("position_xy_sigma", position_sigma, 2)
-    head = track.head_z
-    head_valid = head is not None and head.value is not None and str(head.validity) == "VALID"
+    head_z, head_sigma, head_validity = _head_z(track)
     doc: dict[str, Any] = {
         "world_id": track.world_id,
         "t_last_valid": t_last_valid,
@@ -151,8 +153,9 @@ def world_track_document(
         "support_surface_validity": contact.support_surface_validity,
         "contact_validity": contact.contact_validity,
         "z_validity": contact.z_validity,
-        "head_z": head.value if head_valid else None,  # type: ignore[union-attr]
-        "head_z_sigma": head.sigma_m if head_valid else None,  # type: ignore[union-attr]
+        "head_z": head_z,
+        "head_z_sigma": head_sigma,
+        "head_z_validity": head_validity,
         "cameras": list(track.cameras),
     }
     aliases = _aliases(track)
@@ -220,6 +223,27 @@ def world_state_message(
         "source_id": source_id,
         "payload": dict(payload),
     }
+
+
+def _head_z(track: WorldTrackSnapshot) -> tuple[float | None, float | None, str]:
+    """(head_z, head_z_sigma, head_z_validity). 값은 게이트가 VALID 로 낸 유한한 값만, 그 밖은 null(계약 1.4.0 불변 규칙)."""
+    head = track.head_z
+    if head is None:
+        return None, None, "UNAVAILABLE"  # 이번 시각 클러스터가 붙지 않았다(관측 없음)
+    validity = str(head.validity)
+    if validity not in _VALIDITY:
+        raise ValueError(f"{track.world_id}: head_z 유효성 값이 아니다: {validity!r}")
+    if validity == "VALID":
+        value = head.value
+        if value is None or isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return None, None, "UNAVAILABLE"  # VALID 라면서 값이 없거나 유한하지 않다: VALID 로 싣지 않는다
+        sigma = head.sigma_m
+        if sigma is not None and (isinstance(sigma, bool) or not isinstance(sigma, (int, float)) or not math.isfinite(sigma)):
+            sigma = None  # σ 를 모르면 비운다(값은 VALID 그대로)
+        return float(value), None if sigma is None else float(sigma), "VALID"
+    if validity == "UNCERTAIN" and head.value is None:
+        return None, None, "UNAVAILABLE"  # 값을 만들지 못한 UNCERTAIN 은 근거가 없다
+    return None, None, validity  # UNCERTAIN 값은 싣지 않는다(사용자 결정), UNAVAILABLE 은 그대로
 
 
 def _aliases(track: WorldTrackSnapshot) -> list[str]:

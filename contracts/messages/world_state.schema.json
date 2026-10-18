@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/world_state.schema.json",
   "title": "I1 world_state",
-  "description": "RunPod Tier 0 → EC2, 10 Hz (명세 12.3, 5.2). I1 LIVE 계약이므로 Lead 승인 없이 의미를 바꾸지 않는다. 1.1.0 필드 추가(마이너, Lead 승인 S15P31A101-37): payload.input_provenance(입력 출처, 명세 20.4·AGENTS 규칙 7), position_xy 설명 보강(관측이 없을 때의 시각 기준, 의미 변경 없음). 1.2.0 필드 추가(마이너, Lead 승인 2026-10-18, S15P31A101-169): payload.config_version(이 상태를 만든 tick 의 구성 묶음 버전). 1.3.0 필드 추가(마이너, 사용자 승인 2026-10-18, S15P31A101-170): tracks[].surface_source(지지 표면 출처 observed/inferred, 접지점이 있을 때만), tracks[].aliases(병합으로 이 ID 에 합쳐진 이전 World ID).",
+  "description": "RunPod Tier 0 → EC2, 10 Hz (명세 12.3, 5.2). I1 LIVE 계약이므로 Lead 승인 없이 의미를 바꾸지 않는다. 1.1.0 필드 추가(마이너, Lead 승인 S15P31A101-37): payload.input_provenance(입력 출처, 명세 20.4·AGENTS 규칙 7), position_xy 설명 보강(관측이 없을 때의 시각 기준, 의미 변경 없음). 1.2.0 필드 추가(마이너, Lead 승인 2026-10-18, S15P31A101-169): payload.config_version(이 상태를 만든 tick 의 구성 묶음 버전). 1.3.0 필드 추가(마이너, 사용자 승인 2026-10-18, S15P31A101-170): tracks[].surface_source(지지 표면 출처 observed/inferred, 접지점이 있을 때만), tracks[].aliases(병합으로 이 ID 에 합쳐진 이전 World ID). 1.4.0 필드 추가(마이너, 사용자 승인 2026-10-18, S15P31A101-172): tracks[].head_z_validity(관절 게이트가 낸 head_z 유효성. head_z 값은 VALID 일 때만 싣는다).",
   "allOf": [{ "$ref": "envelope.schema.json" }],
   "type": "object",
   "properties": {
@@ -107,8 +107,18 @@
         },
         "contact_validity": { "$ref": "../common/defs.schema.json#/$defs/validity" },
         "z_validity": { "$ref": "../common/defs.schema.json#/$defs/validity" },
-        "head_z": { "type": ["number", "null"] },
-        "head_z_sigma": { "type": ["number", "null"] },
+        "head_z": {
+          "type": ["number", "null"],
+          "description": "머리 꼭대기 높이(World Z, m, 명세 5.2: 귀·눈 Z 평균 + 오프셋). 관절 유효성 게이트가 VALID 로 낸 값만 싣고, 그 밖에는 null 이다(UNCERTAIN 값은 싣지 않는다, 사용자 결정 2026-10-18). null 의 이유는 head_z_validity 가 알려 준다"
+        },
+        "head_z_sigma": {
+          "type": ["number", "null"],
+          "description": "head_z 의 Z 표준편차(m). head_z 가 null 이면 null"
+        },
+        "head_z_validity": {
+          "$ref": "../common/defs.schema.json#/$defs/validity",
+          "description": "이번 시각 관절 유효성 게이트가 낸 head_z 의 유효성 (명세 5.2 3D 관절 유효성 게이트, 7.1 JOINT_UNCERTAIN, 1.4.0). VALID = VALID 귀·눈으로 만든 값이고 head_z 에 싣는다. UNCERTAIN = VALID 귀·눈이 없어 UNCERTAIN 귀·눈으로만 값을 만들 수 있었다. 값은 싣지 않는다(head_z null, 확정값처럼 쓰이지 않게). 머리가 보이기는 했으나 확정할 근거가 없다는 뜻이고, 머리가 없다거나 낮다는 뜻이 아니다(명세 7.1 JOINT_UNCERTAIN). UNAVAILABLE = 좌표가 있는 귀·눈이 없거나 이번 시각 관측(클러스터)이 붙지 않았다. VALID 이면 head_z 가 수, 그 밖이면 head_z·head_z_sigma 는 null 이다(스키마로 막음). 1.4.0 이상 송신 측은 늘 싣는다(송신 측 계약 시험). 선택 필드라 이 필드가 없는 문서(이전 버전 송신 측)에서 head_z 가 null 이면 이유를 모르는 것이고, 소비자는 UNAVAILABLE 로 가정하지 않는다"
+        },
         "velocity": { "$ref": "../common/defs.schema.json#/$defs/vec3" },
         "cameras": {
           "type": "array",
@@ -142,6 +152,22 @@
             "required": ["ground_anchor_xyz"]
           },
           "then": { "not": { "required": ["surface_source"] } }
+        },
+        {
+          "description": "head_z_validity 가 VALID 이면 head_z 는 수다(값 없이 VALID 라고 하지 않음, 1.4.0). head_z_validity 가 없는 문서(이전 버전 송신 측)에는 적용하지 않는다(하위 호환)",
+          "if": {
+            "properties": { "head_z_validity": { "const": "VALID" } },
+            "required": ["head_z_validity"]
+          },
+          "then": { "properties": { "head_z": { "type": "number" } } }
+        },
+        {
+          "description": "head_z_validity 가 UNCERTAIN·UNAVAILABLE 이면 head_z·head_z_sigma 는 null 이다(UNCERTAIN 값을 싣지 않음, 사용자 결정 2026-10-18, 1.4.0). head_z_validity 가 없는 문서에는 적용하지 않는다(하위 호환)",
+          "if": {
+            "properties": { "head_z_validity": { "enum": ["UNCERTAIN", "UNAVAILABLE"] } },
+            "required": ["head_z_validity"]
+          },
+          "then": { "properties": { "head_z": { "type": "null" }, "head_z_sigma": { "type": "null" } } }
         }
       ]
     }

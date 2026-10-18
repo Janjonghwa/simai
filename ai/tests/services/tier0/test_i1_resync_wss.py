@@ -166,3 +166,61 @@ def test_ec2_outage_keeps_judging_and_site_alerts_then_resyncs_without_gap(ec2, 
     # 첫 연결의 스냅샷은 그때 상태(w-a 만, offset 0)
     [first_snap] = [m["payload"] for m in first if m["msg_type"] == "event_state_snapshot"]
     assert first_snap["journal_offset"] == 0 and [e["event_id"] for e in first_snap["active_events"]] == [a]
+
+
+def test_empty_journal_snapshot_reaches_ec2_before_first_risk(ec2, tmp_path) -> None:
+    """빈 저널 Tier 0 (계약 event_state_snapshot 1.3.0, S15P31A101-172): 실제 wss 연결에서 health 뒤 journal_offset=null
+    스냅샷이 첫 위험보다 먼저 EC2 에 닿는다(EC2 가 첫 위험 전에 동기화를 마친다). 첫 위험 전이는 그 뒤 offset 0 으로
+    실시간 송신되고, 같은 연결에서 스냅샷을 다시 보내지 않는다. EC2 가 바뀐 뒤 새 연결은 재전송(0) → offset 0 스냅샷."""
+    server, cert = ec2
+    clock = FixedClock(1760342400000)
+    wire_clock = SystemClock()
+    journal = EventJournal.open(tmp_path / "journal", clock=clock)
+    store = AckedOffsetStore(tmp_path / ACKED_NAME, gateway_id=GATEWAY)
+    site = Site(journal, clock)
+    snap = EventStateSnapshot(journal, gateway_id=GATEWAY, clock=wire_clock, config_version=lambda: CONFIG,
+                              start_offset=0, current_state=site.tracker.get, risk_observed_at=site.risk_observed_at)
+    link = build_i1_link(
+        WebSocketConnector(server.url, TOKEN, ca_file=str(cert), open_timeout_s=1.0),
+        Envelope(GATEWAY, wire_clock),
+        health_payload=health_payload,
+        make_outbox=lambda t: snap.bind(Outbox(journal, store, gateway_id=GATEWAY, transport=t, clock=wire_clock,
+                                               batch_size=4)),
+        client_kwargs={"backoff": Backoff(initial_s=0.05, factor=2.0, max_s=0.2), "stable_after_s": 0.5},
+    )
+    snap.attach(link.client, link.publisher.envelope)
+    try:
+        assert journal.next_offset == 0
+        link.start()
+        assert wait_until(lambda: "event_state_snapshot" in kinds(server.messages(0)))
+        before_risk = list(server.messages(0))
+        site.step({"w-a": INSIDE})  # 첫 위험(스냅샷을 받은 뒤)
+        a = site.event_of("w-a")
+        assert wait_until(lambda: "risk_event_transition" in kinds(server.messages(0)))
+        time.sleep(0.3)
+        server.drop(0)  # 다음 연결: 확인을 받지 못했으므로 offset 0 을 다시 보내고 스냅샷
+        assert wait_until(lambda: len(server.connections) == 2, timeout=8)
+        assert wait_until(lambda: "event_state_snapshot" in kinds(server.messages(1)), timeout=8)
+        time.sleep(0.3)
+    finally:
+        link.close()
+        journal.close()
+
+    first, second = server.messages(0), server.messages(1)
+    for m in first + second:
+        assert schema_errors(m, m["msg_type"]) == [], (m["msg_type"], schema_errors(m, m["msg_type"]))
+    assert "risk_event_transition" not in kinds(before_risk)
+    k1 = kinds(first)
+    assert k1[0] == "health" and k1.count("event_state_snapshot") == 1
+    assert k1.index("event_state_snapshot") < k1.index("risk_event_transition")
+    [empty] = [m for m in first if m["msg_type"] == "event_state_snapshot"]
+    assert empty["schema_version"] == "1.3.0"
+    assert empty["payload"]["journal_offset"] is None and empty["payload"]["active_events"] == []
+    [raised] = [m["payload"] for m in first if m["msg_type"] == "risk_event_transition"]
+    assert raised["journal_offset"] == 0 and raised["event_id"] == a and raised["transition"] == "RAISED"
+    k2 = kinds(second)
+    assert k2[0] == "health" and k2.count("event_state_snapshot") == 1
+    snap_at = k2.index("event_state_snapshot")
+    assert [m["payload"]["journal_offset"] for m in second[:snap_at] if m["msg_type"] == "risk_event_transition"] == [0]
+    payload = second[snap_at]["payload"]
+    assert payload["journal_offset"] == 0 and [e["event_id"] for e in payload["active_events"]] == [a]
