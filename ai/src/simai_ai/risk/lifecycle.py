@@ -54,8 +54,9 @@ RAISED 가 1 이고 전이마다 1 씩 오른다. 체크포인트 복원(restore
 - R6 처럼 관측을 잃은 사람에게 원래 규칙 판정을 유지하려면 규칙이 holding 판정을 내면 된다.
 """
 
+import logging
 from collections import deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from types import MappingProxyType
@@ -91,6 +92,8 @@ from simai_ai.risk.event_id import EventIdFactory
 from simai_ai.risk.rule import Finding, FindingTarget
 from simai_ai.risk.rules.r7_monitoring import R7_RULE_ID
 from simai_ai.risk.world import IdentityConfidence, ObservationState, WorldState, WorldTrack
+
+_log = logging.getLogger(__name__)
 
 # 지속 대기 중 관측 상실로 발생시킨 이벤트의 근거 코드(Finding.reasons 끝에 붙인다).
 REASON_PENDING_OBSERVATION_LOST = "observation_lost_before_persistence"
@@ -732,6 +735,16 @@ class IdentityCorrection:
         as_int(self.identity_revision, "IdentityCorrection.identity_revision", minimum=0)
 
 
+RelatedEventFn = Callable[[EventKey, Finding], str | None]
+"""새 이벤트를 열 때 이전 이벤트와의 연결(related_event_id)을 돌려주는 함수 (명세 3.2 재시작 복구: 재관측된 사람에게
+같은 위험이 다시 걸려 새 이벤트가 생기면 이전 이벤트와의 연결을 남긴다). 연결할 것이 없으면 None. Tier 0 조립부가 복구
+쪽(recovery.relink)에서 만들어 apply 에 넘긴다. 연결은 정보일 뿐 이벤트의 신원·해소를 바꾸지 않는다.
+
+추적기는 이 함수를 판정을 반영하기 전에(상태를 바꾸기 전에) 활성 이벤트가 없는 키의 발생 판정마다 부른다. 함수가 예외를
+내거나 비지 않은 문자열이 아닌 값을 주면 연결 없음으로 보고 로그만 남긴다(연결 때문에 판정·현장 경보를 잃지 않는다).
+발생 지속 조건을 세는 동안 처음 얻은 연결을 키별로 기억했다가 발생(RAISED)할 때 싣는다(그사이 연결 시간이 끝나도)."""
+
+
 class LifecycleError(RuntimeError):
     """추적기 사용 순서·출처가 계약과 다르다(다른 출처 판정, 시각 역행 등)."""
 
@@ -778,6 +791,8 @@ class LifecycleTracker:
         self._by_key: dict[EventKey, _Active] = {}
         self._by_id: dict[str, _Active] = {}
         self._pending: dict[EventKey, _Pending] = {}  # 발생 지속 조건을 세는 중인 키
+        # 활성 이벤트가 없는 키에 대해 처음 얻은 이전 이벤트 연결(재시작 복구). 발생하면 싣고, 대기가 끝나면 버린다.
+        self._related_hint: dict[EventKey, str] = {}
         self._resolved: dict[EventKey, _Resolved] = {}  # 재개 시간 안의 해소 이벤트(6.4)
         self._last_evaluated_at = -1
         self._last_observation_time: int | None = None
@@ -814,8 +829,15 @@ class LifecycleTracker:
         *,
         config_version: str,
         evidence_ref: str | None = None,
+        related: RelatedEventFn | None = None,
     ) -> LifecycleStep:
-        """한 번의 판정을 반영한다. world 는 그 판정의 입력 World 상태다."""
+        """한 번의 판정을 반영한다. world 는 그 판정의 입력 World 상태다.
+
+        related: 새 이벤트(RAISED)의 related_event_id 를 정하는 함수(재시작 복구, RelatedEventFn). 상태를 바꾸기 전에
+        활성 이벤트가 없는 키의 발생 판정마다 미리 부르고, 오류·잘못된 값은 연결 없음으로 낮춘다(판정은 그대로 반영).
+        지속 조건을 세는 동안 처음 얻은 연결을 기억해 발생할 때 싣는다. 재개(같은 event_id)와 기존 이벤트 갱신에는
+        쓰지 않는다. 없으면(그리고 기억한 연결도 없으면) related_event_id 를 비운다(지금 동작).
+        """
         if evaluation.origin is not self._origin:
             raise LifecycleError(f"{self._origin} 추적기에 {evaluation.origin} 판정이 들어왔다")
         if world.t_latest_global != evaluation.observation_time:
@@ -833,6 +855,15 @@ class LifecycleTracker:
             grouped.setdefault(EventKey.of(finding), []).append(finding)
         tracks = {t.world_id: t for t in world.tracks}
         frame = _Frame(evaluation, config_version, evidence_ref, self._clock.now_ms())
+        # 연결 함수는 상태를 바꾸기 전에 모두 부른다(도중에 실패해 일부만 반영되는 일이 없게). 실패는 연결 없음이다.
+        if related is not None:
+            for key, found in sorted(grouped.items(), key=lambda kv: kv[0].sort_key):
+                raising = [f for f in found if not f.holding]
+                if not raising or key in self._by_key or key in self._related_hint:
+                    continue
+                value = _call_related(related, key, _representative(raising))
+                if value is not None:
+                    self._related_hint[key] = value
 
         # 관측 시각이 앞으로 간 판정만 지속 조건의 프레임으로 센다(같은 관측을 다시 판정해도 한 프레임이다).
         advancing = self._last_observation_time is None or evaluation.observation_time > self._last_observation_time
@@ -853,6 +884,9 @@ class LifecycleTracker:
                 opening = self._persist(key, raising, advancing, world, evaluation.evaluated_at)
                 if opening is not None:
                     self._open(key, opening, world, tracks, frame, transitions, signals)
+                    self._related_hint.pop(key, None)
+                elif key not in self._pending:
+                    self._related_hint.pop(key, None)  # 대기가 이벤트 없이 끝났다(순간 오검출)
             else:
                 finding = _maintaining(findings, active.state) if findings else None
                 self._advance(active, finding, world, tracks, frame, transitions, signals)
@@ -996,6 +1030,7 @@ class LifecycleTracker:
         signals: list[LocalSignal],
     ) -> None:
         verified = self._verification.verifiable(key, key.world_ids, world, frame.evaluation.evaluated_at)
+        related_event_id = self._related_hint.get(key)
         state = EventState(
             event_id=self._ids.new(),
             gateway_id=self._gateway_id,
@@ -1020,6 +1055,7 @@ class LifecycleTracker:
             calibration_version=frame.evaluation.calibration_version,
             scene_version=frame.evaluation.scene_version,
             identity_revisions=MappingProxyType({w: tracks[w].identity_revision for w in key.world_ids if w in tracks}),
+            related_event_id=related_event_id,
         )
         active = _Active(state)
         self._by_key[key] = active
@@ -1388,6 +1424,21 @@ class _Frame:
     config_version: str
     evidence_ref: str | None
     occurred_at: int
+
+
+def _call_related(related: RelatedEventFn, key: EventKey, finding: Finding) -> str | None:
+    """연결 함수를 부른다. 예외·잘못된 값은 연결 없음으로 낮추고 로그를 남긴다(판정·현장 경보를 잃지 않는다)."""
+    try:
+        value = related(key, finding)
+    except Exception:  # noqa: BLE001 - 어떤 오류든 연결 없음으로 낮춰 판정·경보를 지킨다
+        _log.exception("related_event_id 연결 함수가 실패했다(연결 없이 판정을 반영한다): %s", key)
+        return None
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        _log.error("related_event_id 연결 함수가 잘못된 값을 돌려줬다(연결 없이 판정을 반영한다): %s → %r", key, value)
+        return None
+    return value
 
 
 def _rank(severity: Severity) -> int:

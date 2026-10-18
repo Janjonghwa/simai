@@ -9,9 +9,11 @@ RunPod Tier 0 전용이다. 이벤트 저널(eventlog)이 정본이고 체크포
 | restore | recover: 체크포인트 복원 → 그 offset 이후 저널 재적용 → 활성 이벤트 UNVERIFIABLE 복원(저널에 기록) |
 | checkpointer | Checkpointer: 1초 주기 체크포인트(저널에서 만든 상태 + 구성 버전·촬영 시각·Track), 저널 정리 |
 | health_gate | RecoveryHealthGate: 재관측·시간 동기화 확보 전 System Health UNSAFE_UNKNOWN |
+| relink | RestoredEventLinker: 재시작 뒤 새 이벤트의 related_event_id(복원 Track 후보·같은 규칙과 구역) |
 
-World Track 은 저장하고 꺼내 주기만 한다(TrackCheckpoint, 관측 상태 UNKNOWN). 재관측 매칭은 S15P31A101-54, 진입점
-배선은 S15P31A101-171 이다.
+World Track 은 체크포인트에 저장하고 꺼내 준다(TrackCheckpoint, 관측 상태 UNKNOWN). 재관측과의 매칭은
+`WorldTrackManager.restore`(후보로만 쓰고 위치 정본·같은 ID 로 쓰지 않음)와 relink 가 한다(S15P31A101-54).
+진입점 배선은 S15P31A101-171 이다.
 """
 
 from simai_ai.recovery.checkpoint import (
@@ -35,6 +37,7 @@ from simai_ai.recovery.projection import (
     ReplayStats,
     Tombstone,
 )
+from simai_ai.recovery.relink import RestoredEventLinker
 from simai_ai.recovery.restore import (
     LegacyJournalError,
     RecoveryError,
@@ -69,6 +72,7 @@ __all__ = [
     "Rejected",
     "ReplayError",
     "ReplayStats",
+    "RestoredEventLinker",
     "Tombstone",
     "check_journal_format",
     "recover",

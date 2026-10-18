@@ -75,6 +75,18 @@ ID)과 위치뿐이다. 외형·얼굴·재식별은 쓰지 않는다. 로컬 �
   IDENTITY_UNCERTAIN(LATE_REASSOCIATION)을 매 시각 다시 붙인다. 시간이 지났다고 풀지 않는다.
 - 분할(SPLIT)과 수동 교정(CORRECTION)은 내지 않는다(별도 티켓).
 
+**재시작 뒤 복원 Track 매칭(S15P31A101-54, 명세 3.2·부록 C).** `restore` 로 체크포인트의 Track(`TrackCheckpoint`)을
+받으면 재관측과 맞출 **후보**로만 둔다. 위치 정본이 아니므로 world_state·export_tracks·연결·칼만 필터에 넣지 않고
+(복원 위치가 OBSERVED 로 새지 않는다), 복원 Track 의 World ID 를 다시 쓰지도 않는다. 재시작하면 로컬 트래커가 새로
+시작해 늦은 재연결의 근거(서로 다른 카메라 2대의 옛 로컬 트랙)가 없고 남는 것은 위치뿐이다. 위치만으로는 잇지 않으므로
+(위 늦은 재연결과 같은 근거 기준, 사라진 자리에 다른 사람이 나타난 경우와 구별할 수 없다) 재관측된 사람은 늘 새 ID 를
+받는다. 새 Track 의 첫 위치 측정이 복원 Track 의 마지막 위치에서 그 시간에 갈 수 있는 거리(늦은 재연결과 같은 식) 안이면
+그 복원 Track 을 후보로 남기고(`WorldTrackSnapshot.restored_candidates`, 가까운 순), 복원 Track 이 남아 있는 동안
+IDENTITY_UNCERTAIN(RESTORED_TRACK_CANDIDATE)을 붙인다. 갈 수 없는 거리면 그 사람이 아니다(`restored_excluded`). 도달
+거리는 첫 관측으로 잰다(시간이 지나 통과하지 않게). 체크포인트가 첫 프레임보다 `restore_max_age_ms`(30 s) 넘게 오래됐으면
+복원하지 않고, 복원 Track 도 마지막 관측부터 그 시간이 지나면 후보에서 뺀다. 이전 이벤트와의 연결(related_event_id)은
+`recovery.relink` 가 이 후보로 정한다.
+
 **Risk 전달(G3).** Tier 0 조립부는 `WorldTrackFrame.revisions` 를 그 시각 판정을 `LifecycleTracker.apply` 하기 전에
 `LifecycleTracker.correct_identity(revision.to_correction())` 로 넘긴다. 진행 중인 이벤트는 사라지는 ID 에서 남는 ID 로
 이어지고(원본 World ID 는 origin_world_ids 에 남음) 자동 해소되지 않는다(D-G3-10).
@@ -159,6 +171,22 @@ class IdentityFlag(StrEnum):
     REASSOCIATION_AMBIGUOUS = "REASSOCIATION_AMBIGUOUS"
     """갱신되지 않은 다른 Track 의 옛 로컬 트랙을 넘겨받았지만 근거가 모자라(카메라 1대, 여러 Track, 근처의 다른 소실
     Track, 멀거나 다른 곳에도 보임) 잇지 않았다. 그 Track 이 남아 있는 동안 계속 붙는다(돌아온 사람일 수 있다)"""
+    RESTORED_TRACK_CANDIDATE = "RESTORED_TRACK_CANDIDATE"
+    """재시작 뒤 처음 관측된 곳이 복원 Track(재시작 전 Track)이 갈 수 있는 거리 안이다. 위치만으로는 같은 사람인지 알 수
+    없어 잇지 않았다(S15P31A101-54). 그 복원 Track 이 후보로 남아 있는 동안 계속 붙는다(재시작 전의 그 사람일 수 있다)"""
+
+
+class RestoreState(StrEnum):
+    """복원 Track 처리 상태 (`WorldTrackManager.restore_status`)."""
+
+    NONE = "NONE"
+    """restore 를 부르지 않았다(재시작 복구가 아님)"""
+    PENDING = "PENDING"
+    """restore 를 불렀고 첫 프레임을 기다린다(체크포인트 나이는 첫 프레임 시각으로 잰다)"""
+    ACCEPTED = "ACCEPTED"
+    """체크포인트가 restore_max_age_ms 안이라 복원 Track 을 후보로 받았다(Track 이 없었을 수도 있다)"""
+    DISCARDED = "DISCARDED"
+    """체크포인트가 오래됐거나 시각을 믿을 수 없어 복원 Track 을 버렸다(reason)"""
 
 
 class RevisionKind(StrEnum):
@@ -305,6 +333,10 @@ class WorldTrackConfig:
     init_velocity_sigma_mps: float = 1.0
     min_cameras_for_high: int = 3
     """이 수 이상의 카메라로 갱신된 CONFIRMED Track 만 HIGH. 2대뿐이면 MEDIUM (2대 영역 오연결, D-G2-06)"""
+    restore_max_age_ms: int = 30_000
+    """재시작 뒤 첫 프레임 시각 − 체크포인트 Track 시각(tracks_t)이 이보다 크면 복원 Track 을 받지 않는다. 받은 복원 Track 도
+    마지막 관측부터 이 시간이 지나면 후보에서 뺀다. 이전 이벤트 연결(recovery.relink)은 첫 프레임부터 이 시간까지만 한다.
+    명세 부록 C 의 기준 시간 초기값(30초)"""
     joint_gate: JointGateConfig = field(default_factory=JointGateConfig)
 
     def __post_init__(self) -> None:
@@ -319,6 +351,7 @@ class WorldTrackConfig:
             "key_ttl_ms",
             "uncertain_hold_ms",
             "max_extrapolation_ms",
+            "restore_max_age_ms",
         ):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} 는 0 이상이어야 한다")
@@ -445,6 +478,11 @@ class WorldTrackSnapshot:
     """병합으로 이 ID 에 합쳐진 이전 ID"""
     filter_sigma_xy: tuple[float, float] = (0.0, 0.0)
     """t_last_valid 의 필터 σ (공백 확대 전)"""
+    restored_candidates: tuple[str, ...] = ()
+    """재시작 전 Track(복원 Track) 중 이 사람일 수 있는 것 (첫 관측이 갈 수 있는 거리 안, 가까운 순). 신원 근거가 아니라
+    이전 이벤트 연결(related_event_id)의 후보다. 위치를 주지 않는다 (S15P31A101-54)"""
+    restored_excluded: tuple[str, ...] = ()
+    """첫 관측 때 남아 있던 복원 Track 중 갈 수 없는 거리여서 이 사람이 아닌 것"""
 
     @property
     def updated(self) -> bool:
@@ -508,8 +546,8 @@ class TrackCheckpoint:
 
     값은 t_last_valid 시각의 필터 상태다(위치·σ·속도). 관측 상태는 저장하지 않는다. 되살린 Track 은 재시작 뒤 아직
     아무 카메라로도 다시 보지 않았으므로 늘 UNKNOWN 이다(`observation_state`). 기록에 관측 상태를 넣어도 받지 않는다
-    (모르는 필드). 재관측과 매칭해 같은 World ID 로 잇는 일과 오래된(30초 넘은) 체크포인트의 Track 을 버리는 일은
-    S15P31A101-54 가 한다. 여기서는 저장하고 꺼내 주기만 한다.
+    (모르는 필드). 재시작 뒤에는 `WorldTrackManager.restore` 가 재관측과 맞출 후보로만 쓴다(같은 World ID 로 잇지
+    않고, 오래된(30초 넘은) 체크포인트의 Track 은 버린다, S15P31A101-54).
     """
 
     world_id: str
@@ -590,6 +628,28 @@ def _finite3(value: Any, name: str, nonnegative: bool = False) -> tuple[float, f
     return out[0], out[1], out[2]
 
 
+@dataclass(frozen=True)
+class RestoreStatus:
+    """복원 Track 처리 결과 (S15P31A101-54).
+
+    tracks_t: restore 로 받은 체크포인트 Track 시각. decided_t: 그것을 판단한 재시작 뒤 첫 프레임 시각.
+    restored: 받은 복원 Track 의 World ID(그 시각에 이미 마지막 관측부터 restore_max_age_ms 가 지난 것은 뺀다).
+    link_until: 이전 이벤트 연결을 할 마지막 시각(decided_t + restore_max_age_ms). 판단 전이거나 restore 를 부르지 않았으면
+    None.
+    """
+
+    state: RestoreState = RestoreState.NONE
+    reason: str | None = None
+    tracks_t: int | None = None
+    decided_t: int | None = None
+    restored: tuple[str, ...] = ()
+    link_until: int | None = None
+
+    def link_open(self, t: int) -> bool:
+        """시각 t 에 재시작 전 이벤트와의 연결을 할지 (판단을 마쳤고 연결 시간 안)."""
+        return self.link_until is not None and t <= self.link_until
+
+
 @dataclass
 class _Track:
     world_id: str
@@ -619,6 +679,10 @@ class _Track:
     confirm_left: int = 0
     """늦은 재연결·병합 뒤 일관성 확인이 남은 시각 수. 0 이 될 때까지 IDENTITY_UNCERTAIN(LATE_REASSOCIATION)을 매 시각
     다시 붙인다(시간이 지났다고 풀지 않는다)"""
+    restored_candidates: tuple[str, ...] = ()
+    """첫 위치 측정이 갈 수 있는 거리 안이었던 복원 Track (가까운 순). 첫 관측에서 정하고 바꾸지 않는다(병합하면 합친다)"""
+    restored_excluded: frozenset[str] = frozenset()
+    """첫 위치 측정 때 후보였던(살아 있던) 복원 Track 중 갈 수 없는 거리였던 것: 이 사람이 아니다"""
 
     @property
     def last_xy(self) -> np.ndarray:
@@ -678,6 +742,10 @@ class WorldTrackManager:
         """갱신된 Track ID → 병합 근거 (갱신되지 않은 Track 의 로컬 트랙이 이어진 시각 수)"""
         self._last_t: int | None = None
         self._order = 0
+        self._restore_input: tuple[tuple[TrackCheckpoint, ...], int | None] | None = None
+        self._restored: dict[str, TrackCheckpoint] = {}
+        """후보로 남은 복원 Track (S15P31A101-54). 연결·world_state·export_tracks 에 넣지 않는다"""
+        self._restore_status = RestoreStatus()
 
     @property
     def revisions(self) -> tuple[IdentityRevision, ...]:
@@ -690,6 +758,42 @@ class WorldTrackManager:
         return tuple(sorted(self._dormant))
 
     @property
+    def restore_status(self) -> RestoreStatus:
+        """복원 Track 처리 상태 (S15P31A101-54)."""
+        return self._restore_status
+
+    @property
+    def restored_alive(self) -> tuple[str, ...]:
+        """지금 후보로 남은 복원 Track 의 World ID."""
+        return tuple(sorted(self._restored))
+
+    def restore(self, tracks: Iterable[TrackCheckpoint], tracks_t: int | None) -> None:
+        """재시작 복구: 체크포인트의 Track 을 재관측과 맞출 후보로 받는다(명세 3.2·부록 C, S15P31A101-54).
+
+        첫 update 전에 한 번만 부른다. 받을지는 첫 프레임 시각으로 정한다: 첫 프레임 시각 − tracks_t 가
+        restore_max_age_ms 보다 크거나, 음수(시각 역행)거나, Track 이 있는데 tracks_t 를 모르면 버린다(모르면 비운다).
+        복원 Track 은 후보일 뿐 위치 정본이 아니다. world_state·export_tracks·연결·필터에 넣지 않고 World ID 도 다시 쓰지
+        않는다. 이번 세션 발급기의 접두어로 시작하는 World ID 는 받지 않는다(다른 세션의 Track 이어야 한다).
+        """
+        if self._last_t is not None or self._restore_input is not None:
+            raise ValueError("restore 는 첫 update 전에 한 번만 부른다")
+        tracks = tuple(tracks)
+        if tracks_t is not None:
+            require_ms("tracks_t", tracks_t)
+        own = f"w-{self.issuer.session}-"
+        seen: set[str] = set()
+        for tr in tracks:
+            if not isinstance(tr, TrackCheckpoint):
+                raise TypeError("restore 는 TrackCheckpoint 만 받는다")
+            if tr.world_id.startswith(own):
+                raise ValueError(f"이번 세션의 World ID 는 복원 Track 이 될 수 없다: {tr.world_id}")
+            if tr.world_id in seen:
+                raise ValueError(f"같은 World ID 의 복원 Track 이 둘 이상이다: {tr.world_id}")
+            seen.add(tr.world_id)
+        self._restore_input = (tracks, tracks_t)
+        self._restore_status = RestoreStatus(RestoreState.PENDING, tracks_t=tracks_t)
+
+    @property
     def last_t(self) -> int | None:
         """마지막으로 넣은 공통 시각. 아직 없으면 None."""
         return self._last_t
@@ -697,7 +801,8 @@ class WorldTrackManager:
     def export_tracks(self) -> tuple[TrackCheckpoint, ...]:
         """체크포인트용 Track 상태(명세 3.2 재시작 복구, S15P31A101-51). 살아 있는 Track 만(소실 후보 제외), world_id 순서.
 
-        상태를 바꾸지 않는다. 되살리기(재관측 매칭)는 S15P31A101-54 가 한다.
+        상태를 바꾸지 않는다. restore 로 받은 복원 Track(후보)은 내보내지 않는다(위치 정본이 아니다). 재관측 매칭은
+        `restore`(S15P31A101-54).
         """
         out = []
         for tr in sorted(self._tracks.values(), key=lambda tr: tr.world_id):
@@ -736,6 +841,7 @@ class WorldTrackManager:
         excluded = frozenset(sync_invalid_cameras)
         _check_clusters(frame)
         self._last_t = t
+        self._restore_step(t)
 
         keep_ms = max(cfg.key_ttl_ms, cfg.reconnect_window_ms)
         for tr in self._all():
@@ -947,6 +1053,7 @@ class WorldTrackManager:
                 t_last_valid=t,
             )
             tr.path.append((t, z[:2].copy()))
+            self._relate_restored(tr, z[:2], t)
             self._tracks[tr.world_id] = tr
             for k in c.cluster.keys:
                 self._take_key(k, tr, t, set(assigned) | set(applied))
@@ -1012,6 +1119,11 @@ class WorldTrackManager:
                 continue
             for wid in (a, b):
                 flags.setdefault(wid, set()).add(IdentityFlag.POSSIBLE_DUPLICATE)
+
+        # 재시작 뒤 복원 Track 후보: 그 복원 Track 이 남아 있는 동안 매 시각 표시한다(재시작 전의 그 사람일 수 있다)
+        for wid, tr in self._tracks.items():
+            if any(r in self._restored for r in tr.restored_candidates):
+                flags.setdefault(wid, set()).add(IdentityFlag.RESTORED_TRACK_CANDIDATE)
 
         for wid, fs in flags.items():
             tr = self._tracks.get(wid)
@@ -1303,6 +1415,9 @@ class WorldTrackManager:
             survivor.keys[k] = max(kt, survivor.keys.get(k, kt))
         for f, ft in retired.flags.items():
             survivor.flags[f] = max(ft, survivor.flags.get(f, ft))
+        candidates = [*survivor.restored_candidates, *retired.restored_candidates]
+        survivor.restored_candidates = tuple(dict.fromkeys(candidates))
+        survivor.restored_excluded = (survivor.restored_excluded | retired.restored_excluded) - set(candidates)
         origins = {**survivor.origin_of, **retired.origin_of}
         survivor.origin_of = {k: v for k, v in origins.items() if v[0] not in (stale_id, live_id)}
         survivor.confirm_left = self.config.merge_confirm_frames
@@ -1327,6 +1442,53 @@ class WorldTrackManager:
         )
         self._revisions.append(record)
         return record
+
+    # ------------------------------------------------------------------ 재시작 뒤 복원 Track (S15P31A101-54)
+
+    def _restore_step(self, t: int) -> None:
+        """첫 프레임이면 복원 Track 을 받을지 정하고, 마지막 관측부터 restore_max_age_ms 가 지난 복원 Track 을 뺀다."""
+        limit = self.config.restore_max_age_ms
+        if self._restore_input is not None:
+            tracks, tracks_t = self._restore_input
+            self._restore_input = None
+            reason: str | None = None
+            if tracks and tracks_t is None:
+                reason = "체크포인트 Track 시각(tracks_t)을 모른다"
+            elif tracks_t is not None and t < tracks_t:
+                reason = f"재시작 뒤 첫 프레임({t})이 체크포인트 Track 시각({tracks_t})보다 앞이다(시각 역행)"
+            elif tracks_t is not None and t - tracks_t > limit:
+                reason = f"체크포인트가 {t - tracks_t} ms 전 것이다(상한 {limit} ms)"
+            if reason is None:
+                self._restored = {tr.world_id: tr for tr in tracks if t - tr.t_last_valid <= limit}
+            self._restore_status = RestoreStatus(
+                RestoreState.DISCARDED if reason is not None else RestoreState.ACCEPTED,
+                reason=reason,
+                tracks_t=tracks_t,
+                decided_t=t,
+                restored=tuple(sorted(self._restored)),
+                link_until=t + limit,
+            )
+        for wid in [w for w, tr in self._restored.items() if t - tr.t_last_valid > limit]:
+            del self._restored[wid]
+
+    def _relate_restored(self, tr: _Track, xy: np.ndarray, t: int) -> None:
+        """새 Track 의 첫 위치 측정으로 복원 Track 후보를 정한다. 잇지 않는다(위치만으로는 같은 사람이라 할 수 없다).
+
+        도달 거리는 늦은 재연결(`_link_check`)과 같은 식 gate_base_m + max_speed_mps × (t − 복원 Track 의 t_last_valid)
+        이다. 첫 관측으로만 재므로 기다린다고 후보가 되지 않는다.
+        """
+        cfg = self.config
+        near: list[tuple[float, str]] = []
+        far: set[str] = set()
+        for wid, r in self._restored.items():
+            d = float(np.hypot(xy[0] - r.position_xyz[0], xy[1] - r.position_xyz[1]))
+            reach = cfg.gate_base_m + cfg.max_speed_mps * (t - r.t_last_valid) / 1000.0
+            if d <= reach:
+                near.append((d, wid))
+            else:
+                far.add(wid)
+        tr.restored_candidates = tuple(wid for _, wid in sorted(near))
+        tr.restored_excluded = frozenset(far)
 
     # ------------------------------------------------------------------ 내부
 
@@ -1427,6 +1589,8 @@ class WorldTrackManager:
             identity_flags=tuple(sorted(held)),
             aliases=tuple(tr.aliases),
             filter_sigma_xy=(float(filt[0]), float(filt[1])),
+            restored_candidates=tr.restored_candidates,
+            restored_excluded=tuple(sorted(tr.restored_excluded)),
         )
 
 
