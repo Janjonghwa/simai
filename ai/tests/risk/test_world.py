@@ -115,3 +115,39 @@ def test_inferred_joints_are_not_used_for_risk(track_json):
     # 2대 미만에서 보인 관절은 지어내지 않는다.
     assert skeleton.observed_joint(2) is None
     assert skeleton.validity[2] is Validity.UNAVAILABLE
+
+
+# --- head_z_validity (world_state 1.4.0, S15P31A101-177) ------------------------------------------
+
+EXAMPLES = EXAMPLE.parent
+
+
+@pytest.mark.skipif(not EXAMPLE.is_file(), reason="저장소 밖(배포 이미지)에서는 contracts/ 예시가 없다")
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("world_state.json", (Validity.VALID, Validity.UNAVAILABLE)),
+        ("world_state.head_z_uncertain.json", (Validity.UNCERTAIN,)),
+        ("world_state.pre_1_3.json", None),
+    ],
+)
+def test_head_z_validity_contract_examples(name, expected):
+    # 1.4.0 예시는 head_z_validity 를 읽고, 필드가 없는 이전 버전 예시는 None(UNAVAILABLE 로 가정하지 않음)이다
+    world = WorldState.from_payload(json.loads((EXAMPLES / name).read_text(encoding="utf-8"))["payload"])
+    got = tuple(t.head_z_validity for t in world.tracks)
+    if expected is None:
+        assert set(got) == {None}
+    else:
+        assert got == expected
+
+
+@pytest.mark.skipif(not EXAMPLE.is_file(), reason="저장소 밖(배포 이미지)에서는 contracts/ 예시가 없다")
+@pytest.mark.parametrize(
+    "name", ["world_state.head_z_uncertain_with_value.json", "world_state.head_z_valid_without_value.json"]
+)
+def test_head_z_validity_invalid_contract_examples_are_rejected(name):
+    # 스키마가 거부하는 예시(UNCERTAIN 인데 값, VALID 인데 null)는 Risk 입력에서도 거부한다
+    doc = json.loads((EXAMPLES / "invalid" / name).read_text(encoding="utf-8"))
+    with pytest.raises(RiskInputError, match="head_z"):
+        WorldState.from_payload(doc["payload"])
+

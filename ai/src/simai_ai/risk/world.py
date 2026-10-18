@@ -7,7 +7,10 @@ contracts/ 생성 타입(S15P31A101-24)이 simai_ai.contracts 에 들어오면 �
 - 이 타입은 Tier 0 가 만든 World 상태만 담는다(AGENTS.md 규칙 1). HMR·정적 3D·VLM 결과는 입력이 아니다.
 - 시각은 UTC epoch ms 정수, 좌표는 World(m, 오른손, +Z 상방, 바닥 Z=0).
 - 모르는 값은 None 이다. ground_anchor_xyz 를 Z=0 으로 채우지 않는다(규칙 2). 스키마의 조건부 규칙
-  (지지 표면이 VALID 가 아니거나 z_validity 가 UNAVAILABLE 이면 ground_anchor_xyz 는 null)을 여기서도 검사한다.
+  (지지 표면이 VALID 가 아니거나 z_validity 가 UNAVAILABLE 이면 ground_anchor_xyz 는 null, head_z_validity 가 VALID 면
+  head_z 는 수, UNCERTAIN·UNAVAILABLE 이면 head_z·head_z_sigma 는 null)을 여기서도 검사한다.
+- head_z_validity(1.4.0 선택 필드)가 없는 문서(이전 버전 송신 측)는 None 이다. 이때 head_z 가 null 이면 이유를 모르는 것이고
+  UNAVAILABLE 로 가정하지 않는다(계약 설명).
 - 관절 배열 길이 일치처럼 스키마로 표현하지 못한 규칙도 검사한다(contracts/README.md, 명세 21.3).
 - 수신 측은 모르는 필드를 무시한다(명세 12.1).
 """
@@ -163,6 +166,8 @@ class WorldTrack:
     head_z_sigma: float | None = None
     velocity: Vec3 | None = None
     skeleton: Skeleton | None = None
+    head_z_validity: Validity | None = None
+    """관절 게이트가 낸 head_z 유효성(1.4.0). None 이면 송신 측이 싣지 않은 이전 버전 문서다"""
 
     def __post_init__(self) -> None:
         # 스키마 allOf 의 조건부 규칙: 지지 표면을 모르면 접지점을 비운다(Z=0 대체 금지).
@@ -176,6 +181,15 @@ class WorldTrack:
                 raise RiskInputError(
                     f"track {self.world_id}: z_validity 가 UNAVAILABLE 이면 ground_anchor_xyz 는 null 이어야 한다"
                 )
+        # 1.4.0 조건부 규칙: head_z 값은 VALID 일 때만 싣는다. 필드가 없는 이전 버전 문서에는 적용하지 않는다(하위 호환).
+        if self.head_z_validity is Validity.VALID and self.head_z is None:
+            raise RiskInputError(f"track {self.world_id}: head_z_validity 가 VALID 면 head_z 는 수여야 한다")
+        if self.head_z_validity in (Validity.UNCERTAIN, Validity.UNAVAILABLE) and (
+            self.head_z is not None or self.head_z_sigma is not None
+        ):
+            raise RiskInputError(
+                f"track {self.world_id}: head_z_validity 가 {self.head_z_validity} 면 head_z·head_z_sigma 는 null 이어야 한다"
+            )
 
     @classmethod
     def from_json(cls, obj: Any, where: str = "track") -> "WorldTrack":
@@ -188,6 +202,10 @@ class WorldTrack:
             return f"{where}.{key}"
 
         skeleton = obj.get("skeleton")
+        # 키가 없으면 이전 버전 문서(None). 키가 있는데 null·모르는 값이면 계약 위반이다(as_enum 이 거부한다).
+        head_validity = (
+            as_enum(Validity, obj["head_z_validity"], at("head_z_validity")) if "head_z_validity" in obj else None
+        )
         return cls(
             world_id=as_str(req("world_id"), at("world_id")),
             t_last_valid=as_timestamp_ms(req("t_last_valid"), at("t_last_valid")),
@@ -214,6 +232,7 @@ class WorldTrack:
             head_z_sigma=as_opt_number(obj.get("head_z_sigma"), at("head_z_sigma")),
             velocity=as_opt_vec(obj.get("velocity"), 3, at("velocity")),
             skeleton=None if skeleton is None else Skeleton.from_json(skeleton, at("skeleton")),
+            head_z_validity=head_validity,
         )
 
 
