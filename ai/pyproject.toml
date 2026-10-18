@@ -21,7 +21,17 @@ scene = ["torch>=2.4"]
 hmr = ["torch>=2.4"]
 # 배포 단위 묶음 (services/)
 # websockets: I1 WebSocket(wss) 클라이언트 (services/tier0/i1_client, 명세 12.2)
-tier0 = ["simai-ai[io,detection,geometry,calibration]", "websockets>=14"]
+# TensorRT·onnx: Tier 0 이미지(Linux GPU)에서 YOLO26x-pose TensorRT FP16 엔진을 Pod 첫 기동 때 만들고 쓴다(명세 3.12, deploy/tier0).
+#   torch 휠이 CUDA 13 이므로 cu13 빌드를 쓴다. libs 휠은 pypi.nvidia.com 에만 있다(PyPI 에는 내려받기용 sdist 만).
+#   Windows 노트북 개발 환경에는 설치하지 않는다(marker).
+tier0 = [
+    "simai-ai[io,detection,geometry,calibration]",
+    "websockets>=14",
+    "tensorrt-cu13>=11.4,<12; sys_platform == 'linux'",
+    "tensorrt-cu13-libs>=11.4,<12; sys_platform == 'linux'",
+    "tensorrt-cu13-bindings>=11.4,<12; sys_platform == 'linux'",
+    "onnx>=1.12,<2; sys_platform == 'linux'",
+]
 worker = ["simai-ai[scene,hmr]"]
 
 [dependency-groups]
@@ -40,6 +50,14 @@ dev = [
     # I1 클라이언트 시험(로컬 wss 서버). 기능 설치는 extras tier0 가 같은 범위를 선언한다
     "websockets>=14",
 ]
+
+[tool.uv.sources]
+tensorrt-cu13-libs = { index = "nvidia" }
+
+[[tool.uv.index]]
+name = "nvidia"
+url = "https://pypi.nvidia.com"
+explicit = true
 
 [build-system]
 requires = ["uv_build>=0.8,<0.12"]

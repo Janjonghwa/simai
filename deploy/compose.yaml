@@ -1,0 +1,52 @@
+# 로컬 점검용 Compose (RunPod 은 Compose 를 쓰지 않는다. RunPod 템플릿 값은 deploy/README.md 에 있다).
+# 저장소 최상위에서:
+#   docker compose -f deploy/compose.yaml run --rm tier0 --help             # GPU 없이 진입점 확인
+#   docker compose -f deploy/compose.yaml run --rm tier0                    # 볼륨에 가중치가 없으면 종료 코드 2
+#   docker compose -f deploy/compose.yaml --profile gpu run --rm tier0-gpu  # NVIDIA GPU 가 있는 Linux 호스트
+# simai-volume 은 Network Volume(/workspace) 대역이다. 가중치는 여기에 직접 넣는다(이미지·저장소에 넣지 않음).
+name: simai
+
+x-tier0-env: &tier0-env
+  SIMAI_ROOT: /workspace/simai
+  SIMAI_TIER0_WEIGHTS: /workspace/simai/weights/yolo/yolo26x-pose.pt
+  SIMAI_ENGINE_CACHE: /workspace/simai/engines
+  SIMAI_OBS2D_ROOT: /workspace/simai/obs2d
+
+services:
+  tier0:
+    image: ${SIMAI_TIER0_IMAGE:-simai/tier0:local}
+    environment: *tier0-env
+    volumes:
+      - simai-volume:/workspace
+
+  tier0-gpu:
+    profiles: ["gpu"]
+    image: ${SIMAI_TIER0_IMAGE:-simai/tier0:local}
+    environment: *tier0-env
+    volumes:
+      - simai-volume:/workspace
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  exp02:
+    profiles: ["gpu"]
+    image: ${SIMAI_EXP02_IMAGE:-simai/exp02-fs3db:local}
+    environment:
+      SIMAI_ROOT: /workspace/simai
+    volumes:
+      - simai-volume:/workspace
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  simai-volume:
