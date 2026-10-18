@@ -16,7 +16,7 @@ from simai_ai.eventlog import (
     JournalWriteError,
 )
 from simai_ai.eventlog._lock import WriterLockError
-from simai_ai.eventlog.journal import segment_name
+from simai_ai.eventlog.journal import is_judgment_transition, segment_name
 from simai_ai.eventlog.record import HEADER_SIZE, decode_at, encode
 
 ACK_ID = "5b0c7a1e-2f4d-4c8e-9a6b-1d2e3f405162"
@@ -370,6 +370,41 @@ def test_ack_channel_actor_mismatch_is_refused_before_write(tmp_path, live_event
         with pytest.raises(JournalError, match="맞지 않는다"):
             j.append_step(acked, ack_id=ACK_ID)
         assert j.next_offset == 1 and not j.has_ack_id(ACK_ID)
+
+
+def test_non_judgment_transition_with_unknown_evidence_is_recorded(tmp_path, live_events):
+    """판정이 아닌 전이(확인)는 판정 근거를 몰라도 거절하지 않는다(계약 1.4.0, outbox 가 null 로 보낸다)."""
+    raised = live_events.raise_event()
+    acked = live_events.tracker.acknowledge(
+        raised.transitions[0].event_id, "SITE_BUTTON", "laptop-01", live_events.clock.now_ms(), channel="SITE_BUTTON"
+    )
+    with EventJournal.open(tmp_path, clock=live_events.clock) as j:
+        j.release(j.prepare_step(acked, ack_id=ACK_ID))
+        (entry,) = j.append_step(acked, ack_id=ACK_ID)
+        assert "evidence_ref" not in entry.meta and entry.meta["ack_id"] == ACK_ID
+
+
+@pytest.mark.parametrize(
+    ("over", "judgment"),
+    [
+        ({"transition": "RAISED", "changes": ["RAISED"]}, True),
+        ({"transition": "RESOLVED", "changes": ["CLEARED"]}, True),
+        ({"transition": "UPDATED", "changes": ["SEVERITY", "METRICS"]}, True),
+        ({"transition": "UPDATED", "changes": ["VERIFICATION"]}, True),
+        ({"transition": "UPDATED", "changes": ["RESUMED", "SEVERITY"], "resumed": True}, True),
+        ({"transition": "UPDATED", "changes": ["IDENTITY_CORRECTED", "SEVERITY"]}, True),
+        ({"transition": "UPDATED", "changes": []}, True),
+        ({"transition": "UPDATED"}, True),
+        ({"transition": "UPDATED", "changes": ["ACKNOWLEDGED"], "ack": {"actor": "ADMIN"}}, False),
+        ({"transition": "ACKNOWLEDGED"}, False),
+        ({"transition": "UPDATED", "changes": ["RESTORED"]}, False),
+        ({"transition": "UPDATED", "changes": ["RESTORED", "VERIFICATION"]}, False),
+        ({"transition": "UPDATED", "changes": ["IDENTITY_CORRECTED"]}, False),
+        ({"transition": "UPDATED", "changes": ["IDENTITY_CONFLICT"]}, False),
+    ],
+)
+def test_is_judgment_transition(over, judgment):
+    assert is_judgment_transition(over) is judgment
 
 
 def test_transition_with_unknown_evidence_is_refused_before_write(tmp_path, live_events):

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/media_clip_retention.schema.json",
+  "title": "I1 media_clip_retention",
+  "description": "RunPod Tier 0 → EC2. 이미 보낸 media_clip 에 보존 표시를 붙이는 추가 기록 (명세 11.5 CRITICAL 자동 보존). HIGH 로 시작한 위험 구간(event_id, resume_count)이 클립을 보낸 뒤 CRITICAL 로 오르면, 원래 media_clip 을 고치지 않고 이 기록을 더한다(AGENTS.md 규칙 6). EC2 는 clip_id 의 보존 표시를 켜고 이 기록을 이력으로 남긴다. Tier 0 는 보존 표시를 떼지 않는다(떼기는 관리자가 EC2 에서, PUT /api/clips/{id}/retention). 1.0.0 신설(Lead 승인 2026-10-18, S15P31A101-169. 형식은 S15P31A101-57 의 ClipRetentionUpdate). I1 계약.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "media_clip_retention" },
+    "payload": {
+      "type": "object",
+      "required": ["clip_id", "event_id", "gateway_id", "resume_count", "severity", "retention_hold", "reason", "issued_at_ms", "source"],
+      "properties": {
+        "clip_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7", "description": "보존 표시를 붙일 media_clip.clip_id" },
+        "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "gateway_id": { "$ref": "../common/defs.schema.json#/$defs/instance_id", "description": "봉투 source_id 와 같다" },
+        "resume_count": { "type": "integer", "minimum": 0, "description": "media_clip.resume_count 와 같은 위험 구간" },
+        "severity": { "enum": ["CRITICAL", "HIGH"], "description": "보존 표시를 붙이게 한 이벤트 등급" },
+        "retention_hold": { "const": true, "description": "Tier 0 는 보존 표시를 붙이기만 한다" },
+        "reason": { "enum": ["CRITICAL_AUTO"], "description": "CRITICAL_AUTO: 이벤트가 CRITICAL 이 되어 자동 보존 (11.5)" },
+        "issued_at_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "보존 표시를 정한 시각(Tier 0 주입 시계)" },
+        "source": { "const": "LIVE" }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "CRITICAL 자동 보존은 CRITICAL 이벤트에만",
+          "if": { "properties": { "reason": { "const": "CRITICAL_AUTO" } }, "required": ["reason"] },
+          "then": { "properties": { "severity": { "const": "CRITICAL" } } }
+        }
+      ]
+    }
+  }
+}

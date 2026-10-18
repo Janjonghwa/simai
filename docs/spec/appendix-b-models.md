@@ -12,11 +12,11 @@
 | GeoCalib (ECCV 2024) | 내부 파라미터 추정 학습 모델, 비교·대체 2순위 | 비교·대체 | 코드 Apache-2.0, 가중치 CC-BY-4.0(출처 표시 의무) |
 | Perspective Fields (CVPR 2023) | 내부 파라미터 추정 후보 | 제외 | Adobe Research License(비상업 전용, 재배포 금지). 렌즈 왜곡도 내지 않음 |
 | WildCamera (NeurIPS 2023) | 내부 파라미터 추정 후보 | 제외 | 코드 Apache-2.0, 가중치 라이선스 표기 없음. 렌즈 왜곡을 내지 않음 |
-| HumanCalib | 사람 기반 자동 보정(번들 조정) | MVP | 코드 MIT. 기본 3D lifter MeTRAbs 는 비상업, VideoPose3D 는 CC BY-NC |
+| HumanCalib | 사람 기반 자동 보정(번들 조정) | 원리 참고(자체 구현, 4.3) | 코드 MIT. 코드·3D lifter 를 쓰지 않는다(기본 3D lifter MeTRAbs 는 비상업, VideoPose3D 는 CC BY-NC) |
 | MapAnything | 초기 보정 추정, 정적 3D | MVP | 코드 Apache 2.0. 가중치 `facebook/map-anything`은 CC-BY-NC 4.0, `facebook/map-anything-apache`는 Apache 2.0(선행 PoC에서 품질 크게 낮음) |
 | Depth Anything 3 | 정적 3D 비교군(pose-conditioned, MapAnything 외부 모델 인터페이스) | 비교 | DA3NESTED-GIANT-LARGE-1.1 은 CC BY-NC, Metric-Large 는 Apache 2.0 |
 | MoGe-3 | 정적 3D 단안 대체 | 대안 | 코드 MIT, 체크포인트 확인 필요 |
-| CCVS | 카메라별 높이 검산 | 미룸(4.4 독립 검증이 대신) | 확인 필요 |
+| CCVS | 카메라별 높이 검산 | 보조 진단·재보정 후보 거름(자체 구현, 4.3) | 방법만 참고(코드 미사용) |
 | DMMR | 사람 기반 내부 파라미터 추정 | 참고 | 확인 필요 |
 | ExtrCamCalib_PersonKeypoints | 운영 중 보정 감시 | 참고 | 확인 필요 |
 | NVIDIA Cosmos3-Nano(16B) Reasoner | VLM(vLLM 0.19.1 이상, `vllm-cosmos3`) | MVP | OpenMDW 1.1 |

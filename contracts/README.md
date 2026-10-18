@@ -1,18 +1,20 @@
 # contracts
 
-구간 계약의 정본(JSON Schema, draft 2020-12). 명세 12장, 20.4, 21.2 기준. **v2.0.0** (2.0.0: v1.3 에서 쓰지 않는 보정 출처(CHARUCO·MANUAL_PNP)·스케일 근거(MARKER·FLOOR_PLAN)와 `hmac_signature` 삭제, I5 작업 대여 방식 — S15P31A101-167·-157. 그 사이 추가: 녹화 manifest(-158), I0·I1 현장 경보 재동기화·시계 교환·엔드포인트 등록·2D 관측 요약(-155). 1.1.0: 보정 입력 선택 항목화, `MODEL_ESTIMATE` 출처 추가 — S15P31A101-148).
+구간 계약의 정본(JSON Schema, draft 2020-12). 명세 12장, 20.4, 21.2 기준. **v2.1.0** (2.1.0: `world_state.config_version`, 판정이 아닌 전이의 `evidence_ref` null, health 노트북 버림 집계, 이벤트 클립 기록 `media_clip`·`media_clip_retention` — S15P31A101-169. 2.0.0: v1.3 에서 쓰지 않는 보정 출처(CHARUCO·MANUAL_PNP)·스케일 근거(MARKER·FLOOR_PLAN)와 `hmac_signature` 삭제, I5 작업 대여 방식 — S15P31A101-167·-157. 그 사이 추가: 녹화 manifest(-158), I0·I1 현장 경보 재동기화·시계 교환·엔드포인트 등록·2D 관측 요약(-155). 1.1.0: 보정 입력 선택 항목화, `MODEL_ESTIMATE` 출처 추가 — S15P31A101-148).
 
 | 경로 | 내용 | 명세 |
 |---|---|---|
 | `common/defs.schema.json` | 공통 타입(좌표, 시각, 상태 enum, `input_provenance`, `reproducibility`). `calibration_source` 를 쓰는 계약(calibration, calibration_update, run_record, scene_output, human_mesh_output)은 2.0.0 | 4.1, 6.2, 12.1, 20.4 |
 | `messages/envelope.schema.json` | 공통 봉투 | 12.1 |
-| `messages/world_state.schema.json` | I1 `world_state` (LIVE 계약, Lead 승인 필요). 1.1.0: 입력 출처 `input_provenance`(선택), `position_xy` 관측 공백 때 시각 기준 설명 보강 | 5.2, 6.1, 12.3, 20.4 |
-| `messages/risk_event_transition.schema.json` | I1 Tier 0 → EC2 LIVE 이벤트 전이(저널 기록, 운영자 확인 포함). 1.3.0: 확인 필요 이유 `confidence_reasons`, 해소 후 재개 `resumed` | 3.2, 6.4, 7.1, 12.3 |
+| `messages/world_state.schema.json` | I1 `world_state` (LIVE 계약, Lead 승인 필요). 1.1.0: 입력 출처 `input_provenance`(선택), `position_xy` 관측 공백 때 시각 기준 설명 보강. 1.2.0: 구성 묶음 버전 `config_version`(선택, -169) | 3.2, 5.2, 6.1, 12.3, 20.4 |
+| `messages/risk_event_transition.schema.json` | I1 Tier 0 → EC2 LIVE 이벤트 전이(저널 기록, 운영자 확인 포함). 1.3.0: 확인 필요 이유 `confidence_reasons`, 해소 후 재개 `resumed`. 1.4.0: 판정이 아닌 전이(확인·복원·ID 교정)의 `evidence_ref` null 허용(-169) | 3.2, 6.4, 7.1, 12.3 |
 | `messages/event_state_snapshot.schema.json` | I1 Tier 0 → EC2 재동기화 후 활성 이벤트 최종 상태 | 3.2 |
-| `messages/health.schema.json` | I1 Tier 0 → EC2(및 I0 노트북) 1 Hz 상태·손실 3종 | 3.11, 5.1, 6.2, 12.3, 12.7 |
+| `messages/health.schema.json` | I1 Tier 0 → EC2(및 I0 노트북) 1 Hz 상태·손실 3종. 1.4.0: 카메라별 노트북 송신 큐 버림 `laptop_skipped`·구분 불가 `unattributed_gap`(선택, -169) | 3.11, 5.1, 6.2, 12.3, 12.7 |
 | `messages/observation_batch.schema.json` | Tier 0 카메라별 2D 관측 묶음(RunPod Network Volume 보관 형식, EC2 로는 `observation_summary`) | 5.1, 11.2 |
 | `messages/observation_summary.schema.json` | I1 Tier 0 → EC2 2D 관측 카메라별 요약(원본은 RunPod 보관) | 11.2, 12.2 |
 | `messages/calibration_update.schema.json` | I1 Tier 0 → EC2 보정 상태·버전 변경 (2.0.0 메이저: v1.3 에서 쓰지 않는 보정 출처 값 삭제) | 4.4, 4.5 |
+| `messages/media_clip.schema.json` | I1 Tier 0 → EC2 이벤트 클립 업로드 기록(객체 키·구간·해시·크기·얼굴 흐림 여부·삭제 예정일·보존 표시). 1.0.0 신설(-169) | 5.1, 11.3, 11.5, 12.3 |
+| `messages/media_clip_retention.schema.json` | I1 Tier 0 → EC2 보낸 클립에 보존 표시를 붙이는 추가 기록(CRITICAL 자동 보존). 1.0.0 신설(-169) | 11.5, 12.3 |
 | `messages/event_frame_ready.schema.json` | I1 Tier 0 → EC2 이벤트 프레임 업로드 완료(주소만) | 12.3 |
 | `messages/tier0_endpoint.schema.json` | I1 Tier 0 → EC2 Pod 엔드포인트 등록(공개 IP·포트·공개키 지문). 노트북 조회 응답도 이 형식 | 3.12, 12.6, 12.7 |
 | `messages/config_bundle.schema.json` | I1 EC2 → Tier 0 구성 묶음 발행 | 3.2, 11.1 |
@@ -69,6 +71,8 @@ I4(워치, 확장)와 I2 `/topic/world`·`/topic/health` 토픽 형식은 아직
 - I1 전이·현장 경보·푸시(`risk_event_transition`, `local_alert`, `risk_alert`)의 `source`는 LIVE만. 현장 경보·푸시는 CRITICAL·HIGH만 (7.3)
 - 활성 현장 경보 목록(`health.active_site_alerts`)은 LIVE·CRITICAL·HIGH 만, `(event_id, event_sequence)`·`acknowledged` 필수. 시계 차이는 불확실성과 함께, 모르면 null. 엔드포인트 등록은 공개키 지문과 대칭 매핑(70000 이상) 포트, 영상 포트는 카메라별, 비밀 값 불가(payload 닫힘). `observation_summary` 에는 2D 원본(frames·detections·bbox·keypoint 등)을 싣지 않는다(payload·카메라 집계 닫힘)
 - `event_id`는 UUIDv7. 해소(RESOLVED)는 `verification`이 VERIFIED일 때만, 재동기화 스냅샷에는 활성 이벤트만
+- I1 전이의 `evidence_ref` 키는 늘 싣는다. RAISED·RESOLVED·재개(`resumed`)는 null 불가, 판정이 아닌 전이(확인·복원·ID 교정)는 근거를 모르면 null
+- 이벤트 클립(`media_clip`)은 LIVE·CRITICAL·HIGH 만, 영상은 객체 키로만(스킴·쿼리 있는 주소 불가, payload 닫힘), 삭제 예정일 필수, 흐림 없음(NONE)이면 `redactor_version` null·흐림이면 필수. 보존 표시 추가 기록(`media_clip_retention`)은 붙이기만(true), CRITICAL 자동 보존은 CRITICAL 만
 - 운영자 확인은 누가(`actor_role`·`actor_id`)·어디서(`channel`) 했는지 필수. 현장 확인 버튼은 `site_ack`로만, 관제 화면·PWA 확인은 `event_ack`로만
 - VLM `proposed_severity`는 `severity`보다 높은 등급이거나 null(하향·같은 등급 불가). VLM 결과에는 해소·끄기 필드가 없다. 푸시 근거 한 줄은 규칙 근거(`summary_source: RULE`)만
 - VLM 입력 프레임은 얼굴 흐림·제외(`face_policy`) 필수. I5 대여 응답·하트비트·제출은 `lease_id` 필수, 대여 응답과 ACTIVE 응답은 만료 시각 필수, REJECTED 는 이유 필수
@@ -82,7 +86,7 @@ I4(워치, 확장)와 I2 `/topic/world`·`/topic/health` 토픽 형식은 아직
 - 좌표계 선언은 World(m, 오른손, +Z)만 허용
 - 녹화 manifest: 실제 카메라(RTSP) 녹화는 동의·보관 기한(`consent`) 필수, 사람이 찍히면 동의서 ID·범위 필수(11.5). RTSP 주소에 계정 불가, 저장 위치는 `volume://`·`s3://`만, 파일 경로는 세션 디렉터리 기준 상대 경로만. `input_kinds` 는 카메라 입력 종류(`cameras[].source.kind`)를 모두 담고, RTSP 가 아닌 입력이 있으면 `is_test_input: true`(그때만). 세그먼트 무결성 검사는 모두 true
 
-스키마로 표현할 수 없는 규칙(R의 직교성, 관절 배열 길이 일치, `is_upper_bound`와 출처의 일치, 봉투 `source_id`와 `gateway_id`의 일치, `event_sequence`·`journal_offset` 단조 증가, `codec_info`와 `frame_header`의 `stream_epoch` 일치, I5 대여의 `lease_expires_at > leased_at`·`attempt ≤ max_attempts`, `health.active_site_alerts` 의 `event_id` 유일, 시계 교환의 `t3_ms ≥ t2_ms`·`uncertainty_ms ≥ round_trip_ms/2`, `observation_summary` 의 `window_end_ms > window_start_ms`, `tier0_endpoint` 의 VIDEO `camera_id` 유일과 `gateway_id`·`source_id` 일치, 녹화 manifest 시각 범위의 from ≤ to·`camera_id` 중복 등)은 각 모듈의 계약 시험에서 검사한다(명세 21.3).
+스키마로 표현할 수 없는 규칙(R의 직교성, 관절 배열 길이 일치, `is_upper_bound`와 출처의 일치, 봉투 `source_id`와 `gateway_id`의 일치, `event_sequence`·`journal_offset` 단조 증가, `codec_info`와 `frame_header`의 `stream_epoch` 일치, I5 대여의 `lease_expires_at > leased_at`·`attempt ≤ max_attempts`, `health.active_site_alerts` 의 `event_id` 유일, 시계 교환의 `t3_ms ≥ t2_ms`·`uncertainty_ms ≥ round_trip_ms/2`, `observation_summary` 의 `window_end_ms > window_start_ms`, `tier0_endpoint` 의 VIDEO `camera_id` 유일과 `gateway_id`·`source_id` 일치, 녹화 manifest 시각 범위의 from ≤ to·`camera_id` 중복, 판정 UPDATED(등급·수치·구역·검증 상태 변경)의 `evidence_ref` 존재, `media_clip` 의 `clip_end_capture_ms ≥ clip_start_capture_ms`·`delete_after_ms = created_at_ms + 보관 기간`·`gateway_id` 와 `source_id` 일치 등)은 각 모듈의 계약 시험에서 검사한다(명세 21.3).
 
 ## 검증
 

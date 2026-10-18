@@ -803,3 +803,58 @@ def test_clip_records_gaps_inside_the_window():
     _run(service, clock, stream, 25_000)
     (rec,) = sink.records
     assert rec.draft.has_gaps
+
+
+# --- 계약 media_clip·media_clip_retention (S15P31A101-169) ----------------------------------------------------------
+
+CONTRACTS = AI_DIR.parent / "contracts"
+
+
+@pytest.fixture(scope="module")
+def contract_errors():
+    """errors(msg_type, payload): 그 계약 예시의 봉투에 payload 를 넣어 검증한 오류 목록."""
+    import json
+
+    import jsonschema
+    import referencing
+
+    registry = referencing.Registry()
+    by_name = {}
+    for path in sorted(CONTRACTS.rglob("*.schema.json")):
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        registry = registry.with_resource(schema["$id"], referencing.Resource.from_contents(schema))
+        by_name[path.name.removesuffix(".schema.json")] = schema
+
+    def errors(name: str, payload: dict) -> list[str]:
+        example = json.loads((CONTRACTS / "examples" / f"{name}.json").read_text(encoding="utf-8"))
+        doc = {**example, "payload": payload}
+        validator = jsonschema.Draft202012Validator(by_name[name], registry=registry)
+        return [f"{list(e.path)}: {e.message}" for e in validator.iter_errors(doc)]
+
+    return errors
+
+
+@pytest.mark.parametrize("blur", [False, True])
+def test_media_clip_records_match_contract(contract_errors, blur):
+    clock, service, stream, _, _, sink, _ = _setup(redactor=FakeRedactor() if blur else None, cameras=("cam_A", "cam_B"))
+    _run(service, clock, stream, 25_000)
+    service.on_transitions([transition(severity=Severity.CRITICAL, observation_time=stream.t_ms)])
+    _run(service, clock, stream, 25_000)
+    assert len(sink.records) == 2
+    for rec in sink.records:
+        payload = rec.to_payload()
+        assert payload["face_redaction"] == (FACE_BLUR_BEFORE_EXPORT if blur else FACE_REDACTION_NONE)
+        assert contract_errors("media_clip", payload) == [], payload
+
+
+def test_media_clip_retention_updates_match_contract(contract_errors):
+    clock, service, stream, _, _, sink, _ = _setup(cameras=("cam_A",))
+    _run(service, clock, stream, 25_000)
+    service.on_transitions([transition(severity=Severity.HIGH, observation_time=stream.t_ms)])
+    _run(service, clock, stream, 25_000)
+    (rec,) = sink.records
+    assert contract_errors("media_clip", rec.to_payload()) == []
+    service.on_transitions([_escalation(stream.t_ms)])
+    _run(service, clock, stream, 2_000)
+    (update,) = sink.retention
+    assert contract_errors("media_clip_retention", update.to_payload()) == [], update.to_payload()

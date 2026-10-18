@@ -54,7 +54,7 @@
 
 - Tier 0 서비스: RAISED → UPDATED → RESOLVED 전이를 확정한다. 전이마다 `risk_event_transition`(I1)을 이벤트 저널(Network Volume에 추가만 하는 내구성 로그)에 기록하고 EC2로 보낸다. outbox는 별도 저장소가 아니라 저널에서 acked_offset 이후 구간이다(아래 저널 계약).
 - EC2: 영속 저장, 조회, 알림 전달, 운영자 조치(ACK·티켓), 화면용 projection을 맡고 전이를 새로 만들지 않는다. `(event_id, event_sequence)`로 중복을 제거하고 순서를 검증하며, 낮은 sequence가 늦게 오면 기록만 한다.
-- 운영자 ACK는 EC2 → Tier 0 서비스 → 노트북으로 전달해 현장 경보의 반복 소리를 멈춘다. 관리자(관제 화면)·반장(PWA)·현장 확인 버튼 중 누가 확인해도 소리를 멈추고, 점멸 표시는 해소까지 유지한다. 누가 확인했는지는 저널에 남긴다.
+- 운영자 ACK는 EC2 → Tier 0 서비스 → 노트북으로 전달해 현장 경보의 반복 소리를 멈춘다. 관리자(관제 화면)·반장(PWA)·현장 확인 버튼 중 누가 확인해도 소리를 멈추고, 점멸 표시는 해소까지 유지한다. 누가 확인했는지와 확인한 사람이 본 이벤트 상태(`event_sequence`, 확인 대상)는 저널에 남긴다. 확인 대상보다 뒤에 등급이 오른 경보는 그 확인으로 멈추지 않는다(3.10).
 - **재동기화 알림 규칙:** 원칙은 최종 상태를 확인한 뒤에만 알린다는 것이다. EC2 연결이 복구되면 EC2는 동기화 모드로 들어가 outbox 전이를 sequence 순서대로 받아 기록만 하고 실시간 알림은 보류한다. 빈 구간은 다시 요청한다(`journal_ack`). 재전송이 끝나면 Tier 0 서비스가 `event_state_snapshot`을 보내고, EC2는 이를 받은 뒤에만 동기화 완료로 전환한다. 그 시점에 여전히 활성이고 최근 유효 관측 근거가 있는 이벤트만 DELAYED_ACTIVE로 알리고, 해소된 이벤트는 감사 기록으로만 복원한다. 경과 시간만으로 알림을 억제하지 않는다.
 - 노트북 쪽 현장 경보의 재동기화는 3.10 을 따른다.
 
@@ -82,14 +82,15 @@
 - 현장 경보(`local_alert`) 전송은 fsync 를 기다리지 않는다. EC2 로 보내는 전이만 fsync 가 끝난 뒤에 보낸다.
 - 저널 쓰기는 판정 스레드와 분리한 별도 스레드에서 시간 제한을 두고 하며, 쓰기가 멈추는지 감시한다.
 - 운영자 확인(EC2 ACK, 현장 확인 버튼)도 저널 이벤트로 기록한다.
+- 전이의 판정 근거(`evidence_ref`, 판정에 쓴 `world_state` 의 msg_id)는 판정 전이(발생·해소·재개, 판정으로 등급·수치·구역·검증 상태가 바뀐 갱신)에 반드시 싣는다. 판정 전이의 근거를 모르면 지어내지 않고 기록 전에 거절한다. 판정이 아닌 전이(운영자 확인·재시작 복원·ID 교정)는 그 이벤트의 직전 판정 근거를 싣고, 모르면(체크포인트로만 복원돼 저널에 판정 기록이 없는 이벤트 등) null 로 보낸다. 근거가 null 이라는 이유로 outbox 전송을 멈추지 않는다.
 - 이 계약은 Risk Engine 구현 태스크의 완료 조건이다.
 
 **구성 묶음과 연결 단절 시 동작.** Tier 0 서비스가 판정하려면 판정 기준이 그 서비스 안에 있어야 한다.
 
 - 구성 묶음(config bundle) = 구역, 규칙 버전, 보정 버전, Operational Geometry(바닥 평면·등록 정적 객체·작업면 OBB, 7.5), 각 버전 ID와 해시.
 - EC2가 새 묶음을 발행하면 Tier 0 서비스가 내려받아 스키마·해시·참조 무결성을 검증하고 원자적으로 전환한 뒤, 적용 시각과 함께 ACK(`config_ack`)한다. EC2는 ACK 후에만 “현장 적용됨”으로 표시하고, 그 전에는 뷰어에 “적용 대기”를 표시한다.
-- EC2와 연결이 끊기면 마지막 검증 묶음으로 계속 판정하고 Config Sync를 UNVERIFIED로 표시한다. 재접속 후 더 새 묶음이 있으면 STALE로 바꾸고 전환한다(6.2). 어느 상태든 판정은 멈추지 않는다.
-- 모든 이벤트에 `config_version`을 기록하고, 리플레이·What-if는 그 시각에 적용돼 있던 버전을 쓴다.
+- EC2와 연결이 끊기면 마지막 검증 묶음으로 계속 판정하고 Config Sync를 UNVERIFIED로 표시한다. EC2 는 I1 이 (재)연결될 때 최신 묶음 알림(`config_bundle`)을 다시 보내고, Tier 0 는 그 알림을 받기 전까지 UNVERIFIED 로 둔다. 알림의 묶음이 활성 묶음과 다르면 STALE(불일치가 확인됨)로 바꾸고 검증·전환(PENDING)을 거쳐 CURRENT 가 된다(6.2). STALE 은 EC2 가 알린 묶음과 다르다는 것이 확인된 상태이며 경과 시간만으로 STALE 로 바꾸지 않는다. 검증에서 거부한 묶음이 마지막 알림이면 STALE 로 남는다. 어느 상태든 판정은 멈추지 않는다.
+- 판정 한 번(tick)은 한 묶음으로만 한다(tick 도중에 전환하지 않는다). 모든 이벤트와 `world_state` 에 그 tick 의 `config_version`을 기록하고(`world_state` 는 선택 필드), 리플레이·What-if는 그 시각에 적용돼 있던 버전을 쓴다.
 
 **확장 가능한 계약.** 실제 운용은 C110 4대로 확정하되, 내부 인터페이스는 `camera_id` 기반 N-camera 구조로 둔다. 위치 추정은 PositionEstimator 인터페이스의 구현체(바닥 투영, 삼각측량, HMR 보강)로, 배치는 DeploymentProfile(클라우드, 현장)로 분리한다.
 
@@ -227,7 +228,7 @@ flowchart TB
 | RunPod 분석 | 마스크 | YOLO26-seg, 새 물체·실측 정물은 YOLOE-26 | 기본안 |
 | RunPod 분석 | 정적 3D | MapAnything Native, trimesh로 glTF (EXP-01) | 기본안·선행 실험 |
 | RunPod 분석 | 인체 메시·외형 | Fast SAM 3D Body, MHR 메시, 연속 관측 기반 외형 갱신 (EXP-02) | 실험 후보·확장 채택 별도 승인 |
-| RunPod 분석 | 자동 보정 | 무마커 내부 파라미터 추정(교실 직선 고전 기준 plumb-line·소실점이 기본, AnyCalib·GeoCalib 은 비교·대체, 부록 B), HumanCalib, OpenCV solvePnP, SciPy least_squares | 기본안 |
+| RunPod 분석 | 자동 보정 | 무마커 내부 파라미터 추정(교실 직선 고전 기준 plumb-line·소실점이 기본, AnyCalib·GeoCalib 은 비교·대체, 부록 B), 사람 keypoint 번들 조정(HumanCalib 원리를 따른 자체 구현, 4.3), OpenCV solvePnP, SciPy least_squares | 기본안 |
 | RunPod 분석 | 작업 워커(I5) | Python, EC2 작업 가져가기(HTTPS long-poll 기본, WebSocket 대안, 12.5) | 기본안 |
 | EC2 | 백엔드 | Java 21, Spring Boot 4(`server/`) | 확정 |
 | EC2 | 실시간·API | Spring WebSocket(STOMP), Spring Web(REST) | 기본안 |
@@ -262,7 +263,8 @@ flowchart TB
 **노트북–Pod 시계 차이.** Tier 0 는 I0 제어 채널에서 NTP 식 4-타임스탬프 교환(요청 송신·수신, 응답 송신·수신 시각)으로 노트북 시계와 자기 시계의 차이와 그 불확실성을 추정하고 `health` 로 보고한다. 왕복 시간이 가장 짧은 표본을 쓴다. 6.1 의 T_lag 계산은 이 값으로 노트북이 붙인 촬영 시각을 Tier 0 시계로 옮겨 쓴다.
 
 - 계약: Tier 0 가 `clock_sync_request`(t1)를 보내면 노트북은 `clock_sync_response`(t1 그대로, 노트북 시계의 t2·t3)로 바로 답하고, Tier 0 는 응답 수신 시각 t4 를 자기 시계로 적는다. 결과는 `health.laptop_clock_offset`(`offset_ms` = 노트북 시계 − Tier 0 시계, `uncertainty_ms` ≥ 왕복/2, `round_trip_ms`, `sample_count`, `estimated_at`)이다.
-- 교환에 성공한 표본이 없거나 노트북 제어 채널이 끊기면 `laptop_clock_offset` 은 null 이다. 0 으로 채우지 않고 이전 추정도 유지하지 않는다.
+- 제어 채널은 살아 있는데 교환만 늦으면 마지막 표본 뒤 최대 60초(초기값)까지 마지막 추정을 쓰고, 불확실성을 두 시계의 표류 한도(초기값 100ppm) × 경과만큼 키운다(`estimated_at` 은 그 표본 그대로).
+- 교환에 성공한 표본이 없거나, 유지 시간이 지났거나, 노트북 제어 채널이 끊기면 `laptop_clock_offset` 은 null 이다. 0 으로 채우지 않고 이전 추정도 유지하지 않는다. 이때의 판정·System Health 처리는 6.1 을 따른다.
 
 **촬영 시각 계약.** NTP로 시계가 맞아도 카메라마다 노출 순간은 다르다(25 fps에서 프레임 간격 40ms). 그래서 다음을 규칙으로 둔다.
 
@@ -285,7 +287,10 @@ MVP의 현장 경보는 노트북 로컬 경보(1차)와 관제 화면 경보(2�
 
 - Tier 0 는 노트북이 (재)접속한 직후와 1Hz `health` 마다 활성 현장 경보 목록(`event_id`, `event_sequence`, `acknowledged`)을 노트북에 보낸다.
 - 노트북은 이 목록에 맞춰 소리·표시를 켜고 끈다. 목록에 있으면 표시하고, `acknowledged`이면 소리만 멈추며, 목록에서 빠지면(해소) 표시를 내린다.
-- 중복 판단은 `(event_id, event_sequence)`로 한다.
+- 중복 판단은 `(event_id, event_sequence)`로 한다. 노트북은 같은 `event_id` 에서 이미 반영한 것보다 낮은 `event_sequence` 로 화면을 되돌리지 않고, 목록에서 빠져 해소로 내린 경보는 늦게 온 목록으로 되살리지 않는다.
+- 목록은 보내기 직전에 만들고 `local_alert`·`alarm_stop` 과 같은 제어 채널 송신 순서로 보낸다. 목록을 만든 시각(`active_site_alerts_as_of`, Tier 0 시계)보다 뒤에 보낸 `local_alert` 로 켠 경보는 목록에 없어도 끄지 않는다(다음 목록에서 다시 판단).
+- 목록은 지금 등급 기준이다. CAUTION 이하로 내려간 활성 이벤트는 목록에서 빠지고 노트북 표시도 내린다.
+- Tier 0 가 재시작하면 활성 이벤트를 복원하기 전에는 목록을 보내지 않는다. 복원 전 빈 목록은 실제 경보를 모두 내리기 때문이다.
 - 계약: `health.active_site_alerts`(항목은 `event_id`, `event_sequence`, `source`=LIVE, `acknowledged`, `severity`=CRITICAL·HIGH, `summary`)와 목록을 만든 시각 `active_site_alerts_as_of`. 노트북 제어 채널이 (재)접속되면 Tier 0 는 1Hz 주기를 기다리지 않고 바로 `health` 를 보낸다. 빈 배열은 ‘활성 현장 경보 없음’이고, 이 필드가 없는 `health`(이전 버전 송신 측)로는 경보를 끄지 않는다. 노트북은 자기 소리·표시 상태를 `laptop_heartbeat.alarm` 으로 다시 알린다.
 
 **시험 알림.** 시작 절차의 소리·푸시 확인(18.1·18.2)은 RiskEvent 를 만들지 않는 별도 경로로 한다. 노트북은 로컬 시험음을 재생하고, 반장 PWA 는 `POST /api/push/test`로 시험 푸시를 받는다. 모든 시험 알림에는 “시험”을 표시한다. LIVE 출처만 실제 알림으로 나간다는 규칙(2장 원칙 10)을 지키기 위해서다.
@@ -298,6 +303,14 @@ MVP의 현장 경보는 노트북 로컬 경보(1차)와 관제 화면 경보(2�
 | 분석 워커 중단 | 계속 | 정상 | “AI 분석 지연” (작게 표시) |
 
 **현장 확인.** EC2가 끊기면 운영자 ACK가 노트북에 닿지 않으므로 노트북에 현장 확인 버튼을 둔다. 누르면 반복 소리를 멈추고(표시는 해소 전까지 유지), 확인 사실을 I0 제어 채널(`site_ack`)로 Tier 0에 보내 저널 이벤트로 기록한다. EC2가 복구되면 재동기화로 반영된다.
+
+**확인 대상과 경보 단계.** 확인은 확인한 사람이 그때 본 이벤트 상태에 대한 것이다. 등급이 오른 뒤 늦게 도착한 옛 확인이 올라간 경보를 끄지 않게 다음을 규칙으로 둔다.
+
+- 경보 단계는 그 이벤트의 마지막 발생·등급 상향·해소 후 재개가 연다. 현장 경보의 반복 소리는 지금 경보 단계를 연 상태 이후를 대상으로 한 확인으로만 멈춘다.
+- `site_ack`·`event_ack` 는 누를 때 화면·푸시에 보이던 이벤트의 `event_sequence`(확인 대상)를 싣는다. EC2 는 관리자·반장 확인을 Tier 0 로 보낼 때 그 사람이 본 sequence(EC2 가 받은 마지막 전이 또는 푸시의 sequence)를 채운다. 확인 대상이 없는 `event_ack`(이전 EC2)는 받되 기록하는 시점의 상태를 대상으로 보고 경고를 남긴다. 노트북이 보낸 대상이 지금 sequence 보다 크면 Tier 0 는 지금 값으로 줄인다.
+- Tier 0 는 확인을 대상과 함께 저널에 남기고, `alarm_stop.event_sequence` 에 확인 전이 자신의 sequence 가 아니라 확인 대상을 돌려준다. 노트북은 경보마다 지금 경보 단계를 연 sequence 를 기억하고, 대상이 그보다 앞인 `alarm_stop` 으로는 소리를 멈추지 않는다.
+- `local_alert.acknowledged` 와 `health.active_site_alerts[].acknowledged` 도 같은 기준이다: 지금 경보 단계 이후 상태를 대상으로 한 확인만 센다. 상향 전 상태에 대한 확인은 저널에 남지만 이 값은 false 다.
+- 등급이 오르거나 해소 후 재개되면 이전 확인과 상관없이 다시 울린다(재경보). 재동기화 목록으로 확인을 풀 때 노트북은 경보 단계 시작을 그 목록의 sequence 로 올린다(애매하면 소리를 내는 쪽).
 
 ## 3.11 시스템 지표
 

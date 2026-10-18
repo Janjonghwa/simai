@@ -3,7 +3,7 @@
 이 폴더가 기획서의 **정본**이다. Notion 에는 이 폴더로 가는 링크와 발표·제출용으로 내보낸 사본만 둔다.
 요구사항 명세서는 [`../requirements.md`](../requirements.md) 에 있다. 저장소 규칙과 계약은 `AGENTS.md`, `contracts/` 를 본다.
 
-**기준 문서:** simai System Specification v1.2 r4 수정 7 (2026-10-17) · **개정일:** 2026-10-17
+**기준 문서:** simai System Specification v1.2 r4 수정 7 (2026-10-17) · **개정일:** 2026-10-18
 
 2026-10-17 · A101 · **상태: v1.3** · 정본: GitLab `docs/spec/`
 
@@ -19,6 +19,7 @@
 | v1.3 수정 1 | 2026-10-17 | 저장소 구조에 `contracts/data/`(녹화 세션 manifest 등 데이터 형식 계약)를 더함(S15P31A101-158). 21.1 |
 | v1.3 수정 2 | 2026-10-17 | R7(구역 감시 능력 저하) 심각도를 HIGH(시스템)에서 CAUTION(시스템)으로 낮춤: 시스템 상태 안내라 관제 화면 안내로만 보내고 현장 소리·반장 PWA 로 내지 않는다. 저하 구역 안 사람의 위험은 각 규칙과 R6 이 ‘확인 필요’로 다룬다(S15P31A101-73). 7.2, 6.5 |
 | v1.3 수정 3 | 2026-10-17 | 머지된 v1.3 계약(I0·I1·I5·녹화 manifest) 이름으로 본문을 맞춤(S15P31A101-167): 현장 경보 목록 `health.active_site_alerts`(3.10), 시계 차이 `clock_sync_request`·`clock_sync_response`·`health.laptop_clock_offset` 과 T_lag·pipeline_lag 보정(3.9, 6.1, 부록 A), 엔드포인트 등록 `tier0_endpoint`(3.12), 2D 관측 요약 `observation_summary`(11.2), I5 작업 대여 `job_lease_request`·`job_request`·`job_heartbeat`·`job_callback`·`job_lease_status`(12.2, 12.5), 녹화 manifest `recording_manifest`(15.3). Network Volume 구조에 `obs2d`·`recordings` 추가(19.1, 3.12). 보정 출처 값을 `G1_AUTO`·`DATASET_GT`·`SIM`·`MODEL_ESTIMATE` 로 정리(20.4. 이 값을 쓰는 calibration·calibration_update·run_record·scene_output·human_mesh_output 계약 2.0.0). 내부 파라미터 추정 후보 라이선스 확인과 고전 기준 잠정 기본(4.3, 3.8, 부록 B). 아직 계약에 없는 항목(`confidence_reasons`, 이벤트 재개 전이, 노트북 송신 큐 버린 프레임 수)을 19.1 에 모음(6.4, 7.1, 12장 머리말, 12.7) |
+| v1.3 수정 4 | 2026-10-18 | 6·7차 구현 결정과 사용자(Lead) 승인 계약을 반영(S15P31A101-169). 확인 대상 `event_sequence`·경보 단계·상향 재경보·재동기화 `as_of`(3.10, 3.2), 시계 차이 정책: 교환 지연 60초 유지 + 표류 불확실성, 그 뒤·표본 없음·단절은 offset null + UNSAFE_UNKNOWN, 관측 상태 유지·해소 확정 금지, 시계 점프 뒤 해소 유지 시간 재시작(3.9, 6.1, 6.5), Config Sync STALE 정의(3.2, 6.2)와 `world_state.config_version`, 판정이 아닌 전이의 `evidence_ref` null(3.2, 12.3), 이벤트 클립 얼굴 흐림 안 함·동의서 항목·`media_clip`·`media_clip_retention`(5.1, 11.3, 11.5, 12.2, 12.3), 기하 단계 10명 p95 50ms 단계 목표(6.6), 번들 조정은 HumanCalib 원리의 자체 구현·CCVS 보조 진단·DRIFTED 감시 규칙(4.3, 4.4, 3.8, 18.1, 부록 B), `stream_epoch` 비감소·STREAM_REJECT·SKIP_NOTICE 구간 집합·구분 불가 빈칸(12.7), 재개 전이·`confidence_reasons` 계약 반영 표기 정리(6.4, 7.1, 12.4), 결정 기록(16장), 미결 사항(19.1). 계약: `world_state` 1.2.0·`risk_event_transition` 1.4.0·`health` 1.4.0(마이너), `media_clip`·`media_clip_retention` 1.0.0 신설 |
 
 v1.0 \~ v1.2 r4 수정 7 의 이력은 [`history.md`](history.md) 에 있다.
 

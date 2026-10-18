@@ -23,6 +23,7 @@ from simai_ai.eventlog.journal import (
     Reservation,
     ack_id_of,
     evidence_ref_of,
+    is_judgment_transition,
 )
 from simai_ai.eventlog.outbox import (
     SCHEMA_VERSION,
@@ -66,6 +67,7 @@ __all__ = [
     "ack_id_of",
     "build_transition_message",
     "evidence_ref_of",
+    "is_judgment_transition",
     "operator_ack",
     "to_i1_transition_payload",
 ]

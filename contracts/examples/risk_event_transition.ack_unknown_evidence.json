@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.4.0",
+  "msg_type": "risk_event_transition",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000142",
+  "sent_at": 1760342400400,
+  "source_id": "tier0-01",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "event_sequence": 5,
+    "journal_offset": 1202,
+    "transition": "ACKNOWLEDGED",
+    "occurred_at": 1760342461000,
+    "gateway_id": "tier0-01",
+    "observation_time": 1760342400100,
+    "evaluated_at": 1760342400340,
+    "rule_id": "R2",
+    "rule_version": 3,
+    "config_version": "cfg-12",
+    "calibration_version": "cal-7",
+    "scene_version": "scene-3",
+    "source": "LIVE",
+    "severity": "CRITICAL",
+    "confidence": "HIGH",
+    "verification": "UNVERIFIABLE",
+    "needs_check": false,
+    "confidence_reasons": [],
+    "world_ids": [
+      "w-0012"
+    ],
+    "zone_id": "z-04",
+    "metrics": {
+      "edge_distance_m": 0.82,
+      "height_diff_m": 2.1
+    },
+    "evidence_ref": null,
+    "resent": false,
+    "ack": {
+      "ack_id": "7a2b3c4d-5e6f-4a7b-9c8d-1e2f3a4b5c70",
+      "channel": "CONTROL_ROOM",
+      "actor_role": "ADMIN",
+      "actor_id": "admin-01",
+      "acked_at": 1760342460900
+    }
+  }
+}

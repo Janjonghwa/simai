@@ -13,7 +13,8 @@ acked_offset 을 영속 저장(AckedOffsetStore)한 뒤 앞으로 옮긴다. 그
 - journal_ack.resend_from_offset 이 오면 그 offset 부터 다시 보낸다(EC2 가 빈 구간을 찾음).
 - 정리(compact)는 min(acked_offset, last_applied_journal_offset) 이하만 저널에 맡긴다. last_applied_journal_offset 은
   체크포인트(S15P31A101-51)가 준다.
-- 계약 필수 값을 모르는 기록(evidence_ref 를 끝내 모름, 확인의 ack_id·채널 없음)은 지어내지 않는다. 보내기 전에
+- 계약 필수 값을 모르는 기록(판정 전이의 evidence_ref 를 끝내 모름, 확인의 ack_id·채널 없음)은 지어내지 않는다.
+  판정이 아닌 전이(확인·복원·ID 교정)의 근거를 모르면 보류하지 않고 evidence_ref=null 로 보낸다(계약 1.4.0). 보내기 전에
   잡아 그 기록에서 전송을 보류하고(blocked) 경고를 남긴다. 순서를 지키려고 그 뒤 기록도 보내지 않는다.
 - 재전송을 마친 뒤 event_state_snapshot 을 보내는 일은 추적기 상태를 가진 쪽(서비스 조립)이 drained 를 보고 한다.
 """
@@ -25,12 +26,19 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from simai_ai.eventlog.acked import AckedOffsetStore
-from simai_ai.eventlog.journal import ACK_ACTOR_ROLE, ACK_CHANNELS, EventJournal, ack_id_of, evidence_ref_of
+from simai_ai.eventlog.journal import (
+    ACK_ACTOR_ROLE,
+    ACK_CHANNELS,
+    EventJournal,
+    ack_id_of,
+    evidence_ref_of,
+    is_judgment_transition,
+)
 from simai_ai.eventlog.record import JournalEntry
 from simai_ai.risk.clock import Clock
 
-# risk_event_transition 1.3.0(confidence_reasons·resumed 추가, contracts/README.md)
-SCHEMA_VERSION = "1.3.0"
+# risk_event_transition 1.4.0(1.3.0 confidence_reasons·resumed 추가, 1.4.0 판정이 아닌 전이의 evidence_ref null 허용)
+SCHEMA_VERSION = "1.4.0"
 # 계약에서 선택(없어도 됨)이고 null 을 허용하지 않는 필드. lifecycle payload 는 비었을 때 null 로 싣는다.
 _OPTIONAL_NOT_NULL = ("ack", "related_event_id")
 _OPERATOR_ACK_KEYS = ("ack_id", "channel", "actor_role", "actor_id", "acked_at")
@@ -109,7 +117,8 @@ def to_i1_transition_payload(entry: JournalEntry, *, resent: bool) -> dict[str, 
     - 계약에 없는 lifecycle 필드(changes, evidence 등)는 그대로 둔다(수신 측은 모르는 필드를 무시한다, 12.1).
     - 값이 null 인 선택 필드(ack, related_event_id)는 뺀다.
     - evidence_ref 가 비었으면(확인·복원 전이) 저널이 남긴 그 이벤트의 직전 판정 근거(meta.evidence_ref)를 쓴다.
-      그것도 없으면 UnsendableEntry(지어내지 않음).
+      그것도 없으면 판정이 아닌 전이(확인·복원·ID 교정)는 null 로 보내고(계약 1.4.0), 판정 전이는 UnsendableEntry
+      (지어내지 않음).
     - 확인 기록(lifecycle 은 UPDATED + 변경 사유 ACKNOWLEDGED)은 계약대로 transition=ACKNOWLEDGED, ack=operator_ack.
     - journal_offset·resent 를 붙인다.
     """
@@ -118,8 +127,8 @@ def to_i1_transition_payload(entry: JournalEntry, *, resent: bool) -> dict[str, 
         if key in payload and payload[key] is None:
             del payload[key]
     evidence = evidence_ref_of(entry)
-    if evidence is None:
-        # 계약 필수. 정리 뒤에도 근거 색인이 지키지만, 그래도 모르면(저널 밖에서 복원된 이벤트 등) 지어내지 않는다.
+    if evidence is None and is_judgment_transition(entry.payload):
+        # 판정 전이는 계약 필수. 정리 뒤에도 근거 색인이 지키지만, 그래도 모르면 지어내지 않는다.
         raise UnsendableEntry(entry, "evidence_ref 를 모른다(이벤트의 판정 근거 기록이 저널에 없다)")
     payload["evidence_ref"] = evidence
     if "ack" in payload:
