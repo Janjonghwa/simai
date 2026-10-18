@@ -25,6 +25,10 @@
   camera_stall_ms 로 이미 걸러진 판정이다. G3 '카메라 분리 → 구역 저하 표시 1초 이내'의 규칙 쪽 몫은
   camera_stall_ms + 판정 주기다.
 
+- 감시 확보 근거(clear_zones, S15P31A101-174): 판정을 내지 않은 구역 중 감시 상태 입력과 관측 카메라 목록이 있고 정상
+  카메라가 min_cameras 이상인 구역을 돌려준다(rule.ZoneClearEvidence). 재시작 뒤 복원한 R7 이벤트는 판정이 없는 것만으로
+  해소하지 않고 이 근거가 있는 판정에서만 해소를 센다(lifecycle, 명세 3.2). 규칙·구역이 구성에서 빠지면 근거도 없다.
+
 근거(reasons)는 첫 값이 monitoring_degraded 이고 뒤에 원인이 붙는다(coverage_insufficient, 그다음 카메라 ID 순).
 | 근거 | 뜻 |
 | monitoring_unknown | 감시 상태 입력 없음(LIVE·REPLAY) |
@@ -74,6 +78,20 @@ class ZoneMonitoringRule:
             finding = self._judge(zone, ctx.monitoring, ctx.world.t_latest_global)
             if finding is not None:
                 yield finding
+
+    def clear_zones(self, ctx: RuleContext) -> Iterator[str]:
+        """감시가 확보된 구역(rule.ZoneClearEvidence, S15P31A101-174).
+
+        감시 상태 입력이 있고 그 구역의 관측 카메라 목록을 알며 정상 관측 카메라가 min_cameras 이상인 구역이다.
+        입력이 없거나(monitoring None) 목록을 모르는 구역은 넣지 않는다(모르면 근거가 아니다).
+        """
+        if ctx.monitoring is None:
+            return
+        for zone in ctx.zones:
+            if zone.zone_id not in ctx.monitoring.zone_cameras:
+                continue
+            if self._judge(zone, ctx.monitoring, ctx.world.t_latest_global) is None:
+                yield zone.zone_id
 
     def _judge(self, zone: Zone, monitoring: MonitoringState | None, t_latest_global: int) -> Finding | None:
         required = float(self._min_cameras)

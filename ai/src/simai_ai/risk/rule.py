@@ -195,3 +195,16 @@ class Rule(Protocol):
     def spec(self) -> RuleSpec: ...
 
     def evaluate(self, ctx: RuleContext) -> Iterable[Finding]: ...
+
+
+@runtime_checkable
+class ZoneClearEvidence(Protocol):
+    """구역 대상 규칙의 선택 확장: 조건이 없다는 것을 유효 입력으로 확인한 구역 (명세 3.2 재시작 복구, 6.4).
+
+    구역 대상 판정(R7)은 사람이 없어 '대상을 다시 관측했다'로 해소를 확인할 수 없다. 이 메서드는 판정이 없는 것만이
+    아니라 그 구역을 실제로 판정할 입력이 있고 조건이 사라졌다고 판단한 구역 ID 를 돌려준다(R7: 그 구역의 정상 관측
+    카메라가 min_cameras 이상). 입력이 없거나 모르면 돌려주지 않는다. 엔진이 Evaluation.zone_clear_evidence 로 모아
+    lifecycle 에 넘기고, lifecycle 은 복원한 구역 대상 이벤트를 이 근거가 있는 판정에서만 VERIFIED 로 본다.
+    """
+
+    def clear_zones(self, ctx: RuleContext) -> Iterable[str]: ...

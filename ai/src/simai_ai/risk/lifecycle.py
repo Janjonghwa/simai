@@ -24,6 +24,12 @@ LIVE 이벤트의 생명주기 정본은 RunPod Tier 0 의 이 추적기 하나�
 - 해소: 판정이 없고 대상이 유효하게 관측되는(VERIFIED) 상태가 해소 유지 시간 동안 이어질 때만 확정한다.
   시간은 관측 시각(observation_time)으로 잰다. 영상이 멈추면 관측 시각이 멈추므로 해소도 멈춘다.
 - 관측 상실: 대상을 유효하게 관측할 수 없으면 검증 상태만 UNVERIFIABLE 이 되고 자동 해소하지 않는다(6.4, G3).
+- 복원 보호(3.2, D-G3-09, S15P31A101-174): 재시작 뒤 restore 로 넣은 구역 대상 이벤트(R7 형태)는 사람이 없어 재관측으로
+  해소를 확인할 수 없다. 그래서 그 이벤트가 해소될 때까지 복원 보호를 두고, 판정의 zone_clear_evidence 에 (규칙, 구역)
+  근거(R7: 그 구역의 정상 관측 카메라 확보)가 있는 판정에서만 VERIFIED 로 본다. 판정이 없는 것만으로는, 또 규칙·구역이
+  구성에서 빠져 판정이 없는 동안에는 해소를 세지 않는다. 사람 대상 복원 이벤트는 기존 정책대로 대상 World ID 의 재관측으로
+  확인한다. 복원 보호는 체크포인트·저널에 싣지 않는다. restore 가 복원하는 모든 활성 이벤트에 다시 걸고 해소 때만 풀리므로
+  다시 재시작해도 같은 상태가 된다.
 - 확인 필요(7.1): 이벤트의 confidence_reasons 가 비어 있지 않은 상태다. needs_check 는 그 결과로 맞춰 둔다
   (common.normalize_confidence). 이유 목록이 바뀌면 CONFIDENCE 변경 사유로 UPDATED 를 낸다.
 - ACKNOWLEDGED 는 상태가 아니라 속성이다. 확인은 UPDATED 전이(변경 사유 ACKNOWLEDGED)로 저널에 남고
@@ -692,7 +698,8 @@ class ObservedTracksPolicy:
     대상 자신의 관측이 최신이어야 한다(T_gap = t_latest_global - t_last_valid ≤ max_gap_ms). OBSERVED 도 최신이라는
     뜻이 아니므로(6.1) 상류 상태 문자열만 믿지 않는다. PREDICTED·UNKNOWN 위치나 불확실한 신원으로는 위험이
     사라졌다고 확인하지 않는다.
-    구역 대상: 규칙(R7)이 카메라 커버리지를 직접 판정하므로 lag 만 본다.
+    구역 대상: 규칙(R7)이 카메라 커버리지를 직접 판정하므로 lag 만 본다. 단, 재시작 뒤 복원한 구역 대상 이벤트는
+    추적기가 판정의 감시 확보 근거(Evaluation.zone_clear_evidence)를 더 요구한다(복원 보호, S15P31A101-174).
 
     초기값은 6.1 의 OBSERVED 경계(gap 200ms)와 System Health DEGRADED lag 기준(600ms)이다(실험용 초기값).
     """
@@ -755,6 +762,9 @@ class _Active:
     def __init__(self, state: EventState) -> None:
         self.state = state
         self.clear_since: int | None = None  # 해소 확인을 시작한 관측 시각
+        # 복원 보호(S15P31A101-174): restore 로 넣은 이벤트. 구역 대상이면 감시 확보 근거가 있는 판정에서만 VERIFIED.
+        # 해소될 때까지 남는다(재개한 이벤트는 새 _Active 라 보호가 없다).
+        self.restored = False
         self.metrics_emitted_at = state.evaluated_at
         self.mark_emitted()
 
@@ -812,6 +822,10 @@ class LifecycleTracker:
     def get(self, event_id: str) -> EventState | None:
         active = self._by_id.get(event_id)
         return None if active is None else active.state
+
+    def restore_protected(self) -> tuple[str, ...]:
+        """복원 보호가 걸린 활성 이벤트의 event_id(키 순서, 진단·시험용). 해소되면 빠진다."""
+        return tuple(a.state.event_id for a in self._sorted_active() if a.restored)
 
     def groups(self) -> Mapping[str, tuple[EventState, ...]]:
         """group_key → 활성 이벤트. 한 사람에게 걸린 여러 규칙을 화면에서 한 묶음으로 보일 때 쓴다(7.4)."""
@@ -1092,6 +1106,10 @@ class LifecycleTracker:
         identity_revised = Change.IDENTITY_REVISED in changes
 
         verified = self._verification.verifiable(state.key, state.world_ids, world, evaluation.evaluated_at)
+        if verified and active.restored and state.key.target is FindingTarget.ZONE:
+            # 복원 보호: 사람 없는 구역 대상 이벤트는 판정이 없거나 최신이라는 것만으로 해소를 확인하지 않는다. 그 규칙이
+            # 이 판정의 유효 입력으로 그 구역에 조건이 없다고 확인한 근거가 있어야 한다(명세 3.2 복원 이벤트 자동 해소 금지).
+            verified = (state.rule_id, state.key.zone_id) in evaluation.zone_clear_evidence
         verification = Verification.VERIFIED if verified else Verification.UNVERIFIABLE
         if verification is not state.verification:
             changes.add(Change.VERIFICATION)
@@ -1295,6 +1313,8 @@ class LifecycleTracker:
         """체크포인트·저널에서 되살린 활성 이벤트를 넣는다(명세 3.2 재시작 복구).
 
         복원한 이벤트는 UNVERIFIABLE 로 두고 자동 해소하지 않는다. event_sequence 는 이어서 올린다.
+        모든 복원 이벤트에 복원 보호를 건다(해소될 때까지). 사람 대상은 기존 정책대로 대상의 재관측으로, 구역 대상은 판정의
+        감시 확보 근거(Evaluation.zone_clear_evidence)가 있을 때만 VERIFIED 가 된다(S15P31A101-174).
         지속 조건 대기 중인 키와 재개 시간 안의 해소 이벤트는 체크포인트에 없어 복원하지 않는다(재시작 직후의
         재발생은 지속 조건을 다시 세고 새 이벤트가 된다).
         이미 활성 이벤트가 있는 추적기에는 복원하지 않는다(재시작 직후 한 번만 쓴다).
@@ -1311,6 +1331,7 @@ class LifecycleTracker:
             if state.key in self._by_key or state.event_id in self._by_id:
                 raise LifecycleError(f"복원할 이벤트가 겹친다: {state.event_id}")
             active = _Active(state)
+            active.restored = True
             self._by_key[state.key] = active
             self._by_id[state.event_id] = active
             restored.append(active)

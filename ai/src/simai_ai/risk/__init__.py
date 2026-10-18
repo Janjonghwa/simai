@@ -64,7 +64,16 @@ from simai_ai.risk.lifecycle import (
 )
 from simai_ai.risk.monitoring import CameraMonitor, CameraStatus, MonitoringState
 from simai_ai.risk.registry import RuleRegistry, UnknownRuleError, default_registry
-from simai_ai.risk.rule import Finding, FindingTarget, Rule, RuleContext, RuleSpec, RuleState, RuleStateView
+from simai_ai.risk.rule import (
+    Finding,
+    FindingTarget,
+    Rule,
+    RuleContext,
+    RuleSpec,
+    RuleState,
+    RuleStateView,
+    ZoneClearEvidence,
+)
 from simai_ai.risk.rules.height_common import CLASSROOM_TEST_PROFILE, OPERATIONAL_HEIGHT_PROFILE, HeightProfile
 from simai_ai.risk.rules.r1_zone_entry import ZoneEntryRule
 from simai_ai.risk.rules.r2_edge_proximity import EdgeProximityRule
@@ -142,6 +151,7 @@ __all__ = [
     "WorldState",
     "WorldTrack",
     "Zone",
+    "ZoneClearEvidence",
     "ZoneEntryRule",
     "ZoneJudgeType",
     "ZoneMonitoringRule",
