@@ -59,8 +59,8 @@ class Evaluation:
     - findings: (rule_id, rule_version, zone_id, world_ids) 순으로 정렬. 같은 입력이면 순서까지 같다.
     - zone_clear_evidence: (rule_id, zone_id) 쌍. 그 규칙이 이 판정의 유효 입력으로 그 구역에 조건이 없다고 확인했다
       (rule.ZoneClearEvidence, R7: 정상 관측 카메라 확보). 판정 시각에 유효한 구역만 들어가고, 같은 규칙이 같은 구역에
-      판정을 냈으면 넣지 않는다. lifecycle 이 복원한 구역 대상 이벤트의 해소 근거로 쓴다(S15P31A101-174). 직접 만든
-      Evaluation 은 기본으로 비어 있다(근거 없음).
+      판정을 냈으면 넣지 않는다. lifecycle 이 구역 대상 이벤트의 해소 근거로 쓴다(복원 이벤트 S15P31A101-174, 전체 -180).
+      직접 만든 Evaluation 은 기본으로 비어 있다(근거 없음: 구역 대상 이벤트는 판정이 사라져도 해소를 세지 않는다).
     """
 
     origin: Origin

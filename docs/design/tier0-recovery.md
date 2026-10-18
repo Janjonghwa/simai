@@ -13,7 +13,7 @@ S15P31A101-51. 기획서 §3.2(재시작 복구·복구 순서·저널 계약), 
 | 체크포인트 | `Checkpointer` 가 1초마다 투영으로 쓴다. 활성 이벤트, 해소 기록(최근 1024개 + 밀려난 것의 판정 시각 watermark), last_applied_journal_offset·msg_id, config_version, 마지막 촬영 시각, Track(꺼내기만) |
 | 복구 | `recover`: 체크포인트 선택 → 그 offset 이후 저널 재적용 → 활성 이벤트를 UNVERIFIABLE 로 복원(저널에 기록) |
 | Health | `RecoveryHealthGate`: 재시작 뒤 촬영 시각이 앞으로 간 새 프레임과 시계 차이 추정이 함께 확인될 때까지 UNSAFE_UNKNOWN |
-| 복원 이벤트 해소 근거 | `LifecycleTracker.restore` 가 모든 복원 이벤트에 복원 보호를 건다(해소될 때까지, 체크포인트·저널에 싣지 않고 재시작마다 다시 건다). 사람 대상은 기존대로 대상 World ID 재관측으로, 구역 대상(R7)은 판정의 `Evaluation.zone_clear_evidence`(R7 이 그 구역의 정상 관측 카메라 확보를 확인)가 있는 판정에서만 VERIFIED 다. 판정이 없거나 규칙·구역이 구성에서 빠진 것은 근거가 아니다(-174) |
+| 복원 이벤트 해소 근거 | `LifecycleTracker.restore` 가 모든 복원 이벤트에 복원 보호를 건다(해소될 때까지, 체크포인트·저널에 싣지 않고 재시작마다 다시 건다). 사람 대상은 기존대로 대상 World ID 재관측으로, 구역 대상(R7)은 판정의 `Evaluation.zone_clear_evidence`(R7 이 그 구역의 정상 관측 카메라 확보를 확인)가 있는 판정에서만 VERIFIED 다. 판정이 없거나 규칙·구역이 구성에서 빠진 것은 근거가 아니다(-174). 복원하지 않은 구역 대상 이벤트도 판정이 사라진 판정에서는 같은 근거가 있어야 해소를 센다(-180, 아래 "구역 대상 이벤트가 남을 때") |
 | 복원 Track | `WorldTrackManager.restore(result.tracks, result.tracks_t)`: 재관측과 맞출 후보로만(새 ID, 30초 규칙). `RestoredEventLinker(result.restored)`: 새 이벤트의 related_event_id (-54, tier0-world-track.md "재시작 뒤 복원 Track 매칭") |
 
 체크포인트 형식(내부, `format_version` 2): `checkpoint-{세대}.json` = {format, format_version, sha256, body}. 형식 1(해소 기록 없음)은 읽지 않고 직전 세대·저널 전체로 물러선다.
@@ -42,6 +42,16 @@ S15P31A101-51. 기획서 §3.2(재시작 복구·복구 순서·저널 계약), 
 - `RecoveryResult.rejected` 가 비어 있지 않음: 버린 체크포인트(손상·부분 쓰기·형식 버전·다른 gateway·정리된 구간)와 이유. 로그·health 에 남기고, 파일은 다음 체크포인트 저장 때 정리된다(필요하면 그 전에 보관 위치로 복사).
 - `RecoveryResult.source == JOURNAL`: 체크포인트 없이 저널 전체로 복구했다. config_version 을 체크포인트에서 얻지 못하므로 BundleArchive 복구 결과만으로 판정한다.
 - `RecoveryResult.stats` 의 gaps·unknown_updates·duplicates·stale: 저널 이상. 로그로 알린다.
+
+## 구역 대상 이벤트가 남을 때 (운영 절차, S15P31A101-180)
+
+구역 대상(R7) 이벤트는 R7 이 그 구역의 정상 관측 카메라 확보를 확인한 판정(`Evaluation.zone_clear_evidence`)이 해소 유지 시간(3 s) 동안 이어져야 해소된다(명세 6.4). 구성 묶음 전환으로 R7 규칙이나 그 구역이 빠지면 근거가 나오지 않으므로 그 구역의 활성 R7 이벤트는 해소되지 않고 UNVERIFIABLE 로 남는다. 재시작해도 복원 보호로 같은 상태다. 수동 종료 전이는 없다(구현하지 않음).
+
+| 경우 | 조치 |
+|---|---|
+| 구역 삭제·R7 제거 전 | 관제 화면에서 그 구역의 활성 R7 이벤트가 없는지 먼저 확인한다. 있으면 카메라를 복구해 해소된 뒤(정상 관측 카메라 2대 이상, 3 s) 새 구성 묶음을 배포한다 |
+| 이미 뺀 뒤 이벤트가 남음 | 구역(같은 zone_id)과 R7 이 들어 있는 구성 묶음을 새 버전으로 다시 활성화한다(이전 버전을 덮어쓰지 않는다). 카메라가 정상이면 첫 판정에서 VERIFIED, 3 s 뒤 해소된다. 해소를 확인한 다음 원래 의도한 구성 묶음을 다시 배포한다 |
+| 그 구역을 볼 카메라를 복구할 수 없음 | 근거를 만들 수 없으므로 이벤트는 남는다. 저널·체크포인트를 고쳐 지우지 않는다. 확인(ACK)으로 담당자를 기록하고 Lead 에 알린다(수동 종료 전이는 별도 티켓 후보) |
 
 ## 실행 중 경고
 
