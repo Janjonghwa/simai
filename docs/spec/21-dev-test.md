@@ -41,7 +41,11 @@ gateway/                   # 노트북 중계·현장 경보 앱 (Python)
 server/                    # EC2 Spring Boot
 front/                     # Three.js 뷰어, 반장 PWA
 deploy/                    # Docker 이미지 (모델별), Docker Compose, RunPod 템플릿
-docs/                      # 팀 규칙(git-convention), 실험 설계, 결정 기록, 데이터 manifest
+docs/                      # 팀 규칙(git-convention·jira-convention)
+  spec/                    # 기획서 정본(장별), requirements.md 는 요구사항 명세서 정본
+  design/                  # 구현 설계 문서(티켓별: 관련 명세 절, 코드·시험 위치, 정한 수치와 근거, 버린 대안, 잔여 위험)
+  data/                    # 데이터 manifest(공개 데이터 출처·라이선스·해시, 녹화 manifest 형식과 sessions/ 사본, 15.3)
+  experiments/             # EXP 실험 설계와 색인(20장)
 ```
 
 - **기능 단위로 나누고, 배포 단위는 조립만 한다.** Tier 0 서비스와 분석 워커는 배포 단위일 뿐이므로 `services/`에서 `src/`의 기능을 조립하고 설정만 둔다. 같은 기능을 다른 배포(EC2의 Risk Engine 컨테이너, 현장 프로파일)에서 재사용하기 위해서다.
