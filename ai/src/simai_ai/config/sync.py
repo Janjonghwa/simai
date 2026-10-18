@@ -53,6 +53,7 @@ from simai_ai.risk import (
     MonitoringState,
     Origin,
     RiskEngine,
+    RuleState,
     WorkSurfaceSet,
     WorldState,
     Zone,
@@ -185,10 +186,14 @@ class ConfigSync:
         self._transitions: list[SyncTransition] = []
         self._acks: list[Mapping[str, Any]] = []
         self._state = ConfigSyncState.UNVERIFIED
+        # 판정 사이 규칙 기억(R4 사람별 이력). 묶음마다 엔진을 새로 만들어도 같은 RuleState 를 넘겨, 같은 규칙 버전이면
+        # 구성 전환 중 진행 중인 낙상 후보를 잃지 않는다(출처별 칸은 엔진이 나눈다).
+        self._rule_state = RuleState()
         if restored is not None:
             if restored_applied_at is None:
                 raise ValueError("ConfigSync: restored 에는 restored_applied_at 이 있어야 한다")
-            self._active = ActiveConfig(restored, RiskEngine(restored.rules, clock), restored_applied_at)
+            engine = RiskEngine(restored.rules, clock, state=self._rule_state)
+            self._active = ActiveConfig(restored, engine, restored_applied_at)
             self._versions.append(restored)
             self._applied.append(AppliedRecord(restored.config_version, restored.bundle_hash, restored_applied_at))
 
@@ -356,7 +361,7 @@ class ConfigSync:
             if self._staged is not None:
                 # 아직 판정에 쓰지 않은 대기 묶음은 더 새 묶음으로 바꾼다(적용하지 않았으므로 APPLIED 를 보내지 않는다)
                 log.info("대기 묶음 %s 를 %s 로 바꾼다", self._staged.config_version, version)
-            self._staged = ActiveConfig(bundle, RiskEngine(bundle.rules, self._clock), 0)
+            self._staged = ActiveConfig(bundle, RiskEngine(bundle.rules, self._clock, state=self._rule_state), 0)
             self._update_state(f"{version} 검증 통과, 판정 경계 대기")
             return ReceiveResult(version, accepted=True)
 

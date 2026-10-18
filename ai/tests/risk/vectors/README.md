@@ -101,6 +101,12 @@ uv run pytest tests/risk                                   # 위 실행을 포�
 | `r2_r3_podium_replay.json` | REPLAY: 같은 장면의 판정·전이는 같고 현장 경보 신호 0건 (7.4) |
 | `r2_r3_podium_operational_profile.json` | LIVE 운영 프로파일(R2·R3 v1, 2 m): 같은 40 cm 단상 장면에서 판정·이벤트 0건 |
 | `r5_r2_edge_stage_approach.json` | LIVE R5·R2 v1001: 6 m 무대 위 가장자리로 접근. R5(CAUTION, target_edge)가 R2 발생 영역 진입 2초 전부터 발생 판정, R2 발생 영역(범위 간격 1.0 m)에 닿으면 R2 CRITICAL 이 맡고 R5 판정 없음, R5 이벤트가 R2 이벤트보다 2.1초 앞섬, 멈추면 둘 다 3초 뒤 해소 (7.2 R5 'R1·R2') |
+| `r4_fall_floor.json` | LIVE R4 바닥 낙상: 머리 1.70 → 0.20 m 를 0.8초에 내려간 뒤 낮은 자세(지면 기준 0.6 m 이하) 2초 → CRITICAL 이벤트(지속 조건 2프레임째, 노트북 로컬 경보). 일어나 0.8 m 를 넘은 뒤 판정 없이 3초면 해소 (7.2 R4, D-G6-02) |
+| `r4_fall_floor_replay.json` | REPLAY R4: 같은 낙상의 판정·전이는 같고 현장 경보 신호 0건 (7.4) |
+| `r4_podium_fall_uncertain_joints.json` | LIVE R4 40 cm 단상 위 낙상(지면 기준 = 상판). head_z 는 VALID 일 때만 실려 null, skeleton 귀·눈 UNCERTAIN 으로 머리 높이를 만들어 '낙상 의심 + 확인 필요'(JOINT_UNCERTAIN, CRITICAL 유지) |
+| `r4_lost_after_drop.json` | LIVE R4 급하강 직후 관측 상실: 0.85 m 하강 뒤 UNKNOWN → 바로 발생(PREDICTED, UNVERIFIABLE), 상실 6초 동안 해소 없음, 서 있는 모습이 보이면 3초 뒤 해소 (6.4) |
+| `r4_head_unknown_hold.json` | LIVE R4 발생 뒤 트랙은 OBSERVED 인데 머리 높이를 모름 4초: 관측 상실 발생 판정(head_unavailable, JOINT_UNCERTAIN)으로 해소하지 않음, 서 있는 머리가 보이면 3초 뒤 해소 (6.4) |
+| `r4_normal_postures.json` | LIVE R4 오경보 대조: 빠른 앉기, 빠르게 바닥에 앉기(급하강 후보지만 낮은 자세 아님), 단상에서 내려오기(머리와 접지가 함께 내려감)는 판정 없음. 접지를 모르는 사람은 Z=0 으로 채우지 않고 유지(input_unknown, Z_UNKNOWN)만. 이벤트 0건 |
 | `r5_approach_entry.json` | LIVE R5 + R1 접근(1 m/s): 선행 2.5초는 유지만, 2.0초 이하 발생 판정, 둘째 프레임에 CAUTION 이벤트(현장 경보 없음, 7.3 관제 화면 안내). 판정 시각으로 옮긴 범위만 걸리면 선행 0초(predicted_touching_now), 관측 범위가 구역에 걸리면 R1 이 맡아 R5 판정 없음(R1 HIGH 현장 경보), R5 는 판정 없이 3초 뒤 해소. R5 이벤트가 실제 진입보다 2초 앞섬 (7.2 R5, D-G6-03) |
 | `r5_approach_entry_what_if.json`, `r5_approach_entry_replay.json`, `r5_approach_entry_planned.json` | 비 LIVE R5: 같은 접근의 판정·전이는 같고 현장 경보 신호·알림 후보 0건 (7.4) |
 | `r5_pass_by_and_stationary.json` | LIVE R5 없음: 구역 0.75m 옆을 나란히 지나감, 0.5m 앞 정지(속력 0.2 m/s 미만), 속도 없음(발생 판정 없이 유지 판정 input_unknown 만). 이벤트 0건 |

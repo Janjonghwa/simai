@@ -150,3 +150,59 @@ def test_face_hidden_from_behind(builtin_outputs):
             assert sum(seen) > 0.8 * len(seen)
         else:
             assert not any(seen)
+
+
+def test_postures_change_head_height(run_sim, write_scenario, tmp_path):
+    """자세 키: 서기 → 쪼그림 → 서기 → 누움(가속). 정답 머리 꼭대기 높이가 자세표대로 바뀌고 관절은 지지 표면 위에 있다."""
+    doc = copy.deepcopy(BASIC)
+    doc["duration_ms"] = 6000
+    doc["people"] = [
+        {
+            "id": "p",
+            "initial_heading_rad": 0.0,
+            "waypoints": [{"t_ms": 0, "xy": [3.0, 3.0]}],
+            "postures": [
+                {"t_ms": 0, "posture": "stand"},
+                {"t_ms": 1000, "posture": "stand"},
+                {"t_ms": 1500, "posture": "squat"},
+                {"t_ms": 2500, "posture": "squat"},
+                {"t_ms": 3000, "posture": "stand"},
+                {"t_ms": 4000, "posture": "stand"},
+                {"t_ms": 4800, "posture": "lie", "ease": "in"},
+            ],
+        }
+    ]
+    out = tmp_path / "out"
+    assert run_sim(write_scenario(doc), out).returncode == 0
+    start = doc["start_time_ms"]
+    head = {row["t"] - start: row["people"][0]["head_top_xyz"] for row in _jsonl(out / "truth" / "world_truth.jsonl")}
+    assert head[500][2] == pytest.approx(1.70)
+    assert head[2000][2] == pytest.approx(1.12)
+    assert head[3500][2] == pytest.approx(1.70)
+    assert head[5500][2] == pytest.approx(0.10)
+    assert head[5500][0] == pytest.approx(3.0 + 1.75)  # 머리는 진행 방향(+X) 앞쪽
+    # 가속 보간: 넘어짐 절반 시점(4400)에는 하강량의 1/4 만 내려갔다
+    assert head[4400][2] == pytest.approx(1.70 - 0.25 * 1.60)
+    joints = [j for row in _jsonl(out / "truth" / "world_truth.jsonl") for j in row["people"][0]["joints"]]
+    assert min(j[2] for j in joints) >= 0.0
+    # 머리가 보이는 동안 world_tracks 의 head_z 도 정답 머리 꼭대기다
+    tracks = {row["t"] - start: row["tracks"] for row in _jsonl(out / "world_tracks.jsonl")}
+    assert tracks[2000][0]["head_z"] == pytest.approx(1.12)
+
+
+@pytest.mark.parametrize(
+    ("postures", "message"),
+    [
+        ([{"t_ms": 0, "posture": "dance"}], "posture"),
+        ([{"t_ms": 0, "posture": "lie", "ease": "out"}], "ease"),
+        ([{"t_ms": 10, "posture": "stand"}, {"t_ms": 10, "posture": "lie"}], "증가"),
+        ([{"t_ms": 0, "posture": "stand", "speed": 1}], "모르는 키"),
+    ],
+    ids=["unknown-posture", "unknown-ease", "not-increasing", "unknown-key"],
+)
+def test_invalid_postures_fail(run_sim, write_scenario, tmp_path, postures, message):
+    doc = copy.deepcopy(BASIC)
+    doc["people"][0]["postures"] = postures
+    result = run_sim(write_scenario(doc), tmp_path / "out")
+    assert result.returncode == 2
+    assert message in result.stderr
