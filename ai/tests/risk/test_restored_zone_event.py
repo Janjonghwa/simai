@@ -2,7 +2,8 @@
 
 재시작 뒤 restore 로 넣은 구역 대상 이벤트는 사람이 없어 재관측으로 해소를 확인할 수 없다. 판정이 없는 것만으로, 또는
 규칙·구역이 판정 구성에서 빠진 동안에는 해소를 세지 않고, R7 이 그 구역의 정상 관측 카메라 확보를 확인한 판정
-(Evaluation.zone_clear_evidence)에서만 VERIFIED 로 본다. 복원하지 않은 R7 이벤트와 사람 대상 복원 이벤트는 그대로다.
+(Evaluation.zone_clear_evidence)에서만 VERIFIED 로 본다. 사람 대상 복원 이벤트는 그대로다. 복원하지 않은 구역 대상 이벤트의
+근거 요구(S15P31A101-180)는 test_zone_clear_evidence.py 에 있다.
 """
 
 import pytest
@@ -235,17 +236,7 @@ def test_lag_still_blocks_evidence():
     assert site.resolved() == [] and _r7(site.tracker)[0].verification is Verification.UNVERIFIABLE
 
 
-# --- 복원하지 않은 R7·사람 대상 복원 이벤트는 그대로 ----------------------------------------------------
-
-
-def test_non_restored_r7_still_resolves_on_lag_only():
-    """복원하지 않은 R7 은 기존대로 판정이 없고 최신이면 해소한다(동작 불변, 근거 없는 수동 Evaluation 도)."""
-    clock = FixedClock(T0)
-    site = Site(clock, _tracker(clock), T0)
-    site.tick(monitoring="degraded")
-    assert site.tracker.restore_protected() == ()
-    site.run(31, rules=())
-    assert len(site.resolved()) == 1
+# --- 사람 대상 복원 이벤트는 그대로 ----------------------------------------------------
 
 
 def test_restored_person_event_keeps_reobservation_policy(track_json):

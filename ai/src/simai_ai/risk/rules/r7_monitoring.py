@@ -26,8 +26,9 @@
   camera_stall_ms + 판정 주기다.
 
 - 감시 확보 근거(clear_zones, S15P31A101-174): 판정을 내지 않은 구역 중 감시 상태 입력과 관측 카메라 목록이 있고 정상
-  카메라가 min_cameras 이상인 구역을 돌려준다(rule.ZoneClearEvidence). 재시작 뒤 복원한 R7 이벤트는 판정이 없는 것만으로
-  해소하지 않고 이 근거가 있는 판정에서만 해소를 센다(lifecycle, 명세 3.2). 규칙·구역이 구성에서 빠지면 근거도 없다.
+  카메라가 min_cameras 이상인 구역을 돌려준다(rule.ZoneClearEvidence). R7 이벤트는 판정이 없는 것만으로 해소하지 않고 이
+  근거가 있는 판정에서만 해소를 센다(lifecycle, 명세 6.4·3.2, 복원 이벤트 -174, 전체 -180). 규칙·구역이 구성에서 빠지면
+  근거도 없으므로 그 구역의 활성 R7 이벤트는 UNVERIFIABLE 로 남는다(운영 정리: docs/design/tier0-recovery.md).
 
 근거(reasons)는 첫 값이 monitoring_degraded 이고 뒤에 원인이 붙는다(coverage_insufficient, 그다음 카메라 ID 순).
 | 근거 | 뜻 |

@@ -1,7 +1,7 @@
 {
   "format_version": "1.3.0",
   "vector_id": "lifecycle-persistence-boundary",
-  "description": "LIVE 1.3 발생 지속 조건(6.4, D-G6-07): R1 발생 판정 한 프레임(순간 검출)은 이벤트 0건, 같은 관측을 다시 판정해도 프레임을 세지 않음, 3프레임 중 2프레임([T,F,T])에서 발생. R7 은 기본 설정으로 즉시 발생",
+  "description": "LIVE 1.3 발생 지속 조건(6.4, D-G6-07): R1 발생 판정 한 프레임(순간 검출)은 이벤트 0건, 같은 관측을 다시 판정해도 프레임을 세지 않음, 3프레임 중 2프레임([T,F,T])에서 발생. R7 은 기본 설정으로 즉시 발생. 다음 단계에 R7 판정이 사라져도 구성에 R7 이 없어 감시 확보 근거가 없으므로 해소를 세지 않고 UNVERIFIABLE 로 바뀐다(S15P31A101-180)",
   "origin": "LIVE",
   "rules": [],
   "zones": [],
@@ -155,7 +155,24 @@
       "inject_findings": [],
       "expect": {
         "findings": [],
-        "transitions": [],
+        "transitions": [
+          {
+            "event": "e1",
+            "event_sequence": 2,
+            "transition": "UPDATED",
+            "changes": [
+              "VERIFICATION"
+            ],
+            "rule_id": "R7",
+            "severity": "CAUTION",
+            "needs_check": false,
+            "verification": "UNVERIFIABLE",
+            "world_ids": [],
+            "zone_id": "z-04",
+            "acknowledged": false,
+            "confidence_reasons": []
+          }
+        ],
         "local_signals": []
       }
     },
