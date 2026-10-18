@@ -12,6 +12,14 @@ from videos import make_video
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+@pytest.fixture(autouse=True)
+def _epoch_state_in_tmp(tmp_path: Path, monkeypatch):
+    """CLI 를 부르는 시험이 사용자 폴더(~/.simai)에 epoch 저장 파일을 만들지 않게 한다."""
+    from simai_relay import cli
+
+    monkeypatch.setattr(cli, "DEFAULT_EPOCH_STATE", tmp_path / "relay-epochs.json")
+
+
 @pytest.fixture
 def mp4_video(tmp_path: Path) -> Path:
     return make_video(tmp_path / "input.mp4")
