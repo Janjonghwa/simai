@@ -6,6 +6,9 @@ DRIFTED 는 운영 중 재투영 오차 증가 또는 스트림 해상도·화�
 
 재투영 오차 "증가"의 기준은 카메라마다 max(설정 상한, 보정 당시 값)이다. 상한 초기값은 CALIBRATED 기준과 같다.
 PROVISIONAL 보정처럼 처음부터 상한을 넘던 카메라는 보정 당시 값보다 커질 때 틀어짐으로 본다.
+
+운영 중 사람 keypoint 로 재투영 오차를 계속 재고 지속 조건으로 확정하는 감시는 `monitor` 가 한다(스트림 근거는 이
+모듈의 detect_drift 를 그대로 쓴다).
 """
 
 from __future__ import annotations
