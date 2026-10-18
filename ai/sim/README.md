@@ -78,6 +78,7 @@ uv run python -m sim.run --scenario path/to/custom.json --out <dir> --seed 7
 - World: 미터, 오른손, +Z 상방, 바닥 Z = 0. 교실 바닥은 `[0, size_x] × [0, size_y]`.
 - 카메라: 핀홀(`fx = fy = (width / 2) / tan(hfov_rad / 2)`, 주점은 영상 중앙). 자세는 `position` 에서 `look_at` 을 보고 `roll_rad` 만큼 돈다. 왜곡은 `NONE`, `OPENCV_PINHOLE`(k1 k2 p1 p2 k3), `OPENCV_FISHEYE`(k1 k2 k3 k4) 를 OpenCV 식 그대로 적용한다.
 - 사람: 시각이 붙은 경유점을 등속 직선으로 잇는다. 키 1.70 m 기준 골격 비율을 키에 맞춰 늘리고, 걸을 때 다리·팔을 진자처럼 흔든다. 발목은 늘 지지 표면 위 같은 높이다. 멈추면 직전 진행 방향(없으면 `initial_heading_rad`)을 본다.
+- 자세(선택, R4 낙상·오경보 대조용): `postures` 키가 있으면 그 시각에 그 자세이고, 앞 키에서 다음 키까지 관절 위치를 보간한다(`ease`: `linear` 등속, `in` 진행률²로 점점 빨라짐, 넘어짐용). 자세는 `stand`(걷기 골격), `sit`(의자, 머리 꼭대기 약 1.26 m), `squat`(쪼그림, 약 1.12 m), `stoop`(허리 굽힘, 약 1.02 m), `sit_floor`(바닥 앉기, 약 0.90 m), `lie`(누움, 약 0.10 m, 발은 경유점·머리는 진행 방향 앞쪽 1.75 m) 이다(키 1.70 m 기준, 지지 표면 위). 고정 자세는 대략적인 비율이고, 서기와 섞는 전환 중에는 걷기 흔들림이 서기 비중만큼 남는다. 자세 키가 있는 사람의 가림 원기둥 위 끝은 가장 높은 점 + 5 cm 다(누운 사람의 몸 방향 길이는 모델링하지 않는다). 자세 키가 없으면 출력은 이전과 바이트 단위로 같다.
 - 지지 표면: `surfaces` 의 상자(바닥에 놓인 축 정렬 상자). 사람 위치가 상자 위면 그 윗면, 아니면 바닥이다. 상자는 가림 물체이기도 하다.
 - 가림: 카메라 중심 → 관절 선분이 다른 사람 원기둥(지지 표면 ~ 키, 반지름 `radius_m`)이나 상자를 지나면 가린다. 얼굴(코·눈)은 카메라가 머리 뒤쪽이면 가린다. 몸통·팔다리 자기 가림은 모델링하지 않는다.
 
@@ -94,7 +95,8 @@ uv run python -m sim.run --scenario path/to/custom.json --out <dir> --seed 7
 | `surfaces[]` | | `[]` | `{id, box_min, box_max}`. `box_min` 의 z 는 0 |
 | `camera_defaults` | | Tapo C110 | 아래 카메라 키의 기본값을 바꾼다 |
 | `cameras[]` | 예 | | `{id, position, look_at}` + 카메라 키 |
-| `people[]` | 예 | | `{id, waypoints: [{t_ms, xy}], height_m = 1.70, radius_m = 0.2, initial_heading_rad = 0}` |
+| `people[]` | 예 | | `{id, waypoints: [{t_ms, xy}], height_m = 1.70, radius_m = 0.2, initial_heading_rad = 0, postures = []}` |
+| `people[].postures[]` | | `[]` | `{t_ms, posture, ease = "linear"}`. 위 '모델'의 자세 |
 | `keypoints` | | 아래 | `pixel_noise_sigma_px = 1.0`, `confidence_range = [0.6, 0.98]`, `min_visible_joints = 3`, `occluded = conf_zero`, `out_of_frame = null` |
 
 카메라 키(기본값은 Tapo C110 stream1, 명세 3.3): `image_size = [2304, 1296]`, `fps = 25`, `hfov_rad = 1.832596`(가로 105°, 판매처 정보·미확인), `distortion = {model: NONE, coeffs: []}`, `roll_rad = 0`, `time_offset_ms = 0`, `capture_jitter_ms = 0`, `timestamp_error_ms = 0`.

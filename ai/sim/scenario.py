@@ -72,6 +72,21 @@ class Waypoint:
     xy: tuple[float, float]
 
 
+POSTURES = ("stand", "sit", "squat", "stoop", "sit_floor", "lie")
+"""자세 이름. stand 는 걷기 골격, 나머지는 sim.body 의 고정 자세(키 1.70 m 기준 몸 좌표)다"""
+EASES = ("linear", "in")
+"""자세 전환 보간: linear(등속), in(가속, 진행률². 넘어짐처럼 점점 빨라지는 전환)"""
+
+
+@dataclass(frozen=True)
+class PostureKey:
+    """t_ms 에 posture 자세다. 앞 키에서 이 키까지 ease 로 보간한다."""
+
+    t_ms: int
+    posture: str
+    ease: str = "linear"
+
+
 @dataclass(frozen=True)
 class PersonSpec:
     person_id: str
@@ -79,6 +94,8 @@ class PersonSpec:
     radius_m: float
     initial_heading_rad: float
     waypoints: tuple[Waypoint, ...]
+    postures: tuple[PostureKey, ...] = ()
+    """비어 있으면 늘 서서 걷는다(자세 키가 생기기 전 출력과 바이트 단위로 같다)"""
 
 
 @dataclass(frozen=True)
@@ -278,7 +295,9 @@ def _camera(raw: Any, i: int, defaults: dict[str, Any]) -> CameraSpec:
 def _person(raw: Any, i: int, room: tuple[float, ...]) -> PersonSpec:
     where = f"people[{i}]"
     doc = _obj(raw, where)
-    _keys(doc, where, required={"id", "waypoints"}, optional={"height_m", "radius_m", "initial_heading_rad"})
+    _keys(
+        doc, where, required={"id", "waypoints"}, optional={"height_m", "radius_m", "initial_heading_rad", "postures"}
+    )
     waypoints = []
     for j, w in enumerate(_list(doc["waypoints"], f"{where}.waypoints")):
         wdoc = _obj(w, f"{where}.waypoints[{j}]")
@@ -293,12 +312,27 @@ def _person(raw: Any, i: int, room: tuple[float, ...]) -> PersonSpec:
         raise ScenarioError(f"{where}.waypoints 가 비어 있다")
     if any(a.t_ms >= b.t_ms for a, b in zip(waypoints, waypoints[1:])):
         raise ScenarioError(f"{where}.waypoints 의 t_ms 는 증가해야 한다")
+    postures = []
+    for j, k in enumerate(_list(doc.get("postures", []), f"{where}.postures")):
+        kwhere = f"{where}.postures[{j}]"
+        kdoc = _obj(k, kwhere)
+        _keys(kdoc, kwhere, required={"t_ms", "posture"}, optional={"ease"})
+        if kdoc["posture"] not in POSTURES:
+            raise ScenarioError(f"{kwhere}.posture 는 {POSTURES} 중 하나")
+        ease = kdoc.get("ease", "linear")
+        if ease not in EASES:
+            raise ScenarioError(f"{kwhere}.ease 는 {EASES} 중 하나")
+        t_ms = _int(kdoc["t_ms"], f"{kwhere}.t_ms", minimum=0)
+        postures.append(PostureKey(t_ms=t_ms, posture=kdoc["posture"], ease=ease))
+    if any(a.t_ms >= b.t_ms for a, b in zip(postures, postures[1:])):
+        raise ScenarioError(f"{where}.postures 의 t_ms 는 증가해야 한다")
     return PersonSpec(
         person_id=_id(doc["id"], f"{where}.id"),
         height_m=_num(doc.get("height_m", 1.70), f"{where}.height_m", positive=True),
         radius_m=_num(doc.get("radius_m", 0.2), f"{where}.radius_m", positive=True),
         initial_heading_rad=_num(doc.get("initial_heading_rad", 0.0), f"{where}.initial_heading_rad"),
         waypoints=tuple(waypoints),
+        postures=tuple(postures),
     )
 
 

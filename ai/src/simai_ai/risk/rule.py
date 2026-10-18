@@ -7,17 +7,20 @@
   RuleContext.monitoring_expected(카메라 감시 상태 개념이 있는 입력인지, R7 이 씀)를 빼면 같은 입력은 출처와
   관계없이 같은 판정을 낸다(명세 7장: 같은 규칙을 네 가지 입력에 적용). 알림 여부는 엔진이 출처로만 정한다.
 - 판정 시각은 RuleContext.now_ms(주입 시계)만 쓴다. 규칙이 시계를 직접 읽지 않는다.
-- 규칙은 상태를 갖지 않는다. 발생·해소 임계값 분리(히스테리시스, 명세 6.4·7.1)는 Finding.holding 으로 낸다.
+- 규칙(객체)은 상태를 갖지 않는다. 발생·해소 임계값 분리(히스테리시스, 명세 6.4·7.1)는 Finding.holding 으로 낸다.
   발생 임계값을 넘으면 holding=False, 해소 임계값 안쪽(띠 안)이면 holding=True 로 낸다. 활성 이벤트가
   있는지는 규칙이 몰라도 되고, 이벤트 생성·유지·해소 시간 확인은 lifecycle 이 한다.
+  예외: 시간 조건이라 판정 사이 기억이 필요한 규칙(R4 낙상 의심의 사람별 머리 높이 이력)은 그 기억을 규칙 객체가 아니라
+  RuleContext.state(RuleState 의 출처별 칸)에 둔다. RuleState 는 엔진이 소유하고, ConfigSync 는 구성 묶음이 바뀌어도 같은
+  RuleState 를 새 엔진에 넘긴다. 그래서 규칙 객체는 여전히 상태가 없어 묶음끼리 공유해도 되고, 출처끼리 기억이 섞이지 않는다.
 """
 
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from simai_ai.risk._parse import RiskInputError
 from simai_ai.risk.common import ConfidenceReason, Severity, normalize_confidence
@@ -119,6 +122,33 @@ class Finding:
         return (self.rule_id, self.rule_version, self.zone_id or "", self.world_ids)
 
 
+class RuleStateView:
+    """한 출처의 규칙 기억 칸들. 규칙은 slot(자기 규칙 키, 만드는 함수)으로 자기 칸만 쓴다. 출처는 보이지 않는다."""
+
+    def __init__(self, slots: dict[tuple[str, int], Any] | None = None) -> None:
+        self._slots: dict[tuple[str, int], Any] = {} if slots is None else slots
+
+    def slot(self, key: tuple[str, int], factory: Callable[[], Any]) -> Any:
+        """key(규칙 ID, 버전)의 칸. 없으면 factory() 로 만든다."""
+        if key not in self._slots:
+            self._slots[key] = factory()
+        return self._slots[key]
+
+
+class RuleState:
+    """판정 사이 규칙 기억(세션). 출처(Origin 값)마다 칸을 따로 둔다(R4, 모듈 설명 '예외').
+
+    엔진은 만들 때 받은 RuleState(없으면 새 것)를 판정마다 그 출처의 RuleStateView 로 규칙에 넘긴다. 같은 RuleState 를 받은
+    엔진들(ConfigSync 의 구성 묶음별 엔진)은 같은 규칙 키·같은 출처의 기억을 이어 쓴다. 규칙 버전이 바뀌면 키가 달라 새 칸이다.
+    """
+
+    def __init__(self) -> None:
+        self._by_origin: dict[str, dict[tuple[str, int], Any]] = {}
+
+    def view(self, origin: str) -> RuleStateView:
+        return RuleStateView(self._by_origin.setdefault(str(origin), {}))
+
+
 @dataclass(frozen=True)
 class RuleContext:
     """규칙이 읽는 입력. 출처(Origin)는 일부러 넣지 않는다.
@@ -135,6 +165,9 @@ class RuleContext:
 
     work_surfaces: 판정 시각의 등록 작업면(명세 7.5, 활성 구성 묶음의 Operational Geometry). R2·R3 와 R5 의 가장자리
     예측이 읽는다. 비어 있으면 등록 작업면이 없다는 뜻이고, 그 위의 가장자리·고소 위치는 판정할 근거가 없다.
+
+    state: 이 출처의 판정 사이 규칙 기억(RuleState.view). 엔진이 넣는다. 기억이 필요한 규칙(R4)만 읽고 쓴다. 직접 만든
+    RuleContext 는 빈 칸이라 그 판정 한 번만의 기억이다.
     """
 
     now_ms: int
@@ -143,6 +176,7 @@ class RuleContext:
     monitoring: MonitoringState | None = None
     monitoring_expected: bool = True
     work_surfaces: tuple[WorkSurface, ...] = ()
+    state: RuleStateView = field(default_factory=RuleStateView, compare=False)
 
     @property
     def lag_ms(self) -> int:

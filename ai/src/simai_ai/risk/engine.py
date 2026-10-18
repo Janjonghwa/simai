@@ -18,7 +18,7 @@ from simai_ai.risk._parse import RiskInputError
 from simai_ai.risk.clock import Clock
 from simai_ai.risk.common import Origin
 from simai_ai.risk.monitoring import MonitoringState
-from simai_ai.risk.rule import Finding, Rule, RuleContext, RuleSpec
+from simai_ai.risk.rule import Finding, Rule, RuleContext, RuleSpec, RuleState
 from simai_ai.risk.work_surface import WorkSurface, check_unique_ids
 from simai_ai.risk.world import WorldState
 from simai_ai.risk.zone import Zone
@@ -89,7 +89,9 @@ class Evaluation:
 
 
 class RiskEngine:
-    def __init__(self, rules: Iterable[Rule], clock: Clock) -> None:
+    def __init__(self, rules: Iterable[Rule], clock: Clock, *, state: RuleState | None = None) -> None:
+        """state: 판정 사이 규칙 기억(R4). 없으면 이 엔진만의 새 RuleState 다. 출처마다 칸을 나눠 규칙에 넘긴다.
+        구성 묶음이 바뀌어도 기억을 이어야 하면(ConfigSync) 같은 RuleState 를 새 엔진에 넘긴다."""
         self._rules = tuple(sorted(rules, key=lambda r: r.spec.key))
         ids = [r.spec.rule_id for r in self._rules]
         duplicated = sorted({i for i in ids if ids.count(i) > 1})
@@ -97,6 +99,11 @@ class RiskEngine:
             # 한 엔진에는 규칙 ID 당 한 버전만 둔다(이벤트의 규칙 버전이 하나로 정해져야 한다).
             raise RuleContractError(f"같은 규칙 ID 가 여러 번 들어왔다 {duplicated}")
         self._clock = clock
+        self._state = RuleState() if state is None else state
+
+    @property
+    def state(self) -> RuleState:
+        return self._state
 
     @property
     def rules(self) -> tuple[RuleSpec, ...]:
@@ -138,6 +145,7 @@ class RiskEngine:
             monitoring=monitoring,
             monitoring_expected=origin in _CAMERA_ORIGINS,
             work_surfaces=surfaces,
+            state=self._state.view(origin),
         )
 
         findings: list[Finding] = []

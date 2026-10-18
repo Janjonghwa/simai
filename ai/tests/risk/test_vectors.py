@@ -38,6 +38,8 @@ LIFECYCLE_VECTORS = {
 # R1 시나리오(S15P31A101-71, G6-R1): 경계 진입·이탈·깜빡임, 불확실성, Z 모름, 단상 위 VOLUME_3D.
 # R6·R7 시나리오(S15P31A101-73, G3): 구역 안 관측 상실 자동 해소 0건, 카메라 분리 1초 안 저하 표시, 복구 시 해소,
 # 비 LIVE 출처 현장 경보 0건.
+# R4 시나리오(S15P31A101-96, D-G6-02): 바닥 낙상 발생·해소, 단상 위 낙상 + UNCERTAIN 머리 근거, 급하강 직후 관측 상실,
+# 발생 뒤 머리 높이 모름 중 유지, 정상 동작(빠른 앉기·바닥 앉기·단상 내려오기) 0건, 비 LIVE 경보 0건.
 # R5 시나리오(S15P31A101-98, D-G6-03): 접근(발생·R1 인계·해소), 스쳐 지나감·정지, 되돌아감, 불확실 속도, 속도 상실 중 유지,
 # 축마다 다른 σ, 비 LIVE 경보 0건.
 RULE_VECTORS = {
@@ -53,6 +55,12 @@ RULE_VECTORS = {
     "r2_r3_podium_replay.json",
     "r2_r3_podium_operational_profile.json",
     "r5_r2_edge_stage_approach.json",
+    "r4_fall_floor.json",
+    "r4_fall_floor_replay.json",
+    "r4_podium_fall_uncertain_joints.json",
+    "r4_lost_after_drop.json",
+    "r4_head_unknown_hold.json",
+    "r4_normal_postures.json",
     "r5_approach_entry.json",
     "r5_approach_entry_what_if.json",
     "r5_approach_entry_replay.json",
@@ -96,14 +104,15 @@ def test_vector_ids_are_unique():
 
 
 def test_default_registry_rules():
-    # R1(S15P31A101-71, R6 으로 감쌈), R2·R3(S15P31A101-93), R5(S15P31A101-98), R7(S15P31A101-73). R6 은 구역 규칙을 감싸므로
-    # 따로 등록하지 않는다. 높이 규칙과 그 가장자리를 예측하는 R5 는 교실 시험 프로파일(버전 + 1000, 명세 7.4)도 등록한다.
+    # R1(S15P31A101-71, R6 으로 감쌈), R2·R3(S15P31A101-93), R4(S15P31A101-96), R5(S15P31A101-98), R7(S15P31A101-73).
+    # R6 은 구역 규칙을 감싸므로 따로 등록하지 않는다. 높이 규칙과 그 가장자리를 예측하는 R5 는 교실 시험 프로파일(버전 + 1000, 명세 7.4)도 등록한다.
     assert list(default_registry()) == [
         ("R1", 1),
         ("R2", 1),
         ("R2", 1001),
         ("R3", 1),
         ("R3", 1001),
+        ("R4", 1),
         ("R5", 1),
         ("R5", 1001),
         ("R7", 1),

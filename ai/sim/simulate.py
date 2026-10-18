@@ -124,7 +124,12 @@ class Simulation:
         w, h = cam.spec.image_size
         states = self.states(t_abs_ms)
         cylinders = [
-            Cylinder(st.position_xy, p.spec.radius_m, st.support_z, st.support_z + p.spec.height_m)
+            Cylinder(
+                st.position_xy,
+                p.spec.radius_m,
+                st.support_z,
+                st.support_z + p.spec.height_m if st.top_z is None else st.top_z,
+            )
             for st, p in zip(states, self.people)
         ]
         detections = []
