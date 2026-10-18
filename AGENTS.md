@@ -45,9 +45,14 @@ gateway/     노트북 중계·현장 경보 앱
 server/      EC2 Spring Boot
 front/       Three.js 뷰어, 반장 PWA
 deploy/      모델별 Docker 이미지, Compose, RunPod 템플릿
-docs/        기획서(spec/), 요구사항 명세서(requirements.md), 팀 규칙, 실험 설계, 결정 기록, 데이터 manifest
+docs/        기획서(spec/), 요구사항 명세서(requirements.md), 팀 규칙, 구현 설계(design/), 데이터 manifest(data/), 실험 설계(experiments/)
 ```
 
+- `docs/` 하위 폴더:
+  - `spec/`: 기획서 정본(장별 파일). `requirements.md`: 요구사항 명세서 정본.
+  - `design/`: 구현 설계 문서. 티켓 단위로 관련 명세 절, 코드·시험 위치, 명세에 없어 정한 수치와 근거, 버린 대안, 잔여 위험, 넘긴 일을 적는다. 명세 정리 MR 이 근거로 쓴다.
+  - `data/`: 데이터 manifest. 공개 데이터의 출처·라이선스·경로·해시, 녹화 세션 manifest 형식(`recording-manifest.md`)과 세션별 사본(`sessions/<session_id>.json`).
+  - `experiments/`: EXP 실험 설계와 색인.
 - 영상·사진·가중치·데이터셋·대형 3D 산출물은 커밋하지 않는다. RunPod Network Volume에 두고 저장소에는 manifest(경로·해시)만 둔다.
 - 비밀 값(API 키, 토큰, RTSP 계정)은 `.env`에만 둔다.
 
