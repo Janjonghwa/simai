@@ -45,16 +45,41 @@ def _run(args: argparse.Namespace) -> int:
     from simai_site_alert.app import SiteAlertApp
     from simai_site_alert.core import SiteAlertCore
     from simai_site_alert.display import TextDisplay, TkDisplay
-    settings = load_settings(Path(args.env_file))
+    from simai_site_alert.clock import SystemClock
+    from simai_site_alert.heartbeat import Ec2HeartbeatClient
+    from simai_site_alert.link_status import SiteLinkMonitor
+    from simai_site_alert.relay_status import RelayStatusReceiver
+
+    try:
+        settings = load_settings(Path(args.env_file))
+    except ValueError as e:
+        print(f"설정 오류: {e}", file=sys.stderr)
+        return 2
     channel = None
+    ec2 = None
     if not args.offline:
         try:
             channel = build_control_channel(settings)
+            assert settings.ec2_base_url and settings.device_token
+            ec2 = Ec2HeartbeatClient(settings.ec2_base_url, device_token=settings.device_token)
         except ValueError as e:
             print(f"설정 오류: {e} (또는 --offline 으로 실행한다)", file=sys.stderr)
             return 2
-    core = SiteAlertCore(_sound(args.sound), laptop_id=settings.laptop_id)
-    app = SiteAlertApp(core, channel)
+    clock = SystemClock()
+    core = SiteAlertCore(_sound(args.sound), laptop_id=settings.laptop_id, clock=clock)
+    # 장애 감시(관제 중단·원격 관제 장애 표시, 노트북 → Tier 0·EC2 하트비트)는 제어 채널이 있을 때만 켠다
+    monitor = SiteLinkMonitor() if channel is not None else None
+    app = SiteAlertApp(core, channel, monitor=monitor, ec2=ec2, clock=clock)
+    receiver = None
+    if monitor is not None:
+        try:
+            receiver = RelayStatusReceiver(app.on_relay_report, port=settings.relay_status_port,
+                                           monotonic=clock.monotonic)
+            receiver.start()
+        except OSError as e:  # 포트를 못 열면 영상 상태를 모름으로 두고(관제 중단 표시) 경보는 계속 돈다
+            logging.getLogger(__name__).error(
+                "영상 중계 상태 포트 127.0.0.1:%d 를 열지 못했다 (%s). 영상 상태를 모름으로 표시한다",
+                settings.relay_status_port, type(e).__name__)
     test_s = None if args.no_test_alert else args.test_alert_seconds
     if args.headless:
         app.add_display(TextDisplay().update)
@@ -67,6 +92,8 @@ def _run(args: argparse.Namespace) -> int:
             pass
         finally:
             app.close()
+            if receiver is not None:
+                receiver.close()
         return 0
     display = TkDisplay(on_site_ack=app.site_ack, on_test_alert=lambda: app.test_alert(args.test_alert_seconds),
                         fullscreen=args.fullscreen)
@@ -76,6 +103,8 @@ def _run(args: argparse.Namespace) -> int:
         display.run()
     finally:
         app.close()
+        if receiver is not None:
+            receiver.close()
     return 0
 
 

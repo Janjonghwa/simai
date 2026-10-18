@@ -44,6 +44,7 @@ from enum import Enum
 from typing import Any
 
 from simai_site_alert.clock import Clock, SystemClock
+from simai_site_alert.link_status import SiteStatus
 from simai_site_alert.messages import (
     AlarmStop,
     Health,
@@ -118,6 +119,7 @@ class ScreenState:
     test: TestAlertState | None  # 진행 중이거나 마지막 시험 경보
     control_connected: bool | None  # I0 제어 채널 연결 상태(None 은 아직 모름)
     pending_site_acks: int  # 보냈지만 Tier 0 기록을 아직 받지 못한 현장 확인 수
+    site: SiteStatus | None = None  # 장애별 현장 표시(link_status). 감시를 켜지 않았으면(--offline) None
 
 
 @dataclass(frozen=True)
@@ -141,6 +143,7 @@ class HandleResult:
     outcome: Outcome
     reason: str | None = None
     sound_start_latency_s: float | None = None  # 이 메시지로 소리 시작을 걸었으면 수신 → start() 반환까지
+    health: Health | None = None  # health 였으면 해석한 값(장애 상태 기계 link_status 가 쓴다)
 
 
 _SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1}
@@ -162,6 +165,7 @@ class SiteAlertCore:
         self._check_failed = False  # 장치 확인(check)이 실패했다. 다시 확인될 때까지 오류 표시를 내리지 않는다
         self._test: TestAlertState | None = None
         self._control_connected: bool | None = None
+        self._site: SiteStatus | None = None
         self._listeners: list[Callable[[ScreenState], None]] = []
         self.last_health: Health | None = None  # 마지막으로 받은 health(재동기화 부분)
         self.rejected: Counter[str] = Counter()
@@ -337,7 +341,7 @@ class SiteAlertCore:
         if msg.contract_warnings:
             log.warning("health.active_site_alerts 계약 위반: %s", ", ".join(msg.contract_warnings))
         if msg.active_site_alerts is None:
-            return HandleResult(Outcome.IGNORED, "active_site_alerts 없는 health 로는 경보를 바꾸지 않는다")
+            return HandleResult(Outcome.IGNORED, "active_site_alerts 없는 health 로는 경보를 바꾸지 않는다", health=msg)
         as_of = msg.active_site_alerts_as_of
         now_ms = self._clock.now_ms()
         changed = 0
@@ -362,7 +366,7 @@ class SiteAlertCore:
         if changed:
             latency = self._reconcile(received_mono)
             self._notify()
-        return HandleResult(Outcome.APPLIED, f"active_site_alerts 재동기화 (바뀐 경보 {changed})", latency)
+        return HandleResult(Outcome.APPLIED, f"active_site_alerts 재동기화 (바뀐 경보 {changed})", latency, health=msg)
 
     def _apply_list_item(self, item: SiteAlertItem, as_of: int | None, now_ms: int) -> bool:
         """목록 항목 하나를 활성 경보 집합에 맞춘다. 바뀌었으면 True."""
@@ -510,6 +514,13 @@ class SiteAlertCore:
                 self._control_connected = connected
                 self._notify()
 
+    def set_site_status(self, status: SiteStatus) -> None:
+        """장애 상태 기계(link_status)가 계산한 현장 표시. 경보 판단에는 쓰지 않는다(표시만)."""
+        with self._lock:
+            if self._site != status:
+                self._site = status
+                self._notify()
+
     def tick(self) -> None:
         """주기 호출(약 1초). 소리 장치가 실패해 있으면 다시 시도한다."""
         with self._lock:
@@ -599,4 +610,5 @@ class SiteAlertCore:
             test=self._test,
             control_connected=self._control_connected,
             pending_site_acks=len(self._pending_site_acks),
+            site=self._site,
         )

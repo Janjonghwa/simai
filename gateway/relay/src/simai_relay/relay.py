@@ -231,9 +231,12 @@ class RelaySession:
     def alive(self) -> bool:
         return any(t.is_alive() for t in self._threads)
 
-    def heartbeat_cameras(self) -> list[dict[str, Any]]:
-        """laptop_heartbeat payload.cameras (카메라별 RTSP 상태·epoch·마지막 순번·도착 간격 최대)."""
-        return [r.stats.heartbeat_entry() for r in self.relays]
+    def heartbeat_cameras(self, reset_window: bool = True) -> list[dict[str, Any]]:
+        """laptop_heartbeat payload.cameras (카메라별 RTSP 상태·epoch·마지막 순번·도착 간격 최대).
+
+        reset_window: 도착 간격 최대의 창을 비운다. 하트비트로 보내는 쪽(상태 보고, 1초마다)만 비우고, 로그는 비우지 않는다.
+        """
+        return [r.stats.heartbeat_entry(reset_window) for r in self.relays]
 
     def snapshots(self) -> list[dict[str, Any]]:
         return [r.stats.snapshot() for r in self.relays]

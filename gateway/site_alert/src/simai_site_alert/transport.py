@@ -9,7 +9,7 @@
   인증서 검증을 끄고 아무 서버에나 붙는 경로는 없다. 서버 확인(peer_verifier)은 기기 토큰을 싣는 HTTP 요청보다 먼저 한다.
 - InMemoryControlChannel: 시험·오프라인용.
 
-기기 토큰 발급, 시계 차이 교환, laptop_heartbeat 송신, 카메라 영상 연결은 이 모듈 밖이다.
+기기 토큰 발급, 시계 차이 교환, 카메라 영상 연결은 이 모듈 밖이다. laptop_heartbeat 는 app 이 send 로 보낸다.
 """
 
 from __future__ import annotations
@@ -61,6 +61,9 @@ class ControlChannel(Protocol):
     def send(self, message: dict[str, Any]) -> bool:
         """보낼 수 있으면 보내고(기다리지 않음) True, 연결이 없으면 False."""
 
+    def reset(self) -> None:
+        """지금 연결을 끊고 다시 붙는다(기다리지 않음). Tier 0 health 가 끊긴 반쯤 열린 연결을 버릴 때 쓴다(명세 3.2)."""
+
     def close(self) -> None: ...
 
 
@@ -79,6 +82,7 @@ class InMemoryControlChannel:
     def __init__(self, monotonic: Callable[[], float] = time.perf_counter) -> None:
         self.sent: list[dict[str, Any]] = []
         self.connected = False
+        self.resets = 0
         self._monotonic = monotonic
         self._on_message: OnMessage | None = None
         self._on_connected: OnConnected | None = None
@@ -101,6 +105,11 @@ class InMemoryControlChannel:
             return False
         self.sent.append(message)
         return True
+
+    def reset(self) -> None:
+        self.resets += 1
+        if self.connected:
+            self.set_connected(False)
 
     def close(self) -> None:
         self.connected = False
@@ -299,6 +308,20 @@ class WebSocketControlChannel:
         text = json.dumps(message, ensure_ascii=False)
         asyncio.run_coroutine_threadsafe(ws.send(text), loop)
         return True
+
+    def reset(self) -> None:
+        """지금 연결을 바로 끊는다(닫기 인사를 기다리지 않음: 반쯤 열린 연결은 답하지 않는다). 수신 루프가 끝나면 다시 붙는다."""
+        ws, loop = self._ws, self._loop
+        if ws is None or loop is None or not loop.is_running():
+            return
+
+        def abort() -> None:
+            transport = getattr(ws, "transport", None)
+            if transport is not None:
+                transport.abort()
+
+        log.warning("Tier 0 health 가 끊겨 제어 채널을 끊고 다시 붙는다")
+        loop.call_soon_threadsafe(abort)
 
     def close(self) -> None:
         self._closing.set()

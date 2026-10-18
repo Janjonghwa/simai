@@ -26,7 +26,8 @@ class CertFiles:
     fingerprint: str  # sha256:<hex>, cryptography 가 계산한 SubjectPublicKeyInfo DER 의 SHA-256
 
 
-def make_cert(directory: Path, name: str = "tier0", *, rsa: bool = False) -> CertFiles:
+def make_cert(directory: Path, name: str = "tier0", *, rsa: bool = False, loopback_san: bool = False) -> CertFiles:
+    """loopback_san: 127.0.0.1·localhost 이름을 넣는다(호스트 이름까지 검증하는 HTTPS 시험 서버, S15P31A101-91)."""
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -44,8 +45,15 @@ def make_cert(directory: Path, name: str = "tier0", *, rsa: bool = False) -> Cer
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - dt.timedelta(days=1))
         .not_valid_after(now + dt.timedelta(days=1))
-        .sign(key, hashes.SHA256())
     )
+    if loopback_san:
+        import ipaddress
+
+        cert = cert.add_extension(
+            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1")), x509.DNSName("localhost")]),
+            critical=False,
+        )
+    cert = cert.sign(key, hashes.SHA256())
     directory.mkdir(parents=True, exist_ok=True)
     cert_file, key_file = directory / f"{name}.crt", directory / f"{name}.key"
     cert_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
@@ -238,3 +246,60 @@ class FakeEc2:
     def __exit__(self, *exc) -> None:
         self._srv.shutdown()
         self._srv.server_close()
+
+
+class HttpsEc2:
+    """하트비트 시험용 로컬 HTTPS EC2 (S15P31A101-91). 인증서는 시험 중에만 만든 자체 서명(loopback_san).
+
+    mode: "ok"(200), "status:<코드>", "delay:<초>"(그만큼 늦게 200), "redirect:<주소>"(302). 받은 요청을 requests 에 쌓는다.
+    """
+
+    def __init__(self, cert: CertFiles, mode: str = "ok") -> None:
+        self.mode = mode
+        self.requests: list[dict] = []
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length)
+                outer.requests.append({"path": self.path, "headers": dict(self.headers.items()), "body": body,
+                                       "at": time.monotonic()})
+                mode = outer.mode
+                if mode.startswith("delay:"):
+                    time.sleep(float(mode.split(":", 1)[1]))
+                    mode = "ok"
+                if mode.startswith("redirect:"):
+                    self.send_response(302)
+                    self.send_header("Location", mode.split(":", 1)[1])
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                status = int(mode.split(":", 1)[1]) if mode.startswith("status:") else 200
+                payload = b"{}"
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                except OSError:
+                    pass
+
+            def log_message(self, *args) -> None:
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.server.socket = server_context(cert).wrap_socket(self.server.socket, server_side=True)
+        self.port = self.server.server_address[1]
+        self.base_url = f"https://127.0.0.1:{self.port}"
+        self._thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+
+    def __enter__(self) -> HttpsEc2:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.server.shutdown()
+        self.server.server_close()

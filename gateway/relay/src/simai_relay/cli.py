@@ -32,6 +32,8 @@ from simai_relay.config import (
 from simai_relay.epoch_store import DEFAULT_EPOCH_STATE, EpochStore
 from simai_relay.relay import RelaySession
 from simai_relay.sink import CountingSink, SinkFactory
+from simai_relay.status_report import DEFAULT_PORT as DEFAULT_STATUS_PORT
+from simai_relay.status_report import RelayStatusPublisher
 
 log = logging.getLogger("simai_relay")
 
@@ -47,7 +49,8 @@ def _setup_logging(secrets: list[str], verbose: bool) -> None:
 
 def _report(session: RelaySession, transport: object | None = None) -> None:
     sends = {s["camera_id"]: s for s in transport.snapshots()} if transport is not None else {}  # type: ignore[attr-defined]
-    for entry, snap in zip(session.heartbeat_cameras(), session.snapshots(), strict=True):
+    # 로그는 도착 간격 창을 비우지 않는다(창은 1초마다 단말로 보내는 상태 보고가 비운다)
+    for entry, snap in zip(session.heartbeat_cameras(reset_window=False), session.snapshots(), strict=True):
         record = {**snap, "heartbeat": entry}
         if snap["camera_id"] in sends:
             record["tier0_send"] = sends[snap["camera_id"]]
@@ -80,6 +83,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     _setup_logging(secret_values(env), args.verbose)
     watcher = factory = None
     try:
+        if not 0 <= args.status_port <= 65535:
+            raise ValueError("--status-port 는 0~65535 다")
         cameras = load_cameras(Path(args.config), clock, env)
         epochs = EpochStore(Path(args.epoch_state))
         if args.send:
@@ -95,6 +100,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     if watcher is not None:
         watcher.start()
     session.start(args.seconds)
+    publisher = None
+    if args.status_port:
+        # 현장 경보 단말에 1초마다 상태 보고(관제 중단 판단·laptop_heartbeat). --send 가 아니면 Tier 0 영상 연결은 없다
+        video = factory.video_cameras if factory is not None else list
+        publisher = RelayStatusPublisher(lambda: session.heartbeat_cameras(), video, port=args.status_port)
+        publisher.start()
     try:
         while not session.join(timeout=args.report_interval):
             _report(session, factory)
@@ -102,6 +113,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         session.stop()
         session.join()
     finally:
+        if publisher is not None:
+            publisher.stop()
         if watcher is not None:
             watcher.stop()
     _report(session, factory)
@@ -124,6 +137,8 @@ def main(argv: list[str] | None = None) -> int:
                      help="카메라별로 쓴 최대 stream_epoch 를 남기는 파일 (재시작해도 epoch 가 줄지 않게. 기본 ~/.simai)")
     run.add_argument("--send", action="store_true",
                      help="Tier 0 로 전송한다 (.env 의 SIMAI_EC2_BASE_URL·SIMAI_DEVICE_TOKEN·SIMAI_TIER0_PINNED_SPKI_SHA256)")
+    run.add_argument("--status-port", type=int, default=DEFAULT_STATUS_PORT,
+                     help="현장 경보 단말에 상태를 알리는 127.0.0.1 UDP 포트 (기본 47031, 단말 SIMAI_RELAY_STATUS_PORT 와 같게. 0 이면 끔)")
     run.add_argument("--verbose", action="store_true")
     from simai_relay import bench
 
