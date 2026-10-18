@@ -25,6 +25,8 @@ from typing import Any, Literal
 
 # site_ack 를 정의한 계약 버전(contracts/examples/site_ack.json 과 같다). 2.1.0: 확인 대상 event_sequence.
 SITE_ACK_SCHEMA_VERSION = "2.1.0"
+# laptop_heartbeat 계약 버전(contracts/examples/laptop_heartbeat.json 과 같다)
+LAPTOP_HEARTBEAT_SCHEMA_VERSION = "1.2.0"
 
 SITE_SEVERITIES = ("CRITICAL", "HIGH")  # 노트북 로컬 경보 대상 (명세 7.3)
 LIFECYCLES = ("RAISED", "UPDATED", "RESOLVED")
@@ -116,6 +118,9 @@ class Health:
     undecidable_event_ids: frozenset[str] = frozenset()  # 항목이 틀려 이번 목록으로 판단하지 않는 이벤트
     partial: bool = False  # event_id 도 읽을 수 없는 항목이 있다: 목록에서 빠진 이벤트를 해소로 보지 않는다
     contract_warnings: tuple[str, ...] = field(default=())
+    # 장애 표시용(link_status, S15P31A101-91). 없거나 형식이 틀리면 None(모름): 정상으로 보지 않는다.
+    system_health: str | None = None  # NOMINAL / DEGRADED / UNSAFE_UNKNOWN
+    t_latest_global: int | None = None  # 처리 진행 판단(늘어나는지)에만 쓴다. 다른 시계와 비교하지 않는다
 
 
 @dataclass(frozen=True)
@@ -278,13 +283,21 @@ def _parse_site_alert_item(raw: Any) -> SiteAlertItem | str | None:
     return SiteAlertItem(event_id, seq, acknowledged, severity, summary, rule_id, zone_id)
 
 
+SYSTEM_HEALTHS = ("NOMINAL", "DEGRADED", "UNSAFE_UNKNOWN")
+
+
 def parse_health(env: Envelope) -> Health:
     p = env.payload
     raw_alerts = p.get("active_site_alerts")
     as_of = p.get("active_site_alerts_as_of")
     as_of = as_of if _is_int(as_of) else None
+    system_health = p.get("system_health")
+    system_health = system_health if system_health in SYSTEM_HEALTHS else None
+    t_latest = p.get("t_latest_global")
+    t_latest = t_latest if _is_int(t_latest) and t_latest >= 0 else None
+    link = {"system_health": system_health, "t_latest_global": t_latest}
     if not isinstance(raw_alerts, list):
-        return Health(sent_at=env.sent_at, active_site_alerts=None, active_site_alerts_as_of=as_of)
+        return Health(sent_at=env.sent_at, active_site_alerts=None, active_site_alerts_as_of=as_of, **link)
     items: dict[str, SiteAlertItem] = {}
     undecidable: set[str] = set()
     partial = False
@@ -312,6 +325,7 @@ def parse_health(env: Envelope) -> Health:
         undecidable_event_ids=frozenset(undecidable),
         partial=partial,
         contract_warnings=tuple(warnings),
+        **link,
     )
 
 
@@ -356,4 +370,19 @@ def build_site_ack(*, event_id: str, laptop_id: str, now_ms: int, event_sequence
                 "acked_at": now_ms,
             },
         },
+    }
+
+
+def build_laptop_heartbeat(*, laptop_id: str, now_ms: int, payload: dict[str, Any]) -> dict[str, Any]:
+    """laptop_heartbeat 봉투 (contracts/messages/laptop_heartbeat.schema.json). payload 는 link_status 가 만든다.
+
+    노트북 ID 는 봉투 source_id, 시각은 봉투 sent_at(노트북 벽시계)이다. 받는 쪽은 자기 단조 시계로 누락을 잰다.
+    """
+    return {
+        "schema_version": LAPTOP_HEARTBEAT_SCHEMA_VERSION,
+        "msg_type": "laptop_heartbeat",
+        "msg_id": str(uuid.uuid4()),
+        "sent_at": now_ms,
+        "source_id": laptop_id,
+        "payload": payload,
     }

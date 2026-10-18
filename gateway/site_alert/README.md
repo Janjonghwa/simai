@@ -13,6 +13,8 @@ RunPod Tier 0 가 LIVE 로 판정한 CRITICAL·HIGH 경보(`local_alert`)를 I0 
 | 3.10 시험 알림, 18.2 시작 절차 | 시작할 때 시험 경보(“시험” 표시, 실제 경보와 다른 소리). RiskEvent·`site_ack` 를 만들지 않음 |
 | 계약 `event_sequence` | `(event_id, event_sequence)` 로 중복·역순 무시. 해소된 이벤트의 sequence 도 기억해 늦은 RAISED 로 되살리지 않음 |
 | 부록 D-G0-04 | 수신 → 소리 시작 호출 지연을 `bench` 로 잰다 |
+| 3.2 이중 감시, 3.10 표, 6.5 | 장애별 현장 표시(S15P31A101-91): Tier 0·영상이 끊기면 “관제 중단”, EC2 만 끊기면 “원격 관제 장애”, 정상이면 “관제 정상”. 원인과 연결 상세(Tier 0 · 영상 n/4대 · EC2)를 함께 띄운다. 아래 '장애 감시' |
+| FR-134, 12.6, 계약 `laptop_heartbeat` | 1초마다 노트북 → EC2 `POST /api/devices/heartbeat`(HTTPS, 기기 토큰)와 노트북 → Tier 0(I0 제어 채널) 하트비트. 내용은 장애 상태 기계가 만든다 |
 | 3.12 엔드포인트 등록, 12.7·14 공개키 고정 | Tier 0 주소·포트는 EC2 `GET /api/endpoints/tier0`(기기 토큰)로 조회해 붙고, 끊기거나 연결 중 재조회(30초)에서 바뀌면 다시 붙음. 서버 공개키 지문이 미리 고정한 값과 다르면 기기 토큰을 보내기 전에 끊음(S15P31A101-159) |
 
 ## 구조
@@ -29,6 +31,9 @@ src/simai_site_alert/
   display.py    화면 문구(순수 함수, 헤드리스 시험)와 tkinter 창
   transport.py  I0 제어 채널 인터페이스와 WebSocket 구현(wss, 기기 토큰, 엔드포인트 조회·재접속), 시험용 InMemory 채널
   endpoint.py   EC2 엔드포인트 조회(tier0_endpoint 해석)와 고정 지문 확인 → 접속 대상
+  link_status.py 장애 상태 기계: Tier 0·영상 중계·EC2 연결 → 현장 표시(site_display)·laptop_heartbeat 내용
+  heartbeat.py  노트북 → EC2 하트비트(HTTPS POST, 기기 토큰, 대기열 없음)
+  relay_status.py 영상 중계 → 단말 상태 보고(127.0.0.1 UDP, 노트북 안 내부 형식)
   pinning.py    Tier 0 TLS 공개키 지문(SPKI SHA-256) 계산과 고정 검사
   app.py        조립: 제어 채널 → 코어 → 소리·화면, 주기 tick, 재접속 때 site_ack 재전송
   bench.py      수신 → 소리 시작 지연 측정 (loopback WebSocket)
@@ -73,7 +78,41 @@ tests/          시험 (소리를 내지 않는다)
 - 한계: 해소(RESOLVED)를 놓친 뒤의 재개는 UPDATED 로 와서 노트북은 재개인지 알 수 없다. 확인된 경보가 재개돼도 다음 목록
   (최대 약 1초)까지 조용하고, 그 사이 옛 단계를 대상으로 한 늦은 `alarm_stop` 도 적용된다. 다음 목록이 바로잡는다.
 
-`core.alarm_status()` 는 `laptop_heartbeat.alarm` 형식이다(하트비트 송신은 이 티켓 밖).
+`core.alarm_status()` 는 `laptop_heartbeat.alarm` 형식이다(하트비트에 그대로 싣는다).
+
+### 장애 감시 (S15P31A101-91)
+
+노트북 쪽 장애 판단은 `link_status.SiteLinkMonitor` 한 곳에서 하고, 화면과 두 하트비트가 그 결과를 쓴다.
+
+| 상황 (명세 3.10 표) | 현장 표시 | 판단 근거 (받는 쪽 단조 시계, 1초 주기 3회 연속 누락 = 3초) |
+|---|---|---|
+| RunPod Tier 0 중단 | 관제 중단 `CONTROL_HALTED` | 제어 채널 끊김(즉시), health 3초 없음, 처리 정체(`t_latest_global` 이 3초 동안 늘지 않음), `system_health` 가 UNSAFE_UNKNOWN 이거나 없음 |
+| 노트북 → RunPod 영상 단절 | 관제 중단 | 영상 중계가 Tier 0 영상 연결이 0대라고 알림(즉시), 중계 상태 보고 3초 없음(모름) |
+| EC2 만 단절 | 원격 관제 장애 `REMOTE_FAULT` | EC2 하트비트에 3초 동안 2xx 응답 없음. 현장 경보는 그대로 울린다 |
+| 분석 워커 중단 | (만들지 않음) | 노트북에 오는 신호가 없다. `AI_DELAY` 를 지어내지 않는다 |
+
+- 모르면 정상으로 보지 않는다: 시작 직후는 관제 중단, EC2 응답을 받기 전은 원격 장애다.
+- 장애로는 즉시 바꾸고, 정상으로는 정상 조건이 2초 이어질 때만 되돌린다(깜빡이는 연결에서 '정상'이 잠깐씩 보이지 않게).
+  제어 채널이 끊기면 그 연결에서 받은 health 를 버린다(재접속 뒤 새 health 가 와야 정상). 둘이 겹치면 관제 중단이 먼저다.
+- 연결은 살아 있는데 health 가 3초 넘게 없으면 제어 채널을 바로 끊고(닫기 인사를 기다리지 않음) 다시 붙는다(반쯤 열린 연결).
+- 판단 주기는 0.5초다. 끊김 3초 + 0.5초 안에 화면이 바뀐다(G3 현장 5초).
+- 벽시계는 `last_message_at`·`last_response_at` 기록에만 쓴다. 노트북 시계를 되돌려 `t_latest_global` 이 줄면 기준만 옮기고
+  다음 증가를 진행으로 본다.
+
+하트비트 (계약 `laptop_heartbeat` 1.2.0):
+
+- `tier0.control` 은 계약 정의대로 제어 채널이 연결돼 있고 3초 안에 health 를 받았는지다. 처리 정체·판정 불가는
+  `site_display=CONTROL_HALTED` 로 알린다. `video_cameras` 는 중계 보고가 살아 있을 때만 채우고(모르면 빈 배열),
+  `cameras` 는 그때만 싣는다. `ec2` 는 Tier 0 로 보내는 하트비트에만 싣는다.
+- EC2: HTTPS 만(평문 http 는 루프백 시험 서버도 불가), 인증서 검증, 리다이렉트 안 따름. 기기 토큰은 Authorization 헤더에만
+  싣고 주소·로그·예외 문장·repr 에 넣지 않는다. 대기열이 없다: 보낼 때마다 그 순간 상태로 만들고 한 번에 하나만 보낸다.
+  EC2 가 느리거나 막혀도 쌓이지 않고, 송신은 따로 도는 스레드라 현장 경보 경로를 기다리게 하지 않는다. 원격 장애 판단은
+  응답 결과가 아니라 '마지막 2xx 이후 경과'로 하므로 송신 스레드가 막혀도 3초 뒤 표시가 바뀐다.
+- Tier 0: 연결돼 있으면 1초마다 제어 채널로 보낸다(기다리지 않음).
+
+영상 상태는 중계(`gateway/relay`, 별도 프로세스)가 1초마다 127.0.0.1 UDP(`SIMAI_RELAY_STATUS_PORT`, 기본 47031)로 알린다
+(`relay_status.py`, 노트북 안 내부 형식이라 계약이 아니다). 형식이 틀린 보고는 통째로 버리고 같은 중계의 늦은 보고도 버린다.
+포트를 열지 못하면 영상 상태를 모름으로 두고(관제 중단) 경보는 계속 돈다.
 
 ## 설치와 시험
 
@@ -91,7 +130,8 @@ tkinter 시험은 창을 잠깐 띄웠다 닫는다(화면이 없으면 건너�
 
 1. 저장소 루트 `.env` 에 설정을 넣는다(`gateway/site_alert/.env.example` 참고, 커밋 금지).
    `SIMAI_EC2_BASE_URL`(https), `SIMAI_DEVICE_TOKEN`(비밀), `SIMAI_TIER0_PINNED_SPKI_SHA256`(미리 고정한 Tier 0 공개키 지문),
-   `SIMAI_LAPTOP_ID`. Tier 0 주소·포트는 적지 않는다(Pod 가 바뀌면 EC2 에서 새 값을 받는다).
+   `SIMAI_LAPTOP_ID`. Tier 0 주소·포트는 적지 않는다(Pod 가 바뀌면 EC2 에서 새 값을 받는다). EC2 하트비트 때문에
+   `SIMAI_EC2_BASE_URL` 은 https 여야 한다. 영상 중계와 상태 포트를 바꾸면 `SIMAI_RELAY_STATUS_PORT` 와 중계 `--status-port` 를 같게 한다.
 2. 실행하면 먼저 시험 경보가 4초 울린다. 소리가 들리고 “시험” 화면이 보이는지 확인한다. 창의 '시험 경보' 버튼으로 다시 울릴 수 있다.
 
 ```sh
@@ -114,5 +154,6 @@ uv run simai-site-alert bench --sound win --count 100  # 실제 winsound (짧은
 ## 하지 않는 것 (다른 티켓)
 
 - 카메라 영상 TLS 연결(공개키 고정 검사는 `pinning.PinnedPeerVerifier` 를 같이 쓴다), RunPod HTTPS 프록시 예비 경로.
-- `laptop_heartbeat` 송신, 장애별 현장 표시(“관제 중단”·“원격 관제 장애”) 판정, 시계 차이 교환.
+- 시계 차이 교환. “AI 분석 지연” 표시(분석 워커 상태가 노트북에 오지 않는다).
+- Tier 0 쪽 `laptop_heartbeat` 수신 감시(`health.gateway_link` 판정)와 EC2 쪽 하트비트 수신·구분 표시(server).
 - 실제 Tier 0 연결.

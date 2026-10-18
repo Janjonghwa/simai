@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import TextIO
 
 from simai_site_alert.core import ActiveAlert, ScreenState
+from simai_site_alert.link_status import CONTROL_HALTED, NORMAL, REMOTE_FAULT, Reason, SiteStatus
 
 CHANNEL_LABEL = {"CONTROL_ROOM": "관제 화면", "FOREMAN_PWA": "반장 PWA", "SITE_BUTTON": "현장 확인 버튼"}
 TEST_BANNER = "[시험] 시험 경보입니다. 실제 위험이 아닙니다. 소리가 들리고 화면이 보이는지 확인하세요."
@@ -18,6 +19,44 @@ TEST_BANNER = "[시험] 시험 경보입니다. 실제 위험이 아닙니다. �
 
 def sound_fault_banner(reason: str) -> str:
     return f"소리 장치 오류: {reason} - 소리 없이 화면으로만 경보 중. 스피커·출력 장치를 확인하세요."
+
+
+REASON_LABEL = {
+    Reason.CONTROL_NOT_CONNECTED: "Tier 0 제어 채널 끊김",
+    Reason.HEALTH_MISSING: "Tier 0 응답 없음",
+    Reason.PROCESSING_STALLED: "Tier 0 처리 정체",
+    Reason.TIER0_UNSAFE: "Tier 0 판정 불가",
+    Reason.VIDEO_DOWN: "영상 중계 끊김",
+    Reason.VIDEO_UNKNOWN: "영상 중계 상태 모름",
+    Reason.EC2_UNREACHABLE: "EC2 응답 없음",
+}
+SITE_TITLE = {
+    CONTROL_HALTED: "관제 중단 - 위험 감시가 멈췄습니다",
+    REMOTE_FAULT: "원격 관제 장애 - 현장 경보는 동작 중입니다. 관제 화면·반장 PWA 전달이 늦거나 안 됩니다",
+    NORMAL: "관제 정상",
+}
+
+
+def site_banner(site: SiteStatus) -> str:
+    """장애별 현장 표시 한 줄 (명세 3.10 표). 원인을 함께 쓴다."""
+    text = SITE_TITLE.get(site.site_display, site.site_display)
+    reasons = site.tier0_reasons if site.site_display == CONTROL_HALTED else site.ec2_reasons
+    if site.site_display != NORMAL and reasons:
+        text += " (" + ", ".join(REASON_LABEL.get(r, r) for r in reasons) + ")"
+    if site.recovering:
+        text += " · 복구 확인 중"
+    return text
+
+
+def site_detail(site: SiteStatus) -> str:
+    """연결 상세 한 줄: Tier 0 · 영상 · EC2."""
+    tier0 = "Tier 0: 연결됨" if site.control_link == "CONNECTED" else "Tier 0: 끊김"
+    if site.camera_count is None:
+        video = "영상: 상태 모름"
+    else:
+        video = f"영상: {len(site.video_cameras)}/{site.camera_count}대"
+    ec2 = "EC2: 연결됨" if site.ec2_link == "CONNECTED" else "EC2: 끊김"
+    return " · ".join((tier0, video, ec2))
 
 
 def control_line(connected: bool | None) -> str:
@@ -58,7 +97,11 @@ def render_lines(state: ScreenState) -> list[str]:
             lines.append(TEST_BANNER)
         else:
             lines.append("[시험] 시험 경보 끝 (소리 재생: " + ("시작됨" if state.test.sound_started else "실패") + ")")
-    lines.append(control_line(state.control_connected))
+    if state.site is not None:
+        lines.append(site_banner(state.site))
+        lines.append(site_detail(state.site))
+    else:
+        lines.append(control_line(state.control_connected))
     if state.pending_site_acks:
         lines.append(f"현장 확인 {state.pending_site_acks}건 Tier 0 기록 대기")
     if not state.alerts:
@@ -88,11 +131,15 @@ class TkDisplay:
     - CRITICAL·HIGH 경보가 표시 중이면 배경이 점멸한다(확인 뒤에도 해소까지 유지).
     - 경보마다 '현장 확인' 버튼(확인 전일 때만 누를 수 있음).
     - 소리 장치 오류는 맨 위에 큰 빨간 띠로 띄운다.
+    - 장애별 현장 표시(관제 중단·원격 관제 장애·정상)는 상태 줄 위 띠로 띄운다(경보 표시와 따로).
     """
 
     POLL_MS = 30
     BLINK_MS = 500
     COLORS = {"CRITICAL": ("#b00020", "#ff5252"), "HIGH": ("#c75000", "#ffa040"), None: ("#202020", "#202020")}
+    # 장애별 현장 표시 띠 (배경, 글자, 글자 크기)
+    SITE_STYLE = {CONTROL_HALTED: ("#4a0000", "white", 24), REMOTE_FAULT: ("#ffb000", "black", 20),
+                  NORMAL: ("#1e5e2e", "white", 14)}
 
     def __init__(
         self,
@@ -118,6 +165,7 @@ class TkDisplay:
         self.root.configure(bg="#202020")
         self._fault = tk.Label(self.root, font=("Malgun Gothic", 26, "bold"), fg="white", bg="#d00000", wraplength=1050)
         self._test = tk.Label(self.root, font=("Malgun Gothic", 20, "bold"), fg="black", bg="#ffe066", wraplength=1050)
+        self._site = tk.Label(self.root, font=("Malgun Gothic", 14, "bold"), fg="white", bg="#202020", wraplength=1050)
         self._status = tk.Label(self.root, font=("Malgun Gothic", 14), fg="#dddddd", bg="#202020", anchor="w")
         self._alerts = tk.Frame(self.root, bg="#202020")
         bottom = tk.Frame(self.root, bg="#202020")
@@ -180,7 +228,14 @@ class TkDisplay:
             self._test.pack(fill="x", before=self._status, ipady=8)
         else:
             self._test.pack_forget()
-        status = control_line(state.control_connected)
+        if state.site is not None:
+            bg, fg, size = self.SITE_STYLE.get(state.site.site_display, self.SITE_STYLE[CONTROL_HALTED])
+            self._site.configure(text=site_banner(state.site), bg=bg, fg=fg, font=("Malgun Gothic", size, "bold"))
+            self._site.pack(fill="x", before=self._status, ipady=8 if state.site.site_display != NORMAL else 2)
+            status = site_detail(state.site)
+        else:
+            self._site.pack_forget()
+            status = control_line(state.control_connected)
         if state.pending_site_acks:
             status += f"   현장 확인 {state.pending_site_acks}건 Tier 0 기록 대기"
         self._status.configure(text=status)
