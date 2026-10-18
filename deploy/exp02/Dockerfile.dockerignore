@@ -1,0 +1,4 @@
+# EXP-02 이미지 빌드 컨텍스트 허용 목록 (컨텍스트 = 저장소 최상위). 코드는 git 커밋으로 받고, 가중치·데이터는 볼륨에 있다.
+*
+!deploy/exp02/requirements.lock.txt
+!deploy/exp02/entrypoint.sh

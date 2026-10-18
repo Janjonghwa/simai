@@ -18,7 +18,8 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get("SIMAI_ROOT", "/workspace/simai"))
 IMPL = "fast"                                       # 원본 구현 비교는 off 프리셋(원본 경로에 가장 가까움, PoC 에서 2D 0.65 px 일치)으로 대신
-REPO = ROOT / "third_party" / "Fast-SAM-3D-Body"
+# EXP-02 이미지(deploy/exp02)는 코드를 이미지 안에 두고 SIMAI_FS3DB_REPO 로 가리킨다. 없으면 볼륨 설치(setup_runpod.sh) 위치
+REPO = Path(os.environ.get("SIMAI_FS3DB_REPO") or ROOT / "third_party" / "Fast-SAM-3D-Body")
 CKPT = ROOT / "weights"
 OUT = ROOT / "runs" / "exp02"
 INPUTS = ROOT / "datasets" / "hmr_poc14"
