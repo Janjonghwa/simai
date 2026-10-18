@@ -52,6 +52,6 @@ S15P31A101-51. 기획서 §3.2(재시작 복구·복구 순서·저널 계약), 
 
 ## 남은 일
 
-- 배선(-171): 시작 때 `recover` → `Checkpointer(…, compact=outbox.compact).start()`, 판정 루프의 `update_inputs`, health 발행 경로의 `RecoveryHealthGate.apply`(카메라 시각 상태는 새로 만든다), 복원 전 active_site_alerts 송신 금지, 위 경고를 health·로그로 알림, checkpoint config_version 과 BundleArchive 복구 버전 비교.
+- 배선(-171, 완료): 시작 때 `recover` → `Checkpointer(…, compact=SnapshotOutbox.compact).start()`, 판정 루프의 `update_inputs`, health 발행 경로의 `RecoveryHealthGate.apply`(카메라 시각 상태는 새로 만든다), 복원 전 active_site_alerts 송신 금지, 위 경고를 로그·표시 파일(`state/tier0.live`)로 알림(health 계약 필드는 없음), checkpoint config_version 과 BundleArchive 복구 버전 비교. 구조는 docs/design/tier0-service.md.
 - 명세: §3.2 는 "MVP 는 World Track 을 체크포인트하지 않는다"이다. -54 는 Jira 대로 복원 Track 을 재관측 매칭 후보로 쓰되(같은 ID 로 잇지 않음, 위치 정본 아님) 판정에는 넣지 않는다. 저장 범위는 명세 정리 때 Lead 가 정한다(-172).
-- 배선(-171) 추가: `recover` 직후 첫 update 전에 `manager.restore(result.tracks, result.tracks_t)`, `linker = RestoredEventLinker(result.restored)`, 판정마다 `tracker.apply(..., related=linker.for_frame(frame, manager.restore_status))`. `manager.restore_status` 가 DISCARDED 면 이유를 로그에 남긴다. 위 시작 거부 절차는 §18 에 옮길 후보다.
+- 배선(-54 → -171 후속, 아직 안 함): `recover` 직후 첫 update 전에 `manager.restore(result.tracks, result.tracks_t)`, `linker = RestoredEventLinker(result.restored)`, 판정마다 `tracker.apply(..., related=linker.for_frame(frame, manager.restore_status))`. `manager.restore_status` 가 DISCARDED 면 이유를 로그에 남긴다. 위 시작 거부 절차는 §18 에 옮길 후보다.

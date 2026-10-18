@@ -19,8 +19,7 @@
 - 엔드포인트 등록은 HTTPS 임시안(endpoint_registration.HttpTransport)과 이 I1 경로 둘 다 쓸 수 있다. 명세는 I1 이다.
 - world_state 송신 버림 누적(health 1.5.0 `ec2_world_state_drops`): I1Publisher.world_state_drops() 가 이 스케줄러를
   만든 뒤의 누적(I1Client.drop_counts, 재연결로 0 이 되지 않음)과 세기 시작한 시각을 돌려주고, with_world_state_drops·
-  world_state_drop_fields 가 health payload 에 합친다. 지금 health payload 는 주입 함수가 만들므로 합치는 배선은 Tier 0
-  조립(S15P31A101-171)이 한다. 10 Hz 주기에 맞춰 건너뛴 것(world_coalesced, 내려 뽑기)은 송신 버림이 아니라 넣지 않는다.
+  world_state_drop_fields 가 health payload 에 합친다. 합치는 배선은 Tier 0 조립(service.Tier0Service, S15P31A101-171)이 한다. 10 Hz 주기에 맞춰 건너뛴 것(world_coalesced, 내려 뽑기)은 송신 버림이 아니라 넣지 않는다.
 """
 
 from __future__ import annotations
@@ -122,7 +121,7 @@ class I1Publisher:
         self._tick_s = tick_s
         self._mono = monotonic
         self._lock = threading.Lock()
-        self._world: Mapping[str, Any] | None = None  # 아직 보내지 않은 최신 payload
+        self._world: tuple[Mapping[str, Any], str | None] | None = None  # 아직 보내지 않은 최신 (payload, msg_id)
         self._next_world = 0.0
         self._next_health: float | None = None  # None: 연결 전
         self._need_first_health = False  # 이 연결의 첫 health 를 아직 못 만들었다
@@ -158,12 +157,15 @@ class I1Publisher:
 
     # --- 넣기 -----------------------------------------------------------------------
 
-    def offer_world_state(self, payload: Mapping[str, Any]) -> None:
-        """최신 world_state payload(tracking.world_state.world_state_payload)를 넣는다. 넣은 뒤 바꾸지 않는다."""
+    def offer_world_state(self, payload: Mapping[str, Any], *, msg_id: str | None = None) -> None:
+        """최신 world_state payload(tracking.world_state.world_state_payload)를 넣는다. 넣은 뒤 바꾸지 않는다.
+
+        msg_id 를 주면 그 봉투 msg_id 로 보낸다. 판정 루프는 같은 값을 그 tick 판정 전이의 evidence_ref 로 쓴다(-79·-171).
+        """
         with self._lock:
             if self._world is not None:
                 self.world_coalesced += 1
-            self._world = payload
+            self._world = (payload, msg_id)
             self.world_offered += 1
 
     def send_event(self, msg_type: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -203,10 +205,11 @@ class I1Publisher:
             # 밀린 주기를 몰아 보내지 않는다(다음 주기는 지금부터)
             self._next_world = max(self._next_world + self._world_interval, now)
             with self._lock:
-                payload, self._world = self._world, None
-            if payload is not None:
+                offered, self._world = self._world, None
+            if offered is not None:
+                payload, msg_id = offered
                 try:
-                    self._client.put_latest(self._envelope.make("world_state", payload))
+                    self._client.put_latest(self._envelope.make("world_state", payload, msg_id=msg_id))
                 except Exception:  # noqa: BLE001
                     log.exception("world_state 봉투 만들기 실패")
         if not self._client.connected or self._next_health is None:

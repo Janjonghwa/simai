@@ -104,7 +104,7 @@ RELIABLE_TYPES = frozenset({"config_ack", "calibration_update", "event_frame_rea
 TELEMETRY_TYPES = frozenset({"observation_summary"})
 
 DEFAULT_I1_PATH = "/ws/tier0"
-"""SIMAI_EC2_I1_URL 이 없을 때 SIMAI_EC2_BASE_URL 에 붙이는 경로. 서버 확정 전 기본안이다"""
+"""SIMAI_EC2_I1_URL 이 없을 때 SIMAI_EC2_BASE_URL 에 붙이는 경로의 기본값(SIMAI_EC2_I1_PATH 로 바꾼다). 서버 확정 전 기본안이다"""
 
 
 # ---------------------------------------------------------------------------- 비밀 값 가림
@@ -212,7 +212,8 @@ class I1Settings:
     def from_env(cls, env: Mapping[str, str] | None = None) -> I1Settings:
         """환경 변수(.env, 비밀 값은 커밋하지 않는다):
 
-        SIMAI_EC2_I1_URL   I1 WebSocket 주소 (wss, query 없이). 없으면 SIMAI_EC2_BASE_URL(https) + DEFAULT_I1_PATH
+        SIMAI_EC2_I1_URL   I1 WebSocket 주소 (wss, query 없이). 없으면 SIMAI_EC2_BASE_URL(https) + SIMAI_EC2_I1_PATH
+        SIMAI_EC2_I1_PATH  선택. SIMAI_EC2_BASE_URL 에 붙이는 경로 (기본 DEFAULT_I1_PATH, 서버 확정 전 임시 기본값)
         SIMAI_TIER0_TOKEN  Tier 0 토큰 (비밀, Authorization: Bearer)
         SIMAI_TIER0_ID     봉투 source_id (기본 tier0-01, 이벤트 gateway_id 와 같다)
         SIMAI_EC2_CA_FILE  선택. EC2 인증서를 사설 CA 로 발급했을 때 그 CA PEM (시스템 신뢰 저장소에 더한다)
@@ -226,7 +227,10 @@ class I1Settings:
                 raise I1ConfigError("SIMAI_EC2_I1_URL(wss) 또는 SIMAI_EC2_BASE_URL(https) 이 필요하다 (.env)")
             if parts.query or parts.fragment:
                 raise I1ConfigError("SIMAI_EC2_BASE_URL 에 query·fragment 를 넣지 않는다")
-            url = urllib.parse.urlunsplit(("wss", parts.netloc, parts.path.rstrip("/") + DEFAULT_I1_PATH, "", ""))
+            path = (env.get("SIMAI_EC2_I1_PATH") or "").strip() or DEFAULT_I1_PATH
+            if not path.startswith("/"):
+                raise I1ConfigError("SIMAI_EC2_I1_PATH 는 / 로 시작한다")
+            url = urllib.parse.urlunsplit(("wss", parts.netloc, parts.path.rstrip("/") + path, "", ""))
         token = env.get("SIMAI_TIER0_TOKEN") or ""
         source_id = (env.get("SIMAI_TIER0_ID") or DEFAULT_TIER0_ID).strip()
         ca_file = (env.get("SIMAI_EC2_CA_FILE") or "").strip() or None
@@ -259,7 +263,15 @@ class Envelope:
         """sent_at 을 만드는 주입 시계 (i1_publisher 가 world_state 버림 누적 시작 시각에도 쓴다)."""
         return self._clock
 
-    def make(self, msg_type: str, payload: Mapping[str, Any], *, schema_version: str | None = None) -> dict[str, Any]:
+    def make(
+        self,
+        msg_type: str,
+        payload: Mapping[str, Any],
+        *,
+        schema_version: str | None = None,
+        msg_id: str | None = None,
+    ) -> dict[str, Any]:
+        """봉투를 씌운다. msg_id 를 주면 그 값을 쓴다(판정 근거 evidence_ref 로 미리 정한 world_state msg_id, -171)."""
         if msg_type not in UPSTREAM_TYPES:
             raise ValueError(f"I1 위로 보내는 메시지가 아니다: {msg_type}")
         if not isinstance(payload, Mapping):
@@ -267,7 +279,7 @@ class Envelope:
         return {
             "schema_version": schema_version or self._versions.get(msg_type, CONTRACTS_VERSION),
             "msg_type": msg_type,
-            "msg_id": self._new_msg_id(),
+            "msg_id": msg_id if msg_id is not None else self._new_msg_id(),
             "sent_at": int(self._clock.now_ms()),
             "source_id": self.source_id,
             "payload": dict(payload),

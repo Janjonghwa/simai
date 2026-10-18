@@ -18,6 +18,7 @@
 | 게이트웨이(노트북) 연결 끊김                  | UNSAFE_UNKNOWN  | 6.5       |
 | EC2 연결 끊김(판정·현장 경보는 계속)          | DEGRADED        | 6.5       |
 | 재시작 뒤 재관측·시간 동기화 확보 전(RECOVERING, recovery.RecoveryHealthGate) | UNSAFE_UNKNOWN | 3.2 |
+| 적용된 구성 묶음 없음(NO_ACTIVE_CONFIG, 구역·규칙을 몰라 위험 판정을 하지 못함) | UNSAFE_UNKNOWN | 3.2, 6장 머리말 |
 
 현재 시각(t_risk_now)은 주입받는다. 카메라 수신 중단은 t_latest_global 대비 그 카메라의 경과로 본다.
 전체가 멈추면 카메라끼리의 차이는 없지만 판정 시계가 계속 가므로 lag 로 잡힌다(명세 6.1).
@@ -89,6 +90,8 @@ class HealthReason(StrEnum):
     CLOCK_OFFSET_UNCERTAIN = "CLOCK_OFFSET_UNCERTAIN"
     # 재시작 복구 중: 재관측·시간 동기화를 아직 확보하지 못했다(3.2, recovery.RecoveryHealthGate 가 붙인다)
     RECOVERING = "RECOVERING"
+    # 적용된 구성 묶음이 없어 위험 판정을 하지 못한다(첫 기동에 EC2·보관 묶음 모두 없음, 3.2 구성 묶음)
+    NO_ACTIVE_CONFIG = "NO_ACTIVE_CONFIG"
 
 
 _REASON_HEALTH = {
@@ -107,6 +110,7 @@ _REASON_HEALTH = {
     HealthReason.CLOCK_OFFSET_INCONSISTENT: SystemHealth.UNSAFE_UNKNOWN,
     HealthReason.CLOCK_OFFSET_UNCERTAIN: SystemHealth.DEGRADED,
     HealthReason.RECOVERING: SystemHealth.UNSAFE_UNKNOWN,
+    HealthReason.NO_ACTIVE_CONFIG: SystemHealth.UNSAFE_UNKNOWN,
 }
 
 _CALIBRATION_REASON = {
@@ -180,12 +184,15 @@ def evaluate_health(
     config: TimeModelConfig = TimeModelConfig(),
     capture_clock: CaptureClock = SAME_CLOCK,
     progress_age_ms: float | None = None,
+    config_active: bool = True,
 ) -> HealthReport:
     """System Health 전체 값을 계산한다. 원인을 모두 모으고 가장 나쁜 상태를 쓴다.
 
     capture_clock: LIVE 는 노트북–Pod 시계 차이 추정값(ClockOffset, 모르면 None), 촬영 시각이
     판정 시계와 같은 시계면 SAME_CLOCK(기본값, SIM·REPLAY·FILE). LIVE 조립은 반드시 명시한다.
     progress_age_ms: ProgressWatchdog.age_ms. 처리 정체 감시(lag 하한). 없으면 보지 않는다.
+    config_active: 판정에 쓸 구성 묶음(구역·규칙)이 적용돼 있는지. 없으면 위험 판정을 하지 못하므로 UNSAFE_UNKNOWN
+    (NO_ACTIVE_CONFIG). 기본값 True 는 구성 묶음과 무관한 호출(시험·도구)용이고, Tier 0 조립은 반드시 넘긴다.
     구역별 감시 능력 저하(R7)는 여기서 계산하지 않는다.
     """
     require_ms("t_risk_now", t_risk_now)
@@ -248,6 +255,8 @@ def evaluate_health(
         reasons.append(HealthReason.GATEWAY_LINK_LOST)
     if not ec2_link_ok:
         reasons.append(HealthReason.EC2_LINK_LOST)
+    if not config_active:
+        reasons.append(HealthReason.NO_ACTIVE_CONFIG)
 
     health = max((_REASON_HEALTH[r] for r in reasons), key=_SEVERITY.__getitem__, default=SystemHealth.NOMINAL)
     return HealthReport(
