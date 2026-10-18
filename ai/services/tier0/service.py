@@ -10,6 +10,9 @@
  4. 구성 묶음 복구: 체크포인트의 config_version 을 BundleArchive 에서 같은 검증기로 다시 만든다. 결과(MATCHED·없음·거부)를
     비교해 남긴다(config_check). 체크포인트가 없으면 보관소의 가장 최근 묶음, 그것도 없으면 설정의 시작 묶음(bootstrap).
  5. 인지·판정·스냅샷·health·I1 연결·체크포인트·클립을 만든다. 스냅샷 seed = 복원한 활성 이벤트, start_offset = 저널 끝.
+    인지를 만든 직후(첫 World Track update 전) 체크포인트 Track 을 복원 후보로 넘기고 이전 이벤트 연결을 만든다
+    (RestoreLink: manager.restore → RestoredEventLinker, -178). 체크포인트 재료는 첫 인지 tick 전까지 복구 결과로 채운다
+    (그 전에 쓰는 체크포인트가 복구가 알던 config_version·Track 을 잃지 않게).
  6. 시작: 저널 쓰기 스레드 → Checkpointer(정리는 SnapshotOutbox.compact 로만) → I1 → I0 제어 채널 → 정리 주기 → 판정 루프.
 
 종료(stop, 종료 신호): 판정 루프 → 정리 주기 → I0 → I1(더는 저널을 읽지 않는다) → 저널 쓰기 스레드 비우기(넣은 단계를 모두
@@ -39,6 +42,7 @@ from services.tier0.i1_client import Envelope, WebSocketConnector
 from services.tier0.i1_publisher import I1Link, build_i1_link, with_world_state_drops
 from services.tier0.judge import JudgmentLoop
 from services.tier0.perception import FrameFeed, Perception, SimObservationFeed
+from services.tier0.restore_link import RestoreLink
 from services.tier0.settings import Tier0Settings
 from services.tier0.site_alert_sync import SiteAlertResync
 from services.tier0.video_ingest import TokenVerifier, parse_token_hashes, server_context
@@ -352,6 +356,8 @@ class Tier0Service:
         provenance = build_input_provenance(feed.provenance(), calibration=self.rig.calibration_provenance)
         self.perception = Perception(self.rig, feed, session=session_prefix_from_ms(now), scene_version=s.scene_version,
                                      input_provenance=provenance)
+        # 복원 Track 후보·이전 이벤트 연결: 첫 World Track update 전(판정 스레드 시작 전, -178)
+        self.restore_link = RestoreLink(self.perception.manager, r)
         self.writer = JournalWriter(self.journal)
         self.watchdog = ProgressWatchdog()
         self.clips = EventClipService(PacketRingBuffer(feed.camera_ids), self.clock)
@@ -387,13 +393,17 @@ class Tier0Service:
         # 정리는 SnapshotOutbox.compact 로만(스냅샷이 접지 않은 기록을 지우지 않게, -81)
         self.checkpointer = Checkpointer(self.journal, self.store, r.projection, clock=self.clock,
                                          compact=self.outbox.compact, interval_s=s.checkpoint_interval_s)
+        # 첫 인지 tick 전에 쓰는 체크포인트도 복구가 알던 값을 잇는다(Track 시각은 원래 값 그대로라 30 s 규칙이 그대로 선다)
+        self.checkpointer.update_inputs(config_version=self._config_version(), last_capture_time=r.last_capture_time,
+                                        tracks_t=r.tracks_t, tracks=r.tracks)
         self.judge = JudgmentLoop(
             lock=self.judge_lock, now_ms=self.clock.now_ms, config_sync=self.config_sync, perception=self.perception,
             tracker=self.tracker, journal=self.journal, writer=self.writer,
             send_i0=None if self.control is None else self.control.send,
             offer_world_state=None if self.link is None else self.link.publisher.offer_world_state,
             checkpoint_inputs=self.checkpointer.update_inputs, clips=self.clips, snapshot=self.snapshot,
-            observe_progress=lambda t: self.watchdog.observe(t, self._mono_ns()), new_msg_id=self._new_msg_id,
+            observe_progress=lambda t: self.watchdog.observe(t, self._mono_ns()), restore_link=self.restore_link,
+            new_msg_id=self._new_msg_id,
         )
         if self._drift_watch_factory is not None:
             # 보정 감시(-117): 저장한 기준선을 검증 여부 그대로 돌려주고(CalibrationDriftWatch(baselines=...)), 정리 주기마다 저장한다
@@ -674,6 +684,7 @@ class Tier0Service:
             "recovery": None if self.recovery is None else {
                 "source": str(self.recovery.source), "restored": len(self.recovery.restored),
                 "rejected": [r.name for r in self.recovery.rejected]},
+            "restore_link": dict(self.restore_link.status()) if getattr(self, "restore_link", None) is not None else None,
             "config_check": self.config_check,
             "config_sync": self.config_sync.health_fields(),
             "system_health": None if snap_health is None else str(snap_health.report.system_health),

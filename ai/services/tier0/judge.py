@@ -8,8 +8,10 @@
    싣고(-84·-169), 봉투 msg_id 를 여기서 정한다. 같은 값이 이 tick 판정 전이의 evidence_ref 다(-79).
 3. ID 교정: WorldTrackFrame.revisions 를 LifecycleTracker.correct_identity 로 넘긴다. **반드시 같은 tick 의 apply 전**
    (-40, docs/design/tier0-world-track.md G3). 순서를 지키면 새 ID 로 들어오는 같은 규칙 판정이 기존 이벤트를 갱신한다.
-4. 판정: ActiveConfig.evaluate(world, LIVE, monitoring) → LifecycleTracker.apply(config_version, evidence_ref).
+4. 판정: ActiveConfig.evaluate(world, LIVE, monitoring) → LifecycleTracker.apply(config_version, evidence_ref, related).
    작업면은 ActiveConfig.evaluate 가 넘긴다(-93). 감시 상태(R7)는 카메라 상태와 구역별 관측 카메라(geometry.zone_coverage).
+   related 는 재시작 뒤 새 이벤트의 related_event_id 를 정하는 함수다(RestoreLink.related(frame), -178). 3) 교정 뒤에 만들어
+   apply 에 넘긴다. 복원 이벤트를 옮기거나 해소하지 않는다(연결만). 입력 정지 tick 은 마지막 실제 World 의 frame 으로 만든다.
 5. 단계마다(교정·판정·확인): JournalWriter.submit_step(기다리지 않음, fsync 는 쓰기 스레드) → 현장 경보 송신(local_alert·
    alarm_stop, fsync 를 기다리지 않음, D-G3-18) → 클립 대상 전이(EventClipService.on_transitions, -57).
 6. world_state 를 I1 송신 칸에 넣고(offer_world_state, msg_id 고정), 체크포인트 재료를 넘긴다(Checkpointer.update_inputs).
@@ -65,7 +67,8 @@ from simai_ai.risk import (
     alarm_stop_contract_payload,
     local_alert_payload,
 )
-from simai_ai.tracking.world_track import RevisionKind
+from simai_ai.risk.lifecycle import RelatedEventFn
+from simai_ai.tracking.world_track import RevisionKind, WorldTrackFrame
 
 log = logging.getLogger("services.tier0.judge")
 
@@ -119,6 +122,7 @@ class JudgmentLoop:
         clips: Any | None = None,
         snapshot: Any | None = None,
         observe_progress: Callable[[int | None], Any] | None = None,
+        restore_link: Any | None = None,
         new_msg_id: Callable[[], str] = lambda: str(uuid.uuid4()),
     ) -> None:
         self.lock = lock
@@ -134,6 +138,7 @@ class JudgmentLoop:
         self._clips = clips
         self._snapshot = snapshot
         self._observe_progress = observe_progress
+        self._restore_link = restore_link  # 재시작 뒤 이전 이벤트 연결(services.tier0.restore_link.RestoreLink, -178)
         self._new_msg_id = new_msg_id
         self._coverage_key: tuple[str, str] | None = None
         self._coverage: Mapping[str, tuple[str, ...]] = {}
@@ -141,6 +146,7 @@ class JudgmentLoop:
         self.active_config: ActiveConfig | None = None
         self.stats = JudgeStats()
         self._last: tuple[dict[str, Any], str] | None = None  # 마지막 실제 World(payload, world_state msg_id)
+        self._last_frame: WorldTrackFrame | None = None  # 그 World 의 World Track 결과(입력 정지 tick 의 연결 판단)
         # 판정 상태의 불변 사본(스냅샷 콜백용, lock 없이 읽는다). 바꿔 끼우기만 한다(참조 대입은 원자적)
         self._view_states: Mapping[str, EventState] = {}
         self._view_risk: Mapping[str, tuple[int, int]] = {}
@@ -198,7 +204,8 @@ class JudgmentLoop:
         payload, msg_id = self._last
         world = WorldState.from_payload(payload)
         evaluation = active.evaluate(world, Origin.LIVE, monitoring=self._monitoring(active))
-        step = self.tracker.apply(evaluation, world, config_version=active.config_version, evidence_ref=msg_id)
+        step = self.tracker.apply(evaluation, world, config_version=active.config_version, evidence_ref=msg_id,
+                                  related=self._related(self._last_frame))
         self.stats.frozen_evaluations += 1
         self._record(step)
         self._note_risk(evaluation)
@@ -219,18 +226,21 @@ class JudgmentLoop:
             log.info("ID 교정 %s → %s (rev %d)", revision.previous_world_id, revision.world_id, revision.identity_revision)
             self._record(step)
             steps.append(step)
+        related = self._related(perceived.frame)  # 3) 교정 뒤, 같은 lock 안. 복원 Track 판단(로그)은 묶음이 없어도 한다
         evaluation: Evaluation | None = None
         if active is None:
             self.stats.no_config_ticks += 1
         else:
             world = WorldState.from_payload(payload)
             evaluation = active.evaluate(world, Origin.LIVE, monitoring=self._monitoring(active))  # 4) 판정(작업면 포함)
-            step = self.tracker.apply(evaluation, world, config_version=active.config_version, evidence_ref=msg_id)
+            step = self.tracker.apply(evaluation, world, config_version=active.config_version, evidence_ref=msg_id,
+                                      related=related)
             self.stats.evaluated += 1
             self._record(step)
             steps.append(step)
             self._note_risk(evaluation)
         self._last = (payload, msg_id)
+        self._last_frame = perceived.frame
         if self._offer_world_state is not None:  # 6) world_state (msg_id = 이 tick 의 evidence_ref)
             self._offer_world_state(payload, msg_id=msg_id)
         if self._checkpoint_inputs is not None:
@@ -304,6 +314,11 @@ class JudgmentLoop:
                     continue
                 self._send_i0("alarm_stop", alarm_stop_contract_payload(signal, ack_id=ack_id))
                 self.stats.alarm_stops += 1
+
+    def _related(self, frame: WorldTrackFrame | None) -> RelatedEventFn | None:
+        if self._restore_link is None or frame is None:
+            return None
+        return self._restore_link.related(frame)
 
     def _monitoring(self, active: ActiveConfig) -> MonitoringState:
         key = (active.config_version, self.perception.rig.calibration_version)
