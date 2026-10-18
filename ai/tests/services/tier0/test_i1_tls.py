@@ -392,6 +392,7 @@ class SilentServer:
         self.port = self._listener.getsockname()[1]
         self.accepted = 0
         self._conns: list = []
+        self._lock = threading.Lock()
         self._stop = threading.Event()
         self._b64, self._sha1 = base64.b64encode, hashlib.sha1
         self._socket_timeout = socket.timeout
@@ -399,24 +400,37 @@ class SilentServer:
         self._thread.start()
 
     def _serve(self) -> None:
+        # 연결마다 따로 핸드셰이크한다: 한 연결이 핸드셰이크 도중 멈춰도 다음 연결(재연결)의 핸드셰이크를 막지 않는다
         while not self._stop.is_set():
             try:
                 raw, _ = self._listener.accept()
             except (self._socket_timeout, OSError):
                 continue
-            try:
-                conn = self._ctx.wrap_socket(raw, server_side=True)
-                data = b""
-                while b"\r\n\r\n" not in data:
-                    data += conn.recv(4096)
-            except OSError:
-                continue
+            threading.Thread(target=self._handshake, args=(raw,), daemon=True).start()
+
+    def _handshake(self, raw) -> None:
+        try:
+            # 받은 소켓이 리스너의 0.1 s 시간 제한을 물려받지 않게 넉넉히 둔다(부하 중 TLS 핸드셰이크가 잘리지 않게).
+            # 요청 전에 끊긴 연결(recv 가 b"")에서 무한히 돌지 않는다
+            raw.settimeout(5.0)
+            conn = self._ctx.wrap_socket(raw, server_side=True)
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    raise OSError("요청 전에 끊김")
+                data += chunk
+            conn.settimeout(None)
             lines = data.decode().split("\r\n")[1:]
             headers = {k.lower(): v for k, v in (line.split(": ", 1) for line in lines if ": " in line)}
             accept = self._b64(self._sha1((headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
                                           .encode()).digest())
             conn.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                          b"Sec-WebSocket-Accept: " + accept + b"\r\n\r\n")
+        except OSError:
+            raw.close()
+            return
+        with self._lock:
             self._conns.append(conn)
             self.accepted += 1  # 이 뒤로는 읽지 않는다
 
@@ -490,6 +504,8 @@ def test_send_watchdog_aborts_stuck_send_and_reconnects(silent) -> None:
         # 보내다 끊긴 신뢰 메시지는 버리지 않고 다음 연결에서 다시 보낸다(지금 다시 보내는 중이거나 대기열에 있다)
         assert link.client.stats.send_failures >= 1
         assert wait_until(lambda: link.client.queue_sizes()["reliable"] == 1 or link.client._sending is not None)
+        # 서버가 두 번째 연결을 받은 뒤 클라이언트가 그 연결을 열기 전에 닫지 않는다(시험의 타이밍 가정 제거)
+        assert wait_until(lambda: link.client.stats.connects >= 2)
     finally:
         assert link.close(timeout_s=2.0)
     assert link.client.stats.connects >= 2 and link.alive_threads() == []

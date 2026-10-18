@@ -7,9 +7,12 @@ World Track Manager 결과(`world_track.WorldTrackFrame`)를 계약 형식으로
 - 모르는 값은 비운다. 접지(`ground_anchor_xyz`, 지지 표면)는 ContactEstimator(`simai_ai.contact`) 결과
   (`SupportContact`)가 있을 때만 싣고, 없으면 null·UNKNOWN·UNAVAILABLE 이다. Z=0 으로 채우지 않는다(AGENTS.md 규칙 2).
 - 지지 표면 출처(`SupportContact.surface_source`: observed = 이번 시각 발목 근거, inferred = 가려진 동안 마지막 유효
-  지지 표면 유지)는 계약 1.1.0 에 필드가 없어 문서에 싣지 않는다(I1 LIVE 계약은 Lead 승인 없이 바꾸지 않는다). 유지
-  중이면 z_validity·contact_validity 가 UNCERTAIN 이고 ground_anchor_sigma 가 커진다. surface_source 는 후속 계약 티켓에서
-  world_state 선택 필드로 추가한다(2026-10-18 승인).
+  지지 표면 유지)는 계약 1.3.0 선택 필드 `surface_source` 로 싣는다(AGENTS 규칙 7, 2026-10-18 승인, S15P31A101-170).
+  접지점(ground_anchor_xyz)이 있을 때만, 그때는 늘 싣고, 접지점이 없으면 두지 않는다(SupportContact 불변식이 둘을 묶는다).
+  유지 중이면 z_validity·contact_validity 가 UNCERTAIN 이고 ground_anchor_sigma 가 커진다.
+- 별칭(`aliases`, 계약 1.3.0 선택 필드)은 World Track Manager 가 병합 때 남는 Track 에 붙인 이전 ID(`WorldTrackSnapshot.aliases`)를
+  순서대로 싣는다. 별칭이 없으면 두지 않는다. 별칭 목록은 Track 이 살아 있는 동안 뒤에만 붙고(world_track `_merge`), 여기서는
+  고르거나 빼지 않는다(덮어쓰지 않음). 중복은 한 번만 싣고, 자기 world_id 가 들어 있으면 입력 불일치라 ValueError 다.
 - `head_z` 는 관절 유효성 게이트가 VALID 로 낸 값만 싣는다. UNCERTAIN·UNAVAILABLE 이면 null 이다(계약에
   head_z 유효성 필드가 없어 UNCERTAIN 값이 확정값처럼 실리지 않게, 사용자 결정·docs/design/tier0-joint-gate.md).
 - `skeleton`·`pelvis_xyz` 는 이번 시각에 클러스터가 붙은 Track 만 있고, 관절은 모두 Tier 0 관측(joint_source observed)이다.
@@ -37,8 +40,9 @@ from typing import Any
 from simai_ai.tracking.time_model import TimeModelConfig, classify_observation, require_ms
 from simai_ai.tracking.world_track import WorldTrackFrame, WorldTrackSnapshot
 
-WORLD_STATE_SCHEMA_VERSION = "1.1.0"
-"""world_state 계약이 마지막으로 바뀐 버전 (1.1.0: input_provenance 선택 필드, position_xy 설명 보강)"""
+WORLD_STATE_SCHEMA_VERSION = "1.3.0"
+"""world_state 계약이 마지막으로 바뀐 버전 (1.1.0: input_provenance, 1.2.0: config_version, 1.3.0: 트랙의
+surface_source·aliases 선택 필드)"""
 DEFAULT_SOURCE_ID = "tier0-01"
 _VALIDITY = frozenset({"VALID", "UNCERTAIN", "UNAVAILABLE"})
 _SURFACE_VALIDITY = frozenset({"VALID", "UNCERTAIN", "UNKNOWN"})
@@ -52,8 +56,7 @@ class SupportContact:
 
     지지 표면이 VALID 가 아니거나 z_validity 가 UNAVAILABLE 이면 ground_anchor_xyz 는 None 이어야 한다(계약 불변 규칙).
     surface_source 는 접지점이 있으면 반드시, 없으면 두지 않는다: observed(이번 시각 발목 근거) 또는 inferred(가려진
-    동안 마지막 유효 지지 표면 유지). 계약 1.1.0 에 없는 필드라 문서에 싣지 않는다(후속 계약 티켓에서 world_state
-    선택 필드로 추가한다, 2026-10-18 승인).
+    동안 마지막 유효 지지 표면 유지). world_state 1.3.0 트랙의 surface_source 로 싣는다.
     observed_xy·observed_xy_sigma·observed_at 은 마지막으로 발목으로 확인한 접지점의 수평 위치·σ·시각이다(지금 접지가
     UNKNOWN 이어도 그 시각의 관측으로 남는다). position_xy 의 접지점 대체에 쓴다. 셋은 함께 있거나 함께 없다.
     """
@@ -152,6 +155,15 @@ def world_track_document(
         "head_z_sigma": head.sigma_m if head_valid else None,  # type: ignore[union-attr]
         "cameras": list(track.cameras),
     }
+    aliases = _aliases(track)
+    if aliases:
+        doc["aliases"] = aliases
+    if contact.ground_anchor_xyz is not None:
+        # 접지점이 있으면 출처를 늘 싣고, 접지점이 없으면 싣지 않는다(계약 1.3.0). SupportContact 불변식이 둘을 묶지만
+        # 불변식을 우회한 값이 출처 없이 나가지 않게 여기서도 막는다(-O 로 사라지는 assert 를 쓰지 않는다)
+        if contact.surface_source not in _SURFACE_SOURCE:
+            raise ValueError(f"{track.world_id}: 접지점이 있는데 surface_source 가 없거나 값이 아니다: {contact.surface_source!r}")
+        doc["surface_source"] = contact.surface_source
     if velocity is not None:
         doc["velocity"] = list(velocity)
     if contact.ground_anchor_sigma is not None:
@@ -208,6 +220,19 @@ def world_state_message(
         "source_id": source_id,
         "payload": dict(payload),
     }
+
+
+def _aliases(track: WorldTrackSnapshot) -> list[str]:
+    """병합 별칭을 합쳐진 순서대로 중복 없이. 자기 ID 나 빈 ID 는 입력 불일치다."""
+    out: list[str] = []
+    for alias in track.aliases:
+        if not isinstance(alias, str) or not alias:
+            raise ValueError(f"{track.world_id}: 별칭이 빈 World ID 다: {alias!r}")
+        if alias == track.world_id:
+            raise ValueError(f"{track.world_id}: 별칭에 자기 World ID 가 있다")
+        if alias not in out:
+            out.append(alias)
+    return out
 
 
 def _require_finite(name: str, values: Any, n: int) -> None:

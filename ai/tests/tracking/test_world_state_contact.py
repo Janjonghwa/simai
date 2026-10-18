@@ -1,8 +1,8 @@
-"""world_state 조립의 위치·접지 필드 (명세 5.2 World 위치의 정의, 6.1, 계약 world_state 1.1.0).
+"""world_state 조립의 위치·접지 필드 (명세 5.2 World 위치의 정의, 6.1, 계약 world_state 1.3.0).
 
 - position_xy: 골반과 발목으로 확인한 접지점 중 더 최근 관측을 고르고, 위치·σ·t_last_valid·observation_state·속도가 모두
   그 관측 시각을 가리킨다(리뷰 F1: 현재 접지점 XY 와 과거 골반 시각을 섞지 않는다).
-- ground_anchor_xyz·지지 표면은 ContactEstimator 결과(SupportContact)대로 싣고, surface_source 는 계약에 없어 싣지 않는다.
+- ground_anchor_xyz·지지 표면은 ContactEstimator 결과(SupportContact)대로 싣고, surface_source 는 접지점이 있을 때만 싣는다(1.3.0).
 """
 
 import pytest
@@ -62,7 +62,7 @@ def test_fresh_anchor_without_pelvis_sets_all_fields_to_anchor_time(contract_err
     assert doc["t_last_valid"] == t and doc["observation_state"] == "OBSERVED"
     assert "velocity" not in doc  # 그 시각의 속도를 모른다 (과거 골반 필터 속도를 싣지 않는다)
     assert doc["pelvis_xyz"] is None
-    assert "surface_source" not in doc and "observed_at" not in doc
+    assert doc["surface_source"] == "observed" and "observed_at" not in doc  # 내부 관측 시각은 계약 필드가 아니다
     payload = {"t_latest_global": t, "calibration_version": "cal-1", "scene_version": "scene-1", "tracks": [doc]}
     assert contract_errors("world_state", world_state_message(payload, msg_id=MSG_ID, sent_at=t)) == []
     # 시간 모델에 계약 정의대로 넣어도 같은 시각의 위치다 (과거 속도로 다시 옮기지 않는다)

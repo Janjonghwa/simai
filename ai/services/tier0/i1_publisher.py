@@ -17,6 +17,10 @@
   SiteAlertResync.fields 등)를 합친다. health_payload 가 None 이면(아직 모름) 보내지 않고, 연결 첫 health 라면 만들 수
   있을 때까지 tick 마다 다시 시도한다(그동안 그 연결의 다른 송신은 열리지 않는다).
 - 엔드포인트 등록은 HTTPS 임시안(endpoint_registration.HttpTransport)과 이 I1 경로 둘 다 쓸 수 있다. 명세는 I1 이다.
+- world_state 송신 버림 누적(health 1.5.0 `ec2_world_state_drops`): I1Publisher.world_state_drops() 가 이 스케줄러를
+  만든 뒤의 누적(I1Client.drop_counts, 재연결로 0 이 되지 않음)과 세기 시작한 시각을 돌려주고, with_world_state_drops·
+  world_state_drop_fields 가 health payload 에 합친다. 지금 health payload 는 주입 함수가 만들므로 합치는 배선은 Tier 0
+  조립(S15P31A101-171)이 한다. 10 Hz 주기에 맞춰 건너뛴 것(world_coalesced, 내려 뽑기)은 송신 버림이 아니라 넣지 않는다.
 """
 
 from __future__ import annotations
@@ -40,9 +44,56 @@ WORLD_STATE_INTERVAL_S = 0.1  # 10 Hz (명세 12.2)
 HEALTH_INTERVAL_S = 1.0  # 1 Hz (명세 12.2)
 EVENT_TYPES = frozenset({"observation_summary", "calibration_update", "event_frame_ready"})
 
+WORLD_STATE_DROPS_FIELD = "ec2_world_state_drops"
+"""health 1.5.0 선택 필드 이름 (contracts/messages/health.schema.json)"""
+
 PayloadFn = Callable[[], Mapping[str, Any] | None]
 FieldsFn = Callable[[], Mapping[str, Any]]
 MessageSource = Callable[[], Iterable[Mapping[str, Any]]]
+
+
+@dataclass(frozen=True)
+class WorldStateDrops:
+    """Tier 0 → EC2 world_state 송신 버림 누적 (health 1.5.0 `ec2_world_state_drops`).
+
+    superseded: 연결된 동안 보내기 전에 더 새 world_state 에 밀려 버린 수. disconnected: EC2 연결이 없어 버린 수(끊긴
+    동안 만든 것, 끊길 때 칸에 남은 것, 보내다 끊긴 것). since_ms: 세기 시작한 시각(UTC ms). 재연결로 0 이 되지 않는다.
+    """
+
+    superseded: int
+    disconnected: int
+    since_ms: int
+
+    def __post_init__(self) -> None:
+        for name in ("superseded", "disconnected", "since_ms"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} 는 0 이상의 정수다: {value!r}")
+
+    def to_payload(self) -> dict[str, int]:
+        return {"superseded": self.superseded, "disconnected": self.disconnected, "since_ms": self.since_ms}
+
+
+def world_state_drop_fields(drops: WorldStateDrops | None) -> dict[str, Any]:
+    """health_fields(FieldsFn)로 쓸 수 있는 꼴. 모르면(None) 빈 dict — 필드를 싣지 않는다(0 으로 지어내지 않음)."""
+    if drops is None:
+        return {}
+    return {WORLD_STATE_DROPS_FIELD: drops.to_payload()}
+
+
+def with_world_state_drops(payload: Mapping[str, Any] | None, drops: WorldStateDrops | None) -> dict[str, Any] | None:
+    """health payload 에 world_state 버림 누적을 합친 새 dict. 원본은 바꾸지 않는다.
+
+    payload 가 None(health 를 아직 모름)이면 None 그대로 — 버림 수만으로 health 를 만들지 않는다. drops 가 None 이면 필드
+    없이 돌려준다. payload 에 이미 같은 필드가 있으면 출처가 둘이라 ValueError(어느 값이 맞는지 고르지 않는다).
+    """
+    if payload is None:
+        return None
+    if WORLD_STATE_DROPS_FIELD in payload:
+        raise ValueError(f"health payload 에 이미 {WORLD_STATE_DROPS_FIELD} 가 있다")
+    merged = dict(payload)
+    merged.update(world_state_drop_fields(drops))
+    return merged
 
 
 class I1Publisher:
@@ -81,6 +132,9 @@ class I1Publisher:
         self._thread: threading.Thread | None = None
         self.world_offered = 0
         self.world_coalesced = 0  # 10 Hz 주기 안에 더 새 payload 가 와서 넘긴 수(내려 뽑기. 송신 지연 버림과 다르다)
+        # world_state 송신 버림 누적의 기준: 이 스케줄러를 만든 시각과 그때의 클라이언트 누적(health 1.5.0)
+        self._drops_since_ms = int(envelope.clock.now_ms())
+        self._drops_base = client.drop_counts("world_state")
 
     @property
     def source_id(self) -> str:
@@ -89,6 +143,18 @@ class I1Publisher:
     @property
     def envelope(self) -> Envelope:
         return self._envelope
+
+    def world_state_drops(self) -> WorldStateDrops:
+        """이 스케줄러를 만든 뒤 Tier 0 → EC2 world_state 송신 버림 누적(health 1.5.0 `ec2_world_state_drops`).
+
+        재연결로 0 이 되지 않는다. 내려 뽑기(world_coalesced)는 넣지 않는다. 어느 스레드에서 불러도 된다.
+        """
+        superseded, disconnected = self._client.drop_counts("world_state")
+        return WorldStateDrops(
+            superseded=superseded - self._drops_base[0],
+            disconnected=disconnected - self._drops_base[1],
+            since_ms=self._drops_since_ms,
+        )
 
     # --- 넣기 -----------------------------------------------------------------------
 
