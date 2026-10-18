@@ -115,7 +115,7 @@ from simai_ai.geometry.triangulation import COCO17_L_HIP, COCO17_R_HIP, JointVal
 from simai_ai.risk.lifecycle import IdentityCorrection
 from simai_ai.tracking.assignment import linear_sum_assignment
 from simai_ai.tracking.cross_view import AssociationFrame, TrackKey, ViewCluster
-from simai_ai.tracking.time_model import TimeModelConfig, TrackTimeInput, require_ms
+from simai_ai.tracking.time_model import ObservationState, TimeModelConfig, TrackTimeInput, require_ms
 
 JOINT_LAYOUT = "COCO17"
 """골반·head_z 정의가 있는 관절 배치만 받는다 (joint_gate 와 같음)"""
@@ -489,6 +489,107 @@ class WorldTrackFrame:
         return None
 
 
+_TRACK_CHECKPOINT_KEYS = (
+    "world_id",
+    "created_t",
+    "t_last_valid",
+    "lifecycle",
+    "identity_revision",
+    "aliases",
+    "position_xyz",
+    "filter_sigma_xyz",
+    "velocity",
+)
+
+
+@dataclass(frozen=True)
+class TrackCheckpoint:
+    """체크포인트에 남기는 World Track 하나(명세 3.2 재시작 복구, S15P31A101-51). Tier 0 내부 형식이다(계약 아님).
+
+    값은 t_last_valid 시각의 필터 상태다(위치·σ·속도). 관측 상태는 저장하지 않는다. 되살린 Track 은 재시작 뒤 아직
+    아무 카메라로도 다시 보지 않았으므로 늘 UNKNOWN 이다(`observation_state`). 기록에 관측 상태를 넣어도 받지 않는다
+    (모르는 필드). 재관측과 매칭해 같은 World ID 로 잇는 일과 오래된(30초 넘은) 체크포인트의 Track 을 버리는 일은
+    S15P31A101-54 가 한다. 여기서는 저장하고 꺼내 주기만 한다.
+    """
+
+    world_id: str
+    created_t: int
+    t_last_valid: int
+    lifecycle: TrackLifecycle
+    identity_revision: int
+    aliases: tuple[str, ...]
+    position_xyz: tuple[float, float, float]
+    filter_sigma_xyz: tuple[float, float, float]
+    velocity: tuple[float, float, float]
+
+    @property
+    def observation_state(self) -> ObservationState:
+        """되살린 Track 의 관측 상태. 재관측 전이므로 늘 UNKNOWN 이다(OBSERVED 로 내보내지 않는다, 6.1)."""
+        return ObservationState.UNKNOWN
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "world_id": self.world_id,
+            "created_t": self.created_t,
+            "t_last_valid": self.t_last_valid,
+            "lifecycle": str(self.lifecycle),
+            "identity_revision": self.identity_revision,
+            "aliases": list(self.aliases),
+            "position_xyz": list(self.position_xyz),
+            "filter_sigma_xyz": list(self.filter_sigma_xyz),
+            "velocity": list(self.velocity),
+        }
+
+    @classmethod
+    def from_record(cls, doc: Any) -> TrackCheckpoint:
+        """to_record 의 역. 빠진 필드·모르는 필드(관측 상태 포함)·형식 위반은 ValueError(객체가 아니면 TypeError)."""
+        if not isinstance(doc, Mapping):
+            raise TypeError("TrackCheckpoint: 객체여야 한다")
+        keys = set(doc)
+        if keys != set(_TRACK_CHECKPOINT_KEYS):
+            raise ValueError(
+                f"TrackCheckpoint: 필드가 맞지 않는다 (빠짐 {sorted(set(_TRACK_CHECKPOINT_KEYS) - keys)},"
+                f" 모름 {sorted(keys - set(_TRACK_CHECKPOINT_KEYS))})"
+            )
+        world_id = doc["world_id"]
+        if not isinstance(world_id, str) or not world_id:
+            raise ValueError("TrackCheckpoint.world_id 가 비었다")
+        aliases = doc["aliases"]
+        if not isinstance(aliases, list | tuple) or not all(isinstance(a, str) and a for a in aliases):
+            raise ValueError("TrackCheckpoint.aliases 는 문자열 배열이어야 한다")
+        revision = doc["identity_revision"]
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise ValueError(f"TrackCheckpoint.identity_revision 은 0 이상 정수: {revision!r}")
+        created_t = require_ms("TrackCheckpoint.created_t", doc["created_t"])
+        t_last_valid = require_ms("TrackCheckpoint.t_last_valid", doc["t_last_valid"])
+        if t_last_valid < created_t:
+            raise ValueError("TrackCheckpoint: t_last_valid 가 created_t 보다 앞이다")
+        return cls(
+            world_id=world_id,
+            created_t=created_t,
+            t_last_valid=t_last_valid,
+            lifecycle=TrackLifecycle(doc["lifecycle"]),
+            identity_revision=revision,
+            aliases=tuple(aliases),
+            position_xyz=_finite3(doc["position_xyz"], "position_xyz"),
+            filter_sigma_xyz=_finite3(doc["filter_sigma_xyz"], "filter_sigma_xyz", nonnegative=True),
+            velocity=_finite3(doc["velocity"], "velocity"),
+        )
+
+
+def _finite3(value: Any, name: str, nonnegative: bool = False) -> tuple[float, float, float]:
+    if not isinstance(value, list | tuple) or len(value) != 3:
+        raise ValueError(f"TrackCheckpoint.{name} 는 길이 3 배열이어야 한다")
+    out = []
+    for v in value:
+        if isinstance(v, bool) or not isinstance(v, int | float) or not math.isfinite(v):
+            raise ValueError(f"TrackCheckpoint.{name} 에 유한하지 않은 값: {v!r}")
+        if nonnegative and v < 0:
+            raise ValueError(f"TrackCheckpoint.{name} 는 음수가 아니어야 한다: {v!r}")
+        out.append(float(v))
+    return out[0], out[1], out[2]
+
+
 @dataclass
 class _Track:
     world_id: str
@@ -587,6 +688,34 @@ class WorldTrackManager:
     def lost_candidates(self) -> tuple[str, ...]:
         """늦은 재연결을 기다리는 소실 후보 World ID."""
         return tuple(sorted(self._dormant))
+
+    @property
+    def last_t(self) -> int | None:
+        """마지막으로 넣은 공통 시각. 아직 없으면 None."""
+        return self._last_t
+
+    def export_tracks(self) -> tuple[TrackCheckpoint, ...]:
+        """체크포인트용 Track 상태(명세 3.2 재시작 복구, S15P31A101-51). 살아 있는 Track 만(소실 후보 제외), world_id 순서.
+
+        상태를 바꾸지 않는다. 되살리기(재관측 매칭)는 S15P31A101-54 가 한다.
+        """
+        out = []
+        for tr in sorted(self._tracks.values(), key=lambda tr: tr.world_id):
+            sigma = tr.kf.sigma_xyz
+            out.append(
+                TrackCheckpoint(
+                    world_id=tr.world_id,
+                    created_t=tr.created_t,
+                    t_last_valid=tr.t_last_valid,
+                    lifecycle=tr.lifecycle,
+                    identity_revision=tr.identity_revision,
+                    aliases=tuple(tr.aliases),
+                    position_xyz=(float(tr.kf.x[0]), float(tr.kf.x[1]), float(tr.kf.x[2])),
+                    filter_sigma_xyz=(float(sigma[0]), float(sigma[1]), float(sigma[2])),
+                    velocity=(float(tr.kf.x[3]), float(tr.kf.x[4]), float(tr.kf.x[5])),
+                )
+            )
+        return tuple(out)
 
     def update(
         self, frame: AssociationFrame, rig: CameraRig, sync_invalid_cameras: Collection[str] = ()

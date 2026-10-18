@@ -20,7 +20,8 @@ LIVE RiskEvent 전이의 내구성 로그이자 재시작 복구의 정본이다
 - 운영자 확인(EC2 event_ack, 현장 site_ack)도 전이(LifecycleTracker.acknowledge 의 결과)로 기록한다. payload 는
   lifecycle 의 to_payload 그대로이며 저널은 필드를 고치지 않는다(lifecycle 이 필드를 더해도 그대로 남는다).
 
-이벤트 상태 재적용(체크포인트 + last_applied_journal_offset 이후 전이)은 S15P31A101-51 이 read 로 한다.
+- 전이 기록의 meta.state 에 전이 뒤 이벤트의 완전한 상태(EventState.to_record)를 남긴다. 이벤트 상태 재적용(체크포인트 +
+  last_applied_journal_offset 이후 전이, 3.2 복구 순서)은 simai_ai.recovery 가 read 와 이 값으로 한다(S15P31A101-51).
 """
 
 import json
@@ -46,6 +47,9 @@ EVIDENCE_NAME = "evidence_index.json"
 ACK_CHANNELS = frozenset({"CONTROL_ROOM", "FOREMAN_PWA", "SITE_BUTTON"})
 ACK_ACTOR_ROLE = {"ADMIN": "ADMIN", "FOREMAN": "FOREMAN", "SITE_BUTTON": "SITE"}
 TRANSITION_KIND = "risk_event_transition"
+# 전이 기록 meta 에 남기는 전이 뒤 이벤트 상태(lifecycle EventState.to_record, S15P31A101-51). payload 만으로는
+# 확인 기록 전체·현장 경보 단계·발생 시각 등이 빠져 재시작 복구(recovery)가 상태를 되살릴 수 없다. I1 로는 보내지 않는다.
+STATE_META_KEY = "state"
 # 판정이 아닌 전이(운영자 확인·재시작 복원·ID 교정)의 lifecycle 변경 사유. 이 전이는 world_state 판정 근거를 모를 수 있고,
 # 계약(risk_event_transition 1.4.0)은 그때 evidence_ref 를 null 로 둔다. VERIFICATION 은 복원 전이에 함께 붙는다.
 NON_JUDGMENT_CHANGES = frozenset({"ACKNOWLEDGED", "RESTORED", "IDENTITY_CORRECTED", "IDENTITY_CONFLICT"})
@@ -172,6 +176,15 @@ def is_judgment_transition(payload: Mapping[str, Any]) -> bool:
         return True
     names = {str(c) for c in changes}
     return not (names & NON_JUDGMENT_CHANGES and names <= _NON_JUDGMENT_ALLOWED)
+
+
+def _state_record_of(transition: Any) -> dict[str, Any] | None:
+    """전이 뒤 이벤트의 완전한 상태(lifecycle EventState.to_record). 그런 상태가 없는 전이면 None.
+
+    저널은 lifecycle 을 import 하지 않으므로 덕 타이핑으로 읽는다.
+    """
+    to_record = getattr(getattr(transition, "state", None), "to_record", None)
+    return to_record() if callable(to_record) else None
 
 
 def _valid_record_after(data: bytes, pos: int) -> bool:
@@ -540,6 +553,9 @@ class EventJournal:
         """
         payload = transition.to_payload()
         meta = self._transition_meta(payload, ack_id)
+        state_record = _state_record_of(transition)
+        if state_record is not None:
+            meta[STATE_META_KEY] = state_record
         if _nonempty_str(payload.get("evidence_ref")) is None:
             event_id = str(payload.get("event_id"))
             with self._lock:
