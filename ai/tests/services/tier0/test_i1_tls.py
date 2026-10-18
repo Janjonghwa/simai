@@ -3,6 +3,7 @@
 보낸 메시지 계약 통과, world_state 10 Hz·health 1 Hz, 재연결 직후 health, 토큰 비노출, 인증서 검증 실패 시 토큰 미전송,
 수신 디스패치(journal_ack → outbox, config_bundle → ConfigSync → config_ack, event_ack → 확인 처리)를 본다.
 송신이 막힌 연결을 끊는 경로(Windows: 핸들을 닫지 않고 대기 입출력 취소)와 그 뒤 재연결도 본다(S15P31A101-173).
+시험 서버는 운영 조건(TLS 1.3 세션 티켓을 보냄)과 티켓 끔 두 경우로 돈다(tls·silent 고정물의 매개변수, S15P31A101-175).
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -80,24 +82,40 @@ def wait_until(cond, timeout: float = 5.0, step: float = 0.01) -> bool:
     return cond()
 
 
-def server_tls_context(cert: Path, key: Path) -> ssl.SSLContext:
-    """시험 서버 TLS 컨텍스트. TLS 1.3 세션 티켓(NewSessionTicket)을 보내지 않는다.
+TICKETS = ["tickets_on", "tickets_off"]
+"""시험 서버의 TLS 1.3 세션 티켓 켬(운영 nginx·JSSE 기본값)·끔. tls·silent 고정물이 두 경우로 돈다."""
 
-    websockets 동기 클라이언트는 수신 스레드가 SSL_read 에 들어가 있는 동안 연결 스레드가 업그레이드 요청을 SSL_write 한다.
-    핸드셰이크 직후 도착한 티켓을 SSL_read 가 처리하는 순간과 겹치면 한 SSL 객체를 두 스레드가 동시에 만져 요청 레코드가
-    깨지거나 사라진다(서버: 읽기 시간 초과·SSL record layer failure, 클라이언트: InvalidMessage). 이 경합은 I1 끊기 경로와
-    무관한 TLS 계층 문제다(S15P31A101-173 조사: 티켓을 끄거나 TLS 1.2 면 0 회). 시험은 티켓을 꺼 그 경합과 떼어 본다.
+
+def server_tls_context(cert: Path, key: Path, *, tickets: bool = True, max_tls12: bool = False) -> ssl.SSLContext:
+    """시험 서버 TLS 컨텍스트. 기본은 운영 조건: TLS 1.3 이고 핸드셰이크 직후 세션 티켓(NewSessionTicket)을 보낸다.
+
+    티켓은 클라이언트가 업그레이드 요청을 쓰는 순간 수신 스레드의 읽기로 처리된다. ssl.SSLSocket 이면 한 SSL 객체를 두 스레드가
+    동시에 만져 요청이 깨지거나 프로세스가 죽었다(S15P31A101-173 조사, -175 에서 SerialTLSSocket 으로 고침). 티켓 끔(tickets=False)
+    은 그 경합이 없는 대조 조건이다. max_tls12: 서버가 TLS 1.2 까지만 준다.
     """
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(cert, key)
-    context.num_tickets = 0
+    if not tickets:
+        context.num_tickets = 0
+    if max_tls12:
+        context.maximum_version = ssl.TLSVersion.TLSv1_2
     return context
 
 
-def tls_client(port: int, cert: Path) -> ssl.SSLSocket:
-    """시험 인증서를 믿는 원시 TLS 클라이언트(블로킹)."""
+CLIENT_KINDS = ["serial", "sslsocket"]
+"""끊기 경로 시험의 클라이언트 소켓: I1 이 쓰는 SerialTLSSocket(S15P31A101-175)과 ssl.SSLSocket(-173 이 본 경로)."""
+
+
+def tls_client(port: int, cert: Path, kind: str = "sslsocket") -> Any:
+    """시험 인증서를 믿는 원시 TLS 클라이언트(블로킹). kind: sslsocket(ssl.SSLSocket) 또는 serial(SerialTLSSocket)."""
+    from services.tier0.serial_tls import SerialTLSSocket
+
     raw = socket.create_connection(("127.0.0.1", port), timeout=5)
-    tls = ssl.create_default_context(cafile=str(cert)).wrap_socket(raw, server_hostname="127.0.0.1")
+    context = ssl.create_default_context(cafile=str(cert))
+    if kind == "serial":
+        tls: Any = SerialTLSSocket(raw, context, server_hostname="127.0.0.1")
+    else:
+        tls = context.wrap_socket(raw, server_hostname="127.0.0.1")
     tls.settimeout(None)
     return tls
 
@@ -145,8 +163,8 @@ def make_cert(directory: Path) -> tuple[Path, Path]:
 class Ec2Server:
     """EC2 흉내 wss 서버. 연결마다 받은 메시지(수신 단조 시각, 문서)와 Authorization 헤더를 남긴다."""
 
-    def __init__(self, cert: Path, key: Path) -> None:
-        self._ssl = server_tls_context(cert, key)
+    def __init__(self, cert: Path, key: Path, *, tickets: bool = True, max_tls12: bool = False) -> None:
+        self._ssl = server_tls_context(cert, key, tickets=tickets, max_tls12=max_tls12)
         self.requests = 0
         self.auth: list[str | None] = []
         self.connections: list[list[tuple[float, dict]]] = []
@@ -228,10 +246,10 @@ class Ec2Server:
         self._thread.join(5)
 
 
-@pytest.fixture
-def tls(tmp_path):
+@pytest.fixture(params=TICKETS)
+def tls(tmp_path, request):
     cert, key = make_cert(tmp_path)
-    server = Ec2Server(cert, key)
+    server = Ec2Server(cert, key, tickets=request.param == "tickets_on")
     yield server, cert
     server.stop()
 
@@ -425,11 +443,11 @@ def open_link(client):
 class SilentServer:
     """HTTP 101 까지만 응답하고 다시 읽지 않는 TLS 서버(EC2 앱이 멈춘 상태). 수신 버퍼를 작게 잡아 송신이 빨리 막힌다."""
 
-    def __init__(self, cert: Path, key: Path) -> None:
+    def __init__(self, cert: Path, key: Path, *, tickets: bool = True) -> None:
         import base64
         import hashlib
 
-        self._ctx = server_tls_context(cert, key)
+        self._ctx = server_tls_context(cert, key, tickets=tickets)
         self._listener = socket.socket()
         self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
         self._listener.bind(("127.0.0.1", 0))
@@ -501,10 +519,10 @@ def big_calibration_update() -> dict:
     return payload
 
 
-@pytest.fixture
-def silent(tmp_path):
+@pytest.fixture(params=TICKETS)
+def silent(tmp_path, request):
     cert, key = make_cert(tmp_path)
-    server = SilentServer(cert, key)
+    server = SilentServer(cert, key, tickets=request.param == "tickets_on")
     yield server, cert
     server.stop()
 
@@ -574,7 +592,17 @@ class OwnedConn:
         self.closed.set()
 
 
-def blocked_reader(tls: ssl.SSLSocket) -> threading.Event:
+def owner_close(tls: Any) -> None:
+    """연결의 원래 닫기 경로(websockets close_socket): shutdown 한 뒤 close. Linux 는 close 만으로는 다른 스레드의 막힌 recv 가
+    깨어나지 않으므로 websockets 도 shutdown 을 먼저 부른다(close 만 부르는 흉내는 Linux 에서 읽기 스레드를 못 깨운다)."""
+    try:
+        tls.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    tls.close()
+
+
+def blocked_reader(tls: Any) -> threading.Event:
     """websockets 수신 스레드처럼 recv 에 막혀 있는 스레드. 풀리면 이벤트가 선다."""
     done = threading.Event()
 
@@ -590,7 +618,8 @@ def blocked_reader(tls: ssl.SSLSocket) -> threading.Event:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows 끊기 경로")
-def test_windows_abort_keeps_handle_so_a_late_write_cannot_reach_a_socket_reusing_its_number(silent) -> None:
+@pytest.mark.parametrize("kind", CLIENT_KINDS)
+def test_windows_abort_keeps_handle_so_a_late_write_cannot_reach_a_socket_reusing_its_number(silent, kind) -> None:
     """반례: 끊은 뒤 같은 핸들 번호를 새 소켓이 받는 장면을 일부러 노린다.
 
     예전 경로(C 수준 close)는 핸들을 바로 놓아 새 소켓이 그 번호를 받고, OpenSSL BIO 가 들고 있던 그 번호로 늦은 SSL_write
@@ -600,7 +629,7 @@ def test_windows_abort_keeps_handle_so_a_late_write_cannot_reach_a_socket_reusin
     from services.tier0.i1_client import abort_connection
 
     server, cert = silent
-    tls = tls_client(server.port, cert)
+    tls = tls_client(server.port, cert, kind)
     handle = tls.fileno()
     reader = blocked_reader(tls)
     conn = OwnedConn(tls)  # 원래 닫기 경로는 시험이 끝에 직접 부른다(그 전까지 핸들은 이 소켓 것이어야 한다)
@@ -659,7 +688,8 @@ def test_abort_linux_path_only_shuts_down_and_leaves_closing_to_the_owner(monkey
         b.close()
 
 
-def test_abort_racing_owner_close_and_other_aborts_does_not_break_new_connections(silent) -> None:
+@pytest.mark.parametrize("kind", CLIENT_KINDS)
+def test_abort_racing_owner_close_and_other_aborts_does_not_break_new_connections(silent, kind) -> None:
     """반례(동시성): 원래 닫기 경로의 close 와 여러 abort 가 같은 순간에 겹쳐도 예외가 새지 않고 막힌 스레드가 풀리며,
     그 직후 새 TLS 연결(핸들 번호를 이어받을 수 있는)이 깨지지 않는다. 연속으로 되풀이한다."""
     from services.tier0.i1_client import abort_connection
@@ -667,9 +697,9 @@ def test_abort_racing_owner_close_and_other_aborts_does_not_break_new_connection
     server, cert = silent
     errors: list[BaseException] = []
     for _ in range(15):
-        tls = tls_client(server.port, cert)
+        tls = tls_client(server.port, cert, kind)
         reader = blocked_reader(tls)
-        conn = OwnedConn(tls, close=tls.close)
+        conn = OwnedConn(tls, close=lambda: owner_close(tls))
         start = threading.Barrier(4)
 
         def run(fn) -> None:
@@ -680,7 +710,7 @@ def test_abort_racing_owner_close_and_other_aborts_does_not_break_new_connection
                 errors.append(e)
 
         racers = [threading.Thread(target=run, args=(fn,), daemon=True)
-                  for fn in (lambda: abort_connection(conn), lambda: abort_connection(conn), tls.close)]
+                  for fn in (lambda: abort_connection(conn), lambda: abort_connection(conn), lambda: owner_close(tls))]
         for t in racers:
             t.start()
         start.wait()

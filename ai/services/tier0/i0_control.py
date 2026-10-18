@@ -12,6 +12,11 @@ Tier 0 가 직접 종료), 3.12(포트는 대칭 매핑). 노트북 쪽 클라�
 - 받은 메시지(site_ack·laptop_heartbeat·clock_sync_response)는 연결 스레드에서 on_message(메시지, 세대)로 넘긴다. 처리 로직은
   넘겨받는 쪽(판정 루프·시계 교환·연결 감시)이 기존 모듈로 한다. JSON 이 아니거나 봉투가 틀리면 세고 버린다.
 - 연결 훅: on_connected(세대)는 연결을 연 직후(그 연결의 첫 수신 전)에, on_disconnected(세대)는 그 연결이 끝난 뒤 부른다.
+- TLS 상태는 한 번에 한 스레드만 만진다(serial_tls.SerialTLSSocket, S15P31A101-175). websockets 동기 서버도 연결 스레드가
+  recv 에 머무는 동안 송신 스레드가 send 하므로 ssl.SSLSocket 이면 한 SSL 객체를 두 스레드가 동시에 만진다. 듣기 소켓은 평문으로
+  열고, 연결마다 SerialTLSSocket 으로 서버 핸드셰이크(전체 마감 HANDSHAKE_TIMEOUT_S)를 한 뒤 websockets 연결을 만든다.
+  핸드셰이크는 연결마다 따로 스레드에서 하므로 느린 상대가 다른 연결의 수락을 막지 않는다. 핸드셰이크·HTTP 업그레이드 중인
+  연결(아직 _handler 에 오지 않은 것)은 기억해 두고 close() 가 그 소켓을 먼저 끊는다(느린 상대가 정지를 붙잡지 않게).
 
 봉투 sent_at 은 주입 시계(health.active_site_alerts_as_of 와 같은 시계, 판정 시계)로 만든다.
 """
@@ -22,13 +27,16 @@ import json
 import logging
 import queue
 import ssl
+import socket
 import threading
 import uuid
+import weakref
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from services.tier0.i1_client import abort_connection
+from services.tier0.i1_client import abort_connection, interrupt_socket
+from services.tier0.serial_tls import SerialTLSSocket
 from services.tier0.video_ingest import TokenVerifier
 from simai_ai.risk import Clock
 
@@ -42,6 +50,8 @@ DOWNSTREAM_VERSIONS: Mapping[str, str] = {
     "clock_sync_request": "1.3.0",
 }
 UPSTREAM_TYPES = frozenset({"site_ack", "laptop_heartbeat", "clock_sync_response"})
+HANDSHAKE_TIMEOUT_S = 10.0
+"""TLS 핸드셰이크 제한 시간(websockets 동기 서버의 open_timeout 기본값과 같다)"""
 
 OnMessage = Callable[[Mapping[str, Any], int], Any]
 Hook = Callable[[int], Any]
@@ -126,6 +136,7 @@ class ControlServer:
         self._server: Any = None
         self._threads: list[threading.Thread] = []
         self._closing = threading.Event()
+        self._opening: weakref.WeakSet[socket.socket] = weakref.WeakSet()  # 핸드셰이크·업그레이드 중인 OS 소켓
         self.stats = ControlStats()
         self.port: int | None = None
 
@@ -195,7 +206,8 @@ class ControlServer:
             self._handler,
             self._host,
             self._port,
-            ssl=self._ssl,
+            ssl=None,  # TLS 는 연결마다 SerialTLSSocket 으로(serial_tls_connection)
+            create_connection=serial_tls_connection(self._ssl, self._opening_started) if self._ssl is not None else None,
             process_request=self._check,
             compression=None,
             ping_interval=10,
@@ -212,6 +224,10 @@ class ControlServer:
 
     def close(self, timeout_s: float = 5.0) -> bool:
         self._closing.set()
+        with self._lock:  # 이 뒤로는 새 핸드셰이크가 등록되지 않는다(_opening_started 가 closing 을 같은 잠금에서 본다)
+            opening = list(self._opening)
+        for sock in opening:  # 핸드셰이크·업그레이드 중인 연결을 먼저 끊는다(server.shutdown 이 그 스레드를 기다린다)
+            interrupt_socket(sock)
         if self._server is not None:
             self._server.shutdown()
         with self._lock:
@@ -245,8 +261,18 @@ class ControlServer:
             return connection.respond(401, "unauthorized\n")
         return None
 
-    def _handler(self, conn: Any) -> None:
+    def _opening_started(self, sock: socket.socket) -> None:
+        """핸드셰이크를 시작하는 OS 소켓을 기억한다. 이미 닫는 중이면 거절한다(예외 → websockets 가 소켓을 닫는다)."""
         with self._lock:
+            if self._closing.is_set():
+                raise ConnectionAbortedError("I0 제어 채널을 닫는 중이다")
+            self._opening.add(sock)
+
+    def _handler(self, conn: Any) -> None:
+        raw = getattr(conn, "socket", None)
+        with self._lock:
+            if isinstance(raw, SerialTLSSocket):
+                self._opening.discard(raw.raw)  # 업그레이드까지 끝났다. 이 뒤로는 self._conn 으로 끊는다
             previous = self._conn
             self._conn = conn
             self._generation += 1
@@ -331,3 +357,21 @@ class ControlServer:
                 continue
             with self._lock:
                 self.stats.sent[kind] = self.stats.sent.get(kind, 0) + 1
+
+
+def serial_tls_connection(context: ssl.SSLContext, on_open: Callable[[socket.socket], None] | None = None) -> Any:
+    """websockets 동기 서버의 create_connection 자리에 넣는 연결 클래스. 받은 평문 소켓에서 SerialTLSSocket 으로 서버
+    핸드셰이크(전체 마감 HANDSHAKE_TIMEOUT_S)를 마친 뒤 websockets 연결을 만든다. on_open(소켓)은 핸드셰이크 전에 부른다.
+    핸드셰이크가 실패하거나 마감을 넘기면 예외가 나고 websockets 가 소켓을 닫는다."""
+    from websockets.sync.server import ServerConnection
+
+    class SerialTLSServerConnection(ServerConnection):
+        def __init__(self, sock: Any, protocol: Any, server: Any, **kwargs: Any) -> None:
+            if on_open is not None:
+                on_open(sock)
+            sock.settimeout(HANDSHAKE_TIMEOUT_S)
+            tls = SerialTLSSocket(sock, context, server_side=True)
+            tls.settimeout(None)
+            super().__init__(tls, protocol, server, **kwargs)  # type: ignore[arg-type]
+
+    return SerialTLSServerConnection

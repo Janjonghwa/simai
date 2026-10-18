@@ -5,7 +5,9 @@
 - 시작 구성 묶음: EC2 가 보내는 config_bundle 과 같은 구성 요소(구역·규칙·보정·작업면)를 메모리 저장소에 올리고 실제
   BundleVerifier 로 검증한 뒤 BundleArchive 에 저장한다. 규칙은 등록부 전체(R1·R2·R3·R5 교실 프로파일·R7).
 - 노트북 시험 상대(Laptop): I0 제어 채널(wss, 기기 토큰)에 붙어 local_alert·alarm_stop·health 를 받고, clock_sync_request 에
-  답하고(같은 컴퓨터 시계), 1초마다 laptop_heartbeat 를 보내고, site_ack 를 보낼 수 있다.
+  답하고(같은 컴퓨터 시계), 1초마다 laptop_heartbeat 를 보내고, site_ack 를 보낼 수 있다. websockets 동기 클라이언트라
+  TLS 는 SerialTLSSocket 으로 한다(Tier 0 가 보내는 세션 티켓 처리와 송신이 한 SSL 객체에서 겹치지 않게, S15P31A101-175).
+  운영 노트북(gateway/site_alert)은 asyncio 클라이언트라 TLS 를 이벤트 루프 한 스레드에서만 만진다.
 """
 
 from __future__ import annotations
@@ -226,9 +228,12 @@ class Laptop:
     def _run(self) -> None:
         from websockets.sync.client import connect
 
+        from services.tier0.serial_tls import SerialTLSContext
+
         while not self._stop.is_set():
             try:
-                ws = connect(self.url, ssl=self._ssl, additional_headers={"Authorization": f"Bearer {LAPTOP_TOKEN}"},
+                ws = connect(self.url, ssl=SerialTLSContext(self._ssl),
+                             additional_headers={"Authorization": f"Bearer {LAPTOP_TOKEN}"},
                              open_timeout=2, compression=None, proxy=None).__enter__()
             except Exception:  # noqa: BLE001 - Tier 0 가 아직 없거나 재시작 중
                 self._stop.wait(0.2)
