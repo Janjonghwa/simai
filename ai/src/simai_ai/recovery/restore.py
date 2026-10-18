@@ -15,7 +15,7 @@
    기록한다(판정이 아닌 전이, 근거는 직전 근거 또는 null). 복원 전이는 새 이벤트를 만들지 않고 현장 경보 신호도 내지 않는다.
 
 World Track 은 체크포인트의 Track 을 꺼내 주기만 한다(관측 상태 UNKNOWN). 재관측 매칭·30초 넘은 체크포인트 처리는
-S15P31A101-54 다. 구성 묶음은 BundleArchive 가 따로 되살리고, 여기서는 체크포인트의 config_version 을 돌려준다.
+`WorldTrackManager.restore` 와 `relink.RestoredEventLinker` 가 한다(S15P31A101-54). 구성 묶음은 BundleArchive 가 따로 되살리고, 여기서는 체크포인트의 config_version 을 돌려준다.
 
 이전 형식 저널(meta.state 없음, S15P31A101-51 이전 코드)은 LegacyJournalError 로 시작을 거부한다. 운영 배포 전이라
 업그레이드 bridge 는 두지 않는다(Lead 결정). 조치는 오류 메시지와 docs/design/tier0-recovery.md 에 있다.

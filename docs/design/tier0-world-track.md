@@ -85,6 +85,35 @@ S15P31A101-37(기본 추적), S15P31A101-40(늦은 재연결·ID 교정). 기획
 
 시험(`test_world_track_reconnect.py`): 짧은 가림 뒤 같은 ID, 두 카메라 근거로 LOST 뒤 같은 ID, 다시 이은 뒤 가려지면 불확실 유지, 1대 근거는 잇지 않음(두 번째 카메라가 되살아나면 이음), 리뷰 F1 장면(B 가 A 로 복원되지 않음, A 소실 후보 동안 B 불확실), 근거 없는 재등장·거리 밖은 새 ID, 10 s 창 경계(9999/10000/10001 ms), crowd 경계(1.499/1.501 m), 교차 뒤 함께 사라진 두 사람, 두 소실 Track 의 로컬 트랙이 섞인 클러스터, 긴 소실 뒤 새 ID → 3시각 근거 뒤 교정(기록·별칭·world_state 스키마), 1대 되살림은 병합 안 함·불확실 유지, 근거 TTL 경계(1999/2000/2001/2100 ms), 짧은 빠짐 허용·반대 근거 재시작, 갈라진 한 사람 병합, 연쇄 병합, 두 Track 의 경쟁, 병합 금지 쌍(함께 보인 두 사람, 1대 클러스터 검출, 가림 중 검출, 병합으로 이어짐, 로컬 ID 전환), G3: 리뷰 F1 Risk 장면(숨은 A 의 경보 유지, AlertClear 없음), 교정 후 같은 규칙 이벤트 유지·연결, 이벤트 다시 키 달기, 같은 ID 재연결 이벤트 유지. 리뷰 장면 시험은 각 수정(카메라 수 기준, 병합 금지 기록, TTL 검사)을 빼면 실패하는 것을 확인했다.
 
+## 재시작 뒤 복원 Track 매칭 (S15P31A101-54)
+
+Jira -54(기획서 §3.2 재시작 복구, 부록 C "Track 체크포인트 복원·재관측 매칭"): 복원 Track 은 OBSERVED 가 아니고, 30초 넘은 체크포인트에서는 Track 을 복원하지 않으며, 새 World ID 를 주기 전에 복원 Track 과 먼저 매칭하고 애매하면 `related_event_id` 를 단다. 완료 조건은 재시작 때 같은 위험의 이벤트 중복 생성·활성 이벤트 자동 해소·복원 위치의 OBSERVED 처리 0건(G3)이다. 명세 §3.2 본문은 "MVP 는 World Track 을 체크포인트하지 않는다"라 Jira 와 다르다(정리는 -172). 여기서는 Jira 를 따르되 복원 Track 을 **재관측과 맞출 후보로만** 쓴다.
+
+**근거 판단.** 늦은 재연결(-40)의 근거는 서로 다른 카메라 2대의 로컬 트래커가 이어 온 옛 로컬 트랙이고, 위치만으로는 잇지 않는다(사라진 자리에 다른 사람이 나타난 경우와 구별할 수 없고, 잘못 이은 신원은 옛 사람의 경보를 새 사람의 관측으로 해소시킨다, -40 리뷰 F1). 재시작하면 로컬 트래커가 새로 시작해 옛 로컬 트랙이 없다(체크포인트에도 로컬 트랙을 넣지 않는다. 재시작 뒤 같은 번호가 다른 사람에게 다시 나올 수 있다). 남는 근거는 마지막 위치·시각뿐이라 -40 기준으로는 **같은 ID 로 이을 근거가 늘 모자란다.** 그래서 재관측된 사람은 늘 새 ID 를 받고(복원 ID·revision·별칭을 물려받지 않음), 복원 이벤트도 새 ID 로 옮기지 않는다(`correct_identity` 를 쓰지 않음). -40 규칙의 재사용은 이렇다.
+
+| -40 규칙 | 재시작 뒤 |
+|---|---|
+| 로컬 ID 하나와 위치만으로 잇지 않음 | 위치만 있으므로 잇지 않는다(후보·연결만) |
+| 카메라 2대 근거 | 재시작 뒤에는 없다. 그래서 잇는 경우가 없다 |
+| 병합 금지 반증 | 잇지 않으므로 병합 자체가 없다(더 강함) |
+| 도달 거리를 첫 관측부터 잼 | 후보 판정에 그대로 쓴다: 첫 위치 측정이 0.5 m + 2 m/s × (첫 관측 − 복원 Track 의 t_last_valid) 밖이면 그 사람이 아니다(`restored_excluded`). 첫 관측으로만 재므로 기다린다고 후보가 되지 않는다 |
+| 근거가 모자라면 새 ID + IDENTITY_UNCERTAIN | 후보가 있는 새 ID 에 IDENTITY_UNCERTAIN(`RESTORED_TRACK_CANDIDATE`)을 그 복원 Track 이 남아 있는 동안 붙인다(-40 의 `REASSOCIATION_AMBIGUOUS` 와 같은 방식) |
+
+**구현.** `WorldTrackManager.restore(tracks, tracks_t)` 를 첫 update 전에 부른다.
+
+- 30초 규칙(`restore_max_age_ms` 30 000, 부록 C 초기값): 첫 프레임 시각 − `tracks_t` > 30 s 면 버린다(`RestoreStatus` DISCARDED, 이유). 첫 프레임이 `tracks_t` 보다 앞(시각 역행)이거나 Track 이 있는데 `tracks_t` 를 모르면 버린다(모르면 비운다). 받은 복원 Track 도 마지막 관측부터 30 s 가 지나면 후보에서 뺀다(가림 중이던 Track 은 더 일찍 빠진다). 나이는 촬영 시각(체크포인트 `tracks_t` 와 재시작 뒤 첫 프레임)으로 잰다. 벽시계 `written_at` 은 쓰지 않는다.
+- 복원 Track 은 `_tracks`·`_dormant`·로컬 트랙 이력·연결 비용·칼만 필터·world_state·export_tracks 어디에도 넣지 않는다. 그래서 복원 위치가 OBSERVED 로 나가는 경로가 없다(1대 검출로 복원 위치를 채우지도 않는다). 이번 세션 접두어의 World ID 는 받지 않는다.
+- 새 Track 이 생길 때(6단계) 첫 골반 측정으로 후보(`restored_candidates`, 가까운 순)와 제외(`restored_excluded`)를 정하고 바꾸지 않는다. 재시작 뒤 생긴 두 ID 가 -40 근거로 병합되면 둘을 합친다(후보가 우선).
+- 재시작 직후에는 공백이 길어 도달 거리가 커서(5 s 면 10.5 m) 교실의 대부분 사람이 후보가 된다. 재시작 뒤 길어야 30 s 동안 그 사람들의 해소가 늦어지는 것은 의도한 보수적 동작이다(재관측 전 System Health 도 UNSAFE_UNKNOWN). 새 위험 발생과 현장 경보는 늦지 않는다.
+
+**이벤트 연결(`recovery.relink.RestoredEventLinker`).** `LifecycleTracker.apply(..., related=linker.for_frame(frame, manager.restore_status))` 로 새 이벤트(RAISED)에 `related_event_id` 를 단다. 새 이벤트(규칙 X, 대상 N)와 복원 이벤트(규칙 X, 대상 R)를 ① R 이 N 의 후보면(여럿이면 가까운 R), ② N 이 처음 보일 때 R 의 복원 Track 이 없었으면(체크포인트에 없음·30 s 넘음·이미 빠짐) 같은 구역일 때 잇는다. ③ R 이 N 의 제외면 잇지 않는다. 연결은 재시작 뒤 첫 프레임부터 30 s 까지다. 구역 대상(R7) 이벤트는 같은 키라 복원 이벤트가 그대로 갱신되므로 다루지 않는다. 계약 `risk_event_transition.related_event_id` 설명("재시작 복구 중 복원 Track 매칭이 애매해 새 이벤트를 만들었을 때 이전 이벤트")과 `risk_event.related_event_id` 를 그대로 쓴다.
+
+**중복 이벤트의 뜻.** 위 판단대로 재관측된 사람은 새 ID 이므로 같은 위험은 새 이벤트가 되고 연결로 남는다(§3.2 "새 이벤트가 생기면 이전 이벤트와의 연결을 남긴다", D-G3-09 "재발생 이벤트의 related_event_id 누락 0건"). 이전 이벤트를 이어받는 방법(복원 이벤트를 새 ID 로 다시 키 달기)은 쓰지 않았다. 이어받으면 새 ID 의 관측으로 이전 이벤트가 해소될 수 있고, 그 새 ID 가 다른 사람이면 경보가 잘못 꺼진다(시험의 음성 대조가 재현한다).
+
+**lifecycle 수정(최소).** `LifecycleTracker.apply` 에 `related` 키워드(기본 None, `RelatedEventFn = (EventKey, Finding) → event_id | None`)를 더하고 `_raise` 가 그 값을 `related_event_id` 로 싣는다. 리뷰 반영: ① 함수는 상태를 바꾸기 전에 활성 이벤트가 없는 키의 발생 판정마다 미리 부르고, 예외·잘못된 값(빈 문자열·문자열 아님)은 연결 없음으로 낮추고 로그를 남긴다(M2: 처음에는 `_raise` 안에서 검사해 예외를 냈고, 같은 tick 의 앞 키 전이·현장 경보가 반영만 되고 반환되지 않아 사라졌다). ② 지속 조건을 세는 동안 키별로 처음 얻은 연결을 기억했다가 발생할 때 싣고, 대기가 이벤트 없이 끝나면 버린다(M1: 첫 위험 프레임이 연결 시간 안이어도 지속 조건을 채운 다음 프레임이 창 밖이면 연결이 사라졌다). 기존 API(`restore`, `correct_identity`)로는 새 이벤트를 만들 때 연결을 달 수 없다(`correct_identity` 의 충돌 경로는 옛 이벤트 쪽에 새 이벤트를 다는 방향이고 키를 바꾸는 경로는 이어받기다). RAISED 전이에 처음부터 싣는 것이 전이를 하나 더 만들지 않고 저널·EC2 에 같은 값이 남는 가장 작은 변경이다. 재개(같은 event_id)와 갱신에는 쓰지 않는다.
+
+**시험.** `tests/tracking/test_world_track_restore.py`(후보·제외·30 s 경계 29 900/30 000/30 100 ms·Track 별 만료·시각 역행·도달 거리 경계 0.89/0.91 m·두 복원 Track 경쟁·끝내 재관측 안 됨·병합 후 합치기·1대 검출로 복원 위치를 채우지 않음·world_state 계약), `tests/recovery/test_restore_track_match.py`(재시작 직후 같은 위험 재발생의 연결·계약 검증, 같은 자리에 다른 사람이 60 s 보여도 이전 경보 유지와 위치로 이었을 때 해소되는 음성 대조, 29.9/30.1 s 체크포인트의 연결, 연결 시간 닫힘, 갈 수 없던 사람은 같은 구역이어도 안 이음, 두 복원 Track 경쟁, 끝내 재관측 안 됨, 실제 저널·체크포인트·recover 를 거친 끝까지 시험과 outbox 메시지 계약). 30초 규칙·후보 표시·연결 훅·첫 관측 도달 거리·제외 규칙·Track 별 만료를 하나씩 되돌리면 해당 시험이 실패하는 것을 확인했다.
+
 ## 처리 시간 (-168 연결)
 
 관절 게이트에 Cross-view 클러스터의 왜곡 제거 결과와 삼각측량(`ViewCluster.undistorted`, `ViewCluster.skeleton`)과 다른 클러스터의 왜곡 제거 결과(`others_undistorted`, `others` 와 같은 카메라·같은 순서)를 넘긴다. 게이트는 입력이 같다고 확인될 때만(`UndistortedKeypoints.matches`, `SkeletonEstimate.reusable_for`) 다시 쓰므로 결과는 다시 계산한 것과 같다. `test_world_track_reuse.py` 가 bench 장면(광각 왜곡, 3·10명, 8 tick)에서 다시 쓰기를 켠 것과 끈 것의 `WorldTrackFrame` 전체(관절 게이트 결과의 모든 필드 포함)를 재귀로 비교하고(범주형 완전 일치, 실수 1e-9), 다시 쓰기 경로가 실제로 돌았는지 센다.
@@ -193,7 +222,7 @@ S15P31A101-37(기본 추적), S15P31A101-40(늦은 재연결·ID 교정). 기획
 - 계약: `world_state` 1.1.0(마이너, Lead 승인)으로 ① `payload.input_provenance` 선택 필드, ② `position_xy` 설명에 "관측이 없을 때 t_last_valid 위치 유지, σ 를 2 m/s × 공백만큼 확대, 이중 외삽 금지"를 넣었다. 남은 제안: `head_z_validity`, ID 교정 이력(아래).
 - 계약(-40 결정): `world_state.world_track` 에 선택 필드 `aliases`(이 ID 로 합쳐진 이전 World ID 목록)를 넣는 것을 사용자가 승인했다. -169 머지 뒤 별도 계약 티켓에서 추가하고 world_state 조립이 `WorldTrackSnapshot.aliases` 를 싣는다. 이번 변경은 스키마를 고치지 않았다. 지금은 I1 로 `identity_revision` 증가만 보이고 사라진 ID 는 설명 없이 빠진다.
 - 분할(SPLIT)·수동 교정(CORRECTION)은 별도 티켓이다: 잘못 합친 ID 를 다시 가르는 근거(예: 합친 뒤 같은 카메라의 두 검출로 동시에 보임)와, 분할 시 이벤트를 어느 ID 에 둘지 Risk 쪽 인터페이스(`IdentityCorrection` 은 병합 방향만 있다)가 필요하다. 리플레이 교정도 같이 정한다.
-- Tier 0 조립부(-45 이후): 시각마다 `frame.revisions` 를 `LifecycleTracker.correct_identity(rev.to_correction())` 로 `apply` 전에 넘기고, `rev.to_payload()` 를 저널에 남긴다. Pod 재시작 체크포인트에 소실 후보·교정 기록을 넣을지는 체크포인트 작업에서 정한다.
+- Tier 0 조립부(-45 이후): 시각마다 `frame.revisions` 를 `LifecycleTracker.correct_identity(rev.to_correction())` 로 `apply` 전에 넘기고, `rev.to_payload()` 를 저널에 남긴다. Pod 재시작 체크포인트에는 살아 있는 Track 만 넣는다(-51, 소실 후보·교정 기록은 넣지 않음). 소실 후보였던 사람의 복원 이벤트는 위 재시작 연결의 ② (같은 규칙·구역)로만 이어진다.
 - Risk `correct_identity` 의 충돌(IDENTITY_CONFLICT) 쪽 이벤트는 옛 ID 가 다시 관측되지 않으므로 UNVERIFIABLE 로 계속 남는다(자동 해소 없음, G3 쪽으로 안전). 운영자가 정리하는 흐름은 Risk·관제 화면 쪽 몫이다.
 - 늦은 재연결 수치(`reconnect_window_ms` 10 s, `reconnect_crowd_radius_m` 1.5 m, `reconnect_min_cameras` 2, `merge_confirm_frames` 3)는 초기값이다. 카메라 4대 교실에서 2대 근거가 실제 로컬 트래커 재등장 동작으로 얼마나 자주 나오는지(늦은 재연결이 드물 수 있다)도 G2·A0 녹화로 본다. G2·A0 녹화(실제 로컬 트래커 재등장 동작)로 조정한다.
 - 생명주기·게이트·여유 수치는 명세에 없어 초기값이다. G2·A0 녹화로 조정한다(특히 소실 3 s, 게이트 0.5~1.5 m, 여유 0.3).

@@ -13,6 +13,7 @@ S15P31A101-51. 기획서 §3.2(재시작 복구·복구 순서·저널 계약), 
 | 체크포인트 | `Checkpointer` 가 1초마다 투영으로 쓴다. 활성 이벤트, 해소 기록(최근 1024개 + 밀려난 것의 판정 시각 watermark), last_applied_journal_offset·msg_id, config_version, 마지막 촬영 시각, Track(꺼내기만) |
 | 복구 | `recover`: 체크포인트 선택 → 그 offset 이후 저널 재적용 → 활성 이벤트를 UNVERIFIABLE 로 복원(저널에 기록) |
 | Health | `RecoveryHealthGate`: 재시작 뒤 촬영 시각이 앞으로 간 새 프레임과 시계 차이 추정이 함께 확인될 때까지 UNSAFE_UNKNOWN |
+| 복원 Track | `WorldTrackManager.restore(result.tracks, result.tracks_t)`: 재관측과 맞출 후보로만(새 ID, 30초 규칙). `RestoredEventLinker(result.restored)`: 새 이벤트의 related_event_id (-54, tier0-world-track.md "재시작 뒤 복원 Track 매칭") |
 
 체크포인트 형식(내부, `format_version` 2): `checkpoint-{세대}.json` = {format, format_version, sha256, body}. 형식 1(해소 기록 없음)은 읽지 않고 직전 세대·저널 전체로 물러선다.
 저널 정리는 남은 온전한 체크포인트 세대의 가장 작은 offset 과 acked_offset 중 작은 값 이하만 한다(명세 경계보다 보수적, 직전 세대로 물러설 구간 보존).
@@ -52,4 +53,5 @@ S15P31A101-51. 기획서 §3.2(재시작 복구·복구 순서·저널 계약), 
 ## 남은 일
 
 - 배선(-171): 시작 때 `recover` → `Checkpointer(…, compact=outbox.compact).start()`, 판정 루프의 `update_inputs`, health 발행 경로의 `RecoveryHealthGate.apply`(카메라 시각 상태는 새로 만든다), 복원 전 active_site_alerts 송신 금지, 위 경고를 health·로그로 알림, checkpoint config_version 과 BundleArchive 복구 버전 비교.
-- 명세: §3.2 는 "MVP 는 World Track 을 체크포인트하지 않는다"이다. 이번에는 Track 을 저장·꺼내기만 하고 판정·Manager 에 넣지 않는다. 저장 범위는 명세 정리 때 Lead 가 정한다. 위 시작 거부 절차는 §18 에 옮길 후보다.
+- 명세: §3.2 는 "MVP 는 World Track 을 체크포인트하지 않는다"이다. -54 는 Jira 대로 복원 Track 을 재관측 매칭 후보로 쓰되(같은 ID 로 잇지 않음, 위치 정본 아님) 판정에는 넣지 않는다. 저장 범위는 명세 정리 때 Lead 가 정한다(-172).
+- 배선(-171) 추가: `recover` 직후 첫 update 전에 `manager.restore(result.tracks, result.tracks_t)`, `linker = RestoredEventLinker(result.restored)`, 판정마다 `tracker.apply(..., related=linker.for_frame(frame, manager.restore_status))`. `manager.restore_status` 가 DISCARDED 면 이유를 로그에 남긴다. 위 시작 거부 절차는 §18 에 옮길 후보다.
