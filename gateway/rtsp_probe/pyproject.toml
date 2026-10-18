@@ -1,0 +1,28 @@
+[project]
+name = "simai-rtsp-probe"
+version = "0.1.0"
+description = "simai Tapo C110 RTSP 수신 측정 도구: fps·해상도·도착 간격·PTS·키프레임·비트레이트·RTCP 시각·동시 접속 (S15P31A101-9)"
+requires-python = ">=3.11,<3.12"
+# simai-recorder: RTSP 수신(RtspSource, PyAV, 디코딩 없음), 촬영 시각 추정기, I0 헤더·세그먼트 쓰기, 계정(.env) 읽기를
+# 녹화 도구·영상 중계와 같은 코드로 쓴다(중복 구현하지 않는다). 저장소 안 경로 의존이다.
+dependencies = ["simai-recorder"]
+
+[project.scripts]
+simai-rtsp-probe = "simai_rtsp_probe.cli:main"
+
+[tool.uv.sources]
+simai-recorder = { path = "../recorder", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.12"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = ["--import-mode=importlib", "-ra"]
