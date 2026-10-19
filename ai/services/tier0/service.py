@@ -778,8 +778,8 @@ class Tier0Service:
                           "EC2 전송 보류(outbox blocked): %s")
         snap = self.snapshot.status()
         self._warn_change("snapshot_broken", snap["broken"], "event_state_snapshot 접기 중단: %s")
-        # 같은 상태를 health.tier0_warnings 로도 알린다(읽기만, 판정 lock 밖에서 읽어 기억, -179)
-        self.health.refresh_warnings(WarningSources(cp, self.writer, self.outbox, self.snapshot))
+        # 같은 상태를 health.tier0_warnings 로도 알린다(읽기만, 판정 lock 밖에서 읽어 기억, -179). 표시 파일 쓰기 실패도(-197)
+        self.health.refresh_warnings(WarningSources(cp, self.writer, self.outbox, self.snapshot, self.marker_error))
 
     def status(self) -> dict[str, Any]:
         """운영 상태(표시 파일·로그). 체크포인트·저널·outbox·스냅샷의 세부 상태를 싣는다(켜진 경고는 health.tier0_warnings 에도)."""

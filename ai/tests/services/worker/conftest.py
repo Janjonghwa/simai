@@ -4,7 +4,7 @@ services 는 설치 대상이 아니라(ai/ 작업 디렉터리에서 실행) �
 
 FakeEC2 는 `Transport` 를 구현하고, 계약(contracts/messages/job_*.schema.json 설명)에 적은 서버 규칙을
 그대로 흉내 낸다: 우선순위 대여, 하트비트 연장, 만료 시 재할당(attempt + 1), 같은 대여 재제출은 DUPLICATE,
-만료·재할당된 대여 제출은 REJECTED, 실행 상한 뒤 하트비트는 JOB_TIMED_OUT. 주고받는 모든 메시지를
+만료·재할당된 대여 제출은 REJECTED, 실행 상한 뒤 하트비트는 JOB_TIMED_OUT, 반납(consume_attempt false)은 시도 횟수 그대로 재대기. 주고받는 모든 메시지를
 스키마로 검증한다. 시각은 실제 monotonic 시계(작은 값)를 쓰고, 네트워크 고장은 경로 종류별로 넣는다.
 """
 
@@ -155,7 +155,7 @@ class FakeEC2:
 
     def _envelope(self, msg_type: str, payload: dict[str, Any], sent_at: int | None = None) -> dict[str, Any]:
         return {
-            "schema_version": "2.0.0",
+            "schema_version": "3.0.0" if msg_type == "job_request" else "2.0.0",  # job_request 3.0.0: 시도 번호(-197)
             "msg_type": msg_type,
             "msg_id": str(uuid.uuid4()),
             "sent_at": self.now_ms() if sent_at is None else sent_at,
@@ -247,6 +247,10 @@ class FakeEC2:
         status = p["status"]
         if status == "SUCCEEDED":
             job.state, job.result, job.error = "SUCCEEDED", p["result"], None
+        elif status == "FAILED" and p["error"].get("consume_attempt") is False:
+            job.error = p["error"]  # 반납(2.1.0): 시도 횟수를 쓰지 않고 다시 대기열로(마지막 시도여도)
+            job.attempt -= 1
+            job.state = "QUEUED"
         else:
             job.error = p["error"]
             retry = status == "FAILED" and p["error"].get("retryable", False) and job.attempt < self.max_attempts

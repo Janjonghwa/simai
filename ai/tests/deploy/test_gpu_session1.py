@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from simai_ai.providers.contract import schema_errors
+
 PY = sys.executable
 SECRET_TOKEN = "hf_" + "Q" * 34
 PRIVATE_KEY = "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIFakeFakeFake\n-----END EC PRIVATE KEY-----\n"
@@ -89,6 +91,9 @@ def test_timeout_and_failure_do_not_block_next_items_and_placeholders_are_not_qu
     assert summary["jobs"]["a_slow"]["status"] == "failed"
     records = [json.loads(v) for k, v in files.items() if k.endswith("run_record.json")]
     assert {r["status"] for r in records} == {"FAILED", "SUCCEEDED"} and len(records) == 3
+    # 검증 큐 기록은 운영 경로 검증 Run(VAL-01, run_record 2.1.0)이고 계약을 통과한다(-197, 이전에는 INT-01 로 적었다)
+    assert {(r["experiment_id"], r["schema_version"]) for r in records} == {("VAL-01", "2.1.0")}
+    assert all("e_gate" not in r and schema_errors(r, "run_record") == [] for r in records)
     assert "scp -P" in capsys.readouterr().out
 
 
@@ -291,3 +296,4 @@ def test_pod_job_file_passes_gpu_queue_check_and_run_record_schema(gs, monkeypat
     gq.load_job_file(path)
     queue = gq.Queue(doc, path, path.parent / "state", None, gs.REPO / "contracts", persist=False)
     assert queue.dry_run_errors() == []
+    assert doc["record"]["experiment_id"] == "VAL-01"

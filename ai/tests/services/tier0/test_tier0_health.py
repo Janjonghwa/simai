@@ -293,17 +293,52 @@ def test_counterexample_unreadable_or_stale_warnings_are_omitted() -> None:
     assert reporter.payload()["tier0_warnings"] == [{"code": "JOURNAL_FAILED", "since_ms": clock.now}]
 
 
+def test_counterexample_marker_write_failure_warning_appears_and_clears() -> None:
+    """반례 9(-197): 표시 파일 쓰기 실패 → LIVE_MARKER_WRITE_FAILED(health 2.1.0 스키마 통과), 실패가 이어지면 since 그대로,
+    해소(다음 쓰기 성공, marker_error None) → 빠짐. 경고만 바뀌고 system_health·나머지 필드는 같다(판정·알림 동작 불변)."""
+    clock = _Clock()
+    reporter = _reporter(clock)
+    reporter.refresh_warnings(_sources())
+    before = reporter.payload()
+    assert before["tier0_warnings"] == []
+    failing = WarningSources(_Cp(), _Writer(), _Outbox(), _Snapshot(), "PermissionError: denied")
+    reporter.refresh_warnings(failing)
+    first = clock.now
+    on = reporter.payload()
+    assert on["tier0_warnings"] == [{"code": "LIVE_MARKER_WRITE_FAILED", "since_ms": first}]
+    assert schema_errors(_msg(on), "health") == []
+    assert {k: v for k, v in on.items() if k != "tier0_warnings"} == {k: v for k, v in before.items() if k != "tier0_warnings"}
+    clock.advance(1_000)
+    reporter.refresh_warnings(WarningSources(_Cp(), _Writer(), _Outbox(), _Snapshot(), "OSError: other"))
+    assert reporter.payload()["tier0_warnings"] == [{"code": "LIVE_MARKER_WRITE_FAILED", "since_ms": first}]
+    clock.advance(1_000)
+    reporter.refresh_warnings(_sources())  # 다음 쓰기 성공
+    ref = _reporter(clock)  # 같은 시각, 경고를 한 번도 겪지 않은 송신 측
+    ref.refresh_warnings(_sources())
+    assert reporter.payload() == ref.payload() and ref.payload()["tier0_warnings"] == []
+
+
+def test_warning_codes_match_contract_enum() -> None:
+    """송신 측 code 목록이 계약의 닫힌 목록과 같다(한쪽만 더하면 health 가 계약 위반이 되거나 경고를 못 싣는다)."""
+    import json
+
+    from simai_ai.providers.contract import contracts_dir
+
+    schema = json.loads((contracts_dir() / "messages" / "health.schema.json").read_text(encoding="utf-8"))
+    assert set(schema["$defs"]["tier0_warning"]["properties"]["code"]["enum"]) == {str(c) for c in Tier0Warning}
+
+
 # --- 봉투 버전 ---------------------------------------------------------------------------------
 
 
 def test_envelope_versions_follow_contract_modules() -> None:
-    """반례 8: 송신 봉투가 내용과 다른 버전을 달지 않는다. I1·I0 health 는 HEALTH_SCHEMA_VERSION(2.0.0), I1 world_state 는
+    """반례 8: 송신 봉투가 내용과 다른 버전을 달지 않는다. I1·I0 health 는 HEALTH_SCHEMA_VERSION(2.1.0), I1 world_state 는
     tracking.world_state 의 2.0.0 이다. 2.0.0 내용(null lag)을 단 health 와 UNCERTAIN 값을 단 world_state 가 그 봉투로 검증된다."""
     from services.tier0.i0_control import DOWNSTREAM_VERSIONS
     from services.tier0.i1_client import MESSAGE_SCHEMA_VERSIONS, Envelope
     from simai_ai.tracking.world_state import WORLD_STATE_SCHEMA_VERSION
 
-    assert MESSAGE_SCHEMA_VERSIONS["health"] == DOWNSTREAM_VERSIONS["health"] == HEALTH_SCHEMA_VERSION == "2.0.0"
+    assert MESSAGE_SCHEMA_VERSIONS["health"] == DOWNSTREAM_VERSIONS["health"] == HEALTH_SCHEMA_VERSION == "2.1.0"
     assert MESSAGE_SCHEMA_VERSIONS["world_state"] == WORLD_STATE_SCHEMA_VERSION == "2.0.0"
 
     class _FixedClock:
@@ -313,5 +348,5 @@ def test_envelope_versions_follow_contract_modules() -> None:
     env = Envelope("tier0-01", _FixedClock(), new_msg_id=lambda: "0192a6f0-7c1e-7b3a-9f2d-000000000001")
     payload = _reporter(_Clock(), capture_clock=None).payload()
     msg = env.make("health", payload)
-    assert msg["schema_version"] == "2.0.0" and payload["pipeline_lag_ms"] is None
+    assert msg["schema_version"] == "2.1.0" and payload["pipeline_lag_ms"] is None
     assert schema_errors(msg, "health") == []

@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-SCHEMA_VERSION = "2.0.0"  # run_record 계약 버전 (2.0.0: input_provenance.calibration.source 에서 v1.3 제외 보정 출처 삭제)
+SCHEMA_VERSION = "2.1.0"  # run_record 계약 버전 (2.0.0: v1.3 제외 보정 출처 삭제, 2.1.0: experiment_id VAL-01 운영 경로 검증 Run)
 RUN_ID_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 METRIC_TYPES = (int, float, str, bool, type(None))

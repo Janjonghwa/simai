@@ -1,6 +1,6 @@
 {
   "_expect_error": "대여 응답에 만료 시각(lease_expires_at)이 없다. 워커가 대여를 언제 잃는지 알 수 없다",
-  "schema_version": "2.0.0",
+  "schema_version": "3.0.0",
   "msg_type": "job_request",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000118",
   "sent_at": 1760342400500,

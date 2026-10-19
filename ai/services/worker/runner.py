@@ -14,12 +14,11 @@ Tier 0 우선(명세 3.2, admission 이 있을 때, simai_ai.gpu.admission):
   pause_s 쉰다(PAUSED). EC2 는 작업을 대기열에 그대로 둔다. LIVE 중에는 LIVE 에 막힌 유형(EXP-01·02)을 대여 요청 목록에서 빼고,
   long-poll 을 live_wait_ms 로 줄인다.
 - long-poll 사이에 상황이 바뀔 수 있어 받은 뒤 다시 본다. LIVE 에 막힌 유형이면 시작하지 않고 바로, 지연 때문이면 hold_max_s(실행
-  상한의 절반 이하) 동안 하트비트로 대여를 지키며 기다리다가 그래도 받을 수 없으면 retryable FAILED 로 돌려보낸다(DEFERRED).
-  I5 에 '시작하지 않고 반납'이 없어 시도 횟수 하나를 쓴다. 마지막 시도(attempt == max_attempts)면 돌려보내면 최종 FAILED 가 되므로
-  돌려보내지 않고 실행 상한 직전까지 대여를 지키며 기다린다(그래도 못 열리면 그때만 최종 실패).
+  상한의 절반 이하) 동안 하트비트로 대여를 지키며 기다리다가 그래도 받을 수 없으면 반납한다(DEFERRED).
 - LIVE 에 막힌 유형이 도는 중이면 별도 감시 스레드가 live_poll_s 마다 접수 문을 본다(하트비트 HTTP 대기와 무관). LIVE 가 시작되면
-  바로 취소를 알리고 retryable FAILED 로 돌려보낸다(마지막 시도여도 LIVE 중 EXP 는 멈춘다). 지연 초과는 새 작업만 멈추고 도는
-  작업은 끝까지 둔다(명세 3.2 '새 작업을 멈추고').
+  바로 취소를 알리고 반납한다. 지연 초과는 새 작업만 멈추고 도는 작업은 끝까지 둔다(명세 3.2 '새 작업을 멈추고').
+- 반납(계약 job_callback 2.1.0): retryable FAILED + error.consume_attempt false. EC2 는 시도 횟수를 쓰지 않고(attempt 그대로) 다시
+  내주므로 마지막 시도도 Tier 0 우선 때문에 최종 FAILED 가 되지 않는다. 처리기 실패·시간 초과는 반납이 아니다(시도를 쓴다).
 """
 
 from __future__ import annotations
@@ -56,7 +55,7 @@ class Outcome(enum.Enum):
     GAVE_UP = "GAVE_UP"  # 대여가 끝나기 전에 제출하지 못했다
     INVALID = "INVALID"  # EC2 가 제출 형식을 거부했다(400 등). 다시 보내지 않는다
     PAUSED = "PAUSED"  # Tier 0 우선(지연 초과·모름·LIVE)으로 대여 요청을 쉬었다
-    DEFERRED = "DEFERRED"  # Tier 0 우선으로 받은 작업을 시작하지 않거나 멈추고 retryable 실패로 돌려보냈다(EC2 가 반영)
+    DEFERRED = "DEFERRED"  # Tier 0 우선으로 받은 작업을 시작하지 않거나 멈추고 반납했다(EC2 가 반영, 시도 횟수 그대로)
 
 
 @dataclass
@@ -209,27 +208,18 @@ class Worker:
 
     def _hold(self, lease: Lease, ctx: JobContext, beat: _Beat, received: float,
               should_stop: Callable[[], bool]) -> Outcome | None:
-        """받은 작업을 시작해도 되는지 다시 본다. 시작해도 되면 None. 안 되면 대여를 지키며 기다리거나 돌려보낸다."""
-        time_left_s = lease.time_left_ms / 1000
-        if lease.last_attempt:
-            # 돌려보내면 최종 FAILED 다(계약 job_callback). 실행 상한 직전까지 대여를 지키며 기다린다
-            hold_deadline = received + time_left_s - min(5.0, 0.1 * time_left_s)
-        else:
-            hold_deadline = received + min(self.hold_max_s, 0.5 * time_left_s)
+        """받은 작업을 시작해도 되는지 다시 본다. 시작해도 되면 None. 안 되면 대여를 지키며 기다리거나 반납한다."""
+        hold_deadline = received + min(self.hold_max_s, 0.5 * lease.time_left_ms / 1000)
         while True:
             adm = self._admission()
-            blocked = adm.blocks(lease.job_type)
-            if blocked and not lease.last_attempt:
+            if adm.blocks(lease.job_type):
                 return self._defer(lease, beat, "LIVE_EXP_BLOCKED",
                                    f"LIVE 관제 중이라 {lease.job_type} 를 돌리지 않는다: {adm.reason}")
-            if adm.admit and not blocked:
+            if adm.admit:
                 return None
             now = self._monotonic()
             if now >= hold_deadline or should_stop():
-                if lease.last_attempt:
-                    log.error("작업 %s 는 마지막 시도라 돌려보내면 최종 실패다. 기다렸지만 열리지 않았다", lease.job_id)
-                code = "LIVE_EXP_BLOCKED" if blocked else "TIER0_PRIORITY"
-                return self._defer(lease, beat, code, f"Tier 0 우선으로 시작하지 않았다: {adm.reason}")
+                return self._defer(lease, beat, "TIER0_PRIORITY", f"Tier 0 우선으로 시작하지 않았다: {adm.reason}")
             wake = min(now + self.live_poll_s, beat.next_heartbeat, beat.lease_deadline, hold_deadline)
             self._sleep(max(0.0, wake - now))
             out = self._heartbeat_due(lease, ctx, beat)
@@ -247,8 +237,9 @@ class Worker:
                 return
 
     def _defer(self, lease: Lease, beat: _Beat, code: str, message: str, started_at: int | None = None) -> Outcome:
-        log.warning("작업 %s 돌려보냄(%s): %s", lease.job_id, code, message)
-        error = {"code": code, "message": message[:_MESSAGE_LIMIT], "retryable": True}
+        """반납: 시도 횟수를 쓰지 않는 retryable FAILED (계약 job_callback 2.1.0, code 는 계약의 닫힌 목록)."""
+        log.warning("작업 %s 반납(%s): %s", lease.job_id, code, message)
+        error = {"code": code, "message": message[:_MESSAGE_LIMIT], "retryable": True, "consume_attempt": False}
         out = self._submit(lease, "FAILED", started_at, error=error, deadline=beat.lease_deadline)
         return Outcome.DEFERRED if out in (Outcome.ACCEPTED, Outcome.DUPLICATE) else out
 

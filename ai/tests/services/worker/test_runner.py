@@ -141,6 +141,7 @@ def ec2_lease_message(ec2, rec):
     """가짜 EC2 대여 기록을 job_request 모양으로 (늦은 제출 시험용)."""
     job = ec2.jobs[rec.job_id]
     return {
+        "schema_version": "3.0.0",
         "msg_type": "job_request",
         "sent_at": rec.leased_at,
         "payload": {

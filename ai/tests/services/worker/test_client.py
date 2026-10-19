@@ -54,6 +54,18 @@ def test_lease_from_contract_example():
     assert (lease.ttl_ms, lease.time_left_ms, lease.heartbeat_interval_ms) == (30000, 5000, 10000)
 
 
+def test_job_request_2x_is_refused_not_retried():
+    """job_request 2.x 의 attempt 는 대여 순번이라 반납(시도 번호)과 섞을 수 없다(3.0.0, -197). 받지 않고 다시 보내지도 않는다.
+    대여 요청 오류(RequestRejected)라 Worker.run 이 멈춘다(설정 오류: EC2 와 워커 계약 버전이 다르다)."""
+    old = load_example("job_request.static_reconstruct.json")
+    old["schema_version"] = "2.0.0"
+    t = Scripted(Response(200, old))
+    with pytest.raises(RequestRejected, match="2.0.0"):
+        _client(t).lease_once(["static_reconstruct"], 0)
+    assert len(t.sent) == 1  # 다시 보내지 않았다
+    assert Lease.from_message(load_example("job_request.static_reconstruct.json")).attempt >= 1  # 3.0.0 은 받는다
+
+
 def test_lease_status_from_contract_examples():
     assert LeaseStatus.from_message(load_example("job_lease_status.active.json")) == LeaseStatus("ACTIVE", None, 30000)
     assert LeaseStatus.from_message(load_example("job_lease_status.duplicate.json")).status == "DUPLICATE"
@@ -138,6 +150,14 @@ def test_heartbeat_and_submit_messages_are_valid():
     assert schema_errors(res, "job_callback") == []
     failed = client.callback_message(lease, "FAILED", started_at=None, finished_at=2, error={"code": "X", "message": ""})
     assert schema_errors(failed, "job_callback") == []
+    assert res["schema_version"] == failed["schema_version"] == "2.1.0" and hb["schema_version"] == SCHEMA_VERSION
+    released = client.callback_message(lease, "FAILED", started_at=None, finished_at=2, error={
+        "code": "TIER0_PRIORITY", "message": "", "retryable": True, "consume_attempt": False})
+    assert schema_errors(released, "job_callback") == []
+    # 반납은 Tier 0 우선 사유만: 처리기 실패를 반납으로 보내면 계약 위반이다
+    misuse = client.callback_message(lease, "FAILED", started_at=1, finished_at=2, error={
+        "code": "HANDLER_ERROR", "message": "", "retryable": True, "consume_attempt": False})
+    assert schema_errors(misuse, "job_callback") != []
 
 
 def test_job_id_is_escaped_in_path():

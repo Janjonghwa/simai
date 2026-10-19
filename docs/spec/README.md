@@ -24,6 +24,7 @@
 | v1.3 수정 6 | 2026-10-18 | 저장소 구조의 `docs/` 하위 폴더 용도를 적음: `spec/`·`design/`(구현 설계 문서)·`data/`(데이터 manifest)·`experiments/`(S15P31A101-176). 21.1 |
 | v1.3 수정 7 | 2026-10-19 | 사용자 승인 I1 계약 변경을 반영(S15P31A101-179). `head_z` 는 `head_z_validity` 가 VALID·UNCERTAIN 이면 값을 싣고 UNAVAILABLE 이면 비움(2026-10-18 ‘VALID 일 때만’ 대체), UNCERTAIN 값은 확정 근거 아님(R1·R5 는 Z 모름, R4 는 확인 필요로 사용하고 UNCERTAIN 머리로는 해소하지 않음)(5.2), 시계 차이·최신 촬영 시각을 모르면 `health.pipeline_lag_ms` null·하한 `pipeline_lag_lower_bound_ms`(6.1), 카메라 동기화 근거 `sync_valid`(근거 없으면 null)(6.1), Tier 0 내부 기록 장애와 `health.tier0_warnings`(6.5), I1 예시·설명(12.3), 용어(부록 A), 계약 반영 목록·미결(19.1). 계약 v3.0.0: `world_state` 2.0.0·`health` 2.0.0(메이저) |
 | v1.3 수정 8 | 2026-10-19 | 무마커 내부 파라미터 추정 기본 경로 결정(S15P31A101-192): AnyCalib(`anycalib_dist`, `radial:2`) 기본, 사용 불가 때 GeoCalib(`distorted`·`radial`), 그다음 고전 기준(가중치 없는 예비). 실패한 결과는 다른 방법 값으로 채우지 않고 비우며 방법을 기록, 고전 기준으로 학습 결과의 직선성 확인, 입력은 메모리 시간 중앙값 배경(영상 비저장). C110 세 방법 비교 미결 삭제(4.3, 3.8, 16장, 19.1, 부록 B) |
+| v1.3 수정 9 | 2026-10-19 | 계약 정리 5차(S15P31A101-197, `health` 변경은 사용자(Lead) 승인). Tier 0 우선으로 시작하지 않았거나 멈춘 분석 작업은 시도 횟수를 쓰지 않고 반납(3.2, 12.5), GPU 상태 표시 파일 쓰기 실패 운영 경고 `LIVE_MARKER_WRITE_FAILED`(정보 경고, 판정·알림 불변)(6.5, 부록 A), 운영 경로 검증 Run `experiment_id` `VAL-01`(채택 게이트 근거 아님)(20.5), 계약 반영 목록(19.1). I5 `attempt` 는 반납을 세지 않는 시도 번호, `max_attempts` 는 최대 시도 수(Lead 결정, 12.5). 계약 v4.0.0: `job_request` 3.0.0(메이저), `job_callback`·`health`·`run_record` 2.1.0(마이너) |
 
 v1.0 \~ v1.2 r4 수정 7 의 이력은 [`history.md`](history.md) 에 있다.
 

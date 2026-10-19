@@ -1,0 +1,22 @@
+{
+  "_expect_error": "처리기 오류를 반납으로 보냄: 반납 code 는 Tier 0 우선 사유만 (2.1.0)",
+  "schema_version": "2.1.0",
+  "msg_type": "job_callback",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000209",
+  "sent_at": 1760342401710,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261017-0044",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001c1",
+    "job_type": "static_reconstruct",
+    "status": "FAILED",
+    "started_at": null,
+    "finished_at": 1760342401700,
+    "error": {
+      "code": "HANDLER_ERROR",
+      "message": "LIVE 관제 중이라 static_reconstruct 를 돌리지 않는다",
+      "retryable": true,
+      "consume_attempt": false
+    }
+  }
+}
