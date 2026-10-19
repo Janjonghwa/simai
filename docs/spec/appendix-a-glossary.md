@@ -15,7 +15,7 @@
 | 게이지 고정 | 번들 조정 결과가 매번 통째로 이동·회전·축척되지 않도록 좌표계를 제약으로 묶는 것 |
 | 실측 정물 | 치수를 미리 잰 단단한 시연용 안전 장비(안전봉·라바콘 등). 1순위 스케일 근거(4.3) |
 | observation_gap | 전체 카메라 최신 촬영 시각 − 객체의 마지막 유효 관측 시각 |
-| pipeline_lag | 판정 시각 − 전체 카메라 최신 촬영 시각(노트북–Pod 시계 차이 `laptop_clock_offset` 으로 Tier 0 시계에 옮긴 값, 6.1) |
+| pipeline_lag | 판정 시각 − 전체 카메라 최신 촬영 시각(노트북–Pod 시계 차이 `laptop_clock_offset` 으로 Tier 0 시계에 옮긴 값, 6.1). 시계 차이나 최신 촬영 시각을 모르면 `health.pipeline_lag_ms` 는 null 이고 처리 정체 경과로 아는 하한은 `pipeline_lag_lower_bound_ms` 로 따로 싣는다 |
 | staleness | gap + lag. 객체 정보의 총 경과 시간 |
 | OBSERVED / PREDICTED / UNKNOWN | 객체 관측 상태(6.1) |
 | NOMINAL / DEGRADED / UNSAFE_UNKNOWN | System Health(6.2) |
@@ -69,7 +69,9 @@
 | IDENTITY_UNCERTAIN | 카메라 간 매칭이 애매해 같은 사람인지 확신할 수 없다는 표시. 합치지 않고 이 표시를 붙인다 |
 | stream_epoch | 카메라 스트림 재연결마다 증가하는 번호. camera_id·frame_sequence와 함께 프레임을 식별(12.7) |
 | pelvis_xyz / position_xy / ground_anchor_xyz | 삼각측량 골반 위치 / 구역 판정용 수평 위치 / 검증된 지지 표면 위 위치(모르면 비움). 정의는 5.2 |
-| head_z / head_z_validity | 머리 꼭대기 높이 추정. 귀·눈 중점 높이 + 고정 오프셋(5.2). 관절 유효성 게이트가 VALID 로 낸 값만 싣고, 게이트 결과(VALID/UNCERTAIN/UNAVAILABLE)는 `head_z_validity` 로 싣는다 |
+| head_z / head_z_validity | 머리 꼭대기 높이 추정. 귀·눈 중점 높이 + 고정 오프셋(5.2). 관절 유효성 게이트가 VALID·UNCERTAIN 으로 낸 값을 싣고(UNAVAILABLE 이면 비움), 게이트 결과(VALID/UNCERTAIN/UNAVAILABLE)는 `head_z_validity` 로 싣는다. 값이 있어도 유효성을 확인하고 UNCERTAIN 값은 확정 근거로 쓰지 않는다 |
+| tier0_warnings | `health` 에 싣는 Tier 0 운영 경고: CHECKPOINT_STALLED·CHECKPOINT_ERROR·JOURNAL_STALLED·JOURNAL_FAILED·OUTBOX_BLOCKED·SNAPSHOT_BROKEN 과 처음 확인한 시각. 빈 배열은 경고 없음, 필드 없음은 모름(6.5) |
+| sync_valid | `health` 카메라별 시간 동기화 근거. true 는 동기화 측정으로 확인, false 는 무효 판정(융합 제외), null 은 근거 없음(6.1) |
 | aliases | 병합(ID 교정)으로 이 World ID 에 합쳐진 이전 World ID 목록. 뒤에만 붙고 Track 이 살아 있는 동안 빠지지 않는다(5.2) |
 | 해소 기록(tombstone) | 재시작 복구용 체크포인트에 남기는 해소된 이벤트의 마지막 sequence·판정 시각. 저널을 다시 적용할 때 해소된 이벤트를 되살리지 않게 한다(3.2) |
 | queue_wait_ms / frame_age_ms | 추론 대기열에서 기다린 시간 / 촬영부터 추론 시점까지 전체 경과 시간 |

@@ -166,7 +166,7 @@ Jira -54(기획서 §3.2 재시작 복구, 부록 C "Track 체크포인트 복�
 
 - 필드는 계약 그대로다. `skeleton`·`pelvis_xyz`·`cameras` 는 이번 시각에 클러스터가 붙은 Track 만 채운다. 관절은 모두 observed 다. 클러스터가 붙었는데 골반 측정이 없는 시각(엉덩이가 가려짐)에는 관측 상태가 PREDICTED·UNKNOWN 이어도 이번 시각의 `skeleton`·`head_z`(VALID)·`cameras` 는 싣는다. 관절 관측 자체는 이번 시각의 사실이고, 위치(`position_xy`)만 측정이 없다는 뜻이다.
 - 접지: ContactEstimator 가 아직 없어 `ground_anchor_xyz = null`, `support_surface_validity = UNKNOWN`, `contact_validity = UNAVAILABLE`, `z_validity = UNAVAILABLE` 이다. 결과가 생기면 `SupportContact` 로 넘긴다. `SupportContact` 는 지지 표면이 VALID 가 아니거나 z_validity 가 UNAVAILABLE 인데 접지점이 있으면 만들 때 거부한다(Z=0 대체 금지, 계약 불변 규칙).
-- `head_z`: 게이트가 VALID 로 낸 값만 싣는다. UNCERTAIN·UNAVAILABLE 이면 null(사용자 결정, tier0-joint-gate.md).
+- `head_z`: 게이트가 VALID·UNCERTAIN 으로 낸 값(관측 귀·눈 근거가 같은 Track skeleton 에서 확인될 때만)을 싣고 UNAVAILABLE 이면 null, 유효성은 `head_z_validity`(world_state 2.0.0, 사용자 결정 2026-10-19, tier0-joint-gate.md).
 - `input_provenance`: `WorldTrackManager` 에 넘긴 출처를 `payload.input_provenance`(계약 1.1.0 선택 필드, Lead 승인)로 싣는다. 넘기지 않으면 필드를 넣지 않는다. SIM·DATASET_GT 입력이면 `is_upper_bound = true`.
 - 봉투 `schema_version` 은 world_state 가 마지막으로 바뀐 1.1.0, `msg_id`·`sent_at` 은 호출자가 넣는다(현재 시각을 읽지 않는다).
 

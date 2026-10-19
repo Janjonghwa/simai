@@ -25,8 +25,13 @@ from typing import Any
 
 WORLD_STATE = "world_state"
 OBSERVATION_BATCH = "observation_batch"
-# 이 리더가 의미를 아는 I1 메시지 스키마의 major 버전 (contracts/README.md 버전 규칙: 삭제·의미 변경은 major)
-SUPPORTED_MESSAGE_MAJOR = 1
+# 이 리더가 의미를 아는 I1 메시지 스키마의 major 버전 (contracts/README.md 버전 규칙: 삭제·의미 변경은 major).
+# world_state 2.x: head_z_validity 가 UNCERTAIN 이면 그 값을 head_z 에 싣는다(1.x 는 null, S15P31A101-179). 리더는 트랙을
+# 그대로 옮기므로 두 major 를 모두 읽고, world_tracks 소비자는 head_z 를 head_z_validity 와 함께 읽는다.
+SUPPORTED_MESSAGE_MAJORS: dict[str, frozenset[int]] = {
+    WORLD_STATE: frozenset({1, 2}),
+    OBSERVATION_BATCH: frozenset({1}),
+}
 
 
 class Tier0LogError(ValueError):

@@ -35,6 +35,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from services.tier0.health import HEALTH_SCHEMA_VERSION
 from services.tier0.i1_client import abort_connection, interrupt_socket
 from services.tier0.serial_tls import SerialTLSSocket
 from services.tier0.video_ingest import TokenVerifier
@@ -46,7 +47,7 @@ log = logging.getLogger("services.tier0.i0_control")
 DOWNSTREAM_VERSIONS: Mapping[str, str] = {
     "local_alert": "1.2.0",
     "alarm_stop": "2.1.0",
-    "health": "1.5.0",
+    "health": HEALTH_SCHEMA_VERSION,  # I1 과 같은 형식(health.py 가 정한다, 2.0.0 -179)
     "clock_sync_request": "1.3.0",
 }
 UPSTREAM_TYPES = frozenset({"site_ack", "laptop_heartbeat", "clock_sync_response"})

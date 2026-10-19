@@ -165,8 +165,9 @@ lock 순서는 **판정 lock → (스냅샷 lock, 시계 lock, 각 모듈 내부
 
 - LIVE 입력: `NvdecDecoder` 가 아직 없다. 디코더가 생기면 `service._build_live_feed` 에서 VideoIngestServer → I0Ingest → `DetectorFeed`
   (`yolo_detector.UltralyticsPoseDetector` + `MultiCameraLocalTracker`) 와 클립 링 버퍼 수신을 잇는다.
-- health 계약(-172): 시계 차이를 모를 때 `pipeline_lag_ms` 값(지금은 처리 정체 경과 = 참 lag 의 하한, 없으면 0), Tier 0 운영 경고
-  (Checkpointer·저널·outbox blocked·스냅샷 broken) 필드, 카메라 sync_offset_ms·동기화 무효 판정 모듈.
+- health 계약은 2.0.0 에서 정했다(-179): 시계 차이를 모르면 `pipeline_lag_ms` null + 하한 `pipeline_lag_lower_bound_ms`, 운영 경고
+  `tier0_warnings`(정리 주기에 Checkpointer·저널·outbox·스냅샷 상태를 읽어 기억), 카메라 `sync_valid`(근거 없으면 null). 송신 봉투(i1_client·i0_control)는
+  `HEALTH_SCHEMA_VERSION` 을 쓴다. 남은 일: 카메라 sync_offset_ms·동기화 무효 판정 모듈.
 - 보정 감시(-117): CalibrationVersionStore 영속·현장 보정 채택 경로가 생기면 `drift_watch_factory` 로 감시를 만들고 판정 tick 에서
   Cross-view 클러스터를 `PersonObservation` 으로 넘긴다.
 - 정책 해석을 기능 패키지 API 로 옮기기(리뷰 권장): 공통 시각 선택(`Perception.choose_t`), health 카메라 상태 계산

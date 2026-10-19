@@ -10,7 +10,7 @@ Tier 0 가 남긴 I1 `world_state` 를 `world_tracks.schema.json` 문서로 옮�
 |---|---|
 | `t` | `payload.t_latest_global` |
 | `calibration_version`, `scene_version` | payload 값 그대로 (문서마다. 스트림 중간에 바뀌면 바뀐 대로 낸다) |
-| `tracks[*]` | payload 트랙 객체 그대로(모르는 필드 포함), 순서 유지 |
+| `tracks[*]` | payload 트랙 객체 그대로(모르는 필드 포함), 순서 유지. world_state 2.x 의 UNCERTAIN `head_z` 값도 그대로 옮기므로 `head_z` 는 `head_z_validity` 와 함께 읽는다(1.x 는 UNCERTAIN 이면 null) |
 | `tracks[*].per_camera` | 아래 연결 규칙 |
 | `provider_source` / `provider_version` | `TIER0_LOG` / 리더 버전(+ 기록을 만든 Tier 0 빌드) |
 | `coordinate_frame` | World(m, 오른손, +Z). world_state 는 World 좌표만 쓴다(I1 계약) |
@@ -51,7 +51,7 @@ from simai_ai.providers import contract
 from simai_ai.providers.base import WorldTrackProvider, WorldTracksDoc
 from simai_ai.providers.tier0_log.source import (
     OBSERVATION_BATCH,
-    SUPPORTED_MESSAGE_MAJOR,
+    SUPPORTED_MESSAGE_MAJORS,
     WORLD_STATE,
     Tier0LogError,
     Tier0LogRecord,
@@ -262,10 +262,11 @@ class Tier0LogWorldTrackProvider(WorldTrackProvider):
         version = m.get("schema_version")
         if not isinstance(version, str) or not version.split(".")[0].isdigit():
             raise Tier0LogError(f"{where}: schema_version {version!r} 이 semver 가 아니다")
-        if int(version.split(".")[0]) != SUPPORTED_MESSAGE_MAJOR:
+        majors = SUPPORTED_MESSAGE_MAJORS.get(str(m.get("msg_type")), frozenset())
+        if int(version.split(".")[0]) not in majors:
             raise Tier0LogError(
                 f"{where}: {m.get('msg_type')} schema_version {version} 는 지원하지 않는다 "
-                f"(major {SUPPORTED_MESSAGE_MAJOR} 만)"
+                f"(major {sorted(majors)} 만)"
             )
         if not _nonempty_str(m.get("msg_id")):
             raise Tier0LogError(f"{where}: msg_id 가 없다")

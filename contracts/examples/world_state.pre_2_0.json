@@ -1,5 +1,4 @@
 {
-  "_expect_error": "head_z_validity 가 UNCERTAIN 인데 head_z 값을 실음: UNCERTAIN 값은 싣지 않는다 (사용자 결정 2026-10-18, 1.4.0)",
   "schema_version": "1.4.0",
   "msg_type": "world_state",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e95",
@@ -36,7 +35,7 @@
         "support_surface_validity": "UNKNOWN",
         "contact_validity": "UNAVAILABLE",
         "z_validity": "UNAVAILABLE",
-        "head_z": 1.67,
+        "head_z": null,
         "head_z_sigma": null,
         "head_z_validity": "UNCERTAIN",
         "cameras": [

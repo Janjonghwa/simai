@@ -4,17 +4,20 @@
 '낙상 의심 + 확인 필요'다. 앉기·물건 줍기·책상 뒤 이동과 영상상 비슷해서 관절 유효성 게이트를 통과한 관절만 확정 근거로 쓴다.
 심각도는 늘 CRITICAL 이고 신뢰도가 낮아도 내리지 않는다(7.3). 채널은 alerting.channels_for 가 정한다.
 
-**머리 높이와 그 유효성(무엇을 읽는가).** world_state 의 head_z 는 관절 게이트가 VALID 로 낸 값만 실리고, 게이트가 낸
-유효성은 1.4.0 선택 필드 head_z_validity 로 실린다(VALID 일 때만 값, UNCERTAIN 값은 싣지 않음, 사용자 결정). R4 는 머리 높이와
-그 근거가 VALID 인지 UNCERTAIN 인지를 head_z_validity 로 정한다.
+**머리 높이와 그 유효성(무엇을 읽는가).** world_state 의 head_z_validity(1.4.0)가 관절 게이트가 낸 머리 높이 유효성이다.
+world_state 2.0.0 부터 head_z 에는 VALID 값과 UNCERTAIN 값이 모두 실리고(UNAVAILABLE 이면 null, 사용자 결정 2026-10-19), 1.x 는
+VALID 일 때만 값이 있었다. risk.world 는 확정값(VALID)만 WorldTrack.head_z 로, UNCERTAIN 값은 head_z_uncertain 으로 따로 넘긴다
+(R1·R5 가 UNCERTAIN 값을 확정 근거로 쓰지 않게, S15P31A101-179). R4 는 머리 높이와 그 근거가 VALID 인지 UNCERTAIN 인지를
+head_z_validity 로 정한다.
 - VALID: head_z 를 그대로 쓴다(확정 근거). skeleton 을 다시 보지 않는다.
-- UNCERTAIN: 머리가 보이기는 했지만 확정할 근거가 없다. 계약에 값이 없으므로 같은 트랙 skeleton 의 관측(observed) UNCERTAIN
-  귀·눈(COCO17 1~4)에서 Tier 0 와 같은 식(Z 평균 + head_top_offset_m, geometry.joint_gate.GatedSkeleton.head_z 의 UNCERTAIN
-  값)으로 다시 만들어 판정하고 확인 필요(`JOINT_UNCERTAIN`)를 붙인다(명세 7.2 R4 '관절이 UNCERTAIN 이면 낙상 의심 + 확인
-  필요', 5.2 'UNCERTAIN 이면 등급은 유지하고 확인 필요'). 이 경로만 남긴 이유: 2대 관측 경쟁 후보 영역처럼 머리 근거가 계속
-  UNCERTAIN 인 사람은 값 없이는 급하강을 볼 수 없어 낙상을 놓친다(단상 낙상 벡터). 귀·눈 좌표가 없으면 머리 높이를 모르는
-  것으로 본다(아래 '머리 높이를 모름', head_uncertain). 오프셋 기본값(0.12 m)은 Tier 0 JointGateConfig.head_top_offset_m 과 같아야 한다
-  (같은지 시험한다. G2 에서 바뀌면 함께 바꾼다).
+- UNCERTAIN: 머리가 보이기는 했지만 확정할 근거가 없다. 판정에 쓰되 확인 필요(`JOINT_UNCERTAIN`)를 붙인다(명세 7.2 R4 '관절이
+  UNCERTAIN 이면 낙상 의심 + 확인 필요', 5.2 'UNCERTAIN 이면 등급은 유지하고 확인 필요'). 값은 2.0.0 문서면 계약이 실은
+  head_z_uncertain 을 그대로 쓴다. 1.x 문서(값 없음)면 같은 트랙 skeleton 의 관측(observed) UNCERTAIN 귀·눈(COCO17 1~4)에서
+  Tier 0 와 같은 식(Z 평균 + head_top_offset_m, geometry.joint_gate.GatedSkeleton.head_z 의 UNCERTAIN 값)으로 다시 만든다. 값이
+  필요한 이유: 2대 관측 경쟁 후보 영역처럼 머리 근거가 계속 UNCERTAIN 인 사람은 값 없이는 급하강을 볼 수 없어 낙상을 놓친다
+  (단상 낙상 벡터). 값도 귀·눈 좌표도 없으면 머리 높이를 모르는 것으로 본다(아래 '머리 높이를 모름', head_uncertain). 다시
+  만드는 경로의 오프셋 기본값(0.12 m)은 Tier 0 JointGateConfig.head_top_offset_m 과 같아야 한다(같은지 시험한다. 1.x 문서를
+  더 받지 않게 되면 이 경로와 오프셋 이중 관리를 없앤다, 후속).
 - UNAVAILABLE: 머리 높이를 모른다(좌표 있는 귀·눈 없음, 이번 시각 관측 없음). skeleton 으로 다시 만들지 않는다.
 - head_z_validity 가 없는 이전 버전(1.3.0 이하) 문서: 지금까지처럼 읽는다(하위 호환). head_z 가 있으면 그 값(VALID, 다만
   skeleton 이 있는데 관측 VALID 귀·눈이 하나도 없으면 UNCERTAIN 귀·눈에서 왔다고 보고 UNCERTAIN), head_z 가 null 이면 이유를
@@ -44,6 +47,15 @@ risk.world 가 계약 위반으로 거부한다.
   후보를 버린다).
 - 발생 뒤(FALLEN): 지면 기준 머리 높이가 low_raise_m 이하면 발생 판정, low_clear_m 이하(히스테리시스 띠)면 유지(holding),
   넘으면(일어남) 판정을 내지 않는다. 판정 없이 유효 관측이 3초 이어지면 lifecycle 이 해소한다.
+- 회복 확인(UNCERTAIN 머리로 해소하지 않음, 명세 5.2 'UNCERTAIN head_z 만으로 낙상이 아니다를 확정하지 않는다',
+  S15P31A101-179): 발생 뒤(FALLEN·급하강 직후 상실) 머리가 높아지면 그 사람을 회복 확인 중으로 둔다. 회복 확인 중에는 VALID
+  머리 근거로 높은(HIGH) 표본만 '판정 없음'으로 두어 lifecycle 이 해소 시간을 세게 하고, UNCERTAIN 머리로 높은 표본은 유지
+  (holding, head_uncertain_recovery, `JOINT_UNCERTAIN`)를 내어 해소 시간을 처음부터 다시 세게 한다. VALID 머리 근거로 높은
+  시간을 누적해(연속한 두 VALID 높은 표본 사이 간격만 더함, 간격은 _RECOVERY_GAP_CAP_MS 까지) recovery_valid_ms(lifecycle 기본
+  해소 유지 3초와 같음)에 이르면 회복 확인을 끝내고, 그 뒤로는 머리 유효성과 무관하게 높으면 판정을 내지 않아 lifecycle 이
+  해소한다. 그래서 VALID 한 프레임만으로는 해소되지 않고, UNCERTAIN 이 섞여도 VALID 근거가 충분히 쌓이면 해소된다(활성
+  이벤트가 없는 사람에게 유지를 남발하지 않음). 낮은 자세·띠면 누적을 처음부터 다시 하고, 머리 모름·관측 상실은 연속을 끊는다.
+  새 급하강 감지(UNCERTAIN 값 포함, `JOINT_UNCERTAIN`)는 그대로다. 1.x 문서(UNCERTAIN 값 없이 skeleton 귀·눈)도 같다.
 발생 지속 조건(3프레임 중 2)·해소 유지 시간·재개는 lifecycle 이 한다.
 
 **모르는 상태로 해소하지 않음(6.4).** lifecycle 은 판정이 없고 트랙이 OBSERVED 면 해소 시간을 센다. 그래서 트랙은 관측되지만
@@ -121,7 +133,10 @@ R4_FALLBACK_CLEAR_DROP_M = 0.8
 """접지를 전혀 모를 때: 내려간 양이 이보다 작으면 낮은 자세가 아니다(띠 0.8~1.0 m)"""
 R4_HEAD_TOP_OFFSET_M = 0.12
 """귀·눈 Z 평균에서 머리 꼭대기까지. Tier 0 geometry.joint_gate.JointGateConfig.head_top_offset_m 기본값과 같아야 한다"""
-
+R4_RECOVERY_VALID_MS = 3000
+"""회복 확인(모듈 설명)을 끝내는 VALID 높은 머리 근거 누적 시간. lifecycle 기본 해소 유지(LifecyclePolicy.clear_hold_ms)와 같다"""
+_RECOVERY_GAP_CAP_MS = 500
+"""회복 확인 누적에서 두 VALID 표본 사이 간격을 이만큼까지만 센다(관측 공백을 근거 시간으로 세지 않음, 10 Hz 의 5배)"""
 # 판정 근거 코드
 REASON_HEAD_DROP = "head_drop"
 REASON_LOW_SUSTAINED = "low_posture_sustained"
@@ -136,6 +151,7 @@ REASON_TRACK_NOT_OBSERVED = "track_not_observed"
 REASON_TRACK_MISSING = "track_missing"
 REASON_SUPPORT_LAST_KNOWN = "support_last_known"
 REASON_SUPPORT_HEAD_CHANGE = "support_unknown_head_change"
+REASON_HEAD_UNCERTAIN_RECOVERY = "head_uncertain_recovery"
 
 # COCO17·HALPE26 앞 17개 순서의 눈·귀(명세 5.2 head_z 근거). risk 는 geometry 를 import 하지 않으므로 여기 둔다.
 _HEAD_JOINTS = (1, 2, 3, 4)
@@ -208,6 +224,16 @@ class _Memory:
     uncertain: bool = False  # 후보 근거에 UNCERTAIN 머리 표본이 있었다
     z_unknown: bool = False  # 후보 근거에 대체 기준(마지막 접지·머리 변화)을 썼다
     lost_code: str | None = None
+    recovering: bool = False  # 발생 뒤 회복 확인 중(모듈 설명). clear_candidate 로 지우지 않는다
+    recover_valid_ms: float = 0.0  # 회복 확인 중 누적한 VALID 높은 머리 근거 시간
+    recover_last_t: int | None = None  # 회복 확인 중 마지막 높은 표본 시각(직전이 VALID 일 때만)
+
+    def start_recovery(self) -> None:
+        """발생(FALLEN·상실) 뒤 머리가 높아졌다: 후보를 버리고 회복 확인을 시작한다."""
+        self.clear_candidate()
+        self.recovering = True
+        self.recover_valid_ms = 0.0
+        self.recover_last_t = None
 
     def clear_candidate(self) -> None:
         self.phase = _Phase.NONE
@@ -238,6 +264,7 @@ class FallSuspectRule:
     - fallback_low_drop_m·fallback_clear_drop_m: 접지를 전혀 모를 때 머리 변화 기준의 발생·해소 임계.
     - head_top_offset_m: UNCERTAIN(또는 이전 버전 문서의 head_z null) 때 skeleton 귀·눈에서 머리 높이를 만들며 더하는
       오프셋(Tier 0 과 같은 값).
+    - recovery_valid_ms: 발생 뒤 회복 확인을 끝내는 VALID 높은 머리 근거 누적 시간(모듈 설명 '회복 확인').
     """
 
     def __init__(
@@ -255,6 +282,7 @@ class FallSuspectRule:
         fallback_low_drop_m: float = R4_FALLBACK_LOW_DROP_M,
         fallback_clear_drop_m: float = R4_FALLBACK_CLEAR_DROP_M,
         head_top_offset_m: float = R4_HEAD_TOP_OFFSET_M,
+        recovery_valid_ms: int = R4_RECOVERY_VALID_MS,
     ) -> None:
         for name, value, minimum in (
             ("drop_window_ms", drop_window_ms, 1),
@@ -263,6 +291,7 @@ class FallSuspectRule:
             ("lost_window_ms", lost_window_ms, 0),
             ("lost_memory_ms", lost_memory_ms, 0),
             ("support_memory_ms", support_memory_ms, 0),
+            ("recovery_valid_ms", recovery_valid_ms, 0),
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
                 raise RiskInputError(f"R4.{name} 는 {minimum} 이상 정수여야 한다")
@@ -294,6 +323,7 @@ class FallSuspectRule:
         self._fb_low = float(fallback_low_drop_m)
         self._fb_clear = float(fallback_clear_drop_m)
         self._offset = float(head_top_offset_m)
+        self._recovery = recovery_valid_ms
         self._spec = RuleSpec(rule_id=R4_RULE_ID, rule_version=R4_RULE_VERSION, reads=_R4_READS)
 
     @property
@@ -366,7 +396,9 @@ class FallSuspectRule:
             # risk.world 가 VALID 인데 값 없는 문서를 거부한다. 우회해 들어와도 값을 지어내지 않고 모름으로 둔다.
             return REASON_HEAD_UNAVAILABLE if track.head_z is None else _Head(track.head_z, uncertain=False)
         if validity is Validity.UNCERTAIN:
-            uncertain_z = self._head_joint_z(track)[Validity.UNCERTAIN]
+            if track.head_z_uncertain is not None:  # world_state 2.0.0: 게이트가 낸 UNCERTAIN 값
+                return _Head(track.head_z_uncertain, uncertain=True)
+            uncertain_z = self._head_joint_z(track)[Validity.UNCERTAIN]  # 1.x: 값이 없어 skeleton 으로 다시 만든다
             if uncertain_z:
                 return _Head(sum(uncertain_z) / len(uncertain_z) + self._offset, uncertain=True)
             return REASON_HEAD_UNCERTAIN
@@ -423,7 +455,7 @@ class FallSuspectRule:
             # (판정 없이 유효 관측이 이어지면 lifecycle 이 해소한다).
             memory.lost_code = None
             if reading.posture is _Posture.HIGH:
-                memory.clear_candidate()
+                memory.start_recovery()  # 회복 확인: VALID 머리 근거가 이어져야 해소가 진행된다(모듈 설명)
             else:
                 memory.phase = _Phase.FALLEN
                 memory.t_low = t if reading.posture is _Posture.LOW else memory.t_low
@@ -442,7 +474,7 @@ class FallSuspectRule:
                 memory.t_low = None
         elif memory.phase is _Phase.FALLEN:
             if reading.posture is _Posture.HIGH:
-                memory.clear_candidate()  # 일어났다. 판정 없이 유효 관측이 이어지면 lifecycle 이 해소한다
+                memory.start_recovery()  # 일어났다. VALID 머리 근거로 판정 없이 이어지면 lifecycle 이 해소한다
             elif reading.posture is _Posture.LOW:
                 memory.t_low = memory.t_low if memory.t_low is not None else t
         return reading
@@ -501,6 +533,7 @@ class FallSuspectRule:
         self, world_id: str, memory: _Memory, code: str, track: WorldTrack | None, observed: bool, now: int
     ) -> Finding | None:
         """관측(트랙·머리 높이)을 잃었다. 급하강 직후이거나 이미 낮은 자세였으면 발생, 아니면 필요할 때 유지만 한다."""
+        memory.recover_last_t = None  # 회복 확인 중이면 VALID 연속이 끊긴다(누적은 남는다)
         if memory.phase is _Phase.CANDIDATE:
             recent = memory.last_sample_t is not None and memory.last_sample_t - memory.t_drop <= self._lost_window
             if recent or memory.t_low is not None:
@@ -552,6 +585,10 @@ class FallSuspectRule:
         if reading.drop_from_peak_m is not None:
             metrics["head_drop_from_peak_m"] = reading.drop_from_peak_m
         support = () if reading.support_code is None else (reading.support_code,)
+        if reading.posture in (_Posture.LOW, _Posture.BAND):
+            memory.recover_valid_ms, memory.recover_last_t = 0.0, None  # 다시 낮아졌다: 회복 근거를 처음부터 쌓는다
+        elif reading.posture is _Posture.UNKNOWN:
+            memory.recover_last_t = None  # 지면 기준을 모른다: 연속만 끊는다
 
         if reading.posture is _Posture.UNKNOWN:
             # 지면 기준 높이를 모르고 후보도 아니다: 유지만 한다.
@@ -576,7 +613,7 @@ class FallSuspectRule:
                 holding=True,
             )  # fmt: skip
         if reading.posture is _Posture.HIGH:
-            return None
+            return self._high(world_id, memory, track, head, confidence, metrics, support)
         # 낮은 자세(또는 띠)인데 아직 발생 조건이 아니다(후보가 유지 시간 전이거나 급하강 이력이 없음): 유지만 한다.
         if memory.phase is _Phase.CANDIDATE:
             metrics["head_drop_m"] = memory.drop_m
@@ -586,6 +623,39 @@ class FallSuspectRule:
         return self._finding(
             world_id, memory, confidence, (REASON_LOW_POSTURE, *support), metrics, holding=True, candidate_flags=False
         )
+
+    def _high(
+        self,
+        world_id: str,
+        memory: _Memory,
+        track: WorldTrack,
+        head: _Head,
+        confidence: set[ConfidenceReason],
+        metrics: dict[str, float],
+        support: tuple[str, ...],
+    ) -> Finding | None:
+        """머리가 높다(해소 임계 초과). 회복 확인 중이 아니면 판정 없음. 회복 확인 중이면 VALID 근거가 충분히 쌓여야 해소를
+        진행한다(모듈 설명 '회복 확인')."""
+        if not memory.recovering:
+            return None
+        t = track.t_last_valid
+        if head.uncertain:
+            memory.recover_last_t = None  # VALID 연속이 끊긴다
+        else:
+            last = memory.recover_last_t
+            if last is not None and t > last:
+                memory.recover_valid_ms += min(t - last, _RECOVERY_GAP_CAP_MS)
+            if last is None or t > last:
+                memory.recover_last_t = t
+            if memory.recover_valid_ms >= self._recovery:
+                memory.recovering = False  # VALID 근거로 충분히 일어나 있었다: 회복 확인 끝
+                memory.recover_valid_ms, memory.recover_last_t = 0.0, None
+            return None  # VALID 로 높다: 해소 시간을 센다
+        # UNCERTAIN 머리로는 '일어났다'를 확정하지 않는다: 유지해 lifecycle 이 해소 시간을 처음부터 다시 세게 한다
+        return self._finding(
+            world_id, memory, confidence, (REASON_HEAD_UNCERTAIN_RECOVERY, *support), metrics,
+            holding=True, candidate_flags=False,
+        )  # fmt: skip
 
     def _finding(
         self,
