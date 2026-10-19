@@ -1,0 +1,14 @@
+{
+  "_expect_error": "REJECTED 인데 거부 사유가 없다. EC2 가 관리자에게 왜 닫히지 않았는지 보여 줄 수 없다",
+  "schema_version": "1.0.0",
+  "msg_type": "event_close_result",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000206",
+  "sent_at": 1760342460040,
+  "source_id": "tier0-01",
+  "payload": {
+    "close_id": "8b3c4d5e-6f7a-4b2c-8d3e-4f5a6b7c8d9e",
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "result": "REJECTED",
+    "decided_at": 1760342460030
+  }
+}

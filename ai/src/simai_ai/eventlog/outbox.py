@@ -17,6 +17,7 @@ acked_offset 을 영속 저장(AckedOffsetStore)한 뒤 앞으로 옮긴다. 그
   판정이 아닌 전이(확인·복원·ID 교정)의 근거를 모르면 보류하지 않고 evidence_ref=null 로 보낸다(계약 1.4.0). 보내기 전에
   잡아 그 기록에서 전송을 보류하고(blocked) 경고를 남긴다. 순서를 지키려고 그 뒤 기록도 보내지 않는다.
 - 재전송을 마친 뒤 event_state_snapshot 을 보내는 일은 추적기 상태를 가진 쪽(서비스 조립)이 drained 를 보고 한다.
+- 운영자 종료 기록(lifecycle payload.close, S15P31A101-200)은 계약 resolution(risk_event_transition 2.0.0)으로 바꿔 보낸다.
 """
 
 import logging
@@ -37,11 +38,13 @@ from simai_ai.eventlog.journal import (
 from simai_ai.eventlog.record import JournalEntry
 from simai_ai.risk.clock import Clock
 
-# risk_event_transition 1.4.0(1.3.0 confidence_reasons·resumed 추가, 1.4.0 판정이 아닌 전이의 evidence_ref null 허용)
-SCHEMA_VERSION = "1.4.0"
+# risk_event_transition 2.0.0(1.3.0 confidence_reasons·resumed 추가, 1.4.0 판정이 아닌 전이의 evidence_ref null 허용,
+# 2.0.0 운영자 종료 해소 resolution: 있으면 RESOLVED 의 VERIFIED·evidence_ref 필수가 풀린다, S15P31A101-200)
+SCHEMA_VERSION = "2.0.0"
 # 계약에서 선택(없어도 됨)이고 null 을 허용하지 않는 필드. lifecycle payload 는 비었을 때 null 로 싣는다.
 _OPTIONAL_NOT_NULL = ("ack", "related_event_id")
 _OPERATOR_ACK_KEYS = ("ack_id", "channel", "actor_role", "actor_id", "acked_at")
+_RESOLUTION_KEYS = ("close_id", "channel", "actor_role", "actor_id", "requested_at", "reason")
 
 
 class TransportError(RuntimeError):
@@ -111,6 +114,26 @@ def operator_ack(entry: JournalEntry) -> dict[str, Any]:
     return {k: out[k] for k in _OPERATOR_ACK_KEYS}
 
 
+def operator_resolution(entry: JournalEntry) -> dict[str, Any]:
+    """저널 기록의 운영자 종료(payload.close, lifecycle CloseRecord) → 계약 operator_resolution. 모르는 값은 지어내지 않는다.
+
+    lifecycle 기록은 {close_id, channel, actor_role, actor_id, requested_at, recorded_at, reason} 이고 계약은 kind 를 더하고
+    recorded_at 을 뺀다(추가 필드 금지, Tier 0 기록 시각은 전이의 occurred_at). RESOLVED 가 아니거나 값이 비면 UnsendableEntry.
+    """
+    close = entry.payload.get("close")
+    if not isinstance(close, Mapping) or entry.payload.get("transition") != "RESOLVED":
+        raise UnsendableEntry(entry, "운영자 종료 기록은 RESOLVED 전이에만 있다")
+    out: dict[str, Any] = {"kind": "OPERATOR_CLOSED"}
+    for key in _RESOLUTION_KEYS:
+        value = close.get(key)
+        if value is None or value == "" or isinstance(value, bool):
+            raise UnsendableEntry(entry, f"운영자 종료 기록에 {key} 가 없다(계약 operator_resolution 필수)")
+        out[key] = value
+    if (out["channel"], out["actor_role"]) != ("CONTROL_ROOM", "ADMIN"):
+        raise UnsendableEntry(entry, f"운영자 종료 채널·역할 ({out['channel']}, {out['actor_role']}) 은 계약이 받지 않는다")
+    return out
+
+
 def to_i1_transition_payload(entry: JournalEntry, *, resent: bool) -> dict[str, Any]:
     """저널 기록 하나 → I1 risk_event_transition payload. 저널의 기록 자체는 바꾸지 않는다(복사본을 바꾼다).
 
@@ -120,6 +143,7 @@ def to_i1_transition_payload(entry: JournalEntry, *, resent: bool) -> dict[str, 
       그것도 없으면 판정이 아닌 전이(확인·복원·ID 교정)는 null 로 보내고(계약 1.4.0), 판정 전이는 UnsendableEntry
       (지어내지 않음).
     - 확인 기록(lifecycle 은 UPDATED + 변경 사유 ACKNOWLEDGED)은 계약대로 transition=ACKNOWLEDGED, ack=operator_ack.
+    - 운영자 종료 기록(close)은 계약 resolution(operator_resolution)으로 바꾸고 close 는 뺀다(2.0.0).
     - journal_offset·resent 를 붙인다.
     """
     payload = entry.payload_dict()
@@ -134,6 +158,9 @@ def to_i1_transition_payload(entry: JournalEntry, *, resent: bool) -> dict[str, 
     if "ack" in payload:
         payload["transition"] = "ACKNOWLEDGED"
         payload["ack"] = operator_ack(entry)
+    if "close" in payload:
+        payload["resolution"] = operator_resolution(entry)
+        del payload["close"]
     payload["journal_offset"] = entry.journal_offset
     payload["resent"] = resent
     return payload

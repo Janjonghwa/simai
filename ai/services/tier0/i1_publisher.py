@@ -415,6 +415,7 @@ def build_i1_link(
     config_sync: Any | None = None,
     on_event_ack: Callable[[Any], Any] | None = None,
     ack_seen: Callable[[str], bool] | None = None,
+    on_event_close: Callable[[Any], Mapping[str, Any]] | None = None,
     endpoint_build: Callable[[], Mapping[str, Any]] | None = None,
     client_kwargs: Mapping[str, Any] | None = None,
     publisher_kwargs: Mapping[str, Any] | None = None,
@@ -424,6 +425,8 @@ def build_i1_link(
     make_outbox: 전송 함수(OutboxI1Transport)를 받아 eventlog.Outbox 를 만드는 함수
     (예: lambda transport: Outbox(journal, store, gateway_id=..., transport=transport, clock=clock)).
     on_event_ack 를 주면 ack_seen(예: EventJournal.has_ack_id)도 필수다(연결을 넘는 확인 멱등).
+    on_event_close: CloseRequest → event_close_result payload(JudgmentLoop.close). 결과는 신뢰 대기열로 EC2 에 보낸다
+    (끊겨도 보관). 종료 전이 자체는 저널 outbox 로 간다(S15P31A101-200).
     config_sync 의 연결 표시는 연결 훅으로 바로 바꾸고, 처리 중 연결이 바뀐 구성 묶음 뒤에는 디스패처가 다시 맞춘다.
     snapshot_payload: 재전송을 마친 뒤 보낼 event_state_snapshot payload(활성 이벤트 최종 상태, 추적기를 가진 조립이 만든다).
     연결 훅(연결 스레드): 디스패처 중복 기억 비움 → Config Sync 연결 표시 → health 즉시 → 엔드포인트 재등록.
@@ -450,6 +453,14 @@ def build_i1_link(
     if endpoint_build is not None:
         endpoint = EndpointI1Registration(client, endpoint_build, source_id=envelope.source_id)
         client.add_on_connected(endpoint.register)
+    close_and_reply = None
+    if on_event_close is not None:
+
+        def close_and_reply(request: Any) -> Mapping[str, Any]:
+            result = on_event_close(request)
+            client.enqueue(envelope.make("event_close_result", result))
+            return result
+
     wire_tier0_handlers(dispatcher, outbox=outbox, config_sync=config_sync, on_event_ack=on_event_ack,
-                        ack_seen=ack_seen)
+                        ack_seen=ack_seen, on_event_close=close_and_reply)
     return I1Link(client, publisher, dispatcher, endpoint, outbox)

@@ -33,6 +33,9 @@ LIVE 이벤트의 생명주기 정본은 RunPod Tier 0 의 이 추적기 하나�
   근거가 있는 판정에서만 VERIFIED 로 본다(복원 직후 UNVERIFIABLE 이 저하 판정만으로 VERIFIED 로 돌아가지 않게). 사람 대상
   복원 이벤트는 기존 정책대로 대상 World ID 의 재관측으로 확인한다. 복원 보호는 체크포인트·저널에 싣지 않는다. restore 가
   복원하는 모든 활성 이벤트에 다시 걸고 해소 때만 풀리므로 다시 재시작해도 같은 상태가 된다.
+- 운영자 종료(S15P31A101-200, close): 근거가 오지 않아 남은 구역 대상 이벤트를 관제 화면 관리자가 닫는다. RESOLVED 전이
+  (변경 사유 OPERATOR_CLOSED, close 기록에 누가·왜)로 남기고 검증 상태는 바꾸지 않는다(관측 해소가 아니다). 사람 대상·
+  HIGH·CRITICAL·마지막 판정에 조건이 있는 이벤트는 거부한다. 종료한 이벤트는 재개하지 않는다(재발생은 새 이벤트).
 - 확인 필요(7.1): 이벤트의 confidence_reasons 가 비어 있지 않은 상태다. needs_check 는 그 결과로 맞춰 둔다
   (common.normalize_confidence). 이유 목록이 바뀌면 CONFIDENCE 변경 사유로 UPDATED 를 낸다.
 - ACKNOWLEDGED 는 상태가 아니라 속성이다. 확인은 UPDATED 전이(변경 사유 ACKNOWLEDGED)로 저널에 남고
@@ -142,6 +145,7 @@ class Change(StrEnum):
     VERSION = "VERSION"  # 규칙·구성·보정·Scene 버전이 바뀜(근거 감사)
     ACKNOWLEDGED = "ACKNOWLEDGED"
     CLEARED = "CLEARED"  # 해소 확정
+    OPERATOR_CLOSED = "OPERATOR_CLOSED"  # 관리자의 구역 대상 이벤트 종료(event_close, S15P31A101-200). 관측 해소가 아니다
 
 
 _CHANGE_ORDER = {c: i for i, c in enumerate(Change)}
@@ -220,6 +224,73 @@ class AckRecord:
 
 
 _ACK_KEYS = ("actor", "actor_id", "acked_at", "recorded_at", "target_sequence", "channel")
+
+# 운영자 종료를 받는 계약 채널·역할(contracts/messages/event_close.schema.json). 반장 PWA 의 '조치 완료'는 해소가 아니다(8.4).
+CLOSE_CHANNEL = "CONTROL_ROOM"
+CLOSE_ACTOR_ROLE = "ADMIN"
+CLOSE_REASON_MAX = 500  # 계약 event_close.close.reason maxLength
+
+
+class CloseReject(StrEnum):
+    """운영자 종료 거부 사유(계약 event_close_result.reject_reason)."""
+
+    NOT_ACTIVE = "NOT_ACTIVE"  # 활성 이벤트가 아니다(모르는 ID, 이미 해소·종료)
+    TARGET_NOT_ZONE = "TARGET_NOT_ZONE"  # 사람 대상 이벤트는 재관측으로만 해소한다
+    SEVERITY_NOT_ALLOWED = "SEVERITY_NOT_ALLOWED"  # HIGH·CRITICAL 은 닫지 않는다(명세에 기준 없음, 안전 쪽)
+    CONDITION_PRESENT = "CONDITION_PRESENT"  # 마지막 판정에 그 이벤트의 위험 판정이 있다(지금 조건이 성립)
+
+
+@dataclass(frozen=True)
+class CloseRequest:
+    """I1 event_close 하나(관리자가 구역 대상 이벤트를 닫는 명령). close_id 는 EC2 가 발급한 멱등 키다."""
+
+    event_id: str
+    close_id: str
+    actor_id: str
+    requested_at: int
+    reason: str
+
+    @classmethod
+    def from_contract(cls, payload: Any) -> "CloseRequest":
+        """event_close payload → CloseRequest. 계약이 받지 않는 채널·역할(반장 PWA 등)·빈 값은 RiskInputError."""
+        payload = as_mapping(payload, "event_close")
+        close = as_mapping(payload.get("close"), "event_close.close")
+        if close.get("channel") != CLOSE_CHANNEL or close.get("actor_role") != CLOSE_ACTOR_ROLE:
+            raise RiskInputError(
+                f"event_close: 채널·역할 ({close.get('channel')}, {close.get('actor_role')}) 은 받지 않는다(관제 화면 관리자만)"
+            )
+        reason = as_str(close.get("reason"), "event_close.close.reason")
+        if len(reason) > CLOSE_REASON_MAX:
+            raise RiskInputError(f"event_close.close.reason: {CLOSE_REASON_MAX}자를 넘는다 ({len(reason)}자)")
+        return cls(
+            event_id=as_str(payload.get("event_id"), "event_close.event_id"),
+            close_id=as_str(close.get("close_id"), "event_close.close.close_id"),
+            actor_id=as_str(close.get("actor_id"), "event_close.close.actor_id"),
+            requested_at=as_timestamp_ms(close.get("requested_at"), "event_close.close.requested_at"),
+            reason=reason,
+        )
+
+
+@dataclass(frozen=True)
+class CloseRecord:
+    """운영자 종료 기록(종료 전이에 싣는다). requested_at 은 보낸 쪽 기준, recorded_at 은 Tier 0 가 기록한 시각."""
+
+    close_id: str
+    actor_id: str
+    requested_at: int
+    recorded_at: int
+    reason: str
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "close_id": self.close_id,
+            "channel": CLOSE_CHANNEL,
+            "actor_role": CLOSE_ACTOR_ROLE,
+            "actor_id": self.actor_id,
+            "requested_at": self.requested_at,
+            "recorded_at": self.recorded_at,
+            "reason": self.reason,
+        }
 
 
 @dataclass(frozen=True)
@@ -543,6 +614,7 @@ class EventTransition:
     evidence: tuple[TrackEvidence, ...] = ()
     ack: AckRecord | None = None
     evidence_ref: str | None = None
+    close: CloseRecord | None = None  # 운영자 종료 전이에만
 
     @property
     def event_id(self) -> str:
@@ -553,6 +625,12 @@ class EventTransition:
         return self.state.event_sequence
 
     def to_payload(self) -> dict[str, Any]:
+        doc = self._payload()
+        if self.close is not None:  # 종료 전이에만 싣는다(다른 전이의 기록 형식은 그대로)
+            doc["close"] = self.close.to_payload()
+        return doc
+
+    def _payload(self) -> dict[str, Any]:
         s = self.state
         return {
             "event_id": s.event_id,
@@ -769,6 +847,8 @@ class _Active:
         # 판정에서만 VERIFIED(복원하지 않은 구역 대상은 판정이 사라진 판정에서만 근거를 요구한다, -180).
         # 해소될 때까지 남는다(재개한 이벤트는 새 _Active 라 보호가 없다).
         self.restored = False
+        # 마지막 판정에 이 이벤트의 판정이 있었는지(운영자 종료 거부 조건). 복원 직후는 아직 판정이 없어 False 다.
+        self.condition_present = False
         self.metrics_emitted_at = state.evaluated_at
         self.mark_emitted()
 
@@ -1023,6 +1103,7 @@ class LifecycleTracker:
             resume_count=previous.resume_count + 1,
         )
         active = _Active(state)
+        active.condition_present = True
         self._by_key[key] = active
         self._by_id[state.event_id] = active
         self._alert_if_needed(active, frame.occurred_at, signals)
@@ -1076,6 +1157,7 @@ class LifecycleTracker:
             related_event_id=related_event_id,
         )
         active = _Active(state)
+        active.condition_present = True
         self._by_key[key] = active
         self._by_id[state.event_id] = active
         # 경보 발행 여부(local_alerted)까지 확정한 상태를 전이에 싣는다. 저널 전이로 복원해도 ACK·해소 신호가 맞다.
@@ -1095,6 +1177,7 @@ class LifecycleTracker:
         state = active.state
         evaluation = frame.evaluation
         changes: set[Change] = set()
+        active.condition_present = finding is not None
 
         # ID 교정(identity_revision 증가)은 해소 확인을 처음부터 다시 세게 한다. 해소하지 않는다(5.2, G3).
         revisions = dict(state.identity_revisions)
@@ -1265,6 +1348,62 @@ class LifecycleTracker:
                 ),
             )
         return LifecycleStep((transition,), signals)
+
+    # --- 운영자 종료 -------------------------------------------------------------------
+
+    def close(
+        self, request: CloseRequest, *, commit: Callable[[LifecycleStep], Any] | None = None
+    ) -> LifecycleStep | CloseReject:
+        """관리자의 구역 대상 이벤트 종료(event_close, S15P31A101-200). 받으면 RESOLVED 전이(변경 사유 OPERATOR_CLOSED)
+        하나와, 현장 경보를 낸 이벤트면 AlertClear 를 돌려준다. 받지 않으면 거부 사유만 돌려주고 아무것도 바꾸지 않는다.
+
+        감시 확보 근거가 오지 않는 구역 대상 이벤트(카메라를 치움, 구역을 구성에서 뺌, 재시작 복원)를 사람이 닫는 길이다.
+        관측으로 해소를 확인한 것이 아니므로 검증 상태는 그대로 두고(UNVERIFIABLE 이면 UNVERIFIABLE) 판정 근거
+        (evidence_ref)를 싣지 않는다. 누가·왜 닫았는지는 close 기록이 근거다. 거부: 활성이 아님, 사람 대상, HIGH·CRITICAL,
+        마지막 판정에 그 이벤트의 판정이 있음(조건이 지금 성립). 종료한 이벤트는 재개 대상에 넣지 않는다: 같은 (규칙, 구역)이
+        다시 발생 조건을 채우면 재개 시간 안이어도 새 이벤트다(재개는 관측 해소 뒤의 재발생, 6.4).
+
+        commit: 종료 단계를 추적기 상태를 바꾸기 전에 넘겨받는 함수(Tier 0 는 저널 제출). 예외를 내면 아무것도 바꾸지 않고
+        그 예외를 그대로 올린다(제출하지 못한 종료를 활성 제거·수락으로 확정하지 않는다, S15P31A101-200 리뷰 F1).
+        """
+        if self._origin is not Origin.LIVE:
+            raise LifecycleError(f"운영자 종료는 LIVE 이벤트만 받는다({self._origin})")
+        active = self._by_id.get(request.event_id)
+        if active is None:
+            return CloseReject.NOT_ACTIVE
+        state = active.state
+        if state.key.target is not FindingTarget.ZONE:
+            return CloseReject.TARGET_NOT_ZONE
+        if _rank(state.severity) >= _rank(Severity.HIGH):
+            return CloseReject.SEVERITY_NOT_ALLOWED
+        if active.condition_present:
+            return CloseReject.CONDITION_PRESENT
+        occurred_at = self._clock.now_ms()
+        record = CloseRecord(
+            close_id=as_str(request.close_id, "close.close_id"),
+            actor_id=as_str(request.actor_id, "close.actor_id"),
+            requested_at=as_timestamp_ms(request.requested_at, "close.requested_at"),
+            recorded_at=occurred_at,
+            reason=as_str(request.reason, "close.reason"),
+        )
+        closed = replace(state, event_sequence=state.event_sequence + 1, lifecycle=Lifecycle.RESOLVED)
+        transition = EventTransition(
+            state=closed,
+            transition=Lifecycle.RESOLVED,
+            changes=(Change.OPERATOR_CLOSED,),
+            occurred_at=occurred_at,
+            close=record,
+        )
+        signals: tuple[LocalSignal, ...] = ()
+        if closed.local_alerted:
+            signals = (AlertClear(**self._signal_fields(closed, occurred_at)),)
+        step = LifecycleStep((transition,), signals)
+        if commit is not None:
+            commit(step)  # 실패하면 상태를 바꾸기 전이다
+        active.state = closed
+        active.mark_emitted()
+        self._drop(active)
+        return step
 
     # --- ID 교정 ---------------------------------------------------------------------
 

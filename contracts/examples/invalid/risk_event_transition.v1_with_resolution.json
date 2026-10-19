@@ -1,0 +1,44 @@
+{
+  "_expect_error": "1.x 문서에는 운영자 종료 해소가 없다. 1.x 수신 측은 RESOLVED 를 관측 해소로 읽는다(1.x 규칙 회귀)",
+  "schema_version": "1.4.0",
+  "msg_type": "risk_event_transition",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000208",
+  "sent_at": 1760342460050,
+  "source_id": "tier0-01",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e90",
+    "event_sequence": 4,
+    "journal_offset": 1290,
+    "transition": "RESOLVED",
+    "occurred_at": 1760342460030,
+    "gateway_id": "tier0-01",
+    "observation_time": 1760342459900,
+    "evaluated_at": 1760342459990,
+    "rule_id": "R7",
+    "rule_version": 1,
+    "config_version": "cfg-12",
+    "calibration_version": "cal-7",
+    "scene_version": "scene-3",
+    "source": "LIVE",
+    "severity": "CAUTION",
+    "confidence": "HIGH",
+    "verification": "UNVERIFIABLE",
+    "needs_check": false,
+    "world_ids": [],
+    "zone_id": "z-04",
+    "metrics": {
+      "observing_cameras": 1
+    },
+    "evidence_ref": null,
+    "resent": false,
+    "resolution": {
+      "kind": "OPERATOR_CLOSED",
+      "close_id": "7a2b3c4d-5e6f-4a1b-9c2d-3e4f5a6b7c8d",
+      "channel": "CONTROL_ROOM",
+      "actor_role": "ADMIN",
+      "actor_id": "user-0003",
+      "requested_at": 1760342460000,
+      "reason": "3번 카메라 철거로 z-04 구역 감시 근거가 오지 않음. 현장 확인 후 종료"
+    }
+  }
+}

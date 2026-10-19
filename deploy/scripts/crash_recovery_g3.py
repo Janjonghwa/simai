@@ -104,6 +104,9 @@ def restored_resolution_violations(transitions, restored: dict[str, int], hold_m
       해소 유지 시간 동안 이어져야 해소된다(명세 6.4 유효 관측으로 해소 확인). 그 구간의 전이로 보이지 않으면(VERIFIED 없음·중간에
       UNVERIFIABLE·유지 시간 미달) 위반이다. 부하로 재시작 직후 판정이 늦어지면 시동 때 잠깐 난 R7(아직 프레임이 없는 카메라는
       정상으로 세지 않음)이 해소 전에 종료·복원되고 다음 프로세스에서 근거로 해소된다(S15P31A101-198).
+    - 운영자 종료(I1 risk_event_transition 2.0.0 resolution, S15P31A101-200): 관리자가 누가·왜(resolution 의 kind OPERATOR_CLOSED·
+      close_id·actor_id·reason)를 남기고 닫은 구역 대상 해소는 근거 있는 해소로 본다(zone_ok). 그 값이 비었거나 사람 대상이면
+      위반이다. 관측 VERIFIED 유지는 보지 않는다. resolution 이 없는 해소는 관측 해소로 본다(lifecycle 의 changes 는 보지 않는다).
     - 처음 복원과 어떤 해소 사이의 sequence 가 빠지면 구간을 알 수 없어 위반으로 센다(모르면 통과 아님).
     """
     by_event: dict[str, dict[int, dict]] = {}
@@ -127,6 +130,18 @@ def restored_resolution_violations(transitions, restored: dict[str, int], hold_m
             rule = p["rule_id"]
             if "RESTORED" in (p.get("changes") or []):
                 protected, since = True, None
+                continue
+            if p["transition"] == "RESOLVED" and p.get("resolution") is not None:
+                res = p["resolution"] if isinstance(p["resolution"], dict) else {}
+                if p["world_ids"]:
+                    bad.append(f"복원 이벤트 {eid}({rule}) 가 사람 대상인데 운영자 종료됨 (sequence {s})")
+                elif res.get("kind") != "OPERATOR_CLOSED" or not all(
+                        isinstance(res.get(k), str) and res[k] for k in ("close_id", "actor_id", "reason")):
+                    bad.append(f"구역 대상 복원 이벤트 {eid}({rule}) 의 운영자 종료에 누가·왜(close_id·actor_id·reason)가 없음 "
+                               f"(sequence {s})")
+                elif protected and eid not in zone_ok:
+                    zone_ok.append(eid)
+                protected, since = False, None
                 continue
             if p["transition"] == "RESOLVED":
                 if protected and p["world_ids"]:

@@ -1,6 +1,6 @@
 # 12. 인터페이스 명세
 
-I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 봉투를 쓰고, 이미지는 메시지에 넣지 않고 객체 저장소 주소로 주고받는다. 아래 필드는 v1.0 기준 예시이며 필드 정의의 정본은 저장소 `contracts/`의 JSON Schema 파일이다(21.2). 아직 스키마가 없는 메시지는 이 절의 예시가 기준이다. v1.3 에서 바뀐 규칙 중 현장 경보 목록(`health.active_site_alerts`), 시계 차이 교환(`clock_sync_request`·`clock_sync_response`, `health.laptop_clock_offset`), 엔드포인트 등록(`tier0_endpoint`), 2D 관측 요약(`observation_summary`), I5 작업 대여(`job_lease_request`·`job_request`·`job_heartbeat`·`job_callback`·`job_lease_status`), 확인 필요 이유(`confidence_reasons`), 이벤트 재개(`resumed`·`resume_count`), 확인 대상(`site_ack`·`event_ack`·`alarm_stop` 의 `event_sequence`), `world_state.config_version`, 판정이 아닌 전이의 근거 null, 노트북 송신 큐 버림(`health` 의 `laptop_skipped`·`unattributed_gap`), 이벤트 클립 기록(`media_clip`·`media_clip_retention`)은 계약에 반영했다. 아직 계약에 없는 것은 19.1 에 둔다.
+I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 봉투를 쓰고, 이미지는 메시지에 넣지 않고 객체 저장소 주소로 주고받는다. 아래 필드는 v1.0 기준 예시이며 필드 정의의 정본은 저장소 `contracts/`의 JSON Schema 파일이다(21.2). 아직 스키마가 없는 메시지는 이 절의 예시가 기준이다. v1.3 에서 바뀐 규칙 중 현장 경보 목록(`health.active_site_alerts`), 시계 차이 교환(`clock_sync_request`·`clock_sync_response`, `health.laptop_clock_offset`), 엔드포인트 등록(`tier0_endpoint`), 2D 관측 요약(`observation_summary`), I5 작업 대여(`job_lease_request`·`job_request`·`job_heartbeat`·`job_callback`·`job_lease_status`), 확인 필요 이유(`confidence_reasons`), 이벤트 재개(`resumed`·`resume_count`), 확인 대상(`site_ack`·`event_ack`·`alarm_stop` 의 `event_sequence`), `world_state.config_version`, 판정이 아닌 전이의 근거 null, 노트북 송신 큐 버림(`health` 의 `laptop_skipped`·`unattributed_gap`), 이벤트 클립 기록(`media_clip`·`media_clip_retention`), 운영자 종료(`event_close`·`event_close_result`, `risk_event_transition`·`risk_event` 2.0.0 의 운영자 종료 해소 `resolution`: 있으면 해소에 VERIFIED·판정 근거를 요구하지 않음, 6.4)는 계약에 반영했다. 아직 계약에 없는 것은 19.1 에 둔다.
 
 ## 12.1 공통 봉투와 버전
 
@@ -23,7 +23,7 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 
 | ID | 구간 | 방식 | 메시지 |
 |---|---|---|---|
-| I1 | RunPod Tier 0 ↔︎ EC2 | WebSocket + JSON | 위로(Tier 0 → EC2): `world_state`(10 Hz), `health`(1 Hz), `observation_summary`(필요 시 카메라별 요약만. 2D 관측 원본 `observation_batch` 는 RunPod 에 Parquet 로 보관, 11.2), `calibration_update`, `risk_event_transition`, `event_state_snapshot`, `config_ack`, `event_frame_ready`, `media_clip`·`media_clip_retention`(이벤트 클립 기록, 11.3), `tier0_endpoint`(엔드포인트 등록, 3.12) / 아래로(EC2 → Tier 0): `event_ack`, `journal_ack`, `config_bundle` |
+| I1 | RunPod Tier 0 ↔︎ EC2 | WebSocket + JSON | 위로(Tier 0 → EC2): `world_state`(10 Hz), `health`(1 Hz), `observation_summary`(필요 시 카메라별 요약만. 2D 관측 원본 `observation_batch` 는 RunPod 에 Parquet 로 보관, 11.2), `calibration_update`, `risk_event_transition`, `event_state_snapshot`, `config_ack`, `event_frame_ready`, `media_clip`·`media_clip_retention`(이벤트 클립 기록, 11.3), `tier0_endpoint`(엔드포인트 등록, 3.12), `event_close_result`(운영자 종료 결과, 6.4) / 아래로(EC2 → Tier 0): `event_ack`, `event_close`(관리자의 구역 대상 이벤트 종료, 6.4), `journal_ack`, `config_bundle` |
 | I2 | EC2 → 뷰어 | WebSocket(STOMP) + REST | 토픽 `/topic/world`, `/topic/events`, `/topic/health` / REST: 리플레이, 구역 CRUD, 작업면 등록, Scene 자산, 레이아웃(12.6) |
 | I3 | EC2 ↔︎ PWA | Web Push + REST | 푸시 `risk_alert`, 시험 푸시 / REST: 티켓 상태 변경, 사진 업로드 주소 발급, 푸시 구독·해지, 수신 확인(12.6) |
 | I4 | EC2 ↔︎ 워치 | — | 이동(v1.3) → 부록 C |

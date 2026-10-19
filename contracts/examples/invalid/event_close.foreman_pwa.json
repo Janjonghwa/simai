@@ -1,0 +1,19 @@
+{
+  "_expect_error": "반장 PWA 의 '조치 완료'는 해소가 아니다(8.4). 운영자 종료는 관제 화면 관리자만 보낸다",
+  "schema_version": "1.0.0",
+  "msg_type": "event_close",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000204",
+  "sent_at": 1760342460010,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e90",
+    "close": {
+      "close_id": "7a2b3c4d-5e6f-4a1b-9c2d-3e4f5a6b7c8d",
+      "channel": "FOREMAN_PWA",
+      "actor_role": "FOREMAN",
+      "actor_id": "user-0007",
+      "requested_at": 1760342460000,
+      "reason": "조치 완료"
+    }
+  }
+}

@@ -619,6 +619,7 @@ class Tier0Service:
             config_sync=self.config_sync,
             on_event_ack=lambda ack: self.judge.acknowledge(ack),
             ack_seen=self.journal.has_ack_id,
+            on_event_close=lambda request: self.judge.close(request),
             endpoint_build=lambda: registrar.build(env, read_cert_pem(env)),
         )
         link_ref["link"] = link

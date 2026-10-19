@@ -164,3 +164,62 @@ def test_restored_r7_is_not_resolved_when_bundle_has_no_r7(tmp_path, calibration
         assert state.rule_id == "R7" and state.verification is Verification.UNVERIFIABLE
     finally:
         site.close()
+
+
+# ---------------------------------------------------------------- 운영자 종료 (S15P31A101-200)
+
+
+def _drain(site) -> bool:
+    """쓰기 스레드가 앞서 넣은 기록을 모두 쓸 때까지 기다린다(빈 단계는 순서 표지일 뿐 기록하지 않는다)."""
+    from simai_ai.risk import LifecycleStep
+
+    site.writer.submit_step(LifecycleStep()).result(timeout=5)
+    return True
+
+
+def _close(event_id: str, close_id: str = "7a2b3c4d-5e6f-4a1b-9c2d-3e4f5a6b7c8d"):
+    from simai_ai.risk.lifecycle import CloseRequest
+
+    return CloseRequest(event_id=event_id, close_id=close_id, actor_id="user-0003", requested_at=T0, reason="R7 제거")
+
+
+def test_operator_close_of_stuck_restored_r7_is_accepted_once_and_journaled(tmp_path, calibration):
+    """구성에서 R7 이 빠져 근거가 오지 않는 복원 R7: 종료 ACCEPTED → 저널 RESOLVED·활성 목록에서 빠짐. 같은 close_id 재전송은
+    DUPLICATE(저널 기록 대기 중이든 기록 뒤든 다시 기록하지 않음)."""
+    site, _ = _restored_site(tmp_path, calibration, rules=(("R1", 1),))
+    try:
+        site.run(10)
+        [state] = site.tracker.active()
+        result = site.loop.close(_close(state.event_id))
+        assert result["result"] == "ACCEPTED" and result["event_sequence"] == state.event_sequence + 1
+        assert site.loop.close(_close(state.event_id))["result"] == "DUPLICATE"  # 쓰기 스레드 fsync 전일 수 있다
+        assert _drain(site)
+        assert site.loop.close(_close(state.event_id))["result"] == "DUPLICATE"
+        assert site.loop.active_states() == () and site.loop.current_state(state.event_id) is None
+        closes = [e for e in site.journal.iter_from(0) if e.payload.get("close")]
+        assert len(closes) == 1 and closes[0].payload["transition"] == "RESOLVED"
+        assert (site.loop.stats.closes, site.loop.stats.duplicate_closes) == (1, 2)
+        site.run(10)
+        assert site.tracker.active() == ()  # R7 이 구성에 없어 다시 나지 않는다
+    finally:
+        site.close()
+
+
+def test_operator_close_is_rejected_while_r7_still_judges_the_zone_degraded(tmp_path, calibration):
+    """반례: 카메라가 아직 끊긴 채 R7 이 구성에 있으면 판정이 계속 나므로 거부(CONDITION_PRESENT), 저널·상태 그대로.
+    카메라가 돌아오면 근거로 자동 해소되고, 그 뒤 종료는 NOT_ACTIVE 다."""
+    site, covering = _restored_site(tmp_path, calibration)
+    try:
+        site.run(5, down=covering[1:])
+        [state] = site.tracker.active()
+        offset = site.journal.next_offset
+        result = site.loop.close(_close(state.event_id))
+        assert (result["result"], result["reject_reason"]) == ("REJECTED", "CONDITION_PRESENT")
+        assert "event_sequence" not in result
+        assert _drain(site) and site.journal.next_offset == offset
+        assert site.tracker.active() == (state,)
+        site.run(5)
+        assert len(site.resolved()) == 1
+        assert site.loop.close(_close(state.event_id, "8b3c4d5e-6f7a-4b2c-8d3e-4f5a6b7c8d9e"))["reject_reason"] == "NOT_ACTIVE"
+    finally:
+        site.close()

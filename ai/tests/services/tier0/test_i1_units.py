@@ -416,6 +416,20 @@ def test_event_ack_forbidden_channel_and_ack_id_idempotency() -> None:
     assert len(acks) == 1 and d.stats.skipped_acks == 2
 
 
+def test_event_close_is_parsed_and_handed_over_and_foreman_close_is_refused() -> None:
+    """event_close(S15P31A101-200): 계약 예시는 CloseRequest 로 넘기고 결과를 돌려준다. 반장 PWA 종료는 넘기지 않는다."""
+    closes = []
+    d = linked(wire_tier0_handlers(I1Dispatcher(), on_event_close=lambda r: closes.append(r) or {"result": "ACCEPTED"}))
+    assert d.handle(example("event_close")) == {"result": "ACCEPTED"}
+    bad = example("event_close")
+    bad["msg_id"] = "0192a6f0-7c1e-7b3a-9f2d-0000000002ff"
+    bad["payload"]["close"] |= {"channel": "FOREMAN_PWA", "actor_role": "FOREMAN"}
+    assert d.handle(bad) is None and d.stats.handler_errors == 1
+    assert [c.close_id for c in closes] == [example("event_close")["payload"]["close"]["close_id"]]
+    plain = linked(wire_tier0_handlers(I1Dispatcher()))  # 꽂지 않으면 받지 않는다
+    assert plain.handle(example("event_close")) is None and plain.stats.unhandled == 1
+
+
 def test_slow_config_download_does_not_block_journal_ack_and_close_keeps_live_thread() -> None:
     entered, release = threading.Event(), threading.Event()
 

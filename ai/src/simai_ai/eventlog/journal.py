@@ -109,6 +109,7 @@ class Reservation:
 
     ack_ids: tuple[str, ...] = ()
     evidence: tuple[tuple[str, str], ...] = ()
+    close_ids: tuple[str, ...] = ()
 
 
 class TransitionLike(Protocol):
@@ -156,6 +157,12 @@ def ack_id_of(entry: JournalEntry) -> str | None:
     return ack_id
 
 
+def close_id_of(entry: JournalEntry) -> str | None:
+    """운영자 종료 기록의 close_id(payload.close.close_id, lifecycle CloseRecord). 종료 기록이 아니면 None."""
+    close = entry.payload.get("close")
+    return _nonempty_str(close.get("close_id")) if isinstance(close, Mapping) else None
+
+
 def evidence_ref_of(entry: JournalEntry) -> str | None:
     """판정 근거 world_state msg_id: payload.evidence_ref, 없으면 meta.evidence_ref(그 이벤트의 직전 근거)."""
     return _nonempty_str(entry.payload.get("evidence_ref")) or _nonempty_str(entry.meta.get("evidence_ref"))
@@ -164,10 +171,13 @@ def evidence_ref_of(entry: JournalEntry) -> str | None:
 def is_judgment_transition(payload: Mapping[str, Any]) -> bool:
     """판정 전이인지(근거 world_state 가 있어야 하는지). 모르면 판정으로 본다(근거 없이 보내지 않는 쪽).
 
-    판정이 아닌 전이: 확인(ack 를 싣거나 transition=ACKNOWLEDGED), 또는 재개가 아닌 UPDATED 중 변경 사유가 모두
-    복원·ID 교정(과 복원에 붙는 VERIFICATION)인 것. RAISED·RESOLVED·재개·판정 UPDATED 는 판정 전이다.
+    판정이 아닌 전이: 확인(ack 를 싣거나 transition=ACKNOWLEDGED), 운영자 종료(close 를 실은 RESOLVED, 근거는 누가·왜),
+    또는 재개가 아닌 UPDATED 중 변경 사유가 모두 복원·ID 교정(과 복원에 붙는 VERIFICATION)인 것. RAISED·관측 RESOLVED·재개·
+    판정 UPDATED 는 판정 전이다.
     """
     if payload.get("ack") is not None or payload.get("transition") == "ACKNOWLEDGED":
+        return False
+    if payload.get("close") is not None and payload.get("transition") == "RESOLVED":
         return False
     if payload.get("transition") != "UPDATED" or payload.get("resumed") is True:
         return True
@@ -226,6 +236,8 @@ class EventJournal:
         self._closed = False
         self._ack_ids: set[str] = set()
         self._pending_ack_ids: set[str] = set()  # 쓰기 대기 중(fsync 전)인 확인
+        self._close_ids: set[str] = set()  # 운영자 종료 close_id(기록함)
+        self._pending_close_ids: set[str] = set()  # 쓰기 대기 중인 운영자 종료
         self._pending_evidence: dict[str, str] = {}  # 쓰기 대기 중인 단계가 실은 판정 근거
         self._evidence: dict[str, str] = {}  # event_id → 마지막 판정 근거(world_state msg_id)
         self._resolved: set[str] = set()  # 마지막 전이가 RESOLVED 인 이벤트
@@ -407,6 +419,11 @@ class EventJournal:
         with self._lock:
             return ack_id in self._ack_ids or ack_id in self._pending_ack_ids
 
+    def has_close_id(self, close_id: str) -> bool:
+        """이 close_id 의 운영자 종료를 이미 기록했거나 기록 대기 중인지(event_close 재전송 멱등). has_ack_id 와 같은 경계다."""
+        with self._lock:
+            return close_id in self._close_ids or close_id in self._pending_close_ids
+
     # --- 쓰기 ---------------------------------------------------------------------------
 
     def _index_locked(self, entry: JournalEntry) -> None:
@@ -414,6 +431,10 @@ class EventJournal:
         if ack_id is not None:
             self._ack_ids.add(ack_id)
             self._pending_ack_ids.discard(ack_id)
+        close_id = close_id_of(entry)
+        if close_id is not None:
+            self._close_ids.add(close_id)
+            self._pending_close_ids.discard(close_id)
         event_id = _nonempty_str(entry.payload.get("event_id"))
         if event_id is None:
             return
@@ -507,6 +528,7 @@ class EventJournal:
         fsync 전에 다시 받아도 한 번만 기록). 넣기가 실패하면 돌려준 Reservation 으로 release 해 되돌린다.
         """
         acks: list[str] = []
+        closes: list[str] = []
         evidence: dict[str, str] = {}
         with self._lock:
             known = dict(self._evidence)
@@ -516,6 +538,9 @@ class EventJournal:
             meta = self._transition_meta(payload, ack_id if payload.get("ack") is not None else None)
             if "ack_id" in meta:
                 acks.append(meta["ack_id"])
+            close = payload.get("close")
+            if isinstance(close, Mapping) and _nonempty_str(close.get("close_id")) is not None:
+                closes.append(close["close_id"])
             event_id = str(payload.get("event_id"))
             ref = _nonempty_str(payload.get("evidence_ref"))
             if ref is not None:
@@ -526,15 +551,19 @@ class EventJournal:
             self._check_writable()
             new_acks = tuple(a for a in dict.fromkeys(acks) if a not in self._pending_ack_ids)
             self._pending_ack_ids.update(new_acks)
+            new_closes = tuple(c for c in dict.fromkeys(closes) if c not in self._pending_close_ids)
+            self._pending_close_ids.update(new_closes)
             new_evidence = tuple((e, r) for e, r in evidence.items() if self._pending_evidence.get(e) != r)
             self._pending_evidence.update(new_evidence)
-        return Reservation(new_acks, new_evidence)
+        return Reservation(new_acks, new_evidence, new_closes)
 
     def release(self, reservation: "Reservation") -> None:
         """prepare_step 이 올린 대기 중 값을 되돌린다(쓰기 대기열에 넣지 못했을 때). 이미 기록된 것은 그대로 둔다."""
         with self._lock:
             for a in reservation.ack_ids:
                 self._pending_ack_ids.discard(a)
+            for c in reservation.close_ids:
+                self._pending_close_ids.discard(c)
             for e, r in reservation.evidence:
                 if self._pending_evidence.get(e) == r:
                     del self._pending_evidence[e]

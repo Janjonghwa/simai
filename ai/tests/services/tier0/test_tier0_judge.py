@@ -490,3 +490,69 @@ def test_clock_estimate_expiry_during_input_stop_makes_event_unverifiable(tmp_pa
         assert any("VERIFICATION" in [str(c) for c in t.changes] for st in result.steps for t in st.transitions)
     finally:
         s.close()
+
+
+# ---------------------------------------------------------------- 운영자 종료: 저널 제출 실패 (S15P31A101-200 리뷰 F1)
+
+
+def test_operator_close_not_submitted_to_journal_keeps_event_and_can_be_retried(tmp_path) -> None:
+    """리뷰 재현(max_queue=1 로 쓰기 대기열 포화): 제출하지 못한 종료는 REJECTED JOURNAL_UNAVAILABLE 이고 이벤트·다른 이벤트는
+    그대로 활성, close_id 도 남지 않는다. 포화가 풀린 뒤 같은 close_id 재전송은 ACCEPTED, 저널의 종료 전이는 정확히 1건,
+    한 번 더 보내면 DUPLICATE."""
+    import threading
+
+    from simai_ai.risk import Evaluation, Finding, FixedClock, LifecycleStep, LifecycleTracker, Origin, Severity, WorldState
+    from simai_ai.risk.lifecycle import CloseRequest
+
+    clock = FixedClock(T0)
+    tracker = LifecycleTracker(origin=Origin.LIVE, gateway_id=ts.GATEWAY, clock=clock)
+    journal = EventJournal.open(tmp_path / "j", clock=clock)
+
+    def tick(findings=()):
+        clock.advance(100)
+        t = clock.now_ms() - 10
+        world = WorldState(t_latest_global=t, calibration_version="cal-7", scene_version="scene-3", tracks=())
+        evaluation = Evaluation(origin=Origin.LIVE, evaluated_at=clock.now_ms(), observation_time=t,
+                                calibration_version="cal-7", scene_version="scene-3", rules=(), zones=(),
+                                findings=tuple(findings))
+        journal.append_step(tracker.apply(evaluation, world, config_version="cfg-1",
+                                          evidence_ref="0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f"))
+
+    def r7(zone):
+        return Finding(rule_id="R7", rule_version=1, severity=Severity.CAUTION, world_ids=(), zone_id=zone)
+
+    tick([r7("z-04"), r7("z-05")])
+    tick([r7("z-05")])  # z-04 만 판정이 사라짐(종료 가능), z-05 는 판정 중
+    [closable] = [s for s in tracker.active() if s.zone_id == "z-04"]
+    before = tracker.active()
+    writer = JournalWriter(journal, max_queue=1).start()
+    started, release = threading.Event(), threading.Event()
+    blocker = writer._submit(lambda: (started.set(), release.wait(10)))  # 쓰기 스레드를 멈춘다
+    try:
+        assert started.wait(3)
+        filler = writer.submit_step(LifecycleStep())  # 대기열 한 칸을 채운다
+        loop = JudgmentLoop(lock=threading.RLock(), now_ms=clock.now_ms, config_sync=None, perception=None,
+                            tracker=tracker, journal=journal, writer=writer)
+        request = CloseRequest(event_id=closable.event_id, close_id="7a2b3c4d-5e6f-4a1b-9c2d-3e4f5a6b7c8d",
+                               actor_id="user-0003", requested_at=T0, reason="카메라 철거")
+        first = loop.close(request)
+        assert (first["result"], first.get("reject_reason")) == ("REJECTED", "JOURNAL_UNAVAILABLE")
+        assert schema_errors({"schema_version": "1.1.0", "msg_type": "event_close_result", "msg_id": str(uuid.uuid4()),
+                              "sent_at": T0, "source_id": ts.GATEWAY, "payload": first}, "event_close_result") == []
+        assert tracker.active() == before and loop.active_states() == before  # 아무것도 바꾸지 않았다
+        assert not journal.has_close_id(request.close_id) and loop.stats.journal_errors == 1
+        release.set()
+        blocker.result(3)
+        filler.result(3)
+        second = loop.close(request)
+        assert second["result"] == "ACCEPTED" and second["event_sequence"] == closable.event_sequence + 1
+        assert loop.close(request)["result"] == "DUPLICATE"  # 기록 대기 중이어도
+        assert ts.wait_until(lambda: writer.backlog() == 0, timeout=3)  # 대기열 한 칸: 넣지 않고 비기를 기다린다
+        assert loop.close(request)["result"] == "DUPLICATE"
+        closes = [e for e in journal.iter_from(0) if e.payload.get("close")]
+        assert len(closes) == 1 and closes[0].payload["event_sequence"] == second["event_sequence"]
+        assert [s.zone_id for s in tracker.active()] == ["z-05"]
+    finally:
+        release.set()
+        writer.stop(3)
+        journal.close()
