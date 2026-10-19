@@ -9,50 +9,171 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
+import { Route as AppRouteImport } from './routes/_app'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as AppCctvRouteImport } from './routes/_app/cctv'
+import { Route as AppSystemRouteImport } from './routes/_app/system'
+import { Route as AppTbmRouteImport } from './routes/_app/tbm'
+import { Route as AppZonesRouteImport } from './routes/_app/zones'
 
-const IndexRoute = IndexRouteImport.update({
+const AppRoute = AppRouteImport.update({
+  id: '/_app',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => AppRoute,
+} as any)
+const AppCctvRoute = AppCctvRouteImport.update({
+  id: '/cctv',
+  path: '/cctv',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSystemRoute = AppSystemRouteImport.update({
+  id: '/system',
+  path: '/system',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppTbmRoute = AppTbmRouteImport.update({
+  id: '/tbm',
+  path: '/tbm',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppZonesRoute = AppZonesRouteImport.update({
+  id: '/zones',
+  path: '/zones',
+  getParentRoute: () => AppRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
+  '/': typeof AppIndexRoute
+  '/login': typeof LoginRoute
+  '/cctv': typeof AppCctvRoute
+  '/system': typeof AppSystemRoute
+  '/tbm': typeof AppTbmRoute
+  '/zones': typeof AppZonesRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
+  '/login': typeof LoginRoute
+  '/cctv': typeof AppCctvRoute
+  '/system': typeof AppSystemRoute
+  '/tbm': typeof AppTbmRoute
+  '/zones': typeof AppZonesRoute
+  '/': typeof AppIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
+  '/_app': typeof AppRouteWithChildren
+  '/login': typeof LoginRoute
+  '/_app/cctv': typeof AppCctvRoute
+  '/_app/system': typeof AppSystemRoute
+  '/_app/tbm': typeof AppTbmRoute
+  '/_app/zones': typeof AppZonesRoute
+  '/_app/': typeof AppIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths: '/' | '/login' | '/cctv' | '/system' | '/tbm' | '/zones'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/login' | '/cctv' | '/system' | '/tbm' | '/zones' | '/'
+  id:
+    | '__root__'
+    | '/_app'
+    | '/login'
+    | '/_app/cctv'
+    | '/_app/system'
+    | '/_app/tbm'
+    | '/_app/zones'
+    | '/_app/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
+  AppRoute: typeof AppRouteWithChildren
+  LoginRoute: typeof LoginRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
+    '/_app': {
+      id: '/_app'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AppRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_app/': {
+      id: '/_app/'
       path: '/'
       fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/cctv': {
+      id: '/_app/cctv'
+      path: '/cctv'
+      fullPath: '/cctv'
+      preLoaderRoute: typeof AppCctvRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/system': {
+      id: '/_app/system'
+      path: '/system'
+      fullPath: '/system'
+      preLoaderRoute: typeof AppSystemRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/tbm': {
+      id: '/_app/tbm'
+      path: '/tbm'
+      fullPath: '/tbm'
+      preLoaderRoute: typeof AppTbmRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/zones': {
+      id: '/_app/zones'
+      path: '/zones'
+      fullPath: '/zones'
+      preLoaderRoute: typeof AppZonesRouteImport
+      parentRoute: typeof AppRoute
     }
   }
 }
 
+interface AppRouteChildren {
+  AppCctvRoute: typeof AppCctvRoute
+  AppSystemRoute: typeof AppSystemRoute
+  AppTbmRoute: typeof AppTbmRoute
+  AppZonesRoute: typeof AppZonesRoute
+  AppIndexRoute: typeof AppIndexRoute
+}
+
+const AppRouteChildren: AppRouteChildren = {
+  AppCctvRoute: AppCctvRoute,
+  AppSystemRoute: AppSystemRoute,
+  AppTbmRoute: AppTbmRoute,
+  AppZonesRoute: AppZonesRoute,
+  AppIndexRoute: AppIndexRoute,
+}
+
+const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
+  AppRoute: AppRouteWithChildren,
+  LoginRoute: LoginRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
