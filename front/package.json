@@ -25,6 +25,14 @@
     "typescript": "~6.0.3"
   },
   "lint-staged": {
+    "apps/admin/**/*.{ts,tsx}": [
+      "pnpm --filter admin exec eslint --fix",
+      "prettier --write"
+    ],
+    "packages/ui/**/*.{ts,tsx}": [
+      "pnpm --filter @simai/ui exec eslint --fix",
+      "prettier --write"
+    ],
     "*.{js,mjs,cjs}": [
       "eslint --fix --no-warn-ignored",
       "prettier --write"
