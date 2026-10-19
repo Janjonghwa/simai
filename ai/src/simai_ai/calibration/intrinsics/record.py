@@ -8,11 +8,13 @@
 - 이 단계 결과는 보정 버전이 아니다. 보정 문서(provider_source G1_AUTO 등)는 MapAnything 초기 추정·번들 조정·
   검증을 거쳐 `calibration.document` 가 만든다. 그래서 provider_source 를 적지 않는다.
 - created_at 은 주입받는다(UTC int64 ms).
+- 0.2.0: 실행 도구(`cli`)가 쓰는 선택 절 `cameras`(카메라별 입력 설명·수집 프레임 수·시간 범위·백엔드 경로·실패 사유)와
+  `run`(수집 설정·백엔드 순서·사용 불가 백엔드)을 더했다. 영상·이미지는 기록에 넣지 않는다.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,7 +25,7 @@ from simai_ai.providers.provenance import build_input_provenance
 from simai_ai.tracking.time_model import require_ms
 
 INTRINSICS_RECORD_FORMAT = "simai.intrinsics_estimate"
-INTRINSICS_RECORD_VERSION = "0.1.0"
+INTRINSICS_RECORD_VERSION = "0.2.0"
 
 # 번들 조정 사전 분포 폭의 기본값: 추정 불확실성이 없을 때 쓰는 상대 초점 표준편차와 왜곡 표준편차
 DEFAULT_FOCAL_PRIOR_REL = 0.05
@@ -58,8 +60,10 @@ def build_intrinsics_record(
     frames: FramesProvenance,
     estimates: list[IntrinsicsEstimate],
     shared: SharedLensResult | None = None,
+    cameras: Sequence[Mapping[str, Any]] | None = None,
+    run: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """카메라별 추정(과 같은 렌즈 공유 결과)의 기록 한 건."""
+    """카메라별 추정(과 같은 렌즈 공유 결과)의 기록 한 건. cameras·run 은 실행 도구가 넣는 선택 절이다."""
     require_ms("created_at", created_at)
     doc: dict[str, Any] = {
         "format": INTRINSICS_RECORD_FORMAT,
@@ -75,6 +79,10 @@ def build_intrinsics_record(
             "outlier_camera_ids": list(shared.outlier_camera_ids),
             "consensus": shared.consensus,
         }
+    if cameras is not None:
+        doc["cameras"] = [dict(c) for c in cameras]
+    if run is not None:
+        doc["run"] = dict(run)
     return doc
 
 
@@ -109,7 +117,12 @@ class BundleAdjustmentInit:
 
 
 def to_bundle_adjustment_init(shared: SharedLensResult, source_record: Mapping[str, Any]) -> BundleAdjustmentInit:
-    """같은 렌즈 공유 결과 → 번들 조정 초기값. 공통 초점이 없으면 ValueError(초기값을 지어내지 않는다)."""
+    """같은 렌즈 공유 결과 → 번들 조정 초기값. 공통 초점이 없으면 ValueError(초기값을 지어내지 않는다).
+
+    source_record 가 실행 도구 기록이면 직선성 확인을 하지 못한(UNVERIFIED) 카메라에 `STRAIGHTNESS_UNVERIFIED` 표시를
+    붙인다. 지금 번들 조정 풀이(`calibration.bundle.solver`)는 `principal_point_fixed` 와 무관하게 주점을 초기값으로
+    고정한다(초점·k1·k2 만 다듬는다).
+    """
     common = shared.common
     if common.focal_px is None or common.distortion_coeffs is None:
         raise ValueError(f"공통 초점을 정하지 못해 번들 조정 초기값을 만들 수 없다 ({common.status})")
@@ -121,6 +134,12 @@ def to_bundle_adjustment_init(shared: SharedLensResult, source_record: Mapping[s
         max(common.uncertainty.k2_std or 0.0, DEFAULT_K_PRIOR[1] / 5),
     )
     deviations = {d.camera_id: d for d in shared.deviations}
+    # 실행 도구 기록(cameras[].backend.straightness_check)에서 학습 결과를 직선성으로 확인하지 못한 카메라
+    unverified = {
+        c.get("camera_id")
+        for c in source_record.get("cameras", []) or []
+        if ((c.get("backend") or {}).get("straightness_check") or {}).get("status") == "UNVERIFIED"
+    }
     cams: list[CameraIntrinsicsInit] = []
     for camera_id, est in shared.per_camera_initial.items():
         dev = deviations.get(camera_id)
@@ -133,6 +152,8 @@ def to_bundle_adjustment_init(shared: SharedLensResult, source_record: Mapping[s
             flags.append(f"OWN_ESTIMATE_{dev.status}")
         if common.principal_point_assumed:
             flags.append("PRINCIPAL_POINT_ASSUMED_CENTER")
+        if camera_id in unverified:
+            flags.append("STRAIGHTNESS_UNVERIFIED")
         cams.append(
             CameraIntrinsicsInit(
                 camera_id=camera_id,

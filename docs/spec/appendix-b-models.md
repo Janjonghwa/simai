@@ -7,9 +7,9 @@
 | YOLO26x-pose(E2E) | Tier 0 검출·keypoint, 발 6점 미세조정(23점) | MVP | AGPL-3.0(Ultralytics) |
 | COCO-WholeBody 발 주석 | 발 6점 미세조정 데이터·주석 형식 | MVP | 연구·비상업 |
 | TrackTrack | Tier 0 Local Tracker(Ultralytics `tracktrack.yaml`) | MVP | AGPL-3.0(Ultralytics 구현) |
-| 고전 기준(plumb-line + 소실점, 저장소 코드) | 교실 직선으로 단일 이미지 내부 파라미터 초기값 추정(잠정 기본, 4.3) | MVP | 저장소 코드(numpy, 가중치 없음) |
-| AnyCalib (ICCV 2025) | 내부 파라미터 추정 학습 모델, 비교·대체 1순위 | 비교·대체 | 코드 Apache-2.0, 가중치 Apache-2.0 |
-| GeoCalib (ECCV 2024) | 내부 파라미터 추정 학습 모델, 비교·대체 2순위 | 비교·대체 | 코드 Apache-2.0, 가중치 CC-BY-4.0(출처 표시 의무) |
+| AnyCalib (ICCV 2025) | 내부 파라미터 추정 학습 모델, 기본 경로(`anycalib_dist`, `radial:2`, 4.3) | MVP | 코드 Apache-2.0, 가중치 Apache-2.0 |
+| GeoCalib (ECCV 2024) | 내부 파라미터 추정 학습 모델, 예비(AnyCalib 사용 불가 때, `distorted`·`radial`) | 예비 | 코드 Apache-2.0, 가중치 CC-BY-4.0(출처 표시 의무) |
+| 고전 기준(plumb-line + 소실점, 저장소 코드) | 학습 모델이 모두 없을 때의 예비 경로와 학습 결과의 직선성 확인(4.3) | 예비·확인 | 저장소 코드(numpy, 가중치 없음) |
 | Perspective Fields (CVPR 2023) | 내부 파라미터 추정 후보 | 제외 | Adobe Research License(비상업 전용, 재배포 금지). 렌즈 왜곡도 내지 않음 |
 | WildCamera (NeurIPS 2023) | 내부 파라미터 추정 후보 | 제외 | 코드 Apache-2.0, 가중치 라이선스 표기 없음. 렌즈 왜곡을 내지 않음 |
 | HumanCalib | 사람 기반 자동 보정(번들 조정) | 원리 참고(자체 구현, 4.3) | 코드 MIT. 코드·3D lifter 를 쓰지 않는다(기본 3D lifter MeTRAbs 는 비상업, VideoPose3D 는 CC BY-NC) |

@@ -19,6 +19,8 @@ C110 4대는 같은 렌즈이므로 공통 초점·왜곡을 모든 카메라의
   받되 표시가 붙고 번들 조정 사전 분포를 넓게 둔다(`record.to_bundle_adjustment_init`).
 - 영상 크기가 다른 카메라는 합치지 않는다(같은 렌즈라도 스트림 해상도가 다르면 픽셀 값이 다르다). 오류를 낸다.
 - 초점을 정한 카메라가 하나도 없으면 공통 초점은 비운다(지어내지 않는다).
+- **주점.** 합친 카메라 중 주점을 추정한 카메라(AnyCalib)가 있으면 그 주점의 성분별 중앙값을 공통 주점으로 쓰고
+  `principal_point_assumed` 를 False 로 둔다. 모두 영상 중심 가정(고전 기준·GeoCalib)이면 영상 중심이고 True 다.
 """
 
 from __future__ import annotations
@@ -221,7 +223,14 @@ def _merge(
         indiv_med = float(np.median(indiv)) if indiv else 0.0
         focal_std = max(spread, indiv_med) / math.sqrt(n) if (spread or indiv_med) else None
     straight = [e.uncertainty.straightness_rms_px for e in use if e.uncertainty.straightness_rms_px is not None]
-    pp_assumed = all(e.principal_point_assumed for e in use) if use else True
+    # 주점: 주점을 추정한 카메라(AnyCalib 등)가 있으면 그 중앙값, 없으면 영상 중심(가정)
+    pp_src = [e.principal_point for e in focal_src if not e.principal_point_assumed and e.principal_point is not None]
+    pp_assumed = not pp_src
+    principal_point = None
+    if pp_src:
+        pp_arr = np.array(pp_src, dtype=float)
+        principal_point = (float(np.median(pp_arr[:, 0])), float(np.median(pp_arr[:, 1])))
+        notes.append(f"주점은 주점을 추정한 카메라 {len(pp_src)}대의 중앙값이다")
     if focal is None or b is None:
         status = STATUS_NO_FOCAL if b is not None else STATUS_FAILED
         notes.append("초점을 정한 카메라가 없어 공통 초점을 비웠다" if b is not None else "합칠 추정이 없다")
@@ -255,6 +264,7 @@ def _merge(
         method=METHOD_SHARED_LENS,
         method_version=SHARED_LENS_VERSION,
         status=STATUS_OK,
+        principal_point=principal_point,
         principal_point_assumed=pp_assumed,
     )
 

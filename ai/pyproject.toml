@@ -120,6 +120,13 @@ source_modules = ["simai_ai", "services"]
 forbidden_modules = ["experiments"]
 
 [[tool.importlinter.contracts]]
+id = "no-gateway"
+name = "src 와 services 는 gateway 패키지(노트북 중계·녹화·현장 경보)를 import 하지 않는다"
+type = "forbidden"
+source_modules = ["simai_ai", "services"]
+forbidden_modules = ["simai_recorder", "simai_relay", "simai_rtsp_probe", "simai_site_alert"]
+
+[[tool.importlinter.contracts]]
 id = "src-not-services"
 name = "src 는 services 를 import 하지 않는다"
 type = "forbidden"
