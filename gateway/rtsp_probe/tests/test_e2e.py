@@ -7,9 +7,11 @@ RTCP SR 유무·흔들림, 카메라가 건너뛴 프레임, 패킷 손실, PTS 
 from __future__ import annotations
 
 import base64
+import io
 import json
 import socket
 import subprocess
+import sys
 import urllib.parse
 from pathlib import Path
 
@@ -209,6 +211,18 @@ def test_missing_credentials_is_a_config_error(tmp_path, capfd):
     code = cli.main(["measure", "--host", "127.0.0.1", "--out", str(tmp_path / "out"), "--env-file", str(empty)])
     assert code == 2 and "RTSP_USER" in capfd.readouterr().err
     assert not (tmp_path / "out").exists()
+
+
+def test_cp949_console_does_not_crash_on_unencodable_text(tmp_path, monkeypatch):
+    buf = io.BytesIO()
+    console = io.TextIOWrapper(buf, encoding="cp949", errors="strict", newline="\n")  # 한국어 Windows 콘솔 흉내
+    monkeypatch.setattr(sys, "stdout", console)
+    empty = tmp_path / "empty.env"
+    empty.write_text("", encoding="utf-8")
+    cli.main(["measure", "--host", "127.0.0.1", "--out", str(tmp_path / "out"), "--env-file", str(empty)])
+    print("카메라 시각–RTP 대응")  # 보고서 문구의 U+2013
+    console.flush()
+    assert buf.getvalue() == "카메라 시각?RTP 대응\n".encode("cp949")
 
 
 def test_redact_only_touches_strings():
