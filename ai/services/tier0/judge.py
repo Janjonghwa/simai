@@ -29,7 +29,10 @@
 evidence_ref 는 그 World 의 world_state msg_id 다.
 
 운영자 확인(EC2 event_ack, 노트북 site_ack)도 같은 lock 안에서 처리한다. ack_id 로 중복을 거른 뒤(EventJournal.has_ack_id,
-대기 중 기록 포함) acknowledge → 저널 → alarm_stop 순이다.
+대기 중 기록 포함) acknowledge → 저널 → alarm_stop 순이다. 운영자 종료(EC2 event_close, S15P31A101-200)도 같다: close_id 로
+중복을 거른 뒤(EventJournal.has_close_id) close → 저널 → (현장 경보를 낸 이벤트면) 해소 local_alert 이고, event_close_result
+payload 를 돌려준다(build_i1_link 가 신뢰 대기열로 보낸다). 종료 전이는 outbox 가 risk_event_transition 2.0.0 resolution 으로
+보낸다(docs/design/tier0-recovery.md "운영자 종료").
 
 위험 관측 시각(risk_observed_at, -81): 판정마다 발생 판정(holding 아님)이 있고 검증 상태가 VERIFIED 인 활성 이벤트의
 (event_sequence, observation_time)을 기억한다. 스냅샷이 전이 없이 이어진 위험 관측까지 last_valid_observation_at 에 올린다.
@@ -67,7 +70,7 @@ from simai_ai.risk import (
     alarm_stop_contract_payload,
     local_alert_payload,
 )
-from simai_ai.risk.lifecycle import RelatedEventFn
+from simai_ai.risk.lifecycle import CloseReject, CloseRequest, RelatedEventFn
 from simai_ai.tracking.world_track import RevisionKind, WorldTrackFrame
 
 log = logging.getLogger("services.tier0.judge")
@@ -91,6 +94,9 @@ class JudgeStats:
     acks: int = 0
     duplicate_acks: int = 0
     unknown_acks: int = 0
+    closes: int = 0  # 받은 운영자 종료(event_close)
+    duplicate_closes: int = 0
+    rejected_closes: int = 0
     reseeds: int = 0
     errors: int = 0
 
@@ -270,13 +276,39 @@ class JudgmentLoop:
             self._publish_views()
             return step
 
+    def close(self, request: CloseRequest) -> dict[str, Any]:
+        """event_close 하나 → event_close_result payload. 같은 close_id 를 이미 기록(또는 기록 대기)했으면 DUPLICATE 이고
+        다시 기록하지 않는다. 거부는 기록하지 않으므로 같은 close_id 를 다시 받으면 그때 상태로 다시 판단한다."""
+        with self.lock:
+            result: dict[str, Any] = {"close_id": request.close_id, "event_id": request.event_id}
+            if self.journal.has_close_id(request.close_id):
+                self.stats.duplicate_closes += 1
+                return result | {"result": "DUPLICATE", "decided_at": self._now_ms()}
+            try:
+                # 저널 제출이 실패하면(쓰기 대기열 포화·쓰기 정지) 추적기는 이벤트를 그대로 둔다. 재시도할 수 있게 거부한다
+                outcome = self.tracker.close(request, commit=self.writer.submit_step)
+            except JournalError:
+                self.stats.journal_errors += 1
+                log.error("운영자 종료를 저널에 넣지 못해 받지 않았다(재시도 가능): %s", request.event_id, exc_info=True)
+                return result | {"result": "REJECTED", "reject_reason": "JOURNAL_UNAVAILABLE", "decided_at": self._now_ms()}
+            if isinstance(outcome, CloseReject):
+                self.stats.rejected_closes += 1
+                log.info("운영자 종료를 받지 않았다: %s %s", request.event_id, outcome)
+                return result | {"result": "REJECTED", "reject_reason": str(outcome), "decided_at": self._now_ms()}
+            self.stats.closes += 1
+            self._record(outcome, submitted=True)
+            self._publish_views()
+            sequence = outcome.transitions[0].event_sequence
+            return result | {"result": "ACCEPTED", "event_sequence": sequence, "decided_at": self._now_ms()}
+
     # --- 내부 ------------------------------------------------------------------------
 
-    def _record(self, step: LifecycleStep, *, ack_id: str | None = None) -> None:
+    def _record(self, step: LifecycleStep, *, ack_id: str | None = None, submitted: bool = False) -> None:
+        """submitted: 이미 저널에 제출한 단계(운영자 종료는 추적기가 상태를 바꾸기 전에 제출한다)."""
         if not step.transitions and not step.local_signals:
             return
         self.stats.transitions += len(step.transitions)
-        if step.transitions:
+        if step.transitions and not submitted:
             try:
                 self.writer.submit_step(step, ack_id=ack_id)  # 5) 저널: 기다리지 않는다
             except JournalError:

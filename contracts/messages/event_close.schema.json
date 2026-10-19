@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/event_close.schema.json",
+  "title": "I1 event_close",
+  "description": "EC2 → RunPod Tier 0. 관제 화면 관리자가 구역 대상 위험 이벤트를 닫는 명령 (명세 6.4 운영자 종료, 3.2, 12.2). 감시 확보 근거가 오지 않아 자동 해소되지 않는 구역 대상 이벤트(R7 형태: 카메라를 치움, 구역을 구성에서 뺌, 재시작 복원)를 사람이 확인하고 닫는 길이다. 관측으로 해소를 확인한 것이 아니다. Tier 0 는 받을 수 있으면 저널에 종료 전이를 기록하고, 받든 거부하든 event_close_result 로 답한다. EC2 는 종료를 이 응답이 아니라 저널 전이로 반영한다(LIVE 생명주기 정본은 Tier 0). Tier 0 거부: 활성이 아님, 사람 대상(재관측으로만 해소), HIGH·CRITICAL, 마지막 판정에 그 이벤트의 위험 판정이 있음. 반장 PWA 의 '조치 완료'는 해소가 아니므로(8.4) 이 메시지로 보내지 않는다. 1.0.0 신설(S15P31A101-200). I1 계약.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "event_close" },
+    "payload": {
+      "type": "object",
+      "required": ["event_id", "close"],
+      "properties": {
+        "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "close": {
+          "type": "object",
+          "description": "누가·왜 닫는지. 종료 전이의 근거다",
+          "required": ["close_id", "channel", "actor_role", "actor_id", "requested_at", "reason"],
+          "properties": {
+            "close_id": {
+              "$ref": "../common/defs.schema.json#/$defs/uuid",
+              "description": "EC2 가 발급하는 멱등 키. 같은 close_id 를 다시 보내면 Tier 0 는 다시 기록하지 않고 DUPLICATE 로 답한다(재연결 재전송)"
+            },
+            "channel": { "const": "CONTROL_ROOM" },
+            "actor_role": { "const": "ADMIN" },
+            "actor_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "관리자 계정 ID. 사람 이름을 넣지 않는다 (명세 11.4-5)"
+            },
+            "requested_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "관리자가 종료를 누른 시각(EC2 기준)" },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500,
+              "description": "종료 사유(관리자가 적은 운영 메모, 예: '3번 카메라 철거, 구역 사용 안 함'). 비울 수 없다"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  }
+}

@@ -40,7 +40,7 @@
   훅(첫 health)을 부른다. 늦게 돌아온 send 실패가 첫 health 의 버림 수에서 빠지지 않는다.
   world_state 버림 수는 drop_counts 로 꺼내 health 1.5.0 선택 필드 `ec2_world_state_drops` 로 싣는다
   (i1_publisher.I1Publisher.world_state_drops·with_world_state_drops, S15P31A101-170).
-- 신뢰 대기열(reliable): config_ack·calibration_update·event_frame_ready·tier0_endpoint. 끊겨도 보관하고 버리지 않는다.
+- 신뢰 대기열(reliable): config_ack·calibration_update·event_frame_ready·tier0_endpoint·event_close_result. 끊겨도 보관하고 버리지 않는다.
   상한(reliable_limit)에 차면 enqueue 가 QueueFull 을 내 호출자가 붙들고 다시 넣는다(backpressure). 보내다 실패하면
   맨 앞에 되돌린다(같은 msg_id, EC2 가 중복을 거른다, 12.1). replace_key 가 같은 대기 메시지는 새것으로 바꾼다.
 - 텔레메트리 대기열(telemetry): observation_summary. 상한을 넘으면 가장 오래된 것을 버리고 센다(telemetry_overflow).
@@ -88,6 +88,7 @@ MESSAGE_SCHEMA_VERSIONS: Mapping[str, str] = {
     "health": HEALTH_SCHEMA_VERSION,  # 2.1.0: 2.0.0(-179) + tier0_warnings LIVE_MARKER_WRITE_FAILED(-197). health.py 가 정한다
     "observation_summary": "1.3.0",  # -155
     "calibration_update": "2.0.0",  # 보정 출처 값 정리 (-167)
+    "event_close_result": "1.1.0",  # 운영자 종료 결과, 1.1.0 JOURNAL_UNAVAILABLE (-200)
 }
 
 # I1 위로(Tier 0 → EC2) 메시지 (명세 12.2). 다른 종류는 보내지 않는다.
@@ -102,12 +103,13 @@ UPSTREAM_TYPES = frozenset(
         "config_ack",
         "event_frame_ready",
         "tier0_endpoint",
+        "event_close_result",
     }
 )
 LATEST_KINDS = ("health", "world_state")  # 최신 칸
 INFLIGHT_WAIT_GRACE_S = 0.5
 """이전 연결의 최신 칸 송신 성패를 기다리는 여유(송신 감시 주기 0.25 s 이상)"""
-RELIABLE_TYPES = frozenset({"config_ack", "calibration_update", "event_frame_ready", "tier0_endpoint"})
+RELIABLE_TYPES = frozenset({"config_ack", "calibration_update", "event_frame_ready", "tier0_endpoint", "event_close_result"})
 TELEMETRY_TYPES = frozenset({"observation_summary"})
 
 DEFAULT_I1_PATH = "/ws/tier0"

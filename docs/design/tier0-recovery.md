@@ -45,13 +45,37 @@ S15P31A101-51. 기획서 §3.2(재시작 복구·복구 순서·저널 계약), 
 
 ## 구역 대상 이벤트가 남을 때 (운영 절차, S15P31A101-180)
 
-구역 대상(R7) 이벤트는 R7 이 그 구역의 정상 관측 카메라 확보를 확인한 판정(`Evaluation.zone_clear_evidence`)이 해소 유지 시간(3 s) 동안 이어져야 해소된다(명세 6.4). 구성 묶음 전환으로 R7 규칙이나 그 구역이 빠지면 근거가 나오지 않으므로 그 구역의 활성 R7 이벤트는 해소되지 않고 UNVERIFIABLE 로 남는다. 재시작해도 복원 보호로 같은 상태다. 수동 종료 전이는 없다(구현하지 않음).
+구역 대상(R7) 이벤트는 R7 이 그 구역의 정상 관측 카메라 확보를 확인한 판정(`Evaluation.zone_clear_evidence`)이 해소 유지 시간(3 s) 동안 이어져야 해소된다(명세 6.4). 구성 묶음 전환으로 R7 규칙이나 그 구역이 빠지면 근거가 나오지 않으므로 그 구역의 활성 R7 이벤트는 해소되지 않고 UNVERIFIABLE 로 남는다. 재시작해도 복원 보호로 같은 상태다. 근거를 만들 수 없으면 관리자가 닫는다(아래 "운영자 종료", -200).
 
 | 경우 | 조치 |
 |---|---|
 | 구역 삭제·R7 제거 전 | 관제 화면에서 그 구역의 활성 R7 이벤트가 없는지 먼저 확인한다. 있으면 카메라를 복구해 해소된 뒤(정상 관측 카메라 2대 이상, 3 s) 새 구성 묶음을 배포한다 |
 | 이미 뺀 뒤 이벤트가 남음 | 구역(같은 zone_id)과 R7 이 들어 있는 구성 묶음을 새 버전으로 다시 활성화한다(이전 버전을 덮어쓰지 않는다). 카메라가 정상이면 첫 판정에서 VERIFIED, 3 s 뒤 해소된다. 해소를 확인한 다음 원래 의도한 구성 묶음을 다시 배포한다 |
-| 그 구역을 볼 카메라를 복구할 수 없음 | 근거를 만들 수 없으므로 이벤트는 남는다. 저널·체크포인트를 고쳐 지우지 않는다. 확인(ACK)으로 담당자를 기록하고 Lead 에 알린다(수동 종료 전이는 별도 티켓 후보) |
+| 그 구역을 볼 카메라를 복구할 수 없음 | 근거를 만들 수 없으므로 이벤트는 남는다. 저널·체크포인트를 고쳐 지우지 않는다. 확인(ACK)으로 담당자를 기록하고, 관리자 종료(`event_close`)로 닫는다(아래) |
+
+## 운영자 종료 (S15P31A101-200)
+
+명세 6.4 "운영자 종료". 코드: `LifecycleTracker.close`·`CloseRequest`·`CloseReject`(risk/lifecycle.py), `EventJournal.has_close_id`·`is_judgment_transition`(eventlog/journal.py),
+`JudgmentLoop.close`(services/tier0/judge.py), `wire_tier0_handlers(on_event_close=…)`(i1_dispatch.py), `build_i1_link(on_event_close=…)`(i1_publisher.py, 결과를 신뢰 대기열로),
+`Tier0Service._build_link`(`on_event_close=self.judge.close`), outbox `operator_resolution`(eventlog/outbox.py), G3 `restored_resolution_violations`(deploy/scripts/crash_recovery_g3.py).
+계약(v5.0.0): I1 `event_close`·`event_close_result` 1.0.0, I1 `risk_event_transition` 2.0.0·I2 `risk_event` 2.0.0 `resolution`(공통 `operator_resolution`).
+시험: tests/risk/test_operator_close.py, tests/recovery/test_operator_close_restart.py, tests/eventlog/test_outbox.py, tests/services/tier0/test_tier0_judge_r7_restore.py·test_i1_units.py·test_tier0_operator_close_e2e.py, tests/deploy/test_crash_recovery_g3.py.
+
+| 항목 | 정한 것 | 근거·버린 대안 |
+|---|---|---|
+| 대상 | 구역 대상(world_ids 없음)만. 사람 대상은 TARGET_NOT_ZONE | 사람 대상은 대상 World ID 재관측으로만 해소한다(3.2). 사람을 놓친 채 닫으면 위험을 잃는다 |
+| 등급 | CAUTION·INFO 만. HIGH·CRITICAL 은 SEVERITY_NOT_ALLOWED | 명세에 등급 기준이 없어 안전 쪽(거부). 지금 구역 대상 규칙은 R7(CAUTION)뿐이다. 별도 확인(이중 승인)은 버림: 쓰는 규칙이 없다 |
+| 지금 조건 | 마지막 판정에 그 이벤트의 판정이 있으면 CONDITION_PRESENT | 판정이 계속 나는 이벤트를 닫으면 다음 판정에 바로 새 이벤트가 난다(경보 반복). 복원 직후 판정 전은 판정 없음으로 본다(종료 가능) |
+| 누가 | 관제 화면 관리자(CONTROL_ROOM·ADMIN)만, 사유(1~500자) 필수 | 반장 PWA '조치 완료'는 해소가 아니다(8.4). 근거 없는 해소가 되지 않게 누가·왜를 필수로 |
+| 기록 | 저널: RESOLVED 전이, 변경 사유 OPERATOR_CLOSED, payload `close`(close_id·채널·역할·계정·요청·기록 시각·사유). 검증 상태 그대로, lifecycle 은 evidence_ref 를 싣지 않는다(저널이 직전 판정 근거를 알면 meta 로 붙이고 모르면 null). I1: outbox 가 `close` 를 `resolution`(kind OPERATOR_CLOSED, recorded_at 제외)으로 바꾸고 `close` 는 뺀다. 값이 비면 지어내지 않고 전송 보류 | VERIFIED 로 바꾸면 관측 해소로 오인된다(규칙 7). 저널은 종료를 판정이 아닌 전이로 보고 근거를 지어내지 않는다 |
+| 재발생 | 재개하지 않고 새 이벤트 | 재개(6.4)는 관측 해소 뒤 깜빡임을 막는 규칙이다. 종료한 이벤트를 다시 열면 종료 기록과 어긋난다(EC2·G3 가 닫힌 이벤트의 전이를 다시 받음) |
+| 멱등 | close_id 를 저널이 색인(기록 대기 중 포함, 재시작 뒤 남은 세그먼트로 다시 만듦) → DUPLICATE | ack_id 와 같은 경계: 정리된 세그먼트의 close_id 는 재시작 뒤 모른다(그때는 이미 닫혀 NOT_ACTIVE). 거부는 기록하지 않아 같은 close_id 를 다시 받으면 다시 판단한다 |
+| 응답 | `event_close_result` ACCEPTED(event_sequence)·DUPLICATE·REJECTED(사유). 종료 전이를 저널에 제출하지 못하면(쓰기 대기열 포화·쓰기 정지) 추적기는 상태를 바꾸기 전이라 이벤트가 그대로 활성이고 REJECTED `JOURNAL_UNAVAILABLE`(1.1.0, 같은 close_id 로 재시도 가능)로 답한다(리뷰 F1: 제출 못 한 종료를 수락하면 활성만 사라지고 근거가 영구 누락) | EC2 는 응답이 아니라 저널 전이로 상태를 바꾼다(생명주기 정본은 Tier 0). ACCEPTED 는 저널 fsync 전에 답한다(확인과 같음): fsync 전 강제 종료면 재시작 복원으로 다시 활성(안전 쪽) |
+| G3 | EC2 로 나간 전이의 `resolution`(kind OPERATOR_CLOSED·close_id·actor_id·reason)이 있는 구역 대상 해소는 근거 있는 해소. 값이 비었거나 사람 대상이면 D-G3-09 위반. `resolution` 없는 해소는 lifecycle `changes` 와 관계없이 관측 해소로 검사 | -198 의 '근거 있는 해소만 정상' 유지 |
+| 계약 버전 | `risk_event_transition`·`risk_event` 2.0.0(메이저): `resolution` 이 있으면 RESOLVED 의 VERIFIED(전이는 evidence_ref 도) 필수를 푼다. 1.x 문서는 `resolution` 없이 1.x 규칙 | 조건 완화라 1.x 수신 측이 RESOLVED 를 관측 해소로 읽는다(Lead 승인 2026-10-20, -197 리뷰 기준). world_state 2.0.0 처럼 schema_version 으로 분기 |
+
+**Lead 결정(2026-10-20).** 위 계약 버전(메이저)과 새 I1 메시지·안전 쪽 값(HIGH·CRITICAL 거부, 관제 화면 ADMIN 만, 사유 1~500자, 판정 중 거부)을 승인했다.
+서버(EC2): `event_close` 송신·`event_close_result` 표시, 전이의 `resolution` 을 `risk_event` 에 옮겨 관측 해소와 구분해 보여 주기는 server 티켓이다.
 
 ## 실행 중 경고
 

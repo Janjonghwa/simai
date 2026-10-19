@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "event_close_result",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000202",
+  "sent_at": 1760342460040,
+  "source_id": "tier0-01",
+  "payload": {
+    "close_id": "7a2b3c4d-5e6f-4a1b-9c2d-3e4f5a6b7c8d",
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e90",
+    "result": "ACCEPTED",
+    "event_sequence": 4,
+    "decided_at": 1760342460030
+  }
+}

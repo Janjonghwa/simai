@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "event_close",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000201",
+  "sent_at": 1760342460010,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e90",
+    "close": {
+      "close_id": "7a2b3c4d-5e6f-4a1b-9c2d-3e4f5a6b7c8d",
+      "channel": "CONTROL_ROOM",
+      "actor_role": "ADMIN",
+      "actor_id": "user-0003",
+      "requested_at": 1760342460000,
+      "reason": "3번 카메라 철거로 z-04 구역 감시 근거가 오지 않음. 현장 확인 후 종료"
+    }
+  }
+}

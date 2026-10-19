@@ -205,3 +205,40 @@ def test_resolution_after_resume_without_a_new_restore_is_not_a_restored_resolut
         tr(7, "UPDATED", "VERIFIED", 8_000), tr(8, "RESOLVED", "VERIFIED", 9_900))]
     bad, _ = judge(g3, person, {"e1": 2})
     assert len(bad) == 2 and all("사람이 그대로 있는데" in b for b in bad)  # 두 복원 구간의 해소가 모두 위반
+
+
+# ---------------------------------------------------------------- 운영자 종료 (S15P31A101-200)
+CLOSE = {"kind": "OPERATOR_CLOSED", "close_id": "7a2b3c4d-5e6f-4a1b-9c2d-3e4f5a6b7c8d", "channel": "CONTROL_ROOM",
+         "actor_role": "ADMIN", "actor_id": "user-0003", "requested_at": 9_000, "reason": "카메라 철거"}
+
+
+def closed(seq, obs, *, close=CLOSE, **kw):
+    """EC2 로 나간 운영자 종료 전이(I1 risk_event_transition 2.0.0 resolution)."""
+    return tr(seq, "RESOLVED", "UNVERIFIABLE", obs, changes=["OPERATOR_CLOSED"], **kw) | {"resolution": close}
+
+
+def test_operator_close_of_restored_zone_event_is_an_evidenced_resolution(g3):
+    """관리자가 누가·왜를 남기고 닫은 복원 R7 은 관측 VERIFIED 유지가 없어도 근거 있는 해소다."""
+    bad, ok = judge(g3, r7_restored_then(tr(3, "UPDATED", "UNVERIFIABLE", 5_000), closed(4, 9_000)), {"e1": 2})
+    assert bad == [] and ok == ["e1"]
+
+
+def test_operator_close_without_who_or_why_or_on_a_person_is_a_violation(g3):
+    """반례: 종료 기록의 사유·계정·close_id 가 비었거나 없으면, 또는 사람 대상이면 위반이다."""
+    for close in ({**CLOSE, "reason": ""}, {k: v for k, v in CLOSE.items() if k != "actor_id"}, {**CLOSE, "close_id": None},
+                  {**CLOSE, "kind": "OBSERVED"}, "closed"):
+        bad, ok = judge(g3, r7_restored_then(closed(3, 9_000, close=close)), {"e1": 2})
+        assert len(bad) == 1 and "누가·왜" in bad[0] and ok == [], close
+    w = {"rule": "R1", "world_ids": ["w-a-0001"]}
+    person = [tr(1, "RAISED", "VERIFIED", 1_000, **w), tr(2, "UPDATED", "UNVERIFIABLE", 1_000, changes=["RESTORED"], **w),
+              closed(3, 9_000, **w)]
+    bad, _ = judge(g3, person, {"e1": 2})
+    assert len(bad) == 1 and "사람 대상인데 운영자 종료" in bad[0]
+
+
+def test_negative_control_unmarked_resolution_without_evidence_is_still_a_violation(g3):
+    """음성 대조: lifecycle 변경 사유(changes)에 OPERATOR_CLOSED 가 있어도 계약 resolution 이 없는 해소는 관측 해소라 근거 유지
+    없이는 위반이다(저널 내부 close 만 실은 것도 같다)."""
+    seq = r7_restored_then(tr(3, "RESOLVED", "VERIFIED", 9_000, changes=["OPERATOR_CLOSED"]) | {"close": CLOSE})
+    bad, ok = judge(g3, seq, {"e1": 2})
+    assert len(bad) == 1 and "근거 유지 없이" in bad[0] and ok == []

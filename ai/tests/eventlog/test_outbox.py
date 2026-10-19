@@ -238,7 +238,7 @@ def test_ack_with_unknown_evidence_is_sent_as_null_not_held(make, tmp_path, live
     assert "evidence_ref" not in entry.meta
     assert outbox.pump() == 1 and outbox.blocked is None
     msg = ec2.messages[0]
-    assert msg["schema_version"] == SCHEMA_VERSION == "1.4.0"
+    assert msg["schema_version"] == SCHEMA_VERSION == "2.0.0"
     assert msg["payload"]["transition"] == "ACKNOWLEDGED" and msg["payload"]["evidence_ref"] is None
     assert message_errors(msg) == [], msg
 
@@ -397,3 +397,58 @@ def test_ec2_send_happens_only_after_fsync(tmp_path, clock, append):
     outbox.pump()
     assert len(ec2.messages) == 1
     journal.close()
+
+
+# ---------------------------------------------------------------- 운영자 종료 (S15P31A101-200, risk_event_transition 2.0.0)
+
+
+def _zone_close(live_events, *, journal=None, request=None):
+    """구역 대상(R7) 이벤트를 열고(journal 이 있으면 발생도 기록) 판정이 사라진 뒤 관리자 종료 단계를 돌려준다."""
+    from simai_ai.risk import Finding, Severity
+    from simai_ai.risk.lifecycle import CloseRequest
+
+    r7 = Finding(rule_id="R7", rule_version=1, severity=Severity.CAUTION, world_ids=(), zone_id="z-04",
+                 reasons=("monitoring_degraded",))
+    raised = live_events.step([r7])
+    if journal is not None:
+        journal.append_step(raised)
+    live_events.step()  # 판정 없음(근거 없음)
+    event_id = raised.transitions[0].event_id
+    request = request or CloseRequest(event_id=event_id, close_id="7a2b3c4d-5e6f-4a1b-9c2d-3e4f5a6b7c8d",
+                                      actor_id="user-0003", requested_at=live_events.clock.now_ms(), reason="카메라 철거")
+    return live_events.tracker.close(request)
+
+
+@pytest.mark.parametrize("evidence_known", [False, True])
+def test_operator_close_is_sent_as_resolution_and_passes_contract(make, tmp_path, live_events, message_errors,
+                                                                  evidence_known):
+    """종료 기록(lifecycle close)은 계약 resolution 으로 바뀌어 나가고 2.0.0 스키마를 통과한다. 검증 상태는 UNVERIFIABLE 그대로,
+    근거는 직전 판정 근거(알면) 또는 null. 같은 메시지를 1.4.0 으로 보내면 계약 위반이다(음성 대조, 1.x 규칙 회귀)."""
+    ec2 = Ec2()
+    journal, _, outbox = make(tmp_path, live_events.clock, ec2)
+    step = _zone_close(live_events, journal=journal if evidence_known else None)
+    journal.append_step(step)
+    outbox.pump()
+    msg = ec2.messages[-1]
+    p = msg["payload"]
+    assert msg["schema_version"] == "2.0.0" and p["transition"] == "RESOLVED" and p["verification"] == "UNVERIFIABLE"
+    assert p["resolution"] == {"kind": "OPERATOR_CLOSED", "close_id": "7a2b3c4d-5e6f-4a1b-9c2d-3e4f5a6b7c8d",
+                               "channel": "CONTROL_ROOM", "actor_role": "ADMIN", "actor_id": "user-0003",
+                               "requested_at": step.transitions[0].close.requested_at, "reason": "카메라 철거"}
+    assert "close" not in p and "ack" not in p
+    assert (p["evidence_ref"] is not None) is evidence_known
+    assert [message_errors(m) for m in ec2.messages] == [[]] * len(ec2.messages), ec2.messages
+    assert message_errors(msg | {"schema_version": "1.4.0"})  # 1.x 수신 측은 이 해소를 관측 해소로 읽는다
+
+
+def test_operator_close_record_missing_reason_is_held_not_invented(make, tmp_path, live_events):
+    """반례(모르는 값): 저널의 종료 기록에 사유가 비면 resolution 을 지어내지 않고 그 기록에서 전송을 보류한다."""
+    from simai_ai.eventlog import TRANSITION_KIND
+
+    ec2 = Ec2()
+    journal, _, outbox = make(tmp_path, live_events.clock, ec2)
+    payload = _zone_close(live_events).transitions[0].to_payload()
+    payload["close"] = {**payload["close"], "reason": ""}
+    journal.append(TRANSITION_KIND, payload)
+    assert outbox.pump() == 0 and ec2.messages == []
+    assert outbox.blocked is not None and "reason" in outbox.blocked.reason
