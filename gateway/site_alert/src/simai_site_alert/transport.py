@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 
 from simai_site_alert.endpoint import ControlTarget
 from simai_site_alert.pinning import PinMismatchError, PinnedPeerVerifier, pinned_client_context
+from simai_site_alert.winsock import retry_wsaefault
 
 log = logging.getLogger(__name__)
 
@@ -191,12 +192,27 @@ class WebSocketControlChannel:
         ready = threading.Event()
 
         def run() -> None:
-            self._loop = asyncio.new_event_loop()
-            ready.set()
+            # Windows 이벤트 루프는 만들 때 socketpair 를 연다. 실패해도 start() 가 영원히 기다리지 않게 하고(ready),
+            # 연결 안 됨(관제 중단 표시) 상태로 재접속 간격마다 다시 만든다.
             try:
-                self._loop.run_until_complete(self._run())
+                while not self._closing.is_set():
+                    try:
+                        loop = retry_wsaefault(asyncio.new_event_loop, what="제어 채널 이벤트 루프")
+                    except OSError as e:
+                        log.error("제어 채널 이벤트 루프를 만들지 못했다(%s). %.1f초 뒤 다시 만든다",
+                                  type(e).__name__, self._reconnect[0])
+                        ready.set()
+                        self._closing.wait(self._reconnect[0])
+                        continue
+                    self._loop = loop
+                    ready.set()
+                    try:
+                        loop.run_until_complete(self._run())
+                    finally:
+                        loop.close()
+                    return
             finally:
-                self._loop.close()
+                ready.set()
 
         self._thread = threading.Thread(target=run, name="i0-control", daemon=True)
         self._thread.start()

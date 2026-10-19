@@ -25,6 +25,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from simai_site_alert.link_status import RelayReport
+from simai_site_alert.winsock import retry_wsaefault
 
 log = logging.getLogger(__name__)
 
@@ -123,12 +124,16 @@ class RelayStatusReceiver:
         self.accepted = 0
         self.dropped = 0
         self.error: str | None = None
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            self._sock.bind(("127.0.0.1", port))
-        except OSError:
-            self._sock.close()
-            raise
+        def bind() -> socket.socket:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.bind(("127.0.0.1", port))
+            except OSError:
+                sock.close()
+                raise
+            return sock
+
+        self._sock = retry_wsaefault(bind, what="중계 상태 포트 열기")
         self._sock.settimeout(0.2)
         self.port = self._sock.getsockname()[1]
         self._thread = threading.Thread(target=self._run, name="relay-status", daemon=True)

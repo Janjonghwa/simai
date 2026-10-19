@@ -34,6 +34,7 @@ from typing import Any
 
 from simai_site_alert.endpoint import EndpointUnavailable, Tier0Endpoint
 from simai_site_alert.pinning import PinMismatchError, PinnedPeerVerifier, pinned_client_context
+from simai_site_alert.winsock import retry_wsaefault
 
 from simai_relay import wire
 from simai_relay.sink import I0CodecInfo, I0Frame
@@ -462,13 +463,22 @@ class TlsCameraSink:
     def _open(self, target: VideoTarget) -> ssl.SSLSocket:
         # 지문이 고정 목록에 없으면 여기서 PinMismatchError (TCP 연결도 열지 않는다)
         verifier = PinnedPeerVerifier(target.spki_sha256, self._pins)
-        raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        def connect() -> socket.socket:  # 다시 시도할 때마다 새 소켓(실패한 소켓의 connect 를 되풀이하지 않는다)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self._sndbuf)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                sock.settimeout(self._connect_timeout)
+                sock.connect((target.host, target.port))
+            except BaseException:
+                sock.close()
+                raise
+            return sock
+
+        raw = retry_wsaefault(connect, what=f"{self.camera_id} Tier 0 영상 연결")
         tls: ssl.SSLSocket | None = None
         try:
-            raw.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self._sndbuf)
-            raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            raw.settimeout(self._connect_timeout)
-            raw.connect((target.host, target.port))
             tls = self._ctx.wrap_socket(raw, server_hostname=None)
             verifier(tls)  # 핸드셰이크 직후, 아무것도 보내기 전에
             hello = {"protocol": wire.PROTOCOL, "camera_id": self.camera_id, "laptop_id": self._laptop_id,
