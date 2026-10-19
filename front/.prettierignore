@@ -3,3 +3,5 @@ node_modules
 dist
 coverage
 pnpm-lock.yaml
+apps/admin/src/routeTree.gen.ts
+packages/ui/src/components
