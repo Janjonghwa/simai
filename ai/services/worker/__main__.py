@@ -4,6 +4,9 @@
 - SIMAI_EC2_BASE_URL: EC2 주소 (https)
 - SIMAI_WORKER_TOKEN: 워커 토큰 (Authorization: Bearer)
 - SIMAI_WORKER_ID: 워커 ID, 봉투 source_id (기본 worker-01)
+- GPU 공유(Tier 0 우선, 명세 3.2): simai_ai.gpu.budget.WorkerGpuSettings.from_env 의 SIMAI_TIER0_MARKER·SIMAI_WORKER_* 값.
+  시작할 때 이 프로세스의 torch 할당 상한(SIMAI_WORKER_GPU_MEMORY_FRACTION)을 두고, 대여마다 Tier 0 표시 파일로 접수를 정한다.
+  상한을 두지 못하면(FAILED) 시작하지 않는다. torch CUDA 가 없으면 상한 없이 돈다(노트북).
 
 작업 유형별 처리기 조립은 후속 티켓에서 채운다. 처리기가 없으면 시작하지 않는다.
 """
@@ -20,6 +23,10 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
+from simai_ai.gpu.admission import AdmissionGate
+from simai_ai.gpu.budget import BudgetError, WorkerGpuSettings
+from simai_ai.gpu.reserve import FAILED, cap_process_memory
+
 from .client import AuthError, LeaseClient, RequestRejected
 from .handlers import JobHandler
 from .runner import HandlerStuck, Worker
@@ -27,7 +34,10 @@ from .transport import HttpTransport
 
 
 def build_handlers(config: Path | None) -> Mapping[str, JobHandler]:
-    """작업 유형 → 처리기. VLM·정적 3D·HMR 처리기는 각 작업 티켓에서 기능 패키지를 조립해 넣는다."""
+    """작업 유형 → 처리기. VLM·정적 3D·HMR 처리기는 각 작업 티켓에서 기능 패키지를 조립해 넣는다.
+
+    VLM 처리기는 vLLM 을 WorkerGpuSettings.budget 의 vllm_gpu_memory_utilization·vllm_max_num_seqs 로 띄운다(명세 3.2 상한).
+    """
     return {}
 
 
@@ -52,6 +62,17 @@ def main(argv: list[str] | None = None) -> int:
         print("services.worker: SIMAI_EC2_BASE_URL·SIMAI_WORKER_TOKEN 이 필요하다 (.env)", file=sys.stderr)
         return 2
 
+    try:
+        gpu = WorkerGpuSettings.from_env(os.environ)
+    except BudgetError as e:
+        print(f"services.worker: GPU 공유 설정 오류: {e}", file=sys.stderr)
+        return 2
+    cap = cap_process_memory(gpu.budget.worker_fraction)
+    if cap.state == FAILED:
+        print(f"services.worker: GPU 메모리 상한을 두지 못했다: {cap.reason}", file=sys.stderr)
+        return 2
+    logging.getLogger("services.worker").info("GPU 메모리 상한 %s (%s), Tier 0 표시 파일 %s", cap.state, cap.fraction, gpu.marker)
+
     stop = threading.Event()
     client = LeaseClient(
         HttpTransport(base_url, token),
@@ -60,7 +81,11 @@ def main(argv: list[str] | None = None) -> int:
         monotonic=time.monotonic,
         sleep=stop.wait,
     )
-    worker = Worker(client, handlers, clock_ms=lambda: time.time_ns() // 1_000_000, monotonic=time.monotonic, wait_ms=args.wait_ms)
+    gate = AdmissionGate(gpu.marker, gpu.policy, wall_s=time.time, monotonic=time.monotonic)
+    worker = Worker(
+        client, handlers, clock_ms=lambda: time.time_ns() // 1_000_000, monotonic=time.monotonic, wait_ms=args.wait_ms,
+        admission=gate, live_wait_ms=gpu.live_wait_ms, hold_max_s=gpu.hold_max_s, pause_s=gpu.pause_s, sleep=stop.wait,
+    )
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
     try:

@@ -12,6 +12,7 @@ GPU 를 켜기 전에 노트북에서 Job 파일을 완성하고 `check` 로 형
 | `gpu_queue.py` | 큐 CLI: `run`(실행), `check`(노트북 확인), `stamp`(git 정보 찍기), `status`(상태 보기) |
 | `run_record.py` | Run 기록 조립: git, GPU(nvidia-smi), env 해시, 가중치·데이터·설정 해시, 결과 URI, 스키마 검증 |
 | `jobs.example.json` | Job 파일 예시 (`queue_egate0.sh` 의 H2·H4 를 옮긴 형태) |
+| `tier0_priority_probe.py` | Tier 0 GPU 우선 보호 Pod 측정: `load`(더미 분석 부하), `watch`(Tier 0 표시 파일의 지연 표본 판정). `docs/design/tier0-gpu-priority.md` |
 
 표준 라이브러리만 쓴다. 스키마 검증에만 `jsonschema`·`referencing` 이 필요하며, `uv run gpu_queue.py ...` 로 실행하면 스크립트 머리의 PEP 723 선언으로 자동 설치된다.
 `python3 gpu_queue.py` 로 돌리고 jsonschema 가 없으면 기록은 남기되 검증을 건너뛰었다고 로그에 쓴다.
@@ -117,14 +118,14 @@ LIVE 관제 시간에는 EXP Job 을 돌리지 않는다(명세 20.5, 3.2). 아�
 
 | 설정 (`queue.live_guard`) | 기본값 | 확인 |
 |---|---|---|
-| `marker_files` | `$SIMAI_ROOT/state/tier0.live` | 파일이 있으면 LIVE. `marker_max_age_s` 를 주면 그보다 오래 갱신되지 않은 파일은 무시(Tier 0 비정상 종료 대비) |
-| `process_patterns` | `-m\s+services\.tier0\b` | Linux `/proc` 명령줄 정규식. 큐 자신과 큐가 띄운 Job 은 제외 |
-| `check_command` | 없음 | 종료 코드 0 이면 LIVE (예: Tier 0 헬스 엔드포인트 확인) |
+| `marker_files` | `$SIMAI_ROOT/state/tier0.live` | 파일이 있으면 LIVE. Tier 0 는 기동 첫 단계(GPU 선확보 전)에 `phase=starting` 으로 쓴다. `marker_max_age_s` 를 주면 그보다 오래 갱신되지 않은 파일은 무시(Tier 0 비정상 종료 대비). 파일 확인이 '없음' 말고 다른 오류로 실패하면 모름 → LIVE |
+| `process_patterns` | `-m\s+services\.tier0\b`, `/simai-tier0(\s\|$)` | Linux `/proc` 명령줄 정규식. 두 번째는 Tier 0 이미지 진입점(엔진 준비 동안도 LIVE). 큐 자신과 큐가 띄운 Job 은 제외 |
+| `check_command` | 없음 | 인자 목록만(문자열 셸 명령은 Job 파일 오류: 셸이 '명령 없음'을 일반 종료 코드로 바꿔 구별할 수 없다). 종료 코드 0 이면 LIVE, `not_live_exit_codes`(기본 `[1]`)면 LIVE 아님, 실행 실패·시간 초과·그 밖의 코드는 모름 → LIVE (예: `["test", "-f", "/path"]`) |
 | `on_live` | `wait` | `wait`: 끝날 때까지 `max_wait_s` 만큼 기다림 / `stop`: 큐를 멈추고 종료 코드 3 |
 | `enabled` | `true` | `false` 는 관제가 절대 없는 개발 Pod 에서만 |
 
-Job 시작 전에 확인하고, 도는 동안에도 `poll_s` 마다 확인한다. 도중에 LIVE 가 시작되면 Job 을 끝내고 ABORTED(`LIVE 관제 시작으로 중단`) 기록을 남긴 뒤, `wait` 면 LIVE 가 끝나고 같은 Job 을 다시 돈다.
-Tier 0 LIVE 서비스가 아직 없으므로, 시작할 때 표시 파일을 만들고 끝날 때 지우는 일은 Tier 0 서비스 쪽에 남아 있다.
+Job 시작 전에 확인하고(VRAM 을 기다린 뒤 띄우기 직전에 한 번 더), 도는 동안에도 확인한다(첫 확인은 Job 감시 주기 `queue.poll_s`, 그 뒤 `live_guard.poll_s` 마다). VRAM 을 기다리는 동안 LIVE 가 시작되면 VRAM 이 비어도 띄우지 않는다. 도중에 LIVE 가 시작되면 Job 을 끝내고 ABORTED(`LIVE 관제 시작으로 중단`) 기록을 남긴 뒤, `wait` 면 LIVE 가 끝나고 같은 Job 을 다시 돈다.
+표시 파일은 Tier 0 서비스(`services/tier0/service.py`)가 기동 첫 단계에 만들고 5초마다 갱신하며 정상 종료 때 지운다. 같은 파일의 `gpu_priority` 칸은 분석 워커 접수 문이 읽는다(`docs/design/tier0-gpu-priority.md`).
 
 ## 기존 큐 스크립트 옮기기
 
@@ -145,7 +146,7 @@ Tier 0 LIVE 서비스가 아직 없으므로, 시작할 때 표시 파일을 만
 
 ## 시험
 
-`ai/tests/experiments/gpu_queue/` (노트북, GPU·RunPod 없이): 샘플 CPU Job 두 개 순서 실행과 Run 기록 스키마, nvidia-smi 대역으로 GPU 정보·VRAM 확인, 타임아웃과 손자 프로세스 정리, 실패 시 중단, 잠금(동시 실행·TTL 회수), 큐 강제 종료 뒤 재시작 복구, LIVE 표시 파일(stop·wait·도중 중단), Job 파일 확인, stamp.
+`ai/tests/experiments/gpu_queue/` (노트북, GPU·RunPod 없이): 샘플 CPU Job 두 개 순서 실행과 Run 기록 스키마, nvidia-smi 대역으로 GPU 정보·VRAM 확인, 타임아웃과 손자 프로세스 정리, 실패 시 중단, 잠금(동시 실행·TTL 회수), 큐 강제 종료 뒤 재시작 복구, LIVE 표시 파일(stop·wait·도중 중단), VRAM 대기 중 LIVE 시작, LIVE 확인 명령 실행 실패, 진입점 명령줄 정규식, Job 파일 확인, stamp.
 Linux 전용 시험(프로세스 명령줄 LIVE, setsid 자손 정리, SIGTERM)은 Windows 에서 건너뛴다.
 
 ```sh

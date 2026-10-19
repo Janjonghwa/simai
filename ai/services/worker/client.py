@@ -65,6 +65,11 @@ class Lease:
     ttl_ms: int  # lease_expires_at − 응답 sent_at: 받은 순간부터 대여가 남은 시간
     time_left_ms: int  # leased_at + timeout_ms − 응답 sent_at: 받은 순간부터 실행 상한까지 남은 시간
     timeout_ms: int
+    max_attempts: int = 1  # 이 시도가 마지막이면(attempt == max_attempts) retryable 실패도 최종 FAILED 다(계약 job_callback)
+
+    @property
+    def last_attempt(self) -> bool:
+        return self.attempt >= self.max_attempts
 
     @classmethod
     def from_message(cls, msg: Mapping[str, Any]) -> Lease:
@@ -95,6 +100,7 @@ class Lease:
                 ttl_ms=expires_at - sent_at,
                 time_left_ms=leased_at + int(p["timeout_ms"]) - sent_at,
                 timeout_ms=int(p["timeout_ms"]),
+                max_attempts=max_attempts,
             )
         except (KeyError, TypeError, ValueError) as e:
             # 어긋난 대여로는 작업을 시작하지 않는다. EC2 는 만료 뒤 다시 내준다

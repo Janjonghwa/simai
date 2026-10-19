@@ -101,6 +101,8 @@ lock 순서는 **판정 lock → (스냅샷 lock, 시계 lock, 각 모듈 내부
 ## 기동 순서 (`Tier0Service.start`)
 
 1. 상태 디렉터리(`state_dir`, Network Volume). `state/tier0.live` 가 남아 있으면 이전 실행이 정상 종료하지 않은 것으로 로그에 남긴다.
+   이어서 표시 파일을 `gpu_priority.phase=starting` 으로 쓰고 GPU 메모리를 선확보한다(-60, `docs/design/tier0-gpu-priority.md`).
+   기동이 실패하면 이 표시 파일을 지운다(이전 실행이 남긴 것이었으면 `start_failed` 로 남긴다).
 2. 보정 문서 → `CameraRig`. 시계: `Tier0Clock`(단조 기준) → `DecisionClock`(판정 시각은 앞으로만, -160).
 3. 노트북 쪽 객체(제어 채널 서버·`Tier0ClockSync`·`GatewayLinkMonitor`)를 만든다(아직 듣지 않음). 판정 해소 확인은
    `ClockAwareVerification(offset_source=시계 교환, generation_source=시계 세대)` 다(-160). 노트북이 없는 조립(오프라인 SIM)은

@@ -286,3 +286,91 @@ def test_sigterm_aborts_job_and_keeps_it_for_next_run(qenv):
     assert rec["status"] == "ABORTED" and rec["failure_reason"] == "큐 중지 신호"
     assert qenv.state_of()["jobs"]["exp"]["status"] == "aborted"
     assert not (qenv.state / "queue.lock").exists()
+
+
+# ---------------------------------------------------------------- Tier 0 우선 보호 빈틈 (S15P31A101-60)
+
+
+def test_live_starting_during_vram_wait_does_not_start_exp_job(qenv):
+    """VRAM 이 비기를 기다리는 동안 LIVE 가 시작되고 그다음 VRAM 이 비어도 Job 을 띄우지 않는다(띄우기 직전 LIVE 재확인)."""
+    used = qenv.tmp / "used_mb.txt"
+    used.write_text("81000", encoding="utf-8")  # 남은 559 MB < 필요 4000 MB
+    smi = [qenv.py()[0], str(qenv.FAKE_SMI), str(used)]
+    guard = {"marker_files": [str(qenv.live)], "process_patterns": [], "on_live": "stop", "poll_s": 5}
+    jobs = qenv.write([qenv.job("exp", qenv.py("ok", "exp", qenv.out), vram_mb=4000)], gpu_query_cmd=smi,
+                      live_guard=guard, vram_wait_s=30, poll_s=0.1)
+    proc = qenv.start("run", jobs)
+    try:
+        time.sleep(1.5)  # 큐가 VRAM 대기에 들어감
+        qenv.live.write_text("")  # Tier 0 LIVE 시작(기동 중 표시 파일)
+        time.sleep(0.3)
+        used.write_text("1024", encoding="utf-8")  # 이어서 VRAM 이 빈다
+        out, _ = proc.communicate(timeout=30)
+    finally:
+        proc.kill()
+    assert proc.returncode == 3, out
+    assert qenv.lines() == [], "LIVE 중에 EXP Job 이 시작됨"
+    assert qenv.records() == []
+    assert qenv.state_of()["jobs"]["exp"]["status"] == "pending"
+
+
+def test_live_check_command_that_cannot_run_is_treated_as_live(qenv):
+    """LIVE 확인 명령을 실행하지 못하면 모름 → LIVE 로 본다(EXP 를 시작하지 않는다)."""
+    guard = {"marker_files": [], "process_patterns": [], "check_command": [str(qenv.tmp / "no-such-health-check")],
+             "on_live": "stop", "poll_s": 0.2}
+    jobs = qenv.write([qenv.job("a", qenv.py("ok", "a", qenv.out))], live_guard=guard)
+    r = qenv.run("run", jobs)
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "모름" in r.stdout
+    assert qenv.lines() == []
+
+
+def test_default_process_patterns_cover_tier0_entrypoint_engine_phase(qenv):
+    """Tier 0 이미지 진입점(엔진 준비 → Tier 0)도 LIVE 로 본다. 셸로 바꿔 탄 경우·다른 이름은 아니다."""
+    import re
+
+    sys.path.insert(0, str(qenv.QUEUE_DIR))
+    try:
+        import gpu_queue
+    finally:
+        sys.path.pop(0)
+    patterns = [re.compile(p) for p in gpu_queue.DEFAULT_GUARD["process_patterns"]]
+    hit = lambda cmd: any(p.search(cmd) for p in patterns)  # noqa: E731
+    assert hit("bash /usr/local/bin/simai-tier0")
+    assert hit("bash /usr/local/bin/simai-tier0 --config /workspace/simai/tier0.json")
+    assert hit("python -m services.tier0 --config x")
+    assert not hit("bash /usr/local/bin/simai-tier0-check")
+    assert not hit("python -m simai_ai.detection.engine_cache plan")
+
+
+def _guard_class(qenv):
+    sys.path.insert(0, str(qenv.QUEUE_DIR))
+    try:
+        import gpu_queue
+    finally:
+        sys.path.pop(0)
+    return gpu_queue.LiveGuard
+
+
+def test_string_check_command_failure_is_live_not_idle(qenv):
+    """리뷰 R4 재현: 문자열 확인 명령은 셸이 '명령 없음'을 일반 종료 코드로 바꾼다. 실행 실패를 구별할 수 없으니 LIVE(모름)."""
+    LiveGuard = _guard_class(qenv)
+    cmd = "simai-no-such-healthcheck-review-60"
+    g = LiveGuard({"marker_files": [], "process_patterns": [], "check_command": cmd}, qenv.tmp, lambda *_: None)
+    assert subprocess.run(cmd, shell=True, capture_output=True).returncode != 0
+    assert g.reason() is not None and "모름" in g.reason()
+    # Job 파일에서는 아예 받지 않는다(GPU 작업 전에 종료 코드 4)
+    guard = {"marker_files": [], "process_patterns": [], "check_command": cmd, "on_live": "stop"}
+    jobs = qenv.write([qenv.job("a", qenv.py("ok", "a", qenv.out))], live_guard=guard)
+    r = qenv.run("check", jobs)
+    assert r.returncode == 4 and "인자 목록" in r.stderr
+    assert qenv.run("run", jobs).returncode == 4 and qenv.lines() == []
+
+
+@pytest.mark.parametrize("code, live", [(0, True), (1, False), (2, True), (127, True)])
+def test_check_command_exit_codes(qenv, code, live):
+    """0 = LIVE, not_live_exit_codes(기본 1) = LIVE 아님, 그 밖(점검 도구 오류 등) = 모름 → LIVE."""
+    LiveGuard = _guard_class(qenv)
+    cmd = [sys.executable, "-c", f"raise SystemExit({code})"]
+    g = LiveGuard({"marker_files": [], "process_patterns": [], "check_command": cmd}, qenv.tmp, lambda *_: None)
+    assert (g.reason() is not None) is live

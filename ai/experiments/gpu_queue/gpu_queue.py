@@ -59,8 +59,13 @@ DEFAULT_GUARD = {
     # Tier 0 LIVE 서비스가 떠 있는 동안 두는 표시 파일
     "marker_files": [str(SIMAI_ROOT / "state" / "tier0.live")],
     "marker_max_age_s": None,  # 설정하면 이보다 오래 갱신되지 않은 표시 파일은 무시한다(Tier 0 비정상 종료 대비)
-    "process_patterns": [r"-m\s+services\.tier0\b"],  # Linux /proc 명령줄 정규식
-    "check_command": None,  # 종료 코드 0 이면 LIVE 로 본다 (예: 헬스 엔드포인트 확인)
+    # Linux /proc 명령줄 정규식. 두 번째는 Tier 0 이미지 진입점(deploy/tier0/entrypoint.sh): Tier 0 를 띄우기 전 엔진 준비
+    # 동안에도 LIVE 로 본다(엔진 빌드·선확보 전에 EXP Job 이 GPU 메모리를 가져가지 않게, -60)
+    "process_patterns": [r"-m\s+services\.tier0\b", r"/simai-tier0(\s|$)"],
+    # 인자 목록만 받는다(문자열은 셸이 '명령 없음'을 일반 종료 코드로 바꿔 실행 실패와 'LIVE 아님'을 구별할 수 없다).
+    # 종료 코드 0 이면 LIVE, not_live_exit_codes 면 LIVE 아님, 그 밖(실행 실패·시간 초과·다른 코드)은 모름 → LIVE
+    "check_command": None,
+    "not_live_exit_codes": [1],
     "on_live": "wait",  # wait: LIVE 가 끝날 때까지 대기 / stop: 큐를 멈추고 종료 코드 3
     "poll_s": 15,
     "max_wait_s": 3600,
@@ -99,6 +104,12 @@ def load_job_file(path: Path) -> dict:
     guard = {**DEFAULT_GUARD, **(q.get("live_guard") or {})}
     if guard["on_live"] not in ("wait", "stop"):
         errs.append("queue.live_guard.on_live 는 wait 또는 stop")
+    cc = guard["check_command"]
+    if cc is not None and not (isinstance(cc, list) and cc and all(isinstance(a, str) and a for a in cc)):
+        errs.append("queue.live_guard.check_command 는 인자 목록이다(문자열 셸 명령은 실행 실패를 구별할 수 없어 받지 않는다)")
+    codes = guard["not_live_exit_codes"]
+    if not (isinstance(codes, list) and all(isinstance(c, int) and not isinstance(c, bool) and c != 0 for c in codes)):
+        errs.append("queue.live_guard.not_live_exit_codes 는 0 이 아닌 정수 목록이다")
     jobs = doc.get("jobs")
     if not isinstance(jobs, list) or not jobs:
         errs.append("jobs 가 비어 있음")
@@ -223,6 +234,7 @@ class LiveGuard:
         self.max_age_s = c["marker_max_age_s"]
         self.patterns = [re.compile(p) for p in c["process_patterns"] or []]
         self.check_command = c["check_command"]
+        self.not_live_codes = set(c["not_live_exit_codes"] or [])
         self.on_live = c["on_live"]
         self.poll_s = float(c["poll_s"])
         self.max_wait_s = float(c["max_wait_s"])
@@ -234,13 +246,16 @@ class LiveGuard:
             log("참고: 프로세스 명령줄 확인은 Linux(/proc)에서만 한다. 이 OS 에서는 표시 파일·확인 명령만 본다")
 
     def reason(self) -> str | None:
+        """LIVE 이유(아니면 None). 확인할 수 없는 경우(표시 파일 확인 오류, 확인 명령 실행 실패)는 모름 → LIVE 로 본다."""
         if not self.enabled:
             return None
         for m in self.markers:
             try:
                 age = time.time() - m.stat().st_mtime
-            except OSError:
+            except FileNotFoundError:
                 continue
+            except OSError as e:
+                return f"LIVE 표시 파일 {m} 확인 실패({type(e).__name__}) → 모름, LIVE 로 봄"
             if self.max_age_s is not None and age > self.max_age_s:
                 continue
             return f"LIVE 표시 파일 {m}"
@@ -252,12 +267,17 @@ class LiveGuard:
                     return f"Tier 0 프로세스 pid={pid}: {cmdline[:120]}"
         if self.check_command:
             cmd = self.check_command
+            if not isinstance(cmd, list):
+                # Job 파일 확인(load_job_file)이 막는다. 직접 만든 LiveGuard 도 실행 실패를 구별할 수 없으니 모름 → LIVE
+                return "LIVE 확인 명령이 인자 목록이 아니다(실행 실패를 구별할 수 없음) → 모름, LIVE 로 봄"
             try:
-                r = subprocess.run(cmd, shell=isinstance(cmd, str), cwd=self.workdir, capture_output=True, timeout=30)
-            except (OSError, subprocess.SubprocessError):
-                return None
+                r = subprocess.run([str(a) for a in cmd], cwd=self.workdir, capture_output=True, timeout=30)
+            except (OSError, subprocess.SubprocessError) as e:
+                return f"LIVE 확인 명령 실행 실패({type(e).__name__}) → 모름, LIVE 로 봄"
             if r.returncode == 0:
                 return "LIVE 확인 명령 성공"
+            if r.returncode not in self.not_live_codes:
+                return f"LIVE 확인 명령 종료 코드 {r.returncode}(LIVE 아님 코드 {sorted(self.not_live_codes)} 가 아님) → 모름, LIVE 로 봄"
         return None
 
 
@@ -548,6 +568,8 @@ class Queue:
                 if not ok:
                     self._abort_without_start(job, st, why)
                     break
+                if self.guard.reason() is not None:
+                    continue  # VRAM 을 기다리는 동안 LIVE 가 시작됐다. 위에서 다시 기다리거나(wait) 멈춘다(stop)
                 outcome = self._execute(job, st)
                 if outcome == "preempted":
                     continue  # LIVE 가 끝나면 같은 Job 을 다시 돈다(on_live=stop 이면 위에서 멈춤)
@@ -639,6 +661,8 @@ class Queue:
             free = g["memory_total_mb"] - g["memory_used_mb"]
             if free >= need:
                 return True, ""
+            if self.guard.reason() is not None:
+                return True, ""  # VRAM 판단은 미룬다. 호출 측이 LIVE 를 다시 보고 기다린다
             if time.monotonic() >= deadline or self.stop.is_set():
                 return False, f"VRAM 부족: 필요 {need:.0f} MB, 남은 {free:.0f} MB ({self.vram_wait_s:.0f}s 대기)"
             self.stop.wait(self.poll_s)
@@ -714,7 +738,8 @@ class Queue:
     def _watch(self, job: dict, proc: subprocess.Popen, token: str) -> tuple[int | None, str | None, str | None, str]:
         start = time.monotonic()
         deadline = start + float(job["timeout_s"])
-        next_live = start + self.guard.poll_s
+        # 첫 확인은 Job 감시 주기(poll_s)로 당긴다: 시작 직전 확인과 Popen 사이에 LIVE 가 시작된 경우를 빨리 잡는다
+        next_live = start + min(self.poll_s, self.guard.poll_s)
         warned = False
         status = reason = None
         outcome = "done"

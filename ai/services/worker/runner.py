@@ -8,17 +8,35 @@
 Python 스레드는 강제로 끝낼 수 없으므로 처리기는 ctx.cancelled 를 보고 스스로 멈춰야 한다.
 버린 처리기가 유예 시간 안에 멈추지 않으면 다음 대여를 받지 않고 HandlerStuck 을 던진다
 (GPU 작업이 겹치지 않게. 진입점은 종료하고 프로세스 관리자가 다시 띄운다, 명세 3.2 Tier 0 자원 우선).
+
+Tier 0 우선(명세 3.2, admission 이 있을 때, simai_ai.gpu.admission):
+- 대여 요청마다(네트워크 오류 뒤 다시 보낼 때도) 접수 문을 본다. 받지 않으면(지연 초과·모름·기동 중) 대여를 요청하지 않고
+  pause_s 쉰다(PAUSED). EC2 는 작업을 대기열에 그대로 둔다. LIVE 중에는 LIVE 에 막힌 유형(EXP-01·02)을 대여 요청 목록에서 빼고,
+  long-poll 을 live_wait_ms 로 줄인다.
+- long-poll 사이에 상황이 바뀔 수 있어 받은 뒤 다시 본다. LIVE 에 막힌 유형이면 시작하지 않고 바로, 지연 때문이면 hold_max_s(실행
+  상한의 절반 이하) 동안 하트비트로 대여를 지키며 기다리다가 그래도 받을 수 없으면 retryable FAILED 로 돌려보낸다(DEFERRED).
+  I5 에 '시작하지 않고 반납'이 없어 시도 횟수 하나를 쓴다. 마지막 시도(attempt == max_attempts)면 돌려보내면 최종 FAILED 가 되므로
+  돌려보내지 않고 실행 상한 직전까지 대여를 지키며 기다린다(그래도 못 열리면 그때만 최종 실패).
+- LIVE 에 막힌 유형이 도는 중이면 별도 감시 스레드가 live_poll_s 마다 접수 문을 본다(하트비트 HTTP 대기와 무관). LIVE 가 시작되면
+  바로 취소를 알리고 retryable FAILED 로 돌려보낸다(마지막 시도여도 LIVE 중 EXP 는 멈춘다). 지연 초과는 새 작업만 멈추고 도는
+  작업은 끝까지 둔다(명세 3.2 '새 작업을 멈추고').
 """
 
 from __future__ import annotations
 
 import enum
 import logging
+import math
 import threading
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
+from simai_ai.gpu.admission import Admission, AdmissionGate
+
 from .client import GaveUp, Lease, LeaseClient, RequestRejected, RetryableError
+
+PAUSE_REPORT_S = 300.0  # 접수 중지가 이어지면 이 주기로 경고를 다시 남긴다(운영 감시)
 from .handlers import JobContext, JobFailed, JobHandler
 
 log = logging.getLogger("services.worker")
@@ -37,6 +55,19 @@ class Outcome(enum.Enum):
     LEASE_LOST = "LEASE_LOST"  # 하트비트 실패로 대여 만료 시각이 지나 작업을 버렸다
     GAVE_UP = "GAVE_UP"  # 대여가 끝나기 전에 제출하지 못했다
     INVALID = "INVALID"  # EC2 가 제출 형식을 거부했다(400 등). 다시 보내지 않는다
+    PAUSED = "PAUSED"  # Tier 0 우선(지연 초과·모름·LIVE)으로 대여 요청을 쉬었다
+    DEFERRED = "DEFERRED"  # Tier 0 우선으로 받은 작업을 시작하지 않거나 멈추고 retryable 실패로 돌려보냈다(EC2 가 반영)
+
+
+@dataclass
+class _Beat:
+    """대여 하나의 하트비트 상태(monotonic 초). 대기(hold)와 실행 감시가 같이 쓴다."""
+
+    lease_deadline: float
+    timeout_deadline: float
+    interval: float
+    next_heartbeat: float
+    failures: int = 0
 
 
 class Worker:
@@ -49,9 +80,17 @@ class Worker:
         monotonic: Callable[[], float],
         wait_ms: int = 25_000,
         abandon_grace_s: float = 30.0,
+        admission: AdmissionGate | None = None,
+        live_wait_ms: int = 5_000,
+        hold_max_s: float = 60.0,
+        pause_s: float = 2.0,
+        live_poll_s: float = 2.0,
+        sleep: Callable[[float], Any] | None = None,
     ) -> None:
         if not handlers:
             raise ValueError("작업 처리기가 하나도 없다")
+        if pause_s <= 0 or live_poll_s <= 0 or hold_max_s < 0:
+            raise ValueError("pause_s·live_poll_s 는 양수, hold_max_s 는 0 이상이다")
         self.client = client
         self.handlers = dict(handlers)
         self._clock_ms = clock_ms
@@ -59,6 +98,15 @@ class Worker:
         self.wait_ms = wait_ms
         self.abandon_grace_s = abandon_grace_s
         self._abandoned: threading.Thread | None = None
+        self.admission = admission
+        self.live_wait_ms = min(live_wait_ms, wait_ms)
+        self.hold_max_s = hold_max_s
+        self.pause_s = pause_s
+        self.live_poll_s = live_poll_s
+        self._sleep = sleep if sleep is not None else threading.Event().wait
+        self._last_admit: bool | None = None
+        self._closed_since: float | None = None
+        self._closed_reported: float | None = None
 
     def run(self, stop: threading.Event) -> None:
         """stop 이 켜질 때까지 작업을 가져와 처리한다. AuthError·RequestRejected(대여 요청)·HandlerStuck 은 위로 던진다."""
@@ -67,10 +115,57 @@ class Worker:
 
     def run_once(self, *, should_stop: Callable[[], bool] = lambda: False) -> Outcome:
         self._wait_abandoned()
-        lease = self.client.lease(sorted(self.handlers), self.wait_ms, should_stop=should_stop)
+        if self.admission is None:
+            lease = self.client.lease(sorted(self.handlers), self.wait_ms, should_stop=should_stop)
+        else:
+            lease = self._lease_gated(should_stop)
+            if lease is Outcome.PAUSED:
+                return Outcome.PAUSED
         if lease is None:
             return Outcome.NO_JOB
-        return self.process(lease)
+        return self.process(lease, should_stop=should_stop)
+
+    def _lease_gated(self, should_stop: Callable[[], bool]) -> Lease | Outcome | None:
+        """대여 요청 한 번마다 접수 문을 다시 본다. 네트워크 오류 뒤 다시 보내기 전에도 본다(닫혔으면 다시 보내지 않는다)."""
+        failures = 0
+        while not should_stop():
+            adm = self._admission()
+            types = adm.allowed_types(sorted(self.handlers))
+            if not types:
+                self._sleep(self.pause_s)
+                return Outcome.PAUSED
+            try:
+                return self.client.lease_once(types, self.live_wait_ms if adm.live else self.wait_ms)
+            except RetryableError as e:
+                failures += 1
+                delay = self.client.backoff.delay(failures)
+                log.warning("대여 요청 실패 %d회, %.1f초 뒤 접수 문부터 다시: %s", failures, delay, e)
+                self._sleep(delay)
+        return None
+
+    def _admission(self) -> Admission:
+        assert self.admission is not None
+        try:
+            adm = self.admission.check()
+        except Exception as e:  # noqa: BLE001 - 접수 문이 깨지면 모름: 받지 않는다
+            adm = Admission(True, False, f"접수 문 확인 실패({type(e).__name__}: {e}) → 모름",
+                            self.admission.policy.live_blocked_types)
+        now = self._monotonic()
+        if adm.admit != self._last_admit:  # 받음/받지 않음이 바뀔 때만 남긴다(이유의 숫자는 매번 바뀐다)
+            self._last_admit = adm.admit
+            (log.info if adm.admit else log.warning)("Tier 0 우선 접수 문: %s (%s)", "받음" if adm.admit else "받지 않음",
+                                                      adm.reason)
+            self._closed_since = None if adm.admit else now
+            self._closed_reported = now
+        elif not adm.admit and self._closed_reported is not None and now - self._closed_reported >= PAUSE_REPORT_S:
+            self._closed_reported = now
+            log.warning("Tier 0 우선 접수 중지 %.0f분째: %s", (now - (self._closed_since or now)) / 60, adm.reason)
+        return adm
+
+    @property
+    def paused_for_s(self) -> float | None:
+        """접수 중지가 이어진 시간(초). 받는 중이면 None (운영 감시)."""
+        return None if self._closed_since is None else self._monotonic() - self._closed_since
 
     def _wait_abandoned(self) -> None:
         thread, self._abandoned = self._abandoned, None
@@ -83,14 +178,20 @@ class Worker:
 
     # ------------------------------------------------------------------ 작업 하나
 
-    def process(self, lease: Lease) -> Outcome:
+    def process(self, lease: Lease, *, should_stop: Callable[[], bool] = lambda: False) -> Outcome:
         received = self._monotonic()  # 남은 시간은 받은 순간부터 센다
         handler = self.handlers.get(lease.job_type)
         ctx = JobContext(lease.job_id, lease.lease_id, lease.job_type, lease.attempt, lease.input)
-        started_at = self._clock_ms()
         if handler is None:  # EC2 가 요청 밖의 유형을 내준 경우
             deadline = received + lease.ttl_ms / 1000
-            return self._submit_failure(lease, started_at, "NO_HANDLER", f"처리기 없음: {lease.job_type}", deadline)
+            return self._submit_failure(lease, self._clock_ms(), "NO_HANDLER", f"처리기 없음: {lease.job_type}", deadline)
+        interval = lease.heartbeat_interval_ms / 1000
+        beat = _Beat(received + lease.ttl_ms / 1000, received + lease.time_left_ms / 1000, interval, received + interval)
+        if self.admission is not None:
+            held = self._hold(lease, ctx, beat, received, should_stop)
+            if held is not None:
+                return held
+        started_at = self._clock_ms()
 
         box: dict[str, Any] = {}
         done = threading.Event()
@@ -100,63 +201,126 @@ class Worker:
         thread.start()
         log.info("작업 시작 %s (%s, 시도 %d)", lease.job_id, lease.job_type, lease.attempt)
         try:
-            return self._supervise(lease, ctx, box, done, started_at, received)
+            return self._supervise(lease, ctx, box, done, started_at, beat)
         finally:
             if not done.is_set():  # 거부·대여 상실·시간 초과·예외(AuthError 등)로 처리기를 버린다
                 ctx.cancelled.set()
                 self._abandoned = thread
 
-    def _supervise(
-        self, lease: Lease, ctx: JobContext, box: dict[str, Any], done: threading.Event, started_at: int, received: float
-    ) -> Outcome:
-        lease_deadline = received + lease.ttl_ms / 1000
-        timeout_deadline = received + lease.time_left_ms / 1000
-        interval = lease.heartbeat_interval_ms / 1000
-        next_heartbeat = received + interval
-        hb_failures = 0
+    def _hold(self, lease: Lease, ctx: JobContext, beat: _Beat, received: float,
+              should_stop: Callable[[], bool]) -> Outcome | None:
+        """받은 작업을 시작해도 되는지 다시 본다. 시작해도 되면 None. 안 되면 대여를 지키며 기다리거나 돌려보낸다."""
+        time_left_s = lease.time_left_ms / 1000
+        if lease.last_attempt:
+            # 돌려보내면 최종 FAILED 다(계약 job_callback). 실행 상한 직전까지 대여를 지키며 기다린다
+            hold_deadline = received + time_left_s - min(5.0, 0.1 * time_left_s)
+        else:
+            hold_deadline = received + min(self.hold_max_s, 0.5 * time_left_s)
         while True:
-            wait = min(next_heartbeat, lease_deadline, timeout_deadline) - self._monotonic()
-            if done.wait(max(0.0, wait)):
-                break
+            adm = self._admission()
+            blocked = adm.blocks(lease.job_type)
+            if blocked and not lease.last_attempt:
+                return self._defer(lease, beat, "LIVE_EXP_BLOCKED",
+                                   f"LIVE 관제 중이라 {lease.job_type} 를 돌리지 않는다: {adm.reason}")
+            if adm.admit and not blocked:
+                return None
             now = self._monotonic()
-            if now >= timeout_deadline:
+            if now >= hold_deadline or should_stop():
+                if lease.last_attempt:
+                    log.error("작업 %s 는 마지막 시도라 돌려보내면 최종 실패다. 기다렸지만 열리지 않았다", lease.job_id)
+                code = "LIVE_EXP_BLOCKED" if blocked else "TIER0_PRIORITY"
+                return self._defer(lease, beat, code, f"Tier 0 우선으로 시작하지 않았다: {adm.reason}")
+            wake = min(now + self.live_poll_s, beat.next_heartbeat, beat.lease_deadline, hold_deadline)
+            self._sleep(max(0.0, wake - now))
+            out = self._heartbeat_due(lease, ctx, beat)
+            if out is not None:
+                return out
+
+    def _watch_live(self, lease: Lease, ctx: JobContext, preempted: dict[str, str], stop: threading.Event) -> None:
+        """LIVE 에 막힌 유형이 도는 동안 live_poll_s 마다 접수 문을 본다. LIVE 면 바로 취소를 알린다(GPU 를 먼저 놓게)."""
+        while not stop.wait(self.live_poll_s):
+            adm = self._admission()
+            if adm.blocks(lease.job_type):
+                preempted["reason"] = adm.reason
                 ctx.cancelled.set()
-                log.warning("작업 %s 실행 상한 %dms 초과", lease.job_id, lease.timeout_ms)
-                error = {"code": "TIMEOUT", "message": f"{lease.timeout_ms}ms 초과"}
-                return self._submit(lease, "TIMED_OUT", started_at, error=error, deadline=lease_deadline)
-            if now >= lease_deadline:
-                ctx.cancelled.set()
-                log.warning("작업 %s 대여를 잃었다(하트비트 %d회 실패). 작업을 버린다", lease.job_id, hb_failures)
-                return Outcome.LEASE_LOST
-            if now < next_heartbeat:
-                continue
-            try:
-                status = self.client.heartbeat(lease, ctx.progress)
-            except RetryableError as e:
-                hb_failures += 1
-                next_heartbeat = now + min(interval, self.client.backoff.delay(hb_failures))
-                log.warning("하트비트 실패 %d회: %s", hb_failures, e)
-                continue
-            except RequestRejected as e:
-                ctx.cancelled.set()
-                log.error("하트비트 거부(형식·경로): %s. 작업을 버린다", e)
-                return Outcome.REJECTED
-            hb_failures = 0
-            if status.status != "ACTIVE":
-                ctx.cancelled.set()
-                log.warning("작업 %s 하트비트 거부: %s %s. 작업을 멈춘다", lease.job_id, status.status, status.reason)
-                return Outcome.REJECTED
-            lease_deadline = now + (status.ttl_ms or 0) / 1000
-            if status.heartbeat_interval_ms:
-                interval = status.heartbeat_interval_ms / 1000
-            next_heartbeat = now + interval
+                log.warning("작업 %s: LIVE 관제 시작, 취소를 알렸다 (%s)", lease.job_id, adm.reason)
+                return
+
+    def _defer(self, lease: Lease, beat: _Beat, code: str, message: str, started_at: int | None = None) -> Outcome:
+        log.warning("작업 %s 돌려보냄(%s): %s", lease.job_id, code, message)
+        error = {"code": code, "message": message[:_MESSAGE_LIMIT], "retryable": True}
+        out = self._submit(lease, "FAILED", started_at, error=error, deadline=beat.lease_deadline)
+        return Outcome.DEFERRED if out in (Outcome.ACCEPTED, Outcome.DUPLICATE) else out
+
+    def _heartbeat_due(self, lease: Lease, ctx: JobContext, beat: _Beat) -> Outcome | None:
+        """대여를 잃었거나 거부되면 그 결과, 아니면(하트비트 때가 아님·보냄·일시 실패) None."""
+        now = self._monotonic()
+        if now >= beat.lease_deadline:
+            log.warning("작업 %s 대여를 잃었다(하트비트 %d회 실패). 작업을 버린다", lease.job_id, beat.failures)
+            return Outcome.LEASE_LOST
+        if now < beat.next_heartbeat:
+            return None
+        try:
+            status = self.client.heartbeat(lease, ctx.progress)
+        except RetryableError as e:
+            beat.failures += 1
+            beat.next_heartbeat = now + min(beat.interval, self.client.backoff.delay(beat.failures))
+            log.warning("하트비트 실패 %d회: %s", beat.failures, e)
+            return None
+        except RequestRejected as e:
+            log.error("하트비트 거부(형식·경로): %s. 작업을 버린다", e)
+            return Outcome.REJECTED
+        beat.failures = 0
+        if status.status != "ACTIVE":
+            log.warning("작업 %s 하트비트 거부: %s %s. 작업을 멈춘다", lease.job_id, status.status, status.reason)
+            return Outcome.REJECTED
+        beat.lease_deadline = now + (status.ttl_ms or 0) / 1000
+        if status.heartbeat_interval_ms:
+            beat.interval = status.heartbeat_interval_ms / 1000
+        beat.next_heartbeat = now + beat.interval
+        return None
+
+    def _supervise(
+        self, lease: Lease, ctx: JobContext, box: dict[str, Any], done: threading.Event, started_at: int, beat: _Beat
+    ) -> Outcome:
+        watch_live = self.admission is not None and lease.job_type in self.admission.policy.live_blocked_types
+        preempted: dict[str, str] = {}
+        watch_stop = threading.Event()
+        watcher = None
+        if watch_live:
+            # 하트비트 HTTP 대기(최대 요청 시간 제한)와 따로 돈다: 느린 EC2 가 LIVE 선점을 늦추지 않게
+            watcher = threading.Thread(target=self._watch_live, args=(lease, ctx, preempted, watch_stop),
+                                       name=f"job-{lease.job_id}-live", daemon=True)
+            watcher.start()
+        try:
+            while True:
+                limit = self._monotonic() + self.live_poll_s if watch_live else math.inf
+                wait = min(beat.next_heartbeat, beat.lease_deadline, beat.timeout_deadline, limit) - self._monotonic()
+                if done.wait(max(0.0, wait)) and not preempted:
+                    break
+                if preempted:
+                    return self._defer(lease, beat, "LIVE_PREEMPTED", f"LIVE 관제 시작으로 멈췄다: {preempted['reason']}",
+                                       started_at)
+                now = self._monotonic()
+                if now >= beat.timeout_deadline:
+                    ctx.cancelled.set()
+                    log.warning("작업 %s 실행 상한 %dms 초과", lease.job_id, lease.timeout_ms)
+                    error = {"code": "TIMEOUT", "message": f"{lease.timeout_ms}ms 초과"}
+                    return self._submit(lease, "TIMED_OUT", started_at, error=error, deadline=beat.lease_deadline)
+                out = self._heartbeat_due(lease, ctx, beat)
+                if out is not None:
+                    ctx.cancelled.set()
+                    return out
+        finally:
+            watch_stop.set()
 
         finished_at = self._clock_ms()
         if "result" in box:
-            return self._submit(lease, "SUCCEEDED", started_at, finished_at, result=box["result"], deadline=lease_deadline)
+            return self._submit(lease, "SUCCEEDED", started_at, finished_at, result=box["result"],
+                                deadline=beat.lease_deadline)
         failure: JobFailed = box["failure"]
         error = {"code": failure.code, "message": failure.message[:_MESSAGE_LIMIT], "retryable": failure.retryable}
-        return self._submit(lease, "FAILED", started_at, finished_at, error=error, deadline=lease_deadline)
+        return self._submit(lease, "FAILED", started_at, finished_at, error=error, deadline=beat.lease_deadline)
 
     @staticmethod
     def _run_handler(handler: JobHandler, ctx: JobContext, box: dict[str, Any], done: threading.Event) -> None:
@@ -180,7 +344,7 @@ class Worker:
         self,
         lease: Lease,
         status: str,
-        started_at: int,
+        started_at: int | None,
         finished_at: int | None = None,
         *,
         result: Mapping[str, Any] | None = None,
