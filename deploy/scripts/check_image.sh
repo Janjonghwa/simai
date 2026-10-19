@@ -60,6 +60,11 @@ print(sys.version.split()[0], "ultralytics", m.version("ultralytics"), "torch", 
 else
   fail "import 실패: $OUT"
 fi
+if OUT=$(docker run --rm "$IMG" simai-wait-tier0 --no-tier0 --marker /nonexistent -- true 2>&1); then
+  pass "simai-wait-tier0 (분석 워커 순서 도구)"
+else
+  fail "simai-wait-tier0: $OUT"
+fi
 if OUT=$(docker run --rm "$IMG" --help 2>&1) && grep -q "Tier 0" <<<"$OUT"; then
   pass "simai-tier0 --help"
 else

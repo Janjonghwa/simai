@@ -14,6 +14,16 @@ Network Volume 에는 가중치, 데이터, 실험 산출물, TensorRT 엔진 �
 | `*/Dockerfile.dockerignore` | 이미지별 빌드 컨텍스트 **허용 목록**(나열한 파일만 들어간다) |
 | `compose.yaml` | 로컬 점검용(RunPod 은 Compose 를 쓰지 않는다) |
 | `scripts/check_image.sh` | 이미지 점검(GPU 불필요): 비밀·가중치·엔진·SSH 호스트 키 없음, import, 진입점 오류 코드, GPU 별 엔진 경로, SSH 비밀번호 접속 거부 |
+| `scripts/gpu_session1.py` | GPU 1차 세션 검증 큐(S15P31A101-183): gpu_queue 로 아래 스크립트를 차례로 돌리고 결과 묶음·scp 명령을 낸다. `prepare`(노트북 사본)·`plan`·`run`(Pod 또는 `--mode dryrun`) |
+| `scripts/pod_check.py` | Pod 점검(-31): GPU·드라이버·CUDA·마운트·용량·쓰기 속도·fsync·flock → JSON |
+| `scripts/session1_engine.sh` | 아래 "Pod 검증 큐" 1)~7) 을 한 Job 으로(단계별 종료 코드·시간을 steps.tsv·metrics.json 에) |
+| `scripts/crash_recovery_g3.py` | Network Volume 강제 종료 복구 실측(-92): 실제 Tier 0 kill -9 ·재시작 + -51 결정적 지점, G3 항목 0건 판정 |
+| `scripts/repeat_pytest.py` | pytest 반복(Linux TLS 시험 -45·-175) |
+| `scripts/session1_live.py` | LIVE 입력 Pod 확인(-182): NVDEC 열림·gpu 시험·4스트림 디코딩 처리량·LIVE 기동 하네스·10명 기하 처리 시간 |
+| `scripts/session1_gpu_priority.py` | Tier 0 GPU 우선 보호 Pod 측정(-60 P0~P7): LIVE 하네스 + `tier0_priority_probe` |
+| `scripts/wait_tier0_ready.py` | 이미지의 `simai-wait-tier0`: 분석 워커를 Tier 0 표시 파일 `phase=running`·`reserve.state=OK` 뒤에 띄운다(아래 "분석 워커") |
+
+Network Volume 구조·권한·보관, Pod 점검 기준, SSH 재접속·443 예비 경로, 세션 큐 항목·예상 시간은 `docs/design/runpod-environment.md` 에 있다.
 
 엔진 캐시 코드는 `ai/src/simai_ai/detection/engine_cache.py`(시험 `ai/tests/detection/test_engine_cache.py`)다.
 
@@ -100,8 +110,29 @@ RunPod 에는 레지스트리 자격 증명(읽기 전용 토큰)을 RunPod 계�
 | Network Volume | AP-JP-1 볼륨을 `/workspace` 에 |
 | 공개 TCP 포트 | 22(SSH, 키 인증만), I0 수신 포트(70000 이상 대칭 매핑, 실제 포트는 `RUNPOD_TCP_PORT_*`, 명세 3.12) |
 | 시작 명령 | 비움(이미지 기본: `simai-tier0` → 엔진 준비 → `python -m services.tier0`) |
-| 환경 변수 | `SIMAI_ROOT=/workspace/simai`, `SIMAI_TIER0_WEIGHTS=/workspace/simai/weights/yolo/yolo26x-pose.pt`, `SIMAI_TIER0_WEIGHTS_SHA256=<해시 목록의 값>`, `SIMAI_ENGINE_CACHE=/workspace/simai/engines`, `SIMAI_OBS2D_ROOT=/workspace/simai/obs2d`, `SIMAI_IMAGE_DIGEST=sha256:...`. 선택: `SIMAI_TIER0_MODE`(e2e), `SIMAI_TIER0_IMGSZ`(1280), `SIMAI_TIER0_MAX_BATCH`(4), `SIMAI_TIER0_CAMERA`(2304x1296) |
-| 비밀 | 템플릿에 넣지 않는다. `/workspace/.simai-private/` 에서 읽는다. `PUBLIC_KEY` 는 RunPod 이 계정 SSH 키로 채운다 |
+| GPU 기능 | 이미지 `NVIDIA_DRIVER_CAPABILITIES=compute,utility,video`(video 는 LIVE 입력 NVDEC, -182). 템플릿에서 덮어쓰지 않는다 |
+| 환경 변수 | `SIMAI_ROOT=/workspace/simai`, `SIMAI_TIER0_GPU_RESERVE_MB=8192`(Tier 0 GPU 선확보, -60, G0 실측 전 초기값), `SIMAI_TIER0_WEIGHTS=/workspace/simai/weights/yolo/yolo26x-pose.pt`, `SIMAI_TIER0_WEIGHTS_SHA256=<해시 목록의 값>`, `SIMAI_ENGINE_CACHE=/workspace/simai/engines`, `SIMAI_OBS2D_ROOT=/workspace/simai/obs2d`, `SIMAI_IMAGE_DIGEST=sha256:...`. 선택: `SIMAI_TIER0_MODE`(e2e), `SIMAI_TIER0_IMGSZ`(1280), `SIMAI_TIER0_MAX_BATCH`(4), `SIMAI_TIER0_CAMERA`(2304x1296) |
+| 분석 워커 환경 변수 | 같은 Pod 에서 워커를 띄울 때(아래 "분석 워커"): `SIMAI_EC2_BASE_URL`, `SIMAI_WORKER_ID=worker-01`, `SIMAI_WORKER_GPU_MEMORY_FRACTION=0.70`, `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION=0.55`, `SIMAI_WORKER_VLLM_MAX_NUM_SEQS=4`, `SIMAI_GPU_TIER0_FRACTION=0.20`, `SIMAI_WORKER_LAG_BUDGET_MS=600`. 선택(기본값): `SIMAI_WORKER_MARKER_MAX_AGE_S`(15), `SIMAI_WORKER_RESUME_AFTER_S`(30), `SIMAI_WORKER_LIVE_BLOCKED_TYPES`(static_reconstruct,hmr_refine,hmr_appearance_update), `SIMAI_WORKER_LIVE_WAIT_MS`(5000), `SIMAI_WORKER_HOLD_MAX_S`(60), `SIMAI_TIER0_MARKER`. 값의 뜻은 docs/design/tier0-gpu-priority.md |
+| 비밀 | 템플릿에 넣지 않는다. `/workspace/.simai-private/` 에서 읽는다(워커 토큰은 `worker.env` 의 `SIMAI_WORKER_TOKEN=`). `PUBLIC_KEY` 는 RunPod 이 계정 SSH 키로 채운다 |
+
+### 분석 워커 (같은 Pod, Tier 0 뒤)
+
+GPU Pod 는 하나이고 Tier 0 가 GPU 를 먼저 쓴다(명세 3.2, S15P31A101-60). 진입점이 TensorRT 엔진을 준비하는 동안(첫 빌드는 수 분)에는
+Tier 0 표시 파일 `state/tier0.live` 가 아직 없어, 분석 워커 접수 문이 '관제 없음'으로 보고 GPU 메모리를 먼저 잡을 수 있다.
+그래서 워커는 `simai-wait-tier0` 로 띄운다. 표시 파일의 `gpu_priority` 가 `phase=running`·`reserve.state=OK` 이고 15초 안에 갱신된 것을
+본 뒤에만 워커를 exec 하고, 모르면(파일 없음·기동 중·선확보 PARTIAL·오래됨) 띄우지 않고 기다린다(기본 30분 뒤 종료 코드 3).
+
+```sh
+# Pod 안 (SSH). Tier 0 는 템플릿 시작 명령(이미지 기본)으로 이미 떠 있다
+nohup simai-wait-tier0 --env-file /workspace/.simai-private/worker.env -- python -m services.worker > /workspace/simai/logs/worker.log 2>&1 &
+# 관제가 없는 개발 시간(Tier 0 없음): 표시 파일이 없을 때만 띄운다
+simai-wait-tier0 --no-tier0 --env-file /workspace/.simai-private/worker.env -- python -m services.worker
+```
+
+진입점이 엔진 준비 전에 기동 중 표시 파일을 쓰는 안은 쓰지 않았다: 표시 파일은 Tier 0 서비스가 단독으로 쓰고(기동 첫 단계 `phase=starting`,
+비정상 종료 감지 `start_failed`), 진입점이 같은 파일을 쓰면 다음 시작이 '이전 실행이 정상 종료하지 않음'으로 잘못 본다.
+Tier 0 재시작(엔진 캐시 사용, 1초대) 때는 워커 접수 문이 표시 파일이 사라진 뒤 60초를 재시작 틈으로 보고 받지 않는다(-60).
+`compose.yaml` 의 `worker` 서비스가 같은 순서의 로컬 점검용이다.
 
 EXP-02 는 같은 볼륨에 `exp02-fs3db@sha256:...` 이미지로 Pod 를 띄우고(Tier 0 와 동시에 띄우지 않는다, LIVE 관제 시간 금지) 시작 명령에 GPU 큐를 준다.
 
@@ -139,6 +170,7 @@ uv pip compile requirements.in --python-version 3.11 --python-platform x86_64-un
 ## Pod 검증 큐
 
 GPU Pod 는 이 큐를 돌릴 때만 켜고 끝나면 바로 Stop 한다. LIVE 관제 시간에는 돌리지 않는다. 앞 단계가 실패하면 멈추고 결과를 기록한다.
+아래 Tier 0 이미지 1)~7) 은 `scripts/session1_engine.sh` 가 한 Job 으로 묶었고, GPU 1차 세션 큐(`scripts/gpu_session1.py`, docs/design/runpod-environment.md)의 b 항목으로 돈다. 8)·9) 는 사람이 한다.
 노트북 준비: 이미지 빌드 → `check_image.sh` 통과 → 사용자 확인 뒤 푸시 → 다이제스트로 템플릿 작성. 볼륨에 `weights/yolo/yolo26x-pose.pt` 와 해시 목록이 있는지 확인(E-GATE-0 때 받아 둠).
 
 Tier 0 이미지 (일본 AP-JP-1 H100, 볼륨 `/workspace`, 시작 명령 `sleep infinity` 로 띄우고 SSH 로 들어가 실행):
@@ -162,7 +194,7 @@ eng = sorted(__import__("glob").glob("/workspace/simai/engines/yolo26x-pose/sm_9
 m = YOLO(eng, task="pose"); frames = [np.zeros((1296, 2304, 3), np.uint8)] * 4
 r = m.predict(frames, imgsz=1280, half=True, verbose=False); print(eng, len(r), r[0].orig_shape)
 PY
-# 5) 진입점 전체 (엔진 준비 로그가 먼저 나와야 한다. LIVE 입력은 NVDEC 디코더가 아직 없어 종료 코드 4 가 정상, S15P31A101-171 남은 일)
+# 5) 진입점 전체 (엔진 준비 로그가 먼저 나와야 한다. -182 머지 전에는 LIVE 디코더가 없어 종료 코드 4, 머지 뒤 LIVE 확인은 세션 큐 c 항목)
 simai-tier0 --config /workspace/simai/tier0.json; echo "exit=$?"
 # 6) 반례: 가중치 해시 불일치·가중치 없음은 GPU 를 쓰지 않고 종료 코드 2
 SIMAI_TIER0_WEIGHTS_SHA256=$(printf '0%.0s' {1..64}) simai-tier0; echo "exit=$? (2 기대)"

@@ -25,14 +25,17 @@ RUN --mount=type=cache,target=/root/.cache/uv \
  && rm -rf ./src
 
 COPY --chmod=0755 deploy/tier0/entrypoint.sh /usr/local/bin/simai-tier0
+# 분석 워커를 Tier 0 준비(표시 파일 phase=running·reserve OK) 뒤에 띄우는 도구 (S15P31A101-60·-183, deploy/README "분석 워커")
+COPY --chmod=0755 deploy/scripts/wait_tier0_ready.py /usr/local/bin/simai-wait-tier0
 
 # 실행 중에 패키지를 설치하지 않는다(ultralytics 자동 설치 끔). 없는 의존성은 실패로 드러나야 한다.
+# NVIDIA_DRIVER_CAPABILITIES 의 video: LIVE 입력 NVDEC(libnvcuvid)을 컨테이너에 올린다(S15P31A101-182).
 ENV SIMAI_CONTRACTS_DIR=/opt/simai/contracts \
     SIMAI_ROOT=/workspace/simai \
     YOLO_AUTOINSTALL=false \
     YOLO_OFFLINE=true \
     YOLO_CONFIG_DIR=/tmp/ultralytics \
-    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/simai-start", "/usr/local/bin/simai-tier0"]
 CMD []

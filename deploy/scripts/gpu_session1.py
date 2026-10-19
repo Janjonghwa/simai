@@ -1,0 +1,659 @@
+#!/usr/bin/env python3
+"""GPU 1차 세션 검증 큐 (S15P31A101-183). ai/experiments/gpu_queue(S15P31A101-36)를 그대로 써서 항목을 차례로 돌린다.
+
+항목(순서, docs/design/runpod-environment.md "GPU 1차 세션 큐"):
+  a  -31  Pod 점검(GPU·드라이버·CUDA·마운트·용량·쓰기·fsync)            deploy/scripts/pod_check.py
+  b  -32  Tier 0 이미지 기동·TensorRT 엔진 생성                           deploy/scripts/session1_engine.sh
+  t       시험 도구(pytest·cryptography)를 컨테이너 디스크에 설치          Pod 만 (이미지에는 시험 의존성이 없다)
+  c  -182 LIVE 입력: NVDEC·디코딩 처리량·LIVE 기동·10명 처리 시간         deploy/scripts/session1_live.py (-182 머지 필요)
+  d  -60  Tier 0 GPU 우선 보호 측정 P0~P7                                  deploy/scripts/session1_gpu_priority.py (-60 머지 필요)
+  e  -92  Network Volume 강제 종료 복구                                    deploy/scripts/crash_recovery_g3.py
+  f  -45·-175 Linux TLS 시험 반복                                         deploy/scripts/repeat_pytest.py
+  g  -87  EXP-02 다시점 집계(선택, LIVE 없을 때만, 마지막)                 자리만. --exp-jobs 로 준 Job 파일을 LIVE 보호를 켠 별도 큐로 돈다
+
+한 항목이 실패해도 다음 항목으로 간다(continue_on_failure). 항목마다 제한 시간과 Run 기록(run_record 계약)은 gpu_queue 가 맡는다.
+전체 시간 상한(--max-total-s)이 지나면 도는 항목을 끝내고(ABORTED 기록) 남은 항목은 돌리지 않는다. Ctrl-C·SIGTERM 도 같다.
+끝나면(실패·중단·큐 오류여도) 결과 묶음(tar.gz, 비밀 파일 제외)을 만들고 노트북으로 가져올 scp 명령을 출력한다.
+
+    # 노트북: 저장소 사본과 git 정보 준비 → Pod 로 올린다 (출력되는 명령을 따른다)
+    python deploy/scripts/gpu_session1.py prepare --out <폴더>
+    # Pod (Tier 0 이미지, /workspace 볼륨): 저장소 사본 최상위에서
+    python deploy/scripts/gpu_session1.py run
+    # 노트북 드라이런: 가짜 nvidia-smi·로컬 디렉터리
+    uv run --project ai python deploy/scripts/gpu_session1.py run --mode dryrun --root <로컬 폴더>
+
+종료 코드: 0 모든 항목 성공, 1 실패한 항목 있음, 2 다른 큐가 잠금을 쥐고 있음, 3 LIVE 관제 중이라 EXP 큐(g)를 멈춤,
+4 Job 정의 오류, 5 사전 점검 실패(쓰기·용량), 6 큐 오류(예외), 7 결과 묶음을 만들지 못함, 8 전체 시간 상한, 130 Ctrl-C·SIGTERM.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tarfile
+import tempfile
+import threading
+import time
+import tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+QUEUE_DIR = REPO / "ai" / "experiments" / "gpu_queue"
+FAKE_SMI = REPO / "ai" / "tests" / "experiments" / "gpu_queue" / "fake_nvidia_smi.py"
+STAMP_FILE = "git-stamp.json"  # prepare 가 저장소 사본 최상위에 둔다(Pod 사본에는 .git 이 없다)
+OWNER = "S15P31A101-183 GPU 1차 세션 큐"
+
+EXIT_OK, EXIT_FAILED, EXIT_LOCKED, EXIT_LIVE, EXIT_BAD_JOBS = 0, 1, 2, 3, 4  # gpu_queue 와 같은 값
+EXIT_PREFLIGHT, EXIT_CRASH, EXIT_BUNDLE, EXIT_DEADLINE, EXIT_SIGNAL = 5, 6, 7, 8, 130
+
+# 결과 묶음에 넣지 않는 것: 이름(비밀·키·토큰·환경 파일·대형 산출물)과 내용(개인 키·HF 토큰·토큰 할당)
+SECRET_NAMES = ("hf.env", "*.env", ".env", ".env.*", "*.key", "*.pem", "*.p12", "*.crt", "id_rsa*", "id_ed25519*",
+                "authorized_keys", "*token*", "*secret*", "*.engine", "*.pt", "*.pth", "*.onnx", "*.safetensors", "*.ckpt")
+SECRET_RE = re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----|hf_[A-Za-z0-9]{30,}|(?:HF_TOKEN|HUGGING_FACE_HUB_TOKEN|RUNPOD_API_KEY)"
+                       rb"\s*=\s*[^\s\"']{8,}")
+SECRET_ENV_RE = re.compile(r"TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE", re.I)
+PRIVATE_DIR = ".simai-private"
+
+
+def now_ms() -> int:
+    return time.time_ns() // 1_000_000
+
+
+def log(msg: str) -> None:
+    print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}Z] session1: {msg}", flush=True)
+
+
+# ---------------------------------------------------------------- 항목 정의
+
+
+def lock_pins() -> dict[str, str]:
+    """ai/uv.lock 의 시험 도구 버전(Pod 의 이미지 venv 에는 dev 의존성이 없어 따로 설치한다)."""
+    doc = tomllib.loads((REPO / "ai" / "uv.lock").read_text(encoding="utf-8"))
+    want = {"pytest", "cryptography"}
+    return {p["name"]: p["version"] for p in doc.get("package", []) if p.get("name") in want}
+
+
+class Layout:
+    """모드별 경로와 명령. pod: /workspace 볼륨·이미지 Python, dryrun: 로컬 폴더·가짜 nvidia-smi."""
+
+    def __init__(self, mode: str, root: Path | None, session: str, python: str | None) -> None:
+        self.mode = mode
+        self.session = session
+        if mode == "pod":
+            self.root = root or Path("/workspace")
+        else:
+            if root is None:
+                raise SystemExit("드라이런은 --root <로컬 폴더> 가 필요하다")
+            self.root = root
+        # resolve() 는 Windows subst 드라이브를 긴 실제 경로로 바꿔 경로 길이 한도에 걸리게 하므로 absolute() 만
+        self.root = Path(os.path.abspath(self.root)) if mode == "dryrun" else self.root
+        self.simai = self.root / "simai"
+        self.py = Path(python or sys.executable).as_posix()  # bash(b 항목)에서도 쓰므로 / 구분자
+        self.queue_state = self.simai / "queue"
+        self.session_dir = self.simai / "runs" / "gpu-session1" / session
+        self.tools = Path(tempfile.gettempdir()) / "simai-session1-testtools"  # 컨테이너 디스크(볼륨 아님)
+        self.smi = ["nvidia-smi"] if mode == "pod" else [self.py, FAKE_SMI.as_posix()]
+        self.queue_name = f"session1-{session}"
+
+    def pythonpath(self) -> str:
+        parts = [str(REPO / "ai" / "src"), str(REPO / "ai")]  # 저장소 사본 코드가 이미지에 설치된 simai_ai 보다 앞선다
+        if self.mode == "pod":
+            parts.append(str(self.tools))
+        return os.pathsep.join(parts)
+
+
+def find_bash() -> str:
+    """드라이런용 bash. Windows 는 PATH 보다 System32 를 먼저 찾아 WSL bash(Windows 환경 변수를 못 받음)가 잡히므로
+    Git for Windows 의 bash 를 찾는다."""
+    if os.name != "nt":
+        return "bash"
+    git = shutil.which("git")
+    candidates = []
+    if git:
+        g = Path(git).resolve()
+        candidates += [g.parents[1] / "bin" / "bash.exe", g.parents[1] / "usr" / "bin" / "bash.exe"]
+    candidates.append(Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Git" / "bin" / "bash.exe")
+    for c in candidates:
+        if c.is_file():
+            return c.as_posix()
+    raise SystemExit("드라이런에 Git Bash 가 필요하다(WSL bash 는 Windows 환경 변수를 받지 못한다)")
+
+
+PROVENANCE_NONE = {"frames": {"source": "SIM", "dataset_id": "none:infrastructure-check"}, "is_upper_bound": True}
+PROVENANCE_SIM = {"frames": {"source": "SIM", "dataset_id": "sim/tier0-e2e-walker"}, "is_upper_bound": True}
+
+
+def items(lay: Layout) -> list[dict]:
+    """세션 항목. command 가 None 이면 자리만(큐에 넣지 않는다). expected_s 는 H100 예상, 근거는 설계 문서."""
+    dry = lay.mode == "dryrun"
+    py = lay.py
+    smi_text = json.dumps(lay.smi)
+    pins = lock_pins()
+    pod_check = [py, "deploy/scripts/pod_check.py", "--root", str(lay.root), "--nvidia-smi", smi_text]
+    if dry:
+        pod_check += ["--allow-not-mount", "--write-mb", "16", "--fsync-count", "50", "--min-free-gb", "1"]
+    return [
+        {"key": "a", "name": "a_pod_check", "jira": "S15P31A101-31", "title": "Pod 점검", "command": pod_check,
+         "expected_s": 120, "timeout_s": 900, "model_version": "n/a (인프라 점검)", "provenance": PROVENANCE_NONE},
+        {"key": "b", "name": "b_tier0_engine", "jira": "S15P31A101-32", "title": "Tier 0 이미지 기동·TensorRT 엔진 생성",
+         "command": ["bash" if lay.mode == "pod" else find_bash(), "deploy/scripts/session1_engine.sh"], "expected_s": 900, "timeout_s": 2700,
+         "model_version": "YOLO26x-pose TensorRT FP16 (e2e, imgsz 1280, batch 4)", "provenance": PROVENANCE_NONE,
+         "weights": ["weights/yolo/yolo26x-pose.pt"]},
+        {"key": "t", "name": "t_test_tools", "jira": "S15P31A101-183", "title": "시험 도구 설치(컨테이너 디스크)",
+         "command": None if dry else ["uv", "pip", "install", "--python", py, "--target", str(lay.tools),
+                                      *(f"{k}=={v}" for k, v in sorted(pins.items()))],
+         "skip_reason": "드라이런은 ai 개발 환경에 이미 있다", "expected_s": 60, "timeout_s": 600,
+         "model_version": "n/a (시험 도구)", "provenance": PROVENANCE_NONE},
+        # c·d 는 -182·-60 이 머지된 뒤의 경로를 부른다(머지 전이면 각 단계가 '머지 필요'로 실패하고 다음 항목으로 간다)
+        {"key": "c", "name": "c_tier0_live", "jira": "S15P31A101-182", "title": "LIVE 입력 Pod 확인(NVDEC·처리량·LIVE 기동·10명)",
+         "command": [py, "deploy/scripts/session1_live.py", "all"], "expected_s": 600, "timeout_s": 2400,
+         "model_version": "YOLO26x-pose TensorRT FP16 + PyAV NVDEC (LIVE 하네스)", "provenance": PROVENANCE_NONE},
+        {"key": "d", "name": "d_tier0_gpu_priority", "jira": "S15P31A101-60", "title": "Tier 0 GPU 우선 보호 측정 P0~P7",
+         "command": [py, "deploy/scripts/session1_gpu_priority.py"], "expected_s": 900, "timeout_s": 2700,
+         "model_version": "Tier 0 LIVE 하네스 + tier0_priority_probe", "provenance": PROVENANCE_NONE},
+        {"key": "e", "name": "e_crash_recovery", "jira": "S15P31A101-92", "title": "Network Volume 강제 종료 복구",
+         "command": [py, "deploy/scripts/crash_recovery_g3.py", "--volume-dir", str(lay.simai / "runs" / "crash92")],
+         "expected_s": 300, "timeout_s": 1800, "model_version": "Tier 0 SIM 입력 (services.tier0)",
+         "provenance": PROVENANCE_SIM},
+        {"key": "f", "name": "f_tls_linux", "jira": "S15P31A101-175", "title": "Linux TLS 시험 반복 (-45·-175)",
+         "command": [py, "deploy/scripts/repeat_pytest.py", "--count", "1" if dry else "5", "--cwd", "ai", "--",
+                     "tests/services/tier0/test_i1_tls.py", "tests/services/tier0/test_serial_tls.py"],
+         "expected_s": 600, "timeout_s": 2400, "model_version": "n/a (TLS 시험)", "provenance": PROVENANCE_NONE},
+        {"key": "g", "name": "g_exp02_multiview", "jira": "S15P31A101-87", "title": "EXP-02 다시점 집계 (선택, LIVE 없을 때)",
+         "command": None, "placeholder": "-87 머지 후 채움 (--exp-jobs 로 별도 큐)", "expected_s": 1800, "timeout_s": 3600},
+    ]
+
+
+def _sh(text: str) -> str:
+    return text if re.fullmatch(r"[A-Za-z0-9_./:\\-]+", text) else "'" + text.replace("'", "'\\''") + "'"
+
+
+def job_env(lay: Layout) -> dict[str, str]:
+    return {"SIMAI_ROOT": str(lay.simai), "SIMAI_PY": lay.py, "SIMAI_NVIDIA_SMI": " ".join(_sh(c) for c in lay.smi),
+            "PYTHONPATH": lay.pythonpath(), "PYTHONUTF8": "1"}
+
+
+def build_jobs(lay: Layout, git: dict | None) -> tuple[dict, list[dict]]:
+    """gpu_queue Job 파일과 자리만 있는 항목 목록."""
+    gpu = {"provider": "RUNPOD", "region": "JP", "datacenter": "AP-JP-1", "shared_with_tier0": False} \
+        if lay.mode == "pod" else {"provider": "LOCAL"}
+    env_cfg: dict = {"lock_files": ["ai/uv.lock"]}
+    if os.environ.get("SIMAI_IMAGE_DIGEST"):
+        env_cfg["image_digest"] = os.environ["SIMAI_IMAGE_DIGEST"]
+    doc: dict = {
+        "queue": {
+            "name": lay.queue_name,
+            "workdir": str(REPO),
+            "continue_on_failure": True,
+            "poll_s": 1,
+            "kill_grace_s": 10,
+            "vram_wait_s": 60,
+            "gpu_query_cmd": lay.smi,
+            "lock": {"heartbeat_s": 15, "ttl_s": 120},
+            # 검증 큐는 Tier 0 를 스스로 띄우고 죽인다(b·e). EXP Job 이 아니므로 LIVE 보호를 끈다.
+            # 관제(LIVE) 시간에는 이 세션을 돌리지 않는다(사람이 확인). EXP(g)는 LIVE 보호를 켠 별도 큐다.
+            "live_guard": {"enabled": False},
+        },
+        "record": {
+            "experiment_id": "INT-01",
+            "owner": OWNER,
+            "experiment_state": "BENCHMARK",
+            "gpu": gpu,
+            "env": env_cfg,
+        },
+        "jobs": [],
+    }
+    if lay.mode == "pod":
+        doc["queue"]["volume"] = {"root": str(lay.root), "datacenter": "AP-JP-1"}
+    if git:
+        doc["git"] = git
+    held: list[dict] = []
+    env = job_env(lay)
+    for it in items(lay):
+        if it["command"] is None:
+            held.append(it)
+            continue
+        doc["jobs"].append({
+            "name": it["name"], "command": it["command"], "expected_s": it["expected_s"], "timeout_s": it["timeout_s"],
+            "vram_mb": 0, "env": env,
+            "record": {"jira_key": it["jira"], "model_version": it["model_version"], "input_provenance": it["provenance"],
+                       **({"weights": it["weights"]} if it.get("weights") else {})},
+        })
+    return doc, held
+
+
+def plan_table(lay: Layout, doc: dict, held: list[dict]) -> str:
+    rows = [f"{'항목':<4} {'이름':<24} {'Jira':<16} {'예상':>7} {'제한':>7}  상태"]
+    queued = {j["name"] for j in doc["jobs"]}
+    total = 0
+    for it in items(lay):
+        state = "큐" if it["name"] in queued else f"자리만: {it.get('placeholder') or it.get('skip_reason')}"
+        if it["name"] in queued:
+            total += it["expected_s"]
+        rows.append(f"{it['key']:<4} {it['name']:<24} {it['jira']:<16} {it['expected_s'] / 60:>5.0f}분 {it['timeout_s'] / 60:>5.0f}분  {state}")
+    future = sum(it["expected_s"] for it in held if it.get("placeholder"))
+    rows.append(f"지금 큐 예상 {total / 60:.0f}분, 자리만 항목을 채우면 +{future / 60:.0f}분")
+    return "\n".join(rows)
+
+
+# ---------------------------------------------------------------- git 정보
+
+
+def git_stamp() -> dict | None:
+    """저장소면 git 에서, Pod 사본이면 prepare 가 둔 git-stamp.json 에서."""
+    def git(*a: str) -> str | None:
+        try:
+            r = subprocess.run(["git", "-C", str(REPO), *a], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    commit = git("rev-parse", "HEAD") if (REPO / ".git").exists() else None
+    if commit:
+        return {"commit": commit, "branch": git("rev-parse", "--abbrev-ref", "HEAD") or "",
+                "dirty_worktree": bool(git("status", "--porcelain"))}
+    stamp = REPO / STAMP_FILE
+    if stamp.is_file():
+        return json.loads(stamp.read_text(encoding="utf-8"))
+    return None
+
+
+# ---------------------------------------------------------------- 사전 점검·환경
+
+
+def preflight(paths: list[Path], min_free_mb: float) -> list[str]:
+    """결과를 쓸 폴더마다: 만들 수 있는지, 쓰고 fsync 하고 지울 수 있는지, 남은 용량이 하한 이상인지."""
+    errs = []
+    for p in paths:
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+            probe = p / f".session1-probe-{os.getpid()}"
+            with open(probe, "wb") as f:
+                f.write(b"x" * 4096)
+                f.flush()
+                os.fsync(f.fileno())
+            probe.unlink()
+        except OSError as e:
+            errs.append(f"{p} 에 쓸 수 없음: {type(e).__name__}: {e}")
+            continue
+        free_mb = shutil.disk_usage(p).free / 1e6
+        if free_mb < min_free_mb:
+            errs.append(f"{p} 남은 용량 {free_mb:.0f} MB < 하한 {min_free_mb:.0f} MB")
+    return errs
+
+
+def scrub_env() -> list[str]:
+    """Job 에 비밀 환경 변수가 넘어가지 않게 지운다(로그에 찍혀 결과 묶음에 섞이는 길을 막는다)."""
+    gone = [k for k in os.environ if SECRET_ENV_RE.search(k)]
+    for k in gone:
+        os.environ.pop(k, None)
+    return sorted(gone)
+
+
+def sweep_leftovers(queue_name: str) -> list[int]:
+    """큐가 예외로 끝나 Job 정리를 못 했을 때: SIMAI_QUEUE_NAME 이 이 큐인 프로세스를 끝낸다(Linux /proc)."""
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return []
+    needle = f"SIMAI_QUEUE_NAME={queue_name}".encode()
+    killed = []
+    for d in proc.iterdir():
+        if not d.name.isdigit() or int(d.name) == os.getpid():
+            continue
+        try:
+            if needle in (d / "environ").read_bytes().split(b"\0"):
+                os.kill(int(d.name), signal.SIGKILL)
+                killed.append(int(d.name))
+        except (OSError, ProcessLookupError):
+            continue
+    return killed
+
+
+# ---------------------------------------------------------------- 큐 실행
+
+
+def load_gpu_queue():
+    if str(QUEUE_DIR) not in sys.path:
+        sys.path.insert(0, str(QUEUE_DIR))
+    import gpu_queue  # noqa: PLC0415 - ai/experiments/gpu_queue (S15P31A101-36)
+
+    return gpu_queue
+
+
+def run_queue(gq, doc: dict, job_file: Path, state_root: Path, deadline: float, outcome: dict) -> int:
+    """gpu_queue.Queue 를 이 프로세스에서 돌린다. 전체 시간 상한이 되면 queue.stop 을 세워 우아하게 멈춘다."""
+    try:
+        gq.load_job_file(job_file)
+    except gq.JobFileError as e:
+        log(f"Job 파일 오류: {e}")
+        return EXIT_BAD_JOBS
+    repo = REPO if (REPO / ".git").exists() else None
+    queue = gq.Queue(doc, job_file, state_root, repo, REPO / "contracts")
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        outcome["deadline_hit"] = True
+        log("전체 시간 상한이 이미 지나 큐를 시작하지 않음")
+        return EXIT_DEADLINE
+
+    def on_deadline() -> None:
+        outcome["deadline_hit"] = True
+        log("전체 시간 상한 도달 → 도는 항목을 끝내고 멈춘다")
+        queue.stop.set()
+
+    timer = threading.Timer(remaining, on_deadline)
+    timer.daemon = True
+    timer.start()
+    try:
+        code = queue.run([], False)
+    finally:
+        timer.cancel()
+    if code == EXIT_SIGNAL and outcome.get("deadline_hit"):
+        return EXIT_DEADLINE
+    return code
+
+
+def live_reason(lay: Layout) -> str | None:
+    """지금 LIVE 관제 중인가: 이 볼륨의 Tier 0 표시 파일(30 s 안에 갱신)이나 services.tier0 프로세스(gpu_queue.LiveGuard)."""
+    gq = load_gpu_queue()
+    guard = gq.LiveGuard({"marker_files": [str(lay.simai / "state" / "tier0.live")], "marker_max_age_s": 30},
+                         REPO, lambda _msg: None)
+    return guard.reason()
+
+
+def exp_job_doc(path: Path, lay: Layout) -> dict:
+    """g 항목: 사용자가 준 EXP Job 파일. LIVE 보호를 강제로 켜고(on_live=stop), 죽은 Tier 0 의 표시 파일은 30 s 뒤 무시.
+    표시 파일 경로는 이 세션의 볼륨 기준으로 적는다(gpu_queue 기본값은 import 때의 SIMAI_ROOT 라 드라이런과 다를 수 있다)."""
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    guard = doc.setdefault("queue", {}).setdefault("live_guard", {})
+    guard["enabled"] = True
+    guard["on_live"] = "stop"
+    guard.setdefault("marker_max_age_s", 30)
+    guard.setdefault("marker_files", [str(lay.simai / "state" / "tier0.live")])
+    return doc
+
+
+# ---------------------------------------------------------------- 결과 묶음
+
+
+def is_secret(path: Path, rel: str) -> str | None:
+    parts = Path(rel).parts
+    if PRIVATE_DIR in parts:
+        return "비공개 폴더"
+    name = path.name.lower()
+    for pat in SECRET_NAMES:
+        if fnmatch.fnmatch(name, pat):
+            return f"이름 {pat}"
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8 << 20)
+    except OSError as e:
+        return f"읽지 못함 {type(e).__name__}"
+    if SECRET_RE.search(head):
+        return "내용에 비밀로 보이는 값"
+    return None
+
+
+def collect(sources: list[tuple[Path, str]], max_mb: float) -> tuple[list[tuple[Path, str]], list[dict]]:
+    """묶을 파일과 뺀 파일(이유). 심볼릭 링크는 따라가지 않고 뺀다(비공개 폴더로 가는 링크 차단)."""
+    keep, dropped = [], []
+    for base, prefix in sources:
+        if not base.exists():
+            continue
+        files = [base] if base.is_file() else sorted(base.rglob("*"))
+        for p in files:
+            rel = f"{prefix}/{p.relative_to(base).as_posix()}" if base.is_dir() else prefix
+            if p.is_symlink():
+                dropped.append({"path": rel, "reason": "심볼릭 링크"})
+                continue
+            if not p.is_file():
+                continue
+            if PRIVATE_DIR in p.resolve().parts:
+                dropped.append({"path": rel, "reason": "비공개 폴더"})
+                continue
+            why = is_secret(p, rel)
+            if why is None and p.stat().st_size > max_mb * 1e6:
+                why = f"{max_mb:.0f} MB 초과"
+            if why:
+                dropped.append({"path": rel, "reason": why})
+                continue
+            keep.append((p, rel))
+    return keep, dropped
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return "sha256:" + h.hexdigest()
+
+
+def make_bundle(lay: Layout, summary: dict, max_mb: float) -> tuple[Path | None, list[str]]:
+    """결과 묶음. 볼륨에 못 쓰면 컨테이너 임시 폴더로 물러선다. (경로, 경고)."""
+    warnings: list[str] = []
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    sources = [(lay.queue_state / lay.queue_name, "queue"), (lay.session_dir / "jobs.json", "jobs.json")]
+    exp = lay.queue_state / f"{lay.queue_name}-exp"
+    if exp.is_dir():
+        sources.append((exp, "queue-exp"))
+    keep, dropped = collect(sources, max_mb)
+    manifest = {"session": lay.session, "created_at": now_ms(), "files": [], "excluded": dropped}
+    for p, rel in keep:
+        try:
+            manifest["files"].append({"path": rel, "bytes": p.stat().st_size, "sha256": sha256_file(p)})
+        except OSError as e:
+            dropped.append({"path": rel, "reason": f"읽지 못함 {type(e).__name__}"})
+    keep = [(p, rel) for p, rel in keep if any(f["path"] == rel for f in manifest["files"])]
+    summary_bytes = (json.dumps(summary, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    manifest_bytes = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    for target_dir in (lay.session_dir, Path(tempfile.gettempdir()) / "simai-session1"):
+        out = target_dir / f"session1-{lay.session}-{stamp}.tar.gz"
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(out, "w:gz") as tar:
+                for name, data in (("session.json", summary_bytes), ("bundle-manifest.json", manifest_bytes)):
+                    info = tarfile.TarInfo(name)
+                    info.size, info.mtime = len(data), int(time.time())
+                    tar.addfile(info, io.BytesIO(data))
+                for p, rel in keep:
+                    tar.add(p, arcname=rel, recursive=False)
+            (target_dir / "session.json").write_bytes(summary_bytes)
+            (target_dir / "bundle-manifest.json").write_bytes(manifest_bytes)
+            if target_dir != lay.session_dir:
+                warnings.append(f"볼륨({lay.session_dir})에 묶음을 쓰지 못해 컨테이너 임시 폴더에 썼다")
+            return out, warnings
+        except OSError as e:
+            warnings.append(f"묶음을 {out} 에 쓰지 못함: {type(e).__name__}: {e}")
+            try:
+                out.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return None, warnings
+
+
+def scp_command(bundle: Path) -> list[str]:
+    ip = os.environ.get("RUNPOD_PUBLIC_IP") or "<Pod 공개 IP>"
+    port = os.environ.get("RUNPOD_TCP_PORT_22") or "<22 매핑 포트>"
+    dest = f"ai/experiments/runs/gpu-session1/{bundle.parent.name}/"
+    return [
+        f"mkdir -p {dest}",
+        f"scp -P {port} -i ~/.ssh/<키> root@{ip}:{bundle.as_posix()} {dest}",
+        f"tar -xzf {dest}{bundle.name} -C {dest}",
+    ]
+
+
+# ---------------------------------------------------------------- 명령
+
+
+def cmd_plan(args, lay: Layout) -> int:
+    doc, held = build_jobs(lay, git_stamp())
+    print(plan_table(lay, doc, held))
+    if args.out:
+        args.out.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"Job 파일: {args.out}")
+    return EXIT_OK
+
+
+def cmd_prepare(args) -> int:
+    git = git_stamp()
+    if not git or not (REPO / ".git").exists():
+        print("prepare 는 노트북 저장소에서 실행한다", file=sys.stderr)
+        return EXIT_BAD_JOBS
+    if git["dirty_worktree"]:
+        print("경고: 커밋되지 않은 변경은 사본에 들어가지 않는다(git archive HEAD). Run 기록 git_commit 은 HEAD 다", file=sys.stderr)
+        git["dirty_worktree"] = False  # 사본은 HEAD 그대로다
+    args.out.mkdir(parents=True, exist_ok=True)
+    tar = args.out / "simai-repo.tar"
+    r = subprocess.run(["git", "-C", str(REPO), "archive", "--format=tar", "-o", str(tar), "HEAD"])
+    if r.returncode != 0:
+        return EXIT_BAD_JOBS
+    (args.out / STAMP_FILE).write_text(json.dumps(git, ensure_ascii=False) + "\n", encoding="utf-8")
+    dest = "/workspace/simai/setup/session1/repo"
+    print(f"사본 {tar} ({tar.stat().st_size / 1e6:.1f} MB), git {git['commit'][:12]} ({git['branch']})")
+    print("Pod 로 올리기 (노트북에서, 포트·IP 는 RunPod 콘솔 Connect 의 'SSH over exposed TCP'):")
+    print(f"  scp -P <포트> {tar.as_posix()} {(args.out / STAMP_FILE).as_posix()} root@<IP>:/workspace/simai/setup/session1/")
+    print(f"  ssh -p <포트> root@<IP> 'rm -rf {dest} && mkdir -p {dest} && tar -xf /workspace/simai/setup/session1/simai-repo.tar"
+          f" -C {dest} && cp /workspace/simai/setup/session1/{STAMP_FILE} {dest}/'")
+    print(f"  ssh -p <포트> root@<IP> 'cd {dest} && nohup python deploy/scripts/gpu_session1.py run > ../session1.log 2>&1 &'")
+    return EXIT_OK
+
+
+def cmd_run(args, lay: Layout) -> int:
+    started = now_ms()
+    t0 = time.monotonic()
+    deadline = t0 + args.max_total_s
+    outcome: dict = {"deadline_hit": False}
+    summary: dict = {"session": lay.session, "mode": lay.mode, "root": str(lay.root), "queue": lay.queue_name,
+                     "started_at": started, "max_total_s": args.max_total_s, "jira": "S15P31A101-183"}
+    gone = scrub_env()
+    if gone:
+        log(f"Job 에 넘기지 않는 비밀 환경 변수: {', '.join(gone)}")
+    summary["scrubbed_env"] = gone
+    code = EXIT_OK
+    try:
+        errs = preflight([lay.queue_state, lay.session_dir], args.min_free_mb)
+        live = None if args.allow_live else live_reason(lay)
+        if errs:
+            for e in errs:
+                log(f"사전 점검 실패: {e}")
+            summary["preflight_errors"] = errs
+            code = EXIT_PREFLIGHT
+        elif live:
+            # 세션 항목은 GPU 를 크게 쓰고(엔진 빌드) 시험용 Tier 0 를 띄웠다 죽인다. LIVE 관제 중이면 시작하지 않는다(Tier 0 우선)
+            log(f"LIVE 관제 중이라 세션을 시작하지 않음: {live}")
+            summary["live"] = live
+            code = EXIT_LIVE
+        else:
+            git = git_stamp()
+            doc, held = build_jobs(lay, git)
+            summary["placeholders"] = [{"key": h["key"], "name": h["name"], "jira": h["jira"],
+                                        "why": h.get("placeholder") or h.get("skip_reason")} for h in held]
+            job_file = lay.session_dir / "jobs.json"
+            job_file.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            print(plan_table(lay, doc, held), flush=True)
+            gq = load_gpu_queue()
+            code = run_queue(gq, doc, job_file, lay.queue_state, deadline, outcome)
+            summary["queue_exit"] = code
+            if args.exp_jobs and code in (EXIT_OK, EXIT_FAILED):
+                exp_doc = exp_job_doc(args.exp_jobs, lay)
+                exp_doc["queue"]["name"] = f"{lay.queue_name}-exp"
+                if git:
+                    exp_doc.setdefault("git", git)
+                exp_file = lay.session_dir / "exp-jobs.json"
+                exp_file.write_text(json.dumps(exp_doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                log(f"g: EXP Job 파일 {args.exp_jobs} 를 LIVE 보호를 켠 큐로 돈다")
+                exp_code = run_queue(gq, exp_doc, exp_file, lay.queue_state, deadline, outcome)
+                summary["exp_queue_exit"] = exp_code
+                if exp_code != EXIT_OK and code == EXIT_OK:
+                    code = exp_code  # 검증 큐가 실패했으면 그 코드(1)를 앞세운다
+            elif args.exp_jobs:
+                summary["exp_queue_exit"] = "skipped (검증 큐가 끝까지 돌지 않음)"
+    except KeyboardInterrupt:
+        log("Ctrl-C (큐 시작 전·후) → 결과 묶음만 만든다")
+        code = EXIT_SIGNAL
+    except Exception as e:  # noqa: BLE001 - 큐 오류여도 결과 묶음과 scp 명령은 남긴다
+        log(f"큐 오류: {type(e).__name__}: {e}")
+        summary["crash"] = f"{type(e).__name__}: {e}"
+        code = EXIT_CRASH
+    finally:
+        killed = sweep_leftovers(lay.queue_name) + sweep_leftovers(f"{lay.queue_name}-exp")
+        if killed:
+            log(f"남은 Job 프로세스 정리: {killed}")
+            summary["swept_pids"] = killed
+    summary |= {"finished_at": now_ms(), "elapsed_s": round(time.monotonic() - t0, 1),
+                "deadline_hit": outcome["deadline_hit"], "exit": code, "jobs": job_states(lay)}
+    bundle, warnings = make_bundle(lay, summary, args.max_file_mb)
+    for w in warnings:
+        log(f"경고: {w}")
+    if bundle is None:
+        log("결과 묶음을 만들지 못했다. 큐 폴더를 직접 가져온다: " + str(lay.queue_state / lay.queue_name))
+        return code if code != EXIT_OK else EXIT_BUNDLE
+    log(f"결과 묶음: {bundle}")
+    print("\n노트북에서 가져오기:\n  " + "\n  ".join(scp_command(bundle)), flush=True)
+    print("끝나면 RunPod 콘솔에서 Pod 를 Stop 한다(GPU 과금). LIVE 관제 중이면 Stop 하지 않는다.", flush=True)
+    return code
+
+
+def job_states(lay: Layout) -> dict:
+    out = {}
+    for name in (lay.queue_name, f"{lay.queue_name}-exp"):
+        try:
+            state = json.loads((lay.queue_state / name / "state.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for job, st in state.get("jobs", {}).items():
+            out[job] = {k: st.get(k) for k in ("status", "attempts", "exit_code", "reason", "run_id")}
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):  # pytest 캡처 스트림에는 없다
+            stream.reconfigure(encoding="utf-8", errors="replace")
+    ap = argparse.ArgumentParser(description="GPU 1차 세션 검증 큐 (S15P31A101-183)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def common(p):
+        p.add_argument("--mode", choices=("pod", "dryrun"), default="pod")
+        p.add_argument("--root", type=Path, default=None, help="볼륨 마운트 경로 (pod 기본 /workspace, 드라이런은 로컬 폴더)")
+        p.add_argument("--session", default=datetime.now(timezone.utc).strftime("%Y%m%d"),
+                       help="세션 이름 (기본 UTC 날짜). 같은 이름으로 다시 돌리면 끝난 항목은 건너뛴다")
+        p.add_argument("--python", default=None, help="Job 이 쓸 Python (기본: 지금 Python)")
+
+    p_plan = sub.add_parser("plan", help="Job 파일·예상 시간 표")
+    common(p_plan)
+    p_plan.add_argument("-o", "--out", type=Path)
+    p_run = sub.add_parser("run", help="큐 실행 → 결과 묶음 → scp 명령")
+    common(p_run)
+    p_run.add_argument("--max-total-s", type=float, default=None, help="전체 시간 상한 (기본 pod 9000 s, 드라이런 1200 s)")
+    p_run.add_argument("--min-free-mb", type=float, default=None, help="결과 폴더 남은 용량 하한 (기본 pod 2048, 드라이런 50)")
+    p_run.add_argument("--max-file-mb", type=float, default=50, help="묶음에 넣을 파일 하나의 최대 크기")
+    p_run.add_argument("--allow-live", action="store_true", help="LIVE 표시 파일·Tier 0 프로세스가 있어도 시작한다(쓰지 않는다)")
+    p_run.add_argument("--exp-jobs", type=Path, default=None, help="g 항목: EXP Job 파일(gpu_queue 형식). LIVE 보호를 켜고 마지막에")
+    p_prep = sub.add_parser("prepare", help="노트북: 저장소 사본(git archive)과 git 정보를 만든다")
+    p_prep.add_argument("--out", type=Path, required=True)
+    args = ap.parse_args(argv)
+    if args.cmd == "prepare":
+        return cmd_prepare(args)
+    lay = Layout(args.mode, args.root, args.session, args.python)
+    if args.cmd == "plan":
+        return cmd_plan(args, lay)
+    if args.max_total_s is None:
+        args.max_total_s = 9000 if lay.mode == "pod" else 1200
+    if args.min_free_mb is None:
+        args.min_free_mb = 2048 if lay.mode == "pod" else 50
+    return cmd_run(args, lay)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -8,6 +8,7 @@
 !contracts/**
 !deploy/base/simai-start.sh
 !deploy/tier0/entrypoint.sh
+!deploy/scripts/wait_tier0_ready.py
 # 허용한 폴더 안에서도 다시 뺀다
 **/__pycache__
 **/*.py[cod]
