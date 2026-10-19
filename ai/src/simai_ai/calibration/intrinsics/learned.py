@@ -1,5 +1,8 @@
 """학습 모델 백엔드: GeoCalib(ECCV 2024), AnyCalib(ICCV 2025) 단일 영상 내부 파라미터 추정.
 
+AnyCalib(`anycalib_dist`, `radial:2`)이 기본 경로, GeoCalib(`distorted`, `radial`)이 예비다. 순서와 대체 규칙은
+`chain.IntrinsicsBackendChain` 이 정한다(사용 불가 → 다음 백엔드, 결과가 FAILED 면 대체하지 않고 비움).
+
 선택 의존성이다. torch 와 각 패키지(geocalib, anycalib)가 없어도 이 모듈은 import 되고, 추정기를 처음 쓸 때
 설치 방법을 적은 `LearnedBackendUnavailable`(ImportError) 를 낸다. 두 패키지는 PyPI 배포가 없어 git 으로 설치한다
 (pyproject 에 넣지 않았다. 후보 비교는 docs/design/markerless-intrinsics.md).
@@ -40,6 +43,7 @@ from simai_ai.calibration.intrinsics.estimate import (
     IntrinsicsEstimationError,
     IntrinsicsUncertainty,
     ModelRef,
+    WeightsMismatchError,
     WeightsRef,
     radial_pixel_from_opencv,
 )
@@ -67,6 +71,18 @@ ANYCALIB_CAMERA_IDS = ("pinhole", "simple_pinhole", "radial:1", "radial:2", "sim
 
 class LearnedBackendUnavailable(ImportError):
     """학습 모델 백엔드의 선택 의존성이 설치돼 있지 않다."""
+
+
+def _verified_weights(weights: WeightsRef) -> Any:
+    """가중치 파일 확인. 파일 없음·해시 불일치는 사용 불가(`LearnedBackendUnavailable`)로 바꾼다.
+
+    사용 불가로 보는 경계는 이 로딩 단계뿐이다. 모델을 읽은 뒤 추론에서 올라오는 FileNotFoundError 등은 추론 실패다
+    (`chain` 이 그 카메라를 FAILED 로 비우고 다른 방법으로 대체하지 않는다).
+    """
+    try:
+        return weights.verify()
+    except (FileNotFoundError, WeightsMismatchError) as e:
+        raise LearnedBackendUnavailable(f"가중치를 쓸 수 없다({type(e).__name__}: {e})") from e
 
 
 def _require(module: str, hint: str) -> Any:
@@ -193,7 +209,7 @@ class GeoCalibEstimator:
             return
         torch = _require("torch", GEOCALIB_INSTALL_HINT)
         geocalib = _require("geocalib", GEOCALIB_INSTALL_HINT)
-        path = self.weights.verify()
+        path = _verified_weights(self.weights)
         self._model = geocalib.GeoCalib(weights=str(path)).to(self.device)
         self._torch = torch
 
@@ -231,7 +247,11 @@ class GeoCalibEstimator:
 
 
 class AnyCalibEstimator:
-    """AnyCalib 단일 영상 추정기 (`IntrinsicsEstimator`). model_id 기본은 anycalib_dist(왜곡 영상 학습)."""
+    """AnyCalib 단일 영상 추정기 (`IntrinsicsEstimator`). 내부 파라미터 추정의 기본 백엔드다(명세 4.3, `chain`).
+
+    model_id 기본은 anycalib_dist(왜곡 영상 학습), cam_id 기본은 radial:2(fx, fy, cx, cy, k1, k2: OpenCV [k1, k2] 와
+    같은 식. 주점도 추정한다).
+    """
 
     method = METHOD_ANYCALIB
 
@@ -240,7 +260,7 @@ class AnyCalibEstimator:
         weights: WeightsRef,
         *,
         model_id: str = "anycalib_dist",
-        cam_id: str = "simple_radial:2",
+        cam_id: str = "radial:2",
         device: str = "cpu",
         channel_order: str = "BGR",
         package_version: str = "1.0",
@@ -261,7 +281,7 @@ class AnyCalibEstimator:
             return
         torch = _require("torch", ANYCALIB_INSTALL_HINT)
         anycalib = _require("anycalib", ANYCALIB_INSTALL_HINT)
-        path = self.weights.verify()
+        path = _verified_weights(self.weights)
         model = anycalib.AnyCalib(model_id=None)
         model.load_state_dict(torch.load(str(path), map_location="cpu"), strict=True)
         self._model = model.eval().to(self.device)

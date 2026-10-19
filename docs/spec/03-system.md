@@ -238,7 +238,7 @@ flowchart TB
 | RunPod 분석 | 마스크 | YOLO26-seg, 새 물체·실측 정물은 YOLOE-26 | 기본안 |
 | RunPod 분석 | 정적 3D | MapAnything Native, trimesh로 glTF (EXP-01) | 기본안·선행 실험 |
 | RunPod 분석 | 인체 메시·외형 | Fast SAM 3D Body, MHR 메시, 연속 관측 기반 외형 갱신 (EXP-02) | 실험 후보·확장 채택 별도 승인 |
-| RunPod 분석 | 자동 보정 | 무마커 내부 파라미터 추정(교실 직선 고전 기준 plumb-line·소실점이 기본, AnyCalib·GeoCalib 은 비교·대체, 부록 B), 사람 keypoint 번들 조정(HumanCalib 원리를 따른 자체 구현, 4.3), OpenCV solvePnP, SciPy least_squares | 기본안 |
+| RunPod 분석 | 자동 보정 | 무마커 내부 파라미터 추정(AnyCalib 기본, GeoCalib 예비, 교실 직선 고전 기준 plumb-line·소실점은 가중치 없는 예비·직선성 확인, 4.3·부록 B), 사람 keypoint 번들 조정(HumanCalib 원리를 따른 자체 구현, 4.3), OpenCV solvePnP, SciPy least_squares | 기본안 |
 | RunPod 분석 | 작업 워커(I5) | Python, EC2 작업 가져가기(HTTPS long-poll 기본, WebSocket 대안, 12.5) | 기본안 |
 | EC2 | 백엔드 | Java 21, Spring Boot 4(`server/`) | 확정 |
 | EC2 | 실시간·API | Spring WebSocket(STOMP), Spring Web(REST) | 기본안 |

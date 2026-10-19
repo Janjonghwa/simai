@@ -11,10 +11,22 @@
 - `learned`: GeoCalib·AnyCalib 백엔드(선택 의존성, 없으면 쓸 때 `LearnedBackendUnavailable`)
 - `shared`: 같은 렌즈 4대 공유(강건 합치기, 카메라별 편차, 이상치 표시)
 - `record`: 추정 기록(input_provenance 포함)과 번들 조정 초기값 넘김
+- `chain`: 백엔드 순서. 기본 AnyCalib → 예비 GeoCalib → 가중치 없이 도는 고전 기준, 학습 결과의 직선성 확인
+- `capture`: 카메라 RTSP·영상 파일에서 프레임을 메모리로만 받아 시간 중앙값 배경(디스크에 쓰지 않음)
+- `runner`·`cli`: 여러 카메라 수집 → 추정 → 같은 렌즈 공유 → 기록 JSON (`python -m simai_ai.calibration.intrinsics.cli`)
 
 이 단계 결과는 보정 버전이 아니며 위험 판정에 직접 쓰이지 않는다. 결과는 SIM 영상이면 상한(is_upper_bound)이다.
 """
 
+from simai_ai.calibration.intrinsics.capture import CameraInput, CaptureConfig, RtspCredentials, capture_background
+from simai_ai.calibration.intrinsics.chain import (
+    DEFAULT_BACKEND_ORDER,
+    METHOD_NONE,
+    ChainResult,
+    IntrinsicsBackendChain,
+    StraightnessCheckConfig,
+    build_default_chain,
+)
 from simai_ai.calibration.intrinsics.estimate import (
     METHOD_ANYCALIB,
     METHOD_GEOCALIB,
@@ -43,6 +55,7 @@ from simai_ai.calibration.intrinsics.record import (
     build_intrinsics_record,
     to_bundle_adjustment_init,
 )
+from simai_ai.calibration.intrinsics.runner import IntrinsicsRun, run_intrinsics
 from simai_ai.calibration.intrinsics.shared import (
     CameraDeviation,
     SharedLensConfig,
@@ -51,8 +64,10 @@ from simai_ai.calibration.intrinsics.shared import (
 )
 
 __all__ = [
+    "DEFAULT_BACKEND_ORDER",
     "METHOD_ANYCALIB",
     "METHOD_GEOCALIB",
+    "METHOD_NONE",
     "METHOD_PLUMB_LINE_VP",
     "METHOD_SHARED_LENS",
     "STATUS_FAILED",
@@ -62,25 +77,35 @@ __all__ = [
     "AnyCalibEstimator",
     "BundleAdjustmentInit",
     "CameraDeviation",
+    "CameraInput",
     "CameraIntrinsicsInit",
+    "CaptureConfig",
+    "ChainResult",
     "EdgeChainConfig",
     "GeoCalibEstimator",
+    "IntrinsicsBackendChain",
     "IntrinsicsEstimate",
     "IntrinsicsEstimationError",
     "IntrinsicsEstimator",
+    "IntrinsicsRun",
     "IntrinsicsUncertainty",
     "LearnedBackendUnavailable",
     "ModelDiscrepancy",
     "ModelRef",
     "PlumbLineConfig",
     "PlumbLineVPEstimator",
+    "RtspCredentials",
     "SharedLensConfig",
     "SharedLensResult",
+    "StraightnessCheckConfig",
     "WeightsMismatchError",
     "WeightsRef",
+    "build_default_chain",
     "build_intrinsics_record",
+    "capture_background",
     "combine_shared_lens",
     "detect_edge_chains",
     "model_discrepancy_px",
+    "run_intrinsics",
     "to_bundle_adjustment_init",
 ]

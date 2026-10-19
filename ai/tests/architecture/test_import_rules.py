@@ -67,6 +67,8 @@ def test_fake_tree_without_violation_passes(tmp_path):
         pytest.param("src/simai_ai/scene/x.py", "import experiments.hmr.bench\n", id="src-imports-experiments"),
         pytest.param("services/tier0/app.py", "from experiments.hmr import bench\n", id="services-imports-experiments"),
         pytest.param("src/simai_ai/io/x.py", "import services.tier0\n", id="src-imports-services"),
+        pytest.param("src/simai_ai/calibration/x.py", "from simai_recorder import config\n", id="src-imports-gateway"),
+        pytest.param("services/tier0/app.py", "import simai_relay.config\n", id="services-imports-gateway"),
     ],
 )
 def test_violation_fails(tmp_path, rel, code):
