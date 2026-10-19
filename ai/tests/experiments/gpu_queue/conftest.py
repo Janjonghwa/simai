@@ -167,4 +167,5 @@ QueueEnv.job = staticmethod(job)
 QueueEnv.pid_alive = staticmethod(pid_alive)
 QueueEnv.wait_dead = staticmethod(wait_dead)
 QueueEnv.FAKE_SMI = FAKE_SMI
+QueueEnv.QUEUE_DIR = QUEUE.parent
 QueueEnv.REPO = REPO

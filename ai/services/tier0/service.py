@@ -4,6 +4,8 @@
 
 기동(start, 한 스레드에서 차례로):
  1. 상태 디렉터리·표시 파일(state/tier0.live): 이전 실행이 남긴 표시 파일이 있으면 정상 종료하지 않은 것으로 로그에 남긴다.
+    그다음 표시 파일을 phase=starting 으로 바로 쓰고(GPU 실험 큐·분석 워커가 기동 중에도 LIVE 로 본다) GPU 메모리를 먼저
+    잡는다(GpuReservation, 명세 3.2). 기동이 실패하면 이 표시 파일을 지운다(이전 실행이 남긴 것이었으면 start_failed 로 남긴다).
  2. 보정(CalibrationProvider) → CameraRig, 시계(Tier0Clock → DecisionClock: 판정 시각은 앞으로만 간다).
  3. 저널을 쓰기 모드로 열고 recover(체크포인트 → 저널 재적용 → 활성 이벤트 UNVERIFIABLE 복원, 저널에 기록). 쓰기 스레드·
     체크포인트·I0·I1 어느 것도 시작하기 전이다(단일 작성자, 복원 전 현장 경보 목록 금지).
@@ -56,6 +58,9 @@ from simai_ai.config import BundleArchive, BundleRejected, BundleVerifier, Confi
 from simai_ai.eventlog import ACKED_NAME, AckedOffsetStore, EventJournal, JournalWriter, Outbox, TransportError
 from simai_ai.geometry.rig import CameraRig
 from simai_ai.io import DecoderUnavailable, FreshnessConfig, I0Ingest, NvdecDecoder, PyAvDecoder
+from simai_ai.io.freshness import SkipReason
+from simai_ai.gpu.admission import RUNNING, STARTING, LoadWindow, marker_section
+from simai_ai.gpu.reserve import GpuReservation
 from simai_ai.providers.files import FileCalibrationProvider
 from simai_ai.providers.provenance import build_input_provenance
 from simai_ai.recovery import Checkpointer, CheckpointStore, RecoveryHealthGate, RecoveryResult, recover
@@ -73,6 +78,7 @@ log = logging.getLogger("services.tier0")
 HOUSEKEEPING_S = 0.1
 STATUS_EVERY_S = 1.0
 MARKER_EVERY_S = 5.0
+QUEUE_WAIT_EXCEEDED = str(SkipReason.QUEUE_WAIT_EXCEEDED)  # LIVE 입력 추론 대기 상한 초과(지연 표본에 싣는다)
 
 
 class Tier0StartError(RuntimeError):
@@ -249,6 +255,7 @@ class Tier0Service:
         journal_fsync: Callable[[int], None] = os.fsync,
         detector_factory: Callable[[], PoseDetector] | None = None,
         tracker_backend_factory: BackendFactory | None = None,
+        gpu_torch: Any | None = None,
     ) -> None:
         """detector_factory·tracker_backend_factory: LIVE 검출기·Local Tracker 백엔드를 바꿔 끼운다(ultralytics 가 없는
         노트북 시험의 대역). 없으면 설정의 엔진·가중치와 ultralytics 추적기를 쓴다."""
@@ -257,6 +264,11 @@ class Tier0Service:
         self._tracker_backend_factory = tracker_backend_factory
         self.live_input: LiveInput | None = None
         self._clock_unknown = False  # LIVE 인데 시계 교환 채널이 없다(F1): SAME_CLOCK 으로 보지 않는다
+        # GPU 공유(명세 3.2, simai_ai.gpu): 선확보와 분석 워커 접수 문에 싣는 지연 표본. gpu_torch 는 시험용 가짜 torch
+        self.gpu = GpuReservation(settings.gpu_reserve_mb, device=settings.gpu_device, torch_module=gpu_torch)
+        self.load = LoadWindow(settings.lag_budget_ms)
+        self._qwe_total = 0  # LIVE 입력의 QUEUE_WAIT_EXCEEDED 누계(직전 지연 표본 때)
+        self.marker_error: str | None = None  # 표시 파일 쓰기 실패(분석 워커·GPU 큐는 표시 파일이 없으면 모름으로 본다)
         self._journal_fsync = journal_fsync
         self._mono_ns = mono_ns
         self._wall_ms = wall_ms
@@ -293,6 +305,16 @@ class Tier0Service:
         if s.live_marker.exists():
             self.previous_unclean = True
             log.warning("이전 Tier 0 실행이 정상 종료하지 않았다(%s 가 남아 있다). 저널·체크포인트로 복구한다", s.live_marker)
+        self._write_phase_marker(STARTING)
+        try:
+            self.gpu.acquire()  # 실패해도 예외를 내지 않는다(상태로 남김). 판정이 먼저다
+            self._start()
+        except BaseException:
+            self._start_failed_marker()
+            raise
+
+    def _start(self) -> None:
+        s = self.settings
         self.tier0_clock = SharedTier0Clock(self._mono_ns, self._wall_ms)
         self.clock = SharedDecisionClock(self.tier0_clock)
         now = self.clock.now_ms()
@@ -458,7 +480,9 @@ class Tier0Service:
 
     def _abort_start(self) -> None:
         """기동이 중간에 실패했다: 이미 시작한 스레드를 멈추고 저널을 닫는다. stop 과 같은 deadline 원칙(디스크가 멈춰도
-        기다리지 않는다)을 따르고, 마지막 체크포인트는 쓰지 않는다(시작하지 못한 상태다)."""
+        기다리지 않는다)을 따르고, 마지막 체크포인트는 쓰지 않는다(시작하지 못한 상태다). 정리 주기를 멈춘 뒤라 표시 파일을
+        다시 쓰지 않으며, 표시 파일 정리는 이어서 start() 가 한다(_start_failed_marker: 이번 것은 지우고 이전 비정상 종료면
+        start_failed 로 남김)."""
         failures = self._shutdown(time.monotonic() + self.settings.drain_s, final_checkpoint=False)
         if failures:
             log.error("기동 실패 정리 중 끝나지 않은 단계: %s", failures)
@@ -720,6 +744,7 @@ class Tier0Service:
                 now = time.monotonic()
                 if now - last_status >= STATUS_EVERY_S:
                     last_status = now
+                    self._sample_load()
                     self.health.update_fps()
                     with self.judge_lock:
                         self.clips.poll()
@@ -785,20 +810,81 @@ class Tier0Service:
                 **self.live_input.status(), "detector": vars(self.perception.feed.stats).copy()},
             "ec2_connected": self._ec2_ok(),
             "laptop_connected": self.control is not None and self.control.connected,
+            "marker_error": self.marker_error,
         }
+
+    def _sample_load(self) -> None:
+        """분석 워커 접수 문의 지연 표본(simai_ai.gpu.admission): 보정 T_lag. 모르면(시계 차이 모름·프레임 없음) None.
+
+        LIVE 입력이면 추론 대기 상한을 넘겨 버린 프레임(I0Ingest SKIPPED_BY_POLICY QUEUE_WAIT_EXCEEDED, 카메라 합)의 직전 표본
+        뒤 증가분도 싣는다(명세 3.2 queue_wait_ms). 그 누계를 읽지 못하면 지연도 모름으로 센다. SIM 은 대기열이 없어 싣지 않는다."""
+        try:
+            lag = self.health.evaluate().report.lag_ms
+        except Exception:  # noqa: BLE001 - 표본을 못 만들면 모름으로 센다(분석 워커는 받지 않는다)
+            log.exception("지연 표본 실패")
+            lag = None
+        qwe: int | None = None
+        live = self.live_input
+        if live is not None:
+            try:
+                total = sum(int(live.ingest.log.counts(cam)["skipped_by_reason"].get(QUEUE_WAIT_EXCEEDED, 0))  # type: ignore[union-attr]
+                            for cam in live.camera_ids)
+            except Exception:  # noqa: BLE001
+                log.exception("추론 대기 상한 초과 누계를 읽지 못했다(지연 표본을 모름으로 센다)")
+                lag = None
+            else:
+                qwe = max(0, total - self._qwe_total)
+                self._qwe_total = total
+        self.load.add(lag, queue_wait_exceeded=qwe)
+
+    def _gpu_section(self, phase: str) -> dict[str, Any]:
+        load = self.load.take() if phase == RUNNING else None
+        return marker_section(phase=phase, reserve=self.gpu.status(), load=load, written_at_ms=self._wall_ms(),
+                              pid=os.getpid())
+
+    def _write_phase_marker(self, phase: str) -> None:
+        """기동 중·기동 실패 표시 파일(status 없이). 쓰지 못하면 로그만 남긴다."""
+        doc = {"started": False, "engine": self.settings.engine_path, "previous_unclean": self.previous_unclean,
+               "gpu_priority": self._gpu_section(phase)}
+        self._put_marker(doc)
+
+    def _put_marker(self, doc: dict[str, Any]) -> None:
+        """표시 파일 원자적 쓰기. 실패는 판정을 멈추지 않고 marker_error·로그(바뀔 때만)·status 로 알린다."""
+        try:
+            _atomic_write(self.settings.live_marker, json.dumps(doc, ensure_ascii=False, default=str).encode("utf-8"))
+        except OSError as e:
+            error = f"{type(e).__name__}: {e}"
+            if error != self.marker_error:
+                log.error("표시 파일을 쓰지 못했다: %s (%s). 분석 워커는 새 작업을 받지 않는다(모름)", self.settings.live_marker, error)
+            self.marker_error = error
+            return
+        if self.marker_error is not None:
+            log.info("해소: 표시 파일 쓰기 (%s)", self.settings.live_marker)
+        self.marker_error = None
+
+    def _start_failed_marker(self) -> None:
+        """기동 실패: 이번에 만든 표시 파일은 지운다. 이전 실행이 정상 종료하지 않았으면 그 사실을 남긴다(다음 시작이 안다)."""
+        if self.previous_unclean:
+            self._write_phase_marker("start_failed")
+            return
+        try:
+            self.settings.live_marker.unlink(missing_ok=True)
+        except OSError:
+            log.exception("표시 파일을 지우지 못했다")
 
     def _write_marker(self, shutdown_failures: list[str] | None = None) -> None:
         doc: dict[str, Any] = {"started": self.started, "engine": self.settings.engine_path}
         if shutdown_failures is not None:
             doc["shutdown_failed"] = shutdown_failures
         try:
+            doc["gpu_priority"] = self._gpu_section(RUNNING if shutdown_failures is None else "shutdown_failed")
+        except Exception as e:  # noqa: BLE001 - 지연 신호를 못 만들어도 표시 파일은 남긴다(분석 워커는 칸이 없으면 받지 않는다)
+            doc["gpu_priority_error"] = repr(e)
+        try:
             doc["status"] = self.status()
         except Exception as e:  # noqa: BLE001 - 일부 객체가 없거나 멈춰도 표시 파일은 남긴다
             doc["status_error"] = repr(e)
-        try:
-            _atomic_write(self.settings.live_marker, json.dumps(doc, ensure_ascii=False, default=str).encode("utf-8"))
-        except OSError:
-            log.exception("표시 파일을 쓰지 못했다: %s", self.settings.live_marker)
+        self._put_marker(doc)
 
     # --- 종료 ------------------------------------------------------------------------
 

@@ -15,7 +15,10 @@
       "lifecycle": {"clear_hold_ms": 3000, "persistence": [2, 3], "resume_window_ms": 10000},
       "tick_ms": 100,                          판정 주기 (10 Hz, 명세 12.2 world_state)
       "checkpoint_interval_s": 1.0,            체크포인트 주기 (명세 3.2 초기값 1초)
-      "drain_s": 5.0                           종료 때 저널 쓰기·스레드 정리를 기다리는 상한
+      "drain_s": 5.0,                          종료 때 저널 쓰기·스레드 정리를 기다리는 상한
+      "gpu": {"reserve_mb": 8192, "device": 0, "lag_budget_ms": 600}
+                                               GPU 공유(명세 3.2, simai_ai.gpu): torch 선확보 크기(0 이면 끔, torch CUDA 가
+                                               없으면 건너뜀), 장치 번호, 분석 워커 접수 문에 싣는 지연 예산(6.6 capture_to_risk)
     }
 
 환경 변수:
@@ -27,6 +30,7 @@
     SIMAI_TIER0_IMGSZ                검출 입력 크기 (기본 1280, 엔진을 만든 값과 같아야 한다)
     SIMAI_TIER0_VIDEO_PORTS, RUNPOD_TCP_PORT_*, SIMAI_TIER0_VIDEO_LISTEN_HOST
                                      LIVE I0 영상 포트 (video_ingest.listen_specs_from_env). TLS·토큰은 제어 채널과 같은 값
+    SIMAI_TIER0_GPU_RESERVE_MB       GPU 선확보 크기 (설정 파일 gpu.reserve_mb 보다 우선, 0 이면 끔)
     SIMAI_EC2_I1_URL / SIMAI_EC2_BASE_URL (+ SIMAI_EC2_I1_PATH), SIMAI_TIER0_TOKEN, SIMAI_EC2_CA_FILE
                                      I1 접속 (i1_client.I1Settings). 둘 다 없으면 EC2 없이 돈다(오프라인, health EC2_LINK_LOST)
     SIMAI_TIER0_CONTROL_PORT         I0 제어 채널(wss) 대칭 매핑 요청 번호. 실제 포트는 RUNPOD_TCP_PORT_<요청 번호>.
@@ -105,6 +109,9 @@ class Tier0Settings:
     weights_path: str | None = None
     imgsz: int = 1280
     live: LiveInputSettings | None = None
+    gpu_reserve_mb: int = 8192  # G0 실측 전 초기값 (simai_ai.gpu.budget 예산표)
+    gpu_device: int = 0
+    lag_budget_ms: int = 600
     i1: I1Settings | None = None
     control: ControlSettings | None = None
     env: Mapping[str, str] = field(default_factory=dict, repr=False)
@@ -275,6 +282,14 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
     imgsz_raw = (env.get("SIMAI_TIER0_IMGSZ") or "1280").strip()
     if not imgsz_raw.isdigit() or int(imgsz_raw) < 32:
         raise Tier0ConfigError("SIMAI_TIER0_IMGSZ 는 32 이상 정수다")
+    gpu = doc.get("gpu") or {}
+    if not isinstance(gpu, dict):
+        raise Tier0ConfigError("gpu 는 객체다")
+    reserve_env = (env.get("SIMAI_TIER0_GPU_RESERVE_MB") or "").strip()
+    if reserve_env:
+        if not reserve_env.isdigit():
+            raise Tier0ConfigError("SIMAI_TIER0_GPU_RESERVE_MB 는 0 이상 정수다")
+        gpu = {**gpu, "reserve_mb": int(reserve_env)}
     return Tier0Settings(
         gateway_id=gateway_id,
         state_dir=state_dir,
@@ -293,6 +308,9 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         weights_path=weights,
         imgsz=int(imgsz_raw),
         live=live,
+        gpu_reserve_mb=_int(gpu, "reserve_mb", 8192),
+        gpu_device=_int(gpu, "device", 0),
+        lag_budget_ms=_int(gpu, "lag_budget_ms", 600, minimum=1),
         i1=_i1({**env, "SIMAI_TIER0_ID": gateway_id}),
         control=_control(env),
         env=env,
