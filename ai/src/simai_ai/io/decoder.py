@@ -1,7 +1,7 @@
 """디코더 인터페이스 (명세 5.1 프레임 최신성 정책: 디코딩과 추론 분리).
 
-디코더는 프레임 의존성 때문에 모든 압축 프레임을 받는다. 운영은 GPU 하드웨어 디코더(NVDEC)이고,
-시험은 GPU 없이 FakeDecoder 로 한다.
+디코더는 프레임 의존성 때문에 모든 압축 프레임을 받는다. 운영은 GPU 하드웨어 디코더(NVDEC)이고, 노트북은 CPU 디코딩이다
+(둘 다 pyav_decoder.PyAvDecoder, NVDEC 은 hwaccel cuda). 단위 시험은 GPU·영상 없이 FakeDecoder 로 한다.
 
 하드웨어 디코더는 파이프라인 지연이 있고(B 프레임이 있으면 순서도 바뀐다) 입력 하나가 바로 출력 하나로 나오지 않는다.
 그래서 입력마다 열쇠(FrameKey)를 함께 넘기고, 출력 그림은 그 열쇠로 헤더와 다시 묶는다.
@@ -55,25 +55,6 @@ class Decoder(ABC):
     @abstractmethod
     def reset(self) -> None:
         """내부 상태와 남은 그림을 버린다. 다시 쓰려면 configure 해야 한다."""
-
-
-class NvdecDecoder(Decoder):
-    """NVDEC GPU 하드웨어 디코더 자리. 구현은 Tier 0 GPU 조립 단계에서 한다(이 티켓은 GPU 를 쓰지 않는다)."""
-
-    def __init__(self, *_: Any, **__: Any) -> None:
-        raise NotImplementedError("NvdecDecoder 는 아직 구현하지 않았다. 시험은 FakeDecoder 로 한다")
-
-    def configure(self, codec: I0CodecInfo) -> None:  # pragma: no cover - 생성자가 막는다
-        raise NotImplementedError
-
-    def decode(self, payload: bytes, key: FrameKey, keyframe: bool) -> list[DecodedPicture]:  # pragma: no cover
-        raise NotImplementedError
-
-    def flush(self) -> list[DecodedPicture]:  # pragma: no cover
-        raise NotImplementedError
-
-    def reset(self) -> None:  # pragma: no cover
-        raise NotImplementedError
 
 
 # --------------------------------------------------------------------------- 시험용 가짜 디코더

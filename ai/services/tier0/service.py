@@ -13,9 +13,13 @@
     인지를 만든 직후(첫 World Track update 전) 체크포인트 Track 을 복원 후보로 넘기고 이전 이벤트 연결을 만든다
     (RestoreLink: manager.restore → RestoredEventLinker, -178). 체크포인트 재료는 첫 인지 tick 전까지 복구 결과로 채운다
     (그 전에 쓰는 체크포인트가 복구가 알던 config_version·Track 을 잃지 않게).
- 6. 시작: 저널 쓰기 스레드 → Checkpointer(정리는 SnapshotOutbox.compact 로만) → I1 → I0 제어 채널 → 정리 주기 → 판정 루프.
+ 6. 시작: 저널 쓰기 스레드 → Checkpointer(정리는 SnapshotOutbox.compact 로만) → I1 → I0 제어 채널 → I0 영상 수신(LIVE)
+    → 정리 주기 → 판정 루프.
 
-종료(stop, 종료 신호): 판정 루프 → 정리 주기 → I0 → I1(더는 저널을 읽지 않는다) → 저널 쓰기 스레드 비우기(넣은 단계를 모두
+LIVE 입력(S15P31A101-182, live_input.py): 검출기(TensorRT 엔진 → 없으면 .pt 가중치, 둘 다 없으면 종료 코드 4) → 디코더
+(NVDEC 또는 CPU, 열지 못하면 4) → 영상 포트 설정(모자라면 2) 순서로 확인한다. 영상 수신은 클립 링 버퍼를 붙인 뒤 연다.
+
+종료(stop, 종료 신호): 판정 루프 → 정리 주기 → I0(영상 수신·제어 채널) → I1(더는 저널을 읽지 않는다) → 저널 쓰기 스레드 비우기(넣은 단계를 모두
 fsync) → 마지막 체크포인트 → 저널 닫기 → 표시 파일 지우기. 제한 시간 안에 끝나지 않은 스레드는 이름을 로그에 남긴다.
 """
 
@@ -41,15 +45,17 @@ from services.tier0.i0_control import ControlServer
 from services.tier0.i1_client import Envelope, WebSocketConnector
 from services.tier0.i1_publisher import I1Link, build_i1_link, with_world_state_drops
 from services.tier0.judge import JudgmentLoop
-from services.tier0.perception import FrameFeed, Perception, SimObservationFeed
+from services.tier0.live_input import LiveInput
+from services.tier0.perception import DetectorFeed, FrameFeed, Perception, PoseDetector, SimObservationFeed
 from services.tier0.restore_link import RestoreLink
 from services.tier0.settings import Tier0Settings
 from services.tier0.site_alert_sync import SiteAlertResync
-from services.tier0.video_ingest import TokenVerifier, parse_token_hashes, server_context
+from services.tier0.video_ingest import TokenVerifier, build_server, parse_token_hashes, server_context
 from simai_ai.calibration.monitor import BaselineRecord
 from simai_ai.config import BundleArchive, BundleRejected, BundleVerifier, ConfigBundle, ConfigSync
 from simai_ai.eventlog import ACKED_NAME, AckedOffsetStore, EventJournal, JournalWriter, Outbox, TransportError
 from simai_ai.geometry.rig import CameraRig
+from simai_ai.io import DecoderUnavailable, FreshnessConfig, I0Ingest, NvdecDecoder, PyAvDecoder
 from simai_ai.providers.files import FileCalibrationProvider
 from simai_ai.providers.provenance import build_input_provenance
 from simai_ai.recovery import Checkpointer, CheckpointStore, RecoveryHealthGate, RecoveryResult, recover
@@ -58,6 +64,7 @@ from simai_ai.risk._parse import RiskInputError
 from simai_ai.tracking.clock_sync import Tier0Clock, Tier0ClockSync
 from simai_ai.tracking.decision_time import ClockAwareVerification, DecisionClock
 from simai_ai.tracking.gateway_link import GatewayLinkMonitor
+from simai_ai.tracking.local_tracker import BackendFactory, MultiCameraLocalTracker
 from simai_ai.tracking.system_health import ProgressWatchdog
 from simai_ai.tracking.world_track import session_prefix_from_ms
 
@@ -240,8 +247,16 @@ class Tier0Service:
         drift_watch_factory: Callable[[dict[str, BaselineRecord]], Any] | None = None,
         new_msg_id: Callable[[], str] = lambda: str(uuid.uuid4()),
         journal_fsync: Callable[[int], None] = os.fsync,
+        detector_factory: Callable[[], PoseDetector] | None = None,
+        tracker_backend_factory: BackendFactory | None = None,
     ) -> None:
+        """detector_factory·tracker_backend_factory: LIVE 검출기·Local Tracker 백엔드를 바꿔 끼운다(ultralytics 가 없는
+        노트북 시험의 대역). 없으면 설정의 엔진·가중치와 ultralytics 추적기를 쓴다."""
         self.settings = settings
+        self._detector_factory = detector_factory
+        self._tracker_backend_factory = tracker_backend_factory
+        self.live_input: LiveInput | None = None
+        self._clock_unknown = False  # LIVE 인데 시계 교환 채널이 없다(F1): SAME_CLOCK 으로 보지 않는다
         self._journal_fsync = journal_fsync
         self._mono_ns = mono_ns
         self._wall_ms = wall_ms
@@ -308,6 +323,13 @@ class Tier0Service:
                 offset_source=lambda: self.clock_sync.capture_clock(self._gateway_ok()),  # type: ignore[union-attr]
                 generation_source=lambda: self.clock_sync.generation,  # type: ignore[union-attr]
             )
+        elif s.input_mode == "live":
+            # LIVE 촬영 시각은 노트북 시계다. 제어 채널(시계 교환)이 없으면 시계 차이를 모른다: SAME_CLOCK 으로 보지 않고
+            # 해소 확인을 막고(offset 모름) health 는 UNSAFE_UNKNOWN 이다(명세 3.9·6.1 미상 시계 정책, -160)
+            log.warning("LIVE 입력인데 I0 제어 채널(SIMAI_TIER0_CONTROL_PORT)이 없다: 노트북 시계 차이를 몰라 해소를 확정하지 "
+                        "않고 health 는 UNSAFE_UNKNOWN 이다")
+            self._clock_unknown = True
+            verification = ClockAwareVerification(offset_source=lambda: None)
         else:
             verification = ObservedTracksPolicy()  # 노트북 없는 조립(SIM 오프라인): 촬영 시각이 판정 시계와 같다
 
@@ -361,6 +383,8 @@ class Tier0Service:
         self.writer = JournalWriter(self.journal)
         self.watchdog = ProgressWatchdog()
         self.clips = EventClipService(PacketRingBuffer(feed.camera_ids), self.clock)
+        if self.live_input is not None:
+            self.live_input.bridge.attach_clips(self.clips.receive)  # 영상 수신을 열기 전에(-57 링 버퍼)
         self.snapshot = EventStateSnapshot(
             self.journal, gateway_id=s.gateway_id, clock=self.clock, config_version=self._config_version,
             start_offset=self.journal.next_offset, seed=self.tracker.active(),
@@ -372,8 +396,8 @@ class Tier0Service:
         self.health = HealthReporter(
             perception=self.perception, now_ms=self.clock.now_ms, mono_ns=self._mono_ns, gate=self.gate,
             watchdog=self.watchdog, ec2_connected=self._ec2_ok, gateway_ok=self._gateway_ok,
-            capture_clock=None if self.clock_sync is None else self.clock_sync.capture_clock,
-            laptop_clock_offset=None if self.clock_sync is None else self.clock_sync.health_field,
+            capture_clock=self._health_capture_clock(),
+            laptop_clock_offset=self._health_laptop_offset(),
             config_fields=self.config_sync.health_fields, config_active=lambda: self.config_sync.active is not None,
             calibration_state=self._calibration_state, calibration_version=lambda: self.rig.calibration_version,
             lock=self.judge_lock,
@@ -420,6 +444,12 @@ class Tier0Service:
         if self.control is not None:
             self.control.start()
             self._event("i0_control")
+        if self.live_input is not None:
+            try:
+                self.live_input.start()
+            except OSError as e:
+                raise Tier0StartError(f"LIVE 입력: I0 영상 포트를 열지 못했다 ({type(e).__name__}: {e})", 4) from e
+            self._event("i0_video")
         self._spawn("tier0-housekeeping", self._run_housekeeping)
         self._spawn("tier0-judge", self._run_judge)
         self._event("judge")
@@ -488,22 +518,57 @@ class Tier0Service:
         return self._build_live_feed()
 
     def _build_live_feed(self) -> FrameFeed:
-        """LIVE: I0 영상 수신 → 디코딩 → YOLO 엔진 → Local Tracker. 디코더(NVDEC)가 아직 없어 시작하지 않는다(남은 일)."""
-        from services.tier0.yolo_detector import DetectorUnavailable, UltralyticsPoseDetector
-        from simai_ai.io import NvdecDecoder
-
-        engine = self.settings.engine_path
-        if not engine or not Path(engine).exists():
-            raise Tier0StartError(f"LIVE 입력: 검출기 엔진이 없다(SIMAI_TIER0_ENGINE={engine!r})", 4)
+        """LIVE: I0 영상 수신 → 디코딩 → 최신성 대기열 → YOLO → Local Tracker (live_input.py). 영상 수신은 step 6 에서 연다."""
+        s = self.settings
+        assert s.live is not None
+        detector = self._build_detector()
+        decoder_factory = self._decoder_factory(s.live.decoder)
+        config = FreshnessConfig(queue_depth=s.live.queue_depth, max_queue_wait_ms=s.live.max_queue_wait_ms,
+                                 reorder_window_ms=0)  # 보간 창 0: live_input 모듈 설명
         try:
-            NvdecDecoder()
-        except NotImplementedError as e:
-            raise Tier0StartError(f"LIVE 입력: {e} (S15P31A101-171 남은 일)", 4) from e
-        try:  # pragma: no cover - 디코더가 생기면 이어서 조립한다
-            UltralyticsPoseDetector(engine)
+            ingest = I0Ingest(s.camera_ids, decoder_factory, self.clock, config)
+        except DecoderUnavailable as e:
+            raise Tier0StartError(f"LIVE 입력: 디코더({s.live.decoder})를 열지 못했다: {e}", 4) from e
+        try:
+            live = LiveInput(ingest, lambda consumer: build_server(s.env, consumer))
+        except (ValueError, OSError) as e:
+            raise Tier0StartError(f"LIVE 입력: I0 영상 수신 설정 오류: {e}", 2) from e
+        tracker_kwargs: dict[str, Any] = {"camera_ids": s.camera_ids}
+        if self._tracker_backend_factory is not None:
+            tracker_kwargs["backend_factory"] = self._tracker_backend_factory
+        tracker = MultiCameraLocalTracker(**tracker_kwargs)
+        self.live_input = live
+        return DetectorFeed(camera_ids=s.camera_ids, tickets=ingest.next_batch, detector=detector, tracker=tracker,
+                            connected=live.connected, source="LIVE", on_close=live.stop)
+
+    def _build_detector(self) -> PoseDetector:
+        """TensorRT 엔진(SIMAI_TIER0_ENGINE) → 없으면 .pt 가중치(SIMAI_TIER0_WEIGHTS, 경고) → 둘 다 없으면 종료 코드 4."""
+        if self._detector_factory is not None:
+            return self._detector_factory()
+        from services.tier0.yolo_detector import DetectorUnavailable, UltralyticsPoseDetector
+
+        s = self.settings
+        model = s.engine_path if s.engine_path and Path(s.engine_path).exists() else None
+        if model is None and s.weights_path and Path(s.weights_path).exists():
+            log.warning("TensorRT 엔진이 없어(SIMAI_TIER0_ENGINE=%r) 가중치 %s 를 ultralytics 로 연다(느리다, 운영 기준 아님)",
+                        s.engine_path, s.weights_path)
+            model = s.weights_path
+        if model is None:
+            raise Tier0StartError(f"LIVE 입력: 검출기가 없다(SIMAI_TIER0_ENGINE={s.engine_path!r}, "
+                                  f"SIMAI_TIER0_WEIGHTS={s.weights_path!r} 둘 다 없음)", 4)
+        try:
+            return UltralyticsPoseDetector(model, imgsz=s.imgsz)
         except DetectorUnavailable as e:
             raise Tier0StartError(f"LIVE 입력: {e}", 4) from e
-        raise Tier0StartError("LIVE 입력 조립은 디코더가 생긴 뒤 이어 한다", 4)  # pragma: no cover
+        except Exception as e:  # noqa: BLE001 - 엔진·가중치를 읽지 못함(손상·GPU 불일치)
+            raise Tier0StartError(f"LIVE 입력: 검출기 {model} 를 열지 못했다 ({type(e).__name__}: {e})", 4) from e
+
+    @staticmethod
+    def _decoder_factory(kind: str) -> Callable[[str], Any]:
+        """카메라마다 디코더 하나. nvdec 은 CPU 로 몰래 떨어지지 않는다(pyav_decoder)."""
+        if kind == "nvdec":
+            return lambda _camera_id: NvdecDecoder()
+        return lambda _camera_id: PyAvDecoder()
 
     def _build_link(self) -> I1Link:
         s = self.settings
@@ -517,7 +582,7 @@ class Tier0Service:
         def health_payload() -> dict[str, Any] | None:
             link = link_ref.get("link")
             drops = None if link is None else link.publisher.world_state_drops()
-            return with_world_state_drops(self.health.payload(), drops)
+            return with_world_state_drops(self._live_health(self.health.payload(), "i1"), drops)
 
         link = build_i1_link(
             connector,
@@ -552,6 +617,23 @@ class Tier0Service:
             return str(self.drift_watch.store.state)
         return str(self.rig.state)
 
+    def _health_capture_clock(self) -> Callable[[bool], Any] | None:
+        """health 의 촬영 시계 입력. None 이면 SAME_CLOCK(노트북 없는 SIM 만). LIVE 에 제어 채널이 없으면 늘 모름(None 반환)."""
+        if self.clock_sync is not None:
+            return self.clock_sync.capture_clock
+        return (lambda _gateway_ok: None) if self._clock_unknown else None
+
+    def _health_laptop_offset(self) -> Callable[[bool], Any] | None:
+        if self.clock_sync is not None:
+            return self.clock_sync.health_field
+        return (lambda _gateway_ok: None) if self._clock_unknown else None
+
+    def _live_health(self, payload: dict[str, Any], consumer: str) -> dict[str, Any]:
+        """LIVE 입력이면 cameras[] 에 프레임 집계·키프레임 대기 상태를 더한다(live_input.LiveInput.merge_health)."""
+        if self.live_input is None:
+            return payload
+        return self.live_input.merge_health(payload, consumer) or payload
+
     def _site_fields(self) -> dict[str, Any]:
         """I1 health 의 active_site_alerts·as_of. 복원 전에는 싣지 않는다(빈 목록은 '경보 없음'이라 지어내지 않는다)."""
         if not self._restored:
@@ -563,7 +645,7 @@ class Tier0Service:
         if self.control is None:
             return
         drops = None if self.link is None else self.link.publisher.world_state_drops()
-        payload = with_world_state_drops(self.health.payload(), drops) or {}
+        payload = with_world_state_drops(self._live_health(self.health.payload(), "laptop"), drops) or {}
         payload.update(fields)
         if not self.control.send("health", payload):
             raise ConnectionError("I0 제어 채널이 끊겼다")
@@ -699,6 +781,8 @@ class Tier0Service:
                        "blocked": None if blocked is None else {"journal_offset": blocked.journal_offset, "reason": blocked.reason}},
             "snapshot": self.snapshot.status(),
             "judge": vars(self.judge.stats).copy(),
+            "live_input": None if self.live_input is None else {
+                **self.live_input.status(), "detector": vars(self.perception.feed.stats).copy()},
             "ec2_connected": self._ec2_ok(),
             "laptop_connected": self.control is not None and self.control.connected,
         }
@@ -771,7 +855,12 @@ class Tier0Service:
             t.join(left())
         failures += [f"thread:{t.name}" for t in self._threads if t.is_alive()]
         self._event("judge_stopped")
-        control, link = self.control, self.link
+        control, link, live = self.control, self.link, self.live_input
+        if live is not None:
+            stuck: list[str] = []
+            # 수신 스레드는 POLL_S(0.5 s)마다 멈춤을 본다. HELLO 대기 중인 연결은 hello 시간 제한까지 걸릴 수 있다
+            if self._bounded(deadline, "i0_video", lambda: stuck.extend(live.stop(min(left(), 7.0))), failures):
+                failures += [f"thread:{n}" for n in stuck]
         if control is not None and self._bounded(deadline, "i0", lambda: control.close(left()), failures):
             failures += [f"thread:{n}" for n in control.alive_threads()]
         if link is not None and self._bounded(deadline, "i1", lambda: link.close(left()), failures):

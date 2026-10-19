@@ -309,6 +309,7 @@ class CameraReceiveStats:
     before_codec_info: int = 0  # 그 epoch 의 codec_info 전에 온 프레임(버림)
     before_keyframe: int = 0  # codec_info 뒤 키프레임 전에 온 프레임(버림)
     stale_epoch: int = 0  # 지금보다 작은 stream_epoch 의 기록(버림)
+    stale_epoch_frames: int = 0  # 그중 FRAME 기록(health 프레임 집계는 이것만 센다. codec_info 거절은 stream_rejects)
     stream_rejects: int = 0  # 작은 epoch 의 codec_info 로 STREAM_REJECT 를 보내고 끊은 연결
     out_of_order: int = 0  # 이미 지난 frame_sequence (버림)
     ignored_skip_notices: int = 0
@@ -391,6 +392,7 @@ class CameraStream:
         epoch, seq = header["stream_epoch"], header["frame_sequence"]
         if self.stream_epoch is not None and epoch < self.stream_epoch:
             self.stats.stale_epoch += 1
+            self.stats.stale_epoch_frames += 1
             return False
         if self.stream_epoch is None or epoch > self.stream_epoch or not self._codec_ok:
             self.stats.before_codec_info += 1
@@ -530,23 +532,54 @@ class VideoIngestServer:
         self._socks: list[socket.socket] = []
         self.ports: list[int] = []
         self._stop = threading.Event()
+        self._threads: list[threading.Thread] = []  # accept·연결 스레드(종료 때 join)
+        self._threads_lock = threading.Lock()
+
+    def _spawn(self, target: Callable[..., None], args: tuple[Any, ...], name: str) -> None:
+        t = threading.Thread(target=target, args=args, name=name, daemon=True)
+        with self._threads_lock:
+            self._threads = [x for x in self._threads if x.is_alive()]
+            self._threads.append(t)
+        t.start()
 
     def start(self) -> None:
-        for spec in self._listen:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind((spec.host, spec.port))
-            sock.listen(16)
-            sock.settimeout(0.5)
-            self._socks.append(sock)
-            self.ports.append(sock.getsockname()[1])
-            threading.Thread(target=self._accept, args=(sock, spec), name=f"i0-video-{spec.port}", daemon=True).start()
+        """포트마다 듣기 시작한다. 중간 포트에서 실패하면 이미 연 포트·스레드를 닫고 예외를 다시 낸다(부분 기동 금지)."""
+        try:
+            for spec in self._listen:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self._socks.append(sock)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((spec.host, spec.port))
+                sock.listen(16)
+                sock.settimeout(0.5)
+                self.ports.append(sock.getsockname()[1])
+                self._spawn(self._accept, (sock, spec), f"i0-video-{spec.port}")
+        except BaseException:
+            self.stop()
+            raise
         log.info("I0 영상 수신 시작: 포트 %s, 카메라 %s", self.ports, sorted(self.streams))
 
+    def alive_threads(self) -> list[str]:
+        with self._threads_lock:
+            return [t.name for t in self._threads if t.is_alive()]
+
+    def join(self, timeout_s: float) -> list[str]:
+        """stop 뒤 accept·연결 스레드가 끝나기를 timeout_s 까지 기다린다. 끝나지 않은 스레드 이름을 돌려준다."""
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        with self._threads_lock:
+            threads = list(self._threads)
+        for t in threads:
+            t.join(max(0.0, deadline - time.monotonic()))
+        return self.alive_threads()
+
     def stop(self) -> None:
+        """멈춘다. 여러 번 불러도 되고, 부분 기동 상태에서도 된다."""
         self._stop.set()
         for sock in self._socks:
-            sock.close()
+            try:
+                sock.close()
+            except OSError:
+                pass
         with self._active_lock:
             conns = list(self._active.values())
         for conn in conns:
@@ -573,7 +606,7 @@ class VideoIngestServer:
                 self.stats.refused_busy += 1
                 conn.close()
                 continue
-            threading.Thread(target=self._handle, args=(conn, peer, spec), daemon=True).start()
+            self._spawn(self._handle, (conn, peer, spec), f"i0-video-conn-{spec.port}")
 
     @staticmethod
     def _kill(conn: _Conn) -> None:

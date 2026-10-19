@@ -4,13 +4,13 @@ S15P31A101-171. 기획서 §3.2(이벤트 소유권·저널 계약·재시작 �
 §3.12(엔드포인트 등록), §5.1·5.2(인지·ID 교정), §6.1·6.2·6.4·6.5, §7장, §12.2·12.3, §18.2 기준이다.
 코드는 `ai/services/tier0/` 의 `__main__`(진입점), `service`(기동·스레드·종료), `judge`(판정 tick), `perception`(입력·인지),
 `restore_link`(재시작 복원 Track 후보·이전 이벤트 연결, -178), `health`(health payload), `i0_control`(노트북 제어 채널 서버),
-`settings`(설정), `config_fetch`, `yolo_detector` 이다.
+`settings`(설정), `config_fetch`, `yolo_detector`, `live_input`(LIVE 입력 조립, -182) 이다.
 판정·추정 로직은 기능 패키지에 있고 여기서는 순서·스레드·설정만 정한다(ai/CONVENTION.md).
 
 ## 흐름
 
 ```
-SIM 2D keypoint ─┐                      (LIVE: I0 영상 → 디코딩 → YOLO 엔진 → Local Tracker, 디코더는 남은 일)
+SIM 2D keypoint ─┐                      (LIVE: I0 영상 → 디코딩 → 최신성 대기열 → YOLO 엔진 → Local Tracker, live_input)
                  ▼
  observation_2d → LocalTrackletBuffer → CrossViewAssociator → WorldTrackManager → ContactEstimator → world_state payload
                                                                      │ revisions(ID 교정)
@@ -115,11 +115,21 @@ lock 순서는 **판정 lock → (스냅샷 lock, 시계 lock, 각 모듈 내부
    `manager.restore(result.tracks, result.tracks_t)` 를 부르고(첫 update 전) `RestoredEventLinker(result.restored)` 를 만든다.
    체크포인트 Track 을 restore 가 거부하면(중복·같은 세션 ID) 쓰지 않고 빈 후보로 다시 부른다(연결은 같은 규칙·같은 구역만).
    Checkpointer 재료는 첫 인지 tick 전까지 복구 결과로 둔다.
-7. 시작: 저널 쓰기 스레드 → Checkpointer → I1 → I0 제어 채널 → 정리 주기 → 판정 루프 → 표시 파일.
+7. 시작: 저널 쓰기 스레드 → Checkpointer → I1 → I0 제어 채널 → I0 영상 수신(LIVE) → 정리 주기 → 판정 루프 → 표시 파일.
+
+LIVE 입력(-182)은 6 에서 만들고 7 에서 연다. 만드는 순서와 종료 코드: 검출기(TensorRT 엔진 `SIMAI_TIER0_ENGINE` → 없으면
+`.pt` 가중치 `SIMAI_TIER0_WEIGHTS` 를 경고와 함께 → 둘 다 없거나 ultralytics 가 없으면 4) → 디코더(`input.decoder`: `nvdec` 기본,
+`cpu` 노트북. NVDEC 을 열지 못하면 CPU 로 바꾸지 않고 4) → 영상 포트 설정(`SIMAI_TIER0_VIDEO_PORTS` 등이 모자라거나 카메라 목록과
+다르면 2). 클립 링 버퍼를 브리지에 붙인 뒤 영상 포트를 연다(열지 못하면 4). 수신 스레드는 카메라별(`VideoIngestServer`)이고,
+디코딩은 그 스레드에서 카메라별 lock 으로(`CameraIngest`), 검출·추적은 판정 tick 에서(`DetectorFeed.poll` → `I0Ingest.next_batch`)
+한다. 판정 lock 은 수신·디코딩 경로에서 잡지 않는다. LIVE 인데 I0 제어 채널이 없으면 노트북 시계 차이를 모르는 것으로
+조립한다(`ClockAwareVerification(offset_source=None 반환)`, health capture_clock 모름 → UNSAFE_UNKNOWN·해소 확인 금지).
+SAME_CLOCK(`ObservedTracksPolicy`)은 노트북 없는 SIM 에만 쓴다. 종료 때 영상 수신(accept·연결) 스레드는 공통 deadline 안에서
+join 하고, 남으면 실패로 남긴다. 영상 포트 일부만 열고 실패하면 연 포트를 닫는다.
 
 ## 종료 (`Tier0Service.stop`, SIGTERM·SIGINT·Windows CTRL_BREAK)
 
-판정 루프·정리 주기 멈춤 → I0 닫기 → I1 닫기(outbox 가 더는 저널을 읽지 않음) → `JournalWriter.stop`(넣은 단계를 모두 fsync)
+판정 루프·정리 주기 멈춤 → I0 닫기(영상 수신 → 제어 채널) → I1 닫기(outbox 가 더는 저널을 읽지 않음) → `JournalWriter.stop`(넣은 단계를 모두 fsync)
 → Checkpointer 멈춤 → 마지막 체크포인트(저널 끝까지) → 저널 닫기 → 표시 파일 삭제.
 
 모든 단계는 공통 deadline(`stop(timeout_s)`, 기본 drain_s) 하나를 나눠 쓰고, 각 단계는 별도 스레드에서 돌려 남은 시간만 기다린다
@@ -159,12 +169,13 @@ lock 순서는 **판정 lock → (스냅샷 lock, 시계 lock, 각 모듈 내부
 | -57 클립 | on_transitions·poll | 배선(업로더 없음: 서명 API 미정) / 시험 없음(SIM 은 영상이 없다) |
 | -159 엔드포인트 | (재)연결마다 tier0_endpoint | 배선 / E2E(계약 검증) |
 | -161 현장 경보 재동기화 | 접속 직후·1 Hz, 같은 lock·한 줄 대기열 | 배선 / E2E |
-| -32 이미지 | SIMAI_TIER0_ENGINE, state/tier0.live | 부분: 설정·표시 파일 배선. LIVE 입력은 디코더(NVDEC)가 없어 종료 코드 4 / `test_live_without_engine_exits_4_without_judging` |
+| -32 이미지 | SIMAI_TIER0_ENGINE, state/tier0.live | 배선 / `test_live_without_engine_exits_4_without_judging`, `test_live_start_errors_have_clear_exit_codes` |
+| -83·-80·-21·-57 LIVE 입력 | I0 영상 수신 → 링 버퍼 + PyAV 디코딩(NVDEC·CPU) → latest-frame-wins → 검출 → Local Tracker, health cameras[].frames·WAITING_KEYFRAME | 배선(-182) / `test_tier0_live_e2e.py`(실제 H.264, 검출·추적 대역), `test_live_input.py`, `tests/io/test_pyav_decoder.py`. Pod 의 NVDEC·TensorRT 실경로는 -183 |
 
 ## 남은 일
 
-- LIVE 입력: `NvdecDecoder` 가 아직 없다. 디코더가 생기면 `service._build_live_feed` 에서 VideoIngestServer → I0Ingest → `DetectorFeed`
-  (`yolo_detector.UltralyticsPoseDetector` + `MultiCameraLocalTracker`) 와 클립 링 버퍼 수신을 잇는다.
+- LIVE 입력(-182 뒤): Pod 실경로(NVDEC·TensorRT·10명 처리 시간)는 -183 큐. observation_2d 원본 Network Volume 보관(11.2)은
+  아직 잇지 않았다.
 - health 계약은 2.0.0 에서 정했다(-179): 시계 차이를 모르면 `pipeline_lag_ms` null + 하한 `pipeline_lag_lower_bound_ms`, 운영 경고
   `tier0_warnings`(정리 주기에 Checkpointer·저널·outbox·스냅샷 상태를 읽어 기억), 카메라 `sync_valid`(근거 없으면 null). 송신 봉투(i1_client·i0_control)는
   `HEALTH_SCHEMA_VERSION` 을 쓴다. 남은 일: 카메라 sync_offset_ms·동기화 무효 판정 모듈.

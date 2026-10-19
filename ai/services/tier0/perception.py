@@ -10,7 +10,8 @@
   하고, 도착한 지 max_backlog_ms 가 넘은 프레임은 넣지 않는다(재시작 직후 지난 장면을 몰아 처리하지 않는다, 5.1 최신성).
   결과는 SIM 상한이다(input_provenance.is_upper_bound = true).
 - DetectorFeed: 실제 경로. 추론 대상 프레임(I0 수신·디코딩·최신성 정책을 거친 InferenceTicket)을 검출기(YOLO26-pose
-  엔진, yolo_detector)에 묶음으로 넣고 MultiCameraLocalTracker 로 카메라 내 트랙 ID 를 붙인다.
+  엔진, yolo_detector)에 묶음으로 넣고 MultiCameraLocalTracker 로 카메라 내 트랙 ID 를 붙인다. 영상 수신·디코딩 조립은
+  live_input.LiveInput 이 한다(S15P31A101-182).
 
 공통 시각(Perception.choose_t): 수신 중인 카메라(최신 촬영 시각이 t_latest_global 에서 camera_stall_ms 안)의 최신 촬영
 시각 중 가장 이른 값이다(docs/design/tier0-triangulation.md: 외삽하지 않으므로 모든 유효 카메라에 그 시각 이후 프레임이
@@ -32,7 +33,7 @@ from typing import Any, Protocol
 
 from simai_ai.contact import ContactEstimator, SurfaceSet
 from simai_ai.geometry.rig import CameraRig
-from simai_ai.io import SimObservationFrameSource
+from simai_ai.io import ResultGate, SimObservationFrameSource
 from simai_ai.providers.base import Frame
 from simai_ai.tracking.cross_view import CrossViewAssociator, LocalTrackletBuffer
 from simai_ai.tracking.local_tracker import (
@@ -167,10 +168,33 @@ class PoseDetector(Protocol):
     def detect(self, frames: Sequence[Frame]) -> list[CameraDetections]: ...
 
 
+@dataclass
+class DetectorFeedStats:
+    """실제 경로 검출 단계 집계(표시 파일·로그. health 계약에 자리가 없는 값)."""
+
+    batches: int = 0
+    frames: int = 0  # 검출기에 넣은 프레임
+    detector_errors: int = 0  # 검출기가 예외를 낸 묶음
+    frames_lost_to_errors: int = 0  # 그 묶음의 프레임(관측을 내지 못함)
+    mismatched: int = 0  # 검출 결과의 카메라·프레임 식별자·촬영 시각이 넣은 프레임과 달라 버린 결과
+    stale_results: int = 0  # 이미 반영한 결과보다 촬영 시각이 늦지 않아 버린 결과(ResultGate)
+
+
+def _ids(frame: Frame) -> tuple[str, int | None, int | None, int]:
+    ref = frame.frame_ref
+    return frame.camera_id, ref.get("stream_epoch"), ref.get("frame_sequence"), frame.estimated_capture_time
+
+
 class DetectorFeed:
     """실제 경로: 추론 대상 프레임 → 검출기 → 카메라별 Local Tracker.
 
-    tickets: 지금 추론할 프레임 묶음(I0Ingest.next_batch 등, InferenceTicket 이나 Frame). connected: 카메라 입력 연결 여부.
+    tickets: 지금 추론할 프레임 묶음(I0Ingest.next_batch 등, InferenceTicket 이나 Frame). connected: 카메라 입력이 관측을
+    낼 수 있는지(R7·health 의 카메라 상태). on_close: 닫을 때 부를 함수(영상 수신 정지 등).
+
+    - 검출기가 예외를 내면 그 묶음은 관측 없이 버리고 센다(판정 tick 은 이어 간다. 지난 관측을 다시 내지 않는다).
+    - 검출 결과는 넣은 프레임과 카메라·(stream_epoch, frame_sequence)·촬영 시각이 같아야 한다. 다르면 버린다
+      (검출기가 시각을 바꾸거나 순서를 섞으면 다른 프레임에 시각이 붙는다, G3).
+    - 오래된 프레임의 뒤늦은 결과로 LIVE 상태를 갱신하지 않는다(명세 5.1, ResultGate).
     """
 
     def __init__(
@@ -182,6 +206,7 @@ class DetectorFeed:
         tracker: MultiCameraLocalTracker,
         connected: Callable[[str], bool] = lambda _cam: True,
         source: str = "LIVE",
+        on_close: Callable[[], None] | None = None,
     ) -> None:
         self._camera_ids = tuple(camera_ids)
         self._tickets = tickets
@@ -189,6 +214,9 @@ class DetectorFeed:
         self._tracker = tracker
         self._connected = connected
         self._source = source
+        self._on_close = on_close
+        self._gate = ResultGate()
+        self.stats = DetectorFeedStats()
 
     @property
     def source(self) -> str:
@@ -202,7 +230,31 @@ class DetectorFeed:
         batch = [getattr(t, "frame", t) for t in self._tickets()]
         if not batch:
             return []
-        return self._tracker.update_batch(self._detector.detect(batch))
+        self.stats.batches += 1
+        self.stats.frames += len(batch)
+        try:
+            results = list(self._detector.detect(batch))
+        except Exception:  # noqa: BLE001 - 검출기 오류가 판정 루프를 멈추지 않는다(모듈 설명)
+            self.stats.detector_errors += 1
+            self.stats.frames_lost_to_errors += len(batch)
+            if self.stats.detector_errors == 1 or self.stats.detector_errors % 100 == 0:
+                log.exception("검출기 오류 %d회째: 이 묶음(%d장)은 관측 없이 버린다", self.stats.detector_errors, len(batch))
+            return []
+        if len(results) != len(batch):
+            self.stats.mismatched += len(batch)
+            log.error("검출 결과 수(%d)가 넣은 프레임 수(%d)와 다르다: 묶음을 버린다", len(results), len(batch))
+            return []
+        accepted: list[CameraDetections] = []
+        for frame, result in zip(batch, results, strict=True):
+            got = (result.camera_id, result.stream_epoch, result.frame_sequence, result.estimated_capture_time_ms)
+            if got != _ids(frame):
+                self.stats.mismatched += 1
+                continue
+            if not self._gate.admit(result.camera_id, result.estimated_capture_time_ms):
+                self.stats.stale_results += 1
+                continue
+            accepted.append(result)
+        return self._tracker.update_batch(accepted) if accepted else []
 
     def camera_connected(self, camera_id: str) -> bool:
         return self._connected(camera_id)
@@ -211,7 +263,8 @@ class DetectorFeed:
         return {"source": self._source, "camera_ids": list(self._camera_ids)}
 
     def close(self) -> None:
-        return None
+        if self._on_close is not None:
+            self._on_close()
 
 
 @dataclass(frozen=True)

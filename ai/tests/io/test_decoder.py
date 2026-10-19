@@ -2,7 +2,7 @@
 
 import pytest
 
-from simai_ai.io import DecodeError, FakeDecoder, FakeImage, I0CodecInfo, NvdecDecoder
+from simai_ai.io import DecodeError, FakeDecoder, FakeImage, I0CodecInfo
 from simai_ai.io.decoder import fake_payload
 
 CODEC = I0CodecInfo(camera_id="cam1", stream_epoch=0, codec="h264")
@@ -10,11 +10,6 @@ CODEC = I0CodecInfo(camera_id="cam1", stream_epoch=0, codec="h264")
 
 def _feed(dec, seq, keyframe=False):
     return dec.decode(fake_payload("cam1", 0, seq, 1000 + seq), (0, seq), keyframe)
-
-
-def test_nvdec_is_placeholder():
-    with pytest.raises(NotImplementedError):
-        NvdecDecoder()
 
 
 def test_needs_configure_and_keyframe():
