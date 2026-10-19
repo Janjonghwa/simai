@@ -10,7 +10,8 @@
    매번 다시 띄우고, 종료 시점 저널을 payload 로만 접은 정답(site_driver.journal_truth)과
    (a) 같은 상태 디렉터리 사본에서 recover 한 결과(-51 assert_matches_journal), (b) 다시 띄운 서비스가 저널에 쓴 RESTORED 전이와
    event_state_snapshot, (c) 재시작 첫 health(UNSAFE_UNKNOWN)를 비교한다. EC2 로 나간 전이가 저널에 없는지(D-G3-18),
-   저널 전이가 결국 EC2 에 전달됐는지(D-G3-14), 복원 이벤트가 사람이 그대로 있는데 해소됐는지(D-G3-09)도 센다.
+   저널 전이가 결국 EC2 에 전달됐는지(D-G3-14), 복원 이벤트가 사람이 그대로 있는데 해소됐는지(D-G3-09, 구역 대상은 감시 확보
+   근거가 해소 유지 시간 동안 이어진 뒤의 해소만 정상: restored_resolution_violations)도 센다.
 2. 결정적 지점(S15P31A101-51 tests/recovery 의 강제 종료 시험을 볼륨 경로로 그대로 부른다): 전이 직후, 체크포인트 임시 파일
    fsync 뒤·rename 전, ACK→정리(compact) 직후(D-G3-13), 해소 뒤 과거 RAISED 재기록, 바쁜 임의 시점(seed).
 
@@ -90,6 +91,62 @@ def _journal_entries(state: Path):
         return list(j.iter_from(first if first is not None else j.next_offset))
 
 
+def restored_resolution_violations(transitions, restored: dict[str, int], hold_ms) -> tuple[list[str], list[str]]:
+    """D-G3-09 '재시작: 활성 이벤트 자동 해소'. (위반 문장 목록, 근거를 갖춰 해소된 구역 대상 복원 이벤트 ID 목록)을 돌려준다.
+
+    transitions: EC2 로 나간 전이 payload(재전송 중복 포함), restored: event_id → 처음 복원된 RESTORED 전이의 sequence,
+    hold_ms: 규칙 ID → 해소 유지 시간(Tier 0 설정 그대로). 처음 복원 뒤 전이를 sequence 순서로 따라가며 복원 구간(RESTORED 전이부터
+    다음 해소까지)마다 그 구간의 해소를 본다. 복원 구간이 해소로 끝나고 재개(같은 event_id)된 뒤의 해소는 복원 이벤트의 해소가 아니고,
+    다시 RESTORED 가 오면 새 복원 구간이다. 처음 복원 전에 해소됐다가 재개돼 복원된 이벤트의 예전 해소도 세지 않는다.
+    - 사람 대상: 재시작 뒤 그 사람은 새 World ID 로만 보여 이전 대상의 재관측으로 해소를 확인할 수 없다(recovery.relink).
+      복원 구간의 해소는 위반이다.
+    - 구역 대상(R7 형태): 복원 보호(S15P31A101-174)대로 판정의 감시 확보 근거가 있을 때만 VERIFIED 가 되고, 그 VERIFIED 가
+      해소 유지 시간 동안 이어져야 해소된다(명세 6.4 유효 관측으로 해소 확인). 그 구간의 전이로 보이지 않으면(VERIFIED 없음·중간에
+      UNVERIFIABLE·유지 시간 미달) 위반이다. 부하로 재시작 직후 판정이 늦어지면 시동 때 잠깐 난 R7(아직 프레임이 없는 카메라는
+      정상으로 세지 않음)이 해소 전에 종료·복원되고 다음 프로세스에서 근거로 해소된다(S15P31A101-198).
+    - 처음 복원과 어떤 해소 사이의 sequence 가 빠지면 구간을 알 수 없어 위반으로 센다(모르면 통과 아님).
+    """
+    by_event: dict[str, dict[int, dict]] = {}
+    for p in transitions:
+        by_event.setdefault(p["event_id"], {})[p["event_sequence"]] = p
+    bad: list[str] = []
+    zone_ok: list[str] = []
+    for eid, first in sorted(restored.items()):
+        seqs = by_event.get(eid, {})
+        last_resolved = max((s for s, p in seqs.items() if s > first and p["transition"] == "RESOLVED"), default=None)
+        if last_resolved is None:
+            continue
+        missing = [s for s in range(first, last_resolved) if s not in seqs]
+        if missing:
+            bad.append(f"복원 이벤트 {eid} 의 해소 전 전이(sequence {missing[:5]})가 빠져 복원 구간·근거를 확인할 수 없음")
+            continue
+        protected = False  # 지금 복원 구간 안인가
+        since = None  # 복원 구간 안에서 마지막으로 이어진 VERIFIED 의 시작 관측 시각
+        for s in range(first, last_resolved + 1):
+            p = seqs[s]
+            rule = p["rule_id"]
+            if "RESTORED" in (p.get("changes") or []):
+                protected, since = True, None
+                continue
+            if p["transition"] == "RESOLVED":
+                if protected and p["world_ids"]:
+                    bad.append(f"복원 이벤트 {eid}({rule}) 가 사람이 그대로 있는데 해소됨 (sequence {s})")
+                elif protected:
+                    held = None if since is None else p["observation_time"] - since
+                    if held is None or held < hold_ms(rule):
+                        bad.append(f"구역 대상 복원 이벤트 {eid}({rule}) 가 감시 확보 근거 유지 없이 해소됨 "
+                                   f"(sequence {s}, VERIFIED 유지 {held} ms, 기준 {hold_ms(rule)} ms)")
+                    elif eid not in zone_ok:
+                        zone_ok.append(eid)
+                protected, since = False, None  # 해소로 복원 구간이 끝난다(재개 뒤 해소는 복원 이벤트의 해소가 아님)
+                continue
+            if p["verification"] != "VERIFIED":
+                since = None
+            elif since is None:
+                since = p["observation_time"]
+    return bad, zone_ok
+
+
 class ServiceRun:
     """실제 Tier 0 프로세스를 같은 상태 디렉터리로 kill -9 · 재시작하며 비교한다."""
 
@@ -126,7 +183,7 @@ class ServiceRun:
         self.procs: list = []
         self.lock_retries = 0
         self.tmp_caught = 0
-        self.restored_events: dict[str, int] = {}  # 한 번이라도 복원된 이벤트 → 그때 sequence
+        self.restored_events: dict[str, int] = {}  # 한 번이라도 복원된 이벤트 → 처음 복원된 RESTORED 전이의 sequence
 
     # -- 프로세스
 
@@ -229,10 +286,17 @@ class ServiceRun:
         code = _graceful(proc)
         final = self._scenario("service_final", "D-G3-09", "사람이 그대로 서 있는 동안 복원 이벤트가 해소되지 않았는지, 정상 종료")
         final["graceful_exit"] = code
-        resolved = {m["payload"]["event_id"] for m in self.transitions() if m["payload"]["transition"] == "RESOLVED"}
-        for eid in sorted(set(self.restored_events) & resolved):
-            self.tally.violate("D-G3-09", final, f"복원 이벤트 {eid} 가 사람이 그대로 있는데 해소됨")
+        from services.tier0.settings import load_settings
+
+        policy = load_settings(self.cfg, self.env).lifecycle
+        payloads = [m["payload"] for m in self.transitions()]
+        bad, zone_ok = restored_resolution_violations(payloads, self.restored_events, policy.hold_ms)
+        for why in bad:
+            self.tally.violate("D-G3-09", final, why)
         final["restored_events"] = len(self.restored_events)
+        final["restored_zone_events"] = sorted(
+            {p["event_id"] for p in payloads if p["event_id"] in self.restored_events and not p["world_ids"]})
+        final["restored_zone_resolved_with_evidence"] = zone_ok
 
     def _scenario(self, name: str, item: str, what: str) -> dict:
         sc = {"name": name, "part": "service", "item": item, "what": what, "started_at": now_ms()}
@@ -305,7 +369,8 @@ class ServiceRun:
         active = {e["event_id"] for e in new[snap_at]["payload"]["active_events"]}
         if not set(truth) <= active:
             tally.violate("D-G3-11", sc, f"재시작 스냅샷에 복원 이벤트 빠짐: {sorted(set(truth) - active)}")
-        self.restored_events |= restored
+        for eid, seq in restored.items():  # 처음 복원된 sequence 를 둔다(그 뒤의 해소를 모두 본다)
+            self.restored_events.setdefault(eid, seq)
 
         # 저널 기록 직후 죽어 EC2 에 못 간 전이도 재시작 뒤 재전송으로 전달돼야 한다(종료 시점 저널 끝까지)
         sent = {m["payload"]["journal_offset"]: m["msg_id"] for m in self.transitions()}
