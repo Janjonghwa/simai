@@ -165,6 +165,22 @@ class CameraIngest:
             self.codec = info
             self.waiting_keyframe = True
 
+    def connection_lost(self) -> None:
+        """전송 연결이 끊겼다(같은 epoch 로 다시 붙을 수 있다, 명세 12.7 재접속).
+
+        새 연결의 코덱 정보·키프레임이 올 때까지 관측 없음이다: 정렬 대기·디코더 안·추론 대기열의 프레임을 STREAM_RESET 으로
+        버리고 디코더를 다시 초기화해 키프레임을 기다린다. stream_epoch·코덱 정보·frame_sequence·손실 기록은 그대로 둔다
+        (같은 epoch 면 번호를 이어 센다).
+        """
+        with self._lock:
+            self._release()
+            self._abandon_held()
+            self._drop_queued()
+            self._decoder.reset()
+            if self.codec is not None:
+                self._decoder.configure(self.codec)
+            self.waiting_keyframe = True
+
     def _confirm_loss(self, epoch: int, start: int, stop: int) -> None:
         """frame_sequence start..stop-1 이 오지 않았다고 확정한다(NETWORK_LOSS)."""
         for missing in range(start, stop):
@@ -336,6 +352,10 @@ class I0Ingest:
             self.camera(message.camera_id).on_codec_info(message)
         else:
             raise TypeError(f"I0 메시지가 아니다: {type(message).__name__}")
+
+    def connection_lost(self, camera_id: str) -> None:
+        """그 카메라의 전송 연결이 끊겼다(CameraIngest.connection_lost)."""
+        self.camera(camera_id).connection_lost()
 
     def poll(self) -> None:
         """보간 창을 넘긴 빈 번호를 손실로 확정하고 뒤 프레임을 디코딩 단계로 넘긴다."""

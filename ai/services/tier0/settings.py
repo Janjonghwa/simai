@@ -8,7 +8,9 @@
       "scene_version": "scene-0",              world_state scene_version (정적 3D 확정 전 기본안)
       "calibration_file": "calibration.json",  보정 문서(contracts/providers/calibration). SIM 은 기본 run_dir/calibration.json
       "input": {"mode": "sim", "run_dir": "...", "anchor_wall_ms": 1760342400000, "arrival_lag_ms": 60},
-               {"mode": "live", "camera_ids": ["cam1", "cam2", "cam3", "cam4"]}
+               {"mode": "live", "camera_ids": ["cam1", "cam2", "cam3", "cam4"],
+                "decoder": "nvdec",                  nvdec(Pod, 기본) | cpu(노트북·시험). NVDEC 이 없으면 시작하지 않는다
+                "max_queue_wait_ms": 150, "queue_depth": 1}   프레임 최신성 정책(명세 5.1 초기값)
       "bootstrap": {"archive": "...", "config_version": "cfg-1"},   체크포인트의 묶음을 보관소에서 찾지 못할 때 쓸 시작 묶음
       "lifecycle": {"clear_hold_ms": 3000, "persistence": [2, 3], "resume_window_ms": 10000},
       "tick_ms": 100,                          판정 주기 (10 Hz, 명세 12.2 world_state)
@@ -21,6 +23,10 @@
     SIMAI_ROOT                       Network Volume 루트 (기본 /workspace/simai). state_dir 기본값의 부모
     SIMAI_TIER0_ID                   Tier 0 인스턴스 ID (기본 tier0-01)
     SIMAI_TIER0_ENGINE               YOLO26x-pose TensorRT 엔진 경로 (deploy/tier0/entrypoint.sh 가 넣는다, LIVE 입력)
+    SIMAI_TIER0_WEIGHTS              엔진이 없을 때 ultralytics 로 여는 가중치(.pt) 경로 (느리다, 경고를 남긴다)
+    SIMAI_TIER0_IMGSZ                검출 입력 크기 (기본 1280, 엔진을 만든 값과 같아야 한다)
+    SIMAI_TIER0_VIDEO_PORTS, RUNPOD_TCP_PORT_*, SIMAI_TIER0_VIDEO_LISTEN_HOST
+                                     LIVE I0 영상 포트 (video_ingest.listen_specs_from_env). TLS·토큰은 제어 채널과 같은 값
     SIMAI_EC2_I1_URL / SIMAI_EC2_BASE_URL (+ SIMAI_EC2_I1_PATH), SIMAI_TIER0_TOKEN, SIMAI_EC2_CA_FILE
                                      I1 접속 (i1_client.I1Settings). 둘 다 없으면 EC2 없이 돈다(오프라인, health EC2_LINK_LOST)
     SIMAI_TIER0_CONTROL_PORT         I0 제어 채널(wss) 대칭 매핑 요청 번호. 실제 포트는 RUNPOD_TCP_PORT_<요청 번호>.
@@ -61,6 +67,16 @@ class SimInput:
     max_backlog_ms: int = 500
 
 
+DECODERS = ("nvdec", "cpu")
+
+
+@dataclass(frozen=True)
+class LiveInputSettings:
+    decoder: str = "nvdec"
+    max_queue_wait_ms: int = 150
+    queue_depth: int = 1
+
+
 @dataclass(frozen=True)
 class ControlSettings:
     host: str
@@ -86,6 +102,9 @@ class Tier0Settings:
     checkpoint_interval_s: float = 1.0
     drain_s: float = 5.0
     engine_path: str | None = None
+    weights_path: str | None = None
+    imgsz: int = 1280
+    live: LiveInputSettings | None = None
     i1: I1Settings | None = None
     control: ControlSettings | None = None
     env: Mapping[str, str] = field(default_factory=dict, repr=False)
@@ -200,6 +219,7 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
     mode = input_doc.get("mode")
     sim = None
     camera_ids: tuple[str, ...] = ()
+    live: LiveInputSettings | None = None
     if mode == "sim":
         if "run_dir" not in input_doc:
             raise Tier0ConfigError("input.run_dir(SIM 출력 디렉터리)가 없다")
@@ -217,6 +237,16 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         if not (isinstance(ids, list) and ids and all(isinstance(c, str) and c for c in ids)):
             raise Tier0ConfigError("input.camera_ids 는 카메라 ID 목록이다")
         camera_ids = tuple(ids)
+        if len(set(camera_ids)) != len(camera_ids):
+            raise Tier0ConfigError("input.camera_ids 에 같은 카메라가 두 번 있다")
+        decoder = input_doc.get("decoder", "nvdec")
+        if decoder not in DECODERS:
+            raise Tier0ConfigError(f"input.decoder 는 {' 또는 '.join(DECODERS)} 다")
+        depth = _int(input_doc, "queue_depth", 1, minimum=1)
+        if depth > 2:
+            raise Tier0ConfigError("input.queue_depth 는 1 또는 2 다 (명세 5.1)")
+        live = LiveInputSettings(decoder=decoder, max_queue_wait_ms=_int(input_doc, "max_queue_wait_ms", 150),
+                                 queue_depth=depth)
     else:
         raise Tier0ConfigError(f"input.mode 는 sim 또는 live 다: {mode!r}")
 
@@ -241,6 +271,10 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
             raise Tier0ConfigError(f"{name} 는 양수다")
     engine = (env.get("SIMAI_TIER0_ENGINE") or "").strip() or None
+    weights = (env.get("SIMAI_TIER0_WEIGHTS") or "").strip() or None
+    imgsz_raw = (env.get("SIMAI_TIER0_IMGSZ") or "1280").strip()
+    if not imgsz_raw.isdigit() or int(imgsz_raw) < 32:
+        raise Tier0ConfigError("SIMAI_TIER0_IMGSZ 는 32 이상 정수다")
     return Tier0Settings(
         gateway_id=gateway_id,
         state_dir=state_dir,
@@ -256,6 +290,9 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         checkpoint_interval_s=float(checkpoint_interval_s),
         drain_s=float(drain_s),
         engine_path=engine,
+        weights_path=weights,
+        imgsz=int(imgsz_raw),
+        live=live,
         i1=_i1({**env, "SIMAI_TIER0_ID": gateway_id}),
         control=_control(env),
         env=env,

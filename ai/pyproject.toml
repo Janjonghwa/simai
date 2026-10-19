@@ -9,7 +9,8 @@ dependencies = []
 [project.optional-dependencies]
 # 무거운 의존성은 기능별로 나눈다. CUDA·Torch 빌드는 deploy/의 Docker 이미지가 고정한다.
 # pyarrow: 2D 관측(observation_2d) Parquet 보관 (simai_ai.io.obs2d_parquet, 명세 11.2)
-io = ["opencv-python-headless>=4.9", "pyarrow>=17"]
+# av(PyAV): Tier 0 I0 압축 프레임 디코딩 (simai_ai.io.pyav_decoder: CPU, Pod 는 hwaccel cuda = NVDEC, 명세 5.1)
+io = ["opencv-python-headless>=4.9", "pyarrow>=17", "av>=14"]
 # lap: ultralytics.trackers 가 import 시점에 요구한다(없으면 런타임에 pip 자동 설치를 시도한다)
 # ultralytics 8.4.178 이상: TrackTrack 추적기와 추적기 인스턴스별 ID 카운터에 기댄다
 detection = ["ultralytics>=8.4.178", "lap>=0.5.12"]
@@ -43,6 +44,8 @@ dev = [
     "numpy>=1.26",
     # 2D 관측 Parquet 시험용. 기능 설치는 extras io 가 같은 범위를 선언한다
     "pyarrow>=17",
+    # Tier 0 LIVE 입력 시험: 시험 안에서 H.264 를 만들고 CPU 로 디코딩한다(영상은 커밋하지 않음). extras io 와 같은 범위
+    "av>=14",
     # 번들 조정 시험용. 기능 설치는 extras calibration 이 같은 범위를 선언한다
     "scipy>=1.11",
     # I0 영상 수신 TLS 시험: 시험 중에 자체 서명 인증서를 만든다(커밋하지 않음). 실행 시에는 쓰지 않는다
@@ -105,6 +108,7 @@ forbidden_modules = [
     "referencing",
     "pyarrow",
     "scipy",
+    "av",
 ]
 
 [[tool.importlinter.contracts]]

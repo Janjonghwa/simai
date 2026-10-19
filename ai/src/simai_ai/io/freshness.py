@@ -226,6 +226,23 @@ class FrameLog:
             s.sequenced += sequenced
             s.decoded += decoded
 
+    def counts(self, camera_id: str) -> dict[str, object]:
+        """누적 개수와 최근 표본의 frame_age p95·queue_wait 최댓값을 잠금 안에서 복사한다(health 집계·표시 파일용.
+        다른 스레드가 기록하는 중에 읽어도 된다)."""
+        with self._lock:
+            s = self.stats[camera_id]
+            return {
+                "received": s.received,
+                "sequenced": s.sequenced,
+                "decoded": s.decoded,
+                "inferred": s.inferred,
+                "network_loss": s.network_loss,
+                "decode_failed": s.decode_failed,
+                "skipped_by_reason": {str(k): v for k, v in s.skipped_by_policy.items()},
+                "frame_age_ms_p95": percentile(s.frame_age_ms, 95),
+                "queue_wait_ms_max": max(s.queue_wait_ms, default=None),
+            }
+
     def recover_loss(self, camera_id: str) -> None:
         """손실로 센 프레임이 늦게 도착했다. 손실에서 빼고(LATE_ARRIVAL 로 따로 기록됨) 순서 도착으로 센다."""
         with self._lock:
