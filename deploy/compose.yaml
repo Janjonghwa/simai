@@ -3,6 +3,7 @@
 #   docker compose -f deploy/compose.yaml run --rm tier0 --help             # GPU 없이 진입점 확인
 #   docker compose -f deploy/compose.yaml run --rm tier0                    # 볼륨에 가중치가 없으면 종료 코드 2
 #   docker compose -f deploy/compose.yaml --profile gpu run --rm tier0-gpu  # NVIDIA GPU 가 있는 Linux 호스트
+#   docker compose -f deploy/compose.yaml --profile gpu up tier0-gpu worker # 분석 워커는 Tier 0 준비(phase=running·reserve OK) 뒤에 뜬다
 # simai-volume 은 Network Volume(/workspace) 대역이다. 가중치는 여기에 직접 넣는다(이미지·저장소에 넣지 않음).
 name: simai
 
@@ -11,6 +12,23 @@ x-tier0-env: &tier0-env
   SIMAI_TIER0_WEIGHTS: /workspace/simai/weights/yolo/yolo26x-pose.pt
   SIMAI_ENGINE_CACHE: /workspace/simai/engines
   SIMAI_OBS2D_ROOT: /workspace/simai/obs2d
+  SIMAI_TIER0_GPU_RESERVE_MB: "8192"           # Tier 0 GPU 메모리 선확보 (S15P31A101-60, G0 실측 전 초기값)
+
+# 분석 워커 GPU 공유 값 (simai_ai.gpu.budget.WorkerGpuSettings.from_env, docs/design/tier0-gpu-priority.md). 모두 G0 실측 전 초기값
+x-worker-env: &worker-env
+  SIMAI_ROOT: /workspace/simai
+  SIMAI_EC2_BASE_URL: ${SIMAI_EC2_BASE_URL:-}
+  SIMAI_WORKER_ID: worker-01
+  SIMAI_WORKER_GPU_MEMORY_FRACTION: "0.70"
+  SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION: "0.55"
+  SIMAI_WORKER_VLLM_MAX_NUM_SEQS: "4"
+  SIMAI_GPU_TIER0_FRACTION: "0.20"
+  SIMAI_WORKER_LAG_BUDGET_MS: "600"
+  SIMAI_WORKER_MARKER_MAX_AGE_S: "15"
+  SIMAI_WORKER_RESUME_AFTER_S: "30"
+  SIMAI_WORKER_LIVE_WAIT_MS: "5000"
+  SIMAI_WORKER_HOLD_MAX_S: "60"
+  # SIMAI_WORKER_TOKEN 은 여기 두지 않는다: 볼륨 /workspace/.simai-private/worker.env 를 simai-wait-tier0 --env-file 로 읽는다
 
 services:
   tier0:
@@ -23,6 +41,23 @@ services:
     profiles: ["gpu"]
     image: ${SIMAI_TIER0_IMAGE:-simai/tier0:local}
     environment: *tier0-env
+    volumes:
+      - simai-volume:/workspace
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu, compute, utility, video]   # video: LIVE 입력 NVDEC (이미지 NVIDIA_DRIVER_CAPABILITIES 와 같다)
+
+  # 분석 워커: 같은 이미지·같은 GPU·같은 볼륨. Tier 0 표시 파일이 phase=running·reserve.state=OK 가 된 뒤에만 뜬다
+  worker:
+    profiles: ["gpu"]
+    image: ${SIMAI_TIER0_IMAGE:-simai/tier0:local}
+    command: ["simai-wait-tier0", "--env-file", "/workspace/.simai-private/worker.env", "--",
+              "python", "-m", "services.worker"]
+    environment: *worker-env
     volumes:
       - simai-volume:/workspace
     deploy:
