@@ -184,15 +184,21 @@ def test_start_failure_removes_new_marker_but_keeps_previous_unclean(tmp_path, s
 
 def test_marker_write_failure_is_unknown_not_idle(tmp_path, sim_run) -> None:
     """리뷰 R1 재현: 표시 파일 쓰기만 실패하는 Tier 0 가 돌 때 새 접수 문은 LIVE(모름)로 보고 아무 유형도 받지 않는다.
-    Tier 0 는 판정을 계속하고, 쓰기 실패를 status·로그로 알린다(health tier0_warnings 는 닫힌 목록이라 MR 제안)."""
+    Tier 0 는 판정을 계속하고, 쓰기 실패를 status·로그와 health tier0_warnings LIVE_MARKER_WRITE_FAILED(2.1.0, -197)로 알린다.
+    쓰기가 다시 되면 경고가 빠진다."""
     settings = _settings(tmp_path, sim_run)
     service = service_mod.Tier0Service(settings)
     original = service_mod._atomic_write
+    failing = {"on": True}
 
     def failed_marker(path, data):
-        if path == settings.live_marker:
+        if failing["on"] and path == settings.live_marker:
             raise PermissionError("injected marker write failure")
         return original(path, data)
+
+    def codes() -> list[str] | None:
+        warnings = service.health.payload().get("tier0_warnings")
+        return None if warnings is None else [w["code"] for w in warnings]
 
     with patch.object(service_mod, "_atomic_write", failed_marker):
         service.start()
@@ -206,6 +212,12 @@ def test_marker_write_failure_is_unknown_not_idle(tmp_path, sim_run) -> None:
             assert ts.wait_until(lambda: service.judge.stats.ticks > ticks + 10, timeout=10)  # 판정은 계속
             assert service.marker_error is not None and "PermissionError" in service.marker_error
             assert service.status()["marker_error"] == service.marker_error
+            assert ts.wait_until(lambda: codes() == ["LIVE_MARKER_WRITE_FAILED"], timeout=10)
+            failing["on"] = False  # 볼륨이 돌아왔다
+            assert ts.wait_until(lambda: settings.live_marker.exists() and codes() == [], timeout=10)
+            assert service.marker_error is None
+            ticks = service.judge.stats.ticks
+            assert ts.wait_until(lambda: service.judge.stats.ticks > ticks + 5, timeout=10)
         finally:
             assert service.stop(timeout_s=30)
     assert service_mod._atomic_write is original

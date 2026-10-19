@@ -1,6 +1,6 @@
 {
   "_expect_error": "VLM 입력 프레임에 timestamp_source 가 없다 (명세 3.9)",
-  "schema_version": "2.0.0",
+  "schema_version": "3.0.0",
   "msg_type": "job_request",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000118",
   "sent_at": 1760342400500,

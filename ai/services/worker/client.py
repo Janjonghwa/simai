@@ -15,6 +15,8 @@ from typing import Any
 from .transport import LEASE_PATH, Response, Transport, TransportError, heartbeat_path, result_path
 
 SCHEMA_VERSION = "2.0.0"  # I5 대여 방식 (계약 2.0.0)
+CALLBACK_SCHEMA_VERSION = "2.1.0"  # job_callback 2.1.0: 반납 error.consume_attempt (-197)
+JOB_REQUEST_MAJOR = "3"  # job_request 3.0.0: attempt = 반납을 세지 않는 시도 번호 (-197). 2.x 는 대여 순번이라 받지 않는다
 log = logging.getLogger("services.worker")
 
 
@@ -65,15 +67,17 @@ class Lease:
     ttl_ms: int  # lease_expires_at − 응답 sent_at: 받은 순간부터 대여가 남은 시간
     time_left_ms: int  # leased_at + timeout_ms − 응답 sent_at: 받은 순간부터 실행 상한까지 남은 시간
     timeout_ms: int
-    max_attempts: int = 1  # 이 시도가 마지막이면(attempt == max_attempts) retryable 실패도 최종 FAILED 다(계약 job_callback)
-
-    @property
-    def last_attempt(self) -> bool:
-        return self.attempt >= self.max_attempts
+    max_attempts: int = 1  # 최대 시도 수(job_request 3.0.0). 마지막 시도의 retryable 실패는 최종 FAILED, 반납은 시도를 쓰지 않는다
 
     @classmethod
     def from_message(cls, msg: Mapping[str, Any]) -> Lease:
+        version = msg.get("schema_version") if isinstance(msg, Mapping) else None
+        if isinstance(version, str) and version.split(".")[0] != JOB_REQUEST_MAJOR:
+            # 다른 의미의 attempt(2.x 대여 순번)와 반납을 섞지 않는다. 설정 오류라 다시 보내지 않는다(대여 요청 오류로 워커가 멈춤)
+            raise RequestRejected(f"job_request {version} 는 받지 않는다: 워커는 {JOB_REQUEST_MAJOR}.x 만 받는다")
         try:
+            if not isinstance(version, str):
+                raise ValueError("schema_version 이 없다")
             if msg["msg_type"] != "job_request":
                 raise ValueError(f"job_request 가 아니다: {msg['msg_type']}")
             p = msg["payload"]
@@ -171,7 +175,7 @@ class LeaseClient:
 
     def envelope(self, msg_type: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         return {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": CALLBACK_SCHEMA_VERSION if msg_type == "job_callback" else SCHEMA_VERSION,
             "msg_type": msg_type,
             "msg_id": self._new_msg_id(),
             "sent_at": int(self._clock_ms()),

@@ -31,7 +31,7 @@ def _now() -> int:
 
 
 def _env(msg_type: str, payload: dict) -> dict:
-    return {"schema_version": "2.0.0", "msg_type": msg_type, "msg_id": str(uuid.uuid4()), "sent_at": _now(),
+    return {"schema_version": "3.0.0" if msg_type == "job_request" else "2.0.0", "msg_type": msg_type, "msg_id": str(uuid.uuid4()), "sent_at": _now(),
             "source_id": "ec2", "payload": payload}
 
 

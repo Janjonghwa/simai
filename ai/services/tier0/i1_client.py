@@ -85,7 +85,7 @@ CONTRACTS_VERSION = "2.0.0"
 # config_ack(ConfigSync)·tier0_endpoint(EndpointRegistrar)·risk_event_transition(outbox)은 만드는 모듈이 정한다.
 MESSAGE_SCHEMA_VERSIONS: Mapping[str, str] = {
     "world_state": WORLD_STATE_SCHEMA_VERSION,  # 2.0.0: UNCERTAIN head_z 값 (-179). 만드는 모듈(tracking.world_state)이 정한다
-    "health": HEALTH_SCHEMA_VERSION,  # 2.0.0: pipeline_lag_ms null·하한, tier0_warnings, sync_valid (-179). health.py 가 정한다
+    "health": HEALTH_SCHEMA_VERSION,  # 2.1.0: 2.0.0(-179) + tier0_warnings LIVE_MARKER_WRITE_FAILED(-197). health.py 가 정한다
     "observation_summary": "1.3.0",  # -155
     "calibration_update": "2.0.0",  # 보정 출처 값 정리 (-167)
 }

@@ -1,4 +1,4 @@
-"""health payload 조립 (계약 messages/health.schema.json 2.0.0, 명세 12.3, 6.1, 6.2, 6.5, 3.2, 3.9, 3.10).
+"""health payload 조립 (계약 messages/health.schema.json 2.1.0, 명세 12.3, 6.1, 6.2, 6.5, 3.2, 3.9, 3.10).
 
 System Health 값은 tracking.system_health.evaluate_health 가 정하고, 재시작 하한은 recovery.RecoveryHealthGate 가 덧씌운다.
 여기서는 그 입력을 모으고 계약 필드로 옮기기만 한다(판정 로직 없음, ai/CONVENTION.md).
@@ -25,7 +25,7 @@ System Health 값은 tracking.system_health.evaluate_health 가 정하고, 재�
   (Perception.camera_clocks)이 sync_valid 를 True 로 두는데, 그것은 측정 근거가 아니므로 true 로 싣지 않는다(지어내지 않음).
   fps 는 주기 갱신(update_fps)의 처리 프레임 수/경과.
 - tier0_warnings(2.0.0): 정리 주기(service._check_warnings)가 refresh_warnings 로 Checkpointer·JournalWriter·outbox·
-  EventStateSnapshot 상태를 읽어(읽기만) 켜진 경고와 처음 확인한 시각을 기억하고, payload 는 그 기억을 싣는다. health 는
+  EventStateSnapshot 상태와 표시 파일 쓰기 실패(service.marker_error, 2.1.0 LIVE_MARKER_WRITE_FAILED)를 읽어(읽기만) 켜진 경고와 처음 확인한 시각을 기억하고, payload 는 그 기억을 싣는다. health 는
   판정 lock 안에서도 만들어지므로(현장 경보 재동기화) 저널 I/O 동안 lock 을 쥘 수 있는 outbox·스냅샷 상태를 여기서 직접
   읽지 않는다. 한 번도 읽지 못했거나, 마지막 읽기가 실패했거나, 마지막 읽기가 WARNINGS_STALE_MS 보다 오래됐으면 필드를
   싣지 않는다(모름. 빈 배열 = 경고 없음과 구분). 원인 상태가 풀리면 다음 읽기에서 빠지고, 다시 켜지면 since_ms 가 새 시각이다.
@@ -49,8 +49,9 @@ from simai_ai.tracking.time_model import SAME_CLOCK, CaptureClock, TimeModelConf
 
 log = logging.getLogger("services.tier0.health")
 
-HEALTH_SCHEMA_VERSION = "2.0.0"
-"""health 계약이 마지막으로 바뀐 버전 (2.0.0: pipeline_lag_ms null·하한, tier0_warnings, cameras[].sync_valid, -179).
+HEALTH_SCHEMA_VERSION = "2.1.0"
+"""health 계약이 마지막으로 바뀐 버전 (2.0.0: pipeline_lag_ms null·하한, tier0_warnings, cameras[].sync_valid, -179.
+2.1.0: tier0_warnings code LIVE_MARKER_WRITE_FAILED, -197).
 봉투에 이 값을 쓰는 것은 송신 모듈(i1_client.MESSAGE_SCHEMA_VERSIONS, i0_control.DOWNSTREAM_VERSIONS)이다"""
 
 WARNINGS_STALE_MS = 5_000
@@ -58,7 +59,7 @@ WARNINGS_STALE_MS = 5_000
 
 
 class Tier0Warning(StrEnum):
-    """health.tier0_warnings 의 code (계약 2.0.0 닫힌 목록, 명세 6.5)."""
+    """health.tier0_warnings 의 code (계약 2.1.0 닫힌 목록, 명세 6.5·3.2)."""
 
     CHECKPOINT_STALLED = "CHECKPOINT_STALLED"
     CHECKPOINT_ERROR = "CHECKPOINT_ERROR"
@@ -66,17 +67,20 @@ class Tier0Warning(StrEnum):
     JOURNAL_FAILED = "JOURNAL_FAILED"
     OUTBOX_BLOCKED = "OUTBOX_BLOCKED"
     SNAPSHOT_BROKEN = "SNAPSHOT_BROKEN"
+    LIVE_MARKER_WRITE_FAILED = "LIVE_MARKER_WRITE_FAILED"  # 2.1.0 정보 경고: 판정·알림은 그대로
 
 
 @dataclass(frozen=True)
 class WarningSources:
     """운영 경고의 출처(읽기만). checkpointer: stalled()·last_error, journal_writer: stalled()·failed,
-    outbox: blocked, snapshot: broken (recovery.Checkpointer, eventlog.JournalWriter, SnapshotOutbox, EventStateSnapshot)."""
+    outbox: blocked, snapshot: broken (recovery.Checkpointer, eventlog.JournalWriter, SnapshotOutbox, EventStateSnapshot),
+    marker_error: 지금 표시 파일 쓰기 실패(Tier0Service.marker_error, 없으면 None)."""
 
     checkpointer: Any
     journal_writer: Any
     outbox: Any
     snapshot: Any
+    marker_error: str | None = None
 
 
 def active_warnings(sources: WarningSources) -> frozenset[Tier0Warning]:
@@ -89,6 +93,7 @@ def active_warnings(sources: WarningSources) -> frozenset[Tier0Warning]:
         Tier0Warning.JOURNAL_FAILED: writer.failed is not None,
         Tier0Warning.OUTBOX_BLOCKED: sources.outbox.blocked is not None,
         Tier0Warning.SNAPSHOT_BROKEN: sources.snapshot.broken is not None,
+        Tier0Warning.LIVE_MARKER_WRITE_FAILED: sources.marker_error is not None,
     }
     return frozenset(code for code, active in on.items() if active)
 

@@ -1,0 +1,21 @@
+{
+  "schema_version": "2.1.0",
+  "msg_type": "job_callback",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000209",
+  "sent_at": 1760342401710,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261017-0044",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001c1",
+    "job_type": "static_reconstruct",
+    "status": "FAILED",
+    "started_at": null,
+    "finished_at": 1760342401700,
+    "error": {
+      "code": "LIVE_EXP_BLOCKED",
+      "message": "LIVE 관제 중이라 static_reconstruct 를 돌리지 않는다",
+      "retryable": true,
+      "consume_attempt": false
+    }
+  }
+}

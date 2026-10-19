@@ -6,8 +6,9 @@ tests/services/tier0/test_tier0_gpu_priority.py 가 본다.
 반례:
 - 지연 초과·모름: 대여를 요청하지 않는다(EC2 대기열에 그대로).
 - long-poll 사이에 지연이 넘침: 받은 작업을 시작하지 않고 하트비트로 대여를 지키다(대여 유지 시간보다 길게) 풀리면 시작,
-  hold 상한까지 안 풀리면 retryable FAILED 로 돌려보낸다.
-- LIVE 시작과 EXP 작업 대여가 동시: 받은 EXP 작업을 시작하지 않고 돌려보낸다. 도는 중이면 취소를 알리고 돌려보낸다.
+  hold 상한까지 안 풀리면 반납한다(retryable FAILED + consume_attempt false, 계약 job_callback 2.1.0).
+- LIVE 시작과 EXP 작업 대여가 동시: 받은 EXP 작업을 시작하지 않고 반납한다. 도는 중이면 취소를 알리고 반납한다.
+- 반납은 시도 횟수를 쓰지 않는다: 마지막 시도도 다시 대기열에 가고 같은 attempt 로 다시 대여된다. 처리기 실패는 반납이 아니다.
 - 접수 문 자체가 예외: 받지 않는다.
 """
 
@@ -130,10 +131,12 @@ def test_overload_that_does_not_clear_defers_job_back_to_queue(ec2, make):
     w = make({"vlm_rationale": never}, ScriptedGate(lambda n: LIVE_OK if n == 1 else LIVE_BUSY), hold_max_s=0.3)
     assert w.run_once() is Outcome.DEFERRED
     job = ec2.jobs[job_id]
-    assert job.state == "QUEUED"  # retryable → EC2 가 다시 내줄 대기열로
-    assert job.error["code"] == "TIER0_PRIORITY" and job.error["retryable"] is True
+    assert job.state == "QUEUED" and job.attempt == 0  # 반납: 시도 횟수를 쓰지 않고 다시 대기열로
+    assert job.error == {"code": "TIER0_PRIORITY", "message": job.error["message"], "retryable": True,
+                         "consume_attempt": False}
     (cb,) = ec2.bodies("result")
     assert cb["payload"]["started_at"] is None  # 시작하지 않았다
+    assert cb["schema_version"] == "2.1.0"
 
 
 def test_hold_is_bounded_by_half_of_execution_limit(ec2, make):
@@ -175,6 +178,7 @@ def test_live_start_preempts_running_exp_job(ec2, make):
     assert cancelled.wait(5.0)
     job = ec2.jobs[job_id]
     assert job.error["code"] == "LIVE_PREEMPTED" and job.state == "QUEUED"
+    assert job.error["consume_attempt"] is False and job.attempt == 0  # 선점은 작업 탓이 아니다: 반납
     (cb,) = ec2.bodies("result")
     assert cb["payload"]["started_at"] is not None  # 시작했던 작업이다
 
@@ -248,38 +252,84 @@ def test_lease_retry_rechecks_gate_and_does_not_burn_last_attempt(ec2):
     assert ec2.bodies("result") == []
 
 
-def test_last_attempt_is_held_not_returned_while_live(ec2, make):
-    """R2: 마지막 시도(attempt == max_attempts)는 돌려보내면 최종 FAILED 다. LIVE 가 끝날 때까지 대여를 지키다가 시작한다."""
+def test_counterexample_last_attempt_released_while_live_is_leased_again_with_same_attempt(ec2, make):
+    """반례 1: 마지막 시도(attempt == max_attempts)가 LIVE 에 막혔다. 반납하면 최종 FAILED 가 아니라 다시 대기열이고,
+    LIVE 가 끝난 뒤 같은 작업을 같은 attempt·새 lease_id 로 다시 대여해 끝낸다."""
     tune(ec2, max_attempts=1, ttl_ms=300, heartbeat_interval_ms=40)
     job_id = ec2.add_job("static_reconstruct", GLTF, timeout_ms=10_000)
-    t_end = [None]
+    live = {"on": False}
 
     def answer(n):
         if n == 1:
             return OPEN  # 대여 요청 때는 LIVE 아님
-        if t_end[0] is None:
-            t_end[0] = time.monotonic() + 0.6  # 받은 순간 LIVE, 0.6초 뒤 끝
-        return OPEN if time.monotonic() >= t_end[0] else LIVE_OK
+        if n == 2:
+            live["on"] = True  # 받은 순간 LIVE
+        return LIVE_OK if live["on"] else OPEN
 
     ran = []
-    w = make({"static_reconstruct": lambda ctx: ran.append(time.monotonic()) or dict(GLTF)}, ScriptedGate(answer),
-             hold_max_s=0.05)
+    w = make({"static_reconstruct": lambda ctx: ran.append(ctx.attempt) or dict(GLTF)}, ScriptedGate(answer))
+    t = time.monotonic()
+    assert w.run_once() is Outcome.DEFERRED
+    assert time.monotonic() - t < 1.0  # 실행 상한까지 대여를 붙잡고 기다리지 않는다
+    job = ec2.jobs[job_id]
+    assert job.state == "QUEUED" and job.attempt == 0 and not ran
+    assert w.run_once() is Outcome.PAUSED  # LIVE 동안 EXP 는 대여 요청에서 빠진다
+    live["on"] = False
     assert w.run_once() is Outcome.ACCEPTED
-    assert ran and ran[0] >= t_end[0]  # LIVE 동안 시작하지 않았다
-    assert ec2.jobs[job_id].state == "SUCCEEDED" and len(ec2.leases_of(job_id)) == 1
+    first, second = ec2.leases_of(job_id)
+    assert first.attempt == second.attempt == 1 and first.lease_id != second.lease_id
+    assert ran == [1] and ec2.jobs[job_id].state == "SUCCEEDED"
 
 
-def test_last_attempt_overload_holds_past_hold_max(ec2, make):
-    """마지막 시도는 hold_max_s 가 지나도 돌려보내지 않고 실행 상한 직전까지 기다린다(못 열리면 그때만 실패)."""
+def test_counterexample_last_attempt_overload_released_after_hold_max(ec2, make):
+    """반례 2: 마지막 시도의 지연 초과도 hold_max_s 뒤 반납한다(실행 상한까지 GPU 대기 슬롯을 붙잡지 않음). 최종 FAILED 아님."""
     tune(ec2, max_attempts=1, ttl_ms=300, heartbeat_interval_ms=40)
     job_id = ec2.add_job("vlm_rationale", copy.deepcopy(VLM_INPUT), priority="VLM_FAST", timeout_ms=1500)
     w = make({"vlm_rationale": never}, ScriptedGate(lambda n: LIVE_OK if n == 1 else LIVE_BUSY), hold_max_s=0.05)
     t = time.monotonic()
-    out = w.run_once()
-    held = time.monotonic() - t
-    assert held >= 1.0  # hold_max_s(0.05)보다 훨씬 오래, 실행 상한 1.5s 직전까지
-    assert out is Outcome.DEFERRED and ec2.jobs[job_id].error["code"] == "TIER0_PRIORITY"
-    assert ec2.jobs[job_id].state == "FAILED"  # I5 에 무소모 반납이 없어 불가피(MR 제안)
+    assert w.run_once() is Outcome.DEFERRED
+    assert time.monotonic() - t < 1.0
+    job = ec2.jobs[job_id]
+    assert job.error["code"] == "TIER0_PRIORITY" and job.state == "QUEUED" and job.attempt == 0
+
+
+def test_counterexample_last_attempt_live_preempted_is_released(ec2, make):
+    """반례 3: 마지막 시도가 도는 중 LIVE 가 시작됐다. 취소하고 반납한다(이전에는 최종 FAILED). 다시 대여하면 같은 attempt."""
+    tune(ec2, max_attempts=1)
+    job_id = ec2.add_job("static_reconstruct", GLTF, timeout_ms=10_000)
+    live = threading.Event()
+    attempts = []
+
+    def heavy(ctx: JobContext):
+        attempts.append(ctx.attempt)
+        if len(attempts) == 1:
+            live.set()
+            assert ctx.cancelled.wait(5.0)
+            return {"gltf_uri": "s3://never"}
+        return dict(GLTF)
+
+    w = make({"static_reconstruct": heavy}, ScriptedGate(lambda n: LIVE_OK if live.is_set() else OPEN))
+    assert w.run_once() is Outcome.DEFERRED
+    assert ec2.jobs[job_id].state == "QUEUED" and ec2.jobs[job_id].error["code"] == "LIVE_PREEMPTED"
+    live.clear()
+    assert w.run_once() is Outcome.ACCEPTED
+    assert attempts == [1, 1] and ec2.jobs[job_id].state == "SUCCEEDED"
+
+
+def test_negative_control_handler_failure_after_start_consumes_attempt(ec2, make):
+    """음성 대조: 접수 문이 열려 시작한 작업의 retryable 실패는 반납이 아니다. 마지막 시도면 기존대로 최종 FAILED."""
+    from services.worker.handlers import JobFailed
+
+    tune(ec2, max_attempts=1)
+    job_id = ec2.add_job("static_reconstruct", GLTF, timeout_ms=10_000)
+
+    def fail(ctx: JobContext):
+        raise JobFailed("INPUT_FETCH_FAILED", "입력 내려받기 실패", retryable=True)
+
+    w = make({"static_reconstruct": fail}, ScriptedGate(OPEN))
+    assert w.run_once() is Outcome.ACCEPTED
+    job = ec2.jobs[job_id]
+    assert job.state == "FAILED" and job.attempt == 1 and "consume_attempt" not in job.error
 
 
 def test_slow_heartbeat_does_not_delay_live_preemption(ec2):

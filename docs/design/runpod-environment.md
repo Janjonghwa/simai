@@ -103,7 +103,7 @@ Host simai-pod
 - c·d 는 -182·-60 이 머지된 뒤의 경로(`simai_ai.io.NvdecDecoder`, `tests/services/tier0/live_video.py`, `experiments/gpu_queue/tier0_priority_probe.py` 등)를 부른다. 머지 전이면 각 단계가 '없음(머지 필요)'으로 실패하고 다음 항목으로 간다. PyAV 는 -182 가 `io` extra 에 넣었으므로 그 뒤에 빌드한 이미지여야 c 가 돈다.
 - 예상 시간 근거: a 는 1GB 쓰기+fsync 200회, b 는 deploy/README 의 "H100 에서 엔진 첫 빌드 수 분" + 캐시·추론, c 는 c4 LIVE 120초 + 엔진 캐시 기동 + 인코딩·디코딩 측정·기하 측정, d 는 줄인 시간(watch 120·120·90·60초) + P0 시험, e·f 는 노트북 실측(e 약 40초, f 1회 약 35초)에 Network Volume fsync 지연과 5회 반복을 넉넉히 더했다. g 는 -87 이 정할 때까지의 가정이다.
 - **H100 총 예상**: 지금 큐 약 58분 + Pod 기동·이미지 받기(압축 약 7.4GB) 약 10분 + 사본 올리기·결과 회수 약 5분 ≈ **1시간 15분**. d 를 G0 판정용(`--full`, watch 600초)으로 돌리면 +20분, g 까지 약 2시간. 전체 시간 상한 기본값은 9000초(2.5시간).
-- 결과 기록은 run_record 계약을 따른다. `experiment_id` 는 계약 enum 에 검증용 값이 없어 `INT-01`, `experiment_state` 는 `BENCHMARK`, 입력 출처는 `SIM`·`is_upper_bound: true` 다(제품 성능 지표로 쓰지 않는다). 종료 코드는 `notes`, 지표는 각 스크립트가 `metrics.json` 에 남긴다.
+- 결과 기록은 run_record 계약을 따른다. `experiment_id` 는 운영 경로 검증 Run 값 `VAL-01`(run_record 2.1.0, `e_gate` 없음, S15P31A101-197), `experiment_state` 는 `BENCHMARK`, 입력 출처는 `SIM`·`is_upper_bound: true` 다(제품 성능 지표로 쓰지 않는다). 종료 코드는 `notes`, 지표는 각 스크립트가 `metrics.json` 에 남긴다.
 
 ### 실행 순서
 

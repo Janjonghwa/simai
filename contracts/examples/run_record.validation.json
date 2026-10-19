@@ -1,0 +1,48 @@
+{
+  "schema_version": "2.1.0",
+  "run_id": "gpu-session1-20261020-0001.a_pod_check",
+  "experiment_id": "VAL-01",
+  "jira_key": "S15P31A101-183",
+  "owner": "GPU 세션 검증 Owner",
+  "git_commit": "ebbacea",
+  "branch": "S15P31A101-183-gpu-session1",
+  "dirty_worktree": false,
+  "env_hash": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "model_version": "n/a (인프라 점검)",
+  "config": {
+    "path": "deploy/scripts/gpu_session1.py",
+    "sha256": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+  },
+  "input_provenance": {
+    "frames": {
+      "source": "SIM",
+      "dataset_id": "none:infrastructure-check"
+    },
+    "is_upper_bound": true
+  },
+  "gpu": {
+    "model": "NVIDIA H100 80GB HBM3",
+    "driver": "570.x",
+    "cuda": "12.8",
+    "provider": "RUNPOD",
+    "region": "JP",
+    "datacenter": "AP-JP-1",
+    "shared_with_tier0": false
+  },
+  "started_at": 1760342000000,
+  "finished_at": 1760342400000,
+  "status": "SUCCEEDED",
+  "experiment_state": "BENCHMARK",
+  "metrics": {},
+  "results": [
+    {
+      "kind": "LOG",
+      "uri": "volume://AP-JP-1/simai/gpu_queue/gpu-session1/a_pod_check/stdout.log"
+    }
+  ],
+  "cost": {
+    "gpu_hours": 0.2
+  },
+  "review": null,
+  "notes": "exit 0"
+}

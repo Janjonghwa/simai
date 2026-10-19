@@ -205,7 +205,7 @@ def build_jobs(lay: Layout, git: dict | None) -> tuple[dict, list[dict]]:
             "live_guard": {"enabled": False},
         },
         "record": {
-            "experiment_id": "INT-01",
+            "experiment_id": "VAL-01",  # 운영 경로 검증 Run(run_record 2.1.0). 실험 채택 근거가 아니라 e_gate 없음
             "owner": OWNER,
             "experiment_state": "BENCHMARK",
             "gpu": gpu,
