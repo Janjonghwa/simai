@@ -8,22 +8,20 @@
 world_state 2.0.0 부터 head_z 에는 VALID 값과 UNCERTAIN 값이 모두 실리고(UNAVAILABLE 이면 null, 사용자 결정 2026-10-19), 1.x 는
 VALID 일 때만 값이 있었다. risk.world 는 확정값(VALID)만 WorldTrack.head_z 로, UNCERTAIN 값은 head_z_uncertain 으로 따로 넘긴다
 (R1·R5 가 UNCERTAIN 값을 확정 근거로 쓰지 않게, S15P31A101-179). R4 는 머리 높이와 그 근거가 VALID 인지 UNCERTAIN 인지를
-head_z_validity 로 정한다.
-- VALID: head_z 를 그대로 쓴다(확정 근거). skeleton 을 다시 보지 않는다.
+head_z_validity 로 정한다. 머리 높이는 계약 값(head_z·head_z_uncertain)만 쓰고 skeleton 귀·눈으로 다시 만들지 않는다
+(S15P31A101-184: 머리 꼭대기 오프셋은 Tier 0 관절 게이트 JointGateConfig.head_top_offset_m 한 곳에서만 관리한다).
+- VALID: head_z 를 그대로 쓴다(확정 근거).
 - UNCERTAIN: 머리가 보이기는 했지만 확정할 근거가 없다. 판정에 쓰되 확인 필요(`JOINT_UNCERTAIN`)를 붙인다(명세 7.2 R4 '관절이
-  UNCERTAIN 이면 낙상 의심 + 확인 필요', 5.2 'UNCERTAIN 이면 등급은 유지하고 확인 필요'). 값은 2.0.0 문서면 계약이 실은
-  head_z_uncertain 을 그대로 쓴다. 1.x 문서(값 없음)면 같은 트랙 skeleton 의 관측(observed) UNCERTAIN 귀·눈(COCO17 1~4)에서
-  Tier 0 와 같은 식(Z 평균 + head_top_offset_m, geometry.joint_gate.GatedSkeleton.head_z 의 UNCERTAIN 값)으로 다시 만든다. 값이
-  필요한 이유: 2대 관측 경쟁 후보 영역처럼 머리 근거가 계속 UNCERTAIN 인 사람은 값 없이는 급하강을 볼 수 없어 낙상을 놓친다
-  (단상 낙상 벡터). 값도 귀·눈 좌표도 없으면 머리 높이를 모르는 것으로 본다(아래 '머리 높이를 모름', head_uncertain). 다시
-  만드는 경로의 오프셋 기본값(0.12 m)은 Tier 0 JointGateConfig.head_top_offset_m 과 같아야 한다(같은지 시험한다. 1.x 문서를
-  더 받지 않게 되면 이 경로와 오프셋 이중 관리를 없앤다, 후속).
-- UNAVAILABLE: 머리 높이를 모른다(좌표 있는 귀·눈 없음, 이번 시각 관측 없음). skeleton 으로 다시 만들지 않는다.
-- head_z_validity 가 없는 이전 버전(1.3.0 이하) 문서: 지금까지처럼 읽는다(하위 호환). head_z 가 있으면 그 값(VALID, 다만
-  skeleton 이 있는데 관측 VALID 귀·눈이 하나도 없으면 UNCERTAIN 귀·눈에서 왔다고 보고 UNCERTAIN), head_z 가 null 이면 이유를
-  모르므로 skeleton 의 관측 VALID 귀·눈을 먼저, 없으면 UNCERTAIN 귀·눈을 같은 식으로 쓴다. 둘 다 없으면 모름이다.
-추정(inferred, HMR) 관절은 어느 경우에도 쓰지 않는다(규칙 1). head_z_validity 와 head_z 가 어긋난 문서(VALID 인데 null 등)는
-risk.world 가 계약 위반으로 거부한다.
+  UNCERTAIN 이면 낙상 의심 + 확인 필요', 5.2 'UNCERTAIN 이면 등급은 유지하고 확인 필요'). 값은 2.0.0 문서가 실은
+  head_z_uncertain 을 그대로 쓴다. 값이 필요한 이유: 2대 관측 경쟁 후보 영역처럼 머리 근거가 계속 UNCERTAIN 인 사람은 값
+  없이는 급하강을 볼 수 없어 낙상을 놓친다(단상 낙상 벡터). 1.x 문서(UNCERTAIN 인데 값 null)는 머리 높이를 모르는 것으로
+  본다(지어내지 않음, 아래 '머리 높이를 모름', head_uncertain). 그래서 1.x 문서에서는 급하강 후보가 있을 때만 '급하강 직후
+  관측 상실'로 발생하고, 그 밖에는 유지(holding)만 한다.
+- UNAVAILABLE: 머리 높이를 모른다(좌표 있는 귀·눈 없음, 이번 시각 관측 없음).
+- head_z_validity 가 없는 이전 버전(1.3.0 이하) 문서: 그때 head_z 는 VALID 일 때만 실렸으므로 값이 있으면 VALID 로 쓰고, null
+  이면 이유를 모르므로 머리 높이를 모름(head_unavailable)으로 둔다.
+skeleton 은 읽지 않으므로 추정(inferred, HMR) 관절이 머리 높이에 들어갈 길이 없다(규칙 1, 계약 head_z 는 observed 귀·눈에서만
+만든다). head_z_validity 와 head_z 가 어긋난 문서(VALID 인데 null 등)는 risk.world 가 계약 위반으로 거부한다.
 
 **지면 기준 높이.** 낮은 자세는 머리 높이 − 서 있는 면 Z(ground_anchor_xyz 의 Z, 단상 위면 상판 높이)로 본다. 계단·단상에서
 내려오면 머리와 함께 접지도 내려가므로 낮은 자세가 아니다. 접지를 모르면 바닥 Z=0 으로 대체하지 않는다(규칙 2).
@@ -42,7 +40,7 @@ risk.world 가 계약 위반으로 거부한다.
 - 급하강 직후 관측 상실: 후보인 사람이 관측을 잃으면(트랙이 OBSERVED 가 아님·world_state 에서 사라짐·머리 높이를 모름) 마지막
   머리 관측이 급하강에서 lost_window_ms 안이었거나 이미 낮은 자세였으면 바로 발생한다. 발생 뒤(FALLEN)에 잃어도 같다. 확인
   필요 이유는 트랙을 잃었으면 `PREDICTED`(위치가 마지막 추정값), 트랙은 보이는데 머리 근거 관절만 잃었으면 `JOINT_UNCERTAIN`
-  이다(머리 근거가 UNAVAILABLE 이거나 UNCERTAIN 인데 귀·눈 값이 없을 때 포함). 관측이 돌아오지 않는 동안 계속 발생 판정을
+  이다(머리 근거가 UNAVAILABLE 이거나 UNCERTAIN 인데 값이 없을 때 포함). 관측이 돌아오지 않는 동안 계속 발생 판정을
   내고(사라진 트랙은 lost_memory_ms 까지), 돌아오면 그때 높이로 다시 본다(낮은 자세·띠면 FALLEN 으로 잇고, 일어나 있으면
   후보를 버린다).
 - 발생 뒤(FALLEN): 지면 기준 머리 높이가 low_raise_m 이하면 발생 판정, low_clear_m 이하(히스테리시스 띠)면 유지(holding),
@@ -55,13 +53,14 @@ risk.world 가 계약 위반으로 거부한다.
   해소 유지 3초와 같음)에 이르면 회복 확인을 끝내고, 그 뒤로는 머리 유효성과 무관하게 높으면 판정을 내지 않아 lifecycle 이
   해소한다. 그래서 VALID 한 프레임만으로는 해소되지 않고, UNCERTAIN 이 섞여도 VALID 근거가 충분히 쌓이면 해소된다(활성
   이벤트가 없는 사람에게 유지를 남발하지 않음). 낮은 자세·띠면 누적을 처음부터 다시 하고, 머리 모름·관측 상실은 연속을 끊는다.
-  새 급하강 감지(UNCERTAIN 값 포함, `JOINT_UNCERTAIN`)는 그대로다. 1.x 문서(UNCERTAIN 값 없이 skeleton 귀·눈)도 같다.
+  새 급하강 감지(UNCERTAIN 값 포함, `JOINT_UNCERTAIN`)는 그대로다. 1.x 문서의 UNCERTAIN(값 없음)은 머리 모름이라 발생 뒤에는
+  관측 상실 발생 판정으로 해소를 막는다.
 발생 지속 조건(3프레임 중 2)·해소 유지 시간·재개는 lifecycle 이 한다.
 
 **모르는 상태로 해소하지 않음(6.4).** lifecycle 은 판정이 없고 트랙이 OBSERVED 면 해소 시간을 센다. 그래서 트랙은 관측되지만
 R4 에 필요한 값을 모르면 유지 판정(holding)을 낸다. holding 은 새 이벤트를 만들지 않고 활성 R4 이벤트의 해소 확인만 다시 세게
 한다(R5 의 속도 모름 holding 과 같은 방식).
-- 머리 높이를 모름(위 관측 상실 발생에 해당하지 않을 때): input_unknown + head_unavailable(UNCERTAIN 인데 귀·눈 값이 없으면
+- 머리 높이를 모름(위 관측 상실 발생에 해당하지 않을 때): input_unknown + head_unavailable(UNCERTAIN 인데 값이 없으면
   head_uncertain), `JOINT_UNCERTAIN`. 급하강 후보인 사람이 이렇게 되면 위 '급하강 직후 관측 상실'과 같다(근거 관절 상실).
 - 지면 기준 높이를 모름(접지·마지막 접지 없음, 후보 아님): input_unknown + support_unknown, `Z_UNKNOWN`.
 - 낮은 자세인데 급하강 이력이 없음(프로세스 재시작·규칙 버전 변경·보정 변경 뒤 이력 없음, 의도적으로 누움): low_posture. 활성 이벤트만 유지한다.
@@ -102,7 +101,7 @@ from simai_ai.risk._parse import RiskInputError
 from simai_ai.risk.common import ConfidenceReason, Severity
 from simai_ai.risk.rule import Finding, RuleContext, RuleSpec
 from simai_ai.risk.rules.r1_zone_entry import track_confidence_reasons
-from simai_ai.risk.world import JointLayout, ObservationState, Validity, WorldTrack
+from simai_ai.risk.world import ObservationState, Validity, WorldTrack
 
 R4_RULE_ID = "R4"
 R4_RULE_VERSION = 1
@@ -131,8 +130,6 @@ R4_FALLBACK_LOW_DROP_M = 1.0
 """접지를 전혀 모를 때: 급하강 전 머리 높이에서 이만큼 이상 내려가 있으면 낮은 자세(명세 5.2 head_z 변화)"""
 R4_FALLBACK_CLEAR_DROP_M = 0.8
 """접지를 전혀 모를 때: 내려간 양이 이보다 작으면 낮은 자세가 아니다(띠 0.8~1.0 m)"""
-R4_HEAD_TOP_OFFSET_M = 0.12
-"""귀·눈 Z 평균에서 머리 꼭대기까지. Tier 0 geometry.joint_gate.JointGateConfig.head_top_offset_m 기본값과 같아야 한다"""
 R4_RECOVERY_VALID_MS = 3000
 """회복 확인(모듈 설명)을 끝내는 VALID 높은 머리 근거 누적 시간. lifecycle 기본 해소 유지(LifecyclePolicy.clear_hold_ms)와 같다"""
 _RECOVERY_GAP_CAP_MS = 500
@@ -153,10 +150,6 @@ REASON_SUPPORT_LAST_KNOWN = "support_last_known"
 REASON_SUPPORT_HEAD_CHANGE = "support_unknown_head_change"
 REASON_HEAD_UNCERTAIN_RECOVERY = "head_uncertain_recovery"
 
-# COCO17·HALPE26 앞 17개 순서의 눈·귀(명세 5.2 head_z 근거). risk 는 geometry 를 import 하지 않으므로 여기 둔다.
-_HEAD_JOINTS = (1, 2, 3, 4)
-_HEAD_LAYOUTS = frozenset({JointLayout.COCO17, JointLayout.HALPE26})
-
 _R4_READS = (
     "tracks.observation_state",
     "tracks.t_last_valid",
@@ -164,7 +157,6 @@ _R4_READS = (
     "tracks.identity_confidence",
     "tracks.head_z",
     "tracks.head_z_validity",
-    "tracks.skeleton",
     "tracks.ground_anchor_xyz",
     "tracks.cameras",
 )
@@ -262,8 +254,6 @@ class FallSuspectRule:
     - lost_window_ms: 급하강 직후 관측 상실로 볼 시간. lost_memory_ms: 사라진 트랙에 상실 판정을 내는 최대 시간.
     - support_memory_ms: 마지막 접지 Z 를 기준으로 쓰는 최대 경과 시간.
     - fallback_low_drop_m·fallback_clear_drop_m: 접지를 전혀 모를 때 머리 변화 기준의 발생·해소 임계.
-    - head_top_offset_m: UNCERTAIN(또는 이전 버전 문서의 head_z null) 때 skeleton 귀·눈에서 머리 높이를 만들며 더하는
-      오프셋(Tier 0 과 같은 값).
     - recovery_valid_ms: 발생 뒤 회복 확인을 끝내는 VALID 높은 머리 근거 누적 시간(모듈 설명 '회복 확인').
     """
 
@@ -281,7 +271,6 @@ class FallSuspectRule:
         support_memory_ms: int = R4_SUPPORT_MEMORY_MS,
         fallback_low_drop_m: float = R4_FALLBACK_LOW_DROP_M,
         fallback_clear_drop_m: float = R4_FALLBACK_CLEAR_DROP_M,
-        head_top_offset_m: float = R4_HEAD_TOP_OFFSET_M,
         recovery_valid_ms: int = R4_RECOVERY_VALID_MS,
     ) -> None:
         for name, value, minimum in (
@@ -301,7 +290,6 @@ class FallSuspectRule:
             ("low_clear_m", low_clear_m),
             ("fallback_low_drop_m", fallback_low_drop_m),
             ("fallback_clear_drop_m", fallback_clear_drop_m),
-            ("head_top_offset_m", head_top_offset_m),
         ):
             if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
                 raise RiskInputError(f"R4.{name} 는 유한한 수여야 한다")
@@ -322,7 +310,6 @@ class FallSuspectRule:
         self._support_memory = support_memory_ms
         self._fb_low = float(fallback_low_drop_m)
         self._fb_clear = float(fallback_clear_drop_m)
-        self._offset = float(head_top_offset_m)
         self._recovery = recovery_valid_ms
         self._spec = RuleSpec(rule_id=R4_RULE_ID, rule_version=R4_RULE_VERSION, reads=_R4_READS)
 
@@ -387,48 +374,21 @@ class FallSuspectRule:
 
     # --- 머리 높이 -------------------------------------------------------------------
 
-    def _head(self, track: WorldTrack) -> _Head | str:
-        """머리 높이와 근거 유효성(모듈 설명 '머리 높이와 그 유효성'). 모르면 그 판정 근거 코드(head_unavailable·head_uncertain)."""
+    @staticmethod
+    def _head(track: WorldTrack) -> _Head | str:
+        """머리 높이와 근거 유효성(모듈 설명 '머리 높이와 그 유효성'). 계약 값만 쓴다. 모르면 그 판정 근거 코드
+        (head_unavailable·head_uncertain)."""
         validity = track.head_z_validity
-        if validity is None:
-            return self._legacy_head(track)
-        if validity is Validity.VALID:
-            # risk.world 가 VALID 인데 값 없는 문서를 거부한다. 우회해 들어와도 값을 지어내지 않고 모름으로 둔다.
+        if validity is None or validity is Validity.VALID:
+            # VALID, 또는 head_z_validity 가 없는 1.3.0 이하 문서(그때 head_z 는 VALID 일 때만 실렸다). 값이 없으면 모름이다.
+            # risk.world 가 VALID 인데 값 없는 문서를 거부한다. 우회해 들어와도 값을 지어내지 않는다.
             return REASON_HEAD_UNAVAILABLE if track.head_z is None else _Head(track.head_z, uncertain=False)
         if validity is Validity.UNCERTAIN:
-            if track.head_z_uncertain is not None:  # world_state 2.0.0: 게이트가 낸 UNCERTAIN 값
-                return _Head(track.head_z_uncertain, uncertain=True)
-            uncertain_z = self._head_joint_z(track)[Validity.UNCERTAIN]  # 1.x: 값이 없어 skeleton 으로 다시 만든다
-            if uncertain_z:
-                return _Head(sum(uncertain_z) / len(uncertain_z) + self._offset, uncertain=True)
-            return REASON_HEAD_UNCERTAIN
+            # 2.0.0 은 게이트가 낸 UNCERTAIN 값을 싣는다. 1.x(값 null)는 머리 높이를 모른다(skeleton 으로 다시 만들지 않음).
+            if track.head_z_uncertain is None:
+                return REASON_HEAD_UNCERTAIN
+            return _Head(track.head_z_uncertain, uncertain=True)
         return REASON_HEAD_UNAVAILABLE
-
-    def _legacy_head(self, track: WorldTrack) -> _Head | str:
-        """head_z_validity 가 없는 이전 버전(1.3.0 이하) 문서. head_z null 의 이유를 몰라 skeleton 귀·눈으로 다시 만든다."""
-        joint_z = self._head_joint_z(track)
-        valid_z, uncertain_z = joint_z[Validity.VALID], joint_z[Validity.UNCERTAIN]
-        if track.head_z is not None:
-            # skeleton 이 있는데 VALID 귀·눈이 없으면 head_z 는 UNCERTAIN 귀·눈에서 왔다(R1 occupancy_height 와 같은 방어).
-            return _Head(track.head_z, uncertain=track.skeleton is not None and not valid_z)
-        if valid_z:
-            return _Head(sum(valid_z) / len(valid_z) + self._offset, uncertain=False)
-        if uncertain_z:
-            return _Head(sum(uncertain_z) / len(uncertain_z) + self._offset, uncertain=True)
-        return REASON_HEAD_UNAVAILABLE
-
-    @staticmethod
-    def _head_joint_z(track: WorldTrack) -> dict[Validity, list[float]]:
-        """skeleton 의 관측(observed) 귀·눈 Z 를 유효성별로. 추정(inferred) 관절·좌표 없는 관절은 뺀다."""
-        out: dict[Validity, list[float]] = {Validity.VALID: [], Validity.UNCERTAIN: []}
-        skeleton = track.skeleton
-        if skeleton is None or skeleton.joint_layout not in _HEAD_LAYOUTS or len(skeleton.joints) <= max(_HEAD_JOINTS):
-            return out
-        for j in _HEAD_JOINTS:
-            joint = skeleton.observed_joint(j)
-            if joint is not None and skeleton.validity[j] in out:
-                out[skeleton.validity[j]].append(joint[2])
-        return out
 
     # --- 상태 갱신 -------------------------------------------------------------------
 

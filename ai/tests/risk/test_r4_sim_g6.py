@@ -15,10 +15,13 @@
   `SIM_UPPER_BOUND_MET`(판정 아님, 실영상 G6 에서 판정), 못 넘으면 `FAILED`. 정상 동작 사람 시간이 6시간 미만이면 오경보율은
   표본 부족(`sample_short`)으로 함께 적는다. SIM 지표는 제품 성능으로 쓰지 않는다(AGENTS.md 규칙 7).
 
-변형: 정답 머리 높이, 잡음(머리 σ 0.05 m·접지 Z σ 0.02 m, G2 p95 10 cm 수준), 잡음 + 표본 30% 의 머리 근거 UNCERTAIN(head_z
-null, skeleton 귀·눈 UNCERTAIN → R4 가 귀·눈 + 오프셋으로 다시 만들고 JOINT_UNCERTAIN). 시뮬레이터 출력은 head_z_validity 가
-없는 이전 버전 형식이라, 같은 변형을 world_state 1.4.0 형식(head_z_validity VALID·UNCERTAIN·UNAVAILABLE, 송신 측
-tracking.world_state 와 같은 규칙)으로도 돌려 결과가 같은지 본다(S15P31A101-177). 기본 시험은 짧게(2주기) 돈다. 길게 재려면:
+변형: 정답 머리 높이, 잡음(머리 σ 0.05 m·접지 Z σ 0.02 m, G2 p95 10 cm 수준), 잡음 + 표본 30% 의 머리 근거 UNCERTAIN. 시뮬레이터
+출력은 head_z_validity 가 없는 이전 버전 형식이라, 기본 측정은 송신 측(tracking.world_state)과 같은 world_state 2.0.0 형식으로
+바꿔 넣는다: 값이 있으면 VALID, UNCERTAIN 표본은 그 값을 head_z 에 싣고 head_z_validity UNCERTAIN(→ R4 가 그 값으로 판정하고
+JOINT_UNCERTAIN), 값이 없으면 UNAVAILABLE. R4 는 skeleton 을 읽지 않는다(S15P31A101-184). 같은 변형을 1.x 형식(UNCERTAIN 은
+head_z null)과 이전 버전 형식(UNCERTAIN 표본은 head_z null)으로도 돌려 형식 사이 차이를 적는다. 1.x·이전 버전의 null 은 R4 가
+머리 모름으로 보므로 UNCERTAIN 표본이 있으면 결과가 2.0.0 과 다를 수 있다(1.x 기록 재생 차이, 판정하지 않고 적기만 한다).
+기본 시험은 짧게(2주기) 돈다. 길게 재려면:
 
     SIMAI_G6R4_CYCLES=60 uv run pytest tests/risk/test_r4_sim_g6.py -s
 """
@@ -236,8 +239,12 @@ class G6R4Result:
         return values[min(len(values) - 1, max(0, math.ceil(q * len(values)) - 1))] if values else math.nan
 
 
+FORMATS = ("v2", "v1", "legacy")
+"""측정 입력 형식: world_state 2.0.0(UNCERTAIN 값 실음), 1.x(UNCERTAIN null), 이전 버전(head_z_validity 없음, UNCERTAIN null)"""
+
+
 def _perturb(
-    track: dict, rng: random.Random, head_sigma: float, anchor_sigma: float, uncertain_ratio: float, v14: bool = False
+    track: dict, rng: random.Random, head_sigma: float, anchor_sigma: float, uncertain_ratio: float, fmt: str = "v2"
 ) -> dict:
     track = json.loads(json.dumps(track))
     made_uncertain = False
@@ -247,31 +254,36 @@ def _perturb(
         track["ground_anchor_xyz"][2] += rng.gauss(0.0, anchor_sigma)
     skeleton = track.get("skeleton")
     if head_sigma and skeleton is not None:
-        # 머리 근거 귀·눈 Z 에도 같은 크기 잡음(UNCERTAIN 경로가 다시 만드는 값)
+        # 머리 근거 귀·눈 Z 에도 같은 크기 잡음. R4 는 읽지 않지만 난수 순서를 S15P31A101-184 전과 같게 둔다
         for j in (1, 2, 3, 4):
             if skeleton["joints"][j] is not None:
                 skeleton["joints"][j][2] += rng.gauss(0.0, head_sigma)
     if uncertain_ratio and skeleton is not None and rng.random() < uncertain_ratio:
-        # 관절 게이트가 머리 근거를 UNCERTAIN 으로 둔 표본: head_z 는 null(VALID 일 때만 실림), 귀·눈은 UNCERTAIN
+        # 관절 게이트가 머리 근거를 UNCERTAIN 으로 둔 표본: 귀·눈은 UNCERTAIN, 값은 형식에 따라 싣거나 비운다(아래)
         made_uncertain = track["head_z"] is not None
-        track["head_z"] = None
         for j in (1, 2, 3, 4):
             if skeleton["validity"][j] == "VALID":
                 skeleton["validity"][j] = "UNCERTAIN"
-    if v14:
-        # world_state 1.4.0: 값이 있으면 VALID, 게이트가 UNCERTAIN 귀·눈으로만 값을 만들었으면 UNCERTAIN(값 null), 좌표 있는
-        # 귀·눈이 없으면 UNAVAILABLE(tracking.world_state._head_z 와 같은 규칙)
-        if track["head_z"] is not None:
+    if made_uncertain and fmt != "v2":
+        # 1.x·이전 버전은 UNCERTAIN 값을 싣지 않았다(head_z null)
+        track["head_z"] = None
+        track.pop("head_z_sigma", None)
+    if fmt != "legacy":
+        # world_state 2.0.0·1.x: 값이 있으면 VALID(2.0.0 의 UNCERTAIN 표본은 값과 함께 UNCERTAIN), 게이트가 UNCERTAIN 귀·눈으로만
+        # 값을 만들었으면 UNCERTAIN, 좌표 있는 귀·눈이 없으면 UNAVAILABLE(tracking.world_state._head_z 와 같은 규칙)
+        if made_uncertain:
+            track["head_z_validity"] = "UNCERTAIN"
+        elif track["head_z"] is not None:
             track["head_z_validity"] = "VALID"
         else:
-            track["head_z_validity"] = "UNCERTAIN" if made_uncertain else "UNAVAILABLE"
+            track["head_z_validity"] = "UNAVAILABLE"
             track.pop("head_z_sigma", None)
     return track
 
 
 def measure(
     out: Path, *, head_sigma: float = 0.0, anchor_sigma: float = 0.0, uncertain_ratio: float = 0.0, seed: int = 0,
-    lag_ms: int = 200, v14: bool = False,
+    lag_ms: int = 200, fmt: str = "v2",
 ) -> G6R4Result:  # fmt: skip
     rng = random.Random(seed)
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
@@ -288,7 +300,7 @@ def measure(
     uncertain = 0
     lost_path = 0
     for row in rows:
-        tracks = [_perturb(t, rng, head_sigma, anchor_sigma, uncertain_ratio, v14) for t in row["tracks"]]
+        tracks = [_perturb(t, rng, head_sigma, anchor_sigma, uncertain_ratio, fmt) for t in row["tracks"]]
         world = WorldState.from_payload(
             {"t_latest_global": row["t"], "calibration_version": row["calibration_version"], "scene_version": "sim",
              "tracks": tracks}
@@ -391,19 +403,23 @@ def test_g6_r4_on_simulator(sim_outs, label, head_sigma, anchor_sigma, uncertain
     [(0.0, 0.0, 0.0), (0.05, 0.02, 0.3)],
     ids=["정답", "잡음+UNCERTAIN 30%"],
 )
-def test_g6_r4_v14_head_z_validity_matches_legacy(sim_outs, head_sigma, anchor_sigma, uncertain_ratio):
-    # 같은 SIM 입력을 world_state 1.4.0 형식(head_z_validity)으로 넣어도 결과가 이전 버전 형식과 같다(S15P31A101-177).
-    # VALID 는 head_z, UNCERTAIN 은 skeleton UNCERTAIN 귀·눈 + 오프셋, UNAVAILABLE 은 모름으로 읽는다.
-    def run_all(v14):
+def test_g6_r4_input_formats(sim_outs, head_sigma, anchor_sigma, uncertain_ratio):
+    # 같은 SIM 입력을 2.0.0·1.x·이전 버전 형식으로 넣는다. UNCERTAIN 표본이 없으면 셋 다 같다(VALID 는 head_z, 값 없음은 모름).
+    # UNCERTAIN 표본이 있으면 1.x 와 이전 버전은 같고(둘 다 null = 머리 모름), 2.0.0 과는 다를 수 있다(1.x 기록 재생 차이,
+    # S15P31A101-184). 1.x 결과는 적기만 하고 판정하지 않는다(Tier 0 는 2.0.0 만 보낸다).
+    def run_all(fmt):
         return G6R4Result.combine(
             [
                 measure(out, head_sigma=head_sigma, anchor_sigma=anchor_sigma, uncertain_ratio=uncertain_ratio,
-                        seed=seed, v14=v14)
+                        seed=seed, fmt=fmt)
                 for out, seed in sim_outs
             ]
         )  # fmt: skip
 
-    new, legacy = run_all(True), run_all(False)
-    print(report(f"G6-R4 SIM 1.4.0({'잡음+UNCERTAIN' if uncertain_ratio else '정답'})", new))
-    assert new == legacy
-    assert new.status == STATUS_MET and sum(new.false_alarms.values()) == 0
+    v2, v1, legacy = (run_all(fmt) for fmt in FORMATS)
+    label = "잡음+UNCERTAIN" if uncertain_ratio else "정답"
+    print(report(f"G6-R4 SIM 1.x({label}, 기록 재생 참고)", v1))
+    assert v1 == legacy
+    assert v2.status == STATUS_MET and sum(v2.false_alarms.values()) == 0
+    if not uncertain_ratio:
+        assert v2 == v1
