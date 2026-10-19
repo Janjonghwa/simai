@@ -188,6 +188,9 @@ def main(argv: list[str] | None = None, clock: Clock | None = None) -> int:
     con.add_argument("--rest", type=float, default=2.0, help="시도 사이 쉬는 시간(초)")
     con.set_defaults(func=cmd_concurrency)
     args = ap.parse_args(argv)
+    for stream in (sys.stdout, sys.stderr):  # 한국어 Windows 콘솔(cp949)에서 못 쓰는 글자(– 등)로 출력이 죽지 않게
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     if args.seconds <= 0 or (args.cmd == "concurrency" and args.max_sessions < 1):
         print("설정 오류: --seconds 는 양수, --max-sessions 는 1 이상이다", file=sys.stderr)
         return 2
