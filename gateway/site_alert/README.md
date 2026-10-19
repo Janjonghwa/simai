@@ -35,6 +35,7 @@ src/simai_site_alert/
   heartbeat.py  노트북 → EC2 하트비트(HTTPS POST, 기기 토큰, 대기열 없음)
   relay_status.py 영상 중계 → 단말 상태 보고(127.0.0.1 UDP, 노트북 안 내부 형식)
   pinning.py    Tier 0 TLS 공개키 지문(SPKI SHA-256) 계산과 고정 검사
+  winsock.py    Windows WinError 10014 일시 오류만 짧게 다시 시도(relay 도 씀, docs/design/gateway-winsock-retry.md)
   app.py        조립: 제어 채널 → 코어 → 소리·화면, 주기 tick, 재접속 때 site_ack 재전송
   bench.py      수신 → 소리 시작 지연 측정 (loopback WebSocket)
   config.py     .env 설정

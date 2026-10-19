@@ -41,6 +41,10 @@ tests/            시험 (카메라 없이 돈다)
 카메라마다 스레드 하나와 CameraSink 하나가 있고 카메라 사이에 공유하는 잠금·큐가 없다. 한 카메라의 수신이 멈추거나
 전송이 막혀도 다른 카메라는 계속 돈다(시험 `test_one_camera_stall_does_not_block_others`).
 
+Tier 0 영상 연결의 connect 가 Windows WinError 10014(일시 오류, 보안 프로그램 후보)로 실패하면 새 소켓으로 0.3 s 안에서 다시
+시도하고, 그래도 안 되면 기존 재접속으로 간다(`simai_site_alert.winsock`, 경로 표와 V3 확인 방법은
+`docs/design/gateway-winsock-retry.md`).
+
 ## 설치와 시험
 
 `gateway/relay/` 에서 실행한다.
