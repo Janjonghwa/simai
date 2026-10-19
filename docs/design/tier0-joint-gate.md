@@ -58,7 +58,7 @@ S15P31A101-29. 기획서 §5.2(3D 관절 유효성 게이트, World 위치의 �
 
 §5.2 정의대로 VALID 인 양쪽 귀·눈 Z 평균 + 고정 오프셋이다. VALID 귀·눈이 없으면 UNCERTAIN 귀·눈으로 값을 내고 UNCERTAIN 으로 표시한다(낙상 R4 는 "확인 필요"). 좌표가 있는 귀·눈이 없으면 비운다. 오프셋 초기값 0.12 m 는 성인 귀·눈 높이에서 머리 꼭대기까지의 대략값이다. 귀·눈 가운데 일부만 VALID 이면 평균 높이가 달라지므로(귀가 눈보다 약간 낮다) 그 편향도 G2 에서 함께 본다.
 
-**World Track 에 싣는 방법(조립 단계 결정 필요).** `world_state` 의 `head_z`·`head_z_sigma` 에는 validity 필드가 없다. 조립에서 `HeadZ.validity` 를 버리면 UNCERTAIN 값이 확정값처럼 실린다. 계약을 바꾸기 전의 안은 **VALID 일 때만 `head_z` 에 싣고, UNCERTAIN·UNAVAILABLE 이면 null** 이다(모르면 비움). 이 경우 R4 의 "낙상 의심 + 확인 필요"(UNCERTAIN 관절 근거)는 `world_state` 만으로 만들 수 없다. 이를 살리려면 `head_z_validity` 필드를 더하는 마이너 계약 개정(I1 LIVE, Lead 승인)이 필요하다.
+**World Track 에 싣는 방법.** `world_state` 2.0.0(S15P31A101-179, 사용자 결정 2026-10-19)은 `HeadZ.validity` 를 `head_z_validity` 로 늘 싣고, VALID·UNCERTAIN 이면 값·σ 를, UNAVAILABLE 이면 null 을 싣는다(`tracking/world_state.py`). 값은 같은 Track skeleton 의 관측(observed) 귀·눈이 `HeadZ.joints` 와 유효성까지 맞을 때만 싣고, 어긋나면 UNAVAILABLE 이다. 소비자는 값이 있어도 `head_z_validity` 를 확인하고 UNCERTAIN 값을 확정 근거로 쓰지 않는다. (이전: 1.4.0 은 VALID 일 때만 값, -172.)
 
 ## G2·A0 에서 조정할 값
 

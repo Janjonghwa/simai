@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.4.0",
+  "schema_version": "2.0.0",
   "msg_type": "world_state",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
   "sent_at": 1760342400123,

@@ -20,6 +20,8 @@ from simai_ai.risk import (
 )
 from simai_ai.risk.rules.r4_fall_suspect import (
     R4_HEAD_TOP_OFFSET_M,
+    R4_RECOVERY_VALID_MS,
+    REASON_HEAD_UNCERTAIN_RECOVERY,
     REASON_HEAD_DROP,
     REASON_HEAD_UNAVAILABLE,
     REASON_HEAD_UNCERTAIN,
@@ -877,6 +879,35 @@ def test_v14_valid_uncertain_flicker_while_standing_does_not_raise(gap):
     assert raising_findings(result) == []
 
 
+# --- world_state 2.0.0: UNCERTAIN head_z 값이 계약으로 온다 (S15P31A101-179) ------------------------------
+
+
+def test_v2_uncertain_value_raises_fall_with_joint_uncertain_without_skeleton():
+    # 2.0.0 은 UNCERTAIN 값을 head_z 에 싣는다. skeleton 이 없어도 그 값으로 '낙상 의심 + 확인 필요'(CRITICAL 유지)이고,
+    # 1.4.0 문서(값 없음, skeleton UNCERTAIN 귀·눈으로 다시 만듦)와 발생·해소 전이가 같다.
+    profile = hold(0, 1000, 2.10) + ramp(1000, 1800, 2.10, 0.55) + hold(1800, 6000, 0.55)
+    standing = frames(hold(6100, 10000, 2.10), validity="VALID", support=0.4)
+    v2, _ = run([(dt, {"head": h, "validity": "UNCERTAIN", "support": 0.4}) for dt, h in profile] + standing)
+    ((_, tr),) = raised(v2)
+    assert tr.state.severity is Severity.CRITICAL
+    assert tr.state.confidence_reasons == (ConfidenceReason.JOINT_UNCERTAIN,)
+    assert tr.state.metrics["head_height_m"] == pytest.approx(0.15)
+    v14_doc, _ = run([(dt, uncertain(h, support=0.4)) for dt, h in profile] + standing)
+    assert summary(v2) == summary(v14_doc)
+
+
+def test_v2_uncertain_value_wins_over_skeleton_recompute():
+    # 반례: 2.0.0 값과 skeleton 이 어긋나면 게이트가 낸 계약 값을 쓴다(R4 가 다시 만들지 않는다). skeleton 귀·눈은 서 있는
+    # 높이인데 값은 넘어진다 → 발생. 반대로 값은 서 있는데 skeleton 은 넘어진다 → 발생 없음.
+    standing_ears = head_skeleton(HEIGHT)
+    falls, _ = run([(dt, {"head": h, "validity": "UNCERTAIN", "skeleton": standing_ears}) for dt, h in FALL_PROFILE])
+    assert len(raised(falls)) == 1
+    stands, _ = run(
+        [(dt, {"head": HEIGHT, "validity": "UNCERTAIN", "skeleton": head_skeleton(h)}) for dt, h in FALL_PROFILE]
+    )
+    assert raised(stands) == []
+
+
 def test_v14_uncertain_gap_during_low_hold_keeps_fall():
     # 반례: 급하강·낮은 자세(VALID) 뒤 유지 시간 중 1초 동안 UNCERTAIN(귀·눈 값 있음)이 끼어도 발생 시각이 같고 확인 필요가 붙는다
     plain, _ = run(fall(validity="VALID"))
@@ -892,13 +923,12 @@ def test_v14_uncertain_gap_during_low_hold_keeps_fall():
     ("fields", "message"),
     [
         ({"head_z": None, "head_z_validity": "VALID"}, "VALID"),
-        ({"head_z": 1.7, "head_z_validity": "UNCERTAIN"}, "UNCERTAIN"),
         ({"head_z": 1.7, "head_z_validity": "UNAVAILABLE"}, "UNAVAILABLE"),
-        ({"head_z": None, "head_z_sigma": 0.02, "head_z_validity": "UNCERTAIN"}, "head_z_sigma"),
+        ({"head_z": None, "head_z_sigma": 0.02, "head_z_validity": "UNCERTAIN"}, "σ"),
         ({"head_z": 1.7, "head_z_validity": None}, "head_z_validity"),
         ({"head_z": 1.7, "head_z_validity": "valid"}, "head_z_validity"),
     ],
-    ids=["valid-null", "uncertain-value", "unavailable-value", "uncertain-sigma", "explicit-null", "bad-enum"],
+    ids=["valid-null", "unavailable-value", "uncertain-sigma-only", "explicit-null", "bad-enum"],
 )
 def test_v14_contract_violations_are_rejected(fields, message):
     # 반례(계약 위반 입력): head_z_validity 와 head_z 가 어긋나면 지어내지 않고 입력 거부(스키마 조건부 규칙과 같다)
@@ -929,3 +959,98 @@ def test_legacy_documents_keep_skeleton_reconstruction():
     assert tr.state.confidence_reasons == ()
     plain, _ = run(frames(FALL_PROFILE))
     assert summary(result) == summary(plain)
+
+
+# --- 회복 확인: UNCERTAIN 머리로는 활성 낙상을 해소하지 않는다 (S15P31A101-179 리뷰 F1) -------------------------
+
+PODIUM_FALL = hold(0, 1000, 2.10) + ramp(1000, 1800, 2.10, 0.55) + hold(1800, 6000, 0.55)
+
+
+def _v2_uncertain(h):
+    """2.0.0 UNCERTAIN 표본: 계약 값 + skeleton 귀·눈 UNCERTAIN(게이트가 낸 그대로)."""
+    return {"head": h, "validity": "UNCERTAIN", "support": 0.4, "skeleton": head_skeleton(h)}
+
+
+def _v14_uncertain(h):
+    return uncertain(h, support=0.4)
+
+
+def _legacy_uncertain(h):
+    return {"head": None, "skeleton": head_skeleton(h), "support": 0.4}
+
+
+def _valid(h):
+    return {"head": h, "validity": "VALID", "support": 0.4, "skeleton": head_skeleton(h, validity="VALID")}
+
+
+def _signals(result):
+    return [(dt, str(sig.kind)) for dt, _, _, sigs in result for sig in sigs]
+
+
+@pytest.mark.parametrize("make", [_v2_uncertain, _v14_uncertain, _legacy_uncertain], ids=["v2", "v1.4", "legacy"])
+def test_uncertain_recovery_does_not_resolve_active_fall_until_valid_returns(make):
+    """회귀(리뷰 재현): 낙상 발생 → 머리 근거가 UNCERTAIN 인 채로 높은 값 4초 → 활성 유지·AlertClear 없음 → VALID 로 돌아온
+    뒤 3초에 해소. 2.0.0(계약 값)·1.4.0(값 없음, skeleton)·이전 버전(head_z_validity 없음) 문서 모두 같다."""
+    uncertain_up = [(dt, make(h)) for dt, h in PODIUM_FALL + hold(6100, 10000, 2.10)]
+    valid_up = frames(hold(10100, 14000, 2.10), validity="VALID", support=0.4, skeleton=head_skeleton(2.10, "VALID"))
+    result, tracker = run(uncertain_up + valid_up)
+    ((dt_raised, _),) = raised(result)
+    assert dt_raised == 3700
+    ((dt_resolved, _),) = resolved(result)
+    assert dt_resolved == 13100  # VALID 첫 표본(10100)에서 해소 유지 3초
+    assert _signals(result) == [(3700, "LOCAL_ALERT"), (13100, "ALERT_CLEAR")]
+    holding = [f for dt, fs, _, _ in result if 6100 <= dt <= 10000 for f in fs]
+    assert holding and all(
+        f.holding and f.reasons == (REASON_HEAD_UNCERTAIN_RECOVERY,) and ConfidenceReason.JOINT_UNCERTAIN in f.confidence_reasons
+        for f in holding
+    )
+    assert tracker.active() == ()
+
+
+def test_uncertain_recovery_with_single_valid_flicker_still_not_resolved():
+    """반례: UNCERTAIN 회복 중 VALID 한 프레임 깜빡임 뒤 UNCERTAIN 4초 → 해소하지 않는다(VALID 근거 누적 0 ms)."""
+    scene = [(dt, _v2_uncertain(h)) for dt, h in PODIUM_FALL + hold(6100, 7000, 2.10)]
+    scene += [(7100, _valid(2.10))]
+    scene += [(dt, _v2_uncertain(2.10)) for dt, _ in hold(7200, 11500, 2.10)]
+    result, tracker = run(scene)
+    assert len(raised(result)) == 1 and resolved(result) == []
+    assert [f for dt, fs, _, _ in result if dt == 7100 for f in fs] == []  # VALID 프레임은 판정 없음
+    assert len(tracker.active()) == 1
+
+
+def test_uncertain_mixed_recovery_resolves_after_enough_valid_evidence():
+    """반례: 일어난 뒤 세 표본마다 하나가 UNCERTAIN. VALID 근거가 3초 쌓인 뒤(그 뒤로는 유효성과 무관하게 판정 없음)
+    lifecycle 이 3초에 해소한다. 끝없이 유지하지 않는다."""
+    scene = [(dt, _v2_uncertain(h)) for dt, h in PODIUM_FALL]
+    for i, (dt, h) in enumerate(hold(6100, 20000, 2.10)):
+        scene.append((dt, _v2_uncertain(h) if i % 3 == 2 else _valid(h)))
+    result, tracker = run(scene)
+    ((_, _),) = raised(result)
+    ((dt_resolved, _),) = resolved(result)
+    # VALID 연속 두 표본마다 100 ms 씩 쌓인다(세 표본에 100 ms): 3초 = 약 9초 뒤 회복 확인 끝, 그 뒤 3초에 해소
+    assert 6100 + R4_RECOVERY_VALID_MS < dt_resolved <= 6100 + 3 * R4_RECOVERY_VALID_MS + 3000
+    assert tracker.active() == ()
+
+
+def test_uncertain_high_without_fall_emits_nothing():
+    """반례: 넘어진 적 없는 사람(활성 이벤트 없음)이 머리 근거 UNCERTAIN 으로 서 있으면 판정·유지를 내지 않는다."""
+    result, tracker = run([(dt, _v2_uncertain(2.10)) for dt, _ in hold(0, 6000, 2.10)])
+    assert all(fs == () for _, fs, _, _ in result)
+    assert tracker.active() == ()
+
+
+def test_after_valid_recovery_later_uncertain_high_emits_nothing():
+    """반례: VALID 로 회복을 확인해 해소된 뒤의 UNCERTAIN 높은 값에는 유지를 남발하지 않는다."""
+    scene = [(dt, _v2_uncertain(h)) for dt, h in PODIUM_FALL]
+    scene += [(dt, _valid(h)) for dt, h in hold(6100, 10000, 2.10)]
+    scene += [(dt, _v2_uncertain(h)) for dt, h in hold(10100, 14000, 2.10)]
+    result, _ = run(scene)
+    ((dt_resolved, _),) = resolved(result)
+    assert dt_resolved == 9100
+    assert all(fs == () for dt, fs, _, _ in result if dt >= 10100)
+
+
+def test_recovery_valid_ms_matches_lifecycle_clear_hold():
+    from simai_ai.risk.lifecycle import LifecyclePolicy
+
+    assert LifecyclePolicy().clear_hold_ms == R4_RECOVERY_VALID_MS

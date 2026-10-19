@@ -1,0 +1,89 @@
+{
+  "schema_version": "2.0.0",
+  "msg_type": "health",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000107",
+  "sent_at": 1760342400400,
+  "source_id": "tier0-01",
+  "payload": {
+    "system_health": "UNSAFE_UNKNOWN",
+    "t_latest_global": 1760342400100,
+    "cameras": [
+      {
+        "id": "cam1",
+        "fps": 14.8,
+        "last_capture": 1760342400100,
+        "sync_offset_ms": null,
+        "sync_valid": null,
+        "status": "OK",
+        "stream_epoch": 12,
+        "timestamp_source": "RECEIVE_ESTIMATED",
+        "timestamp_uncertainty_ms": 18,
+        "frame_age_ms": {
+          "p50": 120,
+          "p95": 210
+        },
+        "queue_wait_ms": {
+          "p50": 8,
+          "p95": 40
+        },
+        "max_result_gap_ms": 160,
+        "frames": {
+          "received": 25,
+          "gateway_to_runpod_loss": 0,
+          "skipped_by_policy": 10,
+          "laptop_skipped": 4,
+          "unattributed_gap": 0,
+          "late_dropped": 0,
+          "camera_to_gateway_gap_max_ms": 80
+        }
+      },
+      {
+        "id": "cam2",
+        "fps": 0,
+        "last_capture": null,
+        "sync_offset_ms": null,
+        "sync_valid": null,
+        "status": "WAITING_KEYFRAME",
+        "stream_epoch": 3
+      }
+    ],
+    "pipeline_lag_ms": null,
+    "calibration_state": "CALIBRATED",
+    "calibration_version": "cal-7",
+    "config_version": "cfg-12",
+    "config_sync": "CURRENT",
+    "gateway_link": "CONNECTED",
+    "ec2_world_state_drops": {
+      "superseded": 3,
+      "disconnected": 41,
+      "since_ms": 1760340000000
+    },
+    "tier0_warnings": [
+      {
+        "code": "OUTBOX_BLOCKED",
+        "since_ms": 1760342398000
+      },
+      {
+        "code": "CHECKPOINT_STALLED",
+        "since_ms": 1760342396400
+      }
+    ],
+    "gpu_util": 0.71,
+    "gpu_memory_used_ratio": 0.62,
+    "active_site_alerts": [
+      {
+        "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+        "event_sequence": 3,
+        "source": "LIVE",
+        "acknowledged": true,
+        "severity": "CRITICAL",
+        "summary": "R2 가장자리 근접 0.82m (높이차 2.1m)",
+        "rule_id": "R2",
+        "zone_id": "z-04"
+      }
+    ],
+    "active_site_alerts_as_of": 1760342400395,
+    "laptop_clock_offset": null,
+    "pipeline_lag_lower_bound_ms": 2350.0
+  }
+}

@@ -161,6 +161,13 @@ def test_unknown_clock_offset_keeps_health_unsafe_and_blocks_resolution(tmp_path
         assert HealthReason.CLOCK_OFFSET_UNKNOWN in snap.report.reasons
         for h in laptop.all_messages("health")[1:]:
             assert h["payload"]["system_health"] == "UNSAFE_UNKNOWN" and h["payload"]["laptop_clock_offset"] is None
+            # 계약 health 2.0.0: T_lag 를 모르면 null 이다. 처리 정체 하한·0 을 참값처럼 싣지 않는다(-179)
+            assert h["payload"]["pipeline_lag_ms"] is None
+            assert h["schema_version"] == "2.0.0"  # I0 봉투도 health 2.0.0(i0_control 이 HEALTH_SCHEMA_VERSION 을 씀)
+            assert all(c["sync_valid"] is None for c in h["payload"]["cameras"])  # 동기화 측정 근거 없음
+            assert schema_errors(h, "health") == []
+        # 운영 경고는 정리 주기가 상태를 읽은 뒤부터 싣는다(이 장면은 켜진 경고 없음)
+        assert ts.wait_until(lambda: service.health.payload().get("tier0_warnings") == [], timeout=5)
         for h in [m for m in laptop.all_messages()[mark:] if m["msg_type"] == "health"]:  # 현장 경보 목록은 계속 나간다
             assert event.event_id in {a["event_id"] for a in h["payload"]["active_site_alerts"]}
         # 사람이 관측되고 있어도 시계 차이를 모르면 해소 확인을 하지 않는다

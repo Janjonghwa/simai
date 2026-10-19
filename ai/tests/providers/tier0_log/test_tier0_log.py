@@ -467,10 +467,25 @@ def test_rejects_mixed_tier0_sources(tmp_path):
 
 
 def test_rejects_unsupported_major_version(tmp_path):
-    msg = _world_state("v2", T0, [])
-    msg["schema_version"] = "2.0.0"
+    msg = _world_state("v3", T0, [])
+    msg["schema_version"] = "3.0.0"
     with pytest.raises(Tier0LogError, match="major"):
         Tier0LogWorldTrackProvider.from_paths(_single(tmp_path, msg))
+    batch = _batch("b2", [_frame("cam1", 1, 1, T0, [])])
+    batch["schema_version"] = "2.0.0"  # observation_batch 는 major 1 만 안다
+    with pytest.raises(Tier0LogError, match="major"):
+        Tier0LogWorldTrackProvider.from_paths(write_jsonl(tmp_path / "b2.jsonl", [_world_state("ok", T0, []), batch]))
+
+
+def test_reads_world_state_2x_and_keeps_uncertain_head_z_with_validity(tmp_path):
+    """world_state 2.0.0(UNCERTAIN head_z 값을 싣는 의미 변경, S15P31A101-179)도 읽고, 트랙을 고치지 않고 옮긴다."""
+    ws = load_example("world_state.head_z_uncertain.json")
+    assert ws["schema_version"] == "2.0.0"
+    (doc,) = list(Tier0LogWorldTrackProvider.from_paths(_single(tmp_path, ws)).frames())
+    track = doc["tracks"][0]
+    src = ws["payload"]["tracks"][0]
+    assert (track["head_z"], track["head_z_sigma"], track["head_z_validity"]) == (
+        src["head_z"], src["head_z_sigma"], "UNCERTAIN")
 
 
 def test_rejects_malformed_line_with_location(tmp_path):

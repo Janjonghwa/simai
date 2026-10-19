@@ -3,7 +3,7 @@
 이 폴더가 기획서의 **정본**이다. Notion 에는 이 폴더로 가는 링크와 발표·제출용으로 내보낸 사본만 둔다.
 요구사항 명세서는 [`../requirements.md`](../requirements.md) 에 있다. 저장소 규칙과 계약은 `AGENTS.md`, `contracts/` 를 본다.
 
-**기준 문서:** simai System Specification v1.2 r4 수정 7 (2026-10-17) · **개정일:** 2026-10-18
+**기준 문서:** simai System Specification v1.2 r4 수정 7 (2026-10-17) · **개정일:** 2026-10-19
 
 2026-10-17 · A101 · **상태: v1.3** · 정본: GitLab `docs/spec/`
 
@@ -22,6 +22,7 @@
 | v1.3 수정 4 | 2026-10-18 | 6·7차 구현 결정과 사용자(Lead) 승인 계약을 반영(S15P31A101-169). 확인 대상 `event_sequence`·경보 단계·상향 재경보·재동기화 `as_of`(3.10, 3.2), 시계 차이 정책: 교환 지연 60초 유지 + 표류 불확실성, 그 뒤·표본 없음·단절은 offset null + UNSAFE_UNKNOWN, 관측 상태 유지·해소 확정 금지, 시계 점프 뒤 해소 유지 시간 재시작(3.9, 6.1, 6.5), Config Sync STALE 정의(3.2, 6.2)와 `world_state.config_version`, 판정이 아닌 전이의 `evidence_ref` null(3.2, 12.3), 이벤트 클립 얼굴 흐림 안 함·동의서 항목·`media_clip`·`media_clip_retention`(5.1, 11.3, 11.5, 12.2, 12.3), 기하 단계 10명 p95 50ms 단계 목표(6.6), 번들 조정은 HumanCalib 원리의 자체 구현·CCVS 보조 진단·DRIFTED 감시 규칙(4.3, 4.4, 3.8, 18.1, 부록 B), `stream_epoch` 비감소·STREAM_REJECT·SKIP_NOTICE 구간 집합·구분 불가 빈칸(12.7), 재개 전이·`confidence_reasons` 계약 반영 표기 정리(6.4, 7.1, 12.4), 결정 기록(16장), 미결 사항(19.1). 계약: `world_state` 1.2.0·`risk_event_transition` 1.4.0·`health` 1.4.0(마이너), `media_clip`·`media_clip_retention` 1.0.0 신설 |
 | v1.3 수정 5 | 2026-10-18 | 8\~10차 구현 결정과 사용자 승인 계약을 반영(S15P31A101-172). 재동기화 스냅샷 만들기와 빈 저널 `journal_offset` null(3.2), 재시작 복구: 해소 기록(tombstone)·World Track 은 저장만(재관측 매칭 후보, 정본 아님)·복구 시작 거부 네 경우·복구 Health 해제 조건·저널 정리 하한(3.2), 이중 감시의 `tier0.control`·`site_display` 함께 읽기(3.2), 노트북 장애 판단: 3회 누락·정상 복귀 2초 유지·영상 상태는 중계 보고·시작 직후 관제 중단·UNSAFE_UNKNOWN health 는 관제 중단(3.10), TensorRT 엔진 첫 기동 GPU 별 생성·볼륨 캐시, Tier 0 이미지 CUDA 13·드라이버 조건·다이제스트(3.12, 18.2), 접지 추정 근거·분해능(약 8 cm)·가림 유지 3초(5.2), 늦은 재연결·ID 교정: 2대 근거·병합 금지 반증·첫 관측부터 도달 거리·잔여 위험(5.2), World 위치 정의에 `surface_source`·`head_z_validity`(5.2), R2·R3 높이 프로파일(운영 2 m, 교실 시험 0.35 m·rule_version+1000)·위험 가장자리와 이어진 같은 층 작업면·접지 모름 정책, R5 판정 초기값(2.0/2.5초, 0.4 m/s, 타원 범위, 판정 제외·holding, 오예측 정의)(7.2), 용어 `surface_source` 두 필드 구분·`head_z_validity`·`aliases`·해소 기록(부록 A), 복구 운영 절차(18.5 신설), I1 예시(12.3), 계약 반영 목록·미결(19.1). 계약 v2.3.0: `world_state` 1.4.0·`event_state_snapshot` 1.3.0(마이너), `laptop_heartbeat` 설명 보강 |
 | v1.3 수정 6 | 2026-10-18 | 저장소 구조의 `docs/` 하위 폴더 용도를 적음: `spec/`·`design/`(구현 설계 문서)·`data/`(데이터 manifest)·`experiments/`(S15P31A101-176). 21.1 |
+| v1.3 수정 7 | 2026-10-19 | 사용자 승인 I1 계약 변경을 반영(S15P31A101-179). `head_z` 는 `head_z_validity` 가 VALID·UNCERTAIN 이면 값을 싣고 UNAVAILABLE 이면 비움(2026-10-18 ‘VALID 일 때만’ 대체), UNCERTAIN 값은 확정 근거 아님(R1·R5 는 Z 모름, R4 는 확인 필요로 사용하고 UNCERTAIN 머리로는 해소하지 않음)(5.2), 시계 차이·최신 촬영 시각을 모르면 `health.pipeline_lag_ms` null·하한 `pipeline_lag_lower_bound_ms`(6.1), 카메라 동기화 근거 `sync_valid`(근거 없으면 null)(6.1), Tier 0 내부 기록 장애와 `health.tier0_warnings`(6.5), I1 예시·설명(12.3), 용어(부록 A), 계약 반영 목록·미결(19.1). 계약 v3.0.0: `world_state` 2.0.0·`health` 2.0.0(메이저) |
 
 v1.0 \~ v1.2 r4 수정 7 의 이력은 [`history.md`](history.md) 에 있다.
 

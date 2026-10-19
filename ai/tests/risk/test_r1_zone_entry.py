@@ -418,3 +418,26 @@ def test_registry_wraps_r1_with_r6():
 def test_invalid_parameters(name, value):
     with pytest.raises(RiskInputError):
         ZoneEntryRule(**{name: value})
+
+
+# --- world_state 2.0.0: UNCERTAIN head_z 값이 계약으로 와도 판정은 1.4.0 때와 같다 (S15P31A101-179) ---------------
+
+
+@pytest.mark.parametrize("head", [1.5, 1.7])
+def test_uncertain_head_z_value_from_v2_keeps_z_unknown_like_v14(head):
+    """회귀: VOLUME_3D 구역(z 2.0~4.0), skeleton 전부 UNCERTAIN, XY 안. 2.0.0 은 UNCERTAIN head_z 값(1.5·1.7)을 싣지만
+    risk.world 가 확정값으로 넘기지 않으므로, 1.4.0(UNCERTAIN + null)·dev 와 같이 위 끝을 모르는 Z_UNKNOWN 발생이다.
+    (값을 확정값으로 쓰면 1.7 은 유지만, 1.5 는 판정 없음이 되어 경보가 빠진다.)"""
+    skel = skeleton(0.0, head - 0.12, validity="UNCERTAIN")
+    v2 = dict(track(head=head, head_sigma=0.04, skel=skel), head_z_validity="UNCERTAIN")
+    v14 = dict(track(head=None, skel=skel), head_z_validity="UNCERTAIN")
+    (f,) = judge(v2, zones=[ABOVE])
+    assert not f.holding and f.reasons == (REASON_XY_INSIDE,) and f.confidence_reasons == (Z_UNKNOWN,)
+    assert judge(v2, zones=[ABOVE]) == judge(v14, zones=[ABOVE])
+
+
+def test_valid_head_z_still_used_as_confirmed_top():
+    # VALID 값은 그대로 확정 위 끝이다(skeleton 이 없을 때): 2.0.0 에서도 바뀌지 않는다
+    v2 = dict(track(head=2.1), head_z_validity="VALID")
+    f = only(judge(v2, zones=[ABOVE]))
+    assert f.reasons == (REASON_XY_INSIDE, REASON_Z_OVERLAP) and not f.needs_check

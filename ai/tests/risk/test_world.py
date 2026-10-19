@@ -128,6 +128,7 @@ EXAMPLES = EXAMPLE.parent
     [
         ("world_state.json", (Validity.VALID, Validity.UNAVAILABLE)),
         ("world_state.head_z_uncertain.json", (Validity.UNCERTAIN,)),
+        ("world_state.pre_2_0.json", (Validity.UNCERTAIN,)),
         ("world_state.pre_1_3.json", None),
     ],
 )
@@ -143,11 +144,26 @@ def test_head_z_validity_contract_examples(name, expected):
 
 @pytest.mark.skipif(not EXAMPLE.is_file(), reason="저장소 밖(배포 이미지)에서는 contracts/ 예시가 없다")
 @pytest.mark.parametrize(
-    "name", ["world_state.head_z_uncertain_with_value.json", "world_state.head_z_valid_without_value.json"]
+    "name", ["world_state.head_z_unavailable_with_value.json", "world_state.head_z_valid_without_value.json"]
 )
 def test_head_z_validity_invalid_contract_examples_are_rejected(name):
-    # 스키마가 거부하는 예시(UNCERTAIN 인데 값, VALID 인데 null)는 Risk 입력에서도 거부한다
+    # 스키마가 버전과 무관하게 거부하는 예시(UNAVAILABLE 인데 값, VALID 인데 null)는 Risk 입력에서도 거부한다.
+    # UNCERTAIN 의 값 유무는 버전별(1.x null, 2.x 수)이고 payload 에는 버전이 없어 Risk 입력은 둘 다 받는다(아래)
     doc = json.loads((EXAMPLES / "invalid" / name).read_text(encoding="utf-8"))
     with pytest.raises(RiskInputError, match="head_z"):
         WorldState.from_payload(doc["payload"])
 
+
+@pytest.mark.skipif(not EXAMPLE.is_file(), reason="저장소 밖(배포 이미지)에서는 contracts/ 예시가 없다")
+@pytest.mark.parametrize(
+    ("name", "expected_uncertain"),
+    [("world_state.head_z_uncertain.json", 1.67), ("world_state.pre_2_0.json", None)],
+)
+def test_uncertain_head_z_never_reaches_confirmed_slot(name, expected_uncertain):
+    # 2.0.0 의 UNCERTAIN 값은 head_z(확정값, R1·R5 가 읽음)가 아니라 head_z_uncertain 으로 간다(S15P31A101-179).
+    # 1.x 문서(UNCERTAIN + null)와 같은 확정값 칸이 되어 R1·R5 판정이 계약 변경 전과 같다.
+    (track,) = WorldState.from_payload(json.loads((EXAMPLES / name).read_text(encoding="utf-8"))["payload"]).tracks
+    assert track.head_z_validity is Validity.UNCERTAIN
+    assert track.head_z is None and track.head_z_sigma is None
+    assert track.head_z_uncertain == expected_uncertain
+    assert track.head_z_uncertain_sigma == (0.04 if expected_uncertain is not None else None)

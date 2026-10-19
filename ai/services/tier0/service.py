@@ -36,7 +36,7 @@ from services.tier0.clips.service import EventClipService
 from services.tier0.config_fetch import HttpsFetcher
 from services.tier0.endpoint_registration import EndpointRegistrar, read_cert_pem
 from services.tier0.event_snapshot import EventStateSnapshot
-from services.tier0.health import HealthReporter
+from services.tier0.health import HealthReporter, WarningSources
 from services.tier0.i0_control import ControlServer
 from services.tier0.i1_client import Envelope, WebSocketConnector
 from services.tier0.i1_publisher import I1Link, build_i1_link, with_world_state_drops
@@ -671,9 +671,11 @@ class Tier0Service:
                           "EC2 전송 보류(outbox blocked): %s")
         snap = self.snapshot.status()
         self._warn_change("snapshot_broken", snap["broken"], "event_state_snapshot 접기 중단: %s")
+        # 같은 상태를 health.tier0_warnings 로도 알린다(읽기만, 판정 lock 밖에서 읽어 기억, -179)
+        self.health.refresh_warnings(WarningSources(cp, self.writer, self.outbox, self.snapshot))
 
     def status(self) -> dict[str, Any]:
-        """운영 상태(표시 파일·로그). health 계약에 필드가 없는 경고(체크포인트·저널·outbox·스냅샷)도 여기에 싣는다."""
+        """운영 상태(표시 파일·로그). 체크포인트·저널·outbox·스냅샷의 세부 상태를 싣는다(켜진 경고는 health.tier0_warnings 에도)."""
         cp = self.checkpointer
         blocked = self.outbox.blocked
         snap_health = self.health.last

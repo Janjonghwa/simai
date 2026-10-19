@@ -664,3 +664,21 @@ def test_pending_r5_then_velocity_lost_creates_no_event():
         step = tracker.apply(engine.evaluate(state, [zone()], Origin.LIVE), state, config_version="cfg-12")
         transitions += step.transitions
     assert transitions == [] and tracker.active() == ()
+
+
+# --- world_state 2.0.0: UNCERTAIN head_z 값이 계약으로 와도 판정은 1.4.0 때와 같다 (S15P31A101-179) ---------------
+
+
+@pytest.mark.parametrize("head", [1.5, 1.7])
+def test_uncertain_head_z_value_from_v2_keeps_z_unknown_like_v14(head):
+    """회귀: 머리 위 VOLUME_3D 구역(z 2.0~4.0)으로 다가가는 사람의 head_z 가 UNCERTAIN. 2.0.0 값(1.5·1.7)은 확정값이 아니므로
+    1.4.0(UNCERTAIN + null)과 같이 위 끝을 모르는 Z_UNKNOWN 예측이다(값을 확정값으로 쓰면 판정 없음)."""
+    above = zone("VOLUME_3D", [2.0, 4.0], zone_id="z-above")
+    v2 = dict(track(head_z=head), head_z_sigma=0.04, head_z_validity="UNCERTAIN")
+    v14 = dict(track(head_z=None), head_z_validity="UNCERTAIN")
+    (f,) = judge(v2, zones=[above])
+    assert f.holding is False and f.reasons == (REASON_PREDICTED_ENTRY,)
+    assert f.confidence_reasons == (ConfidenceReason.Z_UNKNOWN,)
+    assert judge(v2, zones=[above]) == judge(v14, zones=[above])
+    # VALID 값이면 확정 위 끝이라 지금처럼 판정 없음(간격 0.3 m 이상)
+    assert judge(dict(track(head_z=head), head_z_validity="VALID"), zones=[above]) == []

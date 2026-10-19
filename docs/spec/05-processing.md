@@ -110,11 +110,12 @@
 | `ground_anchor_xyz` | 검증된 지지 표면 위의 위치(ContactEstimator) | 접지 미확인이면 비움. Z=0으로 채우지 않음 |
 | `surface_source` | 지지 표면(접지점)의 출처: observed(이번 시각 발목 근거), inferred(가려진 동안 마지막 유효 지지 표면 유지) | 접지점이 없으면 싣지 않음. 메시 표면 출처와 이름만 같은 다른 필드(부록 A) |
 | `support_surface_id`, `support_surface_validity` | 서 있는 면(바닥, 등록 작업면)과 그 유효성 | UNKNOWN |
-| `head_z` | 머리 꼭대기 높이 추정. COCO 17관절에는 머리 꼭대기가 없으므로 삼각측량한 양쪽 귀·눈 중점의 높이에 고정 오프셋(초기값, G2 에서 조정)을 더한다. 관절 유효성 게이트가 VALID 로 낸 값만 싣는다 | 비움. UNCERTAIN 귀·눈으로만 만든 값도 싣지 않는다 |
-| `head_z_validity` | 게이트가 낸 `head_z` 유효성. VALID(값 있음), UNCERTAIN(UNCERTAIN 귀·눈뿐, 값은 비움), UNAVAILABLE(좌표 있는 귀·눈 없음, 이번 시각 관측 없음) | 이전 버전 송신 측은 싣지 않음(그때 `head_z` 가 비면 이유를 모름) |
+| `head_z` | 머리 꼭대기 높이 추정. COCO 17관절에는 머리 꼭대기가 없으므로 삼각측량한 양쪽 귀·눈 중점의 높이에 고정 오프셋(초기값, G2 에서 조정)을 더한다. 관절 유효성 게이트가 VALID 나 UNCERTAIN 으로 낸 값을 싣고(접지점과 `z_validity` 의 관계와 같음), 값이 있어도 `head_z_validity` 를 함께 읽는다. Tier 0 관측(observed) 귀·눈으로만 만든다 | `head_z_validity` 가 UNAVAILABLE 이면 비움 |
+| `head_z_validity` | 게이트가 낸 `head_z` 유효성. VALID(VALID 귀·눈으로 만든 값), UNCERTAIN(VALID 귀·눈이 없어 UNCERTAIN 귀·눈으로만 만든 값, 확정 근거 아님), UNAVAILABLE(좌표 있는 귀·눈 없음, 이번 시각 관측 없음, 값 비움) | 이전 버전 송신 측은 싣지 않음(그때 `head_z` 가 비면 이유를 모름). `world_state` 1.x 는 UNCERTAIN 값을 싣지 않았다 |
 
 - `head_z` 의 정답은 줄자로 잰 키(신발 신은 상태) + 서 있는 면 높이(바닥 0, 단상 40cm)로 하고, 똑바로 선 프레임에서만 비교한다. G2 머리 높이 오차와 4.4 CALIBRATED 검산이 같은 정의를 쓴다.
 - 높이 규칙(R2·R3)은 `ground_anchor_xyz`의 Z(서 있는 면 높이)를 쓰고, 없으면 “확인 필요”로 처리한다. 낙상(R4)은 `head_z` 변화를 쓴다.
+- `head_z_validity` 가 UNCERTAIN 인 `head_z` 는 확정 근거가 아니다(아래 관절 유효성 게이트와 같은 규칙). 위험 규칙은 이 값을 쓰면 “확인 필요”(`JOINT_UNCERTAIN`)를 붙이고, 이 값만으로 ‘구역에 들어가지 않았다’·‘낙상이 아니다’ 같은 판정 없음을 확정하지 않는다. 그래서 구역 진입(R1)·진입 예측(R5)은 UNCERTAIN `head_z` 를 위 끝으로 쓰지 않고 모르는 것으로 보며(Z_UNKNOWN), 낙상(R4)만 이 값으로 판정하고 “확인 필요”를 붙인다. 낙상 의심이 난 뒤 머리가 UNCERTAIN 값으로만 높아지면 R4 는 해소하지 않고 유지하며, VALID 머리 근거로 일어나 있는 것이 확인된 뒤에 해소 유지 시간을 센다.
 - 구역 진입(R1)은 구역 유형에 따라 판정한다(8.2). GROUND_FOOTPRINT는 `position_xy`와 수평 불확실성으로, VOLUME_3D는 사람이 차지하는 높이 범위(서 있는 면 Z부터 VALID 관절 중 가장 높은 Z까지, 없으면 `head_z`까지)와 구역 높이 범위의 겹침을 3D 불확실성과 함께 본다.
 - 아바타는 접지가 확인되면 발을 `ground_anchor_xyz`에 맞추고, 아니면 `pelvis_xyz` 기준으로 배치하며 “접지 미확인”을 표시한다(13.2).
 

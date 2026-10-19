@@ -13,11 +13,15 @@ World Track Manager 결과(`world_track.WorldTrackFrame`)를 계약 형식으로
 - 별칭(`aliases`, 계약 1.3.0 선택 필드)은 World Track Manager 가 병합 때 남는 Track 에 붙인 이전 ID(`WorldTrackSnapshot.aliases`)를
   순서대로 싣는다. 별칭이 없으면 두지 않는다. 별칭 목록은 Track 이 살아 있는 동안 뒤에만 붙고(world_track `_merge`), 여기서는
   고르거나 빼지 않는다(덮어쓰지 않음). 중복은 한 번만 싣고, 자기 world_id 가 들어 있으면 입력 불일치라 ValueError 다.
-- `head_z` 는 관절 유효성 게이트가 VALID 로 낸 값만 싣는다. UNCERTAIN·UNAVAILABLE 이면 null 이다(UNCERTAIN 값이
-  확정값처럼 실리지 않게, 사용자 결정 2026-10-18·docs/design/tier0-joint-gate.md). 게이트가 낸 유효성은 계약 1.4.0
-  `head_z_validity` 로 늘 싣는다(S15P31A101-172): 값을 실으면 VALID, 게이트가 UNCERTAIN 귀·눈으로만 값을 만들었으면
-  UNCERTAIN(값은 null), 게이트가 값을 못 냈거나 이번 시각 클러스터가 붙지 않아 HeadZ 가 없으면 UNAVAILABLE 이다.
-  게이트가 VALID 라고 했는데 값이 없거나 유한하지 않으면 VALID 로 싣지 않고 UNAVAILABLE·null 이다(모르면 비움).
+- `head_z` 는 관절 유효성 게이트가 VALID 나 UNCERTAIN 으로 낸 값을 싣고, 그 유효성을 `head_z_validity` 로 늘 싣는다
+  (계약 2.0.0, 사용자 결정 2026-10-19, S15P31A101-179. 2026-10-18 의 'VALID 일 때만' 을 대체). 접지점과 z_validity 의
+  관계와 같다: VALID·UNCERTAIN 이면 값·σ, UNAVAILABLE 이면 null. 소비자는 값이 있어도 head_z_validity 를 확인한다.
+  값을 싣는 조건(관측 관절만, AGENTS 규칙 1·7): 같은 Track 의 이번 시각 skeleton 이 있고, 게이트가 쓴 귀·눈
+  (HeadZ.joints)이 모두 그 skeleton 에서 좌표가 있고 joint_source 가 observed 이며 유효성이 HeadZ 와 같아야 하고, UNCERTAIN
+  이면 skeleton 에 VALID 귀·눈이 없어야 한다. 하나라도 어긋나면(skeleton 없음, 근거 관절 목록 없음, inferred 관절, 유효성
+  불일치, VALID 귀·눈이 있는데 UNCERTAIN) 근거를 확인할 수 없으므로 UNAVAILABLE·null
+  이다(모르면 비움). 게이트가 값을 못 냈거나(VALID·UNCERTAIN 인데 값이 없거나 유한하지 않음) 이번 시각 클러스터가 붙지
+  않아 HeadZ 가 없으면 UNAVAILABLE 이다. σ 가 유한하지 않으면 σ 만 비운다(값과 유효성은 그대로).
 - `skeleton`·`pelvis_xyz` 는 이번 시각에 클러스터가 붙은 Track 만 있고, 관절은 모두 Tier 0 관측(joint_source observed)이다.
 - `position_xy` 는 명세 5.2 순서(골반 XY → 검증된 접지점 XY → 예측값)와 계약 1.1.0 설명(관측이 없으면 t_last_valid
   시각의 위치를 유지하고 σ 를 속도 상한 × 공백만큼 키운다, 속도로 옮기지 않음)을 함께 따른다. 위치 관측은 두 가지다:
@@ -40,12 +44,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from simai_ai.geometry.joint_gate import COCO17_HEAD_JOINTS
 from simai_ai.tracking.time_model import TimeModelConfig, classify_observation, require_ms
 from simai_ai.tracking.world_track import WorldTrackFrame, WorldTrackSnapshot
 
-WORLD_STATE_SCHEMA_VERSION = "1.4.0"
+WORLD_STATE_SCHEMA_VERSION = "2.0.0"
 """world_state 계약이 마지막으로 바뀐 버전 (1.1.0: input_provenance, 1.2.0: config_version, 1.3.0: 트랙의
-surface_source·aliases 선택 필드, 1.4.0: 트랙의 head_z_validity 선택 필드)"""
+surface_source·aliases 선택 필드, 1.4.0: 트랙의 head_z_validity 선택 필드, 2.0.0: UNCERTAIN head_z 값을 싣는 의미 변경)"""
 DEFAULT_SOURCE_ID = "tier0-01"
 _VALIDITY = frozenset({"VALID", "UNCERTAIN", "UNAVAILABLE"})
 _SURFACE_VALIDITY = frozenset({"VALID", "UNCERTAIN", "UNKNOWN"})
@@ -226,24 +231,49 @@ def world_state_message(
 
 
 def _head_z(track: WorldTrackSnapshot) -> tuple[float | None, float | None, str]:
-    """(head_z, head_z_sigma, head_z_validity). 값은 게이트가 VALID 로 낸 유한한 값만, 그 밖은 null(계약 1.4.0 불변 규칙)."""
+    """(head_z, head_z_sigma, head_z_validity). 게이트가 VALID·UNCERTAIN 으로 낸 유한한 값을 관측 관절 근거와 함께만 싣는다.
+
+    계약 2.0.0 불변 규칙: VALID·UNCERTAIN ↔ 수, UNAVAILABLE ↔ null. 근거를 확인할 수 없으면 UNAVAILABLE 이다.
+    """
     head = track.head_z
     if head is None:
         return None, None, "UNAVAILABLE"  # 이번 시각 클러스터가 붙지 않았다(관측 없음)
     validity = str(head.validity)
     if validity not in _VALIDITY:
         raise ValueError(f"{track.world_id}: head_z 유효성 값이 아니다: {validity!r}")
-    if validity == "VALID":
-        value = head.value
-        if value is None or isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-            return None, None, "UNAVAILABLE"  # VALID 라면서 값이 없거나 유한하지 않다: VALID 로 싣지 않는다
-        sigma = head.sigma_m
-        if sigma is not None and (isinstance(sigma, bool) or not isinstance(sigma, (int, float)) or not math.isfinite(sigma)):
-            sigma = None  # σ 를 모르면 비운다(값은 VALID 그대로)
-        return float(value), None if sigma is None else float(sigma), "VALID"
-    if validity == "UNCERTAIN" and head.value is None:
-        return None, None, "UNAVAILABLE"  # 값을 만들지 못한 UNCERTAIN 은 근거가 없다
-    return None, None, validity  # UNCERTAIN 값은 싣지 않는다(사용자 결정), UNAVAILABLE 은 그대로
+    if validity == "UNAVAILABLE":
+        return None, None, "UNAVAILABLE"
+    value = head.value
+    if value is None or isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None, None, "UNAVAILABLE"  # VALID·UNCERTAIN 이라면서 값이 없거나 유한하지 않다: 값을 만들지 못한 것이다
+    if not _head_joints_observed(track, validity):
+        return None, None, "UNAVAILABLE"  # 관측(observed) 귀·눈 근거를 확인할 수 없다: 지어내지 않는다
+    sigma = head.sigma_m
+    if sigma is not None and (isinstance(sigma, bool) or not isinstance(sigma, (int, float)) or not math.isfinite(sigma)):
+        sigma = None  # σ 를 모르면 비운다(값과 유효성은 그대로)
+    return float(value), None if sigma is None else float(sigma), validity
+
+
+def _head_joints_observed(track: WorldTrackSnapshot, validity: str) -> bool:
+    """게이트가 head_z 에 쓴 귀·눈(HeadZ.joints)이 같은 Track 의 이번 시각 skeleton 에서 모두 좌표가 있는 관측(observed)
+    관절이고 유효성이 head_z 유효성과 같은지. UNCERTAIN 이면 skeleton 에 VALID 귀·눈이 없어야 한다(게이트는 VALID 귀·눈이
+    있으면 VALID 로 낸다. R1·R4 는 'skeleton 에 VALID 근거가 없으면 head_z 는 UNCERTAIN' 으로 읽는다). skeleton·근거 목록이
+    없으면 확인할 수 없어 False 다."""
+    head, skeleton = track.head_z, track.skeleton
+    if head is None or skeleton is None or not head.joints:
+        return False
+    joints = skeleton.joints
+    for j in head.joints:
+        if isinstance(j, bool) or not isinstance(j, int) or not 0 <= j < len(joints):
+            return False
+        joint = joints[j]
+        if joint.xyz is None or joint.joint_source != "observed" or str(joint.validity) != validity:
+            return False
+    if validity == "UNCERTAIN" and any(
+        j < len(joints) and joints[j].xyz is not None and str(joints[j].validity) == "VALID" for j in COCO17_HEAD_JOINTS
+    ):
+        return False  # VALID 귀·눈이 있는데 UNCERTAIN 이라는 것은 게이트와 맞지 않는다(소비자가 VALID 로 오인할 수 있음)
+    return True
 
 
 def _aliases(track: WorldTrackSnapshot) -> list[str]:

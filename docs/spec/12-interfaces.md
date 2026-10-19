@@ -64,9 +64,10 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
   "msg_type": "health",
   "payload": {
     "system_health": "NOMINAL",
-    "cameras": [{"id": "cam1", "fps": 14.8, "last_capture": 1760342400100, "sync_offset_ms": 6, "status": "OK"}],
+    "cameras": [{"id": "cam1", "fps": 14.8, "last_capture": 1760342400100, "sync_offset_ms": 6, "sync_valid": true, "status": "OK"}],
     "pipeline_lag_ms": 120,
     "calibration_state": "CALIBRATED",
+    "tier0_warnings": [],
     "gpu_util": 0.71,
     "active_site_alerts": [],
     "active_site_alerts_as_of": 1760342400120,
@@ -75,9 +76,9 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 }
 ```
 
-`world_state` 는 그 tick 에 적용돼 있던 구성 묶음 버전 `config_version`(선택)을 함께 싣는다(3.2).
+`world_state` 는 그 tick 에 적용돼 있던 구성 묶음 버전 `config_version`(선택)을 함께 싣는다(3.2). `head_z` 는 `head_z_validity` 가 VALID 나 UNCERTAIN 이면 값을, UNAVAILABLE 이면 null 을 싣는다. 값이 있어도 `head_z_validity` 를 확인하고 UNCERTAIN 값은 확정 근거로 쓰지 않는다(5.2. `world_state` 2.0.0 의미 변경, 1.x 는 VALID 일 때만 값).
 
-`health`는 활성 현장 경보 목록(`active_site_alerts`, 3.10)과 노트북–Pod 시계 차이·불확실성(`laptop_clock_offset`, 3.9. 모르면 null)도 싣는다. `pipeline_lag_ms` 는 시계 차이를 보정한 T_lag 다(6.1). 카메라별 프레임 집계(`cameras[].frames`)에는 손실 3종과 따로 노트북 송신 큐 버림(`laptop_skipped`)과 구분 불가 빈칸(`unattributed_gap`)을 싣는다(12.7).
+`health`는 활성 현장 경보 목록(`active_site_alerts`, 3.10)과 노트북–Pod 시계 차이·불확실성(`laptop_clock_offset`, 3.9. 모르면 null)도 싣는다. `pipeline_lag_ms` 는 시계 차이를 보정한 T_lag 이고, 모르면 null(그때 UNSAFE_UNKNOWN, 아는 하한은 `pipeline_lag_lower_bound_ms`)이다(6.1). 카메라별 `sync_valid` 는 동기화 근거(true/false, 근거 없으면 null)다(6.1). Tier 0 운영 경고(체크포인트·저널·EC2 전송 보류·재동기화 스냅샷)는 `tier0_warnings` 에 code 와 처음 확인한 시각으로 싣고, 빈 배열은 경고 없음, 필드가 없으면 모름이다(6.5). 카메라별 프레임 집계(`cameras[].frames`)에는 손실 3종과 따로 노트북 송신 큐 버림(`laptop_skipped`)과 구분 불가 빈칸(`unattributed_gap`)을 싣는다(12.7).
 
 `event_frame_ready`는 EC2가 발급한 임시 업로드 주소로 프레임을 올린 뒤 그 주소와 촬영 시각·카메라만 보낸다.
 
