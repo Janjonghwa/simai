@@ -205,7 +205,7 @@ def job_env(lay: Layout) -> dict[str, str]:
 def build_jobs(lay: Layout, git: dict | None) -> tuple[dict, list[dict]]:
     """gpu_queue Job 파일과 자리만 있는 항목 목록."""
     # provider·datacenter 는 run_record 가 RUNPOD_POD_ID·RUNPOD_DC_ID 로 채운다(그때그때 남은 지역).
-    # shortcut: 계약 provider 가 RUNPOD·LOCAL 뿐이라 Vast·엘리스는 LOCAL 로 기록된다, 계약에 값이 생기면 고친다
+    # provider 는 사이트 신호가 없으면 LOCAL(run_record.site_provider). 사이트 미정 클라우드는 Job 의 gpu.provider 에 OTHER 를 적는다
     gpu = {"shared_with_tier0": False} if lay.mode == "pod" else {"provider": "LOCAL"}
     env_cfg: dict = {"lock_files": ["ai/uv.lock"]}
     if os.environ.get("SIMAI_IMAGE_DIGEST"):

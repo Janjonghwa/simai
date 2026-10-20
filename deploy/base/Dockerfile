@@ -33,6 +33,8 @@ ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
 RUN uv python install ${PYTHON_VERSION}
 
 COPY --chmod=0755 deploy/base/simai-start.sh /usr/local/bin/simai-start
+# 윈도 체크아웃의 CRLF 가 shebang 을 깨뜨리지 않게 빌드에서 CR 을 뺀다(check_image.sh 는 결과를 다시 검사한다)
+RUN sed -i 's/\r$//' /usr/local/bin/simai-start
 
 # RunPod 은 컨테이너를 root 로 띄우고 Network Volume(/workspace)은 chmod 가 적용되지 않는다(명세 3.12).
 # sshd 도 root 가 필요하므로 사용자를 바꾸지 않는다.

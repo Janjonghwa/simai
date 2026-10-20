@@ -37,7 +37,7 @@
     SIMAI_TIER0_TLS_CERT_FILE      TLS 서버 인증서 PEM (엔드포인트 등록의 공개키 지문과 같은 파일)
     SIMAI_TIER0_TLS_KEY_FILE       TLS 비밀 키 PEM (Network Volume 비밀 폴더)
     SIMAI_TIER0_VIDEO_PORTS        카메라별 영상 포트 요청 번호 "cam1:70001,..." (엔드포인트 등록과 같은 값)
-    RUNPOD_TCP_PORT_<요청 번호>    대칭 매핑의 실제 포트. 이 포트에서 듣는다
+    SIMAI_PUBLIC_PORT_<요청 번호>(없으면 RUNPOD_TCP_PORT_<요청 번호>)  대칭 매핑의 실제 포트. 이 포트에서 듣는다
     SIMAI_LAPTOP_TOKEN_SHA256      받아들일 노트북 기기 토큰의 sha256:<hex 64> (쉼표로 여러 개)
     SIMAI_TIER0_VIDEO_LISTEN_HOST  듣는 주소 (기본 0.0.0.0)
 
@@ -779,8 +779,8 @@ class VideoIngestServer:
 
 
 def listen_specs_from_env(env: Mapping[str, str]) -> list[ListenSpec]:
-    """SIMAI_TIER0_VIDEO_PORTS + RUNPOD_TCP_PORT_<요청 번호> → 듣는 포트별 카메라. 모르는 포트는 지어내지 않는다."""
-    from services.tier0.endpoint_registration import parse_video_ports
+    """SIMAI_TIER0_VIDEO_PORTS + 공개 포트 환경 변수 → 듣는 포트별 카메라. 모르는 포트는 지어내지 않는다."""
+    from services.tier0.endpoint_registration import parse_video_ports, public_port_env
 
     text = (env.get("SIMAI_TIER0_VIDEO_PORTS") or "").strip()
     if not text:
@@ -789,9 +789,9 @@ def listen_specs_from_env(env: Mapping[str, str]) -> list[ListenSpec]:
     by_port: dict[int, set[str]] = {}
     problems = []
     for req in parse_video_ports(text):
-        raw = (env.get(f"RUNPOD_TCP_PORT_{req.requested_port}") or "").strip()
+        port_name, raw = public_port_env(env, req.requested_port)
         if not raw.isdigit() or not 1 <= int(raw) <= 65535:
-            problems.append(f"RUNPOD_TCP_PORT_{req.requested_port}")
+            problems.append(port_name)
             continue
         assert req.camera_id is not None
         if not _CAMERA_ID.match(req.camera_id):

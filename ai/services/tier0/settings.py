@@ -28,17 +28,17 @@
     SIMAI_TIER0_ENGINE               YOLO26x-pose TensorRT 엔진 경로 (deploy/tier0/entrypoint.sh 가 넣는다, LIVE 입력)
     SIMAI_TIER0_WEIGHTS              엔진이 없을 때 ultralytics 로 여는 가중치(.pt) 경로 (느리다, 경고를 남긴다)
     SIMAI_TIER0_IMGSZ                검출 입력 크기 (기본 1280, 엔진을 만든 값과 같아야 한다)
-    SIMAI_TIER0_VIDEO_PORTS, RUNPOD_TCP_PORT_*, SIMAI_TIER0_VIDEO_LISTEN_HOST
+    SIMAI_TIER0_VIDEO_PORTS, SIMAI_PUBLIC_PORT_*·RUNPOD_TCP_PORT_*, SIMAI_TIER0_VIDEO_LISTEN_HOST
                                      LIVE I0 영상 포트 (video_ingest.listen_specs_from_env). TLS·토큰은 제어 채널과 같은 값
     SIMAI_TIER0_GPU_RESERVE_MB       GPU 선확보 크기 (설정 파일 gpu.reserve_mb 보다 우선, 0 이면 끔)
     SIMAI_EC2_I1_URL / SIMAI_EC2_BASE_URL (+ SIMAI_EC2_I1_PATH), SIMAI_TIER0_TOKEN, SIMAI_EC2_CA_FILE
                                      I1 접속 (i1_client.I1Settings). 둘 다 없으면 EC2 없이 돈다(오프라인, health EC2_LINK_LOST)
-    SIMAI_TIER0_CONTROL_PORT         I0 제어 채널(wss) 대칭 매핑 요청 번호. 실제 포트는 RUNPOD_TCP_PORT_<요청 번호>.
+    SIMAI_TIER0_CONTROL_PORT         I0 제어 채널(wss) 대칭 매핑 요청 번호. 실제 포트는 SIMAI_PUBLIC_PORT_<요청 번호>(없으면 RUNPOD_TCP_PORT_<요청 번호>).
                                      없으면 노트북 없이 돈다(health GATEWAY_LINK_LOST)
     SIMAI_TIER0_CONTROL_LISTEN_HOST  제어 채널 듣는 주소 (기본 0.0.0.0)
     SIMAI_TIER0_TLS_CERT_FILE, SIMAI_TIER0_TLS_KEY_FILE   Tier 0 TLS 서버 인증서·키 (I0 영상·제어 공용)
     SIMAI_LAPTOP_TOKEN_SHA256        노트북 기기 토큰 sha256 지문 목록
-    엔드포인트 등록(endpoint_registration): RUNPOD_PUBLIC_IP, SIMAI_TIER0_VIDEO_PORTS, RUNPOD_TCP_PORT_* 등
+    엔드포인트 등록(endpoint_registration): SIMAI_PUBLIC_HOST·RUNPOD_PUBLIC_IP, SIMAI_TIER0_VIDEO_PORTS, RUNPOD_TCP_PORT_* 등
 
 값을 모르면 지어내지 않는다. 필요한 값이 빠지면 Tier0ConfigError 로 시작하지 않는다(어떤 값이 없는지 이름만 적는다).
 """
@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from services.tier0.endpoint_registration import DEFAULT_TIER0_ID
+from services.tier0.endpoint_registration import DEFAULT_TIER0_ID, public_port_env
 from services.tier0.i1_client import I1ConfigError, I1Settings
 from simai_ai.risk import LifecyclePolicy, Persistence
 
@@ -178,9 +178,9 @@ def _control(env: Mapping[str, str]) -> ControlSettings | None:
     if not requested:
         return None
     problems = []
-    raw = (env.get(f"RUNPOD_TCP_PORT_{requested}") or "").strip()
+    port_name, raw = public_port_env(env, requested)
     if not raw.isdigit() or not 0 <= int(raw) <= 65535:
-        problems.append(f"RUNPOD_TCP_PORT_{requested}")
+        problems.append(port_name)
     cert = (env.get("SIMAI_TIER0_TLS_CERT_FILE") or "").strip()
     key = (env.get("SIMAI_TIER0_TLS_KEY_FILE") or "").strip()
     tokens = (env.get("SIMAI_LAPTOP_TOKEN_SHA256") or "").strip()

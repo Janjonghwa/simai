@@ -78,7 +78,7 @@ Pod 에 저장소가 있으면 git 정보를 저장소에서 직접 읽고, 없�
 | `weights`: 경로 목록 | `weights_hash` | 파일 하나면 그 해시, 여럿·폴더면 (경로, 해시) 목록의 해시. 없는 경로가 있으면 비운다 |
 | `config`: `{path, file?, overrides?}` | `config` | `path` 는 저장소 상대 경로, `file` 은 Pod 의 실제 위치. 없으면 Job 파일 자체를 설정으로 기록 |
 | `env`: `{image_digest?, lock_files?, freeze_cmd?}` | `env_hash` | 이미지 다이제스트만 있으면 그 값, 여럿이면 묶은 해시(구성은 `notes`). 아무것도 없으면 빈 문자열 |
-| `gpu`: `{provider, region, datacenter, shared_with_tier0}` | `gpu` | 모델명·드라이버·CUDA 는 nvidia-smi 에서. 없으면 빈 문자열. `provider` 기본: `RUNPOD_POD_ID` 가 있으면 RUNPOD |
+| `gpu`: `{provider, region, datacenter, shared_with_tier0}` | `gpu` | 모델명·드라이버·CUDA 는 nvidia-smi 에서. 없으면 빈 문자열. `provider` 기본: `RUNPOD_POD_ID` 가 있으면 RUNPOD, `VAST_TCP_PORT_22` 가 있으면 VAST, 아니면 LOCAL(사이트 미정 클라우드는 Job 에 OTHER) |
 | `results`: `[{kind, path}]` | `results` | 끝난 뒤 있으면 URI·sha256. Job 로그는 항상 `LOG` 로 들어간다 |
 | (큐) | `git_commit`, `branch`, `dirty_worktree` | 저장소 또는 `stamp` |
 | (큐) | `started_at`, `finished_at`, `status`, `failure_reason` | UTC ms. 끝난 시각을 모르면(큐가 죽음) `finished_at` 을 비운다 |
