@@ -73,6 +73,7 @@
 | tier0_warnings | `health` 에 싣는 Tier 0 운영 경고: CHECKPOINT_STALLED·CHECKPOINT_ERROR·JOURNAL_STALLED·JOURNAL_FAILED·OUTBOX_BLOCKED·SNAPSHOT_BROKEN·LIVE_MARKER_WRITE_FAILED(GPU 상태 표시 파일 쓰기 실패, 정보 경고) 과 처음 확인한 시각. 빈 배열은 경고 없음, 필드 없음은 모름(6.5) |
 | sync_valid | `health` 카메라별 시간 동기화 근거. true 는 동기화 측정으로 확인, false 는 무효 판정(융합 제외), null 은 근거 없음(6.1) |
 | aliases | 병합(ID 교정)으로 이 World ID 에 합쳐진 이전 World ID 목록. 뒤에만 붙고 Track 이 살아 있는 동안 빠지지 않는다(5.2) |
+| split_from | 분할(ID 교정)로 갈라져 나간 새 World ID 가 싣는 원래 World ID. 원래 ID 에는 없고, 분할을 확정한 시각부터 그 ID 가 살아 있는 동안 같은 값이다(5.2, `world_state` 2.1.0) |
 | 해소 기록(tombstone) | 재시작 복구용 체크포인트에 남기는 해소된 이벤트의 마지막 sequence·판정 시각. 저널을 다시 적용할 때 해소된 이벤트를 되살리지 않게 한다(3.2) |
 | queue_wait_ms / frame_age_ms | 추론 대기열에서 기다린 시간 / 촬영부터 추론 시점까지 전체 경과 시간 |
 | 원격 관제 장애 | EC2만 끊긴 상태의 노트북 표시. 판정과 현장 경보는 정상이고 PWA·관제 화면 전달만 지연 |

@@ -262,7 +262,7 @@ def test_errors_after_connect_do_not_keep_token(caplog) -> None:
 def test_envelope_fields_and_versions() -> None:
     env = Envelope("tier0-01", FixedClock(T0), new_msg_id=lambda: "0192a6f0-7c1e-7b3a-9f2d-000000000001")
     msg = env.make("world_state", world_payload(T0 - 100))
-    assert msg["schema_version"] == "2.0.0" and msg["sent_at"] == T0 and msg["source_id"] == "tier0-01"
+    assert msg["schema_version"] == "2.1.0" and msg["sent_at"] == T0 and msg["source_id"] == "tier0-01"
     assert schema_errors(msg, "world_state") == []
     assert env.make("health", health_payload())["schema_version"] == "2.1.0"
     assert schema_errors(env.make("health", health_payload()), "health") == []

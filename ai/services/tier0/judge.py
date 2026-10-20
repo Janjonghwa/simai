@@ -6,7 +6,7 @@
    ActiveConfig 하나에서 온다(반쪽 적용 없음). 묶음이 없으면 위험 판정을 하지 않는다(health NO_ACTIVE_CONFIG).
 2. 인지(Perception.step): 공통 시각 t 의 World Track·접지·world_state payload. world_state 에 이 tick 의 config_version 을
    싣고(-84·-169), 봉투 msg_id 를 여기서 정한다. 같은 값이 이 tick 판정 전이의 evidence_ref 다(-79).
-3. ID 교정: WorldTrackFrame.revisions 를 LifecycleTracker.correct_identity 로 넘긴다. **반드시 같은 tick 의 apply 전**
+3. ID 교정: WorldTrackFrame.revisions 를 병합은 correct_identity, 분할은 split_identity 로 넘긴다. **반드시 같은 tick 의 apply 전**
    (-40, docs/design/tier0-world-track.md G3). 순서를 지키면 새 ID 로 들어오는 같은 규칙 판정이 기존 이벤트를 갱신한다.
 4. 판정: ActiveConfig.evaluate(world, LIVE, monitoring) → LifecycleTracker.apply(config_version, evidence_ref, related).
    작업면은 ActiveConfig.evaluate 가 넘긴다(-93). 감시 상태(R7)는 카메라 상태와 구역별 관측 카메라(geometry.zone_coverage).
@@ -225,11 +225,17 @@ class JudgmentLoop:
         steps: list[LifecycleStep] = []
         # 3) ID 교정: 같은 tick 의 apply 전에 (순서 불변식)
         for revision in perceived.frame.revisions:
-            if revision.kind is not RevisionKind.MERGE:
-                continue  # SPLIT·수동 교정은 아직 내지 않는다(별도 티켓). Risk 형식도 MERGE 만
-            step = self.tracker.correct_identity(revision.to_correction())
+            if revision.kind is RevisionKind.MERGE:
+                step = self.tracker.correct_identity(revision.to_correction())
+                log.info("ID 교정 %s → %s (rev %d)", revision.previous_world_id, revision.world_id,
+                         revision.identity_revision)
+            elif revision.kind is RevisionKind.SPLIT:  # 이벤트는 원래 ID 에 두고 분할 상대만 기억한다(-201)
+                step = self.tracker.split_identity(revision.to_split())
+                log.info("ID 분할 %s → %s (rev %d)", revision.previous_world_id, revision.world_id,
+                         revision.identity_revision)
+            else:
+                continue  # 수동 교정은 아직 내지 않는다(운영자 명령 계약 승인 뒤)
             self.stats.corrections += 1
-            log.info("ID 교정 %s → %s (rev %d)", revision.previous_world_id, revision.world_id, revision.identity_revision)
             self._record(step)
             steps.append(step)
         related = self._related(perceived.frame)  # 3) 교정 뒤, 같은 lock 안. 복원 Track 판단(로그)은 묶음이 없어도 한다

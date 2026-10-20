@@ -224,6 +224,60 @@ def test_negative_control_reversed_order_duplicates_event(tmp_path) -> None:
         s.close()
 
 
+def split(source: str, new: str, revision: int = 1) -> IdentityRevision:
+    return IdentityRevision(t=T0, kind=RevisionKind.SPLIT, world_id=new, previous_world_id=source,
+                            identity_revision=revision, reason="SPLIT_OBSERVED", since=T0 - 300)
+
+
+class IgnoreSplit(JudgmentLoop):
+    """음성 대조: 분할 기록을 Risk 에 넘기지 않는다(이전 동작)."""
+
+    def _judge(self, perceived, active):
+        from services.tier0.perception import Perceived
+
+        frame = perceived.frame
+        kept = tuple(r for r in frame.revisions if r.kind is not RevisionKind.SPLIT)
+        frame = WorldTrackFrame(frame.t, frame.calibration_version, frame.tracks, kept)
+        return super()._judge(Perceived(perceived.t, frame, perceived.payload, perceived.t_latest_global), active)
+
+
+def _split_ticks(s):
+    s.tick({"w-x": (INSIDE, 0)})
+    [event] = _r1_events(s.tracker)
+    # 같은 tick: w-n 이 w-x 에서 갈라져 나왔다. w-x 는 구역 밖, w-n 은 구역 안
+    first = s.tick({"w-x": (OUTSIDE, 1), "w-n": (INSIDE, 1)}, revisions=(split("w-x", "w-n"),))
+    later = [s.tick({"w-x": (OUTSIDE, 1), "w-n": (INSIDE, 1)}) for _ in range(10)]  # 1 s (해소 유지 0.3 s)
+    return event, first, later
+
+
+def test_identity_split_keeps_pre_split_event_until_both_sides_clear(site) -> None:
+    """S15P31A101-201: 분할은 이벤트를 옮기거나 해소하지 않는다. 분할 전 이벤트는 w-x 에 남아 IDENTITY_REVISED 로 표시되고,
+    갈라져 나간 w-n 이 구역 안인 동안 w-x 의 관측만으로 해소되지 않는다. w-n 의 같은 위험은 새 이벤트다."""
+    event, first, later = _split_ticks(site)
+    transitions = [t for s in first.steps for t in s.transitions]
+    revised = [t for t in transitions if t.event_id == event.event_id]
+    assert [str(c) for t in revised for c in t.changes] == ["IDENTITY_REVISED"]
+    assert [t.state.world_ids for t in transitions if t.transition is Lifecycle.RAISED] == [("w-n",)]
+    assert site.loop.stats.corrections == 1
+    assert all(t.transition is not Lifecycle.RESOLVED for r in later for s in r.steps for t in s.transitions)
+    assert site.tracker.get(event.event_id).world_ids == ("w-x",)
+    for _ in range(5):  # w-n 도 구역을 벗어나면 둘 다 해소된다
+        site.tick({"w-x": (OUTSIDE, 1), "w-n": (OUTSIDE, 1)})
+    assert site.tracker.get(event.event_id) is None
+
+
+def test_negative_control_ignored_split_resolves_pre_split_event(tmp_path) -> None:
+    """음성 대조: 분할을 넘기지 않으면 w-n 이 구역 안인데 w-x 의 관측만으로 분할 전 이벤트가 해소된다."""
+    s = Site(tmp_path, loop_cls=IgnoreSplit)
+    try:
+        event, _, later = _split_ticks(s)
+        assert s.tracker.get(event.event_id) is None
+        assert any(t.transition is Lifecycle.RESOLVED and t.event_id == event.event_id
+                   for r in later for st in r.steps for t in st.transitions)
+    finally:
+        s.close()
+
+
 def test_config_bundle_switch_only_at_tick_boundary(site) -> None:
     new, fetcher = _bundle("cfg-2", T0 + 5)
     site.fetcher.blobs.update(fetcher.blobs)

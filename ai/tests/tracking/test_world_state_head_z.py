@@ -90,7 +90,7 @@ def test_valid_and_uncertain_values_are_carried(level, contract_errors):
     assert {doc["skeleton"]["validity"][j] for j in COCO17_HEAD_JOINTS} == {str(level)}
     assert {doc["skeleton"]["joint_source"][j] for j in COCO17_HEAD_JOINTS} == {"observed"}
     msg = _message([doc])
-    assert msg["schema_version"] == WORLD_STATE_SCHEMA_VERSION == "2.0.0"
+    assert msg["schema_version"] == WORLD_STATE_SCHEMA_VERSION == "2.1.0"  # 2.1.0(-201) 도 UNCERTAIN 값 규칙은 2.0.0 과 같다
     assert contract_errors("world_state", msg) == []
 
 

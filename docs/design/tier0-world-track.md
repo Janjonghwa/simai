@@ -1,7 +1,7 @@
 # Tier 0 World Track Manager 설계
 
-S15P31A101-37(기본 추적), S15P31A101-40(늦은 재연결·ID 교정). 기획서 §5.2(추적 3계층, 계산 순서 5단계, World 위치의 정의, ID 교정 기록), §6.1(시간 모델), §6.2(World Track 상태), §6.4(재개), §15.1 G2(ID 유지 시간 비율)·G3(ID 교정 후 진행 중 위험 자동 해소 0건), 부록 D-G2-04·D-G3-10 기준이다.
-코드는 `ai/src/simai_ai/tracking/world_track.py`(World ID·연결·칼만 필터·생명주기·늦은 재연결·ID 교정), `tracking/world_state.py`(I1 `world_state` 조립)이고, 시험은 `ai/tests/tracking/` 의 `test_world_track.py`, `test_world_track_reconnect.py`(늦은 재연결·교정·G3), `test_world_track_reuse.py`(-168 결과 다시 쓰기 동일성), `test_world_track_sim.py`, 측정 스크립트는 `sim_world_track.py`, `bench_world_track.py` 다.
+S15P31A101-37(기본 추적), S15P31A101-40(늦은 재연결·ID 교정), S15P31A101-201(분할·수동 교정 계약안). 기획서 §5.2(추적 3계층, 계산 순서 5단계, World 위치의 정의, ID 교정 기록), §6.1(시간 모델), §6.2(World Track 상태), §6.4(재개), §15.1 G2(ID 유지 시간 비율)·G3(ID 교정 후 진행 중 위험 자동 해소 0건), 부록 D-G2-04·D-G3-10 기준이다.
+코드는 `ai/src/simai_ai/tracking/world_track.py`(World ID·연결·칼만 필터·생명주기·늦은 재연결·ID 교정), `tracking/world_state.py`(I1 `world_state` 조립)이고, 시험은 `ai/tests/tracking/` 의 `test_world_track.py`, `test_world_track_reconnect.py`(늦은 재연결·교정·G3), `test_world_track_split.py`(분할·G3, -201), `test_world_track_reuse.py`(-168 결과 다시 쓰기 동일성), `test_world_track_sim.py`, 측정 스크립트는 `sim_world_track.py`, `bench_world_track.py` 다.
 
 ## 범위
 
@@ -10,7 +10,7 @@ S15P31A101-37(기본 추적), S15P31A101-40(늦은 재연결·ID 교정). 기획
 | 계산 순서 1~3 (보간, 연결 후보, 후보별 삼각측량) | 입력으로 받는다(`AssociationFrame`) | Cross-view(S15P31A101-34), 삼각측량·관절 게이트(-26·-29) |
 | 계산 순서 4 (ContactEstimator) | 결과를 받을 자리(`SupportContact`)만. 없으면 모름 | ContactEstimator |
 | 계산 순서 5 (최종 연결과 World Track 갱신) | World ID 발급, 클러스터 → World Track 1:1 연결, 칼만 필터, 생명주기, `world_state` 조립 | |
-| ID 교정 기록·늦은 재연결 | 소실 후보를 같은 ID 로 잇기, 병합(`IdentityRevision` MERGE, `identity_revision`·별칭), Risk 전달(`to_correction`) (S15P31A101-40) | 분할·수동 교정, I1 교정 이력 형식(남은 일) |
+| ID 교정 기록·늦은 재연결 | 소실 후보를 같은 ID 로 잇기, 병합(`IdentityRevision` MERGE, `identity_revision`·별칭), Risk 전달(`to_correction`) (S15P31A101-40), 자동 분할(SPLIT, `to_split`, S15P31A101-201) | 수동 교정(계약안만, 아래), I1 교정 이력 형식(남은 일) |
 
 ## 입력과 출력
 
@@ -70,7 +70,7 @@ S15P31A101-37(기본 추적), S15P31A101-40(늦은 재연결·ID 교정). 기획
 - 남는 ID 의 `identity_revision` = 두 ID 중 큰 값 + 1, 사라지는 ID 는 별칭(`aliases`)에 더한다. `IdentityRevision(t, MERGE, world_id=남는 ID, previous_world_id=사라지는 ID, identity_revision, reason, evidence=근거 로컬 트랙)` 을 `WorldTrackFrame.revisions` 와 `WorldTrackManager.revisions` 에 추가만 한다(덮어쓰지 않음). reason 은 X 가 소실 후보였으면 `LATE_REASSOCIATION`, 가림 중이었으면 `DUPLICATE_MERGE`(-37 의 POSSIBLE_DUPLICATE 쌍이 다시 한 클러스터로 묶인 경우 포함). 연쇄 병합은 revision 이 계속 오르고 별칭이 쌓인다.
 - 두 Track 이 같은 소실 Track 의 서로 다른 옛 로컬 트랙을 동시에 가져가면 어느 쪽도 합치지 않는다.
 - **도달 거리 기준 시각(리뷰 F4).** 병합 근거의 도달 거리는 Y 의 위치 측정 이력(`reconnect_window_ms` 까지 남김) 중 X 의 마지막 관측 뒤의 것 전부와 이번 시각 기준점으로 잰다. 처음 구현은 매 시각 "지금 − X 의 마지막 관측" 으로 다시 재서, A 가 사라지고 0.1 s 뒤 1.2 m·3.6 m 떨어진 곳에 나타난 B 가 제자리에 있어도 몇 시각 뒤 A 로 병합되고 A 의 경보가 해소됐다. 이제 Y 가 한 번이라도 갈 수 없는 곳에서 관측됐으면 X·Y 를 병합 금지 쌍으로 두고, 같은 ID 로 잇기를 거리 때문에 거절하고 새로 만든 Track 도 그 X 와 병합 금지 쌍이 된다. 시험: 리뷰 장면 두 개(경보 유지 포함), 경계(첫 관측 2.49 m 병합 / 2.51 m 거절, 공백 1 s), 천천히 걸어가는 Y 의 정상 병합, 여러 가림 Track 중 갈 수 있는 쪽만 병합.
-- 사라지는 ID 는 그 시각부터 world_state 에 없다. 계약에 별칭 필드가 없어 I1 로는 `identity_revision` 증가만 보인다(아래 남은 일).
+- 사라지는 ID 는 그 시각부터 world_state 에 없다. I1 로는 `identity_revision` 증가와 `aliases`(world_state 1.3.0, -170)로 보인다.
 
 **병합 금지 쌍.** 같은 시각 같은 카메라의 서로 다른 두 검출은 한 사람일 수 없다. 검출 하나가 가리키는 Track 은 그 로컬 트랙의 주인(이번 시각 이전, 소실 후보 포함)과 그 클러스터를 받은 Track 이고, 같은 카메라의 다른 검출이 가리키는 Track 들과 병합 금지 쌍(`_distinct`)이 된다. 위치 갱신과 상관없이 병합 판단 전에 기록한다. 처음 구현은 위치가 갱신된 Track 의 클러스터로만 기록해, B 가 1대 클러스터로만(위치 갱신 없이) A 와 같은 카메라에 보인 반증을 놓치고 뒤에 B→A 를 병합했다(리뷰 F2). 같은 검출이 가리키는 두 Track(주인과 받은 Track)은 짝짓지 않는다(그것이 병합 근거다). 병합하면 사라지는 ID 의 쌍은 남는 ID 로 이어진다. Cross-view 가 한 사람을 (cam1, cam2)·(cam3, cam4) 로 가른 경우는 같은 카메라를 쓰지 않으므로 다시 한 클러스터로 묶이면 합친다. -37 리뷰 F1(로컬 ID 전환 한 번으로 두 사람 병합)·SIM id_switch 도 여기서 막힌다.
 
@@ -85,7 +85,59 @@ S15P31A101-37(기본 추적), S15P31A101-40(늦은 재연결·ID 교정). 기획
 
 시험(`test_world_track_reconnect.py`): 짧은 가림 뒤 같은 ID, 두 카메라 근거로 LOST 뒤 같은 ID, 다시 이은 뒤 가려지면 불확실 유지, 1대 근거는 잇지 않음(두 번째 카메라가 되살아나면 이음), 리뷰 F1 장면(B 가 A 로 복원되지 않음, A 소실 후보 동안 B 불확실), 근거 없는 재등장·거리 밖은 새 ID, 10 s 창 경계(9999/10000/10001 ms), crowd 경계(1.499/1.501 m), 교차 뒤 함께 사라진 두 사람, 두 소실 Track 의 로컬 트랙이 섞인 클러스터, 긴 소실 뒤 새 ID → 3시각 근거 뒤 교정(기록·별칭·world_state 스키마), 1대 되살림은 병합 안 함·불확실 유지, 근거 TTL 경계(1999/2000/2001/2100 ms), 짧은 빠짐 허용·반대 근거 재시작, 갈라진 한 사람 병합, 연쇄 병합, 두 Track 의 경쟁, 병합 금지 쌍(함께 보인 두 사람, 1대 클러스터 검출, 가림 중 검출, 병합으로 이어짐, 로컬 ID 전환), G3: 리뷰 F1 Risk 장면(숨은 A 의 경보 유지, AlertClear 없음), 교정 후 같은 규칙 이벤트 유지·연결, 이벤트 다시 키 달기, 같은 ID 재연결 이벤트 유지. 리뷰 장면 시험은 각 수정(카메라 수 기준, 병합 금지 기록, TTL 검사)을 빼면 실패하는 것을 확인했다.
 
-## 재시작 뒤 복원 Track 매칭 (S15P31A101-54)
+## 분할 (S15P31A101-201)
+
+§5.2 "병합·분할·교정마다 identity_revision 을 올리고 별칭과 교정 이력을 남기며, 이벤트에는 발생 당시의 원본 World ID 를 보존한다. ID 교정은 … 진행 중인 위험을 자동 해소하지 않는다", §19.1 미결 "잘못 합친 World ID 의 분할" 을 구현한다. 코드는 `world_track.py` 의 `_split_candidate`·`_split_step`·`_split`, Risk 쪽은 `risk/lifecycle.py` 의 `LifecycleTracker.split_identity`(`IdentitySplit`), Tier 0 연결은 `services/tier0/judge.py` 3단계다.
+
+**한 ID 가 두 사람이 되는 길.** 병합 금지 쌍(같은 시각 같은 카메라의 두 검출) 때문에 같은 카메라에 함께 보인 두 사람은 병합되지 않는다. 남는 길은 ① 두 사람이 겹쳐 지나가는 동안 Cross-view 가 한 클러스터로 묶고(카메라마다 검출이 하나라 반증이 없다) 일부 카메라의 로컬 트래커가 다른 사람 박스를 따라가 W 가 두 사람의 로컬 트랙을 함께 들게 되는 경우, ② 같은 카메라에 함께 보인 적 없는 두 Track 이 -40 근거로 병합된 경우(잔여 위험)다. 그 뒤 두 사람이 갈라지면 W 는 한쪽 클러스터만 받고 다른 쪽은 지금도 6단계에서 새 ID N 이 된다(W 가 이번 시각 갱신됐으므로 같은 ID 로 잇지 않는다). 이전 구현은 이것을 교정 기록 없이 했고 W·N 어느 쪽에도 표시가 없어, 분할 전 W 의 이벤트가 W 를 받은 사람의 관측만으로 해소됐다(음성 대조가 재현).
+
+**근거와 기준(병합과 대칭).**
+
+| 항목 | 병합 | 분할 |
+|---|---|---|
+| 근거 | 갱신되지 않은 X 의 옛 로컬 트랙이 Y 의 클러스터에 서로 다른 카메라 2대 이상 | W 의 로컬 트랙(이번 시각 이전 주인 W)이 서로 다른 카메라 2대 이상에서 같은 카메라의 두 검출로 갈라짐(한쪽은 W, 한쪽은 새 ID N) |
+| 근거 시각 수 | `merge_confirm_frames` 3 | 같음. 두 골반이 `duplicate_radius_m` 0.35 m 넘게 떨어진 시각만 센다 |
+| 끊김 허용 | 직전 근거가 `key_ttl_ms` 2 s 안이면 이어서 센다 | 같음. 근거가 2 s 넘게 없으면 후보를 버린다(분할하지 않음) |
+| 반대 근거 | 불확실 클러스터, 여러 Track, X 갱신, 병합 금지 쌍, 거리 | 불확실 클러스터, 0.35 m 안(같은 사람일 수 있음) → 처음부터 센다 |
+| 가림 | — | W·N 중 하나라도 위치 측정이 없는 시각은 세지도 버리지도 않는다 |
+| 결과 | 먼저 만든 ID 가 남음, revision = 큰 값 + 1, 별칭 추가 | W 는 그대로, N 은 그대로. 둘 다 revision = 큰 값 + 1, 별칭 불변, W·N 병합 금지 쌍 |
+| 확인 | 자기 로컬 트랙만으로 2대 이상 3시각 갱신까지 `LATE_REASSOCIATION` | 후보인 동안 + 분할 뒤 같은 기준 3시각까지 둘 다 `IDENTITY_SPLIT` |
+
+- **같은 카메라 기준을 고른 이유.** 같은 시각 같은 카메라의 두 검출은 한 사람일 수 없다는 병합 금지 반증과 같은 근거라 위치 잡음에 기대지 않는다. 카메라마다 W 의 로컬 트랙이 다른 클러스터로 간 것만 보면(예: cam1·cam2 는 W, cam3·cam4 는 N) Cross-view 가 한 사람을 두 클러스터로 가른 경우(-37 의 POSSIBLE_DUPLICATE → 병합)와 위치로만 구별해야 하고, 삼각측량 오차로 0.35 m 를 넘으면 한 사람을 영구히 둘로 가른다(분할은 병합 금지 쌍을 남긴다). 그 경우는 분할하지 않고 지금처럼 새 ID 만 만든다(잔여 위험).
+- **0.35 m.** `duplicate_radius_m` 는 같은 사람이 갈라진 두 클러스터 골반(거의 같은 곳)과 서로 다른 두 사람 골반(어깨 폭 약 0.45 m 보다 가깝기 어려움)을 가르는 값이다(7단계). 병합 쪽이 "0.35 m 안이면 같은 사람 두 ID 후보"이므로 분할은 "0.35 m 넘게 떨어져야 근거"로 대칭이다. 갈라지는 첫 시각에는 대개 가까우므로 후보는 거리와 상관없이 만들고(그 시각이 지나면 W 의 로컬 트랙이 N 으로 넘어가 같은 근거를 다시 볼 수 없다) 셈만 거리로 한다.
+- **N 을 바로 만드는 이유.** 분할을 확정할 때까지 N 을 만들지 않으면 갈라져 나간 사람이 0.2~0.3 s 이상 world_state 에서 빠진다(사람을 빠뜨리지 않는다, -37 4·6단계와 같은 원칙). 그래서 ID 는 지금처럼 바로 나누고, 교정 기록·revision·이벤트 처리는 근거가 쌓인 뒤에 한다. 짧은 분리·가림 뒤 다시 묶이면 N 은 기록 없이 남았다가 소실되고, W·N 은 같은 카메라의 두 검출로 보였으므로 병합 금지 쌍이라 다시 합쳐지지 않는다(이전 동작과 같다).
+- **원래 ID 를 갖는 쪽.** 갈라짐을 처음 본 시각에 W 가 3단계 헝가리안으로 받은 쪽(예측 위치에 가까운 쪽, 로컬 트랙 이력 보너스 포함)이다. 확정할 때 다시 고르지 않는다(ID 를 맞바꾸면 소비자 화면의 ID 가 튀고 진동한다). 위치 연속성은 신원 근거가 아니므로 이벤트는 이 선택에 기대지 않는다(아래).
+- **진동 방지.** W·N 은 갈라진 첫 시각에 같은 카메라의 두 검출로 기록돼 병합 금지 쌍이고 분할 때도 넣는다. 다시 겹쳐 한 클러스터에 N 의 로컬 트랙이 2대 이상 섞여도 병합하지 않고, 다시 갈라지면 N 이 연결 비용으로 자기 클러스터를 받는다(두 번째 분할 없음). 분할 후보는 새로 만든 Track 에만 생기므로 살아 있는 두 ID 사이에서 분할·병합이 번갈아 나오지 않는다.
+- **교정 기록.** `IdentityRevision(t=확정 시각, kind=SPLIT, world_id=N, previous_world_id=W, identity_revision, reason=SPLIT_OBSERVED, evidence=N 이 W 에게서 넘겨받은 로컬 트랙, since=후보 시작 시각)` 을 `WorldTrackFrame.revisions`·`WorldTrackManager.revisions` 에 추가만 한다. `to_payload()` 는 `since` 를 싣는다(MERGE 는 null). N 은 그 시각부터 `split_from = W` 를 들고 world_state 2.1.0 `tracks[].split_from` 으로 나간다(Lead 승인 2026-10-20). 살아 있는 동안(가림·같은 ID 재연결 포함) 같은 값이고 바꾸지 않는다. N 이 병합으로 사라지면 함께 사라지고 남는 ID 는 자기 split_from 만 지킨다(N 은 aliases 로만 남음). W 에는 싣지 않는다. 송신 측(`world_state_payload`)은 자기 ID·자기 별칭·빈 값이면 ValueError 로 막는다(스키마는 두 값의 같음을 표현하지 못한다). 저널에 교정 기록 자체를 남기는 것은 병합과 같이 조립부 몫이다(남은 일). W 의 관절 게이트 이력은 지운다. identity_revision 이 오르므로 ContactEstimator 의 가림 유지와 R4 의 이력도 두 ID 모두 끊긴다(분할 전 이력이 다른 사람 것일 수 있다).
+- **체크포인트·재시작.** `export_tracks` 는 분할 뒤 두 Track 의 identity_revision 을 싣고 별칭은 그대로다(`TrackCheckpoint` 형식 불변). 분할 후보·분할 상대·`split_from` 은 싣지 않는다: 복원 Track 은 world_state 에 나가지 않는 후보일 뿐이고 재시작 뒤 사람은 모두 새 ID 라 이전 세션의 분할 출처를 실을 곳이 없다. 형식을 바꾸면 엄격한 `from_record` 가 이전 체크포인트를 거부한다. 재시작하면 로컬 트래커가 새로 시작해 근거가 없으므로 진행 중이던 후보가 재시작 뒤 확정되는 일은 없고, 재관측된 사람은 -54 대로 새 ID + 복원 Track 후보다.
+
+**진행 중 이벤트(G3, D-G3-10).** 분할 전 W 의 이벤트가 둘 중 누구의 것인지 알 근거가 없다. 그래서 둘 중 하나로 지어내지 않는다.
+
+- 이벤트는 W 에 그대로 둔다(키·`world_ids`·`origin_world_ids` 불변, 새 이벤트를 만들거나 N 으로 옮기지 않음). 확정한 tick 에 W 의 identity_revision 이 오르므로 같은 tick 판정에서 기존 경로로 `IDENTITY_REVISED` 갱신이 나가고 해소 확인이 처음부터 다시 센다(표시, 계약 변경 없음).
+- `LifecycleTracker.split_identity(IdentitySplit(world_id=W, new_world_id=N, identity_revision))` 가 W 를 대상으로 하는 사람 대상 활성 이벤트에 N 을 **분할 상대**로 기억한다(`_Active.split_partners`, 내부 상태). 그 이벤트의 검증은 W·N 이 모두 유효하게 관측돼야 VERIFIED 이고, 같은 규칙의 판정이 N 에 있으면 해소를 세지 않는다. 그래서 W(A)가 구역 밖에서 확실히 보여도 N(B)이 구역 안이면 분할 전 경보가 꺼지지 않는다. N 의 같은 위험은 N 의 새 이벤트(RAISED)로 난다. 둘 다 위험이 없다고 확인되면 정상 해소된다(무기한 남지 않음). N 이 관측되지 않으면 UNVERIFIABLE 로 남는다(관측을 잃은 사람 이벤트와 같다).
+- **분할 계보(리뷰 R1).** 분할 상대는 계보 전체다. 상대 N 이 다시 N→M 으로 갈라지면 `split_identity` 가 "W 를 대상으로 하거나 N 을 상대로 둔" 이벤트에 M 을 더한다(전이적). 처음 구현은 W 를 대상으로 하는 이벤트에만 더해, W·N 이 안전하고 M 이 같은 위험에 남아 있는데 W 의 분할 전 이벤트가 해소·AlertClear 됐다(리뷰 재현을 `test_g3_chained_split_partner_keeps_pre_split_event` 로 옮김). 이벤트 자신의 ID 가 다시 갈라지면(W→N2) N2 도 더한다.
+- 분할 상대가 병합으로 Z 에 합쳐지면 상대는 Z 다(상대가 둘이 하나로 합쳐지면 하나만 남는다). 상대가 이벤트 자신의 ID 로 합쳐지면 상대에서 뺀다(자기 판정·관측으로 다룬다). 계보 안의 ID 가 LOST 로 사라지면 관측할 수 없으므로 그 이벤트는 해소하지 않는다(모르면 해소 안 함).
+- **영원히 열리는 경로와 근거.** 계보 안의 ID 하나가 소실되거나(교실을 나감) 재시작으로 분할 상대를 잃으면, 분할 전 사람 대상 이벤트는 UNVERIFIABLE 로 계속 남는다. 대상 사람이 사라진 기존 사람 대상 이벤트(-40, 관측 상실)와 같은 정책이고, 사람 대상 이벤트는 운영자 종료 대상이 아니다(-200). 그 이벤트가 누구의 위험인지 끝내 모르므로 남은 사람의 관측만으로 끄면 §5.2 '진행 중 위험 자동 해소 금지'를 어긴다. 정리 흐름(사람 대상 이벤트의 운영자 정리)은 수동 교정과 함께 서버·화면 쪽 별도 티켓이다. 확인(ACK)으로 반복 소리는 멈출 수 있다. 분할 상대는 저널·체크포인트에 싣지 않는다: 재시작하면 W 는 다시 관측되지 않아 복원 이벤트가 UNVERIFIABLE 로 남는다(안전 쪽, -54).
+- 후보인 동안(확정 전)은 W·N 이 IDENTITY_UNCERTAIN 이라 W 의 이벤트를 해소하지 않는다. 후보가 버려지면(분할하지 않음) 표시는 1 s 유지 뒤 풀리고 이전 동작과 같다.
+- **후보 만료(리뷰 R2).** 분할 후보는 이번 시각의 근거를 보기 전에 `t − 마지막 근거 > key_ttl_ms` 이면 버린다. 처음 구현은 근거가 있으면 count 를 1 로 되살리고 `last_t` 를 덮은 뒤 만료를 봐서, 전체 입력이 멈춰 update 가 불리지 않던 2.6 s 뒤 돌아온 시각에 옛 후보(최초 시각 그대로)로 분할했다(`perception` 은 새 공통 시각이 없으면 update 를 부르지 않는다). 회귀 시험 `test_split_candidate_expires_across_input_stall`.
+- Tier 0 조립부(`judge.py` 3단계)는 MERGE 는 `correct_identity`, SPLIT 은 `split_identity` 를 같은 tick 의 `apply` 전에 부른다. `split_identity` 는 전이를 내지 않는다(표시는 위 `IDENTITY_REVISED`). 교정 수 통계(`stats.corrections`)에 함께 센다.
+
+**시험.** `tests/tracking/test_world_track_split.py`: 교차 장면 분할(k=15 후보·k=19 확정, 기록 필드, revision·별칭, 플래그 구간, world_state 2.1.0 계약과 `split_from` 구간), `split_from` 가림 뒤 유지·송신 측 검사(자기 ID·빈 값·별칭), 거리 경계(0.34 m 분할 없음·불확실 유지 / 0.36 m 분할), 한 카메라만 갈라짐, 불확실 클러스터, 짧은 분리 뒤 다시 묶임(분할·병합 없음), 가림(1 s 는 이어서 세어 분할 / 2.5 s 는 후보 버림), 분할·병합 진동 없음(다시 붙었다 갈라져도 기록은 분할 하나, 새 ID 없음), 병합된 ID 의 분할(revision 큰 값 + 1, 별칭 유지), 재시작(체크포인트 revision, 후보 미복원, 재시작 뒤 교정 없음), G3(분할 상대가 구역 안이면 분할 전 이벤트 유지·N 새 이벤트·B 가 나간 뒤 해소)와 음성 대조(분할을 Risk 에 넘기지 않으면 B 가 구역 안인데 해소·AlertClear). `tests/risk/test_lifecycle.py`: 분할 상대 판정·관측 없음·병합 뒤 상대 이어짐·입력 검증. `tests/services/tier0/test_tier0_judge.py`: judge 가 분할을 판정 전에 넘김과 음성 대조. 핵심 수정 일곱 가지(카메라 2대 기준, 0.35 m, TTL 만료, 가림 시각 무시, 후보 표시, Risk 분할 상대 판정, 분할 상대 관측 검사)를 하나씩 되돌리면 해당 시험이 실패하는 것을 확인했다. 리뷰 수정: 연쇄 분할 회귀(`test_g3_chained_split_partner_keeps_pre_split_event`), 3단 분할(`test_identity_split_lineage_is_transitive_through_three_splits`), 분할·병합 섞임(`test_identity_split_lineage_with_merges`), 입력 정지 뒤 만료(`test_split_candidate_expires_across_input_stall`). 계보 전이·자기 ID 로 합쳐진 상대 빼기·만료 순서를 되돌리면 각각 실패한다. `split_from` 을 넣지 않게 되돌리면 교차 장면·가림 시험이 실패한다. 계약 예시: `contracts/examples/world_state.split.json`(정상), `invalid/world_state.split_from_empty.json`·`split_from_null.json`·`v2_0_split_from.json`(2.0.x 문서에 split_from). SIM 측정표(위)는 분할 뒤에도 같다(SIM 시나리오에는 같은 카메라의 두 검출로 갈라지는 ID 가 없다).
+
+**잔여 위험.**
+- 서로 다른 카메라에만 보이던 두 사람이 한 ID 로 합쳐진 뒤 다시 서로 다른 카메라 쌍으로 갈라지면 같은 카메라 근거가 없어 분할하지 않는다(새 ID 만, 교정 기록 없음, W 의 분할 전 이벤트는 W 를 받은 사람 관측으로 해소될 수 있다). 4대가 교실 모서리에서 같은 공간을 보므로 드물다.
+- 분할 확정 전에 후보가 버려지면(근거 2 s 끊김) 이전 동작과 같다: N 은 기록 없이 남고 W 의 이벤트는 W 관측으로 해소될 수 있다.
+- 분할 상대(계보)가 오래 남거나 소실되면 W 의 분할 전 이벤트가 그만큼(소실이면 계속) 열려 있다(위 '영원히 열리는 경로'). 새 위험 발생·현장 경보는 늦지 않는다.
+- **오분할(리뷰 권장, 코드 변경 없음).** 같은 시각 같은 카메라의 두 검출이 늘 서로 다른 실제 두 사람이라는 가정에 기댄다. 검출기의 동시 중복 박스, 유리·거울 반사, 사람 포스터·사진처럼 한 사람(또는 사람 아님)이 같은 카메라에서 두 검출이 되고 그것이 2대 이상 카메라에서 기하적으로 일관되게 0.35 m 넘게 떨어져 3시각 이어지면 분할 기준을 채울 수 있다. 그러면 갈라진 N 이 중복 이벤트를 만들고, W·N 이 병합 금지 쌍이 되며, N 이 소실되면 W 의 분할 전 이벤트가 확인 불가로 오래 남는다. 실제 녹화가 없어 빈도를 재지 못했다. G4·G5(실제 교실 녹화 검증) 항목 후보: 동시 중복 검출·반사면·포스터가 있는 장면에서 분할 오검출 수와 그로 인한 열린 이벤트 시간을 잰다.
+
+## 수동 교정 계약안 (설계만, Lead 승인 전 구현·스키마 없음)
+
+운영자가 관제 화면에서 잘못 합친·나뉜 ID 를 지정하는 EC2 → Tier 0 명령이다. 형식은 -200 `event_close`·`event_close_result` 와 맞춘다(I1 명령, 같은 봉투, LIVE 만, 멱등).
+
+- `identity_correction`(EC2 → Tier 0) payload: `correction_id`(UUID, 멱등 키), `action`(`MERGE` | `SPLIT` | `DISTINCT`), `world_id`(대상), `other_world_id`(MERGE: 합칠 상대, SPLIT: `world_id` 의 별칭 중 떼어 낼 이전 ID 또는 함께 보이는 다른 ID, DISTINCT: 다른 사람으로 지정할 ID), `observed_identity_revision`(운영자가 본 `world_id` 의 값, 낙관적 동시성), `operator`(`user_id`, `role`, event_close 와 같은 정의), `reason`(필수 문자열), `requested_at`.
+- `identity_correction_result`(Tier 0 → EC2): `correction_id`, `result`(`ACCEPTED` | `REJECTED` | `DUPLICATE`), `reject_reason`(`UNKNOWN_WORLD_ID`, `STALE_REVISION`, `DISTINCT_PAIR`(같은 카메라의 두 검출로 보인 쌍의 병합), `NOT_ALIVE`, `NOT_ALIAS`, `NOT_LIVE`), 적용 뒤 `identity_revision`, `decided_at`. 같은 `correction_id` 를 다시 받으면 처음 결과를 그대로 돌려준다(DUPLICATE, 저널로 판정).
+- 동작: MERGE 는 자동 병합과 같은 결과(먼저 만든 ID 가 남음, revision = 큰 값 + 1, 별칭, `correct_identity`)이고 병합 금지 쌍이면 거절한다. SPLIT 은 별칭을 빼지 않고(덮어쓰지 않음) 두 ID 를 병합 금지 쌍으로 두며 revision 을 올리고 진행 중 이벤트는 자동 분할과 같이 분할 상대 규칙을 쓴다. DISTINCT 는 병합 금지 쌍만 더한다(revision 불변). 기록은 `IdentityRevision(kind=CORRECTION)` + 저널에 명령·결과(누가·왜), 이벤트를 해소하지 않는다.
+- 판정 필요: 메시지 이름·필드, 운영자 권한(관리자만인지), SPLIT 대상이 별칭만인지, I1 계약 버전(새 메시지 두 개, 마이너).
 
 Jira -54(기획서 §3.2 재시작 복구, 부록 C "Track 체크포인트 복원·재관측 매칭"): 복원 Track 은 OBSERVED 가 아니고, 30초 넘은 체크포인트에서는 Track 을 복원하지 않으며, 새 World ID 를 주기 전에 복원 Track 과 먼저 매칭하고 애매하면 `related_event_id` 를 단다. 완료 조건은 재시작 때 같은 위험의 이벤트 중복 생성·활성 이벤트 자동 해소·복원 위치의 OBSERVED 처리 0건(G3)이다. 명세 §3.2 본문은 "MVP 는 World Track 을 체크포인트하지 않는다"라 Jira 와 다르다(정리는 -172). 여기서는 Jira 를 따르되 복원 Track 을 **재관측과 맞출 후보로만** 쓴다.
 
@@ -161,6 +213,7 @@ Jira -54(기획서 §3.2 재시작 복구, 부록 C "Track 체크포인트 복�
 | `POSSIBLE_DUPLICATE` | 같은 사람 두 ID 후보 쌍(7)이 0.35 m 안에 있는 동안 매 시각 |
 | `LATE_REASSOCIATION` | 소실·가림 Track 을 로컬 트랙 근거로 다시 이었거나 ID 를 병합했고 일관성 확인(자기 로컬 트랙 2대 이상으로 3시각 갱신)이 끝나지 않았다(-40). 시간만으로 풀지 않는다 |
 | `REASSOCIATION_AMBIGUOUS` | 갱신되지 않은 Track 의 옛 로컬 트랙을 넘겨받았지만 근거가 모자라 잇지 않았다(-40). 그 Track 이 남아 있는 동안 매 시각 붙는다(돌아온 사람일 수 있다) |
+| `IDENTITY_SPLIT` | 이 ID 의 로컬 트랙이 2대 이상 카메라에서 같은 카메라의 두 검출로 갈라진 분할 후보이거나, 분할 뒤 일관성 확인(자기 로컬 트랙만으로 2대 이상 3시각 갱신) 중이다(-201). 분할 전 관측이 둘 중 누구의 것인지 모른다 |
 
 ## world_state 조립
 
@@ -221,7 +274,9 @@ Jira -54(기획서 §3.2 재시작 복구, 부록 C "Track 체크포인트 복�
 
 - 계약: `world_state` 1.1.0(마이너, Lead 승인)으로 ① `payload.input_provenance` 선택 필드, ② `position_xy` 설명에 "관측이 없을 때 t_last_valid 위치 유지, σ 를 2 m/s × 공백만큼 확대, 이중 외삽 금지"를 넣었다. 남은 제안: `head_z_validity`, ID 교정 이력(아래).
 - 계약(-40 결정): `world_state.world_track` 에 선택 필드 `aliases`(이 ID 로 합쳐진 이전 World ID 목록)를 넣는 것을 사용자가 승인했다. -169 머지 뒤 별도 계약 티켓에서 추가하고 world_state 조립이 `WorldTrackSnapshot.aliases` 를 싣는다. 이번 변경은 스키마를 고치지 않았다. 지금은 I1 로 `identity_revision` 증가만 보이고 사라진 ID 는 설명 없이 빠진다.
-- 분할(SPLIT)·수동 교정(CORRECTION)은 별도 티켓이다: 잘못 합친 ID 를 다시 가르는 근거(예: 합친 뒤 같은 카메라의 두 검출로 동시에 보임)와, 분할 시 이벤트를 어느 ID 에 둘지 Risk 쪽 인터페이스(`IdentityCorrection` 은 병합 방향만 있다)가 필요하다. 리플레이 교정도 같이 정한다.
+- 분할은 -201 에서 구현했다(위 "분할"). 수동 교정은 계약안만 있다(위 "수동 교정 계약안", Lead 승인 뒤 구현). 리플레이 교정은 교정 기록 저널화와 함께 정한다.
+- I1 표현(-201, Lead 승인 2026-10-20): 분할은 `identity_revision` 증가, `identity_confidence` IDENTITY_UNCERTAIN, 이벤트의 `IDENTITY_REVISED` 갱신과 world_state 2.1.0 `tracks[].split_from`(새 ID 에만 원래 ID)으로 보인다. 별칭은 병합 전용이라 분할에 쓰지 않는다(N 에 W 를 넣으면 "W 는 N 으로 합쳐졌다"로 읽힌다). `identity_revision` 설명의 "병합만" 문구도 보강했다. 계약 v5.1.0.
+- 수동 교정 명령(`identity_correction`)은 구현하지 않는다(Lead 결정 2026-10-20). 위 계약안을 서버·화면 작업과 맞춰 별도 티켓에서 다룬다.
 - Tier 0 조립부(-45 이후): 시각마다 `frame.revisions` 를 `LifecycleTracker.correct_identity(rev.to_correction())` 로 `apply` 전에 넘기고, `rev.to_payload()` 를 저널에 남긴다. Pod 재시작 체크포인트에는 살아 있는 Track 만 넣는다(-51, 소실 후보·교정 기록은 넣지 않음). 소실 후보였던 사람의 복원 이벤트는 위 재시작 연결의 ② (같은 규칙·구역)로만 이어진다.
 - Risk `correct_identity` 의 충돌(IDENTITY_CONFLICT) 쪽 이벤트는 옛 ID 가 다시 관측되지 않으므로 UNVERIFIABLE 로 계속 남는다(자동 해소 없음, G3 쪽으로 안전). 운영자가 정리하는 흐름은 Risk·관제 화면 쪽 몫이다.
 - 늦은 재연결 수치(`reconnect_window_ms` 10 s, `reconnect_crowd_radius_m` 1.5 m, `reconnect_min_cameras` 2, `merge_confirm_frames` 3)는 초기값이다. 카메라 4대 교실에서 2대 근거가 실제 로컬 트래커 재등장 동작으로 얼마나 자주 나오는지(늦은 재연결이 드물 수 있다)도 G2·A0 녹화로 본다. G2·A0 녹화(실제 로컬 트래커 재등장 동작)로 조정한다.
