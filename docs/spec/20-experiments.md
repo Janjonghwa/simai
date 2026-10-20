@@ -88,7 +88,7 @@ Jira는 **EXP-01 / EXP-02**를 큰 Feature 티켓으로 유지하고, 티켓 하
 |---|---|---|
 | FrameSource | 공개 다시점 데이터, 시나리오 녹화 파일, 시뮬레이터 | 같음(녹화·라이브) |
 | CalibrationProvider | `DATASET_GT`(공개 데이터의 정답 카메라), `SIM`, `MODEL_ESTIMATE`(이전 Run 에서 모델이 추정한 카메라를 다시 입력. 예: EXP-01 known 모드 시험) | `G1_AUTO`(G1 자동 보정 결과) |
-| WorldTrackProvider | `DATASET_GT`(공개 데이터의 정답 3D 자세·ID), `SIM` | `TIER0_LOG`(Tier 0를 녹화 입력으로 돌린 결과, 또는 Spatial DB에 기록된 `world_state`와 Network Volume 의 2D 관측 Parquet(11.2)) |
+| WorldTrackProvider | `DATASET_GT`(공개 데이터의 정답 3D 자세·ID), `SIM` | `TIER0_LOG`(Tier 0를 녹화 입력으로 돌린 결과, 또는 Spatial DB에 기록된 `world_state`와 Tier 0 저장 위치의 2D 관측 Parquet(11.2)) |
 
 1. **같은 필드 의미.** 대체 구현도 실제 구현과 같은 의미를 지킨다. 접지를 모르면 `ground_anchor_xyz`를 비우고 Z=0으로 채우지 않는다. World 좌표는 미터, 오른손, Z-up이다.
 2. **출처 기록.** 모든 Provider 출력에 `provider_source`(위 표의 값)와 버전을 붙이고, 이를 소비한 결과물(`scene_output`, `human_mesh_output`, Run 기록)에 `input_provenance`로 그대로 남긴다.
@@ -104,10 +104,10 @@ Jira는 **EXP-01 / EXP-02**를 큰 Feature 티켓으로 유지하고, 티켓 하
 
 - **개발 기본 정책:** 두 Worker는 설계/구현을 병렬 진행하되 무거운 단일 GPU 추론 작업은 공유 큐로 순차 실행. 중량 Job에 잠금, TTL/heartbeat, 타임아웃, 종료 시 메모리 회수, 재시작 시 상태 복구를 적용한다.
 - **안전 경로 격리:** Tier 0와 분석 워커는 같은 GPU를 쓴다(3.2). LIVE 관제 시간에는 VLM 등 관제용 분석만 자원 상한 안에서 실행하고, EXP 추론은 관제가 없는 시간에만 실행한다.
-- **격리:** 모델별 Python/CUDA/Torch 환경 또는 컨테이너 격리. 코드 작업은 20.1의 티켓별 Feature Branch, 런 메타데이터와 요약 보고서는 GitLab, 중량 영상·모델·3D 아티팩트는 현재 운영 리전의 Network Volume(3.12)에 저장하고, 환경은 모델별 Docker 이미지로 관리한다.
-- **측정:** GPU 실제 모델명과 드라이버·CUDA, 배치/해상도, inference+I/O+render 별 p50/p95, VRAM peak, 처리량/실패율/스토리지 사용을 기록. A40 등 특정 GPU 수치는 실측 없이 확정하지 않는다. 판정·선택에는 운영 GPU(일본 AP-JP-1 H100) 실측값과 공식 벤치마크를 쓰고, 노트북 등 다른 GPU 수치는 참고값으로 구분해 기록한다.
+- **격리:** 모델별 Python/CUDA/Torch 환경 또는 컨테이너 격리. 코드 작업은 20.1의 티켓별 Feature Branch, 런 메타데이터와 요약 보고서는 GitLab, 중량 영상·모델·3D 아티팩트는 GPU 실행 사이트의 저장 위치(3.12)에 두고 볼륨이 없으면 결과 묶음으로 가져오며, 환경은 모델별 Docker 이미지로 관리한다.
+- **측정:** GPU 실제 모델명과 드라이버·CUDA, 배치/해상도, inference+I/O+render 별 p50/p95, VRAM peak, 처리량/실패율/스토리지 사용을 기록. A40 등 특정 GPU 수치는 실측 없이 확정하지 않는다. 판정·선택에는 시연 GPU(3.12, 미정) 실측값과 공식 벤치마크를 쓰고(시연 GPU 가 정해지기 전 모델 선택은 H100 80GB 기준), 노트북 등 다른 GPU 수치는 참고값으로 구분해 기록한다.
 - **재현:** run_id, experiment_id(실험 EXP-01·EXP-02·INT-01, 운영 경로 검증 Run 은 VAL-01: GPU 세션 검증 큐 등, 채택 게이트 근거 아님·`e_gate` 없음, 정답·SIM 입력 지표는 제품 성능 아님), owner, git_commit, env_hash, model_version, weights_hash, dataset_hash, config, source_camera/calibration_version, 결과 URI, 메트릭, 리뷰 의견을 필수로 남긴다.
-- **운영 비용:** GPU 크레딧·리전·디스크 비용, 네트워크 볼륨 복사/이동 전후 시간과 비용을 별도로 기록한다. 실제 마운트 경로는 확인 후 기입한다. 리전 이전(3.12)의 복사 시간과 비용, 시연 리전 GPU 등급별 시간당 비용도 기록한다.
+- **운영 비용:** GPU 크레딧·사이트·디스크 비용, 이미지·가중치 받기와 결과 회수 시간을 별도로 기록한다. 사이트를 바꿀 때(3.12)의 준비 시간과 비용, 시연 사이트 GPU 등급별 시간당 비용도 기록한다.
 
 저장소 구조는 21.1을 따른다. 실험 코드는 `ai/experiments/{static_scene,hmr}/{configs,eval,reports}`, 계약 스키마는 저장소 최상위 `contracts/`(`scene_output`, `human_mesh_output`, `run_record`), 실험 색인은 `docs/experiments/`에 둔다.
 
