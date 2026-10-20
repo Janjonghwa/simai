@@ -1,21 +1,25 @@
 # deploy: 모델별 Docker 이미지 (S15P31A101-32)
 
 모델별 Python·CUDA·Torch 환경을 Docker 이미지로 고정하고, 이미지 다이제스트를 Run 기록의 `env_hash` 로 쓴다(명세 3.12 저장소 규칙, 20.5, 21.5).
-Network Volume 에는 가중치, 데이터, 실험 산출물, TensorRT 엔진 캐시만 둔다. 환경은 볼륨에 설치하지 않는다(E-GATE-0 은 예외였다).
+저장 위치(`$SIMAI_ROOT`: 볼륨·블록 스토리지, 없으면 컨테이너 디스크)에는 가중치, 데이터, 실험 산출물, TensorRT 엔진 캐시만 둔다. 환경은 볼륨에 설치하지 않는다(E-GATE-0 은 예외였다).
+GPU·지역은 고정하지 않는다(2026-10-20 결정, S15P31A101-205): 개발·시험은 RunPod 의 그때그때 남은 GPU·지역(볼륨 없음), 예비는 Vast.ai,
+시연은 엘리스 클라우드 A100 VM + 블록 스토리지(`docker run`). 일본 Network Volume 은 쓰지 않는다.
+최소 사양: Tier 0 만은 VRAM 24GB급(RTX 4090 이상), Tier 0 + 실험은 48GB(80GB 권장). Ampere 이후, 드라이버 최대 CUDA 13.0 이상, 볼륨이 없으면 컨테이너 디스크 100GB 이상.
 
 ## 파일
 
 | 파일 | 하는 일 |
 |---|---|
 | `docker-bake.hcl` | 빌드 정의. 외부 이미지(CUDA·uv) 다이제스트 고정, 대상 `tier0`·`exp02`(베이스를 함께 빌드) |
-| `base/Dockerfile`, `base/simai-start.sh` | 공통 베이스: CUDA 이미지 + uv + uv 관리 Python 3.11.15 + RunPod SSH(키 인증만) 시작 스크립트 |
+| `base/Dockerfile`, `base/simai-start.sh` | 공통 베이스: CUDA 이미지 + uv + uv 관리 Python 3.11.15 + SSH(키 인증만: RunPod `PUBLIC_KEY`·Vast `SSH_PUBLIC_KEY`·`SIMAI_AUTHORIZED_KEYS_FILE`, `SIMAI_SSHD=off` 면 안 띄움. 한 줄에 공개키 하나만 받고 옵션·제어 문자 줄은 버린다. ssh-keygen·sshd 에는 HF 토큰을 넘기지 않는다) 시작 스크립트 |
 | `tier0/Dockerfile`, `tier0/entrypoint.sh` | Tier 0 서비스 이미지(YOLO26x-pose, TensorRT FP16). `ai/uv.lock` 으로 의존성 고정, 첫 기동 때 엔진 준비 |
+| `scripts/simai_bootstrap.py`, `weights.json` | 이미지의 `simai-bootstrap`(기본 진입점): 저장 위치·GPU 세대 감지 → 가중치 목록대로 받고 sha256 확인 → Tier 0 또는 세션 큐 (아래 "simai-bootstrap") |
 | `exp02/Dockerfile`, `exp02/entrypoint.sh`, `exp02/requirements.{in,lock.txt}` | EXP-02 Fast SAM 3D Body 이미지(골격). 체크포인트는 볼륨에서 읽는다 |
 | `*/Dockerfile.dockerignore` | 이미지별 빌드 컨텍스트 **허용 목록**(나열한 파일만 들어간다) |
 | `compose.yaml` | 로컬 점검용(RunPod 은 Compose 를 쓰지 않는다) |
 | `scripts/check_image.sh` | 이미지 점검(GPU 불필요): 비밀·가중치·엔진·SSH 호스트 키 없음, import, 진입점 오류 코드, GPU 별 엔진 경로, SSH 비밀번호 접속 거부 |
 | `scripts/gpu_session1.py` | GPU 1차 세션 검증 큐(S15P31A101-183): gpu_queue 로 아래 스크립트를 차례로 돌리고 결과 묶음·scp 명령을 낸다. `prepare`(노트북 사본)·`plan`·`run`(Pod 또는 `--mode dryrun`) |
-| `scripts/pod_check.py` | Pod 점검(-31): GPU·드라이버·CUDA·마운트·용량·쓰기 속도·fsync·flock → JSON |
+| `scripts/pod_check.py` | Pod 점검(-31): GPU(최소 사양)·드라이버·CUDA·마운트·용량·쓰기 속도·fsync·flock → JSON. `--no-volume` 은 볼륨 측정 SKIP |
 | `scripts/session1_engine.sh` | 아래 "Pod 검증 큐" 1)~7) 을 한 Job 으로(단계별 종료 코드·시간을 steps.tsv·metrics.json 에) |
 | `scripts/crash_recovery_g3.py` | Network Volume 강제 종료 복구 실측(-92): 실제 Tier 0 kill -9 ·재시작 + -51 결정적 지점, G3 항목 0건 판정 |
 | `scripts/repeat_pytest.py` | pytest 반복(Linux TLS 시험 -45·-175) |
@@ -31,10 +35,11 @@ Network Volume 구조·권한·보관, Pod 점검 기준, SSH 재접속·443 예
 
 | 무엇 | 어디에 | 비고 |
 |---|---|---|
-| 가중치 (YOLO26x-pose `.pt`, sam-3d-body-dinov3 등) | `/workspace/simai/weights/` | 해시 목록은 GitLab 에도 남긴다(3.12). Tier 0 는 `SIMAI_TIER0_WEIGHTS_SHA256` 을 주면 다를 때 시작하지 않는다 |
-| TensorRT 엔진 | `/workspace/simai/engines/` | Pod 첫 기동 때 그 GPU 에서 만든다(아래) |
-| 데이터·녹화·2D 관측·Run 산출물 | `/workspace/simai/{datasets,recordings,obs2d,runs}` | 19.1 볼륨 구조 |
-| 비밀 (HF 토큰, Tier 0 TLS 개인키, 기기·워커 토큰) | `/workspace/.simai-private/` (HF 토큰은 `hf.env`) | 이미지·저장소·RunPod 템플릿 환경 변수에 넣지 않는다. 볼륨은 chmod 가 안 먹으므로 다른 Pod 에 붙일 때 주의 |
+| 가중치 (YOLO26x-pose `.pt`, sam-3d-body-dinov3 등) | `$SIMAI_ROOT/weights/` | 해시 목록은 저장소 `deploy/weights.json`(3.12). `simai-bootstrap` 이 없으면 받고 다르면 시작하지 않는다. Tier 0 는 `SIMAI_TIER0_WEIGHTS_SHA256`(부트스트랩이 목록 값으로 채움)과 다르면 시작하지 않는다 |
+| TensorRT 엔진 | `$SIMAI_ROOT/engines/` | 그 GPU 에서 첫 기동 때 만든다(아래). 세대별 경로(`sm_XX`) |
+| 데이터·녹화·2D 관측·Run 산출물 | `$SIMAI_ROOT/{datasets,recordings,obs2d,runs}` | 19.1 볼륨 구조 |
+| HF 토큰 | 환경 변수 `HF_TOKEN` 만: RunPod Secret `{{ RUNPOD_SECRET_hf_token }}`, Vast 계정 환경 변수, 엘리스는 블록 스토리지 `.simai-private/hf.env`(chmod 600)를 `docker run --env-file` 로 | `simai-bootstrap` 이 가중치를 받을 때만 쓰고 Tier 0·큐를 띄우기 전에 환경에서 지운다. 이미지·저장소·로그·결과 묶음에 남기지 않는다 |
+| 비밀 (Tier 0 TLS 개인키, 기기·워커 토큰) | `$SIMAI_ROOT/../.simai-private/` | 이미지·저장소·템플릿 환경 변수에 넣지 않는다. 볼륨은 chmod 가 안 먹으므로 다른 Pod 에 붙일 때 주의 |
 | SSH 호스트 키 | 컨테이너 시작 때 `ssh-keygen -A` | 이미지에 남으면 모든 Pod 가 같은 호스트 키를 쓴다 |
 
 빌드 컨텍스트는 저장소 최상위지만 `Dockerfile.dockerignore` 가 허용 목록이라 `.env`, `*.pt`, `recordings/` 같은 파일은 컨텍스트에 들어갈 수 없다.
@@ -99,21 +104,83 @@ RunPod 에는 레지스트리 자격 증명(읽기 전용 토큰)을 RunPod 계�
 3. GPU 큐 Job 파일의 `record.env.image_digest` 에 같은 값을 적는다. `run_record.py` 는 이미지 다이제스트만 있으면 그 값을 그대로 `env_hash` 로 쓴다(`ai/experiments/gpu_queue/README.md`).
 4. 다이제스트를 모르는 Run(로컬 이미지, 볼륨 환경)은 `env_hash` 를 다이제스트로 채우지 않는다. 볼륨 환경은 기존처럼 잠금 파일 해시(`lock_files`)를 쓴다.
 
-## RunPod 템플릿 (Tier 0)
+## simai-bootstrap (이미지 기본 진입점, S15P31A101-205)
+
+어느 GPU·지역·사이트에서든 같은 순서로 시작한다. 진입점은 `tini → simai-start(SSH) → simai-bootstrap` 이고 기본 인자는 `tier0` 이다.
+
+| 명령 | 하는 일 |
+|---|---|
+| (인자 없음) / `tier0 [Tier 0 인자]` / `--config ...` | 준비 → `simai-tier0`(엔진 준비 `engine_cache ensure` → `python -m services.tier0`) |
+| `queue [gpu_session1 run 인자]` | 준비 → GPU 1차 세션 큐(저장소 사본 `$SIMAI_SESSION_REPO`, 기본 `$SIMAI_ROOT/setup/session1/repo`). 엔진 첫 빌드 시간은 큐 b 항목이 재므로 엔진 준비는 하지 않는다 |
+| `check` | 준비만 하고 결과 JSON 출력(사이트 첫 확인) |
+| 그 밖의 명령(`sleep infinity`, `bash`, `simai-wait-tier0`, `python ...`) | 준비 없이 그대로 실행 |
+
+준비 순서와 종료 코드(simai-tier0·engine_cache 와 같은 규칙: 2 저장·가중치, 3 GPU):
+
+1. 저장 위치: `SIMAI_ROOT` → `/workspace` 가 있고 쓸 수 있으면 `/workspace/simai`(RunPod 볼륨·Pod 볼륨·`docker run -v`) → 컨테이너 디스크 `/srv/simai`. 남은 용량 하한 `SIMAI_MIN_FREE_GB`(기본 20) 미만이면 2.
+2. GPU: `nvidia-smi` compute_cap → `sm_XX`(`SIMAI_GPU_ARCH` 로 넘김), 메모리·드라이버 기록. GPU 없음, compute_cap·메모리를 읽지 못함, Ampere(8.0) 미만, VRAM 24GB급(22,500 MiB) 미만이면 3. 가중치를 받기 전에 끝난다.
+3. 가중치: `weights.json`(이미지 `/opt/simai/deploy/weights.json`)의 `tier0` 항목. 있고 sha256 이 맞으면 건너뜀(엘리스 블록 스토리지 재사용), 없으면 옆 임시 파일로 받아 sha256 이 맞을 때만 이름을 바꾼다. 있는데 다르면 지우지 않고 2, 받은 것이 다르면 버리고 2, 목록에 해시가 없으면 2. HF 원본(`source.hf`)은 `HF_TOKEN` 을 첫 요청에만 싣는다(다른 호스트 리다이렉트에는 안 실림). 해시 근거는 `docs/data/weights.md`. `SIMAI_TIER0_WEIGHTS`·`SIMAI_TIER0_WEIGHTS_SHA256` 이 비어 있으면 목록 값으로 채운다.
+4. 기록 `$SIMAI_ROOT/runs/bootstrap/<UTC>-<pid>.json`(추가만, 토큰 값 없음, `hf_token: present|absent` 만) → exec.
+
+HF 토큰은 시작하자마자 환경에서 꺼내 부트스트랩 프로세스 안에만 둔다(가중치 받기에만 씀). nvidia-smi 조회·도움말·그대로 넘기는 명령·Tier 0·큐 어느 자식에도 넘어가지 않는다. `simai-start` 도 ssh-keygen·sshd 를 토큰 없는 환경으로 띄운다. `HUGGING_FACE_HUB_TOKEN` 은 읽지 않고 지울 이름으로만 다룬다.
+
+HMR(torch 2.5.1 cu124, Detectron2)·MapAnything(torch 2.7.1 cu126) 가중치는 `weights.json` 의 `placeholders` 에 자리만 있다(실험 이미지 티켓에서 채운다).
+
+## RunPod 템플릿 (Tier 0, 볼륨 없음)
 
 | 항목 | 값 |
 |---|---|
-| 데이터센터·GPU | 일본 AP-JP-1, H100 80GB SXM, GPU 하나(Tier 0 가 먼저 쓴다) |
+| 데이터센터·GPU | 그때그때 남은 지역·GPU. 최소 Tier 0 만 24GB급(RTX 4090 이상), Tier 0 + 실험 48GB(80GB 권장), Ampere 이후. GPU 하나(Tier 0 가 먼저 쓴다) |
 | 이미지 | `<레지스트리>/<프로젝트>/tier0@sha256:<다이제스트>` |
 | CUDA 버전 필터 | 13.0 이상(위 "CUDA 13 인 이유") |
-| Container Disk | 40GB 이상(이미지 풀면 약 19.5GB + 임시 파일) |
-| Network Volume | AP-JP-1 볼륨을 `/workspace` 에 |
+| Container Disk | 100GB 이상(이미지 풀면 약 19.5GB + 가중치·엔진·결과. 볼륨이 없으므로 여기가 `$SIMAI_ROOT=/srv/simai`) |
+| Volume | 붙이지 않는다(Network Volume 은 데이터센터에 묶인다). Pod 볼륨을 쓰면 `/workspace/simai` 가 된다 |
 | 공개 TCP 포트 | 22(SSH, 키 인증만), I0 수신 포트(70000 이상 대칭 매핑, 실제 포트는 `RUNPOD_TCP_PORT_*`, 명세 3.12) |
-| 시작 명령 | 비움(이미지 기본: `simai-tier0` → 엔진 준비 → `python -m services.tier0`) |
+| 시작 명령 | 비움(이미지 기본: `simai-bootstrap tier0`). 검증 세션은 `sleep infinity` 로 띄우고 SSH 로 `simai-bootstrap queue` |
 | GPU 기능 | 이미지 `NVIDIA_DRIVER_CAPABILITIES=compute,utility,video`(video 는 LIVE 입력 NVDEC, -182). 템플릿에서 덮어쓰지 않는다 |
-| 환경 변수 | `SIMAI_ROOT=/workspace/simai`, `SIMAI_TIER0_GPU_RESERVE_MB=8192`(Tier 0 GPU 선확보, -60, G0 실측 전 초기값), `SIMAI_TIER0_WEIGHTS=/workspace/simai/weights/yolo/yolo26x-pose.pt`, `SIMAI_TIER0_WEIGHTS_SHA256=<해시 목록의 값>`, `SIMAI_ENGINE_CACHE=/workspace/simai/engines`, `SIMAI_OBS2D_ROOT=/workspace/simai/obs2d`, `SIMAI_IMAGE_DIGEST=sha256:...`. 선택: `SIMAI_TIER0_MODE`(e2e), `SIMAI_TIER0_IMGSZ`(1280), `SIMAI_TIER0_MAX_BATCH`(4), `SIMAI_TIER0_CAMERA`(2304x1296) |
+| 환경 변수 | `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}`(RunPod Secret, 값은 템플릿에 쓰지 않음), `SIMAI_TIER0_GPU_RESERVE_MB=8192`(Tier 0 GPU 선확보, -60, G0 실측 전 초기값), `SIMAI_IMAGE_DIGEST=sha256:...`. `SIMAI_ROOT`·가중치 경로·해시·엔진 캐시는 부트스트랩이 정한다(`SIMAI_ENGINE_CACHE` 기본 `$SIMAI_ROOT/engines`, `SIMAI_OBS2D_ROOT` 는 필요하면 `$SIMAI_ROOT/obs2d`). 선택: `SIMAI_TIER0_MODE`(e2e), `SIMAI_TIER0_IMGSZ`(1280), `SIMAI_TIER0_MAX_BATCH`(4), `SIMAI_TIER0_CAMERA`(2304x1296) |
 | 분석 워커 환경 변수 | 같은 Pod 에서 워커를 띄울 때(아래 "분석 워커"): `SIMAI_EC2_BASE_URL`, `SIMAI_WORKER_ID=worker-01`, `SIMAI_WORKER_GPU_MEMORY_FRACTION=0.70`, `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION=0.55`, `SIMAI_WORKER_VLLM_MAX_NUM_SEQS=4`, `SIMAI_GPU_TIER0_FRACTION=0.20`, `SIMAI_WORKER_LAG_BUDGET_MS=600`. 선택(기본값): `SIMAI_WORKER_MARKER_MAX_AGE_S`(15), `SIMAI_WORKER_RESUME_AFTER_S`(30), `SIMAI_WORKER_LIVE_BLOCKED_TYPES`(static_reconstruct,hmr_refine,hmr_appearance_update), `SIMAI_WORKER_LIVE_WAIT_MS`(5000), `SIMAI_WORKER_HOLD_MAX_S`(60), `SIMAI_TIER0_MARKER`. 값의 뜻은 docs/design/tier0-gpu-priority.md |
-| 비밀 | 템플릿에 넣지 않는다. `/workspace/.simai-private/` 에서 읽는다(워커 토큰은 `worker.env` 의 `SIMAI_WORKER_TOKEN=`). `PUBLIC_KEY` 는 RunPod 이 계정 SSH 키로 채운다 |
+| 비밀 | 템플릿에 값으로 넣지 않는다(HF 토큰만 Secret 참조). 워커 토큰은 `.simai-private/worker.env` 의 `SIMAI_WORKER_TOKEN=`. `PUBLIC_KEY` 는 RunPod 이 계정 SSH 키로 채운다 |
+
+결과는 컨테이너 디스크에 있으므로 Pod 를 지우기(Terminate) 전에 scp 로 가져온다(세션 큐가 명령을 출력한다). Stop 만 해도 같은 GPU 를 다시 못 잡을 수 있다.
+
+### Vast.ai (예비)
+
+Docker 실행 방식은 **Entrypoint** 로 둔다(SSH·Jupyter 방식은 이미지 진입점을 Vast 스크립트로 바꿔 `simai-start`·`simai-bootstrap` 이 돌지 않는다).
+`SSH_PUBLIC_KEY`(계정 키, Vast 가 넣는다)로 `simai-start` 가 sshd 를 띄운다. 공개 주소·포트는 `PUBLIC_IPADDR`·`VAST_TCP_PORT_22`.
+`HF_TOKEN` 은 Vast 계정 환경 변수로, 디스크는 100GB 이상, CUDA 13.0 이상 필터. 볼륨이 없으면 `/srv/simai` 다.
+
+## GPU VM(엘리스) docker run
+
+엘리스 클라우드 A100 VM + 블록 스토리지(시연). VM 의 호스트 sshd 로 들어가므로 컨테이너 sshd 는 끈다(`SIMAI_SSHD=off`).
+
+```sh
+# 0) 호스트 확인: 드라이버(최대 CUDA 13.0 이상)·Container Toolkit
+nvidia-smi --query-gpu=name,driver_version,compute_cap,memory.total --format=csv
+nvidia-smi | grep "CUDA Version"
+nvidia-ctk --version && docker info --format '{{json .Runtimes}}' | grep -q nvidia && echo "toolkit ok"
+docker run --rm --gpus all --entrypoint nvidia-smi <레지스트리>/<프로젝트>/tier0@sha256:<다이제스트> -L   # 컨테이너에서 GPU 가 보이는지
+# 1) 블록 스토리지를 호스트에 마운트(예: /mnt/simai-block). 컨테이너에는 /workspace 로 붙이고 SIMAI_ROOT 로 명시한다
+#    HF 토큰은 블록 스토리지 .simai-private/hf.env (HF_TOKEN=... 한 줄, chmod 600). 저장소·이미지·명령 기록에 쓰지 않는다
+sudo mkdir -p /mnt/simai-block/.simai-private && sudo chmod 700 /mnt/simai-block/.simai-private
+# 2) 준비만 확인 (GPU sm_80, 가중치 받기·해시, 저장 위치 /workspace/simai)
+docker run --rm --gpus all -v /mnt/simai-block:/workspace -e SIMAI_ROOT=/workspace/simai -e SIMAI_SSHD=off \
+  --env-file /mnt/simai-block/.simai-private/hf.env <이미지> check
+# 3) Tier 0 기동: I0 수신 포트(제어·영상)를 같은 번호로 연다. Tier 0 는 RunPod 이름의 변수로 공개 IP·포트를 읽는다(명세 3.12)
+docker run -d --name simai-tier0 --restart unless-stopped --gpus all \
+  -v /mnt/simai-block:/workspace -e SIMAI_ROOT=/workspace/simai -e SIMAI_SSHD=off \
+  --env-file /mnt/simai-block/.simai-private/hf.env \
+  -p <제어 포트>:<제어 포트> -p <영상 포트들>:<영상 포트들> \
+  -e RUNPOD_PUBLIC_IP=<VM 공인 IP> -e SIMAI_TIER0_CONTROL_PORT=70000 -e RUNPOD_TCP_PORT_70000=<제어 포트> \
+  -e SIMAI_TIER0_GPU_RESERVE_MB=8192 -e SIMAI_IMAGE_DIGEST=sha256:<다이제스트> \
+  <이미지> --config /workspace/simai/tier0.json
+docker logs -f simai-tier0      # simai-bootstrap: 저장·GPU·가중치 한 줄 → simai-tier0: 엔진 → Tier 0
+```
+
+- 블록 스토리지에 가중치·엔진이 이미 있으면 받지 않고(해시만 확인) 엔진 캐시를 쓴다. VM 을 바꿔도 같은 블록 스토리지를 붙이면 된다(A100 은 `sm_80` 경로).
+- `--env-file` 은 호스트 docker 가 읽어 컨테이너 환경에만 넣는다. 부트스트랩이 가중치를 받은 뒤 Tier 0 를 띄우기 전에 지운다.
+- TLS 키·기기 토큰 파일은 `/mnt/simai-block/.simai-private/` 에 두고 `SIMAI_TIER0_TLS_*_FILE=/workspace/.simai-private/...` 로 가리킨다.
+- `RUNPOD_*` 이름은 Tier 0 설정이 RunPod 기준으로 읽기 때문이다(엔드포인트 등록). 이름을 일반화하는 것은 별도 티켓이다.
 
 ### 분석 워커 (같은 Pod, Tier 0 뒤)
 
@@ -171,9 +238,9 @@ uv pip compile requirements.in --python-version 3.11 --python-platform x86_64-un
 
 GPU Pod 는 이 큐를 돌릴 때만 켜고 끝나면 바로 Stop 한다. LIVE 관제 시간에는 돌리지 않는다. 앞 단계가 실패하면 멈추고 결과를 기록한다.
 아래 Tier 0 이미지 1)~7) 은 `scripts/session1_engine.sh` 가 한 Job 으로 묶었고, GPU 1차 세션 큐(`scripts/gpu_session1.py`, docs/design/runpod-environment.md)의 b 항목으로 돈다. 8)·9) 는 사람이 한다.
-노트북 준비: 이미지 빌드 → `check_image.sh` 통과 → 사용자 확인 뒤 푸시 → 다이제스트로 템플릿 작성. 볼륨에 `weights/yolo/yolo26x-pose.pt` 와 해시 목록이 있는지 확인(E-GATE-0 때 받아 둠).
+노트북 준비: 이미지 빌드 → `check_image.sh` 통과 → 사용자 확인 뒤 푸시 → 다이제스트로 템플릿 작성. 가중치는 `simai-bootstrap` 이 `weights.json` 대로 받는다.
 
-Tier 0 이미지 (일본 AP-JP-1 H100, 볼륨 `/workspace`, 시작 명령 `sleep infinity` 로 띄우고 SSH 로 들어가 실행):
+Tier 0 이미지 (그때그때 남은 GPU, 볼륨 없음, 시작 명령 `sleep infinity` 로 띄우고 SSH 로 들어가 실행. 아래 `/workspace/simai` 는 `simai-bootstrap check` 가 출력한 `storage.root`(볼륨 없으면 `/srv/simai`)로 바꿔 읽는다. 세션 큐는 `simai-bootstrap queue` 가 그 값을 넘긴다):
 
 ```sh
 # 1) GPU·드라이버·CUDA 호환 (드라이버 580 미만이면 순방향 호환이 동작하는지 2) 에서 판정)

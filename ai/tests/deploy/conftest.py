@@ -44,6 +44,24 @@ def wt():
     return load_script("wait_tier0_ready")
 
 
+@pytest.fixture
+def bs():
+    """deploy/scripts/simai_bootstrap.py (S15P31A101-205)"""
+    return load_script("simai_bootstrap")
+
+
+@pytest.fixture
+def pc():
+    """deploy/scripts/pod_check.py"""
+    return load_script("pod_check")
+
+
+@pytest.fixture
+def gp():
+    """deploy/scripts/session1_gpu_priority.py"""
+    return load_script("session1_gpu_priority")
+
+
 @pytest.fixture(autouse=True)
 def restore_environ():
     """gpu_session1.scrub_env 가 이 프로세스의 비밀 환경 변수를 지우므로 시험마다 되돌린다."""

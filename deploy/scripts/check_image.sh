@@ -3,7 +3,8 @@
 #   bash deploy/scripts/check_image.sh simai/tier0:local
 # 확인: 비밀·가중치·엔진·SSH 호스트 키가 이미지에 없음, 패키지 import, 진입점 도움말,
 #       볼륨 없음·가중치 없음·해시 불일치·GPU 없음이 각각 명확한 코드와 메시지로 끝남, GPU 별 엔진 경로가 다름,
-#       PUBLIC_KEY 를 주면 키 인증만 받는 sshd 가 뜸.
+#       PUBLIC_KEY(RunPod)·SSH_PUBLIC_KEY(Vast.ai) 를 주면 키 인증만 받는 sshd 가 뜸, SIMAI_SSHD=off 면 안 뜸,
+#       기본 진입점(simai-bootstrap)은 GPU 가 없으면 코드 3, 실행 스크립트에 CR(Windows 줄바꿈)이 없음 (S15P31A101-205).
 # 컨테이너 볼륨은 이름 있는 Docker 볼륨을 만들어 쓰고 끝나면 지운다(호스트 경로 변환 문제를 피한다).
 set -uo pipefail
 export MSYS_NO_PATHCONV=1
@@ -82,15 +83,25 @@ expect(){  # 이름 기대코드 기대문구 docker-run-인자...
     fail "$name: 종료 코드 $rc (기대 $code, 문구 '$text')"; tail -5 <<<"$out" | sed 's/^/      /'
   fi
 }
-expect "볼륨 없음" 2 "Network Volume" "$IMG"
+# 기본 진입점 simai-bootstrap(S15P31A101-205): 볼륨이 없으면 컨테이너 디스크를 쓰고, GPU 가 없으면 가중치를 받기 전에 코드 3
+expect "simai-bootstrap GPU 없음" 3 "GPU 없음" "$IMG"
+# 아래는 simai-tier0(엔진 준비 진입점)를 직접 부른다: 부트스트랩 뒤 단계의 볼륨·가중치·해시·GPU 처리
+T0=(--entrypoint /usr/local/bin/simai-tier0)
+expect "볼륨 없음" 2 "Network Volume" "${T0[@]}" "$IMG"
 docker volume create "$VOL" >/dev/null
 docker run --rm -v "$VOL:/workspace" --entrypoint /bin/sh "$IMG" -c 'mkdir -p /workspace/simai/weights/yolo' >/dev/null
-expect "가중치 없음" 2 "가중치 없음" -v "$VOL:/workspace" "$IMG"
+expect "가중치 없음" 2 "가중치 없음" -v "$VOL:/workspace" "${T0[@]}" "$IMG"
 docker run --rm -v "$VOL:/workspace" --entrypoint /bin/sh "$IMG" \
   -c 'printf "not-real-weights" > /workspace/simai/weights/yolo/yolo26x-pose.pt' >/dev/null
 expect "가중치 해시 불일치" 2 "해시 불일치" -v "$VOL:/workspace" \
-  -e SIMAI_TIER0_WEIGHTS_SHA256=0000000000000000000000000000000000000000000000000000000000000000 "$IMG"
-expect "GPU 없음(가중치는 있음)" 3 "CUDA GPU" -v "$VOL:/workspace" "$IMG"
+  -e SIMAI_TIER0_WEIGHTS_SHA256=0000000000000000000000000000000000000000000000000000000000000000 "${T0[@]}" "$IMG"
+expect "GPU 없음(가중치는 있음)" 3 "CUDA GPU" -v "$VOL:/workspace" "${T0[@]}" "$IMG"
+# 이미지에 들어간 실행 스크립트에 CR 이 없다(Windows checkout 의 'python3\r' 실패 재발 방지)
+if CR=$(docker run --rm --entrypoint /bin/sh "$IMG" -c "grep -l \$(printf '\\r') /usr/local/bin/simai-* || true") && [ -z "$CR" ]; then
+  pass "실행 스크립트 LF (simai-start·bootstrap·tier0·wait-tier0)"
+else
+  fail "CR 이 든 실행 스크립트: $CR"
+fi
 
 # 5) GPU 아키텍처마다 엔진 경로가 다르다 (같은 볼륨에서 A40 캐시를 H100 이 고르지 않는다)
 plan(){ docker run --rm -v "$VOL:/workspace" "$IMG" python -m simai_ai.detection.engine_cache plan \
@@ -103,14 +114,21 @@ else
   fail "엔진 경로가 GPU 별로 나뉘지 않는다: $P90 / $P86"
 fi
 
-# 6) SSH: PUBLIC_KEY 를 주면 키 인증만 받는 sshd 가 뜬다(호스트 키는 이때 만든다)
-OUT=$(docker run --rm -e "PUBLIC_KEY=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEZha2VLZXlGb3JDaGVja09ubHkwMDAwMDAwMDAwMDA check" "$IMG"   bash -c 'pgrep -x sshd >/dev/null && echo running; sshd -T 2>/dev/null | grep -Ei "^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin) "' 2>/dev/null)
-if grep -q running <<<"$OUT" && grep -qi "^passwordauthentication no" <<<"$OUT"    && grep -qi "^kbdinteractiveauthentication no" <<<"$OUT" && grep -qi "^permitrootlogin without-password" <<<"$OUT"; then
-  pass "SSH: sshd 기동, 비밀번호·키보드 인증 끔"
-else
-  fail "SSH 설정: $(tr '
-' ' ' <<<"$OUT")"
-fi
+# 6) SSH: PUBLIC_KEY(RunPod)·SSH_PUBLIC_KEY(Vast.ai) 를 주면 키 인증만 받는 sshd 가 뜬다(호스트 키는 이때 만든다)
+KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEZha2VLZXlGb3JDaGVja09ubHkwMDAwMDAwMDAwMDA check"
+SSH_PROBE='pgrep -x sshd >/dev/null && echo running; sshd -T 2>/dev/null | grep -Ei "^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin) "'
+for VAR in PUBLIC_KEY SSH_PUBLIC_KEY; do
+  OUT=$(docker run --rm -e "$VAR=$KEY" "$IMG" bash -c "$SSH_PROBE" 2>/dev/null)
+  if grep -q running <<<"$OUT" && grep -qi "^passwordauthentication no" <<<"$OUT" \
+     && grep -qi "^kbdinteractiveauthentication no" <<<"$OUT" && grep -qi "^permitrootlogin without-password" <<<"$OUT"; then
+    pass "SSH($VAR): sshd 기동, 비밀번호·키보드 인증 끔"
+  else
+    fail "SSH($VAR) 설정: $(tr '\n' ' ' <<<"$OUT")"
+  fi
+done
+# 엘리스 GPU VM: 호스트 sshd 를 쓰므로 SIMAI_SSHD=off 면 키가 있어도 컨테이너 sshd 를 띄우지 않는다
+OUT=$(docker run --rm -e "PUBLIC_KEY=$KEY" -e SIMAI_SSHD=off "$IMG" bash -c 'pgrep -x sshd >/dev/null && echo running || echo none' 2>/dev/null)
+if [ "$OUT" = none ]; then pass "SIMAI_SSHD=off: 컨테이너 sshd 없음"; else fail "SIMAI_SSHD=off 인데 sshd: $OUT"; fi
 
 echo
 if [ "$FAILS" -eq 0 ]; then echo "check_image: 모두 통과 ($IMG)"; else echo "check_image: 실패 $FAILS 건 ($IMG)"; fi

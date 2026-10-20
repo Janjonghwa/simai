@@ -1,2 +1,5 @@
 # 셸 스크립트는 RunPod(Linux)에서 실행하므로 Windows checkout 에서도 LF 로 둔다
 *.sh text eol=lf
+# deploy/ 는 이미지에 COPY 되어 shebang 으로 실행되는 스크립트(simai-wait-tier0, simai-bootstrap 등)가 있다.
+# Windows checkout(core.autocrlf)의 CRLF 가 들어가면 'python3\r' 로 실패하므로 텍스트는 전부 LF 로 둔다(S15P31A101-205)
+deploy/** text=auto eol=lf
