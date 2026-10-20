@@ -43,7 +43,7 @@
               "timestamp_uncertainty_ms": true,
               "face_policy": {
                 "enum": ["BLURRED", "EXCLUDED"],
-                "description": "VLM 입력 프레임은 얼굴 영역을 흐림 처리한 뒤 넣는다 (5.4). 안전모가 보이도록 머리 윗부분은 남긴다"
+                "description": "VLM 입력 프레임은 얼굴 영역을 흐림 처리한 뒤 넣는다 (5.4). 안전모가 보이도록 머리 윗부분은 남긴다. 처리는 분석 워커가 VLM 호출 직전에 이 값대로 한다(올라온 프레임은 흐리지 않은 원본일 수 있다, S15P31A101-206)"
               }
             },
             "additionalProperties": false

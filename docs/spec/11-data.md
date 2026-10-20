@@ -43,11 +43,11 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 |---|---|
 | `risk_event` | 규칙·버전, World ID·구역, 출처, 생명주기·검증 상태, severity·confidence·confidence_reasons, 발생·해소 시각, 근거 스냅샷, 관련 이벤트(related_event_id), 보존 표시 |
 | `risk_event_update` | RunPod Tier 0 전이의 시간순 기록(event_sequence, config_version, 지연 전달·감사 전용 여부) |
-| `vlm_assessment` | 이벤트, 모델·버전, 입력 참조, 근거 문장, 인용 조항 ID, 상향 의견(proposed_severity), 지연 |
+| `vlm_assessment` | 이벤트, 작업 유형(`vlm_rationale`·`incident_summary`)·job_id, 모델·버전, 입력 참조, 근거·요약 문장, 인용 조항 ID, 상향 의견(proposed_severity), 관리자 결정(승인·거절, 누가·언제, `escalation_id`), 지연 |
 | `notification` | 이벤트, 채널, 대상, 발송·수신 확인·ACK 시각 (LIVE 이벤트만 연결 가능. 시험 알림은 이 테이블에 넣지 않음) |
 | `action_ticket` | 조치 상태, 사진 주소, 해소 상태와의 불일치 표시 |
 | `media_clip` | 이벤트 연결 영상 구간의 객체 키, 카메라·구간(촬영 시각)·해시·크기, 얼굴 흐림 여부, 삭제 예정일, 보존 표시. Tier 0 가 I1 `media_clip` 으로 보내고, 보낸 뒤 붙는 CRITICAL 자동 보존은 고치지 않고 `media_clip_retention` 으로 이력을 더한다 |
-| `report` | TBM 보고서·일일 일지, 입력 참조, 인용 목록 |
+| `report` | 보고서 종류(TBM·DAILY), 레이아웃·계산 결과(`sim.*`) 참조, 생성 상태, 본문, 인용 목록 |
 
 PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다.
 

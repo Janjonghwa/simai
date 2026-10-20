@@ -1,0 +1,51 @@
+{
+  "schema_version": "2.0.0",
+  "msg_type": "risk_event_transition",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000307",
+  "sent_at": 1760342400400,
+  "source_id": "tier0-01",
+  "payload": {
+    "event_id": "0192a6f1-0a00-7c00-8a00-000000000002",
+    "event_sequence": 3,
+    "journal_offset": 1042,
+    "transition": "UPDATED",
+    "occurred_at": 1760342412030,
+    "gateway_id": "tier0-01",
+    "observation_time": 1760342400100,
+    "evaluated_at": 1760342400340,
+    "rule_id": "R2",
+    "rule_version": 3,
+    "config_version": "cfg-12",
+    "calibration_version": "cal-7",
+    "scene_version": "scene-3",
+    "source": "LIVE",
+    "severity": "CRITICAL",
+    "confidence": "HIGH",
+    "verification": "VERIFIED",
+    "needs_check": false,
+    "confidence_reasons": [],
+    "world_ids": [
+      "w-0012"
+    ],
+    "zone_id": "z-04",
+    "metrics": {
+      "edge_distance_m": 0.82,
+      "height_diff_m": 2.1
+    },
+    "evidence_ref": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "resent": false,
+    "resumed": false,
+    "escalation": {
+      "escalation_id": "3c9d1e2f-4a5b-4c6d-9e8f-1a2b3c4d5e6f",
+      "basis": "VLM_PROPOSAL",
+      "assessment_job_id": "job-20261017-0052",
+      "target_severity": "CRITICAL",
+      "channel": "CONTROL_ROOM",
+      "actor_role": "ADMIN",
+      "actor_id": "user-0003",
+      "requested_at": 1760342412000,
+      "note": "VLM 근거 확인, 난간 없음 맞음"
+    }
+  },
+  "_expect_error": "escalation 은 2.1.0 부터"
+}

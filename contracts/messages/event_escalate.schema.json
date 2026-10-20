@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/event_escalate.schema.json",
+  "title": "I1 event_escalate",
+  "description": "EC2 → RunPod Tier 0. 관제 화면 관리자가 승인한 VLM 상향 의견(proposed_severity)을 LIVE 이벤트에 적용하라는 명령 (명세 5.4, 6.4, FR-116, 12.2). 관리자는 POST /api/events/{id}/escalation 으로 승인하거나 거절하고, 승인만 이 메시지로 보낸다(거절은 EC2 vlm_assessment 에만 기록). LIVE 이벤트 생명주기의 정본은 Tier 0 이므로 EC2 는 등급을 직접 바꾸지 않는다(FR-95). Tier 0 는 받을 수 있으면 같은 event_id 의 UPDATED 전이(escalation 포함)를 저널에 기록하고, 받든 거부하든 event_escalate_result 로 답한다. EC2 는 등급을 이 응답이 아니라 저널 전이로 반영한다. 상향만 가능하고 하향·해소·끄기는 표현할 수 없다(원칙 6). 1.0.0 신설(S15P31A101-206). I1 계약.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "event_escalate" },
+    "payload": {
+      "type": "object",
+      "required": ["event_id", "escalation"],
+      "properties": {
+        "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "escalation": { "$ref": "../common/defs.schema.json#/$defs/operator_escalation" }
+      }
+    }
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "schema_version": "3.1.0",
+  "msg_type": "job_request",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000303",
+  "sent_at": 1760342400400,
+  "source_id": "ec2",
+  "payload": {
+    "job_id": "job-20261020-0003",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-000000000313",
+    "attempt": 1,
+    "max_attempts": 2,
+    "job_type": "tbm_report",
+    "priority": "REPORT",
+    "timeout_ms": 180000,
+    "leased_at": 1760342400400,
+    "lease_expires_at": 1760342430400,
+    "heartbeat_interval_ms": 10000,
+    "input": {
+      "report_kind": "DAILY",
+      "report_id": "rep-20261020-01",
+      "rule_results": [
+        {
+          "rule_id": "R2",
+          "severity": "HIGH",
+          "zone_id": "z-04",
+          "metrics": {
+            "edge_distance_m": 1.1
+          }
+        }
+      ],
+      "clauses": [
+        {
+          "clause_id": "KOSHA-R-43",
+          "text": "사업주는 높이 2미터 이상인 장소의 끝부분에서 추락 위험이 있는 경우 안전난간을 설치하여야 한다."
+        }
+      ]
+    }
+  }
+}

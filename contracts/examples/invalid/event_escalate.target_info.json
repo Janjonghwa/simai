@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "event_escalate",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000304",
+  "sent_at": 1760342412010,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f1-0a00-7c00-8a00-000000000002",
+    "escalation": {
+      "escalation_id": "3c9d1e2f-4a5b-4c6d-9e8f-1a2b3c4d5e6f",
+      "basis": "VLM_PROPOSAL",
+      "assessment_job_id": "job-20261017-0052",
+      "target_severity": "INFO",
+      "channel": "CONTROL_ROOM",
+      "actor_role": "ADMIN",
+      "actor_id": "user-0003",
+      "requested_at": 1760342412000,
+      "note": "VLM 근거 확인, 난간 없음 맞음"
+    }
+  },
+  "_expect_error": "INFO 로 올릴 수 없음(상향 전용)"
+}

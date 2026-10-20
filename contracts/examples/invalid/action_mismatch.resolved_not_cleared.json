@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "action_mismatch",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000030b",
+  "sent_at": 1760342500000,
+  "source_id": "ec2",
+  "payload": {
+    "ticket_id": "tkt-0042",
+    "event_id": "0192a6f1-0a00-7c00-8a00-000000000002",
+    "event_sequence": 3,
+    "ticket_status": "DONE",
+    "event_lifecycle": "RESOLVED",
+    "zone_id": "z-01",
+    "detected_at": 1760342499990,
+    "cleared": false
+  },
+  "_expect_error": "해소된 이벤트는 불일치가 아님(cleared true 로 보냄)"
+}
