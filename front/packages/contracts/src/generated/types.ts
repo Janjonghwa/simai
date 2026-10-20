@@ -1,0 +1,546 @@
+// contracts/ 에서 생성한 파일이다. 손으로 고치지 않는다.
+// 다시 만들기: pnpm --filter @simai/contracts generate
+
+
+/**
+ * RunPod Tier 0 → EC2, 10 Hz (명세 12.3, 5.2). I1 LIVE 계약이므로 Lead 승인 없이 의미를 바꾸지 않는다. 1.1.0 필드 추가(마이너, Lead 승인 S15P31A101-37): payload.input_provenance(입력 출처, 명세 20.4·AGENTS 규칙 7), position_xy 설명 보강(관측이 없을 때의 시각 기준, 의미 변경 없음). 1.2.0 필드 추가(마이너, Lead 승인 2026-10-18, S15P31A101-169): payload.config_version(이 상태를 만든 tick 의 구성 묶음 버전). 1.3.0 필드 추가(마이너, 사용자 승인 2026-10-18, S15P31A101-170): tracks[].surface_source(지지 표면 출처 observed/inferred, 접지점이 있을 때만), tracks[].aliases(병합으로 이 ID 에 합쳐진 이전 World ID). 1.4.0 필드 추가(마이너, 사용자 승인 2026-10-18, S15P31A101-172): tracks[].head_z_validity(관절 게이트가 낸 head_z 유효성. head_z 값은 VALID 일 때만 싣는다). 2.0.0 의미 변경(메이저, 사용자 승인 2026-10-19, S15P31A101-179): head_z_validity 가 UNCERTAIN 이면 head_z·head_z_sigma 에 그 UNCERTAIN 값을 싣는다(1.x 에서는 null). 그래서 2.0.0 부터 head_z 가 수라는 것만으로 VALID 라고 읽을 수 없고 head_z_validity 를 반드시 함께 확인한다. 1.x 문서는 1.x 규칙(UNCERTAIN ↔ null)으로 검사한다. 2.1.0 필드 추가(마이너, Lead 승인 2026-10-20, S15P31A101-201): tracks[].split_from(분할로 생긴 새 ID 에만 원래 ID, 그 Track 이 살아 있는 동안 늘 같은 값), identity_revision 설명 보강(병합·분할 모두 교정 차수를 올린다). 2.0.x 이하 문서는 split_from 을 싣지 않는다.
+ */
+export type WorldStateMessage = (Envelope & {
+[k: string]: unknown
+} & {
+msg_type?: "world_state"
+payload: WorldStatePayload
+})
+/**
+ * 사람 한 명의 World 상태 (명세 5.2 World 위치의 정의)
+ */
+export type WorldTrack = ({
+[k: string]: unknown
+} & {
+/**
+ * 세션 단위 익명 World ID (예: w-0012)
+ */
+world_id: string
+/**
+ * UTC epoch 밀리초
+ */
+t_last_valid: number
+/**
+ * 명세 6.1
+ */
+observation_state: ("OBSERVED" | "PREDICTED" | "UNKNOWN")
+/**
+ * 명세 5.2. 관측 상태와 별도
+ */
+track_lifecycle: ("TENTATIVE" | "CONFIRMED" | "OCCLUDED" | "LOST")
+identity_confidence: ("HIGH" | "MEDIUM" | "LOW" | "IDENTITY_UNCERTAIN")
+/**
+ * ID 교정 차수 (명세 5.2 ID 교정 기록). 교정(병합·분할)이 있을 때만 오르고 내려가지 않는다. 병합하면 남는 ID 의 값은 합쳐진 두 ID 의 identity_revision 중 큰 값 + 1 이다. 그래서 그 ID 가 겪은 병합 횟수나 aliases 개수와 같지 않을 수 있다(예: C 가 B 에 합쳐진 뒤 B 가 A 에 합쳐지면 A 는 0 → 2, aliases [B, C]). 병합으로 합쳐진 이전 ID 는 aliases. 분할(2.1.0 설명 보강, S15P31A101-201)하면 원래 ID 와 갈라져 나간 새 ID 의 값을 둘 중 큰 값 + 1 로 함께 올리고 별칭은 바꾸지 않는다. 새 ID 는 처음에 0 으로 나왔다가 분할이 확정된 시각에 오른다(새 ID 의 split_from 도 그 시각부터 실린다). 그래서 aliases 가 그대로인데 identity_revision 이 오른 원래 ID 는 분할된 것이고, 그 시각 split_from 에 이 ID 를 실은 트랙이 갈라져 나간 쪽이다
+ */
+identity_revision: number
+/**
+ * 세션 단위 익명 World ID (예: w-0012)
+ */
+split_from?: string
+/**
+ * 병합(ID 교정)으로 이 World ID 에 합쳐져 더 이상 쓰이지 않는 이전 World ID (명세 5.2 ID 교정 기록, 1.3.0). 합쳐진 순서대로이고, 합쳐진 ID 가 들고 있던 별칭도 이어 붙인다(연쇄 병합: Y 가 X 에, 그 뒤 Z 가 X 에 합쳐지면 [Y, Z]). 중복 없고 자기 world_id 는 넣지 않는다. 병합하면 남는 ID 의 identity_revision 이 오르므로(값 규칙은 identity_revision 설명) 소비자는 identity_revision 이 오른 것을 보고 이 목록으로 '이 ID 로 합쳐진 이전 ID' 를 알고, 이전 ID 로 들고 있던 트랙·이력을 이 ID 로 잇는다. 진행 중 이벤트의 ID 교정은 risk_event_transition 의 ID 교정 전이로 따로 오고, 이벤트의 world_ids 는 발생 당시 원본 ID 를 그대로 둔다. 덮어쓰지 않음(AGENTS 규칙 6): 한 번 실린 별칭은 이 Track 이 살아 있는 동안(LOST 뒤 같은 ID 로 다시 이어진 경우 포함) 빠지지 않고 뒤에만 붙는다. 별칭이 없으면 싣지 않는다(빈 배열 불가). 선택 필드: 없으면 별칭이 없거나 이전 버전 송신 측이다
+ * 
+ * @minItems 1
+ * 
+ * Items: 세션 단위 익명 World ID (예: w-0012)
+ */
+aliases?: [string, ...(string)[]]
+frame_age_ms?: number
+position_xy: Vec2
+position_xy_sigma: Vec21
+/**
+ * 삼각측량한 골반. 2대 이상 유효 관측이 없으면 null
+ */
+pelvis_xyz: (WorldXyz | null)
+/**
+ * 검증된 지지 표면 위의 위치. 접지 미확인이면 null. Z=0으로 채우지 않는다.
+ */
+ground_anchor_xyz: (WorldXyz | null)
+ground_anchor_sigma?: (Vec3 | null)
+/**
+ * 지지 표면(접지점)의 출처 (명세 5.2 접지 추정·가림 동안 유지, AGENTS 규칙 7 관측과 추정 구분, 1.3.0). observed = 이번 시각 Tier 0 가 관측한 VALID 발목이 그 지지 표면 높이에 있다(ContactEstimator 접촉 근거). inferred = 이번 시각 발목 근거가 없어 마지막으로 확인한 지지 표면·접지점을 유지한 값이다(가림 동안 유지, 바닥으로 바꾸지 않음. 이때 z_validity·contact_validity 는 UNCERTAIN 이고 ground_anchor_sigma 가 커진다). ground_anchor_xyz 가 있을 때만 싣고, null 이면 싣지 않는다(모르는 접지의 출처를 지어내지 않음, 스키마로 막음). 1.3.0 이상 송신 측은 ground_anchor_xyz 가 있으면 늘 싣는다(송신 측 계약 시험). 선택 필드라 이 필드가 없는 문서(이전 버전 송신 측)는 출처를 모르는 것이고, 소비자는 observed 로 가정하지 않는다. 메시 표면 출처(human_mesh_output 의 surface_source, defs surface_source)와 이름만 같고 다른 필드다
+ */
+surface_source?: ("observed" | "inferred")
+/**
+ * floor 또는 등록 작업면 ID
+ */
+support_surface_id: (string | null)
+/**
+ * 명세 5.2: 근거가 부족하면 UNKNOWN
+ */
+support_surface_validity: ("VALID" | "UNCERTAIN" | "UNKNOWN")
+contact_validity: ("VALID" | "UNCERTAIN" | "UNAVAILABLE")
+z_validity: ("VALID" | "UNCERTAIN" | "UNAVAILABLE")
+/**
+ * 머리 꼭대기 높이(World Z, m, 명세 5.2: 귀·눈 Z 평균 + 오프셋). 관절 유효성 게이트가 낸 값이고, 값이 있어도 head_z_validity 를 반드시 확인한다(2.0.0). head_z_validity 가 VALID 면 VALID 귀·눈으로 만든 값, UNCERTAIN 이면 VALID 귀·눈이 없어 UNCERTAIN 귀·눈으로만 만든 값이다(사용자 결정 2026-10-19, 접지점 ground_anchor_xyz 와 z_validity 의 관계와 같다). UNCERTAIN 값은 확정 근거가 아니다: 위험 규칙은 이 값으로 '진입 없음'·'낙상 아님' 같은 판정 없음을 확정하지 않고, 쓰면 확인 필요(JOINT_UNCERTAIN, 명세 5.2·7.1)를 붙인다. UNAVAILABLE 이면 null 이다. 값은 Tier 0 관측(joint_source observed) 귀·눈에서만 만든다(HMR 등 추정 관절 금지, AGENTS 규칙 1·7). 1.x 문서에서는 VALID 일 때만 값이 있고 UNCERTAIN 은 null 이었다. head_z_validity 가 없는 문서(1.3.0 이하)에서 head_z 가 null 이면 이유를 모른다
+ */
+head_z: (number | null)
+/**
+ * head_z 의 Z 표준편차(m, 근거 귀·눈 삼각측량 Z 표준편차로 만든 값, 오프셋 불확실성 제외). head_z 가 null 이면 null 이고, 값이 있어도 σ 를 모르면 null 이다. UNCERTAIN 값의 σ 도 head_z_validity 와 함께 읽는다
+ */
+head_z_sigma?: (number | null)
+/**
+ * 이번 시각 관절 유효성 게이트가 낸 head_z 의 유효성 (명세 5.2 3D 관절 유효성 게이트, 7.1 JOINT_UNCERTAIN, 1.4.0, 2.0.0 의미 변경). VALID = VALID 귀·눈으로 만든 값, head_z 는 수. UNCERTAIN = VALID 귀·눈이 없어 UNCERTAIN 귀·눈으로만 만든 값, 2.0.0 부터 head_z 에 싣는다(수). 머리가 보이기는 했으나 확정할 근거가 없다는 뜻이고 머리가 없다거나 낮다는 뜻이 아니다. 확정 근거로 쓰지 않는다(head_z 설명). 1.x 문서의 UNCERTAIN 은 값을 싣지 않았다(head_z·head_z_sigma null). UNAVAILABLE = 좌표가 있는 귀·눈이 없거나 이번 시각 관측(클러스터)이 붙지 않았다, head_z·head_z_sigma 는 null. 스키마로 막는 짝: VALID ↔ 수, UNAVAILABLE ↔ null, UNCERTAIN 은 2.0.0 이상 ↔ 수·1.x ↔ null. 1.4.0 이상 송신 측은 늘 싣는다(송신 측 계약 시험). 선택 필드라 이 필드가 없는 문서(1.3.0 이하 송신 측)에서 head_z 가 null 이면 이유를 모르는 것이고, 소비자는 UNAVAILABLE 로 가정하지 않는다
+ */
+head_z_validity?: ("VALID" | "UNCERTAIN" | "UNAVAILABLE")
+velocity?: Vec3
+/**
+ * 이번 상태에 기여한 카메라
+ */
+cameras: string[]
+skeleton?: Skeleton
+})
+/**
+ * 구역 판정용 수평 위치. 기본은 골반 XY, 없으면 검증된 접지점 XY, 둘 다 없으면 예측값(observation_state=PREDICTED). 관측이 없을 때는 t_last_valid 시각의 위치를 유지하고 불확실성(position_xy_sigma)을 2 m/s(명세 6.1 속도 상한 초기값) × 공백(t − t_last_valid)만큼 키운다. 속도로 옮기지 않는다(이중 외삽 금지: 위치 예측은 하류 시간 모델이 staleness 로 한다)
+ * 
+ * @minItems 2
+ * @maxItems 2
+ */
+export type Vec2 = [number, number]
+/**
+ * @minItems 2
+ * @maxItems 2
+ */
+export type Vec21 = [number, number]
+/**
+ * World 좌표 [x, y, z], 미터, Z-up
+ * 
+ * @minItems 3
+ * @maxItems 3
+ */
+export type WorldXyz = [number, number, number]
+/**
+ * @minItems 3
+ * @maxItems 3
+ */
+export type Vec3 = [number, number, number]
+/**
+ * EC2 → 뷰어, STOMP /topic/events (명세 12.4, 12.2). EC2 가 저장한 RiskEvent 의 화면용 projection 이다. LIVE 는 Tier 0 전이(risk_event_transition)로만 갱신하고, PLANNED·REPLAY·WHAT_IF 는 EC2 옆 Risk Engine 컨테이너 결과로 보고서·시뮬레이션 화면에만 쓴다. rationale 은 VLM 결과가 오면 갱신으로 채워진다. VLM 은 proposed_severity 로 상향 의견만 내고 severity 를 바꾸지 못한다. 1.3.0 필드 추가(마이너): confidence_reasons(확인 필요 이유, 7.1), resume_count(해소 후 재개 횟수, 6.4). 2.0.0 의미 변경(메이저, Lead 승인 2026-10-20, S15P31A101-200): 운영자 종료 해소 resolution(선택, LIVE 만). resolution 이 있는 RESOLVED 는 verification VERIFIED 를 요구하지 않는다. 뷰어는 운영자 종료를 관측 해소와 구분해 보여 준다. 1.x 문서에는 resolution 이 없다(1.x 규칙 그대로). 2.1.0 필드 추가(마이너, S15P31A101-206): 운영자 상향 기록 escalations(선택, LIVE 만, 5.4·FR-116). /topic/events 화면 규칙(12.4): 경보 대상은 source LIVE·severity CRITICAL·HIGH·lifecycle RAISED·UPDATED 이고, 확인 상태는 acks 로 읽는다(지금 경보 단계 이후 event_sequence 를 대상으로 한 확인만 소리를 멈춘다, 3.10).
+ */
+export type RiskEventMessage = (Envelope & {
+[k: string]: unknown
+} & {
+msg_type?: "risk_event"
+payload: RiskEventPayload
+})
+export type RiskEventPayload = ({
+[k: string]: unknown
+} & {
+/**
+ * UUIDv7 (시간 순서, 재시작·여러 현장에서도 충돌 없음). event_id 에 쓴다 (명세 3.2 식별자 규칙)
+ */
+event_id: string
+/**
+ * 반영한 마지막 전이의 sequence (LIVE)
+ */
+event_sequence?: number
+rule_id: string
+rule_version: number
+/**
+ * 판정 출처 (명세 7.1). 실제 알림 채널로 가는 것은 LIVE 뿐이다 (7.4, 11.4)
+ */
+source: ("LIVE" | "PLANNED" | "REPLAY" | "WHAT_IF")
+/**
+ * 명세 6.2, 6.4
+ */
+lifecycle: ("RAISED" | "UPDATED" | "RESOLVED")
+/**
+ * 해소 여부를 관측으로 확인할 수 있는지 (명세 6.2, 6.4). UNVERIFIABLE 이면 자동 해소하지 않는다
+ */
+verification: ("VERIFIED" | "UNVERIFIABLE")
+/**
+ * 규칙 결과. VLM 의견으로 바뀌지 않는다. 상향은 검증된 규칙 조건이나 운영자 확인을 거쳐 새 전이로만 반영한다 (5.4)
+ */
+severity: ("CRITICAL" | "HIGH" | "CAUTION" | "INFO")
+/**
+ * 증거 신뢰도 (명세 7.3). severity 와 독립이다
+ */
+confidence: ("HIGH" | "LOW")
+/**
+ * 확인 필요 (7.1). confidence_reasons 가 있으면 그 목록이 비어 있지 않은 것과 같다
+ */
+needs_check: boolean
+confidence_reasons?: ConfidenceReasons
+/**
+ * 해소 후 재개 시간 안 재발생으로 이 이벤트를 다시 활성으로 돌린 횟수 (6.4 이벤트 재개, 1.3.0). LIVE 는 resumed 전이 수와 같다. 없으면 0
+ */
+resume_count?: number
+/**
+ * Items: 세션 단위 익명 World ID (예: w-0012)
+ */
+world_ids: string[]
+zone_id: (string | null)
+metrics: RuleMetrics
+/**
+ * VLM 근거 문장. 아직 없으면 null. 이벤트 상세 화면에만 쓰고 푸시를 다시 보내지 않는다 (10.1)
+ */
+rationale: (string | null)
+/**
+ * VLM 상향 의견. severity 보다 높은 등급만 허용, 하향·해소 의견은 표현할 수 없다
+ */
+proposed_severity: (("CRITICAL" | "HIGH" | "CAUTION" | "INFO") | null)
+/**
+ * LIVE 이벤트를 만든 Tier 0 인스턴스
+ */
+gateway_id?: string
+/**
+ * calibration_version, scene_version, config_version 등 (예: cal-7)
+ */
+config_version?: string
+/**
+ * calibration_version, scene_version, config_version 등 (예: cal-7)
+ */
+calibration_version?: string
+/**
+ * calibration_version, scene_version, config_version 등 (예: cal-7)
+ */
+scene_version?: string
+/**
+ * UTC epoch 밀리초
+ */
+raised_at?: number
+/**
+ * UTC epoch 밀리초
+ */
+updated_at?: number
+resolved_at?: (number | null)
+/**
+ * 운영자 확인 기록(누가·어디서). 비어 있으면 미확인. 확인은 해소가 아니다
+ */
+acks?: OperatorAck[]
+/**
+ * LIVE 전달 구분 (3.2 재동기화). DELAYED_ACTIVE: 재동기화 후에도 활성이라 지연 알림. AUDIT_ONLY: 재동기화 중 해소돼 감사 기록으로만 복원
+ */
+delivery?: ("REALTIME" | "DELAYED_ACTIVE" | "AUDIT_ONLY")
+/**
+ * UUIDv7 (시간 순서, 재시작·여러 현장에서도 충돌 없음). event_id 에 쓴다 (명세 3.2 식별자 규칙)
+ */
+related_event_id?: string
+resolution?: OperatorResolution
+/**
+ * 운영자 상향 기록(2.1.0, 5.4·FR-116). 비어 있거나 없으면 상향 없음. LIVE 만. 뷰어는 규칙 판정 등급과 운영자 상향을 구분해 보여 준다
+ */
+escalations?: OperatorEscalation[]
+})
+/**
+ * 확인 필요의 이유 (명세 7.1, 13.2 화면 표시, 1.3.0). 없으면(이전 버전) needs_check 만으로 읽는다
+ * 
+ * Items: '확인 필요'의 이유 (명세 7.1). Z_UNKNOWN: 지지 표면·높이 모름(z_validity UNAVAILABLE). PREDICTED: 위치가 관측이 아니라 예측·마지막 추정값(관측 상실 포함). PROVISIONAL_CALIB: 보정 PROVISIONAL. SINGLE_VIEW: 2대 이상 유효 관측 없음. JOINT_UNCERTAIN: 근거 관절 UNCERTAIN. IDENTITY_UNCERTAIN: 카메라 간 연결이 애매함. UNSPECIFIED: 확인 필요인데 생산자가 원인을 적지 않음(이유 목록 이전 형식의 needs_check=true 를 옮길 때만, 원인을 지어내지 않는다)
+ */
+export type ConfidenceReasons = ("Z_UNKNOWN" | "PREDICTED" | "PROVISIONAL_CALIB" | "SINGLE_VIEW" | "JOINT_UNCERTAIN" | "IDENTITY_UNCERTAIN" | "UNSPECIFIED")[]
+/**
+ * 운영자 확인(ACKNOWLEDGED) 한 건. 확인은 해소가 아니다 (명세 6.4). 누가 확인해도 노트북 반복 소리를 멈추고, 점멸 표시는 해소까지 유지한다. 누가 확인했는지는 저널에 남긴다 (3.2)
+ */
+export type OperatorAck = ({
+[k: string]: unknown
+} & {
+/**
+ * 확인을 만든 쪽(EC2 또는 노트북)이 발급. 중복 수신 제거용
+ */
+ack_id: string
+/**
+ * 운영자 확인이 들어온 곳: 관제 화면, 반장 PWA, 노트북 현장 확인 버튼 (명세 3.2, 3.10)
+ */
+channel: ("CONTROL_ROOM" | "FOREMAN_PWA" | "SITE_BUTTON")
+/**
+ * SITE 는 현장 확인 버튼(노트북)
+ */
+actor_role: ("ADMIN" | "FOREMAN" | "SITE")
+/**
+ * 계정 ID 또는 노트북 기기 ID. 사람 이름을 넣지 않는다 (명세 11.4-5)
+ */
+actor_id: string
+/**
+ * UTC epoch 밀리초
+ */
+acked_at: number
+})
+/**
+ * EC2 → 뷰어, STOMP /topic/health (명세 12.2, 12.4, 6.2, 13장). EC2 가 Tier 0 health(I1), 노트북 하트비트, 구성 묶음 적용(config_ack), COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보내는 화면용 상태다. Tier 0 health 원문은 tier0_health 에 그대로 싣는다(없으면 null). EC2 가 Tier 0 나 노트북 하트비트를 잃으면 system_health 는 UNSAFE_UNKNOWN 이다(3.2 이중 감시). Scene 불일치는 Tier 0 가 판정에 쓰는 scene_version(world_state)과 EC2 의 COMMITTED Scene 버전이 다를 때다(FR-12). 1.0.0 신설(S15P31A101-206).
+ */
+export type ViewerHealthMessage = (Envelope & {
+msg_type?: "viewer_health"
+payload: ViewerHealthPayload
+})
+export type ViewerHealthPayload = ({
+[k: string]: unknown
+} & {
+/**
+ * UTC epoch 밀리초
+ */
+as_of: number
+/**
+ * 명세 6.2
+ */
+system_health: ("NOMINAL" | "DEGRADED" | "UNSAFE_UNKNOWN")
+/**
+ * NORMAL: Tier 0·노트북 모두 정상. REMOTE_LINK_LOST: Tier 0 하트비트는 끊겼지만 노트북이 Tier 0 정상을 알림(원격 전달 단절, 현장 경보 동작 중). CONTROL_HALTED: 노트북도 Tier 0 끊김·관제 정지를 알리거나 노트북 하트비트가 없음 (3.2, FR-11)
+ */
+remote_state: ("NORMAL" | "REMOTE_LINK_LOST" | "CONTROL_HALTED")
+/**
+ * EC2 ↔ Tier 0 I1 연결
+ */
+tier0_link: ("CONNECTED" | "DISCONNECTED")
+laptop: {
+/**
+ * laptop_heartbeat 3회 누락이면 DISCONNECTED (3.10)
+ */
+link: ("CONNECTED" | "DISCONNECTED")
+last_heartbeat_at: (number | null)
+}
+/**
+ * as_of − 마지막 world_state 의 t_latest_global(EC2 가 아는 시계 차이 보정 후). 받은 적 없거나 모르면 null
+ */
+data_age_ms: (number | null)
+/**
+ * 명세 4.4
+ */
+calibration_state: ("UNCALIBRATED" | "PROVISIONAL" | "CALIBRATED" | "DRIFTED")
+config: {
+/**
+ * EC2 가 마지막으로 발행한 구성 묶음
+ */
+published_version: (string | null)
+/**
+ * Tier 0 config_ack 로 적용 확인된 버전
+ */
+applied_version: (string | null)
+/**
+ * 명세 6.2, 3.2. 어느 상태든 판정은 계속한다
+ */
+sync: ("CURRENT" | "PENDING" | "UNVERIFIED" | "STALE")
+}
+scene: {
+/**
+ * EC2 의 COMMITTED Scene(GET /api/scenes/current)
+ */
+committed_version: (string | null)
+/**
+ * 마지막 world_state.scene_version
+ */
+live_version: (string | null)
+/**
+ * 두 값이 모두 있고 다르면 true (FR-12 경고)
+ */
+mismatch: boolean
+}
+/**
+ * 마지막으로 받은 I1 health 의 payload 그대로(health.schema.json). 받은 적 없으면 null
+ */
+tier0_health: ({
+
+} | null)
+})
+/**
+ * EC2 → 관리자 뷰어, STOMP /topic/admin/events (명세 8.4, 12.2, FR-42). 반장이 조치 티켓을 완료했는데 연결된 LIVE 이벤트가 관측상 아직 활성이면 보내는 불일치 표시다. 조치 완료는 사람의 보고이고 이벤트 해소가 아니다. 이벤트가 해소되면 cleared true 로 한 번 더 보낸다. 이 토픽은 관리자 권한만 구독한다. 1.0.0 신설(S15P31A101-206).
+ */
+export type ActionMismatchMessage = (Envelope & {
+msg_type?: "action_mismatch"
+payload: ActionMismatchPayload
+})
+export type ActionMismatchPayload = ({
+[k: string]: unknown
+} & {
+ticket_id: string
+/**
+ * UUIDv7 (시간 순서, 재시작·여러 현장에서도 충돌 없음). event_id 에 쓴다 (명세 3.2 식별자 규칙)
+ */
+event_id: string
+/**
+ * 불일치를 판단한 이벤트 상태
+ */
+event_sequence: number
+/**
+ * 조치 완료
+ */
+ticket_status: "DONE"
+/**
+ * 명세 6.2, 6.4
+ */
+event_lifecycle: ("RAISED" | "UPDATED" | "RESOLVED")
+zone_id?: (string | null)
+/**
+ * UTC epoch 밀리초
+ */
+detected_at: number
+/**
+ * false: 불일치 발생. true: 이벤트 해소로 불일치가 풀림
+ */
+cleared: boolean
+})
+
+export interface FrontContracts {
+world_state?: WorldStateMessage
+risk_event?: RiskEventMessage
+viewer_health?: ViewerHealthMessage
+action_mismatch?: ActionMismatchMessage
+}
+/**
+ * I0의 영상 프레임(바이너리)을 제외한 모든 구간 메시지의 봉투 (명세 12.1). 수신 측은 모르는 필드를 무시한다.
+ */
+export interface Envelope {
+schema_version: string
+msg_type: string
+/**
+ * 중복 수신 제거용
+ */
+msg_id: string
+/**
+ * UTC epoch 밀리초
+ */
+sent_at: number
+/**
+ * 실제 송신 주체 (tier0-01, laptop-01, ec2). Tier 0가 보내는 메시지의 source_id는 이벤트의 gateway_id와 같다.
+ */
+source_id: string
+payload: {
+
+}
+}
+export interface WorldStatePayload {
+/**
+ * UTC epoch 밀리초
+ */
+t_latest_global: number
+/**
+ * calibration_version, scene_version, config_version 등 (예: cal-7)
+ */
+calibration_version: string
+/**
+ * calibration_version, scene_version, config_version 등 (예: cal-7)
+ */
+scene_version: string
+/**
+ * calibration_version, scene_version, config_version 등 (예: cal-7)
+ */
+config_version?: string
+input_provenance?: InputProvenance
+tracks: WorldTrack[]
+}
+/**
+ * 이 World 상태를 만든 입력의 출처 (명세 20.4 규칙 2·3, 관측과 추정 구분). 선택 필드. SIM·DATASET_GT 입력이면 is_upper_bound 가 true 이고, 그 결과는 제품 성능이나 실제 관측으로 쓰지 않는다
+ */
+export interface InputProvenance {
+frames: {
+/**
+ * FrameSource 출처 (명세 20.4)
+ */
+source: ("LIVE" | "FILE" | "SIM" | "DATASET")
+/**
+ * 예: cmu_panoptic/160422_ultimatum1, scenario/2026-10-20_a
+ */
+dataset_id?: string
+dataset_hash?: string
+camera_ids?: string[]
+}
+/**
+ * 보정 입력. 이미지만 넣어 모델이 카메라를 스스로 추정하는 Run에는 생략한다
+ */
+calibration?: {
+/**
+ * CalibrationProvider 출처 (명세 20.4). G1_AUTO = 무마커 자동 보정(4.3), MODEL_ESTIMATE = 이전 Run에서 모델(MapAnything 등)이 추정한 카메라를 입력으로 다시 쓴 경우. 2.0.0 의미 변경(메이저): v1.3 에서 쓰지 않는 마커 보정·평면도 대응점 출처 값을 뺐다(명세 4.3 대체 경로, 16장)
+ */
+source: ("G1_AUTO" | "DATASET_GT" | "SIM" | "MODEL_ESTIMATE")
+/**
+ * calibration_version, scene_version, config_version 등 (예: cal-7)
+ */
+calibration_version: string
+}
+/**
+ * 사람 관련 결과물에서 필수
+ */
+tracks?: {
+/**
+ * WorldTrackProvider 출처 (명세 20.4)
+ */
+source: ("TIER0_LOG" | "TIER0_LIVE" | "DATASET_GT" | "SIM")
+provider_version: string
+}
+/**
+ * 입력 중 하나라도 DATASET_GT 또는 SIM이면 true. true인 결과의 지표는 '입력이 완벽할 때의 상한'이며 제품 성능으로 주장하지 않는다.
+ */
+is_upper_bound: boolean
+}
+/**
+ * 관절 배열은 모두 같은 길이, joint_layout 순서. 2대 미만에서 보인 관절은 null (지어내지 않음).
+ */
+export interface Skeleton {
+/**
+ * COCO17 순서: nose, l_eye, r_eye, l_ear, r_ear, l_shoulder, r_shoulder, l_elbow, r_elbow, l_wrist, r_wrist, l_hip, r_hip, l_knee, r_knee, l_ankle, r_ankle
+ */
+joint_layout: ("COCO17" | "HALPE26" | "MHR70" | "MHR_NATIVE")
+joints: (WorldXyz | null)[]
+visible: boolean[]
+validity: ("VALID" | "UNCERTAIN" | "UNAVAILABLE")[]
+/**
+ * Items: observed=Tier 0 삼각측량, inferred=Tier 1 HMR
+ */
+joint_source: ("observed" | "inferred")[]
+}
+/**
+ * 규칙의 수치 근거. 단위는 키 이름에 붙인다 (예: edge_distance_m, height_diff_m)
+ */
+export interface RuleMetrics {
+[k: string]: number
+}
+/**
+ * 운영자 종료 해소(2.0.0, 6.4). LIVE 의 RESOLVED 에만. 없으면 관측 해소다
+ */
+export interface OperatorResolution {
+kind: "OPERATOR_CLOSED"
+/**
+ * event_close 의 멱등 키
+ */
+close_id: string
+channel: "CONTROL_ROOM"
+actor_role: "ADMIN"
+/**
+ * 관리자 계정 ID. 사람 이름을 넣지 않는다 (명세 11.4-5)
+ */
+actor_id: string
+/**
+ * UTC epoch 밀리초
+ */
+requested_at: number
+reason: string
+}
+/**
+ * 운영자 상향(명세 5.4, 6.4, FR-116, S15P31A101-206). VLM 상향 의견(proposed_severity)을 관제 화면 관리자가 승인해 LIVE 이벤트 등급을 올린 기록이다. 판정이 아니므로 전이의 evidence_ref 는 직전 판정 근거(모르면 null)다. 상향만 가능하고 하향·해소·끄기는 표현할 수 없다. 거절은 EC2 에만 기록하고 Tier 0 로 보내지 않는다. 값은 I1 event_escalate.escalation 그대로다
+ */
+export interface OperatorEscalation {
+/**
+ * EC2 가 발급하는 멱등 키. 같은 값을 다시 보내면 Tier 0 는 다시 기록하지 않는다
+ */
+escalation_id: string
+/**
+ * 상향 근거. 지금은 VLM 상향 의견 승인뿐이다
+ */
+basis: "VLM_PROPOSAL"
+/**
+ * 승인한 상향 의견을 낸 vlm_rationale 작업의 job_id (EC2 vlm_assessment 와 연결)
+ */
+assessment_job_id: string
+/**
+ * 올릴 등급. 승인한 proposed_severity 와 같다. Tier 0 는 지금 등급보다 높을 때만 받는다(같거나 낮으면 거부)
+ */
+target_severity: ("CRITICAL" | "HIGH" | "CAUTION")
+channel: "CONTROL_ROOM"
+actor_role: "ADMIN"
+/**
+ * 관리자 계정 ID. 사람 이름을 넣지 않는다 (명세 11.4-5)
+ */
+actor_id: string
+/**
+ * UTC epoch 밀리초
+ */
+requested_at: number
+/**
+ * 관리자 메모(선택)
+ */
+note?: string
+}
