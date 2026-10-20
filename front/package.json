@@ -5,7 +5,7 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
-    "lint": "turbo run lint lint:root",
+    "lint": "turbo run lint lint:root check:generated",
     "lint:root": "eslint .",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
@@ -31,6 +31,10 @@
     ],
     "packages/ui/**/*.{ts,tsx}": [
       "pnpm --filter @simai/ui exec eslint --fix",
+      "prettier --write"
+    ],
+    "packages/contracts/**/*.ts": [
+      "pnpm --filter @simai/contracts exec eslint --fix",
       "prettier --write"
     ],
     "*.{js,mjs,cjs}": [

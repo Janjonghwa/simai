@@ -41,13 +41,15 @@ front/
 - 포맷은 Prettier(`@simai/eslint-config/prettier-base`), 린트는 ESLint flat config. 앱은 각자 `eslint.config.js`를 두고, `front/eslint.config.js`는 루트 수준 설정 파일만 검사한다.
 - 환경변수는 앱 폴더의 `.env.example`을 `.env.local`로 복사해 채운다(`.env.local`은 커밋하지 않음). 앱은 시작할 때 `src/lib/env.ts`로 검사하고, 비었거나 형식이 틀리면 화면을 그리기 전에 멈춘다.
 - `VITE_API_MOCK=true`면 개발 서버가 `src/mocks/handlers.ts`로 REST를 흉내 낸다(msw). `main.tsx`가 DEV에서만 켜서 빌드에는 들어가지 않는다. mock 계정은 `src/mocks/accounts.ts`에 있고, 테스트도 같은 핸들러를 `msw/node`로 쓴다.
+- 계약 타입·검증기는 `packages/contracts`가 저장소 루트 `contracts/`에서 만든다(`pnpm --filter @simai/contracts generate`, 결과는 `src/generated`). 지금은 관제 앱이 STOMP로 받는 I2 메시지 4종(`world_state`, `risk_event`, `viewer_health`, `action_mismatch`)만 만든다. 늘리려면 `scripts/generate.mjs`의 `MESSAGES`에만 더한다(목록 `MESSAGE_TYPES`·`MessageByType`·검증기를 함께 만든다). 계약이 바뀌면 다시 만들어 커밋하고, `pnpm lint`는 생성물이 계약과 다르면 실패한다(`check:generated`, 줄바꿈 차이는 보지 않는다). 생성물은 `packages/contracts/.gitattributes`로 LF 로 체크아웃한다. 검증기는 미리 만든 코드라 브라우저에서 스키마를 컴파일하지 않는다(CSP `unsafe-eval` 불필요). 계약 예제가 바뀌어도 잡도록 contracts 테스트는 turbo 캐시를 쓰지 않는다.
+- 받은 메시지는 `isMessageType(msg_type)`으로 아는 종류인지 먼저 보고 `validateMessage(msg_type, data)`로 검사한다. 생성 타입은 오타가 걸리도록 닫혀 있지만(모르는 필드 없음), 실행 중 검증은 계약대로 모르는 필드를 받는다.
 
 | 명령 (`front/`에서)                 | 하는 일                                                       |
 | ----------------------------------- | ------------------------------------------------------------- |
 | `pnpm install`                      | 의존성 설치, git 훅 연결(`core.hooksPath` = `front/.husky/_`) |
 | `pnpm dev`                          | 개발 서버 (`pnpm --filter admin dev`로 앱 하나만)             |
 | `pnpm build`                        | 전체 빌드                                                     |
-| `pnpm lint`                         | 전체 ESLint                                                   |
+| `pnpm lint`                         | 전체 ESLint, 계약 생성물이 최신인지 검사                      |
 | `pnpm typecheck`                    | 전체 `tsc --noEmit`                                           |
 | `pnpm test`                         | 전체 테스트                                                   |
 | `pnpm format` / `pnpm format:check` | Prettier 적용 / 검사                                          |
@@ -71,7 +73,7 @@ git 훅 (`front/.husky/`):
 - 컴포넌트에 fetch, try/catch, pending 상태를 두지 않는다. `use*.ts` 훅으로 빼고 컴포넌트는 `{ data, pending, error }`처럼 결과만 받는다. 서버 데이터를 다루는 훅의 안쪽은 TanStack Query다.
 - REST는 `src/lib/api.ts`의 인스턴스(`src/lib/http.ts`의 `createHttp`)를 거친다. 응답은 zod 스키마로 검사한다. 실패는 `ApiError`(연결 실패는 `status` 0)로 올라오고, 서버 메시지가 없으면 훅이 든 한국어 기본 문구를 쓴다.
 - STOMP 클라이언트는 `src/lib/stomp.ts`의 하나를 공유한다. 화면에서 연결을 끊지 않는다. 새 메시지가 오면 해당 Query 캐시를 갱신한다.
-- 구간 메시지는 `packages/contracts` 검증기를 통과한 것만 쓴다.
+- 구간 메시지는 `packages/contracts` 검증기를 통과한 것만 쓴다(`validateMessage(msg_type, data)`).
 - 낙관적 갱신을 하지 않는다. 서버가 가진 상태(ACK, 이벤트 상태 등)는 서버 응답이나 메시지가 온 뒤에 그린다.
 - 렌더링 중에 부작용(외부 변수·DOM 변경, 네트워크 요청, 타이머 등록, 다른 컴포넌트 상태 변경)을 두지 않는다. Effect나 이벤트 핸들러에서 한다.
 

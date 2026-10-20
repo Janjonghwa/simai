@@ -12,12 +12,20 @@
     "//#lint:root": {
       "cache": false
     },
+    "check:generated": {
+      "cache": false
+    },
     "typecheck": {
       "dependsOn": ["^build"]
     },
     "test": {
       "dependsOn": ["^build"],
       "outputs": []
+    },
+    "@simai/contracts#test": {
+      "dependsOn": ["^build"],
+      "outputs": [],
+      "cache": false
     },
     "dev": {
       "cache": false,
