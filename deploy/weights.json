@@ -1,0 +1,20 @@
+{
+  "_doc": "가중치 목록 (S15P31A101-205). simai-bootstrap 이 sets 가 맞는 항목을 $SIMAI_ROOT/<path> 에 받고 sha256 을 확인한다. 다르면 시작하지 않는다(종료 코드 2). 가중치 파일은 커밋하지 않는다(AGENTS.md). 덮어쓰지 않고 새 이름으로 더한다. source 는 url 또는 hf {repo, file, revision}(HF 토큰은 환경 변수 HF_TOKEN 만). env 를 주면 그 환경 변수(경로)와 <env>_SHA256 을 비어 있을 때 채운다.",
+  "manifest_version": 1,
+  "weights": [
+    {
+      "name": "yolo26x-pose",
+      "sets": ["tier0"],
+      "path": "weights/yolo/yolo26x-pose.pt",
+      "source": {"url": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26x-pose.pt"},
+      "sha256": "08ed9e01d22a6f248b04f2f9992016aca9a32250b9ab57057d886a09d026700d",
+      "license": "AGPL-3.0 (Ultralytics)",
+      "env": "SIMAI_TIER0_WEIGHTS",
+      "hash_from": "docs/data/weights.md (E-GATE-0 weights/hmr_weights.sha256, ultralytics 릴리스 v8.4.0)"
+    }
+  ],
+  "placeholders": [
+    {"name": "sam-3d-body-dinov3", "sets": ["exp02"], "source": {"hf": {"repo": "facebook/sam-3d-body-dinov3"}}, "why": "자리만: 실험 이미지 티켓 후 (HMR torch 2.5.1 cu124 는 아직 볼륨 venv)"},
+    {"name": "map-anything", "sets": ["static"], "why": "자리만: 실험 이미지 티켓 후 (MapAnything torch 2.7.1 cu126 는 아직 볼륨 venv)"}
+  ]
+}

@@ -10,7 +10,7 @@ FROM ${UV_IMAGE} AS uv
 FROM ${CUDA_IMAGE}
 ARG PYTHON_VERSION=3.11.15
 
-# tini: PID 1 신호 전달·좀비 회수. openssh-server: RunPod 공개 IP:포트 SSH(키 인증만, 명세 3.12).
+# tini: PID 1 신호 전달·좀비 회수. openssh-server: RunPod·Vast.ai 공개 IP:포트 SSH(키 인증만, 명세 3.12. 엘리스 VM 은 호스트 sshd).
 # 설치 때 만들어지는 SSH 호스트 키는 지운다(이미지에 남으면 모든 Pod 가 같은 호스트 키를 쓴다).
 # hadolint ignore=DL3008
 RUN apt-get update \
@@ -28,8 +28,8 @@ ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    SIMAI_ROOT=/workspace/simai
+    PYTHONDONTWRITEBYTECODE=1
+# SIMAI_ROOT 는 고정하지 않는다: Tier 0 는 simai-bootstrap 이 저장 위치를 고르고(S15P31A101-205), EXP-02 는 자기 Dockerfile 에서 정한다.
 RUN uv python install ${PYTHON_VERSION}
 
 COPY --chmod=0755 deploy/base/simai-start.sh /usr/local/bin/simai-start

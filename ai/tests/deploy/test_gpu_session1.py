@@ -87,7 +87,7 @@ def test_timeout_and_failure_do_not_block_next_items_and_placeholders_are_not_qu
     [bundle] = bundles(tmp_path)
     files = members(bundle)
     summary = json.loads(files["session.json"])
-    assert summary["placeholders"][0]["why"] == "-182 머지 후 채움"
+    assert summary["placeholders"][0]["why"] == "자리만: -182 머지 후 채움"  # 제외·자리만을 구분해 적는다(-205)
     assert summary["jobs"]["a_slow"]["status"] == "failed"
     records = [json.loads(v) for k, v in files.items() if k.endswith("run_record.json")]
     assert {r["status"] for r in records} == {"FAILED", "SUCCEEDED"} and len(records) == 3
@@ -282,10 +282,9 @@ def test_pod_job_file_passes_gpu_queue_check_and_run_record_schema(gs, monkeypat
     lay = gs.Layout("pod", None, "20261020", "/opt/simai/ai/.venv/bin/python")
     doc, held = gs.build_jobs(lay, {"commit": "0" * 40, "branch": "dev", "dirty_worktree": False})
     names = [j["name"] for j in doc["jobs"]]
-    # 시험 도구(t)가 그것을 쓰는 c·d·e·f 보다 먼저, EXP(g)는 큐에 없다(LIVE 보호를 켠 별도 큐)
-    assert names == ["a_pod_check", "b_tier0_engine", "t_test_tools", "c_tier0_live", "d_tier0_gpu_priority",
-                     "e_crash_recovery", "f_tls_linux"]
-    assert {h["key"] for h in held} == {"g"}
+    # 시험 도구(t)가 그것을 쓰는 c·d 보다 먼저. e(엘리스로 이동)·f(GPU 불필요)는 제외, EXP(g)·MapAnything(m)은 자리만 (S15P31A101-205)
+    assert names == ["a_pod_check", "b_tier0_engine", "t_test_tools", "c_tier0_live", "d_tier0_gpu_priority"]
+    assert {h["key"] for h in held} == {"e", "f", "g", "m"}
     assert all(j["timeout_s"] >= j["expected_s"] for j in doc["jobs"])
     assert doc["queue"]["continue_on_failure"] is True
     tools = next(j for j in doc["jobs"] if j["name"] == "t_test_tools")["command"]

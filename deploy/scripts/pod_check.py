@@ -3,6 +3,8 @@
 
 GPU·드라이버·CUDA(Tier 0 이미지는 CUDA 13·드라이버 580 이상, 아래면 순방향 호환 필요), Network Volume 마운트,
 볼륨 디렉터리, 용량, 쓰기 속도, fsync 시간, 원자적 rename·파일 잠금(저널 단일 작성자)을 확인하고 JSON 으로 남긴다.
+GPU·지역은 그때그때 남은 것을 쓴다(S15P31A101-205): 최소 사양(Ampere 이상, VRAM 24GB급) 미만만 FAIL 이고 데이터센터는 기록만 한다.
+--no-volume: 볼륨 없이 컨테이너 디스크로 도는 Pod. 마운트·쓰기 속도·fsync 측정은 '볼륨 없음' SKIP(rename·flock 은 그대로 본다).
 비밀 파일은 있는지와 크기만 본다(내용을 읽지 않는다).
 
     python deploy/scripts/pod_check.py                       # Pod: /workspace, 결과는 $SIMAI_RUN_DIR/pod_check.json
@@ -31,6 +33,8 @@ PASS, WARN, FAIL, SKIP = "PASS", "WARN", "FAIL", "SKIP"
 VOLUME_DIRS = ("weights", "datasets", "runs", "recordings", "obs2d", "engines", "state", "queue", "setup", "logs")
 MIN_DRIVER = 580  # CUDA 13.0 이 요구하는 드라이버 (deploy/README.md "Tier 0 가 CUDA 13 인 이유")
 MIN_CUDA = (13, 0)
+MIN_CC = (8, 0)  # Ampere 이상 (simai_bootstrap 과 같은 최소 사양)
+MIN_VRAM_MB = 22_500  # 24GB급(A10·L4 는 약 23,000 MiB 로 보인다)
 DEFAULT_SMI = "nvidia-smi"
 
 
@@ -82,8 +86,15 @@ def check_gpu(rep: Report, smi: list[str]) -> dict:
         gpu |= {"compute_cap": first[2], "memory_total_mb": _num(first[3]), "memory_used_mb": _num(first[4])}
     elif len(first) >= 4:  # compute_cap 를 모르는 오래된 nvidia-smi
         gpu |= {"memory_total_mb": _num(first[2]), "memory_used_mb": _num(first[3])}
-    status = PASS if "H100" in gpu["name"] and len(rows) == 1 else WARN
-    rep.add("gpu", status, f"{gpu['name']} x{len(rows)} (기대: H100 80GB 하나)")
+    cc = re.fullmatch(r"(\d+)\.(\d+)", str(gpu.get("compute_cap", "")))
+    total = gpu.get("memory_total_mb")
+    if cc is None or total is None:
+        status, why = WARN, "compute_cap·메모리를 읽지 못함(최소 사양 판정은 simai-bootstrap)"
+    elif (int(cc.group(1)), int(cc.group(2))) < MIN_CC or total < MIN_VRAM_MB:
+        status, why = FAIL, "최소 사양(Ampere 이상, VRAM 24GB급) 미만"
+    else:
+        status, why = (PASS, "최소 사양 이상") if len(rows) == 1 else (WARN, "GPU 여러 개(Tier 0 는 하나를 먼저 쓴다)")
+    rep.add("gpu", status, f"{gpu['name']} x{len(rows)} {gpu.get('compute_cap', '?')} {total} MiB: {why}")
 
     major = _driver_major(gpu["driver"])
     gpu["driver_major"] = major
@@ -143,14 +154,16 @@ def mount_info(path: Path) -> dict:
     return info
 
 
-def check_volume(rep: Report, root: Path, allow_not_mount: bool, min_free_gb: float) -> dict:
-    vol: dict = {"root": str(root)}
+def check_volume(rep: Report, root: Path, allow_not_mount: bool, min_free_gb: float, no_volume: bool = False) -> dict:
+    vol: dict = {"root": str(root), "no_volume": no_volume}
     if not root.is_dir():
         rep.add("volume_root", FAIL, f"{root} 가 없다 (Network Volume 을 /workspace 에 붙인 Pod 인가)")
         return vol
     mi = mount_info(root)
     vol["mount"] = mi
-    if mi["is_mount"] or (mi["mountpoint"] and mi["mountpoint"] != "/"):
+    if no_volume:
+        rep.add("volume_mount", SKIP, f"볼륨 없음: SKIP ({root} 는 컨테이너 디스크, Pod 를 지우면 사라진다)")
+    elif mi["is_mount"] or (mi["mountpoint"] and mi["mountpoint"] != "/"):
         rep.add("volume_mount", PASS, f"{mi['mountpoint'] or root} ({mi['fstype'] or '?'}, {mi['device'] or '?'})")
     elif allow_not_mount:
         rep.add("volume_mount", WARN, f"{root} 는 마운트 지점이 아니다(드라이런 허용)")
@@ -191,7 +204,7 @@ def check_volume(rep: Report, root: Path, allow_not_mount: bool, min_free_gb: fl
     return vol
 
 
-def check_io(rep: Report, root: Path, write_mb: int, fsync_count: int, fsync_warn_ms: float) -> dict:
+def check_io(rep: Report, root: Path, write_mb: int, fsync_count: int, fsync_warn_ms: float, no_volume: bool = False) -> dict:
     """쓰기 속도(write_mb MB + fsync), 작은 추가+fsync 지연(저널 기록과 같은 형태), rename, flock."""
     io: dict = {}
     probe = root / "simai" / "state" / f".pod-check-{socket.gethostname()}-{os.getpid()}"
@@ -201,41 +214,11 @@ def check_io(rep: Report, root: Path, write_mb: int, fsync_count: int, fsync_war
         rep.add("volume_write", FAIL, f"{probe} 를 만들지 못함: {e}")
         return io
     try:
-        big = probe / "write.bin"
-        chunk = os.urandom(1 << 20)
-        t0 = time.perf_counter()
-        with open(big, "wb") as f:
-            for _ in range(write_mb):
-                f.write(chunk)
-            f.flush()
-            t1 = time.perf_counter()
-            os.fsync(f.fileno())
-        t2 = time.perf_counter()
-        io |= {"write_mb": write_mb, "write_s": round(t2 - t0, 3), "write_fsync_s": round(t2 - t1, 3),
-               "write_mb_s": round(write_mb / max(t2 - t0, 1e-9), 1)}
-        t3 = time.perf_counter()
-        with open(big, "rb") as f:
-            while f.read(1 << 22):
-                pass
-        io["read_mb_s_cached"] = round(write_mb / max(time.perf_counter() - t3, 1e-9), 1)
-        rep.add("volume_write", PASS, f"{write_mb} MB 쓰기+fsync {io['write_s']} s ({io['write_mb_s']} MB/s)")
-
-        lat = []
-        with open(probe / "journal-like.log", "ab") as f:
-            for i in range(fsync_count):
-                f.write(json.dumps({"i": i, "pad": "x" * 400}).encode() + b"\n")
-                f.flush()
-                s = time.perf_counter()
-                os.fsync(f.fileno())
-                lat.append((time.perf_counter() - s) * 1000)
-        lat.sort()
-        io["fsync_ms"] = {"n": len(lat), "p50": round(statistics.median(lat), 2),
-                          "p95": round(lat[int(0.95 * (len(lat) - 1))], 2), "p99": round(lat[int(0.99 * (len(lat) - 1))], 2),
-                          "max": round(lat[-1], 2)}
-        status = PASS if io["fsync_ms"]["p99"] <= fsync_warn_ms else WARN
-        rep.add("fsync", status, f"작은 추가+fsync {fsync_count}회 p50 {io['fsync_ms']['p50']} ms, p99 {io['fsync_ms']['p99']} ms"
-                f" (WARN 기준 p99 > {fsync_warn_ms} ms: 저널 쓰기 정체·체크포인트 지연 위험)")
-
+        if no_volume:
+            rep.add("volume_write", SKIP, "볼륨 없음: SKIP")
+            rep.add("fsync", SKIP, "볼륨 없음: SKIP")
+        else:
+            _measure(rep, io, probe, write_mb, fsync_count, fsync_warn_ms)
         a, b = probe / "a.tmp", probe / "b.json"
         a.write_text("1", encoding="utf-8")
         b.write_text("0", encoding="utf-8")
@@ -251,6 +234,44 @@ def check_io(rep: Report, root: Path, write_mb: int, fsync_count: int, fsync_war
     finally:
         shutil.rmtree(probe, ignore_errors=True)
     return io
+
+
+def _measure(rep: Report, io: dict, probe: Path, write_mb: int, fsync_count: int, fsync_warn_ms: float) -> None:
+    """쓰기 속도(write_mb MB + fsync)와 작은 추가+fsync 지연(저널 기록과 같은 형태)."""
+    big = probe / "write.bin"
+    chunk = os.urandom(1 << 20)
+    t0 = time.perf_counter()
+    with open(big, "wb") as f:
+        for _ in range(write_mb):
+            f.write(chunk)
+        f.flush()
+        t1 = time.perf_counter()
+        os.fsync(f.fileno())
+    t2 = time.perf_counter()
+    io |= {"write_mb": write_mb, "write_s": round(t2 - t0, 3), "write_fsync_s": round(t2 - t1, 3),
+           "write_mb_s": round(write_mb / max(t2 - t0, 1e-9), 1)}
+    t3 = time.perf_counter()
+    with open(big, "rb") as f:
+        while f.read(1 << 22):
+            pass
+    io["read_mb_s_cached"] = round(write_mb / max(time.perf_counter() - t3, 1e-9), 1)
+    rep.add("volume_write", PASS, f"{write_mb} MB 쓰기+fsync {io['write_s']} s ({io['write_mb_s']} MB/s)")
+
+    lat = []
+    with open(probe / "journal-like.log", "ab") as f:
+        for i in range(fsync_count):
+            f.write(json.dumps({"i": i, "pad": "x" * 400}).encode() + b"\n")
+            f.flush()
+            s = time.perf_counter()
+            os.fsync(f.fileno())
+            lat.append((time.perf_counter() - s) * 1000)
+    lat.sort()
+    io["fsync_ms"] = {"n": len(lat), "p50": round(statistics.median(lat), 2),
+                      "p95": round(lat[int(0.95 * (len(lat) - 1))], 2), "p99": round(lat[int(0.99 * (len(lat) - 1))], 2),
+                      "max": round(lat[-1], 2)}
+    status = PASS if io["fsync_ms"]["p99"] <= fsync_warn_ms else WARN
+    rep.add("fsync", status, f"작은 추가+fsync {fsync_count}회 p50 {io['fsync_ms']['p50']} ms, p99 {io['fsync_ms']['p99']} ms"
+            f" (WARN 기준 p99 > {fsync_warn_ms} ms: 저널 쓰기 정체·체크포인트 지연 위험)")
 
 
 def _flock_probe(path: Path) -> str:
@@ -276,15 +297,17 @@ def _flock_probe(path: Path) -> str:
 
 
 def check_env(rep: Report) -> dict:
-    keys = ("RUNPOD_POD_ID", "RUNPOD_DC_ID", "RUNPOD_PUBLIC_IP", "RUNPOD_TCP_PORT_22", "SIMAI_IMAGE_DIGEST", "SIMAI_ROOT")
+    keys = ("RUNPOD_POD_ID", "RUNPOD_DC_ID", "RUNPOD_PUBLIC_IP", "RUNPOD_TCP_PORT_22", "PUBLIC_IPADDR", "VAST_TCP_PORT_22",
+            "SIMAI_IMAGE_DIGEST", "SIMAI_ROOT")
     env = {k: os.environ.get(k, "") for k in keys}
     dc = env["RUNPOD_DC_ID"]
     if dc:
-        rep.add("datacenter", PASS if dc.upper() == "AP-JP-1" else FAIL, f"{dc} (기대 AP-JP-1, 볼륨과 같은 데이터센터)")
+        rep.add("datacenter", PASS, f"{dc} (그때그때 남은 지역을 쓴다. 볼륨을 붙였다면 볼륨과 같은 데이터센터여야 붙는다)")
     else:
-        rep.add("datacenter", SKIP, "RUNPOD_DC_ID 없음 (RunPod 밖)")
-    rep.add("ssh_port", PASS if env["RUNPOD_TCP_PORT_22"] else SKIP,
-            f"공개 IP {env['RUNPOD_PUBLIC_IP'] or '?'} 포트 {env['RUNPOD_TCP_PORT_22'] or '?'} (Pod 재시작마다 바뀔 수 있다)")
+        rep.add("datacenter", SKIP, "RUNPOD_DC_ID 없음 (RunPod 밖: Vast·엘리스 VM)")
+    ip = env["RUNPOD_PUBLIC_IP"] or env["PUBLIC_IPADDR"]  # RunPod / Vast.ai
+    port = env["RUNPOD_TCP_PORT_22"] or env["VAST_TCP_PORT_22"]
+    rep.add("ssh_port", PASS if port else SKIP, f"공개 IP {ip or '?'} 포트 {port or '?'} (재시작마다 바뀔 수 있다. 엘리스 VM 은 호스트 sshd)")
     return env
 
 
@@ -298,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--nvidia-smi", default=os.environ.get("SIMAI_NVIDIA_SMI", DEFAULT_SMI),
                     help="nvidia-smi 명령 (드라이런: 'python fake_nvidia_smi.py'). 환경 변수 SIMAI_NVIDIA_SMI")
     ap.add_argument("--allow-not-mount", action="store_true", help="root 가 마운트 지점이 아니어도 실패로 보지 않는다(드라이런)")
+    ap.add_argument("--no-volume", action="store_true", help="볼륨 없는 Pod: 마운트·쓰기 속도·fsync 측정을 '볼륨 없음' SKIP")
     ap.add_argument("--min-free-gb", type=float, default=50.0, help="볼륨 남은 용량 하한 (기본 50GB: 엔진·녹화·실험 산출물)")
     ap.add_argument("--write-mb", type=int, default=1024, help="쓰기 속도 시험 크기 MB (기본 1024)")
     ap.add_argument("--fsync-count", type=int, default=200, help="작은 추가+fsync 횟수 (기본 200)")
@@ -319,8 +343,10 @@ def main(argv: list[str] | None = None) -> int:
 
     result["env"] = guarded("env", check_env)
     result["gpu"] = guarded("gpu", check_gpu, smi)
-    result["volume"] = guarded("volume", check_volume, args.root, args.allow_not_mount, args.min_free_gb)
-    result["io"] = guarded("volume_io", check_io, args.root, args.write_mb, args.fsync_count, args.fsync_warn_ms)         if args.root.is_dir() else {}
+    result["volume"] = guarded("volume", check_volume, args.root, args.allow_not_mount, args.min_free_gb,
+                               args.no_volume)
+    result["io"] = guarded("volume_io", check_io, args.root, args.write_mb, args.fsync_count, args.fsync_warn_ms,
+                           args.no_volume) if args.root.is_dir() else {}
     result |= {"finished_at": time.time_ns() // 1_000_000, "items": rep.items, "verdict": rep.worst()}
     print(f"\npod_check: {result['verdict']}", flush=True)
 

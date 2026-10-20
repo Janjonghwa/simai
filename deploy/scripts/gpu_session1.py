@@ -7,9 +7,14 @@
   t       시험 도구(pytest·cryptography)를 컨테이너 디스크에 설치          Pod 만 (이미지에는 시험 의존성이 없다)
   c  -182 LIVE 입력: NVDEC·디코딩 처리량·LIVE 기동·10명 처리 시간         deploy/scripts/session1_live.py (-182 머지 필요)
   d  -60  Tier 0 GPU 우선 보호 측정 P0~P7                                  deploy/scripts/session1_gpu_priority.py (-60 머지 필요)
-  e  -92  Network Volume 강제 종료 복구                                    deploy/scripts/crash_recovery_g3.py
-  f  -45·-175 Linux TLS 시험 반복                                         deploy/scripts/repeat_pytest.py
-  g  -87  EXP-02 다시점 집계(선택, LIVE 없을 때만, 마지막)                 자리만. --exp-jobs 로 준 Job 파일을 LIVE 보호를 켠 별도 큐로 돈다
+  e  -92  Network Volume 강제 종료 복구                                    제외: 엘리스 블록 스토리지 세션으로 옮김 (S15P31A101-205)
+  f  -45·-175 Linux TLS 시험 반복                                         제외: GPU 가 필요 없어 GPU 세션에서 뺌 (Linux CPU 에서 repeat_pytest.py)
+  g  -87  EXP-02 다시점 집계(선택, LIVE 없을 때만, 마지막)                 자리만: 실험 이미지 티켓 후. --exp-jobs 로 준 Job 파일을 LIVE 보호를 켠 별도 큐로 돈다
+  m       MapAnything 정적 재구성                                          자리만: 실험 이미지 티켓 후
+
+GPU·지역은 그때그때 남은 것(RunPod·Vast.ai, 볼륨 없음)을 쓴다(S15P31A101-205). Pod 모드 저장 위치는 simai-bootstrap 과 같다:
+SIMAI_ROOT → /workspace/simai → 컨테이너 디스크 /srv/simai. 볼륨이 없으면(마운트 지점 아님) a 의 볼륨 측정은 '볼륨 없음' SKIP 이고,
+결과 묶음은 컨테이너 디스크에 있으므로 Pod 를 지우기(Terminate) 전에 scp 로 가져온다.
 
 한 항목이 실패해도 다음 항목으로 간다(continue_on_failure). 항목마다 제한 시간과 Run 기록(run_record 계약)은 gpu_queue 가 맡는다.
 전체 시간 상한(--max-total-s)이 지나면 도는 항목을 끝내고(ABORTED 기록) 남은 항목은 돌리지 않는다. Ctrl-C·SIGTERM 도 같다.
@@ -17,8 +22,8 @@
 
     # 노트북: 저장소 사본과 git 정보 준비 → Pod 로 올린다 (출력되는 명령을 따른다)
     python deploy/scripts/gpu_session1.py prepare --out <폴더>
-    # Pod (Tier 0 이미지, /workspace 볼륨): 저장소 사본 최상위에서
-    python deploy/scripts/gpu_session1.py run
+    # Pod (Tier 0 이미지): 가중치·GPU 준비(simai-bootstrap) 뒤 이 큐를 돈다
+    simai-bootstrap queue
     # 노트북 드라이런: 가짜 nvidia-smi·로컬 디렉터리
     uv run --project ai python deploy/scripts/gpu_session1.py run --mode dryrun --root <로컬 폴더>
 
@@ -48,6 +53,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import simai_bootstrap  # noqa: E402 - 같은 폴더(저장 위치 규칙을 한 곳에서)
 QUEUE_DIR = REPO / "ai" / "experiments" / "gpu_queue"
 FAKE_SMI = REPO / "ai" / "tests" / "experiments" / "gpu_queue" / "fake_nvidia_smi.py"
 STAMP_FILE = "git-stamp.json"  # prepare 가 저장소 사본 최상위에 둔다(Pod 사본에는 .git 이 없다)
@@ -90,14 +98,20 @@ class Layout:
         self.mode = mode
         self.session = session
         if mode == "pod":
-            self.root = root or Path("/workspace")
+            if root is None:  # simai-bootstrap 과 같은 규칙. SIMAI_ROOT 의 부모가 볼륨 루트(.simai-private 위치)다
+                self.simai, _source = simai_bootstrap.choose_root()
+                self.root = self.simai.parent
+            else:
+                self.root, self.simai = root, root / "simai"
+            # 볼륨(RunPod Network·Pod 볼륨, docker -v 블록 스토리지)은 마운트 지점이다. 아니면 컨테이너 디스크
+            self.has_volume = os.path.ismount(self.root)
         else:
             if root is None:
                 raise SystemExit("드라이런은 --root <로컬 폴더> 가 필요하다")
-            self.root = root
-        # resolve() 는 Windows subst 드라이브를 긴 실제 경로로 바꿔 경로 길이 한도에 걸리게 하므로 absolute() 만
-        self.root = Path(os.path.abspath(self.root)) if mode == "dryrun" else self.root
-        self.simai = self.root / "simai"
+            # resolve() 는 Windows subst 드라이브를 긴 실제 경로로 바꿔 경로 길이 한도에 걸리게 하므로 absolute() 만
+            self.root = Path(os.path.abspath(root))
+            self.simai = self.root / "simai"
+            self.has_volume = True  # 드라이런은 볼륨 측정 경로를 작게 돌려 본다(--allow-not-mount)
         self.py = Path(python or sys.executable).as_posix()  # bash(b 항목)에서도 쓰므로 / 구분자
         self.queue_state = self.simai / "queue"
         self.session_dir = self.simai / "runs" / "gpu-session1" / session
@@ -142,6 +156,8 @@ def items(lay: Layout) -> list[dict]:
     pod_check = [py, "deploy/scripts/pod_check.py", "--root", str(lay.root), "--nvidia-smi", smi_text]
     if dry:
         pod_check += ["--allow-not-mount", "--write-mb", "16", "--fsync-count", "50", "--min-free-gb", "1"]
+    elif not lay.has_volume:
+        pod_check += ["--no-volume"]
     return [
         {"key": "a", "name": "a_pod_check", "jira": "S15P31A101-31", "title": "Pod 점검", "command": pod_check,
          "expected_s": 120, "timeout_s": 900, "model_version": "n/a (인프라 점검)", "provenance": PROVENANCE_NONE},
@@ -164,13 +180,16 @@ def items(lay: Layout) -> list[dict]:
         {"key": "e", "name": "e_crash_recovery", "jira": "S15P31A101-92", "title": "Network Volume 강제 종료 복구",
          "command": [py, "deploy/scripts/crash_recovery_g3.py", "--volume-dir", str(lay.simai / "runs" / "crash92")],
          "expected_s": 300, "timeout_s": 1800, "model_version": "Tier 0 SIM 입력 (services.tier0)",
-         "provenance": PROVENANCE_SIM},
+         "provenance": PROVENANCE_SIM, "excluded": "엘리스 블록 스토리지 세션으로 옮김(볼륨 강제 종료 복구는 그 저장소에서 잰다)"},
         {"key": "f", "name": "f_tls_linux", "jira": "S15P31A101-175", "title": "Linux TLS 시험 반복 (-45·-175)",
          "command": [py, "deploy/scripts/repeat_pytest.py", "--count", "1" if dry else "5", "--cwd", "ai", "--",
                      "tests/services/tier0/test_i1_tls.py", "tests/services/tier0/test_serial_tls.py"],
-         "expected_s": 600, "timeout_s": 2400, "model_version": "n/a (TLS 시험)", "provenance": PROVENANCE_NONE},
+         "expected_s": 600, "timeout_s": 2400, "model_version": "n/a (TLS 시험)", "provenance": PROVENANCE_NONE,
+         "excluded": "GPU 가 필요 없어 GPU 세션에서 뺌(Linux CPU 에서 repeat_pytest.py 로)"},
         {"key": "g", "name": "g_exp02_multiview", "jira": "S15P31A101-87", "title": "EXP-02 다시점 집계 (선택, LIVE 없을 때)",
-         "command": None, "placeholder": "-87 머지 후 채움 (--exp-jobs 로 별도 큐)", "expected_s": 1800, "timeout_s": 3600},
+         "command": None, "placeholder": "실험 이미지 티켓 후 (--exp-jobs 로 별도 큐)", "expected_s": 1800, "timeout_s": 3600},
+        {"key": "m", "name": "m_mapanything", "jira": "S15P31A101-205", "title": "MapAnything 정적 재구성",
+         "command": None, "placeholder": "실험 이미지 티켓 후 (torch 2.7.1 cu126 이미지)", "expected_s": 900, "timeout_s": 1800},
     ]
 
 
@@ -185,8 +204,9 @@ def job_env(lay: Layout) -> dict[str, str]:
 
 def build_jobs(lay: Layout, git: dict | None) -> tuple[dict, list[dict]]:
     """gpu_queue Job 파일과 자리만 있는 항목 목록."""
-    gpu = {"provider": "RUNPOD", "region": "JP", "datacenter": "AP-JP-1", "shared_with_tier0": False} \
-        if lay.mode == "pod" else {"provider": "LOCAL"}
+    # provider·datacenter 는 run_record 가 RUNPOD_POD_ID·RUNPOD_DC_ID 로 채운다(그때그때 남은 지역).
+    # shortcut: 계약 provider 가 RUNPOD·LOCAL 뿐이라 Vast·엘리스는 LOCAL 로 기록된다, 계약에 값이 생기면 고친다
+    gpu = {"shared_with_tier0": False} if lay.mode == "pod" else {"provider": "LOCAL"}
     env_cfg: dict = {"lock_files": ["ai/uv.lock"]}
     if os.environ.get("SIMAI_IMAGE_DIGEST"):
         env_cfg["image_digest"] = os.environ["SIMAI_IMAGE_DIGEST"]
@@ -213,14 +233,14 @@ def build_jobs(lay: Layout, git: dict | None) -> tuple[dict, list[dict]]:
         },
         "jobs": [],
     }
-    if lay.mode == "pod":
-        doc["queue"]["volume"] = {"root": str(lay.root), "datacenter": "AP-JP-1"}
+    if lay.mode == "pod" and lay.has_volume and os.environ.get("RUNPOD_DC_ID"):
+        doc["queue"]["volume"] = {"root": str(lay.root), "datacenter": os.environ["RUNPOD_DC_ID"]}
     if git:
         doc["git"] = git
     held: list[dict] = []
     env = job_env(lay)
     for it in items(lay):
-        if it["command"] is None:
+        if it["command"] is None or it.get("excluded"):
             held.append(it)
             continue
         doc["jobs"].append({
@@ -232,17 +252,23 @@ def build_jobs(lay: Layout, git: dict | None) -> tuple[dict, list[dict]]:
     return doc, held
 
 
+def _held_why(it: dict) -> str:
+    return f"제외: {it['excluded']}" if it.get("excluded") else f"자리만: {it.get('placeholder') or it.get('skip_reason')}"
+
+
 def plan_table(lay: Layout, doc: dict, held: list[dict]) -> str:
     rows = [f"{'항목':<4} {'이름':<24} {'Jira':<16} {'예상':>7} {'제한':>7}  상태"]
     queued = {j["name"] for j in doc["jobs"]}
     total = 0
     for it in items(lay):
-        state = "큐" if it["name"] in queued else f"자리만: {it.get('placeholder') or it.get('skip_reason')}"
+        state = "큐" if it["name"] in queued else _held_why(it)
         if it["name"] in queued:
             total += it["expected_s"]
         rows.append(f"{it['key']:<4} {it['name']:<24} {it['jira']:<16} {it['expected_s'] / 60:>5.0f}분 {it['timeout_s'] / 60:>5.0f}분  {state}")
     future = sum(it["expected_s"] for it in held if it.get("placeholder"))
     rows.append(f"지금 큐 예상 {total / 60:.0f}분, 자리만 항목을 채우면 +{future / 60:.0f}분")
+    if lay.mode == "pod":
+        rows.append(f"저장 {lay.simai} ({'볼륨' if lay.has_volume else '볼륨 없음: 컨테이너 디스크, Pod 를 지우기 전에 결과를 scp'})")
     return "\n".join(rows)
 
 
@@ -482,8 +508,8 @@ def make_bundle(lay: Layout, summary: dict, max_mb: float) -> tuple[Path | None,
 
 
 def scp_command(bundle: Path) -> list[str]:
-    ip = os.environ.get("RUNPOD_PUBLIC_IP") or "<Pod 공개 IP>"
-    port = os.environ.get("RUNPOD_TCP_PORT_22") or "<22 매핑 포트>"
+    ip = os.environ.get("RUNPOD_PUBLIC_IP") or os.environ.get("PUBLIC_IPADDR") or "<Pod 공개 IP>"  # RunPod / Vast.ai
+    port = os.environ.get("RUNPOD_TCP_PORT_22") or os.environ.get("VAST_TCP_PORT_22") or "<22 매핑 포트>"
     dest = f"ai/experiments/runs/gpu-session1/{bundle.parent.name}/"
     return [
         f"mkdir -p {dest}",
@@ -518,13 +544,16 @@ def cmd_prepare(args) -> int:
     if r.returncode != 0:
         return EXIT_BAD_JOBS
     (args.out / STAMP_FILE).write_text(json.dumps(git, ensure_ascii=False) + "\n", encoding="utf-8")
-    dest = "/workspace/simai/setup/session1/repo"
+    up = f"{args.pod_simai.rstrip('/')}/setup/session1"
+    dest = f"{up}/repo"
     print(f"사본 {tar} ({tar.stat().st_size / 1e6:.1f} MB), git {git['commit'][:12]} ({git['branch']})")
-    print("Pod 로 올리기 (노트북에서, 포트·IP 는 RunPod 콘솔 Connect 의 'SSH over exposed TCP'):")
-    print(f"  scp -P <포트> {tar.as_posix()} {(args.out / STAMP_FILE).as_posix()} root@<IP>:/workspace/simai/setup/session1/")
-    print(f"  ssh -p <포트> root@<IP> 'rm -rf {dest} && mkdir -p {dest} && tar -xf /workspace/simai/setup/session1/simai-repo.tar"
-          f" -C {dest} && cp /workspace/simai/setup/session1/{STAMP_FILE} {dest}/'")
-    print(f"  ssh -p <포트> root@<IP> 'cd {dest} && nohup python deploy/scripts/gpu_session1.py run > ../session1.log 2>&1 &'")
+    print(f"Pod 로 올리기 (Pod 저장 위치 {args.pod_simai}. 볼륨 없는 Pod 는 --pod-simai /srv/simai, 포트·IP 는 RunPod Connect·Vast 인스턴스 정보):")
+    print(f"  ssh -p <포트> root@<IP> 'mkdir -p {up}'   # 새 디스크에는 업로드 폴더가 없다(scp 는 부모 폴더를 만들지 않는다)")
+    print(f"  scp -P <포트> {tar.as_posix()} {(args.out / STAMP_FILE).as_posix()} root@<IP>:{up}/")
+    print(f"  ssh -p <포트> root@<IP> 'rm -rf {dest} && mkdir -p {dest} && tar -xf {up}/simai-repo.tar"
+          f" -C {dest} && cp {up}/{STAMP_FILE} {dest}/'")
+    print(f"  ssh -p <포트> root@<IP> 'nohup simai-bootstrap queue > {up}/session1.log 2>&1 &'"
+          "   # 가중치·GPU 준비 뒤 큐 (SIMAI_SESSION_REPO 기본값이 위 사본)")
     return EXIT_OK
 
 
@@ -557,7 +586,7 @@ def cmd_run(args, lay: Layout) -> int:
             git = git_stamp()
             doc, held = build_jobs(lay, git)
             summary["placeholders"] = [{"key": h["key"], "name": h["name"], "jira": h["jira"],
-                                        "why": h.get("placeholder") or h.get("skip_reason")} for h in held]
+                                        "why": _held_why(h)} for h in held]
             job_file = lay.session_dir / "jobs.json"
             job_file.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             print(plan_table(lay, doc, held), flush=True)
@@ -600,6 +629,8 @@ def cmd_run(args, lay: Layout) -> int:
         return code if code != EXIT_OK else EXIT_BUNDLE
     log(f"결과 묶음: {bundle}")
     print("\n노트북에서 가져오기:\n  " + "\n  ".join(scp_command(bundle)), flush=True)
+    if lay.mode == "pod" and not lay.has_volume:
+        print("볼륨 없음: 결과 묶음은 컨테이너 디스크에 있다. Pod 를 지우기(Terminate) 전에 위 scp 로 가져온다.", flush=True)
     print("끝나면 RunPod 콘솔에서 Pod 를 Stop 한다(GPU 과금). LIVE 관제 중이면 Stop 하지 않는다.", flush=True)
     return code
 
@@ -625,7 +656,8 @@ def main(argv: list[str] | None = None) -> int:
 
     def common(p):
         p.add_argument("--mode", choices=("pod", "dryrun"), default="pod")
-        p.add_argument("--root", type=Path, default=None, help="볼륨 마운트 경로 (pod 기본 /workspace, 드라이런은 로컬 폴더)")
+        p.add_argument("--root", type=Path, default=None,
+                   help="볼륨 루트 (pod 기본: SIMAI_ROOT 의 부모 → /workspace → /srv, 드라이런은 로컬 폴더)")
         p.add_argument("--session", default=datetime.now(timezone.utc).strftime("%Y%m%d"),
                        help="세션 이름 (기본 UTC 날짜). 같은 이름으로 다시 돌리면 끝난 항목은 건너뛴다")
         p.add_argument("--python", default=None, help="Job 이 쓸 Python (기본: 지금 Python)")
@@ -642,6 +674,8 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--exp-jobs", type=Path, default=None, help="g 항목: EXP Job 파일(gpu_queue 형식). LIVE 보호를 켜고 마지막에")
     p_prep = sub.add_parser("prepare", help="노트북: 저장소 사본(git archive)과 git 정보를 만든다")
     p_prep.add_argument("--out", type=Path, required=True)
+    p_prep.add_argument("--pod-simai", default="/workspace/simai",
+                        help="Pod 의 SIMAI_ROOT (볼륨 있음 /workspace/simai, 볼륨 없음 /srv/simai: simai-bootstrap check 의 storage.root)")
     args = ap.parse_args(argv)
     if args.cmd == "prepare":
         return cmd_prepare(args)

@@ -6,11 +6,14 @@ S15P31A101-183(GPU 1차 세션 검증 큐)이 S15P31A101-31(RunPod 점검·Volum
 
 ## 원칙
 
-- 한 시점에 한 리전: 일본 AP-JP-1 H100 80GB(SXM) Pod 하나 + 같은 데이터센터 Network Volume(`/workspace`). Tier 0 가 GPU 를 먼저 쓴다.
+- GPU·지역은 고정하지 않는다(2026-10-20 결정, S15P31A101-205): 개발·시험은 RunPod 의 그때그때 남은 GPU·지역(볼륨 없음, 컨테이너 디스크 100GB+), 예비는 Vast.ai,
+  시연은 엘리스 A100 VM + 블록 스토리지(`docker run`, deploy/README "GPU VM(엘리스) docker run"). 일본 Network Volume 은 폐기했다. 한 시점에 GPU 하나, Tier 0 가 먼저 쓴다.
+  아래 "Network Volume 디렉터리 구조"는 저장 위치(`$SIMAI_ROOT`: 볼륨·블록 스토리지·컨테이너 디스크) 안의 구조로 읽는다. 저장 위치는 `simai-bootstrap` 이 고른다.
 - GPU Pod 는 검증할 때만 켠다. 코드·스크립트·큐는 노트북에서 끝내고(이 문서의 드라이런), Pod 에서는 큐를 돌린 뒤 결과를 가져오고 바로 Stop 한다.
 - LIVE 관제 시간에는 세션 큐를 돌리지 않는다(세션 실행기가 Tier 0 표시 파일·프로세스를 보고 시작을 거부한다). EXP Job 은 LIVE 보호를 켠 별도 큐로 마지막에 돈다.
 - 접속은 Pod 공개 IP:포트 SSH 직접 연결(키 인증만)이 기본, RunPod HTTPS 프록시(443)가 예비다. Tailscale 은 쓰지 않는다.
-- 비밀(HF 토큰 등)은 `/workspace/.simai-private/` 에만 둔다. HF 토큰은 `hf.env`(`HF_TOKEN=...` 한 줄). 이미지·저장소·RunPod 템플릿 환경 변수·결과 묶음에 넣지 않는다.
+- HF 토큰은 환경 변수 `HF_TOKEN` 으로만 받는다(RunPod Secret `{{ RUNPOD_SECRET_hf_token }}`, Vast 계정 환경 변수, 엘리스는 블록 스토리지 `.simai-private/hf.env` chmod 600 을 `docker run --env-file`).
+  `simai-bootstrap` 이 가중치를 받을 때만 쓰고 Tier 0·큐를 띄우기 전에 지운다. 다른 비밀은 `.simai-private/` 에만 둔다. 이미지·저장소·로그·결과 묶음에 넣지 않는다.
 
 ## Network Volume 디렉터리 구조 (`/workspace`)
 
@@ -42,15 +45,15 @@ GPU 세션 큐의 첫 항목이다. 표준 라이브러리만 쓰고 결과를 `
 
 | 항목 | 통과 | WARN | FAIL |
 |---|---|---|---|
-| GPU | H100 하나 | 다른 GPU·여러 개 | nvidia-smi 실패 |
+| GPU | 최소 사양(Ampere 이상, VRAM 24GB급) GPU 하나 | 여러 개, compute_cap·메모리를 읽지 못함 | nvidia-smi 실패, 최소 사양 미만 |
 | 드라이버 | 580 이상(CUDA 13 요구) | 580 미만: 이미지의 순방향 호환에 기댄다. 실제 판정은 b 항목 `torch.cuda.is_available()` | 버전을 읽지 못함 |
 | CUDA | 드라이버 최대 CUDA 13.0 이상 | 13.0 미만(Pod CUDA 필터를 13.0 이상으로) | |
-| 마운트 | `/workspace` 가 마운트 지점(장치·파일시스템 기록) | | 마운트 지점이 아님(볼륨 미부착, 컨테이너 디스크에 쓰게 됨) |
-| 데이터센터 | `RUNPOD_DC_ID` = AP-JP-1 | | 다른 데이터센터 |
+| 마운트 | `/workspace` 가 마운트 지점(장치·파일시스템 기록). 볼륨 없는 Pod(`--no-volume`, 세션 큐가 마운트 지점이 아니면 붙인다)는 '볼륨 없음' SKIP | | 마운트 지점이 아님(`--no-volume` 없이) |
+| 데이터센터 | `RUNPOD_DC_ID` 기록(어느 지역이든 PASS) | | |
 | 용량 | 볼륨 50GB 이상 남음(조정 `--min-free-gb`), 컨테이너 10GB 이상 | 컨테이너 10GB 미만 | 볼륨 하한 미만 |
 | 볼륨 디렉터리·가중치·`hf.env` | 있음 | 없음(처음이면 만든다. 가중치가 없으면 b 가 실패) | |
-| 쓰기 속도 | 1GB 쓰기+fsync 시간·MB/s 기록 | | 쓰기 오류 |
-| fsync | 400B 추가+fsync 200회 p50·p95·p99·max 기록, p99 50ms 이하 | p99 50ms 초과(저널 쓰기 정체·체크포인트 지연 위험) | |
+| 쓰기 속도 | 1GB 쓰기+fsync 시간·MB/s 기록(볼륨 없음: SKIP) | | 쓰기 오류 |
+| fsync | 400B 추가+fsync 200회 p50·p95·p99·max 기록, p99 50ms 이하(볼륨 없음: SKIP) | p99 50ms 초과(저널 쓰기 정체·체크포인트 지연 위험) | |
 | rename·flock | `os.replace` 원자성, 같은 파일 두 번째 flock 거부(저널 단일 작성자 잠금) | | 실패(볼륨이 잠금을 무시) |
 
 ## 접속
@@ -95,14 +98,16 @@ Host simai-pod
 | t | -183 | 시험 도구(pytest·cryptography, `ai/uv.lock` 버전)를 컨테이너 디스크에 `uv pip install --target` (Tier 0 이미지에는 시험 의존성이 없다) | 1분 | 10분 | 큐(Pod 만) |
 | c | -182 | LIVE 입력 Pod 확인 (`session1_live.py all`, 아래) | 10분 | 40분 | 큐, **-182 머지·이미지 재빌드 필요** |
 | d | -60 | Tier 0 GPU 우선 보호 측정 P0~P7 (`session1_gpu_priority.py`, 아래) | 15분 | 45분 | 큐, **-60 머지 필요** |
-| e | -92 | Network Volume 강제 종료 복구 (아래) | 5분 | 30분 | 큐 |
-| f | -45·-175 | `test_i1_tls.py`·`test_serial_tls.py` 를 Linux 에서 5회 반복 (`repeat_pytest.py`) | 10분 | 40분 | 큐 |
-| g | -87 | EXP-02 다시점 집계(선택). LIVE 가 없을 때만, 마지막 | 30분(가정) | 60분 | 자리만: -87 머지 후 `--exp-jobs` 로 |
+| e | -92 | Network Volume 강제 종료 복구 (아래) | 5분 | 30분 | 제외: 엘리스 블록 스토리지 세션으로 옮김(-205) |
+| f | -45·-175 | `test_i1_tls.py`·`test_serial_tls.py` 를 Linux 에서 5회 반복 (`repeat_pytest.py`) | 10분 | 40분 | 제외: GPU 가 필요 없어 GPU 세션에서 뺌(Linux CPU 에서) |
+| g | -87 | EXP-02 다시점 집계(선택). LIVE 가 없을 때만, 마지막 | 30분(가정) | 60분 | 자리만: 실험 이미지 티켓 후 `--exp-jobs` 로 |
+| m | - | MapAnything 정적 재구성 (torch 2.7.1 cu126) | 15분(가정) | 30분 | 자리만: 실험 이미지 티켓 후 |
 
 - 순서: Pod 점검 → Tier 0 이미지·엔진(Tier 0 가 먼저, c·d 가 이 엔진 캐시를 쓴다) → 시험 도구 → LIVE·자원 보호 → 복구·TLS → EXP 는 맨 끝. 한 항목이 실패해도 다음 항목으로 간다(`continue_on_failure`).
 - c·d 는 -182·-60 이 머지된 뒤의 경로(`simai_ai.io.NvdecDecoder`, `tests/services/tier0/live_video.py`, `experiments/gpu_queue/tier0_priority_probe.py` 등)를 부른다. 머지 전이면 각 단계가 '없음(머지 필요)'으로 실패하고 다음 항목으로 간다. PyAV 는 -182 가 `io` extra 에 넣었으므로 그 뒤에 빌드한 이미지여야 c 가 돈다.
 - 예상 시간 근거: a 는 1GB 쓰기+fsync 200회, b 는 deploy/README 의 "H100 에서 엔진 첫 빌드 수 분" + 캐시·추론, c 는 c4 LIVE 120초 + 엔진 캐시 기동 + 인코딩·디코딩 측정·기하 측정, d 는 줄인 시간(watch 120·120·90·60초) + P0 시험, e·f 는 노트북 실측(e 약 40초, f 1회 약 35초)에 Network Volume fsync 지연과 5회 반복을 넉넉히 더했다. g 는 -87 이 정할 때까지의 가정이다.
-- **H100 총 예상**: 지금 큐 약 58분 + Pod 기동·이미지 받기(압축 약 7.4GB) 약 10분 + 사본 올리기·결과 회수 약 5분 ≈ **1시간 15분**. d 를 G0 판정용(`--full`, watch 600초)으로 돌리면 +20분, g 까지 약 2시간. 전체 시간 상한 기본값은 9000초(2.5시간).
+- **H100 총 예상**: 지금 큐 약 43분(e·f 제외 뒤) + Pod 기동·이미지 받기(압축 약 7.4GB) 약 10분 + 가중치 받기(볼륨 없음, 수십 초) + 사본 올리기·결과 회수 약 5분 ≈ **1시간**. d 를 G0 판정용(`--full`, watch 600초)으로 돌리면 +20분. 전체 시간 상한 기본값은 9000초(2.5시간). 다른 GPU 는 엔진 빌드·추론 시간이 다르다(H100 예상만 적었다).
+- 볼륨 없는 Pod(-205): 저장 위치는 `simai-bootstrap` 과 같은 규칙(`SIMAI_ROOT` → `/workspace/simai` → `/srv/simai`)이고, 마운트 지점이 아니면 a 에 `--no-volume`(볼륨 측정 SKIP)을 붙이고 Job 파일에 볼륨·데이터센터를 적지 않는다(`provider`·`datacenter` 는 run_record 가 `RUNPOD_POD_ID`·`RUNPOD_DC_ID` 로 채움, Vast·엘리스는 계약 값이 없어 LOCAL). 결과 묶음은 컨테이너 디스크에 있으므로 **Pod 를 지우기(Terminate) 전에** scp 로 가져온다(실행기가 출력).
 - 결과 기록은 run_record 계약을 따른다. `experiment_id` 는 운영 경로 검증 Run 값 `VAL-01`(run_record 2.1.0, `e_gate` 없음, S15P31A101-197), `experiment_state` 는 `BENCHMARK`, 입력 출처는 `SIM`·`is_upper_bound: true` 다(제품 성능 지표로 쓰지 않는다). 종료 코드는 `notes`, 지표는 각 스크립트가 `metrics.json` 에 남긴다.
 
 ### 실행 순서
@@ -111,12 +116,13 @@ Host simai-pod
 # 0) 노트북: 큐 계획과 드라이런 (GPU 없음)
 uv run --project ai python deploy/scripts/gpu_session1.py plan --mode pod
 uv run --project ai python deploy/scripts/gpu_session1.py run --mode dryrun --root <짧은 로컬 폴더>
-# 1) 노트북: 커밋된 HEAD 의 저장소 사본과 git 정보 → Pod 로 올리는 명령이 출력된다
-uv run --project ai python deploy/scripts/gpu_session1.py prepare --out <폴더>
-# 2) Pod 켜기: Tier 0 템플릿(deploy/README), 시작 명령 sleep infinity. 1) 이 출력한 scp·ssh 명령으로 사본을 풀고 큐를 띄운다
-ssh simai-pod 'cd /workspace/simai/setup/session1/repo && nohup python deploy/scripts/gpu_session1.py run > ../session1.log 2>&1 &'
-ssh simai-pod 'tail -f /workspace/simai/setup/session1/session1.log'      # 끊겨도 큐는 계속 돈다
-# 3) 끝나면 로그 끝에 나온 scp 명령으로 결과 묶음을 가져오고 RunPod 콘솔에서 Pod Stop
+# 1) 노트북: 커밋된 HEAD 의 저장소 사본과 git 정보 → Pod 로 올리는 명령이 출력된다 (볼륨 없는 Pod 는 --pod-simai /srv/simai)
+uv run --project ai python deploy/scripts/gpu_session1.py prepare --out <폴더> --pod-simai /srv/simai
+# 2) Pod 켜기: Tier 0 템플릿(deploy/README, 볼륨 없음), 시작 명령 sleep infinity. 1) 이 출력한 scp·ssh 명령으로 사본을 풀고
+#    simai-bootstrap queue 로 띄운다(GPU 세대 감지·가중치 받기·해시 확인 → 큐)
+ssh simai-pod 'nohup simai-bootstrap queue > /srv/simai/setup/session1/session1.log 2>&1 &'
+ssh simai-pod 'tail -f /srv/simai/setup/session1/session1.log'      # 끊겨도 큐는 계속 돈다
+# 3) 끝나면 로그 끝에 나온 scp 명령으로 결과 묶음을 가져온 뒤(볼륨 없음: 지우기 전에) RunPod 콘솔에서 Pod Stop·Terminate
 ```
 
 - `python` 은 이미지 venv(`/opt/simai/ai/.venv`, jsonschema 포함)다. 저장소 사본의 `ai/src` 를 `PYTHONPATH` 앞에 두어 사본 코드로 돈다(b 의 엔진 준비는 이미지에 설치된 모듈).
@@ -165,7 +171,11 @@ ssh simai-pod 'tail -f /workspace/simai/setup/session1/session1.log'      # 끊�
 ### d: Tier 0 GPU 우선 보호 측정 (`deploy/scripts/session1_gpu_priority.py`, -60 'Pod 측정' P0~P7)
 
 Tier 0 는 c4 와 같은 LIVE 하네스로 띄우고(측정 동안 계속), `ai/experiments/gpu_queue/tier0_priority_probe.py` 의 `load`(더미 분석 부하, 상한 0.70)와
-`watch`(표시 파일 `gpu_priority` 판정)로 잰다. 결과는 Run 폴더와 `/workspace/simai/runs/g0-tier0-priority/<UTC>/` 에 남는다.
+`watch`(표시 파일 `gpu_priority` 판정)로 잰다. 결과는 Run 폴더와 `$SIMAI_ROOT/runs/g0-tier0-priority/<UTC>/` 에 남는다.
+
+부하 크기는 감지한 GPU 메모리(`nvidia-smi memory.total`) 비율이다(-205): H100 80GB(81,559 MiB)에서 아래 40·20·70 GB 그대로, 다른 GPU 는 같은 비율(1,000 MB 단위).
+상한 0.70 은 비율 그대로다. 예: L40S 48GB(46,068 MiB) 23·11·40 GB, RTX 4090 24GB 는 Tier 0 전용 사양(48GB급 미만)이라 분석 부하를 같은 GPU 에 올리지 않으므로
+P3·P5·P6 을 SKIP + 이유로 남긴다(선택 단계로 바뀌어 필수 실패로 세지 않음). GPU 메모리를 읽지 못하면 SKIP 이 아니라 FAIL 이다.
 
 | # | 내용 | 통과 기준 | 1차 세션 시간 |
 |---|---|---|---|
@@ -216,6 +226,28 @@ D-G3-09 의 구역 대상 기준(S15P31A101-198): 복원 보호(-174)대로 구�
   Windows 는 경로 길이 한도(260자)에 걸리지 않게 짧은 폴더를 쓴다(구성 묶음 보관 파일 이름이 길다). b 의 bash 는 Git Bash 를 찾아 쓴다(System32 의 WSL bash 는 Windows 환경 변수를 받지 못한다).
 - 반례 시험 `ai/tests/deploy/`: c 의 LIVE 하네스(-182 머지 뒤에 돈다: 실제 Tier0Service + 검출·추적 대역 `stub_tier0_live.py`, CPU 디코더 — 4대 ready PASS, 틀린 영상 토큰은 ready 안 됨 FAIL, 기동 실패는 빨리 FAIL),
   `simai-wait-tier0`(엔진 준비 중·기동 중·PARTIAL·오래됨·깨짐은 띄우지 않음, 시간 초과 코드 3, `--no-tier0` 인데 Tier 0 있음 코드 4, env 파일 비밀 비노출), 항목 제한 시간 초과, 실패 항목 뒤 진행, 자리만 항목 미등록, 전체 시간 상한, 중간 Ctrl-C 와 이어 돌기, 용량 부족·결과 폴더 쓰기 실패·실행 중 디스크 가득 참·묶음 폴더 실패, 비밀 파일·값·환경 변수 차단, LIVE 중 시작 거부·EXP 큐 정지, Pod Job 파일의 gpu_queue·run_record 검증, -92 줄인 실행 PASS·음성 대조(저널에 없는 이벤트 → D-G3-11 FAIL)·판정 불가 분류.
+
+## 임의 GPU·지역·사이트 실행 환경 (S15P31A101-205)
+
+이미지 시작 순서·명령은 deploy/README "simai-bootstrap", 사이트별 절차는 같은 문서의 "RunPod 템플릿(볼륨 없음)"·"Vast.ai"·"GPU VM(엘리스) docker run" 에 있다.
+코드: `deploy/scripts/simai_bootstrap.py`(이미지 `simai-bootstrap`), `deploy/weights.json`, `deploy/base/simai-start.sh`. 시험: `ai/tests/deploy/test_simai_bootstrap.py`, `test_session1_portable.py`.
+
+명세에 없어 정한 수치와 근거:
+
+| 값 | 근거 |
+|---|---|
+| 최소 VRAM 22,500 MiB(24GB급), compute_cap 8.0 | 결정 "Tier 0 만 24GB·Ampere 이후". A10·L4 는 24GB 라도 nvidia-smi 에 약 23,000 MiB 로 보인다 |
+| Tier 0 + 분석 공유 하한 45,000 MiB(48GB급) | 결정 "Tier 0+실험 48GB". L40S 46,068·A6000 49,140 MiB 를 포함한다. 이 아래는 d 의 P3·P5·P6 SKIP |
+| d 부하 기준 81,559 MiB | H100 80GB 의 nvidia-smi memory.total. 이 값에서 -60 MR 의 40·20·70 GB 와 같다 |
+| 부트스트랩 남은 용량 하한 20GB(`SIMAI_MIN_FREE_GB`) | 가중치(약 0.1GB)·엔진(수백 MB)·obs2d·결과 여유. 컨테이너 디스크 100GB 에서 이미지(약 19.5GB)를 빼도 넉넉하다 |
+| 볼륨 없을 때 저장 위치 `/srv/simai` | 이미지의 `/opt/simai`(코드)와 나누고, `/workspace` 는 이미지에 없어야 한다(check_image) |
+| yolo26x-pose sha256 `08ed9e01…` | E-GATE-0 일본 볼륨의 `weights/hmr_weights.sha256`(ultralytics 릴리스 v8.4.0 에서 받은 파일) |
+
+버린 대안: 가중치 받기를 GPU 확인보다 먼저(GPU 없는 곳에서 받기만 하고 실패), 목록에 해시가 없을 때 첫 다운로드를 믿고 기록(TOFU, '모르면 비움'과 어긋남),
+queue 모드에서도 엔진 준비(세션 b 항목의 첫 빌드 시간 측정이 캐시 사용으로 바뀜), 컨테이너 안에서 HF 토큰 파일 읽기(엘리스는 `--env-file` 로 호스트 docker 가 읽게 해 경로가 하나뿐).
+
+잔여 위험: Vast 의 공개키 변수(`SSH_PUBLIC_KEY`)는 Vast 문서의 환경 변수 목록으로만 확인했고 실제 인스턴스에서 보지 않았다. 엘리스 VM 의 드라이버·Container Toolkit·블록 스토리지 마운트는
+첫 시연 준비 때 확인한다. Tier 0 는 공개 IP·포트를 `RUNPOD_*` 이름으로 읽어 Vast·엘리스에서는 사람이 넣는다. run_record `gpu.provider` 계약 값이 RUNPOD·LOCAL 뿐이라 Vast·엘리스 Run 은 LOCAL 로 기록된다.
 
 ## 첫 세션 수동 확인 목록 (큐 밖)
 
