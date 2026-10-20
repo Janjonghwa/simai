@@ -21,7 +21,7 @@ from simai_recorder.recorder import EVENTS_FILE, SESSION_FILE
 from simai_recorder.segment import SegmentPaths, camera_segments, read_frames
 
 MANIFEST_FILE = "manifest.json"
-MANIFEST_VERSION = "1.1.0"  # 계약 스키마 manifest_version (1.1.0: input_kinds 가 카메라 입력 종류를 모두 담는지 검사)
+MANIFEST_VERSION = "1.2.0"  # 계약 스키마 manifest_version (1.2.0: consent.purpose 추가)
 GAP_FACTOR = 1.5  # 도착 간격이 공칭 프레임 간격의 1.5배를 넘으면 camera_to_gateway_gap (-9 측정 도구와 같은 기준)
 
 

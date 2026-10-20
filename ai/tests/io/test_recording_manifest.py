@@ -195,3 +195,18 @@ def test_wrong_contracts_dir_names_the_cause(session_dir, monkeypatch, tmp_path)
     with pytest.raises(FileNotFoundError, match=CONTRACTS_DIR_ENV) as exc:
         load_recording_manifest(session_dir)
     assert "nowhere" in str(exc.value)
+
+
+def _provenance_of(session_dir, purpose):
+    manifest = _manifest()
+    manifest["consent"] = {"contains_people": True, "purpose": purpose, "retention_until": "2027-01-31"}
+    if purpose == "dataset":
+        manifest["consent"].update(consent_ref="CF-1", scope=["dataset_internal"])
+    _write(session_dir, manifest)
+    return VideoFileFrameSource.from_manifest(session_dir, epochs={"cam_A": 0}).provenance()["dataset_id"]
+
+
+def test_dev_test_recording_is_distinguishable_from_consented_dataset(session_dir):
+    sid = _manifest()["session_id"]
+    assert _provenance_of(session_dir, "dev_test") == f"recording-dev_test/{sid}"
+    assert _provenance_of(session_dir, "dataset") == f"recording/{sid}"

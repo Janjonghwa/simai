@@ -24,7 +24,7 @@ def example() -> dict:
     return _load(EXAMPLES / "recording_manifest.json")
 
 
-@pytest.mark.parametrize("name", ["recording_manifest.json", "recording_manifest.test_input.json"])
+@pytest.mark.parametrize("name", ["recording_manifest.json", "recording_manifest.test_input.json", "recording_manifest.dev_test.json"])
 def test_contract_examples_pass(name):
     assert validate_manifest(_load(EXAMPLES / name)) == []
 

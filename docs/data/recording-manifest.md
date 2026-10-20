@@ -32,7 +32,7 @@ Network Volume 에 올린 뒤 `uv run simai-recorder verify <세션 디렉터리
 
 | 필드 | 형식 | 내용 |
 |---|---|---|
-| `manifest_version` | `"1.x.y"` | 이 형식의 버전(현재 `1.1.0`). 필드 추가는 마이너, 삭제·의미 변경은 메이저. 1.1.0 은 `input_kinds` 가 카메라 입력 종류를 모두 담는지 검사를 더했다(1.0.0 녹화 도구 출력은 그대로 통과) |
+| `manifest_version` | `"1.x.y"` | 이 형식의 버전(현재 `1.2.0`). 필드 추가는 마이너, 삭제·의미 변경은 메이저. 1.1.0 은 `input_kinds` 가 카메라 입력 종류를 모두 담는지 검사를 더했다(1.0.0 녹화 도구 출력은 그대로 통과). 1.2.0 은 `consent.purpose` 를 더했다(없으면 `dataset` 과 같아 1.1.0 이하 manifest 는 그대로 통과) |
 | `session_id` | `^[a-z0-9][a-z0-9-]*$` | 기본 `rec-<UTC yyyymmdd-hhmmss>z-<시나리오>` |
 | `scenario` | 문자열 | 15.3 시나리오 이름(예: `empty_room_10min`, `walk_calibration`, `position_grid`) |
 | `description`, `notes` | 문자열 | 사람이 읽는 설명 |
@@ -88,8 +88,9 @@ Network Volume 에 올린 뒤 `uv run simai-recorder verify <세션 디렉터리
 | 필드 | 내용 |
 |---|---|
 | `contains_people` | 사람이 찍혔는지. 사람 없는 교실 녹화는 false |
-| `consent_ref` | 참여자 동의서 문서 ID. 동의서 원본은 저장소 밖에 둔다. `contains_people` 이 true 면 필수 |
-| `scope` | 동의 범위(용도·전송 리전) 코드 목록. `contains_people` 이 true 면 필수 |
+| `purpose` | (선택) 녹화 용도 `dev_test` / `dataset`. 없으면 `dataset` 과 같다. 아래 "내부 테스트 용도" |
+| `consent_ref` | 참여자 동의서 문서 ID. 동의서 원본은 저장소 밖에 둔다. `contains_people` 이 true 면 필수(`purpose` 가 `dev_test` 이면 제외) |
+| `scope` | 동의 범위(용도·전송 리전) 코드 목록. `contains_people` 이 true 면 필수(`purpose` 가 `dev_test` 이면 제외) |
 | `retention_until` | `YYYY-MM-DD`. 이 날이 지나면 Network Volume 에서 세션 디렉터리를 지운다. RTSP 녹화는 필수 |
 
 `scope` 코드(스키마 `$defs/consent_scope`. 코드를 더하려면 스키마에 먼저 더한다, 마이너):
@@ -103,7 +104,13 @@ Network Volume 에 올린 뒤 `uv run simai-recorder verify <세션 디렉터리
 | `presentation` | 발표·시연 자료에 영상 사용 |
 | `hmr_texture` | EXP-02 외형·텍스처 실험(별도 동의, 11.5. 얼굴 영역 규칙은 명세 5.6) |
 
-녹화 도구는 RTSP 세션에 `consent` 가 없거나, 보관 기한이 없거나, 사람이 찍히는데 동의서 ID·범위가 없으면 녹화를 시작하지 않는다.
+녹화 도구는 RTSP 세션에 `consent` 가 없거나, 보관 기한이 없거나, 사람이 찍히는데 동의서 ID·범위가 없으면 녹화를 시작하지 않는다(`dev_test` 는 아래).
+
+### 내부 테스트 용도 (`purpose = "dev_test"`)
+
+수업 중 우연히 찍힌 사람이 있는 교실 영상은 내부 개발·테스트에만 쓴다(사용자 결정 2026-10-20). `contains_people = true` 여도 `consent_ref`·`scope` 없이 녹화할 수 있지만 `retention_until` 은 필수다.
+영상은 저장소에 커밋하지 않고 노트북과 프로젝트 Network Volume 에만 두며, 얼굴 복원·재식별은 하지 않고, 프로젝트 종료 시 지운다.
+**시연·발표·보고서·공개 자료에는 쓰지 않는다**(그런 자료는 사람이 없는 영상이나 동의자 영상만). 시나리오 촬영·데이터셋(`purpose = "dataset"` 또는 생략)은 참여자 동의가 그대로 필수다.
 보관 기한이 지나 지우면 저장소의 manifest 는 지우지 않고(추가만, AGENTS 규칙 6) 같은 파일에 `deleted_at_ms` 를 더하는 커밋을 한다.
 
 ## 검사
@@ -112,7 +119,7 @@ Network Volume 에 올린 뒤 `uv run simai-recorder verify <세션 디렉터리
 (저장소 루트의 `contracts/` 를 직접 읽는다. 다른 위치면 `SIMAI_CONTRACTS_DIR`), 스키마가 막는 것은 다음과 같다.
 
 - 필수 필드, `session_id` 형식, `scenario` 있음, `storage.uri` 가 `volume://`·`s3://`
-- 동의와 보관 규칙(위 표): RTSP 녹화는 `consent` 필수, 보관 기한은 실제 있는 날짜, 사람이 찍히면 `consent_ref`·`scope` 필수
+- 동의와 보관 규칙(위 표): RTSP 녹화는 `consent` 필수, 보관 기한은 실제 있는 날짜, 사람이 찍히면 `consent_ref`·`scope` 필수(`purpose = "dev_test"` 제외, 보관 기한은 필수). AI 입력 변환은 `dev_test` 세션의 `dataset_id` 를 `recording-dev_test/<session_id>` 로 두어 동의된 데이터셋(`recording/<session_id>`)과 구분한다
 - `source.url` 에 계정(`user:pass@`)이 없음, 실제 카메라(RTSP)에 장애 흉내(`faults`) 없음
 - 파일 경로가 세션 디렉터리 기준 상대 경로(`..`·절대 경로 불가), 해시 형식 `sha256:<64자 소문자 16진수>`
 - `input_kinds` 가 `cameras[].source.kind` 를 모두 담음, `is_test_input` 이 입력 종류와 맞음(로컬 파일·합성 카메라가 섞인 세션은 `is_test_input: true`)
