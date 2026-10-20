@@ -1,19 +1,27 @@
-import { DebugPanel, DebugProbe, readDebugFlag } from '@/features/viewer3d/dev-harness/MockDebug';
+import {
+  devViewOf,
+  readDevView,
+  readDiagnosticsOpen,
+  withDevView,
+  type DevViewKey,
+} from '@/features/viewer3d/dev-harness/devView';
+import { DevViewSwitcher } from '@/features/viewer3d/dev-harness/DevViewSwitcher';
+import { DebugProbe, SpatialDiagnostics } from '@/features/viewer3d/dev-harness/MockDebug';
 import { MockNav } from '@/features/viewer3d/dev-harness/MockNav';
 import { MockOverlay, SelectionCard } from '@/features/viewer3d/dev-harness/MockOverlay';
 import { MockScene, type SceneColors } from '@/features/viewer3d/dev-harness/MockScene';
 import { MockTopBar } from '@/features/viewer3d/dev-harness/MockTopBar';
-import { readMockUi, withMockUi, type MenuKey } from '@/features/viewer3d/dev-harness/mockUi';
+import type { MenuKey } from '@/features/viewer3d/dev-harness/mockUi';
 import type { Viewer3DHandle, ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
 import { ViewerShell } from '@/features/viewer3d/ViewerShell';
-import { useEffect, useRef, useState } from 'react';
+import { WorldReference } from '@/features/viewer3d/WorldReference';
+import { useRef, useState } from 'react';
 
 // 3D 재질 색도 FE 토큰(packages/ui globals.css)에서 읽어 다크·화이트 모드를 따른다.
 function readColors(): SceneColors {
   const style = getComputedStyle(document.documentElement);
   const token = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
   return {
-    floor: token('--surface-2', '#19233b'),
     person: token('--muted-foreground', '#9ba7c5'),
     personSelected: token('--primary', '#6886d5'),
     critical: token('--sev-critical', '#ff6b74'),
@@ -24,38 +32,40 @@ function readColors(): SceneColors {
 }
 
 /**
- * 공간 상시 유지 + 하단 메뉴 + 업무 오버레이 목업.
- * ViewerShell 은 항상 한 번만 그리고, 메뉴·패널·목업 ON/OFF 는 그 위 오버레이만 바꾼다.
+ * 공간 상시 유지 + 하단 메뉴 + 업무 오버레이 목업과 Spatial 진단 도구.
+ * ViewerShell 은 항상 한 번만 그린다. 개발 보기(devView)는 그 위 FE 목업·진단 레이어와 World 기준점의 표시만 바꾸고,
+ * 업무 모드·선택·메뉴·패널·시점은 보기와 따로 보존한다.
  */
 export function MockApp() {
   const viewer = useRef<Viewer3DHandle>(null);
-  const [mockUi, setMockUi] = useState(() => readMockUi(window.location.search));
+  const [view, setView] = useState(() => readDevView(window.location.search));
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(() =>
+    readDiagnosticsOpen(window.location.search),
+  );
   const [menu, setMenu] = useState<MenuKey>('monitor');
   const [panelOpen, setPanelOpen] = useState(true);
   const [selected, setSelected] = useState<ViewerTarget | null>(null);
   const [status, setStatus] = useState<ViewerStatus | null>(null);
   const [light, setLight] = useState(false);
   const [colors, setColors] = useState(readColors);
-  const [debug] = useState(() => readDebugFlag(window.location.search));
+  const { mockUi, spatial } = devViewOf(view);
 
-  // TBM 계획 화면만 PLANNED 로 보여준다. 기존 공개 명령(setMode)만 쓴다.
-  useEffect(() => {
-    viewer.current?.setMode(mockUi && panelOpen && menu === 'tbm' ? 'PLANNED' : 'LIVE');
-  }, [mockUi, panelOpen, menu]);
-
-  const toggleMockUi = () => {
-    const next = !mockUi;
-    setMockUi(next);
-    // 페이지를 다시 불러오지 않고 주소만 바꾼다.
-    window.history.replaceState(window.history.state, '', withMockUi(window.location.href, next));
+  const changeView = (next: DevViewKey) => {
+    setView(next);
+    // 페이지를 다시 불러오지 않고 주소만 바꾼다. 업무 모드는 건드리지 않는다.
+    window.history.replaceState(window.history.state, '', withDevView(window.location.href, next));
   };
 
   const selectMenu = (next: MenuKey) => {
-    if (next === menu) setPanelOpen((open) => !open);
-    else {
-      setMenu(next);
-      setPanelOpen(true);
+    if (next === menu) {
+      // 같은 메뉴는 패널만 열고 닫는다. 업무 모드는 그대로다.
+      setPanelOpen((open) => !open);
+      return;
     }
+    setMenu(next);
+    setPanelOpen(true);
+    // 다른 업무 메뉴를 고른 명시적 동작만 모드를 바꾼다. TBM 계획만 PLANNED 이고 나머지는 LIVE 다.
+    viewer.current?.setMode(next === 'tbm' ? 'PLANNED' : 'LIVE');
   };
 
   const toggleTheme = () => {
@@ -72,11 +82,12 @@ export function MockApp() {
   };
 
   return (
-    <div className="smk-root">
+    <div className="smk-root" data-view={view} data-mock-ui={mockUi ? '' : undefined}>
       <div className="smk-layer" data-testid="spatial-layer">
         <ViewerShell ref={viewer} onSelectionChange={setSelected} onStatusChange={setStatus}>
           <MockScene colors={colors} selected={selected} />
-          {debug && <DebugProbe />}
+          {spatial && <WorldReference />}
+          <DebugProbe />
         </ViewerShell>
       </div>
 
@@ -97,11 +108,16 @@ export function MockApp() {
         </div>
       )}
 
-      {debug && <DebugPanel />}
+      {spatial && (
+        <SpatialDiagnostics
+          open={diagnosticsOpen}
+          onToggle={() => setDiagnosticsOpen((open) => !open)}
+          status={status}
+          selected={selected}
+        />
+      )}
 
-      <button type="button" aria-pressed={mockUi} onClick={toggleMockUi} className="smk-toggle">
-        목업 UI {mockUi ? 'ON' : 'OFF'}
-      </button>
+      <DevViewSwitcher view={view} onChange={changeView} />
     </div>
   );
 }

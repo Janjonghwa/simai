@@ -1,13 +1,21 @@
-import { CAMERAS, OBJECTS, PEOPLE, ZONES } from '@/features/viewer3d/dev-harness/mockUi';
+import {
+  CAMERAS,
+  fixtureBox,
+  fixtureFeet,
+  OBJECTS,
+  PEOPLE,
+  ZONES,
+} from '@/features/viewer3d/dev-harness/mockUi';
 import { Selectable } from '@/features/viewer3d/Selectable';
 import type { ViewerTarget } from '@/features/viewer3d/types';
+import { worldPoint, worldToThree } from '@/features/viewer3d/worldCoordinates';
+import { DEMO_ROOM, FLOOR_ROTATION_X } from '@/features/viewer3d/WorldScene';
 import { Edges } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
 import { useEffect, useRef } from 'react';
 import type { Vector3 } from 'three';
 
 export interface SceneColors {
-  floor: string;
   person: string;
   personSelected: string;
   critical: string;
@@ -27,14 +35,21 @@ const isSelected = (selected: ViewerTarget | null, type: ViewerTarget['type'], i
 // 구역 부피는 클릭을 받지 않게 해 안에 있는 사람을 가리지 않는다. 구역 선택은 바닥 면으로 한다.
 const noRaycast = () => null;
 
+// 구역 바닥 면은 World 바닥보다 1cm 위에 그려 겹쳐 깜박이지 않게 한다(표시용 높이).
+const ZONE_FLOOR_LIFT = 0.01;
+
 interface OrbitLike {
   target: Vector3;
   update: () => void;
 }
 
+// DEMO 교실 가운데 바닥을 -Y 쪽 위에서 내려다본다. 패널 사이에 들어오게 중심을 0.8m 앞(-Y)으로 당긴다. 모두 World 좌표다.
+const VIEW_TARGET = worldToThree(worldPoint(DEMO_ROOM.sizeX / 2, DEMO_ROOM.sizeY / 2 - 0.8, 0));
+const VIEW_CAMERA = worldToThree(worldPoint(DEMO_ROOM.sizeX / 2, DEMO_ROOM.sizeY / 2 - 12, 12.5));
+
 /**
  * 목업에서만 처음 한 번 교실 전체가 패널 사이에 보이도록 시점을 잡는다.
- * Viewer 기본 시점은 바꾸지 않는다(World 장면 기준은 S15P31A101-38).
+ * 메뉴·오버레이를 바꿔도 다시 잡지 않는다. Viewer 기본 시점은 바꾸지 않는다.
  */
 function InitialView() {
   const camera = useThree((s) => s.camera);
@@ -43,30 +58,28 @@ function InitialView() {
   useEffect(() => {
     if (!controls || applied.current) return;
     applied.current = true;
-    camera.position.set(0, 12.5, 12);
-    controls.target.set(0, 0, 0.8);
+    camera.position.fromArray(VIEW_CAMERA);
+    controls.target.fromArray(VIEW_TARGET);
     controls.update();
   }, [camera, controls]);
   return null;
 }
 
-/** 목업용 교실 장면. 기존 Viewer 의 Canvas·카메라·선택 위에 Selectable 로만 얹는다. */
+/**
+ * 목업용 교실 장면. 바닥·벽은 Viewer 의 WorldScene 이 그리고, 여기서는 예시 객체만 World 좌표로 얹는다.
+ * 기존 Viewer 의 Canvas·카메라·선택 위에 Selectable 로만 얹는다.
+ */
 export function MockScene({ colors, selected }: MockSceneProps) {
   return (
     <>
       <InitialView />
-      <mesh rotation-x={-Math.PI / 2} position-y={-0.005}>
-        <planeGeometry args={[10, 10]} />
-        <meshStandardMaterial color={colors.floor} transparent opacity={0.55} />
-      </mesh>
-      <mesh position-y={0.55} raycast={noRaycast}>
-        <boxGeometry args={[10, 1.1, 10]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-        <Edges color={colors.camera} />
-      </mesh>
 
       {CAMERAS.map((camera) => (
-        <mesh key={camera.id} position={[camera.x, 2.6, camera.z]} raycast={noRaycast}>
+        <mesh
+          key={camera.id}
+          position={worldToThree(worldPoint(camera.x, camera.y, camera.z))}
+          raycast={noRaycast}
+        >
           <boxGeometry args={[0.25, 0.18, 0.35]} />
           <meshStandardMaterial color={colors.camera} />
         </mesh>
@@ -75,10 +88,14 @@ export function MockScene({ colors, selected }: MockSceneProps) {
       {ZONES.map((zone) => {
         const on = isSelected(selected, 'zone', zone.id);
         const color = zone.tone === 'critical' ? colors.critical : colors.caution;
+        const box = fixtureBox(zone);
         return (
           <Selectable key={zone.id} target={{ type: 'zone', id: zone.id }}>
-            <mesh rotation-x={-Math.PI / 2} position={[zone.x, 0.01, zone.z]}>
-              <planeGeometry args={[zone.width, zone.depth]} />
+            <mesh
+              rotation-x={FLOOR_ROTATION_X}
+              position={worldToThree(worldPoint(zone.x, zone.y, ZONE_FLOOR_LIFT))}
+            >
+              <planeGeometry args={[zone.sizeX, zone.sizeY]} />
               <meshBasicMaterial
                 color={color}
                 transparent
@@ -86,8 +103,8 @@ export function MockScene({ colors, selected }: MockSceneProps) {
                 depthWrite={false}
               />
             </mesh>
-            <mesh position={[zone.x, zone.height / 2, zone.z]} raycast={noRaycast}>
-              <boxGeometry args={[zone.width, zone.height, zone.depth]} />
+            <mesh position={box.position} raycast={noRaycast}>
+              <boxGeometry args={box.size} />
               <meshBasicMaterial
                 color={color}
                 transparent
@@ -100,29 +117,35 @@ export function MockScene({ colors, selected }: MockSceneProps) {
         );
       })}
 
-      {OBJECTS.map((object) => (
-        <Selectable key={object.id} target={{ type: 'object', id: object.id }}>
-          <mesh position={[object.x, object.height / 2, object.z]}>
-            <boxGeometry args={[object.width, object.height, object.depth]} />
-            <meshStandardMaterial
-              color={
-                isSelected(selected, 'object', object.id) ? colors.personSelected : colors.object
-              }
-            />
-          </mesh>
-        </Selectable>
-      ))}
+      {OBJECTS.map((object) => {
+        const box = fixtureBox(object);
+        return (
+          <Selectable key={object.id} target={{ type: 'object', id: object.id }}>
+            <mesh position={box.position}>
+              <boxGeometry args={box.size} />
+              <meshStandardMaterial
+                color={
+                  isSelected(selected, 'object', object.id) ? colors.personSelected : colors.object
+                }
+              />
+            </mesh>
+          </Selectable>
+        );
+      })}
 
       {PEOPLE.map((person) => (
         <Selectable key={person.id} target={{ type: 'person', id: person.id }}>
-          <mesh position={[person.x, 0.85, person.z]}>
-            <capsuleGeometry args={[0.24, 1.1, 6, 12]} />
-            <meshStandardMaterial
-              color={
-                isSelected(selected, 'person', person.id) ? colors.personSelected : colors.person
-              }
-            />
-          </mesh>
+          {/* 발 위치에 두고, 몸통은 Three 위쪽(+Y)으로 세운다. */}
+          <group position={fixtureFeet(person)}>
+            <mesh position-y={0.85}>
+              <capsuleGeometry args={[0.24, 1.1, 6, 12]} />
+              <meshStandardMaterial
+                color={
+                  isSelected(selected, 'person', person.id) ? colors.personSelected : colors.person
+                }
+              />
+            </mesh>
+          </group>
         </Selectable>
       ))}
     </>

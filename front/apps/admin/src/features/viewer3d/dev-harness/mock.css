@@ -313,41 +313,181 @@
   opacity: 0.85;
 }
 
-.smk-toggle {
+/* 개발 보기 선택기. 어느 보기에서든 오른쪽 아래에 이것 하나만 남는다. */
+.smk-views {
   position: absolute;
   right: 16px;
   bottom: 16px;
-  z-index: 8;
-  padding: 8px 16px;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: calc(100% - 32px);
+}
+.smk-view-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 12px 6px 16px;
   border: 0;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--card) 90%, transparent);
   color: var(--foreground);
-  box-shadow:
-    inset 0 0 0 1px var(--border),
-    var(--float-shadow);
   font-size: 12px;
   font-weight: 700;
+  white-space: nowrap;
   cursor: pointer;
 }
-.smk-toggle[aria-pressed='false'] {
-  background: var(--primary);
-  color: var(--primary-foreground);
+.smk-view-toggle svg {
+  width: 16px;
+  height: 16px;
+  opacity: 0.8;
+}
+.smk-view-caption {
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+.smk-view-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 240px;
+  max-width: 100%;
+  padding: 6px;
+  border-radius: 12px;
+}
+.smk-view-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--foreground);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.smk-view-item:hover {
+  background: var(--surface-2);
+}
+.smk-view-item[aria-pressed='true'] {
+  background: var(--surface-3);
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+.smk-view-name {
+  font-weight: 700;
+}
+.smk-view-hint {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.smk-views button:focus-visible,
+.smk-diag button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
-.smk-debug {
+/* Spatial 진단. 왼쪽 아래에 접어 두고, 펼쳐도 FE 목업의 선택 카드·업무 패널·하단 메뉴를 가리지 않는 폭만 쓴다. */
+.smk-diag {
   position: absolute;
-  bottom: 96px;
+  bottom: 16px;
   left: 16px;
-  z-index: 9;
+  z-index: 8;
   width: 300px;
-  padding: 8px;
-  border-radius: 8px;
-  font-size: 11px;
+  max-width: calc(100% - 32px);
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 18px;
 }
-.smk-debug pre {
-  max-height: 160px;
-  margin: 4px 0 0;
+.smk-diag-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  color: var(--foreground);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.smk-diag-head svg {
+  width: 16px;
+  height: 16px;
+  margin-left: auto;
+  opacity: 0.8;
+}
+.smk-diag-state {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.smk-diag-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 0 12px 10px;
+  border-top: 1px solid var(--border);
+}
+.smk-diag-body p {
+  margin: 0;
+}
+.smk-diag-body .smk-chip {
+  border: 0;
+  cursor: pointer;
+}
+.smk-diag-body pre {
+  width: 100%;
+  max-height: 140px;
+  margin: 0;
   overflow: auto;
+  font-size: 11px;
   white-space: pre-wrap;
+  word-break: break-all;
+}
+.smk-diag-body pre:empty {
+  display: none;
+}
+.smk-legend {
+  padding-top: 8px;
+}
+.smk-legend .smk-hint {
+  margin: 2px 0 0;
+}
+.smk-axis[data-axis='X'] {
+  color: #e5484d;
+}
+.smk-axis[data-axis='Y'] {
+  color: #30a46c;
+}
+.smk-axis[data-axis='Z'] {
+  color: #3e63dd;
+}
+
+/* 좁은 화면에서 FE 목업 하단 메뉴와 겹치지 않게 선택기·진단을 메뉴 위로 올린다. */
+@media (max-width: 1160px) {
+  .smk-root[data-mock-ui] .smk-views,
+  .smk-root[data-mock-ui] .smk-diag {
+    bottom: 92px;
+  }
+}
+
+/* 휴대폰 폭에서는 진단을 선택기 위로 쌓고, 측정 결과 높이를 줄여 FE 목업 업무 패널과 닿지 않게 한다. */
+@media (max-width: 640px) {
+  .smk-diag {
+    bottom: 60px;
+  }
+  .smk-root[data-mock-ui] .smk-diag {
+    bottom: 136px;
+  }
+  .smk-diag-body pre {
+    max-height: 72px;
+  }
 }

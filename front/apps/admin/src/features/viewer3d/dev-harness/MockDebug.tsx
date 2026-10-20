@@ -1,8 +1,12 @@
+import type { ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
+import { WORLD_REFERENCE_POINTS } from '@/features/viewer3d/WorldReference';
 import { useThree, type RootState } from '@react-three/fiber';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Box3, Vector3, type Object3D } from 'three';
 
-// ?debug=1 일 때만 쓰는 측정 도구. 같은 Canvas·renderer·Scene·Camera 가 유지되는지 숫자로 확인한다.
+// Spatial 진단 도구. 같은 Canvas·renderer·Scene·Camera 가 유지되는지, World 기준점이 어디 놓였는지 숫자로 확인한다.
+// 측정은 버튼을 누를 때만 한다. 접혀 있거나 다른 보기일 때는 아무것도 읽지 않는다.
 const ids = new WeakMap<object, number>();
 let nextId = 1;
 const idOf = (value: object) => {
@@ -12,11 +16,7 @@ const idOf = (value: object) => {
 const renderers = new Set<number>();
 let readState: (() => RootState) | null = null;
 
-export function readDebugFlag(search: string): boolean {
-  return new URLSearchParams(search).get('debug') === '1';
-}
-
-/** Canvas 안에 두어 렌더러 상태를 읽을 수 있게 한다. */
+/** Canvas 안에 두어 렌더러 상태를 읽을 수 있게 한다. 화면에는 아무것도 그리지 않아 모든 보기에 둔다. */
 export function DebugProbe() {
   const get = useThree((s) => s.get);
   useEffect(() => {
@@ -27,6 +27,16 @@ export function DebugProbe() {
 }
 
 const round = (n: number) => Math.round(n * 1000) / 1000;
+
+// 기준점이 장면에 실제로 놓인 Three 좌표. World 기준점을 띄운 보기에서만 값이 있다.
+function worldRefsOf(state: RootState) {
+  const out: Record<string, number[] | null> = {};
+  for (const point of WORLD_REFERENCE_POINTS) {
+    const object = state.scene.getObjectByName(`world-ref:${point.key}`);
+    out[point.key] = object ? object.getWorldPosition(new Vector3()).toArray().map(round) : null;
+  }
+  return out;
+}
 
 function screenOf(state: RootState, object: Object3D | undefined) {
   if (!object) return null;
@@ -58,18 +68,81 @@ function measure() {
     screen: {
       'person:worker1': screenOf(state, state.scene.getObjectByName('person:worker1')),
       'zone:zoneA': screenOf(state, state.scene.getObjectByName('zone:zoneA')),
+      'world-ref:O': screenOf(state, state.scene.getObjectByName('world-ref:O')),
     },
+    worldRefs: worldRefsOf(state),
   };
 }
 
-export function DebugPanel() {
+/** World 기준 표시 범례. DEMO 교실이 실측이 아님을 함께 알린다. */
+function WorldLegend() {
+  return (
+    <div className="smk-legend" data-testid="world-legend">
+      <p>원점 O = 교실 모서리 바닥(Z=0)</p>
+      <p>
+        <b className="smk-axis" data-axis="X">
+          X
+        </b>{' '}
+        <b className="smk-axis" data-axis="Y">
+          Y
+        </b>{' '}
+        <b className="smk-axis" data-axis="Z">
+          Z(위)
+        </b>{' '}
+        · 표식 간격 1m
+      </p>
+      <p className="smk-hint">DEMO 10×10m 교실 · 실측·캘리브레이션 아님</p>
+    </div>
+  );
+}
+
+interface SpatialDiagnosticsProps {
+  open: boolean;
+  onToggle: () => void;
+  status: ViewerStatus | null;
+  selected: ViewerTarget | null;
+}
+
+/** World 범례와 측정을 한 곳에 모은 접이식 진단 영역. 접으면 제목과 뷰어 상태 한 줄만 남는다. */
+export function SpatialDiagnostics({ open, onToggle, status, selected }: SpatialDiagnosticsProps) {
   const [out, setOut] = useState('');
   return (
-    <div className="smk-debug smk-float smk-mono">
-      <button type="button" className="smk-chip" onClick={() => setOut(JSON.stringify(measure()))}>
-        측정
+    <section
+      aria-label="Spatial 진단"
+      data-testid="spatial-diagnostics"
+      className="smk-diag smk-float"
+    >
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls="smk-diag-body"
+        className="smk-diag-head"
+        onClick={onToggle}
+      >
+        <span className="smk-card-title">Spatial 진단</span>
+        <span className="smk-diag-state smk-mono" data-testid="diag-status">
+          {status ? `${status.phase} · ${status.mode}` : '—'}
+        </span>
+        {open ? <ChevronDown aria-hidden /> : <ChevronUp aria-hidden />}
       </button>
-      <pre data-testid="debug-out">{out}</pre>
-    </div>
+      {open && (
+        <div id="smk-diag-body" className="smk-diag-body">
+          <WorldLegend />
+          <p className="smk-id smk-mono" data-testid="diag-selected">
+            선택 {selected ? `${selected.type}:${selected.id}` : '없음'}
+          </p>
+          <button
+            type="button"
+            className="smk-chip"
+            onClick={() => setOut(JSON.stringify(measure()))}
+          >
+            측정
+          </button>
+          <pre data-testid="debug-out" className="smk-mono">
+            {out}
+          </pre>
+        </div>
+      )}
+    </section>
   );
 }

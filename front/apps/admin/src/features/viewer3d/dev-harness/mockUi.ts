@@ -1,19 +1,13 @@
 import type { ViewerTarget } from '@/features/viewer3d/types';
+import {
+  worldBoxToThree,
+  worldPoint,
+  worldToThree,
+  type ThreeBox,
+  type ThreePoint,
+} from '@/features/viewer3d/worldCoordinates';
 
-// 목업 전용 값. 실제 관측·판정·좌표가 아니다(World 좌표 정합은 S15P31A101-38).
-
-/** ?mockUi=0|false|off 이면 목업 UI 를 끈다. 그 밖에는 켠다. */
-export function readMockUi(search: string): boolean {
-  const value = new URLSearchParams(search).get('mockUi');
-  return value === null || !['0', 'false', 'off'].includes(value.toLowerCase());
-}
-
-/** 다른 매개변수·해시를 그대로 두고 mockUi 만 바꾼 주소. */
-export function withMockUi(href: string, on: boolean): string {
-  const url = new URL(href);
-  url.searchParams.set('mockUi', on ? '1' : '0');
-  return url.toString();
-}
+// 목업 전용 값. 실제 관측·판정이 아니다. 배치는 DEMO 10×10m 교실(WorldScene DEMO_ROOM)의 World 좌표다.
 
 export const MENUS = [
   { key: 'monitor', label: '실시간 관제' },
@@ -25,20 +19,22 @@ export const MENUS = [
 
 export type MenuKey = (typeof MENUS)[number]['key'];
 
+/** 사람·상자의 x·y 는 World 미터(Z-up)다. 장면에는 worldToThree 로만 옮긴다. */
 export interface FixturePerson {
   id: string;
   name: string;
   x: number;
-  z: number;
+  y: number;
 }
 
+/** World 축 정렬 상자. x·y 는 바닥 중심, sizeX·sizeY·height 는 World 길이(m). 바닥 Z=0 에 놓인다. */
 export interface FixtureBox {
   id: string;
   name: string;
   x: number;
-  z: number;
-  width: number;
-  depth: number;
+  y: number;
+  sizeX: number;
+  sizeY: number;
   height: number;
 }
 
@@ -46,45 +42,46 @@ export interface FixtureZone extends FixtureBox {
   tone: 'critical' | 'caution';
 }
 
-// Three.js 장면 단위(Y 상방)로 바로 둔 예시 배치. 10×10 교실을 추상화했다.
+// DEMO 교실 안의 예시 배치(World m). 실측·캘리브레이션 결과가 아니다.
 export const PEOPLE: FixturePerson[] = [
-  { id: 'worker1', name: '예시 작업자 1', x: -2.6, z: -2.2 },
-  { id: 'worker2', name: '예시 작업자 2', x: 1.2, z: 0.6 },
-  { id: 'worker3', name: '예시 작업자 3', x: 2.8, z: 2.4 },
+  { id: 'worker1', name: '예시 작업자 1', x: 2.4, y: 7.2 },
+  { id: 'worker2', name: '예시 작업자 2', x: 6.2, y: 4.4 },
+  { id: 'worker3', name: '예시 작업자 3', x: 7.8, y: 2.6 },
 ];
 
 export const ZONES: FixtureZone[] = [
   {
     id: 'zoneA',
     name: '예시 구역 A',
-    x: -3,
-    z: -3,
-    width: 3,
-    depth: 2.4,
+    x: 2,
+    y: 8,
+    sizeX: 3,
+    sizeY: 2.4,
     height: 2,
     tone: 'critical',
   },
   {
     id: 'zoneB',
     name: '예시 구역 B',
-    x: 3,
-    z: 3,
-    width: 2.6,
-    depth: 2,
+    x: 8,
+    y: 2,
+    sizeX: 2.6,
+    sizeY: 2,
     height: 1.4,
     tone: 'caution',
   },
 ];
 
 export const OBJECTS: FixtureBox[] = [
-  { id: 'surface1', name: '예시 작업면', x: 0.4, z: -3.6, width: 2.2, depth: 0.9, height: 0.8 },
+  { id: 'surface1', name: '예시 작업면', x: 5.4, y: 8.6, sizeX: 2.2, sizeY: 0.9, height: 0.8 },
 ];
 
+// 교실 네 모서리 위 2.6m(World).
 export const CAMERAS = [
-  { id: 'cam1', x: -5, z: -5 },
-  { id: 'cam2', x: 5, z: -5 },
-  { id: 'cam3', x: -5, z: 5 },
-  { id: 'cam4', x: 5, z: 5 },
+  { id: 'cam1', x: 0, y: 10, z: 2.6 },
+  { id: 'cam2', x: 10, y: 10, z: 2.6 },
+  { id: 'cam3', x: 0, y: 0, z: 2.6 },
+  { id: 'cam4', x: 10, y: 0, z: 2.6 },
 ];
 
 export interface FixtureEvent {
@@ -113,4 +110,21 @@ export const EVENTS: FixtureEvent[] = [
 export function fixtureName(target: ViewerTarget): string | null {
   const list = target.type === 'person' ? PEOPLE : target.type === 'zone' ? ZONES : OBJECTS;
   return list.find((item) => item.id === target.id)?.name ?? null;
+}
+
+/** 예시 작업자는 바닥(World Z=0)에 선 것으로 둔다. 발 위치의 Three 좌표. */
+export function fixtureFeet(person: FixturePerson): ThreePoint {
+  return worldToThree(worldPoint(person.x, person.y, 0));
+}
+
+/** 바닥에 놓인 예시 상자(구역·작업면)의 Three 상자. */
+export function fixtureBox(box: FixtureBox): ThreeBox {
+  const halfX = box.sizeX / 2;
+  const halfY = box.sizeY / 2;
+  const result = worldBoxToThree(
+    worldPoint(box.x - halfX, box.y - halfY, 0),
+    worldPoint(box.x + halfX, box.y + halfY, box.height),
+  );
+  if (!result) throw new RangeError(`예시 상자 크기가 음수다: ${box.id}`);
+  return result;
 }
