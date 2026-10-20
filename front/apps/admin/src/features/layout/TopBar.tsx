@@ -1,7 +1,10 @@
+import { ROLE_LABEL } from '@/features/auth/roleLabel';
+import { useLogout } from '@/features/auth/useLogout';
 import { BrandMark } from '@/features/layout/BrandMark';
 import type { StatusValues } from '@/features/layout/status';
 import { SystemHealthChip } from '@/features/layout/SystemHealthChip';
 import { useThemeStore } from '@/features/layout/theme.store';
+import { useSessionStore } from '@/store/session.store';
 import { Button } from '@simai/ui/components/button';
 import {
   DropdownMenu,
@@ -28,6 +31,8 @@ function Meta({ label, value }: { label: string; value?: string }) {
 export function TopBar({ status, floating }: { status: StatusValues; floating: boolean }) {
   const theme = useThemeStore((s) => s.theme);
   const toggleTheme = useThemeStore((s) => s.toggle);
+  const role = useSessionStore((s) => s.session?.user.role);
+  const logout = useLogout();
   const cameras = status.cameras && `${status.cameras.online}/${status.cameras.total}`;
   const dataAge = status.dataAgeSec === undefined ? undefined : `${status.dataAgeSec.toFixed(1)}초`;
 
@@ -64,7 +69,7 @@ export function TopBar({ status, floating }: { status: StatusValues; floating: b
         <DropdownMenuTrigger
           render={<Button variant="secondary" size="sm" className="text-muted-foreground" />}
         >
-          관리자 ▾
+          {role ? ROLE_LABEL[role] : NONE} ▾
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-[220px]">
           <DropdownMenuItem onClick={toggleTheme}>
@@ -72,7 +77,7 @@ export function TopBar({ status, floating }: { status: StatusValues; floating: b
             {theme === 'dark' ? '화이트 모드' : '다크 모드'}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem render={<Link to="/login" />}>
+          <DropdownMenuItem onClick={logout}>
             <LogOut />
             로그아웃
           </DropdownMenuItem>

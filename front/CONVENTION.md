@@ -13,7 +13,9 @@ front/
         features/       화면별 도메인 폴더
           layout/       상단 바·하단 메뉴(도크) 등 공통 레이아웃
           viewer3d/     3D 관제 뷰어 (3D 담당 영역)
-        lib/            http, queryClient, stomp, env 등 두 도메인 이상이 쓰는 것
+        lib/            http, api, queryClient, stomp, env 등 두 도메인 이상이 쓰는 것
+        store/          두 도메인 이상이 쓰는 스토어 (세션)
+        mocks/          개발 서버·테스트용 REST mock (msw 핸들러, mock 계정)
         __tests__/      src 구조를 따름
       .env.example      환경변수 이름과 로컬 예시 값
     pwa/                반장 사이트 (휴대폰 PWA). M1에 위험 알림, M2에 조치 상태(기획서 §19.2)
@@ -38,6 +40,7 @@ front/
 - pnpm 11.24.0 (`package.json`의 `packageManager`). 작업 명령은 turbo로 각 패키지에 나눠 실행한다.
 - 포맷은 Prettier(`@simai/eslint-config/prettier-base`), 린트는 ESLint flat config. 앱은 각자 `eslint.config.js`를 두고, `front/eslint.config.js`는 루트 수준 설정 파일만 검사한다.
 - 환경변수는 앱 폴더의 `.env.example`을 `.env.local`로 복사해 채운다(`.env.local`은 커밋하지 않음). 앱은 시작할 때 `src/lib/env.ts`로 검사하고, 비었거나 형식이 틀리면 화면을 그리기 전에 멈춘다.
+- `VITE_API_MOCK=true`면 개발 서버가 `src/mocks/handlers.ts`로 REST를 흉내 낸다(msw). `main.tsx`가 DEV에서만 켜서 빌드에는 들어가지 않는다. mock 계정은 `src/mocks/accounts.ts`에 있고, 테스트도 같은 핸들러를 `msw/node`로 쓴다.
 
 | 명령 (`front/`에서)                 | 하는 일                                                       |
 | ----------------------------------- | ------------------------------------------------------------- |
@@ -66,11 +69,17 @@ git 훅 (`front/.husky/`):
 ### 데이터
 
 - 컴포넌트에 fetch, try/catch, pending 상태를 두지 않는다. `use*.ts` 훅으로 빼고 컴포넌트는 `{ data, pending, error }`처럼 결과만 받는다. 서버 데이터를 다루는 훅의 안쪽은 TanStack Query다.
-- REST는 `src/lib/http.ts`를 거친다. 실패는 `ApiError`로 올라오고, 서버 메시지가 없으면 훅이 든 한국어 기본 문구를 쓴다.
+- REST는 `src/lib/api.ts`의 인스턴스(`src/lib/http.ts`의 `createHttp`)를 거친다. 응답은 zod 스키마로 검사한다. 실패는 `ApiError`(연결 실패는 `status` 0)로 올라오고, 서버 메시지가 없으면 훅이 든 한국어 기본 문구를 쓴다.
 - STOMP 클라이언트는 `src/lib/stomp.ts`의 하나를 공유한다. 화면에서 연결을 끊지 않는다. 새 메시지가 오면 해당 Query 캐시를 갱신한다.
 - 구간 메시지는 `packages/contracts` 검증기를 통과한 것만 쓴다.
 - 낙관적 갱신을 하지 않는다. 서버가 가진 상태(ACK, 이벤트 상태 등)는 서버 응답이나 메시지가 온 뒤에 그린다.
 - 렌더링 중에 부작용(외부 변수·DOM 변경, 네트워크 요청, 타이머 등록, 다른 컴포넌트 상태 변경)을 두지 않는다. Effect나 이벤트 핸들러에서 한다.
+
+### 인증
+
+- 토큰은 `src/store/session.store.ts`에 메모리로만 둔다. 새로고침하면 다시 로그인한다. 갱신 방식은 서버와 정한 뒤 이 안에 붙인다.
+- 화면은 `features/auth`의 훅(`useLogin`, `useLogout`)만 쓰고 토큰을 직접 다루지 않는다.
+- 로그인이 필요한 화면은 `_app` 아래에 둔다. `_app`의 `beforeLoad`가 라우터 컨텍스트의 `sessionStore`로 막고, 세션이 바뀌면 `main.tsx`가 `router.invalidate()`로 가드를 다시 돌린다. 화면에서 로그인 화면으로 `navigate`하지 않는다.
 
 ### 상태
 
@@ -83,7 +92,7 @@ git 훅 (`front/.husky/`):
 ### 타입
 
 - `any`를 쓰지 않는다. 타입을 모르면 `unknown`으로 받고 좁혀서 쓴다.
-- 서버와 주고받는 타입은 앱에 따로 정의하지 않고 `packages/contracts`에 둔다.
+- 서버와 주고받는 타입은 앱에 따로 정의하지 않고 `packages/contracts`에 둔다. 단, REST 요청·응답은 서버 OpenAPI(springdoc)가 나오기 전까지 도메인 `types.ts`에 zod 스키마로 두고, 나오면 생성 타입으로 바꾼다.
 
 ### 자동 생성물
 
