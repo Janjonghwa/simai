@@ -2,7 +2,7 @@
   "extends": "@simai/typescript-config/vite.json",
   "compilerOptions": {
     "jsx": "react-jsx",
-    "types": ["vite/client"],
+    "types": ["vite/client", "msw/vite/client"],
     "paths": {
       "@/*": ["./src/*"]
     }
