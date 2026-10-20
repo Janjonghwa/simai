@@ -374,3 +374,39 @@ def test_check_command_exit_codes(qenv, code, live):
     cmd = [sys.executable, "-c", f"raise SystemExit({code})"]
     g = LiveGuard({"marker_files": [], "process_patterns": [], "check_command": cmd}, qenv.tmp, lambda *_: None)
     assert (g.reason() is not None) is live
+
+
+# ---------------------------------------------------------------- GPU 제공자 (S15P31A101-208)
+
+
+def _site_provider():
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location("rr208", Path(__file__).resolve().parents[3] / "experiments" / "gpu_queue" / "run_record.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.site_provider
+
+
+@pytest.mark.parametrize("env, want", [
+    ({"RUNPOD_POD_ID": "abc"}, "RUNPOD"),
+    ({"VAST_TCP_PORT_22": "41022"}, "VAST"),
+    ({"RUNPOD_POD_ID": "abc", "VAST_TCP_PORT_22": "41022"}, "RUNPOD"),  # RunPod 신호가 먼저
+    ({}, "LOCAL"),  # 신호가 없으면 클라우드로 지어내지 않는다
+    ({"RUNPOD_POD_ID": "", "VAST_TCP_PORT_22": ""}, "LOCAL"),  # 빈 값은 신호가 아니다
+])
+def test_site_provider_uses_only_known_site_signals(env, want):
+    assert _site_provider()(env) == want
+
+
+def test_other_provider_job_record_passes_schema_and_unknown_provider_does_not(qenv, run_record_errors):
+    rec = {"experiment_id": "INT-01", "jira_key": "S15P31A101-36", "owner": "queue-test", "experiment_state": "PLAN",
+           "model_version": "cpu-sample", "input_provenance": {"frames": {"source": "SIM", "dataset_id": "sim/basic"}, "is_upper_bound": True},
+           "gpu": {"provider": "OTHER"}}
+    jobs = qenv.write([qenv.job("a", qenv.py("ok", "a", qenv.out))], record=rec)
+    assert qenv.run("run", jobs).returncode == 0
+    (r,) = qenv.records()
+    assert r["gpu"]["provider"] == "OTHER" and run_record_errors(r) == []
+    r["gpu"]["provider"] = "GCP"  # 음성 대조: 닫힌 목록 밖은 계약이 거른다
+    assert run_record_errors(r) != []

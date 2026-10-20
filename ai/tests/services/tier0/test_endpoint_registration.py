@@ -339,3 +339,88 @@ def test_entrypoint_help_runs_from_ai_dir() -> None:
     result = subprocess.run([sys.executable, "-m", "services.tier0.endpoint_registration", "--help"],
                             cwd=AI_DIR, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+# ---------------------------------------------------------------------------- 사이트 무관 공개 주소 이름 (S15P31A101-208)
+
+_RUNPOD_ADDR = ("RUNPOD_PUBLIC_IP", "RUNPOD_TCP_PORT_70000", "RUNPOD_TCP_PORT_70001", "RUNPOD_TCP_PORT_70002",
+                "RUNPOD_TCP_PORT_70003", "RUNPOD_TCP_PORT_70004")
+
+
+def _site_env(**over: str | None) -> dict[str, str]:
+    """RunPod 이름을 모두 뺀 환경 + 사이트 무관 이름."""
+    env = runpod_env(**{k: None for k in _RUNPOD_ADDR})
+    env.update({"SIMAI_PUBLIC_HOST": "198.51.100.9", "SIMAI_PUBLIC_PORT_70000": "30000", "SIMAI_PUBLIC_PORT_70001": "30001",
+                "SIMAI_PUBLIC_PORT_70002": "30002", "SIMAI_PUBLIC_PORT_70003": "30003", "SIMAI_PUBLIC_PORT_70004": "30004"})
+    env.update(over)
+    return {k: v for k, v in env.items() if v is not None}
+
+
+def _ports(payload: dict) -> dict[int, int]:
+    return {p["requested_port"]: p["public_port"] for p in payload["ports"]}
+
+
+def test_site_neutral_names_alone_register() -> None:
+    payload = build_payload(_site_env(), cert_pem=CERT_PEM, registered_at_ms=T0)
+    assert payload["public_ip"] == "198.51.100.9" and _ports(payload)[70000] == 30000
+
+
+def test_runpod_names_alone_still_register() -> None:
+    payload = build_payload(runpod_env(), cert_pem=CERT_PEM, registered_at_ms=T0)
+    assert payload["public_ip"] == "203.0.113.24" and _ports(payload)[70000] == 44464
+
+
+def test_site_neutral_name_wins_over_runpod_name_per_value() -> None:
+    env = _site_env(RUNPOD_PUBLIC_IP="203.0.113.24", RUNPOD_TCP_PORT_70000="44464", RUNPOD_TCP_PORT_70001="44465")
+    env.pop("SIMAI_PUBLIC_PORT_70001")  # 이 번호만 RunPod 이름으로 넘어간다
+    payload = build_payload(env, cert_pem=CERT_PEM, registered_at_ms=T0)
+    assert payload["public_ip"] == "198.51.100.9"
+    assert _ports(payload)[70000] == 30000 and _ports(payload)[70001] == 44465
+
+
+def test_vast_names_are_not_read_until_docs_confirm() -> None:
+    env = _site_env(SIMAI_PUBLIC_HOST=None, SIMAI_PUBLIC_PORT_70000=None, PUBLIC_IPADDR="198.51.100.9",
+                    VAST_TCP_PORT_70000="30000")
+    with pytest.raises(EndpointConfigError) as e:
+        build_payload(env, cert_pem=CERT_PEM, registered_at_ms=T0)
+    text = str(e.value)
+    assert "SIMAI_PUBLIC_HOST 또는 RUNPOD_PUBLIC_IP 가 없다" in text and "SIMAI_PUBLIC_PORT_70000 또는 RUNPOD_TCP_PORT_70000 가 없다" in text
+
+
+def test_nothing_set_names_every_accepted_variable() -> None:
+    env = _site_env(SIMAI_PUBLIC_HOST=None, SIMAI_PUBLIC_PORT_70003=None)
+    with pytest.raises(EndpointConfigError) as e:
+        build_payload(env, cert_pem=CERT_PEM, registered_at_ms=T0)
+    assert any("SIMAI_PUBLIC_HOST" in p and "RUNPOD_PUBLIC_IP" in p for p in e.value.problems)
+    assert any("SIMAI_PUBLIC_PORT_70003" in p and "RUNPOD_TCP_PORT_70003" in p for p in e.value.problems)
+
+
+@pytest.mark.parametrize("over, want", [
+    ({"SIMAI_PUBLIC_PORT_70001": "0"}, "SIMAI_PUBLIC_PORT_70001 가 1~65535"),
+    ({"SIMAI_PUBLIC_PORT_70001": "65536"}, "SIMAI_PUBLIC_PORT_70001 가 1~65535"),
+    ({"SIMAI_PUBLIC_PORT_70001": "x1"}, "SIMAI_PUBLIC_PORT_70001 가 1~65535"),
+    ({"SIMAI_PUBLIC_HOST": "not-an-ip"}, "SIMAI_PUBLIC_HOST 가 IPv4"),
+])
+def test_bad_site_neutral_value_is_an_error_not_a_fallback_to_runpod(over, want) -> None:
+    # 사이트 무관 이름이 잘못이면 올바른 RunPod 값으로 조용히 바꿔 읽지 않는다(잘못된 설정을 가리지 않음)
+    env = _site_env(RUNPOD_PUBLIC_IP="203.0.113.24", RUNPOD_TCP_PORT_70001="44465", **over)
+    with pytest.raises(EndpointConfigError) as e:
+        build_payload(env, cert_pem=CERT_PEM, registered_at_ms=T0)
+    assert want in str(e.value)
+
+
+def test_control_and_video_listeners_read_site_neutral_ports() -> None:
+    from services.tier0 import video_ingest as vi
+    from services.tier0.settings import Tier0ConfigError
+
+    env = _site_env()
+    specs = vi.listen_specs_from_env(env)
+    assert sorted(s.port for s in specs) == [30001, 30002, 30003, 30004]
+    with pytest.raises(ValueError, match="SIMAI_PUBLIC_PORT_70002"):
+        vi.listen_specs_from_env({**env, "SIMAI_PUBLIC_PORT_70002": "70000x"})
+    ctl = {"SIMAI_TIER0_CONTROL_PORT": "70000", "SIMAI_PUBLIC_PORT_70000": "30000", "SIMAI_TIER0_TLS_CERT_FILE": "c",
+           "SIMAI_TIER0_TLS_KEY_FILE": "k", "SIMAI_LAPTOP_TOKEN_SHA256": "t"}
+    from services.tier0.settings import _control
+    assert _control(ctl).port == 30000
+    with pytest.raises(Tier0ConfigError, match="SIMAI_PUBLIC_PORT_70000 또는 RUNPOD_TCP_PORT_70000"):
+        _control({k: v for k, v in ctl.items() if k != "SIMAI_PUBLIC_PORT_70000"})

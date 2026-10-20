@@ -13,13 +13,24 @@ import re
 import subprocess
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable
 
-SCHEMA_VERSION = "2.1.0"  # run_record 계약 버전 (2.0.0: v1.3 제외 보정 출처 삭제, 2.1.0: experiment_id VAL-01 운영 경로 검증 Run)
+SCHEMA_VERSION = "2.2.0"  # run_record 계약 버전 (2.0.0: v1.3 제외 보정 출처 삭제, 2.1.0: experiment_id VAL-01, 2.2.0: gpu.provider VAST·OTHER)
 RUN_ID_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 METRIC_TYPES = (int, float, str, bool, type(None))
+
+
+def site_provider(env: Mapping[str, str]) -> str:
+    """bootstrap 이 아는 사이트 신호로 GPU 제공자를 정한다. 모르면 LOCAL(OTHER 는 Job 이 명시한다)."""
+    if env.get("RUNPOD_POD_ID"):
+        return "RUNPOD"
+    # shortcut: Vast 신호는 저장소가 이미 쓰는 VAST_TCP_PORT_22(deploy/scripts/pod_check.py)만, docs.vast.ai 로 확인 못 함 — 확인되면 고친다
+    if env.get("VAST_TCP_PORT_22"):
+        return "VAST"
+    return "LOCAL"
 
 
 def now_ms() -> int:
@@ -239,7 +250,7 @@ def build_record(
     """Job 정의(rec_cfg 는 큐 기본값과 Job 값을 합친 것)와 실행 결과로 Run 기록을 만든다."""
     notes: list[str] = list(extra_notes or [])
     gpu_cfg = dict(rec_cfg.get("gpu") or {})
-    provider = gpu_cfg.get("provider") or ("RUNPOD" if os.environ.get("RUNPOD_POD_ID") else "LOCAL")
+    provider = gpu_cfg.get("provider") or site_provider(os.environ)
     datacenter = gpu_cfg.get("datacenter") or os.environ.get("RUNPOD_DC_ID") or ""
 
     gpu_rec: dict[str, Any] = {"model": gpu["model"], "driver": gpu["driver"], "cuda": gpu["cuda"], "provider": provider}

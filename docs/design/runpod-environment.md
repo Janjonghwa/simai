@@ -7,7 +7,7 @@ S15P31A101-183(GPU 1차 세션 검증 큐)이 S15P31A101-31(RunPod 점검·Volum
 ## 원칙
 
 - GPU·지역은 고정하지 않는다(2026-10-20 결정, S15P31A101-205): 개발·시험은 RunPod 의 그때그때 남은 GPU·지역(볼륨 없음, 컨테이너 디스크 100GB+), 예비는 Vast.ai,
-  시연은 엘리스 A100 VM + 블록 스토리지(`docker run`, deploy/README "GPU VM(엘리스) docker run"). 일본 Network Volume 은 폐기했다. 한 시점에 GPU 하나, Tier 0 가 먼저 쓴다.
+  시연 사이트는 미정(엘리스 등 후보)이고, GPU VM + 블록 스토리지면 `docker run`(deploy/README "GPU VM(엘리스) docker run"). 일본 Network Volume 은 폐기했다. 한 시점에 GPU 하나, Tier 0 가 먼저 쓴다.
   아래 "Network Volume 디렉터리 구조"는 저장 위치(`$SIMAI_ROOT`: 볼륨·블록 스토리지·컨테이너 디스크) 안의 구조로 읽는다. 저장 위치는 `simai-bootstrap` 이 고른다.
 - GPU Pod 는 검증할 때만 켠다. 코드·스크립트·큐는 노트북에서 끝내고(이 문서의 드라이런), Pod 에서는 큐를 돌린 뒤 결과를 가져오고 바로 Stop 한다.
 - LIVE 관제 시간에는 세션 큐를 돌리지 않는다(세션 실행기가 Tier 0 표시 파일·프로세스를 보고 시작을 거부한다). EXP Job 은 LIVE 보호를 켠 별도 큐로 마지막에 돈다.
@@ -61,7 +61,7 @@ GPU 세션 큐의 첫 항목이다. 표준 라이브러리만 쓰고 결과를 `
 ### SSH 직접 (기본)
 
 - RunPod 템플릿은 TCP 22 를 공개하고, `simai-start` 가 `PUBLIC_KEY`(RunPod 계정 SSH 키)로 키 인증만 받는 sshd 를 띄운다(비밀번호·키보드 인증 끔, deploy/README).
-- 주소: RunPod 콘솔 Pod → Connect → "SSH over exposed TCP" 의 `ssh root@<IP> -p <포트>`. Pod 안에서는 `RUNPOD_PUBLIC_IP`, `RUNPOD_TCP_PORT_22`(pod_check 가 출력).
+- 주소: RunPod 콘솔 Pod → Connect → "SSH over exposed TCP" 의 `ssh root@<IP> -p <포트>`. Pod 안에서는 `RUNPOD_PUBLIC_IP`, `RUNPOD_TCP_PORT_22`(pod_check 가 출력. Tier 0 는 `SIMAI_PUBLIC_*` 가 있으면 그것을 먼저 읽는다, 아래 "공개 주소 환경 변수").
 - 노트북 `~/.ssh/config` (IP·포트는 매번 바뀔 수 있어 값만 고친다):
 
 ```
@@ -107,7 +107,7 @@ Host simai-pod
 - c·d 는 -182·-60 이 머지된 뒤의 경로(`simai_ai.io.NvdecDecoder`, `tests/services/tier0/live_video.py`, `experiments/gpu_queue/tier0_priority_probe.py` 등)를 부른다. 머지 전이면 각 단계가 '없음(머지 필요)'으로 실패하고 다음 항목으로 간다. PyAV 는 -182 가 `io` extra 에 넣었으므로 그 뒤에 빌드한 이미지여야 c 가 돈다.
 - 예상 시간 근거: a 는 1GB 쓰기+fsync 200회, b 는 deploy/README 의 "H100 에서 엔진 첫 빌드 수 분" + 캐시·추론, c 는 c4 LIVE 120초 + 엔진 캐시 기동 + 인코딩·디코딩 측정·기하 측정, d 는 줄인 시간(watch 120·120·90·60초) + P0 시험, e·f 는 노트북 실측(e 약 40초, f 1회 약 35초)에 Network Volume fsync 지연과 5회 반복을 넉넉히 더했다. g 는 -87 이 정할 때까지의 가정이다.
 - **H100 총 예상**: 지금 큐 약 43분(e·f 제외 뒤) + Pod 기동·이미지 받기(압축 약 7.4GB) 약 10분 + 가중치 받기(볼륨 없음, 수십 초) + 사본 올리기·결과 회수 약 5분 ≈ **1시간**. d 를 G0 판정용(`--full`, watch 600초)으로 돌리면 +20분. 전체 시간 상한 기본값은 9000초(2.5시간). 다른 GPU 는 엔진 빌드·추론 시간이 다르다(H100 예상만 적었다).
-- 볼륨 없는 Pod(-205): 저장 위치는 `simai-bootstrap` 과 같은 규칙(`SIMAI_ROOT` → `/workspace/simai` → `/srv/simai`)이고, 마운트 지점이 아니면 a 에 `--no-volume`(볼륨 측정 SKIP)을 붙이고 Job 파일에 볼륨·데이터센터를 적지 않는다(`provider`·`datacenter` 는 run_record 가 `RUNPOD_POD_ID`·`RUNPOD_DC_ID` 로 채움, Vast·엘리스는 계약 값이 없어 LOCAL). 결과 묶음은 컨테이너 디스크에 있으므로 **Pod 를 지우기(Terminate) 전에** scp 로 가져온다(실행기가 출력).
+- 볼륨 없는 Pod(-205): 저장 위치는 `simai-bootstrap` 과 같은 규칙(`SIMAI_ROOT` → `/workspace/simai` → `/srv/simai`)이고, 마운트 지점이 아니면 a 에 `--no-volume`(볼륨 측정 SKIP)을 붙이고 Job 파일에 볼륨·데이터센터를 적지 않는다(`provider`·`datacenter` 는 run_record 가 `RUNPOD_POD_ID`·`RUNPOD_DC_ID` 등 사이트 신호로 채움, 신호가 없으면 LOCAL). 결과 묶음은 컨테이너 디스크에 있으므로 **Pod 를 지우기(Terminate) 전에** scp 로 가져온다(실행기가 출력).
 - 결과 기록은 run_record 계약을 따른다. `experiment_id` 는 운영 경로 검증 Run 값 `VAL-01`(run_record 2.1.0, `e_gate` 없음, S15P31A101-197), `experiment_state` 는 `BENCHMARK`, 입력 출처는 `SIM`·`is_upper_bound: true` 다(제품 성능 지표로 쓰지 않는다). 종료 코드는 `notes`, 지표는 각 스크립트가 `metrics.json` 에 남긴다.
 
 ### 실행 순서
@@ -247,7 +247,16 @@ D-G3-09 의 구역 대상 기준(S15P31A101-198): 복원 보호(-174)대로 구�
 queue 모드에서도 엔진 준비(세션 b 항목의 첫 빌드 시간 측정이 캐시 사용으로 바뀜), 컨테이너 안에서 HF 토큰 파일 읽기(엘리스는 `--env-file` 로 호스트 docker 가 읽게 해 경로가 하나뿐).
 
 잔여 위험: Vast 의 공개키 변수(`SSH_PUBLIC_KEY`)는 Vast 문서의 환경 변수 목록으로만 확인했고 실제 인스턴스에서 보지 않았다. 엘리스 VM 의 드라이버·Container Toolkit·블록 스토리지 마운트는
-첫 시연 준비 때 확인한다. Tier 0 는 공개 IP·포트를 `RUNPOD_*` 이름으로 읽어 Vast·엘리스에서는 사람이 넣는다. run_record `gpu.provider` 계약 값이 RUNPOD·LOCAL 뿐이라 Vast·엘리스 Run 은 LOCAL 로 기록된다.
+첫 시연 준비 때 확인한다. Vast 의 공개 IP·포트 환경 변수 이름(`PUBLIC_IPADDR`·`VAST_TCP_PORT_*` 로 알고 있음)은 docs.vast.ai 문서 주소를 찾지 못해(404) 확인하지 못했다. 그래서 Tier 0 는 읽지 않고, 사람이 사이트 무관 이름으로 넣는다(아래 표). run_record `gpu.provider` 는 2.2.0 에서 `VAST`·`OTHER` 가 생겼다(-208). 사이트 신호는 `RUNPOD_POD_ID`→RUNPOD, `VAST_TCP_PORT_22`→VAST 뿐이고 그 밖은 LOCAL 이며, 사이트 미정 클라우드는 Job 의 `gpu.provider` 에 OTHER 를 적는다.
+
+공개 주소 환경 변수(S15P31A101-208, 앞이 우선, 값이 있는 첫 이름만 읽고 틀린 값이면 다음 이름으로 넘어가지 않는다):
+
+| 값 | 먼저 읽는 이름 | 그다음 | 둘 다 없으면 |
+|---|---|---|---|
+| 공개 IPv4 | `SIMAI_PUBLIC_HOST` | `RUNPOD_PUBLIC_IP` | 엔드포인트 등록 오류(이름 둘을 모두 적음) |
+| 공개 포트(요청 번호별) | `SIMAI_PUBLIC_PORT_<번호>` | `RUNPOD_TCP_PORT_<번호>` | 등록·영상 수신·제어 채널 설정 오류 |
+
+이미지 줄바꿈: Windows 체크아웃의 CRLF 가 shebang 을 깨뜨리지 않게 deploy/base·deploy/tier0 Dockerfile 이 COPY 한 실행 스크립트의 CR 을 빌드에서 뺀다(`sed -i 's/$//'`). `check_image.sh` 의 CR 검사는 결과를 다시 확인한다(Docker 를 켜지 않아 빌드는 하지 않았다).
 
 ## 첫 세션 수동 확인 목록 (큐 밖)
 

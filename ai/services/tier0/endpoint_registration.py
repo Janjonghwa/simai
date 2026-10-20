@@ -3,7 +3,8 @@
 명세 3.12 엔드포인트 등록, 12.6, 12.7, 14, FR-138. 메시지 형식의 정본은 `contracts/messages/tier0_endpoint.schema.json`.
 
 - RunPod 는 Pod 가 재설정될 때마다 외부 포트 매핑이 바뀐다. 포트는 70000 이상 번호로 요청하는 대칭 매핑을 쓰고,
-  실제 공개 포트는 `RUNPOD_TCP_PORT_<요청 번호>` 에서, 공개 IP 는 `RUNPOD_PUBLIC_IP` 에서 읽는다.
+  실제 공개 포트는 `SIMAI_PUBLIC_PORT_<요청 번호>`(없으면 `RUNPOD_TCP_PORT_<요청 번호>`)에서,
+  공개 IP 는 `SIMAI_PUBLIC_HOST`(없으면 `RUNPOD_PUBLIC_IP`)에서 읽는다. 둘 다 있으면 사이트 무관 이름이 먼저다.
 - TLS 공개키 지문은 Tier 0 TLS 서버가 쓰는 인증서(PEM, Network Volume 비밀 폴더)의 SubjectPublicKeyInfo(DER) SHA-256 이다.
   인증서 파일만 읽는다. 비밀 키가 섞인 파일은 읽지 않는다.
 - 값을 모르면 지어내지 않는다. 빠진 환경 변수·설정은 이름을 모두 모아 `EndpointConfigError` 로 등록 실패를 보고하고 보내지 않는다.
@@ -21,8 +22,10 @@
     SIMAI_TIER0_CONTROL_PORT    I0 제어 WebSocket(wss) 대칭 매핑 요청 번호 (예: 70000)
     SIMAI_TIER0_VIDEO_PORTS     카메라별 영상 TLS 포트 요청 번호 "cam1:70001,cam2:70002,..." (카메라가 포트를 같이 써도 된다)
     SIMAI_TIER0_TLS_CERT_FILE   Tier 0 TLS 서버 인증서 PEM 경로 (공개키 지문 계산용, 비밀 키 파일이 아니다)
-    RUNPOD_PUBLIC_IP            Pod 공개 IPv4 (RunPod 가 넣는다)
-    RUNPOD_TCP_PORT_<요청 번호>  실제 공개 포트 (RunPod 가 넣는다)
+    SIMAI_PUBLIC_HOST           공개 IPv4 (사이트 무관 이름, 먼저 읽는다)
+    SIMAI_PUBLIC_PORT_<요청 번호> 실제 공개 포트 (사이트 무관 이름, 먼저 읽는다)
+    RUNPOD_PUBLIC_IP            공개 IPv4 (RunPod 가 넣는다. 위 이름이 없을 때)
+    RUNPOD_TCP_PORT_<요청 번호>  실제 공개 포트 (RunPod 가 넣는다. 위 이름이 없을 때)
     RUNPOD_POD_ID, RUNPOD_DC_ID 선택. 있으면 pod_id, datacenter 로 싣는다
 
 실행: `python -m services.tier0.endpoint_registration` (ai/ 에서). Tier 0 조립이 들어오면 기동 순서와 I1 재연결 때 부른다.
@@ -62,6 +65,10 @@ DEFAULT_TIER0_ID = "tier0-01"
 _INSTANCE_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _CAMERA_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 _POD_ID = re.compile(r"^[A-Za-z0-9-]+$")
+# 공개 주소 환경 변수 이름, 앞이 우선. 값이 있는 첫 이름만 읽고 틀린 값이면 다음 이름으로 넘어가지 않고 오류다(잘못 설정을 가리지 않는다).
+# shortcut: Vast 이름(PUBLIC_IPADDR·VAST_TCP_PORT_*)은 docs.vast.ai 로 확인하지 못해 넣지 않았다, 확인되면 두 튜플에 한 줄씩 더한다
+PUBLIC_HOST_NAMES = ("SIMAI_PUBLIC_HOST", "RUNPOD_PUBLIC_IP")
+PUBLIC_PORT_PREFIXES = ("SIMAI_PUBLIC_PORT_", "RUNPOD_TCP_PORT_")
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 _UINT = re.compile(r"^[0-9]{1,6}$")
 _PEM_CERT = re.compile(rb"-----BEGIN CERTIFICATE-----(.+?)-----END CERTIFICATE-----", re.S)
@@ -205,6 +212,22 @@ def _env_port_requests(env: Mapping[str, str], problems: list[str]) -> list[Port
     return requests
 
 
+def public_host_env(env: Mapping[str, str]) -> tuple[str, str]:
+    """(읽은 환경 변수 이름, 값). 값이 있는 첫 이름. 어느 것도 없으면 (첫 이름, "")."""
+    for name in PUBLIC_HOST_NAMES:
+        if (env.get(name) or "").strip():
+            return name, env[name].strip()
+    return PUBLIC_HOST_NAMES[0], ""
+
+
+def public_port_env(env: Mapping[str, str], requested: int | str) -> tuple[str, str]:
+    """요청 번호의 (읽은 환경 변수 이름, 값). 값이 있는 첫 이름. 어느 것도 없으면 (가능한 이름 모두, "")."""
+    for prefix in PUBLIC_PORT_PREFIXES:
+        if (env.get(f"{prefix}{requested}") or "").strip():
+            return f"{prefix}{requested}", env[f"{prefix}{requested}"].strip()
+    return " 또는 ".join(f"{p}{requested}" for p in PUBLIC_PORT_PREFIXES), ""
+
+
 def build_payload(
     env: Mapping[str, str],
     *,
@@ -220,17 +243,17 @@ def build_payload(
     if not _INSTANCE_ID.match(gateway_id):
         problems.append("SIMAI_TIER0_ID 는 소문자·숫자·'-' 로 된 인스턴스 ID 여야 한다 (예: tier0-01)")
 
-    public_ip = (env.get("RUNPOD_PUBLIC_IP") or "").strip()
+    host_name, public_ip = public_host_env(env)
     if not public_ip:
-        problems.append("RUNPOD_PUBLIC_IP 가 없다 (Pod 공개 IP 를 모른다)")
+        problems.append(f"{' 또는 '.join(PUBLIC_HOST_NAMES)} 가 없다 (공개 IP 를 모른다)")
     else:
         try:
             ip = ipaddress.IPv4Address(public_ip)
         except ValueError:
-            problems.append("RUNPOD_PUBLIC_IP 가 IPv4 주소가 아니다")
+            problems.append(f"{host_name} 가 IPv4 주소가 아니다")
         else:
             if ip.is_unspecified or ip.is_multicast:
-                problems.append("RUNPOD_PUBLIC_IP 가 접속할 수 있는 주소가 아니다")
+                problems.append(f"{host_name} 가 접속할 수 있는 주소가 아니다")
             public_ip = str(ip)
 
     ports: list[dict[str, Any]] = []
@@ -253,10 +276,9 @@ def build_payload(
             if r.requested_port in control_requested:
                 problems.append(f"요청 번호 {r.requested_port} 를 제어 포트와 영상 포트가 같이 쓴다")
                 continue
-        name = f"RUNPOD_TCP_PORT_{r.requested_port}"
-        raw = (env.get(name) or "").strip()
+        name, raw = public_port_env(env, r.requested_port)
         if not raw:
-            problems.append(f"{name} 가 없다 (공개 포트를 모른다. RunPod 템플릿에 {r.requested_port} 를 열었는지 확인)")
+            problems.append(f"{name} 가 없다 (공개 포트를 모른다. 사이트 설정에 {r.requested_port} 를 열었는지 확인)")
             continue
         if not _UINT.match(raw) or not 1 <= int(raw) <= 65535:
             problems.append(f"{name} 가 1~65535 포트 번호가 아니다")

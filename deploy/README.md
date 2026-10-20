@@ -3,7 +3,7 @@
 모델별 Python·CUDA·Torch 환경을 Docker 이미지로 고정하고, 이미지 다이제스트를 Run 기록의 `env_hash` 로 쓴다(명세 3.12 저장소 규칙, 20.5, 21.5).
 저장 위치(`$SIMAI_ROOT`: 볼륨·블록 스토리지, 없으면 컨테이너 디스크)에는 가중치, 데이터, 실험 산출물, TensorRT 엔진 캐시만 둔다. 환경은 볼륨에 설치하지 않는다(E-GATE-0 은 예외였다).
 GPU·지역은 고정하지 않는다(2026-10-20 결정, S15P31A101-205): 개발·시험은 RunPod 의 그때그때 남은 GPU·지역(볼륨 없음), 예비는 Vast.ai,
-시연은 엘리스 클라우드 A100 VM + 블록 스토리지(`docker run`). 일본 Network Volume 은 쓰지 않는다.
+시연 사이트는 미정(엘리스 등 후보). 사이트가 GPU VM + 블록 스토리지면 `docker run` 으로 띄운다. 일본 Network Volume 은 쓰지 않는다.
 최소 사양: Tier 0 만은 VRAM 24GB급(RTX 4090 이상), Tier 0 + 실험은 48GB(80GB 권장). Ampere 이후, 드라이버 최대 CUDA 13.0 이상, 볼륨이 없으면 컨테이너 디스크 100GB 이상.
 
 ## 파일
@@ -84,7 +84,7 @@ TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl exp02      # → simai/exp
 
 ## 레지스트리 푸시 (사람이 확인한 뒤에만)
 
-푸시는 외부로 내보내는 작업이라 사용자 확인 뒤에 한다. 레지스트리는 비공개여야 한다(SSAFY GitLab 컨테이너 레지스트리가 열려 있으면 그것, 아니면 Docker Hub 비공개 저장소. 결정 필요).
+푸시는 외부로 내보내는 작업이라 사용자 확인 뒤에 한다. 레지스트리는 비공개여야 한다(Docker Hub 비공개 저장소 `docker.io/jonghwa1492/tier0`, SSAFY GitLab 컨테이너 레지스트리는 구성되어 있지 않다). 예시 다이제스트: `sha256:92af16d5320bcf20e39b8c5a2028f33ec3f390454c761a81205d8fb4bb6c8b3c`(dev da68f00 빌드).
 
 ```sh
 docker login <레지스트리>                                         # 토큰은 docker 자격 증명 저장소에만
@@ -93,7 +93,7 @@ docker buildx imagetools inspect <레지스트리>/<프로젝트>/tier0:$TAG --f
 #  → sha256:...  이 값이 이미지 다이제스트다. RunPod 템플릿 이미지는 <레지스트리>/<프로젝트>/tier0@sha256:... 로 쓴다
 ```
 
-RunPod 에는 레지스트리 자격 증명(읽기 전용 토큰)을 RunPod 계정의 Container Registry Credentials 로 등록한다. 템플릿 환경 변수에 넣지 않는다.
+RunPod 은 Container Registry Auth(읽기 전용 토큰)로 접근한다. 토큰은 RunPod 계정의 Container Registry Auth 에 등록한다. 템플릿 환경 변수에 넣지 않는다.
 
 ## env_hash (Run 기록)
 
@@ -135,7 +135,8 @@ HMR(torch 2.5.1 cu124, Detectron2)·MapAnything(torch 2.7.1 cu126) 가중치는 
 | CUDA 버전 필터 | 13.0 이상(위 "CUDA 13 인 이유") |
 | Container Disk | 100GB 이상(이미지 풀면 약 19.5GB + 가중치·엔진·결과. 볼륨이 없으므로 여기가 `$SIMAI_ROOT=/srv/simai`) |
 | Volume | 붙이지 않는다(Network Volume 은 데이터센터에 묶인다). Pod 볼륨을 쓰면 `/workspace/simai` 가 된다 |
-| 공개 TCP 포트 | 22(SSH, 키 인증만), I0 수신 포트(70000 이상 대칭 매핑, 실제 포트는 `RUNPOD_TCP_PORT_*`, 명세 3.12) |
+| 공개 TCP 포트 | 22(SSH, 키 인증만), I0 수신 포트(70000 이상 대칭 매핑, 실제 포트는 `SIMAI_PUBLIC_PORT_<번호>` 또는 RunPod 가 넣는 `RUNPOD_TCP_PORT_<번호>`, 명세 3.12) |
+| 공개 주소 환경 변수 | Tier 0 가 읽는 순서(앞이 우선, 값이 있는 첫 이름만 쓰고 틀린 값이면 오류): 공개 IP `SIMAI_PUBLIC_HOST` → `RUNPOD_PUBLIC_IP`, 공개 포트 `SIMAI_PUBLIC_PORT_<번호>` → `RUNPOD_TCP_PORT_<번호>`. 어느 것도 없으면 등록·기동 오류. RunPod 는 자동으로 들어오고 그 밖의 사이트는 사람이 사이트 무관 이름으로 넣는다. Vast 이름은 docs.vast.ai 로 확인하지 못해 읽지 않는다 |
 | 시작 명령 | 비움(이미지 기본: `simai-bootstrap tier0`). 검증 세션은 `sleep infinity` 로 띄우고 SSH 로 `simai-bootstrap queue` |
 | GPU 기능 | 이미지 `NVIDIA_DRIVER_CAPABILITIES=compute,utility,video`(video 는 LIVE 입력 NVDEC, -182). 템플릿에서 덮어쓰지 않는다 |
 | 환경 변수 | `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}`(RunPod Secret, 값은 템플릿에 쓰지 않음), `SIMAI_TIER0_GPU_RESERVE_MB=8192`(Tier 0 GPU 선확보, -60, G0 실측 전 초기값), `SIMAI_IMAGE_DIGEST=sha256:...`. `SIMAI_ROOT`·가중치 경로·해시·엔진 캐시는 부트스트랩이 정한다(`SIMAI_ENGINE_CACHE` 기본 `$SIMAI_ROOT/engines`, `SIMAI_OBS2D_ROOT` 는 필요하면 `$SIMAI_ROOT/obs2d`). 선택: `SIMAI_TIER0_MODE`(e2e), `SIMAI_TIER0_IMGSZ`(1280), `SIMAI_TIER0_MAX_BATCH`(4), `SIMAI_TIER0_CAMERA`(2304x1296) |
@@ -152,7 +153,7 @@ Docker 실행 방식은 **Entrypoint** 로 둔다(SSH·Jupyter 방식은 이미�
 
 ## GPU VM(엘리스) docker run
 
-엘리스 클라우드 A100 VM + 블록 스토리지(시연). VM 의 호스트 sshd 로 들어가므로 컨테이너 sshd 는 끈다(`SIMAI_SSHD=off`).
+GPU VM + 블록 스토리지(엘리스 등 후보, 시연 사이트 미정). VM 의 호스트 sshd 로 들어가므로 컨테이너 sshd 는 끈다(`SIMAI_SSHD=off`).
 
 ```sh
 # 0) 호스트 확인: 드라이버(최대 CUDA 13.0 이상)·Container Toolkit
@@ -171,7 +172,7 @@ docker run -d --name simai-tier0 --restart unless-stopped --gpus all \
   -v /mnt/simai-block:/workspace -e SIMAI_ROOT=/workspace/simai -e SIMAI_SSHD=off \
   --env-file /mnt/simai-block/.simai-private/hf.env \
   -p <제어 포트>:<제어 포트> -p <영상 포트들>:<영상 포트들> \
-  -e RUNPOD_PUBLIC_IP=<VM 공인 IP> -e SIMAI_TIER0_CONTROL_PORT=70000 -e RUNPOD_TCP_PORT_70000=<제어 포트> \
+  -e SIMAI_PUBLIC_HOST=<VM 공인 IP> -e SIMAI_TIER0_CONTROL_PORT=70000 -e SIMAI_PUBLIC_PORT_70000=<제어 포트> \
   -e SIMAI_TIER0_GPU_RESERVE_MB=8192 -e SIMAI_IMAGE_DIGEST=sha256:<다이제스트> \
   <이미지> --config /workspace/simai/tier0.json
 docker logs -f simai-tier0      # simai-bootstrap: 저장·GPU·가중치 한 줄 → simai-tier0: 엔진 → Tier 0

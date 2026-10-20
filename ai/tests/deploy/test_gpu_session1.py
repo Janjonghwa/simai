@@ -92,7 +92,7 @@ def test_timeout_and_failure_do_not_block_next_items_and_placeholders_are_not_qu
     records = [json.loads(v) for k, v in files.items() if k.endswith("run_record.json")]
     assert {r["status"] for r in records} == {"FAILED", "SUCCEEDED"} and len(records) == 3
     # 검증 큐 기록은 운영 경로 검증 Run(VAL-01, run_record 2.1.0)이고 계약을 통과한다(-197, 이전에는 INT-01 로 적었다)
-    assert {(r["experiment_id"], r["schema_version"]) for r in records} == {("VAL-01", "2.1.0")}
+    assert {(r["experiment_id"], r["schema_version"]) for r in records} == {("VAL-01", "2.2.0")}
     assert all("e_gate" not in r and schema_errors(r, "run_record") == [] for r in records)
     assert "scp -P" in capsys.readouterr().out
 
