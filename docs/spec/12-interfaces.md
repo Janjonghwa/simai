@@ -149,7 +149,7 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 | `incident_summary` | 이벤트, 이벤트 전후 20초 클립 객체 키(`media_clip`), 얼굴 처리 `face_policy`, 구조화 상태 | 요약 문장(상향 의견 없음). 우선순위 REPORT |
 | `bev_floorplan` | 보정 버전, 카메라 프레임 주소(정적 3D 가 있으면 Scene 버전) | BEV 평면도 이미지 주소(보조 화면, 4.1). 우선순위 BACKGROUND |
 | `static_reconstruct` | 카메라 프레임 주소, 보정 버전 | glTF 주소, 품질 지표 |
-| `calibration_ba` | 2D 관측 묶음(Network Volume), 초기 보정 | 보정 후보 |
+| `calibration_ba` | 2D 관측 묶음(Tier 0 저장 위치), 초기 보정 | 보정 후보 |
 | `hmr_refine` (확장·EXP-02) | 프레임·마스크·keypoint, World ID·보정 버전 | MHR 메시·포즈, 관절 출처, 품질 메타데이터 |
 | `hmr_appearance_update` (EXP-02 실험) | 동일 World ID의 동의된 관측 샘플, 이전 시각 자산 | 신규 텍스처/외형 버전, 관측 영역·불확실성·아티팩트 참조 |
 
@@ -182,6 +182,7 @@ VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커�
 | GET · POST | /api/events, /api/events/\{id\}/ack | 이벤트 목록(기본 `page=0`·`size=20`·최대 100, 최신 발생순, 같은 사람의 여러 규칙은 한 묶음), 확인 | 반장·관리자 |
 | GET | /api/events/\{id\} | 이벤트 상세(위치·근거·관련 구역·조치 상태·VLM 근거·상향 의견) | 반장·관리자 |
 | POST | /api/events/\{id\}/summary | 사고 구간 요약 요청(`incident_summary`, 5.4) | 관리자 |
+| POST | /api/events/\{id\}/close | 구역 대상 이벤트 운영자 종료(본문 사유 1\~500자·멱등 키). I1 `event_close` 로 보내고 결과 `event_close_result` 를 돌려줌(6.4) | 관리자 |
 | POST | /api/events/\{id\}/escalation | VLM 상향 의견 승인·거절(본문 `assessmentId`·`decision`). 승인만 I1 `event_escalate` 로 보냄(5.4) | 관리자 |
 | GET | /api/scenes/current | COMMITTED Scene과 glTF 주소 | 열람 |
 | GET | /api/scenes/\{sceneId\} | Scene 생성 상태(CANDIDATE·VALIDATING·COMMITTED·REJECTED) | 관리자 |
@@ -228,8 +229,8 @@ VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커�
 - `stream_epoch` 는 재시작에도 줄지 않는다. 노트북 중계는 카메라마다 지금까지 쓴 가장 큰 epoch 를 로컬 파일에 먼저 저장한 뒤 쓰고(세션 시작 UTC ms 를 하한으로 둘 수 있어 작은 수가 아닐 수 있다), 저장 파일이 깨졌으면 0 부터 다시 세지 않고 시작을 멈춘다. 같은 epoch 안의 전송 재접속(TLS 연결만 바뀜)은 번호를 이어 센다.
 - Tier 0 는 그 카메라에서 이미 본 것보다 작은 epoch 를 받지 않는다(같은 식별자에 다른 프레임·시각이 붙을 수 있다). 그런 `codec_info` 가 오면 연결 기록 형식 안의 거절 알림(STREAM_REJECT)을 보내고 끊으며, 노트북은 더 큰 epoch 로 다시 시작할 때까지 그 카메라를 다시 붙이지 않는다. 새 TLS 연결이라는 이유로 epoch·번호 비교를 지우지 않는다.
 - 접속: 노트북은 EC2 에서 받은 현재 엔드포인트(`tier0_endpoint`, 3.12)로 접속한다.
-- 전송: 헤더 + 프레임을 길이 접두 방식으로 카메라별 독립 TLS over TCP 연결에 싣는다(한 카메라의 지연이 다른 카메라를 막지 않도록). RunPod Pod의 Direct TCP 포트를 쓰고, TLS는 Tier 0 서비스가 직접 종료하며, 접속 시 노트북 기기 토큰으로 인증한다. 제어 메시지(local_alert, alarm_stop, health, site_ack, laptop_heartbeat, clock_sync_request, clock_sync_response)는 같은 방식으로 인증한 WebSocket(wss)으로 주고받는다.
-- 서버 확인(공개키 고정): Tier 0 TLS 키는 한 번 만들어 Network Volume 비밀 폴더에 둔다. 노트북은 그 공개키 지문만 신뢰한다(또는 팀 사설 CA). 인증서 검증을 끄는 구현은 금지한다(14장).
+- 전송: 헤더 + 프레임을 길이 접두 방식으로 카메라별 독립 TLS over TCP 연결에 싣는다(한 카메라의 지연이 다른 카메라를 막지 않도록). GPU 인스턴스의 공개 TCP 포트(Direct TCP, 3.12)를 쓰고, TLS는 Tier 0 서비스가 직접 종료하며, 접속 시 노트북 기기 토큰으로 인증한다. 제어 메시지(local_alert, alarm_stop, health, site_ack, laptop_heartbeat, clock_sync_request, clock_sync_response)는 같은 방식으로 인증한 WebSocket(wss)으로 주고받는다.
+- 서버 확인(공개키 고정): Tier 0 TLS 키는 한 번 만들어 Tier 0 저장 위치의 비공개 폴더(3.12)에 둔다. 저장 위치가 컨테이너 디스크라 인스턴스와 함께 사라지면 새 키의 지문을 노트북에 다시 고정한다. 노트북은 그 공개키 지문만 신뢰한다(또는 팀 사설 CA). 인증서 검증을 끄는 구현은 금지한다(14장).
 - 송신 큐: 노트북은 카메라별 송신 큐에 상한을 두고 소켓 송신 버퍼를 작게 잡는다. 큐가 넘치면 다음 키프레임까지 버리고, 버린 프레임은 노트북 쪽 skipped 로 따로 센다. 이것은 전송 손실(gateway_to_runpod_loss)이나 Tier 0 의 skipped_by_policy 와 다르다.
 - 버림 알림(SKIP_NOTICE): 노트북은 버린 `frame_sequence` 범위를 연결 기록 형식 안의 알림으로 Tier 0 에 알린다(계약 스키마 밖, 형식 정본은 `gateway/relay` 의 `wire.py`). 지금 epoch 의 버린 구간은 겹치거나 맞닿은 것끼리 합친 구간 집합으로 들고 있다가 새 연결마다 다시 보낸다(같은 알림을 여러 번 받아도 늘지 않는다). Tier 0 는 알린 범위의 번호 빈칸을 손실로 세지 않고 `health.cameras[].frames.laptop_skipped` 로 보고한다. 구간 수가 상한을 넘거나 재시작으로 버림 기록이 잘려 손실인지 버림인지 모르는 빈칸은 `unattributed_gap`(구분 불가)으로 따로 세고, 처음 보는 epoch 의 첫 번호 앞은 세지 않는다(지어내지 않음).
 - 누락: frame_sequence 빈 구간은 노트북 → RunPod 구간의 손실(gateway_to_runpod_loss)로 기록하고 재요청하지 않는다(실시간 우선). 버림 알림 범위(laptop_skipped)와 구분 불가 빈칸(unattributed_gap)은 손실에서 뺀다. 카메라 → 노트북 구간은 RTSP over TCP라 손실이 번호 빈칸이 아니라 도착 간격의 끊김으로 나타나므로, 프레임 도착 간격과 RTP 타임스탬프 간격으로 camera_to_gateway_gap을 잰다. 정책상 건너뛴 프레임(skipped_by_policy)은 손실이 아니다. 카메라 내부에서 버린 프레임은 관측할 수 없으므로 상류 구간의 실제 손실률은 확정할 수 없다. 이 값들은 health와 G0에 따로 보고한다.

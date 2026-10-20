@@ -73,7 +73,7 @@
 | D-G3-16 | 노트북 재접속·`local_alert`/`alarm_stop` 유실 후 현장 소리·표시가 활성 현장 경보 목록과 일치(3.10) | 100% | FI |
 | D-G3-17 | 반쯤 열린 TCP·처리 정체(`t_latest_global` 정지)를 하트비트 3회 누락으로 감지 | 100% | FI |
 | D-G3-18 | 현장 경보 전송이 저널 fsync 를 기다리지 않고, EC2 전송은 fsync 뒤에만 나감 | 100% | UT, FI |
-| D-G3-19 | EC2 단절 중 CRITICAL·HIGH 클립을 Network Volume 에 저장하고 복구 후 업로드 | 100% | FI |
+| D-G3-19 | EC2 단절 중 CRITICAL·HIGH 클립을 Tier 0 저장 위치에 저장하고 복구 후 업로드 | 100% | FI |
 | D-G3-20 | EC2 단절 구간이 리플레이에서 “데이터 없음”으로 표시되고 보간되지 않음 | 100% | IT |
 
 ## D.5 G4 정적 3D
