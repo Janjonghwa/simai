@@ -273,15 +273,18 @@ class VideoFileFrameSource(FrameSource):
     ) -> VideoFileFrameSource:
         """gateway/recorder 녹화 세션 디렉터리에서 만든다. manifest 를 계약으로 검증하고 카메라마다 세그먼트 하나를 읽는다.
 
-        dataset_id 는 recording/<session_id>. manifest 의 is_test_input 이 true(로컬 파일·합성 입력)인 세션은
+        dataset_id 는 recording/<session_id>(내부 테스트 용도는 recording-dev_test/<session_id>). manifest 의 is_test_input 이 true(로컬 파일·합성 입력)인 세션은
         제품 성능·게이트 판정 근거로 쓰지 않는다(AGENTS 규칙 7).
         """
         manifest = load_recording_manifest(session_dir)
+        # 내부 테스트 녹화(consent.purpose=dev_test)는 동의된 데이터셋과 출처에서 구분한다. 계약(input_provenance)은 그대로(명세 11.5)
+        purpose = (manifest.get("consent") or {}).get("purpose")
+        prefix = "recording-dev_test" if purpose == "dev_test" else "recording"
         return cls(
             recordings_from_manifest(session_dir, manifest, epochs),
             source="FILE",
             open_reader=open_reader,
-            dataset_id=f"recording/{manifest['session_id']}",
+            dataset_id=f"{prefix}/{manifest['session_id']}",
         )
 
     def frames(self) -> Iterator[Frame]:

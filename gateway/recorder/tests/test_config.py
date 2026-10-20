@@ -127,3 +127,32 @@ def test_rtsp_connection_failure_is_source_error():
     assert time.monotonic() - t < 10
     assert "secret" not in str(e.value) and "simai:" not in str(e.value)
     source.close()
+
+
+DEV_TEST = '[consent]\ncontains_people = true\npurpose = "dev_test"\n{retention}'
+
+
+def test_dev_test_people_recording_loads_without_consent_ref(tmp_path):
+    consent = DEV_TEST.format(retention='retention_until = "2027-01-31"\n')
+    spec = _load(tmp_path, consent=consent)
+    assert spec.consent["purpose"] == "dev_test" and "consent_ref" not in spec.consent
+
+
+@pytest.mark.parametrize(
+    ("consent", "message"),
+    [
+        (DEV_TEST.format(retention=""), "retention_until"),  # dev_test 도 보관 기한은 필수
+        ('[consent]\ncontains_people = true\npurpose = "dataset"\nretention_until = "2027-01-31"\n', "consent_ref"),
+        ('[consent]\ncontains_people = true\npurpose = "dataset"\nconsent_ref = "CF-1"\nretention_until = "2027-01-31"\n',
+         "scope"),
+        ('[consent]\ncontains_people = true\nretention_until = "2027-01-31"\n', "consent_ref"),  # 용도 없음 = 기존 동작
+        ('[consent]\ncontains_people = true\npurpose = "demo"\nretention_until = "2027-01-31"\n', "purpose"),
+    ],
+)
+def test_purpose_does_not_loosen_other_recordings(tmp_path, consent, message):
+    with pytest.raises(ConfigError, match=message):
+        _load(tmp_path, consent=consent)
+
+
+def test_empty_room_without_purpose_is_unchanged(tmp_path):
+    assert "purpose" not in _load(tmp_path).consent

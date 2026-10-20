@@ -13,7 +13,7 @@
     "manifest_version": {
       "$ref": "../common/defs.schema.json#/$defs/semver",
       "pattern": "^1\\.\\d+\\.\\d+$",
-      "description": "이 형식의 버전(메이저 1, 현재 1.1.0). 필드 추가는 마이너, 삭제·의미 변경은 메이저. 1.1.0: input_kinds 가 cameras[].source.kind 를 모두 담는지 스키마가 검사한다(설명된 뜻 그대로라 1.0.0 녹화 도구 출력은 그대로 통과)"
+      "description": "이 형식의 버전(메이저 1, 현재 1.2.0). 필드 추가는 마이너, 삭제·의미 변경은 메이저. 1.1.0: input_kinds 가 cameras[].source.kind 를 모두 담는지 스키마가 검사한다(설명된 뜻 그대로라 1.0.0 녹화 도구 출력은 그대로 통과). 1.2.0: consent.purpose(선택, dev_test·dataset) 추가. purpose 가 없으면 dataset 과 같이 취급해 1.1.0 manifest 는 그대로 통과"
     },
     "session_id": {
       "type": "string",
@@ -128,6 +128,10 @@
       "required": ["contains_people", "retention_until"],
       "properties": {
         "contains_people": { "type": "boolean", "description": "사람이 찍혔는지. 사람 없는 교실 녹화는 false" },
+        "purpose": {
+          "enum": ["dev_test", "dataset"],
+          "description": "녹화 용도 (명세 11.5). dev_test = 수업 중 우연히 찍힌 사람이 있는 내부 개발·테스트 영상(consent_ref·scope 없이 가능, retention_until 필수, 시연·발표·보고서·공개 자료에 쓰지 않는다). dataset = 시나리오·데이터셋(연기 참여자 동의서 필수). 없으면 dataset 과 같다"
+        },
         "consent_ref": { "type": "string", "minLength": 1, "description": "참여자 동의서 문서 ID. 사람 이름을 넣지 않는다" },
         "scope": {
           "type": "array",
@@ -145,8 +149,11 @@
       "additionalProperties": false,
       "allOf": [
         {
-          "description": "사람이 찍히는 녹화는 동의서 ID 와 동의 범위가 있어야 한다",
-          "if": { "properties": { "contains_people": { "const": true } }, "required": ["contains_people"] },
+          "description": "사람이 찍히는 녹화는 동의서 ID 와 동의 범위가 있어야 한다. 단 purpose 가 dev_test 이면 면제(보관 기한은 항상 필수)",
+          "if": {
+            "properties": { "contains_people": { "const": true }, "purpose": { "not": { "const": "dev_test" } } },
+            "required": ["contains_people"]
+          },
           "then": { "required": ["consent_ref", "scope"] }
         }
       ]

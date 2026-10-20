@@ -10,7 +10,10 @@ storage_uri = "volume://AP-JP-1/simai/recordings"   # 올릴 Network Volume 위�
 notes = ""
 
 [consent]                                           # 명세 11.5. RTSP 녹화는 이 절이 없으면 시작하지 않는다
-contains_people = false                             # 사람이 찍히면 true 로 바꾸고 아래 두 값을 채운다
+contains_people = false                             # 사람이 찍히면 true 로 바꾸고 아래 두 값을 채운다(동의 받은 시나리오 촬영)
+# purpose = "dev_test"                             # 수업 중 우연히 찍힌 영상(내부 개발·테스트 전용): consent_ref·scope 없이 가능, retention_until 필수.
+#                                                 # 커밋 금지, 노트북·Network Volume 에만 두고 프로젝트 종료 시 삭제. 시연·발표·보고서·공개 자료 사용 금지.
+#                                                 # 시나리오 촬영은 "dataset"(또는 생략)이며 동의서 필수. 용도 없이 사람이 있으면 시작하지 않는다
 # consent_ref = "CF-2026-10-001"                    # 참여자 동의서 문서 ID (저장소 밖 보관)
 # scope = ["dataset_internal", "runpod_ap_jp_1"]    # 동의 범위: 용도·전송 리전 (docs/data/recording-manifest.md)
 retention_until = "2027-01-31"                      # 이 날짜가 지나면 Network Volume 에서 지운다

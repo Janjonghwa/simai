@@ -9,7 +9,7 @@
 | 3.3 RTSP 접속 규칙 | 카메라당 RTSP 세션 1개(over TCP). 다시 열기 전에 반드시 닫는다 |
 | 3.9 촬영 시각 계약 | 프레임마다 `estimated_capture_time_ms`·`timestamp_source`·`timestamp_uncertainty_ms`. C110 기본 `RECEIVE_ESTIMATED` |
 | 12.7 I0 프레임 식별 | 헤더는 I0 `frame_header` 그대로. 재접속마다 `stream_epoch` +1, 새 epoch 는 키프레임부터 |
-| 11.5 보관과 개인정보 | RTSP 녹화는 동의·보관 기한 없이는 시작하지 않는다. 사람이 찍히면 동의서 ID·범위 필수 |
+| 11.5 보관과 개인정보 | RTSP 녹화는 동의·보관 기한 없이는 시작하지 않는다. 사람이 찍히면 동의서 ID·범위 필수. 수업 중 우연히 찍힌 영상은 `[consent] purpose = "dev_test"` 로 내부 개발·테스트에만 쓴다(동의서 ID 없이 가능, 보관 기한 필수, 시연·발표·보고서·공개 자료 사용 금지) |
 | 21.1 저장소 구조 | 영상은 Network Volume 에, 저장소에는 manifest 만 ([`docs/data/recording-manifest.md`](../../docs/data/recording-manifest.md)) |
 
 ## 구조
