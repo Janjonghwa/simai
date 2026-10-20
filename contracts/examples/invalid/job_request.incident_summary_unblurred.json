@@ -1,0 +1,41 @@
+{
+  "schema_version": "3.1.0",
+  "msg_type": "job_request",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000302",
+  "sent_at": 1760342400400,
+  "source_id": "ec2",
+  "payload": {
+    "job_id": "job-20261020-0002",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-000000000312",
+    "attempt": 1,
+    "max_attempts": 2,
+    "job_type": "incident_summary",
+    "priority": "REPORT",
+    "timeout_ms": 120000,
+    "leased_at": 1760342400400,
+    "lease_expires_at": 1760342430400,
+    "heartbeat_interval_ms": 10000,
+    "input": {
+      "event_id": "0192a6f1-0a00-7c00-8a00-000000000002",
+      "event_sequence": 3,
+      "clips": [
+        {
+          "clip_id": "clip-0192a6f1-cam1-0",
+          "camera_id": "cam1",
+          "object_key": "clips/2026/10/17/0192a6f1-0a00-7c00-8a00-000000000002/cam1-0.h264"
+        }
+      ],
+      "face_policy": "NONE",
+      "structured_state": {
+        "rule_id": "R1",
+        "severity": "CRITICAL",
+        "zone_id": "z-01",
+        "transitions": [
+          "RAISED",
+          "UPDATED"
+        ]
+      }
+    }
+  },
+  "_expect_error": "incident_summary 입력은 얼굴 흐림·제외 필수"
+}

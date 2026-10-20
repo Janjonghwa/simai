@@ -2,13 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/risk_event.schema.json",
   "title": "I2 risk_event",
-  "description": "EC2 → 뷰어, STOMP /topic/events (명세 12.4, 12.2). EC2 가 저장한 RiskEvent 의 화면용 projection 이다. LIVE 는 Tier 0 전이(risk_event_transition)로만 갱신하고, PLANNED·REPLAY·WHAT_IF 는 EC2 옆 Risk Engine 컨테이너 결과로 보고서·시뮬레이션 화면에만 쓴다. rationale 은 VLM 결과가 오면 갱신으로 채워진다. VLM 은 proposed_severity 로 상향 의견만 내고 severity 를 바꾸지 못한다. 1.3.0 필드 추가(마이너): confidence_reasons(확인 필요 이유, 7.1), resume_count(해소 후 재개 횟수, 6.4). 2.0.0 의미 변경(메이저, Lead 승인 2026-10-20, S15P31A101-200): 운영자 종료 해소 resolution(선택, LIVE 만). resolution 이 있는 RESOLVED 는 verification VERIFIED 를 요구하지 않는다. 뷰어는 운영자 종료를 관측 해소와 구분해 보여 준다. 1.x 문서에는 resolution 이 없다(1.x 규칙 그대로).",
+  "description": "EC2 → 뷰어, STOMP /topic/events (명세 12.4, 12.2). EC2 가 저장한 RiskEvent 의 화면용 projection 이다. LIVE 는 Tier 0 전이(risk_event_transition)로만 갱신하고, PLANNED·REPLAY·WHAT_IF 는 EC2 옆 Risk Engine 컨테이너 결과로 보고서·시뮬레이션 화면에만 쓴다. rationale 은 VLM 결과가 오면 갱신으로 채워진다. VLM 은 proposed_severity 로 상향 의견만 내고 severity 를 바꾸지 못한다. 1.3.0 필드 추가(마이너): confidence_reasons(확인 필요 이유, 7.1), resume_count(해소 후 재개 횟수, 6.4). 2.0.0 의미 변경(메이저, Lead 승인 2026-10-20, S15P31A101-200): 운영자 종료 해소 resolution(선택, LIVE 만). resolution 이 있는 RESOLVED 는 verification VERIFIED 를 요구하지 않는다. 뷰어는 운영자 종료를 관측 해소와 구분해 보여 준다. 1.x 문서에는 resolution 이 없다(1.x 규칙 그대로). 2.1.0 필드 추가(마이너, S15P31A101-206): 운영자 상향 기록 escalations(선택, LIVE 만, 5.4·FR-116). /topic/events 화면 규칙(12.4): 경보 대상은 source LIVE·severity CRITICAL·HIGH·lifecycle RAISED·UPDATED 이고, 확인 상태는 acks 로 읽는다(지금 경보 단계 이후 event_sequence 를 대상으로 한 확인만 소리를 멈춘다, 3.10).",
   "allOf": [
     { "$ref": "envelope.schema.json" },
     {
       "description": "운영자 종료 해소(resolution)는 2.0.0 부터다. 1.x 문서는 resolution 없이 1.x 규칙(RESOLVED 는 VERIFIED)으로 검사한다",
       "if": { "properties": { "schema_version": { "pattern": "^1[.]" } }, "required": ["schema_version"] },
       "then": { "properties": { "payload": { "not": { "required": ["resolution"] } } } }
+    },
+    {
+      "description": "운영자 상향 기록(escalations)은 2.1.0 부터다",
+      "if": { "properties": { "schema_version": { "pattern": "^(1[.]|2[.]0[.])" } }, "required": ["schema_version"] },
+      "then": { "properties": { "payload": { "not": { "required": ["escalations"] } } } }
     }
   ],
   "type": "object",
@@ -79,6 +84,11 @@
         "resolution": {
           "$ref": "../common/defs.schema.json#/$defs/operator_resolution",
           "description": "운영자 종료 해소(2.0.0, 6.4). LIVE 의 RESOLVED 에만. 없으면 관측 해소다"
+        },
+        "escalations": {
+          "type": "array",
+          "items": { "$ref": "../common/defs.schema.json#/$defs/operator_escalation" },
+          "description": "운영자 상향 기록(2.1.0, 5.4·FR-116). 비어 있거나 없으면 상향 없음. LIVE 만. 뷰어는 규칙 판정 등급과 운영자 상향을 구분해 보여 준다"
         }
       },
       "allOf": [
@@ -93,6 +103,11 @@
           "description": "resolution 은 LIVE 의 RESOLVED 에만 (2.0.0)",
           "if": { "required": ["resolution"] },
           "then": { "properties": { "lifecycle": { "const": "RESOLVED" }, "source": { "const": "LIVE" } }, "required": ["lifecycle", "source"] }
+        },
+        {
+          "description": "운영자 상향 기록은 LIVE 에만 (2.1.0)",
+          "if": { "required": ["escalations"] },
+          "then": { "properties": { "source": { "const": "LIVE" } }, "required": ["source"] }
         },
         {
           "description": "delivery 는 알림 대상인 LIVE 이벤트에만 있다 (7.4 출처 분리)",

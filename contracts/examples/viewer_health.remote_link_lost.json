@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "viewer_health",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000030a",
+  "sent_at": 1760342401000,
+  "source_id": "ec2",
+  "payload": {
+    "as_of": 1760342400990,
+    "system_health": "UNSAFE_UNKNOWN",
+    "remote_state": "REMOTE_LINK_LOST",
+    "tier0_link": "DISCONNECTED",
+    "laptop": {
+      "link": "CONNECTED",
+      "last_heartbeat_at": 1760342400800
+    },
+    "data_age_ms": null,
+    "calibration_state": "CALIBRATED",
+    "config": {
+      "published_version": "cfg-12",
+      "applied_version": "cfg-12",
+      "sync": "CURRENT"
+    },
+    "scene": {
+      "committed_version": "scene-4",
+      "live_version": "scene-3",
+      "mismatch": true
+    },
+    "tier0_health": null
+  }
+}

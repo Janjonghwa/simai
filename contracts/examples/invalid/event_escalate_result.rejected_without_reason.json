@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "event_escalate_result",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000306",
+  "sent_at": 1760342412040,
+  "source_id": "tier0-01",
+  "payload": {
+    "escalation_id": "3c9d1e2f-4a5b-4c6d-9e8f-1a2b3c4d5e6f",
+    "event_id": "0192a6f1-0a00-7c00-8a00-000000000002",
+    "result": "REJECTED",
+    "decided_at": 1760342412030
+  },
+  "_expect_error": "REJECTED 는 거부 사유 필수"
+}

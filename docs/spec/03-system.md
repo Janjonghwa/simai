@@ -9,8 +9,8 @@
 | 카메라 4대 | Tapo C110, 교실 Wi-Fi망 | RTSP 영상 송출 |
 | 노트북 | 교실망, Python. GPU(RTX 4070 Laptop, 8GB 예상)는 클라우드 프로파일에서 쓰지 않음 | RTSP 수신, 촬영 시각 추정(3.9), RunPod로 영상 중계(TLS), 현장 경보 단말(스피커·화면), 이중 하트비트 감시. 교실망 NTP 서버 역할은 보류(3.9). 현장 프로파일 대체 경로 후보(3.12) |
 | RunPod Tier 0 서비스 | GPU Pod 하나(관제 중 상시, 운영 리전은 3.12), Python. 분석 워커와 같은 Pod·GPU를 쓰되 별도 프로세스 | YOLO26x-pose 검출·추적·2D keypoint, 카메라 간 연결·시간 보간·삼각측량·World 상태, LIVE Risk Engine·이벤트 저널, 이벤트 클립 링 버퍼, 기동 시 엔드포인트 등록(3.12). PPE 검출은 확장(부록 C) |
-| RunPod 분석 워커 | Tier 0와 같은 GPU Pod 안의 별도 프로세스(자원 상한 적용, 3.2), Python. 관제가 없는 개발 시간에는 같은 Pod에서 단독 실행(개발·시연: 일본 AP-JP-1 H100, 3.12) | EC2에서 작업을 가져가(12.5) 실행: VLM 근거(Cosmos3-Nano Reasoner, 5.4), 정적 3D(MapAnything Native / EXP-01), YOLO26-seg 마스크, 보정 번들 조정, 비동기 HMR(Fast SAM 3D Body / EXP-02), 관측 기반 외형 갱신 실험 |
-| 외부 LLM API | 외부 서비스(“GPT 6.1 sol”, 5.4) | TBM 보고서 문장, RAG 답변 등 텍스트 생성. 텍스트만 보낸다. 호출 위치(분석 워커의 `tbm_report` 작업 또는 EC2)는 확인 필요 |
+| RunPod 분석 워커 | Tier 0와 같은 GPU Pod 안의 별도 프로세스(자원 상한 적용, 3.2), Python. 관제가 없는 개발 시간에는 같은 Pod에서 단독 실행(개발·시연: 일본 AP-JP-1 H100, 3.12) | EC2에서 작업을 가져가(12.5) 실행: VLM 근거·사고 구간 요약(Cosmos3-Nano Reasoner, VLM 입력 얼굴 흐림 포함, 5.4), TBM 보고서·일일 일지(외부 LLM 호출), 정적 3D(MapAnything Native / EXP-01), BEV 평면도 생성(4.1), YOLO26-seg 마스크, 보정 번들 조정, 비동기 HMR(Fast SAM 3D Body / EXP-02), 관측 기반 외형 갱신 실험 |
+| 외부 LLM API | 외부 서비스(“GPT 6.1 sol”, 5.4) | TBM 보고서·일일 일지 문장, RAG 답변 등 텍스트 생성. 텍스트만 보낸다. 분석 워커의 `tbm_report` 작업 안에서만 호출한다(API 키는 Pod `.env`) |
 | EC2 | AWS(EC2 또는 Lightsail 중 지급 서비스로 정함, 확인 필요), Spring Boot 4·Java 21 | RiskEvent 저장·생명주기·알림 라우팅, 규칙·구성 묶음 배포, Risk Engine 컨테이너(계획·리플레이·What-if), Spatial DB, 뷰어 API·실시간 스트림, PWA 알림, Tier 0 엔드포인트 중계, 인증 |
 | 객체 저장소 | S3 또는 Lightsail 버킷 | 이벤트 클립, 조치 사진, 정적 3D 자산(glTF). 수명 주기 규칙으로 자동 삭제 |
 | 클라이언트 | 브라우저, 휴대폰 | Three.js 뷰어, 반장 PWA. 워치 앱은 확장(부록 C) |
@@ -213,7 +213,7 @@ flowchart TB
 1. 노트북은 RTSP 프레임에 추정 촬영 시각(3.9)을 붙여 RunPod Tier 0 서비스로 중계한다. 노트북은 GPU 작업을 하지 않는다.
 2. Tier 0 서비스는 YOLO26x-pose로 사람과 2D keypoint를 찾고, 카메라별 트랙을 World ID로 묶은 뒤 시간 보간과 삼각측량으로 World XYZ와 3D 골격을 만든다. 이 값이 위험 판단의 위치 정본이다.
 3. 같은 서비스의 LIVE Risk Engine이 규칙을 판정하고, 현장 경보는 `local_alert`로 노트북에 바로 보낸다. 이벤트 전이는 저널·outbox를 거쳐 EC2로 간다.
-4. EC2는 `world_state`와 이벤트 전이를 받아 생명주기를 갱신하고 Spatial DB에 기록한 뒤 STOMP 토픽 `/topic/world`, `/topic/events`, `/topic/health`로 발행한다. PWA 알림도 이때 나간다.
+4. EC2는 `world_state`와 이벤트 전이를 받아 생명주기를 갱신하고 Spatial DB에 기록한 뒤 STOMP 토픽 `/topic/world`, `/topic/events`, `/topic/health`(관리자는 `/topic/admin/events` 도, 12.4)로 발행한다. PWA 알림도 이때 나간다.
 5. 브라우저는 토픽을 구독해 World 좌표를 Three.js 좌표 (x, z, −y)로 바꾼 뒤 아바타·구역·경보를 갱신해 렌더링한다. 변환은 뷰어 어댑터 한 곳에서만 한다.
 6. 정적 배경은 설치 시 EC2가 빈 교실 프레임과 보정 버전으로 정적 3D 작업을 만들고, 분석 워커가 그 작업을 가져가 MapAnything으로 복원한 뒤 glTF를 객체 저장소에 둔다. 뷰어는 REST로 COMMITTED Scene 주소를 받아 로드한다. 이 경로의 모델·후처리·품질은 EXP-01에서 선행 검증한다.
 7. 인체 메시/외형은 EXP-02에서 Fast SAM 3D Body 기반 비동기 파이프라인으로 검증한다. World ID·timestamp·calibration_version·scene_version을 기준으로 Tier 0 상태에 맞춰 렌더링만 보강하며, 안전 판정 좌표·이벤트를 수정하지 않는다.

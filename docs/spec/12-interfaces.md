@@ -1,6 +1,6 @@
 # 12. 인터페이스 명세
 
-I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 봉투를 쓰고, 이미지는 메시지에 넣지 않고 객체 저장소 주소로 주고받는다. 아래 필드는 v1.0 기준 예시이며 필드 정의의 정본은 저장소 `contracts/`의 JSON Schema 파일이다(21.2). 아직 스키마가 없는 메시지는 이 절의 예시가 기준이다. v1.3 에서 바뀐 규칙 중 현장 경보 목록(`health.active_site_alerts`), 시계 차이 교환(`clock_sync_request`·`clock_sync_response`, `health.laptop_clock_offset`), 엔드포인트 등록(`tier0_endpoint`), 2D 관측 요약(`observation_summary`), I5 작업 대여(`job_lease_request`·`job_request`·`job_heartbeat`·`job_callback`·`job_lease_status`), 확인 필요 이유(`confidence_reasons`), 이벤트 재개(`resumed`·`resume_count`), 확인 대상(`site_ack`·`event_ack`·`alarm_stop` 의 `event_sequence`), `world_state.config_version`, 판정이 아닌 전이의 근거 null, 노트북 송신 큐 버림(`health` 의 `laptop_skipped`·`unattributed_gap`), 이벤트 클립 기록(`media_clip`·`media_clip_retention`), 운영자 종료(`event_close`·`event_close_result`, `risk_event_transition`·`risk_event` 2.0.0 의 운영자 종료 해소 `resolution`: 있으면 해소에 VERIFIED·판정 근거를 요구하지 않음, 6.4)는 계약에 반영했다. 아직 계약에 없는 것은 19.1 에 둔다.
+I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 봉투를 쓰고, 이미지는 메시지에 넣지 않고 객체 저장소 주소로 주고받는다. 아래 필드는 v1.0 기준 예시이며 필드 정의의 정본은 저장소 `contracts/`의 JSON Schema 파일이다(21.2). 아직 스키마가 없는 메시지는 이 절의 예시가 기준이다. v1.3 에서 바뀐 규칙 중 현장 경보 목록(`health.active_site_alerts`), 시계 차이 교환(`clock_sync_request`·`clock_sync_response`, `health.laptop_clock_offset`), 엔드포인트 등록(`tier0_endpoint`), 2D 관측 요약(`observation_summary`), I5 작업 대여(`job_lease_request`·`job_request`·`job_heartbeat`·`job_callback`·`job_lease_status`), 확인 필요 이유(`confidence_reasons`), 이벤트 재개(`resumed`·`resume_count`), 확인 대상(`site_ack`·`event_ack`·`alarm_stop` 의 `event_sequence`), `world_state.config_version`, 판정이 아닌 전이의 근거 null, 노트북 송신 큐 버림(`health` 의 `laptop_skipped`·`unattributed_gap`), 이벤트 클립 기록(`media_clip`·`media_clip_retention`), 운영자 종료(`event_close`·`event_close_result`, `risk_event_transition`·`risk_event` 2.0.0 의 운영자 종료 해소 `resolution`: 있으면 해소에 VERIFIED·판정 근거를 요구하지 않음, 6.4), 운영자 상향(`event_escalate`·`event_escalate_result`, `risk_event_transition`·`risk_event` 2.1.0 의 `escalation`·`escalations`, 5.4), I5 작업 유형 `bev_floorplan`·`incident_summary`와 `tbm_report` 보고서 종류(`job_request` 3.1.0), I2 화면 상태 `viewer_health`·조치 불일치 `action_mismatch`(12.4)는 계약에 반영했다. 아직 계약에 없는 것은 19.1 에 둔다.
 
 ## 12.1 공통 봉투와 버전
 
@@ -23,8 +23,8 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 
 | ID | 구간 | 방식 | 메시지 |
 |---|---|---|---|
-| I1 | RunPod Tier 0 ↔︎ EC2 | WebSocket + JSON | 위로(Tier 0 → EC2): `world_state`(10 Hz), `health`(1 Hz), `observation_summary`(필요 시 카메라별 요약만. 2D 관측 원본 `observation_batch` 는 RunPod 에 Parquet 로 보관, 11.2), `calibration_update`, `risk_event_transition`, `event_state_snapshot`, `config_ack`, `event_frame_ready`, `media_clip`·`media_clip_retention`(이벤트 클립 기록, 11.3), `tier0_endpoint`(엔드포인트 등록, 3.12), `event_close_result`(운영자 종료 결과, 6.4) / 아래로(EC2 → Tier 0): `event_ack`, `event_close`(관리자의 구역 대상 이벤트 종료, 6.4), `journal_ack`, `config_bundle` |
-| I2 | EC2 → 뷰어 | WebSocket(STOMP) + REST | 토픽 `/topic/world`, `/topic/events`, `/topic/health` / REST: 리플레이, 구역 CRUD, 작업면 등록, Scene 자산, 레이아웃(12.6) |
+| I1 | RunPod Tier 0 ↔︎ EC2 | WebSocket + JSON | 위로(Tier 0 → EC2): `world_state`(10 Hz), `health`(1 Hz), `observation_summary`(필요 시 카메라별 요약만. 2D 관측 원본 `observation_batch` 는 RunPod 에 Parquet 로 보관, 11.2), `calibration_update`, `risk_event_transition`, `event_state_snapshot`, `config_ack`, `event_frame_ready`, `media_clip`·`media_clip_retention`(이벤트 클립 기록, 11.3), `tier0_endpoint`(엔드포인트 등록, 3.12), `event_close_result`(운영자 종료 결과, 6.4), `event_escalate_result`(운영자 상향 결과, 5.4) / 아래로(EC2 → Tier 0): `event_ack`, `event_close`(관리자의 구역 대상 이벤트 종료, 6.4), `event_escalate`(관리자가 승인한 VLM 상향 의견 적용, 5.4), `journal_ack`, `config_bundle` |
+| I2 | EC2 → 뷰어 | WebSocket(STOMP) + REST | 토픽 `/topic/world`(`world_state`), `/topic/events`(`risk_event`), `/topic/health`(`viewer_health`), 관리자 전용 `/topic/admin/events`(`action_mismatch`)(12.4) / REST: 리플레이, 구역 CRUD, 작업면 등록, 보정·설치, Scene 자산, 레이아웃, 보고서, 이벤트 상세·요약·상향(12.6) |
 | I3 | EC2 ↔︎ PWA | Web Push + REST | 푸시 `risk_alert`, 시험 푸시 / REST: 티켓 상태 변경, 사진 업로드 주소 발급, 푸시 구독·해지, 수신 확인(12.6) |
 | I4 | EC2 ↔︎ 워치 | — | 이동(v1.3) → 부록 C |
 | I5 | RunPod 분석 워커 → EC2 | 작업 가져가기(HTTPS long-poll 기본, WebSocket 대안), TLS + 워커 토큰 | 워커가 EC2 에 먼저 접속해 `job_lease_request`로 작업을 대여하고(응답 `job_request`), `job_heartbeat`로 대여를 연장하며, 결과·실패를 `job_callback`으로 제출한다. 하트비트·제출 응답은 `job_lease_status`(12.5) |
@@ -103,7 +103,9 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 }
 ```
 
-`evidence_ref` 키는 늘 싣는다. 판정 전이는 판정에 쓴 `world_state` 의 msg_id 이고, 판정이 아닌 전이(운영자 확인·재시작 복원·ID 교정)는 근거를 모르면 null 이다(3.2 저널 계약).
+`evidence_ref` 키는 늘 싣는다. 판정 전이는 판정에 쓴 `world_state` 의 msg_id 이고, 판정이 아닌 전이(운영자 확인·재시작 복원·ID 교정·운영자 상향)는 근거를 모르면 null 이다(3.2 저널 계약).
+
+`event_escalate` 는 관리자가 VLM 상향 의견을 승인했을 때만 EC2 가 보낸다(거절은 EC2 `vlm_assessment` 에만 기록, 5.4). Tier 0 는 활성 이벤트이고 올릴 등급이 지금 등급보다 높을 때만 같은 `event_id` 의 UPDATED 전이(`escalation` 포함, `resumed` false)를 저널에 기록하고 `event_escalate_result` 로 답한다. 같은 `escalation_id` 는 다시 기록하지 않는다(DUPLICATE). 이 전이로 등급이 오르므로 3.10 의 상향 재경보를 따른다.
 
 ## 12.4 I2·I3 주요 메시지
 
@@ -124,6 +126,11 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 - `rationale`은 VLM 결과가 오면 `risk_event` 갱신으로 채워진다.
 - “확인 필요”는 `confidence_reasons[]`로 싣는다(7.1). 위 예시의 `needs_check`는 이전 버전 호환용으로 남은 같은 뜻의 값이다. 재개 횟수는 `resume_count` 다(6.4).
 - I3 `risk_alert`는 `event_id`, 등급, 구역, 한 줄 요약(규칙 근거)만 담는다. 시험 푸시는 `risk_alert`가 아니며 “시험”을 표시한다(3.10).
+- `/topic/events` 경보 처리: `source` LIVE, `severity` CRITICAL·HIGH, `lifecycle` RAISED·UPDATED 인 이벤트가 관제 화면 소리·점멸 대상이다(8.1, 10장). 확인 상태는 `acks` 로 읽고, 지금 경보 단계를 연 `event_sequence` 이후를 대상으로 한 확인이 있으면 모든 관제 화면의 반복 소리를 멈춘다(3.10). 별도 경보 메시지 타입은 두지 않는다.
+- 운영자 상향을 거친 등급은 `escalations` 로 표시해 규칙 판정 등급과 구분한다(2.1.0).
+- `/topic/world` 는 I1 `world_state` 를 형식 그대로 다시 싣는다. EC2 는 봉투만 새로 쓰고(`source_id` `ec2`) payload 를 바꾸지 않는다. 뷰어가 밀리면 최신 것만 남긴다.
+- `/topic/health` 는 `viewer_health` 다. EC2 가 Tier 0 `health`(원문은 `tier0_health`), 노트북 하트비트, `config_ack`, COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보낸다. 원격 단절 구분(`remote_state`), 데이터 연령, 구성 묶음 적용 상태, Scene 불일치(Tier 0 가 쓰는 `world_state.scene_version` 과 EC2 의 COMMITTED Scene 버전이 다르면 경고, FR-12)를 싣는다.
+- `/topic/admin/events` 는 관리자만 구독하고 조치 불일치 `action_mismatch`(조치 완료인데 이벤트 활성, 8.4)를 싣는다. 이벤트가 해소되면 `cleared: true` 로 한 번 더 보낸다.
 
 ## 12.5 I5 작업 유형
 
@@ -138,11 +145,15 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 | `job_type` | 입력 | 출력 |
 |---|---|---|
 | `vlm_rationale` | 이벤트 프레임 주소, 구조화 상태 | 근거 문장, 상향 의견 |
-| `tbm_report` | 규칙 계산 결과, RAG 질의 | 보고서 본문(LLM 외부 API, 텍스트만), 인용 조항 ID |
+| `tbm_report` | 보고서 종류 `report_kind`(TBM·DAILY, 없으면 TBM), 규칙 계산 결과(EC2 Risk Engine PLANNED 결과), EC2 pgvector 로 검색한 조항 ID·본문 | 보고서 본문(분석 워커가 외부 LLM API 호출, 텍스트만), 인용 조항 ID(입력에 담긴 조항 ID 만) |
+| `incident_summary` | 이벤트, 이벤트 전후 20초 클립 객체 키(`media_clip`), 얼굴 처리 `face_policy`, 구조화 상태 | 요약 문장(상향 의견 없음). 우선순위 REPORT |
+| `bev_floorplan` | 보정 버전, 카메라 프레임 주소(정적 3D 가 있으면 Scene 버전) | BEV 평면도 이미지 주소(보조 화면, 4.1). 우선순위 BACKGROUND |
 | `static_reconstruct` | 카메라 프레임 주소, 보정 버전 | glTF 주소, 품질 지표 |
 | `calibration_ba` | 2D 관측 묶음(Network Volume), 초기 보정 | 보정 후보 |
 | `hmr_refine` (확장·EXP-02) | 프레임·마스크·keypoint, World ID·보정 버전 | MHR 메시·포즈, 관절 출처, 품질 메타데이터 |
 | `hmr_appearance_update` (EXP-02 실험) | 동일 World ID의 동의된 관측 샘플, 이전 시각 자산 | 신규 텍스처/외형 버전, 관측 영역·불확실성·아티팩트 참조 |
+
+VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커가 VLM 호출 직전에 `face_policy` 대로 얼굴 영역을 흐린다(5.4). 외부 LLM 호출은 분석 워커의 `tbm_report` 작업 안에서만 한다(API 키는 Pod `.env`, 14장). `bev_floorplan` 은 CALIBRATED 가 되거나 보정 버전이 바뀌면 EC2 가 등록한다.
 
 작업은 시간 제한(`timeout_ms`)을 두고, 넘기면 TIMED_OUT 으로 끝내며 다시 내주지 않는다. 분석 워커 실패는 VLM·정적 3D·보고서에만 영향을 준다. Tier 0 서비스 실패는 실시간 관측·World XYZ·위험 판정을 멈추고 UNSAFE_UNKNOWN이 되며, Tier 0와 EC2 사이 연결만 실패하면 판정과 노트북 경보는 유지되고 원격 전달만 지연된다(6.5).
 
@@ -157,19 +168,35 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 | GET | /api/world?at=\{t\} | 시각 t의 World 상태 스냅샷 | 열람 |
 | GET | /api/replay?from=\{t1\}&amp;to=\{t2\} | 구간 궤적·이벤트(최소 리플레이, 골격·버전은 확장) | 열람 |
 | GET · POST · PUT | /api/zones | 구역 조회·생성·새 버전 | 쓰기는 관리자 |
+| GET | /api/zones/\{zoneId\}/versions | 구역 버전 이력(리플레이는 그 시각 유효 버전) | 열람 |
 | GET · POST · PUT | /api/static-objects | 정적 객체·작업면(OBB, 상판 높이) 조회·등록·새 버전(7.5) | 쓰기는 관리자 |
 | GET | /api/rules | 규칙 버전 조회 | 열람 |
+| POST | /api/calibrations | 자동 보정 시작(걷기 보정, 4.3) | 관리자 |
+| GET | /api/calibrations/current | 보정 상태(UNCALIBRATED·PROVISIONAL·CALIBRATED·DRIFTED) | 열람 |
+| POST | /api/calibrations/\{id\}/verifications | 독립 검증점 결과 제출(4.4) | 관리자 |
+| POST | /api/calibrations/\{id\}/confirmation | 보정 결과를 새 버전으로 확정 | 관리자 |
+| GET · POST | /api/scale-references | 실측 정물 목록(이름·치수·측정일) 조회·등록(4.3) | 쓰기는 관리자 |
+| GET | /api/cameras/coverage-guides | 커버리지 기반 설치·걷기 경로 안내(4.5) | 관리자 |
+| GET | /api/floor-plans/current | BEV 평면도(보조 화면, `bev_floorplan` 결과, 4.1) | 열람 |
 | POST · GET | /api/config-bundles, /api/config-bundles/\{version\} | 구성 묶음 발행, 현장 적용 상태 조회 | 발행은 관리자, 조회는 열람 |
-| GET · POST | /api/events, /api/events/\{id\}/ack | 이벤트 목록, 확인 | 반장·관리자 |
+| GET · POST | /api/events, /api/events/\{id\}/ack | 이벤트 목록(기본 `page=0`·`size=20`·최대 100, 최신 발생순, 같은 사람의 여러 규칙은 한 묶음), 확인 | 반장·관리자 |
+| GET | /api/events/\{id\} | 이벤트 상세(위치·근거·관련 구역·조치 상태·VLM 근거·상향 의견) | 반장·관리자 |
+| POST | /api/events/\{id\}/summary | 사고 구간 요약 요청(`incident_summary`, 5.4) | 관리자 |
+| POST | /api/events/\{id\}/escalation | VLM 상향 의견 승인·거절(본문 `assessmentId`·`decision`). 승인만 I1 `event_escalate` 로 보냄(5.4) | 관리자 |
 | GET | /api/scenes/current | COMMITTED Scene과 glTF 주소 | 열람 |
+| GET | /api/scenes/\{sceneId\} | Scene 생성 상태(CANDIDATE·VALIDATING·COMMITTED·REJECTED) | 관리자 |
 | POST | /api/scenes/rebuild | 정적 3D 재생성 요청 | 관리자 |
 | GET · POST | /api/layouts | 가상 레이아웃 | 관리자 |
-| POST | /api/layouts/\{id\}/evaluate | 계획 모드 단독 평가(확장. M3 TBM 보고서에서 계산을 어떻게 요청할지는 확인 필요) | 관리자 |
-| POST | /api/reports/tbm | TBM 보고서 생성 요청 | 관리자 |
+| GET · PUT | /api/layouts/\{id\} | 가상 레이아웃 조회·수정 | 조회는 열람, 수정은 관리자 |
+| POST | /api/layouts/\{id\}/evaluate | 계획 모드 단독 평가(확장, 부록 C.4. M3 TBM 보고서는 아래 `/api/reports/tbm` 안에서 계산) | 관리자 |
+| POST | /api/reports/tbm | TBM 보고서 생성 요청(본문 `layoutId`). EC2 가 Risk Engine 컨테이너로 PLANNED 계산(`sim.*`)·pgvector 조항 검색 후 `tbm_report` 등록(8.3) | 관리자 |
+| GET | /api/reports/tbm/\{reportId\} | 보고서 생성 상태·본문·계산 근거 표(PDF 는 브라우저 인쇄, 별도 내보내기 API 없음) | 열람 |
+| POST | /api/reports/daily | 일일 일지 생성 요청(`tbm_report`, `report_kind` DAILY) | 관리자 |
 | GET · PATCH | /api/tickets, /api/tickets/\{id\} | 조치 티켓 조회·상태 변경 | 반장(조회는 관리자도) |
 | POST | /api/uploads/sign | 사진·프레임·클립 임시 업로드 주소 | 기기·반장 |
 | GET | /api/clips/\{id\} | 이벤트 클립 조회(임시 서명 주소) | 관리자 |
 | PUT | /api/clips/\{id\}/retention | 클립 보존 표시 붙이기·떼기 | 관리자 |
+| GET | /api/push/vapid-public-key | Web Push 구독용 VAPID 공개키 | 반장 |
 | POST · DELETE | /api/push/subscribe | Web Push 구독 등록·해지 | 반장 |
 | POST | /api/push/receipts | 푸시 수신 확인(Service Worker) | 반장 기기 |
 | POST | /api/push/test | 시험 푸시(RiskEvent 아님, “시험” 표시) | 관리자 |

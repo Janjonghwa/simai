@@ -1,0 +1,27 @@
+{
+  "schema_version": "3.1.0",
+  "msg_type": "job_request",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000301",
+  "sent_at": 1760342400400,
+  "source_id": "ec2",
+  "payload": {
+    "job_id": "job-20261020-0001",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-000000000311",
+    "attempt": 1,
+    "max_attempts": 2,
+    "job_type": "bev_floorplan",
+    "priority": "BACKGROUND",
+    "timeout_ms": 600000,
+    "leased_at": 1760342400400,
+    "lease_expires_at": 1760342430400,
+    "heartbeat_interval_ms": 10000,
+    "input": {
+      "frame_uris": [
+        "s3://simai-site/empty/cam1-0001.jpg",
+        "s3://simai-site/empty/cam2-0001.jpg"
+      ],
+      "scene_version": "scene-3"
+    }
+  },
+  "_expect_error": "BEV 평면도는 보정 버전 필수"
+}

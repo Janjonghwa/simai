@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/event_escalate_result.schema.json",
+  "title": "I1 event_escalate_result",
+  "description": "RunPod Tier 0 → EC2. event_escalate 처리 결과 (명세 5.4, 6.4, 12.3). ACCEPTED: 상향 UPDATED 전이를 저널에 넣었다(event_sequence 가 그 전이). DUPLICATE: 같은 escalation_id 를 이미 기록했다(새 전이 없음). REJECTED: 아무것도 바꾸지 않았다(reject_reason). 거부는 기록하지 않으므로 같은 escalation_id 를 다시 보내면 그때 상태로 다시 판단한다. 1.0.0 신설(S15P31A101-206). I1 계약.",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "event_escalate_result" },
+    "payload": {
+      "type": "object",
+      "required": ["escalation_id", "event_id", "result", "decided_at"],
+      "properties": {
+        "escalation_id": { "$ref": "../common/defs.schema.json#/$defs/uuid", "description": "응답하는 event_escalate.escalation.escalation_id" },
+        "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "result": { "enum": ["ACCEPTED", "DUPLICATE", "REJECTED"] },
+        "event_sequence": { "type": "integer", "minimum": 1, "description": "ACCEPTED 일 때 상향 전이의 event_sequence" },
+        "reject_reason": {
+          "enum": ["NOT_ACTIVE", "NOT_UPWARD", "JOURNAL_UNAVAILABLE"],
+          "description": "NOT_ACTIVE: 활성 이벤트가 아님(모르는 ID, 이미 해소·종료). NOT_UPWARD: target_severity 가 지금 등급보다 높지 않음(그사이 규칙이 이미 올렸거나 같은 등급). JOURNAL_UNAVAILABLE: 전이를 저널에 넣지 못함(이벤트 그대로, 같은 escalation_id 로 다시 보낼 수 있음)"
+        },
+        "decided_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "Tier 0 가 결정한 시각" }
+      },
+      "allOf": [
+        {
+          "description": "REJECTED 만 거부 사유가 있다",
+          "if": { "properties": { "result": { "const": "REJECTED" } }, "required": ["result"] },
+          "then": { "required": ["reject_reason"], "not": { "required": ["event_sequence"] } },
+          "else": { "not": { "required": ["reject_reason"] } }
+        },
+        {
+          "if": { "properties": { "result": { "const": "ACCEPTED" } }, "required": ["result"] },
+          "then": { "required": ["event_sequence"] }
+        }
+      ]
+    }
+  }
+}
