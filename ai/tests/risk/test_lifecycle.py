@@ -15,6 +15,7 @@ from simai_ai.risk import (
     Finding,
     FixedClock,
     IdentityCorrection,
+    IdentitySplit,
     Lifecycle,
     LifecycleError,
     LifecycleTracker,
@@ -448,6 +449,92 @@ def test_identity_correction_conflict_links_without_resolving(harness, track_jso
     assert all(t.transition is not Lifecycle.RESOLVED for t in transitions(later))
     assert {s.event_id for s in h.tracker.active()} == {old.event_id, other.event_id}
     assert h.tracker.get(old.event_id).verification is Verification.UNVERIFIABLE
+
+
+def _split_harness(harness, track_json):
+    """w-0012 의 R1 이 진행 중일 때 w-0030 이 w-0012 에서 갈라져 나온다(S15P31A101-201). 해소 유지 1 s."""
+    h = harness(policy=legacy(clear_hold_ms=1000))
+    (raised,) = h.step([finding()]).transitions
+    assert h.tracker.split_identity(IdentitySplit("w-0012", "w-0030", 3)).transitions == ()
+    return h, raised
+
+
+def test_identity_split_keeps_event_while_split_partner_has_same_rule(harness, track_json):
+    """분할 전 이벤트는 W 에 남고(키·원본 World ID 그대로), W 가 확실히 관측돼도 분할 상대 N 에 같은 규칙 판정이 있으면
+    해소하지 않는다. N 의 판정은 N 의 새 이벤트다. N 도 판정이 사라진 뒤에야 해소한다."""
+    h, raised = _split_harness(harness, track_json)
+    tracks = [track_json(identity_revision=3), track_json(world_id="w-0030", identity_revision=3)]
+    steps = h.hold(5000, [finding(world_ids=("w-0030",))], tracks)
+    assert all(t.transition is not Lifecycle.RESOLVED for t in transitions(steps))
+    assert h.tracker.get(raised.event_id).world_ids == ("w-0012",)
+    assert h.tracker.get(raised.event_id).origin_world_ids == ("w-0012",)
+    raised_n = [t for t in transitions(steps) if t.transition is Lifecycle.RAISED]
+    assert [t.state.world_ids for t in raised_n] == [("w-0030",)]
+    revised = [t for t in transitions(steps) if Change.IDENTITY_REVISED in t.changes]
+    assert [t.event_id for t in revised] == [raised.event_id]  # 분할은 IDENTITY_REVISED 로 표시된다
+    later = transitions(h.hold(1100, tracks=tracks))
+    assert {t.event_id for t in later if t.transition is Lifecycle.RESOLVED} == {raised.event_id, raised_n[0].event_id}
+
+
+def test_identity_split_partner_unobserved_is_unverifiable(harness, track_json):
+    """분할 상대 N 이 관측되지 않으면 W 만으로는 해소를 확인할 수 없다(UNVERIFIABLE, 자동 해소 없음)."""
+    h, raised = _split_harness(harness, track_json)
+    steps = h.hold(5000, tracks=[track_json(identity_revision=3)])
+    assert all(t.transition is not Lifecycle.RESOLVED for t in transitions(steps))
+    assert h.tracker.get(raised.event_id).verification is Verification.UNVERIFIABLE
+
+
+def test_identity_split_partner_follows_merge(harness, track_json):
+    """분할 상대 N 이 Z 로 합쳐지면 상대는 Z 다(Z 의 같은 규칙 판정이 해소를 막는다)."""
+    h, raised = _split_harness(harness, track_json)
+    h.tracker.correct_identity(IdentityCorrection("w-0030", "w-0040", 4))
+    tracks = [track_json(identity_revision=3), track_json(world_id="w-0040", identity_revision=4)]
+    steps = h.hold(3000, [finding(world_ids=("w-0040",))], tracks)
+    assert all(t.event_id != raised.event_id or t.transition is not Lifecycle.RESOLVED for t in transitions(steps))
+    assert transitions(h.hold(1200, tracks=tracks))[-1].transition is Lifecycle.RESOLVED
+
+
+def test_identity_split_lineage_is_transitive_through_three_splits(harness, track_json):
+    """리뷰 R1: W→N, N→M, M→Q 처럼 분할 상대가 다시 갈라지면 W 의 분할 전 이벤트의 상대는 계보 전체(N·M·Q)다. 가장 끝의 Q 에
+    같은 규칙 판정이 있거나 Q 가 관측되지 않으면 해소하지 않고, 모두 안전하게 관측된 뒤에만 해소한다."""
+    h, raised = _split_harness(harness, track_json)  # w-0012 → w-0030
+    h.tracker.split_identity(IdentitySplit("w-0030", "w-0031", 4))
+    h.tracker.split_identity(IdentitySplit("w-0031", "w-0032", 5))
+    ids = {"w-0012": 3, "w-0030": 4, "w-0031": 5, "w-0032": 5}
+    tracks = [track_json(world_id=w, identity_revision=r) for w, r in ids.items()]
+    steps = h.hold(3000, [finding(world_ids=("w-0032",))], tracks)
+    assert all(t.event_id != raised.event_id or t.transition is not Lifecycle.RESOLVED for t in transitions(steps))
+    steps = h.hold(3000, tracks=tracks[:3])  # Q(w-0032) 를 관측하지 못한다
+    assert all(t.event_id != raised.event_id or t.transition is not Lifecycle.RESOLVED for t in transitions(steps))
+    assert h.tracker.get(raised.event_id).verification is Verification.UNVERIFIABLE
+    later = transitions(h.hold(1200, tracks=tracks))
+    assert any(t.event_id == raised.event_id and t.transition is Lifecycle.RESOLVED for t in later)
+
+
+def test_identity_split_lineage_with_merges(harness, track_json):
+    """분할과 병합이 섞여도 계보를 놓치지 않는다: W→N 뒤 N 이 Z 로 합쳐지고 Z 가 다시 Y 로 갈라지면 상대는 Z·Y 다. 상대가 이벤트
+    자신의 ID 로 합쳐지면 상대에서 빠진다(자기 판정·관측으로 다룬다)."""
+    h, raised = _split_harness(harness, track_json)  # w-0012 → w-0030
+    h.tracker.correct_identity(IdentityCorrection("w-0030", "w-0040", 4))
+    h.tracker.split_identity(IdentitySplit("w-0040", "w-0041", 5))
+    tracks = [track_json(identity_revision=3), track_json(world_id="w-0040", identity_revision=5),
+              track_json(world_id="w-0041", identity_revision=5)]  # fmt: skip
+    steps = h.hold(3000, [finding(world_ids=("w-0041",))], tracks)
+    assert all(t.event_id != raised.event_id or t.transition is not Lifecycle.RESOLVED for t in transitions(steps))
+    h.tracker.correct_identity(IdentityCorrection("w-0041", "w-0012", 6))  # 상대가 이벤트 자신의 ID 로 합쳐짐
+    h.tracker.correct_identity(IdentityCorrection("w-0040", "w-0012", 7))
+    assert h.tracker._by_id[raised.event_id].split_partners == set()
+    later = transitions(h.hold(1200, tracks=[track_json(identity_revision=7)]))
+    assert any(t.event_id == raised.event_id and t.transition is Lifecycle.RESOLVED for t in later)
+
+
+def test_identity_split_input_is_validated():
+    from simai_ai.risk._parse import RiskInputError
+
+    with pytest.raises(RiskInputError):
+        IdentitySplit("w-0012", "w-0012", 1)
+    with pytest.raises(RiskInputError):
+        IdentitySplit("", "w-0030", 1)
 
 
 # --- 확인(ACK, 수정 6) -----------------------------------------------------------------

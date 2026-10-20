@@ -45,6 +45,13 @@ LIVE 이벤트의 생명주기 정본은 RunPod Tier 0 의 이 추적기 하나�
   상향 전 상태에 대한 늦은 확인은 저널에 남지만 상향된 경보 소리를 멈추지 않는다(S15P31A101-161).
 - ID 교정(identity_revision 증가, 명시적 교정)은 해소 확인을 처음부터 다시 세게 할 뿐 해소하지 않는다(5.2, G3).
   이벤트에는 발생 당시의 원본 World ID(origin_world_ids)를 보존한다.
+- ID 분할(S15P31A101-201, split_identity): 한 World ID W 가 두 사람이었다고 분할되면 W 의 활성 이벤트는 W 에 그대로 두고
+  (원본 World ID 보존, 키를 옮기지 않음) 갈라져 나간 새 ID N 을 그 이벤트의 분할 상대로 기억한다. 분할 전 이벤트가 둘 중
+  누구의 것인지 모르므로, 그 이벤트는 W 와 N 이 모두 유효하게 관측되고 같은 규칙의 판정이 W·N 어느 쪽에도 없을 때만 해소를
+  센다(한쪽 관측만으로 해소하지 않음). N 에 같은 위험이 판정되면 N 의 새 이벤트가 생긴다. 분할 상대는 분할 계보 전체다:
+  상대 N 이 다시 M 으로 갈라지면 M 도 상대가 된다(전이적, 리뷰 R1). 상대가 병합되면 남는 ID 로 잇고, 이벤트 자신의 ID 가
+  되면 뺀다. 상대가 사라지면(LOST) 관측할 수 없어 해소하지 않는다. 분할 상대는 체크포인트·저널에 싣지 않는다(재시작하면 W 가
+  다시 관측되지 않아 복원 이벤트는 UNVERIFIABLE 로 남는다).
 
 **병합(7.4).** 같은 규칙·같은 사람(World ID 묶음)은 이벤트 하나를 갱신한다. 사람 대상은 구역이 바뀌어도 같은
 이벤트다(zone_id 는 발생 판정으로 갱신). holding 판정은 활성 이벤트를 유지만 하므로 구역을 바꾸지 않는다.
@@ -823,6 +830,25 @@ class IdentityCorrection:
         as_int(self.identity_revision, "IdentityCorrection.identity_revision", minimum=0)
 
 
+@dataclass(frozen=True)
+class IdentitySplit:
+    """World Track Manager 의 ID 분할 기록(명세 5.2, S15P31A101-201): new_world_id 가 world_id 에서 갈라져 나왔다.
+
+    world_id 는 원래 ID 를 지킨 쪽이고 identity_revision 은 분할 뒤 두 ID 의 값이다(둘 다 같은 값으로 오른다).
+    """
+
+    world_id: str
+    new_world_id: str
+    identity_revision: int
+
+    def __post_init__(self) -> None:
+        if not self.world_id or not self.new_world_id:
+            raise RiskInputError("IdentitySplit: World ID 가 비었다")
+        if self.world_id == self.new_world_id:
+            raise RiskInputError(f"IdentitySplit: 같은 World ID 로 분할할 수 없다 ({self.world_id})")
+        as_int(self.identity_revision, "IdentitySplit.identity_revision", minimum=0)
+
+
 RelatedEventFn = Callable[[EventKey, Finding], str | None]
 """새 이벤트를 열 때 이전 이벤트와의 연결(related_event_id)을 돌려주는 함수 (명세 3.2 재시작 복구: 재관측된 사람에게
 같은 위험이 다시 걸려 새 이벤트가 생기면 이전 이벤트와의 연결을 남긴다). 연결할 것이 없으면 None. Tier 0 조립부가 복구
@@ -849,6 +875,9 @@ class _Active:
         self.restored = False
         # 마지막 판정에 이 이벤트의 판정이 있었는지(운영자 종료 거부 조건). 복원 직후는 아직 판정이 없어 False 다.
         self.condition_present = False
+        # ID 분할 상대(S15P31A101-201): 분할 전 이 이벤트의 사람일 수도 있는 갈라져 나간 World ID. 해소하려면 이들도 유효하게
+        # 관측되고 같은 규칙 판정이 없어야 한다. 해소될 때까지 남는다(재개한 이벤트는 새 _Active 라 없다)
+        self.split_partners: set[str] = set()
         self.metrics_emitted_at = state.evaluated_at
         self.mark_emitted()
 
@@ -1192,7 +1221,12 @@ class LifecycleTracker:
                 revisions[world_id] = track.identity_revision
         identity_revised = Change.IDENTITY_REVISED in changes
 
-        verified = self._verification.verifiable(state.key, state.world_ids, world, evaluation.evaluated_at)
+        partners = tuple(sorted(active.split_partners))
+        verified = self._verification.verifiable(state.key, state.world_ids + partners, world, evaluation.evaluated_at)
+        # 분할 상대에게 같은 규칙 판정이 있으면 분할 전 이 이벤트의 사람이 그쪽일 수 있다: 해소를 세지 않는다(S15P31A101-201)
+        partner_condition = any(
+            f.rule_id == state.rule_id and active.split_partners.intersection(f.world_ids) for f in evaluation.findings
+        )
         if verified and state.key.target is FindingTarget.ZONE and (finding is None or active.restored):
             # 감시 확보 근거(S15P31A101-174·180): 사람 없는 구역 대상 이벤트는 판정이 없고 입력이 최신이라는 것만으로
             # 조건이 사라졌다고 확인하지 않는다. 그 규칙이 이 판정의 유효 입력으로 그 구역에 조건이 없다고 확인한 근거가
@@ -1257,7 +1291,7 @@ class LifecycleTracker:
                 "metrics": finding.metrics,
                 "reasons": finding.reasons,
             }
-        elif verified and not identity_revised:
+        elif verified and not identity_revised and not partner_condition:
             if active.clear_since is None:
                 active.clear_since = evaluation.observation_time
             resolved = evaluation.observation_time - active.clear_since >= self._policy.hold_ms(state.rule_id)
@@ -1416,6 +1450,10 @@ class LifecycleTracker:
         """
         occurred_at = self._clock.now_ms()
         transitions: list[EventTransition] = []
+        for active in self._by_id.values():  # 분할 상대가 합쳐지면 남는 ID 로 잇는다(S15P31A101-201)
+            if correction.previous_world_id in active.split_partners:
+                active.split_partners.discard(correction.previous_world_id)
+                active.split_partners.add(correction.world_id)
         targets = [a for a in self._sorted_active() if correction.previous_world_id in a.state.world_ids]
         for active in targets:
             state = active.state
@@ -1451,7 +1489,24 @@ class LifecycleTracker:
                     state=active.state, transition=Lifecycle.UPDATED, changes=(change,), occurred_at=occurred_at
                 )
             )
+        for active in self._by_id.values():  # 상대가 이벤트 자신의 ID 로 합쳐졌으면 상대가 아니다
+            active.split_partners.difference_update(active.state.world_ids)
         return LifecycleStep(tuple(transitions))
+
+    def split_identity(self, split: IdentitySplit) -> LifecycleStep:
+        """ID 분할을 반영한다(명세 5.2, S15P31A101-201). 이벤트를 옮기거나 해소하지 않는다(G3).
+
+        world_id 를 대상으로 하거나 world_id 를 분할 상대로 둔(분할 계보 안) 사람 대상 활성 이벤트는 그대로 두고(원본 World ID
+        보존) new_world_id 를 분할 상대로 더해 해소 확인을 처음부터 다시 센다(W→N→M 이면 W 의 이벤트 상대는 N·M, 리뷰 R1). 전이는 내지 않는다: 같은 tick 판정에서 world_id 의 identity_revision 이 올라
+        IDENTITY_REVISED 갱신이 나간다. new_world_id 에 같은 위험이 판정되면 그쪽은 새 이벤트다.
+        """
+        for active in self._sorted_active():
+            world_ids = active.state.world_ids
+            lineage = split.world_id in world_ids or split.world_id in active.split_partners
+            if active.state.key.target is FindingTarget.PERSON and lineage and split.new_world_id not in world_ids:
+                active.split_partners.add(split.new_world_id)
+                active.clear_since = None
+        return LifecycleStep(())
 
     # --- 체크포인트 복원 -------------------------------------------------------------
 

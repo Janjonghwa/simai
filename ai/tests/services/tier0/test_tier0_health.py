@@ -333,13 +333,13 @@ def test_warning_codes_match_contract_enum() -> None:
 
 def test_envelope_versions_follow_contract_modules() -> None:
     """반례 8: 송신 봉투가 내용과 다른 버전을 달지 않는다. I1·I0 health 는 HEALTH_SCHEMA_VERSION(2.1.0), I1 world_state 는
-    tracking.world_state 의 2.0.0 이다. 2.0.0 내용(null lag)을 단 health 와 UNCERTAIN 값을 단 world_state 가 그 봉투로 검증된다."""
+    tracking.world_state 의 2.1.0 이다. 2.0.0 내용(null lag)을 단 health 와 UNCERTAIN 값을 단 world_state 가 그 봉투로 검증된다."""
     from services.tier0.i0_control import DOWNSTREAM_VERSIONS
     from services.tier0.i1_client import MESSAGE_SCHEMA_VERSIONS, Envelope
     from simai_ai.tracking.world_state import WORLD_STATE_SCHEMA_VERSION
 
     assert MESSAGE_SCHEMA_VERSIONS["health"] == DOWNSTREAM_VERSIONS["health"] == HEALTH_SCHEMA_VERSION == "2.1.0"
-    assert MESSAGE_SCHEMA_VERSIONS["world_state"] == WORLD_STATE_SCHEMA_VERSION == "2.0.0"
+    assert MESSAGE_SCHEMA_VERSIONS["world_state"] == WORLD_STATE_SCHEMA_VERSION == "2.1.0"
 
     class _FixedClock:
         def now_ms(self) -> int:

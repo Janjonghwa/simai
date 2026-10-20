@@ -73,7 +73,27 @@ ID)과 위치뿐이다. 외형·얼굴·재식별은 쓰지 않는다. 로컬 �
   남는 ID 로 이어진다.
 - 잇거나 합친 Track 은 자기 로컬 트랙만으로(2대 이상) 위치가 갱신된 시각이 `merge_confirm_frames` 번 쌓일 때까지
   IDENTITY_UNCERTAIN(LATE_REASSOCIATION)을 매 시각 다시 붙인다. 시간이 지났다고 풀지 않는다.
-- 분할(SPLIT)과 수동 교정(CORRECTION)은 내지 않는다(별도 티켓).
+- 수동 교정(CORRECTION)은 내지 않는다(운영자 명령 계약 승인 뒤).
+
+**분할(ID 교정, S15P31A101-201, 명세 5.2).** 근거는 병합과 같은 로컬 트랙 연결 이력과 위치이고 기준도 병합과 대칭이다.
+- 분할 후보: 이번 시각 갱신된 Track W 의 로컬 트랙(이번 시각 이전 주인이 W)이 서로 다른 카메라 `reconnect_min_cameras`(2)
+  대 이상에서 **같은 카메라의 두 검출로 동시에** 갈라져, 한쪽은 W 가 받고 다른 쪽 클러스터가 새 ID N 이 됐다(6단계, 사람을
+  빠뜨리지 않으려고 N 은 지금처럼 바로 만든다). 같은 시각 같은 카메라의 두 검출은 한 사람일 수 없으므로(병합 금지 쌍과 같은
+  근거) W 는 두 사람의 관측을 묶고 있었다. 두 클러스터 중 하나라도 IDENTITY_UNCERTAIN 이면 후보로 두지 않는다. 한 카메라만
+  갈라지면(로컬 ID 전환과 구별할 수 없음) 후보가 아니다.
+- 지속: 그 뒤 W 와 N 이 둘 다 위치 측정을 받은 시각마다 N 의 클러스터에 W 에게서 넘겨받은 로컬 트랙이, W 의 클러스터에 같은
+  카메라의 W 로컬 트랙이 2대 이상 함께 있으면 근거다. 두 골반의 수평 거리가 `duplicate_radius_m`(0.35 m, 같은 사람 두 ID
+  기준과 같은 경계) 넘게 떨어진 근거 시각이 `merge_confirm_frames`(3) 번 쌓이면 분할한다. 가까우면(같은 사람일 수 있음)이나
+  클러스터가 불확실하면 처음부터 센다. 한쪽이 가려진 시각은 세지도 버리지도 않는다. 근거가 `key_ttl_ms`(2 s) 넘게 끊기면
+  후보를 버린다(분할하지 않음, 모르면 그대로). 만료는 이번 시각의 근거를 보기 전에 시각으로 판정한다(입력 정지 뒤 복귀 포함).
+- 교정 결과: 원래 ID W 는 분할을 처음 본 시각에 W 가 받은 쪽(연결 비용, 곧 예측 위치에 가까운 쪽)에 남고 갈라져 나간 쪽은
+  N 이다. 두 ID 의 identity_revision 을 둘 중 큰 값 + 1 로 함께 올리고 `IdentityRevision(SPLIT, world_id=N,
+  previous_world_id=W, since=후보 시작 시각)` 을 추가만 한다. 별칭은 바꾸지 않는다(빼지 않음, N 에 W 를 넣지 않음).
+  N 은 그 시각부터 살아 있는 동안 `split_from = W` 를 들고(world_state 2.1.0 `split_from`, 바꾸지 않음), 병합으로 사라지면
+  함께 사라진다(남는 ID 는 자기 split_from 만 지킨다). 체크포인트에는 넣지 않는다(재시작하면 모두 새 ID).
+  W 의 관절 게이트 이력은 지운다. 후보인 동안과 분할 뒤 두 Track 이 자기 로컬 트랙만으로(2대 이상) 위치가 갱신된 시각이
+  `merge_confirm_frames` 번 쌓일 때까지 둘 다 IDENTITY_UNCERTAIN(IDENTITY_SPLIT)이다. W·N 은 병합 금지 쌍이라 다시 합치지
+  않는다(진동 없음).
 
 **재시작 뒤 복원 Track 매칭(S15P31A101-54, 명세 3.2·부록 C).** `restore` 로 체크포인트의 Track(`TrackCheckpoint`)을
 받으면 재관측과 맞출 **후보**로만 둔다. 위치 정본이 아니므로 world_state·export_tracks·연결·칼만 필터에 넣지 않고
@@ -88,8 +108,10 @@ IDENTITY_UNCERTAIN(RESTORED_TRACK_CANDIDATE)을 붙인다. 갈 수 없는 거리
 `recovery.relink` 가 이 후보로 정한다.
 
 **Risk 전달(G3).** Tier 0 조립부는 `WorldTrackFrame.revisions` 를 그 시각 판정을 `LifecycleTracker.apply` 하기 전에
-`LifecycleTracker.correct_identity(revision.to_correction())` 로 넘긴다. 진행 중인 이벤트는 사라지는 ID 에서 남는 ID 로
-이어지고(원본 World ID 는 origin_world_ids 에 남음) 자동 해소되지 않는다(D-G3-10).
+병합은 `LifecycleTracker.correct_identity(revision.to_correction())`, 분할은 `LifecycleTracker.split_identity(
+revision.to_split())` 로 넘긴다. 병합하면 진행 중인 이벤트는 사라지는 ID 에서 남는 ID 로 이어지고(원본 World ID 는
+origin_world_ids 에 남음) 자동 해소되지 않는다(D-G3-10). 분할하면 이벤트는 W 에 그대로 남고 N 을 분할 상대로 기억해 W·N
+모두 위험이 없다고 확인될 때만 해소한다.
 
 **World 칼만 필터.** 골반 XYZ 를 측정으로 받는 등속 모델(상태 x y z vx vy vz, 백색 가속도 잡음). 측정 잡음은 관절
 유효성 게이트의 두 엉덩이 삼각측량 표준편차로 만들고, 골반이 UNCERTAIN 이면 키운다. 골반이 없거나 UNAVAILABLE 이면
@@ -124,7 +146,7 @@ import numpy as np
 from simai_ai.geometry.joint_gate import GatedSkeleton, GateIssue, HeadZ, JointGate, JointGateConfig
 from simai_ai.geometry.rig import CameraRig, UndistortedKeypoints
 from simai_ai.geometry.triangulation import COCO17_L_HIP, COCO17_R_HIP, JointValidity, SkeletonEstimate
-from simai_ai.risk.lifecycle import IdentityCorrection
+from simai_ai.risk.lifecycle import IdentityCorrection, IdentitySplit
 from simai_ai.tracking.assignment import linear_sum_assignment
 from simai_ai.tracking.cross_view import AssociationFrame, TrackKey, ViewCluster
 from simai_ai.tracking.time_model import ObservationState, TimeModelConfig, TrackTimeInput, require_ms
@@ -171,6 +193,9 @@ class IdentityFlag(StrEnum):
     REASSOCIATION_AMBIGUOUS = "REASSOCIATION_AMBIGUOUS"
     """갱신되지 않은 다른 Track 의 옛 로컬 트랙을 넘겨받았지만 근거가 모자라(카메라 1대, 여러 Track, 근처의 다른 소실
     Track, 멀거나 다른 곳에도 보임) 잇지 않았다. 그 Track 이 남아 있는 동안 계속 붙는다(돌아온 사람일 수 있다)"""
+    IDENTITY_SPLIT = "IDENTITY_SPLIT"
+    """이 ID 의 로컬 트랙이 2대 이상 카메라에서 동시에 두 사람으로 갈라졌다(분할 후보)거나, 분할 뒤 일관성 확인 중이다
+    (S15P31A101-201). 분할 전 관측이 둘 중 누구의 것인지 모른다"""
     RESTORED_TRACK_CANDIDATE = "RESTORED_TRACK_CANDIDATE"
     """재시작 뒤 처음 관측된 곳이 복원 Track(재시작 전 Track)이 갈 수 있는 거리 안이다. 위치만으로는 같은 사람인지 알 수
     없어 잇지 않았다(S15P31A101-54). 그 복원 Track 이 후보로 남아 있는 동안 계속 붙는다(재시작 전의 그 사람일 수 있다)"""
@@ -190,7 +215,7 @@ class RestoreState(StrEnum):
 
 
 class RevisionKind(StrEnum):
-    """ID 교정 종류 (명세 5.2 병합·분할·교정). 지금은 MERGE 만 낸다(SPLIT·CORRECTION 은 자리만)."""
+    """ID 교정 종류 (명세 5.2 병합·분할·교정). MERGE·SPLIT 을 낸다(CORRECTION 은 자리만, 운영자 명령 계약 승인 뒤)."""
 
     MERGE = "MERGE"
     SPLIT = "SPLIT"
@@ -204,11 +229,16 @@ class RevisionReason(StrEnum):
     """소실 후보(LOST)의 로컬 트랙이 이미 새 ID 를 받은 Track 에 이어졌다"""
     DUPLICATE_MERGE = "DUPLICATE_MERGE"
     """가림 중인(LOST 전) Track 의 로컬 트랙이 다른 ID 의 Track 에 이어졌다 (POSSIBLE_DUPLICATE 쌍 포함)"""
+    SPLIT_OBSERVED = "SPLIT_OBSERVED"
+    """한 ID 의 로컬 트랙이 2대 이상 카메라에서 같은 카메라의 두 검출로 갈라져, 떨어진 두 위치에서 이어졌다 (S15P31A101-201)"""
 
 
 @dataclass(frozen=True)
 class IdentityRevision:
-    """ID 교정 기록 한 건. previous_world_id 가 world_id 로 합쳐졌다(별칭이 됐다). 기록은 추가만 한다.
+    """ID 교정 기록 한 건. 기록은 추가만 한다.
+
+    MERGE: previous_world_id 가 world_id 로 합쳐졌다(별칭이 됐다). SPLIT: world_id(새 ID)가 previous_world_id(원래 ID 를
+    지킨 쪽)에서 갈라져 나왔다. 두 ID 모두 identity_revision 이 이 값이 됐고 별칭은 바뀌지 않는다(S15P31A101-201).
 
     필드 이름은 Risk Engine 의 `risk.lifecycle.IdentityCorrection`(previous_world_id, world_id, identity_revision)과
     같다. 이벤트에는 발생 당시의 원본 World ID 를 남기고, 교정이 진행 중인 위험을 자동 해소하지 않는다(명세 5.2).
@@ -222,7 +252,9 @@ class IdentityRevision:
     """교정 뒤 world_id 의 identity_revision"""
     reason: str
     evidence: tuple[TrackKey, ...] = ()
-    """근거가 된 (카메라, 로컬 트랙)"""
+    """근거가 된 (카메라, 로컬 트랙). SPLIT 은 새 ID 가 원래 ID 에게서 넘겨받은 로컬 트랙"""
+    since: int | None = None
+    """SPLIT: 갈라짐을 처음 본 시각(분할 후보 시작). t 는 분할을 확정한 시각이다"""
 
     def to_correction(self) -> IdentityCorrection:
         """Risk Engine 에 넘길 교정(`LifecycleTracker.correct_identity`). 병합만 넘길 수 있다."""
@@ -232,6 +264,14 @@ class IdentityRevision:
             previous_world_id=self.previous_world_id,
             world_id=self.world_id,
             identity_revision=self.identity_revision,
+        )
+
+    def to_split(self) -> IdentitySplit:
+        """Risk Engine 에 넘길 분할(`LifecycleTracker.split_identity`). 분할만 넘길 수 있다."""
+        if self.kind is not RevisionKind.SPLIT:
+            raise ValueError(f"{self.kind} 는 Risk 분할로 넘길 형식이 아니다 (SPLIT 만)")
+        return IdentitySplit(
+            world_id=self.previous_world_id, new_world_id=self.world_id, identity_revision=self.identity_revision
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -244,6 +284,7 @@ class IdentityRevision:
             "identity_revision": self.identity_revision,
             "reason": self.reason,
             "evidence": [list(k) for k in self.evidence],
+            "since": self.since,
         }
 
 
@@ -483,6 +524,8 @@ class WorldTrackSnapshot:
     이전 이벤트 연결(related_event_id)의 후보다. 위치를 주지 않는다 (S15P31A101-54)"""
     restored_excluded: tuple[str, ...] = ()
     """첫 관측 때 남아 있던 복원 Track 중 갈 수 없는 거리여서 이 사람이 아닌 것"""
+    split_from: str | None = None
+    """분할로 이 ID 가 갈라져 나온 원래 World ID (분할 확정 시각부터 살아 있는 동안 같은 값, S15P31A101-201)"""
 
     @property
     def updated(self) -> bool:
@@ -683,6 +726,10 @@ class _Track:
     """첫 위치 측정이 갈 수 있는 거리 안이었던 복원 Track (가까운 순). 첫 관측에서 정하고 바꾸지 않는다(병합하면 합친다)"""
     restored_excluded: frozenset[str] = frozenset()
     """첫 위치 측정 때 후보였던(살아 있던) 복원 Track 중 갈 수 없는 거리였던 것: 이 사람이 아니다"""
+    split_left: int = 0
+    """분할 뒤 일관성 확인이 남은 시각 수. 0 이 될 때까지 IDENTITY_UNCERTAIN(IDENTITY_SPLIT)을 매 시각 다시 붙인다"""
+    split_from: str | None = None
+    """분할로 이 ID 가 갈라져 나온 원래 World ID. 한 번 정하면 바꾸지 않는다(world_state 2.1.0 split_from)"""
 
     @property
     def last_xy(self) -> np.ndarray:
@@ -698,6 +745,20 @@ class _Evidence:
     keys: frozenset[TrackKey]
     count: int
     last_t: int
+
+
+@dataclass
+class _Split:
+    """분할 후보: 갱신된 Track `source` 의 로컬 트랙(keys)이 같은 카메라의 다른 검출로 갈라져 새 Track `child` 가 됐다."""
+
+    source: str
+    child: str
+    keys: frozenset[TrackKey]
+    count: int
+    """두 골반이 duplicate_radius_m 넘게 떨어진 근거 시각 수"""
+    last_t: int
+    """마지막 근거 시각 (key_ttl_ms 넘게 끊기면 후보를 버린다)"""
+    since: int
 
 
 @dataclass
@@ -740,6 +801,8 @@ class WorldTrackManager:
         """같은 시각 같은 카메라의 다른 검출로 따로 보인 적이 있는 World ID 쌍. 서로 다른 두 사람이라 병합하지 않는다"""
         self._evidence: dict[str, _Evidence] = {}
         """갱신된 Track ID → 병합 근거 (갱신되지 않은 Track 의 로컬 트랙이 이어진 시각 수)"""
+        self._splits: dict[str, _Split] = {}
+        """갈라져 나간 새 Track ID → 분할 후보 (S15P31A101-201)"""
         self._last_t: int | None = None
         self._order = 0
         self._restore_input: tuple[tuple[TrackCheckpoint, ...], int | None] | None = None
@@ -1062,6 +1125,7 @@ class WorldTrackManager:
                 # 첫 관측이 그 Track 의 마지막 관측에서 갈 수 없는 거리다: 같은 사람이 아니다(병합 근거로 세지 않는다)
                 self._distinct.add(frozenset((unreachable, tr.world_id)))
             applied[tr.world_id] = _Applied(c.cluster, gated, (float(z[0]), float(z[1]), float(z[2])))
+            self._split_candidate(tr.world_id, c, holder, applied, t)
             new_flags = set()
             if c.uncertain:
                 new_flags.add(IdentityFlag.CROSS_VIEW_UNCERTAIN)
@@ -1090,20 +1154,23 @@ class WorldTrackManager:
         # 병합 금지 쌍: 이번 시각 새로 생기거나 다시 이은 Track 까지 (다음 시각 근거에 쓴다)
         self._mark_distinct(frame, holder, {wid: a.cluster for wid, a in applied.items()})
 
+        # 분할 (ID 교정, S15P31A101-201): 떨어진 근거 시각이 merge_confirm_frames 번 쌓이면 새 ID 를 원래 ID 에서 가른다
+        for rec in self._split_step(t, applied, holder, flags):
+            revisions.append(rec)
+            linked.update((rec.world_id, rec.previous_world_id))
+
         # 늦은 재연결·병합 뒤 일관성 확인: 자기 로컬 트랙만으로(reconnect_min_cameras 대 이상) 위치가 갱신된 시각을 센다.
         # 다 셀 때까지 LATE_REASSOCIATION 을 매 시각 붙인다. 넘겨받은 로컬 트랙의 옛 주인이 남아 있으면 애매 표시
         for wid, tr in self._tracks.items():
-            if tr.confirm_left > 0 and wid not in linked:
-                a = applied.get(wid)
-                if (
-                    a is not None
-                    and a.pelvis is not None
-                    and all(holder.get(k) == wid for k in a.cluster.keys)
-                    and _cameras(a.cluster.keys) >= cfg.reconnect_min_cameras
-                ):
-                    tr.confirm_left -= 1
+            own = wid not in linked and _own_update(applied.get(wid), holder, wid, cfg)
+            if tr.confirm_left > 0 and own:
+                tr.confirm_left -= 1
+            if tr.split_left > 0 and own:
+                tr.split_left -= 1
             if tr.confirm_left > 0:
                 flags.setdefault(wid, set()).add(IdentityFlag.LATE_REASSOCIATION)
+            if tr.split_left > 0:
+                flags.setdefault(wid, set()).add(IdentityFlag.IDENTITY_SPLIT)
             if self._ambiguous(tr):
                 flags.setdefault(wid, set()).add(IdentityFlag.REASSOCIATION_AMBIGUOUS)
 
@@ -1421,6 +1488,7 @@ class WorldTrackManager:
         origins = {**survivor.origin_of, **retired.origin_of}
         survivor.origin_of = {k: v for k, v in origins.items() if v[0] not in (stale_id, live_id)}
         survivor.confirm_left = self.config.merge_confirm_frames
+        survivor.split_left = max(survivor.split_left, retired.split_left)
         merged_flags = flags.setdefault(survivor.world_id, set())
         merged_flags |= flags.pop(retired.world_id, set())
         self._tracks.pop(retired.world_id, None)
@@ -1439,6 +1507,95 @@ class WorldTrackManager:
             identity_revision=revision,
             reason=str(RevisionReason.LATE_REASSOCIATION if was_lost else RevisionReason.DUPLICATE_MERGE),
             evidence=tuple(sorted(ev.keys)),
+        )
+        self._revisions.append(record)
+        return record
+
+    # ------------------------------------------------------------------ 분할 (S15P31A101-201)
+
+    def _split_candidate(
+        self, child: str, c: _Cluster, holder: Mapping[TrackKey, str], applied: Mapping[str, _Applied], t: int
+    ) -> None:
+        """새로 만든 Track child 가 이번 시각 갱신된 다른 Track 의 로컬 트랙을 2대 이상 카메라에서 갈라 가졌으면 분할 후보로 둔다.
+
+        카메라마다 child 의 클러스터와 그 Track 의 클러스터에 둘 다 그 Track 의 로컬 트랙(이번 시각 이전 주인)이 있어야 한다
+        (같은 시각 같은 카메라의 두 검출). 두 클러스터 중 하나라도 IDENTITY_UNCERTAIN 이거나 그런 Track 이 여럿이면 두지 않는다.
+        """
+        cfg = self.config
+        if c.uncertain:
+            return
+        sources = []
+        for source in sorted({holder[k] for k in c.cluster.keys if k in holder}):
+            a = applied.get(source)
+            if source not in self._tracks or a is None or a.pelvis is None or a.cluster.identity_uncertain:
+                continue
+            keys = frozenset(k for k in c.cluster.keys if holder.get(k) == source)
+            if _split_cameras(a.cluster, c.cluster, keys, holder, source) >= cfg.reconnect_min_cameras:
+                sources.append((source, keys))
+        if len(sources) != 1:
+            return  # 없거나, 여러 Track 에서 갈라졌다(어느 쪽인지 모른다)
+        ((source, keys),) = sources
+        far = _horizontal(applied[source].pelvis, applied[child].pelvis) > cfg.duplicate_radius_m
+        self._splits[child] = _Split(source, child, keys, 1 if far else 0, t, t)
+
+    def _split_step(
+        self,
+        t: int,
+        applied: Mapping[str, _Applied],
+        holder: Mapping[TrackKey, str],
+        flags: dict[str, set[IdentityFlag]],
+    ) -> list[IdentityRevision]:
+        """분할 후보의 근거를 세고, 쌓였으면 분할한다. 후보인 동안 두 Track 에 IDENTITY_SPLIT 을 붙인다."""
+        cfg = self.config
+        out: list[IdentityRevision] = []
+        for child, sp in sorted(self._splits.items()):
+            if sp.source not in self._tracks or child not in self._tracks:
+                del self._splits[child]  # 사라졌거나 소실 후보가 됐거나 병합됐다
+                continue
+            if t - sp.last_t > cfg.key_ttl_ms:
+                # 근거가 끊겼다: 분할하지 않는다(모르면 그대로). 이번 시각의 근거로 되살리지 않는다(전체 입력이 멈춰
+                # update 가 불리지 않다가 돌아온 경우에도 시각으로 판정한다, 리뷰 R2)
+                del self._splits[child]
+                continue
+            a, b = applied.get(sp.source), applied.get(child)
+            if sp.since != t and a is not None and b is not None and a.pelvis is not None and b.pelvis is not None:
+                # 둘 다 위치 측정을 받은 시각만 본다(가려진 시각은 세지도 버리지도 않는다)
+                certain = not (a.cluster.identity_uncertain or b.cluster.identity_uncertain)
+                apart = certain and _horizontal(a.pelvis, b.pelvis) > cfg.duplicate_radius_m
+                if _split_cameras(a.cluster, b.cluster, sp.keys, holder, sp.source, child) >= cfg.reconnect_min_cameras:
+                    sp.count = sp.count + 1 if apart else 0
+                    sp.last_t = t
+                elif not apart:
+                    sp.count = 0  # 가까워졌거나(같은 사람일 수 있다) 연결이 불확실하다: 처음부터 센다
+            for wid in (sp.source, child):
+                flags.setdefault(wid, set()).add(IdentityFlag.IDENTITY_SPLIT)
+            if sp.count >= cfg.merge_confirm_frames:
+                del self._splits[child]
+                out.append(self._split(sp, t))
+        return out
+
+    def _split(self, sp: _Split, t: int) -> IdentityRevision:
+        """child 를 source 에서 가른다. 두 ID 의 identity_revision 을 함께 올리고 교정 기록을 남긴다(별칭은 그대로)."""
+        cfg = self.config
+        source, child = self._tracks[sp.source], self._tracks[sp.child]
+        revision = max(source.identity_revision, child.identity_revision) + 1
+        for tr in (source, child):
+            tr.identity_revision = revision
+            tr.split_left = cfg.merge_confirm_frames
+        child.split_from = sp.source  # 새로 만든 Track 이라 아직 없다(분할 후보는 새 Track 에만 생긴다)
+        source.gate.reset()  # 분할 전 관절 이력은 다른 사람 것일 수 있다 (joint_gate)
+        pair = frozenset((sp.source, sp.child))
+        self._distinct.add(pair)  # 같은 카메라의 두 검출로 보였다: 다시 합치지 않는다(진동 방지)
+        self._duplicates.discard(pair)
+        record = IdentityRevision(
+            t=t,
+            kind=RevisionKind.SPLIT,
+            world_id=sp.child,
+            previous_world_id=sp.source,
+            identity_revision=revision,
+            reason=str(RevisionReason.SPLIT_OBSERVED),
+            evidence=tuple(sorted(sp.keys)),
+            since=sp.since,
         )
         self._revisions.append(record)
         return record
@@ -1591,6 +1748,7 @@ class WorldTrackManager:
             filter_sigma_xy=(float(filt[0]), float(filt[1])),
             restored_candidates=tr.restored_candidates,
             restored_excluded=tuple(sorted(tr.restored_excluded)),
+            split_from=tr.split_from,
         )
 
 
@@ -1671,6 +1829,41 @@ def _others(
 def _cameras(keys: Iterable[TrackKey]) -> int:
     """로컬 트랙들이 나온 서로 다른 카메라 수."""
     return len({k[0] for k in keys})
+
+
+def _own_update(a: _Applied | None, holder: Mapping[TrackKey, str], wid: str, cfg: WorldTrackConfig) -> bool:
+    """일관성 확인 한 시각: 자기 로컬 트랙만으로(reconnect_min_cameras 대 이상) 위치가 갱신됐는지."""
+    return (
+        a is not None
+        and a.pelvis is not None
+        and all(holder.get(k) == wid for k in a.cluster.keys)
+        and _cameras(a.cluster.keys) >= cfg.reconnect_min_cameras
+    )
+
+
+def _split_cameras(
+    kept: ViewCluster,
+    other: ViewCluster,
+    keys: Collection[TrackKey],
+    holder: Mapping[TrackKey, str],
+    source: str,
+    child: str | None = None,
+) -> int:
+    """source 의 로컬 트랙이 같은 카메라의 두 검출(kept, other)로 갈라진 카메라 수.
+
+    kept 의 그 카메라 view 는 지금 주인이 source 인 로컬 트랙, other 의 같은 카메라 view 는 keys(source 에게서 넘겨받은
+    로컬 트랙) 중 지금 주인이 source(또는 child) 인 것이어야 한다.
+    """
+    kept_cams = {v.camera_id for v in kept.views if holder.get(v.key) == source}
+    owners = {source} if child is None else {source, child}
+    other_cams = {v.camera_id for v in other.views if v.key in keys and holder.get(v.key) in owners}
+    return len(kept_cams & other_cams)
+
+
+def _horizontal(p: tuple[float, float, float] | None, q: tuple[float, float, float] | None) -> float:
+    if p is None or q is None:
+        raise ValueError("분할 거리: 골반 측정이 없다")
+    return float(math.hypot(p[0] - q[0], p[1] - q[1]))
 
 
 def _rename(pair: frozenset[str], old: str, new: str) -> frozenset[str]:

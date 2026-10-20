@@ -579,8 +579,8 @@ def test_world_state_message_matches_contract(rig, contract_errors):
         payload = world_state_payload(f, t_latest, "scene-3")
         msg = world_state_message(payload, msg_id="0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f", sent_at=t_latest + 5)
         assert contract_errors("world_state", msg) == []
-        # 계약 1.1.0: 입력 출처를 payload 에 싣는다 (관측과 추정 구분). 봉투 버전은 마지막 변경(2.0.0, -179)
-        assert msg["schema_version"] == "2.0.0"
+        # 계약 1.1.0: 입력 출처를 payload 에 싣는다 (관측과 추정 구분). 봉투 버전은 마지막 변경(2.1.0, -201)
+        assert msg["schema_version"] == "2.1.0"
         assert payload["input_provenance"] == {"frames": {"source": "SIM"}, "is_upper_bound": True}
         assert payload["input_provenance"] is not f.input_provenance  # 복사본
         for doc in payload["tracks"]:

@@ -13,6 +13,9 @@ World Track Manager 결과(`world_track.WorldTrackFrame`)를 계약 형식으로
 - 별칭(`aliases`, 계약 1.3.0 선택 필드)은 World Track Manager 가 병합 때 남는 Track 에 붙인 이전 ID(`WorldTrackSnapshot.aliases`)를
   순서대로 싣는다. 별칭이 없으면 두지 않는다. 별칭 목록은 Track 이 살아 있는 동안 뒤에만 붙고(world_track `_merge`), 여기서는
   고르거나 빼지 않는다(덮어쓰지 않음). 중복은 한 번만 싣고, 자기 world_id 가 들어 있으면 입력 불일치라 ValueError 다.
+- 분할 출처(`split_from`, 계약 2.1.0 선택 필드, S15P31A101-201)는 분할로 생긴 새 ID 의 `WorldTrackSnapshot.split_from`(원래 ID)을
+  싣고 없으면 두지 않는다. 자기 world_id·자기 별칭·빈 값이면 입력 불일치라 ValueError 다(스키마는 두 값의 같음을 막지 못해
+  송신 측이 막는다).
 - `head_z` 는 관절 유효성 게이트가 VALID 나 UNCERTAIN 으로 낸 값을 싣고, 그 유효성을 `head_z_validity` 로 늘 싣는다
   (계약 2.0.0, 사용자 결정 2026-10-19, S15P31A101-179. 2026-10-18 의 'VALID 일 때만' 을 대체). 접지점과 z_validity 의
   관계와 같다: VALID·UNCERTAIN 이면 값·σ, UNAVAILABLE 이면 null. 소비자는 값이 있어도 head_z_validity 를 확인한다.
@@ -48,9 +51,10 @@ from simai_ai.geometry.joint_gate import COCO17_HEAD_JOINTS
 from simai_ai.tracking.time_model import TimeModelConfig, classify_observation, require_ms
 from simai_ai.tracking.world_track import WorldTrackFrame, WorldTrackSnapshot
 
-WORLD_STATE_SCHEMA_VERSION = "2.0.0"
+WORLD_STATE_SCHEMA_VERSION = "2.1.0"
 """world_state 계약이 마지막으로 바뀐 버전 (1.1.0: input_provenance, 1.2.0: config_version, 1.3.0: 트랙의
-surface_source·aliases 선택 필드, 1.4.0: 트랙의 head_z_validity 선택 필드, 2.0.0: UNCERTAIN head_z 값을 싣는 의미 변경)"""
+surface_source·aliases 선택 필드, 1.4.0: 트랙의 head_z_validity 선택 필드, 2.0.0: UNCERTAIN head_z 값을 싣는 의미 변경,
+2.1.0: 트랙의 분할 출처 split_from 선택 필드)"""
 DEFAULT_SOURCE_ID = "tier0-01"
 _VALIDITY = frozenset({"VALID", "UNCERTAIN", "UNAVAILABLE"})
 _SURFACE_VALIDITY = frozenset({"VALID", "UNCERTAIN", "UNKNOWN"})
@@ -166,6 +170,12 @@ def world_track_document(
     aliases = _aliases(track)
     if aliases:
         doc["aliases"] = aliases
+    if track.split_from is not None:
+        if not isinstance(track.split_from, str) or not track.split_from:
+            raise ValueError(f"{track.world_id}: split_from 이 빈 World ID 다: {track.split_from!r}")
+        if track.split_from == track.world_id or track.split_from in aliases:
+            raise ValueError(f"{track.world_id}: split_from 이 자기 World ID 나 별칭이다: {track.split_from}")
+        doc["split_from"] = track.split_from
     if contact.ground_anchor_xyz is not None:
         # 접지점이 있으면 출처를 늘 싣고, 접지점이 없으면 싣지 않는다(계약 1.3.0). SupportContact 불변식이 둘을 묶지만
         # 불변식을 우회한 값이 출처 없이 나가지 않게 여기서도 막는다(-O 로 사라지는 assert 를 쓰지 않는다)

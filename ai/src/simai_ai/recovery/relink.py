@@ -39,7 +39,7 @@ class RestoredEventLinker:
         # 판정 주기마다
         frame = manager.update(association, rig, sync_invalid)
         for rev in frame.revisions:
-            tracker.correct_identity(rev.to_correction())
+            tracker.correct_identity(rev.to_correction())  # 분할은 split_identity(rev.to_split()), judge 참고
         step = tracker.apply(evaluation, world, config_version=..., evidence_ref=...,
                              related=linker.for_frame(frame, manager.restore_status))
     """
