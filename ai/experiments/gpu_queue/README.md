@@ -34,7 +34,7 @@ uv run setup/gpu_queue/gpu_queue.py status my_jobs.stamped.json      # 잠금·h
 ```
 
 `--repo` 는 git 정보를 읽을 저장소(기본: 이 스크립트가 있는 저장소), `--contracts` 는 스키마 폴더(기본: 저장소의 `contracts/`)다.
-Pod 에 저장소가 있으면 git 정보를 저장소에서 직접 읽고, 없으면 `stamp` 로 넣은 `git` 값을 쓴다. 둘 다 없으면 시작하지 않는다(종료 코드 4).
+Pod 에 저장소가 있으면 git 정보를 저장소에서 직접 읽고, 없으면 `stamp` 로 넣은 `git` 값을 쓰고, 그것도 없으면 `--repo` 최상위의 `git-stamp.json`(`deploy/scripts/gpu_session1.py prepare` 가 사본에 둔다)을 쓴다. 모두 없으면 시작하지 않는다(종료 코드 4).
 
 ## Job 파일 (JSON)
 

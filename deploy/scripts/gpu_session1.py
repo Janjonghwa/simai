@@ -198,8 +198,9 @@ def _sh(text: str) -> str:
 
 
 def job_env(lay: Layout) -> dict[str, str]:
+    # SIMAI_CONTRACTS_DIR: 이미지 환경 값(/opt/simai/contracts)은 이미지를 만들 때의 옛 계약이다. 사본 코드는 사본 계약으로 검증한다
     return {"SIMAI_ROOT": str(lay.simai), "SIMAI_PY": lay.py, "SIMAI_NVIDIA_SMI": " ".join(_sh(c) for c in lay.smi),
-            "PYTHONPATH": lay.pythonpath(), "PYTHONUTF8": "1"}
+            "PYTHONPATH": lay.pythonpath(), "PYTHONUTF8": "1", "SIMAI_CONTRACTS_DIR": str(REPO / "contracts")}
 
 
 def build_jobs(lay: Layout, git: dict | None) -> tuple[dict, list[dict]]:
@@ -530,7 +531,25 @@ def cmd_plan(args, lay: Layout) -> int:
     return EXIT_OK
 
 
+def msys_converted(value: str, env: dict[str, str] | None = None) -> bool:
+    """Git Bash(MSYS)가 Pod 경로 인자를 Windows 경로로 바꿨는가. /srv/simai → C:/Program Files/Git/srv/simai,
+    /tmp/simai → %TEMP%/simai, / → C:/Program Files/Git/, /c/simai → C:/simai 처럼 대상이 여럿이라 설치 폴더만으로는 못 잡는다.
+    (1) Git Bash 안(MSYSTEM)에서 변환을 끄지 않았는데 드라이브 경로면 바뀐 것이다(Pod 경로는 POSIX).
+    (2) 신호가 없어도 MSYS 루트(usr/bin/bash.exe 가 있는 폴더)나 그 아래면 바뀐 것이다.
+    로컬 폴더로 Pod 를 흉내 낼 때는 MSYS_NO_PATHCONV=1 로 변환이 없음을 밝힌다."""
+    env = os.environ if env is None else env
+    no_conv = env.get("MSYS_NO_PATHCONV") or env.get("MSYS2_ARG_CONV_EXCL") == "*"
+    if env.get("MSYSTEM") and not no_conv and re.match(r"[A-Za-z]:", value):
+        return True
+    p = Path(value)
+    return p.is_absolute() and any((a / "usr" / "bin" / "bash.exe").is_file() for a in (p, *p.parents))
+
+
 def cmd_prepare(args) -> int:
+    if msys_converted(args.pod_simai):  # 바뀐 값으로 틀린 Pod 명령을 출력하지 않는다
+        print(f"--pod-simai 가 Git Bash 경로 변환으로 바뀌었다: {args.pod_simai!r}. 변환을 끄고 다시 실행한다: "
+              "MSYS_NO_PATHCONV=1 python deploy/scripts/gpu_session1.py prepare ...", file=sys.stderr)
+        return EXIT_BAD_JOBS
     git = git_stamp()
     if not git or not (REPO / ".git").exists():
         print("prepare 는 노트북 저장소에서 실행한다", file=sys.stderr)

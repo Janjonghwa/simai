@@ -20,7 +20,7 @@ def test_two_jobs_run_in_order_and_records_pass_schema(qenv, run_record_errors):
     recs = qenv.records()
     assert [r["status"] for r in recs] == ["SUCCEEDED", "SUCCEEDED"]
     assert recs[0]["finished_at"] <= recs[1]["started_at"]  # 하나씩 순서대로
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=qenv.REPO, capture_output=True, text=True).stdout.strip()
+    head = qenv.repo_head()
     for rec in recs:
         assert run_record_errors(rec) == []
         assert rec["git_commit"] == head
@@ -263,9 +263,11 @@ def test_stamp_writes_git_info_for_pod_copy(qenv):
     jobs = qenv.write([qenv.job("a", qenv.py("ok", "a", qenv.out))])
     stamped = qenv.tmp / "jobs.stamped.json"
     r = qenv.run("stamp", jobs, "-o", stamped)
+    if not (qenv.REPO / ".git").exists():  # Pod 사본(.git 없음): stamp 는 노트북 저장소에서만 찍는다
+        assert r.returncode == 4 and "읽지 못함" in r.stderr and not stamped.exists(), r.stdout + r.stderr
+        return
     assert r.returncode == 0, r.stdout + r.stderr
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=qenv.REPO, capture_output=True, text=True).stdout.strip()
-    assert json.loads(stamped.read_text(encoding="utf-8"))["git"]["commit"] == head
+    assert json.loads(stamped.read_text(encoding="utf-8"))["git"]["commit"] == qenv.repo_head()
     assert not qenv.state.exists()  # stamp·check 는 상태 폴더를 만들지 않는다
 
 
@@ -410,3 +412,48 @@ def test_other_provider_job_record_passes_schema_and_unknown_provider_does_not(q
     assert r["gpu"]["provider"] == "OTHER" and run_record_errors(r) == []
     r["gpu"]["provider"] = "GCP"  # 음성 대조: 닫힌 목록 밖은 계약이 거른다
     assert run_record_errors(r) != []
+
+
+# ---------------------------------------------------------------- .git 없는 저장소 사본 (S15P31A101-213)
+
+
+def _copy_root(qenv, stamp: str | None):
+    """Pod 의 저장소 사본 흉내: .git 이 없고 prepare 가 둔 git-stamp.json 만 있다."""
+    root = qenv.tmp / "copy"
+    root.mkdir()
+    if stamp is not None:
+        (root / "git-stamp.json").write_text(stamp, encoding="utf-8")
+    return ["--repo", root, "--contracts", qenv.REPO / "contracts"]
+
+
+def test_repo_copy_without_git_uses_git_stamp_file(qenv, run_record_errors):
+    """고치기 전: 사본에서는 git 정보 없음 → 종료 4 (GPU 세션 P0 의 gpu_queue 시험 18건 실패)."""
+    opts = _copy_root(qenv, json.dumps({"commit": "abcdef1234567", "branch": "dev", "dirty_worktree": False}))
+    jobs = qenv.write([qenv.job("a", qenv.py("ok", "a", qenv.out))])
+    r = qenv.run(*opts, "run", jobs)
+    assert r.returncode == 0, r.stdout + r.stderr
+    (rec,) = qenv.records()
+    assert rec["git_commit"] == "abcdef1234567" and rec["branch"] == "dev" and rec["dirty_worktree"] is False
+    assert run_record_errors(rec) == []
+
+
+@pytest.mark.parametrize("stamp", [None, "{not json", json.dumps({"branch": "dev"}), json.dumps(["abcdef1234567"])])
+def test_repo_copy_without_any_git_info_still_does_not_start(qenv, stamp):
+    """stamp 파일이 없거나 깨졌거나 commit 이 없으면 지금처럼 시작하지 않는다(git 필수 규칙은 그대로)."""
+    opts = _copy_root(qenv, stamp)
+    jobs = qenv.write([qenv.job("a", qenv.py("ok", "a", qenv.out))])
+    r = qenv.run(*opts, "run", jobs)
+    assert r.returncode == 4 and "git 정보 없음" in r.stdout + r.stderr, r.stdout + r.stderr
+    assert qenv.lines() == []
+
+
+def test_job_file_stamp_wins_over_git_stamp_file(qenv):
+    """Job 파일에 stamp 로 넣은 git 값이 있으면 그것을 쓴다(사본의 파일로 덮지 않는다)."""
+    opts = _copy_root(qenv, json.dumps({"commit": "abcdef1234567", "branch": "dev"}))
+    jobs = qenv.write([qenv.job("a", qenv.py("ok", "a", qenv.out))])
+    doc = json.loads(jobs.read_text(encoding="utf-8"))
+    doc["git"] = {"commit": "1234567abcdef", "branch": "feature", "dirty_worktree": False}
+    jobs.write_text(json.dumps(doc), encoding="utf-8")
+    assert qenv.run(*opts, "run", jobs).returncode == 0
+    (rec,) = qenv.records()
+    assert rec["git_commit"] == "1234567abcdef" and rec["branch"] == "feature"

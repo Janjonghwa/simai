@@ -25,6 +25,7 @@ hmr = ["torch>=2.4"]
 # TensorRT·onnx: Tier 0 이미지(Linux GPU)에서 YOLO26x-pose TensorRT FP16 엔진을 Pod 첫 기동 때 만들고 쓴다(명세 3.12, deploy/tier0).
 #   torch 휠이 CUDA 13 이므로 cu13 빌드를 쓴다. libs 휠은 pypi.nvidia.com 에만 있다(PyPI 에는 내려받기용 sdist 만).
 #   Windows 노트북 개발 환경에는 설치하지 않는다(marker).
+# nvidia-modelopt[onnx]: ultralytics 8.4.178 TensorRT 내보내기의 FP16 변환(ModelOpt AutoCast)이 요구한다. 0.47 이 onnx<1.22 를 요구해 잠금의 onnx 가 1.21 로 내려간다
 tier0 = [
     "simai-ai[io,detection,geometry,calibration]",
     "websockets>=14",
@@ -32,6 +33,7 @@ tier0 = [
     "tensorrt-cu13-libs>=11.4,<12; sys_platform == 'linux'",
     "tensorrt-cu13-bindings>=11.4,<12; sys_platform == 'linux'",
     "onnx>=1.12,<2; sys_platform == 'linux'",
+    "nvidia-modelopt[onnx]>=0.44; sys_platform == 'linux'",
 ]
 worker = ["simai-ai[scene,hmr]"]
 

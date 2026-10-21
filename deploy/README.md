@@ -61,7 +61,7 @@ CUDA 13.0 은 드라이버 580 이상이 필요하다. 이 베이스에는 순�
 RunPod 에서 Pod 를 고를 때 CUDA 버전 필터를 13.0 이상으로 두는 것이 가장 확실하다(Pod 검증 큐 1번에서 확인).
 
 **TensorRT.** `tensorrt-cu13` 의 libs 휠(약 3.8GB)은 pypi.nvidia.com 에만 있어 `ai/pyproject.toml` 에 그 인덱스를 `explicit` 으로 두고 libs 패키지만 그 인덱스에서 받는다.
-TensorRT·onnx 는 `tier0` extra 에 `sys_platform == 'linux'` 로만 들어가 Windows 노트북 개발 환경에는 설치되지 않는다.
+TensorRT·onnx·`nvidia-modelopt[onnx]` 는 `tier0` extra 에 `sys_platform == 'linux'` 로만 들어가 Windows 노트북 개발 환경에는 설치되지 않는다.
 
 ## 빌드 (노트북, GPU 불필요)
 
@@ -218,7 +218,8 @@ EXP-02 는 같은 볼륨에 `exp02-fs3db@sha256:...` 이미지로 Pod 를 띄우
 - 같은 경로에 키가 다른 파일(손으로 복사 등)이 있으면 쓰지 않고 `*.conflict-<ms>` 로 옆에 옮긴 뒤(지우지 않음) 다시 만든다. 메타데이터가 없는 엔진(빌드 도중 종료)도 쓰지 않는다.
 - 엔진 경로는 Tier 0 프로세스에 `SIMAI_TIER0_ENGINE` 환경 변수로 넘긴다. Tier 0 설정(`services/tier0/settings.py`)이 이 값을 읽고 LIVE 입력의 검출기(`yolo_detector`)가 연다. 실행 중 상태는 `$SIMAI_ROOT/state/tier0.live`(정상 종료하면 지운다)에 5초마다 쓴다.
 - 종료 코드: 2 볼륨·가중치 없음·해시 불일치, 3 GPU·TensorRT 없음, 4 캐시 위치를 쓸 수 없음, 5 빌드 실패. 실패하면 Tier 0 를 띄우지 않는다.
-- 동적 프로파일은 `detection_baseline` 과 같다(min 1×3×32×32, opt 4×3×736×1280, max 4×3×1280×1280). 빌드는 `simplify=False`(onnxslim·onnxruntime 을 이미지에 넣지 않음).
+- 동적 프로파일은 `detection_baseline` 과 같다(min 1×3×32×32, opt 4×3×736×1280, max 4×3×1280×1280). 빌드는 `simplify=False`.
+- Ultralytics 8.4.178 의 TensorRT 내보내기는 FP16 변환(ModelOpt AutoCast)에 `nvidia-modelopt[onnx]>=0.44` 를 요구한다. 없으면 `No module named 'modelopt'` 로 엔진 빌드가 실패하므로(GPU 1차 세션) `tier0` extra 에 넣었다. 잠금은 Pod 에서 엔진 빌드·추론이 통과한 조합(nvidia-modelopt 0.47.0, onnx 1.21.0)이고 onnxruntime-gpu·onnxslim 등이 함께 들어온다(S15P31A101-213). `check_image.sh` 가 `import modelopt` 를 확인한다.
 
 ## EXP-02 이미지 (골격)
 

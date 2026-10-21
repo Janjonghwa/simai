@@ -111,7 +111,8 @@ def c1_nvdec_open(py: str):
 def c2_nvdec_gpu_test(py: str, out: Path):
     xml = out / "junit-nvdec.xml"
     r = subprocess.run([py, "-m", "pytest", "-q", "-m", "gpu", "tests/io/test_pyav_decoder.py", "-p", "no:cacheprovider",
-                        f"--junitxml={xml}"], cwd=AI, timeout=600)
+                        f"--junitxml={xml}"], cwd=AI, timeout=600,
+                       env={**os.environ, "SIMAI_TEST_GPU": "1"})  # 없으면 NVDEC 시험이 건너뛰어진다(test_pyav_decoder)
     try:
         suite = ET.parse(xml).getroot()
         suite = suite if suite.tag == "testsuite" else suite.find("testsuite")

@@ -117,7 +117,8 @@ Host simai-pod
 uv run --project ai python deploy/scripts/gpu_session1.py plan --mode pod
 uv run --project ai python deploy/scripts/gpu_session1.py run --mode dryrun --root <짧은 로컬 폴더>
 # 1) 노트북: 커밋된 HEAD 의 저장소 사본과 git 정보 → Pod 로 올리는 명령이 출력된다 (볼륨 없는 Pod 는 --pod-simai /srv/simai)
-uv run --project ai python deploy/scripts/gpu_session1.py prepare --out <폴더> --pod-simai /srv/simai
+#    Git Bash 는 /srv/simai → C:/Program Files/Git/srv/simai, /tmp/simai → %TEMP%/simai 처럼 바꿔 넘긴다. prepare 는 Git Bash 에서 드라이브 경로를 거절하므로 MSYS_NO_PATHCONV=1 을 붙인다
+MSYS_NO_PATHCONV=1 uv run --project ai python deploy/scripts/gpu_session1.py prepare --out <폴더> --pod-simai /srv/simai
 # 2) Pod 켜기: Tier 0 템플릿(deploy/README, 볼륨 없음), 시작 명령 sleep infinity. 1) 이 출력한 scp·ssh 명령으로 사본을 풀고
 #    simai-bootstrap queue 로 띄운다(GPU 세대 감지·가중치 받기·해시 확인 → 큐)
 ssh simai-pod 'nohup simai-bootstrap queue > /srv/simai/setup/session1/session1.log 2>&1 &'
@@ -126,6 +127,7 @@ ssh simai-pod 'tail -f /srv/simai/setup/session1/session1.log'      # 끊겨도 
 ```
 
 - `python` 은 이미지 venv(`/opt/simai/ai/.venv`, jsonschema 포함)다. 저장소 사본의 `ai/src` 를 `PYTHONPATH` 앞에 두어 사본 코드로 돈다(b 의 엔진 준비는 이미지에 설치된 모듈).
+  Job 환경의 `SIMAI_CONTRACTS_DIR` 는 사본의 `contracts/` 로 덮는다(이미지 값 `/opt/simai/contracts` 는 이미지를 만들 때의 옛 계약). 사본에는 `.git` 이 없으므로 gpu_queue 는 Job 파일에 git 값이 없으면 사본 최상위의 `git-stamp.json` 을 읽는다(둘 다 없으면 지금처럼 시작하지 않음, S15P31A101-213).
 - 같은 `--session` 으로 다시 돌리면 끝난 항목은 건너뛴다(중단·Pod 재시작 뒤 이어 돌기). 처음부터 다시 돌리려면 다른 세션 이름을 쓴다.
 - 결과 묶음: `/workspace/simai/runs/gpu-session1/<세션>/session1-<세션>-<UTC>.tar.gz` = `session.json`(항목별 상태·종료 코드·자리만 항목·시간), `bundle-manifest.json`(파일 sha256, 뺀 파일과 이유), 큐 상태·로그·Run 폴더 전체, `jobs.json`. 볼륨에 못 쓰면 `/tmp/simai-session1/` 로 물러서고 그 경로를 출력한다.
 - 노트북에서는 `ai/experiments/runs/gpu-session1/<세션>/` 에 풀어 둔다(`.gitignore` 의 `runs/`, 커밋하지 않음). Run 요약은 MR·Jira 로 남긴다.
@@ -153,7 +155,7 @@ ssh simai-pod 'tail -f /srv/simai/setup/session1/session1.log'      # 끊겨도 
 | 단계 | 내용 | 통과 기준 |
 |---|---|---|
 | c1 | `NvdecDecoder()` 열기 | "nvdec ok". 실패면 이미지 `NVIDIA_DRIVER_CAPABILITIES` 에 video 가 있는지(이 MR 에서 넣었다) |
-| c2 | `pytest -m gpu tests/io/test_pyav_decoder.py` | 통과 1 이상, 건너뜀 0 |
+| c2 | `pytest -m gpu tests/io/test_pyav_decoder.py` (자식 환경에 `SIMAI_TEST_GPU=1`) | 통과 1 이상, 건너뜀 0 |
 | c3 | 2304x1296 H.264 4스트림(10초, 25 fps) NVDEC 디코딩 + BGR 내려받기, 한 스레드에서 번갈아(보수적). CPU 도 같은 측정(비교만) | 그림 한 장 p95 ≤ 10 ms, 4대 합계 ≥ 100 fps, 넣은 수 = 나온 수 |
 | c4 | LIVE 하네스 120초: 진입점(엔진 준비 → Tier 0 LIVE, decoder nvdec) + 노트북 흉내(I0 제어 채널·시계 교환·하트비트, `tier0_site.Laptop`) + 영상 송신 4대(`live_video` 프레임 번호 무늬 H.264, 2304x1296, 25 fps, 127.0.0.1) | 종료 코드 0, 카메라 4대 ready, decode_failed 0, detector_errors 0, mismatched 0, 검출 호출 > 0. `frame_age_ms_p95`·`pipeline_lag_ms` p50·p95 기록 |
 | c5a | 기하 단계 4대 × 1·5·10명 (`tests/geometry/bench_tier0_geometry.py`, Pod CPU) | 10명 pipeline p95 ≤ 50 ms (명세 6.6 단계 목표) |
@@ -172,6 +174,7 @@ ssh simai-pod 'tail -f /srv/simai/setup/session1/session1.log'      # 끊겨도 
 
 Tier 0 는 c4 와 같은 LIVE 하네스로 띄우고(측정 동안 계속), `ai/experiments/gpu_queue/tier0_priority_probe.py` 의 `load`(더미 분석 부하, 상한 0.70)와
 `watch`(표시 파일 `gpu_priority` 판정)로 잰다. 결과는 Run 폴더와 `$SIMAI_ROOT/runs/g0-tier0-priority/<UTC>/` 에 남는다.
+watch 마다 probe 의 `metrics.json` 은 Run 폴더 아래 `.watch-<단계>/` 에 따로 쓴다(실행기가 폴더를 먼저 만든다. 1차 세션에서는 폴더가 없어 측정 통과인데 FAIL 이었다, S15P31A101-213).
 
 부하 크기는 감지한 GPU 메모리(`nvidia-smi memory.total`) 비율이다(-205): H100 80GB(81,559 MiB)에서 아래 40·20·70 GB 그대로, 다른 GPU 는 같은 비율(1,000 MB 단위).
 상한 0.70 은 비율 그대로다. 예: L40S 48GB(46,068 MiB) 23·11·40 GB, RTX 4090 24GB 는 Tier 0 전용 사양(48GB급 미만)이라 분석 부하를 같은 GPU 에 올리지 않으므로

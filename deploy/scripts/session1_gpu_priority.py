@@ -187,8 +187,14 @@ def _watch_result(code: int | None, path: Path) -> tuple[str, str, dict]:
     return ("PASS" if ok else "FAIL"), f"watch passed={res.get('passed')} lag p95={res.get('lag_ms_p95')}", values
 
 
+def _watch_env(run_dir: Path) -> dict[str, str]:
+    """probe 의 metrics.json 이 이 단계 것을 덮지 않게 watch 마다 따로 둔 SIMAI_RUN_DIR. probe 는 폴더를 만들지 않으므로 여기서 만든다."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return {**os.environ, "SIMAI_RUN_DIR": str(run_dir)}
+
+
 def _watch(py: str, marker: Path, seconds: float, path: Path):
-    env = {**os.environ, "SIMAI_RUN_DIR": str(path.parent / f".watch-{path.stem}")}  # probe 의 metrics.json 이 이 단계 것을 덮지 않게
+    env = _watch_env(path.parent / f".watch-{path.stem}")
     r = subprocess.run(_watch_cmd(py, marker, seconds, path), env=env, timeout=seconds + 120)
     return _watch_result(r.returncode, path)
 
@@ -227,7 +233,7 @@ def _p3(py, marker, dur, out, harness, mem_mb):
 def _p5(py, marker, dur, out, mem_mb):
     load = _load(py, mem_mb, dur["kill_watch"] + 120, out, "p5")
     path = out / "kill.json"
-    env = {**os.environ, "SIMAI_RUN_DIR": str(out / ".watch-kill")}
+    env = _watch_env(out / ".watch-kill")
     watch = subprocess.Popen(_watch_cmd(py, marker, dur["kill_watch"], path), env=env)
     time.sleep(dur["kill_after"])
     load.kill()  # kill -9 (POSIX SIGKILL)
