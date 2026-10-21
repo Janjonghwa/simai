@@ -1,3 +1,5 @@
+import { createSpatialDataStore } from '@/features/viewer3d/data/spatialData.store';
+import { DataPanel } from '@/features/viewer3d/dev-harness/DataPanel';
 import {
   devViewOf,
   readDevView,
@@ -6,16 +8,23 @@ import {
   type DevViewKey,
 } from '@/features/viewer3d/dev-harness/devView';
 import { DevViewSwitcher } from '@/features/viewer3d/dev-harness/DevViewSwitcher';
+import {
+  createHarnessSource,
+  readDataSource,
+  withDataSource,
+  type DataSourceKey,
+} from '@/features/viewer3d/dev-harness/harnessSource';
 import { DebugProbe, SpatialDiagnostics } from '@/features/viewer3d/dev-harness/MockDebug';
 import { MockNav } from '@/features/viewer3d/dev-harness/MockNav';
 import { MockOverlay, SelectionCard } from '@/features/viewer3d/dev-harness/MockOverlay';
 import { MockScene, type SceneColors } from '@/features/viewer3d/dev-harness/MockScene';
 import { MockTopBar } from '@/features/viewer3d/dev-harness/MockTopBar';
 import type { MenuKey } from '@/features/viewer3d/dev-harness/mockUi';
+import type { SpatialMockApi } from '@/features/viewer3d/dev-harness/mswHandlers';
 import type { Viewer3DHandle, ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
 import { ViewerShell } from '@/features/viewer3d/ViewerShell';
 import { WorldReference } from '@/features/viewer3d/WorldReference';
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 
 // 3D 재질 색도 FE 토큰(packages/ui globals.css)에서 읽어 다크·화이트 모드를 따른다.
 function readColors(): SceneColors {
@@ -31,12 +40,20 @@ function readColors(): SceneColors {
   };
 }
 
+interface MockAppProps {
+  /** Spatial REST Mock(MSW). 개발 서버에서 켰을 때만 있다. */
+  mockApi?: SpatialMockApi | null;
+  /** REST 기준 주소. MSW 가 켜져 있으면 '', 아니면 null(REST 를 쓰지 않음). */
+  restBase?: string | null;
+}
+
 /**
  * 공간 상시 유지 + 하단 메뉴 + 업무 오버레이 목업과 Spatial 진단 도구.
  * ViewerShell 은 항상 한 번만 그린다. 개발 보기(devView)는 그 위 FE 목업·진단 레이어와 World 기준점의 표시만 바꾸고,
  * 업무 모드·선택·메뉴·패널·시점은 보기와 따로 보존한다.
+ * 데이터 입력(source)은 보기와 따로 고르며, 바꿔도 Canvas·선택·모드는 그대로다.
  */
-export function MockApp() {
+export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   const viewer = useRef<Viewer3DHandle>(null);
   const [view, setView] = useState(() => readDevView(window.location.search));
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(() =>
@@ -49,11 +66,29 @@ export function MockApp() {
   const [light, setLight] = useState(false);
   const [colors, setColors] = useState(readColors);
   const { mockUi, spatial } = devViewOf(view);
+  const [dataStore] = useState(createSpatialDataStore);
+  const [sourceKey, setSourceKey] = useState(() => readDataSource(window.location.search));
+  const [epoch, setEpoch] = useState(0);
+  // 입력을 바꾸거나 처음부터 다시 재생할 때만 새 Source 를 만든다(epoch 는 재시작 표시).
+  const harness = useMemo(
+    () => createHarnessSource(sourceKey, restBase, mockApi),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sourceKey, restBase, mockApi, epoch],
+  );
 
   const changeView = (next: DevViewKey) => {
     setView(next);
     // 페이지를 다시 불러오지 않고 주소만 바꾼다. 업무 모드는 건드리지 않는다.
     window.history.replaceState(window.history.state, '', withDevView(window.location.href, next));
+  };
+
+  const changeSource = (next: DataSourceKey) => {
+    setSourceKey(next);
+    window.history.replaceState(
+      window.history.state,
+      '',
+      withDataSource(window.location.href, next),
+    );
   };
 
   const selectMenu = (next: MenuKey) => {
@@ -84,7 +119,13 @@ export function MockApp() {
   return (
     <div className="smk-root" data-view={view} data-mock-ui={mockUi ? '' : undefined}>
       <div className="smk-layer" data-testid="spatial-layer">
-        <ViewerShell ref={viewer} onSelectionChange={setSelected} onStatusChange={setStatus}>
+        <ViewerShell
+          ref={viewer}
+          onSelectionChange={setSelected}
+          onStatusChange={setStatus}
+          source={harness.source}
+          dataStore={dataStore}
+        >
           <MockScene colors={colors} selected={selected} />
           {spatial && <WorldReference />}
           <DebugProbe />
@@ -114,7 +155,16 @@ export function MockApp() {
           onToggle={() => setDiagnosticsOpen((open) => !open)}
           status={status}
           selected={selected}
-        />
+        >
+          <DataPanel
+            store={dataStore}
+            sourceKey={sourceKey}
+            harness={harness}
+            mockApi={mockApi}
+            onSourceChange={changeSource}
+            onRestart={() => setEpoch((n) => n + 1)}
+          />
+        </SpatialDiagnostics>
       )}
 
       <DevViewSwitcher view={view} onChange={changeView} />

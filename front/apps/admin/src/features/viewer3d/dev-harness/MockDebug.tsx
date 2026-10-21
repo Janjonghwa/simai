@@ -2,7 +2,7 @@ import type { ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
 import { WORLD_REFERENCE_POINTS } from '@/features/viewer3d/WorldReference';
 import { useThree, type RootState } from '@react-three/fiber';
 import { ChevronDown, ChevronUp } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Box3, Vector3, type Object3D } from 'three';
 
 // Spatial 진단 도구. 같은 Canvas·renderer·Scene·Camera 가 유지되는지, World 기준점이 어디 놓였는지 숫자로 확인한다.
@@ -101,10 +101,18 @@ interface SpatialDiagnosticsProps {
   onToggle: () => void;
   status: ViewerStatus | null;
   selected: ViewerTarget | null;
+  /** 데이터 Provider 진단(입력 선택·Track·이벤트). */
+  children?: ReactNode;
 }
 
 /** World 범례와 측정을 한 곳에 모은 접이식 진단 영역. 접으면 제목과 뷰어 상태 한 줄만 남는다. */
-export function SpatialDiagnostics({ open, onToggle, status, selected }: SpatialDiagnosticsProps) {
+export function SpatialDiagnostics({
+  open,
+  onToggle,
+  status,
+  selected,
+  children,
+}: SpatialDiagnosticsProps) {
   const [out, setOut] = useState('');
   return (
     <section
@@ -141,6 +149,7 @@ export function SpatialDiagnostics({ open, onToggle, status, selected }: Spatial
           <pre data-testid="debug-out" className="smk-mono">
             {out}
           </pre>
+          {children}
         </div>
       )}
     </section>
