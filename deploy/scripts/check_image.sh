@@ -55,9 +55,10 @@ fi
 # 3) import·버전·잠금
 if OUT=$(docker run --rm --entrypoint python "$IMG" -c '
 import importlib.metadata as m, sys
-import simai_ai, services.tier0, simai_ai.detection.engine_cache, cv2, ultralytics, tensorrt, onnx
-print(sys.version.split()[0], "ultralytics", m.version("ultralytics"), "torch", m.version("torch"), "tensorrt", m.version("tensorrt-cu13"))' 2>&1); then
-  pass "import simai_ai·services.tier0·engine_cache·cv2·ultralytics·tensorrt·onnx ($OUT)"
+import simai_ai, services.tier0, simai_ai.detection.engine_cache, cv2, ultralytics, tensorrt, onnx, modelopt
+print(sys.version.split()[0], "ultralytics", m.version("ultralytics"), "torch", m.version("torch"), "tensorrt", m.version("tensorrt-cu13"),
+      "modelopt", m.version("nvidia-modelopt"), "onnx", m.version("onnx"))' 2>&1); then
+  pass "import simai_ai·services.tier0·engine_cache·cv2·ultralytics·tensorrt·onnx·modelopt ($OUT)"
 else
   fail "import 실패: $OUT"
 fi

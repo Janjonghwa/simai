@@ -38,6 +38,7 @@ from run_record import (
     gpu_info,
     load_validator,
     now_ms,
+    read_git_stamp,
     resolve,
     safe_id,
     write_json_atomic,
@@ -847,6 +848,11 @@ def main(argv: list[str] | None = None) -> int:
         args.out.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(f"{args.out} ← git {git['git_commit'][:12]} ({git['branch']})")
         return EXIT_OK
+
+    # .git 없는 저장소 사본: Job 파일에 stamp 가 없으면 사본 최상위의 git-stamp.json. 둘 다 없으면 지금처럼 시작하지 않는다
+    stamp = read_git_stamp(args.repo) if repo is None and not doc.get("git") else None
+    if stamp:
+        doc["git"] = stamp
 
     queue = Queue(doc, args.jobs, args.state_dir, repo, args.contracts, persist=args.cmd == "run")
     if args.cmd == "check":

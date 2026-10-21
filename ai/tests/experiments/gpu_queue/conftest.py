@@ -161,6 +161,13 @@ def wait_dead(pid: int, timeout: float = 10) -> bool:
     return False
 
 
+def repo_head() -> str:
+    """Run 기록 git_commit 의 기대값: 저장소면 HEAD, .git 없는 Pod 사본이면 prepare 가 둔 git-stamp.json 의 commit."""
+    if (REPO / ".git").exists():
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True).stdout.strip()
+    return json.loads((REPO / "git-stamp.json").read_text(encoding="utf-8"))["commit"]
+
+
 # 시험 파일은 conftest 를 import 하지 않는다(--import-mode=importlib). 도우미는 qenv 로 꺼내 쓴다.
 QueueEnv.py = staticmethod(py)
 QueueEnv.job = staticmethod(job)
@@ -169,3 +176,4 @@ QueueEnv.wait_dead = staticmethod(wait_dead)
 QueueEnv.FAKE_SMI = FAKE_SMI
 QueueEnv.QUEUE_DIR = QUEUE.parent
 QueueEnv.REPO = REPO
+QueueEnv.repo_head = staticmethod(repo_head)

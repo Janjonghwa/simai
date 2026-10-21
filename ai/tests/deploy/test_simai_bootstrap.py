@@ -377,11 +377,12 @@ def test_no_child_process_inherits_hf_token(bs, tmp_path, monkeypatch):
         assert TOKEN not in json.dumps(env)
 
 
-def test_prepare_upload_works_on_a_fresh_disk(gs, tmp_path, capsys):
+def test_prepare_upload_works_on_a_fresh_disk(gs, tmp_path, capsys, monkeypatch):
     """리뷰 R2: 새 디스크(볼륨 없음)에서 prepare 안내를 순서대로 따르면 업로드·풀기가 된다(ssh·scp 는 로컬 대응으로)."""
     import shutil
     import tarfile
 
+    monkeypatch.setenv("MSYS_NO_PATHCONV", "1")  # 로컬 폴더로 Pod 를 흉내 낸다: Git Bash 경로 변환이 아님을 밝힌다(-213)
     pod_simai = (tmp_path / "fresh" / "simai").as_posix()
     assert gs.main(["prepare", "--out", str(tmp_path / "prep"), "--pod-simai", pod_simai]) == 0
     lines = [ln.strip() for ln in capsys.readouterr().out.splitlines() if ln.strip().startswith(("ssh ", "scp "))]

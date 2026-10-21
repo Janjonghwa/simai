@@ -151,6 +151,15 @@ def git_info(repo_dir: Path | None, stamp: dict | None) -> dict:
     return {"git_commit": "", "branch": "", "source": "none"}
 
 
+def read_git_stamp(repo_root: Path) -> dict | None:
+    """.git 없는 저장소 사본 최상위의 git-stamp.json(deploy/scripts/gpu_session1.py prepare 가 둔다). 없거나 깨졌으면 None."""
+    try:
+        doc = json.loads((repo_root / "git-stamp.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
 def gpu_info(query_cmd: list[str]) -> dict:
     """nvidia-smi 로 GPU 모델명·드라이버·CUDA·메모리를 읽는다. 없으면 빈 값."""
     info: dict[str, Any] = {"model": "", "driver": "", "cuda": "", "memory_total_mb": None, "memory_used_mb": None}
