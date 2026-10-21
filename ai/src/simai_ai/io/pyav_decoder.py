@@ -24,6 +24,11 @@ configure 는 예외를 내지 않는다: 디코더를 열지 못하면 그 사�
 
 출력 그림은 numpy BGR 배열(H×W×3 uint8, ultralytics·OpenCV 입력 형식)이다. Pod 의 NVDEC 그림도 시스템 메모리로 내려 같은
 형식으로 낸다(장치에 둔 채 넘기는 것은 처리 시간 실측 뒤 판단, -183).
+
+**색 변환(-212).** BGR 변환은 configure 마다 하나 만든 swscale 문맥(VideoReformatter)으로 한다. `frame.to_ndarray(format=...)` 는
+그림마다 새 문맥을 만들어 swscale 초기화·스레드 묶음 생성을 매 그림 치르고, NVDEC 출력(nv12)은 그 비용이 커서 그림 한 장이
+CPU 디코딩보다 느렸다(docs/design/tier0-nvdec-throughput.md). 변환 스레드는 convert_threads 개로 묶는다(0 은 보이는 CPU 전부라
+Pod 224 코어에서 카메라마다 수백 스레드가 된다).
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ log = logging.getLogger("simai_ai.io.pyav_decoder")
 
 ANNEXB_START = b"\x00\x00\x00\x01"
 DEFAULT_MAX_PENDING = 64  # 그림 없이 디코더 안에 남을 수 있는 입력 번호 수(넘으면 오래된 번호를 잊는다)
+DEFAULT_CONVERT_THREADS = 4  # 카메라 하나의 색 변환 스레드(노트북 실측 4 ≈ 자동, 근거는 설계 문서). Pod 값은 c3 변형으로 다시 잰다
 
 
 class DecoderUnavailable(RuntimeError):
@@ -63,15 +69,20 @@ class PyAvDecoder(Decoder):
         device: str | None = None,
         output_format: str = "bgr24",
         max_pending: int = DEFAULT_MAX_PENDING,
+        convert_threads: int = DEFAULT_CONVERT_THREADS,
     ) -> None:
         if max_pending < 1:
             raise ValueError("max_pending 은 1 이상이다")
+        if convert_threads < 0:
+            raise ValueError("convert_threads 는 0(자동) 이상이다")
         self._av = _import_av()
         self.hwaccel = hwaccel
         self.device = device
         self.output_format = output_format
         self.max_pending = max_pending
+        self.convert_threads = convert_threads
         self._ctx: Any = None
+        self._reformatter: Any = None
         self._codec: I0CodecInfo | None = None
         self._open_error: str | None = None
         self._prefix = b""
@@ -126,6 +137,7 @@ class PyAvDecoder(Decoder):
             return
         self._prefix = b"".join(ANNEXB_START + nal for nal in (codec.sps, codec.pps) if nal)
         try:
+            self._reformatter = self._av.video.reformatter.VideoReformatter()
             self._ctx = self._new_context()
         except Exception as e:  # noqa: BLE001 - decode 가 DecodeError 로 알린다(모듈 설명)
             self._open_error = f"디코더를 열지 못했다: {type(e).__name__}: {e}"
@@ -164,7 +176,8 @@ class PyAvDecoder(Decoder):
             if frame.is_corrupt:
                 self.corrupt += 1  # 메운 그림은 관측으로 쓰지 않는다
                 continue
-            out.append(DecodedPicture(key, frame.to_ndarray(format=self.output_format)))
+            image = self._reformatter.reformat(frame, format=self.output_format, threads=self.convert_threads)
+            out.append(DecodedPicture(key, image.to_ndarray()))
         return out
 
     def flush(self) -> list[DecodedPicture]:
@@ -185,6 +198,7 @@ class PyAvDecoder(Decoder):
 
     def reset(self) -> None:
         self._ctx = None
+        self._reformatter = None
         self._codec = None
         self._open_error = None
         self._prefix = b""
@@ -195,5 +209,6 @@ class NvdecDecoder(PyAvDecoder):
     """NVDEC(FFmpeg CUDA hwaccel) 디코더. GPU·드라이버가 없거나 이미지가 video 기능을 열지 않으면 DecoderUnavailable."""
 
     def __init__(self, *, device: str | None = None, output_format: str = "bgr24",
-                 max_pending: int = DEFAULT_MAX_PENDING) -> None:
-        super().__init__(hwaccel="cuda", device=device, output_format=output_format, max_pending=max_pending)
+                 max_pending: int = DEFAULT_MAX_PENDING, convert_threads: int = DEFAULT_CONVERT_THREADS) -> None:
+        super().__init__(hwaccel="cuda", device=device, output_format=output_format, max_pending=max_pending,
+                         convert_threads=convert_threads)
