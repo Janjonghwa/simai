@@ -98,6 +98,16 @@ class GpuSampler:
         return {"gpu_used_base_mb": self.base, "gpu_used_peak_mb": self.peak}
 
 
+def use_local_moge():
+    """MoGe2 를 HF 에서 다시 받지 않고 simai-bootstrap 이 sha256 을 확인한 파일(weights/moge/<저장소 이름>/model.pt)을 쓴다(S15P31A101-207).
+    파일이 없으면(볼륨 venv 환경) 원래대로 HF 저장소 이름을 둔다. MoGe 의 from_pretrained 는 있는 경로를 그대로 읽는다."""
+    import tools.build_fov_estimator as fe
+    for size, repo in list(fe.MOGE_MODELS.items()):
+        local = CKPT / "moge" / repo.rsplit("/", 1)[-1] / "model.pt"
+        if local.is_file():
+            fe.MOGE_MODELS[size] = str(local)
+
+
 def ckpt_dir(variant):
     """dinov3 = Fast 공식 config(float16, setup 이 만든 링크 폴더) / dinov3-origcfg = HF 원본 config(bfloat16)."""
     return CKPT / ("sam-3d-body-dinov3-fastcfg" if variant == "dinov3" else "sam-3d-body-dinov3")
@@ -196,6 +206,7 @@ def build(variant="dinov3", detector=None, detector_model=None, fov=None, device
         timed.wrap(comps["det"], "run_human_detection", "detect")
     if fov:
         from tools.build_fov_estimator import FOVEstimator
+        use_local_moge()
         comps["fov"] = step(f"fov_{fov}", lambda: FOVEstimator(name=fov, device=device))
         timed.wrap(comps["fov"], "get_cam_intrinsics", "fov")
     est = step("estimator_init(warmup)", lambda: SAM3DBodyEstimator(sam_3d_body_model=model, model_cfg=cfg, human_detector=comps.get("det"),
@@ -272,6 +283,7 @@ def baseline_inputs(stem):
     if not cache.exists():
         from tools.build_detector import HumanDetector
         from tools.build_fov_estimator import FOVEstimator
+        use_local_moge()
         det = HumanDetector(name="yolo_pose", device="cuda", model=str(YOLO))
         r = det.run_human_detection(img, det_cat_id=0, bbox_thr=0.5, nms_thr=0.3, default_to_full_image=False)
         del det

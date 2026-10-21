@@ -28,10 +28,20 @@ from pathlib import Path
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 ROOT = Path(os.environ.get("SIMAI_ROOT", "/workspace/simai"))
-MA_REPO = ROOT / "third_party" / "map-anything"
+# MapAnything 이미지(deploy/mapanything)는 코드를 이미지 안에 두고 SIMAI_MAPANYTHING_REPO 로 가리킨다. 없으면 볼륨 설치(setup_runpod.sh) 위치
+MA_REPO = Path(os.environ.get("SIMAI_MAPANYTHING_REPO") or ROOT / "third_party" / "map-anything")
 
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
+
+
+def ma_commit():
+    """이미지 사본에는 .git 이 없어 이미지가 적어 둔 커밋(SIMAI_MAPANYTHING_COMMIT)을 쓴다."""
+    try:
+        out = subprocess.run(["git", "-C", str(MA_REPO), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    except OSError:  # 이미지에는 git 이 없다
+        out = ""
+    return out or os.environ.get("SIMAI_MAPANYTHING_COMMIT", "")
 
 
 def mb(x):
@@ -164,8 +174,9 @@ def main():
         "run_id": a.run_id, "experiment_id": "EXP-01", "e_gate": "E-GATE-0", "jira_key": "S15P31A101-74",
         "started_at": datetime.now(timezone.utc).isoformat(), "args": vars(a), "result": "ERROR",
         "git_commit": a.git_commit,
-        "env_hash": sha256_file(lock) if lock.exists() else None,
-        "model_version": f"map-anything@{subprocess.run(['git', '-C', str(MA_REPO), 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True).stdout.strip()} + {Path(a.model).name}",
+        # 이미지에서는 이미지 다이제스트(deploy/README "env_hash"), 볼륨 venv 는 잠금 파일 해시
+        "env_hash": os.environ.get("SIMAI_IMAGE_DIGEST") or (sha256_file(lock) if lock.exists() else None),
+        "model_version": f"map-anything@{ma_commit()} + {Path(a.model).name}",
         "weights_hash": sha256_file(weights[0]) if weights else None,
         "input_hash": "sha256:" + hashlib.sha256(b"".join(Path(p).read_bytes() for p in paths)).hexdigest(),
         "images": [Path(p).name for p in paths],

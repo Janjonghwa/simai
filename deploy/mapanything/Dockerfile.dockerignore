@@ -1,0 +1,5 @@
+# MapAnything 이미지 빌드 컨텍스트 허용 목록 (컨텍스트 = 저장소 최상위). 코드는 git 커밋으로 받고, 가중치는 시작할 때 simai-bootstrap 이 받는다.
+*
+!deploy/mapanything/requirements.lock.txt
+!deploy/scripts/simai_bootstrap.py
+!deploy/weights.json

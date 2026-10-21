@@ -69,3 +69,15 @@ def restore_environ():
     yield
     os.environ.clear()
     os.environ.update(saved)
+
+
+@pytest.fixture
+def xc():
+    """deploy/scripts/exp_image_check.py (S15P31A101-207)"""
+    return load_script("exp_image_check")
+
+
+@pytest.fixture
+def ej():
+    """deploy/scripts/exp_job.py (S15P31A101-207 리뷰 M2)"""
+    return load_script("exp_job")

@@ -1,20 +1,88 @@
 {
-  "_doc": "가중치 목록 (S15P31A101-205). simai-bootstrap 이 sets 가 맞는 항목을 $SIMAI_ROOT/<path> 에 받고 sha256 을 확인한다. 다르면 시작하지 않는다(종료 코드 2). 가중치 파일은 커밋하지 않는다(AGENTS.md). 덮어쓰지 않고 새 이름으로 더한다. source 는 url 또는 hf {repo, file, revision}(HF 토큰은 환경 변수 HF_TOKEN 만). env 를 주면 그 환경 변수(경로)와 <env>_SHA256 을 비어 있을 때 채운다.",
+  "_doc": "가중치 목록 (S15P31A101-205). simai-bootstrap 이 sets 가 맞는 항목(묶음: tier0, exp02 = HMR 이미지, static = MapAnything 이미지)을 $SIMAI_ROOT/<path> 에 받고 sha256 을 확인한다. 다르면 시작하지 않는다(종료 코드 2). 가중치 파일은 커밋하지 않는다(AGENTS.md). 덮어쓰지 않고 새 이름으로 더한다. source 는 url 또는 hf {repo, file, revision}(HF 토큰은 환경 변수 HF_TOKEN 만). env 를 주면 그 환경 변수(경로)와 <env>_SHA256 을 비어 있을 때 채운다. sha256 이 빈 항목은 받지 않고 시작하지 않는다(값을 모르면 비운다, S15P31A101-207).",
   "manifest_version": 1,
   "weights": [
     {
       "name": "yolo26x-pose",
-      "sets": ["tier0"],
+      "sets": ["tier0", "exp02"],
       "path": "weights/yolo/yolo26x-pose.pt",
       "source": {"url": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26x-pose.pt"},
       "sha256": "08ed9e01d22a6f248b04f2f9992016aca9a32250b9ab57057d886a09d026700d",
       "license": "AGPL-3.0 (Ultralytics)",
       "env": "SIMAI_TIER0_WEIGHTS",
       "hash_from": "docs/data/weights.md (E-GATE-0 weights/hmr_weights.sha256, ultralytics 릴리스 v8.4.0)"
+    },
+    {
+      "name": "sam-3d-body-dinov3",
+      "sets": ["exp02"],
+      "path": "weights/sam-3d-body-dinov3/model.ckpt",
+      "source": {"hf": {"repo": "facebook/sam-3d-body-dinov3", "revision": "11aaa346c7204874a1cbafe3d39a979080b2c55a", "file": "model.ckpt"}},
+      "sha256": "b5a2f9d305dd02626b967aa2e86021fba07065df66ce7a7e00ffb9664f150abf",
+      "license": "SAM License (Meta, HF 승인제 저장소: 승인 계정의 HF_TOKEN 필요)",
+      "hash_from": "docs/data/weights.md (E-GATE-0 weights/hmr_weights.sha256)"
+    },
+    {
+      "name": "sam-3d-body-dinov3-mhr",
+      "sets": ["exp02"],
+      "path": "weights/sam-3d-body-dinov3/assets/mhr_model.pt",
+      "source": {"hf": {"repo": "facebook/sam-3d-body-dinov3", "revision": "11aaa346c7204874a1cbafe3d39a979080b2c55a", "file": "assets/mhr_model.pt"}},
+      "sha256": "352e271a6c42729c68554ceaea0c955e866970160c31e35506d782dc0f7377bc",
+      "license": "SAM License (Meta, HF 승인제 저장소: 승인 계정의 HF_TOKEN 필요)",
+      "hash_from": "docs/data/weights.md (HF API LFS oid, 승인 계정, 2026-10-21)"
+    },
+    {
+      "name": "moge-2-vits-normal",
+      "sets": ["exp02"],
+      "path": "weights/moge/moge-2-vits-normal/model.pt",
+      "source": {"hf": {"repo": "Ruicheng/moge-2-vits-normal", "file": "model.pt", "revision": "26b477f41595707c5db6770294c0d1721e8ed4ed"}},
+      "sha256": "79a16621928c2bf0ed04659218c55c01075e950507f40bb3332fb4c873d3e1dc",
+      "license": "MIT",
+      "hash_from": "HF API LFS oid (docs/data/weights.md)"
+    },
+    {
+      "name": "moge-2-vitl-normal",
+      "sets": ["exp02"],
+      "path": "weights/moge/moge-2-vitl-normal/model.pt",
+      "source": {"hf": {"repo": "Ruicheng/moge-2-vitl-normal", "file": "model.pt", "revision": "cb0e8bbd6b1e243589717c78e750b1ba4c093acf"}},
+      "sha256": "280741fd09bc3f403ccff9967784c2a391b52d2c0742ae3efdb21d9f90cc1a01",
+      "license": "MIT",
+      "hash_from": "HF API LFS oid (docs/data/weights.md)"
+    },
+    {
+      "name": "map-anything-apache-model",
+      "sets": ["static"],
+      "path": "weights/map-anything-apache/model.safetensors",
+      "source": {"hf": {"repo": "facebook/map-anything-apache", "file": "model.safetensors", "revision": "00f9c245bbcb60522d1ed7f9e9d88462c6e3f38a"}},
+      "sha256": "fa06c0fdccefc5048e072c85935d5789b1e36b307f3859033c17f9dcb9fd5201",
+      "license": "Apache-2.0",
+      "hash_from": "HF API LFS oid = E-GATE-0 C1·C2 weights_hash (docs/data/weights.md)"
+    },
+    {
+      "name": "map-anything-apache-config",
+      "sets": ["static"],
+      "path": "weights/map-anything-apache/config.json",
+      "source": {"hf": {"repo": "facebook/map-anything-apache", "file": "config.json", "revision": "00f9c245bbcb60522d1ed7f9e9d88462c6e3f38a"}},
+      "sha256": "65701d09d99ed37a21d295f0d138978b3d584ab3bccdbcb4a2853da212b676c5",
+      "license": "Apache-2.0",
+      "hash_from": "고정 revision 에서 받아 sha256 (docs/data/weights.md)"
+    },
+    {
+      "name": "map-anything-model",
+      "sets": ["static"],
+      "path": "weights/map-anything/model.safetensors",
+      "source": {"hf": {"repo": "facebook/map-anything", "file": "model.safetensors", "revision": "a1d87e9086706fb9974f3be5a3e3a0ca5401c5aa"}},
+      "sha256": "981f060c64664dff3272b5f5a823d350abe71a2f144444db4cfc325f3ed5a3a0",
+      "license": "CC-BY-NC-4.0 (비상업: 연구 비교용, 제품 기본값은 apache)",
+      "hash_from": "HF API LFS oid = E-GATE-0 C1·C2 weights_hash (docs/data/weights.md)"
+    },
+    {
+      "name": "map-anything-config",
+      "sets": ["static"],
+      "path": "weights/map-anything/config.json",
+      "source": {"hf": {"repo": "facebook/map-anything", "file": "config.json", "revision": "a1d87e9086706fb9974f3be5a3e3a0ca5401c5aa"}},
+      "sha256": "65701d09d99ed37a21d295f0d138978b3d584ab3bccdbcb4a2853da212b676c5",
+      "license": "CC-BY-NC-4.0 (비상업: 연구 비교용, 제품 기본값은 apache)",
+      "hash_from": "고정 revision 에서 받아 sha256 (docs/data/weights.md)"
     }
-  ],
-  "placeholders": [
-    {"name": "sam-3d-body-dinov3", "sets": ["exp02"], "source": {"hf": {"repo": "facebook/sam-3d-body-dinov3"}}, "why": "자리만: 실험 이미지 티켓 후 (HMR torch 2.5.1 cu124 는 아직 볼륨 venv)"},
-    {"name": "map-anything", "sets": ["static"], "why": "자리만: 실험 이미지 티켓 후 (MapAnything torch 2.7.1 cu126 는 아직 볼륨 venv)"}
   ]
 }
