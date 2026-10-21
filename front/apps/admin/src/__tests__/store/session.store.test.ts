@@ -17,4 +17,13 @@ describe('session.store', () => {
     useSessionStore.getState().signOut();
     expect(useSessionStore.getState().session).toBeUndefined();
   });
+
+  it('거부된 토큰이 지금 토큰일 때만 세션을 끝낸다', () => {
+    useSessionStore.getState().signIn(session);
+    useSessionStore.getState().signOutIfCurrent('old-token');
+    expect(useSessionStore.getState().session).toEqual(session);
+
+    useSessionStore.getState().signOutIfCurrent('token-1');
+    expect(useSessionStore.getState().session).toBeUndefined();
+  });
 });

@@ -2,10 +2,22 @@ import tailwindcss from '@tailwindcss/vite';
 import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import react from '@vitejs/plugin-react';
 import { msw } from 'msw/vite';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
+import { parseEnv } from './src/lib/parseEnv.ts';
+
+// 빌드할 때 환경변수를 검사한다. 틀린 값으로 만든 빌드는 배포한 뒤에야 빈 화면으로 드러난다.
+// 화면을 그리기 전 검사(src/lib/env.ts)와 같은 값(config.env)·같은 기준(isProduction = import.meta.env.PROD)을 쓴다.
+const checkEnv = (): Plugin => ({
+  name: 'simai-check-env',
+  apply: 'build',
+  configResolved(config) {
+    parseEnv(config.env, { production: config.isProduction });
+  },
+});
 
 export default defineConfig({
   plugins: [
+    checkEnv(),
     tailwindcss(),
     // react() 보다 앞에 둔다. 라우트 파일을 먼저 변환해야 코드 분할이 된다.
     tanstackRouter({ target: 'react', autoCodeSplitting: true }),

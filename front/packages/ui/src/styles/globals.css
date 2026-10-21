@@ -104,7 +104,7 @@
 
   --surface-2: #f1f4f9;
   --surface-3: #e3e8f1;
-  --faint: #7c88a8;
+  --faint: #636e8c;
   --point-soft: #495e95;
   --sev-critical: #b42330;
   --sev-caution: #8a5800;
@@ -153,7 +153,7 @@
 
   --surface-2: #19233b;
   --surface-3: #222d4a;
-  --faint: #6b7797;
+  --faint: #8591b1;
   --point-soft: #b4c4ee;
   /* 빨강·노랑은 위험 등급, 주황은 지연에만 쓴다. */
   --sev-critical: #ff6b74;
