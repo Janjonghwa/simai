@@ -182,7 +182,7 @@ VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커�
 | GET · POST | /api/events, /api/events/\{id\}/ack | 이벤트 목록(기본 `page=0`·`size=20`·최대 100, 최신 발생순, 같은 사람의 여러 규칙은 한 묶음), 확인 | 반장·관리자 |
 | GET | /api/events/\{id\} | 이벤트 상세(위치·근거·관련 구역·조치 상태·VLM 근거·상향 의견) | 반장·관리자 |
 | POST | /api/events/\{id\}/summary | 사고 구간 요약 요청(`incident_summary`, 5.4) | 관리자 |
-| POST | /api/events/\{id\}/close | 구역 대상 이벤트 운영자 종료(본문 사유 1\~500자·멱등 키). I1 `event_close` 로 보내고 결과 `event_close_result` 를 돌려줌(6.4) | 관리자 |
+| POST | /api/events/\{id\}/close | 구역 대상 이벤트 운영자 종료(본문 사유 1\~500자·요청 멱등 키). 멱등 키는 EC2 가 따로 저장해 같은 키 재요청에 처음 결과를 돌려준다. EC2 가 발급한 `close_id` 로 I1 `event_close` 를 보내고 결과 `event_close_result` 를 돌려줌(6.4) | 관리자 |
 | POST | /api/events/\{id\}/escalation | VLM 상향 의견 승인·거절(본문 `assessmentId`·`decision`). 승인만 I1 `event_escalate` 로 보냄(5.4) | 관리자 |
 | GET | /api/scenes/current | COMMITTED Scene과 glTF 주소 | 열람 |
 | GET | /api/scenes/\{sceneId\} | Scene 생성 상태(CANDIDATE·VALIDATING·COMMITTED·REJECTED) | 관리자 |

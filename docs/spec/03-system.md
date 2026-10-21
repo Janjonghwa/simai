@@ -12,7 +12,7 @@
 | RunPod 분석 워커 | Tier 0와 같은 GPU Pod 안의 별도 프로세스(자원 상한 적용, 3.2), Python. 관제가 없는 개발 시간에는 같은 Pod에서 단독 실행(실행 사이트·GPU 는 3.12) | EC2에서 작업을 가져가(12.5) 실행: VLM 근거·사고 구간 요약(Cosmos3-Nano Reasoner, VLM 입력 얼굴 흐림 포함, 5.4), TBM 보고서·일일 일지(외부 LLM 호출), 정적 3D(MapAnything Native / EXP-01), BEV 평면도 생성(4.1), YOLO26-seg 마스크, 보정 번들 조정, 비동기 HMR(Fast SAM 3D Body / EXP-02), 관측 기반 외형 갱신 실험 |
 | 외부 LLM API | 외부 서비스(“GPT 6.1 sol”, 5.4) | TBM 보고서·일일 일지 문장, RAG 답변 등 텍스트 생성. 텍스트만 보낸다. 분석 워커의 `tbm_report` 작업 안에서만 호출한다(API 키는 Pod `.env`) |
 | EC2 | AWS(EC2 또는 Lightsail 중 지급 서비스로 정함, 확인 필요), Spring Boot 4·Java 21 | RiskEvent 저장·생명주기·알림 라우팅, 규칙·구성 묶음 배포, Risk Engine 컨테이너(계획·리플레이·What-if), Spatial DB, 뷰어 API·실시간 스트림, PWA 알림, Tier 0 엔드포인트 중계, 인증 |
-| 객체 저장소 | S3 또는 Lightsail 버킷 | 이벤트 클립, 조치 사진, 정적 3D 자산(glTF). 수명 주기 규칙으로 자동 삭제 |
+| 객체 저장소 | S3 또는 Lightsail 버킷 | 이벤트 클립, 조치 사진, 정적 3D 자산(glTF). 클립은 EC2 삭제 작업이 지운다(보존 표시 확인, 11.5) |
 | 클라이언트 | 브라우저, 휴대폰 | Three.js 뷰어, 반장 PWA. 워치 앱은 확장(부록 C) |
 
 데이터 흐름의 원칙: 카메라 영상은 관제 중 RunPod Tier 0 서비스로 상시 전송되지만 저장하지 않는다(링 버퍼만, 11.5). 영상은 EC2를 거치지 않고, EC2에는 World 상태·이벤트 같은 결과만 간다. 2D 관측 원본도 Tier 0 저장 위치(3.12)에 두고 EC2 로 보내지 않는다(11.2).
@@ -255,7 +255,7 @@ flowchart TB
 | EC2 | 계획·리플레이 판정 | Risk Engine Python 컨테이너 | 확정 |
 | EC2 | 알림 | Web Push(VAPID) | 확정 |
 | EC2 | 배포 | Docker Compose, Nginx + Let’s Encrypt | 기본안 |
-| 저장소 | 객체 저장소 | S3 또는 Lightsail 버킷, 수명 주기 규칙 | 기본안 |
+| 저장소 | 객체 저장소 | S3 또는 Lightsail 버킷. 클립 삭제는 EC2 삭제 작업(수명 주기 규칙은 클립에 쓰지 않음, 11.5) | 기본안 |
 | 브라우저 | 뷰어 | React + Three.js(React Three Fiber), STOMP 클라이언트 | 기본안 |
 | 휴대폰 | 반장 PWA | React PWA, Service Worker, Web Push | 기본안 |
 

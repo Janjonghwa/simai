@@ -402,6 +402,7 @@ erDiagram
     }
     event_close {
         uuid close_id PK
+        text idempotency_key UK
         uuid event_id FK
         bigint actor_user_id FK
     }
@@ -869,6 +870,8 @@ erDiagram
 | 클립 | `media_clip` 은 (`event_id`, `resume_count`, `camera_id`) 유일. 재개마다 새 구간 | 11.3, `media_clip`(I1) |
 | 계획·시뮬레이션 | PLANNED·WHAT_IF 결과는 `sim` 스키마의 별도 테이블. `risk_event.source` 는 LIVE·REPLAY 만 | 11.3, 11.4 |
 | 열거값 | PostgreSQL enum 대신 `text` + CHECK | Flyway 로 값 추가가 쉽다 |
+| hypertable 보관·압축 | 좌표·골격·health 는 상시 삭제 없이 7일 뒤 압축, `system_metric`·`device_heartbeat` 는 30일. 디스크 70% 초과 시 `skeleton_3d` 30일 | 11.5, 16장, EC2 디스크 320 GB. 추정은 `db-verification.md` 6장 |
+| 운영자 종료 멱등 키 | `event_close.idempotency_key`(유일)에 REST 요청 키, `close_id` 는 EC2 발급 PK | 12.6, 16장 |
 
 ## 검사한 것
 
