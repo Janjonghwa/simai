@@ -9,7 +9,7 @@ import pytest
 AI_DIR = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("service", ["tier0", "worker"])
+@pytest.mark.parametrize("service", ["tier0", "worker", "risk_engine"])
 def test_entrypoint_help(service):
     result = subprocess.run(
         [sys.executable, "-m", f"services.{service}", "--help"], cwd=AI_DIR, capture_output=True, text=True

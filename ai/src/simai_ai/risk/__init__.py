@@ -21,8 +21,9 @@ extras 없는 기본 설치만으로 import·테스트가 돌아야 한다. 현�
 | lifecycle | RiskEvent 생명주기 LifecycleTracker(발생 지속 조건·재개 포함), 전이 기록 EventTransition(저널 재료) |
 | site_alerts | 활성 현장 경보 목록 health.active_site_alerts(3.10 재동기화, LIVE·CRITICAL·HIGH·해소 전)과 I0 local_alert payload 를 이벤트 상태로 만드는 순수 함수 |
 | vectors | 공통 테스트 벡터 형식과 실행기 (`python -m simai_ai.risk.vectors <경로>`) |
+| plan | PLANNED 판정: risk_plan_request payload → 엔진 입력, 계획 작업 위치 생성(EC2 Risk Engine 컨테이너, 8.3) |
 
-vectors 는 `python -m` 으로 실행하므로 여기서 import 하지 않는다.
+vectors 는 `python -m` 으로 실행하므로, plan 은 EC2 컨테이너만 쓰므로 여기서 import 하지 않는다.
 """
 
 from simai_ai.risk.alerting import (

@@ -2,6 +2,7 @@
 #   docker buildx bake tier0                     # 베이스(cu130) → Tier 0, 로컬 이미지로 적재
 #   docker buildx bake exp02                     # 베이스(cu128 base·devel) → EXP-02 HMR (Detectron2 를 devel 단계에서 빌드)
 #   docker buildx bake mapanything               # 베이스(cu128 base, Python 3.12) → EXP-01 MapAnything
+#   docker buildx bake risk-engine               # EC2 Risk Engine 컨테이너(CPU, python slim, S15P31A101-99)
 #   REGISTRY=<레지스트리>/simai TAG=$(git rev-parse --short=12 HEAD) docker buildx bake --push tier0   # 푸시(사람이 확인한 뒤)
 # 외부 이미지는 모두 다이제스트로 고정한다. 바꿀 때는 태그와 다이제스트를 함께 바꾸고 MR 에 적는다.
 
@@ -18,6 +19,8 @@ variable "CUDA_EXP_DEVEL" { default = "nvidia/cuda:12.8.1-devel-ubuntu24.04@sha2
 # ghcr.io/astral-sh/uv:0.11.27 (노트북 uv 와 같은 판)
 variable "UV_IMAGE" { default = "ghcr.io/astral-sh/uv:0.11.27@sha256:4d01caf3b22dfd11003455e2e68153da08c4ee1fa54fdbd166c6282d22693419" }
 variable "PYTHON_VERSION" { default = "3.11.15" }
+# docker.io/library/python:3.11.15-slim-trixie (EC2 Risk Engine 컨테이너, CPU 전용. Tier 0 와 같은 Python 판)
+variable "PYTHON_RISK_ENGINE" { default = "python:3.11.15-slim-trixie@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff" }
 # MapAnything 은 볼륨 venv(Python 3.12)와 같은 판대
 variable "PYTHON_VERSION_MAPANYTHING" { default = "3.12.13" }
 # EXP-02 Detectron2 CUDA 확장 아키텍처: Ampere 이후 전부(A100 8.0, A40·A10 8.6, L4·L40S·4090 8.9, H100 9.0, B200 10.0, RTX 5090·PRO 6000 12.0).
@@ -112,4 +115,15 @@ target "mapanything" {
   contexts   = { simai-base-cu128-py312 = "target:base-cu128-py312" }
   args       = { BASE_IMAGE = "simai-base-cu128-py312" }
   tags       = ["${REGISTRY}/mapanything:${TAG}"]
+}
+
+# EC2 Risk Engine 컨테이너(S15P31A101-99): CPU 전용, CUDA 베이스를 쓰지 않는다
+target "risk-engine" {
+  inherits   = ["_common"]
+  dockerfile = "deploy/risk-engine/Dockerfile"
+  args = {
+    PYTHON_IMAGE = "${PYTHON_RISK_ENGINE}"
+    UV_IMAGE     = "${UV_IMAGE}"
+  }
+  tags = ["${REGISTRY}/risk-engine:${TAG}"]
 }

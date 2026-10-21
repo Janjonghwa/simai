@@ -2,12 +2,16 @@
 # 이미지 점검 (GPU 없이, 노트북·CI·Pod 어디서나). 이미지를 레지스트리에 올리기 전에 돌린다.
 #   bash deploy/scripts/check_image.sh simai/tier0:local
 #   bash deploy/scripts/check_image.sh simai/exp02-fs3db:local      # 실험 이미지(S15P31A101-207): 이미지 ENV SIMAI_IMAGE_KIND 로 종류를 고른다
+#   bash deploy/scripts/check_image.sh simai/risk-engine:local      # EC2 Risk Engine 컨테이너(S15P31A101-99). 저장소 최상위에서(계약 예시를 넣는다)
 # 확인: 비밀·가중치·엔진·SSH 호스트 키가 이미지에 없음, 패키지 import, 진입점 도움말,
 #       볼륨 없음·가중치 없음·해시 불일치·GPU 없음이 각각 명확한 코드와 메시지로 끝남, GPU 별 엔진 경로가 다름,
 #       PUBLIC_KEY(RunPod)·SSH_PUBLIC_KEY(Vast.ai) 를 주면 키 인증만 받는 sshd 가 뜸, SIMAI_SSHD=off 면 안 뜸,
 #       기본 진입점(simai-bootstrap)은 GPU 가 없으면 코드 3, 실행 스크립트에 CR(Windows 줄바꿈)이 없음 (S15P31A101-205).
 # 실험 이미지(exp02·mapanything)는 Tier 0 전용 항목(엔진·simai-tier0·분석 워커) 대신: 종류별 import·CUDA 확장 아키텍처·허브 코드 사본,
 #       부트스트랩이 자기 가중치 묶음을 고르는지(해시 모르는 항목은 받기 전에 코드 2, 받기 실패는 코드 2), 실행 도우미의 체크포인트 없음 코드 2.
+# EC2 Risk Engine 컨테이너(risk_engine, S15P31A101-99)는 GPU·SSH·가중치 항목 대신: 무거운 패키지 없음, 비루트 사용자, 공개 포트(EXPOSE) 없음,
+#       헬스체크, 공통 테스트 벡터(D-G3-04)가 이미지 안 라이브러리로 모두 통과, 망 없는(--network none) 컨테이너를 띄워 healthy 가 된 뒤
+#       계약 예시를 HTTP 로 보내 계약 예시 결과와 같은지(deploy/scripts/risk_plan_roundtrip.py).
 # 컨테이너 볼륨은 이름 있는 Docker 볼륨을 만들어 쓰고 끝나면 지운다(호스트 경로 변환 문제를 피한다).
 set -uo pipefail
 export MSYS_NO_PATHCONV=1
@@ -18,12 +22,12 @@ FAILS=0
 pass(){ echo "PASS  $*"; }
 fail(){ echo "FAIL  $*"; FAILS=$((FAILS + 1)); }
 # shellcheck disable=SC2317  # trap 으로 부른다
-cleanup(){ docker volume rm -f "$VOL" >/dev/null 2>&1; }
+cleanup(){ docker volume rm -f "$VOL" >/dev/null 2>&1; docker rm -f "$VOL" >/dev/null 2>&1; }
 trap cleanup EXIT
 KIND=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$IMG" | sed -n 's/^SIMAI_IMAGE_KIND=//p')
 KIND=${KIND:-tier0}
 echo "이미지 종류: $KIND"
-case "$KIND" in tier0|exp02|mapanything) ;; *) echo "FAIL  알 수 없는 SIMAI_IMAGE_KIND=$KIND"; exit 1 ;; esac
+case "$KIND" in tier0|exp02|mapanything|risk_engine) ;; *) echo "FAIL  알 수 없는 SIMAI_IMAGE_KIND=$KIND"; exit 1 ;; esac
 
 # 1) 이미지 층 이력·환경 변수에 비밀이 없다
 SECRET_RE='hf_[A-Za-z0-9]{20,}|HF_TOKEN=[^ ]|HUGGING_FACE_HUB_TOKEN=|RUNPOD_API_KEY=|PUBLIC_KEY=ssh-|BEGIN [A-Z ]*PRIVATE KEY'
@@ -82,6 +86,13 @@ for d in (os.environ["SIMAI_MAPANYTHING_REPO"] + "/mapanything", "/root/.cache/t
     assert pathlib.Path(d).exists(), d
 print(sys.version.split()[0], "torch", torch.__version__, "mapanything", m.version("mapanything"), "uniception", m.version("uniception"),
       "commit", os.environ["SIMAI_MAPANYTHING_COMMIT"][:7])' ;;
+  risk_engine) IMPORTS='
+import importlib.metadata as m, importlib.util as u, sys
+import services.risk_engine.app, simai_ai.risk.plan, fastapi, uvicorn, jsonschema
+heavy = [n for n in ("torch", "numpy", "cv2", "ultralytics", "tensorrt", "websockets", "services.tier0") if u.find_spec(n)]
+assert not heavy, heavy
+print(sys.version.split()[0], "simai-ai", m.version("simai-ai"), "fastapi", m.version("fastapi"), "uvicorn", m.version("uvicorn"),
+      "jsonschema", m.version("jsonschema"))' ;;
 esac
 if [ "$KIND" != tier0 ]; then
   if OUT=$(docker run --rm --entrypoint python "$IMG" -c "$IMPORTS" 2>&1); then
@@ -138,6 +149,43 @@ docker run --rm -v "$VOL:/workspace" --entrypoint /bin/sh "$IMG" \
 expect "가중치 해시 불일치" 2 "해시 불일치" -v "$VOL:/workspace" \
   -e SIMAI_TIER0_WEIGHTS_SHA256=0000000000000000000000000000000000000000000000000000000000000000 "${T0[@]}" "$IMG"
 expect "GPU 없음(가중치는 있음)" 3 "CUDA GPU" -v "$VOL:/workspace" "${T0[@]}" "$IMG"
+elif [ "$KIND" = risk_engine ]; then
+  UID_IN=$(docker run --rm --entrypoint id "$IMG" -u 2>&1)
+  if [ "$UID_IN" != 0 ] && [ -n "$UID_IN" ]; then pass "비루트 사용자 (uid $UID_IN)"; else fail "루트로 돈다: uid $UID_IN"; fi
+  PORTS=$(docker image inspect --format '{{json .Config.ExposedPorts}}' "$IMG")
+  if [ "$PORTS" = null ] || [ "$PORTS" = "{}" ]; then pass "EXPOSE 없음(공개 포트 없음)"; else fail "EXPOSE: $PORTS"; fi
+  if docker image inspect --format '{{json .Config.Healthcheck.Test}}' "$IMG" | grep -q healthz; then
+    pass "헬스체크 /healthz"
+  else
+    fail "헬스체크가 없다"
+  fi
+  if OUT=$(docker run --rm "$IMG" python -m services.risk_engine --help 2>&1) && grep -q "plan/evaluate" <<<"$OUT"; then
+    pass "python -m services.risk_engine --help"
+  else
+    fail "services.risk_engine --help: $(tail -3 <<<"$OUT")"
+  fi
+  # 공통 테스트 벡터(D-G3-04): 이미지 안의 Risk Engine 라이브러리로 저장소 벡터 전부
+  if OUT=$(docker run --rm "$IMG" python -m simai_ai.risk.vectors /opt/simai/vectors 2>&1); then
+    pass "공통 테스트 벡터 $(tail -1 <<<"$OUT")"
+  else
+    fail "공통 테스트 벡터: $(grep -E 'FAIL|통과' <<<"$OUT" | tail -5)"
+  fi
+  # 망 없이 띄워(밖으로 나갈 수 없음) healthy 가 된 뒤 컨테이너 안에서 계약 예시를 HTTP 로 왕복한다
+  docker run -d --name "$VOL" --network none "$IMG" >/dev/null
+  STATE=starting
+  for _ in $(seq 1 60); do
+    STATE=$(docker inspect --format '{{.State.Health.Status}}' "$VOL" 2>/dev/null || echo gone)
+    if [ "$STATE" = healthy ] || [ "$STATE" = unhealthy ] || [ "$STATE" = gone ]; then break; fi
+    sleep 1
+  done
+  if [ "$STATE" = healthy ]; then pass "망 없는 컨테이너 healthy"; else fail "컨테이너 상태 $STATE"; docker logs "$VOL" 2>&1 | tail -5 | sed 's/^/      /'; fi
+  docker cp contracts/examples "$VOL:/tmp/examples" >/dev/null && docker cp deploy/scripts/risk_plan_roundtrip.py "$VOL:/tmp/" >/dev/null
+  if OUT=$(docker exec "$VOL" python /tmp/risk_plan_roundtrip.py --url http://127.0.0.1:8080 --examples /tmp/examples 2>&1); then
+    pass "계약 예시 HTTP 왕복 ($(tail -1 <<<"$OUT"))"
+  else
+    fail "계약 예시 HTTP 왕복:"; while IFS= read -r line; do echo "      $line"; done <<<"$(tail -12 <<<"$OUT")"
+  fi
+  docker rm -f "$VOL" >/dev/null 2>&1
 else
   expect "simai-bootstrap check GPU 없음" 3 "GPU 없음" "$IMG" check
   expect "simai-bootstrap run 명령 없음" 64 "사용법" "$IMG" run
@@ -155,8 +203,9 @@ else
     expect "static 묶음: map-anything 가중치 받기 실패는 코드 2" 2 "map-anything-apache-model 받기 실패" "${FAKE_GPU[@]}" "$IMG" check
   fi
 fi
-# 이미지에 들어간 실행 스크립트에 CR 이 없다(Windows checkout 의 'python3\r' 실패 재발 방지)
-if CR=$(docker run --rm --entrypoint /bin/sh "$IMG" -c "grep -l \$(printf '\\r') /usr/local/bin/simai-* || true") && [ -z "$CR" ]; then
+# 이미지에 들어간 실행 스크립트에 CR 이 없다(Windows checkout 의 'python3\r' 실패 재발 방지). Risk Engine 이미지에는 실행 스크립트가 없다
+if [ "$KIND" = risk_engine ]; then :
+elif CR=$(docker run --rm --entrypoint /bin/sh "$IMG" -c "grep -l \$(printf '\\r') /usr/local/bin/simai-* || true") && [ -z "$CR" ]; then
   pass "실행 스크립트 LF (simai-start·bootstrap·tier0·wait-tier0)"
 else
   fail "CR 이 든 실행 스크립트: $CR"
@@ -175,7 +224,8 @@ else
 fi
 fi
 
-# 6) SSH: PUBLIC_KEY(RunPod)·SSH_PUBLIC_KEY(Vast.ai) 를 주면 키 인증만 받는 sshd 가 뜬다(호스트 키는 이때 만든다)
+# 6) SSH: PUBLIC_KEY(RunPod)·SSH_PUBLIC_KEY(Vast.ai) 를 주면 키 인증만 받는 sshd 가 뜬다(호스트 키는 이때 만든다). Risk Engine 이미지는 sshd 가 없다
+if [ "$KIND" != risk_engine ]; then
 KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEZha2VLZXlGb3JDaGVja09ubHkwMDAwMDAwMDAwMDA check"
 SSH_PROBE='pgrep -x sshd >/dev/null && echo running; sshd -T 2>/dev/null | grep -Ei "^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin) "'
 for VAR in PUBLIC_KEY SSH_PUBLIC_KEY; do
@@ -190,6 +240,7 @@ done
 # 엘리스 GPU VM: 호스트 sshd 를 쓰므로 SIMAI_SSHD=off 면 키가 있어도 컨테이너 sshd 를 띄우지 않는다
 OUT=$(docker run --rm -e "PUBLIC_KEY=$KEY" -e SIMAI_SSHD=off "$IMG" bash -c 'pgrep -x sshd >/dev/null && echo running || echo none' 2>/dev/null)
 if [ "$OUT" = none ]; then pass "SIMAI_SSHD=off: 컨테이너 sshd 없음"; else fail "SIMAI_SSHD=off 인데 sshd: $OUT"; fi
+fi
 
 echo
 if [ "$FAILS" -eq 0 ]; then echo "check_image: 모두 통과 ($IMG)"; else echo "check_image: 실패 $FAILS 건 ($IMG)"; fi

@@ -36,6 +36,9 @@ tier0 = [
     "nvidia-modelopt[onnx]>=0.44; sys_platform == 'linux'",
 ]
 worker = ["simai-ai[scene,hmr]"]
+# EC2 Risk Engine 컨테이너 내부 API (services/risk_engine, deploy/risk-engine, 명세 3.2·3.8·12.2). 요청·응답은 contracts/ 스키마로
+# jsonschema 검증한다(손으로 쓴 Pydantic 모델 없음, 명세 21.2). 판은 올린 지 2주가 지난 것으로 묶는다(공급망. 올릴 때 MR 에 적는다)
+risk_api = ["fastapi>=0.142.4,<0.143", "starlette>=1.7,<1.8", "uvicorn>=0.54,<0.55", "jsonschema>=4.23"]
 
 [dependency-groups]
 dev = [
@@ -54,6 +57,10 @@ dev = [
     "cryptography>=43",
     # I1 클라이언트 시험(로컬 wss 서버). 기능 설치는 extras tier0 가 같은 범위를 선언한다
     "websockets>=14",
+    # Risk Engine 컨테이너 API 시험(fastapi.testclient 가 httpx 를 쓴다, 실제 서버 왕복은 uvicorn). 기능 설치는 extras risk_api 가 같은 범위를 선언한다
+    "fastapi>=0.142.4,<0.143",
+    "httpx>=0.28",
+    "uvicorn>=0.54,<0.55",
 ]
 
 [tool.uv.sources]
@@ -134,3 +141,34 @@ name = "src 는 services 를 import 하지 않는다"
 type = "forbidden"
 source_modules = ["simai_ai"]
 forbidden_modules = ["services"]
+
+[[tool.importlinter.contracts]]
+id = "risk-engine-no-channels"
+name = "Risk Engine 컨테이너(services.risk_engine)와 PLANNED 변환(simai_ai.risk.plan)은 알림·생명주기·저널·Tier 0 전송·네트워크 클라이언트(표준 socket·ssl·http·urllib 포함)·DB 를 import 하지 않는다 (규칙 5, 명세 12.2)"
+type = "forbidden"
+source_modules = ["services.risk_engine", "simai_ai.risk.plan"]
+forbidden_modules = [
+    "simai_ai.risk.alerting",
+    "simai_ai.risk.site_alerts",
+    "simai_ai.risk.lifecycle",
+    "simai_ai.eventlog",
+    "simai_ai.recovery",
+    "simai_ai.io",
+    "services.tier0",
+    "services.worker",
+    "websockets",
+    "httpx",
+    "requests",
+    "urllib3",
+    # 표준 라이브러리 통신·DB(컨테이너는 받은 요청만 계산한다. 헬스체크의 로컬 /healthz 조회는 Dockerfile 몫이라 여기 없다)
+    "socket",
+    "ssl",
+    "http",
+    "urllib",
+    "smtplib",
+    "ftplib",
+    "sqlite3",
+    "psycopg",
+    "psycopg2",
+    "sqlalchemy",
+]

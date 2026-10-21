@@ -17,6 +17,8 @@ Blackwell(sm_100·sm_120)도 세 이미지 모두 커널이 있다(Tier 0 cu130,
 | `scripts/simai_bootstrap.py`, `weights.json` | 이미지의 `simai-bootstrap`(기본 진입점): 저장 위치·GPU 세대 감지 → 가중치 목록대로 받고 sha256 확인 → Tier 0 또는 세션 큐 (아래 "simai-bootstrap") |
 | `exp02/Dockerfile`, `exp02/entrypoint.sh`, `exp02/requirements.{in,lock.txt}` | EXP-02 HMR(Fast SAM 3D Body) 이미지: torch 2.7.1+cu128, Detectron2 를 Ampere~Blackwell 로 미리 빌드. 가중치는 시작할 때 `simai-bootstrap` 이 받는다(아래 "실험 이미지") |
 | `mapanything/Dockerfile`, `mapanything/requirements.{in,lock.txt}` | EXP-01 MapAnything 이미지: Python 3.12, torch 2.7.1+cu128, map-anything @3d10cf7 (아래 "실험 이미지") |
+| `risk-engine/Dockerfile` | EC2 Risk Engine 컨테이너(S15P31A101-99): CPU 전용 python:3.11.15-slim, `ai/uv.lock` 의 extra `risk_api`(FastAPI·uvicorn·jsonschema)만, 비루트(uid 10001)·EXPOSE 없음·헬스체크 `/healthz`, 계약 스키마·공통 벡터 포함(약 225 MB). compose `risk-engine` 은 internal 망 `simai-ec2-internal` 에서 `risk-engine:8080` 으로만 닿는다(포트 공개 없음). 설계 `docs/design/risk-engine-container.md` |
+| `scripts/risk_plan_roundtrip.py`, `scripts/risk_engine_g304.sh` | Risk Engine 컨테이너 계약 예시 왕복(HTTP·라이브러리 직접), D-G3-04 두 이미지 대조(`bash deploy/scripts/risk_engine_g304.sh simai/risk-engine:$TAG simai/tier0:$TAG`: 공통 벡터 출력 같음 + API 응답 = Tier 0 라이브러리 응답) |
 | `*/Dockerfile.dockerignore` | 이미지별 빌드 컨텍스트 **허용 목록**(나열한 파일만 들어간다) |
 | `compose.yaml` | 로컬 점검용(RunPod 은 Compose 를 쓰지 않는다) |
 | `scripts/check_image.sh` | 이미지 점검(GPU 불필요, 세 이미지 공통·종류는 이미지 ENV `SIMAI_IMAGE_KIND`): 비밀·가중치·엔진·SSH 호스트 키 없음, import, 진입점 오류 코드, GPU 별 엔진 경로(Tier 0), 가중치 묶음 선택(실험), SSH 비밀번호 접속 거부 |
@@ -80,6 +82,8 @@ TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl exp02      # → simai/exp
 TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl mapanything # → simai/mapanything:$TAG
 bash deploy/scripts/check_image.sh simai/exp02-fs3db:$TAG         # 실험 이미지도 같은 점검(종류별 항목)
 bash deploy/scripts/check_image.sh simai/mapanything:$TAG
+TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl risk-engine # → simai/risk-engine:$TAG (CPU, EC2 Risk Engine 컨테이너)
+bash deploy/scripts/check_image.sh simai/risk-engine:$TAG         # 벡터·비루트·포트 없음·망 없는 컨테이너 HTTP 왕복
 ```
 
 - Tier 0 이미지는 레지스트리 기준(압축) 약 7.9GB, 풀면 약 21GB 다(-213 의 modelopt·onnxruntime-gpu·cupy 로 0.9GB 늘었다. 2026-10-21 노트북 빌드 실측). 처음 빌드는 받기가 대부분(3MB/s 망에서 약 90분), 이후에는 uv 캐시 마운트로 바뀐 층만 다시 만든다.
