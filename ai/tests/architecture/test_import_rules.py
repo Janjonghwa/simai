@@ -40,6 +40,7 @@ def _fake_tree(root: Path, extra: dict[str, str]) -> subprocess.CompletedProcess
     files |= {f"src/simai_ai/{name}/__init__.py": "" for name in SRC_PACKAGES}
     files |= {f"services/{name}/__init__.py": "" for name in SERVICES}
     files |= {"experiments/__init__.py": "", "experiments/hmr/__init__.py": "", "experiments/hmr/bench.py": ""}
+    files |= {"src/simai_ai/risk/plan.py": ""}  # 계약 risk-engine-no-channels 의 source 모듈(없으면 lint-imports 오류)
     files |= extra
     for rel, text in files.items():
         path = root / rel
@@ -95,3 +96,30 @@ def test_simai_ai_has_only_subpackages():
         if p.name not in {"__init__.py", "__pycache__"} and not (p.is_dir() and (p / "__init__.py").is_file())
     ]
     assert strays == []
+
+
+@pytest.mark.parametrize(
+    ("rel", "code"),
+    [
+        pytest.param("services/risk_engine/app.py", "import simai_ai.risk.alerting\n", id="api-imports-alerting"),
+        pytest.param("services/risk_engine/app.py", "from simai_ai.risk import lifecycle\n", id="api-imports-lifecycle"),
+        pytest.param("services/risk_engine/app.py", "import simai_ai.eventlog\n", id="api-imports-journal"),
+        pytest.param("services/risk_engine/app.py", "from services.tier0 import i1_publisher\n", id="api-imports-tier0"),
+        pytest.param("services/risk_engine/app.py", "import websockets\n", id="api-imports-websockets"),
+        pytest.param("services/risk_engine/app.py", "import urllib.request\n", id="api-imports-urllib"),
+        pytest.param("services/risk_engine/app.py", "import socket\n", id="api-imports-socket"),
+        pytest.param("src/simai_ai/risk/plan.py", "import sqlite3\n", id="plan-imports-sqlite3"),
+        pytest.param("src/simai_ai/risk/plan.py", "import simai_ai.risk.site_alerts\n", id="plan-imports-site-alerts"),
+    ],
+)
+def test_risk_engine_container_cannot_reach_alert_channels(tmp_path, rel, code):
+    """Risk Engine 컨테이너(PLANNED)는 알림·생명주기·저널·Tier 0 전송·네트워크 클라이언트를 import 하지 못한다(S15P31A101-99, 규칙 5)."""
+    stubs = {
+        "src/simai_ai/risk/alerting.py": "",
+        "src/simai_ai/risk/lifecycle.py": "",
+        "src/simai_ai/risk/site_alerts.py": "",
+        "services/tier0/i1_publisher.py": "",
+    }
+    result = _fake_tree(tmp_path, stubs | {rel: code})
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "BROKEN" in result.stdout, result.stdout + result.stderr
