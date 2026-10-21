@@ -27,6 +27,8 @@ export interface SceneColors {
 interface MockSceneProps {
   colors: SceneColors;
   selected: ViewerTarget | null;
+  /** 입력 없음(source=off)일 때만 예전 고정 작업자를 그린다. 입력이 있으면 사람은 PersonLayer 가 그린다. */
+  legacyPeople: boolean;
 }
 
 const isSelected = (selected: ViewerTarget | null, type: ViewerTarget['type'], id: string) =>
@@ -69,7 +71,7 @@ function InitialView() {
  * 목업용 교실 장면. 바닥·벽은 Viewer 의 WorldScene 이 그리고, 여기서는 예시 객체만 World 좌표로 얹는다.
  * 기존 Viewer 의 Canvas·카메라·선택 위에 Selectable 로만 얹는다.
  */
-export function MockScene({ colors, selected }: MockSceneProps) {
+export function MockScene({ colors, selected, legacyPeople }: MockSceneProps) {
   return (
     <>
       <InitialView />
@@ -133,21 +135,24 @@ export function MockScene({ colors, selected }: MockSceneProps) {
         );
       })}
 
-      {PEOPLE.map((person) => (
-        <Selectable key={person.id} target={{ type: 'person', id: person.id }}>
-          {/* 발 위치에 두고, 몸통은 Three 위쪽(+Y)으로 세운다. */}
-          <group position={fixtureFeet(person)}>
-            <mesh position-y={0.85}>
-              <capsuleGeometry args={[0.24, 1.1, 6, 12]} />
-              <meshStandardMaterial
-                color={
-                  isSelected(selected, 'person', person.id) ? colors.personSelected : colors.person
-                }
-              />
-            </mesh>
-          </group>
-        </Selectable>
-      ))}
+      {legacyPeople &&
+        PEOPLE.map((person) => (
+          <Selectable key={person.id} target={{ type: 'person', id: person.id }}>
+            {/* 발 위치에 두고, 몸통은 Three 위쪽(+Y)으로 세운다. */}
+            <group position={fixtureFeet(person)}>
+              <mesh position-y={0.85}>
+                <capsuleGeometry args={[0.24, 1.1, 6, 12]} />
+                <meshStandardMaterial
+                  color={
+                    isSelected(selected, 'person', person.id)
+                      ? colors.personSelected
+                      : colors.person
+                  }
+                />
+              </mesh>
+            </group>
+          </Selectable>
+        ))}
     </>
   );
 }

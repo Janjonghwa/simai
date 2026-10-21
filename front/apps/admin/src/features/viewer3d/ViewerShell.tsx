@@ -3,6 +3,7 @@ import {
   type SpatialDataStore,
 } from '@/features/viewer3d/data/spatialData.store';
 import { SpatialDataProvider } from '@/features/viewer3d/data/SpatialDataProvider';
+import { PersonModelContext } from '@/features/viewer3d/people/PersonLayer';
 import type { Viewer3DProps, ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
 import { createViewerStore, toStatus } from '@/features/viewer3d/viewer3d.store';
 import { ViewerCanvas } from '@/features/viewer3d/ViewerCanvas';
@@ -24,6 +25,8 @@ export interface ViewerShellProps extends Viewer3DProps {
   children?: ReactNode;
   /** 데이터 Store 를 바깥에서 읽어야 할 때(개발 진단·시험)만 넘긴다. 없으면 인스턴스마다 하나 만든다. */
   dataStore?: SpatialDataStore;
+  /** 사람 모델(리깅 glTF) 주소. 배포 경로가 정해지기 전이라 개발 화면만 넘긴다. 없으면 캡슐 아바타. */
+  personModelUrl?: string | null;
 }
 
 /** 뷰어 상태·명령·알림과 데이터 입력을 묶는다. 인스턴스가 살아 있는 동안 store 와 Canvas 는 하나다. */
@@ -36,6 +39,7 @@ export function ViewerShell({
   className,
   children,
   dataStore,
+  personModelUrl = null,
 }: ViewerShellProps) {
   const [store] = useState(() => createViewerStore(initialMode));
   // 처음 받은 dataStore 를 계속 쓴다. 바꿔 넘겨도 장면의 구독을 옮기지 않는다.
@@ -80,7 +84,9 @@ export function ViewerShell({
       <SpatialDataProvider store={data} source={source}>
         <ViewerErrorBoundary onError={handleRenderError}>
           <ViewerStoreContext value={store}>
-            <ViewerCanvas>{children}</ViewerCanvas>
+            <PersonModelContext value={personModelUrl}>
+              <ViewerCanvas>{children}</ViewerCanvas>
+            </PersonModelContext>
           </ViewerStoreContext>
         </ViewerErrorBoundary>
       </SpatialDataProvider>

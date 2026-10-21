@@ -1,4 +1,5 @@
 import { CameraRig } from '@/features/viewer3d/CameraRig';
+import { PersonLayer } from '@/features/viewer3d/people/PersonLayer';
 import { SceneBase } from '@/features/viewer3d/SceneBase';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
 import { Canvas, useThree } from '@react-three/fiber';
@@ -71,6 +72,7 @@ export const ViewerCanvas = memo(function ViewerCanvas({ children }: ViewerCanva
       <RendererStatus />
       <CameraRig />
       <SceneBase />
+      <PersonLayer />
       {children}
     </Canvas>
   );

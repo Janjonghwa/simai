@@ -112,6 +112,22 @@ export function fixtureName(target: ViewerTarget): string | null {
   return list.find((item) => item.id === target.id)?.name ?? null;
 }
 
+/** 화면에 쓸 이름. Provider 의 사람(World ID)은 목업 목록에 없어 ID 로 부른다. */
+export function displayName(target: ViewerTarget): string | null {
+  return fixtureName(target) ?? (target.type === 'person' ? `작업자 ${target.id}` : null);
+}
+
+/** 업무 패널의 추적 인원·이벤트 목록. 입력이 있으면 Provider, 입력 없음이면 예전 고정 목록이다. */
+export interface Roster {
+  people: { id: string; name: string }[];
+  events: FixtureEvent[];
+}
+
+export const LEGACY_ROSTER: Roster = {
+  people: PEOPLE.map(({ id, name }) => ({ id, name })),
+  events: EVENTS,
+};
+
 /** 예시 작업자는 바닥(World Z=0)에 선 것으로 둔다. 발 위치의 Three 좌표. */
 export function fixtureFeet(person: FixturePerson): ThreePoint {
   return worldToThree(worldPoint(person.x, person.y, 0));

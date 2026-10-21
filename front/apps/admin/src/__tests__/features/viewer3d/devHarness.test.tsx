@@ -5,7 +5,11 @@ import {
   withDevView,
   type DevViewKey,
 } from '@/features/viewer3d/dev-harness/devView';
-import { readDataSource, withDataSource } from '@/features/viewer3d/dev-harness/harnessSource';
+import {
+  readAvatar,
+  readDataSource,
+  withDataSource,
+} from '@/features/viewer3d/dev-harness/harnessSource';
 import { MockApp } from '@/features/viewer3d/dev-harness/MockApp';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -240,6 +244,45 @@ describe('MockApp 개발 보기', () => {
       'disconnect',
     );
   });
+
+  it('입력이 있으면 추적 인원이 Provider 의 World ID 이고, 입력 없음이면 예전 고정 목록이다', () => {
+    vi.useFakeTimers();
+    try {
+      window.history.replaceState(null, '', '/dev?view=mock&source=normal');
+      const { unmount } = render(<MockApp />);
+      act(() => vi.advanceTimersByTime(300));
+      const panel = screen.getByRole('region', { name: '실시간 관제' });
+      expect(
+        within(panel)
+          .getAllByText(/^작업자 w-000\d$/)
+          .map((el) => el.textContent),
+      ).toEqual(['작업자 w-0001', '작업자 w-0002', '작업자 w-0003']);
+      expect(within(panel).queryByText('예시 작업자 1')).toBeNull();
+      unmount();
+
+      window.history.replaceState(null, '', '/dev?view=mock&source=off');
+      render(<MockApp />);
+      const legacy = screen.getByRole('region', { name: '실시간 관제' });
+      expect(within(legacy).getByText('예시 작업자 1')).toBeTruthy();
+      expect(within(legacy).queryByText(/작업자 w-/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('위험 시나리오의 LIVE 활성 이벤트가 이벤트 목록이 되고 대상은 World ID 다', () => {
+    vi.useFakeTimers();
+    try {
+      window.history.replaceState(null, '', '/dev?view=mock&source=risk-lifecycle');
+      render(<MockApp />);
+      act(() => vi.advanceTimersByTime(3200));
+      const panel = screen.getByRole('region', { name: '실시간 관제' });
+      expect(within(panel).getByText('R1 · z-01 · UPDATED')).toBeTruthy();
+      expect(within(panel).getByText('R2 · z-02 · RAISED')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('데이터 입력 주소', () => {
@@ -254,5 +297,11 @@ describe('데이터 입력 주소', () => {
     expect(withDataSource('http://127.0.0.1:5175/x/index.html?view=world#h', 'external')).toBe(
       'http://127.0.0.1:5175/x/index.html?view=world&source=external#h',
     );
+  });
+
+  it('avatar=capsule 일 때만 캡슐, 그 밖에는 XBot 을 먼저 시도한다', () => {
+    expect(readAvatar('')).toBe('xbot');
+    expect(readAvatar('?avatar=CAPSULE')).toBe('capsule');
+    expect(readAvatar('?avatar=other')).toBe('xbot');
   });
 });
