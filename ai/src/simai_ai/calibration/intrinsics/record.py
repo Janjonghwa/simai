@@ -10,16 +10,21 @@
 - created_at 은 주입받는다(UTC int64 ms).
 - 0.2.0: 실행 도구(`cli`)가 쓰는 선택 절 `cameras`(카메라별 입력 설명·수집 프레임 수·시간 범위·백엔드 경로·실패 사유)와
   `run`(수집 설정·백엔드 순서·사용 불가 백엔드)을 더했다. 영상·이미지는 기록에 넣지 않는다.
+- 기록 파일에서 번들 조정 초기값을 다시 만드는 것은 `bundle_init_from_record` 다(외부 파라미터 실행 도구, -214).
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
-from simai_ai.calibration.intrinsics.estimate import IntrinsicsEstimate
-from simai_ai.calibration.intrinsics.shared import SharedLensResult
+from simai_ai.calibration.intrinsics.estimate import (
+    STATUS_OK,
+    IntrinsicsEstimate,
+    IntrinsicsUncertainty,
+)
+from simai_ai.calibration.intrinsics.shared import CameraDeviation, SharedLensResult
 from simai_ai.providers.base import FramesProvenance
 from simai_ai.providers.provenance import build_input_provenance
 from simai_ai.tracking.time_model import require_ms
@@ -165,3 +170,58 @@ def to_bundle_adjustment_init(shared: SharedLensResult, source_record: Mapping[s
             )
         )
     return BundleAdjustmentInit(tuple(cams), dict(source_record))
+
+
+def bundle_init_from_record(record: Mapping[str, Any]) -> BundleAdjustmentInit:
+    """기록 JSON(`simai.intrinsics_estimate`)의 같은 렌즈 공통값 → 번들 조정 초기값 (`to_bundle_adjustment_init` 와 같은 규칙).
+
+    공통값이 없거나(합의 없음·초점 없음) 형식이 다르면 ValueError 다(초기값을 지어내지 않는다). 카메라 목록은 기록의
+    estimates 이고, 편차(이상치·자체 추정 상태)와 실행 도구 기록의 직선성 확인 결과도 그대로 표시로 옮긴다.
+    """
+    if record.get("format") != INTRINSICS_RECORD_FORMAT:
+        raise ValueError(f"내부 파라미터 기록 형식이 아니다: {record.get('format')!r}")
+    shared = record.get("shared_lens")
+    if not shared or not shared.get("consensus"):
+        raise ValueError("같은 렌즈 공통값이 없다(shared_lens 없음 또는 합의 없음). 번들 조정 초기값을 만들 수 없다")
+    common_rec = shared["common"]
+    if common_rec.get("status") != STATUS_OK or "camera" not in common_rec:
+        raise ValueError(f"같은 렌즈 공통 초점·왜곡이 없다 ({common_rec.get('status')})")
+    camera = common_rec["camera"]
+    K = camera["K"]
+    unc = common_rec.get("uncertainty") or {}
+    common = IntrinsicsEstimate(
+        camera_id=common_rec["camera_id"],
+        image_size=(int(camera["image_size"][0]), int(camera["image_size"][1])),
+        focal_px=float(K[0][0]),
+        distortion_coeffs=tuple(float(c) for c in camera["distortion"]["coeffs"]),
+        radial_pixel=tuple(common_rec["radial_pixel"]) if common_rec.get("radial_pixel") else None,
+        uncertainty=IntrinsicsUncertainty(
+            focal_std_px=unc.get("focal_std_px"), k1_std=unc.get("k1_std"), k2_std=unc.get("k2_std")
+        ),
+        method=common_rec["method"],
+        method_version=common_rec["method_version"],
+        status=STATUS_OK,
+        principal_point=(float(K[0][2]), float(K[1][2])),
+        principal_point_assumed=bool(common_rec.get("principal_point_assumed", True)),
+    )
+    if camera["distortion"]["model"] != "OPENCV_PINHOLE":
+        raise ValueError(f"공통값 왜곡 모델이 OPENCV_PINHOLE 이 아니다: {camera['distortion']['model']}")
+    deviations = tuple(
+        CameraDeviation(
+            camera_id=d["camera_id"],
+            status=d["status"],
+            focal_rel_dev=d.get("focal_rel_dev"),
+            k1_dev=d.get("k1_dev"),
+            k2_dev=d.get("k2_dev"),
+            discrepancy_p95_px=d.get("discrepancy_p95_px"),
+            outlier=bool(d.get("outlier")),
+            used_in_common=bool(d.get("used_in_common")),
+            discrepancy_rel=d.get("discrepancy_rel"),
+        )
+        for d in shared.get("deviations", [])
+    )
+    camera_ids = [e["camera_id"] for e in record.get("estimates", [])]
+    if not camera_ids:
+        raise ValueError("기록에 카메라별 추정(estimates)이 없다")
+    per_camera = {cid: replace(common, camera_id=cid) for cid in camera_ids}
+    return to_bundle_adjustment_init(SharedLensResult(common, per_camera, deviations, (), True), record)
