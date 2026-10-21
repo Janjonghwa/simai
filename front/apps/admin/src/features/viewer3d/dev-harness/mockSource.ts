@@ -38,6 +38,14 @@ export interface MockSpatialSource extends SpatialSource {
 
 let created = 0;
 
+/**
+ * 개발 서버에서 MSW 가 아직 켜지지 않았거나(첫 의존성 최적화, HMR 로 껐다 켜는 사이) 요청이 Vite 로 가면 index.html 이 온다.
+ * 그 응답을 JSON 으로 읽지 않고 이 이유로 남긴다.
+ */
+export const NOT_JSON_REASON = 'JSON 이 아닌 응답(MSW 미동작 추정)';
+/** 구역은 연결 때 한 번만 받으므로 NOT_JSON 일 때만 이 간격으로 다시 묻는다. HTTP 오류(503 등)는 다시 묻지 않는다. */
+const ZONE_RETRY_MS = [250, 500, 1000, 2000];
+
 export function createMockSource(options: MockSourceOptions): MockSpatialSource {
   const now = options.now ?? Date.now;
   const t0 = options.t0 ?? now();
@@ -64,17 +72,32 @@ export function createMockSource(options: MockSourceOptions): MockSpatialSource 
     try {
       const response = await fetch(`${restBase}${path}`);
       if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
+      if (!(response.headers.get('content-type') ?? '').includes('json')) {
+        return { ok: false, reason: NOT_JSON_REASON };
+      }
       return { ok: true, raw: await response.json() };
     } catch (error) {
       return { ok: false, reason: error instanceof Error ? error.message : '요청 실패' };
     }
   }
 
+  async function getZones(): Promise<ZonesResult> {
+    let result: ZonesResult = await get('/api/zones');
+    for (const wait of ZONE_RETRY_MS) {
+      if (result.ok || result.reason !== NOT_JSON_REASON || sinks.size === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      // 기다리는 동안 구독이 모두 풀렸으면 더 묻지 않는다.
+      if (sinks.size === 0) break;
+      result = await get('/api/zones');
+    }
+    return result;
+  }
+
   // 연결이 열릴 때마다 지금 시각 World 스냅샷을 받아 공백을 메운다. 구역은 처음 한 번 받는다.
   async function onOpen(first: boolean) {
     if (restBase === null) return;
     if (first) {
-      const zones: ZonesResult = await get('/api/zones');
+      const zones = await getZones();
       each((sink) => sink.onZones?.(zones, now()));
     }
     const snapshot = await get(`/api/world?at=${t0 + Math.max(tick - 1, 0) * TICK_MS}`);

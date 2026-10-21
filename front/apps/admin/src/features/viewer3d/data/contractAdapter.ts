@@ -230,16 +230,41 @@ export function adaptMessage(raw: unknown, receivedAt: number): AdaptResult {
 // GET /api/zones 응답 형상 계약은 아직 없다(BE -120·FE -189 협의 대상). config_bundle 의 zones URI·해시는 형상이 아니다.
 // 그래서 contract: 'DEMO_UNCONFIRMED' 표시가 있는 DEMO 응답만 받고, 그렇지 않으면 실제 응답을 추측해 읽지 않고 거부한다.
 
-const finite3 = z.tuple([z.number(), z.number(), z.number()]);
-const demoZone = z.object({
-  zone_id: z.string().min(1),
-  name: z.string(),
-  aabb: z.object({ min_xyz: finite3, max_xyz: finite3 }),
-});
 const demoZones = z.object({
   contract: z.literal('DEMO_UNCONFIRMED'),
   zones: z.array(z.unknown()),
 });
+
+const AXES = ['X', 'Y', 'Z'] as const;
+
+const field = (value: unknown, key: string): unknown =>
+  typeof value === 'object' && value !== null ? Reflect.get(value, key) : undefined;
+
+/** 구역 하나를 검사한다. 0폭·0높이·뒤집힌 범위·미상 높이는 넓히거나 0 으로 채우지 않고 이유와 함께 뺀다. */
+function readDemoZone(item: unknown): { zone: ZoneView } | { reason: string } {
+  const zoneId = field(item, 'zone_id');
+  const name = field(item, 'name');
+  const aabb = field(item, 'aabb');
+  const rawMin = field(aabb, 'min_xyz');
+  const rawMax = field(aabb, 'max_xyz');
+  if (
+    typeof zoneId !== 'string' ||
+    zoneId.trim() === '' ||
+    typeof name !== 'string' ||
+    !Array.isArray(rawMin) ||
+    !Array.isArray(rawMax) ||
+    rawMin.length !== 3 ||
+    rawMax.length !== 3
+  ) {
+    return { reason: '형식 오류' };
+  }
+  if (rawMin[2] == null || rawMax[2] == null) return { reason: '높이(Z) 미상' };
+  const [min, max] = [toWorldPoint(rawMin), toWorldPoint(rawMax)];
+  if (!min || !max) return { reason: '좌표가 유한한 숫자가 아니다' };
+  const axis = AXES.find((_, i) => !(max[i]! > min[i]!));
+  if (axis) return { reason: `${axis} 범위 오류(min ≥ max)` };
+  return { zone: { zoneId, name, min, max } };
+}
 
 export const NO_ZONES: ZoneSnapshot = {
   status: 'NONE',
@@ -250,7 +275,11 @@ export const NO_ZONES: ZoneSnapshot = {
   reason: null,
 };
 
-/** DEMO 구역 응답을 검사한다. 형식이 틀린 구역은 빼고 이유를 남긴다(넓히거나 줄여 맞추지 않는다). */
+/**
+ * DEMO 구역 응답을 검사한다. 형식이 틀린 구역은 빼고 이유를 남긴다(넓히거나 줄여 맞추지 않는다).
+ * 같은 zone_id 가 둘 이상이면 어느 쪽이 맞는지 알 수 없어 그 ID 의 구역을 모두 뺀다.
+ * READY 는 형상을 받아 검사했다는 뜻이다. 구역이 현장에 적용됐다는 증거가 아니다.
+ */
 export function adaptDemoZones(raw: unknown, receivedAt: number): ZoneSnapshot {
   const outer = demoZones.safeParse(raw);
   if (!outer.success) {
@@ -263,23 +292,24 @@ export function adaptDemoZones(raw: unknown, receivedAt: number): ZoneSnapshot {
   }
   const zones: ZoneView[] = [];
   const invalid: { zoneId: string | null; reason: string }[] = [];
+  const idOf = (item: unknown) => {
+    const id = field(item, 'zone_id');
+    return typeof id === 'string' ? id : null;
+  };
+  const seen = new Map<string, number>();
   for (const item of outer.data.zones) {
-    const parsed = demoZone.safeParse(item);
-    const id = (item as { zone_id?: unknown } | null)?.zone_id;
-    const zoneId = typeof id === 'string' ? id : null;
-    if (!parsed.success) {
-      invalid.push({ zoneId, reason: '형식 오류' });
+    const id = idOf(item);
+    if (id !== null) seen.set(id, (seen.get(id) ?? 0) + 1);
+  }
+  for (const item of outer.data.zones) {
+    const zoneId = idOf(item);
+    if (zoneId !== null && seen.get(zoneId)! > 1) {
+      invalid.push({ zoneId, reason: 'zone_id 중복' });
       continue;
     }
-    const [min, max] = [
-      toWorldPoint(parsed.data.aabb.min_xyz),
-      toWorldPoint(parsed.data.aabb.max_xyz),
-    ];
-    if (!min || !max || min.some((v, i) => v > max[i]!)) {
-      invalid.push({ zoneId, reason: 'min 이 max 보다 크다' });
-      continue;
-    }
-    zones.push({ zoneId: parsed.data.zone_id, name: parsed.data.name, min, max });
+    const checked = readDemoZone(item);
+    if ('reason' in checked) invalid.push({ zoneId, reason: checked.reason });
+    else zones.push(checked.zone);
   }
   return {
     status: 'READY',

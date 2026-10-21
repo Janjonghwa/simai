@@ -3,6 +3,7 @@ import {
   type SpatialDataStore,
 } from '@/features/viewer3d/data/spatialData.store';
 import { LEGACY_ROSTER, type Roster } from '@/features/viewer3d/dev-harness/mockUi';
+import { zoneHeightText } from '@/features/viewer3d/zones/zonePresentation';
 import { useMemo } from 'react';
 import { useStore } from 'zustand';
 
@@ -13,6 +14,7 @@ import { useStore } from 'zustand';
 export function useRoster(store: SpatialDataStore, legacy: boolean): Roster {
   const idsKey = useStore(store, (s) => (s.world?.tracks ?? []).map((t) => t.worldId).join('\n'));
   const events = useStore(store, (s) => s.events);
+  const zones = useStore(store, (s) => s.zones);
   return useMemo(() => {
     if (legacy) return LEGACY_ROSTER;
     const people = idsKey ? idsKey.split('\n').map((id) => ({ id, name: `작업자 ${id}` })) : [];
@@ -22,6 +24,16 @@ export function useRoster(store: SpatialDataStore, legacy: boolean): Roster {
     );
     return {
       people,
+      zones: zones.zones.map((zone) => ({
+        id: zone.zoneId,
+        name: zone.name,
+        height: zoneHeightText(zone),
+        legacy: false,
+      })),
+      zoneNote: [`구역 입력 ${zones.status}`, zones.reason, 'DEMO 형상(계약 미확정)']
+        .filter(Boolean)
+        .join(' · '),
+      rejectedZones: zones.invalid.map(({ zoneId, reason }) => ({ id: zoneId, reason })),
       events: active.flatMap((event) => {
         const target = event.worldIds[0];
         if (!target) return [];
@@ -36,5 +48,5 @@ export function useRoster(store: SpatialDataStore, legacy: boolean): Roster {
         ];
       }),
     };
-  }, [idsKey, events, legacy]);
+  }, [idsKey, events, zones, legacy]);
 }

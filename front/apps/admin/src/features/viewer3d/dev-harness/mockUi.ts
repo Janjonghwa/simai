@@ -49,10 +49,11 @@ export const PEOPLE: FixturePerson[] = [
   { id: 'worker3', name: '예시 작업자 3', x: 7.8, y: 2.6 },
 ];
 
+/** 입력 없음(source=off)에서만 그리는 예전 고정 구역. Provider 구역(z-01 등)과 함께 그리지 않는다. */
 export const ZONES: FixtureZone[] = [
   {
     id: 'zoneA',
-    name: '예시 구역 A',
+    name: '레거시 예시 구역 A',
     x: 2,
     y: 8,
     sizeX: 3,
@@ -62,7 +63,7 @@ export const ZONES: FixtureZone[] = [
   },
   {
     id: 'zoneB',
-    name: '예시 구역 B',
+    name: '레거시 예시 구역 B',
     x: 8,
     y: 2,
     sizeX: 2.6,
@@ -114,18 +115,41 @@ export function fixtureName(target: ViewerTarget): string | null {
 
 /** 화면에 쓸 이름. Provider 의 사람(World ID)은 목업 목록에 없어 ID 로 부른다. */
 export function displayName(target: ViewerTarget): string | null {
-  return fixtureName(target) ?? (target.type === 'person' ? `작업자 ${target.id}` : null);
+  const fallback = { person: '작업자', zone: '구역', object: null }[target.type];
+  return fixtureName(target) ?? (fallback ? `${fallback} ${target.id}` : null);
 }
 
-/** 업무 패널의 추적 인원·이벤트 목록. 입력이 있으면 Provider, 입력 없음이면 예전 고정 목록이다. */
+export interface ZoneRow {
+  id: string;
+  name: string;
+  /** 높이 범위(World Z) 문구. */
+  height: string;
+  /** 입력 없음의 예전 고정 구역이면 true. 적용 상태를 표시하지 않는다. */
+  legacy: boolean;
+}
+
+/** 업무 패널의 추적 인원·이벤트·구역 목록. 입력이 있으면 Provider, 입력 없음이면 예전 고정 목록이다. */
 export interface Roster {
   people: { id: string; name: string }[];
   events: FixtureEvent[];
+  zones: ZoneRow[];
+  /** 구역 입력 상태 한 줄. */
+  zoneNote: string;
+  /** 형상 검사에서 뺀 구역과 이유. */
+  rejectedZones: { id: string | null; reason: string }[];
 }
 
 export const LEGACY_ROSTER: Roster = {
   people: PEOPLE.map(({ id, name }) => ({ id, name })),
   events: EVENTS,
+  zones: ZONES.map(({ id, name, height }) => ({
+    id,
+    name,
+    height: `Z 0–${height}m`,
+    legacy: true,
+  })),
+  zoneNote: '입력 없음 · 레거시 고정 예시 구역',
+  rejectedZones: [],
 };
 
 /** 예시 작업자는 바닥(World Z=0)에 선 것으로 둔다. 발 위치의 Three 좌표. */

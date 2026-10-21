@@ -27,14 +27,17 @@ export interface SceneColors {
 interface MockSceneProps {
   colors: SceneColors;
   selected: ViewerTarget | null;
-  /** 입력 없음(source=off)일 때만 예전 고정 작업자를 그린다. 입력이 있으면 사람은 PersonLayer 가 그린다. */
-  legacyPeople: boolean;
+  /**
+   * 입력 없음(source=off)일 때만 예전 고정 작업자·구역을 그린다.
+   * 입력이 있으면 사람은 PersonLayer, 구역은 ZoneLayer 가 Provider 데이터로 그린다(둘을 함께 그리지 않는다).
+   */
+  legacy: boolean;
 }
 
 const isSelected = (selected: ViewerTarget | null, type: ViewerTarget['type'], id: string) =>
   selected?.type === type && selected.id === id;
 
-// 구역 부피는 클릭을 받지 않게 해 안에 있는 사람을 가리지 않는다. 구역 선택은 바닥 면으로 한다.
+// 레거시 구역 부피는 클릭을 받지 않게 해 안에 있는 사람을 가리지 않는다. 구역 선택은 바닥 면으로 한다.
 const noRaycast = () => null;
 
 // 구역 바닥 면은 World 바닥보다 1cm 위에 그려 겹쳐 깜박이지 않게 한다(표시용 높이).
@@ -71,7 +74,7 @@ function InitialView() {
  * 목업용 교실 장면. 바닥·벽은 Viewer 의 WorldScene 이 그리고, 여기서는 예시 객체만 World 좌표로 얹는다.
  * 기존 Viewer 의 Canvas·카메라·선택 위에 Selectable 로만 얹는다.
  */
-export function MockScene({ colors, selected, legacyPeople }: MockSceneProps) {
+export function MockScene({ colors, selected, legacy }: MockSceneProps) {
   return (
     <>
       <InitialView />
@@ -87,37 +90,38 @@ export function MockScene({ colors, selected, legacyPeople }: MockSceneProps) {
         </mesh>
       ))}
 
-      {ZONES.map((zone) => {
-        const on = isSelected(selected, 'zone', zone.id);
-        const color = zone.tone === 'critical' ? colors.critical : colors.caution;
-        const box = fixtureBox(zone);
-        return (
-          <Selectable key={zone.id} target={{ type: 'zone', id: zone.id }}>
-            <mesh
-              rotation-x={FLOOR_ROTATION_X}
-              position={worldToThree(worldPoint(zone.x, zone.y, ZONE_FLOOR_LIFT))}
-            >
-              <planeGeometry args={[zone.sizeX, zone.sizeY]} />
-              <meshBasicMaterial
-                color={color}
-                transparent
-                opacity={on ? 0.45 : 0.22}
-                depthWrite={false}
-              />
-            </mesh>
-            <mesh position={box.position} raycast={noRaycast}>
-              <boxGeometry args={box.size} />
-              <meshBasicMaterial
-                color={color}
-                transparent
-                opacity={on ? 0.16 : 0.07}
-                depthWrite={false}
-              />
-              <Edges color={color} />
-            </mesh>
-          </Selectable>
-        );
-      })}
+      {legacy &&
+        ZONES.map((zone) => {
+          const on = isSelected(selected, 'zone', zone.id);
+          const color = zone.tone === 'critical' ? colors.critical : colors.caution;
+          const box = fixtureBox(zone);
+          return (
+            <Selectable key={zone.id} target={{ type: 'zone', id: zone.id }}>
+              <mesh
+                rotation-x={FLOOR_ROTATION_X}
+                position={worldToThree(worldPoint(zone.x, zone.y, ZONE_FLOOR_LIFT))}
+              >
+                <planeGeometry args={[zone.sizeX, zone.sizeY]} />
+                <meshBasicMaterial
+                  color={color}
+                  transparent
+                  opacity={on ? 0.45 : 0.22}
+                  depthWrite={false}
+                />
+              </mesh>
+              <mesh position={box.position} raycast={noRaycast}>
+                <boxGeometry args={box.size} />
+                <meshBasicMaterial
+                  color={color}
+                  transparent
+                  opacity={on ? 0.16 : 0.07}
+                  depthWrite={false}
+                />
+                <Edges color={color} />
+              </mesh>
+            </Selectable>
+          );
+        })}
 
       {OBJECTS.map((object) => {
         const box = fixtureBox(object);
@@ -135,7 +139,7 @@ export function MockScene({ colors, selected, legacyPeople }: MockSceneProps) {
         );
       })}
 
-      {legacyPeople &&
+      {legacy &&
         PEOPLE.map((person) => (
           <Selectable key={person.id} target={{ type: 'person', id: person.id }}>
             {/* 발 위치에 두고, 몸통은 Three 위쪽(+Y)으로 세운다. */}
