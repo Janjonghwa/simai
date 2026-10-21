@@ -53,6 +53,7 @@ from simai_ai.calibration.intrinsics.record import (
     BundleAdjustmentInit,
     CameraIntrinsicsInit,
     build_intrinsics_record,
+    bundle_init_from_record,
     to_bundle_adjustment_init,
 )
 from simai_ai.calibration.intrinsics.runner import IntrinsicsRun, run_intrinsics
@@ -107,5 +108,6 @@ __all__ = [
     "detect_edge_chains",
     "model_discrepancy_px",
     "run_intrinsics",
+    "bundle_init_from_record",
     "to_bundle_adjustment_init",
 ]
