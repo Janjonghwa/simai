@@ -1,16 +1,16 @@
 # simAI DB 검증 (ERD 4단계)
 
-S15P31A101-210. [`db-erd.md`](db-erd.md)·[`db-tables.md`](db-tables.md) 의 테이블이 API 명세 표 v10(노션, 163행)과 기획서 11.4(리플레이 질의)·11.5(보관)·12.6(REST)을 받쳐 주는지 확인한다.
+S15P31A101-210. [`db-erd.md`](db-erd.md)·[`db-tables.md`](db-tables.md) 의 테이블이 API 명세 표 v11(노션, 166행)과 기획서 11.4(리플레이 질의)·11.5(보관)·12.6(REST)을 받쳐 주는지 확인한다.
 
 ## 요약
 
-- API 표 163행을 모두 테이블에 대응시켰다. DB 를 읽거나 쓰는 행 112개, DB 를 쓰지 않는 행(Tier 0·노트북 내부 처리 등) 51개.
-- **API 표에 빠진 행 3개**(12.6 에는 있음): `POST /api/events/{id}/close`, `GET /api/scale-references`, 그리고 종료 결과 수신. 특히 `event_close` 는 이 행이 없으면 쓰는 곳이 없다.
-- **쓰는 API 가 없는 테이블 8개**: `app_user`(MVP), `site`(MVP), `camera`(MVP), `rule_version`(MVP), `equipment_asset`(확장 2), `rag_clause`(M3), `operator_qa`(확장 3), `watch_registrant`(확장). `device`·`worker` 는 하트비트·대여가 시각만 고치고 행(기기·토큰)을 만드는 경로가 없다. 초기 데이터·관리 명령으로 채울 테이블이라 방법을 정해야 한다(3장).
+- API 표 166행을 모두 테이블에 대응시켰다. DB 를 읽거나 쓰는 행 115개, DB 를 쓰지 않는 행(Tier 0·노트북 내부 처리 등) 51개.
+- 12.6 과 대조해 API 표에 없던 행 3개를 찾아 v11 에 더했다: `POST /api/events/{id}/close`(이벤트 운영자 종료), Tier 0 의 운영자 종료 적용, `GET /api/scale-references`(4장). 이 행이 없으면 `event_close` 를 쓰는 곳이 없었다.
+- 쓰는 API 가 없는 테이블 8개(`app_user`, `site`, `camera`, `rule_version`, `equipment_asset`, `rag_clause`, `operator_qa`, `watch_registrant`)와 행을 만드는 경로가 없는 `device`·`worker` 는 API 를 늘리지 않고 Flyway 시드와 EC2 관리 명령으로 채운다(3장, 결정).
 - 읽는 API 가 없는 테이블: `site`(MVP), `camera`(MVP), `sim.placement_recommendation`(확장 4), `operator_qa`(확장 3), `watch_registrant`(확장), `watch_impact`(확장), `ppe_state`(확장), `region_state`(확장). 확장 테이블은 확장 착수 때 화면·경로를 정하고, `site`·`camera` 는 다른 API 안에서 함께 읽는다(3장).
 - 쓰는 주체가 둘 이상인 테이블 19개. 모두 컬럼이나 상태 단계가 나뉘어 있다(2장 메모).
 - 리플레이 질의 Q1~Q4 가 쓰는 컬럼은 모두 있다. T 시점 이벤트 상태는 `risk_event` 가 아니라 `risk_event_update` 로 만든다(Q2).
-- 보관: 클립 14일 삭제와 보존 표시는 컬럼으로 된다. 객체 저장소 수명 주기 규칙만으로는 보존 표시를 지킬 수 없어 방법을 정해야 하고, hypertable 의 상시 보관 기간은 기획서에 값이 없다(6장).
+- 보관: 클립 14일 삭제는 EC2 삭제 작업만 쓰고 객체 저장소 수명 주기 규칙은 클립에 쓰지 않는다(결정, 기획서 11.5 반영). hypertable 은 EC2 디스크 320 GB 기준으로 좌표·골격·health 는 상시 삭제 없이 7일 뒤 압축, 운영 지표는 30일 보관으로 정했다(6장).
 
 ## 1. 방법
 
@@ -52,10 +52,10 @@ S15P31A101-210. [`db-erd.md`](db-erd.md)·[`db-tables.md`](db-tables.md) 의 테
 | `system_health` | MVP | Tier 0: Health 송신 | 5 | 맞음 |
 | `system_metric` | MVP | Tier 0: Health 송신 | 1 | 맞음 |
 | `observation_summary` | M1 | Tier 0: 2D 관측 요약 송신 | 0 | 맞음 (기록용: 보정 작업 입력(`calibration_run.obs2d_archive_uri`)을 EC2 가 고를 때 읽는다) |
-| `risk_event` | MVP | Tier 0: EC2 복구 재동기화, 운영자 상향 적용, 이벤트 운영자 종료 결과 수신 (표에 없음), 이벤트 저널·outbox 기록, 이벤트 전이 전송·수신 | 18 | 맞음 |
-| `risk_event_update` | MVP | Tier 0: 운영자 상향 적용, 이벤트 운영자 종료 결과 수신 (표에 없음), 이벤트 저널·outbox 기록, 이벤트 전이 전송·수신 | 4 | 맞음 |
+| `risk_event` | MVP | Tier 0: EC2 복구 재동기화, 운영자 상향 적용, 운영자 종료 적용, 이벤트 저널·outbox 기록, 이벤트 전이 전송·수신 | 18 | 맞음 |
+| `risk_event_update` | MVP | Tier 0: 운영자 상향 적용, 운영자 종료 적용, 이벤트 저널·outbox 기록, 이벤트 전이 전송·수신 | 4 | 맞음 |
 | `event_ack` | MVP | 반장·관리자: 경보 확인(ACK) | 1 | 맞음 |
-| `event_close` | MVP | Tier 0: 이벤트 운영자 종료 결과 수신 (표에 없음)<br>관리자: 이벤트 운영자 종료 (표에 없음) | 0 | 쓰는 주체 2 (기록용: 종료 근거. 이벤트 상세에 함께 보일 수 있다) |
+| `event_close` | MVP | Tier 0: 운영자 종료 적용<br>관리자: 이벤트 운영자 종료 | 1 | 쓰는 주체 2 |
 | `event_escalation` | M3 | Tier 0: 운영자 상향 적용<br>관리자: 상향 의견 적용 확인 | 0 | 쓰는 주체 2 (기록용: 상향 근거. 이벤트 상세에 함께 보일 수 있다) |
 | `journal_cursor` | MVP | Tier 0: EC2 복구 재동기화, 이벤트 저널·outbox 기록, 이벤트 전이 전송·수신 | 2 | 맞음 |
 | `event_frame` | M3 | Tier 0: 이벤트 프레임 업로드 완료 통지 | 3 | 맞음 |
@@ -105,37 +105,37 @@ S15P31A101-210. [`db-erd.md`](db-erd.md)·[`db-tables.md`](db-tables.md) 의 테
 | `action_ticket` | EC2 가 자동 생성·불일치 표시, 반장이 상태 변경 |
 | `notification`·`test_push`·`upload_grant`·`watch_alert` | 발송·발급 주체가 행을 만들고 수신 확인·사용 시각만 다른 주체가 채운다 |
 
-## 3. 쓰는 API 가 없는 테이블 (결정 필요)
+## 3. 쓰는 API 가 없는 테이블 (2026-10-21 결정)
 
-이 테이블은 API 표와 12.6 에 쓰는 경로가 없다. 사용자 화면이 필요 없는 초기 데이터와 관리 작업이라 API 를 늘리지 않고 아래처럼 채우는 안을 제안한다. 정하면 `V1__init.sql` 이슈에서 시드·명령을 함께 만든다.
+이 테이블은 API 표와 12.6 에 쓰는 경로가 없다. 사용자 화면이 필요 없는 초기 데이터와 관리 작업이라 API 를 늘리지 않고 아래처럼 채운다(기획서 16장). 시드와 관리 명령은 `V1__init.sql` 이슈에서 함께 만든다.
 
-| 테이블 | 단계 | 제안 |
+| 테이블 | 단계 | 채우는 방법 |
 |---|---|---|
-| `app_user` | MVP | 관리 계정 생성 명령(서버 부트스트랩). 계정 관리 API 는 12.6 에 없다 |
-| `site` | MVP | Flyway 시드 또는 설치 명령(공사장 1개, 16장). 좌표계 이전은 보정 확정 때 갱신 |
-| `camera` | MVP | 설치 명령 또는 시드(3.6 카메라 4대). 하드웨어·펌웨어 정보 |
-| `rule_version` | MVP | 규칙 임계값 파일을 Flyway 시드·배포 때 적재(16장 "규칙은 코드와 같은 버전"). 수정 API 는 없다 |
-| `equipment_asset` | 확장 2 | 자산 적재 스크립트(확장 2) |
-| `rag_clause` | M3 | 조항 적재 스크립트(M3, FR-20). bge-m3 revision 고정 뒤 |
-| `operator_qa` | 확장 3 | 운영자 질의응답(확장 3, C.3). API 표에 행이 없다 |
-| `watch_registrant` | 확장 | 워치 등록 화면(확장, C.6). API 표에 행이 없다 |
-| `device` | MVP | 기기 등록·토큰 발급·폐기 명령(14장 "기기마다 발급, EC2 에서 폐기"). 하트비트는 `last_heartbeat_at` 만 고친다 |
-| `worker` | MVP | 워커 토큰 발급 명령(12.5). 대여는 `last_seen_at` 만 고친다 |
+| `app_user` | MVP | EC2 관리 명령: 계정 생성·역할 지정·비활성. 계정 관리 API 는 두지 않는다 |
+| `site` | MVP | Flyway 시드: 공사장 1개(16장). 좌표계 관련 컬럼은 보정 확정 때 갱신 |
+| `camera` | MVP | Flyway 시드: 카메라 4대(3.6)의 기기 정보 |
+| `rule_version` | MVP | Flyway 시드: 규칙 임계값 파일을 배포 때 적재하고, 값이 바뀌면 새 버전을 새 시드로 넣는다. 수정 API 는 없다 |
+| `equipment_asset` | 확장 2 | 확장 2 착수 때 정한다(적재 스크립트 후보) |
+| `rag_clause` | M3 | 적재 스크립트(M3, FR-20). bge-m3 revision 을 고정한 뒤 조항을 넣는다 |
+| `operator_qa` | 확장 3 | 확장 3(C.3) 착수 때 정한다. API 표에 행이 없다 |
+| `watch_registrant` | 확장 | 확장(C.6) 착수 때 정한다. API 표에 행이 없다 |
+| `device` | MVP | EC2 관리 명령: 기기 등록, 토큰 발급·회전·폐기(14장). 토큰 원문은 발급 때 한 번만 보여 주고 DB 에는 해시만. 하트비트는 `last_heartbeat_at` 만 고친다 |
+| `worker` | MVP | EC2 관리 명령: 워커 토큰 발급·폐기(12.5). 대여는 `last_seen_at` 만 고친다 |
 
 `site`·`camera` 는 읽는 API 도 없다. 현장·카메라 정보는 구성 묶음, 보정 상태, 설치 안내 응답 안에 함께 싣는 것으로 보고, 카메라 목록 화면이 필요해지면 `GET /api/cameras` 를 12.6 에 더한다.
 
-## 4. API 표에 더할 행
+## 4. API 표에 더한 행 (v11)
 
-12.6 에 있는데 API 표 v10 에 없다. 노션 표에 더하면 이 문서의 부록에도 들어간다.
+12.6 에 있는데 API 표 v10 에 없던 행이다. 운영자 종료는 상향 적용과 같은 짝(EC2 REST 행 + Tier 0 적용 행)으로 넣었다.
 
-| 이름(안) | 경로 | 읽기 | 쓰기 | 쓰는 주체 | 메모 |
-|---|---|---|---|---|---|
-| 이벤트 운영자 종료 | `POST /api/events/{id}/close` | risk_event | event_close | 관리자 | 12.6, 6.4. I1 `event_close` 로 보냄 |
-| 이벤트 운영자 종료 결과 수신 | `INTERNAL (I1 event_close_result)` | — | event_close risk_event_update risk_event | Tier 0 | 결과와 종료 전이 |
-| 실측 정물 목록 조회 | `GET /api/scale-references` | scale_reference | — | — | 12.6 은 GET·POST |
+| 기능 ID | API 이름 | 경로 | 읽기 | 쓰기 | 쓰는 주체 | 메모 |
+|---|---|---|---|---|---|---|
+| FR-78 | 운영자 종료 적용 | `INTERNAL` | — | `event_close`, `risk_event_update`, `risk_event` | Tier 0 | event_close_result, RESOLVED 전이 |
+| FR-78 | 이벤트 운영자 종료 | `POST /api/events/{id}/close` | `risk_event`, `event_close` | `event_close` | 관리자 | 멱등 키는 event_close.idempotency_key. 결과 컬럼은 운영자 종료 적용 행(Tier 0) |
+| FR-135 | 실측 정물 목록 조회 | `GET /api/scale-references` | `scale_reference` | — | — |  |
 
-- 운영자 종료는 요구사항(FR)에도 없다(기획서 6.4·12.6 과 계약 `event_close`·`event_close_result` 에만 있음). 요구사항 보완은 별도 이슈다.
-- 12.6 의 종료 요청은 본문에 멱등 키를 받는다. EC2 가 발급하는 `close_id`(계약의 멱등 키)와 같은 값으로 쓸지, 요청 키를 따로 저장할지 정해야 한다. 따로 두면 `event_close` 에 요청 키 컬럼(유일)을 더한다.
+- 운영자 종료의 요구사항은 FR-78 이다. 기획서 README 의 "요구사항 FR 갱신 필요" 목록에 이미 올라 있어(S15P31A101-200) 요구사항 명세서를 맞출 때 함께 반영된다.
+- **멱등 키(2026-10-21 결정).** REST 요청이 보내는 멱등 키는 `event_close.idempotency_key`(유일)에 따로 저장하고, `close_id` 는 EC2 가 발급하는 고유 ID(PK)로 둔다. 같은 멱등 키로 다시 오면 새 행을 만들지 않고 처음 결과를 돌려준다. I1 `event_close` 는 `close_id` 를 계약의 멱등 키로 쓰므로 계약은 바뀌지 않는다(기획서 12.6 반영).
 
 ## 5. 리플레이 질의 (11.4)
 
@@ -213,13 +213,28 @@ ORDER BY s.world_id, s.observation_at DESC;
 
 | 데이터 | 보관 | 테이블·컬럼 | 방법 | 판정 |
 |---|---|---|---|---|
-| 이벤트 클립 | 14일, 보존 표시분은 프로젝트 종료까지 | `media_clip.clip_created_at`·`delete_after`(14일)·`retention_hold`·`deleted_at`, 이력 `media_clip_retention` | EC2 "보관 기간 자동 삭제"가 `delete_after < now()` 이고 보존 표시가 없는 클립의 객체를 지우고 `deleted_at` 을 쓴다 | 컬럼은 됨. **방법 결정 필요**: 객체 저장소 수명 주기 규칙은 DB 의 보존 표시를 모른다. 보존 표시를 객체 태그로도 달아 규칙을 태그 조건으로 걸거나, 규칙 없이 EC2 작업만 쓴다 |
+| 이벤트 클립 | 14일, 보존 표시분은 프로젝트 종료까지 | `media_clip.clip_created_at`·`delete_after`(14일)·`retention_hold`·`deleted_at`, 이력 `media_clip_retention` | EC2 "보관 기간 자동 삭제"가 `delete_after < now()` 이고 보존 표시가 없는 클립의 객체를 지우고 `deleted_at` 을 쓴다 | 됨. **EC2 삭제 작업만 쓴다(2026-10-21 결정)**: 객체 저장소 수명 주기 규칙은 DB 의 보존 표시를 몰라 클립에 쓰지 않는다. 작업이 멈추면 삭제가 밀리므로 주 1회 확인(18.4)에서 `delete_after` 가 지난 미삭제 클립 0건을 본다 |
 | CRITICAL 자동 보존 | 자동 보존 표시 | `media_clip_retention.reason = CRITICAL_AUTO` | Tier 0 `media_clip_retention`(I1) | 됨 |
 | 클립 열람 기록 | 보존분 접근 기록 | `clip_access_log` | 클립 조회 때 행 추가 | 됨 |
 | PPE crop(확장) | 저장 없음 | 없음(`ppe_state` 는 판정 결과만) | — | 됨 |
 | 2D 관측 | Tier 0 저장 위치 7~14일 | DB 밖. `observation_summary.archive_uri` 만 | Tier 0 정리 작업 | 됨. 원본이 지워지면 `archive_uri` 가 가리키는 파일이 없다. 보정 작업은 보관 기간 안의 요약만 고른다 |
-| 좌표·상태·이벤트 로그 | 발표 후 30일 안 파기 | hypertable 8개, `risk_event*`, `notification` 등 | 18.4 일괄 파기 | 됨. **값 없음**: 11.5 는 TimescaleDB 보관 정책을 쓴다고 하지만 hypertable 의 상시 보관 기간(예: `system_metric`·`device_heartbeat`)은 정하지 않았다. EC2 디스크 확인(19.1) 뒤 정한다 |
+| 좌표·상태·이벤트 로그 | 발표 후 30일 안 파기 | hypertable 8개, `risk_event*`, `notification` 등 | 18.4 일괄 파기 | 됨. hypertable 의 상시 보관은 아래 표(2026-10-21 결정) |
 | 전체 | 발표 후 30일 안 전부 | 69개 전부 + 객체 저장소 | 18.4 파기 확인 | 됨. 파기 목록은 이 문서의 테이블 목록을 쓴다 |
+
+**hypertable 보관·압축(2026-10-21 결정, EC2 디스크 320 GB).** 용량은 10명·운영 8시간·카메라 4대로 잡은 추정이고, 운영 초기에 청크 크기로 다시 잰다.
+
+| hypertable | 쓰는 빈도(추정) | 압축 전 하루(추정) | 상시 보관 | 압축 |
+|---|---|---|---|---|
+| `world_track_state` | 10 Hz × 10명 ≈ 288만 행 | 약 0.6 GB(11.4 “수백 MB”) | 없음(발표 후 일괄 파기) | 7일 뒤 |
+| `skeleton_3d` | 5~10 Hz × 10명 ≤ 288만 행 | 약 1.2 GB(관절 23개 × 3) | 없음. 디스크 70% 를 넘으면 30일 | 7일 뒤 |
+| `system_health` | 1 Hz ≈ 2.9만 행 | 약 0.03 GB | 없음 | 7일 뒤 |
+| `system_metric` | 지표 약 40개 × 1 Hz ≈ 115만 행 | 약 0.1 GB | 30일 | 7일 뒤 |
+| `device_heartbeat` | 1 Hz ≈ 2.9만 행 | 약 0.02 GB | 30일 | 7일 뒤 |
+| 확장(`channel_state`·`watch_feature`·`ppe_state`) | — | — | 확장 착수 때 | 확장 착수 때 |
+
+- 합계는 압축 전 운영일 하루 약 2 GB 다. 60 운영일이면 약 120 GB 이고 TimescaleDB 압축(보통 몇 분의 1)을 거치면 그보다 훨씬 작아, 320 GB 에서 OS·컨테이너 이미지·WAL·백업을 빼고도 여유가 크다.
+- 좌표·골격·health 는 리플레이(M3)가 프로젝트 기간 전체를 봐야 해서 상시 삭제하지 않는다. 운영 지표·하트비트는 리플레이에 쓰지 않아 30일만 둔다.
+- 주 1회 확인(18.4)에서 EC2 디스크 사용률을 보고, 70% 를 넘으면 `skeleton_3d`(리플레이 확장용)부터 30일 보관 정책을 건다.
 
 ## 7. 출처 기록 (11.4-2)과 이름 없음 (11.4-5)
 
@@ -242,13 +257,13 @@ ORDER BY s.world_id, s.observation_at DESC;
 
 ## 8. 남은 일
 
-- 결정: 3장(초기 데이터·관리 명령), 4장(멱등 키), 6장(클립 삭제 방법, hypertable 상시 보관 기간).
-- API 표: 4장의 행 3개를 노션 표에 더한다. 요구사항에 운영자 종료 FR 을 더하는 일은 별도 이슈다.
+- 정한 것(2026-10-21): 초기 데이터·관리 명령(3장), 운영자 종료 멱등 키 분리(4장), 클립은 EC2 삭제 작업만과 hypertable 보관·압축(6장). 기획서 3.1·3.8·11.3·11.4·11.5·11.6·12.6·16장·18.4·19.1 에 반영했다(v1.3 수정 19).
+- 노션 API 표: v11 의 행 3개(4장)를 더한다.
 - 5단계(후속 이슈): MVP·M1 테이블 43개와 위 인덱스로 `V1__init.sql`.
 
 ## 부록. API 표 행별 매핑
 
-DB 를 읽거나 쓰는 행만 적는다. "표에 없음"은 4장의 행이다.
+DB 를 읽거나 쓰는 행만 적는다. "v11" 표시는 4장에서 더한 행이다.
 
 | 기능 ID | API 이름 | 경로 | 실행 위치 | 읽기 | 쓰기 | 쓰는 주체 | 메모 |
 |---|---|---|---|---|---|---|---|
@@ -270,6 +285,7 @@ DB 를 읽거나 쓰는 행만 적는다. "표에 없음"은 4장의 행이다.
 | FR-90 | 정적 3D 복원 | `INTERNAL` | 분석 워커 | `calibration_version` | `analysis_job`, `scene_version` | 워커 결과 | static_reconstruct |
 | FR-93 | 정적 공간 갱신 | `INTERNAL` | 분석 워커 | `scene_version` | `region_state`, `scene_version` | 워커 결과 | 확장. 계약 미정 |
 | FR-116 | 운영자 상향 적용 | `INTERNAL` | Tier 0 | — | `event_escalation`, `risk_event_update`, `risk_event` | Tier 0 | event_escalate_result, 전이 |
+| FR-78 | 운영자 종료 적용 (v11) | `INTERNAL` | Tier 0 | — | `event_close`, `risk_event_update`, `risk_event` | Tier 0 | event_close_result, RESOLVED 전이 |
 | FR-129 | World 상태 송신 | `INTERNAL` | Tier 0 | — | `world_track_state`, `skeleton_3d` | Tier 0 | world_state |
 | FR-129 | Health 송신 | `INTERNAL` | Tier 0 | — | `system_health`, `system_metric` | Tier 0 | health |
 | FR-130 | 이벤트 프레임 업로드 완료 통지 | `INTERNAL` | Tier 0 | `upload_grant` | `event_frame`, `upload_grant` | Tier 0 | event_frame_ready |
@@ -358,14 +374,13 @@ DB 를 읽거나 쓰는 행만 적는다. "표에 없음"은 4장의 행이다.
 | FR-112 | 정적 객체·작업면 새 버전 | `PUT /api/static-objects` | EC2 | `static_object` | `static_object` | 관리자 |  |
 | FR-113 | 규칙 버전 조회 | `GET /api/rules` | EC2 | `rule_version` | — | — |  |
 | FR-116 | 상향 의견 적용 확인 | `POST /api/events/{id}/escalation` | EC2 | `vlm_assessment`, `risk_event` | `vlm_assessment`, `event_escalation` | 관리자 | decision |
+| FR-78 | 이벤트 운영자 종료 (v11) | `POST /api/events/{id}/close` | EC2 | `risk_event`, `event_close` | `event_close` | 관리자 | 멱등 키는 event_close.idempotency_key. 결과 컬럼은 운영자 종료 적용 행(Tier 0) |
 | FR-122 | 일일 일지 생성 요청 | `POST /api/reports/daily` | EC2 | `risk_event`, `risk_event_update` | `report`, `analysis_job` | 관리자 |  |
 | FR-134 | 노트북 하트비트 수신 | `POST /api/devices/heartbeat` | EC2 | `device` | `device_heartbeat`, `device` | 기기 | last_heartbeat_at |
 | FR-135 | 실측 정물 등록 | `POST /api/scale-references` | EC2 | — | `scale_reference` | 관리자 |  |
+| FR-135 | 실측 정물 목록 조회 (v11) | `GET /api/scale-references` | EC2 | `scale_reference` | — | — |  |
 | FR-136 | 푸시 수신 확인 | `POST /api/push/receipts` | EC2 | `notification`, `test_push` | `push_receipt`, `notification`, `test_push` | 반장 | receipt_at |
 | FR-138 | Tier 0 엔드포인트 조회 | `GET /api/endpoints/tier0` | EC2 | `tier0_endpoint` | — | — |  |
 | FR-140 | 시험 푸시 | `POST /api/push/test` | EC2 | `push_subscription` | `test_push` | 관리자 |  |
-| FR-? | 이벤트 운영자 종료 (표에 없음) | `POST /api/events/{id}/close` | EC2 | `risk_event` | `event_close` | 관리자 | 12.6, 6.4. I1 `event_close` 로 보냄 |
-| FR-? | 이벤트 운영자 종료 결과 수신 (표에 없음) | `INTERNAL (I1 event_close_result)` | EC2 | — | `event_close`, `risk_event_update`, `risk_event` | Tier 0 | 결과와 종료 전이 |
-| FR-? | 실측 정물 목록 조회 (표에 없음) | `GET /api/scale-references` | EC2 | `scale_reference` | — | — | 12.6 은 GET·POST |
 
 DB 를 쓰지 않는 행: 반복 소리 정지 지시, 사람 검출·keypoint 추출, 카메라별 추적, 프레임 최신성 처리, World ID 연결, 삼각측량, 관절 유효성 판정, 접지 추정, ID 교정 기록, 관측 상태 전환, R1 위험 구역 진입 판정, R2 개구부·가장자리 근접 판정, R3 고소 위치 판정, R4 낙상 의심 판정, R5 진입 예측 판정, R6 구역 내 관측 상실 판정, R7 구역 감시 능력 저하 판정, R8 장비 근접 판정, R9 PPE 미착용 판정, R10 불확실 점유 근접 판정, 히스테리시스·재개, 이벤트 병합, 이벤트 생명주기 관리, Tier 0 재시작 복구, PPE 착용 판정 규칙, VLM 입력 얼굴 흐림, 사람 마스크 제거, SAM 3D Body 관절 보강, Unreal 배경 빌드, 작업 대여·실행 루프, 스트림 수신·손실 집계, 시간 보간·동기 검증, 입력 추상화(파일 모드), Risk Engine 이중 배포 검증, 시계 차이 교환 요청, 2D 관측 보관·정리, VAPID 공개키 조회, 카메라 RTSP 수신, 촬영 시각 헤더 부착, RunPod 프레임 중계, 현장 NTP 시각 기준, 현장 경보 출력, 현장 확인 버튼 처리, 현장 장애별 표시, 시험 경보, 출처 분리, Spatial DB 기록, 스트림 재접속·손실 계측, 카메라 미리보기, 현장 경보 재동기화, 시계 차이 교환 응답.

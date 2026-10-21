@@ -1,9 +1,9 @@
 # simAI DB 테이블 정의
 
-S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md) 에 있다. ERD 1단계(테이블 목록)·2단계(계약 → 컬럼)의 결과다.
+S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verification.md`](db-verification.md) 에 있다. ERD 1단계(테이블 목록)·2단계(계약 → 컬럼)의 결과다.
 
-- **기준:** 기획서 v1.3 수정 16 11장(데이터)·부록 C, 계약 v5.3.0, API 명세 표 v10(노션, 163행)
-- **범위:** 테이블 69개, 컬럼 735개. 확장 테이블도 컬럼까지 썼다
+- **기준:** 기획서 v1.3 수정 19 11장(데이터)·부록 C, 계약 v5.3.0, API 명세 표 v11(노션, 166행)
+- **범위:** 테이블 69개, 컬럼 736개. 확장 테이블도 컬럼까지 썼다
 - **단계별:** MVP 34 · M1 9 · M2 2 · M3 8 · 확장 16
 - **작성·검토:** DB 는 EC2 에 있으므로 곽나혁이 작성한다. Tier 0·분석 워커가 채우는 테이블은 이연주가 검토한다("검토" 표시)
 
@@ -58,7 +58,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md) 에 있다. ERD 1단�
 | E. 이벤트·조치 | `risk_event` | MVP | 일반 | LIVE·REPLAY 이벤트 현재 상태(전이 반영 결과). PLANNED·WHAT_IF 는 sim | 있음 | `/api/events`, `/api/events/{}`, `/api/replay` 외 | 이연주 |
 | E. 이벤트·조치 | `risk_event_update` | MVP | 일반 | Tier 0 전이 기록(추가만). (event_id, event_sequence) 로 중복 제거 | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
 | E. 이벤트·조치 | `event_ack` | MVP | 일반 | 운영자 확인 기록(누가·어디서·어느 상태) | 수정 16 추가 | `/api/events/{}/ack` | 이연주 |
-| E. 이벤트·조치 | `event_close` | MVP | 일반 | 관리자의 구역 대상 이벤트 종료 명령과 결과 | 수정 16 추가 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
+| E. 이벤트·조치 | `event_close` | MVP | 일반 | 관리자의 구역 대상 이벤트 종료 명령과 결과 | 수정 16 추가 | `/api/events/{}/close` | 이연주 |
 | E. 이벤트·조치 | `event_escalation` | M3 | 일반 | 승인한 VLM 상향 의견의 적용 명령과 결과 | 수정 16 추가 | `/api/events/{}/escalation` | 이연주 |
 | E. 이벤트·조치 | `journal_cursor` | MVP | 일반 | Tier 0 인스턴스별 저널 수신 상태 | 수정 16 추가 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
 | E. 이벤트·조치 | `event_frame` | M3 | 일반 | 이벤트 프레임 주소(VLM 입력) | 수정 16 추가 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
@@ -745,7 +745,8 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md) 에 있다. ERD 1단�
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
-| `close_id` | uuid | PK | `event_close.close.close_id, event_close_result.close_id` | 멱등 키 |
+| `close_id` | uuid | PK | `event_close.close.close_id, event_close_result.close_id` | EC2 가 발급하는 고유 ID. I1 `event_close` 의 멱등 키(Tier 0 는 같은 값을 DUPLICATE 로 답함) |
+| `idempotency_key` | text | UQ, NN |  | REST 요청이 보낸 멱등 키(`POST /api/events/{id}/close` 본문). 같은 키로 다시 오면 새 행을 만들지 않고 처음 결과를 돌려준다. `close_id` 와 따로 둔다 |
 | `event_id` | uuid | FK>risk_event.event_id, NN | `event_close.event_id, event_close_result.event_id` |  |
 | `actor_user_id` | bigint | FK>app_user.user_id, NN | `event_close.close.actor_id` |  |
 | `requested_at` | ts | NN | `event_close.close.requested_at` |  |
@@ -1391,4 +1392,4 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 
 - FK 가 가리키는 테이블·컬럼이 모두 이 정의에 있다(자동 검사).
 - I1·I5 주요 메시지 17종(`risk_event_transition`, `media_clip`, `health`, `config_ack`, `tier0_endpoint`, `job_request` 등)의 payload 최상위 필드가 모두 어느 컬럼의 출처로 쓰였다(자동 검사, 미반영 0건).
-- API 명세 표 v10 의 REST·WS 경로 전부가 이 정의의 테이블로 연결된다(자동 검사, 연결 안 된 경로 0개). `/api/push/vapid-public-key` 는 설정값이라 테이블이 없다.
+- API 명세 표 v11 의 REST·WS 경로 전부가 이 정의의 테이블로 연결된다(자동 검사, 연결 안 된 경로 0개). `/api/push/vapid-public-key` 는 설정값이라 테이블이 없다.
