@@ -152,6 +152,130 @@ def test_nvdec_decodes_same_pictures_when_cuda_is_present(video) -> None:
     assert all(lv.read_index(p.image) == 500 + p.key[1] for p in pictures)
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(os.environ.get("SIMAI_TEST_GPU") != "1",
+                    reason="GPU 시험은 SIMAI_TEST_GPU=1 일 때만 돈다(기본 실행은 GPU 를 쓰지 않는다)")
+def test_nvdec_bgr_matches_cpu_bgr(video) -> None:
+    """-212: NVDEC(nv12 → BGR, 디코더마다 하나인 변환 문맥)이 CPU(yuv420p → BGR)와 같은 그림을 낸다. H.264 디코딩은 비트 단위로
+    같고 변환 경로만 달라 반올림 차이(≤ 2)만 허용한다."""
+    import numpy as np
+
+    try:
+        nv = NvdecDecoder()
+    except DecoderUnavailable as e:
+        pytest.skip(f"NVDEC 없음: {e}")
+    cpu = PyAvDecoder()
+    nv.configure(_codec(video))
+    cpu.configure(_codec(video))
+    a, _ = _feed(nv, video, range(40))
+    b, _ = _feed(cpu, video, range(40))
+    a, b = a + nv.flush(), b + cpu.flush()
+    assert [p.key for p in a] == [p.key for p in b] and len(a) == 40
+    assert max(int(np.abs(x.image.astype(int) - y.image.astype(int)).max()) for x, y in zip(a, b)) <= 2
+
+
+# ---------------------------------------------------------------------------- 색 변환 문맥 (-212)
+
+
+@pytest.fixture
+def spy_reformatter(monkeypatch) -> list:
+    """VideoReformatter 대역: 실제 변환을 하되 만든 문맥과 받은 인자를 남긴다. 돌려주는 목록에 만든 문맥이 쌓인다."""
+    import av.video.reformatter as rf
+
+    real, made = rf.VideoReformatter, []
+
+    class Spy:
+        def __init__(self) -> None:
+            self._real, self.calls = real(), []
+            made.append(self)
+
+        def reformat(self, frame, **kwargs):
+            self.calls.append(kwargs)
+            return self._real.reformat(frame, **kwargs)
+
+    monkeypatch.setattr(rf, "VideoReformatter", Spy)
+    return made
+
+
+def test_one_converter_per_configure_is_reused_for_every_picture(video, spy_reformatter) -> None:
+    """반례(-212 원인): 그림마다 swscale 문맥을 새로 만들면(frame.to_ndarray(format=...)) 변환 초기화를 매 그림 치른다.
+    configure 한 번에 문맥 하나, 모든 그림이 그것을 쓰고 threads 는 묶은 값으로 넘어간다. 다시 configure 하면 새로 만든다."""
+    dec = PyAvDecoder(convert_threads=3)
+    dec.configure(_codec(video))
+    pictures, errors = _feed(dec, video, range(12))
+    assert errors == [] and len(pictures) == 12
+    assert len(spy_reformatter) == 1
+    assert [c["threads"] for c in spy_reformatter[0].calls] == [3] * 12
+    assert all(c["format"] == "bgr24" for c in spy_reformatter[0].calls)
+    dec.configure(_codec(video, epoch=1))
+    assert len(spy_reformatter) == 2
+
+
+def test_pictures_kept_by_caller_are_not_overwritten_by_later_conversions(video) -> None:
+    """반례: 변환 문맥을 다시 써도 출력 버퍼까지 다시 쓰면 대기열에 남은 이전 그림이 바뀐다(관측이 다른 프레임 내용이 된다)."""
+    dec = PyAvDecoder()
+    dec.configure(_codec(video))
+    kept = []
+    for s in range(40):
+        au, key = video.frames[s]
+        for p in dec.decode(au, (0, s), key):
+            kept.append((p, p.image.copy()))
+    assert len(kept) == 40
+    assert all((p.image == snap).all() and lv.read_index(p.image) == 500 + p.key[1] for p, snap in kept)
+
+
+def test_in_band_resolution_change_reuses_converter_with_new_size(video) -> None:
+    """경계: configure 없이 스트림 안에서 SPS 가 바뀌어 크기가 달라져도(카메라 설정 변경) 같은 변환 문맥이 새 크기로 낸다."""
+    other = lv.encode(list(range(700, 712)), gop=6, size=(320, 176))
+    inline = b"".join(lv.START + n for n in (other.sps, other.pps))
+    dec = PyAvDecoder()
+    dec.configure(_codec(video))
+    first, errors = _feed(dec, video, range(10))
+    out = []
+    for i, (au, key) in enumerate(other.frames):
+        payload = inline + au if key else au  # 시작은 키프레임, 이 디코더의 configure 접두(이전 SPS)는 붙이지 않는다
+        out += dec.decode(payload, (0, 100 + i), False)
+    out += dec.flush()
+    assert errors == [] and len(first) == 10 and first[-1].image.shape == (lv.SIZE[1], lv.SIZE[0], 3)
+    assert [p.key for p in out] == [(0, 100 + i) for i in range(12)]
+    assert all(p.image.shape == (176, 320, 3) and lv.read_index(p.image) == 600 + p.key[1] for p in out)
+
+
+def test_decoders_in_parallel_threads_never_cross_bind() -> None:
+    """동시성: LIVE 는 카메라마다 수신·디코딩 스레드가 따로 돈다. 디코더마다 변환 문맥이 따로라 그림이 섞이지 않는다."""
+    import threading
+
+    streams = [lv.encode(list(range(1000 * (c + 1), 1000 * (c + 1) + 30)), gop=10) for c in range(4)]
+    results: dict[int, list] = {}
+    errors: list[BaseException] = []
+
+    def run(c: int) -> None:
+        try:
+            dec = PyAvDecoder()
+            dec.configure(_codec(streams[c], cam=f"cam{c + 1}"))
+            pics, errs = _feed(dec, streams[c], range(30))
+            assert errs == []
+            results[c] = pics + dec.flush()
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=run, args=(c,)) for c in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    for c in range(4):
+        assert [lv.read_index(p.image) for p in results[c]] == [1000 * (c + 1) + p.key[1] for p in results[c]]
+        assert len(results[c]) == 30
+
+
+def test_convert_threads_must_not_be_negative() -> None:
+    with pytest.raises(ValueError):
+        PyAvDecoder(convert_threads=-1)
+    PyAvDecoder(convert_threads=0)  # 0 은 FFmpeg 자동(경계값 허용)
+
+
 # ---------------------------------------------------------------------------- CameraIngest + 실제 디코더
 
 

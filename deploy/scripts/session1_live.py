@@ -8,7 +8,8 @@
   c1 nvdec_open        NvdecDecoder() 가 열린다 ("nvdec ok"). 실패면 이미지의 NVIDIA_DRIVER_CAPABILITIES 에 video 가 있는지 본다
   c2 nvdec_gpu_test    pytest -m gpu tests/io/test_pyav_decoder.py → 통과 1 이상, 건너뜀 0
   c3 decode_throughput 2304x1296 H.264 4스트림을 NVDEC 으로 디코딩 + BGR 내려받기: 그림 한 장 p95 ≤ 10 ms, 4대 합계 ≥ 100 fps.
-                       같은 측정을 CPU(PyAvDecoder)로도 해서 비교만 기록한다(판정 안 함)
+                       같은 측정을 CPU(PyAvDecoder)로도 해서 비교만 기록한다(판정 안 함). 변형(-212, 판정 안 함): 카메라마다 스레드
+                       하나(LIVE 구조) NVDEC·CPU, 변환 스레드 0(자동)·1, nv12 그대로(BGR 변환 없음 = 디코딩+내려받기 하한)
   c4 live_start        LIVE 하네스: 진입점(엔진 준비 → Tier 0 LIVE, decoder nvdec) + 노트북 흉내(제어 채널·시계 교환·하트비트)
                        + 영상 송신 4대(2304x1296, 25 fps, 프레임 번호 무늬 H.264, 사람 없음). 종료 코드 0, 카메라 4대 ready,
                        decode_failed 0, detector_errors 0, mismatched 0. frame_age_ms_p95·pipeline_lag_ms 를 기록한다
@@ -23,6 +24,7 @@ TLS 인증서·개인 키와 시험 토큰은 임시 폴더에 만들고 끝나�
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import shutil
@@ -135,8 +137,12 @@ def encode_stream(frames: int, size=SIZE, gop: int = 50):
     return lv.encode(list(range(frames)), gop=gop, size=size, fps=FPS)
 
 
-def bench_decoders(make, enc, cams: int = 4) -> dict:
-    """카메라 cams 대 디코더에 같은 스트림을 번갈아 넣는다(한 스레드, 보수적). 그림 한 장(디코딩+BGR) 시간과 합계 fps."""
+def bench_decoders(make, enc, cams: int = 4, parallel: bool = False) -> dict:
+    """카메라 cams 대 디코더에 같은 스트림을 넣는다. 그림 한 장(디코딩+BGR) 시간과 합계 fps.
+
+    parallel=False: 한 스레드에서 번갈아(보수적, c3 판정). True: 카메라마다 스레드 하나(LIVE 의 카메라별 수신·디코딩 스레드와
+    같은 구조, 기록만). 한 스레드라도 실패하면 예외를 그대로 올린다(덜 나온 그림을 통과로 세지 않는다).
+    """
     from simai_ai.io import I0CodecInfo
 
     decs = []
@@ -146,25 +152,49 @@ def bench_decoders(make, enc, cams: int = 4) -> dict:
                                 sps=enc.sps, pps=enc.pps))
         decs.append(d)
     per: list[float] = []
-    pictures = 0
+    counts = [0] * cams
+    errors: list[BaseException] = []
+
+    def one(i: int, d) -> None:
+        try:
+            for seq, (au, key) in enumerate(enc.frames):
+                s = time.perf_counter()
+                pics = d.decode(au, (1, seq), key)
+                per.append((time.perf_counter() - s) * 1000)  # list.append 는 GIL 아래 원자적이다
+                counts[i] += len(pics)
+            counts[i] += len(d.flush())
+        except BaseException as e:  # noqa: BLE001 - 주 스레드에서 다시 올린다
+            errors.append(e)
+
     t0 = time.perf_counter()
-    for seq, (au, key) in enumerate(enc.frames):
-        for d in decs:
-            s = time.perf_counter()
-            pics = d.decode(au, (1, seq), key)
-            per.append((time.perf_counter() - s) * 1000)
-            pictures += len(pics)
-    for d in decs:
-        pictures += len(d.flush())
+    if parallel:
+        threads = [threading.Thread(target=one, args=(i, d), daemon=True) for i, d in enumerate(decs)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        if errors:
+            raise errors[0]
+    else:
+        for seq, (au, key) in enumerate(enc.frames):
+            for i, d in enumerate(decs):
+                s = time.perf_counter()
+                pics = d.decode(au, (1, seq), key)
+                per.append((time.perf_counter() - s) * 1000)
+                counts[i] += len(pics)
+        for i, d in enumerate(decs):
+            counts[i] += len(d.flush())
+    pictures = sum(counts)
     total = time.perf_counter() - t0
     return {"frames_in": len(enc.frames) * cams, "pictures_out": pictures, "per_frame_ms_p50": pct(per, 50),
             "per_frame_ms_p95": pct(per, 95), "total_fps": round(pictures / total, 1), "seconds": round(total, 2)}
 
 
-def c3_decode_throughput(seconds: float = 10.0):
+def c3_decode_throughput(seconds: float = 10.0, variant_seconds: float = 5.0, size=SIZE):
     from simai_ai.io import NvdecDecoder, PyAvDecoder
 
-    enc = encode_stream(int(seconds * FPS))
+    enc = encode_stream(int(seconds * FPS), size=size)
+    short = dataclasses.replace(enc, frames=enc.frames[:int(variant_seconds * FPS)])  # 변형은 앞 5초(시간 상한 유지)
     values: dict = {}
     try:
         values |= {f"cpu_{k}": v for k, v in bench_decoders(PyAvDecoder, enc).items()}
@@ -172,6 +202,18 @@ def c3_decode_throughput(seconds: float = 10.0):
         values["cpu_error"] = f"{type(e).__name__}: {e}"
     nv = bench_decoders(NvdecDecoder, enc)
     values |= {f"nvdec_{k}": v for k, v in nv.items()}
+    variants = {  # 비교만(판정 안 함): 기준·기본값·디코더 선택 재료 (docs/design/tier0-nvdec-throughput.md)
+        "nvdec_par": lambda: bench_decoders(NvdecDecoder, short, parallel=True),
+        "cpu_par": lambda: bench_decoders(PyAvDecoder, short, parallel=True),
+        "nvdec_thr0": lambda: bench_decoders(lambda: NvdecDecoder(convert_threads=0), short),
+        "nvdec_thr1": lambda: bench_decoders(lambda: NvdecDecoder(convert_threads=1), short),
+        "nvdec_nv12": lambda: bench_decoders(lambda: NvdecDecoder(output_format="nv12"), short),
+    }
+    for name, run in variants.items():
+        try:
+            values |= {f"{name}_{k}": v for k, v in run().items()}
+        except Exception as e:  # noqa: BLE001 - 변형은 비교용이다
+            values[f"{name}_error"] = f"{type(e).__name__}: {e}"
     ok = (nv["per_frame_ms_p95"] is not None and nv["per_frame_ms_p95"] <= 10 and nv["total_fps"] >= 100
           and nv["pictures_out"] == nv["frames_in"])
     return ("PASS" if ok else "FAIL"), (f"NVDEC 그림 p95 {nv['per_frame_ms_p95']} ms, 합계 {nv['total_fps']} fps "
