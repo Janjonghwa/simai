@@ -397,8 +397,12 @@
   bottom: 16px;
   left: 16px;
   z-index: 8;
-  width: 300px;
+  display: flex;
+  flex-direction: column;
+  width: 340px;
   max-width: calc(100% - 32px);
+  /* 데이터 진단을 펼쳐도 상단 바·선택 카드를 덮지 않게 높이를 묶고 안에서 스크롤한다. */
+  max-height: calc(100% - 172px);
   border-radius: 12px;
   font-size: 12px;
   line-height: 18px;
@@ -433,6 +437,8 @@
   flex-direction: column;
   align-items: flex-start;
   gap: 6px;
+  min-height: 0;
+  overflow: auto;
   padding: 0 12px 10px;
   border-top: 1px solid var(--border);
 }
@@ -471,6 +477,70 @@
   color: #3e63dd;
 }
 
+/* Provider 데이터 진단(개발 전용). */
+.smk-data {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.smk-data-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.smk-data select {
+  max-width: 100%;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--foreground);
+  font: inherit;
+}
+.smk-data .smk-chip {
+  border: 0;
+  cursor: pointer;
+}
+.smk-data .smk-chip:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.smk-data-grid {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  row-gap: 2px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+}
+.smk-data-grid dt {
+  color: var(--muted-foreground);
+}
+.smk-data-grid dd {
+  margin: 0;
+  word-break: break-all;
+}
+.smk-data-grid dd[data-stale] {
+  color: var(--sev-caution);
+}
+.smk-data-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  font-size: 11px;
+  line-height: 15px;
+  list-style: none;
+}
+.smk-data-dim {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
 /* 좁은 화면에서 FE 목업 하단 메뉴와 겹치지 않게 선택기·진단을 메뉴 위로 올린다. */
 @media (max-width: 1160px) {
   .smk-root[data-mock-ui] .smk-views,

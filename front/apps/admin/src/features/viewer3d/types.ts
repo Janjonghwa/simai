@@ -1,3 +1,4 @@
+import type { SpatialSource } from '@/features/viewer3d/data/spatialSource';
 import type { Ref } from 'react';
 
 // FE 와 주고받는 값의 모양이다. FE 통합(S15P31A101-193 완료 조건) 때 함께 확정하며, 아직 팀 공통 계약이 아니다.
@@ -52,5 +53,10 @@ export interface Viewer3DProps {
   onSelectionChange?: (target: ViewerTarget | null) => void;
   /** 마운트 직후 한 번, 이후 단계·모드·오류가 바뀔 때마다 부른다. */
   onStatusChange?: (status: ViewerStatus) => void;
+  /**
+   * World·위험 이벤트·Health 입력(Mock 또는 외부 Live). 렌더마다 새로 만들지 말고 고정해 넘긴다.
+   * 다른 Source(다른 id)로 바꾸면 받은 데이터만 비우고 Canvas·카메라·선택·모드는 그대로다. 없으면 데이터 없이 장면만 그린다.
+   */
+  source?: SpatialSource | null;
   className?: string;
 }

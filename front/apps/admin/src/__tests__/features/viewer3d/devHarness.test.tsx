@@ -5,6 +5,7 @@ import {
   withDevView,
   type DevViewKey,
 } from '@/features/viewer3d/dev-harness/devView';
+import { readDataSource, withDataSource } from '@/features/viewer3d/dev-harness/harnessSource';
 import { MockApp } from '@/features/viewer3d/dev-harness/MockApp';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -206,5 +207,52 @@ describe('MockApp 개발 보기', () => {
     fireEvent.click(screen.getByRole('button', { name: '패널 닫기' }));
     expect(screen.queryByTestId('mock-panel')).toBeNull();
     expect(container.querySelector('canvas')).toBe(canvas);
+  });
+
+  it('데이터 입력을 바꿔도 같은 Canvas·업무 모드·보기를 쓰고 주소는 source 만 바뀐다', () => {
+    window.history.replaceState(null, '', '/dev?view=world&source=risk-lifecycle#h');
+    const { container } = render(<MockApp />);
+    const canvas = container.querySelector('canvas');
+    const select = screen.getByRole('combobox', { name: '데이터 입력' }) as HTMLSelectElement;
+    expect(select.value).toBe('risk-lifecycle');
+    expect(screen.getByTestId('data-connection').textContent).toContain('OPEN');
+
+    for (const key of ['disconnect', 'external', 'off', 'normal']) {
+      fireEvent.change(select, { target: { value: key } });
+      expect(new URLSearchParams(window.location.search).get('source')).toBe(key);
+      expect(new URLSearchParams(window.location.search).get('view')).toBe('world');
+      expect(window.location.hash).toBe('#h');
+      expect(container.querySelector('canvas')).toBe(canvas);
+      expect(viewerMode(container)).toBe('LIVE');
+    }
+    fireEvent.change(select, { target: { value: 'off' } });
+    expect(screen.getByTestId('data-connection').textContent).toContain('—');
+    expect(screen.queryByTestId('data-tick')).toBeNull();
+  });
+
+  it('보기를 바꿔도 데이터 입력은 그대로다', () => {
+    window.history.replaceState(null, '', '/dev?view=world&source=disconnect');
+    render(<MockApp />);
+    chooseView('3d');
+    expect(new URLSearchParams(window.location.search).get('source')).toBe('disconnect');
+    chooseView('world');
+    expect((screen.getByRole('combobox', { name: '데이터 입력' }) as HTMLSelectElement).value).toBe(
+      'disconnect',
+    );
+  });
+});
+
+describe('데이터 입력 주소', () => {
+  it('모르는 값이나 없으면 normal, 아는 값은 그대로 읽는다', () => {
+    expect(readDataSource('')).toBe('normal');
+    expect(readDataSource('?source=bogus')).toBe('normal');
+    expect(readDataSource('?source=OFF')).toBe('off');
+    expect(readDataSource('?view=world&source=invalid-input')).toBe('invalid-input');
+  });
+
+  it('source 만 바꾸고 다른 매개변수와 해시는 둔다', () => {
+    expect(withDataSource('http://127.0.0.1:5175/x/index.html?view=world#h', 'external')).toBe(
+      'http://127.0.0.1:5175/x/index.html?view=world&source=external#h',
+    );
   });
 });
