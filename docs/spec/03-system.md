@@ -252,7 +252,7 @@ flowchart TB
 | EC2 | DB | PostgreSQL + TimescaleDB + PostGIS(이미지 `timescale/timescaledb-ha` -all 태그), Spring Data JPA | 확정(DB), 기본안(JPA) |
 | EC2 | RAG 색인 | pgvector(같은 PostgreSQL) | 기본안 |
 | 자체 호스팅 | 임베딩 | BAAI/bge-m3 dense 1024차원, float32, L2 정규화, cosine. 문서·질문에 같은 revision·설정을 쓰고, 가중치 revision 은 운영 색인을 만들기 전에 고정한다. CPU·GPU 배치와 청크·배치 크기는 추후 | 확정(모델), 배치는 결정 전 |
-| EC2 | 계획·리플레이 판정 | Risk Engine Python 컨테이너 | 확정 |
+| EC2 | 계획·리플레이 판정 | Risk Engine Python 컨테이너, FastAPI 내부 API(compose 내부망 HTTP/JSON, 공개 포트 없음, 12.2) | 확정(컨테이너), 기본안(FastAPI) |
 | EC2 | 알림 | Web Push(VAPID) | 확정 |
 | EC2 | 배포 | Docker Compose, Nginx + Let’s Encrypt | 기본안 |
 | 저장소 | 객체 저장소 | S3 또는 Lightsail 버킷. 클립 삭제는 EC2 삭제 작업(수명 주기 규칙은 클립에 쓰지 않음, 11.5) | 기본안 |

@@ -30,6 +30,8 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 | I5 | RunPod 분석 워커 → EC2 | 작업 가져가기(HTTPS long-poll 기본, WebSocket 대안), TLS + 워커 토큰 | 워커가 EC2 에 먼저 접속해 `job_lease_request`로 작업을 대여하고(응답 `job_request`), `job_heartbeat`로 대여를 연장하며, 결과·실패를 `job_callback`으로 제출한다. 하트비트·제출 응답은 `job_lease_status`(12.5) |
 | I0 | 노트북 ↔︎ RunPod Tier 0 | 카메라별 TLS 연결(프레임 헤더 + 압축 프레임), 제어는 WebSocket(wss) | 위로: 프레임 헤더를 붙인 카메라 4대 압축 프레임(`frame_header`, 12.7), `codec_info`, `laptop_heartbeat` / 위로(제어): `site_ack`(현장 확인) / 아래로: `local_alert`, `alarm_stop`, `health`(활성 현장 경보 목록 `active_site_alerts` 포함, 3.10) / 양방향: 노트북–Pod 시계 차이 교환(아래로 `clock_sync_request`, 위로 `clock_sync_response`, 3.9) |
 
+EC2 내부: Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON 이다(공개 포트 없음, 기본 경로 `POST /v1/plan/evaluate`). Spring 이 `risk_plan_request`(출처 PLANNED, 판정 기준 시각, 규칙 묶음, 레이아웃의 구역·작업면·선택 계획 작업 위치)를 보내고 컨테이너가 `risk_plan_result`(등급 + 근거 위험 항목, 판정에 쓴 위치 목록, 또는 오류)로 답한다. 결과는 `sim.*` 에만 저장하고 알림 채널로 보내지 않는다(7.4, 8.3). 오류 판정 순서·HTTP 상태·본문 없는 실패의 처리는 계약(`contracts/`)이 정본이다. MVP 는 PLANNED 만 쓰고 REPLAY·WHAT_IF 재계산은 확장(부록 C)이다.
+
 노트북 → EC2 는 HTTPS(기기 토큰)로 `laptop_heartbeat`(1초)를 보내고 Tier 0 엔드포인트(`tier0_endpoint`)를 조회한다(12.6).
 
 ## 12.3 I1 주요 메시지

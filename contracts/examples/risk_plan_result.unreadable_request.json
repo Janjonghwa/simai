@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "risk_plan_result",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000404",
+  "sent_at": 1760342399010,
+  "source_id": "risk-engine-01",
+  "payload": {
+    "request_id": null,
+    "source": "PLANNED",
+    "status": "ERROR",
+    "computed_at": 1760342399009,
+    "engine_version": "0.1.0",
+    "error": {
+      "code": "INVALID_REQUEST",
+      "message": "본문이 risk_plan_request 1.x 가 아니다: payload.request_id 없음",
+      "retryable": false
+    }
+  }
+}

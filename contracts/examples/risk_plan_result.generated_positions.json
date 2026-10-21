@@ -1,0 +1,106 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "risk_plan_result",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000406",
+  "sent_at": 1760342399120,
+  "source_id": "risk-engine-01",
+  "payload": {
+    "request_id": "0192a6f0-7c1e-7b3a-9f2d-000000000421",
+    "source": "PLANNED",
+    "status": "OK",
+    "computed_at": 1760342399118,
+    "engine_version": "0.1.0",
+    "evaluation_time": 1760342400000,
+    "layout_id": "layout-0007",
+    "layout_version": "lv-3",
+    "rules": {
+      "rules_version": "rules-4",
+      "rule_versions": [
+        {
+          "rule_id": "R1",
+          "rule_version": 1
+        },
+        {
+          "rule_id": "R2",
+          "rule_version": 1
+        },
+        {
+          "rule_id": "R3",
+          "rule_version": 1
+        }
+      ]
+    },
+    "positions": [
+      {
+        "position_id": "gen-scaffold-1-01",
+        "position_xy": [
+          6.0,
+          4.0
+        ],
+        "support_surface_id": "scaffold-1",
+        "position_source": "GENERATED"
+      },
+      {
+        "position_id": "gen-z-open-1-01",
+        "position_xy": [
+          2.5,
+          0.8
+        ],
+        "support_surface_id": "floor",
+        "position_source": "GENERATED"
+      }
+    ],
+    "items": [
+      {
+        "rule_id": "R1",
+        "rule_version": 1,
+        "severity": "CRITICAL",
+        "position_ids": [
+          "gen-z-open-1-01"
+        ],
+        "zone_id": "z-open-1",
+        "metrics": {
+          "zone_distance_m": 0.2
+        },
+        "reason_codes": [
+          "xy_uncertainty_overlap"
+        ],
+        "confidence_reasons": []
+      },
+      {
+        "rule_id": "R2",
+        "rule_version": 1,
+        "severity": "CRITICAL",
+        "position_ids": [
+          "gen-scaffold-1-01"
+        ],
+        "zone_id": null,
+        "metrics": {
+          "edge_distance_m": 0.6,
+          "height_diff_m": 3.2
+        },
+        "reason_codes": [
+          "edge_within_raise_distance",
+          "standing_on_surface"
+        ],
+        "confidence_reasons": []
+      },
+      {
+        "rule_id": "R3",
+        "rule_version": 1,
+        "severity": "HIGH",
+        "position_ids": [
+          "gen-scaffold-1-01"
+        ],
+        "zone_id": null,
+        "metrics": {
+          "height_diff_m": 3.2
+        },
+        "reason_codes": [
+          "standing_surface_elevated"
+        ],
+        "confidence_reasons": []
+      }
+    ]
+  }
+}

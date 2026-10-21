@@ -24,7 +24,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `zone` | 다각형 + 높이 범위, 판정 유형(GROUND_FOOTPRINT/VOLUME_3D), 유형, 심각도, 요구 조건, 유효 시작·종료 |
 | `rule_version` | 규칙 ID, 임계값 세트, 적용 기간(시험 프로파일 포함, 7.4). 값은 AI 규칙 등록부에서 뽑으며 같은 버전의 값은 바꾸지 않는다 |
 | `equipment_asset` | GLB 주소, 반경·형상 파라미터(확장, 부록 C) |
-| `layout_plan` | 가상 레이아웃·계획 궤적(F-02·F-01), 출처 PLANNED |
+| `layout_plan` | 가상 레이아웃(개구부·장비 주차 구역은 구역, 가설 비계는 작업면)·계획 궤적(F-02·F-01), 출처 PLANNED. 계획 작업 위치는 선택이다: 관리자가 주면 그 위치만 쓰고, 없으면(빈 목록 포함) Risk Engine 컨테이너가 작업면·구역에서 만든다(8.3) |
 | `config_bundle` | 구역·규칙·보정·형상(등록 정적 객체·작업면 OBB) 버전 묶음, 해시, 발행 시각, 현장 적용 시각(RunPod Tier 0 ACK) |
 | `config_bundle_item` | 묶음에 들어간 구역·규칙·형상의 ID 와 버전 |
 | `config_ack` | Tier 0 의 묶음 적용·거부 응답(I1 `config_ack`) |
@@ -69,7 +69,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `push_receipt` | Service Worker 수신 확인(실제 알림·시험 푸시 중 하나) |
 | `rag_clause` | 안전 수칙 조항 본문·임베딩(bge-m3 1024차원)·모델 revision |
 
-PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evaluation_run`(계산 실행, 기준 구성, Risk Engine 라이브러리 버전), `sim.risk_result`(위험 항목, 실제 알림 채널로 가지 않음). 확장 테이블(`sim.trajectory_plan` 등)은 부록 C 에 있다.
+PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evaluation_run`(계산 실행, 기준 구성, Risk Engine 라이브러리 버전, 판정에 쓴 계획 작업 위치 목록과 위치마다 출처 REQUESTED·GENERATED), `sim.risk_result`(위험 항목, 실제 알림 채널로 가지 않음). 위치 목록은 EC2 가 컨테이너 결과(`risk_plan_result.positions`)를 그대로 저장한다. 컨테이너가 만든 위치는 다시 계산하면 달라질 수 있으므로 결과와 함께 둔다. 확장 테이블(`sim.trajectory_plan` 등)은 부록 C 에 있다.
 
 운영자 확인·종료·상향은 전이 기록(`risk_event_update`)에 한 줄로 쌓고, 누가·왜·결과는 `event_ack`·`event_close`·`event_escalation` 에 두어 전이 행이 가리킨다.
 
