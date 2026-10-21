@@ -40,7 +40,7 @@ def test_volume_less_pod_plan_skips_volume_measure_and_drops_fixed_region(gs, tm
     assert doc["jobs"][0]["env"]["SIMAI_ROOT"] == str(lay.simai)
     table = gs.plan_table(lay, doc, held)
     assert "제외: 엘리스 블록 스토리지" in table and "제외: GPU 가 필요 없어" in table
-    assert table.count("자리만: 실험 이미지 티켓 후") == 2
+    assert table.count("다른 이미지: exp02 Pod") == 4 and table.count("다른 이미지: mapanything Pod") == 3  # 실험 이미지 항목(-207)
     assert "볼륨 없음" in table and "scp" in table
 
 

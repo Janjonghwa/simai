@@ -1,0 +1,23 @@
+# EXP-01 MapAnything 이미지의 Python 의존성 입력 (S15P31A101-207, ai/experiments/static_scene/setup_runpod.sh 의 설치 목록을 옮김).
+# 잠금은 requirements.lock.txt 다. 고치면 deploy/README.md 의 "실험 이미지 잠금 갱신" 명령으로 다시 만든다(Python 3.12, 볼륨 venv 와 같은 판).
+# map-anything @3d10cf7 자체는 잠금에 넣지 않는다: 이미지 Dockerfile 이 커밋으로 받아 --no-deps 로 설치한다. 아래는 그 pyproject 의 dependencies 그대로다.
+# torch 는 볼륨 venv 와 같은 2.7.1 이고 CUDA 빌드만 cu126 → cu128 (Blackwell sm_100·sm_120 커널 포함, docs/design/exp-images.md).
+torch @ https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl
+torchvision @ https://download.pytorch.org/whl/cu128/torchvision-0.22.1%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl
+huggingface_hub
+hydra-core
+natsort
+opencv-python-headless==4.10.0.84
+orjson
+pillow-heif
+plyfile
+python-box
+requests
+rerun-sdk~=0.24.1
+safetensors
+tensorboard
+tqdm
+trimesh
+uniception==0.1.7
+# 측정 스크립트(ai/experiments/static_scene/run_mapanything.py)가 더 쓰는 것
+matplotlib

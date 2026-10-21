@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""simai-bootstrap: 어느 GPU·지역·사이트(RunPod·Vast.ai·엘리스 GPU VM)에서든 같은 순서로 Tier 0 이미지를 준비한다 (S15P31A101-205).
+"""simai-bootstrap: 어느 GPU·지역·사이트(RunPod·Vast.ai·엘리스 GPU VM)에서든 같은 순서로 이미지를 준비한다 (S15P31A101-205·-207).
 
     simai-bootstrap [tier0] [Tier 0 인자...]   준비 → simai-tier0 (엔진 준비 engine_cache ensure → python -m services.tier0)
     simai-bootstrap queue [gpu_session1 run 인자...]   준비 → GPU 1차 세션 큐 (저장소 사본 $SIMAI_SESSION_REPO, 기본 $SIMAI_ROOT/setup/session1/repo)
     simai-bootstrap check                       준비만 하고 결과 JSON 을 출력한다
+    simai-bootstrap run <명령...>               준비 → 그 명령 (실험 이미지: simai-bootstrap run simai-exp02 python ...)
     simai-bootstrap --help                      이 설명 + Tier 0 도움말 (준비 없음)
     simai-bootstrap <다른 명령...>              준비 없이 그대로 실행 (sleep infinity, bash, simai-wait-tier0 등)
 
@@ -12,7 +13,8 @@
      둘 다 아니면 컨테이너 디스크 /srv/simai. 만들고 남은 용량이 하한(SIMAI_MIN_FREE_GB, 기본 20) 이상인지 본다.
   2) GPU: nvidia-smi 의 compute_cap → sm_XX, 메모리를 기록한다. GPU 가 없거나 최소 사양(Ampere 이상 = compute_cap 8.0,
      VRAM 24GB급) 미만이면 시작하지 않는다.
-  3) 가중치: 목록 파일(SIMAI_WEIGHTS_MANIFEST, 기본 deploy/weights.json)에서 tier0 항목을 $SIMAI_ROOT/<path> 에 둔다.
+  3) 가중치: 목록 파일(SIMAI_WEIGHTS_MANIFEST, 기본 deploy/weights.json)에서 묶음 항목을 $SIMAI_ROOT/<path> 에 둔다.
+     묶음은 tier0 명령이면 tier0, check·queue·run 이면 SIMAI_WEIGHTS_SET(이미지가 정함: Tier 0 tier0, HMR exp02, MapAnything static).
      이미 있고 sha256 이 맞으면 건너뛰고(엘리스 블록 스토리지 재사용), 없으면 받아서 확인한다. 다르면 시작하지 않는다(받은 파일은 버리고,
      있던 파일은 지우지 않는다). HF 는 환경 변수 HF_TOKEN 만 쓰고, 토큰은 다른 호스트로 넘어가는 리다이렉트·출력·기록에 남지 않는다.
   4) 기록 $SIMAI_ROOT/runs/bootstrap/<UTC>-<pid>.json (추가만), 그다음 실행할 명령으로 exec 한다.
@@ -21,7 +23,8 @@
 HF 토큰: 시작하자마자 HF_TOKEN 을 환경에서 꺼내 이 프로세스 안에만 들고(가중치 받기에만 쓴다), HUGGING_FACE_HUB_TOKEN 은 읽지 않고 지우기만 한다.
 그래서 nvidia-smi 조회·도움말·그대로 넘기는 명령·Tier 0·큐 등 어떤 자식 프로세스에도 토큰이 상속되지 않는다(S15P31A101-205 리뷰 R1).
 
-종료 코드(simai-tier0·engine_cache 와 같은 규칙): 0 정상, 2 저장 위치·용량·가중치(없음·해시 불일치·받기 실패·목록 오류), 3 GPU 없음·최소 사양 미만.
+종료 코드(simai-tier0·engine_cache 와 같은 규칙): 0 정상, 2 저장 위치·용량·가중치(없음·해시 불일치·받기 실패·목록 오류·묶음 이름 오류),
+3 GPU 없음·최소 사양 미만, 64 사용법 오류(run 뒤에 명령 없음).
 """
 
 from __future__ import annotations
@@ -39,7 +42,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-EXIT_OK, EXIT_STORAGE, EXIT_GPU = 0, 2, 3
+EXIT_OK, EXIT_STORAGE, EXIT_GPU, EXIT_USAGE = 0, 2, 3, 64
 WORKSPACE = Path("/workspace")
 CONTAINER_ROOT = Path("/srv/simai")  # 볼륨이 없을 때. Pod 를 지우면 같이 사라진다(결과는 지우기 전에 scp)
 DEFAULT_MANIFEST = Path(__file__).resolve().parents[1] / "weights.json"  # 저장소. 이미지는 SIMAI_WEIGHTS_MANIFEST 로 준다
@@ -48,6 +51,7 @@ MIN_VRAM_MB = 22_500  # 24GB급(A10·L4 는 nvidia-smi 에서 약 23,000 MiB 로
 TOKEN_ENVS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")  # 자식 환경에서 지울 이름. 읽는 것은 HF_TOKEN 하나
 _hf_token: str | None = None  # take_token() 이 환경에서 꺼내 둔 값. _request·_redact 만 쓴다
 TIER0_CMD = "simai-tier0"
+SET_ENV = "SIMAI_WEIGHTS_SET"  # check·queue·run 이 받을 가중치 묶음(이미지 ENV). 없으면 tier0
 
 
 class BootstrapError(Exception):
@@ -150,6 +154,8 @@ def sha256_file(path: Path) -> str:
 
 
 def load_manifest(path: Path, wanted: str) -> list[dict]:
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", wanted):
+        raise BootstrapError(EXIT_STORAGE, f"가중치 묶음 이름 {wanted!r} 오류({SET_ENV})")
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
         entries = [w for w in doc["weights"] if wanted in w.get("sets", [])]
@@ -161,6 +167,8 @@ def load_manifest(path: Path, wanted: str) -> list[dict]:
                 raise ValueError(f"{w['name']}: source 에 url 또는 hf 가 없다")
     except (OSError, ValueError, KeyError, TypeError) as e:
         raise BootstrapError(EXIT_STORAGE, f"가중치 목록 {path} 오류: {type(e).__name__}: {e}") from e
+    if not entries:  # 묶음 이름 오타로 아무것도 받지 않고 시작하는 일을 막는다
+        raise BootstrapError(EXIT_STORAGE, f"가중치 목록 {path} 에 묶음 {wanted!r} 항목이 없다({SET_ENV})")
     return entries
 
 
@@ -207,13 +215,15 @@ def fetch(entry: dict, target: Path) -> str:
 
 
 def ensure_weights(root: Path, entries: list[dict]) -> list[dict]:
+    # 해시를 모르는 항목이 하나라도 있으면 아무것도 받기 전에 멈춘다(앞 항목 수 GB 를 받고 나서 실패하지 않게, S15P31A101-207)
+    for w in entries:
+        if not re.fullmatch(r"[0-9a-f]{64}", w.get("sha256") or ""):
+            raise BootstrapError(EXIT_STORAGE, f"{w['name']}: 목록에 sha256 이 없어 확인할 수 없다(모르면 시작하지 않는다)")
     out = []
     for w in entries:
         target = root / w["path"]
-        want = w.get("sha256")
+        want = w["sha256"]
         rec = {"name": w["name"], "path": str(target), "license": w.get("license", "")}
-        if not want or not re.fullmatch(r"[0-9a-f]{64}", want):
-            raise BootstrapError(EXIT_STORAGE, f"{w['name']}: 목록에 sha256 이 없어 확인할 수 없다(모르면 시작하지 않는다)")
         if target.is_file():
             got = sha256_file(target)
             if got != want:
@@ -294,11 +304,15 @@ def main(argv: list[str] | None = None) -> int:
     if not args or args[0].startswith("-"):
         args = ["tier0", *args]
     mode, rest = args[0], args[1:]
-    if mode not in ("tier0", "queue", "check"):
+    if mode not in ("tier0", "queue", "check", "run"):
         execvp(args)  # 준비 없이 그대로 (sleep infinity 로 띄운 개발 Pod, 셸, 점검 도구)
         return EXIT_OK
+    if mode == "run" and not rest:
+        log("사용법: simai-bootstrap run <명령...>")
+        return EXIT_USAGE
+    want_set = "tier0" if mode == "tier0" else (os.environ.get(SET_ENV) or "tier0")
     try:
-        rec = prepare("tier0")
+        rec = prepare(want_set)
     except BootstrapError as e:
         log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
         return e.code
@@ -312,6 +326,9 @@ def main(argv: list[str] | None = None) -> int:
             log(f"{script} 가 없다. 노트북에서 gpu_session1.py prepare 로 저장소 사본을 올린다 (docs/design/runpod-environment.md)")
             return EXIT_STORAGE
         execvp([sys.executable, str(script), "run", *rest])
+        return EXIT_OK
+    if mode == "run":
+        execvp(rest)
         return EXIT_OK
     execvp([TIER0_CMD, *rest])
     return EXIT_OK

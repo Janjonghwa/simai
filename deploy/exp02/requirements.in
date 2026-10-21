@@ -2,8 +2,8 @@
 # 잠금은 requirements.lock.txt 다. 고치면 deploy/README.md 의 "EXP-02 잠금 갱신" 명령으로 다시 만든다.
 # 잠금에 넣지 않는 것(이미지 Dockerfile 이 --no-deps 로 따로 설치): detectron2(@a1ce2f9, 빌드에 torch 필요), chumpy(setup.py 가 pip 를 import),
 # MoGe(@74fbce0, 의존성 flex-gemm 이 triton>=3.2 를 요구해 torch 2.5.1(triton 3.1)과 함께 잠글 수 없다. setup_runpod.sh 도 MoGe 뒤 torch 를 강제로 되돌렸다).
-torch @ https://download.pytorch.org/whl/cu124/torch-2.5.1%2Bcu124-cp311-cp311-linux_x86_64.whl
-torchvision @ https://download.pytorch.org/whl/cu124/torchvision-0.20.1%2Bcu124-cp311-cp311-linux_x86_64.whl
+torch @ https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp311-cp311-manylinux_2_28_x86_64.whl
+torchvision @ https://download.pytorch.org/whl/cu128/torchvision-0.22.1%2Bcu128-cp311-cp311-manylinux_2_28_x86_64.whl
 pytorch-lightning
 pyrender
 opencv-python

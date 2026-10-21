@@ -45,7 +45,7 @@ GPU 세션 큐의 첫 항목이다. 표준 라이브러리만 쓰고 결과를 `
 
 | 항목 | 통과 | WARN | FAIL |
 |---|---|---|---|
-| GPU | 최소 사양(Ampere 이상, VRAM 24GB급) GPU 하나 | 여러 개, compute_cap·메모리를 읽지 못함 | nvidia-smi 실패, 최소 사양 미만 |
+| GPU | 최소 사양(Ampere 이상, VRAM 24GB급) GPU 하나. Blackwell 은 Tier 0·실험 이미지 모두 커널이 있다(-207) | 여러 개, compute_cap·메모리를 읽지 못함 | nvidia-smi 실패, 최소 사양 미만 |
 | 드라이버 | 580 이상(CUDA 13 요구) | 580 미만: 이미지의 순방향 호환에 기댄다. 실제 판정은 b 항목 `torch.cuda.is_available()` | 버전을 읽지 못함 |
 | CUDA | 드라이버 최대 CUDA 13.0 이상 | 13.0 미만(Pod CUDA 필터를 13.0 이상으로) | |
 | 마운트 | `/workspace` 가 마운트 지점(장치·파일시스템 기록). 볼륨 없는 Pod(`--no-volume`, 세션 큐가 마운트 지점이 아니면 붙인다)는 '볼륨 없음' SKIP | | 마운트 지점이 아님(`--no-volume` 없이) |
@@ -100,12 +100,16 @@ Host simai-pod
 | d | -60 | Tier 0 GPU 우선 보호 측정 P0~P7 (`session1_gpu_priority.py`, 아래) | 15분 | 45분 | 큐, **-60 머지 필요** |
 | e | -92 | Network Volume 강제 종료 복구 (아래) | 5분 | 30분 | 제외: 엘리스 블록 스토리지 세션으로 옮김(-205) |
 | f | -45·-175 | `test_i1_tls.py`·`test_serial_tls.py` 를 Linux 에서 5회 반복 (`repeat_pytest.py`) | 10분 | 40분 | 제외: GPU 가 필요 없어 GPU 세션에서 뺌(Linux CPU 에서) |
-| g | -87 | EXP-02 다시점 집계(선택). LIVE 가 없을 때만, 마지막 | 30분(가정) | 60분 | 자리만: 실험 이미지 티켓 후 `--exp-jobs` 로 |
-| m | - | MapAnything 정적 재구성 (torch 2.7.1 cu126) | 15분(가정) | 30분 | 자리만: 실험 이미지 티켓 후 |
+| g0 | -207 | EXP-02 이미지 GPU 점검(`exp_image_check.py`: CUDA·세대 커널·Detectron2 확장 커널·pyrender EGL) | 2분 | 10분 | exp02 이미지 Pod 에서 |
+| g1~g3 | -207 | EXP-02 E-GATE-0 재현: H6 검출 시간, H0 스모크 1장, H1 공식 경로 14장 (아래 "2차 세션") | 5·5·15분 | 20·20·45분 | exp02 이미지 Pod 에서 |
+| m0 | -207 | MapAnything 이미지 GPU 점검 | 2분 | 10분 | mapanything 이미지 Pod 에서 |
+| m1·m2 | -207 | EXP-01 E-GATE-0 재현: C1(map-anything)·C2(map-anything-apache), room4 4장 | 5·5분 | 20·20분 | mapanything 이미지 Pod 에서 |
+| (`--exp-jobs`) | -87 | 추가 EXP Job 파일(다시점 집계 등). LIVE 보호를 켠 별도 큐로 마지막에 | - | - | 사람이 줄 때만 |
 
 - 순서: Pod 점검 → Tier 0 이미지·엔진(Tier 0 가 먼저, c·d 가 이 엔진 캐시를 쓴다) → 시험 도구 → LIVE·자원 보호 → 복구·TLS → EXP 는 맨 끝. 한 항목이 실패해도 다음 항목으로 간다(`continue_on_failure`).
+- 항목마다 돌 이미지가 정해져 있다(S15P31A101-207): Pod 하나는 이미지 하나라 큐는 지금 이미지(`--image`, 기본 이미지 ENV `SIMAI_IMAGE_KIND`, 없으면 tier0)의 항목과 a(모든 이미지)만 넣고, 나머지는 표에 '다른 이미지' 로 남긴다. 모르는 이미지 이름이면 시작하지 않는다(종료 코드 4).
 - c·d 는 -182·-60 이 머지된 뒤의 경로(`simai_ai.io.NvdecDecoder`, `tests/services/tier0/live_video.py`, `experiments/gpu_queue/tier0_priority_probe.py` 등)를 부른다. 머지 전이면 각 단계가 '없음(머지 필요)'으로 실패하고 다음 항목으로 간다. PyAV 는 -182 가 `io` extra 에 넣었으므로 그 뒤에 빌드한 이미지여야 c 가 돈다.
-- 예상 시간 근거: a 는 1GB 쓰기+fsync 200회, b 는 deploy/README 의 "H100 에서 엔진 첫 빌드 수 분" + 캐시·추론, c 는 c4 LIVE 120초 + 엔진 캐시 기동 + 인코딩·디코딩 측정·기하 측정, d 는 줄인 시간(watch 120·120·90·60초) + P0 시험, e·f 는 노트북 실측(e 약 40초, f 1회 약 35초)에 Network Volume fsync 지연과 5회 반복을 넉넉히 더했다. g 는 -87 이 정할 때까지의 가정이다.
+- 예상 시간 근거: a 는 1GB 쓰기+fsync 200회, b 는 deploy/README 의 "H100 에서 엔진 첫 빌드 수 분" + 캐시·추론, c 는 c4 LIVE 120초 + 엔진 캐시 기동 + 인코딩·디코딩 측정·기하 측정, d 는 줄인 시간(watch 120·120·90·60초) + P0 시험, e·f 는 노트북 실측(e 약 40초, f 1회 약 35초)에 Network Volume fsync 지연과 5회 반복을 넉넉히 더했다. g·m(-207)은 E-GATE-0 실측(H100 H1 14장 이미지당 약 10초 + 적재 약 40초, A40 MapAnything 적재 약 33초 + 추론 1초 미만)에 가중치 확인·첫 컴파일을 넉넉히 더했다.
 - **H100 총 예상**: 지금 큐 약 43분(e·f 제외 뒤) + Pod 기동·이미지 받기(압축 약 7.4GB) 약 10분 + 가중치 받기(볼륨 없음, 수십 초) + 사본 올리기·결과 회수 약 5분 ≈ **1시간**. d 를 G0 판정용(`--full`, watch 600초)으로 돌리면 +20분. 전체 시간 상한 기본값은 9000초(2.5시간). 다른 GPU 는 엔진 빌드·추론 시간이 다르다(H100 예상만 적었다).
 - 볼륨 없는 Pod(-205): 저장 위치는 `simai-bootstrap` 과 같은 규칙(`SIMAI_ROOT` → `/workspace/simai` → `/srv/simai`)이고, 마운트 지점이 아니면 a 에 `--no-volume`(볼륨 측정 SKIP)을 붙이고 Job 파일에 볼륨·데이터센터를 적지 않는다(`provider`·`datacenter` 는 run_record 가 `RUNPOD_POD_ID`·`RUNPOD_DC_ID` 등 사이트 신호로 채움, 신호가 없으면 LOCAL). 결과 묶음은 컨테이너 디스크에 있으므로 **Pod 를 지우기(Terminate) 전에** scp 로 가져온다(실행기가 출력).
 - 결과 기록은 run_record 계약을 따른다. `experiment_id` 는 운영 경로 검증 Run 값 `VAL-01`(run_record 2.1.0, `e_gate` 없음, S15P31A101-197), `experiment_state` 는 `BENCHMARK`, 입력 출처는 `SIM`·`is_upper_bound: true` 다(제품 성능 지표로 쓰지 않는다). 종료 코드는 `notes`, 지표는 각 스크립트가 `metrics.json` 에 남긴다.
@@ -132,6 +136,24 @@ ssh simai-pod 'tail -f /srv/simai/setup/session1/session1.log'      # 끊겨도 
 - 결과 묶음: `/workspace/simai/runs/gpu-session1/<세션>/session1-<세션>-<UTC>.tar.gz` = `session.json`(항목별 상태·종료 코드·자리만 항목·시간), `bundle-manifest.json`(파일 sha256, 뺀 파일과 이유), 큐 상태·로그·Run 폴더 전체, `jobs.json`. 볼륨에 못 쓰면 `/tmp/simai-session1/` 로 물러서고 그 경로를 출력한다.
 - 노트북에서는 `ai/experiments/runs/gpu-session1/<세션>/` 에 풀어 둔다(`.gitignore` 의 `runs/`, 커밋하지 않음). Run 요약은 MR·Jira 로 남긴다.
 
+### 2차 세션 (S15P31A101-207)
+
+1차 세션과 같은 실행기를 이미지 셋으로 나눠 돈다. 세션 이름은 1차와 다르게 준다(같은 이름이면 끝난 항목을 건너뛴다).
+
+| 순서 | Pod 이미지 | 큐 항목 | 확인 |
+|---|---|---|---|
+| 1 | `tier0`(-207 재빌드: 층 분할 + modelopt·onnxruntime-gpu·cupy 잠금) | a, b, t, c, d | b 엔진 빌드(modelopt 경로), **c 의 c3 재측정(-212 의 디코더별 색 변환 문맥 + 비교 변형)은 `session1_live.py all` 안에 있어 c 항목으로 함께 돈다** |
+| 2 | `exp02-fs3db` | a, g0~g3 | g0 통과 뒤 g1~g3 를 E-GATE-0 H6·H0·H1 과 비교 |
+| 3 | `mapanything` | a, m0~m2 | m0 통과 뒤 m1·m2 를 E-GATE-0 C1·C2 와 비교(`ai/experiments/static_scene/compare_runs.py`) |
+
+- 실험 이미지 큐는 LIVE 보호를 켠다(`live_guard.enabled=true`, `on_live=stop`, 저장 위치의 `state/tier0.live` 가 30초 안에 갱신됐거나 `services.tier0` 프로세스가 있으면 멈춤).
+  볼륨 없는 Pod 끼리는 표시 파일을 나누지 않으므로, 관제 시간에 실험 Pod 를 켜지 않는 것은 사람이 지킨다(AGENTS.md RunPod 규칙).
+- Run 기록: g1~g3 는 `experiment_id` EXP-02, m1·m2 는 EXP-01, `experiment_state` BENCHMARK, `e_gate` 없음(새 이미지 환경 확인이지 채택 근거가 아니다), 입력 출처 FILE(`hmr_poc14`·`room4`, `is_upper_bound: false`).
+  Run id 는 `<E-GATE-0 이름>_img_<세션>` 이라 E-GATE-0·다른 세션 결과를 덮어쓰지 않고, `exp_job.py` 가 끝난 결과 폴더를 다시 쓰지 않는다. 가중치·입력·결과는 저장 위치 절대 경로로 기록되고(weights_hash·dataset_hash·results), 실험 지표는 Run 기록 metrics 로 넘어간다. 시작 전에 Run 기록 검증기(jsonschema)를 컨테이너 디스크에 깔고 없으면 시작하지 않는다. `env.lock_files` 는 이미지의 잠금(`deploy/exp02/requirements.lock.txt` 등)이고 `SIMAI_IMAGE_DIGEST` 가 있으면 다이제스트가 `env_hash` 다.
+- 결과 묶음에 각 Run 폴더(`runs/exp02/<run_id>`·`runs/exp01/<run_id>`: metrics.json·메시·패널, 50MB 넘는 파일은 빠짐)도 넣는다.
+- 데이터(`datasets/hmr_poc14` 14장, `datasets/room4` 4장)는 저장소에 없어 Pod 에 scp 로 올린다(deploy/README "Pod 검증 큐"). 없으면 g1~g3·m1·m2 가 실패하고 다음 항목으로 간다.
+- H100 예상: exp02 Pod 약 27분 + 이미지 받기·가중치(약 4.3GB) 받기, mapanything Pod 약 12분 + 가중치(약 9.8GB) 받기. `sam-3d-body-dinov3-mhr` 해시를 채우기 전에는 exp02 Pod 의 `simai-bootstrap queue` 가 받기 전에 종료 코드 2 로 멈춘다(docs/data/weights.md).
+
 ### 실행기 규칙
 
 | 상황 | 동작 | 종료 코드 |
@@ -140,7 +162,7 @@ ssh simai-pod 'tail -f /srv/simai/setup/session1/session1.log'      # 끊겨도 
 | 항목 제한 시간 초과 | 그 항목 FAILED(타임아웃), 프로세스 트리 정리, 다음 항목 진행 | 1 |
 | 전체 시간 상한 | 도는 항목을 끝내 ABORTED 기록, 남은 항목은 돌리지 않음(다음 실행 때 이어서) | 8 |
 | Ctrl-C·SIGTERM | 같은 방식으로 멈추고 묶음은 만든다 | 130 |
-| LIVE 관제 중(볼륨 `state/tier0.live` 가 30초 안에 갱신됐거나 `services.tier0` 프로세스) | 세션을 시작하지 않음. EXP 큐(g)는 gpu_queue LIVE 보호(on_live=stop)로 멈춤 | 3 |
+| LIVE 관제 중(볼륨 `state/tier0.live` 가 30초 안에 갱신됐거나 `services.tier0` 프로세스) | 세션을 시작하지 않음. 실험 이미지 큐(g·m)·`--exp-jobs` 는 gpu_queue LIVE 보호(on_live=stop)로 멈춤 | 3 |
 | 결과 폴더에 쓸 수 없음·남은 용량 하한 미만(기본 2GB) | 항목을 돌리지 않음(GPU 작업 전) | 5 |
 | 실행 중 큐 예외(예: 디스크 가득 참으로 상태 파일 쓰기 실패) | 잠금은 gpu_queue 가 풀고, 이 큐의 Job 프로세스(`SIMAI_QUEUE_NAME`)를 찾아 끝낸 뒤(Linux) 묶음을 만든다 | 6 |
 | 묶음을 볼륨·임시 폴더 어디에도 못 씀 | 큐 폴더 경로를 출력 | 7 |
@@ -259,7 +281,8 @@ queue 모드에서도 엔진 준비(세션 b 항목의 첫 빌드 시간 측정�
 | 공개 IPv4 | `SIMAI_PUBLIC_HOST` | `RUNPOD_PUBLIC_IP` | 엔드포인트 등록 오류(이름 둘을 모두 적음) |
 | 공개 포트(요청 번호별) | `SIMAI_PUBLIC_PORT_<번호>` | `RUNPOD_TCP_PORT_<번호>` | 등록·영상 수신·제어 채널 설정 오류 |
 
-이미지 줄바꿈: Windows 체크아웃의 CRLF 가 shebang 을 깨뜨리지 않게 deploy/base·deploy/tier0 Dockerfile 이 COPY 한 실행 스크립트의 CR 을 빌드에서 뺀다(`sed -i 's/$//'`). `check_image.sh` 의 CR 검사는 결과를 다시 확인한다(Docker 를 켜지 않아 빌드는 하지 않았다).
+이미지 줄바꿈: Windows 체크아웃의 CRLF 가 shebang 을 깨뜨리지 않게 deploy/base·deploy/tier0 Dockerfile 이 COPY 한 실행 스크립트의 CR 을 빌드에서 뺀다(`sed -i 's/
+$//'`). `check_image.sh` 의 CR 검사는 결과를 다시 확인한다(Docker 를 켜지 않아 빌드는 하지 않았다).
 
 ## 첫 세션 수동 확인 목록 (큐 밖)
 

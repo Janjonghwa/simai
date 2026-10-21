@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Tier 0 이미지 점검 (GPU 없이, 노트북·CI·Pod 어디서나). 이미지를 레지스트리에 올리기 전에 돌린다.
+# 이미지 점검 (GPU 없이, 노트북·CI·Pod 어디서나). 이미지를 레지스트리에 올리기 전에 돌린다.
 #   bash deploy/scripts/check_image.sh simai/tier0:local
+#   bash deploy/scripts/check_image.sh simai/exp02-fs3db:local      # 실험 이미지(S15P31A101-207): 이미지 ENV SIMAI_IMAGE_KIND 로 종류를 고른다
 # 확인: 비밀·가중치·엔진·SSH 호스트 키가 이미지에 없음, 패키지 import, 진입점 도움말,
 #       볼륨 없음·가중치 없음·해시 불일치·GPU 없음이 각각 명확한 코드와 메시지로 끝남, GPU 별 엔진 경로가 다름,
 #       PUBLIC_KEY(RunPod)·SSH_PUBLIC_KEY(Vast.ai) 를 주면 키 인증만 받는 sshd 가 뜸, SIMAI_SSHD=off 면 안 뜸,
 #       기본 진입점(simai-bootstrap)은 GPU 가 없으면 코드 3, 실행 스크립트에 CR(Windows 줄바꿈)이 없음 (S15P31A101-205).
+# 실험 이미지(exp02·mapanything)는 Tier 0 전용 항목(엔진·simai-tier0·분석 워커) 대신: 종류별 import·CUDA 확장 아키텍처·허브 코드 사본,
+#       부트스트랩이 자기 가중치 묶음을 고르는지(해시 모르는 항목은 받기 전에 코드 2, 받기 실패는 코드 2), 실행 도우미의 체크포인트 없음 코드 2.
 # 컨테이너 볼륨은 이름 있는 Docker 볼륨을 만들어 쓰고 끝나면 지운다(호스트 경로 변환 문제를 피한다).
 set -uo pipefail
 export MSYS_NO_PATHCONV=1
@@ -17,6 +20,10 @@ fail(){ echo "FAIL  $*"; FAILS=$((FAILS + 1)); }
 # shellcheck disable=SC2317  # trap 으로 부른다
 cleanup(){ docker volume rm -f "$VOL" >/dev/null 2>&1; }
 trap cleanup EXIT
+KIND=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$IMG" | sed -n 's/^SIMAI_IMAGE_KIND=//p')
+KIND=${KIND:-tier0}
+echo "이미지 종류: $KIND"
+case "$KIND" in tier0|exp02|mapanything) ;; *) echo "FAIL  알 수 없는 SIMAI_IMAGE_KIND=$KIND"; exit 1 ;; esac
 
 # 1) 이미지 층 이력·환경 변수에 비밀이 없다
 SECRET_RE='hf_[A-Za-z0-9]{20,}|HF_TOKEN=[^ ]|HUGGING_FACE_HUB_TOKEN=|RUNPOD_API_KEY=|PUBLIC_KEY=ssh-|BEGIN [A-Z ]*PRIVATE KEY'
@@ -53,6 +60,37 @@ else
 fi
 
 # 3) import·버전·잠금
+case "$KIND" in
+  exp02) IMPORTS='
+import importlib.metadata as m, os, pathlib, sys
+import torch, torchvision, detectron2, detectron2._C, moge, ultralytics, pyrender, smplx, pytorch_lightning  # chumpy 0.70 은 Python 3.11 에서 import 가 깨진다(inspect.getargspec, 볼륨 venv 와 같음). 설치만 확인
+assert m.version("chumpy") == "0.70"
+from moge.model.v2 import MoGeModel
+arch = pathlib.Path("/opt/exp02/.detectron2_arch").read_text().strip()
+assert arch == "8.0;8.6;8.9;9.0;10.0;12.0", arch
+repo = os.environ["SIMAI_FS3DB_REPO"]
+for d in (repo + "/sam_3d_body", repo + "/checkpoints/sam-3d-body-dinov3/model_config.yaml",
+          "/root/.cache/torch/hub/facebookresearch_dinov3_main/hubconf.py"):
+    assert pathlib.Path(d).exists(), d
+print(sys.version.split()[0], "torch", torch.__version__, "detectron2", m.version("detectron2"), "arch", arch,
+      "ultralytics", m.version("ultralytics"), "numpy", m.version("numpy"))' ;;
+  mapanything) IMPORTS='
+import importlib.metadata as m, os, pathlib, sys
+import torch, torchvision, mapanything, uniception, rerun
+from mapanything.models import MapAnything
+for d in (os.environ["SIMAI_MAPANYTHING_REPO"] + "/mapanything", "/root/.cache/torch/hub/facebookresearch_dinov2_main/hubconf.py"):
+    assert pathlib.Path(d).exists(), d
+print(sys.version.split()[0], "torch", torch.__version__, "mapanything", m.version("mapanything"), "uniception", m.version("uniception"),
+      "commit", os.environ["SIMAI_MAPANYTHING_COMMIT"][:7])' ;;
+esac
+if [ "$KIND" != tier0 ]; then
+  if OUT=$(docker run --rm --entrypoint python "$IMG" -c "$IMPORTS" 2>&1); then
+    pass "import·코드 사본 ($KIND: $(tail -1 <<<"$OUT"))"
+  else
+    fail "import 실패 ($KIND): $(tail -5 <<<"$OUT")"
+  fi
+fi
+if [ "$KIND" = tier0 ]; then
 if OUT=$(docker run --rm --entrypoint python "$IMG" -c '
 import importlib.metadata as m, sys
 import simai_ai, services.tier0, simai_ai.detection.engine_cache, cv2, ultralytics, tensorrt, onnx, modelopt
@@ -73,6 +111,8 @@ else
   fail "simai-tier0 --help: $OUT"
 fi
 
+fi
+
 # 4) 볼륨·가중치·해시·GPU 문제는 Tier 0 를 띄우지 않고 명확한 코드로 끝난다
 expect(){  # 이름 기대코드 기대문구 docker-run-인자...
   local name=$1 code=$2 text=$3; shift 3
@@ -85,6 +125,7 @@ expect(){  # 이름 기대코드 기대문구 docker-run-인자...
   fi
 }
 # 기본 진입점 simai-bootstrap(S15P31A101-205): 볼륨이 없으면 컨테이너 디스크를 쓰고, GPU 가 없으면 가중치를 받기 전에 코드 3
+if [ "$KIND" = tier0 ]; then
 expect "simai-bootstrap GPU 없음" 3 "GPU 없음" "$IMG"
 # 아래는 simai-tier0(엔진 준비 진입점)를 직접 부른다: 부트스트랩 뒤 단계의 볼륨·가중치·해시·GPU 처리
 T0=(--entrypoint /usr/local/bin/simai-tier0)
@@ -97,6 +138,23 @@ docker run --rm -v "$VOL:/workspace" --entrypoint /bin/sh "$IMG" \
 expect "가중치 해시 불일치" 2 "해시 불일치" -v "$VOL:/workspace" \
   -e SIMAI_TIER0_WEIGHTS_SHA256=0000000000000000000000000000000000000000000000000000000000000000 "${T0[@]}" "$IMG"
 expect "GPU 없음(가중치는 있음)" 3 "CUDA GPU" -v "$VOL:/workspace" "${T0[@]}" "$IMG"
+else
+  expect "simai-bootstrap check GPU 없음" 3 "GPU 없음" "$IMG" check
+  expect "simai-bootstrap run 명령 없음" 64 "사용법" "$IMG" run
+  # 가짜 nvidia-smi(H100 한 줄을 출력)로 GPU 단계를 넘겨 가중치 단계를 본다. HF 주소는 닫힌 포트라 실제로 받지 않는다
+  FAKE_GPU=(-e "SIMAI_NVIDIA_SMI=echo NVIDIA H100 80GB HBM3, 9.0, 81559, 580.65.06" -e HF_ENDPOINT=http://127.0.0.1:9)
+  if [ "$KIND" = exp02 ]; then
+    # 해시를 모르는 항목(빈 sha256)이 있으면 아무것도 받기 전에 그 이름으로 멈추고, 다 채워졌으면 받기 실패(닫힌 포트)로 멈춘다
+    if docker run --rm --entrypoint python "$IMG" -c 'import json,sys; d=json.load(open("/opt/simai/deploy/weights.json")); sys.exit(0 if any("exp02" in w["sets"] and not w["sha256"] for w in d["weights"]) else 1)'; then
+      expect "exp02 묶음: 해시 모르는 항목은 받기 전에 코드 2" 2 "목록에 sha256 이 없어" "${FAKE_GPU[@]}" "$IMG" check
+    else
+      expect "exp02 묶음: 받기 실패는 코드 2" 2 "받기 실패" "${FAKE_GPU[@]}" -e SIMAI_ROOT=/tmp/simai "$IMG" check
+    fi
+    expect "simai-exp02 체크포인트 없음" 2 "체크포인트 없음" -e SIMAI_ROOT=/tmp/simai --entrypoint /usr/local/bin/simai-exp02 "$IMG" true
+  else
+    expect "static 묶음: map-anything 가중치 받기 실패는 코드 2" 2 "map-anything-apache-model 받기 실패" "${FAKE_GPU[@]}" "$IMG" check
+  fi
+fi
 # 이미지에 들어간 실행 스크립트에 CR 이 없다(Windows checkout 의 'python3\r' 실패 재발 방지)
 if CR=$(docker run --rm --entrypoint /bin/sh "$IMG" -c "grep -l \$(printf '\\r') /usr/local/bin/simai-* || true") && [ -z "$CR" ]; then
   pass "실행 스크립트 LF (simai-start·bootstrap·tier0·wait-tier0)"
@@ -105,6 +163,7 @@ else
 fi
 
 # 5) GPU 아키텍처마다 엔진 경로가 다르다 (같은 볼륨에서 A40 캐시를 H100 이 고르지 않는다)
+if [ "$KIND" = tier0 ]; then
 plan(){ docker run --rm -v "$VOL:/workspace" "$IMG" python -m simai_ai.detection.engine_cache plan \
   --weights /workspace/simai/weights/yolo/yolo26x-pose.pt --cache-root /workspace/simai/engines \
   --gpu-arch "$1" --tensorrt 11.4.0.106 --ultralytics 8.4.178 2>&1; }
@@ -113,6 +172,7 @@ if [ "$P90" != "$P86" ] && grep -q "/sm_90/trt" <<<"$P90" && grep -q "/sm_86/trt
   pass "엔진 경로 sm_90 ≠ sm_86 (${P90#*	})"
 else
   fail "엔진 경로가 GPU 별로 나뉘지 않는다: $P90 / $P86"
+fi
 fi
 
 # 6) SSH: PUBLIC_KEY(RunPod)·SSH_PUBLIC_KEY(Vast.ai) 를 주면 키 인증만 받는 sshd 가 뜬다(호스트 키는 이때 만든다)

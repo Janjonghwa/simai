@@ -9,8 +9,15 @@
   d  -60  Tier 0 GPU 우선 보호 측정 P0~P7                                  deploy/scripts/session1_gpu_priority.py (-60 머지 필요)
   e  -92  Network Volume 강제 종료 복구                                    제외: 엘리스 블록 스토리지 세션으로 옮김 (S15P31A101-205)
   f  -45·-175 Linux TLS 시험 반복                                         제외: GPU 가 필요 없어 GPU 세션에서 뺌 (Linux CPU 에서 repeat_pytest.py)
-  g  -87  EXP-02 다시점 집계(선택, LIVE 없을 때만, 마지막)                 자리만: 실험 이미지 티켓 후. --exp-jobs 로 준 Job 파일을 LIVE 보호를 켠 별도 큐로 돈다
-  m       MapAnything 정적 재구성                                          자리만: 실험 이미지 티켓 후
+  g0~g3 -207 EXP-02 이미지(HMR) 점검·E-GATE-0 재현(H6·H0·H1)               exp02 이미지 Pod 에서만 (S15P31A101-207)
+  m0~m2 -207 MapAnything 이미지 점검·E-GATE-0 재현(C1·C2)                    mapanything 이미지 Pod 에서만
+  (--exp-jobs: 추가 EXP Job 파일(예 -87 다시점 집계)을 LIVE 보호를 켠 별도 큐로 마지막에 돈다)
+
+항목마다 돌 이미지가 정해져 있다(Pod 하나 = 이미지 하나). 지금 이미지(--image, 기본 이미지 ENV SIMAI_IMAGE_KIND, 없으면 tier0)의
+항목만 큐에 넣고 나머지는 '다른 이미지' 로 표에 남긴다. 2차 세션은 Tier 0 Pod → exp02 Pod → mapanything Pod 순서로 같은 명령을 돈다.
+실험 이미지의 큐는 LIVE 보호를 켠다(on_live=stop: 관제 중이면 멈춤). 데이터(hmr_poc14·room4)는 저장소에 없어 Pod 에 따로 올린다.
+실험 Job 은 exp_job.py 로 감싸 지표를 Run 기록에 넘기고, 가중치·입력·결과는 저장 위치 절대 경로로 기록한다. Run 기록 검증기가 없으면
+(실험 이미지 venv) 시작 전에 컨테이너 디스크에 깔고, 그래도 없으면 시작하지 않는다(종료 코드 5).
 
 GPU·지역은 그때그때 남은 것(RunPod·Vast.ai, 볼륨 없음)을 쓴다(S15P31A101-205). Pod 모드 저장 위치는 simai-bootstrap 과 같다:
 SIMAI_ROOT → /workspace/simai → 컨테이너 디스크 /srv/simai. 볼륨이 없으면(마운트 지점 아님) a 의 볼륨 측정은 '볼륨 없음' SKIP 이고,
@@ -24,6 +31,8 @@ SIMAI_ROOT → /workspace/simai → 컨테이너 디스크 /srv/simai. 볼륨이
     python deploy/scripts/gpu_session1.py prepare --out <폴더>
     # Pod (Tier 0 이미지): 가중치·GPU 준비(simai-bootstrap) 뒤 이 큐를 돈다
     simai-bootstrap queue
+    # 실험 이미지 Pod: 같은 명령. 가중치 묶음(exp02·static)은 이미지가 정하고, 큐는 그 이미지 항목만 돈다
+    simai-bootstrap queue --session <이름>
     # 노트북 드라이런: 가짜 nvidia-smi·로컬 디렉터리
     uv run --project ai python deploy/scripts/gpu_session1.py run --mode dryrun --root <로컬 폴더>
 
@@ -36,6 +45,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
+import importlib
 import io
 import json
 import os
@@ -84,19 +94,54 @@ def log(msg: str) -> None:
 # ---------------------------------------------------------------- 항목 정의
 
 
-def lock_pins() -> dict[str, str]:
-    """ai/uv.lock 의 시험 도구 버전(Pod 의 이미지 venv 에는 dev 의존성이 없어 따로 설치한다)."""
+def lock_pins(want: tuple[str, ...] = ("pytest", "cryptography")) -> dict[str, str]:
+    """ai/uv.lock 의 도구 버전(Pod 의 이미지 venv 에는 dev 의존성이 없어 따로 설치한다)."""
     doc = tomllib.loads((REPO / "ai" / "uv.lock").read_text(encoding="utf-8"))
-    want = {"pytest", "cryptography"}
     return {p["name"]: p["version"] for p in doc.get("package", []) if p.get("name") in want}
+
+
+VALIDATOR_PKGS = ("jsonschema", "referencing")  # Run 기록 스키마 검증기(gpu_queue.run_record.load_validator)
+
+
+def validator_ready(contracts: Path | None = None) -> bool:
+    """Run 기록 스키마 검증기를 만들 수 있는가(jsonschema·referencing import + 스키마 파일)."""
+    rr = load_gpu_queue().load_validator  # gpu_queue 가 run_record 에서 가져온 것
+    return rr(contracts or REPO / "contracts")[0] is not None
+
+
+def ensure_validator(lay: Layout) -> str | None:
+    """실험 이미지 venv 에는 jsonschema 가 없어 gpu_queue 가 Run 기록 검증을 조용히 건너뛴다(S15P31A101-207 리뷰 R1).
+    없으면 ai/uv.lock 의 판으로 컨테이너 디스크(lay.tools)에 설치해 이 프로세스 경로에 더한다. 그래도 없으면 이유(시작하지 않음)."""
+    if validator_ready():
+        return None
+    if lay.mode != "pod":
+        return "jsonschema·referencing 이 없다(uv run --project ai 로 실행한다)"
+    pins = lock_pins(VALIDATOR_PKGS)
+    cmd = ["uv", "pip", "install", "-q", "--python", lay.py, "--target", str(lay.tools), *(f"{k}=={v}" for k, v in sorted(pins.items()))]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        detail = (r.stdout + r.stderr).strip()[-300:]
+    except (OSError, subprocess.SubprocessError) as e:
+        detail = f"{type(e).__name__}: {e}"
+    if str(lay.tools) not in sys.path:
+        sys.path.insert(0, str(lay.tools))
+    importlib.invalidate_caches()
+    return None if validator_ready() else f"Run 기록 검증기를 설치하지 못함({' '.join(cmd[:4])} …): {detail}"
+
+
+IMAGES = ("tier0", "exp02", "mapanything")  # 이미지 ENV SIMAI_IMAGE_KIND 값
+# 이미지별 env_hash 잠금 파일(이미지 다이제스트를 모를 때만 쓰인다, deploy/README "env_hash")
+LOCK_FILES = {"tier0": "ai/uv.lock", "exp02": "deploy/exp02/requirements.lock.txt",
+              "mapanything": "deploy/mapanything/requirements.lock.txt"}
 
 
 class Layout:
     """모드별 경로와 명령. pod: /workspace 볼륨·이미지 Python, dryrun: 로컬 폴더·가짜 nvidia-smi."""
 
-    def __init__(self, mode: str, root: Path | None, session: str, python: str | None) -> None:
+    def __init__(self, mode: str, root: Path | None, session: str, python: str | None, image: str = "tier0") -> None:
         self.mode = mode
         self.session = session
+        self.image = image
         if mode == "pod":
             if root is None:  # simai-bootstrap 과 같은 규칙. SIMAI_ROOT 의 부모가 볼륨 루트(.simai-private 위치)다
                 self.simai, _source = simai_bootstrap.choose_root()
@@ -117,7 +162,8 @@ class Layout:
         self.session_dir = self.simai / "runs" / "gpu-session1" / session
         self.tools = Path(tempfile.gettempdir()) / "simai-session1-testtools"  # 컨테이너 디스크(볼륨 아님)
         self.smi = ["nvidia-smi"] if mode == "pod" else [self.py, FAKE_SMI.as_posix()]
-        self.queue_name = f"session1-{session}"
+        # 실험 이미지는 큐 이름을 나눈다(같은 저장 위치를 다시 붙여도 Tier 0 세션의 끝난 항목 상태와 섞이지 않게)
+        self.queue_name = f"session1-{session}" if image == "tier0" else f"session1-{session}-{image}"
 
     def pythonpath(self) -> str:
         parts = [str(REPO / "ai" / "src"), str(REPO / "ai")]  # 저장소 사본 코드가 이미지에 설치된 simai_ai 보다 앞선다
@@ -145,6 +191,9 @@ def find_bash() -> str:
 
 PROVENANCE_NONE = {"frames": {"source": "SIM", "dataset_id": "none:infrastructure-check"}, "is_upper_bound": True}
 PROVENANCE_SIM = {"frames": {"source": "SIM", "dataset_id": "sim/tier0-e2e-walker"}, "is_upper_bound": True}
+# E-GATE-0 과 같은 입력 사진(공개 영상 프레임 14장, 라운지 사진 4장). 정답 데이터가 아니다
+PROVENANCE_HMR = {"frames": {"source": "FILE", "dataset_id": "hmr_poc14"}, "is_upper_bound": False}
+PROVENANCE_ROOM4 = {"frames": {"source": "FILE", "dataset_id": "room4"}, "is_upper_bound": False}
 
 
 def items(lay: Layout) -> list[dict]:
@@ -154,12 +203,37 @@ def items(lay: Layout) -> list[dict]:
     smi_text = json.dumps(lay.smi)
     pins = lock_pins()
     pod_check = [py, "deploy/scripts/pod_check.py", "--root", str(lay.root), "--nvidia-smi", smi_text]
+    data = lay.simai / "datasets"
+    w = lay.simai / "weights"  # 가중치·입력·결과는 저장 위치의 절대 경로로 적는다(큐 workdir 는 저장소 사본이라 상대 경로면 못 찾는다)
+    hmr = "ai/experiments/hmr"
+    egate = {"experiment_state": "BENCHMARK"}  # E-GATE-0 재현(새 이미지 환경 확인). 판정 기준은 docs/design/exp-images.md
+    # HMR official·opt 프리셋이 실제로 읽는 것: YOLO26x-pose 검출, sam-3d-body(fastcfg = 같은 ckpt·mhr + Fast config), MoGe2-S FOV
+    hmr_w = [str(w / "yolo" / "yolo26x-pose.pt"), str(w / "sam-3d-body-dinov3" / "model.ckpt"),
+             str(w / "sam-3d-body-dinov3" / "assets" / "mhr_model.pt"), str(w / "sam-3d-body-dinov3-fastcfg" / "model_config.yaml"),
+             str(w / "moge" / "moge-2-vits-normal" / "model.pt")]
+
+    def exp(key: str, name: str, title: str, image: str, run: str, cmd: list[str], out: Path, *, weights: list[str],
+            dataset: list[str], results: list[tuple[str, str]], experiment_id: str, provenance: dict, model_version: str,
+            expected_s: int, timeout_s: int) -> dict:
+        """실험 Job: exp_job.py 가 결과 폴더를 덮어쓰지 않게 막고, 실험 지표를 $SIMAI_RUN_DIR/metrics.json 으로 넘긴다.
+        Run id 에 세션 이름을 붙여 세션마다 결과 폴더가 다르다(E-GATE-0·다른 세션 결과를 덮어쓰지 않는다)."""
+        return {"key": key, "name": name, "jira": "S15P31A101-207", "title": title, "image": image, "run_id": run,
+                "command": [py, "deploy/scripts/exp_job.py", "--out", str(out), "--", *cmd],
+                "expected_s": expected_s, "timeout_s": timeout_s, "model_version": model_version, "provenance": provenance,
+                "experiment_id": experiment_id, **egate, "weights": weights, "dataset": dataset,
+                "results": [{"kind": k, "path": str(out / rel) if rel else str(out)} for k, rel in results]}
+
+    sfx = re.sub(r"[^A-Za-z0-9_.-]", "_", lay.session)
+    h6, h0, h1 = (f"{r}_img_{sfx}" for r in ("H6_det_yolo26x", "H0_smoke", "H1_official_opt"))
+    out02 = lay.simai / "runs" / "exp02"  # run_image·det_bench 의 OUT = $SIMAI_ROOT/runs/exp02/<run id>
+    out01 = lay.simai / "runs" / "exp01"
+    hmr_results = [("REPORT", "metrics.json"), ("HUMAN_MESH_OUTPUT", "meshes"), ("RENDER", "renders")]
     if dry:
         pod_check += ["--allow-not-mount", "--write-mb", "16", "--fsync-count", "50", "--min-free-gb", "1"]
     elif not lay.has_volume:
         pod_check += ["--no-volume"]
     return [
-        {"key": "a", "name": "a_pod_check", "jira": "S15P31A101-31", "title": "Pod 점검", "command": pod_check,
+        {"key": "a", "name": "a_pod_check", "jira": "S15P31A101-31", "title": "Pod 점검", "command": pod_check, "image": "*",
          "expected_s": 120, "timeout_s": 900, "model_version": "n/a (인프라 점검)", "provenance": PROVENANCE_NONE},
         {"key": "b", "name": "b_tier0_engine", "jira": "S15P31A101-32", "title": "Tier 0 이미지 기동·TensorRT 엔진 생성",
          "command": ["bash" if lay.mode == "pod" else find_bash(), "deploy/scripts/session1_engine.sh"], "expected_s": 900, "timeout_s": 2700,
@@ -186,10 +260,38 @@ def items(lay: Layout) -> list[dict]:
                      "tests/services/tier0/test_i1_tls.py", "tests/services/tier0/test_serial_tls.py"],
          "expected_s": 600, "timeout_s": 2400, "model_version": "n/a (TLS 시험)", "provenance": PROVENANCE_NONE,
          "excluded": "GPU 가 필요 없어 GPU 세션에서 뺌(Linux CPU 에서 repeat_pytest.py 로)"},
-        {"key": "g", "name": "g_exp02_multiview", "jira": "S15P31A101-87", "title": "EXP-02 다시점 집계 (선택, LIVE 없을 때)",
-         "command": None, "placeholder": "실험 이미지 티켓 후 (--exp-jobs 로 별도 큐)", "expected_s": 1800, "timeout_s": 3600},
-        {"key": "m", "name": "m_mapanything", "jira": "S15P31A101-205", "title": "MapAnything 정적 재구성",
-         "command": None, "placeholder": "실험 이미지 티켓 후 (torch 2.7.1 cu126 이미지)", "expected_s": 900, "timeout_s": 1800},
+        # 2차 세션 실험 이미지 항목(S15P31A101-207)
+        {"key": "g0", "name": "g0_exp02_image_check", "jira": "S15P31A101-207", "title": "EXP-02 이미지 GPU 점검",
+         "image": "exp02", "command": [py, "deploy/scripts/exp_image_check.py"], "expected_s": 120, "timeout_s": 600,
+         "model_version": "n/a (이미지 점검)", "provenance": PROVENANCE_NONE},
+        exp("g1", "g1_exp02_h6_det", "EXP-02 재현 H6 검출 시간", "exp02", h6,
+            ["simai-exp02", py, f"{hmr}/det_bench.py", "--run-id", h6, "--half"], out02 / h6,
+            weights=[str(w / "yolo" / "yolo26x-pose.pt")], dataset=[str(data / "hmr_poc14" / "t3_multi_f050.jpg")],
+            results=[("REPORT", "metrics.json")], experiment_id="EXP-02", provenance=PROVENANCE_HMR,
+            model_version="YOLO26x-pose (ultralytics, FP16)", expected_s=300, timeout_s=1200),
+        exp("g2", "g2_exp02_h0_smoke", "EXP-02 재현 H0 스모크 1장", "exp02", h0,
+            ["simai-exp02", py, f"{hmr}/run_image.py", "--run-id", h0, "--images", str(data / "hmr_poc14" / "t1_front_taichi.jpg"),
+             "--mode", "official", "--preset", "opt"], out02 / h0,
+            weights=hmr_w, dataset=[str(data / "hmr_poc14" / "t1_front_taichi.jpg")], results=hmr_results,
+            experiment_id="EXP-02", provenance=PROVENANCE_HMR, model_version="Fast-SAM-3D-Body@d72aa36 dinov3 (opt)",
+            expected_s=300, timeout_s=1200),
+        exp("g3", "g3_exp02_h1_official", "EXP-02 재현 H1 공식 경로 14장", "exp02", h1,
+            ["simai-exp02", py, f"{hmr}/run_image.py", "--run-id", h1, "--images", str(data / "hmr_poc14"),
+             "--mode", "official", "--preset", "opt"], out02 / h1,
+            weights=hmr_w, dataset=[str(data / "hmr_poc14")], results=hmr_results,
+            experiment_id="EXP-02", provenance=PROVENANCE_HMR, model_version="Fast-SAM-3D-Body@d72aa36 dinov3 (opt)",
+            expected_s=900, timeout_s=2700),
+        {"key": "m0", "name": "m0_mapanything_image_check", "jira": "S15P31A101-207", "title": "MapAnything 이미지 GPU 점검",
+         "image": "mapanything", "command": [py, "deploy/scripts/exp_image_check.py"], "expected_s": 120, "timeout_s": 600,
+         "model_version": "n/a (이미지 점검)", "provenance": PROVENANCE_NONE},
+        *(exp(key, f"{key}_mapanything_{base[:2].lower()}", f"MapAnything 재현 {base} ({model})", "mapanything", f"{base}_img_{sfx}",
+              [py, "ai/experiments/static_scene/run_mapanything.py", "--run-id", f"{base}_img_{sfx}", "--images", str(data / "room4"),
+               "--model", str(w / model), "--runs-dir", str(out01)], out01 / f"{base}_img_{sfx}",
+              weights=[str(w / model / "model.safetensors"), str(w / model / "config.json")], dataset=[str(data / "room4")],
+              results=[("REPORT", "metrics.json"), ("SCENE_OUTPUT", "cameras.json"), ("SCENE_OUTPUT", "fused.ply"), ("RENDER", "panels")],
+              experiment_id="EXP-01", provenance=PROVENANCE_ROOM4, model_version=f"map-anything@3d10cf7 + {model}",
+              expected_s=300, timeout_s=1200)
+          for key, base, model in (("m1", "C1_room4_bf16", "map-anything"), ("m2", "C2_room4_apache_bf16", "map-anything-apache"))),
     ]
 
 
@@ -208,7 +310,7 @@ def build_jobs(lay: Layout, git: dict | None) -> tuple[dict, list[dict]]:
     # provider·datacenter 는 run_record 가 RUNPOD_POD_ID·RUNPOD_DC_ID 로 채운다(그때그때 남은 지역).
     # provider 는 사이트 신호가 없으면 LOCAL(run_record.site_provider). 사이트 미정 클라우드는 Job 의 gpu.provider 에 OTHER 를 적는다
     gpu = {"shared_with_tier0": False} if lay.mode == "pod" else {"provider": "LOCAL"}
-    env_cfg: dict = {"lock_files": ["ai/uv.lock"]}
+    env_cfg: dict = {"lock_files": [LOCK_FILES[lay.image]]}
     if os.environ.get("SIMAI_IMAGE_DIGEST"):
         env_cfg["image_digest"] = os.environ["SIMAI_IMAGE_DIGEST"]
     doc: dict = {
@@ -221,9 +323,9 @@ def build_jobs(lay: Layout, git: dict | None) -> tuple[dict, list[dict]]:
             "vram_wait_s": 60,
             "gpu_query_cmd": lay.smi,
             "lock": {"heartbeat_s": 15, "ttl_s": 120},
-            # 검증 큐는 Tier 0 를 스스로 띄우고 죽인다(b·e). EXP Job 이 아니므로 LIVE 보호를 끈다.
-            # 관제(LIVE) 시간에는 이 세션을 돌리지 않는다(사람이 확인). EXP(g)는 LIVE 보호를 켠 별도 큐다.
-            "live_guard": {"enabled": False},
+            # Tier 0 검증 큐는 Tier 0 를 스스로 띄우고 죽인다(b·e). EXP Job 이 아니므로 LIVE 보호를 끈다.
+            # 관제(LIVE) 시간에는 이 세션을 돌리지 않는다(사람이 확인). 실험 이미지 큐(g·m)와 --exp-jobs 는 LIVE 보호를 켠다.
+            "live_guard": {"enabled": False} if lay.image == "tier0" else live_guard(lay),
         },
         "record": {
             "experiment_id": "VAL-01",  # 운영 경로 검증 Run(run_record 2.1.0). 실험 채택 근거가 아니라 e_gate 없음
@@ -241,20 +343,30 @@ def build_jobs(lay: Layout, git: dict | None) -> tuple[dict, list[dict]]:
     held: list[dict] = []
     env = job_env(lay)
     for it in items(lay):
-        if it["command"] is None or it.get("excluded"):
+        if it["command"] is None or it.get("excluded") or it.get("image", "tier0") not in ("*", lay.image):  # *: 모든 이미지 Pod
             held.append(it)
             continue
+        extra = {k: it[k] for k in ("experiment_id", "experiment_state", "weights", "dataset", "results") if it.get(k)}
         doc["jobs"].append({
             "name": it["name"], "command": it["command"], "expected_s": it["expected_s"], "timeout_s": it["timeout_s"],
             "vram_mb": 0, "env": env,
-            "record": {"jira_key": it["jira"], "model_version": it["model_version"], "input_provenance": it["provenance"],
-                       **({"weights": it["weights"]} if it.get("weights") else {})},
+            "record": {"jira_key": it["jira"], "model_version": it["model_version"], "input_provenance": it["provenance"], **extra},
         })
     return doc, held
 
 
+def live_guard(lay: Layout) -> dict:
+    """EXP 큐의 LIVE 보호: 관제 중이면 멈춘다(on_live=stop). 죽은 Tier 0 의 표시 파일은 30 s 뒤 무시.
+    표시 파일 경로는 이 세션의 저장 위치 기준으로 적는다(gpu_queue 기본값은 import 때의 SIMAI_ROOT 라 드라이런과 다를 수 있다)."""
+    return {"enabled": True, "on_live": "stop", "marker_max_age_s": 30, "marker_files": [str(lay.simai / "state" / "tier0.live")]}
+
+
 def _held_why(it: dict) -> str:
-    return f"제외: {it['excluded']}" if it.get("excluded") else f"자리만: {it.get('placeholder') or it.get('skip_reason')}"
+    if it.get("excluded"):
+        return f"제외: {it['excluded']}"
+    if it["command"] is None:
+        return f"자리만: {it.get('placeholder') or it.get('skip_reason')}"
+    return f"다른 이미지: {it.get('image', 'tier0')} Pod 에서"
 
 
 def plan_table(lay: Layout, doc: dict, held: list[dict]) -> str:
@@ -267,7 +379,9 @@ def plan_table(lay: Layout, doc: dict, held: list[dict]) -> str:
             total += it["expected_s"]
         rows.append(f"{it['key']:<4} {it['name']:<24} {it['jira']:<16} {it['expected_s'] / 60:>5.0f}분 {it['timeout_s'] / 60:>5.0f}분  {state}")
     future = sum(it["expected_s"] for it in held if it.get("placeholder"))
-    rows.append(f"지금 큐 예상 {total / 60:.0f}분, 자리만 항목을 채우면 +{future / 60:.0f}분")
+    other = sum(it["expected_s"] for it in held if it["command"] is not None and not it.get("excluded"))
+    rows.append(f"지금 큐({lay.image} 이미지) 예상 {total / 60:.0f}분, 다른 이미지 Pod 항목 +{other / 60:.0f}분"
+                + (f", 자리만 항목을 채우면 +{future / 60:.0f}분" if future else ""))
     if lay.mode == "pod":
         rows.append(f"저장 {lay.simai} ({'볼륨' if lay.has_volume else '볼륨 없음: 컨테이너 디스크, Pod 를 지우기 전에 결과를 scp'})")
     return "\n".join(rows)
@@ -402,10 +516,10 @@ def exp_job_doc(path: Path, lay: Layout) -> dict:
     표시 파일 경로는 이 세션의 볼륨 기준으로 적는다(gpu_queue 기본값은 import 때의 SIMAI_ROOT 라 드라이런과 다를 수 있다)."""
     doc = json.loads(path.read_text(encoding="utf-8"))
     guard = doc.setdefault("queue", {}).setdefault("live_guard", {})
-    guard["enabled"] = True
-    guard["on_live"] = "stop"
-    guard.setdefault("marker_max_age_s", 30)
-    guard.setdefault("marker_files", [str(lay.simai / "state" / "tier0.live")])
+    want = live_guard(lay)
+    guard["enabled"], guard["on_live"] = want["enabled"], want["on_live"]
+    guard.setdefault("marker_max_age_s", want["marker_max_age_s"])
+    guard.setdefault("marker_files", want["marker_files"])
     return doc
 
 
@@ -473,6 +587,11 @@ def make_bundle(lay: Layout, summary: dict, max_mb: float) -> tuple[Path | None,
     exp = lay.queue_state / f"{lay.queue_name}-exp"
     if exp.is_dir():
         sources.append((exp, "queue-exp"))
+    # 실험 이미지 항목의 결과(metrics.json·메시·패널). 큰 파일은 max_mb 로 빠진다
+    for it in items(lay):
+        if it.get("image", "tier0") == lay.image and it.get("run_id"):
+            out = Path(it["command"][it["command"].index("--out") + 1])
+            sources.append((out, f"runs/{out.parent.name}/{out.name}"))
     keep, dropped = collect(sources, max_mb)
     manifest = {"session": lay.session, "created_at": now_ms(), "files": [], "excluded": dropped}
     for p, rel in keep:
@@ -590,6 +709,10 @@ def cmd_run(args, lay: Layout) -> int:
     code = EXIT_OK
     try:
         errs = preflight([lay.queue_state, lay.session_dir], args.min_free_mb)
+        if not errs:
+            why = ensure_validator(lay)  # 기록 검증 없이 돌지 않는다(형식이 틀린 Run 기록을 성공으로 남기지 않게)
+            if why:
+                errs.append(why)
         live = None if args.allow_live else live_reason(lay)
         if errs:
             for e in errs:
@@ -680,6 +803,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--session", default=datetime.now(timezone.utc).strftime("%Y%m%d"),
                        help="세션 이름 (기본 UTC 날짜). 같은 이름으로 다시 돌리면 끝난 항목은 건너뛴다")
         p.add_argument("--python", default=None, help="Job 이 쓸 Python (기본: 지금 Python)")
+        p.add_argument("--image", choices=IMAGES, default=None,
+                       help="이 Pod 의 이미지(이 이미지 항목만 큐에 넣는다). 기본: 이미지 ENV SIMAI_IMAGE_KIND, 없으면 tier0")
 
     p_plan = sub.add_parser("plan", help="Job 파일·예상 시간 표")
     common(p_plan)
@@ -698,7 +823,11 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.cmd == "prepare":
         return cmd_prepare(args)
-    lay = Layout(args.mode, args.root, args.session, args.python)
+    image = args.image or os.environ.get("SIMAI_IMAGE_KIND") or "tier0"
+    if image not in IMAGES:  # 모르는 이미지면 다른 이미지의 항목을 돌리지 않는다
+        print(f"알 수 없는 이미지 {image!r} (SIMAI_IMAGE_KIND). {', '.join(IMAGES)} 중 하나를 --image 로 준다", file=sys.stderr)
+        return EXIT_BAD_JOBS
+    lay = Layout(args.mode, args.root, args.session, args.python, image)
     if args.cmd == "plan":
         return cmd_plan(args, lay)
     if args.max_total_s is None:
