@@ -1,0 +1,120 @@
+{
+  "_expect_error": "OK 결과에 적용한 규칙 묶음이 없다",
+  "schema_version": "1.0.0",
+  "msg_type": "risk_plan_result",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000402",
+  "sent_at": 1760342399120,
+  "source_id": "risk-engine-01",
+  "payload": {
+    "request_id": "0192a6f0-7c1e-7b3a-9f2d-000000000411",
+    "source": "PLANNED",
+    "status": "OK",
+    "computed_at": 1760342399118,
+    "engine_version": "0.1.0",
+    "evaluation_time": 1760342400000,
+    "layout_id": "layout-0007",
+    "layout_version": "lv-3",
+    "positions": [
+      {
+        "position_id": "p-01",
+        "position_xy": [
+          6.0,
+          4.3
+        ],
+        "support_surface_id": "scaffold-1",
+        "head_height_m": 1.7,
+        "position_source": "REQUESTED"
+      },
+      {
+        "position_id": "p-02",
+        "position_xy": [
+          3.1,
+          1.5
+        ],
+        "support_surface_id": "floor",
+        "head_height_m": 1.7,
+        "position_source": "REQUESTED"
+      },
+      {
+        "position_id": "p-03",
+        "position_xy": [
+          10.0,
+          2.0
+        ],
+        "support_surface_id": "floor",
+        "position_source": "REQUESTED"
+      }
+    ],
+    "items": [
+      {
+        "rule_id": "R1",
+        "rule_version": 1,
+        "severity": "HIGH",
+        "position_ids": [
+          "p-03"
+        ],
+        "zone_id": "z-equip-1",
+        "metrics": {
+          "occupancy_z_min_m": 0.0,
+          "zone_distance_m": 0.0
+        },
+        "reason_codes": [
+          "xy_inside_polygon"
+        ],
+        "confidence_reasons": [
+          "Z_UNKNOWN"
+        ]
+      },
+      {
+        "rule_id": "R1",
+        "rule_version": 1,
+        "severity": "CRITICAL",
+        "position_ids": [
+          "p-02"
+        ],
+        "zone_id": "z-open-1",
+        "metrics": {
+          "zone_distance_m": 0.1
+        },
+        "reason_codes": [
+          "xy_uncertainty_overlap"
+        ],
+        "confidence_reasons": []
+      },
+      {
+        "rule_id": "R2",
+        "rule_version": 1,
+        "severity": "CRITICAL",
+        "position_ids": [
+          "p-01"
+        ],
+        "zone_id": null,
+        "metrics": {
+          "edge_distance_m": 0.3,
+          "height_diff_m": 3.2
+        },
+        "reason_codes": [
+          "edge_within_raise_distance",
+          "standing_on_surface"
+        ],
+        "confidence_reasons": []
+      },
+      {
+        "rule_id": "R3",
+        "rule_version": 1,
+        "severity": "HIGH",
+        "position_ids": [
+          "p-01"
+        ],
+        "zone_id": null,
+        "metrics": {
+          "height_diff_m": 3.2
+        },
+        "reason_codes": [
+          "standing_surface_elevated"
+        ],
+        "confidence_reasons": []
+      }
+    ]
+  }
+}

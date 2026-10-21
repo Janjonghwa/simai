@@ -1,0 +1,144 @@
+{
+  "_expect_error": "레이아웃 좌표계를 +Y 상방으로 선언했다. World 는 +Z 상방 (AGENTS.md 규칙 3, Three.js 변환은 뷰어 어댑터에서만)",
+  "schema_version": "1.0.0",
+  "msg_type": "risk_plan_request",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000401",
+  "sent_at": 1760342399000,
+  "source_id": "ec2",
+  "payload": {
+    "request_id": "0192a6f0-7c1e-7b3a-9f2d-000000000411",
+    "source": "PLANNED",
+    "evaluation_time": 1760342400000,
+    "base_config_version": "cfg-13",
+    "rules": {
+      "rules_version": "rules-4",
+      "rule_versions": [
+        {
+          "rule_id": "R1",
+          "rule_version": 1
+        },
+        {
+          "rule_id": "R2",
+          "rule_version": 1
+        },
+        {
+          "rule_id": "R3",
+          "rule_version": 1
+        }
+      ]
+    },
+    "layout": {
+      "layout_id": "layout-0007",
+      "layout_version": "lv-3",
+      "coordinate_frame": {
+        "frame": "WORLD",
+        "unit": "m",
+        "handedness": "right",
+        "up_axis": "+Y"
+      },
+      "zones": [
+        {
+          "zone_id": "z-open-1",
+          "zone_version": "lv-3",
+          "judge_type": "GROUND_FOOTPRINT",
+          "polygon_xy": [
+            [
+              2.0,
+              1.0
+            ],
+            [
+              3.0,
+              1.0
+            ],
+            [
+              3.0,
+              2.0
+            ],
+            [
+              2.0,
+              2.0
+            ]
+          ],
+          "z_range": null,
+          "severity": "CRITICAL",
+          "zone_type": "OPENING"
+        },
+        {
+          "zone_id": "z-equip-1",
+          "zone_version": "lv-3",
+          "judge_type": "VOLUME_3D",
+          "polygon_xy": [
+            [
+              9.0,
+              1.0
+            ],
+            [
+              12.0,
+              1.0
+            ],
+            [
+              12.0,
+              3.0
+            ],
+            [
+              9.0,
+              3.0
+            ]
+          ],
+          "z_range": [
+            0.0,
+            4.0
+          ],
+          "severity": "HIGH",
+          "zone_type": "EQUIPMENT_PARKING",
+          "valid_from": 1760338800000,
+          "valid_to": 1760367600000
+        }
+      ],
+      "work_surfaces": [
+        {
+          "surface_id": "scaffold-1",
+          "top_height_m": 3.2,
+          "center_xy": [
+            6.0,
+            4.0
+          ],
+          "size_xy": [
+            6.0,
+            1.2
+          ],
+          "yaw_rad": 0.0,
+          "top_height_sigma_m": 0.02
+        }
+      ],
+      "work_positions": [
+        {
+          "position_id": "p-01",
+          "position_xy": [
+            6.0,
+            4.3
+          ],
+          "support_surface_id": "scaffold-1",
+          "head_height_m": 1.7
+        },
+        {
+          "position_id": "p-02",
+          "position_xy": [
+            3.1,
+            1.5
+          ],
+          "support_surface_id": "floor",
+          "head_height_m": 1.7
+        },
+        {
+          "position_id": "p-03",
+          "position_xy": [
+            10.0,
+            2.0
+          ],
+          "support_surface_id": "floor"
+        }
+      ]
+    }
+  }
+}

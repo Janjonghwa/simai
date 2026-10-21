@@ -32,6 +32,7 @@
 | TrackTacular, MVTrajecter | 추적 연구 참고 | 참고 | 확인 필요 |
 | 3DGS-U, GS-Pool, GaussianUpdate, CL-Splats | 정적 공간 갱신 | 확장 후보 | 확인 필요 |
 | Spring Boot | EC2 백엔드(4.x, Java 21) | MVP | Apache 2.0 |
+| FastAPI | EC2 Risk Engine 컨테이너 내부 API(3.8, 12.2) | MVP | MIT |
 | PostgreSQL, TimescaleDB, PostGIS | Spatial DB(`timescale/timescaledb-ha` -all 이미지) | MVP | PostgreSQL License, Apache 2.0(일부 기능 Timescale License), GPL-2.0 |
 | Three.js | 뷰어 | MVP | MIT |
 | Unreal Engine / Blender | 배경 빌드 / 대안 | 확장 | Unreal EULA / GPL |

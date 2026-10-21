@@ -1,0 +1,388 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/risk_plan_result.schema.json",
+  "title": "EC2 내부 risk_plan_result",
+  "description": "EC2 옆 Python Risk Engine 컨테이너 → EC2 Spring. risk_plan_request 의 응답 본문 (명세 3.2, 7장, 8.3, 11.1 sim.evaluation_run·sim.risk_result). 【HTTP】 status OK 는 200, ERROR 는 code 에 따라 400(INVALID_REQUEST·SOURCE_NOT_PLANNED·INVALID_LAYOUT)·422(UNKNOWN_RULE)·500(ENGINE_ERROR). Spring 은 HTTP 상태보다 본문 status 를 따르고, retryable true(ENGINE_ERROR)만 다시 보낸다. 【오류 판정 순서】 위반이 여럿이면 먼저 걸린 단계의 code 하나만 낸다. (1) 본문이 JSON 객체가 아니거나 payload.request_id 가 UUID 가 아님 → INVALID_REQUEST, request_id null. (2) payload.source 가 있고 PLANNED 가 아님 → SOURCE_NOT_PLANNED(다른 스키마 위반이 함께 있어도 이것이 먼저다. 비계획 출처 혼입은 알림 분리(규칙 5)를 건드리는 시도라 따로 센다. source 가 없으면 (3)). (3) 그 밖의 risk_plan_request 스키마 위반 → INVALID_REQUEST(같은 (ID, 버전)을 두 번 넣은 것은 uniqueItems 위반이라 여기). (4) 규칙 묶음 의미 검사: 등록부에 없는 (ID, 버전), 같은 rule_id 의 다른 버전 둘 → UNKNOWN_RULE. (5) 레이아웃 의미 검사: Risk Engine 이 구역·작업면을 거부(z_range 최저 ≥ 최고, valid_from ≥ valid_to), surface_id·position_id·(zone_id, zone_version) 중복, support_surface_id 가 floor 도 그 레이아웃 작업면도 아님, evaluation_time 에 유효한 같은 zone_id 버전 둘 → INVALID_LAYOUT. (6) 그 뒤 계산 중 예외 → ENGINE_ERROR. 근거: 앞 단계를 통과해야 뒤 단계를 검사할 수 있고(스키마가 맞아야 규칙을, 규칙 묶음이 맞아야 레이아웃 판정을), 입력 오류(1~5)는 같은 입력을 다시 보내도 같다. 【본문 없는 실패】 연결 실패·읽기 시간 초과·본문이 risk_plan_result 가 아닌 응답(비JSON 5xx 포함)은 Spring 이 ENGINE_ERROR 처럼 다시 보낼 수 있는 실패로 보고 같은 request_id 로 다시 보낸다(횟수·간격·시간 제한은 Spring 설계). 끝내 결과가 없으면 sim.evaluation_run 을 실패로 남기고 보고서를 만들지 않는다. 결과 없음을 '위험 항목 없음'으로 다루지 않는다. 【위치】 OK 는 판정에 실제로 쓴 계획 위치 목록 positions 를 싣는다(요청이 준 REQUESTED, 컨테이너가 만든 GENERATED). Spring 은 이 목록을 sim.* 에 결과와 함께 저장하고, items 의 position_ids 는 이 목록의 position_id 다. 【위험 항목】 items 는 규칙의 발생 판정만 싣는다(히스테리시스 유지 판정 holding 은 활성 이벤트 유지용이라 한 번 계산하는 PLANNED 에는 싣지 않는다). 항목은 확률·퍼센트 수치가 아니라 등급(severity) + 근거(규칙 ID·버전, 수평 거리·높이 차 같은 metrics, 판정 근거 코드, 관련 구역·계획 위치)로만 표현한다(명세 8.3, '추락 리스크 85%' 같은 값 불가). metrics 값은 소수 셋째 자리(mm)로 반올림한다. 항목 순서는 (rule_id, rule_version, zone_id, position_ids) 로 Risk Engine Evaluation.findings 와 같다. 【출처】 source 는 PLANNED 만이다. 이 결과는 sim.* 에만 저장하고 알림 채널(현장 경보·관제 경보·반장 PWA)로 보내지 않는다(AGENTS.md 규칙 5, 명세 7.4). 좌표·거리는 World 미터, 시각은 UTC int64 ms. 1.0.0 신설(S15P31A101-216).",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    }
+  ],
+  "type": "object",
+  "properties": {
+    "msg_type": {
+      "const": "risk_plan_result"
+    },
+    "source_id": {
+      "const": "risk-engine-01"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "request_id",
+        "source",
+        "status",
+        "computed_at",
+        "engine_version"
+      ],
+      "properties": {
+        "request_id": {
+          "oneOf": [
+            {
+              "$ref": "../common/defs.schema.json#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "응답하는 risk_plan_request.payload.request_id. 요청을 읽지 못해 모르면 null(ERROR INVALID_REQUEST 에만)"
+        },
+        "source": {
+          "const": "PLANNED"
+        },
+        "status": {
+          "enum": [
+            "OK",
+            "ERROR"
+          ]
+        },
+        "computed_at": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "컨테이너가 계산을 끝낸 시각(컨테이너 시계). 판정 기준 시각은 evaluation_time"
+        },
+        "engine_version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Risk Engine 라이브러리 버전(simai-ai 패키지 버전, sim.evaluation_run 기록용)"
+        },
+        "evaluation_time": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "요청의 판정 기준 시각 그대로"
+        },
+        "layout_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "layout_version": {
+          "$ref": "../common/defs.schema.json#/$defs/version_id"
+        },
+        "rules": {
+          "$ref": "risk_plan_request.schema.json#/$defs/rule_set",
+          "description": "실제로 적용한 규칙 묶음(요청 rules 그대로)"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/risk_item"
+          },
+          "description": "위험 항목. 비어 있으면 적용한 규칙의 발생 판정이 없다"
+        },
+        "error": {
+          "$ref": "#/$defs/error"
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evaluated_position"
+          },
+          "description": "판정에 쓴 계획 위치(생성된 것 포함). 위치를 하나도 쓰지 않았으면 빈 배열"
+        }
+      },
+      "allOf": [
+        {
+          "description": "OK 는 계산 결과(규칙 묶음·판정 기준 시각·레이아웃·위치·항목)를 싣고 오류가 없다. ERROR 는 오류만 싣고 위치·항목이 없다(일부 결과를 내지 않는다)",
+          "if": {
+            "properties": {
+              "status": {
+                "const": "OK"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "evaluation_time",
+              "layout_id",
+              "layout_version",
+              "rules",
+              "positions",
+              "items"
+            ],
+            "properties": {
+              "request_id": {
+                "$ref": "../common/defs.schema.json#/$defs/uuid"
+              }
+            },
+            "not": {
+              "required": [
+                "error"
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "error"
+            ],
+            "allOf": [
+              {
+                "not": {
+                  "required": [
+                    "items"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "positions"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "description": "request_id 를 모르는(null) 것은 요청을 읽지 못한 INVALID_REQUEST 뿐이다",
+          "if": {
+            "properties": {
+              "request_id": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "request_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "error": {
+                "properties": {
+                  "code": {
+                    "const": "INVALID_REQUEST"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "risk_item": {
+      "type": "object",
+      "description": "위험 항목 하나(Risk Engine Finding 중 holding 이 아닌 것). 대상은 계획 위치(position_ids)나 구역(zone_id) 중 하나 이상이다. 확률·퍼센트 필드는 없다(값 객체 닫힘)",
+      "required": [
+        "rule_id",
+        "rule_version",
+        "severity",
+        "position_ids",
+        "zone_id",
+        "metrics",
+        "reason_codes",
+        "confidence_reasons"
+      ],
+      "properties": {
+        "rule_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rule_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "severity": {
+          "$ref": "../common/defs.schema.json#/$defs/severity",
+          "description": "등급. 확률로 바꾸지 않는다"
+        },
+        "position_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "관련 계획 위치(payload.positions 의 position_id, 정렬). 구역 대상 판정이면 빈 배열"
+        },
+        "zone_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "관련 구역(요청 zones 의 zone_id). R2·R3 처럼 구역이 아닌 판정은 null"
+        },
+        "metrics": {
+          "allOf": [
+            {
+              "$ref": "../common/defs.schema.json#/$defs/rule_metrics"
+            }
+          ],
+          "propertyNames": {
+            "not": {
+              "pattern": "(prob|percent|pct|likelihood|chance|score)"
+            }
+          },
+          "description": "수치 근거, 단위는 키 이름에(예: zone_distance_m 구역까지 수평 거리, edge_distance_m 가장자리까지 수평 거리, height_diff_m 높이 차). 확률·퍼센트·점수 이름은 받지 않는다. 값은 소수 셋째 자리로 반올림"
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "description": "판정 근거 코드(Finding.reasons, 순서 유지. 예: edge_within_raise_distance, standing_on_surface)"
+        },
+        "confidence_reasons": {
+          "$ref": "../common/defs.schema.json#/$defs/confidence_reasons",
+          "description": "확인 필요 이유(명세 7.1). 비어 있지 않으면 '확인 필요'. 등급과 독립이다(신뢰도가 낮아도 등급을 내리지 않는다)"
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "position_ids": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "zone_id": {
+              "type": "string"
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "description": "계산 오류(값 객체 닫힘). 여러 위반이면 payload 설명의 판정 순서로 먼저 걸린 code 하나만 낸다. INVALID_REQUEST: 본문을 읽지 못함·스키마 위반. SOURCE_NOT_PLANNED: 출처가 PLANNED 가 아님(LIVE 등). INVALID_LAYOUT: 스키마는 맞지만 Risk Engine 이 거부한 입력(z_range 최저 ≥ 최고, 같은 ID 중복, 판정 시각에 유효한 같은 구역 버전 둘, 모르는 support_surface_id). UNKNOWN_RULE: 등록부에 없는 (규칙 ID, 버전), 같은 규칙 ID 가 둘. ENGINE_ERROR: 컨테이너 내부 오류(다시 보내면 될 수 있음). 비밀 값·내부 경로를 message 에 넣지 않는다",
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "INVALID_REQUEST",
+            "SOURCE_NOT_PLANNED",
+            "INVALID_LAYOUT",
+            "UNKNOWN_RULE",
+            "ENGINE_ERROR"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "description": "다시 보내서 될 수 있는 것은 ENGINE_ERROR 뿐이다(입력 오류는 같은 입력으로 다시 보내도 같다)",
+          "if": {
+            "properties": {
+              "code": {
+                "const": "ENGINE_ERROR"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "retryable": {
+                "const": true
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "retryable": {
+                "const": false
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "evaluated_position": {
+      "type": "object",
+      "description": "판정에 쓴 계획 위치 하나. World ID 가 아니다(규칙 1). position_source 로 요청이 준 위치(REQUESTED)와 컨테이너가 만든 위치(GENERATED)를 구분한다(관측·추정 구분, AGENTS.md 규칙 7). GENERATED 의 position_id 는 gen- 으로 시작하고 REQUESTED 는 그렇지 않다. head_height_m 이 없으면 머리 높이를 모른 채 판정했다",
+      "required": [
+        "position_id",
+        "position_xy",
+        "support_surface_id",
+        "position_source"
+      ],
+      "properties": {
+        "position_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "position_xy": {
+          "$ref": "../common/defs.schema.json#/$defs/vec2",
+          "description": "World XY(m)"
+        },
+        "support_surface_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "floor 또는 요청 work_surfaces 의 surface_id"
+        },
+        "head_height_m": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "서 있는 면 기준 머리 높이(m). 모르면 싣지 않는다"
+        },
+        "position_source": {
+          "enum": [
+            "REQUESTED",
+            "GENERATED"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "position_source": {
+                "const": "GENERATED"
+              }
+            },
+            "required": [
+              "position_source"
+            ]
+          },
+          "then": {
+            "properties": {
+              "position_id": {
+                "pattern": "^gen-"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "position_id": {
+                "not": {
+                  "pattern": "^gen-"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}
