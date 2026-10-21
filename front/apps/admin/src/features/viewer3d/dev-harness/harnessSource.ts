@@ -23,6 +23,22 @@ export type DataSourceKey = ScenarioKey | 'external' | 'off';
 const PARAM = 'source';
 const DEFAULT: DataSourceKey = 'normal';
 
+/**
+ * 개발 PC 에만 두는 XBot 모델 위치. Git 에 넣지 않는다(node_modules 는 .gitignore 대상).
+ * 'simAI 관제 데모/xbot.glb.txt'(base64)를 풀어 front/apps/admin/node_modules/.cache/spatial-dev/xbot.glb 로 둔다.
+ * 파일이 없으면 모델 읽기가 실패하고 캡슐 아바타로 그린다.
+ */
+export const DEV_XBOT_URL = '/node_modules/.cache/spatial-dev/xbot.glb';
+
+export type AvatarKind = 'xbot' | 'capsule';
+
+/** ?avatar=capsule 이면 캡슐만, 그 밖에는 XBot 을 먼저 시도한다. */
+export function readAvatar(search: string): AvatarKind {
+  return new URLSearchParams(search).get('avatar')?.toLowerCase() === 'capsule'
+    ? 'capsule'
+    : 'xbot';
+}
+
 const isDataSourceKey = (value: unknown): value is DataSourceKey =>
   isScenarioKey(value) || value === 'external' || value === 'off';
 

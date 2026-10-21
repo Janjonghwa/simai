@@ -48,6 +48,23 @@ function screenOf(state: RootState, object: Object3D | undefined) {
   ];
 }
 
+/** 장면의 첫 사람(Selectable 이름 person:<id>)과 그 화면 좌표·Three 발 위치. */
+function firstPerson(state: RootState) {
+  let found: Object3D | undefined;
+  state.scene.traverse((node) => {
+    if (!found && node.name.startsWith('person:')) found = node;
+  });
+  if (!found) return null;
+  const avatar = found.children[0];
+  const body = avatar?.children[0];
+  return {
+    id: found.name,
+    screen: screenOf(state, found),
+    feet: avatar ? avatar.getWorldPosition(new Vector3()).toArray().map(round) : null,
+    yaw: body ? round(body.rotation.y) : null,
+  };
+}
+
 function measure() {
   const canvas = document.querySelector('canvas');
   const state = readState?.();
@@ -66,7 +83,8 @@ function measure() {
     distance: round(state.camera.position.distanceTo(target)),
     size: [state.size.width, state.size.height],
     screen: {
-      'person:worker1': screenOf(state, state.scene.getObjectByName('person:worker1')),
+      // 화면에 있는 첫 사람(Provider 의 World ID 또는 입력 없음일 때의 예전 작업자).
+      person: firstPerson(state),
       'zone:zoneA': screenOf(state, state.scene.getObjectByName('zone:zoneA')),
       'world-ref:O': screenOf(state, state.scene.getObjectByName('world-ref:O')),
     },

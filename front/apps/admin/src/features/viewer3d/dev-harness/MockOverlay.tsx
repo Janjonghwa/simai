@@ -1,12 +1,5 @@
-import type { FixtureEvent, MenuKey } from '@/features/viewer3d/dev-harness/mockUi';
-import {
-  EVENTS,
-  fixtureName,
-  MENUS,
-  OBJECTS,
-  PEOPLE,
-  ZONES,
-} from '@/features/viewer3d/dev-harness/mockUi';
+import type { FixtureEvent, MenuKey, Roster } from '@/features/viewer3d/dev-harness/mockUi';
+import { displayName, MENUS, OBJECTS, ZONES } from '@/features/viewer3d/dev-harness/mockUi';
 import type { ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
 import { Button } from '@simai/ui/components/button';
 import { Crosshair, X } from 'lucide-react';
@@ -22,6 +15,7 @@ interface MockOverlayProps extends Commands {
   menu: MenuKey;
   selected: ViewerTarget | null;
   status: ViewerStatus | null;
+  roster: Roster;
   onClose: () => void;
 }
 
@@ -90,12 +84,17 @@ function Row({
   );
 }
 
-function MonitorBody({ selected, select, focus }: Commands & { selected: ViewerTarget | null }) {
+function MonitorBody({
+  selected,
+  roster,
+  select,
+  focus,
+}: Commands & { selected: ViewerTarget | null; roster: Roster }) {
   return (
     <>
       <p className="smk-hint">이벤트 목록 · 누르면 3D 대상을 선택하고 초점을 맞춘다</p>
       <ul className="smk-list">
-        {EVENTS.map((event) => (
+        {roster.events.map((event) => (
           <Row
             key={event.id}
             active={same(selected, event.target)}
@@ -109,10 +108,11 @@ function MonitorBody({ selected, select, focus }: Commands & { selected: ViewerT
             <span className="smk-id smk-mono">{event.target.id}</span>
           </Row>
         ))}
+        {roster.events.length === 0 && <li className="smk-hint">활성 이벤트 없음</li>}
       </ul>
       <p className="smk-hint smk-hint-gap">추적 인원</p>
       <ul className="smk-list">
-        {PEOPLE.map((person) => {
+        {roster.people.map((person) => {
           const target: ViewerTarget = { type: 'person', id: person.id };
           return (
             <Row key={person.id} active={same(selected, target)} onClick={() => select(target)}>
@@ -121,6 +121,7 @@ function MonitorBody({ selected, select, focus }: Commands & { selected: ViewerT
             </Row>
           );
         })}
+        {roster.people.length === 0 && <li className="smk-hint">추적 인원 없음</li>}
       </ul>
     </>
   );
@@ -173,7 +174,7 @@ function ZonesBody({ selected, select, focus }: Commands & { selected: ViewerTar
       </ul>
       <dl className="smk-fields smk-box">
         <dt>이름</dt>
-        <dd>{selected ? (fixtureName(selected) ?? '—') : '—'}</dd>
+        <dd>{selected ? (displayName(selected) ?? '—') : '—'}</dd>
         <dt>높이 범위</dt>
         <dd>—</dd>
         <dt>적용 상태</dt>
@@ -228,11 +229,18 @@ function SystemBody({ status }: { status: ViewerStatus | null }) {
 }
 
 /** 메뉴별 업무 오버레이. 3D 위 오른쪽에 뜨고 닫으면 같은 공간이 그대로 남는다. */
-export function MockOverlay({ menu, selected, status, onClose, ...commands }: MockOverlayProps) {
+export function MockOverlay({
+  menu,
+  selected,
+  status,
+  roster,
+  onClose,
+  ...commands
+}: MockOverlayProps) {
   const title = MENUS.find((item) => item.key === menu)!.label;
   return (
     <Panel title={title} wide={menu === 'cctv'} onClose={onClose}>
-      {menu === 'monitor' && <MonitorBody selected={selected} {...commands} />}
+      {menu === 'monitor' && <MonitorBody selected={selected} roster={roster} {...commands} />}
       {menu === 'cctv' && <CctvBody />}
       {menu === 'zones' && <ZonesBody selected={selected} {...commands} />}
       {menu === 'tbm' && <TbmBody />}
@@ -252,7 +260,7 @@ export function SelectionCard({
       <p className="smk-hint">선택 대상</p>
       {selected ? (
         <>
-          <p className="smk-card-title">{fixtureName(selected) ?? '알 수 없는 대상'}</p>
+          <p className="smk-card-title">{displayName(selected) ?? '알 수 없는 대상'}</p>
           <p className="smk-id smk-mono" data-testid="selected-id">
             {selected.type}:{selected.id}
           </p>

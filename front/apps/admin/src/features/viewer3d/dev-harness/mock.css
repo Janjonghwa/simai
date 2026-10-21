@@ -401,8 +401,8 @@
   flex-direction: column;
   width: 340px;
   max-width: calc(100% - 32px);
-  /* 데이터 진단을 펼쳐도 상단 바·선택 카드를 덮지 않게 높이를 묶고 안에서 스크롤한다. */
-  max-height: calc(100% - 172px);
+  /* 데이터 진단을 펼쳐도 상단 바·선택 카드(초점·해제 버튼 포함, 아래 끝 약 200px)를 덮지 않게 높이를 묶고 안에서 스크롤한다. */
+  max-height: calc(100% - 232px);
   border-radius: 12px;
   font-size: 12px;
   line-height: 18px;

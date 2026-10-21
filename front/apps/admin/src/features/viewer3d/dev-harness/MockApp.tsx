@@ -10,6 +10,8 @@ import {
 import { DevViewSwitcher } from '@/features/viewer3d/dev-harness/DevViewSwitcher';
 import {
   createHarnessSource,
+  DEV_XBOT_URL,
+  readAvatar,
   readDataSource,
   withDataSource,
   type DataSourceKey,
@@ -21,6 +23,7 @@ import { MockScene, type SceneColors } from '@/features/viewer3d/dev-harness/Moc
 import { MockTopBar } from '@/features/viewer3d/dev-harness/MockTopBar';
 import type { MenuKey } from '@/features/viewer3d/dev-harness/mockUi';
 import type { SpatialMockApi } from '@/features/viewer3d/dev-harness/mswHandlers';
+import { useRoster } from '@/features/viewer3d/dev-harness/useRoster';
 import type { Viewer3DHandle, ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
 import { ViewerShell } from '@/features/viewer3d/ViewerShell';
 import { WorldReference } from '@/features/viewer3d/WorldReference';
@@ -69,6 +72,10 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   const [dataStore] = useState(createSpatialDataStore);
   const [sourceKey, setSourceKey] = useState(() => readDataSource(window.location.search));
   const [epoch, setEpoch] = useState(0);
+  const [avatar] = useState(() => readAvatar(window.location.search));
+  // 입력 없음이면 예전 고정 작업자를, 입력이 있으면 Provider 의 World ID 사람을 쓴다(둘을 함께 그리지 않는다).
+  const legacyPeople = sourceKey === 'off';
+  const roster = useRoster(dataStore, legacyPeople);
   // 입력을 바꾸거나 처음부터 다시 재생할 때만 새 Source 를 만든다(epoch 는 재시작 표시).
   const harness = useMemo(
     () => createHarnessSource(sourceKey, restBase, mockApi),
@@ -125,8 +132,9 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           onStatusChange={setStatus}
           source={harness.source}
           dataStore={dataStore}
+          personModelUrl={avatar === 'xbot' ? DEV_XBOT_URL : null}
         >
-          <MockScene colors={colors} selected={selected} />
+          <MockScene colors={colors} selected={selected} legacyPeople={legacyPeople} />
           {spatial && <WorldReference />}
           <DebugProbe />
         </ViewerShell>
@@ -141,6 +149,7 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
               menu={menu}
               selected={selected}
               status={status}
+              roster={roster}
               onClose={() => setPanelOpen(false)}
               {...commands}
             />
