@@ -112,9 +112,9 @@ S15P31A101-210. [`db-erd.md`](db-erd.md)·[`db-tables.md`](db-tables.md) 의 테
 | 테이블 | 단계 | 채우는 방법 |
 |---|---|---|
 | `app_user` | MVP | EC2 관리 명령: 계정 생성·역할 지정·비활성. 계정 관리 API 는 두지 않는다 |
-| `site` | MVP | Flyway 시드: 공사장 1개(16장). 좌표계 관련 컬럼은 보정 확정 때 갱신 |
-| `camera` | MVP | Flyway 시드: 카메라 4대(3.6)의 기기 정보 |
-| `rule_version` | MVP | Flyway 시드: 규칙 임계값 파일을 배포 때 적재하고, 값이 바뀌면 새 버전을 새 시드로 넣는다. 수정 API 는 없다 |
+| `site` | MVP | Flyway V2 시드: `classroom-1`(교실 테스트베드, 계약 예시 `coordinate_frame.site_id` 와 같음). 좌표계 관련 컬럼은 보정 확정 때 갱신 |
+| `camera` | MVP | Flyway V2 시드: `cam1`~`cam4`(Tapo C110, 25 fps, 3.3). 계약 예시·코드와 같은 ID 이고 설치 위치는 넣지 않는다. 해상도는 `codec_info` 로 채우고 RTSP 주소·계정은 DB 밖(14장) |
+| `rule_version` | MVP | ai 규칙 등록부에서 자동 생성한 Flyway 반복 마이그레이션 `R__rule_versions.sql`(`python -m simai_ai.risk.rule_catalog --write`). 새 버전만 더하고, 같은 버전의 값이 바뀌면 멈춘다. 등록부와 파일이 어긋나면 ai 테스트가 실패한다. 수정 API 는 없다 |
 | `equipment_asset` | 확장 2 | 확장 2 착수 때 정한다(적재 스크립트 후보) |
 | `rag_clause` | M3 | 적재 스크립트(M3, FR-20). bge-m3 revision 을 고정한 뒤 조항을 넣는다 |
 | `operator_qa` | 확장 3 | 확장 3(C.3) 착수 때 정한다. API 표에 행이 없다 |
@@ -259,7 +259,7 @@ ORDER BY s.world_id, s.observation_at DESC;
 
 - 정한 것(2026-10-21): 초기 데이터·관리 명령(3장), 운영자 종료 멱등 키 분리(4장), 클립은 EC2 삭제 작업만과 hypertable 보관·압축(6장). 기획서 3.1·3.8·11.3·11.4·11.5·11.6·12.6·16장·18.4·19.1 에 반영했다(v1.3 수정 19).
 - 노션 API 표: v11 의 행 3개(4장)를 더한다.
-- 5단계(후속 이슈): MVP·M1 테이블 43개와 위 인덱스로 `V1__init.sql`.
+- 5단계(S15P31A101-211): MVP·M1 테이블 43개와 위 인덱스·정책으로 `V1__init.sql`, 현장·카메라 V2 시드, 규칙 버전 `R__rule_versions.sql`. 계정·기기·워커 토큰 관리 명령은 서버 코드라 별도 이슈다.
 
 ## 부록. API 표 행별 매핑
 

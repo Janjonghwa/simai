@@ -22,7 +22,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `calibration_version` | 카메라별 K·왜곡·R·t·높이, 재투영 오차, 스케일 근거, 상태 |
 | `scene_version` | 정적 3D 자산 주소, 사용한 보정 버전, 상태 |
 | `zone` | 다각형 + 높이 범위, 판정 유형(GROUND_FOOTPRINT/VOLUME_3D), 유형, 심각도, 요구 조건, 유효 시작·종료 |
-| `rule_version` | 규칙 ID, 임계값 세트, 적용 기간(시험 프로파일 포함, 7.4) |
+| `rule_version` | 규칙 ID, 임계값 세트, 적용 기간(시험 프로파일 포함, 7.4). 값은 AI 규칙 등록부에서 뽑으며 같은 버전의 값은 바꾸지 않는다 |
 | `equipment_asset` | GLB 주소, 반경·형상 파라미터(확장, 부록 C) |
 | `layout_plan` | 가상 레이아웃·계획 궤적(F-02·F-01), 출처 PLANNED |
 | `config_bundle` | 구역·규칙·보정·형상(등록 정적 객체·작업면 OBB) 버전 묶음, 해시, 발행 시각, 현장 적용 시각(RunPod Tier 0 ACK) |
@@ -118,7 +118,7 @@ PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evalua
 | `device` | 현장 노트북 기기와 토큰(확장: 워치) |
 | `worker` | 분석 워커와 토큰, 처리 가능 작업 유형 |
 
-계정, 기기·워커 토큰은 API 없이 EC2 관리 명령으로 만들고 회전·폐기한다(14장). `site`·`camera`·`rule_version` 은 Flyway 시드로 넣는다(16장).
+계정, 기기·워커 토큰은 API 없이 EC2 관리 명령으로 만들고 회전·폐기한다(14장). `site`·`camera` 는 Flyway 시드(현장 `classroom-1`, 카메라 `cam1`~`cam4`)로, `rule_version` 은 AI 규칙 등록부에서 자동 생성한 Flyway 반복 마이그레이션으로 넣는다(16장).
 | `analysis_job` | I5 작업: 유형·우선순위·시도 횟수·입력·결과(12.5) |
 | `job_lease` | 작업 대여: 만료·하트비트·반납(12.5) |
 

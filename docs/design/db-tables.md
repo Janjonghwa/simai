@@ -3,9 +3,10 @@
 S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verification.md`](db-verification.md) 에 있다. ERD 1단계(테이블 목록)·2단계(계약 → 컬럼)의 결과다.
 
 - **기준:** 기획서 v1.3 수정 19 11장(데이터)·부록 C, 계약 v5.3.0, API 명세 표 v11(노션, 166행)
-- **범위:** 테이블 69개, 컬럼 736개. 확장 테이블도 컬럼까지 썼다
+- **범위:** 테이블 69개, 컬럼 738개. 확장 테이블도 컬럼까지 썼다
 - **단계별:** MVP 34 · M1 9 · M2 2 · M3 8 · 확장 16
 - **작성·검토:** DB 는 EC2 에 있으므로 곽나혁이 작성한다. Tier 0·분석 워커가 채우는 테이블은 이연주가 검토한다("검토" 표시)
+- **마이그레이션:** `server/src/main/resources/db/migration/` 의 V1(MVP·M1 테이블 43개), V2(현장·카메라 시드), `R__rule_versions.sql`(ai 규칙 등록부에서 자동 생성)
 
 ## 1. 표기와 공통 규칙
 
@@ -16,7 +17,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | 키 | 계약이 정한 ID(`event_id` UUIDv7, `clip_id`, `job_id`, `*_version` 문자열)는 그대로 PK. EC2 가 만드는 행은 `bigint identity` |
 | 버전 테이블 | `zone`·`static_object`·`rule_version`·`calibration_version`·`scene_version` 은 수정하지 않고 새 버전을 추가하고, 리플레이용 `valid_from`·`valid_to` 를 둔다(11.4-1) |
 | hypertable | `world_track_state`·`skeleton_3d`·`system_health`·`system_metric`·`device_heartbeat`(확장: `channel_state`·`watch_feature`·`ppe_state`). 다른 테이블이 hypertable 을 FK 로 참조하지 않는다. 버전 ID 는 논리 참조만 둔다 |
-| 공간 | PostGIS `geometry(…, 0)`: World 로컬 미터 좌표라 SRID 0. 저장·조회만 하고 판정은 Risk Engine(11장) |
+| 공간 | PostGIS `geometry(…, 0)`: World 로컬 미터 좌표라 SRID 0. 타입의 SRID 0 은 PostGIS 에서 "제한 없음"이라 컬럼마다 `CHECK (ST_SRID(컬럼) = 0)` 을 함께 건다(V1 점검에서 SRID 4326 이 들어가는 것을 확인). 저장·조회만 하고 판정은 Risk Engine(11장) |
 | 묶음 값 | 계약에서 구조가 자주 바뀌는 값(`metrics`, 카메라별 health, `components`)은 `jsonb` |
 | 이름 | 사람 이름은 위치·이벤트 기록에 넣지 않는다. 계정은 `user_id`, 기기는 `device_id`(11.4-5). 예외는 접근 제한된 `watch_registrant` 뿐(C.6) |
 | 키·제약 표기 | `PK`, `PK(n)` 복합 키 순서, `FK>표.컬럼`, `UQ`, `UQ(이름)` 묶음 유일, `NN` not null, `CK(…)` 허용값 |
@@ -34,7 +35,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | B. 구성·기준 데이터 | `camera` | MVP | 일반 | 카메라 장비 정보 | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) |  |
 | B. 구성·기준 데이터 | `zone` | MVP | 버전 | 위험 구역. 수정은 새 버전 | 있음 | `/api/zones`, `/api/zones/{}/versions` |  |
 | B. 구성·기준 데이터 | `static_object` | MVP | 버전 | 등록 작업면·정적 객체(Operational Geometry) | 수정 16 추가 | `/api/static-objects` |  |
-| B. 구성·기준 데이터 | `rule_version` | MVP | 버전 | Risk Engine 규칙 임계값 세트 | 있음 | `/api/rules` | 이연주 |
+| B. 구성·기준 데이터 | `rule_version` | MVP | 버전 | Risk Engine 규칙 임계값 세트. 규칙 등록부에서 자동 생성한 Flyway 시드로 채운다 | 있음 | `/api/rules` | 이연주 |
 | B. 구성·기준 데이터 | `config_bundle` | MVP | 버전 | 구성 묶음 발행과 현장 적용 | 있음 | `/api/config-bundles`, `/api/config-bundles/{}` | 이연주 |
 | B. 구성·기준 데이터 | `config_bundle_item` | MVP | 일반 | 묶음에 들어간 구역·규칙·형상 버전 목록 | 수정 16 추가 | `/api/config-bundles` |  |
 | B. 구성·기준 데이터 | `config_ack` | MVP | 일반 | Tier 0 의 구성 묶음 적용·거부 응답 | 수정 16 추가 | `/api/config-bundles/{}`, `/topic/health` |  |
@@ -260,17 +261,19 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `valid_to` | ts |  |  |  |
 | `created_by` | bigint | FK>app_user.user_id |  |  |
 
-#### `rule_version` — Risk Engine 규칙 임계값 세트
+#### `rule_version` — Risk Engine 규칙 임계값 세트. 규칙 등록부에서 자동 생성한 Flyway 시드로 채운다
 
-- 단계 **MVP** · 버전 · 근거: 11.1 rule_version, 7.2·7.4 · 검토: 이연주
+- 단계 **MVP** · 버전 · 근거: 11.1 rule_version, 7.2·7.4, 16장(시드) · 검토: 이연주
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
 | `rule_id` | text | PK(1) | `risk_event_transition.rule_id` | R1~R10 |
 | `rule_version` | int | PK(2) | `risk_event_transition.rule_version` | 교실 시험 프로파일은 기본 + 1000(7.2) |
 | `profile` | text | NN, CK(OPERATION·CLASSROOM_TEST) |  |  |
-| `thresholds` | jsonb | NN |  |  |
-| `default_severity` | text | NN |  |  |
+| `thresholds` | jsonb | NN |  | 규칙 객체의 설정값(규칙 등록부에서 추출, ai `simai_ai.risk.rule_catalog`) |
+| `default_severity` | text | CK(CRITICAL·HIGH·CAUTION·INFO) |  | 규칙 모듈의 고정 심각도. 비면 규칙이 판정마다 정한다(R1 은 구역 심각도) |
+| `legal_basis` | text |  |  | 근거 조항(RuleSpec.legal_basis) |
+| `reads` | text[] | NN |  | 규칙이 읽는 상태(RuleSpec.reads) |
 | `stage` | text |  |  | MVP·M2·확장 |
 | `valid_from` | ts | NN |  |  |
 | `valid_to` | ts |  |  |  |

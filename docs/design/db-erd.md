@@ -14,7 +14,7 @@ S15P31A101-210. 기획서 11장(데이터)·11.4(스키마 원칙)·부록 C(각
 - 상자에는 키 컬럼(PK·FK·UK)만 적는다. UK 는 단독 또는 묶음 유일 키다(묶음은 `db-tables.md` 의 `UQ(이름)`).
 - 선: `||--o{` 필수 1:N(FK not null), `|o--o{` 선택 1:N(FK null 허용), `||--o|` 1:1(FK 가 PK 이거나 유일). 선 이름은 FK 컬럼이다.
 - `sim` 스키마 테이블은 Mermaid 이름 제약 때문에 `sim_` 접두로 적는다(예: `sim_evaluation_run` = `sim.evaluation_run`).
-- 타입의 `timestamptz` 는 UTC, PostGIS `geometry` 는 SRID 0(World 로컬 미터)이다. 그림에는 SRID 를 뺐다.
+- 타입의 `timestamptz` 는 UTC, PostGIS `geometry` 는 SRID 0(World 로컬 미터)이다. 그림에는 SRID 를 뺐다. 타입의 SRID 0 은 "제한 없음"이라 V1 은 `CHECK (ST_SRID(컬럼) = 0)` 을 따로 건다.
 - hypertable 로 들어오는 선은 없다. 다른 테이블은 hypertable 을 FK 로 참조하지 않고(11장 첫머리), 버전 ID 같은 논리 참조는 선으로 그리지 않는다.
 
 ## 1. 전체 관계 (MVP·M1)
@@ -871,6 +871,7 @@ erDiagram
 | 계획·시뮬레이션 | PLANNED·WHAT_IF 결과는 `sim` 스키마의 별도 테이블. `risk_event.source` 는 LIVE·REPLAY 만 | 11.3, 11.4 |
 | 열거값 | PostgreSQL enum 대신 `text` + CHECK | Flyway 로 값 추가가 쉽다 |
 | hypertable 보관·압축 | 좌표·골격·health 는 상시 삭제 없이 7일 뒤 압축, `system_metric`·`device_heartbeat` 는 30일. 디스크 70% 초과 시 `skeleton_3d` 30일 | 11.5, 16장, EC2 디스크 320 GB. 추정은 `db-verification.md` 6장 |
+| 기준 데이터 시드 | 현장 `classroom-1`(교실 테스트베드)·카메라 `cam1`~`cam4` 는 V2 시드. 계약 예시·Tier 0·게이트웨이가 쓰는 ID 그대로이고, 카메라 ID 에 설치 위치를 넣지 않는다(위치는 보정이 정함). RTSP 주소·계정은 DB 에 넣지 않는다. `rule_version` 은 ai 규칙 등록부(`simai_ai.risk.rule_catalog`)에서 자동 생성 | 16장, 14장 |
 | 운영자 종료 멱등 키 | `event_close.idempotency_key`(유일)에 REST 요청 키, `close_id` 는 EC2 발급 PK | 12.6, 16장 |
 
 ## 검사한 것
@@ -881,5 +882,5 @@ erDiagram
 ## 남은 일
 
 - 4단계 검증(API 행별 읽기·쓰기 매핑, 리플레이 질의, 보관·파기, 출처)은 [`db-verification.md`](db-verification.md) 에 있다. 거기서 나온 결정 사항(초기 데이터·관리 명령, 클립 삭제 방법 등)을 정하면 이 그림과 `db-tables.md` 를 고친다.
-- 5단계(후속 이슈): 검토가 끝난 MVP·M1 테이블로 `V1__init.sql`.
+- 5단계(S15P31A101-211): MVP·M1 테이블 43개는 `server/src/main/resources/db/migration/V1__init.sql`, 현장·카메라는 V2 시드, 규칙 버전은 ai 규칙 등록부에서 자동 생성한 `R__rule_versions.sql`. 점검 SQL 은 `server/src/test/resources/db/v1-smoke.sql`.
 - 기업·공사 계정 계층(부록 C.9)을 채택하면 11장 `site`(World 좌표계 정의)와 공사 개념의 이름을 나누고 이 그림을 고친다.
