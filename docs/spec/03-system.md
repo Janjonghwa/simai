@@ -40,6 +40,7 @@
 | Tier 0 | YOLO26x-pose TensorRT 엔진 + 하드웨어 디코더 4개 | 초기값 0.20(80GB 에서 16GB, 그중 torch 선확보 8GB). G0 실측으로 고침 |
 | 분석 워커 전체 | 아래 VLM·마스크·HMR 을 합친 워커 프로세스 상한 | 초기값 0.70. G0 실측으로 고침 |
 | VLM | Cosmos3-Nano(16B) 가중치 + KV 캐시(vLLM `gpu_memory_utilization`) | 초기값 0.55, 동시 요청 4(분석 워커 상한 안). G0 실측으로 고침 |
+| 임베딩(GPU 에 둘 때만) | BAAI/bge-m3(CPU·GPU 배치는 결정 전, 11장) | 배치 결정 뒤 |
 | 마스크 | YOLO26-seg | 분석 워커 상한 안. G0 실측 |
 | HMR(EXP-02 채택 시) | Fast SAM 3D Body | 분석 워커 상한 안. G0 실측(상한) |
 | MapAnything | 설치 때 단독 실행(관제 중 실행 안 함) | — |
@@ -250,6 +251,7 @@ flowchart TB
 | EC2 | 인증 | Spring Security + JWT | 기본안 |
 | EC2 | DB | PostgreSQL + TimescaleDB + PostGIS(이미지 `timescale/timescaledb-ha` -all 태그), Spring Data JPA | 확정(DB), 기본안(JPA) |
 | EC2 | RAG 색인 | pgvector(같은 PostgreSQL) | 기본안 |
+| 자체 호스팅 | 임베딩 | BAAI/bge-m3 dense 1024차원, float32, L2 정규화, cosine. 문서·질문에 같은 revision·설정을 쓰고, 가중치 revision 은 운영 색인을 만들기 전에 고정한다. CPU·GPU 배치와 청크·배치 크기는 추후 | 확정(모델), 배치는 결정 전 |
 | EC2 | 계획·리플레이 판정 | Risk Engine Python 컨테이너 | 확정 |
 | EC2 | 알림 | Web Push(VAPID) | 확정 |
 | EC2 | 배포 | Docker Compose, Nginx + Let’s Encrypt | 기본안 |

@@ -6,7 +6,9 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 
 - 이미지는 `timescale/timescaledb-ha` 의 -all 태그를 쓴다(TimescaleDB·PostGIS 포함).
 - `risk_event`는 일반 테이블로 둔다. `notification`이 `risk_event(event_id, source)`를 복합 FK 로 참조해야 하기 때문이다(11.4).
-- `world_track_state`, `skeleton_3d`, `system_metric`은 hypertable 로 만들고 압축과 보관 정책을 건다.
+- `world_track_state`, `skeleton_3d`, `system_metric`, `system_health`, `device_heartbeat` 는 hypertable 로 만들고 압축과 보관 정책을 건다(확장: `channel_state`, `watch_feature`, `ppe_state`). 다른 테이블은 hypertable 을 외래 키로 참조하지 않고, hypertable 의 버전 ID 는 논리 참조로만 둔다.
+- RAG 색인은 같은 PostgreSQL 의 pgvector 다. 임베딩은 BAAI/bge-m3 dense 1024차원(`float32`, L2 정규화, cosine)이고, 문서와 질문에 같은 모델 revision·설정을 쓴다. revision 은 운영 색인을 만들기 전에 고정한다.
+- 컬럼·키·제약은 ERD(구현 설계 문서)와 Flyway 마이그레이션이 정본이고, 이 장은 테이블과 원칙을 적는다.
 - PostGIS 는 저장·조회에만 쓴다. 구역 판정 계산은 Risk Engine 한 곳에서만 한다(3.2).
 
 ## 11.1 구성·기준 데이터
@@ -24,6 +26,10 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `equipment_asset` | GLB 주소, 반경·형상 파라미터(확장, 부록 C) |
 | `layout_plan` | 가상 레이아웃·계획 궤적(F-02·F-01), 출처 PLANNED |
 | `config_bundle` | 구역·규칙·보정·형상(등록 정적 객체·작업면 OBB) 버전 묶음, 해시, 발행 시각, 현장 적용 시각(RunPod Tier 0 ACK) |
+| `config_bundle_item` | 묶음에 들어간 구역·규칙·형상의 ID 와 버전 |
+| `config_ack` | Tier 0 의 묶음 적용·거부 응답(I1 `config_ack`) |
+| `static_object` | 등록 작업면·정적 객체: 보수적 OBB, 상판 높이(7.5). 수정은 새 버전 |
+| `tier0_endpoint` | Tier 0 Pod 공개 IP·포트·공개키 지문 등록 이력(3.12) |
 
 ## 11.2 시계열 관측
 
@@ -34,8 +40,10 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `skeleton_3d` | World ID, 3D 관절, 관절 가시성, 계산 방식 | 5\~10 Hz | 11.5 |
 | `system_health` | 시스템 상태, 카메라별 상태, lag, 보정 상태, 하트비트 | 1 Hz | 11.5 |
 | `system_metric` | 구간별 지연, FPS, 큐 길이, GPU 사용률, 프레임 손실 | 1\~5 Hz | 11.5 |
+| `device_heartbeat` | 노트북 하트비트(Tier 0 연결, 현장 표시, 카메라 수신 상태). 원격 단절 구분(3.2) 근거 | 1 Hz | 11.5 |
+| `observation_summary` | 2D 관측 카메라별 요약(I1 `observation_summary`, 원본 위치 `archive_uri`) | 필요 시 | 11.5 |
 
-`ppe_state`, `channel_state`, `watch_feature`, `region_state`(와 11.3 의 `watch_binding`)는 MVP DB 에 두지 않는다(부록 C).
+`ppe_state`, `channel_state`, `watch_feature`, `region_state`(와 11.3 의 `watch_binding`) 등 확장 테이블은 MVP DB 에 두지 않는다. 목록은 부록 C 각 절의 “확장 DB 테이블”에 있다.
 
 ## 11.3 이벤트·조치
 
@@ -48,8 +56,22 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `action_ticket` | 조치 상태, 사진 주소, 해소 상태와의 불일치 표시 |
 | `media_clip` | 이벤트 연결 영상 구간의 객체 키, 카메라·구간(촬영 시각)·해시·크기, 얼굴 흐림 여부, 삭제 예정일, 보존 표시. Tier 0 가 I1 `media_clip` 으로 보내고, 보낸 뒤 붙는 CRITICAL 자동 보존은 고치지 않고 `media_clip_retention` 으로 이력을 더한다 |
 | `report` | 보고서 종류(TBM·DAILY), 레이아웃·계산 결과(`sim.*`) 참조, 생성 상태, 본문, 인용 목록 |
+| `event_ack` | 운영자 확인: 누가·어디서·확인 대상 `event_sequence`(3.10). 저널의 ACKNOWLEDGED 전이가 가리킨다 |
+| `event_close` | 운영자 종료 명령과 Tier 0 결과(6.4). 종료 전이가 가리킨다 |
+| `event_escalation` | 승인한 VLM 상향 의견의 적용 명령과 Tier 0 결과(5.4). 상향 전이가 가리킨다 |
+| `journal_cursor` | Tier 0 인스턴스별 저널 수신 상태: `acked_offset`, 재동기화 중 여부, 마지막 스냅샷(3.2) |
+| `event_frame` | 이벤트 프레임 주소와 촬영 시각(I1 `event_frame_ready`, VLM 입력) |
+| `action_ticket_history` | 조치 티켓 상태 변경 이력(추가만) |
+| `clip_access_log` | 이벤트 클립 열람 기록(14장) |
+| `upload_grant` | 임시 업로드 주소 발급 기록(프레임·클립·사진 객체 키 검증) |
+| `push_subscription` | Web Push 구독 |
+| `test_push` | 시험 푸시(RiskEvent 아님, `notification` 에 넣지 않음) |
+| `push_receipt` | Service Worker 수신 확인(실제 알림·시험 푸시 중 하나) |
+| `rag_clause` | 안전 수칙 조항 본문·임베딩(bge-m3 1024차원)·모델 revision |
 
-PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다.
+PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evaluation_run`(계산 실행, 기준 구성, Risk Engine 라이브러리 버전), `sim.risk_result`(위험 항목, 실제 알림 채널로 가지 않음). 확장 테이블(`sim.trajectory_plan` 등)은 부록 C 에 있다.
+
+운영자 확인·종료·상향은 전이 기록(`risk_event_update`)에 한 줄로 쌓고, 누가·왜·결과는 `event_ack`·`event_close`·`event_escalation` 에 두어 전이 행이 가리킨다.
 
 ## 11.4 스키마 원칙
 
@@ -85,3 +107,26 @@ PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다.
 - **국외 이전 고지.** 받는 자(GPU 실행 사이트: 개발·시험의 RunPod(지역이 그때그때 바뀜)·Vast.ai 와 시연 사이트(미정), 3.12. LLM API 제공사)의 명칭·연락처, 이전하는 항목·시기·방법, 거부 방법과 거부의 효과를 적는다(개인정보 보호법 제28조의8. 조문 원문 확인 필요). AWS 는 서울 리전이다. LLM API 제공사의 명칭·연락처는 확인 필요다. 개발·시험 사이트는 지역이 고정되지 않으므로 사람이 찍힌 영상(내부 테스트 영상 포함)을 그 사이트로 보낼 수 있는 범위와 고지 방법을 정해야 한다(19.1).
 - **비참여자.** 같은 교실의 교육생·관람자에게 안내문을 붙이고 촬영 구역을 표시하며, 촬영을 거부하는 절차를 둔다.
 - 전송 구간은 모두 암호화한다(14장).
+
+## 11.6 계정·기기·분석 작업
+
+| 테이블 | 주요 내용 |
+|---|---|
+| `app_user` | 계정, 역할 3종(관리자·반장·열람, 14장). 위치·이벤트 기록에는 계정 ID 만 쓴다 |
+| `refresh_token` | 갱신 토큰(해시만 저장) |
+| `device` | 현장 노트북 기기와 토큰(확장: 워치) |
+| `worker` | 분석 워커와 토큰, 처리 가능 작업 유형 |
+| `analysis_job` | I5 작업: 유형·우선순위·시도 횟수·입력·결과(12.5) |
+| `job_lease` | 작업 대여: 만료·하트비트·반납(12.5) |
+
+## 11.7 보정·설치
+
+| 테이블 | 주요 내용 |
+|---|---|
+| `calibration_camera` | 보정 버전의 카메라별 K·왜곡·R·t·재투영 오차 |
+| `calibration_run` | 자동 보정 실행(걷기 시간, 2D 관측 위치, `calibration_ba` 작업, 결과 후보) |
+| `calibration_verification` | 독립 검증점 결과(4.4) |
+| `scale_reference` | 실측 정물 목록(이름·치수·측정일, 4.3) |
+| `calibration_scale_check` | 보정에서 정물별로 잰 크기·오차·불일치 경고 |
+| `coverage_guide` | 커버리지 계산과 카메라별 설치 안내(4.5) |
+| `floor_plan` | BEV 평면도(보정·Scene 버전, 이미지 키, `bev_floorplan` 작업, 4.1) |
