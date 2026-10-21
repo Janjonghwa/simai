@@ -9,6 +9,7 @@ import { createViewerStore, toStatus } from '@/features/viewer3d/viewer3d.store'
 import { ViewerCanvas } from '@/features/viewer3d/ViewerCanvas';
 import { ViewerErrorBoundary } from '@/features/viewer3d/ViewerErrorBoundary';
 import { ViewerStoreContext } from '@/features/viewer3d/ViewerStoreContext';
+import { ZoneApplyContext, type ZoneApplyState } from '@/features/viewer3d/zones/zonePresentation';
 import { cn } from '@simai/ui/lib/utils';
 import {
   useCallback,
@@ -27,6 +28,11 @@ export interface ViewerShellProps extends Viewer3DProps {
   dataStore?: SpatialDataStore;
   /** 사람 모델(리깅 glTF) 주소. 배포 경로가 정해지기 전이라 개발 화면만 넘긴다. 없으면 캡슐 아바타. */
   personModelUrl?: string | null;
+  /**
+   * 구역 적용 상태 표시. 적용 증거 계약(BE -120·FE -189)이 없어 기본은 UNVERIFIED 이고, DEMO 값은 개발 화면 시험용이다.
+   * 바꿔도 Canvas·장면은 그대로이고 구역 모양만 바뀐다.
+   */
+  zoneApplyState?: ZoneApplyState;
 }
 
 /** 뷰어 상태·명령·알림과 데이터 입력을 묶는다. 인스턴스가 살아 있는 동안 store 와 Canvas 는 하나다. */
@@ -40,6 +46,7 @@ export function ViewerShell({
   children,
   dataStore,
   personModelUrl = null,
+  zoneApplyState = 'UNVERIFIED',
 }: ViewerShellProps) {
   const [store] = useState(() => createViewerStore(initialMode));
   // 처음 받은 dataStore 를 계속 쓴다. 바꿔 넘겨도 장면의 구독을 옮기지 않는다.
@@ -85,7 +92,9 @@ export function ViewerShell({
         <ViewerErrorBoundary onError={handleRenderError}>
           <ViewerStoreContext value={store}>
             <PersonModelContext value={personModelUrl}>
-              <ViewerCanvas>{children}</ViewerCanvas>
+              <ZoneApplyContext value={zoneApplyState}>
+                <ViewerCanvas>{children}</ViewerCanvas>
+              </ZoneApplyContext>
             </PersonModelContext>
           </ViewerStoreContext>
         </ViewerErrorBoundary>

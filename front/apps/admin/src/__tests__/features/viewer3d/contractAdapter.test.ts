@@ -239,7 +239,7 @@ describe('DEMO 구역', () => {
     expect(zones.contract).toBe('DEMO_UNCONFIRMED');
     expect(zones.zones.map((z) => z.zoneId)).toEqual(['z-01', 'z-02', 'z-03']);
     expect(zones.zones[2]).toMatchObject({ min: [4.5, 7.5, 1.2], max: [6.5, 9, 2.4] });
-    expect(zones.invalid).toEqual([{ zoneId: 'z-bad', reason: 'min 이 max 보다 크다' }]);
+    expect(zones.invalid).toEqual([{ zoneId: 'z-bad', reason: 'X 범위 오류(min ≥ max)' }]);
   });
 
   it('DEMO 표시가 없는 응답은 실제 형상을 추측해 읽지 않고 거부한다', () => {
@@ -256,5 +256,60 @@ describe('DEMO 구역', () => {
       zones: [{ zone_id: 'z-shape', name: 'x', aabb: { min_xyz: [0, 0], max_xyz: [1, 1, 1] } }],
     };
     expect(adaptDemoZones(raw, 0).invalid).toEqual([{ zoneId: 'z-shape', reason: '형식 오류' }]);
+  });
+
+  const demo = (...zones: unknown[]) => ({ contract: 'DEMO_UNCONFIRMED', zones });
+  const box = (zoneId: unknown, min: unknown[], max: unknown[]) => ({
+    zone_id: zoneId,
+    name: 'x',
+    aabb: { min_xyz: min, max_xyz: max },
+  });
+
+  it.each([
+    ['0폭(X)', box('z', [1, 0, 0], [1, 1, 1]), 'X 범위 오류(min ≥ max)'],
+    ['0깊이(Y)', box('z', [0, 2, 0], [1, 2, 1]), 'Y 범위 오류(min ≥ max)'],
+    ['0높이(Z)', box('z', [0, 0, 1.2], [1, 1, 1.2]), 'Z 범위 오류(min ≥ max)'],
+    ['뒤집힌 Z', box('z', [0, 0, 2], [1, 1, 1]), 'Z 범위 오류(min ≥ max)'],
+    ['미상 높이(null)', box('z', [0, 0, null], [1, 1, 2]), '높이(Z) 미상'],
+    ['미상 높이(누락 자리)', box('z', [0, 0, 0], [1, 1, undefined]), '높이(Z) 미상'],
+    ['NaN', box('z', [Number.NaN, 0, 0], [1, 1, 1]), '좌표가 유한한 숫자가 아니다'],
+    [
+      'Infinity',
+      box('z', [0, 0, 0], [1, Number.POSITIVE_INFINITY, 1]),
+      '좌표가 유한한 숫자가 아니다',
+    ],
+    ['문자 좌표', box('z', ['0', 0, 0], [1, 1, 1]), '좌표가 유한한 숫자가 아니다'],
+    ['빈 ID', box('  ', [0, 0, 0], [1, 1, 1]), '형식 오류'],
+    ['aabb 없음', { zone_id: 'z', name: 'x' }, '형식 오류'],
+  ])('%s 구역은 넓히거나 0 으로 채우지 않고 뺀다', (_, zone, reason) => {
+    const snapshot = adaptDemoZones(demo(zone), 0);
+    expect(snapshot.status).toBe('READY');
+    expect(snapshot.zones).toEqual([]);
+    expect(snapshot.invalid).toEqual([
+      { zoneId: (zone as { zone_id?: unknown }).zone_id ?? null, reason },
+    ]);
+  });
+
+  it('객체가 아닌 항목은 ID 없이 형식 오류로 뺀다', () => {
+    expect(adaptDemoZones(demo(null, 3), 0).invalid).toEqual([
+      { zoneId: null, reason: '형식 오류' },
+      { zoneId: null, reason: '형식 오류' },
+    ]);
+  });
+
+  it('같은 zone_id 가 둘 이상이면 어느 쪽도 그리지 않고 나머지는 받는다', () => {
+    const snapshot = adaptDemoZones(
+      demo(
+        box('z-dup', [0, 0, 0], [1, 1, 1]),
+        box('z-ok', [2, 2, 0], [3, 3, 1]),
+        box('z-dup', [5, 5, 0], [6, 6, 1]),
+      ),
+      0,
+    );
+    expect(snapshot.zones.map((z) => z.zoneId)).toEqual(['z-ok']);
+    expect(snapshot.invalid).toEqual([
+      { zoneId: 'z-dup', reason: 'zone_id 중복' },
+      { zoneId: 'z-dup', reason: 'zone_id 중복' },
+    ]);
   });
 });

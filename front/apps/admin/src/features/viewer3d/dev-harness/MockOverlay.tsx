@@ -1,6 +1,7 @@
 import type { FixtureEvent, MenuKey, Roster } from '@/features/viewer3d/dev-harness/mockUi';
-import { displayName, MENUS, OBJECTS, ZONES } from '@/features/viewer3d/dev-harness/mockUi';
+import { displayName, MENUS, OBJECTS } from '@/features/viewer3d/dev-harness/mockUi';
 import type { ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
+import { zoneStateLabel, type ZoneApplyState } from '@/features/viewer3d/zones/zonePresentation';
 import { Button } from '@simai/ui/components/button';
 import { Crosshair, X } from 'lucide-react';
 import type { ReactNode } from 'react';
@@ -16,6 +17,7 @@ interface MockOverlayProps extends Commands {
   selected: ViewerTarget | null;
   status: ViewerStatus | null;
   roster: Roster;
+  zoneApply: ZoneApplyState;
   onClose: () => void;
 }
 
@@ -142,22 +144,40 @@ function CctvBody() {
   );
 }
 
-const EDITABLE: { target: ViewerTarget; name: string }[] = [
-  ...ZONES.map((zone) => ({ target: { type: 'zone', id: zone.id } as const, name: zone.name })),
-  ...OBJECTS.map((object) => ({
-    target: { type: 'object', id: object.id } as const,
-    name: object.name,
-  })),
-];
+const SURFACES = OBJECTS.map((object) => ({
+  target: { type: 'object', id: object.id } as const,
+  name: object.name,
+  detail: '작업면',
+}));
 
-function ZonesBody({ selected, select, focus }: Commands & { selected: ViewerTarget | null }) {
+function ZonesBody({
+  selected,
+  roster,
+  zoneApply,
+  select,
+  focus,
+}: Commands & { selected: ViewerTarget | null; roster: Roster; zoneApply: ZoneApplyState }) {
+  const editable = [
+    ...roster.zones.map((zone) => ({
+      target: { type: 'zone', id: zone.id } as const,
+      name: zone.name,
+      detail: `${zone.id} · ${zone.height}`,
+    })),
+    ...SURFACES,
+  ];
+  const zone =
+    selected?.type === 'zone' ? roster.zones.find((row) => row.id === selected.id) : undefined;
   return (
     <>
       <p className="smk-hint">구역·작업면 목록 · 편집과 저장은 연결하지 않는다</p>
+      <p className="smk-hint smk-mono" data-testid="zone-note">
+        {roster.zoneNote}
+      </p>
       <ul className="smk-list">
-        {EDITABLE.map(({ target, name }) => (
+        {editable.map(({ target, name, detail }) => (
           <li key={target.id} className="smk-item" data-active={on(same(selected, target))}>
             <span className="smk-grow">{name}</span>
+            <span className="smk-id smk-mono">{detail}</span>
             <Button variant="secondary" size="sm" onClick={() => select(target)}>
               선택
             </Button>
@@ -171,14 +191,22 @@ function ZonesBody({ selected, select, focus }: Commands & { selected: ViewerTar
             </Button>
           </li>
         ))}
+        {roster.rejectedZones.map((rejected, i) => (
+          <li key={`rejected:${i}`} className="smk-item" data-testid="zone-rejected">
+            <span className="smk-grow">{rejected.id ?? 'ID 없음'} · 표시 안 함</span>
+            <span className="smk-id smk-mono">{rejected.reason}</span>
+          </li>
+        ))}
       </ul>
       <dl className="smk-fields smk-box">
         <dt>이름</dt>
         <dd>{selected ? (displayName(selected) ?? '—') : '—'}</dd>
         <dt>높이 범위</dt>
-        <dd>—</dd>
+        <dd>{zone?.height ?? '—'}</dd>
         <dt>적용 상태</dt>
-        <dd>—</dd>
+        <dd data-testid="zone-apply">
+          {zone ? (zone.legacy ? '레거시 예시(상태 없음)' : zoneStateLabel(zoneApply)) : '—'}
+        </dd>
       </dl>
     </>
   );
@@ -234,6 +262,7 @@ export function MockOverlay({
   selected,
   status,
   roster,
+  zoneApply,
   onClose,
   ...commands
 }: MockOverlayProps) {
@@ -242,7 +271,9 @@ export function MockOverlay({
     <Panel title={title} wide={menu === 'cctv'} onClose={onClose}>
       {menu === 'monitor' && <MonitorBody selected={selected} roster={roster} {...commands} />}
       {menu === 'cctv' && <CctvBody />}
-      {menu === 'zones' && <ZonesBody selected={selected} {...commands} />}
+      {menu === 'zones' && (
+        <ZonesBody selected={selected} roster={roster} zoneApply={zoneApply} {...commands} />
+      )}
       {menu === 'tbm' && <TbmBody />}
       {menu === 'system' && <SystemBody status={status} />}
     </Panel>

@@ -5,8 +5,13 @@ import {
 } from '@/features/viewer3d/data/spatialData.store';
 import { trackPlacement, type TrackView } from '@/features/viewer3d/data/spatialFrame';
 import type { HarnessSource } from '@/features/viewer3d/dev-harness/harnessSource';
-import { DATA_SOURCES, type DataSourceKey } from '@/features/viewer3d/dev-harness/harnessSource';
+import {
+  DATA_SOURCES,
+  ZONE_APPLY_OPTIONS,
+  type DataSourceKey,
+} from '@/features/viewer3d/dev-harness/harnessSource';
 import type { MockFailure, SpatialMockApi } from '@/features/viewer3d/dev-harness/mswHandlers';
+import type { ZoneApplyState } from '@/features/viewer3d/zones/zonePresentation';
 import { useEffect, useReducer, useState } from 'react';
 import { useStore } from 'zustand';
 
@@ -42,6 +47,8 @@ interface DataPanelProps {
   harness: HarnessSource;
   mockApi: SpatialMockApi | null;
   onSourceChange: (key: DataSourceKey) => void;
+  zoneApply: ZoneApplyState;
+  onZoneApplyChange: (state: ZoneApplyState) => void;
   onRestart: () => void;
 }
 
@@ -51,6 +58,8 @@ export function DataPanel({
   harness,
   mockApi,
   onSourceChange,
+  zoneApply,
+  onZoneApplyChange,
   onRestart,
 }: DataPanelProps) {
   const state = useStore(store);
@@ -103,6 +112,19 @@ export function DataPanel({
             ))}
           </select>
         )}
+      </div>
+      <div className="smk-data-row">
+        <select
+          aria-label="구역 적용 상태 표시"
+          value={zoneApply}
+          onChange={(e) => onZoneApplyChange(e.target.value as ZoneApplyState)}
+        >
+          {ZONE_APPLY_OPTIONS.map((option) => (
+            <option key={option.key} value={option.key}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       </div>
       {mock && (
         <div className="smk-data-row">
@@ -209,9 +231,9 @@ export function DataPanel({
           <li className="smk-data-dim">다른 출처(PLANNED 등) {others}건은 따로 보관</li>
         )}
       </ul>
-      <p className="smk-data-dim smk-mono">
+      <p className="smk-data-dim smk-mono" data-testid="data-zones">
         구역 {state.zones.status} · {state.zones.zones.map((z) => z.zoneId).join(', ') || '—'}
-        {state.zones.invalid.length > 0 ? ` · 형상 오류 ${state.zones.invalid.length}` : ''}
+        {state.zones.invalid.map((z) => ` · 거부 ${z.zoneId ?? 'ID 없음'}(${z.reason})`).join('')}
         {state.zones.reason ? ` · ${state.zones.reason}` : ''} · DEMO 형상(계약 미확정)
       </p>
     </div>

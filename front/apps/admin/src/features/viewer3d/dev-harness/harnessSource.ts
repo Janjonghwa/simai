@@ -9,6 +9,7 @@ import {
   SCENARIOS,
   type ScenarioKey,
 } from '@/features/viewer3d/dev-harness/scenarios';
+import type { ZoneApplyState } from '@/features/viewer3d/zones/zonePresentation';
 
 // 개발 화면의 데이터 입력 선택. 시나리오 Mock 5종, 외부 Live 주입 시험, 입력 없음.
 
@@ -41,6 +42,32 @@ export function readAvatar(search: string): AvatarKind {
 
 const isDataSourceKey = (value: unknown): value is DataSourceKey =>
   isScenarioKey(value) || value === 'external' || value === 'off';
+
+/** 개발 화면의 구역 적용 상태 표시 시험. ?zones=preview|applied, 없거나 모르면 적용 미확인. */
+const ZONE_PARAM: Record<string, ZoneApplyState> = {
+  unverified: 'UNVERIFIED',
+  preview: 'DEMO_PREVIEW',
+  applied: 'DEMO_ASSUMED_APPLIED',
+};
+
+export const ZONE_APPLY_OPTIONS: { key: ZoneApplyState; label: string }[] = [
+  { key: 'UNVERIFIED', label: '구역 · 적용 미확인(기본)' },
+  { key: 'DEMO_PREVIEW', label: '구역 · 미리보기(DEMO)' },
+  { key: 'DEMO_ASSUMED_APPLIED', label: '구역 · 적용 가정(DEMO)' },
+];
+
+export function readZoneApply(search: string): ZoneApplyState {
+  return ZONE_PARAM[new URLSearchParams(search).get('zones')?.toLowerCase() ?? ''] ?? 'UNVERIFIED';
+}
+
+/** zones 만 바꾼 주소. 기본값이면 매개변수를 지운다. */
+export function withZoneApply(href: string, state: ZoneApplyState): string {
+  const url = new URL(href);
+  const key = Object.keys(ZONE_PARAM).find((k) => ZONE_PARAM[k] === state);
+  if (!key || state === 'UNVERIFIED') url.searchParams.delete('zones');
+  else url.searchParams.set('zones', key);
+  return url.toString();
+}
 
 /** ?source=normal|observation-loss|risk-lifecycle|disconnect|invalid-input|external|off. 없거나 모르면 normal. */
 export function readDataSource(search: string): DataSourceKey {

@@ -13,7 +13,9 @@ import {
   DEV_XBOT_URL,
   readAvatar,
   readDataSource,
+  readZoneApply,
   withDataSource,
+  withZoneApply,
   type DataSourceKey,
 } from '@/features/viewer3d/dev-harness/harnessSource';
 import { DebugProbe, SpatialDiagnostics } from '@/features/viewer3d/dev-harness/MockDebug';
@@ -27,6 +29,7 @@ import { useRoster } from '@/features/viewer3d/dev-harness/useRoster';
 import type { Viewer3DHandle, ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
 import { ViewerShell } from '@/features/viewer3d/ViewerShell';
 import { WorldReference } from '@/features/viewer3d/WorldReference';
+import type { ZoneApplyState } from '@/features/viewer3d/zones/zonePresentation';
 import { useMemo, useRef, useState } from 'react';
 
 // 3D 재질 색도 FE 토큰(packages/ui globals.css)에서 읽어 다크·화이트 모드를 따른다.
@@ -73,9 +76,10 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   const [sourceKey, setSourceKey] = useState(() => readDataSource(window.location.search));
   const [epoch, setEpoch] = useState(0);
   const [avatar] = useState(() => readAvatar(window.location.search));
-  // 입력 없음이면 예전 고정 작업자를, 입력이 있으면 Provider 의 World ID 사람을 쓴다(둘을 함께 그리지 않는다).
-  const legacyPeople = sourceKey === 'off';
-  const roster = useRoster(dataStore, legacyPeople);
+  const [zoneApply, setZoneApply] = useState(() => readZoneApply(window.location.search));
+  // 입력 없음이면 예전 고정 작업자·구역을, 입력이 있으면 Provider 의 사람·구역을 쓴다(둘을 함께 그리지 않는다).
+  const legacy = sourceKey === 'off';
+  const roster = useRoster(dataStore, legacy);
   // 입력을 바꾸거나 처음부터 다시 재생할 때만 새 Source 를 만든다(epoch 는 재시작 표시).
   const harness = useMemo(
     () => createHarnessSource(sourceKey, restBase, mockApi),
@@ -95,6 +99,15 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
       window.history.state,
       '',
       withDataSource(window.location.href, next),
+    );
+  };
+
+  const changeZoneApply = (next: ZoneApplyState) => {
+    setZoneApply(next);
+    window.history.replaceState(
+      window.history.state,
+      '',
+      withZoneApply(window.location.href, next),
     );
   };
 
@@ -133,8 +146,9 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           source={harness.source}
           dataStore={dataStore}
           personModelUrl={avatar === 'xbot' ? DEV_XBOT_URL : null}
+          zoneApplyState={zoneApply}
         >
-          <MockScene colors={colors} selected={selected} legacyPeople={legacyPeople} />
+          <MockScene colors={colors} selected={selected} legacy={legacy} />
           {spatial && <WorldReference />}
           <DebugProbe />
         </ViewerShell>
@@ -150,6 +164,7 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
               selected={selected}
               status={status}
               roster={roster}
+              zoneApply={zoneApply}
               onClose={() => setPanelOpen(false)}
               {...commands}
             />
@@ -171,6 +186,8 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
             harness={harness}
             mockApi={mockApi}
             onSourceChange={changeSource}
+            zoneApply={zoneApply}
+            onZoneApplyChange={changeZoneApply}
             onRestart={() => setEpoch((n) => n + 1)}
           />
         </SpatialDiagnostics>

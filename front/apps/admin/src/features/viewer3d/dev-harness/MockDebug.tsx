@@ -3,7 +3,7 @@ import { WORLD_REFERENCE_POINTS } from '@/features/viewer3d/WorldReference';
 import { useThree, type RootState } from '@react-three/fiber';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
-import { Box3, Vector3, type Object3D } from 'three';
+import { Box3, Vector3, type BoxGeometry, type Mesh, type Object3D } from 'three';
 
 // Spatial 진단 도구. 같은 Canvas·renderer·Scene·Camera 가 유지되는지, World 기준점이 어디 놓였는지 숫자로 확인한다.
 // 측정은 버튼을 누를 때만 한다. 접혀 있거나 다른 보기일 때는 아무것도 읽지 않는다.
@@ -65,6 +65,34 @@ function firstPerson(state: RootState) {
   };
 }
 
+/**
+ * 장면에 올라온 구역(Selectable 이름 zone:<id>)의 화면 좌표와, Provider 구역이면 실제 상자의 Three 중심·크기.
+ * 레거시 고정 구역(zoneA·zoneB)은 상자 이름이 없어 box 가 null 이다.
+ */
+function zonesOf(state: RootState) {
+  const out: Record<
+    string,
+    { screen: number[] | null; box: { center: number[]; size: number[] } | null }
+  > = {};
+  state.scene.traverse((node) => {
+    if (!node.name.startsWith('zone:')) return;
+    const id = node.name.slice('zone:'.length);
+    const mesh = state.scene.getObjectByName(`zone-box:${id}`) as Mesh<BoxGeometry> | undefined;
+    const p = mesh?.geometry.parameters;
+    out[id] = {
+      screen: screenOf(state, node),
+      box:
+        mesh && p
+          ? {
+              center: mesh.getWorldPosition(new Vector3()).toArray().map(round),
+              size: [p.width, p.height, p.depth].map(round),
+            }
+          : null,
+    };
+  });
+  return out;
+}
+
 function measure() {
   const canvas = document.querySelector('canvas');
   const state = readState?.();
@@ -85,9 +113,9 @@ function measure() {
     screen: {
       // 화면에 있는 첫 사람(Provider 의 World ID 또는 입력 없음일 때의 예전 작업자).
       person: firstPerson(state),
-      'zone:zoneA': screenOf(state, state.scene.getObjectByName('zone:zoneA')),
       'world-ref:O': screenOf(state, state.scene.getObjectByName('world-ref:O')),
     },
+    zones: zonesOf(state),
     worldRefs: worldRefsOf(state),
   };
 }
