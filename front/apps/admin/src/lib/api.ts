@@ -6,5 +6,5 @@ import { useSessionStore } from '@/store/session.store';
 export const api = createHttp({
   baseUrl: env.VITE_API_BASE_URL,
   getToken: () => useSessionStore.getState().session?.accessToken,
-  onUnauthorized: () => useSessionStore.getState().signOut(),
+  onUnauthorized: (token) => useSessionStore.getState().signOutIfCurrent(token),
 });

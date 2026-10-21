@@ -36,7 +36,17 @@ describe('parseEnv', () => {
     expect(parseEnv({ ...valid, VITE_API_MOCK: 'true' }).VITE_API_MOCK).toBe(true);
     expect(parseEnv({ ...valid, VITE_API_MOCK: 'false' }).VITE_API_MOCK).toBe(false);
     expect(parseEnv(valid).VITE_API_MOCK).toBe(false);
-    expect(() => parseEnv({ ...valid, VITE_API_MOCK: 'yes please' })).toThrow(/VITE_API_MOCK/);
+    for (const value of ['yes please', '1', 'on', 'TRUE']) {
+      expect(() => parseEnv({ ...valid, VITE_API_MOCK: value })).toThrow(/VITE_API_MOCK/);
+    }
+  });
+
+  it('API 주소에 ? 나 # 가 있으면 멈춘다(뒤에 붙는 /api/… 가 쿼리로 들어간다)', () => {
+    for (const value of ['http://localhost:8080?x=1', 'http://localhost:8080/?', 'http://h/#a']) {
+      expect(() => parseEnv({ ...valid, VITE_API_BASE_URL: value })).toThrow(
+        /VITE_API_BASE_URL: \? 나 #/,
+      );
+    }
   });
 
   it('운영 빌드에서 원격 주소는 https·wss 만 받는다', () => {
