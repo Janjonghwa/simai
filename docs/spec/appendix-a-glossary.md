@@ -42,7 +42,7 @@
 | 작업면 | 관리자가 OBB 와 상판 높이로 등록한 단상·책상 등. R2·R3 가장자리와 ContactEstimator 의 지지 표면 근거(7.5) |
 | VLM | 비전-언어 모델. NVIDIA Cosmos3-Nano(16B) Reasoner 모드(5.4) |
 | LLM | 텍스트 생성 모델. 외부 API “GPT 6.1 sol”, 텍스트만 보냄(5.4) |
-| RAG | 안전 수칙 문서를 검색해 인용하게 하는 방식 |
+| RAG | 안전 수칙 문서를 검색해 인용하게 하는 방식. 임베딩은 BAAI/bge-m3 1024차원, 색인은 pgvector(11장) |
 | TBM | 작업 전 안전점검회의 |
 | MV3DT 방식 | 카메라별 추적을 공유 바닥 평면에서 전역 ID로 융합하는 방식 |
 | TrackTrack | 카메라별 Local Tracker 기본값(CVPR 2025, Ultralytics `tracktrack.yaml`)(5.2) |
