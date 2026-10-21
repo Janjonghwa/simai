@@ -10,8 +10,12 @@ I0 정식 메시지 스키마는 S15P31A101-20 이 만든다. 그 전까지 필�
 
 from __future__ import annotations
 
+import base64
+import binascii
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from simai_ai.providers.base import TIMESTAMP_SOURCES
 from simai_ai.tracking.time_model import require_ms
@@ -108,3 +112,37 @@ class I0CodecInfo:
 
 
 I0Message = I0Frame | I0CodecInfo
+
+
+def codec_info_from_contract(meta: Mapping[str, Any]) -> I0CodecInfo:
+    """codec_info 계약(contracts/messages/codec_info) → I0CodecInfo. SPS·PPS 는 base64 → 바이트(시작 코드 없이).
+
+    I0 영상 수신(services/tier0 live_input)과 녹화 재생(sources.RecordingReplay)이 같이 쓴다.
+    """
+    try:
+        sps = base64.b64decode(meta["sps"], validate=True)
+        pps = base64.b64decode(meta["pps"], validate=True)
+    except (binascii.Error, ValueError, TypeError) as e:
+        raise ValueError("codec_info sps·pps 가 base64 가 아니다") from e
+    return I0CodecInfo(camera_id=meta["camera_id"], stream_epoch=meta["stream_epoch"], codec=meta["codec"],
+                       pts_timebase=meta.get("pts_timebase"), sps=sps, pps=pps)
+
+
+def frame_header_from_contract(header: Mapping[str, Any]) -> I0FrameHeader:
+    """frame_header 계약 → I0FrameHeader. 촬영 시각·불확실성은 헤더 값 그대로다(채우지 않는다)."""
+    return I0FrameHeader(
+        camera_id=header["camera_id"],
+        stream_epoch=header["stream_epoch"],
+        frame_sequence=header["frame_sequence"],
+        estimated_capture_time_ms=header["estimated_capture_time_ms"],
+        timestamp_source=header["timestamp_source"],
+        keyframe=header["keyframe"],
+        timestamp_uncertainty_ms=header.get("timestamp_uncertainty_ms"),
+        source_pts=header.get("source_pts"),
+        pts_timebase=header.get("pts_timebase"),
+    )
+
+
+def frame_from_contract(header: Mapping[str, Any], data: bytes) -> I0Frame:
+    """frame_header 계약 + 압축 프레임 → I0Frame."""
+    return I0Frame(frame_header_from_contract(header), bytes(data))

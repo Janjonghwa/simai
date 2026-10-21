@@ -34,49 +34,19 @@ health 집계(cameras[].frames, 보고 구간 = 그 수신자의 직전 health �
 
 from __future__ import annotations
 
-import base64
-import binascii
 import logging
 import threading
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from services.tier0.video_ingest import VideoConsumer, VideoIngestServer
-from simai_ai.io import I0CodecInfo, I0Frame, I0FrameHeader, I0Ingest, I0Message
+from simai_ai.io import I0Ingest, I0Message
+from simai_ai.io.messages import codec_info_from_contract, frame_from_contract
 
 log = logging.getLogger("services.tier0.live_input")
 
 FRAME_FIELDS = ("received", "gateway_to_runpod_loss", "skipped_by_policy", "laptop_skipped", "unattributed_gap",
                 "late_dropped")
-
-
-def codec_info_from_contract(meta: Mapping[str, Any]) -> I0CodecInfo:
-    """codec_info 계약(video_ingest 가 검증함) → I0CodecInfo. SPS·PPS 는 base64 → 바이트(시작 코드 없이)."""
-    try:
-        sps = base64.b64decode(meta["sps"], validate=True)
-        pps = base64.b64decode(meta["pps"], validate=True)
-    except (binascii.Error, ValueError) as e:
-        raise ValueError("codec_info sps·pps 가 base64 가 아니다") from e
-    return I0CodecInfo(camera_id=meta["camera_id"], stream_epoch=meta["stream_epoch"], codec=meta["codec"],
-                       pts_timebase=meta.get("pts_timebase"), sps=sps, pps=pps)
-
-
-def frame_from_contract(header: Mapping[str, Any], data: bytes) -> I0Frame:
-    """frame_header 계약 + 압축 프레임 → I0Frame. 촬영 시각·불확실성은 헤더 값 그대로다(채우지 않는다)."""
-    return I0Frame(
-        I0FrameHeader(
-            camera_id=header["camera_id"],
-            stream_epoch=header["stream_epoch"],
-            frame_sequence=header["frame_sequence"],
-            estimated_capture_time_ms=header["estimated_capture_time_ms"],
-            timestamp_source=header["timestamp_source"],
-            keyframe=header["keyframe"],
-            timestamp_uncertainty_ms=header.get("timestamp_uncertainty_ms"),
-            source_pts=header.get("source_pts"),
-            pts_timebase=header.get("pts_timebase"),
-        ),
-        bytes(data),
-    )
 
 
 class I0Bridge:

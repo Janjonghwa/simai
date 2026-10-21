@@ -8,10 +8,13 @@
 - VideoFileFrameSource: 녹화 파일을 처음부터 끝까지 모두 낸다(오프라인·시나리오 재생). 기본 리더는 OpenCV(io extra).
   gateway/recorder 녹화 세션은 manifest(contracts/data/recording_manifest.schema.json)를 계약으로 검증해 읽는다
   (`VideoFileFrameSource.from_manifest`, `recordings_from_manifest`).
+- RecordingReplay: gateway/recorder 녹화 세션을 I0 메시지(코덱 정보 → 헤더 + 압축 프레임)로 다시 낸다(I0 재생).
+  프레임별 촬영 시각·epoch·키프레임이 LIVE 와 같은 I0Ingest 경로로 들어간다(Tier 0 파일 입력, S15P31A101-215).
 """
 
 from __future__ import annotations
 
+import hashlib
 import heapq
 import json
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -21,6 +24,14 @@ from typing import Any, Protocol
 
 from simai_ai.io.freshness import InferenceTicket
 from simai_ai.io.ingest import I0Ingest
+from simai_ai.io.messages import (
+    I0CodecInfo,
+    I0Frame,
+    I0FrameHeader,
+    I0Message,
+    codec_info_from_contract,
+    frame_header_from_contract,
+)
 from simai_ai.providers.base import Detection2D, Frame, FrameSource, FramesProvenance
 from simai_ai.providers.contract import schema_violations
 from simai_ai.tracking.time_model import require_ms
@@ -277,14 +288,11 @@ class VideoFileFrameSource(FrameSource):
         제품 성능·게이트 판정 근거로 쓰지 않는다(AGENTS 규칙 7).
         """
         manifest = load_recording_manifest(session_dir)
-        # 내부 테스트 녹화(consent.purpose=dev_test)는 동의된 데이터셋과 출처에서 구분한다. 계약(input_provenance)은 그대로(명세 11.5)
-        purpose = (manifest.get("consent") or {}).get("purpose")
-        prefix = "recording-dev_test" if purpose == "dev_test" else "recording"
         return cls(
             recordings_from_manifest(session_dir, manifest, epochs),
             source="FILE",
             open_reader=open_reader,
-            dataset_id=f"{prefix}/{manifest['session_id']}",
+            dataset_id=recording_dataset_id(manifest),
         )
 
     def frames(self) -> Iterator[Frame]:
@@ -308,6 +316,14 @@ def _range_errors(where: str, rng: Any) -> list[str]:
     if isinstance(rng, list) and len(rng) == 2 and all(isinstance(x, int) for x in rng) and rng[0] > rng[1]:
         return [f"{where}: 범위가 거꾸로다 (from > to)"]
     return []
+
+
+def recording_dataset_id(manifest: Mapping[str, Any]) -> str:
+    """녹화 세션의 input_provenance.frames.dataset_id. 내부 테스트 녹화(consent.purpose=dev_test)는 동의된 데이터셋과
+    출처에서 구분한다(recording-dev_test/<session_id>, 명세 11.5). 계약(input_provenance)은 그대로다."""
+    purpose = (manifest.get("consent") or {}).get("purpose")
+    prefix = "recording-dev_test" if purpose == "dev_test" else "recording"
+    return f"{prefix}/{manifest['session_id']}"
 
 
 def recording_manifest_rule_errors(manifest: Mapping[str, Any]) -> list[str]:
@@ -405,3 +421,177 @@ def recordings_from_manifest(
     if epochs:
         raise ValueError(f"manifest 에 없는 카메라: {sorted(epochs)}")
     return recordings
+
+
+# --------------------------------------------------------------------------- 녹화 I0 재생 (gateway/recorder 녹화 형식)
+
+
+@dataclass(frozen=True)
+class ReplayMessage:
+    """녹화 I0 재생 한 건. release_ms 가 되면 I0Ingest 에 넣는다.
+
+    release_ms: 녹화의 노트북 수신 시각(header.received_at_ms, 없으면 촬영 시각). 코덱 정보는 그 세그먼트 첫 프레임과 같다.
+    message 가 None 이면 그 카메라의 한 세그먼트 연결이 끝났다(다음 세그먼트가 있을 때만. I0Ingest.connection_lost 와 같다).
+    """
+
+    release_ms: int
+    camera_id: str
+    message: I0Message | None
+
+
+@dataclass(frozen=True)
+class _FrameRef:
+    release_ms: int
+    header: I0FrameHeader
+    offset: int
+    size: int
+
+
+@dataclass(frozen=True)
+class _Segment:
+    stream_epoch: int
+    video: Path
+    codec: I0CodecInfo
+    frames: tuple[_FrameRef, ...]
+
+
+_HEADER_REQUIRED = ("source_pts", "pts_timebase", "keyframe")  # contracts/messages/frame_header required
+_INT64_MAX = 2**63 - 1
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return "sha256:" + h.hexdigest()
+
+
+def _checked_file(session_dir: Path, entry: Mapping[str, Any], where: str) -> Path:
+    """manifest 의 파일 항목({path, bytes, sha256})과 디스크 파일이 같은지. 다르면 ValueError(경로·규칙만)."""
+    path = session_dir / entry["path"]
+    if not path.is_file():
+        raise ValueError(f"{where}: 파일이 없다 ({entry['path']})")
+    if path.stat().st_size != entry["bytes"]:
+        raise ValueError(f"{where}: 파일 크기가 manifest 와 다르다 ({entry['path']})")
+    if _sha256_file(path) != entry["sha256"]:
+        raise ValueError(f"{where}: sha256 이 manifest 와 다르다 ({entry['path']})")
+    return path
+
+
+def _read_segment(session_dir: Path, camera_id: str, seg: Mapping[str, Any]) -> _Segment:
+    """세그먼트 파일 셋을 확인하고 프레임 줄을 읽는다(영상 바이트는 재생할 때 읽는다)."""
+    epoch = seg["stream_epoch"]
+    where = f"{camera_id}/epoch {epoch}"
+    video = _checked_file(session_dir, seg["video"], where)
+    frames_path = _checked_file(session_dir, seg["frames"], where)
+    codec_path = _checked_file(session_dir, seg["codec_info"], where)
+    try:
+        codec = codec_info_from_contract(json.loads(codec_path.read_text(encoding="utf-8")))
+    except (ValueError, KeyError, TypeError) as e:
+        raise ValueError(f"{where}: codec_info 를 읽지 못했다 ({type(e).__name__})") from None
+    if (codec.camera_id, codec.stream_epoch) != (camera_id, epoch):
+        raise ValueError(f"{where}: codec_info 의 카메라·stream_epoch 가 세그먼트와 다르다")
+    video_bytes = seg["video"]["bytes"]
+    first = (seg.get("frame_sequence_range") or [0])[0]
+    refs: list[_FrameRef] = []
+    with frames_path.open(encoding="utf-8") as f:
+        for n, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                raw = row["header"]
+                header = frame_header_from_contract(raw)
+                offset, size = row["offset"], row["size"]
+                for key in _HEADER_REQUIRED:  # frame_header 계약 필수(헤더 dataclass 는 선택으로 받는다)
+                    if key not in raw:
+                        raise KeyError(key)
+                received = raw.get("received_at_ms")
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
+                raise ValueError(f"{where}: 프레임 줄 {n} 을 읽지 못했다 ({type(e).__name__})") from None
+            # received_at_ms 는 없을 때만 촬영 시각으로 넣는다. 있는데 형식이 틀리면 채우지 않고 거절한다(AGENTS 규칙 2)
+            if "received_at_ms" in raw and not (isinstance(received, int) and not isinstance(received, bool)
+                                                and 0 <= received <= _INT64_MAX):
+                raise ValueError(f"{where}: 프레임 줄 {n} 의 received_at_ms 가 UTC ms 정수가 아니다")
+            if (header.camera_id, header.stream_epoch) != (camera_id, epoch):
+                raise ValueError(f"{where}: 프레임 줄 {n} 의 카메라·stream_epoch 가 세그먼트와 다르다")
+            if header.frame_sequence != first + len(refs):
+                raise ValueError(f"{where}: 프레임 줄 {n} 의 frame_sequence 가 이어지지 않는다")
+            if not (isinstance(offset, int) and isinstance(size, int) and offset >= 0 and size >= 1
+                    and offset + size <= video_bytes):
+                raise ValueError(f"{where}: 프레임 줄 {n} 의 offset·size 가 영상 파일 밖이다")
+            refs.append(_FrameRef(header.estimated_capture_time_ms if received is None else received, header, offset, size))
+    if len(refs) != seg["frame_count"]:
+        raise ValueError(f"{where}: 프레임 줄 수가 manifest frame_count 와 다르다")
+    return _Segment(epoch, video, codec, tuple(refs))
+
+
+def _replay_camera(camera_id: str, segments: Sequence[_Segment]) -> Iterator[ReplayMessage]:
+    for i, seg in enumerate(segments):
+        yield ReplayMessage(seg.frames[0].release_ms, camera_id, seg.codec)
+        with seg.video.open("rb") as f:
+            for ref in seg.frames:
+                f.seek(ref.offset)
+                data = f.read(ref.size)
+                if len(data) != ref.size:
+                    raise OSError(f"{camera_id}/epoch {seg.stream_epoch}: 영상 파일이 짧다 ({seg.video.name})")
+                yield ReplayMessage(ref.release_ms, camera_id, I0Frame(ref.header, data))
+        if i + 1 < len(segments):
+            yield ReplayMessage(seg.frames[-1].release_ms, camera_id, None)  # 재접속 전 연결 끝
+
+
+class RecordingReplay:
+    """gateway/recorder 녹화 세션 → I0 메시지(gateway/recorder/README.md "Tier 0 에서 다시 읽기" 1. I0 재생).
+
+    열 때 manifest 를 계약으로 검사하고(load_recording_manifest), 고른 카메라의 세그먼트마다 파일 크기·sha256·codec_info·
+    프레임 줄(카메라·epoch·frame_sequence 연속·offset 범위·줄 수)을 확인한다. 어긋나면 ValueError(경로·규칙만, 받은 값 없음).
+    카메라마다 세그먼트(stream_epoch)를 차례로 내고, 카메라 사이는 release_ms 순서로 합친다(같으면 camera_ids 순서).
+    촬영 시각·timestamp_source 는 녹화 헤더 그대로다(지어내지 않음). 입력 출처는 FILE 이다(명세 20.4).
+    """
+
+    def __init__(self, session_dir: Path | str, camera_ids: Sequence[str] | None = None) -> None:
+        self.session_dir = Path(session_dir)
+        self.manifest = load_recording_manifest(self.session_dir)
+        cameras = {c["camera_id"]: c for c in self.manifest["cameras"]}
+        ids = tuple(cameras) if camera_ids is None else tuple(camera_ids)
+        if not ids or len(set(ids)) != len(ids):
+            raise ValueError("재생할 카메라 목록이 비었거나 같은 카메라가 두 번 있다")
+        missing = [c for c in ids if c not in cameras]
+        if missing:
+            raise ValueError(f"녹화 manifest 에 없는 카메라: {missing}")
+        self.camera_ids = ids
+        self._segments: dict[str, tuple[_Segment, ...]] = {}
+        for cid in ids:
+            segs = sorted(cameras[cid]["segments"], key=lambda s: s["stream_epoch"])
+            read = tuple(_read_segment(self.session_dir, cid, s) for s in segs if s["frame_count"] > 0)
+            if not read:
+                raise ValueError(f"{cid}: 녹화된 프레임이 없다")
+            self._segments[cid] = read
+        self.start_ms = min(segs[0].frames[0].release_ms for segs in self._segments.values())
+        self.end_ms = max(segs[-1].frames[-1].release_ms for segs in self._segments.values())
+        self._streams = [_replay_camera(c, self._segments[c]) for c in ids]
+        self._merged = heapq.merge(*self._streams, key=lambda m: m.release_ms)
+        self._next: ReplayMessage | None = next(self._merged, None)
+        self.delivered = 0
+
+    @property
+    def finished(self) -> bool:
+        return self._next is None
+
+    def pop_due(self, now_ms: int) -> list[ReplayMessage]:
+        """release_ms <= now_ms 인 메시지를 차례로 꺼낸다."""
+        out = []
+        while self._next is not None and self._next.release_ms <= now_ms:
+            out.append(self._next)
+            self._next = next(self._merged, None)
+        self.delivered += len(out)
+        return out
+
+    def provenance(self) -> FramesProvenance:
+        return {"source": "FILE", "dataset_id": recording_dataset_id(self.manifest), "camera_ids": list(self.camera_ids)}
+
+    def close(self) -> None:
+        self._next = None
+        for stream in self._streams:
+            stream.close()  # 열린 영상 파일을 닫는다
