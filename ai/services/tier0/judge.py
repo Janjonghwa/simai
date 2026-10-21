@@ -34,6 +34,10 @@ evidence_ref 는 그 World 의 world_state msg_id 다.
 payload 를 돌려준다(build_i1_link 가 신뢰 대기열로 보낸다). 종료 전이는 outbox 가 risk_event_transition 2.0.0 resolution 으로
 보낸다(docs/design/tier0-recovery.md "운영자 종료").
 
+판정 출처(-215): 판정은 추적기의 출처(LifecycleTracker.origin)로 한다. LIVE 가 아닌 출처(file 입력의 REPLAY)는 7.3 표가
+채널을 주지 않아 현장 경보 신호가 없고, Tier 0 저널(LIVE 전용 계약)에 넣지 않는다. 확정 전이는 record_transitions(JSONL
+출력 등)로만 넘긴다.
+
 위험 관측 시각(risk_observed_at, -81): 판정마다 발생 판정(holding 아님)이 있고 검증 상태가 VERIFIED 인 활성 이벤트의
 (event_sequence, observation_time)을 기억한다. 스냅샷이 전이 없이 이어진 위험 관측까지 last_valid_observation_at 에 올린다.
 """
@@ -126,6 +130,7 @@ class JudgmentLoop:
         offer_world_state: Callable[..., Any] | None = None,
         checkpoint_inputs: Callable[..., Any] | None = None,
         clips: Any | None = None,
+        record_transitions: Callable[[tuple[Any, ...]], Any] | None = None,
         snapshot: Any | None = None,
         observe_progress: Callable[[int | None], Any] | None = None,
         restore_link: Any | None = None,
@@ -142,6 +147,7 @@ class JudgmentLoop:
         self._offer_world_state = offer_world_state
         self._checkpoint_inputs = checkpoint_inputs
         self._clips = clips
+        self._record_transitions = record_transitions  # 확정 전이 사본(file 입력의 risk_event JSONL, -215)
         self._snapshot = snapshot
         self._observe_progress = observe_progress
         self._restore_link = restore_link  # 재시작 뒤 이전 이벤트 연결(services.tier0.restore_link.RestoreLink, -178)
@@ -209,7 +215,7 @@ class JudgmentLoop:
             return TickResult(None, version, None, ())
         payload, msg_id = self._last
         world = WorldState.from_payload(payload)
-        evaluation = active.evaluate(world, Origin.LIVE, monitoring=self._monitoring(active))
+        evaluation = active.evaluate(world, self.tracker.origin, monitoring=self._monitoring(active))
         step = self.tracker.apply(evaluation, world, config_version=active.config_version, evidence_ref=msg_id,
                                   related=self._related(self._last_frame))
         self.stats.frozen_evaluations += 1
@@ -244,7 +250,7 @@ class JudgmentLoop:
             self.stats.no_config_ticks += 1
         else:
             world = WorldState.from_payload(payload)
-            evaluation = active.evaluate(world, Origin.LIVE, monitoring=self._monitoring(active))  # 4) 판정(작업면 포함)
+            evaluation = active.evaluate(world, self.tracker.origin, monitoring=self._monitoring(active))  # 4) 판정(작업면 포함)
             step = self.tracker.apply(evaluation, world, config_version=active.config_version, evidence_ref=msg_id,
                                       related=related)
             self.stats.evaluated += 1
@@ -314,13 +320,18 @@ class JudgmentLoop:
         if not step.transitions and not step.local_signals:
             return
         self.stats.transitions += len(step.transitions)
-        if step.transitions and not submitted:
+        if step.transitions and not submitted and self.tracker.origin is Origin.LIVE:  # 저널은 LIVE 전이만(계약)
             try:
                 self.writer.submit_step(step, ack_id=ack_id)  # 5) 저널: 기다리지 않는다
             except JournalError:
                 self.stats.journal_errors += 1
                 log.critical("저널에 단계를 넣지 못했다(쓰기 정지·실패). 현장 경보는 계속 보낸다", exc_info=True)
         self._send_signals(step, ack_id)  # 현장 경보: fsync 를 기다리지 않는다
+        if self._record_transitions is not None and step.transitions:
+            try:
+                self._record_transitions(step.transitions)
+            except Exception:  # noqa: BLE001 - 출력 파일 실패가 판정을 막지 않는다
+                log.exception("확정 전이 기록(JSONL) 실패")
         if self._clips is not None and step.transitions:
             try:
                 self._clips.on_transitions(step.transitions)

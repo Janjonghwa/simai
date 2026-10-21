@@ -6,11 +6,19 @@
       "gateway_id": "tier0-01",               봉투 source_id·이벤트 gateway_id (환경 변수 SIMAI_TIER0_ID 가 우선)
       "state_dir": "/workspace/simai/state",   Network Volume 상태 루트 (기본 $SIMAI_ROOT/state)
       "scene_version": "scene-0",              world_state scene_version (정적 3D 확정 전 기본안)
-      "calibration_file": "calibration.json",  보정 문서(contracts/providers/calibration). SIM 은 기본 run_dir/calibration.json
+      "calibration_file": "calibration.json",  보정 문서(contracts/providers/calibration). SIM 은 기본 run_dir/calibration.json,
+                                               LIVE·file 은 필수(외부 파라미터 포함, 없으면 시작하지 않는다)
       "input": {"mode": "sim", "run_dir": "...", "anchor_wall_ms": 1760342400000, "arrival_lag_ms": 60},
                {"mode": "live", "camera_ids": ["cam1", "cam2", "cam3", "cam4"],
                 "decoder": "nvdec",                  nvdec(Pod, 기본) | cpu(노트북·시험). NVDEC 이 없으면 시작하지 않는다
                 "max_queue_wait_ms": 150, "queue_depth": 1}   프레임 최신성 정책(명세 5.1 초기값)
+               {"mode": "file", "session_dir": "recordings/rec-...",   녹화 재생(gateway/recorder 세션, S15P31A101-215)
+                "camera_ids": [...],                 생략하면 manifest 의 모든 카메라
+                "speed": "max",                      "max"(기본, 판정 tick 마다 tick_ms 씩, 결과가 매번 같다) | 배속(1.0 = 실시간)
+                "jsonl_dir": "out/run-1",            있으면 world_state.jsonl·risk_event.jsonl 을 쓴다(있는 파일은 덮어쓰지 않음)
+                "decoder": "nvdec", "max_queue_wait_ms": 150, "queue_depth": 1}   LIVE 와 같다
+               file 입력은 판정 출처가 REPLAY 이고 I1·I0 제어 채널을 열지 않는다(환경 변수가 있어도). 상태(저널·체크포인트·
+               표시 파일)는 state_dir/replay/<실행 이름>/ 에 따로 둔다(LIVE 상태와 섞이지 않음). 구조는 docs/design/tier0-recording-replay.md
       "bootstrap": {"archive": "...", "config_version": "cfg-1"},   체크포인트의 묶음을 보관소에서 찾지 못할 때 쓸 시작 묶음
       "lifecycle": {"clear_hold_ms": 3000, "persistence": [2, 3], "resume_window_ms": 10000},
       "tick_ms": 100,                          판정 주기 (10 Hz, 명세 12.2 world_state)
@@ -47,6 +55,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -82,6 +92,19 @@ class LiveInputSettings:
 
 
 @dataclass(frozen=True)
+class FileInputSettings:
+    """녹화 재생 입력(file). speed None = 최대 속도."""
+
+    session_dir: Path
+    camera_ids: tuple[str, ...] | None = None
+    speed: float | None = None
+    jsonl_dir: Path | None = None
+    decoder: str = "nvdec"
+    max_queue_wait_ms: int = 150
+    queue_depth: int = 1
+
+
+@dataclass(frozen=True)
 class ControlSettings:
     host: str
     port: int
@@ -109,6 +132,7 @@ class Tier0Settings:
     weights_path: str | None = None
     imgsz: int = 1280
     live: LiveInputSettings | None = None
+    file: FileInputSettings | None = None
     gpu_reserve_mb: int = 8192  # G0 실측 전 초기값 (simai_ai.gpu.budget 예산표)
     gpu_device: int = 0
     lag_budget_ms: int = 600
@@ -203,6 +227,51 @@ def _i1(env: Mapping[str, str]) -> I1Settings | None:
         raise Tier0ConfigError(f"I1: {e}") from None
 
 
+def _camera_ids(input_doc: Mapping[str, Any], default: list[str] | None) -> tuple[str, ...] | None:
+    ids = input_doc.get("camera_ids", default)
+    if ids is None:
+        return None
+    if not (isinstance(ids, list) and ids and all(isinstance(c, str) and c for c in ids)):
+        raise Tier0ConfigError("input.camera_ids 는 카메라 ID 목록이다")
+    if len(set(ids)) != len(ids):
+        raise Tier0ConfigError("input.camera_ids 에 같은 카메라가 두 번 있다")
+    return tuple(ids)
+
+
+def _freshness(input_doc: Mapping[str, Any]) -> tuple[str, int, int]:
+    decoder = input_doc.get("decoder", "nvdec")
+    if decoder not in DECODERS:
+        raise Tier0ConfigError(f"input.decoder 는 {' 또는 '.join(DECODERS)} 다")
+    depth = _int(input_doc, "queue_depth", 1, minimum=1)
+    if depth > 2:
+        raise Tier0ConfigError("input.queue_depth 는 1 또는 2 다 (명세 5.1)")
+    return decoder, _int(input_doc, "max_queue_wait_ms", 150), depth
+
+
+def _file_input(base: Path, input_doc: Mapping[str, Any]) -> FileInputSettings:
+    if "session_dir" not in input_doc:
+        raise Tier0ConfigError("input.session_dir(녹화 세션 디렉터리)가 없다")
+    speed = input_doc.get("speed", "max")
+    if speed == "max":
+        speed = None
+    elif isinstance(speed, bool) or not isinstance(speed, (int, float)) or not speed > 0:
+        raise Tier0ConfigError('input.speed 는 "max" 또는 양수 배속이다')
+    jsonl = input_doc.get("jsonl_dir")
+    decoder, wait, depth = _freshness(input_doc)
+    return FileInputSettings(
+        session_dir=_path(base, input_doc["session_dir"], "input.session_dir"),
+        camera_ids=_camera_ids(input_doc, None),
+        speed=None if speed is None else float(speed),
+        jsonl_dir=None if jsonl is None else _path(base, jsonl, "input.jsonl_dir"),
+        decoder=decoder, max_queue_wait_ms=wait, queue_depth=depth,
+    )
+
+
+def _replay_run_name() -> str:
+    """재생 상태 디렉터리 이름. 실행마다 새로 만들어 이전 재생의 체크포인트(Track)를 되살리지 않는다(결과가 매번 같게)."""
+    return f"run-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{uuid.uuid4().hex[:8]}"
+
+
 def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None) -> Tier0Settings:
     env = dict(os.environ if env is None else env)
     doc: dict[str, Any] = {}
@@ -227,6 +296,7 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
     sim = None
     camera_ids: tuple[str, ...] = ()
     live: LiveInputSettings | None = None
+    file: FileInputSettings | None = None
     if mode == "sim":
         if "run_dir" not in input_doc:
             raise Tier0ConfigError("input.run_dir(SIM 출력 디렉터리)가 없다")
@@ -240,29 +310,21 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
             max_backlog_ms=_int(input_doc, "max_backlog_ms", 500, minimum=1),
         )
     elif mode == "live":
-        ids = input_doc.get("camera_ids", ["cam1", "cam2", "cam3", "cam4"])
-        if not (isinstance(ids, list) and ids and all(isinstance(c, str) and c for c in ids)):
-            raise Tier0ConfigError("input.camera_ids 는 카메라 ID 목록이다")
-        camera_ids = tuple(ids)
-        if len(set(camera_ids)) != len(camera_ids):
-            raise Tier0ConfigError("input.camera_ids 에 같은 카메라가 두 번 있다")
-        decoder = input_doc.get("decoder", "nvdec")
-        if decoder not in DECODERS:
-            raise Tier0ConfigError(f"input.decoder 는 {' 또는 '.join(DECODERS)} 다")
-        depth = _int(input_doc, "queue_depth", 1, minimum=1)
-        if depth > 2:
-            raise Tier0ConfigError("input.queue_depth 는 1 또는 2 다 (명세 5.1)")
-        live = LiveInputSettings(decoder=decoder, max_queue_wait_ms=_int(input_doc, "max_queue_wait_ms", 150),
-                                 queue_depth=depth)
+        camera_ids = _camera_ids(input_doc, ["cam1", "cam2", "cam3", "cam4"])  # type: ignore[assignment]
+        decoder, wait, depth = _freshness(input_doc)
+        live = LiveInputSettings(decoder=decoder, max_queue_wait_ms=wait, queue_depth=depth)
+    elif mode == "file":
+        file = _file_input(base, input_doc)
+        state_dir = state_dir / "replay" / _replay_run_name()  # LIVE 저널·체크포인트·표시 파일과 섞이지 않게
     else:
-        raise Tier0ConfigError(f"input.mode 는 sim 또는 live 다: {mode!r}")
+        raise Tier0ConfigError(f"input.mode 는 sim, live, file 중 하나다: {mode!r}")
 
     if "calibration_file" in doc:
         calibration_file = _path(base, doc["calibration_file"], "calibration_file")
     elif sim is not None:
         calibration_file = sim.run_dir / "calibration.json"
     else:
-        raise Tier0ConfigError("calibration_file 이 없다(LIVE 는 보정 문서 경로가 필요하다)")
+        raise Tier0ConfigError(f"calibration_file 이 없다({mode} 입력은 보정 문서 경로가 필요하다)")
 
     bootstrap = doc.get("bootstrap") or {}
     archive = _path(base, bootstrap["archive"], "bootstrap.archive") if "archive" in bootstrap else None
@@ -308,10 +370,12 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         weights_path=weights,
         imgsz=int(imgsz_raw),
         live=live,
+        file=file,
         gpu_reserve_mb=_int(gpu, "reserve_mb", 8192),
         gpu_device=_int(gpu, "device", 0),
         lag_budget_ms=_int(gpu, "lag_budget_ms", 600, minimum=1),
-        i1=_i1({**env, "SIMAI_TIER0_ID": gateway_id}),
-        control=_control(env),
+        # file 입력(REPLAY)은 실제 알림 채널(I1·노트북 제어 채널)을 열지 않는다(AGENTS 규칙 5)
+        i1=None if file is not None else _i1({**env, "SIMAI_TIER0_ID": gateway_id}),
+        control=None if file is not None else _control(env),
         env=env,
     )

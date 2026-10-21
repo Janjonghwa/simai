@@ -18,6 +18,11 @@
  6. 시작: 저널 쓰기 스레드 → Checkpointer(정리는 SnapshotOutbox.compact 로만) → I1 → I0 제어 채널 → I0 영상 수신(LIVE)
     → 정리 주기 → 판정 루프.
 
+file 입력(녹화 재생, S15P31A101-215, file_input.py): 보정보다 먼저 녹화(manifest·세그먼트 파일)를 확인하고(어긋나면 종료 코드 4)
+시계를 녹화 시각(ReplayClock)으로 바꾼다. 판정 출처는 REPLAY 이고 I1·I0 제어 채널을 열지 않는다(설정이 막는다). 판정 루프가
+tick 마다 재생 메시지를 I0Ingest 에 넣고(최대 속도면 tick_ms 씩 시계를 옮긴다), 녹화를 다 판정에 넘기면 finished 를 켠다.
+world_state·확정 전이는 설정하면 JSONL 로 남긴다(I1 과 별개).
+
 LIVE 입력(S15P31A101-182, live_input.py): 검출기(TensorRT 엔진 → 없으면 .pt 가중치, 둘 다 없으면 종료 코드 4) → 디코더
 (NVDEC 또는 CPU, 열지 못하면 4) → 영상 포트 설정(모자라면 2) 순서로 확인한다. 영상 수신은 클립 링 버퍼를 붙인 뒤 연다.
 
@@ -42,6 +47,7 @@ from services.tier0.clips.service import EventClipService
 from services.tier0.config_fetch import HttpsFetcher
 from services.tier0.endpoint_registration import EndpointRegistrar, read_cert_pem
 from services.tier0.event_snapshot import EventStateSnapshot
+from services.tier0.file_input import FileInput, JsonlOutput, ReplayClock
 from services.tier0.health import HealthReporter, WarningSources
 from services.tier0.i0_control import ControlServer
 from services.tier0.i1_client import Envelope, WebSocketConnector
@@ -57,7 +63,7 @@ from simai_ai.calibration.monitor import BaselineRecord
 from simai_ai.config import BundleArchive, BundleRejected, BundleVerifier, ConfigBundle, ConfigSync
 from simai_ai.eventlog import ACKED_NAME, AckedOffsetStore, EventJournal, JournalWriter, Outbox, TransportError
 from simai_ai.geometry.rig import CameraRig
-from simai_ai.io import DecoderUnavailable, FreshnessConfig, I0Ingest, NvdecDecoder, PyAvDecoder
+from simai_ai.io import DecoderUnavailable, FreshnessConfig, I0Ingest, NvdecDecoder, PyAvDecoder, RecordingReplay
 from simai_ai.io.freshness import SkipReason
 from simai_ai.gpu.admission import RUNNING, STARTING, LoadWindow, marker_section
 from simai_ai.gpu.reserve import GpuReservation
@@ -79,6 +85,9 @@ HOUSEKEEPING_S = 0.1
 STATUS_EVERY_S = 1.0
 MARKER_EVERY_S = 5.0
 QUEUE_WAIT_EXCEEDED = str(SkipReason.QUEUE_WAIT_EXCEEDED)  # LIVE 입력 추론 대기 상한 초과(지연 표본에 싣는다)
+
+# 입력별 판정 출처. 녹화 재생은 REPLAY: 실제 알림 채널로 나가지 않는다(AGENTS 규칙 5, 명세 7장·부록 E). 없으면 LIVE
+INPUT_ORIGINS: dict[str, Origin] = {"file": Origin.REPLAY}
 
 
 class Tier0StartError(RuntimeError):
@@ -263,6 +272,11 @@ class Tier0Service:
         self._detector_factory = detector_factory
         self._tracker_backend_factory = tracker_backend_factory
         self.live_input: LiveInput | None = None
+        self.file_input: FileInput | None = None  # file 입력(녹화 재생)
+        self.jsonl: JsonlOutput | None = None
+        self._replay: RecordingReplay | None = None
+        self.finished = threading.Event()  # file 입력: 재생이 끝났다(끝까지 넘겼거나 file_input.failed)
+        self.output_failed: dict[str, Any] | None = None  # file 입력 JSONL 기록 실패 지점(진입점 종료 코드 5)
         self._clock_unknown = False  # LIVE 인데 시계 교환 채널이 없다(F1): SAME_CLOCK 으로 보지 않는다
         # GPU 공유(명세 3.2, simai_ai.gpu): 선확보와 분석 워커 접수 문에 싣는 지연 표본. gpu_torch 는 시험용 가짜 torch
         self.gpu = GpuReservation(settings.gpu_reserve_mb, device=settings.gpu_device, torch_module=gpu_torch)
@@ -315,6 +329,8 @@ class Tier0Service:
 
     def _start(self) -> None:
         s = self.settings
+        if s.file is not None:
+            self._open_recording()  # 시계를 녹화 시각으로 바꾸므로 시계보다 먼저
         self.tier0_clock = SharedTier0Clock(self._mono_ns, self._wall_ms)
         self.clock = SharedDecisionClock(self.tier0_clock)
         now = self.clock.now_ms()
@@ -359,8 +375,8 @@ class Tier0Service:
         self.journal = EventJournal.open(s.journal_dir, clock=self.clock, fsync=self._journal_fsync)
         try:
             self.store = CheckpointStore(s.checkpoint_dir, gateway_id=s.gateway_id)
-            self.tracker = LifecycleTracker(origin=Origin.LIVE, gateway_id=s.gateway_id, clock=self.clock,
-                                            policy=s.lifecycle, verification=verification)
+            self.tracker = LifecycleTracker(origin=INPUT_ORIGINS.get(s.input_mode, Origin.LIVE), gateway_id=s.gateway_id,
+                                            clock=self.clock, policy=s.lifecycle, verification=verification)
             self.recovery = recover(journal=self.journal, store=self.store, tracker=self.tracker)
         except Exception as e:
             self.journal.close()
@@ -429,6 +445,12 @@ class Tier0Service:
             lock=self.judge_lock, ready=lambda: self._restored,
         )
         self.link = self._build_link() if s.i1 is not None else None
+        if s.file is not None and s.file.jsonl_dir is not None:
+            try:
+                self.jsonl = JsonlOutput(s.file.jsonl_dir, Envelope(s.gateway_id, self.clock, new_msg_id=self._new_msg_id),
+                                         self._new_msg_id)
+            except OSError as e:  # 같은 이름 파일이 있으면(FileExistsError) 덮어쓰지 않는다
+                raise Tier0StartError(f"JSONL 출력 파일을 만들지 못했다: {s.file.jsonl_dir} ({type(e).__name__})", 2) from e
         if self.link is not None:
             self.snapshot.attach(self.link.client, self.link.publisher.envelope)
             self.outbox = self.link.outbox
@@ -446,7 +468,9 @@ class Tier0Service:
             lock=self.judge_lock, now_ms=self.clock.now_ms, config_sync=self.config_sync, perception=self.perception,
             tracker=self.tracker, journal=self.journal, writer=self.writer,
             send_i0=None if self.control is None else self.control.send,
-            offer_world_state=None if self.link is None else self.link.publisher.offer_world_state,
+            offer_world_state=(self.jsonl.world_state if self.jsonl is not None
+                               else None if self.link is None else self.link.publisher.offer_world_state),
+            record_transitions=None if self.jsonl is None else self.jsonl.transitions,
             checkpoint_inputs=self.checkpointer.update_inputs, clips=self.clips, snapshot=self.snapshot,
             observe_progress=lambda t: self.watchdog.observe(t, self._mono_ns()), restore_link=self.restore_link,
             new_msg_id=self._new_msg_id,
@@ -529,8 +553,21 @@ class Tier0Service:
         self._event(f"config:{check['result']}:{check['restored']}")
         return bundle
 
+    def _open_recording(self) -> None:
+        """file 입력: 녹화를 열고(manifest 계약·세그먼트 파일 크기·sha256·프레임 줄 확인) 시계를 녹화 시각으로 바꾼다."""
+        f = self.settings.file
+        assert f is not None
+        try:
+            self._replay = RecordingReplay(f.session_dir, f.camera_ids)
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            raise Tier0StartError(f"녹화를 열지 못했다: {f.session_dir} ({type(e).__name__}: {e})", 4) from e
+        self.replay_clock = ReplayClock(self._replay.start_ms, f.speed)
+        self._mono_ns, self._wall_ms = self.replay_clock.mono_ns, self.replay_clock.wall_ms
+
     def _build_feed(self, now: int) -> FrameFeed:
         s = self.settings
+        if s.file is not None:
+            return self._build_file_feed()
         if s.input_mode == "sim":
             assert s.sim is not None
             anchor = s.sim.anchor_wall_ms if s.sim.anchor_wall_ms is not None else now
@@ -565,6 +602,29 @@ class Tier0Service:
         return DetectorFeed(camera_ids=s.camera_ids, tickets=ingest.next_batch, detector=detector, tracker=tracker,
                             connected=live.connected, source="LIVE", on_close=live.stop)
 
+    def _build_file_feed(self) -> FrameFeed:
+        """file: 녹화 I0 메시지 → I0Ingest(LIVE 와 같은 디코딩·최신성 대기열) → YOLO → Local Tracker (file_input.py)."""
+        s = self.settings
+        f, replay = s.file, self._replay
+        assert f is not None and replay is not None
+        missing = [c for c in replay.camera_ids if c not in self.rig.cameras]
+        if missing:
+            raise Tier0StartError(f"보정 {self.rig.calibration_version} 에 없는 녹화 카메라: {missing}", 2)
+        detector = self._build_detector()
+        config = FreshnessConfig(queue_depth=f.queue_depth, max_queue_wait_ms=f.max_queue_wait_ms,
+                                 reorder_window_ms=0)  # 녹화 프레임은 frame_sequence 가 이어진다(RecordingReplay 가 확인)
+        try:
+            ingest = I0Ingest(replay.camera_ids, self._decoder_factory(f.decoder), self.clock, config)
+        except DecoderUnavailable as e:
+            raise Tier0StartError(f"file 입력: 디코더({f.decoder})를 열지 못했다: {e}", 4) from e
+        tracker_kwargs: dict[str, Any] = {"camera_ids": replay.camera_ids}
+        if self._tracker_backend_factory is not None:
+            tracker_kwargs["backend_factory"] = self._tracker_backend_factory
+        self.file_input = FileInput(replay, ingest, self.replay_clock)
+        return DetectorFeed(camera_ids=replay.camera_ids, tickets=ingest.next_batch, detector=detector,
+                            tracker=MultiCameraLocalTracker(**tracker_kwargs), connected=self.file_input.connected,
+                            source="FILE", on_close=self.file_input.close, provenance=replay.provenance())
+
     def _build_detector(self) -> PoseDetector:
         """TensorRT 엔진(SIMAI_TIER0_ENGINE) → 없으면 .pt 가중치(SIMAI_TIER0_WEIGHTS, 경고) → 둘 다 없으면 종료 코드 4."""
         if self._detector_factory is not None:
@@ -578,14 +638,15 @@ class Tier0Service:
                         s.engine_path, s.weights_path)
             model = s.weights_path
         if model is None:
-            raise Tier0StartError(f"LIVE 입력: 검출기가 없다(SIMAI_TIER0_ENGINE={s.engine_path!r}, "
+            raise Tier0StartError(f"{s.input_mode.upper()} 입력: 검출기가 없다(SIMAI_TIER0_ENGINE={s.engine_path!r}, "
                                   f"SIMAI_TIER0_WEIGHTS={s.weights_path!r} 둘 다 없음)", 4)
         try:
             return UltralyticsPoseDetector(model, imgsz=s.imgsz)
         except DetectorUnavailable as e:
-            raise Tier0StartError(f"LIVE 입력: {e}", 4) from e
+            raise Tier0StartError(f"{s.input_mode.upper()} 입력: {e}", 4) from e
         except Exception as e:  # noqa: BLE001 - 엔진·가중치를 읽지 못함(손상·GPU 불일치)
-            raise Tier0StartError(f"LIVE 입력: 검출기 {model} 를 열지 못했다 ({type(e).__name__}: {e})", 4) from e
+            raise Tier0StartError(f"{s.input_mode.upper()} 입력: 검출기 {model} 를 열지 못했다 ({type(e).__name__}: {e})",
+                                  4) from e
 
     @staticmethod
     def _decoder_factory(kind: str) -> Callable[[str], Any]:
@@ -718,12 +779,35 @@ class Tier0Service:
     def _run_judge(self) -> None:
         period = self.settings.tick_ms / 1000.0
         next_at = time.monotonic()
+        replay = self.file_input
         while not self._stop.is_set():
+            if replay is not None:  # file 입력: 재생 시계가 지난 메시지를 넣는다(최대 속도면 시계를 tick_ms 옮긴 뒤)
+                if replay.clock.max_speed:
+                    replay.clock.advance_ms(self.settings.tick_ms)
+                try:
+                    replay.pump()
+                except Exception as e:  # noqa: BLE001 - 재생 입력 실패는 재생 실패로 남기고 끝낸다(LIVE 와 다름)
+                    replay.fail(f"재생 입력 실패 ({type(e).__name__}: {e})")
             try:
                 self.judge.tick()
             except Exception:  # noqa: BLE001 - 한 tick 실패로 판정 루프를 멈추지 않는다(로그·통계)
                 self.judge.stats.errors += 1
                 log.exception("판정 tick 실패")
+            if replay is not None:
+                if self.jsonl is not None and self.jsonl.failed is not None:
+                    self.output_failed = dict(self.jsonl.failed)  # 결과를 잃었다: 정상 완료로 보지 않는다
+                    replay.fail(f"JSONL 기록 실패: {self.output_failed['file']} {self.output_failed['line']}번째 줄 "
+                                f"({self.output_failed['error']})")
+                if replay.failed is not None:
+                    self._event("replay_failed")
+                    self.finished.set()
+                    return
+                if replay.drained():
+                    self._event("replay_finished")
+                    self.finished.set()
+                    return
+                if replay.clock.max_speed:
+                    continue  # 실제 시간을 기다리지 않는다
             next_at += period
             delay = next_at - time.monotonic()
             if delay < 0:
@@ -809,6 +893,11 @@ class Tier0Service:
             "judge": vars(self.judge.stats).copy(),
             "live_input": None if self.live_input is None else {
                 **self.live_input.status(), "detector": vars(self.perception.feed.stats).copy()},
+            "file_input": None if self.file_input is None else {
+                **self.file_input.status(), "detector": vars(self.perception.feed.stats).copy(),
+                "jsonl": None if self.jsonl is None else {"world_state": self.jsonl.world_state_lines,
+                                                          "risk_event": self.jsonl.risk_event_lines,
+                                                          "failed": self.jsonl.failed}},
             "ec2_connected": self._ec2_ok(),
             "laptop_connected": self.control is not None and self.control.connected,
             "marker_error": self.marker_error,
@@ -972,6 +1061,8 @@ class Tier0Service:
         feed = getattr(getattr(self, "perception", None), "feed", None)
         if feed is not None:
             feed.close()
+        if self.jsonl is not None:
+            self.jsonl.close()
         journal = getattr(self, "journal", None)
         if journal is not None:
             if drained and not any(f.startswith(("final_checkpoint", "checkpointer")) for f in failures):

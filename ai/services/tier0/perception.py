@@ -11,7 +11,7 @@
   결과는 SIM 상한이다(input_provenance.is_upper_bound = true).
 - DetectorFeed: 실제 경로. 추론 대상 프레임(I0 수신·디코딩·최신성 정책을 거친 InferenceTicket)을 검출기(YOLO26-pose
   엔진, yolo_detector)에 묶음으로 넣고 MultiCameraLocalTracker 로 카메라 내 트랙 ID 를 붙인다. 영상 수신·디코딩 조립은
-  live_input.LiveInput 이 한다(S15P31A101-182).
+  live_input.LiveInput 이 한다(S15P31A101-182). 녹화 재생(file 입력)도 같은 DetectorFeed 를 쓴다(file_input, -215).
 
 공통 시각(Perception.choose_t): 수신 중인 카메라(최신 촬영 시각이 t_latest_global 에서 camera_stall_ms 안)의 최신 촬영
 시각 중 가장 이른 값이다(docs/design/tier0-triangulation.md: 외삽하지 않으므로 모든 유효 카메라에 그 시각 이후 프레임이
@@ -207,6 +207,7 @@ class DetectorFeed:
         connected: Callable[[str], bool] = lambda _cam: True,
         source: str = "LIVE",
         on_close: Callable[[], None] | None = None,
+        provenance: Mapping[str, Any] | None = None,
     ) -> None:
         self._camera_ids = tuple(camera_ids)
         self._tickets = tickets
@@ -215,6 +216,7 @@ class DetectorFeed:
         self._connected = connected
         self._source = source
         self._on_close = on_close
+        self._provenance = None if provenance is None else dict(provenance)  # 녹화 재생: dataset_id 포함(-215)
         self._gate = ResultGate()
         self.stats = DetectorFeedStats()
 
@@ -260,6 +262,8 @@ class DetectorFeed:
         return self._connected(camera_id)
 
     def provenance(self) -> dict[str, Any]:
+        if self._provenance is not None:
+            return dict(self._provenance)
         return {"source": self._source, "camera_ids": list(self._camera_ids)}
 
     def close(self) -> None:
