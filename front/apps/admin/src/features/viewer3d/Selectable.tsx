@@ -27,6 +27,8 @@ export function Selectable({ target, children, pickInstead }: SelectableProps) {
 
   const handleClick = useCallback(
     (event: ThreeEvent<MouseEvent>) => {
+      // 끈 동작(카메라 회전·손잡이 끌기)은 클릭이 아니다. R3F 가 빈 곳 클릭(onPointerMissed)에 쓰는 기준(2px)과 같다.
+      if (event.delta > 2) return;
       event.stopPropagation();
       store.getState().select(pickInstead?.(event) ?? { type, id });
     },
