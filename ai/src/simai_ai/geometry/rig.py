@@ -55,8 +55,8 @@ class RigCamera:
             distortion.check_model(self.distortion_model, self.distortion_coeffs)
         except ValueError as exc:
             raise ValueError(f"{self.camera_id}: {exc}") from None
-        if not self.undistort_tolerance_px > 0:
-            raise ValueError(f"{self.camera_id}: undistort_tolerance_px 는 양수여야 한다: {self.undistort_tolerance_px}")
+        if not (self.undistort_tolerance_px > 0 and math.isfinite(self.undistort_tolerance_px)):
+            raise ValueError(f"{self.camera_id}: undistort_tolerance_px 는 유한한 양수여야 한다: {self.undistort_tolerance_px}")
         K = np.array(self.pinhole.K, dtype=float)
         R = np.array(self.pinhole.R, dtype=float)
         t = np.array(self.pinhole.t, dtype=float)

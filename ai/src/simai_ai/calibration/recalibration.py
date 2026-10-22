@@ -299,10 +299,14 @@ def realign_rotation(
             d1, d2 = X - cams[a].center, X - cams[b].center
             cos = np.abs(np.sum(d1 * d2, axis=1)) / (np.linalg.norm(d1, axis=1) * np.linalg.norm(d2, axis=1))
             wide = np.arccos(np.clip(cos, 0.0, 1.0)) >= min_ray_angle_rad
+            w = X - target.center
+            n = np.linalg.norm(w, axis=1)
+            # 방향을 모르는 대응은 뺀다: 대상 카메라 중심과 같은 점(0/0 = NaN), 넘친 거리(inf 로 나눠 0 벡터·NaN).
+            # Kabsch SVD 에 유한하지 않은 값을 넣지 않는다(S15P31A101-245)
+            wide &= np.isfinite(n) & (n > 0)
             if not wide.any():
                 continue
-            w = X[wide] - target.center
-            world_rays.append(w / np.linalg.norm(w, axis=1, keepdims=True))
+            world_rays.append(w[wide] / n[wide, None])
             c = np.column_stack([own.normalized[joints[wide]], np.ones(int(wide.sum()))])
             cam_rays.append(c / np.linalg.norm(c, axis=1, keepdims=True))
     if not world_rays:

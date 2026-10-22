@@ -179,11 +179,12 @@ HF `nvidia/Cosmos3-Nano` 커밋 `e59a53c25979a090fa8706c9acc0c254a6e89b92`(2026-
 - vLLM·플러그인은 import·모델 클래스 등록·설정 읽기까지만 봤다. 가중치 적재·추론·VRAM 은 3차 세션 v1~v3.
 - constraint 로 묶은 transformers 5.9 등은 플러그인 자체 잠금(vLLM 0.22)과 같은 메이저·마이너이고 vLLM 0.21 과의 조합 그대로를 공식이 시험한 것은 아니다.
 - opencv 5.0(Tier 0 가 검증한 판)은 vLLM CI(4.13)보다 새 메이저다. vLLM 이 cv2 를 쓰는 곳은 영상 프레임 읽기다(v2 의 영상 입력 요청으로 본다).
-- **기존 결함(이 티켓이 만든 것 아님, 사전 판정 중 발견, -237 코드, 별도 버그 티켓에서 고침).** Linux 휠 numpy 의 OpenBLAS 에서 `np.linalg.svd` 가 inf·NaN 이 든 행렬에서 돌아오지 않는다.
+- **해결(S15P31A101-245). 기존 결함(이 티켓이 만든 것 아님, 사전 판정 중 발견, -237 코드).** Linux 휠 numpy 의 OpenBLAS 에서 `np.linalg.svd` 가 inf·NaN 이 든 행렬에서 돌아오지 않는다.
   - 재현 조건: numpy 2.4.6(OpenBLAS 0.3.31.188.0, dev Tier 0 이미지 torch 2.14.1)과 numpy 2.3.5(OpenBLAS 0.3.30, 이 잠금) 둘 다. 최소 재현 `A = np.ones((3, 4, 4)); A[1, 0, 0] = np.inf; np.linalg.svd(A)` 가 60초 넘게 끝나지 않음(NaN 만 넣은 경우는 따로 재지 않았다. 멈춘 시험 행에는 inf·NaN 이 함께 있다). Windows(노트북)에서는 시험이 통과한다.
   - 멈춘 시험: `tests/geometry/test_geometry_speedup_regression.py::test_degenerate_rays_match_previous` 하나(전체 실행에서 다른 멈춤 없음). 입력은 `_baseline_rows(cam1, cam2)`(rig `wide`, 25행 × 2시점 × 2)의 특수 행 — `[0,0,0]=inf`, `[1,1,1]=-inf`, `[2,0,1]=NaN`, `[3,1]=[3,0]`(같은 정규화 좌표).
   - py-spy 위치: 시험 안의 이전 구현 `legacy_batch_triangulation.py:647 _dlt_batch` 와 **제품 코드** `svd (numpy/linalg/_linalg.py:1862)` ← `_dlt_batch (simai_ai/geometry/triangulation.py:659)` ← `_solve_batch (:636)` ← `triangulate_normalized_many (:429)`(같은 행을 제품 함수에 직접 넣어 120초 넘게 멈춤).
   - 영향: Tier 0 판정 루프가 non-finite 정규화 좌표를 이 함수에 넘기면 멈출 수 있다. 이 MR 에서는 고치지 않았다(제품 코드 범위 밖).
+  - 해결(-245): SVD 계열 호출 앞에서 유한하지 않은 계수를 걸러 해 없음으로 둔다. 이 시험은 Linux 컨테이너에서 통과하고, 새 반례와 함께 새 프로세스 60초 제한으로 돈다. 전수 조사·음성 대조는 `docs/design/tier0-geometry-budget.md` "S15P31A101-245" 절.
 
 ## 2단계로 넘긴 일
 

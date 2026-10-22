@@ -455,14 +455,20 @@ def triangulation_covariances(
     J = np.where(mask[:, :, None, None], J, 0.0).reshape(M, -1, 3)
     info = np.einsum("mri,mrj->mij", J, J)
     cov = np.full((M, 3, 3), np.nan)
-    ok = front.copy()
+    # 정보 행렬이 유한하지 않으면(카메라 중심에 붙은 점의 넘침 등) 구하지 못한 점이다. cond(SVD)에 넣지 않는다(S15P31A101-245)
+    ok = front & np.isfinite(info).all(axis=(1, 2))
     if ok.any():
         with np.errstate(divide="ignore", invalid="ignore"):
             cond = np.linalg.cond(info[ok])
         idx = np.flatnonzero(ok)
         ok[idx[~(cond <= 1e12)]] = False
     if ok.any():
-        cov[ok] = sigma_px**2 * np.linalg.inv(info[ok])
+        with np.errstate(over="ignore", invalid="ignore"):
+            cov[ok] = sigma_px**2 * np.linalg.inv(info[ok])
+        # 아주 작은 정보 행렬은 조건수가 작아도 역행렬이 넘친다. 그 점도 구하지 못한 점이다(eigvalsh 에 넣지 않는다)
+        finite = np.isfinite(cov).all(axis=(1, 2))
+        cov[ok & ~finite] = np.nan
+        ok &= finite
     return cov, ok
 
 

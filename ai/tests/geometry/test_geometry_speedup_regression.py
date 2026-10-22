@@ -54,6 +54,7 @@ bench = _load("bench_tier0_geometry")
 legacy_tri = _load("legacy_batch_triangulation")
 legacy_gate = _load("legacy_batch_joint_gate")
 legacy_cv = _load("legacy_batch_cross_view")
+bounded = _load("bounded")
 
 LENSES = {
     "wide": ("OPENCV_PINHOLE", bench.WIDE_COEFFS, "PROVISIONAL"),
@@ -432,19 +433,36 @@ def _baseline_rows(a, b):
 
 def test_degenerate_rays_match_previous():
     """거의 평행한·정확히 기선 위인 시선(DLT 해 유일성 문턱 양쪽), 카메라 뒤 교점, 무한·NaN 입력에서 해 유무·2-view
-    연결 삼각측량·정밀화한 삼각측량이 이전 구현과 같다(정해진 입력)."""
+    연결 삼각측량·정밀화한 삼각측량이 이전 구현과 같다(정해진 입력).
+
+    이전 구현은 무한 행도 SVD 에 넣어 Linux OpenBLAS 에서 끝나지 않는다(S15P31A101-245). 그래서 이전 구현에는 유한한 행만
+    넣고, 무한·NaN 행은 이전 구현의 정의대로 해가 없는지 본다. 멈춤 회귀를 잡도록 새 프로세스에서 시간 제한을 두고 돈다.
+    """
+    bounded.run_bounded(__file__, "_check_degenerate_rays_match_previous")
+
+
+def _same_bits(a, b) -> None:
+    """비트 단위로 같다(`assert_array_equal` 은 +0 과 −0 을 같다고 본다)."""
+    a, b = np.asarray(a), np.asarray(b)
+    assert a.shape == b.shape and a.dtype == b.dtype and a.tobytes() == b.tobytes()
+
+
+def _check_degenerate_rays_match_previous():
     rig, _ = _rigs("wide")
     cams = rig.cameras
     seen = set()
     for ida, idb in (("cam1", "cam2"), ("cam1", "cam3"), ("cam2", "cam4")):
         a, b = cams[ida], cams[idb]
         rows = _baseline_rows(a, b)
+        finite = np.isfinite(rows).all(axis=(1, 2))
+        assert (~finite).sum() == 3
         with np.errstate(all="ignore"):
-            old_tri = legacy_tri.triangulate_normalized_many([a, b], rows)
+            old_tri = legacy_tri.triangulate_normalized_many([a, b], rows[finite])
             new_tri = triangulation_module.triangulate_normalized_many([a, b], rows)
             got = triangulation_module.solvable_normalized_many([a, b], rows)
-        np.testing.assert_array_equal(new_tri, old_tri)
-        assert got.tolist() == np.isfinite(old_tri).all(axis=1).tolist(), (ida, idb)
+        _same_bits(new_tri[finite], old_tri)
+        assert np.isnan(new_tri[~finite]).all(), (ida, idb)
+        assert got.tolist() == np.isfinite(new_tri).all(axis=1).tolist(), (ida, idb)
         seen.update(got[:15].tolist())  # 기선 근처 ε 행: 문턱 양쪽
         assert not got[14] and not got[15:18].any()  # 정확히 기선 위, 기선 연장선(카메라 뒤)
         # Cross-view 2-view 연결 삼각측량(이 행들을 공통 관절처럼 넣는다). 공통 관절은 관측 마스크를 통과한 유한한 값뿐이다
@@ -460,8 +478,8 @@ def test_degenerate_rays_match_previous():
         with np.errstate(all="ignore"):
             old_xyz, old_err = legacy_cv._two_view_triangulation_many([job])[0]
             new_xyz, new_err = cross_view_module._two_view_arrays(a, b, sides[0], sides[1])
-        np.testing.assert_array_equal(new_xyz, old_xyz)
-        np.testing.assert_array_equal(new_err, old_err)
+        _same_bits(new_xyz, old_xyz)
+        _same_bits(new_err, old_err)
     assert seen == {True, False}
 
 
