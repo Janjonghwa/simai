@@ -2,7 +2,8 @@ import tailwindcss from '@tailwindcss/vite';
 import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import react from '@vitejs/plugin-react';
 import { msw } from 'msw/vite';
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
+import { devProxy } from './src/lib/devProxy.ts';
 import { parseEnv } from './src/lib/parseEnv.ts';
 
 // 빌드할 때 환경변수를 검사한다. 틀린 값으로 만든 빌드는 배포한 뒤에야 빈 화면으로 드러난다.
@@ -15,7 +16,7 @@ const checkEnv = (): Plugin => ({
   },
 });
 
-export default defineConfig({
+export default defineConfig(({ command, mode, isPreview }) => ({
   plugins: [
     checkEnv(),
     tailwindcss(),
@@ -29,4 +30,9 @@ export default defineConfig({
     // @ 경로는 tsconfig.json 의 paths 하나에서만 정한다.
     tsconfigPaths: true,
   },
-});
+  // 개발 서버·preview 가 /api 를 실서버로 넘긴다(src/lib/devProxy.ts). preview 는 server.proxy 를 물려받는다.
+  server:
+    command === 'serve'
+      ? { proxy: devProxy(loadEnv(mode, import.meta.dirname, ''), { preview: isPreview }) }
+      : undefined,
+}));

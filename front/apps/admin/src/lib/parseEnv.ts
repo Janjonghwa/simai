@@ -1,9 +1,16 @@
 import { z } from 'zod';
 
+const httpUrl = z.url({ protocol: /^https?$/ });
+
 const schema = z.object({
+  // 비우면 화면과 같은 출처로 부른다(운영 nginx, 개발 서버 프록시).
   // 뒤에 /api/… 를 그대로 이어 붙이므로 ? 나 # 가 있으면 경로가 쿼리·조각으로 들어간다.
   VITE_API_BASE_URL: z
-    .url({ protocol: /^https?$/, error: 'http(s) 주소여야 한다' })
+    .string({ error: '값이 없다. 같은 출처로 부르려면 빈 값으로 둔다(VITE_API_BASE_URL=)' })
+    .refine((value) => value === '' || httpUrl.safeParse(value).success, {
+      error: '비우거나(같은 출처) http(s) 주소를 쓴다',
+      abort: true,
+    })
     .refine((value) => !/[?#]/.test(value), '? 나 # 없이 주소만 쓴다'),
   VITE_STOMP_URL: z.url({ protocol: /^wss?$/, error: 'ws(s) 주소여야 한다' }),
   // true 면 개발 서버에서 msw 가 REST·STOMP 를 흉내 낸다. 빌드에는 들어가지 않는다.
@@ -11,6 +18,17 @@ const schema = z.object({
     .enum(['true', 'false'], { error: 'true 또는 false 여야 한다' })
     .default('false')
     .transform((value) => value === 'true'),
+  // mock 을 켠 채 실서버로 보낼 경로(쉼표로 나눈다). 예: /api/auth 면 로그인·갱신·로그아웃만 실서버로 간다.
+  VITE_API_REAL: z
+    .string()
+    .default('')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((path) => path.trim())
+        .filter((path) => path !== ''),
+    )
+    .pipe(z.array(z.string().regex(/^\/api(\/[a-z0-9-]+)+$/, '/api/… 경로를 쉼표로 나눠 쓴다'))),
 });
 
 export type Env = z.infer<typeof schema>;
@@ -19,6 +37,8 @@ export type Env = z.infer<typeof schema>;
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 function isCleartextRemote(value: string) {
+  // 빈 값은 화면과 같은 출처다. 화면이 https 면 API 도 https 다.
+  if (value === '') return false;
   const url = new URL(value);
   return (url.protocol === 'http:' || url.protocol === 'ws:') && !LOCAL_HOSTS.has(url.hostname);
 }

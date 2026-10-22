@@ -7,9 +7,14 @@ import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const URL = 'ws://stomp.test/ws';
+/** 브로커가 받은 CONNECT 의 Authorization. */
+const authorizations: (string | undefined)[] = [];
 const broker = createStompBroker({
   url: URL,
-  authorize: (a) => a?.startsWith('Bearer t-') ?? false,
+  authorize: (a) => {
+    authorizations.push(a);
+    return a?.startsWith('Bearer t-') ?? false;
+  },
 });
 const server = setupServer(broker.handler);
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
@@ -60,8 +65,43 @@ async function untilHealth() {
 }
 
 describe('createRealtime', () => {
+  it('다시 연결할 때 가장 새 토큰을 싣는다(토큰 갱신이 연결을 다시 열지 않는다)', async () => {
+    let token: string | undefined = 't-1';
+    realtime.start({ userId: 'u-1', getToken: () => token });
+    await until(() => useRealtimeStore.getState().phase === 'OPEN');
+    authorizations.length = 0;
+
+    token = 't-2';
+    broker.dropAll();
+    await until(() => authorizations.length > 0 && useRealtimeStore.getState().phase === 'OPEN');
+    expect(authorizations).toEqual(['Bearer t-2']);
+  });
+
+  it('토큰을 Promise 로 주면 기다렸다가 싣는다(만료 전 갱신)', async () => {
+    authorizations.length = 0;
+    realtime.start({
+      userId: 'u-1',
+      getToken: () => new Promise((resolve) => setTimeout(() => resolve('t-fresh'), 30)),
+    });
+    await until(() => useRealtimeStore.getState().phase === 'OPEN');
+    expect(authorizations).toEqual(['Bearer t-fresh']);
+  });
+
+  it('토큰이 없어졌으면 이전 토큰도 Bearer undefined 도 싣지 않는다', async () => {
+    let token: string | undefined = 't-1';
+    realtime.start({ userId: 'u-1', getToken: () => token });
+    await until(() => useRealtimeStore.getState().phase === 'OPEN');
+    authorizations.length = 0;
+
+    token = undefined;
+    broker.dropAll();
+    await until(() => authorizations.length > 0);
+    expect(authorizations.every((a) => a === undefined)).toBe(true);
+    expect(useRealtimeStore.getState().phase).not.toBe('OPEN');
+  });
+
   it('토큰으로 연결하고, health 는 저장소에 두고 모든 본문을 뷰어 Source 로 넘긴다', async () => {
-    realtime.start({ token: 't-1', userId: 'u-1' });
+    realtime.start({ userId: 'u-1', getToken: () => 't-1' });
     expect(useRealtimeStore.getState().phase).toBe('CONNECTING');
     const viewer = await watchSource();
     await until(() => useRealtimeStore.getState().phase === 'OPEN');
@@ -82,7 +122,7 @@ describe('createRealtime', () => {
   });
 
   it('계약에 맞지 않는 world 는 버리고, 늦게 온 이전 프레임은 지금 프레임을 바꾸지 않는다', async () => {
-    realtime.start({ token: 't-1', userId: 'u-1' });
+    realtime.start({ userId: 'u-1', getToken: () => 't-1' });
     await until(() => useRealtimeStore.getState().phase === 'OPEN');
     const t = Date.now();
     await until(() => {
@@ -104,7 +144,7 @@ describe('createRealtime', () => {
     const offOpen = realtime.on('open', () => {
       opens += 1;
     });
-    realtime.start({ token: 't-1', userId: 'u-1' });
+    realtime.start({ userId: 'u-1', getToken: () => 't-1' });
     await until(() => opens === 1);
 
     const [raised] = riskEventsBetween(0, 40_000);
@@ -137,7 +177,7 @@ describe('createRealtime', () => {
       }),
     );
     try {
-      realtime.start({ token: 't-1', userId: 'u-1' });
+      realtime.start({ userId: 'u-1', getToken: () => 't-1' });
       const { source } = await watchSource();
       source.subscribe({
         onMessage: () => {
@@ -158,7 +198,7 @@ describe('createRealtime', () => {
   it('3D 뷰어가 새로 구독하면(늦게 붙거나 다시 띄움) 마지막 world·health·이벤트를 다시 받는다', async () => {
     const events: string[] = [];
     const off = realtime.on('riskEvent', (event) => events.push(event.event_id));
-    realtime.start({ token: 't-1', userId: 'u-1' });
+    realtime.start({ userId: 'u-1', getToken: () => 't-1' });
     await until(() => useRealtimeStore.getState().phase === 'OPEN');
     await untilHealth();
     const [raised] = riskEventsBetween(0, 40_000);
@@ -180,7 +220,7 @@ describe('createRealtime', () => {
   it('한 번에 뷰어가 바뀌어도(구독 해제 뒤 바로 구독) 새 뷰어가 가장 새 이벤트를 곧바로 받는다', async () => {
     const events: number[] = [];
     const off = realtime.on('riskEvent', (event) => events.push(event.event_sequence ?? 0));
-    realtime.start({ token: 't-1', userId: 'u-1' });
+    realtime.start({ userId: 'u-1', getToken: () => 't-1' });
     await until(() => useRealtimeStore.getState().source !== null);
     await until(() => useRealtimeStore.getState().phase === 'OPEN');
     const [raised, updated] = riskEventsBetween(0, 40_000)
@@ -213,7 +253,7 @@ describe('createRealtime', () => {
   });
 
   it('다시 연결되면 시계가 뒤로 간 world 도 받는다(서버 재시작·시계 보정)', async () => {
-    realtime.start({ token: 't-1', userId: 'u-1' });
+    realtime.start({ userId: 'u-1', getToken: () => 't-1' });
     await until(() => useRealtimeStore.getState().phase === 'OPEN');
     const t = Date.now();
     await until(() => {
@@ -235,7 +275,7 @@ describe('createRealtime', () => {
   });
 
   it('JSON 이 아니거나 계약에 맞지 않는 health 는 버리고 개수만 센다', async () => {
-    realtime.start({ token: 't-1', userId: 'u-1' });
+    realtime.start({ userId: 'u-1', getToken: () => 't-1' });
     await until(() => useRealtimeStore.getState().phase === 'OPEN');
     await untilHealth();
     const before = useRealtimeStore.getState().health;
@@ -247,7 +287,7 @@ describe('createRealtime', () => {
   });
 
   it('health 가 정한 시간 넘게 없으면 뷰어에 끊김을 알리고, 다시 오면 열림을 알린다', async () => {
-    realtime.start({ token: 't-1', userId: 'u-1' });
+    realtime.start({ userId: 'u-1', getToken: () => 't-1' });
     const viewer = await watchSource();
     await until(() => useRealtimeStore.getState().phase === 'OPEN');
     await untilHealth();
@@ -258,7 +298,7 @@ describe('createRealtime', () => {
   });
 
   it('서버가 연결을 끊으면 끊김을 알리고 다시 연결한다', async () => {
-    realtime.start({ token: 't-1', userId: 'u-1' });
+    realtime.start({ userId: 'u-1', getToken: () => 't-1' });
     const viewer = await watchSource();
     await until(() => useRealtimeStore.getState().phase === 'OPEN');
 
@@ -268,7 +308,7 @@ describe('createRealtime', () => {
   });
 
   it('stop 하면 연결을 끊고 저장소를 비운다', async () => {
-    realtime.start({ token: 't-1', userId: 'u-1' });
+    realtime.start({ userId: 'u-1', getToken: () => 't-1' });
     const viewer = await watchSource();
     await until(() => useRealtimeStore.getState().phase === 'OPEN');
     await untilHealth();
@@ -285,12 +325,12 @@ describe('createRealtime', () => {
   });
 
   it('다른 계정으로 다시 start 하면 새 Source 로 바꾸고 이전 데이터를 비운다', async () => {
-    realtime.start({ token: 't-1', userId: 'u-1' });
+    realtime.start({ userId: 'u-1', getToken: () => 't-1' });
     const first = await watchSource();
     await until(() => useRealtimeStore.getState().phase === 'OPEN');
     await untilHealth();
 
-    realtime.start({ token: 't-2', userId: 'u-2' });
+    realtime.start({ userId: 'u-2', getToken: () => 't-2' });
     expect(useRealtimeStore.getState()).toMatchObject({ health: null, source: null });
     expect(first.links.at(-1)).toBe('CLOSED:연결 종료');
     await until(() => useRealtimeStore.getState().source?.id === 'live:u-2:2');
@@ -308,7 +348,7 @@ describe('createRealtime', () => {
           finish = () => resolve(createExternalSource);
         }),
     });
-    delayed.start({ token: 't-1', userId: 'u-1' });
+    delayed.start({ userId: 'u-1', getToken: () => 't-1' });
     expect(useRealtimeStore.getState().phase).toBe('CONNECTING');
 
     await delayed.stop();
@@ -337,7 +377,7 @@ describe('createRealtime', () => {
     const off = flaky.on('riskEvent', (event) => events.push(event.event_id));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      flaky.start({ token: 't-1', userId: 'u-1' });
+      flaky.start({ userId: 'u-1', getToken: () => 't-1' });
       await until(() => useRealtimeStore.getState().phase === 'OPEN');
       await untilHealth();
       await until(() => {
@@ -364,7 +404,7 @@ describe('createRealtime', () => {
   });
 
   it('인증이 거부되면 열리지 않는다', async () => {
-    realtime.start({ token: 'bad', userId: 'u-1' });
+    realtime.start({ userId: 'u-1', getToken: () => 'bad' });
     await new Promise((r) => setTimeout(r, 200));
     expect(useRealtimeStore.getState().phase).not.toBe('OPEN');
     expect(broker.connections).toBe(0);

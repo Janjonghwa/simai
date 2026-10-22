@@ -179,10 +179,226 @@ describe('createHttp', () => {
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });
 
+  it('ProblemDetail 의 code 를 담는다', async () => {
+    server.use(
+      http.post(`${BASE}/api/auth/refresh`, () =>
+        HttpResponse.json(
+          {
+            title: 'Conflict',
+            status: 409,
+            detail: '다시 시도하세요',
+            code: 'REFRESH_TOKEN_ROTATED',
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    const request = createHttp({ baseUrl: BASE });
+
+    await expect(
+      request('/api/auth/refresh', { method: 'POST', schema: okSchema }),
+    ).rejects.toMatchObject({
+      status: 409,
+      serverMessage: '다시 시도하세요',
+      code: 'REFRESH_TOKEN_ROTATED',
+    });
+  });
+
+  it('credentials 를 그대로 넘긴다(갱신 쿠키를 싣는 인증 요청)', async () => {
+    // Node 의 msw 가로채기는 요청을 다시 만들며 credentials 를 버린다. fetch 인자를 직접 본다.
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ ok: true }));
+    vi.stubGlobal('fetch', fetch);
+    try {
+      const request = createHttp({ baseUrl: BASE });
+
+      await request('/api/auth/refresh', {
+        method: 'POST',
+        schema: okSchema,
+        credentials: 'include',
+      });
+      await request('/api/ping', { schema: okSchema });
+      expect(fetch.mock.calls.map(([, init]) => init?.credentials)).toEqual(['include', undefined]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  describe('401 갱신 후 다시 보내기', () => {
+    function guarded(valid: string, seen: { authorization: string | null; body: unknown }[]) {
+      return http.post(`${BASE}/api/ack`, async ({ request }) => {
+        const authorization = request.headers.get('Authorization');
+        seen.push({ authorization, body: await request.json() });
+        if (authorization !== `Bearer ${valid}`) {
+          return HttpResponse.json(
+            { detail: '로그인이 필요합니다', code: 'UNAUTHORIZED' },
+            { status: 401 },
+          );
+        }
+        return HttpResponse.json({ ok: true });
+      });
+    }
+
+    it('새 토큰을 받으면 같은 본문으로 한 번만 다시 보낸다', async () => {
+      const seen: { authorization: string | null; body: unknown }[] = [];
+      server.use(guarded('fresh', seen));
+      const refreshToken = vi.fn(async () => 'fresh');
+      const onUnauthorized = vi.fn();
+      const request = createHttp({
+        baseUrl: BASE,
+        getToken: () => 'stale',
+        refreshToken,
+        onUnauthorized,
+      });
+
+      await expect(
+        request('/api/ack', { method: 'POST', body: { a: 1 }, schema: okSchema }),
+      ).resolves.toEqual({ ok: true });
+      expect(refreshToken).toHaveBeenCalledExactlyOnceWith('stale');
+      expect(seen).toEqual([
+        { authorization: 'Bearer stale', body: { a: 1 } },
+        { authorization: 'Bearer fresh', body: { a: 1 } },
+      ]);
+      expect(onUnauthorized).not.toHaveBeenCalled();
+    });
+
+    it('새 토큰을 못 받거나 같은 토큰이면 다시 보내지 않고 원래 401 을 던진다', async () => {
+      const seen: { authorization: string | null; body: unknown }[] = [];
+      server.use(guarded('fresh', seen));
+      const onUnauthorized = vi.fn();
+
+      for (const refreshToken of [
+        async () => undefined,
+        async () => 'stale',
+        () => Promise.reject(new Error('갱신 실패')),
+      ]) {
+        seen.length = 0;
+        const request = createHttp({
+          baseUrl: BASE,
+          getToken: () => 'stale',
+          refreshToken,
+          onUnauthorized,
+        });
+        await expect(
+          request('/api/ack', { method: 'POST', body: {}, schema: okSchema }),
+        ).rejects.toMatchObject({ status: 401, code: 'UNAUTHORIZED' });
+        expect(seen).toHaveLength(1);
+      }
+      // 세션을 끝낼지는 refreshToken 이 정한다.
+      expect(onUnauthorized).not.toHaveBeenCalled();
+    });
+
+    it('다시 보낸 요청도 401 이면 그 토큰으로 onUnauthorized 를 부르고 더 갱신하지 않는다', async () => {
+      const seen: { authorization: string | null; body: unknown }[] = [];
+      server.use(guarded('never', seen));
+      const refreshToken = vi.fn(async () => 'fresh');
+      const onUnauthorized = vi.fn();
+      const request = createHttp({
+        baseUrl: BASE,
+        getToken: () => 'stale',
+        refreshToken,
+        onUnauthorized,
+      });
+
+      await expect(
+        request('/api/ack', { method: 'POST', body: {}, schema: okSchema }),
+      ).rejects.toMatchObject({ status: 401 });
+      expect(refreshToken).toHaveBeenCalledTimes(1);
+      expect(seen).toHaveLength(2);
+      expect(onUnauthorized).toHaveBeenCalledExactlyOnceWith('fresh');
+    });
+
+    it('갱신을 기다리는 사이 부르는 쪽이 취소하면 다시 보내지 않고 취소 오류를 던진다', async () => {
+      const seen: { authorization: string | null; body: unknown }[] = [];
+      server.use(guarded('fresh', seen));
+      const controller = new AbortController();
+      const refreshToken = async () => {
+        controller.abort();
+        return 'fresh';
+      };
+      const request = createHttp({ baseUrl: BASE, getToken: () => 'stale', refreshToken });
+
+      const error = await failure(
+        request('/api/ack', {
+          method: 'POST',
+          body: {},
+          schema: okSchema,
+          signal: controller.signal,
+        }),
+      );
+      expect(error).not.toBeInstanceOf(ApiError);
+      expect((error as Error).name).toBe('AbortError');
+      expect(seen).toHaveLength(1);
+    });
+
+    it('갱신을 기다리는 사이 취소됐으면 새 토큰을 못 받았어도 401 이 아니라 취소 오류를 던진다', async () => {
+      const seen: { authorization: string | null; body: unknown }[] = [];
+      server.use(guarded('fresh', seen));
+      const controller = new AbortController();
+      const refreshToken = async () => {
+        controller.abort();
+        return undefined;
+      };
+      const request = createHttp({ baseUrl: BASE, getToken: () => 'stale', refreshToken });
+
+      const error = await failure(
+        request('/api/ack', {
+          method: 'POST',
+          body: {},
+          schema: okSchema,
+          signal: controller.signal,
+        }),
+      );
+      expect(error).not.toBeInstanceOf(ApiError);
+      expect((error as Error).name).toBe('AbortError');
+    });
+
+    it('다시 보낼 때 시간 제한을 새로 둔다(갱신을 기다린 시간을 빼지 않는다)', async () => {
+      const seen: { authorization: string | null; body: unknown }[] = [];
+      server.use(guarded('fresh', seen));
+      // 갱신을 시간 제한보다 오래 기다린다. 제한을 나눠 쓰면 다시 보낸 요청이 바로 끊긴다.
+      const refreshToken = async () => {
+        await delay(400);
+        return 'fresh';
+      };
+      const request = createHttp({
+        baseUrl: BASE,
+        getToken: () => 'stale',
+        refreshToken,
+        timeoutMs: 250,
+      });
+
+      await expect(
+        request('/api/ack', { method: 'POST', body: {}, schema: okSchema }),
+      ).resolves.toEqual({ ok: true });
+    });
+  });
+
   it('/ 로 시작하지 않는 경로는 보내지 않는다(토큰이 다른 서버로 가지 않게)', async () => {
     const request = createHttp({ baseUrl: BASE, getToken: () => 'token-1' });
 
     await expect(request('@evil.example/x', { schema: okSchema })).rejects.toThrow(/\/ 로 시작/);
     await expect(request('//evil.example/x', { schema: okSchema })).rejects.toThrow(/\/ 로 시작/);
+  });
+
+  it('같은 출처(빈 base)에서 다른 호스트로 풀리는 경로(역슬래시·제어 문자)는 보내지 않는다', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ ok: true }));
+    vi.stubGlobal('fetch', fetch);
+    try {
+      const request = createHttp({ baseUrl: '', getToken: () => 'token-1' });
+
+      for (const path of [
+        '/\\evil.example/x',
+        '/\t/evil.example/x',
+        '/\n/evil.example/x',
+        '/a\u007fb',
+      ]) {
+        await expect(request(path, { schema: okSchema })).rejects.toThrow(/\/ 로 시작/);
+      }
+      expect(fetch).not.toHaveBeenCalled();
+      await request('/api/ping', { schema: okSchema });
+      expect(fetch.mock.calls[0]?.[0]).toBe('/api/ping');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

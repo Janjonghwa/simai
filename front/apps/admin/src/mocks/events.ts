@@ -1,4 +1,4 @@
-import { MOCK_ACCOUNTS } from '@/mocks/accounts';
+import { readMockUser } from '@/mocks/mockUser';
 import { nextMsgId } from '@/mocks/realtimeScenario';
 import type { StompBroker } from '@/mocks/stompBroker';
 import type { RiskEventMessage } from '@simai/contracts';
@@ -15,7 +15,16 @@ export interface EventsMock {
   record(message: RiskEventMessage): RiskEventMessage;
   /** GET /api/events, POST /api/events/:id/ack */
   handlers: ReturnType<typeof http.get>[];
+  /** 다음 ACK 하나를 토큰 만료(401)로 거절한다. 갱신 후 다시 보내기를 30분 기다리지 않고 본다(개발 콘솔 simaiMock). */
+  expireAuth(): void;
 }
+
+// 서버 보안 필터가 토큰을 거절할 때와 같은 본문(ProblemDetail + code).
+const unauthorized = () =>
+  HttpResponse.json(
+    { status: 401, detail: '로그인이 필요합니다', code: 'UNAUTHORIZED' },
+    { status: 401 },
+  );
 
 export function createEventsMock({
   broker,
@@ -74,11 +83,7 @@ export function createEventsMock({
     return stored;
   }
 
-  // mock 로그인 토큰(mock-token.{계정 id})으로 누가 확인했는지 정한다.
-  const accountOf = (request: Request) => {
-    const id = request.headers.get('Authorization')?.replace(/^Bearer mock-token\./, '');
-    return MOCK_ACCOUNTS.find((account) => account.id === id);
-  };
+  let rejectNextAck = false;
 
   const handlers = [
     http.get('*/api/events', () => {
@@ -88,12 +93,18 @@ export function createEventsMock({
       return HttpResponse.json({ content, totalElements: content.length, number: 0, size: 100 });
     }),
     http.post('*/api/events/:id/ack', ({ params, request }) => {
-      const account = accountOf(request);
-      if (!account) return HttpResponse.json({ message: '로그인이 필요합니다' }, { status: 401 });
-      if (account.role === 'VIEWER') {
+      // mock 로그인 토큰이나 실서버 토큰(혼합 모드)으로 누가 확인했는지 정한다. 만료된 실서버 토큰은 서버처럼 거절한다.
+      const user = readMockUser(request.headers.get('Authorization'));
+      const t = now();
+      if (!user || (user.expiresAt !== undefined && user.expiresAt <= t)) return unauthorized();
+      if (rejectNextAck) {
+        rejectNextAck = false;
+        return unauthorized();
+      }
+      if (user.role === 'VIEWER') {
         return HttpResponse.json({ message: '확인 권한이 없습니다' }, { status: 403 });
       }
-      const stored = ack(String(params.id), { id: account.id, role: account.role }, now());
+      const stored = ack(String(params.id), { id: user.id, role: user.role }, t);
       if (!stored) {
         return HttpResponse.json({ message: '이미 해소된 이벤트입니다' }, { status: 409 });
       }
@@ -102,5 +113,11 @@ export function createEventsMock({
     }),
   ];
 
-  return { record, handlers };
+  return {
+    record,
+    handlers,
+    expireAuth: () => {
+      rejectNextAck = true;
+    },
+  };
 }

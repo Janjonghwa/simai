@@ -8,7 +8,7 @@ const valid = {
 
 describe('parseEnv', () => {
   it('http(s)·ws(s) 주소를 받는다', () => {
-    expect(parseEnv(valid)).toEqual({ ...valid, VITE_API_MOCK: false });
+    expect(parseEnv(valid)).toEqual({ ...valid, VITE_API_MOCK: false, VITE_API_REAL: [] });
     expect(
       parseEnv({
         VITE_API_BASE_URL: 'https://simai.example',
@@ -38,6 +38,37 @@ describe('parseEnv', () => {
     expect(parseEnv(valid).VITE_API_MOCK).toBe(false);
     for (const value of ['yes please', '1', 'on', 'TRUE']) {
       expect(() => parseEnv({ ...valid, VITE_API_MOCK: value })).toThrow(/VITE_API_MOCK/);
+    }
+  });
+
+  it('API 주소를 비우면 같은 출처로 부른다(운영 빌드도 받는다)', () => {
+    const sameOrigin = { ...valid, VITE_API_BASE_URL: '' };
+    expect(parseEnv(sameOrigin).VITE_API_BASE_URL).toBe('');
+    expect(
+      parseEnv(
+        { VITE_API_BASE_URL: '', VITE_STOMP_URL: 'wss://simai.example/ws' },
+        { production: true },
+      ).VITE_API_BASE_URL,
+    ).toBe('');
+    expect(() => parseEnv({ VITE_STOMP_URL: valid.VITE_STOMP_URL })).toThrow(/VITE_API_BASE_URL/);
+  });
+
+  it('실서버 경로는 /api/… 를 쉼표로 나눠 받고 없으면 비운다', () => {
+    expect(parseEnv(valid).VITE_API_REAL).toEqual([]);
+    expect(parseEnv({ ...valid, VITE_API_REAL: '' }).VITE_API_REAL).toEqual([]);
+    expect(parseEnv({ ...valid, VITE_API_REAL: '/api/auth' }).VITE_API_REAL).toEqual(['/api/auth']);
+    expect(
+      parseEnv({ ...valid, VITE_API_REAL: ' /api/auth , /api/events,' }).VITE_API_REAL,
+    ).toEqual(['/api/auth', '/api/events']);
+    for (const value of [
+      'api/auth',
+      '/auth',
+      '/api/',
+      '/api/auth/',
+      '/api/*',
+      'http://x/api/auth',
+    ]) {
+      expect(() => parseEnv({ ...valid, VITE_API_REAL: value })).toThrow(/VITE_API_REAL/);
     }
   });
 
