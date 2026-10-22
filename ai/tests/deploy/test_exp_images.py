@@ -2,7 +2,7 @@
 
 반례: 실험 이미지 ENV(SIMAI_WEIGHTS_SET)가 Tier 0 명령의 가중치 묶음을 바꾸지 않음, 해시를 모르는 항목이 있으면 앞 항목을 받기 전에 멈춤,
 묶음 이름 오타·빈 묶음은 아무것도 받지 않고 시작하는 대신 코드 2, run 뒤 명령 없음은 64, 실제 목록의 실험 항목은 HF revision 고정·해시 근거,
-GPU 세대 호환(같은 주 버전의 낮은 부 버전 SASS·낮은 PTX 만, 모르는 값은 통과 아님), 세션 큐가 지금 이미지 항목만 넣고 실험 이미지는
+GPU 세대 호환(torch 휠 커널: 같은 주 버전의 낮은 부 버전 SASS·낮은 PTX 만, 모르는 값은 통과 아님), 세션 큐가 지금 이미지 항목만 넣고 실험 이미지는
 LIVE 보호를 켬, 모르는 이미지 이름은 아무 항목도 돌리지 않음, MoGe 가 확인된 로컬 파일을 쓰되 없으면 원래 이름을 둠.
 """
 
@@ -150,14 +150,35 @@ def test_arch_compatibility(xc, cap, arch, want):
     assert xc.arch_ok(cap, arch) == want
 
 
-def test_detectron2_arch_list_parsing(xc):
-    assert xc.detectron2_arch_list("8.0;8.6;8.9;9.0;10.0;12.0\n") == ["sm_80", "sm_86", "sm_89", "sm_90", "sm_100", "sm_120"]
-    assert xc.detectron2_arch_list("9.0+PTX") == ["sm_90", "compute_90"]
-    assert xc.detectron2_arch_list("") == []
-    built = xc.detectron2_arch_list("8.0;8.6;8.9;9.0;10.0;12.0")
-    for cap in ((8, 0), (8, 6), (8, 7), (8, 9), (9, 0), (10, 0), (10, 3), (12, 0), (12, 1)):  # Ampere 이후 전부
-        assert xc.arch_ok(cap, built), cap
-    assert xc.arch_ok((7, 5), built) is None
+@pytest.mark.parametrize("n_kp, has_cuda, ok", [(70, False, True), (70, True, False), (69, False, False)])
+def test_exp02_detectron2_check_is_lazyconfig_not_cuda_extension(xc, tmp_path, monkeypatch, n_kp, has_cuda, ok):
+    # S15P31A101-238: 우리 경로가 쓰는 Detectron2 는 LazyConfig 뿐. CUDA 확장이 든 옛 이미지는 g0 에서 실패해야 한다(리뷰 M2)
+    torch = types.ModuleType("torch")
+    torch.__version__ = "2.7.1+cu128"
+    torch.version = types.SimpleNamespace(cuda="12.8")
+    torch.float16, torch.bfloat16 = "f16", "bf16"
+    torch.cuda = types.SimpleNamespace(is_available=lambda: True, get_device_capability=lambda i: (9, 0),
+                                       get_device_name=lambda i: "NVIDIA H100 80GB HBM3", get_arch_list=lambda: ["sm_90"])
+    loaded = []
+    d2 = types.ModuleType("detectron2")
+    d2._C = types.SimpleNamespace(has_cuda=lambda: has_cuda)
+    cfg = types.ModuleType("detectron2.config")
+    cfg.LazyConfig = types.SimpleNamespace(load=lambda p: loaded.append(p) or types.SimpleNamespace(
+        pose_info={"keypoint_info": dict.fromkeys(range(n_kp))}))
+    for name, mod in (("torch", torch), ("detectron2", d2), ("detectron2.config", cfg)):
+        monkeypatch.setitem(sys.modules, name, mod)
+    monkeypatch.setenv("SIMAI_FS3DB_REPO", str(tmp_path / "fs"))
+    out = xc.run_checks("exp02")
+    names = [ch["name"] for ch in out["checks"]]
+    assert "detectron2_arch" not in names and "detectron2_kernel" not in names
+    ch = next(ch for ch in out["checks"] if ch["name"] == "detectron2_lazyconfig")
+    assert ch["ok"] is ok and Path(loaded[0]) == tmp_path / "fs" / "sam_3d_body" / "metadata" / "mhr70.py"
+    if ok:
+        assert ch["value"] == {"keypoints": 70, "extension_has_cuda": False}
+    elif has_cuda:
+        assert "CUDA 확장" in ch["error"]
+    # 점검 하나라도 실패하면 종료 1 (여기서는 가짜 torch 라 matmul·렌더도 실패하므로 detectron2 만으로 가르지 않는다)
+    assert xc.main(["exp02"]) == 1
 
 
 def test_check_without_cuda_fails_not_passes(xc, monkeypatch):

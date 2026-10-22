@@ -1,12 +1,12 @@
 # EXP-02 Fast SAM 3D Body 실험 이미지 (S15P31A101-32 골격 → -207 마무리, 명세 3.12 "Docker 이미지는 E-GATE-1 전에 만든다", 20.5).
 # ai/experiments/hmr/setup_runpod.sh 의 Network Volume 환경(micromamba, torch 2.5.1+cu124)을 어느 GPU·지역에서나 도는 이미지로 옮긴 것이다.
 # - torch 2.7.1+cu128: Blackwell(sm_100·sm_120) 커널이 있는 판. 고른 근거와 E-GATE-0 대조 기준은 docs/design/exp-images.md.
-# - Detectron2 CUDA 확장은 빌드 단계(CUDA 12.8 devel)에서 Ampere 이후 전 세대(TORCH_CUDA_ARCH_LIST)로 미리 컴파일해 휠로 옮긴다.
-#   실행 이미지는 CUDA base 라 nvcc·devel 층(압축 약 5GB)을 레지스트리에 올리지 않는다.
+# - Detectron2 는 CUDA 확장 없이(FORCE_CUDA=0, GPU 없는 빌드 → CPU 전용 C++ 확장) 빌드해 휠로 옮긴다(S15P31A101-238).
+#   우리 경로가 쓰는 Detectron2 기능은 LazyConfig(순수 Python)뿐이라 nvcc·CUDA devel·GPU 세대별 컴파일이 필요 없다.
 # - 코드: Fast-SAM-3D-Body @d72aa36(수정 없음), DINOv3 허브 코드 @6876159(가중치 없음. Fast 가 이 로컬 캐시를 GitHub 보다 먼저 쓴다).
 # - 가중치(sam-3d-body-dinov3, MoGe2, YOLO26x-pose)는 이미지에 없다. 시작할 때 simai-bootstrap 이 deploy/weights.json 의 exp02 묶음을
 #   저장 위치에 받고 sha256 을 확인한다(HF 토큰은 환경 변수 HF_TOKEN 만, 자식 프로세스에 넘기지 않음).
-ARG BUILD_IMAGE=simai-base-cu128-devel
+ARG BUILD_IMAGE=simai-base-cu128
 ARG BASE_IMAGE=simai-base-cu128
 
 # ---------------------------------------------------------------- 0) 잠금에서 층 목록 (deploy/tier0/Dockerfile 과 같은 방식)
@@ -26,9 +26,8 @@ RUN set -eu; \
     pick torch.txt torch torchvision triton; \
     rm one.txt
 
-# ---------------------------------------------------------------- 1) 빌드: Detectron2·chumpy·MoGe 휠, 코드 사본
+# ---------------------------------------------------------------- 1) 빌드: Detectron2·chumpy·MoGe 휠, 코드 사본 (CUDA base + C++ 컴파일러, nvcc 없음)
 FROM ${BUILD_IMAGE} AS build
-ARG TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0"
 ARG MAX_JOBS=2
 ARG FS_COMMIT=d72aa36
 ARG DETECTRON2_COMMIT=a1ce2f9
@@ -39,17 +38,17 @@ RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git build-essential \
  && rm -rf /var/lib/apt/lists/*
 COPY deploy/exp02/requirements.lock.txt /opt/build/requirements.lock.txt
-# torch 가 있어야 Detectron2 를 빌드할 수 있다(빌드용 환경. 실행 이미지에는 만든 휠만 옮긴다)
+# torch 가 있어야 Detectron2 를 빌드할 수 있다(CPU 확장도 torch 헤더로 컴파일. 빌드용 환경. 실행 이미지에는 만든 휠만 옮긴다)
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv venv -q /opt/build/.venv \
  && uv pip install -q --python /opt/build/.venv/bin/python -r /opt/build/requirements.lock.txt
 # 잠금 밖 3개를 휠로: chumpy(setup.py 가 pip 를 import), Detectron2(빌드에 torch 필요), MoGe(의존성 flex-gemm·gradio 를 빼려고 --no-deps)
-RUN CUDA_HOME=/usr/local/cuda TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" MAX_JOBS=${MAX_JOBS} FORCE_CUDA=1 \
+# FORCE_CUDA=0: Detectron2 setup.py 는 (GPU 사용 가능 && CUDA_HOME) 이거나 FORCE_CUDA=1 일 때만 CUDA 확장을 만든다. 빌드에는 GPU 가 없다
+RUN MAX_JOBS=${MAX_JOBS} FORCE_CUDA=0 \
     /opt/build/.venv/bin/python -m pip wheel -q --no-deps --no-build-isolation -w /opt/wheels \
       chumpy==0.70 \
       "detectron2 @ git+https://github.com/facebookresearch/detectron2.git@${DETECTRON2_COMMIT}" \
-      "moge @ git+https://github.com/microsoft/MoGe.git@${MOGE_COMMIT}" \
- && echo "${TORCH_CUDA_ARCH_LIST}" > /opt/wheels/detectron2_arch.txt
+      "moge @ git+https://github.com/microsoft/MoGe.git@${MOGE_COMMIT}"
 RUN git clone -q https://github.com/yangtiming/Fast-SAM-3D-Body /opt/code/Fast-SAM-3D-Body \
  && git -C /opt/code/Fast-SAM-3D-Body checkout -q "${FS_COMMIT}" \
  && rm -rf /opt/code/Fast-SAM-3D-Body/.git \
@@ -87,7 +86,6 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/wheels /tmp/wheels
 RUN uv pip install -q --no-deps /tmp/wheels/*.whl \
- && cp /tmp/wheels/detectron2_arch.txt /opt/exp02/.detectron2_arch \
  && rm -rf /tmp/wheels
 COPY --from=build /opt/code/Fast-SAM-3D-Body /opt/exp02/Fast-SAM-3D-Body
 COPY --from=build /opt/code/facebookresearch_dinov3_main /root/.cache/torch/hub/facebookresearch_dinov3_main

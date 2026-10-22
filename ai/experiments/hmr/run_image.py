@@ -6,6 +6,8 @@
 
 mode
   official   : 공식 demo 구성 — YOLO26x-Pose 검출 + MoGe2 FOV + HMR 동시 GPU 적재, hand_box_source=yolo_pose
+               --calibration(보정 결과·계약 문서)·--dataset-k(데이터셋 K) 를 주면 그 K 를 쓰고(왜곡은 펴서), 없는 그림만 MoGe2 FOV.
+               모든 그림에 K 가 있으면 MoGe 를 띄우지 않는다. 그림별 출처는 행의 k_input, 요약은 최상위 k_input (S15P31A101-238)
   split      : 기존 PoC 와 같은 bbox·K (A3_vith_split_all 출력에서 복원) → HMR 만. hand_box_source=body_decoder (병렬 decoder 비활성)
   split_pose : split 과 같은 bbox·K + 같은 bbox 에 IoU 매칭한 YOLO26x-Pose keypoints (사전 계산, 해제 후 HMR) → 공식 병렬 decoder 경로
 """
@@ -25,7 +27,12 @@ ap.add_argument("--inference-type", default="full", choices=["full", "body"])
 ap.add_argument("--yolo", default=None)
 ap.add_argument("--bbox-thr", type=float, default=0.5)
 ap.add_argument("--no-render", action="store_true")
+ap.add_argument("--calibration", default=None, help="보정 K: simai.intrinsics_estimate 기록 또는 calibration 계약 문서 (official 만)")
+ap.add_argument("--dataset-k", default=None, help="데이터셋 K: calibration 계약 문서(DATASET_GT) 또는 {cameras:[...]} (official 만)")
+ap.add_argument("--camera-id", default=None, help="K 파일의 카메라. 없으면 카메라 하나이거나 파일 이름 접두(cam_A_01 → cam_A)")
 a = ap.parse_args()
+if a.mode != "official" and (a.calibration or a.dataset_k):
+    ap.error("--calibration·--dataset-k 는 official 모드만: split 모드의 bbox·K 캐시는 원본(펴지 않은) 그림 기준이다")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fs3db_common as C  # noqa: E402
@@ -79,17 +86,33 @@ def main():
             torch.cuda.reset_peak_memory_stats()
             est, comps, timed, info = C.build(a.variant, precomputed_pose=a.mode == "split_pose")
         else:
-            est, comps, timed, info = C.build(a.variant, detector="yolo_pose", detector_model=str(a.yolo or C.YOLO), fov="moge2")
+            cands = [(kind, p) for kind, p in ((C.K_CALIBRATION, a.calibration), (C.K_DATASET, a.dataset_k)) if p]
+            for f in files:
+                im = cv2.imread(str(f))
+                if im is not None:
+                    pre[f.stem] = {"k": C.resolve_k([im.shape[1], im.shape[0]], cands, a.camera_id, f.stem)}
+            need_fov = not pre or any(p["k"]["source"] == C.K_MOGE for p in pre.values())
+            est, comps, timed, info = C.build(a.variant, detector="yolo_pose", detector_model=str(a.yolo or C.YOLO),
+                                              fov="moge2" if need_fov else None)
         res["load"] = info
         hbs = "body_decoder" if a.mode == "split" else "yolo_pose"
         for f in files:
             img = cv2.imread(str(f)); row = {"image": f.name, "size": f"{img.shape[1]}x{img.shape[0]}"}
             try:
                 if a.mode == "official":
-                    out, st = C.run_one(est, timed, img, inference_type=a.inference_type, bbox_thr=a.bbox_thr, hand_box_source=hbs)
-                    H, W = img.shape[:2]
-                    fo = float(np.asarray(out[0]["focal_length"]).reshape(-1)[0]) if out else 0
-                    K = np.array([[fo, 0, W / 2], [0, fo, H / 2], [0, 0, 1]])
+                    kin = pre[f.stem]["k"]
+                    row["k_input"] = kin
+                    t0 = time.perf_counter(); img, K = C.prepare_image(img, kin)
+                    row["undistort_ms"] = round((time.perf_counter() - t0) * 1000, 1) if kin.get("undistorted") else None  # process_one_image 밖(CPU)
+                    if K is None and "fov" not in comps:  # 추정기 기본 K(초점 1000)로 조용히 돌지 않는다
+                        raise RuntimeError("K 가 없는데 MoGe FOV 를 띄우지 않았다")
+                    out, st = C.run_one(est, timed, img, cam_int=K, inference_type=a.inference_type, bbox_thr=a.bbox_thr, hand_box_source=hbs)
+                    if K is not None:  # 모델이 넘긴 K 의 초점을 그대로 썼는지(3차 세션 확인 항목)
+                        row["k_focal_diff_px"] = max((abs(float(np.asarray(p["focal_length"]).reshape(-1)[0]) - K[0, 0]) for p in out), default=None)
+                    else:
+                        H, W = img.shape[:2]
+                        fo = float(np.asarray(out[0]["focal_length"]).reshape(-1)[0]) if out else 0
+                        K = np.array([[fo, 0, W / 2], [0, fo, H / 2], [0, 0, 1]])
                 else:
                     pr = pre[f.stem]; K = pr["K"]
                     if a.mode == "split_pose":
@@ -118,6 +141,8 @@ def main():
             print(f"[{rid}] {f.name} {row.get('result')} n={row.get('n_people')} total={row.get('process_one_image_ms')} ms "
                   f"hmr={row.get('hmr_ms')} det={row.get('detect_ms')} fov={row.get('fov_ms')} peak={row.get('peak_alloc_mb')} MB reproj={row.get('reproj_err_px')}", flush=True)
             res["images"].append(row)
+        if a.mode == "official":
+            res["k_input"] = C.k_summary([r["k_input"] for r in res["images"] if "k_input" in r])
         ok = [r for r in res["images"] if r.get("result") == "SUCCESS"]
         res["result"] = "SUCCESS" if len(ok) == len(files) else ("PARTIAL" if ok else "FAIL")
     except torch.cuda.OutOfMemoryError as e:
