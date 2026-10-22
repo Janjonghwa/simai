@@ -77,6 +77,16 @@ uv run pytest tests/risk                                   # 위 실행을 포�
 - `work_surfaces` 키는 `format_version` 1.4 이상에서만 쓴다. 없으면 등록 작업면이 없는 것으로 판정한다.
 - 높이 규칙의 교실 시험 프로파일은 규칙 버전 = 기본 버전 + 1000(R2·R3·R5 v1001, 높이차 0.35 m)이다(명세 7.4). 운영 프로파일은 v1(2 m).
 
+## 보정 상태 (format_version 1.5, 선택)
+
+최상위 `calibration_state` 는 모든 단계의 world 위치를 만든 보정의 상태다(명세 4.4, `UNCALIBRATED` / `PROVISIONAL` / `CALIBRATED` / `DRIFTED` / null).
+world_state 계약에 없는 판정 문맥이라 따로 둔다(Tier 0 는 health 와 같은 활성 보정 상태를 넘긴다).
+
+- CALIBRATED 가 아니면 R2·R3·R4 의 모든 판정에 `PROVISIONAL_CALIB` 가 붙는다(D-G3-03). R1·R5·R6·R7 은 보지 않는다.
+- 없거나 null 이면 보정 상태가 적용되지 않는 입력(PLANNED 계획 위치와 같다)으로 판정한다. 모르는 값은 형식 오류다.
+- `steps[].calibration_state`(선택)는 그 단계만의 값으로 최상위 값을 대신한다(운영 중 상태 전환 시험).
+- `calibration_state` 키(최상위·단계)는 `format_version` 1.5 이상에서만 쓴다.
+
 ## 현재 벡터
 
 | 파일 | 확인하는 것 |
@@ -98,10 +108,13 @@ uv run pytest tests/risk                                   # 위 실행을 포�
 | `r1_persistence_resume.json` | LIVE R1 + 기본 생명주기 정책: 구역 안 순간 검출 한 프레임은 이벤트 0건, `[T,F,T]` 에서 발생, 해소 뒤 10초 안 재진입은 같은 이벤트 재개(RESUMED, 다시 울림), 10초 넘어 재진입은 새 이벤트 (6.4, D-G6-07·08) |
 | `r1_footprint_position_or_anchor.json` | LIVE R1 GROUND_FOOTPRINT 보수적 결합: position_xy 만 안, 접지점만 안 모두 발생, 둘 다 띠 밖이면 판정 없음 (8.2) |
 | `r2_r3_podium_live.json` | LIVE R2·R3 교실 시험 프로파일(v1001): 40 cm 단상 앞 바닥 사람(범위가 footprint 에 걸침)은 판정 없음, 단상 위 둘째 프레임에 R2 CRITICAL·R3 HIGH 발생·현장 경보. 단상 위에서 접지점이 사라지면(Z 모름) 확인 필요(Z_UNKNOWN)로 유지되고 5초 뒤에도 해소 없음, 가려진 채 유지(HELD)면 PREDICTED, 바닥으로 내려오면 3초 뒤 해소 (7.2, 5.2, 7.1, 7.4) |
+| `r2_r3_podium_provisional_calib.json` | r2_r3_podium_live 와 같은 입력을 보정 PROVISIONAL(1.5)로 판정: R2·R3 판정 전부에 `PROVISIONAL_CALIB`, 다른 이유·등급·근거는 그대로 (4.4, D-G3-03) |
 | `r2_r3_podium_replay.json` | REPLAY: 같은 장면의 판정·전이는 같고 현장 경보 신호 0건 (7.4) |
 | `r2_r3_podium_operational_profile.json` | LIVE 운영 프로파일(R2·R3 v1, 2 m): 같은 40 cm 단상 장면에서 판정·이벤트 0건 |
 | `r5_r2_edge_stage_approach.json` | LIVE R5·R2 v1001: 6 m 무대 위 가장자리로 접근. R5(CAUTION, target_edge)가 R2 발생 영역 진입 2초 전부터 발생 판정, R2 발생 영역(범위 간격 1.0 m)에 닿으면 R2 CRITICAL 이 맡고 R5 판정 없음, R5 이벤트가 R2 이벤트보다 2.1초 앞섬, 멈추면 둘 다 3초 뒤 해소 (7.2 R5 'R1·R2') |
 | `r4_fall_floor.json` | LIVE R4 바닥 낙상: 머리 1.70 → 0.20 m 를 0.8초에 내려간 뒤 낮은 자세(지면 기준 0.6 m 이하) 2초 → CRITICAL 이벤트(지속 조건 2프레임째, 노트북 로컬 경보). 일어나 0.8 m 를 넘은 뒤 판정 없이 3초면 해소 (7.2 R4, D-G6-02) |
+| `r4_fall_floor_provisional_calib.json` | r4_fall_floor 와 같은 입력을 보정 PROVISIONAL(1.5)로 판정: R4 판정 전부(발생·유지)에 `PROVISIONAL_CALIB` (4.4, D-G3-03) |
+| `r4_fall_floor_provisional_lifecycle.json` | R4 낙상 열을 PROVISIONAL 로 두 번: 발생·경보·해소·재개 전이와 신호 모두 `PROVISIONAL_CALIB`·needs_check, 발생 중 두 단계만 CALIBRATED 면 UPDATED CONFIDENCE 로 빠졌다 다시 붙음(등급·해소 시각 그대로) (4.4, D-G3-03) |
 | `r4_fall_floor_replay.json` | REPLAY R4: 같은 낙상의 판정·전이는 같고 현장 경보 신호 0건 (7.4) |
 | `r4_podium_fall_uncertain_joints.json` | LIVE R4 40 cm 단상 위 낙상(지면 기준 = 상판). world_state 2.0.0 문서(head_z_validity UNCERTAIN, 게이트가 낸 UNCERTAIN 값이 head_z 에 실림), 그 계약 값으로 '낙상 의심 + 확인 필요'(JOINT_UNCERTAIN, CRITICAL 유지). skeleton 은 R4 가 읽지 않는다(S15P31A101-184 전에는 1.x head_z null + skeleton 귀·눈으로 다시 만들던 장면, 기대 결과 같음). 일어난 뒤 머리 근거가 UNCERTAIN 인 동안 유지(head_uncertain_recovery)로 해소하지 않고, VALID 로 돌아온 뒤 3초에 해소 |
 | `r4_lost_after_drop.json` | LIVE R4 급하강 직후 관측 상실: 0.85 m 하강 뒤 UNKNOWN → 바로 발생(PREDICTED, UNVERIFIABLE), 상실 6초 동안 해소 없음, 서 있는 모습이 보이면 3초 뒤 해소 (6.4) |

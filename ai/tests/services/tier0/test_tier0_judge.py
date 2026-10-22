@@ -125,7 +125,7 @@ def _bundle(version: str, issued_at: int):
 
 class Site:
     def __init__(self, tmp: Path, *, start_writer: bool = True, loop_cls=JudgmentLoop, policy=POLICY,
-                 verification=None, fsync=None) -> None:
+                 verification=None, fsync=None, calibration_state=None) -> None:
         import threading
 
         self.clock = FixedClock(T0)
@@ -148,6 +148,7 @@ class Site:
         self.loop = loop_cls(
             lock=threading.RLock(), now_ms=self.clock.now_ms, config_sync=self.config_sync, perception=self.perception,
             tracker=self.tracker, journal=self.journal, writer=self.writer,
+            calibration_state=calibration_state or (lambda: str(self.rig.state)),
             send_i0=lambda kind, payload: self.i0.append((kind, payload)) or True,
             offer_world_state=lambda payload, msg_id: self.offered.append((payload, msg_id)),
         )
@@ -586,7 +587,7 @@ def test_operator_close_not_submitted_to_journal_keeps_event_and_can_be_retried(
         assert started.wait(3)
         filler = writer.submit_step(LifecycleStep())  # 대기열 한 칸을 채운다
         loop = JudgmentLoop(lock=threading.RLock(), now_ms=clock.now_ms, config_sync=None, perception=None,
-                            tracker=tracker, journal=journal, writer=writer)
+                            tracker=tracker, journal=journal, writer=writer, calibration_state=lambda: "PROVISIONAL")
         request = CloseRequest(event_id=closable.event_id, close_id="7a2b3c4d-5e6f-4a1b-9c2d-3e4f5a6b7c8d",
                                actor_id="user-0003", requested_at=T0, reason="카메라 철거")
         first = loop.close(request)
@@ -610,3 +611,90 @@ def test_operator_close_not_submitted_to_journal_keeps_event_and_can_be_retried(
         release.set()
         writer.stop(3)
         journal.close()
+
+
+# --- 보정 상태 전달 (명세 4.4, D-G3-03, S15P31A101-218) -------------------------------------------------------
+
+
+def test_judgment_passes_active_calibration_state_every_tick(tmp_path, monkeypatch) -> None:
+    """판정마다(입력 정지 tick 포함) 그 시점의 활성 보정 상태를 읽어 엔진에 넘긴다. 시작 때 한 번 읽고 굳히지 않는다
+    (운영 중 DRIFTED 표시가 다음 판정부터 R2·R3·R4 확인 필요가 되도록)."""
+    from simai_ai.config import ActiveConfig
+
+    seen: list[str | None] = []
+    original = ActiveConfig.evaluate
+
+    def spy(self, world, origin, **kwargs):
+        seen.append(kwargs.get("calibration_state"))
+        return original(self, world, origin, **kwargs)
+
+    monkeypatch.setattr(ActiveConfig, "evaluate", spy)
+    state = ["PROVISIONAL"]
+    s = Site(tmp_path, calibration_state=lambda: state[0])
+    try:
+        s.tick({"w-1": (INSIDE, 0)})
+        state[0] = "DRIFTED"
+        s.tick({"w-1": (INSIDE, 0)})
+        state[0] = "CALIBRATED"
+        s.clock.advance(100)
+        result = s.loop.tick()  # 새 프레임 없음: 마지막 World 로 판정만 다시 한다
+        assert result.perceived is None and s.loop.stats.frozen_evaluations == 1
+    finally:
+        s.close()
+    assert seen == ["PROVISIONAL", "DRIFTED", "CALIBRATED"]
+
+
+def test_default_site_uses_rig_calibration_state(tmp_path, monkeypatch) -> None:
+    """Tier 0 와 같은 출처(보정 문서 state)가 그대로 넘어간다. 예시 보정 문서는 PROVISIONAL 이다."""
+    from simai_ai.config import ActiveConfig
+
+    seen: list[str | None] = []
+    original = ActiveConfig.evaluate
+    monkeypatch.setattr(ActiveConfig, "evaluate",
+                        lambda self, w, o, **kw: seen.append(kw.get("calibration_state")) or original(self, w, o, **kw))
+    s = Site(tmp_path)
+    try:
+        s.tick({"w-1": (OUTSIDE, 0)})
+    finally:
+        s.close()
+    assert CALIBRATION["state"] == "PROVISIONAL" and seen == ["PROVISIONAL"]
+
+
+def test_judgment_loop_requires_calibration_state() -> None:
+    """보정 상태 입력에 기본값이 없다(빠뜨리면 '해당 없음'으로 조용히 PROVISIONAL_CALIB 가 사라지지 않게)."""
+    import inspect
+
+    param = inspect.signature(JudgmentLoop).parameters["calibration_state"]
+    assert param.default is inspect.Parameter.empty
+
+
+class _Boom(RuntimeError):
+    pass
+
+
+def _raise():
+    raise _Boom("보정 저장소 읽기 실패")
+
+
+@pytest.mark.parametrize("getter", [_raise, lambda: None, lambda: "calibrated", lambda: ""],
+                         ids=["exception", "none", "typo", "empty"])
+def test_unknown_calibration_state_is_judged_as_uncalibrated(tmp_path, monkeypatch, getter) -> None:
+    """반례(모르는 보정이 정상·해당 없음으로 처리되는 경로): LIVE 진입점에서 보정 상태 읽기가 예외·None·모르는 값이면 판정을
+    빠뜨리지 않고 UNCALIBRATED 로 넘긴다(R2·R3·R4 확인 필요). None(PLANNED 전용 '해당 없음')은 엔진까지 가지 않는다."""
+    from simai_ai.config import ActiveConfig
+
+    seen: list[str | None] = []
+    original = ActiveConfig.evaluate
+    monkeypatch.setattr(ActiveConfig, "evaluate",
+                        lambda self, w, o, **kw: seen.append(kw.get("calibration_state")) or original(self, w, o, **kw))
+    s = Site(tmp_path, calibration_state=getter)
+    try:
+        s.tick({"w-1": (INSIDE, 0)})
+        s.tick({"w-1": (INSIDE, 0)})
+        s.clock.advance(100)
+        s.loop.tick()  # 입력 정지 tick 도 같다
+    finally:
+        s.close()
+    assert seen == ["UNCALIBRATED"] * 3
+    assert s.loop.stats.calibration_state_unknown == 3 and s.loop.stats.evaluated == 2
+

@@ -81,6 +81,7 @@ R4 에 필요한 값을 모르면 유지 판정(holding)을 낸다. holding 은 
 **확인 필요 이유(7.1).** 트랙 이유(PREDICTED·SINGLE_VIEW·IDENTITY_UNCERTAIN, r1_zone_entry.track_confidence_reasons),
 관측 상실 발생의 PREDICTED(트랙 상실) 또는 JOINT_UNCERTAIN(머리 근거 상실), 머리 높이 근거가 UNCERTAIN 이었던 표본이 후보의
 급하강 창·그 뒤에 있었으면 JOINT_UNCERTAIN, 지금 접지점이 아닌 기준(마지막 접지·머리 변화)을 썼으면 Z_UNKNOWN.
+보정 상태가 PROVISIONAL 등 CALIBRATED 가 아니면 모든 판정에 PROVISIONAL_CALIB(명세 4.4, D-G3-03, RuleContext.calibration_confidence).
 
 판정 근거 코드(reasons): head_drop(후보 근거) 뒤에 low_posture_sustained(발생) / low_posture_within_clear_margin(띠 유지) /
 observation_lost_after_drop(상실 발생, 뒤에 track_not_observed·track_missing·head_unavailable·head_uncertain 중 하나) /
@@ -94,7 +95,7 @@ low_posture(후보이지만 아직 유지 시간 전, holding). 기준을 대체
 import math
 from collections import deque
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from simai_ai.risk._parse import RiskInputError
@@ -336,6 +337,9 @@ class FallSuspectRule:
                 finding = self._present(s, track, now)
             if finding is not None:
                 findings.append(finding)
+        calib = ctx.calibration_confidence()
+        if calib:  # 판정 경로가 여럿이라 끝에서 한 번에 붙인다(Finding 이 이유를 다시 정렬하고 needs_check 를 맞춘다)
+            findings = [replace(f, confidence_reasons=f.confidence_reasons + tuple(calib)) for f in findings]
         return iter(findings)
 
     # --- 사람 하나 -------------------------------------------------------------------

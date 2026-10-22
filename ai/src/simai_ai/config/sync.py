@@ -108,10 +108,22 @@ class ActiveConfig:
         틀린 항목은 똑같이 뺀다(rejected). 묶음은 읽기 전용이라 한 번만 읽는다."""
         return work_surfaces_from_operational_geometry(self.bundle.operational_geometry, self.bundle.geometry_version)
 
-    def evaluate(self, world: WorldState, origin: Origin, *, monitoring: MonitoringState | None = None) -> Evaluation:
-        """이 묶음의 규칙·구역·등록 작업면으로 판정한다."""
+    def evaluate(
+        self,
+        world: WorldState,
+        origin: Origin,
+        *,
+        monitoring: MonitoringState | None = None,
+        calibration_state: str | None = None,
+    ) -> Evaluation:
+        """이 묶음의 규칙·구역·등록 작업면으로 판정한다. calibration_state 는 world 를 만든 보정의 상태다(RiskEngine.evaluate)."""
         return self.engine.evaluate(
-            world, self.bundle.zones, origin, monitoring=monitoring, work_surfaces=self.work_surfaces.surfaces
+            world,
+            self.bundle.zones,
+            origin,
+            monitoring=monitoring,
+            work_surfaces=self.work_surfaces.surfaces,
+            calibration_state=calibration_state,
         )
 
 

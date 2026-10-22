@@ -38,7 +38,8 @@ GROUND_FOOTPRINT 는 높이를 보지 않는다(8.2 표).
 - JOINT_UNCERTAIN: VOLUME_3D 위 끝을 VALID 관절 없이 head_z 로 정했는데 skeleton 에 VALID 관절이 없다(head_z 가
   UNCERTAIN 관절에서 왔다, geometry.joint_gate.HeadZ).
 - IDENTITY_UNCERTAIN: 카메라 간 연결이 애매함.
-- PROVISIONAL_CALIB: 규칙 입력(world_state)에 보정 상태가 없어 R1 은 내지 않는다(입력이 생기면 붙인다).
+- PROVISIONAL_CALIB: R1 은 내지 않는다. 명세 4.4 는 PROVISIONAL 에서 R2·R3·R4 에만 확인 필요를 붙이고 R1 은 넓은 불확실성으로
+  돌린다(RuleContext.calibration_state 를 읽지 않는다. 넓은 불확실성은 아직 구현하지 않았다).
 
 판정 근거 코드(reasons 앞쪽): xy_inside_polygon(위치가 다각형 안), xy_uncertainty_overlap(위치는 밖이지만 범위가 걸림),
 xy_within_clear_margin(유지 띠), VOLUME_3D 는 z_overlap / z_within_clear_margin 이 뒤따른다.

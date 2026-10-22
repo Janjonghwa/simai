@@ -26,7 +26,7 @@ lifecycle 이 해소하지 않은 채 UNVERIFIABLE 로 둔다(6.4).
 발생 지속 조건(3프레임 중 2)·재개는 lifecycle 이 한다.
 
 **확인 필요 이유(7.1).** 위의 Z_UNKNOWN·PREDICTED 와 R1 과 같은 트랙 이유(PREDICTED 위치, SINGLE_VIEW, IDENTITY_UNCERTAIN).
-PROVISIONAL_CALIB(D-G3-03)는 규칙 입력에 보정 상태가 없어 내지 못한다(R1 과 같은 한계, 입력이 생기면 붙인다).
+보정 상태가 PROVISIONAL 등 CALIBRATED 가 아니면 PROVISIONAL_CALIB(명세 4.4, D-G3-03, RuleContext.calibration_confidence).
 
 판정 대상은 사람이고 구역이 아니라 zone_id 는 비운다. 수치(metrics): height_diff_m(판정에 쓴 높이차. 운영은 인접 낮은 면과의
 높이차, 교실 시험은 서 있는 면 높이 − 바닥. UNKNOWN 이면 걸친 작업면 중 가장 큰 값).
@@ -145,7 +145,7 @@ class ElevatedPositionRule:
                     reason = REASON_STANDING_ELEVATED
                 if unregistered:
                     reason = REASON_STANDING_UNREGISTERED
-            confidence |= track_confidence_reasons(track)
+            confidence |= track_confidence_reasons(track) | ctx.calibration_confidence()
             yield Finding(
                 rule_id=self._spec.rule_id,
                 rule_version=self._spec.rule_version,

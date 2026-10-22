@@ -42,7 +42,11 @@ LIFECYCLE_VECTORS = {
 # 발생 뒤 머리 높이 모름 중 유지, 정상 동작(빠른 앉기·바닥 앉기·단상 내려오기) 0건, 비 LIVE 경보 0건.
 # R5 시나리오(S15P31A101-98, D-G6-03): 접근(발생·R1 인계·해소), 스쳐 지나감·정지, 되돌아감, 불확실 속도, 속도 상실 중 유지,
 # 축마다 다른 σ, 비 LIVE 경보 0건.
+# 보정 PROVISIONAL(S15P31A101-218, D-G3-03): R2·R3·R4 판정 전부에 PROVISIONAL_CALIB (음성 대조는 test_provisional_calib).
 RULE_VECTORS = {
+    "r2_r3_podium_provisional_calib.json",
+    "r4_fall_floor_provisional_calib.json",
+    "r4_fall_floor_provisional_lifecycle.json",
     "r1_boundary_entry_exit.json",
     "r1_boundary_entry_exit_what_if.json",
     "r1_boundary_entry_exit_replay.json",

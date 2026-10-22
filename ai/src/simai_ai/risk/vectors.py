@@ -7,8 +7,10 @@
 
 벡터 형식(JSON, format_version 1.x). 형식은 ai/tests/risk/vectors/README.md 에도 적는다.
 1.1 은 생명주기(lifecycle) 시나리오를, 1.2 는 단계별 감시 상태(monitoring, R7 입력)를, 1.3 은 발생 지속 조건·재개
-설정과 확인 필요 이유(confidence_reasons)를, 1.4 는 등록 작업면(work_surfaces, R2·R3·R5 입력)을 더했다. 이전 벡터는 그대로 읽힌다.
-monitoring 키는 format_version 1.2 이상에서만, 1.3 키는 1.3 이상에서만, work_surfaces 는 1.4 이상에서만 받는다(낮은 버전에 있으면 오류).
+설정과 확인 필요 이유(confidence_reasons)를, 1.4 는 등록 작업면(work_surfaces, R2·R3·R5 입력)을, 1.5 는 보정 상태
+(calibration_state, R2·R3·R4 의 PROVISIONAL_CALIB 입력)를 더했다. 이전 벡터는 그대로 읽힌다.
+monitoring 키는 format_version 1.2 이상에서만, 1.3 키는 1.3 이상에서만, work_surfaces 는 1.4 이상에서만, calibration_state 는
+1.5 이상에서만 받는다(낮은 버전에 있으면 오류).
 
     {
       "format_version": "1.0.0",
@@ -18,6 +20,7 @@ monitoring 키는 format_version 1.2 이상에서만, 1.3 키는 1.3 이상에�
       "rules": [{"rule_id": "R1", "rule_version": 1}],   # 등록부에서 만든다. 빈 배열 가능
       "zones": [ Zone ],                                 # simai_ai.risk.zone.Zone.from_json 형식
       "work_surfaces": [ WorkSurface ],                  # 선택(1.4). simai_ai.risk.work_surface.WorkSurface.from_json 형식
+      "calibration_state": "PROVISIONAL",                # 선택(1.5). UNCALIBRATED / PROVISIONAL / CALIBRATED / DRIFTED / null
       "steps": [
         {
           "clock_ms": 1760342400200,                     # 고정 시계의 판정 시각. 단계마다 줄지 않는다
@@ -68,6 +71,10 @@ metrics 는 절대 오차 METRIC_ABS_TOL 안에서 같으면 통과다(플랫폼
 등록 작업면(1.4, 선택). 최상위 work_surfaces 는 모든 단계에 같이 쓰는 등록 작업면(명세 7.5, 활성 구성 묶음의 Operational
 Geometry)이다. 형식은 simai_ai.risk.work_surface.WorkSurface.from_json(ContactEstimator 와 같은 임시 형식)이고 ID 가 겹치면 오류다.
 없으면 등록 작업면이 없는 것으로 판정한다(R2·R3 는 판정 근거가 없다).
+
+보정 상태(1.5, 선택). 최상위 calibration_state 는 모든 단계의 world 위치를 만든 보정의 상태(명세 4.4, RuleContext.calibration_state)다.
+없거나 null 이면 보정 상태가 적용되지 않는 입력(PLANNED 계획 위치와 같다)으로 판정해 PROVISIONAL_CALIB 가 붙지 않는다.
+steps[].calibration_state(선택, 1.5)는 그 단계부터가 아니라 그 단계만의 값으로 최상위 값을 대신한다(운영 중 보정 상태 전환 시험).
 """
 
 import argparse
@@ -96,7 +103,7 @@ from simai_ai.risk._parse import (
 )
 from simai_ai.risk.alerting import AckActor, LocalSignal
 from simai_ai.risk.clock import FixedClock
-from simai_ai.risk.common import ConfidenceReason, Origin, Severity
+from simai_ai.risk.common import CALIBRATION_STATES, ConfidenceReason, Origin, Severity
 from simai_ai.risk.engine import Evaluation, RiskEngine, RuleContractError
 from simai_ai.risk.event_id import EventIdFactory, is_uuid7
 from simai_ai.risk.lifecycle import (
@@ -117,6 +124,7 @@ FORMAT_MAJOR = 1
 MONITORING_MIN_MINOR = 2  # steps[].monitoring 을 더한 마이너 버전
 PERSISTENCE_MIN_MINOR = 3  # 발생 지속 조건·재개 설정, confidence_reasons 를 더한 마이너 버전
 WORK_SURFACES_MIN_MINOR = 4  # 최상위 work_surfaces(등록 작업면, R2·R3·R5 입력)를 더한 마이너 버전
+CALIBRATION_STATE_MIN_MINOR = 5  # 최상위 calibration_state(보정 상태, R2·R3·R4 의 PROVISIONAL_CALIB 입력)를 더한 마이너 버전
 METRIC_ABS_TOL = 1e-9
 
 
@@ -139,6 +147,7 @@ class VectorStep:
     # 생명주기 기대값. 비교용 dict(키는 _TRANSITION_KEYS·_SIGNAL_KEYS). lifecycle 이 없으면 None.
     expected_transitions: tuple[Mapping[str, Any], ...] | None = None
     expected_signals: tuple[Mapping[str, Any], ...] | None = None
+    calibration_state: str | None = None  # 이 단계의 보정 상태(steps[].calibration_state, 없으면 최상위 값)
 
 
 @dataclass(frozen=True)
@@ -160,6 +169,7 @@ class Vector:
     path: Path | None = None
     lifecycle: LifecycleSpec | None = None
     work_surfaces: tuple[WorkSurface, ...] = ()
+    calibration_state: str | None = None
 
 
 @dataclass(frozen=True)
@@ -179,7 +189,7 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
     reject_unknown_keys(
         obj,
         {"format_version", "vector_id", "description", "origin", "rules", "zones", "work_surfaces", "steps"}
-        | {"lifecycle"},
+        | {"lifecycle", "calibration_state"},
         where,
     )
 
@@ -210,6 +220,11 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
         for i, w in enumerate(as_list(obj.get("work_surfaces", []), f"{where}.work_surfaces"))
     )
     check_unique_ids(work_surfaces, f"{where}.work_surfaces")
+    if "calibration_state" in obj and minor < CALIBRATION_STATE_MIN_MINOR:
+        raise RiskInputError(
+            f"{where}.calibration_state: format_version {FORMAT_MAJOR}.{CALIBRATION_STATE_MIN_MINOR} 이상에서만 쓴다(이 벡터 {version})"
+        )
+    calibration_state = _parse_calibration_state(obj.get("calibration_state"), f"{where}.calibration_state")
     transition_keys = _TRANSITION_KEYS + (("confidence_reasons",) if minor >= PERSISTENCE_MIN_MINOR else ())
 
     steps = []
@@ -217,10 +232,14 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
     for i, s in enumerate(as_list(require(obj, "steps", where), f"{where}.steps")):
         at = f"{where}.steps[{i}]"
         s = as_mapping(s, at)
-        step_keys = {"clock_ms", "world_state", "monitoring", "expect"}
+        step_keys = {"clock_ms", "world_state", "monitoring", "expect", "calibration_state"}
         if lifecycle is not None:
             step_keys |= {"inject_findings", "acks"}
         reject_unknown_keys(s, step_keys, at)
+        if "calibration_state" in s and minor < CALIBRATION_STATE_MIN_MINOR:
+            raise RiskInputError(
+                f"{at}.calibration_state: format_version {FORMAT_MAJOR}.{CALIBRATION_STATE_MIN_MINOR} 이상에서만 쓴다(이 벡터 {version})"
+            )
         if "monitoring" in s and minor < MONITORING_MIN_MINOR:
             raise RiskInputError(
                 f"{at}.monitoring: format_version {FORMAT_MAJOR}.{MONITORING_MIN_MINOR} 이상에서만 쓴다(이 벡터 {version})"
@@ -237,6 +256,11 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
             clock_ms=clock_ms,
             world_state=WorldState.from_payload(require(s, "world_state", at), f"{at}.world_state"),
             monitoring=_parse_monitoring(s.get("monitoring"), f"{at}.monitoring"),
+            calibration_state=(
+                _parse_calibration_state(s["calibration_state"], f"{at}.calibration_state")
+                if "calibration_state" in s
+                else calibration_state
+            ),
             expected=_parse_findings(require(expect, "findings", f"{at}.expect"), f"{at}.expect.findings", minor),
         )
         if lifecycle is not None:
@@ -273,7 +297,15 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
         path=path,
         lifecycle=lifecycle,
         work_surfaces=work_surfaces,
+        calibration_state=calibration_state,
     )
+
+
+def _parse_calibration_state(value: Any, where: str) -> str | None:
+    state = as_opt_str(value, where)
+    if state is not None and state not in CALIBRATION_STATES:
+        raise RiskInputError(f"{where}: 모르는 보정 상태 {state!r}")
+    return state
 
 
 def load_vector(path: Path) -> Vector:
@@ -296,6 +328,7 @@ def run_vector(vector: Vector, registry: RuleRegistry | None = None) -> VectorRe
             vector.origin,
             monitoring=step.monitoring,
             work_surfaces=vector.work_surfaces,
+            calibration_state=step.calibration_state,
         )
         mismatches += [f"steps[{i}]: {m}" for m in _compare(evaluation, step)]
         if lifecycle is not None:

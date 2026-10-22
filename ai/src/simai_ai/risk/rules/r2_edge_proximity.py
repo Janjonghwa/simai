@@ -26,7 +26,7 @@
 발생 지속 조건(3프레임 중 2)·재개는 lifecycle 이 한다. 경계는 BOUNDARY_TOLERANCE_M 이하를 닿은 것으로 본다(안전 쪽).
 
 **확인 필요 이유(7.1).** 위의 Z_UNKNOWN·PREDICTED 와 R1 과 같은 트랙 이유(PREDICTED 위치, SINGLE_VIEW, IDENTITY_UNCERTAIN).
-PROVISIONAL_CALIB(D-G3-03)는 규칙 입력에 보정 상태가 없어 내지 못한다(입력이 생기면 붙인다).
+보정 상태가 PROVISIONAL 등 CALIBRATED 가 아니면 PROVISIONAL_CALIB(명세 4.4, D-G3-03, RuleContext.calibration_confidence).
 
 판정 대상은 사람이고 구역이 아니라 zone_id 는 비운다. 근거 코드(reasons): 거리 코드 + 서 있는 면 코드(standing_on_surface /
 standing_surface_held / z_unknown_on_surface_footprint). 수치(metrics, 계약 rule_metrics 예시 이름): edge_distance_m(position_xy·
@@ -163,7 +163,7 @@ class EdgeProximityRule:
                 confidence.add(ConfidenceReason.PREDICTED)
             else:
                 basis_reason = REASON_STANDING_ON_SURFACE
-            confidence |= track_confidence_reasons(track)
+            confidence |= track_confidence_reasons(track) | ctx.calibration_confidence()
             distance = min(distance_to_polygon(r.center, e.segment) for r in ranges for e in mine)
             yield Finding(
                 rule_id=self._spec.rule_id,

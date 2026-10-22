@@ -23,7 +23,13 @@ from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 from simai_ai.risk._parse import RiskInputError
-from simai_ai.risk.common import ConfidenceReason, Severity, normalize_confidence
+from simai_ai.risk.common import (
+    CALIBRATION_STATES,
+    PROVISIONAL_CALIB_STATES,
+    ConfidenceReason,
+    Severity,
+    normalize_confidence,
+)
 from simai_ai.risk.monitoring import MonitoringState
 from simai_ai.risk.work_surface import WorkSurface
 from simai_ai.risk.world import WorldState, WorldTrack
@@ -168,6 +174,11 @@ class RuleContext:
 
     state: 이 출처의 판정 사이 규칙 기억(RuleState.view). 엔진이 넣는다. 기억이 필요한 규칙(R4)만 읽고 쓴다. 직접 만든
     RuleContext 는 빈 칸이라 그 판정 한 번만의 기억이다.
+
+    calibration_state: world 의 위치를 만든 보정 버전(world.calibration_version)의 상태(명세 4.4, contracts defs
+    calibration_state). world_state 계약에 없는 판정 문맥이라 감시 상태처럼 따로 받는다(Tier 0 는 health 와 같은 활성 보정
+    상태를 넣는다). None 은 보정 상태가 적용되지 않는 입력이다(PLANNED 계획 위치는 측정이 아니다). R2·R3·R4 는
+    calibration_confidence() 로 PROVISIONAL_CALIB 를 붙인다(D-G3-03).
     """
 
     now_ms: int
@@ -177,6 +188,17 @@ class RuleContext:
     monitoring_expected: bool = True
     work_surfaces: tuple[WorkSurface, ...] = ()
     state: RuleStateView = field(default_factory=RuleStateView, compare=False)
+    calibration_state: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.calibration_state is not None and self.calibration_state not in CALIBRATION_STATES:
+            raise RiskInputError(f"RuleContext: 모르는 보정 상태 {self.calibration_state!r}")
+
+    def calibration_confidence(self) -> frozenset[ConfidenceReason]:
+        """보정 상태에서 오는 확인 필요 이유(명세 4.4 'R2·R3·R4 에 확인 필요'). 보정 상태를 쓰는 규칙만 부른다."""
+        if self.calibration_state in PROVISIONAL_CALIB_STATES:
+            return frozenset({ConfidenceReason.PROVISIONAL_CALIB})
+        return frozenset()
 
     @property
     def lag_ms(self) -> int:
