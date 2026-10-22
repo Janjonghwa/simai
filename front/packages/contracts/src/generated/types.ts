@@ -230,7 +230,7 @@ escalations?: OperatorEscalation[]
 /**
  * 확인 필요의 이유 (명세 7.1, 13.2 화면 표시, 1.3.0). 없으면(이전 버전) needs_check 만으로 읽는다
  * 
- * Items: '확인 필요'의 이유 (명세 7.1). Z_UNKNOWN: 지지 표면·높이 모름(z_validity UNAVAILABLE). PREDICTED: 위치가 관측이 아니라 예측·마지막 추정값(관측 상실 포함). PROVISIONAL_CALIB: 보정 PROVISIONAL. SINGLE_VIEW: 2대 이상 유효 관측 없음. JOINT_UNCERTAIN: 근거 관절 UNCERTAIN. IDENTITY_UNCERTAIN: 카메라 간 연결이 애매함. UNSPECIFIED: 확인 필요인데 생산자가 원인을 적지 않음(이유 목록 이전 형식의 needs_check=true 를 옮길 때만, 원인을 지어내지 않는다)
+ * Items: '확인 필요'의 이유 (명세 7.1). Z_UNKNOWN: 지지 표면·높이 모름(z_validity UNAVAILABLE). PREDICTED: 위치가 관측이 아니라 예측·마지막 추정값(관측 상실 포함). PROVISIONAL_CALIB: 판정 위치를 만든 보정이 CALIBRATED 가 아님(PROVISIONAL·DRIFTED, UNCALIBRATED 에서 판정이 나온 경우 방어적으로. UNCALIBRATED 는 여전히 위치 기반 판단 불가이고 이 표시가 판정을 허용한다는 뜻이 아니다. R2·R3·R4 에만, PLANNED 계획 위치는 해당 없음, 명세 4.4, 계약 v6.0.0 의미 확장). SINGLE_VIEW: 2대 이상 유효 관측 없음. JOINT_UNCERTAIN: 근거 관절 UNCERTAIN. IDENTITY_UNCERTAIN: 카메라 간 연결이 애매함. UNSPECIFIED: 확인 필요인데 생산자가 원인을 적지 않음(이유 목록 이전 형식의 needs_check=true 를 옮길 때만, 원인을 지어내지 않는다)
  */
 export type ConfidenceReasons = ("Z_UNKNOWN" | "PREDICTED" | "PROVISIONAL_CALIB" | "SINGLE_VIEW" | "JOINT_UNCERTAIN" | "IDENTITY_UNCERTAIN" | "UNSPECIFIED")[]
 /**

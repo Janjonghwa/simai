@@ -61,6 +61,10 @@ dev = [
     "fastapi>=0.142.4,<0.143",
     "httpx>=0.28",
     "uvicorn>=0.54,<0.55",
+    # contracts/ 스키마 → pydantic v2 모델 생성(contracts/scripts/generate_python_models.py, 명세 21.2).
+    # 생성 결과가 판마다 달라 판을 고정한다(올린 지 2주가 지난 판). 모델(simai_ai.contracts.models)은 pydantic 이 있어야 import 된다
+    "datamodel-code-generator==0.83.0",
+    "pydantic>=2.14,<3",
 ]
 
 [tool.uv.sources]
@@ -119,6 +123,8 @@ forbidden_modules = [
     "pyarrow",
     "scipy",
     "av",
+    # contracts 생성 모델(simai_ai.contracts.models)은 pydantic 이 필요해 기본 설치의 risk 가 거쳐서도 불러오지 않는다
+    "pydantic",
 ]
 
 [[tool.importlinter.contracts]]
