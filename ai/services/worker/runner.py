@@ -33,7 +33,7 @@ from typing import Any
 
 from simai_ai.gpu.admission import Admission, AdmissionGate
 
-from .client import GaveUp, Lease, LeaseClient, RequestRejected, RetryableError
+from .client import JOB_TYPES, GaveUp, Lease, LeaseClient, RequestRejected, RetryableError
 
 PAUSE_REPORT_S = 300.0  # 접수 중지가 이어지면 이 주기로 경고를 다시 남긴다(운영 감시)
 from .handlers import JobContext, JobFailed, JobHandler
@@ -88,6 +88,8 @@ class Worker:
     ) -> None:
         if not handlers:
             raise ValueError("작업 처리기가 하나도 없다")
+        if unknown := sorted(set(handlers) - JOB_TYPES):
+            raise ValueError(f"계약(job_request job_type)에 없는 작업 유형: {unknown}")
         if pause_s <= 0 or live_poll_s <= 0 or hold_max_s < 0:
             raise ValueError("pause_s·live_poll_s 는 양수, hold_max_s 는 0 이상이다")
         self.client = client

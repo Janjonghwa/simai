@@ -1,10 +1,12 @@
 """I5 대여 클라이언트: 계약 예시 해석, HTTP 상태 분류, 백오프, 만든 메시지의 계약 적합성."""
 
 import copy
+import json
 
 import pytest
 
 from services.worker.client import (
+    JOB_TYPES,
     SCHEMA_VERSION,
     AuthError,
     Backoff,
@@ -15,7 +17,7 @@ from services.worker.client import (
     RetryableError,
 )
 from services.worker.transport import Response, TransportError, heartbeat_path, result_path
-from simai_ai.providers.contract import schema_errors
+from simai_ai.providers.contract import contracts_dir, schema_errors
 from simai_ai.providers.testing import load_example
 
 
@@ -212,3 +214,8 @@ def test_contract_examples_tell_consistent_story():
         if p["status"] in ("ACCEPTED", "DUPLICATE"):
             subs = [c for c in callbacks.values() if c["payload"]["lease_id"] == p["lease_id"] and c["sent_at"] <= msg["sent_at"]]
             assert subs, f"{name}: 앞선 제출이 없다"
+
+
+def test_job_types_match_contract():
+    schema = json.loads((contracts_dir() / "messages" / "job_request.schema.json").read_text(encoding="utf-8"))
+    assert JOB_TYPES == frozenset(schema["$defs"]["job_type"]["enum"])
