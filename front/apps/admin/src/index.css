@@ -1,1 +1,16 @@
 @import '@simai/ui/globals.css';
+
+/* 관제 경보 점멸(1초 주기, 명세 FR-8). motion-safe:animate-alarm-blink 로 써서 움직임 줄이기 설정이면 멈춘다. */
+@theme {
+  --animate-alarm-blink: alarm-blink 1s ease-in-out infinite;
+
+  @keyframes alarm-blink {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
+}

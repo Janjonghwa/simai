@@ -13,8 +13,9 @@ import {
 } from '@/features/layout/status';
 import { SystemHealthChip } from '@/features/layout/SystemHealthChip';
 import { useThemeStore } from '@/features/layout/theme.store';
-import { useLinkAlive } from '@/features/layout/useLinkAlive';
 import { useNow } from '@/features/layout/useNow';
+import { useLinkAlive } from '@/hooks/useLinkAlive';
+import { playTestAlarm } from '@/lib/alarmSound';
 import { useRealtimeStore, type HealthSnapshot } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
 import {
@@ -27,7 +28,7 @@ import {
 import { Separator } from '@simai/ui/components/separator';
 import { cn } from '@simai/ui/lib/utils';
 import { Link } from '@tanstack/react-router';
-import { ChevronDown, LogOut, Moon, Sun } from 'lucide-react';
+import { BellRing, ChevronDown, LogOut, Moon, Sun } from 'lucide-react';
 
 // 값마다 작은 컴포넌트가 실시간 저장소를 직접 구독한다. health 가 1초마다 와도 바뀐 칸만 다시 그린다.
 
@@ -102,6 +103,10 @@ function AccountMenu() {
         <DropdownMenuItem onClick={toggleTheme}>
           {theme === 'dark' ? <Sun /> : <Moon />}
           {theme === 'dark' ? '화이트 모드' : '다크 모드'}
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => void playTestAlarm()}>
+          <BellRing />
+          시험 경보
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => logout()}>

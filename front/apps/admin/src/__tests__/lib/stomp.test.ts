@@ -1,6 +1,6 @@
 import { createExternalSource, type SourceConnectionChange } from '@/features/viewer3d';
 import { createRealtime, type Realtime } from '@/lib/stomp';
-import { viewerHealthAt, worldStateAt } from '@/mocks/realtimeScenario';
+import { riskEventsBetween, viewerHealthAt, worldStateAt } from '@/mocks/realtimeScenario';
 import { createStompBroker } from '@/mocks/stompBroker';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { setupServer } from 'msw/node';
@@ -78,6 +78,32 @@ describe('createRealtime', () => {
     expect(rejected).toBe(0);
     expect(viewer.links).toContain('OPEN');
     expect(viewer.source.id).toBe('live:u-1:1');
+  });
+
+  it('계약을 통과한 risk_event 만 알리고, 연결이 열릴 때마다 open 을 알린다', async () => {
+    const events: string[] = [];
+    let opens = 0;
+    const offEvent = realtime.on('riskEvent', (event) => events.push(event.lifecycle));
+    const offOpen = realtime.on('open', () => {
+      opens += 1;
+    });
+    realtime.start({ token: 't-1', userId: 'u-1' });
+    await until(() => opens === 1);
+
+    const [raised] = riskEventsBetween(0, 40_000);
+    await until(() => {
+      broker.publish('/topic/events', raised);
+      return events.length > 0;
+    });
+    const rejected = useRealtimeStore.getState().rejected;
+    broker.publish('/topic/events', { msg_type: 'risk_event', payload: {} });
+    await until(() => useRealtimeStore.getState().rejected === rejected + 1);
+    expect(events.every((e) => e === 'RAISED')).toBe(true);
+
+    broker.dropAll();
+    await until(() => opens === 2);
+    offEvent();
+    offOpen();
   });
 
   it('JSON 이 아니거나 계약에 맞지 않는 health 는 버리고 개수만 센다', async () => {

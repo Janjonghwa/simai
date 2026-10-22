@@ -1,7 +1,8 @@
+import type { EventsMock } from '@/mocks/events';
 import { riskEventsBetween, viewerHealthAt, worldStateAt } from '@/mocks/realtimeScenario';
 import type { StompBroker } from '@/mocks/stompBroker';
 
-// 개발 서버 mock 송출: world 10Hz, health 1Hz, 위험 이벤트는 40초마다 발생→갱신→해소(명세 12.4 주기).
+// 개발 서버 mock 송출: world 10Hz, health 1Hz, 위험 이벤트는 40초 주기 시나리오(realtimeScenario).
 const WORLD_MS = 100;
 const HEALTH_MS = 1000;
 const EVENTS_MS = 250;
@@ -14,7 +15,11 @@ export interface RealtimeMock {
   stop(): void;
 }
 
-export function startRealtimeMock(broker: StompBroker, now: () => number = Date.now): RealtimeMock {
+export function startRealtimeMock(
+  broker: StompBroker,
+  events: Pick<EventsMock, 'record'>,
+  now: () => number = Date.now,
+): RealtimeMock {
   let healthPausedUntil = 0;
   let lastEventCheck = now();
   // 연결이 없으면(로그인 전·로그아웃 뒤) 메시지를 만들지 않는다.
@@ -29,10 +34,10 @@ export function startRealtimeMock(broker: StompBroker, now: () => number = Date.
     }, HEALTH_MS),
     setInterval(() => {
       const t = now();
-      if (live()) {
-        for (const event of riskEventsBetween(lastEventCheck, t)) {
-          broker.publish('/topic/events', event);
-        }
+      // 저장소에는 늘 반영한다. 로그인하면 목록(GET /api/events)으로 지금 상태를 받는다.
+      for (const message of riskEventsBetween(lastEventCheck, t)) {
+        const stored = events.record(message);
+        if (live()) broker.publish('/topic/events', stored);
       }
       lastEventCheck = t;
     }, EVENTS_MS),
