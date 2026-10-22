@@ -252,6 +252,51 @@ def test_realign_rotation(store):
     assert realign_rotation(doc, "cam9", obs) is None
 
 
+def test_realign_rotation_skips_correspondences_without_direction(store, monkeypatch):
+    """반례(S15P31A101-245): 기준점이 대상 카메라 중심과 같으면 시선 방향이 없다(0/0 = NaN). 그 대응만 빼고 맞추며
+    Kabsch SVD 에는 유한한 단위 벡터만 들어간다(NaN 이면 LinAlgError, Linux OpenBLAS 는 inf 에서 멈춤)."""
+    from simai_ai.calibration import recalibration as recalibration_module
+
+    doc = store.snapshot().doc()
+    turned = _rigs(doc, rotate="cam3", deg=1.5)
+    obs = [p for k in range(10) for p in _people(turned, T0 + k, seed=k)]
+    center = RigCamera.from_calibration(next(c for c in doc["cameras"] if c["camera_id"] == "cam3")).center
+    real_tri, real_kabsch = recalibration_module.triangulate_normalized_many, recalibration_module._kabsch
+
+    def poisoned(*args, **kwargs):
+        X = real_tri(*args, **kwargs)
+        X[0] = center
+        return X
+
+    seen = []
+
+    def checked_kabsch(A, B):
+        for M in (A, B):
+            assert np.isfinite(M).all() and np.allclose(np.linalg.norm(M, axis=1), 1.0)
+        seen.append(len(A))
+        return real_kabsch(A, B)
+
+    monkeypatch.setattr(recalibration_module, "triangulate_normalized_many", poisoned)
+    monkeypatch.setattr(recalibration_module, "_kabsch", checked_kabsch)
+    R, _ = realign_rotation(doc, "cam3", obs)
+    assert seen and _angle_deg(R, turned["cam3"].R) < 0.05
+
+
+def test_realign_rotation_rejects_overflowing_camera_center(store):
+    """반례(S15P31A101-245, 리뷰 재현): 유한한 R·t 라도 중심 −R⁻¹·t 가 넘치면(t ≈ 1.7e308) 카메라 모델을 만들지 않는다
+    (ValueError). 넘친 중심의 시선(inf/inf = NaN)이 Kabsch SVD 로 가지 않는다."""
+    doc = store.snapshot().doc()
+    obs = [p for k in range(3) for p in _people(_rigs(doc), T0 + k, seed=k)]
+    cam = next(c for c in doc["cameras"] if c["camera_id"] == "cam3")
+    c = 2**-0.5
+    cam["R"] = [[c, -c, 0.0], [c, c, 0.0], [0.0, 0.0, 1.0]]
+    cam["t"] = [1.7e308, 1.7e308, -2.7]
+    with pytest.raises(ValueError, match="중심"):
+        RigCamera.from_calibration(cam)
+    with pytest.raises(ValueError, match="중심"):
+        realign_rotation(doc, "cam3", obs)
+
+
 def test_run_recalibration_skips_stale_request(store):
     doc = store.snapshot().doc()
     trig = RecalibrationTrigger(doc, LIVE, RECAL)

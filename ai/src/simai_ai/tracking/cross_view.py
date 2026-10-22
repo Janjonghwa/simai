@@ -996,9 +996,11 @@ def _two_view_arrays(
         rows.append(w[:, None] * (x[:, None] * P[2] - P[0]))
         rows.append(w[:, None] * (y[:, None] * P[2] - P[1]))
     A = np.stack(rows, axis=1)  # (n, 4, 4)
-    _, s, vt = np.linalg.svd(A)
+    # 유한하지 않은 계수는 SVD 에 넣지 않는다(Linux OpenBLAS 가 ±inf 에서 멈춘다, S15P31A101-245). 그 관절은 해가 없다
+    finite = np.isfinite(A).all(axis=(1, 2))
+    _, s, vt = np.linalg.svd(np.where(finite[:, None, None], A, 0.0))
     h = vt[:, -1, :]
-    ok = (s[:, 0] > 0) & (s[:, -2] > 1e-9 * s[:, 0]) & (np.abs(h[:, 3]) > 1e-12)
+    ok = finite & (s[:, 0] > 0) & (s[:, -2] > 1e-9 * s[:, 0]) & (np.abs(h[:, 3]) > 1e-12)
     total = len(A)
     xyz = np.full((total, 3), np.nan)
     xyz[ok] = h[ok, :3] / h[ok, 3:4]

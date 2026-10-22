@@ -184,3 +184,79 @@ GPU 검증(c5a)에서 같은 코드의 10명 pipeline p95 가 1차 세션 34.75 
 
 - Pod CPU 측정을 다음 GPU 검증 큐에 다시 넣는다(위 "Pod(H100 노드) CPU 측정 계획"과 같은 명령). 2차 세션 같은 호스트에서 10명 p95 가 50 ms 안인지 본다.
 - 넘으면 클러스터 묶음 게이트(World Track 호출부 변경) 또는 병렬화를 별도 티켓으로 한다.
+
+## S15P31A101-245: 유한하지 않은 입력의 LAPACK 멈춤
+
+관련 명세: 5.2(삼각측량·관절 유효성 게이트·Cross-view 연결). 결과 정의(해 없음 = NaN·ok False, 2대 미만 null, joint_source)는 바꾸지 않았다.
+
+### 문제
+
+-235 사전 판정(Linux CPU 컨테이너)에서 `test_degenerate_rays_match_previous` 가 멈췄다(`docs/design/unified-env.md` "잔여 위험"). Linux 휠 numpy 의 OpenBLAS(numpy 2.3.5·OpenBLAS 0.3.30, numpy 2.4.6·0.3.31 둘 다)에서 LAPACK SVD 가 ±inf 가 든 행렬에서 끝나지 않는다. Windows 휠에서는 같은 입력이 끝난다.
+노트북 Docker(numpy 2.3.5)에서 호출 종류별로 다시 쟀다(호출마다 새 프로세스, 10~20초 제한, 무작위 행렬 5개에 값 하나):
+
+| 호출 | ±inf | NaN |
+|---|---|---|
+| `svd`(3×3·4×4·8×4) | 5개 중 1~2개 멈춤, `np.ones((3,4,4))`+inf 는 멈춤 | `LinAlgError` |
+| `lstsq` | 멈춤 | 멈춤 |
+| `cond`(SVD) | inf 반환 | `LinAlgError` |
+| `eigvalsh` | `LinAlgError` | `LinAlgError` |
+| `inv`·`solve`·`det`(LU), `norm(·, 2)` 2×2 | 끝남 | 끝남(`norm` 2 는 `LinAlgError`) |
+
+멈춤은 값 배치에 따라 달라 미리 알 수 없다. 그래서 SVD 계열 호출 앞에서 유한하지 않은 행렬을 거르는 것으로 정했다.
+
+### Tier 0 경로의 LAPACK 호출 전수 조사
+
+Tier 0 서비스(`services.tier0` 전체)가 import 하는 `simai_ai` 모듈(calibration 의 criteria·document·drift·monitor·state·structure·versions, contact, geometry, tracking, risk, recovery, io, config, eventlog, gpu, providers)과 Tier 0 에 주입할 수 있는 보정 감시(`calibration/watch.py` → `recalibration.realign_rotation`, `drift_watch_factory`)에서 LAPACK 계열(`np.linalg` 의 svd·eig·eigh·eigvals·eigvalsh·lstsq·pinv·matrix_rank·qr·cholesky·det·slogdet·inv·solve·cond·행렬 노름, `Polynomial.roots`·`np.roots`(동반 행렬 `eigvals`), `polyfit`(`lstsq`))과 `scipy.linalg` 를 모두 찾았다. scipy 는 이 경로에 없다.
+벡터 노름 `np.linalg.norm(x, axis=…)` 은 LAPACK 을 부르지 않는다(제곱합의 제곱근). 줄 번호는 이 변경 뒤 기준이다.
+
+| 위치 | 호출 | 판정 루프에서 실행 | 입력 출처 | 유한하지 않은 값이 올 수 있나 | 이전 | 지금 |
+|---|---|---|---|---|---|---|
+| `geometry/triangulation.py:663`·`:677` `_dlt_batch`·`_dlt_one_by_one` | `svd` | 매 tick(사람 묶음 1차 풀이·관절별 경로·보정 감시) | `triangulate_normalized_many`·`solvable_normalized_many`(공개 함수)와 사람 묶음 1차 풀이의 정규화 좌표·신뢰도 | 공개 함수 입력에 inf·NaN 이 오면 그대로. 사람 경로는 `usable`(왜곡 제거 성공·유한 신뢰도)로 거르지만 아주 큰 유한 신뢰도(예 1e308)는 계수 행렬을 inf 로 넘치게 한다 | 막지 않음(유한 확인이 SVD 뒤). inf 는 멈춤, NaN 은 묶음 `LinAlgError` 뒤 점별 SVD 에서 inf 행이 다시 멈춤 | 계수가 유한하지 않은 점은 0 행렬로 바꿔 풀고 해 없음 |
+| `geometry/triangulation.py:761`·`:767` `_solve_3x3` | `solve` | 매 tick | 가우스-뉴턴 정규 방정식(유한한 DLT 해에서 시작) | 넘침으로 생길 수 있음 | LU 라 멈추지 않음 | 그대로 |
+| `geometry/joint_gate.py:462` `triangulation_covariances` | `cond`(SVD) | 매 tick(관절 게이트) | 관절 XYZ·카메라 행렬로 만든 정보 행렬 | 카메라 중심에 아주 가까운 점(카메라 z ≲ 1e-150)이면 야코비안이 넘쳐 inf·NaN | 막지 않음. NaN 이면 `LinAlgError` 로 관절 게이트 전체가 예외 | 정보 행렬이 유한하지 않은 점은 공분산을 구하지 못한 점(ok False, 표준편차 inf) |
+| `geometry/joint_gate.py:467`·`:495` | `inv`(LU)·`eigvalsh` | 매 tick(관절 게이트) | 조건수 1e12 이하로 통과한 정보 행렬·그 역행렬(공분산) | 정보 행렬이 유한하고 조건수가 작아도 아주 작으면(초점거리 1e-154 등) 역행렬 × σ² 가 넘쳐 inf·NaN | 막지 않음. Windows 는 `eigvalsh` `LinAlgError`, 아니면 NaN 표준편차로 `MAX_SIGMA_EXCEEDED` 비교가 거짓이 될 수 있음 | 공분산이 유한하지 않은 점도 구하지 못한 점(cov NaN, ok False) |
+| `geometry/joint_gate.py:530`, `geometry/rig.py:67` | `inv(K)` | joint_gate 는 매 tick(경쟁 후보), rig 는 기동·보정 교체 때 | 보정 K | 아래 보정 검사 전에는 가능 | LU 라 멈추지 않음 | 보정 검사로 막음 |
+| `geometry/rig.py:71` `RigCamera` | `norm(K[:2,:2], 2)`(SVD) | 기동·보정 교체 때 | 보정 문서 K. `FileCalibrationProvider` 는 `json.loads` 기본값이라 `NaN`·`Infinity` 를 받는다(구성 묶음 경로 `config/verify.py` 는 거부) | 파일 보정 경로에서 가능. `PinholeCamera` 검사(fx·fy > 0, R 직교)는 NaN 을 그냥 통과시킨다 | 막지 않음 | `PinholeCamera` 가 K·R·t 의 유한하지 않은 값을 `ValueError` 로 거절 |
+| `tracking/cross_view.py:1001` `_two_view_arrays` | `svd` | 매 tick(Cross-view 연결) | 카메라 쌍 공통 관절(관측 마스크 통과)의 정규화 좌표·신뢰도 | 마스크가 inf·NaN 을 거르지만 아주 큰 유한 신뢰도는 넘침 | 막지 않음. inf 는 멈춤, NaN 은 `LinAlgError` 로 연결 전체가 예외 | 계수가 유한하지 않은 관절은 XYZ NaN·재투영 오차 inf(해 없음) |
+| `geometry/distortion.py:126` `radial_branch`(`RigCamera` 생성·`zone_coverage`) | `Polynomial.roots`(동반 행렬 `eigvals`, `dgeev`) | 기동·보정 교체 때, 구역 관측 범위 계산 때 | 왜곡 계수로 만든 가지 다항식 | 계수에 NaN·inf(`check_model` 은 개수만 봤다), 또는 아주 큰 유한 계수(k4 1e200)의 곱이 넘침 | 막지 않음 | `check_model` 이 유한하지 않은 계수를 `ValueError`, 다항식 계수가 넘치면 `radial_branch` 가 `ValueError`(가지를 모르므로 거절). `undistort_tolerance_px` 도 유한한 양수만 |
+| `calibration/recalibration.py:328`·`:329` `_kabsch`(보정 감시가 DRIFTED 에서 부름) | `svd`·`det` | 선택형: `drift_watch_factory` 로 보정 감시를 주입했을 때만, DRIFTED 에서 | 기준 카메라 쌍 삼각측량 점에서 대상 카메라 중심으로의 단위 방향 | 점이 대상 카메라 중심과 같으면 0/0 = NaN. 유한한 R·t 라도 중심 −R⁻¹·t 가 넘치면(t ≈ 1.7e308, 계약·기하 검사 통과) inf/inf = NaN | 막지 않음(`LinAlgError`) | 거리가 유한한 양수인 대응만 쓴다(Kabsch 에는 유한한 단위 벡터만). 중심이 넘치는 보정은 `PinholeCamera` 가 `ValueError` 로 거절 |
+| `tracking/world_track.py:480` | `inv(S)`(2×2 칼만 혁신 공분산) | 매 tick | 트랙 상태 공분산 + 측정 잡음 | 측정값이 아니라 공분산에서 온다 | LU 라 멈추지 않음 | 그대로 |
+
+"판정 루프에서 실행" 은 import 여부와 다르다. 기본 서비스 import 에는 scipy 가 없고, 선택형 보정 감시(`calibration.watch`)를 import 하면 번들 조정·내부 파라미터 도구와 scipy 가 함께 import 되지만 그 함수들은 LIVE 주기에서 부르지 않는다(재보정 실행은 호출자 몫).
+
+Tier 0 판정 루프에서 부르지 않는 보정·장면 도구(설치 때 노트북에서, 또는 재보정 작업으로 실행): `calibration/bundle`(`solver.py` `inv`·`solve`, scipy 희소 행렬·`Rotation`, `checks.py` `lstsq`·`eigvalsh`), `calibration/intrinsics`(`eigh`·`solve`·`inv`·`svd`), `calibration/extrinsics/initial.py`(`svd`·`det`), `calibration/world_frame`(`svd`·`solve`), `calibration/recalibration.py` 의 `run_recalibration`(번들 조정, 호출자가 LIVE 주기 밖에서 실행), `calibration/coverage.py`(`radial_branch`, 위 고침이 함께 막는다), `calibration/intrinsics/lines.py`(`polyfit`), `scene/bev.py`(`inv(K)`). 판정 루프 밖이라 이 티켓에서 고치지 않았다(아래 "남은 위험").
+
+### 바꾼 것
+
+- `_dlt_batch`: 계수 행렬이 유한하지 않은 점은 0 행렬로 바꿔 SVD 하고 `ok & finite` 를 돌려준다. 묶음 SVD 는 행렬마다 따로 푸는 gufunc 라 유한한 점의 결과는 비트 단위로 같다. `_solve_batch`·`solvable_normalized_many` 둘 다 이 함수를 지난다.
+- `_two_view_arrays`: 같은 방식으로 거르고 `ok` 에 `finite` 를 더한다.
+- `triangulation_covariances`: `ok = front & isfinite(info)`, 역행렬 뒤에도 공분산이 유한하지 않은 점은 `ok` False·cov NaN.
+- `distortion.check_model`: 계수가 유한하지 않으면 `ValueError`. `radial_branch`: 가지 다항식 계수가 넘치면 근을 구하지 않고 `ValueError`. `RigCamera`: `undistort_tolerance_px` 는 유한한 양수.
+- `recalibration.realign_rotation`: 대상 카메라 중심까지 거리가 유한한 양수인 대응만 쓴다(Kabsch SVD 에 NaN 을 넣지 않는다).
+- `PinholeCamera`: 유한한 R·t 에서 계산한 중심 −R⁻¹·t 가 넘치면 `ValueError`(중심은 시선각·재보정 방향에 쓰인다).
+- `PinholeCamera.__post_init__`: K·R·t 에 유한하지 않은 값이 있으면 `ValueError`(기존 보정 검사와 같은 예외).
+- 비용: 거르기(`isfinite`+`where`)는 (170, 8, 4) 7 µs, (1100, 4, 4) 29 µs 로 같은 묶음의 SVD(564 µs, 2.7 ms)의 1~1.3% 다(노트북).
+
+### 결과가 같다는 확인과 시험
+
+- `test_geometry_speedup_regression.py::test_degenerate_rays_match_previous`: 이전 구현(`legacy_batch_triangulation.py`, 고정 사본이라 고치지 않음)도 inf 행을 SVD 에 넣어 Linux 에서 멈추므로 이전 구현에는 유한한 행만 넣고 비트 단위로 비교한다. 무한·NaN 행은 이전 구현의 정의(해 없음)대로 NaN 인지 본다.
+  Windows 에서는 따로 이전 구현에 전체 행을 넣은 결과가 유한한 행만 넣은 결과·새 구현 전체 행 결과와 비트 단위로 같음을 확인했다(커밋하지 않은 일회 점검).
+- `tests/geometry/test_nonfinite_lapack.py`(새 반례): inf·−inf·NaN 이 섞인 묶음(카메라 2·4대), 전부 유한하지 않은 묶음, 한 카메라만 유한하지 않음(cam1 x 만 inf, 마지막 카메라 x·y inf, 넘치는 신뢰도 1e308, 사람 단위 경로에서 그 카메라만 빠짐), Cross-view 2-view, 공분산 넘침(중심이 원점인 카메라 z 1e-170), 공분산 역행렬 넘침(초점거리 1e-154, `_position_sigmas` 표준편차 inf), 보정 값 거절, 왜곡 계수 거절(NaN·±inf·k4 1e200·허용치 inf). `tests/calibration/test_watch.py::test_realign_rotation_skips_correspondences_without_direction`(기준점 하나가 대상 카메라 중심과 같아도 회전을 맞추고 Kabsch 입력은 유한한 단위 벡터), `::test_realign_rotation_rejects_overflowing_camera_center`(리뷰 재현: 중심이 넘치는 R·t 는 `ValueError`). 새 비교는 `tobytes()` 비트 비교다(`assert_array_equal` 은 +0·−0 을 구분하지 않는다).
+- 시간 제한: `pytest-timeout` 은 의존성에 없고, 멈춤은 C 호출 안이라 스레드로 끊을 수 없다. 기존 방식(`tests/test_winsock_retry.py` 의 `subprocess.run(..., timeout=60)`)을 따라 `tests/geometry/bounded.py` 가 시험 본문을 새 프로세스에서 60초 제한으로 부른다. 60초는 프로세스 시작·import 를 넉넉히 덮는 값이다(계산은 1초 안).
+- 음성 대조(Linux 컨테이너, 이 변경의 소스 4개만 dev 로 되돌림): 위 7개 시험 모두 실패 — 시간 초과 5(degenerate·섞인 묶음·전부 비유한·한 카메라·Cross-view), 공분산 `LinAlgError` 1, 보정 거절 없음 1. Windows 에서는 Cross-view(`LinAlgError`)·보정 거절 2개만 실패한다(멈춤은 Linux 에서만 재현).
+  리뷰 반영분(공분산 역행렬·왜곡 계수·재보정 Kabsch)은 Docker 가 꺼져 Windows 에서만 음성 대조했다: 그 고침만 되돌리면 새 시험 3개 모두 실패(공분산 ok True 로 남음, 왜곡 계수 ValueError 없음, Kabsch `LinAlgError`).
+
+### 버린 대안
+
+- 유한한 행만 골라 SVD(`A[finite]`): 결과는 같지만 색인·되돌려 넣기 코드가 더 길다. 0 행렬은 특이값이 0 이라 원래 판정으로도 해가 없다.
+- `pytest-timeout` 추가: 몇 줄 때문에 dev 의존성을 늘리지 않았다. 스레드 방식 제한은 C 호출 안의 멈춤을 끊지 못해 프로세스 전체가 남는다.
+- 이전 구현 고정 사본(`legacy_batch_*.py`)에 같은 거르기 넣기: 비교 기준이 바뀌므로 하지 않았다.
+- SVD 를 다른 분해(`eigh` 등)로 바꾸기: -237 에서 버린 이유(해 유일성 판정 정밀도)와 같다.
+
+### 남은 위험
+
+- 리뷰 반영분(공분산 역행렬·왜곡 계수·재보정 Kabsch)은 Linux 컨테이너에서 다시 돌리지 않았다(Docker 데몬 꺼짐). 거르는 위치가 LAPACK 호출 앞이라 OS 와 무관하게 같은 경로를 탄다.
+
+- 보정 도구(번들 조정·내부 파라미터·외부 파라미터 초기값·World 좌표계·재보정)의 `svd`·`lstsq` 는 거르지 않았다. 입력은 왜곡 제거가 성공한 관측이라 inf·NaN 이 들어갈 길은 좁지만, 넣으면 Linux 에서 그 도구가 멈출 수 있다. 판정 루프 밖이라 별도 티켓으로 넘긴다.
+- `_two_view_arrays` 는 유한한 입력의 SVD 미수렴 `LinAlgError` 를 잡지 않는다(이전과 같음, 재현 사례 없음).
+- 멈춤 조건은 OpenBLAS 판에 따라 달라질 수 있다. 시험은 이 노트북 Docker 의 numpy 2.3.5·OpenBLAS 0.3.30 에서 확인했다.

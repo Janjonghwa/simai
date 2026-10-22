@@ -61,7 +61,9 @@ class RadialBranch:
 
 
 def check_model(model: str, coeffs: Sequence[float]) -> None:
-    """지원하는 왜곡 모델과 계수 개수인지 확인한다. 아니면 ValueError."""
+    """지원하는 왜곡 모델과 계수 개수·유한한 값인지 확인한다. 아니면 ValueError."""
+    if not all(math.isfinite(float(c)) for c in coeffs):
+        raise ValueError(f"왜곡 계수는 유한한 값이어야 한다: {tuple(coeffs)}")
     if model == MODEL_NONE:
         if any(c != 0.0 for c in coeffs):
             raise ValueError(f"왜곡 모델 NONE 인데 계수가 있다: {tuple(coeffs)}")
@@ -117,6 +119,9 @@ def radial_branch(model: str, coeffs: Sequence[float]) -> RadialBranch:
     for poly in _branch_polynomials(model, coeffs):
         for q in (poly, poly.deriv()):
             q = q.trim()
+            if not np.isfinite(q.coef).all():
+                # 아주 큰 계수의 곱이 넘쳤다. 근(동반 행렬 고윳값, LAPACK)을 구할 수 없고 가지를 모르므로 거절한다(S15P31A101-245)
+                raise ValueError(f"{model} 왜곡 계수가 너무 커 단조 가지를 구할 수 없다: {tuple(coeffs)}")
             if q.degree() >= 1:
                 re = np.real(q.roots())
                 candidates.append(re[(re >= 0.0) & (re <= s_cap)])

@@ -90,6 +90,9 @@ class PinholeCamera:
 
     def __post_init__(self) -> None:
         K, R, t = _mat3(self.K), _mat3(self.R), _vec3(self.t)
+        # NaN 은 아래 비교 검사를 그냥 통과하고, ±inf K 는 RigCamera 의 SVD(행렬 노름)를 Linux 에서 멈춘다(S15P31A101-245)
+        if not all(math.isfinite(x) for row in (*K, *R, t) for x in row):
+            raise ValueError(f"K·R·t 는 유한한 값이어야 한다: K={K}, R={R}, t={t}")
         _check_intrinsics(K)
         _check_rotation(R)
         object.__setattr__(self, "K", K)
@@ -98,6 +101,9 @@ class PinholeCamera:
         # 반올림된 R 에서도 왕복이 맞도록 전치가 아닌 실제 역행렬을 쓴다.
         object.__setattr__(self, "_R_inv", _inverse(R))
         object.__setattr__(self, "_K_inv", _inverse(K))
+        # 유한한 R·t 에서도 중심 −R⁻¹·t 가 넘칠 수 있다(t ≈ 1.7e308). 중심은 시선각·재보정 방향에 쓰인다
+        if not all(math.isfinite(x) for x in self.center_world):
+            raise ValueError(f"카메라 중심 −R⁻¹·t 가 유한하지 않다(넘침): R={R}, t={t}")
 
     @classmethod
     def from_calibration(cls, camera: dict) -> PinholeCamera:

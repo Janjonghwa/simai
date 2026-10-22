@@ -650,16 +650,22 @@ def _dlt_batch(stack: _CameraStack, xn: np.ndarray, w: np.ndarray) -> tuple[np.n
 
     두 번째로 작은 특이값도 0 에 가까우면 해 공간이 2차원 이상(시선 공선)이라 해가 유일하지 않다. 돌려주는 값은
     (점 (M, 3), 해가 있는지 (M,)). 쓰지 않는 카메라는 가중치 0 인 행(0 행)이라 특이값을 바꾸지 않는다.
+    계수에 유한하지 않은 값이 있는 점은 해가 없다(SVD 에 넣지 않는다).
     """
     P = stack.P[None]
     rows_x = w[:, :, None] * (xn[:, :, 0:1] * P[:, :, 2] - P[:, :, 0])
     rows_y = w[:, :, None] * (xn[:, :, 1:2] * P[:, :, 2] - P[:, :, 1])
     A = np.stack([rows_x, rows_y], axis=2).reshape(len(xn), -1, 4)
+    # Linux OpenBLAS 의 SVD 는 ±inf 가 든 행렬에서 끝나지 않는다(S15P31A101-245). 그 점은 0 행렬로 바꿔 풀고 해 없음으로 둔다
+    finite = np.isfinite(A).all(axis=(1, 2))
+    A = np.where(finite[:, None, None], A, 0.0)
     try:
         _, s, vt = np.linalg.svd(A)
     except np.linalg.LinAlgError:
-        return _dlt_one_by_one(A)
-    return _dlt_solution(s, vt)
+        X, ok = _dlt_one_by_one(A)
+    else:
+        X, ok = _dlt_solution(s, vt)
+    return X, ok & finite
 
 
 def _dlt_one_by_one(A: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
