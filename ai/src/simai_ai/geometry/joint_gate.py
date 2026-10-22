@@ -42,7 +42,7 @@ from simai_ai.geometry.triangulation import (
     JointValidity,
     SkeletonEstimate,
     TriangulationConfig,
-    triangulate_normalized_many,
+    solvable_normalized_many,
     triangulate_skeleton,
 )
 
@@ -335,8 +335,6 @@ class JointGate:
         for j, est in enumerate(skeleton.joints):
             if est.xyz is None:
                 continue
-            X = np.array(est.xyz)
-            cams = rig.subset(est.camera_ids)
             if len(est.camera_ids) < cfg.min_views_for_valid:
                 reasons[j].append(GateIssue.FEW_VIEWS_FOR_VALID)
             if not sigma_max[j] <= cfg.max_position_sigma_m:  # type: ignore[operator]
@@ -344,7 +342,7 @@ class JointGate:
             # 속도 상한 (직전 VALID 위치 대비)
             last = self._last_valid.get(j)
             if last is not None and 0 < t - last[0] <= cfg.max_history_gap_ms:
-                speeds[j] = float(np.linalg.norm(X - last[1])) / ((t - last[0]) / 1000.0)
+                speeds[j] = float(np.linalg.norm(np.array(est.xyz) - last[1])) / ((t - last[0]) / 1000.0)
                 if speeds[j] > cfg.max_joint_speed_mps:  # type: ignore[operator]
                     reasons[j].append(GateIssue.SPEED_LIMIT)
             # 2대 관측 경쟁 후보. 확인할 수 없으면(None) 경쟁 후보가 없다고 보지 않는다
@@ -352,7 +350,9 @@ class JointGate:
                 competitor = (
                     None
                     if others is None
-                    else _has_epipolar_competitor(j, cams, pixels, others, cfg, undistorted, others_undistorted)
+                    else _has_epipolar_competitor(
+                        j, rig.subset(est.camera_ids), pixels, others, cfg, undistorted, others_undistorted
+                    )
                 )
                 if competitor is None:
                     reasons[j].append(GateIssue.COMPETITOR_CHECK_UNAVAILABLE)
@@ -479,18 +479,18 @@ def _position_sigmas(
     cam_ids = sorted({cid for j in solved for cid in skeleton.joints[j].camera_ids})
     column = {cid: k for k, cid in enumerate(cam_ids)}
     mask = np.zeros((len(solved), len(cam_ids)), dtype=bool)
-    for row, j in enumerate(solved):
-        mask[row, [column[cid] for cid in skeleton.joints[j].camera_ids]] = True
+    ids = [skeleton.joints[j].camera_ids for j in solved]
+    mask[[row for row, cids in enumerate(ids) for _ in cids], [column[cid] for cids in ids for cid in cids]] = True
     X = np.array([skeleton.joints[j].xyz for j in solved])
     cov, ok = _triangulation_covariances(rig.subset(cam_ids), mask, X, sigma_px)
     diag = np.sqrt(np.maximum(np.diagonal(cov, axis1=1, axis2=2), 0.0))
     biggest = np.full(len(solved), math.inf)
     if ok.any():
         biggest[ok] = np.sqrt(np.maximum(np.linalg.eigvalsh(cov[ok]).max(axis=1), 0.0))
-    for row, j in enumerate(solved):
-        if ok[row]:
-            sigma_xyz[j] = (float(diag[row, 0]), float(diag[row, 1]), float(diag[row, 2]))
-            sigma_max[j] = float(biggest[row])
+    for row, (j, good, d, big) in enumerate(zip(solved, ok.tolist(), diag.tolist(), biggest.tolist())):
+        if good:
+            sigma_xyz[j] = (d[0], d[1], d[2])
+            sigma_max[j] = big
         else:
             sigma_xyz[j], sigma_max[j] = (math.inf, math.inf, math.inf), math.inf
     return sigma_xyz, sigma_max
@@ -587,7 +587,8 @@ def _has_epipolar_competitor(
         near = np.flatnonzero(distance <= cfg.competitor_epipolar_px)
         if len(near):
             pairs = np.stack([np.broadcast_to(xa, (len(near), 2)), xb[near]], axis=1)
-            if np.isfinite(triangulate_normalized_many([own, other], pairs)).all(axis=1).any():
+            # 해가 있는지만 본다(`triangulate_normalized_many` 결과가 유한한지와 같다, 정밀화는 하지 않는다)
+            if solvable_normalized_many([own, other], pairs).any():
                 return True
     return None if unknown else False
 

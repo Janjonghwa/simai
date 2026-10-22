@@ -405,38 +405,96 @@ class CrossViewAssociator:
     def _pairs(self, prepared: dict[TrackKey, _Prepared]) -> dict[tuple[TrackKey, TrackKey], PairEvidence]:
         """카메라가 다른 view 쌍 전체의 근거. 카메라 쌍마다 에피폴라 거리와 2-view 삼각측량을 한 번에 계산한다.
 
-        쌍 하나씩 `_pair` 로 계산한 것과 결과가 같다(부동소수 연산 순서만 다르다).
+        쌍 하나씩 `_pair` 로 계산한 것과 결과가 같다(부동소수 연산 순서만 다르다). 문턱을 넘은 쌍의 판정 근거(일관된
+        관절 수, 잔차 중앙값, 높이 범위 밖 관절 수, 바닥 가설 거리)도 카메라 쌍마다 행렬로 한 번에 구한다(S15P31A101-237).
         """
         cfg = self.config
         by_camera: dict[str, list[TrackKey]] = {}
         for key in sorted(prepared):
             by_camera.setdefault(key[0], []).append(key)
-        found: dict[tuple[TrackKey, TrackKey], PairEvidence] = {}
-        for cam_a, cam_b in itertools.combinations(sorted(by_camera), 2):
+        cams = sorted(by_camera)
+        stacks = {cid: _ViewStack.of([prepared[k] for k in by_camera[cid]]) for cid in cams}
+        found: dict[tuple[str, str], tuple[list[list[int]], list[list[float]], dict[tuple[int, int], PairEvidence]]] = {}
+        for cam_a, cam_b in itertools.combinations(cams, 2):
             pas = [prepared[k] for k in by_camera[cam_a]]
             pbs = [prepared[k] for k in by_camera[cam_b]]
             epi, common = self._epipolar_matrix(pas, pbs)
             counts = common.sum(axis=2)
-            queued = [
-                (i, k)
-                for i in range(len(pas))
-                for k in range(len(pbs))
-                if counts[i, k] >= cfg.min_common_joints and not epi[i, k] > cfg.epipolar_gate_px
-            ]
-            tri = _two_view_triangulation_many([(pas[i], pbs[k], common[i, k]) for i, k in queued])
-            solved = dict(zip(queued, tri))
-            for i, pa in enumerate(pas):
-                for k, pb in enumerate(pbs):
-                    key = (pa.view.key, pb.view.key)
-                    n = int(counts[i, k])
-                    # 대부분의 쌍(다른 사람)은 앞의 두 탈락 조건에서 끝난다. `_evidence` 의 처음 두 분기와 같다
-                    if n < cfg.min_common_joints:
-                        found[key] = PairEvidence(*key, n, reject=RejectReason.FEW_COMMON_JOINTS)
-                    elif epi[i, k] > cfg.epipolar_gate_px:
-                        found[key] = PairEvidence(*key, n, epipolar_px=float(epi[i, k]), reject=RejectReason.EPIPOLAR)
-                    else:
-                        found[key] = self._evidence(pa, pb, common[i, k], float(epi[i, k]), solved[(i, k)])
-        return {key: found[key] for key in sorted(found)}
+            queued = np.argwhere((counts >= cfg.min_common_joints) & ~(epi > cfg.epipolar_gate_px))
+            found[(cam_a, cam_b)] = (
+                counts.tolist(),
+                epi.tolist(),
+                self._evidence_many(stacks[cam_a], stacks[cam_b], common, epi, queued),
+            )
+        # 키 순서((카메라 a, 트랙) → (카메라 b, 트랙))로 바로 낸다. 정렬한 것과 같은 순서다
+        out: dict[tuple[TrackKey, TrackKey], PairEvidence] = {}
+        for c, cam_a in enumerate(cams):
+            for i, ka in enumerate(by_camera[cam_a]):
+                for cam_b in cams[c + 1 :]:
+                    counts_ab, epi_ab, evidence = found[(cam_a, cam_b)]
+                    for k, kb in enumerate(by_camera[cam_b]):
+                        n = counts_ab[i][k]
+                        # 대부분의 쌍(다른 사람)은 앞의 두 탈락 조건에서 끝난다. `_evidence` 의 처음 두 분기와 같다
+                        if n < cfg.min_common_joints:
+                            out[(ka, kb)] = PairEvidence(ka, kb, n, reject=RejectReason.FEW_COMMON_JOINTS)
+                        elif epi_ab[i][k] > cfg.epipolar_gate_px:
+                            out[(ka, kb)] = PairEvidence(
+                                ka, kb, n, epipolar_px=epi_ab[i][k], reject=RejectReason.EPIPOLAR
+                            )
+                        else:
+                            out[(ka, kb)] = evidence[(i, k)]
+        return out
+
+    def _evidence_many(
+        self, sa: _ViewStack, sb: _ViewStack, common: np.ndarray, epi: np.ndarray, queued: np.ndarray
+    ) -> dict[tuple[int, int], PairEvidence]:
+        """카메라 쌍 (a, b) 에서 에피폴라 문턱을 넘은 view 쌍 (i, k) 전체의 `_evidence` 를 한 번에 구한다."""
+        if not len(queued):
+            return {}
+        qi, qk = queued[:, 0], queued[:, 1]
+        sel = common[qi, qk]  # (Q, J) 쌍마다 공통 관절
+        q, j = np.nonzero(sel)  # 쌍 순서, 쌍 안에서는 관절 순서 (= 쌍마다 공통 관절을 이어 붙인 순서)
+        a_rows, b_rows = (qi[q], j), (qk[q], j)
+        xyz, err = _two_view_arrays(
+            sa.camera,
+            sb.camera,
+            (sa.normalized[a_rows], sa.confidence[a_rows], sa.ideal[a_rows]),
+            (sb.normalized[b_rows], sb.confidence[b_rows], sb.ideal[b_rows]),
+        )
+        Q, J = sel.shape
+        tri_cfg = self.config.triangulation
+        solved = np.zeros((Q, J), dtype=bool)
+        solved[q, j] = np.isfinite(err) & (err <= tri_cfg.outlier_reprojection_error_px)
+        n_ok = solved.sum(axis=1)
+        # 일관된 관절의 재투영 오차 중앙값 (np.median 과 같은 값: 홀수면 가운데, 짝수면 가운데 둘의 평균)
+        ranked = np.full((Q, J), np.inf)
+        ranked[q, j] = err
+        ranked = np.sort(np.where(solved, ranked, np.inf), axis=1)
+        rows = np.arange(Q)
+        upper = ranked[rows, np.maximum(n_ok // 2, 0)]
+        lower = ranked[rows, np.maximum(n_ok // 2 - 1, 0)]
+        with np.errstate(invalid="ignore"):
+            residual = np.where(n_ok % 2 == 1, upper, (lower + upper) / 2.0)
+        z = np.full((Q, J), np.nan)
+        z[q, j] = xyz[:, 2]
+        z_lo, z_hi = self.config.joint_z_range_m
+        with np.errstate(invalid="ignore"):
+            outside = (solved & ((z < z_lo) | (z > z_hi))).sum(axis=1)
+        gap = _floor_gaps(sa, sb, qi, qk, self.config.floor_hypothesis_max_height_m)
+        n_common = sel.sum(axis=1)
+        out = {}
+        for r, (i, k) in enumerate(zip(qi.tolist(), qk.tolist())):
+            out[(i, k)] = self._verdict(
+                sa.keys[i],
+                sb.keys[k],
+                int(n_common[r]),
+                float(epi[i, k]),
+                None if math.isnan(gap[r]) else float(gap[r]),
+                int(n_ok[r]),
+                float(residual[r]),
+                int(outside[r]),
+            )
+        return out
 
     def _pair(self, pa: _Prepared, pb: _Prepared) -> PairEvidence:
         """view 쌍 하나의 근거 (`_pairs` 의 쌍 하나)."""
@@ -468,20 +526,35 @@ class CrossViewAssociator:
 
         gap = None
         if pa.floor_ray is not None and pb.floor_ray is not None:
-            # 기록만 한다. 가설 높이보다 높은 면 위 사람일 수 있으므로 이 값으로는 탈락시키지 않는다
             gap = _floor_gap(pa.floor_ray, pb.floor_ray, cfg.floor_hypothesis_max_height_m)
 
         xyz, err = tri
-        tri_cfg = cfg.triangulation
-        solved = np.isfinite(err) & (err <= tri_cfg.outlier_reprojection_error_px)
+        solved = np.isfinite(err) & (err <= cfg.triangulation.outlier_reprojection_error_px)
         n_ok = int(solved.sum())
-        base = {"common_joints": n_common, "epipolar_px": epi, "floor_gap_m": gap, "consistent_joints": n_ok}
-        if n_ok < max(cfg.min_common_joints, cfg.min_consistent_joint_ratio * n_common):
-            return PairEvidence(a, b, **base, reject=RejectReason.TRIANGULATION)
-        residual = float(np.median(err[solved]))
+        residual = float(np.median(err[solved])) if n_ok else math.nan
         z_lo, z_hi = cfg.joint_z_range_m
         z = xyz[solved, 2]
         outside = int(np.sum((z < z_lo) | (z > z_hi)))
+        return self._verdict(a, b, n_common, epi, gap, n_ok, residual, outside)
+
+    def _verdict(
+        self,
+        a: TrackKey,
+        b: TrackKey,
+        n_common: int,
+        epi: float,
+        gap: float | None,
+        n_ok: int,
+        residual: float,
+        outside: int,
+    ) -> PairEvidence:
+        """에피폴라 문턱을 넘은 쌍의 판정. n_ok 는 서로 맞게 삼각측량된 관절 수, residual 은 그 재투영 오차 중앙값,
+        outside 는 그중 높이 범위 밖 관절 수다. gap(바닥 가설 거리)은 기록·비용에만 쓴다. 가설 높이보다 높은 면 위
+        사람일 수 있으므로 이 값으로는 탈락시키지 않는다."""
+        cfg = self.config
+        base = {"common_joints": n_common, "epipolar_px": epi, "floor_gap_m": gap, "consistent_joints": n_ok}
+        if n_ok < max(cfg.min_common_joints, cfg.min_consistent_joint_ratio * n_common):
+            return PairEvidence(a, b, **base, reject=RejectReason.TRIANGULATION)
         if outside > cfg.max_out_of_range_joint_ratio * n_ok:
             return PairEvidence(a, b, **base, residual_px=residual, reject=RejectReason.IMPLAUSIBLE_HEIGHT)
         if residual > cfg.residual_gate_px:
@@ -581,54 +654,74 @@ class CrossViewAssociator:
         """
         cfg = self.config
         works = [_Work([k]) for k in sorted(prepared)]
-        blocked: set[frozenset[frozenset[TrackKey]]] = set()
-        # 클러스터 쌍 병합 비용 (cost, marginal). 병합하면 합친 클러스터의 행·열만 다시 계산한다(나머지 쌍은 그대로다)
         n = len(works)
+        row = {w.keys[0]: r for r, w in enumerate(works)}
+        cams = sorted({k[0] for k in prepared})
+        # 행·열 번호는 처음 view 순서로 고정하고 합쳐 없어진 클러스터는 alive 로 뺀다(남은 클러스터의 순서는 그대로다).
+        # member[클러스터, 카메라]: 클러스터에 그 카메라 view 가 있는지
+        alive = np.ones(n, dtype=bool)
+        member = np.zeros((n, len(cams)), dtype=bool)
+        member[np.arange(n), [cams.index(w.keys[0][0]) for w in works]] = True
+        # 클러스터 쌍 병합 비용 (cost, marginal). 병합하면 합친 클러스터의 행·열만 다시 계산한다(나머지 쌍은 그대로다).
+        # veto: `_linkage` 가 근거와 상관없이 inf 를 내는 쌍(같은 카메라 금지, 기하가 반대하는 view 쌍이 있음). 합친
+        # 클러스터의 veto 는 두 행의 OR 이라 다시 계산하지 않는다. blocked: 이번 시각에 막은 병합 (S15P31A101-237)
         cost = np.full((n, n), math.inf)
         marginal = np.zeros((n, n), dtype=bool)
-        for i, j in itertools.combinations(range(n), 2):
-            cost[i, j], marginal[i, j] = self._linkage(works[i].keys, works[j].keys, pairs)
-            cost[j, i], marginal[j, i] = cost[i, j], marginal[i, j]
+        blocked = np.zeros((n, n), dtype=bool)
+        veto = (member[:, None, :] & member[None, :, :]).any(axis=2) if cfg.same_camera_exclusive else np.eye(n) > 0
+        for (ka, kb), ev in pairs.items():
+            i, j = row[ka], row[kb]
+            if ev.feasible:  # view 하나씩인 클러스터는 근거 있는(통과한) 쌍만 비용이 유한하다
+                cost[i, j], marginal[i, j] = self._linkage([ka], [kb], pairs)
+                cost[j, i], marginal[j, i] = cost[i, j], marginal[i, j]
+            elif ev.reject is not RejectReason.FEW_COMMON_JOINTS:
+                veto[i, j] = veto[j, i] = True
         while True:
-            n = len(works)
-            upper = np.triu(cost < cfg.new_cluster_cost, k=1)
-            candidates = sorted(
-                (float(cost[i, j]), min(works[i].keys + works[j].keys), int(i), int(j))
-                for i, j in zip(*np.nonzero(upper))
-                if _block_key(works[i], works[j]) not in blocked
-            )
-            if not candidates:
-                return works
-            c, _, i, j = candidates[0]
+            open_ = np.triu(cost < cfg.new_cluster_cost, k=1) & ~blocked
+            if not open_.any():
+                return [w for w, keep in zip(works, alive) if keep]
+            # 비용이 가장 낮은 쌍. 같은 비용이면 (두 클러스터 키 중 가장 작은 키, i, j) 순서다
+            ii, jj = np.nonzero(open_)
+            values = cost[ii, jj]
+            ties = np.flatnonzero(values == values.min())
+            _, i, j = min((min(works[ii[t]].keys + works[jj[t]].keys), int(ii[t]), int(jj[t])) for t in ties)
+            c = float(cost[i, j])
             a, b = works[i], works[j]
             if marginal[i, j]:
                 keys = frozenset(a.keys + b.keys)
                 flags.append(_Flag(UncertainReason.MARGINAL_RESIDUAL, keys, keys, keys))
-                blocked.add(_block_key(a, b))
+                blocked[i, j] = True
                 continue
             rivals: list[TrackKey] = []
             if cfg.same_camera_exclusive:
-                cams_a, cams_b = {k[0] for k in a.keys}, {k[0] for k in b.keys}
-                for k in range(n):
-                    if k in (i, j):
-                        continue
-                    cams_k = {key[0] for key in works[k].keys}
-                    if (cams_k & cams_b and cost[i, k] - c < cfg.ambiguity_margin) or (
-                        cams_k & cams_a and cost[j, k] - c < cfg.ambiguity_margin
-                    ):
-                        rivals.extend(works[k].keys)
+                shares_a = (member & member[i]).any(axis=1)
+                shares_b = (member & member[j]).any(axis=1)
+                near = (shares_b & (cost[i] - c < cfg.ambiguity_margin)) | (
+                    shares_a & (cost[j] - c < cfg.ambiguity_margin)
+                )
+                near[[i, j]] = False
+                for k in np.flatnonzero(near):
+                    rivals.extend(works[k].keys)
             if rivals:
                 keys = frozenset(a.keys + b.keys + rivals)
                 flags.append(_Flag(UncertainReason.AMBIGUOUS_ASSIGNMENT, keys, keys, frozenset(a.keys + b.keys)))
-                blocked.add(_block_key(a, b))
+                blocked[i, j] = True
                 continue
             a.keys.extend(b.keys)
-            del works[j]
-            cost = np.delete(np.delete(cost, j, axis=0), j, axis=1)
-            marginal = np.delete(np.delete(marginal, j, axis=0), j, axis=1)
-            for k in range(len(works)):
+            alive[j] = False
+            member[i] |= member[j]
+            member[j] = False
+            veto[i] |= veto[j]
+            veto[:, i] = veto[i]
+            cost[j, :] = cost[:, j] = math.inf
+            # 합친 클러스터의 키 집합은 처음 생긴 것이라 그 클러스터가 든 막은 병합은 없다
+            blocked[i, :] = blocked[:, i] = False
+            for k in np.flatnonzero(alive).tolist():
                 if k != i:
-                    cost[i, k], marginal[i, k] = self._linkage(works[i].keys, works[k].keys, pairs)
+                    if veto[i, k]:
+                        cost[i, k], marginal[i, k] = math.inf, False
+                    else:
+                        cost[i, k], marginal[i, k] = self._linkage(works[i].keys, works[k].keys, pairs)
                     cost[k, i], marginal[k, i] = cost[i, k], marginal[i, k]
 
     # ------------------------------------------------------------------ 3·6단계: 클러스터 검증
@@ -870,15 +963,32 @@ def _two_view_triangulation_many(
     쌍들의 공통 관절을 이어 붙여 계산하고 쌍마다 나눠 돌려준다."""
     if not jobs:
         return []
-    cam_a, cam_b = jobs[0][0].camera, jobs[0][1].camera
     idx = [np.flatnonzero(common) for _, _, common in jobs]
     sizes = [len(i) for i in idx]
-    preps = []
+    sides = []
     for side in (0, 1):
         normalized = np.concatenate([job[side].normalized[i] for job, i in zip(jobs, idx)])
         weight = np.concatenate([job[side].undistorted.confidence[i] for job, i in zip(jobs, idx)])
         target = np.concatenate([job[side].undistorted.ideal_pixels[i] for job, i in zip(jobs, idx)])
-        preps.append((cam_a if side == 0 else cam_b, normalized, weight, target))
+        sides.append((normalized, weight, target))
+    xyz, err = _two_view_arrays(jobs[0][0].camera, jobs[0][1].camera, sides[0], sides[1])
+    out = []
+    start = 0
+    for size in sizes:
+        out.append((xyz[start : start + size], err[start : start + size]))
+        start += size
+    return out
+
+
+def _two_view_arrays(
+    cam_a: RigCamera,
+    cam_b: RigCamera,
+    obs_a: tuple[np.ndarray, np.ndarray, np.ndarray],
+    obs_b: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    """`_two_view_triangulation` 의 계산. 관측 n 개마다 (정규화 좌표 (n, 2), 신뢰도 (n,), 이상적 핀홀 픽셀 (n, 2))를
+    두 카메라에서 받아 World XYZ (n, 3) 와 재투영 오차 (n,) 를 돌려준다."""
+    preps = [(cam_a, *obs_a), (cam_b, *obs_b)]
     rows = []
     for camera, normalized, w, _ in preps:
         P = np.hstack([camera.R, camera.t[:, None]])
@@ -901,12 +1011,7 @@ def _two_view_triangulation_many(
         proj = camera.ideal_pixels(xc[:, :2] / np.where(front, xc[:, 2], 1.0)[:, None])
         worst = np.maximum(worst, np.linalg.norm(proj - target, axis=1))
     err[ok] = worst[ok]
-    out = []
-    start = 0
-    for size in sizes:
-        out.append((xyz[start : start + size], err[start : start + size]))
-        start += size
-    return out
+    return xyz, err
 
 
 def _focal(camera: RigCamera) -> float:
@@ -924,6 +1029,54 @@ def _floor_ray(camera: RigCamera, normalized: np.ndarray) -> tuple[np.ndarray, n
         return None
     c = camera.center
     return c[:2] - c[2] / d[2] * d[:2], d[:2] / d[2]
+
+
+@dataclass(frozen=True)
+class _ViewStack:
+    """한 카메라의 view 들(키 순서)을 쌓은 배열. 그 카메라가 든 카메라 쌍의 근거 계산이 같이 쓴다."""
+
+    camera: RigCamera
+    keys: list[TrackKey]
+    normalized: np.ndarray
+    """(N, J, 2)"""
+    confidence: np.ndarray
+    """(N, J)"""
+    ideal: np.ndarray
+    """(N, J, 2) 이상적 핀홀 픽셀"""
+    floor_a: np.ndarray
+    """(N, 2) 임시 바닥 가설 A (없으면 NaN). 후보 거르기 전용"""
+    floor_b: np.ndarray
+    """(N, 2) 임시 바닥 가설 B (없으면 NaN)"""
+    has_floor: np.ndarray
+    """(N,)"""
+
+    @classmethod
+    def of(cls, views: Sequence[_Prepared]) -> _ViewStack:
+        none = np.full(2, np.nan)
+        rays = [p.floor_ray for p in views]
+        return cls(
+            camera=views[0].camera,
+            keys=[p.view.key for p in views],
+            normalized=np.stack([p.normalized for p in views]),
+            confidence=np.stack([p.undistorted.confidence for p in views]),
+            ideal=np.stack([p.undistorted.ideal_pixels for p in views]),
+            floor_a=np.stack([none if r is None else r[0] for r in rays]),
+            floor_b=np.stack([none if r is None else r[1] for r in rays]),
+            has_floor=np.array([r is not None for r in rays]),
+        )
+
+
+def _floor_gaps(sa: _ViewStack, sb: _ViewStack, qi: np.ndarray, qk: np.ndarray, max_height: float) -> np.ndarray:
+    """view 쌍 (sa 의 qi, sb 의 qk) 마다 `_floor_gap`. 어느 한쪽 가설이 없으면 NaN."""
+    dA = sa.floor_a[qi] - sb.floor_a[qk]
+    dB = sa.floor_b[qi] - sb.floor_b[qk]
+    bb = dB[:, 0] * dB[:, 0] + dB[:, 1] * dB[:, 1]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        h = -(dA[:, 0] * dB[:, 0] + dA[:, 1] * dB[:, 1]) / bb
+        h = np.where(bb < 1e-12, 0.0, np.minimum(np.maximum(h, 0.0), max_height))
+        d = dA + h[:, None] * dB
+        gap = np.sqrt(d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1])
+    return np.where(sa.has_floor[qi] & sb.has_floor[qk], gap, np.nan)
 
 
 def _floor_gap(ray_a: tuple[np.ndarray, np.ndarray], ray_b: tuple[np.ndarray, np.ndarray], max_height: float) -> float:
