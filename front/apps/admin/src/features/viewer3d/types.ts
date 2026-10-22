@@ -1,4 +1,9 @@
 import type { SpatialSource } from '@/features/viewer3d/data/spatialSource';
+import type {
+  ViewerEditCommandResult,
+  ViewerEditPreview,
+  ViewerEditResult,
+} from '@/features/viewer3d/editing/editTypes';
 import type { Ref } from 'react';
 
 // FE 와 주고받는 값의 모양이다. FE 통합(S15P31A101-193 완료 조건) 때 함께 확정하며, 아직 팀 공통 계약이 아니다.
@@ -43,6 +48,15 @@ export interface Viewer3DHandle {
   clearSelection(): CommandResult;
   focus(target: ViewerTarget): CommandResult;
   setMode(mode: ViewerMode): CommandResult;
+  /**
+   * 구역 형상 편집을 시작한다(S15P31A101-195, Spatial 선제안·FE 미합의). 그 구역을 선택하고 손잡이를 띄운다.
+   * 원본은 바꾸지 않고 초안만 바꾼다. REPLAY 는 NOT_EDITABLE. 지금은 zone 만 받는다.
+   */
+  beginEdit(target: ViewerTarget): ViewerEditCommandResult;
+  /** 초안을 버린다. 편집 중이 아니면 null. 결과는 onEditResult 로도 알린다. */
+  cancelEdit(): ViewerEditResult | null;
+  /** 초안을 World 결과로 돌려주고 편집을 끝낸다. 저장하지 않는다(saved: false). 편집 중이 아니면 null. */
+  finishEdit(): ViewerEditResult | null;
 }
 
 export interface Viewer3DProps {
@@ -58,5 +72,12 @@ export interface Viewer3DProps {
    * 다른 Source(다른 id)로 바꾸면 받은 데이터만 비우고 Canvas·카메라·선택·모드는 그대로다. 없으면 데이터 없이 장면만 그린다.
    */
   source?: SpatialSource | null;
+  /**
+   * 편집 초안. 시작할 때와 손잡이를 놓을 때마다 부른다(끄는 도중에는 부르지 않는다). 저장 성공이 아니다.
+   * 선택 사항이며 없으면 편집 결과를 받지 않는다(기존 화면 그대로).
+   */
+  onEditPreview?: (preview: ViewerEditPreview) => void;
+  /** 편집이 끝날 때(완료·취소·거부) 부른다. 시작하지 못한 이유(REJECTED)도 알린다. */
+  onEditResult?: (result: ViewerEditResult) => void;
   className?: string;
 }

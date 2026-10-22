@@ -9,6 +9,15 @@ export type {
   ZonesResult,
 } from '@/features/viewer3d/data/spatialSource';
 export type {
+  ViewerEditBox,
+  ViewerEditCancelReason,
+  ViewerEditCommandResult,
+  ViewerEditPreview,
+  ViewerEditProvenance,
+  ViewerEditRejectReason,
+  ViewerEditResult,
+} from '@/features/viewer3d/editing/editTypes';
+export type {
   CommandFailureReason,
   CommandResult,
   Viewer3DHandle,

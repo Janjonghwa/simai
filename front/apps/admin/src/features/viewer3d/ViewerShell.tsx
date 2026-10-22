@@ -3,6 +3,9 @@ import {
   type SpatialDataStore,
 } from '@/features/viewer3d/data/spatialData.store';
 import { SpatialDataProvider } from '@/features/viewer3d/data/SpatialDataProvider';
+import { createEditStore, previewOf } from '@/features/viewer3d/editing/editSession.store';
+import { EditStoreContext } from '@/features/viewer3d/editing/EditStoreContext';
+import type { ViewerEditPreview, ViewerEditResult } from '@/features/viewer3d/editing/editTypes';
 import { PersonModelContext } from '@/features/viewer3d/people/PersonLayer';
 import type { Viewer3DProps, ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
 import { createViewerStore, toStatus } from '@/features/viewer3d/viewer3d.store';
@@ -41,6 +44,8 @@ export function ViewerShell({
   initialMode = 'LIVE',
   onSelectionChange,
   onStatusChange,
+  onEditPreview,
+  onEditResult,
   source,
   className,
   children,
@@ -51,18 +56,31 @@ export function ViewerShell({
   const [store] = useState(() => createViewerStore(initialMode));
   // 처음 받은 dataStore 를 계속 쓴다. 바꿔 넘겨도 장면의 구독을 옮기지 않는다.
   const [data] = useState(() => dataStore ?? createSpatialDataStore());
+  // 편집 세션(-195). 뷰어 Store·데이터 Store 를 읽기만 하고 원본을 바꾸지 않는다.
+  const [edit] = useState(() => createEditStore(store, data));
   const mode = useStore(store, (s) => s.mode);
   const phase = useStore(store, (s) => s.phase);
 
   useImperativeHandle(ref, () => {
     const { select, clearSelection, focusOn, setMode } = store.getState();
-    return { select, clearSelection, focus: focusOn, setMode };
-  }, [store]);
+    const { begin, cancel, finish } = edit.store.getState();
+    return {
+      select,
+      clearSelection,
+      focus: focusOn,
+      setMode,
+      beginEdit: begin,
+      cancelEdit: () => cancel('USER'),
+      finishEdit: finish,
+    };
+  }, [store, edit]);
 
   const emitSelection = useEffectEvent((target: ViewerTarget | null) =>
     onSelectionChange?.(target),
   );
   const emitStatus = useEffectEvent((status: ViewerStatus) => onStatusChange?.(status));
+  const emitEditPreview = useEffectEvent((preview: ViewerEditPreview) => onEditPreview?.(preview));
+  const emitEditResult = useEffectEvent((result: ViewerEditResult) => onEditResult?.(result));
 
   useEffect(() => {
     let last = toStatus(store.getState());
@@ -75,6 +93,30 @@ export function ViewerShell({
       }
     });
   }, [store]);
+
+  // 편집 세션을 선택·모드·원본 변경에 묶고, 뷰어가 내려가면 진행 중인 편집을 UNMOUNTED 로 취소한다.
+  useEffect(() => edit.connect(), [edit]);
+
+  // 초안은 시작·손잡이를 놓을 때만 알린다(끄는 도중 매 움직임마다 FE 를 다시 그리게 하지 않는다).
+  useEffect(
+    () =>
+      edit.store.subscribe((state, prev) => {
+        if (state.lastResult && state.lastResult !== prev.lastResult)
+          emitEditResult(state.lastResult);
+        const now = state.session;
+        const before = prev.session;
+        if (!now || now.dragging) return;
+        if (
+          !before ||
+          before.target !== now.target ||
+          before.draft !== now.draft ||
+          before.dragging
+        ) {
+          emitEditPreview(previewOf(now));
+        }
+      }),
+    [edit],
+  );
 
   const handleRenderError = useCallback(
     (error: Error) => store.getState().markError({ code: 'RENDER_FAILED', message: error.message }),
@@ -91,11 +133,13 @@ export function ViewerShell({
       <SpatialDataProvider store={data} source={source}>
         <ViewerErrorBoundary onError={handleRenderError}>
           <ViewerStoreContext value={store}>
-            <PersonModelContext value={personModelUrl}>
-              <ZoneApplyContext value={zoneApplyState}>
-                <ViewerCanvas>{children}</ViewerCanvas>
-              </ZoneApplyContext>
-            </PersonModelContext>
+            <EditStoreContext value={edit.store}>
+              <PersonModelContext value={personModelUrl}>
+                <ZoneApplyContext value={zoneApplyState}>
+                  <ViewerCanvas>{children}</ViewerCanvas>
+                </ZoneApplyContext>
+              </PersonModelContext>
+            </EditStoreContext>
           </ViewerStoreContext>
         </ViewerErrorBoundary>
       </SpatialDataProvider>

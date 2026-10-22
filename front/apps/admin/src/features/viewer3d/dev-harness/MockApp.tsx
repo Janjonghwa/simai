@@ -8,6 +8,7 @@ import {
   type DevViewKey,
 } from '@/features/viewer3d/dev-harness/devView';
 import { DevViewSwitcher } from '@/features/viewer3d/dev-harness/DevViewSwitcher';
+import { EditPanel, EditProbe } from '@/features/viewer3d/dev-harness/EditPanel';
 import {
   createHarnessSource,
   DEV_XBOT_URL,
@@ -26,6 +27,7 @@ import { MockTopBar } from '@/features/viewer3d/dev-harness/MockTopBar';
 import type { MenuKey } from '@/features/viewer3d/dev-harness/mockUi';
 import type { SpatialMockApi } from '@/features/viewer3d/dev-harness/mswHandlers';
 import { useRoster } from '@/features/viewer3d/dev-harness/useRoster';
+import type { ViewerEditPreview, ViewerEditResult } from '@/features/viewer3d/editing/editTypes';
 import type { Viewer3DHandle, ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
 import { ViewerShell } from '@/features/viewer3d/ViewerShell';
 import { WorldReference } from '@/features/viewer3d/WorldReference';
@@ -77,6 +79,16 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   const [epoch, setEpoch] = useState(0);
   const [avatar] = useState(() => readAvatar(window.location.search));
   const [zoneApply, setZoneApply] = useState(() => readZoneApply(window.location.search));
+  // 3D 편집 소비 예시(-195). 받은 초안·결과를 보여 주기만 한다.
+  const [editPreview, setEditPreview] = useState<ViewerEditPreview | null>(null);
+  const [editResult, setEditResult] = useState<ViewerEditResult | null>(null);
+  const receiveEditResult = (result: ViewerEditResult) => {
+    setEditResult(result);
+    // 시작하지 못한 이유(REJECTED·다른 대상)는 진행 중인 초안을 지우지 않는다.
+    if (result.status !== 'REJECTED' || result.target?.id === editPreview?.target.id) {
+      setEditPreview(null);
+    }
+  };
   // 입력 없음이면 예전 고정 작업자·구역을, 입력이 있으면 Provider 의 사람·구역을 쓴다(둘을 함께 그리지 않는다).
   const legacy = sourceKey === 'off';
   const roster = useRoster(dataStore, legacy, status?.mode ?? 'LIVE');
@@ -143,6 +155,8 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           ref={viewer}
           onSelectionChange={setSelected}
           onStatusChange={setStatus}
+          onEditPreview={setEditPreview}
+          onEditResult={receiveEditResult}
           source={harness.source}
           dataStore={dataStore}
           personModelUrl={avatar === 'xbot' ? DEV_XBOT_URL : null}
@@ -151,6 +165,7 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           <MockScene colors={colors} selected={selected} legacy={legacy} />
           {spatial && <WorldReference />}
           <DebugProbe />
+          <EditProbe />
         </ViewerShell>
       </div>
 
@@ -190,6 +205,13 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
             onZoneApplyChange={changeZoneApply}
             mode={status?.mode ?? 'LIVE'}
             onRestart={() => setEpoch((n) => n + 1)}
+          />
+          <EditPanel
+            viewer={viewer}
+            store={dataStore}
+            selected={selected}
+            preview={editPreview}
+            result={editResult}
           />
         </SpatialDiagnostics>
       )}
