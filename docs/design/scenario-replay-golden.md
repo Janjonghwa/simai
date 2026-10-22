@@ -56,12 +56,12 @@ cases/<이름>/input.json
 
 | 시나리오 | D-ID | 입력 | 기대 이벤트 |
 |---|---|---|---|
-| `r1_enter_exit` | D-G6-01, D-G6-03 | 1.2 m/s 로 R1 구역에 들어가 3 s 서 있다가 1.7 m/s 로 나감 | R5 CAUTION RAISED [0, 1167](실제 진입 2167 보다 1 s 이상 앞섬) → RESOLVED [2900, 4800]. R1 HIGH RAISED [1400, 3067] VERIFIED → RESOLVED [8300, 9300]. 그 밖 이벤트 없음 |
-| `r1_resume_then_new` (slow, 31 s) | D-G6-08 | 들어감 → 나감 → 4 s 뒤 다시 들어감 → 나감 → 12 s 뒤 다시 들어감 | 이벤트 A: RAISED [1400, 3067] → RESOLVED [7300, 8300] → RESUMED [9800, 11312](같은 event_id, resume_count 1) → RESOLVED [15300, 16300]. 이벤트 B(새 event_id): RAISED [27800, 29312]. R5 는 보지 않음 |
-| `r1_observation_loss` | D-G3-02 | 구역 안에 선 사람이 4~7 s 동안 모든 카메라에서 검출되지 않음 | 규칙 정답: 이벤트 A RAISED [1400, 3067], [4000, 5500] 에 UNVERIFIABLE·확인 필요, 해소는 사람이 나간 뒤 창 [12300, 13300] 에만(없어도 됨). 현재 정책(known_limitations): 다시 보인 사람은 늦은 재연결 조건을 채우지 않아 새 World ID 의 이벤트 B(RAISED [7000, 7900] → RESOLVED [12300, 13300]), A 는 해소 없음 |
+| `r1_enter_exit` | D-G6-01, D-G6-03 | 1.2 m/s 로 R1 구역에 들어가 3 s 서 있다가 1.7 m/s 로 나감 | R5 CAUTION RAISED [0, 1167](실제 진입 2167 보다 1 s 이상 앞섬) → RESOLVED [2900, 4800]. R1 HIGH RAISED [1150, 3067] VERIFIED(보정 여유 `calibration_margin_m` 0.3) → RESOLVED [8300, 9300]. 그 밖 이벤트 없음 |
+| `r1_resume_then_new` (slow, 31 s) | D-G6-08 | 들어감 → 나감 → 4 s 뒤 다시 들어감 → 나감 → 12 s 뒤 다시 들어감 | 이벤트 A: RAISED [1150, 3067] → RESOLVED [7300, 8300] → RESUMED [9700, 11312](같은 event_id, resume_count 1) → RESOLVED [15300, 16300]. 이벤트 B(새 event_id): RAISED [27700, 29312]. R5 는 보지 않음 |
+| `r1_observation_loss` | D-G3-02 | 구역 안에 선 사람이 4~7 s 동안 모든 카메라에서 검출되지 않음 | 규칙 정답: 이벤트 A RAISED [1150, 3067], [4000, 5500] 에 UNVERIFIABLE·확인 필요, 해소는 사람이 나간 뒤 창 [12300, 13300] 에만(없어도 됨). 현재 정책(known_limitations): 다시 보인 사람은 늦은 재연결 조건을 채우지 않아 새 World ID 의 이벤트 B(RAISED [7000, 7900] → RESOLVED [12300, 13300]), A 는 해소 없음 |
 | `r7_camera_disconnect` | D-G3-01, D-G3-08 | cam2·3·4 가 4~7 s 끊겼다 새 epoch 로 재접속, 구역 밖에 한 사람 | R7 CAUTION(구역 대상, World ID 없음) RAISED [4000, 5000](healthy_cameras ≤ 1) → RESOLVED [8500, 9300]. 결합 오류 0 |
 | `r1_late_and_reconnecting_camera` | D-G3-08, D-G6-01 | r1_enter_exit 걸음 + cam3 120 ms 늦게 도착 + cam4 1.5~2.0 s 끊김·재접속 | R1 이 r1_enter_exit 와 같은 창. 결합 오류 0 |
-| `r1_lagging_camera_unverifiable` | D-G0-10 | r1_enter_exit 걸음 + cam3 만 400 ms 늦게 도착 | r1_enter_exit 와 같다: R5 RAISED [0, 1167] → RESOLVED [2900, 4800], R1 RAISED [1400, 3067] VERIFIED → RESOLVED [8300, 9300](늦은 카메라는 융합에서 빠지고 나머지 3대로 OBSERVED, S15P31A101-219 `tier0-fusion-time.md`). 측정(camera_stats): cam3 frame_age p95 [430, 600], 늦어서 뺀 tick [90, 110], 다른 카메라 frame_age p95 [0, 200]·뺀 tick 0 |
+| `r1_lagging_camera_unverifiable` | D-G0-10 | r1_enter_exit 걸음 + cam3 만 400 ms 늦게 도착 | r1_enter_exit 와 같다: R5 RAISED [0, 1167] → RESOLVED [2900, 4800], R1 RAISED [1150, 3067] VERIFIED → RESOLVED [8300, 9300](늦은 카메라는 융합에서 빠지고 나머지 3대로 OBSERVED, S15P31A101-219 `tier0-fusion-time.md`). 측정(camera_stats): cam3 frame_age p95 [430, 600], 늦어서 뺀 tick [90, 110], 다른 카메라 frame_age p95 [0, 200]·뺀 tick 0 |
 | `r2_r3_podium_edge` | D-G2-05 | 0.4 m 단상(등록 작업면) 옆 바닥을 걷다(가장자리 0.6 m) 단상에 올라 가운데에 서고, 12 s 에 뒤 가장자리로 감. 구역 없음 | 바닥 걷기에는 없음. R2 CRITICAL RAISED [4200, 5300] → RESOLVED [6900, 8000] → RESUMED [12500, 13800]. R3 HIGH RAISED [4200, 5300] 뒤 해소 없음. 단상 위 줄에 Z_UNKNOWN·PREDICTED 가 없는 줄(height_diff_m 0.35~0.45)이 있음. R5 는 보지 않음 |
 
 모든 시나리오의 두 실행 각각에 공통 불변식을 본다(두 번째 실행도 기대 비교까지 따로 한다. stats 는 출력 바이트에 없어 결정성 비교가 대신하지
@@ -95,18 +95,18 @@ resolved_at 은 해소 줄에만(= updated_at), 대상·출처(rule_id·rule_ver
     {"name": "R1 진입", "rule_id": "R1", "zone_id": "z-r1",
      "severity": "HIGH", "world_id_count": 1,       이벤트의 모든 줄에서 같아야 한다(등급을 내리지 않음, 대상이 바뀌지 않음)
      "transitions": [                                이정표 순서가 정확히 같아야 한다
-       {"kind": "RAISED", "at_ms": [1400, 3067], "verification": "VERIFIED"},
+       {"kind": "RAISED", "at_ms": [1150, 3067], "verification": "VERIFIED"},
        {"kind": "RESOLVED", "at_ms": [8300, 9300]}],
      "updates": [                                    그 구간에 그 값을 가진 줄이 하나 이상
        {"at_ms": [4000, 5500], "verification": "UNVERIFIABLE", "needs_check": true}]},
     {"name": "관측을 잃은 사람의 진입", "rule_id": "R1",
-     "transitions": [{"kind": "RAISED", "at_ms": [1400, 3067]}],
+     "transitions": [{"kind": "RAISED", "at_ms": [1150, 3067]}],
      "optional_tail": [{"kind": "RESOLVED", "at_ms": [12300, 13300]}]}   transitions 뒤에 이 앞부분이 더 와도 된다
   ],
   "known_limitations": [                    지금 구현의 한계로 나는 동작(명세 정답 아님). 맞지 않으면 실패가 아니라 '!' 알림
     {"id": "<한계 id>", "tracked_by": "<티켓>",
      "events": [{"same_as": "관측을 잃은 사람의 진입", "rule_id": "R1",   events 의 그 이벤트에 덧붙여 본다
-                 "transitions": [{"kind": "RAISED", "at_ms": [1400, 3067], "needs_check": true}]}]}
+                 "transitions": [{"kind": "RAISED", "at_ms": [1150, 3067], "needs_check": true}]}]}
   ],
   "camera_stats": {"cam3": {"frame_age_ms_p95": [430, 600], "lagging_ticks": [90, 110]}}
                                             카메라별 측정 [하한, 상한](frame_age_ms_p95·inferred·lagging_ticks)
@@ -134,12 +134,12 @@ resolved_at 은 해소 줄에만(= updated_at), 대상·출처(rule_id·rule_ver
 
 | 항목 | 값 | 근거 |
 |---|---|---|
-| 발생 하한 | 범위가 구역에 처음 닿을 수 있는 때 | 범위 = 점유 반경 0.3 m + 발끝이 골반보다 앞서는 거리(걸을 때 0.4 m 까지로 봄) + 2σ(0.2 m 까지로 봄). 중심이 구역에서 0.9 m 일 때. R2·R3 은 범위(0.3 m + 2σ)가 단상 footprint 에 걸칠 수 있는 때 |
+| 발생 하한 | 범위가 구역에 처음 닿을 수 있는 때 | 범위 = 점유 반경 0.3 m + 발끝이 골반보다 앞서는 거리(걸을 때 0.4 m 까지로 봄) + 2σ(0.2 m 까지로 봄) + 보정 여유 0.3 m(SIM 보정 PROVISIONAL, 명세 4.4, S15P31A101-233). 중심이 구역에서 1.2 m 일 때(CALIBRATED 면 0.9 m). R2·R3 은 범위(0.3 m + 2σ)가 단상 footprint 에 걸칠 수 있는 때 |
 | 발생 상한 | 중심이 경계를 넘는 때 + 900 ms | D-G6-01 목표(p95 900 ms 이하)를 시나리오 한 건의 상한으로 쓴다(발생 지속 조건 포함) |
 | R5 발생 상한 | 실제 진입 − 1000 ms | D-G6-03(실제 진입보다 1초 이상 앞섬) |
-| 해소 | 범위가 해소 간격 밖으로 나가는 때(이른 쪽: 반경만, 늦은 쪽: 발끝·2σ 포함) + 해소 유지 1500 ms(시나리오 설정) + 판정 주기·발생 지속 여유 | R1 해소 간격 0.3 m, R2 해소 거리 1.3 m(7.2) |
+| 해소 | 범위가 해소 간격 밖으로 나가는 때(이른 쪽: 반경만, 늦은 쪽: 발끝·2σ 포함, R1 은 보정 여유 0.3 m 포함) + 해소 유지 1500 ms(시나리오 설정) + 판정 주기·발생 지속 여유 | R1 해소 간격 0.3 m, R2 해소 거리 1.3 m(7.2) |
 | R7 발생 상한 | 끊김 + 1000 ms | D-G3-01(1초 이내) |
-| 재개·새 이벤트 경계 | 해소 뒤 10 s(resume_window_ms) 안과 밖이 창끼리 겹치지 않게 장면을 짰다 | 6.4. 해소 창 상한 16.3 s 와 새 발생 창 하한 27.8 s 사이가 11.5 s |
+| 재개·새 이벤트 경계 | 해소 뒤 10 s(resume_window_ms) 안과 밖이 창끼리 겹치지 않게 장면을 짰다 | 6.4. 해소 창 상한 16.3 s 와 새 발생 창 하한 27.7 s 사이가 11.4 s |
 
 해소 유지 시간을 1500 ms 로 둔 것은 -215·-171 시험과 같은 값으로 장면을 짧게 하려는 것이다(운영 기본 3000 ms). 규칙 논리는 같다.
 
@@ -196,6 +196,11 @@ resolved_at 은 해소 줄에만(= updated_at), 대상·출처(rule_id·rule_ver
 - **D-G3-03 충족(S15P31A101-218).** SIM 보정은 PROVISIONAL 이라 Tier 0 가 활성 보정 상태를 판정 문맥으로 넘기고(world_state 계약은 그대로)
   R2·R3 의 모든 줄에 `PROVISIONAL_CALIB` 가 붙는다(명세 4.4·부록 D-G3-03 100%). `r2_r3_podium_edge` 기대는 이벤트 키 `reasons_every_line`
   (그 이벤트의 모든 줄 confidence_reasons 에 있어야 할 이유)로 이를 보고, 전이 줄은 needs_check true 다.
+- **R1 넓은 불확실성(S15P31A101-233).** SIM 보정이 PROVISIONAL 이라 R1 은 불확실성 범위를 보정 여유 0.3 m 만큼 넓혀 판정한다(명세 4.4·7.1,
+  `risk-r1-calibration-margin.md`). 재생 결과 R1 발생이 약 0.2 s 이르고(r1_enter_exit 2033 → 1833 ms) 해소가 약 0.1~0.2 s 늦다(8633 → 8833 ms).
+  발생 하한을 넓힌 범위 기준(1.2 m, 1.2 m/s 진입이라 1167 ms → 창 1150)으로 다시 정하고, `r1_resume_then_new` 의 재개·새 발생 하한은 1.7 m/s 귀환 기준으로 넓힌 범위가 닿는 9706·27706 ms(176 ms 앞당김) → 창 9700·27700 으로 다시 정했다. 해소 창은 넓힌 범위 기준 계산
+  (중심 x 6.5~7.1 m 통과 + 1500 ms = 8617~8970 ms)이 기존 창 안이라 그대로 둔다. `r1_enter_exit`·`r1_late_and_reconnecting_camera` 발생 줄은
+  `calibration_margin_m` 0.3 을 확인해 넓힘이 실제로 적용됨을 본다(넓힘을 끄면 실패, 음성 대조).
 - 관측 상실 뒤 다시 보인 사람이 새 World ID 가 되는 것은 얼굴 재식별 금지(규칙 8) 때문이 아니라, World Track 늦은 재연결 조건(서로 다른 카메라
   2대의 로컬 트랙 이력, S15P31A101-40)을 추적기 대역으로는 채우지 않기 때문이다. 그래서 그 부분도 known_limitations(현재 정책)로 두었다.
 - 재생 산출물은 커밋하지 않는다. 다시 만들면 event_id 만 다르다.

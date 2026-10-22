@@ -38,13 +38,24 @@ GROUND_FOOTPRINT 는 높이를 보지 않는다(8.2 표).
 - JOINT_UNCERTAIN: VOLUME_3D 위 끝을 VALID 관절 없이 head_z 로 정했는데 skeleton 에 VALID 관절이 없다(head_z 가
   UNCERTAIN 관절에서 왔다, geometry.joint_gate.HeadZ).
 - IDENTITY_UNCERTAIN: 카메라 간 연결이 애매함.
-- PROVISIONAL_CALIB: R1 은 내지 않는다. 명세 4.4 는 PROVISIONAL 에서 R2·R3·R4 에만 확인 필요를 붙이고 R1 은 넓은 불확실성으로
-  돌린다(RuleContext.calibration_state 를 읽지 않는다. 넓은 불확실성은 아직 구현하지 않았다).
+- PROVISIONAL_CALIB: R1 은 내지 않는다(명세 4.4·7.1, 계약 confidence_reason 'R2·R3·R4 에만'). R1 은 아래 넓은 불확실성으로
+  보정 상태를 판정에 넣는다.
+
+**보정이 CALIBRATED 가 아닐 때(명세 4.4 '넓은 불확실성', 7.1).** RuleContext.calibration_state 가 PROVISIONAL·DRIFTED·
+UNCALIBRATED(방어적으로) 이면 불확실성 범위를 보정 여유 R1_CALIBRATION_MARGIN_M(0.3 m)만큼 넓힌다: 수평은 점유 반경에 더하고
+(범위 둘레를 0.3 m 바깥으로), VOLUME_3D 높이는 아래·위 끝을 0.3 m 씩 넓힌다. 발생·유지·해소 기준(겹침·해소 간격 0.3 m·3초)은
+그대로라 발생은 0.3 m 더 일찍, 해소는 0.3 m 더 벗어나야 한다(안전 쪽). 0.3 m = CALIBRATED 기준의 위치 불일치·머리 높이 오차 한도
+15 cm(4.4)를 보정 오차 σ 로 가정하고 7.1 과 같은 k=2 를 곱한 초기 안전 여유다(측정된 σ 가 아님, G1·G2 실측 뒤 재검토,
+docs/design/risk-r1-calibration-margin.md). 넓힌 판정에는 근거 코드 calibration_<상태 소문자>(reasons 끝)와 수치 calibration_margin_m
+을 붙인다. CALIBRATED 와 보정 상태 없음(None, PLANNED 계획 위치)은 넓히지 않고 결과가 전과 같다. 보정 여유·넓힘 상태는 규칙 값
+(rule_version 시드의 calibration_margin·calibration_widened_states)이고, R1 v1 을 같은 버전에서 보완한 것은 첫 운영 배포 전 예외다
+(명세 11.4, Lead 승인 2026-10-22).
 
 판정 근거 코드(reasons 앞쪽): xy_inside_polygon(위치가 다각형 안), xy_uncertainty_overlap(위치는 밖이지만 범위가 걸림),
-xy_within_clear_margin(유지 띠), VOLUME_3D 는 z_overlap / z_within_clear_margin 이 뒤따른다.
+xy_within_clear_margin(유지 띠), VOLUME_3D 는 z_overlap / z_within_clear_margin 이 뒤따른다. 보정 여유로 넓혔으면 맨 끝에
+calibration_provisional / calibration_drifted / calibration_uncalibrated.
 수치(metrics): zone_distance_m(position_xy·접지점 중 가까운 쪽에서 다각형까지 수평 거리, 안이면 0),
-VOLUME_3D 는 아는 끝만 occupancy_z_min_m·occupancy_z_max_m(불확실성 넓힘 전 값).
+VOLUME_3D 는 아는 끝만 occupancy_z_min_m·occupancy_z_max_m(불확실성 넓힘 전 값), 넓혔으면 calibration_margin_m.
 """
 
 import math
@@ -52,9 +63,18 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 
 from simai_ai.risk._parse import RiskInputError
-from simai_ai.risk.common import ConfidenceReason
+from simai_ai.risk.common import (
+    CALIBRATION_STATES,
+    PROVISIONAL_CALIB_STATES,
+    ConfidenceReason,
+)
 from simai_ai.risk.rule import Finding, RuleContext, RuleSpec
-from simai_ai.risk.world import IdentityConfidence, ObservationState, Validity, WorldTrack
+from simai_ai.risk.world import (
+    IdentityConfidence,
+    ObservationState,
+    Validity,
+    WorldTrack,
+)
 from simai_ai.risk.zone import Zone, ZoneJudgeType
 from simai_ai.risk.zone_geometry import (
     BOUNDARY_TOLERANCE_M,
@@ -68,6 +88,12 @@ R1_RULE_ID = "R1"
 R1_RULE_VERSION = 1
 R1_CLEAR_MARGIN_M = 0.3
 """해소 간격(명세 7.2 R1 '0.3m 바깥'). 불확실성 범위가 구역에서 이만큼 벗어나야 유지 판정도 내지 않는다"""
+R1_CALIBRATION_MARGIN_M = 0.3
+"""보정 여유 기본값(명세 4.4 '넓은 불확실성', 7.1). 보정이 CALIBRATED 가 아니면 불확실성 범위를 수평·높이 모두 이만큼 넓힌다.
+측정된 σ 가 아니라 설계 가정의 초기 안전 여유다: CALIBRATED 기준 한도 15 cm(위치 불일치·머리 높이 오차의 최대값, 4.4)를
+σ 로 가정하고 × k=2. G1·G2 실측 뒤 다시 정한다(docs/design/risk-r1-calibration-margin.md)"""
+R1_WIDENED_STATES = PROVISIONAL_CALIB_STATES
+"""보정 여유를 쓰는 보정 상태 = CALIBRATED 가 아닌 상태(R2·R3·R4 의 PROVISIONAL_CALIB 와 같은 집합, UNCALIBRATED 는 방어적으로)"""
 
 # 판정 근거 코드
 REASON_XY_INSIDE = "xy_inside_polygon"
@@ -115,6 +141,9 @@ class ZoneEntryRule:
     - occupancy_radius_m: 사람 점유 반경(7.1 0.3 m).
     - clear_margin_m: 해소 간격(7.2 R1 0.3 m).
     - tolerance_m: 경계 접촉 허용오차. 간격이 이 값 이하면 닿은 것(걸림)으로 본다(안전 쪽).
+    - calibration_margin_m: 보정이 넓힘 상태일 때 범위를 넓히는 거리(4.4 넓은 불확실성, 초기 안전 여유 0.3 m).
+    - calibration_widened_states: 보정 여유를 쓰는 보정 상태. None 이면 R1_WIDENED_STATES(규칙을 만들 때 읽는다).
+    두 값은 규칙 값이라 rule_catalog 가 rule_version 시드에 적는다(11.4-1).
     """
 
     def __init__(
@@ -124,12 +153,15 @@ class ZoneEntryRule:
         occupancy_radius_m: float = OCCUPANCY_RADIUS_M,
         clear_margin_m: float = R1_CLEAR_MARGIN_M,
         tolerance_m: float = BOUNDARY_TOLERANCE_M,
+        calibration_margin_m: float = R1_CALIBRATION_MARGIN_M,
+        calibration_widened_states: frozenset[str] | None = None,
     ) -> None:
         params = (
             ("k", k),
             ("occupancy_radius_m", occupancy_radius_m),
             ("clear_margin_m", clear_margin_m),
             ("tolerance_m", tolerance_m),
+            ("calibration_margin_m", calibration_margin_m),
         )
         for name, value in params:
             if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value < 0:
@@ -138,6 +170,11 @@ class ZoneEntryRule:
         self._radius = float(occupancy_radius_m)
         self._margin = float(clear_margin_m)
         self._tol = float(tolerance_m)
+        widened = R1_WIDENED_STATES if calibration_widened_states is None else frozenset(calibration_widened_states)
+        if not widened <= CALIBRATION_STATES:
+            raise RiskInputError(f"R1.calibration_widened_states: 모르는 보정 상태 {sorted(widened - CALIBRATION_STATES)}")
+        self._calibration_margin = float(calibration_margin_m)
+        self._calibration_widened_states = widened
         self._spec = RuleSpec(rule_id=R1_RULE_ID, rule_version=R1_RULE_VERSION, reads=_R1_READS)
 
     @property
@@ -145,13 +182,17 @@ class ZoneEntryRule:
         return self._spec
 
     def evaluate(self, ctx: RuleContext) -> Iterator[Finding]:
+        state = ctx.calibration_state
+        widen = state is not None and state in self._calibration_widened_states and self._calibration_margin > 0.0
+        calibration_reason = f"calibration_{state.lower()}" if widen and state is not None else None
+        margin = self._calibration_margin if calibration_reason is not None else 0.0
         for track in sorted(ctx.world.tracks, key=lambda t: t.world_id):
             if track.observation_state is ObservationState.UNKNOWN:
                 continue  # 정확한 위치 사용 중단(6.1). 관측 상실은 R6 이 맡는다
-            ranges = horizontal_ranges(track, k=self._k, radius_m=self._radius)
+            ranges = horizontal_ranges(track, k=self._k, radius_m=self._radius + margin)
             height = occupancy_height(track)
             for zone in ctx.zones:
-                finding = self._judge(track, zone, ranges, height)
+                finding = self._judge(track, zone, ranges, height, margin, calibration_reason)
                 if finding is not None:
                     yield finding
 
@@ -161,6 +202,8 @@ class ZoneEntryRule:
         zone: Zone,
         ranges: tuple[HorizontalRange, ...],
         height: OccupancyHeight,
+        margin: float,
+        calibration_reason: str | None,
     ) -> Finding | None:
         # position_xy(명세 8.2)와 접지점 XY 중 하나라도 걸리면 걸린 것이다(작은 간격).
         cutoff = max(self._margin, self._tol)
@@ -182,7 +225,7 @@ class ZoneEntryRule:
                 # 서 있는 면이나 위 끝을 모르면 높이로 판정하지 않는다(8.2). XY 판정 그대로 + 확인 필요.
                 confidence.add(ConfidenceReason.Z_UNKNOWN)
             else:
-                z_gap = self._height_gap(height.bottom, height.top, height, zone.z_range)
+                z_gap = self._height_gap(height.bottom, height.top, height, zone.z_range, margin)
                 if z_gap <= self._tol:
                     reasons.append(REASON_Z_OVERLAP)
                 elif z_gap < self._margin:
@@ -197,6 +240,9 @@ class ZoneEntryRule:
             if height.top is not None:
                 metrics["occupancy_z_max_m"] = height.top
 
+        if calibration_reason is not None:
+            reasons.append(calibration_reason)
+            metrics["calibration_margin_m"] = margin
         confidence |= track_confidence_reasons(track)
         return Finding(
             rule_id=self._spec.rule_id,
@@ -210,10 +256,12 @@ class ZoneEntryRule:
             holding=not raising,
         )
 
-    def _height_gap(self, bottom: float, top: float, height: OccupancyHeight, z_range: tuple[float, ...]) -> float:
-        """점유 높이(불확실성으로 넓힘)와 구역 높이 [zmin, zmax] 사이 간격. 겹치면(닿음 포함) 0."""
-        lo = bottom - self._k * height.bottom_sigma
-        hi = top + self._k * height.top_sigma
+    def _height_gap(
+        self, bottom: float, top: float, height: OccupancyHeight, z_range: tuple[float, ...], margin: float
+    ) -> float:
+        """점유 높이(불확실성·보정 여유로 넓힘)와 구역 높이 [zmin, zmax] 사이 간격. 겹치면(닿음 포함) 0."""
+        lo = bottom - self._k * height.bottom_sigma - margin
+        hi = top + self._k * height.top_sigma + margin
         return max(z_range[0] - hi, lo - z_range[1], 0.0)
 
 

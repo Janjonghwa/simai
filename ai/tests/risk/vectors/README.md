@@ -82,7 +82,8 @@ uv run pytest tests/risk                                   # 위 실행을 포�
 최상위 `calibration_state` 는 모든 단계의 world 위치를 만든 보정의 상태다(명세 4.4, `UNCALIBRATED` / `PROVISIONAL` / `CALIBRATED` / `DRIFTED` / null).
 world_state 계약에 없는 판정 문맥이라 따로 둔다(Tier 0 는 health 와 같은 활성 보정 상태를 넘긴다).
 
-- CALIBRATED 가 아니면 R2·R3·R4 의 모든 판정에 `PROVISIONAL_CALIB` 가 붙는다(D-G3-03). R1·R5·R6·R7 은 보지 않는다.
+- CALIBRATED 가 아니면 R2·R3·R4 의 모든 판정에 `PROVISIONAL_CALIB` 가 붙는다(D-G3-03).
+- CALIBRATED 가 아니면 R1 은 불확실성 범위를 보정 여유 0.3 m 만큼 넓혀 판정하고(수평·VOLUME_3D 높이, 명세 4.4 '넓은 불확실성'), 넓힌 판정에 근거 코드 `calibration_<상태 소문자>`·수치 `calibration_margin_m` 을 붙인다. `PROVISIONAL_CALIB` 는 붙지 않는다(S15P31A101-233). R5·R7 은 보지 않는다(R6 holding 도 넓히지 않는다).
 - 없거나 null 이면 보정 상태가 적용되지 않는 입력(PLANNED 계획 위치와 같다)으로 판정한다. 모르는 값은 형식 오류다.
 - `steps[].calibration_state`(선택)는 그 단계만의 값으로 최상위 값을 대신한다(운영 중 상태 전환 시험).
 - `calibration_state` 키(최상위·단계)는 `format_version` 1.5 이상에서만 쓴다.
@@ -108,6 +109,7 @@ world_state 계약에 없는 판정 문맥이라 따로 둔다(Tier 0 는 health
 | `r1_persistence_resume.json` | LIVE R1 + 기본 생명주기 정책: 구역 안 순간 검출 한 프레임은 이벤트 0건, `[T,F,T]` 에서 발생, 해소 뒤 10초 안 재진입은 같은 이벤트 재개(RESUMED, 다시 울림), 10초 넘어 재진입은 새 이벤트 (6.4, D-G6-07·08) |
 | `r1_footprint_position_or_anchor.json` | LIVE R1 GROUND_FOOTPRINT 보수적 결합: position_xy 만 안, 접지점만 안 모두 발생, 둘 다 띠 밖이면 판정 없음 (8.2) |
 | `r2_r3_podium_live.json` | LIVE R2·R3 교실 시험 프로파일(v1001): 40 cm 단상 앞 바닥 사람(범위가 footprint 에 걸침)은 판정 없음, 단상 위 둘째 프레임에 R2 CRITICAL·R3 HIGH 발생·현장 경보. 단상 위에서 접지점이 사라지면(Z 모름) 확인 필요(Z_UNKNOWN)로 유지되고 5초 뒤에도 해소 없음, 가려진 채 유지(HELD)면 PREDICTED, 바닥으로 내려오면 3초 뒤 해소 (7.2, 5.2, 7.1, 7.4) |
+| `r1_boundary_provisional_calib.json` | LIVE R1 보정 PROVISIONAL(1.5): 범위 반경 0.4 → 0.7 m 로 넓혀 경계 0.9 m 는 유지, 0.65 m 부터 발생 판정이라 RAISED +300 ms(CALIBRATED 같은 입력은 +500), 나갈 때 0.85 m 도 유지라 RESOLVED +4900 ms(CALIBRATED +4800). 판정마다 `calibration_provisional`·`calibration_margin_m` 0.3, `PROVISIONAL_CALIB` 없음 (4.4, 7.1) |
 | `r2_r3_podium_provisional_calib.json` | r2_r3_podium_live 와 같은 입력을 보정 PROVISIONAL(1.5)로 판정: R2·R3 판정 전부에 `PROVISIONAL_CALIB`, 다른 이유·등급·근거는 그대로 (4.4, D-G3-03) |
 | `r2_r3_podium_replay.json` | REPLAY: 같은 장면의 판정·전이는 같고 현장 경보 신호 0건 (7.4) |
 | `r2_r3_podium_operational_profile.json` | LIVE 운영 프로파일(R2·R3 v1, 2 m): 같은 40 cm 단상 장면에서 판정·이벤트 0건 |

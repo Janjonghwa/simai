@@ -201,12 +201,31 @@ def test_known_limitation_is_separate_from_rule_truth(enter_exit) -> None:
     r1["optional_tail"] = [r1["transitions"].pop()]  # 규칙 정답: 해소는 없어도 되지만 난다면 나간 뒤 창
     doc["known_limitations"] = [{"id": "no-resolve", "tracked_by": "S15P31A101-0",
                                  "events": [{"same_as": r1["name"], "rule_id": "R1",
-                                             "transitions": [{"kind": "RAISED", "at_ms": [1400, 3067]}]}]}]
+                                             "transitions": [{"kind": "RAISED", "at_ms": [1150, 3067]}]}]}]
     diffs, notices = golden.evaluate(doc, replay, scene.start_ms)
     assert diffs == [] and any("no-resolve" in n and "전이 순서" in n for n in notices), (diffs, notices)
     early = _resolve_first(replay, "R1", scene.start_ms + 5000)  # 사람은 6 s 까지 구역 안에 서 있다
     diffs, _ = golden.evaluate(doc, early, scene.start_ms)
     assert any("RESOLVED 시각 기대 [8300, 9300]" in x for x in diffs), diffs
+
+
+def test_r1_enter_exit_needs_the_calibration_margin(tmp_path, monkeypatch, enter_exit) -> None:
+    """음성 대조(S15P31A101-233): SIM 보정은 PROVISIONAL 이라 R1 은 보정 여유 0.3 m 로 넓혀 판정한다. 넓힘을 끄면(CALIBRATED 처럼)
+    발생 줄의 calibration_margin_m 확인이 실패하고, 발생은 늦어지고(약 0.2 s) 해소는 빨라진다."""
+    from simai_ai.risk.rules import r1_zone_entry
+
+    case, expected, scene, widened = enter_exit
+    monkeypatch.setattr(r1_zone_entry, "R1_WIDENED_STATES", frozenset())
+    plain = golden.run_replay(case, scene, tmp_path / "run")
+    diffs = golden.compare(expected, plain, scene.start_ms)
+    assert any("RAISED metrics.calibration_margin_m" in x for x in diffs), diffs
+
+    def r1_milestones(replay):
+        (r1,) = [a for a in golden.actual_events(replay.events, scene.start_ms) if a.rule_id == "R1"]
+        return {m.kind: m.at_ms for m in r1.milestones}
+
+    w, p = r1_milestones(widened), r1_milestones(plain)
+    assert w["RAISED"] < p["RAISED"] and w["RESOLVED"] > p["RESOLVED"], (w, p)
 
 
 def test_lagging_camera_scenario_needs_the_fusion_time_fix(tmp_path, monkeypatch) -> None:

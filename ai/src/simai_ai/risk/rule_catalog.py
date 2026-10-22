@@ -8,7 +8,8 @@ EC2 DB 의 `rule_version` 테이블(기획서 11.1, docs/design/db-tables.md)은
 - R6(관측 상실 유지)으로 감싼 규칙은 감싼 규칙의 값과 `r6` 값을 함께 적는다.
 - 프로파일: 버전이 시험 프로파일 범위면 CLASSROOM_TEST, 아니면 OPERATION(7.4).
 - 기본 심각도: 규칙 모듈의 `{규칙 ID}_SEVERITY` 상수(DEFAULT_SEVERITY). 없으면 비운다(R1 은 구역 심각도, 그 밖은 규칙이 판정마다 정함).
-- 규칙 버전은 고치지 않고 새 버전을 더한다(11.4-1). 같은 (ID, 버전)의 값이 DB 와 다르면 마이그레이션이 멈춘다.
+- 규칙 버전은 고치지 않고 새 버전을 더한다(11.4-1, 첫 운영 배포 전 규칙 보완 예외만 같은 버전). 같은 (ID, 버전)의 값이 DB 와 다르면
+  마이그레이션이 멈춘다.
 
 등록부를 바꾸면 다시 만든다. `ai/` 에서:
 
@@ -54,9 +55,13 @@ class RuleCatalogEntry:
 
 
 def _value(v: Any) -> Any:
-    """설정값을 JSON 값으로. 숫자·문자열·불·None·Enum·dataclass 만 받는다."""
+    """설정값을 JSON 값으로. 숫자·문자열·불·None·Enum·dataclass 와 그 묶음(집합은 정렬한 목록)만 받는다."""
     if v is None or isinstance(v, bool | str):
         return v
+    if isinstance(v, frozenset | set):
+        return sorted(_value(x) for x in v)
+    if isinstance(v, tuple | list):
+        return [_value(x) for x in v]
     if isinstance(v, int | float):
         if isinstance(v, float) and not math.isfinite(v):
             raise ValueError(f"유한하지 않은 설정값: {v!r}")
