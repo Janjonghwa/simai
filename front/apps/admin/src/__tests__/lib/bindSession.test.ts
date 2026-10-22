@@ -1,4 +1,5 @@
 import { bindSession } from '@/lib/bindSession';
+import type { RealtimeSession } from '@/lib/stomp';
 import type { Session } from '@/store/session.store';
 import { describe, expect, it } from 'vitest';
 import { createStore } from 'zustand/vanilla';
@@ -13,7 +14,7 @@ function setup(initial?: Session) {
   const unbind = bindSession({
     sessionStore,
     realtime: {
-      start: ({ token, userId }) => log.push(`start ${userId} ${token}`),
+      start: ({ userId, getToken }) => log.push(`start ${userId} ${getToken()}`),
       stop: async () => {
         log.push('stop');
       },
@@ -29,10 +30,10 @@ function setup(initial?: Session) {
     },
     queryClient: { clear: () => log.push('clear') },
   });
+  // 가드가 끝난 뒤의 처리(캐시 비우기)가 다 돌 때까지 한 턴 기다린다.
   const settle = async () => {
     finishInvalidate();
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
   };
   return { log, sessionStore, unbind, settle };
 }
@@ -62,12 +63,53 @@ describe('bindSession', () => {
     expect(log).toEqual(['stop', 'start bob b-1', 'clearCache', 'invalidate', 'clear']);
   });
 
-  it('같은 사람의 토큰만 바뀌면 다시 연결만 하고 캐시는 둔다', async () => {
-    const { log, sessionStore, settle } = setup(alice);
+  it('같은 사람의 토큰만 바뀌면(갱신) 연결도 캐시도 그대로 두고, 연결은 새 토큰을 읽는다', async () => {
+    let token: RealtimeSession['getToken'] | undefined;
+    const sessionStore = createStore<{ session?: Session }>()(() => ({ session: alice }));
+    const log: string[] = [];
+    bindSession({
+      sessionStore,
+      realtime: {
+        start: ({ getToken }) => {
+          token = getToken;
+          log.push('start');
+        },
+        stop: async () => {
+          log.push('stop');
+        },
+      },
+      router: {
+        invalidate: async () => {
+          log.push('invalidate');
+        },
+        clearCache: () => log.push('clearCache'),
+      },
+      queryClient: { clear: () => log.push('clear') },
+    });
     log.length = 0;
+
     sessionStore.setState({ session: { ...alice, accessToken: 'a-2' } });
-    await settle();
-    expect(log).toEqual(['start alice a-2', 'invalidate']);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(log).toEqual([]);
+    expect(await token?.()).toBe('a-2');
+  });
+
+  it('토큰을 주는 함수를 넘기면 실시간 연결이 그것을 쓴다(만료 전 갱신)', async () => {
+    let token: RealtimeSession['getToken'] | undefined;
+    const sessionStore = createStore<{ session?: Session }>()(() => ({ session: alice }));
+    bindSession({
+      sessionStore,
+      realtime: {
+        start: ({ getToken }) => {
+          token = getToken;
+        },
+        stop: async () => {},
+      },
+      router: { invalidate: async () => {}, clearCache: () => {} },
+      queryClient: { clear: () => {} },
+      getToken: async () => 'fresh',
+    });
+    expect(await token?.()).toBe('fresh');
   });
 
   it('가드가 실패해도 로그아웃이면 캐시를 지운다', async () => {

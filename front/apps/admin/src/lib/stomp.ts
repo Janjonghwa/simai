@@ -30,12 +30,16 @@ const HEARTBEAT_MS = 10_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 
 export interface RealtimeSession {
-  token: string;
   userId: string;
+  /**
+   * 연결·재연결할 때마다 읽는다. 갱신으로 토큰이 바뀌어도 연결을 다시 열지 않고 다음 재연결에 새 토큰을 싣는다.
+   * Promise 면 기다린다(만료가 가까우면 먼저 갱신한다, authSession.freshToken).
+   */
+  getToken: () => string | undefined | Promise<string | undefined>;
 }
 
 export interface Realtime {
-  /** 세션 토큰으로 연결한다. 이전 연결이 있으면 끊고 데이터를 비운 뒤 새로 연결한다. */
+  /** 사용자의 토큰으로 연결한다. 이전 연결이 있으면 끊고 데이터를 비운 뒤 새로 연결한다. */
   start(session: RealtimeSession): void;
   /** 연결을 끊고 받은 데이터를 비운다. 끊김이 끝나면 풀린다. */
   stop(): Promise<void>;
@@ -250,7 +254,7 @@ export function createRealtime({
     store.getState().setSource(withReplay(connection, source));
   }
 
-  function connect({ token }: RealtimeSession): Connection {
+  function connect({ getToken }: RealtimeSession): Connection {
     // 끊은 뒤 늦게 도착한 콜백은 버린다.
     const isCurrent = () => current === connection;
 
@@ -308,14 +312,17 @@ export function createRealtime({
 
     const client = new Client({
       brokerURL: url,
-      connectHeaders: { Authorization: `Bearer ${token}` },
       heartbeatIncoming: HEARTBEAT_MS,
       heartbeatOutgoing: HEARTBEAT_MS,
       reconnectDelay: reconnectDelayMs,
       reconnectTimeMode: ReconnectionTimeMode.EXPONENTIAL,
       maxReconnectDelay: MAX_RECONNECT_DELAY_MS,
-      beforeConnect: () => {
+      // stompjs 는 이 함수가 끝난 뒤 connectHeaders 를 읽는다. 재연결마다 가장 새 토큰을 싣는다.
+      beforeConnect: async (self) => {
         if (isCurrent()) store.getState().setPhase('CONNECTING');
+        // 실패해도 헤더 없이 붙어 거절당하고 다음 재연결에서 다시 받는다.
+        const token = await Promise.resolve(getToken()).catch(() => undefined);
+        self.connectHeaders = token ? { Authorization: `Bearer ${token}` } : {};
       },
       onConnect: () => {
         if (!isCurrent()) return;

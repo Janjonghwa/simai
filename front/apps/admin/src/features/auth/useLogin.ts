@@ -1,7 +1,6 @@
-import { requestLogin } from '@/features/auth/api';
 import { loginErrorMessage } from '@/features/auth/loginErrorMessage';
 import type { LoginForm } from '@/features/auth/types';
-import { api } from '@/lib/api';
+import { authSession } from '@/lib/api';
 import { useSessionStore } from '@/store/session.store';
 import { useMutation } from '@tanstack/react-query';
 
@@ -9,7 +8,7 @@ import { useMutation } from '@tanstack/react-query';
 export function useLogin() {
   const signIn = useSessionStore((s) => s.signIn);
   const mutation = useMutation({
-    mutationFn: (input: LoginForm) => requestLogin(api, input),
+    mutationFn: (input: LoginForm) => authSession.login(input),
     onSuccess: signIn,
     // 입력한 비밀번호가 mutation 캐시에 남지 않게, 로그인 화면이 닫히면 바로 지운다(기본은 5분).
     gcTime: 0,

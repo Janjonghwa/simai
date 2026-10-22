@@ -16,6 +16,8 @@ export interface ApiErrorOptions {
   kind?: ApiErrorKind;
   /** 서버가 보낸 오류 문구. 보여 줄지는 훅이 정한다(5xx 문구에는 서버 내부 정보가 섞일 수 있다). */
   serverMessage?: string;
+  /** 서버가 정한 오류 이름(ProblemDetail 의 code). 예: REFRESH_TOKEN_ROTATED */
+  code?: string;
   cause?: unknown;
 }
 
@@ -23,8 +25,9 @@ export class ApiError extends Error {
   readonly status: number;
   readonly kind: ApiErrorKind;
   readonly serverMessage?: string;
+  readonly code?: string;
 
-  constructor(status: number, { kind, serverMessage, cause }: ApiErrorOptions = {}) {
+  constructor(status: number, { kind, serverMessage, code, cause }: ApiErrorOptions = {}) {
     const resolved = kind ?? (status === NETWORK_ERROR ? 'NETWORK' : 'HTTP');
     // 서버 문구는 message 에 넣지 않는다. 로그·오류 화면으로 서버 내부 정보가 새지 않게 한다.
     super(`요청이 실패했다 (${resolved === 'HTTP' ? `HTTP ${status}` : resolved})`, { cause });
@@ -32,6 +35,7 @@ export class ApiError extends Error {
     this.status = status;
     this.kind = resolved;
     this.serverMessage = serverMessage;
+    this.code = code;
   }
 }
 
@@ -43,6 +47,8 @@ export interface RequestOptions<T> {
   /** 응답 본문 검사. 통과한 값만 돌려준다. */
   schema: ZodType<T>;
   signal?: AbortSignal;
+  /** 쿠키를 실을지. 갱신 쿠키를 주고받는 인증 요청만 'include' 로 부른다. */
+  credentials?: RequestCredentials;
 }
 
 export type Http = <T>(path: string, options: RequestOptions<T>) => Promise<T>;
@@ -50,7 +56,12 @@ export type Http = <T>(path: string, options: RequestOptions<T>) => Promise<T>;
 export interface HttpOptions {
   baseUrl: string;
   getToken?: () => string | undefined;
-  /** 토큰을 실어 보낸 요청이 401 이면 그 토큰을 넘겨 부른다(토큰 만료·폐기). */
+  /**
+   * 토큰을 실어 보낸 요청이 401 이면 그 토큰을 넘겨 새 토큰을 받는다. 다른 토큰이 오면 요청을 한 번만 다시 보낸다.
+   * 못 받으면 원래 401 을 던진다. 세션을 끝낼지는 이 함수가 정한다.
+   */
+  refreshToken?: (token: string) => Promise<string | undefined>;
+  /** 토큰을 실어 보낸 요청이 401 인데 더 갱신하지 않을 때 그 토큰을 넘겨 부른다(refreshToken 이 없거나, 다시 보낸 요청도 401). */
   onUnauthorized?: (token: string) => void;
   /** 요청 하나가 끝나기까지 기다리는 시간(ms). 서버가 멈춰도 화면이 "요청 중"에 머물지 않게 한다. */
   timeoutMs?: number;
@@ -62,45 +73,63 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 export function createHttp({
   baseUrl,
   getToken,
+  refreshToken,
   onUnauthorized,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 }: HttpOptions): Http {
   const base = baseUrl.replace(/\/+$/, '');
 
-  return async (path, { method = 'GET', body, schema, signal }) => {
+  return async (path, { method = 'GET', body, schema, signal, credentials }) => {
     // base 뒤에 붙이므로 / 로 시작해야 한다. '@host/…' 같은 값은 http://base@host/… 가 되어 토큰이 다른 서버로 간다.
-    if (!path.startsWith('/') || path.startsWith('//')) {
+    // base 가 비면(같은 출처) 주소 해석이 '/\host'·탭·줄바꿈이 낀 '//host' 를 다른 호스트로 읽어서 그런 글자도 받지 않는다.
+    if (!path.startsWith('/') || path.startsWith('//') || hasUnsafeChar(path)) {
       throw new Error(`REST 경로는 / 로 시작해야 한다: ${path}`);
     }
-    const token = getToken?.();
-    const headers = new Headers({ Accept: 'application/json' });
-    if (body !== undefined) headers.set('Content-Type', 'application/json');
-    if (token) headers.set('Authorization', `Bearer ${token}`);
     // 직렬화 오류(순환 참조 등)는 코드 문제라 연결 실패로 바꾸지 않는다.
     const payload = body === undefined ? undefined : JSON.stringify(body);
-    const timeout = AbortSignal.timeout(timeoutMs);
 
-    let response: Response;
-    let text: string;
-    try {
-      response = await fetch(`${base}${path}`, {
-        method,
-        headers,
-        body: payload,
-        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-      });
-      text = await response.text();
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      throw new ApiError(NETWORK_ERROR, {
-        kind: timeout.aborted ? 'TIMEOUT' : 'NETWORK',
-        cause: error,
-      });
+    // 보낼 때마다 시간 제한을 새로 둔다. 갱신을 기다린 시간이 다시 보내는 요청의 몫을 먹지 않게 한다.
+    const send = async (token: string | undefined) => {
+      const headers = new Headers({ Accept: 'application/json' });
+      if (payload !== undefined) headers.set('Content-Type', 'application/json');
+      if (token) headers.set('Authorization', `Bearer ${token}`);
+      const timeout = AbortSignal.timeout(timeoutMs);
+      try {
+        const response = await fetch(`${base}${path}`, {
+          method,
+          headers,
+          body: payload,
+          credentials,
+          signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+        });
+        return { response, text: await response.text() };
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        throw new ApiError(NETWORK_ERROR, {
+          kind: timeout.aborted ? 'TIMEOUT' : 'NETWORK',
+          cause: error,
+        });
+      }
+    };
+
+    const token = getToken?.();
+    let { response, text } = await send(token);
+    if (response.status === 401 && token) {
+      if (refreshToken) {
+        // 401 은 서버 보안 필터가 요청을 처리하기 전에 거절한 것이라 POST 도 다시 보내도 된다.
+        const next = await refreshToken(token).catch(() => undefined);
+        if (signal?.aborted) throw signal.reason;
+        if (next && next !== token) {
+          ({ response, text } = await send(next));
+          if (response.status === 401) onUnauthorized?.(next);
+        }
+      } else {
+        onUnauthorized?.(token);
+      }
     }
 
     if (!response.ok) {
-      if (response.status === 401 && token) onUnauthorized?.(token);
-      throw new ApiError(response.status, { serverMessage: readServerMessage(text) });
+      throw new ApiError(response.status, readProblem(text));
     }
     let data: unknown;
     try {
@@ -116,16 +145,27 @@ export function createHttp({
   };
 }
 
-// Spring 기본 오류 본문(message)과 ProblemDetail(detail)을 둘 다 읽는다.
-function readServerMessage(text: string): string | undefined {
+// 역슬래시와 제어 문자(탭·줄바꿈 등). URL 해석이 지우거나 / 로 바꿔 경로가 다른 호스트로 바뀔 수 있다.
+function hasUnsafeChar(path: string) {
+  return [...path].some((char) => {
+    const code = char.charCodeAt(0);
+    return char === '\\' || code < 0x20 || code === 0x7f;
+  });
+}
+
+// Spring 기본 오류 본문(message)과 ProblemDetail(detail·code)을 읽는다.
+function readProblem(text: string): Pick<ApiErrorOptions, 'serverMessage' | 'code'> {
   let data: unknown;
   try {
     data = JSON.parse(text);
   } catch {
-    return undefined;
+    return {};
   }
-  if (typeof data !== 'object' || data === null) return undefined;
-  if ('message' in data && typeof data.message === 'string' && data.message) return data.message;
-  if ('detail' in data && typeof data.detail === 'string' && data.detail) return data.detail;
-  return undefined;
+  if (typeof data !== 'object' || data === null) return {};
+  const problem: object = data;
+  const field = (key: string) => {
+    const value: unknown = Reflect.get(problem, key);
+    return typeof value === 'string' && value ? value : undefined;
+  };
+  return { serverMessage: field('message') ?? field('detail'), code: field('code') };
 }

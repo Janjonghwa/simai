@@ -1,7 +1,7 @@
-import { useSessionStore } from '@/store/session.store';
+import { authSession } from '@/lib/api';
 
-// 세션만 끝낸다. 캐시 비우기와 로그인 화면 이동은 main.tsx 의 세션 구독이 한다(401 로 끝날 때와 같은 길).
-// 서버 로그아웃(갱신 토큰 폐기)이 생기면 여기서 부른다.
+// 화면은 바로 로그아웃하고 서버에 갱신 쿠키 폐기를 부탁한다. 캐시 비우기와 로그인 화면 이동은 main.tsx 의 세션 구독이 한다
+// (401 로 끝날 때와 같은 길).
 export function useLogout() {
-  return useSessionStore((s) => s.signOut);
+  return authSession.logout;
 }

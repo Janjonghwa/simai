@@ -64,4 +64,35 @@ describe('createEventsMock', () => {
     ).toBe(401);
     expect(published).toHaveLength(0);
   });
+
+  it('실서버 토큰(혼합 모드)은 sub·role 로 확인을 남기고, 만료됐거나 expireAuth 뒤 한 번은 401 이다', async () => {
+    const local = createEventsMock({ broker, now: () => NOW });
+    server.use(...local.handlers);
+    try {
+      local.record(raised);
+      const jwt = (claims: object) =>
+        `h.${btoa(JSON.stringify(claims)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')}.s`;
+      const ackWith = (token: string) =>
+        fetch(`http://api.test/api/events/${raised.payload.event_id}/ack`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      const expired = jwt({ sub: '42', role: 'ADMIN', exp: NOW / 1000 - 1 });
+      const live = jwt({ sub: '42', role: 'FOREMAN', exp: NOW / 1000 + 1800 });
+
+      const rejected = await ackWith(expired);
+      expect(rejected.status).toBe(401);
+      expect(await rejected.json()).toMatchObject({ code: 'UNAUTHORIZED' });
+
+      local.expireAuth();
+      expect((await ackWith(live)).status).toBe(401);
+      const accepted = await ackWith(live);
+      expect(accepted.status).toBe(200);
+      expect(((await accepted.json()) as RiskEventMessage['payload']).acks).toEqual([
+        expect.objectContaining({ actor_id: '42', actor_role: 'FOREMAN' }),
+      ]);
+    } finally {
+      server.resetHandlers();
+    }
+  });
 });
