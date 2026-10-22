@@ -6,7 +6,7 @@
 
 | 항목 | 내용 |
 |---|---|
-| 입력 | 읽는 상태(World XYZ와 불확실성, 구역, 등록 작업면, 객체 상태 등) |
+| 입력 | 읽는 상태(World XYZ와 불확실성, 구역, 등록 작업면, 객체 상태 등)와 판정 문맥(감시 상태, 활성 보정 상태 4.4. `world_state` 에 싣지 않는다, 3.2) |
 | 발생·해소 조건 | 발생은 지속 조건(6.4) 충족 시, 히스테리시스용 두 임계값, 해소는 일정 시간 유지 후 |
 | 불확실성 처리 | 발생: 불확실성 범위가 조건에 조금이라도 걸리면. 해소: 불확실성 범위까지 완전히 벗어난 상태가 유지되면 |
 | 심각도 | CRITICAL / HIGH / CAUTION / INFO |
@@ -22,7 +22,7 @@
 |---|---|
 | `Z_UNKNOWN` | 지지 표면·높이를 모름(z_validity UNAVAILABLE) |
 | `PREDICTED` | 위치가 관측이 아니라 예측값 |
-| `PROVISIONAL_CALIB` | 보정 상태가 PROVISIONAL |
+| `PROVISIONAL_CALIB` | 판정 위치를 만든 보정이 CALIBRATED 가 아님(PROVISIONAL·DRIFTED, UNCALIBRATED 에서 판정이 나온 경우 방어적으로. UNCALIBRATED 는 여전히 위치 기반 판단 불가, 4.4). R2·R3·R4 에만 붙는다. PLANNED 계획 위치는 보정 상태 해당 없음이라 붙지 않는다 |
 | `SINGLE_VIEW` | 2대 이상 유효 관측이 없음 |
 | `JOINT_UNCERTAIN` | 근거 관절이 UNCERTAIN |
 | `IDENTITY_UNCERTAIN` | 카메라 간 연결이 애매함 |

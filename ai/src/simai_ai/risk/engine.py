@@ -122,6 +122,7 @@ class RiskEngine:
         *,
         monitoring: MonitoringState | None = None,
         work_surfaces: Iterable[WorkSurface] = (),
+        calibration_state: str | None = None,
     ) -> Evaluation:
         """monitoring 은 같은 판정 시각의 감시 상태(R7 입력)다. 없으면 None 으로 규칙에 넘긴다.
 
@@ -130,6 +131,9 @@ class RiskEngine:
 
         PLANNED·WHAT_IF 는 카메라가 없는 입력이라 monitoring_expected=False 로 넘긴다. 그때 monitoring 이 없으면
         R7 은 판정하지 않는다(가상 카메라 장애를 보려면 monitoring 을 넘긴다). LIVE·REPLAY 에서 없으면 '모름'(저하)이다.
+
+        calibration_state 는 world 위치를 만든 보정의 상태(명세 4.4, RuleContext.calibration_state)다. None 은 보정 상태가
+        적용되지 않는 입력(PLANNED)이다. 카메라 입력(Tier 0 LIVE·REPLAY)은 호출부가 활성 보정 상태를 넣는다.
         """
         origin = Origin(origin)
         now_ms = self._clock.now_ms()
@@ -151,6 +155,7 @@ class RiskEngine:
             monitoring_expected=origin in _CAMERA_ORIGINS,
             work_surfaces=surfaces,
             state=self._state.view(origin),
+            calibration_state=calibration_state,
         )
 
         findings: list[Finding] = []

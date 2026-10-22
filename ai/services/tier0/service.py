@@ -466,7 +466,7 @@ class Tier0Service:
                                         tracks_t=r.tracks_t, tracks=r.tracks)
         self.judge = JudgmentLoop(
             lock=self.judge_lock, now_ms=self.clock.now_ms, config_sync=self.config_sync, perception=self.perception,
-            tracker=self.tracker, journal=self.journal, writer=self.writer,
+            tracker=self.tracker, journal=self.journal, writer=self.writer, calibration_state=self._calibration_state,
             send_i0=None if self.control is None else self.control.send,
             offer_world_state=(self.jsonl.world_state if self.jsonl is not None
                                else None if self.link is None else self.link.publisher.offer_world_state),

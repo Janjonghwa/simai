@@ -8,6 +8,8 @@ EC2 Risk Engine 컨테이너(services/risk_engine)가 `risk_plan_request` payloa
 **변환(계약 risk_plan_request work_position).** 계획 위치는 확실한 입력이다: 위치 불확실성 0(점유 반경 0.3 m 는 규칙이 더함),
 접지 Z = 서 있는 면 상판 높이(floor 0), 머리 높이 = 접지 Z + head_height_m(없으면 모름: head_z 비움, VOLUME_3D 는 Z_UNKNOWN).
 변환에 쓴 가상 값(관측 상태·카메라 이름)은 결과에 싣지 않는다. 결과 항목은 holding 이 아닌 판정만, metrics 는 mm 반올림이다.
+계획 위치는 카메라·보정으로 잰 값이 아니라 보정 상태가 적용되지 않는다(calibration_state=None, '보정 상태 해당 없음'). 그래서 R2·R3·R4
+결과에 PROVISIONAL_CALIB(명세 4.4, 측정 위치의 보정 불확실성)가 붙지 않는다.
 
 **계획 작업 위치 생성(요청에 위치가 없거나 빈 배열일 때만, 규칙 POSITION_RULE).** 사람 대상 규칙(R1·R2·R3)이 레이아웃만으로
 판정을 내도록 대표 위치를 만든다. 요청에 위치가 하나라도 있으면 그 위치만 쓰고 만들지 않는다(REQUESTED 와 섞지 않음).
@@ -223,7 +225,9 @@ def evaluate_plan(payload: Mapping[str, Any], registry: RuleRegistry | None = No
     zones, surfaces, requested = read_layout(payload["layout"], t_ms)
     positions = requested or generate_positions(surfaces, (z for z in zones if z.is_active(t_ms)))
     world = planned_world(positions, surfaces, t_ms)
-    evaluation = RiskEngine(rules, FixedClock(t_ms)).evaluate(world, zones, Origin.PLANNED, work_surfaces=surfaces)
+    evaluation = RiskEngine(rules, FixedClock(t_ms)).evaluate(
+        world, zones, Origin.PLANNED, work_surfaces=surfaces, calibration_state=None  # 계획 위치: 보정 상태 해당 없음
+    )
     if evaluation.alert_candidates():  # 엔진이 막지만 결과가 알림으로 새지 않는다는 것을 여기서도 확인한다(규칙 5)
         raise NonLiveAlertError("PLANNED 판정에서 알림 후보가 나왔다")
     items = tuple(finding_item(f) for f in evaluation.findings if not f.holding)

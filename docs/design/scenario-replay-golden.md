@@ -190,9 +190,9 @@ resolved_at 은 해소 줄에만(= updated_at), 대상·출처(rule_id·rule_ver
   융합이 묶이고 T_gap(t_latest_global − 마지막 유효 관측)이 관측 유효 간격 200 ms 를 넘는다. 6.1 상 PREDICTED·해소 금지는 보수적 동작이지만
   최신 카메라 3대가 있어도 느린 1대에 묶이는 것은 명세 정답이 아니라 가용성 한계다. 기대 파일은 이를 규칙 정답에서 빼고 known_limitations 로만
   적었다(고치면 '!' 알림).
-- **D-G3-03 미충족(별도 결함, S15P31A101-218).** SIM 보정은 PROVISIONAL 인데 R2·R3 줄에 `PROVISIONAL_CALIB` 가 붙지 않는다(명세 4장·부록 D-G3-03
-  은 100% 를 요구, 규칙 입력에 보정 상태가 없음). `r2_r3_podium_edge` 기대는 needs_check·PROVISIONAL_CALIB 를 보지 않아 결함을 정답으로 고정하지
-  않지만, 이 시나리오 통과를 D-G3-03 충족으로 읽으면 안 된다.
+- **D-G3-03 충족(S15P31A101-218).** SIM 보정은 PROVISIONAL 이라 Tier 0 가 활성 보정 상태를 판정 문맥으로 넘기고(world_state 계약은 그대로)
+  R2·R3 의 모든 줄에 `PROVISIONAL_CALIB` 가 붙는다(명세 4.4·부록 D-G3-03 100%). `r2_r3_podium_edge` 기대는 이벤트 키 `reasons_every_line`
+  (그 이벤트의 모든 줄 confidence_reasons 에 있어야 할 이유)로 이를 보고, 전이 줄은 needs_check true 다.
 - 관측 상실 뒤 다시 보인 사람이 새 World ID 가 되는 것은 얼굴 재식별 금지(규칙 8) 때문이 아니라, World Track 늦은 재연결 조건(서로 다른 카메라
   2대의 로컬 트랙 이력, S15P31A101-40)을 추적기 대역으로는 채우지 않기 때문이다. 그래서 그 부분도 known_limitations(현재 정책)로 두었다.
 - 재생 산출물은 커밋하지 않는다. 다시 만들면 event_id 만 다르다.

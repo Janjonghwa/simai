@@ -47,6 +47,12 @@ class ConfidenceReason(StrEnum):
     UNSPECIFIED = "UNSPECIFIED"  # 확인 필요인데 생산자가 이유를 적지 않음(하위 호환, 원인 미상)
 
 
+CALIBRATION_STATES = frozenset({"UNCALIBRATED", "PROVISIONAL", "CALIBRATED", "DRIFTED"})
+"""보정 상태 값(명세 4.4, contracts defs calibration_state). risk 는 tracking 의 enum 을 import 하지 않아 값만 둔다."""
+PROVISIONAL_CALIB_STATES = frozenset({"UNCALIBRATED", "PROVISIONAL", "DRIFTED"})
+"""R2·R3·R4 판정에 PROVISIONAL_CALIB 를 붙이는 보정 상태(명세 4.4·7.1, 계약 v6.0.0, D-G3-03). 기준을 충족해 동결한 CALIBRATED
+만 뺀다. UNCALIBRATED 는 위치 기반 판단 불가 상태라 판정이 나오면 방어적으로 붙인다(판정을 허용한다는 뜻이 아니다)."""
+
 # 이유를 적지 않은 needs_check=True(이유 목록이 생기기 전 형식)에 붙이는 이유. 원인을 모르므로 특정 원인(PREDICTED 등)으로
 # 단정하지 않고 '원인 미상'으로 남긴다. 원인을 아는 규칙(R6 holding 의 PREDICTED 등)은 이유를 직접 적는다.
 LEGACY_NEEDS_CHECK_REASON = ConfidenceReason.UNSPECIFIED

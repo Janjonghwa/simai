@@ -53,6 +53,7 @@
 - EC2 옆 Python 컨테이너: PLANNED·REPLAY·WHAT_IF 계산. 같은 코드, 같은 규칙 버전. MVP 의 내부 API 는 PLANNED 만 받고(12.2), 운영 REPLAY·WHAT_IF 재계산은 이 컨테이너가 맡는 확장이다(부록 C). 녹화 영상을 Tier 0 파일 입력으로 다시 돌리는 재생은 이 배치가 아니라 개발·시험용 시나리오 재생 도구다(21.3).
 - Spring Boot: 규칙·구성 묶음 배포, RiskEvent 저장·생명주기, 알림 라우팅, API.
 - 두 배포의 동일성은 같은 규칙 버전과 공통 테스트 벡터(입력과 기대 출력 세트)로 CI에서 검증한다.
+- 규칙 입력은 World 상태 외에 판정 문맥(같은 판정 시각의 감시 상태, 활성 보정 상태 4.4)을 함께 받는다. 판정 문맥은 `world_state` 계약에 싣지 않는다. Tier 0 는 판정마다 health 와 같은 활성 보정 상태를 넘기고, PLANNED 계획 위치에는 보정 상태가 적용되지 않는다(7.1).
 
 **이벤트 소유권과 outbox.** LIVE RiskEvent의 생명주기 정본은 RunPod Tier 0 서비스다.
 

@@ -111,7 +111,7 @@ FAULT_KEYS = {"camera_gaps", "receive_lag_ms", "detection_dropouts"}
 EXPECTED_KEYS = {"scenario_id", "d_ids", "format_version", "exhaustive", "ignore_rules", "world_state", "events",
                  "known_limitations"}
 EVENT_KEYS = {"name", "rule_id", "zone_id", "severity", "world_id_count", "transitions", "optional_tail", "updates",
-              "same_as"}
+              "same_as", "reasons_every_line"}
 LIMITATION_KEYS = {"id", "tracked_by", "events"}
 CONDITION_KEYS = {"kind", "at_ms", "verification", "needs_check", "resume_count", "severity", "metrics", "reasons_absent"}
 MILESTONES = ("RAISED", "RESUMED", "RESOLVED")
@@ -540,6 +540,10 @@ def _check_event(want: Mapping[str, Any], a: ActualEvent, start_ms: int) -> list
             other = sorted({str(_value(p, key)) for p in a.lines if _value(p, key) != want[key]})
             if other:
                 diffs.append(f"{key} 는 모든 줄에서 {want[key]!r} 여야 한다 / 다른 값 {other}")
+    need = set(want.get("reasons_every_line", []))  # 모든 줄의 confidence_reasons 에 있어야 할 이유(D-G3-03 100% 등)
+    lacking = [p["updated_at"] - start_ms for p in a.lines if not need <= set(p["confidence_reasons"])]
+    if lacking:
+        diffs.append(f"confidence_reasons 에 {sorted(need)} 가 없는 줄 {len(lacking)}/{len(a.lines)} (@{lacking[:5]} ms)")
     for cond in want.get("updates", []):  # 그 구간에 그 필드 값을 가진 줄이 하나 이상 있어야 한다
         lo, hi = _window(cond["at_ms"], "updates.at_ms")
         if not any(lo <= p["updated_at"] - start_ms <= hi and not _fields_match(p, cond) for p in a.lines):

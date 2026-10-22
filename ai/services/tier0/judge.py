@@ -8,8 +8,11 @@
    싣고(-84·-169), 봉투 msg_id 를 여기서 정한다. 같은 값이 이 tick 판정 전이의 evidence_ref 다(-79).
 3. ID 교정: WorldTrackFrame.revisions 를 병합은 correct_identity, 분할은 split_identity 로 넘긴다. **반드시 같은 tick 의 apply 전**
    (-40, docs/design/tier0-world-track.md G3). 순서를 지키면 새 ID 로 들어오는 같은 규칙 판정이 기존 이벤트를 갱신한다.
-4. 판정: ActiveConfig.evaluate(world, LIVE, monitoring) → LifecycleTracker.apply(config_version, evidence_ref, related).
+4. 판정: ActiveConfig.evaluate(world, LIVE, monitoring, calibration_state) → LifecycleTracker.apply(config_version, evidence_ref, related).
    작업면은 ActiveConfig.evaluate 가 넘긴다(-93). 감시 상태(R7)는 카메라 상태와 구역별 관측 카메라(geometry.zone_coverage).
+   보정 상태는 health 와 같은 활성 보정 상태(Tier0._calibration_state)를 판정 때마다 읽어 넘긴다. world_state 계약에 없는 판정
+   문맥이라 I1 계약을 바꾸지 않는다. R2·R3·R4 가 PROVISIONAL_CALIB 를 붙인다(명세 4.4, D-G3-03, -218). 읽기가 예외·None·모르는
+   값이면 판정을 멈추지 않고 UNCALIBRATED 로 넘겨 확인 필요를 붙인다(모르는 보정을 CALIBRATED·해당 없음으로 보지 않는다).
    related 는 재시작 뒤 새 이벤트의 related_event_id 를 정하는 함수다(RestoreLink.related(frame), -178). 3) 교정 뒤에 만들어
    apply 에 넘긴다. 복원 이벤트를 옮기거나 해소하지 않는다(연결만). 입력 정지 tick 은 마지막 실제 World 의 frame 으로 만든다.
 5. 단계마다(교정·판정·확인): JournalWriter.submit_step(기다리지 않음, fsync 는 쓰기 스레드) → 현장 경보 송신(local_alert·
@@ -74,6 +77,7 @@ from simai_ai.risk import (
     alarm_stop_contract_payload,
     local_alert_payload,
 )
+from simai_ai.risk.common import CALIBRATION_STATES
 from simai_ai.risk.lifecycle import CloseReject, CloseRequest, RelatedEventFn
 from simai_ai.tracking.world_track import RevisionKind, WorldTrackFrame
 
@@ -103,6 +107,7 @@ class JudgeStats:
     rejected_closes: int = 0
     reseeds: int = 0
     errors: int = 0
+    calibration_state_unknown: int = 0  # 활성 보정 상태를 읽지 못해 UNCALIBRATED 로 판정한 tick
 
 
 @dataclass(frozen=True)
@@ -126,6 +131,7 @@ class JudgmentLoop:
         tracker: LifecycleTracker,
         journal: EventJournal,
         writer: JournalWriter,
+        calibration_state: Callable[[], str],
         send_i0: SendI0 | None = None,
         offer_world_state: Callable[..., Any] | None = None,
         checkpoint_inputs: Callable[..., Any] | None = None,
@@ -143,6 +149,7 @@ class JudgmentLoop:
         self.tracker = tracker
         self.journal = journal
         self.writer = writer
+        self._calibration_state = calibration_state  # 활성 보정 상태(명세 4.4). 기본값을 두지 않는다(모르는 보정을 정상으로 보지 않음)
         self._send_i0 = send_i0
         self._offer_world_state = offer_world_state
         self._checkpoint_inputs = checkpoint_inputs
@@ -215,13 +222,28 @@ class JudgmentLoop:
             return TickResult(None, version, None, ())
         payload, msg_id = self._last
         world = WorldState.from_payload(payload)
-        evaluation = active.evaluate(world, self.tracker.origin, monitoring=self._monitoring(active))
+        evaluation = active.evaluate(world, self.tracker.origin, monitoring=self._monitoring(active),
+                                     calibration_state=self._active_calibration_state())
         step = self.tracker.apply(evaluation, world, config_version=active.config_version, evidence_ref=msg_id,
                                   related=self._related(self._last_frame))
         self.stats.frozen_evaluations += 1
         self._record(step)
         self._note_risk(evaluation)
         return TickResult(None, version, msg_id, (step,))
+
+    def _active_calibration_state(self) -> str:
+        """판정에 넘길 활성 보정 상태. 읽기 실패(예외·None·모르는 값)는 UNCALIBRATED 다: LIVE 에서 '해당 없음(None)'은 PLANNED 전용이라
+        받지 않고, 판정을 빠뜨리지도 않는다(명세 4.4 '보정 상태를 알 수 없으면 CALIBRATED 로 보지 않는다')."""
+        try:
+            state = self._calibration_state()
+        except Exception as e:  # noqa: BLE001 - 판정 tick 을 잃지 않는다
+            state = e
+        if isinstance(state, Exception) or state is None or str(state) not in CALIBRATION_STATES:
+            self.stats.calibration_state_unknown += 1
+            if self.stats.calibration_state_unknown == 1:  # 매 tick 로그를 남기지 않는다(횟수는 stats)
+                log.warning("활성 보정 상태를 모른다(%r): UNCALIBRATED 로 판정한다(확인 필요)", state)
+            return "UNCALIBRATED"
+        return str(state)
 
     def _judge(self, perceived: Perceived, active: ActiveConfig | None) -> TickResult:
         msg_id = self._new_msg_id()
@@ -250,7 +272,8 @@ class JudgmentLoop:
             self.stats.no_config_ticks += 1
         else:
             world = WorldState.from_payload(payload)
-            evaluation = active.evaluate(world, self.tracker.origin, monitoring=self._monitoring(active))  # 4) 판정(작업면 포함)
+            evaluation = active.evaluate(world, self.tracker.origin, monitoring=self._monitoring(active),
+                                         calibration_state=self._active_calibration_state())  # 4) 판정(작업면·보정 상태 포함)
             step = self.tracker.apply(evaluation, world, config_version=active.config_version, evidence_ref=msg_id,
                                       related=related)
             self.stats.evaluated += 1

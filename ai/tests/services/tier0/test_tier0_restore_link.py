@@ -252,7 +252,7 @@ def test_judge_builds_related_after_identity_correction_inside_lock_and_on_froze
         link = _RecordingLink(site)
         site.loop = JudgmentLoop(
             lock=threading.RLock(), now_ms=site.clock.now_ms, config_sync=site.config_sync, perception=site.perception,
-            tracker=site.tracker, journal=site.journal, writer=site.writer,
+            tracker=site.tracker, journal=site.journal, writer=site.writer, calibration_state=lambda: "PROVISIONAL",
             send_i0=lambda kind, payload: site.i0.append((kind, payload)) or True, restore_link=link,
         )
         site.tick({"w-x": (INSIDE, 0)})

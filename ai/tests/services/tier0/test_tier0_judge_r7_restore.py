@@ -110,7 +110,7 @@ class Site:
         self.perception = _Perception(rig, doc["calibration_version"])
         self.loop = JudgmentLoop(lock=threading.RLock(), now_ms=clock.now_ms, config_sync=config_sync,
                                  perception=self.perception, tracker=self.tracker, journal=self.journal,
-                                 writer=self.writer)
+                                 writer=self.writer, calibration_state=lambda: "PROVISIONAL")
         self.transitions = []
 
     def run(self, n: int, *, down=()) -> None:
