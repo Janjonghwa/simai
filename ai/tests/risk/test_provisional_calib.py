@@ -1,7 +1,7 @@
 """보정 상태 PROVISIONAL 의 R2·R3·R4 확인 필요(PROVISIONAL_CALIB) (명세 4.4, 7.1, 부록 D-G3-03 100%, S15P31A101-218).
 
 공통 벡터 r2_r3_podium_provisional_calib·r4_fall_floor_provisional_calib(1.5)가 PROVISIONAL 정답을 고정한다. 여기서는 같은 벡터를
-보정 상태만 바꿔 돌려 음성 대조(CALIBRATED·상태 없음이면 없음)와 반례(DRIFTED·UNCALIBRATED, 판정 중 상태 전환, R1·R5 무관,
+보정 상태만 바꿔 돌려 음성 대조(CALIBRATED·상태 없음이면 없음)와 반례(DRIFTED·UNCALIBRATED, 판정 중 상태 전환, R5·R7 무관,
 PLANNED 해당 없음, 모르는 값 거부)를 본다.
 """
 
@@ -118,16 +118,25 @@ def test_state_switch_mid_sequence_keeps_r4_history():
     assert raised_after_switch
 
 
-def test_r1_r5_r6_r7_ignore_calibration_state():
-    """R1(명세 4.4: 넓은 불확실성, 확인 필요 아님)·R5·R6(R1 유지)·R7 은 PROVISIONAL 이어도 판정·전이가 그대로다(PROVISIONAL_CALIB 없음).
-    생명주기 벡터는 1.3 이상이라 1.5 로 올려도 정책이 같다."""
-    names = ("r1_volume_podium.json", "r5_approach_entry.json", "r6_observation_lost_in_zone.json",
-             "r7_live_without_monitoring.json")
-    for name in names:
-        doc = copy.deepcopy(_load(name))
-        doc["format_version"] = "1.5.0"
-        doc["calibration_state"] = "PROVISIONAL"
-        assert run_vector(parse_vector(doc)).passed, name
+def test_r5_r7_ignore_calibration_state():
+    """R5·R7 은 PROVISIONAL 이어도 판정·전이가 그대로다(PROVISIONAL_CALIB 없음). R1 은 넓은 불확실성으로 보정 상태를 본다
+    (S15P31A101-233, tests/risk/test_r1_calibration_margin.py). 생명주기 벡터는 1.3 이상이라 1.5 로 올려도 정책이 같다."""
+    doc = copy.deepcopy(_load("r7_live_without_monitoring.json"))
+    doc["format_version"] = "1.5.0"
+    doc["calibration_state"] = "PROVISIONAL"
+    assert run_vector(parse_vector(doc)).passed
+    # r5_approach_entry 는 R1 도 함께 돌려(R1 은 넓힘으로 바뀐다) R5 판정만 상태별로 대조한다
+    vector = parse_vector(_load("r5_approach_entry.json"))
+    r5 = []
+    for state in ("PROVISIONAL", "CALIBRATED"):
+        clock = FixedClock(vector.steps[0].clock_ms)
+        engine = RiskEngine([default_registry().create("R5", 1)], clock)
+        got = []
+        for step in vector.steps:
+            clock.set(step.clock_ms)
+            got.append(engine.evaluate(step.world_state, vector.zones, vector.origin, calibration_state=state).findings)
+        r5.append(got)
+    assert r5[0] == r5[1] and any(r5[0])
 
 
 def test_planned_results_have_no_provisional_calib():

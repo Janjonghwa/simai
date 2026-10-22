@@ -26,7 +26,7 @@
         {
           "kind": "RAISED",
           "at_ms": [
-            1400,
+            1150,
             3067
           ],
           "verification": "VERIFIED"
@@ -65,7 +65,7 @@
             {
               "kind": "RAISED",
               "at_ms": [
-                1400,
+                1150,
                 3067
               ]
             }

@@ -8,7 +8,8 @@
 
 상태 enum 과 System Health 는 `tracking.system_health` 의 것을 그대로 쓴다. System Health 값은 그 모듈의
 원인별 매핑과 같아야 한다(tests/calibration 이 evaluate_health 로 대조한다).
-DRIFTED 의 R1~R4 동작은 명세에 없다. 틀어진 보정이므로 PROVISIONAL 과 같게 보수적으로 둔다.
+DRIFTED 는 PROVISIONAL 과 같다(명세 4.4). UNCALIBRATED 는 위치 판단 불가라 표에서 비우지만, 그래도 판정이 나오면 risk 가 방어적으로
+R1 넓은 불확실성·R2~R4 PROVISIONAL_CALIB 를 적용한다(risk.common.PROVISIONAL_CALIB_STATES, S15P31A101-218·-233).
 
 전이는 보정 버전 전환(새 버전 추가)과 DRIFTED 표시뿐이다. CALIBRATED 는 동결이라 새 버전으로 바뀌지 않고,
 틀어짐이 확인되어 DRIFTED 가 된 뒤에만 재보정 버전으로 바뀐다.
