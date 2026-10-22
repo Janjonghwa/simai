@@ -87,7 +87,8 @@ export const CAMERAS = [
 
 export interface FixtureEvent {
   id: string;
-  severity: 'HIGH' | 'CAUTION';
+  /** 계약 등급 그대로(CRITICAL·HIGH·CAUTION·INFO). 목록에서 다른 등급으로 줄이지 않는다. */
+  severity: 'CRITICAL' | 'HIGH' | 'CAUTION' | 'INFO';
   title: string;
   target: ViewerTarget;
 }

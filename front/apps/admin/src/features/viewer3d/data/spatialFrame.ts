@@ -102,6 +102,8 @@ export interface RiskEventView {
   ackCount: number;
   escalationCount: number;
   sceneVersion: string | null;
+  /** LIVE 전달 구분(3.2 재동기화). AUDIT_ONLY 는 감사 기록으로만 복원된 것이다. 출처가 LIVE 가 아니거나 싣지 않으면 null. */
+  delivery: 'REALTIME' | 'DELAYED_ACTIVE' | 'AUDIT_ONLY' | null;
 }
 
 export interface HealthView {
@@ -168,7 +170,10 @@ export function trackPlacement(track: TrackView): TrackPlacement {
  * 이벤트가 이 Track 을 가리키는지. 이벤트의 world_ids 는 발생 당시 원본 ID 라서 지금 ID 와 병합 별칭을 함께 본다.
  * 분할로 생긴 새 ID(splitFrom)에는 원래 ID 의 이벤트를 옮기지 않는다(ID 교정 전이는 따로 온다).
  */
-export function eventTargetsTrack(event: RiskEventView, track: TrackView): boolean {
+export function eventTargetsTrack(
+  event: Pick<RiskEventView, 'worldIds'>,
+  track: Pick<TrackView, 'worldId' | 'aliases'>,
+): boolean {
   return event.worldIds.some((id) => id === track.worldId || track.aliases.includes(id));
 }
 

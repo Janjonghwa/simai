@@ -71,15 +71,24 @@ function SeverityBadge({ severity }: { severity: FixtureEvent['severity'] }) {
 function Row({
   children,
   active,
+  eventId,
   onClick,
 }: {
   children: ReactNode;
   active?: boolean;
+  /** 이벤트 행이면 event_id. 같은 사람의 여러 이벤트 행을 구분한다. */
+  eventId?: string;
   onClick?: () => void;
 }) {
   return (
     <li>
-      <button type="button" onClick={onClick} className="smk-row" data-active={on(Boolean(active))}>
+      <button
+        type="button"
+        onClick={onClick}
+        className="smk-row"
+        data-active={on(Boolean(active))}
+        data-event-id={eventId}
+      >
         {children}
       </button>
     </li>
@@ -94,11 +103,15 @@ function MonitorBody({
 }: Commands & { selected: ViewerTarget | null; roster: Roster }) {
   return (
     <>
-      <p className="smk-hint">이벤트 목록 · 누르면 3D 대상을 선택하고 초점을 맞춘다</p>
+      <p className="smk-hint">
+        이벤트 목록 · 누르면 3D 대상(사람·구역)을 선택하고 초점을 맞춘다 · 3D 는 event_id 를 따로
+        전달하지 않는다
+      </p>
       <ul className="smk-list">
         {roster.events.map((event) => (
           <Row
             key={event.id}
+            eventId={event.id}
             active={same(selected, event.target)}
             onClick={() => {
               select(event.target);

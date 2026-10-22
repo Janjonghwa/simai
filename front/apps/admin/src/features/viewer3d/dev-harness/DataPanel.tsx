@@ -1,4 +1,5 @@
 import {
+  selectActiveEvents,
   selectEvents,
   selectStatus,
   type SpatialDataStore,
@@ -11,6 +12,14 @@ import {
   type DataSourceKey,
 } from '@/features/viewer3d/dev-harness/harnessSource';
 import type { MockFailure, SpatialMockApi } from '@/features/viewer3d/dev-harness/mswHandlers';
+import { SCENARIOS } from '@/features/viewer3d/dev-harness/scenarios';
+import { zoneContainment } from '@/features/viewer3d/dev-harness/zoneContainment';
+import {
+  MODE_EVENT_SOURCE,
+  riskPresentation,
+  type RiskHighlight,
+} from '@/features/viewer3d/risk/riskPresentation';
+import type { ViewerMode } from '@/features/viewer3d/types';
 import type { ZoneApplyState } from '@/features/viewer3d/zones/zonePresentation';
 import { useEffect, useReducer, useState } from 'react';
 import { useStore } from 'zustand';
@@ -23,12 +32,23 @@ const FAILURES: { key: MockFailure; label: string }[] = [
   { key: 'none', label: 'REST 정상' },
   { key: 'error', label: 'REST 503' },
   { key: 'slow', label: 'REST 1.5초 지연' },
+  { key: 'nonjson', label: 'REST 비JSON(HTML)' },
 ];
 
 // UUID 의 앞 두 묶음 뒤(시간·순번이 바뀌는 자리)를 보여 이벤트끼리 구분한다.
 const short = (id: string) => id.slice(9, 18);
 const fmt = (v: number) => v.toFixed(2);
 const ms = (v: number | null) => (v === null ? '—' : `${Math.round(v)}ms`);
+/** 시각(UTC ms)을 이 브라우저 시간대의 시:분:초.밀리초로. */
+const clock = (v: number | null) =>
+  v === null
+    ? '—'
+    : new Date(v).toTimeString().slice(0, 8) + '.' + String(v % 1000).padStart(3, '0');
+
+const riskText = (map: ReadonlyMap<string, RiskHighlight>) =>
+  [...map]
+    .map(([id, r]) => `${id}:${r.level}×${r.eventIds.length}[${r.eventIds.map(short).join(',')}]`)
+    .join(' ') || '—';
 
 function where(track: TrackView) {
   const p = trackPlacement(track);
@@ -49,6 +69,8 @@ interface DataPanelProps {
   onSourceChange: (key: DataSourceKey) => void;
   zoneApply: ZoneApplyState;
   onZoneApplyChange: (state: ZoneApplyState) => void;
+  /** 뷰어 모드. 위험 강조는 모드의 출처 이벤트만 보인다. */
+  mode: ViewerMode;
   onRestart: () => void;
 }
 
@@ -60,6 +82,7 @@ export function DataPanel({
   onSourceChange,
   zoneApply,
   onZoneApplyChange,
+  mode,
   onRestart,
 }: DataPanelProps) {
   const state = useStore(store);
@@ -80,6 +103,24 @@ export function DataPanel({
   const stale = status.receiveAgeMs !== null && status.receiveAgeMs > DEV_STALE_MS;
   const { mock } = harness;
   const halted = mock?.halted ?? false;
+  // 3D 강조와 같은 계산을 숫자로 보인다(개발 진단 전용).
+  const risk = riskPresentation({
+    events: state.events.values(),
+    tracks: state.world?.tracks ?? [],
+    worldSceneVersion: state.world?.sceneVersion ?? null,
+    zoneIds: state.zones.zones.map((z) => z.zoneId),
+    mode,
+    connectionOpen: state.connection?.state === 'OPEN',
+  });
+  const active = selectActiveEvents(state, MODE_EVENT_SOURCE[mode]);
+  // 이벤트 대상이 지금 구역 상자 안에 있는지(검증용, 3D 강조와 무관).
+  const containment = zoneContainment(active, state.world?.tracks ?? [], state.zones.zones);
+  const latest = [...state.events.values()]
+    .filter((e) => e.source === MODE_EVENT_SOURCE[mode])
+    .sort((a, b) => b.meta.receivedAt - a.meta.receivedAt)[0];
+  const scenario = SCENARIOS.find(
+    (s) => s.key === (sourceKey === 'external' ? 'normal' : sourceKey),
+  );
 
   return (
     <div className="smk-data" data-testid="spatial-data">
@@ -235,6 +276,34 @@ export function DataPanel({
         구역 {state.zones.status} · {state.zones.zones.map((z) => z.zoneId).join(', ') || '—'}
         {state.zones.invalid.map((z) => ` · 거부 ${z.zoneId ?? 'ID 없음'}(${z.reason})`).join('')}
         {state.zones.reason ? ` · ${state.zones.reason}` : ''} · DEMO 형상(계약 미확정)
+      </p>
+      <p className="smk-data-dim smk-mono" data-testid="data-risk">
+        위험 강조({risk.source}) 사람 {riskText(risk.people)} · 구역 {riskText(risk.zones)}
+        {risk.unlinked.map((u) => ` · 미연결 ${u.target}(${u.reason})`).join('')}
+        {risk.skipped.map((s) => ` · 제외 ${short(s.eventId)}(${s.reason})`).join('')}
+      </p>
+      <p className="smk-data-dim smk-mono" data-testid="data-containment">
+        구역 포함(검증용·판정 아님){' '}
+        {containment
+          .map(
+            (c) =>
+              `${short(c.eventId)}:${c.zoneId} 안[${c.inside.join(',')}] 밖[${c.outside.join(',')}]` +
+              (c.unknown.length ? ` 미상[${c.unknown.join(',')}]` : ''),
+          )
+          .join(' · ') || '—'}
+      </p>
+      <p className="smk-data-dim smk-mono" data-testid="data-timing">
+        {latest
+          ? `최근 이벤트 ${short(latest.eventId)} #${latest.eventSequence ?? '—'} ${latest.lifecycle} ${latest.severity} · 갱신 ${clock(latest.updatedAt)} · 송신 ${clock(latest.meta.sentAt)} · 수신 ${clock(latest.meta.receivedAt)}`
+          : '최근 이벤트 없음'}
+        {state.world
+          ? ` · World msg ${short(state.world.meta.msgId)} t ${clock(state.world.tLatestGlobal)} 수신 ${clock(state.world.meta.receivedAt)} (frame id 계약 없음)`
+          : ''}
+      </p>
+      <p className="smk-data-dim smk-mono" data-testid="data-harness">
+        {scenario ? `시나리오 ${scenario.label}: ${scenario.hint}` : '입력 없음'}
+        {mockApi ? ` · MSW 재활성 ${mockApi.reactivations}회` : ' · MSW 없음'}
+        {mock?.capped ? ' · 시연 재생 상한 도달(처음부터로 다시 시작)' : ''}
       </p>
     </div>
   );

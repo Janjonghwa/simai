@@ -7,6 +7,7 @@ import {
   type AnimationAction,
   type Material,
   type Object3D,
+  type Skeleton,
 } from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
@@ -116,8 +117,15 @@ export function instantiateAvatar(model: AvatarModel, phase: number): AvatarInst
   const root = cloneSkinned(model.scene);
   root.scale.setScalar(model.scale);
   const materials: Material[] = [];
+  const skeletons: Skeleton[] = [];
   root.traverse((node) => {
-    const mesh = node as Object3D & { isMesh?: boolean; material?: Material | Material[] };
+    const mesh = node as Object3D & {
+      isMesh?: boolean;
+      material?: Material | Material[];
+      skeleton?: Skeleton;
+    };
+    // 복제본은 뼈대를 따로 가지며, 뼈대는 그리는 동안 뼈 텍스처(GPU)를 만든다. 해제 때 같이 지운다.
+    if (mesh.skeleton && !skeletons.includes(mesh.skeleton)) skeletons.push(mesh.skeleton);
     if (!mesh.isMesh || !mesh.material || Array.isArray(mesh.material)) return;
     const material = mesh.material.clone();
     material.transparent = true;
@@ -146,6 +154,7 @@ export function instantiateAvatar(model: AvatarModel, phase: number): AvatarInst
       mixer.stopAllAction();
       mixer.uncacheRoot(root);
       materials.forEach((material) => material.dispose());
+      skeletons.forEach((skeleton) => skeleton.dispose());
     },
   };
 }

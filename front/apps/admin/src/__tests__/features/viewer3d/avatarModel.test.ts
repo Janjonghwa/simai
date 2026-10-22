@@ -8,11 +8,16 @@ import {
 } from '@/features/viewer3d/people/avatarModel';
 import {
   AnimationClip,
+  Bone,
   BoxGeometry,
+  Float32BufferAttribute,
   Group,
   Mesh,
   MeshStandardMaterial,
   NumberKeyframeTrack,
+  Skeleton,
+  SkinnedMesh,
+  Uint16BufferAttribute,
   VectorKeyframeTrack,
 } from 'three';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -100,5 +105,43 @@ describe('instantiateAvatar', () => {
     expect(original).not.toHaveBeenCalled();
     expect(a.idle.isRunning()).toBe(false);
     b.dispose();
+  });
+
+  it('리깅 모델 복제본의 뼈대(뼈 텍스처)를 해제 때 함께 지운다(재시작 누수 방지)', () => {
+    const scene = new Group();
+    const bone = new Bone();
+    bone.name = 'hips';
+    const geometry = new BoxGeometry(1, 1.8, 1);
+    geometry.setAttribute(
+      'skinIndex',
+      new Uint16BufferAttribute(new Array(geometry.attributes.position!.count * 4).fill(0), 4),
+    );
+    geometry.setAttribute(
+      'skinWeight',
+      new Float32BufferAttribute(new Array(geometry.attributes.position!.count * 4).fill(0.25), 4),
+    );
+    const skinned = new SkinnedMesh(geometry, new MeshStandardMaterial());
+    skinned.add(bone);
+    skinned.bind(new Skeleton([bone]));
+    scene.add(skinned);
+    const track = () => new VectorKeyframeTrack('hips.position', [0, 1], [0, 0, 0, 0, 0.1, 0]);
+    const m: AvatarModel = {
+      url: 'skinned',
+      scene,
+      idle: new AnimationClip('idle', 1, [track()]),
+      walk: new AnimationClip('walk', 1, [track()]),
+      scale: 1,
+    };
+    const original = vi.spyOn(skinned.skeleton, 'dispose');
+    const a = instantiateAvatar(m, 0);
+    let cloned: Skeleton | null = null;
+    a.root.traverse((node) => {
+      if ((node as SkinnedMesh).isSkinnedMesh) cloned = (node as SkinnedMesh).skeleton;
+    });
+    expect(cloned).not.toBe(skinned.skeleton);
+    const disposed = vi.spyOn(cloned!, 'dispose');
+    a.dispose();
+    expect(disposed).toHaveBeenCalledTimes(1);
+    expect(original).not.toHaveBeenCalled();
   });
 });

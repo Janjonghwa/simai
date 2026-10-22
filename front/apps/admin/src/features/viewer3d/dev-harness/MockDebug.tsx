@@ -1,3 +1,5 @@
+import type { SpatialDataStore } from '@/features/viewer3d/data/spatialData.store';
+import { useSpatialDataStore } from '@/features/viewer3d/data/SpatialDataProvider';
 import type { ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
 import { WORLD_REFERENCE_POINTS } from '@/features/viewer3d/WorldReference';
 import { useThree, type RootState } from '@react-three/fiber';
@@ -15,14 +17,17 @@ const idOf = (value: object) => {
 };
 const renderers = new Set<number>();
 let readState: (() => RootState) | null = null;
+let readData: SpatialDataStore | null = null;
 
 /** Canvas 안에 두어 렌더러 상태를 읽을 수 있게 한다. 화면에는 아무것도 그리지 않아 모든 보기에 둔다. */
 export function DebugProbe() {
   const get = useThree((s) => s.get);
+  const data = useSpatialDataStore();
   useEffect(() => {
     readState = get;
+    readData = data;
     renderers.add(idOf(get().gl));
-  }, [get]);
+  }, [get, data]);
   return null;
 }
 
@@ -93,7 +98,94 @@ function zonesOf(state: RootState) {
   return out;
 }
 
+/**
+ * 장면의 위험 표식(risk-person:<id>·risk-zone:<id>)과 등급·이벤트 수, 표식의 World 위치(Three).
+ * 사람 표식 위치가 사람 아바타 위치와 같아야 이동을 따라간 것이다.
+ */
+function risksOf(state: RootState) {
+  const out: Record<
+    string,
+    { level: string; events: number; at: number[]; receiveToApplyMs: number | null }
+  > = {};
+  const events = readData?.getState().events;
+  state.scene.traverse((node) => {
+    if (!node.name.startsWith('risk-')) return;
+    const data = node.userData as {
+      level: string;
+      eventIds: string[];
+      source: string;
+      appliedAt?: number;
+    };
+    // 이 강조에 든 이벤트 중 가장 늦게 받은 것부터 장면 반영까지(같은 브라우저 시계).
+    const received = (data.eventIds ?? []).map(
+      (id) => events?.get(`${data.source}:${id}`)?.meta.receivedAt ?? 0,
+    );
+    out[node.name] = {
+      level: data.level,
+      events: data.eventIds?.length ?? 0,
+      at: node.getWorldPosition(new Vector3()).toArray().map(round),
+      receiveToApplyMs:
+        data.appliedAt && received.length ? data.appliedAt - Math.max(...received) : null,
+    };
+  });
+  return out;
+}
+
+/** 마지막 프레임의 그리기 호출·삼각형 수와 살아 있는 GPU 자원 수, 브라우저가 알려 주면 JS 힙(MB). */
+function rendererOf(state: RootState) {
+  const info = state.gl.info;
+  const memory = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
+  return {
+    calls: info.render.calls,
+    triangles: info.render.triangles,
+    lines: info.render.lines,
+    geometries: info.memory.geometries,
+    textures: info.memory.textures,
+    programs: info.programs?.length ?? null,
+    heapMB: memory ? round(memory.usedJSHeapSize / 1048576) : null,
+  };
+}
+
 function measure() {
+  return measureNow();
+}
+
+/**
+ * 개발 진단용 프레임 측정. 이 탭의 requestAnimationFrame 간격(ms)과 그동안 실제로 그린 프레임 수, 끝난 뒤의 렌더러 자원·힙을 잰다.
+ * 브라우저·창 크기·다른 탭 부하에 따라 달라지는 참고값이다(-56 10명 30 FPS 목표 판정이 아니다).
+ */
+function measureFrames(durationMs: number) {
+  const state = readState?.();
+  const startFrame = state?.gl.info.render.frame ?? 0;
+  return new Promise<Record<string, unknown>>((resolve) => {
+    const gaps: number[] = [];
+    const begin = performance.now();
+    let last = begin;
+    const loop = (time: number) => {
+      gaps.push(time - last);
+      last = time;
+      if (time - begin < durationMs) {
+        requestAnimationFrame(loop);
+        return;
+      }
+      const sorted = gaps.slice(1).sort((a, b) => a - b);
+      const at = (p: number) =>
+        round(sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] ?? 0);
+      const after = readState?.();
+      resolve({
+        seconds: round((last - begin) / 1000),
+        fps: round(sorted.length / ((last - begin) / 1000)),
+        frameMs: { p50: at(0.5), p95: at(0.95), max: at(1) },
+        rendered: after ? after.gl.info.render.frame - startFrame : null,
+        renderer: after ? rendererOf(after) : null,
+        size: after ? [after.size.width, after.size.height, after.viewport.dpr] : null,
+      });
+    };
+    requestAnimationFrame(loop);
+  });
+}
+
+function measureNow() {
   const canvas = document.querySelector('canvas');
   const state = readState?.();
   if (!state || !canvas) return { canvases: document.querySelectorAll('canvas').length };
@@ -116,6 +208,8 @@ function measure() {
       'world-ref:O': screenOf(state, state.scene.getObjectByName('world-ref:O')),
     },
     zones: zonesOf(state),
+    risks: risksOf(state),
+    renderer: rendererOf(state),
     worldRefs: worldRefsOf(state),
   };
 }
@@ -160,6 +254,7 @@ export function SpatialDiagnostics({
   children,
 }: SpatialDiagnosticsProps) {
   const [out, setOut] = useState('');
+  const [perf, setPerf] = useState('');
   return (
     <section
       aria-label="Spatial 진단"
@@ -192,8 +287,21 @@ export function SpatialDiagnostics({
           >
             측정
           </button>
+          <button
+            type="button"
+            className="smk-chip"
+            onClick={() => {
+              setPerf('측정 중…');
+              void measureFrames(5000).then((result) => setPerf(JSON.stringify(result)));
+            }}
+          >
+            프레임 5초
+          </button>
           <pre data-testid="debug-out" className="smk-mono">
             {out}
+          </pre>
+          <pre data-testid="perf-out" className="smk-mono">
+            {perf}
           </pre>
           {children}
         </div>
