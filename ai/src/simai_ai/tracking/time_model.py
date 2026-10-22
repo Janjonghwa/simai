@@ -242,6 +242,8 @@ class TimeModelConfig:
     camera_stall_ms: t_latest_global - 카메라 last_capture 가 이 값을 넘으면 수신 중단으로 본다.
         객체 UNKNOWN 기준(500ms)과 같게 둔다.
     min_cameras: 다시점 3D 에 필요한 최소 카메라 수(명세 5.2, 2대 이상).
+    fusion_max_lag_ms: 수신 중이지만 t_latest_global 보다 이 값 넘게 늦은 카메라는 그 tick 의 융합 시각 계산에서 뺀다
+        (choose_fusion_time). 명세에 없는 제안값이다(docs/design/tier0-fusion-time.md).
     """
 
     observed_max_gap_ms: int = 200
@@ -252,6 +254,7 @@ class TimeModelConfig:
     clock_uncertainty_degraded_ms: float = 100.0
     camera_stall_ms: int = 500
     min_cameras: int = 2
+    fusion_max_lag_ms: int = 150
 
     def __post_init__(self) -> None:
         if not 0 <= self.observed_max_gap_ms <= self.predicted_max_gap_ms:
@@ -266,6 +269,39 @@ class TimeModelConfig:
             raise ValueError("camera_stall_ms 는 0 이상이어야 한다")
         if self.min_cameras < 1:
             raise ValueError("min_cameras 는 1 이상이어야 한다")
+        if self.fusion_max_lag_ms < 0:
+            raise ValueError("fusion_max_lag_ms 는 0 이상이어야 한다")
+
+
+@dataclass(frozen=True)
+class FusionTime:
+    """한 tick 의 융합 시각과 그 시각 계산에서 뺀 늦은 카메라.
+
+    lagging: 수신 중(camera_stall_ms 안)이지만 fusion_max_lag_ms 넘게 늦어 뺀 카메라(이름 순). 이 카메라들에는 t 이후
+        프레임이 없으므로(외삽 금지) 그 tick 의 관측에 들어가지 않는다.
+    """
+
+    t: int
+    lagging: tuple[str, ...] = ()
+
+
+def choose_fusion_time(cameras: Iterable[CameraClock], config: TimeModelConfig) -> FusionTime | None:
+    """World Track 공통 시각: 융합에 넣을 카메라들의 최신 촬영 시각 중 가장 이른 값. 모르면 None.
+
+    외삽하지 않으므로 t 는 넣을 카메라 모두에 t 이후 프레임이 있는 시각이어야 한다(최솟값). 기준(latest)은 t_latest_global 과
+    같은 동기화 유효 카메라의 최댓값이다. 멈춘 카메라(camera_stall_ms 초과)는 빼고, 수신 중이어도 fusion_max_lag_ms 넘게 늦은
+    카메라는 뺀다(늦은 카메라 하나가 모든 객체의 gap 을 그만큼 키우지 않게). 빼고 남은 카메라가 min_cameras 보다 적으면
+    빼지 않는다(다시점에 모자라게 서두르지 않고 이전처럼 늦은 카메라를 기다린다).
+    """
+    times = {c.camera_id: c.last_capture for c in cameras if c.sync_valid and c.last_capture is not None}
+    if not times:
+        return None
+    latest = max(times.values())
+    fresh = {c: t for c, t in times.items() if latest - t <= config.camera_stall_ms}
+    prompt = {c: t for c, t in fresh.items() if latest - t <= config.fusion_max_lag_ms}
+    if len(prompt) < config.min_cameras:
+        return FusionTime(min(fresh.values()))
+    return FusionTime(min(prompt.values()), tuple(sorted(c for c in fresh if c not in prompt)))
 
 
 def classify_observation(gap_ms: int | None, config: TimeModelConfig = TimeModelConfig()) -> ObservationState:

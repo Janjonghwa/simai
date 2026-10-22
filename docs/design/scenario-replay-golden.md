@@ -43,7 +43,7 @@ SIMAI_SCENARIO_SLOW=1 uv run pytest tests/scenarios -q        # 느린 시나리
 cases/<이름>/input.json
   └─ sim.run (tier0_site 교실: 9 x 7.5 m, 모서리 카메라 4대, 시드 1) → observations/·calibration.json(PROVISIONAL, SIM)
   └─ 합성 녹화(gateway/recorder 형식, recording_session.write_session): 카메라별 H.264(프레임 번호를 화소로 새김, 256x144,
-     사람 그림 없음), 헤더 = SIM 촬영 시각, 수신 = +30 ms(+카메라별 지연). 끊김 구간은 프레임이 없고 뒤는 새 epoch 세그먼트
+     사람 그림 없음), 헤더 = SIM 촬영 시각, 수신 = +30 ms(+카메라별 지연, +구간 지연 receive_lag_windows: 풀리면 밀린 프레임이 몰려 옴). 끊김 구간은 프레임이 없고 뒤는 새 epoch 세그먼트
   └─ 시작 구성 묶음(tier0_site.archive_bundle): 구역(기본 z-r1 HIGH)·규칙(R1·R2·R3·R5 교실 프로파일·R7)·SIM 보정·작업면
   └─ Tier0Service(input.mode file, speed max, decoder cpu, msg_id 순번 주입) + 검출기 대역(그림 번호 → SIM keypoint,
      detection_dropouts 구간은 검출 없음) + Local Tracker 대역(검출 순서 = 트랙 ID, 한 사람 장면)
@@ -61,7 +61,7 @@ cases/<이름>/input.json
 | `r1_observation_loss` | D-G3-02 | 구역 안에 선 사람이 4~7 s 동안 모든 카메라에서 검출되지 않음 | 규칙 정답: 이벤트 A RAISED [1400, 3067], [4000, 5500] 에 UNVERIFIABLE·확인 필요, 해소는 사람이 나간 뒤 창 [12300, 13300] 에만(없어도 됨). 현재 정책(known_limitations): 다시 보인 사람은 늦은 재연결 조건을 채우지 않아 새 World ID 의 이벤트 B(RAISED [7000, 7900] → RESOLVED [12300, 13300]), A 는 해소 없음 |
 | `r7_camera_disconnect` | D-G3-01, D-G3-08 | cam2·3·4 가 4~7 s 끊겼다 새 epoch 로 재접속, 구역 밖에 한 사람 | R7 CAUTION(구역 대상, World ID 없음) RAISED [4000, 5000](healthy_cameras ≤ 1) → RESOLVED [8500, 9300]. 결합 오류 0 |
 | `r1_late_and_reconnecting_camera` | D-G3-08, D-G6-01 | r1_enter_exit 걸음 + cam3 120 ms 늦게 도착 + cam4 1.5~2.0 s 끊김·재접속 | R1 이 r1_enter_exit 와 같은 창. 결합 오류 0 |
-| `r1_lagging_camera_unverifiable` | D-G0-10 | r1_enter_exit 걸음 + cam3 만 400 ms 늦게 도착 | 규칙 정답: R1 RAISED [1400, 3067], 해소는 나간 뒤 창 [8300, 9300] 에만(없어도 됨). 현재 한계(known_limitations, Lead 추적): 확인 필요로 발생하고 해소 없음, [6000, 10500] 에 UNVERIFIABLE |
+| `r1_lagging_camera_unverifiable` | D-G0-10 | r1_enter_exit 걸음 + cam3 만 400 ms 늦게 도착 | r1_enter_exit 와 같다: R5 RAISED [0, 1167] → RESOLVED [2900, 4800], R1 RAISED [1400, 3067] VERIFIED → RESOLVED [8300, 9300](늦은 카메라는 융합에서 빠지고 나머지 3대로 OBSERVED, S15P31A101-219 `tier0-fusion-time.md`). 측정(camera_stats): cam3 frame_age p95 [430, 600], 늦어서 뺀 tick [90, 110], 다른 카메라 frame_age p95 [0, 200]·뺀 tick 0 |
 | `r2_r3_podium_edge` | D-G2-05 | 0.4 m 단상(등록 작업면) 옆 바닥을 걷다(가장자리 0.6 m) 단상에 올라 가운데에 서고, 12 s 에 뒤 가장자리로 감. 구역 없음 | 바닥 걷기에는 없음. R2 CRITICAL RAISED [4200, 5300] → RESOLVED [6900, 8000] → RESUMED [12500, 13800]. R3 HIGH RAISED [4200, 5300] 뒤 해소 없음. 단상 위 줄에 Z_UNKNOWN·PREDICTED 가 없는 줄(height_diff_m 0.35~0.45)이 있음. R5 는 보지 않음 |
 
 모든 시나리오의 두 실행 각각에 공통 불변식을 본다(두 번째 실행도 기대 비교까지 따로 한다. stats 는 출력 바이트에 없어 결정성 비교가 대신하지
@@ -78,8 +78,8 @@ resolved_at 은 해소 줄에만(= updated_at), 대상·출처(rule_id·rule_ver
   더 정해야 해서 다음으로 넘긴다.
 - G3 에서 녹화·검출 입력으로 만들 수 있는 D-G3-01·02·08 을 골랐다. 강제 종료·재동기화·EC2 단절(D-G3-05·07·09·11~19)은 장애 주입(FI)
   계층으로 이미 각자 시험이 있다. '보정 없음'은 시작 거절(종료 코드 2)이라 -215 시험(`test_replay_refuses_to_start_without_usable_calibration`)이 본다.
-- D-G0-10 은 FI 계층(측정·기록)이다. 이 시나리오는 frame_age_ms 영향을 재지 않고, 늦은 카메라가 있을 때의 규칙 정답(발생, 사람이 구역에
-  있는 동안 해소 금지)만 본다. 지금 동작(해소 확인 불가)은 명세 정답이 아니라 가용성 한계라 known_limitations 로 분리했다(아래 잔여 위험).
+- D-G0-10 은 FI 계층(측정·기록)이다. 이 시나리오는 늦은 카메라가 있을 때의 규칙 정답과 함께 카메라별 frame_age_ms p95·늦어서 뺀 tick 수를
+  `camera_stats` 로 기록·확인한다(S15P31A101-219 측정: cam3 462 ms·106/110 tick, cam1·2·4 는 56·69·71 ms 로 r1_enter_exit 와 같음).
 
 ## 기대 파일 형식 (format_version 1)
 
@@ -99,15 +99,17 @@ resolved_at 은 해소 줄에만(= updated_at), 대상·출처(rule_id·rule_ver
        {"kind": "RESOLVED", "at_ms": [8300, 9300]}],
      "updates": [                                    그 구간에 그 값을 가진 줄이 하나 이상
        {"at_ms": [4000, 5500], "verification": "UNVERIFIABLE", "needs_check": true}]},
-    {"name": "늦은 카메라가 있는 진입", "rule_id": "R1",
+    {"name": "관측을 잃은 사람의 진입", "rule_id": "R1",
      "transitions": [{"kind": "RAISED", "at_ms": [1400, 3067]}],
-     "optional_tail": [{"kind": "RESOLVED", "at_ms": [8300, 9300]}]}   transitions 뒤에 이 앞부분이 더 와도 된다
+     "optional_tail": [{"kind": "RESOLVED", "at_ms": [12300, 13300]}]}   transitions 뒤에 이 앞부분이 더 와도 된다
   ],
   "known_limitations": [                    지금 구현의 한계로 나는 동작(명세 정답 아님). 맞지 않으면 실패가 아니라 '!' 알림
-    {"id": "slow-camera-fusion-time", "tracked_by": "S15P31A101-219",
-     "events": [{"same_as": "늦은 카메라가 있는 진입", "rule_id": "R1",   events 의 그 이벤트에 덧붙여 본다
+    {"id": "<한계 id>", "tracked_by": "<티켓>",
+     "events": [{"same_as": "관측을 잃은 사람의 진입", "rule_id": "R1",   events 의 그 이벤트에 덧붙여 본다
                  "transitions": [{"kind": "RAISED", "at_ms": [1400, 3067], "needs_check": true}]}]}
-  ]
+  ],
+  "camera_stats": {"cam3": {"frame_age_ms_p95": [430, 600], "lagging_ticks": [90, 110]}}
+                                            카메라별 측정 [하한, 상한](frame_age_ms_p95·inferred·lagging_ticks)
 }
 ```
 
@@ -167,7 +169,9 @@ resolved_at 은 해소 줄에만(= updated_at), 대상·출처(rule_id·rule_ver
 | `test_determinism_check_is_not_vacuous` | msg_id 를 무작위로 내면 결정성 비교가 실패(정규화가 차이를 덮지 않음) |
 | `test_negative_control_illegal_non_milestone_transitions_fail` | 리뷰 F1 반례: 해소 뒤 재개 없는 UPDATED, event_sequence 반복, 대상 World ID 바꿔치기(계약은 통과)가 전이 일관성으로 실패 |
 | `test_second_run_invariants_are_checked_too` | 리뷰 F2 반례: 두 번째 실행만 local_alert·저널·misbound 가 있어도 실패 |
-| `test_known_limitation_is_separate_from_rule_truth` | 리뷰 F3: 늦은 카메라 한계가 고쳐져 나간 뒤 해소되면 통과 + 갱신 알림, 구역 안에 있을 때 해소되면 실패 |
+| `test_known_limitation_is_separate_from_rule_truth` | 리뷰 F3: 한계로 적은 동작(해소 없음)이 고쳐져 나간 뒤 해소되면 통과 + 갱신 알림, 구역 안에 있을 때 해소되면 실패(r1_enter_exit 에 한계를 적은 기대로 본다) |
+| `test_lagging_camera_scenario_needs_the_fusion_time_fix` | 음성 대조(-219): 융합 시각을 최솟값으로 되돌리면 늦은 카메라 시나리오가 실패 |
+| `test_lagging_camera_never_contributes_and_other_frame_age_is_unaffected` | D-G0-10(-219): cam3 는 트랙 cameras 에 없고 트랙은 OBSERVED, 다른 카메라 frame_age p95 는 r1_enter_exit 와 같음 |
 | `test_typo_in_expected_file_is_an_error_not_a_silent_pass` | 기대 파일 키 오타는 오류(2) |
 | `test_script_exit_codes` | 스크립트 종료 코드 0/1/2, `--out` 산출물, 비어 있지 않은 `--out` 거절 |
 
@@ -186,10 +190,9 @@ resolved_at 은 해소 줄에만(= updated_at), 대상·출처(rule_id·rule_ver
 - SIM 상한이다. 검출기·추적기 대역이라 검출 잡음·ID 전환·실제 영상 디코딩 부하가 없다(AGENTS 규칙 7, 제품 성능으로 쓰지 않음).
 - 시각 창은 손으로 정한 구간이라 규칙 상수(점유 반경·해소 간격·발생 지속 조건)를 바꾸면 창을 다시 따져야 한다. 그때 기대 파일의
   `_why` 를 같이 고친다.
-- **늦은 카메라 하나가 전체를 PREDICTED 로 만든다**(`r1_lagging_camera_unverifiable`, 현재 한계 `slow-camera-fusion-time`, S15P31A101-219). perception.py 가 융합 시각을 camera_stall_ms(500) 안 카메라의 최신 촬영 시각 최솟값으로 골라, 400 ms 늦은 카메라 하나에
-  융합이 묶이고 T_gap(t_latest_global − 마지막 유효 관측)이 관측 유효 간격 200 ms 를 넘는다. 6.1 상 PREDICTED·해소 금지는 보수적 동작이지만
-  최신 카메라 3대가 있어도 느린 1대에 묶이는 것은 명세 정답이 아니라 가용성 한계다. 기대 파일은 이를 규칙 정답에서 빼고 known_limitations 로만
-  적었다(고치면 '!' 알림).
+- **늦은 카메라 하나가 전체를 PREDICTED 로 만들던 한계는 풀렸다**(`r1_lagging_camera_unverifiable`, S15P31A101-219). 융합 시각 계산에서
+  t_latest_global 보다 150 ms 넘게 늦은 카메라를 빼므로(`tier0-fusion-time.md`) 한계 `slow-camera-fusion-time` 을 지우고 규칙 정답을
+  events 로 올렸다. 늦은 카메라 관측은 그 tick 에 쓰이지 않으므로, 그 카메라만 보던 곳의 관측은 다른 카메라가 볼 때까지 없다.
 - **D-G3-03 충족(S15P31A101-218).** SIM 보정은 PROVISIONAL 이라 Tier 0 가 활성 보정 상태를 판정 문맥으로 넘기고(world_state 계약은 그대로)
   R2·R3 의 모든 줄에 `PROVISIONAL_CALIB` 가 붙는다(명세 4.4·부록 D-G3-03 100%). `r2_r3_podium_edge` 기대는 이벤트 키 `reasons_every_line`
   (그 이벤트의 모든 줄 confidence_reasons 에 있어야 할 이유)로 이를 보고, 전이 줄은 needs_check true 다.

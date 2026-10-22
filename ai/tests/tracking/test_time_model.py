@@ -6,12 +6,14 @@ from simai_ai.tracking.time_model import (
     SAME_CLOCK,
     CameraClock,
     ClockOffset,
+    FusionTime,
     LagStatus,
     ObservationState,
     TimeAges,
     TimeModelConfig,
     TrackTimeInput,
     advance_ms,
+    choose_fusion_time,
     classify_observation,
     compute_ages,
     compute_t_latest_global,
@@ -189,6 +191,7 @@ def test_default_config_values():
         {"lag_degraded_ms": 3000, "lag_unsafe_ms": 2000},
         {"camera_stall_ms": -1},
         {"min_cameras": 0},
+        {"fusion_max_lag_ms": -1},
     ],
 )
 def test_config_rejects_inconsistent_values(kwargs):
@@ -385,3 +388,58 @@ def test_evaluate_track_unknown_offset_keeps_gap_state_without_time_reference():
     assert not evaluate_track(_track(), t_latest_global=None, t_risk_now=T0).time_reference
     with pytest.raises(ValueError, match="gap"):
         evaluate_track(_track(T0 + 200), t_latest_global=T0 + 100, t_risk_now=T0, capture_clock=None)
+
+
+# --- 융합 시각 (S15P31A101-219, docs/design/tier0-fusion-time.md) ---
+
+
+def _clocks(**times):
+    return [CameraClock(c, None if t is None else T0 + t, True) for c, t in times.items()]
+
+
+def test_fusion_time_is_oldest_of_prompt_cameras():
+    assert choose_fusion_time(_clocks(cam1=1000, cam2=960, cam3=900, cam4=None), TimeModelConfig()) == FusionTime(T0 + 900)
+    assert choose_fusion_time(_clocks(cam1=None), TimeModelConfig()) is None
+    assert choose_fusion_time([], TimeModelConfig()) is None
+
+
+def test_fusion_lag_boundary_150_kept_151_left_out():
+    """경계: t_latest_global 보다 정확히 150 ms 늦으면 넣고(외삽 없이 그 시각을 기다린다), 151 ms 면 뺀다."""
+    config = TimeModelConfig()
+    assert choose_fusion_time(_clocks(cam1=1000, cam2=1000, cam3=850), config) == FusionTime(T0 + 850)
+    assert choose_fusion_time(_clocks(cam1=1000, cam2=990, cam3=849), config) == FusionTime(T0 + 990, ("cam3",))
+
+
+def test_stalled_camera_is_not_reported_as_lagging():
+    """멈춘 카메라(500 ms 초과)는 이전처럼 빠지고, 늦은 카메라 목록에는 수신 중인 카메라만 싣는다."""
+    got = choose_fusion_time(_clocks(cam1=1000, cam2=980, cam3=600, cam4=499), TimeModelConfig())
+    assert got == FusionTime(T0 + 980, ("cam3",))
+
+
+def test_fewer_than_min_cameras_left_waits_for_the_late_ones():
+    """반례: 빼고 남은 카메라가 min_cameras(2)보다 적으면 빼지 않는다. 앞선 카메라 한 대(시계가 앞선 경우 포함)에 맞춰
+    서두르면 다른 카메라가 모두 빠져 다시점이 안 된다."""
+    config = TimeModelConfig()
+    assert choose_fusion_time(_clocks(cam1=1000, cam2=600, cam3=620), config) == FusionTime(T0 + 600)
+    assert choose_fusion_time(_clocks(cam1=1000, cam2=980, cam3=600), config) == FusionTime(T0 + 980, ("cam3",))
+    one = TimeModelConfig(min_cameras=1)
+    assert choose_fusion_time(_clocks(cam1=1000, cam2=600), one) == FusionTime(T0 + 1000, ("cam2",))
+
+
+def test_one_clock_ahead_camera_with_normal_phase_spread_pushes_normal_cameras_out():
+    """리뷰 F2 반례: 되돌림은 남은 카메라가 2대 미만일 때만이다. cam1 만 +140 ms 앞서고 정상 세 대가 40 ms 위상차면 cam1·cam2 가
+    남아 정상 cam3·cam4 가 빠진다(동기화 측정이 없는 동안의 제한, 감시 저하는 R7 이 드러낸다)."""
+    got = choose_fusion_time(_clocks(cam1=1000, cam2=860, cam3=840, cam4=820), TimeModelConfig())
+    assert got == FusionTime(T0 + 860, ("cam3", "cam4"))
+
+
+def test_sync_invalid_camera_does_not_set_the_reference():
+    """동기화가 무효한 카메라는 t_latest_global 처럼 기준에서 빠진다(시계가 앞선 카메라가 나머지를 늦은 쪽으로 만들지 않음)."""
+    clocks = _clocks(cam2=700, cam3=690) + [CameraClock("cam1", T0 + 1000, False)]
+    assert choose_fusion_time(clocks, TimeModelConfig()) == FusionTime(T0 + 690)
+
+
+def test_fusion_time_does_not_depend_on_camera_order():
+    clocks = _clocks(cam4=1000, cam2=980, cam1=700, cam3=650)
+    got = choose_fusion_time(clocks, TimeModelConfig())
+    assert got == choose_fusion_time(list(reversed(clocks)), TimeModelConfig()) == FusionTime(T0 + 980, ("cam1", "cam3"))

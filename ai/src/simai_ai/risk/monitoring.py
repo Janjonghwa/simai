@@ -44,11 +44,16 @@ class CameraStatus(StrEnum):
 
 @dataclass(frozen=True)
 class CameraMonitor:
-    """카메라 한 대의 상태. last_capture 는 마지막으로 처리한 프레임의 촬영 시각(UTC ms), 받은 적 없으면 None."""
+    """카메라 한 대의 상태. last_capture 는 마지막으로 처리한 프레임의 촬영 시각(UTC ms), 받은 적 없으면 None.
+
+    fusion_excluded: 수신 중이지만 그 판정 시각의 융합(다시점 관측)에 쓰지 못한 카메라(Tier 0 가 늦어서 융합 시각 계산에서
+        뺀 카메라, S15P31A101-219). health 에는 없는 Tier 0 내부 값이라 from_json(health 형식)은 False 로 둔다.
+    """
 
     camera_id: str
     status: CameraStatus
     last_capture: int | None
+    fusion_excluded: bool = False
 
     @classmethod
     def from_json(cls, obj: Any, where: str = "camera") -> "CameraMonitor":
