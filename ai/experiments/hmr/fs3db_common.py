@@ -5,6 +5,7 @@ Fast 의 가속 설정은 대부분 환경변수이고 일부는 import 시점�
   off      : Fast 가속 끔 (원본 SAM 3D Body 경로에 가장 가까움: 모든 layer interm 예측, keypoint prompt, correctives, CPU hand prep, 순차 decoder)
   opt      : 공식 run_demo.sh 의 비-compile 설정 (keypoint prompt 생략, interm 예측 body 0,1,2 / hand 0,1, correctives 끔, GPU hand prep, 병렬 decoder 허용)
   opt_compile : opt + torch.compile (공식 run_demo.sh: backbone·decoder compile, reduce-overhead)
+K(카메라 내부 파라미터)는 알려진 K(보정 결과·데이터셋)가 있으면 그것을, 없을 때만 MoGe2 FOV 추정을 쓴다(resolve_k, S15P31A101-238).
 병렬(merged backbone) decoder 는 공식 코드상 hand_box_source=yolo_pose + YOLO-Pose keypoints 가 있을 때만 동작 (sam3d_body.py run_inference).
 → 외부 bbox 로 이 경로를 쓰려면 PrecomputedPoseDetector 로 같은 bbox 에 IoU 매칭된 YOLO26-Pose keypoints 를 함께 전달.
 """
@@ -298,11 +299,191 @@ def baseline_inputs(stem):
     return img, z["boxes"], z["K"]
 
 
+# ---------------------------------------------------------------- 알려진 K 입력 (S15P31A101-238)
+# 우선순위: 보정 K > 데이터셋 K > MoGe FOV 추정. 못 쓰는 후보는 이유를 남기고 다음으로 간다(calibration.intrinsics chain 의 '사용 불가만 대체' 와 같다).
+K_CALIBRATION, K_DATASET, K_MOGE = "CALIBRATION", "DATASET", "MOGE_ESTIMATE"
+_K_ORDER = {K_CALIBRATION: 0, K_DATASET: 1}
+# OPENCV_PINHOLE 계수 개수: 없음·[k1 k2 p1 p2]·+k3·+k4 k5 k6(유리). simai_ai.geometry.distortion 과 같은 범위(되돌리기 식을 정확히 아는 것만)
+_PINHOLE_COEFFS = (0, 4, 5, 8)
+
+
+def _sha256(path):
+    import hashlib
+    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _k_entries(doc):
+    """파일 → (카메라 항목 목록, 출처 메타). 형식: simai.intrinsics_estimate · calibration 계약 문서 · {"cameras": [...]} · 단일 {"K": ...}."""
+    if not isinstance(doc, dict):
+        raise TypeError("최상위가 객체가 아님")
+    if doc.get("format") == "simai.intrinsics_estimate":
+        # 무마커 1단계(AnyCalib 등) 초기값이다. 번들 조정·검증 전이라 PROVISIONAL (명세 4.3·4.4)
+        return ([{"camera_id": e.get("camera_id"), "status": e.get("status"), **(e.get("camera") or {})} for e in doc.get("estimates", [])],
+                {"calibration_source": "G1_AUTO", "calibration_state": "PROVISIONAL", "format": "simai.intrinsics_estimate"})
+    if "provider_source" in doc and "cameras" in doc:
+        return doc["cameras"], {"calibration_source": doc["provider_source"], "calibration_state": doc.get("state"),
+                                "calibration_version": doc.get("calibration_version")}
+    meta = {k: doc[k] for k in ("calibration_source", "calibration_state", "dataset_id") if k in doc}
+    if "cameras" in doc:
+        return doc["cameras"], meta
+    if "K" in doc:
+        return [doc], meta
+    raise ValueError("K 를 찾을 수 없는 형식")
+
+
+def _pick_camera(entries, camera_id, stem):
+    if not isinstance(entries, list) or not entries or not all(isinstance(e, dict) for e in entries):
+        return None, "카메라 목록이 객체 목록이 아님"
+    if camera_id is not None:
+        hit = [e for e in entries if e.get("camera_id") == camera_id]
+        return (hit[0], None) if len(hit) == 1 else (None, f"camera_id {camera_id} 항목이 {len(hit)}개")
+    if len(entries) == 1:
+        return entries[0], None
+    # 파일 이름 접두로 고른다(cam_A_01.jpg → cam_A). 하나로 정해지지 않으면 쓰지 않는다
+    hit = [e for e in entries if e.get("camera_id") and stem and stem.startswith(str(e["camera_id"]) + "_")]
+    return (hit[0], None) if len(hit) == 1 else (None, f"카메라 {len(entries)}대 중 '{stem}' 에 맞는 camera_id 를 정할 수 없음")
+
+
+def known_k(kind, path, image_size, camera_id=None, stem=None):
+    """알려진 K 후보 하나 → (입력 기록, None) 또는 (None, 못 쓰는 이유). 크기가 다르면 K 를 늘리거나 줄이지 않고 쓰지 않는다.
+    어떤 형식 오류도 예외로 실행을 끊지 않고 이유가 된다(다음 후보로 간다)."""
+    path = Path(path)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        entries, meta = _k_entries(doc)
+    except (OSError, ValueError, AttributeError, TypeError) as e:
+        return None, f"읽지 못함: {type(e).__name__}: {e}"[:200]
+    try:
+        return _check_k(kind, path, image_size, camera_id, stem, entries, meta)
+    except (KeyError, IndexError, ValueError, TypeError, AttributeError) as e:
+        return None, f"K·왜곡 형식: {type(e).__name__}: {e}"[:200]
+
+
+def _check_k(kind, path, image_size, camera_id, stem, entries, meta):
+    e, why = _pick_camera(entries, camera_id, stem)
+    if e is None:
+        return None, why
+    if e.get("status", "OK") != "OK":
+        return None, f"{e.get('camera_id')} status {e.get('status')}"
+    if list(e.get("image_size") or []) != list(image_size):
+        return None, f"image_size {e.get('image_size')} ≠ 그림 {list(image_size)}"
+    K = np.asarray(e["K"], float).reshape(3, 3)
+    dist = e.get("distortion", {"model": "NONE", "coeffs": []})
+    if not isinstance(dist, dict) or not isinstance(dist.get("coeffs", []), list):
+        return None, "distortion 이 {model, coeffs[]} 가 아님"
+    model, coeffs = dist.get("model", "NONE"), [float(c) for c in dist.get("coeffs", [])]
+    if not (np.isfinite(K).all() and K[0, 0] > 0 and K[1, 1] > 0 and np.allclose(K[2], [0, 0, 1])):
+        return None, "K 가 유한한 핀홀 행렬이 아님"
+    if not np.isfinite(coeffs).all():
+        return None, "왜곡 계수가 유한하지 않음"
+    if model == "NONE":
+        if any(coeffs):  # 계약: NONE 의 계수는 [] (0 만 있는 목록은 같은 뜻으로 받는다)
+            return None, f"왜곡 NONE 인데 0 이 아닌 계수 {coeffs}"
+    elif model != "OPENCV_PINHOLE":
+        return None, f"지원하지 않는 왜곡 {model}"
+    elif len(coeffs) not in _PINHOLE_COEFFS:
+        return None, f"OPENCV_PINHOLE 계수 {len(coeffs)}개(0·4·5·8 만)"
+    if kind == K_DATASET:
+        meta.setdefault("calibration_source", "DATASET_GT")
+    rec = {"source": kind, **meta, "camera_id": e.get("camera_id"), "file": path.name, "file_sha256": _sha256(path),
+           "K_given": K.tolist(), "distortion": {"model": model, "coeffs": coeffs}}
+    return rec, None
+
+
+def resolve_k(image_size, candidates, camera_id=None, stem=None):
+    """candidates: [(K_CALIBRATION | K_DATASET, 경로)]. 넘긴 순서와 상관없이 보정 > 데이터셋 순으로 보고, 다 못 쓰면 MoGe 추정."""
+    skipped = []
+    for kind, path in sorted(candidates, key=lambda c: _K_ORDER[c[0]]):
+        rec, why = known_k(kind, path, image_size, camera_id, stem)
+        if rec is not None:
+            rec["skipped"] = skipped
+            return rec
+        skipped.append({"source": kind, "file": Path(path).name, "why": why})
+    return {"source": K_MOGE, "skipped": skipped}
+
+
+def prepare_image(img_bgr, kin):
+    """K 입력에 맞춰 HMR 에 넣을 그림과 K. MoGe 추정이면 (그림, None) — 추정은 estimator 의 FOV 가 한다.
+    왜곡 계수가 있으면 그림을 펴서 넣는다(HMR 은 핀홀 카메라를 가정한다. C110 은 가장자리 반지름이 약 24% 줄어든다).
+    새 K 는 원본 화소를 모두 담는 alpha=1(같은 크기, 주점 중앙): 같은 K 로 펴면 교실 사진 93명 중 42명이 화면 밖으로 빠졌다
+    (docs/experiments/EXP-02_design.md "K 입력"). 결과 2D 를 원본 픽셀로 되돌리는 식은 to_original_pixels."""
+    if kin["source"] == K_MOGE:
+        return img_bgr, None
+    K = np.asarray(kin["K_given"], float)
+    coeffs = kin["distortion"]["coeffs"]
+    if not any(coeffs):
+        kin["K_used"] = K.tolist()
+        kin["undistorted"] = False
+        return img_bgr, K
+    import cv2
+    h, w = img_bgr.shape[:2]
+    D = np.asarray(coeffs, float)
+    K1, _roi = cv2.getOptimalNewCameraMatrix(K, D, (w, h), 1, (w, h), centerPrincipalPoint=True)
+    K1 = np.asarray(K1, float)
+    if not (np.isfinite(K1).all() and K1[0, 0] > 0 and K1[1, 1] > 0):  # 펴기 K 를 못 구하면 지어내지 않고 이 그림을 실패로
+        raise ValueError(f"펴기용 새 K 를 구하지 못함: {K1.tolist()}")
+    kin.update(K_used=K1.tolist(), undistorted=True, image_space="UNDISTORTED_ALPHA1")  # 결과 2D·투영은 펴진 그림 좌표다
+    return cv2.undistort(img_bgr, K, D, None, K1), K1
+
+
+def _distort_normalized(xy, coeffs):
+    """OpenCV 핀홀 왜곡(계수 0·4·5·8개) 정방향: 왜곡 없는 정규화 좌표 (N, 2) → 왜곡 정규화 좌표. cv2.projectPoints·simai_ai.geometry.distortion 과 같은 식."""
+    k1, k2, p1, p2, k3, k4, k5, k6 = (list(coeffs) + [0.0] * 8)[:8]
+    x, y = xy[:, 0], xy[:, 1]
+    r2 = x * x + y * y
+    radial = (1 + r2 * (k1 + r2 * (k2 + r2 * k3))) / (1 + r2 * (k4 + r2 * (k5 + r2 * k6)))
+    return np.column_stack([x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x), y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y])
+
+
+def to_original_pixels(points, kin):
+    """HMR 결과 2D(넣은 그림 좌표, (N, 2)) → 원본(왜곡된) 그림 픽셀. K_original · distortion(K_used⁻¹ · p).
+    펴지 않은 입력이면 그대로 돌려준다. MoGe 추정이면 원본 그림을 그대로 넣었으므로 그대로다."""
+    pts = np.asarray(points, float).reshape(-1, 2)
+    if not kin.get("undistorted"):
+        return pts.copy()
+    K0, K1 = np.asarray(kin["K_given"], float), np.asarray(kin["K_used"], float)
+    xy = np.column_stack([pts, np.ones(len(pts))]) @ np.linalg.inv(K1).T
+    d = _distort_normalized(xy[:, :2] / xy[:, 2:], kin["distortion"]["coeffs"])
+    return (np.column_stack([d, np.ones(len(d))]) @ K0.T)[:, :2]
+
+
+def k_summary(rows):
+    """Run 전체 K 출처 요약(exp_job 이 k_input.source·k_input.count.* 로 Run 기록 지표에 넘긴다)."""
+    count = {}
+    for kin in rows:
+        count[kin["source"]] = count.get(kin["source"], 0) + 1
+    out = {"source": next(iter(count)) if len(count) == 1 else ("MIXED" if count else None), "count": count,
+           "undistorted": sum(1 for kin in rows if kin.get("undistorted"))}
+    # Run 기록 input_provenance 에 옮길 값(큐 Job 정의가 채운다). 모든 그림이 같은 K 파일일 때만 — 섞였거나 MoGe 면 비운다(계약: 모델 추정 Run 은 calibration 생략)
+    files = {(kin.get("calibration_source"), kin.get("calibration_version"), kin.get("file"), kin.get("file_sha256")) for kin in rows}
+    src, ver, name, sha = next(iter(files)) if len(files) == 1 else (None,) * 4
+    if rows and sha and out["source"] in (K_CALIBRATION, K_DATASET):
+        out["input_provenance"] = {"calibration": {"source": src, "calibration_version": ver or f"{name}@{sha}"},
+                                   "is_upper_bound": src in ("DATASET_GT", "SIM")}
+    return out
+
+
 def env_summary():
     t = torch_()
     d = {"torch": t.__version__, "cuda": t.version.cuda, "cuda_available": t.cuda.is_available()}
+    # 지연 비교 기준을 가르는 값(S15P31A101-238): cuDNN·드라이버·호스트 CPU·이미지 다이제스트. E-GATE-0 에는 없어 원인을 좁히지 못했다
+    try:
+        d["cudnn"] = t.backends.cudnn.version()
+    except Exception:
+        pass
+    d["image_digest"] = os.environ.get("SIMAI_IMAGE_DIGEST")
+    d["cpu_count"] = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+    try:
+        d["cpu"] = next(ln.split(":", 1)[1].strip() for ln in Path("/proc/cpuinfo").read_text().splitlines() if ln.startswith("model name"))
+    except Exception:
+        pass
     if t.cuda.is_available():
         p = t.cuda.get_device_properties(0); d.update(gpu=p.name, vram_total_mb=mb(p.total_memory), free_mb=mb(t.cuda.mem_get_info()[0]))
+        try:
+            d["driver"] = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"], capture_output=True,
+                                         text=True, timeout=5).stdout.strip()
+        except Exception:
+            pass
     try:
         d["repo_commit"] = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     except Exception:

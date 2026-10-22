@@ -45,7 +45,48 @@ Fast SAM 3D Body의 MHR 메시·포즈를 World ID에 결합해 움직이는 메
 | GPU 큐 | `queue_min.sh`(설치 직후 최소 검증: 가중치·H6·H0·H1·라이브 10분, 실행 완료), `queue_egate0.sh`(다음 세션: H2~H5 + C110 opt_compile 라이브 15분). GPU 는 큐를 돌릴 때만 켠다 |
 | 산출물 | `/workspace/simai/runs/exp02/<run_id>/`, 로컬 사본 `ai/experiments/hmr/runs/`(커밋하지 않음) |
 
-**Detectron2 용도.** 우리 경로(YOLO26-Pose 검출)에서는 `sam_3d_body/visualization/utils.py`가 관절 메타데이터를 읽는 `detectron2.config.LazyConfig`(순수 Python)만 쓴다(ViTDet 검출기 옵션은 쓰지 않음). 공식 설치를 따라 CUDA 확장까지 빌드하느라 nvcc(micromamba cuda-toolkit)가 필요하다. 후속(Docker 이미지 작업 때): CUDA 확장 없이 설치해 렌더가 동작하는지 확인 → 되면 uv 만으로 설치하고 GPU 아키텍처별 재빌드를 없앤다.
+**Detectron2 용도.** 우리 경로(YOLO26-Pose 검출)에서는 `sam_3d_body/visualization/utils.py`가 관절 메타데이터를 읽는 `detectron2.config.LazyConfig`(순수 Python)만 쓴다(ViTDet 검출기 옵션은 쓰지 않음). 볼륨 환경(E-GATE-0)은 공식 설치를 따라 CUDA 확장까지 빌드하느라 nvcc(micromamba cuda-toolkit)가 필요했다. S15P31A101-238 에서 CUDA 확장 없이(`FORCE_CUDA=0`, CPU 전용 C++ 확장) 빌드해 LazyConfig 읽기·스켈레톤·EGL 렌더가 되는 것을 노트북(WSL)에서 확인했고, exp02 이미지에서 CUDA devel 빌드 단계·GPU 세대별 컴파일을 뺐다(근거·확인 내용은 `docs/design/exp-images.md` "Detectron2 CUDA 확장 제거", GPU 확인은 3차 세션 g0).
+
+**K 입력 (S15P31A101-238).** HMR 은 카메라 K 로 사람을 카메라 좌표에 올린다. E-GATE-0 은 K 를 MoGe2 FOV 추정으로 얻었지만(공개 영상 14장에는 K 가 없다), 교실 C110 에는 무마커 보정 K 가 있고
+(AnyCalib, -192: cam_A fx 1,257.8 px → 수평 약 85°) MoGe 계열 추정(70~73°)과 어긋난다. 그래서 `run_image.py --mode official` 은 알려진 K 를 먼저 쓴다(코드 `fs3db_common.resolve_k`·`prepare_image`, 시험 `ai/tests/experiments/hmr/test_hmr_k_input.py`).
+
+| 순위 | 입력(`run_image.py` 인자) | 받는 형식 | 기록(`k_input`) |
+|---|---|---|---|
+| 1 | 보정 K `--calibration` | `simai.intrinsics_estimate` 기록(`calibration.intrinsics.cli`) 또는 calibration 계약 문서(contracts/providers/calibration.schema.json) | `source` CALIBRATION, `calibration_source`(G1_AUTO 등)·`calibration_state`, 계약 문서면 `calibration_version` |
+| 2 | 데이터셋 K `--dataset-k` | calibration 계약 문서(DATASET_GT) 또는 `{"dataset_id", "cameras": [{camera_id, image_size, K, distortion}]}` | `source` DATASET, `calibration_source` DATASET_GT(문서에 없으면) |
+| 3 | 없음 | MoGe2 FOV 추정(E-GATE-0 와 같은 경로) | `source` MOGE_ESTIMATE, 보정 출처·상태를 적지 않는다(계약의 "이미지만 넣어 모델이 카메라를 추정하면 calibration 생략"과 같다) |
+
+- 어휘는 계약의 것을 쓴다: `calibration_source`(G1_AUTO·DATASET_GT·SIM·MODEL_ESTIMATE), `calibration_state`(PROVISIONAL·CALIBRATED…). `intrinsics_estimate` 기록은 무마커 1단계 초기값(번들 조정 전)이라 G1_AUTO·PROVISIONAL 로 적는다.
+  모든 경우에 파일 이름·sha256·camera_id·주어진 K·왜곡·쓴 K(`K_used`)·펴기 여부를 그림별 행에 남기고, 최상위 `k_input`(`source`·`count`·`undistorted`)은 `exp_job.py` 가 Run 기록 지표(`k_input.source`, `k_input.count.*`)로 넘긴다.
+  모든 그림이 같은 K 파일이면 최상위 `k_input.input_provenance`(`calibration.source`·`calibration_version`, 없으면 `<파일>@<sha256>`, `is_upper_bound` = DATASET_GT·SIM 이면 true)를 함께 남긴다. 큐 Job 정의가 이 값을 Run 기록 `input_provenance` 에 옮긴다(리뷰 R4, g4).
+- 순위는 인자 순서와 상관없다. 후보를 못 쓰면 이유를 `skipped[]` 에 적고 다음 순위로 간다(`calibration.intrinsics` 백엔드 순서의 "사용 불가만 대체"와 같은 방식):
+  파일을 못 읽음, 카메라를 하나로 정할 수 없음(`--camera-id` 없고 카메라가 여럿이면 파일 이름 접두 `cam_A_01` → `cam_A` 가 하나로 맞아야 함), `status` 가 OK 가 아님,
+  `image_size` 가 그림과 다름(**K 를 늘리거나 줄이지 않는다**: 스트림 해상도가 바뀌면 보정이 DRIFTED 라는 계약 규칙과 같다), 유한한 핀홀 K 가 아님, OPENCV_PINHOLE·NONE 밖의 왜곡(어안 등),
+  카메라 목록·항목·`distortion` 이 객체가 아님, 계수 개수가 0·4·5·8 이 아님, NONE 에 0 이 아닌 계수. 어떤 형식 오류도 실행을 끊지 않고 이유가 된다(리뷰 M3).
+- 모든 그림에 K 가 있으면 MoGe 를 띄우지 않는다. K 가 없는데 MoGe 도 없으면 실행하지 않는다(추정기의 기본 K 로 조용히 돌지 않는다).
+- split·split_pose 모드는 K 파일을 받지 않는다(그 모드의 bbox·K 캐시는 원본 그림 기준이라 펴진 그림과 맞지 않는다). E-GATE-0 재현(H0·H1)은 지금처럼 MoGe 경로다.
+- **왜곡은 펴서 넣는다.** SAM 3D Body 는 핀홀 투영을 가정한다. C110 보정(k1 −0.27, k2 0.046)은 화면 모서리에서 반지름이 약 24%(수백 px) 줄어드는 강한 배럴 왜곡이라 그대로 넣으면 가장자리 사람의 광선·깊이가 틀린다.
+  새 K 는 `cv2.getOptimalNewCameraMatrix(K, D, (W, H), alpha=1, (W, H), centerPrincipalPoint=True)`(원본 화소를 모두 담는 K, 같은 크기, 주점 중앙)이고 `cv2.undistort(img, K, D, None, K_new)` 로 펴서
+  HMR 에 K_new 를 준다(`k_input.K_used`, `image_space` UNDISTORTED_ALPHA1). 계수가 모두 0 이면 펴지 않는다. 새 K 가 유한하지 않으면 그 그림을 실패로 둔다(지어내지 않는다).
+  펴기 시간은 `undistort_ms`(CPU, `process_one_image_ms` 밖)로 따로 남긴다. 결과 2D 를 원본 픽셀로 되돌리는 식은 `fs3db_common.to_original_pixels`: K_given · distortion(K_used⁻¹ · p) 이다(새 K 와 상관없이 정확하다. 시험은 `simai_ai.geometry.distortion` 으로 편 점의 왕복 1e-6 px).
+  왜곡 계수는 OPENCV_PINHOLE 0·4·5·8개만 받는다(`simai_ai.geometry.distortion` 과 같은 범위, 되돌리기 식을 정확히 아는 것). NONE 은 0 이 아닌 계수를 받지 않는다.
+  - **측정(2026-10-22, 노트북 CPU, 리뷰 R1).** 교실 사진 `classroom-stills-20261021` 20장(cam_A~D × 5, 2304×1296)과 보정 기록 `intrinsics-20261021-022940z.json` 으로 yolo11m-pose(conf 0.5, 선행 PoC 가중치) 사람 93명을 원본에서 찾고,
+    관절·bbox 를 `simai_ai.geometry.distortion` 으로 펴진 좌표에 옮겨 셌다(사진·검출 결과는 저장하지 않았다. 스크립트는 scratchpad 에서 지움):
+
+    | 새 K | 관절이 모두 그림 안 | 일부만 안(중심은 안) | 중심이 그림 밖(빠짐) | bbox 높이 중앙값 | 초점(원 K 대비) |
+    |---|---|---|---|---|---|
+    | 같은 K(첫 구현) | 43 | 8 | **42 (45%)** | 369.6 px | 1.0 |
+    | alpha=1(채택) | 93 | 0 | 0 | 236.6 px | 0.586~0.640 (cam_C·A·D·B) |
+    | (원본, 펴기 전) | | | | 268.6 px | |
+
+    같은 K 는 중심을 원본보다 늘려(높이 1.38배) 좌우·위아래 끝의 사람을 거의 절반 잃는다. alpha=1 은 모두 담고 사람 높이가 원본의 0.88배라 HMR crop(512)에는 차이가 작다.
+    alpha=1 의 원본 가장자리 6점(모서리·좌우 중앙)은 네 카메라 모두 펴진 그림 안에 든다(왜곡 식이 이 범위에서 접히지 않는다). 그래서 alpha=1 로 바꿨다.
+  - 버린 대안: 왜곡을 그대로 넣기(위 이유로 가장자리가 틀린다), 같은 K(위 측정: 45% 빠짐), 더 큰 출력 크기(같은 초점으로 원본 화각을 담으려면 약 3,650 px 폭. 그림이 커져 검출·메모리가 늘고 HMR crop 해상도 이득은 작다),
+    그림 대신 사람 crop 만 펴기(Fast 공식 API 수정이 필요하다).
+  - 잔여 위험: alpha=1 펴진 그림은 모서리에 빈(검은) 영역이 생긴다. 원본 가장자리의 왜곡 보정 정확도는 AnyCalib 직선성 확인이 UNVERIFIED 라 확인하지 않았다. 사람 검출기는 선행 PoC 의 yolo11m-pose 였고(우리 경로는 YOLO26x-Pose) 정답 수가 없는 세기다.
+- **MoGe 는 남긴다.** E-GATE-0 재현 입력(공개 영상 14장)·라이브 서버(`live_server.py`, 첫 프레임 MoGe2 로 K 고정)·K 를 모르는 입력의 예비 경로라서 exp02 가중치 묶음(MoGe2 ViT-S·ViT-L)과 이미지 의존성(MoGe @74fbce0)에서 빼지 않는다.
+  라이브 서버의 K 입력은 이번 범위가 아니다(남은 일).
+- 3차 세션 확인 항목 g4(교실 사진 20장 + 보정 기록, `fov_moge2` 를 띄우지 않고 20장 모두 CALIBRATION)는 `docs/design/exp-images.md` "3차 세션 항목".
 
 **PoC와 다른 입력.** PoC는 bbox·K를 원본 SAM 3D Body PoC의 출력(ViTDet bbox, MoGe2-L K)에서 읽었다. 여기에는 그 파일이 없어 `baseline_inputs()`가 YOLO26x-Pose bbox(conf≥0.5)와 MoGe2-L K를 직접 계산해 `runs/exp02/_inputs/`에 캐시한다. bbox 출처가 달라 PoC 수치와는 근사 비교만 한다.
 

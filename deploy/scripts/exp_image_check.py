@@ -4,7 +4,8 @@
 노트북의 check_image.sh(GPU 없이 이미지 내용)와 짝이다. 여기서는 이 Pod 의 GPU 에서 실제로 도는지만 본다:
   - torch CUDA 사용 가능, 이 GPU 세대(sm_XY)의 커널이 torch 휠에 있음(같은 주 버전의 낮은 부 버전 SASS 또는 낮은 PTX 도 됨)
   - GPU 행렬곱(fp16·bf16) 결과가 유한
-  - exp02: Detectron2 CUDA 확장이 이 세대용으로 빌드됨(.detectron2_arch) + 확장 커널 1회(box_iou_rotated), pyrender EGL 오프스크린 렌더
+  - exp02: Detectron2 LazyConfig 가 Fast 의 관절 메타데이터(mhr70)를 읽음(우리 경로가 쓰는 유일한 Detectron2 기능), 확장이 CPU 전용
+           (CUDA 확장이 있으면 실패, S15P31A101-238), pyrender EGL 오프스크린 렌더
   - mapanything: 패키지·DINOv2 허브 코드 사본, bf16 autocast
 결과 JSON 을 표준 출력에 쓰고, 하나라도 실패하면 종료 코드 1 (모르면 통과로 두지 않는다: 아키텍처를 못 읽으면 실패).
 
@@ -37,19 +38,6 @@ def arch_ok(cap: tuple[int, int], arch_list: list[str]) -> str | None:
     if sass:
         return max(sass)[1]  # 가장 가까운 SASS (8.9 GPU 에 8.0·8.6 이 있으면 8.6)
     return max(ptx)[1] if ptx else None
-
-
-def detectron2_arch_list(text: str) -> list[str]:
-    """TORCH_CUDA_ARCH_LIST 형식('8.0;8.6;9.0+PTX') → ['sm_80', 'sm_86', 'sm_90', 'compute_90']."""
-    out = []
-    for item in re.split(r"[;\s]+", text.strip()):
-        m = re.fullmatch(r"(\d+)\.(\d)(\+PTX)?", item)
-        if m is None:
-            continue
-        out.append(f"sm_{m.group(1)}{m.group(2)}")
-        if m.group(3):
-            out.append(f"compute_{m.group(1)}{m.group(2)}")
-    return out
 
 
 def run_checks(kind: str) -> dict:
@@ -95,19 +83,16 @@ def run_checks(kind: str) -> dict:
     check("matmul", matmul)
 
     if kind == "exp02":
-        def d2_arch():
-            text = Path("/opt/exp02/.detectron2_arch").read_text(encoding="utf-8")
-            hit = arch_ok(cap, detectron2_arch_list(text))
-            assert hit, f"Detectron2 확장이 sm_{cap[0]}{cap[1]} 용으로 빌드되지 않았다: {text.strip()}"
-            return {"match": hit, "built": text.strip()}
-
-        def d2_kernel():
-            from detectron2.layers.rotated_boxes import pairwise_iou_rotated
-            boxes = torch.tensor([[10.0, 10.0, 4.0, 4.0, 0.0], [10.0, 10.0, 4.0, 4.0, 90.0]], device="cuda")
-            iou = pairwise_iou_rotated(boxes, boxes)
-            torch.cuda.synchronize()
-            assert iou.is_cuda and abs(float(iou[0, 1]) - 1.0) < 1e-3, f"box_iou_rotated 결과 이상: {iou.tolist()}"
-            return {"iou_0_1": round(float(iou[0, 1]), 4)}
+        def d2_lazyconfig():
+            from detectron2 import _C
+            from detectron2.config import LazyConfig
+            meta = Path(os.environ.get("SIMAI_FS3DB_REPO", "/opt/exp02/Fast-SAM-3D-Body")) / "sam_3d_body" / "metadata" / "mhr70.py"
+            info = LazyConfig.load(str(meta)).pose_info
+            n = len(info["keypoint_info"])
+            assert n == 70, f"mhr70 관절 {n}개(70 기대)"
+            # CUDA 확장이 든 이미지(-238 이전 빌드)는 거부한다: 3차 세션 g0 는 무확장 이미지를 확인하는 항목이다
+            assert not _C.has_cuda(), "Detectron2 CUDA 확장이 빌드돼 있다(무확장 이미지가 아니다)"
+            return {"keypoints": n, "extension_has_cuda": False}
 
         def egl_render():
             os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
@@ -125,8 +110,7 @@ def run_checks(kind: str) -> dict:
                 r.delete()
             return {"shape": list(color.shape)}
 
-        check("detectron2_arch", d2_arch)
-        check("detectron2_kernel", d2_kernel)
+        check("detectron2_lazyconfig", d2_lazyconfig)
         check("pyrender_egl", egl_render)
     elif kind == "mapanything":
         def ma():

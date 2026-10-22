@@ -7,7 +7,8 @@
 #       볼륨 없음·가중치 없음·해시 불일치·GPU 없음이 각각 명확한 코드와 메시지로 끝남, GPU 별 엔진 경로가 다름,
 #       PUBLIC_KEY(RunPod)·SSH_PUBLIC_KEY(Vast.ai) 를 주면 키 인증만 받는 sshd 가 뜸, SIMAI_SSHD=off 면 안 뜸,
 #       기본 진입점(simai-bootstrap)은 GPU 가 없으면 코드 3, 실행 스크립트에 CR(Windows 줄바꿈)이 없음 (S15P31A101-205).
-# 실험 이미지(exp02·mapanything)는 Tier 0 전용 항목(엔진·simai-tier0·분석 워커) 대신: 종류별 import·CUDA 확장 아키텍처·허브 코드 사본,
+# 실험 이미지(exp02·mapanything)는 Tier 0 전용 항목(엔진·simai-tier0·분석 워커) 대신: 종류별 import·허브 코드 사본
+#       (exp02: Detectron2 확장이 CPU 전용이고 LazyConfig 가 Fast 관절 메타데이터를 읽음, S15P31A101-238),
 #       부트스트랩이 자기 가중치 묶음을 고르는지(해시 모르는 항목은 받기 전에 코드 2, 받기 실패는 코드 2), 실행 도우미의 체크포인트 없음 코드 2.
 # EC2 Risk Engine 컨테이너(risk_engine, S15P31A101-99)는 GPU·SSH·가중치 항목 대신: 무거운 패키지 없음, 비루트 사용자, 공개 포트(EXPOSE) 없음,
 #       헬스체크, 공통 테스트 벡터(D-G3-04)가 이미지 안 라이브러리로 모두 통과, 망 없는(--network none) 컨테이너를 띄워 healthy 가 된 뒤
@@ -70,13 +71,14 @@ import importlib.metadata as m, os, pathlib, sys
 import torch, torchvision, detectron2, detectron2._C, moge, ultralytics, pyrender, smplx, pytorch_lightning  # chumpy 0.70 은 Python 3.11 에서 import 가 깨진다(inspect.getargspec, 볼륨 venv 와 같음). 설치만 확인
 assert m.version("chumpy") == "0.70"
 from moge.model.v2 import MoGeModel
-arch = pathlib.Path("/opt/exp02/.detectron2_arch").read_text().strip()
-assert arch == "8.0;8.6;8.9;9.0;10.0;12.0", arch
+from detectron2.config import LazyConfig
+assert not detectron2._C.has_cuda(), "Detectron2 CUDA 확장이 들어 있다(CUDA 확장 없이 빌드해야 한다)"
 repo = os.environ["SIMAI_FS3DB_REPO"]
+assert len(LazyConfig.load(repo + "/sam_3d_body/metadata/mhr70.py").pose_info["keypoint_info"]) == 70
 for d in (repo + "/sam_3d_body", repo + "/checkpoints/sam-3d-body-dinov3/model_config.yaml",
           "/root/.cache/torch/hub/facebookresearch_dinov3_main/hubconf.py"):
     assert pathlib.Path(d).exists(), d
-print(sys.version.split()[0], "torch", torch.__version__, "detectron2", m.version("detectron2"), "arch", arch,
+print(sys.version.split()[0], "torch", torch.__version__, "detectron2", m.version("detectron2"), "cpu-only",
       "ultralytics", m.version("ultralytics"), "numpy", m.version("numpy"))' ;;
   mapanything) IMPORTS='
 import importlib.metadata as m, os, pathlib, sys

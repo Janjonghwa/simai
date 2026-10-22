@@ -65,6 +65,7 @@ E-GATE-0(2026-10-16) 전이어서, E-GATE-0 때 받은 파일과 같은 revision
 - **MoGe2·map-anything `model.*`**: 공개 저장소라 HF API `tree/main?recursive=true` 의 `lfs.oid`(LFS 객체 sha256)를 그대로 썼다(2026-10-21). map-anything 두 파일은
   E-GATE-0 Run 기록(`ai/experiments/static_scene/runs/C1_room4_bf16/metrics.json`·`C2_room4_apache_bf16/metrics.json` 의 `weights_hash`, 커밋하지 않는 `runs/`)과 같다.
   MoGe2 는 E-GATE-0 때 Fast 코드가 HF 캐시로 받았던 것이라 해시 기록이 없다. 이미지에서는 `fs3db_common.use_local_moge()` 가 이 확인된 파일을 쓴다.
+  S15P31A101-238 부터 HMR 은 알려진 K(보정·데이터셋)를 먼저 쓰지만 MoGe2 두 항목은 묶음에 남긴다: K 를 모르는 입력(E-GATE-0 재현 14장, 라이브 서버)의 예비 경로다(`docs/experiments/EXP-02_design.md` "K 입력").
 - **map-anything `config.json`**: LFS 가 아니어서 고정 revision 의 `resolve/<revision>/config.json` 을 받아(5,776 B) sha256 을 냈다. 두 저장소의 config 가 같은 파일이다.
 - 큰 파일은 노트북에서 받지 않았다. 첫 실험 이미지 세션에서 `simai-bootstrap` 이 받아 대조한다. 다르면 시작하지 않으므로(종료 코드 2) 그때 이 문서와 목록을 새 항목으로 고친다.
 - 이미지에 넣는 코드 사본(가중치 아님): Fast-SAM-3D-Body @d72aa36(MIT), DINOv3 허브 코드 @6876159(DINOv3 License, 2026-10-16 이전 마지막 커밋),
