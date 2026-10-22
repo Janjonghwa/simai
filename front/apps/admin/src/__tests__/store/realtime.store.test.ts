@@ -1,5 +1,11 @@
-import { viewerHealthAt } from '@/mocks/realtimeScenario';
-import { HEALTH_TIMEOUT_MS, isLinkAlive, useRealtimeStore } from '@/store/realtime.store';
+import { viewerHealthAt, worldStateAt } from '@/mocks/realtimeScenario';
+import {
+  HEALTH_TIMEOUT_MS,
+  isLinkAlive,
+  isWorldFresh,
+  useRealtimeStore,
+  WORLD_STALE_MS,
+} from '@/store/realtime.store';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 const T = 1_760_342_400_000;
@@ -30,8 +36,48 @@ describe('realtime.store', () => {
 
   it('reset 하면 로그인 전 상태로 돌아간다', () => {
     useRealtimeStore.getState().opened(T);
+    useRealtimeStore.getState().receiveWorld({ payload: worldStateAt(T).payload, receivedAt: T });
     useRealtimeStore.getState().reset();
-    expect(useRealtimeStore.getState().phase).toBe('IDLE');
+    expect(useRealtimeStore.getState()).toMatchObject({ phase: 'IDLE', world: null });
+  });
+
+  it('연결이 다시 열린 뒤 첫 world 는 순서와 상관없이 받고, 그다음부터 다시 새 것만 받는다', () => {
+    const store = useRealtimeStore.getState();
+    store.receiveWorld({ payload: worldStateAt(T).payload, receivedAt: T });
+    store.opened(T + 1);
+    store.receiveWorld({ payload: worldStateAt(T - 5000).payload, receivedAt: T + 2 });
+    expect(useRealtimeStore.getState().world?.receivedAt).toBe(T + 2);
+    store.receiveWorld({ payload: worldStateAt(T - 9000).payload, receivedAt: T + 3 });
+    expect(useRealtimeStore.getState().world?.receivedAt).toBe(T + 2);
+  });
+
+  it('연결이 그대로여도 한동안 world 를 못 받았으면 시계가 뒤로 간 프레임도 받는다', () => {
+    const store = useRealtimeStore.getState();
+    store.receiveWorld({ payload: worldStateAt(T).payload, receivedAt: T });
+    store.receiveWorld({ payload: worldStateAt(T - 5000).payload, receivedAt: T + 100 });
+    expect(useRealtimeStore.getState().world?.receivedAt).toBe(T);
+    store.receiveWorld({
+      payload: worldStateAt(T - 5000).payload,
+      receivedAt: T + WORLD_STALE_MS + 1,
+    });
+    expect(useRealtimeStore.getState().world?.receivedAt).toBe(T + WORLD_STALE_MS + 1);
+  });
+
+  it('world 를 정한 시간 안에 받았으면 새 것이다', () => {
+    expect(isWorldFresh({ world: null }, T)).toBe(false);
+    const world = { payload: worldStateAt(T).payload, receivedAt: T };
+    expect(isWorldFresh({ world }, T + WORLD_STALE_MS)).toBe(true);
+    expect(isWorldFresh({ world }, T + WORLD_STALE_MS + 1)).toBe(false);
+  });
+
+  it('world 는 더 새 프레임만 받는다(t_latest_global 기준)', () => {
+    const store = useRealtimeStore.getState();
+    store.receiveWorld({ payload: worldStateAt(T).payload, receivedAt: T });
+    const first = useRealtimeStore.getState().world;
+    store.receiveWorld({ payload: worldStateAt(T - 100).payload, receivedAt: T + 10 });
+    expect(useRealtimeStore.getState().world).toBe(first);
+    store.receiveWorld({ payload: worldStateAt(T + 100).payload, receivedAt: T + 20 });
+    expect(useRealtimeStore.getState().world?.receivedAt).toBe(T + 20);
   });
 });
 
