@@ -1,10 +1,14 @@
 package com.ssafy.simai.global.command;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.ssafy.simai.domain.user.entity.AppUser;
 import com.ssafy.simai.domain.user.entity.Role;
 import com.ssafy.simai.domain.user.repository.AppUserRepository;
+import jakarta.servlet.http.Cookie;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
@@ -14,17 +18,25 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.MediaType;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.transaction.annotation.Transactional;
 
 @SpringBootTest
+@AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Transactional
 class AdminCommandsTest {
 
     @Autowired
     AdminCommands commands;
+
+    @Autowired
+    MockMvc mvc;
 
     @Autowired
     AppUserRepository users;
@@ -47,6 +59,50 @@ class AdminCommandsTest {
         assertThat(user.getPasswordHash()).startsWith("{bcrypt}");
         assertThat(passwordEncoder.matches("long-password", user.getPasswordHash())).isTrue();
         assertThat(text(out)).contains("login=admin-1").doesNotContain("long-password");
+    }
+
+    @Test
+    void 명령으로_만든_계정으로_로그인된다() throws Exception {
+        run(List.of("create-user", "--login", "foreman-1", "--role", "FOREMAN"), "long-password", "long-password");
+
+        login("foreman-1", "long-password")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accessToken").isNotEmpty())
+                .andExpect(jsonPath("$.user.role").value("FOREMAN"));
+    }
+
+    @Test
+    void disable_user_는_로그인과_갱신을_막는다() throws Exception {
+        run(List.of("create-user", "--login", "viewer-1", "--role", "VIEWER"), "long-password", "long-password");
+        Cookie refresh = login("viewer-1", "long-password").andReturn().getResponse().getCookie("simai_refresh");
+
+        int code = run(List.of("disable-user", "--login", "viewer-1"));
+
+        assertThat(code).isEqualTo(AdminCommand.OK);
+        assertThat(text(out)).contains("login=viewer-1", "폐기한 갱신 토큰 1개");
+        assertThat(users.findByLoginId("viewer-1").orElseThrow().isDisabled()).isTrue();
+        login("viewer-1", "long-password").andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/auth/refresh").cookie(refresh)).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void 이미_막힌_계정을_다시_막아도_처음_시각을_둔다() {
+        run(List.of("create-user", "--login", "viewer-1", "--role", "VIEWER"), "long-password", "long-password");
+        run(List.of("disable-user", "--login", "viewer-1"));
+        var first = users.findByLoginId("viewer-1").orElseThrow().getDisabledAt();
+
+        int code = run(List.of("disable-user", "--login", "viewer-1"));
+
+        assertThat(code).isEqualTo(AdminCommand.OK);
+        assertThat(users.findByLoginId("viewer-1").orElseThrow().getDisabledAt()).isEqualTo(first);
+    }
+
+    @Test
+    void 없는_아이디는_막을_수_없다() {
+        int code = run(List.of("disable-user", "--login", "nobody"));
+
+        assertThat(code).isEqualTo(AdminCommand.FAILED);
+        assertThat(text(err)).contains("없는 아이디");
     }
 
     @Test
@@ -134,6 +190,12 @@ class AdminCommandsTest {
         Deque<String> inputs = new ArrayDeque<>(List.of(secrets));
         CommandIo io = new CommandIo(print(out), print(err), prompt -> inputs.poll());
         return commands.execute(args, io);
+    }
+
+    private ResultActions login(String loginId, String password) throws Exception {
+        return mvc.perform(post("/api/auth/login")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"username\":\"" + loginId + "\",\"password\":\"" + password + "\"}"));
     }
 
     private static PrintStream print(ByteArrayOutputStream stream) {

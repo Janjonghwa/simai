@@ -97,6 +97,12 @@ public class RefreshTokenService {
         return new BusinessException(ErrorCode.Auth.REFRESH_TOKEN_ROTATED);
     }
 
+    /** 계정을 막을 때 그 계정의 살아 있는 갱신 토큰을 모두 폐기한다. 폐기한 개수를 돌려준다. */
+    @Transactional
+    public int revokeAll(Long userId) {
+        return tokens.revokeAllActive(userId, clock.instant());
+    }
+
     // 무작위 256비트라 소금 없이 SHA-256 으로 충분하다(사전 공격 대상이 아니다)
     private static String hash(String value) {
         try {

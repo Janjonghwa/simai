@@ -45,6 +45,8 @@
 - 계정 생성: 평소 기동에는 아무것도 하지 않는다. EC2 에서 `java -jar simai.jar admin create-user --login <아이디> --role <ADMIN|FOREMAN|VIEWER> [--label <표시 이름>]`
   을 실행하면 웹 서버 없이(필요한 빈만 지연 생성, JWT 키 불필요) 떠서 비밀번호를 두 번 입력받아 만들고 끝난다(종료 코드 0 성공, 1 처리 실패, 2 옵션 오류).
   비밀번호는 셸 기록·프로세스 목록에 남지 않게 인자로 받지 않는다. 같은 아이디가 있으면 덮어쓰지 않는다.
+- 계정 막기: `admin disable-user --login <아이디>` 가 `disabled_at` 을 찍고(지우지 않음) 그 계정의 갱신 토큰을 모두 폐기한다.
+  이미 막혀 있으면 처음 시각을 그대로 둔다. 이미 나간 access 토큰은 만료(최대 30분)까지 남는다.
 - 스키마는 Flyway 만 만든다. JPA 는 `ddl-auto: validate` 로 엔티티가 테이블과 맞는지만 기동 때 검사한다.
 
 ## 명세에 없어 정한 값
@@ -82,8 +84,9 @@
 
 ## 넘긴 일
 
-- 기기·워커 토큰 인증과 경로별 `SecurityFilterChain`(사용자 JWT / `/api/devices/**` 기기 토큰 / `/api/worker/**` 워커 토큰), 필터는 `global/security`: 같은 키 다음 브랜치·229
-- 관리 명령 추가: 기기·워커 토큰 발급·회전·폐기(222), 계정 막기·비밀번호 재설정
+- 기기·워커 토큰 발급·회전·폐기 명령과 인증, 경로별 `SecurityFilterChain`(사용자 JWT / `/api/devices/**` 기기 토큰 / `/api/worker/**` 워커 토큰), 필터는 `global/security`:
+  S15P31A101-222(발급과 검증이 같은 해시 규칙·테이블을 쓰므로 61 에서 옮김). 워커 대여 API 는 229
+- 관리 명령 추가: 비밀번호 재설정
 - 관제 앱·반장 PWA(231) 갱신 호출: 401 이면 `credentials: 'include'` 로 `/api/auth/refresh` 후 재시도, 앱 시작 때 갱신으로 로그인 복구.
   개발 중에는 Vite 프록시로 `/api` 를 서버에 넘기면 쿠키·CORS 설정 없이 같은 출처로 동작한다
 - STOMP 연결 인증(관제 앱은 CONNECT 헤더에 `Authorization: Bearer` 를 싣는다): STOMP 서버를 만들 때

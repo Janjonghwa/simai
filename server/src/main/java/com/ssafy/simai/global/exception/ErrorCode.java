@@ -46,6 +46,7 @@ public sealed interface ErrorCode {
 
     enum User implements ErrorCode {
         DUPLICATE_LOGIN_ID(HttpStatus.CONFLICT, "이미 있는 아이디입니다"),
+        USER_NOT_FOUND(HttpStatus.NOT_FOUND, "없는 아이디입니다"),
         WEAK_PASSWORD(HttpStatus.BAD_REQUEST, "비밀번호는 8자 이상이어야 합니다"),
         // BCrypt 는 72바이트까지만 본다
         PASSWORD_TOO_LONG(HttpStatus.BAD_REQUEST, "비밀번호는 72바이트(영문 72자, 한글 24자) 이하여야 합니다");

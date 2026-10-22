@@ -45,4 +45,18 @@ public class UserService {
             throw new BusinessException(ErrorCode.User.DUPLICATE_LOGIN_ID);
         }
     }
+
+    /**
+     * 계정을 막는다(지우지 않는다). 이미 막혀 있으면 처음 막은 시각을 그대로 둔다.
+     * 로그인·갱신은 disabled_at 을 보고 거부한다. 남은 갱신 토큰 폐기는 부르는 쪽이 한다.
+     */
+    @Transactional
+    public AppUser disable(String loginId) {
+        AppUser user = users.findByLoginId(loginId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.User.USER_NOT_FOUND));
+        if (!user.isDisabled()) {
+            user.disable(clock.instant());
+        }
+        return user;
+    }
 }
