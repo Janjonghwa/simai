@@ -1,0 +1,20 @@
+{
+  "scenario_id": "r1_resume_then_new",
+  "d_ids": ["D-G6-08"],
+  "format_version": 1,
+  "_tolerance": "시각은 장면 시작 기준 ms. 발생 창은 r1_enter_exit 와 같은 근거(범위가 처음 닿을 수 있는 때 ~ 중심 진입 + 900 ms), 해소 창은 해소 간격 밖 통과 + 해소 유지 1500 ms + 여유",
+  "exhaustive": true,
+  "ignore_rules": ["R5"],
+  "_ignore_rules": "R5(접근 예측) 전이는 r1_enter_exit 가 본다. 여기서는 R1 재개·새 이벤트 경계만 본다",
+  "events": [
+    {"name": "첫 진입(재개 포함)", "rule_id": "R1", "zone_id": "z-r1", "severity": "HIGH", "world_id_count": 1,
+     "_why": "해소(약 7.4~8.3 s) 뒤 10초 안(약 9.9~11.3 s)의 재발생은 같은 event_id 의 재개(resume_count 1)",
+     "transitions": [{"kind": "RAISED", "at_ms": [1400, 3067], "resume_count": 0},
+                     {"kind": "RESOLVED", "at_ms": [7300, 8300]},
+                     {"kind": "RESUMED", "at_ms": [9800, 11312], "resume_count": 1},
+                     {"kind": "RESOLVED", "at_ms": [15300, 16300]}]},
+    {"name": "10초 뒤 새 진입", "rule_id": "R1", "zone_id": "z-r1", "severity": "HIGH", "world_id_count": 1,
+     "_why": "마지막 해소(늦어도 16.3 s)에서 10초가 지난 뒤(이르면 27.8 s)의 발생은 새 이벤트. 장면 끝(31 s)까지 활성",
+     "transitions": [{"kind": "RAISED", "at_ms": [27800, 29312], "resume_count": 0}]}
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "scenario_id": "r7_camera_disconnect",
+  "d_ids": ["D-G3-01", "D-G3-08"],
+  "description": "카메라 3대(cam2·cam3·cam4)가 4~7 s 동안 끊겼다가 새 epoch 로 다시 붙는다. 구역 밖에 한 사람이 서 있다",
+  "_design": "끊김은 녹화 세그먼트 공백(epoch 0 끝 → epoch 1 시작, 재접속)이다. 남은 cam1 한 대로는 구역의 2대 이상 관측 조건을 잃는다",
+  "sim": {
+    "duration_ms": 12000,
+    "people": [{"id": "stander", "height_m": 1.65, "waypoints": [{"t_ms": 0, "xy": [1.8, 1.8]}]}]
+  },
+  "faults": {"camera_gaps": [{"camera_id": "cam2", "from_ms": 4000, "to_ms": 7000},
+                             {"camera_id": "cam3", "from_ms": 4000, "to_ms": 7000},
+                             {"camera_id": "cam4", "from_ms": 4000, "to_ms": 7000}]}
+}

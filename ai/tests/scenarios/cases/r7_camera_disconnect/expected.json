@@ -1,0 +1,46 @@
+{
+  "scenario_id": "r7_camera_disconnect",
+  "d_ids": [
+    "D-G3-01",
+    "D-G3-08"
+  ],
+  "format_version": 1,
+  "_tolerance": "시각은 장면 시작 기준 ms",
+  "exhaustive": true,
+  "world_state": {
+    "min_lines": 110,
+    "max_tracks": 1
+  },
+  "events": [
+    {
+      "name": "구역 감시 저하",
+      "rule_id": "R7",
+      "zone_id": "z-r1",
+      "severity": "CAUTION",
+      "world_id_count": 0,
+      "_why": "D-G3-01: 끊김(4.0 s)에서 1초 이내 발생(R7 은 발생 지속 조건 없이 즉시). 재접속(7.0 s) 뒤 첫 키프레임으로 2대 이상이 돌아오면 해소 유지 1.5 s 뒤 해소(+ 디코딩·판정 주기 여유 0.8 s). 결합 오류(D-G3-08)는 공통 불변식 misbound 0 으로 본다",
+      "transitions": [
+        {
+          "kind": "RAISED",
+          "at_ms": [
+            4000,
+            5000
+          ],
+          "metrics": {
+            "healthy_cameras": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "kind": "RESOLVED",
+          "at_ms": [
+            8500,
+            9300
+          ]
+        }
+      ]
+    }
+  ]
+}
