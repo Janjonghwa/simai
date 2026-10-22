@@ -53,7 +53,7 @@ docs/        기획서(spec/), 요구사항 명세서(requirements.md), 팀 규�
   - `design/`: 구현 설계 문서. 티켓 단위로 관련 명세 절, 코드·시험 위치, 명세에 없어 정한 수치와 근거, 버린 대안, 잔여 위험, 넘긴 일을 적는다. 명세 정리 MR 이 근거로 쓴다.
   - `data/`: 데이터 manifest. 공개 데이터의 출처·라이선스·경로·해시, 녹화 세션 manifest 형식(`recording-manifest.md`)과 세션별 사본(`sessions/<session_id>.json`).
   - `experiments/`: EXP 실험 설계와 색인.
-- 영상·사진·가중치·데이터셋·대형 3D 산출물은 커밋하지 않는다. RunPod Network Volume에 두고 저장소에는 manifest(경로·해시)만 둔다.
+- 영상·사진·가중치·데이터셋·대형 3D 산출물은 커밋하지 않는다. 저장소에는 manifest(경로·해시)만 둔다. 실물은 GPU 실행 사이트의 저장 위치(명세 3.12)에 두고, 볼륨이 없으면 인스턴스를 지우기 전에 결과 묶음을 노트북으로 가져온다(Network Volume 은 2026-10-20 에 폐기).
 - 비밀 값(API 키, 토큰, RTSP 계정)은 `.env`에만 둔다.
 
 ## 작업 방식
@@ -62,6 +62,6 @@ docs/        기획서(spec/), 요구사항 명세서(requirements.md), 팀 규�
 - MR은 `/mr` 스킬로 올린다. 공개 전에 사용자 승인을 받는다.
 - 자기 이슈 범위 밖의 파일은 고치지 않는다.
 - 실험 Run마다 `contracts/experiments/run_record.schema.json` 형식의 기록을 남긴다.
-- RunPod는 한 시점에 한 리전만 쓴다(개발·시연: 일본 AP-JP-1 H100 + 같은 데이터센터 Network Volume). GPU Pod는 하나이며 Tier 0가 자원을 먼저 쓴다. LIVE 관제 시간에 EXP Job을 돌리지 않는다.
+- GPU 실행 사이트·지역은 고정하지 않는다(개발·시험은 그때그때 남은 GPU·지역, 볼륨 없음. 최소 사양은 명세 3.12). 한 시점에 GPU 인스턴스는 하나이며 Tier 0가 자원을 먼저 쓴다. LIVE 관제 시간에 EXP Job을 돌리지 않는다.
 - GPU Pod는 검증할 때만 켠다. 코드·설치 스크립트·실험 큐는 노트북에서 완성하고, Pod에서 큐를 실행한 뒤 바로 Stop 한다.
-- 노트북↔Pod는 Pod 공개 IP:포트 SSH 직접 연결(기본)이나 RunPod HTTPS 프록시 443(예비, 토큰 인증)으로 잇는다. Tailscale은 쓰지 않는다.
+- 노트북↔GPU 인스턴스는 인스턴스 공개 IP:포트 SSH 직접 연결(기본, 키 인증만)로 잇는다. 막힌 망의 예비는 RunPod 에서만 되는 HTTPS 프록시 443(토큰 인증)이다. Tailscale은 쓰지 않는다.

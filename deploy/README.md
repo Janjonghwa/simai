@@ -185,7 +185,7 @@ sudo mkdir -p /mnt/simai-block/.simai-private && sudo chmod 700 /mnt/simai-block
 # 2) 준비만 확인 (GPU sm_80, 가중치 받기·해시, 저장 위치 /workspace/simai)
 docker run --rm --gpus all -v /mnt/simai-block:/workspace -e SIMAI_ROOT=/workspace/simai -e SIMAI_SSHD=off \
   --env-file /mnt/simai-block/.simai-private/hf.env <이미지> check
-# 3) Tier 0 기동: I0 수신 포트(제어·영상)를 같은 번호로 연다. Tier 0 는 RunPod 이름의 변수로 공개 IP·포트를 읽는다(명세 3.12)
+# 3) Tier 0 기동: I0 수신 포트(제어·영상)를 같은 번호로 연다. 공개 IP·포트는 사이트 무관 이름 SIMAI_PUBLIC_HOST·SIMAI_PUBLIC_PORT_<번호> 로 넣는다(명세 3.12)
 docker run -d --name simai-tier0 --restart unless-stopped --gpus all \
   -v /mnt/simai-block:/workspace -e SIMAI_ROOT=/workspace/simai -e SIMAI_SSHD=off \
   --env-file /mnt/simai-block/.simai-private/hf.env \
@@ -199,7 +199,7 @@ docker logs -f simai-tier0      # simai-bootstrap: 저장·GPU·가중치 한 �
 - 블록 스토리지에 가중치·엔진이 이미 있으면 받지 않고(해시만 확인) 엔진 캐시를 쓴다. VM 을 바꿔도 같은 블록 스토리지를 붙이면 된다(A100 은 `sm_80` 경로).
 - `--env-file` 은 호스트 docker 가 읽어 컨테이너 환경에만 넣는다. 부트스트랩이 가중치를 받은 뒤 Tier 0 를 띄우기 전에 지운다.
 - TLS 키·기기 토큰 파일은 `/mnt/simai-block/.simai-private/` 에 두고 `SIMAI_TIER0_TLS_*_FILE=/workspace/.simai-private/...` 로 가리킨다.
-- `RUNPOD_*` 이름은 Tier 0 설정이 RunPod 기준으로 읽기 때문이다(엔드포인트 등록). 이름을 일반화하는 것은 별도 티켓이다.
+- Tier 0 는 공개 주소를 `SIMAI_PUBLIC_HOST`·`SIMAI_PUBLIC_PORT_<번호>` 로 먼저 읽고, 없을 때만 RunPod 이 넣는 `RUNPOD_PUBLIC_IP`·`RUNPOD_TCP_PORT_<번호>` 를 읽는다(S15P31A101-208, 위 "공개 주소 환경 변수"). VM 에서는 사이트 무관 이름만 넣으면 된다.
 
 ### 분석 워커 (같은 Pod, Tier 0 뒤)
 
@@ -260,7 +260,8 @@ simai-bootstrap queue --session <이름>     # 2차 세션 큐: 이 이미지의
 ```
 
 - HF 토큰은 `sam-3d-body-dinov3`(승인제)에만 필요하다. Tier 0 와 같이 `HF_TOKEN` 환경 변수로만 받고 자식 프로세스에 넘기지 않는다.
-- `sam-3d-body-dinov3-mhr` 의 sha256 은 아직 비어 있다(`docs/data/weights.md`). 채우기 전에는 HMR 이미지의 `check`·`queue`·`run` 이 받기 전에 종료 코드 2 로 멈춘다.
+- `sam-3d-body-dinov3-mhr` 의 sha256 은 저장소 `deploy/weights.json` 에 채워져 있다(2026-10-21, `docs/data/weights.md`). 이미 빌드한 이미지 `jonghwa1492/tier0:*-3926a8772649` 안의 목록(`/opt/simai/deploy/weights.json`)에만 비어 있어,
+  그 이미지로 exp02 를 돌릴 때는 `SIMAI_WEIGHTS_MANIFEST=<사본>/deploy/weights.json` 으로 저장소 목록을 넘긴다. 넘기지 않으면 HMR 이미지의 `check`·`queue`·`run` 이 받기 전에 종료 코드 2 로 멈춘다. 다음 이미지 빌드부터는 이미지 안 목록에 들어 있다.
 - MoGe2 는 Fast 코드가 HF 저장소 이름으로 부르지만 `fs3db_common.use_local_moge()` 가 확인된 파일(`weights/moge/<이름>/model.pt`)로 바꿔 끼운다(없으면 원래 이름: 볼륨 venv 환경).
 - 볼륨 venv 와의 차이: conda(micromamba) 대신 uv, MoGe @74fbce0 는 `--no-deps`(flex-gemm·gradio 제외, 볼륨 환경도 MoGe 뒤 torch 를 되돌려 같은 상태), torch.hub 코드는 커밋 고정.
 - `run_mapanything.py` 의 `env_hash` 는 `SIMAI_IMAGE_DIGEST` 가 있으면 그 값(없으면 예전처럼 볼륨 잠금 파일 해시)이다.

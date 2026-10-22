@@ -134,8 +134,9 @@ Network Volume 에 올린 뒤 `uv run simai-recorder verify <세션 디렉터리
 ## Tier 0 에서 읽기
 
 `simai_ai.io.VideoFileFrameSource.from_manifest(<세션 디렉터리>, epochs=...)` 가 manifest 를 녹화 도구와 같은 판정(같은 스키마·`format: date` 검사·스키마 밖 규칙, `simai_ai.io.recording_manifest_errors`)으로 검사한 뒤
-카메라마다 세그먼트 하나를 녹화 파일 입력(timestamp_source `FILE`, 명세 20.4)으로 읽는다(`dataset_id = recording/<session_id>`).
-재접속으로 세그먼트가 여럿인 카메라는 `epochs={"cam_A": 1}` 처럼 고른다. 프레임별 촬영 시각이 필요하면 I0 재생으로 읽는다
-([`gateway/recorder/README.md`](../../gateway/recorder/README.md) "Tier 0 에서 다시 읽기").
+카메라마다 세그먼트 하나를 녹화 파일 입력(timestamp_source `FILE`, 명세 20.4)으로 읽는다(`dataset_id = recording/<session_id>`, 내부 테스트 녹화(`consent.purpose` `dev_test`)는 `recording-dev_test/<session_id>`).
+재접속으로 세그먼트가 여럿인 카메라는 `epochs={"cam_A": 1}` 처럼 고른다. 프레임별 촬영 시각이 필요하면 I0 재생으로 읽는다:
+Tier 0 파일 입력(`input.mode: file`, `simai_ai.io.RecordingReplay`)이 모든 세그먼트를 LIVE 와 같은 I0 수신 경로에 넣고 REPLAY 출처로 판정한다
+(명세 21.3, [`docs/design/tier0-recording-replay.md`](../design/tier0-recording-replay.md), [`gateway/recorder/README.md`](../../gateway/recorder/README.md) "Tier 0 에서 다시 읽기").
 위반이면 `ValueError` 이고, 문장에는 경로와 위반 규칙만 적는다(받은 값 없음). manifest 를 직접 넘기는 `recordings_from_manifest` 도
 `camera_id` 중복·범위 역전은 다시 본다. jsonschema 가 필요하다(extras `calibration` → `tier0` 묶음, 또는 dev 그룹).

@@ -76,6 +76,7 @@ docs/                      # 팀 규칙(git-convention·jira-convention)
 | GPU | 모델 추론 정확도·지연(G0), EXP 벤치 | RunPod에서 수동 실행, 결과는 Run 기록으로 |
 | 현장 측정 | LED ms 카운터 판·240fps 촬영(glass-to-alarm)·줄자 실측(15.1 측정 방법) | 개발 교실에서 수동 실행, 결과는 Run 기록으로 |
 
+- 녹화 시나리오 재생은 Tier 0 의 파일 입력(`input.mode: file`, 시뮬레이터 출력은 `sim` 입력)으로 한다. 녹화 세션(15.3)을 LIVE 와 같은 I0 수신 경로에 넣고 판정 출처를 REPLAY 로 두며, I1·I0 제어 채널을 열지 않고(실제 알림 없음, 저널에 넣지 않음) 결과를 `world_state`·`risk_event` JSONL 로 남긴다. `world_state` 에는 판정 출처 필드가 없으므로 파일에서는 `input_provenance.frames.source` = FILE 로 LIVE 와 구분하고, 파일을 읽는 쪽은 이 출처를 지우거나 LIVE 입력과 섞지 않는다. EC2 옆 컨테이너의 운영 REPLAY 계산(3.2)과는 다른 개발·시험 경로다(`docs/design/tier0-recording-replay.md`).
 - 회귀 시험 항목과 시험 ID(D-Gx-nn)는 부록 D 가 정본이다. 테스트 코드와 Run 기록은 이 ID 로 가리킨다.
 - Risk Engine과 Tier 0는 시계를 주입받는다. 실제 시각에 기대는 테스트를 만들지 않는다.
 - GPU가 필요한 테스트는 표시해서(예: pytest marker `gpu`) CI에서 제외한다.
@@ -90,5 +91,5 @@ docs/                      # 팀 규칙(git-convention·jira-convention)
 ## 21.5 개발 환경
 
 - 기본안: Python 3.11(의존성 잠금 파일로 고정), Java 21·Spring Boot 4(`server/`), Node LTS.
-- 모델별 Python·CUDA·Torch 환경은 `deploy/`의 Docker 이미지로 고정하고, 이미지 다이제스트를 Run 기록의 `env_hash`로 쓴다(20.5).
+- 모델별 Python·CUDA·Torch 환경은 `deploy/`의 Docker 이미지로 고정하고, 이미지 다이제스트를 Run 기록의 `env_hash`로 쓴다(20.5). 다이제스트를 모르는 Run(로컬 이미지, 볼륨 환경)은 `env_hash` 를 다이제스트로 채우지 않는다(볼륨 환경은 잠금 파일 해시).
 - 장비 없이 개발할 때는 시뮬레이터와 공개 데이터를 FrameSource로 쓴다(20.4).
