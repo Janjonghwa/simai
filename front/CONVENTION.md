@@ -12,8 +12,11 @@ front/
         routes/         라우트 정의 (TanStack Router 파일 라우트). _app.tsx 아래가 공통 레이아웃을 쓰는 화면
         features/       화면별 도메인 폴더
           layout/       상단 바·하단 메뉴(도크) 등 공통 레이아웃
+          monitor/      실시간 관제 화면 (3D 장면 위에 경보 배너·이벤트 패널)
+          events/       위험 이벤트 목록·상세·ACK·경보 배너·경보음
           viewer3d/     3D 관제 뷰어 (3D 담당 영역)
-        lib/            http, api, queryClient, stomp, realtime, bindSession, env 등 두 도메인 이상이 쓰는 것
+        hooks/          두 도메인 이상이 쓰는 훅 (useLinkAlive 등)
+        lib/            http, api, queryClient, stomp, realtime, bindSession, env, alarmSound 등 두 도메인 이상이 쓰는 것
         store/          두 도메인 이상이 쓰는 스토어 (세션, 실시간 연결 상태)
         mocks/          개발 서버·테스트용 REST·STOMP mock (msw 핸들러, STOMP 브로커, mock 계정·실시간 시나리오)
         __tests__/      src 구조를 따름
@@ -40,7 +43,7 @@ front/
 - pnpm 11.24.0 (`package.json`의 `packageManager`). 작업 명령은 turbo로 각 패키지에 나눠 실행한다.
 - 포맷은 Prettier(`@simai/eslint-config/prettier-base`), 린트는 ESLint flat config. 앱은 각자 `eslint.config.js`를 두고, `front/eslint.config.js`는 루트 수준 설정 파일만 검사한다.
 - 환경변수는 앱 폴더의 `.env.example`을 `.env.local`로 복사해 채운다(`.env.local`은 커밋하지 않음). 앱은 시작할 때 `src/lib/env.ts`로 검사하고, 비었거나 형식이 틀리면 화면을 그리기 전에 멈춘다. 빌드(`vite build`)도 `vite.config.ts`에서 같은 검사(`parseEnv`)로 멈춘다.
-- `VITE_API_MOCK=true`면 개발 서버가 `src/mocks/handlers.ts`로 REST를, `src/mocks/stompBroker.ts`·`src/mocks/realtime.ts`로 STOMP를 흉내 낸다(msw, world 10Hz·health 1Hz·위험 이벤트 40초 주기, 메시지는 `src/mocks/realtimeScenario.ts`). `main.tsx`가 DEV에서만 켜서 빌드에는 들어가지 않는다. 프레임이 많아 msw 콘솔 기록은 끈다. 개발 도구 콘솔에서 `simaiMock.pauseHealth(5000)`(health 끊김), `simaiMock.drop()`(연결 끊김)으로 끊김을 흉내 낸다. mock 계정은 `src/mocks/accounts.ts`에 있고, 테스트도 같은 핸들러·브로커를 `msw/node`로 쓴다.
+- `VITE_API_MOCK=true`면 개발 서버가 `src/mocks/handlers.ts`로 REST를, `src/mocks/stompBroker.ts`·`src/mocks/realtime.ts`로 STOMP를 흉내 낸다(msw, world 10Hz·health 1Hz·위험 이벤트 40초 주기, 메시지는 `src/mocks/realtimeScenario.ts`). 이벤트 상태(`event_sequence`·`acks`)는 `src/mocks/events.ts`가 들고 이벤트 목록·ACK REST 에 답하며, ACK 를 받으면 갱신 이벤트를 `/topic/events`로 다시 보낸다. `main.tsx`가 DEV에서만 켜서 빌드에는 들어가지 않는다. 프레임이 많아 msw 콘솔 기록은 끈다. 개발 도구 콘솔에서 `simaiMock.pauseHealth(5000)`(health 끊김), `simaiMock.drop()`(연결 끊김)으로 끊김을 흉내 낸다. mock 계정은 `src/mocks/accounts.ts`에 있고, 테스트도 같은 핸들러·브로커를 `msw/node`로 쓴다.
 - 계약 타입·검증기는 `packages/contracts`가 저장소 루트 `contracts/`에서 만든다(`pnpm --filter @simai/contracts generate`, 결과는 `src/generated`). 지금은 관제 앱이 STOMP로 받는 I2 메시지 4종(`world_state`, `risk_event`, `viewer_health`, `action_mismatch`)만 만든다. 늘리려면 `scripts/generate.mjs`의 `MESSAGES`에만 더한다(목록 `MESSAGE_TYPES`·`MessageByType`·검증기를 함께 만든다). 계약이 바뀌면 다시 만들어 커밋하고, `pnpm lint`는 생성물이 계약과 다르면 실패한다(`check:generated`, 줄바꿈 차이는 보지 않는다). 생성물은 `packages/contracts/.gitattributes`로 LF 로 체크아웃한다. 검증기는 미리 만든 코드라 브라우저에서 스키마를 컴파일하지 않는다(CSP `unsafe-eval` 불필요). 계약 예제가 바뀌어도 잡도록 contracts 테스트는 turbo 캐시를 쓰지 않는다.
 - 받은 메시지는 `isMessageType(msg_type)`으로 아는 종류인지 먼저 보고 `validateMessage(msg_type, data)`로 검사한다. 생성 타입은 오타가 걸리도록 닫혀 있지만(모르는 필드 없음), 실행 중 검증은 계약대로 모르는 필드를 받는다.
 
@@ -75,6 +78,7 @@ git 훅 (`front/.husky/`):
 - Query 기본값(`src/lib/queryClient.ts`): 4xx·`INVALID_RESPONSE`는 다시 보내지 않고 연결 실패·시간 초과·5xx만 두 번까지 다시 보낸다. 창 포커스 때 다시 받지 않는다. mutation 은 다시 보내지 않는다.
 - STOMP 연결은 앱에 하나다(`src/lib/stomp.ts`의 `createRealtime`, 인스턴스는 `src/lib/realtime.ts`). 로그인·로그아웃에 맞춰 `src/lib/bindSession.ts`가 열고 닫으며, 화면은 연결을 다루지 않는다. 구독 토픽은 `/topic/world`·`/topic/health`·`/topic/events`다.
 - 받은 본문은 세션마다 만든 3D 뷰어 Source(`createExternalSource`)로 그대로 넘긴다. 뷰어가 계약 검사와 순서 정리를 하므로 앱은 world 를 따로 저장하지 않는다. `viewer_health`는 앱도 검사해 `src/store/realtime.store.ts`에 두고(상단 바), health 가 3초 넘게 없으면 연결 끊김으로 본다(`isLinkAlive`). 이벤트 목록처럼 화면이 따로 쓰는 메시지는 해당 Query 캐시를 갱신한다.
+- 실시간 위험 이벤트는 Query 키 `['events', 'live']` 하나에 모은다(`features/events/eventsCache.ts`). 첫 목록은 REST 로 받고, `/topic/events`는 `bindEventsCache`가 같은 캐시에 합친다(`mergeEvent`: `event_sequence`가 같거나 작으면 버리고, 확인 기록 `acks`만 합친다). STOMP 로 먼저 받은 것만 있으면 목록을 받은 것이 아니므로 `loaded`로 따로 표시하고, 목록을 받을 때까지(STOMP 재연결 뒤 포함) 다시 시도한다. ACK 는 응답이나 서버가 보낸 갱신 이벤트로 그린다.
 - 구간 메시지는 `packages/contracts` 검증기를 통과한 것만 쓴다(`validateMessage(msg_type, data)`).
 - 낙관적 갱신을 하지 않는다. 서버가 가진 상태(ACK, 이벤트 상태 등)는 서버 응답이나 메시지가 온 뒤에 그린다.
 - 렌더링 중에 부작용(외부 변수·DOM 변경, 네트워크 요청, 타이머 등록, 다른 컴포넌트 상태 변경)을 두지 않는다. Effect나 이벤트 핸들러에서 한다.
@@ -110,12 +114,13 @@ git 훅 (`front/.husky/`):
 - `src/__tests__/`에 소스 구조를 그대로 따라 둔다(예: `src/__tests__/features/<도메인>/<domain>.store.test.ts`). 테스트 코드는 이 폴더 밖에 두지 않는다.
 - 대상은 순수 로직(데이터 연령 계산, 메시지 처리 등)과 훅, 스토어다. 렌더 스냅샷 테스트는 두지 않는다.
 - 테스트는 서로 의존하지 않고, 어느 환경에서나 같은 결과를 낸다.
-- `import.meta.env`를 읽는 모듈은 테스트에서 import하지 않는다. Vite가 테스트에도 `.env.local`을 읽어서, 그 파일이 없는 PC·CI에서만 실패한다. 검사·계산은 값을 인자로 받는 함수로 떼어 그 함수를 시험한다(`parseEnv`).
+- `import.meta.env`를 읽는 모듈은 테스트에서 import하지 않는다. Vite가 테스트에도 `.env.local`을 읽어서, 그 파일이 없는 PC·CI에서만 실패한다. 검사·계산은 값을 인자로 받는 함수로 떼어 그 함수를 시험한다(`parseEnv`). 앱 REST 인스턴스(`@/lib/api`)를 쓰는 훅은 `vi.mock('@/lib/api')`로 `createHttp` 인스턴스를 시험 주소에 만들어 바꿔 끼운다(`__tests__/features/events/useLiveEvents.test.tsx`).
 
 ## 화면
 
 - 설명용 작은 글씨(힌트, 명세 번호, "데모" 표시 등)를 화면에 넣지 않는다.
 - 빨강·노랑은 위험 등급에만, 주황은 지연 표시에만 쓴다.
+- 확인 대기 경보(`features/events/events.ts`의 `isAlarming`: LIVE·CRITICAL/HIGH·RAISED/UPDATED 이고 지금 경보 단계 뒤 ACK 가 없음)는 경보 배너·소리·점멸로 알린다. 배너와 소리는 관제 앱 어느 화면에서나 나오고(`AppLayout`의 `AlarmBanner`·`AlarmSoundLoop`), 소리는 EC2 연결이 끊기면 멈춘다. 열람 계정은 확인 권한이 없어 끌 수 없으므로 소리 없이 배너만 본다. 브라우저 자동 재생 제한 때문에 클릭·키 입력에서 소리를 깨우고, 나중에 멈춰도 다음 입력에서 다시 깨운다(`lib/alarmSound.ts`의 `installAudioUnlock`). 점멸은 `motion-safe:animate-alarm-blink`로 써서 움직임 줄이기 설정이면 멈춘다.
 - 색·간격 값을 새로 넣기 전에 `packages/ui`의 토큰에 이미 있는지 먼저 확인한다. simAI 토큰은 shadcn 토큰(`background`, `card`, `primary`, `muted-foreground` 등)에 더해 `surface-2`, `surface-3`, `faint`, `point-soft`, `sev-critical`, `sev-caution`, `delay`, `delay-soft`, `ok`, `stripe-a`, `stripe-b`, 로고 `brand-hat`, 떠 있는 패널 그림자 `shadow-float`, 글꼴 `font-mono`가 있다(`packages/ui/src/styles/globals.css`). 컴포넌트에 색 값(`#…`, `rgba(…)`)을 직접 쓰지 않는다.
 - 다크(기본)·화이트 모드는 `<html class="dark">`로 가르고, 상단 바 관리자 메뉴에서 바꾼다(`features/layout/theme.store.ts`, 브라우저에 저장). 토큰은 두 모드 값을 모두 둔다.
 - 화면 부품은 shadcn 컴포넌트로 만든다. 필요한 컴포넌트가 없으면 `packages/ui`에서 `pnpm exec shadcn add <이름>`으로 추가하고, 모양은 쓰는 쪽의 `className`과 토큰으로 맞춘다.

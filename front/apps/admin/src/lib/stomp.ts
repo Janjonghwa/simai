@@ -5,12 +5,21 @@ import {
   type RealtimeState,
   type RealtimeStore,
 } from '@/store/realtime.store';
-import { validateMessage } from '@simai/contracts';
+import { validateMessage, type RiskEventPayload } from '@simai/contracts';
 import { Client, ReconnectionTimeMode, type IMessage } from '@stomp/stompjs';
 
 /** 관제 앱이 구독하는 토픽(명세 12.4). 조치 불일치(/topic/admin/events)는 그 화면을 만들 때 더한다. */
 export const TOPICS = ['/topic/world', '/topic/health', '/topic/events'] as const;
 const HEALTH_TOPIC = '/topic/health';
+const EVENTS_TOPIC = '/topic/events';
+
+/** 연결에서 화면 쪽으로 알리는 일. 화면 데이터(Query 캐시 등)는 받는 쪽이 정한다. */
+export interface RealtimeListeners {
+  /** /topic/events 로 받아 계약 검사를 통과한 risk_event. */
+  riskEvent: (event: RiskEventPayload, receivedAt: number) => void;
+  /** 연결이 열릴 때마다(처음·재연결). 끊긴 사이 놓친 상태를 다시 받는 데 쓴다. */
+  open: () => void;
+}
 
 const HEARTBEAT_MS = 10_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
@@ -25,6 +34,8 @@ export interface Realtime {
   start(session: RealtimeSession): void;
   /** 연결을 끊고 받은 데이터를 비운다. 끊김이 끝나면 풀린다. */
   stop(): Promise<void>;
+  /** 알림을 받는다. 해제 함수를 돌려준다. */
+  on<K extends keyof RealtimeListeners>(type: K, listener: RealtimeListeners[K]): () => void;
 }
 
 export type SourceFactory = (id: string, now: () => number) => ExternalSpatialSource;
@@ -76,6 +87,33 @@ export function createRealtime({
   let current: { client: Client; source: ExternalSpatialSource; dispose: () => void } | null = null;
   // start·stop 마다 올린다. Source 를 불러오는 사이 stop·다른 start 가 오면 그 연결은 열지 않는다.
   let generation = 0;
+  const listeners: { [K in keyof RealtimeListeners]: Set<RealtimeListeners[K]> } = {
+    riskEvent: new Set(),
+    open: new Set(),
+  };
+
+  function on<K extends keyof RealtimeListeners>(type: K, listener: RealtimeListeners[K]) {
+    listeners[type].add(listener);
+    return () => {
+      listeners[type].delete(listener);
+    };
+  }
+
+  // 받는 쪽 하나가 실패해도 나머지는 받고 연결 처리도 이어 간다. 오류는 따로 던져 콘솔에 남긴다.
+  function emit<K extends keyof RealtimeListeners>(
+    type: K,
+    ...args: Parameters<RealtimeListeners[K]>
+  ) {
+    for (const listener of listeners[type]) {
+      try {
+        (listener as (...a: Parameters<RealtimeListeners[K]>) => void)(...args);
+      } catch (error) {
+        queueMicrotask(() => {
+          throw error;
+        });
+      }
+    }
+  }
 
   function stop() {
     generation += 1;
@@ -133,6 +171,16 @@ export function createRealtime({
       }
       // 3D 뷰어는 받은 본문을 직접 계약으로 검사하고 순서를 정리한다(viewer3d 의 Source 입력).
       source.push(raw, receivedAt);
+      if (topic === EVENTS_TOPIC) {
+        // 이벤트 목록·경보는 앱 화면이 따로 쓰므로 앱도 검사한다.
+        const event = validateMessage('risk_event', raw);
+        if (!event.ok) {
+          store.getState().reject();
+          return;
+        }
+        emit('riskEvent', event.message.payload, receivedAt);
+        return;
+      }
       if (topic !== HEALTH_TOPIC) return;
       const checked = validateMessage('viewer_health', raw);
       if (!checked.ok) {
@@ -161,6 +209,7 @@ export function createRealtime({
         if (!isCurrent()) return;
         store.getState().opened(now());
         for (const topic of TOPICS) client.subscribe(topic, receive(topic));
+        emit('open');
       },
       onWebSocketClose: () => {
         if (isCurrent()) store.getState().setPhase('CLOSED');
@@ -189,5 +238,5 @@ export function createRealtime({
     client.activate();
   }
 
-  return { start, stop };
+  return { start, stop, on };
 }

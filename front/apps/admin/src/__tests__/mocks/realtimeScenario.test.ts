@@ -32,23 +32,47 @@ describe('실시간 mock 시나리오', () => {
     }
   });
 
-  it('위험 이벤트는 한 바퀴에 발생→갱신→해소를 한 번씩 보내고, 모두 계약을 통과한다', () => {
+  it('위험 이벤트는 한 바퀴에 정해진 전이를 한 번씩 순서대로 보내고, 모두 계약을 통과한다', () => {
     const start = Math.floor(T0 / EVENT_CYCLE_MS) * EVENT_CYCLE_MS;
     const events = [];
     // 1초 간격으로 겹치지 않게 훑는다(mock 송출과 같은 방식).
     for (let t = start; t < start + EVENT_CYCLE_MS; t += 1000) {
       events.push(...riskEventsBetween(t, t + 1000));
     }
-    expect(events.map((e) => [e.payload.lifecycle, e.payload.event_sequence])).toEqual([
-      ['RAISED', 1],
-      ['UPDATED', 2],
-      ['RESOLVED', 3],
+    const byEvent = new Map<string, { rule: string; steps: string[]; sequences: number[] }>();
+    for (const { payload } of events) {
+      const seen = byEvent.get(payload.event_id) ?? {
+        rule: `${payload.rule_id} ${payload.severity}`,
+        steps: [],
+        sequences: [],
+      };
+      seen.steps.push(payload.lifecycle);
+      seen.sequences.push(payload.event_sequence ?? 0);
+      byEvent.set(payload.event_id, seen);
+    }
+    expect([...byEvent.values()].map(({ rule, steps }) => [rule, steps])).toEqual([
+      ['R5 CAUTION', ['RAISED', 'RESOLVED']],
+      ['R2 CRITICAL', ['RAISED', 'UPDATED', 'RESOLVED']],
+      ['R1 HIGH', ['RAISED', 'RESOLVED']],
+      ['R1 HIGH', ['RAISED', 'RESOLVED', 'UPDATED', 'RESOLVED']],
     ]);
-    expect(new Set(events.map((e) => e.payload.event_id)).size).toBe(1);
+    for (const { sequences } of byEvent.values()) {
+      expect(sequences).toEqual(sequences.map((_, i) => i + 1));
+    }
     for (const event of events) {
       const checked = validateMessage('risk_event', event);
       expect(checked.ok ? [] : checked.errors).toEqual([]);
     }
+  });
+
+  it('재개된 이벤트는 resume_count 와 확인 필요 이유를 싣는다', () => {
+    const resumed = riskEventsBetween(0, EVENT_CYCLE_MS).find((e) => e.payload.resume_count === 1);
+    expect(resumed?.payload).toMatchObject({
+      lifecycle: 'UPDATED',
+      needs_check: true,
+      resolved_at: null,
+      world_ids: ['w-0021'],
+    });
   });
 
   it('바퀴마다 다른 이벤트 id 를 쓴다', () => {
