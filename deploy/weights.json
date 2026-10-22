@@ -1,5 +1,5 @@
 {
-  "_doc": "가중치 목록 (S15P31A101-205). simai-bootstrap 이 sets 가 맞는 항목(묶음: tier0, exp02 = HMR 이미지, static = MapAnything 이미지)을 $SIMAI_ROOT/<path> 에 받고 sha256 을 확인한다. 다르면 시작하지 않는다(종료 코드 2). 가중치 파일은 커밋하지 않는다(AGENTS.md). 덮어쓰지 않고 새 이름으로 더한다. source 는 url 또는 hf {repo, file, revision}(HF 토큰은 환경 변수 HF_TOKEN 만). env 를 주면 그 환경 변수(경로)와 <env>_SHA256 을 비어 있을 때 채운다. sha256 이 빈 항목은 받지 않고 시작하지 않는다(값을 모르면 비운다, S15P31A101-207).",
+  "_doc": "가중치 목록 (S15P31A101-205). simai-bootstrap 이 sets 가 맞는 항목(묶음: tier0, exp02 = HMR 이미지, static = MapAnything 이미지, vlm = 분석 워커 VLM Cosmos3-Nano(통합 이미지 2단계에서 쓴다, S15P31A101-235))을 $SIMAI_ROOT/<path> 에 받고 sha256 을 확인한다. 다르면 시작하지 않는다(종료 코드 2). 가중치 파일은 커밋하지 않는다(AGENTS.md). 덮어쓰지 않고 새 이름으로 더한다. source 는 url 또는 hf {repo, file, revision}(HF 토큰은 환경 변수 HF_TOKEN 만). env 를 주면 그 환경 변수(경로)와 <env>_SHA256 을 비어 있을 때 채운다. sha256 이 빈 항목은 받지 않고 시작하지 않는다(값을 모르면 비운다, S15P31A101-207).",
   "manifest_version": 1,
   "weights": [
     {
@@ -83,6 +83,168 @@
       "sha256": "65701d09d99ed37a21d295f0d138978b3d584ab3bccdbcb4a2853da212b676c5",
       "license": "CC-BY-NC-4.0 (비상업: 연구 비교용, 제품 기본값은 apache)",
       "hash_from": "고정 revision 에서 받아 sha256 (docs/data/weights.md)"
+    },
+    {
+      "name": "cosmos3-nano-config",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/config.json",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "config.json", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "c32f2468a54542c21946bc8eab6172b911dcec9a7193a94c023ea2d4073bcda6",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "고정 revision 에서 받아 sha256 (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-safetensors-index",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/model.safetensors.index.json",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "model.safetensors.index.json", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "43bdea0b60472d7b4f74f280d5eb508ec5e895f24287af8d2ecf2d0e2738708f",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "고정 revision 에서 받아 sha256 (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-generation-config",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/generation_config.json",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "generation_config.json", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "8469742d1fce0de951c8909b26a2c0c0d8490837ce476efb114da9e0cefc4d44",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "고정 revision 에서 받아 sha256 (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-preprocessor-config",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/preprocessor_config.json",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "preprocessor_config.json", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "고정 revision 에서 받아 sha256 (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-video-preprocessor-config",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/video_preprocessor_config.json",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "video_preprocessor_config.json", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "고정 revision 에서 받아 sha256 (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-chat-template",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/chat_template.json",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "chat_template.json", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "5c72a170d2a4a1a3bc5adad2e689ae28138a9700e5b8c96c0266331e86c0acce",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "고정 revision 에서 받아 sha256 (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-tokenizer",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/tokenizer.json",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "tokenizer.json", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "a5d85b6dcc535e6b93115a9ef287e6132fdbf30270da6218194ba742261173c7",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "고정 revision 에서 받아 sha256 (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-tokenizer-config",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/tokenizer_config.json",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "tokenizer_config.json", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "c2da771801886ad9ae98181793ffd3dfb7f1af30f6f7c6a4e15d7dbba52e2399",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "고정 revision 에서 받아 sha256 (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-vocab",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/vocab.json",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "vocab.json", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "고정 revision 에서 받아 sha256 (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-merges",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/merges.txt",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "merges.txt", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "고정 revision 에서 받아 sha256 (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-transformer-00001-of-00007",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/transformer/diffusion_pytorch_model-00001-of-00007.safetensors",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "transformer/diffusion_pytorch_model-00001-of-00007.safetensors", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "7d0f718198cac14cf323d58568c78aa1290b4bd1dcced6481624b5b9c6d70dc2",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "HF API LFS oid (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-transformer-00002-of-00007",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/transformer/diffusion_pytorch_model-00002-of-00007.safetensors",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "transformer/diffusion_pytorch_model-00002-of-00007.safetensors", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "7e6e7d270c193a58a1aec0cbc89f6f5afcaef6e3b951d86b0a432244c449e34e",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "HF API LFS oid (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-transformer-00003-of-00007",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/transformer/diffusion_pytorch_model-00003-of-00007.safetensors",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "transformer/diffusion_pytorch_model-00003-of-00007.safetensors", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "15d08936149a7e77c6668e5b1cd47dc92a35e33741f0090d619045b66da9ff8d",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "HF API LFS oid (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-transformer-00004-of-00007",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/transformer/diffusion_pytorch_model-00004-of-00007.safetensors",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "transformer/diffusion_pytorch_model-00004-of-00007.safetensors", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "02cebbb557bced701eb825901e1de5f86d2e1feb49cb9a8d1fb7d1b878fdb31b",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "HF API LFS oid (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-transformer-00005-of-00007",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/transformer/diffusion_pytorch_model-00005-of-00007.safetensors",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "transformer/diffusion_pytorch_model-00005-of-00007.safetensors", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "a5e3edd742b8f1fcf27a3eb3878c67dfcb0e6881588fa35deef503d640ea69d1",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "HF API LFS oid (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-transformer-00006-of-00007",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/transformer/diffusion_pytorch_model-00006-of-00007.safetensors",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "transformer/diffusion_pytorch_model-00006-of-00007.safetensors", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "1bb99750f7ab4a47f8b0403a87aa43fefc9648660609ab2ace4cab361b957cd0",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "HF API LFS oid (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-transformer-00007-of-00007",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/transformer/diffusion_pytorch_model-00007-of-00007.safetensors",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "transformer/diffusion_pytorch_model-00007-of-00007.safetensors", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "3f159bc8b82477adde771ae9e4f54f76564e02844a2fc6267903bd745111d7f6",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "HF API LFS oid (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "cosmos3-nano-vision-encoder-model",
+      "sets": ["vlm"],
+      "path": "weights/cosmos3-nano/vision_encoder/model.safetensors",
+      "source": {"hf": {"repo": "nvidia/Cosmos3-Nano", "file": "vision_encoder/model.safetensors", "revision": "e59a53c25979a090fa8706c9acc0c254a6e89b92"}},
+      "sha256": "b0c0f719fcf5f2cdadb676701477c236020713657976592ad046583707a6a95a",
+      "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
+      "hash_from": "HF API LFS oid (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
     }
   ]
 }

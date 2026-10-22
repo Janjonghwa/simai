@@ -86,3 +86,21 @@ MapAnything 보정 입력(`simai_ai.calibration.world_frame.cli prepare`)에서 
 | 쓰는 곳 | `world_frame.prepare.UltralyticsPersonSegmenter`(person 클래스만, 가중치 해시 확인 뒤 사용, 코드가 내려받지 않음) |
 
 획득 기록: 2026-10-22 노트북에서 위 URL 을 `curl -L` 로 받아 `sha256sum` 으로 쟀다(ultralytics 8.4.178 이 받는 릴리스와 같은 `v8.4.0`).
+
+## Cosmos3-Nano (분석 워커 VLM Reasoner, 묶음 `vlm`, S15P31A101-235)
+
+| 항목 | 값 |
+|---|---|
+| 저장 경로 | `$SIMAI_ROOT/weights/cosmos3-nano/<HF 저장소 안 경로>` (18개) |
+| 원본 | HF `nvidia/Cosmos3-Nano`, revision `e59a53c25979a090fa8706c9acc0c254a6e89b92`(HF API 마지막 수정 2026-09-16) |
+| 크기 | 받는 18개 약 31.5GB(저장소 전체 34.99GB 중 `vae/` 1.41GB·`sound_tokenizer/` 1.99GB·예시 영상 등은 받지 않음) |
+| 라이선스 | OpenMDW-1.1 (NVIDIA). HF API `gated=false`(2026-10-22, NVIDIA 빠른 시작 문서는 승인제라고 적어 서로 다름. 받기가 401 이면 승인 계정 `HF_TOKEN`) |
+| 쓰는 곳 | vLLM 0.21.0 + `vllm-cosmos3` Reasoner 서빙(`--hf-overrides '{"architectures":["Cosmos3ReasonerForConditionalGeneration"]}'`). 지금 이 묶음을 쓰는 이미지는 없다(2단계 통합 이미지) |
+
+획득 기록(2026-10-22, 노트북):
+
+- `https://huggingface.co/api/models/nvidia/Cosmos3-Nano`(sha·gated)와 `/tree/main?recursive=true`(파일 크기·LFS oid)를 받았다. 큰 파일 8개(`transformer/diffusion_pytorch_model-0000{1..7}-of-00007.safetensors`,
+  `vision_encoder/model.safetensors`)의 sha256 은 LFS oid 다(받지 않음).
+- 작은 파일 10개(`config.json`, `model.safetensors.index.json`, `generation_config.json`, `preprocessor_config.json`, `video_preprocessor_config.json`, `chat_template.json`, `tokenizer.json`,
+  `tokenizer_config.json`, `vocab.json`, `merges.txt`)는 위 revision 의 `resolve/` 로 받아 `sha256sum` 으로 쟀다.
+- 고른 근거(루트 index 가 vae·sound_tokenizer 를 가리키지 않음)와 확인 항목은 `docs/design/unified-env.md` "Cosmos3-Nano 가중치". 첫 GPU 세션에서 `simai-bootstrap` 이 받아 대조한다. 다르면 시작하지 않는다(종료 코드 2).
