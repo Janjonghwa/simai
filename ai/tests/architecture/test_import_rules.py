@@ -5,6 +5,7 @@ tmp_path 에 실제 패키지 구조를 본뜬 가짜 트리를 만들고, 위�
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -109,6 +110,62 @@ def test_simai_ai_has_only_subpackages():
         if p.name not in {"__init__.py", "__pycache__"} and not (p.is_dir() and (p / "__init__.py").is_file())
     ]
     assert strays == []
+
+
+@pytest.mark.parametrize(
+    ("files"),
+    [
+        pytest.param({"services/tier0/app.py": "import vllm\n"}, id="tier0-imports-vllm"),
+        pytest.param({"src/simai_ai/detection/x.py": "from transformers import AutoModel\n"}, id="detection-imports-transformers"),
+        pytest.param({"src/simai_ai/tracking/x.py": "import detectron2.config\n"}, id="tracking-imports-detectron2"),
+        pytest.param({"src/simai_ai/calibration/x.py": "from moge.model.v2 import MoGeModel\n"}, id="calibration-imports-moge"),
+        pytest.param({"src/simai_ai/risk/x.py": "import pyrender\n"}, id="risk-imports-pyrender"),
+        # 워커 패키지를 거쳐 간접으로 불러와도 막는다(같은 가상환경이라 import 자체는 성공한다)
+        pytest.param(
+            {"src/simai_ai/vlm/server.py": "import vllm_cosmos3\n", "src/simai_ai/io/x.py": "from simai_ai.vlm import server\n"},
+            id="io-reaches-vllm-cosmos3-through-vlm",
+        ),
+        # 우리 워커 패키지 자체도 막는다(지금은 비어 있어도 나중에 vLLM·HMR 을 불러오게 된다)
+        pytest.param({"services/tier0/app.py": "from simai_ai import vlm\n"}, id="tier0-imports-simai-vlm"),
+        pytest.param({"src/simai_ai/tracking/x.py": "import chumpy\n"}, id="tracking-imports-chumpy"),
+    ],
+)
+def test_tier0_cannot_import_worker_stack(tmp_path, files):
+    """Tier 0 경로는 한 가상환경에 같이 깔린 VLM·HMR 스택을 import 하지 못한다(S15P31A101-235)."""
+    result = _fake_tree(tmp_path, files)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "BROKEN" in result.stdout, result.stdout + result.stderr
+
+
+def test_worker_package_may_import_worker_stack(tmp_path):
+    """분석 워커 쪽(simai_ai.vlm·hmr)은 vLLM·HMR 스택을 써도 된다(Tier 0 금지가 워커까지 막지 않는다)."""
+    result = _fake_tree(tmp_path, {"src/simai_ai/vlm/server.py": "import vllm\n", "src/simai_ai/hmr/mesh.py": "import pyrender\n"})
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _simai_subpackages_imported(text: str) -> set[str]:
+    """`import simai_ai.x`·`from simai_ai.x import y`·`from simai_ai import x, y as z`·괄호 여러 줄 형태에서 하위 패키지 이름."""
+    used = {f"simai_ai.{m}" for m in re.findall(r"^\s*(?:from|import)\s+simai_ai\.(\w+)", text, re.M)}
+    for names in re.findall(r"^\s*from\s+simai_ai\s+import\s+(\([^)]*\)|[^\n]+)", text, re.M):
+        used |= {f"simai_ai.{n.split()[0]}" for n in names.strip("()").split(",") if n.strip()}
+    return used
+
+
+def test_simai_import_scan_reads_every_form():
+    text = "import simai_ai.io\nfrom simai_ai.tracking import x\nfrom simai_ai import geometry, contact as c\nfrom simai_ai import (\n    risk,\n    gpu,\n)\n"
+    assert _simai_subpackages_imported(text) == {f"simai_ai.{n}" for n in ("io", "tracking", "geometry", "contact", "risk", "gpu")}
+
+
+def test_tier0_contract_covers_every_package_tier0_imports():
+    """services.tier0 가 import 하는 simai_ai 하위 패키지는 모두 tier0-no-worker-stack 의 source 에 있어야 한다
+    (Tier 0 가 새 패키지를 쓰기 시작했는데 목록에 없으면 그 패키지를 거친 워커 스택 import 를 못 잡는다)."""
+    config = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["tool"]["importlinter"]
+    contract = next(c for c in config["contracts"] if c["id"] == "tier0-no-worker-stack")
+    used = set()
+    for path in (AI_DIR / "services" / "tier0").rglob("*.py"):
+        used |= _simai_subpackages_imported(path.read_text(encoding="utf-8"))
+    assert used, "services/tier0 에서 simai_ai import 를 하나도 찾지 못했다(검사 정규식 확인)"
+    assert used <= set(contract["source_modules"]), sorted(used - set(contract["source_modules"]))
 
 
 @pytest.mark.parametrize(

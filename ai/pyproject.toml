@@ -7,35 +7,109 @@ requires-python = ">=3.11,<3.12"
 dependencies = []
 
 [project.optional-dependencies]
-# 무거운 의존성은 기능별로 나눈다. CUDA·Torch 빌드는 deploy/의 Docker 이미지가 고정한다.
+# 무거운 의존성은 기능별로 나눈다. torch 판은 tier0·hmr 이 vLLM 0.21.0 과 같은 판으로 고정한다(Linux 는 PyPI cu130 휠, S15P31A101-235).
 # pyarrow: 2D 관측(observation_2d) Parquet 보관 (simai_ai.io.obs2d_parquet, 명세 11.2)
 # av(PyAV): Tier 0 I0 압축 프레임 디코딩 (simai_ai.io.pyav_decoder: CPU, Pod 는 hwaccel cuda = NVDEC, 명세 5.1)
 io = ["opencv-python-headless>=4.9", "pyarrow>=17", "av>=14"]
 # lap: ultralytics.trackers 가 import 시점에 요구한다(없으면 런타임에 pip 자동 설치를 시도한다)
 # ultralytics 8.4.178 이상: TrackTrack 추적기와 추적기 인스턴스별 ID 카운터에 기댄다
-detection = ["ultralytics>=8.4.178", "lap>=0.5.12"]
+# OpenCV 는 headless 하나만 쓴다(ultralytics 가 선언한 opencv-python 은 [tool.uv] override 로 뺀다. 같은 cv2 폴더를 덮어쓰는 두 휠을 막는다, S15P31A101-235)
+detection = ["ultralytics>=8.4.178,<8.5", "lap>=0.5.12", "opencv-python-headless>=4.9"]
 geometry = ["numpy>=1.26"]
 # jsonschema: 보정 버전 저장소가 저장 전에 contracts/providers/calibration.schema.json 으로 직접 검증한다
 # scipy: 사람 keypoint 번들 조정(simai_ai.calibration.bundle)의 희소 행렬·연결 성분·회전 계산
 calibration = ["numpy>=1.26", "opencv-python-headless>=4.9", "jsonschema>=4.23", "scipy>=1.11"]
 scene = ["torch>=2.4"]
-hmr = ["torch>=2.4"]
+# HMR(Fast SAM 3D Body @d72aa36) 실행 의존성. deploy/exp02/requirements.in 에서 옮겼다(S15P31A101-235, docs/design/unified-env.md).
+#   torch 는 Tier 0·vLLM 과 같은 판(한 가상환경). Linux GPU 에서만 돌므로 torch 밖은 모두 Linux 전용이다.
+#   추론에 안 쓰는 것은 뺐다: tensorboard·black(Detectron2 의 기록기·설정 저장에서만), pytest, seaborn, hydra-submitit-launcher, pip(chumpy 빌드 단계 전용).
+#   opencv-python 은 headless 로 합쳤고 websockets==14.1 고정은 >=14 로 풀었다.
+#   잠금 밖(uv sync 뒤 --no-deps 휠): chumpy 0.70, detectron2 @a1ce2f9(FORCE_CUDA=0), moge @74fbce0. 순서는 설계 문서 "설치 순서".
+hmr = [
+    "torch==2.11.0",
+    "torchvision==0.26.0",
+    "pytorch-lightning; sys_platform == 'linux'",
+    "pyrender; sys_platform == 'linux'",
+    "opencv-python-headless>=4.9; sys_platform == 'linux'",
+    "yacs; sys_platform == 'linux'",
+    "scikit-image; sys_platform == 'linux'",
+    "einops; sys_platform == 'linux'",
+    "timm; sys_platform == 'linux'",
+    "dill; sys_platform == 'linux'",
+    "pandas; sys_platform == 'linux'",
+    "rich; sys_platform == 'linux'",
+    "hydra-core; sys_platform == 'linux'",
+    "hydra-colorlog; sys_platform == 'linux'",
+    "pyrootutils; sys_platform == 'linux'",
+    "webdataset; sys_platform == 'linux'",
+    "networkx==3.2.1; sys_platform == 'linux'",
+    "roma; sys_platform == 'linux'",
+    "joblib; sys_platform == 'linux'",
+    "appdirs; sys_platform == 'linux'",
+    "ffmpeg; sys_platform == 'linux'",
+    "cython; sys_platform == 'linux'",
+    "jsonlines; sys_platform == 'linux'",
+    "xtcocotools; sys_platform == 'linux'",
+    "loguru; sys_platform == 'linux'",
+    "optree; sys_platform == 'linux'",
+    "fvcore; sys_platform == 'linux'",
+    "pycocotools; sys_platform == 'linux'",
+    "huggingface-hub; sys_platform == 'linux'",
+    "setuptools<81; sys_platform == 'linux'",
+    "smplx; sys_platform == 'linux'",
+    "numpy>=2; sys_platform == 'linux'",
+    "scipy; sys_platform == 'linux'",
+    "tqdm; sys_platform == 'linux'",
+    "pyzmq; sys_platform == 'linux'",
+    "plyfile; sys_platform == 'linux'",
+    "trimesh>=4.11; sys_platform == 'linux'",
+    "websockets>=14; sys_platform == 'linux'",
+    "ultralytics>=8.4.178,<8.5; sys_platform == 'linux'",
+    # MoGe @74fbce0 의 실행 의존성(flex-gemm·gradio 는 뺀다: triton 판 충돌과 데모 앱 전용)
+    "click>=8.3.1; sys_platform == 'linux'",
+    "requests; sys_platform == 'linux'",
+    "utils3d-moge; sys_platform == 'linux'",
+    "pipeline; sys_platform == 'linux'",
+    # detectron2 @a1ce2f9 의 실행 의존성(detectron2 자체는 --no-deps)
+    "pillow>=7.1; sys_platform == 'linux'",
+    "matplotlib; sys_platform == 'linux'",
+    "termcolor>=1.1; sys_platform == 'linux'",
+    "tabulate; sys_platform == 'linux'",
+    "cloudpickle; sys_platform == 'linux'",
+    "iopath>=0.1.7,<0.1.10; sys_platform == 'linux'",
+    "omegaconf>=2.1,<2.4; sys_platform == 'linux'",
+    "packaging; sys_platform == 'linux'",
+    # chumpy 0.70 의 실행 의존성
+    "six; sys_platform == 'linux'",
+]
+# VLM 서빙(vLLM OpenAI 호환 서버 + Cosmos3 플러그인, Cosmos3-Nano Reasoner, 명세 3.2·3.8·5.4). vllm 0.21.0 이 torch==2.11.0·torchvision==0.26.0·flashinfer 0.6.8.post1 을 고정한다.
+#   Linux GPU 전용. vllm-cosmos3·transformers-cosmos3 는 PyPI 에 없어 cosmos-framework 커밋을 고정한다([tool.uv.sources]).
+vlm = [
+    "vllm==0.21.0; sys_platform == 'linux'",
+    "flashinfer-python==0.6.8.post1; sys_platform == 'linux'",
+    "vllm-cosmos3; sys_platform == 'linux'",
+    "transformers-cosmos3; sys_platform == 'linux'",
+]
 # 배포 단위 묶음 (services/)
 # websockets: I1 WebSocket(wss) 클라이언트 (services/tier0/i1_client, 명세 12.2)
+# torch·torchvision: Tier 0·분석 워커·vLLM 이 한 가상환경을 쓰므로 vllm 0.21.0 이 고정한 판으로 묶는다(S15P31A101-235). PyPI 의 Linux 휠이 CUDA 13.0 빌드다.
 # TensorRT·onnx: Tier 0 이미지(Linux GPU)에서 YOLO26x-pose TensorRT FP16 엔진을 Pod 첫 기동 때 만들고 쓴다(명세 3.12, deploy/tier0).
 #   torch 휠이 CUDA 13 이므로 cu13 빌드를 쓴다. libs 휠은 pypi.nvidia.com 에만 있다(PyPI 에는 내려받기용 sdist 만).
 #   Windows 노트북 개발 환경에는 설치하지 않는다(marker).
-# nvidia-modelopt[onnx]: ultralytics 8.4.178 TensorRT 내보내기의 FP16 변환(ModelOpt AutoCast)이 요구한다. 0.47 이 onnx<1.22 를 요구해 잠금의 onnx 가 1.21 로 내려간다
+# nvidia-modelopt[onnx]: ultralytics 8.4.178 TensorRT 내보내기의 FP16 변환(ModelOpt AutoCast)이 요구한다. 0.47 이 onnx<1.22 를 요구한다.
+#   Tier 0 핵심 판은 상·하한을 둬 워커 패키지 변경에 끌려가지 않게 한다(판 고정 표: docs/design/unified-env.md)
 tier0 = [
     "simai-ai[io,detection,geometry,calibration]",
+    "torch==2.11.0",
+    "torchvision==0.26.0",
     "websockets>=14",
     "tensorrt-cu13>=11.4,<12; sys_platform == 'linux'",
     "tensorrt-cu13-libs>=11.4,<12; sys_platform == 'linux'",
     "tensorrt-cu13-bindings>=11.4,<12; sys_platform == 'linux'",
-    "onnx>=1.12,<2; sys_platform == 'linux'",
-    "nvidia-modelopt[onnx]>=0.44; sys_platform == 'linux'",
+    "onnx>=1.21,<1.22; sys_platform == 'linux'",
+    "nvidia-modelopt[onnx]>=0.47,<0.48; sys_platform == 'linux'",
 ]
-worker = ["simai-ai[scene,hmr]"]
+worker = ["simai-ai[scene,hmr,vlm]"]
 # EC2 Risk Engine 컨테이너 내부 API (services/risk_engine, deploy/risk-engine, 명세 3.2·3.8·12.2). 요청·응답은 contracts/ 스키마로
 # jsonschema 검증한다(손으로 쓴 Pydantic 모델 없음, 명세 21.2). 판은 올린 지 2주가 지난 것으로 묶는다(공급망. 올릴 때 MR 에 적는다)
 risk_api = ["fastapi>=0.142.4,<0.143", "starlette>=1.7,<1.8", "uvicorn>=0.54,<0.55", "jsonschema>=4.23"]
@@ -67,8 +141,26 @@ dev = [
     "pydantic>=2.14,<3",
 ]
 
+[tool.uv]
+# ultralytics 가 선언한 opencv-python(GUI 판)을 빼고 headless 하나로 통일한다(두 휠이 같은 cv2 폴더를 덮어쓴다, pyrender EGL 과 Qt/X11 번들 충돌 후보)
+override-dependencies = ["opencv-python; sys_platform == 'never'"]
+# vLLM 0.21.0 은 아래 패키지의 상한을 두지 않는다. 최신 판(openai 3·anthropic 2·mcp 2·transformers 5.20·2026-10-09 triton 포크)은 vLLM 0.21 이 나온 뒤의 판이라
+# vllm-cosmos3 자체 잠금(cosmos-framework packages/vllm-cosmos3/uv.lock)·vLLM 0.21.0 CI 잠금과 같은 메이저·마이너로 묶는다(VLM 쪽만 쓰는 패키지, Linux 전용)
+constraint-dependencies = [
+    "transformers>=5.5.3,<5.10; sys_platform == 'linux'",
+    "openai<3; sys_platform == 'linux'",
+    "anthropic<1; sys_platform == 'linux'",
+    "mcp<2; sys_platform == 'linux'",
+    "tokenspeed-triton==3.7.10.post20260505; sys_platform == 'linux'",
+]
+
 [tool.uv.sources]
 tensorrt-cu13-libs = { index = "nvidia" }
+# cosmos-framework "Release 2026-09-23"(올린 지 2주가 지난 커밋). 두 플러그인 폴더는 2026-06-01·09-17 뒤로 바뀌지 않았다
+vllm-cosmos3 = { git = "https://github.com/NVIDIA/cosmos-framework.git", subdirectory = "packages/vllm-cosmos3", rev = "cf5d68c00d97ccd2480a2320ed652b92dec63102" }
+transformers-cosmos3 = { git = "https://github.com/NVIDIA/cosmos-framework.git", subdirectory = "packages/transformers-cosmos3", rev = "cf5d68c00d97ccd2480a2320ed652b92dec63102" }
+utils3d-moge = { git = "https://github.com/EasternJournalist/utils3d-moge.git", rev = "62f09d58509485564e24d5d9f6aac9ee9ebc0c37" }
+pipeline = { git = "https://github.com/EasternJournalist/pipeline.git", rev = "1c511390d90226c00c101f34b84df26a0f8789b4" }
 
 [[tool.uv.index]]
 name = "nvidia"
@@ -125,6 +217,46 @@ forbidden_modules = [
     "av",
     # contracts 생성 모델(simai_ai.contracts.models)은 pydantic 이 필요해 기본 설치의 risk 가 거쳐서도 불러오지 않는다
     "pydantic",
+]
+
+[[tool.importlinter.contracts]]
+id = "tier0-no-worker-stack"
+name = "Tier 0 경로(services.tier0 와 그 simai_ai 모듈)는 분석 워커·VLM 스택(vLLM·Transformers·Detectron2·MoGe·pyrender 등)을 import 하지 않는다 (한 가상환경이라 설치돼 있어도 막는다, S15P31A101-235, 명세 3.2)"
+type = "forbidden"
+source_modules = [
+    "services.tier0",
+    "simai_ai.io",
+    "simai_ai.detection",
+    "simai_ai.tracking",
+    "simai_ai.geometry",
+    "simai_ai.contact",
+    "simai_ai.calibration",
+    "simai_ai.risk",
+    "simai_ai.config",
+    "simai_ai.eventlog",
+    "simai_ai.recovery",
+    "simai_ai.gpu",
+    "simai_ai.providers",
+]
+forbidden_modules = [
+    "vllm",
+    "vllm_cosmos3",
+    "transformers",
+    "transformers_cosmos3",
+    "flashinfer",
+    "detectron2",
+    "moge",
+    "pyrender",
+    "smplx",
+    "pytorch_lightning",
+    # 잠금 밖 휠(chumpy)과 MoGe 의존성(utils3d-moge 의 모듈 utils3d)
+    "chumpy",
+    "utils3d",
+    # 우리 분석 워커 쪽 패키지(이들을 거치면 워커 스택이 따라온다)
+    "simai_ai.vlm",
+    "simai_ai.hmr",
+    "simai_ai.scene",
+    "services.worker",
 ]
 
 [[tool.importlinter.contracts]]
