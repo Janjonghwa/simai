@@ -12,8 +12,10 @@ front/
         routes/         라우트 정의 (TanStack Router 파일 라우트). _app.tsx 아래가 공통 레이아웃을 쓰는 화면
         features/       화면별 도메인 폴더
           layout/       상단 바·하단 메뉴(도크) 등 공통 레이아웃
-          monitor/      실시간 관제 화면 (3D 장면 위에 경보 배너·이벤트 패널)
+          monitor/      실시간 관제 화면 (3D 장면 또는 2D 평면 위에 이벤트 패널, 3D·2D 전환)
           events/       위험 이벤트 목록·상세·ACK·경보 배너·경보음
+          plan/         2D 평면 (3D 가 멈췄을 때의 비상 화면, BEV 2D 개요). three.js 없이 SVG
+          zones/        구역 조회(직사각형 가정)·구역 편집 화면
           viewer3d/     3D 관제 뷰어 (3D 담당 영역)
         hooks/          두 도메인 이상이 쓰는 훅 (useLinkAlive 등)
         lib/            http, api, queryClient, stomp, realtime, bindSession, env, alarmSound 등 두 도메인 이상이 쓰는 것
@@ -33,7 +35,8 @@ front/
 
 - 앱은 `packages/`만 import한다. `admin`과 `pwa`는 서로 import하지 않는다. 둘이 같이 쓰는 것은 `packages/`로 올린다.
 - `apps/admin/src/features/viewer3d/`는 3D 담당 영역이다. 바깥에서는 입구(`@/features/viewer3d`: `Viewer3D`, `createExternalSource`, 타입)만 import하고 내부 파일을 직접 import하지 않는다. 입구는 three.js 를 끌고 오므로 첫 화면에서 쓰는 모듈(`lib/` 등)은 타입만 정적으로 import하고 값은 동적 import로 부른다(`lib/stomp.ts`).
-- World(미터, 오른손, +Z 상방) → Three.js `(x, z, −y)` 변환은 `viewer3d`의 어댑터 한 곳에서만 한다(`AGENTS.md` 규칙 3).
+- World(미터, 오른손, +Z 상방) → Three.js `(x, z, −y)` 변환은 `viewer3d`의 어댑터 한 곳에서만 한다(`AGENTS.md` 규칙 3). World → 2D 평면(+Y 를 화면 위로 뒤집음) 변환은 `features/plan/plan.ts`의 `toPlan` 한 곳에서만 한다.
+- `features/plan`은 3D 가 멈췄을 때 쓰는 비상 화면이라(명세 13.6) three.js·`@react-three/*`·`@/features/viewer3d`를 import 하지 않는다. `__tests__/features/plan/independence.test.ts`가 소스를 검사한다.
 - 앱끼리 import 금지, viewer3d 입구 규칙, `@/` alias(`../` 금지), `vitest`는 `src/__tests__`에서만 쓰기는 `apps/admin/eslint.config.js`의 `no-restricted-imports`로 막는다. 테스트는 viewer3d 내부도 직접 import할 수 있다.
 - 파트 사이 필드 정의의 정본은 저장소 루트 `contracts/`다. `packages/contracts`의 생성 타입은 손으로 고치지 않고, 필요한 변경은 스키마에 먼저 요청한다(`AGENTS.md` 「계약 우선」).
 
@@ -77,8 +80,9 @@ git 훅 (`front/.husky/`):
 - REST는 `src/lib/api.ts`의 인스턴스(`src/lib/http.ts`의 `createHttp`)를 거친다. 응답은 zod 스키마로 검사한다. 실패는 `ApiError`로 올라온다. `kind`는 `HTTP`(4xx·5xx), `NETWORK`, `TIMEOUT`(기본 10초), `INVALID_RESPONSE`(성공 상태인데 본문이 JSON 이 아니거나 스키마와 다름)이고, 응답을 못 받았으면 `status`는 0이다. 서버 문구(`serverMessage`)는 `message`에 넣지 않고, 보여 줄지는 훅이 정한다(4xx 만). 서버 메시지가 없으면 훅이 든 한국어 기본 문구를 쓴다.
 - Query 기본값(`src/lib/queryClient.ts`): 4xx·`INVALID_RESPONSE`는 다시 보내지 않고 연결 실패·시간 초과·5xx만 두 번까지 다시 보낸다. 창 포커스 때 다시 받지 않는다. mutation 은 다시 보내지 않는다.
 - STOMP 연결은 앱에 하나다(`src/lib/stomp.ts`의 `createRealtime`, 인스턴스는 `src/lib/realtime.ts`). 로그인·로그아웃에 맞춰 `src/lib/bindSession.ts`가 열고 닫으며, 화면은 연결을 다루지 않는다. 구독 토픽은 `/topic/world`·`/topic/health`·`/topic/events`다.
-- 받은 본문은 세션마다 만든 3D 뷰어 Source(`createExternalSource`)로 그대로 넘긴다. 뷰어가 계약 검사와 순서 정리를 하므로 앱은 world 를 따로 저장하지 않는다. `viewer_health`는 앱도 검사해 `src/store/realtime.store.ts`에 두고(상단 바), health 가 3초 넘게 없으면 연결 끊김으로 본다(`isLinkAlive`). 이벤트 목록처럼 화면이 따로 쓰는 메시지는 해당 Query 캐시를 갱신한다.
+- 받은 본문은 세션마다 만든 3D 뷰어 Source(`createExternalSource`)로 그대로 넘긴다. STOMP 는 3D 뷰어 코드(three.js 묶음)를 기다리지 않고 연결하고, Source 는 뷰어 코드를 받는 대로 붙인다. Source 는 구독 전 메시지를 남기지 않으므로, 연결은 계약을 통과한 가장 새 world·health 와 이벤트별 가장 새 risk_event(넘치면 해소된 것부터 뺌)를 두었다가, 화면에 준 Source 를 3D 뷰어가 구독하는 순간(늦게 붙거나 다시 띄움) 그 뷰어에 넘긴다(`withReplay`). 3D 뷰어에는 앱 처리 뒤에 넘기고 실패를 가둔다(3D 가 고장 나도 2D·경보는 계속 받는다). `world_state`는 앱도 검사해 최신 프레임 하나를 `realtime.store`의 `world`에 둔다(2D 평면용, `t_latest_global`이 더 새 것만, 재연결 뒤 첫 프레임이나 1.5초 넘게 못 받은 뒤의 프레임은 순서와 상관없이 받음). `viewer_health`는 앱도 검사해 `src/store/realtime.store.ts`에 두고(상단 바), health 가 3초 넘게 없으면 연결 끊김으로 본다(`isLinkAlive`). 이벤트 목록처럼 화면이 따로 쓰는 메시지는 해당 Query 캐시를 갱신한다.
 - 실시간 위험 이벤트는 Query 키 `['events', 'live']` 하나에 모은다(`features/events/eventsCache.ts`). 첫 목록은 REST 로 받고, `/topic/events`는 `bindEventsCache`가 같은 캐시에 합친다(`mergeEvent`: `event_sequence`가 같거나 작으면 버리고, 확인 기록 `acks`만 합친다). STOMP 로 먼저 받은 것만 있으면 목록을 받은 것이 아니므로 `loaded`로 따로 표시하고, 목록을 받을 때까지(STOMP 재연결 뒤 포함) 다시 시도한다. ACK 는 응답이나 서버가 보낸 갱신 이벤트로 그린다.
+- 구역은 `GET /api/zones`를 3D 뷰어 데모와 같은 직사각형 형식(`contract: 'DEMO_UNCONFIRMED'`, `aabb`)으로 가정한다(`features/zones`, 응답 계약은 BE -120·FE -189). 관제 화면은 같은 응답을 3D 뷰어 Source 에도 넘긴다(`pushZones`, 뷰어가 준비됐을 때도 다시 넘김).
 - 구간 메시지는 `packages/contracts` 검증기를 통과한 것만 쓴다(`validateMessage(msg_type, data)`).
 - 낙관적 갱신을 하지 않는다. 서버가 가진 상태(ACK, 이벤트 상태 등)는 서버 응답이나 메시지가 온 뒤에 그린다.
 - 렌더링 중에 부작용(외부 변수·DOM 변경, 네트워크 요청, 타이머 등록, 다른 컴포넌트 상태 변경)을 두지 않는다. Effect나 이벤트 핸들러에서 한다.
@@ -95,7 +99,7 @@ git 훅 (`front/.husky/`):
 - 화면 상태는 zustand로 관리한다. 값을 쓰지 않는 컴포넌트가 2단계 이상 props로 넘기기만 하면 스토어로 옮긴다. 바로 아래 자식에게만 넘기는 값은 props로 충분하다.
 - 스토어 하나는 화면 하나의 관심사 하나만 갖는다. 새 스토어는 `src/features/<도메인>/<domain>.store.ts`에 두고, 두 도메인 이상이 쓸 때만 `src/store/`로 올린다.
 - 렌더링에 쓰는 값은 selector로 구독하고(`useXStore((s) => s.value)`), 렌더 밖 콜백에서는 `useXStore.getState()`로 그 순간 값을 읽는다.
-- 30 FPS로 바뀌는 World 상태는 React 상태로 두지 않는다. 스토어에 두고 3D 렌더 루프가 `getState()`로 직접 읽는다(뷰어의 데이터 저장소).
+- 30 FPS로 바뀌는 World 상태는 React 상태로 두지 않는다. 스토어에 두고 3D 렌더 루프가 `getState()`로 직접 읽는다(뷰어의 데이터 저장소). 2D 평면은 world 를 쓰는 컴포넌트(`LivePlan`)만 구독해 그 층만 다시 그리고, 바탕·구역 층은 `memo`로 바뀔 때만 그린다.
 - 자주 바뀌는 값(health 1Hz, 시계)은 그 값을 보이는 작은 컴포넌트가 직접 구독한다. 위 컴포넌트가 받아서 props 로 내리면 화면 전체가 다시 그려진다(`features/layout/TopBar.tsx`).
 - 스토어는 컴포넌트 없이 액션과 상태 전이를 테스트할 수 있어야 한다.
 
@@ -124,4 +128,6 @@ git 훅 (`front/.husky/`):
 - 색·간격 값을 새로 넣기 전에 `packages/ui`의 토큰에 이미 있는지 먼저 확인한다. simAI 토큰은 shadcn 토큰(`background`, `card`, `primary`, `muted-foreground` 등)에 더해 `surface-2`, `surface-3`, `faint`, `point-soft`, `sev-critical`, `sev-caution`, `delay`, `delay-soft`, `ok`, `stripe-a`, `stripe-b`, 로고 `brand-hat`, 떠 있는 패널 그림자 `shadow-float`, 글꼴 `font-mono`가 있다(`packages/ui/src/styles/globals.css`). 컴포넌트에 색 값(`#…`, `rgba(…)`)을 직접 쓰지 않는다.
 - 다크(기본)·화이트 모드는 `<html class="dark">`로 가르고, 상단 바 관리자 메뉴에서 바꾼다(`features/layout/theme.store.ts`, 브라우저에 저장). 토큰은 두 모드 값을 모두 둔다.
 - 화면 부품은 shadcn 컴포넌트로 만든다. 필요한 컴포넌트가 없으면 `packages/ui`에서 `pnpm exec shadcn add <이름>`으로 추가하고, 모양은 쓰는 쪽의 `className`과 토큰으로 맞춘다.
+- 실시간 관제는 왼쪽 위 「3D · 2D」 토글로 보기를 바꾸고, 3D 가 멈추면(렌더 실패·WebGL 끊김·3D 코드 받기 실패) 2D 평면으로 바꾼다. 3D 가 첫 화면을 그리기 전에도 2D 평면을 보여 빈 화면을 두지 않는다. 2D 일 때는 3D 뷰어를 그리지 않는다. 경보 배너·소리·이벤트 패널은 보기와 상관없이 그대로다.
+- 2D 평면은 연결이 끊겼거나 world 가 1.5초 넘게 없으면(`isWorldFresh`) 흐리게 그린다. 경보 대상은 병합 전 ID(`aliases`)까지 본다. 확인 대기는 점멸에 더해 선을 굵게 해 움직임 줄이기 설정에서도 구분한다.
 - 관제 화면의 상단 바와 하단 메뉴는 `features/layout`에 있다. 실시간 관제처럼 상단 바 아래까지 화면을 채우는 화면은 라우트에 `staticData: { fullBleed: true }`를 준다.

@@ -1,4 +1,5 @@
 import { MOCK_ACCOUNTS } from '@/mocks/accounts';
+import { zonesHandlers } from '@/mocks/zones';
 import { http, HttpResponse } from 'msw/http';
 
 function readCredentials(body: unknown) {
@@ -29,4 +30,5 @@ export const handlers = [
       user: { id: account.id, role: account.role },
     });
   }),
+  ...zonesHandlers,
 ];

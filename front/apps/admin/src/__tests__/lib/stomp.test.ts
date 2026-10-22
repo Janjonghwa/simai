@@ -4,7 +4,7 @@ import { riskEventsBetween, viewerHealthAt, worldStateAt } from '@/mocks/realtim
 import { createStompBroker } from '@/mocks/stompBroker';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { setupServer } from 'msw/node';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const URL = 'ws://stomp.test/ws';
 const broker = createStompBroker({
@@ -72,12 +72,29 @@ describe('createRealtime', () => {
       viewer.messages.some((m) => (m as { msg_type?: string }).msg_type === 'world_state'),
     );
 
-    const { health, rejected } = useRealtimeStore.getState();
+    const { health, world, rejected } = useRealtimeStore.getState();
     expect(health?.payload.system_health).toBe('NOMINAL');
     expect(Math.abs(health?.clockOffsetMs ?? Infinity)).toBeLessThan(1000);
+    expect(world?.payload.tracks.length).toBeGreaterThan(0);
     expect(rejected).toBe(0);
     expect(viewer.links).toContain('OPEN');
     expect(viewer.source.id).toBe('live:u-1:1');
+  });
+
+  it('계약에 맞지 않는 world 는 버리고, 늦게 온 이전 프레임은 지금 프레임을 바꾸지 않는다', async () => {
+    realtime.start({ token: 't-1', userId: 'u-1' });
+    await until(() => useRealtimeStore.getState().phase === 'OPEN');
+    const t = Date.now();
+    await until(() => {
+      broker.publish('/topic/world', worldStateAt(t));
+      return useRealtimeStore.getState().world !== null;
+    });
+    const latest = useRealtimeStore.getState().world;
+
+    broker.publish('/topic/world', worldStateAt(t - 5000));
+    broker.publish('/topic/world', { msg_type: 'world_state', payload: {} });
+    await until(() => useRealtimeStore.getState().rejected === 1);
+    expect(useRealtimeStore.getState().world).toBe(latest);
   });
 
   it('계약을 통과한 risk_event 만 알리고, 연결이 열릴 때마다 open 을 알린다', async () => {
@@ -104,6 +121,117 @@ describe('createRealtime', () => {
     await until(() => opens === 2);
     offEvent();
     offOpen();
+  });
+
+  it('3D 뷰어가 받다가 실패해도 앱은 world·health 를 계속 받는다', async () => {
+    const rethrown: unknown[] = [];
+    const original = globalThis.queueMicrotask;
+    // 뷰어 오류는 따로 던져 콘솔에 남긴다. 시험에서는 그 오류를 모은다.
+    const later = vi.spyOn(globalThis, 'queueMicrotask').mockImplementation((fn) =>
+      original(() => {
+        try {
+          fn();
+        } catch (error) {
+          rethrown.push(error);
+        }
+      }),
+    );
+    try {
+      realtime.start({ token: 't-1', userId: 'u-1' });
+      const { source } = await watchSource();
+      source.subscribe({
+        onMessage: () => {
+          throw new Error('viewer broke');
+        },
+        onConnectionChange: () => undefined,
+      });
+      await until(() => useRealtimeStore.getState().phase === 'OPEN');
+      await untilHealth();
+      broker.publish('/topic/world', worldStateAt(Date.now()));
+      await until(() => useRealtimeStore.getState().world !== null);
+      expect(rethrown.length).toBeGreaterThan(0);
+    } finally {
+      later.mockRestore();
+    }
+  });
+
+  it('3D 뷰어가 새로 구독하면(늦게 붙거나 다시 띄움) 마지막 world·health·이벤트를 다시 받는다', async () => {
+    const events: string[] = [];
+    const off = realtime.on('riskEvent', (event) => events.push(event.event_id));
+    realtime.start({ token: 't-1', userId: 'u-1' });
+    await until(() => useRealtimeStore.getState().phase === 'OPEN');
+    await untilHealth();
+    const [raised] = riskEventsBetween(0, 40_000);
+    await until(() => {
+      broker.publish('/topic/events', raised);
+      broker.publish('/topic/world', worldStateAt(Date.now()));
+      return events.length > 0 && useRealtimeStore.getState().world !== null;
+    });
+    off();
+
+    // 메시지를 더 보내지 않아도 새로 구독한 뷰어가 받는다.
+    const viewer = await watchSource();
+    const types = () => viewer.messages.map((m) => (m as { msg_type?: string }).msg_type);
+    await until(() =>
+      ['world_state', 'viewer_health', 'risk_event'].every((t) => types().includes(t)),
+    );
+  });
+
+  it('한 번에 뷰어가 바뀌어도(구독 해제 뒤 바로 구독) 새 뷰어가 가장 새 이벤트를 곧바로 받는다', async () => {
+    const events: number[] = [];
+    const off = realtime.on('riskEvent', (event) => events.push(event.event_sequence ?? 0));
+    realtime.start({ token: 't-1', userId: 'u-1' });
+    await until(() => useRealtimeStore.getState().source !== null);
+    await until(() => useRealtimeStore.getState().phase === 'OPEN');
+    const [raised, updated] = riskEventsBetween(0, 40_000)
+      .filter((m) => m.payload.rule_id === 'R2')
+      .map((m, i) => ({ ...m, payload: { ...m.payload, event_sequence: i + 1 } }));
+    // 순서가 뒤바뀌어 와도(2 다음 1) 다시 넘길 것은 순번이 큰 쪽이다.
+    await until(() => {
+      broker.publish('/topic/events', updated);
+      return events.includes(2);
+    });
+    broker.publish('/topic/events', raised);
+    await until(() => events.includes(1));
+    off();
+
+    const source = useRealtimeStore.getState().source!;
+    const first = source.subscribe({
+      onMessage: () => undefined,
+      onConnectionChange: () => undefined,
+    });
+    first();
+    const received: unknown[] = [];
+    source.subscribe({
+      onMessage: (raw) => received.push(raw),
+      onConnectionChange: () => undefined,
+    });
+    const replayed = received.filter(
+      (m) => (m as { msg_type?: string }).msg_type === 'risk_event',
+    ) as { payload: { event_sequence: number } }[];
+    expect(replayed.map((m) => m.payload.event_sequence)).toEqual([2]);
+  });
+
+  it('다시 연결되면 시계가 뒤로 간 world 도 받는다(서버 재시작·시계 보정)', async () => {
+    realtime.start({ token: 't-1', userId: 'u-1' });
+    await until(() => useRealtimeStore.getState().phase === 'OPEN');
+    const t = Date.now();
+    await until(() => {
+      broker.publish('/topic/world', worldStateAt(t));
+      return useRealtimeStore.getState().world !== null;
+    });
+
+    broker.dropAll();
+    await until(() => useRealtimeStore.getState().phase !== 'OPEN');
+    await until(() => useRealtimeStore.getState().phase === 'OPEN' && broker.connections === 1);
+    const earlier = worldStateAt(t - 60_000);
+    await until(() => {
+      broker.publish('/topic/world', earlier);
+      return (
+        useRealtimeStore.getState().world?.payload.t_latest_global ===
+        earlier.payload.t_latest_global
+      );
+    });
   });
 
   it('JSON 이 아니거나 계약에 맞지 않는 health 는 버리고 개수만 센다', async () => {
@@ -149,6 +277,7 @@ describe('createRealtime', () => {
     expect(useRealtimeStore.getState()).toMatchObject({
       phase: 'IDLE',
       health: null,
+      world: null,
       source: null,
     });
     expect(viewer.links.at(-1)).toBe('CLOSED:연결 종료');
@@ -169,7 +298,7 @@ describe('createRealtime', () => {
     await until(() => broker.connections === 1);
   });
 
-  it('뷰어 입력을 불러오는 사이 stop 하면 연결을 열지 않는다', async () => {
+  it('뷰어 입력을 불러오는 사이 stop 하면 늦게 온 입력을 붙이지 않는다', async () => {
     let finish: () => void = () => {};
     const delayed = createRealtime({
       url: URL,
@@ -186,11 +315,16 @@ describe('createRealtime', () => {
     finish();
     await new Promise((r) => setTimeout(r, 100));
     expect(useRealtimeStore.getState()).toMatchObject({ phase: 'IDLE', source: null });
-    expect(broker.connections).toBe(0);
+    await until(() => broker.connections === 0);
   });
 
-  it('뷰어 입력을 불러오지 못하면 다시 불러와 연결한다', async () => {
+  it('3D 뷰어 코드를 받지 못해도 연결해 world·health·이벤트를 받고, 다시 불러오면 뷰어 입력을 붙인다', async () => {
     let attempts = 0;
+    let release: () => void = () => {};
+    const retried = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const events: string[] = [];
     const flaky = createRealtime({
       url: URL,
       store: useRealtimeStore,
@@ -198,13 +332,33 @@ describe('createRealtime', () => {
       loadSourceFactory: () =>
         ++attempts === 1
           ? Promise.reject(new Error('chunk load failed'))
-          : Promise.resolve(createExternalSource),
+          : retried.then(() => createExternalSource),
     });
+    const off = flaky.on('riskEvent', (event) => events.push(event.event_id));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       flaky.start({ token: 't-1', userId: 'u-1' });
       await until(() => useRealtimeStore.getState().phase === 'OPEN');
+      await untilHealth();
+      await until(() => {
+        broker.publish('/topic/world', worldStateAt(Date.now()));
+        broker.publish('/topic/events', riskEventsBetween(0, 40_000)[0]);
+        return useRealtimeStore.getState().world !== null && events.length > 0;
+      });
+      expect(useRealtimeStore.getState().source).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      release();
+      const viewer = await watchSource();
       expect(attempts).toBe(2);
+      expect(viewer.links.at(-1)).toBe('OPEN');
+      // 늦게 붙은 뷰어도 진행 중 이벤트를 받는다.
+      expect(
+        viewer.messages.some((m) => (m as { msg_type?: string }).msg_type === 'risk_event'),
+      ).toBe(true);
     } finally {
+      warn.mockRestore();
+      off();
       await flaky.stop();
     }
   });
