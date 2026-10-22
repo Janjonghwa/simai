@@ -287,7 +287,7 @@ class _PersonInput:
 
     def assemble(
         self,
-        first: Mapping[int, tuple[np.ndarray, np.ndarray, float]],
+        first: Mapping[int, tuple[np.ndarray, float, float]],
         rig: CameraRig,
         joint_layout: str,
         config: TriangulationConfig,
@@ -299,8 +299,8 @@ class _PersonInput:
             idx = np.flatnonzero(self.usable[:, j])
             cams = [self.cameras[k] for k in idx]
             if j in first:
-                X_j, errs, angle = first[j]
-                joints.append(_estimate(cams, X_j, errs, angle, (), trusted, config))
+                X_j, reproj, angle = first[j]
+                joints.append(_estimate(cams, X_j, reproj, angle, (), trusted, config))
             else:
                 obs = _Observations(cams, self.normalized[idx, j], self.targets[idx, j], self.confidence[idx, j])
                 joints.append(_triangulate_joint(obs, trusted, config))
@@ -317,49 +317,47 @@ class _PersonInput:
 
 def _first_pass(
     inputs: Sequence[_PersonInput], rig: CameraRig, config: TriangulationConfig
-) -> dict[int, dict[int, tuple[np.ndarray, np.ndarray, float]]]:
+) -> dict[int, dict[int, tuple[np.ndarray, float, float]]]:
     """1차: 유효 관측이 충분한 관절을 사람 전체에 걸쳐 한 번에 푼다(관절마다 쓴 카메라는 마스크).
 
-    이상치·퇴화가 없는 관절만 (사람 → 관절 → (XYZ, view 순서 재투영 오차, 시선각))으로 돌려준다. 나머지 관절은
+    이상치·퇴화가 없는 관절만 (사람 → 관절 → (XYZ, 쓴 카메라 중 최대 재투영 오차, 시선각))으로 돌려준다. 나머지 관절은
     관절별 순차 경로(`_triangulate_joint`, 이상치 카메라를 하나씩 빼고 다시 푼다)로 넘긴다. 1차 풀이는 순차 경로의
     첫 반복과 같은 식이라 확정한 관절의 결과는 순차 경로와 같다.
     """
     cam_ids = sorted({cam.camera_id for inp in inputs for cam in inp.cameras})
     column = {cid: c for c, cid in enumerate(cam_ids)}
-    rows: list[tuple[int, int, np.ndarray]] = []  # (사람, 관절, 그 사람 view 의 열 번호)
+    C = len(cam_ids)
+    # 사람마다 풀 관절의 행을 (관절, 카메라 열) 배열로 한 번에 만든다. 쓰지 않는 칸은 0 이고 mask 로 뺀다(S15P31A101-237)
+    owners, joints, parts = [], [], []
     for n, inp in enumerate(inputs):
-        cols = np.array([column[cam.camera_id] for cam in inp.cameras])
-        for j in np.flatnonzero(inp.usable.sum(axis=0) >= config.min_views):
-            rows.append((n, int(j), cols))
-    if not rows:
+        js = np.flatnonzero(inp.usable.sum(axis=0) >= config.min_views)
+        if not len(js):
+            continue
+        cols = [column[cam.camera_id] for cam in inp.cameras]
+        ok = inp.usable[:, js].T  # (행, 그 사람 view)
+        part = [np.zeros((len(js), C), dtype=bool), np.zeros((len(js), C, 2)), np.zeros((len(js), C, 2)), np.zeros((len(js), C))]
+        part[0][:, cols] = ok
+        part[1][:, cols] = np.where(ok[:, :, None], inp.normalized[:, js].transpose(1, 0, 2), 0.0)
+        part[2][:, cols] = np.where(ok[:, :, None], inp.targets[:, js].transpose(1, 0, 2), 0.0)
+        part[3][:, cols] = np.where(ok, inp.confidence[:, js].T, 0.0)
+        owners += [n] * len(js)
+        joints += js.tolist()
+        parts.append(part)
+    if not parts:
         return {}
-    M, C = len(rows), len(cam_ids)
-    mask = np.zeros((M, C), dtype=bool)
-    xn = np.zeros((M, C, 2))
-    tg = np.zeros((M, C, 2))
-    w = np.zeros((M, C))
-    for r, (n, j, cols) in enumerate(rows):
-        inp = inputs[n]
-        ok = inp.usable[:, j]
-        mask[r, cols[ok]] = True
-        xn[r, cols[ok]] = inp.normalized[ok, j]
-        tg[r, cols[ok]] = inp.targets[ok, j]
-        w[r, cols[ok]] = inp.confidence[ok, j]
+    mask, xn, tg, w = (np.concatenate([p[k] for p in parts]) for k in range(4))
+    M = len(mask)
     stack = _CameraStack.of(rig.subset(cam_ids))
     X = _solve_batch(stack, xn, tg, w, mask, config.refine_iterations)
     solved = np.isfinite(X).all(axis=1)
-    errors = np.full((M, C), np.nan)
+    worst = np.full(M, np.inf)
     angles = np.full(M, np.nan)
     if solved.any():
-        errors[solved] = _errors_batch(stack, tg[solved], mask[solved], X[solved])
+        worst[solved] = np.where(mask[solved], _errors_batch(stack, tg[solved], mask[solved], X[solved]), -np.inf).max(axis=1)
         angles[solved] = _max_ray_angles_batch(stack, mask[solved], X[solved])
-    out: dict[int, dict[int, tuple[np.ndarray, np.ndarray, float]]] = {}
-    for r, (n, j, cols) in enumerate(rows):
-        if not solved[r]:
-            continue
-        errs = errors[r, cols[inputs[n].usable[:, j]]]  # 그 사람 view 순서
-        if float(errs.max()) <= config.outlier_reprojection_error_px:
-            out.setdefault(n, {})[j] = (X[r], errs, float(angles[r]))
+    out: dict[int, dict[int, tuple[np.ndarray, float, float]]] = {}
+    for r in np.flatnonzero(solved & (worst <= config.outlier_reprojection_error_px)).tolist():
+        out.setdefault(owners[r], {})[joints[r]] = (X[r], float(worst[r]), float(angles[r]))
     return out
 
 
@@ -429,6 +427,23 @@ def triangulate_normalized_many(
     targets = np.asarray(targets, dtype=float).reshape(M, -1, 2)
     mask = np.ones((M, len(cameras)), dtype=bool)
     return _solve_batch(_CameraStack.of(cameras), normalized, targets, w, mask, refine_iterations)
+
+
+def solvable_normalized_many(cameras: Sequence[RigCamera], normalized: np.ndarray) -> np.ndarray:
+    """(M,) `triangulate_normalized_many(cameras, normalized)` 의 행마다 해가 있는지(결과가 유한한지). 가중치는 1 이다.
+
+    가우스-뉴턴은 쓴 카메라 모두의 앞이고 비용을 줄이는(유한한) 걸음만 받아들이므로, 해 유무는 정밀화 전의 선형 DLT 해와
+    카메라 앞 확인으로 정해진다. 그래서 정밀화를 하지 않고 같은 판정을 낸다(S15P31A101-237, 경쟁 후보 검사용).
+    """
+    if len(cameras) < MIN_VIEWS:
+        raise ValueError(f"삼각측량에는 카메라가 {MIN_VIEWS}대 이상 필요하다: {len(cameras)}대")
+    normalized = np.asarray(normalized, dtype=float).reshape(-1, len(cameras), 2)
+    stack = _CameraStack.of(cameras)
+    mask = np.ones(normalized.shape[:2], dtype=bool)
+    X, ok = _dlt_batch(stack, normalized, np.ones(normalized.shape[:2]))
+    ok &= np.isfinite(normalized).all(axis=(1, 2))
+    ok[ok] = _in_front_batch(stack, X[ok], mask[ok])
+    return ok
 
 
 def reprojection_errors(cameras: Sequence[RigCamera], pixels: np.ndarray, X: np.ndarray) -> np.ndarray:
@@ -517,20 +532,20 @@ def _triangulate_joint(obs: _Observations, trusted_calibration: bool, config: Tr
             rejected_camera_ids=tuple(rejected),
             issues=(JointIssue.DEGENERATE,),
         )
-    return _estimate(cameras, X, errors, max_ray_angle(cameras, X), tuple(rejected), trusted_calibration, config)
+    reproj = float(errors.max())
+    return _estimate(cameras, X, reproj, max_ray_angle(cameras, X), tuple(rejected), trusted_calibration, config)
 
 
 def _estimate(
     cameras: Sequence[RigCamera],
     X: np.ndarray,
-    errors: np.ndarray,
+    reproj: float,
     angle: float,
     rejected: tuple[str, ...],
     trusted_calibration: bool,
     config: TriangulationConfig,
 ) -> JointEstimate:
-    """좌표를 얻은 관절의 최소 기준 판정 (재투영 오차, 시선각, 보정 상태)."""
-    reproj = float(errors.max())
+    """좌표를 얻은 관절의 최소 기준 판정 (쓴 카메라 중 최대 재투영 오차, 시선각, 보정 상태)."""
     issues = []
     if reproj > config.max_reprojection_error_px:
         issues.append(JointIssue.HIGH_REPROJECTION_ERROR)
@@ -706,28 +721,31 @@ def _refine_batch(
     """
     sw = np.sqrt(w)
     r, J, front = _residuals_batch(stack, targets, sw, mask, X)
+    X = X.copy()
     active = front.copy()  # 시작점이 어느 카메라 뒤면 다듬지 않는다
     damping = np.full(len(X), 1e-3)
     eye = np.eye(3)
     with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
         for _ in range(iterations):
-            if not active.any():
+            # 멈추지 않은 점만 계산한다. 점마다 식이 따로라 멈춘 점을 함께 계산할 때와 결과가 같다(S15P31A101-237)
+            idx = np.flatnonzero(active)
+            if not len(idx):
                 break
-            # 멈춘 점도 같이 계산하지만 값을 바꾸지 않는다(행 수가 작아 골라내는 비용이 더 크다)
-            cost = np.einsum("mr,mr->m", r, r)
-            H = np.einsum("mri,mrj->mij", J, J)
-            g = np.einsum("mri,mr->mi", J, r)
-            step, solvable = _solve_3x3(H + damping[:, None, None] * (H * eye), -g)
-            cand = X + step
-            tr, tJ, tfront = _residuals_batch(stack, targets, sw, mask, cand)
-            accept = active & solvable & tfront & (np.einsum("mr,mr->m", tr, tr) < cost)
-            reject = active & solvable & ~accept
-            X = np.where(accept[:, None], cand, X)
-            r = np.where(accept[:, None], tr, r)
-            J = np.where(accept[:, None, None], tJ, J)
-            damping = np.where(accept, np.maximum(damping / 10, 1e-9), np.where(reject, damping * 10, damping))
+            r_a, J_a, d_a = r[idx], J[idx], damping[idx]
+            cost = np.einsum("mr,mr->m", r_a, r_a)
+            H = np.einsum("mri,mrj->mij", J_a, J_a)
+            g = np.einsum("mri,mr->mi", J_a, r_a)
+            step, solvable = _solve_3x3(H + d_a[:, None, None] * (H * eye), -g)
+            cand = X[idx] + step
+            tr, tJ, tfront = _residuals_batch(stack, targets[idx], sw[idx], mask[idx], cand)
+            accept = solvable & tfront & (np.einsum("mr,mr->m", tr, tr) < cost)
+            reject = solvable & ~accept
+            took = idx[accept]
+            X[took], r[took], J[took] = cand[accept], tr[accept], tJ[accept]
+            d_a = np.where(accept, np.maximum(d_a / 10, 1e-9), np.where(reject, d_a * 10, d_a))
+            damping[idx] = d_a
             converged = accept & (np.linalg.norm(step, axis=1) < 1e-9)
-            active &= solvable & ~converged & ~(reject & (damping > 1e6))
+            active[idx] = solvable & ~converged & ~(reject & (d_a > 1e6))
     return X
 
 
