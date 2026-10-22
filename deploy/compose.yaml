@@ -50,7 +50,7 @@ services:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu, compute, utility, video]   # video: LIVE 입력 NVDEC (이미지 NVIDIA_DRIVER_CAPABILITIES 와 같다)
+              capabilities: [gpu, compute, utility, video]   # video: 선택 디코더 NVDEC(기본은 CPU, -236. 이미지 NVIDIA_DRIVER_CAPABILITIES 와 같다)
 
   # 분석 워커: 같은 이미지·같은 GPU·같은 볼륨. Tier 0 표시 파일이 phase=running·reserve.state=OK 가 된 뒤에만 뜬다
   worker:

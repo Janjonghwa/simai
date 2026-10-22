@@ -108,7 +108,7 @@ Host simai-pod
 
 - 순서: Pod 점검 → Tier 0 이미지·엔진(Tier 0 가 먼저, c·d 가 이 엔진 캐시를 쓴다) → 시험 도구 → LIVE·자원 보호 → 복구·TLS → EXP 는 맨 끝. 한 항목이 실패해도 다음 항목으로 간다(`continue_on_failure`).
 - 항목마다 돌 이미지가 정해져 있다(S15P31A101-207): Pod 하나는 이미지 하나라 큐는 지금 이미지(`--image`, 기본 이미지 ENV `SIMAI_IMAGE_KIND`, 없으면 tier0)의 항목과 a(모든 이미지)만 넣고, 나머지는 표에 '다른 이미지' 로 남긴다. 모르는 이미지 이름이면 시작하지 않는다(종료 코드 4).
-- c·d 는 -182·-60 이 머지된 뒤의 경로(`simai_ai.io.NvdecDecoder`, `tests/services/tier0/live_video.py`, `experiments/gpu_queue/tier0_priority_probe.py` 등)를 부른다. 머지 전이면 각 단계가 '없음(머지 필요)'으로 실패하고 다음 항목으로 간다. PyAV 는 -182 가 `io` extra 에 넣었으므로 그 뒤에 빌드한 이미지여야 c 가 돈다.
+- c·d 는 -182·-60 이 머지된 뒤의 경로(`simai_ai.io.PyAvDecoder`·`NvdecDecoder`, `tests/services/tier0/live_video.py`, `experiments/gpu_queue/tier0_priority_probe.py` 등)를 부른다. 머지 전이면 각 단계가 '없음(머지 필요)'으로 실패하고 다음 항목으로 간다. PyAV 는 -182 가 `io` extra 에 넣었으므로 그 뒤에 빌드한 이미지여야 c 가 돈다.
 - 예상 시간 근거: a 는 1GB 쓰기+fsync 200회, b 는 deploy/README 의 "H100 에서 엔진 첫 빌드 수 분" + 캐시·추론, c 는 c4 LIVE 120초 + 엔진 캐시 기동 + 인코딩·디코딩 측정·기하 측정, d 는 줄인 시간(watch 120·120·90·60초) + P0 시험, e·f 는 노트북 실측(e 약 40초, f 1회 약 35초)에 Network Volume fsync 지연과 5회 반복을 넉넉히 더했다. g·m(-207)은 E-GATE-0 실측(H100 H1 14장 이미지당 약 10초 + 적재 약 40초, A40 MapAnything 적재 약 33초 + 추론 1초 미만)에 가중치 확인·첫 컴파일을 넉넉히 더했다.
 - **H100 총 예상**: 지금 큐 약 43분(e·f 제외 뒤) + Pod 기동·이미지 받기(압축 약 7.4GB) 약 10분 + 가중치 받기(볼륨 없음, 수십 초) + 사본 올리기·결과 회수 약 5분 ≈ **1시간**. d 를 G0 판정용(`--full`, watch 600초)으로 돌리면 +20분. 전체 시간 상한 기본값은 9000초(2.5시간). 다른 GPU 는 엔진 빌드·추론 시간이 다르다(H100 예상만 적었다).
 - 볼륨 없는 Pod(-205): 저장 위치는 `simai-bootstrap` 과 같은 규칙(`SIMAI_ROOT` → `/workspace/simai` → `/srv/simai`)이고, 마운트 지점이 아니면 a 에 `--no-volume`(볼륨 측정 SKIP)을 붙이고 Job 파일에 볼륨·데이터센터를 적지 않는다(`provider`·`datacenter` 는 run_record 가 `RUNPOD_POD_ID`·`RUNPOD_DC_ID` 등 사이트 신호로 채움, 신호가 없으면 LOCAL). 결과 묶음은 컨테이너 디스크에 있으므로 **Pod 를 지우기(Terminate) 전에** scp 로 가져온다(실행기가 출력).
@@ -176,10 +176,11 @@ ssh simai-pod 'tail -f /srv/simai/setup/session1/session1.log'      # 끊겨도 
 
 | 단계 | 내용 | 통과 기준 |
 |---|---|---|
-| c1 | `NvdecDecoder()` 열기 | "nvdec ok". 실패면 이미지 `NVIDIA_DRIVER_CAPABILITIES` 에 video 가 있는지(이 MR 에서 넣었다) |
-| c2 | `pytest -m gpu tests/io/test_pyav_decoder.py` (자식 환경에 `SIMAI_TEST_GPU=1`) | 통과 1 이상, 건너뜀 0 |
-| c3 | 2304x1296 H.264 4스트림(10초, 25 fps) NVDEC 디코딩 + BGR 내려받기, 한 스레드에서 번갈아(보수적). CPU 도 같은 측정(비교만) | 그림 한 장 p95 ≤ 10 ms, 4대 합계 ≥ 100 fps, 넣은 수 = 나온 수 |
-| c4 | LIVE 하네스 120초: 진입점(엔진 준비 → Tier 0 LIVE, decoder nvdec) + 노트북 흉내(I0 제어 채널·시계 교환·하트비트, `tier0_site.Laptop`) + 영상 송신 4대(`live_video` 프레임 번호 무늬 H.264, 2304x1296, 25 fps, 127.0.0.1) | 종료 코드 0, 카메라 4대 ready, decode_failed 0, detector_errors 0, mismatched 0, 검출 호출 > 0. `frame_age_ms_p95`·`pipeline_lag_ms` p50·p95 기록 |
+| c0 | 컨테이너 CPU 기록: 자기 cgroup(`/proc/self/cgroup`·`mountinfo`, v2 하위 그룹 `cpu.max`·v1 공동 마운트 `cfs_quota_us`, 조상 중 최소) 할당량·`os.sched_getaffinity`·호스트 `os.cpu_count()`·`/proc/cpuinfo` 모델(-236) | 기록만(선택). `usable_vcpu` = 셋 중 작은 값. 호스트 값(H100 Pod 224)을 할당량으로 보지 않는다 |
+| c1 | `NvdecDecoder()` 열기 | 선택(-236, NVDEC 은 선택 디코더). "nvdec ok". 실패면 이미지 `NVIDIA_DRIVER_CAPABILITIES` 에 video 가 있는지 |
+| c2 | `pytest -m gpu tests/io/test_pyav_decoder.py` (자식 환경에 `SIMAI_TEST_GPU=1`) | 선택(-236). 통과 1 이상, 건너뜀 0 |
+| c3 | 2304x1296 H.264 4스트림(10초, 25 fps) CPU 디코딩(기본 디코더) + BGR, 카메라마다 스레드 하나(LIVE 구조). 참고(판정 안 함): CPU 한 스레드 번갈아, NVDEC 한 스레드·카메라별 스레드·변환 스레드 0·1·nv12 (`docs/design/tier0-nvdec-throughput.md`) | 그림 한 장 p95 ≤ 10 ms, 4대 합계 ≥ 100 fps, 넣은 수 = 나온 수 (-236 에서 NVDEC 한 스레드 → CPU 카메라별 스레드로 바꿈) |
+| c4 | LIVE 하네스 120초: 진입점(엔진 준비 → Tier 0 LIVE, 기본 디코더 cpu) + 노트북 흉내(I0 제어 채널·시계 교환·하트비트, `tier0_site.Laptop`) + 영상 송신 4대(`live_video` 프레임 번호 무늬 H.264, 2304x1296, 25 fps, 127.0.0.1) | 종료 코드 0, 카메라 4대 ready, decode_failed 0, detector_errors 0, mismatched 0, 검출 호출 > 0. `frame_age_ms_p95`·`pipeline_lag_ms` p50·p95 기록 |
 | c5a | 기하 단계 4대 × 1·5·10명 (`tests/geometry/bench_tier0_geometry.py`, Pod CPU) | 10명 pipeline p95 ≤ 50 ms (명세 6.6 단계 목표) |
 | c5b | 10명 녹화 LIVE 재생 | 큐에서는 SKIP(선택). 아래 수동 절차 |
 
@@ -187,7 +188,7 @@ ssh simai-pod 'tail -f /srv/simai/setup/session1/session1.log'      # 끊겨도 
 추적·연결·판정 부하는 c5a(기하)로만 본다. 하네스는 노트북·EC2 없이 Pod 안 127.0.0.1 로 돌아 망 구간(I0 Direct TCP)은 재지 않는다.
 
 **c5 수동 (10명 처리 시간, 녹화 재생):** 10명 이상이 보이는 A0 녹화(또는 같은 조건 영상)가 있을 때.
-1. Pod 에서 Tier 0 를 LIVE 설정(`input.mode live`, `decoder nvdec`, 영상 포트 `SIMAI_TIER0_VIDEO_PORTS`)으로 띄우고, 노트북에서 `gateway/relay` 를
+1. Pod 에서 Tier 0 를 LIVE 설정(`input.mode live`, 디코더는 기본 cpu, 영상 포트 `SIMAI_TIER0_VIDEO_PORTS`)으로 띄우고, 노트북에서 `gateway/relay` 를
    녹화 파일 입력(`kind = "file"`)과 `--send` 로 붙인다(EC2 엔드포인트 조회·공개키 고정). 사람이 없는 영상으로 경로만 볼 때는 `session1_live.py serve` 를 쓴다.
 2. 표시 파일 `state/tier0.live` 의 `status.live_input` 에서 `frame_age_ms_p95 ≤ 150 + 검출 시간`, health `pipeline_lag_ms` 를 10분 기록하고, 검출 4대 묶음 38 ms(명세 5.1 기준선)와 비교한다.
 3. 결과는 `runs/live10/` 에 두고 MR·Jira 에 요약한다(제품 성능 지표로 쓰기 전 G0 조건 확인).

@@ -1,8 +1,8 @@
-"""PyAV(FFmpeg) H.264 디코더: 노트북·시험은 CPU, Pod 는 NVDEC(hwaccel cuda) (명세 5.1 디코딩과 추론 분리, 12.7).
+"""PyAV(FFmpeg) H.264 디코더: 기본 CPU, 선택 NVDEC(hwaccel cuda) (명세 5.1 디코딩과 추론 분리, 12.7).
 
 decoder.Decoder 구현 하나로 두 경우를 다 맡는다. 다른 점은 hwaccel 하나뿐이다.
 
-- `PyAvDecoder()`: FFmpeg 소프트웨어 디코더(CPU). 노트북 E2E·시험.
+- `PyAvDecoder()`: FFmpeg 소프트웨어 디코더(CPU). Tier 0 기본(LIVE·파일·노트북 E2E·시험).
 - `NvdecDecoder()` = `PyAvDecoder(hwaccel="cuda")`: FFmpeg 의 CUDA hwaccel(NVDEC). 소프트웨어로 몰래 떨어지지 않게
   allow_software_fallback=False 로 연다. 만들 때 장치를 한 번 열어 보고, 못 열면 DecoderUnavailable 이다
   (Tier 0 는 그때 시작하지 않는다. 조용히 CPU 로 바꾸지 않는다).
@@ -22,7 +22,7 @@ configure 는 예외를 내지 않는다: 디코더를 열지 못하면 그 사�
 아니므로 쓰지 않는다: err_detect=explode 로 오류를 DecodeError 로 올리고(그 카메라는 다음 키프레임까지 기다린다), 그래도
 손상 표시(is_corrupt)가 붙어 나온 그림은 버리고 센다(corrupt). 깨진 그림 출력 플래그(output_corrupt)는 켜지 않는다.
 
-출력 그림은 numpy BGR 배열(H×W×3 uint8, ultralytics·OpenCV 입력 형식)이다. Pod 의 NVDEC 그림도 시스템 메모리로 내려 같은
+출력 그림은 numpy BGR 배열(H×W×3 uint8, ultralytics·OpenCV 입력 형식)이다. NVDEC 그림도 시스템 메모리로 내려 같은
 형식으로 낸다(장치에 둔 채 넘기는 것은 처리 시간 실측 뒤 판단, -183).
 
 **색 변환(-212).** BGR 변환은 configure 마다 하나 만든 swscale 문맥(VideoReformatter)으로 한다. `frame.to_ndarray(format=...)` 는

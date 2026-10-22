@@ -27,7 +27,8 @@
 - [x] Tier 0 공개 주소 환경 변수(S15P31A101-208, 3.12): `SIMAI_PUBLIC_HOST`·`SIMAI_PUBLIC_PORT_<번호>` 먼저, 없으면 `RUNPOD_PUBLIC_IP`·`RUNPOD_TCP_PORT_<번호>`. Vast 이름은 문서로 확인하지 못해 읽지 않는다. Run 기록 `gpu.provider` 에 VAST·OTHER 추가(run_record 2.2.0, 20.5)
 - [x] 실험 이미지(HMR `exp02-fs3db`·MapAnything `mapanything`, torch 2.7.1+cu128, 3.12)와 가중치 묶음(`exp02`·`static`), GPU 세션 검증 큐의 EXP 항목(g·m)(S15P31A101-207)
 - [ ] 세 이미지(Tier 0·HMR·MapAnything)의 GPU 실행, Blackwell(sm_100·sm_120) GPU 에서의 실제 실행, 실험 이미지와 E-GATE-0 결과 대조: 2차 GPU 세션(b·g·m 항목, S15P31A101-207, 3.12·20.6)
-- [ ] c3(NVDEC 디코딩 처리량) 판정 구조와 기준(2차 GPU 세션 재측정 뒤): 지금 기준(한 스레드 번갈아 p95 ≤ 10 ms·합계 ≥ 100 fps)은 설계 문서 값이고 명세에는 디코딩 구간 예산이 없다. LIVE 구조(카메라별 스레드) 기준으로 바꿀지는 재측정 뒤 정한다(S15P31A101-212, `docs/design/tier0-nvdec-throughput.md`)
+- [x] c3(디코딩 처리량) 판정 구조와 기준, Tier 0 기본 디코더(S15P31A101-236, `docs/design/tier0-nvdec-throughput.md`): 2차 GPU 세션(H100)에서 CPU 디코딩이 NVDEC 보다 빨라(카메라별 스레드 합계 1,576 fps 대 215 fps) 기본 디코더를 CPU 로, NVDEC 은 설정 선택으로 두고(5.1), c3 판정을 CPU 카메라별 스레드(그림 p95 ≤ 10 ms·합계 ≥ 100 fps)로 바꿨다. NVDEC 은 참고 측정
+- [ ] 다음 GPU 세션에서 확인: 컨테이너가 받는 vCPU·CPU 모델(큐 c0 기록, 3.12 최소 사양 vCPU 8 초기값 확인), 기본 디코더 CPU 로 c3·c4(LIVE 기동·frame_age·pipeline_lag) 통과
 - [ ] 외부 파라미터 실행 도구의 여러 명 동시 걷기 대응(카메라 간 사람 대응 단계, 4.3)과 2단계 World 정렬 입력 형식(S15P31A101-102)
 - [ ] Risk Engine 컨테이너가 `risk_plan_result` 1.1.0 의 `no_evaluated_positions` 를 채우기(지금 응답은 1.0.0 이고 빈 `positions` 가 같은 뜻, 8.3)
 - [ ] 설계 문서와 명세 차이(판단 필요): T_lag 불확실성에 `timestamp_uncertainty_ms` 를 더할지(6.1 은 더한다고 적고 구현은 시계 차이 불확실성만 쓴다), 학습 내부 파라미터의 직선성 확인을 할 수 없을 때 값을 지우지 않고 `UNVERIFIED` 표시로 넘기는 것(4.3 은 ‘곧지 않으면 비운다’만 적음), 번들 조정이 주점을 초기값에 고정하는 한계(4.3 3단계), 2대 관측 경쟁 후보를 `IDENTITY_UNCERTAIN` 으로 두는 조건을 2대 클러스터·엉덩이 관절로 좁힌 것(5.2 관절 유효성 게이트), 복원한 구역 대상(R7) 이벤트의 근거 있는 해소를 D-G3-09 ‘자동 해소’로 보지 않는 해석(S15P31A101-198, 3.2·6.4), 재시작마다 첫 판정에 잠깐 나는 R7(아직 프레임이 없는 카메라)

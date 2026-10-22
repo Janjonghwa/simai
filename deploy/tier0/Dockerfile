@@ -75,7 +75,7 @@ RUN sed -i 's/\r$//' /usr/local/bin/simai-tier0 /usr/local/bin/simai-wait-tier0 
 COPY deploy/weights.json /opt/simai/deploy/weights.json
 
 # 실행 중에 패키지를 설치하지 않는다(ultralytics 자동 설치 끔). 없는 의존성은 실패로 드러나야 한다.
-# NVIDIA_DRIVER_CAPABILITIES 의 video: LIVE 입력 NVDEC(libnvcuvid)을 컨테이너에 올린다(S15P31A101-182).
+# NVIDIA_DRIVER_CAPABILITIES 의 video: 선택 디코더 NVDEC(libnvcuvid)을 컨테이너에 올린다(S15P31A101-182, 기본은 CPU -236).
 # SIMAI_ROOT 는 고정하지 않는다(simai-bootstrap 이 SIMAI_ROOT → /workspace/simai → /srv/simai 순서로 고른다).
 ENV SIMAI_CONTRACTS_DIR=/opt/simai/contracts \
     SIMAI_WEIGHTS_MANIFEST=/opt/simai/deploy/weights.json \
