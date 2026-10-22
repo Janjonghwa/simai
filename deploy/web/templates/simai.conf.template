@@ -1,0 +1,101 @@
+# simai EC2 Nginx (S15P31A101-66). 이미지 진입점이 ${SIMAI_DOMAIN} 만 채워 /etc/nginx/conf.d/simai.conf 로 쓴다.
+# 관제 앱(정적 파일)·REST(/api)·STOMP(/ws)를 한 출처로 묶는다. 갱신 토큰 쿠키(SameSite=Strict, Path=/api/auth)가 같은 출처라야 돈다.
+
+# compose 내부 DNS. server 가 아직 없거나 다시 만들어져도 Nginx 가 뜨고 새 주소를 찾게 변수로 넘긴다
+resolver 127.0.0.11 valid=10s ipv6=off;
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+# HTTP: Let's Encrypt 확인 파일과 HTTPS 이동만
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${SIMAI_DOMAIN} www.${SIMAI_DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+    location / {
+        return 301 https://${SIMAI_DOMAIN}$request_uri;
+    }
+}
+
+# www 는 맨 도메인으로 보낸다
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name www.${SIMAI_DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${SIMAI_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${SIMAI_DOMAIN}/privkey.pem;
+
+    return 301 https://${SIMAI_DOMAIN}$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${SIMAI_DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${SIMAI_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${SIMAI_DOMAIN}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+    # 반장 사진 업로드는 임시 서명 주소로 객체 저장소에 직접 올린다(명세 12.6). 여기는 JSON 만 지난다
+    client_max_body_size 10m;
+
+    set $server_upstream http://server:8080;
+
+    location /api/ {
+        proxy_pass $server_upstream;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # STOMP(WebSocket). 관제 화면은 연결을 오래 연다. 하트비트가 이 시간보다 자주 오가야 한다
+    location /ws {
+        proxy_pass $server_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+
+    root /usr/share/nginx/html;
+
+    # location 에 add_header 가 있으면 server 의 add_header 를 물려받지 않으므로 보안 헤더를 다시 적는다
+    # Vite 산출물은 파일 이름에 해시가 있어 오래 캐시한다
+    location /assets/ {
+        try_files $uri =404;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        add_header Strict-Transport-Security "max-age=31536000" always;
+        add_header X-Content-Type-Options nosniff always;
+    }
+
+    # 그 밖은 관제 앱(SPA). index.html 은 매번 새로 받아 새 배포를 바로 쓴다
+    location / {
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache";
+        add_header Strict-Transport-Security "max-age=31536000" always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
+    }
+}

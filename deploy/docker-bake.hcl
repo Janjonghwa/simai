@@ -3,6 +3,7 @@
 #   docker buildx bake exp02                     # 베이스(cu128 base·devel) → EXP-02 HMR (Detectron2 를 devel 단계에서 빌드)
 #   docker buildx bake mapanything               # 베이스(cu128 base, Python 3.12) → EXP-01 MapAnything
 #   docker buildx bake risk-engine               # EC2 Risk Engine 컨테이너(CPU, python slim, S15P31A101-99)
+#   TAG=$(git rev-parse --short=12 HEAD) docker buildx bake ec2   # EC2 운영 스택 server·web·risk-engine (S15P31A101-66, deploy/ec2)
 #   REGISTRY=<레지스트리>/simai TAG=$(git rev-parse --short=12 HEAD) docker buildx bake --push tier0   # 푸시(사람이 확인한 뒤)
 # 외부 이미지는 모두 다이제스트로 고정한다. 바꿀 때는 태그와 다이제스트를 함께 바꾸고 MR 에 적는다.
 
@@ -21,6 +22,17 @@ variable "UV_IMAGE" { default = "ghcr.io/astral-sh/uv:0.11.27@sha256:4d01caf3b22
 variable "PYTHON_VERSION" { default = "3.11.15" }
 # docker.io/library/python:3.11.15-slim-trixie (EC2 Risk Engine 컨테이너, CPU 전용. Tier 0 와 같은 Python 판)
 variable "PYTHON_RISK_ENGINE" { default = "python:3.11.15-slim-trixie@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff" }
+# EC2 운영 스택(S15P31A101-66). Java 21 은 server/build.gradle toolchain, Node·pnpm 은 front/.node-version·packageManager 와 같은 판
+# docker.io/library/eclipse-temurin:21-jdk-noble (server 빌드 단계만)
+variable "JDK_SERVER" { default = "eclipse-temurin:21-jdk-noble@sha256:107215954359f1ab0be058a247d7c64ed6e69c71c1682d471d38ef751ec8e964" }
+# docker.io/library/eclipse-temurin:21-jre-noble (server 실행)
+variable "JRE_SERVER" { default = "eclipse-temurin:21-jre-noble@sha256:35501d3f93173b420ac9001658eb68157e813316b865087e345c187fca422c4c" }
+# docker.io/library/node:24.19.0-bookworm-slim (관제 앱 빌드 단계만)
+variable "NODE_WEB" { default = "node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df" }
+# docker.io/library/nginx:1.30.6-alpine
+variable "NGINX_WEB" { default = "nginx:1.30.6-alpine@sha256:c59d1f8b1e0e42da75be973424cd72e23f7f8adfb54e982f4d1cd0216a5a5576" }
+# 관제 앱이 부를 공개 도메인(빌드에 박힌다). deploy/ec2 의 SIMAI_DOMAIN 과 같게 둔다
+variable "SIMAI_DOMAIN" { default = "simai.live" }
 # MapAnything 은 볼륨 venv(Python 3.12)와 같은 판대
 variable "PYTHON_VERSION_MAPANYTHING" { default = "3.12.13" }
 # EXP-02 Detectron2 CUDA 확장 아키텍처: Ampere 이후 전부(A100 8.0, A40·A10 8.6, L4·L40S·4090 8.9, H100 9.0, B200 10.0, RTX 5090·PRO 6000 12.0).
@@ -31,6 +43,7 @@ variable "EXP02_MAX_JOBS" { default = "2" }
 
 group "default" { targets = ["tier0"] }
 group "exp" { targets = ["exp02", "mapanything"] }
+group "ec2" { targets = ["server", "web", "risk-engine"] }
 
 target "_common" {
   context   = "."
@@ -126,4 +139,28 @@ target "risk-engine" {
     UV_IMAGE     = "${UV_IMAGE}"
   }
   tags = ["${REGISTRY}/risk-engine:${TAG}"]
+}
+
+# EC2 Spring 서버(S15P31A101-66): JDK 로 bootJar, JRE 로 실행
+target "server" {
+  inherits   = ["_common"]
+  dockerfile = "deploy/server/Dockerfile"
+  args = {
+    JDK_IMAGE = "${JDK_SERVER}"
+    JRE_IMAGE = "${JRE_SERVER}"
+  }
+  tags = ["${REGISTRY}/server:${TAG}"]
+}
+
+# EC2 Nginx(S15P31A101-66): 관제 앱 정적 파일 + HTTPS + /api·/ws 프록시
+target "web" {
+  inherits   = ["_common"]
+  dockerfile = "deploy/web/Dockerfile"
+  args = {
+    NODE_IMAGE        = "${NODE_WEB}"
+    NGINX_IMAGE       = "${NGINX_WEB}"
+    VITE_API_BASE_URL = "https://${SIMAI_DOMAIN}"
+    VITE_STOMP_URL    = "wss://${SIMAI_DOMAIN}/ws"
+  }
+  tags = ["${REGISTRY}/web:${TAG}"]
 }
