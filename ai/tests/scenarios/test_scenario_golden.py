@@ -191,18 +191,52 @@ def test_second_run_invariants_are_checked_too(tmp_path, monkeypatch, enter_exit
     assert not any(not x.startswith("[두 번째 실행]") for x in outcome.diffs)
 
 
-def test_known_limitation_is_separate_from_rule_truth(tmp_path) -> None:
-    """리뷰 F3: 늦은 카메라 시나리오의 '해소 확인 불가'는 현재 한계(known_limitations)라, 융합 시각이 고쳐져 나간 뒤 창에 해소되면
-    실패가 아니라 갱신 알림이 나고, 사람이 아직 구역 안에 있을 때 해소되면(규칙 정답 위반) 실패한다."""
-    outcome = golden.run_case("r1_lagging_camera_unverifiable", tmp_path, repeat=False)
-    assert outcome.diffs == [] and outcome.notices == []
-    _, expected = golden.load_case("r1_lagging_camera_unverifiable")
-    fixed = _resolve_first(outcome.replay, "R1", outcome.start_ms + 8800)
-    diffs, notices = golden.evaluate(expected, fixed, outcome.start_ms)
-    assert diffs == [] and any("slow-camera-fusion-time" in n and "전이 순서" in n for n in notices), (diffs, notices)
-    early = _resolve_first(outcome.replay, "R1", outcome.start_ms + 5000)  # 사람은 6 s 까지 구역 안에 서 있다
-    diffs, _ = golden.evaluate(expected, early, outcome.start_ms)
+def test_known_limitation_is_separate_from_rule_truth(enter_exit) -> None:
+    """리뷰 F3: 현재 한계(known_limitations)는 규칙 정답과 따로 본다. 한계로 적은 동작(해소 없음)이 고쳐져 나간 뒤 창에 해소되면
+    실패가 아니라 갱신 알림이 나고, 사람이 아직 구역 안에 있을 때 해소되면(규칙 정답 위반) 실패한다. S15P31A101-219 로
+    늦은 카메라 시나리오의 한계가 풀려 지금 저장소에는 한계가 없으므로 r1_enter_exit 에 한계를 적은 기대로 본다."""
+    _case, expected, scene, replay = enter_exit
+    doc = copy.deepcopy(expected)
+    r1 = doc["events"][1]
+    r1["optional_tail"] = [r1["transitions"].pop()]  # 규칙 정답: 해소는 없어도 되지만 난다면 나간 뒤 창
+    doc["known_limitations"] = [{"id": "no-resolve", "tracked_by": "S15P31A101-0",
+                                 "events": [{"same_as": r1["name"], "rule_id": "R1",
+                                             "transitions": [{"kind": "RAISED", "at_ms": [1400, 3067]}]}]}]
+    diffs, notices = golden.evaluate(doc, replay, scene.start_ms)
+    assert diffs == [] and any("no-resolve" in n and "전이 순서" in n for n in notices), (diffs, notices)
+    early = _resolve_first(replay, "R1", scene.start_ms + 5000)  # 사람은 6 s 까지 구역 안에 서 있다
+    diffs, _ = golden.evaluate(doc, early, scene.start_ms)
     assert any("RESOLVED 시각 기대 [8300, 9300]" in x for x in diffs), diffs
+
+
+def test_lagging_camera_scenario_needs_the_fusion_time_fix(tmp_path, monkeypatch) -> None:
+    """음성 대조(S15P31A101-219): 융합 시각을 수신 중 카메라의 최신 촬영 시각 최솟값(이전 구현)으로 되돌리면 늦은 카메라
+    시나리오가 실패한다(해소를 확인하지 못하고, 늦어서 뺀 tick 수 측정도 맞지 않음)."""
+    from services.tier0 import perception
+    from simai_ai.tracking.time_model import FusionTime
+
+    def oldest(cameras, config):
+        times = [c.last_capture for c in cameras if c.last_capture is not None]
+        return FusionTime(min(t for t in times if max(times) - t <= config.camera_stall_ms)) if times else None
+
+    monkeypatch.setattr(perception, "choose_fusion_time", oldest)
+    outcome = golden.run_case("r1_lagging_camera_unverifiable", tmp_path, repeat=False)
+    assert any(x.startswith("[이벤트 늦은 카메라가 있는 진입] 전이 순서") for x in outcome.diffs), outcome.diffs
+    assert any(x.startswith("[카메라 cam3] lagging_ticks") for x in outcome.diffs), outcome.diffs
+
+
+def test_lagging_camera_never_contributes_and_other_frame_age_is_unaffected(tmp_path) -> None:
+    """D-G0-10: 늦은 cam3 는 트랙 cameras 에 한 번도 없고 트랙은 OBSERVED 다. 다른 카메라의 frame_age p95 는 늦은 카메라가
+    없는 r1_enter_exit 와 같다(카메라별 대기열이라 서로 묶이지 않는다, ±10 ms)."""
+    lag = golden.run_case("r1_lagging_camera_unverifiable", tmp_path / "lag", repeat=False)
+    base = golden.run_case("r1_enter_exit", tmp_path / "base", repeat=False)
+    assert lag.diffs == [] and lag.notices == [] and base.diffs == []
+    tracks = [t for m in lag.replay.worlds for t in m["payload"]["tracks"]]
+    assert tracks and all("cam3" not in t["cameras"] and t["observation_state"] == "OBSERVED" for t in tracks)
+    for cam in ("cam1", "cam2", "cam4"):
+        got, want = (o.replay.stats["cameras"][cam]["frame_age_ms_p95"] for o in (lag, base))
+        assert abs(got - want) <= 10, (cam, got, want)  # 측정은 같은 값이었다(56·69·71 ms). 스레드 순서 여유 10 ms
+    assert lag.replay.stats["cameras"]["cam3"]["frame_age_ms_p95"] >= 430
 
 
 class WallClockReplayClock(ReplayClock):
@@ -284,3 +318,57 @@ def test_scenario_replay_with_real_models_on_runpod() -> None:
     """자리만 둔다: 실제 검출기(YOLO26x-pose TensorRT)·TrackTrack 으로 같은 시나리오를 재생하는 것은 RunPod 몫이다(-183 큐).
     합성 영상에는 사람 그림이 없어 실제 모델 입력이 될 수 없으므로 시나리오 녹화(시연 동의 녹화)가 생긴 뒤 정한다."""
     pytest.skip("RunPod 실제 모델 시나리오 재생은 아직 없다(S15P31A101-41 남은 일)")
+
+
+# --------------------------------------------------------------------------- 두 대만 보는 구역의 늦은 카메라 (리뷰 F1, -219)
+
+
+def _two_view_zone_lag(tmp_path, monkeypatch, lag_to_ms: int | None):
+    """늦은 카메라 시나리오에서 cam2·cam4 의 사람 검출을 모두 지우고 z-r1 관측 카메라를 cam1·cam3 로 둔다(두 대만 덮는 구역
+    모형, 리뷰 F1 재현). cam3 는 lag_to_ms 까지 400 ms 늦고(None 이면 끝까지) 그 뒤 따라잡는다."""
+    from services.tier0.judge import JudgmentLoop
+    from simai_ai.risk import MonitoringState
+
+    original = JudgmentLoop._monitoring
+
+    def two_cameras(self, active):
+        mon = original(self, active)
+        return MonitoringState(cameras=mon.cameras, zone_cameras={"z-r1": ("cam1", "cam3")})
+
+    monkeypatch.setattr(JudgmentLoop, "_monitoring", two_cameras)
+
+    def override(case):
+        case["faults"] = {"detection_dropouts": [{"from_ms": 0, "to_ms": 11000, "cameras": ["cam2", "cam4"]}],
+                          "receive_lag_windows": [{"camera_id": "cam3", "from_ms": 0,
+                                                   "to_ms": 11000 if lag_to_ms is None else lag_to_ms, "lag_ms": 400}]}
+
+    outcome = golden.run_case("r1_lagging_camera_unverifiable", tmp_path, repeat=False, case_override=override)
+    events: dict[str, list] = {}
+    for a in golden.actual_events(outcome.replay.events, outcome.start_ms):
+        events.setdefault(a.rule_id, []).append(a)
+    tracks = [(m["payload"]["t_latest_global"] - outcome.start_ms, t)
+              for m in outcome.replay.worlds for t in m["payload"]["tracks"]]
+    return outcome, events, tracks
+
+
+def test_lagging_camera_keeps_r7_up_in_a_two_camera_zone_without_inventing_r1(tmp_path, monkeypatch) -> None:
+    """리뷰 F1: 사람을 cam1 과 늦은 cam3 만 볼 때 늦은 cam3 는 융합에 쓰이지 않으므로 그 구역은 2대 관측 조건을 잃는다. 새로 들어온
+    사람의 트랙·R1 은 없고(외삽·단안 관절로 지어내지 않음), R7 감시 저하 안내가 처음부터 끝까지 유지된다(감시 복구로 해소 안 함)."""
+    outcome, events, tracks = _two_view_zone_lag(tmp_path, monkeypatch, None)
+    assert not [d for d in outcome.diffs if d.startswith("[불변식]") or d.startswith("[계약]")], outcome.diffs
+    assert tracks == [] and "R1" not in events
+    [r7] = events["R7"]
+    assert [m.kind for m in r7.milestones] == ["RAISED"] and r7.milestones[0].at_ms < 1000, golden.summary(
+        outcome.replay, outcome.start_ms)
+
+
+def test_r7_resolves_only_after_the_lagging_camera_catches_up(tmp_path, monkeypatch) -> None:
+    """리뷰 F1: cam3 지연이 5 s 에 풀리면 그 뒤에야 cam1·cam3 로 사람이 관측되고, R7 은 지연 회복 + 해소 유지(1.5 s) 뒤에만
+    해소된다. 지연 중에는 트랙·R1 이 없다."""
+    outcome, events, tracks = _two_view_zone_lag(tmp_path, monkeypatch, 5000)
+    [r7] = events["R7"]
+    kinds = [(m.kind, m.at_ms) for m in r7.milestones]
+    assert kinds[0][0] == "RAISED" and kinds[-1][0] == "RESOLVED" and kinds[-1][1] >= 5000 + 1500, kinds
+    assert not any(k == "RESOLVED" and at < 6500 for k, at in kinds), kinds
+    assert tracks and min(rel for rel, _ in tracks) >= 5000, min(rel for rel, _ in tracks)
+    assert all(a.milestones[0].at_ms >= 5000 for a in events.get("R1", []))

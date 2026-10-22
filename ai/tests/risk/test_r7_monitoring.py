@@ -337,3 +337,46 @@ def test_monitoring_from_health_camera_items():
 def test_monitoring_rejects_bad_input(obj):
     with pytest.raises(RiskInputError):
         MonitoringState.from_json(obj)
+
+
+# --- 융합에서 뺀 카메라 (S15P31A101-219, docs/design/tier0-fusion-time.md) ---
+
+
+def _excluded(*ids, coverage=None, last=T0 - 400):
+    cams = (CameraMonitor("cam1", CameraStatus.OK, T0),) + tuple(
+        CameraMonitor(c, CameraStatus.OK, last, fusion_excluded=True) for c in ids)
+    return MonitoringState(cameras=cams, zone_cameras={"z-04": ("cam1", "cam3")} if coverage is None else coverage)
+
+
+def test_camera_left_out_of_fusion_is_not_a_healthy_monitor():
+    """수신 중(400 ms, 중단 기준 500 ms 안)이어도 늦어서 융합에서 뺀 카메라는 그 구역을 관측하지 못한다: 저하로 발생하고
+    감시 확보 근거(clear_zones)도 아니다. 같은 카메라가 융합에 쓰이면 정상이다(위 test_two_healthy_cameras_…)."""
+    rule = ZoneMonitoringRule()
+    mon = _excluded("cam3")
+    [f] = judge(mon)
+    assert f.reasons == ("monitoring_degraded", "camera_fusion_excluded:cam3")
+    assert f.metrics["healthy_cameras"] == 1.0
+    ctx = RuleContext(now_ms=T0 + 100, world=world(T0), zones=(ZONE,), monitoring=mon)
+    assert list(rule.clear_zones(ctx)) == []
+    three = _excluded("cam3", coverage={"z-04": ("cam1", "cam2", "cam3")})
+    three = MonitoringState(cameras=three.cameras + (CameraMonitor("cam2", CameraStatus.OK, T0),),
+                            zone_cameras=three.zone_cameras)
+    assert judge(three) == []  # 남은 2대가 보는 구역은 그대로 감시된다
+
+
+def test_clock_offset_camera_can_push_normal_cameras_out_and_r7_shows_it():
+    """리뷰 F2 반례: 한 대(cam1)만 +140 ms 앞서고 정상 세 대가 40 ms 위상차면, 앞선 cam1 과 cam2 가 남아(2대라 되돌림 없음)
+    정상 cam3·cam4 가 빠진다. 동기화 측정이 없는 동안 이 제외는 막지 못하지만, cam3·cam4 로만 2대 관측하는 구역은 R7 저하로
+    드러나고 감시 복구 근거가 되지 않는다."""
+    from simai_ai.tracking.time_model import choose_fusion_time
+
+    clocks = [CameraClock("cam1", T0, True), CameraClock("cam2", T0 - 140, True),
+              CameraClock("cam3", T0 - 160, True), CameraClock("cam4", T0 - 180, True)]
+    fusion = choose_fusion_time(clocks, TimeModelConfig())
+    assert fusion is not None and fusion.lagging == ("cam3", "cam4")
+    mon = MonitoringState(
+        cameras=tuple(CameraMonitor(c.camera_id, CameraStatus.OK, c.last_capture, c.camera_id in fusion.lagging)
+                      for c in clocks),
+        zone_cameras={"z-04": ("cam3", "cam4")})
+    [f] = judge(mon)
+    assert f.reasons == ("monitoring_degraded", "camera_fusion_excluded:cam3", "camera_fusion_excluded:cam4")

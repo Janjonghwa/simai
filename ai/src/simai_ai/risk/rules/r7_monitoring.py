@@ -8,7 +8,8 @@
   오인하지 않게). 채널은 alerting.channels_for(7.3 표)로만 정하며 CAUTION 은 관제 화면 안내다. 그래서 현장 경보
   신호(LocalAlert·AlertClear)가 없다. LIVE 가 아니면 채널이 없다(규칙 5). 저하 구역 안 사람의 위험은 각 규칙과
   R6 이 '확인 필요'로 다룬다.
-- 정상 카메라: 상태 OK, 받은 프레임이 있고, t_latest_global - last_capture ≤ camera_stall_ms.
+- 정상 카메라: 상태 OK, 받은 프레임이 있고, t_latest_global - last_capture ≤ camera_stall_ms, 그 판정 시각의 융합에 쓰였다
+  (fusion_excluded 아님. 수신 중이어도 늦어서 융합에서 뺀 카메라는 그 구역을 관측하지 못한다, S15P31A101-219).
   System Health(tracking/system_health)의 수신 중 판단(동기화 유효 + 같은 경과 기준)과 같은 기준에 상태 검사를
   더한 것이다. camera_stall_ms·min_cameras 초기값도 System Health(TimeModelConfig)와 같다(500ms, 2대).
 - PLANNED·WHAT_IF 처럼 카메라 개념이 없는 입력(RuleContext.monitoring_expected=False)에서 감시 상태가 없으면
@@ -38,6 +39,7 @@
 | camera_no_signal:<id> / camera_waiting_keyframe:<id> / camera_sync_invalid:<id> | 카메라 상태 |
 | camera_stalled:<id> | 상태는 OK 지만 마지막 프레임이 camera_stall_ms 보다 오래됨 |
 | camera_no_frame:<id> | 상태는 OK 지만 처리한 프레임이 없음 |
+| camera_fusion_excluded:<id> | 수신 중이지만 늦어서 그 판정 시각의 융합에서 뺐음(Tier 0 융합 시각, docs/design/tier0-fusion-time.md) |
 | camera_unreported:<id> | 관측 카메라 목록에 있으나 상태 보고에 없음 |
 수치(metrics): healthy_cameras(정상 관측 카메라 수), required_cameras, covering_cameras(목록을 알 때만).
 """
@@ -131,6 +133,8 @@ class ZoneMonitoringRule:
             return "camera_no_frame"
         if t_latest_global - camera.last_capture > self._camera_stall_ms:
             return "camera_stalled"
+        if camera.fusion_excluded:
+            return "camera_fusion_excluded"
         return None
 
     def _finding(self, zone: Zone, causes: tuple[str, ...], metrics: dict[str, float]) -> Finding:

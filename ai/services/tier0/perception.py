@@ -13,9 +13,12 @@
   엔진, yolo_detector)에 묶음으로 넣고 MultiCameraLocalTracker 로 카메라 내 트랙 ID 를 붙인다. 영상 수신·디코딩 조립은
   live_input.LiveInput 이 한다(S15P31A101-182). 녹화 재생(file 입력)도 같은 DetectorFeed 를 쓴다(file_input, -215).
 
-공통 시각(Perception.choose_t): 수신 중인 카메라(최신 촬영 시각이 t_latest_global 에서 camera_stall_ms 안)의 최신 촬영
-시각 중 가장 이른 값이다(docs/design/tier0-triangulation.md: 외삽하지 않으므로 모든 유효 카메라에 그 시각 이후 프레임이
-있어야 한다). 멈춘 카메라는 빼서 한 카메라 정지가 전체를 멈추지 않게 한다. World Track 시각은 늘기만 하므로 직전보다
+공통 시각(Perception.choose_t, time_model.choose_fusion_time): 융합에 넣을 카메라의 최신 촬영 시각 중 가장 이른 값이다
+(docs/design/tier0-triangulation.md: 외삽하지 않으므로 넣을 카메라 모두에 그 시각 이후 프레임이 있어야 한다). 멈춘 카메라
+(camera_stall_ms 초과)와, 수신 중이어도 t_latest_global 보다 fusion_max_lag_ms 넘게 늦은 카메라는 빼서 한 카메라의 정지·
+지연이 전체를 멈추거나 늦추지 않게 한다(docs/design/tier0-fusion-time.md). 뺀 늦은 카메라는 그 tick 관측에 들어가지 않고
+(트랙 cameras 에 없다) Perceived.lagging·Perception.lagging·lagging_ticks 에 남고, 판정의 감시 입력(R7)은 이 카메라를
+정상 관측 카메라로 세지 않는다. World Track 시각은 늘기만 하므로 직전보다
 늘지 않으면 그 tick 은 인지 결과를 내지 않는다(같은 관측을 두 번 내지 않는다).
 
 카메라 시각 상태(CameraClock)의 sync_valid 는 동기화 측정 모듈이 아직 없어 True 로 둔다(SIM 은 시각 오차가 없다.
@@ -43,7 +46,13 @@ from simai_ai.tracking.local_tracker import (
     PoseDetection,
     TrackedDetection,
 )
-from simai_ai.tracking.time_model import CameraClock, TimeModelConfig, compute_t_latest_global
+from simai_ai.tracking.time_model import (
+    CameraClock,
+    FusionTime,
+    TimeModelConfig,
+    choose_fusion_time,
+    compute_t_latest_global,
+)
 from simai_ai.tracking.world_state import world_state_payload
 from simai_ai.tracking.world_track import WorldIdIssuer, WorldTrackConfig, WorldTrackFrame, WorldTrackManager
 
@@ -279,6 +288,7 @@ class Perceived:
     frame: WorldTrackFrame
     payload: dict[str, Any]
     t_latest_global: int
+    lagging: tuple[str, ...] = ()  # 늦어서 이 tick 융합 시각 계산과 관측에서 뺀 카메라(FusionTime.lagging)
 
 
 @dataclass(frozen=True)
@@ -319,6 +329,10 @@ class Perception:
         self._last_capture: dict[str, int | None] = {c: None for c in feed.camera_ids}
         self._frames_since: dict[str, int] = {c: 0 for c in feed.camera_ids}
         self.dropped_frames = 0
+        self.lagging_ticks: dict[str, int] = {c: 0 for c in feed.camera_ids}  # 늦어서 뺀 인지 tick 수(누계)
+        # 마지막으로 인지 결과를 낸 tick 에서 늦어서 뺀 카메라. 새 tick 이 날 때까지 유지한다(판정의 감시 입력이 읽는다: 수신
+        # 중이어도 융합에 쓰지 못한 카메라는 R7 의 정상 관측 카메라로 세지 않는다)
+        self.lagging: tuple[str, ...] = ()
 
     def camera_clocks(self) -> tuple[CameraClock, ...]:
         with self._lock:
@@ -338,15 +352,9 @@ class Perception:
     def t_latest_global(self) -> int | None:
         return compute_t_latest_global(self.camera_clocks())
 
-    def choose_t(self) -> int | None:
-        """공통 시각: 수신 중인 카메라의 최신 촬영 시각 중 가장 이른 값(모듈 설명). 모르면 None."""
-        with self._lock:
-            times = [t for t in self._last_capture.values() if t is not None]
-        if not times:
-            return None
-        latest = max(times)
-        fresh = [t for t in times if latest - t <= self.time_config.camera_stall_ms]
-        return min(fresh)
+    def choose_t(self) -> FusionTime | None:
+        """공통 시각과 늦어서 뺀 카메라(모듈 설명). 모르면 None."""
+        return choose_fusion_time(self.camera_clocks(), self.time_config)
 
     def ingest(self, frames: Sequence[Observation2DFrame]) -> None:
         for f in frames:
@@ -363,11 +371,18 @@ class Perception:
     def step(self, now_ms: int, surfaces: SurfaceSet, sync_invalid: Sequence[str] = ()) -> Perceived | None:
         """입력을 받아 공통 시각 t 의 World Track·접지·world_state payload 를 만든다. 새 시각이 없으면 None."""
         self.ingest(self.feed.poll(now_ms))
-        t = self.choose_t()
+        fusion = self.choose_t()
         t_latest = self.t_latest_global()
         last = self.manager.last_t
-        if t is None or t_latest is None or (last is not None and t <= last):
+        if fusion is None or t_latest is None or (last is not None and fusion.t <= last):
             return None
+        t = fusion.t
+        if fusion.lagging and fusion.lagging != self.lagging:
+            log.info("늦은 카메라를 융합에서 뺀다(t_latest_global 보다 %d ms 넘게 늦음): %s",
+                     self.time_config.fusion_max_lag_ms, ", ".join(fusion.lagging))
+        self.lagging = fusion.lagging
+        for c in fusion.lagging:
+            self.lagging_ticks[c] += 1
         views, _drops = self.buffer.views_at(t)
         assoc = self.associator.associate(t, views, exclude_cameras=tuple(sync_invalid))
         self.buffer.prune(t)
@@ -376,4 +391,4 @@ class Perception:
         payload = world_state_payload(
             frame, t_latest, self.scene_version, contacts=contacts.contacts(), time_config=self.time_config
         )
-        return Perceived(t=t, frame=frame, payload=payload, t_latest_global=t_latest)
+        return Perceived(t=t, frame=frame, payload=payload, t_latest_global=t_latest, lagging=fusion.lagging)

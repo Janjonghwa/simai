@@ -76,6 +76,7 @@ class _Perception:
     feed: _Feed = field(default_factory=_Feed)
     manager: _Manager = field(default_factory=_Manager)
     _t: int | None = None
+    lagging: tuple[str, ...] = ()
 
     def camera_clocks(self):
         return tuple(CameraClock(c, self._t, True) for c in CAMERAS)

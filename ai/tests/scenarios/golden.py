@@ -84,6 +84,10 @@ def load_case(name: str) -> tuple[dict[str, Any], dict[str, Any]]:
     _check_keys(f"{name} input.faults", case.get("faults", {}), FAULT_KEYS)
     _check_keys(f"{name} expected", expected, EXPECTED_KEYS)
     _check_keys(f"{name} expected.world_state", expected.get("world_state", {}), {"min_lines", "max_tracks"})
+    for cam, want in _notes_dropped(expected.get("camera_stats", {})).items():
+        _check_keys(f"{name} expected.camera_stats.{cam}", want, CAMERA_STAT_KEYS)
+        for key, window in _notes_dropped(want).items():
+            _window(window, f"{name} expected.camera_stats.{cam}.{key}")
     names = {e.get("name") for e in expected.get("events", [])}
     specs = [(f"events[{i}]", e) for i, e in enumerate(expected.get("events", []))]
     for j, lim in enumerate(expected.get("known_limitations", [])):
@@ -107,14 +111,19 @@ def load_case(name: str) -> tuple[dict[str, Any], dict[str, Any]]:
 
 # 기대·입력 파일의 키(밑줄로 시작하는 키는 설명 메모라 무시한다). 오타 키가 조용히 무시돼 시험이 비지 않게 모르는 키는 오류다
 INPUT_KEYS = {"scenario_id", "d_ids", "description", "sim", "seed", "zones", "work_surfaces", "lifecycle", "faults"}
-FAULT_KEYS = {"camera_gaps", "receive_lag_ms", "detection_dropouts"}
+FAULT_KEYS = {"camera_gaps", "receive_lag_ms", "receive_lag_windows", "detection_dropouts"}
 EXPECTED_KEYS = {"scenario_id", "d_ids", "format_version", "exhaustive", "ignore_rules", "world_state", "events",
-                 "known_limitations"}
+                 "known_limitations", "camera_stats"}
+CAMERA_STAT_KEYS = {"frame_age_ms_p95", "inferred", "lagging_ticks"}  # Replay.stats["cameras"] 의 값, [하한, 상한]
 EVENT_KEYS = {"name", "rule_id", "zone_id", "severity", "world_id_count", "transitions", "optional_tail", "updates",
               "same_as", "reasons_every_line"}
 LIMITATION_KEYS = {"id", "tracked_by", "events"}
 CONDITION_KEYS = {"kind", "at_ms", "verification", "needs_check", "resume_count", "severity", "metrics", "reasons_absent"}
 MILESTONES = ("RAISED", "RESUMED", "RESOLVED")
+
+
+def _notes_dropped(doc: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in doc.items() if not k.startswith("_")}
 
 
 def _check_keys(where: str, doc: Mapping[str, Any], allowed: set[str]) -> None:
@@ -160,6 +169,9 @@ def build_scene(case: Mapping[str, Any], workdir: Path) -> Scene:
         frames[f.camera_id].append(f)
     faults = case.get("faults", {})
     lag = faults.get("receive_lag_ms", {})
+    # 구간 지연 [{camera_id, from_ms, to_ms, lag_ms}]: 그 구간에 찍힌 프레임만 더 늦게 온다. 지연이 풀리면 밀린 프레임이 몰려
+    # 오도록 카메라별 도착 시각은 줄지 않게 한다(역순 도착은 만들지 않는다)
+    windows = faults.get("receive_lag_windows", [])
     gaps = faults.get("camera_gaps", [])
     cameras: dict[str, list[Segment]] = {}
     for cam, fs in frames.items():
@@ -173,14 +185,17 @@ def build_scene(case: Mapping[str, Any], workdir: Path) -> Scene:
                 continue
             runs[-1].append(i)
         segments = []
+        arrived = 0
         for epoch, idx in enumerate(r for r in runs if r):
             video = lv.encode(idx, gop=10)
             seg = Segment(epoch, lv.codec_meta(cam, epoch, video))
             for i, (au, key) in zip(idx, video.frames, strict=True):
                 f = fs[i]
                 t = f.estimated_capture_time
+                extra = sum(w["lag_ms"] for w in windows if w["camera_id"] == cam and _in_window(t - start, w))
+                arrived = max(arrived, t + RECEIVE_LAG_MS + lag.get(cam, 0) + extra)
                 seg.frames.append((frame_header(cam, epoch, f.frame_ref["frame_sequence"], t, key,
-                                                received_ms=t + RECEIVE_LAG_MS + lag.get(cam, 0)), au))
+                                                received_ms=arrived), au))
             segments.append(seg)
         cameras[cam] = segments
     session = write_session(workdir, f"rec-golden-{case['scenario_id'].replace('_', '-')}", cameras)
@@ -303,6 +318,10 @@ def run_replay(case: Mapping[str, Any], scene: Scene, workdir: Path, *,
         "origin": str(service.tracker.origin), "file_errors": fi.get("errors"), "file_failed": fi.get("failed"),
         "output_failed": service.output_failed,
         "decode_failed": sum(c.get("decode_failed", 0) for c in fi.get("cameras", {}).values()),
+        # 카메라별 측정(D-G0-10): 추론 시점 frame_age p95(파일 시계 기준), 늦어서 융합에서 뺀 인지 tick 수
+        "cameras": {c: {"frame_age_ms_p95": v.get("frame_age_ms_p95"), "inferred": v.get("inferred"),
+                        "lagging_ticks": service.perception.lagging_ticks.get(c, 0)}
+                    for c, v in sorted(fi.get("cameras", {}).items())},
     }
     read = (lambda name: (out / name).read_text(encoding="utf-8").splitlines() if (out / name).exists() else [])
     return Replay(out, read(WORLD_STATE_FILE), read(RISK_EVENT_FILE), stats)
@@ -476,6 +495,12 @@ def evaluate(expected: Mapping[str, Any], replay: Replay, start_ms: int) -> tupl
         most = max((len(m["payload"]["tracks"]) for m in worlds), default=0)
         if most > world["max_tracks"]:
             diffs.append(f"[world_state] 한 tick 의 트랙 수 기대 {world['max_tracks']} 이하 / 실제 최대 {most}")
+    for cam, want in _notes_dropped(expected.get("camera_stats", {})).items():
+        got = replay.stats.get("cameras", {}).get(cam, {})
+        for key, window in _notes_dropped(want).items():
+            lo, hi = _window(window, f"camera_stats.{cam}.{key}")
+            if got.get(key) is None or not lo <= got[key] <= hi:
+                diffs.append(f"[카메라 {cam}] {key} 기대 [{lo}, {hi}] / 실제 {got.get(key)!r}")
 
     actual = actual_events(replay.events, start_ms)
     ignored = set(expected.get("ignore_rules", []))
