@@ -1,7 +1,7 @@
 # simai — 에이전트 작업 지침
 
 고정 카메라 4대로 교실을 미터 좌표 3D 디지털 트윈에 올리고 위험을 판정하는 안전 관제 플랫폼이다.
-기획서(simai System Specification v1.2 r4)의 정본은 `docs/spec/`(장별 파일), 요구사항 명세서의 정본은 `docs/requirements.md` 다. Notion 에는 링크와 내보낸 사본만 있다.
+기획서(simai System Specification v1.3)의 정본은 `docs/spec/`(장별 파일), 요구사항 명세서의 정본은 `docs/requirements.md` 다. Notion 에는 링크와 내보낸 사본만 있다.
 작업에 필요한 규칙은 이 문서, 아래 규칙 문서, `contracts/`, `docs/spec/` 에 있다. 명세가 필요하면 `docs/spec/README.md` 의 장 목록과 에픽별 표에서 해당 장 파일만 읽는다.
 명세와 이 문서가 다르면 명세가 우선하며, 차이를 발견하면 보고한다. 이 문서의 "명세 x.y"는 기획서의 절 번호이고 `docs/spec/` 의 장 파일과 일대일이다(예: 5.2 → `05-processing.md`).
 

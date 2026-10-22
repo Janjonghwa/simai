@@ -19,7 +19,7 @@
 | CCVS | 카메라별 높이 검산 | 보조 진단·재보정 후보 거름(자체 구현, 4.3) | 방법만 참고(코드 미사용) |
 | DMMR | 사람 기반 내부 파라미터 추정 | 참고 | 확인 필요 |
 | ExtrCamCalib_PersonKeypoints | 운영 중 보정 감시 | 참고 | 확인 필요 |
-| NVIDIA Cosmos3-Nano(16B) Reasoner | VLM(vLLM 0.19.1 이상, `vllm-cosmos3`) | MVP | OpenMDW 1.1 |
+| NVIDIA Cosmos3-Nano(16B) Reasoner | VLM(vLLM 0.21.0 + `vllm-cosmos3` 커밋 고정, Tier 0 와 같은 가상환경의 별도 프로세스, 3.12) | MVP | OpenMDW 1.1 |
 | NVIDIA Cosmos3-Super(64B) | VLM 확장 후보(80GB 에 Tier 0 와 함께 안 올라감) | 확장 후보 | 확인 필요 |
 | Qwen3-VL | VLM 참고(1순위 아님) | 참고 | 확인 필요 |
 | BAAI/bge-m3 | RAG 임베딩(안전 수칙 조항·질문, dense 1024차원, L2 정규화, cosine, 11장). revision 은 운영 색인 생성 전에 고정 | M3 | MIT(채택 전 모델 저장소 라이선스 파일 확인) |
