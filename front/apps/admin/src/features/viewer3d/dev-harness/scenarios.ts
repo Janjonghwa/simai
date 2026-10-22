@@ -7,7 +7,16 @@ import type { SourceConnection } from '@/features/viewer3d/data/spatialSource';
 export const SCENARIOS = [
   { key: 'normal', label: '정상', hint: '사람 3명 관측' },
   { key: 'observation-loss', label: '관측 손실', hint: 'OBSERVED→PREDICTED→UNKNOWN' },
-  { key: 'risk-lifecycle', label: '위험 발생·해소', hint: 'RAISED→UPDATED→중첩→RESOLVED' },
+  {
+    key: 'risk-lifecycle',
+    label: '위험 전이 회귀(합성)',
+    hint: 'RAISED→UPDATED→중첩→RESOLVED 전이 회귀용. 구역 밖 관계자가 포함될 수 있어 지오펜싱 시연이 아니다',
+  },
+  {
+    key: 'geofence',
+    label: '지오펜싱 정합 시연',
+    hint: '구역 진입→체류 상향→이탈 해소. 이벤트 대상은 그 tick 에 구역 안에 있는 사람뿐이다',
+  },
   { key: 'disconnect', label: '통신 장애', hint: '끊김·역전·중복·복구' },
   { key: 'invalid-input', label: '잘못된 입력', hint: '계약 오류·미상 Z' },
 ] as const;
@@ -31,8 +40,18 @@ export const PERIOD: Record<ScenarioKey, number> = {
   normal: 80,
   'observation-loss': 60,
   'risk-lifecycle': 80,
+  geofence: 120,
   disconnect: 70,
   'invalid-input': 10,
+};
+
+/**
+ * 이벤트를 만드는 시나리오의 재생 상한(tick). 주기마다 새 event_id 가 생기고 Store 는 해소된 이벤트도 남기므로
+ * 개발 시연이 끝없이 쌓이지 않게 이 지점에서 재생을 멈춘다('처음부터'로 다시 시작). 운영 Store 규칙이 아니다.
+ */
+export const DEMO_MAX_TICKS: Partial<Record<ScenarioKey, number>> = {
+  'risk-lifecycle': 4000,
+  geofence: 4800,
 };
 
 export type ScenarioEmit =
@@ -45,6 +64,7 @@ const CODE: Record<ScenarioKey, number> = {
   'risk-lifecycle': 3,
   disconnect: 4,
   'invalid-input': 5,
+  geofence: 6,
 };
 
 const hex = (n: number, width: number) => n.toString(16).padStart(width, '0').slice(-width);
@@ -96,6 +116,28 @@ function poseOf(id: (typeof MOCK_TRACK_IDS)[number], tick: number): Xy {
   }
 }
 
+/**
+ * 지오펜싱 시연 경로(주기 120, 10 Hz, 1 m/s). 경계 위에 서지 않게 0.05 m 어긋나게 둔다.
+ * - w-0001: y=2.25 를 따라 x 3.95→7.95(0~40), 머묾(40~69), 7.95→3.95(70~110). z-02(x 6.5~9) 안: tick 26~84.
+ * - w-0003: y=7.0 을 따라 x 0.45→2.95(0~25), 머묾(25~59), 2.95→0.45(60~85). z-01(x 1.5~4.5) 안: tick 11~74.
+ * - w-0002: (5.2, 5.0) 에 서 있는 구역 밖 사람.
+ */
+function geofencePose(id: (typeof MOCK_TRACK_IDS)[number], tick: number): Xy {
+  const p = tick % PERIOD.geofence;
+  switch (id) {
+    case 'w-0001': {
+      const x = p < 40 ? 3.95 + 0.1 * p : p < 70 ? 7.95 : p < 110 ? 7.95 - 0.1 * (p - 70) : 3.95;
+      return [x, 2.25];
+    }
+    case 'w-0002':
+      return [5.2, 5.0];
+    case 'w-0003': {
+      const x = p < 25 ? 0.45 + 0.1 * p : p < 60 ? 2.95 : p < 85 ? 2.95 - 0.1 * (p - 60) : 0.45;
+      return [x, 7.0];
+    }
+  }
+}
+
 // COCO17 관절의 골반 기준 수평 오프셋과 높이(m). 귀 하나는 가려진 관절(null)로 둔다.
 const JOINTS: [number, number, number][] = [
   [0.0, 0.1, 1.6],
@@ -133,9 +175,14 @@ function skeleton([x, y]: Xy) {
   };
 }
 
-function observed(id: (typeof MOCK_TRACK_IDS)[number], tick: number, t: number) {
-  const [x, y] = poseOf(id, tick).map(round) as Xy;
-  const [nx, ny] = poseOf(id, tick + 1);
+function observed(
+  id: (typeof MOCK_TRACK_IDS)[number],
+  tick: number,
+  t: number,
+  pose: typeof poseOf = poseOf,
+) {
+  const [x, y] = pose(id, tick).map(round) as Xy;
+  const [nx, ny] = pose(id, tick + 1);
   return {
     world_id: id,
     t_last_valid: t,
@@ -240,6 +287,7 @@ export function scenarioWorld(key: ScenarioKey, tick: number, t0: number) {
   const tracks = MOCK_TRACK_IDS.map((id) => {
     if (key === 'observation-loss' && id === 'w-0002') return lossTrack(tick, t0);
     if (key === 'invalid-input' && id === 'w-0003') return unknownZTrack(tick, t);
+    if (key === 'geofence') return observed(id, tick, t, geofencePose);
     return observed(id, tick, t);
   });
   return envelope(
@@ -338,6 +386,8 @@ const RISK_STEPS: Record<number, EventStep[]> = {
   50: [{ n: 1, seq: 3, lifecycle: 'RESOLVED', severity: 'CRITICAL', slot: 2 }],
   56: [{ n: 1, seq: 2, lifecycle: 'UPDATED', severity: 'CRITICAL', slot: 6 }],
   65: [{ n: 2, seq: 2, lifecycle: 'RESOLVED', severity: 'CRITICAL', slot: 3 }],
+  // 계획 이벤트도 주기 안에서 해소해 다음 주기로 쌓이지 않게 한다.
+  75: [{ n: 3, seq: null, lifecycle: 'RESOLVED', severity: 'HIGH', source: 'PLANNED', slot: 5 }],
 };
 
 function riskEvent(step: EventStep, tick: number, t0: number) {
@@ -381,6 +431,68 @@ function riskEvent(step: EventStep, tick: number, t0: number) {
 }
 
 // ---- 잘못된 입력 ----
+
+// ---- 지오펜싱 정합 시연 ----
+// 판정 결과를 미리 적어 둔 Fixture 다. 브라우저는 판정하지 않는다. 시험(zoneContainment)이 경로와 맞는지 따로 확인한다.
+
+const GEOFENCE_RULES: Record<number, { zone: string; worldIds: string[]; entry: number }> = {
+  11: { zone: 'z-02', worldIds: ['w-0001'], entry: 26 },
+  12: { zone: 'z-01', worldIds: ['w-0003'], entry: 11 },
+};
+
+interface GeofenceStep {
+  n: 11 | 12;
+  seq: number;
+  lifecycle: 'RAISED' | 'UPDATED' | 'RESOLVED';
+  severity: 'CRITICAL' | 'HIGH';
+}
+
+/** 주기 120 안의 전이. 진입한 tick 에 발생, 2초 머물면 상향, 나간 첫 tick 에 해소. */
+export const GEOFENCE_STEPS: Record<number, GeofenceStep[]> = {
+  11: [{ n: 12, seq: 1, lifecycle: 'RAISED', severity: 'HIGH' }],
+  26: [{ n: 11, seq: 1, lifecycle: 'RAISED', severity: 'HIGH' }],
+  46: [{ n: 11, seq: 2, lifecycle: 'UPDATED', severity: 'CRITICAL' }],
+  75: [{ n: 12, seq: 2, lifecycle: 'RESOLVED', severity: 'HIGH' }],
+  85: [{ n: 11, seq: 3, lifecycle: 'RESOLVED', severity: 'CRITICAL' }],
+};
+
+function geofenceEvent(step: GeofenceStep, tick: number, t0: number) {
+  const cycle = Math.floor(tick / PERIOD.geofence);
+  const rule = GEOFENCE_RULES[step.n]!;
+  const entryTick = cycle * PERIOD.geofence + rule.entry;
+  const t = tAt(t0, tick);
+  return envelope(
+    'risk_event',
+    mockMsgId('geofence', tick, 2 + (step.n - 11)),
+    t + 40,
+    {
+      event_id: mockEventId(cycle, step.n),
+      event_sequence: step.seq,
+      rule_id: 'R1',
+      rule_version: 1,
+      source: 'LIVE',
+      lifecycle: step.lifecycle,
+      verification: 'VERIFIED',
+      severity: step.severity,
+      confidence: 'HIGH',
+      needs_check: false,
+      confidence_reasons: [],
+      resume_count: 0,
+      world_ids: rule.worldIds,
+      zone_id: rule.zone,
+      metrics: { dwell_s: round((tick - entryTick) / 10) },
+      rationale: null,
+      proposed_severity: null,
+      scene_version: VERSIONS.scene,
+      raised_at: tAt(t0, entryTick),
+      updated_at: t,
+      resolved_at: step.lifecycle === 'RESOLVED' ? t : null,
+      gateway_id: 'tier0-mock',
+      delivery: 'REALTIME',
+    },
+    '2.1.0',
+  );
+}
 
 /** 주기 10 안의 위치별 계약 오류. 모두 거부돼야 한다. */
 export const INVALID_STEPS = [2, 4, 6, 8, 9] as const;
@@ -448,6 +560,9 @@ export function scenarioTick(key: ScenarioKey, tick: number, t0: number): Scenar
 
   if (key === 'risk-lifecycle') {
     for (const step of RISK_STEPS[p] ?? []) message(riskEvent(step, tick, t0));
+  }
+  if (key === 'geofence') {
+    for (const step of GEOFENCE_STEPS[p] ?? []) message(geofenceEvent(step, tick, t0));
   }
   if (key === 'invalid-input' && (INVALID_STEPS as readonly number[]).includes(p)) {
     message(invalidMessage(p, tick, t0));

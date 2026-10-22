@@ -18,6 +18,10 @@ export interface MockSourceOptions {
   restBase?: string | null;
   /** true 면 메시지를 JSON 문자열로 바꿨다가 다시 읽어 STOMP 본문처럼 넘긴다. */
   serialize?: boolean;
+  /** NOT_JSON(MSW 미응답)일 때 Mock 을 다시 켠다. 개발 서버의 startSpatialMocks 가 준다. */
+  reactivateMocks?: () => Promise<void>;
+  /** 이 tick 에 이르면 재생을 멈춘다(개발 시연 상한). 없으면 계속 재생한다. */
+  maxTicks?: number;
 }
 
 export interface MockSpatialSource extends SpatialSource {
@@ -27,6 +31,8 @@ export interface MockSpatialSource extends SpatialSource {
   /** 다음에 내보낼 tick. */
   readonly tick: number;
   readonly halted: boolean;
+  /** 재생 상한에 이르러 멈췄다. */
+  readonly capped: boolean;
   readonly subscriberCount: number;
   /** 지금 돌고 있는 타이머 수(0 또는 1). 누수 확인용이다. */
   readonly timerCount: number;
@@ -39,12 +45,14 @@ export interface MockSpatialSource extends SpatialSource {
 let created = 0;
 
 /**
- * 개발 서버에서 MSW 가 아직 켜지지 않았거나(첫 의존성 최적화, HMR 로 껐다 켜는 사이) 요청이 Vite 로 가면 index.html 이 온다.
- * 그 응답을 JSON 으로 읽지 않고 이 이유로 남긴다.
+ * 요청이 MSW 를 거치지 않고 Vite 로 가면 index.html 이 온다. 그 응답을 JSON 으로 읽지 않고 이 이유로 남긴다.
+ * 원인: 서비스 워커가 유휴로 종료됐다 다시 뜨면 활성 페이지 목록이 비어 요청을 그대로 넘긴다(페이지 쪽 MSW 는 켜진 줄 안다).
+ * HMR 로 MSW 를 껐다 켜는 사이에 보낸 요청도 같다.
  */
 export const NOT_JSON_REASON = 'JSON 이 아닌 응답(MSW 미동작 추정)';
-/** 구역은 연결 때 한 번만 받으므로 NOT_JSON 일 때만 이 간격으로 다시 묻는다. HTTP 오류(503 등)는 다시 묻지 않는다. */
-const ZONE_RETRY_MS = [250, 500, 1000, 2000];
+/** NOT_JSON 일 때 Mock 을 다시 켜고(reactivateMocks) 다시 묻는 횟수와 간격. HTTP 오류(503 등)는 실제 실패라 다시 묻지 않는다. */
+const RECOVER_ATTEMPTS = 3;
+const RECOVER_WAIT_MS = 200;
 
 export function createMockSource(options: MockSourceOptions): MockSpatialSource {
   const now = options.now ?? Date.now;
@@ -55,6 +63,7 @@ export function createMockSource(options: MockSourceOptions): MockSpatialSource 
   let connection: SourceConnectionChange = { state: 'CONNECTING', at: now() };
   let tick = 0;
   let halted = false;
+  let capped = false;
   let timer: ReturnType<typeof setInterval> | null = null;
   let opened = false;
 
@@ -66,7 +75,7 @@ export function createMockSource(options: MockSourceOptions): MockSpatialSource 
     each((sink) => sink.onConnectionChange(change));
   };
 
-  async function get(
+  async function fetchJson(
     path: string,
   ): Promise<{ ok: true; raw: unknown } | { ok: false; reason: string }> {
     try {
@@ -81,14 +90,15 @@ export function createMockSource(options: MockSourceOptions): MockSpatialSource 
     }
   }
 
-  async function getZones(): Promise<ZonesResult> {
-    let result: ZonesResult = await get('/api/zones');
-    for (const wait of ZONE_RETRY_MS) {
+  /** REST 요청. Mock 이 응답하지 않았으면(NOT_JSON) Mock 을 다시 켜고 다시 묻는다. 구독이 모두 풀렸으면 그만둔다. */
+  async function get(path: string): Promise<ZonesResult> {
+    let result: ZonesResult = await fetchJson(path);
+    for (let attempt = 1; attempt <= RECOVER_ATTEMPTS; attempt++) {
       if (result.ok || result.reason !== NOT_JSON_REASON || sinks.size === 0) break;
-      await new Promise((resolve) => setTimeout(resolve, wait));
-      // 기다리는 동안 구독이 모두 풀렸으면 더 묻지 않는다.
+      await options.reactivateMocks?.();
+      await new Promise((resolve) => setTimeout(resolve, RECOVER_WAIT_MS * attempt));
       if (sinks.size === 0) break;
-      result = await get('/api/zones');
+      result = await fetchJson(path);
     }
     return result;
   }
@@ -97,7 +107,7 @@ export function createMockSource(options: MockSourceOptions): MockSpatialSource 
   async function onOpen(first: boolean) {
     if (restBase === null) return;
     if (first) {
-      const zones = await getZones();
+      const zones = await get('/api/zones');
       each((sink) => sink.onZones?.(zones, now()));
     }
     const snapshot = await get(`/api/world?at=${t0 + Math.max(tick - 1, 0) * TICK_MS}`);
@@ -105,6 +115,13 @@ export function createMockSource(options: MockSourceOptions): MockSpatialSource 
   }
 
   function emit() {
+    // 개발 시연 상한. 더 재생하지 않고 멈춘다(연결은 그대로라 World 연령이 늘어난다).
+    if (options.maxTicks !== undefined && tick >= options.maxTicks) {
+      capped = true;
+      halted = true;
+      stopTimer();
+      return;
+    }
     for (const out of scenarioTick(options.scenario, tick, t0)) {
       if (out.type === 'connection') {
         setConnection({ state: out.state, at: now(), reason: out.reason });
@@ -136,6 +153,9 @@ export function createMockSource(options: MockSourceOptions): MockSpatialSource 
     },
     get halted() {
       return halted;
+    },
+    get capped() {
+      return capped;
     },
     get subscriberCount() {
       return sinks.size;

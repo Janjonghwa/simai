@@ -20,6 +20,10 @@ export function startSpatialMocks(initial: {
     const api = createSpatialMockApi(initial);
     network.configure({ handlers: api.handlers, onUnhandledFrame: 'bypass' });
     await network.enable();
+    api.setReactivator(async () => {
+      await network.disable();
+      await network.enable();
+    });
     return api;
   })();
   return started;

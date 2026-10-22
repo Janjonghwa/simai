@@ -27,6 +27,9 @@ import {
   type PersonPose,
   type PersonTone,
 } from '@/features/viewer3d/people/personMotion';
+import { PersonRiskMark } from '@/features/viewer3d/risk/RiskMarks';
+import { riskLabel, riskStyle } from '@/features/viewer3d/risk/riskPresentation';
+import { useRiskHighlight } from '@/features/viewer3d/risk/RiskScope';
 import { Selectable } from '@/features/viewer3d/Selectable';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
 import type { ThreePoint } from '@/features/viewer3d/worldCoordinates';
@@ -34,6 +37,7 @@ import { Line } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -126,8 +130,17 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
   );
   // 관측 상태·위치 근거·연결이 바뀔 때만 다시 그린다.
   useSpatialData((s) => statusKey(s, worldId));
+  // 위험 강조는 이벤트가 바뀔 때만 달라진다. 위치·동작 기록(motion)은 그대로 둔다.
+  const risk = useRiskHighlight('person', worldId);
   const [hasLastValid, setHasLastValid] = useState(false);
   const root = useRef<Group>(null);
+  // 위험 표식 자리. 선택 그룹 밖에 두어 초점 중심·클릭 경계에 끼지 않게 하고, 위치만 아바타를 따라간다.
+  const riskRoot = useRef<Group>(null);
+  // 표식이 새로 붙는 순간에도 원점에 한 프레임 보이지 않게 지금 아바타 위치에서 시작한다.
+  const attachRisk = useCallback((group: Group | null) => {
+    riskRoot.current = group;
+    if (group && root.current) group.position.copy(root.current.position);
+  }, []);
   const body = useRef<Group>(null);
   const motion = useRef<Motion>({
     world: null,
@@ -194,6 +207,7 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
       approach(m.display[2], target[2], dt, POSITION_RATE),
     ];
     group.position.set(...m.display);
+    riskRoot.current?.position.set(...m.display);
     if (m.heading !== null) m.yaw = approachAngle(m.yaw, m.heading, dt, YAW_RATE);
     if (body.current) body.current.rotation.y = m.yaw;
     const walking = isWalking({
@@ -212,37 +226,46 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
   // 표시 종류·이름표만 정한다. 좌표는 useFrame 이 마지막 유효 위치로 채운다.
   const pose = personPose(track, hasLastValid ? SOME_LAST_VALID : NO_LAST_VALID);
   const tone = personTone(track);
-  const label = personLabel(track, pose, connection?.state === 'OPEN');
+  const base = personLabel(track, pose, connection?.state === 'OPEN');
+  // 이름표 하나에 위험 > 대상 ID·관측 상태 순서로 적어 겹치지 않게 한다.
+  const label = risk ? `${riskLabel(risk)} · ${base}` : base;
 
   return (
-    <Selectable target={{ type: 'person', id: worldId }}>
-      <group ref={root} name={`person-avatar:${worldId}`}>
-        {pose.kind === 'BODY' ? (
-          <group ref={body}>
-            {model ? (
-              <ModelBody
-                key={model.url}
-                model={model}
-                tone={tone}
-                selected={selected}
-                motion={motion}
-                worldId={worldId}
-              />
-            ) : (
-              <CapsuleBody tone={tone} selected={selected} />
-            )}
-          </group>
-        ) : (
-          <HeightUnknownColumn selected={selected} />
-        )}
-        <LabelSprite
-          text={label}
-          y={pose.kind === 'BODY' ? LABEL_Y : COLUMN_TOP + 0.2}
-          height={0.24}
-          color={LABEL_COLOR[tone]}
-        />
-      </group>
-    </Selectable>
+    <>
+      <Selectable target={{ type: 'person', id: worldId }}>
+        <group ref={root} name={`person-avatar:${worldId}`}>
+          {pose.kind === 'BODY' ? (
+            <group ref={body}>
+              {model ? (
+                <ModelBody
+                  key={model.url}
+                  model={model}
+                  tone={tone}
+                  selected={selected}
+                  motion={motion}
+                  worldId={worldId}
+                />
+              ) : (
+                <CapsuleBody tone={tone} selected={selected} />
+              )}
+            </group>
+          ) : (
+            <HeightUnknownColumn selected={selected} />
+          )}
+          <LabelSprite
+            text={label}
+            y={pose.kind === 'BODY' ? LABEL_Y : COLUMN_TOP + 0.2}
+            height={0.24}
+            color={risk ? riskStyle(risk).labelColor : LABEL_COLOR[tone]}
+          />
+        </group>
+      </Selectable>
+      {risk && (
+        <group ref={attachRisk}>
+          <PersonRiskMark risk={risk} kind={pose.kind} worldId={worldId} />
+        </group>
+      )}
+    </>
   );
 }
 

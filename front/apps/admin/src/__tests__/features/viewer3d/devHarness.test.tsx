@@ -270,15 +270,31 @@ describe('MockApp 개발 보기', () => {
     }
   });
 
-  it('위험 시나리오의 LIVE 활성 이벤트가 이벤트 목록이 되고 대상은 World ID 다', () => {
+  it('위험 시나리오의 LIVE 활성 이벤트가 계약 등급 그대로 이벤트 목록이 되고 대상은 World ID 다(R06)', () => {
     vi.useFakeTimers();
     try {
       window.history.replaceState(null, '', '/dev?view=mock&source=risk-lifecycle');
       render(<MockApp />);
-      act(() => vi.advanceTimersByTime(3200));
       const panel = screen.getByRole('region', { name: '실시간 관제' });
-      expect(within(panel).getByText('R1 · z-01 · UPDATED')).toBeTruthy();
-      expect(within(panel).getByText('R2 · z-02 · RAISED')).toBeTruthy();
+      // 행마다 [등급 배지, 제목, 대상 ID].
+      const rows = () =>
+        [...panel.querySelectorAll('[data-event-id]')].map((row) =>
+          [...row.children].map((cell) => cell.textContent),
+        );
+      act(() => vi.advanceTimersByTime(1200));
+      expect(rows()).toEqual([['HIGH', 'R1 · z-01 · RAISED #1', 'w-0001']]);
+      act(() => vi.advanceTimersByTime(1000));
+      // 상향된 CRITICAL 을 HIGH 로 줄이지 않는다.
+      expect(rows()).toEqual([['CRITICAL', 'R1 · z-01 · UPDATED #2', 'w-0001']]);
+      act(() => vi.advanceTimersByTime(1000));
+      expect(rows()).toEqual([
+        ['CRITICAL', 'R1 · z-01 · UPDATED #2', 'w-0001'],
+        ['CRITICAL', 'R2 · z-02 · RAISED #1', 'w-0001'],
+      ]);
+      act(() => vi.advanceTimersByTime(2000));
+      expect(rows()).toEqual([['CRITICAL', 'R2 · z-02 · RAISED #1', 'w-0001']]);
+      act(() => vi.advanceTimersByTime(1500));
+      expect(rows()).toEqual([]);
     } finally {
       vi.useRealTimers();
     }

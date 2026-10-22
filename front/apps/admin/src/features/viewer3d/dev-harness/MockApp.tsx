@@ -79,7 +79,7 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   const [zoneApply, setZoneApply] = useState(() => readZoneApply(window.location.search));
   // 입력 없음이면 예전 고정 작업자·구역을, 입력이 있으면 Provider 의 사람·구역을 쓴다(둘을 함께 그리지 않는다).
   const legacy = sourceKey === 'off';
-  const roster = useRoster(dataStore, legacy);
+  const roster = useRoster(dataStore, legacy, status?.mode ?? 'LIVE');
   // 입력을 바꾸거나 처음부터 다시 재생할 때만 새 Source 를 만든다(epoch 는 재시작 표시).
   const harness = useMemo(
     () => createHarnessSource(sourceKey, restBase, mockApi),
@@ -156,7 +156,7 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
 
       {mockUi && (
         <div className="smk-ui" data-testid="mock-ui">
-          <MockTopBar status={status} light={light} onToggleTheme={toggleTheme} />
+          <MockTopBar status={status} light={light} onToggleTheme={toggleTheme} store={dataStore} />
           <SelectionCard selected={selected} focus={commands.focus} clear={commands.clear} />
           {panelOpen && (
             <MockOverlay
@@ -188,6 +188,7 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
             onSourceChange={changeSource}
             zoneApply={zoneApply}
             onZoneApplyChange={changeZoneApply}
+            mode={status?.mode ?? 'LIVE'}
             onRestart={() => setEpoch((n) => n + 1)}
           />
         </SpatialDiagnostics>

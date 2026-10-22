@@ -5,6 +5,7 @@ import {
 } from '@/features/viewer3d/dev-harness/mockSource';
 import type { SpatialMockApi } from '@/features/viewer3d/dev-harness/mswHandlers';
 import {
+  DEMO_MAX_TICKS,
   isScenarioKey,
   SCENARIOS,
   type ScenarioKey,
@@ -124,7 +125,12 @@ export function createHarnessSource(
 ): HarnessSource {
   if (key === 'off') return { source: null, mock: null };
   const scenario: ScenarioKey = key === 'external' ? 'normal' : key;
-  const mock = createMockSource({ scenario, restBase });
+  const mock = createMockSource({
+    scenario,
+    restBase,
+    reactivateMocks: api ? () => api.reactivate() : undefined,
+    maxTicks: DEMO_MAX_TICKS[scenario],
+  });
   // REST 스냅샷이 같은 시나리오·시각축에서 나오게 맞춘다.
   api?.setScenario(scenario, mock.t0);
   return { source: key === 'external' ? relay(mock) : mock, mock };

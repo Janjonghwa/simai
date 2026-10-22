@@ -146,6 +146,7 @@ function eventOf(message: RiskEventMessage, receivedAt: number): RiskEventView {
     ackCount: p.acks?.length ?? 0,
     escalationCount: p.escalations?.length ?? 0,
     sceneVersion: p.scene_version ?? null,
+    delivery: p.delivery ?? null,
   };
 }
 
