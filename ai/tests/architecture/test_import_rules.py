@@ -78,6 +78,19 @@ def test_violation_fails(tmp_path, rel, code):
     assert "BROKEN" in result.stdout, result.stdout + result.stderr
 
 
+def test_risk_cannot_reach_pydantic_through_contract_models(tmp_path):
+    """생성 모델(pydantic)은 기본 설치에 없으므로 risk 가 contracts.models 를 거쳐 불러오면 실패한다(S15P31A101-24)."""
+    result = _fake_tree(
+        tmp_path,
+        {
+            "src/simai_ai/contracts/models.py": "import pydantic\n",
+            "src/simai_ai/risk/engine.py": "from simai_ai.contracts import models\n",
+        },
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "BROKEN" in result.stdout, result.stdout + result.stderr
+
+
 def test_risk_contract_covers_every_feature_package():
     """새 기능 패키지를 만들고 risk 금지 목록에 넣지 않으면 실패한다."""
     config = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["tool"]["importlinter"]

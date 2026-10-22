@@ -1,0 +1,12 @@
+// 계약 Java 클래스 생성(contracts.gradle)에 쓰는 jsonschema2pojo 플러그인과 사용자 annotator(S15P31A101-24).
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.jsonschema2pojo:jsonschema2pojo-gradle-plugin:1.3.3'
+}

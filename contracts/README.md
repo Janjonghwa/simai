@@ -117,3 +117,18 @@ uv run contracts/scripts/validate_examples.py
 - `examples/<schema>[.<variant>].json`은 통과해야 한다.
 - `examples/invalid/<schema>.<case>.json`은 실패해야 한다. 불변 규칙을 하나 추가하면 그 위반 예시도 하나 추가한다.
 - 스키마를 바꾸면 예시도 같이 바꾼다. 버전 규칙: 필드 추가는 마이너, 삭제·의미 변경은 메이저(12.1).
+
+## 언어별 생성 타입
+
+명세 21.2: 언어별 타입은 스키마에서 생성하고 생성 코드를 손으로 고치지 않는다. 계약 검증의 정본은 여전히 jsonschema(위 `validate_examples.py`, 각 파트의 계약 시험)다. 생성 타입은 if/then/else·not·조건 분기로 적은 불변 규칙을 검사하지 않는다.
+
+| 언어 | 대상 | 생성 위치(커밋 여부) | 재생성 | 커밋과 같은지 확인 |
+|---|---|---|---|---|
+| Python (pydantic v2) | `common/defs` 를 뺀 모든 스키마(46개). 스키마 이름 → 모델은 `Contracts.model_fields['<이름>']`(예: `world_state` → `WorldState`) | `ai/src/simai_ai/contracts/models.py`(커밋) | `cd ai && uv run python ../contracts/scripts/generate_python_models.py` | 같은 명령에 `--check`(종료 1 이면 다름). `ai/tests/contracts/test_models.py` 가 함께 돈다 |
+| Java (jsonschema2pojo, Jackson 3) | `messages/*` 에서 `envelope` 를 뺀 메시지(42개). `com.ssafy.simai.contracts.WorldState`·`WorldStatePayload` 꼴 | `server/build/generated-sources/js2p`(커밋 안 함, 빌드 산출물) | `cd server && ./gradlew compileJava`(스키마가 바뀌면 다시 만든다) | 해당 없음(커밋하지 않음). `ContractExamplesRoundTripTest` 가 예시 왕복을 본다 |
+| TypeScript | 관제 앱이 받는 I2 메시지(`world_state`, `risk_event`, `viewer_health`, `action_mismatch`) 타입·검증기 | `front/packages/contracts/src/generated`(커밋) | `cd front && pnpm --filter @simai/contracts generate` | `pnpm --filter @simai/contracts check:generated` |
+
+스키마를 바꾼 MR 은 이 순서로 다시 만든다: ① 스키마·예시 수정 후 `uv run contracts/scripts/validate_examples.py` ② Python 생성 + `uv run pytest tests/contracts` ③ TS `generate` + `check:generated` ④ Java `./gradlew test`(생성물은 커밋하지 않으니 빌드가 통과하는지만). 생성 모델의 이름·형태가 바뀌면 그 모델을 쓰는 코드도 같은 MR 에서 고친다.
+
+- Python: 생성기 판(`datamodel-code-generator`)은 ai dev 그룹에 고정한다(판마다 결과가 달라 `--check` 가 깨진다). 선택 필드는 없으면 `pydantic.MISSING`, null 은 스키마가 허용할 때만이라 없음과 null 이 구분되고, 열린 객체는 모르는 필드를 그대로 싣는다(`extra='allow'`), 닫힌 값 객체는 거부한다. 문자열·불리언을 정수로 바꿔 받지 않는다(strict). 모델은 pydantic 이 있어야 import 되므로 기본 설치의 `simai_ai.risk` 는 쓰지 않는다(lint-imports 가 막는다). 모델이 놓치는 조건 밖 위반 2건(`event_ack.site_button_via_ec2`, `observation_summary.data_uri_archive`: allOf 로 가져온 정의를 같은 자리에서 좁히는 제약)은 `KNOWN_GAPS` 에 있다.
+- Java: `server/contracts.gradle` 이 jsonschema2pojo 가 못 읽는 2020-12 구성을 타입만 남게 바꿔(`build/contract-schemas`) 넘긴다. allOf 의 `$ref`(봉투 등)는 필드를 합치고, null 갈래 하나만 있는 oneOf 는 nullable 로, 조건 분기는 버린다. 정수는 `Long`(int64 ms), 열린 객체의 모르는 필드는 `additionalProperties` 맵에 남는다. 필수 필드는 null 이어도 키를 싣는다(`buildSrc` 의 `RequiredAlwaysAnnotator`). 한계: 선택 필드의 null 과 없음을 구분하지 못한다(쓰면 키 없음), 패턴·범위·enum 축소를 검사하지 않는다. **사용 지침:** Spring 은 I1 등 받은 원본 JSON 을 생성 클래스로 읽기 전에 jsonschema 로 먼저 검증한다(읽은 뒤에는 필수 nullable 키의 누락이 Java null 로 바뀌어 되돌릴 수 없고, 조건 규칙·KNOWN_GAPS 를 클래스만으로 판정할 수 없다. 구현은 서버 수신 티켓 몫).

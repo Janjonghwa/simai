@@ -1,0 +1,123 @@
+// contracts/messages 의 JSON Schema 에서 Java 클래스(com.ssafy.simai.contracts)를 만든다(명세 21.2, S15P31A101-24).
+// 생성 코드는 build/generated-sources/js2p 에만 두고 커밋하지 않는다. compileJava 가 스키마 변경을 보고 다시 만든다.
+// 클래스 이름: world_state → WorldState, 그 payload → WorldStatePayload. 계약 검증 정본은 jsonschema 다(아래 주의).
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+
+def contractsDir = file('../contracts')
+def preparedDir = layout.buildDirectory.dir('contract-schemas')
+def contractPackage = 'com.ssafy.simai.contracts'
+def schemaFiles = fileTree(contractsDir) { include '*/*.schema.json' }
+def messageNames = fileTree(contractsDir) { include 'messages/*.schema.json' }.files*.name
+        .collect { it - '.schema.json' }.findAll { it != 'envelope' }.sort()
+
+// jsonschema2pojo 가 읽지 못하는 2020-12 구성을 타입만 남게 바꿔 build/contract-schemas 에 쓴다.
+// - allOf 의 $ref(봉투, operator_ack 같은 공통 묶음)는 그 필드를 가져와 합친다. 조건만 있는 갈래(if/then/else, not)는 버린다.
+// - oneOf/anyOf 는 null 을 뺀 갈래가 하나면 그 타입(nullable), 아니면 버린다(Object). const 만 있는 자리는 값의 타입을 준다.
+// 필수 필드는 null 이어도 키를 싣는다(buildSrc RequiredAlwaysAnnotator).
+// 주의: 생성 클래스는 조건 규칙·패턴·범위를 검사하지 않고 없음과 null 을 구분하지 못한다(선택 필드 null = 키 없음).
+def prepareContractSchemas = tasks.register('prepareContractSchemas') {
+    inputs.files(schemaFiles)
+    outputs.dir(preparedDir)
+    doLast {
+        def out = preparedDir.get().asFile
+        out.deleteDir()
+        def docs = [:]
+        schemaFiles.files.each { f -> docs["${f.parentFile.name}/${f.name}".toString()] = new JsonSlurper().parse(f, 'UTF-8') }
+        // 모든 $ref 를 '../<폴더>/<파일>#조각' 으로 맞춘다. 스키마는 모두 한 단계 폴더 안이라 어느 파일에서나 같은 뜻이다.
+        def canonical = { String ref, String rel ->
+            int hash = ref.indexOf('#')
+            def file = hash < 0 ? ref : ref.substring(0, hash)
+            def frag = hash < 0 ? '' : ref.substring(hash)
+            "../${file ? new URI(rel).resolve(file).normalize().toString() : rel}${frag}".toString()
+        }
+        def canon
+        canon = { node, String rel ->
+            if (node instanceof Map) return node.collectEntries { k, v -> [k, k == '$ref' ? canonical(v, rel) : canon(v, rel)] }
+            if (node instanceof List) return node.collect { canon(it, rel) }
+            node
+        }
+        docs = docs.collectEntries { rel, d -> [rel, canon(d, rel)] }
+        def resolve = { String ref ->
+            def m = ref =~ /^\.\.\/([^#]+)(?:#(.*))?$/
+            if (!m.matches() || !docs.containsKey(m.group(1))) throw new GradleException("풀 수 없는 \$ref: ${ref}")
+            def node = docs[m.group(1)]
+            (m.group(2) ?: '').split('/').findAll { it }.each { node = node[it] }
+            node
+        }
+        def simplify
+        simplify = { node ->
+            if (node instanceof List) return node.collect { simplify(it) }
+            if (!(node instanceof Map)) return node
+            def n = new LinkedHashMap(node)
+            ['if', 'then', 'else', 'not', '$id', '$schema', 'propertyNames', 'contains'].each { n.remove(it) }
+            n.remove('allOf')?.findAll { it instanceof Map && it.'$ref' }?.each { part ->
+                def target = simplify(resolve(part.'$ref'))
+                if (!target.properties && !n.properties && !n.'$ref' && !n.type) {
+                    n.'$ref' = part.'$ref'
+                    return
+                }
+                if (!n.type && target.type) n.type = target.type
+                // 같은 이름은 합친다. 닫힌 객체가 이름만 적은 자리(true, {})는 가져온 정의의 타입을 쓴다
+                def merged = new LinkedHashMap(target.properties ?: [:])
+                (n.properties ?: [:]).each { name, prop ->
+                    def base = merged[name]
+                    if (base instanceof Map && (prop == true || prop == [:])) return
+                    merged[name] = base instanceof Map && prop instanceof Map ? base + prop : prop
+                }
+                n.properties = merged
+                def required = ((target.required ?: []) + (n.required ?: [])).unique()
+                if (required) n.required = required
+            }
+            ['oneOf', 'anyOf'].each { kw ->
+                // null 갈래는 설명문(description 등)이 붙어 있어도 type 만 본다(keypoint_2d 의 '검출되지 않음')
+                def branches = n.remove(kw)?.findAll { !(it instanceof Map && it.type == 'null') }
+                if (branches?.size() == 1 && (branches[0].'$ref' || branches[0].type)) n.putAll(branches[0])
+            }
+            if (n.containsKey('const') && !n.type) {
+                n.type = n.const instanceof String ? 'string' : n.const instanceof Boolean ? 'boolean' : 'number'
+            }
+            def result = n.collectEntries { k, v ->
+                if (k in ['const', 'enum', 'default']) return [k, v]
+                if (k in ['properties', '$defs', 'patternProperties']) return [k, v.collectEntries { name, sub -> [name, simplify(sub)] }]
+                [k, simplify(v)]
+            }
+            result
+        }
+        docs.each { rel, d ->
+            def s = simplify(d)
+            def name = rel.tokenize('/')[1] - '.schema.json'
+            if (rel.startsWith('messages/') && name != 'envelope') {
+                def cls = name.split('_').collect { it.capitalize() }.join()
+                s.javaType = "${contractPackage}.${cls}".toString()
+                if (s.properties?.payload instanceof Map && !s.properties.payload.'$ref') {
+                    s.properties.payload = s.properties.payload + [javaType: "${contractPackage}.${cls}Payload".toString()]
+                }
+            }
+            def f = new File(out, rel)
+            f.parentFile.mkdirs()
+            f.setText(JsonOutput.prettyPrint(JsonOutput.toJson(s)), 'UTF-8')
+        }
+    }
+}
+
+jsonSchema2Pojo {
+    source = files(messageNames.collect { name -> preparedDir.map { it.file("messages/${name}.schema.json") } })
+    targetPackage = contractPackage
+    annotationStyle = 'jackson3'
+    customAnnotator = com.ssafy.simai.buildlogic.RequiredAlwaysAnnotator
+    useLongIntegers = true
+    initializeCollections = false
+    includeAdditionalProperties = true
+    includeJsr303Annotations = false
+    includeGeneratedAnnotation = false
+    removeOldOutput = true
+}
+
+tasks.named('generateJsonSchema2Pojo') { dependsOn prepareContractSchemas }
+
+// 계약 왕복 시험(ContractExamplesRoundTripTest)이 contracts/examples 를 읽는다
+tasks.named('test') {
+    inputs.dir(file('../contracts/examples'))
+    systemProperty 'simai.contracts.dir', file('../contracts').absolutePath
+}
