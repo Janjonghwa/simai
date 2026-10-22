@@ -1,0 +1,5 @@
+simai:
+  auth:
+    jwt:
+      # 시험 전용 키(Base64, 37바이트). 운영 값이 아니다
+      secret: dGVzdC1vbmx5LXNpbWFpLWp3dC1zZWNyZXQtMzItYnl0ZXMhIQ==
