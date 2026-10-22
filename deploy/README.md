@@ -5,7 +5,7 @@
 GPU·지역은 고정하지 않는다(2026-10-20 결정, S15P31A101-205): 개발·시험은 RunPod 의 그때그때 남은 GPU·지역(볼륨 없음), 예비는 Vast.ai,
 시연 사이트는 미정(엘리스 등 후보). 사이트가 GPU VM + 블록 스토리지면 `docker run` 으로 띄운다. 일본 Network Volume 은 쓰지 않는다.
 최소 사양: Tier 0 만은 VRAM 24GB급(RTX 4090 이상), Tier 0 + 실험은 48GB(80GB 권장). Ampere 이후, 드라이버 최대 CUDA 13.0 이상, 볼륨이 없으면 컨테이너 디스크 100GB 이상.
-Blackwell(sm_100·sm_120)도 세 이미지 모두 커널이 있다(Tier 0 cu130, 실험 이미지 cu128 + Detectron2 sm_100·sm_120 빌드, S15P31A101-207). 그 GPU 에서 실제로 도는지는 2차 세션 b·g0·m0 로 확인한다.
+Blackwell(sm_100·sm_120)도 세 이미지 모두 커널이 있다(Tier 0 cu130, 실험 이미지 cu128 torch 휠, S15P31A101-207. Detectron2 는 CUDA 확장 없는 CPU 전용 빌드라 GPU 세대와 상관없다, S15P31A101-238). 그 GPU 에서 실제로 도는지는 2차 세션 b·g0·m0 로 확인한다.
 
 ## 파일
 
@@ -15,14 +15,14 @@ Blackwell(sm_100·sm_120)도 세 이미지 모두 커널이 있다(Tier 0 cu130,
 | `base/Dockerfile`, `base/simai-start.sh` | 공통 베이스: CUDA 이미지 + uv + uv 관리 Python 3.11.15 + SSH(키 인증만: RunPod `PUBLIC_KEY`·Vast `SSH_PUBLIC_KEY`·`SIMAI_AUTHORIZED_KEYS_FILE`, `SIMAI_SSHD=off` 면 안 띄움. 한 줄에 공개키 하나만 받고 옵션·제어 문자 줄은 버린다. ssh-keygen·sshd 에는 HF 토큰을 넘기지 않는다) 시작 스크립트 |
 | `tier0/Dockerfile`, `tier0/entrypoint.sh` | Tier 0 서비스 이미지(YOLO26x-pose, TensorRT FP16). `ai/uv.lock` 으로 의존성 고정(큰 휠은 묶음별 층, 아래 "층 분할"), 첫 기동 때 엔진 준비 |
 | `scripts/simai_bootstrap.py`, `weights.json` | 이미지의 `simai-bootstrap`(기본 진입점): 저장 위치·GPU 세대 감지 → 가중치 목록대로 받고 sha256 확인 → Tier 0 또는 세션 큐 (아래 "simai-bootstrap") |
-| `exp02/Dockerfile`, `exp02/entrypoint.sh`, `exp02/requirements.{in,lock.txt}` | EXP-02 HMR(Fast SAM 3D Body) 이미지: torch 2.7.1+cu128, Detectron2 를 Ampere~Blackwell 로 미리 빌드. 가중치는 시작할 때 `simai-bootstrap` 이 받는다(아래 "실험 이미지") |
+| `exp02/Dockerfile`, `exp02/entrypoint.sh`, `exp02/requirements.{in,lock.txt}` | EXP-02 HMR(Fast SAM 3D Body) 이미지: torch 2.7.1+cu128, Detectron2 는 CUDA 확장 없이(`FORCE_CUDA=0`, CPU 전용) 빌드. 가중치는 시작할 때 `simai-bootstrap` 이 받는다(아래 "실험 이미지") |
 | `mapanything/Dockerfile`, `mapanything/requirements.{in,lock.txt}` | EXP-01 MapAnything 이미지: Python 3.12, torch 2.7.1+cu128, map-anything @3d10cf7 (아래 "실험 이미지") |
 | `risk-engine/Dockerfile` | EC2 Risk Engine 컨테이너(S15P31A101-99): CPU 전용 python:3.11.15-slim, `ai/uv.lock` 의 extra `risk_api`(FastAPI·uvicorn·jsonschema)만, 비루트(uid 10001)·EXPOSE 없음·헬스체크 `/healthz`, 계약 스키마·공통 벡터 포함(약 225 MB). compose `risk-engine` 은 internal 망 `simai-ec2-internal` 에서 `risk-engine:8080` 으로만 닿는다(포트 공개 없음). 설계 `docs/design/risk-engine-container.md` |
 | `scripts/risk_plan_roundtrip.py`, `scripts/risk_engine_g304.sh` | Risk Engine 컨테이너 계약 예시 왕복(HTTP·라이브러리 직접), D-G3-04 두 이미지 대조(`bash deploy/scripts/risk_engine_g304.sh simai/risk-engine:$TAG simai/tier0:$TAG`: 공통 벡터 출력 같음 + API 응답 = Tier 0 라이브러리 응답) |
 | `*/Dockerfile.dockerignore` | 이미지별 빌드 컨텍스트 **허용 목록**(나열한 파일만 들어간다) |
 | `compose.yaml` | 로컬 점검용(RunPod 은 Compose 를 쓰지 않는다) |
 | `scripts/check_image.sh` | 이미지 점검(GPU 불필요, 세 이미지 공통·종류는 이미지 ENV `SIMAI_IMAGE_KIND`): 비밀·가중치·엔진·SSH 호스트 키 없음, import, 진입점 오류 코드, GPU 별 엔진 경로(Tier 0), 가중치 묶음 선택(실험), SSH 비밀번호 접속 거부 |
-| `scripts/exp_image_check.py` | 실험 이미지 GPU 점검(Pod, 세션 큐 g0·m0): CUDA·이 GPU 세대 커널(torch·Detectron2)·확장 커널 1회·pyrender EGL·MapAnything import |
+| `scripts/exp_image_check.py` | 실험 이미지 GPU 점검(Pod, 세션 큐 g0·m0): CUDA·이 GPU 세대 커널(torch)·Detectron2 LazyConfig 읽기(CUDA 확장 없음)·pyrender EGL·MapAnything import |
 | `scripts/gpu_session1.py` | GPU 세션 검증 큐(S15P31A101-183·-207): gpu_queue 로 아래 스크립트를 차례로 돌리고 결과 묶음·scp 명령을 낸다. `prepare`(노트북 사본)·`plan`·`run`(Pod 또는 `--mode dryrun`). 지금 이미지(`--image`, 기본 `SIMAI_IMAGE_KIND`)의 항목만 돈다 |
 | `scripts/pod_check.py` | Pod 점검(-31): GPU(최소 사양)·드라이버·CUDA·마운트·용량·쓰기 속도·fsync·flock → JSON. `--no-volume` 은 볼륨 측정 SKIP |
 | `scripts/session1_engine.sh` | 아래 "Pod 검증 큐" 1)~7) 을 한 Job 으로(단계별 종료 코드·시간을 steps.tsv·metrics.json 에) |
@@ -78,7 +78,7 @@ RunPod Pod 안에서는 Docker 를 쓸 수 없으므로 이미지는 노트북�
 TAG=$(git rev-parse --short=12 HEAD)
 TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl tier0      # → simai/tier0:$TAG (로컬)
 bash deploy/scripts/check_image.sh simai/tier0:$TAG               # 모두 통과해야 올린다
-TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl exp02      # → simai/exp02-fs3db:$TAG (Detectron2 6세대 CPU 빌드)
+TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl exp02      # → simai/exp02-fs3db:$TAG (Detectron2 CPU 전용 빌드)
 TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl mapanything # → simai/mapanything:$TAG
 bash deploy/scripts/check_image.sh simai/exp02-fs3db:$TAG         # 실험 이미지도 같은 점검(종류별 항목)
 bash deploy/scripts/check_image.sh simai/mapanything:$TAG
@@ -91,8 +91,9 @@ bash deploy/scripts/check_image.sh simai/risk-engine:$TAG         # 벡터·비�
   묶음 이름이 잠금에 없으면 빌드가 멈춘다. 묶음을 바꿀 때는 `deploy/tier0/Dockerfile` 의 `pick` 줄을 고친다.
 - Docker Hub 받기가 `httpReadSeeker ... EOF` 로 끊기면(SSAFY 망에서 자주 봤다) 같은 명령을 다시 실행한다. 받은 층은 남는다.
 - `git status` 가 깨끗할 때만 올릴 이미지를 빌드한다(`TAG` 가 커밋을 가리키므로).
-- EXP-02 의 Detectron2 아키텍처는 `EXP02_CUDA_ARCH="8.0;8.6;8.9;9.0;10.0;12.0"`(Ampere 이후 전부) 기본이라 GPU 가 바뀌어도 다시 빌드하지 않는다.
-- EXP-02 는 Detectron2 CUDA 확장을 CPU 로 컴파일한다. nvcc 병렬 수는 `EXP02_MAX_JOBS`(기본 2, Docker Desktop 메모리 2GB 에서 맞춘 값). 메모리를 8GB 이상으로 올렸으면 `EXP02_MAX_JOBS=8` 로 빨라진다.
+- EXP-02 의 Detectron2 는 CUDA 확장 없이 빌드한다(`FORCE_CUDA=0`, S15P31A101-238). 우리 경로가 쓰는 기능은 LazyConfig(순수 Python)뿐이라 nvcc·CUDA devel 베이스·GPU 세대별 컴파일이 필요 없고, GPU 가 바뀌어도 다시 빌드하지 않는다.
+  빌드·실행 단계 모두 CUDA 12.8.1 base 다(devel 이미지를 받지 않는다). `check_image.sh` 가 확장이 CPU 전용(`has_cuda()` False)인지 확인한다.
+- Detectron2 CPU 확장(C++) 컴파일 병렬 수는 `EXP02_MAX_JOBS`(기본 2, Docker Desktop 메모리 2GB 에서 맞춘 값). 메모리를 8GB 이상으로 올렸으면 `EXP02_MAX_JOBS=8` 로 빨라진다.
 - 노트북 빌드 실측(층 크기·시간·다시 올라가는 층)은 `docs/design/exp-images.md` "빌드 결과" 에 있다.
 
 정적 점검: `docker run --rm -i hadolint/hadolint:v2.14.0 < deploy/tier0/Dockerfile` (세 Dockerfile 모두), 셸 스크립트는 shellcheck. 셸 스크립트는 LF 다(`.gitattributes`).
@@ -245,9 +246,9 @@ Tier 0 재시작(엔진 캐시 사용, 1초대) 때는 워커 접수 문이 표�
 
 | | `exp02-fs3db` (HMR) | `mapanything` |
 |---|---|---|
-| 베이스 | `nvidia/cuda:12.8.1-base-ubuntu24.04` + Python 3.11.15. Detectron2 는 `12.8.1-devel` 빌드 단계에서만(실행 이미지에 nvcc 없음) | 같은 CUDA base + Python 3.12.13 |
+| 베이스 | `nvidia/cuda:12.8.1-base-ubuntu24.04` + Python 3.11.15. 빌드 단계도 같은 base(devel·nvcc 없음, Detectron2 CPU 전용 휠만 만든다) | 같은 CUDA base + Python 3.12.13 |
 | torch | 2.7.1+cu128 (볼륨 venv 2.5.1+cu124 → Blackwell 커널이 있는 판) | 2.7.1+cu128 (볼륨 venv 2.7.1+cu126 과 같은 판, CUDA 빌드만) |
-| GPU 세대 | torch 휠 SASS sm_75·80·86·90·100·120 + PTX 12.0(cuobjdump 로 확인, 8.9 는 8.6 SASS). Detectron2 SASS 8.0·8.6·8.9·9.0·10.0·12.0, PTX 없음 (같은 주 버전의 높은 부 버전 8.7·10.3·12.1 은 SASS 호환) | torch 휠과 같다 |
+| GPU 세대 | torch 휠 SASS sm_75·80·86·90·100·120 + PTX 12.0(cuobjdump 로 확인, 8.9 는 8.6 SASS). Detectron2 는 CUDA 커널 없음(CPU 전용 확장, LazyConfig 만 쓴다) (torch: 같은 주 버전의 높은 부 버전 8.7·10.3·12.1 은 SASS 호환) | torch 휠과 같다 |
 | 코드 | Fast-SAM-3D-Body @d72aa36 → `SIMAI_FS3DB_REPO`, DINOv3 허브 코드 → `~/.cache/torch/hub/facebookresearch_dinov3_main` | map-anything @3d10cf7 → `SIMAI_MAPANYTHING_REPO`, DINOv2 허브 코드 → `~/.cache/torch/hub/facebookresearch_dinov2_main` |
 | 가중치 묶음 | `exp02`: yolo26x-pose, sam-3d-body-dinov3 `model.ckpt`·`assets/mhr_model.pt`, MoGe2 vits·vitl | `static`: map-anything·map-anything-apache (`model.safetensors`·`config.json`) |
 | 기본 명령 | `sleep infinity`(SSH 로 들어가 쓰는 개발 Pod, 준비 없음) | 같다 |
@@ -256,7 +257,7 @@ Tier 0 재시작(엔진 캐시 사용, 1초대) 때는 워커 접수 문이 표�
 # 준비(저장 위치·GPU·가중치 sha256) → 실행. HMR 은 simai-exp02 가 fastcfg 링크(Fast 저장소 config + 같은 가중치)를 만들고 체크포인트를 확인한다
 simai-bootstrap run simai-exp02 python <사본>/ai/experiments/hmr/run_image.py --run-id ... --images ...
 simai-bootstrap run python <사본>/ai/experiments/static_scene/run_mapanything.py --run-id ... --images ... --model $SIMAI_ROOT/weights/map-anything-apache
-simai-bootstrap queue --session <이름>     # 2차 세션 큐: 이 이미지의 항목(g0~g3 또는 m0~m2)만 돈다
+simai-bootstrap queue --session <이름>     # 2차 세션 큐: 이 이미지의 항목(g0~g4 또는 m0~m2)만 돈다
 ```
 
 - HF 토큰은 `sam-3d-body-dinov3`(승인제)에만 필요하다. Tier 0 와 같이 `HF_TOKEN` 환경 변수로만 받고 자식 프로세스에 넘기지 않는다.
@@ -318,7 +319,9 @@ python -m simai_ai.detection.engine_cache plan --weights /workspace/simai/weight
 # 노트북: 사본은 Tier 0 와 같은 prepare 출력. 데이터는 저장소에 없으므로 따로 올린다(공개 영상 프레임 14장, 라운지 사진 4장)
 scp -P <포트> -r <hmr_poc14 폴더> root@<IP>:/srv/simai/datasets/hmr_poc14     # exp02 Pod
 scp -P <포트> -r <room4 폴더> root@<IP>:/srv/simai/datasets/room4             # mapanything Pod
-# Pod: 가중치 받기·sha256 확인 → 이 이미지 항목만 큐 (a 점검 + g0~g3 또는 m0~m2). 끝나면 출력된 scp 로 결과 묶음을 가져오고 Stop·Terminate
+# exp02 Pod g4(보정 K 입력 경로): prepare 가 저장소 밖 --out 에 만든 g4-inputs.tar(교실 사진 20장 + 보정 기록)를 prepare 출력대로 올려
+# datasets/ 에 푼다. 사람이 찍힌 사진이라 내부 확인용이다(공유·커밋하지 않는다)
+# Pod: 가중치 받기·sha256 확인 → 이 이미지 항목만 큐 (a 점검 + g0~g4 또는 m0~m2). 끝나면 출력된 scp 로 결과 묶음을 가져오고 Stop·Terminate
 nohup simai-bootstrap queue --session <세션> > /srv/simai/setup/session1/session2-<이미지>.log 2>&1 &
 ```
 

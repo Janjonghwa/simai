@@ -91,26 +91,36 @@ Host simai-pod
 `ai/experiments/gpu_queue`(S15P31A101-36)를 같은 프로세스에서 그대로 돌린다. 항목별 명령·제한 시간·Run 기록(`contracts/experiments/run_record.schema.json`)·잠금·heartbeat·재시작 복구는 gpu_queue 가 맡고,
 세션 실행기는 Job 파일 생성, 사전 점검, 전체 시간 상한, 결과 묶음, scp 명령을 더한다.
 
-| 항목 | Jira | 내용 | H100 예상 | 제한 | 상태 |
+| 항목 | Jira | 내용 | H100 예상 (2차 세션 실측) | 제한 | 상태 |
 |---|---|---|---|---|---|
-| a | -31 | Pod 점검(위 표) | 2분 | 15분 | 큐 |
-| b | -32 | Tier 0 이미지 GPU·torch CUDA·TensorRT 확인, 엔진 첫 빌드·캐시 재사용·batch 4 추론, 진입점(설정이 있으면), 가중치 반례(종료 코드 2), sm_86 경로 분리 (`session1_engine.sh`, deploy/README "Pod 검증 큐" 1~7) | 15분 | 45분 | 큐 |
-| t | -183 | 시험 도구(pytest·cryptography, `ai/uv.lock` 버전)를 컨테이너 디스크에 `uv pip install --target` (Tier 0 이미지에는 시험 의존성이 없다) | 1분 | 10분 | 큐(Pod 만) |
-| c | -182 | LIVE 입력 Pod 확인 (`session1_live.py all`, 아래) | 10분 | 40분 | 큐, **-182 머지·이미지 재빌드 필요** |
-| d | -60 | Tier 0 GPU 우선 보호 측정 P0~P7 (`session1_gpu_priority.py`, 아래) | 15분 | 45분 | 큐, **-60 머지 필요** |
+| a | -31 | Pod 점검(위 표) | 1분 (0.2초, 볼륨 없음) | 15분 | 큐 |
+| b | -32 | Tier 0 이미지 GPU·torch CUDA·TensorRT 확인, 엔진 첫 빌드·캐시 재사용·batch 4 추론, 진입점(설정이 있으면), 가중치 반례(종료 코드 2), sm_86 경로 분리 (`session1_engine.sh`, deploy/README "Pod 검증 큐" 1~7) | 12분 (561.2초, 엔진 빌드 550.6초) | 45분 | 큐 |
+| t | -183 | 시험 도구(pytest·cryptography, `ai/uv.lock` 버전)를 컨테이너 디스크에 `uv pip install --target` (Tier 0 이미지에는 시험 의존성이 없다) | 1분 (0.8초) | 10분 | 큐(Pod 만) |
+| c | -182 | LIVE 입력 Pod 확인 (`session1_live.py all`, 아래) | 5분 (207.2초) | 40분 | 큐 |
+| d | -60 | Tier 0 GPU 우선 보호 측정 P0~P7 (`session1_gpu_priority.py`, 아래) | 10분 (446.8초) | 45분 | 큐 |
 | e | -92 | Network Volume 강제 종료 복구 (아래) | 5분 | 30분 | 제외: 엘리스 블록 스토리지 세션으로 옮김(-205) |
 | f | -45·-175 | `test_i1_tls.py`·`test_serial_tls.py` 를 Linux 에서 5회 반복 (`repeat_pytest.py`) | 10분 | 40분 | 제외: GPU 가 필요 없어 GPU 세션에서 뺌(Linux CPU 에서) |
-| g0 | -207 | EXP-02 이미지 GPU 점검(`exp_image_check.py`: CUDA·세대 커널·Detectron2 확장 커널·pyrender EGL) | 2분 | 10분 | exp02 이미지 Pod 에서 |
-| g1~g3 | -207 | EXP-02 E-GATE-0 재현: H6 검출 시간, H0 스모크 1장, H1 공식 경로 14장 (아래 "2차 세션") | 5·5·15분 | 20·20·45분 | exp02 이미지 Pod 에서 |
-| m0 | -207 | MapAnything 이미지 GPU 점검 | 2분 | 10분 | mapanything 이미지 Pod 에서 |
-| m1·m2 | -207 | EXP-01 E-GATE-0 재현: C1(map-anything)·C2(map-anything-apache), room4 4장 | 5·5분 | 20·20분 | mapanything 이미지 Pod 에서 |
+| g0 | -207 | EXP-02 이미지 GPU 점검(`exp_image_check.py`: CUDA·세대 커널·Detectron2 LazyConfig(-238 부터 CUDA 확장 없음)·pyrender EGL) | 1분 (6.6초) | 10분 | exp02 이미지 Pod 에서 |
+| g1~g3 | -207 | EXP-02 E-GATE-0 재현: H6 검출 시간, H0 스모크 1장, H1 공식 경로 14장 (아래 "2차 세션") | 1·1·2분 (10.0·35.9·58.3초) | 20·20·45분 | exp02 이미지 Pod 에서 |
+| g4 | -238·-243 | EXP-02 보정 K 입력 경로: 교실 사진 20장 + 교실 보정 기록, `check_calib_k.py` 판정 (`docs/design/exp-images.md` "3차 세션 항목") | 3분 (추정, 아래) | 30분 | exp02 이미지 Pod 에서 |
+| m0 | -207 | MapAnything 이미지 GPU 점검 | 1분 (5.0초) | 10분 | mapanything 이미지 Pod 에서 |
+| m1·m2 | -207 | EXP-01 E-GATE-0 재현: C1(map-anything)·C2(map-anything-apache), room4 4장 | 2·2분 (47.1·37.5초) | 20·20분 | mapanything 이미지 Pod 에서 |
 | (`--exp-jobs`) | -87 | 추가 EXP Job 파일(다시점 집계 등). LIVE 보호를 켠 별도 큐로 마지막에 | - | - | 사람이 줄 때만 |
 
 - 순서: Pod 점검 → Tier 0 이미지·엔진(Tier 0 가 먼저, c·d 가 이 엔진 캐시를 쓴다) → 시험 도구 → LIVE·자원 보호 → 복구·TLS → EXP 는 맨 끝. 한 항목이 실패해도 다음 항목으로 간다(`continue_on_failure`).
 - 항목마다 돌 이미지가 정해져 있다(S15P31A101-207): Pod 하나는 이미지 하나라 큐는 지금 이미지(`--image`, 기본 이미지 ENV `SIMAI_IMAGE_KIND`, 없으면 tier0)의 항목과 a(모든 이미지)만 넣고, 나머지는 표에 '다른 이미지' 로 남긴다. 모르는 이미지 이름이면 시작하지 않는다(종료 코드 4).
 - c·d 는 -182·-60 이 머지된 뒤의 경로(`simai_ai.io.PyAvDecoder`·`NvdecDecoder`, `tests/services/tier0/live_video.py`, `experiments/gpu_queue/tier0_priority_probe.py` 등)를 부른다. 머지 전이면 각 단계가 '없음(머지 필요)'으로 실패하고 다음 항목으로 간다. PyAV 는 -182 가 `io` extra 에 넣었으므로 그 뒤에 빌드한 이미지여야 c 가 돈다.
-- 예상 시간 근거: a 는 1GB 쓰기+fsync 200회, b 는 deploy/README 의 "H100 에서 엔진 첫 빌드 수 분" + 캐시·추론, c 는 c4 LIVE 120초 + 엔진 캐시 기동 + 인코딩·디코딩 측정·기하 측정, d 는 줄인 시간(watch 120·120·90·60초) + P0 시험, e·f 는 노트북 실측(e 약 40초, f 1회 약 35초)에 Network Volume fsync 지연과 5회 반복을 넉넉히 더했다. g·m(-207)은 E-GATE-0 실측(H100 H1 14장 이미지당 약 10초 + 적재 약 40초, A40 MapAnything 적재 약 33초 + 추론 1초 미만)에 가중치 확인·첫 컴파일을 넉넉히 더했다.
-- **H100 총 예상**: 지금 큐 약 43분(e·f 제외 뒤) + Pod 기동·이미지 받기(압축 약 7.4GB) 약 10분 + 가중치 받기(볼륨 없음, 수십 초) + 사본 올리기·결과 회수 약 5분 ≈ **1시간**. d 를 G0 판정용(`--full`, watch 600초)으로 돌리면 +20분. 전체 시간 상한 기본값은 9000초(2.5시간). 다른 GPU 는 엔진 빌드·추론 시간이 다르다(H100 예상만 적었다).
+- **예상 시간 근거 (S15P31A101-243).** 2차 세션 실측: 2026-10-22, RunPod AP-JP-1, NVIDIA H100 80GB HBM3(드라이버 595.91.07, CUDA 13.2), 볼륨 없음(`/srv/simai`).
+  이미지 Tier 0 `jonghwa1492/tier0:3926a8772649`(`sha256:7fe58115…`), HMR `jonghwa1492/tier0:exp02-fs3db-3926a8772649`(`sha256:da77b601…`, -238 전 CUDA 확장 이미지),
+  MapAnything `jonghwa1492/tier0:mapanything-3926a8772649`(`sha256:f171420c…`). 결과 묶음은 노트북 `ai/experiments/runs/gpu-session1/20261022-s2-{tier0,exp02,mapanything}/`(커밋 안 함).
+  표의 예상은 항목 Run 기록(started_at~finished_at) 실측에 약 1.3~2배를 더해 분 단위로 올렸다(`gpu_session1.py` 의 `expected_s` 와 같은 값). 제한(`timeout_s`)은 처음 값 그대로다(다른 GPU·첫 받기 여유).
+  - b: 엔진 빌드 550.6초(YOLO26x-pose e2e FP16, imgsz 1280, batch 4), 캐시 재사용 3.0초, batch 4 추론 4.2초. 1차 세션 문서의 "수 분" 을 실측으로 바꿨다.
+  - c: c1 1.1초, c2 2.9초(통과 2), c3 40.6초, c4 131.8초, c5a 30.5초. c3 은 -212 판(NVDEC 한 스레드 p95 9.665 ms·112.2 fps, CPU 한 스레드 492.3 fps, CPU 카메라별 스레드 5초 변형 p95 3.05 ms·1,575.7 fps), c4 frame_age p95 최대 79 ms·pipeline_lag p50 117·p95 143 ms(NVDEC), c5a 10명 p95 57.38 ms(FAIL, 호스트 CPU, `docs/design/tier0-geometry-budget.md`).
+  - d: P0 23.1초(시험 3개가 Pod 의 RUNPOD_DC_ID·큐 표식을 물려받아 실패 → -243 에서 시험 환경 분리), P1 즉시(예약 8,194 MB), P2·P3·P5·P6 120.2·135.3·90.2·60.1초, watch lag p95 170·168·166·168 ms 모두 passed.
+  - g·m: g0 6.6초, g1 10.0초(H6 ms_per_frame p50 8.11 ms), g2 35.9초, g3 58.3초(H1 12장 중앙값 232.1 ms, `docs/design/exp-images.md` "2차 세션 HMR HOLD 원인과 새 기준"), m0 5.0초, m1 47.1초(적재 33.6초, warm 추론 795.7 ms), m2 37.5초(적재 23.3초, warm 457.4 ms).
+  - g4 는 아직 돌리지 않았다. g3(14장, 적재 포함 58.3초)에 그림 수(20장)·다인원(노트북 원본 93명)·펴기(CPU, 그림당 수십 ms)를 더해 3분으로 잡았다(3차 세션 실측으로 바꾼다).
+  - e·f 는 GPU 세션에서 빠져 1차 때 값(노트북 실측 e 약 40초, f 1회 약 35초에 여유)을 그대로 둔다.
+- **H100 총 예상**: Tier 0 Pod 큐 약 29분(실측 1,216.6초 ≈ 20분) + Pod 기동·이미지 받기(압축 약 7.9GB) 약 10분 + 가중치 받기(볼륨 없음, 수십 초) + 사본 올리기·결과 회수 약 5분 ≈ **45분**. d 를 G0 판정용(`--full`, watch 600·600·180·120초)으로 돌리면 +약 19분(watch 합 1,500초 − 390초). 전체 시간 상한 기본값은 9000초(2.5시간). 다른 GPU 는 엔진 빌드·추론 시간이 다르다(H100 실측만 적었다).
 - 볼륨 없는 Pod(-205): 저장 위치는 `simai-bootstrap` 과 같은 규칙(`SIMAI_ROOT` → `/workspace/simai` → `/srv/simai`)이고, 마운트 지점이 아니면 a 에 `--no-volume`(볼륨 측정 SKIP)을 붙이고 Job 파일에 볼륨·데이터센터를 적지 않는다(`provider`·`datacenter` 는 run_record 가 `RUNPOD_POD_ID`·`RUNPOD_DC_ID` 등 사이트 신호로 채움, 신호가 없으면 LOCAL). 결과 묶음은 컨테이너 디스크에 있으므로 **Pod 를 지우기(Terminate) 전에** scp 로 가져온다(실행기가 출력).
 - 결과 기록은 run_record 계약을 따른다. `experiment_id` 는 운영 경로 검증 Run 값 `VAL-01`(run_record 2.1.0, `e_gate` 없음, S15P31A101-197), `experiment_state` 는 `BENCHMARK`, 입력 출처는 `SIM`·`is_upper_bound: true` 다(제품 성능 지표로 쓰지 않는다). 종료 코드는 `notes`, 지표는 각 스크립트가 `metrics.json` 에 남긴다.
 
@@ -143,7 +153,7 @@ ssh simai-pod 'tail -f /srv/simai/setup/session1/session1.log'      # 끊겨도 
 | 순서 | Pod 이미지 | 큐 항목 | 확인 |
 |---|---|---|---|
 | 1 | `tier0`(-207 재빌드: 층 분할 + modelopt·onnxruntime-gpu·cupy 잠금) | a, b, t, c, d | b 엔진 빌드(modelopt 경로), **c 의 c3 재측정(-212 의 디코더별 색 변환 문맥 + 비교 변형)은 `session1_live.py all` 안에 있어 c 항목으로 함께 돈다** |
-| 2 | `exp02-fs3db` | a, g0~g3 | g0 통과 뒤 g1~g3 를 E-GATE-0 H6·H0·H1 과 비교 |
+| 2 | `exp02-fs3db` | a, g0~g3 (3차 세션부터 g4) | g0 통과 뒤 g1~g3 를 E-GATE-0 H6·H0·H1 과 비교. g4 는 `check_calib_k.py` 판정(`docs/design/exp-images.md` "3차 세션 항목") |
 | 3 | `mapanything` | a, m0~m2 | m0 통과 뒤 m1·m2 를 E-GATE-0 C1·C2 와 비교(`ai/experiments/static_scene/compare_runs.py`) |
 
 - 실험 이미지 큐는 LIVE 보호를 켠다(`live_guard.enabled=true`, `on_live=stop`, 저장 위치의 `state/tier0.live` 가 30초 안에 갱신됐거나 `services.tier0` 프로세스가 있으면 멈춤).
@@ -152,7 +162,8 @@ ssh simai-pod 'tail -f /srv/simai/setup/session1/session1.log'      # 끊겨도 
   Run id 는 `<E-GATE-0 이름>_img_<세션>` 이라 E-GATE-0·다른 세션 결과를 덮어쓰지 않고, `exp_job.py` 가 끝난 결과 폴더를 다시 쓰지 않는다. 가중치·입력·결과는 저장 위치 절대 경로로 기록되고(weights_hash·dataset_hash·results), 실험 지표는 Run 기록 metrics 로 넘어간다. 시작 전에 Run 기록 검증기(jsonschema)를 컨테이너 디스크에 깔고 없으면 시작하지 않는다. `env.lock_files` 는 이미지의 잠금(`deploy/exp02/requirements.lock.txt` 등)이고 `SIMAI_IMAGE_DIGEST` 가 있으면 다이제스트가 `env_hash` 다.
 - 결과 묶음에 각 Run 폴더(`runs/exp02/<run_id>`·`runs/exp01/<run_id>`: metrics.json·메시·패널, 50MB 넘는 파일은 빠짐)도 넣는다.
 - 데이터(`datasets/hmr_poc14` 14장, `datasets/room4` 4장)는 저장소에 없어 Pod 에 scp 로 올린다(deploy/README "Pod 검증 큐"). 없으면 g1~g3·m1·m2 가 실패하고 다음 항목으로 간다.
-- H100 예상: exp02 Pod 약 27분 + 이미지 받기·가중치(약 4.3GB) 받기, mapanything Pod 약 12분 + 가중치(약 9.8GB) 받기. `sam-3d-body-dinov3-mhr` 해시를 채우기 전에는 exp02 Pod 의 `simai-bootstrap queue` 가 받기 전에 종료 코드 2 로 멈춘다(docs/data/weights.md).
+  g4 입력(교실 사진 20장 + 교실 보정 기록)은 사람이 찍혀 있어 `prepare` 가 저장소 밖 `--out` 에 `g4-inputs.tar` 로 묶고 그 출력대로 올린다. 없으면 g4 Run 기록의 calibration 이 비고 판정이 실패한다.
+- H100 예상(2차 세션 실측 기준, 위 "예상 시간 근거"): exp02 Pod 큐 약 9분(g4 포함. 2차 실측 g0~g3 115.5초) + 이미지 받기·가중치(약 4.3GB) 받기, mapanything Pod 큐 약 6분(실측 100.1초) + 가중치(약 9.8GB) 받기. `sam-3d-body-dinov3-mhr` 해시를 채우기 전에는 exp02 Pod 의 `simai-bootstrap queue` 가 받기 전에 종료 코드 2 로 멈춘다(docs/data/weights.md).
 
 ### 실행기 규칙
 
@@ -203,15 +214,15 @@ watch 마다 probe 의 `metrics.json` 은 Run 폴더 아래 `.watch-<단계>/` �
 상한 0.70 은 비율 그대로다. 예: L40S 48GB(46,068 MiB) 23·11·40 GB, RTX 4090 24GB 는 Tier 0 전용 사양(48GB급 미만)이라 분석 부하를 같은 GPU 에 올리지 않으므로
 P3·P5·P6 을 SKIP + 이유로 남긴다(선택 단계로 바뀌어 필수 실패로 세지 않음). GPU 메모리를 읽지 못하면 SKIP 이 아니라 FAIL 이다.
 
-| # | 내용 | 통과 기준 | 1차 세션 시간 |
+| # | 내용 | 통과 기준 | 시간 (1차 → 2차 실측) |
 |---|---|---|---|
-| P0 | `pytest tests/experiments/gpu_queue tests/gpu tests/services/worker/test_runner_tier0_priority.py` (Linux 전용 시험 포함) | 모두 통과 | 약 3분 |
+| P0 | `pytest tests/experiments/gpu_queue tests/gpu tests/services/worker/test_runner_tier0_priority.py` (Linux 전용 시험 포함) | 모두 통과 | 약 3분 → 23.1초 |
 | P1 | 표시 파일 `gpu_priority`, `nvidia-smi --query-compute-apps` 기록 | phase=running, reserve.state=OK, reserved_mb ≥ 8192 | 즉시 |
-| P2 | 부하 없는 기준선 watch | passed (lag p95 ≤ 600 ms, unknown 0, 판정 오류 증가 0) | 120초 |
-| P3 | 더미 부하 40 GB 동안 watch | passed, Tier 0 로그 `out of memory` 0건 | 120초 |
+| P2 | 부하 없는 기준선 watch | passed (lag p95 ≤ 600 ms, unknown 0, 판정 오류 증가 0) | 120초 → 120.2초 |
+| P3 | 더미 부하 40 GB 동안 watch | passed, Tier 0 로그 `out of memory` 0건 | 120초 → 135.3초 |
 | P4 | VLM(vLLM) 부하 | SKIP(선택): 처리기가 아직 없다 | - |
-| P5 | 더미 부하 20 GB 를 watch 30초째에 kill -9 | passed (D-G0-08 판정 지속) | 90초 |
-| P6 | 상한(0.70 = 56 GB)을 넘는 70 GB 부하 | 부하는 메모리 부족으로 끝나고 watch 는 passed | 60초 |
+| P5 | 더미 부하 20 GB 를 watch 30초째에 kill -9 | passed (D-G0-08 판정 지속) | 90초 → 90.2초 |
+| P6 | 상한(0.70 = 56 GB)을 넘는 70 GB 부하 | 부하는 메모리 부족으로 끝나고 watch 는 passed | 60초 → 60.1초 |
 | P7 | 분석 워커 접수 문 | SKIP(선택, 수동): 처리기·EC2 가 있어야 한다 | - |
 
 `--full` 은 -60 MR 의 G0 판정용 시간(watch 600·600·180·120초)이다. 1차 세션은 경로 확인용으로 줄인 시간을 쓰고, G0 판정은 `--full` 결과로 한다.

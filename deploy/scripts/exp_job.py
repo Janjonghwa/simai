@@ -8,7 +8,9 @@
 2) 명령을 실행한다(표준 입출력은 그대로 Job 로그로).
 3) 명령이 끝나면(성공·실패 모두) 결과 폴더의 metrics.json 을 Run 기록용 스칼라 지표로 줄여 $SIMAI_RUN_DIR/metrics.json 에 쓴다.
    gpu_queue 의 기록기(run_record)는 그 파일만 읽고 스칼라만 받는다. 원본 metrics.json 은 Run 기록 results 에 sha256 과 함께 걸린다.
-종료 코드: 명령의 종료 코드, 4 결과가 이미 있음, 2 사용법 오류.
+4) --check <판정 스크립트> [--check-arg ...] 를 주면 명령이 성공한 뒤 `python <스크립트> <인자...> <metrics.json>` 으로 판정하고
+   (g4, S15P31A101-243), 지표에 check.passed 를 더한다. 판정 실패·지표 없음은 종료 코드 1(성공으로 두지 않는다).
+종료 코드: 명령의 종료 코드, 4 결과가 이미 있음, 2 사용법 오류, 1 판정 실패.
 """
 
 from __future__ import annotations
@@ -62,6 +64,8 @@ def main(argv: list[str] | None = None) -> int:
     i = args.index("--")
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--check", type=Path, default=None, help="명령 성공 뒤 metrics.json 을 판정할 Python 스크립트")
+    ap.add_argument("--check-arg", action="append", default=[], help="판정 스크립트 인자(여러 번)")
     opts = ap.parse_args(args[:i])
     cmd = args[i + 1:]
     if not cmd:
@@ -76,6 +80,14 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as e:
         print(f"exp_job: 명령을 실행하지 못함: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
         code = 127
+    checked = None
+    if opts.check is not None and code == 0:
+        if not src.is_file():
+            print(f"exp_job: 판정할 지표 없음({src}) → 실패", file=sys.stderr, flush=True)
+            code = 1
+        else:
+            checked = subprocess.run([sys.executable, str(opts.check), *opts.check_arg, str(src)]).returncode == 0
+            code = 0 if checked else 1
     run_dir = os.environ.get("SIMAI_RUN_DIR")
     if run_dir and src.is_file():
         try:
@@ -83,6 +95,8 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError) as e:
             print(f"exp_job: {src} 를 읽지 못함: {e}", file=sys.stderr, flush=True)
         else:
+            if checked is not None:
+                metrics["check.passed"] = checked
             Path(run_dir).mkdir(parents=True, exist_ok=True)
             (Path(run_dir) / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     elif run_dir:

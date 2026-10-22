@@ -237,7 +237,7 @@ def test_live_process_pattern_blocks_exp_jobs_but_ignores_own_jobs(qenv):
     assert qenv.run("run", jobs).returncode == 0  # 자기 Job 의 명령줄은 무시
     assert qenv.lines() == ["own"]
 
-    tier0 = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", marker])
+    tier0 = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", marker], env=qenv.env())  # 큐 표식 없는 바깥 프로세스
     try:
         r = qenv.run("run", jobs, "--rerun", "own")
     finally:
@@ -457,3 +457,58 @@ def test_job_file_stamp_wins_over_git_stamp_file(qenv):
     assert qenv.run(*opts, "run", jobs).returncode == 0
     (rec,) = qenv.records()
     assert rec["git_commit"] == "1234567abcdef" and rec["branch"] == "feature"
+
+
+# ---------------------------------------------------------------- 실행 환경 분리 (S15P31A101-243, 2차 세션 d P0)
+
+POD_ENV = {"RUNPOD_POD_ID": "pod243", "RUNPOD_DC_ID": "AP-JP-1", "VAST_TCP_PORT_22": "41022",
+           "SIMAI_QUEUE_TOKEN": "outer-queue-token", "SIMAI_RUN_ID": "outer-run", "SIMAI_QUEUE_NAME": "outer"}
+
+
+def test_queue_env_drops_pod_and_outer_queue_variables(qenv, monkeypatch):
+    """Pod·바깥 큐 Job 안에서 돌아도 큐 하위 프로세스에 그 환경이 새지 않는다. 다른 변수는 그대로."""
+    for k, v in POD_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("SIMAI_243_KEEP", "x")
+    env = qenv.env()
+    assert not set(POD_ENV) & set(env)
+    assert env["SIMAI_243_KEEP"] == "x" and env["PYTHONUTF8"] == "1"
+
+
+def test_local_record_has_no_datacenter_even_inside_pod(qenv, monkeypatch, run_record_errors):
+    """반례: Pod 의 RUNPOD_DC_ID 가 있어도 LOCAL 기대 시험의 Run 기록에 datacenter 가 붙지 않는다."""
+    for k, v in POD_ENV.items():
+        monkeypatch.setenv(k, v)
+    jobs = qenv.write([qenv.job("a", qenv.py("ok", "a", qenv.out))])
+    assert qenv.run("run", jobs).returncode == 0
+    (rec,) = qenv.records()
+    assert rec["gpu"] == {"model": "", "driver": "", "cuda": "", "provider": "LOCAL"}
+    assert run_record_errors(rec) == []
+
+
+def test_record_datacenter_from_job_config_still_wins(qenv, run_record_errors):
+    """제품 동작은 그대로: Job 구성의 datacenter 는 환경을 지운 뒤에도 기록된다."""
+    rec = {"experiment_id": "INT-01", "jira_key": "S15P31A101-36", "owner": "queue-test", "experiment_state": "PLAN",
+           "model_version": "cpu-sample", "input_provenance": {"frames": {"source": "SIM", "dataset_id": "sim/basic"}, "is_upper_bound": True},
+           "gpu": {"provider": "LOCAL", "datacenter": "EU-RO-1"}}
+    jobs = qenv.write([qenv.job("a", qenv.py("ok", "a", qenv.out))], record=rec)
+    assert qenv.run("run", jobs).returncode == 0
+    (r,) = qenv.records()
+    assert r["gpu"]["datacenter"] == "EU-RO-1" and run_record_errors(r) == []
+
+
+@linux_only
+def test_fake_tier0_detected_when_pytest_runs_inside_queue_job(qenv, monkeypatch):
+    """반례: pytest 자체가 큐 Job(SIMAI_QUEUE_TOKEN 있음) 안에서 돌아도 가짜 Tier 0 는 LIVE 로 잡힌다."""
+    monkeypatch.setenv("SIMAI_QUEUE_TOKEN", "outer-queue-token")
+    marker = f"fake-tier0-{uuid.uuid4().hex}"
+    guard = {"marker_files": [], "process_patterns": [marker], "on_live": "stop", "poll_s": 0.2}
+    jobs = qenv.write([qenv.job("own", qenv.py("ok", "own", qenv.out))], live_guard=guard)
+    tier0 = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", marker], env=qenv.env())
+    try:
+        r = qenv.run("run", jobs)
+    finally:
+        tier0.kill()
+        tier0.wait()
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert qenv.lines() == []
