@@ -70,3 +70,18 @@ E-GATE-0(2026-10-16) 전이어서, E-GATE-0 때 받은 파일과 같은 revision
 - 이미지에 넣는 코드 사본(가중치 아님): Fast-SAM-3D-Body @d72aa36(MIT), DINOv3 허브 코드 @6876159(DINOv3 License, 2026-10-16 이전 마지막 커밋),
   map-anything @3d10cf7(Apache-2.0), DINOv2 허브 코드 @7764ea0(Apache-2.0, 같은 기준). 두 허브 코드는 `torch.hub` 가 GitHub `main` 을 그때그때 받던 것을
   커밋으로 고정한 것이다(`pretrained=False` 경로: 코드만 쓰고 가중치는 위 목록에서 읽는다).
+
+## yolo26x-seg (보정 입력 사람 마스크, S15P31A101-102)
+
+MapAnything 보정 입력(`simai_ai.calibration.world_frame.cli prepare`)에서 교실 사진의 사람 영역을 찾는 분할 모델이다. 노트북 CPU 에서만 쓰고
+`deploy/weights.json`(Pod 시작 묶음)에는 넣지 않았다(Pod 에서 쓰지 않는다).
+
+| 항목 | 값 |
+|---|---|
+| 노트북 위치 | 정하지 않음(커밋하지 않는 위치. `--segmenter <경로> --segmenter-sha256 <값>` 으로 넘긴다) |
+| 원본 | https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26x-seg.pt |
+| sha256 | `92b3de0065766a17180d6219858717dc9d03cdce8a3ca9576c97fd75aabb64f3` (142,129,861 B) |
+| 라이선스 | AGPL-3.0 (Ultralytics) |
+| 쓰는 곳 | `world_frame.prepare.UltralyticsPersonSegmenter`(person 클래스만, 가중치 해시 확인 뒤 사용, 코드가 내려받지 않음) |
+
+획득 기록: 2026-10-22 노트북에서 위 URL 을 `curl -L` 로 받아 `sha256sum` 으로 쟀다(ultralytics 8.4.178 이 받는 릴리스와 같은 `v8.4.0`).

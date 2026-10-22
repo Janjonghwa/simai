@@ -43,7 +43,7 @@ S15P31A101-214. 기획서 §4.2(경계별 변환), §4.3(자동 캘리브레이�
 
 - cameras.json: `convention` 에 cam2world·OpenCV 가 없으면 오류. 회전은 ‖RᵀR − I‖ ≤ 1e-3 이고 det > 0 이어야 하며(float32 잡음은 SVD 로 다듬음), 카메라 쌍 거리가 0.3~60 m 밖이면 단위가 미터가 아니라고 보고 오류다. R = Rcwᵀ, t = −R·c.
 - view ↔ camera_id: `--view CAM=NAME` 또는 이름 자동 짝짓기(view 이름 = camera_id 또는 `camera_id_번호`). 카메라 하나에 view 가 여럿이면 오류(추측하지 않는다).
-- `--world-alignment` 형식(이 도구의 입력 형식, -102 가 정할 때 맞춘다): `{"format": "simai.world_alignment", "mapanything_to_world": 4×4 [sR | T]}`. det ≤ 0(왼손)이면 오류.
+- `--world-alignment` 형식(-102 `world_frame.cli fix` 결과, `docs/design/world-frame-from-mapanything.md`): `{"format": "simai.world_alignment", "mapanything_to_world": 4×4 [sR | T]}`. det ≤ 0(왼손)이면 오류. `status` 가 OK 가 아니면(바닥 없음·축 모호) 오류, `cameras_json_sha256`·`inputs.intrinsics.sha256` 이 있으면 `--cameras-json`·`--intrinsics` 의 sha256 과 같아야 한다(다른 MapAnything 실행·다른 내부 파라미터 기록의 정렬 거절).
 - 임시 정렬(INTERIM_PERSON_VERTICAL): 초기 카메라로 어깨·발목을 삼각측량해 발목 중점 → 어깨 중점 단위 벡터의 평균을 상방으로 둔다(25° 넘게 벗어난 표본을 빼고 세 번 다시 평균, 표본 20 개 미만이면 오류, 길이 0.6~2.2 m 밖 표본 제외). 바닥은 표본별 낮은 발목 높이의 중앙값 − 0.08 m(BundleConfig 발목 접지 높이). 벽 방향은 MapAnything X 축을 수평에 투영한 방향, 원점은 MapAnything 원점 아래다. 스케일은 바꾸지 않는다. 번들 조정 게이지(벽 방향·수평 원점·스케일을 초기값에 묶음)가 이 임시 축을 그대로 유지하므로, 이 결과는 버전으로 제안하지 않는다(4.1: World 축·원점은 첫 CALIBRATED 때 한 번 정함).
 
 ## 출처 (AGENTS 7, 명세 20.4 규칙 2·3)
@@ -88,5 +88,5 @@ keypoint 파일만이 아니라 모든 입력의 input_provenance 를 합친다(
 - RECEIVE_ESTIMATED 시각(불확실성 20 ms)의 카메라 간 실제 오차는 재지 않았다. 1.4 m/s 걷기에서 20 ms 는 약 3 cm 다. 시계 차이(-160)·PTS 기반 시각이 들어오면 그대로 따라간다.
 - 한 명 규칙은 한 카메라에만 다른 사람이 보이는 경우(서로 다른 두 사람을 각각 한 명씩 본 카메라)를 막지 못한다. 번들 조정의 초기 재투영 150 px 거름·강건 손실·이상치 제거가 거르지만, 보정 걷기 때 다른 사람이 화면에 없어야 한다.
 - 교실 실제 실행은 아직이다(보정 걷기 녹화, MapAnything cameras.json, -102 World 정렬이 필요). 교실 녹화에서 YOLO26x-pose 추출은 GPU 세션 큐 항목이다.
-- World 정렬 파일 형식은 -102 가 정한다. 형식이 바뀌면 `load_world_alignment` 만 고친다.
+- World 정렬 파일 형식은 -102 가 정했다(위). 형식이 바뀌면 `load_world_alignment` 만 고친다.
 - 결과 파일의 proposal.doc 을 운영 보정 저장소(EC2)에 넣는 경로는 이 도구 밖이다.

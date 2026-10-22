@@ -332,3 +332,44 @@ def test_existing_result_file_is_not_overwritten(inputs, tmp_path, capsys):
                      "--cameras-json", str(inputs["cameras"]), "--out", str(out)], now_ms=1_760_342_500_000)
     assert code == cli.EXIT_CONFIG and "덮어쓰지" in capsys.readouterr().err
     assert out.read_text(encoding="utf-8") == "old"
+
+
+def test_world_alignment_from_another_mapanything_run_is_refused(inputs, tmp_path, capsys):
+    """-102 결과는 만든 cameras.json 의 sha256 을 싣는다. 다른 실행의 cameras.json 과 섞으면 거절(종료 2)."""
+    doc = json.loads(inputs["align"].read_text(encoding="utf-8"))
+    doc["cameras_json_sha256"] = "sha256:" + "0" * 64
+    align = tmp_path / "align-other.json"
+    align.write_text(json.dumps(doc), encoding="utf-8")
+    out = tmp_path / "out-other.json"
+    code = cli.main(["adjust", "--keypoints", str(inputs["keypoints"]), "--intrinsics", str(inputs["intrinsics"]),
+                     "--cameras-json", str(inputs["cameras"]), "--world-alignment", str(align), "--out", str(out)],
+                    now_ms=1_760_342_500_000)
+    assert code == cli.EXIT_CONFIG and "다른 MapAnything 실행" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_failed_world_frame_result_is_refused(inputs, tmp_path, capsys):
+    """-102 가 바닥·축을 못 정한 결과(status FAILED, 변환 없음)는 World 정렬로 받지 않는다(임시 정렬로 바꾸지도 않는다)."""
+    align = tmp_path / "align-failed.json"
+    align.write_text(json.dumps({"format": "simai.world_alignment", "status": "FAILED", "reason": "FLOOR_NOT_FOUND",
+                                 "detail": "바닥 없음"}), encoding="utf-8")
+    out = tmp_path / "out-failed.json"
+    code = cli.main(["adjust", "--keypoints", str(inputs["keypoints"]), "--intrinsics", str(inputs["intrinsics"]),
+                     "--cameras-json", str(inputs["cameras"]), "--world-alignment", str(align), "--out", str(out)],
+                    now_ms=1_760_342_500_000)
+    assert code == cli.EXIT_CONFIG and "FLOOR_NOT_FOUND" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_world_alignment_made_with_other_intrinsics_is_refused(inputs, tmp_path, capsys):
+    """-102 결과는 쓴 내부 파라미터 기록 sha256(inputs.intrinsics.sha256)을 싣는다. --intrinsics 와 다르면 거절(종료 2)."""
+    doc = json.loads(inputs["align"].read_text(encoding="utf-8"))
+    doc["inputs"] = {"intrinsics": {"path": "other.json", "sha256": "sha256:" + "2" * 64}}
+    align = tmp_path / "align-intr.json"
+    align.write_text(json.dumps(doc), encoding="utf-8")
+    out = tmp_path / "out-intr.json"
+    code = cli.main(["adjust", "--keypoints", str(inputs["keypoints"]), "--intrinsics", str(inputs["intrinsics"]),
+                     "--cameras-json", str(inputs["cameras"]), "--world-alignment", str(align), "--out", str(out)],
+                    now_ms=1_760_342_500_000)
+    assert code == cli.EXIT_CONFIG and "다른 내부 파라미터" in capsys.readouterr().err
+    assert not out.exists()
