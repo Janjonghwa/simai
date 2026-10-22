@@ -1,0 +1,17 @@
+# 서버 이미지 빌드 컨텍스트 허용 목록 (컨텍스트 = 저장소 최상위).
+# 나열한 것만 들어간다. 비밀(.env, 키), 빌드 산출물, 시험 코드는 들어갈 길이 없다.
+*
+!server/gradlew
+!server/build.gradle
+!server/settings.gradle
+!server/contracts.gradle
+!server/gradle/**
+!server/buildSrc/build.gradle
+!server/buildSrc/src/**
+!server/src/main/**
+!contracts/*/*.schema.json
+# 허용한 폴더 안에서도 다시 뺀다
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
