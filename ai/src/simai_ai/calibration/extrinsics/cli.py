@@ -180,6 +180,12 @@ def _adjust(args: argparse.Namespace, created_at: int) -> int:
     if args.measured_objects:
         objects, objects_input = _measured_objects(args.measured_objects, MeasuredObjectObservation, checked_provenance)
     provided = load_world_alignment(args.world_alignment) if args.world_alignment else None
+    expected = None if provided is None else provided.record.get("cameras_json_sha256")
+    if expected and expected != initial.record["sha256"]:
+        raise ValueError("World 정렬이 다른 MapAnything 실행(cameras.json)으로 만든 것이다")
+    expected = None if provided is None else provided.record.get("intrinsics_sha256")
+    if expected and expected != _sha256(intr_raw):
+        raise ValueError("World 정렬이 다른 내부 파라미터 기록(--intrinsics)으로 만든 것이다")
     config = BundleConfig(walkable_area_xy=_polygon(args.walkable_area) if args.walkable_area else ())
     # 모든 입력의 출처를 합친다: 하나라도 SIM·DATASET_GT 면 결과 전체가 상한이다(CALIBRATED 불가)
     provenance, provenance_record = combine_input_provenance(

@@ -6,6 +6,9 @@
   images  이미지만 입력(load_images). PoC와 같은 경로.
   known   이미지 + 알려진 intrinsics(+ camera_poses). 이전 Run의 cameras.json을 입력으로 쓰고,
           --pose-scale 로 pose 이동량을 늘려 모델이 pose 입력을 실제로 쓰는지 시험한다.
+  prepared  보정용 known-K(S15P31A101-102). `simai_ai.calibration.world_frame.cli prepare` 가 AnyCalib 왜곡을 편 영상과
+          펴진 K(prepared.json)를 만들고, 여기서는 그 K 를 intrinsics 로 넣는다(pose 는 넣지 않음). 사람 마스크는 모델 입력을
+          바꾸지 않으려고 여기서 쓰지 않고, 노트북의 World 고정(`world_frame.cli fix --prepared`)이 점에서 뺀다.
 
   python run_mapanything.py --run-id C1_room4_bf16 --images /workspace/simai/datasets/room4
   python run_mapanything.py --run-id C2_room4_apache --model /workspace/simai/weights/map-anything-apache ...
@@ -139,12 +142,37 @@ def build_known_views(paths, known_json, use_poses, pose_scale, device):
     return views
 
 
+def prepared_views(prepared_dir):
+    """prepared.json → [{name, path, K(원본 해상도, 왜곡 편 영상)}] (torch 없이 읽는다)."""
+    d = Path(prepared_dir)
+    doc = json.loads((d / "prepared.json").read_text(encoding="utf-8"))
+    if doc.get("format") != "simai.mapanything_inputs":
+        raise ValueError(f"prepared.json 형식이 아니다: {doc.get('format')!r}")
+    out = []
+    for v in doc["views"]:
+        K = np.asarray(v["K_undistorted"], dtype=float)
+        if K.shape != (3, 3) or not (K[0, 0] > 0 and K[1, 1] > 0):
+            raise ValueError(f"{v['name']}: K_undistorted 가 3×3 양의 초점 행렬이 아니다")
+        out.append({"name": v["name"], "path": str(d / v["image"]), "K": K})
+    return out
+
+
+def build_prepared_views(specs):
+    import cv2
+    views = []
+    for sp in specs:
+        img = cv2.cvtColor(cv2.imread(sp["path"]), cv2.COLOR_BGR2RGB)
+        views.append({"img": torch.from_numpy(img), "intrinsics": torch.tensor(sp["K"], dtype=torch.float32)})
+    return views
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--images", default=str(ROOT / "datasets" / "room4"))
     ap.add_argument("--model", default=str(ROOT / "weights" / "map-anything"))
-    ap.add_argument("--mode", choices=["images", "known"], default="images")
+    ap.add_argument("--mode", choices=["images", "known", "prepared"], default="images")
+    ap.add_argument("--prepared", help="prepared 모드: world_frame.cli prepare 출력 폴더(prepared.json)")
     ap.add_argument("--known-from", help="known 모드: 입력으로 쓸 이전 Run의 cameras.json")
     ap.add_argument("--use-poses", type=int, default=0, help="known 모드: camera_poses 도 입력")
     ap.add_argument("--pose-scale", type=float, default=1.0, help="known 모드: 입력 pose 이동량 배율(사용 여부 시험)")
@@ -166,12 +194,17 @@ def main():
 
     out = Path(a.runs_dir) / a.run_id
     (out / "panels").mkdir(parents=True, exist_ok=True)
-    paths = sorted(glob.glob(os.path.join(a.images, "*.jpg")) + glob.glob(os.path.join(a.images, "*.png")))
-    names = [Path(p).stem for p in paths]
+    specs = prepared_views(a.prepared) if a.mode == "prepared" else None
+    if specs is not None:
+        paths, names = [sp["path"] for sp in specs], [sp["name"] for sp in specs]
+    else:
+        paths = sorted(glob.glob(os.path.join(a.images, "*.jpg")) + glob.glob(os.path.join(a.images, "*.png")))
+        names = [Path(p).stem for p in paths]
     lock = ROOT / "envs" / "mapanything.lock.txt"
     weights = sorted(Path(a.model).glob("*.safetensors"))
     res = {
         "run_id": a.run_id, "experiment_id": "EXP-01", "e_gate": "E-GATE-0", "jira_key": "S15P31A101-74",
+        **({"experiment_id": "VAL-01", "e_gate": None, "jira_key": "S15P31A101-102"} if a.mode == "prepared" else {}),
         "started_at": datetime.now(timezone.utc).isoformat(), "args": vars(a), "result": "ERROR",
         "git_commit": a.git_commit,
         # 이미지에서는 이미지 다이제스트(deploy/README "env_hash"), 볼륨 venv 는 잠금 파일 해시
@@ -180,6 +213,7 @@ def main():
         "weights_hash": sha256_file(weights[0]) if weights else None,
         "input_hash": "sha256:" + hashlib.sha256(b"".join(Path(p).read_bytes() for p in paths)).hexdigest(),
         "images": [Path(p).name for p in paths],
+        "prepared_sha256": sha256_file(Path(a.prepared) / "prepared.json") if a.mode == "prepared" else None,
         "gpu": {"model": torch.cuda.get_device_name(0), "torch": torch.__version__, "cuda": torch.version.cuda,
                 "driver": subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"], capture_output=True, text=True).stdout.strip()},
     }
@@ -194,6 +228,8 @@ def main():
         t1 = time.perf_counter()
         if a.mode == "images":
             views = load_images(paths)
+        elif a.mode == "prepared":
+            views = preprocess_inputs(build_prepared_views(specs))
         else:
             views = preprocess_inputs(build_known_views(paths, a.known_from, a.use_poses, a.pose_scale, "cuda"))
         res["preprocess_ms"] = round((time.perf_counter() - t1) * 1000, 1)

@@ -21,7 +21,10 @@
 
 `monitor`·`watch`·`recalibration`·`coverage` 는 여기서 다시 내보내지 않는다(numpy·scipy 가 필요해 서브모듈로 import).
 
-MapAnything 초기 추정(외부 파라미터 초기값)과 실측 정물 끝점 검출(-100)은 아직 없다.
+- `world_frame`(하위 패키지): MapAnything 입력 준비(왜곡 펴기·펴진 K·사람 마스크)와 결과의 바닥·벽으로 World 좌표계 고정,
+  PROVISIONAL 보정 문서와 외부 파라미터 도구의 World 정렬 입력 (명세 4.3 1·2단계, -102). 여기서 다시 내보내지 않는다
+
+실측 정물 끝점 검출(-100)은 아직 없다.
 
 jsonschema 가 필요하다(extras calibration). 없으면 이 패키지를 import 할 때 설치 방법을 적은 ImportError 가 난다.
 """

@@ -176,11 +176,17 @@ def _orthonormal(M: np.ndarray, what: str) -> np.ndarray:
 
 
 def load_world_alignment(path: Path) -> WorldAlignment:
-    """`{"format": "simai.world_alignment", "mapanything_to_world": 4×4 [sR | T]}` (-102 가 정할 때까지의 입력 형식)."""
+    """`{"format": "simai.world_alignment", "mapanything_to_world": 4×4 [sR | T]}` (-102 `world_frame.cli fix` 결과).
+
+    status 가 OK 가 아니면(바닥 없음·축 모호) 오류다. cameras_json_sha256·inputs.intrinsics.sha256 이 있으면 record 에 옮겨
+    cli 가 같은 MapAnything 실행의 cameras.json·같은 내부 파라미터 기록인지 확인한다(다른 실행의 world 로 정한 변환은 맞지 않는다).
+    """
     path = Path(path)
     doc = json.loads(path.read_text(encoding="utf-8"))
     if doc.get("format") != WORLD_ALIGNMENT_FORMAT:
         raise ValueError(f"{path.name}: World 정렬 형식이 아니다: {doc.get('format')!r}")
+    if doc.get("status", "OK") != "OK":  # -102 가 바닥·축을 정하지 못한 결과(변환 없음)
+        raise ValueError(f"{path.name}: World 고정 실패 결과다({doc.get('reason')}): {doc.get('detail')}")
     M = np.asarray(doc["mapanything_to_world"], dtype=float)
     if M.shape != (4, 4) or not np.all(np.isfinite(M)) or not np.allclose(M[3], [0, 0, 0, 1]):
         raise ValueError(f"{path.name}: mapanything_to_world 는 마지막 행이 [0,0,0,1] 인 4×4 다")
@@ -197,6 +203,8 @@ def load_world_alignment(path: Path) -> WorldAlignment:
         "mapanything_to_world": M.tolist(),
         "input_provenance": checked_provenance(doc.get("input_provenance"), path.name),
         "note": doc.get("note"),
+        "cameras_json_sha256": doc.get("cameras_json_sha256"),
+        "intrinsics_sha256": ((doc.get("inputs") or {}).get("intrinsics") or {}).get("sha256"),
     }
     return WorldAlignment(Ra, M[:3, 3].copy(), float(s), SOURCE_PROVIDED, record)
 
