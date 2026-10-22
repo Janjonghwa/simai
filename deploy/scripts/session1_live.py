@@ -4,13 +4,14 @@
     python deploy/scripts/session1_live.py all          # c1~c5 (큐가 부른다, 결과는 $SIMAI_RUN_DIR)
     python deploy/scripts/session1_live.py serve --seconds 600 --work <폴더>   # LIVE 하네스만 (d 항목·수동 측정)
 
-단계(기대 결과는 -182 MR 'Pod 확인'):
-  c1 nvdec_open        NvdecDecoder() 가 열린다 ("nvdec ok"). 실패면 이미지의 NVIDIA_DRIVER_CAPABILITIES 에 video 가 있는지 본다
-  c2 nvdec_gpu_test    pytest -m gpu tests/io/test_pyav_decoder.py → 통과 1 이상, 건너뜀 0
-  c3 decode_throughput 2304x1296 H.264 4스트림을 NVDEC 으로 디코딩 + BGR 내려받기: 그림 한 장 p95 ≤ 10 ms, 4대 합계 ≥ 100 fps.
-                       같은 측정을 CPU(PyAvDecoder)로도 해서 비교만 기록한다(판정 안 함). 변형(-212, 판정 안 함): 카메라마다 스레드
-                       하나(LIVE 구조) NVDEC·CPU, 변환 스레드 0(자동)·1, nv12 그대로(BGR 변환 없음 = 디코딩+내려받기 하한)
-  c4 live_start        LIVE 하네스: 진입점(엔진 준비 → Tier 0 LIVE, decoder nvdec) + 노트북 흉내(제어 채널·시계 교환·하트비트)
+단계(기대 결과는 -182 MR 'Pod 확인'). Tier 0 기본 디코더는 CPU 이고 NVDEC 은 선택이다(-236):
+  c0 cpu_env           (기록만) 컨테이너가 받는 vCPU(cgroup cpu.max·sched_getaffinity)·호스트 CPU 수·CPU 모델. CPU 디코딩 여유의 근거
+  c1 nvdec_open        (선택) NvdecDecoder() 가 열린다 ("nvdec ok"). 실패면 이미지의 NVIDIA_DRIVER_CAPABILITIES 에 video 가 있는지 본다
+  c2 nvdec_gpu_test    (선택) pytest -m gpu tests/io/test_pyav_decoder.py → 통과 1 이상, 건너뜀 0
+  c3 decode_throughput 2304x1296 H.264 4스트림을 CPU(PyAvDecoder, 기본 디코더)로 카메라마다 스레드 하나(LIVE 구조)에서 디코딩 + BGR:
+                       그림 한 장 p95 ≤ 10 ms, 4대 합계 ≥ 100 fps, 넣은 수 = 나온 수. 참고 측정(판정 안 함, 실패는 <이름>_error):
+                       CPU 한 스레드 번갈아(cpu_), NVDEC 한 스레드 번갈아(nvdec_)·카메라별 스레드(nvdec_par_)·변환 스레드 0·1·nv12 그대로
+  c4 live_start        LIVE 하네스: 진입점(엔진 준비 → Tier 0 LIVE, 기본 디코더 cpu) + 노트북 흉내(제어 채널·시계 교환·하트비트)
                        + 영상 송신 4대(2304x1296, 25 fps, 프레임 번호 무늬 H.264, 사람 없음). 종료 코드 0, 카메라 4대 ready,
                        decode_failed 0, detector_errors 0, mismatched 0. frame_age_ms_p95·pipeline_lag_ms 를 기록한다
   c5 ten_people        (a) 기하 단계 10명 p95 ≤ 50 ms (tests/geometry/bench_tier0_geometry.py, 명세 6.6)
@@ -98,7 +99,108 @@ class Steps:
         (self.out / "metrics.json").write_text(json.dumps(self.metrics, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-# ---------------------------------------------------------------- c1·c2
+# ---------------------------------------------------------------- c0·c1·c2
+
+
+def _read(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def parse_quota(cpu_max: str | None = None, quota_us: str | None = None, period_us: str | None = None) -> float | None:
+    """cgroup CPU 할당량 값(vCPU). v2 cpu.max("quota period" 또는 "max period") 또는 v1 cfs_quota/period. 제한 없음·깨진 값은 None."""
+    try:
+        if cpu_max is not None:
+            quota, period = cpu_max.split()[:2]
+            return None if quota == "max" else round(int(quota) / int(period), 2)
+        if quota_us is not None and period_us is not None and int(quota_us) > 0:
+            return round(int(quota_us) / int(period_us), 2)
+    except (ValueError, ZeroDivisionError):
+        pass
+    return None
+
+
+def _cpu_cgroup_dirs(read) -> list[tuple[str, str]]:
+    """자기 프로세스의 CPU 컨트롤러 cgroup 디렉터리들(잎 → 마운트 기준점 순서, ("v1"|"v2", 경로)).
+
+    /proc/self/cgroup 으로 자기 그룹 경로를 찾고, /proc/self/mountinfo 의 cgroup2 마운트·cpu 가 든 cgroup(v1) 마운트(공동 마운트
+    cpu,cpuacct 포함)에 붙인다. 마운트 root 가 그룹 경로의 앞부분이면(컨테이너 cgroup 이름공간 밖 경로) 그만큼 뗀다.
+    할당량은 조상 그룹에도 걸리므로 잎부터 마운트 기준점까지 모두 돌려준다.
+    """
+    groups: dict[str, str] = {}  # "v2" 또는 v1 컨트롤러 이름 → 그룹 경로
+    for ln in (read("/proc/self/cgroup") or "").splitlines():
+        parts = ln.strip().split(":", 2)
+        if len(parts) != 3:
+            continue
+        _, controllers, path = parts
+        if controllers == "":
+            groups["v2"] = path
+        else:
+            for c in controllers.split(","):
+                groups[c] = path
+    mounts: list[tuple[str, str, str]] = []  # (종류, 마운트 root, 마운트 지점)
+    for ln in (read("/proc/self/mountinfo") or "").splitlines():
+        left, sep, right = ln.partition(" - ")
+        f, r = left.split(), right.split()
+        if not sep or len(f) < 5 or not r:
+            continue
+        if r[0] == "cgroup2":
+            mounts.append(("v2", f[3], f[4]))
+        elif r[0] == "cgroup" and len(r) >= 3 and "cpu" in r[2].split(","):
+            mounts.append(("v1", f[3], f[4]))
+    if not mounts:  # mountinfo 를 못 읽으면 흔한 마운트 지점만 본다(그룹 경로는 그대로 붙인다)
+        mounts = [("v2", "/", "/sys/fs/cgroup"), ("v1", "/", "/sys/fs/cgroup/cpu,cpuacct"), ("v1", "/", "/sys/fs/cgroup/cpu")]
+    out: list[tuple[str, str]] = []
+    for kind, root, point in mounts:
+        path = groups.get("v2" if kind == "v2" else "cpu")
+        if path is None:
+            continue
+        rel = path
+        if root != "/" and (path == root or path.startswith(root.rstrip("/") + "/")):
+            rel = path[len(root.rstrip("/")):]
+        segs = [x for x in rel.split("/") if x]
+        for i in range(len(segs), -1, -1):
+            out.append((kind, "/".join([point.rstrip("/"), *segs[:i]])))
+    return out
+
+
+def cgroup_vcpu(read=None) -> tuple[float | None, str | None]:
+    """자기 cgroup 의 CPU 할당량(vCPU)과 읽은 파일. 잎·조상 중 가장 작은 할당량이 실제 한도다. 제한 없음·못 읽음은 (None, None)."""
+    read = read or _read
+    best: tuple[float | None, str | None] = (None, None)
+    for kind, d in _cpu_cgroup_dirs(read):
+        if kind == "v2":
+            value, src = parse_quota(cpu_max=read(f"{d}/cpu.max")), f"{d}/cpu.max"
+        else:
+            value = parse_quota(quota_us=read(f"{d}/cpu.cfs_quota_us"), period_us=read(f"{d}/cpu.cfs_period_us"))
+            src = f"{d}/cpu.cfs_quota_us"
+        if value is not None and (best[0] is None or value < best[0]):
+            best = (value, src)
+    return best
+
+
+def c0_cpu_env(read=None):
+    """컨테이너가 실제로 받는 CPU. os.cpu_count() 는 호스트 값(H100 Pod 224)이라 CPU 디코딩 여유 판단에 쓰지 않는다.
+
+    usable_vcpu 는 cgroup 할당량·affinity·호스트 수 중 읽은 값의 최솟값이고, 어느 것에서 왔는지 usable_vcpu_source 에 남긴다.
+    cgroup 을 읽지 못하면 cgroup_vcpu 는 null 이고 출처가 affinity·host 로 남는다(할당량을 지어내지 않는다).
+    """
+    read = read or _read
+    affinity = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None
+    model = next((ln.split(":", 1)[1].strip() for ln in (read("/proc/cpuinfo") or "").splitlines()
+                  if ln.startswith("model name")), None)
+    quota, quota_src = cgroup_vcpu(read)
+    host = os.cpu_count()
+    values = {"host_cpu_count": host, "affinity_cpus": affinity, "cgroup_vcpu": quota, "cgroup_vcpu_file": quota_src,
+              "cpu_model": model}
+    candidates = [(v, name) for v, name in ((quota, "cgroup"), (affinity, "affinity"), (host, "host")) if v is not None]
+    usable, source = min(candidates, key=lambda x: x[0]) if candidates else (None, None)
+    values |= {"usable_vcpu": usable, "usable_vcpu_source": source}
+    return "PASS", (f"쓸 수 있는 vCPU {usable} (출처 {source}; cgroup {quota} {quota_src or '못 읽음·제한 없음'}, "
+                    f"affinity {affinity}, 호스트 {host}), 모델 {model}"), values
 
 
 def c1_nvdec_open(py: str):
@@ -140,8 +242,8 @@ def encode_stream(frames: int, size=SIZE, gop: int = 50):
 def bench_decoders(make, enc, cams: int = 4, parallel: bool = False) -> dict:
     """카메라 cams 대 디코더에 같은 스트림을 넣는다. 그림 한 장(디코딩+BGR) 시간과 합계 fps.
 
-    parallel=False: 한 스레드에서 번갈아(보수적, c3 판정). True: 카메라마다 스레드 하나(LIVE 의 카메라별 수신·디코딩 스레드와
-    같은 구조, 기록만). 한 스레드라도 실패하면 예외를 그대로 올린다(덜 나온 그림을 통과로 세지 않는다).
+    parallel=False: 한 스레드에서 번갈아(보수적, 참고 측정). True: 카메라마다 스레드 하나(LIVE 의 카메라별 수신·디코딩 스레드와
+    같은 구조, c3 판정은 CPU 디코더의 이 측정이다, -236). 한 스레드라도 실패하면 예외를 그대로 올린다(덜 나온 그림을 통과로 세지 않는다).
     """
     from simai_ai.io import I0CodecInfo
 
@@ -190,34 +292,41 @@ def bench_decoders(make, enc, cams: int = 4, parallel: bool = False) -> dict:
             "per_frame_ms_p95": pct(per, 95), "total_fps": round(pictures / total, 1), "seconds": round(total, 2)}
 
 
+C3_P95_MS = 10.0  # 카메라 하나의 그림 한 장(디코딩+BGR). 프레임 간격 40 ms 의 1/4 (docs/design/tier0-nvdec-throughput.md)
+C3_TOTAL_FPS = 100.0  # 4대 × 25 fps
+
+
+def c3_judge(r: dict) -> bool:
+    """판정: CPU 카메라별 스레드(LIVE 구조). 잰 값이 없거나 그림을 덜 내면 통과로 보지 않는다."""
+    return (r.get("per_frame_ms_p95") is not None and r["per_frame_ms_p95"] <= C3_P95_MS
+            and r.get("total_fps") is not None and r["total_fps"] >= C3_TOTAL_FPS
+            and r.get("frames_in", 0) > 0 and r.get("pictures_out") == r["frames_in"])
+
+
 def c3_decode_throughput(seconds: float = 10.0, variant_seconds: float = 5.0, size=SIZE):
     from simai_ai.io import NvdecDecoder, PyAvDecoder
 
     enc = encode_stream(int(seconds * FPS), size=size)
     short = dataclasses.replace(enc, frames=enc.frames[:int(variant_seconds * FPS)])  # 변형은 앞 5초(시간 상한 유지)
-    values: dict = {}
-    try:
-        values |= {f"cpu_{k}": v for k, v in bench_decoders(PyAvDecoder, enc).items()}
-    except Exception as e:  # noqa: BLE001 - CPU 는 비교용이다
-        values["cpu_error"] = f"{type(e).__name__}: {e}"
-    nv = bench_decoders(NvdecDecoder, enc)
-    values |= {f"nvdec_{k}": v for k, v in nv.items()}
-    variants = {  # 비교만(판정 안 함): 기준·기본값·디코더 선택 재료 (docs/design/tier0-nvdec-throughput.md)
+    cpu = bench_decoders(PyAvDecoder, enc, parallel=True)  # 판정: 기본 디코더 = Tier 0 LIVE 와 같은 구조
+    values: dict = {f"cpu_par_{k}": v for k, v in cpu.items()}
+    references = {  # 참고만(판정 안 함): 이전 기준(한 스레드 번갈아)·NVDEC 선택 경로·변환 스레드 (docs/design/tier0-nvdec-throughput.md)
+        "cpu": lambda: bench_decoders(PyAvDecoder, enc),
+        "nvdec": lambda: bench_decoders(NvdecDecoder, enc),
         "nvdec_par": lambda: bench_decoders(NvdecDecoder, short, parallel=True),
-        "cpu_par": lambda: bench_decoders(PyAvDecoder, short, parallel=True),
         "nvdec_thr0": lambda: bench_decoders(lambda: NvdecDecoder(convert_threads=0), short),
         "nvdec_thr1": lambda: bench_decoders(lambda: NvdecDecoder(convert_threads=1), short),
         "nvdec_nv12": lambda: bench_decoders(lambda: NvdecDecoder(output_format="nv12"), short),
     }
-    for name, run in variants.items():
+    for name, run in references.items():
         try:
             values |= {f"{name}_{k}": v for k, v in run().items()}
-        except Exception as e:  # noqa: BLE001 - 변형은 비교용이다
+        except Exception as e:  # noqa: BLE001 - 참고 측정이다(NVDEC 이 없는 GPU 여도 판정은 그대로)
             values[f"{name}_error"] = f"{type(e).__name__}: {e}"
-    ok = (nv["per_frame_ms_p95"] is not None and nv["per_frame_ms_p95"] <= 10 and nv["total_fps"] >= 100
-          and nv["pictures_out"] == nv["frames_in"])
-    return ("PASS" if ok else "FAIL"), (f"NVDEC 그림 p95 {nv['per_frame_ms_p95']} ms, 합계 {nv['total_fps']} fps "
-                                        f"(기준 ≤ 10 ms, ≥ 100 fps), CPU 합계 {values.get('cpu_total_fps')} fps"), values
+    ok = c3_judge(cpu)
+    return ("PASS" if ok else "FAIL"), (f"CPU 카메라별 스레드 그림 p95 {cpu['per_frame_ms_p95']} ms, 합계 {cpu['total_fps']} fps, "
+                                        f"{cpu['pictures_out']}/{cpu['frames_in']} 장 (기준 ≤ {C3_P95_MS:g} ms, ≥ {C3_TOTAL_FPS:g} fps). "
+                                        f"참고 NVDEC 합계 {values.get('nvdec_total_fps', values.get('nvdec_error'))}"), values
 
 
 # ---------------------------------------------------------------- c4: LIVE 하네스
@@ -226,7 +335,8 @@ def c3_decode_throughput(seconds: float = 10.0, variant_seconds: float = 5.0, si
 class LiveHarness:
     """Pod 안 LIVE Tier 0 하네스. 진입점(엔진 준비) → Tier 0 LIVE, 노트북 흉내, 영상 송신 4대."""
 
-    def __init__(self, work: Path, *, seconds: float, decoder: str = "nvdec", size=SIZE, extra_env: dict | None = None) -> None:
+    def __init__(self, work: Path, *, seconds: float, decoder: str | None = None, size=SIZE,
+                 extra_env: dict | None = None) -> None:
         import live_video as lv
         import tier0_site as ts
 
@@ -249,7 +359,8 @@ class LiveHarness:
         self.marker = self.state / "tier0.live"
         doc = {"gateway_id": ts.GATEWAY, "state_dir": str(self.state), "scene_version": "scene-sim",
                "calibration_file": str(run / "calibration.json"),
-               "input": {"mode": "live", "camera_ids": list(self.cams), "decoder": decoder},
+               "input": {"mode": "live", "camera_ids": list(self.cams),
+                         **({} if decoder is None else {"decoder": decoder})},  # None: Tier 0 기본 디코더(cpu)
                "bootstrap": {"archive": str(work / "boot"), "config_version": "cfg-1"}, "tick_ms": 100}
         self.cfg = work / "tier0-live.json"
         self.cfg.write_text(json.dumps(doc), encoding="utf-8")
@@ -464,8 +575,9 @@ def main(argv: list[str] | None = None) -> int:
             h.close()
 
     steps = Steps(out)
-    steps.run("c1_nvdec_open", True, lambda: c1_nvdec_open(py))
-    steps.run("c2_nvdec_gpu_test", True, lambda: c2_nvdec_gpu_test(py, out))
+    steps.run("c0_cpu_env", False, c0_cpu_env)
+    steps.run("c1_nvdec_open", False, lambda: c1_nvdec_open(py))  # NVDEC 은 선택 디코더(-236): 결과만 남긴다
+    steps.run("c2_nvdec_gpu_test", False, lambda: c2_nvdec_gpu_test(py, out))
     steps.run("c3_decode_throughput", True, c3_decode_throughput)
     steps.run("c4_live_start", True, lambda: c4_live_start(out / "live", args.live_seconds, args.ready_timeout_s))
     steps.run("c5a_geometry_10p", True, lambda: c5_geometry(py, out))

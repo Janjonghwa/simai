@@ -5,7 +5,7 @@
   a  -31  Pod 점검(GPU·드라이버·CUDA·마운트·용량·쓰기·fsync)            deploy/scripts/pod_check.py
   b  -32  Tier 0 이미지 기동·TensorRT 엔진 생성                           deploy/scripts/session1_engine.sh
   t       시험 도구(pytest·cryptography)를 컨테이너 디스크에 설치          Pod 만 (이미지에는 시험 의존성이 없다)
-  c  -182 LIVE 입력: NVDEC·디코딩 처리량·LIVE 기동·10명 처리 시간         deploy/scripts/session1_live.py (-182 머지 필요)
+  c  -182 LIVE 입력: vCPU·CPU 디코딩 처리량(NVDEC 참고)·LIVE 기동·10명    deploy/scripts/session1_live.py (-182 머지 필요)
   d  -60  Tier 0 GPU 우선 보호 측정 P0~P7                                  deploy/scripts/session1_gpu_priority.py (-60 머지 필요)
   e  -92  Network Volume 강제 종료 복구                                    제외: 엘리스 블록 스토리지 세션으로 옮김 (S15P31A101-205)
   f  -45·-175 Linux TLS 시험 반복                                         제외: GPU 가 필요 없어 GPU 세션에서 뺌 (Linux CPU 에서 repeat_pytest.py)
@@ -245,9 +245,9 @@ def items(lay: Layout) -> list[dict]:
          "skip_reason": "드라이런은 ai 개발 환경에 이미 있다", "expected_s": 60, "timeout_s": 600,
          "model_version": "n/a (시험 도구)", "provenance": PROVENANCE_NONE},
         # c·d 는 -182·-60 이 머지된 뒤의 경로를 부른다(머지 전이면 각 단계가 '머지 필요'로 실패하고 다음 항목으로 간다)
-        {"key": "c", "name": "c_tier0_live", "jira": "S15P31A101-182", "title": "LIVE 입력 Pod 확인(NVDEC·처리량·LIVE 기동·10명)",
+        {"key": "c", "name": "c_tier0_live", "jira": "S15P31A101-182", "title": "LIVE 입력 Pod 확인(vCPU·CPU 디코딩 처리량·LIVE 기동·10명)",
          "command": [py, "deploy/scripts/session1_live.py", "all"], "expected_s": 600, "timeout_s": 2400,
-         "model_version": "YOLO26x-pose TensorRT FP16 + PyAV NVDEC (LIVE 하네스)", "provenance": PROVENANCE_NONE},
+         "model_version": "YOLO26x-pose TensorRT FP16 + PyAV CPU 디코딩 (LIVE 하네스)", "provenance": PROVENANCE_NONE},
         {"key": "d", "name": "d_tier0_gpu_priority", "jira": "S15P31A101-60", "title": "Tier 0 GPU 우선 보호 측정 P0~P7",
          "command": [py, "deploy/scripts/session1_gpu_priority.py"], "expected_s": 900, "timeout_s": 2700,
          "model_version": "Tier 0 LIVE 하네스 + tier0_priority_probe", "provenance": PROVENANCE_NONE},

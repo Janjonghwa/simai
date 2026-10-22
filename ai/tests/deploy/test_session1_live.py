@@ -1,6 +1,6 @@
 """c 항목 LIVE 하네스(deploy/scripts/session1_live.py) 시험 (S15P31A101-183). -182 LIVE 입력이 머지된 뒤에 돈다(없으면 건너뜀).
 
-노트북: 진입점 대신 실제 Tier0Service + 검출기·추적 백엔드 대역(stub_tier0_live.py), 디코더 CPU, 작은 화면.
+노트북: 진입점 대신 실제 Tier0Service + 검출기·추적 백엔드 대역(stub_tier0_live.py), 디코더는 설정에 적지 않은 기본값(CPU), 작은 화면.
 - 송신 4대 → 카메라 4대 ready, 디코딩 실패·검출 오류·결합 불일치 0, 종료 0 → PASS
 - 반례: 영상 토큰이 틀리면(영상이 들어가지 않음) ready 가 되지 않아 FAIL(모르면 통과로 보지 않음)
 - 반례: Tier 0 가 기동하지 못하면(설정 오류) FAIL, 하네스가 기다리다 멈추지 않는다
@@ -26,13 +26,14 @@ SMALL = (256, 144)
 
 
 def harness(live, tmp_path: Path, seconds: float = 25):
-    h = live.LiveHarness(tmp_path / "w", seconds=seconds, decoder="cpu", size=SMALL)
+    h = live.LiveHarness(tmp_path / "w", seconds=seconds, size=SMALL)  # 디코더는 Tier 0 기본값(cpu, -236)
     h.command = lambda: [sys.executable, str(STUB), "--config", str(h.cfg), "--run-seconds", str(seconds)]
     return h
 
 
 def test_live_harness_passes_with_four_streams(live, tmp_path):
     h = harness(live, tmp_path)
+    assert "decoder" not in json.loads(h.cfg.read_text(encoding="utf-8"))["input"]  # c4·d 는 서비스 기본 디코더로 돈다
     try:
         h.start(live.encode_stream(50, size=SMALL))
         ready = h.wait_ready(40)

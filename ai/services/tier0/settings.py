@@ -10,13 +10,13 @@
                                                LIVE·file 은 필수(외부 파라미터 포함, 없으면 시작하지 않는다)
       "input": {"mode": "sim", "run_dir": "...", "anchor_wall_ms": 1760342400000, "arrival_lag_ms": 60},
                {"mode": "live", "camera_ids": ["cam1", "cam2", "cam3", "cam4"],
-                "decoder": "nvdec",                  nvdec(Pod, 기본) | cpu(노트북·시험). NVDEC 이 없으면 시작하지 않는다
+                "decoder": "cpu",                    cpu(기본, PyAV CPU) | nvdec(선택). nvdec 을 골랐는데 NVDEC 이 없으면 시작하지 않는다
                 "max_queue_wait_ms": 150, "queue_depth": 1}   프레임 최신성 정책(명세 5.1 초기값)
                {"mode": "file", "session_dir": "recordings/rec-...",   녹화 재생(gateway/recorder 세션, S15P31A101-215)
                 "camera_ids": [...],                 생략하면 manifest 의 모든 카메라
                 "speed": "max",                      "max"(기본, 판정 tick 마다 tick_ms 씩, 결과가 매번 같다) | 배속(1.0 = 실시간)
                 "jsonl_dir": "out/run-1",            있으면 world_state.jsonl·risk_event.jsonl 을 쓴다(있는 파일은 덮어쓰지 않음)
-                "decoder": "nvdec", "max_queue_wait_ms": 150, "queue_depth": 1}   LIVE 와 같다
+                "decoder": "cpu", "max_queue_wait_ms": 150, "queue_depth": 1}   LIVE 와 같다
                file 입력은 판정 출처가 REPLAY 이고 I1·I0 제어 채널을 열지 않는다(환경 변수가 있어도). 상태(저널·체크포인트·
                표시 파일)는 state_dir/replay/<실행 이름>/ 에 따로 둔다(LIVE 상태와 섞이지 않음). 구조는 docs/design/tier0-recording-replay.md
       "bootstrap": {"archive": "...", "config_version": "cfg-1"},   체크포인트의 묶음을 보관소에서 찾지 못할 때 쓸 시작 묶음
@@ -81,12 +81,13 @@ class SimInput:
     max_backlog_ms: int = 500
 
 
-DECODERS = ("nvdec", "cpu")
+DECODERS = ("cpu", "nvdec")
+DEFAULT_DECODER = "cpu"  # Pod 실측 CPU 가 NVDEC 보다 빠르고 GPU 를 검출·분석과 나누지 않는다(docs/design/tier0-nvdec-throughput.md)
 
 
 @dataclass(frozen=True)
 class LiveInputSettings:
-    decoder: str = "nvdec"
+    decoder: str = DEFAULT_DECODER
     max_queue_wait_ms: int = 150
     queue_depth: int = 1
 
@@ -99,7 +100,7 @@ class FileInputSettings:
     camera_ids: tuple[str, ...] | None = None
     speed: float | None = None
     jsonl_dir: Path | None = None
-    decoder: str = "nvdec"
+    decoder: str = DEFAULT_DECODER
     max_queue_wait_ms: int = 150
     queue_depth: int = 1
 
@@ -239,7 +240,7 @@ def _camera_ids(input_doc: Mapping[str, Any], default: list[str] | None) -> tupl
 
 
 def _freshness(input_doc: Mapping[str, Any]) -> tuple[str, int, int]:
-    decoder = input_doc.get("decoder", "nvdec")
+    decoder = input_doc.get("decoder", DEFAULT_DECODER)
     if decoder not in DECODERS:
         raise Tier0ConfigError(f"input.decoder 는 {' 또는 '.join(DECODERS)} 다")
     depth = _int(input_doc, "queue_depth", 1, minimum=1)

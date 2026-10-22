@@ -24,7 +24,7 @@ manifest.json (contracts/data/recording_manifest, 계약 검사)
        세그먼트마다 파일 크기·sha256·codec_info·프레임 줄(카메라·epoch·frame_sequence 연속·offset 범위·줄 수) 확인
        카메라마다 [codec_info → (header, .h264[offset:offset+size]) …] (+ 다음 세그먼트가 있으면 연결 끝), 카메라 사이는 수신 시각 순
   └─ FileInput.pump (services/tier0/file_input.py, 판정 스레드)
-       재생 시계(ReplayClock)가 지난 메시지 → I0Ingest.receive (LIVE 와 같은 CameraIngest·PyAV CPU/NVDEC·latest-frame-wins)
+       재생 시계(ReplayClock)가 지난 메시지 → I0Ingest.receive (LIVE 와 같은 CameraIngest·PyAV CPU(기본)/NVDEC(선택)·latest-frame-wins)
 판정 tick: DetectorFeed(source FILE) → 검출기 → MultiCameraLocalTracker → 카메라 간 연결 → World Track → 접지
            → ActiveConfig.evaluate(REPLAY) → LifecycleTracker(REPLAY)
   ├─ world_state.jsonl  : 봉투 그대로의 world_state 한 줄씩 (msg_id = 그 tick 의 evidence_ref)
@@ -52,7 +52,7 @@ manifest.json (contracts/data/recording_manifest, 계약 검사)
 | risk_event 줄 | 확정 전이마다 `risk_event` 2.1.0 봉투, payload = 전이 뒤 상태의 뷰어 projection(rationale·proposed_severity null, acks 빈 목록, delivery 없음) | 뷰어(-187)가 이벤트도 그린다. risk_event_transition 은 source 가 LIVE 고정이라 REPLAY 를 실을 수 없다. risk_event 는 REPLAY 를 받고, delivery 는 LIVE 에만 있는 필드다 |
 | 파일 쓰기 | 줄마다 flush, fsync 없음. 같은 이름 파일이 있으면 시작하지 않는다(종료 코드 2) | 덮어쓰지 않음(AGENTS 규칙 6). 실행 중에도 읽을 수 있게 |
 | JSONL 을 켜는 입력 | file 입력만(`input.jsonl_dir`) | LIVE 판정 lock 안에서 디스크를 기다리지 않게 한다. SIM 은 필요하면 다음 티켓 |
-| 시작 거절 | 녹화 manifest 계약 위반·세그먼트 파일 불일치·고른 카메라가 manifest 에 없음 → 4. 보정 경로 없음 → 설정 오류 2. 보정 문서를 못 읽음(외부 파라미터 R·t 없음 포함)·녹화 카메라가 보정에 없음 → 2. 디코더(nvdec) 없음·검출기 없음 → 4 | 모르면 지어내지 않는다. 기존 종료 코드 체계(2 설정, 4 입력·검출기) 그대로 |
+| 시작 거절 | 녹화 manifest 계약 위반·세그먼트 파일 불일치·고른 카메라가 manifest 에 없음 → 4. 보정 경로 없음 → 설정 오류 2. 보정 문서를 못 읽음(외부 파라미터 R·t 없음 포함)·녹화 카메라가 보정에 없음 → 2. 고른 디코더(nvdec) 없음·검출기 없음 → 4 | 모르면 지어내지 않는다. 기존 종료 코드 체계(2 설정, 4 입력·검출기) 그대로 |
 | 재생 중 입력 실패 | 녹화 읽기 실패·녹화 끝 디코더 비우기(PyAV flush DecodeError) 실패는 `FileInput.failed` 에 남기고 그 tick 에 재생을 끝낸다(finished). 진입점 종료 코드 4 | 남은 구간을 지어내지 않는다. 판정 스레드가 예외로 죽으면 진입점이 무기한 기다리므로 실패도 끝 신호로 잇는다. LIVE 의 tick 오류 지속 정책은 그대로 |
 | 결과 기록 실패 | world_state·risk_event 쓰기·flush 가 실패하면(디스크·권한) `JsonlOutput.failed` 에 파일·줄 번호·이유를 남기고 그 뒤로는 쓰지 않는다. 이미 쓴 줄은 그대로, 쓸 수 있으면 `replay_failed.json` 에 같은 내용. 재생을 실패로 끝내고 종료 코드 5 | 위험 이벤트를 잃은 출력을 정상 완료(0)로 보고하지 않는다 |
 
@@ -99,7 +99,7 @@ SIMAI_TIER0_WEIGHTS=<yolo26n-pose.pt 경로> SIMAI_TIER0_IMGSZ=640 \
 - 구성 묶음(bootstrap)이 없으면 world_state 만 나오고 위험 판정은 하지 않는다(health NO_ACTIVE_CONFIG).
 - 보정 문서(외부 파라미터 포함)가 없으면 `시작하지 않았다: 보정 문서를 읽지 못했다 …` 로 종료 코드 2 다. 지금 교실 녹화는
   내부 파라미터 결과(`intrinsics-20261021-022940z.json`)만 있고 외부 파라미터가 없어(-214) 여기서 멈춘다.
-- Pod 에서는 `decoder: "nvdec"`, 엔진(`SIMAI_TIER0_ENGINE`)으로 돈다. LIVE 관제 시간에는 돌리지 않는다(GPU 는 Tier 0 LIVE 가 먼저).
+- Pod 에서도 디코더는 기본 `cpu`(-236), 검출은 엔진(`SIMAI_TIER0_ENGINE`)으로 돈다. LIVE 관제 시간에는 돌리지 않는다(GPU 는 Tier 0 LIVE 가 먼저).
 
 시험: `uv run pytest tests/services/tier0/test_tier0_file_replay.py tests/io/test_recording_replay.py -q`
 (합성 녹화: 프레임 번호를 화소로 새긴 H.264, SIM 장면·SIM 보정, 검출기·추적기 대역. SIM 상한 결과다).
@@ -132,7 +132,7 @@ SIMAI_TIER0_WEIGHTS=<yolo26n-pose.pt 경로> SIMAI_TIER0_IMGSZ=640 \
 ## 남은 일
 
 - 교실 녹화 실제 실행: -214 의 외부 파라미터가 든 보정 문서(contracts/providers/calibration, 카메라 ID cam_A~cam_D)와 교실 구성 묶음
-  (구역이 없으면 world_state 만)이 있어야 한다. 노트북 CPU(ultralytics 작은 모델) 또는 Pod(엔진·NVDEC) 중 하나로 돌려 JSONL 을
+  (구역이 없으면 world_state 만)이 있어야 한다. 노트북 CPU(ultralytics 작은 모델) 또는 Pod(엔진, CPU 디코딩) 중 하나로 돌려 JSONL 을
   뷰어 재생(-187)에 넘긴다.
 - `gateway/recorder/README.md` "Tier 0 에서 다시 읽기"(1 은 아직 없다)와 `docs/data/recording-manifest.md` "Tier 0 에서 읽기"에
   이 경로를 적는다(이 티켓 범위 밖 파일).
