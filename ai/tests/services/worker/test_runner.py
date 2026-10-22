@@ -313,3 +313,9 @@ def test_auth_error_during_heartbeat_cancels_handler(ec2, make_worker):
     with pytest.raises(AuthError):
         make_worker({"static_reconstruct": handler}).run_once()
     assert contexts[0].cancelled.is_set()
+
+
+def test_handler_for_unknown_job_type_is_refused_at_start(client):
+    # 계약 밖 유형으로 대여를 요청하면 EC2 가 400 으로 거부해 워커가 멈춘다. 시작할 때 막는다
+    with pytest.raises(ValueError, match="vlm_rationle"):
+        Worker(client, {"vlm_rationle": lambda ctx: {}}, clock_ms=lambda: 0, monotonic=time.monotonic)
