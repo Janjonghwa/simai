@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.1.0",
+  "msg_type": "risk_plan_result",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000403",
+  "sent_at": 1760342399050,
+  "source_id": "risk-engine-01",
+  "payload": {
+    "request_id": "0192a6f0-7c1e-7b3a-9f2d-000000000411",
+    "source": "PLANNED",
+    "status": "ERROR",
+    "computed_at": 1760342399049,
+    "engine_version": "0.1.0",
+    "error": {
+      "code": "UNKNOWN_RULE",
+      "message": "등록되지 않은 규칙이다: R9 v1",
+      "retryable": false
+    },
+    "no_evaluated_positions": true
+  }
+}

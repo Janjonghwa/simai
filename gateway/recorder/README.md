@@ -130,10 +130,13 @@ RTSP 입력은 RTCP SR 로 환산한 카메라 시각도 `SourcePacket.camera_ti
 
 ### Tier 0 에서 다시 읽기
 
-방법은 두 가지다. 2 는 연결돼 있고(S15P31A101-158), 1 은 아직 없다.
+방법은 두 가지다. 둘 다 연결돼 있다(1 은 S15P31A101-215, 2 는 S15P31A101-158).
 
-1. **I0 재생(권장).** 세그먼트마다 `codec_info` → `(header, 압축 프레임)` 순서로 I0 메시지(`I0CodecInfo`, `I0Frame`)를 만들어
-   `I0Ingest` 에 넣는다. 프레임별 촬영 시각·epoch·키프레임이 LIVE 와 같은 경로로 들어간다. 읽는 순서는
+1. **I0 재생(권장, Tier 0 파일 입력).** Tier 0 설정의 `input` 을 `{"mode": "file", "session_dir": <세션 디렉터리>, ...}` 로 두면
+   `simai_ai.io.RecordingReplay` 가 세그먼트마다 `codec_info` → `(header, 압축 프레임)` 순서로 I0 메시지를 만들어 LIVE 와 같은 `I0Ingest` 에 넣는다.
+   프레임별 촬영 시각·epoch·키프레임이 LIVE 와 같은 경로로 들어간다. 판정 출처는 REPLAY 이고 I1·I0 제어 채널을 열지 않으며(실제 알림 없음),
+   `input.jsonl_dir` 을 주면 `world_state.jsonl`·`risk_event.jsonl` 을 남긴다(명세 21.3). 실행 방법·시계·종료 코드는
+   [`docs/design/tier0-recording-replay.md`](../../docs/design/tier0-recording-replay.md). 읽는 순서는
    `simai_recorder.segment.read_segment` 와 같다(ai 는 gateway 를 import 하지 않으므로 형식만 따른다).
 2. **VideoFileFrameSource.** `VideoFileFrameSource.from_manifest(<세션 디렉터리>, epochs={...})` 가 manifest 를 녹화 도구와 같은 판정(계약 스키마 + 스키마 밖 규칙)으로 검사하고
    카메라마다 `Recording(camera_id, path=epoch_NNNN.h264, start_time_ms=세그먼트 첫 추정 촬영 시각, fps=settings.nominal_fps)` 를 만든다.

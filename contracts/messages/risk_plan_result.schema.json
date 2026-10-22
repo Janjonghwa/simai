@@ -2,10 +2,34 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/risk_plan_result.schema.json",
   "title": "EC2 내부 risk_plan_result",
-  "description": "EC2 옆 Python Risk Engine 컨테이너 → EC2 Spring. risk_plan_request 의 응답 본문 (명세 3.2, 7장, 8.3, 11.1 sim.evaluation_run·sim.risk_result). 【HTTP】 status OK 는 200, ERROR 는 code 에 따라 400(INVALID_REQUEST·SOURCE_NOT_PLANNED·INVALID_LAYOUT)·422(UNKNOWN_RULE)·500(ENGINE_ERROR). Spring 은 HTTP 상태보다 본문 status 를 따르고, retryable true(ENGINE_ERROR)만 다시 보낸다. 【오류 판정 순서】 위반이 여럿이면 먼저 걸린 단계의 code 하나만 낸다. (1) 본문이 JSON 객체가 아니거나 payload.request_id 가 UUID 가 아님 → INVALID_REQUEST, request_id null. (2) payload.source 가 있고 PLANNED 가 아님 → SOURCE_NOT_PLANNED(다른 스키마 위반이 함께 있어도 이것이 먼저다. 비계획 출처 혼입은 알림 분리(규칙 5)를 건드리는 시도라 따로 센다. source 가 없으면 (3)). (3) 그 밖의 risk_plan_request 스키마 위반 → INVALID_REQUEST(같은 (ID, 버전)을 두 번 넣은 것은 uniqueItems 위반이라 여기). (4) 규칙 묶음 의미 검사: 등록부에 없는 (ID, 버전), 같은 rule_id 의 다른 버전 둘 → UNKNOWN_RULE. (5) 레이아웃 의미 검사: Risk Engine 이 구역·작업면을 거부(z_range 최저 ≥ 최고, valid_from ≥ valid_to), surface_id·position_id·(zone_id, zone_version) 중복, support_surface_id 가 floor 도 그 레이아웃 작업면도 아님, evaluation_time 에 유효한 같은 zone_id 버전 둘 → INVALID_LAYOUT. (6) 그 뒤 계산 중 예외 → ENGINE_ERROR. 근거: 앞 단계를 통과해야 뒤 단계를 검사할 수 있고(스키마가 맞아야 규칙을, 규칙 묶음이 맞아야 레이아웃 판정을), 입력 오류(1~5)는 같은 입력을 다시 보내도 같다. 【본문 없는 실패】 연결 실패·읽기 시간 초과·본문이 risk_plan_result 가 아닌 응답(비JSON 5xx 포함)은 Spring 이 ENGINE_ERROR 처럼 다시 보낼 수 있는 실패로 보고 같은 request_id 로 다시 보낸다(횟수·간격·시간 제한은 Spring 설계). 끝내 결과가 없으면 sim.evaluation_run 을 실패로 남기고 보고서를 만들지 않는다. 결과 없음을 '위험 항목 없음'으로 다루지 않는다. 【위치】 OK 는 판정에 실제로 쓴 계획 위치 목록 positions 를 싣는다(요청이 준 REQUESTED, 컨테이너가 만든 GENERATED). Spring 은 이 목록을 sim.* 에 결과와 함께 저장하고, items 의 position_ids 는 이 목록의 position_id 다. 【위험 항목】 items 는 규칙의 발생 판정만 싣는다(히스테리시스 유지 판정 holding 은 활성 이벤트 유지용이라 한 번 계산하는 PLANNED 에는 싣지 않는다). 항목은 확률·퍼센트 수치가 아니라 등급(severity) + 근거(규칙 ID·버전, 수평 거리·높이 차 같은 metrics, 판정 근거 코드, 관련 구역·계획 위치)로만 표현한다(명세 8.3, '추락 리스크 85%' 같은 값 불가). metrics 값은 소수 셋째 자리(mm)로 반올림한다. 항목 순서는 (rule_id, rule_version, zone_id, position_ids) 로 Risk Engine Evaluation.findings 와 같다. 【출처】 source 는 PLANNED 만이다. 이 결과는 sim.* 에만 저장하고 알림 채널(현장 경보·관제 경보·반장 PWA)로 보내지 않는다(AGENTS.md 규칙 5, 명세 7.4). 좌표·거리는 World 미터, 시각은 UTC int64 ms. 1.0.0 신설(S15P31A101-216).",
+  "description": "EC2 옆 Python Risk Engine 컨테이너 → EC2 Spring. risk_plan_request 의 응답 본문 (명세 3.2, 7장, 8.3, 11.1 sim.evaluation_run·sim.risk_result). 【HTTP】 status OK 는 200, ERROR 는 code 에 따라 400(INVALID_REQUEST·SOURCE_NOT_PLANNED·INVALID_LAYOUT)·422(UNKNOWN_RULE)·500(ENGINE_ERROR). Spring 은 HTTP 상태보다 본문 status 를 따르고, retryable true(ENGINE_ERROR)만 다시 보낸다. 【오류 판정 순서】 위반이 여럿이면 먼저 걸린 단계의 code 하나만 낸다. (1) 본문이 JSON 객체가 아니거나 payload.request_id 가 UUID 가 아님 → INVALID_REQUEST, request_id null. (2) payload.source 가 있고 PLANNED 가 아님 → SOURCE_NOT_PLANNED(다른 스키마 위반이 함께 있어도 이것이 먼저다. 비계획 출처 혼입은 알림 분리(규칙 5)를 건드리는 시도라 따로 센다. source 가 없으면 (3)). (3) 그 밖의 risk_plan_request 스키마 위반 → INVALID_REQUEST(같은 (ID, 버전)을 두 번 넣은 것은 uniqueItems 위반이라 여기). (4) 규칙 묶음 의미 검사: 등록부에 없는 (ID, 버전), 같은 rule_id 의 다른 버전 둘 → UNKNOWN_RULE. (5) 레이아웃 의미 검사: Risk Engine 이 구역·작업면을 거부(z_range 최저 ≥ 최고, valid_from ≥ valid_to), surface_id·position_id·(zone_id, zone_version) 중복, support_surface_id 가 floor 도 그 레이아웃 작업면도 아님, evaluation_time 에 유효한 같은 zone_id 버전 둘 → INVALID_LAYOUT. (6) 그 뒤 계산 중 예외 → ENGINE_ERROR. 근거: 앞 단계를 통과해야 뒤 단계를 검사할 수 있고(스키마가 맞아야 규칙을, 규칙 묶음이 맞아야 레이아웃 판정을), 입력 오류(1~5)는 같은 입력을 다시 보내도 같다. 【본문 없는 실패】 연결 실패·읽기 시간 초과·본문이 risk_plan_result 가 아닌 응답(비JSON 5xx 포함)은 Spring 이 ENGINE_ERROR 처럼 다시 보낼 수 있는 실패로 보고 같은 request_id 로 다시 보낸다(횟수·간격·시간 제한은 Spring 설계). 끝내 결과가 없으면 sim.evaluation_run 을 실패로 남기고 보고서를 만들지 않는다. 결과 없음을 '위험 항목 없음'으로 다루지 않는다. 【위치】 OK 는 판정에 실제로 쓴 계획 위치 목록 positions 를 싣는다(요청이 준 REQUESTED, 컨테이너가 만든 GENERATED). Spring 은 이 목록을 sim.* 에 결과와 함께 저장하고, items 의 position_ids 는 이 목록의 position_id 다. 【위험 항목】 items 는 규칙의 발생 판정만 싣는다(히스테리시스 유지 판정 holding 은 활성 이벤트 유지용이라 한 번 계산하는 PLANNED 에는 싣지 않는다). 항목은 확률·퍼센트 수치가 아니라 등급(severity) + 근거(규칙 ID·버전, 수평 거리·높이 차 같은 metrics, 판정 근거 코드, 관련 구역·계획 위치)로만 표현한다(명세 8.3, '추락 리스크 85%' 같은 값 불가). metrics 값은 소수 셋째 자리(mm)로 반올림한다. 항목 순서는 (rule_id, rule_version, zone_id, position_ids) 로 Risk Engine Evaluation.findings 와 같다. 【출처】 source 는 PLANNED 만이다. 이 결과는 sim.* 에만 저장하고 알림 채널(현장 경보·관제 경보·반장 PWA)로 보내지 않는다(AGENTS.md 규칙 5, 명세 7.4). 좌표·거리는 World 미터, 시각은 UTC int64 ms. 【평가한 위치 없음】 OK 의 positions 가 빈 배열이면(만들 작업면·개구부가 없고 요청도 위치를 주지 않음) 사람 대상 규칙(R1·R2·R3)을 판정할 위치가 없었다는 뜻이다. Spring·보고서는 이것을 '평가한 작업 위치 없음'으로 보이고 '위험 없음'으로 쓰지 않는다(명세 8.3). no_evaluated_positions 는 이 뜻을 명시하는 선택 표시이며, 실을 때는 positions 와 맞아야 한다(true ⇔ 빈 배열). 싣지 않은 문서도 빈 positions 를 같은 뜻으로 읽는다. 1.0.0 신설(S15P31A101-216). 1.1.0 필드 추가(마이너, S15P31A101-217): no_evaluated_positions(선택, OK 에만, 1.0.x 문서는 싣지 않음).",
   "allOf": [
     {
       "$ref": "envelope.schema.json"
+    },
+    {
+      "description": "평가한 위치 없음 표시(no_evaluated_positions)는 1.1.0 부터다",
+      "if": {
+        "properties": {
+          "schema_version": {
+            "pattern": "^1[.]0[.]"
+          }
+        },
+        "required": [
+          "schema_version"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "not": {
+              "required": [
+                "no_evaluated_positions"
+              ]
+            }
+          }
+        }
+      }
     }
   ],
   "type": "object",
@@ -86,11 +110,15 @@
             "$ref": "#/$defs/evaluated_position"
           },
           "description": "판정에 쓴 계획 위치(생성된 것 포함). 위치를 하나도 쓰지 않았으면 빈 배열"
+        },
+        "no_evaluated_positions": {
+          "type": "boolean",
+          "description": "판정에 쓴 계획 위치가 하나도 없었는지(true 면 positions 가 빈 배열, false 면 하나 이상). '평가한 작업 위치 없음'이지 '위험 없음'이 아니다(명세 8.3). 선택(1.1.0), OK 에만"
         }
       },
       "allOf": [
         {
-          "description": "OK 는 계산 결과(규칙 묶음·판정 기준 시각·레이아웃·위치·항목)를 싣고 오류가 없다. ERROR 는 오류만 싣고 위치·항목이 없다(일부 결과를 내지 않는다)",
+          "description": "OK 는 계산 결과(규칙 묶음·판정 기준 시각·레이아웃·위치·항목)를 싣고 오류가 없다. ERROR 는 오류만 싣고 위치·항목·위치 없음 표시가 없다(일부 결과를 내지 않는다)",
           "if": {
             "properties": {
               "status": {
@@ -119,7 +147,48 @@
               "required": [
                 "error"
               ]
-            }
+            },
+            "allOf": [
+              {
+                "description": "no_evaluated_positions 를 실으면 positions 와 맞는다: true 는 빈 배열, false 는 하나 이상",
+                "if": {
+                  "properties": {
+                    "no_evaluated_positions": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "no_evaluated_positions"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "positions": {
+                      "maxItems": 0
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "no_evaluated_positions": {
+                      "const": false
+                    }
+                  },
+                  "required": [
+                    "no_evaluated_positions"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "positions": {
+                      "minItems": 1
+                    }
+                  }
+                }
+              }
+            ]
           },
           "else": {
             "required": [
@@ -137,6 +206,13 @@
                 "not": {
                   "required": [
                     "positions"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "no_evaluated_positions"
                   ]
                 }
               }

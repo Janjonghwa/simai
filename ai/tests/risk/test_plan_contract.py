@@ -1,4 +1,4 @@
-"""EC2 내부 PLANNED 판정 계약(risk_plan_request·risk_plan_result 1.0.0)과 Risk Engine 코드의 일치 시험 (S15P31A101-216).
+"""EC2 내부 PLANNED 판정 계약(risk_plan_request 1.0.0·risk_plan_result 1.1.0)과 Risk Engine 코드의 일치 시험 (S15P31A101-216, 1.1.0 -217).
 
 계약이 코드 형식(Zone.from_json, WorkSurface, Finding, 등록부)과 어긋나거나, 결과 예시가 실제 엔진 출력이 아니게 되면 실패한다.
 계획 위치 → WorldTrack 변환(_planned_world)은 Risk Engine 컨테이너(-99)가 할 일을 시험에서만 흉내 낸 것이다.
@@ -435,3 +435,82 @@ def test_probability_names_rejected_in_metrics():
         doc = copy.deepcopy(result)
         doc["payload"]["items"][0]["metrics"][name] = 0.85
         assert schema_errors(doc, "risk_plan_result"), name
+
+
+# ---------------------------------------------------------------- 평가한 위치 없음 (risk_plan_result 1.1.0, S15P31A101-217)
+
+
+def test_no_positions_example_is_generator_output():
+    """만들 작업면·유효한 개구부가 없는 요청(지난 개구부·장비 구역뿐)은 위치도 항목도 없다. 예시가 실제 생성·판정 출력과 같다."""
+    from simai_ai.risk.plan import evaluate_plan
+
+    request = load_example("risk_plan_request.no_positions.json")["payload"]
+    assert "work_positions" not in request["layout"]
+    outcome = evaluate_plan(request)
+    assert outcome.positions == () and outcome.items == ()
+    result = load_example("risk_plan_result.no_positions.json")["payload"]
+    assert result["positions"] == [] and result["items"] == [] and result["no_evaluated_positions"] is True
+
+
+def test_expired_opening_would_generate_when_valid():
+    """반례 대조: 같은 개구부가 판정 시각에 유효하면 위치가 생긴다(빈 결과가 생성 규칙 고장이 아니라 레이아웃 때문임)."""
+    from simai_ai.risk.plan import evaluate_plan
+
+    request = copy.deepcopy(load_example("risk_plan_request.no_positions.json")["payload"])
+    opening = request["layout"]["zones"][0]
+    opening.pop("valid_from")
+    opening.pop("valid_to")
+    outcome = evaluate_plan(request)
+    assert [p.position_id for p in outcome.positions] == ["gen-z-open-old-01"]
+    assert outcome.items
+
+
+@pytest.mark.parametrize(
+    ("flag", "with_positions", "ok"),
+    [
+        (True, False, True),
+        (False, True, True),
+        (None, False, True),  # 표시 없음: 1.0.0 과 같이 빈 positions 로 읽는다
+        (None, True, True),
+        (True, True, False),  # 위치가 있는데 '없음'
+        (False, False, False),  # 위치가 없는데 '있음'(빈 결과를 위험 없음으로 읽게 하는 문서)
+    ],
+)
+def test_no_positions_flag_matches_positions(flag, with_positions, ok):
+    doc = load_example("risk_plan_result.no_positions.json")
+    if with_positions:
+        gen = load_example("risk_plan_result.generated_positions.json")["payload"]
+        doc["payload"] |= {"positions": gen["positions"], "items": gen["items"]}
+    doc["payload"].pop("no_evaluated_positions")
+    if flag is not None:
+        doc["payload"]["no_evaluated_positions"] = flag
+    assert (schema_errors(doc, "risk_plan_result") == []) is ok
+
+
+@pytest.mark.parametrize(
+    ("version", "status", "ok"),
+    [("1.1.0", "OK", True), ("1.2.3", "OK", True), ("1.0.0", "OK", False), ("1.0.9", "OK", False), ("1.1.0", "ERROR", False)],
+)
+def test_no_positions_flag_version_and_status(version, status, ok):
+    """표시는 1.1.0 부터, OK 에만. 표시를 빼면 같은 문서가 통과한다(음성 대조: 거부 이유가 표시뿐)."""
+    if status == "OK":
+        doc = load_example("risk_plan_result.no_positions.json")
+    else:
+        doc = load_example("risk_plan_result.unknown_rule.json") | {"schema_version": version}
+        doc["payload"]["no_evaluated_positions"] = True
+    doc["schema_version"] = version
+    assert (schema_errors(doc, "risk_plan_result") == []) is ok
+    doc["payload"].pop("no_evaluated_positions")
+    assert schema_errors(doc, "risk_plan_result") == []
+
+
+def test_current_container_response_still_valid():
+    """지금 컨테이너(-99)는 표시를 채우지 않는다(1.0.0 응답). 그 응답이 1.1.0 계약을 그대로 통과하고, 빈 positions 로 같은 뜻을 낸다."""
+    from services.risk_engine.handler import RESULT_SCHEMA_VERSION, handle
+
+    status, body = handle(json.dumps(load_example("risk_plan_request.no_positions.json")).encode(), now_ms=lambda: 1760342399118)
+    doc = json.loads(body)
+    assert status == 200 and doc["schema_version"] == RESULT_SCHEMA_VERSION
+    assert schema_errors(doc, "risk_plan_result") == []
+    assert doc["payload"]["positions"] == [] and doc["payload"]["items"] == []
+    assert "no_evaluated_positions" not in doc["payload"]

@@ -3,7 +3,7 @@
 이 폴더가 기획서의 **정본**이다. Notion 에는 이 폴더로 가는 링크와 발표·제출용으로 내보낸 사본만 둔다.
 요구사항 명세서는 [`../requirements.md`](../requirements.md) 에 있다. 저장소 규칙과 계약은 `AGENTS.md`, `contracts/` 를 본다.
 
-**기준 문서:** simai System Specification v1.2 r4 수정 7 (2026-10-17) · **개정일:** 2026-10-20
+**기준 문서:** simai System Specification v1.2 r4 수정 7 (2026-10-17) · **개정일:** 2026-10-22
 
 2026-10-17 · A101 · **상태: v1.3** · 정본: GitLab `docs/spec/`
 
@@ -38,6 +38,7 @@
 | v1.3 수정 20 | 2026-10-21 | 기준 데이터 시드(S15P31A101-211, 사용자 결정): 현장 `classroom-1`(교실 테스트베드)·카메라 `cam1`~`cam4` 는 Flyway 시드, `rule_version` 은 AI 규칙 등록부(`simai_ai.risk.rule_catalog`)에서 자동 생성한 Flyway 반복 마이그레이션(11.1, 11.6, 16장). 계약 변경 없음 |
 | v1.3 수정 21 | 2026-10-22 | TBM PLANNED 판정 구간(S15P31A101-216, 사용자 결정): EC2 Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON(공개 포트 없음), 메시지 `risk_plan_request`·`risk_plan_result`(12.2). 계획 작업 위치는 선택이고 없으면 컨테이너가 작업면·구역에서 만들며, 결과에 REQUESTED·GENERATED 로 표시하고 EC2 가 위치 목록을 `sim.*` 에 저장(8.3, 11.1, 16장). 기술 스택에 FastAPI(3.8, 부록 B), 생성 규칙·컨테이너 구현은 미결(19.1). 계약 v5.5.0: `risk_plan_request`·`risk_plan_result` 1.0.0 신설 |
 | v1.3 수정 22 | 2026-10-22 | TBM 계획 작업 위치 생성 규칙과 Risk Engine 컨테이너 구현(S15P31A101-99): 작업면마다 상판 가운데(넓은 면은 가장 긴 변 가운데에서 0.5 m 안쪽 하나 더), 판정 시각에 유효한 개구부 구역마다 경계 바깥 0.2 m 바닥 위치, 다른 구역 유형에는 만들지 않음, 머리 높이 없음, ID `gen-<작업면·구역 ID>-<순번>`, 결정적(8.3). 19.1 미결 닫음. 계약 변경 없음 |
+| v1.3 수정 23 | 2026-10-22 | 명세 정리 6차(S15P31A101-217). Tier 0 공개 주소 환경 변수는 사이트 무관 `SIMAI_PUBLIC_HOST`·`SIMAI_PUBLIC_PORT_<번호>` 먼저, 없으면 `RUNPOD_PUBLIC_IP`·`RUNPOD_TCP_PORT_<번호>`(3.12, 14, S15P31A101-208), Run 기록 `gpu.provider` RUNPOD·VAST·OTHER·LOCAL(20.5). 실험 이미지 HMR `exp02-fs3db`·MapAnything `mapanything`(torch 2.7.1+cu128, Detectron2 sm_80\~sm_120), 시작 절차의 이미지별 가중치 묶음과 sha256, Tier 0 이미지 층 분할, Docker Hub 단일 비공개 저장소 태그 접두, 최소 사양에 Blackwell, 다이제스트를 모르는 Run 의 `env_hash`(3.12, 20.5, 21.5, S15P31A101-207). EC2 컨테이너는 MVP 에서 PLANNED 만·운영 REPLAY 재계산은 확장(3.2)과 Tier 0 파일 입력 시나리오 재생(REPLAY 출처, I1·I0 제어 미송신, JSONL, `input_provenance.frames.source` FILE 구분)(21.3, S15P31A101-215). 외부 파라미터 실행 도구는 한 명 걷기부터·여러 명은 후속·World 정렬 입력은 S15P31A101-102(4.3, S15P31A101-214). 평가한 작업 위치 없음은 ‘위험 없음’이 아님(8.3). 19.1: -208·-207 닫음, 2차 GPU 세션 확인·c3 판정 구조와 기준(S15P31A101-212)·여러 명 외부 파라미터·컨테이너의 위치 없음 표시 채우기 추가, 계약 반영 목록. 요구사항 갱신 목록(이 문서). 계약 v5.6.0: `risk_plan_result` 1.1.0 `no_evaluated_positions`(선택, 마이너) |
 
 v1.0 \~ v1.2 r4 수정 7 의 이력은 [`history.md`](history.md) 에 있다.
 
@@ -122,7 +123,7 @@ v1.0 \~ v1.2 r4 수정 7 의 이력은 [`history.md`](history.md) 에 있다.
 | FR-54 | 장애별 표시 | 노트북 앱 일시 소켓 오류(WinError 10014)는 짧게 다시 시도, 넘기면 재접속, 그동안 정상으로 보지 않음, 앱이 멈추지 않음 | v1.3 수정 14, 3.10 (S15P31A101-199) |
 | FR-59·FR-99·FR-141·NFR-32 | Network Volume 에 클립·2D 관측 보관·정리 | Tier 0 저장 위치(3.12)로 | v1.3 수정 14 |
 | FR-131 | 노트북 GPU 현장 프로파일 대체 경로 유지·측정 | 하지 않음(현장 프로파일은 코드 구조로만) | v1.3 수정 14, 3.12 (S15P31A101-94) |
-| FR-138 | 공개 포트 `RUNPOD_TCP_PORT_*` | 실행 사이트의 환경 변수(이름 일반화 진행 중) | v1.3 수정 14, 3.12 (S15P31A101-208) |
+| FR-138 | 공개 포트 `RUNPOD_TCP_PORT_*` | 사이트 무관 `SIMAI_PUBLIC_HOST`·`SIMAI_PUBLIC_PORT_<번호>` 먼저, 없으면 `RUNPOD_PUBLIC_IP`·`RUNPOD_TCP_PORT_<번호>`(값이 틀리면 오류, 둘 다 없으면 등록·기동 오류) | v1.3 수정 14·23, 3.12 (S15P31A101-208) |
 | NFR-13 | RunPod 볼륨의 비밀 값 | 실행 사이트 비밀 환경 변수·저장 위치 비공개 폴더, `HF_TOKEN` 은 가중치 받을 때만 | v1.3 수정 14, 3.12 (S15P31A101-205) |
 | NFR-16 | 동의서 국외 이전 받는 자(RunPod 일본) | GPU 실행 사이트(지역 미고정·시연 사이트 미정), 내부 테스트 영상(우연히 찍힌 사람, 내부 개발·테스트만) | v1.3 수정 12·14, 11.5 (S15P31A101-204) |
 | NFR-19 | GPU 격리, 상한 | GPU 메모리 예산 초기값(Tier 0 0.20·분석 워커 0.70·VLM 0.55/동시 4)과 시작 검사, 48GB 미만 GPU 에는 분석 부하 안 올림, 접수 중지 기준(창 최댓값 600ms·대기 상한 초과 1건·30초 유지) | v1.3 수정 14, 3.2 (S15P31A101-60) |
@@ -130,3 +131,8 @@ v1.0 \~ v1.2 r4 수정 7 의 이력은 [`history.md`](history.md) 에 있다.
 | NFR-30 | 한 시점에 한 리전 | 한 시점에 GPU 하나, 사이트·지역 고정 안 함, 볼륨이 없으면 지우기 전에 결과 회수 | v1.3 수정 14, 3.12 |
 | 개요·기획서 대응표 | 시스템 개요의 ‘일본 AP-JP-1 H100’, 대응표 8·37·42 행(3.12 제목, 19.1 Network Volume 구조) | 3.12 ‘GPU 실행 환경·저장소’, 19.1 ‘Tier 0 저장 위치 구조’ | v1.3 수정 14 |
 | FR-99·NFR-32 | 클립은 객체 저장소 수명 주기 규칙으로 삭제·확인 | EC2 클립 삭제 작업(`delete_after` 지난, 보존 표시 없는 클립만)으로 삭제·확인, 수명 주기 규칙은 클립에 쓰지 않음 | v1.3 수정 19, 11.5 (S15P31A101-210) |
+| FR-107 | Run 기록 필드 | GPU 제공 사이트 `gpu.provider`(RUNPOD·VAST·OTHER·LOCAL), 이미지 다이제스트를 모르는 Run 은 `env_hash` 를 다이제스트로 채우지 않음 | v1.3 수정 23, 20.5, 21.5 (S15P31A101-208·-207) |
+| FR-23 | 한 명이 걷고 부족하면 여러 명(모두 보정에 씀) | 지금 외부 파라미터 실행 도구는 한 명 걷기 녹화만(여러 명 동시는 카메라 간 사람 대응 단계 후속), World 정렬 입력 형식은 S15P31A101-102 | v1.3 수정 23, 4.3 (S15P31A101-214) |
+| FR-127·NFR-28 | 녹화 파일 입력·결정적 시나리오 재생 | Tier 0 파일 입력 `input.mode: file`: REPLAY 출처, I1·I0 제어 채널 없음(실제 알림·저널 없음), `world_state`·`risk_event` JSONL, 파일에서는 `input_provenance.frames.source` FILE 로 LIVE 와 구분 | v1.3 수정 23, 21.3 (S15P31A101-215) |
+| FR-128 | EC2 컨테이너(PLANNED·REPLAY·WHAT_IF) | MVP 내부 API 는 PLANNED 만, 운영 REPLAY·WHAT_IF 재계산은 확장(부록 C), Tier 0 파일 재생은 개발·시험 도구 | v1.3 수정 23, 3.2, 21.3 (S15P31A101-215) |
+| FR-19 | 계획 모드 평가 결과 | 평가한 계획 위치가 없으면 ‘위험 없음’이 아니라 ‘평가한 작업 위치 없음’으로 보임(`risk_plan_result` 1.1.0 `no_evaluated_positions`, 선택) | v1.3 수정 23, 8.3 (S15P31A101-217) |
