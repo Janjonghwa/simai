@@ -240,7 +240,7 @@ flowchart TB
 | RunPod Tier 0 | LIVE 판정 | Risk Engine Python 라이브러리, 이벤트 저널·outbox(Tier 0 저장 위치, 3.12) | 확정 |
 | RunPod Tier 0 | World 추적 | MV3DT 원칙의 Python Global Tracker, World 칼만 필터, 늦은 재연결·ID 교정 | 기본안 |
 | RunPod Tier 0 | 접지 추정 | ContactEstimator(발뒤꿈치·발끝 keypoint, 발목 높이·정지 여부·다시점 Z·등록 작업면) | 기본안 |
-| RunPod 분석 | VLM | NVIDIA Cosmos3-Nano(16B) Reasoner 모드, vLLM 0.19.1 이상(`vllm-cosmos3`) | 확정(G7 합격 판정) |
+| RunPod 분석 | VLM | NVIDIA Cosmos3-Nano(16B) Reasoner 모드, vLLM 0.21.0 + `vllm-cosmos3`(커밋 고정), Tier 0 와 같은 가상환경의 별도 프로세스(3.12) | 확정(G7 합격 판정) |
 | 외부 | LLM | 외부 API “GPT 6.1 sol”(텍스트만, 5.4) | 확정 |
 | RunPod 분석 | 마스크 | YOLO26-seg, 새 물체·실측 정물은 YOLOE-26 | 기본안 |
 | RunPod 분석 | 정적 3D | MapAnything Native, trimesh로 glTF (EXP-01) | 기본안·선행 실험 |
@@ -426,7 +426,8 @@ GPU 를 쓰는 곳(실행 사이트)과 지역은 고정하지 않는다(2026-10
 
 - Tier 0 이미지는 CUDA 13 이다. Tier 0 의존성 잠금의 torch 가 CUDA 13.0 런타임 휠을 가져오므로 베이스도 같은 판의 CUDA 13.0 이미지, TensorRT 도 CUDA 13 판을 쓴다.
 - Tier 0 이미지의 의존성은 잠금에서 뽑은 큰 휠 묶음별 층(CUDA 13 휠·torch·TensorRT·큰 일반 휠), 작은 패키지 층, 코드 층으로 나눈다. 작은 패키지나 코드만 바뀌면 그 위 층만 다시 올린다. 층 재사용은 같은 빌드 기계의 빌드 캐시가 남아 있을 때만 된다(`docs/design/exp-images.md`).
-- 실험 이미지: EXP-02 HMR `exp02-fs3db`, EXP-01 MapAnything `mapanything`. 둘 다 torch 2.7.1+cu128 이다(cu128 은 Blackwell 커널이 든 첫 CUDA 빌드이고, MapAnything 은 E-GATE-0 볼륨 환경과 같은 torch 판, HMR 은 2.5.1 에서 가장 가까운 판). HMR 의 Detectron2 확장은 sm_80\~sm_120(Ampere\~Blackwell) 전부로 빌드해 GPU 가 바뀌어도 다시 빌드하지 않는다. 볼륨 venv 설치 대신 이 이미지를 쓰고, E-GATE-0 결과와 같은지는 설계 문서의 대조 기준으로 확인한다. 실험 이미지는 Tier 0 와 다른 인스턴스로 띄운다(인스턴스 하나에 이미지 하나, LIVE 관제 시간에는 띄우지 않음, 20.5).
+- 의존성 잠금(`ai/uv.lock`)은 하나다. Tier 0, VLM 서빙(vLLM 0.21.0 + `vllm-cosmos3` 커밋 고정), HMR 이 같은 판(torch 2.11.0, Linux 는 CUDA 13.0 `cu130` 휠)을 쓰는 한 가상환경이고, 프로세스는 Tier 0 / vLLM 서버 / 분석 워커로 나눈다(3.2 장애 격리). 한 가상환경이라 워커 스택(vLLM·Transformers·Detectron2 등)이 설치돼 있어도 Tier 0 코드가 import 하지 못하게 import 규칙으로 막는다. Detectron2 는 CUDA 확장 없이 CPU 전용으로 빌드해(`FORCE_CUDA=0`) 잠금 설치 뒤 따로 넣는다. 세 프로세스를 담는 통합 이미지와 시작 절차의 프로세스 감시, 그 이미지가 받을 VLM 가중치 묶음 `vlm`(Cosmos3-Nano 약 31.5GB, 서빙에 쓰지 않는 `vae`·`sound_tokenizer` 제외)은 아직 쓰지 않는다(S15P31A101-235 2단계, 19.1). 근거는 `docs/design/unified-env.md`.
+- 실험 이미지: EXP-02 HMR `exp02-fs3db`, EXP-01 MapAnything `mapanything`. 둘 다 아직 위 잠금과 별도인 torch 2.7.1+cu128 이다(cu128 은 Blackwell 커널이 든 첫 CUDA 빌드이고, MapAnything 은 E-GATE-0 볼륨 환경과 같은 torch 판, HMR 은 2.5.1 에서 가장 가까운 판). HMR 의 Detectron2 는 CUDA 확장 없이 CPU 전용으로 빌드한다(`FORCE_CUDA=0`): 우리 경로가 쓰는 것은 설정 읽기(`LazyConfig`)뿐이라 GPU 커널이 필요 없다(S15P31A101-238). 볼륨 venv 설치 대신 이 이미지를 쓰고, E-GATE-0 결과와 같은지는 설계 문서의 대조 기준으로 확인한다. 실험 이미지는 Tier 0 와 다른 인스턴스로 띄운다(인스턴스 하나에 이미지 하나, LIVE 관제 시간에는 띄우지 않음, 20.5).
 - CUDA 13.0 은 NVIDIA 드라이버 580 이상이 필요하다. 베이스 이미지의 순방향 호환 라이브러리로 데이터센터 GPU(H100 등)는 535·550·565·570·575 계열 드라이버에서도 돌 수 있다. 인스턴스를 고를 때 드라이버 최대 CUDA 13.0 이상으로 거른다(RunPod·Vast 의 CUDA 필터). 실제 동작은 검증 큐 첫 단계에서 확인한다.
 - 이미지는 노트북에서 빌드해 Docker Hub 비공개 저장소에 올린다(SSAFY GitLab 컨테이너 레지스트리는 구성되지 않음. 인스턴스 안에서는 Docker 를 쓰지 않는다). 무료 플랜은 비공개 저장소가 하나라 Tier 0·실험 이미지를 같은 저장소에 올리고 태그 접두(`exp02-fs3db-`, `mapanything-`)로 구분한다. 실행 사이트는 태그가 아니라 이미지 다이제스트로 가리키고, 그 다이제스트가 Run 기록의 `env_hash` 다(20.5, 21.5). 레지스트리 읽기 자격 증명은 사이트의 레지스트리 자격 증명 기능에 두고 환경 변수에 넣지 않는다. 이미지에는 가중치·엔진·비밀 값·SSH 호스트 키를 넣지 않는다.
 
