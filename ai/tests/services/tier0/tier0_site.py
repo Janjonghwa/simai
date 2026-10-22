@@ -92,9 +92,10 @@ class _DictFetcher:
 
 
 def bundle_message(
-    calibration: dict[str, Any], version: str, issued_at: int, *, zones=None, rules=RULES, fetcher: _DictFetcher | None = None
+    calibration: dict[str, Any], version: str, issued_at: int, *, zones=None, rules=RULES, fetcher: _DictFetcher | None = None,
+    work_surfaces=(),
 ) -> tuple[dict[str, Any], _DictFetcher]:
-    """EC2 처럼 구성 요소 → 매니페스트 → config_bundle 알림을 만든다(바이트는 fetcher 에)."""
+    """EC2 처럼 구성 요소 → 매니페스트 → config_bundle 알림을 만든다(바이트는 fetcher 에). work_surfaces: 작업면(R2·R3)."""
     from simai_ai.config import sha256_of
 
     fetcher = fetcher or _DictFetcher()
@@ -103,7 +104,8 @@ def bundle_message(
         "zones": {"version": f"zones-{version}", "zones": [ZONE | {"zone_version": f"zone-{version}"}] if zones is None else zones},
         "rules": {"version": f"rules-{version}", "rule_versions": [{"rule_id": r, "rule_version": v} for r, v in rules]},
         "calibration": calibration,
-        "operational_geometry": {"version": f"geom-{version}", "work_surfaces": [], "static_objects": []},
+        "operational_geometry": {"version": f"geom-{version}", "work_surfaces": list(work_surfaces),
+                                 "static_objects": []},
     }
     components = {}
     for name, doc in docs.items():

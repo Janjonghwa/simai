@@ -1,0 +1,60 @@
+{
+  "scenario_id": "r1_late_and_reconnecting_camera",
+  "d_ids": [
+    "D-G3-08",
+    "D-G6-01"
+  ],
+  "description": "r1_enter_exit 와 같은 걸음에 cam3 프레임이 120 ms 늦게 도착하고 cam4 가 1.5~2.0 s 에 끊겼다가 새 epoch 로 다시 붙는다",
+  "_design": "늦은 카메라(관측 유효 간격 200 ms 보다 작은 지연)·재접속이 있어도 그림과 촬영 시각 결합이 어긋나지 않고(misbound 0), R1 시각 창이 r1_enter_exit 와 같다. 지연이 200 ms 를 넘는 경우는 r1_lagging_camera_unverifiable",
+  "sim": {
+    "duration_ms": 11000,
+    "people": [
+      {
+        "id": "walker",
+        "height_m": 1.72,
+        "waypoints": [
+          {
+            "t_ms": 0,
+            "xy": [
+              1.0,
+              3.8
+            ]
+          },
+          {
+            "t_ms": 3000,
+            "xy": [
+              4.6,
+              3.8
+            ]
+          },
+          {
+            "t_ms": 6000,
+            "xy": [
+              4.6,
+              3.8
+            ]
+          },
+          {
+            "t_ms": 8000,
+            "xy": [
+              8.0,
+              3.8
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "faults": {
+    "receive_lag_ms": {
+      "cam3": 120
+    },
+    "camera_gaps": [
+      {
+        "camera_id": "cam4",
+        "from_ms": 1500,
+        "to_ms": 2000
+      }
+    ]
+  }
+}

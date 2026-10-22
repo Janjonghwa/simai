@@ -1,0 +1,52 @@
+{
+  "scenario_id": "r1_lagging_camera_unverifiable",
+  "d_ids": [
+    "D-G0-10"
+  ],
+  "description": "r1_enter_exit 와 같은 걸음에 cam3 프레임만 400 ms 늦게 도착한다(camera_stall_ms 500 보다 짧아 공통 시각에서 빠지지 않음)",
+  "_design": "명세 6.1·6.4 규칙 정답: 사람이 구역에 들어가면 R1 이 나고(확인 필요일 수 있음), 유효 관측 없이 해소하지 않는다. 해소된다면 사람이 실제로 나간 뒤(중심 x 6.2~6.8 m 통과 6941~7294 ms + 해소 유지 1500 ms)여야 한다. 지금 구현은 융합 시각을 camera_stall_ms(500) 안 카메라의 최신 촬영 시각 최솟값으로 골라(perception.py) 400 ms 늦은 카메라 하나에 전체가 묶여 트랙이 PREDICTED 가 되고 해소를 확인하지 못한다. 이것은 명세가 요구하는 정답이 아니라 가용성 한계라 known_limitations 로 따로 적는다. frame_age_ms 영향 측정(D-G0-10 측정·기록)은 이 시나리오가 하지 않는다",
+  "sim": {
+    "duration_ms": 11000,
+    "people": [
+      {
+        "id": "walker",
+        "height_m": 1.72,
+        "waypoints": [
+          {
+            "t_ms": 0,
+            "xy": [
+              1.0,
+              3.8
+            ]
+          },
+          {
+            "t_ms": 3000,
+            "xy": [
+              4.6,
+              3.8
+            ]
+          },
+          {
+            "t_ms": 6000,
+            "xy": [
+              4.6,
+              3.8
+            ]
+          },
+          {
+            "t_ms": 8000,
+            "xy": [
+              8.0,
+              3.8
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "faults": {
+    "receive_lag_ms": {
+      "cam3": 400
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "scenario_id": "r1_enter_exit",
+  "d_ids": ["D-G6-01", "D-G6-03"],
+  "format_version": 1,
+  "_tolerance": "시각은 장면 시작 기준 ms. 근거는 docs/design/scenario-replay-golden.md '허용 오차'",
+  "exhaustive": true,
+  "world_state": {"min_lines": 100, "max_tracks": 1},
+  "events": [
+    {"name": "R5 접근 예측", "rule_id": "R5", "zone_id": "z-r1", "severity": "CAUTION", "world_id_count": 1,
+     "_why": "D-G6-03: 실제 진입(2167 ms)보다 1초 이상 앞서 발생(상한 1167). 구역 안에 들어서면 R1 이 맡아 판정이 끊기고 해소 유지 1.5 s 뒤 해소",
+     "transitions": [{"kind": "RAISED", "at_ms": [0, 1167]},
+                     {"kind": "RESOLVED", "at_ms": [2900, 4800]}]},
+    {"name": "R1 진입", "rule_id": "R1", "zone_id": "z-r1", "severity": "HIGH", "world_id_count": 1,
+     "_why": "D-G6-01: 하한 = 범위(점유 반경 0.3 + 발끝 앞섬 0.4 + 2σ 0.2 = 0.9 m)가 처음 닿을 수 있는 1417 ms, 상한 = 실제 진입 + 900 ms. 해소 = 범위가 해소 간격 밖(중심 x 6.2~6.8 m, 6941~7294 ms) + 해소 유지 1500 ms + 판정 주기 여유",
+     "transitions": [{"kind": "RAISED", "at_ms": [1400, 3067], "verification": "VERIFIED"},
+                     {"kind": "RESOLVED", "at_ms": [8300, 9300]}]}
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "scenario_id": "r1_late_and_reconnecting_camera",
+  "d_ids": [
+    "D-G3-08",
+    "D-G6-01"
+  ],
+  "format_version": 1,
+  "_tolerance": "시각은 장면 시작 기준 ms. 근거는 docs/design/scenario-replay-golden.md '허용 오차'",
+  "exhaustive": true,
+  "world_state": {
+    "min_lines": 100,
+    "max_tracks": 1
+  },
+  "events": [
+    {
+      "name": "R1 진입",
+      "rule_id": "R1",
+      "zone_id": "z-r1",
+      "severity": "HIGH",
+      "world_id_count": 1,
+      "_why": "D-G6-01: 하한 = 범위(점유 반경 0.3 + 발끝 앞섬 0.4 + 2σ 0.2 = 0.9 m)가 처음 닿을 수 있는 1417 ms, 상한 = 실제 진입 + 900 ms. 해소 = 범위가 해소 간격 밖(중심 x 6.2~6.8 m, 6941~7294 ms) + 해소 유지 1500 ms + 판정 주기 여유",
+      "transitions": [
+        {
+          "kind": "RAISED",
+          "at_ms": [
+            1400,
+            3067
+          ],
+          "verification": "VERIFIED"
+        },
+        {
+          "kind": "RESOLVED",
+          "at_ms": [
+            8300,
+            9300
+          ]
+        }
+      ]
+    }
+  ],
+  "ignore_rules": [
+    "R5"
+  ],
+  "_ignore_rules": "R5 는 r1_enter_exit 가 본다(늦은 카메라는 속도 추정 시점을 바꿀 수 있다)"
+}
