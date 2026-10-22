@@ -284,7 +284,7 @@ def test_pod_job_file_passes_gpu_queue_check_and_run_record_schema(gs, monkeypat
     names = [j["name"] for j in doc["jobs"]]
     # 시험 도구(t)가 그것을 쓰는 c·d 보다 먼저. e(엘리스로 이동)·f(GPU 불필요)는 제외, 실험 이미지 항목(g·m)은 다른 이미지 Pod (S15P31A101-205·-207)
     assert names == ["a_pod_check", "b_tier0_engine", "t_test_tools", "c_tier0_live", "d_tier0_gpu_priority"]
-    assert {h["key"] for h in held} == {"e", "f", "g0", "g1", "g2", "g3", "m0", "m1", "m2"}
+    assert {h["key"] for h in held} == {"e", "f", "g0", "g1", "g2", "g3", "g4", "m0", "m1", "m2"}
     assert all(j["timeout_s"] >= j["expected_s"] for j in doc["jobs"])
     assert doc["queue"]["continue_on_failure"] is True
     tools = next(j for j in doc["jobs"] if j["name"] == "t_test_tools")["command"]

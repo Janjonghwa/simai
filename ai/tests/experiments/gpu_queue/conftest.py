@@ -107,9 +107,15 @@ class QueueEnv:
         return self.out.read_text(encoding="utf-8").splitlines() if self.out.is_file() else []
 
 
+# 시험을 도는 곳의 환경 변수가 기대를 바꾸지 않게 지운다. Pod 는 RUNPOD_*(provider·datacenter)를,
+# 큐 Job 안에서 도는 pytest(2차 세션 d P0)는 SIMAI_QUEUE_TOKEN 을 물려받아 가짜 Tier 0 도 '큐가 띄운 Job' 으로 보였다
+HOST_ENV_PREFIXES = ("RUNPOD_", "VAST_")
+HOST_ENV_KEYS = ("SIMAI_QUEUE_TOKEN", "SIMAI_RUN_ID", "SIMAI_RUN_DIR", "SIMAI_QUEUE_NAME")
+
+
 def _env() -> dict[str, str]:
-    env = dict(os.environ, PYTHONUTF8="1")
-    env.pop("RUNPOD_POD_ID", None)
+    env = {k: v for k, v in os.environ.items() if not k.startswith(HOST_ENV_PREFIXES) and k not in HOST_ENV_KEYS}
+    env["PYTHONUTF8"] = "1"
     return env
 
 
@@ -177,3 +183,4 @@ QueueEnv.FAKE_SMI = FAKE_SMI
 QueueEnv.QUEUE_DIR = QUEUE.parent
 QueueEnv.REPO = REPO
 QueueEnv.repo_head = staticmethod(repo_head)
+QueueEnv.env = staticmethod(_env)

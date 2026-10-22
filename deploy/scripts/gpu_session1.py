@@ -10,12 +10,14 @@
   e  -92  Network Volume 강제 종료 복구                                    제외: 엘리스 블록 스토리지 세션으로 옮김 (S15P31A101-205)
   f  -45·-175 Linux TLS 시험 반복                                         제외: GPU 가 필요 없어 GPU 세션에서 뺌 (Linux CPU 에서 repeat_pytest.py)
   g0~g3 -207 EXP-02 이미지(HMR) 점검·E-GATE-0 재현(H6·H0·H1)               exp02 이미지 Pod 에서만 (S15P31A101-207)
+  g4  -238 HMR 보정 K 입력 경로(교실 사진 20장 + 교실 보정 기록, 판정 check_calib_k)  exp02 이미지 Pod 에서만 (S15P31A101-243)
   m0~m2 -207 MapAnything 이미지 점검·E-GATE-0 재현(C1·C2)                    mapanything 이미지 Pod 에서만
   (--exp-jobs: 추가 EXP Job 파일(예 -87 다시점 집계)을 LIVE 보호를 켠 별도 큐로 마지막에 돈다)
 
 항목마다 돌 이미지가 정해져 있다(Pod 하나 = 이미지 하나). 지금 이미지(--image, 기본 이미지 ENV SIMAI_IMAGE_KIND, 없으면 tier0)의
 항목만 큐에 넣고 나머지는 '다른 이미지' 로 표에 남긴다. 2차 세션은 Tier 0 Pod → exp02 Pod → mapanything Pod 순서로 같은 명령을 돈다.
 실험 이미지의 큐는 LIVE 보호를 켠다(on_live=stop: 관제 중이면 멈춤). 데이터(hmr_poc14·room4)는 저장소에 없어 Pod 에 따로 올린다.
+g4 입력(교실 사진·보정 기록)은 사람이 찍혀 있어 저장소에 넣지 않고, prepare 가 노트북 recordings 에서 저장소 밖 묶음(g4-inputs.tar)으로 만든다.
 실험 Job 은 exp_job.py 로 감싸 지표를 Run 기록에 넘기고, 가중치·입력·결과는 저장 위치 절대 경로로 기록한다. Run 기록 검증기가 없으면
 (실험 이미지 venv) 시작 전에 컨테이너 디스크에 깔고, 그래도 없으면 시작하지 않는다(종료 코드 5).
 
@@ -194,10 +196,29 @@ PROVENANCE_SIM = {"frames": {"source": "SIM", "dataset_id": "sim/tier0-e2e-walke
 # E-GATE-0 과 같은 입력 사진(공개 영상 프레임 14장, 라운지 사진 4장). 정답 데이터가 아니다
 PROVENANCE_HMR = {"frames": {"source": "FILE", "dataset_id": "hmr_poc14"}, "is_upper_bound": False}
 PROVENANCE_ROOM4 = {"frames": {"source": "FILE", "dataset_id": "room4"}, "is_upper_bound": False}
+# g4 입력(S15P31A101-243): 교실 사진(cam_A~D × 5장, 2304×1296)과 교실 보정 기록(AnyCalib, PROVISIONAL). 노트북 원본은 커밋하지 않는 recordings
+G4_STILLS, G4_IMAGES = "classroom-stills-20261021", 20
+G4_CALIB = "intrinsics-20261021-022940z.json"
+G4_LOCAL_STILLS = REPO / "ai" / "experiments" / "recordings" / G4_STILLS
+G4_LOCAL_CALIB = REPO / "ai" / "experiments" / "recordings" / "intrinsics" / G4_CALIB
+
+
+def calibration_provenance(path: Path) -> dict | None:
+    """보정 기록 파일 → Run 기록 input_provenance.calibration. run_image 의 k_input.input_provenance(fs3db_common.k_summary)와 같은 규칙:
+    무마커 추정 기록(simai.intrinsics_estimate)은 G1_AUTO, 판은 '<파일 이름>@<sha256>'. 읽지 못하거나 다른 형식이면 모른다(None, 지어내지 않는다)."""
+    try:
+        data = path.read_bytes()
+        doc = json.loads(data)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or doc.get("format") != "simai.intrinsics_estimate":
+        return None
+    return {"source": "G1_AUTO", "calibration_version": f"{path.name}@sha256:{hashlib.sha256(data).hexdigest()}"}
 
 
 def items(lay: Layout) -> list[dict]:
-    """세션 항목. command 가 None 이면 자리만(큐에 넣지 않는다). expected_s 는 H100 예상, 근거는 설계 문서."""
+    """세션 항목. command 가 None 이면 자리만(큐에 넣지 않는다). expected_s 는 H100 예상(2차 세션 실측 기준, 근거는
+    docs/design/runpod-environment.md "예상 시간 근거"), timeout_s 는 처음 정한 넉넉한 값 그대로."""
     dry = lay.mode == "dryrun"
     py = lay.py
     smi_text = json.dumps(lay.smi)
@@ -214,17 +235,23 @@ def items(lay: Layout) -> list[dict]:
 
     def exp(key: str, name: str, title: str, image: str, run: str, cmd: list[str], out: Path, *, weights: list[str],
             dataset: list[str], results: list[tuple[str, str]], experiment_id: str, provenance: dict, model_version: str,
-            expected_s: int, timeout_s: int) -> dict:
+            expected_s: int, timeout_s: int, jira: str = "S15P31A101-207", check: list[str] | None = None) -> dict:
         """실험 Job: exp_job.py 가 결과 폴더를 덮어쓰지 않게 막고, 실험 지표를 $SIMAI_RUN_DIR/metrics.json 으로 넘긴다.
-        Run id 에 세션 이름을 붙여 세션마다 결과 폴더가 다르다(E-GATE-0·다른 세션 결과를 덮어쓰지 않는다)."""
-        return {"key": key, "name": name, "jira": "S15P31A101-207", "title": title, "image": image, "run_id": run,
-                "command": [py, "deploy/scripts/exp_job.py", "--out", str(out), "--", *cmd],
+        Run id 에 세션 이름을 붙여 세션마다 결과 폴더가 다르다(E-GATE-0·다른 세션 결과를 덮어쓰지 않는다).
+        check 를 주면 exp_job 이 명령 성공 뒤 그 판정(exp_job --check)으로 Job 성공·실패를 정한다."""
+        return {"key": key, "name": name, "jira": jira, "title": title, "image": image, "run_id": run,
+                "command": [py, "deploy/scripts/exp_job.py", "--out", str(out), *(check or []), "--", *cmd],
                 "expected_s": expected_s, "timeout_s": timeout_s, "model_version": model_version, "provenance": provenance,
                 "experiment_id": experiment_id, **egate, "weights": weights, "dataset": dataset,
                 "results": [{"kind": k, "path": str(out / rel) if rel else str(out)} for k, rel in results]}
 
     sfx = re.sub(r"[^A-Za-z0-9_.-]", "_", lay.session)
-    h6, h0, h1 = (f"{r}_img_{sfx}" for r in ("H6_det_yolo26x", "H0_smoke", "H1_official_opt"))
+    h6, h0, h1, h7 = (f"{r}_img_{sfx}" for r in ("H6_det_yolo26x", "H0_smoke", "H1_official_opt", "H7_calib_k"))
+    stills, calib = data / G4_STILLS, data / "classroom-k" / G4_CALIB
+    # 보정 출처는 큐를 만들 때(Pod 에 입력이 올라간 뒤) 파일에서 읽는다. 파일이 없으면 비우고, 판정이 g4 를 실패로 둔다
+    g4_prov = {"frames": {"source": "FILE", "dataset_id": G4_STILLS}, "is_upper_bound": False}
+    if (cal := calibration_provenance(calib)) is not None:
+        g4_prov["calibration"] = cal
     out02 = lay.simai / "runs" / "exp02"  # run_image·det_bench 의 OUT = $SIMAI_ROOT/runs/exp02/<run id>
     out01 = lay.simai / "runs" / "exp01"
     hmr_results = [("REPORT", "metrics.json"), ("HUMAN_MESH_OUTPUT", "meshes"), ("RENDER", "renders")]
@@ -234,9 +261,9 @@ def items(lay: Layout) -> list[dict]:
         pod_check += ["--no-volume"]
     return [
         {"key": "a", "name": "a_pod_check", "jira": "S15P31A101-31", "title": "Pod 점검", "command": pod_check, "image": "*",
-         "expected_s": 120, "timeout_s": 900, "model_version": "n/a (인프라 점검)", "provenance": PROVENANCE_NONE},
+         "expected_s": 60, "timeout_s": 900, "model_version": "n/a (인프라 점검)", "provenance": PROVENANCE_NONE},
         {"key": "b", "name": "b_tier0_engine", "jira": "S15P31A101-32", "title": "Tier 0 이미지 기동·TensorRT 엔진 생성",
-         "command": ["bash" if lay.mode == "pod" else find_bash(), "deploy/scripts/session1_engine.sh"], "expected_s": 900, "timeout_s": 2700,
+         "command": ["bash" if lay.mode == "pod" else find_bash(), "deploy/scripts/session1_engine.sh"], "expected_s": 720, "timeout_s": 2700,
          "model_version": "YOLO26x-pose TensorRT FP16 (e2e, imgsz 1280, batch 4)", "provenance": PROVENANCE_NONE,
          "weights": ["weights/yolo/yolo26x-pose.pt"]},
         {"key": "t", "name": "t_test_tools", "jira": "S15P31A101-183", "title": "시험 도구 설치(컨테이너 디스크)",
@@ -246,10 +273,10 @@ def items(lay: Layout) -> list[dict]:
          "model_version": "n/a (시험 도구)", "provenance": PROVENANCE_NONE},
         # c·d 는 -182·-60 이 머지된 뒤의 경로를 부른다(머지 전이면 각 단계가 '머지 필요'로 실패하고 다음 항목으로 간다)
         {"key": "c", "name": "c_tier0_live", "jira": "S15P31A101-182", "title": "LIVE 입력 Pod 확인(vCPU·CPU 디코딩 처리량·LIVE 기동·10명)",
-         "command": [py, "deploy/scripts/session1_live.py", "all"], "expected_s": 600, "timeout_s": 2400,
+         "command": [py, "deploy/scripts/session1_live.py", "all"], "expected_s": 300, "timeout_s": 2400,
          "model_version": "YOLO26x-pose TensorRT FP16 + PyAV CPU 디코딩 (LIVE 하네스)", "provenance": PROVENANCE_NONE},
         {"key": "d", "name": "d_tier0_gpu_priority", "jira": "S15P31A101-60", "title": "Tier 0 GPU 우선 보호 측정 P0~P7",
-         "command": [py, "deploy/scripts/session1_gpu_priority.py"], "expected_s": 900, "timeout_s": 2700,
+         "command": [py, "deploy/scripts/session1_gpu_priority.py"], "expected_s": 600, "timeout_s": 2700,
          "model_version": "Tier 0 LIVE 하네스 + tier0_priority_probe", "provenance": PROVENANCE_NONE},
         {"key": "e", "name": "e_crash_recovery", "jira": "S15P31A101-92", "title": "Network Volume 강제 종료 복구",
          "command": [py, "deploy/scripts/crash_recovery_g3.py", "--volume-dir", str(lay.simai / "runs" / "crash92")],
@@ -262,27 +289,37 @@ def items(lay: Layout) -> list[dict]:
          "excluded": "GPU 가 필요 없어 GPU 세션에서 뺌(Linux CPU 에서 repeat_pytest.py 로)"},
         # 2차 세션 실험 이미지 항목(S15P31A101-207)
         {"key": "g0", "name": "g0_exp02_image_check", "jira": "S15P31A101-207", "title": "EXP-02 이미지 GPU 점검",
-         "image": "exp02", "command": [py, "deploy/scripts/exp_image_check.py"], "expected_s": 120, "timeout_s": 600,
+         "image": "exp02", "command": [py, "deploy/scripts/exp_image_check.py"], "expected_s": 60, "timeout_s": 600,
          "model_version": "n/a (이미지 점검)", "provenance": PROVENANCE_NONE},
         exp("g1", "g1_exp02_h6_det", "EXP-02 재현 H6 검출 시간", "exp02", h6,
             ["simai-exp02", py, f"{hmr}/det_bench.py", "--run-id", h6, "--half"], out02 / h6,
             weights=[str(w / "yolo" / "yolo26x-pose.pt")], dataset=[str(data / "hmr_poc14" / "t3_multi_f050.jpg")],
             results=[("REPORT", "metrics.json")], experiment_id="EXP-02", provenance=PROVENANCE_HMR,
-            model_version="YOLO26x-pose (ultralytics, FP16)", expected_s=300, timeout_s=1200),
+            model_version="YOLO26x-pose (ultralytics, FP16)", expected_s=60, timeout_s=1200),
         exp("g2", "g2_exp02_h0_smoke", "EXP-02 재현 H0 스모크 1장", "exp02", h0,
             ["simai-exp02", py, f"{hmr}/run_image.py", "--run-id", h0, "--images", str(data / "hmr_poc14" / "t1_front_taichi.jpg"),
              "--mode", "official", "--preset", "opt"], out02 / h0,
             weights=hmr_w, dataset=[str(data / "hmr_poc14" / "t1_front_taichi.jpg")], results=hmr_results,
             experiment_id="EXP-02", provenance=PROVENANCE_HMR, model_version="Fast-SAM-3D-Body@d72aa36 dinov3 (opt)",
-            expected_s=300, timeout_s=1200),
+            expected_s=60, timeout_s=1200),
         exp("g3", "g3_exp02_h1_official", "EXP-02 재현 H1 공식 경로 14장", "exp02", h1,
             ["simai-exp02", py, f"{hmr}/run_image.py", "--run-id", h1, "--images", str(data / "hmr_poc14"),
              "--mode", "official", "--preset", "opt"], out02 / h1,
             weights=hmr_w, dataset=[str(data / "hmr_poc14")], results=hmr_results,
             experiment_id="EXP-02", provenance=PROVENANCE_HMR, model_version="Fast-SAM-3D-Body@d72aa36 dinov3 (opt)",
-            expected_s=900, timeout_s=2700),
+            expected_s=120, timeout_s=2700),
+        # g4: 알려진 K(보정)를 펴서 넣는 경로. MoGe 를 띄우지 않으므로 MoGe 가중치는 기록하지 않고, 보정 기록 파일이 입력이다
+        exp("g4", "g4_exp02_h7_calib_k", "EXP-02 보정 K 입력 경로 교실 사진 20장", "exp02", h7,
+            ["simai-exp02", py, f"{hmr}/run_image.py", "--run-id", h7, "--images", str(stills),
+             "--mode", "official", "--preset", "opt", "--calibration", str(calib)], out02 / h7,
+            weights=[p for p in hmr_w if "/moge/" not in Path(p).as_posix()], dataset=[str(stills), str(calib)],
+            results=hmr_results, experiment_id="EXP-02", provenance=g4_prov,
+            model_version="Fast-SAM-3D-Body@d72aa36 dinov3 (opt) + 보정 K(펴짐)", expected_s=180, timeout_s=1800,
+            jira="S15P31A101-238",
+            check=["--check", f"{hmr}/check_calib_k.py", f"--check-arg=--images={G4_IMAGES}",  # = 형식: '--' 로 시작하는 값
+                   f"--check-arg=--provenance={json.dumps(g4_prov, ensure_ascii=False)}"]),
         {"key": "m0", "name": "m0_mapanything_image_check", "jira": "S15P31A101-207", "title": "MapAnything 이미지 GPU 점검",
-         "image": "mapanything", "command": [py, "deploy/scripts/exp_image_check.py"], "expected_s": 120, "timeout_s": 600,
+         "image": "mapanything", "command": [py, "deploy/scripts/exp_image_check.py"], "expected_s": 60, "timeout_s": 600,
          "model_version": "n/a (이미지 점검)", "provenance": PROVENANCE_NONE},
         *(exp(key, f"{key}_mapanything_{base[:2].lower()}", f"MapAnything 재현 {base} ({model})", "mapanything", f"{base}_img_{sfx}",
               [py, "ai/experiments/static_scene/run_mapanything.py", "--run-id", f"{base}_img_{sfx}", "--images", str(data / "room4"),
@@ -290,7 +327,7 @@ def items(lay: Layout) -> list[dict]:
               weights=[str(w / model / "model.safetensors"), str(w / model / "config.json")], dataset=[str(data / "room4")],
               results=[("REPORT", "metrics.json"), ("SCENE_OUTPUT", "cameras.json"), ("SCENE_OUTPUT", "fused.ply"), ("RENDER", "panels")],
               experiment_id="EXP-01", provenance=PROVENANCE_ROOM4, model_version=f"map-anything@3d10cf7 + {model}",
-              expected_s=300, timeout_s=1200)
+              expected_s=120, timeout_s=1200)
           for key, base, model in (("m1", "C1_room4_bf16", "map-anything"), ("m2", "C2_room4_apache_bf16", "map-anything-apache"))),
     ]
 
@@ -664,6 +701,36 @@ def msys_converted(value: str, env: dict[str, str] | None = None) -> bool:
     return p.is_absolute() and any((a / "usr" / "bin" / "bash.exe").is_file() for a in (p, *p.parents))
 
 
+def g4_inputs(out: Path, stills: Path, calib: Path) -> tuple[Path | None, str]:
+    """g4 입력 묶음(교실 사진 20장 + 보정 기록). 사람이 찍힌 사진이라 저장소 안에는 만들지 않는다(커밋 사고 방지). (경로, 알림).
+    폴더는 실제 경로(resolve: 상대 경로·폴더 링크)로 보고, 최종 파일은 이미 있으면(파일·링크·하드링크 모두) 덮어쓰지 않는다.
+    새 임시 파일(O_EXCL)에 쓴 뒤 하드링크로 최종 이름을 만든다(이미 있으면 실패 = 원자적 '없을 때만 생성')."""
+    repo = REPO.resolve()
+    real_out = out.resolve()
+    if real_out.is_relative_to(repo):
+        return None, f"g4 입력을 넣지 않음: --out {out} 이 저장소 안이다(사람이 찍힌 사진). 저장소 밖 폴더로 다시 prepare 한다"
+    tar = real_out / "g4-inputs.tar"
+    if os.path.lexists(tar):  # 남은 파일이 저장소 안 파일의 하드링크·링크일 수 있다 → 따라가 덮어쓰지 않는다
+        return None, f"g4 입력을 넣지 않음: {tar} 가 이미 있다(덮어쓰지 않는다). 지우거나 새 --out 폴더로 다시 prepare 한다"
+    photos = sorted(stills.glob("*.jpg")) if stills.is_dir() else []
+    if len(photos) != G4_IMAGES or not calib.is_file():
+        return None, (f"g4 입력 없음: 사진 {len(photos)}/{G4_IMAGES}장({stills}), 보정 기록 {'있음' if calib.is_file() else '없음'}({calib})"
+                      " → Pod 의 g4 는 판정 실패로 남는다")
+    fd, tmp_name = tempfile.mkstemp(prefix=".g4-inputs-", suffix=".tmp", dir=real_out)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as f, tarfile.open(fileobj=f, mode="w") as t:
+            for p in photos:
+                t.add(p, arcname=f"{G4_STILLS}/{p.name}", recursive=False)
+            t.add(calib, arcname=f"classroom-k/{calib.name}", recursive=False)
+        os.link(tmp, tar)  # 최종 이름이 그새 생겼으면 FileExistsError(덮어쓰지 않음)
+    except OSError as e:
+        return None, f"g4 입력을 넣지 않음: {tar} 를 만들지 못함({type(e).__name__}: {e}). 사진 묶음은 남기지 않았다"
+    finally:
+        tmp.unlink(missing_ok=True)
+    return tar, f"g4 입력 {tar} (사진 {len(photos)}장 + {calib.name}). 사람이 찍혀 있어 내부 확인용이다(공유·커밋하지 않는다)"
+
+
 def cmd_prepare(args) -> int:
     if msys_converted(args.pod_simai):  # 바뀐 값으로 틀린 Pod 명령을 출력하지 않는다
         print(f"--pod-simai 가 Git Bash 경로 변환으로 바뀌었다: {args.pod_simai!r}. 변환을 끄고 다시 실행한다: "
@@ -690,6 +757,12 @@ def cmd_prepare(args) -> int:
     print(f"  scp -P <포트> {tar.as_posix()} {(args.out / STAMP_FILE).as_posix()} root@<IP>:{up}/")
     print(f"  ssh -p <포트> root@<IP> 'rm -rf {dest} && mkdir -p {dest} && tar -xf {up}/simai-repo.tar"
           f" -C {dest} && cp {up}/{STAMP_FILE} {dest}/'")
+    g4, note = g4_inputs(args.out, args.g4_stills, args.g4_calibration)
+    print(note, file=sys.stdout if g4 else sys.stderr)
+    if g4:  # exp02 Pod 만: $SIMAI_ROOT/datasets/{classroom-stills-20261021, classroom-k} 로 푼다
+        print(f"  scp -P <포트> {g4.as_posix()} root@<IP>:{up}/   # exp02 Pod")
+        print(f"  ssh -p <포트> root@<IP> 'mkdir -p {args.pod_simai.rstrip('/')}/datasets && tar -xf {up}/{g4.name}"
+              f" -C {args.pod_simai.rstrip('/')}/datasets'")
     print(f"  ssh -p <포트> root@<IP> 'nohup simai-bootstrap queue > {up}/session1.log 2>&1 &'"
           "   # 가중치·GPU 준비 뒤 큐 (SIMAI_SESSION_REPO 기본값이 위 사본)")
     return EXIT_OK
@@ -820,6 +893,8 @@ def main(argv: list[str] | None = None) -> int:
     p_prep.add_argument("--out", type=Path, required=True)
     p_prep.add_argument("--pod-simai", default="/workspace/simai",
                         help="Pod 의 SIMAI_ROOT (볼륨 있음 /workspace/simai, 볼륨 없음 /srv/simai: simai-bootstrap check 의 storage.root)")
+    p_prep.add_argument("--g4-stills", type=Path, default=G4_LOCAL_STILLS, help="g4 교실 사진 폴더(노트북, 커밋하지 않음)")
+    p_prep.add_argument("--g4-calibration", type=Path, default=G4_LOCAL_CALIB, help="g4 교실 보정 기록(노트북)")
     args = ap.parse_args(argv)
     if args.cmd == "prepare":
         return cmd_prepare(args)

@@ -57,7 +57,7 @@ uv 공식 문서(Docker 통합 안내)의 권장은 "의존성 층(`--no-install
   - 노트북에서 못 본 것: 이미지 빌드(cu128 torch 가 깔린 빌드 단계, Docker 금지), GPU EGL 렌더. 3차 세션과 Lead 의 이미지 재빌드·`check_image.sh` 로 본다(아래 "3차 세션 항목").
   - 점검 바꿈: `exp_image_check.py` 의 `detectron2_arch`·`detectron2_kernel`(GPU 위 `box_iou_rotated`) → `detectron2_lazyconfig`(Fast 의 mhr70 메타데이터 70관절을 `LazyConfig.load`, 확장의 CUDA 여부는 기록만).
     `check_image.sh` 는 확장이 CPU 전용(`has_cuda()` False)인지와 같은 LazyConfig 읽기를 이미지 안에서 확인한다(빌드 성질 점검).
-  - `deploy/README.md` 의 Detectron2 줄(6세대 CUDA 빌드·`EXP02_CUDA_ARCH`·devel)은 -236 담당 파일이라 고치지 않았다(머지 뒤 맞춘다).
+  - `deploy/README.md` 의 Detectron2 줄(6세대 CUDA 빌드·`EXP02_CUDA_ARCH`·devel)은 -236 담당 파일이라 고치지 않았고, -243 에서 CPU 전용 빌드(`FORCE_CUDA=0`, base 빌드 단계)에 맞췄다.
 - **빌드 단계도 base.** -238 부터 devel 이미지(압축 약 5.2GB)를 받지 않는다. 빌드 단계는 휠(chumpy·Detectron2 CPU 확장·MoGe)만 만들어 실행 이미지로 옮긴다.
   실행 이미지에는 torch.compile(triton) 런처용 `gcc`·`libc6-dev`, pyrender EGL 용 glvnd 를 둔다.
 - **허브 코드 고정.** Fast 의 `Dinov3Backbone` 과 MapAnything(uniception) 인코더는 `torch.hub.load("facebookresearch/dinov{2,3}", pretrained=False)` 로 GitHub `main` 을 그때그때 받았다(가중치는 안 받음).
@@ -143,21 +143,26 @@ MapAnything 비교는 노트북에서 한다: 결과 묶음의 `runs/exp01/*_img
 
 ### 3차 세션 항목 (S15P31A101-238, exp02 Pod)
 
-Lead 가 이 MR 의 Dockerfile 로 이미지를 다시 빌드한 뒤 같은 `simai-bootstrap queue` 로 돈다. 세션 큐(`deploy/scripts/gpu_session1.py`)는 -236 담당이라 g4 항목 추가는 그 MR 머지 뒤 Lead 가 한다.
+Lead 가 이 MR 의 Dockerfile 로 이미지를 다시 빌드한 뒤 같은 `simai-bootstrap queue` 로 돈다. 세션 큐(`deploy/scripts/gpu_session1.py`)의 g4 항목은 -243 이 넣었다(아래 "g4 큐 연결").
 
 | 키 | 확인 | 명령(저장 위치 `$R` = `/srv/simai` 등) | 기대 |
 |---|---|---|---|
 | (빌드 뒤) | 무확장 이미지 내용 | `bash deploy/scripts/check_image.sh <이미지>` (Lead, 노트북) | "import·코드 사본 (exp02: … cpu-only …)" PASS, 빌드 로그에 devel 베이스·nvcc 없음 |
 | g0 | 무확장 이미지 GPU 점검 | `python deploy/scripts/exp_image_check.py` | `detectron2_lazyconfig` ok(CUDA 확장이 든 옛 이미지면 실패·종료 1), `pyrender_egl` ok, 종료 0 |
 | g1·g2·g3 | E-GATE-0 재현(항목 그대로) | 기존 항목. 판정은 `compare_egate0.py --base <E-GATE-0 Run>` | 구조 PASS. 같은 torch 판이라 지연은 H100·2.7.1+cu128 기대값 ±25%·±20%. 렌더 패널은 사람이 2차 세션 것과 비교(확장 제거가 렌더를 바꾸지 않음) |
-| g4 | 보정 K 입력 경로 | `simai-exp02 python ai/experiments/hmr/run_image.py --run-id H7_calib_k_img_<세션> --images $R/datasets/classroom-stills-20261021 --mode official --preset opt --calibration $R/datasets/classroom-k/intrinsics-20261021-022940z.json` | 20장 모두 행의 `k_input.source` CALIBRATION(G1_AUTO·PROVISIONAL)·`undistorted` true·`image_space` UNDISTORTED_ALPHA1, 최상위 `k_input.count` {CALIBRATION: 20}, 적재 목록에 `fov_moge2` 없음, `k_focal_diff_px`(모델 초점 − `K_used` fx) < 0.5, `reproj_err_px` 0.0, finite. 사람 수는 기록만(정답 없음. 노트북 yolo11m-pose 로 원본에서 93명) |
+| g4 | 보정 K 입력 경로 | `simai-exp02 python ai/experiments/hmr/run_image.py --run-id H7_calib_k_img_<세션> --images $R/datasets/classroom-stills-20261021 --mode official --preset opt --calibration $R/datasets/classroom-k/intrinsics-20261021-022940z.json` | 20장 모두 행의 `k_input.source` CALIBRATION(G1_AUTO·PROVISIONAL)·`undistorted` true·`image_space` UNDISTORTED_ALPHA1, 최상위 `k_input.count` {CALIBRATION: 20}, 적재 목록에 `fov_moge2` 없음, `k_focal_diff_px`(모델 초점 − `K_used` fx) < 0.5, `reproj_err_px` 0.0(판정 허용 0.01, 소수 4자리 반올림), finite. 사람 없는 그림(NO_PERSON)은 초점 비교 없이 통과. 사람 수는 기록만(정답 없음. 노트북 yolo11m-pose 로 원본에서 93명) |
 
 - g4 입력: 노트북 `ai/experiments/recordings/classroom-stills-20261021/`(cam_A~D × 5장, 2304×1296, 커밋하지 않음)과 교실 보정 기록
   `ai/experiments/recordings/intrinsics/intrinsics-20261021-022940z.json`(AnyCalib, 4대 OK, 직선성 UNVERIFIED)을 Pod 로 올린다. 카메라는 파일 이름 접두(`cam_A_01` → `cam_A`)로 고른다.
   수업 중 우연히 찍힌 사람이 있을 수 있어 내부 확인용이며 결과 렌더를 공개·시연에 쓰지 않는다. Run 기록 `input_provenance.frames` 는 FILE, `dataset_id` classroom-stills-20261021.
 - g4 Job 기록: `weights` 에서 MoGe2 를 빼고 보정 기록 파일을 `dataset` 에 함께 적는다(보정 K 가 입력이므로 해시가 Run 기록에 남는다). `input_provenance.calibration` 은
-  {source G1_AUTO, calibration_version `intrinsics-20261021-022940z.json@sha256:<파일 해시>`}(metrics 의 `k_input.input_provenance` 와 같은 값), `is_upper_bound` false. g4 는 적재 구성이 달라(MoGe 없음) `compare_egate0.py` 대조 대상이 아니다. 예상 5~10분(적재·첫 실행 포함), 제한 30분.
+  {source G1_AUTO, calibration_version `intrinsics-20261021-022940z.json@sha256:<파일 해시>`}(metrics 의 `k_input.input_provenance` 와 같은 값), `is_upper_bound` false. g4 는 적재 구성이 달라(MoGe 없음) `compare_egate0.py` 대조 대상이 아니다. 예상 3분(2차 세션 g3 실측 58.3초에서 추정, `docs/design/runpod-environment.md` "예상 시간 근거"), 제한 30분.
   펴기(`undistort_ms`, CPU)는 그림당 수십 ms 로 `process_one_image_ms` 밖이다.
+- **g4 큐 연결 (S15P31A101-243).** 항목 `g4_exp02_h7_calib_k`(Jira -238, Run id `H7_calib_k_img_<세션>`). `input_provenance.calibration` 은 큐를 만들 때(Pod 에 입력이 올라간 뒤
+  `simai-bootstrap queue`) 보정 기록 파일을 읽어 위 규칙으로 채우고, 파일이 없거나 형식(`simai.intrinsics_estimate`)이 다르면 비운다(지어내지 않는다). 그러면 run_image 도 MoGe 로 물러서므로 판정이 실패한다.
+  판정은 `exp_job.py --check ai/experiments/hmr/check_calib_k.py`(위 표의 기대 + metrics 의 `k_input.input_provenance` 가 Job 기록과 같은지)이고, 어긋나면 Job 이 FAILED(종료 1)이며
+  Run 기록 지표에 `check.passed` 가 남는다. 입력은 `gpu_session1.py prepare` 가 노트북 recordings 에서 `--out`(저장소 밖이어야 한다. 안이면 사진을 넣지 않는다)에 `g4-inputs.tar` 로 묶고,
+  출력하는 scp·tar 명령으로 Pod 의 `$R/datasets/` 에 푼다. 노트북에서 실제 보정 기록으로 계산한 Job 기록 값은 fs3db_common `k_summary` 의 값과 같았다(20장 모두 CALIBRATION).
 - 선택: 같은 사진을 `--calibration` 없이 한 번 더 돌리면(MoGe 추정) 두 K 의 HMR 결과 차이를 본다. MoGe 계열 추정(70~73°)과 보정(약 85°)이 어긋난다는 -192 관찰을 HMR 쪽에서 확인하는 용도다.
 
 ## 빌드 결과 (노트북, 2026-10-21)

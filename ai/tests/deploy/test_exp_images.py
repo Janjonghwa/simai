@@ -193,7 +193,8 @@ def test_check_without_cuda_fails_not_passes(xc, monkeypatch):
 
 @pytest.mark.parametrize("image, want", [
     ("tier0", ["a_pod_check", "b_tier0_engine", "t_test_tools", "c_tier0_live", "d_tier0_gpu_priority"]),
-    ("exp02", ["a_pod_check", "g0_exp02_image_check", "g1_exp02_h6_det", "g2_exp02_h0_smoke", "g3_exp02_h1_official"]),
+    ("exp02", ["a_pod_check", "g0_exp02_image_check", "g1_exp02_h6_det", "g2_exp02_h0_smoke", "g3_exp02_h1_official",
+               "g4_exp02_h7_calib_k"]),
     ("mapanything", ["a_pod_check", "m0_mapanything_image_check", "m1_mapanything_c1", "m2_mapanything_c2"]),
 ])
 def test_queue_takes_only_this_images_items_and_exp_images_keep_live_guard(gs, monkeypatch, image, want):
@@ -300,7 +301,7 @@ def test_exp_jobs_record_real_weights_dataset_metrics_and_results(gs, ej, tmp_pa
     lay = gs.Layout("pod", vol, "s2", PY, image)
     doc, _held = gs.build_jobs(lay, {"commit": "0" * 40, "branch": "dev", "dirty_worktree": False})
     jobs = [j for j in doc["jobs"] if j["record"].get("experiment_id") in ("EXP-01", "EXP-02")]
-    assert len(jobs) == (3 if image == "exp02" else 2)
+    assert len(jobs) == (4 if image == "exp02" else 2)
     for n, job in enumerate(jobs):
         rec_cfg = job["record"]
         for i, p in enumerate(rec_cfg["weights"] + rec_cfg["dataset"]):
