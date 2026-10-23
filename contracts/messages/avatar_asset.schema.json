@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/avatar_asset.schema.json",
+  "title": "아바타 스트림 avatar_asset",
+  "description": "GPU 분석 워커(HMR, source_id worker-01) → EC2, 아바타 스트림(avatar_pose_batch 와 같은 연결). 한 사람의 리깅 메시 자산 버전 알림. 처음 한 번과 appearance_version 이 바뀔 때 보내고, 드롭 허용 연결이라 재접속 직후와 10초마다 살아 있는 사람의 현재 자산을 다시 보낸다(EC2 는 (world_id, stream_epoch, appearance_version) 으로 한 번만 기록, docs/design/avatar-pose-stream.md). 파일(glTF·텍스처·표면 출처 지도)은 EC2 가 발급한 임시 업로드 주소로 먼저 올리고 객체 주소만 싣는다. 자산은 덮어쓰지 않고 새 버전을 더한다(AGENTS 규칙 6). 안전 판단 권한이 없는 Tier 1 시각화 자산이다(명세 5.6, 20.3). 1.0.0 신설(S15P31A101-249).",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "avatar_asset" },
+    "payload": {
+      "type": "object",
+      "required": [
+        "world_id", "stream_epoch", "identity_revision", "appearance_version", "previous_appearance_version",
+        "created_at_ms", "calibration_version", "model_version", "input_provenance",
+        "mesh", "skeleton", "shape", "texture", "surface_source", "face_policy"
+      ],
+      "properties": {
+        "world_id": { "$ref": "../common/defs.schema.json#/$defs/world_id" },
+        "stream_epoch": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "이 자산을 만든 워커 스트림의 stream_epoch(avatar_pose_batch 와 같은 값). 자산의 식별은 (world_id, stream_epoch, appearance_version) 이고, 포즈는 같은 stream_epoch 의 자산에만 묶는다(워커가 재시작해 버전을 0 부터 다시 세도 이전 자산과 섞이지 않게. 재접속으로는 바뀌지 않아 재알림한 자산이 그대로 묶인다)"
+        },
+        "identity_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "이 자산을 만들 때 본 Tier 0 트랙의 identity_revision. IDENTITY_UNCERTAIN 동안과 identity_revision 이 바뀐 직후에는 외형 누적을 멈추고 새 버전을 내지 않는다(명세 20.3). 교정 뒤에도 같은 world_id 로 남은 사람은 이 자산(마지막 확정 외형)을 계속 가리킬 수 있다(설계 'ID 교정 뒤 외형')"
+        },
+        "appearance_version": { "type": "integer", "minimum": 0, "description": "같은 (world_id, stream_epoch) 안에서 단조 증가(계약 시험). 같은 버전을 다른 내용으로 다시 보내지 않는다" },
+        "previous_appearance_version": { "type": ["integer", "null"], "minimum": 0, "description": "바로 앞 버전. 첫 버전이면 null" },
+        "created_at_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "calibration_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "model_version": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "input_provenance": {
+          "allOf": [
+            { "$ref": "../common/defs.schema.json#/$defs/input_provenance" },
+            { "required": ["tracks"] }
+          ]
+        },
+        "mesh": {
+          "type": "object",
+          "description": "스키닝된 glTF 메시(Three.js SkinnedMesh). 단위 m, glTF 규약 Y-up(자산 좌표). World 배치는 포즈의 root_rotation 과 Tier 0 pelvis 로 한다",
+          "required": ["format", "object_uri", "sha256", "size_bytes", "vertex_count", "face_count", "axis_convention"],
+          "properties": {
+            "format": { "enum": ["GLB_SKINNED", "GLTF_SKINNED"] },
+            "object_uri": { "$ref": "../common/defs.schema.json#/$defs/object_uri" },
+            "sha256": { "$ref": "../common/defs.schema.json#/$defs/sha256" },
+            "size_bytes": { "type": "integer", "minimum": 1 },
+            "vertex_count": { "type": "integer", "minimum": 1 },
+            "face_count": { "type": "integer", "minimum": 1 },
+            "axis_convention": { "const": "GLTF_Y_UP" }
+          },
+          "additionalProperties": false
+        },
+        "skeleton": {
+          "type": "object",
+          "description": "포즈 joint_rotations 의 관절 순서 기준. glTF skin.joints[i] = MHR 자산 관절 i",
+          "required": ["rig", "joint_count", "joint_parents_sha256", "pelvis_joint_index", "rig_source"],
+          "properties": {
+            "rig": { "const": "MHR" },
+            "joint_count": { "type": "integer", "minimum": 1, "maximum": 1024, "description": "MHR 자산은 127" },
+            "joint_parents_sha256": {
+              "$ref": "../common/defs.schema.json#/$defs/sha256",
+              "description": "관절 부모 배열(MHR 자산 순서, root 는 -1)을 공백 없는 JSON(예: [-1,0,1,...])으로 적은 UTF-8 바이트의 sha256. 관절 순서·위계를 고정한다(뼈 길이는 사람마다 달라 넣지 않는다)"
+            },
+            "pelvis_joint_index": { "type": "integer", "minimum": 0, "description": "Tier 0 pelvis_xyz 에 맞출 관절(MHR 자산은 1)" },
+            "rig_source": { "type": "string", "minLength": 1, "maxLength": 256, "description": "관절 순서의 출처: MHR 자산 판(예: facebookresearch/MHR mhr_model.pt @ sam-3d-body@b5c765a)" }
+          },
+          "additionalProperties": false
+        },
+        "shape": {
+          "type": "object",
+          "required": ["representation", "frozen", "frames_used"],
+          "properties": {
+            "representation": { "const": "MHR" },
+            "frozen": { "type": "boolean", "description": "N프레임 누적 뒤 체형을 고정했는지" },
+            "frames_used": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "texture": {
+          "description": "외형 텍스처. 아직 관측 누적으로 만든 텍스처가 없을 때만 null(기본 재질). 관측 픽셀만 쓰고 보이지 않는 면·얼굴을 생성하지 않는다(명세 20.3, 2026-10-23 사용자 결정: 참여자 동의 제한 없음)",
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["object_uri", "sha256", "resolution"],
+              "properties": {
+                "object_uri": { "$ref": "../common/defs.schema.json#/$defs/object_uri" },
+                "sha256": { "$ref": "../common/defs.schema.json#/$defs/sha256" },
+                "resolution": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "minItems": 2, "maxItems": 2 }
+              },
+              "additionalProperties": false
+            },
+            { "type": "null" }
+          ]
+        },
+        "surface_source": {
+          "type": "object",
+          "description": "표면 출처(관측·보간·미관측) 지도와 비율. 뷰어가 관측 영역과 아닌 영역을 구분해 그린다(명세 5.6). 얼굴 영역은 face_ratios 로 따로 싣는다. 비율 합 1 은 계약 시험",
+          "required": ["mask_uri", "ratios", "face_ratios"],
+          "properties": {
+            "mask_uri": {
+              "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/object_uri" }, { "type": "null" }],
+              "description": "표면 출처 지도. 텍셀 값 2 = OBSERVED, 1 = INTERPOLATED, 0 = UNOBSERVED, 얼굴 영역 텍셀은 128 을 더한다(130 = 얼굴 관측, 128 = 얼굴 미관측, 129 불가). 무손실 8비트 단일 채널 PNG, 텍스처와 같은 UV·같은 해상도(docs/design/avatar-pose-stream.md '표면 출처 지도'). 텍스처가 없으면 null"
+            },
+            "ratios": {
+              "type": "object",
+              "required": ["OBSERVED", "INTERPOLATED", "UNOBSERVED"],
+              "properties": {
+                "OBSERVED": { "type": "number", "minimum": 0, "maximum": 1 },
+                "INTERPOLATED": { "type": "number", "minimum": 0, "maximum": 1 },
+                "UNOBSERVED": { "type": "number", "minimum": 0, "maximum": 1 }
+              },
+              "additionalProperties": false
+            },
+            "face_ratios": {
+              "type": "object",
+              "description": "얼굴 영역 텍셀의 관측·미관측 비율. 얼굴은 보간·생성으로 채우지 않으므로 INTERPOLATED 가 없다(안 보이는 얼굴은 기본 재질). 합 1 은 계약 시험",
+              "required": ["OBSERVED", "UNOBSERVED"],
+              "properties": {
+                "OBSERVED": { "type": "number", "minimum": 0, "maximum": 1 },
+                "UNOBSERVED": { "type": "number", "minimum": 0, "maximum": 1 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "face_policy": {
+          "enum": ["OBSERVED", "BLURRED", "EXCLUDED"],
+          "description": "얼굴 영역 처리(2026-10-23 사용자 결정). OBSERVED(기본) = 관측된 얼굴 픽셀을 그대로 쓰고 생성하지 않는다, BLURRED = 관측 픽셀을 흐려서 쓴다(선택), EXCLUDED = 얼굴 영역을 텍스처에 넣지 않는다. 안 보이는 얼굴을 지어내는 생성형 복원·표정 추정·재식별은 어느 값에서도 하지 않는다(AGENTS 규칙 8)"
+        }
+      },
+      "allOf": [
+        {
+          "description": "텍스처가 있으면 표면 출처 지도 필수",
+          "if": { "properties": { "texture": { "type": "object" } }, "required": ["texture"] },
+          "then": {
+            "properties": { "surface_source": { "properties": { "mask_uri": { "$ref": "../common/defs.schema.json#/$defs/object_uri" } } } }
+          }
+        },
+        {
+          "description": "텍스처가 없으면 관측·보간 표면이 없다(추정 외형을 실측으로 표시 금지, 명세 20.3 불합격 조건)",
+          "if": { "properties": { "texture": { "type": "null" } }, "required": ["texture"] },
+          "then": {
+            "properties": {
+              "surface_source": {
+                "properties": {
+                  "mask_uri": { "type": "null" },
+                  "ratios": { "properties": { "OBSERVED": { "maximum": 0 }, "INTERPOLATED": { "maximum": 0 }, "UNOBSERVED": { "minimum": 1 } } },
+                  "face_ratios": { "properties": { "OBSERVED": { "maximum": 0 }, "UNOBSERVED": { "minimum": 1 } } }
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "얼굴을 넣지 않으면(EXCLUDED) 얼굴 관측 비율 0",
+          "if": { "properties": { "face_policy": { "const": "EXCLUDED" } }, "required": ["face_policy"] },
+          "then": {
+            "properties": { "surface_source": { "properties": { "face_ratios": { "properties": { "OBSERVED": { "maximum": 0 }, "UNOBSERVED": { "minimum": 1 } } } } } }
+          }
+        }
+      ]
+    }
+  }
+}

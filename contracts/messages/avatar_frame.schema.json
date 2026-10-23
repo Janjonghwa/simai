@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/avatar_frame.schema.json",
+  "title": "I2 /topic/avatar avatar_frame",
+  "description": "EC2(source_id ec2) → 뷰어 STOMP /topic/avatar. EC2 가 아바타 스트림(avatar_pose_batch·avatar_asset)에서 사람별 가장 새 포즈만 남겨 다시 싣는다. 메시지 하나만으로 그릴 수 있게 포즈마다 그 포즈가 가리키는 자산의 내려받기 주소를 함께 싣는다(늦게 구독한 뷰어도 REST 없이 시작). 밀리면 버리고(사람별 최신만), 빠진 사람은 '갱신 없음'이지 '사라짐'이 아니다. 사람의 존재·위치·접지·관측 상태·ID 신뢰도는 /topic/world(world_state)가 정본이고, 이 메시지는 관절 회전과 외형만 더한다(명세 13.1, 20.4). /topic/world·/topic/events 는 바뀌지 않는다. 1.0.0 신설(S15P31A101-249).",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "avatar_frame" },
+    "payload": {
+      "type": "object",
+      "required": ["input_provenance", "avatars"],
+      "properties": {
+        "input_provenance": {
+          "allOf": [
+            { "$ref": "../common/defs.schema.json#/$defs/input_provenance" },
+            { "required": ["tracks"] }
+          ],
+          "description": "포즈 묶음의 입력 출처를 그대로 싣는다. 출처가 다른 묶음은 다른 메시지로 보낸다"
+        },
+        "avatars": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "description": "이번에 갱신된 사람들(최대 64명, 메시지 바이트 상한은 설계 문서). 한 메시지에 같은 world_id 는 하나(계약 시험)",
+          "items": { "$ref": "#/$defs/avatar" }
+        }
+      }
+    }
+  },
+
+  "$defs": {
+    "avatar": {
+      "type": "object",
+      "description": "한 사람의 최신 포즈와 그 포즈가 가리키는 자산. 위치 필드가 끼어들지 않도록 닫는다(Tier 0 정본)",
+      "required": [
+        "world_id", "identity_revision", "capture_time_ms", "received_at_ms",
+        "calibration_version", "appearance_version", "joint_source", "pose", "asset"
+      ],
+      "properties": {
+        "world_id": { "$ref": "../common/defs.schema.json#/$defs/world_id" },
+        "identity_revision": { "type": "integer", "minimum": 0, "description": "avatar_pose_batch 값 그대로. 뷰어가 그리는 world_state 트랙 값과 다르면 캡슐로 그린다" },
+        "capture_time_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "avatar_pose_batch 값 그대로(원본 프레임 촬영 시각). 보간 기준" },
+        "received_at_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "EC2 가 그 포즈 묶음을 받은 시각(지연 진단용, 보간에 쓰지 않는다)" },
+        "calibration_version": { "$ref": "../common/defs.schema.json#/$defs/version_id", "description": "포즈 묶음의 보정 버전. world_state 와 다르면 캡슐로 그린다" },
+        "appearance_version": { "type": "integer", "minimum": 0 },
+        "joint_source": { "const": "inferred" },
+        "pose": { "$ref": "../common/defs.schema.json#/$defs/mhr_pose" },
+        "asset": {
+          "description": "appearance_version 의 자산. EC2 가 그 버전의 avatar_asset 을 아직 받지 못했으면 null(뷰어는 캡슐로 그린다)",
+          "oneOf": [{ "$ref": "#/$defs/viewer_asset" }, { "type": "null" }]
+        }
+      },
+      "additionalProperties": false
+    },
+    "viewer_asset": {
+      "type": "object",
+      "description": "뷰어가 내려받을 자산. 주소는 EC2 REST 경로(같은 출처, 관제 앱 인증)로만 싣는다. 객체 저장소 주소·서명 주소·다른 호스트는 싣지 않는다",
+      "required": [
+        "stream_epoch", "identity_revision", "mesh_url", "mesh_sha256", "mesh_format", "joint_count", "joint_parents_sha256",
+        "pelvis_joint_index", "texture_url", "surface_source_url", "surface_ratios", "face_ratios", "face_policy"
+      ],
+      "properties": {
+        "stream_epoch": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "avatar_asset stream_epoch 그대로. 포즈 묶음과 같은 epoch 의 자산만 싣는다" },
+        "identity_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "avatar_asset identity_revision 그대로(자산을 만들 때 본 ID 교정 차수). 포즈의 identity_revision 보다 클 수 없다. 작으면 ID 교정 뒤 유지한 마지막 확정 외형이다(계약 시험, 설계 'ID 교정 뒤 외형')"
+        },
+        "mesh_url": { "$ref": "#/$defs/avatar_rest_path" },
+        "mesh_sha256": { "$ref": "../common/defs.schema.json#/$defs/sha256", "description": "내려받은 파일 확인과 뷰어 캐시 키" },
+        "mesh_format": { "enum": ["GLB_SKINNED", "GLTF_SKINNED"] },
+        "joint_count": { "type": "integer", "minimum": 1, "maximum": 1024, "description": "pose.joint_rotations 길이와 같아야 한다. 다르면 캡슐" },
+        "joint_parents_sha256": { "$ref": "../common/defs.schema.json#/$defs/sha256" },
+        "pelvis_joint_index": { "type": "integer", "minimum": 0 },
+        "texture_url": {
+          "oneOf": [{ "$ref": "#/$defs/avatar_rest_path" }, { "type": "null" }],
+          "description": "아직 텍스처가 없으면 null(기본 재질로 그린다)"
+        },
+        "surface_source_url": {
+          "oneOf": [{ "$ref": "#/$defs/avatar_rest_path" }, { "type": "null" }],
+          "description": "표면 출처 지도(avatar_asset surface_source.mask_uri 의 내려받기 경로). 텍셀 값 2 = OBSERVED, 1 = INTERPOLATED, 0 = UNOBSERVED, 얼굴 영역 텍셀은 128 을 더한다(130 = 얼굴 관측, 128 = 얼굴 미관측, 129 불가). 무손실 8비트 단일 채널 PNG, 텍스처와 같은 UV·같은 해상도(docs/design/avatar-pose-stream.md '표면 출처 지도'). 텍스처가 있으면 필수, 없으면 null"
+        },
+        "surface_ratios": {
+          "type": "object",
+          "required": ["OBSERVED", "INTERPOLATED", "UNOBSERVED"],
+          "properties": {
+            "OBSERVED": { "type": "number", "minimum": 0, "maximum": 1 },
+            "INTERPOLATED": { "type": "number", "minimum": 0, "maximum": 1 },
+            "UNOBSERVED": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "face_ratios": {
+          "type": "object",
+          "description": "avatar_asset surface_source.face_ratios 그대로(얼굴 영역 관측·미관측, 보간 없음)",
+          "required": ["OBSERVED", "UNOBSERVED"],
+          "properties": {
+            "OBSERVED": { "type": "number", "minimum": 0, "maximum": 1 },
+            "UNOBSERVED": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "face_policy": { "enum": ["OBSERVED", "BLURRED", "EXCLUDED"], "description": "avatar_asset face_policy 그대로" }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "텍스처가 없으면 관측·보간 표면·얼굴 관측 비율 0(avatar_asset 과 같은 규칙)",
+          "if": { "properties": { "texture_url": { "type": "null" } }, "required": ["texture_url"] },
+          "then": {
+            "properties": {
+              "surface_source_url": { "type": "null" },
+              "surface_ratios": { "properties": { "OBSERVED": { "maximum": 0 }, "INTERPOLATED": { "maximum": 0 }, "UNOBSERVED": { "minimum": 1 } } },
+              "face_ratios": { "properties": { "OBSERVED": { "maximum": 0 }, "UNOBSERVED": { "minimum": 1 } } }
+            }
+          }
+        },
+        {
+          "description": "텍스처가 있으면 표면 출처 지도 경로 필수(avatar_asset 과 같은 규칙)",
+          "if": { "properties": { "texture_url": { "type": "string" } }, "required": ["texture_url"] },
+          "then": { "properties": { "surface_source_url": { "$ref": "#/$defs/avatar_rest_path" } } }
+        },
+        {
+          "description": "얼굴을 넣지 않으면(EXCLUDED) 얼굴 관측 비율 0(avatar_asset 과 같은 규칙)",
+          "if": { "properties": { "face_policy": { "const": "EXCLUDED" } }, "required": ["face_policy"] },
+          "then": { "properties": { "face_ratios": { "properties": { "OBSERVED": { "maximum": 0 }, "UNOBSERVED": { "minimum": 1 } } } } }
+        }
+      ]
+    },
+    "avatar_rest_path": {
+      "type": "string",
+      "pattern": "^/api/avatars(/[A-Za-z0-9_~-][A-Za-z0-9._~-]*)+$",
+      "maxLength": 512,
+      "description": "EC2 REST 의 아바타 파일 경로(예: /api/avatars/w-0012/epochs/1760342000000/versions/3/mesh.glb, epoch 를 넣어 워커 재시작 뒤 같은 버전과 겹치지 않게). 스킴·호스트·쿼리(서명)·퍼센트 인코딩 없는 같은 출처 경로만, 마디는 점으로 시작하지 않는다(.. 경로 탈출 금지)"
+    }
+  }
+}

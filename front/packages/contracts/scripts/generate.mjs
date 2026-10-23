@@ -19,6 +19,7 @@ const MESSAGES = {
   risk_event: 'RiskEvent',
   viewer_health: 'ViewerHealth',
   action_mismatch: 'ActionMismatch',
+  avatar_frame: 'AvatarFrame',
 };
 // 메시지 스키마가 $ref 하는 파일. 새 파일을 $ref 하면 여기에 더한다.
 const SCHEMAS = [
