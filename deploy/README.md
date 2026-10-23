@@ -22,7 +22,7 @@ Blackwell(sm_100·sm_120)도 세 이미지 모두 커널이 있다(Tier 0 cu130,
 | `*/Dockerfile.dockerignore` | 이미지별 빌드 컨텍스트 **허용 목록**(나열한 파일만 들어간다) |
 | `compose.yaml` | 로컬 점검용(RunPod 은 Compose 를 쓰지 않는다) |
 | `scripts/check_image.sh` | 이미지 점검(GPU 불필요, 세 이미지 공통·종류는 이미지 ENV `SIMAI_IMAGE_KIND`): 비밀·가중치·엔진·SSH 호스트 키 없음, import, 진입점 오류 코드, GPU 별 엔진 경로(Tier 0), 가중치 묶음 선택(실험), SSH 비밀번호 접속 거부 |
-| `scripts/exp_image_check.py` | 실험·통합 이미지 GPU 점검(Pod, 세션 큐 g0·m0·u1): CUDA·이 GPU 세대 커널(torch)·Detectron2 LazyConfig 읽기(CUDA 확장 없음)·pyrender EGL·MapAnything import, 통합 이미지는 HMR(잠금 밖 휠 없이)·vLLM 플러그인 |
+| `scripts/exp_image_check.py` | 실험·통합 이미지 GPU 점검(Pod, 세션 큐 g0·m0·u1): CUDA·이 GPU 세대 커널(torch)·Detectron2 LazyConfig 읽기(CUDA 확장 없음)·pyrender EGL·MapAnything import, 통합 이미지는 HMR(잠금 밖 휠 없이)·vLLM 플러그인·MapAnything(S15P31A101-250) |
 | `scripts/gpu_session1.py` | GPU 세션 검증 큐(S15P31A101-183·-207): gpu_queue 로 아래 스크립트를 차례로 돌리고 결과 묶음·scp 명령을 낸다. `prepare`(노트북 사본)·`plan`·`run`(Pod 또는 `--mode dryrun`). 지금 이미지(`--image`, 기본 `SIMAI_IMAGE_KIND`)의 항목만 돈다 |
 | `scripts/pod_check.py` | Pod 점검(-31): GPU(최소 사양)·드라이버·CUDA·마운트·용량·쓰기 속도·fsync·flock → JSON. `--no-volume` 은 볼륨 측정 SKIP |
 | `scripts/session1_engine.sh` | 아래 "Pod 검증 큐" 1)~7) 을 한 Job 으로(단계별 종료 코드·시간을 steps.tsv·metrics.json 에) |
@@ -131,6 +131,7 @@ RunPod 은 Container Registry Auth(읽기 전용 토큰)로 접근한다. 토큰
 | (인자 없음) / `tier0 [Tier 0 인자]` / `--config ...` | 준비 → `simai-tier0`(엔진 준비 `engine_cache ensure` → `python -m services.tier0`) |
 | `queue [gpu_session1 run 인자]` | 준비 → GPU 1차 세션 큐(저장소 사본 `$SIMAI_SESSION_REPO`, 기본 `$SIMAI_ROOT/setup/session1/repo`). 엔진 첫 빌드 시간은 큐 b 항목이 재므로 엔진 준비는 하지 않는다 |
 | `check` | 준비만 하고 결과 JSON 출력(사이트 첫 확인) |
+| `scene [--] <명령...>` | 장면 준비 모드(S15P31A101-250, 통합 이미지의 MapAnything 일회성 작업): Tier 0·GPU 확인 → `static` 가중치 → 재확인 → 그 명령을 자식으로 실행하며 Tier 0 시작을 감시(나타나면 장면 작업을 끝내고 75). 종료 코드는 명령의 것. 아래 "장면 준비 모드" |
 | 그 밖의 명령(`sleep infinity`, `bash`, `simai-wait-tier0`, `python ...`) | 준비 없이 그대로 실행 |
 
 준비 순서와 종료 코드(simai-tier0·engine_cache 와 같은 규칙: 2 저장·가중치, 3 GPU):
@@ -241,6 +242,7 @@ Tier 0 재시작(엔진 캐시 사용, 1초대) 때는 워커 접수 문이 표�
 | `NVIDIA_DRIVER_CAPABILITIES` | `compute,utility,video,graphics`(NVDEC 선택 디코더 + pyrender·나중의 텍스처 래스터화 EGL) |
 | 기본 명령 | `simai-bootstrap tier0` + `SIMAI_SERVICES=tier0,vllm,worker`(아래 감시 프로세스). `SIMAI_SERVICES=tier0` 이면 `tier0` 이미지와 같은 Tier 0 단독 |
 | 가중치 | 기동 전 `tier0` 묶음(YOLO26x-pose)만, Tier 0 준비 뒤 `SIMAI_WORKER_WEIGHTS_SET`(기본 `vlm`, Cosmos3-Nano 18개 31.5GB). 워커 가중치가 실패해도 Tier 0 는 돈다 |
+| MapAnything(S15P31A101-250) | 같은 가상환경(torch 2.11.0)에 map-anything @3d10cf7(잠금 밖 휠 `--no-deps`, 소스 사본 `SIMAI_MAPANYTHING_REPO=/opt/simai/mapanything/map-anything`)·DINOv2 허브 코드 @7764ea0. 의존성은 잠금 `scene` 묶음(uniception 0.1.7·rerun-sdk 0.24.1 등). 가중치(`static`)는 이미지에 없다. LIVE 와 따로 도는 준비 단계 일회성 작업이라 `simai-bootstrap scene` 으로만 돌린다(아래) |
 
 ### 감시 프로세스 (`SIMAI_SERVICES`)
 
@@ -261,6 +263,25 @@ Tier 0 재시작(엔진 캐시 사용, 1초대) 때는 워커 접수 문이 표�
 - vLLM 은 Tier 0 의 TensorRT 엔진 빌드·적재와 GPU 선확보가 끝난 뒤에 뜬다: 진입점이 엔진을 준비한 뒤에야 Tier 0 서비스가 시작해 표시 파일을 쓰고, 감시자는 `phase=running`·`reserve.state=OK` 를 본 뒤에 워커 쪽을 시작한다(엔진 빌드 중 vLLM 이 메모리를 먼저 잡아 빌드가 실패하는 일을 막는다).
 - 시험·점검용 덮어쓰기: `SIMAI_TIER0_CMD`·`SIMAI_VLLM_CMD`·`SIMAI_WORKER_CMD`(셸 따옴표 규칙), `SIMAI_TIER0_MARKER`, `SIMAI_VLLM_MODEL`.
 
+### 장면 준비 모드 (`simai-bootstrap scene`, MapAnything, S15P31A101-250)
+
+정적 장면 준비(MapAnything 초기 추정, 명세 4.3·5.x)는 설치 때 한 번 도는 작업이다. LIVE 서비스(Tier 0·vLLM·워커)와 같은 GPU 에서 동시에 돌리지 않고, 명령이 끝나면 프로세스가 끝나 VRAM 을 돌려준다.
+
+```sh
+# 관제 시간 밖, 감시 프로세스를 띄우지 않은 컨테이너(Pod 는 시작 명령 sleep infinity)에서
+simai-bootstrap scene -- python <사본>/ai/experiments/static_scene/run_mapanything.py --run-id <id> --mode prepared --prepared <입력 폴더>     --model $SIMAI_ROOT/weights/map-anything-apache --runs-dir $SIMAI_ROOT/runs/exp01
+# VM: docker run --rm --gpus all -v /mnt/simai-block:/workspace -e SIMAI_ROOT=/workspace/simai -e SIMAI_SSHD=off <통합 이미지> scene -- python ...
+```
+
+1. LIVE 확인(받기 전): Tier 0 표시 파일(`SIMAI_TIER0_MARKER`, 기본 `$SIMAI_ROOT/state/tier0.live`)이 30초 안에 갱신됐거나 확인하지 못하면, 또는 GPU 사용 중 메모리가 1024 MiB 초과면 종료 코드 75(못 읽는 것은 2 의 GPU 단계가 판정).
+2. 준비: 저장 위치·GPU·가중치 `static` 묶음(MapAnything 기본·apache, `SIMAI_WEIGHTS_SET` 과 상관없음). 실패하면 2·3.
+3. 재확인: 표시 파일(받는 동안 Tier 0 가 떴을 수 있다)과 GPU 사용 중 메모리(`nvidia-smi memory.used` 가 1024 MiB 초과, 못 읽음, NaN 등 → 75: 표시 파일로 안 보이는 Tier 0 엔진 빌드·REPLAY·vLLM·다른 컨테이너). 거부하면 `runs/bootstrap/` 에 exit 75 기록을 추가한다.
+4. 그 명령을 새 프로세스 그룹 자식으로 실행한다(출력은 `[scene]` 접두, 원문 `$SIMAI_ROOT/logs/scene.log`). 종료 코드는 명령의 것이고 끝나면 그룹을 정리해 VRAM 을 돌려준다. HF 토큰은 2 의 받기에만 쓰고 명령에 넘기지 않는다. 실행 중 Tier 0 가 시작하면 아래처럼 멈춘다.
+
+- `SIMAI_SERVICES` 에 `scene` 을 넣으면 사용법 오류 64(장면 준비는 서비스가 아니다). 이미지 기본 `SIMAI_SERVICES=tier0,vllm,worker` 는 `scene` 명령이 보지 않는다.
+- **Tier 0 와 상호 배제(Tier 0 우선, Codex 리뷰 R1).** `tier0` 명령은 GPU 를 잡기 전(가중치 준비 전)에 `$SIMAI_ROOT/locks/tier0.lock` 공유 flock 을 쥐고 exec 를 지나 Tier 0 프로세스가 끝날 때까지 쥔다(커널이 프로세스 종료 때 푼다). 장면 모드는 `locks/scene.lock` 을 쥐고 명령을 새 프로세스 그룹 자식으로 돌리며 0.5초마다 tier0.lock·표시 파일을 본다. Tier 0 가 나타나면 장면 그룹 SIGTERM → 10초 → SIGKILL, 기록 75. Tier 0 시작 경로는 exec 전에 scene.lock 이 풀리기를 최대 20초 기다리고(장면 작업이 VRAM 을 돌려줄 때까지) 남은 그룹을 회수한 뒤(최악 약 40초) 시작한다. 감시 부모가 멈추거나 죽어도 장면 작업이 남지 않게(Codex 재리뷰 R1): 장면 모드는 자식 그룹을 `locks/scene.pgid`(pgid·시작 표지, 원자적 쓰기)에 남기고, Linux 에서는 자식에 `PR_SET_PDEATHSIG`(SIGKILL)를 건다. Tier 0 시작 경로는 잠금이 풀렸거나(부모 소멸) 시한이 지나도(부모 정지) 그 그룹이 살아 있으면 직접 SIGTERM → 10초 → SIGKILL 로 회수하고 사라진 것을 확인한 뒤 진행한다(잠금 해제·시한을 VRAM 반환으로 보지 않는다). 시작 표지가 다르면(pid 재사용) 건드리지 않고, 회수하지 못하면 기록(`stage: tier0-reap-scene`)하고 진행한다(Tier 0 우선). **의도된 정책(Codex 3차 재리뷰, Lead 결정): Tier 0 가용성이 장면 작업보다 우선이다.** 회수하지 못하거나(신호 거부·시한 초과) 건드리지 않은 경우(아래) Tier 0 는 막지 않고 큰 경고 로그와 부트스트랩 기록(`stage: tier0-reap-scene`, `exit: 75`)을 남긴 뒤 시작한다. Tier 0 를 막는 쪽(관제 불가)이 장면 작업과 GPU 를 잠깐 나누는 쪽보다 위험하다고 본다. **모르면 건드리지 않는다**: 기록의 PID namespace(`/proc/self/ns/pid`)가 Tier 0 쪽과 다르거나 모르면, 또는 시작 표지가 기록·지금 중 하나라도 없으면 신호를 보내지 않고 기록을 남긴다. KILL 전에 시작 표지를 다시 본다. **같은 컨테이너 전제**: 상호 배제·회수는 통합 이미지의 같은 컨테이너(같은 PID namespace) 안에서 장면 모드를 돌리는 것을 전제로 한다(`docker exec` 로 같은 컨테이너, Pod 는 SSH 로 같은 컨테이너). 다른 컨테이너의 장면 작업은 잠금으로 보이지만 신호는 보내지 않는다(그 컨테이너가 맡는다). 자식은 시작 handshake(POSIX: 표준 입력에서 1바이트를 받은 뒤에만 exec)로 그룹 기록이 공개된 뒤에만 장면 명령을 시작하고, 기록을 못 쓰면 시작시키지 않고 75. `/proc` 를 읽을 권한이 없는 것(EACCES·EPERM)은 살아 있음(모름), 항목이 없음(ENOENT·ESRCH)만 끝남으로 본다. Tier 0 는 최악 약 40초(잠금 20초 + TERM 10초 + 확인 10초) 늦게 시작할 수 있다. 잠금을 열지 못해도 Tier 0 는 막히지 않는다(장면 쪽은 모름 → 거부). 장면 준비는 그래도 관제 시간 밖에서 Tier 0 를 띄우기 전에 끝낸다.
+- torch 2.7.1 이미지(`mapanything`, 아래 "실험 이미지")는 두 환경의 결과 비교(3차 세션 u3·u4 ↔ m1·m2, `ai/experiments/static_scene/compare_envs.py`)가 끝날 때까지 남긴다.
+
 ### 사이트 조건 (통합 이미지)
 
 | 항목 | 조건 |
@@ -278,7 +299,7 @@ Tier 0 재시작(엔진 캐시 사용, 1초대) 때는 워커 접수 문이 표�
 
 위 "RunPod 템플릿" 과 같고 다음만 다르다. 이미지 `<레지스트리>/<프로젝트>/tier0@sha256:<unified 다이제스트>`(무료 플랜 저장소 하나라 태그 접두 `unified-`), Container Disk 150GB 이상,
 환경 변수에 `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}`(Cosmos3-Nano 는 승인제가 아니지만 HF 속도 제한 완화), 분석 워커 값(`SIMAI_WORKER_*`, 위 표), 필요하면 `SIMAI_WORKER_ARGS`.
-시작 명령은 비운다(이미지 기본 = 감시 프로세스). 검증 세션은 `sleep infinity` 로 띄우고 SSH 로 `SIMAI_WEIGHTS_SET=exp02 simai-bootstrap queue`(이 이미지의 큐는 a·b·t·c·d·u1·u2, 아래 "Pod 검증 큐"). 통합 이미지에는 `SIMAI_WEIGHTS_SET` 이 없어(기본 tier0) 그대로 부르면 u2(HMR 보정 K)·`simai-exp02` 가 sam-3d-body 체크포인트 없음(종료 코드 2)으로 실패한다. HMR 만 따로 돌릴 때도 `SIMAI_WEIGHTS_SET=exp02 simai-bootstrap run simai-exp02 python <사본>/ai/experiments/hmr/run_image.py --mode official --calibration <K> --no-render ...`.
+시작 명령은 비운다(이미지 기본 = 감시 프로세스). 검증 세션은 `sleep infinity` 로 띄우고 SSH 로 `SIMAI_WEIGHTS_SET=exp02 simai-bootstrap queue`(이 이미지의 큐는 a·b·t·c·d·u1·u2·u3·u4, 아래 "Pod 검증 큐". u3·u4 는 장면 준비 모드로 `static` 가중치를 따로 받는다). 통합 이미지에는 `SIMAI_WEIGHTS_SET` 이 없어(기본 tier0) 그대로 부르면 u2(HMR 보정 K)·`simai-exp02` 가 sam-3d-body 체크포인트 없음(종료 코드 2)으로 실패한다. HMR 만 따로 돌릴 때도 `SIMAI_WEIGHTS_SET=exp02 simai-bootstrap run simai-exp02 python <사본>/ai/experiments/hmr/run_image.py --mode official --calibration <K> --no-render ...`.
 RunPod Stop 이 SIGTERM 뒤 얼마를 기다리는지는 문서로 확인하지 못했다: 저널은 기록마다 fsync 라(명세 3.2) 강제 종료돼도 재시작 복구가 된다.
 
 ### VM형 (엘리스 등 GPU VM + 블록 스토리지, `docker run --gpus all`)

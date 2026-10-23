@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""실험 이미지(exp02 HMR·mapanything)·통합 이미지 GPU 점검 (S15P31A101-207·-246). 세션 큐 g0·m0·u1 항목이 그 이미지의 Pod 에서 돌린다.
+"""실험 이미지(exp02 HMR·mapanything)·통합 이미지 GPU 점검 (S15P31A101-207·-246·-250). 세션 큐 g0·m0·u1 항목이 그 이미지의 Pod 에서 돌린다.
 
 노트북의 check_image.sh(GPU 없이 이미지 내용)와 짝이다. 여기서는 이 Pod 의 GPU 에서 실제로 도는지만 본다:
   - torch CUDA 사용 가능, 이 GPU 세대(sm_XY)의 커널이 torch 휠에 있음(같은 주 버전의 낮은 부 버전 SASS 또는 낮은 PTX 도 됨)
@@ -8,7 +8,7 @@
            (CUDA 확장이 있으면 실패, S15P31A101-238), pyrender EGL 오프스크린 렌더
   - mapanything: 패키지·DINOv2 허브 코드 사본, bf16 autocast
   - unified: HMR 추론 경로가 잠금 밖 휠(Detectron2·MoGe·chumpy) 없이 import 됨(mhr70 관절 70), pyrender EGL 렌더,
-             vLLM + vllm-cosmos3 플러그인의 Cosmos3 Reasoner 등록(S15P31A101-246)
+             vLLM + vllm-cosmos3 플러그인의 Cosmos3 Reasoner 등록(S15P31A101-246), MapAnything 패키지·DINOv2 허브 코드 사본·bf16 autocast(S15P31A101-250)
 결과 JSON 을 표준 출력에 쓰고, 하나라도 실패하면 종료 코드 1 (모르면 통과로 두지 않는다: 아키텍처를 못 읽으면 실패).
 
     python deploy/scripts/exp_image_check.py            # 이미지의 SIMAI_IMAGE_KIND 로 종류를 고른다
@@ -90,6 +90,23 @@ def vllm_plugin() -> dict:
     return {"vllm": m.version("vllm"), "vllm_cosmos3": m.version("vllm-cosmos3"), "arch": arch}
 
 
+def mapanything_check() -> dict:
+    """MapAnything(mapanything 이미지·통합 이미지 공통): 패키지·추론 경로 모듈, DINOv2 허브 코드 사본, GPU bf16 autocast SDPA."""
+    import importlib.metadata as m
+
+    import torch
+    from mapanything.models import MapAnything  # noqa: F401
+    from mapanything.utils.image import load_images, preprocess_inputs  # noqa: F401
+    from mapanything.utils.viz import predictions_to_glb  # noqa: F401
+    hub = Path.home() / ".cache" / "torch" / "hub" / "facebookresearch_dinov2_main" / "hubconf.py"
+    assert hub.is_file(), f"{hub} 없음(DINOv2 허브 코드 사본)"
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        y = torch.nn.functional.scaled_dot_product_attention(*(torch.randn(1, 4, 64, 32, device="cuda"),) * 3)
+    assert torch.isfinite(y).all().item()
+    return {"mapanything": m.version("mapanything"), "uniception": m.version("uniception"),
+            "commit": os.environ.get("SIMAI_MAPANYTHING_COMMIT", "")[:7]}
+
+
 def run_checks(kind: str) -> dict:
     out: dict = {"kind": kind, "checks": []}
 
@@ -150,19 +167,9 @@ def run_checks(kind: str) -> dict:
         check("hmr_without_out_of_lock_wheels", hmr_chain)
         check("pyrender_egl", egl_render)
         check("vllm_cosmos3_plugin", vllm_plugin)
+        check("mapanything", mapanything_check)
     elif kind == "mapanything":
-        def ma():
-            import importlib.metadata as m
-
-            from mapanything.models import MapAnything  # noqa: F401
-            hub = Path.home() / ".cache" / "torch" / "hub" / "facebookresearch_dinov2_main" / "hubconf.py"
-            assert hub.is_file(), f"{hub} 없음(DINOv2 허브 코드 사본)"
-            with torch.autocast("cuda", dtype=torch.bfloat16):
-                y = torch.nn.functional.scaled_dot_product_attention(*(torch.randn(1, 4, 64, 32, device="cuda"),) * 3)
-            assert torch.isfinite(y).all().item()
-            return {"mapanything": m.version("mapanything"), "commit": os.environ.get("SIMAI_MAPANYTHING_COMMIT", "")[:7]}
-
-        check("mapanything", ma)
+        check("mapanything", mapanything_check)
     else:
         out["checks"].append({"name": "kind", "ok": False, "error": f"알 수 없는 SIMAI_IMAGE_KIND={kind!r}"})
     return out

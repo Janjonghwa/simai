@@ -3,6 +3,8 @@
 #   tier0    Tier 0 만(지금까지의 이미지와 같은 내용). 기본 진입점은 simai-bootstrap → simai-tier0
 #   unified  같은 가상환경에 워커 스택(vLLM 0.21.0 + vllm-cosmos3, HMR 추론 의존성 + Fast-SAM-3D-Body 코드 사본)을 더한 이미지. simai-bootstrap 이 Tier 0 → vLLM 서버 → 분석 워커를
 #            별도 프로세스(그룹)로 띄우고 감시한다(SIMAI_SERVICES, deploy/README.md "통합 이미지", docs/design/unified-env.md "2단계")
+#            MapAnything(map-anything @3d10cf7, 잠금 밖 --no-deps, 의존성은 잠금 scene 묶음)도 같은 가상환경에 있다. LIVE 와 따로 도는 준비 단계 일회성 작업이다
+#            ('simai-bootstrap scene <명령>', S15P31A101-250, docs/design/unified-env.md "3단계")
 # - Python 의존성은 ai/uv.lock 그대로(uv sync --locked). pyproject 와 잠금이 어긋나면 빌드가 실패한다.
 #   큰 휠은 잠금에서 뽑은 묶음별 층으로 먼저 깐다(S15P31A101-207, docs/design/exp-images.md "Tier 0 층 분할"). 가상환경을 통째 COPY --from 하지 않는다.
 # - 가중치(YOLO26x-pose .pt, Cosmos3-Nano)와 TensorRT 엔진은 이미지에 없다. 모두 저장 위치($SIMAI_ROOT)에 둔다.
@@ -10,6 +12,9 @@
 #   simai-tier0 가 그 GPU 에서 엔진을 만들고 캐시한다(entrypoint → simai_ai.detection.engine_cache).
 # - 빌드 컨텍스트는 저장소 최상위이고, 들어오는 파일은 deploy/tier0/Dockerfile.dockerignore 의 허용 목록뿐이다.
 ARG BASE_IMAGE=simai-base
+# MapAnything 코드 커밋(unified 만 쓴다). deploy/mapanything/Dockerfile 의 torch 2.7.1 이미지와 같은 커밋이라 두 환경의 결과를 비교한다
+ARG MA_COMMIT=3d10cf7a3016fc0f9bb13a071ee66c47b10be0d9
+ARG DINOV2_COMMIT=7764ea0f912e53c92e82eb78a2a1631e92725fc8
 
 # 0) 잠금(ai/uv.lock)에서 층별 설치 목록(해시 포함)을 뽑는다. 잠금이 바뀌면 이 단계는 다시 돌지만, 목록 내용이 같으면
 #    아래 COPY --from 의 캐시 키(내용 체크섬)가 같아 큰 층을 다시 만들지 않는다(같은 층 = 같은 다이제스트 = 다시 올리지 않음).
@@ -136,10 +141,30 @@ RUN git clone -q https://github.com/yangtiming/Fast-SAM-3D-Body /opt/code/Fast-S
  && git -C /opt/code/facebookresearch_dinov3_main checkout -q "${DINOV3_COMMIT}" \
  && rm -rf /opt/code/facebookresearch_dinov3_main/.git
 
+# ---------------------------------------------------------------- MapAnything 코드 사본·휠 (S15P31A101-250, 이미지에는 결과만 옮긴다)
+# map-anything @3d10cf7(수정 없음)을 휠로 만들어 둔다(잠금 밖. 실행 이미지에서 --no-deps 로 깔고, 의존성은 잠금의 scene 묶음이 이미 깔았다).
+# DINOv2 허브 코드 @7764ea0(가중치 없음): uniception 인코더가 torch.hub.load("facebookresearch/dinov2", pretrained=False) 로 골격만 만들 때 이 캐시를 쓴다.
+FROM unified-deps AS ma-code
+ARG MA_COMMIT
+ARG DINOV2_COMMIT
+RUN git clone -q https://github.com/facebookresearch/map-anything /opt/code/map-anything \
+ && git -C /opt/code/map-anything checkout -q "${MA_COMMIT}" \
+ && rm -rf /opt/code/map-anything/.git \
+ && git clone -q https://github.com/facebookresearch/dinov2 /opt/code/facebookresearch_dinov2_main \
+ && git -C /opt/code/facebookresearch_dinov2_main checkout -q "${DINOV2_COMMIT}" \
+ && rm -rf /opt/code/facebookresearch_dinov2_main/.git
+# setuptools 가 사본에 남기는 build/·egg-info 는 지운다(사본이 sys.path 에 들어가 설치 메타데이터와 겹치지 않게)
+RUN --mount=type=cache,target=/root/.cache/uv uv build -q --no-config --wheel --out-dir /opt/code/dist /opt/code/map-anything \
+ && rm -rf /opt/code/map-anything/build /opt/code/map-anything/*.egg-info
+
 # ---------------------------------------------------------------- unified 타깃
 FROM unified-deps AS unified
+ARG MA_COMMIT
 COPY --from=hmr-code /opt/code/Fast-SAM-3D-Body /opt/simai/hmr/Fast-SAM-3D-Body
 COPY --from=hmr-code /opt/code/facebookresearch_dinov3_main /root/.cache/torch/hub/facebookresearch_dinov3_main
+# MapAnything 소스 사본(SIMAI_MAPANYTHING_REPO: run_mapanything.py 가 sys.path 앞에 넣는다, 2.7.1 이미지와 같은 규약)과 DINOv2 허브 코드
+COPY --from=ma-code /opt/code/map-anything /opt/simai/mapanything/map-anything
+COPY --from=ma-code /opt/code/facebookresearch_dinov2_main /root/.cache/torch/hub/facebookresearch_dinov2_main
 
 # 5) simai_ai 패키지·배포 단위·계약 스키마(잠금 밖 휠이 없으므로 tier0 와 같은 정확 sync)
 COPY ai/src ./src
@@ -148,6 +173,10 @@ COPY contracts /opt/simai/contracts
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --extra tier0 --extra worker --no-editable \
  && rm -rf ./src
+# map-anything 휠(잠금 밖)은 정확 sync 뒤에 --no-deps 로 둔다(정확 sync 는 잠금에 없는 패키지를 지운다, docs/design/unified-env.md "설치 순서" 3).
+# 휠(약 2MB)은 단계에서 bind 로 읽어 층에 남기지 않는다. 코드가 바뀌면 이 층도 다시 만든다(몇 초)
+RUN --mount=type=bind,from=ma-code,source=/opt/code/dist,target=/tmp/ma-dist \
+    uv pip install -q --no-config --no-deps --no-index /tmp/ma-dist/mapanything-*.whl
 
 COPY --chmod=0755 deploy/tier0/entrypoint.sh /usr/local/bin/simai-tier0
 COPY --chmod=0755 deploy/scripts/wait_tier0_ready.py /usr/local/bin/simai-wait-tier0
@@ -161,7 +190,10 @@ COPY deploy/weights.json /opt/simai/deploy/weights.json
 # SIMAI_SERVICES: simai-bootstrap tier0 가 띄울 프로세스(Tier 0 → vLLM 서버 → 분석 워커). 'tier0' 로 주면 Tier 0 단독(tier0 이미지와 같은 동작).
 # SIMAI_WORKER_WEIGHTS_SET: Tier 0 준비 뒤에 받는 워커 가중치 묶음(Cosmos3-Nano 약 31.5GB, 받는 동안에도 Tier 0 는 돈다).
 # NVIDIA_DRIVER_CAPABILITIES 는 합집합: video(NVDEC 선택 디코더) + graphics(pyrender EGL, HMR).
+# SIMAI_MAPANYTHING_REPO·_COMMIT: MapAnything 이미지(deploy/mapanything)와 같은 이름. 장면 준비 모드(simai-bootstrap scene)는 static 묶음을 받는다
 ENV SIMAI_IMAGE_KIND=unified \
+    SIMAI_MAPANYTHING_REPO=/opt/simai/mapanything/map-anything \
+    SIMAI_MAPANYTHING_COMMIT=${MA_COMMIT} \
     SIMAI_SERVICES=tier0,vllm,worker \
     SIMAI_WORKER_WEIGHTS_SET=vlm \
     SIMAI_CONTRACTS_DIR=/opt/simai/contracts \
