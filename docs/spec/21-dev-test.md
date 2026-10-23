@@ -83,8 +83,8 @@ docs/                      # 팀 규칙(git-convention·jira-convention)
 
 ## 21.4 CI와 리뷰 규칙
 
-- CI 단계(Jenkins): 정적 검사(lint·format) → 단위 → 계약·공통 벡터 → 통합 → 이미지 빌드. GPU 없는 러너에서 돌 수 있어야 한다.
-- CI 실행 위치: EC2 의 Jenkins 컨테이너(운영 compose 의 `jenkins`, 화면·Webhook 은 Nginx `/jenkins/` 뒤). MR 마다 바뀐 경로의 파트만 검사하고 결과를 GitLab 커밋 상태로 MR 에 올린다. Jenkins 는 호스트 Docker 소켓·운영 DB·운영 비밀 값을 받지 않는다(운영과 같은 서버라 격리). 검사 도구 판은 배포 이미지와 같게 맞추고, 서버 시험 DB 는 운영 DB 와 분리된 CI 전용 DB 를 쓴다. 절차: `docs/design/ci-pipeline.md`
+- CI 단계(Jenkins): 정적 검사(lint·format) → 단위 → 계약·공통 벡터 → 통합 → 이미지 빌드. GPU·torch 가 없는 Linux 컨테이너에서 도는 로직 층이다.
+- CI 실행 위치: EC2 의 Jenkins 컨테이너(운영 compose 의 `jenkins`, 화면·Webhook 은 Nginx `/jenkins/` 뒤). 첫 단계에서 `git clean`(`.venv`·`node_modules`·`.gradle` 제외)으로 이전 브랜치 빌드가 남긴 추적 안 되는·무시 파일을 지운 뒤(S15P31A101-258), MR 마다 바뀐 경로의 파트만 검사하고(`contracts/` 변경은 계약을 읽는 파트 전체, `deploy/` 변경은 `ai` 단계 포함) 결과를 GitLab 커밋 상태로 MR 에 올린다. `ai` 단계는 `lint-imports` 뒤 MR 빌드에서는 바뀐 파일과 정적 import 그래프·보조 모듈 전이·경로 규칙(`ai/scripts/select_tests.py`)으로 고른 시험만 돌리고(빈 출력이면 생략, 잠금·계약·`conftest.py` 변경 등 `ALL` 조건이면 전체), `dev`·`master` push 빌드에서는 전체(`pytest -m "not gpu"`)를 돌려 머지 뒤 안전망으로 삼는다(S15P31A101-255·-260, `docs/design/test-selection.md`). Jenkins 는 호스트 Docker 소켓·운영 DB·운영 비밀 값을 받지 않는다(운영과 같은 서버라 격리). 검사 도구 판은 배포 이미지와 같게 맞추고, 서버 시험 DB 는 운영 DB 와 분리된 CI 전용 DB 를 쓴다. 절차: `docs/design/ci-pipeline.md`
 - 브랜치·커밋·MR·Jira는 팀 규칙 `docs/git-convention.md`를 따른다(브랜치 `S15P31A101-{번호}-{설명}`, 커밋 `[S15P31A101-{번호}] 한국어 한 줄`, `dev`로 MR, squash merge). 셀프 merge를 허용한다.
 - `contracts/`를 바꾸는 MR은 영향받는 파트에 알리고, MR 본문의 영향 범위에 적는다.
 - EXP 실험의 채택 리뷰(20.1 Reviewer)는 MR merge와 별개다. merge는 코드 통합이고, 채택 판정은 20.6의 게이트를 따른다.
