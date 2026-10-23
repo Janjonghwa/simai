@@ -1,0 +1,20 @@
+{
+  "always_include": [
+    "tests/architecture"
+  ],
+  "path_rules": {
+    "deploy/**": [
+      "tests/deploy"
+    ],
+    "ai/sim/**": [
+      "tests/sim"
+    ],
+    "ai/experiments/<name>/**": [
+      "tests/experiments/<name>"
+    ],
+    "ai/services/tier0/**": [
+      "tests/deploy/test_session1_live.py",
+      "tests/deploy/test_crash_recovery_g3.py"
+    ]
+  }
+}
