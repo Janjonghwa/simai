@@ -55,6 +55,8 @@ GitLab ──Webhook──▶ https://simai.live/jenkins/ (Nginx) ──▶ jenk
   파트(ai·gateway 시험, front `check:generated`, server `contracts.gradle` 계약 클래스)도 돈다.
 - **캐시**: uv·pnpm·Gradle 내려받기를 `${WORKSPACE}@tmp/cache` 에 둔다. 저장소 안에 두면 git 상태가 바뀌어 git 정보를 읽는 시험에 영향을
   줄 수 있다. `.venv`·`node_modules` 는 작업 공간에 남아 다음 빌드가 다시 쓴다.
+- **작업 공간 정리**: 첫 단계에서 `git clean -ffdx -e .venv -e node_modules -e .gradle` 로 추적 안 되는·무시 파일을 지운다. 작업 공간을
+  빌드 사이에 재사용해서, 다른 브랜치 빌드가 남긴 `__pycache__` 등으로 `__init__.py` 없는 폴더가 남아 ai 구조 시험이 실패했다(S15P31A101-258).
 - **gradlew**: 실행 권한 없이(100644) 커밋돼 있어 `sh gradlew` 로 부른다. **husky**: `HUSKY=0`.
 - **ai lint**: ruff 등은 아직 정하지 않았다(`ai/CONVENTION.md`). 정해지면 ai 단계에 더한다. 지금은 합의된 `lint-imports` 만 돈다.
 

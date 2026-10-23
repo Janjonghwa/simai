@@ -40,6 +40,9 @@ pipeline {
         stage('변경 경로') {
             steps {
                 updateGitlabCommitStatus name: 'jenkins', state: 'running'
+                // 작업 공간은 빌드 사이에 재사용된다. 다른 브랜치 빌드가 남긴 추적 안 되는·무시 파일(__pycache__ 등)이
+                // 남으면 시험이 엉뚱하게 실패한다(S15P31A101-258). 다시 받기 비싼 .venv·node_modules·.gradle 만 남긴다
+                sh 'git clean -ffdx -e .venv -e node_modules -e .gradle'
                 script {
                     List<String> files = null
                     if (env.gitlabActionType == 'MERGE' && env.gitlabTargetBranch) {
