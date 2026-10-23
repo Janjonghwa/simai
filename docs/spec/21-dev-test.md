@@ -83,7 +83,8 @@ docs/                      # 팀 규칙(git-convention·jira-convention)
 
 ## 21.4 CI와 리뷰 규칙
 
-- CI 단계(기본안, GitLab CI): 정적 검사(lint·format) → 단위 → 계약·공통 벡터 → 통합 → 이미지 빌드. GPU 없는 러너에서 돌 수 있어야 한다.
+- CI 단계(Jenkins): 정적 검사(lint·format) → 단위 → 계약·공통 벡터 → 통합 → 이미지 빌드. GPU 없는 러너에서 돌 수 있어야 한다.
+- CI 실행 위치: EC2 의 Jenkins 컨테이너(운영 compose 의 `jenkins`, 화면·Webhook 은 Nginx `/jenkins/` 뒤). MR 마다 바뀐 경로의 파트만 검사하고 결과를 GitLab 커밋 상태로 MR 에 올린다. Jenkins 는 호스트 Docker 소켓·운영 DB·운영 비밀 값을 받지 않는다(운영과 같은 서버라 격리). 검사 도구 판은 배포 이미지와 같게 맞추고, 서버 시험 DB 는 운영 DB 와 분리된 CI 전용 DB 를 쓴다. 절차: `docs/design/ci-pipeline.md`
 - 브랜치·커밋·MR·Jira는 팀 규칙 `docs/git-convention.md`를 따른다(브랜치 `S15P31A101-{번호}-{설명}`, 커밋 `[S15P31A101-{번호}] 한국어 한 줄`, `dev`로 MR, squash merge). 셀프 merge를 허용한다.
 - `contracts/`를 바꾸는 MR은 영향받는 파트에 알리고, MR 본문의 영향 범위에 적는다.
 - EXP 실험의 채택 리뷰(20.1 Reviewer)는 MR merge와 별개다. merge는 코드 통합이고, 채택 판정은 20.6의 게이트를 따른다.

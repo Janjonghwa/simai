@@ -1,0 +1,3 @@
+# Jenkins 이미지 빌드 컨텍스트 허용 목록 (컨텍스트 = 저장소 최상위). 플러그인 목록만 들어간다.
+*
+!deploy/jenkins/plugins.txt
