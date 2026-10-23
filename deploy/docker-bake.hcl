@@ -1,5 +1,6 @@
 # simai 이미지 빌드 정의. 저장소 최상위에서 실행한다 (자세한 절차: deploy/README.md).
 #   docker buildx bake tier0                     # 베이스(cu130) → Tier 0, 로컬 이미지로 적재
+#   docker buildx bake unified                   # 베이스(cu130) → Tier 0 층 + 워커 스택(vLLM·HMR) 통합 이미지 (S15P31A101-246)
 #   docker buildx bake exp02                     # 베이스(cu128 base) → EXP-02 HMR (Detectron2 는 CUDA 확장 없이 빌드)
 #   docker buildx bake mapanything               # 베이스(cu128 base, Python 3.12) → EXP-01 MapAnything
 #   docker buildx bake risk-engine               # EC2 Risk Engine 컨테이너(CPU, python slim, S15P31A101-99)
@@ -10,7 +11,7 @@
 variable "REGISTRY" { default = "simai" }
 variable "TAG" { default = "dev" }
 
-# docker.io/nvidia/cuda:13.0.3-base-ubuntu24.04 (CUDA 13.0 런타임 + 순방향 호환 라이브러리. torch 2.14.1 휠의 nvidia-cuda-runtime 13.0.96 과 같은 판)
+# docker.io/nvidia/cuda:13.0.3-base-ubuntu24.04 (CUDA 13.0 런타임 + 순방향 호환 라이브러리. torch 2.11.0 cu130 휠의 CUDA 13.0 런타임과 같은 주·부 판)
 variable "CUDA_TIER0" { default = "nvidia/cuda:13.0.3-base-ubuntu24.04@sha256:7c7413a56200486f71f181cad9310f6fd31b6bb21816ade15fc9c1e1e927a5c1" }
 # 실험 이미지(S15P31A101-207): torch 2.7.1+cu128 휠이 CUDA 12.8 라이브러리를 직접 가져오므로 base. Detectron2 도 CUDA 확장 없이 base 에서 빌드(S15P31A101-238)
 # docker.io/nvidia/cuda:12.8.1-base-ubuntu24.04
@@ -33,7 +34,7 @@ variable "NGINX_WEB" { default = "nginx:1.30.6-alpine@sha256:c59d1f8b1e0e42da75b
 variable "SIMAI_DOMAIN" { default = "simai.live" }
 # MapAnything 은 볼륨 venv(Python 3.12)와 같은 판대
 variable "PYTHON_VERSION_MAPANYTHING" { default = "3.12.13" }
-# Detectron2 CPU 확장 컴파일 병렬 수. Docker Desktop 메모리가 작으면(2GB) 1~2
+# Detectron2 CPU 확장 컴파일 병렬 수(exp02). Docker Desktop 메모리가 작으면(2GB) 1~2
 variable "EXP02_MAX_JOBS" { default = "2" }
 
 group "default" { targets = ["tier0"] }
@@ -63,9 +64,20 @@ target "base-cu130" {
 target "tier0" {
   inherits   = ["_common"]
   dockerfile = "deploy/tier0/Dockerfile"
+  target     = "tier0"
   contexts   = { simai-base = "target:base-cu130" }
   args       = { BASE_IMAGE = "simai-base" }
   tags       = ["${REGISTRY}/tier0:${TAG}"]
+}
+
+# 통합 이미지(S15P31A101-246): tier0 와 같은 Dockerfile·같은 큰 층 위에 워커 스택(vLLM·HMR)을 더한다. Tier 0 → vLLM → 분석 워커를 simai-bootstrap 이 감시
+target "unified" {
+  inherits   = ["_common"]
+  dockerfile = "deploy/tier0/Dockerfile"
+  target     = "unified"
+  contexts   = { simai-base = "target:base-cu130" }
+  args       = { BASE_IMAGE = "simai-base" }
+  tags       = ["${REGISTRY}/unified:${TAG}"]
 }
 
 target "base-cu128" {

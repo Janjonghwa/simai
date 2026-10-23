@@ -9,7 +9,7 @@ TensorRT 엔진은 GPU 아키텍처와 TensorRT 버전에 묶인다(A40 sm_86, R
     {cache_root}/{모델}/{gpu_arch}/trt{TensorRT}/{모델}-{가중치 sha256 앞 12자}_{mode}_i{imgsz}_b{batch}_c{W}x{H}_fp16_ul{ultralytics}.engine
     (같은 이름의 .json 에 키 전부와 엔진 sha256 을 둔다)
 
-캐시를 쓰는 조건은 메타데이터의 키(가중치 sha256, GPU 아키텍처, TensorRT·ultralytics 버전, 입력 설정)가 지금 것과 모두 같고
+캐시를 쓰는 조건은 메타데이터의 키(가중치 sha256, GPU 아키텍처, TensorRT·ultralytics·torch·ModelOpt 버전, 입력 설정)가 지금 것과 모두 같고
 엔진 파일 해시가 메타데이터와 같을 때뿐이다. 다른 GPU 에서 만든 엔진은 경로부터 달라 고르지 않고, 같은 경로에 키가 다른
 파일이 있으면(손으로 복사 등) 쓰지 않고 옆으로 옮긴 뒤(지우지 않음) 다시 만든다.
 
@@ -103,13 +103,17 @@ class BuildTarget:
     tensorrt_version: str
     ultralytics_version: str
     gpu_name: str = ""  # 기록용 (같은 sm 의 H100 SXM·PCIe 는 같은 엔진을 쓴다)
+    # ONNX 내보내기·FP16 변환을 하는 torch 판(S15P31A101-246: 한 가상환경으로 2.14.1 → 2.11.0). 키에만 넣고 경로는 그대로라
+    # 이 키가 없던 엔진·다른 torch 로 만든 엔진은 conflict 로 옆에 옮기고 다시 만든다. 비우면 판을 모르는 것(plan 의 설치판 없음)
+    torch_version: str = ""
+    modelopt_version: str = ""  # FP16 AutoCast 를 하는 nvidia-modelopt 판(같은 이유로 키에만)
 
     def __post_init__(self) -> None:
         if not _SM.match(self.gpu_arch):
             raise ValueError(f"gpu_arch 형식은 sm_90 같은 값이다: {self.gpu_arch!r}")
-        for name in ("tensorrt_version", "ultralytics_version"):
+        for name in ("tensorrt_version", "ultralytics_version", "torch_version", "modelopt_version"):
             value = getattr(self, name)
-            if not _VERSION.match(value):
+            if (value or name in ("tensorrt_version", "ultralytics_version")) and not _VERSION.match(value):
                 raise ValueError(f"{name} 형식이 잘못됐다: {value!r}")
 
 
@@ -197,6 +201,8 @@ def expected_keys(model: ModelRef, cfg: EngineConfig, target: BuildTarget) -> di
         "gpu_arch": target.gpu_arch,
         "tensorrt_version": target.tensorrt_version,
         "ultralytics_version": target.ultralytics_version,
+        "torch_version": target.torch_version,
+        "modelopt_version": target.modelopt_version,
         "precision": PRECISION,
         "config": asdict(cfg),
         "profile": engine_profile(cfg),
@@ -253,6 +259,8 @@ def detect_target() -> BuildTarget:
         tensorrt_version=str(tensorrt.__version__),
         ultralytics_version=str(ultralytics.__version__),
         gpu_name=str(torch.cuda.get_device_name(0)),
+        torch_version=str(torch.__version__),
+        modelopt_version=_installed("nvidia-modelopt"),
     )
 
 
@@ -327,6 +335,51 @@ def ensure_engine(
     model = model_ref(weights, expect_sha256)
     target = detect()
     engine = engine_path(cache_root, model, cfg, target)
+    # 같은 엔진 경로를 쓰는 두 프로세스(같은 저장 위치에 Tier 0 둘)의 확인·옆으로 옮기기·빌드·게시를 직렬화한다(S15P31A101-246 리뷰).
+    # 기다린 쪽은 먼저 끝난 쪽의 엔진을 다시 확인해 그대로 쓴다. 잠금 파일은 엔진 폴더 밖 cache_root/.locks/ 에 두고 지우지 않는다
+    try:
+        lock_path = cache_root / ".locks" / f"{engine.parent.parent.name}-{engine.parent.name}-{engine.name}.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock = open(lock_path, "a+b")  # noqa: SIM115 - 아래 finally 가 닫는다(닫으면 잠금이 풀린다)
+    except OSError as e:
+        raise CacheDirError(f"엔진 캐시 위치를 쓸 수 없다: {cache_root} ({e})") from e
+    try:
+        _lock_exclusive(lock, log)
+        return _ensure_locked(model, cfg, target, engine, now_ms, build, log)
+    finally:
+        lock.close()
+
+
+def _lock_exclusive(f, log: Callable[[str], None]) -> None:
+    """배타 잠금(쥔 쪽이 끝날 때까지 기다린다). POSIX flock, Windows(노트북 시험) msvcrt.locking."""
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+    if fcntl is not None:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log("다른 프로세스가 같은 엔진을 확인·빌드하는 중이라 끝날 때까지 기다린다")
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        return
+    import msvcrt
+
+    told = False
+    while True:
+        try:
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            return
+        except OSError:
+            if not told:
+                log("다른 프로세스가 같은 엔진을 확인·빌드하는 중이라 끝날 때까지 기다린다")
+                told = True
+            time.sleep(0.05)
+
+
+def _ensure_locked(model: ModelRef, cfg: EngineConfig, target: BuildTarget, engine: Path, now_ms: Callable[[], int],
+                   build: Callable[[ModelRef, EngineConfig, BuildTarget, Path], Path], log: Callable[[str], None]) -> EnsureResult:
     status = inspect_cache(engine, model, cfg, target)
     result = EnsureResult(engine=engine, built=False)
     if status.state == "valid":
@@ -380,6 +433,16 @@ def ensure_engine(
 # --------------------------------------------------------------------------- CLI
 
 
+def _installed(dist: str) -> str:
+    """설치된 배포판(import 하지 않고 메타데이터만). 없으면 빈 값."""
+    from importlib import metadata
+
+    try:
+        return metadata.version(dist)
+    except metadata.PackageNotFoundError:
+        return ""
+
+
 def _camera(text: str) -> tuple[int, int]:
     m = re.fullmatch(r"([0-9]+)x([0-9]+)", text)
     if not m:
@@ -403,6 +466,8 @@ def _parser() -> argparse.ArgumentParser:
             p.add_argument("--gpu-arch", required=True, help="예: sm_90 (H100)")
             p.add_argument("--tensorrt", required=True, help="TensorRT 버전")
             p.add_argument("--ultralytics", required=True, help="ultralytics 버전")
+            p.add_argument("--torch", default=None, help="torch 버전(기본: 설치된 torch, 없으면 비움)")
+            p.add_argument("--modelopt", default=None, help="nvidia-modelopt 버전(기본: 설치된 판, 없으면 비움)")
     return ap
 
 
@@ -414,7 +479,8 @@ def main(argv: list[str] | None = None, *, detect: Callable[[], BuildTarget] = d
                            camera_w=args.camera[0], camera_h=args.camera[1])
         if args.command == "plan":
             target = BuildTarget(gpu_arch=args.gpu_arch, tensorrt_version=args.tensorrt,
-                                 ultralytics_version=args.ultralytics)
+                                 ultralytics_version=args.ultralytics, torch_version=args.torch or _installed("torch"),
+                                 modelopt_version=args.modelopt or _installed("nvidia-modelopt"))
             model = model_ref(args.weights, args.expect_sha256)
             engine = engine_path(args.cache_root, model, cfg, target)
             print(f"{inspect_cache(engine, model, cfg, target).state}\t{engine}")

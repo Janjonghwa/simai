@@ -108,6 +108,9 @@ tier0 = [
     "tensorrt-cu13-bindings>=11.4,<12; sys_platform == 'linux'",
     "onnx>=1.21,<1.22; sys_platform == 'linux'",
     "nvidia-modelopt[onnx]>=0.47,<0.48; sys_platform == 'linux'",
+    # ModelOpt AutoCast 의 ONNX 참조 실행용 CPU 판. modelopt[onnx] 가 x86 에서 선언한 onnxruntime-gpu·cupy-cuda12x(CUDA 12 빌드라 cu13 환경에서
+    # GPU 로 못 뜬다)는 [tool.uv] override 로 뺀다(S15P31A101-246, docs/design/unified-env.md "2단계")
+    "onnxruntime>=1.24,<1.25; sys_platform == 'linux'",
 ]
 worker = ["simai-ai[scene,hmr,vlm]"]
 # EC2 Risk Engine 컨테이너 내부 API (services/risk_engine, deploy/risk-engine, 명세 3.2·3.8·12.2). 요청·응답은 contracts/ 스키마로
@@ -143,7 +146,12 @@ dev = [
 
 [tool.uv]
 # ultralytics 가 선언한 opencv-python(GUI 판)을 빼고 headless 하나로 통일한다(두 휠이 같은 cv2 폴더를 덮어쓴다, pyrender EGL 과 Qt/X11 번들 충돌 후보)
-override-dependencies = ["opencv-python; sys_platform == 'never'"]
+# onnxruntime-gpu·cupy-cuda12x: modelopt[onnx] 의 CUDA 12 빌드 의존성. 우리 경로(FP16 AutoCast)는 CPU onnxruntime 으로 돌고 cupy 는 쓰지 않는다(S15P31A101-246)
+override-dependencies = [
+    "opencv-python; sys_platform == 'never'",
+    "onnxruntime-gpu; sys_platform == 'never'",
+    "cupy-cuda12x; sys_platform == 'never'",
+]
 # vLLM 0.21.0 은 아래 패키지의 상한을 두지 않는다. 최신 판(openai 3·anthropic 2·mcp 2·transformers 5.20·2026-10-09 triton 포크)은 vLLM 0.21 이 나온 뒤의 판이라
 # vllm-cosmos3 자체 잠금(cosmos-framework packages/vllm-cosmos3/uv.lock)·vLLM 0.21.0 CI 잠금과 같은 메이저·마이너로 묶는다(VLM 쪽만 쓰는 패키지, Linux 전용)
 constraint-dependencies = [

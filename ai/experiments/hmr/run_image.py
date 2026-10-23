@@ -13,6 +13,7 @@ mode
 """
 import argparse
 import gc
+import importlib.util
 import sys
 import time
 import traceback
@@ -33,6 +34,12 @@ ap.add_argument("--camera-id", default=None, help="K 파일의 카메라. 없으
 a = ap.parse_args()
 if a.mode != "official" and (a.calibration or a.dataset_k):
     ap.error("--calibration·--dataset-k 는 official 모드만: split 모드의 bbox·K 캐시는 원본(펴지 않은) 그림 기준이다")
+# 통합 이미지(S15P31A101-246)에는 잠금 밖 휠 Detectron2·MoGe 가 없다: 렌더 패널(tools.vis_utils 가 Detectron2 LazyConfig 를 쓴다)과
+# K 없는 그림의 MoGe FOV 예비 경로는 exp02 이미지에서만 돈다. 모델을 올리기 전에 명확한 오류로 멈춘다(조용히 다른 K·결과로 돌지 않는다)
+HAS_DETECTRON2 = importlib.util.find_spec("detectron2") is not None
+HAS_MOGE = importlib.util.find_spec("moge") is not None
+if not a.no_render and not HAS_DETECTRON2:
+    ap.error("렌더 패널은 Detectron2 가 필요한데 이 환경에 없다(통합 이미지). --no-render 로 돌리거나 exp02 이미지에서 렌더한다")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fs3db_common as C  # noqa: E402
@@ -92,6 +99,11 @@ def main():
                 if im is not None:
                     pre[f.stem] = {"k": C.resolve_k([im.shape[1], im.shape[0]], cands, a.camera_id, f.stem)}
             need_fov = not pre or any(p["k"]["source"] == C.K_MOGE for p in pre.values())
+            if need_fov and not HAS_MOGE:
+                no_k = sorted(s for s, p in pre.items() if p["k"]["source"] == C.K_MOGE) or ["(읽은 그림 없음)"]
+                print(f"run_image: K 가 없는 그림 {', '.join(no_k)}: MoGe(K 예비 경로)가 없는 환경(통합 이미지)은 K 없이 돌지 않는다. "
+                      "--calibration·--dataset-k 로 K 를 주거나 exp02 이미지에서 돌린다", file=sys.stderr)
+                sys.exit(2)
             est, comps, timed, info = C.build(a.variant, detector="yolo_pose", detector_model=str(a.yolo or C.YOLO),
                                               fov="moge2" if need_fov else None)
         res["load"] = info

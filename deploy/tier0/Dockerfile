@@ -1,7 +1,11 @@
-# Tier 0 서비스 이미지 (명세 3.1 RunPod Tier 0, 3.12, 21.5). 빌드: deploy/README.md (docker buildx bake tier0).
+# Tier 0 서비스 이미지와 통합 이미지 (명세 3.1 RunPod Tier 0, 3.2 프로세스 분리, 3.12, 21.5). 빌드: deploy/README.md (docker buildx bake tier0 / unified).
+# 타깃 두 개가 아래 큰 층(CUDA 13 휠·torch·TensorRT libs·큰 일반 휠·Tier 0 잠금)을 같이 쓴다(S15P31A101-246):
+#   tier0    Tier 0 만(지금까지의 이미지와 같은 내용). 기본 진입점은 simai-bootstrap → simai-tier0
+#   unified  같은 가상환경에 워커 스택(vLLM 0.21.0 + vllm-cosmos3, HMR 추론 의존성 + Fast-SAM-3D-Body 코드 사본)을 더한 이미지. simai-bootstrap 이 Tier 0 → vLLM 서버 → 분석 워커를
+#            별도 프로세스(그룹)로 띄우고 감시한다(SIMAI_SERVICES, deploy/README.md "통합 이미지", docs/design/unified-env.md "2단계")
 # - Python 의존성은 ai/uv.lock 그대로(uv sync --locked). pyproject 와 잠금이 어긋나면 빌드가 실패한다.
-#   큰 휠은 잠금에서 뽑은 묶음별 층으로 먼저 깐다(S15P31A101-207, docs/design/exp-images.md "Tier 0 층 분할").
-# - 가중치(YOLO26x-pose .pt)와 TensorRT 엔진은 이미지에 없다. 둘 다 저장 위치($SIMAI_ROOT)에 둔다.
+#   큰 휠은 잠금에서 뽑은 묶음별 층으로 먼저 깐다(S15P31A101-207, docs/design/exp-images.md "Tier 0 층 분할"). 가상환경을 통째 COPY --from 하지 않는다.
+# - 가중치(YOLO26x-pose .pt, Cosmos3-Nano)와 TensorRT 엔진은 이미지에 없다. 모두 저장 위치($SIMAI_ROOT)에 둔다.
 #   시작하면 simai-bootstrap 이 저장 위치·GPU 를 고르고 가중치를 목록(deploy/weights.json)대로 받아 확인한 뒤(S15P31A101-205),
 #   simai-tier0 가 그 GPU 에서 엔진을 만들고 캐시한다(entrypoint → simai_ai.detection.engine_cache).
 # - 빌드 컨텍스트는 저장소 최상위이고, 들어오는 파일은 deploy/tier0/Dockerfile.dockerignore 의 허용 목록뿐이다.
@@ -11,29 +15,36 @@ ARG BASE_IMAGE=simai-base
 #    아래 COPY --from 의 캐시 키(내용 체크섬)가 같아 큰 층을 다시 만들지 않는다(같은 층 = 같은 다이제스트 = 다시 올리지 않음).
 #    묶음(바뀌는 빈도가 낮은 것부터): cuda = torch 가 가져오는 CUDA 13 휠, torch = torch·triton·torchvision,
 #    trt = TensorRT libs(pypi.nvidia.com), wheels = 드물게 바뀌는 큰 일반 휠. 나머지 작은 패키지는 4) 층, simai_ai 코드는 5) 층.
+#    worker = 통합 이미지의 워커 쪽 큰 휠(tier0 + worker 내보내기에서 뽑는다. Tier 0 묶음에 없는 것만).
 #    묶음의 이름이 잠금에 없으면 빌드를 멈춘다(나뉜 줄 알았는데 4) 층 하나에 다 들어가는 일을 막는다).
 FROM ${BASE_IMAGE} AS layer-lists
 WORKDIR /src
 COPY ai/pyproject.toml ai/uv.lock ./
 RUN set -eu; \
     uv export -q --locked --no-dev --extra tier0 --no-emit-project --format requirements-txt -o all.txt; \
-    pick(){ out=$1; shift; : > "$out"; \
+    uv export -q --locked --no-dev --extra tier0 --extra worker --no-emit-project --format requirements-txt -o all-worker.txt; \
+    pick(){ src=$1; out=$2; shift 2; : > "$out"; \
       for n in "$@"; do \
-        awk -v n="$n" '/^[^ #]/ { x = $1; sub(/[ =;].*/, "", x); keep = (x == n) } keep && !/^ *#/' all.txt > one.txt; \
+        awk -v n="$n" '/^[^ #]/ { x = $1; sub(/[ =;].*/, "", x); keep = (x == n) } keep && !/^ *#/' "$src" > one.txt; \
         grep -q "^$n==" one.txt || { echo "층 묶음의 $n 이 잠금에 없다(deploy/tier0/Dockerfile 묶음을 고친다)" >&2; exit 1; }; \
         cat one.txt >> "$out"; \
       done; }; \
-    pick cuda.txt nvidia-cublas nvidia-cudnn-cu13 nvidia-cufft nvidia-cusolver nvidia-cusparse nvidia-cusparselt-cu13 \
+    pick all.txt cuda.txt nvidia-cublas nvidia-cudnn-cu13 nvidia-cufft nvidia-cusolver nvidia-cusparse nvidia-cusparselt-cu13 \
       nvidia-nccl-cu13 nvidia-nvshmem-cu13 nvidia-cuda-nvrtc nvidia-curand nvidia-nvjitlink nvidia-cuda-runtime \
       nvidia-cuda-cupti nvidia-cufile nvidia-nvtx cuda-toolkit; \
-    pick torch.txt torch triton torchvision; \
-    pick trt.txt tensorrt-cu13-libs; \
-    pick wheels.txt onnxruntime-gpu cupy-cuda12x polars-runtime-32 pyarrow opencv-python opencv-python-headless scipy av; \
+    pick all.txt torch.txt torch triton torchvision; \
+    pick all.txt trt.txt tensorrt-cu13-libs; \
+    pick all.txt wheels.txt polars-runtime-32 pyarrow opencv-python-headless scipy av; \
+    pick all-worker.txt worker.txt flashinfer-cubin vllm tokenspeed-triton nvidia-cutlass-dsl-libs-base llvmlite tilelang \
+      xgrammar z3-solver; \
     rm one.txt
 
-FROM ${BASE_IMAGE}
+# ---------------------------------------------------------------- Tier 0 의존성 (두 타깃 공통)
+FROM ${BASE_IMAGE} AS tier0-deps
 
 WORKDIR /opt/simai/ai
+# 가상환경은 하나다(Tier 0·vLLM·워커가 같은 판, S15P31A101-235). 그래서 이미지 전역 VIRTUAL_ENV·PATH 로 둔다.
+# LD_LIBRARY_PATH 는 두지 않는다(CUDA·TensorRT 휠은 자기 RUNPATH 로 찾는다)
 ENV UV_PROJECT_ENVIRONMENT=/opt/simai/ai/.venv \
     VIRTUAL_ENV=/opt/simai/ai/.venv \
     PATH=/opt/simai/ai/.venv/bin:${PATH}
@@ -57,6 +68,9 @@ COPY ai/pyproject.toml ai/uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --extra tier0 --no-install-project
 
+# ---------------------------------------------------------------- tier0 타깃
+FROM tier0-deps AS tier0
+
 # 5) simai_ai 패키지(편집 모드 아님)와 배포 단위(services 는 설치하지 않고 이 폴더에서 실행), 계약 스키마
 COPY ai/src ./src
 COPY ai/services ./services
@@ -77,6 +91,7 @@ COPY deploy/weights.json /opt/simai/deploy/weights.json
 # 실행 중에 패키지를 설치하지 않는다(ultralytics 자동 설치 끔). 없는 의존성은 실패로 드러나야 한다.
 # NVIDIA_DRIVER_CAPABILITIES 의 video: 선택 디코더 NVDEC(libnvcuvid)을 컨테이너에 올린다(S15P31A101-182, 기본은 CPU -236).
 # SIMAI_ROOT 는 고정하지 않는다(simai-bootstrap 이 SIMAI_ROOT → /workspace/simai → /srv/simai 순서로 고른다).
+# SIMAI_SERVICES 가 없으면 Tier 0 단독이다(simai-bootstrap 이 감시 프로세스 없이 simai-tier0 로 exec).
 ENV SIMAI_CONTRACTS_DIR=/opt/simai/contracts \
     SIMAI_WEIGHTS_MANIFEST=/opt/simai/deploy/weights.json \
     YOLO_AUTOINSTALL=false \
@@ -85,5 +100,78 @@ ENV SIMAI_CONTRACTS_DIR=/opt/simai/contracts \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
 
 # 기본(인자 없음)은 준비 → Tier 0. 'sleep infinity'·bash 같은 다른 명령은 준비 없이 그대로 실행한다.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/simai-start", "/usr/local/bin/simai-bootstrap"]
+CMD ["tier0"]
+
+# ---------------------------------------------------------------- 통합 이미지 의존성 (Tier 0 층 위에 워커 층)
+FROM tier0-deps AS unified-deps
+# pyrender EGL 렌더용 glvnd 로더(libEGL.so 무버전 이름은 libegl-dev), pyglet 이 여는 X11 라이브러리(-207 에서 발견),
+# (sam_3d_body 가 import 때 pyrender 를 연다), triton(vLLM·torch.compile) 런처를 컴파일할 C 컴파일러, git(잠금의 git 의존성 vllm-cosmos3·transformers-cosmos3·utils3d-moge·pipeline 설치)
+# hadolint ignore=DL3008
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      libegl1 libegl-dev libgl1 libglvnd0 libglib2.0-0 libxrender1 libxext6 libsm6 gcc libc6-dev git \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=layer-lists /src/worker.txt /tmp/layers/
+# --no-config: 이 폴더의 ai/pyproject.toml [tool.uv] constraint-dependencies 를 uv pip 가 읽으면 --require-hashes 와 부딪힌다(판은 이미 해시로 고정)
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install -q --no-config --no-deps --require-hashes -r /tmp/layers/worker.txt
+# 워커 묶음 전체(Tier 0 층의 패키지는 같은 판이라 건너뛴다. tier0 ⊂ tier0+worker 라 지우는 것도 없다)
+# hadolint ignore=DL3059
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --extra tier0 --extra worker --no-install-project
+
+# ---------------------------------------------------------------- HMR 코드 사본 (이미지에는 결과만 옮긴다)
+# 잠금 밖 휠(chumpy·Detectron2·MoGe)은 통합 이미지에 넣지 않는다(S15P31A101-246, docs/design/unified-env.md "2단계"):
+# 시연 HMR 경로(보정 K → sam-3d-body 추론 → 메시·관절, 렌더 없음)는 셋 없이 import 된다(exp02 이미지에서 셋을 막고 확인).
+# Detectron2 는 렌더 패널(tools.vis_utils)의 LazyConfig, MoGe 는 K 가 없을 때의 FOV 예비 경로, chumpy 는 mhr2smpl 에서만 쓴다 → exp02 이미지에만 둔다.
+FROM unified-deps AS hmr-code
+ARG FS_COMMIT=d72aa36
+ARG DINOV3_COMMIT=6876159a11b4df116f30f667f8c9888617df0751
+RUN git clone -q https://github.com/yangtiming/Fast-SAM-3D-Body /opt/code/Fast-SAM-3D-Body \
+ && git -C /opt/code/Fast-SAM-3D-Body checkout -q "${FS_COMMIT}" \
+ && rm -rf /opt/code/Fast-SAM-3D-Body/.git \
+ && echo "Fast 저장소에 커밋된 가중치(mhr2smpl 실험용, 이미지에 넣지 않음):" \
+ && find /opt/code/Fast-SAM-3D-Body -type f \( -name '*.pth' -o -name '*.pt' -o -name '*.ckpt' -o -name '*.safetensors' -o -name '*.onnx' -o -name '*.engine' \) -print -delete \
+ && git clone -q https://github.com/facebookresearch/dinov3 /opt/code/facebookresearch_dinov3_main \
+ && git -C /opt/code/facebookresearch_dinov3_main checkout -q "${DINOV3_COMMIT}" \
+ && rm -rf /opt/code/facebookresearch_dinov3_main/.git
+
+# ---------------------------------------------------------------- unified 타깃
+FROM unified-deps AS unified
+COPY --from=hmr-code /opt/code/Fast-SAM-3D-Body /opt/simai/hmr/Fast-SAM-3D-Body
+COPY --from=hmr-code /opt/code/facebookresearch_dinov3_main /root/.cache/torch/hub/facebookresearch_dinov3_main
+
+# 5) simai_ai 패키지·배포 단위·계약 스키마(잠금 밖 휠이 없으므로 tier0 와 같은 정확 sync)
+COPY ai/src ./src
+COPY ai/services ./services
+COPY contracts /opt/simai/contracts
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --extra tier0 --extra worker --no-editable \
+ && rm -rf ./src
+
+COPY --chmod=0755 deploy/tier0/entrypoint.sh /usr/local/bin/simai-tier0
+COPY --chmod=0755 deploy/scripts/wait_tier0_ready.py /usr/local/bin/simai-wait-tier0
+COPY --chmod=0755 deploy/scripts/simai_bootstrap.py /usr/local/bin/simai-bootstrap
+# HMR 실행 도우미(fastcfg 링크·체크포인트 확인, exp02 이미지와 같은 파일). 가중치 묶음은 이미지에 정하지 않으므로(기본 tier0) 부를 때 준다:
+#   SIMAI_WEIGHTS_SET=exp02 simai-bootstrap run simai-exp02 python .../run_image.py --calibration ... --no-render   (세션 큐 u2 도 SIMAI_WEIGHTS_SET=exp02 simai-bootstrap queue)
+COPY --chmod=0755 deploy/exp02/entrypoint.sh /usr/local/bin/simai-exp02
+RUN sed -i 's/\r$//' /usr/local/bin/simai-tier0 /usr/local/bin/simai-wait-tier0 /usr/local/bin/simai-bootstrap /usr/local/bin/simai-exp02
+COPY deploy/weights.json /opt/simai/deploy/weights.json
+
+# SIMAI_SERVICES: simai-bootstrap tier0 가 띄울 프로세스(Tier 0 → vLLM 서버 → 분석 워커). 'tier0' 로 주면 Tier 0 단독(tier0 이미지와 같은 동작).
+# SIMAI_WORKER_WEIGHTS_SET: Tier 0 준비 뒤에 받는 워커 가중치 묶음(Cosmos3-Nano 약 31.5GB, 받는 동안에도 Tier 0 는 돈다).
+# NVIDIA_DRIVER_CAPABILITIES 는 합집합: video(NVDEC 선택 디코더) + graphics(pyrender EGL, HMR).
+ENV SIMAI_IMAGE_KIND=unified \
+    SIMAI_SERVICES=tier0,vllm,worker \
+    SIMAI_WORKER_WEIGHTS_SET=vlm \
+    SIMAI_CONTRACTS_DIR=/opt/simai/contracts \
+    SIMAI_WEIGHTS_MANIFEST=/opt/simai/deploy/weights.json \
+    SIMAI_FS3DB_REPO=/opt/simai/hmr/Fast-SAM-3D-Body \
+    PYOPENGL_PLATFORM=egl \
+    YOLO_AUTOINSTALL=false \
+    YOLO_OFFLINE=true \
+    YOLO_CONFIG_DIR=/tmp/ultralytics \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,video,graphics
+
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/simai-start", "/usr/local/bin/simai-bootstrap"]
 CMD ["tier0"]
