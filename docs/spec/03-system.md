@@ -9,7 +9,7 @@
 | 카메라 4대 | Tapo C110, 교실 Wi-Fi망 | RTSP 영상 송출 |
 | 노트북 | 교실망, Python. 노트북 GPU 는 쓰지 않음(3.12) | RTSP 수신, 촬영 시각 추정(3.9), RunPod로 영상 중계(TLS), 현장 경보 단말(스피커·화면), 이중 하트비트 감시. 교실망 NTP 서버 역할은 보류(3.9) |
 | RunPod Tier 0 서비스 | GPU Pod 하나(관제 중 상시, 실행 사이트·GPU 는 3.12), Python. 분석 워커와 같은 Pod·GPU를 쓰되 별도 프로세스 | YOLO26x-pose 검출·추적·2D keypoint, 카메라 간 연결·시간 보간·삼각측량·World 상태, LIVE Risk Engine·이벤트 저널, 이벤트 클립 링 버퍼, 기동 시 엔드포인트 등록(3.12). PPE 검출은 확장(부록 C) |
-| RunPod 분석 워커 | Tier 0와 같은 GPU Pod 안의 별도 프로세스(자원 상한 적용, 3.2), Python. 관제가 없는 개발 시간에는 같은 Pod에서 단독 실행(실행 사이트·GPU 는 3.12) | EC2에서 작업을 가져가(12.5) 실행: VLM 근거·사고 구간 요약(Cosmos3-Nano Reasoner, VLM 입력 얼굴 흐림 포함, 5.4), TBM 보고서·일일 일지(외부 LLM 호출), 정적 3D(MapAnything Native / EXP-01), BEV 평면도 생성(4.1), YOLO26-seg 마스크, 보정 번들 조정, 비동기 HMR(Fast SAM 3D Body / EXP-02), 관측 기반 외형 갱신 실험 |
+| RunPod 분석 워커 | Tier 0와 같은 GPU Pod 안의 별도 프로세스(자원 상한 적용, 3.2), Python. 관제가 없는 개발 시간에는 같은 Pod에서 단독 실행(실행 사이트·GPU 는 3.12) | EC2에서 작업을 가져가(12.5) 실행: VLM 근거·사고 구간 요약(Cosmos3-Nano Reasoner, VLM 입력 얼굴 흐림 포함, 5.4), TBM 보고서·일일 일지(외부 LLM 호출), 정적 3D(MapAnything Native / EXP-01), BEV 평면도 생성(4.1), YOLO26-seg 마스크, 보정 번들 조정, 비동기 HMR 아바타 포즈 스트림·관측 기반 외형 갱신(Fast SAM 3D Body / EXP-02, 시연 범위, 5.6) |
 | 외부 LLM API | 외부 서비스(“GPT 6.1 sol”, 5.4) | TBM 보고서·일일 일지 문장, RAG 답변 등 텍스트 생성. 텍스트만 보낸다. 분석 워커의 `tbm_report` 작업 안에서만 호출한다(API 키는 Pod `.env`) |
 | EC2 | AWS(EC2 또는 Lightsail 중 지급 서비스로 정함, 확인 필요), Spring Boot 4·Java 21 | RiskEvent 저장·생명주기·알림 라우팅, 규칙·구성 묶음 배포, Risk Engine 컨테이너(계획·리플레이·What-if), Spatial DB, 뷰어 API·실시간 스트림, PWA 알림, Tier 0 엔드포인트 중계, 인증 |
 | 객체 저장소 | S3 또는 Lightsail 버킷 | 이벤트 클립, 조치 사진, 정적 3D 자산(glTF). 클립은 EC2 삭제 작업이 지운다(보존 표시 확인, 11.5) |
@@ -24,7 +24,7 @@
 - Tier 0와 분석 워커는 **GPU Pod 하나**에서 별도 프로세스로 실행한다(World Track Manager 하나, LIVE Risk Engine 정본 하나). GPU를 나눠 쓰므로 다음 규칙을 둔다.
   - Tier 0 프로세스가 GPU 메모리를 먼저 확보한다. 분석 워커는 남은 메모리 안에서 상한을 두고 실행한다(예: vLLM `gpu_memory_utilization` 제한, 동시 요청 수 제한). 아래 GPU 메모리 예산표를 따른다.
   - Tier 0 지연이 목표를 넘거나 모르면 분석 워커의 새 작업을 멈추고 대기열에 둔다. Tier 0 는 1초 간격으로 지연 표본을 모아 GPU 상태 표시 파일을 쓸 때마다(초기값 5초) 그 사이 창으로 집계한다. 기준은 그 창의 최댓값(p95 보다 엄격)이 `capture_to_risk` 목표(6.6, 600ms)를 넘음, 창 안에 추론 대기 상한(5.1, `queue_wait_ms` 150ms)을 넘겨 버린 프레임이 1건 이상, 지연을 모르는 표본이 있음, 표본이 없음이다. 다시 받으려면 통과 상태가 30초(초기값) 이어져야 한다. 이 규칙이나 LIVE 관제 시작 때문에 분석 워커가 받은 작업을 시작하지 않았거나 멈췄으면 시도 횟수를 쓰지 않고 반납한다(12.5). 우선순위는 Tier 0 > VLM 빠른 경로 > 보고서·사후 요약 > 그 밖의 작업이다.
-  - EXP-01·02 같은 대형 오프라인 Job은 LIVE 관제 시간에 실행하지 않는다.
+  - EXP-01 등 오프라인·배치 EXP Job(I5 배치 `hmr_*` 작업 포함)은 LIVE 관제 시간에 실행하지 않는다. 예외로 시연 범위인 EXP-02 아바타 포즈 스트림(상시 HMR 루프, 5.6·12.2)은 LIVE 관제 중에도 분석 워커 GPU 상한 안에서 실행하되, 추론 전마다 Tier 0 지연 감시 표시 파일(`$SIMAI_ROOT/state/tier0.live`)을 읽어 Tier 0 지연이 목표를 넘거나 모르면 추론을 멈추고(그때 뷰어는 0.5 s 뒤 캡슐 아바타로 돌아감, 13.2) 지연이 돌아오면 다시 시작한다.
   - 분석 워커 프로세스가 죽거나 메모리 부족이 나도 Tier 0 프로세스는 계속 동작해야 한다(프로세스 분리, 6.5).
   - GPU가 부족하면 같은 Pod의 GPU 등급을 올리고, 그다음 VLM 처리 주기와 동시 요청 수를 조정한다(VLM 모델은 5.4 로 고정). GPU Pod를 2개로 늘리는 구성은 쓰지 않는다. Tier 0 분산(샤딩, 중앙 Fusion, 리더 선출, 장애 전환)은 MVP 범위 밖이다.
 - 이중 감시: 노트북은 끊긴 대상에 따라 현장 표시를 달리한다(RunPod Tier 0나 영상이 끊기면 “관제 중단”, EC2만 끊기면 “원격 관제 장애”, 3.10). EC2는 RunPod Tier 0나 노트북 하트비트가 끊기면 System Health를 UNSAFE_UNKNOWN으로 바꾸고 PWA·관리자 화면에 알린다. 노트북은 EC2에도 1초마다 HTTPS 하트비트(`laptop_heartbeat`, 기기 토큰)를 보내며 Tier 0 연결 상태를 함께 알린다. 그래서 EC2는 Tier 0 하트비트가 끊겨도 노트북이 Tier 0 정상을 알리면 “원격 전달 단절(현장 경보 동작 중)”, 노트북도 Tier 0 끊김을 알리면 “관제 정지”로 구분해 표시한다. 두 경우 모두 System Health는 UNSAFE_UNKNOWN이다. ‘Tier 0 정상’은 연결(`tier0.control`)과 노트북 현장 표시(`site_display`)를 함께 본다: 노트북은 Tier 0 health 를 받고 있으면 처리 정체·판정 불가·영상 단절이어도 `tier0.control`=CONNECTED 로 두고 그 판단을 `site_display`=CONTROL_HALTED 로 알리므로, CONNECTED 여도 CONTROL_HALTED 이면 “관제 정지”다(3.10).
@@ -42,7 +42,7 @@
 | VLM | Cosmos3-Nano(16B) 가중치 + KV 캐시(vLLM `gpu_memory_utilization`) | 초기값 0.55, 동시 요청 4(분석 워커 상한 안). G0 실측으로 고침 |
 | 임베딩(GPU 에 둘 때만) | BAAI/bge-m3(CPU·GPU 배치는 결정 전, 11장) | 배치 결정 뒤 |
 | 마스크 | YOLO26-seg | 분석 워커 상한 안. G0 실측 |
-| HMR(EXP-02 채택 시) | Fast SAM 3D Body | 분석 워커 상한 안. G0 실측(상한) |
+| HMR(EXP-02, 시연 범위) | Fast SAM 3D Body(상시 아바타 스트림 루프) | 분석 워커 상한 안. G0 실측(상한) |
 | MapAnything | 설치 때 단독 실행(관제 중 실행 안 함) | — |
 
 비율은 GPU 전체 메모리 대비다. 분석 워커는 시작할 때 Tier 0 + 분석 워커 ≤ 0.95, VLM ≤ 분석 워커를 검사하고 틀리면 시작하지 않는다.
@@ -163,7 +163,7 @@ flowchart TB
   end
   subgraph RunPod["RunPod GPU"]
     T0["Tier 0 서비스 (관제 중 상시)<br/>YOLO26x-pose·추적·삼각측량<br/>LIVE Risk Engine·저널·링 버퍼"]
-    AW["분석 워커 (필요할 때)<br/>VLM·정적 3D EXP-01·YOLO26-seg<br/>HMR 메시 EXP-02·외형 갱신(실험)"]
+    AW["분석 워커 (아바타 스트림·작업)<br/>VLM·정적 3D EXP-01·YOLO26-seg<br/>HMR 메시·포즈 스트림 EXP-02(시연 범위)·외형 갱신"]
   end
   subgraph AWS["AWS"]
     EC2["EC2 (Spring Boot)<br/>RiskEvent 저장·전달, Spatial DB<br/>뷰어 API, 알림, 인증<br/>계획·리플레이용 Risk Engine"]
@@ -177,11 +177,12 @@ flowchart TB
   GW -->|"하트비트·엔드포인트 조회 (HTTPS)"| EC2
   T0 -->|"I1 World 상태·이벤트 전이·엔드포인트 등록"| EC2
   AW -->|"I5 작업 가져가기·결과"| EC2
+  AW -->|"I6 아바타 스트림 (wss)"| EC2
   EC2 -->|I2 STOMP| V
   EC2 -->|I3 Web Push| P
 ```
 
-노트북은 영상을 중계하고 현장 경보를 울리며, RunPod Tier 0 서비스가 관측부터 판정까지 처리해 결과만 EC2로 보낸다. 분석 워커는 EC2에서 무거운 분석 작업을 가져가 처리하고, EC2는 결과를 뷰어·PWA로 전달한다. 워치(I4)는 확장이다(부록 C).
+노트북은 영상을 중계하고 현장 경보를 울리며, RunPod Tier 0 서비스가 관측부터 판정까지 처리해 결과만 EC2로 보낸다. 분석 워커는 EC2에서 무거운 분석 작업을 가져가 처리하고(I5) 아바타 포즈·자산 스트림을 별도 연결로 보내며(I6), EC2는 결과를 뷰어·PWA로 전달한다. 워치(I4)는 확장이다(부록 C).
 
 ## 3.7 데이터 흐름: 카메라에서 Three.js까지
 
@@ -244,7 +245,7 @@ flowchart TB
 | 외부 | LLM | 외부 API “GPT 6.1 sol”(텍스트만, 5.4) | 확정 |
 | RunPod 분석 | 마스크 | YOLO26-seg, 새 물체·실측 정물은 YOLOE-26 | 기본안 |
 | RunPod 분석 | 정적 3D | MapAnything Native, trimesh로 glTF (EXP-01) | 기본안·선행 실험 |
-| RunPod 분석 | 인체 메시·외형 | Fast SAM 3D Body, MHR 메시, 연속 관측 기반 외형 갱신 (EXP-02) | 실험 후보·확장 채택 별도 승인 |
+| RunPod 분석 | 인체 메시·외형 | Fast SAM 3D Body, MHR 리깅 메시·포즈 스트림, 관측 픽셀 UV 텍스처 누적 (EXP-02, 5.6·20.3) | 시연 범위(E-GATE-0\~3 검증, 20.6) |
 | RunPod 분석 | 자동 보정 | 무마커 내부 파라미터 추정(AnyCalib 기본, GeoCalib 예비, 교실 직선 고전 기준 plumb-line·소실점은 가중치 없는 예비·직선성 확인, 4.3·부록 B), 사람 keypoint 번들 조정(HumanCalib 원리를 따른 자체 구현, 4.3), OpenCV solvePnP, SciPy least_squares | 기본안 |
 | RunPod 분석 | 작업 워커(I5) | Python, EC2 작업 가져가기(HTTPS long-poll 기본, WebSocket 대안, 12.5) | 기본안 |
 | EC2 | 백엔드 | Java 21, Spring Boot 4(`server/`) | 확정 |
@@ -354,11 +355,11 @@ GPU 를 쓰는 곳(실행 사이트)과 지역은 고정하지 않는다(2026-10
 |---|---|---|
 | 개발·시험 | RunPod 에서 그때그때 남은 GPU·지역(아래 최소 사양 이상) | 볼륨 없음. 컨테이너 디스크(100GB 이상) |
 | 개발·시험 예비 | Vast.ai | 컨테이너 디스크 |
-| 시연 준비·리허설·시연 | 미정(엘리스 클라우드 GPU VM 등이 후보, 19.1) | 인스턴스를 다시 켜도 남는 디스크(블록 스토리지 등) |
+| 시연 준비·리허설·시연 | 시연 기준 GPU 는 80GB(H100 급). 실행 사이트는 미정(엘리스 클라우드 GPU VM 등이 후보, 19.1) | 인스턴스를 다시 켜도 남는 디스크(블록 스토리지 등) |
 
 **최소 사양.**
 
-- Tier 0 만 돌릴 때 VRAM 24GB급(RTX 4090 이상), Tier 0 와 분석 워커·실험을 함께 돌릴 때 48GB 이상(80GB 권장). 48GB 미만 GPU 에는 분석 부하를 같은 GPU 에 올리지 않는다.
+- Tier 0 만 돌릴 때 VRAM 24GB급(RTX 4090 이상), Tier 0 와 분석 워커·실험을 함께 돌릴 때 48GB 이상(80GB 권장). 시연 기준 GPU 는 80GB(H100)이고, 48GB 는 Tier 0 와 분석(VLM·HMR 스트림) 동시 실행에 모자랄 수 있다(3.2 예산표의 VLM 0.55 는 48GB 기준 초기값이라 3차 GPU 세션에서 Reasoner VRAM 실측 뒤 다시 정한다, 19.1). 48GB 미만 GPU 에는 분석 부하를 같은 GPU 에 올리지 않는다.
 - Ampere(compute capability 8.0) 이후 GPU, 드라이버가 지원하는 최대 CUDA 13.0 이상(아래 이미지와 CUDA). Blackwell(sm_100·sm_120)도 대상이다: Tier 0 이미지는 CUDA 13, 실험 이미지는 Blackwell 커널이 든 CUDA 12.8 판으로 만든다. Blackwell GPU 에서 실제로 돌려 본 것은 아직 없다(19.1).
 - GPU 가 없거나 사양을 읽지 못하거나 사양 미만이면 Tier 0 를 띄우지 않는다(시작 절차가 가중치를 받기 전에 멈춘다).
 - CPU: 컨테이너가 받는 vCPU(cgroup 할당량, 호스트 코어 수가 아님) 8개 이상(초기값). Tier 0 기본 디코더가 CPU 라 카메라 4대 디코딩·색 변환(실측 약 코어 1개 이하)과 검출 전후처리·기하·판정·수신이 이 몫을 나눠 쓴다. 시작 절차는 아직 vCPU 로 멈추지 않고 검증 큐가 기록만 하며, 기록으로 값을 고친다(19.1).
