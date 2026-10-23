@@ -56,10 +56,10 @@ async function watchSource() {
   return { source, messages, links };
 }
 
-/** 구독이 브로커에 닿을 때까지 health 를 보낸다. */
+/** 구독이 브로커에 닿을 때까지 health 를 보낸다. 실행 시각과 상관없이 정상(고장 흉내 없음)이다. */
 async function untilHealth() {
   await until(() => {
-    broker.publish('/topic/health', viewerHealthAt(Date.now()));
+    broker.publish('/topic/health', viewerHealthAt(Date.now(), { faults: false }));
     return useRealtimeStore.getState().health !== null;
   });
 }

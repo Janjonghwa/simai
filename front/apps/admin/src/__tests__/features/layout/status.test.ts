@@ -67,6 +67,12 @@ describe('상단 바 문구', () => {
     expect(cameraLabel(null)).toBeUndefined();
   });
 
+  it('EC2 ↔ Tier 0 가 끊기면 마지막으로 받은 Tier 0 값을 지금 값처럼 쓰지 않는다', () => {
+    const health = snapshot({ tier0_link: 'DISCONNECTED', system_health: 'UNSAFE_UNKNOWN' });
+    expect(cameraLabel(health)).toBeUndefined();
+    expect(calibrationLabel(health)).toBe('CALIBRATED');
+  });
+
   it('구성이 아직 적용되지 않았으면 발행 버전과 상태를 보인다', () => {
     const config = (sync: ViewerHealthPayload['config']['sync']) =>
       snapshot({ config: { published_version: 'cfg-13', applied_version: 'cfg-12', sync } });

@@ -20,6 +20,39 @@ describe('실시간 mock 시나리오', () => {
     }
   });
 
+  describe('바퀴의 20~26초에는 cam3 가 키프레임을 기다린다', () => {
+    const at = (t: number, faults?: boolean) => {
+      const { payload } = viewerHealthAt(t, { faults });
+      const cameras = (payload.tier0_health as { cameras: { id: string; status: string }[] })
+        .cameras;
+      return {
+        system: payload.system_health,
+        cam3: cameras.find((camera) => camera.id === 'cam3')?.status,
+        others: cameras.filter((camera) => camera.id !== 'cam3').map((camera) => camera.status),
+        // cam3 가 영상을 보내지 않는 동안에는 world 에서도 cam3 로 관측하지 않는다.
+        observed: new Set(worldStateAt(t).payload.tracks.flatMap((track) => track.cameras)),
+      };
+    };
+
+    it.each([
+      [19_999, 'NOMINAL', 'OK'],
+      [20_000, 'DEGRADED', 'WAITING_KEYFRAME'],
+      [25_999, 'DEGRADED', 'WAITING_KEYFRAME'],
+      [26_000, 'NOMINAL', 'OK'],
+      [EVENT_CYCLE_MS + 21_000, 'DEGRADED', 'WAITING_KEYFRAME'],
+    ])('바퀴 시작 + %ims: %s, cam3 %s', (offset, system, cam3) => {
+      const state = at(T0 + offset);
+      expect(state.system).toBe(system);
+      expect(state.cam3).toBe(cam3);
+      expect(state.others).toEqual(['OK', 'OK', 'OK']);
+      expect(state.observed.has('cam3')).toBe(cam3 === 'OK');
+    });
+
+    it('고장 흉내를 끄면 그 구간에도 정상이다', () => {
+      expect(at(T0 + 21_000, false)).toMatchObject({ system: 'NOMINAL', cam3: 'OK' });
+    });
+  });
+
   it('작업자는 교실(10×10m) 안에 있다', () => {
     for (let i = 0; i < 100; i++) {
       for (const track of worldStateAt(T0 + i * 977).payload.tracks) {
