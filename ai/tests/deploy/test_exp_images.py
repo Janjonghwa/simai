@@ -198,7 +198,7 @@ def test_check_without_cuda_fails_not_passes(xc, monkeypatch):
     ("mapanything", ["a_pod_check", "m0_mapanything_image_check", "m1_mapanything_c1", "m2_mapanything_c2"]),
     # 통합 이미지는 Tier 0 층이 같아 tier0 항목도 돈다(S15P31A101-246). v1~v3 는 자리만
     ("unified", ["a_pod_check", "b_tier0_engine", "t_test_tools", "c_tier0_live", "d_tier0_gpu_priority", "u1_unified_image_check",
-                 "u2_unified_hmr_calib_k"]),
+                 "u2_unified_hmr_calib_k", "u3_unified_mapanything_c1", "u4_unified_mapanything_c2"]),
 ])
 def test_queue_takes_only_this_images_items_and_exp_images_keep_live_guard(gs, monkeypatch, image, want):
     monkeypatch.setenv("SIMAI_IMAGE_DIGEST", "sha256:" + "b" * 64)
@@ -332,6 +332,38 @@ def test_exp_jobs_record_real_weights_dataset_metrics_and_results(gs, ej, tmp_pa
         if kind == "hmr":
             assert rec["metrics"]["images.count"] == 2 and rec["metrics"]["images.result.success"] == 2
             assert rec["metrics"]["images.n_people.max"] == 5 and rec["metrics"]["images.finite.true"] == 2
+
+
+def test_unified_mapanything_code_pins_match_the_torch271_image():
+    """통합 이미지의 map-anything·DINOv2 허브 커밋이 deploy/mapanything(torch 2.7.1) 과 같다(다르면 u3·u4 ↔ m1·m2 비교가 환경 비교가 아니다, S15P31A101-250).
+    map-anything 휠은 코드 층의 정확 sync 뒤에 --no-deps 로 깐다(앞에 깔면 정확 sync 가 지운다)."""
+    pins = lambda text: dict(re.findall(r"^ARG (MA_COMMIT|DINOV2_COMMIT)=([0-9a-f]{40})$", text, re.M))  # noqa: E731
+    unified = (REPO / "deploy" / "tier0" / "Dockerfile").read_text(encoding="utf-8")
+    ma = (REPO / "deploy" / "mapanything" / "Dockerfile").read_text(encoding="utf-8")
+    assert pins(unified) == pins(ma) and len(pins(ma)) == 2
+    stage = unified[unified.index("AS unified\n"):]
+    sync = stage.index("uv sync --locked --no-dev --extra tier0 --extra worker --no-editable")
+    wheel = stage.index("--no-deps --no-index /tmp/ma-dist/mapanything-")
+    assert sync < wheel and "SIMAI_MAPANYTHING_REPO=" in stage and "SIMAI_MAPANYTHING_COMMIT=${MA_COMMIT}" in stage
+    tier0 = unified[unified.index("AS tier0\n"):unified.index("AS unified-deps")]
+    assert "mapanything" not in tier0.lower()  # tier0 타깃은 그대로
+
+
+def test_unified_mapanything_items_mirror_m1_m2_through_scene_mode(gs, tmp_path):
+    """u3·u4(S15P31A101-250): m1·m2 와 같은 입력·가중치·인자를 장면 준비 모드로 돌리고 run id 만 다르다(compare_envs 가 비교할 수 있게)."""
+    by = {it["key"]: it for it in gs.items(gs.Layout("pod", tmp_path, "s3", PY, "unified"))}
+    for u, m in (("u3", "m1"), ("u4", "m2")):
+        cu, cm = by[u]["command"], by[m]["command"]
+        assert by[u]["image"] == "unified" and by[m]["image"] == "mapanything"
+        inner_u, inner_m = cu[cu.index("--") + 1:], cm[cm.index("--") + 1:]
+        assert inner_u[:3] == [PY, "deploy/scripts/simai_bootstrap.py", "scene"]  # LIVE·GPU 사용 중 거부, static 가중치
+        args_u, args_m = inner_u[3:], inner_m
+        rid_u, rid_m = args_u[args_u.index("--run-id") + 1], args_m[args_m.index("--run-id") + 1]
+        assert rid_u.endswith("_uni_s3") and rid_m.endswith("_img_s3") and rid_u.replace("_uni_", "_img_") == rid_m
+        assert [a for a in args_u if a != rid_u] == [a for a in args_m if a != rid_m]  # 같은 스크립트·입력·모델·결과 폴더 위치
+        assert by[u]["weights"] == by[m]["weights"] and by[u]["dataset"] == by[m]["dataset"]
+        assert cu[cu.index("--out") + 1].endswith(rid_u) and by[u]["timeout_s"] >= by[u]["expected_s"]
+        assert {r["path"].rsplit("/", 1)[-1].rsplit("\\", 1)[-1] for r in by[u]["results"]} >= {"metrics.json", "cameras.json", "raw.npz"}
 
 
 def test_hmr_jobs_hash_every_weight_the_official_path_reads(gs, tmp_path):

@@ -19,7 +19,27 @@ geometry = ["numpy>=1.26"]
 # jsonschema: 보정 버전 저장소가 저장 전에 contracts/providers/calibration.schema.json 으로 직접 검증한다
 # scipy: 사람 keypoint 번들 조정(simai_ai.calibration.bundle)의 희소 행렬·연결 성분·회전 계산
 calibration = ["numpy>=1.26", "opencv-python-headless>=4.9", "jsonschema>=4.23", "scipy>=1.11"]
-scene = ["torch>=2.4"]
+# 정적 장면: BEV(simai_ai.scene, numpy) + MapAnything 일회성 장면 준비(S15P31A101-250, docs/design/unified-env.md "3단계").
+#   map-anything @3d10cf7 자체는 잠금 밖(이미지가 커밋으로 받아 --no-deps). 아래는 그 pyproject 의 dependencies 중 추론 경로
+#   (mapanything.models·utils.geometry·utils.image·utils.viz, ai/experiments/static_scene/run_mapanything.py)가 import 하는 것이다.
+#   뺀 것: tensorboard·natsort(추론 경로에서 쓰지 않음, tensorboard 는 학습 코드 train/ 에서만), orjson·python-box(학습 데이터셋 wai 만), pillow-heif(HEIF 입력 선택 import).
+#   opencv-python-headless==4.10.0.84 고정은 Tier 0 판(>=4.9)으로 합쳤다. scipy 는 utils.viz 가 import 하는데 map-anything 이 선언하지 않아 적었다.
+#   rerun-sdk 는 utils.viz 가 모듈 수준에서 import 하고 uniception 도 선언한다(map-anything 고정 ~=0.24.1 그대로).
+scene = [
+    "torch==2.11.0",
+    "uniception==0.1.7; sys_platform == 'linux'",
+    "rerun-sdk~=0.24.1; sys_platform == 'linux'",
+    "huggingface-hub; sys_platform == 'linux'",
+    "hydra-core; sys_platform == 'linux'",
+    "safetensors; sys_platform == 'linux'",
+    "opencv-python-headless>=4.9; sys_platform == 'linux'",
+    "matplotlib; sys_platform == 'linux'",
+    "scipy; sys_platform == 'linux'",
+    "plyfile; sys_platform == 'linux'",
+    "requests; sys_platform == 'linux'",
+    "tqdm; sys_platform == 'linux'",
+    "trimesh>=4.11; sys_platform == 'linux'",
+]
 # HMR(Fast SAM 3D Body @d72aa36) 실행 의존성. deploy/exp02/requirements.in 에서 옮겼다(S15P31A101-235, docs/design/unified-env.md).
 #   torch 는 Tier 0·vLLM 과 같은 판(한 가상환경). Linux GPU 에서만 돌므로 torch 밖은 모두 Linux 전용이다.
 #   추론에 안 쓰는 것은 뺐다: tensorboard·black(Detectron2 의 기록기·설정 저장에서만), pytest, seaborn, hydra-submitit-launcher, pip(chumpy 빌드 단계 전용).
@@ -260,6 +280,10 @@ forbidden_modules = [
     # 잠금 밖 휠(chumpy)과 MoGe 의존성(utils3d-moge 의 모듈 utils3d)
     "chumpy",
     "utils3d",
+    # MapAnything 장면 준비 스택(잠금 밖 map-anything, 그 인코더 uniception, 시각화 rerun-sdk 의 모듈 rerun, S15P31A101-250)
+    "mapanything",
+    "uniception",
+    "rerun",
     # 우리 분석 워커 쪽 패키지(이들을 거치면 워커 스택이 따라온다)
     "simai_ai.vlm",
     "simai_ai.hmr",

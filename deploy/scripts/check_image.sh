@@ -5,6 +5,7 @@
 #   bash deploy/scripts/check_image.sh simai/risk-engine:local      # EC2 Risk Engine 컨테이너(S15P31A101-99). 저장소 최상위에서(계약 예시를 넣는다)
 #   bash deploy/scripts/check_image.sh simai/unified:local          # 통합 이미지(S15P31A101-246): Tier 0 항목 전부 + vLLM·플러그인·HMR(잠금 밖 휠 없이) import,
 #                                                                     EGL 렌더(버리는 컨테이너의 Mesa), 감시 프로세스 기동·종료 순서(가짜 프로세스). 저장소 최상위에서
+#                                                                     MapAnything(S15P31A101-250): 추론 경로 import·DINOv2 허브 사본(망 없이 골격 생성)·장면 준비 모드
 # 확인: 비밀·가중치·엔진·SSH 호스트 키가 이미지에 없음, 패키지 import, 진입점 도움말,
 #       볼륨 없음·가중치 없음·해시 불일치·GPU 없음이 각각 명확한 코드와 메시지로 끝남, GPU 별 엔진 경로가 다름,
 #       PUBLIC_KEY(RunPod)·SSH_PUBLIC_KEY(Vast.ai) 를 주면 키 인증만 받는 sshd 가 뜸, SIMAI_SSHD=off 면 안 뜸,
@@ -117,8 +118,22 @@ from sam_3d_body.metadata.mhr70 import pose_info
 from tools.build_detector import HumanDetector
 assert len(pose_info["keypoint_info"]) == 70
 assert pathlib.Path("/root/.cache/torch/hub/facebookresearch_dinov3_main/hubconf.py").is_file()
+# MapAnything(S15P31A101-250): 잠금 밖 map-anything 휠 + 잠금 scene 묶음. 추론 경로(run_mapanything.py)가 쓰는 모듈과 소스 사본·DINOv2 허브 코드
+import mapanything, uniception, rerun
+from mapanything.models import MapAnything
+from mapanything.utils.geometry import depthmap_to_world_frame
+from mapanything.utils.image import load_images, preprocess_inputs
+from mapanything.utils.viz import predictions_to_glb
+assert m.version("mapanything") == "1.1.4" and m.version("uniception") == "0.1.7", (m.version("mapanything"), m.version("uniception"))
+assert os.environ["SIMAI_MAPANYTHING_COMMIT"].startswith("3d10cf7"), os.environ["SIMAI_MAPANYTHING_COMMIT"]
+for d in (os.environ["SIMAI_MAPANYTHING_REPO"] + "/mapanything/models/__init__.py", "/root/.cache/torch/hub/facebookresearch_dinov2_main/hubconf.py"):
+    assert pathlib.Path(d).is_file(), d
+assert mapanything.__file__.startswith(sys.prefix), mapanything.__file__  # 설치한 휠(사본은 run_mapanything.py 가 sys.path 앞에 넣을 때만)
+extra = [p.name for p in pathlib.Path(os.environ["SIMAI_MAPANYTHING_REPO"]).iterdir() if p.name == "build" or p.name.endswith(".egg-info")]
+assert not extra, extra  # 휠 빌드 찌꺼기가 사본에 남지 않는다
 print(sys.version.split()[0], "torch", torch.__version__, "vllm", m.version("vllm"), "vllm-cosmos3", m.version("vllm-cosmos3"),
-      "transformers", m.version("transformers"), "tensorrt", m.version("tensorrt-cu13"), "onnxruntime", m.version("onnxruntime"))' ;;
+      "transformers", m.version("transformers"), "tensorrt", m.version("tensorrt-cu13"), "onnxruntime", m.version("onnxruntime"),
+      "mapanything", m.version("mapanything"), "rerun-sdk", m.version("rerun-sdk"))' ;;
   risk_engine) IMPORTS='
 import importlib.metadata as m, importlib.util as u, sys
 import services.risk_engine.app, simai_ai.risk.plan, fastapi, uvicorn, jsonschema
@@ -168,6 +183,8 @@ expect(){  # 이름 기대코드 기대문구 docker-run-인자...
     fail "$name: 종료 코드 $rc (기대 $code, 문구 '$text')"; tail -5 <<<"$out" | sed 's/^/      /'
   fi
 }
+# 가짜 nvidia-smi(H100 한 줄을 출력)로 GPU 단계를 넘겨 가중치 단계를 본다. HF 주소는 닫힌 포트라 실제로 받지 않는다(실험 이미지·통합 이미지 장면 모드)
+FAKE_GPU=(-e "SIMAI_NVIDIA_SMI=echo NVIDIA H100 80GB HBM3, 9.0, 81559, 580.65.06" -e HF_ENDPOINT=http://127.0.0.1:9)
 # 기본 진입점 simai-bootstrap(S15P31A101-205): 볼륨이 없으면 컨테이너 디스크를 쓰고, GPU 가 없으면 가중치를 받기 전에 코드 3
 if [ "$T0LIKE" = 1 ]; then
 expect "simai-bootstrap GPU 없음" 3 "GPU 없음" "$IMG"
@@ -222,8 +239,6 @@ elif [ "$KIND" = risk_engine ]; then
 else
   expect "simai-bootstrap check GPU 없음" 3 "GPU 없음" "$IMG" check
   expect "simai-bootstrap run 명령 없음" 64 "사용법" "$IMG" run
-  # 가짜 nvidia-smi(H100 한 줄을 출력)로 GPU 단계를 넘겨 가중치 단계를 본다. HF 주소는 닫힌 포트라 실제로 받지 않는다
-  FAKE_GPU=(-e "SIMAI_NVIDIA_SMI=echo NVIDIA H100 80GB HBM3, 9.0, 81559, 580.65.06" -e HF_ENDPOINT=http://127.0.0.1:9)
   if [ "$KIND" = exp02 ]; then
     # 해시를 모르는 항목(빈 sha256)이 있으면 아무것도 받기 전에 그 이름으로 멈추고, 다 채워졌으면 받기 실패(닫힌 포트)로 멈춘다
     if docker run --rm --entrypoint python "$IMG" -c 'import json,sys; d=json.load(open("/opt/simai/deploy/weights.json")); sys.exit(0 if any("exp02" in w["sets"] and not w["sha256"] for w in d["weights"]) else 1)'; then
@@ -328,6 +343,100 @@ RUN
     fail "감시 프로세스: 기동 '$STARTS' 종료 '$TERMS' 코드 $CODE 토큰 '$TOKENS'"; tail -8 <<<"$LOGS" | sed 's/^/      /'
   fi
   rm -rf "$SUP"
+
+  # 5c) MapAnything(S15P31A101-250): DINOv2 허브 코드 사본으로 망 없이 골격을 만든다(uniception 이 torch.hub.load("facebookresearch/dinov2", pretrained=False) 로 부르는 그대로,
+  #     작은 vits14 로). 망이 없으면 torch.hub 가 GitHub 확인에 실패하고 캐시를 쓴다(이 사본이 없으면 실패)
+  if OUT=$(docker run --rm --network none --entrypoint python "$IMG" -c '
+import torch
+m = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14", pretrained=False)
+n = sum(p.numel() for p in m.parameters())
+assert n > 2e7, n
+print("dinov2_vits14", n)' 2>&1); then
+    pass "DINOv2 허브 사본으로 망 없이 골격 생성 ($(tail -1 <<<"$OUT"))"
+  else
+    fail "DINOv2 허브 사본: $(tail -3 <<<"$OUT")"
+  fi
+  # 장면 준비 모드(simai-bootstrap scene): 명령 없음 64, LIVE 표시 파일이 새것이면 받기 전에 75, 묶음은 static(받기 실패 2),
+  # 가짜 GPU(사용 중 0 MiB)·file:// 가중치로 명령 종료 코드 7 이 그대로·자식 토큰 없음, 사용 중 2048 MiB 면 75
+  expect "scene 명령 없음" 64 "사용법" "$IMG" scene
+  expect "scene LIVE 표시 파일 → 받기 전에 거부" 75 "LIVE 서비스가 떠 있다" -e SIMAI_ROOT=/tmp/s --entrypoint /bin/sh "$IMG"     -c 'mkdir -p /tmp/s/state && echo "{}" > /tmp/s/state/tier0.live && exec simai-bootstrap scene true'
+  expect "scene 묶음 static: map-anything 받기 실패는 코드 2" 2 "map-anything-apache-model 받기 실패" "${FAKE_GPU[@]}" "$IMG" scene true
+  SCN=$(mktemp -d)
+  cp ai/tests/experiments/gpu_queue/fake_nvidia_smi.py "$SCN/"
+  cat > "$SCN/run.sh" <<'RUN'
+cd /tmp/scn
+printf 'fake-map-anything' > ma.bin
+echo 0 > used.txt
+python - <<'PY'
+import hashlib, json
+json.dump({"weights": [{"name": "ma", "sets": ["static"], "path": "weights/map-anything/model.safetensors",
+                        "source": {"url": "file:///tmp/scn/ma.bin"}, "sha256": hashlib.sha256(open("ma.bin", "rb").read()).hexdigest()}]},
+          open("w.json", "w"))
+PY
+simai-bootstrap scene -- python -c 'import os, sys; sys.exit(9 if {"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"} & set(os.environ) else 7)'
+echo "scene-rc=$?"
+echo 2048 > used.txt
+simai-bootstrap scene true
+echo "scene-busy=$?"
+# 실행 중 Tier 0 시작(Codex 리뷰 R1): 장면 작업을 자식으로 띄운 뒤 Tier 0 시작 경로(시작 잠금 → 장면 대기)를 부르면 장면 그룹이 끝나고 75, Tier 0 는 진행
+echo 0 > used.txt
+simai-bootstrap scene -- python -c 'import os, time; open("/tmp/scn/child.pid", "w").write(str(os.getpid())); time.sleep(120)' &
+SCENE_PID=$!
+for _ in $(seq 1 150); do [ -s child.pid ] && break; sleep 0.2; done
+python - <<'PY'
+import importlib.machinery, importlib.util, os, pathlib
+loader = importlib.machinery.SourceFileLoader("bs", "/usr/local/bin/simai-bootstrap")
+bs = importlib.util.module_from_spec(importlib.util.spec_from_loader("bs", loader))
+loader.exec_module(bs)
+root = pathlib.Path("/tmp/scn/simai")
+bs.claim_tier0(root)
+bs.wait_scene_released(root)
+try:
+    os.kill(int(open("/tmp/scn/child.pid").read()), 0)
+    print("preempt-child=alive")
+except ProcessLookupError:
+    print("preempt-child=gone")
+PY
+wait "$SCENE_PID"
+echo "scene-preempt=$?"
+# 감시 부모가 멈춤(SIGSTOP) → Tier 0 시작 경로가 시한(20초) 뒤 장면 그룹을 직접 회수, 감시 부모가 죽음(SIGKILL) → PDEATHSIG 로 장면 리더가 같이 끝남
+reap_probe(){  # $1 = stop|kill
+  rm -f child.pid
+  simai-bootstrap scene -- python -c 'import os, time; open("/tmp/scn/child.pid", "w").write(str(os.getpid())); time.sleep(120)' &
+  MON=$!
+  for _ in $(seq 1 150); do [ -s child.pid ] && break; sleep 0.2; done
+  if [ "$1" = stop ]; then kill -STOP "$MON"; else kill -KILL "$MON"; sleep 2; fi
+  python - "$1" <<'PY'
+import importlib.machinery, importlib.util, os, pathlib, sys, time
+loader = importlib.machinery.SourceFileLoader("bs", "/usr/local/bin/simai-bootstrap")
+bs = importlib.util.module_from_spec(importlib.util.spec_from_loader("bs", loader))
+loader.exec_module(bs)
+root = pathlib.Path("/tmp/scn/simai")
+pid = int(open("/tmp/scn/child.pid").read())
+if sys.argv[1] == "kill":  # PDEATHSIG: Tier 0 를 부르기 전에 이미 끝났어야 한다
+    print("pdeath-child=" + ("alive" if bs._proc_alive(pid) else "gone"))
+bs.claim_tier0(root)
+bs.wait_scene_released(root)
+bs.release_tier0_claim()
+print(f"reap-{sys.argv[1]}-child=" + ("alive" if bs._proc_alive(pid) else "gone"))
+PY
+  kill -KILL "$MON" 2>/dev/null; wait "$MON" 2>/dev/null
+}
+reap_probe stop
+reap_probe kill
+RUN
+  docker create --name "$VOL" -e SIMAI_ROOT=/tmp/scn/simai -e "SIMAI_NVIDIA_SMI=python /tmp/scn/fake_nvidia_smi.py /tmp/scn/used.txt"     -e SIMAI_WEIGHTS_MANIFEST=/tmp/scn/w.json -e SIMAI_MIN_FREE_GB=0 -e HF_TOKEN=hf_checkimageFakeToken0000000000     --entrypoint bash "$IMG" /tmp/scn/run.sh >/dev/null
+  docker cp "$(hostpath "$SCN")/." "$VOL:/tmp/scn" >/dev/null
+  OUT=$(docker start -a "$VOL" 2>&1)
+  docker rm -f "$VOL" >/dev/null 2>&1; rm -rf "$SCN"
+  if grep -q '^scene-rc=7$' <<<"$OUT" && grep -q '^scene-busy=75$' <<<"$OUT" && ! grep -q 'hf_checkimage' <<<"$OUT" \
+     && grep -q '^preempt-child=gone$' <<<"$OUT" && grep -q '^scene-preempt=75$' <<<"$OUT" \
+     && grep -q '^reap-stop-child=gone$' <<<"$OUT" && grep -q '^pdeath-child=gone$' <<<"$OUT" && grep -q '^reap-kill-child=gone$' <<<"$OUT"; then
+    pass "장면 준비 모드: 명령 종료 코드 7 그대로, 자식 토큰 없음, GPU 사용 중 2048 MiB 면 75, 실행 중 Tier 0 시작 → 장면 그룹 종료·75·Tier 0 진행, 감시 부모 정지 → Tier 0 가 그룹 회수, 감시 부모 소멸 → PDEATHSIG"
+  else
+    fail "장면 준비 모드: $(grep -E 'scene-|preempt-|reap-|pdeath-|거부|오류' <<<"$OUT" | tail -4 | tr '
+' ' ')"
+  fi
 fi
 
 # 6) SSH: PUBLIC_KEY(RunPod)·SSH_PUBLIC_KEY(Vast.ai) 를 주면 키 인증만 받는 sshd 가 뜬다(호스트 키는 이때 만든다). Risk Engine 이미지는 sshd 가 없다

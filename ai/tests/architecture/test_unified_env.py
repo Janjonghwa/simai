@@ -48,7 +48,7 @@ def test_ultralytics_is_bounded_for_tier0():
     assert str(_reqs("detection")["ultralytics"].specifier) == "<8.5,>=8.4.178"
 
 
-@pytest.mark.parametrize("extra", ["vlm", "hmr"])
+@pytest.mark.parametrize("extra", ["vlm", "hmr", "scene"])
 def test_linux_only_worker_packages_have_marker(extra):
     """torch·torchvision(모든 플랫폼에 같은 판, Windows 는 CPU 휠)만 marker 없이 둔다. 하나라도 빠지면 Windows uv lock·sync 가 깨진다."""
     missing = [n for n, r in _reqs(extra).items() if n not in {"torch", "torchvision"} and str(r.marker) != 'sys_platform == "linux"']

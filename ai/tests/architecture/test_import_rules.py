@@ -128,6 +128,14 @@ def test_simai_ai_has_only_subpackages():
         # 우리 워커 패키지 자체도 막는다(지금은 비어 있어도 나중에 vLLM·HMR 을 불러오게 된다)
         pytest.param({"services/tier0/app.py": "from simai_ai import vlm\n"}, id="tier0-imports-simai-vlm"),
         pytest.param({"src/simai_ai/tracking/x.py": "import chumpy\n"}, id="tracking-imports-chumpy"),
+        # MapAnything 장면 준비 스택(S15P31A101-250): 같은 가상환경에 있어도 Tier 0 경로에서 막는다
+        pytest.param({"services/tier0/app.py": "from mapanything.models import MapAnything\n"}, id="tier0-imports-mapanything"),
+        pytest.param({"src/simai_ai/calibration/x.py": "import uniception.models\n"}, id="calibration-imports-uniception"),
+        pytest.param({"src/simai_ai/geometry/x.py": "import rerun as rr\n"}, id="geometry-imports-rerun"),
+        pytest.param(
+            {"src/simai_ai/scene/static.py": "import mapanything\n", "src/simai_ai/calibration/x.py": "from simai_ai.scene import static\n"},
+            id="calibration-reaches-mapanything-through-scene",
+        ),
     ],
 )
 def test_tier0_cannot_import_worker_stack(tmp_path, files):

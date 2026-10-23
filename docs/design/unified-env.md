@@ -6,6 +6,7 @@ S15P31A101-235 1단계. 기획서 §3.2(Tier 0 와 분석 워커는 GPU 하나�
 시험은 `ai/tests/architecture/test_unified_env.py`, `ai/tests/architecture/test_import_rules.py`(Tier 0 금지 규칙). 사전 판정 스크립트는 저장소에 넣지 않았다(아래 "사전 판정", 2단계에서 이미지 점검으로 옮긴다).
 
 1단계는 잠금·사전 판정·3차 세션 큐 초안까지다. 통합 Dockerfile·`simai-bootstrap` 감시 프로세스는 2단계(S15P31A101-246, 아래 "2단계: 통합 이미지와 simai-bootstrap 감시 프로세스")다.
+MapAnything 을 같은 가상환경에 넣고 장면 준비 모드를 둔 것은 3단계(S15P31A101-250, 아래 "3단계")다.
 
 ## 결정
 
@@ -154,11 +155,12 @@ Pod 는 시작 명령 `sleep infinity` 로 띄운다(감시 프로세스가 Tier
 | c | LIVE 입력(-236·-237) | 큐(기존 `session1_live.py all`) | 기존 기준(c5a 10명 p95 ≤ 50 ms) |
 | d | GPU 우선 보호(-60) | 큐(기존 `session1_gpu_priority.py`) | 기존 P0~P7 기준 |
 | u2 | 통합 이미지 HMR 보정 K 경로(렌더 없음) | 큐: `SIMAI_WEIGHTS_SET=exp02 simai-bootstrap queue`(sam-3d-body·MHR·YOLO·MoGe 파일, MoGe 는 helper 확인용으로만 받고 쓰지 않음) → `simai-exp02 run_image.py --mode official --calibration … --no-render`, `check_calib_k.py` 판정(g4 와 같은 교실 사진 20장 + 보정 기록) | 판정 통과(K 출처 CALIBRATION·펴짐, MoGe 미적재, 초점 차 < 0.5 px). 지연·VRAM 은 torch 2.11 기록(g1~g3 기대값 표에 없는 조합) |
+| u3·u4 | 통합 환경 MapAnything C1·C2(S15P31A101-250, 장면 준비 모드) | 큐: `simai_bootstrap.py scene` → `run_mapanything.py`(m1·m2 와 같은 room4 4장·가중치·인자, run id `*_uni_<세션>`). u3 이 `static` 가중치 두 벌을 처음 받는다 | 75(LIVE·GPU 사용 중) 없이 SUCCESS. 노트북에서 `compare_envs.py --base <m1·m2 Run> --new <u3·u4 Run>` 가 PASS(아래 "3단계" 합격 기준). 지연·`peak_alloc_mb`·`gpu_used_peak_mb` 는 기록(같은 GPU 모델일 때 m1·m2 와 비교) |
 | v1 | VLM 단독 적재·VRAM(감시 프로세스) | `SIMAI_WEIGHTS_SET=vlm simai-bootstrap check`(31.5GB 받기, 다음부터 스탬프) → 시험용 Tier 0 없이 `SIMAI_VLLM_CMD` 그대로 `vllm serve …`(감시자와 같은 인자: README "감시 프로세스" 3) 또는 v3 의 감시 모드로 | "Application startup complete", 적재 시간(감시자 시한 1800초 안인지), 가중치 메모리·KV 캐시(GiB), `nvidia-smi` 최대, vae·sound_tokenizer 없이 뜨는지, EngineCore pid 의 pgid 가 vLLM 리더와 같은지(`ps -o pid,pgid,cmd`) |
 | v2 | G7 지연 모양 | v1 서버에 OpenAI 호환 `/v1/chat/completions` 20회(사람 없는 그림 + 무늬 영상 3~5초 + 상태 텍스트), 동시 1·4 | 요청별 첫 토큰·전체 p50·p95. G7 p95 ≤ 5초(§15)와 비교만 |
 | v3 | Tier 0 + VLM 동시(감시 프로세스, G0·CPU 경합) | 기본 진입점(`simai-bootstrap tier0 --config …`, `SIMAI_SERVICES=tier0,vllm,worker`)을 c4 와 같은 LIVE 하네스 입력으로 띄우고 v2 요청을 동시 4로 10분. `tier0_priority_probe.py watch`, `pidstat` | 기동 순서 로그(`[tier0]` → Tier 0 준비됨 → 워커 가중치 present-stamp → `[vllm]` 준비됨 → `[worker]`), Tier 0 `capture_to_risk`·`frame_age_ms_p95` 의 c4 대비 악화, `gpu_priority` 통과, Tier 0 메모리 부족 0. `kill -9 <vLLM pid>` 1회 → 그룹 정리·백오프 재기동·Tier 0 지연 영향 기록, 끝에 `docker stop`(RunPod Stop) 순서 로그 |
 | g0·g4 | HMR 렌더·E-GATE-0(exp02 이미지) | exp02 이미지 Pod 따로(기존) | 기존 기준. 렌더 패널·MoGe 예비 경로는 이 이미지에만 있다 |
-| w1·w2 | MapAnything 알려진 K(-102) | `mapanything` 이미지 Pod 따로 | `docs/design/world-frame-from-mapanything.md` 그대로 |
+| w1·w2 (+m1·m2) | MapAnything 알려진 K(-102), u3·u4 비교 기준 | `mapanything` 이미지 Pod 따로. 같은 세션에서 m1·m2 도 돌려 u3·u4 와 같은 GPU 모델 결과를 만든다(가능하면 같은 GPU 종류의 Pod) | `docs/design/world-frame-from-mapanything.md` 그대로. m1·m2 는 E-GATE-0 대조 기준(`docs/design/exp-images.md`) |
 
 - 순서 근거: Tier 0 가 먼저(b·c·d 가 통과해야 통합 이미지가 Tier 0 를 해치지 않음을 안다), 그다음 HMR(u2, 가중치 작음), VLM 단독(v1·v2), 마지막에 동시(v3).
 - 결과로 §3.2 예산표(VLM 0.55, 분석 워커 0.70)를 고칠 근거(v1 VRAM)와 감시자의 기본값(vLLM 시한·스레드 제한·nice, v3 CPU 경합)을 얻는다.
@@ -294,6 +296,114 @@ Docker Desktop 29.6.1(메모리 10GB), `TAG=s246 docker buildx bake unified tier
 - `services.worker` 는 아직 처리기가 없어 바로 종료 1 로 끝나 감시자가 5번 뒤 포기한다(처리기 조립 -227 등 뒤에 정상).
 - 통합 이미지의 HMR 은 import 까지만 노트북에서 봤다. 가중치 적재·추론은 3차 세션 u2(보정 K 경로, 렌더 없음). `hmr_refine` 작업이 LIVE 중에는 -60 접수 문 기본값(`SIMAI_WORKER_LIVE_BLOCKED_TYPES`)으로 막혀 있다: 시연 범위로 올린 결정과 맞추는 일은 -227·명세(§3.2).
 - 48GB GPU 에서 VLM 0.55(26.4GB)에 Cosmos3-Nano BF16(31.5GB)이 들어가지 않을 수 있다(자문 7, 명세 결함 후보 -172). 감시자는 48GB급 이상에서만 워커 쪽을 띄우고 값은 예산표 이름 그대로 넘긴다.
+
+## 3단계: MapAnything 을 같은 가상환경에, 장면 준비 모드 (S15P31A101-250)
+
+명세 §3.2(프로세스·GPU 예산: Tier 0 가 GPU 를 먼저 쓴다), §3.12(GPU 실행 환경), §4.1·4.3(World 좌표계, MapAnything 초기 추정), §5.x 정적 배경(EXP-01).
+코드는 `ai/pyproject.toml`(`scene` 묶음, import-linter `tier0-no-worker-stack`)·`ai/uv.lock`, `deploy/tier0/Dockerfile`(`ma-code` 단계, `unified`), `deploy/scripts/simai_bootstrap.py`(`scene`),
+`deploy/scripts/check_image.sh`·`exp_image_check.py`, `deploy/scripts/gpu_session1.py`(u3·u4), `ai/experiments/static_scene/compare_envs.py`.
+시험은 `ai/tests/deploy/test_simai_scene.py`, `ai/tests/experiments/static_scene/test_compare_envs.py`, `ai/tests/architecture/test_import_rules.py`(MapAnything 4개), `ai/tests/deploy/test_exp_images.py`·`test_gpu_session1.py`(u3·u4).
+
+### 결정 (사용자 2026-10-23)
+
+- **같은 가상환경(torch 2.11.0+cu130, Python 3.11, 잠금 하나).** 별도 venv·torch 2.7.1 한 벌을 더하지 않는다(CUDA·torch 휠이 이미지에 두 벌, 위 1단계 "결정" 과 같은 근거).
+  map-anything @3d10cf7 은 `requires-python >=3.10`, uniception 0.1.7 도 `>=3.10` 이라 3.11 에 그대로 깔린다.
+- **잠금: 기존 `scene` 묶음을 넓혔다**(새 묶음을 만들지 않음). `scene` 은 이미 `worker` 에 들어 있어 통합 이미지의 `uv sync --extra tier0 --extra worker` 가 그대로 깐다.
+  `torch>=2.4` → `==2.11.0`(다른 묶음과 같은 판, 잠금 판은 원래 2.11.0). torch 밖은 모두 Linux 전용 marker(Windows 노트북 개발 환경은 바뀌지 않음).
+  map-anything 자체는 잠금 밖(이미지가 커밋으로 받아 휠로 만들고 `--no-deps`), 의존성은 그 pyproject 의 dependencies 에서 추론 경로가 import 하는 것만 옮겼다.
+- **뺀 의존성과 근거.** map-anything @3d10cf7 전체 `.py` 와 uniception 0.1.7 휠을 AST 로 따라가 추론 경로(`mapanything.models`·`utils.geometry`·`utils.image`·`utils.viz`, 그 아래 uniception 인코더, `run_mapanything.py`)의 import 를 모았다(287개 모듈).
+  `tensorboard`·`natsort` 는 추론 경로에서 쓰지 않는다(tensorboard 는 학습 코드 `train/` 에서만, natsort 는 실행 import 를 찾지 못함), `orjson`·`python-box` 는 학습 데이터셋(`utils/wai`)에서만, `pillow-heif` 는 `utils/image.py` 의 `try` import(HEIF 입력 선택)라 뺐다.
+  **`rerun-sdk` 는 남겼다**: `mapanything.utils.viz`(→ `predictions_to_glb`, `run_mapanything.py` 가 씀)가 모듈 수준에서 `import rerun` 하고 uniception 도 선언한다(map-anything 고정 `~=0.24.1` 그대로).
+  `matplotlib` 도 `utils/hf_utils/viz.py`·`run_mapanything.py` 의 `colorize` 가 쓴다. `scipy` 는 `utils/hf_utils/viz.py` 가 import 하는데 map-anything 이 선언하지 않아 적었다.
+  `opencv-python-headless==4.10.0.84` 고정은 Tier 0 판(`>=4.9`, 잠금 5.0.0.93)으로 합쳤다(아래 잔여 위험).
+- **잠금 변화**: 287 → 298 패키지, **추가만 11개**(uniception 0.1.7, rerun-sdk 0.24.1, jaxtyping 0.3.11, wadler-lindig 0.1.7, scikit-learn 1.9.1, threadpoolctl 3.7.0, minio 7.2.20,
+  argon2-cffi 25.1.0, argon2-cffi-bindings 26.1.0, pycryptodome 4.1.0, narwhals 2.27.1). 기존 패키지의 판·marker 는 하나도 바뀌지 않았다(잠금 전후 (이름, 판) 집합 비교.
+  torch·torchvision·triton·tensorrt·ultralytics·numpy·opencv·scipy·onnx·modelopt·onnxruntime·pyarrow·av·vllm·transformers·huggingface-hub 같음).
+  minio·scikit-learn·argon2·pycryptodome 은 uniception 이 선언한 의존성이라(추론 경로는 import 하지 않음) 잠금 안 패키지로 깔린다(뺄 방법은 override 뿐인데 uniception 판 변화에 약해 두었다).
+- **Dockerfile(unified 만).** `ma-code` 단계가 map-anything·DINOv2 허브 코드를 커밋으로 받고 휠(`uv build --wheel`)을 만든다(사본의 `build/`·egg-info 는 지움).
+  `unified` 는 소스 사본(`/opt/simai/mapanything/map-anything`, `SIMAI_MAPANYTHING_REPO`)과 허브 코드(`/root/.cache/torch/hub/facebookresearch_dinov2_main`)를 코드 층 아래에 두고,
+  코드 층의 정확 sync **뒤에** 휠을 `--no-deps` 로 깐다(정확 sync 는 잠금에 없는 패키지를 지운다, 1단계 "설치 순서" 3). 휠은 단계에서 bind 로 읽어 층에 남기지 않는다.
+  커밋은 `deploy/mapanything` 과 같고(전역 ARG `MA_COMMIT`·`DINOV2_COMMIT`) `SIMAI_MAPANYTHING_REPO`·`SIMAI_MAPANYTHING_COMMIT` 도 같은 이름이라 `run_mapanything.py`·`session3_jobs.py` 를 고치지 않았다.
+  `tier0` 타깃은 바꾸지 않았다(설치 패키지 105개가 dev 이미지 `simai/tier0:62bab24f4dff` 의 `uv pip freeze` 와 같음).
+- **장면 준비 모드 `simai-bootstrap scene [--] <명령...>`**(기존 `run`·`queue` 와 같은 하위 명령 꼴). 순서: LIVE 확인 → `static` 가중치(`SIMAI_WEIGHTS_SET` 과 상관없음) → LIVE·GPU 재확인 → 그 명령을 새 프로세스 그룹 자식으로 실행하며 Tier 0 시작을 감시(종료 코드 그대로, 끝나면 그룹을 정리해 VRAM 반환, Tier 0 가 시작하면 장면 작업을 끝내고 75). 처음에는 exec 였으나 실행 중 선점을 하려고 자식으로 바꿨다(Codex 리뷰 R1).
+  거부는 종료 코드 75(sysexits `EX_TEMPFAIL`: 나중에 다시 하면 되는 상태. 기존 2·3·64·127 과 겹치지 않게).
+  - **"LIVE 가 떠 있으면 거부"를 골랐다.** "같이 지정하면 거부"만으로는 구분할 수 없다: 통합 이미지가 `SIMAI_SERVICES=tier0,vllm,worker` 를 기본 ENV 로 가져 지정 여부가 LIVE 여부를 말하지 않는다. 구분 방법 두 가지:
+    (1) Tier 0 표시 파일(`state/tier0.live`, `SIMAI_TIER0_MARKER`)이 30초 안에 갱신됨. Tier 0 는 5초마다 쓰고, 30초는 세션 큐 `live_guard` 의 `marker_max_age_s` 와 같은 값이다(비정상 종료로 남은 오래된 표시는 무시). 확인 실패·미래 시각은 모름 → LIVE.
+    (2) 명령 직전 `nvidia-smi memory.used` > 1024 MiB 또는 못 읽음. 표시 파일로 안 보이는 사용을 잡는다: Tier 0 진입점의 TensorRT 엔진 빌드(약 550초, 이때는 표시 파일이 아직 없다), REPLAY, 다른 컨테이너.
+    1024 MiB 근거: 빈 GPU 는 0~수 MiB, 다른 프로세스의 빈 CUDA 문맥은 약 0.5 GiB, Tier 0(엔진 + 선확보)·vLLM 은 수 GiB 이상.
+  - 받기 전과 명령 직전에 두 번 본다(static 가중치 두 벌을 받는 수 분 동안 Tier 0 가 떴을 수 있다). 받기 전에도 GPU 사용 중 메모리를 본다(엔진 빌드·다른 컨테이너 중에 수 GB 를 받지 않게, 리뷰 -250). 받기 전에 못 읽는 것은 준비의 GPU 단계(없으면 코드 3)에 맡기고, 명령 직전에 못 읽으면 거부한다. 거부하면 부트스트랩 기록에 `stage: scene`·`exit: 75` 를 추가한다(준비 기록 exit 0 만 보고 성공으로 읽지 않게).
+  - "같이 지정"도 막는다: `SIMAI_SERVICES` 에 `scene` 을 섞으면(`tier0,scene` 등) 받기 전에 64 와 `simai-bootstrap scene` 안내.
+  - HF 토큰은 지금 규칙 그대로(받기에만, 명령 환경·출력·기록에 없음).
+  - **Tier 0 와 상호 배제(Codex 리뷰 R1, Tier 0 우선).** 두 번 읽는 확인만으로는 확인과 실행 사이(최종 GPU 조회 최대 60초 동안, exec 직전, 실행 중)의 Tier 0 기동을 막지 못했다. 공유 flock 두 개로 바꿨다: `tier0` 명령은 가중치 준비 전에 `locks/tier0.lock` 공유 잠금을 쥐고 fd 를 상속해 exec(simai-tier0 → services.tier0)를 지나 끝날 때까지 쥔다. 장면 모드는 `locks/scene.lock` 배타 잠금을 쥐고(두 장면 작업도 동시에 못 돈다), 확인 끝에 tier0.lock 을 배타로 잠깐 잡아 보아 Tier 0 가 있는지 보고, 명령을 새 프로세스 그룹 자식으로 돌리며 0.5초마다 같은 확인(+표시 파일)을 한다. Tier 0 가 보이면 그룹 SIGTERM → 10초 → SIGKILL 하고 75(기록). Tier 0 시작 경로는 exec 전에 scene.lock 이 풀리기를 최대 20초(감시 주기 + 시한 + 여유) 기다려 장면 작업이 VRAM 을 돌려준 뒤 진행하고, 시한이 지나도 그대로 시작한다. 감시 부모가 멈추거나 죽어도 장면 작업이 남지 않게(Codex 재리뷰 R1): 장면 모드는 자식 그룹을 `locks/scene.pgid`(pgid·시작 표지, 원자적 쓰기)에 남기고, Linux 에서는 자식에 `PR_SET_PDEATHSIG`(SIGKILL)를 건다. Tier 0 시작 경로는 잠금이 풀렸거나(부모 소멸) 시한이 지나도(부모 정지) 그 그룹이 살아 있으면 직접 SIGTERM → 10초 → SIGKILL 로 회수하고 사라진 것을 확인한 뒤 진행한다(잠금 해제·시한을 VRAM 반환으로 보지 않는다). 시작 표지가 다르면(pid 재사용) 건드리지 않고, 회수하지 못하면 기록(`stage: tier0-reap-scene`)하고 진행한다(Tier 0 우선). **의도된 정책(Codex 3차 재리뷰, Lead 결정): Tier 0 가용성이 장면 작업보다 우선이다.** 회수하지 못하거나(신호 거부·시한 초과) 건드리지 않은 경우(아래) Tier 0 는 막지 않고 큰 경고 로그와 부트스트랩 기록(`stage: tier0-reap-scene`, `exit: 75`)을 남긴 뒤 시작한다. Tier 0 를 막는 쪽(관제 불가)이 장면 작업과 GPU 를 잠깐 나누는 쪽보다 위험하다고 본다. **모르면 건드리지 않는다**: 기록의 PID namespace(`/proc/self/ns/pid`)가 Tier 0 쪽과 다르거나 모르면, 또는 시작 표지가 기록·지금 중 하나라도 없으면 신호를 보내지 않고 기록을 남긴다. KILL 전에 시작 표지를 다시 본다. **같은 컨테이너 전제**: 상호 배제·회수는 통합 이미지의 같은 컨테이너(같은 PID namespace) 안에서 장면 모드를 돌리는 것을 전제로 한다(`docker exec` 로 같은 컨테이너, Pod 는 SSH 로 같은 컨테이너). 다른 컨테이너의 장면 작업은 잠금으로 보이지만 신호는 보내지 않는다(그 컨테이너가 맡는다). 자식은 시작 handshake(POSIX: 표준 입력에서 1바이트를 받은 뒤에만 exec)로 그룹 기록이 공개된 뒤에만 장면 명령을 시작하고, 기록을 못 쓰면 시작시키지 않고 75. `/proc` 를 읽을 권한이 없는 것(EACCES·EPERM)은 살아 있음(모름), 항목이 없음(ENOENT·ESRCH)만 끝남으로 본다. Tier 0 는 최악 약 40초(잠금 20초 + TERM 10초 + 확인 10초) 늦게 시작할 수 있다. 리더가 먼저 끝나고 손자만 남은 그룹은 리더 시작 표지를 읽을 수 없어 신호를 보내지 않는다(남의 그룹일 수 있다: 남은 파일은 원래 그룹이 이어졌다는 증거가 아니다). 이 경우 손자가 GPU 를 쥐고 있을 수 있어 경고한다. flock 을 고른 근거: 커널이 프로세스 종료 때 풀어 남은 표시 파일·pid 재사용 문제가 없고, 같은 호스트의 다른 컨테이너(같은 저장 위치를 붙인 경우)·PID 네임스페이스와 상관없이 보인다. Tier 0 쪽이 잠금을 열지 못해도 Tier 0 는 막지 않고, 장면 쪽은 확인 못 함 → 거부.
+- **import-linter**: `tier0-no-worker-stack` 의 금지 목록에 `mapanything`·`uniception`·`rerun` 을 더했다(같은 가상환경이라 설치돼 있어도 Tier 0 경로에서 막는다). `simai_ai.scene` 은 원래 금지라 그것을 거친 간접 import 도 막힌다.
+
+### 동등성 비교 (torch 2.7.1 이미지 ↔ 통합 환경)
+
+같은 입력(EXP-01 room4 4장)·같은 가중치·같은 인자로 m1·m2(`mapanything` 이미지)와 u3·u4(통합 이미지, 장면 준비 모드)를 돌리고 노트북에서
+`uv run --project ai python ai/experiments/static_scene/compare_envs.py --base <m Run 폴더> --new <u Run 폴더> [-o <결과.json>]` 로 판정한다(종료 0 PASS, 1 FAIL, 2 비교 불가). 입력은 각 Run 의 `metrics.json`·`cameras.json`·`raw.npz` 다.
+비교 불가: SUCCESS 가 아님, `input_hash`·`weights_hash`·그림 목록·`prepared_sha256`·인자(mode·known_from·amp·amp_dtype·minibatch·conf_percentile·use_poses·pose_scale)·시점 목록·모델 입력 크기가 다름, 손상·불완전 Run(파일을 못 읽음·손상 zip(BadZipFile)·잘린 파일, 수가 아닌 raw 배열(문자열·객체), `args` 없음, 시점의 카메라 항목·raw 배열 없음, 배열 모양 불일치 — 트레이스백이 아니라 종료 2). `known_from` 은 run_mapanything.py 가 해시를 남기지 않아 경로로 본다.
+잴 수 없는 값은 FAIL 이다(모르면 통과로 두지 않는다): 시점별 값 중 하나라도 None·NaN·Inf 이면 그 항목 전체가 잴 수 없음(내장 max/min 은 NaN 을 비교에서 버려 뒤 시점 NaN 이 통과하던 결함, 리뷰 -250), 비유한 회전 행렬(clip 이 +inf 를 1 로 바꿔 0도로 보이던 결함, Codex 리뷰 R2), 공통 유효 픽셀이 없는 시점, 척도 계수가 양의 유한 실수가 아님(bool·0·음수·없음), 기준 카메라 두 대가 한 점(거리 ≤ 1e-9, 작은 수로 나누지 않는다). 결과 JSON 의 잴 수 없는 값은 null(NaN 을 쓰지 않음).
+
+| 값 | 합격 | 근거 |
+|---|---|---|
+| 카메라 쌍 거리 비(new/base) 최소·최대 | 0.99~1.01 | E-GATE-0 대조 기준(`docs/design/exp-images.md`)과 같은 값. 같은 환경 bf16↔fp32 차이 0.998 |
+| 카메라별 회전 차이 최대 | ≤ 0.2° | 같은 표(bf16↔fp32 0.07°) |
+| 가로 FOV 차이 최대 | ≤ 0.3° | 같은 표(0.02°) |
+| `metric_scaling_factor` 상대 차이(모든 시점, 최대) | ≤ 1% | 같은 표(0.08%). 시점마다 기록되므로 첫 시점만 보지 않는다 |
+| 시점별 유효 깊이 중앙값 상대 차이 | ≤ 1% | 같은 표(0.13~0.17%) |
+| 같은 픽셀 \|Δd\|/d 중앙값(시점별 최대) | ≤ 1% | 위 깊이 중앙값과 같은 예산을 픽셀 대응으로 |
+| 같은 픽셀의 world 점 거리 / 기준 깊이, 중앙값(전 시점) | ≤ 1% | 점 = 깊이 × 광선이라 깊이와 같은 예산. 깊이·내부 파라미터·자세 차이를 한 번에 본다(점구름 판정) |
+| 기록만: 픽셀 \|Δd\|/d p95, 유효 마스크 IoU 최솟값, 점구름 대칭 최근접 거리(중앙값·p95 / 기준 점구름 p1~p99 대각선), 카메라 중심 차이 최대 | — | 근거 값이 없다(E-GATE-0 는 중앙값만 쟀다). 3차 세션 결과로 정한다 |
+
+- torch 2.7.1+cu128 → 2.11.0+cu130 은 CUDA·cuDNN·SDPA 커널이 함께 바뀐다. 허용 폭은 cu126 → cu128 이미지 교체 때 정한 E-GATE-0 대조 기준을 그대로 쓴다(새 수치를 지어내지 않음). 하나라도 어긋나면 FAIL(HOLD)로 두고 원인을 본다.
+- 점구름 대칭 최근접 거리는 면을 따라 미끄러진 차이(깊이 척도·전체 이동)를 잘 못 잡는다(합성 시험에서 깊이 2% 차이를 판정하지 못했다). 그래서 판정은 같은 픽셀 대응이 하고, 이 값은 유효 영역이 달라졌을 때의 모양 차이 기록으로 둔다.
+- 비교의 GPU: 같은 GPU 모델 결과끼리 비교하는 것이 깨끗하다. 3차 세션에서 mapanything Pod(m1·m2)와 통합 Pod(u3·u4)를 같은 GPU 종류로 띄운다(결과 `env.same_gpu_model`). 다르면 판정은 하되 그 사실을 MR 에 적는다.
+- 리뷰 반례(-250): 뒤 시점 FOV·깊이 중앙값 NaN·자세 NaN FAIL, 뒤 시점 척도 없음·3%·bool·음수 FAIL, known_from 다름 비교 불가, raw 키 없음·args 없음·배열 크기 다름·자세 모양 틀림 종료 2, 기준 카메라 한 점 FAIL·JSON null(모두 수정 전 코드에서 실패 확인).
+- 시험(합성 Run, `test_compare_envs.py`): 같음·0.2% 잡음 PASS, 깊이 0.9% PASS·2% FAIL, 카메라 하나 0.5° 회전·FOV·척도 2%·전체 이동 0.3 m FAIL(각각 해당 항목), 유효 픽셀 없음·척도 없음 FAIL, 입력·가중치·인자·시점·결과 다름 비교 불가, 결과 파일 덮어쓰기 거부.
+
+### 버린 대안
+
+- **별도 venv·torch 2.7.1 한 벌 추가**: 사용자 결정으로 하지 않는다.
+- **새 extra(`mapanything`)를 만들어 `worker` 에 넣기**: `scene` 이 이미 정적 장면 묶음이고 `worker` 에 들어 있다. 묶음 이름만 늘고 하는 일은 같다.
+- **map-anything 을 설치하지 않고 `SIMAI_MAPANYTHING_REPO` 의 sys.path 만으로**: `run_mapanything.py` 는 되지만 다른 호출부(나중의 워커 장면 처리기)마다 경로를 넣어야 하고 `importlib.metadata` 판 확인이 안 된다.
+- **휠을 코드 층 아래에 깔고 코드 층 sync 를 `--inexact` 로**: 2단계가 정확 sync 로 정했다(잠금 밖 찌꺼기가 남지 않게). 휠 층(약 7MB)이 코드 층 위에 있어 코드 변경마다 몇 초 다시 만드는 쪽을 골랐다.
+- **`SIMAI_SERVICES=scene`**: `SIMAI_SERVICES` 는 감시자가 계속 띄우고 재기동하는 서비스 목록이다. 끝나는 일회성 작업을 섞으면 감시·재기동 규칙이 맞지 않는다.
+- **장면 작업 중에 Tier 0 기동을 막기(장면이 이김)**: Tier 0 가 자원을 먼저 쓴다(AGENTS.md). 막으면 관제가 장면 작업에 밀린다. 대신 장면 작업이 선점돼 멈춘다(위 상호 배제).
+- **시작 의도 표시 파일(pid 기록)**: 비정상 종료 때 남은 파일·pid 재사용·다른 PID 네임스페이스에서 판단이 틀린다. flock 은 커널이 정리한다.
+- **`rerun-sdk` 빼기**(`predictions_to_glb` 를 `utils/hf_utils/viz.py` 판으로 바꾸기): 두 함수가 달라 GLB 산출물이 2.7.1 이미지와 달라지고, uniception 이 어차피 rerun-sdk 를 끌어온다.
+
+### 빌드 결과 (노트북, 2026-10-23)
+
+Docker Desktop 29.6.1(메모리 8GB), `TAG=s250 docker buildx bake -f deploy/docker-bake.hcl unified tier0`(Codex 3차 재리뷰 반영 최종 코드, 두 이미지 모두 다시 빌드). 로컬 태그 `simai/unified:s250`(풀면 24.8GB, ID `82607b65fa14`, check_image 24항목), `simai/tier0:s250`(18.7GB, ID `016d2f9c0b0e`, check_image 16항목). 검증 기준: 두 이미지 안의 `simai-bootstrap` = 저장소 `deploy/scripts/simai_bootstrap.py`(git blob `040b807ffb4d`), `deploy/tier0/Dockerfile` blob `922db9f6f612`(문서는 이미지에 들어가지 않는다). 같은 unified 이미지 컨테이너 안에서 `ai/tests/deploy/test_simai_scene.py` 를 Linux 로 돌려 53 passed(POSIX 전용 handshake·SIGSTOP 회수·PDEATHSIG·/proc 권한 시험 포함).
+푸시하지 않아 압축 크기·다이제스트는 Lead 푸시 때 정해진다. 비교 기준은 dev(-246 머지) 로컬 이미지 `simai/unified:62bab24f4dff`(24.3GB)·`simai/tier0:62bab24f4dff`.
+
+| 층(풀린 크기) | 2단계 | 이번 | 비고 |
+|---|---|---|---|
+| 워커 나머지(uv sync, git 의존성 포함) | 0.82GB | 1.18GB | +0.36GB: rerun-sdk 0.24.1(휠 90.7MB) 등 잠금 추가 11개 |
+| map-anything 소스 사본 | — | 14MB | `/opt/simai/mapanything/map-anything`(build/·egg-info 지움) |
+| DINOv2 허브 코드 | — | 4.8MB | `/root/.cache/torch/hub/facebookresearch_dinov2_main` |
+| map-anything 휠 설치(코드 층 위) | — | 6.8MB | 코드가 바뀌면 다시 만든다(몇 초) |
+| 그 밖의 층 | 같음 | 같음 | Tier 0 층·apt·워커 큰 휠 8개·HMR 사본·코드 |
+
+- 늘어난 크기 약 0.39GB(풀린 크기). `tier0` 이미지는 설치 패키지가 같다(`uv pip freeze` 105개 동일). 다만 잠금이 바뀌어 Tier 0 나머지 sync 층(약 0.65GB)부터 위가 다시 만들어졌다(아래 잔여 위험).
+- 통합 이미지 `uv pip freeze` 는 dev 이미지보다 12개 많다(잠금 추가 11개 + `mapanything` 1.1.4). 빠진 것 없음.
+- `check_image.sh`: unified 24항목(2단계 19 + MapAnything 5: 추론 경로 import·판·사본, DINOv2 허브 사본으로 망 없이 골격 생성(`--network none`, vits14 22,056,576 매개변수), 장면 모드 명령 없음 64·LIVE 표시 파일 75·static 받기 실패 2·가짜 GPU 로 명령 종료 코드 7 그대로·자식 토큰 없음·사용 중 2048 MiB 면 75), tier0 16항목 모두 통과.
+- 음성 대조(이미지): DINOv2 사본을 지운 컨테이너에서 망 없이 `torch.hub.load` 가 `RuntimeError`(캐시 없음). 첫 빌드 이미지(사본에 build/·egg-info 남음)에서 새 점검이 그 두 이름으로 실패 → `ma-code` 에서 지우고 다시 빌드해 통과.
+
+### 잔여 위험
+
+- 통합 환경 MapAnything 의 실제 추론(가중치 적재·bf16 SDPA·결과 동등성)은 GPU 에서만 본다(3차 세션 u3·u4 + `compare_envs.py`). 노트북은 import·허브 사본·장면 모드만 봤다. FAIL 이면 2.7.1 이미지를 계속 쓴다.
+- map-anything 이 고정한 `opencv-python-headless==4.10.0.84` 대신 5.0.0.93 이다(Tier 0 판). 쓰는 곳은 그림 읽기·크기 바꾸기(`utils/image.py`·`cropping.py`)라 위험은 작지만 u3·u4 비교가 본다.
+- 픽셀 p95·마스크 IoU·점구름 거리는 근거가 없어 기록만 한다. 첫 결과로 기준을 정하는 일은 이 비교 뒤(-172 명세 반영과 함께).
+- GPU 사용 중 메모리 상한 1024 MiB 는 초기값이다. MIG·vGPU 처럼 `memory.used` 의 뜻이 다른 사이트에서는 거부가 잦을 수 있다(모름 → 거부, 안전한 쪽).
+- 상호 배제는 같은 저장 위치(`$SIMAI_ROOT/locks/`)를 쓰는 프로세스끼리만 보인다. 다른 저장 위치를 쓰는 장면 작업은 표시 파일·잠금으로 못 보고 GPU 사용 중 메모리로만 거른다(한 시점 GPU 인스턴스 하나·같은 Pod 운영이라 실제로는 같은 위치). Tier 0 는 장면 작업이 멈추기를 기다리고 남은 그룹을 회수하므로 최악 약 40초(잠금 20초 + TERM 10초 + 확인 10초) 늦게 시작할 수 있다. 회수하지 못하거나 신원을 확인하지 못한 장면 작업은 Tier 0 와 GPU 를 나눌 수 있다(의도된 정책, 경고·기록 75 로 사람이 확인). 실제 Linux 프로세스 그룹 선점은 check_image(컨테이너)와 POSIX 시험으로 본다.
+- 잠금이 바뀌면 `tier0-deps` 의 Tier 0 나머지 sync 층(0.65GB)과 그 위가 다시 만들어진다(`COPY ai/pyproject.toml ai/uv.lock` 가 그 층 바로 앞, 2단계 설계 그대로). 이번에도 `tier0` 이미지의 의존 패키지 판은 같지만 그 층 다이제스트가 바뀌고, bootstrap(시작 잠금·장면 대기·회수)은 바뀌어 다시 올려야 한다.
+
+### 넘긴 일
+
+- Tier 0 나머지 층을 `uv export --extra tier0` 목록(내용 체크섬) 설치로 바꿔 워커 쪽만 바뀐 잠금이 `tier0` 층을 다시 만들지 않게 하기(2단계 설계 변경, Lead 판단).
+- u3·u4 PASS 뒤: -102 w1·w2 를 통합 이미지로(`session3_jobs.py --py /opt/simai/ai/.venv/bin/python`, 명령을 `simai_bootstrap.py scene` 으로 감쌈), `deploy/mapanything` 정리, 기록만 지표의 기준 정하기.
+- 워커 장면 처리기(`simai_ai.scene` 의 MapAnything 작업 유형)는 이번 범위가 아니다(장면 준비는 사람이 `scene` 명령으로).
 
 ## 2단계로 넘긴 일 (1단계 때 적은 것)
 

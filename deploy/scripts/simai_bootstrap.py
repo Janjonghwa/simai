@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""simai-bootstrap: 어느 GPU·지역·사이트(RunPod·Vast.ai·엘리스 GPU VM)에서든 같은 순서로 이미지를 준비한다 (S15P31A101-205·-207·-246).
+"""simai-bootstrap: 어느 GPU·지역·사이트(RunPod·Vast.ai·엘리스 GPU VM)에서든 같은 순서로 이미지를 준비한다 (S15P31A101-205·-207·-246·-250).
 
     simai-bootstrap [tier0] [Tier 0 인자...]   준비 → simai-tier0 (엔진 준비 engine_cache ensure → python -m services.tier0)
                                                 SIMAI_SERVICES 에 vllm·worker 가 있으면 감시 프로세스로 Tier 0 → vLLM 서버 → 분석 워커 (아래)
     simai-bootstrap queue [gpu_session1 run 인자...]   준비 → GPU 1차 세션 큐 (저장소 사본 $SIMAI_SESSION_REPO, 기본 $SIMAI_ROOT/setup/session1/repo)
     simai-bootstrap check                       준비만 하고 결과 JSON 을 출력한다
     simai-bootstrap run <명령...>               준비 → 그 명령 (실험 이미지: simai-bootstrap run simai-exp02 python ...)
+    simai-bootstrap scene [--] <명령...>        장면 준비 모드(일회성, 통합 이미지의 MapAnything): Tier 0·GPU 확인 → static 가중치 → 재확인 → 그 명령을
+                                                자식으로 실행하며 Tier 0 시작을 감시(나타나면 장면 작업을 끝내고 75). 명령의 종료 코드로 끝난다(아래 "장면 준비 모드")
     simai-bootstrap --help                      이 설명 + Tier 0 도움말 (준비 없음)
     simai-bootstrap <다른 명령...>              준비 없이 그대로 실행 (sleep infinity, bash, simai-wait-tier0 등)
 
@@ -40,11 +42,27 @@
     $SIMAI_ROOT/../.simai-private/worker.env 가 있을 때)은 simai-wait-tier0 --env-file 로 워커 환경에만 넣는다.
     워커 인자는 SIMAI_WORKER_ARGS(예: --config <워커 설정>: 받을 작업 유형 VLM·hmr_refine 등의 처리기)를 덧붙인다.
 
+장면 준비 모드(S15P31A101-250, simai-bootstrap scene): MapAnything 같은 준비 단계 일회성 작업을 LIVE 서비스(Tier 0·vLLM·워커)와 겹치지 않게 돌린다.
+  - 가중치 묶음은 SIMAI_WEIGHTS_SET 과 상관없이 static(MapAnything 기본·apache)이다. SIMAI_SERVICES(이미지 기본 tier0,vllm,worker)는 tier0 명령만 쓰므로 보지 않는다.
+  - Tier 0 와 상호 배제(리뷰 R1, Tier 0 우선): tier0 명령은 GPU 를 잡기 전에 $SIMAI_ROOT/locks/tier0.lock 공유 잠금을 쥐고(exec 를 지나 Tier 0 가
+    끝날 때까지), 장면 작업이 돌고 있으면(locks/scene.lock) 그 작업이 멈추기를 SCENE_PREEMPT_WAIT_S(20초)까지 기다리고 남은 그룹을 회수한 뒤
+    (최악 약 40초) 시작한다. 회수하지 못하면 경고·기록(75)을 남기고 그대로 시작한다(Tier 0 가용성 우선, 의도된 정책). 장면 모드는
+    scene.lock 을 쥐고, 명령을 새 프로세스 그룹 자식으로 돌리며 0.5초마다 tier0.lock·표시 파일을 본다. Tier 0 가 나타나면 그룹 SIGTERM → 10초 → SIGKILL, 75.
+    감시 부모가 멈추거나 죽어도: 자식 그룹을 locks/scene.pgid(pgid·시작 표지·PID namespace)에 남기고(자식은 기록이 공개된 뒤에만 시작), Tier 0 시작 경로가 잠금이 풀렸거나 시한이 지나도 그 그룹이
+    살아 있으면 직접 SIGTERM → 10초 → SIGKILL 로 회수한다(실패는 기록하고 진행). Linux 에서는 자식에 PR_SET_PDEATHSIG(SIGKILL)도 건다.
+  - LIVE 판정(하나라도 맞으면 시작하지 않고 코드 75): Tier 0 시작 잠금이 쥐어짐, Tier 0 표시 파일(SIMAI_TIER0_MARKER, 기본 $SIMAI_ROOT/state/tier0.live)이 30초 안에 갱신됨
+    (세션 큐 live_guard 의 marker_max_age_s 와 같은 값. Tier 0 는 5초마다 쓴다), 표시 파일을 확인하지 못함(모름), 가중치 준비 뒤 GPU 사용 중 메모리가
+    1024 MiB 초과(Tier 0 엔진 빌드·REPLAY·vLLM·다른 컨테이너처럼 표시 파일로 안 보이는 사용), 사용 중 메모리를 읽지 못함(모름).
+    표시 파일·GPU 메모리는 가중치를 받기 전과 명령 직전에 두 번 본다(받는 동안 Tier 0 가 떴을 수 있다. 받기 전에 GPU 메모리를 못 읽으면
+    준비의 GPU 단계가 판정). 거부하면 기록($SIMAI_ROOT/runs/bootstrap/)에 exit 75 를 추가한다.
+  - 장면 작업 중에 Tier 0 를 띄우면 Tier 0 는 막히지 않고 장면 작업이 멈춘다. 그래도 장면 준비는 관제 시간 밖에서 Tier 0 보다 먼저 끝낸다(deploy/README).
+
 HF 토큰: 시작하자마자 HF_TOKEN 을 환경에서 꺼내 이 프로세스 안에만 들고(가중치 받기에만 쓴다), HUGGING_FACE_HUB_TOKEN 은 읽지 않고 지우기만 한다.
 그래서 nvidia-smi 조회·도움말·그대로 넘기는 명령·Tier 0·vLLM·워커·큐 등 어떤 자식 프로세스에도 토큰이 상속되지 않는다(S15P31A101-205 리뷰 R1).
 
 종료 코드(simai-tier0·engine_cache 와 같은 규칙): 0 정상, 2 저장 위치·용량·가중치(없음·해시 불일치·받기 실패·목록 오류·묶음 이름 오류),
-3 GPU 없음·최소 사양 미만, 64 사용법 오류(run 뒤에 명령 없음, SIMAI_SERVICES 오류), 127 Tier 0 명령을 띄우지 못함.
+3 GPU 없음·최소 사양 미만, 64 사용법 오류(run·scene 뒤에 명령 없음, SIMAI_SERVICES 오류), 75 장면 준비 거부(LIVE 서비스·GPU 사용 중·모름, sysexits EX_TEMPFAIL),
+127 Tier 0 명령을 띄우지 못함.
 감시 프로세스 모드는 Tier 0 의 종료 코드를 그대로 돌려준다(신호로 끝났으면 128 + 신호 번호).
 """
 
@@ -55,6 +73,7 @@ import http.client
 import importlib.machinery
 import importlib.util
 import json
+import math
 import os
 import re
 import shlex
@@ -71,6 +90,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 EXIT_OK, EXIT_STORAGE, EXIT_GPU, EXIT_USAGE, EXIT_NOT_FOUND = 0, 2, 3, 64, 127
+EXIT_BUSY = 75  # 장면 준비 거부: LIVE 서비스가 떠 있거나 GPU 를 다른 프로세스가 쓴다(또는 모름). sysexits EX_TEMPFAIL(나중에 다시)
 WORKSPACE = Path("/workspace")
 CONTAINER_ROOT = Path("/srv/simai")  # 볼륨이 없을 때. Pod 를 지우면 같이 사라진다(결과는 지우기 전에 scp)
 DEFAULT_MANIFEST = Path(__file__).resolve().parents[1] / "weights.json"  # 저장소. 이미지는 SIMAI_WEIGHTS_MANIFEST 로 준다
@@ -84,6 +104,16 @@ SET_ENV = "SIMAI_WEIGHTS_SET"  # check·queue·run 이 받을 가중치 묶음(�
 SERVICES_ENV = "SIMAI_SERVICES"  # tier0 명령이 띄울 프로세스. 없으면 tier0(단독)
 WORKER_SET_ENV = "SIMAI_WORKER_WEIGHTS_SET"  # 감시 모드에서 Tier 0 준비 뒤 받는 묶음. 없으면 vlm
 SERVICES = ("tier0", "vllm", "worker")  # 기동 순서. 종료는 거꾸로
+SCENE_SET = "static"  # 장면 준비 모드의 가중치 묶음(MapAnything 기본·apache)
+SCENE_MARKER_MAX_AGE_S = 30.0  # 이 안에 갱신된 Tier 0 표시 파일 = LIVE (gpu_session1 live_guard 의 marker_max_age_s 와 같음)
+SCENE_POLL_S = 0.5  # 장면 작업 실행 중 Tier 0 시작 확인 주기
+SCENE_STOP_GRACE_S = 10.0  # Tier 0 가 시작하면 장면 그룹 SIGTERM 뒤 SIGKILL 까지
+SCENE_PREEMPT_WAIT_S = 20.0  # Tier 0 시작 경로가 장면 잠금 해제를 기다리는 상한(감시 주기 + 시한 + 여유). 그 뒤 남은 그룹 회수(TERM 10초 + 확인 10초)까지
+#                               최악 약 40초 늦게 시작한다. 지나면 그대로 시작
+TIER0_LOCK = ("locks", "tier0.lock")  # Tier 0 시작 의도(공유 잠금, Tier 0 프로세스가 끝날 때까지). flock 은 커널이 프로세스 종료 때 푼다
+SCENE_LOCK = ("locks", "scene.lock")  # 장면 작업 실행 중(배타)
+SCENE_PGID = ("locks", "scene.pgid")  # 실행 중인 장면 그룹(pgid·시작 표지). 감시 부모가 멈추거나 죽어도 Tier 0 가 이것으로 회수한다
+SCENE_MAX_GPU_USED_MB = 1024  # 넘으면 다른 프로세스가 GPU 를 쓴다. 빈 GPU 는 0~수 MiB, 다른 프로세스의 빈 CUDA 문맥은 약 0.5 GiB, Tier 0·vLLM 은 수 GiB 이상
 FETCH_ATTEMPTS = 5
 RETRY_HTTP = {408, 425, 429, 500, 502, 503, 504}
 LOCK_DIR = ("weights", ".locks")  # 항목마다 지우지 않는 잠금 파일(Codex 리뷰 R1)
@@ -509,7 +539,8 @@ def parse_services(text: str | None) -> list[str]:
     """SIMAI_SERVICES → 기동 순서 목록. tier0 가 꼭 있어야 하고 모르는 이름·중복은 사용법 오류(받기 전에 멈춘다)."""
     names = [s.strip() for s in (text or "tier0").split(",") if s.strip()]
     if not names or "tier0" not in names or len(set(names)) != len(names) or set(names) - set(SERVICES):
-        raise BootstrapError(EXIT_USAGE, f"{SERVICES_ENV}={text!r} 오류: tier0 를 넣고 tier0·vllm·worker 중에서 쉼표로 고른다")
+        hint = " (scene 은 서비스가 아니다: 장면 준비는 LIVE 와 따로 'simai-bootstrap scene <명령>')" if "scene" in names else ""
+        raise BootstrapError(EXIT_USAGE, f"{SERVICES_ENV}={text!r} 오류: tier0 를 넣고 tier0·vllm·worker 중에서 쉼표로 고른다{hint}")
     return [n for n in SERVICES if n in names]
 
 
@@ -565,17 +596,28 @@ def http_ok(url: str) -> bool:  # 시험에서 바꿔 끼운다
         return False
 
 
+def _die_with_parent() -> None:
+    """Linux prctl(PR_SET_PDEATHSIG, SIGKILL): 감시 부모가 죽으면 이 자식도 끝난다(자식 쪽 fork 뒤 exec 전에 돈다)."""
+    import ctypes
+
+    ctypes.CDLL(None, use_errno=True).prctl(1, int(KILL), 0, 0, 0)  # PR_SET_PDEATHSIG = 1
+
+
 class Proc:
     """서비스 프로세스 하나. 새 세션(= 새 프로세스 그룹)으로 띄워 그룹 전체에 신호를 보낸다(손자 프로세스까지).
     출력은 줄마다 [이름] 접두로 표준 오류에 내보내고 원문을 로그 파일에 덧붙인다."""
 
-    def __init__(self, name: str, argv: list[str], env: dict[str, str], log_dir: Path) -> None:
+    def __init__(self, name: str, argv: list[str], env: dict[str, str], log_dir: Path, *, die_with_parent: bool = False,
+                 stdin_pipe: bool = False) -> None:
         self.name = name
         log_dir.mkdir(parents=True, exist_ok=True)
         self._log = open(log_dir / f"{name}.log", "ab")  # noqa: SIM115 - 출력 스레드가 닫는다
         kw: dict = {"start_new_session": True} if os.name != "nt" else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        if die_with_parent and sys.platform.startswith("linux"):
+            kw["preexec_fn"] = _die_with_parent  # 리더만 받는다. 손자는 Tier 0 쪽 그룹 회수(reap_scene_group)가 맡는다
         try:
-            self.p = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw)
+            self.p = subprocess.Popen(argv, env=env, stdin=subprocess.PIPE if stdin_pipe else subprocess.DEVNULL,
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw)
         except OSError:
             self._log.close()
             raise
@@ -905,6 +947,459 @@ class Supervisor:
             self.sleep(self.tick_s)
 
 
+# ---------------------------------------------------------------- 장면 준비 모드 (S15P31A101-250)
+
+
+def _open_lock(root: Path, rel: tuple[str, ...]):
+    path = root.joinpath(*rel)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return open(path, "a+b")  # noqa: SIM115 - 잠금을 쥔 동안 연 채로 둔다(닫으면 풀린다)
+
+
+def _try_lock(f, shared: bool = False) -> bool:
+    """기다리지 않는 잠금. POSIX flock(공유·배타), Windows(노트북 시험) msvcrt 는 배타만(공유 요청도 배타로)."""
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+    if fcntl is not None:
+        try:
+            fcntl.flock(f.fileno(), (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            return False
+    import msvcrt
+
+    try:
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        return True
+    except OSError:
+        return False
+
+
+_tier0_claim = None  # Tier 0 시작 잠금(공유)을 쥔 파일. exec 를 지나 Tier 0 프로세스가 끝날 때까지 쥔다
+
+
+def release_tier0_claim() -> None:
+    global _tier0_claim
+    if _tier0_claim is not None:
+        _tier0_claim.close()
+        _tier0_claim = None
+
+
+def claim_tier0(root: Path) -> None:
+    """Tier 0 시작 의도(S15P31A101-250 리뷰 R1): GPU 를 잡기 전에 locks/tier0.lock 공유 잠금을 쥐고, exec 해도 풀리지 않게 상속한다.
+    장면 준비 모드는 이 잠금이 쥐어져 있으면 시작하지 않고, 실행 중에 쥐어지면 장면 작업을 끝낸다(Tier 0 우선). 쥐지 못해도 Tier 0 는 막지 않는다."""
+    global _tier0_claim
+    release_tier0_claim()
+    try:
+        f = _open_lock(root, TIER0_LOCK)
+    except OSError as e:
+        log(f"Tier 0 시작 잠금을 열지 못함({e}): 장면 준비 모드가 Tier 0 를 못 볼 수 있다(Tier 0 는 그대로 시작)")
+        return
+    deadline = time.monotonic() + 5  # 장면 쪽 확인은 배타 잠금을 잠깐만 쥔다
+    while not _try_lock(f, shared=True):
+        if time.monotonic() > deadline:
+            log("Tier 0 시작 잠금을 쥐지 못함(다른 Tier 0?): 잠금 없이 시작한다")
+            f.close()
+            return
+        time.sleep(0.05)
+    os.set_inheritable(f.fileno(), True)  # simai-tier0 → python services.tier0 로 exec 해도 그 프로세스가 끝날 때까지 쥔다
+    _tier0_claim = f
+
+
+def wait_scene_released(root: Path) -> None:
+    """Tier 0 시작 전: 장면 작업이 돌고 있으면(locks/scene.lock) 그 작업이 선점돼 끝날 때까지 SCENE_PREEMPT_WAIT_S(20초)까지 기다리고,
+    남은 그룹을 회수한다(TERM 10초 + 확인 10초, 최악 약 40초). 회수하지 못해도 Tier 0 는 시작한다(Tier 0 가 이긴다, 경고·기록)."""
+    try:
+        f = _open_lock(root, SCENE_LOCK)
+    except OSError:
+        return
+    with f:  # 잠금 확인 뒤 그룹 회수(아래)는 잠금을 놓고 한다
+        deadline = time.monotonic() + SCENE_PREEMPT_WAIT_S
+        told = False
+        while not _try_lock(f):
+            if not told:
+                log(f"장면 준비 작업이 돌고 있다 → 그 작업이 끝나기를 최대 {SCENE_PREEMPT_WAIT_S:.0f}s 기다린다(Tier 0 우선, 장면 작업은 스스로 멈춘다)")
+                told = True
+            if time.monotonic() > deadline:
+                log("장면 감시 부모가 시한 안에 끝나지 않았다(멈춤?) → 장면 그룹을 직접 회수한다")
+                break
+            time.sleep(0.2)
+    # 잠금이 풀렸어도(감시 부모 소멸) 시한이 지났어도(감시 부모 정지) 장면 그룹이 살아 있으면 회수한다: 잠금·시한을 VRAM 반환으로 보지 않는다
+    reap_scene_group(root)
+
+
+def _proc_start_token(pid: int) -> str | None:
+    """프로세스 시작 표지(pid 재사용 오인 방지): Linux /proc/<pid>/stat 의 starttime, Windows GetProcessTimes 의 생성 시각. 모르면 None."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return None
+        try:
+            t = [wintypes.FILETIME() for _ in range(4)]
+            if not k.GetProcessTimes(h, *(ctypes.byref(x) for x in t)):
+                return None
+            return f"{t[0].dwHighDateTime}:{t[0].dwLowDateTime}"
+        finally:
+            k.CloseHandle(h)
+    try:
+        return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace").rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def _pid_ns() -> str | None:
+    """이 프로세스의 PID namespace 표지(/proc/self/ns/pid 의 링크, 예 'pid:[4026531836]'). Windows(노트북 시험)는 하나뿐이라 'nt'. 모르면 None."""
+    if os.name == "nt":
+        return "nt"
+    try:
+        return os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return None
+
+
+def _proc_alive(pid: int) -> bool:
+    """프로세스가 살아 있는가(직접 조회). 권한이 없어 못 보는 것은 살아 있는 것으로 본다(모르면 끝났다고 하지 않는다)."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        h = k.OpenProcess(0x1000, False, pid)
+        if not h:
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED: 있지만 못 연다. 그 밖(87 등)은 없음
+        try:
+            code = wintypes.DWORD()
+            return not k.GetExitCodeProcess(h, ctypes.byref(code)) or code.value == 259  # STILL_ACTIVE
+        finally:
+            k.CloseHandle(h)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return _proc_state(pid) != "Z"  # 좀비(부모가 멈춰 거두지 못한 끝난 프로세스)는 GPU·메모리를 쥐지 않는다. 상태를 모르면 살아 있음
+
+
+def _proc_state(pid: int) -> str | None:
+    """Linux /proc/<pid>/stat 의 상태 글자(R·S·Z…). 못 읽으면 None(모름: 부르는 쪽이 살아 있는 것으로 본다)."""
+    try:
+        return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace").rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return None
+
+
+def _group_alive(pgid: int) -> bool:
+    """그룹에 끝나지 않은(좀비 아닌) 프로세스가 있는가. Linux 는 /proc 를 훑는다(killpg(0) 은 좀비도 산 것으로 본다).
+    항목이 사라짐(ENOENT·ESRCH)만 끝난 것으로 보고, 읽을 권한이 없음(EACCES·EPERM)·그 밖의 오류는 살아 있음(모름)으로 본다.
+    /proc 가 없으면 killpg(0). Windows(노트북 시험)는 그 프로세스."""
+    if os.name == "nt":
+        return _proc_alive(pgid)
+    proc = Path("/proc")
+    if proc.is_dir():
+        try:
+            entries = [d for d in proc.iterdir() if d.name.isdigit()]
+        except OSError:
+            return True
+        for d in entries:
+            try:
+                f = (d / "stat").read_text(encoding="utf-8", errors="replace").rsplit(")", 1)[1].split()
+            except (FileNotFoundError, ProcessLookupError):
+                continue  # 그새 끝난 프로세스
+            except (OSError, IndexError):
+                return True  # 못 읽음: 그 프로세스가 이 그룹일 수 있다
+            if len(f) > 2 and f[2] == str(pgid) and f[0] != "Z":
+                return True
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _signal_group(pgid: int, kill: bool) -> bool:
+    """그룹에 신호. 보내지 못하면 False(권한 등). Windows(노트북 시험)는 taskkill /T, 거부되면 그 프로세스만 TerminateProcess."""
+    if os.name == "nt":
+        if subprocess.run(["taskkill", "/PID", str(pgid), "/T", "/F"], capture_output=True, check=False).returncode == 0:
+            return True
+        import ctypes
+
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        h = k.OpenProcess(0x0001, False, pgid)  # PROCESS_TERMINATE
+        if not h:
+            return False
+        try:
+            return bool(k.TerminateProcess(h, 1))
+        finally:
+            k.CloseHandle(h)
+    try:
+        os.killpg(pgid, KILL if kill else signal.SIGTERM)
+        return True
+    except ProcessLookupError:
+        return True  # 이미 없다
+    except PermissionError:
+        return False
+
+
+def _write_scene_pgid(root: Path, pgid: int) -> bool:
+    """장면 그룹 기록(pgid·시작 표지·PID namespace)을 원자적으로 쓴다. 실패하면 False(부르는 쪽이 자식을 시작시키지 않고 끝낸다)."""
+    path = root.joinpath(*SCENE_PGID)
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps({"pgid": pgid, "start": _proc_start_token(pgid), "pidns": _pid_ns(),
+                                   "written_at": time.time_ns() // 1_000_000}), encoding="utf-8")
+        os.replace(tmp, path)  # 원자적으로(반쯤 쓴 파일을 읽지 않게)
+        return True
+    except OSError as e:
+        log(f"장면 그룹 기록 {path} 을 쓰지 못함({e})")
+        return False
+
+
+def _wait_gone(pgid: int, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while _group_alive(pgid):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.1)
+    return True
+
+
+def _reap_record(root: Path, pgid: int, ok: bool, why: str | None) -> None:
+    now_ms = time.time_ns() // 1_000_000
+    _write_record(root, {"bootstrap": "S15P31A101-250", "stage": "tier0-reap-scene", "pgid": pgid, "started_at": now_ms,
+                         "finished_at": now_ms, "exit": EXIT_OK if ok else EXIT_BUSY, "error": why})
+
+
+def reap_scene_group(root: Path) -> None:
+    """Tier 0 시작 경로: 장면 그룹 기록이 남아 있고 그 그룹이 살아 있으면(감시 부모 정지·소멸) 직접 SIGTERM → SCENE_STOP_GRACE_S →
+    SIGKILL 로 회수하고 사라진 것을 확인한다. 같은 PID namespace 이고 시작 표지가 둘 다 있고 같을 때만 신호를 보낸다(모르면 건드리지 않음).
+    회수하지 못하거나 건드리지 않으면 경고와 기록(exit 75)을 남기고 진행한다: Tier 0 가용성이 장면 작업보다 우선이다(의도된 정책,
+    docs/design/unified-env.md "3단계"). 통합 이미지의 같은 컨테이너 안 실행이 전제다(다른 컨테이너의 장면 작업은 그 컨테이너가 맡는다)."""
+    path = root.joinpath(*SCENE_PGID)
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+        pgid, start, ns = int(d["pgid"]), d.get("start"), d.get("pidns")
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        log(f"경고: 장면 그룹 기록 {path} 을 읽지 못함({type(e).__name__}) → 회수하지 못한다(Tier 0 는 그대로 시작, GPU 를 장면 작업이 쥐고 있을 수 있다)")
+        return
+    mine = _pid_ns()
+    if ns is None or mine is None or ns != mine:  # 다른 컨테이너의 pgid 는 이 /proc·killpg 에서 다른 프로세스다
+        why = f"다른 PID namespace(기록 {ns}, 여기 {mine})의 장면 그룹 {pgid}: 신호를 보내지 않는다(기록은 남김)"
+        log(f"경고: {why}. 그 컨테이너에서 장면 작업이 GPU 를 쥐고 있을 수 있다 → Tier 0 는 그대로 시작한다(Tier 0 우선)")
+        _reap_record(root, pgid, False, why)
+        return
+    if pgid <= 1 or not _group_alive(pgid):
+        path.unlink(missing_ok=True)
+        return
+    now = _proc_start_token(pgid)
+    if start is not None and now is not None and now != start:  # 시작 시각이 알려져 있고 다르다: pid 재사용(원래 그룹은 끝났다)
+        log(f"장면 그룹 기록의 pid {pgid} 는 다른 프로세스다(시작 표지 다름): 건드리지 않고 지난 기록을 지운다")
+        path.unlink(missing_ok=True)
+        return
+    if start is None or now is None:  # 리더를 확인할 수 없다(리더만 먼저 끝남·권한·기록 때 조회 실패): 남의 그룹일 수 있다
+        why = f"장면 그룹 {pgid} 의 신원을 확인하지 못함(시작 표지 기록 {start}, 지금 {now}): 신호를 보내지 않는다(기록은 남김)"
+        log(f"경고: {why} → Tier 0 는 그대로 시작한다(Tier 0 우선, GPU 를 장면 작업이 쥐고 있을 수 있다)")
+        _reap_record(root, pgid, False, why)
+        return
+    log(f"장면 작업 그룹 {pgid} 이 남아 있다(감시 부모 정지·소멸) → Tier 0 가 직접 회수한다(SIGTERM → {SCENE_STOP_GRACE_S:.0f}s → SIGKILL)")
+    sent = _signal_group(pgid, kill=False)
+    if not _wait_gone(pgid, SCENE_STOP_GRACE_S):
+        t = _proc_start_token(pgid)  # KILL 전에 다시 본다. 표지를 못 읽으면(리더가 TERM 으로 끝남·권한) 모르므로 보내지 않는다
+        if t is None or t != start:
+            log(f"장면 그룹 {pgid} 의 리더를 다시 확인하지 못함(시작 표지 {t}): SIGKILL 을 보내지 않는다")
+        else:
+            sent = _signal_group(pgid, kill=True) and sent
+    gone = _wait_gone(pgid, 10)
+    if gone:
+        path.unlink(missing_ok=True)
+        _reap_record(root, pgid, True, None)
+        log(f"장면 작업 그룹 {pgid} 회수함")
+    else:
+        why = f"장면 그룹 {pgid} 을 회수하지 못함(신호 {'보냄' if sent else '거부됨'})"
+        log(f"경고: {why} → Tier 0 는 그대로 시작한다(Tier 0 우선, 의도된 정책). 장면 작업이 GPU 를 쥐고 있을 수 있다: 사람이 확인한다")
+        _reap_record(root, pgid, False, why)
+
+
+def tier0_claimed(root: Path) -> bool | None:
+    """Tier 0 시작 잠금을 누가 쥐었는가. 배타 잠금을 잠깐 잡아 본다(잡히면 바로 놓는다). 확인하지 못하면 None(모름)."""
+    try:
+        f = _open_lock(root, TIER0_LOCK)
+    except OSError:
+        return None
+    with f:
+        return not _try_lock(f)  # 닫으면 잡았던 잠금도 풀린다
+
+
+def gpu_memory_used_mb(smi: list[str]) -> float | None:
+    """nvidia-smi 의 사용 중 메모리(MiB, GPU 여러 장이면 가장 큰 값). 읽지 못하면 None(모름)."""
+    try:
+        r = subprocess.run([*smi, "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=60, env=child_env())
+        vals = [float(line.strip()) for line in r.stdout.splitlines() if line.strip()]
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    # nan·inf·음수는 모름(float() 은 'nan' 을 받고, 내장 max 는 NaN 을 비교에서 버린다)
+    if r.returncode != 0 or not vals or any(not math.isfinite(v) or v < 0 for v in vals):
+        return None
+    return max(vals)
+
+
+def tier0_present(root: Path) -> str | None:
+    """Tier 0 가 시작했거나 도는 중인 이유(없으면 None): 시작 잠금, 30초 안의 표시 파일. 모르면 있는 것으로 본다."""
+    claimed = tier0_claimed(root)
+    if claimed is None:
+        return "Tier 0 시작 잠금을 확인하지 못함 → 모름, Tier 0 가 있는 것으로 본다"
+    if claimed:
+        return f"Tier 0 가 시작했다({root.joinpath(*TIER0_LOCK)} 를 쥐고 있다)"
+    marker = Path(os.environ.get("SIMAI_TIER0_MARKER") or root / "state" / "tier0.live")
+    try:
+        age = time.time() - marker.stat().st_mtime
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        return f"Tier 0 표시 파일 {marker} 를 확인하지 못함({type(e).__name__}) → 모름, LIVE 로 본다"
+    if age <= SCENE_MARKER_MAX_AGE_S:  # 미래 시각(음수)도 여기: 시계가 어긋난 새 표시 파일은 LIVE 로 본다
+        return f"Tier 0 표시 파일 {marker} 이 {age:.0f}s 전에 갱신됐다(LIVE 서비스가 떠 있다, 상한 {SCENE_MARKER_MAX_AGE_S:.0f}s)"
+    return None
+
+
+def scene_busy(root: Path, smi: list[str] | None, gpu_unknown_ok: bool = False) -> str | None:
+    """장면 준비를 시작하면 안 되는 이유(없으면 None). 모르면 거부한다. GPU 조회(최대 60초)를 먼저 하고 Tier 0 확인을 마지막에 한다
+    (조회 동안 Tier 0 가 시작했으면 여기서 보이고, 그 뒤에 시작하면 실행 감시가 잡는다).
+    gpu_unknown_ok: 준비 전 확인용. 사용 중 메모리를 못 읽으면 여기서 막지 않고 준비의 GPU 단계(없으면 코드 3)에 맡긴다."""
+    if smi is not None:
+        used = gpu_memory_used_mb(smi)
+        if used is None and not gpu_unknown_ok:
+            return "GPU 사용 중 메모리를 읽지 못함 → 모름, 시작하지 않는다"
+        if used is not None and used > SCENE_MAX_GPU_USED_MB:
+            return (f"GPU 사용 중 메모리 {used:.0f} MiB > {SCENE_MAX_GPU_USED_MB} MiB: 다른 프로세스(Tier 0 엔진 빌드·REPLAY·vLLM·워커 등)가 "
+                    "GPU 를 쓴다")
+    return tier0_present(root)
+
+
+def _scene_refuse(root: Path, why: str) -> int:
+    """거부를 알리고 기록에 75 를 남긴다(준비가 남긴 exit 0 기록 뒤에 추가만, 저장 위치가 있을 때)."""
+    log(f"장면 준비 거부: {why} (종료 코드 {EXIT_BUSY})")
+    if root.is_dir():
+        now = time.time_ns() // 1_000_000
+        _write_record(root, {"bootstrap": "S15P31A101-250", "stage": "scene", "set": SCENE_SET, "started_at": now,
+                             "finished_at": now, "exit": EXIT_BUSY, "error": _redact(why)})
+    return EXIT_BUSY
+
+
+# 시작 handshake(Codex 3차 R1-d, POSIX): 자식은 표준 입력에서 1바이트('g')를 받은 뒤에만 장면 명령으로 exec 한다(pid·그룹·PDEATHSIG 는 그대로).
+# 부모가 그룹 기록을 쓰기 전에 멈추면 자식은 GPU 를 쓰지 않고 기다리고, 부모가 죽으면 EOF 라 시작하지 않고 끝난다.
+SCENE_HANDSHAKE = (
+    "import os, sys\n"
+    "if os.read(0, 1) != b'g':\n"
+    "    sys.exit(75)\n"
+    "fd = os.open(os.devnull, os.O_RDONLY)\n"
+    "os.dup2(fd, 0)\n"
+    "os.close(fd)\n"
+    "try:\n"
+    "    os.execvp(sys.argv[1], sys.argv[1:])\n"
+    "except OSError as e:\n"
+    "    print(f'simai-bootstrap scene: {sys.argv[1]} 를 실행하지 못함: {e}', file=sys.stderr)\n"
+    "    sys.exit(127)\n"
+)
+
+
+def run_scene_child(root: Path, argv: list[str]) -> int:
+    """장면 작업을 새 프로세스 그룹 자식으로 돌리고 SCENE_POLL_S 마다 Tier 0 시작을 본다. Tier 0 가 나타나면 그룹 SIGTERM →
+    SCENE_STOP_GRACE_S 뒤 SIGKILL 하고 75(Tier 0 우선). 끝나면 자식 종료 코드 그대로(신호 종료는 128 + 번호). 자식 환경에 HF 토큰 없음."""
+    stop: dict = {"sig": None}
+    old: dict = {}
+    if threading.current_thread() is threading.main_thread():  # 시험은 다른 스레드에서도 부른다(신호 처리는 주 스레드만)
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            old[sig] = signal.signal(sig, lambda s, _f: stop.update(sig=s))
+    try:
+        gated = os.name != "nt"  # Windows(노트북 시험)의 exec 는 pid 를 바꿔 handshake 를 쓰지 않는다(기록을 바로 쓴다)
+        try:
+            proc = Proc("scene", [sys.executable, "-c", SCENE_HANDSHAKE, *argv] if gated else argv, child_env(), root / "logs",
+                        die_with_parent=True, stdin_pipe=gated)
+        except OSError as e:
+            log(f"장면 작업을 띄우지 못함: {type(e).__name__}: {e}")
+            return EXIT_NOT_FOUND
+        if not _write_scene_pgid(root, proc.pid):  # 기록이 없으면 감시 부모가 멈췄을 때 Tier 0 가 회수할 수 없다: 시작시키지 않는다
+            proc.signal(KILL)
+            proc.wait(10)
+            return _scene_refuse(root, "장면 그룹 기록을 쓰지 못해 장면 작업을 시작시키지 않았다")
+        if gated:
+            try:
+                proc.p.stdin.write(b"g")
+                proc.p.stdin.close()
+            except OSError as e:  # 자식이 그새 끝났다(아래 wait 가 종료 코드를 본다)
+                log(f"장면 작업 시작 신호를 보내지 못함: {e}")
+        log(f"장면 작업 시작 pid {proc.pid}: {shlex.join(argv)} (Tier 0 가 시작하면 멈춘다)")
+        while True:
+            rc = proc.wait(SCENE_POLL_S)
+            if rc is not None:
+                proc.signal(KILL)  # 그룹에 남은 손자 정리(GPU 메모리를 남기지 않게)
+                return exit_code(rc)
+            why = tier0_present(root) or (f"신호 {stop['sig']}" if stop["sig"] is not None else None)
+            if why is None:
+                continue
+            log(f"장면 작업을 멈춘다: {why}")
+            proc.signal(signal.SIGTERM)
+            if proc.wait(SCENE_STOP_GRACE_S) is None:
+                log(f"장면 작업이 {SCENE_STOP_GRACE_S:.0f}s 안에 끝나지 않아 그룹 SIGKILL")
+            proc.signal(KILL)
+            proc.wait(10)
+            if stop["sig"] is not None:
+                return 128 + int(stop["sig"])
+            return _scene_refuse(root, f"실행 중 Tier 0 시작으로 선점됨: {why}")
+    finally:
+        root.joinpath(*SCENE_PGID).unlink(missing_ok=True)  # 그룹을 정리한 뒤(위 반환 경로는 모두 그룹 KILL 뒤다)
+        for sig, h in old.items():
+            signal.signal(sig, h)
+
+
+def scene(rest: list[str]) -> int:
+    """장면 준비 모드: 장면 잠금 → Tier 0·GPU 확인 → static 가중치 → 재확인 → 자식으로 실행하며 Tier 0 시작을 감시한다
+    (종료 코드는 자식의 것, 끝나면 VRAM 을 돌려준다, Tier 0 가 시작하면 장면 작업을 끝내고 75)."""
+    if rest[:1] == ["--"]:
+        rest = rest[1:]
+    if not rest:
+        log("사용법: simai-bootstrap scene [--] <명령...>")
+        return EXIT_USAGE
+    root, _source = choose_root()
+    smi = shlex.split(os.environ.get("SIMAI_NVIDIA_SMI") or "nvidia-smi")
+    try:
+        lock = _open_lock(root, SCENE_LOCK)
+    except OSError as e:
+        log(f"장면 잠금을 열지 못함({e}) → 시작하지 않는다 (종료 코드 {EXIT_STORAGE})")
+        return EXIT_STORAGE
+    with lock:  # 실행 내내 쥔다: Tier 0 시작 경로가 이 잠금으로 장면 작업이 끝나기를 기다린다
+        if not _try_lock(lock):
+            return _scene_refuse(root, "다른 장면 준비 작업이 돌고 있다")
+        # 받기 전에: Tier 0 와 GPU 사용 중 메모리(엔진 빌드·다른 컨테이너 중에 수 GB 를 받지 않는다)
+        if why := scene_busy(root, smi, gpu_unknown_ok=True):
+            return _scene_refuse(root, why)
+        try:
+            prepare(SCENE_SET)
+        except BootstrapError as e:
+            log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
+            return e.code
+        root = Path(os.environ["SIMAI_ROOT"])
+        if why := scene_busy(root, smi):
+            return _scene_refuse(root, why)
+        log(f"장면 준비 모드: 가중치 {SCENE_SET} 확인, Tier 0·LIVE 없음 → {shlex.join(rest)}")
+        return run_scene_child(root, rest)
+
+
 def supervise(rec: dict, services: list[str], rest: list[str]) -> int:
     root = Path(os.environ["SIMAI_ROOT"])
     tier0 = [*shlex.split(os.environ.get("SIMAI_TIER0_CMD") or TIER0_CMD), *rest]
@@ -931,6 +1426,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args or args[0].startswith("-"):
         args = ["tier0", *args]
     mode, rest = args[0], args[1:]
+    if mode == "scene":
+        return scene(rest)
     if mode not in ("tier0", "queue", "check", "run"):
         execvp(args)  # 준비 없이 그대로 (sleep infinity 로 띄운 개발 Pod, 셸, 점검 도구)
         return EXIT_OK
@@ -945,6 +1442,8 @@ def main(argv: list[str] | None = None) -> int:
             log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
             return e.code
     want_set = "tier0" if mode == "tier0" else (os.environ.get(SET_ENV) or "tier0")
+    if mode == "tier0":  # GPU 를 잡기 전에 시작 의도를 남긴다: 장면 준비 작업은 이것을 보고 시작하지 않거나 스스로 멈춘다(Tier 0 우선)
+        claim_tier0(choose_root()[0])
     try:
         rec = prepare(want_set)
     except BootstrapError as e:
@@ -968,6 +1467,7 @@ def main(argv: list[str] | None = None) -> int:
         log(f"GPU VRAM {rec['gpu']['memory_total_mb']:.0f} MiB < 48GB급({MIN_WORKER_VRAM_MB} MiB): 분석 부하를 같은 GPU 에 올리지 않는다 "
             f"→ Tier 0 단독 ({SERVICES_ENV}={','.join(services)} 무시, 명세 3.12)")
         services = ["tier0"]
+    wait_scene_released(Path(os.environ["SIMAI_ROOT"]))  # 장면 작업이 멈춰 VRAM 을 돌려줄 때까지(상한 있음)
     if services == ["tier0"]:
         execvp([TIER0_CMD, *rest])  # Tier 0 단독: 감시 프로세스 없이 지금까지와 같다
         return EXIT_OK

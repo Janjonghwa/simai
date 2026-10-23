@@ -15,6 +15,8 @@
   u1    -246 통합 이미지 GPU 점검(CUDA·HMR 잠금 밖 휠 없이·EGL·vLLM 플러그인)      unified 이미지 Pod 에서만. 이 Pod 는 a·b·t·c·d 도 돈다
   u2    -246 통합 이미지 HMR 보정 K 경로(렌더 없음, g4 와 같은 판정)               unified 이미지 Pod, SIMAI_WEIGHTS_SET=exp02 simai-bootstrap queue
   v1~v3 -246 VLM 단독 적재·G7 지연 모양·Tier 0 + VLM 동시                     자리만(사람이 돈다, docs/design/unified-env.md)
+  u3·u4 -250 통합 환경(torch 2.11) MapAnything C1·C2 를 장면 준비 모드로(m1·m2 와 같은 입력·인자)  unified 이미지 Pod. 노트북에서
+             ai/experiments/static_scene/compare_envs.py 로 m1·m2(torch 2.7.1 이미지) 결과와 비교
   (--exp-jobs: 추가 EXP Job 파일(예 -87 다시점 집계)을 LIVE 보호를 켠 별도 큐로 마지막에 돈다)
 
 항목마다 돌 이미지가 정해져 있다(Pod 하나 = 이미지 하나). 지금 이미지(--image, 기본 이미지 ENV SIMAI_IMAGE_KIND, 없으면 tier0)의
@@ -347,6 +349,19 @@ def items(lay: Layout) -> list[dict]:
           for key, name, title, exp_s in (("v1", "v1_vlm_load", "VLM 단독 적재·VRAM", 1500),
                                           ("v2", "v2_vlm_latency", "VLM G7 지연 모양", 300),
                                           ("v3", "v3_tier0_with_vlm", "Tier 0 + VLM 동시(G0·CPU 경합)", 900))),
+        # u3·u4(S15P31A101-250): 통합 환경 MapAnything 을 장면 준비 모드(simai-bootstrap scene: LIVE·GPU 사용 중이면 75, static 가중치)로.
+        # m1·m2 와 같은 입력·가중치·인자(run id 만 _uni_)라 compare_envs.py 가 torch 2.7.1 이미지 결과와 비교한다. 저장소 사본의 simai_bootstrap.py 를 쓴다
+        *(exp(key, f"{key}_unified_mapanything_{base[:2].lower()}", f"통합 환경 MapAnything {base} ({model})", "unified", f"{base}_uni_{sfx}",
+              [py, "deploy/scripts/simai_bootstrap.py", "scene", py, "ai/experiments/static_scene/run_mapanything.py",
+               "--run-id", f"{base}_uni_{sfx}", "--images", str(data / "room4"), "--model", str(w / model), "--runs-dir", str(out01)],
+              out01 / f"{base}_uni_{sfx}",
+              weights=[str(w / model / "model.safetensors"), str(w / model / "config.json")], dataset=[str(data / "room4")],
+              results=[("REPORT", "metrics.json"), ("SCENE_OUTPUT", "cameras.json"), ("SCENE_OUTPUT", "raw.npz"), ("SCENE_OUTPUT", "fused.ply")],
+              experiment_id="EXP-01", provenance=PROVENANCE_ROOM4,
+              model_version=f"map-anything@3d10cf7 + {model}, 통합 환경 torch 2.11.0", expected_s=exp_s, timeout_s=2700,
+              jira="S15P31A101-250")
+          # u3 이 static 가중치 두 벌을 처음 받는다(그다음은 스탬프로 건너뜀). m1·m2 실측 47·38초 + 받기
+          for key, base, model, exp_s in (("u3", "C1_room4_bf16", "map-anything", 900), ("u4", "C2_room4_apache_bf16", "map-anything-apache", 120))),
         {"key": "m0", "name": "m0_mapanything_image_check", "jira": "S15P31A101-207", "title": "MapAnything 이미지 GPU 점검",
          "image": "mapanything", "command": [py, "deploy/scripts/exp_image_check.py"], "expected_s": 60, "timeout_s": 600,
          "model_version": "n/a (이미지 점검)", "provenance": PROVENANCE_NONE},
