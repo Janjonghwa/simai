@@ -20,11 +20,18 @@ const LOOK: Record<HealthChipState, { dot: string; ring: string; label: string; 
   LOST: { dot: 'bg-faint', ring: 'border-faint', label: '연결 끊김' },
 };
 
-export function SystemHealthChip({ state }: { state?: HealthChipState }) {
+/** live: 바뀌면 화면 낭독기에 알린다. 한 화면에 칩이 둘이면 하나(상단 바)만 알린다. */
+export function SystemHealthChip({
+  state,
+  live = true,
+}: {
+  state?: HealthChipState;
+  live?: boolean;
+}) {
   const look = state ? LOOK[state] : undefined;
   return (
     <Badge
-      role="status"
+      role={live ? 'status' : undefined}
       variant="outline"
       className={cn(
         'h-auto gap-2 rounded-full bg-surface-2 px-3.5 py-1.5 text-sm font-bold',

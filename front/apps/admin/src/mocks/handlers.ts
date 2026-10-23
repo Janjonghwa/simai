@@ -1,4 +1,5 @@
 import { type MockAccount, MOCK_ACCOUNTS } from '@/mocks/accounts';
+import { metricsHandlers } from '@/mocks/metrics';
 import { zonesHandlers } from '@/mocks/zones';
 import { http, HttpResponse } from 'msw/http';
 
@@ -60,4 +61,5 @@ export const handlers = [
     () => new HttpResponse(null, { status: 204, headers: { 'Set-Cookie': refreshCookie('', 0) } }),
   ),
   ...zonesHandlers,
+  ...metricsHandlers,
 ];

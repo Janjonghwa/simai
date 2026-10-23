@@ -29,8 +29,9 @@ type Tier0 = z.infer<typeof tier0Schema>;
 // 같은 health 를 여러 칸이 읽으므로 받은 메시지 하나에 한 번만 검사한다.
 const tier0Cache = new WeakMap<HealthSnapshot, Tier0 | undefined>();
 
+// tier0_health 는 EC2 가 마지막으로 받은 값이다. EC2 ↔ Tier 0 가 끊기면 지금 값이 아니라 읽지 않는다.
 function tier0(health: HealthSnapshot | null): Tier0 | undefined {
-  if (!health) return undefined;
+  if (!health || health.payload.tier0_link !== 'CONNECTED') return undefined;
   if (!tier0Cache.has(health)) {
     tier0Cache.set(health, tier0Schema.safeParse(health.payload.tier0_health).data);
   }

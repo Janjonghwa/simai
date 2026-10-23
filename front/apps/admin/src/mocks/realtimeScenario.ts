@@ -25,6 +25,18 @@ let messages = 0;
 /** 메시지마다 다른 msg_id(UUID 형식). */
 const nextMsgId = () => `0192a6f0-7c1e-4b3a-9f2d-${hex12(++messages)}`;
 
+/** 바퀴(EVENT_CYCLE_MS) 안에서 cam3 가 키프레임을 기다리는 구간(ms). 시스템 상태 화면의 빈칸·비정상 카메라를 보인다. */
+const CAM3_DOWN = { from: 20_000, to: 26_000 } as const;
+
+const cam3DownAt = (t: number) => {
+  const inCycle = t % EVENT_CYCLE_MS;
+  return inCycle >= CAM3_DOWN.from && inCycle < CAM3_DOWN.to;
+};
+
+/** 시각 t 에 영상을 보내는 카메라만 남긴다. cam3 가 키프레임을 기다리는 동안은 cam3 로 관측하지 않는다. */
+const sending = (ids: readonly string[], t: number) =>
+  ids.filter((id) => id !== 'cam3' || !cam3DownAt(t));
+
 function track(worker: (typeof WORKERS)[number], t: number): WorldTrack {
   const turn = (t / worker.periodMs + worker.phase) % 1;
   const angle = 2 * Math.PI * turn;
@@ -53,7 +65,7 @@ function track(worker: (typeof WORKERS)[number], t: number): WorldTrack {
     head_z_sigma: 0.05,
     head_z_validity: 'VALID',
     velocity: [r2(-speed * Math.sin(angle)), r2(speed * Math.cos(angle)), 0],
-    cameras: ['cam1', 'cam2', 'cam3'],
+    cameras: sending(['cam1', 'cam2', 'cam3'], t),
   };
 }
 
@@ -71,7 +83,7 @@ export function worldStateAt(t: number): WorldStateMessage {
       scene_version: VERSIONS.scene,
       config_version: VERSIONS.config,
       input_provenance: {
-        frames: { source: 'LIVE', camera_ids: [...CAMERAS] },
+        frames: { source: 'LIVE', camera_ids: sending(CAMERAS, t) },
         calibration: { source: 'G1_AUTO', calibration_version: VERSIONS.calibration },
         tracks: { source: 'TIER0_LIVE', provider_version: 'tier0-0.1.0' },
         is_upper_bound: false,
@@ -81,8 +93,54 @@ export function worldStateAt(t: number): WorldStateMessage {
   };
 }
 
-/** /topic/health: 시각 t(ms)의 관제 상태. 카메라 4대 정상, 데이터 연령은 0.2초 안팎. */
-export function viewerHealthAt(t: number): ViewerHealthMessage {
+/**
+ * 카메라 한 대의 Tier 0 health(계약 예제 contracts/examples/viewer_health.json 모양). 키프레임을 기다리면
+ * 처리 FPS 는 0 이고(계약 필수 값), 잴 수 없는 값은 null 이거나 싣지 않는다(예제의 cam2 와 같다).
+ */
+function cameraHealth(id: (typeof CAMERAS)[number], index: number, t: number, down: boolean) {
+  if (down) {
+    return {
+      id,
+      fps: 0,
+      last_capture: null,
+      sync_offset_ms: null,
+      sync_valid: null,
+      status: 'WAITING_KEYFRAME',
+    };
+  }
+  const wave = Math.floor(t / 1000 + index * 3) % 5;
+  return {
+    id,
+    fps: r2(14.6 + wave * 0.1),
+    last_capture: t - 120,
+    sync_offset_ms: 4 + index * 2,
+    sync_valid: true,
+    status: 'OK',
+    frame_age_ms: { p50: 120 + wave * 5, p95: 200 + wave * 10 },
+    queue_wait_ms: { p50: 8 + index, p95: 36 + wave * 4 },
+    frames: {
+      received: 25,
+      gateway_to_runpod_loss: index === 1 ? wave % 2 : 0,
+      skipped_by_policy: 10,
+      laptop_skipped: 4,
+      unattributed_gap: 0,
+      late_dropped: 0,
+      camera_to_gateway_gap_max_ms: 70 + wave * 10,
+    },
+  };
+}
+
+/**
+ * /topic/health: 시각 t(ms)의 관제 상태. 데이터 연령은 0.2초 안팎이고, 바퀴마다 cam3 가 잠깐 키프레임을 기다린다.
+ * faults 가 false 면 고장 흉내 없이 늘 정상이다(시각과 상관없이 NOMINAL 을 기대하는 시험).
+ */
+export function viewerHealthAt(
+  t: number,
+  { faults = true }: { faults?: boolean } = {},
+): ViewerHealthMessage {
+  const cam3Down = faults && cam3DownAt(t);
+  const system = cam3Down ? 'DEGRADED' : 'NOMINAL';
+  const wave = Math.floor(t / 1000) % 5;
   return {
     schema_version: '1.0.0',
     msg_type: 'viewer_health',
@@ -91,7 +149,7 @@ export function viewerHealthAt(t: number): ViewerHealthMessage {
     source_id: 'ec2',
     payload: {
       as_of: t - 10,
-      system_health: 'NOMINAL',
+      system_health: system,
       remote_state: 'NORMAL',
       tier0_link: 'CONNECTED',
       laptop: { link: 'CONNECTED', last_heartbeat_at: t - 200 },
@@ -104,20 +162,18 @@ export function viewerHealthAt(t: number): ViewerHealthMessage {
       },
       scene: { committed_version: VERSIONS.scene, live_version: VERSIONS.scene, mismatch: false },
       tier0_health: {
-        system_health: 'NOMINAL',
+        system_health: system,
         t_latest_global: t - 120,
-        cameras: CAMERAS.map((id) => ({
-          id,
-          fps: 14.8,
-          last_capture: t - 120,
-          sync_offset_ms: 6,
-          status: 'OK',
-        })),
-        pipeline_lag_ms: 120,
+        cameras: CAMERAS.map((id, index) => cameraHealth(id, index, t, id === 'cam3' && cam3Down)),
+        pipeline_lag_ms: 110 + wave * 5,
+        capture_to_risk_ms: { p50: 300 + wave * 5, p95: 460 + wave * 10 },
         calibration_state: 'CALIBRATED',
         calibration_version: VERSIONS.calibration,
         config_version: VERSIONS.config,
         config_sync: 'CURRENT',
+        gateway_link: 'CONNECTED',
+        gpu_util: r2(0.68 + wave * 0.01),
+        gpu_memory_used_ratio: 0.62,
       },
     },
   };
