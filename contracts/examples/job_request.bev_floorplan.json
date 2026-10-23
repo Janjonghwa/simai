@@ -1,5 +1,5 @@
 {
-  "schema_version": "3.1.0",
+  "schema_version": "3.2.0",
   "msg_type": "job_request",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000301",
   "sent_at": 1760342400400,
@@ -17,9 +17,24 @@
     "heartbeat_interval_ms": 10000,
     "input": {
       "calibration_version": "cal-7",
-      "frame_uris": [
-        "s3://simai-site/empty/cam1-0001.jpg",
-        "s3://simai-site/empty/cam2-0001.jpg"
+      "calibration_ref": "s3://simai-site/calibrations/cal-7.json",
+      "calibration_hash": "sha256:9f2c4b1e0a7d3c5b8e6f1a2d4c7b9e0f3a5d8c1b4e7f0a2d5c8b1e4f7a0d3c6b",
+      "frame_source": "LIVE",
+      "frames": [
+        {
+          "camera_id": "cam1",
+          "frame_uri": "s3://simai-site/empty/cam1-0001.jpg",
+          "estimated_capture_time_ms": 1760342000000,
+          "timestamp_source": "RECEIVE_ESTIMATED",
+          "timestamp_uncertainty_ms": 25
+        },
+        {
+          "camera_id": "cam2",
+          "frame_uri": "s3://simai-site/empty/cam2-0001.jpg",
+          "estimated_capture_time_ms": 1760342000000,
+          "timestamp_source": "RECEIVE_ESTIMATED",
+          "timestamp_uncertainty_ms": 25
+        }
       ],
       "scene_version": "scene-3"
     }

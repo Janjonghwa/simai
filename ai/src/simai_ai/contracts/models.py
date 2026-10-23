@@ -21,6 +21,25 @@ from pydantic import (
 from typing_extensions import TypeAliasType
 
 
+class BevFloorplan(RootModel[Any]):
+    root: Any
+
+
+class CoordinateFrame(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    frame: Literal['WORLD']
+    unit: Literal['m']
+    handedness: Literal['right']
+    up_axis: Literal['+Z']
+
+
+CamerasSkippedAdditionalProperty = TypeAliasType(
+    "CamerasSkippedAdditionalProperty", Annotated[StrictStr, Field(min_length=1)]
+)
+
+
 class Validation(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1520,6 +1539,26 @@ class ActionMismatch(Envelope):
     payload: Payload
 
 
+class WorldBounds(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    min_xy: DefsVec2
+    max_xy: DefsVec2
+
+
+class RoomOutline(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    source: Literal['inferred']
+    basis: Literal['FLOOR_MASK', 'CAMERA_FOOTPRINT']
+    method: Literal['CONVEX_HULL_OF_COVERAGE']
+    accuracy: Literal['NOT_CLAIMED']
+    polygon_xy: Annotated[list[DefsVec2], Field(min_length=3)]
+    openings: None
+
+
 class Camera(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1771,7 +1810,7 @@ class EventEscalate(Envelope):
     payload: Payload10
 
 
-class Frame(DefsCaptureTime):
+class Frame1(DefsCaptureTime):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -1787,7 +1826,7 @@ class Payload12(BaseModel):
         extra='allow',
     )
     event_id: DefsUuidV7
-    frames: Annotated[list[Frame], Field(min_length=1)]
+    frames: Annotated[list[Frame1], Field(min_length=1)]
 
 
 class EventFrameReady(Envelope):
@@ -2421,7 +2460,7 @@ class Tier0Endpoint(Envelope):
     payload: Payload33
 
 
-class Frame1(DefsCaptureTime):
+class Frame2(DefsCaptureTime):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -2448,7 +2487,7 @@ class VlmRationaleInput(BaseModel):
     zone_id: Annotated[StrictStr | None, Field(min_length=1)]
     metrics: DefsRuleMetrics
     observation_time: DefsTimestampMs
-    frames: Annotated[list[Frame1], Field(min_length=1)]
+    frames: Annotated[list[Frame2], Field(min_length=1)]
     structured_state: dict[str, Any]
     world_state_ref: DefsUuid | MISSING = MISSING
 
@@ -2506,6 +2545,66 @@ class AlarmStop(Envelope):
     )
     msg_type: Annotated[Literal['alarm_stop'], Field(min_length=1)]
     payload: Payload1
+
+
+class Frame(DefsCaptureTime):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    frame_uri: DefsObjectUri
+    estimated_capture_time_ms: DefsTimestampMs
+    timestamp_source: DefsTimestampSource
+    timestamp_uncertainty_ms: DefsDurationMs
+
+
+class BevFloorplanInput(BaseModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    calibration_version: DefsVersionId
+    calibration_ref: DefsObjectUri
+    calibration_hash: DefsSha256
+    frame_source: DefsFrameSource
+    frames: Annotated[list[Frame], Field(min_length=1)]
+    scene_version: DefsVersionId | MISSING = MISSING
+
+
+class Raster(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    width: Annotated[StrictInt, Field(ge=1)]
+    height: Annotated[StrictInt, Field(ge=1)]
+    meters_per_pixel: Annotated[StrictFloat, Field(gt=0.0)]
+    origin_xy: DefsVec2
+    origin: Literal['TOP_LEFT_PIXEL_OUTER_CORNER']
+    col_axis: Literal['+X']
+    row_axis: Literal['-Y']
+    pixel_to_world: DefsMat3
+    world_bounds: WorldBounds
+
+
+class BevFloorplanResult(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    image_uri: DefsObjectUri
+    image_sha256: DefsSha256
+    content_type: Literal['image/png']
+    metadata_uri: DefsObjectUri
+    calibration_version: DefsVersionId
+    scene_version: DefsVersionId | None
+    created_at: DefsTimestampMs
+    purpose: Literal['OVERVIEW_DISPLAY_ONLY']
+    safety_use: Literal[False]
+    coordinate_frame: CoordinateFrame
+    raster: Raster
+    cameras_used: Annotated[list[DefsCameraId], Field(min_length=1)]
+    cameras_skipped: dict[DefsCameraId, CamerasSkippedAdditionalProperty]
+    coverage_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+    room_outline: RoomOutline | None
+    input_provenance: DefsInputProvenance
 
 
 class CalibrationCameraCalibration(BaseModel):
@@ -2708,6 +2807,7 @@ class Contracts(BaseModel):
     )
     action_mismatch: ActionMismatch | MISSING = MISSING
     alarm_stop: AlarmStop | MISSING = MISSING
+    bev_floorplan: BevFloorplan | MISSING = MISSING
     calibration: Calibration | MISSING = MISSING
     calibration_update: CalibrationUpdate | MISSING = MISSING
     clock_sync_request: ClockSyncRequest | MISSING = MISSING

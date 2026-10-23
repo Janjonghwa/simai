@@ -11,11 +11,14 @@ FakeEC2 는 `Transport` 를 구현하고, 계약(contracts/messages/job_*.schema
 from __future__ import annotations
 
 import itertools
+import json
+import signal
 import sys
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -25,12 +28,14 @@ AI_DIR = Path(__file__).resolve().parents[3]
 if str(AI_DIR) not in sys.path:
     sys.path.insert(0, str(AI_DIR))
 
+import services.worker.__main__ as entry  # noqa: E402
 from services.worker.client import Backoff, LeaseClient  # noqa: E402
 from services.worker.runner import Worker  # noqa: E402
-from services.worker.transport import Response, TransportError  # noqa: E402
+from services.worker.transport import TOKEN_HEADER, Response, TransportError  # noqa: E402
 from simai_ai.providers.contract import schema_errors  # noqa: E402
 
 T0 = 1760342400000
+TOKEN = "test-worker-token"
 PRIORITY_ORDER = {"VLM_FAST": 0, "REPORT": 1, "BACKGROUND": 2}
 
 
@@ -310,3 +315,52 @@ def make_worker(client):
         return Worker(client, handlers, clock_ms=lambda: T0 + int(time.monotonic() * 1000), monotonic=time.monotonic, wait_ms=wait_ms)
 
     return _make
+
+
+@pytest.fixture
+def http_ec2(ec2):
+    """FakeEC2 를 HTTP 로 연다. 토큰이 틀리거나 가짜가 계약 위반을 잡으면 400 으로 답해 워커가 멈추게 한다(멈춰 기다리지 않게)."""
+    errors: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            try:
+                assert self.headers[TOKEN_HEADER] == f"Bearer {TOKEN}", "워커 토큰이 실리지 않았다"
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                resp = ec2.post(self.path, body, 0)
+                status, raw = resp.status, b"" if resp.body is None else json.dumps(resp.body).encode()
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"{type(e).__name__}: {e}")
+                status, raw = 400, b""
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_port}", errors
+    server.shutdown()
+    server.server_close()
+
+
+@pytest.fixture
+def run_main(http_ec2, monkeypatch, tmp_path):
+    url, errors = http_ec2
+    monkeypatch.setenv("SIMAI_EC2_BASE_URL", url)
+    monkeypatch.setenv("SIMAI_WORKER_TOKEN", TOKEN)
+    monkeypatch.setenv("SIMAI_WORKER_ID", "worker-01")
+    monkeypatch.setenv("SIMAI_TIER0_MARKER", str(tmp_path / "tier0.live"))  # 없음 + 개발 모드 = 관제 없음
+    monkeypatch.setenv("SIMAI_WORKER_DEV_NO_LIVE", "1")
+    monkeypatch.setattr(signal, "signal", lambda *a: None)  # pytest 의 Ctrl+C 처리를 바꾸지 않는다
+
+    def _run(handlers) -> int:
+        monkeypatch.setattr(entry, "build_handlers", lambda config, store=None: handlers)
+        code = entry.main(["--once", "--wait-ms", "0"])
+        assert not errors, errors
+        return code
+
+    return _run

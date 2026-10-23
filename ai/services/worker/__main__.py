@@ -8,7 +8,10 @@
   시작할 때 이 프로세스의 torch 할당 상한(SIMAI_WORKER_GPU_MEMORY_FRACTION)을 두고, 대여마다 Tier 0 표시 파일로 접수를 정한다.
   상한을 두지 못하면(FAILED) 시작하지 않는다. torch CUDA 가 없으면 상한 없이 돈다(노트북).
 
-작업 유형별 처리기 조립은 후속 티켓에서 채운다. 처리기가 없으면 시작하지 않는다.
+작업 유형별 처리기는 build_handlers 가 조립한다. 처리기가 없으면 시작하지 않는다.
+- bev_floorplan(S15P31A101-239): 객체 저장소 주입점(services.worker.objects.ObjectStore)이 있을 때만 등록한다. 워커 전용 서명 API
+  (S15P31A101-248) 클라이언트가 붙기 전에는 진입점이 저장소를 주지 않으므로 등록하지 않는다(받아도 올릴 수 없는 작업을 대여해
+  시도 횟수를 쓰지 않게).
 """
 
 from __future__ import annotations
@@ -28,17 +31,23 @@ from simai_ai.gpu.budget import BudgetError, WorkerGpuSettings
 from simai_ai.gpu.reserve import FAILED, cap_process_memory
 
 from .client import AuthError, LeaseClient, RequestRejected
+from .bev_floorplan import BevFloorplanHandler
 from .handlers import JobHandler
+from .objects import ObjectStore
 from .runner import HandlerStuck, Worker
 from .transport import HttpTransport
 
 
-def build_handlers(config: Path | None) -> Mapping[str, JobHandler]:
+def build_handlers(config: Path | None, store: ObjectStore | None = None) -> Mapping[str, JobHandler]:
     """작업 유형 → 처리기. VLM·정적 3D·HMR 처리기는 각 작업 티켓에서 기능 패키지를 조립해 넣는다.
 
     VLM 처리기는 vLLM 을 WorkerGpuSettings.budget 의 vllm_gpu_memory_utilization·vllm_max_num_seqs 로 띄운다(명세 3.2 상한).
+    객체 저장소를 쓰는 처리기는 store 가 있을 때만 넣는다.
     """
-    return {}
+    handlers: dict[str, JobHandler] = {}
+    if store is not None:
+        handlers["bev_floorplan"] = BevFloorplanHandler(store, clock_ms=lambda: time.time_ns() // 1_000_000)
+    return handlers
 
 
 def main(argv: list[str] | None = None) -> int:
