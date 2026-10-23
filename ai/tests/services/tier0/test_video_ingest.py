@@ -386,6 +386,71 @@ def test_reconnect_supersedes_old_connection_and_counts_loss(server_factory):
     old.close()
 
 
+# ---------------------------------------------------------------------------- 종료 직후 듣기 포트 (S15P31A101-251)
+# 수정 전 Linux 는 accept 스레드가 poll(시간 제한 0.5s) 안에 있으면 close() 뒤에도 그동안 LISTEN 이 남았다. 아래 시험은
+# stop() 직후(join 전, 기다림 없이) 포트를 본다. Windows 는 close 만으로 닫혀 수정 전에도 통과한다.
+
+def _server(tmp_path, ports, **kw) -> vi.VideoIngestServer:
+    cert, key = _make_cert(tmp_path)
+    cams = [f"cam_{c}" for c in "ABCD"]
+    return vi.VideoIngestServer([vi.ListenSpec(p, frozenset({cams[i]}), "127.0.0.1") for i, p in enumerate(ports)],
+                                vi.server_context(str(cert), str(key)),
+                                vi.TokenVerifier(frozenset({vi.token_sha256(TOKEN)})), **kw)
+
+
+def _refused(port: int) -> bool:
+    with socket.socket() as probe:
+        probe.settimeout(1)
+        return probe.connect_ex(("127.0.0.1", port)) != 0
+
+
+def test_stop_closes_every_listening_port_before_join(tmp_path):
+    """반례(순서): accept 스레드가 기다리는 중에 stop 하면 join 을 기다리지 않아도 모든 포트가 바로 닫혀 있다. 두 번 불러도 같다."""
+    server = _server(tmp_path, [0, 0, 0])
+    server.start()
+    assert len(server.alive_threads()) == 3
+    server.stop()
+    assert [p for p in server.ports if not _refused(p)] == []
+    server.stop()  # 이미 닫힌 소켓의 shutdown·close 도 조용히 넘어간다
+    assert server.join(3.0) == []
+
+
+def test_stop_with_live_and_half_open_connections_closes_listener_and_threads_end(tmp_path):
+    """반례(동시성): 인증된 연결과 HELLO 를 안 보낸 TCP 연결이 붙어 있어도 stop 직후 듣기 포트는 닫히고 모든 스레드가 끝난다."""
+    server = _server(tmp_path, [0], hello_timeout_s=2.0)
+    server.start()
+    port = server.ports[0]
+    tls, ack = _client(port, "cam_A")
+    assert ack == {"ok": True}
+    raw = socket.create_connection(("127.0.0.1", port), timeout=5)  # TLS 핸드셰이크 중에 멈춘 연결
+    wait_until(lambda: len(server.alive_threads()) == 3)
+    server.stop()
+    assert _refused(port)
+    assert server.join(5.0) == []
+    tls.close()
+    raw.close()
+
+
+def test_restart_on_same_port_right_after_stop_accepts_again(tmp_path):
+    """반례(재시작): stop 직후 같은 포트에 새 서버를 띄울 수 있고 노트북이 다시 붙는다(남은 LISTEN 이 있으면 Linux bind 가 실패한다)."""
+    first = _server(tmp_path, [0])
+    first.start()
+    port = first.ports[0]
+    old, _ = _client(port, "cam_A")
+    first.stop()
+    second = _server(tmp_path, [port])
+    try:
+        second.start()
+        assert second.ports == [port]
+        tls, ack = _client(port, "cam_A")
+        assert ack == {"ok": True}
+        tls.close()
+    finally:
+        second.stop()
+        old.close()
+    assert first.join(3.0) == [] and second.join(3.0) == []
+
+
 def test_listen_specs_from_env_uses_runpod_ports_and_refuses_unknown():
     env = {"SIMAI_TIER0_VIDEO_PORTS": "cam1:70001,cam2:70001,cam3:70003", "RUNPOD_TCP_PORT_70001": "40001",
            "RUNPOD_TCP_PORT_70003": "40003"}

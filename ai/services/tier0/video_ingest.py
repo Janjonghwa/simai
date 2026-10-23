@@ -576,6 +576,11 @@ class VideoIngestServer:
         """멈춘다. 여러 번 불러도 되고, 부분 기동 상태에서도 된다."""
         self._stop.set()
         for sock in self._socks:
+            # Linux 는 accept 스레드가 poll 중이면 close() 만으로는 그 시간 제한까지 LISTEN 이 남는다. shutdown 이 바로 끊고 깨운다
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:  # Windows 는 듣기 소켓 shutdown 을 거절한다(close 만으로 닫힌다). 이미 닫힌 소켓도 여기로 온다
+                pass
             try:
                 sock.close()
             except OSError:
