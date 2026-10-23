@@ -53,7 +53,8 @@ pipeline {
                     // contracts/ 가 바뀌면 계약을 읽는 파트도 돈다: ai·gateway 시험, front 생성 타입, server 계약 클래스(contracts.gradle)
                     def parts = [
                         ['CONTRACTS', ['contracts/']],
-                        ['AI', ['ai/', 'contracts/']],
+                        // deploy/ 는 ai/tests/deploy 가 파일 경로로 읽어 검사한다(시험 고르기 스크립트가 잇는다, S15P31A101-260)
+                        ['AI', ['ai/', 'contracts/', 'deploy/']],
                         ['GATEWAY', ['gateway/', 'contracts/']],
                         ['FRONT', ['front/', 'contracts/']],
                         ['SERVER', ['server/', 'contracts/']],
@@ -145,13 +146,28 @@ pipeline {
         }
 
         stage('ai') {
-            // 가장 오래 걸려서(20분 이상) 마지막에 둔다
+            // 가장 오래 걸려서 마지막에 둔다. MR 빌드는 바뀐 파일과 import 관계로 고른 시험만 돌고(scripts/select_tests.py,
+            // S15P31A101-255·-260), dev push 빌드는 전체를 돈다(머지 뒤 안전망: 고르기가 놓친 것을 잡는다)
             when { environment name: 'RUN_AI', value: 'true' }
             steps {
                 dir('ai') {
                     sh 'uv sync --frozen'
                     sh 'uv run lint-imports'
-                    sh 'uv run pytest -m "not gpu"'
+                    script {
+                        List<String> selected = ['ALL']
+                        if (env.gitlabActionType == 'MERGE' && env.gitlabTargetBranch) {
+                            selected = sh(script: "uv run python -m scripts.select_tests --base origin/${env.gitlabTargetBranch}",
+                                          returnStdout: true).trim().readLines().findAll { it.trim() }
+                        }
+                        if (selected.isEmpty()) {
+                            echo 'ai 시험 생략: 바뀐 파일이 ai 시험에 닿지 않는다(lint-imports 만)'
+                        } else if (selected.contains('ALL')) {
+                            sh 'uv run pytest -m "not gpu"'
+                        } else {
+                            echo "고른 ai 시험 경로 ${selected.size()}개"
+                            sh "uv run pytest -m 'not gpu' ${selected.join(' ')}"
+                        }
+                    }
                 }
             }
         }
