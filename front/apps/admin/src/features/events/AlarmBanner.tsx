@@ -56,9 +56,10 @@ export function AlarmBanner({ withPanel }: { withPanel: boolean }) {
         aria-label="확인 대기 경보"
         className="pointer-events-auto relative flex max-w-[680px] items-center gap-3 rounded-[12px] bg-card/94 px-4 py-2.5 shadow-float backdrop-blur-[8px]"
       >
+        {/* 깜빡이는 테두리는 배너 전체를 덮으므로 클릭을 통과시킨다(막으면 아래 버튼이 눌리지 않는다). */}
         <span
           aria-hidden
-          className="absolute inset-0 rounded-[12px] ring-2 ring-sev-critical ring-inset motion-safe:animate-alarm-blink"
+          className="pointer-events-none absolute inset-0 rounded-[12px] ring-2 ring-sev-critical ring-inset motion-safe:animate-alarm-blink"
         />
         <SeverityBadge severity={event.severity} />
         {/* 가장 위 경보가 바뀔 때만 읽는다. 버튼·건수는 읽지 않는다. */}

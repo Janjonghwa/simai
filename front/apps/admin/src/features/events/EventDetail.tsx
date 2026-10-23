@@ -1,3 +1,4 @@
+import { EventClips } from '@/features/clips/EventClips';
 import {
   CONFIDENCE_REASON,
   entryStatus,
@@ -89,6 +90,7 @@ export function EventDetail({ entry, onBack }: { entry: EventEntry; onBack: () =
           </Row>
         )}
       </dl>
+      <EventClips event={event} />
     </section>
   );
 }
