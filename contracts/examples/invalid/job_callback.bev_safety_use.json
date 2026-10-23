@@ -1,0 +1,117 @@
+{
+  "schema_version": "2.2.0",
+  "msg_type": "job_callback",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000031a",
+  "sent_at": 1760342460100,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261020-0001",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-000000000311",
+    "job_type": "bev_floorplan",
+    "status": "SUCCEEDED",
+    "started_at": 1760342400500,
+    "finished_at": 1760342460050,
+    "result": {
+      "image_uri": "s3://simai-site/floor-plans/job-20261020-0001/bev_floorplan.png",
+      "image_sha256": "sha256:74f85bd2e9fae38f641e5b1b82cb71f18e042566073a85d0e0fda701e515f2b5",
+      "content_type": "image/png",
+      "metadata_uri": "s3://simai-site/floor-plans/job-20261020-0001/bev_floorplan.json",
+      "calibration_version": "cal-7",
+      "scene_version": null,
+      "created_at": 1760342460000,
+      "purpose": "OVERVIEW_DISPLAY_ONLY",
+      "safety_use": true,
+      "coordinate_frame": {
+        "frame": "WORLD",
+        "unit": "m",
+        "handedness": "right",
+        "up_axis": "+Z"
+      },
+      "raster": {
+        "width": 560,
+        "height": 460,
+        "meters_per_pixel": 0.02,
+        "origin_xy": [
+          -0.8,
+          8.4
+        ],
+        "origin": "TOP_LEFT_PIXEL_OUTER_CORNER",
+        "col_axis": "+X",
+        "row_axis": "-Y",
+        "pixel_to_world": [
+          [
+            0.02,
+            0.0,
+            -0.79
+          ],
+          [
+            0.0,
+            -0.02,
+            8.39
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "world_bounds": {
+          "min_xy": [
+            -0.8,
+            -0.8
+          ],
+          "max_xy": [
+            10.4,
+            8.4
+          ]
+        }
+      },
+      "cameras_used": [
+        "cam1",
+        "cam2"
+      ],
+      "cameras_skipped": {},
+      "coverage_ratio": 0.71,
+      "room_outline": {
+        "source": "inferred",
+        "basis": "CAMERA_FOOTPRINT",
+        "method": "CONVEX_HULL_OF_COVERAGE",
+        "accuracy": "NOT_CLAIMED",
+        "polygon_xy": [
+          [
+            -0.4,
+            -0.6
+          ],
+          [
+            9.9,
+            -0.5
+          ],
+          [
+            10.1,
+            7.9
+          ],
+          [
+            -0.6,
+            8.1
+          ]
+        ],
+        "openings": null
+      },
+      "input_provenance": {
+        "frames": {
+          "source": "LIVE",
+          "camera_ids": [
+            "cam1",
+            "cam2"
+          ]
+        },
+        "calibration": {
+          "source": "G1_AUTO",
+          "calibration_version": "cal-7"
+        },
+        "is_upper_bound": false
+      }
+    }
+  },
+  "_expect_error": "BEV 평면도는 보조 화면이라 안전 판단에 쓰지 않는다(safety_use false 고정)"
+}

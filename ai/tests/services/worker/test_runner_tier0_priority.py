@@ -136,7 +136,7 @@ def test_overload_that_does_not_clear_defers_job_back_to_queue(ec2, make):
                          "consume_attempt": False}
     (cb,) = ec2.bodies("result")
     assert cb["payload"]["started_at"] is None  # 시작하지 않았다
-    assert cb["schema_version"] == "2.1.0"
+    assert cb["schema_version"] == "2.2.0"
 
 
 def test_hold_is_bounded_by_half_of_execution_limit(ec2, make):

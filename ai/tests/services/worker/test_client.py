@@ -152,7 +152,7 @@ def test_heartbeat_and_submit_messages_are_valid():
     assert schema_errors(res, "job_callback") == []
     failed = client.callback_message(lease, "FAILED", started_at=None, finished_at=2, error={"code": "X", "message": ""})
     assert schema_errors(failed, "job_callback") == []
-    assert res["schema_version"] == failed["schema_version"] == "2.1.0" and hb["schema_version"] == SCHEMA_VERSION
+    assert res["schema_version"] == failed["schema_version"] == "2.2.0" and hb["schema_version"] == SCHEMA_VERSION
     released = client.callback_message(lease, "FAILED", started_at=None, finished_at=2, error={
         "code": "TIER0_PRIORITY", "message": "", "retryable": True, "consume_attempt": False})
     assert schema_errors(released, "job_callback") == []
