@@ -2,7 +2,7 @@
 
 MR 마다 정적 검사·단위 시험·계약 예시 검증을 자동으로 돌린다(명세 21.3, 21.4, NFR-28). 저장소 루트의 `Jenkinsfile` 과 Jenkins 이미지
 `deploy/jenkins/` 로 구성하고, EC2 운영 compose(`deploy/ec2/compose.yaml`, S15P31A101-66)에 `jenkins`·`ci-db` 서비스로 올린다.
-이미지 빌드·배포(CD)는 이 티켓 범위가 아니다(아래 "넘긴 일").
+이미지 빌드·배포(CD)는 S15P31A101-254 가 같은 Jenkinsfile 의 `배포` 단계로 붙였다(`docs/design/ec2-deploy.md` "자동 배포").
 
 명세 21.4 의 CI 도구를 GitLab CI 에서 Jenkins 로 바꿨다(팀 결정 2026-10-21, 기획서 개정 이력 참조). 단계 구성(정적 검사 → 단위 →
 계약·공통 벡터 → 통합 → 이미지 빌드, GPU 없는 실행)은 그대로다.
@@ -127,8 +127,8 @@ docker run -d --name simai-ci-db -p 5432:5432 -e POSTGRES_PASSWORD=simai-ci time
 
 ## 넘긴 일
 
-- 이미지 빌드·배포(CD): `master` 빌드에서 EC2 에 `bake ec2` → `compose up`. Jenkins 에 소켓을 주지 않으므로, 호스트의 배포 스크립트 하나만
-  실행할 수 있게 제한한 SSH 키 등으로 범위를 좁혀 넘긴다(자동 배포 티켓).
+- 이미지 빌드·배포(CD): S15P31A101-254 에서 dev 빌드 끝에 붙였다. 호스트의 배포 스크립트 하나만 실행하는 제한 SSH 키를 쓴다
+  (`docs/design/ec2-deploy.md` "자동 배포").
 - Risk Engine 공통 벡터(부록 D-G3-04): Tier 0 이미지와 EC2 컨테이너 이미지 두 곳에서 같은 벡터를 돌리는 단계.
 - 통합 시험(Docker Compose EC2 스택 + 가짜 Tier 0 송신기, 명세 21.3).
 

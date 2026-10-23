@@ -89,6 +89,8 @@ services:
     volumes:
       - jenkins-home:/var/jenkins_home
     networks: [edge, ci]
+    # 자동 배포(S15P31A101-254): 호스트 sshd 로 deploy.sh 만 실행하는 제한 키를 쓴다
+    extra_hosts: ["host.docker.internal:host-gateway"]
     mem_limit: 4g
     restart: unless-stopped
 
