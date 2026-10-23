@@ -504,9 +504,11 @@ def test_large_condition_number_sigmas_match_previous():
     assert any(math.isinf(s) for s in sigma_max) and any(math.isfinite(s) for s in sigma_max)
 
 
-def test_floor_gap_batch_is_bit_identical_to_scalar():
-    """임시 바닥 가설 거리(쌍 비용에 들어간다)의 묶음 계산이 쌍 하나씩 계산(`_floor_gap`)과 비트 단위로 같다.
-    1e-12 ~ 1e12 규모를 섞는다. 이 환경(numpy·CPU)에서의 확인이며 다른 BLAS 의 증명은 아니다."""
+def test_floor_gap_batch_matches_scalar():
+    """임시 바닥 가설 거리(쌍 비용에 들어간다)의 묶음 계산이 쌍 하나씩 계산(`_floor_gap`)과 상대 1e-12 안에서 같다.
+    1e-12 ~ 1e12 규모를 섞는다. 비트 단위로는 같지 않을 수 있다: 큰 값의 뺄셈에서 CPU·numpy 빌드의 연산 순서(SIMD)에 따라
+    마지막 비트가 달라진다(EC2 x86 에서 상대 5.6e-15, S15P31A101-257). 제품은 묶음 계산만 쓰므로 같은 기기 재현성은 그대로다.
+    1e-6 변화는 음성 대조(`test_negative_control_floor_gap_changed`)가 잡는다."""
     rng = np.random.default_rng(570)
     N = 4000
     scale = 10.0 ** rng.uniform(-12, 12, (N, 4, 1))
@@ -516,4 +518,5 @@ def test_floor_gap_batch_is_bit_identical_to_scalar():
     idx = np.arange(N)
     got = cross_view_module._floor_gaps(stack(0), stack(2), idx, idx, 1.0)
     want = np.array([legacy_cv._floor_gap((rays[n, 0], rays[n, 1]), (rays[n, 2], rays[n, 3]), 1.0) for n in range(N)])
-    np.testing.assert_array_equal(got, want)
+    np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-300)
+    np.testing.assert_array_equal(np.isfinite(got), np.isfinite(want))
