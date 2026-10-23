@@ -504,6 +504,20 @@ def test_large_condition_number_sigmas_match_previous():
     assert any(math.isinf(s) for s in sigma_max) and any(math.isfinite(s) for s in sigma_max)
 
 
+def test_floor_gap_scalar_is_bit_identical_to_batch():
+    """운영 경로 두 개(쌍 하나씩 `_floor_gap`, 묶음 `_floor_gaps`)는 같은 요소별 식이라 어느 CPU·BLAS 에서나 비트 단위로 같다
+    (S15P31A101-259). 평행 가설(dB = 0)과 1e-12 ~ 1e12 규모를 섞는다."""
+    rng = np.random.default_rng(571)
+    N = 4000
+    rays = rng.normal(size=(N, 4, 2)) * 10.0 ** rng.uniform(-12, 12, (N, 4, 1))
+    rays[:50, 3] = rays[:50, 1]
+    stack = lambda part: type("S", (), {"floor_a": rays[:, part], "floor_b": rays[:, part + 1], "has_floor": np.ones(N, dtype=bool)})()
+    idx = np.arange(N)
+    got = cross_view_module._floor_gaps(stack(0), stack(2), idx, idx, 1.0)
+    want = np.array([cross_view_module._floor_gap((rays[n, 0], rays[n, 1]), (rays[n, 2], rays[n, 3]), 1.0) for n in range(N)])
+    _same_bits(got, want)
+
+
 def test_floor_gap_batch_matches_scalar():
     """임시 바닥 가설 거리(쌍 비용에 들어간다)의 묶음 계산이 쌍 하나씩 계산(`_floor_gap`)과 상대 1e-12 안에서 같다.
     1e-12 ~ 1e12 규모를 섞는다. 비트 단위로는 같지 않을 수 있다: 큰 값의 뺄셈에서 CPU·numpy 빌드의 연산 순서(SIMD)에 따라

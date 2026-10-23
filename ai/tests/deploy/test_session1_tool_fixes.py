@@ -165,7 +165,7 @@ def test_prepare_refuses_path_under_msys_root_even_without_shell_signal(gs, tmp_
     assert not out.exists()  # 사본·명령을 만들지 않는다
 
 
-@pytest.mark.parametrize("value", ["C:/Users/SSAFY/AppData/Local/Temp/simai", "C:/simai", "D:/srv/simai", "c:\simai"])
+@pytest.mark.parametrize("value", ["C:/Users/SSAFY/AppData/Local/Temp/simai", "C:/simai", "D:/srv/simai", r"c:\simai"])
 def test_prepare_refuses_drive_path_in_git_bash(gs, tmp_path, capsys, monkeypatch, value):
     """Git Bash(MSYSTEM)에서 변환을 끄지 않았는데 드라이브 경로: /tmp/simai → %TEMP%/simai, /c/simai → C:/simai (리뷰 R1)."""
     _env(monkeypatch, MSYSTEM="MINGW64")

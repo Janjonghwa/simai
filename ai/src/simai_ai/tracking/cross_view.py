@@ -1083,7 +1083,10 @@ def _floor_gaps(sa: _ViewStack, sb: _ViewStack, qi: np.ndarray, qk: np.ndarray, 
 
 def _floor_gap(ray_a: tuple[np.ndarray, np.ndarray], ray_b: tuple[np.ndarray, np.ndarray], max_height: float) -> float:
     """두 임시 바닥 가설의 XY 거리 중 높이 h ∈ [0, max_height] 에서의 최솟값 (거리 제곱이 h 의 2차식)."""
+    # `_floor_gaps` 와 같은 요소별 곱·합으로 계산한다. `@`·`np.linalg.norm` 은 BLAS 를 거쳐 CPU 에 따라 FMA 가 골라져
+    # 묶음 계산과 최하위 비트가 달라진다(S15P31A101-259)
     dA, dB = ray_a[0] - ray_b[0], ray_a[1] - ray_b[1]
-    bb = float(dB @ dB)
-    h = 0.0 if bb < 1e-12 else min(max(-float(dA @ dB) / bb, 0.0), max_height)
-    return float(np.linalg.norm(dA + h * dB))
+    bb = float(dB[0] * dB[0] + dB[1] * dB[1])
+    h = 0.0 if bb < 1e-12 else min(max(-float(dA[0] * dB[0] + dA[1] * dB[1]) / bb, 0.0), max_height)
+    d0, d1 = dA[0] + h * dB[0], dA[1] + h * dB[1]
+    return float(np.sqrt(d0 * d0 + d1 * d1))
