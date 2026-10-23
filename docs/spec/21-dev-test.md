@@ -25,7 +25,7 @@ ai/
     calibration/           #   자동 보정, PnP, CalibrationProvider
     risk/                  #   Risk Engine (Tier 0·EC2 컨테이너 공통)
     scene/                 #   정적 3D (EXP-01 채택분)
-    hmr/                   #   인체 메시·외형 (EXP-02 채택분)
+    hmr/                   #   인체 메시·외형 (EXP-02 시연 범위)
     vlm/                   #   VLM 근거·보고서
     providers/             #   WorldTrackProvider 등 입력 대체 계약 구현 (20.4)
     contracts/             #   contracts/ 스키마에서 생성한 타입 (손으로 고치지 않음)

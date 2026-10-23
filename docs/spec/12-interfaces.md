@@ -1,6 +1,6 @@
 # 12. 인터페이스 명세
 
-I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 봉투를 쓰고, 이미지는 메시지에 넣지 않고 객체 저장소 주소로 주고받는다. 아래 필드는 v1.0 기준 예시이며 필드 정의의 정본은 저장소 `contracts/`의 JSON Schema 파일이다(21.2). 아직 스키마가 없는 메시지는 이 절의 예시가 기준이다. v1.3 에서 바뀐 규칙 중 현장 경보 목록(`health.active_site_alerts`), 시계 차이 교환(`clock_sync_request`·`clock_sync_response`, `health.laptop_clock_offset`), 엔드포인트 등록(`tier0_endpoint`), 2D 관측 요약(`observation_summary`), I5 작업 대여(`job_lease_request`·`job_request`·`job_heartbeat`·`job_callback`·`job_lease_status`), 확인 필요 이유(`confidence_reasons`), 이벤트 재개(`resumed`·`resume_count`), 확인 대상(`site_ack`·`event_ack`·`alarm_stop` 의 `event_sequence`), `world_state.config_version`, 판정이 아닌 전이의 근거 null, 노트북 송신 큐 버림(`health` 의 `laptop_skipped`·`unattributed_gap`), 이벤트 클립 기록(`media_clip`·`media_clip_retention`), 운영자 종료(`event_close`·`event_close_result`, `risk_event_transition`·`risk_event` 2.0.0 의 운영자 종료 해소 `resolution`: 있으면 해소에 VERIFIED·판정 근거를 요구하지 않음, 6.4), 운영자 상향(`event_escalate`·`event_escalate_result`, `risk_event_transition`·`risk_event` 2.1.0 의 `escalation`·`escalations`, 5.4), I5 작업 유형 `bev_floorplan`·`incident_summary`와 `tbm_report` 보고서 종류(`job_request` 3.1.0), I2 화면 상태 `viewer_health`·조치 불일치 `action_mismatch`(12.4)는 계약에 반영했다. 아직 계약에 없는 것은 19.1 에 둔다.
+I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 봉투를 쓰고, 이미지는 메시지에 넣지 않고 객체 저장소 주소로 주고받는다. 아래 필드는 v1.0 기준 예시이며 필드 정의의 정본은 저장소 `contracts/`의 JSON Schema 파일이다(21.2). 아직 스키마가 없는 메시지는 이 절의 예시가 기준이다. v1.3 에서 바뀐 규칙 중 현장 경보 목록(`health.active_site_alerts`), 시계 차이 교환(`clock_sync_request`·`clock_sync_response`, `health.laptop_clock_offset`), 엔드포인트 등록(`tier0_endpoint`), 2D 관측 요약(`observation_summary`), I5 작업 대여(`job_lease_request`·`job_request`·`job_heartbeat`·`job_callback`·`job_lease_status`), 확인 필요 이유(`confidence_reasons`), 이벤트 재개(`resumed`·`resume_count`), 확인 대상(`site_ack`·`event_ack`·`alarm_stop` 의 `event_sequence`), `world_state.config_version`, 판정이 아닌 전이의 근거 null, 노트북 송신 큐 버림(`health` 의 `laptop_skipped`·`unattributed_gap`), 이벤트 클립 기록(`media_clip`·`media_clip_retention`), 운영자 종료(`event_close`·`event_close_result`, `risk_event_transition`·`risk_event` 2.0.0 의 운영자 종료 해소 `resolution`: 있으면 해소에 VERIFIED·판정 근거를 요구하지 않음, 6.4), 운영자 상향(`event_escalate`·`event_escalate_result`, `risk_event_transition`·`risk_event` 2.1.0 의 `escalation`·`escalations`, 5.4), I5 작업 유형 `bev_floorplan`·`incident_summary`와 `tbm_report` 보고서 종류(`job_request` 3.1.0), I2 화면 상태 `viewer_health`·조치 불일치 `action_mismatch`(12.4), 아바타 포즈 스트림(I6 `avatar_pose_batch`·`avatar_asset`, I2 `/topic/avatar` 의 `avatar_frame` 1.0.0, 계약 묶음 6.2.0, 12.2·12.4)은 계약에 반영했다. 아직 계약에 없는 것은 19.1 에 둔다.
 
 ## 12.1 공통 봉투와 버전
 
@@ -15,19 +15,20 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 }
 ```
 
-- 시각은 UTC int64 ms, 좌표는 World(미터, Z-up), 각도는 라디안.
+- 시각은 UTC int64 ms, 좌표는 World(미터, Z-up), 각도는 라디안(아바타 관절 회전은 축각 rotation vector 라디안 하나, 공통 `axis_angle`).
 - 필드 추가는 마이너 버전(하위 호환), 필드 삭제·의미 변경은 메이저 버전. 수신 측은 모르는 필드를 무시한다.
-- `msg_id`로 중복 수신을 제거한다. source_id는 실제 송신 주체(예: tier0-01, laptop-01, ec2)이며, Tier 0가 보내는 메시지의 source_id는 이벤트의 gateway_id와 같은 Tier 0 인스턴스 식별자다.
+- `msg_id`로 중복 수신을 제거한다. source_id는 실제 송신 주체(예: tier0-01, worker-01, laptop-01, ec2)이며, Tier 0가 보내는 메시지의 source_id는 이벤트의 gateway_id와 같은 Tier 0 인스턴스 식별자다.
 
 ## 12.2 구간 목록
 
 | ID | 구간 | 방식 | 메시지 |
 |---|---|---|---|
 | I1 | RunPod Tier 0 ↔︎ EC2 | WebSocket + JSON | 위로(Tier 0 → EC2): `world_state`(10 Hz), `health`(1 Hz), `observation_summary`(필요 시 카메라별 요약만. 2D 관측 원본 `observation_batch` 는 RunPod 에 Parquet 로 보관, 11.2), `calibration_update`, `risk_event_transition`, `event_state_snapshot`, `config_ack`, `event_frame_ready`, `media_clip`·`media_clip_retention`(이벤트 클립 기록, 11.3), `tier0_endpoint`(엔드포인트 등록, 3.12), `event_close_result`(운영자 종료 결과, 6.4), `event_escalate_result`(운영자 상향 결과, 5.4) / 아래로(EC2 → Tier 0): `event_ack`, `event_close`(관리자의 구역 대상 이벤트 종료, 6.4), `event_escalate`(관리자가 승인한 VLM 상향 의견 적용, 5.4), `journal_ack`, `config_bundle` |
-| I2 | EC2 → 뷰어 | WebSocket(STOMP) + REST | 토픽 `/topic/world`(`world_state`), `/topic/events`(`risk_event`), `/topic/health`(`viewer_health`), 관리자 전용 `/topic/admin/events`(`action_mismatch`)(12.4) / REST: 리플레이, 구역 CRUD, 작업면 등록, 보정·설치, Scene 자산, 레이아웃, 보고서, 이벤트 상세·요약·상향(12.6) |
+| I2 | EC2 → 뷰어 | WebSocket(STOMP) + REST | 토픽 `/topic/world`(`world_state`), `/topic/avatar`(`avatar_frame`), `/topic/events`(`risk_event`), `/topic/health`(`viewer_health`), 관리자 전용 `/topic/admin/events`(`action_mismatch`)(12.4) / REST: 리플레이, 구역 CRUD, 작업면 등록, 보정·설치, Scene·아바타 자산(`/api/avatars/...`), 레이아웃, 보고서, 이벤트 상세·요약·상향(12.6) |
 | I3 | EC2 ↔︎ PWA | Web Push + REST | 푸시 `risk_alert`, 시험 푸시 / REST: 티켓 상태 변경, 사진 업로드 주소 발급, 푸시 구독·해지, 수신 확인(12.6) |
 | I4 | EC2 ↔︎ 워치 | — | 이동(v1.3) → 부록 C |
 | I5 | RunPod 분석 워커 → EC2 | 작업 가져가기(HTTPS long-poll 기본, WebSocket 대안), TLS + 워커 토큰 | 워커가 EC2 에 먼저 접속해 `job_lease_request`로 작업을 대여하고(응답 `job_request`), `job_heartbeat`로 대여를 연장하며, 결과·실패를 `job_callback`으로 제출한다. 하트비트·제출 응답은 `job_lease_status`(12.5) |
+| I6 | RunPod 분석 워커 → EC2 (아바타 스트림) | WebSocket(wss) + JSON, 워커 토큰(I1 과 분리된 별도 연결, 기본 경로 `/ws/worker/avatar`) | 위로(워커 → EC2, 단방향): `avatar_pose_batch`(1.0.0, 사람별 2\~5 Hz 묶음, MHR 축각 회전만·위치 없음), `avatar_asset`(1.0.0, 스키닝 glTF·UV 텍스처·표면 출처 지도 버전 알림, 처음·버전 변경·재접속 직후·10초 재알림). 세부는 `docs/design/avatar-pose-stream.md` 와 `contracts/`(묶음 6.2.0)가 정본이고, 오프라인 Run 기록은 `experiments/human_mesh_output`(2.0.0)을 그대로 둔다 |
 | I0 | 노트북 ↔︎ RunPod Tier 0 | 카메라별 TLS 연결(프레임 헤더 + 압축 프레임), 제어는 WebSocket(wss) | 위로: 프레임 헤더를 붙인 카메라 4대 압축 프레임(`frame_header`, 12.7), `codec_info`, `laptop_heartbeat` / 위로(제어): `site_ack`(현장 확인) / 아래로: `local_alert`, `alarm_stop`, `health`(활성 현장 경보 목록 `active_site_alerts` 포함, 3.10) / 양방향: 노트북–Pod 시계 차이 교환(아래로 `clock_sync_request`, 위로 `clock_sync_response`, 3.9) |
 
 EC2 내부: Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON 이다(공개 포트 없음, 기본 경로 `POST /v1/plan/evaluate`). Spring 이 `risk_plan_request`(출처 PLANNED, 판정 기준 시각, 규칙 묶음, 레이아웃의 구역·작업면·선택 계획 작업 위치)를 보내고 컨테이너가 `risk_plan_result`(등급 + 근거 위험 항목, 판정에 쓴 위치 목록, 또는 오류)로 답한다. 결과는 `sim.*` 에만 저장하고 알림 채널로 보내지 않는다(7.4, 8.3). 오류 판정 순서·HTTP 상태·본문 없는 실패의 처리는 계약(`contracts/`)이 정본이다. MVP 는 PLANNED 만 쓰고 REPLAY·WHAT_IF 재계산은 확장(부록 C)이다.
@@ -133,6 +134,7 @@ EC2 내부: Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON �
 - `/topic/world` 는 I1 `world_state` 를 형식 그대로 다시 싣는다. EC2 는 봉투만 새로 쓰고(`source_id` `ec2`) payload 를 바꾸지 않는다. 뷰어가 밀리면 최신 것만 남긴다.
 - `/topic/health` 는 `viewer_health` 다. EC2 가 Tier 0 `health`(원문은 `tier0_health`), 노트북 하트비트, `config_ack`, COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보낸다. 원격 단절 구분(`remote_state`), 데이터 연령, 구성 묶음 적용 상태, Scene 불일치(Tier 0 가 쓰는 `world_state.scene_version` 과 EC2 의 COMMITTED Scene 버전이 다르면 경고, FR-12)를 싣는다.
 - `/topic/admin/events` 는 관리자만 구독하고 조치 불일치 `action_mismatch`(조치 완료인데 이벤트 활성, 8.4)를 싣는다. 이벤트가 해소되면 `cleared: true` 로 한 번 더 보낸다.
+- `/topic/avatar` 는 `avatar_frame`(1.0.0, 계약 묶음 6.2.0)이다. EC2 는 I6 으로 받은 사람별 최신 포즈에 그 포즈의 아바타 자산 내려받기 경로(`/api/avatars/...`)를 붙여 중계한다. 브로커가 밀리면 오래된 `avatar_frame` 부터 버리고 `/topic/world`·`/topic/events` 전달은 방해하지 않는다. 사람의 존재·위치·접지·관측 상태·ID 신뢰도는 `/topic/world` 가 정본이며, `/topic/world` 에서 빠지거나 오래 갱신되지 않은 사람은 지운다. 중복·역전 거르기, 자산 매칭, 크기·인원 상한 등 세부는 `docs/design/avatar-pose-stream.md` 와 `contracts/` 가 정본이다.
 
 ## 12.5 I5 작업 유형
 
@@ -141,7 +143,7 @@ EC2 내부: Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON �
 - 대여: 워커가 `POST /api/worker/jobs/lease`(`job_lease_request`, long-poll)를 보내면 EC2 는 작업이 생길 때 작업 하나와 대여(`lease_id`, 만료 시각)를 담은 `job_request` 를 돌려준다. 한 작업에는 한 시점에 유효한 대여가 하나뿐이고, 우선순위는 3.2 를 따른다.
 - 연장·제출: 워커는 실행 중 `job_heartbeat` 로 대여를 연장하고, 결과·실패를 `job_callback` 으로 제출한다. 응답은 `job_lease_status`(ACTIVE·ACCEPTED·DUPLICATE·REJECTED)다. 이미 반영한 대여(`lease_id`)의 재제출은 대여가 만료된 뒤라도 처음 반영한 것을 유지하고 DUPLICATE 로 답한다(만료 검사보다 먼저 본다).
 - 만료·재할당: 하트비트도 결과도 없이 대여가 만료되면 EC2 는 시도 횟수 안에서 같은 작업을 새 대여로 다시 내준다. 아직 반영한 적 없는 만료·재할당 대여의 하트비트·제출은 거부(REJECTED)하고 늦은 결과는 버린다.
-- 반납: Tier 0 우선(3.2: 지연 초과로 hold 상한까지 시작하지 못함, LIVE 관제 중 EXP 유형, 도는 중 LIVE 시작으로 멈춤) 때문에 돌려주는 작업은 `job_callback` FAILED 에 `error.retryable: true`·`consume_attempt: false` 를 싣는다. EC2 는 시도 횟수를 쓰지 않고 같은 attempt·새 대여로 다시 내준다(마지막 시도도 FAILED 로 끝내지 않음). 처리기 실패·입력 실패·시간 초과는 반납이 아니고 시도를 쓴다(`job_callback` 2.1.0). 그래서 `job_request` 3.0.0(메이저)부터 `attempt` 는 반납을 세지 않는 시도 번호, `max_attempts` 는 최대 시도 수이고, 같은 `attempt` 가 여러 대여에 되풀이될 수 있다(2.x 는 대여 순번·최대 대여 횟수). 워커는 3.x 가 아닌 `job_request` 를 받지 않는다.
+- 반납: Tier 0 우선(3.2: 지연 초과로 hold 상한까지 시작하지 못함, LIVE 관제 중 오프라인·배치 EXP 유형(I5 배치 `hmr_*` 포함, I6 상시 아바타 스트림 루프는 3.2 지연 감시 예외), 도는 중 LIVE 시작으로 멈춤) 때문에 돌려주는 작업은 `job_callback` FAILED 에 `error.retryable: true`·`consume_attempt: false` 를 싣는다. EC2 는 시도 횟수를 쓰지 않고 같은 attempt·새 대여로 다시 내준다(마지막 시도도 FAILED 로 끝내지 않음). 처리기 실패·입력 실패·시간 초과는 반납이 아니고 시도를 쓴다(`job_callback` 2.1.0). 그래서 `job_request` 3.0.0(메이저)부터 `attempt` 는 반납을 세지 않는 시도 번호, `max_attempts` 는 최대 시도 수이고, 같은 `attempt` 가 여러 대여에 되풀이될 수 있다(2.x 는 대여 순번·최대 대여 횟수). 워커는 3.x 가 아닌 `job_request` 를 받지 않는다.
 - `job_request`·`job_callback` 은 2.0.0(메이저)에서 콜백 주소와 HMAC 서명 필드를 없앴다. 경로는 기본안이며 확정본은 서버 OpenAPI 문서다.
 
 | `job_type` | 입력 | 출력 |
@@ -152,8 +154,8 @@ EC2 내부: Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON �
 | `bev_floorplan` | 보정 버전, 카메라 프레임 주소(정적 3D 가 있으면 Scene 버전) | BEV 평면도 이미지 주소(보조 화면, 4.1). 우선순위 BACKGROUND |
 | `static_reconstruct` | 카메라 프레임 주소, 보정 버전 | glTF 주소, 품질 지표 |
 | `calibration_ba` | 2D 관측 묶음(Tier 0 저장 위치), 초기 보정 | 보정 후보 |
-| `hmr_refine` (확장·EXP-02) | 프레임·마스크·keypoint, World ID·보정 버전 | MHR 메시·포즈, 관절 출처, 품질 메타데이터 |
-| `hmr_appearance_update` (EXP-02 실험) | 동일 World ID의 동의된 관측 샘플, 이전 시각 자산 | 신규 텍스처/외형 버전, 관측 영역·불확실성·아티팩트 참조 |
+| `hmr_refine` (시연 범위·EXP-02) | LIVE 관제 중에는 I5 대여 작업이 아니라 분석 워커의 상시 스트림 루프(Tier 0 공유 메모리 입력, 3.2 지연 감시 적용)로 돌며, 출력을 I5 콜백이 아닌 I6 아바타 스트림(`avatar_pose_batch`·`avatar_asset`)으로 보낸다. I5 배치 대여는 관제 외 오프라인 재처리·실험에만 쓰며 LIVE 중에는 받지 않는다(오프라인 산출물은 `experiments/human_mesh_output`) | I6 `avatar_pose_batch`·`avatar_asset` (오프라인 배치는 MHR 메시·포즈, 관절 출처, 품질 메타데이터) |
+| `hmr_appearance_update` (시연 범위·EXP-02 2단계) | 동일 World ID의 연속 관측 샘플, 이전 시각 자산(I5 배치 작업은 LIVE 중 받지 않으며, 스트림 중 갱신된 자산은 I6 `avatar_asset` 과 객체 업로드로 알림) | 신규 텍스처/외형 버전(`appearance_version`), 표면 출처 지도·비율(`surface_source`·`face_ratios`), 아티팩트 참조 |
 
 VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커가 VLM 호출 직전에 `face_policy` 대로 얼굴 영역을 흐린다(5.4). 외부 LLM 호출은 분석 워커의 `tbm_report` 작업 안에서만 한다(API 키는 Pod `.env`, 14장). `bev_floorplan` 은 CALIBRATED 가 되거나 보정 버전이 바뀌면 EC2 가 등록한다.
 

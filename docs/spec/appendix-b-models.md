@@ -24,9 +24,9 @@
 | Qwen3-VL | VLM 참고(1순위 아님) | 참고 | 확인 필요 |
 | BAAI/bge-m3 | RAG 임베딩(안전 수칙 조항·질문, dense 1024차원, L2 정규화, cosine, 11장). revision 은 운영 색인 생성 전에 고정 | M3 | MIT(채택 전 모델 저장소 라이선스 파일 확인) |
 | GPT 6.1 sol(외부 API) | LLM 텍스트 생성(TBM 보고서 문장, RAG 답변, 운영자 질의응답) | MVP | 제공사 이용 약관(제공사 명칭·약관 확인 필요) |
-| SAM 3D Body (Fast 변형) | MHR 인체 메시/포즈·관측 기반 외형 갱신 실험(EXP-02) | 선행 실험·확장 후보 | Fast 구현 코드 MIT(yangtiming/Fast-SAM-3D-Body), 가중치는 원본 `facebook/sam-3d-body-*`의 SAM License(HF 승인 필요) |
-| MHR | SAM 3D Body 바디 표현 | 확장 | Apache 2.0 |
-| PyTorch3D / nvdiffrast | EXP-02 2단계 UV 투영 | 실험 | 채택 전 확인(PyTorch3D 는 BSD 계열, nvdiffrast 는 NVIDIA 소스 코드 라이선스로 알려짐) |
+| SAM 3D Body (Fast 변형) | MHR 인체 메시·포즈 스트림과 관측 기반 외형 갱신(EXP-02, 5.6·20.3) | 시연 범위(E-GATE-0\~3 검증) | Fast 구현 코드 MIT(yangtiming/Fast-SAM-3D-Body), 가중치는 원본 `facebook/sam-3d-body-*`의 SAM License(HF 승인 필요) |
+| MHR | SAM 3D Body 바디 표현(5.6, 13.2) | 시연 범위 | Apache 2.0 |
+| PyTorch3D / nvdiffrast | EXP-02 2단계 UV 투영(20.3) | 시연 범위(2단계) | 사용 전 확인(PyTorch3D 는 BSD 계열, nvdiffrast 는 NVIDIA 소스 코드 라이선스로 알려짐) |
 | Multi-HMR 2 | HMR 비교 기준선 | 비교 | 확인 못 함. 바디 모델 Anny 는 Apache 2.0 |
 | SOMA-X | 바디 표현 변환 후보 | 확장 후보 | Apache 2.0 |
 | TrackTacular, MVTrajecter | 추적 연구 참고 | 참고 | 확인 필요 |
