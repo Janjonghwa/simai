@@ -32,6 +32,9 @@ variable "NODE_WEB" { default = "node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432
 variable "NGINX_WEB" { default = "nginx:1.30.6-alpine@sha256:c59d1f8b1e0e42da75be973424cd72e23f7f8adfb54e982f4d1cd0216a5a5576" }
 # 관제 앱이 부를 공개 도메인(빌드에 박힌다). deploy/ec2 의 SIMAI_DOMAIN 과 같게 둔다
 variable "SIMAI_DOMAIN" { default = "simai.live" }
+# CI Jenkins(S15P31A101-28). docker.io/jenkins/jenkins:lts-jdk21 (2026-10-22: Jenkins 2.580.1, JDK 21.0.12, Debian 13)
+# Node·uv·Python 은 위 NODE_WEB·UV_IMAGE·PYTHON_VERSION 을 같이 쓴다(배포 이미지와 같은 판으로 검사)
+variable "JENKINS_IMAGE" { default = "jenkins/jenkins:lts-jdk21@sha256:a660310e39ade10631f774bacd5219de767dfd08947ea5c32a739b5e5bb382c1" }
 # MapAnything 은 볼륨 venv(Python 3.12)와 같은 판대
 variable "PYTHON_VERSION_MAPANYTHING" { default = "3.12.13" }
 # Detectron2 CPU 확장 컴파일 병렬 수(exp02). Docker Desktop 메모리가 작으면(2GB) 1~2
@@ -155,4 +158,17 @@ target "web" {
     VITE_STOMP_URL    = "wss://${SIMAI_DOMAIN}/ws"
   }
   tags = ["${REGISTRY}/web:${TAG}"]
+}
+
+# CI Jenkins(S15P31A101-28): 공식 LTS + 각 파트 검사 도구 + 플러그인. 앱 배포(ec2 묶음)와 따로 빌드한다
+target "jenkins" {
+  inherits   = ["_common"]
+  dockerfile = "deploy/jenkins/Dockerfile"
+  args = {
+    JENKINS_IMAGE  = "${JENKINS_IMAGE}"
+    NODE_IMAGE     = "${NODE_WEB}"
+    UV_IMAGE       = "${UV_IMAGE}"
+    PYTHON_VERSION = "${PYTHON_VERSION}"
+  }
+  tags = ["${REGISTRY}/jenkins:${TAG}"]
 }

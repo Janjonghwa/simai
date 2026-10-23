@@ -3,7 +3,8 @@
 #   docker compose --env-file /opt/simai/.env -f deploy/ec2/compose.yaml up -d          # 띄우기
 #   docker compose --env-file /opt/simai/.env -f deploy/ec2/compose.yaml run --rm server admin create-user --login <아이디> --role ADMIN
 # 비밀 값은 서버의 /opt/simai/.env(권한 600)에만 둔다. 키 이름은 deploy/ec2/.env.example
-# 망: edge(web·server, 밖으로 나갈 수 있음), ec2-internal(server·db·risk-engine, 밖으로 못 나감). 공개 포트는 web 의 80·443 뿐이다
+# 망: edge(web·server·jenkins, 밖으로 나갈 수 있음), ec2-internal(server·db·risk-engine, 밖으로 못 나감),
+#     ci(jenkins·ci-db, 밖으로 못 나감. 운영 DB 와 분리). 공개 포트는 web 의 80·443 뿐이다
 name: simai-ec2
 
 services:
@@ -77,13 +78,44 @@ services:
       service: risk-engine
     image: ${SIMAI_REGISTRY:-simai}/risk-engine:${SIMAI_TAG:-dev}
 
+  # CI(S15P31A101-28). 이미지는 따로 빌드한다: TAG=... docker buildx bake jenkins, 태그는 SIMAI_JENKINS_TAG.
+  # 검사는 이 컨테이너 안에서 직접 돈다. 호스트 Docker 소켓·운영 DB·/opt/simai/.env 를 받지 않는다(docs/design/ci-pipeline.md).
+  # 화면은 Nginx /jenkins 뒤에 있고 로그인한 관리자만 쓴다
+  jenkins:
+    image: ${SIMAI_REGISTRY:-simai}/jenkins:${SIMAI_JENKINS_TAG:-dev}
+    environment:
+      JENKINS_OPTS: --prefix=/jenkins
+      JAVA_OPTS: -Xmx1g -Djava.awt.headless=true
+    volumes:
+      - jenkins-home:/var/jenkins_home
+    networks: [edge, ci]
+    mem_limit: 4g
+    restart: unless-stopped
+
+  # 서버 시험 전용 DB(운영 db 와 같은 이미지). Jenkinsfile 이 빌드마다 시험 DB 를 지우고 새로 만든다.
+  # 비밀번호는 ci 망 안에서만 닿는 일회용 시험 DB 용이라 비밀 값이 아니다
+  ci-db:
+    # timescale/timescaledb-ha:pg17-all
+    image: timescale/timescaledb-ha:pg17-all@sha256:26e355e055c97d0a51afc415b71fa728dd85664fb24165d595cc8cd0c485b2fc
+    environment:
+      POSTGRES_PASSWORD: simai-ci
+      # 이미지가 메모리(1 GB)로 자동 조정하면 25 라, Spring 시험 컨텍스트 여러 개의 연결 풀이 넘친다(too many clients)
+      TS_TUNE_MAX_CONNS: "100"
+    networks: [ci]
+    shm_size: 256m
+    mem_limit: 1g
+    restart: unless-stopped
+
 networks:
   edge: {}
   ec2-internal:
     name: simai-ec2-internal
+    internal: true
+  ci:
     internal: true
 
 volumes:
   db-data:
   letsencrypt:
   certbot-www:
+  jenkins-home:
