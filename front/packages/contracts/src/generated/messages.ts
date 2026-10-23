@@ -1,9 +1,9 @@
 // contracts/ 에서 생성한 파일이다. 손으로 고치지 않는다.
 // 다시 만들기: pnpm --filter @simai/contracts generate
-import type { WorldStateMessage, RiskEventMessage, ViewerHealthMessage, ActionMismatchMessage } from './types';
+import type { WorldStateMessage, RiskEventMessage, ViewerHealthMessage, ActionMismatchMessage, AvatarFrameMessage } from './types';
 
 /** 관제 앱이 STOMP 로 받는 메시지의 msg_type(명세 12.4). */
-export const MESSAGE_TYPES = ['world_state', 'risk_event', 'viewer_health', 'action_mismatch'] as const;
+export const MESSAGE_TYPES = ['world_state', 'risk_event', 'viewer_health', 'action_mismatch', 'avatar_frame'] as const;
 
 export type MessageType = (typeof MESSAGE_TYPES)[number];
 
@@ -13,4 +13,5 @@ export interface MessageByType {
   risk_event: RiskEventMessage;
   viewer_health: ViewerHealthMessage;
   action_mismatch: ActionMismatchMessage;
+  avatar_frame: AvatarFrameMessage;
 }

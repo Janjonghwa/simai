@@ -9,16 +9,22 @@ import { describe, expect, it } from 'vitest';
 
 // 저장소 루트 contracts/ 의 정본 예제. 손으로 옮겨 적지 않고 그대로 읽는다.
 const ALL_VALID = import.meta.glob<{ default: unknown }>(
-  '../../../../../../../contracts/examples/{world_state,risk_event,viewer_health,action_mismatch}*.json',
+  '../../../../../../../contracts/examples/{world_state,risk_event,viewer_health,action_mismatch,avatar_frame}*.json',
   { eager: true },
 );
 const ALL_INVALID = import.meta.glob<{ default: unknown }>(
-  '../../../../../../../contracts/examples/invalid/{world_state,risk_event,viewer_health}*.json',
+  '../../../../../../../contracts/examples/invalid/{world_state,risk_event,viewer_health,avatar_frame}*.json',
   { eager: true },
 );
 const name = (path: string) => path.split('/').pop()!.replace('.json', '');
 // risk_event_transition(I1) 처럼 이름만 앞이 같은 다른 메시지는 뺀다.
-const VIEWER_TYPES = ['world_state', 'risk_event', 'viewer_health', 'action_mismatch'];
+const VIEWER_TYPES = [
+  'world_state',
+  'risk_event',
+  'viewer_health',
+  'action_mismatch',
+  'avatar_frame',
+];
 const onlyViewer = (files: typeof ALL_VALID) =>
   Object.fromEntries(
     Object.entries(files).filter(([path]) => VIEWER_TYPES.includes(name(path).split('.')[0]!)),
@@ -46,9 +52,19 @@ describe('정본 예제', () => {
         risk_event: 'event',
         viewer_health: 'health',
         action_mismatch: 'ignored',
+        avatar_frame: 'ignored',
       }[type!];
       expect([name(path), result.kind]).toEqual([name(path), expected]);
     }
+  });
+
+  it('/topic/avatar(avatar_frame)는 검사만 하고 그리지 않는다(EXP-02 뷰어 연결 전)', () => {
+    const result = adaptMessage(example('avatar_frame'), 0);
+    expect(result).toEqual({
+      kind: 'ignored',
+      msgType: 'avatar_frame',
+      msgId: '7f1c2a10-4b6e-4c1d-9a2b-000000000252',
+    });
   });
 
   it('잘못된 예제는 모두 계약 오류로 거부한다', () => {

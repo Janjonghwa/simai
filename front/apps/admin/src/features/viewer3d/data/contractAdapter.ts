@@ -31,8 +31,9 @@ export type AdaptResult =
   | { kind: 'world'; frame: WorldFrame }
   | { kind: 'event'; event: RiskEventView }
   | { kind: 'health'; health: HealthView }
-  /** action_mismatch 는 관리자 토픽의 조치 불일치다. 3D 렌더 대상이 아니라 검사만 하고 버린다. */
-  | { kind: 'ignored'; msgType: 'action_mismatch'; msgId: string }
+  /** action_mismatch 는 관리자 토픽의 조치 불일치다. 3D 렌더 대상이 아니라 검사만 하고 버린다.
+   *  avatar_frame(/topic/avatar, EXP-02)은 아직 그리지 않아 검사만 하고 버린다. */
+  | { kind: 'ignored'; msgType: 'action_mismatch' | 'avatar_frame'; msgId: string }
   | { kind: 'rejected'; reason: RejectReason; msgType: string | null; detail: string };
 
 class NonFinite extends Error {}
@@ -216,7 +217,9 @@ export function adaptMessage(raw: unknown, receivedAt: number): AdaptResult {
           kind: 'health',
           health: healthOf(checked.message as ViewerHealthMessage, receivedAt),
         };
+      // shortcut: /topic/avatar 는 아직 그리지 않는다(EXP-02 뷰어 -65·-88 에서 SkinnedMesh 로 연결)
       case 'action_mismatch':
+      case 'avatar_frame':
         return { kind: 'ignored', msgType, msgId: (checked.message as Envelope).msg_id };
     }
   } catch (error) {

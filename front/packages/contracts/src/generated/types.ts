@@ -373,12 +373,92 @@ detected_at: number
  */
 cleared: boolean
 })
+/**
+ * EC2(source_id ec2) → 뷰어 STOMP /topic/avatar. EC2 가 아바타 스트림(avatar_pose_batch·avatar_asset)에서 사람별 가장 새 포즈만 남겨 다시 싣는다. 메시지 하나만으로 그릴 수 있게 포즈마다 그 포즈가 가리키는 자산의 내려받기 주소를 함께 싣는다(늦게 구독한 뷰어도 REST 없이 시작). 밀리면 버리고(사람별 최신만), 빠진 사람은 '갱신 없음'이지 '사라짐'이 아니다. 사람의 존재·위치·접지·관측 상태·ID 신뢰도는 /topic/world(world_state)가 정본이고, 이 메시지는 관절 회전과 외형만 더한다(명세 13.1, 20.4). /topic/world·/topic/events 는 바뀌지 않는다. 1.0.0 신설(S15P31A101-249).
+ */
+export type AvatarFrameMessage = (Envelope & {
+msg_type?: "avatar_frame"
+payload: AvatarFramePayload
+})
+/**
+ * 리그 모델 좌표(glTF Y-up 자산 좌표)를 World(m, 오른손, +Z 상방)로 돌리는 회전. 똑바로 선 사람은 'X 축 +π/2 뒤 World Z 축 방향 회전'. Three.js 변환 (x, z, −y)는 뷰어 어댑터에서만 곱한다
+ * 
+ * @minItems 3
+ * @maxItems 3
+ */
+export type AxisAngle = [number, number, number]
+/**
+ * 축각 회전(rotation vector) [rx, ry, rz], 라디안. 방향 = 회전축, 길이 = 회전각(0 ≤ 길이 ≤ π, 길이 검사는 계약 시험). 회전 표현은 이것 하나다(쿼터니언·행렬·오일러로 싣지 않는다, 명세 12.1 각도는 라디안). 뷰어는 쿼터니언으로 바꿔 보간한다
+ * 
+ * @minItems 3
+ * @maxItems 3
+ */
+export type AxisAngle1 = [number, number, number]
+/**
+ * 뷰어가 내려받을 자산. 주소는 EC2 REST 경로(같은 출처, 관제 앱 인증)로만 싣는다. 객체 저장소 주소·서명 주소·다른 호스트는 싣지 않는다
+ */
+export type ViewerAsset = ({
+[k: string]: unknown
+} & {
+[k: string]: unknown
+} & {
+[k: string]: unknown
+} & {
+/**
+ * UTC epoch 밀리초
+ */
+stream_epoch: number
+/**
+ * avatar_asset identity_revision 그대로(자산을 만들 때 본 ID 교정 차수). 포즈의 identity_revision 보다 클 수 없다. 작으면 ID 교정 뒤 유지한 마지막 확정 외형이다(계약 시험, 설계 'ID 교정 뒤 외형')
+ */
+identity_revision: number
+/**
+ * EC2 REST 의 아바타 파일 경로(예: /api/avatars/w-0012/epochs/1760342000000/versions/3/mesh.glb, epoch 를 넣어 워커 재시작 뒤 같은 버전과 겹치지 않게). 스킴·호스트·쿼리(서명)·퍼센트 인코딩 없는 같은 출처 경로만, 마디는 점으로 시작하지 않는다(.. 경로 탈출 금지)
+ */
+mesh_url: string
+/**
+ * 내려받은 파일 확인과 뷰어 캐시 키
+ */
+mesh_sha256: string
+mesh_format: ("GLB_SKINNED" | "GLTF_SKINNED")
+/**
+ * pose.joint_rotations 길이와 같아야 한다. 다르면 캡슐
+ */
+joint_count: number
+joint_parents_sha256: string
+pelvis_joint_index: number
+/**
+ * 아직 텍스처가 없으면 null(기본 재질로 그린다)
+ */
+texture_url: (string | null)
+/**
+ * 표면 출처 지도(avatar_asset surface_source.mask_uri 의 내려받기 경로). 텍셀 값 2 = OBSERVED, 1 = INTERPOLATED, 0 = UNOBSERVED, 얼굴 영역 텍셀은 128 을 더한다(130 = 얼굴 관측, 128 = 얼굴 미관측, 129 불가). 무손실 8비트 단일 채널 PNG, 텍스처와 같은 UV·같은 해상도(docs/design/avatar-pose-stream.md '표면 출처 지도'). 텍스처가 있으면 필수, 없으면 null
+ */
+surface_source_url: (string | null)
+surface_ratios: {
+OBSERVED: number
+INTERPOLATED: number
+UNOBSERVED: number
+}
+/**
+ * avatar_asset surface_source.face_ratios 그대로(얼굴 영역 관측·미관측, 보간 없음)
+ */
+face_ratios: {
+OBSERVED: number
+UNOBSERVED: number
+}
+/**
+ * avatar_asset face_policy 그대로
+ */
+face_policy: ("OBSERVED" | "BLURRED" | "EXCLUDED")
+})
 
 export interface FrontContracts {
 world_state?: WorldStateMessage
 risk_event?: RiskEventMessage
 viewer_health?: ViewerHealthMessage
 action_mismatch?: ActionMismatchMessage
+avatar_frame?: AvatarFrameMessage
 }
 /**
  * I0의 영상 프레임(바이너리)을 제외한 모든 구간 메시지의 봉투 (명세 12.1). 수신 측은 모르는 필드를 무시한다.
@@ -543,4 +623,108 @@ requested_at: number
  * 관리자 메모(선택)
  */
 note?: string
+}
+export interface AvatarFramePayload {
+/**
+ * 포즈 묶음의 입력 출처를 그대로 싣는다. 출처가 다른 묶음은 다른 메시지로 보낸다
+ */
+input_provenance: (InputProvenance1 & {
+[k: string]: unknown
+})
+/**
+ * 이번에 갱신된 사람들(최대 64명, 메시지 바이트 상한은 설계 문서). 한 메시지에 같은 world_id 는 하나(계약 시험)
+ * 
+ * @minItems 1
+ * @maxItems 64
+ */
+avatars: [Avatar, ...(Avatar)[]]
+}
+/**
+ * 결과물을 만든 입력의 출처 (명세 20.4 입력 대체 계약 규칙 2·3)
+ */
+export interface InputProvenance1 {
+frames: {
+/**
+ * FrameSource 출처 (명세 20.4)
+ */
+source: ("LIVE" | "FILE" | "SIM" | "DATASET")
+/**
+ * 예: cmu_panoptic/160422_ultimatum1, scenario/2026-10-20_a
+ */
+dataset_id?: string
+dataset_hash?: string
+camera_ids?: string[]
+}
+/**
+ * 보정 입력. 이미지만 넣어 모델이 카메라를 스스로 추정하는 Run에는 생략한다
+ */
+calibration?: {
+/**
+ * CalibrationProvider 출처 (명세 20.4). G1_AUTO = 무마커 자동 보정(4.3), MODEL_ESTIMATE = 이전 Run에서 모델(MapAnything 등)이 추정한 카메라를 입력으로 다시 쓴 경우. 2.0.0 의미 변경(메이저): v1.3 에서 쓰지 않는 마커 보정·평면도 대응점 출처 값을 뺐다(명세 4.3 대체 경로, 16장)
+ */
+source: ("G1_AUTO" | "DATASET_GT" | "SIM" | "MODEL_ESTIMATE")
+/**
+ * calibration_version, scene_version, config_version 등 (예: cal-7)
+ */
+calibration_version: string
+}
+/**
+ * 사람 관련 결과물에서 필수
+ */
+tracks?: {
+/**
+ * WorldTrackProvider 출처 (명세 20.4)
+ */
+source: ("TIER0_LOG" | "TIER0_LIVE" | "DATASET_GT" | "SIM")
+provider_version: string
+}
+/**
+ * 입력 중 하나라도 DATASET_GT 또는 SIM이면 true. true인 결과의 지표는 '입력이 완벽할 때의 상한'이며 제품 성능으로 주장하지 않는다.
+ */
+is_upper_bound: boolean
+}
+/**
+ * 한 사람의 최신 포즈와 그 포즈가 가리키는 자산. 위치 필드가 끼어들지 않도록 닫는다(Tier 0 정본)
+ */
+export interface Avatar {
+/**
+ * 세션 단위 익명 World ID (예: w-0012)
+ */
+world_id: string
+/**
+ * avatar_pose_batch 값 그대로. 뷰어가 그리는 world_state 트랙 값과 다르면 캡슐로 그린다
+ */
+identity_revision: number
+/**
+ * UTC epoch 밀리초
+ */
+capture_time_ms: number
+/**
+ * UTC epoch 밀리초
+ */
+received_at_ms: number
+/**
+ * calibration_version, scene_version, config_version 등 (예: cal-7)
+ */
+calibration_version: string
+appearance_version: number
+joint_source: "inferred"
+pose: MhrPose
+/**
+ * appearance_version 의 자산. EC2 가 그 버전의 avatar_asset 을 아직 받지 못했으면 null(뷰어는 캡슐로 그린다)
+ */
+asset: (ViewerAsset | null)
+}
+/**
+ * MHR 리깅 메시의 포즈 하나 (EXP-02 아바타 스트림, docs/design/avatar-pose-stream.md). 위치는 싣지 않는다: root 위치·접지는 Tier 0 world_state 가 정본이다(명세 5.2, 20.4 아바타 구동). 모든 회전은 HMR 추정(inferred)이고 표시에만 쓰며 위험 판정에 넣지 않는다
+ */
+export interface MhrPose {
+root_rotation: AxisAngle
+/**
+ * 관절별 부모 기준(local) 회전. 인덱스 i = 자산 skeleton 의 관절 i(MHR 자산 관절 순서 = glTF skin.joints[i]), 길이 = avatar_asset skeleton.joint_count(계약 시험). 관절 0(MHR root)은 몸 전체 방향을 root_rotation 에 넣으므로 [0, 0, 0]. null = HMR 가 이 관절을 추정하지 않음(예: body 모드의 손가락), 뷰어는 그 관절의 기준(bind) 회전을 둔다. 지어내지 않는다
+ * 
+ * @minItems 1
+ * @maxItems 1024
+ */
+joint_rotations: [(AxisAngle1 | null), ...((AxisAngle1 | null))[]]
 }

@@ -1,0 +1,77 @@
+{
+  "_expect_error": "텍스처가 있는데 표면 출처 지도가 없다(관측·보간·미관측 구분 불가)",
+  "schema_version": "1.0.0",
+  "msg_type": "avatar_asset",
+  "msg_id": "7f1c2a10-4b6e-4c1d-9a2b-000000000251",
+  "sent_at": 1760342395000,
+  "source_id": "worker-01",
+  "payload": {
+    "world_id": "w-0012",
+    "stream_epoch": 1760342000000,
+    "identity_revision": 2,
+    "appearance_version": 3,
+    "previous_appearance_version": 2,
+    "created_at_ms": 1760342398000,
+    "calibration_version": "cal-7",
+    "model_version": "Fast-SAM-3D-Body@d72aa36 + sam-3d-body-dinov3",
+    "input_provenance": {
+      "frames": {
+        "source": "LIVE",
+        "camera_ids": [
+          "cam1",
+          "cam2",
+          "cam3",
+          "cam4"
+        ]
+      },
+      "calibration": {
+        "source": "G1_AUTO",
+        "calibration_version": "cal-7"
+      },
+      "tracks": {
+        "source": "TIER0_LIVE",
+        "provider_version": "tier0-0.1.0"
+      },
+      "is_upper_bound": false
+    },
+    "mesh": {
+      "format": "GLB_SKINNED",
+      "object_uri": "s3://simai-avatars/w-0012/e1760342000000/v3/mesh.glb",
+      "sha256": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "size_bytes": 1843200,
+      "vertex_count": 18439,
+      "face_count": 36874,
+      "axis_convention": "GLTF_Y_UP"
+    },
+    "skeleton": {
+      "rig": "MHR",
+      "joint_count": 127,
+      "joint_parents_sha256": "sha256:46ebaa1f3e9fc2b026611d597678b4471a3ccae6e593066f6ded381a4afc5225",
+      "pelvis_joint_index": 1,
+      "rig_source": "facebookresearch/MHR mhr_model.pt @ sam-3d-body@b5c765a"
+    },
+    "shape": {
+      "representation": "MHR",
+      "frozen": true,
+      "frames_used": 30
+    },
+    "texture": {
+      "object_uri": "s3://simai-avatars/w-0012/e1760342000000/v3/albedo.png",
+      "sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "resolution": [1024, 1024]
+    },
+    "surface_source": {
+      "mask_uri": null,
+      "ratios": {
+        "OBSERVED": 0.46,
+        "INTERPOLATED": 0.12,
+        "UNOBSERVED": 0.42
+      },
+      "face_ratios": {
+        "OBSERVED": 0.55,
+        "UNOBSERVED": 0.45
+      }
+    },
+    "face_policy": "OBSERVED"
+  }
+}
