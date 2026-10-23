@@ -30,7 +30,7 @@ GitLab ──Webhook──▶ https://simai.live/jenkins/ (Nginx) ──▶ jenk
 | server | `ci-db` 에 시험 DB `simai_ci` 를 지우고 새로 만든 뒤 `sh gradlew build`. `@SpringBootTest` 가 Flyway 로 V1·V2·R 을 적용한다. JUnit 결과를 Jenkins 에 올린다 | `server/`, `contracts/` |
 | front | `pnpm install --frozen-lockfile` → `format:check` → `lint`(계약 생성물 최신 여부 포함) → `typecheck` → `test` → `build` | `front/`, `contracts/` |
 | gateway | 패키지 4개(recorder, relay, rtsp_probe, site_alert)를 차례로 `uv sync --frozen` → `uv run pytest` | `gateway/`, `contracts/` |
-| ai | `uv sync --frozen` → `uv run lint-imports`(의존 방향) → 시험. **MR 빌드**는 `scripts/select_tests.py --base origin/<대상>` 이 고른 경로만 `pytest -m "not gpu"`(빈 출력이면 생략, `ALL` 이면 전체), **dev push** 는 전체(머지 뒤 안전망). 규칙은 `docs/design/test-selection.md`(S15P31A101-255·-260) | `ai/`, `contracts/`, `deploy/` |
+| ai | `uv sync --frozen` → `uv run lint-imports`(의존 방향) → 시험. `scripts/select_tests.py` 가 고른 경로만 `pytest -m "not gpu"`(빈 출력이면 생략, `ALL` 이면 전체). 기준은 **MR 빌드** `origin/<대상>`, **dev push** push 전 커밋(`gitlabBefore`, 없으면 `HEAD^1`). **전체**는 작업 매개변수 `FULL_AI_TESTS=true` 일 때만 — 매일 새벽 dev 전체 시험 작업(Jenkins 작업 설정의 매개변수·주기, 배포 없음)이 고르기가 놓친 것을 잡는다. 규칙은 `docs/design/test-selection.md`(S15P31A101-255·-260·-266) | `ai/`, `contracts/`, `deploy/` |
 
 `Jenkinsfile`·`deploy/jenkins/` 가 바뀌면 모든 단계가 돈다. 결과는 GitLab 커밋 상태 `jenkins` 로 MR 에 보인다(running → success·failed·canceled).
 
