@@ -1,7 +1,8 @@
 // MR·dev·master 자동 검사 (기획서 21.4, S15P31A101-28). 설명과 Jenkins 준비는 docs/design/ci-pipeline.md
 // 바뀐 경로의 단계만 돈다. GPU 없이 돈다(GPU 시험은 pytest marker gpu 로 뺀다).
 // 검사는 Docker 없이 Jenkins 컨테이너 안에서 직접 돈다. 도구(JDK 21·Node·pnpm·uv·Python 3.11)는 deploy/jenkins/Dockerfile 이 넣는다.
-// 아직 없는 단계: Risk Engine 공통 벡터(부록 D-G3-04), 통합(Compose), 이미지 빌드·배포(자동 배포 티켓)
+// dev 에 들어온 커밋은 검사를 모두 통과하면 EC2 에 배포한다(S15P31A101-254, docs/design/ec2-deploy.md "자동 배포").
+// 아직 없는 단계: Risk Engine 공통 벡터(부록 D-G3-04), 통합(Compose)
 
 // files 가 null 이면(MR 이 아닌 빌드) 모두 돈다
 @NonCPS
@@ -149,6 +150,24 @@ pipeline {
                     sh 'uv run lint-imports'
                     sh 'uv run pytest -m "not gpu"'
                 }
+            }
+        }
+
+        stage('배포') {
+            // dev 에 push(머지)된 빌드만. MR 빌드는 배포하지 않는다. 앞 단계가 하나라도 실패하면 여기까지 오지 않는다
+            when {
+                allOf {
+                    environment name: 'gitlabActionType', value: 'PUSH'
+                    environment name: 'gitlabBranch', value: 'dev'
+                }
+            }
+            steps {
+                // Jenkins 에는 Docker 소켓이 없다. 소스를 호스트로 보내고 빌드·기동은 호스트의 deploy.sh 가 한다.
+                // 이 키는 authorized_keys 에서 그 스크립트만 실행하게 묶여 있다(command=)
+                sh '''
+                    git archive --format=tar HEAD | ssh -i "$HOME/.ssh/simai_deploy" -o BatchMode=yes \
+                        ubuntu@host.docker.internal "deploy $(git rev-parse HEAD)"
+                '''
             }
         }
     }
