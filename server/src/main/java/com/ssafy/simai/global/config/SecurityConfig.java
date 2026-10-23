@@ -19,7 +19,7 @@ import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 /**
- * 공개 경로는 로그인·갱신·로그아웃뿐이고 나머지는 JWT 가 있어야 한다(명세 12.6 권한 열, FR-2).
+ * 공개 경로는 로그인·갱신·로그아웃과 API 문서뿐이고 나머지는 JWT 가 있어야 한다(명세 12.6 권한 열, FR-2).
  * API별 역할은 컨트롤러에 @PreAuthorize 로 붙인다. 열람 API 는 인증만 있으면 된다(역할 3종 모두 열람 가능).
  * 예: 관리자만 → hasRole('ADMIN'), 반장·관리자 → hasAnyRole('FOREMAN', 'ADMIN').
  * 관리 명령은 웹 서버 없이 뜨므로 이 설정을 쓰지 않는다.
@@ -44,6 +44,8 @@ public class SecurityConfig {
                         .permitAll()
                         // 오류 응답 본문을 만드는 경로. 막으면 400·401 이 빈 본문이 된다
                         .requestMatchers("/error").permitAll()
+                        // OpenAPI 문서·Swagger UI(OpenApiConfig). 경로 모양만 보이고 API 호출은 여전히 JWT 가 있어야 한다
+                        .requestMatchers(HttpMethod.GET, "/api/docs", "/api/docs/**", "/api/swagger-ui/**").permitAll()
                         .anyRequest().authenticated())
                 // 401·403 에도 ProblemDetail(code) 본문을 싣는다. 관제 앱이 만료(갱신 후 재시도)와 다른 오류를 가른다
                 .exceptionHandling(exceptions -> exceptions

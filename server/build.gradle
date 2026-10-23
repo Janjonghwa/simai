@@ -30,6 +30,8 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
     implementation 'org.springframework.boot:spring-boot-starter-websocket'
     implementation 'org.flywaydb:flyway-database-postgresql'
+    // OpenAPI 문서(명세 12.6: 경로 확정본). 3.1.x 가 Spring Boot 4.1 기준이다
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.1'
     compileOnly 'org.projectlombok:lombok'
     runtimeOnly 'org.postgresql:postgresql'
     annotationProcessor 'org.projectlombok:lombok'
