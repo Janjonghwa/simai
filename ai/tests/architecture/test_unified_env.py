@@ -78,9 +78,16 @@ def test_lock_has_one_torch_and_vllm_pins():
 
 def test_opencv_gui_wheel_is_never_installed():
     """ultralytics 의 opencv-python 은 override marker 'never' 로만 남는다(headless 하나로 통일)."""
-    assert PYPROJECT["tool"]["uv"]["override-dependencies"] == ["opencv-python; sys_platform == 'never'"]
+    assert PYPROJECT["tool"]["uv"]["override-dependencies"] == [
+        "opencv-python; sys_platform == 'never'",
+        # modelopt[onnx] 의 CUDA 12 빌드 의존성(S15P31A101-246): AutoCast 는 CPU onnxruntime 으로 돈다
+        "onnxruntime-gpu; sys_platform == 'never'",
+        "cupy-cuda12x; sys_platform == 'never'",
+    ]
     edges = [(p["name"], d.get("marker", "")) for p in LOCK["package"] for d in p.get("dependencies", []) if d["name"] == "opencv-python"]
     assert edges and all(m == "sys_platform == 'never'" for _, m in edges), edges
+    names = {p["name"] for p in LOCK["package"]}
+    assert not {"onnxruntime-gpu", "cupy-cuda12x"} & names and "onnxruntime" in names
 
 
 def test_git_sources_are_commit_pinned():

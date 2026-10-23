@@ -18,7 +18,11 @@ constraints = [
     { name = "tokenspeed-triton", marker = "sys_platform == 'linux'", specifier = "==3.7.10.post20260505" },
     { name = "transformers", marker = "sys_platform == 'linux'", specifier = ">=5.5.3,<5.10" },
 ]
-overrides = [{ name = "opencv-python", marker = "sys_platform == 'never'" }]
+overrides = [
+    { name = "cupy-cuda12x", marker = "sys_platform == 'never'" },
+    { name = "onnxruntime-gpu", marker = "sys_platform == 'never'" },
+    { name = "opencv-python", marker = "sys_platform == 'never'" },
+]
 
 [[package]]
 name = "agent-detector"
@@ -602,19 +606,6 @@ nvrtc = [
 ]
 nvtx = [
     { name = "nvidia-nvtx" },
-]
-
-[[package]]
-name = "cupy-cuda12x"
-version = "14.2.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "cuda-pathfinder" },
-    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" } },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/00/98/ac56fb7a285e264a0f29ea71d64b5c2eacd23c1f4ed9b4a8f99b16db3881/cupy_cuda12x-14.2.0-cp311-cp311-manylinux2014_aarch64.whl", hash = "sha256:1c775069f0af34662a8d4ae90848e29afcaf4ba63762d556ff22b6011683e571", size = 148189237, upload-time = "2026-08-20T02:39:47.011Z" },
-    { url = "https://files.pythonhosted.org/packages/d3/49/a83b7664151a7bdfb5d7ca7f29cef4eb5574a4cb8e1f9dfbae7fea372e4f/cupy_cuda12x-14.2.0-cp311-cp311-manylinux2014_x86_64.whl", hash = "sha256:5fe2366cc5c61a7ee4a527ce1e8951cb89092d0fb0b5830623cf114d1942c585", size = 136632369, upload-time = "2026-08-20T02:39:51.562Z" },
 ]
 
 [[package]]
@@ -2114,14 +2105,12 @@ wheels = [
 [package.optional-dependencies]
 onnx = [
     { name = "cppimport" },
-    { name = "cupy-cuda12x", marker = "platform_machine != 'ARM64' and platform_machine != 'aarch64'" },
     { name = "lief" },
     { name = "ml-dtypes" },
     { name = "onnx" },
     { name = "onnx-graphsurgeon" },
     { name = "onnxconverter-common" },
     { name = "onnxruntime", marker = "platform_machine == 'aarch64'" },
-    { name = "onnxruntime-gpu", marker = "platform_machine != 'aarch64'" },
     { name = "onnxscript" },
     { name = "onnxslim" },
     { name = "polygraphy" },
@@ -2251,21 +2240,7 @@ dependencies = [
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/e9/8c901c150ce0c368da38638f44152fb411059c0c7364b497c9e5c957321a/onnxruntime-1.24.4-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:046ff290045a387676941a02a8ae5c3ebec6b4f551ae228711968c4a69d8f6b7", size = 15152472, upload-time = "2026-03-17T22:03:26.176Z" },
-]
-
-[[package]]
-name = "onnxruntime-gpu"
-version = "1.24.4"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "flatbuffers" },
-    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" } },
-    { name = "packaging" },
-    { name = "protobuf" },
-    { name = "sympy" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/9f/13/e080d758f2b60f71abe518c707135fb121d6a3019e0761ead89b5283ac3d/onnxruntime_gpu-1.24.4-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c2a698659271c28220b3f56fe9b63f70eae3b3c36afa544201bf750b929a36dc", size = 252761835, upload-time = "2026-03-17T22:03:45.584Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/b6/7a4df417cdd01e8f067a509e123ac8b31af450a719fa7ed81787dd6057ec/onnxruntime-1.24.4-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e54ad52e61d2d4618dcff8fa1480ac66b24ee2eab73331322db1049f11ccf330", size = 17222993, upload-time = "2026-03-17T22:04:34.485Z" },
 ]
 
 [[package]]
@@ -3583,6 +3558,7 @@ tier0 = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin' or sys_platform == 'win32'" },
     { name = "nvidia-modelopt", extra = ["onnx"], marker = "sys_platform == 'linux'" },
     { name = "onnx", marker = "sys_platform == 'linux'" },
+    { name = "onnxruntime", marker = "sys_platform == 'linux'" },
     { name = "opencv-python-headless" },
     { name = "pyarrow" },
     { name = "scipy" },
@@ -3709,6 +3685,7 @@ requires-dist = [
     { name = "nvidia-modelopt", extras = ["onnx"], marker = "sys_platform == 'linux' and extra == 'tier0'", specifier = ">=0.47,<0.48" },
     { name = "omegaconf", marker = "sys_platform == 'linux' and extra == 'hmr'", specifier = ">=2.1,<2.4" },
     { name = "onnx", marker = "sys_platform == 'linux' and extra == 'tier0'", specifier = ">=1.21,<1.22" },
+    { name = "onnxruntime", marker = "sys_platform == 'linux' and extra == 'tier0'", specifier = ">=1.24,<1.25" },
     { name = "opencv-python-headless", marker = "sys_platform == 'linux' and extra == 'hmr'", specifier = ">=4.9" },
     { name = "opencv-python-headless", marker = "extra == 'calibration'", specifier = ">=4.9" },
     { name = "opencv-python-headless", marker = "extra == 'detection'", specifier = ">=4.9" },

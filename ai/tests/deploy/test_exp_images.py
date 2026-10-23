@@ -196,6 +196,9 @@ def test_check_without_cuda_fails_not_passes(xc, monkeypatch):
     ("exp02", ["a_pod_check", "g0_exp02_image_check", "g1_exp02_h6_det", "g2_exp02_h0_smoke", "g3_exp02_h1_official",
                "g4_exp02_h7_calib_k"]),
     ("mapanything", ["a_pod_check", "m0_mapanything_image_check", "m1_mapanything_c1", "m2_mapanything_c2"]),
+    # 통합 이미지는 Tier 0 층이 같아 tier0 항목도 돈다(S15P31A101-246). v1~v3 는 자리만
+    ("unified", ["a_pod_check", "b_tier0_engine", "t_test_tools", "c_tier0_live", "d_tier0_gpu_priority", "u1_unified_image_check",
+                 "u2_unified_hmr_calib_k"]),
 ])
 def test_queue_takes_only_this_images_items_and_exp_images_keep_live_guard(gs, monkeypatch, image, want):
     monkeypatch.setenv("SIMAI_IMAGE_DIGEST", "sha256:" + "b" * 64)
@@ -203,7 +206,7 @@ def test_queue_takes_only_this_images_items_and_exp_images_keep_live_guard(gs, m
     doc, held = gs.build_jobs(lay, {"commit": "0" * 40, "branch": "dev", "dirty_worktree": False})
     assert [j["name"] for j in doc["jobs"]] == want
     guard = doc["queue"]["live_guard"]
-    if image == "tier0":
+    if image in ("tier0", "unified"):  # Tier 0 를 스스로 띄우고 죽이는 검증 큐
         assert guard == {"enabled": False}
     else:
         assert guard["enabled"] is True and guard["on_live"] == "stop"
@@ -425,8 +428,74 @@ def test_layer_lists_keep_version_marker_hashes_without_duplicates(gs, tmp_path,
     assert seen < set(full)  # 나머지는 뒤의 전체 설치가 맡는다
 
 
+def test_unified_worker_layer_list_is_from_worker_export_and_disjoint_from_tier0_layers(gs, tmp_path):
+    """통합 이미지 워커 층(S15P31A101-246): tier0+worker 내보내기와 한 글자도 다르지 않고, Tier 0 층 묶음과 겹치지 않는다."""
+    for f in ("pyproject.toml", "uv.lock"):
+        (tmp_path / f).write_bytes((REPO / "ai" / f).read_bytes())
+    r = subprocess.run([gs.find_bash(), "-c", _layer_script("deploy/tier0/Dockerfile")], cwd=tmp_path, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    assert r.returncode == 0, r.stderr[-500:]
+    full = _blocks((tmp_path / "all-worker.txt").read_text(encoding="utf-8"))
+    tier0 = _blocks((tmp_path / "all.txt").read_text(encoding="utf-8"))
+    worker = _blocks((tmp_path / "worker.txt").read_text(encoding="utf-8"))
+    assert "vllm" in worker and "flashinfer-cubin" in worker
+    for name, lines in worker.items():
+        assert lines == full[name] and name not in tier0, name
+    t0_layers = set().union(*(_blocks((tmp_path / f"{g}.txt").read_text(encoding="utf-8")) for g in ("cuda", "torch", "trt", "wheels")))
+    assert not t0_layers & set(worker)
+    # 잠금 밖 휠은 통합 이미지에 넣지 않는다(시연 HMR 경로가 쓰지 않는다)
+    text = (REPO / "deploy" / "tier0" / "Dockerfile").read_text(encoding="utf-8")
+    unified = text[text.index("AS unified-deps"):]
+    assert "pip wheel" not in unified and "detectron2.git" not in unified and "--inexact" not in unified
+    assert "NVIDIA_DRIVER_CAPABILITIES=compute,utility,video,graphics" in unified
+
+
 def test_layer_list_fails_when_a_group_name_is_missing(gs, tmp_path):
     (tmp_path / "all.txt").write_text("numpy==2.4.6 \\\n    --hash=sha256:" + "0" * 64 + "\n", encoding="utf-8")
     r = subprocess.run([gs.find_bash(), "-c", _layer_script("deploy/exp02/Dockerfile")], cwd=tmp_path, capture_output=True,
                        text=True, encoding="utf-8", errors="replace")
     assert r.returncode != 0 and "잠금에 없다" in r.stderr
+
+
+# ---------------------------------------------------------------- 통합 이미지의 HMR 경로: 잠금 밖 휠 없이 (S15P31A101-246)
+
+
+def _run_image(tmp_path, *extra):
+    cv2 = pytest.importorskip("cv2")
+    pytest.importorskip("torch")
+    import numpy as np
+
+    img = tmp_path / "cam_A_01.png"
+    cv2.imwrite(str(img), np.zeros((32, 48, 3), np.uint8))
+    env = {**os.environ, "SIMAI_ROOT": str(tmp_path / "root"), "PYTHONUTF8": "1"}
+    return subprocess.run([sys.executable, str(REPO / "ai" / "experiments" / "hmr" / "run_image.py"), "--run-id", "t246",
+                           "--images", str(img), "--mode", "official", *extra], env=env, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=300)
+
+
+def test_unified_hmr_refuses_render_without_detectron2(tmp_path):
+    import importlib.util
+
+    if importlib.util.find_spec("detectron2") is not None:
+        pytest.skip("Detectron2 가 있는 환경(exp02 이미지)")
+    r = _run_image(tmp_path)
+    assert r.returncode == 2 and "--no-render" in r.stderr and not (tmp_path / "root" / "runs").exists()
+
+
+def test_unified_hmr_refuses_image_without_k_instead_of_guessing(tmp_path):
+    import importlib.util
+
+    if importlib.util.find_spec("moge") is not None:
+        pytest.skip("MoGe 가 있는 환경(exp02 이미지)")
+    r = _run_image(tmp_path, "--no-render")  # K 를 주지 않았다: MoGe 예비 경로도 없으니 모델을 올리기 전에 멈춘다
+    assert r.returncode == 2 and "K 가 없는 그림 cam_A_01" in r.stderr, r.stderr[-800:]
+
+
+def test_unified_hmr_check_fails_if_out_of_lock_wheels_sneak_in(xc, monkeypatch):
+    """통합 이미지 점검(u1): Detectron2·MoGe·chumpy 가 들어 있으면 통과로 두지 않는다(시연 경로가 그것 없이 돈다는 것을 보는 항목)."""
+    import importlib.util
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda n, *a: object() if n == "moge" else real(n, *a))
+    with pytest.raises(AssertionError, match="잠금 밖 휠"):
+        xc.hmr_chain()

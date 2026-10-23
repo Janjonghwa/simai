@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""simai-bootstrap: 어느 GPU·지역·사이트(RunPod·Vast.ai·엘리스 GPU VM)에서든 같은 순서로 이미지를 준비한다 (S15P31A101-205·-207).
+"""simai-bootstrap: 어느 GPU·지역·사이트(RunPod·Vast.ai·엘리스 GPU VM)에서든 같은 순서로 이미지를 준비한다 (S15P31A101-205·-207·-246).
 
     simai-bootstrap [tier0] [Tier 0 인자...]   준비 → simai-tier0 (엔진 준비 engine_cache ensure → python -m services.tier0)
+                                                SIMAI_SERVICES 에 vllm·worker 가 있으면 감시 프로세스로 Tier 0 → vLLM 서버 → 분석 워커 (아래)
     simai-bootstrap queue [gpu_session1 run 인자...]   준비 → GPU 1차 세션 큐 (저장소 사본 $SIMAI_SESSION_REPO, 기본 $SIMAI_ROOT/setup/session1/repo)
     simai-bootstrap check                       준비만 하고 결과 JSON 을 출력한다
     simai-bootstrap run <명령...>               준비 → 그 명령 (실험 이미지: simai-bootstrap run simai-exp02 python ...)
@@ -17,41 +18,79 @@
      묶음은 tier0 명령이면 tier0, check·queue·run 이면 SIMAI_WEIGHTS_SET(이미지가 정함: Tier 0 tier0, HMR exp02, MapAnything static).
      이미 있고 sha256 이 맞으면 건너뛰고(엘리스 블록 스토리지 재사용), 없으면 받아서 확인한다. 다르면 시작하지 않는다(받은 파일은 버리고,
      있던 파일은 지우지 않는다). HF 는 환경 변수 HF_TOKEN 만 쓰고, 토큰은 다른 호스트로 넘어가는 리다이렉트·출력·기록에 남지 않는다.
+     받기는 끊기면 지수 백오프로 다시 시도하고(SIMAI_FETCH_ATTEMPTS, 기본 5회) 옆 임시 파일(<이름>.part)에서 이어받는다(HTTP Range).
+     tier0 묶음에 없는 항목(워커·실험 가중치)은 확인한 뒤 검증 스탬프($SIMAI_ROOT/weights/.verified/<이름>.json: 경로·크기·mtime·sha256)를
+     남기고, 다음 시작에 크기·mtime 이 같으면 다시 해시하지 않는다(Cosmos3-Nano 31.5GB 재해싱을 피한다). Tier 0 가중치는 매번 해시한다.
   4) 기록 $SIMAI_ROOT/runs/bootstrap/<UTC>-<pid>.json (추가만), 그다음 실행할 명령으로 exec 한다.
      queue 는 엔진 준비를 하지 않는다: 세션 b 항목이 엔진 첫 빌드 시간을 재기 때문이다.
 
+감시 프로세스(SIMAI_SERVICES=tier0,vllm,worker, 통합 이미지 기본. 없거나 'tier0' 이면 위처럼 simai-tier0 로 exec 하는 Tier 0 단독):
+  - Tier 0 가중치만 확인한 뒤 simai-tier0 을 새 프로세스 그룹으로 띄운다. Tier 0 표시 파일(state/tier0.live)이 phase=running·
+    reserve.state=OK(simai-wait-tier0 와 같은 판정)이고 이번에 띄운 Tier 0 가 기동 뒤에 쓴 것(gpu_priority.written_at ≥ 기동 시각, pid 같음)이면 워커 가중치 묶음(SIMAI_WORKER_WEIGHTS_SET, 기본 vlm)을 받고(실패해도 Tier 0 는 계속),
+    vLLM 서버(127.0.0.1:SIMAI_VLLM_PORT, /health 확인) → 분석 워커 순서로 띄운다. GPU VRAM 이 48GB급 미만이면 워커 쪽을 띄우지 않는다(명세 3.12).
+  - vLLM·워커가 죽으면 그 프로세스 그룹을 SIGKILL 로 정리하고(vLLM EngineCore 같은 손자 포함), 지수 백오프 뒤 Tier 0 가 준비 상태일 때만
+    다시 띄운다. 빨리 죽는 일이 연달아 SIMAI_SUPERVISE_MAX_FAST_FAILURES(기본 5)번이면 그 프로세스는 포기한다. Tier 0 는 건드리지 않는다.
+  - Tier 0 가 끝나면 워커 → vLLM 을 내리고 Tier 0 종료 코드 그대로 끝낸다. SIGTERM·SIGINT 를 받으면 워커 → vLLM → Tier 0 순서로
+    그룹에 SIGTERM, SIMAI_STOP_GRACE_S(기본 15)초 안에 안 끝나면 그룹 SIGKILL. docker stop 은 -t 60 이상으로 준다.
+  - 출력은 줄마다 [tier0]·[vllm]·[worker] 접두로 표준 오류에, 원문은 $SIMAI_ROOT/logs/<이름>.log 에 덧붙인다.
+  - vLLM·워커는 스레드 제한(OMP·MKL·OpenBLAS·NumExpr = SIMAI_SIDECAR_THREADS, 기본 1. torch intra-op 도 OMP 를 따른다)·nice(SIMAI_SIDECAR_NICE, 기본 10)·
+    CPU 고정(SIMAI_SIDECAR_CPUS, 기본 auto = vCPU 8개 이상이면 뒤쪽 절반, none·'4-7,10'), 세 프로세스 모두 다른
+    TRITON_CACHE_DIR·TORCHINDUCTOR_CACHE_DIR·CUDA_CACHE_PATH(SIMAI_CACHE_ROOT, 기본 /tmp/simai-cache/<이름>/)로 띄운다.
+    vLLM 은 표시 파일이 phase=running·reserve OK 일 때만 띄우므로 Tier 0 의 TensorRT 엔진 빌드·적재와 GPU 선확보가 끝난 뒤다(진입점이 엔진을 준비한 뒤에 서비스가 표시 파일을 쓴다). 워커 토큰 파일(SIMAI_WORKER_ENV_FILE, 없으면
+    $SIMAI_ROOT/../.simai-private/worker.env 가 있을 때)은 simai-wait-tier0 --env-file 로 워커 환경에만 넣는다.
+    워커 인자는 SIMAI_WORKER_ARGS(예: --config <워커 설정>: 받을 작업 유형 VLM·hmr_refine 등의 처리기)를 덧붙인다.
+
 HF 토큰: 시작하자마자 HF_TOKEN 을 환경에서 꺼내 이 프로세스 안에만 들고(가중치 받기에만 쓴다), HUGGING_FACE_HUB_TOKEN 은 읽지 않고 지우기만 한다.
-그래서 nvidia-smi 조회·도움말·그대로 넘기는 명령·Tier 0·큐 등 어떤 자식 프로세스에도 토큰이 상속되지 않는다(S15P31A101-205 리뷰 R1).
+그래서 nvidia-smi 조회·도움말·그대로 넘기는 명령·Tier 0·vLLM·워커·큐 등 어떤 자식 프로세스에도 토큰이 상속되지 않는다(S15P31A101-205 리뷰 R1).
 
 종료 코드(simai-tier0·engine_cache 와 같은 규칙): 0 정상, 2 저장 위치·용량·가중치(없음·해시 불일치·받기 실패·목록 오류·묶음 이름 오류),
-3 GPU 없음·최소 사양 미만, 64 사용법 오류(run 뒤에 명령 없음).
+3 GPU 없음·최소 사양 미만, 64 사용법 오류(run 뒤에 명령 없음, SIMAI_SERVICES 오류), 127 Tier 0 명령을 띄우지 못함.
+감시 프로세스 모드는 Tier 0 의 종료 코드를 그대로 돌려준다(신호로 끝났으면 128 + 신호 번호).
 """
 
 from __future__ import annotations
 
 import hashlib
+import http.client
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
+import threading
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-EXIT_OK, EXIT_STORAGE, EXIT_GPU, EXIT_USAGE = 0, 2, 3, 64
+EXIT_OK, EXIT_STORAGE, EXIT_GPU, EXIT_USAGE, EXIT_NOT_FOUND = 0, 2, 3, 64, 127
 WORKSPACE = Path("/workspace")
 CONTAINER_ROOT = Path("/srv/simai")  # 볼륨이 없을 때. Pod 를 지우면 같이 사라진다(결과는 지우기 전에 scp)
 DEFAULT_MANIFEST = Path(__file__).resolve().parents[1] / "weights.json"  # 저장소. 이미지는 SIMAI_WEIGHTS_MANIFEST 로 준다
 MIN_CC = (8, 0)  # Ampere 이상
 MIN_VRAM_MB = 22_500  # 24GB급(A10·L4 는 nvidia-smi 에서 약 23,000 MiB 로 보인다)
+MIN_WORKER_VRAM_MB = 45_000  # 48GB급(A40·L40S 는 약 46,000 MiB). 그보다 작으면 분석 부하를 같은 GPU 에 올리지 않는다(명세 3.12)
 TOKEN_ENVS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")  # 자식 환경에서 지울 이름. 읽는 것은 HF_TOKEN 하나
 _hf_token: str | None = None  # take_token() 이 환경에서 꺼내 둔 값. _request·_redact 만 쓴다
 TIER0_CMD = "simai-tier0"
 SET_ENV = "SIMAI_WEIGHTS_SET"  # check·queue·run 이 받을 가중치 묶음(이미지 ENV). 없으면 tier0
+SERVICES_ENV = "SIMAI_SERVICES"  # tier0 명령이 띄울 프로세스. 없으면 tier0(단독)
+WORKER_SET_ENV = "SIMAI_WORKER_WEIGHTS_SET"  # 감시 모드에서 Tier 0 준비 뒤 받는 묶음. 없으면 vlm
+SERVICES = ("tier0", "vllm", "worker")  # 기동 순서. 종료는 거꾸로
+FETCH_ATTEMPTS = 5
+RETRY_HTTP = {408, 425, 429, 500, 502, 503, 504}
+LOCK_DIR = ("weights", ".locks")  # 항목마다 지우지 않는 잠금 파일(Codex 리뷰 R1)
+STAMP_DIR = ("weights", ".verified")  # 모델 폴더 밖(vLLM 이 읽는 weights/cosmos3-nano/ 에 섞이지 않게), Tier 0 state/ 밖
+VLLM_HF_OVERRIDES = '{"architectures": ["Cosmos3ReasonerForConditionalGeneration"]}'  # Reasoner 탑만 싣는다(docs/design/unified-env.md)
+KILL = getattr(signal, "SIGKILL", 9)  # Windows(노트북 시험)에는 SIGKILL 이 없다(Proc.signal 이 kill() 로 바꾼다)
+_out_lock = threading.Lock()
 
 
 class BootstrapError(Exception):
@@ -81,7 +120,8 @@ def _redact(text: str) -> str:
 
 
 def log(msg: str) -> None:
-    print(f"simai-bootstrap: {_redact(msg)}", file=sys.stderr, flush=True)
+    with _out_lock:
+        print(f"simai-bootstrap: {_redact(msg)}", file=sys.stderr, flush=True)
 
 
 # ---------------------------------------------------------------- 저장 위치
@@ -188,30 +228,187 @@ def urlopen(req: urllib.request.Request):  # 시험에서 바꿔 끼운다
     return urllib.request.urlopen(req, timeout=60)  # noqa: S310 - 목록 파일의 https·HF 주소만
 
 
-def fetch(entry: dict, target: Path) -> str:
-    """target 옆 임시 파일에 받고 해시를 맞춘 뒤에만 이름을 바꾼다. 받은 파일의 sha256."""
-    part = target.with_name(f"{target.name}.part-{os.getpid()}")
+def backoff_sleep(seconds: float) -> None:  # 시험에서 바꿔 끼운다
+    time.sleep(seconds)
+
+
+class _Retry(Exception):
+    """다시 시도하면 될 수 있는 받기 실패(망 끊김·5xx·429·이어받기 응답 불일치)."""
+
+
+def _lock_file(f, what: str) -> None:
+    """열린 잠금 파일에 배타 잠금을 건다(다른 프로세스가 쥐고 있으면 끝날 때까지 기다린다). 프로세스가 죽으면 풀린다.
+    POSIX 는 flock, Windows(노트북 시험)는 msvcrt.locking(첫 바이트). 둘 다 다른 열기(open)끼리 막는다(같은 프로세스의 스레드끼리도)."""
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+    if fcntl is not None:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log(f"{what}: 다른 프로세스가 받거나 확인하는 중이라 끝날 때까지 기다린다")
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        return
+    import msvcrt
+
+    told = False
+    while True:
+        try:
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            return
+        except OSError:
+            if not told:
+                log(f"{what}: 다른 프로세스가 받거나 확인하는 중이라 끝날 때까지 기다린다")
+                told = True
+            time.sleep(0.05)
+
+
+class weight_lock:
+    """가중치 항목 하나의 임계 구역: 기존 파일 재확인 → 받기 → 해시 → 게시(rename) → 스탬프. 잠금 파일은 지우지 않는다
+    (지우거나 이름을 바꾸면 기다리던 쪽과 새로 연 쪽의 inode 가 갈라져 둘 다 잠금을 쥔다). 모델 폴더 밖 weights/.locks/ 에 둔다."""
+
+    def __init__(self, root: Path, w: dict) -> None:
+        self.path = root.joinpath(*LOCK_DIR, re.sub(r"[^A-Za-z0-9_.-]", "_", w["path"]) + ".lock")
+        self.what = w["name"]
+        self.f = None
+
+    def __enter__(self):
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.f = open(self.path, "a+b")  # noqa: SIM115 - __exit__ 가 닫는다(닫으면 잠금이 풀린다)
+        except OSError as e:
+            raise BootstrapError(EXIT_STORAGE, f"{self.what} 잠금 파일 {self.path} 을 열 수 없다: {e}") from e
+        _lock_file(self.f, self.what)
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.f.close()
+
+
+def _download_once(entry: dict, f, have: int):
+    """f(추가 모드 임시 파일)에 받는다. have 바이트가 이미 있으면 Range 로 이어받는다. 끝까지 받은 내용의 sha256 객체."""
     h = hashlib.sha256()
+    if have:
+        f.seek(0)
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    req = _request(entry["source"])
+    if have:
+        req.add_header("Range", f"bytes={have}-")  # 리다이렉트에도 실린다(Authorization 과 달리 일반 헤더)
+    try:
+        resp = urlopen(req)
+    except urllib.error.HTTPError as e:
+        if e.code == 416:  # 이어받을 범위가 없다(임시 파일이 원본보다 길거나 원본이 바뀜): 처음부터
+            f.seek(0)
+            f.truncate()
+            raise _Retry("HTTP 416(이어받기 범위 없음), 처음부터 다시") from e
+        if e.code in RETRY_HTTP:
+            raise _Retry(f"HTTP {e.code}") from e
+        raise
+    with resp:
+        status = getattr(resp, "status", None)
+        if not (have and status == 206 and str(resp.headers.get("Content-Range", "")).startswith(f"bytes {have}-")):
+            if have:  # 원본이 Range 를 무시했다(200) 또는 응답 범위가 다르다: 이어붙이면 파일이 깨지므로 처음부터
+                log(f"{entry['name']} 원본이 이어받기를 받지 않아(상태 {status}) 처음부터 받는다")
+            f.seek(0)
+            f.truncate()
+            h = hashlib.sha256()
+        for chunk in iter(lambda: resp.read(1 << 20), b""):
+            h.update(chunk)
+            f.write(chunk)
+        f.flush()
+        os.fsync(f.fileno())
+    return h
+
+
+def fetch(entry: dict, target: Path) -> str:
+    """target 옆 임시 파일(<이름>.part)에 받고 해시를 맞춘 뒤에만 이름을 바꾼다. 받은 파일의 sha256.
+    부르는 쪽(ensure_weights)이 weight_lock 을 쥐고 부른다: 받기·해시·게시가 한 임계 구역이다(Codex 리뷰 R1).
+    끊기면 지수 백오프로 다시 시도하며 임시 파일에서 이어받는다. 해시가 다르면 임시 파일을 지운다(깨진 파일을 이어받지 않게)."""
+    part = target.with_name(f"{target.name}.part")
+    attempts = max(1, int(os.environ.get("SIMAI_FETCH_ATTEMPTS") or FETCH_ATTEMPTS))
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        with urlopen(_request(entry["source"])) as resp, open(part, "wb") as f:
-            for chunk in iter(lambda: resp.read(1 << 20), b""):
-                h.update(chunk)
-                f.write(chunk)
-            f.flush()
-            os.fsync(f.fileno())
-        got = h.hexdigest()
+        with open(part, "a+b") as f:
+            for attempt in range(1, attempts + 1):
+                f.flush()
+                have = os.fstat(f.fileno()).st_size
+                try:
+                    got = _download_once(entry, f, have).hexdigest()
+                    break
+                except urllib.error.HTTPError:
+                    raise  # 401·403·404 등은 다시 해도 같다
+                except (_Retry, urllib.error.URLError, http.client.HTTPException, OSError) as e:
+                    if attempt == attempts:
+                        raise BootstrapError(EXIT_STORAGE, f"{entry['name']} 받기 실패({attempts}회 시도, 받은 {have} 바이트는 "
+                                                           f"{part.name} 에 남김): {type(e).__name__}: {e}") from e
+                    wait = min(60.0, 2.0 ** attempt)
+                    f.flush()
+                    log(f"{entry['name']} 받기 끊김({type(e).__name__}: {e}) → {wait:.0f}s 뒤 다시 "
+                        f"({attempt}/{attempts}, {os.fstat(f.fileno()).st_size} 바이트부터 이어받기)")
+                    backoff_sleep(wait)
         if got != entry["sha256"]:
+            part.unlink(missing_ok=True)
             raise BootstrapError(EXIT_STORAGE, f"{entry['name']} 받은 파일 해시 불일치 {got[:12]}… ≠ 목록 {entry['sha256'][:12]}… "
                                                "(버림, 시작하지 않음)")
         os.replace(part, target)
         return got
     except BootstrapError:
+        _drop_empty(part)
         raise
     except Exception as e:  # noqa: BLE001 - 받기 실패는 모두 가중치 문제(코드 2)로. 메시지는 _redact 를 거쳐 나간다
+        _drop_empty(part)
         raise BootstrapError(EXIT_STORAGE, f"{entry['name']} 받기 실패: {type(e).__name__}: {e}") from e
-    finally:
-        part.unlink(missing_ok=True)
+
+
+def _drop_empty(part: Path) -> None:
+    """받은 것이 없는 임시 파일만 지운다(받은 바이트는 다음 시작에 이어받는다)."""
+    try:
+        if part.stat().st_size == 0:
+            part.unlink()
+    except OSError:
+        pass
+
+
+def _stamped(w: dict) -> bool:
+    """검증 스탬프를 쓰는 항목: tier0 묶음에 없는 것(워커·실험 가중치). Tier 0 가중치는 매번 해시한다."""
+    return "tier0" not in w.get("sets", []) and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", w.get("name", "")))
+
+
+def _stamp_file(root: Path, w: dict) -> Path:
+    return root.joinpath(*STAMP_DIR, f"{w['name']}.json")
+
+
+def _stamp_matches(root: Path, w: dict, target: Path) -> bool:
+    try:
+        d = json.loads(_stamp_file(root, w).read_text(encoding="utf-8"))
+        st = target.stat()
+    except (OSError, ValueError):
+        return False
+    return isinstance(d, dict) and d.get("path") == w["path"] and d.get("sha256") == w["sha256"] and d.get("stat") == _ident(st)
+
+
+def _ident(st: os.stat_result) -> list[int]:
+    """파일 식별: 크기·mtime_ns·inode·ctime_ns. mtime 을 되돌린 복사·교체(새 inode, ctime 갱신)도 다시 해시하게 한다(Codex 리뷰 권장)."""
+    return [st.st_size, st.st_mtime_ns, st.st_ino, st.st_ctime_ns]
+
+
+def _write_stamp(root: Path, w: dict, target: Path, st: os.stat_result) -> None:
+    """st: 해시하기 전에 잰 stat. 해시한 뒤의 stat 과 다르면(해시하는 동안 바뀜) 스탬프를 남기지 않는다."""
+    f = _stamp_file(root, w)
+    try:
+        if _ident(target.stat()) != _ident(st):
+            log(f"{w['name']} 확인하는 동안 파일이 바뀌어 검증 스탬프를 남기지 않는다(다음 시작에 다시 해시)")
+            return
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_name(f"{f.name}.tmp-{os.getpid()}")
+        tmp.write_text(json.dumps({"path": w["path"], "sha256": w["sha256"], "stat": _ident(st),
+                                   "verified_at": time.time_ns() // 1_000_000}) + "\n", encoding="utf-8")
+        os.replace(tmp, f)
+    except OSError as e:
+        log(f"{w['name']} 검증 스탬프를 쓰지 못함(다음 시작에 다시 해시한다): {e}")
 
 
 def ensure_weights(root: Path, entries: list[dict]) -> list[dict]:
@@ -223,17 +420,27 @@ def ensure_weights(root: Path, entries: list[dict]) -> list[dict]:
     for w in entries:
         target = root / w["path"]
         want = w["sha256"]
+        stamped = _stamped(w)
         rec = {"name": w["name"], "path": str(target), "license": w.get("license", "")}
-        if target.is_file():
-            got = sha256_file(target)
-            if got != want:
-                raise BootstrapError(EXIT_STORAGE, f"{w['name']} 가중치 해시 불일치: {target} {got[:12]}… ≠ 목록 {want[:12]}… "
-                                                   "(지우지 않음, 시작하지 않음)")
-            rec["status"] = "present"
-        else:
-            log(f"{w['name']} 받는 중 → {target}")
-            fetch(w, target)
-            rec["status"] = "downloaded"
+        with weight_lock(root, w):  # 재확인·받기·해시·게시·스탬프를 한 임계 구역으로(기다린 쪽은 먼저 끝난 쪽의 파일을 다시 확인한다)
+            if target.is_file():
+                if stamped and _stamp_matches(root, w, target):
+                    rec["status"] = "present-stamp"  # 크기·mtime·inode·ctime 이 확인 때와 같다: 다시 해시하지 않는다
+                else:
+                    st = target.stat()
+                    got = sha256_file(target)
+                    if got != want:
+                        raise BootstrapError(EXIT_STORAGE, f"{w['name']} 가중치 해시 불일치: {target} {got[:12]}… ≠ 목록 {want[:12]}… "
+                                                           "(지우지 않음, 시작하지 않음)")
+                    rec["status"] = "present"
+                    if stamped:
+                        _write_stamp(root, w, target, st)
+            else:
+                log(f"{w['name']} 받는 중 → {target}")
+                fetch(w, target)
+                rec["status"] = "downloaded"
+                if stamped:
+                    _write_stamp(root, w, target, target.stat())  # 받은 내용은 fetch 가 해시했다(같은 임계 구역 안)
         rec["sha256"] = want
         if w.get("env"):
             os.environ.setdefault(w["env"], str(target))
@@ -279,6 +486,10 @@ def prepare(want_set: str = "tier0") -> dict:
 def _write_record(root: Path, rec: dict) -> None:
     d = root / "runs" / "bootstrap"
     name = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}.json"
+    n = 0
+    while (d / name).exists():  # 같은 초·같은 프로세스의 두 번째 기록(감시 모드의 워커 가중치). 추가만 하고, 이름순 = 시간순('~' 는 '.' 뒤)
+        n += 1
+        name = f"{name.split('.')[0].split('~')[0]}~{n}.json"
     try:
         d.mkdir(parents=True, exist_ok=True)
         (d / name).write_text(_redact(json.dumps(rec, ensure_ascii=False, indent=2)) + "\n", encoding="utf-8")
@@ -289,6 +500,422 @@ def _write_record(root: Path, rec: dict) -> None:
 
 def execvp(argv: list[str]) -> None:  # 시험에서 바꿔 끼운다
     os.execvpe(argv[0], argv, child_env())
+
+
+# ---------------------------------------------------------------- 감시 프로세스 (S15P31A101-246)
+
+
+def parse_services(text: str | None) -> list[str]:
+    """SIMAI_SERVICES → 기동 순서 목록. tier0 가 꼭 있어야 하고 모르는 이름·중복은 사용법 오류(받기 전에 멈춘다)."""
+    names = [s.strip() for s in (text or "tier0").split(",") if s.strip()]
+    if not names or "tier0" not in names or len(set(names)) != len(names) or set(names) - set(SERVICES):
+        raise BootstrapError(EXIT_USAGE, f"{SERVICES_ENV}={text!r} 오류: tier0 를 넣고 tier0·vllm·worker 중에서 쉼표로 고른다")
+    return [n for n in SERVICES if n in names]
+
+
+def exit_code(rc: int) -> int:
+    return 128 - rc if rc < 0 else rc  # Popen 은 신호 종료를 음수로 준다
+
+
+def _env_float(env: dict, name: str, default: float) -> float:
+    try:
+        return float(env.get(name) or default)
+    except ValueError as e:
+        raise BootstrapError(EXIT_USAGE, f"{name}={env.get(name)!r} 는 숫자여야 한다") from e
+
+
+def _load_waiter():
+    """simai-wait-tier0(deploy/scripts/wait_tier0_ready.py)의 표시 파일 판정을 그대로 쓴다(같은 규칙을 두 번 쓰지 않는다)."""
+    here = Path(__file__).resolve().parent
+    for cand in (here / "wait_tier0_ready.py", here / "simai-wait-tier0"):
+        if cand.is_file():
+            loader = importlib.machinery.SourceFileLoader("simai_wait_tier0", str(cand))
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            mod = importlib.util.module_from_spec(spec)
+            loader.exec_module(mod)
+            return mod
+    raise BootstrapError(EXIT_USAGE, f"simai-wait-tier0 가 {here} 에 없다(Tier 0 준비를 판정할 수 없다)")
+
+
+def tier0_marker_ready(marker: Path, waiter, since_ms: int | None, pid: int | None) -> tuple[bool, str]:
+    """simai-wait-tier0 판정(phase=running·reserve OK·15초 안 갱신)에 더해, 이번에 띄운 Tier 0 가 기동 뒤에 쓴 표시 파일인지 본다(리뷰 -246).
+    이전 실행이 비정상 종료로 남긴 running 표시(mtime 이 아직 새것)를 새 Tier 0 의 준비로 보면, 진입점이 엔진을 다시 만드는 동안(약 550초)
+    vLLM·워커가 GPU 를 먼저 잡는다. 표시 파일은 지우지 않는다(Tier 0 가 previous_unclean 판정에 쓴다). 표시 파일 형식은 그대로:
+    gpu_priority.written_at(Tier 0 가 쓴 UTC ms)이 이번 기동 시각 이후이고 gpu_priority.pid 가 띄운 프로세스(simai-tier0 이 exec 해 같은 pid)여야 한다."""
+    ok, why = waiter.readiness(marker, {"OK"})
+    if not ok:
+        return ok, why
+    try:
+        gp = json.loads(marker.read_text(encoding="utf-8"))["gpu_priority"]
+        written, owner = gp.get("written_at"), gp.get("pid")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False, "표시 파일을 다시 읽지 못함"
+    if since_ms is None or not isinstance(written, int) or isinstance(written, bool) or written < since_ms:
+        return False, f"이번 Tier 0 기동 전의 표시 파일(written_at {written!r} < 기동 {since_ms})"
+    if pid is not None and owner != pid:
+        return False, f"다른 프로세스가 쓴 표시 파일(pid {owner!r} ≠ 띄운 Tier 0 {pid})"
+    return True, why
+
+
+def http_ok(url: str) -> bool:  # 시험에서 바꿔 끼운다
+    try:
+        with urllib.request.urlopen(url, timeout=2) as r:  # noqa: S310 - 127.0.0.1 의 vLLM /health
+            return getattr(r, "status", 200) == 200
+    except (OSError, http.client.HTTPException):
+        return False
+
+
+class Proc:
+    """서비스 프로세스 하나. 새 세션(= 새 프로세스 그룹)으로 띄워 그룹 전체에 신호를 보낸다(손자 프로세스까지).
+    출력은 줄마다 [이름] 접두로 표준 오류에 내보내고 원문을 로그 파일에 덧붙인다."""
+
+    def __init__(self, name: str, argv: list[str], env: dict[str, str], log_dir: Path) -> None:
+        self.name = name
+        log_dir.mkdir(parents=True, exist_ok=True)
+        self._log = open(log_dir / f"{name}.log", "ab")  # noqa: SIM115 - 출력 스레드가 닫는다
+        kw: dict = {"start_new_session": True} if os.name != "nt" else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        try:
+            self.p = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw)
+        except OSError:
+            self._log.close()
+            raise
+        self.pid = self.p.pid
+        self._pump = threading.Thread(target=self._copy_output, name=f"out-{name}", daemon=True)
+        self._pump.start()
+
+    def _copy_output(self) -> None:
+        try:
+            for raw in iter(self.p.stdout.readline, b""):
+                line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                with _out_lock:
+                    print(f"[{self.name}] {line}", file=sys.stderr, flush=True)
+                self._log.write(raw if raw.endswith(b"\n") else raw + b"\n")
+                self._log.flush()
+        finally:
+            self._log.close()
+
+    def poll(self) -> int | None:
+        return self.p.poll()
+
+    def signal(self, sig: int) -> None:
+        if os.name == "nt":  # 노트북 시험: 그룹 신호가 없다
+            try:
+                self.p.kill() if sig == KILL else self.p.terminate()
+            except OSError:
+                pass
+            return
+        try:
+            os.killpg(self.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass  # 그룹이 이미 비었다
+
+    def wait(self, timeout: float) -> int | None:
+        try:
+            return self.p.wait(timeout)
+        except subprocess.TimeoutExpired:
+            return None
+
+    def pin(self, cpus: set[int] | None) -> None:
+        if cpus and hasattr(os, "sched_setaffinity"):
+            try:
+                os.sched_setaffinity(self.pid, cpus)  # 리더에 걸면 그 뒤의 손자가 물려받는다(nice 와 같음)
+            except OSError as e:
+                log(f"{self.name} CPU 고정 {sorted(cpus)} 실패: {e}")
+
+    def renice(self, value: int) -> None:
+        if value and hasattr(os, "setpriority"):
+            try:
+                os.setpriority(os.PRIO_PROCESS, self.pid, value)  # 이 뒤에 만드는 손자(vLLM EngineCore 등)가 물려받는다
+            except OSError as e:
+                log(f"{self.name} nice {value} 실패: {e}")
+
+
+def usable_cpus() -> list[int]:  # 시험에서 바꿔 끼운다
+    if hasattr(os, "sched_getaffinity"):
+        return sorted(os.sched_getaffinity(0))  # 컨테이너 cpuset 안의 CPU
+    return list(range(os.cpu_count() or 1))
+
+
+def sidecar_cpus(spec: str | None, avail: list[int]) -> set[int] | None:
+    """vLLM·워커를 묶을 CPU. auto(기본): 쓸 수 있는 vCPU 가 8개 이상이면 뒤쪽 절반(앞쪽은 Tier 0 의 CPU 디코딩·기하 단계 몫),
+    8개 미만이면 묶지 않는다(나누면 둘 다 모자란다). none: 묶지 않음. '4-7,10': 그 목록(쓸 수 있는 것과 겹치는 것만). Tier 0 는 묶지 않는다."""
+    spec = (spec or "auto").strip().lower()
+    if spec in ("none", "off"):
+        return None
+    if spec == "auto":
+        return set(avail[len(avail) // 2:]) if len(avail) >= 8 else None
+    out: set[int] = set()
+    try:
+        for part in spec.split(","):
+            a, _, b = part.strip().partition("-")
+            out |= set(range(int(a), int(b or a) + 1))
+    except ValueError as e:
+        raise BootstrapError(EXIT_USAGE, f"SIMAI_SIDECAR_CPUS={spec!r} 형식 오류(예: auto, none, 4-7,10)") from e
+    out &= set(avail)
+    if not out:
+        raise BootstrapError(EXIT_USAGE, f"SIMAI_SIDECAR_CPUS={spec!r} 에 쓸 수 있는 CPU 가 없다(쓸 수 있는 {avail})")
+    return out
+
+
+class Service:
+    def __init__(self, name: str, argv: list[str], env: dict[str, str]) -> None:
+        self.name, self.argv, self.env = name, argv, env
+        self.proc: Proc | None = None
+        self.started = 0.0
+        self.healthy = False  # vLLM 은 /health 200 을 본 뒤, 워커는 띄우자마자
+        self.ever_healthy = False
+        self.last_health = -1e9
+        self.fails = 0  # 연달아 빨리 죽은 수
+        self.next_at = 0.0
+        self.given_up = False
+
+
+class Supervisor:
+    """Tier 0 → (Tier 0 준비) → 워커 가중치 → vLLM → 분석 워커. Tier 0 가 끝나면 나머지를 내리고 Tier 0 종료 코드로 끝난다."""
+
+    def __init__(self, root: Path, services: list[str], tier0_argv: list[str], env: dict[str, str] | None = None, *,
+                 spawn=Proc, ready=None, health=None, clock=time.monotonic, sleep=time.sleep, wall_ms=None) -> None:
+        env = dict(os.environ) if env is None else env
+        self.root = root
+        self.services = services
+        self.spawn, self.clock, self.sleep = spawn, clock, sleep
+        self.wall_ms = wall_ms or (lambda: time.time_ns() // 1_000_000)
+        self.t0_since_ms: int | None = None  # 이번에 띄운 Tier 0 의 기동 시각·pid(표시 파일이 그 뒤의 것인지 본다)
+        self.t0_pid: int | None = None
+        self.log_dir = root / "logs"
+        self.marker = Path(env.get("SIMAI_TIER0_MARKER") or root / "state" / "tier0.live")
+        self.port = int(_env_float(env, "SIMAI_VLLM_PORT", 8000))
+        self.ready_timeout_s = _env_float(env, "SIMAI_VLLM_READY_TIMEOUT_S", 1800)
+        self.grace_s = _env_float(env, "SIMAI_STOP_GRACE_S", 15)
+        self.backoff_s = _env_float(env, "SIMAI_SUPERVISE_BACKOFF_S", 5)
+        self.backoff_max_s = _env_float(env, "SIMAI_SUPERVISE_BACKOFF_MAX_S", 300)
+        self.min_uptime_s = _env_float(env, "SIMAI_SUPERVISE_MIN_UPTIME_S", 60)
+        self.max_fast = int(_env_float(env, "SIMAI_SUPERVISE_MAX_FAST_FAILURES", 5))
+        self.nice = int(_env_float(env, "SIMAI_SIDECAR_NICE", 10))
+        self.tick_s = _env_float(env, "SIMAI_SUPERVISE_TICK_S", 0.5)
+        self.worker_set = env.get(WORKER_SET_ENV) or "vlm"
+        self.manifest = Path(env.get("SIMAI_WEIGHTS_MANIFEST") or DEFAULT_MANIFEST)
+        if ready is None:
+            waiter = _load_waiter()
+            ready = lambda: tier0_marker_ready(self.marker, waiter, self.t0_since_ms, self.t0_pid)  # noqa: E731
+        self.ready = ready
+        self.health = health or (lambda: http_ok(f"http://127.0.0.1:{self.port}/health"))
+        base = {k: v for k, v in env.items() if k not in TOKEN_ENVS}
+        threads = env.get("SIMAI_SIDECAR_THREADS") or "1"
+        self.cpus = sidecar_cpus(env.get("SIMAI_SIDECAR_CPUS"), usable_cpus())
+        # 프로세스마다 JIT·커널 캐시를 나눈다(같은 판이어도 동시에 쓰는 경합을 피한다). 컨테이너 디스크(/tmp): 저장 위치에 남길 산출물이 아니다
+        cache_root = Path(env.get("SIMAI_CACHE_ROOT") or ("/tmp/simai-cache" if os.name != "nt" else Path(tempfile.gettempdir()) / "simai-cache"))
+        self.svc: dict[str, Service] = {}
+        for name in services:
+            e = dict(base)
+            cache = cache_root / name
+            e["TRITON_CACHE_DIR"], e["TORCHINDUCTOR_CACHE_DIR"] = str(cache / "triton"), str(cache / "inductor")
+            e["CUDA_CACHE_PATH"] = str(cache / "cuda")
+            if name != "tier0":  # Tier 0 의 CPU 디코딩·단일 스레드 기하 단계를 보호한다(자문 3-4). torch 의 intra-op 스레드도 OMP_NUM_THREADS 를 따른다
+                for k in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+                    e[k] = threads
+            if name == "vllm":
+                e.setdefault("VLLM_USE_DEEP_GEMM", "0")
+                e["HF_HUB_OFFLINE"] = "1"  # 모델은 확인한 로컬 폴더만. 토큰 없이 HF 로 나가지 않는다
+            argv = {"tier0": tier0_argv, "vllm": self._vllm_argv(env), "worker": self._worker_argv(env)}[name]
+            self.svc[name] = Service(name, argv, e)
+        self.phase = "wait_tier0"  # → weights → run | off(워커 쪽 포기)
+        self.last_why = ""
+        self.stop_signal: int | None = None
+        self._weights: threading.Thread | None = None
+        self.weights_error: str | None = None
+
+    def _vllm_argv(self, env: dict) -> list[str]:
+        model = env.get("SIMAI_VLLM_MODEL") or str(self.root / "weights" / "cosmos3-nano")
+        return [*shlex.split(env.get("SIMAI_VLLM_CMD") or "vllm"), "serve", model,
+                "--served-model-name", env.get("SIMAI_VLLM_SERVED_NAME") or "cosmos3-nano",
+                "--hf-overrides", VLLM_HF_OVERRIDES,
+                "--gpu-memory-utilization", env.get("SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION") or "0.55",
+                "--max-num-seqs", env.get("SIMAI_WORKER_VLLM_MAX_NUM_SEQS") or "4",
+                "--host", "127.0.0.1", "--port", str(self.port),
+                "--mm-encoder-tp-mode", "data", "--async-scheduling",
+                *shlex.split(env.get("SIMAI_VLLM_EXTRA_ARGS") or "")]
+
+    def _worker_argv(self, env: dict) -> list[str]:
+        cmd = shlex.split(env["SIMAI_WORKER_CMD"]) if env.get("SIMAI_WORKER_CMD") else [sys.executable, "-m", "services.worker"]
+        # 설정 자리(S15P31A101-246): 받을 작업 유형(VLM·HMR hmr_refine 등)은 워커 설정 파일의 처리기가 정한다(services.worker --config, 조립은 -227 등).
+        # 예: SIMAI_WORKER_ARGS="--config /workspace/simai/worker.json"
+        cmd += shlex.split(env.get("SIMAI_WORKER_ARGS") or "")
+        env_file = env.get("SIMAI_WORKER_ENV_FILE")
+        if not env_file and (default := self.root.parent / ".simai-private" / "worker.env").is_file():
+            env_file = str(default)
+        if env_file:  # 워커 토큰은 워커 환경에만(다른 프로세스·이 감시 프로세스 환경에 넣지 않는다)
+            cmd = [*shlex.split(env.get("SIMAI_WAIT_TIER0_CMD") or "simai-wait-tier0"), "--env-file", env_file, "--", *cmd]
+        return cmd
+
+    def request_stop(self, signum: int, _frame=None) -> None:
+        self.stop_signal = signum
+
+    # -- 단계
+
+    def _tier0_ready(self) -> bool:
+        ok, why = self.ready()
+        if not ok and why != self.last_why:
+            log(f"Tier 0 준비 기다림: {why}")
+        self.last_why = why
+        return ok
+
+    def _prepare_worker_weights(self) -> None:
+        rec: dict = {"bootstrap": "S15P31A101-246", "stage": "worker-weights", "set": self.worker_set,
+                     "started_at": time.time_ns() // 1_000_000, "hf_token": "present" if _hf_token else "absent"}
+        try:
+            rec["weights"] = ensure_weights(self.root, load_manifest(self.manifest, self.worker_set))
+            rec["exit"] = EXIT_OK
+            log(f"워커 가중치 {self.worker_set} 준비: " + ", ".join(f"{w['name']} {w['status']}" for w in rec["weights"]))
+        except Exception as e:  # noqa: BLE001 - 워커 가중치 실패는 Tier 0 를 멈추지 않는다
+            self.weights_error = _redact(f"{type(e).__name__}: {e}")
+            rec |= {"exit": getattr(e, "code", EXIT_STORAGE), "error": self.weights_error}
+        finally:
+            rec["finished_at"] = time.time_ns() // 1_000_000
+            _write_record(self.root, rec)
+
+    def step(self) -> None:
+        now = self.clock()
+        if self.phase == "wait_tier0" and self._tier0_ready():
+            log("Tier 0 준비됨(phase=running, reserve OK) → 워커 쪽 준비")
+            if "vllm" in self.svc:
+                self.phase = "weights"
+                self._weights = threading.Thread(target=self._prepare_worker_weights, name="worker-weights", daemon=True)
+                self._weights.start()
+            else:
+                self.phase = "run"
+        if self.phase == "weights" and self._weights is not None and not self._weights.is_alive():
+            if self.weights_error:
+                log(f"워커 가중치 {self.worker_set} 실패 → vLLM·워커를 띄우지 않는다(Tier 0 는 계속): {self.weights_error}")
+                self.phase = "off"
+            else:
+                self.phase = "run"
+        if self.phase == "run":
+            for name in ("vllm", "worker"):
+                if name in self.svc:
+                    self._tend(self.svc[name], now)
+
+    def _gate_open(self, s: Service) -> bool:
+        if s.name == "worker" and "vllm" in self.svc:
+            v = self.svc["vllm"]
+            return v.ever_healthy or v.given_up  # VLM 이 한 번 뜬 뒤(포기했으면 VLM 없이)
+        return True
+
+    def _tend(self, s: Service, now: float) -> None:
+        if s.given_up:
+            return
+        if s.proc is None:
+            if now < s.next_at or not self._gate_open(s) or not self._tier0_ready():
+                return  # 다시 띄우는 것도 Tier 0 표시 파일이 정상일 때만
+            try:
+                s.proc = self.spawn(s.name, s.argv, s.env, self.log_dir)
+            except OSError as e:
+                self._failed(s, now, True, f"띄우지 못함({type(e).__name__}: {e})")
+                return
+            s.started, s.healthy, s.last_health = now, s.name != "vllm", -1e9
+            if s.name != "tier0":
+                s.proc.renice(self.nice)
+                s.proc.pin(self.cpus)
+            log(f"{s.name} 시작 pid {s.proc.pid}: {shlex.join(s.argv)}")
+            return
+        rc = s.proc.poll()
+        if rc is None:
+            if not s.healthy:
+                if now - s.last_health >= 5:
+                    s.last_health = now
+                    if self.health():
+                        s.healthy = s.ever_healthy = True
+                        log(f"{s.name} 준비됨({now - s.started:.0f}s, /health 200)")
+                        return
+                if now - s.started > self.ready_timeout_s:
+                    s.proc.signal(KILL)
+                    s.proc.wait(10)
+                    self._reap(s, now, f"{self.ready_timeout_s:.0f}s 안에 /health 가 200 이 아님")
+            elif s.fails and now - s.started >= self.min_uptime_s:
+                s.fails = 0  # 오래 돌았다: 연속 실패를 잊는다
+            return
+        self._reap(s, now, f"종료 코드 {exit_code(rc)}")
+
+    def _reap(self, s: Service, now: float, why: str) -> None:
+        assert s.proc is not None
+        s.proc.signal(KILL)  # 그룹에 남은 손자(vLLM EngineCore 등, GPU 메모리를 쥔다)를 정리한다
+        fast = not s.healthy or now - s.started < self.min_uptime_s
+        s.proc, s.healthy = None, False
+        self._failed(s, now, fast, why)
+
+    def _failed(self, s: Service, now: float, fast: bool, why: str) -> None:
+        # 오래 돌다 끝났으면 연속 빠른 실패를 0 부터 다시 센다(포기는 그 뒤 빠른 실패 max_fast 번), 백오프는 처음 값
+        s.fails = s.fails + 1 if fast else 0
+        if fast and s.fails >= self.max_fast:
+            s.given_up = True
+            log(f"{s.name} {why}: 빨리 끝남이 {s.fails}번 이어져 다시 띄우지 않는다(Tier 0 는 그대로)")
+            return
+        delay = min(self.backoff_max_s, self.backoff_s * 2 ** max(0, s.fails - 1))
+        s.next_at = now + delay
+        log(f"{s.name} {why} → {delay:.0f}s 뒤 다시 띄운다(연속 빠른 실패 {s.fails}번, Tier 0 는 그대로)")
+
+    # -- 종료
+
+    def _stop(self, s: Service) -> int | None:
+        if s.proc is None:
+            return None
+        s.proc.signal(signal.SIGTERM)
+        rc = s.proc.wait(self.grace_s)
+        if rc is None:
+            log(f"{s.name} 가 {self.grace_s:.0f}s 안에 끝나지 않아 그룹 SIGKILL")
+        s.proc.signal(KILL)  # 리더가 끝났어도 그룹에 남은 손자를 정리한다
+        if rc is None:
+            rc = s.proc.wait(10)
+        s.proc = None
+        return rc
+
+    def _stop_sidecars(self) -> None:
+        for name in ("worker", "vllm"):  # 워커가 vLLM 을 쓰므로 워커 먼저
+            if name in self.svc:
+                self._stop(self.svc[name])
+
+    def start_tier0(self) -> None:
+        t0 = self.svc["tier0"]
+        self.t0_since_ms = self.wall_ms()  # 띄우기 전에 잰다: 이 시각보다 먼저 쓴 표시 파일은 이번 Tier 0 의 것이 아니다
+        t0.proc = self.spawn("tier0", t0.argv, t0.env, self.log_dir)
+        self.t0_pid = t0.proc.pid
+        t0.started = self.clock()
+
+    def run(self) -> int:
+        t0 = self.svc["tier0"]
+        try:
+            self.start_tier0()
+        except OSError as e:
+            log(f"Tier 0 를 띄우지 못함: {type(e).__name__}: {e}")
+            return EXIT_NOT_FOUND
+        log(f"tier0 시작 pid {t0.proc.pid}: {shlex.join(t0.argv)} (이어서 {', '.join(self.services[1:])})")
+        while True:
+            if self.stop_signal is not None:
+                log(f"신호 {self.stop_signal} → 워커 → vLLM → Tier 0 순서로 내린다")
+                self._stop_sidecars()
+                rc = self._stop(t0)
+                return exit_code(rc) if rc is not None else 128 + int(self.stop_signal)
+            rc = t0.proc.poll()
+            if rc is not None:
+                log(f"Tier 0 종료(코드 {exit_code(rc)}) → 워커·vLLM 을 내리고 같은 코드로 끝낸다")
+                self._stop_sidecars()
+                t0.proc.signal(KILL)
+                return exit_code(rc)
+            self.step()
+            self.sleep(self.tick_s)
+
+
+def supervise(rec: dict, services: list[str], rest: list[str]) -> int:
+    root = Path(os.environ["SIMAI_ROOT"])
+    tier0 = [*shlex.split(os.environ.get("SIMAI_TIER0_CMD") or TIER0_CMD), *rest]
+    try:
+        sup = Supervisor(root, services, tier0)
+    except BootstrapError as e:
+        log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
+        return e.code
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, sup.request_stop)
+    return sup.run()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -310,6 +937,13 @@ def main(argv: list[str] | None = None) -> int:
     if mode == "run" and not rest:
         log("사용법: simai-bootstrap run <명령...>")
         return EXIT_USAGE
+    services = ["tier0"]
+    if mode == "tier0":
+        try:  # 가중치를 받기 전에 설정 오타를 잡는다
+            services = parse_services(os.environ.get(SERVICES_ENV))
+        except BootstrapError as e:
+            log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
+            return e.code
     want_set = "tier0" if mode == "tier0" else (os.environ.get(SET_ENV) or "tier0")
     try:
         rec = prepare(want_set)
@@ -330,8 +964,14 @@ def main(argv: list[str] | None = None) -> int:
     if mode == "run":
         execvp(rest)
         return EXIT_OK
-    execvp([TIER0_CMD, *rest])
-    return EXIT_OK
+    if len(services) > 1 and rec["gpu"]["memory_total_mb"] < MIN_WORKER_VRAM_MB:
+        log(f"GPU VRAM {rec['gpu']['memory_total_mb']:.0f} MiB < 48GB급({MIN_WORKER_VRAM_MB} MiB): 분석 부하를 같은 GPU 에 올리지 않는다 "
+            f"→ Tier 0 단독 ({SERVICES_ENV}={','.join(services)} 무시, 명세 3.12)")
+        services = ["tier0"]
+    if services == ["tier0"]:
+        execvp([TIER0_CMD, *rest])  # Tier 0 단독: 감시 프로세스 없이 지금까지와 같다
+        return EXIT_OK
+    return supervise(rec, services, rest)
 
 
 if __name__ == "__main__":

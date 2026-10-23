@@ -3,6 +3,8 @@
 #   bash deploy/scripts/check_image.sh simai/tier0:local
 #   bash deploy/scripts/check_image.sh simai/exp02-fs3db:local      # 실험 이미지(S15P31A101-207): 이미지 ENV SIMAI_IMAGE_KIND 로 종류를 고른다
 #   bash deploy/scripts/check_image.sh simai/risk-engine:local      # EC2 Risk Engine 컨테이너(S15P31A101-99). 저장소 최상위에서(계약 예시를 넣는다)
+#   bash deploy/scripts/check_image.sh simai/unified:local          # 통합 이미지(S15P31A101-246): Tier 0 항목 전부 + vLLM·플러그인·HMR(잠금 밖 휠 없이) import,
+#                                                                     EGL 렌더(버리는 컨테이너의 Mesa), 감시 프로세스 기동·종료 순서(가짜 프로세스). 저장소 최상위에서
 # 확인: 비밀·가중치·엔진·SSH 호스트 키가 이미지에 없음, 패키지 import, 진입점 도움말,
 #       볼륨 없음·가중치 없음·해시 불일치·GPU 없음이 각각 명확한 코드와 메시지로 끝남, GPU 별 엔진 경로가 다름,
 #       PUBLIC_KEY(RunPod)·SSH_PUBLIC_KEY(Vast.ai) 를 주면 키 인증만 받는 sshd 가 뜸, SIMAI_SSHD=off 면 안 뜸,
@@ -28,7 +30,9 @@ trap cleanup EXIT
 KIND=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$IMG" | sed -n 's/^SIMAI_IMAGE_KIND=//p')
 KIND=${KIND:-tier0}
 echo "이미지 종류: $KIND"
-case "$KIND" in tier0|exp02|mapanything|risk_engine) ;; *) echo "FAIL  알 수 없는 SIMAI_IMAGE_KIND=$KIND"; exit 1 ;; esac
+case "$KIND" in tier0|exp02|mapanything|risk_engine|unified) ;; *) echo "FAIL  알 수 없는 SIMAI_IMAGE_KIND=$KIND"; exit 1 ;; esac
+# 통합 이미지(S15P31A101-246)는 Tier 0 이미지와 같은 Tier 0 층·진입점이라 Tier 0 항목을 모두 돌고, 워커 쪽 항목을 더한다
+T0LIKE=0; case "$KIND" in tier0|unified) T0LIKE=1 ;; esac
 
 # 1) 이미지 층 이력·환경 변수에 비밀이 없다
 SECRET_RE='hf_[A-Za-z0-9]{20,}|HF_TOKEN=[^ ]|HUGGING_FACE_HUB_TOKEN=|RUNPOD_API_KEY=|PUBLIC_KEY=ssh-|BEGIN [A-Z ]*PRIVATE KEY'
@@ -46,10 +50,11 @@ fi
 # 2) 파일 시스템에 가중치·엔진·비밀 파일·SSH 호스트 키가 없다
 #    가중치 확장자는 256KB 넘는 것만 본다(패키지가 싣는 .pth 경로 설정 파일·onnx 시험용 작은 모델은 가중치가 아니다).
 #    .pem·.key 는 개인 키가 든 것만 본다(certifi 인증서 묶음 같은 공개 인증서는 괜찮다).
+#    compressed_tensors(vLLM 의존성)의 hadamards.safetensors 는 패키지에 든 하다마드 행렬 표(학습 가중치 아님, 통합 이미지)라 뺀다.
 FOUND=$(docker run --rm --entrypoint /bin/sh "$IMG" -c '
   find / -xdev \( -path /proc -o -path /sys -o -path /dev \) -prune -o -type f -size +256k \( \
     -name "*.pt" -o -name "*.pth" -o -name "*.engine" -o -name "*.onnx" -o -name "*.safetensors" -o -name "*.ckpt" \
-    -o -name "*.trt" -o -name "*.bin" -path "*weights*" \) -print 2>/dev/null
+    -o -name "*.trt" -o -name "*.bin" -path "*weights*" \)     ! -path "*/site-packages/compressed_tensors/transform/utils/hadamards.safetensors" -print 2>/dev/null
   find / -xdev \( -path /proc -o -path /sys -o -path /dev \) -prune -o -type f \( \
     -name "hf.env" -o -name ".env" -o -name "*.env" -o -name "id_rsa*" -o -name "id_ed25519*" -o -name "authorized_keys" \
     -o -path "/etc/ssh/ssh_host_*" -o -path "*/.simai-private/*" \) -print 2>/dev/null
@@ -88,6 +93,32 @@ for d in (os.environ["SIMAI_MAPANYTHING_REPO"] + "/mapanything", "/root/.cache/t
     assert pathlib.Path(d).exists(), d
 print(sys.version.split()[0], "torch", torch.__version__, "mapanything", m.version("mapanything"), "uniception", m.version("uniception"),
       "commit", os.environ["SIMAI_MAPANYTHING_COMMIT"][:7])' ;;
+  unified) IMPORTS='
+import importlib.metadata as m, importlib.util as u, os, pathlib, sys
+import torch, vllm, flashinfer, transformers, tensorrt, ultralytics, pyrender, smplx, pytorch_lightning, timm, cv2
+import modelopt.onnx.autocast, onnxruntime
+from vllm import ModelRegistry
+from vllm.plugins import load_general_plugins
+load_general_plugins()
+assert "Cosmos3ReasonerForConditionalGeneration" in ModelRegistry.get_supported_archs(), "vllm-cosmos3 플러그인 미등록"
+# 잠금 밖 휠(Detectron2·MoGe·chumpy)은 통합 이미지에 넣지 않는다. CUDA 12 짐(onnxruntime-gpu·cupy)·GUI OpenCV 도 없다
+extra = [n for n in ("detectron2", "moge", "chumpy", "cupy") if u.find_spec(n)]
+for d in ("onnxruntime-gpu", "opencv-python", "cupy-cuda12x"):
+    try:
+        m.distribution(d)
+        extra.append(d)
+    except m.PackageNotFoundError:
+        pass
+assert not extra, extra
+# 시연 HMR 경로(보정 K → sam-3d-body → 메시·관절)가 셋 없이 올라온다. 관절 정보는 mhr70 모듈을 그대로 읽는다
+sys.path.insert(0, os.environ["SIMAI_FS3DB_REPO"])
+from sam_3d_body import SAM3DBodyEstimator, load_sam_3d_body
+from sam_3d_body.metadata.mhr70 import pose_info
+from tools.build_detector import HumanDetector
+assert len(pose_info["keypoint_info"]) == 70
+assert pathlib.Path("/root/.cache/torch/hub/facebookresearch_dinov3_main/hubconf.py").is_file()
+print(sys.version.split()[0], "torch", torch.__version__, "vllm", m.version("vllm"), "vllm-cosmos3", m.version("vllm-cosmos3"),
+      "transformers", m.version("transformers"), "tensorrt", m.version("tensorrt-cu13"), "onnxruntime", m.version("onnxruntime"))' ;;
   risk_engine) IMPORTS='
 import importlib.metadata as m, importlib.util as u, sys
 import services.risk_engine.app, simai_ai.risk.plan, fastapi, uvicorn, jsonschema
@@ -103,7 +134,7 @@ if [ "$KIND" != tier0 ]; then
     fail "import 실패 ($KIND): $(tail -5 <<<"$OUT")"
   fi
 fi
-if [ "$KIND" = tier0 ]; then
+if [ "$T0LIKE" = 1 ]; then
 if OUT=$(docker run --rm --entrypoint python "$IMG" -c '
 import importlib.metadata as m, sys
 import simai_ai, services.tier0, simai_ai.detection.engine_cache, cv2, ultralytics, tensorrt, onnx, modelopt
@@ -138,7 +169,7 @@ expect(){  # 이름 기대코드 기대문구 docker-run-인자...
   fi
 }
 # 기본 진입점 simai-bootstrap(S15P31A101-205): 볼륨이 없으면 컨테이너 디스크를 쓰고, GPU 가 없으면 가중치를 받기 전에 코드 3
-if [ "$KIND" = tier0 ]; then
+if [ "$T0LIKE" = 1 ]; then
 expect "simai-bootstrap GPU 없음" 3 "GPU 없음" "$IMG"
 # 아래는 simai-tier0(엔진 준비 진입점)를 직접 부른다: 부트스트랩 뒤 단계의 볼륨·가중치·해시·GPU 처리
 T0=(--entrypoint /usr/local/bin/simai-tier0)
@@ -214,7 +245,7 @@ else
 fi
 
 # 5) GPU 아키텍처마다 엔진 경로가 다르다 (같은 볼륨에서 A40 캐시를 H100 이 고르지 않는다)
-if [ "$KIND" = tier0 ]; then
+if [ "$T0LIKE" = 1 ]; then
 plan(){ docker run --rm -v "$VOL:/workspace" "$IMG" python -m simai_ai.detection.engine_cache plan \
   --weights /workspace/simai/weights/yolo/yolo26x-pose.pt --cache-root /workspace/simai/engines \
   --gpu-arch "$1" --tensorrt 11.4.0.106 --ultralytics 8.4.178 2>&1; }
@@ -224,6 +255,79 @@ if [ "$P90" != "$P86" ] && grep -q "/sm_90/trt" <<<"$P90" && grep -q "/sm_86/trt
 else
   fail "엔진 경로가 GPU 별로 나뉘지 않는다: $P90 / $P86"
 fi
+fi
+
+# 5b) 통합 이미지(S15P31A101-246): EGL 렌더와 감시 프로세스 기동·종료 순서(가짜 Tier 0·vLLM·워커, GPU 없음)
+if [ "$KIND" = unified ]; then
+  hostpath(){ if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi; }  # Git Bash: docker.exe 는 윈도 경로를 받는다
+  # GPU 가 없는 곳에는 NVIDIA EGL 이 없어, 버리는 컨테이너에만 Mesa 소프트웨어 EGL 을 깔아 pyrender EGL 경로가 실제로 그리는지 본다(이미지에는 넣지 않음)
+  cat > "${TMPDIR:-/tmp}/simai-egl-$$.py" <<'PY'
+import os, numpy as np, pyrender, trimesh
+s = pyrender.Scene(bg_color=[0, 0, 0, 1], ambient_light=[1.0, 1.0, 1.0])
+s.add(pyrender.Mesh.from_trimesh(trimesh.creation.box()))
+s.add(pyrender.PerspectiveCamera(yfov=1.0), pose=np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 3], [0, 0, 0, 1]], dtype=float))
+r = pyrender.OffscreenRenderer(64, 64)
+c, d = r.render(s)
+r.delete()
+assert c[32, 32].any() and not c[0, 0].any() and d[32, 32] > 0, (c[32, 32], c[0, 0])
+print("EGL", os.environ.get("PYOPENGL_PLATFORM"), c.shape)
+PY
+  docker create --name "$VOL" --entrypoint bash "$IMG" -c \
+    'apt-get update -qq >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libegl-mesa0 libgl1-mesa-dri >/dev/null 2>&1 || exit 77; python /tmp/egl.py' >/dev/null
+  docker cp "$(hostpath "${TMPDIR:-/tmp}/simai-egl-$$.py")" "$VOL:/tmp/egl.py" >/dev/null
+  OUT=$(docker start -a "$VOL" 2>&1); RC=$?
+  docker rm -f "$VOL" >/dev/null 2>&1; rm -f "${TMPDIR:-/tmp}/simai-egl-$$.py"
+  if [ "$RC" -eq 0 ]; then
+    pass "pyrender EGL 렌더(버리는 컨테이너의 Mesa EGL, $(tail -1 <<<"$OUT"))"
+  elif [ "$RC" -eq 77 ]; then
+    echo "SKIP  pyrender EGL 렌더: Mesa 를 받지 못함(망). GPU 에서는 세션 u1 이 본다"
+  else
+    fail "pyrender EGL 렌더: $(tail -5 <<<"$OUT")"
+  fi
+  # 감시 프로세스: 저장소의 가짜 프로세스(ai/tests/deploy/fake_service.py)로 Tier 0 → vLLM(/health) → 워커, docker stop 에 워커 → vLLM → Tier 0
+  SUP=$(mktemp -d)
+  cp ai/tests/deploy/fake_service.py "$SUP/"
+  cat > "$SUP/run.sh" <<'RUN'
+set -e
+cd /tmp/sup
+printf 'fake-yolo' > t0.pt
+printf 'fake-vlm' > vlm.bin
+python - <<'PY'
+import hashlib, json
+h = lambda f: hashlib.sha256(open(f, "rb").read()).hexdigest()
+json.dump({"weights": [
+    {"name": "yolo", "sets": ["tier0"], "path": "weights/yolo/yolo26x-pose.pt", "source": {"url": "file:///tmp/sup/t0.pt"},
+     "sha256": h("t0.pt"), "env": "SIMAI_TIER0_WEIGHTS"},
+    {"name": "fakevlm", "sets": ["fakevlm"], "path": "weights/cosmos3-nano/model.bin", "source": {"url": "file:///tmp/sup/vlm.bin"},
+     "sha256": h("vlm.bin")}]}, open("w.json", "w"))
+PY
+exec simai-bootstrap tier0 --config c.json
+RUN
+  docker create --name "$VOL" -e SIMAI_ROOT=/tmp/sup/simai -e "SIMAI_NVIDIA_SMI=echo NVIDIA H100 80GB HBM3, 9.0, 81559, 580.65.06" \
+    -e SIMAI_WEIGHTS_MANIFEST=/tmp/sup/w.json -e SIMAI_WORKER_WEIGHTS_SET=fakevlm -e SIMAI_MIN_FREE_GB=0 -e SIMAI_SUPERVISE_TICK_S=0.2 \
+    -e "SIMAI_TIER0_CMD=python /tmp/sup/fake_service.py tier0" -e "SIMAI_VLLM_CMD=python /tmp/sup/fake_service.py vllm" \
+    -e "SIMAI_WORKER_CMD=python /tmp/sup/fake_service.py worker" -e FAKE_EVENTS=/tmp/sup/events.txt \
+    -e HF_TOKEN=hf_checkimageFakeToken0000000000 "$IMG" bash /tmp/sup/run.sh >/dev/null
+  docker cp "$(hostpath "$SUP")/." "$VOL:/tmp/sup" >/dev/null && docker start "$VOL" >/dev/null
+  for _ in $(seq 1 120); do
+    if docker exec "$VOL" cat /tmp/sup/events.txt 2>/dev/null | grep -q '^worker start'; then break; fi
+    sleep 1
+  done
+  docker stop -t 60 "$VOL" >/dev/null
+  CODE=$(docker inspect --format '{{.State.ExitCode}}' "$VOL")
+  docker cp "$VOL:/tmp/sup/events.txt" "$(hostpath "$SUP")/events.txt" >/dev/null 2>&1
+  LOGS=$(docker logs "$VOL" 2>&1)
+  docker rm -f "$VOL" >/dev/null 2>&1
+  STARTS=$(awk '$2 == "start" { printf "%s ", $1 }' "$SUP/events.txt" 2>/dev/null)
+  TERMS=$(awk '$2 == "term" { printf "%s ", $1 }' "$SUP/events.txt" 2>/dev/null)
+  TOKENS=$(awk '$2 == "start" && $3 != "clean"' "$SUP/events.txt" 2>/dev/null)
+  if [ "$STARTS" = "tier0 vllm worker " ] && [ "$TERMS" = "worker vllm tier0 " ] && [ -z "$TOKENS" ] && [ "$CODE" = 0 ] \
+     && grep -q '^\[worker\] worker says hello' <<<"$LOGS" && ! grep -q 'hf_checkimage' <<<"$LOGS"; then
+    pass "감시 프로세스: 기동 ${STARTS}/ 종료 ${TERMS}/ 자식 토큰 없음, 종료 코드 0"
+  else
+    fail "감시 프로세스: 기동 '$STARTS' 종료 '$TERMS' 코드 $CODE 토큰 '$TOKENS'"; tail -8 <<<"$LOGS" | sed 's/^/      /'
+  fi
+  rm -rf "$SUP"
 fi
 
 # 6) SSH: PUBLIC_KEY(RunPod)·SSH_PUBLIC_KEY(Vast.ai) 를 주면 키 인증만 받는 sshd 가 뜬다(호스트 키는 이때 만든다). Risk Engine 이미지는 sshd 가 없다

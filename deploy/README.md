@@ -13,8 +13,8 @@ Blackwell(sm_100·sm_120)도 세 이미지 모두 커널이 있다(Tier 0 cu130,
 |---|---|
 | `docker-bake.hcl` | 빌드 정의. 외부 이미지(CUDA·uv) 다이제스트 고정, 대상 `tier0`·`exp02`·`mapanything`(베이스를 함께 빌드, 묶음 `exp` = 실험 이미지 둘) |
 | `base/Dockerfile`, `base/simai-start.sh` | 공통 베이스: CUDA 이미지 + uv + uv 관리 Python 3.11.15 + SSH(키 인증만: RunPod `PUBLIC_KEY`·Vast `SSH_PUBLIC_KEY`·`SIMAI_AUTHORIZED_KEYS_FILE`, `SIMAI_SSHD=off` 면 안 띄움. 한 줄에 공개키 하나만 받고 옵션·제어 문자 줄은 버린다. ssh-keygen·sshd 에는 HF 토큰을 넘기지 않는다) 시작 스크립트 |
-| `tier0/Dockerfile`, `tier0/entrypoint.sh` | Tier 0 서비스 이미지(YOLO26x-pose, TensorRT FP16). `ai/uv.lock` 으로 의존성 고정(큰 휠은 묶음별 층, 아래 "층 분할"), 첫 기동 때 엔진 준비 |
-| `scripts/simai_bootstrap.py`, `weights.json` | 이미지의 `simai-bootstrap`(기본 진입점): 저장 위치·GPU 세대 감지 → 가중치 목록대로 받고 sha256 확인 → Tier 0 또는 세션 큐 (아래 "simai-bootstrap") |
+| `tier0/Dockerfile`, `tier0/entrypoint.sh` | 타깃 `tier0`: Tier 0 서비스 이미지(YOLO26x-pose, TensorRT FP16). `ai/uv.lock` 으로 의존성 고정(큰 휠은 묶음별 층, 아래 "층 분할"), 첫 기동 때 엔진 준비. 타깃 `unified`: 같은 층 위에 vLLM·HMR 을 더한 통합 이미지(아래 "통합 이미지", S15P31A101-246) |
+| `scripts/simai_bootstrap.py`, `weights.json` | 이미지의 `simai-bootstrap`(기본 진입점): 저장 위치·GPU 세대 감지 → 가중치 목록대로 받고 sha256 확인(재시도·이어받기·워커 가중치 검증 스탬프) → Tier 0 또는 세션 큐. `SIMAI_SERVICES` 면 Tier 0·vLLM·워커 감시 프로세스 (아래 "simai-bootstrap"·"통합 이미지") |
 | `exp02/Dockerfile`, `exp02/entrypoint.sh`, `exp02/requirements.{in,lock.txt}` | EXP-02 HMR(Fast SAM 3D Body) 이미지: torch 2.7.1+cu128, Detectron2 는 CUDA 확장 없이(`FORCE_CUDA=0`, CPU 전용) 빌드. 가중치는 시작할 때 `simai-bootstrap` 이 받는다(아래 "실험 이미지") |
 | `mapanything/Dockerfile`, `mapanything/requirements.{in,lock.txt}` | EXP-01 MapAnything 이미지: Python 3.12, torch 2.7.1+cu128, map-anything @3d10cf7 (아래 "실험 이미지") |
 | `risk-engine/Dockerfile` | EC2 Risk Engine 컨테이너(S15P31A101-99): CPU 전용 python:3.11.15-slim, `ai/uv.lock` 의 extra `risk_api`(FastAPI·uvicorn·jsonschema)만, 비루트(uid 10001)·EXPOSE 없음·헬스체크 `/healthz`, 계약 스키마·공통 벡터 포함(약 225 MB). compose `risk-engine` 은 internal 망 `simai-ec2-internal` 에서 `risk-engine:8080` 으로만 닿는다(포트 공개 없음). 설계 `docs/design/risk-engine-container.md` |
@@ -22,7 +22,7 @@ Blackwell(sm_100·sm_120)도 세 이미지 모두 커널이 있다(Tier 0 cu130,
 | `*/Dockerfile.dockerignore` | 이미지별 빌드 컨텍스트 **허용 목록**(나열한 파일만 들어간다) |
 | `compose.yaml` | 로컬 점검용(RunPod 은 Compose 를 쓰지 않는다) |
 | `scripts/check_image.sh` | 이미지 점검(GPU 불필요, 세 이미지 공통·종류는 이미지 ENV `SIMAI_IMAGE_KIND`): 비밀·가중치·엔진·SSH 호스트 키 없음, import, 진입점 오류 코드, GPU 별 엔진 경로(Tier 0), 가중치 묶음 선택(실험), SSH 비밀번호 접속 거부 |
-| `scripts/exp_image_check.py` | 실험 이미지 GPU 점검(Pod, 세션 큐 g0·m0): CUDA·이 GPU 세대 커널(torch)·Detectron2 LazyConfig 읽기(CUDA 확장 없음)·pyrender EGL·MapAnything import |
+| `scripts/exp_image_check.py` | 실험·통합 이미지 GPU 점검(Pod, 세션 큐 g0·m0·u1): CUDA·이 GPU 세대 커널(torch)·Detectron2 LazyConfig 읽기(CUDA 확장 없음)·pyrender EGL·MapAnything import, 통합 이미지는 HMR(잠금 밖 휠 없이)·vLLM 플러그인 |
 | `scripts/gpu_session1.py` | GPU 세션 검증 큐(S15P31A101-183·-207): gpu_queue 로 아래 스크립트를 차례로 돌리고 결과 묶음·scp 명령을 낸다. `prepare`(노트북 사본)·`plan`·`run`(Pod 또는 `--mode dryrun`). 지금 이미지(`--image`, 기본 `SIMAI_IMAGE_KIND`)의 항목만 돈다 |
 | `scripts/pod_check.py` | Pod 점검(-31): GPU(최소 사양)·드라이버·CUDA·마운트·용량·쓰기 속도·fsync·flock → JSON. `--no-volume` 은 볼륨 측정 SKIP |
 | `scripts/session1_engine.sh` | 아래 "Pod 검증 큐" 1)~7) 을 한 Job 으로(단계별 종료 코드·시간을 steps.tsv·metrics.json 에) |
@@ -62,7 +62,7 @@ Network Volume 구조·권한·보관, Pod 점검 기준, SSH 재접속·443 예
 | 실험 이미지 코드 사본 | Fast-SAM-3D-Body @d72aa36, DINOv3 허브 코드 @6876159, map-anything @3d10cf7, DINOv2 허브 코드 @7764ea0 (Dockerfile ARG) |
 | 이미지 자체 | 레지스트리에 올린 이미지의 다이제스트. RunPod 템플릿은 태그가 아니라 다이제스트로 이미지를 가리킨다 |
 
-**Tier 0 가 CUDA 13 인 이유.** `ai/uv.lock` 의 torch 2.14.1(ultralytics 의존성)은 리눅스에서 CUDA 13.0 런타임 휠(`nvidia-cuda-runtime` 13.0.96)을 직접 가져온다.
+**Tier 0 가 CUDA 13 인 이유.** `ai/uv.lock` 의 torch 2.11.0(vLLM 0.21.0 과 같은 판, S15P31A101-235)은 리눅스에서 CUDA 13.0 런타임 휠을 직접 가져온다.
 그래서 베이스는 같은 판의 `nvidia/cuda:13.0.3-base-ubuntu24.04` 이고 TensorRT 도 `tensorrt-cu13` 이다. CUDA 라이브러리는 휠이 가져오므로 `runtime` 이 아니라 `base` 변형을 쓴다(중복 수 GB 절약).
 CUDA 13.0 은 드라이버 580 이상이 필요하다. 이 베이스에는 순방향 호환 라이브러리가 있어 데이터센터 GPU(H100)는 535·550·565·570·575 계열 드라이버에서도 돌 수 있다(`NVIDIA_REQUIRE_CUDA`).
 RunPod 에서 Pod 를 고를 때 CUDA 버전 필터를 13.0 이상으로 두는 것이 가장 확실하다(Pod 검증 큐 1번에서 확인).
@@ -78,6 +78,8 @@ RunPod Pod 안에서는 Docker 를 쓸 수 없으므로 이미지는 노트북�
 TAG=$(git rev-parse --short=12 HEAD)
 TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl tier0      # → simai/tier0:$TAG (로컬)
 bash deploy/scripts/check_image.sh simai/tier0:$TAG               # 모두 통과해야 올린다
+TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl unified    # → simai/unified:$TAG (같은 Tier 0 층 + 워커 층, S15P31A101-246)
+bash deploy/scripts/check_image.sh simai/unified:$TAG             # Tier 0 항목 + vLLM·HMR import·EGL 렌더·감시 프로세스 순서
 TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl exp02      # → simai/exp02-fs3db:$TAG (Detectron2 CPU 전용 빌드)
 TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl mapanything # → simai/mapanything:$TAG
 bash deploy/scripts/check_image.sh simai/exp02-fs3db:$TAG         # 실험 이미지도 같은 점검(종류별 항목)
@@ -86,7 +88,7 @@ TAG=$TAG docker buildx bake -f deploy/docker-bake.hcl risk-engine # → simai/ri
 bash deploy/scripts/check_image.sh simai/risk-engine:$TAG         # 벡터·비루트·포트 없음·망 없는 컨테이너 HTTP 왕복
 ```
 
-- Tier 0 이미지는 레지스트리 기준(압축) 약 7.9GB, 풀면 약 21GB 다(-213 의 modelopt·onnxruntime-gpu·cupy 로 0.9GB 늘었다. 2026-10-21 노트북 빌드 실측). 처음 빌드는 받기가 대부분(3MB/s 망에서 약 90분), 이후에는 uv 캐시 마운트로 바뀐 층만 다시 만든다.
+- Tier 0 이미지는 풀면 약 18.7GB, 통합 이미지는 약 24.3GB 다(2026-10-23 노트북 빌드, S15P31A101-246: torch 2.11.0·onnxruntime-gpu·cupy 제외. 층별 크기는 `docs/design/unified-env.md` "빌드 결과"). 이전 Tier 0 는 압축 약 7.9GB·풀면 약 21GB 였다. 처음 빌드는 받기가 대부분(3MB/s 망에서 약 90분), 이후에는 uv 캐시 마운트로 바뀐 층만 다시 만든다.
 - **층 분할(S15P31A101-207).** 큰 휠은 잠금에서 뽑은 묶음별 층(CUDA 13 휠·torch·TensorRT libs·큰 일반 휠)이고, 작은 패키지는 그 위 한 층, simai_ai 코드는 맨 위다. 로컬 재빌드에서 작은 패키지 하나가 바뀌면 다시 만든 층이 풀린 크기로 약 0.6GB, 코드 한 줄이면 약 9MB 다(push 전송량은 압축 크기라 더 작다. 같은 빌드 기계의 BuildKit 캐시가 남아 있을 때. 실측은 `docs/design/exp-images.md`).
   묶음 이름이 잠금에 없으면 빌드가 멈춘다. 묶음을 바꿀 때는 `deploy/tier0/Dockerfile` 의 `pick` 줄을 고친다.
 - Docker Hub 받기가 `httpReadSeeker ... EOF` 로 끊기면(SSAFY 망에서 자주 봤다) 같은 명령을 다시 실행한다. 받은 층은 남는다.
@@ -135,7 +137,9 @@ RunPod 은 Container Registry Auth(읽기 전용 토큰)로 접근한다. 토큰
 
 1. 저장 위치: `SIMAI_ROOT` → `/workspace` 가 있고 쓸 수 있으면 `/workspace/simai`(RunPod 볼륨·Pod 볼륨·`docker run -v`) → 컨테이너 디스크 `/srv/simai`. 남은 용량 하한 `SIMAI_MIN_FREE_GB`(기본 20) 미만이면 2.
 2. GPU: `nvidia-smi` compute_cap → `sm_XX`(`SIMAI_GPU_ARCH` 로 넘김), 메모리·드라이버 기록. GPU 없음, compute_cap·메모리를 읽지 못함, Ampere(8.0) 미만, VRAM 24GB급(22,500 MiB) 미만이면 3. 가중치를 받기 전에 끝난다.
-3. 가중치: `weights.json`(이미지 `/opt/simai/deploy/weights.json`)의 `tier0` 항목. 있고 sha256 이 맞으면 건너뜀(엘리스 블록 스토리지 재사용), 없으면 옆 임시 파일로 받아 sha256 이 맞을 때만 이름을 바꾼다. 있는데 다르면 지우지 않고 2, 받은 것이 다르면 버리고 2, 목록에 해시가 없으면 2. HF 원본(`source.hf`)은 `HF_TOKEN` 을 첫 요청에만 싣는다(다른 호스트 리다이렉트에는 안 실림). 해시 근거는 `docs/data/weights.md`. `SIMAI_TIER0_WEIGHTS`·`SIMAI_TIER0_WEIGHTS_SHA256` 이 비어 있으면 목록 값으로 채운다.
+3. 가중치: `weights.json`(이미지 `/opt/simai/deploy/weights.json`)의 `tier0` 항목. 있고 sha256 이 맞으면 건너뜀(엘리스 블록 스토리지 재사용), 없으면 옆 임시 파일(`<이름>.part`)로 받아 sha256 이 맞을 때만 이름을 바꾼다.
+   받기가 끊기거나 429·5xx 면 지수 백오프(2·4·8·16초)로 `SIMAI_FETCH_ATTEMPTS`(5)번까지 다시 하고 임시 파일에서 HTTP Range 로 이어받는다(원본이 Range 를 무시하거나 범위가 다르면·416 이면 처음부터, 401·403·404 는 다시 하지 않음). 다 실패해도 받은 바이트는 남겨 다음 시작이 잇는다. 항목마다 지우지 않는 잠금 파일(`$SIMAI_ROOT/weights/.locks/`)로 재확인·받기·해시·게시(rename)·스탬프를 한 임계 구역으로 묶어, 같은 저장 위치의 두 부트스트랩은 앞의 것이 끝날 때까지 기다렸다가 그 파일을 다시 확인한다.
+   `tier0` 묶음에 없는 항목(워커·실험 가중치)은 확인 뒤 검증 스탬프 `$SIMAI_ROOT/weights/.verified/<이름>.json`(경로·sha256·크기·mtime_ns·inode·ctime_ns, 해시 전후 stat 이 같을 때만)을 남기고, 다음 시작에 네 값이 같으면 다시 해시하지 않는다(Cosmos3-Nano 31.5GB). 강제로 다시 확인하려면 `weights/.verified/` 를 지운다(가중치는 그대로). Tier 0 가중치는 매번 해시한다. 있는데 다르면 지우지 않고 2, 받은 것이 다르면 버리고 2, 목록에 해시가 없으면 2. HF 원본(`source.hf`)은 `HF_TOKEN` 을 첫 요청에만 싣는다(다른 호스트 리다이렉트에는 안 실림). 해시 근거는 `docs/data/weights.md`. `SIMAI_TIER0_WEIGHTS`·`SIMAI_TIER0_WEIGHTS_SHA256` 이 비어 있으면 목록 값으로 채운다.
 4. 기록 `$SIMAI_ROOT/runs/bootstrap/<UTC>-<pid>.json`(추가만, 토큰 값 없음, `hf_token: present|absent` 만) → exec.
 
 HF 토큰은 시작하자마자 환경에서 꺼내 부트스트랩 프로세스 안에만 둔다(가중치 받기에만 씀). nvidia-smi 조회·도움말·그대로 넘기는 명령·Tier 0·큐 어느 자식에도 넘어가지 않는다. `simai-start` 도 ssh-keygen·sshd 를 토큰 없는 환경으로 띄운다. `HUGGING_FACE_HUB_TOKEN` 은 읽지 않고 지울 이름으로만 다룬다.
@@ -223,6 +227,81 @@ Tier 0 재시작(엔진 캐시 사용, 1초대) 때는 워커 접수 문이 표�
 
 실험 이미지(`exp02-fs3db`·`mapanything`)는 Tier 0 와 다른 Pod 로 띄운다(Pod 하나 = 이미지 하나, Tier 0 와 동시에 띄우지 않는다, LIVE 관제 시간 금지). 아래 "실험 이미지".
 
+## 통합 이미지 (Tier 0 + vLLM + 분석 워커, S15P31A101-246)
+
+`deploy/tier0/Dockerfile` 의 `unified` 타깃이다(`docker buildx bake unified` → `simai/unified:$TAG`). `tier0` 타깃과 같은 Dockerfile·같은 큰 층(CUDA 13 휠·torch 2.11.0·TensorRT libs·Tier 0 잠금) 위에
+워커 층(vLLM 0.21.0 + vllm-cosmos3, HMR 추론 의존성)을 더하고 Fast-SAM-3D-Body @d72aa36·DINOv3 허브 코드 사본을 넣는다. 가상환경은 하나(`ai/uv.lock`, extras `tier0`+`worker`)이고 프로세스는 셋이다(명세 3.2).
+설계·결정·잔여 위험은 `docs/design/unified-env.md` "2단계".
+
+| 무엇 | 값 |
+|---|---|
+| 들어 있는 것 | `tier0` 이미지 전부 + vLLM·flashinfer·transformers 5.9·vllm-cosmos3, HMR 추론(sam-3d-body 가 import 하는 pytorch-lightning·pyrender·roma·timm 등, `hmr` extra), EGL·X11 런타임(libegl1·libgl1·libglvnd0…), triton 런처용 gcc, Fast·DINOv3 코드 사본(`SIMAI_FS3DB_REPO=/opt/simai/hmr/Fast-SAM-3D-Body`) |
+| 넣지 않은 것 | 잠금 밖 휠 Detectron2·MoGe·chumpy(시연 HMR 경로가 쓰지 않는다: 렌더 패널·K 없는 그림의 FOV 예비·mhr2smpl 전용. exp02 이미지에만), `onnxruntime-gpu`·`cupy-cuda12x`(CUDA 12 빌드, 두 이미지 모두 뺐다. AutoCast 는 CPU `onnxruntime`), 가중치·엔진·비밀 |
+| HMR 경로 | 보정 K → sam-3d-body 추론 → 메시·관절(`run_image.py --mode official --calibration <K> --no-render`). K 없는 그림·렌더 패널은 시작 전에 종료 코드 2(명확한 오류) |
+| `NVIDIA_DRIVER_CAPABILITIES` | `compute,utility,video,graphics`(NVDEC 선택 디코더 + pyrender·나중의 텍스처 래스터화 EGL) |
+| 기본 명령 | `simai-bootstrap tier0` + `SIMAI_SERVICES=tier0,vllm,worker`(아래 감시 프로세스). `SIMAI_SERVICES=tier0` 이면 `tier0` 이미지와 같은 Tier 0 단독 |
+| 가중치 | 기동 전 `tier0` 묶음(YOLO26x-pose)만, Tier 0 준비 뒤 `SIMAI_WORKER_WEIGHTS_SET`(기본 `vlm`, Cosmos3-Nano 18개 31.5GB). 워커 가중치가 실패해도 Tier 0 는 돈다 |
+
+### 감시 프로세스 (`SIMAI_SERVICES`)
+
+`tini → simai-start → simai-bootstrap` 이 사라지지 않고 세 프로세스를 각각 새 프로세스 그룹으로 띄워 감시한다.
+
+1. 준비(저장 위치·GPU·`tier0` 가중치) → `simai-tier0`(엔진 준비 → Tier 0). GPU VRAM 이 48GB급(45,000 MiB) 미만이면 vLLM·워커를 띄우지 않고 Tier 0 단독으로 exec 한다(명세 3.12).
+2. Tier 0 표시 파일 `state/tier0.live` 가 `phase=running`·`reserve.state=OK`(simai-wait-tier0 와 같은 판정)이고 이번에 띄운 Tier 0 가 쓴 것(`gpu_priority.written_at` ≥ 기동 시각, `pid` 같음)이면 워커 가중치를 받는다(받는 동안에도 Tier 0 는 돈다). 이전 실행이 비정상 종료로 남긴 표시는 준비로 보지 않고 지우지도 않는다.
+3. vLLM 서버: `vllm serve $SIMAI_ROOT/weights/cosmos3-nano --served-model-name cosmos3-nano --hf-overrides '{"architectures": ["Cosmos3ReasonerForConditionalGeneration"]}' --gpu-memory-utilization $SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION(0.55) --max-num-seqs $SIMAI_WORKER_VLLM_MAX_NUM_SEQS(4) --host 127.0.0.1 --port $SIMAI_VLLM_PORT(8000) --mm-encoder-tp-mode data --async-scheduling $SIMAI_VLLM_EXTRA_ARGS`, `VLLM_USE_DEEP_GEMM=0`, `HF_HUB_OFFLINE=1`. `/health` 가 200 이 될 때까지 기다린다(`SIMAI_VLLM_READY_TIMEOUT_S`, 기본 1800).
+4. 분석 워커: `python -m services.worker $SIMAI_WORKER_ARGS`(받을 작업 유형 VLM·`hmr_refine` 등의 처리기는 워커 설정 파일 `--config` 가 정한다. 조립은 -227 등). 워커 토큰 파일은 `SIMAI_WORKER_ENV_FILE`, 없으면 `$SIMAI_ROOT/../.simai-private/worker.env` 가 있을 때 `simai-wait-tier0 --env-file` 로 워커 환경에만 넣는다.
+
+- vLLM·워커가 죽으면 그 그룹을 SIGKILL 로 정리하고(vLLM EngineCore 같은 손자까지, GPU 메모리를 남기지 않게) 백오프(`SIMAI_SUPERVISE_BACKOFF_S` 5초 → 최대 300초) 뒤 **Tier 0 가 준비 상태일 때만** 다시 띄운다. 60초 안에 끝나는 일이 `SIMAI_SUPERVISE_MAX_FAST_FAILURES`(5)번 이어지면 그 프로세스는 포기한다(지금 `services.worker` 는 처리기가 없어 종료 1 로 바로 끝나므로 5번 뒤 포기한다). Tier 0 에는 신호를 보내지 않는다.
+- Tier 0 가 끝나면 워커 → vLLM 을 내리고 Tier 0 종료 코드 그대로 컨테이너가 끝난다(VM 은 `--restart unless-stopped` 가 컨테이너를 다시 띄운다).
+- `docker stop`·RunPod Stop(SIGTERM)은 워커 → vLLM → Tier 0 순서로 그룹 SIGTERM, 각 `SIMAI_STOP_GRACE_S`(15초) 안에 안 끝나면 그룹 SIGKILL. 셋 합쳐 최대 45초라 `docker run --stop-timeout 60`(또는 `docker stop -t 60`)으로 띄운다.
+- 출력은 줄마다 `[tier0]`·`[vllm]`·`[worker]` 접두로 `docker logs` 에, 원문은 `$SIMAI_ROOT/logs/<이름>.log` 에 덧붙인다(회전 없음).
+- vLLM·워커는 `OMP_NUM_THREADS`·`MKL_NUM_THREADS`·`OPENBLAS_NUM_THREADS`·`NUMEXPR_NUM_THREADS`=`SIMAI_SIDECAR_THREADS`(1, torch intra-op 도 OMP 를 따른다), nice `SIMAI_SIDECAR_NICE`(10),
+  CPU 고정 `SIMAI_SIDECAR_CPUS`(기본 `auto`: 쓸 수 있는 vCPU 가 8개 이상이면 뒤쪽 절반에 묶고 앞쪽은 Tier 0 몫, 8개 미만이면 묶지 않음. `none`, `4-7,10`). Tier 0 는 묶지 않는다.
+  세 프로세스 모두 `TRITON_CACHE_DIR`·`TORCHINDUCTOR_CACHE_DIR`·`CUDA_CACHE_PATH` 가 `SIMAI_CACHE_ROOT`(기본 `/tmp/simai-cache`)`/<이름>/` 로 나뉜다. HF 토큰은 어느 자식에도 넘기지 않는다.
+- vLLM 은 Tier 0 의 TensorRT 엔진 빌드·적재와 GPU 선확보가 끝난 뒤에 뜬다: 진입점이 엔진을 준비한 뒤에야 Tier 0 서비스가 시작해 표시 파일을 쓰고, 감시자는 `phase=running`·`reserve.state=OK` 를 본 뒤에 워커 쪽을 시작한다(엔진 빌드 중 vLLM 이 메모리를 먼저 잡아 빌드가 실패하는 일을 막는다).
+- 시험·점검용 덮어쓰기: `SIMAI_TIER0_CMD`·`SIMAI_VLLM_CMD`·`SIMAI_WORKER_CMD`(셸 따옴표 규칙), `SIMAI_TIER0_MARKER`, `SIMAI_VLLM_MODEL`.
+
+### 사이트 조건 (통합 이미지)
+
+| 항목 | 조건 |
+|---|---|
+| GPU | 하나. 80GB 권장(H100·A100 80GB), 48GB급 미만이면 Tier 0 단독으로 뜬다. Ampere 이후. 48GB 에서 VLM 0.55(26.4GB)는 Cosmos3-Nano BF16(약 31.5GB)이 들어가지 않을 수 있다(3차 세션 v1 이 잰다) |
+| 드라이버 | 최대 CUDA 13.0 이상(RunPod·Vast 의 CUDA 필터 13.0). VM 은 NVIDIA Container Toolkit, `graphics` 기능이 컨테이너에 올라오는지(`ls /usr/share/glvnd/egl_vendor.d/` 에 `10_nvidia.json`) |
+| 디스크 | 이미지(풀면 아래 "빌드 결과") + 가중치 약 32GB(YOLO 0.1GB + Cosmos3-Nano 31.5GB) + 엔진·저널·로그. 컨테이너 디스크면 150GB 이상, 시연은 인스턴스를 다시 켜도 남는 디스크(명세 3.12) |
+| 포트 | 22(SSH, 키 인증만), I0 수신 포트(공개 TCP, 70000 이상 대칭 매핑). vLLM 8000 은 127.0.0.1 만(공개하지 않는다) |
+| 메모리·CPU | vCPU 8개 이상(명세 3.12 초기값). Tier 0 CPU 디코딩과 vLLM 전처리가 같은 CPU 를 쓴다(3차 세션 v3 가 잰다) |
+
+**저장 위치 전제.** 시연 준비·리허설·시연은 인스턴스를 다시 켜도 남는 디스크(`$SIMAI_ROOT`: 블록 스토리지·Pod 볼륨)에 가중치(약 32GB)·TensorRT 엔진 캐시·저널을 둔다(명세 3.12).
+그래야 재시작 때 가중치를 다시 받지 않고(검증 스탬프로 다시 해시도 않음) 엔진을 다시 만들지 않는다(H100 약 550초). 컨테이너 디스크(`/srv/simai`)는 개발·시험용이다.
+
+### Pod형 (RunPod 템플릿)
+
+위 "RunPod 템플릿" 과 같고 다음만 다르다. 이미지 `<레지스트리>/<프로젝트>/tier0@sha256:<unified 다이제스트>`(무료 플랜 저장소 하나라 태그 접두 `unified-`), Container Disk 150GB 이상,
+환경 변수에 `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}`(Cosmos3-Nano 는 승인제가 아니지만 HF 속도 제한 완화), 분석 워커 값(`SIMAI_WORKER_*`, 위 표), 필요하면 `SIMAI_WORKER_ARGS`.
+시작 명령은 비운다(이미지 기본 = 감시 프로세스). 검증 세션은 `sleep infinity` 로 띄우고 SSH 로 `SIMAI_WEIGHTS_SET=exp02 simai-bootstrap queue`(이 이미지의 큐는 a·b·t·c·d·u1·u2, 아래 "Pod 검증 큐"). 통합 이미지에는 `SIMAI_WEIGHTS_SET` 이 없어(기본 tier0) 그대로 부르면 u2(HMR 보정 K)·`simai-exp02` 가 sam-3d-body 체크포인트 없음(종료 코드 2)으로 실패한다. HMR 만 따로 돌릴 때도 `SIMAI_WEIGHTS_SET=exp02 simai-bootstrap run simai-exp02 python <사본>/ai/experiments/hmr/run_image.py --mode official --calibration <K> --no-render ...`.
+RunPod Stop 이 SIGTERM 뒤 얼마를 기다리는지는 문서로 확인하지 못했다: 저널은 기록마다 fsync 라(명세 3.2) 강제 종료돼도 재시작 복구가 된다.
+
+### VM형 (엘리스 등 GPU VM + 블록 스토리지, `docker run --gpus all`)
+
+```sh
+# 0)~1) 위 "GPU VM(엘리스) docker run" 과 같다(드라이버·Toolkit 확인, 블록 스토리지 /mnt/simai-block, hf.env)
+# 2) 준비만: Tier 0 묶음 + 워커 묶음(31.5GB, 블록 스토리지에 한 번 받으면 다음부터 검증 스탬프로 다시 해시하지 않는다)
+docker run --rm --gpus all -v /mnt/simai-block:/workspace -e SIMAI_ROOT=/workspace/simai -e SIMAI_SSHD=off \
+  --env-file /mnt/simai-block/.simai-private/hf.env -e SIMAI_WEIGHTS_SET=vlm <통합 이미지> check
+# 3) 기동: Tier 0 → (준비) → vLLM → 워커. 정지 시한 60초
+docker run -d --name simai --restart unless-stopped --stop-timeout 60 --gpus all \
+  -v /mnt/simai-block:/workspace -e SIMAI_ROOT=/workspace/simai -e SIMAI_SSHD=off \
+  --env-file /mnt/simai-block/.simai-private/hf.env \
+  -p <제어 포트>:<제어 포트> -p <영상 포트들>:<영상 포트들> \
+  -e SIMAI_PUBLIC_HOST=<VM 공인 IP> -e SIMAI_TIER0_CONTROL_PORT=70000 -e SIMAI_PUBLIC_PORT_70000=<제어 포트> \
+  -e SIMAI_TIER0_GPU_RESERVE_MB=8192 -e SIMAI_IMAGE_DIGEST=sha256:<다이제스트> \
+  -e SIMAI_EC2_BASE_URL=https://<EC2> -e SIMAI_WORKER_ID=worker-01 \
+  <통합 이미지> --config /workspace/simai/tier0.json
+docker logs -f simai     # [tier0] … → simai-bootstrap: Tier 0 준비됨 → 워커 가중치 → [vllm] … 준비됨 → [worker] …
+```
+
+Compose 다중 컨테이너로 나누지 않는다(Pod형과 같은 단일 컨테이너, 자문 1). Tier 0 만 띄울 때는 `-e SIMAI_SERVICES=tier0`.
+
 ## TensorRT 엔진 캐시
 
 진입점 `simai-tier0` 이 Tier 0 시작 전에 별도 프로세스로 `python -m simai_ai.detection.engine_cache ensure` 를 부른다.
@@ -238,7 +317,7 @@ Tier 0 재시작(엔진 캐시 사용, 1초대) 때는 워커 접수 문이 표�
 - 엔진 경로는 Tier 0 프로세스에 `SIMAI_TIER0_ENGINE` 환경 변수로 넘긴다. Tier 0 설정(`services/tier0/settings.py`)이 이 값을 읽고 LIVE 입력의 검출기(`yolo_detector`)가 연다. 실행 중 상태는 `$SIMAI_ROOT/state/tier0.live`(정상 종료하면 지운다)에 5초마다 쓴다.
 - 종료 코드: 2 볼륨·가중치 없음·해시 불일치, 3 GPU·TensorRT 없음, 4 캐시 위치를 쓸 수 없음, 5 빌드 실패. 실패하면 Tier 0 를 띄우지 않는다.
 - 동적 프로파일은 `detection_baseline` 과 같다(min 1×3×32×32, opt 4×3×736×1280, max 4×3×1280×1280). 빌드는 `simplify=False`.
-- Ultralytics 8.4.178 의 TensorRT 내보내기는 FP16 변환(ModelOpt AutoCast)에 `nvidia-modelopt[onnx]>=0.44` 를 요구한다. 없으면 `No module named 'modelopt'` 로 엔진 빌드가 실패하므로(GPU 1차 세션) `tier0` extra 에 넣었다. 잠금은 Pod 에서 엔진 빌드·추론이 통과한 조합(nvidia-modelopt 0.47.0, onnx 1.21.0)이고 onnxruntime-gpu·onnxslim 등이 함께 들어온다(S15P31A101-213). `check_image.sh` 가 `import modelopt` 를 확인한다.
+- Ultralytics 8.4.178 의 TensorRT 내보내기는 FP16 변환(ModelOpt AutoCast)에 `nvidia-modelopt[onnx]>=0.44` 를 요구한다. 없으면 `No module named 'modelopt'` 로 엔진 빌드가 실패하므로(GPU 1차 세션) `tier0` extra 에 넣었다. 잠금은 Pod 에서 엔진 빌드·추론이 통과한 조합(nvidia-modelopt 0.47.0, onnx 1.21.0)이다(S15P31A101-213). CUDA 12 빌드 onnxruntime-gpu·cupy-cuda12x 는 빼고 CPU onnxruntime 을 쓴다(S15P31A101-246, AutoCast 참조 실행은 CPU). 엔진 메타데이터 키에 torch·ModelOpt 판도 들어간다. `check_image.sh` 가 `import modelopt` 를 확인한다.
 
 ## 실험 이미지 (EXP-02 HMR, EXP-01 MapAnything, S15P31A101-207)
 

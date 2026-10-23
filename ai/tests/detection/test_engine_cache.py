@@ -15,8 +15,9 @@ import pytest
 
 from simai_ai.detection import engine_cache as ec
 
-H100 = ec.BuildTarget(gpu_arch="sm_90", tensorrt_version="11.4.0.106", ultralytics_version="8.4.178", gpu_name="H100")
-A40 = ec.BuildTarget(gpu_arch="sm_86", tensorrt_version="11.4.0.106", ultralytics_version="8.4.178", gpu_name="A40")
+TORCH = "2.11.0+cu130"
+H100 = ec.BuildTarget(gpu_arch="sm_90", tensorrt_version="11.4.0.106", ultralytics_version="8.4.178", gpu_name="H100", torch_version=TORCH, modelopt_version="0.47.0")
+A40 = ec.BuildTarget(gpu_arch="sm_86", tensorrt_version="11.4.0.106", ultralytics_version="8.4.178", gpu_name="A40", torch_version=TORCH, modelopt_version="0.47.0")
 CFG = ec.EngineConfig()
 
 
@@ -198,6 +199,68 @@ def test_tensorrt_upgrade_gets_new_engine(weights: Path, tmp_path: Path) -> None
     assert new.built and new.engine.parent.name == "trt11.5.0.1" and old.engine.exists()
 
 
+def test_torch_change_rebuilds_and_keeps_old_engine_aside(weights: Path, tmp_path: Path) -> None:
+    """S15P31A101-246: 한 가상환경으로 torch 가 2.14.1 → 2.11.0 이 됐다. 경로는 같지만 키가 달라 옛 엔진을 쓰지 않는다(지우지 않고 옆으로)."""
+    root = tmp_path / "engines"
+    old_t = ec.BuildTarget(gpu_arch="sm_90", tensorrt_version="11.4.0.106", ultralytics_version="8.4.178", torch_version="2.14.1+cu130",
+                           modelopt_version="0.47.0")
+    old = _ensure(weights, root, old_t, FakeBuilder())
+    builder = FakeBuilder()
+    new = _ensure(weights, root, H100, builder)
+    assert new.engine == old.engine and new.built and len(builder.calls) == 1 and new.quarantined
+    meta = json.loads(ec.metadata_path(new.engine).read_text(encoding="utf-8"))
+    assert meta["torch_version"] == TORCH
+    assert not _ensure(weights, root, H100, FakeBuilder()).built  # 같은 torch 면 다시 쓴다
+
+
+def test_modelopt_change_rebuilds(weights: Path, tmp_path: Path) -> None:
+    root = tmp_path / "engines"
+    _ensure(weights, root, H100, FakeBuilder())
+    newer = ec.BuildTarget(gpu_arch="sm_90", tensorrt_version="11.4.0.106", ultralytics_version="8.4.178", torch_version=TORCH,
+                           modelopt_version="0.48.0")
+    assert _ensure(weights, root, newer, FakeBuilder()).built
+
+
+def test_engine_from_before_torch_key_is_not_reused(weights: Path, tmp_path: Path) -> None:
+    root = tmp_path / "engines"
+    first = _ensure(weights, root, H100, FakeBuilder())
+    meta_file = ec.metadata_path(first.engine)
+    meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    del meta["torch_version"]  # -246 전에 만든 캐시(2차 세션, torch 2.14.1)
+    meta_file.write_text(json.dumps(meta), encoding="utf-8")
+    model = ec.model_ref(weights)
+    assert ec.inspect_cache(first.engine, model, CFG, H100).state == "conflict"
+    assert _ensure(weights, root, H100, FakeBuilder()).built
+
+
+def test_concurrent_ensure_builds_once_and_shares_engine(weights: Path, tmp_path: Path) -> None:
+    """같은 저장 위치에서 두 프로세스가 같은 엔진을 준비하면 빌드는 한 번, 기다린 쪽은 먼저 만든 엔진을 쓴다(S15P31A101-246 리뷰)."""
+    import threading
+
+    root = tmp_path / "engines"
+    inside, go = threading.Event(), threading.Event()
+
+    class Slow(FakeBuilder):
+        def __call__(self, model, cfg, target, work):
+            inside.set()
+            assert go.wait(10)
+            return super().__call__(model, cfg, target, work)
+    builder = Slow()
+    out: list = []
+    a = threading.Thread(target=lambda: out.append(_ensure(weights, root, H100, builder)))
+    a.start()
+    assert inside.wait(10)
+    b = threading.Thread(target=lambda: out.append(_ensure(weights, root, H100, builder)))
+    b.start()
+    b.join(0.5)
+    assert b.is_alive()  # 빌드가 끝날 때까지 기다린다
+    go.set()
+    a.join(10)
+    b.join(10)
+    assert len(builder.calls) == 1 and [r.built for r in out] == [True, False] and out[0].engine == out[1].engine
+    assert not out[1].quarantined
+
+
 def test_failed_build_leaves_no_usable_cache(weights: Path, tmp_path: Path) -> None:
     root = tmp_path / "engines"
     with pytest.raises(ec.BuildError, match="RuntimeError: out of memory"):
@@ -229,9 +292,9 @@ def test_cli_exit_codes(weights: Path, tmp_path: Path, capsys: pytest.CaptureFix
     assert ec.main(["ensure", *common], detect=lambda: H100, build=FakeBuilder()) == ec.EXIT_OK
     built = Path(capsys.readouterr().out.strip().splitlines()[-1])
     assert built.is_file()
-    assert ec.main(["plan", *common, "--gpu-arch", "sm_90", "--tensorrt", "11.4.0.106", "--ultralytics", "8.4.178"]) == 0
+    assert ec.main(["plan", *common, "--gpu-arch", "sm_90", "--tensorrt", "11.4.0.106", "--ultralytics", "8.4.178", "--torch", TORCH, "--modelopt", "0.47.0"]) == 0
     assert capsys.readouterr().out.strip() == f"valid\t{built}"
-    assert ec.main(["plan", *common, "--gpu-arch", "sm_86", "--tensorrt", "11.4.0.106", "--ultralytics", "8.4.178"]) == 0
+    assert ec.main(["plan", *common, "--gpu-arch", "sm_86", "--tensorrt", "11.4.0.106", "--ultralytics", "8.4.178", "--torch", TORCH, "--modelopt", "0.47.0"]) == 0
     assert capsys.readouterr().out.startswith("missing\t")
 
 

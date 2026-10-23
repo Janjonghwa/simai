@@ -12,6 +12,9 @@
   g0~g3 -207 EXP-02 이미지(HMR) 점검·E-GATE-0 재현(H6·H0·H1)               exp02 이미지 Pod 에서만 (S15P31A101-207)
   g4  -238 HMR 보정 K 입력 경로(교실 사진 20장 + 교실 보정 기록, 판정 check_calib_k)  exp02 이미지 Pod 에서만 (S15P31A101-243)
   m0~m2 -207 MapAnything 이미지 점검·E-GATE-0 재현(C1·C2)                    mapanything 이미지 Pod 에서만
+  u1    -246 통합 이미지 GPU 점검(CUDA·HMR 잠금 밖 휠 없이·EGL·vLLM 플러그인)      unified 이미지 Pod 에서만. 이 Pod 는 a·b·t·c·d 도 돈다
+  u2    -246 통합 이미지 HMR 보정 K 경로(렌더 없음, g4 와 같은 판정)               unified 이미지 Pod, SIMAI_WEIGHTS_SET=exp02 simai-bootstrap queue
+  v1~v3 -246 VLM 단독 적재·G7 지연 모양·Tier 0 + VLM 동시                     자리만(사람이 돈다, docs/design/unified-env.md)
   (--exp-jobs: 추가 EXP Job 파일(예 -87 다시점 집계)을 LIVE 보호를 켠 별도 큐로 마지막에 돈다)
 
 항목마다 돌 이미지가 정해져 있다(Pod 하나 = 이미지 하나). 지금 이미지(--image, 기본 이미지 ENV SIMAI_IMAGE_KIND, 없으면 tier0)의
@@ -131,10 +134,16 @@ def ensure_validator(lay: Layout) -> str | None:
     return None if validator_ready() else f"Run 기록 검증기를 설치하지 못함({' '.join(cmd[:4])} …): {detail}"
 
 
-IMAGES = ("tier0", "exp02", "mapanything")  # 이미지 ENV SIMAI_IMAGE_KIND 값
+IMAGES = ("tier0", "exp02", "mapanything", "unified")  # 이미지 ENV SIMAI_IMAGE_KIND 값. unified 는 tier0 항목도 돈다(S15P31A101-246)
 # 이미지별 env_hash 잠금 파일(이미지 다이제스트를 모를 때만 쓰인다, deploy/README "env_hash")
 LOCK_FILES = {"tier0": "ai/uv.lock", "exp02": "deploy/exp02/requirements.lock.txt",
-              "mapanything": "deploy/mapanything/requirements.lock.txt"}
+              "mapanything": "deploy/mapanything/requirements.lock.txt", "unified": "ai/uv.lock"}
+
+
+def runs_on(it: dict, image: str) -> bool:
+    """이 이미지 Pod 에서 도는 항목인가. 통합 이미지는 Tier 0 이미지와 같은 Tier 0 층을 가져 tier0 항목(b·c·d)도 돈다."""
+    want = it.get("image", "tier0")
+    return want in ("*", image) or (image == "unified" and want == "tier0")
 
 
 class Layout:
@@ -246,7 +255,7 @@ def items(lay: Layout) -> list[dict]:
                 "results": [{"kind": k, "path": str(out / rel) if rel else str(out)} for k, rel in results]}
 
     sfx = re.sub(r"[^A-Za-z0-9_.-]", "_", lay.session)
-    h6, h0, h1, h7 = (f"{r}_img_{sfx}" for r in ("H6_det_yolo26x", "H0_smoke", "H1_official_opt", "H7_calib_k"))
+    h6, h0, h1, h7, h7u = (f"{r}_img_{sfx}" for r in ("H6_det_yolo26x", "H0_smoke", "H1_official_opt", "H7_calib_k", "H7u_calib_k_unified"))
     stills, calib = data / G4_STILLS, data / "classroom-k" / G4_CALIB
     # 보정 출처는 큐를 만들 때(Pod 에 입력이 올라간 뒤) 파일에서 읽는다. 파일이 없으면 비우고, 판정이 g4 를 실패로 둔다
     g4_prov = {"frames": {"source": "FILE", "dataset_id": G4_STILLS}, "is_upper_bound": False}
@@ -318,6 +327,26 @@ def items(lay: Layout) -> list[dict]:
             jira="S15P31A101-238",
             check=["--check", f"{hmr}/check_calib_k.py", f"--check-arg=--images={G4_IMAGES}",  # = 형식: '--' 로 시작하는 값
                    f"--check-arg=--provenance={json.dumps(g4_prov, ensure_ascii=False)}"]),
+        # 3차 세션 통합 이미지 항목(S15P31A101-246). u1 은 큐, v1~v3 는 vLLM 서버를 띄우고 재는 사람 항목(docs/design/unified-env.md "3차 GPU 세션 큐")
+        {"key": "u1", "name": "u1_unified_image_check", "jira": "S15P31A101-246", "title": "통합 이미지 GPU 점검(CUDA·HMR 휠 없이·EGL·vLLM 플러그인)",
+         "image": "unified", "command": [py, "deploy/scripts/exp_image_check.py"], "expected_s": 120, "timeout_s": 900,
+         "model_version": "n/a (이미지 점검)", "provenance": PROVENANCE_NONE},
+        # u2: 시연 HMR 경로(보정 K → sam-3d-body → 메시·관절, 렌더 없음)를 잠금 밖 휠 없는 통합 이미지에서. 가중치는 SIMAI_WEIGHTS_SET=exp02 로 받는다
+        exp("u2", "u2_unified_hmr_calib_k", "통합 이미지 HMR 보정 K 경로(렌더 없음) 교실 사진 20장", "unified", h7u,
+            ["simai-exp02", py, f"{hmr}/run_image.py", "--run-id", h7u, "--images", str(stills),
+             "--mode", "official", "--preset", "opt", "--calibration", str(calib), "--no-render"], out02 / h7u,
+            weights=[p for p in hmr_w if "/moge/" not in Path(p).as_posix()], dataset=[str(stills), str(calib)],
+            results=[("REPORT", "metrics.json"), ("HUMAN_MESH_OUTPUT", "meshes")], experiment_id="EXP-02", provenance=g4_prov,
+            model_version="Fast-SAM-3D-Body@d72aa36 dinov3 (opt) + 보정 K(펴짐), 통합 이미지", expected_s=180, timeout_s=1800,
+            jira="S15P31A101-246",
+            check=["--check", f"{hmr}/check_calib_k.py", f"--check-arg=--images={G4_IMAGES}",
+                   f"--check-arg=--provenance={json.dumps(g4_prov, ensure_ascii=False)}"]),
+        *({"key": key, "name": name, "jira": "S15P31A101-246", "title": title, "image": "unified", "command": None,
+           "placeholder": f"사람이 돈다(docs/design/unified-env.md 3차 GPU 세션 큐 {key})", "expected_s": exp_s, "timeout_s": exp_s * 2,
+           "model_version": "Cosmos3-Nano Reasoner (vLLM 0.21.0 + vllm-cosmos3)", "provenance": PROVENANCE_NONE}
+          for key, name, title, exp_s in (("v1", "v1_vlm_load", "VLM 단독 적재·VRAM", 1500),
+                                          ("v2", "v2_vlm_latency", "VLM G7 지연 모양", 300),
+                                          ("v3", "v3_tier0_with_vlm", "Tier 0 + VLM 동시(G0·CPU 경합)", 900))),
         {"key": "m0", "name": "m0_mapanything_image_check", "jira": "S15P31A101-207", "title": "MapAnything 이미지 GPU 점검",
          "image": "mapanything", "command": [py, "deploy/scripts/exp_image_check.py"], "expected_s": 60, "timeout_s": 600,
          "model_version": "n/a (이미지 점검)", "provenance": PROVENANCE_NONE},
@@ -362,7 +391,7 @@ def build_jobs(lay: Layout, git: dict | None) -> tuple[dict, list[dict]]:
             "lock": {"heartbeat_s": 15, "ttl_s": 120},
             # Tier 0 검증 큐는 Tier 0 를 스스로 띄우고 죽인다(b·e). EXP Job 이 아니므로 LIVE 보호를 끈다.
             # 관제(LIVE) 시간에는 이 세션을 돌리지 않는다(사람이 확인). 실험 이미지 큐(g·m)와 --exp-jobs 는 LIVE 보호를 켠다.
-            "live_guard": {"enabled": False} if lay.image == "tier0" else live_guard(lay),
+            "live_guard": {"enabled": False} if lay.image in ("tier0", "unified") else live_guard(lay),
         },
         "record": {
             "experiment_id": "VAL-01",  # 운영 경로 검증 Run(run_record 2.1.0). 실험 채택 근거가 아니라 e_gate 없음
@@ -380,7 +409,7 @@ def build_jobs(lay: Layout, git: dict | None) -> tuple[dict, list[dict]]:
     held: list[dict] = []
     env = job_env(lay)
     for it in items(lay):
-        if it["command"] is None or it.get("excluded") or it.get("image", "tier0") not in ("*", lay.image):  # *: 모든 이미지 Pod
+        if it["command"] is None or it.get("excluded") or not runs_on(it, lay.image):  # *: 모든 이미지 Pod
             held.append(it)
             continue
         extra = {k: it[k] for k in ("experiment_id", "experiment_state", "weights", "dataset", "results") if it.get(k)}
@@ -626,7 +655,7 @@ def make_bundle(lay: Layout, summary: dict, max_mb: float) -> tuple[Path | None,
         sources.append((exp, "queue-exp"))
     # 실험 이미지 항목의 결과(metrics.json·메시·패널). 큰 파일은 max_mb 로 빠진다
     for it in items(lay):
-        if it.get("image", "tier0") == lay.image and it.get("run_id"):
+        if runs_on(it, lay.image) and it.get("image", "tier0") != "*" and it.get("run_id"):
             out = Path(it["command"][it["command"].index("--out") + 1])
             sources.append((out, f"runs/{out.parent.name}/{out.name}"))
     keep, dropped = collect(sources, max_mb)
