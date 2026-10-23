@@ -48,6 +48,7 @@ if (import.meta.env.DEV && env.VITE_API_MOCK) {
     { createStompBroker },
     { startRealtimeMock },
     { createEventsMock },
+    { createClipsMock },
   ] = await Promise.all([
     import('virtual:msw'),
     import('@/mocks/handlers'),
@@ -56,6 +57,7 @@ if (import.meta.env.DEV && env.VITE_API_MOCK) {
     import('@/mocks/stompBroker'),
     import('@/mocks/realtime'),
     import('@/mocks/events'),
+    import('@/mocks/clips'),
   ]);
   // 토큰 모양만 본다: mock 로그인 토큰이나 sub·role 이 있는 JWT(혼합 모드, 서명·만료는 보지 않는다).
   // 로그아웃 뒤 토큰 없이 붙지 않는지 볼 수 있다.
@@ -64,10 +66,11 @@ if (import.meta.env.DEV && env.VITE_API_MOCK) {
     authorize: (authorization) => readMockUser(authorization) !== undefined,
   });
   const events = createEventsMock({ broker });
+  const clips = createClipsMock({ findEvent: events.find });
   network.configure({
     // 실서버 경로의 mock 은 빼서 그 요청이 그대로 나가게 한다(처리되지 않은 요청은 bypass).
     handlers: [
-      ...withoutRealPaths([...handlers, ...events.handlers], env.VITE_API_REAL),
+      ...withoutRealPaths([...handlers, ...events.handlers, ...clips.handlers], env.VITE_API_REAL),
       broker.handler,
     ],
     onUnhandledFrame: 'bypass',

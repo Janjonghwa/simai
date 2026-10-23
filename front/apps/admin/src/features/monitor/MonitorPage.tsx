@@ -36,6 +36,12 @@ const importViewer = (): Promise<ViewerModule> =>
 
 type View = '3d' | '2d';
 
+/**
+ * 화면에 들어와 3D 가 이 시간(ms) 안에 첫 화면을 그리지 못하면 2D 평면을 대신 보인다(명세 13.6). 그보다 빨리 준비되면
+ * 탭에 들어올 때마다 2D 가 잠깐 비쳤다 사라지지 않게 2D 를 띄우지 않는다. 2D 를 보다가 3D 로 바꿀 때는 기다리지 않는다.
+ */
+const PLAN_FALLBACK_MS = 2_000;
+
 /** 3D 에 선택을 다시 적용할 때 장면에 대상이 올라오기를 기다리는 간격(ms)과 횟수(약 3초). */
 const RESELECT_MS = 200;
 const RESELECT_TRIES = 15;
@@ -51,9 +57,12 @@ function targetOfKey(key: string | null): ViewerTarget | null {
 
 export function MonitorPage({
   loadViewer = importViewer,
+  planFallbackMs = PLAN_FALLBACK_MS,
 }: {
   /** 3D 뷰어 코드를 불러온다. 시험에서 바꿔 넣는다. */
   loadViewer?: () => Promise<ViewerModule>;
+  /** 3D 가 준비되지 않았을 때 2D 를 띄우기까지 기다리는 시간(ms). 시험에서 줄인다. */
+  planFallbackMs?: number;
 } = {}) {
   const source = useRealtimeStore((s) => s.source);
   const viewer = useRef<Viewer3DHandle>(null);
@@ -63,8 +72,10 @@ export function MonitorPage({
   // 불러오기에 실패한 lazy 는 같은 오류를 계속 던진다. 그 뒤 3D 로 다시 바꾸면 새로 불러온다.
   const [loader, setLoader] = useState(() => ({ attempt: 0, Viewer3D: lazy(loadViewer) }));
   const loadFailed = useRef(false);
-  // 3D 가 첫 화면을 그리기 전(코드를 받는 중·초기화 중·멈춤)에는 2D 평면을 보인다. 빈 화면을 두지 않는다.
+  // 3D 가 첫 화면을 그리기 전(코드를 받는 중·초기화 중·멈춤)에는 planBeforeReady 일 때만 2D 평면을 보인다.
   const [viewerReady, setViewerReady] = useState(false);
+  // 화면에 들어와 planFallbackMs 가 지났거나, 2D 를 보다가 3D 로 바꿨으면 참이다.
+  const [planBeforeReady, setPlanBeforeReady] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const openEventId = useEventsStore((s) => s.openEventId);
   const openEvent = useEventsStore((s) => s.openEvent);
@@ -89,6 +100,12 @@ export function MonitorPage({
     },
     [pushZones],
   );
+
+  useEffect(() => {
+    if (view !== '3d' || viewerReady || planBeforeReady) return;
+    const id = setTimeout(() => setPlanBeforeReady(true), planFallbackMs);
+    return () => clearTimeout(id);
+  }, [view, viewerReady, planBeforeReady, planFallbackMs]);
 
   // 3D 가 준비되면 2D 에서 고른 대상을 3D 에도 고른다(뷰어는 새로 띄우면 선택이 없다).
   // 준비 직후에는 사람·구역이 아직 장면에 올라오지 않았을 수 있어(NOT_FOUND) 될 때까지 잠깐 다시 시도한다.
@@ -117,6 +134,8 @@ export function MonitorPage({
       setLoader((prev) => ({ attempt: prev.attempt + 1, Viewer3D: lazy(loadViewer) }));
     }
     setViewerReady(false);
+    // 보던 2D 를 3D 가 준비될 때까지 그대로 둔다(그 사이 빈 화면을 두지 않는다).
+    setPlanBeforeReady(true);
     setView('3d');
   };
 
@@ -137,6 +156,7 @@ export function MonitorPage({
     );
 
   const { Viewer3D } = loader;
+  const planShown = view === '2d' || (!viewerReady && planBeforeReady);
 
   return (
     <main aria-label="실시간 관제" className="relative flex-1 bg-background">
@@ -155,7 +175,7 @@ export function MonitorPage({
           </Suspense>
         </ViewerLoadBoundary>
       )}
-      {(view === '2d' || !viewerReady) && (
+      {planShown && (
         <div className="absolute top-[72px] right-[370px] bottom-[96px] left-5">
           <LivePlan selectedKey={selectedKey} onSelect={setSelectedKey} className="size-full" />
         </div>

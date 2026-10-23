@@ -15,6 +15,8 @@ export interface EventsMock {
   record(message: RiskEventMessage): RiskEventMessage;
   /** GET /api/events, POST /api/events/:id/ack */
   handlers: ReturnType<typeof http.get>[];
+  /** 저장소의 이벤트 하나(클립 mock 이 읽는다). */
+  find(eventId: string): RiskEventMessage['payload'] | undefined;
   /** 다음 ACK 하나를 토큰 만료(401)로 거절한다. 갱신 후 다시 보내기를 30분 기다리지 않고 본다(개발 콘솔 simaiMock). */
   expireAuth(): void;
 }
@@ -116,6 +118,7 @@ export function createEventsMock({
   return {
     record,
     handlers,
+    find: (eventId) => events.get(eventId)?.payload,
     expireAuth: () => {
       rejectNextAck = true;
     },

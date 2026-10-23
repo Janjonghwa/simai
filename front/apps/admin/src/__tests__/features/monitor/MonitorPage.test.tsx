@@ -4,7 +4,7 @@ import { worldStateAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, render, screen } from '@testing-library/react';
-import { useEffect, useImperativeHandle, useRef, type ReactNode } from 'react';
+import { useImperativeHandle, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const ZONES_RAW = { contract: 'DEMO_UNCONFIRMED', zones: [] };
@@ -18,10 +18,15 @@ vi.mock('@/features/zones/useZones', () => ({
 }));
 vi.mock('@/lib/api', () => ({ api: () => Promise.reject(new Error('no api in test')) }));
 
+type Phase = 'initializing' | 'ready' | 'error';
+
 // 3D 뷰어 대역: 마운트마다 상태를 한 번 알린다(실제 뷰어처럼 콜백이 바뀌어도 다시 알리지 않는다).
+// report 로 마지막에 뜬 뷰어가 나중에 상태를 알리게 한다(늦게 준비되는 3D). 화면에 뜨는 커밋 안에서 연결해
+// 시험이 뷰어를 찾은 뒤 report 를 부르면 늘 그 뷰어에 닿는다.
 const fake = vi.hoisted(() => ({
-  phase: 'ready' as 'initializing' | 'ready' | 'error',
+  phase: 'ready' as Phase,
   select: vi.fn(),
+  report: (() => undefined) as (phase: Phase) => void,
 }));
 
 function FakeViewer({ ref, onStatusChange }: Viewer3DProps) {
@@ -36,26 +41,30 @@ function FakeViewer({ ref, onStatusChange }: Viewer3DProps) {
       }) as unknown as Viewer3DHandle,
   );
   const reported = useRef(false);
-  useEffect(() => {
+  useLayoutEffect(() => {
+    fake.report = (phase) =>
+      onStatusChange?.({
+        phase,
+        mode: 'LIVE',
+        error: phase === 'error' ? { code: 'RENDER_FAILED', message: 'x' } : null,
+      } as ViewerStatus);
     if (reported.current) return;
     reported.current = true;
-    onStatusChange?.({
-      phase: fake.phase,
-      mode: 'LIVE',
-      error: fake.phase === 'error' ? { code: 'RENDER_FAILED', message: 'x' } : null,
-    } as ViewerStatus);
+    fake.report(fake.phase);
   });
   return <div data-testid="viewer3d" />;
 }
 
 const loadFake = () => Promise.resolve({ default: FakeViewer });
 
-function renderPage(loadViewer = loadFake) {
+function renderPage(loadViewer = loadFake, planFallbackMs?: number) {
   const queryClient = new QueryClient();
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   );
-  return render(<MonitorPage loadViewer={loadViewer} />, { wrapper });
+  return render(<MonitorPage loadViewer={loadViewer} planFallbackMs={planFallbackMs} />, {
+    wrapper,
+  });
 }
 
 const plan = () => screen.queryByRole('group', { name: '2D 평면' });
@@ -69,31 +78,43 @@ describe('MonitorPage 3D·2D 전환', () => {
   });
   afterEach(cleanup);
 
-  it('3D 가 첫 화면을 그리기 전에는 2D 평면을 보이고, 준비되면 3D 만 보인다', async () => {
+  it('3D 가 정한 시간 안에 첫 화면을 그리지 못하면 준비될 때까지 2D 평면을 보이고, 빨리 준비되면 2D 를 비추지 않는다', async () => {
     fake.phase = 'initializing';
-    renderPage();
+    renderPage(loadFake, 50);
+    // 3D 를 띄우자마자 2D 를 비추지 않는다.
+    expect(plan()).toBeNull();
     expect(await screen.findByTestId('viewer3d')).toBeTruthy();
-    expect(plan()).toBeTruthy();
+    await vi.waitFor(() => expect(plan()).toBeTruthy());
     expect(toggle('3D').getAttribute('aria-pressed')).toBe('true');
+    act(() => fake.report('ready'));
+    expect(plan()).toBeNull();
     cleanup();
 
     fake.phase = 'ready';
-    renderPage();
+    renderPage(loadFake, 300);
+    expect(plan()).toBeNull();
     expect(await screen.findByTestId('viewer3d')).toBeTruthy();
-    await vi.waitFor(() => expect(plan()).toBeNull());
+    // 정한 시간이 지나도 그 전에 준비됐으므로 2D 를 띄우지 않는다.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
+    expect(plan()).toBeNull();
   });
 
-  it('토글로 2D 로 바꾸면 3D 뷰어를 그리지 않고, 다시 3D 로 돌아오면 준비된 뒤 2D 가 사라진다', async () => {
+  it('토글로 2D 로 바꾸면 3D 뷰어를 그리지 않고, 다시 3D 로 돌아오면 3D 가 준비될 때까지 2D 를 그대로 둔다', async () => {
     renderPage();
     await screen.findByTestId('viewer3d');
+    expect(plan()).toBeNull();
 
     act(() => toggle('2D').click());
     expect(plan()).toBeTruthy();
     expect(screen.queryByTestId('viewer3d')).toBeNull();
 
+    fake.phase = 'initializing';
     act(() => toggle('3D').click());
     expect(await screen.findByTestId('viewer3d')).toBeTruthy();
-    await vi.waitFor(() => expect(plan()).toBeNull());
+    // 정한 시간(기본 2초)을 기다리지 않고 보던 2D 를 그대로 둔다.
+    expect(plan()).toBeTruthy();
+    act(() => fake.report('ready'));
+    expect(plan()).toBeNull();
   });
 
   it('이미 3D 일 때 3D 를 다시 눌러도 2D 가 덮지 않는다', async () => {
