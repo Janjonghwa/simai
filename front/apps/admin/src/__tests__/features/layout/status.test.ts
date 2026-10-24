@@ -5,7 +5,10 @@ import {
   clockLabel,
   configLabel,
   dataAgeSec,
+  failureOf,
+  lastDataClock,
   sceneLabel,
+  sceneMismatch,
 } from '@/features/layout/status';
 import { viewerHealthAt } from '@/mocks/realtimeScenario';
 import type { HealthSnapshot } from '@/store/realtime.store';
@@ -95,5 +98,47 @@ describe('상단 바 문구', () => {
     expect(clockLabel(0, now)).toBe('14:30:05');
     expect(clockLabel(-5000, now)).toBe('14:30:00');
     expect(clockLabel(undefined, now)).toBeUndefined();
+  });
+
+  it('현장이 다른 Scene 으로 판정하면 두 버전을 함께 보인다', () => {
+    const scene = (live: string | null, mismatch: boolean) =>
+      snapshot({ scene: { committed_version: 'scene-3', live_version: live, mismatch } });
+    expect(sceneMismatch(scene('scene-2', true))).toEqual({
+      committed: 'scene-3',
+      live: 'scene-2',
+    });
+    expect(sceneLabel(scene('scene-2', true))).toBe('scene-3 ≠ 현장 scene-2');
+    // EC2 가 다르다고 하지 않았거나 한쪽 버전을 모르면 경고하지 않는다.
+    expect(sceneMismatch(scene('scene-3', false))).toBeUndefined();
+    expect(sceneMismatch(scene(null, true))).toBeUndefined();
+    expect(sceneLabel(scene(null, true))).toBe('scene-3');
+    expect(sceneMismatch(null)).toBeUndefined();
+  });
+
+  it('마지막 데이터 시각은 EC2 시각에서 데이터 연령을 뺀 때다', () => {
+    const asOf = new Date(2026, 9, 21, 14, 30, 5).getTime();
+    expect(lastDataClock(snapshot({ as_of: asOf, data_age_ms: 12_000 }))).toBe('14:29:53');
+    expect(lastDataClock(snapshot({ data_age_ms: null }))).toBeUndefined();
+    expect(lastDataClock(null)).toBeUndefined();
+  });
+});
+
+describe('failureOf', () => {
+  const state = (
+    remote_state: ViewerHealthPayload['remote_state'],
+    laptop: ViewerHealthPayload['laptop']['link'] = 'CONNECTED',
+  ) => snapshot({ remote_state, laptop: { link: laptop, last_heartbeat_at: T } });
+
+  it('EC2 가 알린 remote_state 와 노트북 연결로 장애 종류를 정한다', () => {
+    expect(failureOf(state('NORMAL'), true)).toBeUndefined();
+    expect(failureOf(state('REMOTE_LINK_LOST'), true)).toBe('REMOTE_LINK_LOST');
+    expect(failureOf(state('CONTROL_HALTED'), true)).toBe('CONTROL_HALTED');
+    // 노트북 하트비트가 끊겨도 CONTROL_HALTED 다. 노트북 정지는 따로 알린다.
+    expect(failureOf(state('CONTROL_HALTED', 'DISCONNECTED'), true)).toBe('DEVICE_DOWN');
+  });
+
+  it('EC2 와 끊겼으면 마지막으로 받은 상태로 장애를 알리지 않는다', () => {
+    expect(failureOf(state('CONTROL_HALTED'), false)).toBeUndefined();
+    expect(failureOf(null, true)).toBeUndefined();
   });
 });

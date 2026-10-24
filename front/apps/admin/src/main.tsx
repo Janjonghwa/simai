@@ -79,7 +79,8 @@ if (import.meta.env.DEV && env.VITE_API_MOCK) {
   });
   await network.enable();
   // 개발 도구 콘솔에서 흉내 낸다: simaiMock.pauseHealth(5000), simaiMock.drop(),
-  // simaiMock.expireAuth()(다음 ACK 를 토큰 만료로 거절해 갱신 뒤 다시 보내기를 본다)
+  // simaiMock.expireAuth()(다음 ACK 를 토큰 만료로 거절해 갱신 뒤 다시 보내기를 본다),
+  // simaiMock.outage('tier0' | 'laptop' | 'remote' | null)(장애 띠), simaiMock.sceneMismatch(true)
   Object.assign(globalThis, {
     simaiMock: { ...startRealtimeMock(broker, events), expireAuth: events.expireAuth },
   });

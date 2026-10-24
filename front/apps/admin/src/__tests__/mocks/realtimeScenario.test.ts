@@ -3,11 +3,82 @@ import {
   riskEventsBetween,
   viewerHealthAt,
   worldStateAt,
+  type MockOutage,
 } from '@/mocks/realtimeScenario';
 import { validateMessage } from '@simai/contracts';
 import { describe, expect, it } from 'vitest';
 
 const T0 = 1_760_342_400_000;
+
+describe('장애·Scene 불일치 흉내', () => {
+  const health = (t: number, kind: MockOutage) =>
+    viewerHealthAt(t, { faults: false, outage: { kind, since: T0 } }).payload;
+
+  it('끊긴 뒤 3초 동안은 데이터 연령만 늘고, 그 뒤 EC2 가 장애를 알린다', () => {
+    const early = health(T0 + 2_999, 'tier0');
+    expect(early.remote_state).toBe('NORMAL');
+    expect(early.data_age_ms).toBeGreaterThanOrEqual(2_999);
+
+    const late = health(T0 + 3_000, 'tier0');
+    expect(late).toMatchObject({
+      remote_state: 'CONTROL_HALTED',
+      tier0_link: 'DISCONNECTED',
+      laptop: { link: 'CONNECTED' },
+      system_health: 'UNSAFE_UNKNOWN',
+    });
+  });
+
+  it('노트북 정지는 노트북 하트비트가 끊기고 카메라 신호가 없다', () => {
+    const payload = health(T0 + 5_000, 'laptop');
+    expect(payload).toMatchObject({
+      remote_state: 'CONTROL_HALTED',
+      tier0_link: 'CONNECTED',
+      laptop: { link: 'DISCONNECTED', last_heartbeat_at: T0 },
+    });
+    const cameras = (payload.tier0_health as { cameras: { status: string }[] }).cameras;
+    expect(cameras.map((camera) => camera.status)).toEqual(Array(4).fill('NO_SIGNAL'));
+  });
+
+  it('Tier 0 → EC2 단절은 원격 전달 단절이고 노트북은 이어져 있다', () => {
+    expect(health(T0 + 5_000, 'remote')).toMatchObject({
+      remote_state: 'REMOTE_LINK_LOST',
+      tier0_link: 'DISCONNECTED',
+      laptop: { link: 'CONNECTED' },
+    });
+  });
+
+  it('끊긴 동안 마지막 데이터 시각(as_of − 데이터 연령)은 장애가 시작될 때로 고정된다', () => {
+    const lastAt = (t: number) => {
+      const payload = health(t, 'tier0');
+      return payload.as_of - (payload.data_age_ms ?? 0);
+    };
+    // 초마다 바뀌는 평소 연령 흔들림이 섞이지 않는다.
+    expect(new Set([1_000, 2_500, 4_000, 7_300, 9_999].map((ms) => lastAt(T0 + ms)))).toEqual(
+      new Set([T0 - 120]),
+    );
+  });
+
+  it('Scene 불일치를 켜면 Tier 0 가 이전 Scene 을 쓴다고 알리고, world 도 그 Scene 으로 온다', () => {
+    expect(viewerHealthAt(T0, { sceneMismatch: true }).payload.scene).toEqual({
+      committed_version: 'scene-3',
+      live_version: 'scene-2',
+      mismatch: true,
+    });
+    expect(worldStateAt(T0, { sceneMismatch: true }).payload.scene_version).toBe('scene-2');
+    expect(worldStateAt(T0).payload.scene_version).toBe('scene-3');
+  });
+
+  it('장애·불일치 흉내도 계약을 통과한다', () => {
+    for (const kind of ['tier0', 'laptop', 'remote'] as const) {
+      const message = viewerHealthAt(T0 + 5_000, {
+        outage: { kind, since: T0 },
+        sceneMismatch: true,
+      });
+      const result = validateMessage('viewer_health', message);
+      expect(result.ok ? [] : result.errors).toEqual([]);
+    }
+  });
+});
 
 describe('실시간 mock 시나리오', () => {
   it('world·health 메시지는 계약을 통과한다', () => {

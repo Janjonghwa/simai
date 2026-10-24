@@ -1,5 +1,12 @@
 import { PageTitle } from '@/features/layout/PageTitle';
-import { calibrationLabel, chipState, configLabel, dataAgeSec } from '@/features/layout/status';
+import {
+  calibrationLabel,
+  chipState,
+  configLabel,
+  dataAgeSec,
+  sceneLabel,
+  sceneMismatch,
+} from '@/features/layout/status';
 import { SystemHealthChip } from '@/features/layout/SystemHealthChip';
 import { useNow } from '@/features/layout/useNow';
 import {
@@ -43,10 +50,28 @@ function Blank() {
   );
 }
 
-function Value({ value, delay, mono = true }: { value?: string; delay?: boolean; mono?: boolean }) {
+function Value({
+  value,
+  delay,
+  warn,
+  mono = true,
+}: {
+  value?: string;
+  delay?: boolean;
+  warn?: boolean;
+  mono?: boolean;
+}) {
   if (value === undefined) return <Blank />;
   return (
-    <span className={cn(mono && 'font-mono tabular-nums', delay && 'text-delay')}>{value}</span>
+    <span
+      className={cn(
+        mono && 'font-mono tabular-nums',
+        delay && 'text-delay',
+        warn && 'rounded bg-stripes px-1',
+      )}
+    >
+      {value}
+    </span>
   );
 }
 
@@ -65,7 +90,7 @@ function Rows({
         <div key={row.key} className="contents">
           <dt className="text-muted-foreground">{row.label}</dt>
           <dd>
-            <Value value={row.value} delay={row.delay} mono={mono} />
+            <Value value={row.value} delay={row.delay} warn={row.warn} mono={mono} />
           </dd>
         </div>
       ))}
@@ -103,6 +128,12 @@ function Overview({ alive }: { alive: boolean }) {
           rows={[
             { key: 'calibration', label: '보정', value: calibrationLabel(health) },
             { key: 'config', label: '구성', value: configLabel(health) },
+            {
+              key: 'scene',
+              label: '장면',
+              value: sceneLabel(health),
+              warn: sceneMismatch(health) !== undefined,
+            },
           ]}
         />
       </Section>

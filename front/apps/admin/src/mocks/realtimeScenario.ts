@@ -9,6 +9,8 @@ import type {
 // 시험(__tests__/mocks/realtimeScenario.test.ts)이 만든 메시지를 모두 계약 검증기로 검사한다.
 
 const VERSIONS = { calibration: 'cal-7', scene: 'scene-3', config: 'cfg-12' } as const;
+/** Scene 불일치 흉내에서 Tier 0 가 아직 판정에 쓰는 이전 Scene. */
+const PREVIOUS_SCENE = 'scene-2';
 const CAMERAS = ['cam1', 'cam2', 'cam3', 'cam4'] as const;
 
 /** 교실(10×10m) 안을 원을 그리며 걷는 작업자. 주기(ms)마다 한 바퀴 돈다. */
@@ -70,7 +72,11 @@ function track(worker: (typeof WORKERS)[number], t: number): WorldTrack {
 }
 
 /** /topic/world: 시각 t(ms)의 World 상태. EC2 가 봉투만 새로 쓴다(source_id ec2, 명세 12.4). */
-export function worldStateAt(t: number): WorldStateMessage {
+/** sceneMismatch 면 Tier 0 가 이전 Scene 으로 판정한다(health 의 scene.live_version 과 같다, 명세 FR-12). */
+export function worldStateAt(
+  t: number,
+  { sceneMismatch = false }: { sceneMismatch?: boolean } = {},
+): WorldStateMessage {
   return {
     schema_version: '2.0.0',
     msg_type: 'world_state',
@@ -80,7 +86,7 @@ export function worldStateAt(t: number): WorldStateMessage {
     payload: {
       t_latest_global: t - 120,
       calibration_version: VERSIONS.calibration,
-      scene_version: VERSIONS.scene,
+      scene_version: sceneMismatch ? PREVIOUS_SCENE : VERSIONS.scene,
       config_version: VERSIONS.config,
       input_provenance: {
         frames: { source: 'LIVE', camera_ids: sending(CAMERAS, t) },
@@ -97,7 +103,12 @@ export function worldStateAt(t: number): WorldStateMessage {
  * 카메라 한 대의 Tier 0 health(계약 예제 contracts/examples/viewer_health.json 모양). 키프레임을 기다리면
  * 처리 FPS 는 0 이고(계약 필수 값), 잴 수 없는 값은 null 이거나 싣지 않는다(예제의 cam2 와 같다).
  */
-function cameraHealth(id: (typeof CAMERAS)[number], index: number, t: number, down: boolean) {
+function cameraHealth(
+  id: (typeof CAMERAS)[number],
+  index: number,
+  t: number,
+  down: false | 'WAITING_KEYFRAME' | 'NO_SIGNAL',
+) {
   if (down) {
     return {
       id,
@@ -105,7 +116,7 @@ function cameraHealth(id: (typeof CAMERAS)[number], index: number, t: number, do
       last_capture: null,
       sync_offset_ms: null,
       sync_valid: null,
-      status: 'WAITING_KEYFRAME',
+      status: down,
     };
   }
   const wave = Math.floor(t / 1000 + index * 3) % 5;
@@ -130,17 +141,38 @@ function cameraHealth(id: (typeof CAMERAS)[number], index: number, t: number, do
   };
 }
 
+/** 흉내 내는 장애(명세 06장). tier0: Tier 0 정지, laptop: 노트북 정지, remote: Tier 0 → EC2 단절. */
+export type MockOutage = 'tier0' | 'laptop' | 'remote';
+
+/** EC2 가 하트비트 3회(1초 주기) 누락을 장애로 보기까지(ms, 명세 3.2). */
+const DETECT_MS = 3_000;
+
 /**
  * /topic/health: 시각 t(ms)의 관제 상태. 데이터 연령은 0.2초 안팎이고, 바퀴마다 cam3 가 잠깐 키프레임을 기다린다.
  * faults 가 false 면 고장 흉내 없이 늘 정상이다(시각과 상관없이 NOMINAL 을 기대하는 시험).
+ * outage 를 주면 그 시각부터 데이터가 끊기고, 3초 뒤부터 EC2 가 장애(remote_state)를 알린다.
+ * sceneMismatch 면 Tier 0 가 이전 Scene 으로 판정한다고 알린다(명세 FR-12).
  */
 export function viewerHealthAt(
   t: number,
-  { faults = true }: { faults?: boolean } = {},
+  {
+    faults = true,
+    outage,
+    sceneMismatch = false,
+  }: {
+    faults?: boolean;
+    outage?: { kind: MockOutage; since: number };
+    sceneMismatch?: boolean;
+  } = {},
 ): ViewerHealthMessage {
+  const down = outage && t - outage.since >= DETECT_MS ? outage.kind : undefined;
   const cam3Down = faults && cam3DownAt(t);
-  const system = cam3Down ? 'DEGRADED' : 'NOMINAL';
+  const system = down ? 'UNSAFE_UNKNOWN' : cam3Down ? 'DEGRADED' : 'NOMINAL';
   const wave = Math.floor(t / 1000) % 5;
+  const age = 180 + wave * 15;
+  // 노트북이 멈추면 Tier 0 에 영상이 오지 않는다.
+  const cameraDown = (id: (typeof CAMERAS)[number]) =>
+    down === 'laptop' ? 'NO_SIGNAL' : id === 'cam3' && cam3Down ? 'WAITING_KEYFRAME' : false;
   return {
     schema_version: '1.0.0',
     msg_type: 'viewer_health',
@@ -150,21 +182,27 @@ export function viewerHealthAt(
     payload: {
       as_of: t - 10,
       system_health: system,
-      remote_state: 'NORMAL',
-      tier0_link: 'CONNECTED',
-      laptop: { link: 'CONNECTED', last_heartbeat_at: t - 200 },
-      data_age_ms: 180 + (Math.floor(t / 1000) % 5) * 15,
+      remote_state: down === 'remote' ? 'REMOTE_LINK_LOST' : down ? 'CONTROL_HALTED' : 'NORMAL',
+      tier0_link: down === 'tier0' || down === 'remote' ? 'DISCONNECTED' : 'CONNECTED',
+      laptop:
+        down === 'laptop' && outage
+          ? { link: 'DISCONNECTED', last_heartbeat_at: outage.since }
+          : { link: 'CONNECTED', last_heartbeat_at: t - 200 },
+      // 끊긴 동안은 마지막 world(장애 시작 때)부터 잰다. as_of − t_latest_global 과 같다.
+      data_age_ms: outage ? t - 10 - (Math.min(t, outage.since) - 120) : age,
       calibration_state: 'CALIBRATED',
       config: {
         published_version: VERSIONS.config,
         applied_version: VERSIONS.config,
         sync: 'CURRENT',
       },
-      scene: { committed_version: VERSIONS.scene, live_version: VERSIONS.scene, mismatch: false },
+      scene: sceneMismatch
+        ? { committed_version: VERSIONS.scene, live_version: PREVIOUS_SCENE, mismatch: true }
+        : { committed_version: VERSIONS.scene, live_version: VERSIONS.scene, mismatch: false },
       tier0_health: {
         system_health: system,
-        t_latest_global: t - 120,
-        cameras: CAMERAS.map((id, index) => cameraHealth(id, index, t, id === 'cam3' && cam3Down)),
+        t_latest_global: (outage ? Math.min(t, outage.since) : t) - 120,
+        cameras: CAMERAS.map((id, index) => cameraHealth(id, index, t, cameraDown(id))),
         pipeline_lag_ms: 110 + wave * 5,
         capture_to_risk_ms: { p50: 300 + wave * 5, p95: 460 + wave * 10 },
         calibration_state: 'CALIBRATED',

@@ -10,6 +10,7 @@ import {
   configLabel,
   dataAgeSec,
   sceneLabel,
+  sceneMismatch,
 } from '@/features/layout/status';
 import { SystemHealthChip } from '@/features/layout/SystemHealthChip';
 import { useThemeStore } from '@/features/layout/theme.store';
@@ -34,11 +35,31 @@ import { BellRing, ChevronDown, LogOut, Moon, Sun } from 'lucide-react';
 
 const NONE = '—';
 
-function Meta({ label, value, late }: { label: string; value?: string; late?: boolean }) {
+function Meta({
+  label,
+  value,
+  late,
+  warn,
+  shrink,
+}: {
+  label: string;
+  value?: string;
+  late?: boolean;
+  /** 시스템 이상(장면 불일치)이면 장애 띠와 같은 줄무늬로 보인다. */
+  warn?: boolean;
+  /** 자리가 모자라면 이 칸이 말줄임으로 준다. 짧고 급한 값(데이터·카메라·장면)은 줄이지 않는다. */
+  shrink?: boolean;
+}) {
   return (
-    <span className="whitespace-nowrap">
+    <span className={cn('whitespace-nowrap', shrink ? 'min-w-0 truncate' : 'shrink-0')}>
       {label}{' '}
-      <b className={cn('font-mono font-medium text-muted-foreground', late && 'text-delay')}>
+      <b
+        className={cn(
+          'font-mono font-medium text-muted-foreground',
+          late && 'text-delay',
+          warn && 'rounded bg-stripes px-1 text-foreground',
+        )}
+      >
         {value ?? NONE}
       </b>
     </span>
@@ -50,13 +71,15 @@ function HealthMeta({
   label,
   alive,
   select,
+  shrink,
 }: {
   label: string;
   alive: boolean;
   select: (health: HealthSnapshot | null) => string | undefined;
+  shrink?: boolean;
 }) {
   const value = useRealtimeStore((s) => select(s.health));
-  return <Meta label={label} value={alive ? value : undefined} />;
+  return <Meta label={label} value={alive ? value : undefined} shrink={shrink} />;
 }
 
 /** 데이터 연령. 끊겨도 마지막으로 받은 때부터 계속 늘어나고, 지연 색으로 바뀐다. */
@@ -70,6 +93,13 @@ function DataAgeMeta({ alive }: { alive: boolean }) {
       late={!alive && age !== undefined}
     />
   );
+}
+
+/** 장면 버전. 현장이 다른 Scene 으로 판정하고 있으면 두 버전을 경고로 보인다(명세 FR-12). */
+function SceneMeta({ alive }: { alive: boolean }) {
+  const value = useRealtimeStore((s) => sceneLabel(s.health));
+  const mismatch = useRealtimeStore((s) => sceneMismatch(s.health) !== undefined);
+  return <Meta label="장면" value={alive ? value : undefined} warn={alive && mismatch} />;
 }
 
 function HealthStatus({ alive }: { alive: boolean }) {
@@ -146,11 +176,11 @@ export function TopBar({ floating }: { floating: boolean }) {
         <Divider />
         <HealthMeta label="카메라" alive={alive} select={cameraLabel} />
         <Divider />
-        <HealthMeta label="보정" alive={alive} select={calibrationLabel} />
+        <HealthMeta label="보정" alive={alive} select={calibrationLabel} shrink />
         <Divider />
-        <HealthMeta label="구성" alive={alive} select={configLabel} />
+        <HealthMeta label="구성" alive={alive} select={configLabel} shrink />
         <Divider />
-        <HealthMeta label="장면" alive={alive} select={sceneLabel} />
+        <SceneMeta alive={alive} />
       </div>
       <Ec2Clock />
       <AccountMenu />

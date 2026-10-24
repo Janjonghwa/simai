@@ -1,5 +1,10 @@
 import type { EventsMock } from '@/mocks/events';
-import { riskEventsBetween, viewerHealthAt, worldStateAt } from '@/mocks/realtimeScenario';
+import {
+  riskEventsBetween,
+  viewerHealthAt,
+  worldStateAt,
+  type MockOutage,
+} from '@/mocks/realtimeScenario';
 import type { StompBroker } from '@/mocks/stompBroker';
 
 // 개발 서버 mock 송출: world 10Hz, health 1Hz, 위험 이벤트는 40초 주기 시나리오(realtimeScenario).
@@ -12,6 +17,13 @@ export interface RealtimeMock {
   pauseHealth(ms: number): void;
   /** 연결을 끊는다(서버 재시작 흉내). 클라이언트가 다시 연결한다. */
   drop(): void;
+  /**
+   * 장애를 흉내 낸다(명세 FR-11). 그때부터 world 가 오지 않고, 3초 뒤 EC2 가 health 로 알린다. null 이면 복구한다.
+   * 위험 이벤트는 그대로 흘린다(흉내를 단순하게 둔다).
+   */
+  outage(kind: MockOutage | null): void;
+  /** Tier 0 가 이전 Scene 으로 판정하는 상태(명세 FR-12)를 켜고 끈다. */
+  sceneMismatch(on: boolean): void;
   stop(): void;
 }
 
@@ -22,15 +34,24 @@ export function startRealtimeMock(
 ): RealtimeMock {
   let healthPausedUntil = 0;
   let lastEventCheck = now();
+  let fault: { kind: MockOutage; since: number } | undefined;
+  let staleScene = false;
   // 연결이 없으면(로그인 전·로그아웃 뒤) 메시지를 만들지 않는다.
   const live = () => broker.connections > 0;
   const timers = [
     setInterval(() => {
-      if (live()) broker.publish('/topic/world', worldStateAt(now()));
+      if (live() && !fault) {
+        broker.publish('/topic/world', worldStateAt(now(), { sceneMismatch: staleScene }));
+      }
     }, WORLD_MS),
     setInterval(() => {
       const t = now();
-      if (live() && t >= healthPausedUntil) broker.publish('/topic/health', viewerHealthAt(t));
+      if (live() && t >= healthPausedUntil) {
+        broker.publish(
+          '/topic/health',
+          viewerHealthAt(t, { outage: fault, sceneMismatch: staleScene }),
+        );
+      }
     }, HEALTH_MS),
     setInterval(() => {
       const t = now();
@@ -47,6 +68,12 @@ export function startRealtimeMock(
       healthPausedUntil = now() + ms;
     },
     drop: () => broker.dropAll(),
+    outage: (kind) => {
+      fault = kind ? { kind, since: now() } : undefined;
+    },
+    sceneMismatch: (on) => {
+      staleScene = on;
+    },
     stop: () => timers.forEach(clearInterval),
   };
 }

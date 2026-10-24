@@ -154,6 +154,8 @@ export interface StatusRow {
   value?: string;
   /** 지연 값이면 주황으로 보인다(위험 등급 색을 쓰지 않는다). */
   delay?: boolean;
+  /** 시스템 이상(장면 불일치)이면 장애 띠와 같은 줄무늬로 보인다. */
+  warn?: boolean;
 }
 
 /**
