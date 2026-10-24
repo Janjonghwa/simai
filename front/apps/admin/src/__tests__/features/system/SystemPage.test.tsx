@@ -169,12 +169,34 @@ describe('SystemPage', () => {
     expect(age.className).not.toContain('text-delay');
 
     act(() => useRealtimeStore.setState({ phase: 'CLOSED' }));
-    for (const label of ['노트북 ↔ Tier 0', '노트북 ↔ EC2', 'Tier 0 ↔ EC2', '보정', '구성']) {
+    for (const label of [
+      '노트북 ↔ Tier 0',
+      '노트북 ↔ EC2',
+      'Tier 0 ↔ EC2',
+      '보정',
+      '구성',
+      '장면',
+    ]) {
       expect(dd(label).textContent).toBe(BLANK);
     }
     // 데이터 경과는 끊겨도 계속 늘어나며, 늦어짐을 주황으로 보인다.
     expect(screen.getByText(/^\d+\.\d초$/).className).toContain('text-delay');
     expect(screen.getByText('연결 끊김')).toBeTruthy();
+  });
+
+  it('현장이 다른 Scene 으로 판정하면 장면 칸에 두 버전을 줄무늬로 보인다', () => {
+    renderPage();
+    expect(dd('장면').textContent).toBe('scene-3');
+    expect(dd('장면').querySelector('.bg-stripes')).toBeNull();
+
+    act(() =>
+      seed(T, {
+        scene: { committed_version: 'scene-3', live_version: 'scene-2', mismatch: true },
+      }),
+    );
+    expect(dd('장면').textContent).toBe('scene-3 ≠ 현장 scene-2');
+    expect(dd('장면').querySelector('.bg-stripes')).toBeTruthy();
+    expect(dd('장면').innerHTML).not.toMatch(/sev-|text-delay/);
   });
 
   it('Tier 0 가 끊기면 Tier 0 에서 온 값을 비우고 EC2 가 아는 연결 상태만 보인다', async () => {
