@@ -93,7 +93,34 @@ Host simai-pod
   `sleep infinity` Pod 에서 sshd 가 안 뜬 원인은 템플릿 오류(빈 `PUBLIC_KEY`, 이름 칸에 이미지 다이제스트가 든 `SSH_PUBLIC_KEY`)로 유효한 공개키가 없던 것이다(deploy/README 템플릿 "공개키" 줄).
   SSH 세션에 컨테이너 ENV 가 없어 `/proc/1/environ` 을 수동으로 source 했던 절차는 `simai-start` 가 적는 `/etc/profile.d/simai-env.sh`(비밀 아닌 이름만)로 바꿨다.
 - 막힌 망에서 세션 큐는 이 경로의 SSH 로 `nohup` 으로 띄우고(연결이 끊겨도 돈다), 결과 묶음은 이 경로의 scp 로 가져온다. 이전의 웹 터미널 + 다른 망 scp 절차는 쓰지 않는다. 묶음을 HTTP 로 공개 서빙하지 않는다(토큰 없는 공개 주소가 된다).
-- 남은 확인: 10분 이상 연속 연결(100초 끊김과 keepalive·WebSocket ping), 큰 결과 묶음(수 GB) scp 처리량.
+- I0 도 같은 터널로 보낼 수 있다(S15P31A101-288): 템플릿 `SIMAI_TUNNEL_ALLOW=17000,17001` 이면 `simai-start` 가 `--restrict-to 127.0.0.1:17000·17001` 을 더하고(22 는 늘, 틀린 목록이면 22 만),
+  Tier 0 는 `SIMAI_PUBLIC_HOST=127.0.0.1`·`SIMAI_PUBLIC_PORT_70000/70001=17000/17001`·듣기 주소 127.0.0.1 로 띄운다. 노트북 wstunnel 이 같은 번호 로컬 포트를 전달한다(명령은 deploy/README "I0 터널").
+  노트북은 Tier 0 를 공개키 지문으로만 확인하므로(호스트 이름 검사 없음) 주소가 127.0.0.1 로 바뀌어도 TLS 검증을 바꿀 것이 없다.
+- wstunnel 클라이언트는 기본으로 바깥 TLS(Cloudflare) 인증서를 검증하지 않는다. 안쪽 SSH·I0 는 따로 서버를 확인하지만 경로 비밀값은 바깥 TLS 만 지키므로, 클라이언트 명령에 늘 `--tls-verify-certificate` 를 붙인다(deploy/README).
+  SSAFY 망에서 검증을 켜도 붙는 것을 확인했다(2026-10-26: 핸드셰이크 통과 → HTTP 404, TLS 가로채기 없음). 시연장 망에서는 다시 확인하고, 실패하면 검증을 끄지 않고 보고한다.
+- 남은 확인: 10분 이상 연속 연결(100초 끊김과 keepalive·WebSocket ping), 큰 결과 묶음(수 GB) scp 처리량, I0 영상 지연(아래 "I0 443 예비 경로 측정").
+
+### I0 443 예비 경로 측정 (S15P31A101-288, 4차 세션 ④)
+
+명세 3.12 시연장 망 위험·19.1 미결 "I0 프록시 지연". 같은 입력으로 (a) 443 프록시 + wstunnel, (b) LTE 테더링 Direct TCP 를 각 10분 잰다. 도구는 `deploy/scripts/i0_link_measure.py`(시험 `ai/tests/deploy/test_i0_link_measure.py`).
+
+| 결정 | 값 | 근거 |
+|---|---|---|
+| 입력 | 녹화 재생(`rec-20261021-031045z-classroom-dev-test`, 교실 4대 2304x1296 25 fps 180 s, relay `kind = "file"`·`loop`·`fps = 25`) | 두 경로에 같은 영상이 들어간다. 테더링 때 카메라 공유기 LAN 과 휴대폰 망을 같이 잡는 이중 망 구성이 필요 없고, C110 RTSP 2세션 제한·교실 장면 변화와 무관하다. 실카메라 relay 는 (a) 만 덧붙여 볼 수 있다 |
+| 포트 | 제어 17000, 영상 17001(4대 공용) | 대칭 매핑 요청 번호 70000·70001 의 실제 값. 영상 포트를 같이 써도 연결은 카메라마다 따로라(TCP 연결마다 WebSocket 하나) 독립성은 같고 허용 대상이 줄어든다. Windows 동적 포트 예약(49152~) 밖 |
+| 노트북 대상 | Pod 가 쓴 `endpoint.json`(주소·포트·지문) + 사람이 옮긴 `--pin` | EC2 `GET /api/endpoints/tier0` 가 서버에 아직 없다. 신뢰 규칙은 제품과 같다(고정값에 없는 지문은 붙지 않음, 실제 서버 키가 다르면 토큰 전에 끊음) |
+| 노트북 제어 채널 | 현장 경보 단말 코드(SiteAlertApp·WebSocketControlChannel·SiteLinkMonitor) + 시계 교환 응답 | 단말은 `clock_sync_request` 에 답하지 않는다(무시). 답이 없으면 T_lag 가 null 이고 frame_age 에 두 컴퓨터 시계 차이가 섞인다. 하네스 노트북 흉내와 같은 방식으로 도구가 답한다 |
+| Pod Tier 0 | 시뮬레이터 교실 보정(cam1~cam4), 그 자리 자체 서명 키(임시 폴더, 끝나면 지움), EC2 없음 | 지연·끊김만 본다. 위치·판정은 의미가 없고 결과는 제품 성능 지표가 아니다(AGENTS 규칙 7) |
+| 지표 | frame_age_ms_p95(표시 파일 5초 창), 보정 T_lag(표시 파일 `gpu_priority.load.lag_ms` 와 노트북이 받은 health `pipeline_lag_ms`), 노트북 송신 Mbps·fps, Pod 수신 fps·`gateway_to_runpod_loss`, 영상·제어 재연결 수와 시각, 90~110 s 로 끝난 연결 구간 수(100초 끊김), 최장 연결 | 표시 파일은 5초마다, 노트북 relay 는 1초마다 기록. 측정 시간이 끝나며 닫는 끊김은 세지 않는다 |
+
+노트북 로컬 대역 왕복(2026-10-26): `pod --link tunnel --tier0-cmd <대역 Tier 0>`(실제 Tier0Service + 검출 대역) ↔ `laptop`(합성 카메라 4대) 30 s 에서 공개키 고정·기기 토큰·제어 채널·시계 교환·영상 4대가 붙고
+T_lag p50 78·p95 122 ms(같은 컴퓨터), health lag null 0/27, 끊김 0 이었다. 시계 교환 응답을 넣기 전에는 health lag 가 모두 null 이었다. wstunnel·RunPod 프록시 구간은 노트북에서 재지 않았다.
+
+버린 대안: SSH 포트 전달(`ssh -L`, 이미지 변경 없음)은 카메라·제어가 TCP 하나에 묶여 한 카메라의 지연·끊김이 번지므로 이미지가 늦을 때의 예비로만 둔다. 노트북 HTTP 조회 대역(loopback http)은 relay 는 받지만
+현장 경보 단말의 EC2 하트비트가 https 만 받아 제어 채널을 띄울 수 없고, 인증서 검증을 끄는 우회는 하지 않는다.
+
+남은 위험: RunPod 프록시의 연결 시간 상한이 영상처럼 계속 흐르는 WebSocket 에도 걸리는지(걸리면 relay·제어가 재연결로 버티는지 측정이 답한다), 테더링 망의 CGNAT·지터,
+시연장 망의 TLS 가로채기(SSAFY 망은 2026-10-26 검증 켠 채 접속 확인, 시연장은 다시 확인), 현장 경보 단말의 시계 교환 미구현(제품 경로에서는 T_lag 를 모른다 → system_health UNSAFE_UNKNOWN), EC2 엔드포인트 조회 미구현.
 
 ## GPU 1차 세션 큐 (`deploy/scripts/gpu_session1.py`)
 
@@ -309,6 +336,6 @@ $//'`). `check_image.sh` 의 CR 검사는 결과를 다시 확인한다(Docker �
 
 - SSH 키 접속과 비밀번호 접속 거부(deploy/README Pod 검증 큐 8).
 - Pod 재시작 뒤 포트 변경과 위 재접속 절차, 같은 `--session` 이어 돌기.
-- 443 예비: wstunnel 경유 SSH·scp(3차 세션에서 확인, 이미지 반영 뒤 다시 확인), 10분 이상 연속 연결·100초 끊김.
+- 443 예비: wstunnel 경유 SSH·scp(3차 세션에서 확인, 이미지 반영 뒤 다시 확인), 10분 이상 연속 연결·100초 끊김, `--tls-verify-certificate`(SSAFY 망 확인됨 2026-10-26, 시연장 망은 다시), I0 터널 지연(위 "I0 443 예비 경로 측정").
 - Network Volume 을 붙인 Pod 의 Stop 가능 여부(명세 19.1 미확인 항목).
 - 끝나면 Pod Stop, 결과 묶음 sha256 을 manifest 와 대조.

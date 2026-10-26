@@ -9,6 +9,8 @@
 # sshd 를 띄우면 SSH 세션용으로 비밀이 아닌 컨테이너 환경 변수를 /etc/profile.d/simai-env.sh 에 적는다(로그인 셸이 읽는다, S15P31A101-286).
 # 막힌 망 예비 SSH(S15P31A101-286, 명세 3.12 443 예비): sshd 를 띄운 경우에만, SIMAI_TUNNEL_PREFIX(경로 비밀값, RunPod Secret)가 있으면
 #   wstunnel 서버를 ws://0.0.0.0:${SIMAI_TUNNEL_PORT:-8080} 에 띄워 RunPod HTTPS 프록시(443)로 들어온 WebSocket 을 127.0.0.1:22 로만 잇는다.
+#   SIMAI_TUNNEL_ALLOW(쉼표로 나눈 포트 번호, 예 17000,17001, S15P31A101-288)를 주면 127.0.0.1 의 그 포트도 잇는다(막힌 망 I0 예비 경로).
+#   22 는 늘 허용한다. 목록이 틀리면(포트 번호가 아님·터널 포트 자신·16개 초과) 하나도 더하지 않고 22 만 연다(대상을 넓히지 않는 쪽, SSH 는 남긴다).
 # 시험용 경로: SIMAI_SSH_DIR(기본 /root/.ssh), SIMAI_SSHD_CONFIG_DIR(기본 /etc/ssh/sshd_config.d), SIMAI_SSHD_BIN(기본 /usr/sbin/sshd), SIMAI_SSH_KEYGEN_BIN(기본 ssh-keygen),
 #   SIMAI_SSH_ENV_FILE(기본 /etc/profile.d/simai-env.sh), SIMAI_WSTUNNEL_BIN(기본 wstunnel).
 set -euo pipefail
@@ -98,9 +100,28 @@ if [ -n "$keys" ]; then
   elif ! command -v "$WSTUNNEL" >/dev/null; then
     echo "simai-start: $WSTUNNEL 이 없어 터널을 띄우지 않는다" >&2
   else
+    # 허용 대상(S15P31A101-288): 22 는 늘, SIMAI_TUNNEL_ALLOW 의 포트는 127.0.0.1 로만 더한다(같은 포트는 한 번)
+    restrict=(--restrict-to 127.0.0.1:22 --restrict-to localhost:22)
+    targets="127.0.0.1:22"
+    if [ -n "${SIMAI_TUNNEL_ALLOW:-}" ]; then
+      extra=() bad=""
+      IFS=',' read -ra items <<<"$SIMAI_TUNNEL_ALLOW"
+      for p in "${items[@]}"; do
+        p=${p//[[:space:]]/}
+        [ -z "$p" ] && continue
+        if ! [[ $p =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$p > 65535 )) || [ "$p" = "$TUNNEL_PORT" ]; then bad=1; break; fi
+        [ "$p" = 22 ] && continue
+        [[ " ${extra[*]} " == *" $p "* ]] || extra+=("$p")
+      done
+      if [ -n "$bad" ] || (( ${#extra[@]} > 16 )); then
+        echo "simai-start: SIMAI_TUNNEL_ALLOW 가 포트 목록이 아니다(쉼표로 나눈 1~65535, 터널 포트 제외, 16개 이하) → 하나도 더하지 않고 22 만 연다" >&2
+      else
+        for p in "${extra[@]}"; do restrict+=(--restrict-to "127.0.0.1:$p"); targets+=",127.0.0.1:$p"; done
+      fi
+    fi
     WSTUNNEL_RESTRICT_HTTP_UPGRADE_PATH_PREFIX="$tunnel_prefix" "$WSTUNNEL" server --log-lvl OFF \
-      --restrict-to 127.0.0.1:22 --restrict-to localhost:22 "ws://0.0.0.0:$TUNNEL_PORT" </dev/null >/dev/null 2>&1 &
-    echo "simai-start: wstunnel 시작 (ws://0.0.0.0:$TUNNEL_PORT → 127.0.0.1:22 만, 경로 비밀값 인증, 로그 끔)" >&2
+      "${restrict[@]}" "ws://0.0.0.0:$TUNNEL_PORT" </dev/null >/dev/null 2>&1 &
+    echo "simai-start: wstunnel 시작 (ws://0.0.0.0:$TUNNEL_PORT → $targets 만, 경로 비밀값 인증, 로그 끔)" >&2
   fi
 elif [ -n "$tunnel_prefix" ]; then
   echo "simai-start: sshd 를 띄우지 않아 443 예비 터널(wstunnel)도 띄우지 않는다" >&2
