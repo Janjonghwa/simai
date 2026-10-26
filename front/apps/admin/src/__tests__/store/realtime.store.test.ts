@@ -34,6 +34,21 @@ describe('realtime.store', () => {
     });
   });
 
+  it('GET /api/health 로 받은 값은 더 새 health 를 아직 받지 않았을 때만 채운다', () => {
+    const store = useRealtimeStore.getState();
+    store.seedHealth(health(T));
+    expect(useRealtimeStore.getState().health?.payload.as_of).toBe(health(T).payload.as_of);
+
+    // /topic/health 로 더 새 값을 받은 뒤 늦게 온 조회 값은 버린다.
+    store.receiveHealth(health(T + 2000));
+    store.seedHealth(health(T + 1000));
+    expect(useRealtimeStore.getState().health?.payload.as_of).toBe(health(T + 2000).payload.as_of);
+
+    // 더 새 조회 값은 받는다(재연결 직후 등).
+    store.seedHealth(health(T + 3000));
+    expect(useRealtimeStore.getState().health?.payload.as_of).toBe(health(T + 3000).payload.as_of);
+  });
+
   it('reset 하면 로그인 전 상태로 돌아간다', () => {
     useRealtimeStore.getState().opened(T);
     useRealtimeStore.getState().receiveWorld({ payload: worldStateAt(T).payload, receivedAt: T });
