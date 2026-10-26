@@ -189,4 +189,28 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    /** Tier 0 엔드포인트 조회(S15P31A101-290) */
+    enum Endpoint implements ErrorCode {
+        // 노트북은 404 를 '아직 등록 없음'으로 보고 다시 조회한다(gateway/site_alert endpoint.py)
+        TIER0_ENDPOINT_NOT_REGISTERED(HttpStatus.NOT_FOUND, "등록된 Tier 0 엔드포인트가 없습니다. Tier 0 가 등록할 때까지 다시 조회하세요");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Endpoint(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }
