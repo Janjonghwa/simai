@@ -57,7 +57,7 @@ class MachineTokenIntegrationTest {
 
         mvc.perform(get("/api/devices/probe").header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
                 .andExpect(status().isOk()).andExpect(content().string(deviceId));
-        // 엔드포인트 조회(GET)는 기기 체인을 지난다(컨트롤러가 아직 없어 404). 등록(POST)은 I1 이라 기기 토큰으로 못 한다
+        // 엔드포인트 조회(GET)는 기기 체인을 지난다(시험 DB 에 등록이 없어 404, Tier0EndpointIntegrationTest). 등록(POST)은 I1 이라 기기 토큰으로 못 한다
         mvc.perform(get("/api/endpoints/tier0").header(HttpHeaders.AUTHORIZATION, "bearer " + token))
                 .andExpect(status().isNotFound());
         mvc.perform(get("/api/endpoints/tier0")).andExpect(status().isUnauthorized());

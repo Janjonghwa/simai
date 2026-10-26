@@ -340,6 +340,9 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `pod_id` | text |  | `tier0_endpoint.pod_id` |  |
 | `datacenter` | text |  | `tier0_endpoint.datacenter` |  |
 | `received_at` | ts | NN |  |  |
+| `msg_id` | uuid | UQ | 봉투 `msg_id` | 재전송 제거(V8, S15P31A101-290) |
+| `schema_version` | text |  | 봉투 `schema_version` | 조회 응답 봉투(V8) |
+| `sent_at` | ts |  | 봉투 `sent_at` | 조회 응답 봉투(V8) |
 
 #### `layout_plan` — 가상 레이아웃(개구부·비계·장비 주차 구역)
 
