@@ -20,7 +20,8 @@ import tools.jackson.databind.node.ObjectNode;
  *   <li>Tier 0 정상 = 연결돼 있고 처리가 나아감(t_latest_global 이 linkTimeoutMs 안에 늘어남, FR-11). health 는 오는데 처리가 멈추면
  *       tier0_link 는 CONNECTED 로 두고 관제 정지(CONTROL_HALTED)로 본다
  *   <li>remote_state: 노트북이 "Tier 0 제어 연결 CONNECTED, 현장 표시 CONTROL_HALTED 아님"이라고 알리는지(노트북 정상)를 함께 본다.
- *       Tier 0 정상이고 노트북 연결이 살아 있고 노트북 정상이면 NORMAL, Tier 0 연결만 끊겼고 노트북 정상이면 REMOTE_LINK_LOST(현장 경보 동작 중),
+ *       Tier 0 정상이고 노트북 연결이 살아 있고 노트북 정상이면 NORMAL, Tier 0 연결만 끊겼고 Tier 0 를 잃은 뒤 받은 하트비트가 노트북 정상을
+ *       알리면 REMOTE_LINK_LOST(현장 경보 동작 중, 그 하트비트가 오기 전에는 모르므로 CONTROL_HALTED),
  *       그 밖(노트북 끊김·노트북이 관제 정지를 알림)은 CONTROL_HALTED. 연결이 살아 있어도 노트북이 관제 정지를 알리면 NORMAL 이 아니다
  *   <li>system_health: remote_state 가 NORMAL 이 아니면 UNSAFE_UNKNOWN, 아니면 Tier 0 health 의 값(모르면 UNSAFE_UNKNOWN)
  *   <li>노트북이 여럿이면(MVP 는 하나) 살아 있는 노트북이 모두 정상일 때만 정상이다. 살아 있는 노트북이 하나라도 있으면 laptop.link 는
@@ -73,11 +74,16 @@ public class ViewerHealthService {
         List<HealthState.Heartbeat> live = laptops.stream().filter(h -> fresh(h.receivedNanos(), nowNanos)).toList();
         boolean laptopUp = !live.isEmpty();
         // 살아 있는 노트북이 모두 정상(Tier 0 제어 연결, 관제 정지 아님)을 알릴 때만 정상으로 본다
-        boolean laptopOk = laptopUp && live.stream().allMatch(h -> siteOk(h.payload()));
+        boolean laptopOk = laptopUp && live.stream().allMatch(h -> HealthState.siteOk(h.payload()));
         Long lastHeartbeat = laptops.stream().map(h -> h.receivedAt().toEpochMilli()).max(Long::compare).orElse(null);
         JsonNode health = tier0 == null ? null : tier0.payload();
 
-        String remote = tier0Up && processing && laptopOk ? "NORMAL" : !tier0Up && laptopOk ? "REMOTE_LINK_LOST" : "CONTROL_HALTED";
+        // Tier 0 를 잃은 뒤(마지막 health + 끊김 기준) 받은 하트비트만 Tier 0 상태를 안다. 그 전 하트비트로 '현장 경보 동작 중'이라 하지 않는다
+        long lostNanos = tier0 == null ? Long.MIN_VALUE : tier0.receivedNanos() + linkTimeoutMs * 1_000_000L;
+        List<HealthState.Heartbeat> afterLoss = live.stream().filter(h -> h.receivedNanos() - lostNanos > 0).toList();
+        boolean laptopSaysTier0Ok = !afterLoss.isEmpty() && afterLoss.stream().allMatch(h -> HealthState.siteOk(h.payload()));
+        String remote = tier0Up && processing && laptopOk ? "NORMAL"
+                : !tier0Up && laptopSaysTier0Ok ? "REMOTE_LINK_LOST" : "CONTROL_HALTED";
         ObjectNode p = mapper.createObjectNode();
         p.put("as_of", now.toEpochMilli());
         String reported = health == null ? null : health.path("system_health").asString(null);
@@ -117,12 +123,6 @@ public class ViewerHealthService {
 
     long linkTimeoutMs() {
         return linkTimeoutMs;
-    }
-
-    /** control 만 보지 않는다: 연결돼 있어도 처리가 멈추면 노트북은 CONTROL_HALTED 로 알린다(계약 laptop_heartbeat) */
-    private static boolean siteOk(JsonNode heartbeat) {
-        return CONNECTED.equals(heartbeat.path("tier0").path("control").asString(null))
-                && !"CONTROL_HALTED".equals(heartbeat.path("site_display").asString(null));
     }
 
     private ObjectNode config(boolean tier0Up, JsonNode health) {

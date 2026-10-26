@@ -52,6 +52,8 @@ public class HealthState {
     private volatile Received tier0Health;
     private volatile World world;
     private volatile Progress progress;
+    /** 노트북이 마지막으로 정상(Tier 0 제어 연결, 관제 정지 아님)을 알린 때 */
+    private volatile Instant laptopOkAt;
     private volatile Runnable onChange = () -> { };
 
     public HealthState(Clock clock) {
@@ -60,10 +62,8 @@ public class HealthState {
 
     @TransactionalEventListener(fallbackExecution = true)
     void onTier0Health(Tier0HealthStored stored) {
-        Received previous = tier0Health;
-        if (previous == null || !stored.receivedAt().isBefore(previous.receivedAt())) {
-            tier0Health = new Received(stored.envelope().payload(), stored.receivedAt(), nanoTime());
-        }
+        // 도착 순서(I1 한 연결)대로 바꾼다. 벽시계로 순서를 정하면 시계를 뒤로 맞출 때 새 health 를 버린다
+        tier0Health = new Received(stored.envelope().payload(), stored.receivedAt(), nanoTime());
         JsonNode t = stored.envelope().payload().get("t_latest_global");
         if (t != null && t.isIntegralNumber()) {
             progressed(t.longValue());
@@ -71,11 +71,16 @@ public class HealthState {
         onChange.run();
     }
 
-    /** t_latest_global 이 지금까지 본 값보다 크면 처리가 나아간 것이다 */
+    /**
+     * t_latest_global 이 지금까지 본 값보다 크면 처리가 나아간 것이다. 작아졌는데 그동안(WORLD_RESYNC_MS) 더 큰 값이 없었으면
+     * Tier 0 시계가 바뀐 것(시계 차이 재추정·재시작)으로 보고 그 값을 새 기준으로 삼는다(되돌아간 뒤 관제 정지로 굳지 않게)
+     */
     private synchronized void progressed(long tMs) {
         Progress previous = progress;
-        if (previous == null || tMs > previous.tLatestGlobalMs()) {
-            progress = new Progress(tMs, clock.instant(), nanoTime());
+        long now = nanoTime();
+        if (previous == null || tMs > previous.tLatestGlobalMs()
+                || (tMs < previous.tLatestGlobalMs() && now - previous.nanos() >= WORLD_RESYNC_MS * 1_000_000L)) {
+            progress = new Progress(tMs, clock.instant(), now);
         }
     }
 
@@ -105,6 +110,9 @@ public class HealthState {
 
     void recordHeartbeat(String deviceId, JsonNode payload, Instant receivedAt) {
         laptops.put(deviceId, new Heartbeat(deviceId, payload, receivedAt, nanoTime()));
+        if (siteOk(payload)) {
+            laptopOkAt = receivedAt;
+        }
         onChange.run();
     }
 
@@ -115,6 +123,16 @@ public class HealthState {
 
     public Progress progress() {
         return progress;
+    }
+
+    public Instant laptopOkAt() {
+        return laptopOkAt;
+    }
+
+    /** 노트북 정상: Tier 0 제어 연결 CONNECTED 이고 관제 정지를 알리지 않음. control 만 보지 않는다(계약 laptop_heartbeat) */
+    static boolean siteOk(JsonNode heartbeat) {
+        return "CONNECTED".equals(heartbeat.path("tier0").path("control").asString(null))
+                && !"CONTROL_HALTED".equals(heartbeat.path("site_display").asString(null));
     }
 
     /** 받은 값이 바뀌면 부른다(바뀌면 즉시 보내기, 명세 12.4). 받은 스레드에서 불리므로 빨리 끝나야 한다 */

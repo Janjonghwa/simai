@@ -54,6 +54,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | D. 시계열 관측 | `world_track_state` | MVP | hypertable | World Track 상태 10 Hz(최소 리플레이 근거) | 있음 | `/api/replay`, `/api/world`, `/topic/world` | 이연주 |
 | D. 시계열 관측 | `skeleton_3d` | MVP | hypertable | 3D 골격 5~10 Hz(리플레이 확장·뷰어) | 있음 | `/api/world` | 이연주 |
 | D. 시계열 관측 | `system_health` | MVP | hypertable | Tier 0 health 기록(카메라별 값은 JSONB) | 있음 | `/api/health`, `/topic/health` | 이연주 |
+| D. 시계열 관측 | `system_outage` | MVP | 일반 | 장애 기록(관제 정지·현장 장비 응답 없음·원격 전달 단절). 마지막 정상 근거·판정·끝 시각, 열린 장애는 하나(V7, S15P31A101-122) | V7 추가 | `/topic/health`(G3 근거) |  |
 | D. 시계열 관측 | `system_metric` | MVP | hypertable | 구간별 지연·FPS·큐·손실 지표(긴 형식) | 있음 | `/api/metrics` |  |
 | D. 시계열 관측 | `observation_summary` | M1 | 일반 | 2D 관측 카메라별 요약(원본은 Tier 0 저장 위치의 Parquet) | 수정 16 추가 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
 | E. 이벤트·조치 | `risk_event` | MVP | 일반 | LIVE·REPLAY 이벤트 현재 상태(전이 반영 결과). PLANNED·WHAT_IF 는 sim | 있음 | `/api/events`, `/api/events/{}`, `/api/replay` 외 | 이연주 |

@@ -259,6 +259,24 @@ class HealthIntegrationTest {
     }
 
     @Test
+    void Tier0_시각이_뒤로_가도_다시_나아가면_관제_정지로_굳지_않는다() throws Exception {
+        long base = Instant.now().toEpochMilli();
+        try (Tier0 tier0 = tier0()) {
+            tier0.send(stalledTier0Health(base));
+            // Tier 0 시계가 60초 뒤로 바뀐 뒤 그 기준에서 계속 나아간다(시계 차이 재추정·재시작)
+            long restart = base - 60_000;
+            long deadline = System.currentTimeMillis() + 3_500;
+            for (int i = 0; System.currentTimeMillis() < deadline; i++) {
+                tier0.send(stalledTier0Health(restart + i * 300L));
+                postHeartbeat(laptopToken, heartbeat("CONNECTED", "NORMAL"));
+                Thread.sleep(300);
+            }
+            JsonNode health = getHealth();
+            assertThat(health.at("/payload/remote_state").asString()).isEqualTo("NORMAL");
+        }
+    }
+
+    @Test
     void 노트북이_끊기면_10초_안에_현장_장비_응답_없음으로_기록한다() throws Exception {
         Instant start = Instant.now();
         try (Tier0 tier0 = tier0()) {

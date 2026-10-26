@@ -2,6 +2,8 @@ simai:
   health:
     # 시험은 끊김을 빨리 본다(운영 3초)
     link-timeout-ms: 1500
+    # 시험 컨텍스트가 여럿이라, Tier 0·노트북을 둘 다 받은 컨텍스트만 장애를 기록한다(열린 장애는 하나)
+    outage-startup-grace-ms: 3600000
   auth:
     jwt:
       # 시험 전용 키(Base64, 37바이트). 운영 값이 아니다

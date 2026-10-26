@@ -64,16 +64,17 @@ class HealthPublisher implements AutoCloseable {
     private void run(boolean always) {
         try {
             ObjectNode message = health.message();
-            outages.observe(message.get("payload"));
             String shape = shape(message.get("payload"));
             if (always || !Objects.equals(lastShape, shape)) {
                 lastShape = shape;
                 publisher.publish(RealtimeTopics.HEALTH, message.get("msg_type").asString(),
                         message.get("schema_version").asString(), message.get("payload"));
             }
+            // 화면 알림을 먼저 보낸다. 기록(DB)이 느리거나 실패해도 알림은 늦지 않는다(G3)
+            outages.observe(message.get("payload"));
         } catch (RuntimeException e) {
             // 한 번 실패해도 다음 주기는 돈다
-            log.warn("viewer_health 를 만들지 못함", e);
+            log.warn("viewer_health 를 만들거나 장애를 기록하지 못함", e);
         }
     }
 

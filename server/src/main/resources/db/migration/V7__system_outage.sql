@@ -9,8 +9,12 @@ CREATE TABLE system_outage (
     ended_at timestamptz,
     end_reason text CHECK (end_reason IN ('RECOVERED', 'CHANGED', 'EC2_RESTART')),
     details jsonb,
-    PRIMARY KEY (outage_id)
+    PRIMARY KEY (outage_id),
+    CONSTRAINT system_outage_end_check CHECK ((ended_at IS NULL) = (end_reason IS NULL))
 );
+
+-- 한 시점에 열린 장애는 하나다(EC2 한 대가 기록한다)
+CREATE UNIQUE INDEX system_outage_one_open_idx ON system_outage ((true)) WHERE ended_at IS NULL;
 
 CREATE INDEX system_outage_detected_at_idx ON system_outage (detected_at DESC);
 

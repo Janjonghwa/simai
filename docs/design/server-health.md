@@ -36,11 +36,12 @@ remote_state·laptop.link 로 "관제 정지"·"현장 장비 응답 없음"·"�
 
 | 항목 | 정한 값 | 근거 |
 |---|---|---|
-| 끊김 시계 | 받는 쪽 단조 시계(System.nanoTime). 화면에 싣는 시각만 벽시계 | FR-11 "하트비트는 받는 쪽 단조 시계로". 벽시계를 맞춰도 끊김이 생기거나 사라지지 않게 |
-| Tier 0 정상 | 연결(health 3초 안) + 처리 진행(`health`·`world_state` 의 `t_latest_global` 이 3초 안에 늘어남). health 는 오는데 처리가 멈추면 `tier0_link` 는 CONNECTED, remote_state 는 CONTROL_HALTED | FR-11 "Tier 0 정상은 처리 진행(t_latest_global 증가)으로 판정" |
+| 끊김 시계 | 받는 쪽 단조 시계(System.nanoTime), 순서도 도착 순서. 화면에 싣는 시각만 벽시계 | FR-11 "하트비트는 받는 쪽 단조 시계로". 벽시계를 맞춰도 끊김이 생기거나 사라지지 않게 |
+| Tier 0 정상 | 연결(health 3초 안) + 처리 진행(`health`·`world_state` 의 `t_latest_global` 이 3초 안에 늘어남, 뒤로 갔는데 2초 동안 더 큰 값이 없으면 그 값을 새 기준으로). health 는 오는데 처리가 멈추면 `tier0_link` 는 CONNECTED, remote_state 는 CONTROL_HALTED(계약 설명 보강) |
+| 원격 단절 판정 | Tier 0 를 잃은 뒤 받은 노트북 하트비트가 Tier 0 정상을 알릴 때만 REMOTE_LINK_LOST. 그 하트비트가 오기 전(1초 안팎)은 CONTROL_HALTED | Tier 0 가 죽었는데 '현장 경보 동작 중'으로 안심시키지 않는다 | FR-11 "Tier 0 정상은 처리 진행(t_latest_global 증가)으로 판정" |
 | 장애 종류 | REMOTE_LINK_LOST, CONTROL_HALTED 중 노트북 하트비트 끊김이면 DEVICE_DOWN, 그 밖 CONTROL_HALTED | 관제 앱 status.ts 와 같은 규칙 |
-| 장애 기록 | V7 `system_outage`: 종류가 바뀔 때 한 행(`last_seen_at` 실패한 쪽의 마지막 정상 근거, `detected_at` EC2 판정, `ended_at`·`end_reason` RECOVERED·CHANGED·EC2_RESTART). 시작은 WARN, 끝은 INFO 로그 | G3 단절 감지 시간(10초 안)을 나중에 잰다 |
-| 재시작 | 뜬 뒤 3초(끊김 기준) 안은 기록하지 않는다. 닫히지 않은 기록은 뜰 때 EC2_RESTART 로 닫는다 | EC2 재시작을 현장 장애로 남기지 않는다 |
+| 장애 기록 | V7 `system_outage`: 종류가 바뀔 때 한 행(`last_seen_at` 실패한 쪽의 마지막 정상 근거 — 노트북 끊김은 마지막 하트비트, Tier 0 끊김은 마지막 health, 처리 정체는 마지막 진행, 노트북이 알린 관제 정지는 노트북이 마지막으로 정상을 알린 때 / `detected_at` EC2 판정 / `ended_at`·`end_reason`). 열린 장애는 하나(부분 유일 색인). 화면 알림을 먼저 보내고 기록하며, 기록이 실패하면 다음 주기에 다시 시도한다 | G3 단절 감지 시간(10초 안)을 나중에 잰다 |
+| 재시작 | ApplicationReady 뒤 Tier 0·노트북을 둘 다 한 번씩 받거나 30초(`simai.health.outage-startup-grace-ms`)가 지나야 기록한다. 닫히지 않은 기록은 뜰 때 EC2_RESTART 로 닫는다 | EC2 재시작·재배포를 현장 장애로 남기지 않는다 |
 
 ## 시험
 
