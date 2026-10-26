@@ -430,6 +430,21 @@ def test_event_close_is_parsed_and_handed_over_and_foreman_close_is_refused() ->
     assert plain.handle(example("event_close")) is None and plain.stats.unhandled == 1
 
 
+def test_event_escalate_is_parsed_and_handed_over_and_foreman_escalation_is_refused() -> None:
+    """event_escalate(S15P31A101-272): 계약 예시는 EscalationRequest 로 넘기고 결과를 돌려준다. 계약이 받지 않는 상향은 넘기지 않는다."""
+    escalations = []
+    d = linked(wire_tier0_handlers(I1Dispatcher(),
+                                   on_event_escalate=lambda r: escalations.append(r) or {"result": "ACCEPTED"}))
+    assert d.handle(example("event_escalate")) == {"result": "ACCEPTED"}
+    bad = example("event_escalate")
+    bad["msg_id"] = "0192a6f0-7c1e-7b3a-9f2d-0000000003ff"
+    bad["payload"]["escalation"] |= {"channel": "FOREMAN_PWA", "actor_role": "FOREMAN"}
+    assert d.handle(bad) is None and d.stats.handler_errors == 1
+    assert [e.escalation_id for e in escalations] == [example("event_escalate")["payload"]["escalation"]["escalation_id"]]
+    plain = linked(wire_tier0_handlers(I1Dispatcher()))  # 꽂지 않으면 받지 않는다
+    assert plain.handle(example("event_escalate")) is None and plain.stats.unhandled == 1
+
+
 def test_slow_config_download_does_not_block_journal_ack_and_close_keeps_live_thread() -> None:
     entered, release = threading.Event(), threading.Event()
 

@@ -77,6 +77,24 @@ S15P31A101-51. 기획서 §3.2(재시작 복구·복구 순서·저널 계약), 
 **Lead 결정(2026-10-20).** 위 계약 버전(메이저)과 새 I1 메시지·안전 쪽 값(HIGH·CRITICAL 거부, 관제 화면 ADMIN 만, 사유 1~500자, 판정 중 거부)을 승인했다.
 서버(EC2): `event_close` 송신·`event_close_result` 표시, 전이의 `resolution` 을 `risk_event` 에 옮겨 관측 해소와 구분해 보여 주기는 server 티켓이다.
 
+## 운영자 상향 (S15P31A101-272)
+
+명세 5.4 "운영자 확인 상향", 12.3. 운영자 종료와 같은 흐름이다: `EscalationRequest.from_contract` → `JudgmentLoop.escalate`(escalation_id 중복 → 추적기 판단 →
+저널 제출 → 현장 경보·클립) → `event_escalate_result`. 코드: `LifecycleTracker.escalate`·`EscalationRequest`·`EscalateReject`(risk/lifecycle.py),
+`EventJournal.has_escalation_id`·`is_judgment_transition`(eventlog/journal.py), `JudgmentLoop.escalate`(services/tier0/judge.py), `wire_tier0_handlers(on_event_escalate=…)`,
+`build_i1_link(on_event_escalate=…)`, `Tier0Service._build_link`. 계약(-206): I1 `event_escalate`·`event_escalate_result` 1.0.0, `risk_event_transition` 2.1.0 `escalation`.
+시험: tests/risk/test_operator_escalate.py, tests/recovery/test_operator_escalate_restart.py, tests/eventlog/test_outbox.py, tests/services/tier0/test_tier0_operator_escalate.py·
+test_tier0_operator_escalate_e2e.py·test_i1_units.py·test_event_clips.py.
+
+| 항목 | 정한 것 | 근거·버린 대안 |
+|---|---|---|
+| 판단 순서 | DUPLICATE(같은 escalation_id 기록·대기 중) → NOT_ACTIVE → NOT_UPWARD(target ≤ 지금 등급) → JOURNAL_UNAVAILABLE(제출 실패) → ACCEPTED | 계약 설명 그대로. 거부는 기록하지 않아 같은 escalation_id 를 다시 받으면 그때 상태로 다시 판단한다 |
+| 기록 | 같은 event_id 의 UPDATED, 변경 사유 SEVERITY·ESCALATED, payload `escalation`(받은 값 그대로), resumed false. 판정 값(검증 상태·수치·근거)은 그대로, lifecycle 은 evidence_ref 를 싣지 않는다(저널이 직전 판정 근거를 meta 로, 모르면 null) | 판정이 아닌 전이(12.3 evidence_ref 문장). outbox 는 `escalation` 을 그대로 보내고 전이 schema_version 을 2.1.0 으로 올렸다(EC2 는 메이저만 본다) |
+| 재경보·클립 | 등급이 오르면 규칙 상향과 같이 `_local_alert(force)` 로 다시 울리고 경보 단계(site_alarm_sequence)를 연다. 전이는 SEVERITY 를 달아 클립 경로(같은 열쇠의 상향, CRITICAL 보존 표시)를 그대로 탄다 | 3.10 상향 재경보. 별도 경로를 두지 않았다 |
+| 이후 규칙 판정 | 올린 등급은 해소될 때까지 바닥값(`EventState.escalation_floor`): 규칙 판정이 그보다 낮으면 바닥값을 쓰고, 높으면 따른다. 재개(RESUMED)하면 비운다 | 명세에 규칙 판정과의 관계가 없다(5.4 하향 불가만). 바닥값이 없으면 다음 판정이 바로 되돌려 승인이 무의미하다. 버린 안: 규칙이 그대로 덮어씀(음성 대조 시험) |
+| 복구 | 바닥값은 상태 기록(to_record)에 있을 때만 싣는다(이전 체크포인트·저널 형식 그대로). escalation_id 는 저널 재생으로 색인 | 체크포인트가 상향 전이든 후이든 같은 상태로 돌아온다(시험) |
+| 멱등 경계 | close_id 와 같다: 정리된 세그먼트의 escalation_id 는 재시작 뒤 모른다(그때 같은 등급이면 NOT_UPWARD 로 답해 기록하지 않는다) | |
+
 ## 실행 중 경고
 
 | 신호 | 의미 | 조치 |

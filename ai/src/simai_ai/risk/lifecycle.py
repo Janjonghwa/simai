@@ -36,6 +36,9 @@ LIVE 이벤트의 생명주기 정본은 RunPod Tier 0 의 이 추적기 하나�
 - 운영자 종료(S15P31A101-200, close): 근거가 오지 않아 남은 구역 대상 이벤트를 관제 화면 관리자가 닫는다. RESOLVED 전이
   (변경 사유 OPERATOR_CLOSED, close 기록에 누가·왜)로 남기고 검증 상태는 바꾸지 않는다(관측 해소가 아니다). 사람 대상·
   HIGH·CRITICAL·마지막 판정에 조건이 있는 이벤트는 거부한다. 종료한 이벤트는 재개하지 않는다(재발생은 새 이벤트).
+- 운영자 상향(S15P31A101-272, escalate): 관리자가 승인한 VLM 상향 의견을 같은 event_id 의 UPDATED 전이(escalation)로 남기고
+  규칙 상향과 같이 다시 울린다(3.10). 지금 등급보다 높을 때만 받는다. 올린 등급은 해소될 때까지 바닥값이라 이후 규칙 판정이
+  낮추지 않는다(5.4 하향 불가, 명세에 규칙 판정과의 관계가 없어 정한 기본안). 재개하면 바닥값을 비운다.
 - 확인 필요(7.1): 이벤트의 confidence_reasons 가 비어 있지 않은 상태다. needs_check 는 그 결과로 맞춰 둔다
   (common.normalize_confidence). 이유 목록이 바뀌면 CONFIDENCE 변경 사유로 UPDATED 를 낸다.
 - ACKNOWLEDGED 는 상태가 아니라 속성이다. 확인은 UPDATED 전이(변경 사유 ACKNOWLEDGED)로 저널에 남고
@@ -153,6 +156,7 @@ class Change(StrEnum):
     ACKNOWLEDGED = "ACKNOWLEDGED"
     CLEARED = "CLEARED"  # 해소 확정
     OPERATOR_CLOSED = "OPERATOR_CLOSED"  # 관리자의 구역 대상 이벤트 종료(event_close, S15P31A101-200). 관측 해소가 아니다
+    ESCALATED = "ESCALATED"  # 관리자가 승인한 VLM 상향 의견으로 등급을 올림(event_escalate, S15P31A101-272). 판정이 아니다
 
 
 _CHANGE_ORDER = {c: i for i, c in enumerate(Change)}
@@ -300,6 +304,80 @@ class CloseRecord:
         }
 
 
+class EscalateReject(StrEnum):
+    """운영자 상향 거부 사유(계약 event_escalate_result.reject_reason 중 추적기가 정하는 것. JOURNAL_UNAVAILABLE 은 저널 쪽)."""
+
+    NOT_ACTIVE = "NOT_ACTIVE"  # 활성 이벤트가 아니다(모르는 ID, 이미 해소·종료)
+    NOT_UPWARD = "NOT_UPWARD"  # target_severity 가 지금 등급보다 높지 않다(같은 등급, 그사이 규칙이 이미 올림)
+
+
+# 계약 operator_escalation(contracts/common/defs.schema.json). 값은 받은 그대로 전이 escalation 에 싣는다.
+_ESCALATION_REQUIRED = (
+    "escalation_id",
+    "basis",
+    "assessment_job_id",
+    "target_severity",
+    "channel",
+    "actor_role",
+    "actor_id",
+    "requested_at",
+)
+_ESCALATION_KEYS = frozenset(_ESCALATION_REQUIRED) | {"note"}
+ESCALATION_BASIS = "VLM_PROPOSAL"
+ESCALATION_TARGETS = (Severity.CRITICAL, Severity.HIGH, Severity.CAUTION)
+ESCALATION_NOTE_MAX = 500  # 계약 operator_escalation.note maxLength
+
+
+@dataclass(frozen=True)
+class EscalationRequest:
+    """I1 event_escalate 하나(관리자가 승인한 VLM 상향 의견). escalation 은 계약 operator_escalation 을 검사한 사본이다."""
+
+    event_id: str
+    escalation: Mapping[str, Any] = field(hash=False)
+
+    @property
+    def escalation_id(self) -> str:
+        return str(self.escalation["escalation_id"])
+
+    @property
+    def target_severity(self) -> Severity:
+        return Severity(self.escalation["target_severity"])
+
+    @classmethod
+    def from_contract(cls, payload: Any) -> "EscalationRequest":
+        """event_escalate payload → EscalationRequest. 계약이 받지 않는 값(반장 PWA, 모르는 근거·필드, INFO 등)은 RiskInputError."""
+        payload = as_mapping(payload, "event_escalate")
+        doc = as_mapping(payload.get("escalation"), "event_escalate.escalation")
+        reject_unknown_keys(doc, set(_ESCALATION_KEYS), "event_escalate.escalation")
+        for key in _ESCALATION_REQUIRED:
+            require(doc, key, "event_escalate.escalation")
+        if doc["channel"] != CLOSE_CHANNEL or doc["actor_role"] != CLOSE_ACTOR_ROLE:
+            raise RiskInputError(
+                f"event_escalate: 채널·역할 ({doc['channel']}, {doc['actor_role']}) 은 받지 않는다(관제 화면 관리자만)"
+            )
+        if doc["basis"] != ESCALATION_BASIS:
+            raise RiskInputError(f"event_escalate.escalation.basis: {ESCALATION_BASIS} 만 받는다 ({doc['basis']!r})")
+        target = as_enum(Severity, doc["target_severity"], "event_escalate.escalation.target_severity")
+        if target not in ESCALATION_TARGETS:
+            raise RiskInputError(f"event_escalate.escalation.target_severity: {target} 로는 올리지 않는다")
+        out: dict[str, Any] = {
+            "escalation_id": as_str(doc["escalation_id"], "event_escalate.escalation.escalation_id"),
+            "basis": ESCALATION_BASIS,
+            "assessment_job_id": as_str(doc["assessment_job_id"], "event_escalate.escalation.assessment_job_id"),
+            "target_severity": str(target),
+            "channel": CLOSE_CHANNEL,
+            "actor_role": CLOSE_ACTOR_ROLE,
+            "actor_id": as_str(doc["actor_id"], "event_escalate.escalation.actor_id"),
+            "requested_at": as_timestamp_ms(doc["requested_at"], "event_escalate.escalation.requested_at"),
+        }
+        if "note" in doc:
+            note = as_str(doc["note"], "event_escalate.escalation.note")
+            if len(note) > ESCALATION_NOTE_MAX:
+                raise RiskInputError(f"event_escalate.escalation.note: {ESCALATION_NOTE_MAX}자를 넘는다 ({len(note)}자)")
+            out["note"] = note
+        return cls(event_id=as_str(payload.get("event_id"), "event_escalate.event_id"), escalation=MappingProxyType(out))
+
+
 @dataclass(frozen=True)
 class TrackEvidence:
     """전이 근거(명세 6.4): 대상 한 명의 카메라·좌표·관측 상태. 대상이 World 상태에 없으면 present=False."""
@@ -387,6 +465,8 @@ class EventState:
     # 현장 경보(소리)를 마지막으로 (다시) 시작한 전이의 event_sequence: 발생·등급 상향·재개(3.10). 현장 경보를 낸 적
     # 없으면 None.
     site_alarm_sequence: int | None = None
+    # 운영자 상향 바닥값(S15P31A101-272): 이 이벤트가 해소될 때까지 규칙 판정이 등급을 이보다 낮추지 않는다. 재개하면 비운다.
+    escalation_floor: Severity | None = None
 
     def __post_init__(self) -> None:
         # 확인 필요 = 이유 목록이 비어 있지 않음(7.1). 이유 없는 needs_check(이전 체크포인트)도 여기서 맞춘다.
@@ -467,6 +547,8 @@ class EventState:
         """
         doc = self.to_payload()
         doc["key"] = {"rule_id": self.key.rule_id, "world_ids": list(self.key.world_ids), "zone_id": self.key.zone_id}
+        if self.escalation_floor is not None:  # 상향이 없으면 싣지 않는다(이전 체크포인트·저널 기록과 같은 형식)
+            doc["escalation_floor"] = str(self.escalation_floor)
         return doc
 
     @classmethod
@@ -477,7 +559,7 @@ class EventState:
         rule_id, source)와 확인 필요 이유가 원래 값과 어긋난 기록(손상)은 받지 않는다.
         """
         doc = as_mapping(doc, where)
-        reject_unknown_keys(doc, set(_STATE_KEYS), where)
+        reject_unknown_keys(doc, set(_STATE_KEYS) | {"escalation_floor"}, where)
         for key in _STATE_KEYS:
             require(doc, key, where)
         key_doc = as_mapping(doc["key"], f"{where}.key")
@@ -540,6 +622,9 @@ class EventState:
                 site_alarm_sequence=None
                 if site_alarm is None
                 else as_int(site_alarm, f"{where}.site_alarm_sequence", minimum=1),
+                escalation_floor=None
+                if doc.get("escalation_floor") is None
+                else as_enum(Severity, doc["escalation_floor"], f"{where}.escalation_floor"),
             )
         except ValueError as exc:  # normalize_confidence 등
             if isinstance(exc, RiskInputError):
@@ -622,6 +707,7 @@ class EventTransition:
     ack: AckRecord | None = None
     evidence_ref: str | None = None
     close: CloseRecord | None = None  # 운영자 종료 전이에만
+    escalation: Mapping[str, Any] | None = field(default=None, hash=False)  # 운영자 상향 전이에만(계약 operator_escalation)
 
     @property
     def event_id(self) -> str:
@@ -635,6 +721,8 @@ class EventTransition:
         doc = self._payload()
         if self.close is not None:  # 종료 전이에만 싣는다(다른 전이의 기록 형식은 그대로)
             doc["close"] = self.close.to_payload()
+        if self.escalation is not None:  # 상향 전이에만. 받은 값 그대로(outbox 가 계약 escalation 으로 그대로 보낸다)
+            doc["escalation"] = dict(self.escalation)
         return doc
 
     def _payload(self) -> dict[str, Any]:
@@ -1130,6 +1218,7 @@ class LifecycleTracker:
             local_alerted=False,
             site_alarm_sequence=None,
             resume_count=previous.resume_count + 1,
+            escalation_floor=None,  # 운영자 상향은 해소로 끝난다. 재개는 새 위험 발생처럼 규칙 등급으로 다시 시작한다
         )
         active = _Active(state)
         active.condition_present = True
@@ -1265,6 +1354,11 @@ class LifecycleTracker:
                 zone_id=state.zone_id,
                 metrics=state.metrics,
             )
+        floor = state.escalation_floor
+        if finding is not None and floor is not None and _rank(finding.severity) < _rank(floor):
+            # 운영자 상향 바닥값(S15P31A101-272): 해소될 때까지 규칙 판정이 운영자가 올린 등급을 낮추지 않는다(5.4 하향 불가).
+            # 규칙이 더 높게 판정하면 그 등급을 따른다.
+            finding = replace(finding, severity=floor)
         if finding is not None:
             active.clear_since = None
             if finding.severity is not state.severity:
@@ -1439,6 +1533,54 @@ class LifecycleTracker:
         self._drop(active)
         return step
 
+    # --- 운영자 상향 -------------------------------------------------------------------
+
+    def escalate(
+        self, request: EscalationRequest, *, commit: Callable[[LifecycleStep], Any] | None = None
+    ) -> LifecycleStep | EscalateReject:
+        """관리자가 승인한 VLM 상향 의견(event_escalate, S15P31A101-272, 명세 5.4·12.3). 받으면 같은 event_id 의 UPDATED 전이
+        (변경 사유 SEVERITY·ESCALATED, escalation 은 받은 값 그대로, resumed false) 하나와, 3.10 상향 재경보(등급이 오르면 그 등급으로
+        다시 울림, 규칙 상향과 같은 경로)의 LocalAlert 를 돌려준다. 받지 않으면 거부 사유만 돌려주고 아무것도 바꾸지 않는다.
+
+        판정이 아니므로 판정 근거(evidence)·검증 상태·수치는 그대로이고 evidence_ref 는 비운다(저널이 그 이벤트의 직전 판정 근거를
+        싣고, 모르면 null). 받은 등급은 해소될 때까지 바닥값(escalation_floor)이다: 이후 규칙 판정이 낮추지 않는다(5.4 하향 불가).
+        거부: 활성이 아님(NOT_ACTIVE), target_severity 가 지금 등급보다 높지 않음(NOT_UPWARD).
+
+        commit: 상태를 바꾸기 전에 단계를 넘겨받는 함수(Tier 0 는 저널 제출). 예외를 내면 아무것도 바꾸지 않고 그 예외를 올린다(close 와 같다).
+        """
+        if self._origin is not Origin.LIVE:
+            raise LifecycleError(f"운영자 상향은 LIVE 이벤트만 받는다({self._origin})")
+        active = self._by_id.get(request.event_id)
+        if active is None:
+            return EscalateReject.NOT_ACTIVE
+        state = active.state
+        target = request.target_severity
+        if _rank(target) <= _rank(state.severity):
+            return EscalateReject.NOT_UPWARD
+        occurred_at = self._clock.now_ms()
+        floor = state.escalation_floor
+        escalated = replace(
+            state,
+            severity=target,
+            escalation_floor=target if floor is None or _rank(target) > _rank(floor) else floor,
+            event_sequence=state.event_sequence + 1,
+            lifecycle=Lifecycle.UPDATED,
+        )
+        escalated, alert = self._local_alert(escalated, occurred_at, force=True)  # 등급 상향 재경보(3.10, _advance 와 같다)
+        transition = EventTransition(
+            state=escalated,
+            transition=Lifecycle.UPDATED,
+            changes=(Change.SEVERITY, Change.ESCALATED),
+            occurred_at=occurred_at,
+            escalation=request.escalation,
+        )
+        step = LifecycleStep((transition,), () if alert is None else (alert,))
+        if commit is not None:
+            commit(step)  # 실패하면 상태를 바꾸기 전이다
+        active.state = escalated
+        active.mark_emitted()
+        return step
+
     # --- ID 교정 ---------------------------------------------------------------------
 
     def correct_identity(self, correction: IdentityCorrection) -> LifecycleStep:
@@ -1586,20 +1728,23 @@ class LifecycleTracker:
     def _alert_if_needed(
         self, active: _Active, occurred_at: int, signals: list[LocalSignal], force: bool = False
     ) -> None:
-        state = active.state
+        state, alert = self._local_alert(active.state, occurred_at, force=force)
+        if alert is not None:
+            active.state = state
+            signals.append(alert)
+
+    def _local_alert(self, state: EventState, occurred_at: int, *, force: bool) -> tuple[EventState, LocalAlert | None]:
+        """현장 경보를 (다시) 내야 하면 경보 단계를 연 상태와 LocalAlert, 아니면 (state, None). 상태를 바꾸지 않는다."""
         plan = channels_for(state.severity, state.confidence, state.origin)
         if Channel.LOCAL_ALERT not in plan.channels or (state.local_alerted and not force):
-            return
-        active.update(local_alerted=True, site_alarm_sequence=state.event_sequence)
-        state = active.state
-        signals.append(
-            LocalAlert(
-                **self._signal_fields(state, occurred_at),
-                rule_id=state.rule_id,
-                zone_id=state.zone_id,
-                world_ids=state.world_ids,
-                observation_time=state.observation_time,
-            )
+            return state, None
+        state = replace(state, local_alerted=True, site_alarm_sequence=state.event_sequence)
+        return state, LocalAlert(
+            **self._signal_fields(state, occurred_at),
+            rule_id=state.rule_id,
+            zone_id=state.zone_id,
+            world_ids=state.world_ids,
+            observation_time=state.observation_time,
         )
 
     @staticmethod

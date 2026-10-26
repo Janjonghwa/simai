@@ -238,7 +238,7 @@ def test_ack_with_unknown_evidence_is_sent_as_null_not_held(make, tmp_path, live
     assert "evidence_ref" not in entry.meta
     assert outbox.pump() == 1 and outbox.blocked is None
     msg = ec2.messages[0]
-    assert msg["schema_version"] == SCHEMA_VERSION == "2.0.0"
+    assert msg["schema_version"] == SCHEMA_VERSION == "2.1.0"
     assert msg["payload"]["transition"] == "ACKNOWLEDGED" and msg["payload"]["evidence_ref"] is None
     assert message_errors(msg) == [], msg
 
@@ -431,7 +431,7 @@ def test_operator_close_is_sent_as_resolution_and_passes_contract(make, tmp_path
     outbox.pump()
     msg = ec2.messages[-1]
     p = msg["payload"]
-    assert msg["schema_version"] == "2.0.0" and p["transition"] == "RESOLVED" and p["verification"] == "UNVERIFIABLE"
+    assert msg["schema_version"] == "2.1.0" and p["transition"] == "RESOLVED" and p["verification"] == "UNVERIFIABLE"
     assert p["resolution"] == {"kind": "OPERATOR_CLOSED", "close_id": "7a2b3c4d-5e6f-4a1b-9c2d-3e4f5a6b7c8d",
                                "channel": "CONTROL_ROOM", "actor_role": "ADMIN", "actor_id": "user-0003",
                                "requested_at": step.transitions[0].close.requested_at, "reason": "카메라 철거"}
@@ -452,3 +452,73 @@ def test_operator_close_record_missing_reason_is_held_not_invented(make, tmp_pat
     journal.append(TRANSITION_KIND, payload)
     assert outbox.pump() == 0 and ec2.messages == []
     assert outbox.blocked is not None and "reason" in outbox.blocked.reason
+
+
+# --- 운영자 상향 (S15P31A101-272) -------------------------------------------------------
+
+ESC_ID = "3c9d1e2f-4a5b-4c6d-9e8f-1a2b3c4d5e6f"
+
+
+def _escalate(live_events, *, journal=None, escalation_id=ESC_ID):
+    """HIGH 사람 대상 이벤트를 열고(journal 이 있으면 발생도 기록) 관리자 상향(CRITICAL) 단계를 돌려준다."""
+    from simai_ai.risk.lifecycle import EscalationRequest
+
+    raised = live_events.raise_event()
+    if journal is not None:
+        journal.append_step(raised)
+    event_id = raised.transitions[0].event_id
+    request = EscalationRequest.from_contract({"event_id": event_id, "escalation": {
+        "escalation_id": escalation_id, "basis": "VLM_PROPOSAL", "assessment_job_id": "job-20261017-0052",
+        "target_severity": "CRITICAL", "channel": "CONTROL_ROOM", "actor_role": "ADMIN", "actor_id": "user-0003",
+        "requested_at": live_events.clock.now_ms()}})
+    return live_events.tracker.escalate(request)
+
+
+@pytest.mark.parametrize("evidence_known", [False, True])
+def test_operator_escalation_is_sent_as_received_and_passes_contract(make, tmp_path, live_events, message_errors,
+                                                                    evidence_known):
+    """상향 기록은 받은 escalation 그대로 2.1.0 으로 나가고 스키마를 통과한다. 근거는 직전 판정 근거(알면) 또는 null.
+    같은 메시지를 2.0.0 으로 보내면 계약 위반이다(음성 대조)."""
+    ec2 = Ec2()
+    journal, _, outbox = make(tmp_path, live_events.clock, ec2)
+    step = _escalate(live_events, journal=journal if evidence_known else None)
+    journal.append_step(step)
+    outbox.pump()
+    msg = ec2.messages[-1]
+    p = msg["payload"]
+    assert msg["schema_version"] == "2.1.0" and p["transition"] == "UPDATED" and p["resumed"] is False
+    assert p["severity"] == "CRITICAL" and p["escalation"] == dict(step.transitions[0].escalation)
+    assert (p["evidence_ref"] is not None) is evidence_known
+    assert [message_errors(m) for m in ec2.messages] == [[]] * len(ec2.messages), ec2.messages
+    assert message_errors(msg | {"schema_version": "2.0.0"})
+
+
+def test_escalation_id_is_known_pending_recorded_and_after_reopen(tmp_path, live_events):
+    """escalation_id 멱등의 경계는 close_id 와 같다: 넣기 전 대기 중부터, 기록 뒤, 다시 열어도(저널 재생) 안다.
+    판정이 아니라 근거를 몰라도 기록 전에 거절하지 않는다."""
+    journal = EventJournal.open(tmp_path, clock=live_events.clock)
+    try:
+        step = _escalate(live_events)  # 발생을 기록하지 않음: 직전 근거를 모른다
+        assert not journal.has_escalation_id(ESC_ID)
+        reservation = journal.prepare_step(step)
+        assert journal.has_escalation_id(ESC_ID) and reservation.escalation_ids == (ESC_ID,)
+        journal.release(reservation)
+        assert not journal.has_escalation_id(ESC_ID)
+        [entry] = journal.append_step(step)
+        assert journal.has_escalation_id(ESC_ID) and entry.meta.get("evidence_ref") is None
+    finally:
+        journal.close()
+    reopened = EventJournal.open(tmp_path, clock=live_events.clock)
+    try:
+        assert reopened.has_escalation_id(ESC_ID) and not reopened.has_escalation_id(ACK_ID)
+    finally:
+        reopened.close()
+
+
+def test_escalation_entry_is_not_a_judgment_transition():
+    from simai_ai.eventlog.journal import is_judgment_transition
+
+    base = {"transition": "UPDATED", "resumed": False, "changes": ["SEVERITY", "ESCALATED"]}
+    assert not is_judgment_transition(base | {"escalation": {"escalation_id": ESC_ID}})
+    assert is_judgment_transition(base)  # 대조: escalation 없는 SEVERITY 갱신은 판정이다
+    assert is_judgment_transition(base | {"escalation": {"escalation_id": ESC_ID}, "resumed": True})

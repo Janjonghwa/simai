@@ -1,7 +1,7 @@
 """I1 수신 디스패처: EC2 → Tier 0 메시지를 처리할 모듈로 넘긴다 (명세 12.1·12.2 I1 아래로, 3.2).
 
 받는 메시지(12.2): `journal_ack`(저널 전송 확인·빈 구간 재요청), `config_bundle`(구성 묶음 알림), `event_ack`(운영자 확인),
-`event_close`(관리자의 구역 대상 이벤트 종료, S15P31A101-200).
+`event_close`(관리자의 구역 대상 이벤트 종료, S15P31A101-200), `event_escalate`(관리자가 승인한 상향, S15P31A101-272).
 처리 로직은 각 모듈의 기존 함수를 부른다. 여기서는 봉투를 확인하고, 중복을 거르고, 종류별로 넘기기만 한다.
 
 | msg_type | 넘기는 곳 | 스레드 |
@@ -9,7 +9,8 @@
 | journal_ack | simai_ai.eventlog.Outbox.on_journal_ack(payload) | 수신 스레드 |
 | config_bundle | simai_ai.config.ConfigSync.receive(message) (봉투째. 내려받기·검증은 ConfigSync) | 구성 작업 스레드(받은 순서대로) |
 | event_ack | simai_ai.risk.alerting.ack_from_contract("event_ack", payload) → 주입한 on_ack(ContractAck) | 수신 스레드 |
-| event_close | simai_ai.risk.lifecycle.CloseRequest.from_contract(payload) → 주입한 on_event_close(CloseRequest) | 수신 스레드 |
+| event_close | simai_ai.risk.lifecycle.CloseRequest.from_contract(payload) → 주입한 on_event_close(CloseRequest) | 수신 스레드
+| event_escalate | simai_ai.risk.lifecycle.EscalationRequest.from_contract(payload) → 주입한 on_event_escalate(EscalationRequest) | 수신 스레드 |
 
 연결 세대: on_connected 마다 세대가 하나 는다. on_disconnected 뒤에는 연결된 세대가 없다.
 
@@ -40,11 +41,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from simai_ai.risk.alerting import ContractAck, ack_from_contract
-from simai_ai.risk.lifecycle import CloseRequest
+from simai_ai.risk.lifecycle import CloseRequest, EscalationRequest
 
 log = logging.getLogger("services.tier0.i1.dispatch")
 
-DOWNSTREAM_TYPES = frozenset({"journal_ack", "config_bundle", "event_ack", "event_close"})
+DOWNSTREAM_TYPES = frozenset({"journal_ack", "config_bundle", "event_ack", "event_close", "event_escalate"})
 
 Handler = Callable[[Mapping[str, Any]], Any]
 _STOP = object()
@@ -281,6 +282,7 @@ def wire_tier0_handlers(
     on_event_ack: Callable[[ContractAck], Any] | None = None,
     ack_seen: Callable[[str], bool] | None = None,
     on_event_close: Callable[[CloseRequest], Any] | None = None,
+    on_event_escalate: Callable[[EscalationRequest], Any] | None = None,
 ) -> I1Dispatcher:
     """기존 모듈의 처리 함수를 디스패처에 꽂는다. 주지 않은 것은 꽂지 않는다(받으면 unhandled 로 센다).
 
@@ -289,6 +291,8 @@ def wire_tier0_handlers(
     ack_seen: 이 ack_id 를 이미 기록했는지(EventJournal.has_ack_id). on_event_ack 를 꽂으면 필수다.
     on_event_close: CloseRequest 를 받아 event_close_result payload 를 돌려주는 서비스 함수(JudgmentLoop.close, close_id 멱등은
     그 함수가 저널로 한다). 결과를 EC2 로 보내는 것은 부르는 쪽(build_i1_link)이다.
+    on_event_escalate: EscalationRequest 를 받아 event_escalate_result payload 를 돌려주는 서비스 함수(JudgmentLoop.escalate,
+    escalation_id 멱등은 그 함수가 저널로 한다). event_close 와 같다.
     """
     if on_event_ack is not None and ack_seen is None:
         raise ValueError("on_event_ack 에는 ack_seen(예: EventJournal.has_ack_id)이 필요하다(재연결 뒤 이중 기록 방지)")
@@ -317,4 +321,8 @@ def wire_tier0_handlers(
         dispatcher.register("event_ack", event_ack)
     if on_event_close is not None:
         dispatcher.register("event_close", lambda message: on_event_close(CloseRequest.from_contract(message["payload"])))
+    if on_event_escalate is not None:
+        dispatcher.register(
+            "event_escalate", lambda message: on_event_escalate(EscalationRequest.from_contract(message["payload"]))
+        )
     return dispatcher
