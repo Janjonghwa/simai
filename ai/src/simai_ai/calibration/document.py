@@ -19,11 +19,12 @@ from typing import Any
 
 from simai_ai.calibration.criteria import CalibrationJudgement, ScaleBasis
 from simai_ai.providers.base import CalibrationDoc
-from simai_ai.providers.contract import CALIBRATION_SCHEMA_VERSION, camera_center
+from simai_ai.providers.contract import CALIBRATION_SCHEMA_VERSION, WORLD_AXES_SOURCES, camera_center
 from simai_ai.tracking.time_model import require_ms
 
-# 이 패키지가 내는 문서의 계약 버전은 providers.contract.CALIBRATION_SCHEMA_VERSION 이다(2.0.0: v1.3 에서 쓰지 않는
-# 보정 출처·스케일 근거 값 삭제, 1.2.0: scale_basis 값 MEASURED_OBJECT·KNOWN_PERSON_HEIGHT 와
+# 이 패키지가 내는 문서의 계약 버전은 providers.contract.CALIBRATION_SCHEMA_VERSION 이다(2.1.0: World 축 출처
+# world_axes_source·스케일 근거 MEASURED_CAMERA_HEIGHT 추가, 2.0.0: v1.3 에서 쓰지 않는 보정 출처·스케일 근거 값 삭제,
+# 1.2.0: scale_basis 값 MEASURED_OBJECT·KNOWN_PERSON_HEIGHT 와
 # scale_cross_check_basis·validation.max_pairwise_position_disagreement_m 추가).
 
 # content_hash 에 넣지 않는 키
@@ -76,12 +77,14 @@ def build_calibration_doc(
     judgement: CalibrationJudgement,
     fallback_scale_basis: ScaleBasis | str,
     site_id: str | None = None,
+    world_axes_source: str | None = None,
 ) -> CalibrationDoc:
     """판정 결과로 보정 문서 한 버전을 만든다.
 
     state 는 판정 결과(CALIBRATED/PROVISIONAL)다. scale_basis 는 판정이 고른 근거, 근거가 없으면 fallback_scale_basis
     (예: G1 초기 추정은 MODEL_ESTIMATE) 다. 주 근거와 일치한 다른 근거는 scale_cross_check_basis 에
     우선순위 순으로 적는다(명세 4.3 사용한 근거 기록). validation 은 판정이 아는 값만 넣는다.
+    world_axes_source 는 World 축을 정한 근거(WALLS·WALL_AND_FLOOR·MANUAL_FLOOR_POINTS)다. 모르면 None 으로 두어 싣지 않는다(지어내지 않음).
     """
     require_ms("created_at", created_at)
     if not calibration_version:
@@ -101,6 +104,10 @@ def build_calibration_doc(
     }
     if judgement.scale.cross_checks:
         doc["scale_cross_check_basis"] = [str(b) for b in judgement.scale.cross_checks]
+    if world_axes_source is not None:
+        if world_axes_source not in WORLD_AXES_SOURCES:
+            raise ValueError(f"world_axes_source 는 {WORLD_AXES_SOURCES} 중 하나다: {world_axes_source!r}")
+        doc["world_axes_source"] = world_axes_source
     doc["extrinsic_convention"] = "OPENCV_WORLD_TO_CAMERA"
     doc["cameras"] = [c.to_contract() if isinstance(c, CameraCalibration) else _copy(c) for c in cameras]
     if judgement.validation:

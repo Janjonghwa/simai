@@ -114,9 +114,15 @@ class HumanBundleResult:
         )
 
     def propose_to(
-        self, store: CalibrationVersionStore, *, at_ms: int, checkpoints: Sequence[HeightCheckpoint] = ()
+        self,
+        store: CalibrationVersionStore,
+        *,
+        at_ms: int,
+        checkpoints: Sequence[HeightCheckpoint] = (),
+        world_axes_source: str | None = None,
     ) -> ProposalResult:
-        """보정 버전 후보로 넣는다. 판정·전환은 저장소(criteria)가 한다. 실패·불확실한 조정은 넣지 않는다."""
+        """보정 버전 후보로 넣는다. 판정·전환은 저장소(criteria)가 한다. 실패·불확실한 조정은 넣지 않는다.
+        world_axes_source 는 World 축을 정한 근거(-102 결과의 axes_source)이고 모르면 None(문서에 싣지 않음)이다."""
         if self.status != STATUS_CONVERGED:
             raise BundleNotUsable(
                 f"번들 조정이 {self.status} 다 ({', '.join(self.flags)}). 걷기 재수행·정물 추가가 필요하다"
@@ -128,6 +134,7 @@ class HumanBundleResult:
             evidence=self.evidence(checkpoints),
             at_ms=at_ms,
             fallback_scale_basis=self.fallback_scale_basis,
+            world_axes_source=world_axes_source,
         )
 
 
