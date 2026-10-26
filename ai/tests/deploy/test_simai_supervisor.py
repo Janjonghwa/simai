@@ -6,6 +6,8 @@
 HF 토큰은 워커 가중치 첫 요청에만(자식 환경 없음), 48GB 미만 GPU 는 Tier 0 단독, SIMAI_SERVICES 오타는 받기 전에 64,
 끊긴 받기는 Range 로 이어받고 Range 를 무시하는 원본·416·해시 불일치는 처음부터(깨진 파일을 잇지 않음), 다시 해도 같은 4xx 는 한 번만,
 스탬프는 크기·mtime·sha256 이 맞을 때만 해시를 건너뜀(Tier 0 가중치는 늘 해시).
+vLLM 기본값(S15P31A101-278): --max-model-len 32768(환경 값·EXTRA_ARGS 가 우선, 중복 없음), VLLM_USE_FLASHINFER_SAMPLER=0(환경 값 우선),
+auto CPU 묶기는 min(affinity, cgroup 할당량 올림) 기준(v1·v2 파싱, 할당량 8 미만이면 안 묶음)이고 계산 결과를 시작 로그에 남김.
 실제 프로세스 시험(POSIX, Linux 컨테이너에서 돈다)은 가짜 Tier 0·vLLM·워커(fake_service.py)로 기동·종료 순서, 손자 프로세스 정리, 토큰 비전달을 본다.
 """
 
@@ -218,17 +220,78 @@ def test_children_get_no_token_own_caches_thread_limits_and_vllm_budget_flags(bs
     flags = dict(zip(a[3::2], a[4::2]))
     assert flags["--gpu-memory-utilization"] == "0.5" and flags["--max-num-seqs"] == "2" and flags["--host"] == "127.0.0.1"
     assert flags["--port"] == "8123" and "Cosmos3ReasonerForConditionalGeneration" in flags["--hf-overrides"]
+    assert flags["--max-model-len"] == "32768"  # 모델 기본 262,144 는 0.55 의 KV 에 안 들어간다(3차 GPU 세션)
+    assert w.envs["vllm"]["VLLM_USE_FLASHINFER_SAMPLER"] == "0" and w.envs["vllm"]["VLLM_USE_DEEP_GEMM"] == "0"
+    assert "VLLM_USE_FLASHINFER_SAMPLER" not in w.envs["tier0"] and "VLLM_USE_FLASHINFER_SAMPLER" not in w.envs["worker"]
     assert w.argvs["worker"][-2:] == ["-m", "services.worker"]
 
 
-@pytest.mark.parametrize("spec, avail, want", [
-    (None, list(range(16)), set(range(8, 16))),  # auto: 뒤쪽 절반
-    ("auto", list(range(4)), None),  # 8개 미만은 나누지 않는다
-    ("none", list(range(16)), None),
-    ("4-5,9", list(range(8)), {4, 5}),  # 쓸 수 있는 것과 겹치는 것만
+def test_vllm_max_model_len_and_flashinfer_sampler_follow_env(bs, tmp_path, monkeypatch):
+    sup = _sup(bs, tmp_path, monkeypatch, World(), env={"SIMAI_WORKER_VLLM_MAX_MODEL_LEN": "16384",
+                                                        "VLLM_USE_FLASHINFER_SAMPLER": "1"})
+    a = sup.svc["vllm"].argv
+    assert a.count("--max-model-len") == 1 and a[a.index("--max-model-len") + 1] == "16384"
+    assert sup.svc["vllm"].env["VLLM_USE_FLASHINFER_SAMPLER"] == "1"  # 사용자가 준 값이 우선
+
+
+@pytest.mark.parametrize("extra", ["--max-model-len 8192", "--max-model-len=8192", "--max_model_len 8192 --enforce-eager"])
+def test_vllm_extra_args_max_model_len_is_not_duplicated(bs, tmp_path, monkeypatch, extra):
+    sup = _sup(bs, tmp_path, monkeypatch, World(), env={"SIMAI_VLLM_EXTRA_ARGS": extra, "SIMAI_WORKER_VLLM_MAX_MODEL_LEN": "16384"})
+    a = sup.svc["vllm"].argv
+    assert sum(x.split("=", 1)[0].replace("_", "-") == "--max-model-len" for x in a) == 1
+    assert "16384" not in a and "32768" not in a and a[-len(extra.split()):] == extra.split()
+
+
+@pytest.mark.parametrize("spec, avail, quota, want", [
+    (None, list(range(16)), None, set(range(8, 16))),  # auto, 할당량 없음: 뒤쪽 절반(기존)
+    ("auto", list(range(4)), None, None),  # 8개 미만은 나누지 않는다
+    ("none", list(range(16)), None, None),
+    ("4-5,9", list(range(8)), None, {4, 5}),  # 쓸 수 있는 것과 겹치는 것만
+    ("auto", list(range(224)), 23.8, set(range(212, 224))),  # 3차 세션 Pod: affinity 224·할당량 23.8 → 올림 24 → 뒤쪽 12개
+    ("auto", list(range(224)), 6.0, None),  # 할당량 6 → 8 미만이라 묶지 않음
+    ("auto", list(range(224)), 7.2, set(range(220, 224))),  # 올림 8 → 4개
+    ("auto", list(range(12)), 64.0, set(range(6, 12))),  # 할당량이 affinity 보다 크면 affinity 기준
+    ("auto", [0, 2, 4, 6, 8, 10, 12, 14, 16, 18], 8.0, {12, 14, 16, 18}),  # affinity 목록의 뒤쪽(번호가 아니라 목록 순서)
+    ("4-5", list(range(224)), 2.0, {4, 5}),  # 직접 준 목록은 할당량과 상관없이 그대로
 ])
-def test_sidecar_cpu_affinity_rule(bs, spec, avail, want):
-    assert bs.sidecar_cpus(spec, avail) == want
+def test_sidecar_cpu_affinity_rule(bs, spec, avail, quota, want):
+    assert bs.sidecar_cpus(spec, avail, quota) == want
+
+
+@pytest.mark.parametrize("files, expected", [
+    # 3차 세션 Pod(cgroup v1 공동 마운트 cpu,cpuacct): 23.8 vCPU
+    ({"/proc/self/cgroup": "4:cpu,cpuacct:/\n",
+      "/proc/self/mountinfo": "35 25 0:30 / /sys/fs/cgroup/cpu,cpuacct rw - cgroup cgroup rw,cpu,cpuacct\n",
+      "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us": "2380000\n", "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us": "100000\n"}, 23.8),
+    ({"/proc/self/cgroup": "0::/\n", "/proc/self/mountinfo": "30 25 0:26 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n",
+      "/sys/fs/cgroup/cpu.max": "2380000 100000\n"}, 23.8),  # v2
+    ({"/proc/self/cgroup": "0::/\n", "/sys/fs/cgroup/cpu.max": "max 100000\n"}, None),  # v2 제한 없음
+    ({"/proc/self/cgroup": "4:cpu,cpuacct:/\n", "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us": "-1",
+      "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us": "100000"}, None),  # v1 제한 없음
+    ({}, None),  # 못 읽음(Windows 등)
+])
+def test_cgroup_vcpu_parses_v1_and_v2(bs, files, expected):
+    assert bs.cgroup_vcpu(files.get)[0] == expected
+
+
+def test_sidecar_cpus_use_cgroup_quota_and_log_it(bs, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(bs, "usable_cpus", lambda: list(range(224)))
+    monkeypatch.setattr(bs, "cgroup_vcpu", lambda read=None: (23.8, "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us"))
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w)
+    w.ready = w.healthy = True
+
+    def ticking(_s):
+        if sup._weights is not None:
+            sup._weights.join(5)
+        w.now += 1
+        if w.now == 20:
+            sup.request_stop(signal.SIGTERM)
+    sup.sleep = ticking
+    assert sup.run() == 0
+    assert w.last("vllm").cpus == w.last("worker").cpus == set(range(212, 224)) and w.last("tier0").cpus is None
+    err = capsys.readouterr().err
+    assert "affinity 224개" in err and "23.8 vCPU" in err and "212-223 (12개)" in err
 
 
 @pytest.mark.parametrize("spec", ["x-y", "20-30"])
@@ -240,6 +303,7 @@ def test_bad_sidecar_cpus_is_usage_error(bs, spec):
 
 def test_sidecars_are_pinned_tier0_is_not(bs, tmp_path, monkeypatch):
     monkeypatch.setattr(bs, "usable_cpus", lambda: list(range(12)))
+    monkeypatch.setattr(bs, "cgroup_vcpu", lambda read=None: (None, None))  # 시험 기계의 실제 cgroup 할당량에 기대지 않는다
     w = World()
     sup = _sup(bs, tmp_path, monkeypatch, w)
     _start(sup, w)

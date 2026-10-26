@@ -405,6 +405,46 @@ Docker Desktop 29.6.1(메모리 8GB), `TAG=s250 docker buildx bake -f deploy/doc
 - u3·u4 PASS 뒤: -102 w1·w2 를 통합 이미지로(`session3_jobs.py --py /opt/simai/ai/.venv/bin/python`, 명령을 `simai_bootstrap.py scene` 으로 감쌈), `deploy/mapanything` 정리, 기록만 지표의 기준 정하기.
 - 워커 장면 처리기(`simai_ai.scene` 의 MapAnything 작업 유형)는 이번 범위가 아니다(장면 준비는 사람이 `scene` 명령으로).
 
+## 3차 GPU 세션 결과(2026-10-26, S15P31A101-278)
+
+RunPod H100 80GB HBM3, 통합 이미지 `sha256:145b767262846c490686401880fd82df5d457f4d842f7a9d275195e95095d197`, vLLM 0.21.0. 명세 §3.2(GPU 예산·워커 보호), §3.12, §5.4.
+감시 프로세스 `Supervisor._vllm_argv` 와 같은 인자·환경(스레드 1, nice 10, `VLLM_USE_DEEP_GEMM=0`, `HF_HUB_OFFLINE=1`)으로 vLLM 을 띄웠다.
+원본은 노트북 `ai/experiments/runs/gpu-session1/20261026-s3/v-int/summary.json`(실패 로그 `v-int-fail1/vllm.log`·`v-int-fail2/vllm.log`, 커밋 안 함).
+코드는 `deploy/scripts/simai_bootstrap.py`(vLLM 기본값·CPU 묶기, cgroup 할당량 읽기를 `session1_live.py` 에서 옮겨 c0 도 같은 함수를 쓴다), 시험은 `ai/tests/deploy/test_simai_supervisor.py`.
+
+### 측정
+
+1. 실패 1: FlashInfer top-k/top-p 샘플러가 메모리 측정(`determine_available_memory`) 중 JIT 컴파일 → `/usr/local/cuda/bin/nvcc: not found`(runtime 이미지) → Engine core 초기화 실패.
+   `VLLM_USE_FLASHINFER_SAMPLER=0` 이면 "FlashInfer top-p/top-k sampling disabled … using PyTorch-native sampler" 로 넘어간다. 어텐션은 FLASH_ATTN 백엔드(FlashInfer 아님).
+2. 실패 2: `--max-model-len` 없음 → 모델 기본 262,144 토큰, 한 요청에 KV 36.0 GiB 필요 > 0.55 에서 남는 KV 23.99 GiB → ValueError.
+3. 둘 다 넣고 성공: 기동 → `/health` 70.1 s(시한 1800 s 안), 가중치 16.79 GiB(3.6 s), KV 23.99 GiB = 174,688 토큰, 32,768 기준 최대 동시 5.33x. GPU 사용 최대 약 54.2 GB(Tier 0 선확보 8 GB 포함).
+   이미지 1280 px + 질문, 답 최대 256 토큰: 동시 1 전체 p95 2.04 s, 동시 4 2.10 s, 10분 지속 동시 4(1,088회) 2.12 s, 오류 0(G7 p95 ≤ 5 s 통과). 영상(mp4 data URL) 입력도 된다.
+4. Tier 0 영향(c4 와 같은 LIVE 하네스 입력, 단독 → VLM 동시 4 지속): `frame_age` p95 60 → 76 ms, `pipeline_lag` p95 148 → 154 ms, reserve OK 유지, ready 4/4, `decode_failed`·`detector_errors` 0,
+   Tier 0 CPU 142% → 192%, loadavg 최대 85.
+5. `kill -9`(vLLM 리더만): 10 s 뒤 EngineCore·resource_tracker 가 같은 pgid 의 고아로 남아 GPU 53.7 GB 유지 → 그룹 SIGKILL 뒤 9.8 GB. 감시 프로세스의 그룹 정리(2단계 "재기동") 설계가 필요함을 실증했다.
+6. CPU: Pod 는 `sched_getaffinity` 224개, cgroup 상한 23.8 vCPU(`/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us`, cgroup v1). `SIMAI_SIDECAR_CPUS=auto` 가 224 기준 뒤쪽 112-223 에 묶어
+   실제로 제한 효과가 없었다(상한은 컨테이너 전체가 나눠 쓰므로 vLLM 이 112개에 퍼질 수 있다).
+
+### 결정
+
+- **v1·v2·v3 를 통합 시험 하나로 합쳤다**(Lead 결정). 위 "3차 GPU 세션 큐" 표의 v1(단독 적재·VRAM)·v2(G7 지연)·v3(Tier 0 + VLM 동시·kill -9)를 감시 프로세스와 같은 인자로 띄운 한 번의 실행(v-int)에서 단계별로 쟀다.
+- **`--max-model-len` 기본 32768**(`SIMAI_WORKER_VLLM_MAX_MODEL_LEN`. `SIMAI_VLLM_EXTRA_ARGS` 에 `--max-model-len`(`=`·밑줄 표기 포함)이 있으면 그 값만 쓰고 넣지 않는다). 근거: 0.55 의 KV 174,688 토큰을
+  32,768 로 나누면 5.33 이라 `--max-num-seqs` 4 를 다 받고, 이미지 1280 px + 질문 + 답 256 토큰 요청에 충분하다. 모델 기본(262,144)은 기동이 안 된다.
+- **`VLLM_USE_FLASHINFER_SAMPLER=0` 기본**(`setdefault`, 컨테이너 환경에 주면 그 값). runtime 이미지에 nvcc(devel 층, 수 GB)를 넣는 것보다 작고, 샘플러만 PyTorch 로 바뀐다(어텐션은 원래 FLASH_ATTN).
+- **auto CPU 묶기는 cgroup 할당량을 본다.** 쓸 수 있는 vCPU 수 n = min(affinity 개수, cgroup 할당량의 올림)(v2 `cpu.max`·v1 `cpu.cfs_quota_us/cpu.cfs_period_us`, 잎·조상 중 가장 작은 값.
+  못 읽거나 제한 없음이면 affinity 개수). n ≥ 8 이면 affinity 목록의 뒤쪽 n//2 개를 vLLM·워커에 묶고, 8 미만이면 묶지 않는다(기존 규칙). 위 Pod 는 24 → 뒤쪽 12개(212-223).
+  할당량이 없으면 짝수 개수에서 기존과 같다(홀수면 Tier 0 쪽이 하나 더). 계산 결과(affinity 개수·할당량과 파일·묶은 범위)는 감시 프로세스 시작 로그 한 줄에 남는다. Tier 0 는 여전히 묶지 않고 신호·제한을 주지 않는다.
+  cgroup 읽기는 c0(`session1_live.py`)이 쓰던 함수를 `simai_bootstrap.py` 로 옮겨 둘이 같은 판정을 쓴다(이미지에는 bootstrap 만 복사되므로 의존 방향을 live → bootstrap 으로).
+  2단계 "격리"·잔여 위험의 'vCPU 8개 이상이면 뒤쪽 절반' 은 이 규칙으로 바뀌었다.
+- **명세 §3.2 예산(VLM 0.55)은 고치지 않는다.** 가중치 16.8 GiB + KV 24 GiB 가 0.55(H100 약 44 GB) 안에 들어가고, G7·Tier 0 보호 기준을 넘지 않았다. 48GB급 GPU 의 0.55 는 위 "2단계" 잔여 위험(-172) 그대로다.
+
+### 남은 일·잔여 위험
+
+- VLM 답 반복: 같은 문장을 14회 반복한 답이 1건 있었다. 반복 억제(`repetition_penalty`·`frequency_penalty`)·형식 강제(JSON 스키마·guided decoding)는 워커 쪽 요청 인자로 한다(감시 프로세스의 서버 인자 아님).
+- 지연 측정은 같은 그림을 되풀이해 보냈으므로 prefix 캐시 덕에 첫 토큰·전체 지연이 낙관적일 수 있다. 실제 카메라 그림(매번 다름)으로 다시 잰다.
+- 새 CPU 묶기(뒤쪽 12개)는 이번 측정에 쓰지 않았다(측정은 112-223 묶음). vLLM CPU 중앙값이 약 119%(1.2 코어)라 12개면 넉넉하다고 보지만, loadavg 85 처럼 할당량 23.8 을 넘는 실행 대기가 Tier 0 에 주는 영향은 다음 GPU 세션에서 새 묶음으로 다시 본다.
+- 할당량은 소수 둘째 자리 반올림 뒤 올림이라 7.999 같은 값은 8 로 본다(경계 한 코어 차이). 실행 중 cgroup 변경은 보지 않는다(시작 때 한 번).
+
 ## 2단계로 넘긴 일 (1단계 때 적은 것)
 
 S15P31A101-246 이 위 "2단계" 로 처리한 것: 통합 Dockerfile·opencv-python 빼기·EGL·`NVIDIA_DRIVER_CAPABILITIES` 합집합·감시 프로세스·프로세스별 캐시·onnxruntime-gpu·cupy 정리.
