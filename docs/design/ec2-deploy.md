@@ -161,6 +161,7 @@ $C exec -T db pg_restore -U postgres -d postgres --clean --create < /opt/simai/b
 이미 적용된 마이그레이션(`V1`·`V2` 등)을 고치면 운영 DB 의 Flyway 체크섬이 맞지 않아 server 가 뜨지 않는다. 명세의 첫 운영 배포 전
 규칙 보완 예외(11.4-1)로 그런 변경이 dev 에 들어오면, 그 판을 배포할 때 한 번 DB 를 비우고 V1 부터 다시 만든다. 그 판이 머지되기
 전에 비우면 옛 V1 로 다시 만들어져 또 깨지므로, 머지 뒤 배포 직전에 한다. 데이터와 관리자 계정이 모두 사라진다.
+첫 운영 배포 MR 은 `rule_catalog.FIRST_OPERATION_DEPLOY` 에 날짜를 넣는다 → `docs/design/rule-seed-preop-exception.md`.
 
 ```sh
 C="docker compose --env-file /opt/simai/.env -f /opt/simai/repo/deploy/ec2/compose.yaml"

@@ -114,7 +114,7 @@ S15P31A101-210. [`db-erd.md`](db-erd.md)·[`db-tables.md`](db-tables.md) 의 테
 | `app_user` | MVP | EC2 관리 명령: 계정 생성·역할 지정·비활성. 계정 관리 API 는 두지 않는다 |
 | `site` | MVP | Flyway V2 시드: `classroom-1`(교실 테스트베드, 계약 예시 `coordinate_frame.site_id` 와 같음). 좌표계 관련 컬럼은 보정 확정 때 갱신 |
 | `camera` | MVP | Flyway V2 시드: `cam1`~`cam4`(Tapo C110, 25 fps, 3.3). 계약 예시·코드와 같은 ID 이고 설치 위치는 넣지 않는다. 해상도는 `codec_info` 로 채우고 RTSP 주소·계정은 DB 밖(14장) |
-| `rule_version` | MVP | ai 규칙 등록부에서 자동 생성한 Flyway 반복 마이그레이션 `R__rule_versions.sql`(`python -m simai_ai.risk.rule_catalog --write`). 새 버전만 더하고, 같은 버전의 값이 바뀌면 멈춘다. 등록부와 파일이 어긋나면 ai 테스트가 실패한다. 수정 API 는 없다 |
+| `rule_version` | MVP | ai 규칙 등록부에서 자동 생성한 Flyway 반복 마이그레이션 `R__rule_versions.sql`(`python -m simai_ai.risk.rule_catalog --write`). 새 버전만 더하고, 같은 버전의 값이 바뀌면 첫 운영 배포 뒤에만 멈춘다(그 전은 갱신, docs/design/rule-seed-preop-exception.md). 등록부와 파일이 어긋나면 ai 테스트가 실패한다. 수정 API 는 없다 |
 | `equipment_asset` | 확장 2 | 확장 2 착수 때 정한다(적재 스크립트 후보) |
 | `rag_clause` | M3 | 적재 스크립트(M3, FR-20). bge-m3 revision 을 고정한 뒤 조항을 넣는다 |
 | `operator_qa` | 확장 3 | 확장 3(C.3) 착수 때 정한다. API 표에 행이 없다 |
