@@ -10,6 +10,10 @@
         --intrinsics <같은 기록> --prepared <같은 입력 폴더> [--scale-evidence …] [--foot-points …] \\
         [--floor-points <바닥 두 점.json>] [--camera-heights <실측 카메라 높이.json>]
 
+    # 3a) (선택) 노트북: 실측 정물(목록 calibration/data/measured_objects.json)로 축척 근거 → fix --scale-evidence
+    uv run --extra calibration --extra detection python -m simai_ai.calibration.world_frame.cli measure-objects \\
+        --run-dir <결과 폴더> --prepared <같은 입력 폴더> --weights-dir <가중치 폴더> [--catalog <목록>] --out <근거.json>
+
 - 축 우선순위(-277): 선택 입력 `--floor-points`(설치자가 카메라 하나의 원본 그림에서 찍은 바닥 두 점: 원점, +X 방향 점,
   MANUAL_FLOOR_POINTS, `--prepared` 실행에서만) > 수직 경계 벽 두 방향(WALLS) > 경계 벽 한 방향 + 바닥(WALL_AND_FLOOR, 원점은
   벽·바닥 교선 위 카메라 중심 평균의 수선 발) > 실패. 선택 입력 `--camera-heights`(줄자로 잰 바닥 → 렌즈 중심 높이, m)는
@@ -24,7 +28,10 @@
   prepared 모드 실행인데 --prepared 가 없거나, --prepared 를 줬는데 그 폴더로 돈 기록이 없어도(images 모드) 거절.
 - 결과는 언제나 PROVISIONAL 이다(독립 검증점이 없다, 4.4).
 - 기본 출력: `ai/experiments/recordings/world-frame/world-frame-<UTC>.json`(.gitignore). 있으면 덮어쓰지 않는다.
-- 종료 코드: 0 고정함, 2 인자·입력 오류, 3 고정 못 함(결과 파일에 사유).
+- `measure-objects`(-100): 목록의 정물을 펴진 그림에서 찾아 MapAnything 점으로 재고(노트북 윗판 등) 같은 실행의
+  `fix --scale-evidence` 입력(`simai.scale_evidence`, basis MEASURED_OBJECT, label = 정물 id)을 낸다. 근거를 못 내면
+  estimates 가 비고 사유가 남는다(종료 3). `fix` 는 근거 파일의 cameras_json_sha256 이 이번 실행과 다르면 거절한다.
+- 종료 코드: 0 고정함(근거 냄), 2 인자·입력 오류, 3 고정 못 함(근거 못 냄, 결과 파일에 사유).
 """
 
 from __future__ import annotations
@@ -83,6 +90,18 @@ def build_parser() -> argparse.ArgumentParser:
     fx.add_argument("--site-id", default=None)
     fx.add_argument("--calibration-version", help="기본 cal-wf-<UTC>")
     fx.add_argument("--out", type=Path, help=f"결과 JSON (기본 {DEFAULT_OUT_DIR}/world-frame-<UTC>.json)")
+
+    mo = sub.add_parser("measure-objects", help="실측 정물 → 축척 근거(fix --scale-evidence 입력, S15P31A101-100)")
+    mo.add_argument("--run-dir", type=Path, required=True, help="run_mapanything 결과 폴더(cameras.json, raw.npz)")
+    mo.add_argument("--prepared", type=Path, required=True, help="그 실행의 prepare 입력 폴더(펴진 그림·사람 마스크)")
+    mo.add_argument("--catalog", type=Path, help="실측 정물 목록(기본: 패키지 calibration/data/measured_objects.json)")
+    mo.add_argument("--object", action="append", default=[], help="이 정물 id 만(여러 번). 기본: 목록 전부")
+    mo.add_argument("--weights-dir", type=Path, help="검출 가중치 폴더(목록의 파일 이름·sha256 으로 확인)")
+    mo.add_argument("--view", action="append", default=[], metavar="CAM=VIEW")
+    mo.add_argument("--device", default=None)
+    mo.add_argument("--out", type=Path, help=f"근거 JSON (기본 {DEFAULT_OUT_DIR}/scale-evidence-<UTC>.json)")
+    mo.add_argument("--debug-dir", type=Path,
+                    help="진단 그림 폴더(det_<정물>_<카메라>.jpg: 채택·버림 표시. 사람이 찍힌 그림이라 커밋하지 않는 곳)")
     return p
 
 
@@ -95,6 +114,8 @@ def main(argv: Sequence[str] | None = None, *, now_ms: int | None = None) -> int
     try:
         if args.command == "prepare":
             return _prepare(args)
+        if args.command == "measure-objects":
+            return _measure_objects(args, created_at)
         return _fix(args, created_at)
     except (ValueError, KeyError, FileNotFoundError, FileExistsError, ImportError) as e:
         print(f"입력 오류: {type(e).__name__}: {e}", file=sys.stderr)
@@ -212,6 +233,10 @@ def _fix(args: argparse.Namespace, created_at: int) -> int:
             ScaleEstimate(ScaleBasis(e["basis"]), float(e["scale"]), int(e.get("sample_count", 1)), e.get("label"))
             for e in sdoc.get("estimates", [])
         )
+        # 축척 근거는 그 MapAnything 실행의 길이 단위 기준이다(-100 measure-objects 가 cameras.json sha256 을 적는다)
+        made_for = sdoc.get("cameras_json_sha256")
+        if made_for and made_for != run.record["cameras_json"]["sha256"]:
+            raise ValueError("축척 근거(--scale-evidence)가 다른 MapAnything 실행(cameras.json)에서 나왔다")
         scale_input = {"path": args.scale_evidence.name, "sha256": _sha256(raw),
                        "input_provenance": checked_provenance(sdoc.get("input_provenance"), args.scale_evidence.name)}
     feet, feet_input = None, None
@@ -330,6 +355,90 @@ def _fix(args: argparse.Namespace, created_at: int) -> int:
         print(f"World 고정 못 함: {record['reason']}: {record['detail']}", file=sys.stderr)
         return EXIT_NOT_FIXED
     return EXIT_OK
+
+
+def _measure_objects(args: argparse.Namespace, created_at: int) -> int:
+    import cv2
+
+    from simai_ai.calibration.extrinsics.initial import checked_provenance
+    from simai_ai.calibration.world_frame.frame import WorldFrameConfig
+    from simai_ai.calibration.world_frame.inputs import load_mapanything_run, load_prepared
+    from simai_ai.calibration.world_frame.measured_objects import (
+        DEFAULT_CATALOG,
+        DETECTORS,
+        build_evidence,
+        draw_diagnostics,
+        load_catalog,
+    )
+
+    out = args.out or DEFAULT_OUT_DIR / f"scale-evidence-{_utc_stamp(created_at)}.json"
+    if out.exists():
+        raise ValueError(f"결과 파일이 이미 있다(덮어쓰지 않는다): {out}")
+    objects, catalog_record = load_catalog(args.catalog or DEFAULT_CATALOG)
+    if args.object:
+        unknown = sorted(set(args.object) - {o.id for o in objects})
+        if unknown:
+            raise ValueError(f"목록에 없는 정물: {unknown}")
+        objects = tuple(o for o in objects if o.id in args.object)
+    prepared = load_prepared(args.prepared)
+    view_map = dict(_pair(v, "--view") for v in args.view) or None
+    cfg = WorldFrameConfig()
+    # 바닥은 fix 와 같은 실행(사람 마스크·신뢰도 하위 백분위 제외)에서, 정물 점은 사람 마스크·신뢰도 거르기 없이 쓴다
+    # (사람 마스크 팽창과 물체 경계의 낮은 신뢰도가 정물 끝을 깎는다. 정물 앞 사람은 끝점 가림 검사가 잡는다)
+    run = load_mapanything_run(args.run_dir, view_map=view_map, prepared=prepared, conf_percentile=cfg.conf_percentile)
+    used = (run.record.get("mapanything") or {}).get("prepared_sha256")
+    if used != prepared["_sha256"]:
+        raise ValueError("MapAnything 실행 기록(metrics.json)의 prepared_sha256 이 이 입력 폴더와 다르다(다른 그림으로 돈 실행)")
+    points_run = load_mapanything_run(args.run_dir, view_map=view_map, conf_percentile=0.0)
+    views = {v["name"]: v for v in prepared["views"]}
+    images = {v.camera_id: Path(prepared["_dir"]) / views[v.name]["image"] for v in run.views}
+    sizes = {v.camera_id: views[v.name]["image_size"] for v in run.views}
+    # 사람 마스크: 덮개 윗변 끝점이 닿을 때만 그 측정을 버린다. prepare 는 마스크를 dilate_px 팽창해 두므로 같은 크기로
+    # 깎아 원래 윤곽에 가깝게 되돌린다(닫힘 연산: 팽창 전 마스크의 작은 틈만 메워진다)
+    persons = {}
+    dil = int(((prepared.get("segmenter") or {}).get("dilate_px")) or 0)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dil + 1,) * 2) if dil > 0 else None
+    for v in run.views:
+        if views[v.name].get("mask"):
+            pm = cv2.imread(str(Path(prepared["_dir"]) / views[v.name]["mask"]), cv2.IMREAD_GRAYSCALE)
+            if pm is None:
+                raise ValueError(f"{v.camera_id}: 사람 마스크 {views[v.name]['mask']} 를 읽지 못함")
+            persons[v.camera_id] = (cv2.erode(pm, kernel) if kernel is not None else pm) > 127
+    detections, described = {}, {}
+    for o in objects:
+        det = DETECTORS[o.detector["kind"]](o.detector, args.weights_dir, args.device)
+        described[o.id] = det.describe()
+        per_cam = {}
+        for cid, path in sorted(images.items()):
+            img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            if img is None:
+                raise ValueError(f"{cid}: 펴진 그림을 읽지 못함 {path.name}")
+            per_cam[cid] = det.detect(img)
+        detections[o.id] = per_cam
+    doc = build_evidence(objects, run, points_run, detections, sizes,
+                         input_provenance=checked_provenance(prepared.get("input_provenance"), "prepared.json"),
+                         catalog_record=catalog_record, detectors=described, created_at=created_at,
+                         person_masks=persons, floor_cfg=cfg)
+    _write(out, doc)
+    if args.debug_dir:
+        args.debug_dir.mkdir(parents=True, exist_ok=True)
+        for rec in doc["objects"]:
+            for cid, path in sorted(images.items()):
+                ms = [m for m in rec.get("measurements", []) if m["camera_id"] == cid]
+                img = draw_diagnostics(cv2.imread(str(path), cv2.IMREAD_COLOR), detections[rec["id"]][cid], ms)
+                cv2.imwrite(str(args.debug_dir / f"det_{rec['id']}_{cid}.jpg"), img)
+    for rec in doc["objects"]:
+        print(f"{rec['id']}: {rec['status']}(근거 방법 {rec.get('method')}) 검출 {rec.get('detections')} "
+              f"{rec.get('reason') or ''}")
+        for method, mrec in (rec.get("by_method") or {}).items():
+            agg = mrec.get("aggregation") or {}
+            print(f"  {method}: {mrec['status']} 채택 {mrec['accepted']} 독립 표본 {agg.get('samples')} "
+                  f"중앙값 {agg.get('median_all')} 퍼짐 {agg.get('spread_all')} 배율 {agg.get('scale')}")
+            print(f"    버림: {mrec['rejected_by_reason']}")
+        if rec.get("camera_heights_m"):
+            print(f"  이 배율로 본 카메라 높이(m): {rec['camera_heights_m']}")
+    print(f"근거: {out}")
+    return EXIT_OK if doc["estimates"] else EXIT_NOT_FIXED
 
 
 def _provider_source(provenance: dict[str, Any]) -> str:

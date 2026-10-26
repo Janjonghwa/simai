@@ -132,7 +132,7 @@ X_world = s · Ra · (X_mapanything − o). 길이 한도는 MapAnything 단위(
 
 **넘긴 일.**
 
-- 노트북 윗판(35.5 × 25.5 cm, 교실에 같은 노트북 여러 대)을 실측 물체로 쓰는 축척은 -100(정물 검출·스케일 근거)에서 따로 한다. 그 전까지 이 티켓의 기본 축척은 MODEL_ESTIMATE(카메라 높이를 주면 MEASURED_CAMERA_HEIGHT).
+- 노트북 윗판(35.5 × 25.5 cm, 교실에 같은 노트북 여러 대)을 실측 물체로 쓰는 축척은 -100 이 `world_frame.cli measure-objects`(`--scale-evidence` 입력을 만든다)로 했다(`docs/design/measured-object-scale.md`). w1(518)에서는 원본 윤곽 방법으로 노트북 4대가 1% 안에 모여 MEASURED_OBJECT 1.028(MODEL_ESTIMATE 와 5% 안, 카메라 높이 2.06~2.15 m)이지만, 한 대 값이라 공통 깊이 치우침을 배제하지 못해 카메라 높이 실측으로 교차 확인하기 전까지 잠정 근거다.
 - (선택) 카메라 높이를 잴 수 있으면 w1 로 다시 `fix` 해 모델 축척 차(임시 2.70 m 기준 약 24%)를 확인.
 - -214 번들 조정 보정 문서의 scale_basis 는 아직 번들 쪽 근거(없으면 MODEL_ESTIMATE)다. World 고정의 스케일 근거(카메라 높이·정물)를 번들 게이지·문서로 넘기는 일.
 - MANHATTAN 주된 방향을 기록용으로 더하기(판정 미사용), 원본 스틸 위에 두 점을 찍는 작은 도구(지금은 그림 뷰어로 픽셀을 읽어 JSON 을 쓴다).
