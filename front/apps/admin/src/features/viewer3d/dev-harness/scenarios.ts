@@ -19,6 +19,11 @@ export const SCENARIOS = [
   },
   { key: 'disconnect', label: '통신 장애', hint: '끊김·역전·중복·복구' },
   { key: 'invalid-input', label: '잘못된 입력', hint: '계약 오류·미상 Z' },
+  {
+    key: 'crowd',
+    label: '다인원 골격',
+    hint: '12명(골격 10·관절 결손·접지 미확인·예측·확인 불가). -56 렌더 성능 측정용',
+  },
 ] as const;
 
 export type ScenarioKey = (typeof SCENARIOS)[number]['key'];
@@ -43,6 +48,7 @@ export const PERIOD: Record<ScenarioKey, number> = {
   geofence: 120,
   disconnect: 70,
   'invalid-input': 10,
+  crowd: 120,
 };
 
 /**
@@ -65,6 +71,7 @@ const CODE: Record<ScenarioKey, number> = {
   disconnect: 4,
   'invalid-input': 5,
   geofence: 6,
+  crowd: 7,
 };
 
 const hex = (n: number, width: number) => n.toString(16).padStart(width, '0').slice(-width);
@@ -276,6 +283,113 @@ function unknownZTrack(tick: number, t: number) {
   };
 }
 
+// ---- 다인원(-56 골격 아바타 성능 측정) ----
+
+/** crowd 시나리오의 사람 수. 골격 10명(그중 결손 1·골반만 1) + 예측 1 + 확인 불가 1. */
+export const CROWD_SIZE = 12;
+export const crowdTrackId = (i: number) => 'w-' + String(101 + i).padStart(4, '0');
+/** 관절 일부가 없거나(손목) 불확실(무릎)하거나 Tier 1 추정(팔꿈치)인 사람. */
+export const CROWD_PARTIAL_ID = crowdTrackId(8);
+/** 골반만 있고 접지점이 없는 사람(접지 미확인). */
+export const CROWD_PELVIS_ID = crowdTrackId(9);
+const CROWD_PREDICTED = 10;
+const CROWD_UNKNOWN = 11;
+
+/** i 번째 사람의 원 궤도 위치와 진행 방향(World, rad). 한 주기(PERIOD.crowd)에 정확히 한 바퀴 돈다. */
+function crowdPose(i: number, tick: number): { xy: Xy; heading: number } {
+  const dir = i % 2 === 0 ? 1 : -1;
+  const radius = 1 + 0.32 * (i % 10);
+  const angle = (i * 2 * Math.PI) / CROWD_SIZE + dir * ((2 * Math.PI * tick) / PERIOD.crowd);
+  return {
+    xy: [5 + radius * Math.cos(angle), 5 + radius * Math.sin(angle)],
+    heading: angle + (dir * Math.PI) / 2,
+  };
+}
+
+/** 걷는 사람의 COCO17 골격. JOINTS 를 진행 방향으로 돌리고 다리·팔을 흔든다. 높이는 지지면(Z=0) 기준. */
+function crowdSkeleton(i: number, tick: number, xy: Xy, heading: number) {
+  const partial = crowdTrackId(i) === CROWD_PARTIAL_ID;
+  const swing = Math.sin(tick * 0.9 + i);
+  const theta = heading - Math.PI / 2; // JOINTS 의 앞(+y)을 진행 방향으로.
+  const [c, s] = [Math.cos(theta), Math.sin(theta)];
+  const forward: Record<number, number> = { 7: -0.08, 9: -0.16, 13: 0.12, 15: 0.24 };
+  const back: Record<number, number> = { 8: 0.08, 10: 0.16, 14: -0.12, 16: -0.24 };
+  const hidden = partial ? new Set([9, 10, HIDDEN_JOINT]) : new Set([HIDDEN_JOINT]);
+  return {
+    joint_layout: 'COCO17',
+    joints: JOINTS.map(([dx, dy, z], j) => {
+      if (hidden.has(j)) return null;
+      const fy = dy + swing * (forward[j] ?? back[j] ?? 0);
+      return [round(xy[0] + dx * c - fy * s), round(xy[1] + dx * s + fy * c), z];
+    }),
+    [SKELETON_VISIBLE_KEY]: JOINTS.map((_, j) => !hidden.has(j) && !(partial && j === 13)),
+    validity: JOINTS.map((_, j) =>
+      hidden.has(j)
+        ? 'UNAVAILABLE'
+        : j === UNCERTAIN_JOINT || (partial && j === 14)
+          ? 'UNCERTAIN'
+          : 'VALID',
+    ),
+    joint_source: JOINTS.map((_, j) => (partial && j === 7 ? 'inferred' : 'observed')),
+  };
+}
+
+function crowdTrack(i: number, tick: number, t: number) {
+  const id = crowdTrackId(i);
+  const { xy, heading } = crowdPose(i, tick);
+  const [x, y] = xy.map(round) as Xy;
+  const base = {
+    world_id: id,
+    track_lifecycle: 'CONFIRMED',
+    identity_confidence: 'HIGH',
+    identity_revision: 0,
+    frame_age_ms: 120,
+    position_xy: [x, y],
+  };
+  if (i === CROWD_PREDICTED || i === CROWD_UNKNOWN) {
+    // 가려진 사람: 마지막 관측 위치를 유지하고 골격·높이는 싣지 않는다.
+    return {
+      ...base,
+      t_last_valid: t - 600,
+      observation_state: i === CROWD_PREDICTED ? 'PREDICTED' : 'UNKNOWN',
+      track_lifecycle: 'OCCLUDED',
+      identity_confidence: 'MEDIUM',
+      position_xy_sigma: [1.28, 1.28],
+      pelvis_xyz: null,
+      ground_anchor_xyz: null,
+      support_surface_id: null,
+      support_surface_validity: 'UNKNOWN',
+      contact_validity: 'UNAVAILABLE',
+      z_validity: 'UNAVAILABLE',
+      head_z: null,
+      head_z_sigma: null,
+      head_z_validity: 'UNAVAILABLE',
+      cameras: [],
+    };
+  }
+  const pelvisOnly = id === CROWD_PELVIS_ID;
+  const speed = (2 * Math.PI * (1 + 0.32 * (i % 10))) / (PERIOD.crowd * (TICK_MS / 1000));
+  return {
+    ...base,
+    t_last_valid: t,
+    observation_state: 'OBSERVED',
+    position_xy_sigma: [0.08, 0.08],
+    pelvis_xyz: [x, y, 0.95],
+    ground_anchor_xyz: pelvisOnly ? null : [x, y, 0],
+    ...(pelvisOnly ? {} : { ground_anchor_sigma: [0.06, 0.06, 0.03], surface_source: 'observed' }),
+    support_surface_id: pelvisOnly ? null : 'floor',
+    support_surface_validity: pelvisOnly ? 'UNKNOWN' : 'VALID',
+    contact_validity: pelvisOnly ? 'UNAVAILABLE' : 'VALID',
+    z_validity: pelvisOnly ? 'UNCERTAIN' : 'VALID',
+    head_z: 1.68,
+    head_z_sigma: 0.05,
+    head_z_validity: 'VALID',
+    velocity: [round(speed * Math.cos(heading)), round(speed * Math.sin(heading)), 0],
+    cameras: ['cam1', 'cam2', 'cam3'],
+    skeleton: crowdSkeleton(i, tick, [x, y], heading),
+  };
+}
+
 function sceneAt(key: ScenarioKey, tick: number) {
   const p = tick % PERIOD.disconnect;
   return key === 'disconnect' && p >= 41 && p < 50 ? NEXT_SCENE : VERSIONS.scene;
@@ -284,12 +398,15 @@ function sceneAt(key: ScenarioKey, tick: number) {
 /** 시나리오의 tick 시점 World(world_state 메시지). 연결 상태와 관계없이 서버 쪽에 있는 값이다(REST 스냅샷도 이것을 쓴다). */
 export function scenarioWorld(key: ScenarioKey, tick: number, t0: number) {
   const t = tAt(t0, tick);
-  const tracks = MOCK_TRACK_IDS.map((id) => {
-    if (key === 'observation-loss' && id === 'w-0002') return lossTrack(tick, t0);
-    if (key === 'invalid-input' && id === 'w-0003') return unknownZTrack(tick, t);
-    if (key === 'geofence') return observed(id, tick, t, geofencePose);
-    return observed(id, tick, t);
-  });
+  const tracks =
+    key === 'crowd'
+      ? Array.from({ length: CROWD_SIZE }, (_, i) => crowdTrack(i, tick, t))
+      : MOCK_TRACK_IDS.map((id) => {
+          if (key === 'observation-loss' && id === 'w-0002') return lossTrack(tick, t0);
+          if (key === 'invalid-input' && id === 'w-0003') return unknownZTrack(tick, t);
+          if (key === 'geofence') return observed(id, tick, t, geofencePose);
+          return observed(id, tick, t);
+        });
   return envelope(
     'world_state',
     mockMsgId(key, tick, 0),

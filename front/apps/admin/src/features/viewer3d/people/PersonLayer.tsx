@@ -27,6 +27,12 @@ import {
   type PersonPose,
   type PersonTone,
 } from '@/features/viewer3d/people/personMotion';
+import { SkeletonBody } from '@/features/viewer3d/people/SkeletonBody';
+import {
+  skeletonFigure,
+  skeletonUsable,
+  type SkeletonFigure,
+} from '@/features/viewer3d/people/skeletonPose';
 import { PersonRiskMark } from '@/features/viewer3d/risk/RiskMarks';
 import { riskLabel, riskStyle } from '@/features/viewer3d/risk/riskPresentation';
 import { useRiskHighlight } from '@/features/viewer3d/risk/RiskScope';
@@ -77,13 +83,14 @@ const trackOf = (world: WorldFrame | null, worldId: string): TrackView | undefin
 const selectIds = (state: SpatialDataState) =>
   (state.world?.tracks ?? []).map((track) => track.worldId).join('\n');
 
-/** 이 사람의 표시가 바뀌는 상태만 묶는다(관측 상태·위치 근거·연결·ID 교정). 좌표는 넣지 않는다. */
+/** 이 사람의 표시가 바뀌는 상태만 묶는다(관측 상태·위치 근거·골격 사용 여부·연결·ID 교정). 좌표는 넣지 않는다. */
 function statusKey(state: SpatialDataState, worldId: string) {
   const track = trackOf(state.world, worldId);
   if (!track) return '';
   return [
     track.observationState,
     trackPlacement(track).basis,
+    skeletonUsable(track) ? 'SKELETON' : 'BODY',
     state.connection?.state ?? 'NONE',
     track.identityRevision,
   ].join('|');
@@ -120,6 +127,8 @@ interface Motion {
   speed: number;
   /** 0 = idle, 1 = walk. */
   walk: number;
+  /** 이번 표본의 Tier 0 골격 모양(발 위치 기준). 골격을 쓸 수 없으면 null. */
+  figure: SkeletonFigure | null;
 }
 
 function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel | null }) {
@@ -136,6 +145,8 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
   const root = useRef<Group>(null);
   // 위험 표식 자리. 선택 그룹 밖에 두어 초점 중심·클릭 경계에 끼지 않게 하고, 위치만 아바타를 따라간다.
   const riskRoot = useRef<Group>(null);
+  // 골격 자리. 루트는 보간되며 따라가지만 관절·접지 고리는 표본의 World 위치에 그대로 있어야 해서, 보간 차이만큼 되돌린다.
+  const skeletonRoot = useRef<Group>(null);
   // 표식이 새로 붙는 순간에도 원점에 한 프레임 보이지 않게 지금 아바타 위치에서 시작한다.
   const attachRisk = useCallback((group: Group | null) => {
     riskRoot.current = group;
@@ -154,6 +165,7 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
     heading: null,
     speed: 0,
     walk: 0,
+    figure: null,
   });
 
   useFrame((_, dt) => {
@@ -189,6 +201,16 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
         m.sampleAt = at;
         m.observation = track.observationState;
         m.speed = speed;
+        // 관절은 이번 표본의 목표 발 위치 기준으로 둔다. 확인된 접지면 그 지지면 높이까지 발 막대를 잇는다.
+        const placement = trackPlacement(track);
+        m.figure =
+          pose.fresh && pose.feet && skeletonUsable(track)
+            ? skeletonFigure(
+                track.skeleton!,
+                pose.feet,
+                placement.basis === 'GROUND_ANCHOR' ? placement.world[2] : null,
+              )
+            : null;
         if (heading !== null) m.heading = heading;
         if (snap) {
           const target = pose.feet ?? [pose.columnXz![0], 0, pose.columnXz![1]];
@@ -208,6 +230,14 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
     ];
     group.position.set(...m.display);
     riskRoot.current?.position.set(...m.display);
+    // 골격은 보간하지 않는다: 루트(이름표·선택·위험 표식)는 부드럽게 따라가도 관절은 늘 이번 표본의 World 위치다.
+    if (skeletonRoot.current && pose.feet) {
+      skeletonRoot.current.position.set(
+        pose.feet[0] - m.display[0],
+        pose.feet[1] - m.display[1],
+        pose.feet[2] - m.display[2],
+      );
+    }
     if (m.heading !== null) m.yaw = approachAngle(m.yaw, m.heading, dt, YAW_RATE);
     if (body.current) body.current.rotation.y = m.yaw;
     const walking = isWalking({
@@ -226,6 +256,9 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
   // 표시 종류·이름표만 정한다. 좌표는 useFrame 이 마지막 유효 위치로 채운다.
   const pose = personPose(track, hasLastValid ? SOME_LAST_VALID : NO_LAST_VALID);
   const tone = personTone(track);
+  // Tier 0 골격을 쓸 수 있으면 관절 사이 막대 아바타로, 아니면 -44 의 기본 캡슐(또는 개발용 모델)로 그린다.
+  const skeleton = pose.kind === 'BODY' && skeletonUsable(track);
+  const placement = trackPlacement(track).basis;
   const base = personLabel(track, pose, connection?.state === 'OPEN');
   // 이름표 하나에 위험 > 대상 ID·관측 상태 순서로 적어 겹치지 않게 한다.
   const label = risk ? `${riskLabel(risk)} · ${base}` : base;
@@ -234,7 +267,22 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
     <>
       <Selectable target={{ type: 'person', id: worldId }}>
         <group ref={root} name={`person-avatar:${worldId}`}>
-          {pose.kind === 'BODY' ? (
+          {skeleton ? (
+            <group ref={skeletonRoot} name="person-skeleton-root">
+              <SkeletonBody
+                motion={motion}
+                color={bodyColor(tone, selected)}
+                opacity={OPACITY[tone]}
+                anchor={
+                  placement === 'GROUND_ANCHOR'
+                    ? 'CONFIRMED'
+                    : placement === 'GROUND_ANCHOR_UNCERTAIN'
+                      ? 'UNCERTAIN'
+                      : 'NONE'
+                }
+              />
+            </group>
+          ) : pose.kind === 'BODY' ? (
             <group ref={body}>
               {model ? (
                 <ModelBody

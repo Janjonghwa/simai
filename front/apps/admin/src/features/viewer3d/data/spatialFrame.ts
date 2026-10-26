@@ -157,7 +157,15 @@ export type TrackPlacement =
 
 export function trackPlacement(track: TrackView): TrackPlacement {
   const { groundAnchor, pelvis } = track;
-  if (groundAnchor && track.contactValidity === 'VALID' && track.zValidity === 'VALID') {
+  // 확인된 접지는 접촉·높이·지지면이 모두 VALID 이고 출처가 가림 동안 유지한 값(inferred)이 아닐 때만이다.
+  // 계약상 inferred 면 접촉·높이가 UNCERTAIN 이어야 하므로, 서로 모순되는 문서는 확인된 접지로 보지 않는다.
+  if (
+    groundAnchor &&
+    track.contactValidity === 'VALID' &&
+    track.zValidity === 'VALID' &&
+    track.supportSurfaceValidity === 'VALID' &&
+    track.surfaceSource !== 'inferred'
+  ) {
     return { basis: 'GROUND_ANCHOR', world: groundAnchor, groundConfirmed: true };
   }
   if (pelvis) return { basis: 'PELVIS', world: pelvis, groundConfirmed: false };
