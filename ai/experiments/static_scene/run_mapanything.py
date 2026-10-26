@@ -166,6 +166,24 @@ def build_prepared_views(specs):
     return views
 
 
+def resize_kwargs(mode: str, size: str | None) -> dict:
+    """--resize-mode·--size → load_images/preprocess_inputs 인자. fixed_mapping 은 공식 기본(인자 없음)과 같다."""
+    if mode == "fixed_mapping":
+        if size:
+            raise SystemExit("--size 는 fixed_mapping 에 쓰지 않는다(긴 변 518 고정)")
+        return {}
+    if not size:
+        raise SystemExit(f"--resize-mode {mode} 에는 --size 가 필요하다")
+    if mode == "fixed_size":
+        w, sep, h = size.lower().partition("x")
+        if not sep or not w.isdigit() or not h.isdigit():
+            raise SystemExit(f"fixed_size 의 --size 는 가로x세로(예 2304x1296): {size!r}")
+        return {"resize_mode": mode, "size": (int(w), int(h))}
+    if not size.isdigit():
+        raise SystemExit(f"{mode} 의 --size 는 정수: {size!r}")
+    return {"resize_mode": mode, "size": int(size)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-id", required=True)
@@ -181,9 +199,14 @@ def main():
     ap.add_argument("--minibatch", type=int, default=0, help="0 = 공식 기본(동적)")
     ap.add_argument("--repeat", type=int, default=3)
     ap.add_argument("--conf-percentile", type=float, default=10)
+    ap.add_argument("--resize-mode", choices=["fixed_mapping", "longest_side", "fixed_size", "square"], default="fixed_mapping",
+                    help="MapAnything 전처리 resize_mode (공식 기본 fixed_mapping = 긴 변 518)")
+    ap.add_argument("--size", default=None,
+                    help="longest_side·square: 정수(예 1036), fixed_size: 가로x세로(예 2304x1296, 14 배수로 내림)")
     ap.add_argument("--runs-dir", default=str(ROOT / "runs" / "exp01"))
     ap.add_argument("--git-commit", default="", help="이 스크립트가 있는 저장소 커밋(재현용)")
     a = ap.parse_args()
+    resize = resize_kwargs(a.resize_mode, a.size)
 
     sys.path.insert(0, str(MA_REPO))
     from mapanything.models import MapAnything
@@ -227,13 +250,14 @@ def main():
 
         t1 = time.perf_counter()
         if a.mode == "images":
-            views = load_images(paths)
+            views = load_images(paths, **resize)
         elif a.mode == "prepared":
-            views = preprocess_inputs(build_prepared_views(specs))
+            views = preprocess_inputs(build_prepared_views(specs), **resize)
         else:
-            views = preprocess_inputs(build_known_views(paths, a.known_from, a.use_poses, a.pose_scale, "cuda"))
+            views = preprocess_inputs(build_known_views(paths, a.known_from, a.use_poses, a.pose_scale, "cuda"), **resize)
         res["preprocess_ms"] = round((time.perf_counter() - t1) * 1000, 1)
         res["model_input_hw"] = list(views[0]["img"].shape[-2:])
+        res["resize"] = {k: (list(v) if isinstance(v, tuple) else v) for k, v in resize.items()}
         kw = dict(memory_efficient_inference=True, minibatch_size=a.minibatch or None, use_amp=bool(a.amp),
                   amp_dtype=a.amp_dtype, apply_mask=True, mask_edges=True)
         res["infer_kwargs"] = kw
