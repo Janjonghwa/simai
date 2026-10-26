@@ -26,7 +26,10 @@ import tools.jackson.databind.JsonNode;
  *   <li>동기화 중에 바뀌었고 스냅샷에서 아직 활성인 이벤트: 유효 관측 근거(last_valid_observation_at)가 있으면 DELAYED_ACTIVE,
  *       없으면(재시작 뒤 근거 없음 등) AUDIT_ONLY. 시간 창은 두지 않는다(3.2: 경과 시간만으로 억제하지 않는다).
  *   <li>동기화 중에 바뀌었고 스냅샷에는 없는(그사이 해소된) 이벤트: AUDIT_ONLY. 실시간 재알림 0(G3 D-G3-05).
- *   <li>스냅샷의 활성 이벤트가 EC2 에 없으면 스냅샷 값으로 만들고 같은 규칙으로 분류한다.
+ *   <li>스냅샷의 활성 이벤트가 EC2 에 없거나 delivery 가 아직 없으면(끝나지 못한 이전 동기화) 같은 규칙으로 분류한다.
+ *   <li>스냅샷이 새로 시작한 저널을 알리면(Pod 교체로 offset 이 줄어듦) 저널 세대를 올린다. 새 저널에 기록이 있으면 연결을 닫아
+ *       Tier 0 가 처음부터 다시 보내게 한다.
+ *   <li>분류가 커밋된 뒤에만 동기화를 끝낸다. 분류가 실패하면 동기화 모드가 이어지고 다음 스냅샷이 다시 분류한다.
  * </ul>
  */
 @Component
@@ -74,6 +77,13 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
         Long snapshotOffset = I1Json.whole(p, "journal_offset");
         JournalTracker tracker = journal.tracker(connection);
 
+        if (tracker.isNewJournal(snapshotOffset)) {
+            journal.startNewEpoch(connection, tracker);
+            if (snapshotOffset != null) {
+                connection.close("Tier 0 저널이 새로 시작됨");
+                return Outcome.STORED;
+            }
+        }
         Long missingFrom = tracker.missingBefore(snapshotOffset);
         cursors.saveSnapshot(gatewayId, I1Json.requiredTime(p, "snapshot_at"), snapshotOffset, missingFrom);
         if (missingFrom != null) {
@@ -82,8 +92,9 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
             return Outcome.STORED;
         }
 
-        Set<UUID> touched = tracker.finishSync();
+        Set<UUID> touched = tracker.touchedDuringSync();
         transaction.executeWithoutResult(status -> classify(gatewayId, active, touched));
+        tracker.finishSync();
         cursors.saveSyncMode(gatewayId, false, I1Json.utc(clock.instant()));
         journal.send(connection, tracker, null);
         log.info("I1 저널 동기화 끝: gateway={} active={} changed_during_sync={}", gatewayId, active.size(), touched.size());
@@ -92,13 +103,16 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
 
     private void classify(String gatewayId, JsonNode active, Set<UUID> touched) {
         Set<UUID> activeIds = new LinkedHashSet<>();
+        for (JsonNode event : active.values()) {
+            activeIds.add(I1Json.requiredUuid(event, "event_id"));
+            events.ensureFromSnapshot(gatewayId, event);
+        }
+        Set<UUID> undecided = events.withoutDelivery(activeIds);
         Set<UUID> delayed = new HashSet<>();
         Set<UUID> auditOnly = new HashSet<>();
         for (JsonNode event : active.values()) {
             UUID eventId = I1Json.requiredUuid(event, "event_id");
-            activeIds.add(eventId);
-            boolean created = events.ensureFromSnapshot(gatewayId, event);
-            if (created || touched.contains(eventId)) {
+            if (undecided.contains(eventId) || touched.contains(eventId)) {
                 boolean hasEvidence = I1Json.time(event, "last_valid_observation_at") != null;
                 (hasEvidence ? delayed : auditOnly).add(eventId);
             }

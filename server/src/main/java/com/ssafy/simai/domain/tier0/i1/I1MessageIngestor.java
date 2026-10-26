@@ -17,6 +17,13 @@ public interface I1MessageIngestor {
      */
     Outcome ingest(I1Envelope envelope, Instant receivedAt, I1Connection connection);
 
+    /**
+     * 이 종류의 메시지를 계약 위반(형식·타입·읽을 수 없는 메이저)으로 버렸다. 다시 받아도 같으니 필요하면 건너뛴 것으로 친다
+     * (저널 전이는 빈 구간이 영원히 남지 않게). DB 장애처럼 다시 받으면 될 수 있는 실패에는 부르지 않는다.
+     */
+    default void onRejected(I1Envelope envelope, I1Connection connection, String reason) {
+    }
+
     /** STORED: 행을 쓰거나 바꿨다. DUPLICATE: 이미 같은 메시지가 저장돼 있어 아무것도 바꾸지 않았다. */
     enum Outcome {
         STORED,

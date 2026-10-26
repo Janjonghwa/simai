@@ -1,5 +1,6 @@
 package com.ssafy.simai.domain.tier0.event;
 
+import com.ssafy.simai.domain.tier0.event.RiskEventRepository.Recorded;
 import com.ssafy.simai.domain.tier0.i1.I1Connection;
 import com.ssafy.simai.domain.tier0.i1.I1Envelope;
 import com.ssafy.simai.domain.tier0.i1.I1Json;
@@ -15,6 +16,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * risk_event_transition(Tier 0 → EC2, 명세 12.3·3.2) → risk_event_update 기록·risk_event 반영·저널 위치.
  * 동기화 중(연결 직후 ~ 스냅샷)에 받은 전이는 delivery_mode AUDIT_ONLY 로 기록하고 실시간 알림 대상이 아니다.
  * 스냅샷 뒤에 받은 전이만 REALTIME 이다. 저장 트랜잭션이 끝난 뒤에 저널 위치를 옮긴다(되돌려진 저장을 ack 하지 않게).
+ * 같은 offset 에 다른 메시지가 오면 Tier 0 저널이 새로 시작된 것이라 세대를 올리고 다시 기록한다.
+ * 계약 위반으로 버린 전이는 건너뛴 것으로 쳐서 빈 구간이 영원히 남지 않게 한다(onRejected).
  */
 @Component
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -47,13 +50,35 @@ class RiskEventTransitionIngestor implements I1MessageIngestor {
         }
         long offset = I1Json.requiredWhole(envelope.payload(), "journal_offset");
         JournalTracker tracker = journal.tracker(connection);
-        String deliveryMode = tracker.syncMode() ? "AUDIT_ONLY" : "REALTIME";
-        boolean inserted = Boolean.TRUE.equals(
-                transaction.execute(status -> events.recordTransition(envelope, deliveryMode, receivedAt)));
-        if (inserted) {
+        tracker.noteReceived(offset);
+        Recorded recorded = record(envelope, receivedAt, tracker);
+        if (recorded == Recorded.OFFSET_CONFLICT) {
+            journal.startNewEpoch(connection, tracker);
+            recorded = record(envelope, receivedAt, tracker);
+        }
+        if (recorded == Recorded.INSERTED) {
             tracker.touched(I1Json.requiredUuid(envelope.payload(), "event_id"));
         }
         journal.afterPersisted(connection, tracker, offset);
-        return inserted ? Outcome.STORED : Outcome.DUPLICATE;
+        return recorded == Recorded.INSERTED ? Outcome.STORED : Outcome.DUPLICATE;
+    }
+
+    private Recorded record(I1Envelope envelope, Instant receivedAt, JournalTracker tracker) {
+        String deliveryMode = tracker.syncMode() ? "AUDIT_ONLY" : "REALTIME";
+        int epoch = tracker.epoch();
+        return transaction.execute(status -> events.recordTransition(envelope, deliveryMode, receivedAt, epoch));
+    }
+
+    @Override
+    public void onRejected(I1Envelope envelope, I1Connection connection, String reason) {
+        Long offset;
+        try {
+            offset = I1Json.whole(envelope.payload(), "journal_offset");
+        } catch (InvalidI1Message e) {
+            offset = null;
+        }
+        if (offset != null && connection.gatewayId() != null) {
+            journal.skip(connection, journal.tracker(connection), offset, reason);
+        }
     }
 }

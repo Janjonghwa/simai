@@ -70,6 +70,15 @@ public final class I1Connection {
         return (T) state.get(key);
     }
 
+    /** 연결을 닫는다. Tier 0 는 다시 붙어 자기 acked 다음부터 보낸다 */
+    public void close(String reason) {
+        try {
+            session.close(org.springframework.web.socket.CloseStatus.SERVICE_RESTARTED.withReason(reason));
+        } catch (IOException e) {
+            // 이미 닫혔다
+        }
+    }
+
     /** 공통 봉투를 씌워 보낸다(명세 12.1). */
     public void send(String msgType, String schemaVersion, ObjectNode payload) throws IOException {
         ObjectNode envelope = mapper.createObjectNode();

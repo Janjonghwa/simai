@@ -70,6 +70,12 @@ public class Tier0I1WebSocketHandler extends TextWebSocketHandler {
         } catch (InvalidI1Message | JacksonException e) {
             router.countInvalid(envelope.msgType());
             log.warn("I1 계약 위반이라 버림: msg_type={} msg_id={} reason={}", envelope.msgType(), envelope.msgId(), reason(e));
+            try {
+                router.rejected(envelope, connection, reason(e));
+            } catch (RuntimeException rejectFailure) {
+                log.warn("I1 버린 메시지 처리 실패: msg_type={} error={}", envelope.msgType(),
+                        rejectFailure.getClass().getSimpleName());
+            }
         } catch (RuntimeException e) {
             router.countFailed(envelope.msgType());
             // DB 오류 문구에는 값이 실릴 수 있어 예외 종류만 남긴다

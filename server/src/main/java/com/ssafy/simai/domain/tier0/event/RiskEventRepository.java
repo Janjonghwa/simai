@@ -38,16 +38,16 @@ public class RiskEventRepository {
                 occurred_at, observation_at, evaluated_at, rule_id, rule_version, config_version, calibration_version,
                 scene_version, source, severity, confidence, verification, needs_check, confidence_reasons, world_ids,
                 zone_id, metrics, evidence_ref, resent, resumed, related_event_id, ack_id, close_id, escalation_id,
-                delivery_mode, received_at)
+                delivery_mode, received_at, journal_epoch)
             VALUES (:eventId, :seq, :msgId, :gatewayId, :journalOffset, :transition,
                 :occurredAt, :observationAt, :evaluatedAt, :ruleId, :ruleVersion, :configVersion, :calibrationVersion,
                 :sceneVersion, :source, :severity, :confidence, :verification, :needsCheck,
                 CAST(:confidenceReasons AS text[]), CAST(:worldIds AS text[]),
                 :zoneId, CAST(:metrics AS jsonb), CAST(:evidenceRef AS uuid), :resent, :resumed,
-                (SELECT e.event_id FROM risk_event e WHERE e.event_id = CAST(:relatedEventId AS uuid)),
+                CAST(:relatedEventId AS uuid),
                 (SELECT a.ack_id FROM event_ack a WHERE a.ack_id = CAST(:ackId AS uuid)),
                 (SELECT c.close_id FROM event_close c WHERE c.close_id = CAST(:closeId AS uuid)),
-                CAST(:escalationId AS uuid), :deliveryMode, :receivedAt)
+                CAST(:escalationId AS uuid), :deliveryMode, :receivedAt, :epoch)
             ON CONFLICT DO NOTHING
             """;
 
@@ -73,6 +73,18 @@ public class RiskEventRepository {
             WHERE event_id = :eventId AND (event_sequence IS NULL OR event_sequence < :seq)
             """;
 
+    /** 같은 세대·offset 에 이미 있는 기록의 msg_id. 다른 msg_id 면 Tier 0 저널이 새로 시작된 것이다 */
+    private static final String MSG_AT_OFFSET = """
+            SELECT msg_id FROM risk_event_update
+            WHERE gateway_id = :gatewayId AND journal_epoch = :epoch AND journal_offset = :journalOffset
+            """;
+
+    /** RAISED 가 더 높은 sequence 보다 늦게 와도 처음 시각은 채운다 */
+    private static final String FILL_RAISED_AT = """
+            UPDATE risk_event SET raised_at = :occurredAt
+            WHERE event_id = :eventId AND raised_at IS NULL AND :transition = 'RAISED'
+            """;
+
     private static final String ENSURE_FROM_SNAPSHOT = """
             INSERT INTO risk_event (event_id, source, gateway_id, rule_id, rule_version, lifecycle, verification, severity,
                 confidence, needs_check, world_ids, zone_id, metrics, resume_count, event_sequence, raised_at, retention_hold)
@@ -87,12 +99,21 @@ public class RiskEventRepository {
         this.jdbc = jdbc;
     }
 
+    public enum Recorded {
+        /** 새로 기록했다 */
+        INSERTED,
+        /** 같은 전이(event_id·sequence 또는 msg_id)가 이미 있다 */
+        DUPLICATE,
+        /** 같은 세대·offset 에 다른 메시지가 있다. Tier 0 저널이 새로 시작됐다 */
+        OFFSET_CONFLICT
+    }
+
     /**
      * 전이 하나를 기록하고 현재 상태에 반영한다. 한 트랜잭션 안에서 부른다.
      * @param deliveryMode 동기화 중이면 AUDIT_ONLY, 아니면 REALTIME
-     * @return 새로 기록했으면 true, 같은 전이(event_id·sequence 또는 msg_id 또는 journal_offset)가 이미 있으면 false
+     * @param epoch 지금 저널 세대(V4 journal_epoch)
      */
-    public boolean recordTransition(I1Envelope envelope, String deliveryMode, Instant receivedAt) {
+    public Recorded recordTransition(I1Envelope envelope, String deliveryMode, Instant receivedAt, int epoch) {
         JsonNode p = envelope.payload();
         Integer seq = integer(p, "event_sequence");
         if (seq == null || seq < 1) {
@@ -135,13 +156,16 @@ public class RiskEventRepository {
                 .addValue("resolution", json(p, "resolution"))
                 .addValue("deliveryMode", deliveryMode)
                 .addValue("delivery", "REALTIME".equals(deliveryMode) ? deliveryMode : null)
-                .addValue("receivedAt", utc(receivedAt));
+                .addValue("receivedAt", utc(receivedAt))
+                .addValue("epoch", epoch);
         jdbc.update(ENSURE_EVENT, params);
         if (jdbc.update(INSERT_UPDATE, params) == 0) {
-            return false;
+            java.util.List<UUID> existing = jdbc.queryForList(MSG_AT_OFFSET, params, UUID.class);
+            return existing.isEmpty() || existing.contains(envelope.msgId()) ? Recorded.DUPLICATE : Recorded.OFFSET_CONFLICT;
         }
         jdbc.update(APPLY, params);
-        return true;
+        jdbc.update(FILL_RAISED_AT, params);
+        return Recorded.INSERTED;
     }
 
     /** UUID 형식을 검사하고 문자열로 넘긴다(SQL 에서 CAST). 형식이 틀리면 CAST 오류가 아니라 계약 위반으로 처리한다 */
@@ -166,6 +190,16 @@ public class RiskEventRepository {
                 .addValue("zoneId", text(active, "zone_id"))
                 .addValue("seq", integer(active, "event_sequence"))
                 .addValue("raisedAt", time(active, "raised_at"))) > 0;
+    }
+
+    /** 그중 delivery 가 아직 정해지지 않은 이벤트(끝나지 못한 이전 동기화에서 만든 것 등) */
+    public java.util.Set<UUID> withoutDelivery(Collection<UUID> eventIds) {
+        if (eventIds.isEmpty()) {
+            return java.util.Set.of();
+        }
+        return java.util.Set.copyOf(jdbc.queryForList(
+                "SELECT event_id FROM risk_event WHERE event_id IN (:ids) AND delivery IS NULL",
+                new MapSqlParameterSource("ids", eventIds), UUID.class));
     }
 
     public void setDelivery(Collection<UUID> eventIds, String delivery) {

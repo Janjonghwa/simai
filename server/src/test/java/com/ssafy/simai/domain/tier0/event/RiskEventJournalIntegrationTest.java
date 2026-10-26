@@ -141,7 +141,68 @@ class RiskEventJournalIntegrationTest {
 
         assertThat(event(event, "lifecycle")).isEqualTo("UPDATED");
         assertThat(jdbc.queryForObject("SELECT event_sequence FROM risk_event WHERE event_id = ?", Integer.class, event)).isEqualTo(2);
+        // RAISED 가 늦게 와도 처음 시각은 채운다
+        assertThat(event(event, "raised_at")).isNotNull();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM risk_event_update WHERE event_id = ?", Integer.class, event)).isEqualTo(2);
+    }
+
+    @Test
+    void 계약_위반_전이는_건너뛰어_빈_구간이_남지_않고_동기화가_끝난다() throws Exception {
+        UUID event = UUID.randomUUID();
+        ObjectNode broken = transition(event, 2, 1, "UPDATED", true);
+        ((ObjectNode) broken.get("payload")).put("event_sequence", 0);
+
+        try (Tier0 tier0 = connect()) {
+            tier0.send(transition(event, 1, 0, "RAISED", true));
+            tier0.send(broken);
+            tier0.send(transition(event, 3, 2, "UPDATED", true));
+            tier0.send(snapshot(2L, active(event, 3, "UPDATED", true)));
+
+            JsonNode ack = tier0.awaitAck(a -> !a.get("sync_mode").booleanValue());
+            assertThat(ack.get("acked_offset").longValue()).isEqualTo(2);
+        }
+
+        assertThat(event(event, "delivery")).isEqualTo("DELAYED_ACTIVE");
+    }
+
+    @Test
+    void Tier0_저널이_새로_시작되면_세대를_올려_같은_offset_의_새_전이를_기록한다() throws Exception {
+        UUID before = UUID.randomUUID();
+        UUID after = UUID.randomUUID();
+
+        try (Tier0 tier0 = connect()) {
+            tier0.send(transition(before, 1, 0, "RAISED", false));
+            tier0.send(transition(before, 2, 1, "UPDATED", false));
+            tier0.awaitAck(a -> a.get("acked_offset").longValue() == 1);
+        }
+        // Pod 가 바뀌어 저널이 비었다: offset 0 부터 다른 전이
+        try (Tier0 tier0 = connect()) {
+            tier0.send(transition(after, 1, 0, "RAISED", false));
+            await(() -> String.valueOf(jdbc.queryForObject(
+                    "SELECT count(*) FROM risk_event WHERE event_id = ?", Integer.class, after)), "1");
+        }
+
+        assertThat(jdbc.queryForObject("SELECT journal_epoch FROM journal_cursor WHERE gateway_id = ?", Integer.class, gatewayId))
+                .isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT journal_epoch FROM risk_event_update WHERE event_id = ?", Integer.class, after))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void 끝나지_못한_동기화에서_만든_이벤트도_다음_스냅샷에서_분류한다() throws Exception {
+        UUID event = UUID.randomUUID();
+
+        try (Tier0 tier0 = connect()) {
+            tier0.send(transition(event, 1, 0, "RAISED", true));
+            tier0.awaitAck(a -> a.get("acked_offset").longValue() == 0);
+        }
+        // 다음 연결: 이미 ack 했으니 다시 보내지 않고 스냅샷만 온다
+        try (Tier0 tier0 = connect()) {
+            tier0.send(snapshot(0L, active(event, 1, "RAISED", true)));
+            tier0.awaitAck(a -> !a.get("sync_mode").booleanValue());
+        }
+
+        assertThat(event(event, "delivery")).isEqualTo("DELAYED_ACTIVE");
     }
 
     // ---- 도우미

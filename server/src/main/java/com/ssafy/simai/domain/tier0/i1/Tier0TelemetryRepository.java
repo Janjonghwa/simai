@@ -4,7 +4,6 @@ import static com.ssafy.simai.domain.tier0.i1.I1Json.*;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -148,7 +147,7 @@ public class Tier0TelemetryRepository {
     public boolean insertHealth(I1Envelope envelope, Instant receivedAt) {
         JsonNode p = envelope.payload();
         int rows = jdbc.update(INSERT_HEALTH, new MapSqlParameterSource()
-                .addValue("reportedAt", OffsetDateTime.ofInstant(envelope.sentAt(), ZoneOffset.UTC))
+                .addValue("reportedAt", utc(envelope.sentAt()))
                 .addValue("gatewayId", envelope.sourceId())
                 .addValue("msgId", envelope.msgId())
                 .addValue("systemHealth", text(p, "system_health"))
@@ -169,7 +168,7 @@ public class Tier0TelemetryRepository {
                 .addValue("activeSiteAlerts", json(p, "active_site_alerts"))
                 .addValue("activeSiteAlertsAsOf", time(p, "active_site_alerts_as_of"))
                 .addValue("laptopClockOffset", json(p, "laptop_clock_offset"))
-                .addValue("receivedAt", OffsetDateTime.ofInstant(receivedAt, ZoneOffset.UTC)));
+                .addValue("receivedAt", utc(receivedAt)));
         return rows > 0;
     }
 
@@ -212,7 +211,7 @@ public class Tier0TelemetryRepository {
                 .addValue("sceneVersion", text(payload, "scene_version"))
                 .addValue("configVersion", text(payload, "config_version"))
                 .addValue("inputProvenance", json(payload, "input_provenance"))
-                .addValue("receivedAt", OffsetDateTime.ofInstant(receivedAt, ZoneOffset.UTC));
+                .addValue("receivedAt", utc(receivedAt));
     }
 
     /** 골격이 없는 트랙이면 null */
