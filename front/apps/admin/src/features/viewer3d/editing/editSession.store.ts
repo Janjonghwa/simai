@@ -7,6 +7,7 @@ import {
   isValidBox,
   isValidShape,
   objectFieldOperations,
+  OBSTACLE_OBB_POLICY,
   sameBox,
   WORK_SURFACE_OBB_POLICY,
   ZONE_AABB_POLICY,
@@ -30,7 +31,14 @@ import type {
   ViewerObjectEditPreview,
   ViewerObjectEditProvenance,
   ViewerObjectEditResult,
+  ViewerObjectKind,
 } from '@/features/viewer3d/editing/editTypes';
+import {
+  obbObstacle,
+  obstacleItem,
+  obstacleJson,
+  obstacleObb,
+} from '@/features/viewer3d/surfaces/obstacleGeometry';
 import {
   geometryProblem,
   obbWorkSurface,
@@ -40,6 +48,7 @@ import {
   workSurfaceJson,
   workSurfaceObb,
   type WorkSurfaceGeometry,
+  type WorkSurfaceSnapshot,
 } from '@/features/viewer3d/surfaces/workSurfaceGeometry';
 import { parseTarget, sameTarget, targetKey } from '@/features/viewer3d/target';
 import type { ViewerMode, ViewerTarget } from '@/features/viewer3d/types';
@@ -51,13 +60,56 @@ import { createStore, type StoreApi } from 'zustand/vanilla';
 // 원본 구역이 바뀌거나 사라지고, 입력 Source·Scene 버전이 바뀌면 초안을 버리고 STALE_SOURCE 로 끝낸다.
 // 작업면 OBB(-188)도 같은 Store·같은 엔진(applyEditOperation)·같은 수명 규칙을 쓴다. 구역 세션(session)과
 // 작업면 세션(objectSession)은 동시에 하나만 있고, 결과는 모양이 달라 lastResult·lastObjectResult 로 따로 알린다.
+// 등록 정적 객체(OBSTACLE, -274)도 object 대상이라 objectSession 을 쓰고 objectKind 로 정책·결과 모양만 다르다.
 
 /** 마우스로 잡는 손잡이. move 는 X·Y 이동, 나머지는 그 면의 경계다. */
 export type EditHandle = 'move' | EditFace;
 
 /** 작업면 OBB 손잡이. move X·Y 이동, x±·y± 지역 축 면, z+ 상판, yaw 수평 회전. */
 export const OBJECT_EDIT_HANDLES = ['move', 'x-', 'x+', 'y-', 'y+', 'z+', 'yaw'] as const;
-export type ObjectEditHandle = (typeof OBJECT_EDIT_HANDLES)[number];
+export type WorkSurfaceEditHandle = (typeof OBJECT_EDIT_HANDLES)[number];
+/** 정적 객체 OBB 손잡이(-274). 작업면 손잡이에 z- 아랫면, lift Z 이동(크기 유지)을 더한다. */
+export const OBSTACLE_EDIT_HANDLES = [...OBJECT_EDIT_HANDLES, 'z-', 'lift'] as const;
+export type ObjectEditHandle = (typeof OBSTACLE_EDIT_HANDLES)[number];
+
+/** 대상 종류마다 띄우는 손잡이. */
+export const objectEditHandles = (kind: ViewerObjectKind): readonly ObjectEditHandle[] =>
+  kind === 'OBSTACLE' ? OBSTACLE_EDIT_HANDLES : OBJECT_EDIT_HANDLES;
+
+/** object 대상의 원본(작업면 또는 정적 객체)을 찾는다. 없으면 null. */
+export function findEditableObject(snapshot: WorkSurfaceSnapshot, id: string) {
+  const surface = snapshot.surfaces.find((s) => s.surfaceId === id);
+  if (surface) {
+    return {
+      objectKind: 'WORK_SURFACE' as const,
+      obb: workSurfaceObb(surface),
+      source: surface.source,
+    };
+  }
+  const obstacle = snapshot.obstacles.find((o) => o.objectId === id);
+  if (obstacle) {
+    return {
+      objectKind: 'OBSTACLE' as const,
+      obb: obstacleObb(obstacle),
+      source: obstacle.source,
+    };
+  }
+  return null;
+}
+
+const KIND_POLICY: Record<ViewerObjectKind, EditPolicy> = {
+  WORK_SURFACE: WORK_SURFACE_OBB_POLICY,
+  OBSTACLE: OBSTACLE_OBB_POLICY,
+};
+const KIND_LABEL: Record<ViewerObjectKind, string> = {
+  WORK_SURFACE: '작업면',
+  OBSTACLE: '정적 객체',
+};
+/** 주어 꼴(조사 포함). */
+const KIND_SUBJECT: Record<ViewerObjectKind, string> = {
+  WORK_SURFACE: '작업면이',
+  OBSTACLE: '정적 객체가',
+};
 
 export interface EditSession {
   target: ViewerTarget;
@@ -75,10 +127,12 @@ export interface EditSession {
   refused: { reason: 'NOT_EDITABLE' | 'INVALID_GEOMETRY'; detail: string } | null;
 }
 
-/** 작업면 OBB 편집 세션(-188). 원본(base)은 바뀌지 않는다. */
+/** 작업면·정적 객체 OBB 편집 세션(-188·-274). 원본(base)은 바뀌지 않는다. */
 export interface ObjectEditSession {
   target: ViewerTarget;
   mode: ViewerMode;
+  /** WORK_SURFACE 등록 작업면 · OBSTACLE 등록 정적 객체(-274). 정책·결과 모양이 갈린다. */
+  objectKind: ViewerObjectKind;
   policy: EditPolicy;
   base: WorldObb;
   draft: WorldObb;
@@ -142,14 +196,54 @@ export function previewOf(session: EditSession): ViewerEditPreview {
 }
 
 export function objectPreviewOf(session: ObjectEditSession): ViewerObjectEditPreview {
-  return {
+  const common = {
     target: session.target,
     mode: session.mode,
     origin: session.origin,
-    before: workSurfaceJson(obbWorkSurface(session.base)),
-    draft: workSurfaceJson(obbWorkSurface(session.draft)),
     provenance: session.provenance,
-    saved: false,
+    saved: false as const,
+  };
+  return session.objectKind === 'OBSTACLE'
+    ? {
+        ...common,
+        objectKind: 'OBSTACLE',
+        before: obstacleJson(obbObstacle(session.base)),
+        draft: obstacleJson(obbObstacle(session.draft)),
+      }
+    : {
+        ...common,
+        objectKind: 'WORK_SURFACE',
+        before: workSurfaceJson(obbWorkSurface(session.base)),
+        draft: workSurfaceJson(obbWorkSurface(session.draft)),
+      };
+}
+
+/** 세션 원본을 그 종류의 계약 형상으로. CANCELLED 결과에 쓴다. */
+const objectBefore = (session: ObjectEditSession) =>
+  session.objectKind === 'OBSTACLE'
+    ? { objectKind: 'OBSTACLE' as const, before: obstacleJson(obbObstacle(session.base)) }
+    : {
+        objectKind: 'WORK_SURFACE' as const,
+        before: workSurfaceJson(obbWorkSurface(session.base)),
+      };
+
+/** 초안을 그 종류의 계약 형상·결과 항목으로. FINISHED 결과에 쓴다. */
+function objectAfter(session: ObjectEditSession) {
+  if (session.objectKind === 'OBSTACLE') {
+    const after = obstacleJson(obbObstacle(session.draft));
+    return {
+      objectKind: 'OBSTACLE' as const,
+      before: obstacleJson(obbObstacle(session.base)),
+      after,
+      afterItem: obstacleItem(session.target.id, after, session.source),
+    };
+  }
+  const after = workSurfaceJson(obbWorkSurface(session.draft));
+  return {
+    objectKind: 'WORK_SURFACE' as const,
+    before: workSurfaceJson(obbWorkSurface(session.base)),
+    after,
+    afterItem: workSurfaceItem(session.target.id, after, session.source),
   };
 }
 
@@ -217,7 +311,7 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
         target: objectSession.target,
         mode: objectSession.mode,
         origin: objectSession.origin,
-        before: workSurfaceJson(obbWorkSurface(objectSession.base)),
+        ...objectBefore(objectSession),
         reason,
         provenance: objectSession.provenance,
         saved: false,
@@ -261,7 +355,7 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
       return outcome;
     };
 
-    /** 작업면 OBB 편집 시작(-188). 구역 시작과 같은 순서로 검사한다. */
+    /** 작업면·정적 객체 OBB 편집 시작(-188·-274). 구역 시작과 같은 순서로 검사한다. */
     const beginObject = (target: ViewerTarget): ViewerEditCommandResult => {
       const { phase, mode } = viewer.getState();
       if (phase !== 'ready') return refuseObject(target, 'NOT_READY', '뷰어가 준비되지 않았다');
@@ -273,18 +367,22 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
         );
       }
       const state = data.getState();
-      const surface = state.workSurfaces.surfaces.find((s) => s.surfaceId === target.id);
-      if (state.workSurfaces.status !== 'READY' || !surface) {
-        return refuseObject(target, 'NOT_FOUND', '장면에 그 작업면이 없다');
+      const found = findEditableObject(state.workSurfaces, target.id);
+      if (state.workSurfaces.status !== 'READY' || !found) {
+        return refuseObject(target, 'NOT_FOUND', '장면에 그 작업면·정적 객체가 없다');
       }
-      const base = workSurfaceObb(surface);
+      const base = found.obb;
       if (!isValidShape({ kind: 'obb', ...base })) {
         return refuseObject(target, 'INVALID_GEOMETRY', '원본 형상이 유효하지 않다');
       }
       const current = get().objectSession;
       if (current && sameTarget(current.target, target)) return { ok: true };
       if (!viewer.getState().targets.has(targetKey(target))) {
-        return refuseObject(target, 'NOT_FOUND', '장면에 그 작업면이 등록되지 않았다');
+        return refuseObject(
+          target,
+          'NOT_FOUND',
+          `장면에 그 ${KIND_SUBJECT[found.objectKind]} 등록되지 않았다`,
+        );
       }
       if (current) cancelObject('REPLACED');
       if (get().session) cancel('REPLACED');
@@ -293,7 +391,8 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
         objectSession: {
           target,
           mode,
-          policy: WORK_SURFACE_OBB_POLICY,
+          objectKind: found.objectKind,
+          policy: KIND_POLICY[found.objectKind],
           base,
           draft: copyObb(base),
           settled: copyObb(base),
@@ -306,7 +405,7 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
             configVersion: null,
           },
           origin: 'REGISTERED',
-          source: surface.source,
+          source: found.source,
           dragging: null,
           refused: null,
         },
@@ -341,7 +440,7 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
       }
       const state = data.getState();
       if (
-        state.workSurfaces.surfaces.some((s) => s.surfaceId === target.id) ||
+        findEditableObject(state.workSurfaces, target.id) ||
         viewer.getState().targets.has(targetKey(target))
       ) {
         return refuseObject(target, 'INVALID_TARGET', '이미 장면에 있는 ID 다');
@@ -358,6 +457,7 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
         objectSession: {
           target,
           mode,
+          objectKind: 'WORK_SURFACE',
           policy: WORK_SURFACE_OBB_POLICY,
           base,
           draft: copyObb(base),
@@ -608,13 +708,7 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
           target: session.target,
           mode: session.mode,
           origin: session.origin,
-          before: workSurfaceJson(obbWorkSurface(session.base)),
-          after: workSurfaceJson(obbWorkSurface(session.draft)),
-          afterItem: workSurfaceItem(
-            session.target.id,
-            obbWorkSurface(session.draft),
-            session.source,
-          ),
+          ...objectAfter(session),
           changed: !sameObb(session.base, session.draft, 0),
           provenance: session.provenance,
           saved: false,
@@ -687,12 +781,13 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
         if (state.sourceId !== object.provenance.sourceId) {
           endObject('STALE_SOURCE', '입력 Source 가 바뀌었다');
         } else if (state.workSurfaces !== prev.workSurfaces) {
-          const surface = state.workSurfaces.surfaces.find((s) => s.surfaceId === object.target.id);
+          const found = findEditableObject(state.workSurfaces, object.target.id);
           if (object.origin === 'NEW') {
-            if (surface) endObject('STALE_SOURCE', '같은 ID 의 작업면이 들어왔다');
-          } else if (!surface) endObject('STALE_SOURCE', '원본 작업면이 사라졌다');
-          else if (!sameObb(workSurfaceObb(surface), object.base, 0)) {
-            endObject('STALE_SOURCE', '원본 작업면 형상이 바뀌었다');
+            if (found) endObject('STALE_SOURCE', '같은 ID 의 작업면이 들어왔다');
+          } else if (!found || found.objectKind !== object.objectKind) {
+            endObject('STALE_SOURCE', `원본 ${KIND_SUBJECT[object.objectKind]} 사라졌다`);
+          } else if (!sameObb(found.obb, object.base, 0)) {
+            endObject('STALE_SOURCE', `원본 ${KIND_LABEL[object.objectKind]} 형상이 바뀌었다`);
           }
         } else if (began !== null && scene !== null && scene !== began) {
           endObject('STALE_SOURCE', `Scene 버전이 바뀌었다(${began} → ${scene})`);

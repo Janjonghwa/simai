@@ -1,4 +1,9 @@
 import type { WorldObb } from '@/features/viewer3d/editing/editGeometry';
+import {
+  readStaticObjects,
+  type InvalidObstacle,
+  type ObstacleView,
+} from '@/features/viewer3d/surfaces/obstacleGeometry';
 import { worldPoint, type WorldPoint } from '@/features/viewer3d/worldCoordinates';
 
 // 등록 작업면(단상·책상 등) Operational Geometry 의 순수 계산(S15P31A101-188). 렌더러·React 와 떨어져 있어 시험한다.
@@ -10,6 +15,7 @@ import { worldPoint, type WorldPoint } from '@/features/viewer3d/worldCoordinate
 //   - top_height_m: 상판 높이(바닥 Z=0 기준 m, 0 보다 크다). OBB 는 바닥(Z=0)에서 상판까지다.
 // 바깥 묶음({ version?, work_surfaces: [...] })을 Viewer 에 넘기는 경로(BE -58 API·구성 묶음 버전)는 아직 정해지지 않았다.
 // 그래서 contract 표시는 OPERATIONAL_GEOMETRY_UNCONFIRMED 다.
+// 같은 묶음의 static_objects(등록 정적 객체 OBSTACLE, -274)도 함께 읽어 obstacles 에 싣는다(obstacleGeometry.ts).
 //
 // 이 형상은 안전 판단용 Operational Geometry 다. 3D 보기용 glTF(Visual Geometry)를 여기에 넣거나 대신 쓰지 않는다.
 // R2 위험 가장자리(인접 면과의 높이차)는 AI 가 판정한다. 여기서는 등록 OBB 윗면 둘레 전체를 그대로 보인다.
@@ -43,6 +49,10 @@ export interface WorkSurfaceSnapshot {
   surfaces: readonly WorkSurfaceView[];
   /** 형식이 틀려 뺀 항목과 이유. */
   invalid: readonly { surfaceId: string | null; reason: string }[];
+  /** 등록 정적 객체(OBSTACLE, -274). 같은 묶음의 static_objects 에서 읽는다. */
+  obstacles: readonly ObstacleView[];
+  /** 형식이 틀리거나 ID 가 겹쳐 뺀 정적 객체와 이유. */
+  invalidObstacles: readonly InvalidObstacle[];
   receivedAt: number | null;
   reason: string | null;
 }
@@ -53,6 +63,8 @@ export const NO_WORK_SURFACES: WorkSurfaceSnapshot = {
   geometryVersion: null,
   surfaces: [],
   invalid: [],
+  obstacles: [],
+  invalidObstacles: [],
   receivedAt: null,
   reason: null,
 };
@@ -132,10 +144,12 @@ export function readWorkSurface(item: unknown): { surface: WorkSurfaceView } | {
 }
 
 /**
- * 작업면 묶음({ version?, work_surfaces?: [...] })을 검사한다. AI work_surfaces_from_operational_geometry 와 같은 규칙이다.
+ * 작업면 묶음({ version?, work_surfaces?: [...], static_objects?: [...] })을 검사한다.
+ * 작업면은 AI work_surfaces_from_operational_geometry 와 같은 규칙이다.
  * - work_surfaces 가 없으면 작업면 0개, 배열이 아니면 묶음 전체 거부.
  * - 형식이 틀린 항목은 빼고 이유를 남긴다. 같은 surface_id 는 앞의 유효 항목만 쓰고 뒤 항목을 뺀다.
  *   (구성 묶음 검증 config.verify 는 중복 ID 묶음 자체를 거부하므로 Tier 0 에는 오지 않는다.)
+ * - static_objects 는 readStaticObjects 규칙(배열이 아니면 묶음 전체 거부, 항목은 이유와 함께 뺀다)이다.
  * READY 는 형상을 받아 검사했다는 뜻이다. 구성 묶음이 현장에 적용됐다는 증거가 아니다.
  */
 export function adaptWorkSurfaces(raw: unknown, receivedAt: number): WorkSurfaceSnapshot {
@@ -167,12 +181,18 @@ export function adaptWorkSurfaces(raw: unknown, receivedAt: number): WorkSurface
       surfaces.push(checked.surface);
     }
   }
+  const statics = readStaticObjects(raw, seen);
+  if ('reason' in statics) {
+    return { ...NO_WORK_SURFACES, status: 'REJECTED', receivedAt, reason: statics.reason };
+  }
   return {
     status: 'READY',
     contract: 'OPERATIONAL_GEOMETRY_UNCONFIRMED',
     geometryVersion: typeof version === 'string' && version !== '' ? version : null,
     surfaces,
     invalid,
+    obstacles: statics.obstacles,
+    invalidObstacles: statics.invalid,
     receivedAt,
     reason: null,
   };

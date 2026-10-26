@@ -1,6 +1,7 @@
 import { useSpatialData } from '@/features/viewer3d/data/SpatialDataProvider';
 import { LabelSprite } from '@/features/viewer3d/LabelSprite';
 import { Selectable } from '@/features/viewer3d/Selectable';
+import { ObstacleLayer } from '@/features/viewer3d/surfaces/ObstacleLayer';
 import {
   surfaceCorners,
   surfaceTopEdge,
@@ -19,6 +20,7 @@ import { useStore } from 'zustand';
 // 반투명 상자는 바닥(Z=0)부터 상판까지이고, 윗면 둘레(R2·R3 가 보는 가장자리, 명세 7.5·13.1)는 굵은 선으로 따로 그린다.
 // 선은 World 꼭짓점을 worldToThree 로 그대로 옮겨 그린다(상자 회전과 별개로 꼭짓점 좌표가 정확하다).
 // 보기용 glTF(Visual Geometry)는 여기서 쓰지 않는다. 위험 가장자리(높이차 기준 충족 구간) 판정은 AI 가 한다.
+// 같은 묶음의 등록 정적 객체(OBSTACLE, -274)는 ObstacleLayer 가 이 레이어 옆에 따로 그린다.
 
 const noRaycast = () => null;
 const pickPerson = (event: ThreeEvent<MouseEvent>) => personOnRay(event.intersections);
@@ -51,11 +53,14 @@ export function surfaceOutline(surface: WorkSurfaceView): {
 export function WorkSurfaceLayer() {
   const surfaces = useSpatialData((s) => s.workSurfaces.surfaces);
   return (
-    <group name="work-surface-layer">
-      {surfaces.map((surface) => (
-        <WorkSurfaceVolume key={surface.surfaceId} surface={surface} />
-      ))}
-    </group>
+    <>
+      <group name="work-surface-layer">
+        {surfaces.map((surface) => (
+          <WorkSurfaceVolume key={surface.surfaceId} surface={surface} />
+        ))}
+      </group>
+      <ObstacleLayer />
+    </>
   );
 }
 

@@ -5,7 +5,7 @@ import type {
   ZonesResult,
 } from '@/features/viewer3d/data/spatialSource';
 import {
-  DEMO_WORK_SURFACES,
+  DEMO_OPERATIONAL_GEOMETRY,
   scenarioTick,
   TICK_MS,
   type ScenarioKey,
@@ -171,8 +171,9 @@ export function createMockSource(options: MockSourceOptions): MockSpatialSource 
     subscribe(sink) {
       sinks.add(sink);
       sink.onConnectionChange(connection);
-      // 등록 작업면(-188)은 조회 API(BE -58)가 없어 구독마다 DEMO 묶음을 바로 넘긴다(같은 값이라 다시 받아도 그대로다).
-      sink.onWorkSurfaces?.({ ok: true, raw: copy(DEMO_WORK_SURFACES) }, now());
+      // 등록 작업면(-188)·정적 객체(-274)는 Viewer 로 넘기는 경로가 아직 없어 구독마다 DEMO 묶음을 바로 넘긴다
+      // (같은 값이라 다시 받아도 그대로다).
+      sink.onWorkSurfaces?.({ ok: true, raw: copy(DEMO_OPERATIONAL_GEOMETRY) }, now());
       if (!opened) {
         opened = true;
         setConnection({ state: 'OPEN', at: now(), reason: 'Mock 시작' });

@@ -1,3 +1,4 @@
+import type { ObstacleGeometry } from '@/features/viewer3d/surfaces/obstacleGeometry';
 import type { WorkSurfaceGeometry } from '@/features/viewer3d/surfaces/workSurfaceGeometry';
 import type { ViewerMode, ViewerTarget } from '@/features/viewer3d/types';
 
@@ -105,11 +106,19 @@ export type ViewerEditOverlayInput = ViewerEditOverlay | readonly ViewerEditOver
 // 구역 편집 값(ViewerEditPreview·ViewerEditResult)과 모양이 달라 따로 둔다. 구역 쪽 타입·콜백은 그대로다.
 // 형상은 계약 work_surface 필드와 1:1 이다(centerXy=center_xy, sizeXy=size_xy, yawRad=yaw_rad, topHeightM=top_height_m).
 // 저장·구성 묶음 적용·버전 확정은 FE -165·BE -58 이 한다. 여기 결과는 저장 요청에 쓸 값일 뿐이다(saved: false).
+// 등록 정적 객체(OBSTACLE, -274)도 같은 object 대상·같은 콜백으로 알린다. objectKind 로 형상 모양을 가른다.
+// 정적 객체 형상은 계약 obb 와 1:1 이다(center=obb.center 3D 중심, size=obb.size 전체 길이, yawRad=obb.yaw_rad).
 
 /** 작업면 형상(World m·rad). */
 export type ViewerWorkSurfaceGeometry = WorkSurfaceGeometry;
 
-/** REGISTERED 받은 등록 작업면을 고침 · NEW 3D 에서 새로 만듦(아직 어디에도 등록되지 않음). */
+/** 정적 객체 형상(World m·rad, -274). */
+export type ViewerObstacleGeometry = ObstacleGeometry;
+
+/** object 편집 대상 종류. 계약 static_object.kind 와 같은 값이다. */
+export type ViewerObjectKind = 'WORK_SURFACE' | 'OBSTACLE';
+
+/** REGISTERED 받은 등록 작업면·정적 객체를 고침 · NEW 3D 에서 새 작업면을 만듦(아직 어디에도 등록되지 않음). */
 export type ViewerObjectEditOrigin = 'REGISTERED' | 'NEW';
 
 /** 작업면 편집을 시작할 때 실제로 확인한 출처. 모르는 값은 null 이다. */
@@ -125,43 +134,65 @@ export interface ViewerObjectEditProvenance {
   configVersion: null;
 }
 
-export interface ViewerObjectEditPreview {
+interface ObjectEditPreviewBase {
   target: ViewerTarget;
   mode: ViewerMode;
   origin: ViewerObjectEditOrigin;
-  before: ViewerWorkSurfaceGeometry;
-  draft: ViewerWorkSurfaceGeometry;
+  provenance: ViewerObjectEditProvenance;
+  saved: false;
+}
+
+export type ViewerObjectEditPreview =
+  | (ObjectEditPreviewBase & {
+      objectKind: 'WORK_SURFACE';
+      before: ViewerWorkSurfaceGeometry;
+      draft: ViewerWorkSurfaceGeometry;
+    })
+  | (ObjectEditPreviewBase & {
+      objectKind: 'OBSTACLE';
+      before: ViewerObstacleGeometry;
+      draft: ViewerObstacleGeometry;
+    });
+
+interface ObjectEditFinishedBase {
+  status: 'FINISHED';
+  target: ViewerTarget;
+  mode: ViewerMode;
+  origin: ViewerObjectEditOrigin;
+  /**
+   * 계약 항목(snake_case). 작업면은 work_surface(surface_id·top_height_m·center_xy·size_xy·yaw_rad),
+   * 정적 객체는 static_objects 항목(object_id·kind·obb{center·size·yaw_rad})이다. 받은 원본 항목의 다른 키
+   * (top_height_sigma_m·name 등)는 그대로 실린다. 저장 요청 본문을 만들 때 쓴다. NEW 는 형상 필드만 있다.
+   */
+  afterItem: Record<string, unknown>;
+  changed: boolean;
+  provenance: ViewerObjectEditProvenance;
+  saved: false;
+}
+
+interface ObjectEditCancelledBase {
+  status: 'CANCELLED';
+  target: ViewerTarget;
+  mode: ViewerMode;
+  origin: ViewerObjectEditOrigin;
+  reason: ViewerEditCancelReason;
   provenance: ViewerObjectEditProvenance;
   saved: false;
 }
 
 export type ViewerObjectEditResult =
-  | {
-      status: 'FINISHED';
-      target: ViewerTarget;
-      mode: ViewerMode;
-      origin: ViewerObjectEditOrigin;
+  | (ObjectEditFinishedBase & {
+      objectKind: 'WORK_SURFACE';
       before: ViewerWorkSurfaceGeometry;
       after: ViewerWorkSurfaceGeometry;
-      /**
-       * 계약 work_surface 항목(snake_case: surface_id·top_height_m·center_xy·size_xy·yaw_rad). 받은 원본 항목의 다른 키
-       * (top_height_sigma_m·name 등)는 그대로 실린다. 저장 요청 본문을 만들 때 쓴다. NEW 는 형상 필드만 있다.
-       */
-      afterItem: Record<string, unknown>;
-      changed: boolean;
-      provenance: ViewerObjectEditProvenance;
-      saved: false;
-    }
-  | {
-      status: 'CANCELLED';
-      target: ViewerTarget;
-      mode: ViewerMode;
-      origin: ViewerObjectEditOrigin;
-      before: ViewerWorkSurfaceGeometry;
-      reason: ViewerEditCancelReason;
-      provenance: ViewerObjectEditProvenance;
-      saved: false;
-    }
+    })
+  | (ObjectEditFinishedBase & {
+      objectKind: 'OBSTACLE';
+      before: ViewerObstacleGeometry;
+      after: ViewerObstacleGeometry;
+    })
+  | (ObjectEditCancelledBase & { objectKind: 'WORK_SURFACE'; before: ViewerWorkSurfaceGeometry })
+  | (ObjectEditCancelledBase & { objectKind: 'OBSTACLE'; before: ViewerObstacleGeometry })
   | {
       status: 'REJECTED';
       target: ViewerTarget | null;
@@ -173,5 +204,8 @@ export type ViewerObjectEditResult =
 /**
  * 숫자로 고치는 작업면 값. centerX·centerY 중심(m) · width·depth 지역 축 전체 길이(m, 중심 고정) ·
  * topHeight 상판 높이(m, 바닥 고정) · yaw 수평 회전(rad, [-π, π]).
+ * 정적 객체(-274)는 centerZ 중심 높이(m, 크기 유지) · height 높이(m, 중심 고정)도 받는다. topHeight 는 윗면 높이(아랫면 고정)다.
+ * 작업면에서 centerZ·height 는 NOT_EDITABLE 이다(바닥에 놓인 형상).
  */
-export type ViewerObjectEditField = 'centerX' | 'centerY' | 'width' | 'depth' | 'topHeight' | 'yaw';
+export type ViewerObjectEditField =
+  'centerX' | 'centerY' | 'width' | 'depth' | 'topHeight' | 'yaw' | 'centerZ' | 'height';

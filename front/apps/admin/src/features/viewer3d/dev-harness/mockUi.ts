@@ -114,9 +114,12 @@ export function fixtureName(target: ViewerTarget): string | null {
   return list.find((item) => item.id === target.id)?.name ?? null;
 }
 
-/** 화면에 쓸 이름. Provider 의 사람(World ID)은 목업 목록에 없어 ID 로 부른다. */
+/**
+ * 화면에 쓸 이름. Provider 의 사람(World ID)은 목업 목록에 없어 ID 로 부른다.
+ * object 대상은 작업면(-188)과 정적 객체(-274)가 함께 쓰므로 둘을 묶어 '등록 객체'로 부른다.
+ */
 export function displayName(target: ViewerTarget): string | null {
-  const fallback = { person: '작업자', zone: '구역', object: '작업면' }[target.type];
+  const fallback = { person: '작업자', zone: '구역', object: '등록 객체' }[target.type];
   return fixtureName(target) ?? (fallback ? `${fallback} ${target.id}` : null);
 }
 

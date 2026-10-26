@@ -5,6 +5,7 @@ import type {
   ViewerEditResult,
   ViewerObjectEditPreview,
   ViewerObjectEditResult,
+  ViewerObstacleGeometry,
   ViewerWorkSurfaceGeometry,
 } from '@/features/viewer3d/editing/editTypes';
 import { VIEWER_MODES, type Viewer3DHandle, type ViewerTarget } from '@/features/viewer3d/types';
@@ -46,6 +47,14 @@ interface EditPanelProps {
 const fmtSurface = (s: ViewerWorkSurfaceGeometry) =>
   `center_xy [${s.centerXy.map(r3).join(', ')}] · size_xy [${s.sizeXy.map(r3).join(', ')}] · yaw_rad ${r3(s.yawRad)} · top_height_m ${r3(s.topHeightM)}`;
 
+/** 정적 객체 형상 한 줄(계약 obb 필드 이름). */
+const fmtObstacle = (o: ViewerObstacleGeometry) =>
+  `obb.center [${o.center.map(r3).join(', ')}] · obb.size [${o.size.map(r3).join(', ')}] · obb.yaw_rad ${r3(o.yawRad)}`;
+
+/** object 초안·결과 형상 한 줄. 종류에 맞는 계약 필드 이름으로 적는다. */
+const fmtGeometry = (geometry: ViewerWorkSurfaceGeometry | ViewerObstacleGeometry) =>
+  'centerXy' in geometry ? fmtSurface(geometry) : fmtObstacle(geometry);
+
 export function EditPanel({
   viewer,
   store,
@@ -57,7 +66,8 @@ export function EditPanel({
 }: EditPanelProps) {
   const zones = useStore(store, (s) => s.zones.zones);
   const surfaces = useStore(store, (s) => s.workSurfaces.surfaces);
-  const setField = (field: 'width' | 'topHeight' | 'yaw', value: number) =>
+  const obstacles = useStore(store, (s) => s.workSurfaces.obstacles);
+  const setField = (field: 'width' | 'topHeight' | 'yaw' | 'centerZ' | 'height', value: number) =>
     viewer.current?.updateObjectEditField?.({ field, value });
   const created = useRef(0);
   // 새 작업면 만들기 예시. ID·처음 형상은 FE 가 정한다(여기서는 빈 바닥 자리에 책상 크기로 둔다).
@@ -111,6 +121,16 @@ export function EditPanel({
         <button type="button" className="smk-chip" onClick={create}>
           새 작업면 만들기
         </button>
+        {obstacles.map((obstacle) => (
+          <button
+            key={obstacle.objectId}
+            type="button"
+            className="smk-chip"
+            onClick={() => viewer.current?.beginEdit({ type: 'object', id: obstacle.objectId })}
+          >
+            {obstacle.objectId} 편집
+          </button>
+        ))}
         <button
           type="button"
           className="smk-chip"
@@ -140,6 +160,25 @@ export function EditPanel({
         <button
           type="button"
           className="smk-chip"
+          disabled={objectPreview?.objectKind !== 'OBSTACLE'}
+          onClick={() =>
+            objectPreview?.objectKind === 'OBSTACLE' &&
+            setField('centerZ', objectPreview.draft.center[2] + 0.3)
+          }
+        >
+          정적 객체 Z +0.3m
+        </button>
+        <button
+          type="button"
+          className="smk-chip"
+          disabled={objectPreview?.objectKind !== 'OBSTACLE'}
+          onClick={() => setField('height', 1)}
+        >
+          정적 객체 높이 1m
+        </button>
+        <button
+          type="button"
+          className="smk-chip"
           disabled={!objectPreview}
           onClick={() => setField('yaw', 90)}
         >
@@ -150,14 +189,14 @@ export function EditPanel({
           className="smk-chip"
           onClick={() => viewer.current?.cancelObjectEdit?.()}
         >
-          작업면 취소
+          작업면·정적 객체 취소
         </button>
         <button
           type="button"
           className="smk-chip"
           onClick={() => viewer.current?.finishObjectEdit?.()}
         >
-          작업면 완료
+          작업면·정적 객체 완료
         </button>
       </div>
       <div className="smk-data-row">
@@ -189,22 +228,14 @@ export function EditPanel({
                 ? `CANCELLED(${result.reason}) · ${result.target.id} · 원본 ${fmt(result.before)}`
                 : `REJECTED(${result.reason}) · ${result.detail}`}
         </dd>
-        <dt>작업면 초안</dt>
+        <dt>object 초안</dt>
         <dd data-testid="object-edit-preview" data-editing={objectPreview ? '' : undefined}>
           {objectPreview
-            ? `${objectPreview.target.id} · ${objectPreview.mode} · ${fmtSurface(objectPreview.draft)}`
+            ? `${objectPreview.target.id} · ${objectPreview.objectKind} · ${objectPreview.mode} · ${fmtGeometry(objectPreview.draft)}`
             : '없음'}
         </dd>
-        <dt>작업면 결과</dt>
-        <dd data-testid="object-edit-result">
-          {!objectResult
-            ? '없음'
-            : objectResult.status === 'FINISHED'
-              ? `FINISHED(${objectResult.origin}) · ${objectResult.target.id} · 전 ${fmtSurface(objectResult.before)} → 후 ${fmtSurface(objectResult.after)} · saved=false`
-              : objectResult.status === 'CANCELLED'
-                ? `CANCELLED(${objectResult.reason}) · ${objectResult.target.id} · 원본 ${fmtSurface(objectResult.before)}`
-                : `REJECTED(${objectResult.reason}) · ${objectResult.detail}`}
-        </dd>
+        <dt>object 결과</dt>
+        <dd data-testid="object-edit-result">{objectResultText(objectResult)}</dd>
       </dl>
       {result && (
         <pre className="smk-mono" data-testid="edit-result-json">
@@ -218,6 +249,16 @@ export function EditPanel({
       )}
     </section>
   );
+}
+
+/** object 결과 한 줄. 종류마다 계약 필드 이름으로 전후 형상을 적는다. */
+function objectResultText(result: ViewerObjectEditResult | null) {
+  if (!result) return '없음';
+  if (result.status === 'REJECTED') return `REJECTED(${result.reason}) · ${result.detail}`;
+  if (result.status === 'CANCELLED') {
+    return `CANCELLED(${result.reason}) · ${result.target.id} · 원본 ${fmtGeometry(result.before)}`;
+  }
+  return `FINISHED(${result.origin}) · ${result.objectKind} · ${result.target.id} · 전 ${fmtGeometry(result.before)} → 후 ${fmtGeometry(result.after)} · saved=false`;
 }
 
 /**
