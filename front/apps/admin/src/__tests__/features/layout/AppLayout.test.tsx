@@ -1,4 +1,5 @@
 import { AppLayout } from '@/features/layout/AppLayout';
+import { useHealthSnapshot } from '@/features/layout/useHealthSnapshot';
 import { cleanup, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -21,6 +22,7 @@ vi.mock('@/features/layout/SpatialViewportHost', () => ({
   SpatialViewportHost: ({ children }: { children?: ReactNode }) => children,
 }));
 vi.mock('@/features/events/AlarmSoundLoop', () => ({ AlarmSoundLoop: () => null }));
+vi.mock('@/features/layout/useHealthSnapshot', () => ({ useHealthSnapshot: vi.fn() }));
 vi.mock('@/features/layout/FailureBand', () => ({
   FailureBand: () => (route.failure ? <div data-testid="failure" /> : null),
 }));
@@ -74,5 +76,12 @@ describe('AppLayout 알림 자리', () => {
     const box = notices();
     expect(box.childElementCount).toBe(0);
     expect(box.className).toContain('empty:hidden');
+  });
+});
+
+describe('AppLayout 연결 상태', () => {
+  it('연결이 열릴 때 지금 상태를 먼저 받는 훅(GET /api/health)을 부른다', () => {
+    render(<AppLayout />);
+    expect(vi.mocked(useHealthSnapshot)).toHaveBeenCalled();
   });
 });

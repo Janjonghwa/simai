@@ -1,4 +1,5 @@
 import type { EventsMock } from '@/mocks/events';
+import { readMockUser } from '@/mocks/mockUser';
 import {
   riskEventsBetween,
   viewerHealthAt,
@@ -6,6 +7,7 @@ import {
   type MockOutage,
 } from '@/mocks/realtimeScenario';
 import type { StompBroker } from '@/mocks/stompBroker';
+import { http, HttpResponse } from 'msw/http';
 
 // 개발 서버 mock 송출: world 10Hz, health 1Hz, 위험 이벤트는 40초 주기 시나리오(realtimeScenario).
 const WORLD_MS = 100;
@@ -13,7 +15,12 @@ const HEALTH_MS = 1000;
 const EVENTS_MS = 250;
 
 export interface RealtimeMock {
-  /** health 송출을 ms 동안 멈춘다(EC2 상태 메시지 끊김 흉내). */
+  /**
+   * GET /api/health(명세 12.6, 열람). /topic/health 와 같은 지금 상태(장애·Scene 불일치 흉내 포함)를 준다.
+   * 응답 형식은 FE 제안(viewer_health 메시지 그대로, features/layout/api.ts)을 따른다.
+   */
+  handlers: ReturnType<typeof http.get>[];
+  /** health 송출을 ms 동안 멈춘다(EC2 상태 메시지 끊김 흉내). REST 조회는 그대로 답한다. */
   pauseHealth(ms: number): void;
   /** 연결을 끊는다(서버 재시작 흉내). 클라이언트가 다시 연결한다. */
   drop(): void;
@@ -38,6 +45,7 @@ export function startRealtimeMock(
   let staleScene = false;
   // 연결이 없으면(로그인 전·로그아웃 뒤) 메시지를 만들지 않는다.
   const live = () => broker.connections > 0;
+  const healthAt = (t: number) => viewerHealthAt(t, { outage: fault, sceneMismatch: staleScene });
   const timers = [
     setInterval(() => {
       if (live() && !fault) {
@@ -46,12 +54,7 @@ export function startRealtimeMock(
     }, WORLD_MS),
     setInterval(() => {
       const t = now();
-      if (live() && t >= healthPausedUntil) {
-        broker.publish(
-          '/topic/health',
-          viewerHealthAt(t, { outage: fault, sceneMismatch: staleScene }),
-        );
-      }
+      if (live() && t >= healthPausedUntil) broker.publish('/topic/health', healthAt(t));
     }, HEALTH_MS),
     setInterval(() => {
       const t = now();
@@ -64,6 +67,19 @@ export function startRealtimeMock(
     }, EVENTS_MS),
   ];
   return {
+    handlers: [
+      http.get('*/api/health', ({ request }) => {
+        // 로그인한 계정이면 역할과 상관없이 본다. 만료된 실서버 토큰(혼합 모드)은 서버처럼 거절한다.
+        const user = readMockUser(request.headers.get('Authorization'));
+        if (!user || (user.expiresAt !== undefined && user.expiresAt <= now())) {
+          return HttpResponse.json(
+            { status: 401, detail: '로그인이 필요합니다', code: 'UNAUTHORIZED' },
+            { status: 401 },
+          );
+        }
+        return HttpResponse.json(healthAt(now()));
+      }),
+    ],
     pauseHealth: (ms) => {
       healthPausedUntil = now() + ms;
     },

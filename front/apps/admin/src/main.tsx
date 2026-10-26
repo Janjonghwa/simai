@@ -70,10 +70,15 @@ if (import.meta.env.DEV && env.VITE_API_MOCK) {
   });
   const events = createEventsMock({ broker });
   const clips = createClipsMock({ findEvent: events.find });
+  // GET /api/health 가 STOMP 흉내와 같은 상태를 주도록 실시간 mock 을 먼저 만든다.
+  const { handlers: realtimeHandlers, ...realtimeMock } = startRealtimeMock(broker, events);
   network.configure({
     // 실서버 경로의 mock 은 빼서 그 요청이 그대로 나가게 한다(처리되지 않은 요청은 bypass).
     handlers: [
-      ...withoutRealPaths([...handlers, ...events.handlers, ...clips.handlers], env.VITE_API_REAL),
+      ...withoutRealPaths(
+        [...handlers, ...events.handlers, ...clips.handlers, ...realtimeHandlers],
+        env.VITE_API_REAL,
+      ),
       broker.handler,
     ],
     onUnhandledFrame: 'bypass',
@@ -85,7 +90,7 @@ if (import.meta.env.DEV && env.VITE_API_MOCK) {
   // simaiMock.expireAuth()(다음 ACK 를 토큰 만료로 거절해 갱신 뒤 다시 보내기를 본다),
   // simaiMock.outage('tier0' | 'laptop' | 'remote' | null)(장애 띠), simaiMock.sceneMismatch(true)
   Object.assign(globalThis, {
-    simaiMock: { ...startRealtimeMock(broker, events), expireAuth: events.expireAuth },
+    simaiMock: { ...realtimeMock, expireAuth: events.expireAuth },
   });
 }
 

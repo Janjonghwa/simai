@@ -41,6 +41,8 @@ export interface RealtimeState {
   setPhase: (phase: LinkPhase) => void;
   opened: (at: number) => void;
   receiveHealth: (health: HealthSnapshot) => void;
+  /** GET /api/health 로 받은 값. 그 사이 /topic/health 로 더 새(as_of) 값을 받았으면 버린다. */
+  seedHealth: (health: HealthSnapshot) => void;
   /** 더 새 프레임만 받는다. 늦게 온 이전 프레임은 버린다. */
   receiveWorld: (world: WorldSnapshot) => void;
   reject: () => void;
@@ -66,6 +68,8 @@ export const useRealtimeStore = create<RealtimeState>()((set) => ({
   setPhase: (phase) => set({ phase }),
   opened: (at) => set({ phase: 'OPEN', openedAt: at, worldResync: true }),
   receiveHealth: (health) => set({ health }),
+  seedHealth: (health) =>
+    set((s) => (s.health && s.health.payload.as_of >= health.payload.as_of ? s : { health })),
   receiveWorld: (world) =>
     set((s) =>
       s.world &&
