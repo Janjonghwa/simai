@@ -108,7 +108,7 @@ EC2 내부: Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON �
 
 `evidence_ref` 키는 늘 싣는다. 판정 전이는 판정에 쓴 `world_state` 의 msg_id 이고, 판정이 아닌 전이(운영자 확인·재시작 복원·ID 교정·운영자 상향)는 근거를 모르면 null 이다(3.2 저널 계약).
 
-`event_escalate` 는 관리자가 VLM 상향 의견을 승인했을 때만 EC2 가 보낸다(거절은 EC2 `vlm_assessment` 에만 기록, 5.4). Tier 0 는 활성 이벤트이고 올릴 등급이 지금 등급보다 높을 때만 같은 `event_id` 의 UPDATED 전이(`escalation` 포함, `resumed` false)를 저널에 기록하고 `event_escalate_result` 로 답한다. 같은 `escalation_id` 는 다시 기록하지 않는다(DUPLICATE). 이 전이로 등급이 오르므로 3.10 의 상향 재경보를 따른다.
+`event_escalate` 는 관리자가 VLM 상향 의견을 승인했을 때만 EC2 가 보낸다(거절은 EC2 `vlm_assessment` 에만 기록, 5.4). Tier 0 는 활성 이벤트이고 올릴 등급이 지금 등급보다 높을 때만 같은 `event_id` 의 UPDATED 전이(`escalation` 포함, `resumed` false)를 저널에 기록하고 `event_escalate_result` 로 답한다. 같은 `escalation_id` 는 다시 기록하지 않는다(DUPLICATE). 이 전이로 등급이 오르므로 3.10 의 상향 재경보를 따른다. 올린 등급은 관측 해소까지 바닥값이다(5.4). Tier 0 는 모든 `risk_event_transition` 을 2.1.0 으로 보낸다.
 
 ## 12.4 I2·I3 주요 메시지
 
@@ -144,20 +144,21 @@ EC2 내부: Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON �
 - 연장·제출: 워커는 실행 중 `job_heartbeat` 로 대여를 연장하고, 결과·실패를 `job_callback` 으로 제출한다. 응답은 `job_lease_status`(ACTIVE·ACCEPTED·DUPLICATE·REJECTED)다. 이미 반영한 대여(`lease_id`)의 재제출은 대여가 만료된 뒤라도 처음 반영한 것을 유지하고 DUPLICATE 로 답한다(만료 검사보다 먼저 본다).
 - 만료·재할당: 하트비트도 결과도 없이 대여가 만료되면 EC2 는 시도 횟수 안에서 같은 작업을 새 대여로 다시 내준다. 아직 반영한 적 없는 만료·재할당 대여의 하트비트·제출은 거부(REJECTED)하고 늦은 결과는 버린다.
 - 반납: Tier 0 우선(3.2: 지연 초과로 hold 상한까지 시작하지 못함, LIVE 관제 중 오프라인·배치 EXP 유형(I5 배치 `hmr_*` 포함, I6 상시 아바타 스트림 루프는 3.2 지연 감시 예외), 도는 중 LIVE 시작으로 멈춤) 때문에 돌려주는 작업은 `job_callback` FAILED 에 `error.retryable: true`·`consume_attempt: false` 를 싣는다. EC2 는 시도 횟수를 쓰지 않고 같은 attempt·새 대여로 다시 내준다(마지막 시도도 FAILED 로 끝내지 않음). 처리기 실패·입력 실패·시간 초과는 반납이 아니고 시도를 쓴다(`job_callback` 2.1.0). 그래서 `job_request` 3.0.0(메이저)부터 `attempt` 는 반납을 세지 않는 시도 번호, `max_attempts` 는 최대 시도 수이고, 같은 `attempt` 가 여러 대여에 되풀이될 수 있다(2.x 는 대여 순번·최대 대여 횟수). 워커는 3.x 가 아닌 `job_request` 를 받지 않는다.
+- 객체 저장소: 작업 입력에 있는 객체(프레임·보정 문서 등)를 받거나 결과를 올릴 때 워커는 대여에 묶인 서명 API `POST /api/worker/jobs/{job_id}/objects/sign`(워커 토큰, `lease_id`·`op` GET|PUT)으로 임시 서명 주소를 받는다. GET 은 그 작업 입력에 있는 주소만, PUT 키는 EC2 가 그 작업 전용으로 정한다(14장).
 - `job_request`·`job_callback` 은 2.0.0(메이저)에서 콜백 주소와 HMAC 서명 필드를 없앴다. 경로는 기본안이며 확정본은 서버 OpenAPI 문서다.
 
 | `job_type` | 입력 | 출력 |
 |---|---|---|
 | `vlm_rationale` | 이벤트 프레임 주소, 구조화 상태 | 근거 문장, 상향 의견 |
-| `tbm_report` | 보고서 종류 `report_kind`(TBM·DAILY, 없으면 TBM), 규칙 계산 결과(EC2 Risk Engine PLANNED 결과), EC2 pgvector 로 검색한 조항 ID·본문 | 보고서 본문(분석 워커가 외부 LLM API 호출, 텍스트만), 인용 조항 ID(입력에 담긴 조항 ID 만) |
+| `tbm_report` | `tbm_report.schema.json` 입력(`job_request` 3.3.0): 보고서 종류 `report_kind`(TBM·DAILY)·보고서 ID·현장·날짜, TBM 은 PLANNED 계산 결과(`risk_plan_result` 의 위험 항목·위치), DAILY 는 그날 이벤트 요약(사람 필드 없음), EC2 pgvector 로 검색한 조항 `clauses[]`(ID·본문). 텍스트만 | 결과(`job_callback` 2.3.0): 섹션·문단별 본문과 인용 조항 ID(입력에 담긴 조항 ID 만), 입력 등급 그대로의 계산 근거 표, 인용 목록, 생성 모델·프롬프트 버전·시도 수(분석 워커가 외부 LLM 호출, 텍스트만) |
 | `incident_summary` | 이벤트, 이벤트 전후 20초 클립 객체 키(`media_clip`), 얼굴 처리 `face_policy`, 구조화 상태 | 요약 문장(상향 의견 없음). 우선순위 REPORT |
-| `bev_floorplan` | 보정 버전, 카메라 프레임 주소(정적 3D 가 있으면 Scene 버전) | BEV 평면도 이미지 주소(보조 화면, 4.1). 우선순위 BACKGROUND |
+| `bev_floorplan` | `bev_floorplan.schema.json` 입력(`job_request` 3.2.0): 보정 버전·보정 문서 주소와 해시, 프레임 출처, 카메라마다 사람 없는 프레임 한 장(주소·촬영 시각), 선택 Scene 버전 | BEV 평면도 이미지·메타데이터 주소, 픽셀 ↔ World 대응, 방 외곽, `input_provenance`(보조 화면, 안전 판단에 쓰지 않음, 4.1, `job_callback` 2.2.0). 우선순위 BACKGROUND |
 | `static_reconstruct` | 카메라 프레임 주소, 보정 버전 | glTF 주소, 품질 지표 |
 | `calibration_ba` | 2D 관측 묶음(Tier 0 저장 위치), 초기 보정 | 보정 후보 |
 | `hmr_refine` (시연 범위·EXP-02) | LIVE 관제 중에는 I5 대여 작업이 아니라 분석 워커의 상시 스트림 루프(Tier 0 공유 메모리 입력, 3.2 지연 감시 적용)로 돌며, 출력을 I5 콜백이 아닌 I6 아바타 스트림(`avatar_pose_batch`·`avatar_asset`)으로 보낸다. I5 배치 대여는 관제 외 오프라인 재처리·실험에만 쓰며 LIVE 중에는 받지 않는다(오프라인 산출물은 `experiments/human_mesh_output`) | I6 `avatar_pose_batch`·`avatar_asset` (오프라인 배치는 MHR 메시·포즈, 관절 출처, 품질 메타데이터) |
 | `hmr_appearance_update` (시연 범위·EXP-02 2단계) | 동일 World ID의 연속 관측 샘플, 이전 시각 자산(I5 배치 작업은 LIVE 중 받지 않으며, 스트림 중 갱신된 자산은 I6 `avatar_asset` 과 객체 업로드로 알림) | 신규 텍스처/외형 버전(`appearance_version`), 표면 출처 지도·비율(`surface_source`·`face_ratios`), 아티팩트 참조 |
 
-VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커가 VLM 호출 직전에 `face_policy` 대로 얼굴 영역을 흐린다(5.4). 외부 LLM 호출은 분석 워커의 `tbm_report` 작업 안에서만 한다(API 키는 Pod `.env`, 14장). `bev_floorplan` 은 CALIBRATED 가 되거나 보정 버전이 바뀌면 EC2 가 등록한다.
+VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커가 VLM 호출 직전에 `face_policy` 대로 얼굴 영역을 흐린다(5.4). 외부 LLM 호출은 분석 워커의 `tbm_report` 작업 안에서만 한다(SSAFY GMS 경유, 설정 `SIMAI_LLM_BASE_URL`·`SIMAI_LLM_MODEL`·`SIMAI_LLM_API_KEY`·`SIMAI_LLM_TIMEOUT_S` 는 Pod `.env`, 14장). `tbm_report` 입출력은 계약 묶음 6.3.0 이다. `bev_floorplan` 은 CALIBRATED 가 되거나 보정 버전이 바뀌면 EC2 가 등록한다.
 
 작업은 시간 제한(`timeout_ms`)을 두고, 넘기면 TIMED_OUT 으로 끝내며 다시 내주지 않는다. 분석 워커 실패는 VLM·정적 3D·보고서에만 영향을 준다. Tier 0 서비스 실패는 실시간 관측·World XYZ·위험 판정을 멈추고 UNSAFE_UNKNOWN이 되며, Tier 0와 EC2 사이 연결만 실패하면 판정과 노트북 경보는 유지되고 원격 전달만 지연된다(6.5).
 

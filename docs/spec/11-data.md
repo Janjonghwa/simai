@@ -7,7 +7,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 - 이미지는 `timescale/timescaledb-ha` 의 -all 태그를 쓴다(TimescaleDB·PostGIS 포함).
 - `risk_event`는 일반 테이블로 둔다. `notification`이 `risk_event(event_id, source)`를 복합 FK 로 참조해야 하기 때문이다(11.4).
 - `world_track_state`, `skeleton_3d`, `system_metric`, `system_health`, `device_heartbeat` 는 hypertable 로 만들고 압축과 보관 정책을 건다(확장: `channel_state`, `watch_feature`, `ppe_state`). 다른 테이블은 hypertable 을 외래 키로 참조하지 않고, hypertable 의 버전 ID 는 논리 참조로만 둔다.
-- RAG 색인은 같은 PostgreSQL 의 pgvector 다. 임베딩은 BAAI/bge-m3 dense 1024차원(`float32`, L2 정규화, cosine)이고, 문서와 질문에 같은 모델 revision·설정을 쓴다. revision 은 운영 색인을 만들기 전에 고정한다.
+- RAG 색인은 같은 PostgreSQL 의 pgvector 다. 임베딩은 BAAI/bge-m3 dense 1024차원(`float32`, L2 정규화, cosine)이고, 문서와 질문에 같은 모델 revision·설정을 쓴다. revision 은 `5617a9f61b028005a4858fdac845db406aefb181` 로 고정했고(CLS 풀링 + L2 정규화, CPU fp32), 조항과 TBM 질문 템플릿은 미리 임베딩해 시드로 넣는다.
 - 컬럼·키·제약은 ERD(구현 설계 문서)와 Flyway 마이그레이션이 정본이고, 이 장은 테이블과 원칙을 적는다.
 - PostGIS 는 저장·조회에만 쓴다. 구역 판정 계산은 Risk Engine 한 곳에서만 한다(3.2).
 
@@ -22,7 +22,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `calibration_version` | 카메라별 K·왜곡·R·t·높이, 재투영 오차, 스케일 근거, 상태 |
 | `scene_version` | 정적 3D 자산 주소, 사용한 보정 버전, 상태 |
 | `zone` | 다각형 + 높이 범위, 판정 유형(GROUND_FOOTPRINT/VOLUME_3D), 유형, 심각도, 요구 조건, 유효 시작·종료 |
-| `rule_version` | 규칙 ID, 임계값 세트, 적용 기간(시험 프로파일 포함, 7.4). 값은 AI 규칙 등록부에서 뽑으며 같은 버전의 값은 바꾸지 않는다(첫 운영 배포 전 예외, 11.4-1) |
+| `rule_version` | 규칙 ID, 임계값 세트, 적용 기간(시험 프로파일 포함, 7.4). 값은 AI 규칙 등록부에서 뽑으며 같은 버전의 값은 바꾸지 않는다(첫 운영 배포 전 예외, 11.4-1). 근거 조항(`legal_basis`)은 비어 있으면 시드가 채우고, 다른 값이 있으면 첫 운영 배포 전에는 갱신하고 뒤에는 마이그레이션이 멈춘다(7.1) |
 | `equipment_asset` | GLB 주소, 반경·형상 파라미터(확장, 부록 C) |
 | `layout_plan` | 가상 레이아웃(개구부·장비 주차 구역은 구역, 가설 비계는 작업면)·계획 궤적(F-02·F-01), 출처 PLANNED. 계획 작업 위치는 선택이다: 관리자가 주면 그 위치만 쓰고, 없으면(빈 목록 포함) Risk Engine 컨테이너가 작업면·구역에서 만든다(8.3) |
 | `config_bundle` | 구역·규칙·보정·형상(등록 정적 객체·작업면 OBB) 버전 묶음, 해시, 발행 시각, 현장 적용 시각(RunPod Tier 0 ACK) |
@@ -67,7 +67,8 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `push_subscription` | Web Push 구독 |
 | `test_push` | 시험 푸시(RiskEvent 아님, `notification` 에 넣지 않음) |
 | `push_receipt` | Service Worker 수신 확인(실제 알림·시험 푸시 중 하나) |
-| `rag_clause` | 안전 수칙 조항 본문·임베딩(bge-m3 1024차원)·모델 revision |
+| `rag_clause` | 안전 수칙 조항 본문·임베딩(bge-m3 1024차원)·모델 revision. 조 단위(1,000자 넘는 조만 항·호 경계로 나눈 청크), ID `산업안전보건기준규칙 제N조[#k]`, 법령 판(MST) |
+| `rag_query_template` | TBM 질문 템플릿과 미리 계산한 임베딩(조항과 같은 모델·revision). M3 는 자유 문장 질의를 임베딩하지 않는다 |
 
 PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evaluation_run`(계산 실행, 기준 구성, Risk Engine 라이브러리 버전, 판정에 쓴 계획 작업 위치 목록과 위치마다 출처 REQUESTED·GENERATED), `sim.risk_result`(위험 항목, 실제 알림 채널로 가지 않음). 위치 목록은 EC2 가 컨테이너 결과(`risk_plan_result.positions`)를 그대로 저장한다. 컨테이너가 만든 위치는 다시 계산하면 달라질 수 있으므로 결과와 함께 둔다. 확장 테이블(`sim.trajectory_plan` 등)은 부록 C 에 있다.
 
@@ -105,7 +106,7 @@ PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evalua
 
 - 자동 삭제는 EC2 클립 삭제 작업, TimescaleDB 보관 정책, Tier 0 저장 위치 정리 작업으로 구현한다. 클립 삭제 작업은 `delete_after` 가 지났고 보존 표시가 없는 클립의 객체를 지우고 `deleted_at` 을 남긴다. 객체 저장소 수명 주기 규칙은 DB 의 보존 표시를 모르므로 클립에 쓰지 않는다.
 - 촬영·외부 클라우드(GPU 실행 사이트·EC2) 전송·이벤트 클립 보관(얼굴 흐림 없이 14일 보관, CRITICAL 이벤트 연결 클립은 보존 표시로 프로젝트 발표 후 30일 안 파기까지 유지, 열람은 권한자로 제한하고 조회 기록 유지)·시연 및 발표 자료 활용은 모두 기관(SSAFY) 허가를 기준으로 하며, 참여자 개별 동의서나 비참여자 동의 제한은 두지 않는다(16장).
-- 외부 LLM API 에는 계속 텍스트(규칙 계산 결과·법령 조항·이벤트 요약)만 보내고 영상·이미지·얼굴·실명은 보내지 않는다(5.4). AWS 는 서울 리전이다.
+- 외부 LLM 에는 SSAFY GMS 를 거쳐 OpenAI(국외)로 텍스트(규칙 계산 결과·법령 조항·이벤트 요약)만 보내고 영상·이미지·얼굴·실명은 보내지 않는다(5.4). AWS 는 서울 리전이다.
 - 전송 구간은 모두 암호화한다(14장).
 
 ## 11.6 계정·기기·분석 작업
