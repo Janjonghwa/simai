@@ -1,20 +1,35 @@
 import { useSpatialViewport, useZoneEditor } from '@/features/layout/SpatialViewportHost';
 import type { ViewerEditBox } from '@/features/viewer3d';
-import type { ZoneBox } from '@/features/zones/types';
+import { ZONE_TYPES, type ZoneBox } from '@/features/zones/types';
+import { APPLY_LABEL, publishErrorText, useConfigApply } from '@/features/zones/useConfigApply';
+import { saveErrorText, useZoneSave } from '@/features/zones/useZoneSave';
+import { ZoneAttributesForm } from '@/features/zones/ZoneAttributesForm';
+import { changedFieldDeltas, formatMeters, sameEditBox } from '@/features/zones/zoneEditor';
 import {
-  changedFieldDeltas,
-  formatMeters,
-  sameEditBox,
-  SERVER_SAVE_DISABLED_REASON,
-} from '@/features/zones/zoneEditor';
+  formErrors,
+  formOf,
+  newZoneBody,
+  patchOf,
+  sameForm,
+  ZONE_TYPE_LABEL,
+  type ZoneForm,
+  type ZonePatch,
+} from '@/features/zones/zoneForm';
 import { ZoneNumericFields } from '@/features/zones/ZoneNumericFields';
 import { Button } from '@simai/ui/components/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@simai/ui/components/dropdown-menu';
 import { Input } from '@simai/ui/components/input';
 import {
   ChevronDown,
   ChevronUp,
   FolderSearch,
   Play,
+  Plus,
   RotateCcw,
   Save,
   SlidersHorizontal,
@@ -27,6 +42,19 @@ function boxOfZone(zone: ZoneBox): ViewerEditBox {
     min: [zone.min[0], zone.min[1], zone.min[2]],
     max: [zone.max[0], zone.max[1], zone.max[2]],
   };
+}
+
+/** 고친 칸. until 은 저장해서 생긴 버전이다. 그 버전이 목록에 들어오면 버린다(저장 직후 옛 값이 비치지 않게 한다). */
+interface FormEdit {
+  patch: ZonePatch;
+  until?: number;
+}
+
+function withoutEdit(edits: Record<string, FormEdit>, zoneId: string) {
+  if (!(zoneId in edits)) return edits;
+  const next = { ...edits };
+  delete next[zoneId];
+  return next;
 }
 
 function CurrentBoxSummary({
@@ -131,13 +159,14 @@ export function ZonesPage({
 } = {}) {
   const viewport = useSpatialViewport()!;
   const editor = useZoneEditor()!;
-  const { selectedZoneId, zones, zonesFailed, selectTarget } = viewport;
+  const { selectedZoneId, zones, zonesRaw, zonesFailed, selectTarget } = viewport;
   const {
     canEditZones,
     editPreview,
     editSessionId,
     localDrafts,
     editNotice,
+    setEditNotice,
     requestZoneEdit,
     finishZoneEdit,
     cancelZoneEdit,
@@ -151,7 +180,12 @@ export function ZonesPage({
   const [numericOpen, setNumericOpen] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
   const [discardAllConfirm, setDiscardAllConfirm] = useState(false);
+  // 고치는 중인 속성(바꾼 칸만). 구역별로 두어 형상 편집으로 넘어갔다 와도 남는다. 나머지 칸은 늘 받은 최신 버전이라
+  // 409 로 최신 버전을 다시 받으면 다른 사람이 바꾼 칸이 보이고, 다시 저장해도 덮지 않는다.
+  const [edits, setEdits] = useState<Record<string, FormEdit>>({});
   const consumedSearchRef = useRef<string | null>(null);
+  const { save, create } = useZoneSave();
+  const apply = useConfigApply(zones);
 
   const selectedZone = useMemo(
     () => (selectedZoneId ? (zones.find((z) => z.zoneId === selectedZoneId) ?? null) : null),
@@ -224,6 +258,94 @@ export function ZonesPage({
     return false;
   }, [isEditingSelected, editPreview, keptDraftForSelected]);
 
+  const savedForm = useMemo(() => (selectedZone ? formOf(selectedZone) : null), [selectedZone]);
+  const edit = selectedZone ? edits[selectedZone.zoneId] : undefined;
+  const livePatch =
+    edit && (edit.until === undefined || selectedZone!.version < edit.until) ? edit.patch : {};
+  const form = savedForm ? { ...savedForm, ...livePatch } : null;
+  const formDirty = form !== null && savedForm !== null && !sameForm(form, savedForm);
+  const errors =
+    form && savedForm && selectedZone
+      ? formErrors(form, { saved: savedForm, hasHeight: selectedZone.zRange !== null })
+      : {};
+  const canSave =
+    canEditZones &&
+    (hasUnsavedChange || formDirty) &&
+    form !== null &&
+    Object.keys(errors).length === 0 &&
+    !save.isPending;
+
+  const setForm = (next: ZoneForm) => {
+    if (selectedZone && savedForm)
+      setEdits((prev) => ({ ...prev, [selectedZone.zoneId]: { patch: patchOf(savedForm, next) } }));
+  };
+
+  // isPending 은 다음 턴에 바뀌어, 같은 턴에 두 번 눌리면 두 번 보낸다. 보내는 중인 요청은 여기서 바로 막는다.
+  const sending = useRef(new Set<'save' | 'create' | 'publish'>());
+  const begin = (key: 'save' | 'create' | 'publish') => {
+    if (sending.current.has(key)) return null;
+    sending.current.add(key);
+    return () => sending.current.delete(key);
+  };
+
+  // 형상을 고치는 중이면 먼저 편집을 끝내고 그 결과를 함께 저장한다. 속성만 고쳤으면 받은 형상을 그대로 보낸다.
+  const handleSave = () => {
+    if (!selectedZone || !form || !canSave || sending.current.has('save')) return;
+    let box = keptDraftForSelected?.after ?? null;
+    if (isEditingSelected) {
+      const result = finishZoneEdit();
+      if (result?.status !== 'FINISHED') return;
+      box = result.changed ? result.after : null;
+    }
+    const zone = selectedZone;
+    const done = begin('save');
+    if (!done) return;
+    save.mutate(
+      { zone, form, box },
+      {
+        onSettled: done,
+        onSuccess: (saved) => {
+          setEdits((prev) => {
+            const done = prev[zone.zoneId];
+            return done ? { ...prev, [zone.zoneId]: { ...done, until: saved.zone_version } } : prev;
+          });
+          setEditNotice({
+            tone: 'neutral',
+            text: `저장했습니다 (${saved.zone_id} v${saved.zone_version}).`,
+          });
+        },
+        onError: (error) => setEditNotice({ tone: 'warning', text: saveErrorText(error) }),
+      },
+    );
+  };
+
+  const handleRestore = () => {
+    if (!selectedZone) return;
+    if (keptDraftForSelected) discardLocalDraft(selectedZone.zoneId);
+    setEdits((prev) => withoutEdit(prev, selectedZone.zoneId));
+  };
+
+  // 저장한 구역은 구성 묶음을 발행해야 현장(Tier 0)에 간다(명세 3.2). 결과는 최근 묶음 목록으로 안다(useConfigApply).
+  const handlePublish = () => {
+    const done = begin('publish');
+    if (!done) return;
+    apply.publish.mutate(undefined, {
+      onSettled: done,
+      onError: (error) => setEditNotice({ tone: 'warning', text: publishErrorText(error) }),
+    });
+  };
+
+  // 새 구역은 고른 유형의 기본 상자로 먼저 만들고(v1) 바로 형상 편집을 시작한다. 현장에는 발행해야 간다.
+  const handleCreate = (zoneType: string) => {
+    const done = begin('create');
+    if (!done) return;
+    create.mutate(newZoneBody(zones, zoneType), {
+      onSettled: done,
+      onSuccess: (zone) => requestZoneEdit(zone.zone_id, { focus: true }),
+      onError: (error) => setEditNotice({ tone: 'warning', text: saveErrorText(error) }),
+    });
+  };
+
   return (
     <section
       aria-label="구역 편집 도구"
@@ -277,7 +399,7 @@ export function ZonesPage({
               ? draftList.length > 0
                 ? `미저장 ${draftList.length}건`
                 : '구역 미선택'
-              : hasUnsavedChange
+              : hasUnsavedChange || formDirty
                 ? '미저장 변경'
                 : '변경 없음'}
           </span>
@@ -285,16 +407,81 @@ export function ZonesPage({
             <span className="text-muted-foreground">전체 미저장 {draftList.length}건</span>
           )}
         </div>
-        <Button
-          size="sm"
-          variant="secondary"
-          aria-expanded={pickerOpen}
-          onClick={() => setPickerOpen((prev) => !prev)}
-          className="shrink-0 whitespace-nowrap"
-        >
-          <FolderSearch className="size-3.5" aria-hidden />
-          구역 목록 ({zones.length})
-        </Button>
+        <div className="flex shrink-0 gap-1.5">
+          {canEditZones && (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                disabled={create.isPending || !zonesRaw}
+                render={<Button size="sm" variant="secondary" className="whitespace-nowrap" />}
+              >
+                <Plus className="size-3.5" aria-hidden />새 구역
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {ZONE_TYPES.map((type) => (
+                  <DropdownMenuItem key={type} onClick={() => handleCreate(type)}>
+                    {ZONE_TYPE_LABEL[type]}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+          <Button
+            size="sm"
+            variant="secondary"
+            aria-expanded={pickerOpen}
+            onClick={() => setPickerOpen((prev) => !prev)}
+            className="whitespace-nowrap"
+          >
+            <FolderSearch className="size-3.5" aria-hidden />
+            구역 목록 ({zones.length})
+          </Button>
+        </div>
+      </div>
+
+      {/* 현장 적용(명세 FR-17): 구성 묶음 버전과 Tier 0 적용 상태, 발행하지 않은 저장 건수 */}
+      <div
+        role="group"
+        aria-label="현장 적용"
+        className="flex items-center justify-between gap-2 rounded-[10px] bg-surface-2 px-2.5 py-1.5 text-xs"
+      >
+        {/* 적용 대기 → 현장 적용됨 변화를 화면 읽기 프로그램도 알린다. */}
+        <span aria-live="polite" className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+          <span className="text-muted-foreground">구성</span>
+          {apply.latest ? (
+            <>
+              <span className="font-mono font-semibold text-foreground">
+                {apply.latest.config_version}
+              </span>
+              <span className="font-medium text-foreground">
+                {APPLY_LABEL[apply.latest.status]}
+              </span>
+              {/* 거부·불일치면 Tier 0 가 계속 쓰는 묶음을 함께 보인다. */}
+              {apply.latest.status !== 'PENDING' &&
+                apply.latest.status !== 'APPLIED' &&
+                apply.latest.last_ack?.active_config_version && (
+                  <span className="text-muted-foreground">
+                    · 현장 {apply.latest.last_ack.active_config_version}
+                  </span>
+                )}
+            </>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          )}
+          {apply.unpublished && apply.unpublished.size > 0 && (
+            <span className="text-muted-foreground">· 발행 전 {apply.unpublished.size}건</span>
+          )}
+        </span>
+        {canEditZones && (
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={apply.publish.isPending || !apply.canPublish}
+            onClick={handlePublish}
+            className="shrink-0 whitespace-nowrap"
+          >
+            현장에 적용
+          </Button>
+        )}
       </div>
 
       {/* 2단: 미선택 안내 또는 선택된 구역 식별 헤더 (전체 폭 사용으로 줄바꿈 깨짐 방지) */}
@@ -310,6 +497,10 @@ export function ZonesPage({
           </span>
           <span className="min-w-0 truncate text-xs font-medium text-foreground">
             {selectedZone.name}
+          </span>
+          <span className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground">
+            v{selectedZone.version}
+            {apply.unpublished?.has(selectedZone.zoneId) && ' · 발행 전'}
           </span>
         </div>
       ) : (
@@ -375,6 +566,11 @@ export function ZonesPage({
                         미저장 미리보기
                       </span>
                     )}
+                    {apply.unpublished?.has(zone.zoneId) && (
+                      <span className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        발행 전
+                      </span>
+                    )}
                   </span>
                 </button>
               );
@@ -421,7 +617,7 @@ export function ZonesPage({
       )}
 
       {/* 구역 선택 후 · 편집 시작 전 (또는 미저장 미리보기 확인 상태) */}
-      {selectedZone && !isEditingSelected && (
+      {selectedZone && !isEditingSelected && form && (
         <div className="flex flex-col gap-2">
           <CurrentBoxSummary
             box={keptDraftForSelected ? keptDraftForSelected.after : boxOfZone(selectedZone)}
@@ -430,50 +626,50 @@ export function ZonesPage({
             onToggleCompare={() => setCompareOpen((prev) => !prev)}
           />
 
+          <ZoneAttributesForm
+            form={form}
+            errors={errors}
+            onChange={setForm}
+            readOnly={!canEditZones}
+            disabled={save.isPending}
+          />
+
           {/* 명세 14장: 구역 수정은 관리자만 한다. 다른 역할에는 편집 영역을 그리지 않는다. */}
-          {!canEditZones ? null : keptDraftForSelected ? (
-            <>
-              <div className="flex flex-col gap-1.5">
-                <div className="grid grid-cols-2 gap-1.5">
-                  <Button size="sm" onClick={handleStartEdit} className="w-full">
-                    <Play className="size-3.5" aria-hidden />
-                    계속 편집
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => discardLocalDraft(selectedZone.zoneId)}
-                    className="w-full"
-                  >
-                    <RotateCcw className="size-3.5" aria-hidden />
-                    원본 복원
+          {canEditZones && (
+            <div className="flex flex-col gap-1.5">
+              {keptDraftForSelected ? (
+                <Button size="sm" onClick={handleStartEdit} className="w-full">
+                  <Play className="size-3.5" aria-hidden />
+                  계속 편집
+                </Button>
+              ) : (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    {selectedZone.min[2] > 0
+                      ? `공중 구역 (하단 ${formatMeters(selectedZone.min[2])}m)`
+                      : '바닥 구역 (하단 0.00m)'}
+                  </span>
+                  <Button size="sm" onClick={handleStartEdit}>
+                    구역 수정
                   </Button>
                 </div>
+              )}
+              <div className="grid grid-cols-2 gap-1.5">
+                <Button size="sm" disabled={!canSave} onClick={handleSave} className="w-full">
+                  <Save className="size-3.5" aria-hidden />
+                  {save.isPending ? '저장 중…' : '저장'}
+                </Button>
                 <Button
                   size="sm"
                   variant="secondary"
-                  disabled
-                  aria-disabled="true"
+                  disabled={!keptDraftForSelected && !formDirty}
+                  onClick={handleRestore}
                   className="w-full"
                 >
-                  <Save className="size-3.5" aria-hidden />
-                  저장 (서버 미연결)
+                  <RotateCcw className="size-3.5" aria-hidden />
+                  원본 복원
                 </Button>
               </div>
-              <p className="rounded-[10px] bg-surface-2 px-2.5 py-1.5 text-[11px] leading-4 text-muted-foreground">
-                {SERVER_SAVE_DISABLED_REASON}
-              </p>
-            </>
-          ) : (
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs text-muted-foreground">
-                {selectedZone.min[2] > 0
-                  ? `공중 구역 (하단 ${formatMeters(selectedZone.min[2])}m)`
-                  : '바닥 구역 (하단 0.00m)'}
-              </span>
-              <Button size="sm" onClick={handleStartEdit}>
-                구역 수정
-              </Button>
             </div>
           )}
         </div>
@@ -548,14 +744,11 @@ export function ZonesPage({
                 이번 수정 취소
               </Button>
             </div>
-            <Button size="sm" variant="secondary" disabled aria-disabled="true" className="w-full">
+            <Button size="sm" disabled={!canSave} onClick={handleSave} className="w-full">
               <Save className="size-3.5" aria-hidden />
-              저장 (서버 미연결)
+              {save.isPending ? '저장 중…' : '저장'}
             </Button>
           </div>
-          <p className="rounded-[10px] bg-surface-2 px-2.5 py-1.5 text-[11px] leading-4 text-muted-foreground">
-            {SERVER_SAVE_DISABLED_REASON}
-          </p>
         </div>
       )}
 

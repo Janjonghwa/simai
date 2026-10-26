@@ -9,6 +9,14 @@ import type {
 // 시험(__tests__/mocks/realtimeScenario.test.ts)이 만든 메시지를 모두 계약 검증기로 검사한다.
 
 const VERSIONS = { calibration: 'cal-7', scene: 'scene-3', config: 'cfg-12' } as const;
+
+/** health 의 구성 묶음 상태(명세 FR-17). 구역 mock 이 발행·ACK 를 흉내 내며 바꾼다. */
+export type MockConfig = ViewerHealthMessage['payload']['config'];
+export const MOCK_CONFIG: MockConfig = {
+  published_version: VERSIONS.config,
+  applied_version: VERSIONS.config,
+  sync: 'CURRENT',
+};
 /** Scene 불일치 흉내에서 Tier 0 가 아직 판정에 쓰는 이전 Scene. */
 const PREVIOUS_SCENE = 'scene-2';
 const CAMERAS = ['cam1', 'cam2', 'cam3', 'cam4'] as const;
@@ -75,7 +83,10 @@ function track(worker: (typeof WORKERS)[number], t: number): WorldTrack {
 /** sceneMismatch 면 Tier 0 가 이전 Scene 으로 판정한다(health 의 scene.live_version 과 같다, 명세 FR-12). */
 export function worldStateAt(
   t: number,
-  { sceneMismatch = false }: { sceneMismatch?: boolean } = {},
+  {
+    sceneMismatch = false,
+    configVersion = MOCK_CONFIG.applied_version,
+  }: { sceneMismatch?: boolean; configVersion?: string | null } = {},
 ): WorldStateMessage {
   return {
     schema_version: '2.0.0',
@@ -87,7 +98,7 @@ export function worldStateAt(
       t_latest_global: t - 120,
       calibration_version: VERSIONS.calibration,
       scene_version: sceneMismatch ? PREVIOUS_SCENE : VERSIONS.scene,
-      config_version: VERSIONS.config,
+      ...(configVersion ? { config_version: configVersion } : {}),
       input_provenance: {
         frames: { source: 'LIVE', camera_ids: sending(CAMERAS, t) },
         calibration: { source: 'G1_AUTO', calibration_version: VERSIONS.calibration },
@@ -159,10 +170,12 @@ export function viewerHealthAt(
     faults = true,
     outage,
     sceneMismatch = false,
+    config = MOCK_CONFIG,
   }: {
     faults?: boolean;
     outage?: { kind: MockOutage; since: number };
     sceneMismatch?: boolean;
+    config?: MockConfig;
   } = {},
 ): ViewerHealthMessage {
   const down = outage && t - outage.since >= DETECT_MS ? outage.kind : undefined;
@@ -191,11 +204,7 @@ export function viewerHealthAt(
       // 끊긴 동안은 마지막 world(장애 시작 때)부터 잰다. as_of − t_latest_global 과 같다.
       data_age_ms: outage ? t - 10 - (Math.min(t, outage.since) - 120) : age,
       calibration_state: 'CALIBRATED',
-      config: {
-        published_version: VERSIONS.config,
-        applied_version: VERSIONS.config,
-        sync: 'CURRENT',
-      },
+      config,
       scene: sceneMismatch
         ? { committed_version: VERSIONS.scene, live_version: PREVIOUS_SCENE, mismatch: true }
         : { committed_version: VERSIONS.scene, live_version: VERSIONS.scene, mismatch: false },
@@ -207,8 +216,8 @@ export function viewerHealthAt(
         capture_to_risk_ms: { p50: 300 + wave * 5, p95: 460 + wave * 10 },
         calibration_state: 'CALIBRATED',
         calibration_version: VERSIONS.calibration,
-        config_version: VERSIONS.config,
-        config_sync: 'CURRENT',
+        config_version: config.applied_version,
+        config_sync: config.sync,
         gateway_link: 'CONNECTED',
         gpu_util: r2(0.68 + wave * 0.01),
         gpu_memory_used_ratio: 0.62,

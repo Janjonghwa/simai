@@ -1,24 +1,85 @@
 import { z } from 'zod';
 
-// 구역 REST(GET /api/zones). 응답 형식 계약이 아직 없어(BE -120·FE -189) 3D 뷰어 데모와 같은 직사각형 형식을 가정한다
-// (viewer3d contractAdapter 의 DEMO 구역). contract 표시가 있는 응답만 받는다. 실제 형식이 정해지면 이 파일과 zones.ts 를 바꾼다.
+// 구역 REST(GET·POST·PUT /api/zones)와 구성 묶음(POST·GET /api/config-bundles). 서버(BE -120, docs/design/server-config-bundle.md)
+// 형식 그대로다. 칸 이름은 DB zone 열을 따른다(eval_type·zone_kind·z_min_m·z_max_m). 구역 목록은 구역마다 지금 유효한 버전 하나다.
 
-export const zonesResponseSchema = z.object({
-  contract: z.literal('DEMO_UNCONFIRMED'),
-  // 구역 하나가 틀려도 나머지는 그린다. 항목은 zones.ts 에서 하나씩 검사한다.
-  zones: z.array(z.unknown()),
-});
-
+/** 구역 목록. 구역 하나가 틀려도 나머지는 그린다. 항목은 zones.ts 에서 하나씩 검사한다. */
+export const zonesResponseSchema = z.array(z.unknown());
 export type ZonesResponse = z.infer<typeof zonesResponseSchema>;
 
-const point = z.tuple([z.number(), z.number(), z.number()]);
+export const JUDGE_TYPES = ['GROUND_FOOTPRINT', 'VOLUME_3D'] as const;
+export type JudgeType = (typeof JUDGE_TYPES)[number];
+
+// 서버는 비지 않은 문자열이면 받는다. 입력 칸은 계약(risk_plan_request zone_type) 설명에 있는 예만 고르게 한다.
+export const ZONE_TYPES = ['OPENING', 'EQUIPMENT_PARKING', 'LIFTING'] as const;
+
+export const SEVERITIES = ['CRITICAL', 'HIGH', 'CAUTION', 'INFO'] as const;
+export type Severity = (typeof SEVERITIES)[number];
+
+const vec2 = z.tuple([z.number(), z.number()]);
+const requirements = z.record(z.string(), z.unknown());
 
 export const zoneItemSchema = z.object({
   // 공백만 있는 ID 는 받지 않는다. 값은 자르지 않는다(이벤트의 zone_id 와 그대로 맞춘다).
   zone_id: z.string().refine((id) => id.trim() !== ''),
+  zone_version: z.number().int().positive(),
   name: z.string(),
-  aabb: z.object({ min_xyz: point, max_xyz: point }),
+  zone_kind: z.string().min(1),
+  eval_type: z.enum(JUDGE_TYPES),
+  // 바닥 다각형(World x·y, m, 닫는 점 없음). 지금은 상자 편집기가 만든 직사각형만 고칠 수 있다.
+  polygon_xy: z.array(vec2).min(3),
+  // 최저·최고 높이(m). VOLUME_3D 는 둘 다 있다.
+  z_min_m: z.number().nullable(),
+  z_max_m: z.number().nullable(),
+  severity: z.enum(SEVERITIES),
+  // 화면에서 고치지 않는다. 새 버전을 저장할 때 받은 값을 그대로 다시 보낸다.
+  requirements: requirements.nullish(),
+  has_guardrail: z.boolean().nullish(),
+  // 이 버전이 유효해진 시각(epoch ms, 서버가 저장할 때 정한다). 지금 버전은 valid_to 가 없다.
+  valid_from: z.number(),
+  valid_to: z.number().nullable(),
 });
+
+export type ZoneItem = z.infer<typeof zoneItemSchema>;
+
+/** 만들기(POST)·새 버전(PUT) 본문. 서버가 ID·버전·유효 시각을 정한다. 응답은 새로 생긴 버전 하나다(zoneItemSchema). */
+export const zoneBodySchema = z.object({
+  name: z.string(),
+  zone_kind: z.string(),
+  eval_type: z.enum(JUDGE_TYPES),
+  polygon_xy: z.array(vec2).min(3),
+  z_min_m: z.number().nullable(),
+  z_max_m: z.number().nullable(),
+  severity: z.enum(SEVERITIES),
+  has_guardrail: z.boolean().nullable(),
+  requirements: requirements.nullable(),
+});
+export type ZoneBody = z.infer<typeof zoneBodySchema>;
+
+/**
+ * 구성 묶음(명세 3.2, FR-17). 발행하면 서버가 그때 유효한 구역·규칙·보정·작업면으로 묶는다. status 는 Tier 0 가 마지막으로
+ * 보낸 config_ack 로 정한다: 없으면 PENDING(적용 대기), APPLIED(현장 적용됨), REJECTED(거부), 해시가 다르면 MISMATCH.
+ */
+export const BUNDLE_STATUSES = ['PENDING', 'APPLIED', 'REJECTED', 'MISMATCH'] as const;
+export type BundleStatus = (typeof BUNDLE_STATUSES)[number];
+
+export const configBundleSchema = z.object({
+  config_version: z.string().min(1),
+  issued_at: z.number(),
+  status: z.enum(BUNDLE_STATUSES),
+  applied_at: z.number().nullable(),
+  // 마지막으로 받은 ACK(서버 칸 이름 last_ack). 거부면 Tier 0 가 계속 쓰는 묶음(active_config_version)이 있다.
+  last_ack: z
+    .object({
+      active_config_version: z.string().nullable(),
+      reject_reason: z.string().nullable(),
+    })
+    .nullish(),
+});
+export type ConfigBundle = z.infer<typeof configBundleSchema>;
+
+/** 최근 묶음(새것부터). 항목은 하나씩 검사한다. */
+export const bundlesResponseSchema = z.array(z.unknown());
 
 type Point = readonly [number, number, number];
 
@@ -28,4 +89,29 @@ export interface ZoneBox {
   name: string;
   min: Point;
   max: Point;
+}
+
+/** 서버 구역의 지금 버전. 상자(min·max)는 다각형을 감싸는 상자다. */
+export interface Zone extends ZoneBox {
+  version: number;
+  judgeType: JudgeType;
+  zoneType: string;
+  severity: Severity;
+  /** 받은 바닥 다각형과 최저·최고 높이 그대로(높이는 한쪽만 있을 수 있다). 형상을 고치지 않고 속성만 저장할 때 다시 보낸다. */
+  polygon: readonly (readonly [number, number])[];
+  zBounds: readonly [number | null, number | null];
+  /** 최저·최고 높이가 둘 다 있을 때만 그 범위다. */
+  zRange: readonly [number, number] | null;
+  hasGuardrail: boolean | null;
+  requirements: Readonly<Record<string, unknown>> | null;
+  /** 이 버전이 유효해진 시각(ms). 마지막 묶음보다 늦으면 아직 발행하지 않은 것이다. */
+  validFrom: number;
+  /** 바닥이 축에 맞춘 직사각형이고 높이가 있어야 상자 편집기로 형상을 고칠 수 있다. */
+  shapeEditable: boolean;
+}
+
+/** 3D 뷰어 Source 가 받는 구역 형식(뷰어 contractAdapter 의 DEMO 상자). 서버 형식을 바꿔 넘긴다. */
+export interface ViewerZones {
+  contract: 'DEMO_UNCONFIRMED';
+  zones: { zone_id: string; name: string; aabb: { min_xyz: Point; max_xyz: Point } }[];
 }

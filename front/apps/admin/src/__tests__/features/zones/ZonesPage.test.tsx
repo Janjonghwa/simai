@@ -1,3 +1,4 @@
+import { zoneOf } from '@/__tests__/features/zones/zoneFixture';
 import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
 import type {
   Viewer3DHandle,
@@ -9,38 +10,67 @@ import type {
 } from '@/features/viewer3d';
 import { fieldOperation, isValidBox } from '@/features/viewer3d/editing/editGeometry';
 import { worldPoint } from '@/features/viewer3d/worldCoordinates';
-import type { ZoneBox, ZonesResponse } from '@/features/zones/types';
+import type { ViewerZones, Zone } from '@/features/zones/types';
 import { ZonesPage } from '@/features/zones/ZonesPage';
 import { parseZonesSearch } from '@/features/zones/zonesSearch';
+import { ApiError } from '@/lib/http';
 import { worldStateAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore, type Role } from '@/store/session.store';
 import { useZoneDraftsStore } from '@/store/zoneDrafts.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useEffect, useImperativeHandle, useRef, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const DEFAULT_ZONES: ZoneBox[] = [
-  {
+const DEFAULT_ZONES: Zone[] = [
+  zoneOf({
     zoneId: 'z-02',
     name: '중앙 통로 상부 작업 공간',
     min: [2.2, 2.5, 0.6],
     max: [5.4, 5.1, 2.4],
-  },
-  {
-    zoneId: 'z-04',
-    name: '북동 위험 구역',
-    min: [5.8, 1.2, 0],
-    max: [8.6, 3.8, 2.4],
-  },
+  }),
+  zoneOf(
+    {
+      zoneId: 'z-04',
+      name: '북동 위험 구역',
+      min: [5.8, 1.2, 0],
+      max: [8.6, 3.8, 2.4],
+    },
+    { version: 3, severity: 'CRITICAL', zoneType: 'OPENING' },
+  ),
 ];
 
 const mockZonesState = vi.hoisted(() => ({
-  zones: [] as ZoneBox[],
-  raw: undefined as ZonesResponse | undefined,
+  zones: [] as Zone[],
+  raw: undefined as ViewerZones | undefined,
   failed: false,
 }));
+// 시험마다 바꾼다. 기본은 서버가 없는 것처럼 실패한다.
+const apiMock = vi.hoisted(() => ({
+  fn: (path: string, options: unknown): Promise<unknown> =>
+    Promise.reject(new Error(`no api in test: ${path} ${typeof options}`)),
+}));
+// 최근 구성 묶음 조회(GET /api/config-bundles)의 답. 시험마다 바꾼다.
+const bundlesMock = vi.hoisted(() => ({ list: [] as unknown[] }));
+const bundleOf = (
+  config_version: string,
+  issued_at: number,
+  status: 'PENDING' | 'APPLIED' | 'REJECTED' | 'MISMATCH',
+  active: string | null = config_version,
+) => ({
+  config_version,
+  issued_at,
+  status,
+  applied_at: status === 'APPLIED' ? issued_at + 1 : null,
+  last_ack:
+    status === 'PENDING'
+      ? null
+      : {
+          active_config_version: active,
+          reject_reason: status === 'REJECTED' ? 'VALIDATION_FAILED' : null,
+        },
+});
 
 vi.mock('@/features/events/useLiveEvents', () => ({
   useLiveEvents: () => ({ entries: [], loaded: true, failed: false }),
@@ -48,7 +78,18 @@ vi.mock('@/features/events/useLiveEvents', () => ({
 vi.mock('@/features/zones/useZones', () => ({
   useZones: () => mockZonesState,
 }));
-vi.mock('@/lib/api', () => ({ api: () => Promise.reject(new Error('no api in test')) }));
+// 조회(GET)는 시험마다 정한 묶음 목록과, 저장 전 확인용으로 화면의 구역 버전을 그대로 답한다. 쓰기는 apiMock 이 답한다.
+vi.mock('@/lib/api', () => ({
+  api: (path: string, options: unknown) => {
+    if ((options as { method?: string }).method) return apiMock.fn(path, options);
+    if (path === '/api/config-bundles') return Promise.resolve(bundlesMock.list);
+    if (path === '/api/zones')
+      return Promise.resolve(
+        mockZonesState.zones.map((z) => ({ zone_id: z.zoneId, zone_version: z.version })),
+      );
+    return apiMock.fn(path, options);
+  },
+}));
 
 const fake = vi.hoisted(() => ({
   selected: null as ViewerTarget | null,
@@ -250,8 +291,16 @@ function signInAs(role: Role) {
   });
 }
 
+/** '새 구역' 메뉴를 연다(항목은 구역 유형). */
+function openNewZoneMenu() {
+  act(() => {
+    fireEvent.click(screen.getByRole('button', { name: '새 구역' }));
+  });
+}
+
 function renderZones(ui: ReactNode = <ZonesPage />) {
-  const qc = new QueryClient();
+  // 실패를 흉내 내는 시험이 재시도 지연을 기다리지 않게 한다.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <SpatialViewportHost loadViewer={loadFake} zoneEditor>
@@ -283,6 +332,9 @@ describe('ZonesPage 경량 플로팅 편집 도구', () => {
     fake.failAtUpdateStep = 0;
     fake.updateStepCount = 0;
     fake.overlay = null;
+    apiMock.fn = () => Promise.reject(new Error('no api in test'));
+    // 기본: 구역들(valid_from 1)보다 늦게 발행한 cfg-12 가 현장에 적용되어 있다.
+    bundlesMock.list = [bundleOf('cfg-12', 100, 'APPLIED')];
   });
   afterEach(cleanup);
 
@@ -359,7 +411,7 @@ describe('ZonesPage 경량 플로팅 편집 도구', () => {
     expect(fake.editing).not.toBeNull();
   });
 
-  it('미리보기 유지는 결과를 사라지게 하지 않고 3D Ghost·계속 편집·취소·비활성 저장(미연결 사유)을 표시한다', async () => {
+  it('미리보기 유지는 결과를 사라지게 하지 않고 3D Ghost·계속 편집·원본 복원·저장을 표시한다', async () => {
     renderZones();
     await screen.findByTestId('viewer3d');
 
@@ -375,9 +427,9 @@ describe('ZonesPage 경량 플로팅 편집 도구', () => {
       target: { type: 'zone', id: 'z-02' },
       box: { min: [2.2, 2.5, 0.9], max: [5.4, 5.1, 2.4] },
     });
-    const saveBtn = screen.getByRole('button', { name: '저장 (서버 미연결)' });
-    expect((saveBtn as HTMLButtonElement).disabled).toBe(true);
-    expect(document.body.textContent).not.toContain('저장 완료');
+    const saveBtn = screen.getByRole('button', { name: '저장' });
+    expect((saveBtn as HTMLButtonElement).disabled).toBe(false);
+    expect(document.body.textContent).not.toContain('서버 미연결');
     expect(document.body.textContent).not.toContain('초안 확정');
     expect(document.body.textContent).not.toContain('BE -120');
 
@@ -388,6 +440,415 @@ describe('ZonesPage 경량 플로팅 편집 도구', () => {
     act(() => screen.getByRole('button', { name: '미리보기 유지' }).click());
     act(() => screen.getByRole('button', { name: '원본 복원' }).click());
     expect(fake.overlay).toBeNull();
+  });
+
+  describe('저장', () => {
+    const calls: { path: string; method?: string; body?: Record<string, unknown> }[] = [];
+    const answer = (zone: Record<string, unknown>) => {
+      apiMock.fn = (path, options) => {
+        const { method, body } = options as { method?: string; body?: Record<string, unknown> };
+        calls.push({ path: path as string, method, body });
+        return Promise.resolve(zone);
+      };
+    };
+    // 서버(BE -120)가 돌려주는 새 버전.
+    const saved = (zone_id: string, zone_version: number) => ({
+      zone_id,
+      zone_version,
+      name: '저장됨',
+      zone_kind: 'OPENING',
+      eval_type: 'VOLUME_3D',
+      polygon_xy: [
+        [0, 0],
+        [1, 0],
+        [1, 1],
+        [0, 1],
+      ],
+      z_min_m: 0,
+      z_max_m: 1,
+      severity: 'HIGH',
+      requirements: null,
+      has_guardrail: null,
+      valid_from: 500,
+      valid_to: null,
+    });
+    beforeEach(() => {
+      calls.length = 0;
+    });
+
+    it('속성만 고치면 받은 형상과 고치기 시작한 버전을 함께 보내고 저장한 버전을 알린다', async () => {
+      answer(saved('z-04', 4));
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
+
+      const save = screen.getByRole('button', { name: '저장' }) as HTMLButtonElement;
+      expect(save.disabled).toBe(true);
+      fireEvent.change(screen.getByRole('textbox', { name: '이름' }), {
+        target: { value: '북동 개구부' },
+      });
+      fireEvent.change(screen.getByRole('combobox', { name: '심각도' }), {
+        target: { value: 'HIGH' },
+      });
+      expect(screen.getByText('미저장 변경')).toBeTruthy();
+      act(() => save.click());
+
+      expect(await screen.findByText('저장했습니다 (z-04 v4).')).toBeTruthy();
+      expect(calls).toEqual([
+        {
+          path: '/api/zones/z-04',
+          method: 'PUT',
+          body: {
+            name: '북동 개구부',
+            zone_kind: 'OPENING',
+            eval_type: 'VOLUME_3D',
+            polygon_xy: DEFAULT_ZONES[1]!.polygon,
+            z_min_m: 0,
+            z_max_m: 2.4,
+            severity: 'HIGH',
+            has_guardrail: null,
+            requirements: null,
+          },
+        },
+      ]);
+    });
+
+    it('미리보기로 보관한 형상을 저장하면 그 형상을 보내고, 저장 뒤 보관 초안과 Ghost 를 정리한다', async () => {
+      answer(saved('z-04', 4));
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
+      act(() => screen.getByRole('button', { name: '구역 수정' }).click());
+      act(() => screen.getByRole('button', { name: /정밀 입력/ }).click());
+      const originX = screen.getByLabelText('시작 X (m)') as HTMLInputElement;
+      fireEvent.change(originX, { target: { value: '6.2' } });
+      fireEvent.blur(originX);
+      act(() => screen.getByRole('button', { name: '미리보기 유지' }).click());
+      expect(fake.overlay).not.toBeNull();
+
+      act(() => screen.getByRole('button', { name: '저장' }).click());
+      expect(await screen.findByText('저장했습니다 (z-04 v4).')).toBeTruthy();
+      const [[x0]] = calls[0]!.body!.polygon_xy as [number, number][];
+      expect(x0).toBeCloseTo(6.2, 9);
+      expect(useZoneDraftsStore.getState().drafts).toEqual({});
+      expect(fake.overlay).toBeNull();
+    });
+
+    it('409 면 고친 칸은 남기고 고치지 않은 칸은 다시 받은 최신 값을 보이며, 다시 저장해도 그 값을 덮지 않는다', async () => {
+      apiMock.fn = (path, options) => {
+        const { method, body } = options as { method?: string; body?: Record<string, unknown> };
+        calls.push({ path, method, body });
+        return Promise.reject(new ApiError(409));
+      };
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
+      const name = screen.getByRole('textbox', { name: '이름' }) as HTMLInputElement;
+      fireEvent.change(name, { target: { value: '북동 개구부' } });
+      act(() => screen.getByRole('button', { name: '저장' }).click());
+      expect(await screen.findByText(/그 사이 다른 버전이 저장되어/)).toBeTruthy();
+
+      // 다른 관리자가 심각도를 INFO 로 바꾼 v4 를 다시 받았다.
+      mockZonesState.zones = [
+        DEFAULT_ZONES[0]!,
+        { ...DEFAULT_ZONES[1]!, version: 4, severity: 'INFO' },
+      ];
+      act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
+      expect(name.value).toBe('북동 개구부');
+      expect((screen.getByRole('combobox', { name: '심각도' }) as HTMLSelectElement).value).toBe(
+        'INFO',
+      );
+
+      answer(saved('z-04', 5));
+      act(() => screen.getByRole('button', { name: '저장' }).click());
+      expect(await screen.findByText('저장했습니다 (z-04 v5).')).toBeTruthy();
+      expect(calls[1]!.body).toMatchObject({ name: '북동 개구부', severity: 'INFO' });
+    });
+
+    it.each([
+      [new ApiError(403), '구역을 저장할 권한이 없습니다.'],
+      [new ApiError(400), '저장하지 못했습니다. 다시 시도하세요.'],
+      [new ApiError(0, { kind: 'NETWORK' }), /저장됐는지 확인하지 못해/],
+    ])('저장이 %s 로 실패하면 이유를 알리고 고친 속성은 둔다', async (error, text) => {
+      apiMock.fn = () => Promise.reject(error);
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
+      const name = screen.getByRole('textbox', { name: '이름' }) as HTMLInputElement;
+      fireEvent.change(name, { target: { value: '북동 개구부' } });
+      act(() => screen.getByRole('button', { name: '저장' }).click());
+      expect(await screen.findByText(text)).toBeTruthy();
+      expect(name.value).toBe('북동 개구부');
+    });
+
+    it('저장 중에는 버튼을 끄고 다시 눌러도 한 번만 보낸다', async () => {
+      apiMock.fn = (path, options) => {
+        calls.push({ path, method: (options as { method?: string }).method });
+        return new Promise(() => {});
+      };
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
+      fireEvent.change(screen.getByRole('textbox', { name: '이름' }), {
+        target: { value: '북동 개구부' },
+      });
+      const save = screen.getByRole('button', { name: '저장' }) as HTMLButtonElement;
+      // isPending 이 바뀌기 전(같은 턴)에 두 번 누른다.
+      act(() => {
+        save.click();
+        save.click();
+      });
+      await waitFor(() => expect(save.textContent).toContain('저장 중'));
+      expect(save.disabled).toBe(true);
+      await waitFor(() => expect(calls).toHaveLength(1));
+
+      openNewZoneMenu();
+      act(() => {
+        const opening = screen.getByRole('menuitem', { name: '개구부' });
+        opening.click();
+        opening.click();
+      });
+      await waitFor(() => expect(calls).toHaveLength(2));
+      await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+      expect(calls.map((c) => c.method)).toEqual(['PUT', 'POST']);
+    });
+
+    it('직사각형이 아니고 높이가 없는 구역은 속성만 고쳐 저장해도 받은 다각형·높이·유형을 그대로 보내고, 입체로 바꾸지 못한다', async () => {
+      const triangle = zoneOf(
+        { zoneId: 'z-07', name: '삼각 바닥', min: [0, 0, 0], max: [4, 3, 0.05] },
+        {
+          judgeType: 'GROUND_FOOTPRINT',
+          zoneType: 'CUSTOM_X',
+          polygon: [
+            [0, 0],
+            [4, 0],
+            [0, 3],
+          ],
+          zBounds: [null, null],
+          zRange: null,
+          shapeEditable: false,
+        },
+      );
+      mockZonesState.zones = [...DEFAULT_ZONES, triangle];
+      answer(saved('z-07', 2));
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      act(() => fake.onSelect?.({ type: 'zone', id: 'z-07' }));
+
+      const kind = screen.getByRole('combobox', { name: '유형' }) as HTMLSelectElement;
+      expect(kind.value).toBe('CUSTOM_X');
+      fireEvent.change(screen.getByRole('combobox', { name: '판정 유형' }), {
+        target: { value: 'VOLUME_3D' },
+      });
+      expect(screen.getByRole('alert').textContent).toBe(
+        '높이가 없는 구역은 입체로 판정할 수 없습니다.',
+      );
+      expect((screen.getByRole('button', { name: '저장' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      );
+      fireEvent.change(screen.getByRole('combobox', { name: '판정 유형' }), {
+        target: { value: 'GROUND_FOOTPRINT' },
+      });
+
+      fireEvent.change(screen.getByRole('textbox', { name: '이름' }), {
+        target: { value: '삼각 바닥 구역' },
+      });
+      act(() => screen.getByRole('button', { name: '저장' }).click());
+      expect(await screen.findByText('저장했습니다 (z-07 v2).')).toBeTruthy();
+      expect(calls[0]!.body).toMatchObject({
+        name: '삼각 바닥 구역',
+        eval_type: 'GROUND_FOOTPRINT',
+        zone_kind: 'CUSTOM_X',
+        polygon_xy: [
+          [0, 0],
+          [4, 0],
+          [0, 3],
+        ],
+        z_min_m: null,
+        z_max_m: null,
+      });
+    });
+
+    it('구역 목록을 받기 전에는 새 구역을 만들 수 없다', async () => {
+      mockZonesState.raw = undefined;
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      expect((screen.getByRole('button', { name: '새 구역' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      );
+    });
+
+    it('형상을 고치는 중에 저장하면 편집을 끝내고 그 형상을 함께 보낸다', async () => {
+      answer(saved('z-04', 4));
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
+      act(() => screen.getByRole('button', { name: '구역 수정' }).click());
+      act(() => screen.getByRole('button', { name: /정밀 입력/ }).click());
+      const originX = screen.getByLabelText('시작 X (m)') as HTMLInputElement;
+      fireEvent.change(originX, { target: { value: '6.2' } });
+      fireEvent.blur(originX);
+
+      act(() => screen.getByRole('button', { name: '저장' }).click());
+      expect(fake.editing).toBeNull();
+      expect(await screen.findByText('저장했습니다 (z-04 v4).')).toBeTruthy();
+      expect(useZoneDraftsStore.getState().drafts).toEqual({});
+      expect(fake.overlay).toBeNull();
+      const body = calls[0]!.body!;
+      expect(body).toMatchObject({ z_min_m: 0, z_max_m: 2.4 });
+      const [[x0, y0], [x1], [, y1]] = body.polygon_xy as number[][] as [number, number][];
+      expect([x0, y0, y1]).toEqual([expect.closeTo(6.2, 9), 1.2, 3.8]);
+      expect(x1).toBeCloseTo(9, 9);
+    });
+
+    it('저장하지 못하면 이유를 알리고 고친 속성은 그대로 둔다', async () => {
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
+      const name = screen.getByRole('textbox', { name: '이름' }) as HTMLInputElement;
+      fireEvent.change(name, { target: { value: '북동 개구부' } });
+      act(() => screen.getByRole('button', { name: '저장' }).click());
+
+      expect(await screen.findByText('저장하지 못했습니다. 다시 시도하세요.')).toBeTruthy();
+      expect(name.value).toBe('북동 개구부');
+      act(() => screen.getByRole('button', { name: '원본 복원' }).click());
+      expect(name.value).toBe('북동 위험 구역');
+    });
+
+    it('이름을 비우면 저장할 수 없다', async () => {
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
+      fireEvent.change(screen.getByRole('textbox', { name: '이름' }), { target: { value: ' ' } });
+      expect(screen.getByRole('alert').textContent).toBe('이름을 입력하세요.');
+      expect((screen.getByRole('button', { name: '저장' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      );
+    });
+
+    it('새 구역은 고른 유형으로 기존 구역들 가운데에 만들고 바로 형상 편집을 시작한다', async () => {
+      const created = zoneOf({ zoneId: 'z-05', name: '새 구역', min: [4, 2, 0], max: [6, 4, 2] });
+      apiMock.fn = (path, options) => {
+        const { method, body } = options as { method?: string; body?: Record<string, unknown> };
+        calls.push({ path: path as string, method, body });
+        mockZonesState.zones = [...DEFAULT_ZONES, created];
+        return Promise.resolve(saved('z-05', 1));
+      };
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      openNewZoneMenu();
+      expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+        '개구부',
+        '장비 주차',
+        '양중 하부',
+      ]);
+      act(() => screen.getByRole('menuitem', { name: '장비 주차' }).click());
+
+      await waitFor(() => expect(fake.editing?.target).toEqual({ type: 'zone', id: 'z-05' }));
+      expect(calls[0]).toMatchObject({ path: '/api/zones', method: 'POST' });
+      expect(calls[0]!.body).toMatchObject({
+        name: '새 구역',
+        zone_kind: 'EQUIPMENT_PARKING',
+        z_min_m: 0,
+        z_max_m: 2,
+      });
+    });
+
+    it('관리자가 아니면 속성을 읽기만 하고 저장·새 구역 버튼이 없다', async () => {
+      signInAs('VIEWER');
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
+
+      expect(screen.getByLabelText('구역 속성').textContent).toContain('개구부');
+      expect(screen.getByLabelText('구역 속성').textContent).toContain('CRITICAL');
+      expect(screen.queryByRole('textbox', { name: '이름' })).toBeNull();
+      expect(screen.queryByRole('button', { name: '저장' })).toBeNull();
+      expect(screen.queryByRole('button', { name: '새 구역' })).toBeNull();
+    });
+  });
+
+  describe('현장 적용', () => {
+    let published: string[];
+    beforeEach(() => {
+      published = [];
+      // z-04 는 cfg-12(issued_at 100)보다 늦게(200) 저장해 발행 전이다.
+      mockZonesState.zones = DEFAULT_ZONES.map((z) =>
+        z.zoneId === 'z-04' ? { ...z, validFrom: 200 } : z,
+      );
+      apiMock.fn = (path, options) => {
+        if (path === '/api/config-bundles' && (options as { method?: string }).method === 'POST') {
+          published.push(path);
+          return Promise.resolve(bundleOf('cfg-13', 300, 'PENDING'));
+        }
+        return Promise.reject(new Error(`no api in test: ${path}`));
+      };
+    });
+    const status = () => screen.getByRole('group', { name: '현장 적용' }).textContent;
+
+    it('최근 묶음의 구성 버전과 현장 적용 상태, 발행 전 건수를 보이고 발행 전 구역에 표시한다', async () => {
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      await waitFor(() => expect(status()).toContain('발행 전 1건'));
+      expect(status()).toContain('cfg-12');
+      expect(status()).toContain('현장 적용됨');
+
+      act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
+      expect(screen.getByText('v3 · 발행 전')).toBeTruthy();
+      act(() => screen.getByRole('button', { name: /구역 목록/ }).click());
+      const row = screen.getByRole('button', { name: /z-04/ });
+      expect(row.textContent).toContain('발행 전');
+      expect(screen.getByRole('button', { name: /z-02/ }).textContent).not.toContain('발행 전');
+    });
+
+    it('현장에 적용하면 새 묶음을 적용 대기로 보이고 발행 전이 사라진다', async () => {
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      await waitFor(() => expect(status()).toContain('발행 전 1건'));
+
+      act(() => screen.getByRole('button', { name: '현장에 적용' }).click());
+      await waitFor(() => expect(status()).toContain('cfg-13'));
+      expect(published).toEqual(['/api/config-bundles']);
+      expect(status()).toContain('적용 대기');
+      expect(status()).not.toContain('발행 전');
+      expect(
+        (screen.getByRole('button', { name: '현장에 적용' }) as HTMLButtonElement).disabled,
+      ).toBe(true);
+    });
+
+    it('현장에 적용하지 못하면 이유를 알린다', async () => {
+      apiMock.fn = () => Promise.reject(new ApiError(403));
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      await waitFor(() => expect(status()).toContain('발행 전 1건'));
+      act(() => screen.getByRole('button', { name: '현장에 적용' }).click());
+      expect(await screen.findByText('현장에 적용할 권한이 없습니다.')).toBeTruthy();
+    });
+
+    it('Tier 0 가 묶음을 거부하면 적용 거부와 현장이 계속 쓰는 묶음을 보이고, 발행 전 구역이 없어도 다시 발행할 수 있다', async () => {
+      bundlesMock.list = [
+        bundleOf('cfg-13', 300, 'REJECTED', 'cfg-12'),
+        bundleOf('cfg-12', 100, 'APPLIED'),
+      ];
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      await waitFor(() => expect(status()).toContain('cfg-13'));
+      expect(status()).toContain('적용 거부');
+      expect(status()).toContain('현장 cfg-12');
+      expect(status()).not.toContain('현장 적용됨');
+      expect(status()).not.toContain('발행 전');
+      expect(
+        (screen.getByRole('button', { name: '현장에 적용' }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    });
+
+    it('관리자가 아니면 상태만 보고 발행하지 못한다', async () => {
+      signInAs('FOREMAN');
+      renderZones();
+      await screen.findByTestId('viewer3d');
+      await waitFor(() => expect(status()).toContain('현장 적용됨'));
+      expect(screen.queryByRole('button', { name: '현장에 적용' })).toBeNull();
+    });
   });
 
   it('초안 이어 편집 6단계 중 중간 단계가 실패하면 부분 적용을 취소하고 실패를 알린다(R03)', async () => {

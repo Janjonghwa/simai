@@ -54,7 +54,7 @@ export function calibrationLabel(health: HealthSnapshot | null): string | undefi
     : health.payload.calibration_state;
 }
 
-const SYNC_LABEL = {
+export const SYNC_LABEL = {
   PENDING: '적용 대기',
   UNVERIFIED: '적용 미확인',
   STALE: '적용 지연',
