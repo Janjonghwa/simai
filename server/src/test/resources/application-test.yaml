@@ -1,4 +1,7 @@
 simai:
+  health:
+    # 시험은 끊김을 빨리 본다(운영 3초)
+    link-timeout-ms: 1500
   auth:
     jwt:
       # 시험 전용 키(Base64, 37바이트). 운영 값이 아니다
