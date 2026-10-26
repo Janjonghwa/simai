@@ -28,8 +28,8 @@ interface MockSceneProps {
   colors: SceneColors;
   selected: ViewerTarget | null;
   /**
-   * 입력 없음(source=off)일 때만 예전 고정 작업자·구역을 그린다.
-   * 입력이 있으면 사람은 PersonLayer, 구역은 ZoneLayer 가 Provider 데이터로 그린다(둘을 함께 그리지 않는다).
+   * 입력 없음(source=off)일 때만 예전 고정 작업자·구역·작업면을 그린다.
+   * 입력이 있으면 사람은 PersonLayer, 구역은 ZoneLayer, 작업면은 WorkSurfaceLayer 가 Provider 데이터로 그린다(둘을 함께 그리지 않는다).
    */
   legacy: boolean;
 }
@@ -123,21 +123,24 @@ export function MockScene({ colors, selected, legacy }: MockSceneProps) {
           );
         })}
 
-      {OBJECTS.map((object) => {
-        const box = fixtureBox(object);
-        return (
-          <Selectable key={object.id} target={{ type: 'object', id: object.id }}>
-            <mesh position={box.position}>
-              <boxGeometry args={box.size} />
-              <meshStandardMaterial
-                color={
-                  isSelected(selected, 'object', object.id) ? colors.personSelected : colors.object
-                }
-              />
-            </mesh>
-          </Selectable>
-        );
-      })}
+      {legacy &&
+        OBJECTS.map((object) => {
+          const box = fixtureBox(object);
+          return (
+            <Selectable key={object.id} target={{ type: 'object', id: object.id }}>
+              <mesh position={box.position}>
+                <boxGeometry args={box.size} />
+                <meshStandardMaterial
+                  color={
+                    isSelected(selected, 'object', object.id)
+                      ? colors.personSelected
+                      : colors.object
+                  }
+                />
+              </mesh>
+            </Selectable>
+          );
+        })}
 
       {legacy &&
         PEOPLE.map((person) => (

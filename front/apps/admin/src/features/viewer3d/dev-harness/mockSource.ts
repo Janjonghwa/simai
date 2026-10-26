@@ -4,7 +4,12 @@ import type {
   SpatialSourceSink,
   ZonesResult,
 } from '@/features/viewer3d/data/spatialSource';
-import { scenarioTick, TICK_MS, type ScenarioKey } from '@/features/viewer3d/dev-harness/scenarios';
+import {
+  DEMO_WORK_SURFACES,
+  scenarioTick,
+  TICK_MS,
+  type ScenarioKey,
+} from '@/features/viewer3d/dev-harness/scenarios';
 
 // 개발·시험 전용 10 Hz Mock Source. 시나리오를 재생해 외부 Live 와 같은 SpatialSource 경계로 넘긴다.
 // 실제 STOMP 서버를 흉내 내지 않는다. 구역·스냅샷은 REST(개발 서버에서는 MSW)로 받아 실제 경로와 같게 둔다.
@@ -166,6 +171,8 @@ export function createMockSource(options: MockSourceOptions): MockSpatialSource 
     subscribe(sink) {
       sinks.add(sink);
       sink.onConnectionChange(connection);
+      // 등록 작업면(-188)은 조회 API(BE -58)가 없어 구독마다 DEMO 묶음을 바로 넘긴다(같은 값이라 다시 받아도 그대로다).
+      sink.onWorkSurfaces?.({ ok: true, raw: copy(DEMO_WORK_SURFACES) }, now());
       if (!opened) {
         opened = true;
         setConnection({ state: 'OPEN', at: now(), reason: 'Mock 시작' });

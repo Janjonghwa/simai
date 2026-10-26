@@ -125,7 +125,8 @@ describe('편집 세션', () => {
     expect(begin({ type: 'zone', id: 'missing' })).toEqual({ ok: false, reason: 'NOT_FOUND' });
     expect(begin({ type: 'zone' })).toEqual({ ok: false, reason: 'INVALID_TARGET' });
     expect(begin(Z1)).toEqual({ ok: true });
-    expect(begin({ type: 'object', id: 'desk' })).toEqual({ ok: false, reason: 'NOT_EDITABLE' });
+    // 작업면(object)은 -188 부터 편집 대상이지만 작업면 입력이 없으면 NOT_FOUND 이고 구역 편집은 그대로다.
+    expect(begin({ type: 'object', id: 'desk' })).toEqual({ ok: false, reason: 'NOT_FOUND' });
     expect(edit.store.getState().session?.target).toEqual(Z1);
     edit.store.getState().cancel();
     viewer.getState().setMode('REPLAY');

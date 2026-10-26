@@ -6,17 +6,22 @@ export type {
   SourceConnectionChange,
   SpatialSource,
   SpatialSourceSink,
+  WorkSurfacesResult,
   ZonesResult,
 } from '@/features/viewer3d/data/spatialSource';
 export {
   EDIT_FACES,
   EDIT_FIELDS,
+  OBJECT_EDIT_FIELDS,
+  WORK_SURFACE_OBB_POLICY,
   ZONE_AABB_POLICY,
   applyEditOperation,
+  applyEditOperations,
   applyZoneBoxOperation,
   boxJson,
   fieldOperation,
   isValidBox,
+  objectFieldOperations,
   restoreZoneBoxSteps,
   sameBox,
 } from '@/features/viewer3d/editing/editGeometry';
@@ -28,8 +33,11 @@ export type {
   EditOperation,
   EditOutcome,
   EditPolicy,
+  EditShape,
+  ObjectEditField,
   SerializableEditBox,
   WorldBox,
+  WorldObb,
 } from '@/features/viewer3d/editing/editGeometry';
 export type {
   ViewerEditBox,
@@ -42,7 +50,28 @@ export type {
   ViewerEditProvenance,
   ViewerEditRejectReason,
   ViewerEditResult,
+  ViewerObjectEditField,
+  ViewerObjectEditOrigin,
+  ViewerObjectEditPreview,
+  ViewerObjectEditProvenance,
+  ViewerObjectEditResult,
+  ViewerWorkSurfaceGeometry,
 } from '@/features/viewer3d/editing/editTypes';
+export {
+  adaptWorkSurfaces,
+  geometryProblem,
+  obbWorkSurface,
+  sameWorkSurface,
+  surfaceCorners,
+  surfaceTopEdge,
+  workSurfaceItem,
+  workSurfaceObb,
+} from '@/features/viewer3d/surfaces/workSurfaceGeometry';
+export type {
+  WorkSurfaceGeometry,
+  WorkSurfaceSnapshot,
+  WorkSurfaceView,
+} from '@/features/viewer3d/surfaces/workSurfaceGeometry';
 export type {
   CommandFailureReason,
   CommandResult,

@@ -52,6 +52,9 @@ export function SpatialDataProvider({ store, source, children }: SpatialDataProv
       onZones: (result, receivedAt) => {
         if (active) store.getState().ingestZones(result, receivedAt);
       },
+      onWorkSurfaces: (result, receivedAt) => {
+        if (active) store.getState().ingestWorkSurfaces(result, receivedAt);
+      },
     });
     return () => {
       active = false;

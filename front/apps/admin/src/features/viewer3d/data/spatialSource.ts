@@ -14,6 +14,12 @@ export interface SourceConnectionChange {
 /** 구역 조회 결과. 본문은 검증 전 값이다. */
 export type ZonesResult = { ok: true; raw: unknown } | { ok: false; reason: string };
 
+/**
+ * 등록 작업면 묶음({ version?, work_surfaces: [...] }) 조회 결과(S15P31A101-188). 본문은 검증 전 값이다.
+ * 조회 API·구성 묶음 전달 경로는 BE -58·FE -165 가 정한다. Spatial 은 받은 본문만 검사해 그린다.
+ */
+export type WorkSurfacesResult = { ok: true; raw: unknown } | { ok: false; reason: string };
+
 export interface SpatialSourceSink {
   /**
    * 검증 전 메시지 하나(STOMP 본문을 JSON.parse 한 값 등). 계약 검사는 받는 쪽이 한다.
@@ -22,6 +28,7 @@ export interface SpatialSourceSink {
   onMessage(raw: unknown, receivedAt: number): void;
   onConnectionChange(change: SourceConnectionChange): void;
   onZones?(result: ZonesResult, receivedAt: number): void;
+  onWorkSurfaces?(result: WorkSurfacesResult, receivedAt: number): void;
 }
 
 export interface SpatialSource {
@@ -42,6 +49,8 @@ export interface ExternalSpatialSource extends SpatialSource {
   readonly subscriberCount: number;
   push(raw: unknown, receivedAt?: number): void;
   pushZones(result: ZonesResult, receivedAt?: number): void;
+  /** 등록 작업면 묶음을 넘긴다(선택). 넘기지 않으면 작업면을 그리지 않는다. */
+  pushWorkSurfaces(result: WorkSurfacesResult, receivedAt?: number): void;
   setConnection(state: SourceConnection, reason?: string): void;
 }
 
@@ -76,6 +85,9 @@ export function createExternalSource(
     },
     pushZones(result, receivedAt = now()) {
       each((sink) => sink.onZones?.(result, receivedAt));
+    },
+    pushWorkSurfaces(result, receivedAt = now()) {
+      each((sink) => sink.onWorkSurfaces?.(result, receivedAt));
     },
     setConnection(state, reason) {
       connection = reason ? { state, at: now(), reason } : { state, at: now() };

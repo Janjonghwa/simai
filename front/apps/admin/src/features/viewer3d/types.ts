@@ -5,6 +5,10 @@ import type {
   ViewerEditOverlayInput,
   ViewerEditPreview,
   ViewerEditResult,
+  ViewerObjectEditField,
+  ViewerObjectEditPreview,
+  ViewerObjectEditResult,
+  ViewerWorkSurfaceGeometry,
 } from '@/features/viewer3d/editing/editTypes';
 import type { Ref } from 'react';
 
@@ -51,13 +55,14 @@ export interface Viewer3DHandle {
   focus(target: ViewerTarget): CommandResult;
   setMode(mode: ViewerMode): CommandResult;
   /**
-   * 구역 형상 편집을 시작한다(S15P31A101-195, Spatial 선제안·FE 미합의). 그 구역을 선택하고 손잡이를 띄운다.
-   * 원본은 바꾸지 않고 초안만 바꾼다. REPLAY 는 NOT_EDITABLE. 지금은 zone 만 받는다.
+   * 형상 편집을 시작한다(S15P31A101-195, Spatial 선제안·FE 미합의). 그 대상을 선택하고 손잡이를 띄운다.
+   * 원본은 바꾸지 않고 초안만 바꾼다. REPLAY 는 NOT_EDITABLE. zone(구역 AABB)과 object(등록 작업면 OBB, -188)를 받는다.
+   * 작업면 편집의 초안·결과는 onObjectEditPreview·onObjectEditResult 로 따로 알린다(구역 콜백은 부르지 않는다).
    */
   beginEdit(target: ViewerTarget): ViewerEditCommandResult;
-  /** 초안을 버린다. 편집 중이 아니면 null. 결과는 onEditResult 로도 알린다. */
+  /** 구역 초안을 버린다. 구역 편집 중이 아니면 null. 결과는 onEditResult 로도 알린다. */
   cancelEdit(): ViewerEditResult | null;
-  /** 초안을 World 결과로 돌려주고 편집을 끝낸다. 저장하지 않는다(saved: false). 편집 중이 아니면 null. */
+  /** 구역 초안을 World 결과로 돌려주고 편집을 끝낸다. 저장하지 않는다(saved: false). 구역 편집 중이 아니면 null. */
   finishEdit(): ViewerEditResult | null;
   /**
    * 편집 중 초안의 한 값을 World 절대값(m)으로 고친다(숫자 입력, S15P31A101-241). 손잡이 끌기와 같은 엔진으로 검사한다.
@@ -65,6 +70,28 @@ export interface Viewer3DHandle {
    * 성공하면 onEditPreview 로 새 초안을 알린다.
    */
   updateEditField(change: { field: ViewerEditField; value: number }): ViewerEditCommandResult;
+  // 아래 작업면 명령(-188)은 기존 FE 가짜 핸들·시험과 호환되도록 선택 멤버로 둔다. Viewer3D 는 늘 채운다.
+  /** 작업면 초안을 버린다(-188). 작업면 편집 중이 아니면 null. 결과는 onObjectEditResult 로도 알린다. */
+  cancelObjectEdit?(): ViewerObjectEditResult | null;
+  /** 작업면 초안을 World 결과(center_xy·size_xy·yaw_rad·top_height_m)로 돌려준다. 저장하지 않는다. 편집 중이 아니면 null. */
+  finishObjectEdit?(): ViewerObjectEditResult | null;
+  /**
+   * 작업면 초안의 한 값을 절대값으로 고친다(숫자 입력, -188). 손잡이와 같은 엔진·정책으로 검사한다.
+   * 편집 중이 아니면 NOT_EDITABLE, 유한하지 않거나 크기·상판이 0 이하이거나 yaw 가 [-π, π] 밖이면 INVALID_GEOMETRY 이고 초안은 그대로다.
+   */
+  updateObjectEditField?(change: {
+    field: ViewerObjectEditField;
+    value: number;
+  }): ViewerEditCommandResult;
+  /**
+   * 새 작업면을 3D 에서 만든다(-188). FE 가 정한 ID 와 처음 형상(World m·rad)으로 NEW 편집 세션을 열고 손잡이를 띄운다.
+   * ID 가 비었거나 floor·이미 장면에 있는 ID 면 INVALID_TARGET, 형상이 틀리면 INVALID_GEOMETRY. 끝나면 장면에서 사라진다
+   * (결과 afterItem 으로 등록 요청을 만들고, 등록된 묶음이 다시 들어오면 그때 작업면으로 그린다).
+   */
+  beginObjectCreate?(input: {
+    id: string;
+    geometry: ViewerWorkSurfaceGeometry;
+  }): ViewerEditCommandResult;
 }
 
 export interface Viewer3DProps {
@@ -89,6 +116,10 @@ export interface Viewer3DProps {
   onEditPreview?: (preview: ViewerEditPreview) => void;
   /** 편집이 끝날 때(완료·취소·거부) 부른다. 시작하지 못한 이유(REJECTED)도 알린다. */
   onEditResult?: (result: ViewerEditResult) => void;
+  /** 작업면 OBB 편집 초안(-188). 시작할 때와 손잡이를 놓을 때마다 부른다. 저장 성공이 아니다. */
+  onObjectEditPreview?: (preview: ViewerObjectEditPreview) => void;
+  /** 작업면 OBB 편집이 끝날 때(완료·취소·거부) 부른다. */
+  onObjectEditResult?: (result: ViewerObjectEditResult) => void;
   /**
    * 화면이 보관한 미저장 미리보기를 겹쳐 그린다(선택 사항, 읽기 전용 Ghost). 클릭·위험 강조·원본 구역에 영향이 없고,
    * 그 구역이 장면에 없으면 그리지 않는다. 같은 구역을 편집하는 동안에는 편집 미리보기가 대신한다.

@@ -1,6 +1,11 @@
 import type { WorldBox } from '@/features/viewer3d/editing/editGeometry';
 import type { EditHandle, EditStore } from '@/features/viewer3d/editing/editSession.store';
 import { useEditStore } from '@/features/viewer3d/editing/EditStoreContext';
+import {
+  createHandleRaycast,
+  MIN_PLANE_COSINE,
+  useEditKeys,
+} from '@/features/viewer3d/editing/handleInput';
 import { LabelSprite } from '@/features/viewer3d/LabelSprite';
 import { sameTarget } from '@/features/viewer3d/target';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
@@ -19,14 +24,12 @@ import { useEffect, useState } from 'react';
 import {
   BoxGeometry,
   ConeGeometry,
-  Mesh,
   Plane,
   Raycaster,
   SphereGeometry,
   Vector2,
   Vector3,
   type BufferGeometry,
-  type Intersection,
 } from 'three';
 import { useStore } from 'zustand';
 
@@ -50,10 +53,6 @@ const HANDLE_COLORS: Record<EditHandle, string> = {
   'z+': '#5b9cf0',
 };
 const UP = new Vector3(0, 1, 0);
-// 표시 형상과 별개로 24×24 CSS px를 잡을 수 있게 한다.
-const HANDLE_HIT_HALF_PX = 12;
-// 평면에서 약 3도 미만인 광선은 작은 포인터 오차도 큰 World 이동으로 증폭한다.
-const MIN_PLANE_COSINE = 0.05;
 export const EDIT_HANDLES: readonly EditHandle[] = ['move', 'x-', 'x+', 'y-', 'y+', 'z-', 'z+'];
 
 /** 손잡이에 마우스를 올렸거나 끄는 동안 보이는 짧은 설명. 무엇이 움직이고 무엇이 고정되는지 적는다. */
@@ -229,34 +228,7 @@ function AabbGizmo({ store }: { store: EditStore }) {
   const dragging = useStore(store, (s) => s.session?.dragging ?? null);
   const refused = useStore(store, (s) => s.session?.refused ?? null);
   const zoneId = useStore(store, (s) => s.session?.target.id ?? '');
-  const [handleRaycast] = useState(
-    () =>
-      function (this: Mesh, raycaster: Raycaster, intersections: Intersection[]) {
-        const count = intersections.length;
-        Mesh.prototype.raycast.call(this, raycaster, intersections);
-        if (intersections.length > count) return;
-        const { camera, gl } = get();
-        const rect = gl.domElement.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) return;
-        const center = this.getWorldPosition(new Vector3());
-        const projected = center.clone().project(camera);
-        if (projected.z < -1 || projected.z > 1) return;
-        const plane = new Plane().setFromNormalAndCoplanarPoint(
-          camera.getWorldDirection(new Vector3()),
-          center,
-        );
-        const point = raycaster.ray.intersectPlane(plane, new Vector3());
-        if (!point) return;
-        const distance = point.distanceTo(raycaster.ray.origin);
-        if (distance < raycaster.near || distance > raycaster.far) return;
-        const pointer = point.clone().project(camera);
-        if (
-          (Math.abs(pointer.x - projected.x) * rect.width) / 2 <= HANDLE_HIT_HALF_PX &&
-          (Math.abs(pointer.y - projected.y) * rect.height) / 2 <= HANDLE_HIT_HALF_PX
-        )
-          intersections.push({ distance, point, object: this });
-      },
-  );
+  const [handleRaycast] = useState(() => createHandleRaycast(get));
 
   // 내려가면(선택 변경·취소·완료·오류·StrictMode 재마운트) 끌기를 끝내고 카메라 조작을 되돌린다.
   useEffect(() => () => drag.end(), [drag]);
@@ -269,28 +241,7 @@ function AabbGizmo({ store }: { store: EditStore }) {
       canvas.style.cursor = '';
     };
   }, [get, cursor]);
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229)
-        return;
-      if (
-        event
-          .composedPath()
-          .some(
-            (target) =>
-              target instanceof Element &&
-              target.closest(
-                'input, textarea, select, button, a, [contenteditable]:not([contenteditable="false"])',
-              ),
-          )
-      )
-        return;
-      if (event.key === 'Escape') drag.escape();
-      if (event.key === 'Enter') drag.enter();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [drag]);
+  useEditKeys(drag.escape, drag.enter);
 
   const box = draft && worldBoxToThree(draft.min, draft.max);
   if (!draft || !settled || !box) return null;

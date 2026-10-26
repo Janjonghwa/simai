@@ -3,10 +3,13 @@ import type {
   ViewerEditBox,
   ViewerEditPreview,
   ViewerEditResult,
+  ViewerObjectEditPreview,
+  ViewerObjectEditResult,
+  ViewerWorkSurfaceGeometry,
 } from '@/features/viewer3d/editing/editTypes';
 import { VIEWER_MODES, type Viewer3DHandle, type ViewerTarget } from '@/features/viewer3d/types';
 import { useThree } from '@react-three/fiber';
-import { useEffect, type RefObject } from 'react';
+import { useEffect, useRef, type RefObject } from 'react';
 import { Vector3 } from 'three';
 import { useStore } from 'zustand';
 
@@ -35,10 +38,36 @@ interface EditPanelProps {
   selected: ViewerTarget | null;
   preview: ViewerEditPreview | null;
   result: ViewerEditResult | null;
+  objectPreview: ViewerObjectEditPreview | null;
+  objectResult: ViewerObjectEditResult | null;
 }
 
-export function EditPanel({ viewer, store, selected, preview, result }: EditPanelProps) {
+/** 작업면 형상 한 줄(계약 필드 이름). */
+const fmtSurface = (s: ViewerWorkSurfaceGeometry) =>
+  `center_xy [${s.centerXy.map(r3).join(', ')}] · size_xy [${s.sizeXy.map(r3).join(', ')}] · yaw_rad ${r3(s.yawRad)} · top_height_m ${r3(s.topHeightM)}`;
+
+export function EditPanel({
+  viewer,
+  store,
+  selected,
+  preview,
+  result,
+  objectPreview,
+  objectResult,
+}: EditPanelProps) {
   const zones = useStore(store, (s) => s.zones.zones);
+  const surfaces = useStore(store, (s) => s.workSurfaces.surfaces);
+  const setField = (field: 'width' | 'topHeight' | 'yaw', value: number) =>
+    viewer.current?.updateObjectEditField?.({ field, value });
+  const created = useRef(0);
+  // 새 작업면 만들기 예시. ID·처음 형상은 FE 가 정한다(여기서는 빈 바닥 자리에 책상 크기로 둔다).
+  const create = () => {
+    created.current += 1;
+    viewer.current?.beginObjectCreate?.({
+      id: `new-${created.current}`,
+      geometry: { centerXy: [8, 5], sizeXy: [1.2, 0.6], yawRad: 0, topHeightM: 0.74 },
+    });
+  };
   return (
     <section className="smk-data" aria-label="3D 편집(DEV)" data-testid="edit-panel">
       <p className="smk-card-title">3D 편집 · DEV 예시(저장 안 함)</p>
@@ -66,6 +95,69 @@ export function EditPanel({ viewer, store, selected, preview, result }: EditPane
         </button>
         <button type="button" className="smk-chip" onClick={() => viewer.current?.finishEdit()}>
           완료(결과 받기)
+        </button>
+      </div>
+      <div className="smk-data-row">
+        {surfaces.map((surface) => (
+          <button
+            key={surface.surfaceId}
+            type="button"
+            className="smk-chip"
+            onClick={() => viewer.current?.beginEdit({ type: 'object', id: surface.surfaceId })}
+          >
+            {surface.surfaceId} 편집
+          </button>
+        ))}
+        <button type="button" className="smk-chip" onClick={create}>
+          새 작업면 만들기
+        </button>
+        <button
+          type="button"
+          className="smk-chip"
+          disabled={!objectPreview}
+          onClick={() =>
+            objectPreview && setField('yaw', objectPreview.draft.yawRad + Math.PI / 12)
+          }
+        >
+          yaw +15°
+        </button>
+        <button
+          type="button"
+          className="smk-chip"
+          disabled={!objectPreview}
+          onClick={() => setField('width', 1.5)}
+        >
+          폭 1.5m
+        </button>
+        <button
+          type="button"
+          className="smk-chip"
+          disabled={!objectPreview}
+          onClick={() => setField('topHeight', 0.9)}
+        >
+          상판 0.9m
+        </button>
+        <button
+          type="button"
+          className="smk-chip"
+          disabled={!objectPreview}
+          onClick={() => setField('yaw', 90)}
+        >
+          yaw 90(도 값 거부)
+        </button>
+        <button
+          type="button"
+          className="smk-chip"
+          onClick={() => viewer.current?.cancelObjectEdit?.()}
+        >
+          작업면 취소
+        </button>
+        <button
+          type="button"
+          className="smk-chip"
+          onClick={() => viewer.current?.finishObjectEdit?.()}
+        >
+          작업면 완료
         </button>
       </div>
       <div className="smk-data-row">
@@ -97,10 +189,31 @@ export function EditPanel({ viewer, store, selected, preview, result }: EditPane
                 ? `CANCELLED(${result.reason}) · ${result.target.id} · 원본 ${fmt(result.before)}`
                 : `REJECTED(${result.reason}) · ${result.detail}`}
         </dd>
+        <dt>작업면 초안</dt>
+        <dd data-testid="object-edit-preview" data-editing={objectPreview ? '' : undefined}>
+          {objectPreview
+            ? `${objectPreview.target.id} · ${objectPreview.mode} · ${fmtSurface(objectPreview.draft)}`
+            : '없음'}
+        </dd>
+        <dt>작업면 결과</dt>
+        <dd data-testid="object-edit-result">
+          {!objectResult
+            ? '없음'
+            : objectResult.status === 'FINISHED'
+              ? `FINISHED(${objectResult.origin}) · ${objectResult.target.id} · 전 ${fmtSurface(objectResult.before)} → 후 ${fmtSurface(objectResult.after)} · saved=false`
+              : objectResult.status === 'CANCELLED'
+                ? `CANCELLED(${objectResult.reason}) · ${objectResult.target.id} · 원본 ${fmtSurface(objectResult.before)}`
+                : `REJECTED(${objectResult.reason}) · ${objectResult.detail}`}
+        </dd>
       </dl>
       {result && (
         <pre className="smk-mono" data-testid="edit-result-json">
           {JSON.stringify(result)}
+        </pre>
+      )}
+      {objectResult && (
+        <pre className="smk-mono" data-testid="object-edit-result-json">
+          {JSON.stringify(objectResult)}
         </pre>
       )}
     </section>
@@ -119,15 +232,24 @@ export function EditProbe() {
       const handles: Record<string, [number, number]> = {};
       const marks: Record<string, number[]> = {};
       scene.traverse((node) => {
-        if (node.name.startsWith('risk-zone:') || node.name.startsWith('zone-box:')) {
+        if (
+          node.name.startsWith('risk-zone:') ||
+          node.name.startsWith('zone-box:') ||
+          node.name.startsWith('surface-box:')
+        ) {
           marks[node.name] = node
             .getWorldPosition(new Vector3())
             .toArray()
             .map((v) => Math.round(v * 1000) / 1000);
         }
-        if (!node.name.startsWith('edit-handle:')) return;
+        const handleName = node.name.startsWith('edit-handle:')
+          ? node.name.slice(12)
+          : node.name.startsWith('object-edit-handle:')
+            ? `object:${node.name.slice(19)}`
+            : null;
+        if (!handleName) return;
         const p = node.getWorldPosition(new Vector3()).project(camera);
-        handles[node.name.slice(12)] = [
+        handles[handleName] = [
           Math.round(rect.left + ((p.x + 1) / 2) * rect.width),
           Math.round(rect.top + ((1 - p.y) / 2) * rect.height),
         ];

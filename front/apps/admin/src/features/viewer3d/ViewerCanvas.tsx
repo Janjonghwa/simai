@@ -1,9 +1,11 @@
 import { CameraRig } from '@/features/viewer3d/CameraRig';
 import { DraftOverlay } from '@/features/viewer3d/editing/DraftOverlay';
 import { GizmoController } from '@/features/viewer3d/editing/GizmoController';
+import { ObbGizmoController } from '@/features/viewer3d/editing/ObbGizmo';
 import { PersonLayer } from '@/features/viewer3d/people/PersonLayer';
 import { RiskScope } from '@/features/viewer3d/risk/RiskScope';
 import { SceneBase } from '@/features/viewer3d/SceneBase';
+import { WorkSurfaceLayer } from '@/features/viewer3d/surfaces/WorkSurfaceLayer';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
 import { ZoneLayer } from '@/features/viewer3d/zones/ZoneLayer';
 import { Canvas, useThree } from '@react-three/fiber';
@@ -80,8 +82,11 @@ export const ViewerCanvas = memo(function ViewerCanvas({ children }: ViewerCanva
         <ZoneLayer />
         <PersonLayer />
       </RiskScope>
+      {/* 등록 작업면(-188). 위험 강조 대상이 아니라 RiskScope 밖에 둔다. 작업면이 없으면 아무것도 그리지 않는다. */}
+      <WorkSurfaceLayer />
       {/* 편집 초안·손잡이는 위험 강조 밖에 둔다(위험은 원본 구역에만 붙는다). */}
       <GizmoController />
+      <ObbGizmoController />
       <DraftOverlay />
       {children}
     </Canvas>

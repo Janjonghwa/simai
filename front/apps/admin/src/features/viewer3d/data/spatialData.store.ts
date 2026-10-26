@@ -13,7 +13,16 @@ import type {
   ZoneSnapshot,
 } from '@/features/viewer3d/data/spatialFrame';
 import { isActiveEvent } from '@/features/viewer3d/data/spatialFrame';
-import type { SourceConnectionChange, ZonesResult } from '@/features/viewer3d/data/spatialSource';
+import type {
+  SourceConnectionChange,
+  WorkSurfacesResult,
+  ZonesResult,
+} from '@/features/viewer3d/data/spatialSource';
+import {
+  adaptWorkSurfaces,
+  NO_WORK_SURFACES,
+  type WorkSurfaceSnapshot,
+} from '@/features/viewer3d/surfaces/workSurfaceGeometry';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 
 // Viewer 인스턴스마다 하나 두는 데이터 Store. 선택·모드(viewer3d.store)와 섞지 않는다.
@@ -54,11 +63,14 @@ export interface SpatialDataState {
   events: ReadonlyMap<string, RiskEventView>;
   health: HealthView | null;
   zones: ZoneSnapshot;
+  /** 등록 작업면 OBB(Operational Geometry, -188). 10 Hz World 와 따로 바뀐다. */
+  workSurfaces: WorkSurfaceSnapshot;
   lastRejected: RejectedInfo | null;
   counts: IngestCounts;
 
   ingest(raw: unknown, receivedAt: number): IngestOutcome;
   ingestZones(result: ZonesResult, receivedAt: number): void;
+  ingestWorkSurfaces(result: WorkSurfacesResult, receivedAt: number): void;
   setConnection(change: SourceConnectionChange): void;
   /** 다른 Source 로 바꿀 때 받은 데이터를 모두 비운다. */
   reset(sourceId: string | null): void;
@@ -113,6 +125,7 @@ export function createSpatialDataStore(): SpatialDataStore {
       events: new Map(),
       health: null,
       zones: NO_ZONES,
+      workSurfaces: NO_WORK_SURFACES,
       lastRejected: null,
       counts: ZERO,
 
@@ -181,6 +194,14 @@ export function createSpatialDataStore(): SpatialDataStore {
         });
       },
 
+      ingestWorkSurfaces: (result, receivedAt) => {
+        set({
+          workSurfaces: result.ok
+            ? adaptWorkSurfaces(result.raw, receivedAt)
+            : { ...NO_WORK_SURFACES, status: 'REJECTED', receivedAt, reason: result.reason },
+        });
+      },
+
       setConnection: (change) => {
         if (change.state === 'CLOSED' || change.state === 'ERROR') dropped = true;
         const recovered = change.state === 'OPEN' && dropped;
@@ -199,6 +220,7 @@ export function createSpatialDataStore(): SpatialDataStore {
           events: new Map(),
           health: null,
           zones: NO_ZONES,
+          workSurfaces: NO_WORK_SURFACES,
           lastRejected: null,
           counts: ZERO,
         });

@@ -3,9 +3,18 @@ import {
   type SpatialDataStore,
 } from '@/features/viewer3d/data/spatialData.store';
 import { SpatialDataProvider } from '@/features/viewer3d/data/SpatialDataProvider';
-import { createEditStore, previewOf } from '@/features/viewer3d/editing/editSession.store';
+import {
+  createEditStore,
+  objectPreviewOf,
+  previewOf,
+} from '@/features/viewer3d/editing/editSession.store';
 import { EditOverlayContext, EditStoreContext } from '@/features/viewer3d/editing/EditStoreContext';
-import type { ViewerEditPreview, ViewerEditResult } from '@/features/viewer3d/editing/editTypes';
+import type {
+  ViewerEditPreview,
+  ViewerEditResult,
+  ViewerObjectEditPreview,
+  ViewerObjectEditResult,
+} from '@/features/viewer3d/editing/editTypes';
 import { PersonModelContext } from '@/features/viewer3d/people/PersonLayer';
 import type { Viewer3DProps, ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
 import { createViewerStore, toStatus } from '@/features/viewer3d/viewer3d.store';
@@ -47,6 +56,8 @@ export function ViewerShell({
   onStatusChange,
   onEditPreview,
   onEditResult,
+  onObjectEditPreview,
+  onObjectEditResult,
   editDraftOverlay = null,
   source,
   className,
@@ -65,7 +76,16 @@ export function ViewerShell({
 
   useImperativeHandle(ref, () => {
     const { select, clearSelection, focusOn, setMode } = store.getState();
-    const { begin, cancel, finish, updateField } = edit.store.getState();
+    const {
+      begin,
+      cancel,
+      finish,
+      updateField,
+      cancelObject,
+      finishObject,
+      updateObjectField,
+      createObject,
+    } = edit.store.getState();
     return {
       select,
       clearSelection,
@@ -75,6 +95,10 @@ export function ViewerShell({
       cancelEdit: () => cancel('USER'),
       finishEdit: finish,
       updateEditField: (change) => updateField(change.field, change.value),
+      cancelObjectEdit: () => cancelObject('USER'),
+      finishObjectEdit: finishObject,
+      updateObjectEditField: (change) => updateObjectField(change.field, change.value),
+      beginObjectCreate: createObject,
     };
   }, [store, edit]);
 
@@ -87,6 +111,12 @@ export function ViewerShell({
   const emitStatus = useEffectEvent((status: ViewerStatus) => onStatusChange?.(status));
   const emitEditPreview = useEffectEvent((preview: ViewerEditPreview) => onEditPreview?.(preview));
   const emitEditResult = useEffectEvent((result: ViewerEditResult) => onEditResult?.(result));
+  const emitObjectEditPreview = useEffectEvent((preview: ViewerObjectEditPreview) =>
+    onObjectEditPreview?.(preview),
+  );
+  const emitObjectEditResult = useEffectEvent((result: ViewerObjectEditResult) =>
+    onObjectEditResult?.(result),
+  );
 
   useEffect(() => {
     let last = toStatus(store.getState());
@@ -112,6 +142,20 @@ export function ViewerShell({
       edit.store.subscribe((state, prev) => {
         if (state.lastResult && state.lastResult !== prev.lastResult)
           emitEditResult(state.lastResult);
+        if (state.lastObjectResult && state.lastObjectResult !== prev.lastObjectResult)
+          emitObjectEditResult(state.lastObjectResult);
+        const object = state.objectSession;
+        const objectBefore = prev.objectSession;
+        if (
+          object &&
+          !object.dragging &&
+          (!objectBefore ||
+            objectBefore.target !== object.target ||
+            objectBefore.draft !== object.draft ||
+            objectBefore.dragging)
+        ) {
+          emitObjectEditPreview(objectPreviewOf(object));
+        }
         const now = state.session;
         const before = prev.session;
         if (!now || now.dragging) return;
