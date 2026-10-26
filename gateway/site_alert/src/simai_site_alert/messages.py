@@ -1,4 +1,5 @@
-"""I0 제어 채널 메시지 해석과 site_ack 생성 (contracts/messages: local_alert, alarm_stop, health, site_ack).
+"""I0 제어 채널 메시지 해석과 site_ack·clock_sync_response 생성
+(contracts/messages: local_alert, alarm_stop, health, clock_sync_request, site_ack, clock_sync_response).
 
 형식의 정본은 저장소의 contracts/ 스키마다. 단말은 실행 중에 스키마를 읽지 않고(경보 경로에 파일·검증기 의존을 두지 않음)
 여기서 필요한 필드만 직접 확인한다. 시험(tests/test_contract.py)이 계약 예시를 이 해석기에 넣고, 만든 site_ack 를
@@ -27,6 +28,8 @@ from typing import Any, Literal
 SITE_ACK_SCHEMA_VERSION = "2.1.0"
 # laptop_heartbeat 계약 버전(contracts/examples/laptop_heartbeat.json 과 같다)
 LAPTOP_HEARTBEAT_SCHEMA_VERSION = "1.2.0"
+# clock_sync_response 계약 버전(contracts/examples/clock_sync_response.json 과 같다)
+CLOCK_SYNC_SCHEMA_VERSION = "1.3.0"
 
 SITE_SEVERITIES = ("CRITICAL", "HIGH")  # 노트북 로컬 경보 대상 (명세 7.3)
 LIFECYCLES = ("RAISED", "UPDATED", "RESOLVED")
@@ -124,13 +127,21 @@ class Health:
 
 
 @dataclass(frozen=True)
+class ClockSyncRequest:
+    """노트북–Pod 시계 차이 교환 요청 (명세 3.9, 계약 clock_sync_request). app 이 받은 즉시 clock_sync_response 로 답한다."""
+
+    exchange_id: str
+    t1_ms: int
+
+
+@dataclass(frozen=True)
 class Other:
-    """단말이 쓰지 않는 메시지(clock_sync_request 등). 무시한다."""
+    """단말이 쓰지 않는 메시지. 무시한다."""
 
     msg_type: str
 
 
-Message = LocalAlert | AlarmStop | Health | Other
+Message = LocalAlert | AlarmStop | Health | ClockSyncRequest | Other
 
 
 def _is_int(v: Any) -> bool:
@@ -329,6 +340,18 @@ def parse_health(env: Envelope) -> Health:
     )
 
 
+def parse_clock_sync_request(env: Envelope) -> ClockSyncRequest:
+    """돌려줄 두 필드(exchange_id, t1_ms)가 계약 형식이 아니면 거부한다(답하지 않는다: Tier 0 가 버릴 응답을 만들지 않음)."""
+    p = env.payload
+    exchange_id = p.get("exchange_id")
+    if not isinstance(exchange_id, str) or not _UUID.match(exchange_id):
+        raise Rejected("MALFORMED", "clock_sync_request: exchange_id 가 UUID 가 아니다")
+    t1_ms = p.get("t1_ms")
+    if not _is_int(t1_ms) or t1_ms < 0:
+        raise Rejected("MALFORMED", "clock_sync_request: t1_ms 가 0 이상의 정수가 아니다")
+    return ClockSyncRequest(exchange_id=exchange_id, t1_ms=t1_ms)
+
+
 def parse_message(obj: Any) -> Message:
     env = parse_envelope(obj)
     if env.msg_type == "local_alert":
@@ -337,6 +360,8 @@ def parse_message(obj: Any) -> Message:
         return parse_alarm_stop(env)
     if env.msg_type == "health":
         return parse_health(env)
+    if env.msg_type == "clock_sync_request":
+        return parse_clock_sync_request(env)
     return Other(env.msg_type)
 
 
@@ -385,4 +410,27 @@ def build_laptop_heartbeat(*, laptop_id: str, now_ms: int, payload: dict[str, An
         "sent_at": now_ms,
         "source_id": laptop_id,
         "payload": payload,
+    }
+
+
+def build_clock_sync_response(
+    *, request: ClockSyncRequest, laptop_id: str, t2_ms: int, t3_ms: int
+) -> dict[str, Any]:
+    """clock_sync_request → clock_sync_response 봉투 (contracts/messages/clock_sync_response.schema.json, 명세 3.9).
+
+    exchange_id·t1_ms 는 요청 값 그대로, t2_ms 는 요청 수신 시각, t3_ms 는 응답 송신 직전 시각(노트북 벽시계 UTC ms)이다.
+    sent_at 은 t3_ms 와 같다(Tier 0 쪽 simai_ai.tracking.clock_sync.build_clock_sync_response 와 같은 계산).
+    t3_ms < t2_ms(그 사이 노트북 시계가 뒤로 뜀)면 ValueError: 계약을 어기는 응답을 만들지 않는다.
+    """
+    if not _is_int(t2_ms) or not _is_int(t3_ms) or t2_ms < 0:
+        raise ValueError("t2_ms·t3_ms 는 0 이상의 정수다")
+    if t3_ms < t2_ms:
+        raise ValueError(f"t3_ms({t3_ms}) 가 t2_ms({t2_ms}) 보다 작다")
+    return {
+        "schema_version": CLOCK_SYNC_SCHEMA_VERSION,
+        "msg_type": "clock_sync_response",
+        "msg_id": str(uuid.uuid4()),
+        "sent_at": t3_ms,
+        "source_id": laptop_id,
+        "payload": {"exchange_id": request.exchange_id, "t1_ms": request.t1_ms, "t2_ms": t2_ms, "t3_ms": t3_ms},
     }

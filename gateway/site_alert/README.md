@@ -15,6 +15,7 @@ RunPod Tier 0 가 LIVE 로 판정한 CRITICAL·HIGH 경보(`local_alert`)를 I0 
 | 부록 D-G0-04 | 수신 → 소리 시작 호출 지연을 `bench` 로 잰다 |
 | 3.2 이중 감시, 3.10 표, 6.5 | 장애별 현장 표시(S15P31A101-91): Tier 0·영상이 끊기면 “관제 중단”, EC2 만 끊기면 “원격 관제 장애”, 정상이면 “관제 정상”. 원인과 연결 상세(Tier 0 · 영상 n/4대 · EC2)를 함께 띄운다. 아래 '장애 감시' |
 | FR-134, 12.6, 계약 `laptop_heartbeat` | 1초마다 노트북 → EC2 `POST /api/devices/heartbeat`(HTTPS, 기기 토큰)와 노트북 → Tier 0(I0 제어 채널) 하트비트. 내용은 장애 상태 기계가 만든다 |
+| 3.9 시계 차이 교환, 계약 `clock_sync_request`·`clock_sync_response` | 요청을 받은 즉시 같은 제어 채널로 답한다(S15P31A101-289). `exchange_id`·`t1_ms` 그대로, `t2_ms` = 수신 콜백에 들어온 시각, `t3_ms` = 보내기 직전 시각(노트북 벽시계 UTC ms, `sent_at` = `t3_ms`). 경보 잠금을 기다리지 않는다. 형식이 틀린 요청은 거부로 기록만 하고 답하지 않으며(연결 유지), 그 사이 시계가 뒤로 뛰면(t3 < t2) 보내지 않는다. 이 응답이 없으면 Tier 0 health 의 `pipeline_lag_ms` 가 늘 null 이다 |
 | 3.12 엔드포인트 등록, 12.7·14 공개키 고정 | Tier 0 주소·포트는 EC2 `GET /api/endpoints/tier0`(기기 토큰)로 조회해 붙고, 끊기거나 연결 중 재조회(30초)에서 바뀌면 다시 붙음. 서버 공개키 지문이 미리 고정한 값과 다르면 기기 토큰을 보내기 전에 끊음(S15P31A101-159) |
 
 ## 구조
@@ -26,7 +27,7 @@ RunPod Tier 0 가 LIVE 로 판정한 CRITICAL·HIGH 경보(`local_alert`)를 I0 
 ```
 src/simai_site_alert/
   core.py       경보 코어: 활성 경보 집합(event_id → ActiveAlert), 중복·역순, ACK, 현장 확인, 시험 경보, 소리 판단
-  messages.py   I0 메시지 해석(local_alert·alarm_stop·health)과 site_ack 생성
+  messages.py   I0 메시지 해석(local_alert·alarm_stop·health·clock_sync_request)과 site_ack·clock_sync_response 생성
   sound.py      등급별 소리 패턴, 소리 백엔드(WinSound / Fake / Null)
   display.py    화면 문구(순수 함수, 헤드리스 시험)와 tkinter 창
   transport.py  I0 제어 채널 인터페이스와 WebSocket 구현(wss, 기기 토큰, 엔드포인트 조회·재접속), 시험용 InMemory 채널
@@ -155,6 +156,6 @@ uv run simai-site-alert bench --sound win --count 100  # 실제 winsound (짧은
 ## 하지 않는 것 (다른 티켓)
 
 - 카메라 영상 TLS 연결(공개키 고정 검사는 `pinning.PinnedPeerVerifier` 를 같이 쓴다), RunPod HTTPS 프록시 예비 경로.
-- 시계 차이 교환. “AI 분석 지연” 표시(분석 워커 상태가 노트북에 오지 않는다).
+- “AI 분석 지연” 표시(분석 워커 상태가 노트북에 오지 않는다).
 - Tier 0 쪽 `laptop_heartbeat` 수신 감시(`health.gateway_link` 판정)와 EC2 쪽 하트비트 수신·구분 표시(server).
 - 실제 Tier 0 연결.

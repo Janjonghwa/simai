@@ -15,6 +15,9 @@
     "ai/services/tier0/**": [
       "tests/deploy/test_session1_live.py",
       "tests/deploy/test_crash_recovery_g3.py"
+    ],
+    "gateway/site_alert/**": [
+      "tests/services/tier0/test_site_alert_clock_sync.py"
     ]
   }
 }

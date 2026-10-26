@@ -253,6 +253,12 @@ def test_f2_external_path_rules_select_deploy_tests(capsys: pytest.CaptureFixtur
         assert expected_test in out
 
 
+def test_site_alert_change_selects_tier0_round_trip():
+    """현장 경보 단말(gateway/site_alert) 변경은 실제 Tier 0 와의 시계 교환 왕복 시험을 고른다(S15P31A101-289)."""
+    selected = select_tests(["gateway/site_alert/src/simai_site_alert/app.py"], ai_dir=AI_DIR)
+    assert "tests/services/tier0/test_site_alert_clock_sync.py" in selected
+
+
 def test_f3_string_literals_and_path_rules_select_all_five_cases():
     """F3 반례: review.md F3 표의 5가지 subprocess·문자열·데이터 경로 사례가 모두 빠짐없이 선택된다."""
     cases = [

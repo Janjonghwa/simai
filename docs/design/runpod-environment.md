@@ -109,7 +109,7 @@ Host simai-pod
 | 입력 | 녹화 재생(`rec-20261021-031045z-classroom-dev-test`, 교실 4대 2304x1296 25 fps 180 s, relay `kind = "file"`·`loop`·`fps = 25`) | 두 경로에 같은 영상이 들어간다. 테더링 때 카메라 공유기 LAN 과 휴대폰 망을 같이 잡는 이중 망 구성이 필요 없고, C110 RTSP 2세션 제한·교실 장면 변화와 무관하다. 실카메라 relay 는 (a) 만 덧붙여 볼 수 있다 |
 | 포트 | 제어 17000, 영상 17001(4대 공용) | 대칭 매핑 요청 번호 70000·70001 의 실제 값. 영상 포트를 같이 써도 연결은 카메라마다 따로라(TCP 연결마다 WebSocket 하나) 독립성은 같고 허용 대상이 줄어든다. Windows 동적 포트 예약(49152~) 밖 |
 | 노트북 대상 | Pod 가 쓴 `endpoint.json`(주소·포트·지문) + 사람이 옮긴 `--pin` | EC2 `GET /api/endpoints/tier0` 가 서버에 아직 없다. 신뢰 규칙은 제품과 같다(고정값에 없는 지문은 붙지 않음, 실제 서버 키가 다르면 토큰 전에 끊음) |
-| 노트북 제어 채널 | 현장 경보 단말 코드(SiteAlertApp·WebSocketControlChannel·SiteLinkMonitor) + 시계 교환 응답 | 단말은 `clock_sync_request` 에 답하지 않는다(무시). 답이 없으면 T_lag 가 null 이고 frame_age 에 두 컴퓨터 시계 차이가 섞인다. 하네스 노트북 흉내와 같은 방식으로 도구가 답한다 |
+| 노트북 제어 채널 | 현장 경보 단말 코드(SiteAlertApp·WebSocketControlChannel·SiteLinkMonitor) | 시계 교환(`clock_sync_request`)은 단말이 받은 즉시 답한다(S15P31A101-289). 처음(-288)에는 단말이 답하지 않아 도구가 대신 답했다(답이 없으면 T_lag 가 null 이고 frame_age 에 두 컴퓨터 시계 차이가 섞인다) |
 | Pod Tier 0 | 시뮬레이터 교실 보정(cam1~cam4), 그 자리 자체 서명 키(임시 폴더, 끝나면 지움), EC2 없음 | 지연·끊김만 본다. 위치·판정은 의미가 없고 결과는 제품 성능 지표가 아니다(AGENTS 규칙 7) |
 | 지표 | frame_age_ms_p95(표시 파일 5초 창), 보정 T_lag(표시 파일 `gpu_priority.load.lag_ms` 와 노트북이 받은 health `pipeline_lag_ms`), 노트북 송신 Mbps·fps, Pod 수신 fps·`gateway_to_runpod_loss`, 영상·제어 재연결 수와 시각, 90~110 s 로 끝난 연결 구간 수(100초 끊김), 최장 연결 | 표시 파일은 5초마다, 노트북 relay 는 1초마다 기록. 측정 시간이 끝나며 닫는 끊김은 세지 않는다 |
 
@@ -120,7 +120,7 @@ T_lag p50 78·p95 122 ms(같은 컴퓨터), health lag null 0/27, 끊김 0 이�
 현장 경보 단말의 EC2 하트비트가 https 만 받아 제어 채널을 띄울 수 없고, 인증서 검증을 끄는 우회는 하지 않는다.
 
 남은 위험: RunPod 프록시의 연결 시간 상한이 영상처럼 계속 흐르는 WebSocket 에도 걸리는지(걸리면 relay·제어가 재연결로 버티는지 측정이 답한다), 테더링 망의 CGNAT·지터,
-시연장 망의 TLS 가로채기(SSAFY 망은 2026-10-26 검증 켠 채 접속 확인, 시연장은 다시 확인), 현장 경보 단말의 시계 교환 미구현(제품 경로에서는 T_lag 를 모른다 → system_health UNSAFE_UNKNOWN), EC2 엔드포인트 조회 미구현.
+시연장 망의 TLS 가로채기(SSAFY 망은 2026-10-26 검증 켠 채 접속 확인, 시연장은 다시 확인), EC2 엔드포인트 조회 미구현. 현장 경보 단말의 시계 교환은 S15P31A101-289 에서 넣었다.
 
 ## GPU 1차 세션 큐 (`deploy/scripts/gpu_session1.py`)
 

@@ -46,7 +46,6 @@ import sys
 import tempfile
 import threading
 import time
-import uuid
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -354,20 +353,10 @@ def cmd_laptop(args: argparse.Namespace) -> int:  # pragma: no cover - gateway/r
     on_message, on_connected = app._on_message, app._on_connected
 
     def record_message(raw: str | bytes, received_mono: float) -> None:
-        t2 = now_ms()
+        # 시계 교환(clock_sync_request)은 제품 단말(SiteAlertApp)이 받은 즉시 답한다(S15P31A101-289). 도구는 health 만 기록한다
         try:
             msg = json.loads(raw)
-            if isinstance(msg, dict) and msg.get("msg_type") == "clock_sync_request":
-                # 현장 경보 단말은 시계 교환에 아직 답하지 않는다(clock_sync 무시). 답이 없으면 Tier 0 가 노트북–Pod 시계 차이를 몰라
-                # T_lag 가 null 이고 frame_age 에 두 컴퓨터 시계 차이가 섞인다. 측정 도구가 하네스 노트북 흉내(tier0_site.Laptop)와
-                # 같은 방식으로 답한다(t2 받은 시각, t3 보내는 시각, 계약 clock_sync_response)
-                p = msg.get("payload") or {}
-                t3 = now_ms()
-                channel.send({"schema_version": "1.3.0", "msg_type": "clock_sync_response", "msg_id": str(uuid.uuid4()),
-                              "sent_at": t3, "source_id": laptop_id,
-                              "payload": {"exchange_id": p.get("exchange_id"), "t1_ms": p.get("t1_ms"), "t2_ms": t2,
-                                          "t3_ms": t3}})
-            elif isinstance(msg, dict) and msg.get("msg_type") == "health":
+            if isinstance(msg, dict) and msg.get("msg_type") == "health":
                 p = msg.get("payload") or {}
                 out.write({"t": now_ms(), "kind": "health", "pipeline_lag_ms": p.get("pipeline_lag_ms"),
                            "lower_bound_ms": p.get("pipeline_lag_lower_bound_ms"), "system_health": p.get("system_health"),
