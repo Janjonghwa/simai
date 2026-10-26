@@ -51,8 +51,8 @@
 
 | 항목 | 결정 | 이유 |
 |---|---|---|
-| MoGe-3 정적 형상 | 주력 → 대조군 → 단안 대체로만(v1.3). 대조군 결정은 대체됨 | 실측 K·pose를 입력으로 쓰지 못하고 뷰별 스케일이 흔들림(PoC 0.94\~1.23) |
-| 정적 3D 비교군 | Depth Anything 3 pose-conditioned(DA3NESTED-GIANT-LARGE-1.1)를 MapAnything 외부 모델 인터페이스로 비교(v1.3) | 미터 단위이고 알려진 pose 를 받는다. 가중치는 CC BY-NC(Metric-Large 는 Apache 2.0) |
+| MoGe-3 정적 형상 | 주력 → 대조군 → 단안 대체로만(v1.3). 대조군 결정은 대체됨. EXP-01 비교 큐에서 MoGe 단안 경로를 뺌(Lead 결정 2026-10-26, 스크립트 어댑터는 두되 돌리지 않음). G4 미달 대체도 MoGe-3 단안 + 스케일 보정에서 DA3 혼합 경로(MapAnything 자세 + 원본 해상도 깊이) + 실측 정물 축척으로 바꿈(Lead 결정·사용자 승인 2026-10-26, 5.3) | 실측 K·pose를 입력으로 쓰지 못하고 뷰별 스케일이 흔들림(PoC 0.94\~1.23). DA3 와 역할이 겹치고, 한 장씩 추정이라 카메라별 축척 정합 부담이 크며, 축척 1순위는 실측 정물 |
+| 정적 3D 비교군 | Depth Anything 3(DA3NESTED-GIANT-LARGE-1.1) 두 경로: (a) MapAnything 자세 고정 + 공식 `inference` 자세 조건 깊이(배경 밀도용), (b) 자세 없이 단독 미터 추정(축척 교차 확인 후보, 우선순위 가장 낮음)(5.3, 20.2). 이전의 ‘MapAnything 외부 모델 인터페이스로 끼운 미터 단위 비교’는 대체됨 | 자세를 넣으면 공식 `inference` 가 예측 자세를 입력 자세에 Umeyama 로 맞춰 깊이 단위가 넣은 자세(MapAnything)를 따르고, MapAnything 의 DA3 래퍼는 입력 자세를 고정하지 않아 ‘자세 조건 + 미터’가 한 경로로 성립하지 않는다(`docs/design/exp01-hybrid-depth.md`). NESTED 1.1 가중치 CC BY-NC-4.0 은 MapAnything 기본 가중치와 같은 판단(교육 시연 사용, 공개 산출물 출처 표기). Apache-2.0 대안은 DA3-BASE·DA3-SMALL·DA3METRIC-LARGE |
 | MapAnything 외부 백엔드(VGGT-Ω 등) | 비교군 | 외부 wrapper가 알려진 pose를 소비한다는 보장이 없음. Native 우선 |
 | R2·R3 가장자리 근거 | 등록 작업면 OBB 윗면 둘레(v1.3). 정적 3D 가장자리 결정은 대체됨 | 정적 3D(G4)에 기대면 높이 규칙이 M3 이후로 밀리고 형상 오차가 판정에 들어간다(7.5) |
 | EXP-01 텍스처 메시 | 확장(v1.3) | MVP 는 점군 → 단순 메시 glTF 로 충분하다 |

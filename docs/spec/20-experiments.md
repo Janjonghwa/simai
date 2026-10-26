@@ -27,7 +27,7 @@ Jira는 **EXP-01 / EXP-02**를 큰 Feature 티켓으로 유지하고, 티켓 하
 
 ## 20.2 EXP-01 — Static Scene Reconstruction
 
-**연구 질문:** MapAnything Native의 결과(비교군: Depth Anything 3 pose-conditioned 를 외부 모델 인터페이스로 끼운 것, 5.3)를 10×10m, 4대 고정 카메라 관측과 World 좌표(4.1)에 정합해 COMMITTED Scene에 사용할 수 있는 시각 배경(glTF)으로 만들 수 있는가?
+**연구 질문:** MapAnything Native의 결과(비교군: Depth Anything 3 의 두 경로, 5.3)를 10×10m, 4대 고정 카메라 관측과 World 좌표(4.1)에 정합해 COMMITTED Scene에 사용할 수 있는 시각 배경(glTF)으로 만들 수 있는가?
 
 1. **Baseline:** 소수의 빈 교실 프레임, K·pose, 가중치·CUDA 환경을 고정하고 depth/point map/camera 출력을 기록.
 2. **복원:** 뷰 간 정합→이상점 제거→표면 생성/메시→단순화. MVP 산출물은 점군 → 단순 메시 glTF 이고 텍스처 메시는 확장(부록 C). 동적 사람 영역은 YOLO26-seg 마스크로 제거.
@@ -35,7 +35,9 @@ Jira는 **EXP-01 / EXP-02**를 큰 Feature 티켓으로 유지하고, 티켓 하
 4. **검증:** G4 개발 교실 줄자 실측 대비 10cm, 책상 상판 높이 ±5cm·위치 10cm, 공동 관측 점 중앙값 5cm. 실패/가림/반사/저텍스처 사례도 보고.
 5. **통합:** glTF와 Scene 버전/해시/검증 결과를 내보내고 Three.js 실제 화면에서 배경을 확인.
 
-**실패 대안:** G4 미달 시 MoGe-3(단안) + 스케일 보정, 그래도 실패하면 관리자가 등록한 단순 형상(바닥 평면 + 보수적 OBB). MapAnything 포인트/깊이가 정상 생성됐다는 사실만으로 glTF가 성공했다고 판정하지 않는다.
+**비교 경로와 채택 기준(`docs/design/exp01-hybrid-depth.md`).** 비교군은 (a) MapAnything 자세 고정 + DA3 자세 조건 깊이(깊이 단위 = MapAnything 단위, 배경 밀도용, 독립 축척 근거 아님)와 (b) 자세 없이 DA3NESTED-GIANT-LARGE-1.1 단독(미터 추정, 축척 교차 확인 후보, 우선순위 가장 낮음)이고, MoGe 단안 경로는 큐에서 뺐다(5.3, Lead 결정 2026-10-26). 기준선은 MapAnything 깊이를 원본 해상도로 올리기만 한 결과(fake)다. 같은 입력에서 DA3 결과가 기준선보다 카메라 간 깊이 차(|Δd|/d)와 왕복 재투영이 작고, 바닥 rms 1.5 cm 이하, 충돌로 뺀 점 비율 5% 이하, 분석 워커 GPU 예산 안이면 배경용 깊이로 쓸 만하다고 보고 G4 실측으로 넘어간다. MapAnything 입력 해상도 비교(518·1036·1554·원본 2296×1288, 보정용·배경용 따로 판정)는 5.3 을 따른다.
+
+**실패 대안:** G4 미달 시 DA3 혼합 경로(MapAnything 자세 + 원본 해상도 깊이, S15P31A101-283) + 실측 정물 축척(S15P31A101-100), 그래도 실패하면 관리자가 등록한 단순 형상(바닥 평면 + 보수적 OBB). MapAnything 포인트/깊이가 정상 생성됐다는 사실만으로 glTF가 성공했다고 판정하지 않는다.
 
 **필수 산출물:** 재현 명령, 모델/입력 해시, 카메라 매개변수, 샘플 점군·glTF, 월드 정렬 결과, 성능(p50/p95·VRAM peak), 실패/복구 기록, Reviewer 판정.
 

@@ -14,8 +14,8 @@
 | WildCamera (NeurIPS 2023) | 내부 파라미터 추정 후보 | 제외 | 코드 Apache-2.0, 가중치 라이선스 표기 없음. 렌즈 왜곡을 내지 않음 |
 | HumanCalib | 사람 기반 자동 보정(번들 조정) | 원리 참고(자체 구현, 4.3) | 코드 MIT. 코드·3D lifter 를 쓰지 않는다(기본 3D lifter MeTRAbs 는 비상업, VideoPose3D 는 CC BY-NC) |
 | MapAnything | 초기 보정 추정, 정적 3D(통합 이미지의 같은 가상환경 torch 2.11.0, `simai-bootstrap scene` 일회성 장면 준비 모드, 3.12. 2.7.1 `mapanything` 이미지는 동등성 비교까지만 유지) | MVP | 코드 Apache 2.0. 가중치 `facebook/map-anything`은 CC-BY-NC 4.0, `facebook/map-anything-apache`는 Apache 2.0(선행 PoC에서 품질 크게 낮음) |
-| Depth Anything 3 | 정적 3D 비교군(pose-conditioned, MapAnything 외부 모델 인터페이스) | 비교 | DA3NESTED-GIANT-LARGE-1.1 은 CC BY-NC, Metric-Large 는 Apache 2.0 |
-| MoGe-3 | 정적 3D 단안 대체 | 대안 | 코드 MIT, 체크포인트 확인 필요 |
+| Depth Anything 3 | 정적 3D 비교군 두 경로(MapAnything 자세 고정 + 공식 `inference` 자세 조건 깊이, 자세 없이 DA3NESTED 단독 미터 추정, 5.3). 실험 단계에서는 통합 잠금에 넣지 않고 별도 가상환경에서 깊이만 낸다(`docs/design/exp01-hybrid-depth.md`) | 비교 | 코드 Apache-2.0. DA3NESTED-GIANT-LARGE-1.1 가중치는 CC BY-NC-4.0 이고 MapAnything 기본 가중치와 같은 판단(교육 시연 사용, 공개 산출물 출처 표기). Apache-2.0 대안은 DA3-BASE·DA3-SMALL·DA3METRIC-LARGE |
+| MoGe-3 | 정적 3D 단안 대체였으나 EXP-01 비교 큐와 G4 미달 대체에서 모두 뺌(Lead 결정 2026-10-26, 5.3) | 제외 | 코드 MIT, 체크포인트 확인 필요 |
 | CCVS | 카메라별 높이 검산 | 보조 진단·재보정 후보 거름(자체 구현, 4.3) | 방법만 참고(코드 미사용) |
 | DMMR | 사람 기반 내부 파라미터 추정 | 참고 | 확인 필요 |
 | ExtrCamCalib_PersonKeypoints | 운영 중 보정 감시 | 참고 | 확인 필요 |
