@@ -279,7 +279,8 @@ def _adjust(args: argparse.Namespace, created_at: int) -> int:
         _write(out, record)
         return EXIT_NOT_PROPOSED
     store = CalibrationVersionStore(camera_ids=[c["camera_id"] for c in header["cameras"]])
-    proposal = result.propose_to(store, at_ms=created_at)
+    # World 축 출처(-102 결과의 axes_source)를 보정 문서에 옮긴다(AGENTS 7). 없으면 비운다
+    proposal = result.propose_to(store, at_ms=created_at, world_axes_source=alignment.record.get("axes_source"))
     record["proposal"] = {
         "adopted": proposal.adopted,
         "state": str(proposal.judgement.state),

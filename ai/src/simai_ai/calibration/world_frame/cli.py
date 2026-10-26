@@ -7,10 +7,16 @@
     # 2) GPU 세션: run_mapanything.py --mode prepared --prepared <폴더> (ai/experiments/static_scene/session3_jobs.py)
     # 3) 노트북: MapAnything 결과 → World 고정 → -214 의 --world-alignment 입력
     uv run --extra calibration python -m simai_ai.calibration.world_frame.cli fix --run-dir <결과 폴더> \\
-        --intrinsics <같은 기록> --prepared <같은 입력 폴더> [--scale-evidence …] [--foot-points …]
+        --intrinsics <같은 기록> --prepared <같은 입력 폴더> [--scale-evidence …] [--foot-points …] \\
+        [--floor-points <바닥 두 점.json>] [--camera-heights <실측 카메라 높이.json>]
 
+- 축 우선순위(-277): 선택 입력 `--floor-points`(설치자가 카메라 하나의 원본 그림에서 찍은 바닥 두 점: 원점, +X 방향 점,
+  MANUAL_FLOOR_POINTS, `--prepared` 실행에서만) > 수직 경계 벽 두 방향(WALLS) > 경계 벽 한 방향 + 바닥(WALL_AND_FLOOR, 원점은
+  벽·바닥 교선 위 카메라 중심 평균의 수선 발) > 실패. 선택 입력 `--camera-heights`(줄자로 잰 바닥 → 렌즈 중심 높이, m)는
+  스케일 근거 MEASURED_CAMERA_HEIGHT 이고, 없으면 기존 근거(없으면 MODEL_ESTIMATE)다.
 - `fix` 결과(`simai.world_alignment`)는 status OK 일 때만 `mapanything_to_world`(4×4 [sR | T])와 PROVISIONAL 보정 문서
-  (`calibration`, 계약 calibration 2.0.0)를 싣는다. 실패(바닥 없음·축 모호·발 접지점 불일치)면 사유만 싣고 변환은 비운다.
+  (`calibration`, 계약 calibration 2.1.0, `world_axes_source` 포함)를 싣는다. 실패(바닥 없음·축 모호·발 접지점 불일치·
+  바닥 두 점 무효)면 사유만 싣고 변환은 비운다.
 - 출처: 영상·내부 파라미터 기록·스케일 근거·발 접지점의 출처를 -214 `combine_input_provenance` 로 합친다.
   input_provenance.calibration 은 MODEL_ESTIMATE(`mapanything-<run_id>`, 카메라를 모델이 추정)이고 입력 중 하나라도
   SIM·DATASET_GT 면 그 출처(결과 전체 상한)다. provider_source 는 G1_AUTO, 상한이면 그 출처.
@@ -36,8 +42,8 @@ from typing import Any
 AI_DIR = Path(__file__).resolve().parents[4]
 DEFAULT_OUT_DIR = AI_DIR / "experiments" / "recordings" / "world-frame"
 RESULT_FORMAT = "simai.world_alignment"  # -214 calibration.extrinsics.initial.WORLD_ALIGNMENT_FORMAT
-RESULT_VERSION = "0.1.0"
-PROVIDER_VERSION = "world-frame-0.1.0"
+RESULT_VERSION = "0.2.0"  # 0.2.0: axes_source·origin_source, inputs.floor_points·camera_heights (-277)
+PROVIDER_VERSION = "world-frame-0.2.0"
 
 EXIT_OK = 0
 EXIT_CONFIG = 2
@@ -66,6 +72,12 @@ def build_parser() -> argparse.ArgumentParser:
     fx.add_argument("--prepared", type=Path, help="prepare 출력 폴더(사람 마스크·입력 출처). 없으면 마스크 없이(경고)")
     fx.add_argument("--scale-evidence", type=Path, help='{"estimates": [{"basis","scale","sample_count","label"}]}')
     fx.add_argument("--foot-points", type=Path, help='{"format": "simai.foot_contacts", "points_mapanything": [...]}')
+    fx.add_argument("--floor-points", type=Path,
+                    help='바닥 두 점 {"format": "simai.floor_points", "camera_id", "pixel_space": "ORIGINAL"|"PREPARED", '
+                         '"origin_px": [u, v], "x_axis_px": [u, v]} (축 출처 MANUAL_FLOOR_POINTS)')
+    fx.add_argument("--camera-heights", type=Path,
+                    help='실측 카메라 높이(m, 바닥 → 렌즈 중심) {"format": "simai.camera_heights", '
+                         '"heights_m": {"cam_A": 2.71, …}} 또는 {"cam_A": 2.71, …}')
     fx.add_argument("--frames-source", choices=["FILE", "LIVE", "SIM", "DATASET"], help="prepared 가 없을 때 입력 영상 출처")
     fx.add_argument("--dataset-id")
     fx.add_argument("--site-id", default=None)
@@ -126,6 +138,8 @@ def _prepare(args: argparse.Namespace) -> int:
 
 
 def _fix(args: argparse.Namespace, created_at: int) -> int:
+    import numpy as np
+
     from simai_ai.calibration.criteria import CalibrationJudgement, ScaleBasis, ScaleDecision, ScaleEstimate
     from simai_ai.calibration.document import CameraCalibration, build_calibration_doc
     from simai_ai.calibration.extrinsics.initial import (
@@ -138,6 +152,9 @@ def _fix(args: argparse.Namespace, created_at: int) -> int:
     from simai_ai.calibration.world_frame.frame import STATUS_FAILED, STATUS_OK, WorldFrameConfig, fix_world_frame
     from simai_ai.calibration.world_frame.inputs import (
         cross_view_reprojection,
+        floor_point_rays,
+        load_camera_heights,
+        load_floor_points,
         load_foot_points,
         load_mapanything_run,
         load_prepared,
@@ -201,6 +218,25 @@ def _fix(args: argparse.Namespace, created_at: int) -> int:
     if args.foot_points:
         feet, feet_input = load_foot_points(args.foot_points)
         feet_input["input_provenance"] = checked_provenance(feet_input["input_provenance"], args.foot_points.name)
+    rays, points_input = None, None
+    if args.floor_points:
+        if not prepared:
+            raise ValueError("바닥 두 점(--floor-points)은 known-K 입력 폴더(--prepared)로 돈 실행에서만 받는다"
+                             "(픽셀 → 광선 규약)")
+        spec, points_input = load_floor_points(args.floor_points)
+        points_input["input_provenance"] = checked_provenance(points_input["input_provenance"], args.floor_points.name)
+        if spec["camera_id"] not in camera_ids:
+            raise ValueError(f"바닥 두 점의 카메라 {spec['camera_id']!r} 가 MapAnything 결과에 없다({camera_ids})")
+        cam = intrinsics.camera(spec["camera_id"]).camera
+        rays = floor_point_rays(run, prepared, spec, K=np.asarray(cam["K"], dtype=float),
+                                dist=np.asarray(cam["distortion"]["coeffs"], dtype=float))
+    heights, heights_input = None, None
+    if args.camera_heights:
+        heights, heights_input = load_camera_heights(args.camera_heights)
+        heights_input["input_provenance"] = checked_provenance(heights_input["input_provenance"], args.camera_heights.name)
+        unknown_h = sorted(set(heights) - set(camera_ids))
+        if unknown_h:
+            raise ValueError(f"카메라 높이에 MapAnything 결과에 없는 카메라가 있다: {unknown_h} (결과 카메라 {camera_ids})")
     # 모든 입력(영상·내부 파라미터·스케일·발)의 출처를 -214 와 같은 규칙으로 합친다: 하나라도 SIM·DATASET_GT 면
     # calibration 출처가 그 값이 되어 결과 전체가 상한이고(is_upper_bound 가 출처와 맞음) 보정 문서도 그 출처다
     provenance, sources = combine_input_provenance(
@@ -209,6 +245,8 @@ def _fix(args: argparse.Namespace, created_at: int) -> int:
             "intrinsics": checked_provenance(intr_doc.get("input_provenance"), args.intrinsics.name),
             "scale_evidence": scale_input and scale_input["input_provenance"],
             "foot_points": feet_input and feet_input["input_provenance"],
+            "floor_points": points_input and points_input["input_provenance"],
+            "camera_heights": heights_input and heights_input["input_provenance"],
         },
         f"mapanything-{run_id}",
     )
@@ -218,7 +256,8 @@ def _fix(args: argparse.Namespace, created_at: int) -> int:
     # combine_input_provenance 는 첫 입력을 keypoints 로 부른다. 여기서는 영상(입력 폴더) 출처다
     upper = {("frames" if k == "keypoints" else k): v for k, v in sources["upper_bound_inputs"].items()}
 
-    result = fix_world_frame(run.all_points(), run.cam2world(), scale_estimates=estimates, foot_points=feet, config=cfg)
+    result = fix_world_frame(run.all_points(), run.cam2world(), scale_estimates=estimates, foot_points=feet,
+                             floor_points=rays, camera_heights=heights, config=cfg)
     widths = {c.camera_id: int(c.camera["image_size"][0]) for c in intrinsics.cameras}
     record: dict[str, Any] = {
         "format": RESULT_FORMAT,
@@ -226,6 +265,8 @@ def _fix(args: argparse.Namespace, created_at: int) -> int:
         "status": result.status,
         "reason": result.reason,
         "detail": result.detail,
+        "axes_source": result.axes_source,
+        "origin_source": (result.evidence.get("origin") or {}).get("source") if result.status == STATUS_OK else None,
         "created_at": created_at,
         "input_provenance": provenance,
         "cameras_json_sha256": run.record["cameras_json"]["sha256"],
@@ -235,6 +276,8 @@ def _fix(args: argparse.Namespace, created_at: int) -> int:
             "intrinsics": {"path": args.intrinsics.name, "sha256": _sha256(intr_raw)},
             "scale_evidence": scale_input,
             "foot_points": feet_input,
+            "floor_points": points_input,
+            "camera_heights": heights_input,
         },
         "evidence": result.evidence,
         "reprojection": cross_view_reprojection(run, original_width=widths),
@@ -269,6 +312,7 @@ def _fix(args: argparse.Namespace, created_at: int) -> int:
             judgement=judgement,
             fallback_scale_basis=ScaleBasis.MODEL_ESTIMATE,
             site_id=args.site_id,
+            world_axes_source=result.axes_source,
         )
         problems = check_calibration(doc)
         if problems:
@@ -276,7 +320,8 @@ def _fix(args: argparse.Namespace, created_at: int) -> int:
             record.pop("mapanything_to_world")
         else:
             record["calibration"] = doc
-            record["note"] = (f"World 고정: {result.evidence['axes']['rule']}. 스케일 {result.scale_basis} "
+            record["note"] = (f"World 고정({result.axes_source}): {result.evidence['axes']['rule']}. "
+                              f"스케일 {result.scale_basis} "
                               f"{result.scale:.4f}. PROVISIONAL(독립 검증 전)")
     _write(out, record)
     _print_summary(record)
@@ -295,10 +340,19 @@ def _provider_source(provenance: dict[str, Any]) -> str:
 
 def _print_summary(record: dict[str, Any]) -> None:
     ev = record.get("evidence") or {}
-    floor, room = ev.get("floor") or {}, ev.get("room") or {}
-    print(f"상태 {record['status']} {record.get('reason') or ''}")
+    floor, room, scale = ev.get("floor") or {}, ev.get("room") or {}, ev.get("scale") or {}
+    print(f"상태 {record['status']} {record.get('reason') or ''} 축 출처 {record.get('axes_source')}")
     if floor:
         print(f"바닥: 지지 {floor.get('inliers')} rms {floor.get('rms_ma')} 발 확인 {floor.get('foot_check', {}).get('status')}")
+    if scale:
+        print(f"스케일: {scale.get('basis')} {scale.get('scale')} 교차 확인 {scale.get('cross_checks')}")
+    if scale.get("camera_heights"):
+        h = scale["camera_heights"]
+        print(f"카메라 높이(모델 단위): {h.get('model_height_ma')} 비 {h.get('ratio')} 퍼짐 {h.get('spread')} "
+              f"{h.get('rejected') or ''}")
+    fp = (ev.get("axes") or {}).get("floor_points")
+    if fp:
+        print(f"바닥 두 점({fp.get('camera_id')}): {fp.get('points')} 거리 {fp.get('separation_m')} m")
     if room:
         print(f"카메라 높이(m): {room.get('camera_heights_m')} 바닥 XY p2 {room.get('floor_xy_p2_m')} p98 {room.get('floor_xy_p98_m')}")
     for cid, rep in (record.get("reprojection") or {}).get("cameras", {}).items():

@@ -21,6 +21,7 @@ AI_DIR = Path(__file__).resolve().parents[2]
 CALIBRATION_SOURCES = {"G1_AUTO", "DATASET_GT", "SIM", "MODEL_ESTIMATE"}
 SCALE_BASES = {
     "MEASURED_OBJECT",
+    "MEASURED_CAMERA_HEIGHT",
     "KNOWN_PERSON_HEIGHT",
     "HUMAN_HEIGHT_STATS",
     "STANDARD_OBJECT",
@@ -81,3 +82,10 @@ def test_generators_emit_major_2(rel, const):
     m = re.search(rf'^{const} = "(\d+\.\d+\.\d+)"', text, re.MULTILINE)
     assert m, f"{rel} 에 {const} 가 없다"
     assert _major(m.group(1)) == CALIBRATION_MAJOR
+
+
+def test_world_axes_source_enum_matches_code():
+    """World 축 출처(2.1.0)는 계약 enum 과 코드 상수가 같다. 생략할 수 있는 선택 필드다."""
+    schema = _schema("providers/calibration.schema.json")
+    assert tuple(schema["properties"]["world_axes_source"]["enum"]) == contract.WORLD_AXES_SOURCES
+    assert "world_axes_source" not in schema["required"]

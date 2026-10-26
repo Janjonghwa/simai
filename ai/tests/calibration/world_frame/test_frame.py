@@ -104,12 +104,12 @@ def test_floor_only_desk_and_ceiling_never_becomes_floor(tmp_path):
     assert res.reason in (FLOOR_NOT_FOUND, AXES_AMBIGUOUS)
 
 
-def test_one_wall_direction_is_ambiguous(tmp_path):
+def test_one_wall_direction_uses_wall_and_floor(tmp_path):
+    """벽 방향 하나(-277 전에는 AXES_AMBIGUOUS): 벽 하나 + 바닥으로 축(WALL_AND_FLOOR). 자세한 시험은 test_open_space."""
     run = make_run(tmp_path, drop_labels=(3, 4))  # y=0, y=W 벽이 안 보임 → 벽 방향 하나
     _, res = _fix(run)
-    assert res.status == STATUS_FAILED and res.reason == AXES_AMBIGUOUS
-    assert "ONE_WALL_DIRECTION" in res.detail
-    assert "floor" in res.evidence  # 바닥은 찾았지만 축이 없으면 변환을 내지 않는다
+    assert res.status == STATUS_OK and res.axes_source == "WALL_AND_FLOOR"
+    assert "ONE_WALL_DIRECTION" in res.evidence["axes"]["walls_status"]
 
 
 def _wall(normal, inliers):

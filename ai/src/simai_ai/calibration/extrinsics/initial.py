@@ -205,6 +205,7 @@ def load_world_alignment(path: Path) -> WorldAlignment:
         "note": doc.get("note"),
         "cameras_json_sha256": doc.get("cameras_json_sha256"),
         "intrinsics_sha256": ((doc.get("inputs") or {}).get("intrinsics") or {}).get("sha256"),
+        "axes_source": doc.get("axes_source"),  # -277: WALLS·WALL_AND_FLOOR·MANUAL_FLOOR_POINTS, 0.1.0 결과는 없음(None = 기록 없음)
     }
     return WorldAlignment(Ra, M[:3, 3].copy(), float(s), SOURCE_PROVIDED, record)
 

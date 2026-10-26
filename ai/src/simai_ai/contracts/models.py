@@ -127,9 +127,9 @@ class ReprojectionErrorPx(BaseModel):
 
 
 class CalibrationScaleBasis(
-    RootModel[Literal['MEASURED_OBJECT', 'KNOWN_PERSON_HEIGHT', 'HUMAN_HEIGHT_STATS', 'STANDARD_OBJECT', 'MODEL_ESTIMATE', 'DATASET_GT']]
+    RootModel[Literal['MEASURED_OBJECT', 'MEASURED_CAMERA_HEIGHT', 'KNOWN_PERSON_HEIGHT', 'HUMAN_HEIGHT_STATS', 'STANDARD_OBJECT', 'MODEL_ESTIMATE', 'DATASET_GT']]
 ):
-    root: Literal['MEASURED_OBJECT', 'KNOWN_PERSON_HEIGHT', 'HUMAN_HEIGHT_STATS', 'STANDARD_OBJECT', 'MODEL_ESTIMATE', 'DATASET_GT']
+    root: Literal['MEASURED_OBJECT', 'MEASURED_CAMERA_HEIGHT', 'KNOWN_PERSON_HEIGHT', 'HUMAN_HEIGHT_STATS', 'STANDARD_OBJECT', 'MODEL_ESTIMATE', 'DATASET_GT']
 
 
 class ReprojectionErrorPx1(BaseModel):
@@ -3088,6 +3088,9 @@ class Calibration(BaseModel):
     created_at: DefsTimestampMs
     coordinate_frame: DefsCoordinateFrame
     scale_basis: CalibrationScaleBasis
+    world_axes_source: Literal['WALLS', 'WALL_AND_FLOOR', 'MANUAL_FLOOR_POINTS', 'CAMERA_LAYOUT'] | MISSING = (
+        MISSING
+    )
     scale_cross_check_basis: Annotated[
         list[CalibrationScaleBasis] | MISSING, Field(min_length=1)
     ] = MISSING

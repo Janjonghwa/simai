@@ -58,8 +58,13 @@ CAMERA_DOWN_MAX_Z = 0.1
 
 # CalibrationProvider 출력 문서(contracts/providers/calibration.schema.json)의 계약 버전. 보정 문서를 만드는 코드
 # (calibration.document, providers.dataset_gt)는 이 값을 쓴다. 2.0.0 은 v1.3 에서 쓰지 않는 보정 출처·스케일 근거
-# 값을 뺀 메이저 버전이다. world_tracks 등 다른 계약의 버전과는 따로 간다.
-CALIBRATION_SCHEMA_VERSION = "2.0.0"
+# 값을 뺀 메이저 버전이고, 2.1.0 은 World 축 출처 world_axes_source 와 스케일 근거 MEASURED_CAMERA_HEIGHT 를 더했다
+# (S15P31A101-277). world_tracks 등 다른 계약의 버전과는 따로 간다.
+CALIBRATION_SCHEMA_VERSION = "2.1.0"
+
+# World 원점·X·Y 축을 정한 근거 (calibration.schema.json world_axes_source, 명세 4.1·4.3 2단계). CAMERA_LAYOUT 은 예약
+# 값이라 지금 코드는 내지 않는다.
+WORLD_AXES_SOURCES = ("WALLS", "WALL_AND_FLOOR", "MANUAL_FLOOR_POINTS", "CAMERA_LAYOUT")
 
 # CALIBRATED 가 될 수 있는 출처 (명세 20.4 규칙 4, 4.3 대체 경로).
 # v1.3 의 대체 경로는 걷기 재수행·실측 정물 추가 뒤 G1 재보정뿐이라 G1_AUTO 만 남는다.
@@ -67,10 +72,18 @@ CALIBRATED_SOURCES = frozenset({"G1_AUTO"})
 NEVER_CALIBRATED_SOURCES = frozenset({"DATASET_GT", "SIM", "MODEL_ESTIMATE"})
 
 # 스케일 근거 (명세 4.3, 4.4 수정 6). 주 근거는 실측 정물(2개 이상 일치) 또는 사람 키 통계(20명 이상)다.
-# 교차 확인 근거는 4.3 우선순위 목록이다. 공개 데이터 정답은 현장 근거가 아니어서 뺀다.
+# 교차 확인 근거는 4.3 우선순위 목록이다(카메라 높이 실측 포함, -277). 공개 데이터 정답은 현장 근거가 아니어서 뺀다.
+# 카메라 높이 실측은 주 근거가 아니다(4.4 의 주 근거 조건은 그대로).
 PRIMARY_SCALE_BASES = frozenset({"MEASURED_OBJECT", "HUMAN_HEIGHT_STATS"})
 CROSS_CHECK_SCALE_BASES = frozenset(
-    {"MEASURED_OBJECT", "KNOWN_PERSON_HEIGHT", "HUMAN_HEIGHT_STATS", "STANDARD_OBJECT", "MODEL_ESTIMATE"}
+    {
+        "MEASURED_OBJECT",
+        "MEASURED_CAMERA_HEIGHT",
+        "KNOWN_PERSON_HEIGHT",
+        "HUMAN_HEIGHT_STATS",
+        "STANDARD_OBJECT",
+        "MODEL_ESTIMATE",
+    }
 )
 
 

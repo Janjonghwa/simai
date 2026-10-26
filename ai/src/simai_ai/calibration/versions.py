@@ -222,6 +222,7 @@ class CalibrationVersionStore:
         evidence: CalibrationEvidence,
         at_ms: int,
         fallback_scale_basis: ScaleBasis | str = ScaleBasis.MODEL_ESTIMATE,
+        world_axes_source: str | None = None,
     ) -> ProposalResult:
         """후보 보정을 판정하고 조건을 만족하면 새 버전으로 전환한다. at_ms 는 후보의 created_at 이다."""
         require_ms("at_ms", at_ms)
@@ -238,6 +239,7 @@ class CalibrationVersionStore:
                 judgement=judgement,
                 fallback_scale_basis=fallback_scale_basis,
                 site_id=self.site_id,
+                world_axes_source=world_axes_source,
             )
             violations = tuple([f"입력: {m}" for m in judgement.invalid_inputs] + self._contract_violations(doc))
             if violations:

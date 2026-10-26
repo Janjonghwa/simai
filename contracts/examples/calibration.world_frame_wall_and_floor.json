@@ -1,0 +1,24 @@
+{
+  "schema_version": "2.1.0",
+  "calibration_version": "cal-wf-20261026-120000z",
+  "provider_source": "G1_AUTO",
+  "provider_version": "world-frame-0.2.0",
+  "state": "PROVISIONAL",
+  "created_at": 1792987355372,
+  "coordinate_frame": { "frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z", "site_id": "classroom-1" },
+  "scale_basis": "MODEL_ESTIMATE",
+  "world_axes_source": "WALL_AND_FLOOR",
+  "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
+  "cameras": [
+    {
+      "camera_id": "cam1",
+      "image_size": [1920, 1080],
+      "K": [[1000.0, 0.0, 960.0], [0.0, 1000.0, 540.0], [0.0, 0.0, 1.0]],
+      "distortion": { "model": "OPENCV_PINHOLE", "coeffs": [-0.30, 0.09, 0.0, 0.0, -0.01] },
+      "R": [[0.7071, -0.7071, 0.0], [-0.3062, -0.3062, -0.9014], [0.6374, 0.6374, -0.4330]],
+      "t": [0.0, 2.43, 0.0],
+      "camera_height_m": 2.19
+    }
+  ],
+  "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+}

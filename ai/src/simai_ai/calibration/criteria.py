@@ -56,6 +56,7 @@ class ScaleBasis(StrEnum):
     """스케일 근거 (contracts calibration.schema.json scale_basis, 명세 4.3)."""
 
     MEASURED_OBJECT = "MEASURED_OBJECT"
+    MEASURED_CAMERA_HEIGHT = "MEASURED_CAMERA_HEIGHT"  # 줄자로 잰 카메라 높이 / 바닥 평면에서 잰 카메라 높이(-277)
     KNOWN_PERSON_HEIGHT = "KNOWN_PERSON_HEIGHT"
     HUMAN_HEIGHT_STATS = "HUMAN_HEIGHT_STATS"
     STANDARD_OBJECT = "STANDARD_OBJECT"
@@ -63,9 +64,11 @@ class ScaleBasis(StrEnum):
     DATASET_GT = "DATASET_GT"
 
 
-# 명세 4.3 우선순위(앞이 높다).
+# 명세 4.3 우선순위(앞이 높다). 카메라 높이 실측은 실측 정물 다음이다: 줄자 실측이라 사람 키보다 정확하지만(카메라마다
+# 약 1%) 카메라 4대가 한 평면(바닥) 기준이라 정물처럼 방 안 여러 곳의 길이를 직접 재지는 않는다(-277).
 SCALE_PRIORITY: tuple[ScaleBasis, ...] = (
     ScaleBasis.MEASURED_OBJECT,
+    ScaleBasis.MEASURED_CAMERA_HEIGHT,
     ScaleBasis.KNOWN_PERSON_HEIGHT,
     ScaleBasis.HUMAN_HEIGHT_STATS,
     ScaleBasis.STANDARD_OBJECT,
