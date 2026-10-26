@@ -36,6 +36,8 @@ services:
       DB_USERNAME: postgres
       DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD}
       SIMAI_JWT_SECRET: ${SIMAI_JWT_SECRET:?SIMAI_JWT_SECRET}
+      # 비어 있으면 Tier 0 I1(/ws/tier0) 연결만 거부되고 서버는 뜬다(Tier 0 를 붙이기 전 배포)
+      SIMAI_TIER0_TOKEN_SHA256: ${SIMAI_TIER0_TOKEN_SHA256:-}
       # Nginx 가 넘긴 X-Forwarded-* 로 원래 주소(https)를 안다
       SERVER_FORWARD_HEADERS_STRATEGY: framework
     networks: [edge, ec2-internal]
