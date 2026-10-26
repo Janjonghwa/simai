@@ -95,4 +95,30 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    enum Machine implements ErrorCode {
+        MACHINE_EXISTS(HttpStatus.CONFLICT, "이미 등록된 ID 입니다. 토큰을 바꾸려면 rotate 를 쓴다"),
+        MACHINE_NOT_FOUND(HttpStatus.NOT_FOUND, "등록되지 않은 ID 입니다"),
+        INVALID_MACHINE_ID(HttpStatus.BAD_REQUEST, "ID 는 소문자·숫자·- 로 1~63자여야 합니다"),
+        INVALID_DEVICE_KIND(HttpStatus.BAD_REQUEST, "기기 종류는 LAPTOP 또는 WATCH 여야 합니다"),
+        INVALID_JOB_TYPES(HttpStatus.BAD_REQUEST, "작업 유형은 계약 job_type 값이어야 합니다(쉼표로 구분)");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Machine(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }
