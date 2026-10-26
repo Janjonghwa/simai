@@ -9,7 +9,6 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Set;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -57,18 +56,9 @@ public class StaticObjectRepository {
 
     public ObjectNode create(String siteId, StaticObjectRequest request, long userId, OffsetDateTime now) {
         Checked checked = check(request);
-        String prefix = WORK_SURFACE.equals(checked.kind()) ? "ws" : "so";
-        for (int attempt = 0; ; attempt++) {
-            String objectId = Versioned.newId(prefix);
-            try {
-                insert(objectId, 1, siteId, checked, userId, now);
-                return findVersion(objectId, 1);
-            } catch (DuplicateKeyException e) {
-                if (attempt >= 3) {
-                    throw e;
-                }
-            }
-        }
+        String objectId = Versioned.unusedId(WORK_SURFACE.equals(checked.kind()) ? "ws" : "so", this::exists);
+        insert(objectId, 1, siteId, checked, userId, now);
+        return findVersion(objectId, 1);
     }
 
     public ObjectNode newVersion(String objectId, StaticObjectRequest request, long userId, OffsetDateTime now) {
@@ -77,13 +67,18 @@ public class StaticObjectRepository {
         List<Integer> current = jdbc.queryForList(
                 "SELECT object_version FROM static_object WHERE object_id = :id AND valid_to IS NULL FOR UPDATE", params, Integer.class);
         if (current.isEmpty()) {
-            throw new BusinessException(ErrorCode.Config.STATIC_OBJECT_NOT_FOUND);
+            throw new BusinessException(exists(objectId) ? ErrorCode.Config.CONCURRENT_EDIT : ErrorCode.Config.STATIC_OBJECT_NOT_FOUND);
         }
         String siteId = jdbc.queryForObject("SELECT site_id FROM static_object WHERE object_id = :id LIMIT 1", params, String.class);
         jdbc.update("UPDATE static_object SET valid_to = :now WHERE object_id = :id AND valid_to IS NULL", params);
         int version = current.getFirst() + 1;
         insert(objectId, version, siteId, checked, userId, now);
         return findVersion(objectId, version);
+    }
+
+    private boolean exists(String objectId) {
+        return !jdbc.queryForList("SELECT 1 FROM static_object WHERE object_id = :id LIMIT 1",
+                new MapSqlParameterSource("id", objectId), Integer.class).isEmpty();
     }
 
     private ObjectNode findVersion(String objectId, int version) {
@@ -115,10 +110,8 @@ public class StaticObjectRepository {
         if (!Double.isFinite(yaw) || size[0] <= 0 || size[1] <= 0 || size[2] <= 0) {
             throw new BusinessException(invalid);
         }
-        Double top = r.topHeightM();
-        if (top != null && !Double.isFinite(top)) {
-            throw new BusinessException(invalid);
-        }
+        // 상판 높이는 real 열에 들어간 값으로 검사한다(아주 작은 값이 0 이 되면 Tier 0 가 그 작업면을 뺀다)
+        Double top = r.topHeightM() == null ? null : Versioned.real(r.topHeightM(), invalid);
         // 작업면은 바닥(Z=0)보다 높은 상판이 있어야 R2·R3·ContactEstimator 가 쓴다(7.5)
         if (WORK_SURFACE.equals(r.kind()) && (top == null || !(top > 0))) {
             throw new BusinessException(invalid);
@@ -147,12 +140,7 @@ public class StaticObjectRepository {
         ObjectNode obb = (ObjectNode) mapper.readTree(rs.getString("obb"));
         JsonNode sigma = obb.remove("top_height_sigma_m");
         o.set("obb", obb);
-        float top = rs.getFloat("top_height_m");
-        if (rs.wasNull()) {
-            o.putNull("top_height_m");
-        } else {
-            o.put("top_height_m", (double) top);
-        }
+        o.put("top_height_m", Versioned.real(rs, "top_height_m"));
         if (sigma != null) {
             o.set("top_height_sigma_m", sigma);
         }

@@ -13,13 +13,11 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
@@ -73,17 +71,9 @@ public class ZoneRepository {
     /** 한 트랜잭션 안에서 부른다. 다각형이 꼬였으면(자기 교차·넓이 0) 실패한다 */
     public ObjectNode create(String siteId, ZoneRequest request, long userId, OffsetDateTime now) {
         Checked checked = check(request);
-        for (int attempt = 0; ; attempt++) {
-            String zoneId = Versioned.newId("z");
-            try {
-                insert(zoneId, 1, siteId, checked, userId, now);
-                return findVersion(zoneId, 1);
-            } catch (DuplicateKeyException e) {
-                if (attempt >= 3) {
-                    throw e;
-                }
-            }
-        }
+        String zoneId = Versioned.unusedId("z", this::exists);
+        insert(zoneId, 1, siteId, checked, userId, now);
+        return findVersion(zoneId, 1);
     }
 
     /** 지금 버전을 잠그고 닫은 뒤 다음 버전을 더한다. 한 트랜잭션 안에서 부른다 */
@@ -94,13 +84,19 @@ public class ZoneRepository {
                 SELECT zone_version FROM zone WHERE zone_id = :zoneId AND valid_to IS NULL FOR UPDATE
                 """, params, Integer.class);
         if (current.isEmpty()) {
-            throw new BusinessException(ErrorCode.Config.ZONE_NOT_FOUND);
+            // 같이 고치던 다른 요청이 먼저 새 버전을 만들었으면 지금 버전이 바뀌었다(잠금이 풀린 뒤 다시 읽음)
+            throw new BusinessException(exists(zoneId) ? ErrorCode.Config.CONCURRENT_EDIT : ErrorCode.Config.ZONE_NOT_FOUND);
         }
         String siteId = jdbc.queryForObject("SELECT site_id FROM zone WHERE zone_id = :zoneId LIMIT 1", params, String.class);
         jdbc.update("UPDATE zone SET valid_to = :now WHERE zone_id = :zoneId AND valid_to IS NULL", params);
         int version = current.getFirst() + 1;
         insert(zoneId, version, siteId, checked, userId, now);
         return findVersion(zoneId, version);
+    }
+
+    private boolean exists(String zoneId) {
+        return !jdbc.queryForList("SELECT 1 FROM zone WHERE zone_id = :zoneId LIMIT 1",
+                new MapSqlParameterSource("zoneId", zoneId), Integer.class).isEmpty();
     }
 
     private ObjectNode findVersion(String zoneId, int version) {
@@ -128,8 +124,9 @@ public class ZoneRepository {
                 || (r.requirements() != null && !r.requirements().isNull() && !r.requirements().isObject())) {
             throw new BusinessException(ErrorCode.Config.INVALID_ZONE);
         }
-        Double zMin = finiteOrNull(r.zMinM());
-        Double zMax = finiteOrNull(r.zMaxM());
+        // real 열에 들어간 값으로 검사한다(최저 < 최고가 저장 뒤에도 성립해야 Tier 0 가 받는다)
+        Double zMin = r.zMinM() == null ? null : Versioned.real(r.zMinM(), ErrorCode.Config.INVALID_Z_RANGE);
+        Double zMax = r.zMaxM() == null ? null : Versioned.real(r.zMaxM(), ErrorCode.Config.INVALID_Z_RANGE);
         if (zMin != null && zMax != null && !(zMin < zMax)) {
             throw new BusinessException(ErrorCode.Config.INVALID_Z_RANGE);
         }
@@ -149,13 +146,6 @@ public class ZoneRepository {
                 r.hasGuardrail());
     }
 
-    private static Double finiteOrNull(Double value) {
-        if (value != null && !Double.isFinite(value)) {
-            throw new BusinessException(ErrorCode.Config.INVALID_Z_RANGE);
-        }
-        return value;
-    }
-
     /** 꼭짓점 3개 이상(닫는 점 생략 가능), 유한한 수. 닫힌 WKT 로 만든다 */
     private static String wkt(List<List<Double>> points) {
         if (points == null || points.size() < 3 || points.size() > MAX_VERTICES + 1) {
@@ -168,7 +158,7 @@ public class ZoneRepository {
         if (Arrays.equals(ring.getFirst(), ring.getLast())) {
             ring.removeLast();
         }
-        if (ring.size() < 3) {
+        if (ring.size() < 3 || ring.size() > MAX_VERTICES) {
             throw new BusinessException(ErrorCode.Config.INVALID_POLYGON);
         }
         ring.add(ring.getFirst());
@@ -183,13 +173,9 @@ public class ZoneRepository {
         z.put("name", rs.getString("name"));
         z.put("zone_kind", rs.getString("zone_kind"));
         z.put("eval_type", rs.getString("eval_type"));
-        ArrayNode polygon = z.putArray("polygon_xy");
-        JsonNode ring = mapper.readTree(rs.getString("polygon")).path("coordinates").get(0);
-        for (int i = 0; i < ring.size() - 1; i++) { // 마지막은 닫는 점
-            polygon.addArray().add(ring.get(i).get(0).doubleValue()).add(ring.get(i).get(1).doubleValue());
-        }
-        putReal(z, rs, "z_min_m");
-        putReal(z, rs, "z_max_m");
+        Versioned.polygonXy(mapper.readTree(rs.getString("polygon")), z.putArray("polygon_xy"));
+        z.put("z_min_m", Versioned.real(rs, "z_min_m"));
+        z.put("z_max_m", Versioned.real(rs, "z_max_m"));
         z.put("severity", rs.getString("severity"));
         String requirements = rs.getString("requirements");
         z.set("requirements", requirements == null ? null : mapper.readTree(requirements));
@@ -202,14 +188,5 @@ public class ZoneRepository {
         z.put("valid_from", Versioned.millis(rs.getObject("valid_from", OffsetDateTime.class)));
         z.put("valid_to", Versioned.millis(rs.getObject("valid_to", OffsetDateTime.class)));
         return z;
-    }
-
-    private static void putReal(ObjectNode node, ResultSet rs, String column) throws SQLException {
-        float value = rs.getFloat(column);
-        if (rs.wasNull()) {
-            node.putNull(column);
-        } else {
-            node.put(column, (double) value);
-        }
     }
 }

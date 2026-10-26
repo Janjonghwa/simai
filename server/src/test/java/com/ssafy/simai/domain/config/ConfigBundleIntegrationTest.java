@@ -255,6 +255,53 @@ class ConfigBundleIntegrationTest {
     }
 
     @Test
+    void 다시_붙은_Tier0_에는_적용한_묶음도_다시_알리고_해시가_다른_APPLIED_는_적용으로_보지_않는다() throws Exception {
+        call("POST", "/api/calibrations", admin(), upload(calibration("cal-test-" + tag + "-e")), 201);
+        String version;
+        String hash;
+        try (Tier0 tier0 = tier0()) {
+            tier0.send(health());
+            Thread.sleep(300);
+            version = publish(null).get("config_version").asString();
+            hash = tier0.await("config_bundle", version).at("/payload/bundle_hash").asString();
+            tier0.send(ack(version, hash));
+            awaitStatus(version, "APPLIED");
+        }
+        // Tier 0 는 (재)연결 뒤 알림을 받기 전까지 UNVERIFIED 다. 적용했던 묶음이어도 다시 보낸다(주기 10초)
+        try (Tier0 again = tier0()) {
+            again.send(health());
+            JsonNode resent = again.await("config_bundle", version, Duration.ofSeconds(15));
+            assertThat(resent.at("/payload/bundle_hash").asString()).isEqualTo(hash);
+
+            ObjectNode wrong = ack(version, "sha256:" + "0".repeat(64));
+            again.send(wrong);
+            JsonNode view = awaitStatus(version, "MISMATCH");
+            assertThat(view.at("/last_ack/result").asString()).isEqualTo("APPLIED");
+        }
+    }
+
+    @Test
+    void 저장_뒤에_뭉개지는_높이와_꼭짓점_256개_초과는_거부한다() throws Exception {
+        ObjectNode flat = zone("float 로 같아지는 높이", 3.0);
+        flat.put("z_min_m", 1.0);
+        flat.put("z_max_m", 1.00000001);
+        assertThat(call("POST", "/api/zones", admin(), flat, 400).get("code").asString()).isEqualTo("INVALID_Z_RANGE");
+
+        ObjectNode many = zone("꼭짓점 257", 3.0);
+        ArrayNode ring = many.putArray("polygon_xy");
+        for (int i = 0; i < 257; i++) {
+            double angle = 2 * Math.PI * i / 257;
+            ring.add(point(Math.cos(angle) * 5, Math.sin(angle) * 5));
+        }
+        assertThat(call("POST", "/api/zones", admin(), many, 400).get("code").asString()).isEqualTo("INVALID_POLYGON");
+
+        ObjectNode tiny = podium(0.4);
+        tiny.put("top_height_m", 1e-46);
+        assertThat(call("POST", "/api/static-objects", admin(), tiny, 400).get("code").asString())
+                .isEqualTo("INVALID_STATIC_OBJECT");
+    }
+
+    @Test
     void 다음_묶음은_이전_묶음을_가리키고_규칙_프로필을_이어받는다() throws Exception {
         call("POST", "/api/calibrations", admin(), upload(calibration("cal-test-" + tag + "-d")), 201);
         JsonNode first = publish("CLASSROOM_TEST");
@@ -416,7 +463,11 @@ class ConfigBundleIntegrationTest {
         }
 
         JsonNode await(String msgType, String configVersion) throws InterruptedException {
-            long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            return await(msgType, configVersion, Duration.ofSeconds(10));
+        }
+
+        JsonNode await(String msgType, String configVersion, Duration timeout) throws InterruptedException {
+            long deadline = System.nanoTime() + timeout.toNanos();
             while (System.nanoTime() < deadline) {
                 JsonNode message = received.poll(200, TimeUnit.MILLISECONDS);
                 if (message != null && msgType.equals(message.path("msg_type").asString())

@@ -41,8 +41,8 @@ public class JwtConfig {
         return decoder;
     }
 
-    // 키가 없거나 짧으면 뜨지 않는다. 약한 키로 서명한 토큰이 나가는 것보다 낫다
-    private static SecretKey decodeKey(String secret) {
+    /** 키가 없거나 짧으면 뜨지 않는다. 약한 키로 서명한 토큰이 나가는 것보다 낫다. 구성 묶음 주소 서명 키도 이 키에서 뽑는다 */
+    public static SecretKey decodeKey(String secret) {
         if (secret == null || secret.isBlank()) {
             throw new IllegalStateException("SIMAI_JWT_SECRET 이 비어 있다");
         }

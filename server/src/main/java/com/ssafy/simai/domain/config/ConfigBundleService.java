@@ -2,12 +2,11 @@ package com.ssafy.simai.domain.config;
 
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -94,7 +93,8 @@ public class ConfigBundleService {
                 SELECT max(CAST(substring(config_version FROM 5) AS integer)) FROM config_bundle WHERE config_version ~ '^cfg-[0-9]+$'
                 """, Map.of(), Integer.class);
         String configVersion = VERSION_PREFIX + ((last == null ? 0 : last) + 1);
-        Instant issuedAt = clock.instant();
+        // 매니페스트와 알림(DB 에서 다시 읽음)의 issued_at 이 같아야 Tier 0 가 받는다. DB 가 µs 로 반올림하므로 ms 로 자른다
+        Instant issuedAt = clock.instant().truncatedTo(ChronoUnit.MILLIS);
 
         Calibration calibration = latestCalibration(siteId);
         List<Item> items = new ArrayList<>();
@@ -185,13 +185,9 @@ public class ConfigBundleService {
             z.put("zone_id", rs.getString("zone_id"));
             z.put("zone_version", String.valueOf(rs.getInt("zone_version")));
             z.put("judge_type", rs.getString("eval_type"));
-            ArrayNode polygon = z.putArray("polygon_xy");
-            JsonNode ring = mapper.readTree(rs.getString("polygon")).path("coordinates").get(0);
-            for (int i = 0; i < ring.size() - 1; i++) {
-                polygon.addArray().add(ring.get(i).get(0).doubleValue()).add(ring.get(i).get(1).doubleValue());
-            }
-            Double zMin = real(rs, "z_min_m");
-            Double zMax = real(rs, "z_max_m");
+            Versioned.polygonXy(mapper.readTree(rs.getString("polygon")), z.putArray("polygon_xy"));
+            Double zMin = Versioned.real(rs, "z_min_m");
+            Double zMax = Versioned.real(rs, "z_max_m");
             if (zMin != null && zMax != null) {
                 z.putArray("z_range").add(zMin).add(zMax);
             } else {
@@ -239,7 +235,7 @@ public class ConfigBundleService {
             if ("WORK_SURFACE".equals(rs.getString("kind"))) {
                 ObjectNode s = surfaces.addObject();
                 s.put("surface_id", id);
-                s.put("top_height_m", real(rs, "top_height_m"));
+                s.put("top_height_m", Versioned.real(rs, "top_height_m"));
                 s.putArray("center_xy").add(obb.get("center").get(0).doubleValue()).add(obb.get("center").get(1).doubleValue());
                 s.putArray("size_xy").add(obb.get("size").get(0).doubleValue()).add(obb.get("size").get(1).doubleValue());
                 s.put("yaw_rad", obb.path("yaw_rad").doubleValue());
@@ -251,7 +247,7 @@ public class ConfigBundleService {
                 o.put("object_id", id);
                 o.put("kind", rs.getString("kind"));
                 o.set("obb", obb);
-                Double top = real(rs, "top_height_m");
+                Double top = Versioned.real(rs, "top_height_m");
                 if (top != null) {
                     o.put("top_height_m", top);
                 }
@@ -259,10 +255,5 @@ public class ConfigBundleService {
             items.add(new Item("STATIC_OBJECT", id, rs.getInt("object_version")));
         });
         return doc;
-    }
-
-    private static Double real(ResultSet rs, String column) throws SQLException {
-        float value = rs.getFloat(column);
-        return rs.wasNull() ? null : (double) value;
     }
 }

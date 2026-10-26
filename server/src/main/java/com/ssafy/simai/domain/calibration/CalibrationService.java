@@ -1,6 +1,7 @@
 package com.ssafy.simai.domain.calibration;
 
 import com.ssafy.simai.domain.config.ConfigFiles;
+import com.ssafy.simai.domain.tier0.i1.I1Json;
 import com.ssafy.simai.global.contract.ContractSchemas;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
@@ -69,6 +70,8 @@ public class CalibrationService {
 
         return transaction.execute(status -> {
             MapSqlParameterSource params = new MapSqlParameterSource("v", version);
+            // 같은 새 버전을 동시에 올려도(두 번 누름) 한 쪽씩 처리한다. 새 버전은 잠글 행이 없어 FOR UPDATE 로는 막지 못한다
+            jdbc.queryForList("SELECT pg_advisory_xact_lock(hashtext('simai.calibration:' || :v))", params);
             List<String> existing = jdbc.queryForList(
                     "SELECT sha256 FROM calibration_document WHERE calibration_version = :v FOR UPDATE", params, String.class);
             if (!existing.isEmpty()) {
@@ -113,7 +116,7 @@ public class CalibrationService {
                 .addValue("providerVersion", doc.path("provider_version").asString(null)).addValue("reason", reason)
                 .addValue("now", now).addValue("ref", "ec2:calibration_document/" + version).addValue("sha", sha256)
                 .addValue("scaleBasis", doc.path("scale_basis").asString(null))
-                .addValue("crossCheck", crossCheck.isEmpty() ? null : "{" + String.join(",", crossCheck) + "}")
+                .addValue("crossCheck", crossCheck.isEmpty() ? null : I1Json.arrayLiteral(crossCheck))
                 .addValue("validation", validation == null || validation.isNull() ? null : mapper.writeValueAsString(validation)));
     }
 

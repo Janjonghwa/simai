@@ -28,8 +28,11 @@ S15P31A101-120(구역 CRUD·구성 묶음 발행·config_ack 수신)·S15P31A101
 | 파일 주소 | `https://<공개 주소>/api/config-bundles/{version}/files/{name}?sig=<HMAC>`. JWT 없이 열리고 서명이 틀리면 404 | Tier 0 는 헤더 없이 https GET 만 한다. 주소가 매니페스트에 들어가 해시가 고정되므로 만료를 두지 않는다 |
 | 서명 키 | JWT 서명 키에서 용도 이름으로 뽑은 HMAC 키 | 새 비밀 값을 늘리지 않는다. JWT 키를 바꾸면 이전 묶음 주소가 닫힌다 |
 | 공개 주소 | `SIMAI_PUBLIC_BASE_URL`(compose 는 `https://${SIMAI_DOMAIN}`). https 가 아니면 발행 503 | Tier 0 는 https 만 받는다 |
-| 알림 보내기 | 발행 때 열린 연결 모두에, 그 뒤 10초마다 가장 최근 묶음에 아직 응답하지 않은 Tier 0 에 30초 간격으로 다시 | 끊겨 있던 Tier 0 도 다시 붙으면 받는다 |
-| 적용 상태 | 가장 늦게 받은 `config_ack` 로 PENDING·APPLIED·REJECTED. 화면 응답에는 서명 주소를 싣지 않는다 | |
+| 알림 보내기 | 발행 때 열린 연결 모두에. 그 뒤 10초마다 가장 최근 묶음을 그 연결로 보낸 적이 없으면 보내고(재연결 포함), 보낸 지 30초가 지났는데 응답이 없거나 마지막 응답이 DOWNLOAD_FAILED 면 다시 | Tier 0 는 (재)연결 뒤 알림을 받기 전까지 UNVERIFIED 이고(sync.py '전제(서버)'), 거부한 묶음을 남기지 않아 다시 오면 다시 검증한다. 다른 거부는 다시 보내도 같다 |
+| 적용 상태 | 가장 늦게 받은 `config_ack` 로 PENDING·APPLIED·REJECTED, APPLIED 인데 해시가 다르면 MISMATCH. 화면 응답에는 서명 주소를 싣지 않는다 | |
+| 높이 값 | `z_min_m`·`z_max_m`·`top_height_m` 은 real(float4) 열에 들어간 값으로 검사한다 | 1.0 과 1.00000001 이 같아져 Tier 0 가 묶음을 거부하지 않게 |
+| 동시 수정 | 같은 구역·객체를 동시에 고치면 늦은 쪽은 409 `CONCURRENT_EDIT` | 지금 버전을 잠그고 다시 읽는다 |
+| issued_at | ms 로 자른다 | DB(µs) 반올림으로 매니페스트와 알림이 달라지면 Tier 0 가 거부한다 |
 
 ## 시험
 

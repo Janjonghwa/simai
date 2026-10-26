@@ -18,7 +18,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * 구성 묶음 적용 상태(GET /api/config-bundles). status 는 가장 늦게 받은 config_ack 로 정한다: 없으면 PENDING(적용 대기),
- * APPLIED·REJECTED 는 그 응답대로다. 화면에는 내려받기 주소(서명)를 싣지 않는다.
+ * APPLIED·REJECTED 는 그 응답대로, APPLIED 인데 해시가 발행한 것과 다르면 MISMATCH 다. 화면에는 내려받기 주소(서명)를 싣지 않는다.
  */
 @Repository
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -91,7 +91,9 @@ public class ConfigBundleViews {
             c.set("sha256", stored.get(name).get("sha256"));
         }
         String result = rs.getString("result");
-        b.put("status", result == null ? "PENDING" : result);
+        // APPLIED 인데 Tier 0 가 계산한 해시가 발행한 것과 다르면 현장 적용으로 보지 않는다(applied_at 도 비어 있다)
+        boolean mismatch = "APPLIED".equals(result) && !rs.getString("bundle_hash").equals(rs.getString("ack_hash"));
+        b.put("status", result == null ? "PENDING" : mismatch ? "MISMATCH" : result);
         b.put("applied_at", millis(rs, "applied_at"));
         if (result == null) {
             b.putNull("last_ack");
@@ -110,7 +112,6 @@ public class ConfigBundleViews {
     }
 
     private static Long millis(ResultSet rs, String column) throws SQLException {
-        OffsetDateTime time = rs.getObject(column, OffsetDateTime.class);
-        return time == null ? null : time.toInstant().toEpochMilli();
+        return Versioned.millis(rs.getObject(column, OffsetDateTime.class));
     }
 }

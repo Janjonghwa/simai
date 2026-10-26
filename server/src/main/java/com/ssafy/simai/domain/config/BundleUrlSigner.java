@@ -1,5 +1,6 @@
 package com.ssafy.simai.domain.config;
 
+import com.ssafy.simai.global.config.JwtConfig;
 import com.ssafy.simai.global.properties.AuthProperties;
 import com.ssafy.simai.global.properties.ConfigBundleProperties;
 import java.net.URLEncoder;
@@ -28,7 +29,7 @@ public class BundleUrlSigner {
     private final String baseUrl;
 
     public BundleUrlSigner(AuthProperties auth, ConfigBundleProperties properties) {
-        byte[] jwtKey = Base64.getDecoder().decode(auth.jwt().secret().trim());
+        byte[] jwtKey = JwtConfig.decodeKey(auth.jwt().secret()).getEncoded();
         this.key = new SecretKeySpec(hmac(new SecretKeySpec(jwtKey, ALGORITHM), PURPOSE), ALGORITHM);
         this.baseUrl = properties.publicBaseUrl();
     }
