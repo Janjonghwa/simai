@@ -57,6 +57,9 @@ R3_RULE_VERSION = 1
 """운영 프로파일 버전. 교실 시험 프로파일은 R3_RULE_VERSION + TEST_PROFILE_VERSION_OFFSET(1001)"""
 R3_SEVERITY = Severity.HIGH
 """명세 7.2 R3 심각도"""
+R3_LEGAL_BASIS = "산업안전보건기준규칙 제32조; 산업안전보건기준규칙 제44조"
+"""운영 R3 근거 조항(7.1, RAG 조항 ID 조 단위, S15P31A101-27·256): 제32조(①2호) 보호구, 제44조(①) 안전대 부착설비.
+교실 시험 프로파일(0.35 m)은 안전 기준이 아니라 비운다."""
 
 REASON_STANDING_ELEVATED = "standing_surface_elevated"
 REASON_STANDING_HELD = "standing_surface_held"
@@ -101,7 +104,12 @@ class ElevatedPositionRule:
         self._k = float(k)
         self._radius = float(occupancy_radius_m)
         self._tol = float(tolerance_m)
-        self._spec = RuleSpec(rule_id=R3_RULE_ID, rule_version=profile.rule_version(R3_RULE_VERSION), reads=_R3_READS)
+        self._spec = RuleSpec(
+            rule_id=R3_RULE_ID,
+            rule_version=profile.rule_version(R3_RULE_VERSION),
+            reads=_R3_READS,
+            legal_basis=None if profile.test else R3_LEGAL_BASIS,
+        )
 
     @property
     def spec(self) -> RuleSpec:

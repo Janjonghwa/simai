@@ -1,6 +1,7 @@
 """규칙 등록부 → DB 규칙 버전 시드 (S15P31A101-211)."""
 
 import importlib
+import json
 import pkgutil
 from pathlib import Path
 
@@ -66,8 +67,9 @@ def test_before_first_operation_deploy_updates_same_version() -> None:
 def test_after_first_operation_deploy_raises() -> None:
     """첫 운영 배포 날짜가 있으면 같은 버전 값 변경을 멈추고 갱신하지 않는다."""
     sql = render_flyway_seed(catalog(), first_operation_deploy="2026-11-02")
-    assert "UPDATE rule_version" not in sql and "RAISE NOTICE" not in sql
-    assert "RAISE EXCEPTION" in sql and "첫 운영 배포(2026-11-02) 뒤라 같은 버전 값 변경 금지" in sql
+    values = _block(sql, "-- ② ", "-- ②' ")
+    assert "UPDATE rule_version" not in values and "RAISE NOTICE" not in values
+    assert "RAISE EXCEPTION" in values and "첫 운영 배포(2026-11-02) 뒤라 같은 버전 값 변경 금지" in values
     assert "-- 표시: 첫 운영 배포 2026-11-02 뒤" in sql
 
 
@@ -78,8 +80,56 @@ def test_first_operation_deploy_must_be_iso_date() -> None:
 
 @pytest.mark.parametrize("deploy", [None, "2026-11-02"])
 def test_blocks_in_order(deploy: str | None) -> None:
-    """① 시드 → ② 값 → ③ 새 버전. S15P31A101-256 은 ②와 ③ 사이에 블록을 더한다."""
+    """① 시드 → ② 값 → ②' 근거 조항(S15P31A101-256) → ③ 새 버전."""
     sql = render_flyway_seed(catalog(), first_operation_deploy=deploy)
-    marks = [sql.index(m) for m in ("-- ① ", "-- ② ", "-- ③ ")]
+    marks = [sql.index(m) for m in ("-- ① ", "-- ② ", "-- ②' ", "-- ③ ")]
     assert marks == sorted(marks)
-    assert sql.index("CREATE TEMP TABLE") > marks[0] and sql.index("INSERT INTO rule_version (") > marks[2]
+    assert sql.index("CREATE TEMP TABLE") > marks[0] and sql.index("INSERT INTO rule_version (") > marks[3]
+
+
+def _block(sql: str, start: str, end: str) -> str:
+    return sql[sql.index(start) : sql.index(end)]
+
+
+CLAUSES = Path(__file__).resolve().parents[2] / "src/simai_ai/rag/data/clauses.json"
+
+
+def test_r3_legal_basis_only_on_operation_profile() -> None:
+    """R3 v1 만 근거 조항(제32조·제44조)을 갖고, 교실 시험 프로파일(v1001)과 다른 규칙은 비어 있다(S15P31A101-256)."""
+    by_key = {(e.rule_id, e.rule_version): e.legal_basis for e in catalog()}
+    assert by_key.pop(("R3", 1)) == "산업안전보건기준규칙 제32조; 산업안전보건기준규칙 제44조"
+    assert set(by_key.values()) == {None}
+
+
+def test_legal_basis_ids_exist_in_clause_file() -> None:
+    """등록부의 근거 조항 ID 는 조 단위이고 RAG 조항 파일에 있다. risk 는 rag 를 import 하지 않으므로 JSON 만 읽는다."""
+    data = json.loads(CLAUSES.read_text(encoding="utf-8"))
+    articles = {f"산업안전보건기준규칙 {a['article']}" for a in data["articles"]}
+    ids = [i.strip() for e in catalog() if e.legal_basis for i in e.legal_basis.split(";")]
+    assert ids
+    for clause_id in ids:
+        assert "#" not in clause_id, f"청크 접미사 없는 조 단위 ID 여야 한다: {clause_id}"
+        assert clause_id in articles, f"조항 파일에 없는 근거 조항: {clause_id}"
+
+
+@pytest.mark.parametrize("deploy", [None, "2026-11-02"])
+def test_legal_basis_block_fills_empty(deploy: str | None) -> None:
+    """②': DB 가 비어 있으면 표시와 관계없이 채우고 NOTICE 를 남긴다."""
+    block = _block(render_flyway_seed(catalog(), first_operation_deploy=deploy), "-- ②' ", "-- ③ ")
+    assert "UPDATE rule_version SET legal_basis = c.legal_basis" in block
+    assert "근거 조항(legal_basis)이 비어 있어 등록부 값으로 채웠다" in block
+
+
+def test_legal_basis_block_before_first_operation_deploy_updates_different() -> None:
+    block = _block(render_flyway_seed(catalog(), first_operation_deploy=None), "-- ②' ", "-- ③ ")
+    assert "WHERE r.legal_basis IS DISTINCT FROM s.legal_basis" in block
+    assert "RAISE EXCEPTION" not in block
+    assert "첫 운영 배포 전 규칙 보완 예외(11.4-1): % v% 근거 조항(legal_basis)을 등록부 값으로 갱신했다" in block
+
+
+def test_legal_basis_block_after_first_operation_deploy_raises_on_different() -> None:
+    block = _block(render_flyway_seed(catalog(), first_operation_deploy="2026-11-02"), "-- ②' ", "-- ③ ")
+    assert "WHERE r.legal_basis IS NOT NULL AND r.legal_basis IS DISTINCT FROM s.legal_basis" in block
+    assert "근거 조항(legal_basis)이 바뀌었는데 rule_version 이 같다" in block
+    assert "첫 운영 배포(2026-11-02) 뒤라 같은 버전 값 변경 금지" in block
+    assert block.index("RAISE EXCEPTION") < block.index("UPDATE rule_version")  # 멈출 때는 채우기 전에 멈춘다
