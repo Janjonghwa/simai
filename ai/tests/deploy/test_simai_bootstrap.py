@@ -246,17 +246,27 @@ def _start(gs, tmp_path: Path, env: dict) -> tuple[subprocess.CompletedProcess, 
     fake = tmp_path / "fakebin"
     fake.mkdir(parents=True, exist_ok=True)
     # 가짜 ssh-keygen·sshd 는 자기 환경에 HF 토큰이 있는지 FAKE_SSHD_MARK.env 에 남긴다(리뷰 R1)
-    seen = 'echo "$0 ${HF_TOKEN:+TOKEN}${HUGGING_FACE_HUB_TOKEN:+TOKEN}" >> "$FAKE_SSHD_MARK.env"'
-    for name, body in (("ssh-keygen", seen), ("sshd", seen + '\necho started >> "$FAKE_SSHD_MARK"')):
+    # 터널 비밀값(-286)도 같은 방식으로 본다
+    seen = ('echo "$0 ${HF_TOKEN:+TOKEN}${HUGGING_FACE_HUB_TOKEN:+TOKEN}'
+            '${SIMAI_TUNNEL_PREFIX:+TUNNEL}${WSTUNNEL_RESTRICT_HTTP_UPGRADE_PATH_PREFIX:+TUNNEL}" >> "$FAKE_SSHD_MARK.env"')
+    # 가짜 wstunnel 은 받은 인자와 환경(경로 비밀값·HF 토큰)을 FAKE_SSHD_MARK.wst 에 다 쓴 뒤 옮긴다(백그라운드라 시험이 기다린다)
+    wst = ('{ printf "%s\\n" "$*"; echo "prefix=${WSTUNNEL_RESTRICT_HTTP_UPGRADE_PATH_PREFIX-}"; '
+           'echo "other=${HF_TOKEN:+TOKEN}${SIMAI_TUNNEL_PREFIX:+TUNNEL}"; } > "$FAKE_SSHD_MARK.wst.tmp"\n'
+           'mv "$FAKE_SSHD_MARK.wst.tmp" "$FAKE_SSHD_MARK.wst"')
+    for name, body in (("ssh-keygen", seen), ("sshd", seen + '\necho started >> "$FAKE_SSHD_MARK"'), ("wstunnel", wst)):
         (fake / name).write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8", newline="\n")
         (fake / name).chmod(0o755)
     ssh = tmp_path / "ssh"
-    base = {k: v for k, v in os.environ.items() if k not in ("PUBLIC_KEY", "SSH_PUBLIC_KEY", "SIMAI_AUTHORIZED_KEYS_FILE", "SIMAI_SSHD")}
+    drop = ("PUBLIC_KEY", "SSH_PUBLIC_KEY", "SIMAI_AUTHORIZED_KEYS_FILE", "SIMAI_SSHD", "SIMAI_TUNNEL_PREFIX", "SIMAI_TUNNEL_PORT")
+    base = {k: v for k, v in os.environ.items() if k not in drop}
     full = {**base, "PATH": str(fake) + os.pathsep + base.get("PATH", ""), "SIMAI_SSH_DIR": ssh.as_posix(),
             "SIMAI_SSHD_CONFIG_DIR": (tmp_path / "sshd_config.d").as_posix(), "SIMAI_SSHD_BIN": (fake / "sshd").as_posix(), "SIMAI_SSH_KEYGEN_BIN": (fake / "ssh-keygen").as_posix(),
+            "SIMAI_SSH_ENV_FILE": (tmp_path / "profile.d" / "simai-env.sh").as_posix(), "SIMAI_WSTUNNEL_BIN": (fake / "wstunnel").as_posix(),
             "FAKE_SSHD_MARK": (tmp_path / "sshd.mark").as_posix(), **env}
     bash = gs.find_bash()
-    cmd = 'echo ran-cmd; echo "next-token=${HF_TOKEN:+yes}"'  # 넘겨받은 명령(simai-bootstrap)은 토큰을 받아야 한다
+    # 넘겨받은 명령(simai-bootstrap)은 HF 토큰을 받아야 하고, 터널 비밀값은 받으면 안 된다
+    cmd = ('echo ran-cmd; echo "next-token=${HF_TOKEN:+yes}"; '
+           'echo "next-tunnel=${SIMAI_TUNNEL_PREFIX:+yes}${WSTUNNEL_RESTRICT_HTTP_UPGRADE_PATH_PREFIX:+yes}"')
     r = subprocess.run([bash, (REPO / "deploy" / "base" / "simai-start.sh").as_posix(), "bash", "-c", cmd],
                        env=full, capture_output=True, text=True, encoding="utf-8", timeout=60)
     return r, ssh / "authorized_keys"
@@ -325,9 +335,10 @@ def test_simai_start_drops_hf_token_before_any_helper_command():
     lines = (REPO / "deploy" / "base" / "simai-start.sh").read_text(encoding="utf-8").splitlines()
     code = [(i, ln) for i, ln in enumerate(lines) if ln.strip() and not ln.lstrip().startswith("#")]
     unset_at = next(i for i, ln in code if ln.strip() == "unset HF_TOKEN HUGGING_FACE_HUB_TOKEN")
-    helpers = ("cat ", "tr ", "awk", "mkdir", "chmod", "wc ", '"$KEYGEN"', '"$SSHD"')
+    unset_tunnel_at = next(i for i, ln in code if ln.strip() == "unset SIMAI_TUNNEL_PREFIX")  # -286 터널 비밀값도 같다
+    helpers = ("cat ", "tr ", "awk", "mkdir", "chmod", "wc ", '"$KEYGEN"', '"$SSHD"', '"$WSTUNNEL"')
     first_helper = min(i for i, ln in code if any(h in ln for h in helpers))
-    assert unset_at < first_helper
+    assert unset_at < first_helper and unset_tunnel_at < first_helper
     exports = [i for i, ln in code if "export HF_TOKEN" in ln]
     exec_at = max(i for i, ln in code if ln.strip() == 'exec "$@"')
     assert len(exports) == 1 and [i for i, _ in code if exports[0] < i] == [exec_at]
@@ -400,3 +411,87 @@ def test_prepare_upload_works_on_a_fresh_disk(gs, tmp_path, capsys, monkeypatch)
         t.extractall(dest, members=[m for m in t.getmembers() if m.name.startswith("deploy/")], filter="data")
     # 안내 4: simai-bootstrap queue 의 기본 사본 위치($SIMAI_ROOT/setup/session1/repo)에 큐 스크립트가 있다
     assert (Path(pod_simai) / "setup" / "session1" / "repo" / "deploy" / "scripts" / "gpu_session1.py").is_file()
+
+
+# ---------------------------------------------------------------- 443 예비 터널·SSH 세션 환경 (S15P31A101-286)
+
+PREFIX = "Tun3lPrefix_" + "x9-Q" * 8  # 44자, 허용 문자만
+WST_ARGS = "server --log-lvl OFF --restrict-to 127.0.0.1:22 --restrict-to localhost:22 ws://0.0.0.0:{port}"
+
+
+def _wst(tmp_path: Path, wait_s: float = 10.0) -> list[str] | None:
+    """백그라운드 가짜 wstunnel 이 남긴 [인자, prefix=, other=] 줄. wait_s 안에 없으면 None."""
+    import time
+
+    mark = tmp_path / "sshd.mark.wst"
+    end = time.monotonic() + wait_s
+    while not mark.exists() and time.monotonic() < end:
+        time.sleep(0.05)
+    return mark.read_text(encoding="utf-8").split("\n")[:-1] if mark.exists() else None
+
+
+@pytest.mark.parametrize("port_env, port", [({}, "8080"), ({"SIMAI_TUNNEL_PORT": "18080"}, "18080")])
+def test_tunnel_starts_after_sshd_and_prefix_reaches_only_wstunnel_env(gs, tmp_path, port_env, port):
+    r, _ = _start(gs, tmp_path, {"PUBLIC_KEY": KEY_A, "SIMAI_TUNNEL_PREFIX": PREFIX, "HF_TOKEN": TOKEN, **port_env})
+    assert r.returncode == 0 and "ran-cmd" in r.stdout, r.stderr
+    assert _wst(tmp_path) == [WST_ARGS.format(port=port), f"prefix={PREFIX}", "other="]  # 명령줄(ps)에는 비밀값이 없다
+    assert "wstunnel 시작" in r.stderr
+    # 출력·넘겨받은 명령·sshd·ssh-keygen·SSH 세션 환경 파일 어디에도 비밀값이 없다
+    assert PREFIX not in r.stdout + r.stderr and "next-tunnel=\n" in r.stdout and "next-token=yes" in r.stdout
+    seen = (tmp_path / "sshd.mark.env").read_text(encoding="utf-8").split("\n")[:-1]
+    assert len(seen) == 2 and all(not line.endswith(("TOKEN", "TUNNEL")) for line in seen), seen
+    env_file = (tmp_path / "profile.d" / "simai-env.sh").read_text(encoding="utf-8")
+    assert PREFIX not in env_file and TOKEN not in env_file
+
+
+@pytest.mark.parametrize("env, why", [
+    ({}, "SIMAI_TUNNEL_PREFIX 없음"),
+    ({"SIMAI_TUNNEL_PREFIX": ""}, "SIMAI_TUNNEL_PREFIX 없음"),
+    ({"SIMAI_TUNNEL_PREFIX": "short-secret"}, "약하거나"),
+    ({"SIMAI_TUNNEL_PREFIX": "a" * 31}, "약하거나"),  # 32자 미만
+    ({"SIMAI_TUNNEL_PREFIX": "a" * 129}, "약하거나"),
+    ({"SIMAI_TUNNEL_PREFIX": "a" * 40 + "/../x"}, "약하거나"),  # 경로 문자
+    ({"SIMAI_TUNNEL_PREFIX": "a" * 40 + " b"}, "약하거나"),
+    ({"SIMAI_TUNNEL_PREFIX": PREFIX, "SIMAI_TUNNEL_PORT": "0"}, "포트 번호가 아니라"),
+    ({"SIMAI_TUNNEL_PREFIX": PREFIX, "SIMAI_TUNNEL_PORT": "70000"}, "포트 번호가 아니라"),
+    ({"SIMAI_TUNNEL_PREFIX": PREFIX, "SIMAI_TUNNEL_PORT": "80a"}, "포트 번호가 아니라"),
+])
+def test_missing_weak_prefix_or_bad_port_starts_no_tunnel_but_sshd_and_command_run(gs, tmp_path, env, why):
+    r, keys = _start(gs, tmp_path, {"PUBLIC_KEY": KEY_A, **env})
+    assert r.returncode == 0 and "ran-cmd" in r.stdout and keys.exists(), r.stderr
+    assert why in r.stderr and "wstunnel 시작" not in r.stderr
+    assert _wst(tmp_path, wait_s=0.3) is None
+    prefix = env.get("SIMAI_TUNNEL_PREFIX")
+    if prefix:  # 약한 비밀값도 출력하지 않는다
+        assert prefix not in r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("env", [
+    {"PUBLIC_KEY": KEY_A, "SIMAI_SSHD": "off"},  # 엘리스 VM: 호스트 sshd
+    {},  # 공개키 없음 → sshd 없음
+])
+def test_no_sshd_means_no_tunnel_even_with_prefix(gs, tmp_path, env):
+    r, keys = _start(gs, tmp_path, {**env, "SIMAI_TUNNEL_PREFIX": PREFIX})
+    assert r.returncode == 0 and "ran-cmd" in r.stdout and not keys.exists(), r.stderr
+    assert "sshd 를 띄우지 않아 443 예비 터널" in r.stderr and _wst(tmp_path, wait_s=0.3) is None
+    assert PREFIX not in r.stdout + r.stderr and "next-tunnel=\n" in r.stdout
+    assert not (tmp_path / "profile.d" / "simai-env.sh").exists()
+
+
+def test_ssh_session_env_file_keeps_non_secret_names_only(gs, tmp_path):
+    quoted = "it's $HOME `x` \"q\""  # 작은따옴표·확장 문자가 그대로 돌아와야 한다
+    env = {"PUBLIC_KEY": KEY_A, "SIMAI_TUNNEL_PREFIX": PREFIX, "HF_TOKEN": TOKEN, "HUGGING_FACE_HUB_TOKEN": TOKEN,
+           "SIMAI_IMAGE_DIGEST": "sha256:abc", "SIMAI_ODD": quoted, "CUDA_VERSION": "13.0.3", "RUNPOD_POD_ID": "pod123",
+           "RUNPOD_API_KEY": "rpa_secret_value", "SIMAI_WORKER_TOKEN": "worker-secret", "SIMAI_DB_PASSWORD": "pw-secret",
+           "UNRELATED_NAME": "not-copied"}
+    r, _ = _start(gs, tmp_path, env)
+    assert r.returncode == 0, r.stderr
+    f = tmp_path / "profile.d" / "simai-env.sh"
+    text = f.read_text(encoding="utf-8")
+    for secret in (PREFIX, TOKEN, "rpa_secret_value", "worker-secret", "pw-secret", KEY_A):
+        assert secret not in text
+    assert "UNRELATED_NAME" not in text and "PUBLIC_KEY" not in text
+    probe = 'set -e; . "$1"; printf "%s|%s|%s|%s" "$SIMAI_IMAGE_DIGEST" "$CUDA_VERSION" "$RUNPOD_POD_ID" "$SIMAI_ODD"'
+    out = subprocess.run([gs.find_bash(), "-c", probe, "probe", f.as_posix()], capture_output=True, text=True, encoding="utf-8",
+                         env={"PATH": os.environ.get("PATH", "")}, timeout=30)
+    assert out.returncode == 0 and out.stdout == f"sha256:abc|13.0.3|pod123|{quoted}", out.stderr

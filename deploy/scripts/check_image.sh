@@ -9,6 +9,7 @@
 # 확인: 비밀·가중치·엔진·SSH 호스트 키가 이미지에 없음, 패키지 import, 진입점 도움말,
 #       볼륨 없음·가중치 없음·해시 불일치·GPU 없음이 각각 명확한 코드와 메시지로 끝남, GPU 별 엔진 경로가 다름,
 #       PUBLIC_KEY(RunPod)·SSH_PUBLIC_KEY(Vast.ai) 를 주면 키 인증만 받는 sshd 가 뜸, SIMAI_SSHD=off 면 안 뜸,
+#       wstunnel 고정 판이 있고 경로 비밀값을 주면 sshd 뒤에 뜨며 비밀값이 명령줄·출력에 없음(S15P31A101-286),
 #       기본 진입점(simai-bootstrap)은 GPU 가 없으면 코드 3, 실행 스크립트에 CR(Windows 줄바꿈)이 없음 (S15P31A101-205).
 # 실험 이미지(exp02·mapanything)는 Tier 0 전용 항목(엔진·simai-tier0·분석 워커) 대신: 종류별 import·허브 코드 사본
 #       (exp02: Detectron2 확장이 CPU 전용이고 LazyConfig 가 Fast 관절 메타데이터를 읽음, S15P31A101-238),
@@ -36,13 +37,13 @@ case "$KIND" in tier0|exp02|mapanything|risk_engine|unified) ;; *) echo "FAIL  �
 T0LIKE=0; case "$KIND" in tier0|unified) T0LIKE=1 ;; esac
 
 # 1) 이미지 층 이력·환경 변수에 비밀이 없다
-SECRET_RE='hf_[A-Za-z0-9]{20,}|HF_TOKEN=[^ ]|HUGGING_FACE_HUB_TOKEN=|RUNPOD_API_KEY=|PUBLIC_KEY=ssh-|BEGIN [A-Z ]*PRIVATE KEY'
+SECRET_RE='hf_[A-Za-z0-9]{20,}|HF_TOKEN=[^ ]|HUGGING_FACE_HUB_TOKEN=|RUNPOD_API_KEY=|SIMAI_TUNNEL_PREFIX=|PUBLIC_KEY=ssh-|BEGIN [A-Z ]*PRIVATE KEY'
 if docker history --no-trunc --format '{{.CreatedBy}}' "$IMG" | grep -Eq "$SECRET_RE"; then
   fail "docker history 에 비밀로 보이는 값이 있다"
 else
   pass "docker history 에 비밀 값 없음"
 fi
-if docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$IMG" | grep -Eiq '^(HF_TOKEN|HUGGING_FACE_HUB_TOKEN|RUNPOD_API_KEY|PUBLIC_KEY|.*SECRET.*|.*PASSWORD.*)='; then
+if docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$IMG" | grep -Eiq '^(HF_TOKEN|HUGGING_FACE_HUB_TOKEN|RUNPOD_API_KEY|SIMAI_TUNNEL_PREFIX|PUBLIC_KEY|.*SECRET.*|.*PASSWORD.*)='; then
   fail "이미지 환경 변수에 비밀 이름이 있다"
 else
   pass "이미지 환경 변수에 비밀 이름 없음"
@@ -455,6 +456,17 @@ done
 # 엘리스 GPU VM: 호스트 sshd 를 쓰므로 SIMAI_SSHD=off 면 키가 있어도 컨테이너 sshd 를 띄우지 않는다
 OUT=$(docker run --rm -e "PUBLIC_KEY=$KEY" -e SIMAI_SSHD=off "$IMG" bash -c 'pgrep -x sshd >/dev/null && echo running || echo none' 2>/dev/null)
 if [ "$OUT" = none ]; then pass "SIMAI_SSHD=off: 컨테이너 sshd 없음"; else fail "SIMAI_SSHD=off 인데 sshd: $OUT"; fi
+# 막힌 망 예비 SSH(S15P31A101-286): 고정 판 wstunnel 이 PATH 에 있고, 공개키·경로 비밀값을 주면 sshd 뒤에 뜨며 비밀값은 명령줄·출력·넘겨받은 명령에 없다
+OUT=$(docker run --rm --entrypoint wstunnel "$IMG" --version 2>&1)
+if grep -q '10\.7\.1' <<<"$OUT"; then pass "wstunnel 10.7.1"; else fail "wstunnel 판: $OUT"; fi
+TP="check${RANDOM}Prefix0123456789abcdefghijklmn"
+WST_PROBE='sleep 1; P=$(pgrep -x wstunnel) && echo running && tr "\0" " " </proc/$P/cmdline; echo; echo "child=${SIMAI_TUNNEL_PREFIX:-}"'
+OUT=$(docker run --rm -e "PUBLIC_KEY=$KEY" -e "SIMAI_TUNNEL_PREFIX=$TP" "$IMG" bash -c "$WST_PROBE" 2>&1)
+if grep -q '^running' <<<"$OUT" && grep -q 'ws://0.0.0.0:8080' <<<"$OUT" && ! grep -qF "$TP" <<<"$OUT"; then
+  pass "wstunnel: sshd 뒤 기동, 비밀값은 명령줄·출력·자식 환경에 없음"
+else
+  fail "wstunnel 기동: $(tr '\n' ' ' <<<"${OUT//$TP/<비밀값>}")"
+fi
 fi
 
 echo

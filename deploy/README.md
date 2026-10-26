@@ -12,7 +12,7 @@ Blackwell(sm_100·sm_120)도 세 이미지 모두 커널이 있다(Tier 0 cu130,
 | 파일 | 하는 일 |
 |---|---|
 | `docker-bake.hcl` | 빌드 정의. 외부 이미지(CUDA·uv) 다이제스트 고정, 대상 `tier0`·`exp02`·`mapanything`(베이스를 함께 빌드, 묶음 `exp` = 실험 이미지 둘) |
-| `base/Dockerfile`, `base/simai-start.sh` | 공통 베이스: CUDA 이미지 + uv + uv 관리 Python 3.11.15 + SSH(키 인증만: RunPod `PUBLIC_KEY`·Vast `SSH_PUBLIC_KEY`·`SIMAI_AUTHORIZED_KEYS_FILE`, `SIMAI_SSHD=off` 면 안 띄움. 한 줄에 공개키 하나만 받고 옵션·제어 문자 줄은 버린다. ssh-keygen·sshd 에는 HF 토큰을 넘기지 않는다) 시작 스크립트 |
+| `base/Dockerfile`, `base/simai-start.sh` | 공통 베이스: CUDA 이미지 + uv + uv 관리 Python 3.11.15 + SSH(키 인증만: RunPod `PUBLIC_KEY`·Vast `SSH_PUBLIC_KEY`·`SIMAI_AUTHORIZED_KEYS_FILE`, `SIMAI_SSHD=off` 면 안 띄움. 한 줄에 공개키 하나만 받고 옵션·제어 문자 줄은 버린다. ssh-keygen·sshd 에는 HF 토큰을 넘기지 않는다) 시작 스크립트. sshd 를 띄우면 SSH 세션용 비밀 아닌 환경 변수 파일(`/etc/profile.d/simai-env.sh`)을 적고, 경로 비밀값 `SIMAI_TUNNEL_PREFIX` 가 있으면 막힌 망 예비 SSH 용 wstunnel 서버를 띄운다(아래 "막힌 망 예비 SSH", S15P31A101-286) |
 | `tier0/Dockerfile`, `tier0/entrypoint.sh` | 타깃 `tier0`: Tier 0 서비스 이미지(YOLO26x-pose, TensorRT FP16). `ai/uv.lock` 으로 의존성 고정(큰 휠은 묶음별 층, 아래 "층 분할"), 첫 기동 때 엔진 준비. 타깃 `unified`: 같은 층 위에 vLLM·HMR 을 더한 통합 이미지(아래 "통합 이미지", S15P31A101-246) |
 | `scripts/simai_bootstrap.py`, `weights.json` | 이미지의 `simai-bootstrap`(기본 진입점): 저장 위치·GPU 세대 감지 → 가중치 목록대로 받고 sha256 확인(재시도·이어받기·워커 가중치 검증 스탬프) → Tier 0 또는 세션 큐. `SIMAI_SERVICES` 면 Tier 0·vLLM·워커 감시 프로세스 (아래 "simai-bootstrap"·"통합 이미지") |
 | `exp02/Dockerfile`, `exp02/entrypoint.sh`, `exp02/requirements.{in,lock.txt}` | EXP-02 HMR(Fast SAM 3D Body) 이미지: torch 2.7.1+cu128, Detectron2 는 CUDA 확장 없이(`FORCE_CUDA=0`, CPU 전용) 빌드. 가중치는 시작할 때 `simai-bootstrap` 이 받는다(아래 "실험 이미지") |
@@ -59,6 +59,7 @@ Network Volume 구조·권한·보관, Pod 점검 기준, SSH 재접속·443 예
 | Tier 0 Python 의존성 | `ai/uv.lock` 을 `uv sync --locked --no-dev --extra tier0` 로. pyproject 와 잠금이 어긋나면 **빌드가 실패**한다 |
 | EXP-02 Python 의존성 | `exp02/requirements.lock.txt`(해시 포함, Python 3.11). 잠금 밖 3개(chumpy·Detectron2·MoGe)는 커밋 고정 휠 + `--no-deps` |
 | MapAnything Python 의존성 | `mapanything/requirements.lock.txt`(해시 포함, Python 3.12). map-anything 자체는 커밋 고정 + `--no-deps` |
+| wstunnel (막힌 망 예비 SSH) | 10.7.1 linux_amd64 릴리스 묶음 sha256 `fa842ed5…ea9ea2`(`base/Dockerfile` ARG). 다르면 빌드가 실패한다 |
 | 실험 이미지 코드 사본 | Fast-SAM-3D-Body @d72aa36, DINOv3 허브 코드 @6876159, map-anything @3d10cf7, DINOv2 허브 코드 @7764ea0 (Dockerfile ARG) |
 | 이미지 자체 | 레지스트리에 올린 이미지의 다이제스트. RunPod 템플릿은 태그가 아니라 다이제스트로 이미지를 가리킨다 |
 
@@ -159,15 +160,62 @@ HMR 이미지 `exp02`, MapAnything 이미지 `static`)의 묶음을 준비한다
 | CUDA 버전 필터 | 13.0 이상(위 "CUDA 13 인 이유") |
 | Container Disk | 100GB 이상(이미지 풀면 약 19.5GB + 가중치·엔진·결과. 볼륨이 없으므로 여기가 `$SIMAI_ROOT=/srv/simai`) |
 | Volume | 붙이지 않는다(Network Volume 은 데이터센터에 묶인다). Pod 볼륨을 쓰면 `/workspace/simai` 가 된다 |
+| 공개 HTTP 포트 | 8080(막힌 망 예비 SSH 의 wstunnel, `https://<POD_ID>-8080.proxy.runpod.net`. 아래 "막힌 망 예비 SSH") |
 | 공개 TCP 포트 | 22(SSH, 키 인증만), I0 수신 포트(70000 이상 대칭 매핑, 실제 포트는 `SIMAI_PUBLIC_PORT_<번호>` 또는 RunPod 가 넣는 `RUNPOD_TCP_PORT_<번호>`, 명세 3.12) |
 | 공개 주소 환경 변수 | Tier 0 가 읽는 순서(앞이 우선, 값이 있는 첫 이름만 쓰고 틀린 값이면 오류): 공개 IP `SIMAI_PUBLIC_HOST` → `RUNPOD_PUBLIC_IP`, 공개 포트 `SIMAI_PUBLIC_PORT_<번호>` → `RUNPOD_TCP_PORT_<번호>`. 어느 것도 없으면 등록·기동 오류. RunPod 는 자동으로 들어오고 그 밖의 사이트는 사람이 사이트 무관 이름으로 넣는다. Vast 이름은 docs.vast.ai 로 확인하지 못해 읽지 않는다 |
 | 시작 명령 | 비움(이미지 기본: `simai-bootstrap tier0`). 검증 세션은 `sleep infinity` 로 띄우고 SSH 로 `simai-bootstrap queue` |
 | GPU 기능 | 이미지 `NVIDIA_DRIVER_CAPABILITIES=compute,utility,video`(video 는 선택 디코더 NVDEC 용, -182. Tier 0 기본 디코더는 CPU 라 없어도 기본 경로는 선다, -236). 템플릿에서 덮어쓰지 않는다 |
-| 환경 변수 | `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}`(RunPod Secret, 값은 템플릿에 쓰지 않음), `SIMAI_TIER0_GPU_RESERVE_MB=8192`(Tier 0 GPU 선확보, -60, G0 실측 전 초기값), `SIMAI_IMAGE_DIGEST=sha256:...`. `SIMAI_ROOT`·가중치 경로·해시·엔진 캐시는 부트스트랩이 정한다(`SIMAI_ENGINE_CACHE` 기본 `$SIMAI_ROOT/engines`, `SIMAI_OBS2D_ROOT` 는 필요하면 `$SIMAI_ROOT/obs2d`). 선택: `SIMAI_TIER0_MODE`(e2e), `SIMAI_TIER0_IMGSZ`(1280), `SIMAI_TIER0_MAX_BATCH`(4), `SIMAI_TIER0_CAMERA`(2304x1296) |
+| 환경 변수 | `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}`(RunPod Secret, 값은 템플릿에 쓰지 않음), `SIMAI_TIER0_GPU_RESERVE_MB=8192`(Tier 0 GPU 선확보, -60, G0 실측 전 초기값), `SIMAI_IMAGE_DIGEST=sha256:...`(이미지 다이제스트와 같은 값), `PUBLIC_KEY=<계정 SSH 공개키>`(비밀 아님), `SIMAI_TUNNEL_PREFIX={{ RUNPOD_SECRET_simai_tunnel_prefix }}`(RunPod Secret, 막힌 망 예비 SSH). `SIMAI_ROOT`·가중치 경로·해시·엔진 캐시는 부트스트랩이 정한다(`SIMAI_ENGINE_CACHE` 기본 `$SIMAI_ROOT/engines`, `SIMAI_OBS2D_ROOT` 는 필요하면 `$SIMAI_ROOT/obs2d`). 선택: `SIMAI_TIER0_MODE`(e2e), `SIMAI_TIER0_IMGSZ`(1280), `SIMAI_TIER0_MAX_BATCH`(4), `SIMAI_TIER0_CAMERA`(2304x1296) |
 | 분석 워커 환경 변수 | 같은 Pod 에서 워커를 띄울 때(아래 "분석 워커"): `SIMAI_EC2_BASE_URL`, `SIMAI_WORKER_ID=worker-01`, `SIMAI_WORKER_GPU_MEMORY_FRACTION=0.70`, `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION=0.55`, `SIMAI_WORKER_VLLM_MAX_NUM_SEQS=4`, `SIMAI_GPU_TIER0_FRACTION=0.20`, `SIMAI_WORKER_LAG_BUDGET_MS=600`. 선택(기본값): `SIMAI_WORKER_MARKER_MAX_AGE_S`(15), `SIMAI_WORKER_RESUME_AFTER_S`(30), `SIMAI_WORKER_LIVE_BLOCKED_TYPES`(static_reconstruct,hmr_refine,hmr_appearance_update), `SIMAI_WORKER_LIVE_WAIT_MS`(5000), `SIMAI_WORKER_HOLD_MAX_S`(60), `SIMAI_TIER0_MARKER`. 값의 뜻은 docs/design/tier0-gpu-priority.md |
-| 비밀 | 템플릿에 값으로 넣지 않는다(HF 토큰만 Secret 참조). 워커 토큰은 `.simai-private/worker.env` 의 `SIMAI_WORKER_TOKEN=`. `PUBLIC_KEY` 는 RunPod 이 계정 SSH 키로 채운다 |
+| 비밀 | 템플릿에 값으로 넣지 않는다(HF 토큰·터널 비밀값만 Secret 참조). 워커 토큰은 `.simai-private/worker.env` 의 `SIMAI_WORKER_TOKEN=` |
+| 공개키 | RunPod 은 계정 SSH 키를 `PUBLIC_KEY` 로 넣지만, 템플릿에 `PUBLIC_KEY` 를 빈 값으로 두면 그 값이 덮어써 공개키가 하나도 없게 되고 sshd 가 뜨지 않는다(3차 세션 2026-10-26: 빈 `PUBLIC_KEY` + 이름 칸에 이미지 다이제스트가 들어간 `SSH_PUBLIC_KEY`). 그래서 템플릿에 계정 공개키 값을 그대로 넣는다(공개키는 비밀이 아니다). 로그에 `sshd 시작 (키 인증만, 키 N개)` 가 없으면 이 줄부터 본다 |
 
 결과는 컨테이너 디스크에 있으므로 Pod 를 지우기(Terminate) 전에 scp 로 가져온다(세션 큐가 명령을 출력한다). Stop 만 해도 같은 GPU 를 다시 못 잡을 수 있다.
+
+### 막힌 망 예비 SSH (443, wstunnel, S15P31A101-286)
+
+SSAFY 노트북 망은 나가는 포트가 80·443·8000·8080 뿐이라 Direct TCP SSH(임의 높은 포트)가 시간 초과로 끝난다(3차 세션 2026-10-26).
+그때는 RunPod HTTPS 프록시(443, 명세 3.12 예비 경로) 위 WebSocket 으로 sshd 에 닿는다. 30 MB scp 32 s 로 SSH·scp 모두 확인했다.
+
+- Pod: 이미지의 `simai-start` 가 sshd 를 띄운 경우에만 `wstunnel server --log-lvl OFF --restrict-to 127.0.0.1:22 --restrict-to localhost:22 ws://0.0.0.0:${SIMAI_TUNNEL_PORT:-8080}` 를 백그라운드로 띄운다.
+  `SIMAI_SSHD=off` 이거나 공개키가 없으면 띄우지 않는다. 프록시 주소는 공개이므로 경로 비밀값 `SIMAI_TUNNEL_PREFIX` 가 없거나 약하면(영문·숫자·`_-` 32~128자가 아니면) 띄우지 않고 한 줄로 알린다.
+- 비밀값 처리: `simai-start` 가 맨 앞에서 환경에서 지우고 wstunnel 에만 환경 변수(`WSTUNNEL_RESTRICT_HTTP_UPGRADE_PATH_PREFIX`)로 넘긴다. 명령줄(`ps`)·출력·넘겨받은 명령(`simai-bootstrap`)·SSH 세션 환경 파일에는 없다.
+  wstunnel 로그는 규칙(비밀값 포함)을 찍으므로 끄고 버린다. 그래서 Pod 쪽 터널 로그는 없고, 확인은 노트북에서 접속해 본다.
+- 비밀값 만들기(한 번, 노트북): `python -c "import secrets; print(secrets.token_urlsafe(32))"`(43자). RunPod 콘솔 Secrets 에 `simai_tunnel_prefix` 로 넣고, 노트북에는 저장소 밖 본인만 읽는 파일(예: `~/.ssh/simai-tunnel-prefix`)에 둔다.
+- 노트북 wstunnel 클라이언트는 같은 판을 사람이 직접 받아 sha256 을 확인한다(https://github.com/erebe/wstunnel/releases/tag/v10.7.1, GitHub 릴리스 자산 digest 값).
+
+| 묶음 | sha256 |
+|---|---|
+| `wstunnel_10.7.1_windows_amd64.tar.gz` | `deb3c8b8d9fecf5428f7e0caabbc13aeb3b1edbfba49e1724a7a065c027bd0f2` |
+| `wstunnel_10.7.1_linux_amd64.tar.gz` | `fa842ed53fbb14b1c69cd98829f9895d7f8a6b0d562c57c1175851a52cea9ea2` |
+
+```powershell
+# Windows: 받은 묶음 확인 → 풀어서 wstunnel.exe 를 PATH 의 폴더(예: ~/bin)에 둔다
+(Get-FileHash .\wstunnel_10.7.1_windows_amd64.tar.gz -Algorithm SHA256).Hash   # 위 표와 같아야 한다
+tar -xzf .\wstunnel_10.7.1_windows_amd64.tar.gz wstunnel.exe
+# 접속하는 셸에서만 비밀값을 환경 변수로 둔다(ssh 설정 파일·명령줄에 쓰지 않는다)
+$env:WSTUNNEL_HTTP_UPGRADE_PATH_PREFIX = (Get-Content ~/.ssh/simai-tunnel-prefix -Raw).Trim()
+ssh simai-pod-443
+```
+
+노트북 `~/.ssh/config` (`<POD_ID>` 는 콘솔의 Pod ID, Pod 를 새로 만들면 바뀐다):
+
+```
+Host simai-pod-443
+  HostName <POD_ID>-8080.proxy.runpod.net
+  User root
+  IdentityFile ~/.ssh/<RunPod 에 등록한 키>
+  ProxyCommand wstunnel client --log-lvl OFF -L stdio://127.0.0.1:22 wss://%h:443
+  ServerAliveInterval 30
+```
+
+- 비밀값은 클라이언트도 환경 변수 `WSTUNNEL_HTTP_UPGRADE_PATH_PREFIX` 로 받는다(`-P <비밀값>` 도 되지만 설정 파일·프로세스 목록에 남는다). 비밀값이 틀리면 서버가 업그레이드를 거절해 SSH 가 바로 끊긴다.
+- 연결은 오래 유지되지 않을 수 있다(RunPod 프록시 최대 100초, 명세 3.12). wstunnel 은 양쪽이 30초마다 WebSocket ping 을 보내고 위 설정은 SSH keepalive 30초다. 큐·긴 작업은 `nohup` 으로 띄우고 끊기면 다시 접속한다.
+- 호스트 키는 컨테이너마다 새로 만든다(위 "SSH 직접"과 같은 재접속 규칙, `docs/design/runpod-environment.md`).
+
+**SSH 세션의 환경 변수.** sshd 가 띄운 셸에는 컨테이너 ENV 가 없다. `simai-start` 가 sshd 를 띄울 때 비밀이 아닌 이름(`SIMAI_*`·`CUDA_*`·`NVIDIA_*`·`UV_*`·`RUNPOD_*`·`PYTHON*`·`PATH`·`LD_LIBRARY_PATH`, 이름에 TOKEN·SECRET·PASSW·API_KEY·PRIVATE·CREDENTIAL 이 든 것 제외)만
+`/etc/profile.d/simai-env.sh` 에 적는다. 로그인 셸(`ssh simai-pod`)은 자동으로 읽고, 명령 한 줄은 `ssh simai-pod 'bash -lc "simai-bootstrap queue ..."'` 처럼 로그인 셸로 돌린다.
+HF 토큰·터널 비밀값은 이 파일에 없다. SSH 에서 가중치를 받아야 하면 그 명령에만 `HF_TOKEN="$(tr '\0' '\n' </proc/1/environ | sed -n 's/^HF_TOKEN=//p')" simai-bootstrap ...` 로 넘긴다.
 
 ### Vast.ai (예비)
 

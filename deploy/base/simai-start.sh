@@ -6,7 +6,11 @@
 #   SIMAI_AUTHORIZED_KEYS_FILE  공개키 파일 경로(한 줄에 키 하나, 위 두 방식이 없는 곳). 옵션이 붙은 authorized_keys 줄은 버린다
 # SIMAI_SSHD=off: 공개키가 있어도 컨테이너 sshd 를 띄우지 않는다(엘리스 GPU VM 처럼 호스트 sshd 로 들어가는 곳).
 # 비밀번호·키보드 인증은 항상 끈다. 비밀 값은 여기서 만들거나 저장하지 않는다. 호스트 키는 컨테이너마다 새로 만든다(이미지에 넣지 않음).
-# 시험용 경로: SIMAI_SSH_DIR(기본 /root/.ssh), SIMAI_SSHD_CONFIG_DIR(기본 /etc/ssh/sshd_config.d), SIMAI_SSHD_BIN(기본 /usr/sbin/sshd), SIMAI_SSH_KEYGEN_BIN(기본 ssh-keygen).
+# sshd 를 띄우면 SSH 세션용으로 비밀이 아닌 컨테이너 환경 변수를 /etc/profile.d/simai-env.sh 에 적는다(로그인 셸이 읽는다, S15P31A101-286).
+# 막힌 망 예비 SSH(S15P31A101-286, 명세 3.12 443 예비): sshd 를 띄운 경우에만, SIMAI_TUNNEL_PREFIX(경로 비밀값, RunPod Secret)가 있으면
+#   wstunnel 서버를 ws://0.0.0.0:${SIMAI_TUNNEL_PORT:-8080} 에 띄워 RunPod HTTPS 프록시(443)로 들어온 WebSocket 을 127.0.0.1:22 로만 잇는다.
+# 시험용 경로: SIMAI_SSH_DIR(기본 /root/.ssh), SIMAI_SSHD_CONFIG_DIR(기본 /etc/ssh/sshd_config.d), SIMAI_SSHD_BIN(기본 /usr/sbin/sshd), SIMAI_SSH_KEYGEN_BIN(기본 ssh-keygen),
+#   SIMAI_SSH_ENV_FILE(기본 /etc/profile.d/simai-env.sh), SIMAI_WSTUNNEL_BIN(기본 wstunnel).
 set -euo pipefail
 
 # HF 토큰은 넘겨받은 명령(simai-bootstrap)에만 넘긴다. 이 스크립트의 다른 자식(cat·tr·awk·mkdir·chmod·wc·ssh-keygen·sshd)은
@@ -14,11 +18,17 @@ set -euo pipefail
 hf_token=${HF_TOKEN-}
 hf_token_set=${HF_TOKEN+1}
 unset HF_TOKEN HUGGING_FACE_HUB_TOKEN
+# 터널 경로 비밀값은 wstunnel 에만(환경 변수로) 넘긴다. 넘겨받은 명령을 포함해 다른 어느 자식에도 넘기지 않고 출력하지 않는다
+tunnel_prefix=${SIMAI_TUNNEL_PREFIX-}
+unset SIMAI_TUNNEL_PREFIX
 
 SSH_DIR=${SIMAI_SSH_DIR:-/root/.ssh}
 CONF_DIR=${SIMAI_SSHD_CONFIG_DIR:-/etc/ssh/sshd_config.d}
 SSHD=${SIMAI_SSHD_BIN:-/usr/sbin/sshd}
 KEYGEN=${SIMAI_SSH_KEYGEN_BIN:-ssh-keygen}
+ENV_FILE=${SIMAI_SSH_ENV_FILE:-/etc/profile.d/simai-env.sh}
+WSTUNNEL=${SIMAI_WSTUNNEL_BIN:-wstunnel}
+TUNNEL_PORT=${SIMAI_TUNNEL_PORT:-8080}
 
 keys=""
 for k in "${PUBLIC_KEY:-}" "${SSH_PUBLIC_KEY:-}"; do
@@ -58,6 +68,42 @@ if [ -n "$keys" ]; then
     > "$CONF_DIR/00-simai.conf"
   "$SSHD"
   echo "simai-start: sshd 시작 (키 인증만, 키 $(printf '%s\n' "$keys" | wc -l | tr -d ' ')개)" >&2
+
+  # SSH 세션에는 컨테이너 ENV 가 없다(sshd 가 새 환경으로 셸을 띄운다). 3차 세션의 /proc/1/environ 수동 절차를 대신해
+  # 정해 둔 이름(SIMAI_*·CUDA_*·NVIDIA_*·UV_*·RUNPOD_*·PYTHON*·PATH·LD_LIBRARY_PATH)만 적고, 비밀로 보이는 이름은 뺀다.
+  # HF 토큰·터널 비밀값은 위에서 이미 환경에서 지웠다. 값은 작은따옴표로 감싸 sh·bash 어느 쪽이 읽어도 그대로 들어간다.
+  sq="'" sq_esc="'\\''"
+  if mkdir -p "${ENV_FILE%/*}" && {
+       echo "# simai-start 가 sshd 를 띄울 때 적는다(S15P31A101-286). 비밀 값(HF 토큰·API 키·터널 비밀값)은 넣지 않는다"
+       for name in $(compgen -e); do
+         [[ $name =~ ^(PATH|LD_LIBRARY_PATH|(SIMAI|CUDA|NVIDIA|UV|RUNPOD)_[A-Za-z0-9_]*|PYTHON[A-Za-z0-9_]*)$ ]] || continue
+         [[ $name =~ TOKEN|SECRET|PASSW|API_KEY|PRIVATE|CREDENTIAL|^SIMAI_TUNNEL_PREFIX$ ]] && continue
+         value=${!name}
+         printf "export %s='%s'\n" "$name" "${value//$sq/$sq_esc}"
+       done
+     } > "$ENV_FILE"; then
+    chmod 644 "$ENV_FILE"
+  else
+    echo "simai-start: $ENV_FILE 을 쓸 수 없다(SSH 세션에 컨테이너 환경 변수가 없다)" >&2
+  fi
+
+  # 443 예비 터널. 프록시 주소는 공개이므로 경로 비밀값이 없거나 약하면 띄우지 않는다(명세 3.12: 토큰 인증 필수).
+  # 비밀값은 명령줄(ps 에 보임)이 아니라 wstunnel 의 환경 변수로만 넘기고, wstunnel 로그는 규칙(비밀값 포함)을 찍으므로 끄고 버린다.
+  if [ -z "$tunnel_prefix" ]; then
+    echo "simai-start: SIMAI_TUNNEL_PREFIX 없음 → 443 예비 터널(wstunnel)을 띄우지 않는다" >&2
+  elif ! [[ $tunnel_prefix =~ ^[A-Za-z0-9_-]{32,128}$ ]]; then
+    echo "simai-start: SIMAI_TUNNEL_PREFIX 가 약하거나 형식이 틀려 터널을 띄우지 않는다(영문·숫자·_- 32~128자)" >&2
+  elif ! [[ $TUNNEL_PORT =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$TUNNEL_PORT > 65535 )); then
+    echo "simai-start: SIMAI_TUNNEL_PORT=$TUNNEL_PORT 가 포트 번호가 아니라 터널을 띄우지 않는다" >&2
+  elif ! command -v "$WSTUNNEL" >/dev/null; then
+    echo "simai-start: $WSTUNNEL 이 없어 터널을 띄우지 않는다" >&2
+  else
+    WSTUNNEL_RESTRICT_HTTP_UPGRADE_PATH_PREFIX="$tunnel_prefix" "$WSTUNNEL" server --log-lvl OFF \
+      --restrict-to 127.0.0.1:22 --restrict-to localhost:22 "ws://0.0.0.0:$TUNNEL_PORT" </dev/null >/dev/null 2>&1 &
+    echo "simai-start: wstunnel 시작 (ws://0.0.0.0:$TUNNEL_PORT → 127.0.0.1:22 만, 경로 비밀값 인증, 로그 끔)" >&2
+  fi
+elif [ -n "$tunnel_prefix" ]; then
+  echo "simai-start: sshd 를 띄우지 않아 443 예비 터널(wstunnel)도 띄우지 않는다" >&2
 fi
 
 if [ "$#" -eq 0 ]; then
