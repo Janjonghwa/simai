@@ -5,6 +5,8 @@ import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * I1 공통 봉투(contracts/messages/envelope.schema.json, 명세 12.1). payload 는 메시지마다 읽는 쪽이 푼다.
@@ -60,6 +62,18 @@ public record I1Envelope(
                 Instant.ofEpochMilli(sentAt.longValue()),
                 requiredString(root, "source_id"),
                 payload);
+    }
+
+    /** EC2 가 보내는 메시지의 봉투(source_id ec2, 새 msg_id). I1 응답과 I2 STOMP 발행이 같이 쓴다 */
+    public static ObjectNode outbound(ObjectMapper mapper, long sentAtMs, String msgType, String schemaVersion, JsonNode payload) {
+        ObjectNode envelope = mapper.createObjectNode();
+        envelope.put("schema_version", schemaVersion);
+        envelope.put("msg_type", msgType);
+        envelope.put("msg_id", UUID.randomUUID().toString());
+        envelope.put("sent_at", sentAtMs);
+        envelope.put("source_id", I1Connection.EC2_SOURCE_ID);
+        envelope.set("payload", payload);
+        return envelope;
     }
 
     private static String requiredString(JsonNode root, String field) {

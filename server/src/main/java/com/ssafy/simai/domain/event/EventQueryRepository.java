@@ -93,6 +93,10 @@ public class EventQueryRepository {
                 SELECT event_id, ack_id, channel, actor_role, actor_user_id, actor_device_id, acked_at
                 FROM event_ack WHERE event_id IN (:ids) ORDER BY acked_at, ack_id
                 """, new MapSqlParameterSource("ids", ids), rs -> {
+            // 계약(operator_ack)의 현장 버튼 ↔ SITE 짝이 틀린 행은 빼서, 행 하나 때문에 항목 전체가 관제 앱 검사에서 버려지지 않게 한다
+            if ("SITE_BUTTON".equals(rs.getString("channel")) != "SITE".equals(rs.getString("actor_role"))) {
+                return;
+            }
             ObjectNode ack = byEvent.get(rs.getString("event_id")).addObject();
             ack.put("ack_id", rs.getString("ack_id"));
             ack.put("channel", rs.getString("channel"));
