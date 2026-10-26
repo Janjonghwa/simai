@@ -38,6 +38,9 @@ simai:
       cookie-secure: ${SIMAI_REFRESH_COOKIE_SECURE:true}
     # 관제 앱 개발 서버(Vite)가 다른 포트에서 부른다. 운영은 같은 출처라 비워 둔다
     cors-allowed-origins: ${SIMAI_CORS_ALLOWED_ORIGINS:}
+  config-bundle:
+    # Tier 0 가 구성 묶음을 내려받는 공개 주소(https://<도메인>). 묶음 안 구성 요소 주소가 이것으로 시작한다. 비어 있으면 발행하지 않는다
+    public-base-url: ${SIMAI_PUBLIC_BASE_URL:}
   tier0:
     # Tier 0 토큰(Tier 0 의 SIMAI_TIER0_TOKEN) 원문의 SHA-256 16진수. 비어 있으면 I1(/ws/tier0) 연결을 모두 거부한다
     token-sha256: ${SIMAI_TIER0_TOKEN_SHA256:}

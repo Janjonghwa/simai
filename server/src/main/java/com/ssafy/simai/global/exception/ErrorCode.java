@@ -124,4 +124,44 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    /** 구역·작업면·보정 문서·구성 묶음(S15P31A101-120·-58) */
+    enum Config implements ErrorCode {
+        ZONE_NOT_FOUND(HttpStatus.NOT_FOUND, "구역을 찾을 수 없습니다"),
+        INVALID_ZONE(HttpStatus.BAD_REQUEST, "구역 값이 올바르지 않습니다(name·zone_kind 필수, eval_type 은 GROUND_FOOTPRINT·VOLUME_3D, severity 는 CRITICAL·HIGH·CAUTION·INFO)"),
+        INVALID_POLYGON(HttpStatus.BAD_REQUEST, "다각형은 서로 다른 꼭짓점 3개 이상이고 자기 교차·넓이 0 이 없어야 합니다"),
+        INVALID_Z_RANGE(HttpStatus.BAD_REQUEST, "높이 범위는 z_min_m < z_max_m 이어야 하고 VOLUME_3D 구역은 둘 다 있어야 합니다"),
+        STATIC_OBJECT_NOT_FOUND(HttpStatus.NOT_FOUND, "작업면·정적 객체를 찾을 수 없습니다"),
+        // 같은 항목을 동시에 고쳐 다른 요청이 먼저 새 버전을 만들었다. 다시 읽고 고친다
+        CONCURRENT_EDIT(HttpStatus.CONFLICT, "다른 요청이 먼저 새 버전을 만들었습니다. 다시 불러와 고치세요"),
+        INVALID_STATIC_OBJECT(HttpStatus.BAD_REQUEST, "작업면·정적 객체 값이 올바르지 않습니다(kind, OBB center·size·yaw_rad, 작업면은 top_height_m > 0)"),
+        INVALID_CALIBRATION(HttpStatus.BAD_REQUEST, "보정 문서가 계약(contracts/providers/calibration)에 맞지 않습니다"),
+        CALIBRATION_SITE_MISMATCH(HttpStatus.BAD_REQUEST, "보정 문서의 현장(coordinate_frame.site_id)이 이 서버의 현장과 다릅니다"),
+        // 덮어쓰지 않는다. 다른 문서면 새 calibration_version 으로 올린다
+        CALIBRATION_VERSION_CONFLICT(HttpStatus.CONFLICT, "같은 보정 버전에 다른 문서가 이미 있습니다"),
+        CALIBRATION_MISSING(HttpStatus.CONFLICT, "올린 보정 문서가 없어 구성 묶음을 만들 수 없습니다. 먼저 POST /api/calibrations 로 올리세요"),
+        RULES_MISSING(HttpStatus.CONFLICT, "유효한 규칙 버전이 없어 구성 묶음을 만들 수 없습니다"),
+        INVALID_RULE_PROFILE(HttpStatus.BAD_REQUEST, "rule_profile 은 OPERATION 또는 CLASSROOM_TEST 여야 합니다"),
+        PUBLIC_URL_NOT_SET(HttpStatus.SERVICE_UNAVAILABLE, "Tier 0 가 묶음을 내려받을 https 공개 주소(SIMAI_PUBLIC_BASE_URL)가 설정되지 않았습니다"),
+        CONFIG_BUNDLE_NOT_FOUND(HttpStatus.NOT_FOUND, "구성 묶음을 찾을 수 없습니다"),
+        SITE_NOT_SINGLE(HttpStatus.CONFLICT, "현장이 하나가 아닙니다(MVP 는 현장 하나)");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Config(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }
