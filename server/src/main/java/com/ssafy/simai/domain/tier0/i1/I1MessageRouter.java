@@ -16,7 +16,7 @@ import org.springframework.stereotype.Component;
  * 결과는 simai.i1.messages{msg_type, result} 로 센다.
  * result: stored · duplicate(재전송이라 바뀐 것 없음) · invalid(계약 위반) · failed(저장 실패) · unsupported_version · unknown_type.
  * msg_type 태그는 저장기가 있는 종류만 쓰고 나머지는 other 다. 보낸 쪽 문자열로 지표 수가 늘지 않게 한다.
- * 아직 저장기가 없는 종류(risk_event_transition 등)는 unknown_type 으로 세고 버린다. 붙이는 이슈가 저장기를 더한다.
+ * 저장기가 없는 종류(observation_summary 등)는 unknown_type 으로 세고 버린다. 붙이는 이슈가 저장기를 더한다.
  */
 @Component
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -35,7 +35,7 @@ public class I1MessageRouter {
     }
 
     /** 계약 위반은 InvalidI1Message 로, 저장 실패는 그 예외로 던진다. 세는 일은 호출자가 countInvalid·countFailed 로 한다. */
-    public void route(I1Envelope envelope, Instant receivedAt) {
+    public void route(I1Envelope envelope, Instant receivedAt, I1Connection connection) {
         I1MessageIngestor ingestor = ingestors.get(envelope.msgType());
         if (ingestor == null) {
             count(envelope.msgType(), "unknown_type");
@@ -46,15 +46,24 @@ public class I1MessageRouter {
             count(envelope.msgType(), "unsupported_version");
             log.warn("I1 메이저 버전을 읽을 수 없어 버림: msg_type={} schema_version={} msg_id={}",
                     envelope.msgType(), envelope.schemaVersion(), envelope.msgId());
+            ingestor.onRejected(envelope, connection, "unsupported_version " + envelope.schemaVersion());
             return;
         }
-        I1MessageIngestor.Outcome outcome = ingestor.ingest(envelope, receivedAt);
+        I1MessageIngestor.Outcome outcome = ingestor.ingest(envelope, receivedAt, connection);
         count(envelope.msgType(), outcome == I1MessageIngestor.Outcome.STORED ? "stored" : "duplicate");
     }
 
     /** 봉투나 payload 가 계약과 맞지 않는 메시지. 봉투를 못 읽었으면 msgType 은 null 이다. */
     void countInvalid(String msgType) {
         count(msgType, "invalid");
+    }
+
+    /** 계약 위반으로 버린 메시지를 그 종류의 저장기에 알린다(onRejected) */
+    void rejected(I1Envelope envelope, I1Connection connection, String reason) {
+        I1MessageIngestor ingestor = ingestors.get(envelope.msgType());
+        if (ingestor != null) {
+            ingestor.onRejected(envelope, connection, reason);
+        }
     }
 
     void countFailed(String msgType) {

@@ -30,37 +30,52 @@ public class Tier0I1WebSocketHandler extends TextWebSocketHandler {
      */
     static final int MAX_TEXT_MESSAGE_BYTES = 1024 * 1024;
 
+    private static final String CONNECTION = "simai.i1.connection";
+
     private final ObjectMapper mapper;
     private final I1MessageRouter router;
+    private final I1ConnectionRegistry connections;
     private final Clock clock;
 
-    public Tier0I1WebSocketHandler(ObjectMapper mapper, I1MessageRouter router, Clock clock) {
+    public Tier0I1WebSocketHandler(ObjectMapper mapper, I1MessageRouter router, I1ConnectionRegistry connections, Clock clock) {
         this.mapper = mapper;
         this.router = router;
+        this.connections = connections;
         this.clock = clock;
     }
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
         session.setTextMessageSizeLimit(MAX_TEXT_MESSAGE_BYTES);
+        I1Connection connection = new I1Connection(session, mapper, clock);
+        session.getAttributes().put(CONNECTION, connection);
+        connections.add(connection);
         log.info("I1 연결: session={} remote={}", session.getId(), session.getRemoteAddress());
     }
 
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+        I1Connection connection = (I1Connection) session.getAttributes().get(CONNECTION);
         I1Envelope envelope;
         try {
             envelope = I1Envelope.parse(mapper.readTree(message.getPayload()));
+            connection.bind(envelope.sourceId());
         } catch (RuntimeException e) {
             router.countInvalid(null);
             log.warn("I1 봉투를 읽지 못해 버림: session={} reason={}", session.getId(), reason(e));
             return;
         }
         try {
-            router.route(envelope, clock.instant());
+            router.route(envelope, clock.instant(), connection);
         } catch (InvalidI1Message | JacksonException e) {
             router.countInvalid(envelope.msgType());
             log.warn("I1 계약 위반이라 버림: msg_type={} msg_id={} reason={}", envelope.msgType(), envelope.msgId(), reason(e));
+            try {
+                router.rejected(envelope, connection, reason(e));
+            } catch (RuntimeException rejectFailure) {
+                log.warn("I1 버린 메시지 처리 실패: msg_type={} error={}", envelope.msgType(),
+                        rejectFailure.getClass().getSimpleName());
+            }
         } catch (RuntimeException e) {
             router.countFailed(envelope.msgType());
             // DB 오류 문구에는 값이 실릴 수 있어 예외 종류만 남긴다
@@ -71,6 +86,7 @@ public class Tier0I1WebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        connections.remove(session.getId());
         log.info("I1 연결 끊김: session={} status={}", session.getId(), status);
     }
 
