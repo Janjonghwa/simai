@@ -27,7 +27,7 @@ class HealthIngestor implements I1MessageIngestor {
     }
 
     @Override
-    public Outcome ingest(I1Envelope envelope, Instant receivedAt) {
+    public Outcome ingest(I1Envelope envelope, Instant receivedAt, I1Connection connection) {
         return repository.insertHealth(envelope, receivedAt) ? Outcome.STORED : Outcome.DUPLICATE;
     }
 }

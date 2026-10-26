@@ -33,7 +33,7 @@ class WorldStateIngestor implements I1MessageIngestor {
 
     @Override
     @Transactional
-    public Outcome ingest(I1Envelope envelope, Instant receivedAt) {
+    public Outcome ingest(I1Envelope envelope, Instant receivedAt, I1Connection connection) {
         return repository.upsertWorldState(envelope, receivedAt) ? Outcome.STORED : Outcome.DUPLICATE;
     }
 }

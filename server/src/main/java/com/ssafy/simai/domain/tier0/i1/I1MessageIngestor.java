@@ -13,9 +13,9 @@ public interface I1MessageIngestor {
 
     /**
      * receivedAt 은 EC2 수신 시각이다. 같은 msg_id 를 다시 받아도 행이 늘지 않아야 한다(Tier 0 재전송, 12.1).
-     * 계약에 맞지 않는 payload 는 InvalidI1Message 를 던진다.
+     * 계약에 맞지 않는 payload 는 InvalidI1Message 를 던진다. connection 은 보낸 Tier 0 연결이다(연결별 상태, 회신).
      */
-    Outcome ingest(I1Envelope envelope, Instant receivedAt);
+    Outcome ingest(I1Envelope envelope, Instant receivedAt, I1Connection connection);
 
     /** STORED: 행을 쓰거나 바꿨다. DUPLICATE: 이미 같은 메시지가 저장돼 있어 아무것도 바꾸지 않았다. */
     enum Outcome {

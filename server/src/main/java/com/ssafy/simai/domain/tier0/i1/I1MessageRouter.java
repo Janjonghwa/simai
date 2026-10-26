@@ -35,7 +35,7 @@ public class I1MessageRouter {
     }
 
     /** 계약 위반은 InvalidI1Message 로, 저장 실패는 그 예외로 던진다. 세는 일은 호출자가 countInvalid·countFailed 로 한다. */
-    public void route(I1Envelope envelope, Instant receivedAt) {
+    public void route(I1Envelope envelope, Instant receivedAt, I1Connection connection) {
         I1MessageIngestor ingestor = ingestors.get(envelope.msgType());
         if (ingestor == null) {
             count(envelope.msgType(), "unknown_type");
@@ -48,7 +48,7 @@ public class I1MessageRouter {
                     envelope.msgType(), envelope.schemaVersion(), envelope.msgId());
             return;
         }
-        I1MessageIngestor.Outcome outcome = ingestor.ingest(envelope, receivedAt);
+        I1MessageIngestor.Outcome outcome = ingestor.ingest(envelope, receivedAt, connection);
         count(envelope.msgType(), outcome == I1MessageIngestor.Outcome.STORED ? "stored" : "duplicate");
     }
 
