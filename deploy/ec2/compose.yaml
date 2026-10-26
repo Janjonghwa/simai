@@ -38,6 +38,8 @@ services:
       SIMAI_JWT_SECRET: ${SIMAI_JWT_SECRET:?SIMAI_JWT_SECRET}
       # 비어 있으면 Tier 0 I1(/ws/tier0) 연결만 거부되고 서버는 뜬다(Tier 0 를 붙이기 전 배포)
       SIMAI_TIER0_TOKEN_SHA256: ${SIMAI_TIER0_TOKEN_SHA256:-}
+      # Tier 0 가 구성 묶음을 내려받는 주소(S15P31A101-120). Nginx 가 /api/ 를 서버로 넘긴다
+      SIMAI_PUBLIC_BASE_URL: https://${SIMAI_DOMAIN:?SIMAI_DOMAIN}
       # Nginx 가 넘긴 X-Forwarded-* 로 원래 주소(https)를 안다
       SERVER_FORWARD_HEADERS_STRATEGY: framework
     networks: [edge, ec2-internal]

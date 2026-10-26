@@ -113,6 +113,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/docs", "/api/docs/**", "/api/swagger-ui/**").permitAll()
                         // 관제 앱 STOMP 업그레이드. 브라우저는 여기에 헤더를 싣지 못해 CONNECT 프레임에서 JWT 를 본다(StompAuthInterceptor)
                         .requestMatchers(HttpMethod.GET, RealtimeTopics.ENDPOINT).permitAll()
+                        // Tier 0 가 구성 묶음 파일을 헤더 없이 내려받는다. 주소의 서명(sig)을 컨트롤러가 검사한다(BundleUrlSigner)
+                        .requestMatchers(HttpMethod.GET, "/api/config-bundles/*/files/*").permitAll()
                         .anyRequest().authenticated())
                 // 401·403 에도 ProblemDetail(code) 본문을 싣는다. 관제 앱이 만료(갱신 후 재시도)와 다른 오류를 가른다
                 .exceptionHandling(exceptions -> exceptions
