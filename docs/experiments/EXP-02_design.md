@@ -182,3 +182,33 @@ H1(공식 opt, 14장) SUCCESS. H2(opt) 완료. H3 진행 중 라이브 테스트
 - **L6 웹캠 라이브**(결과 데이터만 응답, 노트북이 실시간 웹캠 + 오버레이 + Open3D 3D 메시 창을 그림 — 선행 PoC 와 같은 화면, 손 포함 full, 1280px, inflight 2): e2e p50 **450 ms** / p95 744 ms, 추론 약 3.6~4.5 fps, 서버 처리 150~280 ms(HMR 128~275). 영상이 실시간이라 체감 렉이 크게 줄었다. 한 프레임 서버 시간 2.4 s 튐(원인 미확인).
 - **결정(2026-10-16)**: 기본 모드는 손 포함(full). 손 품질·지연이 충분해 손 제외(body) 측정은 하지 않는다.
 - 미실행(다음 검증 세션): H2·H4 벤치마크, compile 라이브, 실제 카메라(C110) 라이브, 긴 실행에서 지연 튐 반복 여부.
+
+## 7. E-GATE-1 (S15P31A101-87)
+
+설계·인터페이스·가정은 `docs/design/hmr-multiview-aggregation.md`. Fast SAM 3D Body 내장 다시점 융합(`mocap/core/multiview_mhr2smpl.py`)은 SMPL 출력·카메라당 1인·별도 가중치라
+쓰지 않고(코드 확인), 명세 5.6 의 대안(카메라당 1개 연결 → 다시점 재투영으로 대표 포즈 선택, root 는 Tier 0 pelvis)을 `simai_ai.hmr.multiview` 로 만들었다.
+
+**입력.** 녹화 → 같은 시각 카메라별 그림(`egate1_frames.py`, 노트북) → GPU Job(`run_multiview_hmr.py`, 큐 생성기 `egate1_jobs.py`): e1 bbox+YOLO26-seg 마스크, e2 bbox 만(기준선 원본),
+e3 마스크+몸통·고관절 keypoint 프롬프트(GPU 미검증 변형) → 카메라별 HMR 결과 묶음 + 같은 시각 Tier 0 world_tracks → `egate1_eval.py`(노트북 CPU).
+
+**지표(Run 기록 `metrics` 이름).** `<표지>` 는 `all`·`crowded`(다른 사람 있음)·`crossing`(0.8 m 안)·`occluded`(보인 카메라 < 전체)·`reappeared`(빠졌다 다시). 분포는 `.n`·`.p50`·`.p95`·`.mean`.
+
+| 이름 | 정의 |
+|---|---|
+| `<표지>.loo_common_px.<변형>` | 한 카메라 제외 재투영(이상적 핀홀 px). 제외한 카메라 c 의 Tier 0 2D(COCO17, 신뢰도 ≥ 0.3) 중 c 를 뺀 Tier 0 2D 로 삼각측량할 수 있는 관절. 기준점 = c 를 뺀 카메라로 삼각측량한 엉덩이 중점. 변형: `hmr_multiview`(c 를 뺀 후보로 집계), `hmr_single_root`(후보 하나씩 기준점에), `hmr_single_raw`(HMR 자기 translation, 기준선 원본), `tier0_triangulated`(기준선 기본 골격) |
+| `<표지>.loo_hmr_only_px.<변형>` | 같은 계산을 c 에서 보였지만 Tier 0 가 삼각측량하지 못한 관절에서(하체 채우기 품질) |
+| `<표지>.silhouette_iou.<변형>` | c 의 YOLO26-seg 마스크 vs 메시 투영(K_used). `hmr_multiview`·`hmr_single_raw`·`hmr_self`(c 자기 결과, 참고) |
+| `<표지>.foot_anchor_abs_m.<변형>`·`foot_anchor_within_g5.<변형>` | 접지 VALID·`ground_anchor_xyz` 있을 때만. `hmr_multiview` = MHR70 발끝·발뒤꿈치 최저 Z − anchor Z, `tier0_ankle` = VALID 발목 Z − anchor Z(G5 정의). 5 cm 안 비율 |
+| `<표지>.root_offset_m.multiview`·`.single_raw` | 다시점 위치 진단 해(translation 만)·단안 자기 translation 의 엉덩이 중점 vs Tier 0 pelvis(m) |
+| `lower_body.tier0_missing_rate`·`hmr_filled_of_missing` | Tier 0 골격 하체(COCO 11~16) 누락률(D-G5-02)과 그중 HMR 이 위치를 낸 비율(inferred) |
+| `continuity.*` | `world_ids`, `reappearances`, `identity_revision_changes`, `representative_switches`, `jitter_m`(연속 시각 상대 관절 평균 이동, 재등장·차수 변경 사이 제외) |
+| `counts.*` | 문서·잇기(`join_frame_ref`·`join_time`·`join_missing`)·집계 사람·버린 후보 이유(`rejected.*`)·대표 선택(`selection.*`)·한 카메라 제외 표본·기준점 없음 |
+
+**판정.** 사전 등록 기준(3절)대로 위 지표를 기준선(원본·기본 골격) 대비 기록한다. 수치 합격선은 명세 20.6 대로 실제 Baseline 보고서 뒤에 정한다.
+SIM·DATASET_GT 입력의 Run(`is_upper_bound` true)은 경로 검증이며 제품 성능으로 쓰지 않는다.
+
+**노트북 경로 검증(2026-10-26, 상한).** CMU Panoptic 171204_pose1 HD 4대·30 시각에 우리가 넣은 단안 오차(체형·깊이 N(0, 5%), 관절 2 cm)로: 한 카메라 제외 p50 다시점 15.2 px,
+단안+기준점 18.2, 원본 단안 40.3, Tier 0 삼각측량 1.5. root 오차 p50 다시점 2.0 cm, 원본 10.3 cm(`ai/tests/experiments/hmr/test_egate1_panoptic.py`). HMR 성능이 아니다.
+
+**막힌 것.** 녹화(rec-20261021)로 평가하려면 Tier 0 파일 재생이 카메라별 관측(`observation_batch`)도 남겨야 하고(지금은 world_state 만), 교실 외부 파라미터 보정이 있어야 한다.
+GPU Job(e1~e3)은 그와 상관없이 먼저 돌려 묶음을 만들어 둘 수 있다.
