@@ -55,6 +55,10 @@ export function SpatialDataProvider({ store, source, children }: SpatialDataProv
       onWorkSurfaces: (result, receivedAt) => {
         if (active) store.getState().ingestWorkSurfaces(result, receivedAt);
       },
+      // 재생 Source 가 뒤로 돌릴 때. Source 는 그대로 두고 받은 데이터만 비운다.
+      onReset: () => {
+        if (active) store.getState().reset(sourceId);
+      },
     });
     return () => {
       active = false;

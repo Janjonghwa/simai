@@ -1,4 +1,4 @@
-// Mock·Live 공통 입력 경계. Viewer 는 메시지를 어디서 받는지 모르고 이 인터페이스만 본다.
+// Mock·Live·재생 공통 입력 경계. Viewer 는 메시지를 어디서 받는지 모르고 이 인터페이스만 본다.
 // 실제 STOMP 연결·인증·토픽 구독은 FE(src/lib/stomp.ts 예정)나 BE 연동이 소유한다. Spatial 은 받은 본문만 넘겨받는다.
 
 export const SOURCE_CONNECTIONS = ['CONNECTING', 'OPEN', 'CLOSED', 'ERROR'] as const;
@@ -29,12 +29,18 @@ export interface SpatialSourceSink {
   onConnectionChange(change: SourceConnectionChange): void;
   onZones?(result: ZonesResult, receivedAt: number): void;
   onWorkSurfaces?(result: WorkSurfacesResult, receivedAt: number): void;
+  /**
+   * 지금까지 보낸 것을 버리고 처음부터 다시 보낸다는 알림(재생 되감기, -187). 받는 쪽은 받은 데이터를 비우고 같은 Source 를 이어 받는다.
+   * Store 는 이미 받은 것보다 오래된 World 를 거부하므로, 시각을 뒤로 돌리는 Source 는 다시 보내기 전에 이것을 부른다.
+   */
+  onReset?(): void;
 }
 
 export interface SpatialSource {
   /** 같은 id 면 같은 스트림으로 보고 다시 구독해도 데이터를 비우지 않는다. 바뀌면 받은 데이터를 비운다. */
   readonly id: string;
-  readonly kind: 'MOCK' | 'EXTERNAL';
+  /** REPLAY 는 녹화 기록 재생(-187)이다. 이벤트는 기록의 출처(REPLAY)로만 들어가고 LIVE 로 바꾸지 않는다. */
+  readonly kind: 'MOCK' | 'EXTERNAL' | 'REPLAY';
   /**
    * 구독을 시작하고 해제 함수를 돌려준다. 여러 번 구독할 수 있어야 한다(React StrictMode 는 효과를 두 번 돌린다).
    * 구독하자마자 지금 연결 상태를 한 번 알린다.
