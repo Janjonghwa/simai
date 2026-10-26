@@ -1,8 +1,9 @@
 -- 자동 생성 파일이다. 손으로 고치지 않는다.
 -- 만든 곳: ai/src/simai_ai/risk/rule_catalog.py (규칙 등록부 default_registry). 등록부를 바꾸면 ai/ 에서
 --   python -m simai_ai.risk.rule_catalog --write ../server/src/main/resources/db/migration/R__rule_versions.sql
--- Flyway 반복 마이그레이션이라 내용이 바뀔 때마다 다시 실행된다. 이미 있는 (rule_id, rule_version) 은 그대로 두고 새 버전만 더한다.
--- 같은 (rule_id, rule_version) 인데 값이 다르면 멈춘다: 규칙 값을 바꿀 때는 rule_version 을 올린다(기획서 11.4-1).
+-- Flyway 반복 마이그레이션이라 내용이 바뀔 때마다 다시 실행된다. 새 (rule_id, rule_version) 은 더한다(기획서 11.4-1).
+-- 표시: 첫 운영 배포 전(FIRST_OPERATION_DEPLOY = None): 같은 (rule_id, rule_version) 인데 값이 다르면 등록부 값으로 갱신하고 NOTICE 를 남긴다.
+-- ① 등록부 값
 CREATE TEMP TABLE rule_version_seed (
     rule_id text NOT NULL,
     rule_version integer NOT NULL,
@@ -24,18 +25,22 @@ INSERT INTO rule_version_seed (rule_id, rule_version, profile, thresholds, defau
     ('R5', 1001, 'CLASSROOM_TEST', '{"edge_reach": 1.0, "horizon_s": 2.0, "k": 2.0, "limit_s": 2.5, "margin": 0.3, "max_speed": 4.0, "max_staleness": 500, "min_closing": 0.4, "min_speed": 0.2, "profile": {"floor_reference": true, "height_threshold_m": 0.35, "name": "classroom-test-podium-40cm", "test": true}, "radius": 0.3, "tol": 1e-09}'::jsonb, 'CAUTION', NULL, ARRAY['tracks.observation_state', 'tracks.track_lifecycle', 'tracks.t_last_valid', 'tracks.position_xy', 'tracks.position_xy_sigma', 'tracks.velocity', 'tracks.ground_anchor_xyz', 'tracks.ground_anchor_sigma', 'tracks.head_z', 'tracks.head_z_sigma', 'tracks.skeleton', 'tracks.cameras', 'tracks.identity_confidence', 'tracks.support_surface_id', 'tracks.z_validity', 'zones', 'work_surfaces']::text[]),
     ('R7', 1, 'OPERATION', '{"camera_stall_ms": 500, "min_cameras": 2}'::jsonb, NULL, NULL, ARRAY['zones', 't_latest_global', 'monitoring.cameras', 'monitoring.zone_cameras']::text[]);
 
+-- ② 첫 운영 배포 전 규칙 보완 예외(11.4-1): 같은 버전의 값이 다르면 등록부 값으로 갱신한다(legal_basis·reads·valid_from 은 그대로).
 DO $$
-DECLARE changed text;
+DECLARE c record;
 BEGIN
-    SELECT string_agg(s.rule_id || ' v' || s.rule_version, ', ' ORDER BY s.rule_id, s.rule_version) INTO changed
-    FROM rule_version_seed s JOIN rule_version r USING (rule_id, rule_version)
-    WHERE r.profile IS DISTINCT FROM s.profile OR r.thresholds IS DISTINCT FROM s.thresholds
-       OR r.default_severity IS DISTINCT FROM s.default_severity;
-    IF changed IS NOT NULL THEN
-        RAISE EXCEPTION '규칙 값이 바뀌었는데 rule_version 이 같다: %. 등록부에서 버전을 올린다', changed;
-    END IF;
+    FOR c IN SELECT s.* FROM rule_version_seed s JOIN rule_version r USING (rule_id, rule_version)
+             WHERE r.profile IS DISTINCT FROM s.profile OR r.thresholds IS DISTINCT FROM s.thresholds
+                OR r.default_severity IS DISTINCT FROM s.default_severity
+             ORDER BY s.rule_id, s.rule_version
+    LOOP
+        UPDATE rule_version SET profile = c.profile, thresholds = c.thresholds, default_severity = c.default_severity
+        WHERE rule_id = c.rule_id AND rule_version = c.rule_version;
+        RAISE NOTICE '첫 운영 배포 전 규칙 보완 예외(11.4-1): % v% 값을 등록부 값으로 갱신했다', c.rule_id, c.rule_version;
+    END LOOP;
 END $$;
 
+-- ③ 새 (rule_id, rule_version) 만 더한다.
 INSERT INTO rule_version (rule_id, rule_version, profile, thresholds, default_severity, legal_basis, reads, valid_from)
 SELECT rule_id, rule_version, profile, thresholds, default_severity, legal_basis, reads, now() FROM rule_version_seed
 ON CONFLICT (rule_id, rule_version) DO NOTHING;

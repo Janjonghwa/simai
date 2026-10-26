@@ -51,3 +51,35 @@ def test_every_severity_constant_is_listed() -> None:
             if name.endswith("_SEVERITY") and name[:-len("_SEVERITY")].startswith("R"):
                 found[name[: -len("_SEVERITY")]] = value
     assert found == DEFAULT_SEVERITY
+
+
+def test_before_first_operation_deploy_updates_same_version() -> None:
+    """첫 운영 배포 전(11.4-1 예외): 같은 버전 값이 다르면 세 칼럼만 갱신하고 NOTICE, 멈추지 않는다(S15P31A101-252)."""
+    sql = render_flyway_seed(catalog(), first_operation_deploy=None)
+    assert "RAISE EXCEPTION" not in sql
+    assert "UPDATE rule_version SET profile = c.profile, thresholds = c.thresholds, default_severity = c.default_severity\n" in sql
+    assert "RAISE NOTICE" in sql
+    update = sql[sql.index("UPDATE rule_version"):sql.index("RAISE NOTICE")]
+    assert "legal_basis" not in update and "reads" not in update and "valid_from" not in update
+
+
+def test_after_first_operation_deploy_raises() -> None:
+    """첫 운영 배포 날짜가 있으면 같은 버전 값 변경을 멈추고 갱신하지 않는다."""
+    sql = render_flyway_seed(catalog(), first_operation_deploy="2026-11-02")
+    assert "UPDATE rule_version" not in sql and "RAISE NOTICE" not in sql
+    assert "RAISE EXCEPTION" in sql and "첫 운영 배포(2026-11-02) 뒤라 같은 버전 값 변경 금지" in sql
+    assert "-- 표시: 첫 운영 배포 2026-11-02 뒤" in sql
+
+
+def test_first_operation_deploy_must_be_iso_date() -> None:
+    with pytest.raises(ValueError):
+        render_flyway_seed(catalog(), first_operation_deploy="11월 2일")
+
+
+@pytest.mark.parametrize("deploy", [None, "2026-11-02"])
+def test_blocks_in_order(deploy: str | None) -> None:
+    """① 시드 → ② 값 → ③ 새 버전. S15P31A101-256 은 ②와 ③ 사이에 블록을 더한다."""
+    sql = render_flyway_seed(catalog(), first_operation_deploy=deploy)
+    marks = [sql.index(m) for m in ("-- ① ", "-- ② ", "-- ③ ")]
+    assert marks == sorted(marks)
+    assert sql.index("CREATE TEMP TABLE") > marks[0] and sql.index("INSERT INTO rule_version (") > marks[2]
