@@ -27,7 +27,12 @@ import { MockTopBar } from '@/features/viewer3d/dev-harness/MockTopBar';
 import type { MenuKey } from '@/features/viewer3d/dev-harness/mockUi';
 import type { SpatialMockApi } from '@/features/viewer3d/dev-harness/mswHandlers';
 import { useRoster } from '@/features/viewer3d/dev-harness/useRoster';
-import type { ViewerEditPreview, ViewerEditResult } from '@/features/viewer3d/editing/editTypes';
+import type {
+  ViewerEditPreview,
+  ViewerEditResult,
+  ViewerObjectEditPreview,
+  ViewerObjectEditResult,
+} from '@/features/viewer3d/editing/editTypes';
 import type { Viewer3DHandle, ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
 import { ViewerShell } from '@/features/viewer3d/ViewerShell';
 import { WorldReference } from '@/features/viewer3d/WorldReference';
@@ -87,6 +92,15 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
     // 시작하지 못한 이유(REJECTED·다른 대상)는 진행 중인 초안을 지우지 않는다.
     if (result.status !== 'REJECTED' || result.target?.id === editPreview?.target.id) {
       setEditPreview(null);
+    }
+  };
+  // 작업면 OBB 편집 소비 예시(-188). 구역과 같은 규칙으로 받은 값만 보인다.
+  const [objectPreview, setObjectPreview] = useState<ViewerObjectEditPreview | null>(null);
+  const [objectResult, setObjectResult] = useState<ViewerObjectEditResult | null>(null);
+  const receiveObjectResult = (result: ViewerObjectEditResult) => {
+    setObjectResult(result);
+    if (result.status !== 'REJECTED' || result.target?.id === objectPreview?.target.id) {
+      setObjectPreview(null);
     }
   };
   // 입력 없음이면 예전 고정 작업자·구역을, 입력이 있으면 Provider 의 사람·구역을 쓴다(둘을 함께 그리지 않는다).
@@ -157,6 +171,8 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           onStatusChange={setStatus}
           onEditPreview={setEditPreview}
           onEditResult={receiveEditResult}
+          onObjectEditPreview={setObjectPreview}
+          onObjectEditResult={receiveObjectResult}
           source={harness.source}
           dataStore={dataStore}
           personModelUrl={avatar === 'xbot' ? DEV_XBOT_URL : null}
@@ -212,6 +228,8 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
             selected={selected}
             preview={editPreview}
             result={editResult}
+            objectPreview={objectPreview}
+            objectResult={objectResult}
           />
         </SpatialDiagnostics>
       )}

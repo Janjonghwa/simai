@@ -715,3 +715,37 @@ export const DEMO_ZONES_RESPONSE = {
     { zone_id: 'z-bad', name: '형상 오류 예시', aabb: { min_xyz: [3, 3, 1], max_xyz: [2, 4, 2] } },
   ],
 };
+
+/**
+ * 등록 작업면 DEMO 묶음(-188). 항목은 계약 work_surface 형식(center_xy·size_xy·yaw_rad·top_height_m)이고,
+ * 묶음 모양은 AI 구성 묶음 operational_geometry({ version, work_surfaces })를 따른다. 조회 API(BE -58)는 아직 없어
+ * Mock Source 가 직접 넘긴다. 실측 치수가 아니다. desk-bad 는 크기 0, floor 는 바닥 ID 라 거부돼야 한다.
+ */
+export const DEMO_WORK_SURFACES = {
+  version: 'demo-og-1',
+  work_surfaces: [
+    {
+      surface_id: 'podium-1',
+      top_height_m: 0.4,
+      center_xy: [7.6, 7.4],
+      size_xy: [2.4, 1.1],
+      yaw_rad: 0,
+    },
+    {
+      surface_id: 'desk-1',
+      top_height_m: 0.74,
+      center_xy: [2.4, 3.6],
+      size_xy: [1.2, 0.6],
+      yaw_rad: 0.5236,
+    },
+    {
+      surface_id: 'desk-2',
+      top_height_m: 0.74,
+      center_xy: [5.0, 4.6],
+      size_xy: [1.2, 0.6],
+      yaw_rad: -0.2618,
+    },
+    { surface_id: 'desk-bad', top_height_m: 0.74, center_xy: [8, 5], size_xy: [0, 0.6] },
+    { surface_id: 'floor', top_height_m: 0.1, center_xy: [1, 1], size_xy: [1, 1] },
+  ],
+};

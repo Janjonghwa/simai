@@ -22,6 +22,7 @@ export function useRoster(
   const idsKey = useStore(store, (s) => (s.world?.tracks ?? []).map((t) => t.worldId).join('\n'));
   const events = useStore(store, (s) => s.events);
   const zones = useStore(store, (s) => s.zones);
+  const surfaces = useStore(store, (s) => s.workSurfaces);
   return useMemo(() => {
     if (legacy) return LEGACY_ROSTER;
     const people = idsKey ? idsKey.split('\n').map((id) => ({ id, name: `작업자 ${id}` })) : [];
@@ -41,6 +42,19 @@ export function useRoster(
         .filter(Boolean)
         .join(' · '),
       rejectedZones: zones.invalid.map(({ zoneId, reason }) => ({ id: zoneId, reason })),
+      surfaces: surfaces.surfaces.map((surface) => ({
+        id: surface.surfaceId,
+        name: `작업면 ${surface.surfaceId}`,
+        detail: `상판 ${surface.topHeightM.toFixed(2)}m · ${Math.round((surface.yawRad * 180) / Math.PI)}°`,
+      })),
+      surfaceNote: [
+        `작업면 입력 ${surfaces.status}`,
+        surfaces.reason,
+        surfaces.invalid.length ? `형식 오류 ${surfaces.invalid.length}건 제외` : null,
+        '등록 OBB · 전달 계약 미확정',
+      ]
+        .filter(Boolean)
+        .join(' · '),
       events: active.flatMap((event) => {
         // 목록 행은 event_id 로 구분하고, 누르면 기존 선택 브리지(person·zone)로 대상만 고른다.
         const person = event.worldIds[0];
@@ -60,5 +74,5 @@ export function useRoster(
         ];
       }),
     };
-  }, [idsKey, events, zones, legacy, mode]);
+  }, [idsKey, events, zones, surfaces, legacy, mode]);
 }

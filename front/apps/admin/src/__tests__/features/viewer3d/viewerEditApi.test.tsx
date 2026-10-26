@@ -3,6 +3,7 @@ import {
   type Viewer3DHandle,
   type Viewer3DProps,
   type ViewerEditResult,
+  type ViewerObjectEditResult,
 } from '@/features/viewer3d';
 import { cleanup, render } from '@testing-library/react';
 import { createRef } from 'react';
@@ -53,5 +54,38 @@ describe('Viewer3D 편집 접점(선택 사항)', () => {
     expect(ref.current!.finishEdit()).toBeNull();
     // 기존 명령은 그대로다.
     expect(ref.current!.clearSelection()).toEqual({ ok: true });
+  });
+
+  it('작업면(object) 편집은 구역 콜백과 따로 알리고, 편집 중이 아니면 null·NOT_EDITABLE 이다(-188)', () => {
+    const ref = createRef<Viewer3DHandle>();
+    const zoneResults: ViewerEditResult[] = [];
+    const objectResults: ViewerObjectEditResult[] = [];
+    render(
+      <Viewer3D
+        ref={ref}
+        onEditResult={(r) => zoneResults.push(r)}
+        onObjectEditResult={(r) => objectResults.push(r)}
+      />,
+    );
+    expect(ref.current!.beginEdit({ type: 'object', id: 'desk-1' })).toEqual({
+      ok: false,
+      reason: 'NOT_READY',
+    });
+    expect(zoneResults).toEqual([]);
+    expect(objectResults).toEqual([
+      {
+        status: 'REJECTED',
+        target: { type: 'object', id: 'desk-1' },
+        reason: 'NOT_READY',
+        detail: '뷰어가 준비되지 않았다',
+        saved: false,
+      },
+    ]);
+    expect(ref.current!.finishObjectEdit?.()).toBeNull();
+    expect(ref.current!.cancelObjectEdit?.()).toBeNull();
+    expect(ref.current!.updateObjectEditField?.({ field: 'yaw', value: 0.1 })).toEqual({
+      ok: false,
+      reason: 'NOT_EDITABLE',
+    });
   });
 });

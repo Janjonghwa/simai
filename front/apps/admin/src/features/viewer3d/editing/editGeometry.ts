@@ -3,8 +3,9 @@ import { toWorldPoint, type WorldPoint } from '@/features/viewer3d/worldCoordina
 // 공통 3D 편집 엔진의 순수 World 계산(S15P31A101-195). 렌더러·React·Store 와 떨어져 있어 시험한다.
 // 엔진은 하나이고, 대상 종류마다 허용 조작(EditPolicy)만 다르다.
 // - 구역(zone, -47 AABB): X·Y 이동, 6개 면 경계(반대 면 고정), 회전·기울임 없음.
-// - 작업면(object, -188 OBB)·TBM 가상 객체(PLANNED, -186): 이 파일의 OBB 계산과 정책 매개변수만 시험 Fixture 로 보인다.
-//   해당 도메인의 등록·상판·판정 흐름은 각 스토리가 한다.
+// - 작업면(object, -188 OBB): X·Y 이동, World +Z 축 수평 회전(yaw), 지역 축 4개 면(폭·깊이), 상판 높이(윗면).
+//   바닥(Z=0)에 놓인 형상이라 Z 이동·하단 면은 없다. 등록·저장·위험 판정은 FE -165·BE -58·AI 가 한다.
+// - TBM 가상 객체(PLANNED, -186): 이 파일의 OBB 계산과 정책 매개변수만 시험 Fixture 로 보인다.
 //
 // 입력 정책(명세에 정해지지 않은 것은 새로 만들지 않는다):
 // - 유효한 형상: 모든 값이 유한한 숫자이고 세 축 모두 min < max(크기 > 0). 그 밖은 INVALID_GEOMETRY 로 거부한다.
@@ -53,6 +54,17 @@ export const ZONE_AABB_POLICY: EditPolicy = {
   translate: { x: true, y: true, z: false },
   faces: EDIT_FACES,
   rotate: { yaw: false, pitch: false, roll: false },
+};
+
+/**
+ * -188 등록 작업면 OBB. 바닥(Z=0)에 놓인 상자라 X·Y 이동과 수평 회전(yaw), 지역 축 폭·깊이 면, 상판(z+)만 바꾼다.
+ * Z 이동·하단(z-) 면·기울임(pitch·roll)은 없다. 그래서 하단은 늘 바닥이고 상판 높이 = OBB 높이다.
+ */
+export const WORK_SURFACE_OBB_POLICY: EditPolicy = {
+  name: 'work-surface-obb',
+  translate: { x: true, y: true, z: false },
+  faces: ['x-', 'x+', 'y-', 'y+', 'z+'],
+  rotate: { yaw: true, pitch: false, roll: false },
 };
 
 export type EditFailureReason = 'NOT_EDITABLE' | 'INVALID_GEOMETRY';
@@ -286,4 +298,75 @@ export function restoreZoneBoxSteps(
     { field: 'depth', value: target.max[1] - target.min[1] },
     ...zSteps,
   ];
+}
+
+/**
+ * 숫자로 고치는 작업면 값(World, m·rad, -188). 계약 필드와 같다.
+ * centerX·centerY 중심(center_xy) · width·depth 지역 축 전체 길이(size_xy, 중심 고정) · topHeight 상판 높이(top_height_m, 바닥 고정) ·
+ * yaw 수평 회전(yaw_rad, [-π, π]).
+ */
+export const OBJECT_EDIT_FIELDS = [
+  'centerX',
+  'centerY',
+  'width',
+  'depth',
+  'topHeight',
+  'yaw',
+] as const;
+export type ObjectEditField = (typeof OBJECT_EDIT_FIELDS)[number];
+
+/** 계약 yaw_rad 허용 범위. 도(degree) 값을 숫자 입력으로 넣은 것을 걸러 낸다. */
+const YAW_INPUT_LIMIT = 3.1415927;
+
+/**
+ * 작업면 절대값 입력을 같은 엔진의 조작 목록으로 바꾼다. 차례로 applyEditOperation 에 넣는다.
+ * 폭·깊이는 양쪽 면을 절반씩 옮겨 중심을 지킨다. 값이 유한하지 않거나 yaw 가 [-π, π] 밖이면 null(INVALID_GEOMETRY).
+ */
+export function objectFieldOperations(
+  obb: WorldObb,
+  field: ObjectEditField,
+  value: number,
+): EditOperation[] | null {
+  if (!Number.isFinite(value)) return null;
+  switch (field) {
+    case 'centerX':
+      return [{ type: 'translate', delta: [value - obb.center[0], 0, 0] }];
+    case 'centerY':
+      return [{ type: 'translate', delta: [0, value - obb.center[1], 0] }];
+    case 'width': {
+      const half = (value - obb.size[0]) / 2;
+      return [
+        { type: 'face', face: 'x+', delta: half },
+        { type: 'face', face: 'x-', delta: -half },
+      ];
+    }
+    case 'depth': {
+      const half = (value - obb.size[1]) / 2;
+      return [
+        { type: 'face', face: 'y+', delta: half },
+        { type: 'face', face: 'y-', delta: -half },
+      ];
+    }
+    case 'topHeight':
+      return [{ type: 'face', face: 'z+', delta: value - (obb.center[2] + obb.size[2] / 2) }];
+    case 'yaw':
+      if (Math.abs(value) > YAW_INPUT_LIMIT) return null;
+      return [{ type: 'rotate', axis: 'yaw', radians: value - obb.yaw }];
+  }
+}
+
+/** 조작 목록을 차례로 적용한다. 하나라도 거부되면 그 이유를 돌려주고 중간 결과는 버린다. */
+export function applyEditOperations(
+  shape: EditShape,
+  operations: readonly EditOperation[],
+  policy: EditPolicy,
+): EditOutcome {
+  let current: EditOutcome = isValidShape(shape)
+    ? { ok: true, shape }
+    : fail('INVALID_GEOMETRY', '시작 형상이 유효하지 않다');
+  for (const operation of operations) {
+    if (!current.ok) return current;
+    current = applyEditOperation(current.shape, operation, policy);
+  }
+  return current;
 }

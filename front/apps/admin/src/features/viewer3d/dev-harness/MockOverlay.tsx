@@ -1,5 +1,5 @@
 import type { FixtureEvent, MenuKey, Roster } from '@/features/viewer3d/dev-harness/mockUi';
-import { displayName, MENUS, OBJECTS } from '@/features/viewer3d/dev-harness/mockUi';
+import { displayName, MENUS } from '@/features/viewer3d/dev-harness/mockUi';
 import type { ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
 import { zoneStateLabel, type ZoneApplyState } from '@/features/viewer3d/zones/zonePresentation';
 import { Button } from '@simai/ui/components/button';
@@ -157,12 +157,6 @@ function CctvBody() {
   );
 }
 
-const SURFACES = OBJECTS.map((object) => ({
-  target: { type: 'object', id: object.id } as const,
-  name: object.name,
-  detail: '작업면',
-}));
-
 function ZonesBody({
   selected,
   roster,
@@ -176,7 +170,11 @@ function ZonesBody({
       name: zone.name,
       detail: `${zone.id} · ${zone.height}`,
     })),
-    ...SURFACES,
+    ...roster.surfaces.map((surface) => ({
+      target: { type: 'object', id: surface.id } as const,
+      name: surface.name,
+      detail: surface.detail,
+    })),
   ];
   const zone =
     selected?.type === 'zone' ? roster.zones.find((row) => row.id === selected.id) : undefined;
@@ -185,6 +183,9 @@ function ZonesBody({
       <p className="smk-hint">구역·작업면 목록 · 편집과 저장은 연결하지 않는다</p>
       <p className="smk-hint smk-mono" data-testid="zone-note">
         {roster.zoneNote}
+      </p>
+      <p className="smk-hint smk-mono" data-testid="surface-note">
+        {roster.surfaceNote}
       </p>
       <ul className="smk-list">
         {editable.map(({ target, name, detail }) => (

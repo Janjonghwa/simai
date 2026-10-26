@@ -105,6 +105,7 @@ function relay(mock: MockSpatialSource): SpatialSource {
         onMessage: (raw) => external.push(JSON.parse(JSON.stringify(raw))),
         onConnectionChange: (change) => external.setConnection(change.state, change.reason),
         onZones: (result) => external.pushZones(result),
+        onWorkSurfaces: (result) => external.pushWorkSurfaces(result),
       });
       return () => {
         off();

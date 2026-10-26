@@ -116,7 +116,7 @@ export function fixtureName(target: ViewerTarget): string | null {
 
 /** 화면에 쓸 이름. Provider 의 사람(World ID)은 목업 목록에 없어 ID 로 부른다. */
 export function displayName(target: ViewerTarget): string | null {
-  const fallback = { person: '작업자', zone: '구역', object: null }[target.type];
+  const fallback = { person: '작업자', zone: '구역', object: '작업면' }[target.type];
   return fixtureName(target) ?? (fallback ? `${fallback} ${target.id}` : null);
 }
 
@@ -138,6 +138,10 @@ export interface Roster {
   zoneNote: string;
   /** 형상 검사에서 뺀 구역과 이유. */
   rejectedZones: { id: string | null; reason: string }[];
+  /** 등록 작업면(-188). 입력이 있으면 Provider 의 작업면 OBB, 입력 없음이면 예전 고정 예시다. */
+  surfaces: { id: string; name: string; detail: string }[];
+  /** 작업면 입력 상태 한 줄. */
+  surfaceNote: string;
 }
 
 export const LEGACY_ROSTER: Roster = {
@@ -151,6 +155,8 @@ export const LEGACY_ROSTER: Roster = {
   })),
   zoneNote: '입력 없음 · 레거시 고정 예시 구역',
   rejectedZones: [],
+  surfaces: OBJECTS.map(({ id, name }) => ({ id, name, detail: '작업면' })),
+  surfaceNote: '입력 없음 · 레거시 고정 예시 작업면',
 };
 
 /** 예시 작업자는 바닥(World Z=0)에 선 것으로 둔다. 발 위치의 Three 좌표. */
