@@ -14,10 +14,12 @@
   m0~m2 -207 MapAnything 이미지 점검·E-GATE-0 재현(C1·C2)                    mapanything 이미지 Pod 에서만
   u1    -246 통합 이미지 GPU 점검(CUDA·HMR 잠금 밖 휠 없이·EGL·vLLM 플러그인)      unified 이미지 Pod 에서만. 이 Pod 는 a·b·t·c·d 도 돈다
   u2    -246 통합 이미지 HMR 보정 K 경로(렌더 없음, g4 와 같은 판정)               unified 이미지 Pod, SIMAI_WEIGHTS_SET=exp02 simai-bootstrap queue
-  v1~v3 -246 VLM 단독 적재·G7 지연 모양·Tier 0 + VLM 동시                     자리만(사람이 돈다, docs/design/unified-env.md)
+  v4    -278 통합 시험 재확인(3차 v-int 재현: Tier 0 LIVE 하네스 + 감시 프로세스 기본 인자 vLLM, G7·CPU 묶기·kill -9)  unified 이미지 Pod,
+             deploy/scripts/vlm_int.py (S15P31A101-291. 3차의 v1~v3 사람 항목을 대신한다, vlm 가중치를 먼저 받는다)
   u3·u4 -250 통합 환경(torch 2.11) MapAnything C1·C2 를 장면 준비 모드로(m1·m2 와 같은 입력·인자)  unified 이미지 Pod. 노트북에서
              ai/experiments/static_scene/compare_envs.py 로 m1·m2(torch 2.7.1 이미지) 결과와 비교
-  (--exp-jobs: 추가 EXP Job 파일(예 -87 다시점 집계)을 LIVE 보호를 켠 별도 큐로 마지막에 돈다)
+  (--exp-jobs: 추가 EXP Job 파일(예 -87 다시점 집계, 4차 세션 session4_jobs.py)을 LIVE 보호를 켠 별도 큐로 마지막에 돈다)
+  (--only a,v4: 이 키의 항목만 큐에 넣는다. 지난 세션에서 끝난 항목을 새 Pod 에서 다시 돌리지 않을 때, S15P31A101-291)
 
 항목마다 돌 이미지가 정해져 있다(Pod 하나 = 이미지 하나). 지금 이미지(--image, 기본 이미지 ENV SIMAI_IMAGE_KIND, 없으면 tier0)의
 항목만 큐에 넣고 나머지는 '다른 이미지' 로 표에 남긴다. 2차 세션은 Tier 0 Pod → exp02 Pod → mapanything Pod 순서로 같은 명령을 돈다.
@@ -155,6 +157,7 @@ class Layout:
         self.mode = mode
         self.session = session
         self.image = image
+        self.only: set[str] | None = None  # --only: 이 키의 항목만 큐에 넣는다(None = 이 이미지 항목 모두)
         if mode == "pod":
             if root is None:  # simai-bootstrap 과 같은 규칙. SIMAI_ROOT 의 부모가 볼륨 루트(.simai-private 위치)다
                 self.simai, _source = simai_bootstrap.choose_root()
@@ -207,6 +210,8 @@ PROVENANCE_SIM = {"frames": {"source": "SIM", "dataset_id": "sim/tier0-e2e-walke
 # E-GATE-0 과 같은 입력 사진(공개 영상 프레임 14장, 라운지 사진 4장). 정답 데이터가 아니다
 PROVENANCE_HMR = {"frames": {"source": "FILE", "dataset_id": "hmr_poc14"}, "is_upper_bound": False}
 PROVENANCE_ROOM4 = {"frames": {"source": "FILE", "dataset_id": "room4"}, "is_upper_bound": False}
+# v4: Tier 0 는 무늬 영상(사람 없음), VLM 질문 그림은 교실 사진. 지연·자원 측정이지 성능 지표가 아니다(상한 표시)
+PROVENANCE_VINT = {"frames": {"source": "SIM", "dataset_id": "sim/live-pattern+classroom-stills-20261026"}, "is_upper_bound": True}
 # g4 입력(S15P31A101-243): 교실 사진(cam_A~D × 5장, 2304×1296)과 교실 보정 기록(AnyCalib, PROVISIONAL). 노트북 원본은 커밋하지 않는 recordings
 G4_STILLS, G4_IMAGES = "classroom-stills-20261021", 20
 G4_CALIB = "intrinsics-20261021-022940z.json"
@@ -343,12 +348,12 @@ def items(lay: Layout) -> list[dict]:
             jira="S15P31A101-246",
             check=["--check", f"{hmr}/check_calib_k.py", f"--check-arg=--images={G4_IMAGES}",
                    f"--check-arg=--provenance={json.dumps(g4_prov, ensure_ascii=False)}"]),
-        *({"key": key, "name": name, "jira": "S15P31A101-246", "title": title, "image": "unified", "command": None,
-           "placeholder": f"사람이 돈다(docs/design/unified-env.md 3차 GPU 세션 큐 {key})", "expected_s": exp_s, "timeout_s": exp_s * 2,
-           "model_version": "Cosmos3-Nano Reasoner (vLLM 0.21.0 + vllm-cosmos3)", "provenance": PROVENANCE_NONE}
-          for key, name, title, exp_s in (("v1", "v1_vlm_load", "VLM 단독 적재·VRAM", 1500),
-                                          ("v2", "v2_vlm_latency", "VLM G7 지연 모양", 300),
-                                          ("v3", "v3_tier0_with_vlm", "Tier 0 + VLM 동시(G0·CPU 경합)", 900))),
+        # v4(S15P31A101-291): 3차의 사람 항목 v1~v3(한 번의 v-int 로 합침)을 스크립트로. 감시 프로세스 기본값(-278)을 그대로 잰다.
+        # Tier 0 하네스를 스스로 띄우고 죽이므로 LIVE 보호를 끈 검증 큐 항목이다(EXP 큐에 넣으면 자기 Tier 0 를 보고 멈춘다). 3차 실측 13.4분
+        {"key": "v4", "name": "v4_vlm_int", "jira": "S15P31A101-278", "title": "통합 시험 재확인(Tier 0 + vLLM 기본값·CPU 묶기·G7·kill -9)",
+         "image": "unified", "command": [py, "deploy/scripts/vlm_int.py", "--images", str(data / "classroom4-prepared-20261026")],
+         "expected_s": 1200, "timeout_s": 3600, "provenance": PROVENANCE_VINT,
+         "model_version": "Cosmos3-Nano Reasoner (vLLM 0.21.0 + vllm-cosmos3, 감시 프로세스 기본 인자) + Tier 0 LIVE 하네스"},
         # u3·u4(S15P31A101-250): 통합 환경 MapAnything 을 장면 준비 모드(simai-bootstrap scene: LIVE·GPU 사용 중이면 75, static 가중치)로.
         # m1·m2 와 같은 입력·가중치·인자(run id 만 _uni_)라 compare_envs.py 가 torch 2.7.1 이미지 결과와 비교한다. 저장소 사본의 simai_bootstrap.py 를 쓴다
         *(exp(key, f"{key}_unified_mapanything_{base[:2].lower()}", f"통합 환경 MapAnything {base} ({model})", "unified", f"{base}_uni_{sfx}",
@@ -424,7 +429,8 @@ def build_jobs(lay: Layout, git: dict | None) -> tuple[dict, list[dict]]:
     held: list[dict] = []
     env = job_env(lay)
     for it in items(lay):
-        if it["command"] is None or it.get("excluded") or not runs_on(it, lay.image):  # *: 모든 이미지 Pod
+        if (it["command"] is None or it.get("excluded") or not runs_on(it, lay.image)  # *: 모든 이미지 Pod
+                or (lay.only is not None and it["key"] not in lay.only)):
             held.append(it)
             continue
         extra = {k: it[k] for k in ("experiment_id", "experiment_state", "weights", "dataset", "results") if it.get(k)}
@@ -442,7 +448,10 @@ def live_guard(lay: Layout) -> dict:
     return {"enabled": True, "on_live": "stop", "marker_max_age_s": 30, "marker_files": [str(lay.simai / "state" / "tier0.live")]}
 
 
-def _held_why(it: dict) -> str:
+def _held_why(it: dict, lay: Layout | None = None) -> str:
+    if (lay is not None and lay.only is not None and it["key"] not in lay.only and it["command"] is not None
+            and not it.get("excluded") and runs_on(it, lay.image)):
+        return "--only 밖(이번 실행에서 뺌)"
     if it.get("excluded"):
         return f"제외: {it['excluded']}"
     if it["command"] is None:
@@ -455,12 +464,12 @@ def plan_table(lay: Layout, doc: dict, held: list[dict]) -> str:
     queued = {j["name"] for j in doc["jobs"]}
     total = 0
     for it in items(lay):
-        state = "큐" if it["name"] in queued else _held_why(it)
+        state = "큐" if it["name"] in queued else _held_why(it, lay)
         if it["name"] in queued:
             total += it["expected_s"]
         rows.append(f"{it['key']:<4} {it['name']:<24} {it['jira']:<16} {it['expected_s'] / 60:>5.0f}분 {it['timeout_s'] / 60:>5.0f}분  {state}")
     future = sum(it["expected_s"] for it in held if it.get("placeholder"))
-    other = sum(it["expected_s"] for it in held if it["command"] is not None and not it.get("excluded"))
+    other = sum(it["expected_s"] for it in held if it["command"] is not None and not it.get("excluded") and not runs_on(it, lay.image))
     rows.append(f"지금 큐({lay.image} 이미지) 예상 {total / 60:.0f}분, 다른 이미지 Pod 항목 +{other / 60:.0f}분"
                 + (f", 자리만 항목을 채우면 +{future / 60:.0f}분" if future else ""))
     if lay.mode == "pod":
@@ -845,7 +854,7 @@ def cmd_run(args, lay: Layout) -> int:
             git = git_stamp()
             doc, held = build_jobs(lay, git)
             summary["placeholders"] = [{"key": h["key"], "name": h["name"], "jira": h["jira"],
-                                        "why": _held_why(h)} for h in held]
+                                        "why": _held_why(h, lay)} for h in held]
             job_file = lay.session_dir / "jobs.json"
             job_file.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             print(plan_table(lay, doc, held), flush=True)
@@ -922,6 +931,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--python", default=None, help="Job 이 쓸 Python (기본: 지금 Python)")
         p.add_argument("--image", choices=IMAGES, default=None,
                        help="이 Pod 의 이미지(이 이미지 항목만 큐에 넣는다). 기본: 이미지 ENV SIMAI_IMAGE_KIND, 없으면 tier0")
+        p.add_argument("--only", default=None, help="이 키의 항목만(쉼표, 예: a,v4). 이 이미지에서 돌지 않는 키·모르는 키는 오류(종료 4)")
 
     p_plan = sub.add_parser("plan", help="Job 파일·예상 시간 표")
     common(p_plan)
@@ -947,6 +957,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"알 수 없는 이미지 {image!r} (SIMAI_IMAGE_KIND). {', '.join(IMAGES)} 중 하나를 --image 로 준다", file=sys.stderr)
         return EXIT_BAD_JOBS
     lay = Layout(args.mode, args.root, args.session, args.python, image)
+    if args.only is not None:
+        lay.only = {k.strip() for k in args.only.split(",") if k.strip()}
+        runnable = {it["key"] for it in items(lay) if it["command"] is not None and not it.get("excluded") and runs_on(it, image)}
+        bad = sorted(lay.only - runnable)
+        if bad or not lay.only:  # 오타·다른 이미지 항목을 조용히 빼고 빈 큐로 '성공'하지 않는다
+            print(f"--only {args.only!r}: 이 이미지({image})에서 돌 수 있는 항목이 아니다 {bad or '(비어 있음)'}. "
+                  f"가능: {', '.join(sorted(runnable))}", file=sys.stderr)
+            return EXIT_BAD_JOBS
     if args.cmd == "plan":
         return cmd_plan(args, lay)
     if args.max_total_s is None:

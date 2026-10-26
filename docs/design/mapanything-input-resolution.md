@@ -17,7 +17,7 @@ python ai/experiments/static_scene/session3_jobs.py --root /srv/simai --repo <�
   --prepared /srv/simai/datasets/classroom4-prepared-20261026 --dataset-id classroom-stills-20261026 \
   --session <세션> --resolutions r518,r1036,r1554,rfull -o exp-jobs-282.json
 ```
-r1554·rfull 은 예상 600 s·시한 2400 s. 노트북에서 각 Run 에 `world_frame.cli fix --out <Run>/world-fix` 를 돌린 뒤 `compare_resolutions.py <Run...>`.
+4차 세션(S15P31A101-291)은 같은 항목을 `session4_jobs.py` 가 `simai_bootstrap.py scene` 으로 감싸(static 가중치 받기·Tier 0 우선) EXP 큐에 넣는다(Run 기록 jira -282). r1554·rfull 은 예상 600 s·시한 2400 s. 노트북에서 각 Run 에 `world_frame.cli fix --out <Run>/world-fix` 를 돌린 뒤 `compare_resolutions.py <Run...>`.
 3차 세션 w1·w2 로 확인한 표(518): w1 바닥 지지 48,858·rms 0.0115·재투영 중앙(카메라 중앙값) 14.2 px, w2 FLOOR_NOT_FOUND.
 
 ## 버린 대안
