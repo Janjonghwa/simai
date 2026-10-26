@@ -5,9 +5,7 @@ import com.ssafy.simai.domain.auth.repository.RefreshTokenRepository;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import com.ssafy.simai.global.properties.AuthProperties;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import com.ssafy.simai.global.security.TokenHashes;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
@@ -103,14 +101,8 @@ public class RefreshTokenService {
         return tokens.revokeAllActive(userId, clock.instant());
     }
 
-    // 무작위 256비트라 소금 없이 SHA-256 으로 충분하다(사전 공격 대상이 아니다)
     private static String hash(String value) {
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(digest);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
-        }
+        return HexFormat.of().formatHex(TokenHashes.sha256(value));
     }
 
     public record IssuedRefreshToken(String value, Duration ttl) {
