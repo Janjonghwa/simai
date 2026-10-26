@@ -35,15 +35,19 @@ CAMERA_HEIGHTS_FORMAT = "simai.camera_heights"
 PIXEL_SPACES = ("ORIGINAL", "PREPARED")
 
 
-def mask_to_model_res(mask: np.ndarray, model_hw: Sequence[int]) -> np.ndarray:
-    """원본 해상도 bool 마스크 → MapAnything 모델 해상도(H, W). 덮도록 줄인 뒤 가운데 자르기, 조금이라도 덮이면 True."""
+def mask_to_model_res(mask: np.ndarray, model_hw: Sequence[int], *, min_fraction: float | None = None) -> np.ndarray:
+    """원본 해상도 bool 마스크 → MapAnything 모델 해상도(H, W). 덮도록 줄인 뒤 가운데 자르기.
+
+    min_fraction 이 없으면 조금이라도 덮인 픽셀이 True(사람 마스크: 경계 픽셀도 뺀다), 있으면 덮인 면적 비율이 그 값 이상인
+    픽셀만 True(실측 정물 -100: 0.5 면 픽셀 중심이 마스크 안인 픽셀과 거의 같다).
+    """
     import cv2
 
     h, w = mask.shape
     th, tw = int(model_hw[0]), int(model_hw[1])
     rw, rh, left, top = _crop_resize(w, h, th, tw)
-    small = cv2.resize(mask.astype(np.float32), (rw, rh), interpolation=cv2.INTER_AREA)
-    return small[top:top + th, left:left + tw] > 0
+    small = cv2.resize(mask.astype(np.float32), (rw, rh), interpolation=cv2.INTER_AREA)[top:top + th, left:left + tw]
+    return small > 0 if min_fraction is None else small >= min_fraction
 
 
 def _crop_resize(w: int, h: int, th: int, tw: int) -> tuple[int, int, int, int]:

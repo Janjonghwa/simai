@@ -1,0 +1,40 @@
+{
+ "format": "simai.measured_objects",
+ "format_version": "0.1.0",
+ "note": "실측 정물 목록(명세 4.3 스케일 근거 1순위). 치수는 m. 정물을 추가할 때는 이 파일에 항목을 더하고, 새 detector.kind·measurement.kind 가 필요할 때만 코드(simai_ai.calibration.world_frame.measured_objects)에 등록한다. 절차와 수치 근거는 docs/design/measured-object-scale.md. 관리 티켓 S15P31A101-100",
+ "objects": [
+  {
+   "id": "laptop_lid_team",
+   "name": "팀 노트북 윗판(덮개 판 전체, 액정 아님)",
+   "dimensions_m": {"width": 0.355, "depth": 0.255},
+   "edges": [
+    {"name": "lid_width", "length_m": 0.355,
+     "condition": "덮개를 연 노트북은 덮개 윗변(가로 변), 닫혀 책상에 놓인 덮개는 긴 변"},
+    {"name": "lid_depth", "length_m": 0.255,
+     "condition": "닫혀 책상에 놓인 덮개의 짧은 변만(연 각도가 자리마다 달라 연 덮개에는 쓰지 않는다)"}
+   ],
+   "measured": {
+    "date": "2026-10-23",
+    "by": "사용자(팀, Lead 박종화 기록)",
+    "method": "덮개 판 바깥 치수 실측(도구 기록 없음)",
+    "source": "Jira S15P31A101-100 댓글 2026-10-23"
+   },
+   "population": "팀 노트북은 모두 같은 기종이라 교실 여러 곳·카메라 4대에 동시에 보인다. 교실의 다른 노트북·모니터도 같은 클래스로 검출되므로 측정값 묶음의 일치로 거른다",
+   "role": "보조 정물(작아서 단독 근거로 약함, 라바콘과 함께 쓴다). 목록 항목 하나 = 근거 하나(label = id)",
+   "detector": {"kind": "ULTRALYTICS_SEG", "weights": "yolo26x-seg.pt",
+                "weights_sha256": "sha256:92b3de0065766a17180d6219858717dc9d03cdce8a3ca9576c97fd75aabb64f3",
+                "classes": [63], "class_names": ["laptop"], "conf": 0.5, "imgsz": 1280},
+   "measurement": {"kind": "LAPTOP_LID", "open_edge": "lid_width", "closed_edges": ["lid_width", "lid_depth"],
+                   "length_method": "IMAGE_EDGE"},
+   "aggregation": {"min_samples": 3, "agreement_tolerance": 0.07, "max_outlier_fraction": 0.34}
+  }
+ ],
+ "pending": [
+  {"name": "라바콘", "status": "배송 중(2026-10-23 기준). 오면 높이·밑면을 재서 objects 에 추가"},
+  {"name": "안전봉", "status": "배송 중(2026-10-23 기준). 오면 길이를 재서 objects 에 추가"}
+ ],
+ "cross_checks": [
+  {"name": "노트북 – 가장 가까운 카메라 거치대 수평 거리", "value_m": 1.60, "measured": "사용자 실측(날짜 기록 없음)",
+   "status": "기록만(어느 노트북인지 자동으로 가리지 못해 이번에는 축척 근거·검산에 쓰지 않는다)"}
+ ]
+}
