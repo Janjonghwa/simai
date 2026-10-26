@@ -174,10 +174,11 @@ const OBJECT_FIXTURE: EditPolicy = {
   faces: ['x-', 'x+', 'y-', 'y+', 'z+'],
   rotate: { yaw: true, pitch: false, roll: false },
 };
+// -195 Jira: PLANNED 가상 객체 = 허용 축별 이동·회전·크기. 기울임은 어느 정책에서도 형상으로 표현하지 않는다.
 const PLANNED_FIXTURE: EditPolicy = {
   name: 'fixture-planned',
   translate: { x: true, y: true, z: true },
-  faces: [],
+  faces: EDIT_FACES,
   rotate: { yaw: true, pitch: false, roll: false },
 };
 const OBB: EditShape = {
@@ -212,12 +213,32 @@ describe('같은 엔진의 OBB·PLANNED Fixture(도메인 완료 아님)', () =>
     ).toMatchObject({ reason: 'NOT_EDITABLE' });
   });
 
-  it('PLANNED Fixture: 축별 이동·수평 회전만 허용하고 치수는 막는다', () => {
+  it('PLANNED Fixture: 축별 이동·수평 회전·크기(하단 포함)를 허용하고 기울임만 막는다', () => {
+    const lifted = applyEditOperation(
+      OBB,
+      { type: 'translate', delta: [0, 0, 0.5] },
+      PLANNED_FIXTURE,
+    );
+    if (!lifted.ok || lifted.shape.kind !== 'obb') throw new Error('obb');
+    expect(lifted.shape.center).toEqual([2, 3, 0.9]);
+    const wider = applyEditOperation(
+      OBB,
+      { type: 'face', face: 'x+', delta: 0.1 },
+      PLANNED_FIXTURE,
+    );
+    if (!wider.ok || wider.shape.kind !== 'obb') throw new Error('obb');
+    expect(wider.shape.size[0]).toBeCloseTo(1.3, 12);
+    const lower = applyEditOperation(
+      OBB,
+      { type: 'face', face: 'z-', delta: 0.2 },
+      PLANNED_FIXTURE,
+    );
+    if (!lower.ok || lower.shape.kind !== 'obb') throw new Error('obb');
+    // 하단을 0.2 올리면 높이 0.6, 중심 Z 0.5(상단 0.8 고정).
+    expect(lower.shape.size[2]).toBeCloseTo(0.6, 12);
+    expect(lower.shape.center[2]).toBeCloseTo(0.5, 12);
     expect(
-      applyEditOperation(OBB, { type: 'translate', delta: [0, 0, 0.5] }, PLANNED_FIXTURE).ok,
-    ).toBe(true);
-    expect(
-      applyEditOperation(OBB, { type: 'face', face: 'x+', delta: 0.1 }, PLANNED_FIXTURE),
+      applyEditOperation(OBB, { type: 'rotate', axis: 'pitch', radians: 0.1 }, PLANNED_FIXTURE),
     ).toMatchObject({ reason: 'NOT_EDITABLE' });
     expect(
       applyEditOperation(OBB, { type: 'rotate', axis: 'roll', radians: 0.1 }, PLANNED_FIXTURE),
