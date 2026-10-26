@@ -3,6 +3,7 @@ import { AlarmSoundLoop } from '@/features/events/AlarmSoundLoop';
 import { useEventsStore } from '@/features/events/events.store';
 import { Dock } from '@/features/layout/Dock';
 import { FailureBand } from '@/features/layout/FailureBand';
+import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
 import { TopBar } from '@/features/layout/TopBar';
 import { cn } from '@simai/ui/lib/utils';
 import { Outlet, useMatches } from '@tanstack/react-router';
@@ -14,6 +15,9 @@ export function AppLayout() {
   });
   const eventPanel = useMatches({
     select: (matches) => matches.some((m) => m.staticData.eventPanel),
+  });
+  const zoneEditor = useMatches({
+    select: (matches) => matches.some((m) => m.staticData.zoneEditor),
   });
   const openEvent = useEventsStore((s) => s.openEvent);
 
@@ -49,7 +53,9 @@ export function AppLayout() {
       {!fullBleed && notices}
       <div className={cn('relative flex min-h-0 flex-1', fullBleed && 'absolute inset-0')}>
         {fullBleed ? (
-          <Outlet />
+          <SpatialViewportHost zoneEditor={zoneEditor}>
+            <Outlet />
+          </SpatialViewportHost>
         ) : (
           <main className="relative flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-auto px-5 pt-3.5 pb-[90px]">
             <Outlet />

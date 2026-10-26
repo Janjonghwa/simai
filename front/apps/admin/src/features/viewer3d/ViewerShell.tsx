@@ -4,7 +4,7 @@ import {
 } from '@/features/viewer3d/data/spatialData.store';
 import { SpatialDataProvider } from '@/features/viewer3d/data/SpatialDataProvider';
 import { createEditStore, previewOf } from '@/features/viewer3d/editing/editSession.store';
-import { EditStoreContext } from '@/features/viewer3d/editing/EditStoreContext';
+import { EditOverlayContext, EditStoreContext } from '@/features/viewer3d/editing/EditStoreContext';
 import type { ViewerEditPreview, ViewerEditResult } from '@/features/viewer3d/editing/editTypes';
 import { PersonModelContext } from '@/features/viewer3d/people/PersonLayer';
 import type { Viewer3DProps, ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
@@ -43,9 +43,11 @@ export function ViewerShell({
   ref,
   initialMode = 'LIVE',
   onSelectionChange,
+  onTargetDoubleClick,
   onStatusChange,
   onEditPreview,
   onEditResult,
+  editDraftOverlay = null,
   source,
   className,
   children,
@@ -63,7 +65,7 @@ export function ViewerShell({
 
   useImperativeHandle(ref, () => {
     const { select, clearSelection, focusOn, setMode } = store.getState();
-    const { begin, cancel, finish } = edit.store.getState();
+    const { begin, cancel, finish, updateField } = edit.store.getState();
     return {
       select,
       clearSelection,
@@ -72,11 +74,15 @@ export function ViewerShell({
       beginEdit: begin,
       cancelEdit: () => cancel('USER'),
       finishEdit: finish,
+      updateEditField: (change) => updateField(change.field, change.value),
     };
   }, [store, edit]);
 
   const emitSelection = useEffectEvent((target: ViewerTarget | null) =>
     onSelectionChange?.(target),
+  );
+  const emitTargetDoubleClick = useEffectEvent((target: ViewerTarget) =>
+    onTargetDoubleClick?.(target),
   );
   const emitStatus = useEffectEvent((status: ViewerStatus) => onStatusChange?.(status));
   const emitEditPreview = useEffectEvent((preview: ViewerEditPreview) => onEditPreview?.(preview));
@@ -87,6 +93,9 @@ export function ViewerShell({
     emitStatus(last);
     return store.subscribe((state, prev) => {
       if (state.selected !== prev.selected) emitSelection(state.selected);
+      if (state.activated && state.activated !== prev.activated) {
+        emitTargetDoubleClick(state.activated.target);
+      }
       if (state.phase !== last.phase || state.mode !== last.mode || state.error !== last.error) {
         last = toStatus(state);
         emitStatus(last);
@@ -134,11 +143,13 @@ export function ViewerShell({
         <ViewerErrorBoundary onError={handleRenderError}>
           <ViewerStoreContext value={store}>
             <EditStoreContext value={edit.store}>
-              <PersonModelContext value={personModelUrl}>
-                <ZoneApplyContext value={zoneApplyState}>
-                  <ViewerCanvas>{children}</ViewerCanvas>
-                </ZoneApplyContext>
-              </PersonModelContext>
+              <EditOverlayContext value={editDraftOverlay}>
+                <PersonModelContext value={personModelUrl}>
+                  <ZoneApplyContext value={zoneApplyState}>
+                    <ViewerCanvas>{children}</ViewerCanvas>
+                  </ZoneApplyContext>
+                </PersonModelContext>
+              </EditOverlayContext>
             </EditStoreContext>
           </ViewerStoreContext>
         </ViewerErrorBoundary>

@@ -8,10 +8,36 @@ export type {
   SpatialSourceSink,
   ZonesResult,
 } from '@/features/viewer3d/data/spatialSource';
+export {
+  EDIT_FACES,
+  EDIT_FIELDS,
+  ZONE_AABB_POLICY,
+  applyEditOperation,
+  applyZoneBoxOperation,
+  boxJson,
+  fieldOperation,
+  isValidBox,
+  restoreZoneBoxSteps,
+  sameBox,
+} from '@/features/viewer3d/editing/editGeometry';
+export type {
+  BoxEditOutcome,
+  EditFace,
+  EditFailureReason,
+  EditField,
+  EditOperation,
+  EditOutcome,
+  EditPolicy,
+  SerializableEditBox,
+  WorldBox,
+} from '@/features/viewer3d/editing/editGeometry';
 export type {
   ViewerEditBox,
   ViewerEditCancelReason,
   ViewerEditCommandResult,
+  ViewerEditField,
+  ViewerEditOverlay,
+  ViewerEditOverlayInput,
   ViewerEditPreview,
   ViewerEditProvenance,
   ViewerEditRejectReason,
@@ -31,3 +57,4 @@ export type {
   ViewerTargetType,
 } from '@/features/viewer3d/types';
 export { Viewer3D } from '@/features/viewer3d/Viewer3D';
+export { toWorldPoint, worldPoint, type WorldPoint } from '@/features/viewer3d/worldCoordinates';

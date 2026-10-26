@@ -1,0 +1,522 @@
+import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
+import type {
+  Viewer3DHandle,
+  Viewer3DProps,
+  ViewerEditBox,
+  ViewerEditField,
+  ViewerStatus,
+  ViewerTarget,
+} from '@/features/viewer3d';
+import { fieldOperation, isValidBox } from '@/features/viewer3d/editing/editGeometry';
+import { worldPoint } from '@/features/viewer3d/worldCoordinates';
+import type { ZoneBox, ZonesResponse } from '@/features/zones/types';
+import { ZonesPage } from '@/features/zones/ZonesPage';
+import { parseZonesSearch } from '@/features/zones/zonesSearch';
+import { worldStateAt } from '@/mocks/realtimeScenario';
+import { useRealtimeStore } from '@/store/realtime.store';
+import { useSessionStore, type Role } from '@/store/session.store';
+import { useZoneDraftsStore } from '@/store/zoneDrafts.store';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { useEffect, useImperativeHandle, useRef, type ReactNode } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const DEFAULT_ZONES: ZoneBox[] = [
+  {
+    zoneId: 'z-02',
+    name: '중앙 통로 상부 작업 공간',
+    min: [2.2, 2.5, 0.6],
+    max: [5.4, 5.1, 2.4],
+  },
+  {
+    zoneId: 'z-04',
+    name: '북동 위험 구역',
+    min: [5.8, 1.2, 0],
+    max: [8.6, 3.8, 2.4],
+  },
+];
+
+const mockZonesState = vi.hoisted(() => ({
+  zones: [] as ZoneBox[],
+  raw: undefined as ZonesResponse | undefined,
+  failed: false,
+}));
+
+vi.mock('@/features/events/useLiveEvents', () => ({
+  useLiveEvents: () => ({ entries: [], loaded: true, failed: false }),
+}));
+vi.mock('@/features/zones/useZones', () => ({
+  useZones: () => mockZonesState,
+}));
+vi.mock('@/lib/api', () => ({ api: () => Promise.reject(new Error('no api in test')) }));
+
+const fake = vi.hoisted(() => ({
+  selected: null as ViewerTarget | null,
+  editing: null as { target: ViewerTarget; base: ViewerEditBox; draft: ViewerEditBox } | null,
+  selectCalls: 0,
+  focusCalls: 0,
+  failAtUpdateStep: 0,
+  updateStepCount: 0,
+  overlay: null as Viewer3DProps['editDraftOverlay'] | null,
+  onSelect: null as Viewer3DProps['onSelectionChange'] | null,
+  onPreview: null as Viewer3DProps['onEditPreview'] | null,
+  onResult: null as Viewer3DProps['onEditResult'] | null,
+}));
+
+function applyField(
+  draft: ViewerEditBox,
+  field: ViewerEditField,
+  value: number,
+): ViewerEditBox | null {
+  const wBox = {
+    min: worldPoint(draft.min[0], draft.min[1], draft.min[2]),
+    max: worldPoint(draft.max[0], draft.max[1], draft.max[2]),
+  };
+  const op = fieldOperation(wBox, field, value);
+  if (!op) return null;
+  const next: ViewerEditBox = {
+    min: [...draft.min] as [number, number, number],
+    max: [...draft.max] as [number, number, number],
+  };
+  if (op.type === 'translate') {
+    next.min = [next.min[0] + op.delta[0], next.min[1] + op.delta[1], next.min[2] + op.delta[2]];
+    next.max = [next.max[0] + op.delta[0], next.max[1] + op.delta[1], next.max[2] + op.delta[2]];
+  } else if (op.type === 'face') {
+    const axis = op.face[0] === 'x' ? 0 : op.face[0] === 'y' ? 1 : 2;
+    if (op.face[1] === '+') next.max[axis] += op.delta;
+    else next.min[axis] += op.delta;
+  }
+  return isValidBox({
+    min: worldPoint(next.min[0], next.min[1], next.min[2]),
+    max: worldPoint(next.max[0], next.max[1], next.max[2]),
+  })
+    ? next
+    : null;
+}
+
+function FakeViewer({
+  ref,
+  onSelectionChange,
+  onStatusChange,
+  onEditPreview,
+  onEditResult,
+  editDraftOverlay,
+}: Viewer3DProps) {
+  useEffect(() => {
+    fake.onSelect = onSelectionChange ?? null;
+    fake.onPreview = onEditPreview ?? null;
+    fake.onResult = onEditResult ?? null;
+    fake.overlay = editDraftOverlay ?? null;
+  }, [onSelectionChange, onEditPreview, onEditResult, editDraftOverlay]);
+
+  useImperativeHandle(
+    ref,
+    () =>
+      ({
+        select: (target: ViewerTarget) => {
+          fake.selectCalls += 1;
+          const exists = mockZonesState.zones.some((z) => z.zoneId === target.id);
+          if (!exists) return { ok: false, reason: 'NOT_FOUND' };
+          fake.selected = target;
+          fake.onSelect?.(target);
+          return { ok: true };
+        },
+        focus: () => {
+          fake.focusCalls += 1;
+          return { ok: true };
+        },
+        clearSelection: () => {
+          fake.selected = null;
+          fake.onSelect?.(null);
+          return { ok: true };
+        },
+        setMode: () => ({ ok: true }),
+        beginEdit: (target: ViewerTarget) => {
+          const zone = mockZonesState.zones.find((z) => z.zoneId === target.id);
+          if (!zone) return { ok: false, reason: 'NOT_FOUND' };
+          const base: ViewerEditBox = {
+            min: [zone.min[0], zone.min[1], zone.min[2]],
+            max: [zone.max[0], zone.max[1], zone.max[2]],
+          };
+          const draft: ViewerEditBox = { min: [...base.min], max: [...base.max] };
+          fake.editing = { target, base, draft };
+          fake.selected = target;
+          fake.onSelect?.(target);
+          fake.onPreview?.({
+            target,
+            mode: 'LIVE',
+            before: base,
+            draft,
+            provenance: {
+              sourceId: useRealtimeStore.getState().source?.id ?? 's-1',
+              zoneContract: 'DEMO_UNCONFIRMED',
+              zonesReceivedAt: 1000,
+              sceneVersion: useRealtimeStore.getState().world?.payload.scene_version ?? 'scene-3',
+              configVersion: null,
+            },
+            saved: false,
+          });
+          return { ok: true };
+        },
+        updateEditField: ({ field, value }) => {
+          if (!fake.editing) return { ok: false, reason: 'NOT_EDITABLE' };
+          fake.updateStepCount += 1;
+          if (fake.failAtUpdateStep > 0 && fake.updateStepCount === fake.failAtUpdateStep) {
+            return { ok: false, reason: 'INVALID_GEOMETRY' };
+          }
+          const next = applyField(fake.editing.draft, field, value);
+          if (!next) return { ok: false, reason: 'INVALID_GEOMETRY' };
+          fake.editing.draft = next;
+          fake.onPreview?.({
+            target: fake.editing.target,
+            mode: 'LIVE',
+            before: fake.editing.base,
+            draft: next,
+            provenance: {
+              sourceId: useRealtimeStore.getState().source?.id ?? 's-1',
+              zoneContract: 'DEMO_UNCONFIRMED',
+              zonesReceivedAt: 1000,
+              sceneVersion: useRealtimeStore.getState().world?.payload.scene_version ?? 'scene-3',
+              configVersion: null,
+            },
+            saved: false,
+          });
+          return { ok: true };
+        },
+        finishEdit: () => {
+          if (!fake.editing) return null;
+          const cur = fake.editing;
+          fake.editing = null;
+          const res = {
+            status: 'FINISHED' as const,
+            target: cur.target,
+            mode: 'LIVE' as const,
+            before: cur.base,
+            after: cur.draft,
+            changed: JSON.stringify(cur.base) !== JSON.stringify(cur.draft),
+            provenance: {
+              sourceId: useRealtimeStore.getState().source?.id ?? 's-1',
+              zoneContract: 'DEMO_UNCONFIRMED' as const,
+              zonesReceivedAt: 1000,
+              sceneVersion: useRealtimeStore.getState().world?.payload.scene_version ?? 'scene-3',
+              configVersion: null,
+            },
+            saved: false as const,
+          };
+          fake.onResult?.(res);
+          return res;
+        },
+        cancelEdit: () => {
+          if (!fake.editing) return null;
+          const cur = fake.editing;
+          fake.editing = null;
+          const res = {
+            status: 'CANCELLED' as const,
+            target: cur.target,
+            mode: 'LIVE' as const,
+            before: cur.base,
+            reason: 'USER' as const,
+            provenance: {
+              sourceId: useRealtimeStore.getState().source?.id ?? 's-1',
+              zoneContract: 'DEMO_UNCONFIRMED' as const,
+              zonesReceivedAt: 1000,
+              sceneVersion: useRealtimeStore.getState().world?.payload.scene_version ?? 'scene-3',
+              configVersion: null,
+            },
+            saved: false as const,
+          };
+          fake.onResult?.(res);
+          return res;
+        },
+      }) as Viewer3DHandle,
+  );
+
+  const reported = useRef(false);
+  useEffect(() => {
+    if (!reported.current) {
+      reported.current = true;
+      onStatusChange?.({ phase: 'ready', mode: 'LIVE', error: null } as ViewerStatus);
+    }
+  }, [onStatusChange]);
+
+  return <div data-testid="viewer3d" />;
+}
+
+const loadFake = () => Promise.resolve({ default: FakeViewer });
+
+function signInAs(role: Role) {
+  useSessionStore.setState({
+    session: { accessToken: `token-${role}`, user: { id: role.toLowerCase(), role } },
+  });
+}
+
+function renderZones(ui: ReactNode = <ZonesPage />) {
+  const qc = new QueryClient();
+  return render(
+    <QueryClientProvider client={qc}>
+      <SpatialViewportHost loadViewer={loadFake} zoneEditor>
+        {ui}
+      </SpatialViewportHost>
+    </QueryClientProvider>,
+  );
+}
+
+describe('ZonesPage 경량 플로팅 편집 도구', () => {
+  beforeEach(() => {
+    signInAs('ADMIN');
+    useZoneDraftsStore.getState().clear();
+    useRealtimeStore.setState(
+      {
+        ...useRealtimeStore.getInitialState(),
+        source: { id: 's-1', pushZones: vi.fn() } as never,
+        world: { payload: worldStateAt(Date.now()).payload, receivedAt: Date.now() },
+      },
+      true,
+    );
+    mockZonesState.zones = [...DEFAULT_ZONES];
+    mockZonesState.raw = { contract: 'DEMO_UNCONFIRMED', zones: [] };
+    mockZonesState.failed = false;
+    fake.selected = null;
+    fake.editing = null;
+    fake.selectCalls = 0;
+    fake.focusCalls = 0;
+    fake.failAtUpdateStep = 0;
+    fake.updateStepCount = 0;
+    fake.overlay = null;
+  });
+  afterEach(cleanup);
+
+  it('구역 선택 전에는 최소 안내와 접이식 구역 목록 버튼만 보이고 3열 고정 패널이나 도구 탭을 두지 않는다', async () => {
+    renderZones();
+    await screen.findByTestId('viewer3d');
+    expect(screen.getByText('구역 편집 모드')).toBeTruthy();
+    expect(screen.getByText(/3D 구역을 클릭해 선택 · 더블클릭해 바로 수정/)).toBeTruthy();
+    expect(screen.queryByRole('region', { name: '구역 목록 선택' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'World 수치 입력' })).toBeNull();
+
+    act(() => screen.getByRole('button', { name: /구역 목록/ }).click());
+    const searchInput = screen.getByLabelText('구역 검색');
+    fireEvent.change(searchInput, { target: { value: '북동' } });
+    expect(screen.getByRole('button', { name: /z-04/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /z-02/ })).toBeNull();
+  });
+
+  it('한 편집 세션에서 도구 탭 전환 없이 XY·폭/깊이·높이 수치를 누적하고, 숫자 칸 Esc 는 칸 값만 되돌린다', async () => {
+    renderZones();
+    await screen.findByTestId('viewer3d');
+
+    act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
+    act(() => screen.getByRole('button', { name: '구역 수정' }).click());
+    act(() => screen.getByRole('button', { name: /정밀 입력/ }).click());
+
+    const originX = screen.getByLabelText('시작 X (m)') as HTMLInputElement;
+    const width = screen.getByLabelText('폭 X (m)') as HTMLInputElement;
+    const zMax = screen.getByLabelText('상단 Z (m)') as HTMLInputElement;
+
+    // 타이핑 후 디바운스만으로 로컬 3D 미리보기가 자동 갱신된다(U05).
+    fireEvent.focus(originX);
+    fireEvent.change(originX, { target: { value: '6.2' } });
+    await new Promise((r) => setTimeout(r, 260));
+    expect(fake.editing?.draft.min[0]).toBe(6.2);
+
+    // X=5000대 및 음수 origin 도 임의 클램프 없이 허용된다(U06).
+    fireEvent.focus(originX);
+    fireEvent.change(originX, { target: { value: '5000' } });
+    fireEvent.blur(originX);
+    expect(fake.editing?.draft.min[0]).toBe(5000);
+    fireEvent.focus(originX);
+    fireEvent.change(originX, { target: { value: '-12.5' } });
+    fireEvent.blur(originX);
+    expect(fake.editing?.draft.min[0]).toBe(-12.5);
+    fireEvent.focus(originX);
+    fireEvent.change(originX, { target: { value: '6.2' } });
+    fireEvent.blur(originX);
+
+    fireEvent.focus(width);
+    fireEvent.change(width, { target: { value: '3.5' } });
+    fireEvent.blur(width);
+    fireEvent.focus(zMax);
+    fireEvent.change(zMax, { target: { value: '3.0' } });
+    fireEvent.blur(zMax);
+
+    expect(fake.editing?.draft.min[0]).toBeCloseTo(6.2, 9);
+    expect(fake.editing?.draft.max[0]).toBeCloseTo(9.7, 9);
+    expect(fake.editing?.draft.max[2]).toBe(3);
+
+    // 잘못된 값(음수 폭·교차 높이·문자열)은 거부하고 마지막 유효 초안을 유지한다.
+    fireEvent.change(width, { target: { value: '-1' } });
+    fireEvent.keyDown(width, { key: 'Enter' });
+    expect(screen.getByRole('alert').textContent).toContain('0보다 커야');
+    expect(fake.editing?.draft.max[0]).toBeCloseTo(9.7, 9);
+
+    fireEvent.change(zMax, { target: { value: 'abc' } });
+    fireEvent.keyDown(zMax, { key: 'Enter' });
+    expect(screen.getByRole('alert').textContent).toContain('유효한 숫자');
+
+    // 숫자 칸 Esc 는 세션을 취소하지 않고 그 칸 입력만 현재 초안 값(3)으로 되돌린다.
+    fireEvent.keyDown(zMax, { key: 'Escape' });
+    expect(zMax.value).toBe('3');
+    expect(fake.editing).not.toBeNull();
+  });
+
+  it('미리보기 유지는 결과를 사라지게 하지 않고 3D Ghost·계속 편집·취소·비활성 저장(미연결 사유)을 표시한다', async () => {
+    renderZones();
+    await screen.findByTestId('viewer3d');
+
+    act(() => fake.onSelect?.({ type: 'zone', id: 'z-02' }));
+    act(() => screen.getByRole('button', { name: '구역 수정' }).click());
+    act(() => screen.getByRole('button', { name: /정밀 입력/ }).click());
+    const zMin = screen.getByLabelText('하단 Z (m)') as HTMLInputElement;
+    fireEvent.change(zMin, { target: { value: '0.9' } });
+    fireEvent.blur(zMin);
+
+    act(() => screen.getByRole('button', { name: '미리보기 유지' }).click());
+    expect(fake.overlay).toEqual({
+      target: { type: 'zone', id: 'z-02' },
+      box: { min: [2.2, 2.5, 0.9], max: [5.4, 5.1, 2.4] },
+    });
+    const saveBtn = screen.getByRole('button', { name: '저장 (서버 미연결)' });
+    expect((saveBtn as HTMLButtonElement).disabled).toBe(true);
+    expect(document.body.textContent).not.toContain('저장 완료');
+    expect(document.body.textContent).not.toContain('초안 확정');
+    expect(document.body.textContent).not.toContain('BE -120');
+
+    // 계속 편집을 누르면 보관된 미리보기 값(zMin 0.9)에서 다시 편집을 이어 간다.
+    act(() => screen.getByRole('button', { name: '계속 편집' }).click());
+    expect(fake.editing?.draft).toEqual({ min: [2.2, 2.5, 0.9], max: [5.4, 5.1, 2.4] });
+
+    act(() => screen.getByRole('button', { name: '미리보기 유지' }).click());
+    act(() => screen.getByRole('button', { name: '원본 복원' }).click());
+    expect(fake.overlay).toBeNull();
+  });
+
+  it('초안 이어 편집 6단계 중 중간 단계가 실패하면 부분 적용을 취소하고 실패를 알린다(R03)', async () => {
+    renderZones();
+    await screen.findByTestId('viewer3d');
+
+    act(() => fake.onSelect?.({ type: 'zone', id: 'z-02' }));
+    act(() => screen.getByRole('button', { name: '구역 수정' }).click());
+    act(() => screen.getByRole('button', { name: /정밀 입력/ }).click());
+    const originX = screen.getByLabelText('시작 X (m)') as HTMLInputElement;
+    fireEvent.change(originX, { target: { value: '3.0' } });
+    fireEvent.blur(originX);
+    act(() => screen.getByRole('button', { name: '미리보기 유지' }).click());
+
+    fake.updateStepCount = 0;
+    fake.failAtUpdateStep = 4;
+    act(() => screen.getByRole('button', { name: '계속 편집' }).click());
+    expect(fake.editing).toBeNull();
+    expect(screen.getByRole('status').textContent).toContain('초안 좌표를 복원하지 못해');
+  });
+
+  it('2D 보기에서 구역 수정을 누르면 NOT_READY 경고 없이 3D 로 전환된 뒤 편집을 시작하고, 비관리자는 차단한다(R02, R05)', async () => {
+    renderZones();
+    await screen.findByTestId('viewer3d');
+
+    act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
+    act(() => screen.getByRole('button', { name: '2D' }).click());
+    act(() => screen.getByRole('button', { name: '구역 수정' }).click());
+    await screen.findByTestId('viewer3d');
+    expect(fake.editing?.target).toEqual({ type: 'zone', id: 'z-04' });
+    expect(screen.queryByRole('status')).toBeNull();
+
+    act(() => signInAs('VIEWER'));
+    expect(fake.editing).toBeNull();
+    expect(screen.queryByRole('button', { name: '구역 수정' })).toBeNull();
+    // 비관리자에게는 편집 영역도, 설명 문구도 그리지 않는다.
+    expect(screen.queryByText(/관리자/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /계속 편집|미리보기 유지/ })).toBeNull();
+  });
+
+  it('Scene 버전 변경·원본 구역 형상 변경·Source(계정) 변경 시 오래된 미저장 미리보기를 즉시 폐기한다', async () => {
+    const qc = new QueryClient();
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <SpatialViewportHost loadViewer={loadFake} zoneEditor>
+          <ZonesPage />
+        </SpatialViewportHost>
+      </QueryClientProvider>,
+    );
+    await screen.findByTestId('viewer3d');
+
+    act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
+    act(() => screen.getByRole('button', { name: '구역 수정' }).click());
+    const moved = {
+      ...fake.editing!,
+      draft: {
+        ...fake.editing!.draft,
+        min: [6.3, 1.2, 0] as [number, number, number],
+        max: [9.1, 3.8, 2.4] as [number, number, number],
+      },
+    };
+    fake.editing = moved;
+    act(() => screen.getByRole('button', { name: '미리보기 유지' }).click());
+    expect(fake.overlay).not.toBeNull();
+
+    // Scene 버전 변경 → 미리보기 폐기
+    act(() => {
+      const baseWorld = worldStateAt(Date.now()).payload;
+      useRealtimeStore.setState({
+        world: {
+          payload: { ...baseWorld, scene_version: 'scene-4' },
+          receivedAt: Date.now(),
+        },
+      });
+    });
+    expect(fake.overlay).toBeNull();
+    expect(screen.getByRole('status').textContent).toContain('Scene 버전이 바뀌어');
+
+    // 다시 미리보기 생성 후 Source 변경(로그아웃/다른 계정) → 선택과 미리보기 모두 초기화
+    act(() => screen.getByRole('button', { name: '구역 수정' }).click());
+    fake.editing!.draft = { min: [6.3, 1.2, 0], max: [9.1, 3.8, 2.4] };
+    act(() => screen.getByRole('button', { name: '미리보기 유지' }).click());
+    expect(fake.overlay).not.toBeNull();
+    act(() => {
+      useRealtimeStore.setState({ source: { id: 's-2', pushZones: vi.fn() } as never });
+    });
+    rerender(
+      <QueryClientProvider client={qc}>
+        <SpatialViewportHost loadViewer={loadFake} zoneEditor>
+          <ZonesPage />
+        </SpatialViewportHost>
+      </QueryClientProvider>,
+    );
+    expect(fake.overlay).toBeNull();
+  });
+
+  it('늦은 GET /api/zones 응답이 도착하기 전에는 재시도 횟수를 소진하지 않고 도착 즉시 ?zone=z-04&edit=1 을 선택·편집한다', async () => {
+    mockZonesState.zones = [];
+    mockZonesState.raw = undefined;
+    const onConsumed = vi.fn();
+    const qc = new QueryClient();
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <SpatialViewportHost loadViewer={loadFake} zoneEditor>
+          <ZonesPage initialZoneId="z-04" autoStartEdit onSearchConsumed={onConsumed} />
+        </SpatialViewportHost>
+      </QueryClientProvider>,
+    );
+    await screen.findByTestId('viewer3d');
+    expect(fake.selectCalls).toBe(0);
+
+    mockZonesState.zones = [...DEFAULT_ZONES];
+    mockZonesState.raw = { contract: 'DEMO_UNCONFIRMED', zones: [] };
+    rerender(
+      <QueryClientProvider client={qc}>
+        <SpatialViewportHost loadViewer={loadFake} zoneEditor>
+          <ZonesPage initialZoneId="z-04" autoStartEdit onSearchConsumed={onConsumed} />
+        </SpatialViewportHost>
+      </QueryClientProvider>,
+    );
+    expect(fake.selectCalls).toBe(1);
+    expect(fake.focusCalls).toBe(1);
+    expect(fake.editing?.target).toEqual({ type: 'zone', id: 'z-04' });
+    expect(onConsumed).toHaveBeenCalledTimes(1);
+  });
+
+  it('parseZonesSearch 는 유효한 zone·edit 만 남기고 잘못된 값은 버린다', () => {
+    expect(parseZonesSearch({ zone: ' z-04 ', edit: '1' })).toEqual({ zone: 'z-04', edit: '1' });
+    expect(parseZonesSearch({ zone: 'bad id!', edit: '1' })).toEqual({});
+    expect(parseZonesSearch({})).toEqual({});
+  });
+});

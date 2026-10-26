@@ -133,4 +133,35 @@ describe('bindSession', () => {
     sessionStore.setState({ session: undefined });
     expect(log).toEqual(['start alice a-1']);
   });
+
+  it('로그아웃·다른 계정·같은 사람의 권한 변경에서만 사용자 화면 상태를 비우고, 첫 로그인·토큰 갱신에서는 두다', () => {
+    const cleared: string[] = [];
+    const sessionStore = createStore<{ session?: Session }>()(() => ({ session: undefined }));
+    bindSession({
+      sessionStore,
+      realtime: { start: () => {}, stop: async () => {} },
+      router: { invalidate: async () => {}, clearCache: () => {} },
+      queryClient: { clear: () => {} },
+      onUserChange: () => cleared.push('clear'),
+    });
+    const step = (session: Session | undefined, label: string) => {
+      sessionStore.setState({ session });
+      cleared.push(label);
+    };
+    step(alice, 'login');
+    step({ ...alice, accessToken: 'a-2' }, 'refresh');
+    step({ ...alice, user: { id: 'alice', role: 'VIEWER' } }, 'role');
+    step(bob, 'account');
+    step(undefined, 'logout');
+    expect(cleared).toEqual([
+      'login',
+      'refresh',
+      'clear',
+      'role',
+      'clear',
+      'account',
+      'clear',
+      'logout',
+    ]);
+  });
 });

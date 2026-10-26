@@ -1,3 +1,4 @@
+import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
 import { MonitorPage } from '@/features/monitor/MonitorPage';
 import type { Viewer3DHandle, Viewer3DProps, ViewerStatus } from '@/features/viewer3d';
 import { worldStateAt } from '@/mocks/realtimeScenario';
@@ -62,9 +63,12 @@ function renderPage(loadViewer = loadFake, planFallbackMs?: number) {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   );
-  return render(<MonitorPage loadViewer={loadViewer} planFallbackMs={planFallbackMs} />, {
-    wrapper,
-  });
+  return render(
+    <SpatialViewportHost loadViewer={loadViewer} planFallbackMs={planFallbackMs}>
+      <MonitorPage />
+    </SpatialViewportHost>,
+    { wrapper },
+  );
 }
 
 const plan = () => screen.queryByRole('group', { name: '2D 평면' });

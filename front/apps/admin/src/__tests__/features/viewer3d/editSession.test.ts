@@ -43,6 +43,17 @@ beforeEach(() => {
 afterEach(() => off());
 
 describe('편집 세션', () => {
+  it('F07: 드래그 중에는 외부 finish 명령도 종료 결과를 만들지 않는다', () => {
+    edit.store.getState().begin(Z1);
+    edit.store.getState().setDragging('move');
+    expect(edit.store.getState().finish()).toBeNull();
+    expect(edit.store.getState().session).not.toBeNull();
+    expect(results).toHaveLength(0);
+    edit.store.getState().setDragging(null);
+    expect(edit.store.getState().finish()?.status).toBe('FINISHED');
+    expect(results).toHaveLength(1);
+  });
+
   it('시작하면 그 구역을 선택하고 원본 사본·확인 가능한 출처만 기록한다', () => {
     expect(edit.store.getState().begin(Z1)).toEqual({ ok: true });
     expect(viewer.getState().selected).toEqual(Z1);

@@ -1,7 +1,16 @@
 import { MonitorPage } from '@/features/monitor/MonitorPage';
-import { createFileRoute } from '@tanstack/react-router';
+import { createFileRoute, useNavigate } from '@tanstack/react-router';
+
+function MonitorRoute() {
+  const navigate = useNavigate();
+  return (
+    <MonitorPage
+      onEditZone={(zoneId) => void navigate({ to: '/zones', search: { zone: zoneId, edit: '1' } })}
+    />
+  );
+}
 
 export const Route = createFileRoute('/_app/')({
-  component: MonitorPage,
+  component: MonitorRoute,
   staticData: { fullBleed: true, eventPanel: true },
 });

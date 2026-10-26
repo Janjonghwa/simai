@@ -19,12 +19,14 @@ import { useEffect, useState } from 'react';
 import {
   BoxGeometry,
   ConeGeometry,
-  CylinderGeometry,
+  Mesh,
   Plane,
   Raycaster,
+  SphereGeometry,
   Vector2,
   Vector3,
   type BufferGeometry,
+  type Intersection,
 } from 'three';
 import { useStore } from 'zustand';
 
@@ -48,21 +50,36 @@ const HANDLE_COLORS: Record<EditHandle, string> = {
   'z+': '#5b9cf0',
 };
 const UP = new Vector3(0, 1, 0);
+// 표시 형상과 별개로 24×24 CSS px를 잡을 수 있게 한다.
+const HANDLE_HIT_HALF_PX = 12;
+// 평면에서 약 3도 미만인 광선은 작은 포인터 오차도 큰 World 이동으로 증폭한다.
+const MIN_PLANE_COSINE = 0.05;
 export const EDIT_HANDLES: readonly EditHandle[] = ['move', 'x-', 'x+', 'y-', 'y+', 'z-', 'z+'];
+
+/** 손잡이에 마우스를 올렸거나 끄는 동안 보이는 짧은 설명. 무엇이 움직이고 무엇이 고정되는지 적는다. */
+export const HANDLE_HINTS: Record<EditHandle, string> = {
+  move: '구역 전체 이동 · X/Y (폭·깊이·높이 유지)',
+  'x-': 'X− 경계 · 반대쪽 X+ 고정',
+  'x+': 'X+ 경계 · 반대쪽 X− 고정',
+  'y-': 'Y− 경계 · 반대쪽 Y+ 고정',
+  'y+': 'Y+ 경계 · 반대쪽 Y− 고정',
+  'z-': '하단(z_min) · 상단 고정',
+  'z+': '상단(z_max) · 하단 고정',
+};
 
 // 손잡이 형상은 모듈에 하나씩만 둔다(끌 때마다 새로 만들지 않는다).
 const FACE_GEOMETRY = new BoxGeometry(0.16, 0.16, 0.16);
-const MOVE_GEOMETRY = new CylinderGeometry(0.22, 0.22, 0.03, 24);
+const MOVE_GEOMETRY = new SphereGeometry(0.18, 24, 16);
 const Z_GEOMETRY = new ConeGeometry(0.1, 0.22, 16);
 const UNIT_EDGES = boxEdges([1, 1, 1]);
 
-/** 손잡이의 World 위치. 이동은 윗면 가운데, 면은 그 면 가운데, 높이는 위·아래로 조금 띄운 곳이다. */
+/** 손잡이의 World 위치. 이동은 상자 기하 중심, 면은 그 면 가운데, 높이는 위·아래로 조금 띄운 곳이다. */
 export function handleWorld(box: WorldBox, handle: EditHandle): WorldPoint {
   const c = [0, 1, 2].map((i) => (box.min[i]! + box.max[i]!) / 2);
   const [cx, cy, cz] = [c[0]!, c[1]!, c[2]!];
   switch (handle) {
     case 'move':
-      return worldPoint(cx, cy, box.max[2]);
+      return worldPoint(cx, cy, cz);
     case 'x-':
       return worldPoint(box.min[0], cy, cz);
     case 'x+':
@@ -111,7 +128,7 @@ export function createHandleDrag(store: EditStore, get: () => RootState) {
     if (handle === 'z-' || handle === 'z+') {
       // 높이는 카메라를 마주 보는 세로 평면 위에서 읽는다.
       const normal = camera.getWorldDirection(new Vector3()).setY(0);
-      if (normal.lengthSq() < 1e-6) normal.set(0, 0, 1);
+      if (normal.lengthSq() < MIN_PLANE_COSINE ** 2) return;
       plane.setFromNormalAndCoplanarPoint(normal.normalize(), anchor);
     } else {
       // X·Y 는 손잡이 높이의 수평 평면 위에서 읽는다. 이 평면에서는 높이(Z)가 바뀌지 않는다.
@@ -121,11 +138,13 @@ export function createHandleDrag(store: EditStore, get: () => RootState) {
     const ndc = new Vector2();
     const worldAt = (clientX: number, clientY: number) => {
       const rect = gl.domElement.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
       ndc.set(
         ((clientX - rect.left) / rect.width) * 2 - 1,
         -((clientY - rect.top) / rect.height) * 2 + 1,
       );
       raycaster.setFromCamera(ndc, camera);
+      if (Math.abs(raycaster.ray.direction.dot(plane.normal)) < MIN_PLANE_COSINE) return null;
       const point = raycaster.ray.intersectPlane(plane, new Vector3());
       const three = point && toThreePoint([point.x, point.y, point.z]);
       return three ? threeToWorld(three) : null;
@@ -180,7 +199,13 @@ export function createHandleDrag(store: EditStore, get: () => RootState) {
     store.getState().cancel('USER');
   };
 
-  return { start, end, escape };
+  /** Enter. 끄는 중이 아닐 때 현재 초안을 미리보기로 확정(유지)하고 손잡이를 내린다. */
+  const enter = () => {
+    if (active) return;
+    store.getState().finish();
+  };
+
+  return { start, end, escape, enter };
 }
 
 export function GizmoController() {
@@ -198,16 +223,70 @@ function GizmoForStore({ store }: { store: EditStore }) {
 function AabbGizmo({ store }: { store: EditStore }) {
   const get = useThree((s) => s.get);
   const [drag] = useState(() => createHandleDrag(store, get));
+  const [hovered, setHovered] = useState<EditHandle | null>(null);
   const draft = useStore(store, (s) => s.session?.draft ?? null);
   const settled = useStore(store, (s) => s.session?.settled ?? null);
   const dragging = useStore(store, (s) => s.session?.dragging ?? null);
   const refused = useStore(store, (s) => s.session?.refused ?? null);
+  const zoneId = useStore(store, (s) => s.session?.target.id ?? '');
+  const [handleRaycast] = useState(
+    () =>
+      function (this: Mesh, raycaster: Raycaster, intersections: Intersection[]) {
+        const count = intersections.length;
+        Mesh.prototype.raycast.call(this, raycaster, intersections);
+        if (intersections.length > count) return;
+        const { camera, gl } = get();
+        const rect = gl.domElement.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
+        const center = this.getWorldPosition(new Vector3());
+        const projected = center.clone().project(camera);
+        if (projected.z < -1 || projected.z > 1) return;
+        const plane = new Plane().setFromNormalAndCoplanarPoint(
+          camera.getWorldDirection(new Vector3()),
+          center,
+        );
+        const point = raycaster.ray.intersectPlane(plane, new Vector3());
+        if (!point) return;
+        const distance = point.distanceTo(raycaster.ray.origin);
+        if (distance < raycaster.near || distance > raycaster.far) return;
+        const pointer = point.clone().project(camera);
+        if (
+          (Math.abs(pointer.x - projected.x) * rect.width) / 2 <= HANDLE_HIT_HALF_PX &&
+          (Math.abs(pointer.y - projected.y) * rect.height) / 2 <= HANDLE_HIT_HALF_PX
+        )
+          intersections.push({ distance, point, object: this });
+      },
+  );
 
   // 내려가면(선택 변경·취소·완료·오류·StrictMode 재마운트) 끌기를 끝내고 카메라 조작을 되돌린다.
   useEffect(() => () => drag.end(), [drag]);
+  // 손잡이 위에서는 잡을 수 있다는 커서, 끄는 동안은 잡은 커서를 보인다. 내려가면 되돌린다.
+  const cursor = dragging ? 'grabbing' : hovered ? 'grab' : '';
+  useEffect(() => {
+    const canvas = get().gl.domElement;
+    canvas.style.cursor = cursor;
+    return () => {
+      canvas.style.cursor = '';
+    };
+  }, [get, cursor]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229)
+        return;
+      if (
+        event
+          .composedPath()
+          .some(
+            (target) =>
+              target instanceof Element &&
+              target.closest(
+                'input, textarea, select, button, a, [contenteditable]:not([contenteditable="false"])',
+              ),
+          )
+      )
+        return;
       if (event.key === 'Escape') drag.escape();
+      if (event.key === 'Enter') drag.enter();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -216,6 +295,7 @@ function AabbGizmo({ store }: { store: EditStore }) {
   const box = draft && worldBoxToThree(draft.min, draft.max);
   if (!draft || !settled || !box) return null;
   const [sx, sy, sz] = box.size;
+  const hint = dragging ?? hovered;
   return (
     <group name="edit-gizmo">
       {/* 초안(미리보기). 원본 구역과 따로 그리며 클릭을 받지 않는다(사람·원본 구역 선택을 가리지 않는다). */}
@@ -238,32 +318,51 @@ function AabbGizmo({ store }: { store: EditStore }) {
             raycast={noRaycast}
           />
         </group>
-        {/* 글자는 놓았을 때(settled)만 바뀐다. 끄는 동안 텍스처를 새로 만들지 않는다. */}
+        {/* 좌표는 편집 패널에서 읽는다. 끄는 동안 텍스처를 새로 만들지 않는다. */}
         <LabelSprite
-          text={refused ? `편집 거부 · ${refused.detail}` : previewLabel(settled)}
+          text={
+            refused
+              ? `${previewLabel(zoneId)} · 편집 거부 · ${refused.detail}`
+              : previewLabel(zoneId)
+          }
           y={sy / 2 + Z_HANDLE_GAP + 0.3}
           height={0.22}
           color={refused ? '#ffb4b4' : PREVIEW_COLOR}
         />
       </group>
-      {EDIT_HANDLES.map((handle) => (
-        <mesh
-          key={handle}
-          name={`edit-handle:${handle}`}
-          position={worldToThree(handleWorld(draft, handle))}
-          geometry={geometryOf(handle)}
-          rotation={handle === 'z-' ? [Math.PI, 0, 0] : undefined}
-          renderOrder={20}
-          onPointerDown={(event) => drag.start(handle, event)}
-        >
-          <meshBasicMaterial
-            color={HANDLE_COLORS[handle]}
-            transparent
-            opacity={dragging === handle ? 1 : 0.85}
-            depthTest={false}
-          />
-        </mesh>
-      ))}
+      {EDIT_HANDLES.map((handle) => {
+        const active = hint === handle;
+        return (
+          <mesh
+            key={handle}
+            name={`edit-handle:${handle}`}
+            position={worldToThree(handleWorld(draft, handle))}
+            scale={active ? 1.2 : 1}
+            geometry={geometryOf(handle)}
+            raycast={handleRaycast}
+            rotation={handle === 'z-' ? [Math.PI, 0, 0] : undefined}
+            renderOrder={20}
+            onPointerDown={(event) => drag.start(handle, event)}
+            onPointerOver={(event) => {
+              event.stopPropagation();
+              setHovered(handle);
+            }}
+            onPointerOut={() => setHovered((current) => (current === handle ? null : current))}
+          >
+            <meshBasicMaterial
+              color={HANDLE_COLORS[handle]}
+              transparent
+              opacity={active ? 1 : dragging ? 0.35 : 0.82}
+              depthTest={false}
+            />
+          </mesh>
+        );
+      })}
+      {hint && (
+        <group position={worldToThree(handleWorld(settled, hint))}>
+          <LabelSprite text={HANDLE_HINTS[hint]} y={0.32} height={0.2} color="#f5f5f5" />
+        </group>
+      )}
     </group>
   );
 }
@@ -273,9 +372,7 @@ function geometryOf(handle: EditHandle): BufferGeometry {
   return handle[0] === 'z' ? Z_GEOMETRY : FACE_GEOMETRY;
 }
 
-const m = (v: number) => (Math.round(v * 100) / 100).toFixed(2);
-
 /** 초안 이름표. 저장되지 않은 미리보기임을 함께 적는다. */
-export function previewLabel({ min, max }: WorldBox) {
-  return `편집 미리보기(저장 안 됨) · X ${m(min[0])}–${m(max[0])} · Y ${m(min[1])}–${m(max[1])} · Z ${m(min[2])}–${m(max[2])}m`;
+export function previewLabel(zoneId: string) {
+  return `${zoneId} · 미저장`;
 }

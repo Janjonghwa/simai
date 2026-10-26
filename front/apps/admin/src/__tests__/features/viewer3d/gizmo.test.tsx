@@ -11,6 +11,7 @@ import {
   EDIT_HANDLES,
   GizmoController,
   handleWorld,
+  previewLabel,
 } from '@/features/viewer3d/editing/GizmoController';
 import { Selectable } from '@/features/viewer3d/Selectable';
 import { createViewerStore, type ViewerStore } from '@/features/viewer3d/viewer3d.store';
@@ -163,6 +164,18 @@ describe('손잡이 끌기(World)', () => {
     drag.escape();
     expect(edit.store.getState().session).toBeNull();
     expect(edit.store.getState().lastResult).toMatchObject({ status: 'CANCELLED', reason: 'USER' });
+
+    // 이동 후 Enter(drag.enter)는 현재 초안을 FINISHED(미리보기 유지)로 마친다.
+    edit.store.getState().begin(Z1);
+    press(drag, camera, 'move');
+    moveTo(camera, shift(handleWorld(before, 'move'), 0.5, 0, 0));
+    // 끄는 도중에는 Enter 가 무시된다.
+    drag.enter();
+    expect(edit.store.getState().session).not.toBeNull();
+    release();
+    drag.enter();
+    expect(edit.store.getState().session).toBeNull();
+    expect(edit.store.getState().lastResult).toMatchObject({ status: 'FINISHED', changed: true });
   });
 
   it('창 밖에서 놓아 버튼이 떨어진 움직임·내려감은 끌기를 끝내고 카메라를 되돌리며, 끄기 전 꺼져 있던 카메라는 꺼진 채 둔다', () => {
@@ -199,6 +212,55 @@ describe('손잡이 끌기(World)', () => {
     release();
     expect(draft()).toEqual(valid);
     expect(edit.store.getState().session!.refused?.reason).toBe('INVALID_GEOMETRY');
+  });
+
+  it.each(EDIT_HANDLES)(
+    '%s: 거의 평행한 시점에서는 시작을 거부하고 Orbit과 초안을 유지한다',
+    (handle) => {
+      edit.store.getState().begin(Z1);
+      const { camera, controls, drag } = rig();
+      const before = draft();
+      const anchor = new Vector3(...worldToThree(handleWorld(before, handle)));
+      camera.position
+        .copy(anchor)
+        .add(handle[0] === 'z' ? new Vector3(0.001, 10, 0) : new Vector3(10, 0.001, 0));
+      camera.lookAt(anchor);
+      camera.updateMatrixWorld();
+      press(drag, camera, handle);
+      expect(edit.store.getState().session!.dragging).toBeNull();
+      expect(controls.enabled).toBe(true);
+      moveTo(camera, shift(handleWorld(before, handle), 0.5, 0, 0.5));
+      expect(draft()).toEqual(before);
+      release();
+    },
+  );
+
+  it('끄는 중 평면과 거의 평행해진 포인터는 무시하고 마지막 유효 초안과 해제를 유지한다', () => {
+    edit.store.getState().begin(Z1);
+    const { camera, controls, drag } = rig();
+    const start = handleWorld(draft(), 'move');
+    press(drag, camera, 'move');
+    moveTo(camera, shift(start, 0.5, 0, 0));
+    const valid = draft();
+    const distant = camera
+      .getWorldDirection(new Vector3())
+      .setY(0)
+      .normalize()
+      .multiplyScalar(100_000)
+      .add(camera.position);
+    distant.y -= 0.001;
+    distant.project(camera);
+    window.dispatchEvent(
+      new MouseEvent('pointermove', {
+        clientX: ((distant.x + 1) / 2) * RECT.width,
+        clientY: ((1 - distant.y) / 2) * RECT.height,
+        buttons: 1,
+      }),
+    );
+    expect(draft()).toEqual(valid);
+    release();
+    expect(controls.enabled).toBe(true);
+    expect(edit.store.getState().session!.dragging).toBeNull();
   });
 });
 
@@ -273,6 +335,7 @@ async function mount(strict = false) {
     </ViewerStoreContext>
   );
   await act(async () => root!.render(strict ? <StrictMode>{tree}</StrictMode> : tree));
+  return canvas;
 }
 
 const named = (prefix: string) => {
@@ -320,15 +383,186 @@ describe('GizmoController 장면', () => {
     const handle = named('edit-handle:move')[0] as unknown as {
       __r3f: { handlers: Record<string, unknown> };
     };
-    expect(Object.keys(handle.__r3f.handlers)).toEqual(['onPointerDown']);
+    // 손잡이는 끌기·호버 안내만 받고 클릭 선택 처리기는 없다.
+    expect(Object.keys(handle.__r3f.handlers).sort()).toEqual([
+      'onPointerDown',
+      'onPointerOut',
+      'onPointerOver',
+    ]);
   });
 
-  it('끄는 중 장면에서 내려가면(취소·StrictMode 재마운트) 카메라 조작을 되돌린다', async () => {
+  it('StrictMode에서도 전역 Enter 한 번만 완료하고 드래그 중에는 완료하지 않는다', async () => {
     await mount(true);
     await act(async () => void edit.store.getState().begin(Z1));
-    const handle = named('edit-handle:x+')[0] as unknown as {
+    const finish = vi.spyOn(edit.store.getState(), 'finish');
+    const results = vi.fn();
+    const unsubscribe = edit.store.subscribe((state, previous) => {
+      if (state.lastResult !== previous.lastResult) results(state.lastResult);
+    });
+    const handle = named('edit-handle:move')[0] as THREE.Mesh & {
       __r3f: { handlers: { onPointerDown: (e: unknown) => void } };
     };
+    await act(async () =>
+      handle.__r3f.handlers.onPointerDown({
+        stopPropagation: () => {},
+        button: 0,
+        nativeEvent: screen(sceneCamera!, handleWorld(draft(), 'move')),
+      }),
+    );
+    await act(async () => {
+      moveTo(sceneCamera!, shift(handleWorld(draft(), 'move'), 0.5, 0, 0));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    });
+    expect(finish).not.toHaveBeenCalled();
+    expect(results).not.toHaveBeenCalled();
+    expect(edit.store.getState().session?.dragging).toBe('move');
+    await act(async () => {
+      release();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    });
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(results).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        status: 'FINISHED',
+        changed: true,
+        saved: false,
+      }),
+    );
+    expect(controls.enabled).toBe(true);
+    unsubscribe();
+  });
+
+  it.each(['Enter', 'Escape'])(
+    '%s: 소비·반복·IME·네이티브 입력 키는 세션에 전달하지 않는다',
+    async (key) => {
+      await mount();
+      await act(async () => void edit.store.getState().begin(Z1));
+      const before = edit.store.getState().session;
+      for (const init of [{ repeat: true }, { isComposing: true }, { keyCode: 229 }]) {
+        await act(
+          async () => void window.dispatchEvent(new KeyboardEvent('keydown', { key, ...init })),
+        );
+        expect(edit.store.getState().session).toBe(before);
+      }
+      const consumed = new KeyboardEvent('keydown', { key, cancelable: true });
+      consumed.preventDefault();
+      await act(async () => void window.dispatchEvent(consumed));
+      expect(edit.store.getState().session).toBe(before);
+      for (const html of [
+        '<input />',
+        '<textarea></textarea>',
+        '<select><option>구역</option></select>',
+        '<button><span>완료</span></button>',
+        '<a href="#"><span>구역</span></a>',
+        '<div contenteditable="true"><span>값</span></div>',
+        '<div contenteditable="plaintext-only"><span>값</span></div>',
+      ]) {
+        const container = document.createElement('div');
+        container.innerHTML = html;
+        document.body.append(container);
+        const target = container.querySelector('span, option') ?? container.firstElementChild!;
+        await act(
+          async () =>
+            void target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })),
+        );
+        expect(edit.store.getState().session, html).toBe(before);
+        container.remove();
+      }
+      expect(edit.store.getState().lastResult).toBeNull();
+    },
+  );
+
+  it('전역 Escape는 드래그만 되돌리고 다음 Escape에서 세션을 취소한다', async () => {
+    await mount();
+    await act(async () => void edit.store.getState().begin(Z1));
+    const before = draft();
+    const handle = named('edit-handle:x+')[0] as THREE.Mesh & {
+      __r3f: { handlers: { onPointerDown: (e: unknown) => void } };
+    };
+    await act(async () =>
+      handle.__r3f.handlers.onPointerDown({
+        stopPropagation: () => {},
+        button: 0,
+        nativeEvent: screen(sceneCamera!, handleWorld(before, 'x+')),
+      }),
+    );
+    await act(async () => moveTo(sceneCamera!, shift(handleWorld(before, 'x+'), 0.5, 0, 0)));
+    expect(draft()).not.toEqual(before);
+    await act(
+      async () => void window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })),
+    );
+    expect(draft()).toEqual(before);
+    expect(edit.store.getState().lastResult).toBeNull();
+    expect(controls.enabled).toBe(true);
+    await act(
+      async () => void window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })),
+    );
+    expect(edit.store.getState().lastResult).toMatchObject({ status: 'CANCELLED', reason: 'USER' });
+  });
+
+  it('활성 이름표는 구역 ID와 미저장만 표시하고 거부 안내는 유지한다', async () => {
+    expect(previewLabel(Z1.id)).toBe('z-01 · 미저장');
+    const fillText = vi.fn();
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 12 }),
+      beginPath: () => {},
+      roundRect: () => {},
+      fill: () => {},
+      fillText,
+    } as unknown as CanvasRenderingContext2D);
+    await mount();
+    await act(async () => void edit.store.getState().begin(Z1));
+    expect(fillText).toHaveBeenCalledWith('z-01 · 미저장', expect.any(Number), expect.any(Number));
+    await act(async () => void edit.store.getState().updateField('width', -10));
+    expect(fillText).toHaveBeenCalledWith(
+      `z-01 · 미저장 · 편집 거부 · ${edit.store.getState().session!.refused!.detail}`,
+      expect.any(Number),
+      expect.any(Number),
+    );
+  });
+
+  it.each([8, 80])(
+    '%sm 거리에서도 표시 형상은 그대로 두고 최소 24px 포인터 영역을 제공한다',
+    async (distance) => {
+      await mount();
+      await act(async () => void edit.store.getState().begin(Z1));
+      scene!.updateMatrixWorld(true);
+      for (const handle of named('edit-handle:') as THREE.Mesh[]) {
+        const center = handle.getWorldPosition(new Vector3());
+        sceneCamera!.position.copy(center).add(new Vector3(0, 0, distance));
+        sceneCamera!.lookAt(center);
+        sceneCamera!.updateMatrixWorld();
+        const geometry = handle.geometry;
+        const scale = handle.scale.clone();
+        const hitAt = (dx: number, dy: number) => {
+          const raycaster = new THREE.Raycaster();
+          raycaster.setFromCamera(
+            new THREE.Vector2((2 * dx) / RECT.width, (-2 * dy) / RECT.height),
+            sceneCamera!,
+          );
+          return raycaster.intersectObject(handle, false);
+        };
+        expect(hitAt(11, 11), handle.name).toHaveLength(1);
+        expect(hitAt(30, 30), handle.name).toHaveLength(0);
+        expect(handle.geometry).toBe(geometry);
+        expect(handle.scale).toEqual(scale);
+        expect(handle.position.toArray()).toEqual(
+          worldToThree(handleWorld(draft(), handle.name.slice(12) as EditHandle)),
+        );
+      }
+    },
+  );
+
+  it('끄는 중 장면에서 내려가면(취소·StrictMode 재마운트) 카메라 조작을 되돌린다', async () => {
+    const canvas = await mount(true);
+    await act(async () => void edit.store.getState().begin(Z1));
+    const handle = named('edit-handle:x+')[0] as unknown as {
+      __r3f: {
+        handlers: { onPointerDown: (e: unknown) => void; onPointerOver: (e: unknown) => void };
+      };
+    };
+    await act(async () => handle.__r3f.handlers.onPointerOver({ stopPropagation: () => {} }));
+    expect(canvas.style.cursor).toBe('grab');
     const at = screen(sceneCamera!, handleWorld(draft(), 'x+'));
     await act(async () =>
       handle.__r3f.handlers.onPointerDown({
@@ -339,8 +573,10 @@ describe('GizmoController 장면', () => {
     );
     expect(edit.store.getState().session?.dragging).toBe('x+');
     expect(controls.enabled).toBe(false);
+    expect(canvas.style.cursor).toBe('grabbing');
     await act(async () => void edit.store.getState().cancel('USER'));
     expect(controls.enabled).toBe(true);
+    expect(canvas.style.cursor).toBe('');
     expect(named('edit-gizmo')).toHaveLength(0);
   });
 });
@@ -380,6 +616,10 @@ describe('Selectable', () => {
     expect(viewer.getState().selected).toBeNull();
     group.__r3f.handlers.onClick(event(1));
     expect(viewer.getState().selected).toEqual(Z1);
+    expect(viewer.getState().activated).toBeNull();
+    // 같은 대상을 연속 클릭(더블클릭)하면 activated 를 알린다.
+    group.__r3f.handlers.onClick(event(1));
+    expect(viewer.getState().activated).toEqual({ target: Z1 });
     await act(async () => r.unmount());
   });
 });

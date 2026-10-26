@@ -196,3 +196,94 @@ export const boxJson = (box: WorldBox) => ({
   min: [box.min[0], box.min[1], box.min[2]] as [number, number, number],
   max: [box.max[0], box.max[1], box.max[2]] as [number, number, number],
 });
+
+/**
+ * 숫자로 고치는 AABB 값(World, m). 화면 입력이 같은 엔진(applyEditOperation)을 거치게 조작으로 바꾼다.
+ * - originX·originY: min X·Y 위치. 바꾸면 min·max 를 함께 옮겨 폭·깊이를 지킨다(X·Y 이동).
+ * - width·depth: min 경계를 고정하고 max X·Y 를 옮긴다(x+·y+ 면).
+ * - zMin·zMax: 그 면만 바꾼다(z-·z+ 면). 다른 값은 그대로다.
+ */
+export const EDIT_FIELDS = ['originX', 'originY', 'width', 'depth', 'zMin', 'zMax'] as const;
+export type EditField = (typeof EDIT_FIELDS)[number];
+
+/** 절대값 입력을 조작으로 바꾼다. 값이 유한하지 않으면 null(INVALID_GEOMETRY 로 거부). */
+export function fieldOperation(
+  box: WorldBox,
+  field: EditField,
+  value: number,
+): EditOperation | null {
+  if (!Number.isFinite(value)) return null;
+  switch (field) {
+    case 'originX':
+      return { type: 'translate', delta: [value - box.min[0], 0, 0] };
+    case 'originY':
+      return { type: 'translate', delta: [0, value - box.min[1], 0] };
+    case 'width':
+      return { type: 'face', face: 'x+', delta: box.min[0] + value - box.max[0] };
+    case 'depth':
+      return { type: 'face', face: 'y+', delta: box.min[1] + value - box.max[1] };
+    case 'zMin':
+      return { type: 'face', face: 'z-', delta: value - box.min[2] };
+    case 'zMax':
+      return { type: 'face', face: 'z+', delta: value - box.max[2] };
+  }
+}
+
+/** 직렬화 가능한 World 상자(m, Z-up). */
+export interface SerializableEditBox {
+  min: readonly [number, number, number];
+  max: readonly [number, number, number];
+}
+
+export type BoxEditOutcome =
+  | { ok: true; box: { min: [number, number, number]; max: [number, number, number] } }
+  | { ok: false; reason: EditFailureReason; detail: string };
+
+/**
+ * Canvas 바깥(FE 2D 평면 편집·전역 초안 Store 등)에서 직렬화된 World 상자에
+ * 3D Gizmo 와 동일한 연산·정책(ZONE_AABB_POLICY)을 적용한다(S15P31A101-241).
+ */
+export function applyZoneBoxOperation(
+  box: SerializableEditBox,
+  operation: EditOperation,
+  policy: EditPolicy = ZONE_AABB_POLICY,
+): BoxEditOutcome {
+  const min = toWorldPoint(box.min);
+  const max = toWorldPoint(box.max);
+  if (!min || !max) {
+    return { ok: false, reason: 'INVALID_GEOMETRY', detail: '좌표가 유한하지 않다' };
+  }
+  const outcome = applyEditOperation({ kind: 'aabb', min, max }, operation, policy);
+  if (!outcome.ok) return outcome;
+  if (outcome.shape.kind !== 'aabb') {
+    return { ok: false, reason: 'NOT_EDITABLE', detail: 'AABB 구역 형상이 아니다' };
+  }
+  return { ok: true, box: boxJson(outcome.shape) };
+}
+
+/**
+ * 외부 Store 에 보관된 초안 상자(target)를 새로 마운트된 Viewer 의 편집 세션(base)에
+ * 복원할 때, 중간 단계에서 zMin >= zMax 역전이 나지 않도록 6단계 적용 순서를 계산한다.
+ */
+export function restoreZoneBoxSteps(
+  base: SerializableEditBox,
+  target: SerializableEditBox,
+): Array<{ field: EditField; value: number }> {
+  const zSteps: Array<{ field: EditField; value: number }> =
+    target.min[2] >= base.max[2]
+      ? [
+          { field: 'zMax', value: target.max[2] },
+          { field: 'zMin', value: target.min[2] },
+        ]
+      : [
+          { field: 'zMin', value: target.min[2] },
+          { field: 'zMax', value: target.max[2] },
+        ];
+  return [
+    { field: 'originX', value: target.min[0] },
+    { field: 'originY', value: target.min[1] },
+    { field: 'width', value: target.max[0] - target.min[0] },
+    { field: 'depth', value: target.max[1] - target.min[1] },
+    ...zSteps,
+  ];
+}
