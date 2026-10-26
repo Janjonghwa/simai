@@ -40,9 +40,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 AI = REPO / "ai"
-for p in (AI / "tests" / "services" / "tier0", AI):
+for p in (AI / "tests" / "services" / "tier0", AI, Path(__file__).resolve().parent):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
+# cgroup CPU 할당량 읽기는 감시 프로세스의 CPU 묶기와 같은 함수를 쓴다(S15P31A101-278). parse_quota 는 시험이 이 이름으로 부른다
+from simai_bootstrap import _read, cgroup_vcpu, parse_quota  # noqa: F401
 
 SIZE = (2304, 1296)
 FPS = 25
@@ -100,86 +102,6 @@ class Steps:
 
 
 # ---------------------------------------------------------------- c0·c1·c2
-
-
-def _read(path: str) -> str | None:
-    try:
-        with open(path, encoding="utf-8") as f:
-            return f.read()
-    except OSError:
-        return None
-
-
-def parse_quota(cpu_max: str | None = None, quota_us: str | None = None, period_us: str | None = None) -> float | None:
-    """cgroup CPU 할당량 값(vCPU). v2 cpu.max("quota period" 또는 "max period") 또는 v1 cfs_quota/period. 제한 없음·깨진 값은 None."""
-    try:
-        if cpu_max is not None:
-            quota, period = cpu_max.split()[:2]
-            return None if quota == "max" else round(int(quota) / int(period), 2)
-        if quota_us is not None and period_us is not None and int(quota_us) > 0:
-            return round(int(quota_us) / int(period_us), 2)
-    except (ValueError, ZeroDivisionError):
-        pass
-    return None
-
-
-def _cpu_cgroup_dirs(read) -> list[tuple[str, str]]:
-    """자기 프로세스의 CPU 컨트롤러 cgroup 디렉터리들(잎 → 마운트 기준점 순서, ("v1"|"v2", 경로)).
-
-    /proc/self/cgroup 으로 자기 그룹 경로를 찾고, /proc/self/mountinfo 의 cgroup2 마운트·cpu 가 든 cgroup(v1) 마운트(공동 마운트
-    cpu,cpuacct 포함)에 붙인다. 마운트 root 가 그룹 경로의 앞부분이면(컨테이너 cgroup 이름공간 밖 경로) 그만큼 뗀다.
-    할당량은 조상 그룹에도 걸리므로 잎부터 마운트 기준점까지 모두 돌려준다.
-    """
-    groups: dict[str, str] = {}  # "v2" 또는 v1 컨트롤러 이름 → 그룹 경로
-    for ln in (read("/proc/self/cgroup") or "").splitlines():
-        parts = ln.strip().split(":", 2)
-        if len(parts) != 3:
-            continue
-        _, controllers, path = parts
-        if controllers == "":
-            groups["v2"] = path
-        else:
-            for c in controllers.split(","):
-                groups[c] = path
-    mounts: list[tuple[str, str, str]] = []  # (종류, 마운트 root, 마운트 지점)
-    for ln in (read("/proc/self/mountinfo") or "").splitlines():
-        left, sep, right = ln.partition(" - ")
-        f, r = left.split(), right.split()
-        if not sep or len(f) < 5 or not r:
-            continue
-        if r[0] == "cgroup2":
-            mounts.append(("v2", f[3], f[4]))
-        elif r[0] == "cgroup" and len(r) >= 3 and "cpu" in r[2].split(","):
-            mounts.append(("v1", f[3], f[4]))
-    if not mounts:  # mountinfo 를 못 읽으면 흔한 마운트 지점만 본다(그룹 경로는 그대로 붙인다)
-        mounts = [("v2", "/", "/sys/fs/cgroup"), ("v1", "/", "/sys/fs/cgroup/cpu,cpuacct"), ("v1", "/", "/sys/fs/cgroup/cpu")]
-    out: list[tuple[str, str]] = []
-    for kind, root, point in mounts:
-        path = groups.get("v2" if kind == "v2" else "cpu")
-        if path is None:
-            continue
-        rel = path
-        if root != "/" and (path == root or path.startswith(root.rstrip("/") + "/")):
-            rel = path[len(root.rstrip("/")):]
-        segs = [x for x in rel.split("/") if x]
-        for i in range(len(segs), -1, -1):
-            out.append((kind, "/".join([point.rstrip("/"), *segs[:i]])))
-    return out
-
-
-def cgroup_vcpu(read=None) -> tuple[float | None, str | None]:
-    """자기 cgroup 의 CPU 할당량(vCPU)과 읽은 파일. 잎·조상 중 가장 작은 할당량이 실제 한도다. 제한 없음·못 읽음은 (None, None)."""
-    read = read or _read
-    best: tuple[float | None, str | None] = (None, None)
-    for kind, d in _cpu_cgroup_dirs(read):
-        if kind == "v2":
-            value, src = parse_quota(cpu_max=read(f"{d}/cpu.max")), f"{d}/cpu.max"
-        else:
-            value = parse_quota(quota_us=read(f"{d}/cpu.cfs_quota_us"), period_us=read(f"{d}/cpu.cfs_period_us"))
-            src = f"{d}/cpu.cfs_quota_us"
-        if value is not None and (best[0] is None or value < best[0]):
-            best = (value, src)
-    return best
 
 
 def c0_cpu_env(read=None):

@@ -36,8 +36,11 @@
     그룹에 SIGTERM, SIMAI_STOP_GRACE_S(기본 15)초 안에 안 끝나면 그룹 SIGKILL. docker stop 은 -t 60 이상으로 준다.
   - 출력은 줄마다 [tier0]·[vllm]·[worker] 접두로 표준 오류에, 원문은 $SIMAI_ROOT/logs/<이름>.log 에 덧붙인다.
   - vLLM·워커는 스레드 제한(OMP·MKL·OpenBLAS·NumExpr = SIMAI_SIDECAR_THREADS, 기본 1. torch intra-op 도 OMP 를 따른다)·nice(SIMAI_SIDECAR_NICE, 기본 10)·
-    CPU 고정(SIMAI_SIDECAR_CPUS, 기본 auto = vCPU 8개 이상이면 뒤쪽 절반, none·'4-7,10'), 세 프로세스 모두 다른
+    CPU 고정(SIMAI_SIDECAR_CPUS, 기본 auto = 쓸 수 있는 vCPU n = min(affinity 개수, cgroup 할당량 올림)이 8 이상이면 affinity 뒤쪽 n//2 개,
+    none·'4-7,10'. 계산 결과는 시작 로그 한 줄), 세 프로세스 모두 다른
     TRITON_CACHE_DIR·TORCHINDUCTOR_CACHE_DIR·CUDA_CACHE_PATH(SIMAI_CACHE_ROOT, 기본 /tmp/simai-cache/<이름>/)로 띄운다.
+    vLLM 기본값: --max-model-len SIMAI_WORKER_VLLM_MAX_MODEL_LEN(32768, SIMAI_VLLM_EXTRA_ARGS 에 있으면 그 값), 환경 VLLM_USE_DEEP_GEMM=0·
+    VLLM_USE_FLASHINFER_SAMPLER=0(환경에 주면 그 값)·HF_HUB_OFFLINE=1.
     vLLM 은 표시 파일이 phase=running·reserve OK 일 때만 띄우므로 Tier 0 의 TensorRT 엔진 빌드·적재와 GPU 선확보가 끝난 뒤다(진입점이 엔진을 준비한 뒤에 서비스가 표시 파일을 쓴다). 워커 토큰 파일(SIMAI_WORKER_ENV_FILE, 없으면
     $SIMAI_ROOT/../.simai-private/worker.env 가 있을 때)은 simai-wait-tier0 --env-file 로 워커 환경에만 넣는다.
     워커 인자는 SIMAI_WORKER_ARGS(예: --config <워커 설정>: 받을 작업 유형 VLM·hmr_refine 등의 처리기)를 덧붙인다.
@@ -119,6 +122,7 @@ RETRY_HTTP = {408, 425, 429, 500, 502, 503, 504}
 LOCK_DIR = ("weights", ".locks")  # 항목마다 지우지 않는 잠금 파일(Codex 리뷰 R1)
 STAMP_DIR = ("weights", ".verified")  # 모델 폴더 밖(vLLM 이 읽는 weights/cosmos3-nano/ 에 섞이지 않게), Tier 0 state/ 밖
 VLLM_HF_OVERRIDES = '{"architectures": ["Cosmos3ReasonerForConditionalGeneration"]}'  # Reasoner 탑만 싣는다(docs/design/unified-env.md)
+VLLM_MAX_MODEL_LEN = "32768"  # H100·0.55 에서 KV 23.99 GiB = 174,688 토큰 → 32,768 기준 동시 5.33x ≥ --max-num-seqs 4 (3차 GPU 세션, unified-env.md)
 KILL = getattr(signal, "SIGKILL", 9)  # Windows(노트북 시험)에는 SIGKILL 이 없다(Proc.signal 이 kill() 로 바꾼다)
 _out_lock = threading.Lock()
 
@@ -678,14 +682,109 @@ def usable_cpus() -> list[int]:  # 시험에서 바꿔 끼운다
     return list(range(os.cpu_count() or 1))
 
 
-def sidecar_cpus(spec: str | None, avail: list[int]) -> set[int] | None:
-    """vLLM·워커를 묶을 CPU. auto(기본): 쓸 수 있는 vCPU 가 8개 이상이면 뒤쪽 절반(앞쪽은 Tier 0 의 CPU 디코딩·기하 단계 몫),
-    8개 미만이면 묶지 않는다(나누면 둘 다 모자란다). none: 묶지 않음. '4-7,10': 그 목록(쓸 수 있는 것과 겹치는 것만). Tier 0 는 묶지 않는다."""
+# cgroup CPU 할당량. session1_live(c0 기록)도 이 함수들을 쓴다(S15P31A101-278 에서 옮김)
+def _read(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def parse_quota(cpu_max: str | None = None, quota_us: str | None = None, period_us: str | None = None) -> float | None:
+    """cgroup CPU 할당량 값(vCPU). v2 cpu.max("quota period" 또는 "max period") 또는 v1 cfs_quota/period. 제한 없음·깨진 값은 None."""
+    try:
+        if cpu_max is not None:
+            quota, period = cpu_max.split()[:2]
+            return None if quota == "max" else round(int(quota) / int(period), 2)
+        if quota_us is not None and period_us is not None and int(quota_us) > 0:
+            return round(int(quota_us) / int(period_us), 2)
+    except (ValueError, ZeroDivisionError):
+        pass
+    return None
+
+
+def _cpu_cgroup_dirs(read) -> list[tuple[str, str]]:
+    """자기 프로세스의 CPU 컨트롤러 cgroup 디렉터리들(잎 → 마운트 기준점 순서, ("v1"|"v2", 경로)).
+
+    /proc/self/cgroup 으로 자기 그룹 경로를 찾고, /proc/self/mountinfo 의 cgroup2 마운트·cpu 가 든 cgroup(v1) 마운트(공동 마운트
+    cpu,cpuacct 포함)에 붙인다. 마운트 root 가 그룹 경로의 앞부분이면(컨테이너 cgroup 이름공간 밖 경로) 그만큼 뗀다.
+    할당량은 조상 그룹에도 걸리므로 잎부터 마운트 기준점까지 모두 돌려준다.
+    """
+    groups: dict[str, str] = {}  # "v2" 또는 v1 컨트롤러 이름 → 그룹 경로
+    for ln in (read("/proc/self/cgroup") or "").splitlines():
+        parts = ln.strip().split(":", 2)
+        if len(parts) != 3:
+            continue
+        _, controllers, path = parts
+        if controllers == "":
+            groups["v2"] = path
+        else:
+            for c in controllers.split(","):
+                groups[c] = path
+    mounts: list[tuple[str, str, str]] = []  # (종류, 마운트 root, 마운트 지점)
+    for ln in (read("/proc/self/mountinfo") or "").splitlines():
+        left, sep, right = ln.partition(" - ")
+        f, r = left.split(), right.split()
+        if not sep or len(f) < 5 or not r:
+            continue
+        if r[0] == "cgroup2":
+            mounts.append(("v2", f[3], f[4]))
+        elif r[0] == "cgroup" and len(r) >= 3 and "cpu" in r[2].split(","):
+            mounts.append(("v1", f[3], f[4]))
+    if not mounts:  # mountinfo 를 못 읽으면 흔한 마운트 지점만 본다(그룹 경로는 그대로 붙인다)
+        mounts = [("v2", "/", "/sys/fs/cgroup"), ("v1", "/", "/sys/fs/cgroup/cpu,cpuacct"), ("v1", "/", "/sys/fs/cgroup/cpu")]
+    out: list[tuple[str, str]] = []
+    for kind, root, point in mounts:
+        path = groups.get("v2" if kind == "v2" else "cpu")
+        if path is None:
+            continue
+        rel = path
+        if root != "/" and (path == root or path.startswith(root.rstrip("/") + "/")):
+            rel = path[len(root.rstrip("/")):]
+        segs = [x for x in rel.split("/") if x]
+        for i in range(len(segs), -1, -1):
+            out.append((kind, "/".join([point.rstrip("/"), *segs[:i]])))
+    return out
+
+
+def cgroup_vcpu(read=None) -> tuple[float | None, str | None]:  # 시험에서 바꿔 끼운다
+    """자기 cgroup 의 CPU 할당량(vCPU)과 읽은 파일. 잎·조상 중 가장 작은 할당량이 실제 한도다. 제한 없음·못 읽음은 (None, None)."""
+    read = read or _read
+    best: tuple[float | None, str | None] = (None, None)
+    for kind, d in _cpu_cgroup_dirs(read):
+        if kind == "v2":
+            value, src = parse_quota(cpu_max=read(f"{d}/cpu.max")), f"{d}/cpu.max"
+        else:
+            value = parse_quota(quota_us=read(f"{d}/cpu.cfs_quota_us"), period_us=read(f"{d}/cpu.cfs_period_us"))
+            src = f"{d}/cpu.cfs_quota_us"
+        if value is not None and (best[0] is None or value < best[0]):
+            best = (value, src)
+    return best
+
+
+def _cpu_ranges(cpus) -> str:
+    """{4,5,6,10} → '4-6,10' (로그용)"""
+    out: list[str] = []
+    for c in sorted(cpus):
+        if out and int(out[-1].rpartition("-")[2]) == c - 1:
+            out[-1] = f"{out[-1].partition('-')[0]}-{c}"
+        else:
+            out.append(str(c))
+    return ",".join(out)
+
+
+def sidecar_cpus(spec: str | None, avail: list[int], quota: float | None = None) -> set[int] | None:
+    """vLLM·워커를 묶을 CPU. auto(기본): 쓸 수 있는 vCPU 수 n = min(affinity 개수, cgroup 할당량 올림)(할당량을 못 읽거나 제한 없음이면
+    affinity 개수)가 8 이상이면 affinity 목록의 뒤쪽 n//2 개(앞쪽은 Tier 0 의 CPU 디코딩·기하 단계 몫), 8 미만이면 묶지 않는다(나누면 둘 다
+    모자란다). 할당량은 컨테이너 전체가 나눠 쓰므로 affinity 224·할당량 23.8 인 Pod 에서 뒤쪽 112개에 묶으면 제한이 되지 않는다(3차 GPU 세션).
+    none: 묶지 않음. '4-7,10': 그 목록(쓸 수 있는 것과 겹치는 것만). Tier 0 는 묶지 않는다."""
     spec = (spec or "auto").strip().lower()
     if spec in ("none", "off"):
         return None
     if spec == "auto":
-        return set(avail[len(avail) // 2:]) if len(avail) >= 8 else None
+        n = len(avail) if quota is None else min(len(avail), math.ceil(quota))
+        return set(avail[len(avail) - n // 2:]) if n >= 8 else None
     out: set[int] = set()
     try:
         for part in spec.split(","):
@@ -744,7 +843,12 @@ class Supervisor:
         self.health = health or (lambda: http_ok(f"http://127.0.0.1:{self.port}/health"))
         base = {k: v for k, v in env.items() if k not in TOKEN_ENVS}
         threads = env.get("SIMAI_SIDECAR_THREADS") or "1"
-        self.cpus = sidecar_cpus(env.get("SIMAI_SIDECAR_CPUS"), usable_cpus())
+        avail = usable_cpus()
+        quota, quota_src = cgroup_vcpu()
+        self.cpus = sidecar_cpus(env.get("SIMAI_SIDECAR_CPUS"), avail, quota)
+        self.cpu_note = (f"CPU 묶기({env.get('SIMAI_SIDECAR_CPUS') or 'auto'}): affinity {len(avail)}개, cgroup 상한 "
+                         f"{f'{quota} vCPU ({quota_src})' if quota is not None else '없음·못 읽음'} → vLLM·워커 "
+                         f"{f'{_cpu_ranges(self.cpus)} ({len(self.cpus)}개)' if self.cpus else '묶지 않음'}, Tier 0 묶지 않음")
         # 프로세스마다 JIT·커널 캐시를 나눈다(같은 판이어도 동시에 쓰는 경합을 피한다). 컨테이너 디스크(/tmp): 저장 위치에 남길 산출물이 아니다
         cache_root = Path(env.get("SIMAI_CACHE_ROOT") or ("/tmp/simai-cache" if os.name != "nt" else Path(tempfile.gettempdir()) / "simai-cache"))
         self.svc: dict[str, Service] = {}
@@ -758,6 +862,8 @@ class Supervisor:
                     e[k] = threads
             if name == "vllm":
                 e.setdefault("VLLM_USE_DEEP_GEMM", "0")
+                # runtime 이미지에 nvcc 가 없어 FlashInfer top-k/top-p 샘플러 JIT 가 메모리 측정 중 실패한다(3차 GPU 세션). PyTorch 샘플러로
+                e.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
                 e["HF_HUB_OFFLINE"] = "1"  # 모델은 확인한 로컬 폴더만. 토큰 없이 HF 로 나가지 않는다
             argv = {"tier0": tier0_argv, "vllm": self._vllm_argv(env), "worker": self._worker_argv(env)}[name]
             self.svc[name] = Service(name, argv, e)
@@ -769,14 +875,19 @@ class Supervisor:
 
     def _vllm_argv(self, env: dict) -> list[str]:
         model = env.get("SIMAI_VLLM_MODEL") or str(self.root / "weights" / "cosmos3-nano")
+        extra = shlex.split(env.get("SIMAI_VLLM_EXTRA_ARGS") or "")
+        # 모델 기본 262,144 토큰은 한 요청 KV 36 GiB 라 0.55 에서 남는 KV(약 24 GiB)를 넘어 기동이 실패한다(3차 GPU 세션). EXTRA_ARGS 값이 우선
+        given = any(a.split("=", 1)[0].replace("_", "-") == "--max-model-len" for a in extra)
+        max_len = [] if given else ["--max-model-len", env.get("SIMAI_WORKER_VLLM_MAX_MODEL_LEN") or VLLM_MAX_MODEL_LEN]
         return [*shlex.split(env.get("SIMAI_VLLM_CMD") or "vllm"), "serve", model,
                 "--served-model-name", env.get("SIMAI_VLLM_SERVED_NAME") or "cosmos3-nano",
                 "--hf-overrides", VLLM_HF_OVERRIDES,
                 "--gpu-memory-utilization", env.get("SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION") or "0.55",
                 "--max-num-seqs", env.get("SIMAI_WORKER_VLLM_MAX_NUM_SEQS") or "4",
+                *max_len,
                 "--host", "127.0.0.1", "--port", str(self.port),
                 "--mm-encoder-tp-mode", "data", "--async-scheduling",
-                *shlex.split(env.get("SIMAI_VLLM_EXTRA_ARGS") or "")]
+                *extra]
 
     def _worker_argv(self, env: dict) -> list[str]:
         cmd = shlex.split(env["SIMAI_WORKER_CMD"]) if env.get("SIMAI_WORKER_CMD") else [sys.executable, "-m", "services.worker"]
@@ -931,6 +1042,7 @@ class Supervisor:
             log(f"Tier 0 를 띄우지 못함: {type(e).__name__}: {e}")
             return EXIT_NOT_FOUND
         log(f"tier0 시작 pid {t0.proc.pid}: {shlex.join(t0.argv)} (이어서 {', '.join(self.services[1:])})")
+        log(self.cpu_note)
         while True:
             if self.stop_signal is not None:
                 log(f"신호 {self.stop_signal} → 워커 → vLLM → Tier 0 순서로 내린다")
