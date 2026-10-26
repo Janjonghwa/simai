@@ -3,10 +3,10 @@
 S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verification.md`](db-verification.md) 에 있다. ERD 1단계(테이블 목록)·2단계(계약 → 컬럼)의 결과다.
 
 - **기준:** 기획서 v1.3 수정 19 11장(데이터)·부록 C, 계약 v5.3.0, API 명세 표 v11(노션, 166행)
-- **범위:** 테이블 69개, 컬럼 738개. 확장 테이블도 컬럼까지 썼다
-- **단계별:** MVP 34 · M1 9 · M2 2 · M3 8 · 확장 16
+- **범위:** 테이블 70개, 컬럼 743개. 확장 테이블도 컬럼까지 썼다
+- **단계별:** MVP 34 · M1 9 · M2 2 · M3 9 · 확장 16 (M3 `rag_query_template` 은 S15P31A101-27 에서 추가)
 - **작성·검토:** DB 는 EC2 에 있으므로 곽나혁이 작성한다. Tier 0·분석 워커가 채우는 테이블은 이연주가 검토한다("검토" 표시)
-- **마이그레이션:** `server/src/main/resources/db/migration/` 의 V1(MVP·M1 테이블 43개), V2(현장·카메라 시드), `R__rule_versions.sql`(ai 규칙 등록부에서 자동 생성)
+- **마이그레이션:** `server/src/main/resources/db/migration/` 의 V1(MVP·M1 테이블 43개), V2(현장·카메라 시드), V3(`rag_clause`·`rag_query_template`, pgvector), `R__rule_versions.sql`(ai 규칙 등록부에서 자동 생성), `R__rag_clauses.sql`(ai RAG 조항·임베딩에서 자동 생성)
 
 ## 1. 표기와 공통 규칙
 
@@ -78,6 +78,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | H. AI 결과·보고서 | `vlm_assessment` | M3 | 일반 | VLM 근거·사고 구간 요약과 관리자 상향 결정 | 있음 | `/api/events/{}`, `/api/events/{}/escalation`, `/api/events/{}/summary` | 이연주 |
 | H. AI 결과·보고서 | `report` | M3 | 일반 | TBM 보고서·일일 일지 | 있음 | `/api/reports/daily`, `/api/reports/tbm`, `/api/reports/tbm/{}` | 이연주 |
 | H. AI 결과·보고서 | `rag_clause` | M3 | 일반 | 안전 수칙 조항과 임베딩 | 수정 16 추가 | `/api/reports/tbm` | 이연주 |
+| H. AI 결과·보고서 | `rag_query_template` | M3 | 일반 | TBM 질문 템플릿과 질문 임베딩 | S15P31A101-27 추가 | `/api/reports/tbm` | 이연주 |
 | I. 계획·시뮬레이션 (sim 스키마) | `sim.evaluation_run` | M3 | 일반 | EC2 Risk Engine 컨테이너 계산 실행(PLANNED·WHAT_IF) | 있음 | `/api/layouts/{}/evaluate`, `/api/layouts/{}/evaluations/{}`, `/api/reports/tbm` 외 | 이연주 |
 | I. 계획·시뮬레이션 (sim 스키마) | `sim.risk_result` | M3 | 일반 | 계산된 위험 항목(실제 알림 채널로 가지 않음) | 있음 | `/api/layouts/{}/evaluate`, `/api/layouts/{}/evaluations/{}`, `/api/simulations/{}` 외 | 이연주 |
 | I. 계획·시뮬레이션 (sim 스키마) | `sim.trajectory_plan` | 확장 2 | 일반 | 시간 구간이 있는 계획 궤적 | 있음 | `/api/simulations` | 이연주 |
@@ -1091,6 +1092,7 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 #### `rag_clause` — 안전 수칙 조항과 임베딩
 
 - 단계 **M3** · 일반 · 근거: 5.4, 3.8 pgvector, FR-20 · 검토: 이연주
+- 마이그레이션 `V3__rag_clause.sql`(pgvector 확장 포함), 행은 ai 가 생성한 반복 마이그레이션 `R__rag_clauses.sql`. 수집·분할·임베딩 규칙은 `docs/design/rag-clause-index.md`(S15P31A101-27)
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
@@ -1102,9 +1104,23 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `embedding` | vector(1024) | NN |  | BAAI/bge-m3 dense, float32, L2 정규화. HNSW 인덱스 vector_cosine_ops |
 | `embedding_model` | text | NN |  | BAAI/bge-m3 |
 | `embedding_revision` | text | NN |  | 가중치 revision. 문서·질문이 같은 값이어야 한다(운영 색인 생성 전에 고정) |
-| `chunk_index` | int | NN |  | 조항을 나눈 순서(청크 크기는 추후 조정) |
-| `source_version` | text | NN |  | 법령 개정일 |
-| `loaded_at` | ts | NN |  |  |
+| `chunk_index` | int | NN, CHECK ≥ 0 |  | 조항을 나눈 순서(0부터). 조 본문이 1,000자를 넘을 때만 항·호 경계로 나눈다 |
+| `source_version` | text | NN |  | 조문 시행일(YYYY-MM-DD). 판(MST)은 `R__rag_clauses.sql` 머리 주석 |
+| `loaded_at` | ts | NN |  | 행이 바뀔 때만 갱신 |
+
+#### `rag_query_template` — TBM 질문 템플릿과 질문 임베딩
+
+- 단계 **M3** · 일반 · 근거: 5.4(문서·질문 같은 모델 revision·설정), FR-20 · 검토: 이연주
+- EC2 Java 는 bge-m3 를 돌리지 않는다. TBM 질의는 PLANNED 결과(규칙 ID·대상 종류)에서 만들므로 템플릿 문장을 문서와 같은 스크립트·revision 으로 미리 임베딩해 두고, EC2(S15P31A101-223)는 키로 벡터를 골라 `rag_clause` 를 검색만 한다(S15P31A101-27 결정 E). 자유 문장 질의(확장 3)는 별도 임베딩 컨테이너로 한다
+- 마이그레이션 `V3__rag_clause.sql`, 행은 `R__rag_clauses.sql`
+
+| 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
+|---|---|---|---|---|
+| `template_key` | text | PK |  | `규칙 ID.대상 종류`, 예: `R3.ELEVATED`, `R1.OPENING`, `TBM.GENERAL` |
+| `text` | text | NN |  | 질문 문장 |
+| `embedding` | vector(1024) | NN |  | `rag_clause.embedding` 과 같은 모델·revision·설정 |
+| `embedding_model` | text | NN |  | BAAI/bge-m3 |
+| `embedding_revision` | text | NN |  | `rag_clause` 와 같은 값이어야 한다(`R__rag_clauses.sql` 이 확인) |
 
 ### I. 계획·시뮬레이션 (sim 스키마)
 
