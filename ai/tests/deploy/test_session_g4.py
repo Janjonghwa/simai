@@ -66,9 +66,11 @@ def _g4(gs, lay) -> dict:
 
 
 def _metrics(provenance: dict, n: int = 20) -> dict:
-    rows = [{"image": f"cam_{'ABCD'[i // 5]}_{i % 5 + 1:02d}.jpg", "result": "SUCCESS", "finite": True, "n_people": 3,
-             "k_input": {"source": "CALIBRATION", "undistorted": True, "image_space": "UNDISTORTED_ALPHA1"},
-             "k_focal_diff_px": 0.0, "reproj_err_px": [0.0, 0.0, 0.0]} for i in range(n)]
+    # 3차 GPU 세션 u2 실측 모양: 펴기 주점 (W−1)/2·(H−1)/2, 모델은 그림 중심 → 재투영 √0.5
+    rows = [{"image": f"cam_{'ABCD'[i // 5]}_{i % 5 + 1:02d}.jpg", "size": "2304x1296", "result": "SUCCESS", "finite": True,
+             "n_people": 3, "k_input": {"source": "CALIBRATION", "undistorted": True, "image_space": "UNDISTORTED_ALPHA1",
+                                        "K_used": [[750.67, 0.0, 1151.5], [0.0, 750.67, 647.5], [0.0, 0.0, 1.0]]},
+             "k_focal_diff_px": 0.0, "reproj_err_px": [0.7071, 0.7071, 0.7071]} for i in range(n)]
     rows[-1].update(result="NO_PERSON", n_people=0, k_focal_diff_px=None, reproj_err_px=[])  # 사람 없는 그림(cam_D)
     return {"result": "PARTIAL", "images": rows,
             "load": {"fov": None, "load": [{"component": "hmr_dinov3"}, {"component": "detector_yolo_pose"}]},
@@ -167,7 +169,10 @@ def test_check_passes_good_run_with_empty_image(ck):
     (_set("images.0.finite", False), "finite"),
     (_set("images.0.finite", KeyError), "finite"),
     (_set("images.0.result", "ERROR"), "result"),
-    (_set("images.0.reproj_err_px", [0.0, 0.5]), "reproj_err_px"),
+    (_set("images.0.reproj_err_px", [0.7071, 0.76]), "reproj_err_px"),  # 규약 차이(√0.5)를 넘으면 실패
+    (_set("images.0.k_input.K_used", [[750.67, 0.0, 1160.0], [0.0, 750.67, 647.5], [0.0, 0.0, 1.0]]), "주점"),  # 중심 밖 주점
+    (_set("images.0.k_input.K_used", KeyError), "주점"),  # 모르면 통과로 보지 않는다
+    (_set("images.0.size", KeyError), "주점"),
     (_set("images.0.reproj_err_px", []), "reproj_err_px"),
     (_set("load.fov", "moge2"), "MoGe"),
     (lambda m: m["load"]["load"].append({"component": "fov_moge2"}), "MoGe"),
