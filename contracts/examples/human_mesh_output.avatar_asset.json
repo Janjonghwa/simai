@@ -23,7 +23,7 @@
     "format": "GLB_SKINNED",
     "uri": "volume://US-KS-2/exp02/runs/exp02-20261021-0003/w-0001/avatar_v0.glb",
     "sha256": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
-    "vertex_count": 18439,
+    "vertex_count": 19455,
     "face_count": 36874,
     "axis_convention": "GLTF_Y_UP"
   },

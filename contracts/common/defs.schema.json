@@ -55,7 +55,7 @@
           "type": "array",
           "minItems": 1,
           "maxItems": 1024,
-          "description": "관절별 부모 기준(local) 회전. 인덱스 i = 자산 skeleton 의 관절 i(MHR 자산 관절 순서 = glTF skin.joints[i]), 길이 = avatar_asset skeleton.joint_count(계약 시험). 관절 0(MHR root)은 몸 전체 방향을 root_rotation 에 넣으므로 [0, 0, 0]. null = HMR 가 이 관절을 추정하지 않음(예: body 모드의 손가락), 뷰어는 그 관절의 기준(bind) 회전을 둔다. 지어내지 않는다",
+          "description": "관절별 부모 기준(local) 회전. 인덱스 i = 자산 skeleton 의 관절 i(MHR 자산 관절 순서 = glTF skin.joints[i]), 길이 = avatar_asset skeleton.joint_count(계약 시험). 관절 0(MHR body_world, 바닥 원점)은 [0, 0, 0] 이고, MHR 이 몸 방향을 거는 관절 1(MHR root, pelvis)의 회전은 몸 전체 방향으로 root_rotation 에 옮기므로 관절 1 도 [0, 0, 0](계약 시험은 관절 0 만 확인). null = HMR 가 이 관절을 추정하지 않음(예: body 모드의 손가락), 뷰어는 그 관절의 기준(bind) 회전을 둔다. 지어내지 않는다",
           "items": { "oneOf": [{ "$ref": "#/$defs/axis_angle" }, { "type": "null" }] }
         }
       },

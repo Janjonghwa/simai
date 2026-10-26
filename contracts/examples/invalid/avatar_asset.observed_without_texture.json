@@ -39,7 +39,7 @@
       "object_uri": "s3://simai-avatars/w-0013/e1760342000000/v0/mesh.glb",
       "sha256": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
       "size_bytes": 1843200,
-      "vertex_count": 18439,
+      "vertex_count": 19455,
       "face_count": 36874,
       "axis_convention": "GLTF_Y_UP"
     },
@@ -48,7 +48,7 @@
       "joint_count": 127,
       "joint_parents_sha256": "sha256:46ebaa1f3e9fc2b026611d597678b4471a3ccae6e593066f6ded381a4afc5225",
       "pelvis_joint_index": 1,
-      "rig_source": "facebookresearch/MHR mhr_model.pt @ sam-3d-body@b5c765a"
+      "rig_source": "facebookresearch/MHR mhr_model.pt @ facebook/sam-3d-body-dinov3@11aaa34"
     },
     "shape": {
       "representation": "MHR",

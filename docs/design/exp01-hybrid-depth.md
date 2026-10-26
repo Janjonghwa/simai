@@ -42,7 +42,7 @@ MapAnything 입력 해상도 비교(518·1036·1554·원본)는 병행 티켓 -2
 
 - `-1.1` 은 학습 버그를 고쳐 다시 학습한 판이고 README 는 구판(NESTED·GIANT·LARGE)을 deprecated 로 둔다. README 매개변수와 HF safetensors 매개변수 수(NESTED 1.69B)는 다르다(어느 쪽이 맞는지 확인 못 함).
 - 코드 라이선스 Apache-2.0(`pyproject.toml` `license`). 상업 사용이 되는 미터 깊이 모델은 단안 DA3METRIC-LARGE 뿐이고, 자세 조건 모델 중 Apache-2.0 은 BASE·SMALL(LARGE-1.1 은 위 불일치)이다.
-  NESTED 는 MapAnything 기본 가중치(CC-BY-NC-4.0)와 같은 비상업 조건이다. 기존 판단("비상업: 교육 시연 가능, 공개 산출물에 표기", `world-frame-from-mapanything.md`)을 그대로 적용할지는 Lead 결정(아래).
+  NESTED 는 MapAnything 기본 가중치(CC-BY-NC-4.0)와 같은 비상업 조건이다. 기존 판단("비상업: 교육 시연 가능, 공개 산출물에 표기", `world-frame-from-mapanything.md`)을 그대로 적용한다(Lead 결정 2026-10-26, 명세 수정 33). Apache 대안은 BASE·SMALL·METRIC-LARGE.
 
 **자세 조건 추론**(`src/depth_anything_3/api.py` `DepthAnything3.inference`, docs/API.md, 코드 독해 + api.py 직접 확인).
 
@@ -160,7 +160,7 @@ MapAnything 입력 해상도 비교(518·1036·1554·원본)는 병행 티켓 -2
 | 성능 | predict 모델 적재·추론 ms(데움 뒤)·`peak_alloc_mb`, fuse 초 | 분석 워커 GPU 상한 안 |
 | G4 | 개발 교실 줄자 실측 대비(명세 5.3, 10 cm) | 실측이 생길 때까지 `NOT_MEASURED` |
 
-채택 기준(제안, Lead 판단): 같은 입력에서 DA3 결과가 기준선보다 카메라 간 |Δd|/d 중앙값과 왕복 재투영이 작고, 바닥 rms 가 1.5 cm 이하, 충돌 비율 5% 이하, H100 에서 predict 가 분석 워커 예산 안이면 "배경용 깊이로 쓸 만함"으로 보고 G4 실측으로 넘어간다. 기준선보다 나쁘면 MapAnything 해상도 비교(-282) 결과와 함께 다시 본다.
+채택 기준(Lead 결정 2026-10-26, 명세 수정 33 20.2): 같은 입력에서 DA3 결과가 기준선보다 카메라 간 |Δd|/d 중앙값과 왕복 재투영이 작고, 바닥 rms 가 1.5 cm 이하, 충돌 비율 5% 이하, H100 에서 predict 가 분석 워커 예산 안이면 "배경용 깊이로 쓸 만함"으로 보고 G4 실측으로 넘어간다. 기준선보다 나쁘면 MapAnything 해상도 비교(-282) 결과와 함께 다시 본다.
 
 ### 정한 수치
 

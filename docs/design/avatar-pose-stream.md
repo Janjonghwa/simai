@@ -113,9 +113,9 @@ flowchart LR
 
 | 항목 | 정의 |
 |---|---|
-| 관절 순서 | MHR 자산(`mhr_model.pt`)의 관절 인덱스 순서. 127개. glTF 내보내기는 `skin.joints[i]` = MHR 관절 i 로 둔다. 관절 이름은 자산에 없어(torchscript, 선행 PoC `Moge-3-test/pocs/human_sam3d_g3_lite/COMPATIBILITY.md`) 인덱스가 기준이다. 공식 코드에서 확인된 인덱스: 0 root(바닥), 1 pelvis(root 위 92 cm), 40·76 하완, 41·77 손목 비틀림, 42·78 손목(R·L). 43~64·79~100 은 손가락 |
-| 순서 고정 | `skeleton.joint_parents_sha256` = 부모 배열(root −1)을 공백 없는 JSON 으로 적은 UTF-8 바이트의 sha256. 선행 PoC 자산(sam-3d-body@b5c765a) 값 `sha256:46ebaa1f…5225`. 뼈 길이는 사람마다 달라(scale 파라미터) 넣지 않는다. `rig_source` 에 자산 판을 적는다 |
-| 관절 회전 | 부모 기준(local) 축각, glTF 노드 회전과 같은 뜻. 관절 0 은 [0, 0, 0] 이고 몸 전체 방향은 `root_rotation` 에 넣는다(두 번 돌리지 않게) |
+| 관절 순서 | MHR 자산(`mhr_model.pt`)의 관절 인덱스 순서. 127개. glTF 내보내기는 `skin.joints[i]` = MHR 관절 i 로 둔다. 인덱스가 기준이다. 자산에 관절 이름이 있다(`get_joint_names()`, 0 `body_world`(바닥 원점), 1 `root`(pelvis, 92.4 cm), 42 `r_wrist`, 43 `r_pinky0` …, glTF 노드 이름에 넣음. S15P31A101-88 `docs/design/mhr-skinned-gltf.md` 가 확인해 선행 PoC `COMPATIBILITY.md` 의 ‘이름 없음’을 정정). 공식 코드에서 확인된 인덱스: 40·76 하완, 41·77 손목 비틀림, 42·78 손목(R·L). 43~64·79~100 은 손가락(이름으로도 맞음) |
+| 순서 고정 | `skeleton.joint_parents_sha256` = 부모 배열(root −1)을 공백 없는 JSON 으로 적은 UTF-8 바이트의 sha256. 선행 PoC 자산(sam-3d-body@b5c765a) 값 `sha256:46ebaa1f…5225`. 뼈 길이는 사람마다 달라(scale 파라미터) 넣지 않는다. `rig_source` 에 자산 출처를 적는다(HF `facebook/sam-3d-body-dinov3@11aaa34`, 코드 저장소 커밋이 아님) |
+| 관절 회전 | 부모 기준(local) 축각, glTF 노드 회전과 같은 뜻. 관절 0 은 [0, 0, 0] 이고 몸 전체 방향은 `root_rotation` 에 넣는다(두 번 돌리지 않게). MHR 은 몸 방향을 관절 1(pelvis)에 걸므로 그것을 root 로 옮긴 결과 관절 1 도 늘 [0, 0, 0] 이다 |
 | 모르는 관절 | null. body 모드는 손가락을 추정하지 않으므로 43~64·79~100 은 null, 뷰어는 그 관절의 bind 회전을 둔다. 손을 펴진 자세로 지어내지 않는다 |
 | `root_rotation` | 리그 모델 좌표(glTF Y-up)를 World(m, 오른손, +Z)로 돌리는 회전. 워커가 HMR `global_rot`(카메라 기준)에 보정 R(World → 카메라)의 역을 곱해 만든다. 그래서 `calibration_version` 이 world_state 와 다르면 쓰지 않는다. 똑바로 선 사람 = Rz(ψ)·Rx(+π/2) |
 | 위치 | 없음. 뷰어가 Tier 0 `pelvis_xyz` 에 `skeleton.pelvis_joint_index` 관절을 맞추고, 접지가 VALID 면 발을 `ground_anchor_xyz` 높이에 맞춘다(13.2). HMR `pred_cam_t` 는 버린다 |
@@ -235,7 +235,7 @@ EXP-02 를 시연 범위로 올린 결정(2026-10-23)이라 아바타 스트림�
 
 ## 잔여 위험
 
-- MHR 127 관절 이름이 자산에 없어 인덱스만 기준이다. MHR 자산 판이 바뀌면 순서가 바뀔 수 있고, 그때 `joint_parents_sha256` 가 달라져 뷰어가 캡슐로 돌아간다(조용히 틀리지는 않음). 손가락 범위(43~64·79~100)는 부모 배열로 읽은 값이라 -227 이 공식 자산으로 다시 확인한다.
+- MHR 127 관절은 인덱스가 기준이다(자산에 이름이 있지만 계약은 인덱스로 맞춘다). MHR 자산 판이 바뀌면 순서가 바뀔 수 있고, 그때 `joint_parents_sha256` 가 달라져 뷰어가 캡슐로 돌아간다(조용히 틀리지는 않음). 손가락 범위(43~64·79~100)는 -88 이 공식 자산의 관절 이름으로 확인했다.
 - 관절 회전이 위치보다 HMR 지연 + D(약 0.5~0.7 s) 늦어 걷는 다리와 이동이 어긋나 보일 수 있다. 시연 판단은 -88 실측.
 - 되돌아가기 조건 2(500 ms)는 full 모드 지연 p50 450 ms 와 가까워 메시·캡슐이 깜빡일 수 있다. 시연은 body 모드를 기본으로 하고, 깜빡이면 히스테리시스를 -88 이 더한다.
 - LIVE 중 HMR 이 GPU 를 함께 쓰므로 Tier 0 지연이 늘 수 있다. 지연 감시가 추론을 멈추는 것은 지연이 목표를 넘은 뒤라, 넘기 전의 여유 감소는 G0 동시 실행 실측(-183 큐)으로 확인한다.
