@@ -10,6 +10,8 @@
    gpu_queue 의 기록기(run_record)는 그 파일만 읽고 스칼라만 받는다. 원본 metrics.json 은 Run 기록 results 에 sha256 과 함께 걸린다.
 4) --check <판정 스크립트> [--check-arg ...] 를 주면 명령이 성공한 뒤 `python <스크립트> <인자...> <metrics.json>` 으로 판정하고
    (g4, S15P31A101-243), 지표에 check.passed 를 더한다. 판정 실패·지표 없음은 종료 코드 1(성공으로 두지 않는다).
+5) --metrics <이름>: 결과 폴더의 지표 파일 이름(기본 metrics.json). 1)·3)·4) 가 이 파일을 본다
+   (DA3 predict 는 depth.json, S15P31A101-291. 실패·OOM 도 depth.json 에 result 로 남는다).
 종료 코드: 명령의 종료 코드, 4 결과가 이미 있음, 2 사용법 오류, 1 판정 실패.
 """
 
@@ -66,12 +68,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--check", type=Path, default=None, help="명령 성공 뒤 metrics.json 을 판정할 Python 스크립트")
     ap.add_argument("--check-arg", action="append", default=[], help="판정 스크립트 인자(여러 번)")
+    ap.add_argument("--metrics", default="metrics.json", help="결과 폴더의 지표 파일 이름(폴더 구분자 없이)")
     opts = ap.parse_args(args[:i])
     cmd = args[i + 1:]
     if not cmd:
         print("사용법: exp_job.py --out <폴더> -- <명령...>", file=sys.stderr)
         return 2
-    src = opts.out / "metrics.json"
+    if not opts.metrics or Path(opts.metrics).name != opts.metrics:
+        print(f"exp_job: --metrics 는 파일 이름이다: {opts.metrics!r}", file=sys.stderr)
+        return 2
+    src = opts.out / opts.metrics
     if src.exists():
         print(f"exp_job: {src} 가 이미 있다. 끝난 결과를 덮어쓰지 않는다(다른 세션 이름으로 돌린다)", file=sys.stderr, flush=True)
         return EXIT_EXISTS

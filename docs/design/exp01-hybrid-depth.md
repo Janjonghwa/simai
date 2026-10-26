@@ -228,7 +228,14 @@ MapAnything 입력 해상도 비교(518·1036·1554·원본)는 병행 티켓 -2
 | h7 | ray 헤드 자세 | h2~h5 중 가장 좋은 해상도에 `--ray-pose` | 3 분 |
 | h8 | MoGe-2 단안 | exp02 이미지(MoGe @74fbce0)에서 `… predict --adapter moge --model <root>/weights/moge/moge-2-vitl-normal/model.pt --out …/HYB283_moge2_vitl_<세션>` (exp02 Pod 를 따로 켜야 하면 생략 가능) | 2 분 |
 
-합계 GPU 약 25~35 분(환경·가중치 포함). 각 항목은 gpu_queue Job(`deploy/scripts/exp_job.py` 로 감쌈, Run 기록 `experiment_id: EXP-01`, `jira_key: S15P31A101-283`, 가중치·입력 절대 경로)으로 넣는다. Job 파일 생성기는 큐를 확정할 때 만든다(넘긴 일).
+합계 GPU 약 25~35 분(환경·가중치 포함). 각 항목은 gpu_queue Job(`deploy/scripts/exp_job.py` 로 감쌈, Run 기록 `experiment_id: EXP-01`, `jira_key: S15P31A101-283`, 가중치·입력 절대 경로)으로 넣는다.
+
+**큐 확정(S15P31A101-291, 4차 세션).** 생성기 `ai/experiments/static_scene/session4_jobs.py`(시험 `ai/tests/deploy/test_session4_queue.py`), 실행서 `docs/design/runpod-environment.md` "4차 세션". 위 표와 다른 점:
+- h8(MoGe-2)은 넣지 않는다(S15P31A101-287 에서 제외). 생성기가 `--only h8` 을 거절한다.
+- h1 은 `hf download` 대신 simai-bootstrap 의 받기(`SIMAI_WEIGHTS_MANIFEST=ai/experiments/static_scene/da3_weights.json`, 묶음 `da3`)를 쓴다. 같은 리비전 고정(`b2359bdf726fb44ef62acca04d629dcf158053e7`)에 더해 sha256(HF LFS oid `8ebe871a…`, config `09adf894…`)이 맞을 때만 게시하고, 다르면 받은 파일을 버리거나(있던 파일은 지우지 않고) 종료 2 다. 이어받기·검증 스탬프도 그대로다. Run 기록 `weights_hash` 는 run_record 가 두 파일로 낸다. 이미지 목록(`deploy/weights.json`)에는 넣지 않았다(채택 전, 아래 "넘긴 일").
+- h2~h7 은 시작 때 같은 확인을 다시 거쳐(스탬프라 다시 해시하지 않음) h1 이 실패했거나 파일이 바뀌었으면 predict 를 돌리지 않는다. 결과 폴더 보호·지표는 `exp_job.py --metrics depth.json`(predict 는 `metrics.json` 대신 `depth.json` 을 쓰고, OOM·ERROR 도 거기 남는다).
+- h7 은 h2~h5 를 본 뒤 `--only h7 --h7-res <504·1008·1512·2304 중>` 로 Job 파일을 하나 더 만든다(그 밖의 값은 거절).
+- h0 은 실패한 시도가 남긴 `/root/da3` 를 지우고 다시 만든다(이어 쓰지 않음).
 세션 뒤 노트북: 깊이 폴더마다 `run_hybrid_depth.py fuse --ma-run <w1> --prepared <입력 폴더> --depth <깊이 폴더> --out <결과>`(각 약 1 분), fake 기준선과 지표 표를 비교한다.
 
 ## 버린 대안
@@ -255,7 +262,7 @@ MapAnything 입력 해상도 비교(518·1036·1554·원본)는 병행 티켓 -2
 
 ## 넘긴 일
 
-- 다음 GPU 세션: 위 h0~h8, gpu_queue Job 파일 생성기(`session3_jobs.py` 와 같은 꼴), 결과로 지표 표·채택 의견.
+- 다음 GPU 세션: 위 h0~h7(생성기·실행서는 S15P31A101-291, h8 제외), 결과로 지표 표·채택 의견.
 - DA3 를 쓰기로 하면: `deploy/weights.json`·`docs/data/weights.md` 에 DA3 가중치(해시·라이선스), 실행 환경(별도 이미지 단계 또는 별도 가상환경) 결정, 잠금 판단(지금은 바꾸지 않음).
 - 명세 정리(-172 등): 5.3·20.2 비교군 문구(자세 조건 = 입력 자세 단위, 외부 모델 인터페이스 래퍼는 자세를 고정하지 않음), MoGe-3(flex-gemm) 대 MoGe-2.
 - G4: 개발 교실 줄자 실측 점(바닥 모서리·책상 상판)으로 `hybrid_metrics.json` 에 G4 지표를 넣는 단계.

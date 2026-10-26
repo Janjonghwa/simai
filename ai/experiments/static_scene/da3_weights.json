@@ -1,0 +1,14 @@
+{
+  "_doc": "EXP-01 혼합 경로(S15P31A101-283) Depth Anything 3 가중치 목록. deploy/weights.json 과 같은 형식이고 simai-bootstrap 이 SIMAI_WEIGHTS_MANIFEST=<이 파일> SIMAI_WEIGHTS_SET=da3 로 받는다(리비전 고정, sha256 이 맞을 때만 게시, 다르면 종료 2). 채택 전 실험 가중치라 이미지 목록(deploy/weights.json)에는 넣지 않는다(설계 '넘긴 일'). 가중치 파일은 커밋하지 않는다.",
+  "manifest_version": 1,
+  "weights": [
+    {"name": "da3nested-giant-large-1.1-model", "sets": ["da3"], "path": "weights/da3nested-giant-large-1.1/model.safetensors",
+     "source": {"hf": {"repo": "depth-anything/DA3NESTED-GIANT-LARGE-1.1", "file": "model.safetensors", "revision": "b2359bdf726fb44ef62acca04d629dcf158053e7"}},
+     "sha256": "8ebe871a022ed58d2fc8fdfb2ebdb31d57b60fe39611c849095851a7b7c6020c", "license": "CC-BY-NC-4.0 (비상업: 교육 시연, 공개 산출물에 표기)",
+     "hash_from": "HF API tree b2359bdf LFS oid, 6,759,558,100 B (2026-10-26 확인)"},
+    {"name": "da3nested-giant-large-1.1-config", "sets": ["da3"], "path": "weights/da3nested-giant-large-1.1/config.json",
+     "source": {"hf": {"repo": "depth-anything/DA3NESTED-GIANT-LARGE-1.1", "file": "config.json", "revision": "b2359bdf726fb44ef62acca04d629dcf158053e7"}},
+     "sha256": "09adf89474017e717bc05aa86fd3a378708ba8914b036d61874eced328069468", "license": "CC-BY-NC-4.0 (비상업: 교육 시연, 공개 산출물에 표기)",
+     "hash_from": "같은 revision 에서 받아 sha256 (git blob 0c9ba5b7 = HF tree oid, 3,113 B, 2026-10-26)"}
+  ]
+}

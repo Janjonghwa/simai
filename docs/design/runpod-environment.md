@@ -108,7 +108,7 @@ Host simai-pod
 |---|---|---|
 | 입력 | 녹화 재생(`rec-20261021-031045z-classroom-dev-test`, 교실 4대 2304x1296 25 fps 180 s, relay `kind = "file"`·`loop`·`fps = 25`) | 두 경로에 같은 영상이 들어간다. 테더링 때 카메라 공유기 LAN 과 휴대폰 망을 같이 잡는 이중 망 구성이 필요 없고, C110 RTSP 2세션 제한·교실 장면 변화와 무관하다. 실카메라 relay 는 (a) 만 덧붙여 볼 수 있다 |
 | 포트 | 제어 17000, 영상 17001(4대 공용) | 대칭 매핑 요청 번호 70000·70001 의 실제 값. 영상 포트를 같이 써도 연결은 카메라마다 따로라(TCP 연결마다 WebSocket 하나) 독립성은 같고 허용 대상이 줄어든다. Windows 동적 포트 예약(49152~) 밖 |
-| 노트북 대상 | Pod 가 쓴 `endpoint.json`(주소·포트·지문) + 사람이 옮긴 `--pin` | EC2 `GET /api/endpoints/tier0` 가 서버에 아직 없다. 신뢰 규칙은 제품과 같다(고정값에 없는 지문은 붙지 않음, 실제 서버 키가 다르면 토큰 전에 끊음) |
+| 노트북 대상 | Pod 가 쓴 `endpoint.json`(주소·포트·지문) + 사람이 옮긴 `--pin` | 측정용 Tier 0 는 EC2 없이 돌아 등록하지 않는다(EC2 `GET /api/endpoints/tier0` 는 S15P31A101-290 으로 생겼다). 신뢰 규칙은 제품과 같다(고정값에 없는 지문은 붙지 않음, 실제 서버 키가 다르면 토큰 전에 끊음) |
 | 노트북 제어 채널 | 현장 경보 단말 코드(SiteAlertApp·WebSocketControlChannel·SiteLinkMonitor) | 시계 교환(`clock_sync_request`)은 단말이 받은 즉시 답한다(S15P31A101-289). 처음(-288)에는 단말이 답하지 않아 도구가 대신 답했다(답이 없으면 T_lag 가 null 이고 frame_age 에 두 컴퓨터 시계 차이가 섞인다) |
 | Pod Tier 0 | 시뮬레이터 교실 보정(cam1~cam4), 그 자리 자체 서명 키(임시 폴더, 끝나면 지움), EC2 없음 | 지연·끊김만 본다. 위치·판정은 의미가 없고 결과는 제품 성능 지표가 아니다(AGENTS 규칙 7) |
 | 지표 | frame_age_ms_p95(표시 파일 5초 창), 보정 T_lag(표시 파일 `gpu_priority.load.lag_ms` 와 노트북이 받은 health `pipeline_lag_ms`), 노트북 송신 Mbps·fps, Pod 수신 fps·`gateway_to_runpod_loss`, 영상·제어 재연결 수와 시각, 90~110 s 로 끝난 연결 구간 수(100초 끊김), 최장 연결 | 표시 파일은 5초마다, 노트북 relay 는 1초마다 기록. 측정 시간이 끝나며 닫는 끊김은 세지 않는다 |
@@ -141,7 +141,9 @@ T_lag p50 78·p95 122 ms(같은 컴퓨터), health lag null 0/27, 끊김 0 이�
 | g4 | -238·-243 | EXP-02 보정 K 입력 경로: 교실 사진 20장 + 교실 보정 기록, `check_calib_k.py` 판정 (`docs/design/exp-images.md` "3차 세션 항목") | 3분 (추정, 아래) | 30분 | exp02 이미지 Pod 에서 |
 | m0 | -207 | MapAnything 이미지 GPU 점검 | 1분 (5.0초) | 10분 | mapanything 이미지 Pod 에서 |
 | m1·m2 | -207 | EXP-01 E-GATE-0 재현: C1(map-anything)·C2(map-anything-apache), room4 4장 | 2·2분 (47.1·37.5초) | 20·20분 | mapanything 이미지 Pod 에서 |
-| (`--exp-jobs`) | -87 | 추가 EXP Job 파일(다시점 집계 등). LIVE 보호를 켠 별도 큐로 마지막에 | - | - | 사람이 줄 때만 |
+| v4 | -278 | 통합 시험 재확인(3차 v-int 재현, `vlm_int.py`, 아래 "4차 세션") | 15분 (3차 v-int 13.4분) | 60분 | unified 이미지 Pod 에서 |
+| (`--exp-jobs`) | -87·-291 | 추가 EXP Job 파일(다시점 집계, 4차 세션 `session4_jobs.py` 등). LIVE 보호를 켠 별도 큐로 마지막에 | - | - | 사람이 줄 때만 |
+| (`--only`) | -291 | 이 키의 항목만 큐에 넣는다(예 `a,t,v4`). 이 이미지에서 돌지 않는 키·모르는 키는 종료 4(빈 큐로 성공하지 않음) | - | - | 사람이 줄 때만 |
 
 - 순서: Pod 점검 → Tier 0 이미지·엔진(Tier 0 가 먼저, c·d 가 이 엔진 캐시를 쓴다) → 시험 도구 → LIVE·자원 보호 → 복구·TLS → EXP 는 맨 끝. 한 항목이 실패해도 다음 항목으로 간다(`continue_on_failure`).
 - 항목마다 돌 이미지가 정해져 있다(S15P31A101-207): Pod 하나는 이미지 하나라 큐는 지금 이미지(`--image`, 기본 이미지 ENV `SIMAI_IMAGE_KIND`, 없으면 tier0)의 항목과 a(모든 이미지)만 넣고, 나머지는 표에 '다른 이미지' 로 남긴다. 모르는 이미지 이름이면 시작하지 않는다(종료 코드 4).
@@ -200,6 +202,139 @@ ssh simai-pod 'tail -f /srv/simai/setup/session1/session1.log'      # 끊겨도 
 - 데이터(`datasets/hmr_poc14` 14장, `datasets/room4` 4장)는 저장소에 없어 Pod 에 scp 로 올린다(deploy/README "Pod 검증 큐"). 없으면 g1~g3·m1·m2 가 실패하고 다음 항목으로 간다.
   g4 입력(교실 사진 20장 + 교실 보정 기록)은 사람이 찍혀 있어 `prepare` 가 저장소 밖 `--out` 에 `g4-inputs.tar` 로 묶고 그 출력대로 올린다. 없으면 g4 Run 기록의 calibration 이 비고 판정이 실패한다.
 - H100 예상(2차 세션 실측 기준, 위 "예상 시간 근거"): exp02 Pod 큐 약 9분(g4 포함. 2차 실측 g0~g3 115.5초) + 이미지 받기·가중치(약 4.3GB) 받기, mapanything Pod 큐 약 6분(실측 100.1초) + 가중치(약 9.8GB) 받기. `sam-3d-body-dinov3-mhr` 해시를 채우기 전에는 exp02 Pod 의 `simai-bootstrap queue` 가 받기 전에 종료 코드 2 로 멈춘다(docs/data/weights.md).
+
+### 4차 세션 (S15P31A101-291)
+
+통합 이미지 Pod 하나(H100 80GB)에서 **LIVE 루프 연결 시험(별도 티켓) → I0 443 지연(-288) → 큐(-278 재확인·-282·-283)** 순서로 돈다(Lead 결정).
+LIVE 구간(Tier 0 가 영상을 받는 시험)이 끝난 뒤에만 큐를 띄운다. 세션 실행기는 Tier 0 표시 파일(30 s 안 갱신)·`services.tier0` 프로세스가 있으면 시작하지 않고(종료 3),
+EXP 큐는 LIVE 보호(on_live=stop)로 멈춘다. 이미지 `jonghwa1492/tier0:unified-37c7ae51773d`(dev 37c7ae5 빌드: -278 감시 프로세스 기본값·-286 wstunnel·-288 터널 포트 포함)는 다시 빌드하지 않는다.
+
+| 항목 | 무엇 | 어디 | 판정·기록 |
+|---|---|---|---|
+| I0 | -288 443 프록시 + wstunnel / LTE 테더링 Direct TCP 각 10분(`i0_link_measure.py`, 위 "I0 443 예비 경로 측정") | LIVE 구간(측정 도구가 Tier 0 LIVE 를 띄우고 노트북이 녹화 재생 영상을 보낸다) | `summarize` 표. 기록만 |
+| a·t·v4 | Pod 점검·시험 도구·-278 재확인(`deploy/scripts/vlm_int.py`): 3차 v-int 단계 A~D 를 감시 프로세스가 만드는 vLLM 인자·환경·CPU 묶기 그대로 | 검증 큐(`--only a,t,v4`). v4 는 자기 Tier 0 하네스를 띄우므로 EXP 큐가 아니다 | 기본값 그대로, /health 시한 안, 세 요청 단계 오류 0·p95 ≤ 5 s, A~C 카메라 4대 ready·reserve OK(표본 없음은 실패), vLLM 이 할당량 기준 CPU(이번 Pod 예상 12개)에 묶임, kill -9 뒤 그룹 정리로 그룹이 빔. 환경이 기본값을 덮었거나 vlm 가중치가 없으면 GPU 를 쓰기 전에 종료 2 |
+| r518~rfull | -282 MapAnything 해상도 4 Run(`session3_jobs.build`, `simai_bootstrap.py scene` 으로 감싸 static 가중치를 받고 Tier 0 우선 감시) | EXP 큐(`ai/experiments/static_scene/session4_jobs.py`) | 노트북 `world_frame.cli fix` → `compare_resolutions.py` |
+| h0~h6 | -283 DA3 가상환경(`/root/da3`)·가중치(`ai/experiments/static_scene/da3_weights.json`: 리비전 b2359bd·sha256 고정, simai-bootstrap 받기)·predict 504·1008·1512·2304·자세 없이 504 | EXP 큐 | h2~h7 은 시작 때 가중치 확인을 다시 거쳐(검증 스탬프) 해시가 다르면 predict 전에 종료 2. 깊이 폴더 `depth.json` 이 지표(`exp_job --metrics depth.json`, OOM 도 기록) |
+| h7 | -283 ray 헤드 자세, h2~h5 를 보고 사람이 고른 해상도 | 큐가 끝난 뒤 Job 파일 하나 더(아래 7) | 같은 기준 |
+
+h8(MoGe-2)은 넣지 않는다(-287 결정). 생성기는 `--only h8` 을 거절한다.
+
+**0) 노트북 준비 (GPU 꺼짐).** 입력·결과 묶음은 저장소 밖 임시 폴더(`<T>`)에 둔다(사람이 찍힌 사진, 커밋 안 함).
+
+```sh
+MSYS_NO_PATHCONV=1 uv run --project ai python deploy/scripts/gpu_session1.py prepare --out <T> --pod-simai /srv/simai   # 사본·git-stamp (g4 묶음 줄은 무시)
+uv run --project ai python deploy/scripts/gpu_session1.py plan --mode pod --root /srv --image unified --only a,t,v4     # v4 가 '큐' 인지
+MSYS_NO_PATHCONV=1 python ai/experiments/static_scene/session4_jobs.py --repo /srv/simai/setup/session1/repo --session <YYYYMMDD>-s4 -o <T>/exp-jobs-s4.json   # Git Bash 경로 변환이 남으면 거절
+(cd ai && uv run python experiments/gpu_queue/gpu_queue.py check <T>/exp-jobs-s4.json)                                 # Job 11개, Run 기록 형식 통과
+# 입력: w1 MapAnything Run(3차, cameras.json·raw.npz·metrics.json 만)과 입력 폴더. 노트북 위치는 아래 경로 그대로(메인 checkout, 커밋 안 함)
+tar -cf <T>/s4-prepared.tar -C ai/experiments/recordings/mapanything-inputs classroom4-prepared-20261026
+W1=CAL102_w1_map_anything_known_k_20261026-s3
+tar -cf <T>/s4-w1.tar -C ai/experiments/runs/gpu-session1/20261026-s3/runs/exp01 $W1/cameras.json $W1/raw.npz $W1/metrics.json
+python deploy/scripts/i0_link_measure.py token-hash     # SIMAI_DEVICE_TOKEN(.env)의 sha256 → Pod 의 SIMAI_LAPTOP_TOKEN_SHA256
+```
+
+- I0 relay 설정(`<T>/i0-relay.toml`, 저장소 밖): 녹화 `ai/experiments/recordings/rec-20261021-031045z-classroom-dev-test/cam_{A,B,C,D}/epoch_0000.h264` 를 Pod 시뮬레이터 카메라 `cam1`~`cam4` 로
+  `[[cameras]]` `camera_id = "cam1"`, `kind = "file"`, `file = "<그 경로>"`, `loop = true`, `fps = 25` 네 벌. wstunnel 클라이언트·비밀값 파일은 deploy/README "막힌 망 예비 SSH".
+
+**1) Pod 켜기 (약 10~15분).** RunPod 템플릿(deploy/README "RunPod 템플릿", "통합 이미지"의 Pod형): 이미지 `jonghwa1492/tier0:unified-37c7ae51773d`(다이제스트로 고정하면 `SIMAI_IMAGE_DIGEST` 에 같은 값),
+H100 80GB·CUDA 13.0 이상, Container Disk 150GB 이상, 볼륨 없음, 공개 HTTP 8080, 공개 TCP 22·70000·70001(LTE 비교의 Direct TCP), 시작 명령 `sleep infinity`(감시 프로세스·Tier 0 를 띄우지 않는다).
+환경 변수: `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}`, `SIMAI_TUNNEL_PREFIX={{ RUNPOD_SECRET_simai_tunnel_prefix }}`, `SIMAI_TUNNEL_ALLOW=17000,17001`, `SIMAI_TIER0_GPU_RESERVE_MB=8192`, `PUBLIC_KEY=<계정 공개키 값>`.
+`SIMAI_VLLM_EXTRA_ARGS`·`SIMAI_WORKER_VLLM_MAX_MODEL_LEN`·`VLLM_USE_FLASHINFER_SAMPLER`·`SIMAI_SIDECAR_CPUS` 는 넣지 않는다(v4 는 기본값을 잰다. 넣으면 v4 가 종료 2).
+
+**2) 접속·올리기 (약 5분).** SSAFY 망은 443 경로: `WSTUNNEL_HTTP_UPGRADE_PATH_PREFIX` 를 그 셸에만 두고 `ssh simai-pod-443`(deploy/README). scp 는 같은 Host 로 약 1 MB/s(3차 30 MB 32 s).
+
+```sh
+ssh simai-pod-443 'mkdir -p /srv/simai/setup/session1 /srv/simai/datasets /srv/simai/runs/exp01'
+scp <T>/simai-repo.tar <T>/git-stamp.json <T>/exp-jobs-s4.json <T>/s4-prepared.tar <T>/s4-w1.tar simai-pod-443:/srv/simai/setup/session1/
+ssh simai-pod-443 'cd /srv/simai/setup/session1 && rm -rf repo && mkdir repo && tar -xf simai-repo.tar -C repo && cp git-stamp.json repo/ && tar -xf s4-prepared.tar -C /srv/simai/datasets && tar -xf s4-w1.tar -C /srv/simai/runs/exp01'
+```
+
+**3) 미리 받기·시험 도구 (GPU 안 씀, 약 5~10분, LIVE 측정이 시작되기 전에 끝낸다).** v4 의 Cosmos3-Nano(31.5GB, 검증 스탬프)와 I0 측정 도구가 import 하는 시험 도구(pytest·cryptography, `ai/uv.lock` 판).
+I0 측정(`i0_link_measure.py pod`)은 `tests/services/tier0` 의 TLS 도우미(`test_i1_tls`, 모듈 첫 줄에서 pytest import)를 쓰는데 이미지에 pytest 가 없어, 큐의 t 항목보다 먼저 여기서 깐다.
+Pod 로그인 셸(`ssh simai-pod-443`)에서:
+
+```sh
+HF_TOKEN="$(tr '\0' '\n' </proc/1/environ | sed -n 's/^HF_TOKEN=//p')" SIMAI_WEIGHTS_SET=vlm simai-bootstrap check > /srv/simai/setup/session1/vlm-check.log 2>&1
+uv pip install --python /opt/simai/ai/.venv/bin/python --target /tmp/simai-session1-testtools pytest==9.1.1 cryptography==50.0.2
+```
+
+**4) LIVE 루프 연결 시험 슬롯 (별도 티켓).** 그 티켓의 실행서대로. 끝나면 그 Tier 0 를 내린다.
+
+**5) I0 443 지연 (-288, 약 30분: 경로마다 기동 1~2분 + 10분 + 옮기기).** Pod 로그인 셸에서((b) 는 `--link direct --work …/b-lte`):
+
+```sh
+mkdir -p /srv/simai/runs/i0-link && cd /srv/simai/setup/session1/repo
+export PYTHONPATH=$PWD/ai/src:$PWD/ai:/tmp/simai-session1-testtools
+SIMAI_LAPTOP_TOKEN_SHA256=sha256:<hex 64> SIMAI_WEIGHTS_SET=tier0 nohup simai-bootstrap run /opt/simai/ai/.venv/bin/python \
+  deploy/scripts/i0_link_measure.py pod --link tunnel --seconds 600 --work /srv/simai/runs/i0-link/a-tunnel > /srv/simai/runs/i0-link/a-tunnel.log 2>&1 &
+cat /srv/simai/runs/i0-link/a-tunnel/endpoint.json      # tls_public_key_sha256 를 노트북 --pin 으로 옮긴다
+```
+
+```powershell
+# 노트북 (a) SSAFY 망: wstunnel 로 17000·17001 전달(deploy/README "I0 터널") 뒤
+scp simai-pod-443:/srv/simai/runs/i0-link/a-tunnel/endpoint.json <T>/a-endpoint.json
+uv run --project gateway/relay python deploy/scripts/i0_link_measure.py laptop --endpoint <T>/a-endpoint.json --pin sha256:<hex 64> `
+  --config <T>/i0-relay.toml --seconds 600 --out <T>/a-laptop.jsonl
+# (b) 휴대폰 LTE 테더링으로 망을 바꾸고(wstunnel 은 끈다) Pod 를 --link direct --work /srv/simai/runs/i0-link/b-lte 로 다시 띄운 뒤 같은 명령(b-endpoint, b-laptop.jsonl)
+# 회수(8) 뒤
+python deploy/scripts/i0_link_measure.py summarize --run tunnel=<a-tunnel/pod.jsonl>,<T>/a-laptop.jsonl --run lte=<b-lte/pod.jsonl>,<T>/b-laptop.jsonl --out <T>/i0-summary.json
+```
+
+측정 도구의 시계 교환 대리 응답은 -289 머지로 지워졌다(현장 경보 단말이 답한다, dev b74288b 의 `cmd_laptop` 에서 확인).
+
+**6) 큐 (LIVE 종료 확인 뒤, 약 50~60분).** `pgrep -af services.tier0` 가 비어 있고 표시 파일이 30 s 넘게 갱신되지 않았는지 본 뒤:
+
+```sh
+ssh simai-pod-443 'nohup simai-bootstrap queue --session <YYYYMMDD>-s4 --only a,t,v4 --exp-jobs /srv/simai/setup/session1/exp-jobs-s4.json > /srv/simai/setup/session1/session4.log 2>&1 &'
+ssh simai-pod-443 'tail -f /srv/simai/setup/session1/session4.log'       # 끊겨도 큐는 돈다
+```
+
+| 순서 | 항목 | 예상 | 근거 |
+|---|---|---|---|
+| 1 | a·t | 1분 | 2차 실측 0.2·0.8초 |
+| 2 | v4 | 15분 | 3차 v-int 13.4분(A 90 s, vLLM 70 s, 요청, 지속 600 s, kill -9) + Tier 0 하네스 기동(LIVE 시험이 만든 엔진 캐시) |
+| 3 | r518·r1036·r1554·rfull | 3+1+2+3분 | 첫 Run 이 static 가중치 9.8GB 를 받는다(u3 실측 약 1.7분). 3차 w1 29초, rfull 은 토큰 19배라 추정 |
+| 4 | h0 | 5~10분 | torch cu130 휠 받기(설계) |
+| 5 | h1 | 2~5분 | 6.76GB 받기 + 해시 |
+| 6 | h2~h6 | 2+2+3+5+2분 | 설계 추정(적재 30~60 s + 추론 2회) |
+| 합 | | 약 50~60분 | Job 파일 `expected_s` 는 넉넉한 값(검증 큐 22분 + EXP 62분, 시한 계산용) |
+
+**7) h7 (선택, 약 10분).** h2~h5 중 고르는 기준은 설계(`exp01-hybrid-depth.md` "채택 기준": 카메라 간 |Δd|/d 중앙값·왕복 재투영·바닥 rms·충돌 비율). Pod CPU 로 빠르게 본다(고르는 데만 쓰고 정식 fuse 는 노트북). Pod 로그인 셸에서:
+
+```sh
+cd /srv/simai/setup/session1/repo && export PYTHONPATH=$PWD/ai/src:$PWD/ai S=<YYYYMMDD>-s4
+for r in 504 1008 1512 2304; do /opt/simai/ai/.venv/bin/python ai/experiments/static_scene/run_hybrid_depth.py fuse --no-mesh --no-color \
+  --ma-run /srv/simai/runs/exp01/CAL102_w1_map_anything_known_k_20261026-s3 --prepared /srv/simai/datasets/classroom4-prepared-20261026 \
+  --depth /srv/simai/runs/exp01/HYB283_da3_pose_${r}_$S --out /tmp/s4-pick/$r; done
+/opt/simai/ai/.venv/bin/python ai/experiments/static_scene/session4_jobs.py --repo $PWD --session $S --only h7 --h7-res <고른 값> -o /srv/simai/setup/session1/exp-jobs-s4-h7.json
+nohup simai-bootstrap queue --session $S --only a --exp-jobs /srv/simai/setup/session1/exp-jobs-s4-h7.json > /srv/simai/setup/session1/session4-h7.log 2>&1 &
+```
+
+같은 `--session` 이라 끝난 a 는 건너뛰고 h7 만 돈다. 시간이 모자라면 h7 은 건너뛰고 '넘긴 일'로 둔다.
+
+**8) 결과 회수 (약 5~10분, 443 경로 약 1 MB/s).** 세션 묶음(로그 끝의 scp 명령: 큐 상태·로그·v4 Run 폴더의 `summary.json`·`samples.json`)과, 묶음에 들어가지 않는 실험 결과(50MB 넘는 rfull `raw.npz` 등)·I0 기록:
+
+```sh
+ssh simai-pod-443 'cd /srv/simai/runs && tar -czf s4-results.tar.gz exp01/*_<YYYYMMDD>-s4 i0-link'
+scp simai-pod-443:/srv/simai/runs/s4-results.tar.gz ai/experiments/runs/gpu-session1/<YYYYMMDD>-s4/      # 노트북, 커밋 안 함
+```
+
+노트북에서 묶음 sha256 을 `bundle-manifest.json` 과 대조하고, 깊이 폴더마다 `run_hybrid_depth.py fuse`(설계 "다음 GPU 세션 큐" 아래 줄), MapAnything Run 마다 `world_frame.cli fix` → `compare_resolutions.py`.
+
+**9) Pod Stop → Terminate.** 볼륨이 없어 회수를 확인한 뒤에만 지운다(GPU 과금).
+
+| 구간 | 예상 |
+|---|---|
+| 켜기·올리기·미리 받기 | 20~30분 |
+| LIVE 루프 연결 시험 | 별도 티켓 |
+| I0 443·LTE | 30분 |
+| 큐 + h7 | 60~70분 |
+| 회수·Stop | 10분 |
+| **합(LIVE 슬롯 제외)** | **약 2~2.5시간** |
+
+재현: v4 는 큐 밖에서도 `python deploy/scripts/vlm_int.py --images /srv/simai/datasets/classroom4-prepared-20261026 --out <폴더>` 로 돈다. 3차의 v-int 는 손으로 돌려 스크립트가 남지 않아,
+노트북 `ai/experiments/runs/gpu-session1/20261026-s3/v-int/summary.json`(단계·인자)과 `pod-logs/v-int.log` 를 따라 다시 썼다. 3차와 다른 점: vLLM 인자·환경·CPU 묶기를 손으로 적지 않고 감시 프로세스 코드에서 받는다,
+요청마다 질문 앞에 다른 표식(prefix 캐시로 지연이 낙관적으로 나오지 않게), 영상 입력 시도는 뺐다(3차에서 됨), kill -9 뒤 감시 프로세스와 같은 그룹 정리로 그룹이 비는지 판정한다.
 
 ### 실행기 규칙
 
