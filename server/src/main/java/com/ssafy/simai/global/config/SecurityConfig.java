@@ -58,31 +58,31 @@ public class SecurityConfig {
         return http.build();
     }
 
+    /**
+     * 현장 노트북(하트비트, Tier 0 엔드포인트 조회). 기기 토큰(명세 14·12.6, S15P31A101-222).
+     * 사용자 JWT 체인과 나눈다. 같은 체인이면 JWT 리소스 서버가 기기 토큰을 JWT 로 읽다가 거부한다.
+     */
     @Bean
     @Order(2)
     SecurityFilterChain deviceFilterChain(HttpSecurity http, MachineTokenService tokens) throws Exception {
-        return machineChain(http, MachineKind.DEVICE, tokens, DEVICE_PATHS);
+        // 엔드포인트는 조회(GET)만 기기 토큰이다. 등록은 Tier 0 가 I1 tier0_endpoint 로 한다(12.6, FR-138)
+        return machineChain(http, MachineKind.DEVICE, tokens, matchers -> matchers
+                .requestMatchers("/api/devices/**")
+                .requestMatchers(HttpMethod.GET, "/api/endpoints/tier0"));
     }
 
     /** RunPod 분석 워커(I5 작업 대여·결과, 워커 객체 서명). 워커 토큰(명세 12.5, S15P31A101-222) */
     @Bean
     @Order(3)
     SecurityFilterChain workerFilterChain(HttpSecurity http, MachineTokenService tokens) throws Exception {
-        return machineChain(http, MachineKind.WORKER, tokens, WORKER_PATHS);
+        return machineChain(http, MachineKind.WORKER, tokens, matchers -> matchers.requestMatchers("/api/worker/**"));
     }
 
-    /**
-     * 현장 노트북(하트비트, Tier 0 엔드포인트 조회). 기기 토큰(명세 14·12.6, S15P31A101-222).
-     * 사용자 JWT 체인과 나눈다. 같은 체인이면 JWT 리소스 서버가 기기 토큰을 JWT 로 읽다가 거부한다.
-     */
-    static final String[] DEVICE_PATHS = {"/api/devices/**", "/api/endpoints/tier0"};
-    static final String[] WORKER_PATHS = {"/api/worker/**"};
-
     private static SecurityFilterChain machineChain(HttpSecurity http, MachineKind kind, MachineTokenService tokens,
-            String... paths) throws Exception {
+            Customizer<HttpSecurity.RequestMatcherConfigurer> paths) throws Exception {
         SecurityErrorResponder errors = new SecurityErrorResponder();
         http
-                .securityMatcher(paths)
+                .securityMatchers(paths)
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .addFilterBefore(new MachineTokenAuthenticationFilter(kind, tokens), AnonymousAuthenticationFilter.class)

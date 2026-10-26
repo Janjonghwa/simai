@@ -14,9 +14,11 @@ import org.springframework.stereotype.Component;
  * admin device register --id laptop-01 --kind LAPTOP
  * admin device rotate --id laptop-01
  * admin device revoke --id laptop-01
+ * admin device reactivate --id laptop-01   (폐기한 기기를 새 토큰으로 되살림. rotate 는 폐기된 기기를 거부한다)
  * admin worker register --id worker-01 --job-types vlm_rationale,tbm_report
  * admin worker rotate --id worker-01
  * admin worker revoke --id worker-01
+ * admin worker reactivate --id worker-01
  * </pre>
  */
 final class MachineCommands {
@@ -40,7 +42,7 @@ final class MachineCommands {
 
         @Override
         public String usage() {
-            return "admin device register --id <기기 ID> --kind LAPTOP|WATCH | rotate --id <기기 ID> | revoke --id <기기 ID>";
+            return "admin device register --id <기기 ID> --kind LAPTOP|WATCH | rotate --id <기기 ID> | revoke --id <기기 ID> | reactivate --id <기기 ID>";
         }
 
         @Override
@@ -54,6 +56,7 @@ final class MachineCommands {
                 }
                 case "rotate" -> printIssued(io, tokens.rotate(MachineKind.DEVICE, id(rest)), "토큰을 바꿈");
                 case "revoke" -> printRevoked(io, tokens.revoke(MachineKind.DEVICE, id(rest)));
+                case "reactivate" -> printIssued(io, tokens.reactivate(MachineKind.DEVICE, id(rest)), "되살림");
                 default -> throw new CommandUsageException(usage());
             };
         }
@@ -75,7 +78,7 @@ final class MachineCommands {
 
         @Override
         public String usage() {
-            return "admin worker register --id <워커 ID> --job-types <유형,…> | rotate --id <워커 ID> | revoke --id <워커 ID>";
+            return "admin worker register --id <워커 ID> --job-types <유형,…> | rotate --id <워커 ID> | revoke --id <워커 ID> | reactivate --id <워커 ID>";
         }
 
         @Override
@@ -91,6 +94,7 @@ final class MachineCommands {
                 }
                 case "rotate" -> printIssued(io, tokens.rotate(MachineKind.WORKER, id(rest)), "토큰을 바꿈");
                 case "revoke" -> printRevoked(io, tokens.revoke(MachineKind.WORKER, id(rest)));
+                case "reactivate" -> printIssued(io, tokens.reactivate(MachineKind.WORKER, id(rest)), "되살림");
                 default -> throw new CommandUsageException(usage());
             };
         }
@@ -98,7 +102,7 @@ final class MachineCommands {
 
     private static String action(List<String> args) {
         if (args.isEmpty()) {
-            throw new CommandUsageException("register·rotate·revoke 중 하나를 적는다");
+            throw new CommandUsageException("register·rotate·revoke·reactivate 중 하나를 적는다");
         }
         return args.getFirst();
     }

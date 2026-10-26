@@ -38,7 +38,7 @@ public class SecurityErrorResponder implements AuthenticationEntryPoint, AccessD
     }
 
     // 문구가 상수뿐이라 JSON 을 직접 쓴다(요청 값을 넣지 않는다)
-    private static void write(HttpServletResponse response, ErrorCode errorCode) throws IOException {
+    static void write(HttpServletResponse response, ErrorCode errorCode) throws IOException {
         response.setStatus(errorCode.status().value());
         response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
