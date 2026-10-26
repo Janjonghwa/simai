@@ -104,3 +104,25 @@ MapAnything 보정 입력(`simai_ai.calibration.world_frame.cli prepare`)에서 
 - 작은 파일 10개(`config.json`, `model.safetensors.index.json`, `generation_config.json`, `preprocessor_config.json`, `video_preprocessor_config.json`, `chat_template.json`, `tokenizer.json`,
   `tokenizer_config.json`, `vocab.json`, `merges.txt`)는 위 revision 의 `resolve/` 로 받아 `sha256sum` 으로 쟀다.
 - 고른 근거(루트 index 가 vae·sound_tokenizer 를 가리키지 않음)와 확인 항목은 `docs/design/unified-env.md` "Cosmos3-Nano 가중치". 첫 GPU 세션에서 `simai-bootstrap` 이 받아 대조한다. 다르면 시작하지 않는다(종료 코드 2).
+
+## BAAI/bge-m3 (RAG 조항·질문 임베딩, extra `rag`, S15P31A101-27)
+
+| 항목 | 값 |
+|---|---|
+| 저장 경로 | 노트북 HF 캐시(`~/.cache/huggingface/hub/models--BAAI--bge-m3/snapshots/<revision>/`). GPU Pod 에서 쓰지 않아 `deploy/weights.json` 에 넣지 않는다 |
+| 원본 | HF `BAAI/bge-m3`, revision `5617a9f61b028005a4858fdac845db406aefb181`(main, HF API 마지막 수정 2024-07-03, 2026-10-23 조회). 코드 고정 위치 `ai/src/simai_ai/rag/embed.py` `REVISION` |
+| 쓰는 파일 | 아래 6개(transformers `AutoModel`·`AutoTokenizer` 가 받는 것). `onnx/`·`colbert_linear.pt`·`sparse_linear.pt` 는 받지 않는다(dense 만 씀) |
+| 라이선스 | MIT. 모델 저장소에는 LICENSE 파일이 없고(위 revision 의 `resolve/…/LICENSE` 404) 모델 카드 메타데이터가 `license: mit` 이다. 코드 저장소 FlagOpen/FlagEmbedding 의 LICENSE 도 MIT(GitHub API, 2026-10-23) |
+| 쓰는 곳 | `simai_ai.rag.seed embed`(노트북 CPU fp32, 배치 1). 결과는 `ai/src/simai_ai/rag/data/embeddings.json` 에 커밋한다 |
+
+| 파일 | 크기(B) | sha256 |
+|---|---|---|
+| `pytorch_model.bin` | 2,271,145,830 | `b5e0ce3470abf5ef3831aa1bd5553b486803e83251590ab7ff35a117cf6aad38` (LFS oid 와 같음) |
+| `tokenizer.json` | 17,098,108 | `21106b6d7dab2952c1d496fb21d5dc9db75c28ed361a05f5020bbba27810dd08` |
+| `sentencepiece.bpe.model` | 5,069,051 | `cfc8146abe2a0488e9e2a0c56de7952f7c11ab059eca145a0a727afce0db2865` |
+| `config.json` | 687 | `26159e7ad065073448460117eb24b7a4572f6f4e78eadff65dc0a11c052449fa` |
+| `tokenizer_config.json` | 444 | `a62b2b6784f990259fddef5f16388693a8043be4f69179e6a5257eeb3f9abac4` |
+| `special_tokens_map.json` | 964 | `8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835` |
+
+획득 기록: 2026-10-23 노트북에서 transformers 5.9.0 이 위 revision 으로 받은 캐시 스냅숏의 파일을 `sha256sum` 으로 쟀다(받기 약 8 분, 약 5 MB/s).
+`pytorch_model.bin` 의 값은 캐시 blob 이름(HF LFS oid)과 같다.

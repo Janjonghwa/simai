@@ -110,6 +110,9 @@ vlm = [
     "vllm-cosmos3; sys_platform == 'linux'",
     "transformers-cosmos3; sys_platform == 'linux'",
 ]
+# RAG 조항 임베딩(BAAI/bge-m3 dense, 명세 5.4·11장, S15P31A101-27, docs/design/rag-clause-index.md). 노트북 CPU 에서 돌린다.
+#   torch·transformers 는 한 가상환경의 판(torch 2.11.0, transformers 는 VLM 쪽 상한 <5.10 안의 잠금 판)과 같게 고정해 문서·질문 임베딩 환경을 하나로 둔다.
+rag = ["torch==2.11.0", "transformers==5.9.0"]
 # 배포 단위 묶음 (services/)
 # websockets: I1 WebSocket(wss) 클라이언트 (services/tier0/i1_client, 명세 12.2)
 # torch·torchvision: Tier 0·분석 워커·vLLM 이 한 가상환경을 쓰므로 vllm 0.21.0 이 고정한 판으로 묶는다(S15P31A101-235). PyPI 의 Linux 휠이 CUDA 13.0 빌드다.
@@ -234,6 +237,7 @@ forbidden_modules = [
     "simai_ai.eventlog",
     "simai_ai.recovery",
     "simai_ai.gpu",
+    "simai_ai.rag",
     "numpy",
     "cv2",
     "torch",
@@ -288,6 +292,7 @@ forbidden_modules = [
     "simai_ai.vlm",
     "simai_ai.hmr",
     "simai_ai.scene",
+    "simai_ai.rag",
     "services.worker",
 ]
 
