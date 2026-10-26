@@ -131,8 +131,8 @@ uv run contracts/scripts/validate_examples.py
 
 | 언어 | 대상 | 생성 위치(커밋 여부) | 재생성 | 커밋과 같은지 확인 |
 |---|---|---|---|---|
-| Python (pydantic v2) | `common/defs` 를 뺀 모든 스키마(51개). 스키마 이름 → 모델은 `Contracts.model_fields['<이름>']`(예: `world_state` → `WorldState`) | `ai/src/simai_ai/contracts/models.py`(커밋) | `cd ai && uv run python ../contracts/scripts/generate_python_models.py` | 같은 명령에 `--check`(종료 1 이면 다름). `ai/tests/contracts/test_models.py` 가 함께 돈다 |
-| Java (jsonschema2pojo, Jackson 3) | `messages/*` 에서 `envelope` 를 뺀 메시지(47개). `com.ssafy.simai.contracts.WorldState`·`WorldStatePayload` 꼴 | `server/build/generated-sources/js2p`(커밋 안 함, 빌드 산출물) | `cd server && ./gradlew compileJava`(스키마가 바뀌면 다시 만든다) | 해당 없음(커밋하지 않음). `ContractExamplesRoundTripTest` 가 예시 왕복을 본다 |
+| Python (pydantic v2) | `common/defs` 를 뺀 모든 스키마(51개, `contracts/**/*.schema.json` 파일 수에서 defs 를 뺀 값). 스키마 이름 → 모델은 `Contracts.model_fields['<이름>']`(예: `world_state` → `WorldState`) | `ai/src/simai_ai/contracts/models.py`(커밋) | `cd ai && uv run python ../contracts/scripts/generate_python_models.py` | 같은 명령에 `--check`(종료 1 이면 다름). `ai/tests/contracts/test_models.py` 가 함께 돈다 |
+| Java (jsonschema2pojo, Jackson 3) | `messages/*` 에서 `envelope` 를 뺀 메시지(44개, `server/contracts.gradle` 의 `messageNames` 와 같은 규칙으로 `contracts/messages/*.schema.json` 파일 수에서 envelope 를 뺀 값). `com.ssafy.simai.contracts.WorldState`·`WorldStatePayload` 꼴 | `server/build/generated-sources/js2p`(커밋 안 함, 빌드 산출물) | `cd server && ./gradlew compileJava`(스키마가 바뀌면 다시 만든다) | 해당 없음(커밋하지 않음). `ContractExamplesRoundTripTest` 가 예시 왕복을 본다 |
 | TypeScript | 관제 앱이 받는 I2 메시지(`world_state`, `risk_event`, `viewer_health`, `action_mismatch`, `avatar_frame`) 타입·검증기 | `front/packages/contracts/src/generated`(커밋) | `cd front && pnpm --filter @simai/contracts generate` | `pnpm --filter @simai/contracts check:generated` |
 
 스키마를 바꾼 MR 은 이 순서로 다시 만든다: ① 스키마·예시 수정 후 `uv run contracts/scripts/validate_examples.py` ② Python 생성 + `uv run pytest tests/contracts` ③ TS `generate` + `check:generated` ④ Java `./gradlew test`(생성물은 커밋하지 않으니 빌드가 통과하는지만). 생성 모델의 이름·형태가 바뀌면 그 모델을 쓰는 코드도 같은 MR 에서 고친다.

@@ -6,8 +6,9 @@
 - [ ] Tapo C110 RTSP 스트림의 촬영 시각: RTCP 시각이 불안정함을 확인(1차 측정). 긴 구간 회귀 보정 가능 여부는 G0 LED 시험으로 판단
 - [ ] 공유기 환경에서 카메라 1대 10분 RTSP 측정(S15P31A101-9 완료 조건)
 - [ ] 시연 GPU 에서 4대 동시 처리 FPS(G0)와 노트북 → GPU 사이트 업로드 안정성
-- [ ] RAG 임베딩 BAAI/bge-m3 의 가중치 revision 고정(운영 색인 생성 전), 실행 위치(CPU·GPU), 조항 청크·배치 크기
-- [ ] 외부 LLM “GPT 6.1 sol” 의 제공사와 호출 설정(출력 길이·응답 시간을 I5 작업 대여 시간 제한 안으로, 12.5)
+- [x] RAG 임베딩 BAAI/bge-m3 의 가중치 revision·실행 위치·조항 청크·배치 크기(S15P31A101-27, 5.4·11장): revision `5617a9f61b028005a4858fdac845db406aefb181`, CLS 풀링 + L2 정규화, 노트북 CPU fp32·배치 1, 조 단위(1,000자 넘는 조만 항·호 경계로 나눈 청크 `#k`), 질문은 TBM 템플릿 사전 임베딩(`rag_query_template`). 자유 문장 질의 임베딩 위치는 확장
+- [x] 외부 LLM “GPT 6.1 sol” 의 제공사와 호출 설정(S15P31A101-225, 5.4·11.5·12.5): SSAFY GMS(OpenAI API 중계, 엔드포인트 `https://gms.ssafy.io/gmsapi/` + OpenAI 경로, 형식은 OpenAI 공식 레퍼런스와 같음)를 거쳐 OpenAI 로 보낸다. 모델 `gpt-6.1-sol`, `temperature` 미전송(기본값만 받음), 응답 대기 기본 60초로 작업 시간 제한 안에서 두 번까지(실측 약 19초). 국외 이전은 11.5. 호출 방식은 아래 미결
+- [ ] 외부 LLM 호출 방식: GMS 공식 방식(OpenAI Responses API)으로 전환, 지금은 Chat Completions 로 동작 확인(2026-10-26). S15P31A101-285
 - [ ] 다중 공사·기업 계정(부록 C.9)의 역할 계층·12.6 경로, JWT 현장 클레임·`site_id` 확장 대비 채택 여부(MVP 이후, 팀 회의 뒤)
 - [ ] 해상도·화각이 바뀐 뒤 재보정 절차(내부 파라미터 재추정 → 번들 조정)와, 틀어짐 귀속이 불확실할 때 운영자가 할 일(4.4, 18장)
 - [ ] 지급 EC2 의 네트워크 전송 한도(2D 관측은 Tier 0 저장 위치에 두므로 부담이 줄었다), EC2 와 Lightsail 중 어느 것인지. 디스크는 320 GB 로 확인했다(11.4, 11.5)
@@ -18,7 +19,7 @@
 - [ ] World 축의 영상 쪽 교차 확인(펴진 영상 직선의 벽 소실점, 4.1·4.3)과, 3차 GPU 세션의 알려진 K MapAnything 실행(기본·apache 가중치)으로 좌표계 고정 정식 수치(바닥·벽·축 근거, 카메라 간 재투영)를 내고 가중치 하나를 고르기(`docs/design/world-frame-from-mapanything.md`)
 - [x] 촬영·시연·데이터 활용 허가 기준(2026-10-23 사용자 결정, 11.5·16장): 참여자 별도 동의서·비참여자 안내·시연 및 공개 자료의 ‘사람 없음 또는 동의자만’ 제한은 두지 않고 기관(SSAFY) 허가 기준으로 정리했다. 개인정보보호법 검토는 이 프로젝트 범위에서 하지 않는다
 - [x] 개발·시험 GPU 사이트(RunPod 남는 지역·Vast.ai)로 영상(내부 테스트·녹화 영상 포함) 전송 범위(2026-10-23 사용자 결정, 11.5·16장): 기관(SSAFY) 허가 기준으로 정리했고 별도 참여자 동의·국외 이전 고지 조건은 두지 않는다
-- [ ] R3 높이 기준의 정확한 근거 조항
+- [x] R3 높이 기준의 정확한 근거 조항(S15P31A101-27·-256, 7.1·7.2): 산업안전보건기준규칙 제32조(①2호 안전대)·제44조(①안전대 부착설비). 운영 R3 의 `legal_basis` 에 조 단위 ID 로 연결(교실 시험 프로파일은 없음), 규칙 값 시드가 비어 있으면 채움
 - [x] TBM 계획 작업 위치 자동 생성 규칙과 Risk Engine 컨테이너의 FastAPI 구현(S15P31A101-99, 8.3·12.2): 작업면 상판 가운데(넓은 면은 가장자리 0.5 m 안쪽 하나 더)와 유효한 개구부 경계 바깥 0.2 m, 머리 높이 없음(8.3). 컨테이너는 `deploy/risk-engine`(CPU, compose 내부망 `risk-engine:8080`, 포트 공개 없음). 같은 커밋 두 이미지의 D-G3-04 대조는 다음 Tier 0 이미지 빌드 때 `deploy/scripts/risk_engine_g304.sh`
 - [x] Tier 0 저장 위치 구조(`$SIMAI_ROOT`, 3.12): 시작 절차가 지정값 → 볼륨(`/workspace/simai`) → 컨테이너 디스크(`/srv/simai`) 순으로 고른다. 그 아래 `weights`(가중치), `datasets`, `recordings`, `obs2d`, `engines`(TensorRT 엔진 캐시), `state`(Tier 0 저널·체크포인트·구성 묶음 보관본·보정 기준·실행 중 표시 파일, 단일 작성자·손으로 지우지 않음), `locks`(Tier 0·장면 준비 잠금), `queue`(GPU 큐 상태·Run 폴더), `runs`(실험·검증 산출물), `setup`, `logs`가 있다. 비공개 폴더 `.simai-private` 는 `$SIMAI_ROOT` 안이 아니라 옆(`$SIMAI_ROOT/../.simai-private/`)이며 TLS 키·토큰 파일 환경 변수가 그 경로를 가리킨다. E-GATE-0 때의 `envs`·`third_party`·`tools` 는 새로 만들지 않는다. `obs2d` 는 2D 관측 Parquet(11.2)이다: Tier 0 에 `SIMAI_OBS2D_ROOT=$SIMAI_ROOT/obs2d` 를 준다(코드 기본값 없음, 없으면 오류). 파일은 `{date}/{hour}/{camera_id}/obs2d.{camera_id}.{YYYYMMDDTHHMM}Z.{session_id}.{part:04d}.parquet`(UTC, 한 시간 단위)이고 기본 14일(7\~14일) 뒤 지운다. `recordings` 는 녹화 세션 디렉터리 `recordings/<session_id>/`(세션 목록·해시는 `recording_manifest`, 15.3. 보관 위치는 위 미결)다
 - [x] SSAFY GitLab CI 러너 사용 가능 여부와 Jenkins CI 구성: 공유·그룹 러너가 없고 Container Registry 도 꺼져 있다(2026-10-21 확인). CI 는 EC2 의 Jenkins(GPU·torch 없는 Linux 로직 층, 첫 단계 `git clean`, 21.4)로 하며, MR 빌드는 정적 import 그래프 기반 선택기(`ai/scripts/select_tests.py`)가 고른 `ai` 시험만 돌리고(빈 출력 생략, `ALL` 전체, `deploy/` 변경 포함) `dev`·`master` push 는 전체를 돌린다(S15P31A101-28·-255·-258·-260)
