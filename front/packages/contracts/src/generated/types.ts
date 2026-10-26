@@ -279,7 +279,7 @@ as_of: number
  */
 system_health: ("NOMINAL" | "DEGRADED" | "UNSAFE_UNKNOWN")
 /**
- * NORMAL: Tier 0·노트북 모두 정상. REMOTE_LINK_LOST: Tier 0 하트비트는 끊겼지만 노트북이 Tier 0 정상을 알림(원격 전달 단절, 현장 경보 동작 중). CONTROL_HALTED: 노트북도 Tier 0 끊김·관제 정지를 알리거나 노트북 하트비트가 없음 (3.2, FR-11)
+ * NORMAL: Tier 0·노트북 모두 정상. REMOTE_LINK_LOST: Tier 0 하트비트는 끊겼지만 노트북이 Tier 0 정상을 알림(원격 전달 단절, 현장 경보 동작 중). CONTROL_HALTED: 노트북도 Tier 0 끊김·관제 정지를 알리거나, 노트북 하트비트가 없거나, Tier 0 처리가 멈춤(연결은 살아 있어도 t_latest_global 이 늘지 않음, 이때 tier0_link 는 CONNECTED 일 수 있다) (3.2, FR-11)
  */
 remote_state: ("NORMAL" | "REMOTE_LINK_LOST" | "CONTROL_HALTED")
 /**
