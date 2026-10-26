@@ -47,6 +47,7 @@ class HeartbeatController {
         try {
             envelope = I1Envelope.parse(body);
             check(envelope.payload());
+            I1Json.textArray(envelope.payload().get("tier0"), "video_cameras"); // 저장할 배열도 미리 만들어 본다
         } catch (InvalidI1Message e) {
             throw new BusinessException(ErrorCode.Health.INVALID_HEARTBEAT);
         }
@@ -63,7 +64,7 @@ class HeartbeatController {
         state.recordHeartbeat(deviceId, envelope.payload(), receivedAt);
     }
 
-    /** 계약 laptop_heartbeat 의 필수 값(EC2 가 읽는 것) */
+    /** 계약 laptop_heartbeat 의 값 중 EC2 가 읽거나 저장하는 것. 저장 중에 형식 오류가 나지 않게 여기서 모두 본다 */
     private static void check(JsonNode p) {
         JsonNode seq = p.get("heartbeat_seq");
         JsonNode tier0 = p.get("tier0");
@@ -80,5 +81,22 @@ class HeartbeatController {
             throw new InvalidI1Message("tier0");
         }
         I1Json.time(tier0, "last_message_at"); // 형식만 본다(null 허용)
+        JsonNode ec2 = p.get("ec2");
+        if (ec2 != null && !ec2.isNull()) {
+            JsonNode state = ec2.get("state");
+            if (!ec2.isObject() || state == null || !state.isString() || !LINK_STATES.contains(state.stringValue())) {
+                throw new InvalidI1Message("ec2");
+            }
+            I1Json.time(ec2, "last_response_at");
+        }
+        JsonNode alarm = p.get("alarm");
+        if (alarm != null && !alarm.isNull() && (!alarm.isObject() || !alarm.path("sounding_event_ids").isArray()
+                || !alarm.path("displayed_event_ids").isArray())) {
+            throw new InvalidI1Message("alarm");
+        }
+        JsonNode links = p.get("cameras");
+        if (links != null && !links.isNull() && (!links.isArray() || !links.valueStream().allMatch(JsonNode::isObject))) {
+            throw new InvalidI1Message("cameras");
+        }
     }
 }

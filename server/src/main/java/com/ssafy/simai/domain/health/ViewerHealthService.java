@@ -17,9 +17,13 @@ import tools.jackson.databind.node.ObjectNode;
  * 화면 상태 viewer_health(계약 1.0.0, 명세 3.2 이중 감시·6.2·12.4, FR-5·11·12)를 만든다. GET /api/health 와 /topic/health 가 같은 값을 쓴다.
  * <ul>
  *   <li>tier0_link·laptop.link: 마지막 수신(EC2 시각)이 linkTimeoutMs(기본 3초 = 1초 주기 3회 누락, 3.10) 안이면 CONNECTED
- *   <li>remote_state: 둘 다 연결이면 NORMAL. Tier 0 만 끊겼고 노트북이 Tier 0 제어 연결 CONNECTED 이며 현장 표시가 CONTROL_HALTED 가
- *       아니면 REMOTE_LINK_LOST(현장 경보 동작 중), 그 밖(노트북도 끊김·관제 정지 표시·노트북 하트비트 없음)은 CONTROL_HALTED
- *   <li>system_health: 어느 쪽이든 끊기면 UNSAFE_UNKNOWN, 아니면 Tier 0 health 의 값(모르면 UNSAFE_UNKNOWN)
+ *   <li>remote_state: 노트북이 "Tier 0 제어 연결 CONNECTED, 현장 표시 CONTROL_HALTED 아님"이라고 알리는지(노트북 정상)를 함께 본다.
+ *       Tier 0·노트북 연결이 모두 살아 있고 노트북 정상이면 NORMAL, Tier 0 만 끊겼고 노트북 정상이면 REMOTE_LINK_LOST(현장 경보 동작 중),
+ *       그 밖(노트북 끊김·노트북이 관제 정지를 알림)은 CONTROL_HALTED. 연결이 살아 있어도 노트북이 관제 정지를 알리면 NORMAL 이 아니다
+ *   <li>system_health: remote_state 가 NORMAL 이 아니면 UNSAFE_UNKNOWN, 아니면 Tier 0 health 의 값(모르면 UNSAFE_UNKNOWN)
+ *   <li>노트북이 여럿이면(MVP 는 하나) 살아 있는 노트북이 모두 정상일 때만 정상이다. 살아 있는 노트북이 하나라도 있으면 laptop.link 는
+ *       CONNECTED 다(현장 노트북이 죽고 예비가 살아 있으면 구분하지 못한다, 설계 문서 남은 일)
+ *   <li>calibration_state: Tier 0 가 연결돼 있으면 Tier 0 health 의 값, 끊겼거나 모르면 UNCALIBRATED(모르면 정상으로 보지 않는다)
  *   <li>data_age_ms: 지금 − 마지막 world_state 의 t_latest_global(두 서버 시계는 NTP 로 맞춘다고 본다, 음수는 0). 받은 적 없으면 null
  *   <li>config: 발행한 최근 묶음, 적용 확인(config_bundle.applied_at)된 최근 묶음, sync 는 Tier 0 가 연결돼 있으면 Tier 0 health 의
  *       config_sync, 끊겼으면 UNVERIFIED
@@ -58,23 +62,28 @@ public class ViewerHealthService {
 
     ObjectNode payload(Instant now) {
         HealthState.Received tier0 = state.tier0Health();
-        HealthState.Heartbeat laptop = state.laptop();
         HealthState.World world = state.world();
         boolean tier0Up = fresh(tier0 == null ? null : tier0.receivedAt(), now);
-        boolean laptopUp = fresh(laptop == null ? null : laptop.receivedAt(), now);
+        List<HealthState.Heartbeat> laptops = state.laptops();
+        List<HealthState.Heartbeat> live = laptops.stream().filter(h -> fresh(h.receivedAt(), now)).toList();
+        boolean laptopUp = !live.isEmpty();
+        // 살아 있는 노트북이 모두 정상(Tier 0 제어 연결, 관제 정지 아님)을 알릴 때만 정상으로 본다
+        boolean laptopOk = laptopUp && live.stream().allMatch(h -> siteOk(h.payload()));
+        Long lastHeartbeat = laptops.stream().map(h -> h.receivedAt().toEpochMilli()).max(Long::compare).orElse(null);
         JsonNode health = tier0 == null ? null : tier0.payload();
 
+        String remote = tier0Up && laptopOk ? "NORMAL" : !tier0Up && laptopOk ? "REMOTE_LINK_LOST" : "CONTROL_HALTED";
         ObjectNode p = mapper.createObjectNode();
         p.put("as_of", now.toEpochMilli());
         String reported = health == null ? null : health.path("system_health").asString(null);
-        p.put("system_health", tier0Up && laptopUp && reported != null ? reported : UNSAFE_UNKNOWN);
-        p.put("remote_state", remoteState(tier0Up, laptopUp, laptop));
+        p.put("system_health", "NORMAL".equals(remote) && reported != null ? reported : UNSAFE_UNKNOWN);
+        p.put("remote_state", remote);
         p.put("tier0_link", tier0Up ? CONNECTED : DISCONNECTED);
         ObjectNode laptopNode = p.putObject("laptop");
         laptopNode.put("link", laptopUp ? CONNECTED : DISCONNECTED);
-        laptopNode.put("last_heartbeat_at", laptop == null ? null : laptop.receivedAt().toEpochMilli());
+        laptopNode.put("last_heartbeat_at", lastHeartbeat);
         p.put("data_age_ms", world == null ? null : Math.max(0, now.toEpochMilli() - world.tLatestGlobalMs()));
-        String calibration = health == null ? null : health.path("calibration_state").asString(null);
+        String calibration = tier0Up && health != null ? health.path("calibration_state").asString(null) : null;
         p.put("calibration_state", calibration == null ? "UNCALIBRATED" : calibration);
         p.set("config", config(tier0Up, health));
         p.set("scene", scene(world));
@@ -86,18 +95,10 @@ public class ViewerHealthService {
         return receivedAt != null && now.toEpochMilli() - receivedAt.toEpochMilli() <= linkTimeoutMs;
     }
 
-    private static String remoteState(boolean tier0Up, boolean laptopUp, HealthState.Heartbeat laptop) {
-        if (tier0Up && laptopUp) {
-            return "NORMAL";
-        }
-        if (!tier0Up && laptopUp) {
-            JsonNode p = laptop.payload();
-            boolean controlUp = CONNECTED.equals(p.path("tier0").path("control").asString(null));
-            boolean halted = "CONTROL_HALTED".equals(p.path("site_display").asString(null));
-            // control 만 보지 않는다: 연결돼 있어도 처리가 멈추면 노트북은 CONTROL_HALTED 로 알린다(계약 laptop_heartbeat)
-            return controlUp && !halted ? "REMOTE_LINK_LOST" : "CONTROL_HALTED";
-        }
-        return "CONTROL_HALTED";
+    /** control 만 보지 않는다: 연결돼 있어도 처리가 멈추면 노트북은 CONTROL_HALTED 로 알린다(계약 laptop_heartbeat) */
+    private static boolean siteOk(JsonNode heartbeat) {
+        return CONNECTED.equals(heartbeat.path("tier0").path("control").asString(null))
+                && !"CONTROL_HALTED".equals(heartbeat.path("site_display").asString(null));
     }
 
     private ObjectNode config(boolean tier0Up, JsonNode health) {

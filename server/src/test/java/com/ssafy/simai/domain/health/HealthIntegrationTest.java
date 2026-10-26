@@ -94,7 +94,9 @@ class HealthIntegrationTest {
     }
 
     @AfterEach
-    void cleanUp() {
+    void cleanUp() throws InterruptedException {
+        // 화면 상태(HealthState)는 시험 컨텍스트 내내 남는다. 이 시험의 노트북·Tier 0 가 다음 시험에서 살아 있는 것으로 보이지 않게 기다린다
+        Thread.sleep(LINK_TIMEOUT_MS + 200);
         jdbc.update("DELETE FROM device_heartbeat WHERE device_id = ?", laptopId);
         jdbc.update("DELETE FROM device WHERE device_id = ?", laptopId);
         jdbc.update("DELETE FROM system_health WHERE gateway_id = ?", gatewayId);
@@ -191,6 +193,37 @@ class HealthIntegrationTest {
         assertThat(getHealth().at("/payload/remote_state").asString()).isEqualTo("CONTROL_HALTED");
         postHeartbeat(laptopToken, heartbeat("DISCONNECTED", "NORMAL"));
         assertThat(getHealth().at("/payload/remote_state").asString()).isEqualTo("CONTROL_HALTED");
+    }
+
+    @Test
+    void 연결이_모두_살아_있어도_노트북이_관제_정지를_알리면_NORMAL_이_아니다() throws Exception {
+        try (Tier0 tier0 = tier0()) {
+            tier0.send(tier0Health());
+            assertThat(postHeartbeat(laptopToken, heartbeat("CONNECTED", "CONTROL_HALTED"))).isEqualTo(204);
+            Thread.sleep(200);
+            JsonNode halted = getHealth();
+            assertValid(halted);
+            assertThat(halted.at("/payload/tier0_link").asString()).isEqualTo("CONNECTED");
+            assertThat(halted.at("/payload/laptop/link").asString()).isEqualTo("CONNECTED");
+            assertThat(halted.at("/payload/remote_state").asString()).isEqualTo("CONTROL_HALTED");
+            assertThat(halted.at("/payload/system_health").asString()).isEqualTo("UNSAFE_UNKNOWN");
+        }
+    }
+
+    @Test
+    void 선택_항목_형식이_틀리면_500_이_아니라_400_이고_카메라_ID_는_그대로_남긴다() throws Exception {
+        ObjectNode badEc2 = heartbeat("CONNECTED", "NORMAL");
+        ((ObjectNode) badEc2.get("payload")).putObject("ec2").put("state", 1);
+        assertThat(postHeartbeat(laptopToken, badEc2)).isEqualTo(400);
+        ObjectNode badAlarm = heartbeat("CONNECTED", "NORMAL");
+        ((ObjectNode) badAlarm.get("payload")).put("alarm", "loud");
+        assertThat(postHeartbeat(laptopToken, badAlarm)).isEqualTo(400);
+
+        ObjectNode odd = heartbeat("CONNECTED", "NORMAL");
+        ((ObjectNode) odd.at("/payload/tier0")).putArray("video_cameras").add("cam,1").add("NULL").add("{x\"");
+        assertThat(postHeartbeat(laptopToken, odd)).isEqualTo(204);
+        assertThat(jdbc.queryForObject("SELECT array_to_string(tier0_video_cameras, '|') FROM device_heartbeat WHERE device_id = ?",
+                String.class, laptopId)).isEqualTo("cam,1|NULL|{x\"");
     }
 
     // ---- 도우미

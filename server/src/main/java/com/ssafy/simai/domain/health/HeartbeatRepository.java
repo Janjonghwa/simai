@@ -4,8 +4,6 @@ import com.ssafy.simai.domain.tier0.i1.I1Json;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
-import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -37,14 +35,12 @@ class HeartbeatRepository {
     void insert(String deviceId, Instant sentAt, JsonNode p, Instant receivedAt) {
         JsonNode tier0 = p.get("tier0");
         JsonNode ec2 = p.get("ec2");
-        List<String> cameras = new ArrayList<>();
-        tier0.get("video_cameras").values().forEach(c -> cameras.add(c.stringValue()));
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("receivedAt", utc(receivedAt)).addValue("deviceId", deviceId).addValue("sentAt", utc(sentAt))
                 .addValue("seq", p.get("heartbeat_seq").longValue())
                 .addValue("control", tier0.get("control").stringValue())
                 .addValue("lastMessageAt", I1Json.time(tier0, "last_message_at"))
-                .addValue("cameras", I1Json.arrayLiteral(cameras))
+                .addValue("cameras", I1Json.textArray(tier0, "video_cameras"))
                 .addValue("ec2State", ec2 == null ? null : I1Json.text(ec2, "state"))
                 .addValue("ec2LastResponseAt", ec2 == null ? null : I1Json.time(ec2, "last_response_at"))
                 .addValue("siteDisplay", p.get("site_display").stringValue())
