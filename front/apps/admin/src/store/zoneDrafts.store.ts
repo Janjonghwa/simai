@@ -28,3 +28,6 @@ export const useZoneDraftsStore = create<ZoneDraftsState>()((set) => ({
     set((state) => ({ drafts: typeof next === 'function' ? next(state.drafts) : next })),
   clear: () => set({ drafts: {} }),
 }));
+
+/** 사용자가 끝나거나 바뀌면(bindSession onUserChange) 보관 초안을 지운다. */
+export const clearZoneDrafts = () => useZoneDraftsStore.getState().clear();

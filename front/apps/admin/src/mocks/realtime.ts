@@ -1,9 +1,11 @@
 import type { EventsMock } from '@/mocks/events';
 import { readMockUser } from '@/mocks/mockUser';
 import {
+  MOCK_CONFIG,
   riskEventsBetween,
   viewerHealthAt,
   worldStateAt,
+  type MockConfig,
   type MockOutage,
 } from '@/mocks/realtimeScenario';
 import type { StompBroker } from '@/mocks/stompBroker';
@@ -38,6 +40,8 @@ export function startRealtimeMock(
   broker: StompBroker,
   events: Pick<EventsMock, 'record'>,
   now: () => number = Date.now,
+  // 구성 묶음 상태(발행·ACK). 구역 mock 이 정한다(mocks/zones).
+  config: () => MockConfig = () => MOCK_CONFIG,
 ): RealtimeMock {
   let healthPausedUntil = 0;
   let lastEventCheck = now();
@@ -45,11 +49,16 @@ export function startRealtimeMock(
   let staleScene = false;
   // 연결이 없으면(로그인 전·로그아웃 뒤) 메시지를 만들지 않는다.
   const live = () => broker.connections > 0;
-  const healthAt = (t: number) => viewerHealthAt(t, { outage: fault, sceneMismatch: staleScene });
+  const healthAt = (t: number) =>
+    viewerHealthAt(t, { outage: fault, sceneMismatch: staleScene, config: config() });
   const timers = [
     setInterval(() => {
       if (live() && !fault) {
-        broker.publish('/topic/world', worldStateAt(now(), { sceneMismatch: staleScene }));
+        const configVersion = config().applied_version;
+        broker.publish(
+          '/topic/world',
+          worldStateAt(now(), { sceneMismatch: staleScene, configVersion }),
+        );
       }
     }, WORLD_MS),
     setInterval(() => {

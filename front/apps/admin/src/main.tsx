@@ -12,7 +12,7 @@ import { queryClient } from '@/lib/queryClient';
 import { realtime } from '@/lib/realtime';
 import { routeTree } from '@/routeTree.gen';
 import { useSessionStore } from '@/store/session.store';
-import { useZoneDraftsStore } from '@/store/zoneDrafts.store';
+import { clearZoneDrafts } from '@/store/zoneDrafts.store';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createRouter, RouterProvider } from '@tanstack/react-router';
 import { StrictMode } from 'react';
@@ -52,6 +52,7 @@ if (import.meta.env.DEV && env.VITE_API_MOCK) {
     { startRealtimeMock },
     { createEventsMock },
     { createClipsMock },
+    { createZonesMock },
   ] = await Promise.all([
     import('virtual:msw'),
     import('@/mocks/handlers'),
@@ -61,6 +62,7 @@ if (import.meta.env.DEV && env.VITE_API_MOCK) {
     import('@/mocks/realtime'),
     import('@/mocks/events'),
     import('@/mocks/clips'),
+    import('@/mocks/zones'),
   ]);
   // 토큰 모양만 본다: mock 로그인 토큰이나 sub·role 이 있는 JWT(혼합 모드, 서명·만료는 보지 않는다).
   // 로그아웃 뒤 토큰 없이 붙지 않는지 볼 수 있다.
@@ -70,13 +72,26 @@ if (import.meta.env.DEV && env.VITE_API_MOCK) {
   });
   const events = createEventsMock({ broker });
   const clips = createClipsMock({ findEvent: events.find });
+  // health 의 구성 묶음 상태(발행·ACK)는 구역 mock 이 정한다.
+  const zones = createZonesMock();
   // GET /api/health 가 STOMP 흉내와 같은 상태를 주도록 실시간 mock 을 먼저 만든다.
-  const { handlers: realtimeHandlers, ...realtimeMock } = startRealtimeMock(broker, events);
+  const { handlers: realtimeHandlers, ...realtimeMock } = startRealtimeMock(
+    broker,
+    events,
+    Date.now,
+    zones.config,
+  );
   network.configure({
     // 실서버 경로의 mock 은 빼서 그 요청이 그대로 나가게 한다(처리되지 않은 요청은 bypass).
     handlers: [
       ...withoutRealPaths(
-        [...handlers, ...events.handlers, ...clips.handlers, ...realtimeHandlers],
+        [
+          ...handlers,
+          ...events.handlers,
+          ...clips.handlers,
+          ...zones.handlers,
+          ...realtimeHandlers,
+        ],
         env.VITE_API_REAL,
       ),
       broker.handler,
@@ -88,9 +103,14 @@ if (import.meta.env.DEV && env.VITE_API_MOCK) {
   await network.enable();
   // 개발 도구 콘솔에서 흉내 낸다: simaiMock.pauseHealth(5000), simaiMock.drop(),
   // simaiMock.expireAuth()(다음 ACK 를 토큰 만료로 거절해 갱신 뒤 다시 보내기를 본다),
-  // simaiMock.outage('tier0' | 'laptop' | 'remote' | null)(장애 띠), simaiMock.sceneMismatch(true)
+  // simaiMock.outage('tier0' | 'laptop' | 'remote' | null)(장애 띠), simaiMock.sceneMismatch(true),
+  // simaiMock.rejectNextBundle()(다음 구성 묶음을 Tier 0 가 거부해 STALE)
   Object.assign(globalThis, {
-    simaiMock: { ...realtimeMock, expireAuth: events.expireAuth },
+    simaiMock: {
+      ...realtimeMock,
+      expireAuth: events.expireAuth,
+      rejectNextBundle: zones.rejectNextBundle,
+    },
   });
 }
 
@@ -111,7 +131,7 @@ bindSession({
   router,
   queryClient,
   getToken: authSession.freshToken,
-  onUserChange: () => useZoneDraftsStore.getState().clear(),
+  onUserChange: clearZoneDrafts,
 });
 // /topic/events 로 받은 이벤트를 경보 목록 캐시에 반영한다.
 bindEventsCache(realtime, queryClient);

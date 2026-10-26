@@ -1,6 +1,7 @@
 import { bindSession } from '@/lib/bindSession';
 import type { RealtimeSession } from '@/lib/stomp';
 import type { Session } from '@/store/session.store';
+import { clearZoneDrafts, useZoneDraftsStore, type KeptZoneDraft } from '@/store/zoneDrafts.store';
 import { describe, expect, it } from 'vitest';
 import { createStore } from 'zustand/vanilla';
 
@@ -163,5 +164,23 @@ describe('bindSession', () => {
       'clear',
       'logout',
     ]);
+  });
+
+  it('앱이 넘기는 clearZoneDrafts 로 묶으면 실제 구역 초안 저장소가 로그아웃에서 비고 토큰 갱신에서는 남는다', () => {
+    const sessionStore = createStore<{ session?: Session }>()(() => ({ session: alice }));
+    bindSession({
+      sessionStore,
+      realtime: { start: () => {}, stop: async () => {} },
+      router: { invalidate: async () => {}, clearCache: () => {} },
+      queryClient: { clear: () => {} },
+      onUserChange: clearZoneDrafts,
+    });
+    const draft = { zoneId: 'z-04' } as KeptZoneDraft;
+    useZoneDraftsStore.getState().setDrafts({ 'z-04': draft });
+
+    sessionStore.setState({ session: { ...alice, accessToken: 'a-2' } });
+    expect(useZoneDraftsStore.getState().drafts).toEqual({ 'z-04': draft });
+    sessionStore.setState({ session: undefined });
+    expect(useZoneDraftsStore.getState().drafts).toEqual({});
   });
 });

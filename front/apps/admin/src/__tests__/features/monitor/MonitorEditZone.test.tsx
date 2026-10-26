@@ -30,20 +30,23 @@ const ZONES_RAW = {
 vi.mock('@/features/events/useLiveEvents', () => ({
   useLiveEvents: () => ({ entries: [], loaded: true, failed: false }),
 }));
-vi.mock('@/features/zones/useZones', () => ({
-  useZones: () => ({
-    zones: [
-      {
-        zoneId: 'z-04',
-        name: '북동 위험 구역',
-        min: [5.8, 1.2, 0] as const,
-        max: [8.6, 3.8, 2.4] as const,
-      },
-    ],
-    raw: ZONES_RAW,
-    failed: false,
-  }),
-}));
+vi.mock('@/features/zones/useZones', async () => {
+  const { zoneOf } = await import('@/__tests__/features/zones/zoneFixture');
+  return {
+    useZones: () => ({
+      zones: [
+        zoneOf({
+          zoneId: 'z-04',
+          name: '북동 위험 구역',
+          min: [5.8, 1.2, 0],
+          max: [8.6, 3.8, 2.4],
+        }),
+      ],
+      raw: ZONES_RAW,
+      failed: false,
+    }),
+  };
+});
 vi.mock('@/lib/api', () => ({ api: () => Promise.reject(new Error('no api in test')) }));
 
 const fake = vi.hoisted(() => ({
@@ -276,5 +279,6 @@ describe('MonitorPage 구역 선택 수정 동작 및 단일 Canvas 공유', () 
       target: { type: 'zone', id: 'z-04' },
       box: { min: [6.5, 1.2, 0], max: [9.3, 3.8, 2.4] },
     });
-  });
+    // 구역 편집 화면을 10번 다시 그리는 시험이라, 전체 시험을 함께 돌리는 부하에서는 기본 5초가 빠듯하다.
+  }, 15_000);
 });

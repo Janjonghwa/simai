@@ -17,7 +17,7 @@ import type {
   ViewerStatus,
   ViewerTarget,
 } from '@/features/viewer3d';
-import type { ZoneBox, ZonesResponse } from '@/features/zones/types';
+import type { ViewerZones, Zone } from '@/features/zones/types';
 import { useZones } from '@/features/zones/useZones';
 import { continueOrder, rejectReasonText, sameEditBox } from '@/features/zones/zoneEditor';
 import { useRealtimeStore } from '@/store/realtime.store';
@@ -108,8 +108,8 @@ export interface SpatialViewportValue {
   selectedKey: string | null;
   setSelectedKey: (key: string | null) => void;
   selectedZoneId: string | null;
-  zones: ZoneBox[];
-  zonesRaw: ZonesResponse | undefined;
+  zones: Zone[];
+  zonesRaw: ViewerZones | undefined;
   zonesFailed: boolean;
   selectTarget: (
     target: ViewerTarget,
@@ -269,6 +269,8 @@ export function SpatialViewportHost({
         max: [current.max[0], current.max[1], current.max[2]],
       };
       if (!sameEditBox(currentBox, draft.before)) {
+        // 그 초안 형상으로 저장된 구역이 먼저 들어왔다(저장 응답과 초안 정리의 순서는 보장되지 않는다). 알리지 않고 정리한다.
+        if (sameEditBox(currentBox, draft.after)) continue;
         notice = {
           tone: 'warning',
           text: `원본 구역(${draft.zoneId}) 형상이 갱신되어 이전 미저장 미리보기를 폐기했습니다.`,
@@ -481,15 +483,28 @@ export function SpatialViewportHost({
         setEditNotice({ tone: 'warning', text: rejectReasonText(result.reason, result.detail) });
         return;
       }
+      // 3D 가 멈추거나(렌더 오류로 NOT_READY) 내려가면(UNMOUNTED) 하던 편집은 2D 로 바꿀 때처럼 미리보기로 남긴다.
+      const interrupted =
+        preview !== null &&
+        result.target?.id === preview.target.id &&
+        ((result.status === 'REJECTED' && result.reason === 'NOT_READY') ||
+          (result.status === 'CANCELLED' && result.reason === 'UNMOUNTED'));
       editPreviewRef.current = null;
       setEditPreview(null);
       if (recoveringContinueRef.current) return;
+      if (interrupted) {
+        keepDraft(preview, preview.draft);
+        if (!sameEditBox(preview.before, preview.draft)) {
+          setEditNotice({ tone: 'neutral', text: '3D 가 멈춰 편집 중이던 변경을 보관했습니다.' });
+        }
+        return;
+      }
       if (result.status === 'FINISHED') {
         keepDraft({ ...result, draft: result.after }, result.after);
         setEditNotice({
           tone: 'neutral',
           text: result.changed
-            ? '미리보기를 유지했습니다. 서버에는 저장하지 않았습니다.'
+            ? '미리보기를 유지했습니다.'
             : '원본과 같은 형상으로 돌아와 미저장 변경을 정리했습니다.',
         });
         return;
@@ -531,6 +546,17 @@ export function SpatialViewportHost({
       }
       const target: ViewerTarget = { type: 'zone', id: zoneId };
       setSelectedKey(`zone:${zoneId}`);
+      // 상자 편집기로 고치면 다각형·높이를 상자로 덮어쓰게 되는 구역은 형상 편집을 막는다(속성은 고칠 수 있다).
+      if (zones.find((z) => z.zoneId === zoneId)?.shapeEditable === false) {
+        setEditNotice({
+          tone: 'warning',
+          text: rejectReasonText(
+            'NOT_EDITABLE',
+            '직사각형이 아니거나 높이가 없는 구역은 형상을 고칠 수 없습니다.',
+          ),
+        });
+        return { ok: false, reason: 'NOT_EDITABLE' };
+      }
       const handle = viewer.current;
       if (!handle) {
         setEditNotice({ tone: 'warning', text: rejectReasonText('NOT_READY') });
@@ -544,7 +570,7 @@ export function SpatialViewportHost({
       }
       return res;
     },
-    [canEditZones, setSelectedKey],
+    [canEditZones, zones, setSelectedKey],
   );
 
   const continueZoneEdit = useCallback(

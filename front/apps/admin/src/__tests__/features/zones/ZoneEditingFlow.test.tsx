@@ -1,28 +1,38 @@
+import { zoneOf } from '@/__tests__/features/zones/zoneFixture';
 import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
 import type { Viewer3DProps, ViewerEditOverlayInput } from '@/features/viewer3d';
 import { createSpatialDataStore } from '@/features/viewer3d/data/spatialData.store';
 import { createEditStore, previewOf } from '@/features/viewer3d/editing/editSession.store';
 import { createViewerStore } from '@/features/viewer3d/viewer3d.store';
 import { ZonesPage } from '@/features/zones/ZonesPage';
-import type { ZoneBox, ZonesResponse } from '@/features/zones/types';
+import type { ViewerZones, Zone } from '@/features/zones/types';
 import { worldStateAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore } from '@/store/session.store';
 import { useZoneDraftsStore } from '@/store/zoneDrafts.store';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const input = vi.hoisted(() => ({
-  zones: [] as ZoneBox[],
-  raw: undefined as ZonesResponse | undefined,
+  zones: [] as Zone[],
+  raw: undefined as ViewerZones | undefined,
   failed: false,
 }));
 vi.mock('@/features/zones/useZones', () => ({ useZones: () => input }));
 vi.mock('@/features/events/useLiveEvents', () => ({
   useLiveEvents: () => ({ entries: [], loaded: true, failed: false }),
 }));
-vi.mock('@/lib/api', () => ({ api: vi.fn() }));
+// 최근 구성 묶음 조회만 답한다. 구역들(valid_from 1)보다 늦게 발행한 cfg-12 가 현장에 적용되어 있다.
+vi.mock('@/lib/api', () => ({
+  api: (path: string) =>
+    path === '/api/config-bundles'
+      ? Promise.resolve([
+          { config_version: 'cfg-12', issued_at: 100, status: 'APPLIED', applied_at: 101 },
+        ])
+      : Promise.reject(new Error(`no api in test: ${path}`)),
+}));
 
 let engine: ReturnType<typeof createEditStore>;
 let viewer: ReturnType<typeof createViewerStore>;
@@ -99,13 +109,23 @@ function StoreViewer({ ref, ...props }: Viewer3DProps) {
 }
 const load = () => Promise.resolve({ default: StoreViewer });
 
+let queryClient: QueryClient;
+// 구역 저장 훅이 QueryClient 를 쓴다. rerender 에도 같은 Provider 가 남는다.
+const wrapper = ({ children }: { children: ReactNode }) => (
+  <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+);
+
 async function mount() {
+  const before = viewer;
   const result = render(
     <SpatialViewportHost loadViewer={load} zoneEditor>
       <ZonesPage />
     </SpatialViewportHost>,
+    { wrapper },
   );
   await screen.findByTestId('store-viewer');
+  // 뷰어 저장소는 effect 에서 연결된다. 화면이 보인 뒤 effect 가 늦게 돌 수 있어(부하) 새 저장소를 받을 때까지 기다린다.
+  await waitFor(() => expect(viewer).not.toBe(before));
   return result;
 }
 function select(id: string) {
@@ -142,9 +162,10 @@ beforeEach(() => {
     },
     true,
   );
+  queryClient = new QueryClient();
   input.zones = [
-    { zoneId: 'z-04', name: '구역 4', min: [5.8, 1.2, 0], max: [8.6, 3.8, 2.4] },
-    { zoneId: 'z-02', name: '구역 2', min: [1, 6.2, 0], max: [4, 8.4, 0.4] },
+    zoneOf({ zoneId: 'z-04', name: '구역 4', min: [5.8, 1.2, 0], max: [8.6, 3.8, 2.4] }),
+    zoneOf({ zoneId: 'z-02', name: '구역 2', min: [1, 6.2, 0], max: [4, 8.4, 0.4] }),
   ];
   input.raw = {
     contract: 'DEMO_UNCONFIRMED',
@@ -349,6 +370,66 @@ describe('실제 Store 기반 구역 편집 회귀', () => {
     expect(screen.queryByText(/전체 미저장/)).toBeNull();
   });
 
+  it.each([
+    ['로그아웃할', () => useSessionStore.setState({ session: undefined })],
+    [
+      '반장 계정으로 바뀔',
+      () =>
+        useSessionStore.setState({
+          session: { accessToken: 'test', user: { id: 'admin', role: 'FOREMAN' } },
+        }),
+    ],
+    [
+      'Source 가 바뀔',
+      () => useRealtimeStore.setState({ source: { id: 's-2', pushZones: vi.fn() } as never }),
+    ],
+  ])('F20: %s 때 화면이 내려가면 편집 중이던 미리보기를 보관하지 않는다', async (_, change) => {
+    // AppLayout·라우트 가드처럼 부모가 같은 렌더에서 화면을 내린다(화면은 바뀐 역할로 다시 그려지지 않는다).
+    function Gate() {
+      const admin = useSessionStore((s) => s.session?.user.role === 'ADMIN');
+      const sourceId = useRealtimeStore((s) => s.source?.id);
+      return admin && sourceId === 's-1' ? (
+        <SpatialViewportHost loadViewer={load} zoneEditor>
+          <ZonesPage />
+        </SpatialViewportHost>
+      ) : null;
+    }
+    render(<Gate />, { wrapper });
+    await screen.findByTestId('store-viewer');
+    begin('z-04');
+    act(() => {
+      engine.store.getState().updateField('originX', 2);
+    });
+    act(change);
+    expect(screen.queryByTestId('store-viewer')).toBeNull();
+    expect(useZoneDraftsStore.getState().drafts).toEqual({});
+  });
+
+  it('직사각형이 아니거나 높이가 없는 구역은 형상 편집을 시작하지 않고 알린다', async () => {
+    Object.assign(input.zones[0]!, { shapeEditable: false });
+    await mount();
+    begin('z-04');
+    expect(engine.store.getState().session).toBeNull();
+    expect(screen.getByText(/형상을 고칠 수 없습니다/)).toBeTruthy();
+  });
+
+  it.each([
+    [
+      '렌더 오류로 멈추면',
+      () => viewer.getState().markError({ code: 'RENDER_FAILED', message: '' }),
+    ],
+    ['뷰어만 내려가면', () => engine.store.getState().cancel('UNMOUNTED')],
+  ])('3D 가 %s 편집 중이던 변경을 미리보기로 보관한다', async (_, stop) => {
+    await mount();
+    begin('z-04');
+    act(() => {
+      engine.store.getState().updateField('originX', 2);
+    });
+    act(stop);
+    expect(useZoneDraftsStore.getState().drafts['z-04']?.after.min[0]).toBe(2);
+    expect(screen.getByText('3D 가 멈춰 편집 중이던 변경을 보관했습니다.')).toBeTruthy();
+  });
+
   it('F12: Source A/B/A가 한 번에 바뀌어도 폐기된 보관 초안이 복구되지 않는다', async () => {
     await mount();
     begin('z-04');
@@ -376,6 +457,7 @@ describe('실제 Store 기반 구역 편집 회귀', () => {
         contract: 'DEMO_UNCONFIRMED',
         zones: input.zones.map((z) => ({
           zone_id: z.zoneId,
+          name: z.name,
           aabb: { min_xyz: z.min, max_xyz: z.max },
         })),
       };
@@ -390,6 +472,7 @@ describe('실제 Store 기반 구역 편집 회귀', () => {
         contract: 'DEMO_UNCONFIRMED',
         zones: original.map((z) => ({
           zone_id: z.zoneId,
+          name: z.name,
           aabb: { min_xyz: z.min, max_xyz: z.max },
         })),
       };
@@ -401,6 +484,34 @@ describe('실제 Store 기반 구역 편집 회귀', () => {
       expect(overlays()).toHaveLength(0);
     },
   );
+
+  it('보관 초안 형상 그대로 저장된 구역이 초안 정리보다 먼저 들어와도 폐기를 알리지 않고 그 초안만 정리한다', async () => {
+    const page = await mount();
+    begin('z-02');
+    enter('2');
+    begin('z-04');
+    enter('7');
+    const saved = useZoneDraftsStore.getState().drafts['z-04']!.after;
+    input.zones = input.zones.map((z) =>
+      z.zoneId === 'z-04' ? { ...z, version: 2, min: saved.min, max: saved.max } : z,
+    );
+    input.raw = {
+      contract: 'DEMO_UNCONFIRMED',
+      zones: input.zones.map((z) => ({
+        zone_id: z.zoneId,
+        name: z.name,
+        aabb: { min_xyz: z.min, max_xyz: z.max },
+      })),
+    };
+    page.rerender(
+      <SpatialViewportHost loadViewer={load} zoneEditor>
+        <ZonesPage />
+      </SpatialViewportHost>,
+    );
+    expect(Object.keys(useZoneDraftsStore.getState().drafts)).toEqual(['z-02']);
+    expect(overlays().map((o) => o.target.id)).toEqual(['z-02']);
+    expect(screen.queryByText(/폐기/)).toBeNull();
+  });
 
   it('F14/F15: 선택 중에도 전체 보관 목록에 접근하고 전체 복원은 확인 뒤에만 실행한다', async () => {
     await mount();

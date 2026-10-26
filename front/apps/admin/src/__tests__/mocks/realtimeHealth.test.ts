@@ -1,4 +1,5 @@
 import { startRealtimeMock } from '@/mocks/realtime';
+import { worldStateAt, type MockConfig } from '@/mocks/realtimeScenario';
 import type { StompBroker } from '@/mocks/stompBroker';
 import { validateMessage, type ViewerHealthPayload } from '@simai/contracts';
 import { setupServer } from 'msw/node';
@@ -60,5 +61,40 @@ describe('GET /api/health mock', () => {
     const now = await payload(await get());
     expect(now.remote_state).toBe('CONTROL_HALTED');
     expect(now.scene.mismatch).toBe(true);
+  });
+});
+
+describe('구성 묶음 상태', () => {
+  it('구역 mock 이 정한 구성 상태(발행·ACK)를 health 와 world 에 싣고, 계약을 통과한다', async () => {
+    const states: MockConfig[] = [
+      { published_version: 'cfg-13', applied_version: 'cfg-12', sync: 'PENDING' },
+      { published_version: 'cfg-13', applied_version: 'cfg-12', sync: 'STALE' },
+      { published_version: 'cfg-13', applied_version: 'cfg-13', sync: 'CURRENT' },
+    ];
+    let config = states[0]!;
+    const configured = startRealtimeMock(
+      broker,
+      { record: (m) => m },
+      () => t,
+      () => config,
+    );
+    // 이 시험 동안만 구성 상태를 받는 mock 이 GET /api/health 에 답한다.
+    server.use(...configured.handlers);
+    try {
+      for (const next of states) {
+        config = next;
+        const message = await (await get()).json();
+        const checked = validateMessage('viewer_health', message);
+        expect(checked.ok ? [] : checked.errors).toEqual([]);
+        expect((message as { payload: ViewerHealthPayload }).payload.config).toEqual(next);
+      }
+      expect(worldStateAt(t, { configVersion: 'cfg-13' }).payload.config_version).toBe('cfg-13');
+      expect(validateMessage('world_state', worldStateAt(t, { configVersion: null })).ok).toBe(
+        true,
+      );
+    } finally {
+      server.resetHandlers();
+      configured.stop();
+    }
   });
 });

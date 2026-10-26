@@ -1,6 +1,5 @@
 import { type MockAccount, MOCK_ACCOUNTS } from '@/mocks/accounts';
 import { metricsHandlers } from '@/mocks/metrics';
-import { zonesHandlers } from '@/mocks/zones';
 import { http, HttpResponse } from 'msw/http';
 
 function readCredentials(body: unknown) {
@@ -60,6 +59,5 @@ export const handlers = [
     '*/api/auth/logout',
     () => new HttpResponse(null, { status: 204, headers: { 'Set-Cookie': refreshCookie('', 0) } }),
   ),
-  ...zonesHandlers,
   ...metricsHandlers,
 ];

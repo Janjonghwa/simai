@@ -56,9 +56,6 @@ export const ZONE_FIELD_SPECS: readonly ZoneFieldSpec[] = [
 /** 타이핑 중 유효한 숫자를 로컬 3D 미리보기에 자동 반영하는 안정화 지연(ms). */
 export const NUMERIC_DEBOUNCE_MS = 220;
 
-export const SERVER_SAVE_DISABLED_REASON =
-  '서버 저장 기능이 아직 연결되지 않아 이 화면의 미리보기로만 유지됩니다. 실제 관제 구역과 위험 판정은 바뀌지 않습니다.';
-
 export function formatMeters(value: number): string {
   return (Math.round(value * 1000) / 1000).toFixed(2);
 }
