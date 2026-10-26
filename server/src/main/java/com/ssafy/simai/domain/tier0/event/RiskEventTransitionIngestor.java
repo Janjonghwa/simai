@@ -7,15 +7,18 @@ import com.ssafy.simai.domain.tier0.i1.I1Json;
 import com.ssafy.simai.domain.tier0.i1.I1MessageIngestor;
 import com.ssafy.simai.domain.tier0.i1.InvalidI1Message;
 import java.time.Instant;
+import java.util.List;
 import java.util.Set;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * risk_event_transition(Tier 0 → EC2, 명세 12.3·3.2) → risk_event_update 기록·risk_event 반영·저널 위치.
  * 동기화 중(연결 직후 ~ 스냅샷)에 받은 전이는 delivery_mode AUDIT_ONLY 로 기록하고 실시간 알림 대상이 아니다.
- * 스냅샷 뒤에 받은 전이만 REALTIME 이다. 저장 트랜잭션이 끝난 뒤에 저널 위치를 옮긴다(되돌려진 저장을 ack 하지 않게).
+ * 스냅샷 뒤에 받은 전이만 REALTIME 이고, 그 전이가 현재 상태를 바꿨으면 커밋 뒤 /topic/events 로 알린다(RiskEventsDelivered).
+ * 저장 트랜잭션이 끝난 뒤에 저널 위치를 옮긴다(되돌려진 저장을 ack 하지 않게).
  * 같은 offset 에 다른 메시지가 오면 Tier 0 저널이 새로 시작된 것이라 세대를 올리고 다시 기록한다.
  * 계약 위반으로 버린 전이는 건너뛴 것으로 쳐서 빈 구간이 영원히 남지 않게 한다(onRejected).
  */
@@ -26,11 +29,14 @@ class RiskEventTransitionIngestor implements I1MessageIngestor {
     private final RiskEventRepository events;
     private final JournalService journal;
     private final TransactionTemplate transaction;
+    private final ApplicationEventPublisher publisher;
 
-    RiskEventTransitionIngestor(RiskEventRepository events, JournalService journal, TransactionTemplate transaction) {
+    RiskEventTransitionIngestor(RiskEventRepository events, JournalService journal, TransactionTemplate transaction,
+            ApplicationEventPublisher publisher) {
         this.events = events;
         this.journal = journal;
         this.transaction = transaction;
+        this.publisher = publisher;
     }
 
     @Override
@@ -56,17 +62,24 @@ class RiskEventTransitionIngestor implements I1MessageIngestor {
             journal.startNewEpoch(connection, tracker);
             recorded = record(envelope, receivedAt, tracker);
         }
-        if (recorded == Recorded.INSERTED) {
+        if (recorded.inserted()) {
             tracker.touched(I1Json.requiredUuid(envelope.payload(), "event_id"));
         }
         journal.afterPersisted(connection, tracker, offset);
-        return recorded == Recorded.INSERTED ? Outcome.STORED : Outcome.DUPLICATE;
+        return recorded.inserted() ? Outcome.STORED : Outcome.DUPLICATE;
     }
 
     private Recorded record(I1Envelope envelope, Instant receivedAt, JournalTracker tracker) {
         String deliveryMode = tracker.syncMode() ? "AUDIT_ONLY" : "REALTIME";
         int epoch = tracker.epoch();
-        return transaction.execute(status -> events.recordTransition(envelope, deliveryMode, receivedAt, epoch));
+        return transaction.execute(status -> {
+            Recorded recorded = events.recordTransition(envelope, deliveryMode, receivedAt, epoch);
+            // 현재 상태를 바꾼 실시간 전이만 커밋 뒤 알린다. 늦게 온 낮은 sequence(빈 구간 재전송 등)는 기록만 한다
+            if (recorded == Recorded.APPLIED && "REALTIME".equals(deliveryMode)) {
+                publisher.publishEvent(new RiskEventsDelivered(List.of(I1Json.requiredUuid(envelope.payload(), "event_id"))));
+            }
+            return recorded;
+        });
     }
 
     @Override

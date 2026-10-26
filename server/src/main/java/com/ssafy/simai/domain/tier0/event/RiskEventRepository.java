@@ -118,12 +118,19 @@ public class RiskEventRepository {
     }
 
     public enum Recorded {
-        /** 새로 기록했다 */
-        INSERTED,
+        /** 새로 기록했고 현재 상태(risk_event)도 바꿨다 */
+        APPLIED,
+        /** 새로 기록했지만 더 높은 sequence 가 이미 반영돼 현재 상태는 그대로다(늦게 온 전이) */
+        HISTORY_ONLY,
         /** 같은 전이(event_id·sequence 또는 msg_id)가 이미 있다 */
         DUPLICATE,
         /** 같은 세대·offset 에 다른 메시지가 있다. Tier 0 저널이 새로 시작됐다 */
-        OFFSET_CONFLICT
+        OFFSET_CONFLICT;
+
+        /** risk_event_update 에 새 행을 남겼다 */
+        public boolean inserted() {
+            return this == APPLIED || this == HISTORY_ONLY;
+        }
     }
 
     /**
@@ -195,12 +202,12 @@ public class RiskEventRepository {
             java.util.List<UUID> existing = jdbc.queryForList(MSG_AT_OFFSET, params, UUID.class);
             return existing.isEmpty() || existing.contains(envelope.msgId()) ? Recorded.DUPLICATE : Recorded.OFFSET_CONFLICT;
         }
-        jdbc.update(APPLY, params);
+        boolean applied = jdbc.update(APPLY, params) > 0;
         jdbc.update(FILL_RAISED_AT, params);
         if (hasAck) {
             jdbc.update(ACK_JOURNALED, params);
         }
-        return Recorded.INSERTED;
+        return applied ? Recorded.APPLIED : Recorded.HISTORY_ONLY;
     }
 
     private static final java.util.Set<String> ACK_CHANNELS = java.util.Set.of("CONTROL_ROOM", "FOREMAN_PWA", "SITE_BUTTON");

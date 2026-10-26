@@ -1,5 +1,6 @@
 package com.ssafy.simai.global.config;
 
+import com.ssafy.simai.domain.realtime.RealtimeTopics;
 import com.ssafy.simai.domain.tier0.Tier0Paths;
 import com.ssafy.simai.global.properties.AuthProperties;
 import com.ssafy.simai.global.properties.Tier0Properties;
@@ -56,7 +57,7 @@ public class SecurityConfig {
 
     @Bean
     @Order(2)
-    SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    SecurityFilterChain securityFilterChain(HttpSecurity http, JwtAuthenticationConverter roleConverter) throws Exception {
         SecurityErrorResponder errors = new SecurityErrorResponder();
         http
                 // API 인증은 Authorization 헤더로만 한다. 갱신 토큰 쿠키는 SameSite=Strict·Path=/api/auth 라
@@ -72,6 +73,8 @@ public class SecurityConfig {
                         .requestMatchers("/error").permitAll()
                         // OpenAPI 문서·Swagger UI(OpenApiConfig). 경로 모양만 보이고 API 호출은 여전히 JWT 가 있어야 한다
                         .requestMatchers(HttpMethod.GET, "/api/docs", "/api/docs/**", "/api/swagger-ui/**").permitAll()
+                        // 관제 앱 STOMP 업그레이드. 브라우저는 여기에 헤더를 싣지 못해 CONNECT 프레임에서 JWT 를 본다(StompAuthInterceptor)
+                        .requestMatchers(HttpMethod.GET, RealtimeTopics.ENDPOINT).permitAll()
                         .anyRequest().authenticated())
                 // 401·403 에도 ProblemDetail(code) 본문을 싣는다. 관제 앱이 만료(갱신 후 재시도)와 다른 오류를 가른다
                 .exceptionHandling(exceptions -> exceptions
@@ -80,7 +83,7 @@ public class SecurityConfig {
                 .oauth2ResourceServer(oauth2 -> oauth2
                         .authenticationEntryPoint(errors)
                         .accessDeniedHandler(errors)
-                        .jwt(jwt -> jwt.jwtAuthenticationConverter(roleConverter())));
+                        .jwt(jwt -> jwt.jwtAuthenticationConverter(roleConverter)));
         return http.build();
     }
 
@@ -100,8 +103,9 @@ public class SecurityConfig {
         return source;
     }
 
-    // role 클레임(ADMIN 등)을 ROLE_ADMIN 권한으로 바꾼다
-    private static JwtAuthenticationConverter roleConverter() {
+    /** role 클레임(ADMIN 등)을 ROLE_ADMIN 권한으로 바꾼다. REST 와 STOMP CONNECT(StompConfig)가 같이 쓴다 */
+    @Bean
+    JwtAuthenticationConverter roleConverter() {
         JwtGrantedAuthoritiesConverter authorities = new JwtGrantedAuthoritiesConverter();
         authorities.setAuthoritiesClaimName(AccessTokenIssuer.ROLE_CLAIM);
         authorities.setAuthorityPrefix("ROLE_");

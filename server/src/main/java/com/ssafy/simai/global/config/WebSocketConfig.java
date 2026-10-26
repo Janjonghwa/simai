@@ -9,7 +9,7 @@ import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
 
 /**
- * 기기·서비스가 붙는 WebSocket(STOMP 아님). 지금은 I1(Tier 0, /ws/tier0) 하나다.
+ * 기기·서비스가 붙는 WebSocket(STOMP 아님). 지금은 I1(Tier 0, /ws/tier0) 하나다. 관제 앱 STOMP(/ws)는 StompConfig.
  * Tier 0 는 브라우저가 아니라 Origin 을 싣지 않는다. Origin 이 없는 요청은 출처 검사를 받지 않는다.
  */
 @Configuration

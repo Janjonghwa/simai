@@ -9,11 +9,13 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
@@ -23,8 +25,8 @@ import tools.jackson.databind.JsonNode;
  *
  * <ul>
  *   <li>스냅샷이 접어 넣은 offset 까지 빈틈없이 받지 못했으면 다시 요청하고 동기화를 이어 간다(Tier 0 가 다시 보낸 뒤 스냅샷도 다시 보낸다).
- *   <li>동기화 중에 바뀌었고 스냅샷에서 아직 활성인 이벤트: 유효 관측 근거(last_valid_observation_at)가 있으면 DELAYED_ACTIVE,
- *       없으면(재시작 뒤 근거 없음 등) AUDIT_ONLY. 시간 창은 두지 않는다(3.2: 경과 시간만으로 억제하지 않는다).
+ *   <li>동기화 중에 바뀌었고 스냅샷에서 아직 활성인 이벤트: 유효 관측 근거(last_valid_observation_at)가 있으면 DELAYED_ACTIVE
+ *       (커밋 뒤 /topic/events 로 알린다), 없으면(재시작 뒤 근거 없음 등) AUDIT_ONLY. 시간 창은 두지 않는다(3.2: 경과 시간만으로 억제하지 않는다).
  *   <li>동기화 중에 바뀌었고 스냅샷에는 없는(그사이 해소된) 이벤트: AUDIT_ONLY. 실시간 재알림 0(G3 D-G3-05).
  *   <li>스냅샷의 활성 이벤트가 EC2 에 없거나 delivery 가 아직 없으면(끝나지 못한 이전 동기화) 같은 규칙으로 분류한다.
  *   <li>스냅샷이 새로 시작한 저널을 알리면(Pod 교체로 offset 이 줄어듦) 저널 세대를 올린다. 새 저널에 기록이 있으면 연결을 닫아
@@ -44,15 +46,17 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
     private final TransactionTemplate transaction;
     private final EventAckForwarder acks;
     private final Clock clock;
+    private final ApplicationEventPublisher publisher;
 
     EventStateSnapshotIngestor(RiskEventRepository events, JournalCursorRepository cursors, JournalService journal,
-            TransactionTemplate transaction, EventAckForwarder acks, Clock clock) {
+            TransactionTemplate transaction, EventAckForwarder acks, Clock clock, ApplicationEventPublisher publisher) {
         this.acks = acks;
         this.events = events;
         this.cursors = cursors;
         this.journal = journal;
         this.transaction = transaction;
         this.clock = clock;
+        this.publisher = publisher;
     }
 
     @Override
@@ -117,7 +121,7 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
             events.ensureFromSnapshot(gatewayId, event);
         }
         Set<UUID> undecided = events.withoutDelivery(activeIds);
-        Set<UUID> delayed = new HashSet<>();
+        Set<UUID> delayed = new LinkedHashSet<>(); // 스냅샷 순서대로 알린다
         Set<UUID> auditOnly = new HashSet<>();
         for (JsonNode event : active.values()) {
             UUID eventId = I1Json.requiredUuid(event, "event_id");
@@ -132,6 +136,10 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
             }
         }
         events.setDelivery(delayed, "DELAYED_ACTIVE");
+        if (!delayed.isEmpty()) {
+            // 커밋 뒤 /topic/events 로 지연 알림을 보낸다(분류가 되돌려지면 보내지 않는다)
+            publisher.publishEvent(new RiskEventsDelivered(List.copyOf(delayed)));
+        }
         events.setDelivery(auditOnly, "AUDIT_ONLY");
         int stale = events.countActiveNotIn(gatewayId, activeIds);
         if (stale > 0) {

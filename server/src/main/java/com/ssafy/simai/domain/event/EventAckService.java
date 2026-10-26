@@ -1,6 +1,7 @@
 package com.ssafy.simai.domain.event;
 
 import com.ssafy.simai.domain.tier0.event.EventAckForwarder;
+import com.ssafy.simai.domain.tier0.event.RiskEventsDelivered;
 import com.ssafy.simai.domain.user.entity.Role;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
@@ -8,10 +9,12 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -30,11 +33,14 @@ public class EventAckService {
     private final EventQueryRepository events;
     private final EventAckForwarder forwarder;
     private final Clock clock;
+    private final ApplicationEventPublisher publisher;
 
-    public EventAckService(EventQueryRepository events, EventAckForwarder forwarder, Clock clock) {
+    public EventAckService(EventQueryRepository events, EventAckForwarder forwarder, Clock clock,
+            ApplicationEventPublisher publisher) {
         this.events = events;
         this.forwarder = forwarder;
         this.clock = clock;
+        this.publisher = publisher;
     }
 
     /**
@@ -65,6 +71,8 @@ public class EventAckService {
         if (!sent) {
             log.info("Tier 0 로 바로 보내지 못해 저장만 함(다시 보냄): event_id={} ack_id={}", eventId, ackId);
         }
+        // 다른 관제 화면도 확인을 알아 반복 소리를 멈추게 /topic/events 로 다시 보낸다(3.10). Tier 0 가 끊겨 있어도 보낸다
+        publisher.publishEvent(new RiskEventsDelivered(List.of(eventId)));
         // 다시 읽지 않고 방금 만든 확인을 붙여 돌려준다
         ObjectNode added = ((tools.jackson.databind.node.ArrayNode) event.get("acks")).addObject();
         added.put("ack_id", ackId.toString());

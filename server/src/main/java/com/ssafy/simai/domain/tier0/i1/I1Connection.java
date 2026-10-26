@@ -3,7 +3,6 @@ package com.ssafy.simai.domain.tier0.i1;
 import java.io.IOException;
 import java.time.Clock;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 import org.springframework.web.socket.TextMessage;
@@ -81,13 +80,7 @@ public final class I1Connection {
 
     /** 공통 봉투를 씌워 보낸다(명세 12.1). */
     public void send(String msgType, String schemaVersion, ObjectNode payload) throws IOException {
-        ObjectNode envelope = mapper.createObjectNode();
-        envelope.put("schema_version", schemaVersion);
-        envelope.put("msg_type", msgType);
-        envelope.put("msg_id", UUID.randomUUID().toString());
-        envelope.put("sent_at", clock.millis());
-        envelope.put("source_id", EC2_SOURCE_ID);
-        envelope.set("payload", payload);
+        ObjectNode envelope = I1Envelope.outbound(mapper, clock.millis(), msgType, schemaVersion, payload);
         session.sendMessage(new TextMessage(mapper.writeValueAsString(envelope)));
     }
 
