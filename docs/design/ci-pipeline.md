@@ -30,7 +30,7 @@ GitLab ──Webhook──▶ https://simai.live/jenkins/ (Nginx) ──▶ jenk
 | server | `ci-db` 에 시험 DB `simai_ci` 를 지우고 새로 만든 뒤 `sh gradlew build`. `@SpringBootTest` 가 Flyway 로 V1·V2·R 을 적용한다. JUnit 결과를 Jenkins 에 올린다 | `server/`, `contracts/` |
 | front | `pnpm install --frozen-lockfile` → `format:check` → `lint`(계약 생성물 최신 여부 포함) → `typecheck` → `test` → `build` | `front/`, `contracts/` |
 | gateway | 패키지 4개(recorder, relay, rtsp_probe, site_alert)를 차례로 `uv sync --frozen` → `uv run pytest` | `gateway/`, `contracts/` |
-| ai | `uv sync --frozen` → `uv run lint-imports`(의존 방향) → 시험. `scripts/select_tests.py` 가 고른 경로만 `pytest -m "not gpu"`(빈 출력이면 생략, `ALL` 이면 전체). 기준은 **MR 빌드** `origin/<대상>`, **dev push** push 전 커밋(`gitlabBefore`, 없으면 `HEAD^1`). **전체**는 작업 매개변수 `FULL_AI_TESTS=true` 일 때만 — 매일 새벽 dev 전체 시험 작업(Jenkins 작업 설정의 매개변수·주기, 배포 없음)이 고르기가 놓친 것을 잡는다. 규칙은 `docs/design/test-selection.md`(S15P31A101-255·-260·-266) | `ai/`, `contracts/`, `deploy/` |
+| ai | `uv sync --frozen` → `uv run lint-imports`(의존 방향). **pytest 는 새벽 작업에서만**: 작업 매개변수 `FULL_AI_TESTS=true` 이면 `pytest -m "not gpu"` 전체, 아니면(MR·dev push) 생략한다. 새벽 작업 `simai-nightly-ai` 가 매일 02:00 KST 에 dev 로 돈다(아래 설정 8). 빌드가 한 줄로 하나씩 돌아 ai 전체 시험(30분대) 하나가 뒤 MR 을 막았기 때문이다(2026-10-26, 빌드 #43·#44, S15P31A101-269). MR 에서 ai 를 바로 확인하려면 로컬에서 `scripts.select_tests` 로 고른 시험을 돌린다(`docs/design/test-selection.md`) | `ai/`, `contracts/`, `deploy/` |
 
 `Jenkinsfile`·`deploy/jenkins/` 가 바뀌면 모든 단계가 돈다. 결과는 GitLab 커밋 상태 `jenkins` 로 MR 에 보인다(running → success·failed·canceled).
 
@@ -95,6 +95,11 @@ GitLab ──Webhook──▶ https://simai.live/jenkins/ (Nginx) ──▶ jenk
    지우므로 다시 넣는다.
 7. 머지 조건 "Pipelines must succeed" 는 꺼져 있다(2026-10-21). Jenkins 가 MR 에 상태를 올리는 것을 확인한 뒤 켤지 정한다. 상태가 오지
    않는데 켜면 모든 MR 이 막힌다.
+8. 새벽 전체 시험 작업(S15P31A101-269): **New Item → Pipeline**(이름 `simai-nightly-ai`) → `simai` 와 같은 저장소·clone 자격 증명·
+   Script Path `Jenkinsfile`, Branch Specifier 는 `*/dev`(Webhook 이 아니라 `gitlabSourceBranch` 가 없다). **이 빌드는 매개변수가 있습니다**에
+   Boolean `FULL_AI_TESTS`(기본 true), **Triggers → 주기적으로 빌드**에 `TZ=Asia/Seoul` 다음 줄 `0 2 * * *`(매일 02:00 KST 정각, 컨테이너
+   시계는 UTC). GitLab 트리거는 걸지 않는다. Webhook 빌드가 아니라 `gitlabActionType` 이 없어 배포 단계는 타지 않고, 모든 단계가 돈다.
+   결과는 그 dev 커밋의 `jenkins` 상태로도 올라간다.
 
 비밀 값(관리자 비밀번호, GitLab 토큰, Webhook Secret)은 Jenkins 자격 증명 저장소(`jenkins-home` 볼륨)에만 둔다. 저장소·`.env` 에 넣지 않는다.
 

@@ -101,6 +101,8 @@ MR 과 Owner 노트북에서 바뀐 파일로부터 정적 import 그래프·보
 
 ### CI 적용 제안 (`Jenkinsfile` — 곽나혁 님 S15P31A101-28 연동)
 
+> **2026-10-26 변경(S15P31A101-269)**: Jenkins 는 빌드를 한 줄로 하나씩 돌려 `ALL` 빌드(30분대) 하나가 뒤 MR 을 막았다. 그래서 지금 Jenkins 의 MR·dev push 빌드는 ai `pytest` 를 돌리지 않고(`lint-imports` 까지만), 새벽 작업 `simai-nightly-ai`(매일 02:00 KST, `FULL_AI_TESTS=true`)만 전체를 돈다. 아래 MR 선택 실행은 Jenkins 에서는 쓰지 않고 Owner 노트북에서 쓴다. Jenkins 를 동시 실행으로 바꾸면 MR 선택 실행을 다시 붙일 수 있다.
+
 1. **MR 빌드 (`env.gitlabMergeRequestId != null`)**:
    `ai` 단계(`dir('ai')`)에서 `lint-imports` 를 돌린 뒤 `select_tests` 결과에 따라 분기한다(`stderr` 로 출력되는 `[select_tests] ALL: ...` 사유는 빌드 로그에 그대로 남고 `SELECTED` 변수에는 `stdout` 만 담긴다).
 

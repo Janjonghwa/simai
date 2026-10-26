@@ -146,38 +146,21 @@ pipeline {
         }
 
         stage('ai') {
-            // 가장 오래 걸려서 마지막에 둔다. 바뀐 파일과 import 관계로 고른 시험만 돈다(scripts/select_tests.py, S15P31A101-255·-260·-266):
-            // MR 빌드는 대상 브랜치와, dev push 빌드는 push 전 커밋과 비교한다. 전체는 작업 매개변수 FULL_AI_TESTS=true 일 때만
-            // (새벽 전체 시험 작업. 매개변수·주기는 Jenkins 작업 설정에 두고 여기 parameters·triggers 로 두지 않는다 — Webhook 토큰 문제)
+            // 평소 MR·dev 빌드는 의존성·import 규칙만 본다. ai pytest(약 5,350개, 30분대)는 새벽 전체 시험 작업
+            // simai-nightly-ai(매개변수 FULL_AI_TESTS=true, 매일 02:00 KST, 배포 없음)에서만 돈다(S15P31A101-269).
+            // 빌드가 한 줄로 하나씩 돌아 ai 전체 시험 하나가 뒤 MR 들을 30분 넘게 막았다(빌드 #43·#44).
+            // 매개변수·주기는 Jenkins 작업 설정에 두고 여기 parameters·triggers 로 두지 않는다 — Webhook 토큰 문제
             when { environment name: 'RUN_AI', value: 'true' }
             steps {
                 dir('ai') {
                     sh 'uv sync --frozen'
                     sh 'uv run lint-imports'
                     script {
-                        List<String> selected = ['ALL']
-                        String base = null
                         if (params.FULL_AI_TESTS?.toString() == 'true') {
                             echo 'ai 시험 전체(FULL_AI_TESTS)'
-                        } else if (env.gitlabActionType == 'MERGE' && env.gitlabTargetBranch) {
-                            base = "origin/${env.gitlabTargetBranch}"
-                        } else if (env.gitlabActionType == 'PUSH') {
-                            // 새 브랜치 push 는 before 가 0 으로만 된 값이다. 그때는 머지 커밋의 첫 부모(직전 dev)와 비교한다
-                            base = (env.gitlabBefore && !(env.gitlabBefore ==~ /0+/)) ? env.gitlabBefore : 'HEAD^1'
-                        }
-                        if (base) {
-                            // 기준 커밋을 읽지 못하는 등 실패하면 스크립트가 ALL 을 낸다(보수적)
-                            selected = sh(script: "uv run python -m scripts.select_tests --base ${base}",
-                                          returnStdout: true).trim().readLines().findAll { it.trim() }
-                            echo "시험 고르기 기준: ${base}"
-                        }
-                        if (selected.isEmpty()) {
-                            echo 'ai 시험 생략: 바뀐 파일이 ai 시험에 닿지 않는다(lint-imports 만)'
-                        } else if (selected.contains('ALL')) {
                             sh 'uv run pytest -m "not gpu"'
                         } else {
-                            echo "고른 ai 시험 경로 ${selected.size()}개"
-                            sh "uv run pytest -m 'not gpu' ${selected.join(' ')}"
+                            echo 'ai pytest 생략: 새벽 전체 시험 작업(simai-nightly-ai, 02:00 KST)에서 돈다. 급하면 로컬에서 scripts.select_tests 로 고른 시험을 돌린다'
                         }
                     }
                 }
