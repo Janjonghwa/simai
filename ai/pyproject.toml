@@ -238,6 +238,7 @@ forbidden_modules = [
     "simai_ai.recovery",
     "simai_ai.gpu",
     "simai_ai.rag",
+    "simai_ai.report",
     "numpy",
     "cv2",
     "torch",
@@ -293,6 +294,7 @@ forbidden_modules = [
     "simai_ai.hmr",
     "simai_ai.scene",
     "simai_ai.rag",
+    "simai_ai.report",
     "services.worker",
 ]
 

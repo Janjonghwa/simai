@@ -1,0 +1,59 @@
+{
+  "schema_version": "3.3.0",
+  "msg_type": "job_request",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000303",
+  "sent_at": 1760342400400,
+  "source_id": "ec2",
+  "payload": {
+    "job_id": "job-20261020-0003",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-000000000313",
+    "attempt": 1,
+    "max_attempts": 2,
+    "job_type": "tbm_report",
+    "priority": "REPORT",
+    "timeout_ms": 180000,
+    "leased_at": 1760342400400,
+    "lease_expires_at": 1760342430400,
+    "heartbeat_interval_ms": 10000,
+    "input": {
+      "report_kind": "DAILY",
+      "report_id": "rep-20261020-01",
+      "site_id": "classroom-1",
+      "report_date": "2026-10-20",
+      "events": [
+        {
+          "event_id": "0192a6f1-0a00-7c00-8a00-000000000002",
+          "rule_id": "R2",
+          "severity": "CRITICAL",
+          "zone_id": "z-04",
+          "raised_at": 1760342400340,
+          "resolved_at": 1760342460340,
+          "resolution": "OBSERVED",
+          "action_status": "DONE",
+          "worker_name": "홍길동"
+        },
+        {
+          "event_id": "0192a6f1-0a00-7c00-8a00-000000000007",
+          "rule_id": "R7",
+          "severity": "CAUTION",
+          "zone_id": "z-04",
+          "raised_at": 1760342500000,
+          "resolved_at": null,
+          "resolution": null,
+          "action_status": null
+        }
+      ],
+      "clauses": [
+        {
+          "clause_id": "산업안전보건기준규칙 제42조#0",
+          "text": "① 사업주는 근로자가 추락하거나 넘어질 위험이 있는 장소[작업발판의 끝ㆍ개구부(開口部) 등을 제외한다]또는 기계ㆍ설비ㆍ선박블록 등에서 작업을 할 때에 근로자가 위험해질 우려가 있는 경우 비계(飛階)를 조립하는 등의 방법으로 작업발판을 설치하여야 한다."
+        },
+        {
+          "clause_id": "산업안전보건기준규칙 제43조",
+          "text": "① 사업주는 작업발판 및 통로의 끝이나 개구부로서 근로자가 추락할 위험이 있는 장소에는 안전난간, 울타리, 수직형 추락방망 또는 덮개 등(이하 이 조에서 \"난간등\"이라 한다)의 방호 조치를 충분한 강도를 가진 구조로 튼튼하게 설치하여야 하며, 덮개를 설치하는 경우에는 뒤집히거나 떨어지지 않도록 설치하여야 한다. 이 경우 어두운 장소에서도 알아볼 수 있도록 개구부임을 표시해야 하며, 수직형 추락방망은 한국산업표준에서 정하는 성능기준에 적합한 것을 사용해야 한다. <개정 2019.12.26, 2022.10.18>"
+        }
+      ]
+    }
+  },
+  "_expect_error": "실명·사람 이름은 보내지 않는다(5.4, 14): 이벤트 요약에 사람 필드를 둘 수 없다"
+}

@@ -135,7 +135,7 @@ def test_e2e_lease_run_upload_submit_and_result_passes_contract(ec2, run_main, s
 def test_build_handlers_registers_bev_only_with_object_store(store):
     assert isinstance(entry.build_handlers(None, store)["bev_floorplan"], BevFloorplanHandler)
     # 서명 API 클라이언트(-248) 전에는 올릴 수 없는 작업을 대여하지 않는다
-    assert entry.build_handlers(None) == {}
+    assert "bev_floorplan" not in entry.build_handlers(None)
 
 
 def test_calibration_hash_mismatch_fails_without_retry(store):

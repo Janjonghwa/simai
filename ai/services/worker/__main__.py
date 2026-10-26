@@ -12,6 +12,8 @@
 - bev_floorplan(S15P31A101-239): 객체 저장소 주입점(services.worker.objects.ObjectStore)이 있을 때만 등록한다. 워커 전용 서명 API
   (S15P31A101-248) 클라이언트가 붙기 전에는 진입점이 저장소를 주지 않으므로 등록하지 않는다(받아도 올릴 수 없는 작업을 대여해
   시도 횟수를 쓰지 않게).
+- tbm_report(S15P31A101-225): 늘 등록한다. 외부 LLM 설정(SIMAI_LLM_BASE_URL·SIMAI_LLM_MODEL·SIMAI_LLM_API_KEY·SIMAI_LLM_TIMEOUT_S,
+  simai_ai.report.llm)은 작업마다 읽고, 없으면 그 작업을 재시도 불가 LLM_CONFIG 로 끝낸다(설정 오류를 EC2 에서 보이게).
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from simai_ai.gpu.reserve import FAILED, cap_process_memory
 from .client import AuthError, LeaseClient, RequestRejected
 from .bev_floorplan import BevFloorplanHandler
 from .handlers import JobHandler
+from .tbm_report import TbmReportHandler
 from .objects import ObjectStore
 from .runner import HandlerStuck, Worker
 from .transport import HttpTransport
@@ -44,7 +47,7 @@ def build_handlers(config: Path | None, store: ObjectStore | None = None) -> Map
     VLM 처리기는 vLLM 을 WorkerGpuSettings.budget 의 vllm_gpu_memory_utilization·vllm_max_num_seqs 로 띄운다(명세 3.2 상한).
     객체 저장소를 쓰는 처리기는 store 가 있을 때만 넣는다.
     """
-    handlers: dict[str, JobHandler] = {}
+    handlers: dict[str, JobHandler] = {"tbm_report": TbmReportHandler(clock_ms=lambda: time.time_ns() // 1_000_000)}
     if store is not None:
         handlers["bev_floorplan"] = BevFloorplanHandler(store, clock_ms=lambda: time.time_ns() // 1_000_000)
     return handlers
