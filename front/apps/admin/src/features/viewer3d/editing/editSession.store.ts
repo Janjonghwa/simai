@@ -2,10 +2,12 @@ import type { SpatialDataStore } from '@/features/viewer3d/data/spatialData.stor
 import {
   applyEditOperation,
   boxJson,
+  fieldOperation,
   isValidBox,
   sameBox,
   ZONE_AABB_POLICY,
   type EditFace,
+  type EditField,
   type EditOperation,
   type EditOutcome,
   type EditPolicy,
@@ -57,6 +59,11 @@ export interface EditState {
   setDragging(handle: EditHandle | null): void;
   /** 끌던 조작을 되돌린다(Esc). 초안을 끌기 전 값으로 둔다. */
   restoreDraft(draft: WorldBox): void;
+  /**
+   * 초안의 한 값을 World 절대값으로 고친다(숫자 입력). 끌기와 같은 엔진·정책으로 검사하고,
+   * 거부되면 초안은 마지막 유효 값에 둔다. 끄는 중에는 받지 않는다.
+   */
+  updateField(field: EditField, value: number): ViewerEditCommandResult;
   cancel(reason?: ViewerEditCancelReason): ViewerEditResult | null;
   finish(): ViewerEditResult | null;
 }
@@ -228,11 +235,29 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
         });
       },
 
+      updateField: (field, value) => {
+        const session = get().session;
+        if (!session) return { ok: false, reason: 'NOT_EDITABLE' };
+        if (session.dragging) return { ok: false, reason: 'NOT_READY' };
+        const operation = fieldOperation(session.draft, field, value);
+        if (!operation) {
+          set({
+            session: {
+              ...session,
+              refused: { reason: 'INVALID_GEOMETRY', detail: '숫자가 아니다' },
+            },
+          });
+          return { ok: false, reason: 'INVALID_GEOMETRY' };
+        }
+        const outcome = get().preview(session.draft, operation);
+        return outcome.ok ? { ok: true } : { ok: false, reason: outcome.reason };
+      },
+
       cancel,
 
       finish: () => {
         const { session } = get();
-        if (!session) return null;
+        if (!session || session.dragging) return null;
         if (!isValidBox(session.draft)) {
           return reject(session.target, 'INVALID_GEOMETRY', '초안 형상이 유효하지 않다');
         }

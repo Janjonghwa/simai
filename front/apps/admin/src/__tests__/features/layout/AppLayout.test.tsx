@@ -1,5 +1,6 @@
 import { AppLayout } from '@/features/layout/AppLayout';
 import { cleanup, render, screen } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // 레이아웃이 알림 자리를 어디에 어떻게 두는지만 본다. 화면 조각은 대역으로 바꾼다.
@@ -16,6 +17,9 @@ vi.mock('@tanstack/react-router', () => ({
 }));
 vi.mock('@/features/layout/TopBar', () => ({ TopBar: () => <header /> }));
 vi.mock('@/features/layout/Dock', () => ({ Dock: () => null }));
+vi.mock('@/features/layout/SpatialViewportHost', () => ({
+  SpatialViewportHost: ({ children }: { children?: ReactNode }) => children,
+}));
 vi.mock('@/features/events/AlarmSoundLoop', () => ({ AlarmSoundLoop: () => null }));
 vi.mock('@/features/layout/FailureBand', () => ({
   FailureBand: () => (route.failure ? <div data-testid="failure" /> : null),

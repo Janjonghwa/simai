@@ -85,3 +85,17 @@ export type ViewerEditResult =
     };
 
 export type ViewerEditCommandResult = { ok: true } | { ok: false; reason: ViewerEditRejectReason };
+
+/**
+ * 숫자로 고치는 값(World, m). originX·originY 는 min X·Y(크기 유지 이동), width·depth 는 min 을 고정한 폭·깊이,
+ * zMin·zMax 는 하단·상단 높이다(S15P31A101-241).
+ */
+export type ViewerEditField = 'originX' | 'originY' | 'width' | 'depth' | 'zMin' | 'zMax';
+
+/** 화면이 보관한 미저장 미리보기 형상을 읽기 전용 Ghost 로 겹쳐 그린다. 원본·위험 강조·선택에 영향을 주지 않는다. */
+export interface ViewerEditOverlay {
+  target: ViewerTarget;
+  box: ViewerEditBox;
+}
+
+export type ViewerEditOverlayInput = ViewerEditOverlay | readonly ViewerEditOverlay[] | null;

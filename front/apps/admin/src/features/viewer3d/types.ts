@@ -1,6 +1,8 @@
 import type { SpatialSource } from '@/features/viewer3d/data/spatialSource';
 import type {
   ViewerEditCommandResult,
+  ViewerEditField,
+  ViewerEditOverlayInput,
   ViewerEditPreview,
   ViewerEditResult,
 } from '@/features/viewer3d/editing/editTypes';
@@ -57,6 +59,12 @@ export interface Viewer3DHandle {
   cancelEdit(): ViewerEditResult | null;
   /** 초안을 World 결과로 돌려주고 편집을 끝낸다. 저장하지 않는다(saved: false). 편집 중이 아니면 null. */
   finishEdit(): ViewerEditResult | null;
+  /**
+   * 편집 중 초안의 한 값을 World 절대값(m)으로 고친다(숫자 입력, S15P31A101-241). 손잡이 끌기와 같은 엔진으로 검사한다.
+   * 편집 중이 아니면 NOT_EDITABLE, 유한하지 않거나 경계가 교차하면 INVALID_GEOMETRY 이고 초안은 그대로다.
+   * 성공하면 onEditPreview 로 새 초안을 알린다.
+   */
+  updateEditField(change: { field: ViewerEditField; value: number }): ViewerEditCommandResult;
 }
 
 export interface Viewer3DProps {
@@ -65,6 +73,8 @@ export interface Viewer3DProps {
   initialMode?: ViewerMode;
   /** 3D 클릭이든 FE 명령이든 선택이 바뀔 때마다 부른다. 해제는 null. */
   onSelectionChange?: (target: ViewerTarget | null) => void;
+  /** 3D 대상을 더블클릭했을 때 부른다(구역 편집 모드에서 구역 더블클릭 즉시 수정 진입용). */
+  onTargetDoubleClick?: (target: ViewerTarget) => void;
   /** 마운트 직후 한 번, 이후 단계·모드·오류가 바뀔 때마다 부른다. */
   onStatusChange?: (status: ViewerStatus) => void;
   /**
@@ -79,5 +89,11 @@ export interface Viewer3DProps {
   onEditPreview?: (preview: ViewerEditPreview) => void;
   /** 편집이 끝날 때(완료·취소·거부) 부른다. 시작하지 못한 이유(REJECTED)도 알린다. */
   onEditResult?: (result: ViewerEditResult) => void;
+  /**
+   * 화면이 보관한 미저장 미리보기를 겹쳐 그린다(선택 사항, 읽기 전용 Ghost). 클릭·위험 강조·원본 구역에 영향이 없고,
+   * 그 구역이 장면에 없으면 그리지 않는다. 같은 구역을 편집하는 동안에는 편집 미리보기가 대신한다.
+   * 단일 구역 또는 여러 구역 배열을 모두 받는다.
+   */
+  editDraftOverlay?: ViewerEditOverlayInput;
   className?: string;
 }

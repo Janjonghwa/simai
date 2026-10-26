@@ -12,6 +12,7 @@ import { queryClient } from '@/lib/queryClient';
 import { realtime } from '@/lib/realtime';
 import { routeTree } from '@/routeTree.gen';
 import { useSessionStore } from '@/store/session.store';
+import { useZoneDraftsStore } from '@/store/zoneDrafts.store';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createRouter, RouterProvider } from '@tanstack/react-router';
 import { StrictMode } from 'react';
@@ -34,6 +35,8 @@ declare module '@tanstack/react-router' {
     fullBleed?: boolean;
     /** 오른쪽에 이벤트 패널이 있다(실시간 관제). 경보 배너가 그 자리를 비키고 「상세」를 이 화면에서 연다. */
     eventPanel?: boolean;
+    /** 구역 편집 화면(/zones). 같은 3D World 위에 편집 오버레이·가장자리 음영·미저장 Ghost 를 켠다. */
+    zoneEditor?: boolean;
   }
 }
 
@@ -103,6 +106,7 @@ bindSession({
   router,
   queryClient,
   getToken: authSession.freshToken,
+  onUserChange: () => useZoneDraftsStore.getState().clear(),
 });
 // /topic/events 로 받은 이벤트를 경보 목록 캐시에 반영한다.
 bindEventsCache(realtime, queryClient);

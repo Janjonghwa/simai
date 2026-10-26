@@ -2,7 +2,10 @@ import { targetKey } from '@/features/viewer3d/target';
 import type { ViewerTarget } from '@/features/viewer3d/types';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
 import type { ThreeEvent } from '@react-three/fiber';
-import { useCallback, useEffect, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, type ReactNode } from 'react';
+
+/** 같은 대상을 연속 클릭했을 때 더블클릭으로 인정하는 최대 간격(ms). */
+const DOUBLE_CLICK_MS = 400;
 
 interface SelectableProps {
   target: ViewerTarget;
@@ -18,6 +21,7 @@ interface SelectableProps {
 export function Selectable({ target, children, pickInstead }: SelectableProps) {
   const store = useViewerStore();
   const { type, id } = target;
+  const lastClickRef = useRef<{ key: string; at: number } | null>(null);
 
   useEffect(() => {
     const registered = { type, id };
@@ -30,7 +34,20 @@ export function Selectable({ target, children, pickInstead }: SelectableProps) {
       // 끈 동작(카메라 회전·손잡이 끌기)은 클릭이 아니다. R3F 가 빈 곳 클릭(onPointerMissed)에 쓰는 기준(2px)과 같다.
       if (event.delta > 2) return;
       event.stopPropagation();
-      store.getState().select(pickInstead?.(event) ?? { type, id });
+      const picked = pickInstead?.(event) ?? { type, id };
+      const key = targetKey(picked);
+      const now = Date.now();
+      const prev = lastClickRef.current;
+      store.getState().select(picked);
+      if (
+        (event.nativeEvent && event.nativeEvent.detail >= 2) ||
+        (prev !== null && prev.key === key && now - prev.at <= DOUBLE_CLICK_MS)
+      ) {
+        lastClickRef.current = null;
+        store.getState().activate(picked);
+        return;
+      }
+      lastClickRef.current = { key, at: now };
     },
     [store, type, id, pickInstead],
   );

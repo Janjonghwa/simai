@@ -9,6 +9,8 @@ export interface BindSessionDeps {
   queryClient: { clear(): void };
   /** 실시간 연결이 연결·재연결마다 읽는 토큰. 기본은 세션의 토큰(앱은 만료 전에 갱신하는 authSession.freshToken). */
   getToken?: RealtimeSession['getToken'];
+  /** 사용자가 끝나거나(로그아웃·다른 계정) 같은 사용자의 권한이 바뀔 때 부른다. 그 사용자의 화면 상태(구역 초안 등)를 비운다. */
+  onUserChange?: () => void;
 }
 
 /**
@@ -25,6 +27,7 @@ export function bindSession({
   router,
   queryClient,
   getToken = () => sessionStore.getState().session?.accessToken,
+  onUserChange,
 }: BindSessionDeps) {
   const initial = sessionStore.getState().session;
   if (initial) realtime.start({ userId: initial.user.id, getToken });
@@ -33,10 +36,14 @@ export function bindSession({
     const before = prev.session;
     const after = state.session;
     if (before === after) return;
-    // 같은 사용자의 토큰 갱신이면 할 일이 없다. 가드도 그대로 통과한다.
-    if (before && after && before.user.id === after.user.id) return;
+    // 같은 사용자의 토큰 갱신이면 할 일이 없다. 가드도 그대로 통과한다. 권한만 바뀌었으면 그 사용자의 화면 상태만 비운다.
+    if (before && after && before.user.id === after.user.id) {
+      if (before.user.role !== after.user.role) onUserChange?.();
+      return;
+    }
     const userEnded = before !== undefined;
 
+    if (userEnded) onUserChange?.();
     if (userEnded) void realtime.stop();
     if (after) realtime.start({ userId: after.user.id, getToken });
     if (userEnded) router.clearCache();

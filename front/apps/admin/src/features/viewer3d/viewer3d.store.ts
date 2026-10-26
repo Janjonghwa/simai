@@ -20,12 +20,15 @@ export interface ViewerState {
   selected: ViewerTarget | null;
   /** 요청마다 새 객체라 같은 대상을 다시 요청해도 카메라가 다시 맞춘다. */
   focus: FocusRequest | null;
+  /** 3D 더블클릭(활성화) 요청. 요청마다 새 객체로 알린다. */
+  activated: FocusRequest | null;
   /** 장면에 올라온 선택 가능 대상의 키별 등록 수. 같은 키가 잠시 겹쳐도 하나가 빠질 때 지우지 않는다. */
   targets: ReadonlyMap<string, number>;
 
   registerTarget(target: ViewerTarget): void;
   unregisterTarget(target: ViewerTarget): void;
   select(input: unknown): CommandResult;
+  activate(input: unknown): CommandResult;
   clearSelection(): CommandResult;
   focusOn(input: unknown): CommandResult;
   setMode(input: unknown): CommandResult;
@@ -59,6 +62,7 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       mode: isViewerMode(initialMode) ? initialMode : 'LIVE',
       selected: null,
       focus: null,
+      activated: null,
       targets: new Map(),
 
       registerTarget: (target) => {
@@ -92,6 +96,16 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
         const resolved = resolve(input);
         if (!('target' in resolved)) return resolved;
         if (!sameTarget(get().selected, resolved.target)) set({ selected: resolved.target });
+        return OK;
+      },
+
+      activate: (input) => {
+        const resolved = resolve(input);
+        if (!('target' in resolved)) return resolved;
+        set({
+          selected: resolved.target,
+          activated: { target: resolved.target },
+        });
         return OK;
       },
 

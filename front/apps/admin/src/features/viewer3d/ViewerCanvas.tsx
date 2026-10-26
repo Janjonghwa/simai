@@ -1,4 +1,5 @@
 import { CameraRig } from '@/features/viewer3d/CameraRig';
+import { DraftOverlay } from '@/features/viewer3d/editing/DraftOverlay';
 import { GizmoController } from '@/features/viewer3d/editing/GizmoController';
 import { PersonLayer } from '@/features/viewer3d/people/PersonLayer';
 import { RiskScope } from '@/features/viewer3d/risk/RiskScope';
@@ -81,6 +82,7 @@ export const ViewerCanvas = memo(function ViewerCanvas({ children }: ViewerCanva
       </RiskScope>
       {/* 편집 초안·손잡이는 위험 강조 밖에 둔다(위험은 원본 구역에만 붙는다). */}
       <GizmoController />
+      <DraftOverlay />
       {children}
     </Canvas>
   );
