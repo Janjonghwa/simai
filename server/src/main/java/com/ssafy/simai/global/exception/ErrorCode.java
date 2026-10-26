@@ -164,4 +164,29 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    /** 노트북 하트비트·System Health(S15P31A101-262) */
+    enum Health implements ErrorCode {
+        INVALID_HEARTBEAT(HttpStatus.BAD_REQUEST, "하트비트가 계약(laptop_heartbeat 1.x)에 맞지 않습니다"),
+        HEARTBEAT_SOURCE_MISMATCH(HttpStatus.BAD_REQUEST, "하트비트 source_id 가 기기 토큰의 기기 ID 와 다릅니다"),
+        NOT_A_LAPTOP(HttpStatus.FORBIDDEN, "노트북으로 등록된 기기만 하트비트를 보냅니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Health(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }
