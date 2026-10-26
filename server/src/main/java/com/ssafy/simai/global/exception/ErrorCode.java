@@ -69,4 +69,30 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    enum Event implements ErrorCode {
+        EVENT_NOT_FOUND(HttpStatus.NOT_FOUND, "이벤트를 찾을 수 없습니다"),
+        // Tier 0 는 해소된 이벤트의 확인을 응답 없이 버린다. 미리 막아 화면에 알린다
+        EVENT_RESOLVED(HttpStatus.CONFLICT, "이미 해소된 이벤트입니다"),
+        INVALID_EVENT_SEQUENCE(HttpStatus.BAD_REQUEST, "event_sequence 는 1 이상이어야 합니다"),
+        INVALID_ACK_CHANNEL(HttpStatus.BAD_REQUEST, "channel 은 CONTROL_ROOM 또는 FOREMAN_PWA 여야 합니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Event(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }
