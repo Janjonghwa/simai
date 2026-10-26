@@ -16,9 +16,10 @@ from site_driver import GATEWAY, T0, Site, finding  # 같은 디렉터리(스크
 
 from simai_ai.eventlog import JournalConfig
 from simai_ai.risk import FixedClock, Severity
-from simai_ai.risk.lifecycle import Lifecycle
+from simai_ai.risk.lifecycle import EscalationRequest, Lifecycle
 
 SMALL = JournalConfig(segment_max_bytes=1, retention_ms=0)
+ESCALATION_ID = "3c9d1e2f-4a5b-4c6d-9e8f-1a2b3c4d5e6f"
 
 
 def say(*parts: object) -> None:
@@ -47,6 +48,19 @@ def main() -> None:
         site.checkpoint()
         site.ack(a.event_id)
         site.raise_event("w-2", Severity.CRITICAL)
+        report(site)
+        hang()
+
+    elif scenario == "after_escalate":
+        # 운영자 상향(S15P31A101-272) 전이(fsync) 직후 종료: 체크포인트 뒤의 상향은 저널에만 있다(D-G3-11, S15P31A101-113).
+        site = Site(root, clock)
+        a = site.raise_event("w-1", Severity.HIGH)
+        site.checkpoint()
+        request = EscalationRequest.from_contract({"event_id": a.event_id, "escalation": {
+            "escalation_id": ESCALATION_ID, "basis": "VLM_PROPOSAL", "assessment_job_id": "job-1",
+            "target_severity": "CRITICAL", "channel": "CONTROL_ROOM", "actor_role": "ADMIN", "actor_id": "user-0003",
+            "requested_at": T0}})
+        site.journal.append_step(site.tracker.escalate(request))
         report(site)
         hang()
 

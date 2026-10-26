@@ -63,7 +63,7 @@ def test_child_that_dies_before_the_kill_point_is_error_not_violation(g3, tmp_pa
     res = result(tmp_path / "vol")
     assert code == 2 and res["verdict"] == "ERROR"
     assert all(v["count"] == 0 for v in res["g3"].values())  # 위반으로 세지 않는다
-    assert len(res["errors"]) == 4
+    assert len(res["errors"]) == 5  # 결정적 지점 5개(-113 운영자 상향 직후 포함), seed 없음
 
 
 def test_nothing_ran_is_error_not_pass(g3, tmp_path):

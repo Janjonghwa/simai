@@ -130,6 +130,26 @@ def test_kill_right_after_transition(tmp_path, sd, recovered_clock):
     site.close()
 
 
+def test_kill_right_after_operator_escalation(tmp_path, sd, recovered_clock):
+    """운영자 상향(S15P31A101-272) 전이 직후 강제 종료(D-G3-11, S15P31A101-113): 체크포인트 뒤 저널에만 있는 상향이 등급·바닥값까지
+    복원되고, escalation_id 는 재시작 뒤에도 저널 색인으로 남는다(같은 명령을 다시 기록하지 않음)."""
+    from simai_ai.risk import Severity
+
+    escalation_id = "3c9d1e2f-4a5b-4c6d-9e8f-1a2b3c4d5e6f"  # crash_child.ESCALATION_ID
+
+    child = Child("after_escalate", tmp_path)
+    child.wait_for(lambda s: s == "HANG")
+    expected = child.last_active()
+    child.kill()
+    site, truth = _recover(sd, tmp_path, recovered_clock)
+    sd.assert_matches_journal(site.result, truth)
+    assert {s.event_id: s.event_sequence - 1 for s in site.result.restored} == expected
+    [state] = site.result.restored
+    assert state.severity is Severity.CRITICAL and state.escalation_floor is Severity.CRITICAL
+    assert site.journal.has_escalation_id(escalation_id)
+    site.close()
+
+
 def test_kill_during_checkpoint_write(tmp_path, sd, recovered_clock):
     child = Child("during_checkpoint", tmp_path)
     child.wait_for(lambda s: s == "HANG")
