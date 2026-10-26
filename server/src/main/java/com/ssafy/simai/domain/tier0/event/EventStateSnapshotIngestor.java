@@ -100,7 +100,12 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
         cursors.saveSyncMode(gatewayId, false, I1Json.utc(clock.instant()));
         journal.send(connection, tracker, null);
         // 끊긴 동안 저장만 한 운영자 확인을 같은 ack_id 로 다시 보낸다(S15P31A101-121)
-        acks.resendPending(connection);
+        try {
+            acks.resendPending(connection);
+        } catch (RuntimeException e) {
+            // 동기화는 끝났다. 다시 보내기는 주기 작업이 이어 한다
+            log.warn("I1 미반영 확인 다시 보내기 실패: gateway={} error={}", gatewayId, e.getClass().getSimpleName());
+        }
         log.info("I1 저널 동기화 끝: gateway={} active={} changed_during_sync={}", gatewayId, active.size(), touched.size());
         return Outcome.STORED;
     }

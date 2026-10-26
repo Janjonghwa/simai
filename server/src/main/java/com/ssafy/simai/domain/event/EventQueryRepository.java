@@ -15,7 +15,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
-import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
@@ -43,10 +42,13 @@ public class EventQueryRepository {
         this.mapper = mapper;
     }
 
-    /** 최신 발생순(raised_at, 모르면 뒤로). LIVE 만 */
+    /**
+     * 최신 발생순. 발생 시각을 모르는 이벤트(RAISED 보다 뒤 전이가 먼저 왔거나 스냅샷으로 만든 것)는 마지막 갱신 시각으로 보고,
+     * 그것도 없으면 앞에 둔다. 관제 앱은 첫 페이지만 읽으므로 활성 경보가 뒤로 밀려 안 보이면 안 된다. LIVE 만
+     */
     public List<ObjectNode> findPage(int page, int size) {
         List<ObjectNode> events = jdbc.query("SELECT " + COLUMNS + " FROM risk_event WHERE source = 'LIVE'"
-                + " ORDER BY raised_at DESC NULLS LAST, updated_at DESC NULLS LAST, event_id"
+                + " ORDER BY COALESCE(raised_at, updated_at) DESC NULLS FIRST, event_id"
                 + " LIMIT :size OFFSET :offset",
                 new MapSqlParameterSource().addValue("size", size).addValue("offset", (long) page * size),
                 (rs, i) -> toPayload(rs));
@@ -110,11 +112,15 @@ public class EventQueryRepository {
         return deviceId == null ? "unknown" : deviceId;
     }
 
+    /**
+     * 관제 앱 스키마(types.ts)에서 선택 항목인 칸은 값이 없으면 빼고 보낸다(null 은 검증에 실패한다).
+     * rationale·zone_id·proposed_severity 는 필수·null 허용이라 null 로 싣는다.
+     */
     private ObjectNode toPayload(ResultSet rs) throws SQLException {
         ObjectNode e = mapper.createObjectNode();
         e.put("event_id", rs.getString("event_id"));
         e.put("source", rs.getString("source"));
-        e.put("gateway_id", rs.getString("gateway_id"));
+        putIfPresent(e, "gateway_id", rs.getString("gateway_id"));
         e.put("rule_id", rs.getString("rule_id"));
         e.put("rule_version", rs.getInt("rule_version"));
         e.put("lifecycle", rs.getString("lifecycle"));
@@ -125,7 +131,7 @@ public class EventQueryRepository {
         putTextArray(e, "confidence_reasons", rs.getArray("confidence_reasons"));
         putTextArray(e, "world_ids", rs.getArray("world_ids"));
         e.put("zone_id", rs.getString("zone_id"));
-        e.set("metrics", json(rs.getString("metrics")));
+        e.set("metrics", rs.getString("metrics") == null ? mapper.createObjectNode() : mapper.readTree(rs.getString("metrics")));
         e.put("rationale", rs.getString("rationale"));
         e.put("proposed_severity", rs.getString("proposed_severity"));
         e.put("resume_count", rs.getInt("resume_count"));
@@ -133,33 +139,34 @@ public class EventQueryRepository {
         if (!rs.wasNull()) {
             e.put("event_sequence", sequence);
         }
-        e.put("config_version", rs.getString("config_version"));
-        e.put("calibration_version", rs.getString("calibration_version"));
-        e.put("scene_version", rs.getString("scene_version"));
+        putIfPresent(e, "config_version", rs.getString("config_version"));
+        putIfPresent(e, "calibration_version", rs.getString("calibration_version"));
+        putIfPresent(e, "scene_version", rs.getString("scene_version"));
         putMillis(e, "raised_at", rs.getTimestamp("raised_at"));
         putMillis(e, "updated_at", rs.getTimestamp("updated_at"));
         putMillis(e, "resolved_at", rs.getTimestamp("resolved_at"));
-        e.put("delivery", rs.getString("delivery"));
-        e.put("related_event_id", rs.getString("related_event_id"));
-        e.set("resolution", json(rs.getString("resolution")));
+        putIfPresent(e, "delivery", rs.getString("delivery"));
+        putIfPresent(e, "related_event_id", rs.getString("related_event_id"));
+        if (rs.getString("resolution") != null) {
+            e.set("resolution", mapper.readTree(rs.getString("resolution")));
+        }
         return e;
     }
 
-    private JsonNode json(String text) {
-        return text == null ? mapper.nullNode() : mapper.readTree(text);
+    private static void putIfPresent(ObjectNode node, String field, String value) {
+        if (value != null) {
+            node.put(field, value);
+        }
     }
 
     private static void putMillis(ObjectNode node, String field, Timestamp time) {
-        if (time == null) {
-            node.putNull(field);
-        } else {
+        if (time != null) {
             node.put(field, time.getTime());
         }
     }
 
     private static void putTextArray(ObjectNode node, String field, Array array) throws SQLException {
         if (array == null) {
-            node.putNull(field);
             return;
         }
         ArrayNode out = node.putArray(field);

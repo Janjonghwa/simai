@@ -47,7 +47,7 @@ public class RiskEventRepository {
                 CAST(:confidenceReasons AS text[]), CAST(:worldIds AS text[]),
                 :zoneId, CAST(:metrics AS jsonb), CAST(:evidenceRef AS uuid), :resent, :resumed,
                 CAST(:relatedEventId AS uuid),
-                (SELECT a.ack_id FROM event_ack a WHERE a.ack_id = CAST(:ackId AS uuid)),
+                CAST(:ackId AS uuid),
                 (SELECT c.close_id FROM event_close c WHERE c.close_id = CAST(:closeId AS uuid)),
                 CAST(:escalationId AS uuid), :deliveryMode, :receivedAt, :epoch)
             ON CONFLICT DO NOTHING
@@ -79,7 +79,7 @@ public class RiskEventRepository {
             INSERT INTO event_ack (ack_id, event_id, channel, actor_role, actor_user_id, actor_device_id, acked_at)
             VALUES (CAST(:ackId AS uuid), :eventId, :ackChannel, :ackRole,
                 CASE WHEN :ackChannel <> 'SITE_BUTTON'
-                     THEN (SELECT u.user_id FROM app_user u WHERE CAST(u.user_id AS text) = :ackActor) END,
+                     THEN (SELECT u.user_id FROM app_user u WHERE u.user_id = CAST(:ackUserId AS bigint)) END,
                 CASE WHEN :ackChannel = 'SITE_BUTTON'
                      THEN (SELECT d.device_id FROM device d WHERE d.device_id = :ackActor) END,
                 :ackAt)
@@ -172,6 +172,7 @@ public class RiskEventRepository {
                 .addValue("ackChannel", absent(ack) ? null : text(ack, "channel"))
                 .addValue("ackRole", absent(ack) ? null : text(ack, "actor_role"))
                 .addValue("ackActor", absent(ack) ? null : text(ack, "actor_id"))
+                .addValue("ackUserId", absent(ack) ? null : userId(text(ack, "actor_id")))
                 .addValue("ackAt", absent(ack) ? null : time(ack, "acked_at"))
                 .addValue("closeId", absent(resolution) ? null : uuidText(resolution, "close_id"))
                 .addValue("escalationId", absent(escalation) ? null : uuidText(escalation, "escalation_id"))
@@ -181,11 +182,16 @@ public class RiskEventRepository {
                 .addValue("receivedAt", utc(receivedAt))
                 .addValue("epoch", epoch);
         jdbc.update(ENSURE_EVENT, params);
-        boolean hasAck = params.getValue("ackId") != null;
+        boolean hasAck = !absent(ack);
         if (hasAck) {
+            validateAck(ack);
             jdbc.update(ENSURE_ACK, params);
         }
         if (jdbc.update(INSERT_UPDATE, params) == 0) {
+            if (hasAck) {
+                // 이미 기록된 전이를 다시 받아도(배포 전 기록·재전송) 저널에 잡혔다는 것은 남긴다
+                jdbc.update(ACK_JOURNALED, params);
+            }
             java.util.List<UUID> existing = jdbc.queryForList(MSG_AT_OFFSET, params, UUID.class);
             return existing.isEmpty() || existing.contains(envelope.msgId()) ? Recorded.DUPLICATE : Recorded.OFFSET_CONFLICT;
         }
@@ -195,6 +201,34 @@ public class RiskEventRepository {
             jdbc.update(ACK_JOURNALED, params);
         }
         return Recorded.INSERTED;
+    }
+
+    private static final java.util.Set<String> ACK_CHANNELS = java.util.Set.of("CONTROL_ROOM", "FOREMAN_PWA", "SITE_BUTTON");
+    private static final java.util.Set<String> ACK_ROLES = java.util.Set.of("ADMIN", "FOREMAN", "SITE");
+
+    /** 계약 operator_ack 필수 칸·값. 틀리면 DB 제약 오류(저장 실패)가 아니라 계약 위반으로 버린다(건너뛰기 대상) */
+    private static void validateAck(JsonNode ack) {
+        requiredUuid(ack, "ack_id");
+        if (!ACK_CHANNELS.contains(requiredText(ack, "channel"))) {
+            throw new InvalidI1Message("ack.channel 이 계약 값이 아니다");
+        }
+        if (!ACK_ROLES.contains(requiredText(ack, "actor_role"))) {
+            throw new InvalidI1Message("ack.actor_role 이 계약 값이 아니다");
+        }
+        requiredText(ack, "actor_id");
+        requiredTime(ack, "acked_at");
+    }
+
+    /** actor_id 를 user_id 로 읽는다. 숫자("3") 또는 계약 예시 형식("user-0003"), 그 밖은 null */
+    static Long userId(String actorId) {
+        if (actorId == null) {
+            return null;
+        }
+        String digits = actorId.startsWith("user-") ? actorId.substring(5) : actorId;
+        if (digits.isEmpty() || digits.length() > 18 || !digits.chars().allMatch(Character::isDigit)) {
+            return null;
+        }
+        return Long.parseLong(digits);
     }
 
     /** UUID 형식을 검사하고 문자열로 넘긴다(SQL 에서 CAST). 형식이 틀리면 CAST 오류가 아니라 계약 위반으로 처리한다 */

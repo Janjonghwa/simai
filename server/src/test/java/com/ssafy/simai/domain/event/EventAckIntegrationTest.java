@@ -126,7 +126,9 @@ class EventAckIntegrationTest {
             tier0.await("journal_ack", p -> p.get("acked_offset").longValue() == 0);
         }
 
-        String body = mvc.perform(post("/api/events/{id}/ack", event).header(HttpHeaders.AUTHORIZATION, foreman))
+        // 반장 PWA 에서 확인(channel 을 싣는다)
+        String body = mvc.perform(post("/api/events/{id}/ack", event).header(HttpHeaders.AUTHORIZATION, foreman)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"channel\": \"FOREMAN_PWA\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.acks[0].channel").value("FOREMAN_PWA"))
                 .andReturn().getResponse().getContentAsString();
@@ -199,6 +201,10 @@ class EventAckIntegrationTest {
                 .andExpect(jsonPath("$.content[0].event_id").value(newer.toString()))
                 .andExpect(jsonPath("$.content[0].raised_at").value(4102444800000L))
                 .andExpect(jsonPath("$.content[0].acks").isArray())
+                // 관제 앱 스키마의 선택 항목은 값이 없으면 빠진다(null 이면 검증 실패)
+                .andExpect(jsonPath("$.content[0].resolution").doesNotExist())
+                .andExpect(jsonPath("$.content[0].delivery").doesNotExist())
+                .andExpect(jsonPath("$.content[0].resolved_at").doesNotExist())
                 .andExpect(jsonPath("$.size").value(1));
         mvc.perform(get("/api/events").header(HttpHeaders.AUTHORIZATION, token("viewer", Role.VIEWER)))
                 .andExpect(status().isForbidden());

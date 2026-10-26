@@ -37,8 +37,11 @@ public class EventAckService {
         this.clock = clock;
     }
 
-    /** @return 새 확인을 붙인 이벤트 항목(관제 앱이 바로 반영한다) */
-    public ObjectNode acknowledge(UUID eventId, Integer seenSequence, long userId, Role role) {
+    /**
+     * @return 새 확인을 붙인 이벤트 항목(관제 앱이 바로 반영한다).
+     * channel 은 확인한 화면(관제 화면 CONTROL_ROOM, 반장 PWA FOREMAN_PWA). 없으면 관제 화면이다.
+     */
+    public ObjectNode acknowledge(UUID eventId, Integer seenSequence, String requestedChannel, long userId, Role role) {
         if (seenSequence != null && seenSequence < 1) {
             throw new BusinessException(ErrorCode.Event.INVALID_EVENT_SEQUENCE);
         }
@@ -49,7 +52,10 @@ public class EventAckService {
         Integer current = event.has("event_sequence") ? event.get("event_sequence").intValue() : null;
         // 화면이 EC2 보다 앞선 sequence 를 말할 수는 없다. 넘치면 Tier 0 도 지금 sequence 로 줄인다(3.10)
         Integer target = seenSequence == null ? current : current == null ? seenSequence : Math.min(seenSequence, current);
-        String channel = role == Role.ADMIN ? "CONTROL_ROOM" : "FOREMAN_PWA";
+        String channel = requestedChannel == null ? "CONTROL_ROOM" : requestedChannel;
+        if (!channel.equals("CONTROL_ROOM") && !channel.equals("FOREMAN_PWA")) {
+            throw new BusinessException(ErrorCode.Event.INVALID_ACK_CHANNEL);
+        }
         UUID ackId = UUID.randomUUID();
         Instant now = clock.instant();
 
@@ -57,8 +63,15 @@ public class EventAckService {
         boolean sent = forwarder.forward(event.path("gateway_id").asString(null), new EventAckForwarder.Ack(
                 eventId, target, ackId, channel, role.name(), String.valueOf(userId), now.toEpochMilli()));
         if (!sent) {
-            log.info("Tier 0 연결이 없어 확인을 저장만 함(동기화 뒤 다시 보냄): event_id={} ack_id={}", eventId, ackId);
+            log.info("Tier 0 로 바로 보내지 못해 저장만 함(다시 보냄): event_id={} ack_id={}", eventId, ackId);
         }
-        return events.findOne(eventId).orElseThrow();
+        // 다시 읽지 않고 방금 만든 확인을 붙여 돌려준다
+        ObjectNode added = ((tools.jackson.databind.node.ArrayNode) event.get("acks")).addObject();
+        added.put("ack_id", ackId.toString());
+        added.put("channel", channel);
+        added.put("actor_role", role.name());
+        added.put("actor_id", String.valueOf(userId));
+        added.put("acked_at", now.toEpochMilli());
+        return event;
     }
 }
