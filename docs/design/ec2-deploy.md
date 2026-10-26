@@ -21,6 +21,7 @@ S15P31A101-254).
 - `ec2-internal` 은 internal 망이라 db·risk-engine 은 밖으로 나가지 못한다. server 만 두 망에 붙는다.
 - 공개 포트는 web 의 80·443 뿐이다. EC2 ufw 는 22·80·443 만 연다.
 - 비밀 값(`POSTGRES_PASSWORD`, `SIMAI_JWT_SECRET`)은 EC2 의 `/opt/simai/.env`(권한 600)에만 있다. 키 이름은 `deploy/ec2/.env.example`.
+- Tier 0 토큰은 원문을 EC2 에 두지 않고 해시(`SIMAI_TIER0_TOKEN_SHA256`)만 `.env` 에 둔다. 비우면 I1(`wss://<도메인>/ws/tier0`) 연결만 거부되고 서버는 뜬다. 원문은 RunPod Tier 0 의 `SIMAI_TIER0_TOKEN` 에 둔다.
 - 외부 이미지는 `deploy/docker-bake.hcl`·compose 에서 다이제스트로 고정한다.
 
 ## 정한 것과 근거

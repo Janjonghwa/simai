@@ -1,11 +1,15 @@
 package com.ssafy.simai.global.config;
 
+import com.ssafy.simai.domain.tier0.Tier0Paths;
 import com.ssafy.simai.global.properties.AuthProperties;
+import com.ssafy.simai.global.properties.Tier0Properties;
 import com.ssafy.simai.global.security.AccessTokenIssuer;
 import com.ssafy.simai.global.security.SecurityErrorResponder;
+import com.ssafy.simai.global.security.Tier0TokenAuthenticationFilter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
@@ -14,6 +18,7 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -29,7 +34,28 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 @EnableMethodSecurity
 public class SecurityConfig {
 
+    /**
+     * I1(Tier 0 → EC2 WebSocket, 명세 12.2·12.3)은 사용자 JWT 가 아니라 Tier 0 토큰으로 인증한다.
+     * 업그레이드 요청 하나만 거치므로 이 체인이 사용자 체인보다 먼저 경로를 가져간다.
+     */
     @Bean
+    @Order(1)
+    SecurityFilterChain tier0FilterChain(HttpSecurity http, Tier0Properties tier0) throws Exception {
+        SecurityErrorResponder errors = new SecurityErrorResponder();
+        http
+                .securityMatcher(Tier0Paths.I1)
+                .csrf(csrf -> csrf.disable())
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .addFilterBefore(new Tier0TokenAuthenticationFilter(tier0), AnonymousAuthenticationFilter.class)
+                .authorizeHttpRequests(auth -> auth.anyRequest().hasAuthority(Tier0TokenAuthenticationFilter.ROLE))
+                .exceptionHandling(exceptions -> exceptions
+                        .authenticationEntryPoint(errors)
+                        .accessDeniedHandler(errors));
+        return http.build();
+    }
+
+    @Bean
+    @Order(2)
     SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         SecurityErrorResponder errors = new SecurityErrorResponder();
         http
