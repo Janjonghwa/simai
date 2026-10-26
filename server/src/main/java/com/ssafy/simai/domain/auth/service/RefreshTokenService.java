@@ -6,12 +6,9 @@ import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import com.ssafy.simai.global.properties.AuthProperties;
 import com.ssafy.simai.global.security.TokenHashes;
-import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Base64;
-import java.util.HexFormat;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,14 +20,12 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class RefreshTokenService {
 
-    private static final int TOKEN_BYTES = 32;
     // 교체 직후 이 시간 안에 같은 토큰이 다시 오면 동시 갱신(탭 두 개·재시도)으로 보고 전체 폐기하지 않는다
     static final Duration ROTATION_GRACE = Duration.ofSeconds(30);
 
     private final RefreshTokenRepository tokens;
     private final Duration ttl;
     private final Clock clock;
-    private final SecureRandom random = new SecureRandom();
 
     RefreshTokenService(RefreshTokenRepository tokens, AuthProperties properties, Clock clock) {
         this.tokens = tokens;
@@ -40,9 +35,7 @@ public class RefreshTokenService {
 
     @Transactional
     public IssuedRefreshToken issue(Long userId) {
-        byte[] bytes = new byte[TOKEN_BYTES];
-        random.nextBytes(bytes);
-        String value = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        String value = TokenHashes.newToken();
         Instant now = clock.instant();
         tokens.save(new RefreshToken(UUID.randomUUID(), userId, hash(value), now, now.plus(ttl)));
         return new IssuedRefreshToken(value, ttl);
@@ -102,7 +95,7 @@ public class RefreshTokenService {
     }
 
     private static String hash(String value) {
-        return HexFormat.of().formatHex(TokenHashes.sha256(value));
+        return TokenHashes.sha256Hex(value);
     }
 
     public record IssuedRefreshToken(String value, Duration ttl) {
