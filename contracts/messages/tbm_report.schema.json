@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/tbm_report.schema.json",
+  "title": "I5 tbm_report 입력·결과",
+  "description": "I5 job_type tbm_report 의 입력(job_request.payload.input, 3.3.0)과 결과(job_callback.payload.result, 2.3.0) (명세 5.4 LLM, 8.3 F-02, 12.5, FR-20·122·142, S15P31A101-225). EC2 가 PLANNED 계산 결과(TBM) 또는 그날 이벤트 요약(DAILY)과 RAG 로 찾은 안전 수칙 조항을 텍스트로 담고, 분석 워커가 외부 LLM 으로 보고서 초안을 만든다. 외부 LLM 에는 텍스트만 보낸다: 입력에 영상·이미지·객체 주소·얼굴·실명·사람 이름 필드는 없다(모든 객체 닫힘, 사람은 World ID 도 싣지 않는다). 인용은 입력 clauses[] 의 조항 ID 만 허용하고(워커가 검사, 어기면 그 초안을 버린다), 위험 등급은 입력값 그대로 결과에 옮기며 LLM 이 바꾸지 못한다. 보고서는 경보가 아니다(알림 채널로 보내지 않는다, AGENTS 규칙 5). 이 파일은 정의만 담고 메시지는 job_request·job_callback 이다.",
+  "$defs": {
+    "clause_id": {
+      "type": "string",
+      "pattern": "^산업안전보건기준규칙 제[1-9][0-9]*조(의[1-9][0-9]*)?(#(0|[1-9][0-9]*))?$",
+      "description": "안전 수칙 조항 ID (S15P31A101-27 rag_clause.clause_id 규칙). 조 단위 '산업안전보건기준규칙 제N조' 또는 청크 '…제N조#k'"
+    },
+    "input": {
+      "type": "object",
+      "description": "EC2 가 보고서 요청(POST /api/reports/tbm·daily, S15P31A101-33)마다 등록한다. TBM 은 plan 필수·events 없음, DAILY 는 events 필수·plan 없음",
+      "required": ["report_kind", "report_id", "site_id", "report_date", "clauses"],
+      "properties": {
+        "report_kind": { "enum": ["TBM", "DAILY"] },
+        "report_id": { "type": "string", "minLength": 1, "maxLength": 64, "description": "EC2 보고서 ID. 결과에 그대로 돌아온다" },
+        "site_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "report_date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", "description": "보고 대상 날짜(현장 현지 날짜, YYYY-MM-DD)" },
+        "plan": {
+          "type": "object",
+          "description": "TBM: Risk Engine 컨테이너의 PLANNED 계산 결과(risk_plan_result OK 의 필요한 부분 그대로, S15P31A101-216). 등급은 확률이 아니다",
+          "required": ["layout_id", "layout_version", "evaluation_time", "rules_version", "items", "positions", "no_evaluated_positions"],
+          "properties": {
+            "layout_id": { "type": "string", "minLength": 1 },
+            "layout_version": { "type": "string", "minLength": 1 },
+            "evaluation_time": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+            "rules_version": { "type": "string", "minLength": 1 },
+            "items": { "type": "array", "maxItems": 200, "items": { "$ref": "risk_plan_result.schema.json#/$defs/risk_item" }, "description": "위험 항목(순서가 결과 risk_items[].item_index 다)" },
+            "positions": { "type": "array", "maxItems": 200, "items": { "$ref": "risk_plan_result.schema.json#/$defs/evaluated_position" } },
+            "no_evaluated_positions": { "type": "boolean", "description": "true 면 평가한 작업 위치가 없었다('위험 없음'이 아니다, 8.3). positions 가 비었을 때만 true" }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "no_evaluated_positions": { "const": true } }, "required": ["no_evaluated_positions"] },
+              "then": { "properties": { "positions": { "maxItems": 0 } } },
+              "else": { "properties": { "positions": { "minItems": 1 } } }
+            }
+          ],
+          "additionalProperties": false
+        },
+        "events": {
+          "type": "array",
+          "maxItems": 500,
+          "description": "DAILY: 그날 LIVE 이벤트 요약. 사람(World ID·이름)은 싣지 않는다",
+          "items": {
+            "type": "object",
+            "required": ["event_id", "rule_id", "severity", "zone_id", "raised_at", "resolved_at", "resolution", "action_status"],
+            "properties": {
+              "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+              "rule_id": { "type": "string", "minLength": 1 },
+              "severity": { "$ref": "../common/defs.schema.json#/$defs/severity", "description": "마지막 등급(운영자 상향 포함). LLM 이 바꾸지 못한다" },
+              "zone_id": { "type": ["string", "null"], "minLength": 1 },
+              "raised_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+              "resolved_at": { "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" }, { "type": "null" }], "description": "해소 시각. 아직 활성이면 null" },
+              "resolution": { "enum": ["OBSERVED", "OPERATOR_CLOSED", null], "description": "해소 방식(관측 해소, 운영자 종료). 활성이면 null" },
+              "action_status": { "enum": ["REQUESTED", "CONFIRMED", "IN_PROGRESS", "DONE", null], "description": "조치 티켓 상태(8.4). 티켓이 없으면 null. 조치 완료는 해소가 아니다" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "clauses": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "description": "RAG 로 찾은 조항(S15P31A101-223). 인용은 이 clause_id 만 허용한다",
+          "items": {
+            "type": "object",
+            "required": ["clause_id", "text"],
+            "properties": {
+              "clause_id": { "$ref": "#/$defs/clause_id" },
+              "text": { "type": "string", "minLength": 1, "maxLength": 4000 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "options": {
+          "type": "object",
+          "description": "생성 옵션(선택). 없으면 한국어, 워커 기본 길이",
+          "properties": {
+            "language": { "const": "ko" },
+            "max_chars": { "type": "integer", "minimum": 500, "maximum": 20000, "description": "보고서 본문 길이 상한(글자)" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "report_kind": { "const": "TBM" } }, "required": ["report_kind"] },
+          "then": { "required": ["plan"], "not": { "required": ["events"] } },
+          "else": { "required": ["events"], "not": { "required": ["plan"] } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "description": "보고서 초안. 모든 인용은 입력 clauses[] 안이다(워커 검사, 이 스키마는 ID 형식만 본다). risk_items·events 의 등급은 입력값 그대로다",
+      "required": ["report_kind", "report_id", "sections", "risk_items", "citations", "generator", "created_at"],
+      "properties": {
+        "report_kind": { "enum": ["TBM", "DAILY"] },
+        "report_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "sections": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["kind", "title", "paragraphs"],
+            "properties": {
+              "kind": { "enum": ["SUMMARY", "RISK_ITEM", "EVENT_REVIEW", "RECOMMENDATION"] },
+              "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+              "item_index": { "type": "integer", "minimum": 0, "description": "RISK_ITEM 섹션이 설명하는 risk_items[].item_index" },
+              "paragraphs": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": ["text", "citations"],
+                  "properties": {
+                    "text": { "type": "string", "minLength": 1 },
+                    "citations": { "type": "array", "items": { "$ref": "#/$defs/clause_id" }, "uniqueItems": true }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "kind": { "const": "RISK_ITEM" } }, "required": ["kind"] },
+                "then": { "required": ["item_index"] },
+                "else": { "not": { "required": ["item_index"] } }
+              }
+            ],
+            "additionalProperties": false
+          }
+        },
+        "risk_items": {
+          "type": "array",
+          "description": "TBM: 입력 plan.items 를 워커가 그대로 옮긴 계산 근거 표(등급은 입력값). DAILY 는 빈 배열",
+          "items": {
+            "type": "object",
+            "required": ["item_index", "rule_id", "rule_version", "severity", "zone_id", "position_ids"],
+            "properties": {
+              "item_index": { "type": "integer", "minimum": 0 },
+              "rule_id": { "type": "string", "minLength": 1 },
+              "rule_version": { "type": "integer", "minimum": 1 },
+              "severity": { "$ref": "../common/defs.schema.json#/$defs/severity" },
+              "zone_id": { "type": ["string", "null"], "minLength": 1 },
+              "position_ids": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "citations": { "type": "array", "items": { "$ref": "#/$defs/clause_id" }, "uniqueItems": true, "description": "본문 전체에서 인용한 조항 ID(중복 없음, 처음 나온 순서)" },
+        "generator": {
+          "type": "object",
+          "required": ["model", "prompt_version", "attempts"],
+          "properties": {
+            "model": { "type": "string", "minLength": 1, "description": "제공사가 응답에 적은 모델 이름(없으면 요청한 모델 이름)" },
+            "prompt_version": { "type": "string", "minLength": 1 },
+            "attempts": { "type": "integer", "minimum": 1, "maximum": 2, "description": "이 작업 안에서 생성한 횟수(인용 검사로 버린 초안 포함)" },
+            "input_tokens": { "type": ["integer", "null"], "minimum": 0, "description": "제공사가 주면(모든 시도 합), 아니면 null" },
+            "output_tokens": { "type": ["integer", "null"], "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "created_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

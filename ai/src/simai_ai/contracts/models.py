@@ -1407,6 +1407,128 @@ class Performance1(BaseModel):
     gpu_model: StrictStr | MISSING = MISSING
 
 
+class TbmReport(RootModel[Any]):
+    root: Any
+
+
+class TbmReportClauseId(RootModel[StrictStr]):
+    root: Annotated[
+        StrictStr,
+        Field(pattern='^산업안전보건기준규칙 제[1-9][0-9]*조(의[1-9][0-9]*)?(#(0|[1-9][0-9]*))?$'),
+    ]
+
+
+class Plan(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    layout_id: Annotated[StrictStr, Field(min_length=1)]
+    layout_version: Annotated[StrictStr, Field(min_length=1)]
+    evaluation_time: DefsTimestampMs
+    rules_version: Annotated[StrictStr, Field(min_length=1)]
+    items: Annotated[list[RiskPlanResultRiskItem], Field(max_length=200)]
+    positions: Annotated[list[RiskPlanResultEvaluatedPosition], Field(max_length=200)]
+    no_evaluated_positions: StrictBool
+
+
+class Event(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    event_id: DefsUuidV7
+    rule_id: Annotated[StrictStr, Field(min_length=1)]
+    severity: DefsSeverity
+    zone_id: Annotated[StrictStr | None, Field(min_length=1)]
+    raised_at: DefsTimestampMs
+    resolved_at: DefsTimestampMs | None
+    resolution: Literal['OBSERVED', 'OPERATOR_CLOSED'] | None
+    action_status: Literal['REQUESTED', 'CONFIRMED', 'IN_PROGRESS', 'DONE'] | None
+
+
+class Clause(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    clause_id: TbmReportClauseId
+    text: Annotated[StrictStr, Field(max_length=4000, min_length=1)]
+
+
+class Options(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    language: Literal['ko'] | MISSING = MISSING
+    max_chars: Annotated[StrictInt | MISSING, Field(ge=500, le=20000)] = MISSING
+
+
+class TbmReportInput(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    report_kind: Literal['TBM', 'DAILY']
+    report_id: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    site_id: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    report_date: Annotated[StrictStr, Field(pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}$')]
+    plan: Plan | MISSING = MISSING
+    events: Annotated[list[Event] | MISSING, Field(max_length=500)] = MISSING
+    clauses: Annotated[list[Clause], Field(max_length=50, min_length=1)]
+    options: Options | MISSING = MISSING
+
+
+class Paragraph(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    text: Annotated[StrictStr, Field(min_length=1)]
+    citations: list[TbmReportClauseId]
+
+
+class Section(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    kind: Literal['SUMMARY', 'RISK_ITEM', 'EVENT_REVIEW', 'RECOMMENDATION']
+    title: Annotated[StrictStr, Field(max_length=200, min_length=1)]
+    item_index: Annotated[StrictInt | MISSING, Field(ge=0)] = MISSING
+    paragraphs: Annotated[list[Paragraph], Field(min_length=1)]
+
+
+class RiskItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    item_index: Annotated[StrictInt, Field(ge=0)]
+    rule_id: Annotated[StrictStr, Field(min_length=1)]
+    rule_version: Annotated[StrictInt, Field(ge=1)]
+    severity: DefsSeverity
+    zone_id: Annotated[StrictStr | None, Field(min_length=1)]
+    position_ids: list[PositionId]
+
+
+class Generator(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    model: Annotated[StrictStr, Field(min_length=1)]
+    prompt_version: Annotated[StrictStr, Field(min_length=1)]
+    attempts: Annotated[StrictInt, Field(ge=1, le=2)]
+    input_tokens: Annotated[StrictInt | None | MISSING, Field(ge=0)] = MISSING
+    output_tokens: Annotated[StrictInt | None | MISSING, Field(ge=0)] = MISSING
+
+
+class TbmReportResult(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    report_kind: Literal['TBM', 'DAILY']
+    report_id: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    sections: Annotated[list[Section], Field(min_length=1)]
+    risk_items: list[RiskItem]
+    citations: list[TbmReportClauseId]
+    generator: Generator
+    created_at: DefsTimestampMs
+
+
 class Tier0EndpointPortMapping(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -3064,6 +3186,7 @@ class Contracts(BaseModel):
     run_record: RunRecord | MISSING = MISSING
     scene_output: SceneOutput | MISSING = MISSING
     site_ack: SiteAck | MISSING = MISSING
+    tbm_report: TbmReport | MISSING = MISSING
     tier0_endpoint: Tier0Endpoint | MISSING = MISSING
     viewer_health: ViewerHealth | MISSING = MISSING
     vlm_rationale: VlmRationale | MISSING = MISSING
