@@ -7,6 +7,9 @@
 - 노트북 → EC2 하트비트: Ec2HeartbeatSender 가 따로 도는 스레드에서 1초마다 보낸다(ec2 빼고).
 - 연결은 살아 있는데 Tier 0 health 가 3초 넘게 없으면 제어 채널을 끊고 다시 붙는다(반쯤 열린 연결, 명세 3.2).
 - 현장 경보 경로(제어 채널 수신 → 코어 → 소리)는 장애 감시를 기다리지 않는다. 메시지는 코어에 먼저 넣고 그 뒤에 감시에 알린다.
+- 시계 차이 교환(명세 3.9, S15P31A101-289): clock_sync_request 를 받으면 수신 콜백 안에서 바로 clock_sync_response 를 보낸다
+  (t2 = 콜백에 들어온 시각, t3 = 보내기 직전 시각, 노트북 벽시계). 경보 잠금·tick·하트비트를 기다리지 않는다.
+  형식이 틀린 요청은 코어가 거부로 기록만 하고 답하지 않는다(연결은 유지).
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from simai_site_alert.clock import Clock, SystemClock
 from simai_site_alert.core import ScreenState, SiteAlertCore
 from simai_site_alert.heartbeat import Ec2HeartbeatClient, Ec2HeartbeatSender
 from simai_site_alert.link_status import RelayReport, SiteLinkMonitor, SiteStatus
-from simai_site_alert.messages import build_laptop_heartbeat
+from simai_site_alert.messages import ClockSyncRequest, build_clock_sync_response, build_laptop_heartbeat
 from simai_site_alert.transport import ControlChannel
 
 log = logging.getLogger(__name__)
@@ -82,11 +85,27 @@ class SiteAlertApp:
     # ---- 제어 채널 ------------------------------------------------------------------------------------------------
 
     def _on_message(self, raw: str | bytes, received_mono: float) -> None:
+        received_ms = self.clock.now_ms()  # clock_sync_request 의 t2(수신 시각). 해석보다 먼저 잰다
         result = self.core.handle_text(raw, received_mono)  # 현장 경보 먼저
+        if result.clock_sync is not None:
+            self._answer_clock_sync(result.clock_sync, received_ms)
         if self.monitor is not None:
             self.monitor.on_tier0_message(self.clock.monotonic(), self.clock.now_ms(), result.health)
             if result.health is not None:
                 self.publish_status()
+
+    def _answer_clock_sync(self, request: ClockSyncRequest, t2_ms: int) -> None:
+        """받은 즉시 답한다. 연결이 없으면 버린다(Tier 0 는 재접속 때 새 교환을 시작한다)."""
+        if self.channel is None:
+            return
+        t3_ms = self.clock.now_ms()  # 보내기 직전
+        try:
+            envelope = build_clock_sync_response(request=request, laptop_id=self.core.laptop_id, t2_ms=t2_ms, t3_ms=t3_ms)
+        except ValueError:  # 그 사이 노트북 시계가 뒤로 뛰었다(t3 < t2). 계약을 어기는 응답을 보내지 않고 다음 교환을 기다린다
+            log.warning("노트북 시계가 뒤로 뛰어 clock_sync_response 를 보내지 않았다 (exchange_id=%s)", request.exchange_id)
+            return
+        if not self.channel.send(envelope):
+            log.info("제어 채널이 없어 clock_sync_response 를 버렸다 (exchange_id=%s)", request.exchange_id)
 
     def _on_connected(self, connected: bool) -> None:
         self.core.set_control_connected(connected)

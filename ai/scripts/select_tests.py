@@ -48,6 +48,8 @@ DEFAULT_PATH_RULES: dict[str, list[str]] = {
         "tests/deploy/test_session1_live.py",
         "tests/deploy/test_crash_recovery_g3.py",
     ],
+    # 현장 경보 단말을 실제 Tier 0 에 붙이는 왕복 시험(S15P31A101-289)은 단말 소스를 import 한다
+    "gateway/site_alert/**": ["tests/services/tier0/test_site_alert_clock_sync.py"],
 }
 
 

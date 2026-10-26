@@ -127,7 +127,7 @@ def test_non_json_rejected(core: SiteAlertCore) -> None:
 
 
 def test_unknown_message_ignored(core: SiteAlertCore) -> None:
-    result = core.handle({"msg_type": "clock_sync_request", "msg_id": "x", "payload": {}})
+    result = core.handle({"msg_type": "config_bundle", "msg_id": "x", "payload": {}})
     assert result.outcome is Outcome.IGNORED
 
 

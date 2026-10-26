@@ -47,6 +47,7 @@ from simai_site_alert.clock import Clock, SystemClock
 from simai_site_alert.link_status import SiteStatus
 from simai_site_alert.messages import (
     AlarmStop,
+    ClockSyncRequest,
     Health,
     LocalAlert,
     Other,
@@ -135,7 +136,7 @@ class Outcome(Enum):
     APPLIED = "APPLIED"
     STALE = "STALE"  # 중복 또는 늦게 온 낮은 sequence
     REJECTED = "REJECTED"
-    IGNORED = "IGNORED"  # 단말이 쓰지 않는 메시지(clock_sync 등), 목록 없는 health
+    IGNORED = "IGNORED"  # 경보에 쓰지 않는 메시지(clock_sync_request 는 app 이 답한다), 목록 없는 health
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,7 @@ class HandleResult:
     reason: str | None = None
     sound_start_latency_s: float | None = None  # 이 메시지로 소리 시작을 걸었으면 수신 → start() 반환까지
     health: Health | None = None  # health 였으면 해석한 값(장애 상태 기계 link_status 가 쓴다)
+    clock_sync: ClockSyncRequest | None = None  # clock_sync_request 였으면 해석한 값(app 이 받은 즉시 답한다)
 
 
 _SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1}
@@ -205,6 +207,8 @@ class SiteAlertCore:
             msg = parse_message(obj)
         except Rejected as e:
             return self._reject(e)
+        if isinstance(msg, ClockSyncRequest):  # 경보 상태와 무관하다. 잠금을 기다리지 않고 돌려준다(응답 지연을 늘리지 않게)
+            return HandleResult(Outcome.IGNORED, "clock_sync_request 는 app 이 답한다", clock_sync=msg)
         with self._lock:
             msg_id = obj.get("msg_id") if isinstance(obj, dict) else None
             if isinstance(msg_id, str) and not isinstance(msg, (Health, Other)):

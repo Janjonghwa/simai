@@ -9,7 +9,7 @@
   인증서 검증을 끄고 아무 서버에나 붙는 경로는 없다. 서버 확인(peer_verifier)은 기기 토큰을 싣는 HTTP 요청보다 먼저 한다.
 - InMemoryControlChannel: 시험·오프라인용.
 
-기기 토큰 발급, 시계 차이 교환, 카메라 영상 연결은 이 모듈 밖이다. laptop_heartbeat 는 app 이 send 로 보낸다.
+기기 토큰 발급, 카메라 영상 연결은 이 모듈 밖이다. laptop_heartbeat·clock_sync_response 는 app 이 send 로 보낸다.
 """
 
 from __future__ import annotations
