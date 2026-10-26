@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MHR 포즈 확인</title>
+<!--
+  S15P31A101-88 실험 확인 도구(제품 뷰어 아님, 제품 표시는 -65).
+  verify_mhr_gltf.py 가 만든 사람별 .glb 와 avatar_pose_batch 시퀀스 JSON 을 파일로 골라 포즈를 재생한다.
+  데이터는 저장소에 넣지 않는다(MHR 자산 SAM License). 로컬 파일만 읽고 아무 데도 보내지 않는다.
+  규약(docs/design/avatar-pose-stream.md, mhr-skinned-gltf.md):
+    joint_rotations[i] → skin.joints[i] 노드 회전(부모 기준 축각), null → glTF 바인드 회전.
+    root_rotation(리그 → World) 은 감싼 그룹에 quat(A)·quat(root) 로 준다. A = World → Three (x, z, −y) = Rx(−π/2).
+    위치는 싣지 않으므로 pelvis(관절 1)를 원점 위 PELVIS_HEIGHT 에 둔다(제품은 Tier 0 pelvis_xyz).
+-->
+<style>
+  :root { --bg: #f4f4f2; --fg: #1d1d1b; --muted: #6b6b66; --panel: #ffffffd9; --accent: #2f6fde; --line: #d8d8d2; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #161616; --fg: #ececea; --muted: #a0a09a; --panel: #222222d9; --accent: #7aa7ff; --line: #3a3a38; }
+  }
+  :root[data-theme="dark"] { --bg: #161616; --fg: #ececea; --muted: #a0a09a; --panel: #222222d9; --accent: #7aa7ff; --line: #3a3a38; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; }
+  #view { position: fixed; inset: 0; }
+  #panel { position: fixed; left: 16px; right: 16px; top: 16px; max-width: 520px; background: var(--panel); border: 1px solid var(--line);
+           border-radius: 8px; padding: 10px 12px; display: grid; gap: 8px; box-sizing: border-box; }
+  #panel label { display: grid; grid-template-columns: 7.5em 1fr; gap: 8px; align-items: center; }
+  #panel input[type=file] { min-width: 0; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button { border: 1px solid var(--line); background: transparent; color: var(--fg); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  input[type=range] { flex: 1; min-width: 120px; accent-color: var(--accent); }
+  #status { color: var(--muted); font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="view"></div>
+<div id="panel">
+  <label>메시 (.glb) <input id="glb" type="file" accept=".glb"></label>
+  <label>포즈 (JSON) <input id="poses" type="file" accept=".json,application/json"></label>
+  <div class="row">
+    <button id="play" disabled>재생</button>
+    <input id="t" type="range" min="0" max="1000" value="0" disabled>
+    <select id="speed"><option value="0.25">0.25×</option><option value="1" selected>1×</option><option value="2">2×</option></select>
+    <label style="display:flex;gap:4px;grid-template-columns:none"><input id="bones" type="checkbox">뼈</label>
+  </div>
+  <div id="status">.glb 와 포즈 JSON(avatar_pose_batch 하나, 배열, 또는 {"messages": [...]})을 고른다.</div>
+</div>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const PELVIS = 1, PELVIS_HEIGHT = 1.0;
+const A = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2); // World → Three
+const $ = (id) => document.getElementById(id);
+const status = (s) => { $("status").textContent = s; };
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+$("view").appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 100);
+camera.position.set(1.8, 1.4, 3.2);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1, 0);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x666666, 2.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.5); sun.position.set(2, 4, 3); scene.add(sun);
+scene.add(new THREE.GridHelper(6, 12, 0x888888, 0x555555));
+scene.add(new THREE.AxesHelper(0.3));
+
+function themeBackground() {
+  scene.background = new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() || "#f4f4f2");
+}
+themeBackground();
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", themeBackground);
+
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+window.addEventListener("resize", resize); resize();
+
+const holder = new THREE.Group(); // root_rotation 과 pelvis 맞춤을 받는 그룹
+scene.add(holder);
+let bones = null, bind = null, helper = null, frames = [], playing = false, t = 0, last = performance.now();
+
+function axisAngleQuat(r) {
+  const angle = Math.hypot(r[0], r[1], r[2]);
+  if (angle < 1e-12) return new THREE.Quaternion();
+  return new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(r[0] / angle, r[1] / angle, r[2] / angle), angle);
+}
+
+$("glb").addEventListener("change", async (e) => { const f = e.target.files[0]; if (f) await loadGlb(await f.arrayBuffer()); });
+$("poses").addEventListener("change", async (e) => { const f = e.target.files[0]; if (f) loadPoses(await f.text()); });
+
+async function loadGlb(buffer) {
+  const gltf = await new GLTFLoader().parseAsync(buffer, "");
+  holder.clear();
+  holder.add(gltf.scene);
+  let mesh = null;
+  gltf.scene.traverse((o) => { if (o.isSkinnedMesh) mesh = o; });
+  if (!mesh) { status("SkinnedMesh 가 없다"); return; }
+  mesh.frustumCulled = false; // 바인드 자세의 경계 구로 잘리지 않게
+  bones = mesh.skeleton.bones; // skin.joints 순서 = MHR 관절 순서
+  bind = bones.map((b) => b.quaternion.clone());
+  helper = new THREE.SkeletonHelper(gltf.scene); helper.visible = $("bones").checked; scene.add(helper);
+  const extras = (gltf.parser.json.extras || {}).simai || {};
+  status(`메시: 관절 ${bones.length}, 정점 ${mesh.geometry.attributes.position.count}, ${extras.joint_parents_sha256 || ""}`);
+  apply(frames.length ? sample(t) : null);
+  ready();
+}
+
+function loadPoses(text) {
+  const doc = JSON.parse(text);
+  const msgs = Array.isArray(doc) ? doc : (doc.messages || [doc]);
+  frames = [];
+  for (const m of msgs) {
+    if (m.msg_type !== "avatar_pose_batch") continue;
+    for (const p of m.payload.poses) frames.push({ t: p.capture_time_ms, pose: p.pose, note: m._frame || p.world_id });
+  }
+  frames.sort((a, b) => a.t - b.t);
+  t = 0;
+  status(`포즈 ${frames.length}개, ${((frames.at(-1)?.t - frames[0]?.t) / 1000 || 0).toFixed(1)} s` + (doc._note ? `\n${doc._note}` : ""));
+  apply(frames.length ? sample(0) : null);
+  ready();
+}
+
+// http 로 띄웠을 때 ?glb=<주소>&poses=<주소>&t=<초> 로 바로 연다(같은 폴더의 로컬 파일을 python -m http.server 로 띄우는 용도)
+(async () => {
+  const q = new URLSearchParams(location.search);
+  if (q.get("glb")) await loadGlb(await (await fetch(q.get("glb"))).arrayBuffer());
+  if (q.get("poses")) loadPoses(await (await fetch(q.get("poses"))).text());
+  if (q.get("t") && frames.length) {
+    t = Math.min(duration(), Number(q.get("t")) * 1000);
+    $("t").value = Math.round((duration() ? t / duration() : 0) * 1000);
+    apply(sample(t));
+  }
+})().catch((err) => status(`불러오기 실패: ${err}`));
+
+$("bones").addEventListener("change", () => { if (helper) helper.visible = $("bones").checked; });
+$("play").addEventListener("click", () => { playing = !playing; $("play").textContent = playing ? "멈춤" : "재생"; });
+$("t").addEventListener("input", () => { playing = false; $("play").textContent = "재생"; t = $("t").value / 1000 * duration(); apply(sample(t)); });
+
+function ready() { const ok = bones && frames.length; $("play").disabled = $("t").disabled = !ok; }
+function duration() { return frames.length > 1 ? frames.at(-1).t - frames[0].t : 0; }
+
+// 재생 시각 t(ms, 첫 포즈 기준)를 사이에 둔 두 포즈를 관절마다 slerp. 한쪽이 null 이면 바인드 회전을 쓴다(설계 '지연 보간')
+function sample(tm) {
+  const abs = frames[0].t + tm;
+  let i = frames.findIndex((f) => f.t > abs);
+  if (i <= 0) i = i === 0 ? 1 : frames.length;
+  const a = frames[Math.max(0, i - 1)], b = frames[Math.min(frames.length - 1, i)];
+  const w = b.t > a.t ? Math.min(1, Math.max(0, (abs - a.t) / (b.t - a.t))) : 0;
+  return { a, b, w };
+}
+
+function apply(s) {
+  if (!bones || !s) return;
+  const { a, b, w } = s;
+  const ja = a.pose.joint_rotations, jb = b.pose.joint_rotations;
+  if (ja.length !== bones.length) { status(`joint_rotations 길이 ${ja.length} != 관절 ${bones.length} (뷰어는 캡슐로 돌아갈 조건)`); return; }
+  for (let i = 0; i < bones.length; i++) {
+    const qa = ja[i] ? axisAngleQuat(ja[i]) : bind[i].clone();
+    const qb = jb[i] ? axisAngleQuat(jb[i]) : bind[i].clone();
+    bones[i].quaternion.copy(qa.slerp(qb, w));
+  }
+  const root = axisAngleQuat(a.pose.root_rotation).slerp(axisAngleQuat(b.pose.root_rotation), w);
+  holder.quaternion.copy(A).multiply(root);
+  holder.position.set(0, 0, 0);
+  holder.updateMatrixWorld(true);
+  const pelvis = new THREE.Vector3().setFromMatrixPosition(bones[PELVIS].matrixWorld);
+  holder.position.set(-pelvis.x, PELVIS_HEIGHT - pelvis.y, -pelvis.z);
+  const nulls = ja.filter((r) => r === null).length;
+  status(`프레임 ${w < 0.5 ? a.note : b.note}  t=${((a.t - frames[0].t) / 1000).toFixed(1)} s  null 관절 ${nulls}`);
+}
+
+function loop(now) {
+  const dt = now - last; last = now;
+  if (playing && frames.length > 1) {
+    t = (t + dt * Number($("speed").value)) % (duration() + 400);
+    $("t").value = Math.round(Math.min(1, t / duration()) * 1000);
+    apply(sample(Math.min(t, duration())));
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
