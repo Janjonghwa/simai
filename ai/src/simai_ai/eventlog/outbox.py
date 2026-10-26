@@ -18,6 +18,7 @@ acked_offset 을 영속 저장(AckedOffsetStore)한 뒤 앞으로 옮긴다. 그
   잡아 그 기록에서 전송을 보류하고(blocked) 경고를 남긴다. 순서를 지키려고 그 뒤 기록도 보내지 않는다.
 - 재전송을 마친 뒤 event_state_snapshot 을 보내는 일은 추적기 상태를 가진 쪽(서비스 조립)이 drained 를 보고 한다.
 - 운영자 종료 기록(lifecycle payload.close, S15P31A101-200)은 계약 resolution(risk_event_transition 2.0.0)으로 바꿔 보낸다.
+- 운영자 상향 기록(lifecycle payload.escalation, S15P31A101-272)은 받은 계약 operator_escalation 그대로라 바꾸지 않고 보낸다(2.1.0).
 """
 
 import logging
@@ -39,8 +40,9 @@ from simai_ai.eventlog.record import JournalEntry
 from simai_ai.risk.clock import Clock
 
 # risk_event_transition 2.0.0(1.3.0 confidence_reasons·resumed 추가, 1.4.0 판정이 아닌 전이의 evidence_ref null 허용,
-# 2.0.0 운영자 종료 해소 resolution: 있으면 RESOLVED 의 VERIFIED·evidence_ref 필수가 풀린다, S15P31A101-200)
-SCHEMA_VERSION = "2.0.0"
+# 2.0.0 운영자 종료 해소 resolution: 있으면 RESOLVED 의 VERIFIED·evidence_ref 필수가 풀린다, S15P31A101-200,
+# 2.1.0 운영자 상향 escalation: 재개가 아닌 UPDATED 에만, S15P31A101-272)
+SCHEMA_VERSION = "2.1.0"
 # 계약에서 선택(없어도 됨)이고 null 을 허용하지 않는 필드. lifecycle payload 는 비었을 때 null 로 싣는다.
 _OPTIONAL_NOT_NULL = ("ack", "related_event_id")
 _OPERATOR_ACK_KEYS = ("ack_id", "channel", "actor_role", "actor_id", "acked_at")

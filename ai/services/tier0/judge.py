@@ -35,7 +35,9 @@ evidence_ref 는 그 World 의 world_state msg_id 다.
 대기 중 기록 포함) acknowledge → 저널 → alarm_stop 순이다. 운영자 종료(EC2 event_close, S15P31A101-200)도 같다: close_id 로
 중복을 거른 뒤(EventJournal.has_close_id) close → 저널 → (현장 경보를 낸 이벤트면) 해소 local_alert 이고, event_close_result
 payload 를 돌려준다(build_i1_link 가 신뢰 대기열로 보낸다). 종료 전이는 outbox 가 risk_event_transition 2.0.0 resolution 으로
-보낸다(docs/design/tier0-recovery.md "운영자 종료").
+보낸다(docs/design/tier0-recovery.md "운영자 종료"). 운영자 상향(EC2 event_escalate, S15P31A101-272)도 같은 순서다: escalation_id 로
+중복을 거른 뒤(EventJournal.has_escalation_id) escalate → 저널 → 상향 재경보 local_alert → 클립(CRITICAL 보존 표시)이고
+event_escalate_result payload 를 돌려준다(docs/design/tier0-recovery.md "운영자 상향").
 
 판정 출처(-215): 판정은 추적기의 출처(LifecycleTracker.origin)로 한다. LIVE 가 아닌 출처(file 입력의 REPLAY)는 7.3 표가
 채널을 주지 않아 현장 경보 신호가 없고, Tier 0 저널(LIVE 전용 계약)에 넣지 않는다. 확정 전이는 record_transitions(JSONL
@@ -78,7 +80,7 @@ from simai_ai.risk import (
     local_alert_payload,
 )
 from simai_ai.risk.common import CALIBRATION_STATES
-from simai_ai.risk.lifecycle import CloseReject, CloseRequest, RelatedEventFn
+from simai_ai.risk.lifecycle import CloseReject, CloseRequest, EscalateReject, EscalationRequest, RelatedEventFn
 from simai_ai.tracking.world_track import RevisionKind, WorldTrackFrame
 
 log = logging.getLogger("services.tier0.judge")
@@ -105,6 +107,9 @@ class JudgeStats:
     closes: int = 0  # 받은 운영자 종료(event_close)
     duplicate_closes: int = 0
     rejected_closes: int = 0
+    escalations: int = 0  # 받은 운영자 상향(event_escalate)
+    duplicate_escalations: int = 0
+    rejected_escalations: int = 0
     reseeds: int = 0
     errors: int = 0
     calibration_state_unknown: int = 0  # 활성 보정 상태를 읽지 못해 UNCALIBRATED 로 판정한 tick
@@ -336,10 +341,35 @@ class JudgmentLoop:
             sequence = outcome.transitions[0].event_sequence
             return result | {"result": "ACCEPTED", "event_sequence": sequence, "decided_at": self._now_ms()}
 
+    def escalate(self, request: EscalationRequest) -> dict[str, Any]:
+        """event_escalate 하나 → event_escalate_result payload(close 와 같은 순서). 같은 escalation_id 를 이미 기록(또는 기록 대기)했으면
+        DUPLICATE 이고 다시 기록하지 않는다. 거부는 기록하지 않으므로 같은 escalation_id 를 다시 받으면 그때 상태로 다시 판단한다."""
+        with self.lock:
+            result: dict[str, Any] = {"escalation_id": request.escalation_id, "event_id": request.event_id}
+            if self.journal.has_escalation_id(request.escalation_id):
+                self.stats.duplicate_escalations += 1
+                return result | {"result": "DUPLICATE", "decided_at": self._now_ms()}
+            try:
+                # 저널 제출이 실패하면 추적기는 이벤트를 그대로 둔다(등급·바닥값 그대로). 재시도할 수 있게 거부한다
+                outcome = self.tracker.escalate(request, commit=self.writer.submit_step)
+            except JournalError:
+                self.stats.journal_errors += 1
+                log.error("운영자 상향을 저널에 넣지 못해 받지 않았다(재시도 가능): %s", request.event_id, exc_info=True)
+                return result | {"result": "REJECTED", "reject_reason": "JOURNAL_UNAVAILABLE", "decided_at": self._now_ms()}
+            if isinstance(outcome, EscalateReject):
+                self.stats.rejected_escalations += 1
+                log.info("운영자 상향을 받지 않았다: %s %s", request.event_id, outcome)
+                return result | {"result": "REJECTED", "reject_reason": str(outcome), "decided_at": self._now_ms()}
+            self.stats.escalations += 1
+            self._record(outcome, submitted=True)  # 상향 재경보(local_alert)·클립(CRITICAL 보존 표시)은 규칙 상향과 같은 경로
+            self._publish_views()
+            sequence = outcome.transitions[0].event_sequence
+            return result | {"result": "ACCEPTED", "event_sequence": sequence, "decided_at": self._now_ms()}
+
     # --- 내부 ------------------------------------------------------------------------
 
     def _record(self, step: LifecycleStep, *, ack_id: str | None = None, submitted: bool = False) -> None:
-        """submitted: 이미 저널에 제출한 단계(운영자 종료는 추적기가 상태를 바꾸기 전에 제출한다)."""
+        """submitted: 이미 저널에 제출한 단계(운영자 종료·상향은 추적기가 상태를 바꾸기 전에 제출한다)."""
         if not step.transitions and not step.local_signals:
             return
         self.stats.transitions += len(step.transitions)

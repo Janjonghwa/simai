@@ -110,6 +110,7 @@ class Reservation:
     ack_ids: tuple[str, ...] = ()
     evidence: tuple[tuple[str, str], ...] = ()
     close_ids: tuple[str, ...] = ()
+    escalation_ids: tuple[str, ...] = ()
 
 
 class TransitionLike(Protocol):
@@ -163,6 +164,12 @@ def close_id_of(entry: JournalEntry) -> str | None:
     return _nonempty_str(close.get("close_id")) if isinstance(close, Mapping) else None
 
 
+def escalation_id_of(entry: JournalEntry) -> str | None:
+    """운영자 상향 기록의 escalation_id(payload.escalation.escalation_id, S15P31A101-272). 상향 기록이 아니면 None."""
+    escalation = entry.payload.get("escalation")
+    return _nonempty_str(escalation.get("escalation_id")) if isinstance(escalation, Mapping) else None
+
+
 def evidence_ref_of(entry: JournalEntry) -> str | None:
     """판정 근거 world_state msg_id: payload.evidence_ref, 없으면 meta.evidence_ref(그 이벤트의 직전 근거)."""
     return _nonempty_str(entry.payload.get("evidence_ref")) or _nonempty_str(entry.meta.get("evidence_ref"))
@@ -172,12 +179,15 @@ def is_judgment_transition(payload: Mapping[str, Any]) -> bool:
     """판정 전이인지(근거 world_state 가 있어야 하는지). 모르면 판정으로 본다(근거 없이 보내지 않는 쪽).
 
     판정이 아닌 전이: 확인(ack 를 싣거나 transition=ACKNOWLEDGED), 운영자 종료(close 를 실은 RESOLVED, 근거는 누가·왜),
+    운영자 상향(escalation 을 실은 재개가 아닌 UPDATED, S15P31A101-272),
     또는 재개가 아닌 UPDATED 중 변경 사유가 모두 복원·ID 교정(과 복원에 붙는 VERIFICATION)인 것. RAISED·관측 RESOLVED·재개·
     판정 UPDATED 는 판정 전이다.
     """
     if payload.get("ack") is not None or payload.get("transition") == "ACKNOWLEDGED":
         return False
     if payload.get("close") is not None and payload.get("transition") == "RESOLVED":
+        return False
+    if payload.get("escalation") is not None and payload.get("transition") == "UPDATED" and payload.get("resumed") is not True:
         return False
     if payload.get("transition") != "UPDATED" or payload.get("resumed") is True:
         return True
@@ -238,6 +248,8 @@ class EventJournal:
         self._pending_ack_ids: set[str] = set()  # 쓰기 대기 중(fsync 전)인 확인
         self._close_ids: set[str] = set()  # 운영자 종료 close_id(기록함)
         self._pending_close_ids: set[str] = set()  # 쓰기 대기 중인 운영자 종료
+        self._escalation_ids: set[str] = set()  # 운영자 상향 escalation_id(기록함)
+        self._pending_escalation_ids: set[str] = set()  # 쓰기 대기 중인 운영자 상향
         self._pending_evidence: dict[str, str] = {}  # 쓰기 대기 중인 단계가 실은 판정 근거
         self._evidence: dict[str, str] = {}  # event_id → 마지막 판정 근거(world_state msg_id)
         self._resolved: set[str] = set()  # 마지막 전이가 RESOLVED 인 이벤트
@@ -424,6 +436,11 @@ class EventJournal:
         with self._lock:
             return close_id in self._close_ids or close_id in self._pending_close_ids
 
+    def has_escalation_id(self, escalation_id: str) -> bool:
+        """이 escalation_id 의 운영자 상향을 이미 기록했거나 기록 대기 중인지(event_escalate 재전송 멱등, has_close_id 와 같은 경계)."""
+        with self._lock:
+            return escalation_id in self._escalation_ids or escalation_id in self._pending_escalation_ids
+
     # --- 쓰기 ---------------------------------------------------------------------------
 
     def _index_locked(self, entry: JournalEntry) -> None:
@@ -435,6 +452,10 @@ class EventJournal:
         if close_id is not None:
             self._close_ids.add(close_id)
             self._pending_close_ids.discard(close_id)
+        escalation_id = escalation_id_of(entry)
+        if escalation_id is not None:
+            self._escalation_ids.add(escalation_id)
+            self._pending_escalation_ids.discard(escalation_id)
         event_id = _nonempty_str(entry.payload.get("event_id"))
         if event_id is None:
             return
@@ -529,6 +550,7 @@ class EventJournal:
         """
         acks: list[str] = []
         closes: list[str] = []
+        escalations: list[str] = []
         evidence: dict[str, str] = {}
         with self._lock:
             known = dict(self._evidence)
@@ -541,6 +563,9 @@ class EventJournal:
             close = payload.get("close")
             if isinstance(close, Mapping) and _nonempty_str(close.get("close_id")) is not None:
                 closes.append(close["close_id"])
+            escalation = payload.get("escalation")
+            if isinstance(escalation, Mapping) and _nonempty_str(escalation.get("escalation_id")) is not None:
+                escalations.append(escalation["escalation_id"])
             event_id = str(payload.get("event_id"))
             ref = _nonempty_str(payload.get("evidence_ref"))
             if ref is not None:
@@ -553,9 +578,11 @@ class EventJournal:
             self._pending_ack_ids.update(new_acks)
             new_closes = tuple(c for c in dict.fromkeys(closes) if c not in self._pending_close_ids)
             self._pending_close_ids.update(new_closes)
+            new_escalations = tuple(e for e in dict.fromkeys(escalations) if e not in self._pending_escalation_ids)
+            self._pending_escalation_ids.update(new_escalations)
             new_evidence = tuple((e, r) for e, r in evidence.items() if self._pending_evidence.get(e) != r)
             self._pending_evidence.update(new_evidence)
-        return Reservation(new_acks, new_evidence, new_closes)
+        return Reservation(new_acks, new_evidence, new_closes, new_escalations)
 
     def release(self, reservation: "Reservation") -> None:
         """prepare_step 이 올린 대기 중 값을 되돌린다(쓰기 대기열에 넣지 못했을 때). 이미 기록된 것은 그대로 둔다."""
@@ -564,6 +591,8 @@ class EventJournal:
                 self._pending_ack_ids.discard(a)
             for c in reservation.close_ids:
                 self._pending_close_ids.discard(c)
+            for e in reservation.escalation_ids:
+                self._pending_escalation_ids.discard(e)
             for e, r in reservation.evidence:
                 if self._pending_evidence.get(e) == r:
                     del self._pending_evidence[e]

@@ -858,3 +858,30 @@ def test_media_clip_retention_updates_match_contract(contract_errors):
     _run(service, clock, stream, 2_000)
     (update,) = sink.retention
     assert contract_errors("media_clip_retention", update.to_payload()) == [], update.to_payload()
+
+
+def test_operator_escalation_to_critical_gets_the_same_retention_hold_as_a_rule_upgrade():
+    """운영자 상향(S15P31A101-272)으로 HIGH → CRITICAL 이 되면 규칙 상향과 같이 새로 자르지 않고 보존 표시가 붙는다(11.5)."""
+    from simai_ai.risk import Evaluation, Finding, LifecyclePolicy, LifecycleTracker, Persistence, WorldState
+    from simai_ai.risk.lifecycle import EscalationRequest
+
+    clock, service, stream, _, _, sink, _ = _setup(redactor=FakeRedactor(), cameras=("cam_A",))
+    _run(service, clock, stream, 25_000)
+    t = stream.t_ms
+    tracker = LifecycleTracker(origin=Origin.LIVE, gateway_id="tier0-01", clock=FixedClock(t + 10),
+                               policy=LifecyclePolicy(persistence=Persistence(1, 1), persistence_by_rule={}))
+    world = WorldState(t_latest_global=t, calibration_version="cal-7", scene_version="scene-3", tracks=())
+    finding = Finding(rule_id="R1", rule_version=1, severity=Severity.HIGH, world_ids=("w-0012",), zone_id="z-01")
+    raised = tracker.apply(Evaluation(origin=Origin.LIVE, evaluated_at=t + 10, observation_time=t,
+                                      calibration_version="cal-7", scene_version="scene-3", rules=(), zones=(),
+                                      findings=(finding,)), world, config_version="cfg-1", evidence_ref=None)
+    event_id = raised.transitions[0].event_id
+    escalated = tracker.escalate(EscalationRequest.from_contract({"event_id": event_id, "escalation": {
+        "escalation_id": "3c9d1e2f-4a5b-4c6d-9e8f-1a2b3c4d5e6f", "basis": "VLM_PROPOSAL", "assessment_job_id": "job-1",
+        "target_severity": "CRITICAL", "channel": "CONTROL_ROOM", "actor_role": "ADMIN", "actor_id": "user-0003",
+        "requested_at": t}}))
+    service.on_transitions(raised.transitions)
+    service.on_transitions(escalated.transitions)
+    _run(service, clock, stream, 25_000)
+    assert len(sink.records) == 1 and sink.records[0].draft.retention_hold is True
+    assert service.stats.duplicate_triggers == 1 and service.stats.retention_escalations == 1
