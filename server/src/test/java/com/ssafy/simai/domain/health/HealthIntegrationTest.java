@@ -21,7 +21,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.sql.Timestamp;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -226,6 +228,82 @@ class HealthIntegrationTest {
                 String.class, laptopId)).isEqualTo("cam,1|NULL|{x\"");
     }
 
+    @Test
+    void health_는_오는데_처리가_멈추면_관제_정지로_보고_장애를_기록한다() throws Exception {
+        Instant start = Instant.now();
+        long stuckAt = start.toEpochMilli() - 100;
+        try (Tier0 tier0 = tier0()) {
+            tier0.send(stalledTier0Health(stuckAt - 1));
+            // 연결과 하트비트는 살아 있지만 t_latest_global 이 늘지 않는다(FR-11 처리 정체)
+            long deadline = System.currentTimeMillis() + LINK_TIMEOUT_MS + 1_200;
+            while (System.currentTimeMillis() < deadline) {
+                tier0.send(stalledTier0Health(stuckAt));
+                postHeartbeat(laptopToken, heartbeat("CONNECTED", "NORMAL"));
+                Thread.sleep(300);
+            }
+            JsonNode stalled = getHealth();
+            assertValid(stalled);
+            assertThat(stalled.at("/payload/tier0_link").asString()).isEqualTo("CONNECTED");
+            assertThat(stalled.at("/payload/laptop/link").asString()).isEqualTo("CONNECTED");
+            assertThat(stalled.at("/payload/remote_state").asString()).isEqualTo("CONTROL_HALTED");
+            assertThat(stalled.at("/payload/system_health").asString()).isEqualTo("UNSAFE_UNKNOWN");
+            awaitOutage("CONTROL_HALTED", start);
+
+            // 처리가 다시 나아가면 정상으로 돌아오고 장애 기록이 닫힌다
+            tier0.send(tier0Health());
+            postHeartbeat(laptopToken, heartbeat("CONNECTED", "NORMAL"));
+            Thread.sleep(300);
+            assertThat(getHealth().at("/payload/remote_state").asString()).isEqualTo("NORMAL");
+            awaitClosed("CONTROL_HALTED", start);
+        }
+    }
+
+    @Test
+    void 노트북이_끊기면_10초_안에_현장_장비_응답_없음으로_기록한다() throws Exception {
+        Instant start = Instant.now();
+        try (Tier0 tier0 = tier0()) {
+            tier0.send(tier0Health());
+            assertThat(postHeartbeat(laptopToken, heartbeat("CONNECTED", "NORMAL"))).isEqualTo(204);
+            long deadline = System.currentTimeMillis() + LINK_TIMEOUT_MS + 1_500;
+            while (System.currentTimeMillis() < deadline) {
+                tier0.send(tier0Health());
+                Thread.sleep(300);
+            }
+            Map<String, Object> row = awaitOutage("DEVICE_DOWN", start);
+            // G3: 마지막 하트비트 → 장애 판정이 10초 안(시험 기준은 끊김 1.5초 + 판정 주기 1초)
+            long detectMs = ((Timestamp) row.get("detected_at")).getTime() - ((Timestamp) row.get("last_seen_at")).getTime();
+            assertThat(detectMs).isBetween(LINK_TIMEOUT_MS, 10_000L);
+        }
+    }
+
+    private Map<String, Object> awaitOutage(String kind, Instant since) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (System.nanoTime() < deadline) {
+            List<Map<String, Object>> rows = jdbc.queryForList(
+                    "SELECT * FROM system_outage WHERE kind = ? AND detected_at >= ? ORDER BY detected_at DESC",
+                    kind, Timestamp.from(since));
+            if (!rows.isEmpty()) {
+                return rows.getFirst();
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError(kind + " 장애 기록이 생기지 않았다");
+    }
+
+    private void awaitClosed(String kind, Instant since) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (System.nanoTime() < deadline) {
+            Integer open = jdbc.queryForObject(
+                    "SELECT count(*) FROM system_outage WHERE kind = ? AND detected_at >= ? AND ended_at IS NULL",
+                    Integer.class, kind, Timestamp.from(since));
+            if (open != null && open == 0) {
+                return;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError(kind + " 장애 기록이 닫히지 않았다");
+    }
+
     // ---- 도우미
 
     private void commitScene(String scene) {
@@ -248,9 +326,19 @@ class HealthIntegrationTest {
         return root;
     }
 
+    /** 처리가 나아가는(t_latest_global 이 늘어나는) Tier 0 health */
     private ObjectNode tier0Health() throws Exception {
         ObjectNode root = example("health.json");
         root.put("source_id", gatewayId);
+        ((ObjectNode) root.get("payload")).put("t_latest_global", Instant.now().toEpochMilli() - 100);
+        return root;
+    }
+
+    /** 처리가 멈춘(t_latest_global 이 그대로인) Tier 0 health */
+    private ObjectNode stalledTier0Health(long tLatestGlobalMs) throws Exception {
+        ObjectNode root = example("health.json");
+        root.put("source_id", gatewayId);
+        ((ObjectNode) root.get("payload")).put("t_latest_global", tLatestGlobalMs);
         return root;
     }
 

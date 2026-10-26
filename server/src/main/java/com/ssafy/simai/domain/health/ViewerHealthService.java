@@ -16,9 +16,11 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * 화면 상태 viewer_health(계약 1.0.0, 명세 3.2 이중 감시·6.2·12.4, FR-5·11·12)를 만든다. GET /api/health 와 /topic/health 가 같은 값을 쓴다.
  * <ul>
- *   <li>tier0_link·laptop.link: 마지막 수신(EC2 시각)이 linkTimeoutMs(기본 3초 = 1초 주기 3회 누락, 3.10) 안이면 CONNECTED
+ *   <li>tier0_link·laptop.link: 마지막 수신이 linkTimeoutMs(기본 3초 = 1초 주기 3회 누락, 3.10) 안이면 CONNECTED. 받는 쪽 단조 시계로 잰다
+ *   <li>Tier 0 정상 = 연결돼 있고 처리가 나아감(t_latest_global 이 linkTimeoutMs 안에 늘어남, FR-11). health 는 오는데 처리가 멈추면
+ *       tier0_link 는 CONNECTED 로 두고 관제 정지(CONTROL_HALTED)로 본다
  *   <li>remote_state: 노트북이 "Tier 0 제어 연결 CONNECTED, 현장 표시 CONTROL_HALTED 아님"이라고 알리는지(노트북 정상)를 함께 본다.
- *       Tier 0·노트북 연결이 모두 살아 있고 노트북 정상이면 NORMAL, Tier 0 만 끊겼고 노트북 정상이면 REMOTE_LINK_LOST(현장 경보 동작 중),
+ *       Tier 0 정상이고 노트북 연결이 살아 있고 노트북 정상이면 NORMAL, Tier 0 연결만 끊겼고 노트북 정상이면 REMOTE_LINK_LOST(현장 경보 동작 중),
  *       그 밖(노트북 끊김·노트북이 관제 정지를 알림)은 CONTROL_HALTED. 연결이 살아 있어도 노트북이 관제 정지를 알리면 NORMAL 이 아니다
  *   <li>system_health: remote_state 가 NORMAL 이 아니면 UNSAFE_UNKNOWN, 아니면 Tier 0 health 의 값(모르면 UNSAFE_UNKNOWN)
  *   <li>노트북이 여럿이면(MVP 는 하나) 살아 있는 노트북이 모두 정상일 때만 정상이다. 살아 있는 노트북이 하나라도 있으면 laptop.link 는
@@ -61,18 +63,21 @@ public class ViewerHealthService {
     }
 
     ObjectNode payload(Instant now) {
+        long nowNanos = state.nanoTime();
         HealthState.Received tier0 = state.tier0Health();
         HealthState.World world = state.world();
-        boolean tier0Up = fresh(tier0 == null ? null : tier0.receivedAt(), now);
+        HealthState.Progress progress = state.progress();
+        boolean tier0Up = tier0 != null && fresh(tier0.receivedNanos(), nowNanos);
+        boolean processing = progress != null && fresh(progress.nanos(), nowNanos);
         List<HealthState.Heartbeat> laptops = state.laptops();
-        List<HealthState.Heartbeat> live = laptops.stream().filter(h -> fresh(h.receivedAt(), now)).toList();
+        List<HealthState.Heartbeat> live = laptops.stream().filter(h -> fresh(h.receivedNanos(), nowNanos)).toList();
         boolean laptopUp = !live.isEmpty();
         // 살아 있는 노트북이 모두 정상(Tier 0 제어 연결, 관제 정지 아님)을 알릴 때만 정상으로 본다
         boolean laptopOk = laptopUp && live.stream().allMatch(h -> siteOk(h.payload()));
         Long lastHeartbeat = laptops.stream().map(h -> h.receivedAt().toEpochMilli()).max(Long::compare).orElse(null);
         JsonNode health = tier0 == null ? null : tier0.payload();
 
-        String remote = tier0Up && laptopOk ? "NORMAL" : !tier0Up && laptopOk ? "REMOTE_LINK_LOST" : "CONTROL_HALTED";
+        String remote = tier0Up && processing && laptopOk ? "NORMAL" : !tier0Up && laptopOk ? "REMOTE_LINK_LOST" : "CONTROL_HALTED";
         ObjectNode p = mapper.createObjectNode();
         p.put("as_of", now.toEpochMilli());
         String reported = health == null ? null : health.path("system_health").asString(null);
@@ -91,8 +96,27 @@ public class ViewerHealthService {
         return p;
     }
 
-    private boolean fresh(Instant receivedAt, Instant now) {
-        return receivedAt != null && now.toEpochMilli() - receivedAt.toEpochMilli() <= linkTimeoutMs;
+    private boolean fresh(long receivedNanos, long nowNanos) {
+        return nowNanos - receivedNanos <= linkTimeoutMs * 1_000_000L;
+    }
+
+    /**
+     * 화면 장애 종류(FR-11, 관제 앱 features/layout/status.ts 와 같은 규칙). 정상이면 null.
+     * REMOTE_LINK_LOST 원격 전달 단절, CONTROL_HALTED 중 노트북 하트비트가 끊겼으면 DEVICE_DOWN 현장 장비 응답 없음, 그 밖은 CONTROL_HALTED 관제 정지
+     */
+    public static String failure(JsonNode payload) {
+        String remote = payload.path("remote_state").asString("");
+        if ("REMOTE_LINK_LOST".equals(remote)) {
+            return remote;
+        }
+        if (!"CONTROL_HALTED".equals(remote)) {
+            return null;
+        }
+        return DISCONNECTED.equals(payload.path("laptop").path("link").asString(null)) ? "DEVICE_DOWN" : "CONTROL_HALTED";
+    }
+
+    long linkTimeoutMs() {
+        return linkTimeoutMs;
     }
 
     /** control 만 보지 않는다: 연결돼 있어도 처리가 멈추면 노트북은 CONTROL_HALTED 로 알린다(계약 laptop_heartbeat) */

@@ -19,6 +19,7 @@ import tools.jackson.databind.node.ObjectNode;
  * /topic/health(viewer_health)를 1초마다 보낸다(명세 12.4). 받은 값(Tier 0 health·하트비트·Scene 버전)이 바뀌어 화면이 다르게 보일
  * 상태(System Health·원격 단절·연결·보정·구성·Scene)가 바뀌면 다음 주기를 기다리지 않고 보낸다. 끊김과 DB 쪽 변경(새 COMMITTED Scene,
  * 구성 적용)은 1초 주기가 잡는다.
+ * 만든 상태마다 장애 기록(OutageRecorder)도 맞춘다.
  * <p>모든 발행은 이 전용 스레드 하나에서 한다. I1 수신·하트비트 요청 스레드를 붙잡지 않고(DB·브로커가 느려도), 공유 스케줄러의 다른 일
  * (journal_ack 보내기 등)이 막혀도 1초 주기가 멈추지 않으며, 메시지가 만든 순서대로 나간다(앞 상태가 뒤에 나가지 않는다).
  */
@@ -31,15 +32,17 @@ class HealthPublisher implements AutoCloseable {
 
     private final ViewerHealthService health;
     private final RealtimePublisher publisher;
+    private final OutageRecorder outages;
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(
             Thread.ofPlatform().name("health-publisher").factory());
     /** 바뀜 알림이 이미 걸려 있으면 더 걸지 않는다(world_state 10 Hz 등) */
     private final AtomicBoolean changePending = new AtomicBoolean();
     private String lastShape;
 
-    HealthPublisher(ViewerHealthService health, RealtimePublisher publisher, HealthState state) {
+    HealthPublisher(ViewerHealthService health, RealtimePublisher publisher, HealthState state, OutageRecorder outages) {
         this.health = health;
         this.publisher = publisher;
+        this.outages = outages;
         state.onChange(this::changed);
         executor.scheduleAtFixedRate(() -> run(true), PERIOD_MS, PERIOD_MS, TimeUnit.MILLISECONDS);
     }
@@ -61,6 +64,7 @@ class HealthPublisher implements AutoCloseable {
     private void run(boolean always) {
         try {
             ObjectNode message = health.message();
+            outages.observe(message.get("payload"));
             String shape = shape(message.get("payload"));
             if (always || !Objects.equals(lastShape, shape)) {
                 lastShape = shape;

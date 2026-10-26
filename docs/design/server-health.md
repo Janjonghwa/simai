@@ -29,6 +29,19 @@ S15P31A101-262. 명세 3.2(이중 감시), 3.10(3회 누락), 6.2·6.5, 12.4(`/t
 | 발행 스레드 | 전용 스레드 하나(`health-publisher`)에서 1초 주기와 바뀜 알림을 모두 보낸다 | I1·하트비트 요청을 붙잡지 않고, 공유 스케줄러가 막혀도 주기가 돌며, 만든 순서대로 나간다 |
 | 하트비트 응답 | 204, 본문 없음. 형식이 틀리면(선택 항목 `ec2`·`alarm`·`cameras` 포함) 또는 source_id 가 토큰의 기기와 다르면 400, 노트북이 아닌 기기는 403 | 노트북은 2xx 만 성공으로 본다 |
 
+## 단절 감시와 장애 기록 (S15P31A101-122)
+
+FR-11·NFR-9·G3("단절 10초 안에 관리자 화면 알림"). 화면 알림은 위 `viewer_health` 가 하고(관제 앱 `features/layout/status.ts` 가
+remote_state·laptop.link 로 "관제 정지"·"현장 장비 응답 없음"·"원격 전달 단절 · 현장 경보 동작 중"을 띄운다), -122 는 판정 기준과 기록을 보탠다.
+
+| 항목 | 정한 값 | 근거 |
+|---|---|---|
+| 끊김 시계 | 받는 쪽 단조 시계(System.nanoTime). 화면에 싣는 시각만 벽시계 | FR-11 "하트비트는 받는 쪽 단조 시계로". 벽시계를 맞춰도 끊김이 생기거나 사라지지 않게 |
+| Tier 0 정상 | 연결(health 3초 안) + 처리 진행(`health`·`world_state` 의 `t_latest_global` 이 3초 안에 늘어남). health 는 오는데 처리가 멈추면 `tier0_link` 는 CONNECTED, remote_state 는 CONTROL_HALTED | FR-11 "Tier 0 정상은 처리 진행(t_latest_global 증가)으로 판정" |
+| 장애 종류 | REMOTE_LINK_LOST, CONTROL_HALTED 중 노트북 하트비트 끊김이면 DEVICE_DOWN, 그 밖 CONTROL_HALTED | 관제 앱 status.ts 와 같은 규칙 |
+| 장애 기록 | V7 `system_outage`: 종류가 바뀔 때 한 행(`last_seen_at` 실패한 쪽의 마지막 정상 근거, `detected_at` EC2 판정, `ended_at`·`end_reason` RECOVERED·CHANGED·EC2_RESTART). 시작은 WARN, 끝은 INFO 로그 | G3 단절 감지 시간(10초 안)을 나중에 잰다 |
+| 재시작 | 뜬 뒤 3초(끊김 기준) 안은 기록하지 않는다. 닫히지 않은 기록은 뜰 때 EC2_RESTART 로 닫는다 | EC2 재시작을 현장 장애로 남기지 않는다 |
+
 ## 시험
 
 `HealthIntegrationTest`(끊김 기준 1.5초): 하트비트 인증·source_id·형식·기록, 노트북이 끊기면 GET 과 `/topic/health` 가 같은 단절(CONTROL_HALTED·UNSAFE_UNKNOWN)·Scene 불일치,
@@ -36,6 +49,6 @@ Tier 0 만 끊기면 REMOTE_LINK_LOST, 노트북이 관제 정지를 알리거�
 
 ## 남은 일
 
-- 단절 감시에 따른 장애 알림(10초 안, G3)은 S15P31A101-122.
+- 장애를 반장 PWA 로 Web Push 알림(I3): PWA·Web Push 이슈(M1). 지금은 관제 화면(`/topic/health`)만 알린다.
 - `GET /api/scenes/current`(Scene 관리)는 Scene 이슈. 지금은 `scene_version` 표를 바로 읽는다.
 - 노트북이 여럿일 때 현장 노트북을 정하는 설정(지금은 모두 정상이어야 정상).
