@@ -10,6 +10,7 @@
 #       볼륨 없음·가중치 없음·해시 불일치·GPU 없음이 각각 명확한 코드와 메시지로 끝남, GPU 별 엔진 경로가 다름,
 #       PUBLIC_KEY(RunPod)·SSH_PUBLIC_KEY(Vast.ai) 를 주면 키 인증만 받는 sshd 가 뜸, SIMAI_SSHD=off 면 안 뜸,
 #       wstunnel 고정 판이 있고 경로 비밀값을 주면 sshd 뒤에 뜨며 비밀값이 명령줄·출력에 없음(S15P31A101-286),
+#       SIMAI_TUNNEL_ALLOW 포트가 127.0.0.1 허용 대상으로 더해짐(S15P31A101-288),
 #       기본 진입점(simai-bootstrap)은 GPU 가 없으면 코드 3, 실행 스크립트에 CR(Windows 줄바꿈)이 없음 (S15P31A101-205).
 # 실험 이미지(exp02·mapanything)는 Tier 0 전용 항목(엔진·simai-tier0·분석 워커) 대신: 종류별 import·허브 코드 사본
 #       (exp02: Detectron2 확장이 CPU 전용이고 LazyConfig 가 Fast 관절 메타데이터를 읽음, S15P31A101-238),
@@ -466,6 +467,14 @@ if grep -q '^running' <<<"$OUT" && grep -q 'ws://0.0.0.0:8080' <<<"$OUT" && ! gr
   pass "wstunnel: sshd 뒤 기동, 비밀값은 명령줄·출력·자식 환경에 없음"
 else
   fail "wstunnel 기동: $(tr '\n' ' ' <<<"${OUT//$TP/<비밀값>}")"
+fi
+# 막힌 망 I0 예비 경로(S15P31A101-288): SIMAI_TUNNEL_ALLOW 의 포트는 127.0.0.1 로만 더해진다
+OUT=$(docker run --rm -e "PUBLIC_KEY=$KEY" -e "SIMAI_TUNNEL_PREFIX=$TP" -e SIMAI_TUNNEL_ALLOW=17000,17001 "$IMG" bash -c "$WST_PROBE" 2>&1)
+if grep -q -- '--restrict-to 127.0.0.1:22 --restrict-to localhost:22 --restrict-to 127.0.0.1:17000 --restrict-to 127.0.0.1:17001 ws://0.0.0.0:8080' <<<"$OUT" \
+   && ! grep -qF "$TP" <<<"$OUT"; then
+  pass "wstunnel: SIMAI_TUNNEL_ALLOW 포트를 127.0.0.1 로만 더함"
+else
+  fail "wstunnel 허용 대상: $(tr '\n' ' ' <<<"${OUT//$TP/<비밀값>}")"
 fi
 fi
 

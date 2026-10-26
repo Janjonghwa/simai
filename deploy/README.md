@@ -30,6 +30,7 @@ Blackwell(sm_100·sm_120)도 세 이미지 모두 커널이 있다(Tier 0 cu130,
 | `scripts/repeat_pytest.py` | pytest 반복(Linux TLS 시험 -45·-175) |
 | `scripts/session1_live.py` | LIVE 입력 Pod 확인(-182): 컨테이너 vCPU·CPU 모델 기록, 4스트림 CPU 디코딩 처리량(카메라별 스레드, 판정)·NVDEC 열림·gpu 시험·NVDEC 처리량(참고), LIVE 기동 하네스(기본 디코더 CPU)·10명 기하 처리 시간 |
 | `scripts/session1_gpu_priority.py` | Tier 0 GPU 우선 보호 Pod 측정(-60 P0~P7): LIVE 하네스 + `tier0_priority_probe` |
+| `scripts/i0_link_measure.py` | 막힌 망 I0 예비 경로 측정(-288, 4차 세션 ④): `pod`(Tier 0 LIVE + 표시 파일 기록)·`laptop`(녹화 재생 relay + 제어 채널, gateway/relay 환경)·`summarize`(두 경로를 한 JSON·표로)·`token-hash`. 절차는 `docs/design/runpod-environment.md` "I0 443 예비 경로 측정" |
 | `scripts/wait_tier0_ready.py` | 이미지의 `simai-wait-tier0`: 분석 워커를 Tier 0 표시 파일 `phase=running`·`reserve.state=OK` 뒤에 띄운다(아래 "분석 워커") |
 
 Network Volume 구조·권한·보관, Pod 점검 기준, SSH 재접속·443 예비 경로, 세션 큐 항목·예상 시간은 `docs/design/runpod-environment.md` 에 있다.
@@ -160,12 +161,12 @@ HMR 이미지 `exp02`, MapAnything 이미지 `static`)의 묶음을 준비한다
 | CUDA 버전 필터 | 13.0 이상(위 "CUDA 13 인 이유") |
 | Container Disk | 100GB 이상(이미지 풀면 약 19.5GB + 가중치·엔진·결과. 볼륨이 없으므로 여기가 `$SIMAI_ROOT=/srv/simai`) |
 | Volume | 붙이지 않는다(Network Volume 은 데이터센터에 묶인다). Pod 볼륨을 쓰면 `/workspace/simai` 가 된다 |
-| 공개 HTTP 포트 | 8080(막힌 망 예비 SSH 의 wstunnel, `https://<POD_ID>-8080.proxy.runpod.net`. 아래 "막힌 망 예비 SSH") |
+| 공개 HTTP 포트 | 8080(막힌 망 예비 SSH·I0 의 wstunnel, `https://<POD_ID>-8080.proxy.runpod.net`. 아래 "막힌 망 예비 SSH") |
 | 공개 TCP 포트 | 22(SSH, 키 인증만), I0 수신 포트(70000 이상 대칭 매핑, 실제 포트는 `SIMAI_PUBLIC_PORT_<번호>` 또는 RunPod 가 넣는 `RUNPOD_TCP_PORT_<번호>`, 명세 3.12) |
 | 공개 주소 환경 변수 | Tier 0 가 읽는 순서(앞이 우선, 값이 있는 첫 이름만 쓰고 틀린 값이면 오류): 공개 IP `SIMAI_PUBLIC_HOST` → `RUNPOD_PUBLIC_IP`, 공개 포트 `SIMAI_PUBLIC_PORT_<번호>` → `RUNPOD_TCP_PORT_<번호>`. 어느 것도 없으면 등록·기동 오류. RunPod 는 자동으로 들어오고 그 밖의 사이트는 사람이 사이트 무관 이름으로 넣는다. Vast 이름은 docs.vast.ai 로 확인하지 못해 읽지 않는다 |
 | 시작 명령 | 비움(이미지 기본: `simai-bootstrap tier0`). 검증 세션은 `sleep infinity` 로 띄우고 SSH 로 `simai-bootstrap queue` |
 | GPU 기능 | 이미지 `NVIDIA_DRIVER_CAPABILITIES=compute,utility,video`(video 는 선택 디코더 NVDEC 용, -182. Tier 0 기본 디코더는 CPU 라 없어도 기본 경로는 선다, -236). 템플릿에서 덮어쓰지 않는다 |
-| 환경 변수 | `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}`(RunPod Secret, 값은 템플릿에 쓰지 않음), `SIMAI_TIER0_GPU_RESERVE_MB=8192`(Tier 0 GPU 선확보, -60, G0 실측 전 초기값), `SIMAI_IMAGE_DIGEST=sha256:...`(이미지 다이제스트와 같은 값), `PUBLIC_KEY=<계정 SSH 공개키>`(비밀 아님), `SIMAI_TUNNEL_PREFIX={{ RUNPOD_SECRET_simai_tunnel_prefix }}`(RunPod Secret, 막힌 망 예비 SSH). `SIMAI_ROOT`·가중치 경로·해시·엔진 캐시는 부트스트랩이 정한다(`SIMAI_ENGINE_CACHE` 기본 `$SIMAI_ROOT/engines`, `SIMAI_OBS2D_ROOT` 는 필요하면 `$SIMAI_ROOT/obs2d`). 선택: `SIMAI_TIER0_MODE`(e2e), `SIMAI_TIER0_IMGSZ`(1280), `SIMAI_TIER0_MAX_BATCH`(4), `SIMAI_TIER0_CAMERA`(2304x1296) |
+| 환경 변수 | `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}`(RunPod Secret, 값은 템플릿에 쓰지 않음), `SIMAI_TIER0_GPU_RESERVE_MB=8192`(Tier 0 GPU 선확보, -60, G0 실측 전 초기값), `SIMAI_IMAGE_DIGEST=sha256:...`(이미지 다이제스트와 같은 값), `PUBLIC_KEY=<계정 SSH 공개키>`(비밀 아님), `SIMAI_TUNNEL_PREFIX={{ RUNPOD_SECRET_simai_tunnel_prefix }}`(RunPod Secret, 막힌 망 예비 SSH), 막힌 망에서 I0 를 터널로 보낼 때만 `SIMAI_TUNNEL_ALLOW=17000,17001`(비밀 아님, 아래 "I0 터널"). `SIMAI_ROOT`·가중치 경로·해시·엔진 캐시는 부트스트랩이 정한다(`SIMAI_ENGINE_CACHE` 기본 `$SIMAI_ROOT/engines`, `SIMAI_OBS2D_ROOT` 는 필요하면 `$SIMAI_ROOT/obs2d`). 선택: `SIMAI_TIER0_MODE`(e2e), `SIMAI_TIER0_IMGSZ`(1280), `SIMAI_TIER0_MAX_BATCH`(4), `SIMAI_TIER0_CAMERA`(2304x1296) |
 | 분석 워커 환경 변수 | 같은 Pod 에서 워커를 띄울 때(아래 "분석 워커"): `SIMAI_EC2_BASE_URL`, `SIMAI_WORKER_ID=worker-01`, `SIMAI_WORKER_GPU_MEMORY_FRACTION=0.70`, `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION=0.55`, `SIMAI_WORKER_VLLM_MAX_NUM_SEQS=4`, `SIMAI_GPU_TIER0_FRACTION=0.20`, `SIMAI_WORKER_LAG_BUDGET_MS=600`. 선택(기본값): `SIMAI_WORKER_MARKER_MAX_AGE_S`(15), `SIMAI_WORKER_RESUME_AFTER_S`(30), `SIMAI_WORKER_LIVE_BLOCKED_TYPES`(static_reconstruct,hmr_refine,hmr_appearance_update), `SIMAI_WORKER_LIVE_WAIT_MS`(5000), `SIMAI_WORKER_HOLD_MAX_S`(60), `SIMAI_TIER0_MARKER`. 값의 뜻은 docs/design/tier0-gpu-priority.md |
 | 비밀 | 템플릿에 값으로 넣지 않는다(HF 토큰·터널 비밀값만 Secret 참조). 워커 토큰은 `.simai-private/worker.env` 의 `SIMAI_WORKER_TOKEN=` |
 | 공개키 | RunPod 은 계정 SSH 키를 `PUBLIC_KEY` 로 넣지만, 템플릿에 `PUBLIC_KEY` 를 빈 값으로 두면 그 값이 덮어써 공개키가 하나도 없게 되고 sshd 가 뜨지 않는다(3차 세션 2026-10-26: 빈 `PUBLIC_KEY` + 이름 칸에 이미지 다이제스트가 들어간 `SSH_PUBLIC_KEY`). 그래서 템플릿에 계정 공개키 값을 그대로 넣는다(공개키는 비밀이 아니다). 로그에 `sshd 시작 (키 인증만, 키 N개)` 가 없으면 이 줄부터 본다 |
@@ -205,13 +206,42 @@ Host simai-pod-443
   HostName <POD_ID>-8080.proxy.runpod.net
   User root
   IdentityFile ~/.ssh/<RunPod 에 등록한 키>
-  ProxyCommand wstunnel client --log-lvl OFF -L stdio://127.0.0.1:22 wss://%h:443
+  ProxyCommand wstunnel client --log-lvl OFF --tls-verify-certificate -L stdio://127.0.0.1:22 wss://%h:443
   ServerAliveInterval 30
 ```
 
 - 비밀값은 클라이언트도 환경 변수 `WSTUNNEL_HTTP_UPGRADE_PATH_PREFIX` 로 받는다(`-P <비밀값>` 도 되지만 설정 파일·프로세스 목록에 남는다). 비밀값이 틀리면 서버가 업그레이드를 거절해 SSH 가 바로 끊긴다.
 - 연결은 오래 유지되지 않을 수 있다(RunPod 프록시 최대 100초, 명세 3.12). wstunnel 은 양쪽이 30초마다 WebSocket ping 을 보내고 위 설정은 SSH keepalive 30초다. 큐·긴 작업은 `nohup` 으로 띄우고 끊기면 다시 접속한다.
 - 호스트 키는 컨테이너마다 새로 만든다(위 "SSH 직접"과 같은 재접속 규칙, `docs/design/runpod-environment.md`).
+- 클라이언트 명령에는 늘 `--tls-verify-certificate` 를 붙인다. wstunnel 클라이언트는 기본으로 바깥 TLS(Cloudflare `*.proxy.runpod.net` 인증서)를 검증하지 않는다(10.7.1 도움말).
+  그 위의 SSH(호스트 키)·I0(공개키 고정)는 따로 서버를 확인하지만 경로 비밀값은 바깥 TLS 만 지킨다. SSAFY 망에서는 검증을 켜도 붙는 것을 확인했다(2026-10-26: TLS 핸드셰이크 통과 → HTTP 404, 망이 TLS 를 가로채지 않음).
+  시연장 등 다른 망에서는 다시 확인한다. 검증이 실패하면(망이 TLS 를 가로챔) 검증을 끈 채 쓰지 말고 보고한다.
+
+#### I0 터널 (S15P31A101-288)
+
+Direct TCP(I0 기본: 제어 wss·카메라별 영상 TLS, 명세 3.12·12.2)가 막힌 망의 예비 경로다. 같은 wstunnel 서버가 SSH 말고도 정해 둔 127.0.0.1 포트로 잇게 한다.
+
+- Pod(템플릿 환경 변수): `SIMAI_TUNNEL_ALLOW=17000,17001`(제어·영상 포트, 쉼표로). `simai-start` 가 `--restrict-to 127.0.0.1:<포트>` 를 더한다. 22 는 늘 허용하고,
+  목록이 틀리면(포트 번호가 아님·터널 포트 자신·16개 초과) 하나도 더하지 않고 22 만 연다(대상을 넓히지 않는 쪽, SSH 는 남는다). 이미지를 다시 빌드해야 들어간다(-288).
+- Tier 0(Pod): 대칭 매핑 값을 터널 포트로 준다. 제품 코드는 그대로이고, 듣는 포트와 등록하는 주소가 함께 바뀐다.
+  `SIMAI_TIER0_CONTROL_PORT=70000`, `SIMAI_TIER0_VIDEO_PORTS=cam1:70001,...`(4대가 영상 포트 하나를 같이 쓴다), `SIMAI_PUBLIC_HOST=127.0.0.1`,
+  `SIMAI_PUBLIC_PORT_70000=17000`, `SIMAI_PUBLIC_PORT_70001=17001`, `SIMAI_TIER0_CONTROL_LISTEN_HOST=127.0.0.1`, `SIMAI_TIER0_VIDEO_LISTEN_HOST=127.0.0.1`.
+  사이트 무관 이름(`SIMAI_PUBLIC_*`)이 RunPod 값보다 먼저라 같은 Pod 에서 Direct TCP 로 돌릴 때는 이 다섯 줄만 빼면 된다.
+- 노트북: Pod 포트와 같은 번호의 로컬 포트를 연다(Tier 0 가 등록하는 주소가 `127.0.0.1:17000/17001` 이라 노트북 로컬 포트가 그 번호여야 한다).
+  TCP 연결마다 WebSocket 하나가 열리므로 카메라별 영상 연결이 서로 독립인 구조(relay `tls_sink`)가 유지된다.
+
+```powershell
+$env:WSTUNNEL_HTTP_UPGRADE_PATH_PREFIX = (Get-Content <비밀값 파일> -Raw).Trim()
+wstunnel client --log-lvl OFF --tls-verify-certificate -L tcp://127.0.0.1:17000:127.0.0.1:17000 -L tcp://127.0.0.1:17001:127.0.0.1:17001 wss://<POD_ID>-8080.proxy.runpod.net:443
+```
+
+- TLS: 노트북 relay·현장 경보 단말은 Tier 0 서버를 호스트 이름이 아니라 미리 고정한 공개키 지문으로 확인한다(`simai_site_alert.pinning`. 영상은 SNI 없이 `server_hostname=None`,
+  제어는 엔드포인트 조회 경로의 고정 문맥). 그래서 접속 주소가 `127.0.0.1` 로 바뀌어도 검증은 그대로이고 끄거나 바꿀 것이 없다. 고정값과 다른 키면 기기 토큰을 보내기 전에 끊는다.
+  다만 고정 주소(`url=`)로 만든 제어 채널은 기본 검증(체인·호스트 이름)을 써서 자체 서명 Tier 0 에는 붙지 않는다. 터널에서도 엔드포인트 조회(공개키 고정) 경로를 쓴다.
+- 지금 한계: EC2 `GET /api/endpoints/tier0` 가 서버에 아직 없다(보안 설정만 있음). 그래서 4차 세션 측정은 `scripts/i0_link_measure.py` 가 Pod 출력(endpoint.json)과
+  사람이 옮긴 지문(`--pin`)으로 같은 신뢰 규칙의 고정 대상을 쓴다. 현장 경보 단말은 시계 교환(`clock_sync_request`)에 답하지 않아 Tier 0 가 노트북–Pod 시계 차이를 모른다(측정 도구가 답한다).
+- 이미지에 아직 `SIMAI_TUNNEL_ALLOW` 가 없을 때의 대안: SSH 포트 전달 `ssh -N -L 17000:127.0.0.1:17000 -L 17001:127.0.0.1:17001 simai-pod-443`. 이미지 변경이 필요 없지만
+  모든 카메라·제어가 SSH 연결 하나(TCP 하나)에 묶여 한 카메라의 지연·끊김이 다른 카메라에 번지고, 그 연결이 끊기면 다 같이 끊긴다. 측정 결과를 wstunnel 직접 전달과 섞지 않는다.
 
 **SSH 세션의 환경 변수.** sshd 가 띄운 셸에는 컨테이너 ENV 가 없다. `simai-start` 가 sshd 를 띄울 때 비밀이 아닌 이름(`SIMAI_*`·`CUDA_*`·`NVIDIA_*`·`UV_*`·`RUNPOD_*`·`PYTHON*`·`PATH`·`LD_LIBRARY_PATH`, 이름에 TOKEN·SECRET·PASSW·API_KEY·PRIVATE·CREDENTIAL 이 든 것 제외)만
 `/etc/profile.d/simai-env.sh` 에 적는다. 로그인 셸(`ssh simai-pod`)은 자동으로 읽고, 명령 한 줄은 `ssh simai-pod 'bash -lc "simai-bootstrap queue ..."'` 처럼 로그인 셸로 돌린다.

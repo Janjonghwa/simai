@@ -257,7 +257,8 @@ def _start(gs, tmp_path: Path, env: dict) -> tuple[subprocess.CompletedProcess, 
         (fake / name).write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8", newline="\n")
         (fake / name).chmod(0o755)
     ssh = tmp_path / "ssh"
-    drop = ("PUBLIC_KEY", "SSH_PUBLIC_KEY", "SIMAI_AUTHORIZED_KEYS_FILE", "SIMAI_SSHD", "SIMAI_TUNNEL_PREFIX", "SIMAI_TUNNEL_PORT")
+    drop = ("PUBLIC_KEY", "SSH_PUBLIC_KEY", "SIMAI_AUTHORIZED_KEYS_FILE", "SIMAI_SSHD", "SIMAI_TUNNEL_PREFIX", "SIMAI_TUNNEL_PORT",
+            "SIMAI_TUNNEL_ALLOW")
     base = {k: v for k, v in os.environ.items() if k not in drop}
     full = {**base, "PATH": str(fake) + os.pathsep + base.get("PATH", ""), "SIMAI_SSH_DIR": ssh.as_posix(),
             "SIMAI_SSHD_CONFIG_DIR": (tmp_path / "sshd_config.d").as_posix(), "SIMAI_SSHD_BIN": (fake / "sshd").as_posix(), "SIMAI_SSH_KEYGEN_BIN": (fake / "ssh-keygen").as_posix(),
@@ -495,3 +496,48 @@ def test_ssh_session_env_file_keeps_non_secret_names_only(gs, tmp_path):
     out = subprocess.run([gs.find_bash(), "-c", probe, "probe", f.as_posix()], capture_output=True, text=True, encoding="utf-8",
                          env={"PATH": os.environ.get("PATH", "")}, timeout=30)
     assert out.returncode == 0 and out.stdout == f"sha256:abc|13.0.3|pod123|{quoted}", out.stderr
+
+
+# ---------------------------------------------------------------- 터널 허용 대상 (S15P31A101-288)
+
+
+@pytest.mark.parametrize("allow, extra", [
+    ("17000,17001", ["17000", "17001"]),
+    (" 17000 , 22,17000,,17001 ", ["17000", "17001"]),  # 공백·빈 항목·22·같은 포트는 한 번
+    ("22", []),
+    ("", []),
+])
+def test_tunnel_allow_adds_loopback_ports_only(gs, tmp_path, allow, extra):
+    r, _ = _start(gs, tmp_path, {"PUBLIC_KEY": KEY_A, "SIMAI_TUNNEL_PREFIX": PREFIX, "SIMAI_TUNNEL_ALLOW": allow})
+    assert r.returncode == 0 and "ran-cmd" in r.stdout, r.stderr
+    want = WST_ARGS.format(port="8080").replace(
+        " ws://", "".join(f" --restrict-to 127.0.0.1:{p}" for p in extra) + " ws://")
+    assert _wst(tmp_path) == [want, f"prefix={PREFIX}", "other="]
+    assert "→ " + ",".join(["127.0.0.1:22", *(f"127.0.0.1:{p}" for p in extra)]) + " 만" in r.stderr
+    assert "포트 목록이 아니다" not in r.stderr and PREFIX not in r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("allow, port_env", [
+    ("17000,abc", {}),
+    ("17000,0", {}),
+    ("70000", {}),
+    ("017000", {}),  # 앞자리 0
+    ("17000;17001", {}),
+    ("0.0.0.0:17000", {}),  # 주소는 받지 않는다(127.0.0.1 로만 잇는다)
+    ("8080", {}),  # 터널 포트 자신
+    ("18080", {"SIMAI_TUNNEL_PORT": "18080"}),
+    (",".join(str(17000 + i) for i in range(17)), {}),  # 16개 초과
+])
+def test_bad_tunnel_allow_falls_back_to_ssh_only(gs, tmp_path, allow, port_env):
+    r, _ = _start(gs, tmp_path, {"PUBLIC_KEY": KEY_A, "SIMAI_TUNNEL_PREFIX": PREFIX, "SIMAI_TUNNEL_ALLOW": allow, **port_env})
+    assert r.returncode == 0 and "ran-cmd" in r.stdout, r.stderr
+    assert "포트 목록이 아니다" in r.stderr and "→ 127.0.0.1:22 만" in r.stderr
+    port = port_env.get("SIMAI_TUNNEL_PORT", "8080")
+    assert _wst(tmp_path) == [WST_ARGS.format(port=port), f"prefix={PREFIX}", "other="]
+
+
+def test_tunnel_allow_without_prefix_or_sshd_opens_nothing(gs, tmp_path):
+    r, _ = _start(gs, tmp_path, {"PUBLIC_KEY": KEY_A, "SIMAI_TUNNEL_ALLOW": "17000"})
+    assert r.returncode == 0 and "SIMAI_TUNNEL_PREFIX 없음" in r.stderr and _wst(tmp_path, wait_s=0.3) is None
+    r, _ = _start(gs, tmp_path / "nosshd", {"SIMAI_TUNNEL_PREFIX": PREFIX, "SIMAI_TUNNEL_ALLOW": "17000"})
+    assert r.returncode == 0 and _wst(tmp_path / "nosshd", wait_s=0.3) is None
