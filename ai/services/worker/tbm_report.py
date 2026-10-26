@@ -14,12 +14,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from simai_ai.providers.contract import schema_errors
-from simai_ai.report.llm import ChatClient, LlmError, LlmSettings, OpenAICompatClient
+from simai_ai.report.llm import ChatClient, LlmError, LlmSettings, make_client
 from simai_ai.report.tbm import ReportRejected, generate_report
 
 from .handlers import JobContext, JobFailed
@@ -27,9 +28,13 @@ from .handlers import JobContext, JobFailed
 INPUT_SCHEMA = {"$ref": "https://simai.dev/contracts/messages/tbm_report.schema.json#/$defs/input"}
 RESULT_SCHEMA = {"$ref": "https://simai.dev/contracts/messages/tbm_report.schema.json#/$defs/result"}
 
+log = logging.getLogger("services.worker")
+
 
 def client_from_env(env: Mapping[str, str] = os.environ) -> ChatClient:
-    return OpenAICompatClient(LlmSettings.from_env(env))
+    settings = LlmSettings.from_env(env)
+    log.info("외부 LLM 호출 방식 %s, 모델 %s", settings.api_style, settings.model)  # 결과에는 넣지 않는다
+    return make_client(settings)
 
 
 class TbmReportHandler:

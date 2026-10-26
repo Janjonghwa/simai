@@ -15,7 +15,17 @@ import services.worker.__main__ as entry
 from services.worker.handlers import JobContext, JobFailed
 from services.worker.tbm_report import TbmReportHandler, client_from_env
 from simai_ai.providers.contract import schema_errors
-from simai_ai.report.llm import ChatResult, LlmAuthError, LlmConfigError, LlmTimeout, LlmUnavailable
+from simai_ai.report.llm import (
+    ChatResult,
+    LlmAuthError,
+    LlmConfigError,
+    LlmSettings,
+    LlmTimeout,
+    LlmUnavailable,
+    OpenAICompatClient,
+    OpenAIResponsesClient,
+)
+from tests.report.test_llm_client import ENV, opener_returning
 
 EXAMPLES = Path(__file__).resolve().parents[4] / "contracts" / "examples"
 RESULT_SCHEMA = {"$ref": "https://simai.dev/contracts/messages/tbm_report.schema.json#/$defs/result"}
@@ -67,6 +77,26 @@ def test_e2e_lease_generate_submit_and_result_passes_contract(ec2, run_main):
     assert not schema_errors(r, RESULT_SCHEMA)
     assert r["generator"]["model"] == "gpt-6.1-sol" and r["citations"] == ["산업안전보건기준규칙 제42조#0"]
     assert [i["severity"] for i in r["risk_items"]] == [i["severity"] for i in example_input()["plan"]["items"]]
+
+
+def test_e2e_with_fake_responses_api_passes_contract_and_citation_check(ec2, run_main):
+    job_id = ec2.add_job("tbm_report", example_input(), priority="REPORT", timeout_ms=60_000)
+    reasoning = {"type": "reasoning", "id": "rs_1", "summary": []}
+    body = {"status": "completed", "model": "gpt-6.1-sol", "usage": {"input_tokens": 900, "output_tokens": 300},
+            "output": [reasoning, {"type": "message", "role": "assistant", "status": "completed",
+                                   "content": [{"type": "output_text", "text": good_draft(), "annotations": []}]}]}
+    seen = []
+    client = OpenAIResponsesClient(LlmSettings.from_env(ENV), opener=opener_returning(body, seen))
+    assert run_main({"tbm_report": TbmReportHandler(clock_ms=lambda: 1760342430000, client_factory=lambda: client)}) == 0
+    job = ec2.jobs[job_id]
+    assert job.state == "SUCCEEDED", job.error
+    assert not schema_errors(job.result, RESULT_SCHEMA) and job.result["citations"] == ["산업안전보건기준규칙 제42조#0"]
+    assert "api_style" not in json.dumps(job.result) and seen[0][0].full_url.endswith("/v1/responses")
+
+
+def test_client_from_env_picks_style():
+    assert isinstance(client_from_env(ENV), OpenAIResponsesClient)
+    assert isinstance(client_from_env(ENV | {"SIMAI_LLM_API_STYLE": "chat"}), OpenAICompatClient)
 
 
 def test_daily_report(ec2, run_main):
