@@ -90,4 +90,4 @@
 - 관제 앱·반장 PWA(231) 갱신 호출: 401 이면 `credentials: 'include'` 로 `/api/auth/refresh` 후 재시도, 앱 시작 때 갱신으로 로그인 복구.
   개발 중에는 Vite 프록시로 `/api` 를 서버에 넘기면 쿠키·CORS 설정 없이 같은 출처로 동작한다
 - STOMP 연결 인증(관제 앱은 CONNECT 헤더에 `Authorization: Bearer` 를 싣는다): STOMP 서버를 만들 때
-- OpenAPI 문서 생성(관제 앱 `types.ts` 가 생성 타입으로 바꾸기를 기다린다)
+- 관제 앱 `types.ts` 를 OpenAPI 생성 타입으로 바꾸기. 문서는 S15P31A101-52 에서 붙였다(`/api/docs/openapi.json`, 화면 `/api/docs`, 토큰 없이 열림)

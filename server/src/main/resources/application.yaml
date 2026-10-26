@@ -15,6 +15,15 @@ spring:
     problemdetails:
       enabled: true
 
+springdoc:
+  # Nginx 가 /api/ 만 서버로 넘기므로 문서도 /api/docs 아래에 둔다(설정 변경 없이 운영에서도 열린다)
+  api-docs:
+    path: /api/docs/openapi.json
+  swagger-ui:
+    path: /api/docs
+  # 문서에는 /api 만 싣는다(/error 등 제외)
+  paths-to-match: /api/**
+
 simai:
   auth:
     jwt:
