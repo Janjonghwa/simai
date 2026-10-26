@@ -38,5 +38,7 @@ S15P31A101-106. 명세 3.2(이벤트 소유권·재동기화 규칙·저널 계�
 ## 남은 일
 
 - 실제 알림 발송(`/topic/events`, Web Push)은 S15P31A101-119·M1. 지금은 `risk_event.delivery` 까지 정한다.
-- 현장 버튼 ACK 를 `event_ack` 행으로 남기기, EC2 → Tier 0 `event_ack` 전달은 S15P31A101-121.
+- 운영자 확인(S15P31A101-121): `POST /api/events/{id}/ack` 가 `event_ack` 를 저장하고 I1 `event_ack` 로 보낸다. Tier 0 가 끊겨 있으면
+  저장만 하고, 다시 붙어 동기화가 끝나면 아직 저널에 잡히지 않은 확인(10분 안, 해소 안 된 이벤트)을 같은 `ack_id` 로 다시 보낸다.
+  ACKNOWLEDGED 전이의 확인은 `event_ack` 에 없으면 만들고(현장 버튼), `journal_event_sequence` 를 채운다.
 - 스냅샷에 없는데 EC2 에서 활성인 이벤트는 경고 로그만 남긴다(EC2 는 전이를 만들지 않는다).

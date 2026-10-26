@@ -42,10 +42,12 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
     private final JournalCursorRepository cursors;
     private final JournalService journal;
     private final TransactionTemplate transaction;
+    private final EventAckForwarder acks;
     private final Clock clock;
 
     EventStateSnapshotIngestor(RiskEventRepository events, JournalCursorRepository cursors, JournalService journal,
-            TransactionTemplate transaction, Clock clock) {
+            TransactionTemplate transaction, EventAckForwarder acks, Clock clock) {
+        this.acks = acks;
         this.events = events;
         this.cursors = cursors;
         this.journal = journal;
@@ -97,6 +99,8 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
         tracker.finishSync();
         cursors.saveSyncMode(gatewayId, false, I1Json.utc(clock.instant()));
         journal.send(connection, tracker, null);
+        // 끊긴 동안 저장만 한 운영자 확인을 같은 ack_id 로 다시 보낸다(S15P31A101-121)
+        acks.resendPending(connection);
         log.info("I1 저널 동기화 끝: gateway={} active={} changed_during_sync={}", gatewayId, active.size(), touched.size());
         return Outcome.STORED;
     }

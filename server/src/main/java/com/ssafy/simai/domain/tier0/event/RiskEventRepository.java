@@ -17,7 +17,9 @@ import tools.jackson.databind.JsonNode;
  * risk_event(현재 상태)·risk_event_update(Tier 0 전이 기록, 추가만)를 쓴다(V1, docs/design/db-tables.md E절, 명세 3.2).
  * EC2 는 전이를 만들지 않는다. 받은 전이를 기록하고, 그 이벤트에서 가장 높은 event_sequence 일 때만 현재 상태에 반영한다
  * (늦게 온 낮은 sequence 는 기록만). 부모 risk_event 행이 없으면(RAISED 보다 뒤 전이가 먼저 옴) 그 전이로 만든다(FK).
- * ack_id·close_id 는 그 행이 이미 있을 때만 잇는다(현장 버튼 확인 기록은 S15P31A101-121).
+ * ACKNOWLEDGED 전이의 확인(ack)은 event_ack 에 없으면 만든다(현장 버튼 확인·EC2 기록 유실, S15P31A101-121). 관제·반장 확인의
+ * actor_id 는 user_id, 현장 버튼은 기기 ID 다(그 계정·기기가 없으면 비운다). 저널에 잡힌 sequence 를 journal_event_sequence 에 남긴다.
+ * close_id 는 그 행이 이미 있을 때만 잇는다.
  */
 @Repository
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -71,6 +73,22 @@ public class RiskEventRepository {
                     (SELECT e.event_id FROM risk_event e WHERE e.event_id = CAST(:relatedEventId AS uuid)), related_event_id),
                 delivery = COALESCE(:delivery, delivery)
             WHERE event_id = :eventId AND (event_sequence IS NULL OR event_sequence < :seq)
+            """;
+
+    private static final String ENSURE_ACK = """
+            INSERT INTO event_ack (ack_id, event_id, channel, actor_role, actor_user_id, actor_device_id, acked_at)
+            VALUES (CAST(:ackId AS uuid), :eventId, :ackChannel, :ackRole,
+                CASE WHEN :ackChannel <> 'SITE_BUTTON'
+                     THEN (SELECT u.user_id FROM app_user u WHERE CAST(u.user_id AS text) = :ackActor) END,
+                CASE WHEN :ackChannel = 'SITE_BUTTON'
+                     THEN (SELECT d.device_id FROM device d WHERE d.device_id = :ackActor) END,
+                :ackAt)
+            ON CONFLICT (ack_id) DO NOTHING
+            """;
+
+    private static final String ACK_JOURNALED = """
+            UPDATE event_ack SET journal_event_sequence = :seq
+            WHERE ack_id = CAST(:ackId AS uuid) AND journal_event_sequence IS NULL
             """;
 
     /** 같은 세대·offset 에 이미 있는 기록의 msg_id. 다른 msg_id 면 Tier 0 저널이 새로 시작된 것이다 */
@@ -151,6 +169,10 @@ public class RiskEventRepository {
                 .addValue("resumed", Boolean.TRUE.equals(bool(p, "resumed")))
                 .addValue("relatedEventId", uuidText(p, "related_event_id"))
                 .addValue("ackId", absent(ack) ? null : uuidText(ack, "ack_id"))
+                .addValue("ackChannel", absent(ack) ? null : text(ack, "channel"))
+                .addValue("ackRole", absent(ack) ? null : text(ack, "actor_role"))
+                .addValue("ackActor", absent(ack) ? null : text(ack, "actor_id"))
+                .addValue("ackAt", absent(ack) ? null : time(ack, "acked_at"))
                 .addValue("closeId", absent(resolution) ? null : uuidText(resolution, "close_id"))
                 .addValue("escalationId", absent(escalation) ? null : uuidText(escalation, "escalation_id"))
                 .addValue("resolution", json(p, "resolution"))
@@ -159,12 +181,19 @@ public class RiskEventRepository {
                 .addValue("receivedAt", utc(receivedAt))
                 .addValue("epoch", epoch);
         jdbc.update(ENSURE_EVENT, params);
+        boolean hasAck = params.getValue("ackId") != null;
+        if (hasAck) {
+            jdbc.update(ENSURE_ACK, params);
+        }
         if (jdbc.update(INSERT_UPDATE, params) == 0) {
             java.util.List<UUID> existing = jdbc.queryForList(MSG_AT_OFFSET, params, UUID.class);
             return existing.isEmpty() || existing.contains(envelope.msgId()) ? Recorded.DUPLICATE : Recorded.OFFSET_CONFLICT;
         }
         jdbc.update(APPLY, params);
         jdbc.update(FILL_RAISED_AT, params);
+        if (hasAck) {
+            jdbc.update(ACK_JOURNALED, params);
+        }
         return Recorded.INSERTED;
     }
 
