@@ -426,6 +426,8 @@ def harness_scenarios(seeds: list[int]) -> list[tuple[str, str, str, object]]:
     out = [
         ("harness_after_transition", "D-G3-11", "전이(fsync) 직후 SIGKILL",
          lambda root: t.test_kill_right_after_transition(root, sd, clock())),
+        ("harness_after_escalate", "D-G3-11", "운영자 상향(-272) 전이(fsync) 직후 SIGKILL",
+         lambda root: t.test_kill_right_after_operator_escalation(root, sd, clock())),
         ("harness_during_checkpoint", "D-G3-11", "체크포인트 임시 파일 fsync 뒤·rename 전 SIGKILL",
          lambda root: t.test_kill_during_checkpoint_write(root, sd, clock())),
         ("harness_after_compact", "D-G3-13", "EC2 ACK → 저널 정리 직후 SIGKILL",
