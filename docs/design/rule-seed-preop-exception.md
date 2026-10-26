@@ -40,10 +40,21 @@
 
 ## S15P31A101-256 과의 경계
 
-- 256(R3 `legal_basis` 를 비어 있을 때만 채우고, 다르면 멈춤)은 ②와 ③ 사이에 자기 블록을 **더하기만** 한다. 이 스토리는 `legal_basis` 를 비교도 갱신도 하지 않으므로
-  같은 줄을 두 스토리가 고치지 않는다.
-- `legal_basis` 는 판정 값이 아니라 근거 문구라, 256 의 "다르면 멈춤"에 이 예외를 적용할지는 256 이 정한다. 필요하면 같은 상수
-  `FIRST_OPERATION_DEPLOY` 를 읽는다(`render_flyway_seed(entries, first_operation_deploy=…)` 가 블록 함수에 넘긴다).
+- ② 는 `legal_basis` 를 다루지 않는다. `legal_basis` 는 ②와 ③ 사이의 ②' 가 같은 표시(`FIRST_OPERATION_DEPLOY`)로 맡는다(아래 절).
+
+## 근거 조항(legal_basis) 블록 ②' (S15P31A101-256)
+
+R3 v1 `RuleSpec.legal_basis` = `산업안전보건기준규칙 제32조; 산업안전보건기준규칙 제44조`(RAG 조항 ID 조 단위, `ai/src/simai_ai/rag/data/clauses.json`).
+R3 v1001(교실 시험 프로파일)과 다른 규칙은 NULL. 생성기 `_legal_basis_block` 이 ②와 ③ 사이에 둔다.
+
+| DB 값 | 시드 값 | 첫 운영 배포 전(`None`) | 첫 운영 배포 뒤(날짜) |
+|---|---|---|---|
+| NULL | 있음 | 채움 + NOTICE `근거 조항(legal_basis)이 비어 있어 등록부 값으로 채웠다: R3 v1` | 같음(채움 + NOTICE) |
+| 같음 | 같음 | 아무것도 안 함 | 아무것도 안 함 |
+| 있음 | 다름(NULL 포함) | 갱신 + NOTICE `첫 운영 배포 전 규칙 보완 예외(11.4-1): R3 v1 근거 조항(legal_basis)을 등록부 값으로 갱신했다` | `RAISE EXCEPTION '근거 조항(legal_basis)이 바뀌었는데 rule_version 이 같다: …'`(채우기 전에 멈춤) |
+
+- Jira 256 의 "다르면 `RAISE EXCEPTION`"을 첫 운영 배포 뒤에만 적용하고, 그 전은 ② 와 같이 갱신한다(② 와 같은 분기·메시지 형식).
+- 시험: `test_rule_catalog.py` 의 R3 근거 조항·조항 파일 존재(JSON 만 읽음, rag import 없음)·②' 분기. DB(2026-10-26, `simai-rag-db`): 새 DB Flyway 전체 적용 뒤 R3 v1 만 값, 기존 DB(NULL) 채움, 다른 값은 첫 운영 전 갱신·날짜를 넣은 시드에서 멈춤.
 
 ## 시험
 
@@ -52,7 +63,7 @@
 | `ai/tests/risk/test_rule_catalog.py::test_before_first_operation_deploy_updates_same_version` | 표시 없음: EXCEPTION 없음, 세 칼럼 UPDATE·NOTICE, UPDATE 에 `legal_basis`·`reads`·`valid_from` 없음 |
 | `…::test_after_first_operation_deploy_raises` | 날짜: UPDATE·NOTICE 없음, EXCEPTION 메시지·머리 주석에 날짜 |
 | `…::test_first_operation_deploy_must_be_iso_date` | 날짜가 아니면 거부 |
-| `…::test_blocks_in_order` | ①·②·③ 순서(256 이 끼울 자리) |
+| `…::test_blocks_in_order` | ①·②·②'·③ 순서 |
 | `…::test_committed_seed_is_up_to_date` | 커밋된 시드가 생성기 출력과 같음(기존) |
 
 로컬 DB 확인(2026-10-26, 별도 컨테이너 `timescale/timescaledb-ha:pg17-all@sha256:26e355e…`, compose 와 같은 digest, 포트 55433):
@@ -82,4 +93,4 @@
 
 ## 넘긴 일
 
-- R3 `legal_basis` 채우기와 다르면 멈춤: S15P31A101-256(②와 ③ 사이 블록).
+- R3 `legal_basis` 채우기와 다르면 멈춤: S15P31A101-256 에서 함(②').

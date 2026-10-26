@@ -10,7 +10,9 @@ EC2 DB 의 `rule_version` 테이블(기획서 11.1, docs/design/db-tables.md)은
 - 기본 심각도: 규칙 모듈의 `{규칙 ID}_SEVERITY` 상수(DEFAULT_SEVERITY). 없으면 비운다(R1 은 구역 심각도, 그 밖은 규칙이 판정마다 정함).
 - 규칙 버전은 고치지 않고 새 버전을 더한다(11.4-1). 같은 (ID, 버전)의 값(profile·thresholds·default_severity)이 DB 와 다르면
   첫 운영 배포 전(`FIRST_OPERATION_DEPLOY` 가 None)에는 그 행을 등록부 값으로 갱신하고 RAISE NOTICE 를 남기며(규칙 보완 예외,
-  S15P31A101-252), 첫 운영 배포 뒤에는 마이그레이션이 멈춘다. legal_basis·reads·valid_from 은 이미 있는 행에서 고치지 않는다.
+  S15P31A101-252), 첫 운영 배포 뒤에는 마이그레이션이 멈춘다. reads·valid_from 은 이미 있는 행에서 고치지 않는다.
+- 근거 조항(legal_basis)은 DB 가 비어 있으면 채운다. DB 에 다른 값이 있으면 위와 같이 첫 운영 배포 전에는 갱신하고 NOTICE,
+  뒤에는 멈춘다(S15P31A101-256).
 
 등록부를 바꾸면 다시 만든다. `ai/` 에서:
 
@@ -199,6 +201,65 @@ def _value_block(first_operation_deploy: str | None) -> list[str]:
     ]
 
 
+def _legal_basis_fill_loop(where: str, notice: list[str]) -> list[str]:
+    """legal_basis 를 시드 값으로 바꾸고 행마다 NOTICE 를 남기는 루프(②' 블록 안)."""
+    return [
+        "    FOR c IN SELECT s.rule_id, s.rule_version, s.legal_basis, r.legal_basis AS db_legal_basis",
+        "             FROM rule_version_seed s JOIN rule_version r USING (rule_id, rule_version)",
+        f"             WHERE {where}",
+        "             ORDER BY s.rule_id, s.rule_version",
+        "    LOOP",
+        "        UPDATE rule_version SET legal_basis = c.legal_basis WHERE rule_id = c.rule_id AND rule_version = c.rule_version;",
+        *notice,
+        "    END LOOP;",
+    ]
+
+
+_FILLED_NOTICE = "RAISE NOTICE '근거 조항(legal_basis)이 비어 있어 등록부 값으로 채웠다: % v%', c.rule_id, c.rule_version;"
+
+
+def _legal_basis_block(first_operation_deploy: str | None) -> list[str]:
+    """②' 이미 있는 (rule_id, rule_version) 의 근거 조항(legal_basis)이 등록부와 다를 때(S15P31A101-256).
+
+    DB 가 비어 있으면 채운다. DB 에 다른 값이 있으면 ② 와 같이 첫 운영 배포 전이면 갱신하고 NOTICE, 뒤면 멈춘다(11.4-1).
+    """
+    if first_operation_deploy is None:
+        return [
+            "-- ②' 근거 조항(legal_basis): 비어 있으면 채우고, 다르면 첫 운영 배포 전 규칙 보완 예외(11.4-1)로 등록부 값으로 갱신한다.",
+            "DO $$",
+            "DECLARE c record;",
+            "BEGIN",
+            *_legal_basis_fill_loop(
+                "r.legal_basis IS DISTINCT FROM s.legal_basis",
+                [
+                    "        IF c.db_legal_basis IS NULL THEN",
+                    f"            {_FILLED_NOTICE}",
+                    "        ELSE",
+                    "            RAISE NOTICE '첫 운영 배포 전 규칙 보완 예외(11.4-1): % v% 근거 조항(legal_basis)을 등록부 값으로 갱신했다', c.rule_id, c.rule_version;",
+                    "        END IF;",
+                ],
+            ),
+            "END $$;",
+            "",
+        ]
+    return [
+        f"-- ②' 근거 조항(legal_basis): 비어 있으면 채운다. 첫 운영 배포({first_operation_deploy}) 뒤라 다른 값이 있으면 멈춘다(11.4-1).",
+        "DO $$",
+        "DECLARE changed text; c record;",
+        "BEGIN",
+        "    SELECT string_agg(s.rule_id || ' v' || s.rule_version, ', ' ORDER BY s.rule_id, s.rule_version) INTO changed",
+        "    FROM rule_version_seed s JOIN rule_version r USING (rule_id, rule_version)",
+        "    WHERE r.legal_basis IS NOT NULL AND r.legal_basis IS DISTINCT FROM s.legal_basis;",
+        "    IF changed IS NOT NULL THEN",
+        f"        RAISE EXCEPTION '근거 조항(legal_basis)이 바뀌었는데 rule_version 이 같다: %. 첫 운영 배포({first_operation_deploy}) 뒤라 같은 버전 값 변경 금지, "
+        "등록부에서 버전을 올린다', changed;",
+        "    END IF;",
+        *_legal_basis_fill_loop("r.legal_basis IS NULL AND s.legal_basis IS NOT NULL", [f"        {_FILLED_NOTICE}"]),
+        "END $$;",
+        "",
+    ]
+
+
 def _insert_block() -> list[str]:
     """③ 새 (rule_id, rule_version) 만 더한다."""
     return [
@@ -225,7 +286,13 @@ def render_flyway_seed(entries: list[RuleCatalogEntry], first_operation_deploy: 
         "-- Flyway 반복 마이그레이션이라 내용이 바뀔 때마다 다시 실행된다. 새 (rule_id, rule_version) 은 더한다(기획서 11.4-1).",
         f"-- 표시: {state}",
     ]
-    return "\n".join(header + _seed_table_block(entries) + _value_block(first_operation_deploy) + _insert_block())
+    return "\n".join(
+        header
+        + _seed_table_block(entries)
+        + _value_block(first_operation_deploy)
+        + _legal_basis_block(first_operation_deploy)
+        + _insert_block()
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
