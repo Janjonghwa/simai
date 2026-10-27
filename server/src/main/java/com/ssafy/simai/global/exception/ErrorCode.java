@@ -140,6 +140,8 @@ public sealed interface ErrorCode {
         // 덮어쓰지 않는다. 다른 문서면 새 calibration_version 으로 올린다
         CALIBRATION_VERSION_CONFLICT(HttpStatus.CONFLICT, "같은 보정 버전에 다른 문서가 이미 있습니다"),
         CALIBRATION_MISSING(HttpStatus.CONFLICT, "올린 보정 문서가 없어 구성 묶음을 만들 수 없습니다. 먼저 POST /api/calibrations 로 올리세요"),
+        // 화면의 현재 보정(Tier 0 알림)과 묶음의 보정이 갈리지 않게 한다(S15P31A101-263)
+        CURRENT_CALIBRATION_MISSING(HttpStatus.CONFLICT, "Tier 0 가 알린 현재 보정 버전의 문서가 없어 구성 묶음을 만들 수 없습니다. 그 버전 문서를 POST /api/calibrations 로 올리세요"),
         RULES_MISSING(HttpStatus.CONFLICT, "유효한 규칙 버전이 없어 구성 묶음을 만들 수 없습니다"),
         INVALID_RULE_PROFILE(HttpStatus.BAD_REQUEST, "rule_profile 은 OPERATION 또는 CLASSROOM_TEST 여야 합니다"),
         PUBLIC_URL_NOT_SET(HttpStatus.SERVICE_UNAVAILABLE, "Tier 0 가 묶음을 내려받을 https 공개 주소(SIMAI_PUBLIC_BASE_URL)가 설정되지 않았습니다"),

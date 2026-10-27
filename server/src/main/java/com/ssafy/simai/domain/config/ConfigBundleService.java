@@ -1,5 +1,6 @@
 package com.ssafy.simai.domain.config;
 
+import com.ssafy.simai.domain.calibration.CalibrationViews;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import java.time.Clock;
@@ -11,6 +12,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
@@ -52,10 +54,12 @@ public class ConfigBundleService {
     private final SiteLookup sites;
     private final ConfigBundleSender sender;
     private final ConfigBundleViews views;
+    private final CalibrationViews calibrations;
     private final Clock clock;
 
     public ConfigBundleService(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, TransactionTemplate transaction,
-            BundleUrlSigner signer, SiteLookup sites, ConfigBundleSender sender, ConfigBundleViews views, Clock clock) {
+            BundleUrlSigner signer, SiteLookup sites, ConfigBundleSender sender, ConfigBundleViews views, CalibrationViews calibrations,
+            Clock clock) {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.transaction = transaction;
@@ -63,6 +67,7 @@ public class ConfigBundleService {
         this.sites = sites;
         this.sender = sender;
         this.views = views;
+        this.calibrations = calibrations;
         this.clock = clock;
     }
 
@@ -161,7 +166,19 @@ public class ConfigBundleService {
     private record Calibration(String version, byte[] content) {
     }
 
+    /**
+     * Tier 0 가 알린 현재 보정 버전의 문서를 싣는다(S15P31A101-263). 그 문서를 아직 올리지 않았으면 묶음을 만들지 않는다
+     * (화면의 현재 보정과 묶음의 보정이 갈리지 않게). 알림을 받은 적이 없으면(Tier 0 연결 전) 가장 최근에 올린 문서를 싣는다.
+     */
     private Calibration latestCalibration(String siteId) {
+        Optional<String> current = calibrations.currentVersion();
+        if (current.isPresent()) {
+            return jdbc.query("""
+                    SELECT calibration_version, content FROM calibration_document WHERE calibration_version = :v
+                    """, new MapSqlParameterSource("v", current.get()),
+                    (rs, i) -> new Calibration(rs.getString("calibration_version"), rs.getBytes("content")))
+                    .stream().findFirst().orElseThrow(() -> new BusinessException(ErrorCode.Config.CURRENT_CALIBRATION_MISSING));
+        }
         return jdbc.query("""
                 SELECT d.calibration_version, d.content FROM calibration_document d
                 JOIN calibration_version v ON v.calibration_version = d.calibration_version

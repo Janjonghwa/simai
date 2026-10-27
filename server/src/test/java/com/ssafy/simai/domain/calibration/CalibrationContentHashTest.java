@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -45,6 +46,23 @@ class CalibrationContentHashTest {
     })
     void 실수는_Python_repr_모양으로_쓴다(double value, String expected) {
         assertThat(CalibrationContentHash.pythonFloat(value)).isEqualTo(expected);
+    }
+
+    /** 2의 거듭제곱 전부(가장 가까운 후보만 보면 46개가 틀린다), 무작위 double 3000개, 경계값의 Python repr */
+    @Test
+    void 실수_5천여_개가_Python_repr_과_같다() throws Exception {
+        List<String> lines = Files.readAllLines(Path.of("src/test/resources/calibration/python-float-repr.txt"));
+        int checked = 0;
+        for (String line : lines) {
+            if (line.startsWith("#")) {
+                continue;
+            }
+            String[] cols = line.split(" ");
+            double value = Double.longBitsToDouble(Long.parseUnsignedLong(cols[0], 16));
+            assertThat(CalibrationContentHash.pythonFloat(value)).as(cols[0]).isEqualTo(cols[1]);
+            checked++;
+        }
+        assertThat(checked).isGreaterThan(5000);
     }
 
     @Test

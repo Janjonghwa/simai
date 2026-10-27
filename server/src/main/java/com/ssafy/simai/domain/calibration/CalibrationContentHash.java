@@ -151,16 +151,27 @@ final class CalibrationContentHash {
 
     /**
      * 되돌리면 같은 double 이 되는 가장 짧은 십진수(같은 길이면 참값에 가장 가까운 것, Python repr 과 같다).
-     * Double.toString 은 한 자리로 충분해도 두 자리를 쓸 때가 있어(5e-324 → 4.9E-324) 참값을 자릿수별로 반올림해 찾는다.
+     * Double.toString 은 한 자리로 충분해도 두 자리를 쓸 때가 있어(5e-324 → 4.9E-324) 참값을 자릿수별로 찾는다.
+     * 2의 거듭제곱은 아래쪽 반올림 범위가 위쪽의 절반이라, 가장 가까운 후보가 범위 밖이어도 반대쪽 후보가 들어갈 수 있다.
+     * 그래서 자릿수마다 내림·올림 후보를 둘 다 보고, 둘 다 되면 참값에 가까운 쪽(같으면 반올림 결과)을 고른다.
      */
     private static BigDecimal shortest(double positive) {
         BigDecimal exact = new BigDecimal(positive);
-        for (int precision = 1; precision < 17; precision++) {
-            BigDecimal candidate = exact.round(new MathContext(precision, RoundingMode.HALF_EVEN));
-            if (candidate.doubleValue() == positive) {
-                return candidate.stripTrailingZeros();
+        for (int precision = 1; precision <= 17; precision++) {
+            BigDecimal down = exact.round(new MathContext(precision, RoundingMode.FLOOR));
+            BigDecimal up = exact.round(new MathContext(precision, RoundingMode.CEILING));
+            boolean downOk = down.doubleValue() == positive;
+            boolean upOk = up.doubleValue() == positive;
+            if (downOk && upOk) {
+                int closer = exact.subtract(down).compareTo(up.subtract(exact));
+                BigDecimal pick = closer < 0 ? down : closer > 0 ? up
+                        : exact.round(new MathContext(precision, RoundingMode.HALF_EVEN));
+                return pick.stripTrailingZeros();
+            }
+            if (downOk || upOk) {
+                return (downOk ? down : up).stripTrailingZeros();
             }
         }
-        return exact.round(new MathContext(17, RoundingMode.HALF_EVEN)).stripTrailingZeros();
+        throw new IllegalStateException("17자리로도 되돌아오지 않는 double: " + positive);
     }
 }

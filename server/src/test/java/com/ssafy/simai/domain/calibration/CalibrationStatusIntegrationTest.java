@@ -11,10 +11,13 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -74,8 +77,9 @@ class CalibrationStatusIntegrationTest {
     private final String tag = UUID.randomUUID().toString().substring(0, 8);
     private final String gatewayId = "tier0-cal-" + tag;
     private final String prefix = "cal-test263-" + tag;
-    /** 다른 시험·실행이 남긴 알림보다 늦게 */
-    private final long base = Instant.now().plus(Duration.ofDays(1)).toEpochMilli();
+    /** 지금보다 이른 Tier 0 시각. 현재 보정 순서는 LEAST(sent_at, received_at) 라 미래 시각은 받은 시각으로 눌린다 */
+    private final long base = Instant.now().minus(Duration.ofMinutes(10)).toEpochMilli();
+    private final List<String> bundles = new ArrayList<>();
     private long adminId;
 
     @BeforeEach
@@ -87,6 +91,12 @@ class CalibrationStatusIntegrationTest {
     @AfterEach
     void cleanUp() {
         String like = prefix + "%";
+        for (String version : bundles) {
+            jdbc.update("DELETE FROM config_ack WHERE config_version = ?", version);
+            jdbc.update("DELETE FROM config_bundle_file WHERE config_version = ?", version);
+            jdbc.update("DELETE FROM config_bundle_item WHERE config_version = ?", version);
+            jdbc.update("DELETE FROM config_bundle WHERE config_version = ?", version);
+        }
         jdbc.update("DELETE FROM calibration_update_message WHERE calibration_version LIKE ?", like);
         jdbc.update("DELETE FROM coverage_guide WHERE calibration_version LIKE ?", like);
         jdbc.update("DELETE FROM calibration_document WHERE calibration_version LIKE ?", like);
@@ -143,6 +153,21 @@ class CalibrationStatusIntegrationTest {
     }
 
     @Test
+    void Tier0_시계가_한_번_미래로_앞선_알림은_시계를_바로잡은_뒤_알림에_현재를_넘긴다() throws Exception {
+        try (Tier0 tier0 = tier0()) {
+            // 시계 동기화 전: 하루 뒤로 찍힌 알림
+            tier0.send(update(prefix + "-a", null, "DRIFTED", "DRIFT_DETECTED", Instant.now().plus(Duration.ofDays(1)).toEpochMilli()));
+            awaitCount(() -> messages(prefix + "-a"), 1);
+            Thread.sleep(20);
+            // 시계를 바로잡은 뒤의 알림(보낸 시각은 앞 알림보다 이르다)
+            tier0.send(update(prefix + "-a", null, "CALIBRATED", "STATE_CHANGED", Instant.now().toEpochMilli()));
+        }
+
+        awaitCount(() -> messages(prefix + "-a"), 2);
+        assertThat(call("/api/calibrations/current", viewer(), 200).get("calibration_state").asString()).isEqualTo("CALIBRATED");
+    }
+
+    @Test
     void 새_버전은_이전_버전을_가리키고_재보정_뒤_현재가_된다() throws Exception {
         try (Tier0 tier0 = tier0()) {
             tier0.send(update(prefix + "-a", null, "CALIBRATED", "INITIAL", base));
@@ -171,16 +196,23 @@ class CalibrationStatusIntegrationTest {
         double duplicateBefore = counter("duplicate");
         double invalidBefore = counter("invalid");
 
+        // 같은 msg_id 가 다른 버전으로 와도 중복이다(버전 행을 만들지 않는다)
+        ObjectNode sameIdOtherVersion = first.deepCopy();
+        ((ObjectNode) sameIdOtherVersion.get("payload")).put("calibration_version", prefix + "-z");
+
         try (Tier0 tier0 = tier0()) {
             tier0.send(first);
             tier0.send(first);
+            tier0.send(sameIdOtherVersion);
             tier0.send(otherHash);
             tier0.send(simCalibrated);
         }
 
         awaitCount(() -> (int) (counter("invalid") - invalidBefore), 2);
-        assertThat(counter("duplicate") - duplicateBefore).isEqualTo(1.0);
+        assertThat(counter("duplicate") - duplicateBefore).isEqualTo(2.0);
         assertThat(messages(prefix + "-a")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM calibration_version WHERE calibration_version = ?", Integer.class,
+                prefix + "-z")).isZero();
         assertThat(call("/api/calibrations/current", viewer(), 200).get("calibration_state").asString()).isEqualTo("CALIBRATED");
     }
 
@@ -207,7 +239,7 @@ class CalibrationStatusIntegrationTest {
     }
 
     @Test
-    void 업로드로_먼저_만든_버전은_이전_버전을_비워_두고_Tier0_알림이_채운다() throws Exception {
+    void 업로드로_먼저_만든_버전은_고치지_않고_이전_버전은_Tier0_알림_값으로_준다() throws Exception {
         try (Tier0 tier0 = tier0()) {
             tier0.send(update(prefix + "-a", null, "CALIBRATED", "INITIAL", base));
         }
@@ -226,15 +258,17 @@ class CalibrationStatusIntegrationTest {
         }
 
         awaitCount(() -> messages(prefix + "-b"), 1);
-        assertThat(previous(prefix + "-b")).isEqualTo(prefix + "-a");
-        // 처음 만든 값(업로드한 문서의 상태·주소)은 그대로다
+        // 버전 행은 덮어쓰지 않는다(AGENTS 6): 처음 만든 값(이전 버전 없음, 업로드 문서 주소) 그대로
+        assertThat(previous(prefix + "-b")).isNull();
         assertThat(jdbc.queryForObject("SELECT calibration_ref FROM calibration_version WHERE calibration_version = ?",
                 String.class, prefix + "-b")).isEqualTo("ec2:calibration_document/" + prefix + "-b");
-        assertThat(call("/api/calibrations/current", viewer(), 200).get("document_uploaded").asBoolean()).isTrue();
+        JsonNode current = call("/api/calibrations/current", viewer(), 200);
+        assertThat(current.get("previous_calibration_version").asString()).isEqualTo(prefix + "-a");
+        assertThat(current.get("document_uploaded").asBoolean()).isTrue();
     }
 
     @Test
-    void 예전에_원문_해시로_남긴_업로드_행은_같은_내용이면_해시를_바로잡고_받는다() throws Exception {
+    void 예전에_원문_해시로_남긴_업로드_행은_고치지_않고_올린_문서가_같은_내용이면_받는다() throws Exception {
         String version = prefix + "-a";
         byte[] content = MAPPER.writeValueAsBytes(document(version, null));
         jdbc.update("""
@@ -253,8 +287,56 @@ class CalibrationStatusIntegrationTest {
 
         awaitCount(() -> messages(version), 1);
         assertThat(jdbc.queryForObject("SELECT calibration_hash FROM calibration_version WHERE calibration_version = ?",
-                String.class, version)).isEqualTo(EXAMPLE_HASH);
+                String.class, version)).isEqualTo("sha256:raw-bytes");
         assertThat(call("/api/calibrations/current", viewer(), 200).get("calibration_state").asString()).isEqualTo("CALIBRATED");
+    }
+
+    @Test
+    void 브라우저가_실수를_정수로_바꾼_문서는_해시가_달라_거부되고_글자_그대로_보내면_받는다() throws Exception {
+        try (Tier0 tier0 = tier0()) {
+            tier0.send(update(prefix + "-a", null, "CALIBRATED", "INITIAL", base));
+        }
+        awaitCount(() -> messages(prefix + "-a"), 1);
+        String original = Files.readString(CONTRACTS.resolve("examples/calibration.json"));
+        String text = original.replace(MAPPER.readTree(original).get("calibration_version").asString(), prefix + "-a");
+        assertThat(text).contains(prefix + "-a").contains("1000.0");
+        // JSON.parse → stringify 를 거치면 1000.0 이 1000 이 된다
+        ObjectNode viaBrowser = (ObjectNode) MAPPER.readTree(text.replace("1000.0", "1000").replace("960.0", "960"));
+
+        assertThat(call("POST", "/api/calibrations", admin(), upload(viaBrowser), 409).get("code").asString())
+                .isEqualTo("CALIBRATION_VERSION_CONFLICT");
+        ObjectNode body = MAPPER.createObjectNode();
+        body.put("document_text", text);
+        call("POST", "/api/calibrations", admin(), body, 201);
+        // 둘 다 보내면 거부
+        body.set("document", viaBrowser);
+        call("POST", "/api/calibrations", admin(), body, 400);
+        // 글자 그대로 저장한다(구성 묶음이 이 글자를 싣는다)
+        assertThat(new String(jdbc.queryForObject("SELECT content FROM calibration_document WHERE calibration_version = ?",
+                byte[].class, prefix + "-a"), StandardCharsets.UTF_8)).isEqualTo(text);
+    }
+
+    @Test
+    void 구성_묶음은_Tier0_가_알린_현재_버전의_문서를_싣고_없으면_만들지_않는다() throws Exception {
+        call("POST", "/api/calibrations", admin(), upload(document(prefix + "-b", null)), 201);
+        try (Tier0 tier0 = tier0()) {
+            ObjectNode a = update(prefix + "-a", null, "CALIBRATED", "INITIAL", base);
+            ((ObjectNode) a.get("payload")).put("calibration_hash", "sha256:" + "6".repeat(64));
+            tier0.send(a);
+        }
+        awaitCount(() -> messages(prefix + "-a"), 1);
+
+        // 가장 최근에 올린 문서(-b)가 아니라 현재 버전(-a)의 문서가 있어야 한다
+        assertThat(call("POST", "/api/config-bundles", admin(), MAPPER.createObjectNode(), 409).get("code").asString())
+                .isEqualTo("CURRENT_CALIBRATION_MISSING");
+
+        try (Tier0 tier0 = tier0()) {
+            tier0.send(update(prefix + "-b", prefix + "-a", "CALIBRATED", "RECALIBRATED", base + 1_000));
+        }
+        awaitCount(() -> messages(prefix + "-b"), 1);
+        JsonNode published = call("POST", "/api/config-bundles", admin(), MAPPER.createObjectNode(), 201);
+        bundles.add(published.get("config_version").asString());
+        assertThat(published.get("calibration_version").asString()).isEqualTo(prefix + "-b");
     }
 
     @Test
