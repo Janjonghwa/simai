@@ -247,6 +247,31 @@ public sealed interface ErrorCode {
         }
     }
 
+    /** BEV 평면도(S15P31A101-240) */
+    enum FloorPlan implements ErrorCode {
+        // 화면은 404 를 '아직 평면도 없음'으로 보고 보조 화면을 비운다
+        FLOOR_PLAN_NOT_READY(HttpStatus.NOT_FOUND, "아직 만들어진 BEV 평면도가 없습니다"),
+        INVALID_FRAMES(HttpStatus.BAD_REQUEST, "프레임 출처·카메라 ID·객체 저장소 주소(버킷 안 s3://)가 맞지 않거나 같은 카메라가 두 번 있습니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        FloorPlan(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
     /** 객체 저장소 임시 서명 주소(S15P31A101-69) */
     enum Storage implements ErrorCode {
         INVALID_UPLOAD(HttpStatus.BAD_REQUEST, "업로드 목적·형식·크기·해시·식별자가 맞지 않습니다"),

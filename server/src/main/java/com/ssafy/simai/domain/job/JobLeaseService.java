@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -38,11 +39,13 @@ class JobLeaseService {
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper mapper;
     private final JobSignal signal;
+    private final ApplicationEventPublisher events;
 
-    JobLeaseService(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, JobSignal signal) {
+    JobLeaseService(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, JobSignal signal, ApplicationEventPublisher events) {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.signal = signal;
+        this.events = events;
     }
 
     /** 대여 요청을 보낸 워커의 마지막 접속 시각과 처리 가능 유형(db-tables worker.job_types: 마지막 대여 요청의 값) */
@@ -233,13 +236,15 @@ class JobLeaseService {
 
     private void finish(String jobId, String status, JsonNode result, JsonNode error, OffsetDateTime startedAt,
             OffsetDateTime finishedAt) {
-        jdbc.update("""
+        List<String> jobType = jdbc.queryForList("""
                 UPDATE analysis_job SET status = :status, result = CAST(:result AS jsonb), error = CAST(:error AS jsonb),
                     started_at = COALESCE(:startedAt, started_at), finished_at = :finishedAt
-                WHERE job_id = :jobId
+                WHERE job_id = :jobId RETURNING job_type
                 """, new MapSqlParameterSource().addValue("jobId", jobId).addValue("status", status)
                 .addValue("result", json(result)).addValue("error", json(error))
-                .addValue("startedAt", startedAt).addValue("finishedAt", finishedAt));
+                .addValue("startedAt", startedAt).addValue("finishedAt", finishedAt), String.class);
+        // 같은 트랜잭션에서 동기로 알린다. 듣는 쪽(예: floor_plan)이 실패하면 끝내기도 되돌아간다
+        jobType.forEach(type -> events.publishEvent(new JobFinished(jobId, type, status, result, error)));
     }
 
     private void closeLease(UUID leaseId, String status, Boolean consumeAttempt, Instant now) {

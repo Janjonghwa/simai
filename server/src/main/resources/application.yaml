@@ -38,6 +38,9 @@ simai:
       cookie-secure: ${SIMAI_REFRESH_COOKIE_SECURE:true}
     # 관제 앱 개발 서버(Vite)가 다른 포트에서 부른다. 운영은 같은 출처라 비워 둔다
     cors-allowed-origins: ${SIMAI_CORS_ALLOWED_ORIGINS:}
+  floor-plan:
+    # 보정 CALIBRATED·버전 변경을 보고 BEV 평면도 작업을 넣는 대조 주기(S15P31A101-240). 평면도는 BACKGROUND 라 몇 초 늦어도 된다
+    reconcile-interval: 10s
   config-bundle:
     # Tier 0 가 구성 묶음을 내려받는 공개 주소(https://<도메인>). 묶음 안 구성 요소 주소가 이것으로 시작한다. 비어 있으면 발행하지 않는다
     public-base-url: ${SIMAI_PUBLIC_BASE_URL:}

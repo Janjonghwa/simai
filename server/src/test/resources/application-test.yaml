@@ -17,6 +17,9 @@ simai:
     path-style: true
     access-key: test-only-access-key
     secret-key: test-only-secret-key
+  floor-plan:
+    # 시험은 대조를 직접 부른다(FloorPlanIntegrationTest). 주기 대조가 다른 시험 도중 작업을 넣지 않게 길게 둔다
+    reconcile-interval: 1h
   tier0:
     # 시험 전용 토큰 "test-only-tier0-token" 의 SHA-256(Tier0I1IntegrationTest). 운영 값이 아니다
     token-sha256: 8c9cd5d871e96b937393e4eeb379dc39b7a894759fa7baa27b3762261baf9e08
