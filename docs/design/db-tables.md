@@ -71,7 +71,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | E. 이벤트·조치 | `media_clip_retention` | MVP | 일반 | 보존 표시 이력(CRITICAL 자동, 관리자 붙이기·떼기) | 있음 | `/api/clips/{}/retention` |  |
 | E. 이벤트·조치 | `clip_access_log` | MVP | 일반 | 클립 열람 기록 | 수정 16 추가 | `/api/clips/{}` |  |
 | E. 이벤트·조치 | `upload_grant` | MVP | 일반 | 임시 업로드 주소 발급 기록(올라온 키 검증) | 수정 16 추가 | `/api/uploads/sign` |  |
-| F. 알림 | `notification` | M1 | 일반 | 실제 알림 발송 기록. LIVE 이벤트만 | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) |  |
+| F. 알림 | `notification` | M1 | 일반 | 실제 알림 발송 기록. LIVE 이벤트만(넣기·꺼내기는 `NotificationQueue`, 같은 전이·채널·대상 유일 V13, S15P31A101-123) | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) |  |
 | F. 알림 | `push_subscription` | M1 | 일반 | Web Push 구독 | 수정 16 추가 | `/api/push/subscribe` |  |
 | F. 알림 | `test_push` | M1 | 일반 | 시험 푸시(RiskEvent 아님, notification 에 넣지 않음) | 수정 16 추가 | `/api/push/test` |  |
 | F. 알림 | `push_receipt` | M1 | 일반 | Service Worker 수신 확인 원본 | 수정 16 추가 | `/api/push/receipts` |  |
