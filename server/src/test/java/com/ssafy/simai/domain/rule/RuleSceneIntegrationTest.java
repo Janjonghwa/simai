@@ -7,6 +7,7 @@ import com.ssafy.simai.domain.scene.SceneService;
 import com.ssafy.simai.global.config.JwtConfig;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
+import com.ssafy.simai.global.properties.StorageProperties;
 import com.ssafy.simai.global.security.AccessTokenIssuer;
 import com.ssafy.simai.global.storage.ObjectStorage;
 import java.net.URI;
@@ -65,6 +66,7 @@ class RuleSceneIntegrationTest {
     private final String calibration = "cal-264-" + tag;
     private final List<String> bundles = new ArrayList<>();
     private final List<String> scenes = new ArrayList<>();
+    private final List<String> testRules = new ArrayList<>();
 
     @AfterEach
     void cleanUp() {
@@ -76,6 +78,9 @@ class RuleSceneIntegrationTest {
             jdbc.update("DELETE FROM scene_version WHERE scene_version = ?", scene);
         }
         jdbc.update("DELETE FROM calibration_version WHERE calibration_version = ?", calibration);
+        for (String ruleId : testRules) {
+            jdbc.update("DELETE FROM rule_version WHERE rule_id = ? AND rule_version = 9001", ruleId);
+        }
     }
 
     @Test
@@ -119,6 +124,55 @@ class RuleSceneIntegrationTest {
         assertThat(versions.get(0).get("rule_id").asString()).isEqualTo("R1");
         assertThat(versions.get(0).has("thresholds")).isFalse();
         assertThat(versions.findValuesAsString("profile")).contains("CLASSROOM_TEST");
+    }
+
+    @Test
+    void 현재_규칙은_Tier0_가_적용한_묶음이고_발행만_한_더_새_묶음은_대기로_알린다() throws Exception {
+        String applied = bundle("OPERATION");
+        item(applied, "R1", 1);
+        // 더 늦게 발행했지만 Tier 0 가 아직 적용하지 않았다(또는 거부했다)
+        String pending = bundle("CLASSROOM_TEST", false);
+        item(pending, "R2", 1001);
+
+        JsonNode body = get("/api/rules", token("VIEWER"), 200);
+
+        assertThat(body.get("config_version").asString()).isEqualTo(applied);
+        assertThat(body.get("rule_profile").asString()).isEqualTo("OPERATION");
+        assertThat(body.get("pending_config_version").asString()).isEqualTo(pending);
+        assertThat(body.get("rules").get(1).get("active").asBoolean()).isFalse();
+    }
+
+    @Test
+    void R6_은_r6_설정이_객체일_때만_감싼_규칙으로_활성이고_자기_판이_생기면_그_판도_싣는다() throws Exception {
+        // 등록부가 R6 을 끈 판(r6: null)과 R6 자기 판(시험 전용 9001 판, 닫아 두어 다른 시험의 유효 판 선택에 끼지 않게)
+        rule("R1", "{\"margin\": 0.3, \"r6\": null}");
+        String bundle = bundle("OPERATION");
+        item(bundle, "R1", 9001);
+
+        JsonNode off = get("/api/rules", token("VIEWER"), 200).get("rules").get(5);
+        assertThat(off.get("active").asBoolean()).isFalse();
+        assertThat(off.get("applied_with")).isEmpty();
+
+        rule("R6", "{\"hold_ms\": 3000}");
+        item(bundle, "R6", 9001);
+        JsonNode own = get("/api/rules", token("VIEWER"), 200).get("rules").get(5);
+        assertThat(own.get("active").asBoolean()).isTrue();
+        assertThat(own.at("/current/rule_version").asInt()).isEqualTo(9001);
+        assertThat(own.at("/current/thresholds/hold_ms").asInt()).isEqualTo(3000);
+    }
+
+    @Test
+    void 저장소를_쓸_수_없으면_Scene_정보는_주고_glTF_주소만_비운다() {
+        String scene = "scene-264-" + tag;
+        commitScene(scene, "scenes/" + tag + "/scene.glb");
+        ObjectStorage unconfigured = new ObjectStorage(new StorageProperties("", "ap-northeast-2", "", false, "", "", null, null));
+        SceneService withoutStorage = new SceneService(named, unconfigured, MAPPER, "scene-demo", "");
+
+        var node = withoutStorage.current();
+
+        assertThat(node.get("scene_version").asString()).isEqualTo(scene);
+        assertThat(node.get("gltf_url").isNull()).isTrue();
+        assertThat(node.get("gltf_expires_at_ms").isNull()).isTrue();
     }
 
     @Test
@@ -198,17 +252,32 @@ class RuleSceneIntegrationTest {
                 """, calibration);
     }
 
-    /** 지금보다 늦게 발행한 묶음이라 가장 최근 묶음이 된다 */
+    /** Tier 0 가 적용한 묶음. 지금보다 늦게 발행·적용해 가장 최근 묶음이 된다 */
     private String bundle(String profile) {
+        return bundle(profile, true);
+    }
+
+    /** 뒤에 만든 묶음일수록 늦게 발행한다 */
+    private String bundle(String profile, boolean applied) {
         calibration();
         String version = "cfg-264-" + tag + "-" + bundles.size();
         jdbc.update("""
                 INSERT INTO config_bundle (config_version, site_id, issued_at, bundle_uri, bundle_hash, components, calibration_version,
-                    rule_profile)
-                VALUES (?, 'classroom-1', now() + interval '1 day', 'https://test/bundle', 'sha256:test', '{}'::jsonb, ?, ?)
-                """, version, calibration, profile);
+                    rule_profile, applied_at)
+                VALUES (?, 'classroom-1', now() + interval '1 day' + ? * interval '1 minute', 'https://test/bundle', 'sha256:test',
+                    '{}'::jsonb, ?, ?, CASE WHEN ? THEN now() + interval '1 day' + ? * interval '1 minute' END)
+                """, version, bundles.size(), calibration, profile, applied, bundles.size());
         bundles.add(version);
         return version;
+    }
+
+    /** 시험 전용 9001 판. 닫아 두어(valid_to) 유효 판 선택에 끼지 않고 묶음 항목으로만 쓰인다 */
+    private void rule(String ruleId, String thresholds) {
+        jdbc.update("""
+                INSERT INTO rule_version (rule_id, rule_version, profile, thresholds, reads, valid_from, valid_to)
+                VALUES (?, 9001, 'OPERATION', ?::jsonb, '{}', now(), now())
+                """, ruleId, thresholds);
+        testRules.add(ruleId);
     }
 
     private void item(String bundle, String ruleId, int ruleVersion) {

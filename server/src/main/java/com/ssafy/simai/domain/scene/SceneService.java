@@ -7,6 +7,8 @@ import com.ssafy.simai.global.storage.ObjectStorage.SignedRequest;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -23,6 +25,16 @@ import tools.jackson.databind.node.ObjectNode;
 @Service
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class SceneService {
+
+    /**
+     * 현재 Scene: COMMITTED 이고 끝나지 않은 가장 최근 것(한 행, scene_version 표의 열 그대로). 관제 상태의 Scene 불일치(FR-12,
+     * ViewerHealthService)와 이 조회가 같은 Scene 을 가리키도록 이 질의 하나를 쓴다.
+     */
+    private static final Logger log = LoggerFactory.getLogger(SceneService.class);
+
+    public static final String CURRENT_COMMITTED = """
+            SELECT * FROM scene_version WHERE state = 'COMMITTED' AND valid_to IS NULL ORDER BY committed_at DESC NULLS LAST LIMIT 1
+            """;
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectStorage storage;
@@ -42,9 +54,8 @@ public class SceneService {
 
     public ObjectNode current() {
         List<Committed> committed = jdbc.query("""
-                SELECT scene_version, calibration_version, gltf_key, quality::text AS quality, committed_at FROM scene_version
-                WHERE state = 'COMMITTED' AND valid_to IS NULL ORDER BY committed_at DESC NULLS LAST LIMIT 1
-                """, Map.of(), (rs, i) -> new Committed(rs.getString("scene_version"), rs.getString("calibration_version"),
+                SELECT scene_version, calibration_version, gltf_key, quality::text AS quality, committed_at FROM (
+                """ + CURRENT_COMMITTED + ") s", Map.of(), (rs, i) -> new Committed(rs.getString("scene_version"), rs.getString("calibration_version"),
                 rs.getString("gltf_key"), rs.getString("quality"), rs.getObject("committed_at", OffsetDateTime.class)));
         ObjectNode node = mapper.createObjectNode();
         if (!committed.isEmpty()) {
@@ -75,14 +86,23 @@ public class SceneService {
     private record Committed(String version, String calibrationVersion, String gltfKey, String quality, OffsetDateTime committedAt) {
     }
 
-    /** glTF 서명 주소(5분). 키가 없는 COMMITTED Scene 은 주소 없이 준다. 서명 주소는 로그에 남기지 않는다 */
+    /**
+     * glTF 서명 주소(5분). 키가 없거나 저장소를 쓸 수 없으면(미설정·자격 증명 없음) 주소만 비우고 Scene 정보는 준다.
+     * 화면은 배경 없이도 Scene 버전·불일치를 보여야 한다. 서명 주소는 로그에 남기지 않는다.
+     */
     private void gltf(ObjectNode node, String key) {
-        if (key == null || key.isBlank()) {
-            node.putNull("gltf_url");
-            node.putNull("gltf_expires_at_ms");
+        node.putNull("gltf_url");
+        node.putNull("gltf_expires_at_ms");
+        if (key == null || key.isBlank() || !storage.configured()) {
             return;
         }
-        SignedRequest signed = storage.signGet(key);
+        SignedRequest signed;
+        try {
+            signed = storage.signGet(key);
+        } catch (BusinessException e) {
+            log.warn("Scene glTF 서명 주소를 만들지 못해 주소 없이 준다: {}", e.getErrorCode());
+            return;
+        }
         node.put("gltf_url", signed.url());
         node.put("gltf_expires_at_ms", signed.expiresAt().toEpochMilli());
     }

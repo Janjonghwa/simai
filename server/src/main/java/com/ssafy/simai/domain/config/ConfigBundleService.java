@@ -1,6 +1,7 @@
 package com.ssafy.simai.domain.config;
 
 import com.ssafy.simai.domain.calibration.CalibrationViews;
+import com.ssafy.simai.domain.rule.RuleSelection;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import java.time.Clock;
@@ -222,12 +223,8 @@ public class ConfigBundleService {
         ObjectNode doc = mapper.createObjectNode();
         doc.put("version", version);
         ArrayNode list = doc.putArray("rule_versions");
-        // 규칙 ID 마다 하나. 교실 시험이면 그 규칙의 교실 시험 버전을 먼저, 없으면 운영 버전
-        jdbc.query("""
-                SELECT DISTINCT ON (rule_id) rule_id, rule_version FROM rule_version
-                WHERE valid_to IS NULL AND (profile = 'OPERATION' OR profile = :profile)
-                ORDER BY rule_id, (profile = :profile) DESC, rule_version DESC
-                """, new MapSqlParameterSource("profile", profile), rs -> {
+        // 규칙 ID 마다 하나. 교실 시험이면 그 규칙의 교실 시험 버전을 먼저, 없으면 운영 버전(규칙 조회 GET /api/rules 와 같은 선택)
+        jdbc.query(RuleSelection.ACTIVE_FOR_PROFILE, new MapSqlParameterSource("profile", profile), rs -> {
             list.addObject().put("rule_id", rs.getString("rule_id")).put("rule_version", rs.getInt("rule_version"));
             items.add(new Item("RULE", rs.getString("rule_id"), rs.getInt("rule_version")));
         });
