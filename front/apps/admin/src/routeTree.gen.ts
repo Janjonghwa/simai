@@ -13,6 +13,7 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppCctvRouteImport } from './routes/_app/cctv'
+import { Route as AppSurfacesRouteImport } from './routes/_app/surfaces'
 import { Route as AppSystemRouteImport } from './routes/_app/system'
 import { Route as AppTbmRouteImport } from './routes/_app/tbm'
 import { Route as AppZonesRouteImport } from './routes/_app/zones'
@@ -36,6 +37,11 @@ const AppCctvRoute = AppCctvRouteImport.update({
   path: '/cctv',
   getParentRoute: () => AppRoute,
 } as any)
+const AppSurfacesRoute = AppSurfacesRouteImport.update({
+  id: '/surfaces',
+  path: '/surfaces',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppSystemRoute = AppSystemRouteImport.update({
   id: '/system',
   path: '/system',
@@ -56,6 +62,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
   '/cctv': typeof AppCctvRoute
+  '/surfaces': typeof AppSurfacesRoute
   '/system': typeof AppSystemRoute
   '/tbm': typeof AppTbmRoute
   '/zones': typeof AppZonesRoute
@@ -63,6 +70,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/cctv': typeof AppCctvRoute
+  '/surfaces': typeof AppSurfacesRoute
   '/system': typeof AppSystemRoute
   '/tbm': typeof AppTbmRoute
   '/zones': typeof AppZonesRoute
@@ -73,6 +81,7 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/_app/cctv': typeof AppCctvRoute
+  '/_app/surfaces': typeof AppSurfacesRoute
   '/_app/system': typeof AppSystemRoute
   '/_app/tbm': typeof AppTbmRoute
   '/_app/zones': typeof AppZonesRoute
@@ -80,14 +89,16 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/cctv' | '/system' | '/tbm' | '/zones'
+  fullPaths:
+    '/' | '/login' | '/cctv' | '/surfaces' | '/system' | '/tbm' | '/zones'
   fileRoutesByTo: FileRoutesByTo
-  to: '/login' | '/cctv' | '/system' | '/tbm' | '/zones' | '/'
+  to: '/login' | '/cctv' | '/surfaces' | '/system' | '/tbm' | '/zones' | '/'
   id:
     | '__root__'
     | '/_app'
     | '/login'
     | '/_app/cctv'
+    | '/_app/surfaces'
     | '/_app/system'
     | '/_app/tbm'
     | '/_app/zones'
@@ -129,6 +140,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppCctvRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/surfaces': {
+      id: '/_app/surfaces'
+      path: '/surfaces'
+      fullPath: '/surfaces'
+      preLoaderRoute: typeof AppSurfacesRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/system': {
       id: '/_app/system'
       path: '/system'
@@ -155,6 +173,7 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppCctvRoute: typeof AppCctvRoute
+  AppSurfacesRoute: typeof AppSurfacesRoute
   AppSystemRoute: typeof AppSystemRoute
   AppTbmRoute: typeof AppTbmRoute
   AppZonesRoute: typeof AppZonesRoute
@@ -163,6 +182,7 @@ interface AppRouteChildren {
 
 const AppRouteChildren: AppRouteChildren = {
   AppCctvRoute: AppCctvRoute,
+  AppSurfacesRoute: AppSurfacesRoute,
   AppSystemRoute: AppSystemRoute,
   AppTbmRoute: AppTbmRoute,
   AppZonesRoute: AppZonesRoute,

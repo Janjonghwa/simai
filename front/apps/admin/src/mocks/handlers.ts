@@ -1,5 +1,6 @@
 import { type MockAccount, MOCK_ACCOUNTS } from '@/mocks/accounts';
 import { metricsHandlers } from '@/mocks/metrics';
+import { createStaticObjectsMock } from '@/mocks/staticObjects';
 import { http, HttpResponse } from 'msw/http';
 
 function readCredentials(body: unknown) {
@@ -60,4 +61,6 @@ export const handlers = [
     () => new HttpResponse(null, { status: 204, headers: { 'Set-Cookie': refreshCookie('', 0) } }),
   ),
   ...metricsHandlers,
+  // 작업면은 앱이 살아 있는 동안 상태를 둔다(구성 묶음 발행·ACK 는 main.tsx 의 구역 mock 이 맡는다).
+  ...createStaticObjectsMock().handlers,
 ];

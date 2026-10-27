@@ -48,10 +48,27 @@ export function unpublishedZoneIds(
   zones: readonly Pick<Zone, 'zoneId' | 'validFrom'>[],
   latest: ConfigBundle | null | undefined,
 ): Set<string> | null {
+  return unpublishedOf(
+    zones.map((z) => ({ id: z.zoneId, validFrom: z.validFrom })),
+    latest,
+  );
+}
+
+/** 발행 전 판단의 공통 규칙(구역·작업면). 묶음이 없으면 모두, 목록을 모르면 null. */
+function unpublishedOf(
+  items: readonly { id: string; validFrom: number }[],
+  latest: ConfigBundle | null | undefined,
+): Set<string> | null {
   if (latest === undefined) return null;
   return new Set(
-    zones.filter((z) => latest === null || z.validFrom > latest.issued_at).map((z) => z.zoneId),
+    items.filter((i) => latest === null || i.validFrom > latest.issued_at).map((i) => i.id),
   );
+}
+
+/** 발행 전 판단에 쓰는 작업면 칸(features/surfaces 의 WorkSurface). */
+export interface PublishableSurface {
+  objectId: string;
+  validFrom: number;
 }
 
 const versionOf = (item: unknown) =>
@@ -60,8 +77,10 @@ const versionOf = (item: unknown) =>
 /**
  * 현장 적용 상태와 발행. 상태는 최근 묶음 목록(GET /api/config-bundles)의 첫 묶음으로 보이고, 적용 대기 동안 다시 받는다.
  * 발행 응답(새 묶음, 적용 대기)은 목록 맨 앞에 넣는다(응답 뒤에 그린다, 낙관적 갱신 아님).
+ * surfaces 를 주면 작업면도 발행 전을 따로 센다(발행은 구역·작업면을 함께 보낸다). 모르면(undefined) 0 으로 보아 발행을 막지
+ * 않는다. 작업면 목록은 이 훅이 받지 않는다(작업면 화면이 받는다).
  */
-export function useConfigApply(zones: readonly Zone[]) {
+export function useConfigApply(zones: readonly Zone[], surfaces?: readonly PublishableSurface[]) {
   const queryClient = useQueryClient();
   // 구역 목록은 로그인마다 한 번만 받는다. 다른 관리자가 저장한 새 버전도 발행 전으로 보이게 화면에 들어올 때 다시 받는다
   // (이미 받는 중이면 그 응답을 쓴다).
@@ -89,11 +108,23 @@ export function useConfigApply(zones: readonly Zone[]) {
     },
   });
   const unpublished = useMemo(() => unpublishedZoneIds(zones, latest), [zones, latest]);
-  // 발행 전 구역이 있거나, 마지막 묶음이 거부·불일치라 현장이 이전 묶음을 쓰면 (다시) 발행할 수 있다. 목록을 모르면 막지 않는다.
+  const unpublishedSurfaces = useMemo(
+    () =>
+      surfaces === undefined
+        ? null
+        : unpublishedOf(
+            surfaces.map((s) => ({ id: s.objectId, validFrom: s.validFrom })),
+            latest,
+          ),
+    [surfaces, latest],
+  );
+  // 발행 전 구역·작업면이 있거나, 마지막 묶음이 거부·불일치라 현장이 이전 묶음을 쓰면 (다시) 발행할 수 있다.
+  // 묶음 목록을 모르면 막지 않는다.
   const canPublish =
     unpublished === null ||
     unpublished.size > 0 ||
+    (unpublishedSurfaces?.size ?? 0) > 0 ||
     latest?.status === 'REJECTED' ||
     latest?.status === 'MISMATCH';
-  return { latest, unpublished, canPublish, publish };
+  return { latest, unpublished, unpublishedSurfaces, canPublish, publish };
 }

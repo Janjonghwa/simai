@@ -4,12 +4,13 @@ import {
   readBundles,
   unpublishedZoneIds,
   useConfigApply,
+  type PublishableSurface,
 } from '@/features/zones/useConfigApply';
 import { useZones } from '@/features/zones/useZones';
 import { useZoneSave } from '@/features/zones/useZoneSave';
 import { bodyOf, formOf } from '@/features/zones/zoneForm';
 import { ApiError } from '@/lib/http';
-import { createZonesMock, type ZonesMock } from '@/mocks/zones';
+import { createZonesMock, SEEDED_AT, type ZonesMock } from '@/mocks/zones';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { delay } from 'msw';
@@ -102,6 +103,29 @@ describe('발행 전 판정', () => {
 });
 
 describe('useConfigApply', () => {
+  it('작업면을 주면 따로 발행 전을 세고(구역 수는 그대로), 작업면을 모르면 0 으로 보아 발행을 막지 않는다', async () => {
+    const view = renderHook(
+      (props: { surfaces?: PublishableSurface[] }) => {
+        const list = useZones();
+        return useConfigApply(list.zones, props.surfaces);
+      },
+      { wrapper, initialProps: {} },
+    );
+    await waitFor(() => expect(view.result.current.unpublished).not.toBeNull());
+    expect(view.result.current.unpublishedSurfaces).toBeNull();
+    expect(view.result.current.canPublish).toBe(false);
+
+    view.rerender({
+      surfaces: [
+        { objectId: 'ws-1', validFrom: SEEDED_AT - 1 },
+        { objectId: 'ws-2', validFrom: SEEDED_AT + 1 },
+      ],
+    });
+    await waitFor(() => expect([...view.result.current.unpublishedSurfaces!]).toEqual(['ws-2']));
+    expect(view.result.current.unpublished?.size).toBe(0);
+    expect(view.result.current.canPublish).toBe(true);
+  });
+
   it('최근 묶음 목록의 첫 묶음으로 적용 상태를 보이고, 저장한 구역은 발행 전이다', async () => {
     const view = await run();
     expect(view.result.current.apply.latest).toMatchObject({

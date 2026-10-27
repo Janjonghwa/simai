@@ -20,6 +20,7 @@ import type {
 import type { ViewerZones, Zone } from '@/features/zones/types';
 import { useZones } from '@/features/zones/useZones';
 import { continueOrder, rejectReasonText, sameEditBox } from '@/features/zones/zoneEditor';
+import { useObjectEditStore } from '@/store/objectEdit.store';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore } from '@/store/session.store';
 import { useZoneDraftsStore, type KeptZoneDraft } from '@/store/zoneDrafts.store';
@@ -58,13 +59,13 @@ const PLAN_FALLBACK_MS = 2_000;
 const RESELECT_MS = 200;
 const RESELECT_TRIES = 15;
 
-/** 이벤트 패널·2D 선택 키(person:…·zone:…)를 3D 대상으로 바꾼다. 사람·구역이 없는 묶음 키는 대상이 없다. */
+/** 이벤트 패널·2D·3D 선택 키(person:…·zone:…·object:…)를 3D 대상으로 바꾼다. 그 밖의 묶음 키는 대상이 없다. */
 export function targetOfKey(key: string | null): ViewerTarget | null {
   if (!key) return null;
   const at = key.indexOf(':');
   const type = key.slice(0, at);
   const id = key.slice(at + 1);
-  return (type === 'person' || type === 'zone') && id ? { type, id } : null;
+  return (type === 'person' || type === 'zone' || type === 'object') && id ? { type, id } : null;
 }
 
 export type { KeptZoneDraft };
@@ -430,7 +431,7 @@ export function SpatialViewportHost({
   const onViewerSelect = useCallback(
     (target: ViewerTarget | null) => {
       const key =
-        target && (target.type === 'person' || target.type === 'zone')
+        target && (target.type === 'person' || target.type === 'zone' || target.type === 'object')
           ? `${target.type}:${target.id}`
           : null;
       syncedKeyRef.current = key;
@@ -704,7 +705,9 @@ export function SpatialViewportHost({
       options?: { focus?: boolean; autoEdit?: boolean },
     ): CommandResult | undefined => {
       const key =
-        target.type === 'person' || target.type === 'zone' ? `${target.type}:${target.id}` : null;
+        target.type === 'person' || target.type === 'zone' || target.type === 'object'
+          ? `${target.type}:${target.id}`
+          : null;
       if (key) {
         setSelectedKey(key);
         pendingActionRef.current =
@@ -942,6 +945,9 @@ export function SpatialViewportHost({
                   onStatusChange={onViewerStatus}
                   onEditPreview={onEditPreview}
                   onEditResult={onEditResult}
+                  // 등록 작업면 편집(-165)은 작업면 등록 화면(/surfaces)이 편집 저장소로 받는다.
+                  onObjectEditPreview={useObjectEditStore.getState().onPreview}
+                  onObjectEditResult={useObjectEditStore.getState().onResult}
                   editDraftOverlay={draftOverlay}
                   className={cn('absolute inset-0', !viewerReady && 'pointer-events-none')}
                 />

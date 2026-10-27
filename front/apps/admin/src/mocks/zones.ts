@@ -6,8 +6,8 @@ import { http, HttpResponse } from 'msw/http';
 // 서버 구역·구성 묶음 API(BE -120) 대신 쓰는 mock. 서버 형식과 검사 규칙(docs/design/server-config-bundle.md)을 따른다.
 // 이벤트 시나리오(realtimeScenario)의 z-04·z-02 와 맞춘다. 위치는 디자인 데모의 기본 구역을 따른다.
 
-/** 처음 구성 묶음(cfg-12)을 발행한 시각(ms). 처음 구역들은 그 전에 저장했다. */
-const SEEDED_AT = 1_760_342_400_000;
+/** 처음 구성 묶음(cfg-12)을 발행한 시각(ms). 처음 구역·작업면들은 그 전에 저장했다. */
+export const SEEDED_AT = 1_760_342_400_000;
 
 export const MOCK_ZONES = [
   {
