@@ -2,6 +2,7 @@ package com.ssafy.simai.global.config;
 
 import com.ssafy.simai.global.properties.AuthProperties;
 import com.ssafy.simai.global.properties.ConfigBundleProperties;
+import com.ssafy.simai.global.properties.StorageProperties;
 import com.ssafy.simai.global.properties.Tier0Properties;
 import java.time.Clock;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -12,7 +13,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 
 /** 웹 서버와 관리 명령(global/command)이 함께 쓰는 빈. */
 @Configuration
-@EnableConfigurationProperties({AuthProperties.class, Tier0Properties.class, ConfigBundleProperties.class})
+@EnableConfigurationProperties({AuthProperties.class, Tier0Properties.class, ConfigBundleProperties.class,
+        StorageProperties.class})
 public class AppConfig {
 
     @Bean

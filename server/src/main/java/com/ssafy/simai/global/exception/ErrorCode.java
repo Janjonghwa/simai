@@ -240,4 +240,32 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    /** 객체 저장소 임시 서명 주소(S15P31A101-69) */
+    enum Storage implements ErrorCode {
+        INVALID_UPLOAD(HttpStatus.BAD_REQUEST, "업로드 목적·형식·크기·해시·식별자가 맞지 않습니다"),
+        UPLOAD_NOT_ALLOWED(HttpStatus.FORBIDDEN, "이 목적의 업로드 주소를 받을 수 없는 주체입니다"),
+        // 같은 클립에 다른 내용(형식·크기·해시·요청 주체)으로 다시 받거나, 이미 기록된 클립을 덮어쓰려 했다
+        UPLOAD_KEY_CONFLICT(HttpStatus.CONFLICT, "이미 다른 내용으로 발급했거나 기록된 객체입니다"),
+        STORAGE_NOT_CONFIGURED(HttpStatus.SERVICE_UNAVAILABLE, "객체 저장소(SIMAI_STORAGE_BUCKET)가 설정되지 않았습니다"),
+        STORAGE_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "객체 저장소 서명 주소를 만들 수 없습니다. 잠시 뒤 다시 시도하세요");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Storage(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }

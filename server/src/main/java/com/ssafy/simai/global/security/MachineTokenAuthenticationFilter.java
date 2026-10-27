@@ -42,9 +42,12 @@ public class MachineTokenAuthenticationFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         String header = request.getHeader(HttpHeaders.AUTHORIZATION);
-        if (header != null && header.regionMatches(true, 0, BEARER, 0, BEARER.length())) {
+        // 같은 체인의 앞 필터(업로드 체인의 Tier 0 토큰)가 이미 인증했으면 DB 를 보지 않는다. DB 장애로 Tier 0 요청까지 503 이 되지 않게
+        boolean authenticated = SecurityContextHolder.getContext().getAuthentication() != null;
+        if (!authenticated && header != null && header.regionMatches(true, 0, BEARER, 0, BEARER.length())) {
             String token = header.substring(BEARER.length()).strip();
-            if (!token.isEmpty()) {
+            // 기계 토큰은 점이 없는 Base64url 이다(TokenHashes.newToken). 점 두 개인 JWT 는 DB 를 보지 않고 JWT 해석에 넘긴다
+            if (!token.isEmpty() && !looksLikeJwt(token)) {
                 Optional<String> id;
                 try {
                     id = tokens.authenticate(kind, token);
@@ -59,5 +62,9 @@ public class MachineTokenAuthenticationFilter extends OncePerRequestFilter {
             }
         }
         chain.doFilter(request, response);
+    }
+
+    private static boolean looksLikeJwt(String token) {
+        return token.chars().filter(c -> c == '.').count() == 2;
     }
 }

@@ -34,6 +34,11 @@ dependencies {
     implementation 'com.networknt:json-schema-validator:1.5.8'
     // OpenAPI 문서(명세 12.6: 경로 확정본). 3.1.x 가 Spring Boot 4.1 기준이다
     implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.1'
+    // 객체 저장소(S3·S3 호환) 임시 서명 주소(명세 14, S15P31A101-69). 서명만 하므로 비동기 HTTP 클라이언트(netty)는 뺀다
+    implementation platform('software.amazon.awssdk:bom:2.55.16')
+    implementation('software.amazon.awssdk:s3') {
+        exclude group: 'software.amazon.awssdk', module: 'netty-nio-client'
+    }
     compileOnly 'org.projectlombok:lombok'
     runtimeOnly 'org.postgresql:postgresql'
     annotationProcessor 'org.projectlombok:lombok'
