@@ -1,9 +1,19 @@
+spring:
+  datasource:
+    hikari:
+      # 시험 컨텍스트마다 풀을 열어 둔다(캐시). 기본 10개면 여러 세션이 같은 시험 DB 서버(max_connections 100)에서 동시에 빌드할 때
+      # "too many clients" 로 컨텍스트가 뜨지 못한다(S15P31A101-70). 시험은 차례로 돌아 4개면 충분하다
+      maximum-pool-size: 4
+      minimum-idle: 1
 simai:
   health:
     # 시험은 끊김을 빨리 본다(운영 3초)
     link-timeout-ms: 1500
     # 시험 컨텍스트가 여럿이라, Tier 0·노트북을 둘 다 받은 컨텍스트만 장애를 기록한다(열린 장애는 하나)
     outage-startup-grace-ms: 3600000
+  metrics:
+    # 시험은 표본을 직접 부른다(SystemMetricIntegrationTest). 주기 표본이 다른 시험 도중 행을 넣지 않게 길게 둔다
+    ec2-interval: 1h
   auth:
     jwt:
       # 시험 전용 키(Base64, 37바이트). 운영 값이 아니다

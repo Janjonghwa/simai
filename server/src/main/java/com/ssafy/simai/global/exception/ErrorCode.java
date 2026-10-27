@@ -192,6 +192,29 @@ public sealed interface ErrorCode {
         }
     }
 
+    /** 시스템 지표 조회(S15P31A101-70) */
+    enum Metric implements ErrorCode {
+        INVALID_METRIC_QUERY(HttpStatus.BAD_REQUEST, "지표 조회 기간이 맞지 않습니다(from·to 는 UTC 밀리초, from ≤ to, 24시간 이내)");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Metric(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
     /** Tier 0 엔드포인트 조회(S15P31A101-290) */
     enum Endpoint implements ErrorCode {
         // 노트북은 404 를 '아직 등록 없음'으로 보고 다시 조회한다(gateway/site_alert endpoint.py)
