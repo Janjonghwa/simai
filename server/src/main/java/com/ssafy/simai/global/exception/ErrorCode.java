@@ -213,4 +213,31 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    /** I5 분석 작업 등록·대여(S15P31A101-229) */
+    enum Job implements ErrorCode {
+        INVALID_JOB(HttpStatus.BAD_REQUEST, "작업 유형·입력·시도 수·시간 제한이 계약(job_request)에 맞지 않습니다"),
+        JOB_NOT_FOUND(HttpStatus.NOT_FOUND, "작업을 찾을 수 없습니다"),
+        INVALID_WORKER_MESSAGE(HttpStatus.BAD_REQUEST, "워커 메시지가 계약(I5 2.x)에 맞지 않거나 경로의 job_id·작업 유형과 다릅니다"),
+        // 계약 job_lease_request: 토큰의 워커 ID 와 봉투 source_id 가 다르면 401
+        WORKER_SOURCE_MISMATCH(HttpStatus.UNAUTHORIZED, "봉투 source_id 가 워커 토큰의 워커 ID 와 다릅니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Job(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }
