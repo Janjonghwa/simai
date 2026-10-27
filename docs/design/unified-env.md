@@ -135,7 +135,7 @@ Windows 노트북에서는 tier0 extra 를 깐 별도 가상환경(torch 2.11.0+
 HF `nvidia/Cosmos3-Nano` 커밋 `e59a53c25979a090fa8706c9acc0c254a6e89b92`(2026-09-16 수정, HF API `gated=false`, OpenMDW-1.1). 저장소 파일 합 34.99GB.
 루트 `model.safetensors.index.json` 의 `weight_map` 은 `transformer/` 샤드 7개(814개 텐서, 30.35GB)와 `vision_encoder/model.safetensors`(351개, 1.15GB)만 가리킨다(`total_size` 31.50GB).
 `vllm_cosmos3.Cosmos3ReasonerForConditionalGeneration` 은 vLLM Qwen3-VL 을 이어받아 `lm_head.`·`model.language_model.`·`model.visual.` 로 바뀌는 이해 탑 가중치만 싣고 나머지(생성 탑)는 버린다.
-`vae/`(1.41GB)·`sound_tokenizer/`(1.99GB)는 index 에 없어 vLLM safetensors 로더의 index 필터에서 빠진다 → 목록에 넣지 않았다(3.4GB 절약). 넣지 않아도 뜨는지는 3차 세션 v1 이 확인한다.
+`vae/`(1.41GB)·`sound_tokenizer/`(1.99GB)는 index 에 없어 vLLM safetensors 로더의 index 필터에서 빠진다 → 목록에 넣지 않았다(3.4GB 절약). 3차 GPU 세션에서 기동했으나 이 목록만으로 떴는지는 기록에 없다. 4차 세션 v4(`vlm_int.py`, `SIMAI_WEIGHTS_SET=vlm`)에서 확인한다.
 
 목록에 넣은 18개(모두 `sets: ["vlm"]`, `weights/cosmos3-nano/<HF 경로>`): 샤드 7개 + vision_encoder(해시 = HF API LFS oid), 작은 파일 10개(config·index·generation·preprocessor·video_preprocessor·chat_template·tokenizer·tokenizer_config·vocab·merges,
 고정 커밋에서 받아 sha256). `checkpoint.json`(`{}`)·`model_index.json`(diffusers 파이프라인용)·`text_tokenizer/`·`transformer/config.json` 등은 Reasoner 서빙에 쓰지 않아 뺐다. 빠진 파일 때문에 서버가 안 뜨면 v1 결과로 새 항목을 더한다.
@@ -183,7 +183,7 @@ Pod 는 시작 명령 `sleep infinity` 로 띄운다(감시 프로세스가 Tier
 - AutoCast 는 운영 입력(1280, batch 4)이 아니라 640·batch 1 로 돌렸다(그래프는 동적 축이라 같은 구조, 노트북 메모리 10GB 에서 640×1 이 5.8GB). 운영 크기 변환은 b 에서 GPU 가 한다.
 - 엔진 캐시 키(`engine_cache`: GPU 세대·TensorRT·가중치 해시·입력 설정·ultralytics 판)에 torch 판이 없다. 남는 디스크에 torch 2.14.1 로 만든 엔진이 있으면 그대로 쓴다.
   ONNX 그래프가 두 판에서 같으므로(위 비교) 엔진도 같을 것으로 보지만, 3차 세션 b 는 캐시를 비우고 빌드한다. 키에 torch 판을 넣을지는 2단계에서 정한다(이번에는 코드 구조를 바꾸지 않음).
-- vLLM·플러그인은 import·모델 클래스 등록·설정 읽기까지만 봤다. 가중치 적재·추론·VRAM 은 3차 세션 v1~v3.
+- vLLM·플러그인은 import·모델 클래스 등록·설정 읽기까지만 봤다. 가중치 적재·추론·VRAM 은 3차 GPU 세션 통합 시험(S15P31A101-278)에서 쟀다(아래 "3차 GPU 세션 결과").
 - constraint 로 묶은 transformers 5.9 등은 플러그인 자체 잠금(vLLM 0.22)과 같은 메이저·마이너이고 vLLM 0.21 과의 조합 그대로를 공식이 시험한 것은 아니다.
 - opencv 5.0(Tier 0 가 검증한 판)은 vLLM CI(4.13)보다 새 메이저다. vLLM 이 cv2 를 쓰는 곳은 영상 프레임 읽기다(v2 의 영상 입력 요청으로 본다).
 - **해결(S15P31A101-245). 기존 결함(이 티켓이 만든 것 아님, 사전 판정 중 발견, -237 코드).** Linux 휠 numpy 의 OpenBLAS 에서 `np.linalg.svd` 가 inf·NaN 이 든 행렬에서 돌아오지 않는다.
@@ -286,7 +286,7 @@ Docker Desktop 29.6.1(메모리 10GB), `TAG=s246 docker buildx bake unified tier
 
 ### 잔여 위험
 
-- 감시자·vLLM 기동·재기동은 가짜 프로세스로만 봤다. 실제 vLLM 0.21 + Cosmos3-Nano 의 적재 시간(1800초 시한 안인지)·`/health` 의미·EngineCore 가 같은 프로세스 그룹에 남는지(새 세션을 만들면 그룹 SIGKILL 이 닿지 않는다)는 3차 세션 v1 이 본다.
+- 감시자·vLLM 기동·재기동은 가짜 프로세스로만 봤다. 실제 vLLM 0.21 + Cosmos3-Nano 의 적재 시간(1800초 시한 안인지)·`/health` 의미·EngineCore 가 같은 프로세스 그룹에 남는지(새 세션을 만들면 그룹 SIGKILL 이 닿지 않는다)는 3차 GPU 세션에서 실측했다: `/health` 까지 70.1 s(시한 1800 s 안), vLLM 리더만 `kill -9` 하면 EngineCore·resource_tracker 가 같은 그룹의 고아로 남아 그룹 SIGKILL 이 필요하다(아래 "3차 GPU 세션 결과" 측정 3·5). 감시자의 그룹 정리는 4차 세션 v4 가 감시 프로세스 코드로 다시 본다.
 - nice·CPU 고정은 리더 프로세스를 띄운 직후에 걸어 그 뒤에 만드는 손자가 물려받는다. vLLM 이 그 사이(수 ms)에 손자를 만들면 그 손자는 nice 0·고정 없음이다. auto 의 '뒤쪽 절반' 은 초기값이다(v3 의 CPU 경합 측정으로 고친다). Tier 0 는 묶지 않아 sidecar 쪽 코어도 쓸 수 있다.
 - vLLM 이 살아 있지만 멈춘 경우(`/health` 실패 지속)는 처음 뜰 때만 본다. 뜬 뒤의 멈춤·Tier 0 지연 초과 때 워커 그룹 SIGSTOP/SIGKILL(자문 3-5 2단계 서킷 브레이커)은 넣지 않았다(1단계 "새 작업 멈춤"은 -60 접수 문).
 - 스탬프는 같은 inode 에서 크기·mtime 을 지키며 제자리에서 바꾼 내용(ctime 은 바뀐다)까지는 잡지만, 파일 시스템이 ctime 을 지키지 않거나 악의적인 변조는 보장하지 않는다(파일 시스템을 믿는다). 강제 재확인은 `weights/.verified/` 삭제. Tier 0 가중치는 스탬프를 쓰지 않는다.
