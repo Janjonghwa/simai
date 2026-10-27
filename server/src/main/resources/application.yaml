@@ -51,9 +51,10 @@ simai:
     # 객체 저장소(S3 또는 S3 호환 Lightsail 버킷, 비공개). 비어 있으면 업로드·조회 서명 주소를 내지 않는다(503)
     bucket: ${SIMAI_STORAGE_BUCKET:}
     region: ${SIMAI_STORAGE_REGION:ap-northeast-2}
-    # 아래는 로컬 S3 호환 저장소(MinIO 등)만. 운영은 비우고 EC2 인스턴스 역할로 서명한다(비밀 값을 .env 에 두지 않게)
+    # endpoint·path-style 은 로컬 S3 호환 저장소(MinIO 등)만
     endpoint: ${SIMAI_STORAGE_ENDPOINT:}
     path-style: ${SIMAI_STORAGE_PATH_STYLE:false}
+    # 비우면 기본 공급자(인스턴스 역할 등)로 서명한다. 운영 EC2 는 SSAFY 제공이라 역할을 붙일 수 없어 IAM 사용자 키를 넣는다
     access-key: ${SIMAI_STORAGE_ACCESS_KEY:}
     secret-key: ${SIMAI_STORAGE_SECRET_KEY:}
     # 서명 주소 수명. 업로더는 시도마다 새로 받는다

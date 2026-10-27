@@ -42,6 +42,12 @@ services:
       SIMAI_PUBLIC_BASE_URL: https://${SIMAI_DOMAIN:?SIMAI_DOMAIN}
       # Nginx 가 넘긴 X-Forwarded-* 로 원래 주소(https)를 안다
       SERVER_FORWARD_HEADERS_STRATEGY: framework
+      # 객체 저장소(S15P31A101-69). 버킷이 비면 서버는 뜨고 업로드·조회 서명만 503 이다.
+      # EC2 가 SSAFY 제공이라 인스턴스 역할을 붙일 수 없어 IAM 사용자의 정적 키를 쓴다(버킷 객체 권한만)
+      SIMAI_STORAGE_BUCKET: ${SIMAI_STORAGE_BUCKET:-}
+      SIMAI_STORAGE_REGION: ${SIMAI_STORAGE_REGION:-ap-northeast-2}
+      SIMAI_STORAGE_ACCESS_KEY: ${SIMAI_STORAGE_ACCESS_KEY:-}
+      SIMAI_STORAGE_SECRET_KEY: ${SIMAI_STORAGE_SECRET_KEY:-}
     networks: [edge, ec2-internal]
     depends_on:
       db:
