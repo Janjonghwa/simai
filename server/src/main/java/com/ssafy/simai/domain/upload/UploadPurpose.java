@@ -12,8 +12,8 @@ enum UploadPurpose {
     // VLM 근거 입력 프레임 한 장(event_frame_ready.frames[].frame_uri)
     EVENT_FRAME("event-frames", Map.of("image/jpeg", ".jpg", "image/png", ".png"), 16L << 20,
             Set.of(Requester.Kind.TIER0, Requester.Kind.DEVICE)),
-    // 이벤트 클립(재인코딩 없는 H.264 기본 스트림, ai/services/tier0/clips/media.py). 수십 초 분량
-    EVENT_CLIP("event-clips", Map.of("video/h264", ".h264", "video/mp4", ".mp4"), 256L << 20,
+    // 이벤트 클립(형식은 ClipFormat, 클립 기록 수신과 같은 표). 수십 초 분량
+    EVENT_CLIP("event-clips", ClipFormat.extensions(), 256L << 20,
             Set.of(Requester.Kind.TIER0, Requester.Kind.DEVICE)),
     // 조치 완료 사진(반장 PWA, FR-41)
     TICKET_PHOTO("ticket-photos", Map.of("image/jpeg", ".jpg", "image/png", ".png", "image/webp", ".webp"), 20L << 20,

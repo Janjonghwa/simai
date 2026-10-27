@@ -67,7 +67,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | E. 이벤트·조치 | `event_frame` | M3 | 일반 | 이벤트 프레임 주소(VLM 입력) | 수정 16 추가 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
 | E. 이벤트·조치 | `action_ticket` | M2 | 일반 | 조치 티켓(현재 상태) | 있음 | `/api/events/{}`, `/api/tickets`, `/api/tickets/{}` 외 |  |
 | E. 이벤트·조치 | `action_ticket_history` | M2 | 일반 | 티켓 상태 변경 이력 | 수정 16 추가 | `/api/tickets/{}` |  |
-| E. 이벤트·조치 | `media_clip` | MVP | 일반 | 이벤트 클립 기록(카메라 하나 × 위험 구간 하나) | 있음 | `/api/clips/{}`, `/api/clips/{}/retention` | 이연주 |
+| E. 이벤트·조치 | `media_clip` | MVP | 일반 | 이벤트 클립 기록(카메라 하나 × 위험 구간 하나) | 있음 | `/api/clips/{}`, `/api/clips/{}/retention`, `/api/events/{}/clips` | 이연주 |
 | E. 이벤트·조치 | `media_clip_retention` | MVP | 일반 | 보존 표시 이력(CRITICAL 자동, 관리자 붙이기·떼기) | 있음 | `/api/clips/{}/retention` |  |
 | E. 이벤트·조치 | `clip_access_log` | MVP | 일반 | 클립 열람 기록 | 수정 16 추가 | `/api/clips/{}` |  |
 | E. 이벤트·조치 | `upload_grant` | MVP | 일반 | 임시 업로드 주소 발급 기록(올라온 키 검증) | 수정 16 추가 | `/api/uploads/sign` |  |
@@ -904,6 +904,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `source` | text |  | `media_clip_retention.source` |  |
 | `actor_user_id` | bigint | FK>app_user.user_id |  | 관리자일 때 |
 | `issued_at` | ts | NN | `media_clip_retention.issued_at_ms` |  |
+| `msg_id` | uuid | UQ | 봉투 `msg_id` | Tier 0 기록의 재전송 제거(V11, S15P31A101-261). 관리자 기록은 비움 |
 
 #### `clip_access_log` — 클립 열람 기록
 

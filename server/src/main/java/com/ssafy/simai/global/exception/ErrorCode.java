@@ -274,4 +274,32 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    /** 이벤트 클립 조회·보존 표시(S15P31A101-261) */
+    enum Clip implements ErrorCode {
+        CLIP_NOT_FOUND(HttpStatus.NOT_FOUND, "클립을 찾을 수 없습니다"),
+        // 보관 기간(14일)이 지나 객체를 지웠다. 기록은 남아 목록에는 보인다
+        CLIP_DELETED(HttpStatus.GONE, "보관 기간이 지나 삭제된 클립입니다"),
+        // CRITICAL 이벤트 연결분은 자동 보존이라 떼지 못한다(명세 11.5)
+        CLIP_AUTO_RETAINED(HttpStatus.CONFLICT, "CRITICAL 이벤트의 클립은 보존 표시를 뗄 수 없습니다"),
+        INVALID_RETENTION(HttpStatus.BAD_REQUEST, "retention_hold(true·false)가 필요합니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Clip(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }

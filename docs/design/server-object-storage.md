@@ -72,8 +72,7 @@ PUT: { "lease_id": "<uuid>", "op": "PUT", "name": "bev.png", "content_type": "im
 ## 남은 일
 
 - 실제 S3(또는 MinIO)로 업로드·만료 뒤 거부를 확인한다(시험은 서명 계산만 본다). 운영 버킷·인스턴스 역할 만들기는 배포 작업이다.
-- 올라온 키 검증: media_clip·event_frame_ready 를 받을 때 `upload_grant` 의 키·크기·해시와 맞추고 `used_at` 을 채운다(클립 기록 수신 이슈).
-- `GET /api/clips/{id}` 는 `ObjectStorage.signGet` 으로 조회 주소를 내고 `clip_access_log` 를 남긴다(클립 조회 이슈).
+- 올라온 키 검증: media_clip 은 S15P31A101-261 에서 한다(`server-event-clips.md`). event_frame_ready 를 받을 때도 같은 방식으로 맞춘다.
 - 이벤트 존재 확인: 서명 때는 `event_id` 가 실제 이벤트인지 보지 않는다(이벤트 기록과 업로드 순서가 겹칠 수 있다). 클립·프레임 기록을 받을 때 이벤트와 발급을 함께 맞춘다.
 - Tier 0 업로더의 서명 클라이언트(`UploadSigner` HTTP 구현)를 이 응답에 맞춰 붙인다(ai).
 - 워커 객체 서명 요청·응답의 계약 스키마: 명세 12.5 는 이 경로의 정본을 서버 OpenAPI 로 두었고 `/api/uploads/sign` 도 스키마가 없다. 계약(`contracts/`)에 둘지는 명세 정리 MR 에서 정한다.
