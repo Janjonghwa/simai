@@ -222,7 +222,11 @@ public sealed interface ErrorCode {
         JOB_NOT_FOUND(HttpStatus.NOT_FOUND, "작업을 찾을 수 없습니다"),
         INVALID_WORKER_MESSAGE(HttpStatus.BAD_REQUEST, "워커 메시지가 계약(I5 2.x)에 맞지 않거나 경로의 job_id·작업 유형과 다릅니다"),
         // 계약 job_lease_request: 토큰의 워커 ID 와 봉투 source_id 가 다르면 401
-        WORKER_SOURCE_MISMATCH(HttpStatus.UNAUTHORIZED, "봉투 source_id 가 워커 토큰의 워커 ID 와 다릅니다");
+        WORKER_SOURCE_MISMATCH(HttpStatus.UNAUTHORIZED, "봉투 source_id 가 워커 토큰의 워커 ID 와 다릅니다"),
+        // 객체 서명(S15P31A101-248). 대여가 없음·남의 것·만료·끝남·작업 취소를 나누지 않는다. 워커는 그 작업을 멈춘다
+        LEASE_NOT_ACTIVE(HttpStatus.CONFLICT, "이 작업의 유효한 대여가 아닙니다"),
+        INVALID_OBJECT_REQUEST(HttpStatus.BAD_REQUEST, "객체 서명 요청(lease_id·op·이름·형식·크기·해시)이 맞지 않습니다"),
+        OBJECT_NOT_IN_INPUT(HttpStatus.FORBIDDEN, "작업 입력에 없는 객체는 받을 수 없습니다");
 
         private final HttpStatus status;
         private final String message;
