@@ -196,6 +196,23 @@ def test_msys_check_leaves_real_pod_paths_alone(gs, tmp_path, monkeypatch):
     assert not gs.msys_converted(str(root.parent / "Gitx" / "srv" / "simai"))
 
 
+def test_msys_check_treats_unreadable_path_as_not_msys(gs, tmp_path, monkeypatch):
+    """읽을 수 없는 상위 폴더(비루트 Jenkins 의 /root/da3)는 예외 없이 '변환 아님'이다. 그 위의 MSYS 루트는 계속 잡는다(-297)."""
+    root = _msys_root(tmp_path)
+    locked = (root / "srv" / "locked", tmp_path / "root")
+    real_is_file = Path.is_file
+
+    def is_file(self, *a, **kw):  # 플랫폼과 실행 사용자에 관계없이 stat 권한 오류를 흉내 낸다
+        if any(self.is_relative_to(d) for d in locked):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_file(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    _env(monkeypatch)
+    assert not gs.msys_converted(str(tmp_path / "root" / "da3"))
+    assert gs.msys_converted(str(root / "srv" / "locked" / "da3"))  # 읽을 수 있는 상위의 MSYS 루트는 잡는다
+
+
 GIT_BASH = Path("C:/Program Files/Git/bin/bash.exe")
 
 

@@ -751,7 +751,15 @@ def msys_converted(value: str, env: dict[str, str] | None = None) -> bool:
     if env.get("MSYSTEM") and not no_conv and re.match(r"[A-Za-z]:", value):
         return True
     p = Path(value)
-    return p.is_absolute() and any((a / "usr" / "bin" / "bash.exe").is_file() for a in (p, *p.parents))
+    return p.is_absolute() and any(_is_file(a / "usr" / "bin" / "bash.exe") for a in (p, *p.parents))
+
+
+def _is_file(p: Path) -> bool:
+    """읽을 수 없는 경로(비루트 Linux 의 /root/da3 등 PermissionError)는 MSYS 루트가 아니다. is_file() 은 ENOENT 류만 False 로 바꾼다(-297)."""
+    try:
+        return p.is_file()
+    except OSError:
+        return False
 
 
 def g4_inputs(out: Path, stills: Path, calib: Path) -> tuple[Path | None, str]:
