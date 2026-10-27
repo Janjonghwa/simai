@@ -65,6 +65,8 @@ public class CalibrationService {
         }
         String version = doc.get("calibration_version").asString();
         String sha256 = ConfigFiles.sha256(content);
+        // calibration_update 의 calibration_hash 는 문서의 content_hash(버전·시각·상태를 뺀 내용 해시)다. 없으면 원문 해시로 대신한다
+        String contentHash = doc.path("content_hash").asString(sha256);
         OffsetDateTime now = OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
         String reason = request.reason() == null || request.reason().isBlank() ? "관리자 업로드" : request.reason().strip();
 
@@ -83,9 +85,9 @@ public class CalibrationService {
             List<String> known = jdbc.queryForList(
                     "SELECT calibration_hash FROM calibration_version WHERE calibration_version = :v", params, String.class);
             if (known.isEmpty()) {
-                insertVersion(siteId, doc, version, sha256, reason, now);
-            } else if (!sha256.equals(known.getFirst())) {
-                // 다른 길로 이미 있는 버전. 같은 문서(해시)일 때만 원문을 붙인다
+                insertVersion(siteId, doc, version, contentHash, reason, now);
+            } else if (!contentHash.equals(known.getFirst())) {
+                // Tier 0 알림(calibration_update)으로 이미 있는 버전. 같은 보정 내용일 때만 원문을 붙인다
                 throw new BusinessException(ErrorCode.Config.CALIBRATION_VERSION_CONFLICT);
             }
             jdbc.update("""
@@ -97,7 +99,7 @@ public class CalibrationService {
         });
     }
 
-    private void insertVersion(String siteId, JsonNode doc, String version, String sha256, String reason, OffsetDateTime now) {
+    private void insertVersion(String siteId, JsonNode doc, String version, String contentHash, String reason, OffsetDateTime now) {
         String previous = jdbc.queryForList("""
                 SELECT calibration_version FROM calibration_version WHERE site_id = :site ORDER BY created_at DESC LIMIT 1
                 """, new MapSqlParameterSource("site", siteId), String.class).stream().findFirst().orElse(null);
@@ -114,7 +116,7 @@ public class CalibrationService {
                 .addValue("v", version).addValue("site", siteId).addValue("previous", previous)
                 .addValue("state", doc.get("state").asString()).addValue("source", doc.get("provider_source").asString())
                 .addValue("providerVersion", doc.path("provider_version").asString(null)).addValue("reason", reason)
-                .addValue("now", now).addValue("ref", "ec2:calibration_document/" + version).addValue("sha", sha256)
+                .addValue("now", now).addValue("ref", "ec2:calibration_document/" + version).addValue("sha", contentHash)
                 .addValue("scaleBasis", doc.path("scale_basis").asString(null))
                 .addValue("crossCheck", crossCheck.isEmpty() ? null : I1Json.arrayLiteral(crossCheck))
                 .addValue("validation", validation == null || validation.isNull() ? null : mapper.writeValueAsString(validation)));
