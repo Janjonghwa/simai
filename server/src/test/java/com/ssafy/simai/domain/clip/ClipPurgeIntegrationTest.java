@@ -1,7 +1,6 @@
 package com.ssafy.simai.domain.clip;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
@@ -127,7 +126,7 @@ class ClipPurgeIntegrationTest {
         UUID clip = clip(event, "cam-1", now.minus(Duration.ofDays(1)), false);
         doThrow(new BusinessException(ErrorCode.Storage.STORAGE_UNAVAILABLE)).when(storage).delete(anyString());
 
-        assertThatThrownBy(() -> purge.purge(now)).isInstanceOf(BusinessException.class);
+        assertThat(purge.purge(now).failed()).isGreaterThanOrEqualTo(1);
         assertThat(deletedAt(clip)).isNull();
 
         reset(storage);
@@ -137,12 +136,28 @@ class ClipPurgeIntegrationTest {
     }
 
     @Test
+    void 키_하나가_계속_실패해도_그_뒤_클립과_업로드는_지운다() {
+        UUID event = event("HIGH");
+        UUID poisoned = clip(event, "cam-1", now.minus(Duration.ofDays(2)), false);
+        UUID next = clip(event, "cam-2", now.minus(Duration.ofDays(1)), false);
+        String orphan = grant(event, now.minus(Duration.ofDays(15)), null);
+        doThrow(new BusinessException(ErrorCode.Storage.STORAGE_UNAVAILABLE)).when(storage).delete(key(event, poisoned));
+
+        ClipPurgeService.Result result = purge.purge(now);
+
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(deletedAt(poisoned)).isNull();
+        assertThat(deletedAt(next)).isEqualTo(now);
+        verify(storage).delete(orphan);
+    }
+
+    @Test
     void 저장소가_설정되지_않았으면_아무것도_하지_않는다() {
         when(storage.configured()).thenReturn(false);
         UUID event = event("HIGH");
         UUID clip = clip(event, "cam-1", now.minus(Duration.ofDays(1)), false);
 
-        assertThat(purge.purge(now)).isEqualTo(new ClipPurgeService.Result(0, 0, 0));
+        assertThat(purge.purge(now)).isEqualTo(new ClipPurgeService.Result(0, 0, 0, 0));
         verify(storage, never()).delete(anyString());
         assertThat(deletedAt(clip)).isNull();
     }
@@ -167,7 +182,10 @@ class ClipPurgeIntegrationTest {
         admin.start();
         assertThat(locked.await(10, TimeUnit.SECONDS)).isTrue();
 
+        long started = System.nanoTime();
         purge.purge(now);
+        // 잠긴 행을 기다리지 않고 건너뛴다(SKIP LOCKED). 기다렸다면 관리자 쪽이 10초 뒤에야 풀린다
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(5));
         release.countDown();
         admin.join(10_000);
 
@@ -193,6 +211,17 @@ class ClipPurgeIntegrationTest {
         verify(storage, never()).delete(used);
         assertThat(jdbc.queryForList("SELECT object_key FROM upload_grant WHERE event_id = ?", String.class, event))
                 .containsExactlyInAnyOrder(recent, used);
+    }
+
+    @Test
+    void CRITICAL_이벤트의_쓰이지_않은_업로드는_지우지_않는다() {
+        UUID event = event("CRITICAL");
+        String stale = grant(event, now.minus(Duration.ofDays(15)), null);
+
+        purge.purge(now);
+
+        verify(storage, never()).delete(stale);
+        assertThat(jdbc.queryForList("SELECT object_key FROM upload_grant WHERE event_id = ?", String.class, event)).containsExactly(stale);
     }
 
     private UUID event(String severity) {

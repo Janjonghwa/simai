@@ -4,6 +4,7 @@ import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import com.ssafy.simai.global.properties.StorageProperties;
 import java.net.URI;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Collections;
@@ -19,6 +20,7 @@ import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.awscore.exception.AwsServiceException;
 import software.amazon.awssdk.awscore.presigner.PresignedRequest;
 import software.amazon.awssdk.core.exception.SdkException;
 import software.amazon.awssdk.regions.Region;
@@ -63,7 +65,9 @@ public class ObjectStorage implements AutoCloseable {
                 : StaticCredentialsProvider.create(AwsBasicCredentials.create(properties.accessKey(), properties.secretKey()));
         S3Presigner.Builder presignerBuilder = S3Presigner.builder().region(region).serviceConfiguration(s3)
                 .credentialsProvider(credentials);
-        S3ClientBuilder clientBuilder = S3Client.builder().region(region).serviceConfiguration(s3).credentialsProvider(credentials);
+        // 저장소가 멈춰도 삭제 작업이 오래 붙잡히지 않게 호출 시간을 묶는다(재시도 포함 30초, 한 번 10초)
+        S3ClientBuilder clientBuilder = S3Client.builder().region(region).serviceConfiguration(s3).credentialsProvider(credentials)
+                .overrideConfiguration(o -> o.apiCallTimeout(Duration.ofSeconds(30)).apiCallAttemptTimeout(Duration.ofSeconds(10)));
         if (!properties.endpoint().isEmpty()) {
             presignerBuilder.endpointOverride(URI.create(properties.endpoint()));
             clientBuilder.endpointOverride(URI.create(properties.endpoint()));
@@ -109,14 +113,19 @@ public class ObjectStorage implements AutoCloseable {
 
     /**
      * 객체를 지운다. 없는 키도 성공이다(S3 DeleteObject 는 멱등). 실패하면 STORAGE_UNAVAILABLE.
+     * 경고 로그에는 키 대신 저장소의 상태·오류 코드만 남긴다(키에는 이벤트·클립 식별자가 있다).
      * 버킷 버전 관리를 켜 두면 지운 표시만 남고 이전 판이 남으므로, 운영 버킷은 버전 관리를 끈다(server-data-retention.md).
      */
     public void delete(String key) {
         requireConfigured();
         try {
             client.deleteObject(DeleteObjectRequest.builder().bucket(properties.bucket()).key(key).build());
+        } catch (AwsServiceException e) {
+            log.warn("객체 저장소에서 객체를 지우지 못했다: status={} code={}", e.statusCode(),
+                    e.awsErrorDetails() == null ? null : e.awsErrorDetails().errorCode());
+            throw new BusinessException(ErrorCode.Storage.STORAGE_UNAVAILABLE);
         } catch (SdkException e) {
-            log.warn("객체 저장소에서 객체를 지우지 못했다: {}", e.getClass().getSimpleName());
+            log.warn("객체 저장소에 닿지 못해 객체를 지우지 못했다: {}", e.getClass().getSimpleName());
             throw new BusinessException(ErrorCode.Storage.STORAGE_UNAVAILABLE);
         }
     }
@@ -149,8 +158,11 @@ public class ObjectStorage implements AutoCloseable {
     @Override
     public void close() {
         if (presigner != null) {
-            presigner.close();
-            client.close();
+            try {
+                presigner.close();
+            } finally {
+                client.close();
+            }
         }
     }
 

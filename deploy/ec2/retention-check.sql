@@ -1,15 +1,17 @@
 -- 데이터 삭제 확인(명세 18.4 주 1회, S15P31A101-72). 읽기만 한다. 결과 해석은 docs/design/server-data-retention.md.
 -- 실행: docker compose --env-file /opt/simai/.env -f deploy/ec2/compose.yaml exec -T db psql -U postgres -d simai < deploy/ec2/retention-check.sql
--- 1·2·4 는 0 이어야 한다. 3 은 정책 7줄이 모두 Success 여야 한다. 5 는 보존 사유를 검토한다.
+-- 1·2·4 는 0 이어야 한다. 3 은 정책 7줄이 모두 scheduled = t, last_run_status = Success 여야 한다(NULL 이면 한 번도 돌지 않음).
+-- 5 는 보존 사유를 검토한다. 1 은 deleted_at 만 보므로, 버킷 버전 관리가 꺼져 있어야 객체도 실제로 지워진 것이다.
 
 -- 1. 클립: 삭제 예정일이 지났는데 남은 클립(0 이어야 한다)
 SELECT count(*) AS overdue_clips FROM media_clip
 WHERE deleted_at IS NULL AND NOT retention_hold AND delete_after <= now() - interval '1 hour';
 -- 2. 클립 기록이 오지 않은 업로드(0 이어야 한다)
-SELECT count(*) AS orphan_grants FROM upload_grant
-WHERE purpose = 'EVENT_CLIP' AND used_at IS NULL AND expires_at <= now() - interval '14 days 1 hour';
+SELECT count(*) AS orphan_grants FROM upload_grant g LEFT JOIN risk_event e ON e.event_id = g.event_id
+WHERE g.purpose = 'EVENT_CLIP' AND g.used_at IS NULL AND g.expires_at <= now() - interval '14 days 1 hour'
+  AND e.severity IS DISTINCT FROM 'CRITICAL';
 -- 3. 보관·압축 정책이 등록돼 있고 마지막 실행이 성공했는지
-SELECT j.hypertable_name, j.proc_name, j.config ->> 'drop_after' AS drop_after, j.config ->> 'compress_after' AS compress_after,
+SELECT j.hypertable_name, j.proc_name, j.scheduled, j.config ->> 'drop_after' AS drop_after, j.config ->> 'compress_after' AS compress_after,
        s.last_run_status, s.last_successful_finish
 FROM timescaledb_information.jobs j LEFT JOIN timescaledb_information.job_stats s USING (job_id)
 WHERE j.proc_name IN ('policy_retention', 'policy_compression') ORDER BY 1, 2;
