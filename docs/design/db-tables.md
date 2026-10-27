@@ -654,6 +654,8 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `unit` | text |  |  |  |
 | `labels` | jsonb |  |  | 백분위 등 |
 
+- 지표 이름·단위와 출처 칸은 `server-system-metrics.md`(S15P31A101-70). Tier 0 지표는 health 를 받을 때, EC2 지표(`source_id = ec2`)는 10초마다 쓴다. 백분위 지표의 `value` 는 p95.
+
 #### `observation_summary` — 2D 관측 카메라별 요약(원본은 Tier 0 저장 위치의 Parquet)
 
 - 단계 **M1** · 일반 · 근거: 11.2, observation_summary(I1), FR-129·141 · 검토: 이연주
