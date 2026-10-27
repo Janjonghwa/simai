@@ -60,3 +60,8 @@ simai:
   tier0:
     # Tier 0 토큰(Tier 0 의 SIMAI_TIER0_TOKEN) 원문의 SHA-256 16진수. 비어 있으면 I1(/ws/tier0) 연결을 모두 거부한다
     token-sha256: ${SIMAI_TIER0_TOKEN_SHA256:}
+  clip:
+    # 클립 삭제 작업(명세 11.5, S15P31A101-72). delete_after 가 지났고 보존 표시가 없는 클립의 객체를 지우고 deleted_at 을 쓴다
+    purge-interval: PT10M
+    # 클립 기록이 오지 않은 업로드 객체는 마지막 발급 만료 뒤 이만큼 지나면 지운다(클립 보관 기간과 같게)
+    orphan-grant-after: 14d

@@ -4,6 +4,7 @@ import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import com.ssafy.simai.global.properties.StorageProperties;
 import java.net.URI;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Collections;
@@ -16,12 +17,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.awscore.exception.AwsServiceException;
 import software.amazon.awssdk.awscore.presigner.PresignedRequest;
 import software.amazon.awssdk.core.exception.SdkException;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
@@ -32,6 +38,7 @@ import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignReques
  * 비공개 객체 저장소의 임시 서명 주소(명세 14, S15P31A101-69). 서명은 EC2 안에서 계산만 하고 저장소에 요청하지 않는다.
  * 올리기(PUT)는 형식·크기·내용 해시(x-amz-checksum-sha256)를 서명에 묶어, 다른 내용이나 크기로는 저장소가 거부한다.
  * 만료는 저장소가 판단한다(만료 뒤 요청은 403). 서명 주소는 로그에 남기지 않는다.
+ * 지우기(delete)만 EC2 가 저장소를 직접 부른다(보관 기간 자동 삭제, S15P31A101-72).
  */
 @Component
 public class ObjectStorage implements AutoCloseable {
@@ -40,28 +47,33 @@ public class ObjectStorage implements AutoCloseable {
 
     private final StorageProperties properties;
     private final S3Presigner presigner;
+    private final S3Client client;
 
     public ObjectStorage(StorageProperties properties) {
         this.properties = properties;
         if (properties.bucket().isEmpty()) {
             log.warn("simai.storage.bucket(SIMAI_STORAGE_BUCKET) 이 비어 업로드·조회 서명 주소를 내지 않는다");
             this.presigner = null;
+            this.client = null;
             return;
         }
-        S3Presigner.Builder builder = S3Presigner.builder()
-                .region(Region.of(properties.region()))
-                .serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(properties.pathStyle()).build());
+        Region region = Region.of(properties.region());
+        S3Configuration s3 = S3Configuration.builder().pathStyleAccessEnabled(properties.pathStyle()).build();
+        // EC2 인스턴스 역할 등. 서명·호출할 때 처음 찾는다(관리 명령처럼 쓰지 않는 프로세스는 찾지 않는다)
+        AwsCredentialsProvider credentials = properties.accessKey().isEmpty()
+                ? DefaultCredentialsProvider.builder().build()
+                : StaticCredentialsProvider.create(AwsBasicCredentials.create(properties.accessKey(), properties.secretKey()));
+        S3Presigner.Builder presignerBuilder = S3Presigner.builder().region(region).serviceConfiguration(s3)
+                .credentialsProvider(credentials);
+        // 저장소가 멈춰도 삭제 작업이 오래 붙잡히지 않게 호출 시간을 묶는다(재시도 포함 30초, 한 번 10초)
+        S3ClientBuilder clientBuilder = S3Client.builder().region(region).serviceConfiguration(s3).credentialsProvider(credentials)
+                .overrideConfiguration(o -> o.apiCallTimeout(Duration.ofSeconds(30)).apiCallAttemptTimeout(Duration.ofSeconds(10)));
         if (!properties.endpoint().isEmpty()) {
-            builder.endpointOverride(URI.create(properties.endpoint()));
+            presignerBuilder.endpointOverride(URI.create(properties.endpoint()));
+            clientBuilder.endpointOverride(URI.create(properties.endpoint()));
         }
-        if (!properties.accessKey().isEmpty()) {
-            builder.credentialsProvider(StaticCredentialsProvider.create(
-                    AwsBasicCredentials.create(properties.accessKey(), properties.secretKey())));
-        } else {
-            // EC2 인스턴스 역할 등. 서명할 때 처음 찾는다(관리 명령처럼 서명하지 않는 프로세스는 찾지 않는다)
-            builder.credentialsProvider(DefaultCredentialsProvider.builder().build());
-        }
-        this.presigner = builder.build();
+        this.presigner = presignerBuilder.build();
+        this.client = clientBuilder.build();
     }
 
     public boolean configured() {
@@ -99,6 +111,25 @@ public class ObjectStorage implements AutoCloseable {
                 .build()));
     }
 
+    /**
+     * 객체를 지운다. 없는 키도 성공이다(S3 DeleteObject 는 멱등). 실패하면 STORAGE_UNAVAILABLE.
+     * 경고 로그에는 키 대신 저장소의 상태·오류 코드만 남긴다(키에는 이벤트·클립 식별자가 있다).
+     * 버킷 버전 관리를 켜 두면 지운 표시만 남고 이전 판이 남으므로, 운영 버킷은 버전 관리를 끈다(server-data-retention.md).
+     */
+    public void delete(String key) {
+        requireConfigured();
+        try {
+            client.deleteObject(DeleteObjectRequest.builder().bucket(properties.bucket()).key(key).build());
+        } catch (AwsServiceException e) {
+            log.warn("객체 저장소에서 객체를 지우지 못했다: status={} code={}", e.statusCode(),
+                    e.awsErrorDetails() == null ? null : e.awsErrorDetails().errorCode());
+            throw new BusinessException(ErrorCode.Storage.STORAGE_UNAVAILABLE);
+        } catch (SdkException e) {
+            log.warn("객체 저장소에 닿지 못해 객체를 지우지 못했다: {}", e.getClass().getSimpleName());
+            throw new BusinessException(ErrorCode.Storage.STORAGE_UNAVAILABLE);
+        }
+    }
+
     private void requireConfigured() {
         if (presigner == null) {
             throw new BusinessException(ErrorCode.Storage.STORAGE_NOT_CONFIGURED);
@@ -127,7 +158,11 @@ public class ObjectStorage implements AutoCloseable {
     @Override
     public void close() {
         if (presigner != null) {
-            presigner.close();
+            try {
+                presigner.close();
+            } finally {
+                client.close();
+            }
         }
     }
 

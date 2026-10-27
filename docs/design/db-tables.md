@@ -885,7 +885,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `spooled` | boolean |  | `media_clip.spooled` |  |
 | `upload_attempts` | int |  | `media_clip.upload_attempts` |  |
 | `received_at` | ts | NN |  |  |
-| `deleted_at` | ts |  |  | 수명 주기 삭제 확인 |
+| `deleted_at` | ts |  |  | 클립 삭제 작업이 객체를 지운 시각(S15P31A101-72, 수명 주기 규칙은 쓰지 않음) |
 
 #### `media_clip_retention` — 보존 표시 이력(CRITICAL 자동, 관리자 붙이기·떼기)
 
