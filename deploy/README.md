@@ -365,11 +365,11 @@ simai-bootstrap scene -- python <사본>/ai/experiments/static_scene/run_mapanyt
 
 | 항목 | 조건 |
 |---|---|
-| GPU | 하나. 80GB 권장(H100·A100 80GB), 48GB급 미만이면 Tier 0 단독으로 뜬다. Ampere 이후. 48GB 에서 VLM 0.55(26.4GB)는 Cosmos3-Nano BF16(약 31.5GB)이 들어가지 않을 수 있다(3차 세션 v1 이 잰다) |
+| GPU | 하나. 80GB 권장(H100·A100 80GB), 48GB급 미만이면 Tier 0 단독으로 뜬다. Ampere 이후. H100 80GB 실측(3차 GPU 세션): 적재 가중치 16.79 GiB + KV 23.99 GiB(174,688 토큰)가 VLM 0.55 안에 들어간다(31.5GB 는 받는 파일 크기). 48GB 에서 0.55(26.4GB)는 미확인(명세 19.1). 추정: 26.4GB ≈ 24.6 GiB − 가중치 16.79 GiB ≈ KV 7.8 GiB 이하 ≈ 56,800 토큰 이하(7.8/23.99 × 174,688), `--max-model-len` 32,768 기준 최대 동시 약 1.7x 이하(활성화 등 여유를 빼면 더 작다) |
 | 드라이버 | 최대 CUDA 13.0 이상(RunPod·Vast 의 CUDA 필터 13.0). VM 은 NVIDIA Container Toolkit, `graphics` 기능이 컨테이너에 올라오는지(`ls /usr/share/glvnd/egl_vendor.d/` 에 `10_nvidia.json`) |
 | 디스크 | 이미지(풀면 아래 "빌드 결과") + 가중치 약 32GB(YOLO 0.1GB + Cosmos3-Nano 31.5GB) + 엔진·저널·로그. 컨테이너 디스크면 150GB 이상, 시연은 인스턴스를 다시 켜도 남는 디스크(명세 3.12) |
 | 포트 | 22(SSH, 키 인증만), I0 수신 포트(공개 TCP, 70000 이상 대칭 매핑). vLLM 8000 은 127.0.0.1 만(공개하지 않는다) |
-| 메모리·CPU | vCPU 8개 이상(명세 3.12 초기값). Tier 0 CPU 디코딩과 vLLM 전처리가 같은 CPU 를 쓴다(3차 세션 v3 가 잰다) |
+| 메모리·CPU | vCPU 8개 이상(명세 3.12 초기값). Tier 0 CPU 디코딩과 vLLM 전처리가 같은 CPU 를 쓴다. 3차 GPU 세션 실측(Pod cgroup 상한 23.8 vCPU): VLM 동시 4 지속 중 Tier 0 CPU 142 → 192%, loadavg 최대 85, `frame_age` p95 60 → 76 ms. cgroup 기준 새 CPU 묶기(S15P31A101-278)는 4차 세션 v4 가 다시 잰다 |
 
 **저장 위치 전제.** 시연 준비·리허설·시연은 인스턴스를 다시 켜도 남는 디스크(`$SIMAI_ROOT`: 블록 스토리지·Pod 볼륨)에 가중치(약 32GB)·TensorRT 엔진 캐시·저널을 둔다(명세 3.12).
 그래야 재시작 때 가중치를 다시 받지 않고(검증 스탬프로 다시 해시도 않음) 엔진을 다시 만들지 않는다(H100 약 550초). 컨테이너 디스크(`/srv/simai`)는 개발·시험용이다.
