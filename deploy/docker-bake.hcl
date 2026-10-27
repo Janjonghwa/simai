@@ -4,6 +4,7 @@
 #   docker buildx bake exp02                     # 베이스(cu128 base) → EXP-02 HMR (Detectron2 는 CUDA 확장 없이 빌드)
 #   docker buildx bake mapanything               # 베이스(cu128 base, Python 3.12) → EXP-01 MapAnything
 #   docker buildx bake risk-engine               # EC2 Risk Engine 컨테이너(CPU, python slim, S15P31A101-99)
+#   docker buildx bake texrecon                  # EXP-01 텍스처 굽기 도구 mvs-texturing(CPU, 노트북 Docker, S15P31A101-298)
 #   TAG=$(git rev-parse --short=12 HEAD) docker buildx bake ec2   # EC2 운영 스택 server·web·risk-engine (S15P31A101-66, deploy/ec2)
 #   REGISTRY=<레지스트리>/simai TAG=$(git rev-parse --short=12 HEAD) docker buildx bake --push tier0   # 푸시(사람이 확인한 뒤)
 # 외부 이미지는 모두 다이제스트로 고정한다. 바꿀 때는 태그와 다이제스트를 함께 바꾸고 MR 에 적는다.
@@ -134,6 +135,13 @@ target "risk-engine" {
     UV_IMAGE     = "${UV_IMAGE}"
   }
   tags = ["${REGISTRY}/risk-engine:${TAG}"]
+}
+
+# EXP-01 텍스처 굽기 도구(S15P31A101-298): CPU 전용 mvs-texturing texrecon. 우분투 다이제스트는 Dockerfile ARG 에 고정
+target "texrecon" {
+  inherits   = ["_common"]
+  dockerfile = "deploy/texrecon/Dockerfile"
+  tags       = ["${REGISTRY}/texrecon:${TAG}"]
 }
 
 # EC2 Spring 서버(S15P31A101-66): JDK 로 bootJar, JRE 로 실행
