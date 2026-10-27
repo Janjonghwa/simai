@@ -26,7 +26,7 @@ POST /api/uploads/sign
 | 항목 | 정한 값 | 근거 |
 |---|---|---|
 | 저장소 | AWS S3(서울, `ap-northeast-2`). S3 호환(Lightsail·MinIO)은 `endpoint`·`path-style` 로 | 명세 3.1·11.6(AWS 서울 리전). SDK 는 AWS SDK for Java v2 `S3Presigner`(서명만, 저장소 호출 없음) |
-| 자격 증명 | 운영은 EC2 인스턴스 역할(기본 공급자). 정적 키는 로컬 S3 호환 저장소에서만 | 비밀 값을 `.env` 에 두지 않게(14). 인스턴스 역할에 버킷의 `s3:PutObject`·`s3:GetObject` 만 준다 |
+| 자격 증명 | 운영은 EC2 인스턴스 역할(기본 공급자). 정적 키는 로컬 S3 호환 저장소에서만 | 비밀 값을 `.env` 에 두지 않게(14). 인스턴스 역할에 버킷의 `s3:PutObject`·`s3:GetObject`·`s3:DeleteObject`(클립 삭제 작업, S15P31A101-72)만 준다 |
 | 미설정 | `SIMAI_STORAGE_BUCKET` 이 비면 서버는 뜨고 서명은 503 `STORAGE_NOT_CONFIGURED`. 자격 증명을 못 찾으면 503 `STORAGE_UNAVAILABLE` | 업로더가 단절과 같이 다루고 다시 시도한다(upload.py `SignerUnavailable`) |
 | 인증 | 한 경로에서 Tier 0 토큰·기기 토큰·사용자 JWT 를 받는다(`SecurityConfig` 업로드 체인). 기계 토큰이 맞으면 JWT 해석을 건너뛴다 | 12.6 권한 "기기·반장". 기계 토큰을 JWT 로 읽으면 401 이 난다(-222 에서 미뤄 둔 일) |
 | 목적별 주체 | `EVENT_FRAME`·`EVENT_CLIP`: Tier 0 토큰·기기 토큰. `TICKET_PHOTO`: 반장 JWT. 그 밖은 403 `UPLOAD_NOT_ALLOWED`. 열람·관리자 JWT 와 워커 토큰은 받지 않는다 | 계약 event_frame_ready·media_clip 은 Tier 0 가 보낸다. db-tables 는 "Tier 0 는 기기 토큰" 이라 둘 다 받는다. 조치 사진은 반장(FR-41) |
@@ -77,5 +77,5 @@ PUT: { "lease_id": "<uuid>", "op": "PUT", "name": "bev.png", "content_type": "im
 - Tier 0 업로더의 서명 클라이언트(`UploadSigner` HTTP 구현)를 이 응답에 맞춰 붙인다(ai).
 - 워커 객체 서명 요청·응답의 계약 스키마: 명세 12.5 는 이 경로의 정본을 서버 OpenAPI 로 두었고 `/api/uploads/sign` 도 스키마가 없다. 계약(`contracts/`)에 둘지는 명세 정리 MR 에서 정한다.
 - 워커 GET 은 객체를 메모리로 다 읽는다(BEV 입력은 작다). 큰 정적 3D 입력을 받는 처리기가 생기면 임시 파일로 흘려 받는다.
-- 쓰이지 않은 발급(만료 뒤 `used_at` 없음)의 객체와 `upload_grant` 행은 클립 삭제 작업이 함께 정리한다. 프레임·사진은 요청마다 새 키라 행이 쌓인다(인증된 주체만 부르므로 호출 빈도 제한은 두지 않았다).
+- 쓰이지 않은 클립 발급(만료 14일 뒤 `used_at` 없음)의 객체와 `upload_grant` 행은 클립 삭제 작업이 정리한다(S15P31A101-72, `server-data-retention.md`). 프레임·사진은 요청마다 새 키라 행이 쌓인다(인증된 주체만 부르므로 호출 빈도 제한은 두지 않았다).
 - 같은 클립을 다른 주체(Tier 0 토큰 → 기기 토큰)로 다시 받으면 409 가 이어진다. 업로더는 한 가지 토큰만 쓴다.

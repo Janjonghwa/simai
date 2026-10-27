@@ -52,7 +52,6 @@ FR-59·99, 계약 `media_clip`·`media_clip_retention` 1.x.
 
 - 관제 앱(S15P31A101-253): 응답에 `contract: DEMO_UNCONFIRMED` 를 싣지 않으므로 그 검사를 빼고, `h264-annexb` 를 브라우저에서 MP4 로 감싸 재생한다.
 - 명세 12.6 API 표에 `GET /api/events/{id}/clips` 행을 더한다(명세 정리).
-- 클립 삭제 작업(S15P31A101-72): `delete_after` 가 지났고 `retention_hold` 가 false 인 클립의 객체를 지우고 `deleted_at` 을 남긴다.
-- 이벤트가 클립을 보낸 뒤 CRITICAL 로 오르면 보존 표시는 Tier 0 의 `media_clip_retention` 으로만 켜진다. 그 기록이 오지 않으면 EC2 가 이벤트 등급으로 켤지는 -72 와 함께 정한다.
+- 클립 삭제 작업과, 이벤트가 CRITICAL 로 올랐는데 Tier 0 보존 기록이 오지 않은 클립의 보존 표시는 S15P31A101-72 에서 했다(`server-data-retention.md`).
 - Tier 0 가 `media_clip`·`media_clip_retention` 을 I1 로 보내는 연결(ai, 형식은 `record.py`).
 - 실제 S3 로 재생 주소를 열어 본다(시험은 서명 계산만 본다).
