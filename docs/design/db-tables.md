@@ -516,6 +516,22 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `status` | text | NN, CK(PENDING·READY·FAILED) |  |  |
 | `job_id` | text | FK>analysis_job.job_id |  |  |
 | `created_at` | ts | NN |  |  |
+| `frame_set_id` | bigint | FK>bev_frame_set.frame_set_id, UQ(calibration_version, frame_set_id) |  | 입력 프레임 묶음. 같은 보정·묶음은 한 번만 등록(V12, S15P31A101-240) |
+| `result` | jsonb |  | `job_callback.result` | 결과 원문(픽셀 ↔ World `raster`·방 외곽 등, V12) |
+| `error` | text |  |  | FAILED 이유(V12) |
+| `finished_at` | ts |  |  | READY·FAILED 시각(V12) |
+
+#### `bev_frame_set` — BEV 평면도 입력 프레임 묶음
+
+- 단계 **MVP** · 일반 · 근거: 12.5 bev_floorplan input.frames, S15P31A101-240(관리 명령 `admin floorplan frames`, 사용자 결정 2026-10-27)
+
+| 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
+|---|---|---|---|---|
+| `frame_set_id` | bigint identity | PK |  |  |
+| `site_id` | text | FK>site.site_id, NN |  |  |
+| `frame_source` | text | NN, CK(LIVE·FILE·SIM·DATASET) | `bev_floorplan.input.frame_source` |  |
+| `frames` | jsonb | NN | `bev_floorplan.input.frames` | 카메라별 사람 없는 프레임(s3://)·촬영 시각. 추가만, 가장 늦은 묶음을 쓴다 |
+| `created_at` | ts | NN |  |  |
 
 #### `scene_version` — 정적 3D Scene. 테이블은 MVP(버전 ID 참조), 생성은 M3
 

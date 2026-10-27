@@ -11,9 +11,11 @@ import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -33,14 +35,16 @@ public class AnalysisJobService {
     private final ContractSchemas schemas;
     private final JobSignal signal;
     private final Clock clock;
+    private final ApplicationEventPublisher events;
 
     public AnalysisJobService(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, ContractSchemas schemas, JobSignal signal,
-            Clock clock) {
+            Clock clock, ApplicationEventPublisher events) {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.schemas = schemas;
         this.signal = signal;
         this.clock = clock;
+        this.events = events;
     }
 
     /**
@@ -86,11 +90,16 @@ public class AnalysisJobService {
      * 끝나지 않은 작업을 취소한다. 대여 중이면 워커의 다음 하트비트·제출이 REJECTED(JOB_CANCELLED)를 받고 멈춘다.
      * @return 이번에 취소했으면 true, 이미 끝난 작업이면 false
      */
+    /** 취소와 그 알림(JobFinished)을 한 트랜잭션으로 묶는다. 듣는 쪽이 실패하면 취소도 되돌아간다 */
+    @Transactional
     public boolean cancel(String jobId) {
-        int rows = jdbc.update("""
+        List<String> cancelled = jdbc.queryForList("""
                 UPDATE analysis_job SET status = 'CANCELLED', finished_at = :now WHERE job_id = :jobId AND status IN ('QUEUED', 'LEASED')
+                RETURNING job_type
                 """, new MapSqlParameterSource().addValue("jobId", jobId)
-                .addValue("now", I1Json.utc(clock.instant())));
+                .addValue("now", I1Json.utc(clock.instant())), String.class);
+        cancelled.forEach(type -> events.publishEvent(new JobFinished(jobId, type, "CANCELLED", null, null)));
+        int rows = cancelled.size();
         if (rows == 0 && jdbc.queryForObject("SELECT count(*) FROM analysis_job WHERE job_id = :jobId",
                 new MapSqlParameterSource("jobId", jobId), Integer.class) == 0) {
             throw new BusinessException(ErrorCode.Job.JOB_NOT_FOUND);

@@ -79,7 +79,7 @@ EC2 쪽(작업 등록·`floor_plan` 저장)은 S15P31A101-240, 워커 전용 서
 ## 잔여 위험·넘긴 일
 
 - -248(완료): 워커 전용 서명 API 와 워커 쪽 HTTP 서명 클라이언트 `HttpObjectStore`. `__main__` 이 저장소를 넘겨 bev_floorplan 처리기가 등록된다(`server-object-storage.md`).
-- -240: 작업 등록(input 의 `calibration_ref`·`calibration_hash`·`frame_source`·`frames`), `floor_plan` 의 픽셀 ↔ 미터 대응 저장(컬럼이면 V3 마이그레이션).
+- -240(완료): 작업 등록(보정 알림의 `calibration_ref`·`calibration_hash`, 관리 명령으로 등록한 프레임 묶음의 `frame_source`·`frames`)과 `floor_plan` 결과 저장(V12 `result` 에 `raster` 포함)·조회(`server-floor-plan.md`).
 - 명세 12.5(입력 표)·12.6(서명 API 행) 반영은 명세 정리 MR.
 - 사람 없는 프레임은 EC2 가 고른다. 사람이 찍힌 프레임은 바닥에 늘어진 얼룩이 된다(`exclude_masks` 연결은 하지 않았다).
 - `generate_bev` 는 중간에 멈추지 않는다. LIVE 선점 뒤 최대 수십 초 CPU 를 더 쓴다(GPU 는 쓰지 않는다).
