@@ -930,6 +930,11 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `issued_at` | ts | NN |  |  |
 | `expires_at` | ts | NN |  |  |
 | `used_at` | ts |  |  |  |
+| `requester` | text | NN, CK(TIER0·DEVICE·USER) |  | 요청 주체 종류. Tier 0 토큰이면 기기·사용자 칸이 비어 이것으로 가른다(V9, S15P31A101-69) |
+| `content_type` | text | NN |  | 서명에 묶은 형식(V9) |
+| `size_bytes` | bigint | NN |  | 서명에 묶은 크기(V9) |
+| `sha256` | text | NN |  | 서명에 묶은 내용 해시, 같은 클립 재발급·올라온 키 검증(V9) |
+| `event_id` | uuid |  |  | 이벤트 프레임·클립(V9) |
 
 ### F. 알림
 

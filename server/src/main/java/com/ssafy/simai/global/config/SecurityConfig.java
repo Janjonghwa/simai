@@ -4,6 +4,7 @@ import com.ssafy.simai.domain.machine.MachineKind;
 import com.ssafy.simai.domain.machine.MachineTokenService;
 import com.ssafy.simai.domain.realtime.RealtimeTopics;
 import com.ssafy.simai.domain.tier0.Tier0Paths;
+import com.ssafy.simai.domain.user.entity.Role;
 import com.ssafy.simai.global.properties.AuthProperties;
 import com.ssafy.simai.global.properties.Tier0Properties;
 import com.ssafy.simai.global.security.AccessTokenIssuer;
@@ -19,8 +20,11 @@ import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
+import org.springframework.security.oauth2.server.resource.web.DefaultBearerTokenResolver;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
@@ -93,8 +97,42 @@ public class SecurityConfig {
         return http.build();
     }
 
+    /**
+     * 업로드 서명 주소(POST /api/uploads/sign, 명세 12.6 "기기·반장", S15P31A101-69). 기기 토큰·Tier 0 토큰·사용자 JWT 를 모두 받는다.
+     * 기계 토큰 필터가 먼저 보고, 맞으면 JWT 해석을 건너뛴다(기계 토큰을 JWT 로 읽다가 401 을 내지 않게). 아니면 JWT 로 본다.
+     * 목적별로 받을 수 있는 주체(Tier 0·기기는 이벤트 프레임·클립, 반장은 조치 사진)는 UploadSignService 가 가른다.
+     */
     @Bean
     @Order(4)
+    SecurityFilterChain uploadFilterChain(HttpSecurity http, Tier0Properties tier0, MachineTokenService tokens,
+            JwtAuthenticationConverter roleConverter) throws Exception {
+        SecurityErrorResponder errors = new SecurityErrorResponder();
+        DefaultBearerTokenResolver bearer = new DefaultBearerTokenResolver();
+        http
+                .securityMatchers(matchers -> matchers.requestMatchers(HttpMethod.POST, "/api/uploads/sign"))
+                .csrf(csrf -> csrf.disable())
+                .cors(Customizer.withDefaults())
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .addFilterBefore(new Tier0TokenAuthenticationFilter(tier0), BearerTokenAuthenticationFilter.class)
+                // Tier 0 필터 뒤에 둔다. Tier 0 토큰으로 인증되면 기기 토큰 DB 조회를 건너뛴다
+                .addFilterAfter(new MachineTokenAuthenticationFilter(MachineKind.DEVICE, tokens),
+                        Tier0TokenAuthenticationFilter.class)
+                .authorizeHttpRequests(auth -> auth.anyRequest().hasAnyAuthority(Tier0TokenAuthenticationFilter.ROLE,
+                        MachineKind.DEVICE.authority(), "ROLE_" + Role.FOREMAN.name()))
+                .exceptionHandling(exceptions -> exceptions
+                        .authenticationEntryPoint(errors)
+                        .accessDeniedHandler(errors))
+                .oauth2ResourceServer(oauth2 -> oauth2
+                        .bearerTokenResolver(request -> SecurityContextHolder.getContext().getAuthentication() == null
+                                ? bearer.resolve(request) : null)
+                        .authenticationEntryPoint(errors)
+                        .accessDeniedHandler(errors)
+                        .jwt(jwt -> jwt.jwtAuthenticationConverter(roleConverter)));
+        return http.build();
+    }
+
+    @Bean
+    @Order(5)
     SecurityFilterChain securityFilterChain(HttpSecurity http, JwtAuthenticationConverter roleConverter) throws Exception {
         SecurityErrorResponder errors = new SecurityErrorResponder();
         http

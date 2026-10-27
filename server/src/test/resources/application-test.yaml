@@ -10,6 +10,13 @@ simai:
       secret: dGVzdC1vbmx5LXNpbWFpLWp3dC1zZWNyZXQtMzItYnl0ZXMhIQ==
   config-bundle:
     public-base-url: https://ec2.test
+  storage:
+    # 서명은 계산만 하므로 저장소가 없어도 된다(UploadSignIntegrationTest). 시험 전용 값이다
+    bucket: simai-test-bucket
+    endpoint: http://127.0.0.1:9000
+    path-style: true
+    access-key: test-only-access-key
+    secret-key: test-only-secret-key
   tier0:
     # 시험 전용 토큰 "test-only-tier0-token" 의 SHA-256(Tier0I1IntegrationTest). 운영 값이 아니다
     token-sha256: 8c9cd5d871e96b937393e4eeb379dc39b7a894759fa7baa27b3762261baf9e08
