@@ -302,4 +302,28 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    /** 현재 Scene 조회(S15P31A101-264) */
+    enum Scene implements ErrorCode {
+        // COMMITTED Scene 이 없고 시연용 기본 Scene(simai.scene.default-gltf-key)도 등록하지 않았다
+        SCENE_NOT_FOUND(HttpStatus.NOT_FOUND, "확정된 Scene 이 없고 기본 Scene 도 등록되지 않았습니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Scene(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }
