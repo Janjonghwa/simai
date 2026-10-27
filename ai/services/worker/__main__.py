@@ -9,9 +9,8 @@
   상한을 두지 못하면(FAILED) 시작하지 않는다. torch CUDA 가 없으면 상한 없이 돈다(노트북).
 
 작업 유형별 처리기는 build_handlers 가 조립한다. 처리기가 없으면 시작하지 않는다.
-- bev_floorplan(S15P31A101-239): 객체 저장소 주입점(services.worker.objects.ObjectStore)이 있을 때만 등록한다. 워커 전용 서명 API
-  (S15P31A101-248) 클라이언트가 붙기 전에는 진입점이 저장소를 주지 않으므로 등록하지 않는다(받아도 올릴 수 없는 작업을 대여해
-  시도 횟수를 쓰지 않게).
+- bev_floorplan(S15P31A101-239): 객체 저장소 주입점(services.worker.objects.ObjectStore)이 있을 때만 등록한다. 진입점은
+  워커 전용 서명 API(S15P31A101-248)를 쓰는 HttpObjectStore 를 넘긴다(같은 EC2 주소·워커 토큰).
 - tbm_report(S15P31A101-225): 늘 등록한다. 외부 LLM 설정(SIMAI_LLM_BASE_URL·SIMAI_LLM_MODEL·SIMAI_LLM_API_KEY·SIMAI_LLM_TIMEOUT_S,
   simai_ai.report.llm)은 작업마다 읽고, 없으면 그 작업을 재시도 불가 LLM_CONFIG 로 끝낸다(설정 오류를 EC2 에서 보이게).
 """
@@ -36,7 +35,7 @@ from .client import AuthError, LeaseClient, RequestRejected
 from .bev_floorplan import BevFloorplanHandler
 from .handlers import JobHandler
 from .tbm_report import TbmReportHandler
-from .objects import ObjectStore
+from .objects import HttpObjectStore, ObjectStore
 from .runner import HandlerStuck, Worker
 from .transport import HttpTransport
 
@@ -63,16 +62,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--wait-ms 는 0~30000 이다 (계약 job_lease_request)")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
-    handlers = build_handlers(args.config)
-    if not handlers:
-        print("services.worker: 등록된 작업 처리기가 없다 (처리기 조립은 후속 티켓)", file=sys.stderr)
-        return 1
     base_url = os.environ.get("SIMAI_EC2_BASE_URL", "")
     token = os.environ.get("SIMAI_WORKER_TOKEN", "")
     worker_id = os.environ.get("SIMAI_WORKER_ID", "worker-01")
     if not base_url or not token:
         print("services.worker: SIMAI_EC2_BASE_URL·SIMAI_WORKER_TOKEN 이 필요하다 (.env)", file=sys.stderr)
         return 2
+    transport = HttpTransport(base_url, token)
+    handlers = build_handlers(args.config, HttpObjectStore(transport))
+    if not handlers:
+        print("services.worker: 등록된 작업 처리기가 없다 (처리기 조립은 후속 티켓)", file=sys.stderr)
+        return 1
 
     try:
         gpu = WorkerGpuSettings.from_env(os.environ)
@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
 
     stop = threading.Event()
     client = LeaseClient(
-        HttpTransport(base_url, token),
+        transport,
         worker_id,
         clock_ms=lambda: time.time_ns() // 1_000_000,
         monotonic=time.monotonic,

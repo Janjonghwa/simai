@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
 import ssl
 import urllib.error
@@ -28,6 +29,11 @@ def heartbeat_path(job_id: str) -> str:
 
 def result_path(job_id: str) -> str:
     return f"/api/worker/jobs/{urllib.parse.quote(job_id, safe='')}/result"
+
+
+def objects_sign_path(job_id: str) -> str:
+    """워커 전용 객체 서명(S15P31A101-248). 본문은 I5 봉투가 아니라 lease_id·op 등 이 API 전용 JSON 이다."""
+    return f"/api/worker/jobs/{urllib.parse.quote(job_id, safe='')}/objects/sign"
 
 
 @dataclass(frozen=True)
@@ -58,8 +64,18 @@ def _parse(raw: bytes) -> dict[str, Any] | None:
     return doc if isinstance(doc, dict) else None
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """리다이렉트를 따라가지 않는다. 따라가면 Authorization 헤더가 다른 호스트·평문 http 로 실린다."""
+def is_loopback(host: str) -> bool:
+    """같은 기계 안 개발 서버 주소인지. 평문 http 는 이때만 허용한다(EC2·서명 주소 공통)."""
+    if host in _LOOPBACK:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """리다이렉트를 따라가지 않는다. 따라가면 Authorization 헤더·서명 주소가 다른 호스트·평문 http 로 실린다."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
         return None  # urllib 이 3xx 를 HTTPError 로 올리고, post() 가 Response(3xx) 로 돌려준다
@@ -74,7 +90,7 @@ class HttpTransport:
 
     def __init__(self, base_url: str, token: str, *, ssl_context: ssl.SSLContext | None = None) -> None:
         parts = urllib.parse.urlsplit(base_url)
-        if parts.scheme == "http" and parts.hostname not in _LOOPBACK:
+        if parts.scheme == "http" and not is_loopback(parts.hostname or ""):
             raise ValueError("I5 는 TLS 만 쓴다: 루프백이 아니면 https 주소여야 한다")
         if parts.scheme not in ("https", "http") or not parts.hostname:
             raise ValueError(f"EC2 주소가 올바르지 않다: {base_url!r}")
@@ -84,7 +100,7 @@ class HttpTransport:
         self._token = token
         self._ssl = ssl_context if ssl_context is not None else ssl.create_default_context()
         self._opener = urllib.request.build_opener(
-            _NoRedirect(), urllib.request.HTTPSHandler(context=self._ssl)
+            NoRedirect(), urllib.request.HTTPSHandler(context=self._ssl)
         )
 
     def post(self, path: str, body: Mapping[str, Any], timeout_s: float) -> Response:
