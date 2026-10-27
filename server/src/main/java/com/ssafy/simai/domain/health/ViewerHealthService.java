@@ -1,5 +1,6 @@
 package com.ssafy.simai.domain.health;
 
+import com.ssafy.simai.domain.scene.SceneService;
 import com.ssafy.simai.domain.tier0.i1.I1Envelope;
 import java.time.Clock;
 import java.time.Instant;
@@ -138,10 +139,8 @@ public class ViewerHealthService {
 
     private ObjectNode scene(HealthState.World world) {
         ObjectNode s = mapper.createObjectNode();
-        String committed = first("""
-                SELECT scene_version FROM scene_version WHERE state = 'COMMITTED' AND valid_to IS NULL
-                ORDER BY committed_at DESC NULLS LAST LIMIT 1
-                """);
+        // GET /api/scenes/current 와 같은 Scene(SceneService.CURRENT_COMMITTED)
+        String committed = first("SELECT scene_version FROM (" + SceneService.CURRENT_COMMITTED + ") s");
         String live = world == null ? null : world.sceneVersion();
         s.put("committed_version", committed);
         s.put("live_version", live);
