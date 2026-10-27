@@ -25,8 +25,9 @@ POST /api/uploads/sign
 
 | 항목 | 정한 값 | 근거 |
 |---|---|---|
-| 저장소 | AWS S3(서울, `ap-northeast-2`). S3 호환(Lightsail·MinIO)은 `endpoint`·`path-style` 로 | 명세 3.1·11.6(AWS 서울 리전). SDK 는 AWS SDK for Java v2 `S3Presigner`(서명만, 저장소 호출 없음) |
-| 자격 증명 | 운영은 EC2 인스턴스 역할(기본 공급자). 정적 키는 로컬 S3 호환 저장소에서만 | 비밀 값을 `.env` 에 두지 않게(14). 인스턴스 역할에 버킷의 `s3:PutObject`·`s3:GetObject`·`s3:DeleteObject`(클립 삭제 작업, S15P31A101-72)만 준다 |
+| 저장소 | AWS S3. 리전은 `SIMAI_STORAGE_REGION`(기본 서울 `ap-northeast-2`). 운영 버킷 `simai-k15a101-media` 는 시드니 `ap-southeast-2` | 명세 3.1·11.6 은 서울 리전이다. 팀 AWS 계정에서 서울 리전을 바로 쓸 수 없어(플랜 업그레이드 필요, 지출 한도가 풀려 하지 않았다) 운영 버킷은 시드니에 두었다(서명 주소로 클라이언트가 직접 올리고 받으므로 EC2 와 리전이 달라도 서버 경로에는 들어가지 않는다). 계정을 바꾸면 서울로 옮긴다. S3 호환(Lightsail·MinIO)은 `endpoint`·`path-style` 로. SDK 는 AWS SDK for Java v2 `S3Presigner`(서명만, 저장소 호출 없음) |
+| 자격 증명 | `SIMAI_STORAGE_ACCESS_KEY`·`SECRET_KEY` 가 있으면 정적 키, 없으면 기본 공급자(인스턴스 역할 등). 운영은 IAM 사용자 `simai-ec2` 의 정적 키를 `/opt/simai/.env`(권한 600)에 둔다 | 운영 EC2(`k15a101.p.ssafy.io`)는 SSAFY 제공이라 인스턴스 역할을 붙일 수 없다. 키가 새도 피해가 버킷 객체로 한정되게 그 사용자에게는 이 버킷 객체의 `s3:PutObject`·`s3:GetObject`·`s3:DeleteObject`(클립 삭제 작업, S15P31A101-72)만 준다. 키는 저장소·로그에 두지 않는다 |
+| CORS | 버킷 CORS: 출처 `https://simai.live`·로컬 개발(`localhost:5173`·`5174`), 메서드 `GET`·`PUT`·`HEAD`, 헤더 `content-type`·`x-amz-checksum-sha256`, 노출 `ETag` | 브라우저(반장 조치 사진·화면의 프레임·클립 보기)가 서명 주소로 직접 올리고 받는다. 서명에 묶은 헤더만 연다 |
 | 미설정 | `SIMAI_STORAGE_BUCKET` 이 비면 서버는 뜨고 서명은 503 `STORAGE_NOT_CONFIGURED`. 자격 증명을 못 찾으면 503 `STORAGE_UNAVAILABLE` | 업로더가 단절과 같이 다루고 다시 시도한다(upload.py `SignerUnavailable`) |
 | 인증 | 한 경로에서 Tier 0 토큰·기기 토큰·사용자 JWT 를 받는다(`SecurityConfig` 업로드 체인). 기계 토큰이 맞으면 JWT 해석을 건너뛴다 | 12.6 권한 "기기·반장". 기계 토큰을 JWT 로 읽으면 401 이 난다(-222 에서 미뤄 둔 일) |
 | 목적별 주체 | `EVENT_FRAME`·`EVENT_CLIP`: Tier 0 토큰·기기 토큰. `TICKET_PHOTO`: 반장 JWT. 그 밖은 403 `UPLOAD_NOT_ALLOWED`. 열람·관리자 JWT 와 워커 토큰은 받지 않는다 | 계약 event_frame_ready·media_clip 은 Tier 0 가 보낸다. db-tables 는 "Tier 0 는 기기 토큰" 이라 둘 다 받는다. 조치 사진은 반장(FR-41) |
@@ -71,7 +72,8 @@ PUT: { "lease_id": "<uuid>", "op": "PUT", "name": "bev.png", "content_type": "im
 
 ## 남은 일
 
-- 실제 S3(또는 MinIO)로 업로드·만료 뒤 거부를 확인한다(시험은 서명 계산만 본다). 운영 버킷·인스턴스 역할 만들기는 배포 작업이다.
+- 실제 S3 로 업로드·내용 다름 거부·만료 뒤 거부를 확인한다(시험은 서명 계산만 본다). 운영 버킷·IAM 사용자·CORS 는 만들었다(위 표).
+- 운영 버킷을 명세대로 서울 리전으로 옮기는 일(계정이 서울 리전을 열면). 옮길 때는 `SIMAI_STORAGE_REGION` 만 바꾸면 되고, 이미 올라간 객체는 복사한다.
 - 올라온 키 검증: media_clip 은 S15P31A101-261 에서 한다(`server-event-clips.md`). event_frame_ready 를 받을 때도 같은 방식으로 맞춘다.
 - 이벤트 존재 확인: 서명 때는 `event_id` 가 실제 이벤트인지 보지 않는다(이벤트 기록과 업로드 순서가 겹칠 수 있다). 클립·프레임 기록을 받을 때 이벤트와 발급을 함께 맞춘다.
 - Tier 0 업로더의 서명 클라이언트(`UploadSigner` HTTP 구현)를 이 응답에 맞춰 붙인다(ai).
