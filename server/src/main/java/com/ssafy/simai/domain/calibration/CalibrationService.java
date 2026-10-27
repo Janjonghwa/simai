@@ -18,6 +18,7 @@ import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
@@ -50,11 +51,26 @@ public class CalibrationService {
     }
 
     public ObjectNode upload(String siteId, CalibrationUploadRequest request, long userId) {
-        JsonNode doc = request == null ? null : request.document();
+        if (request == null || (request.document() == null) == (request.documentText() == null)) {
+            throw new BusinessException(ErrorCode.Config.INVALID_CALIBRATION);
+        }
+        JsonNode doc;
+        byte[] content;
+        if (request.documentText() != null) {
+            // 글자 그대로 받은 문서는 그대로 저장한다(실수 표기를 바꾸지 않는다)
+            try {
+                doc = mapper.readTree(request.documentText());
+            } catch (JacksonException e) {
+                throw new BusinessException(ErrorCode.Config.INVALID_CALIBRATION);
+            }
+            content = request.documentText().getBytes(StandardCharsets.UTF_8);
+        } else {
+            doc = request.document();
+            content = mapper.writeValueAsBytes(doc);
+        }
         if (doc == null || !doc.isObject()) {
             throw new BusinessException(ErrorCode.Config.INVALID_CALIBRATION);
         }
-        byte[] content = mapper.writeValueAsBytes(doc);
         List<String> problems = schemas.violations("providers/calibration", new String(content, StandardCharsets.UTF_8));
         if (!problems.isEmpty()) {
             log.info("보정 문서 거부: {}", problems);
@@ -65,6 +81,14 @@ public class CalibrationService {
         }
         String version = doc.get("calibration_version").asString();
         String sha256 = ConfigFiles.sha256(content);
+        // 버전 행의 해시는 Tier 0 의 calibration_update.calibration_hash 와 같은 content_hash 다. 문서가 적은 값은 믿지 않고 다시 잰다
+        String contentHash = CalibrationContentHash.of(doc);
+        String declared = doc.path("content_hash").asString(null);
+        if (declared != null && !declared.equals(contentHash)) {
+            // 문서를 고쳤거나, 숫자 표기가 바뀌었거나(1000.0 → 1000), Python 과 다르게 잰 경우다. 거부하지는 않는다(다시 잰 값이 기준)
+            log.warn("보정 문서의 content_hash 가 다시 잰 값과 다르다: calibration_version={} declared={} computed={}",
+                    doc.path("calibration_version").asString(null), declared, contentHash);
+        }
         OffsetDateTime now = OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
         String reason = request.reason() == null || request.reason().isBlank() ? "관리자 업로드" : request.reason().strip();
 
@@ -83,9 +107,9 @@ public class CalibrationService {
             List<String> known = jdbc.queryForList(
                     "SELECT calibration_hash FROM calibration_version WHERE calibration_version = :v", params, String.class);
             if (known.isEmpty()) {
-                insertVersion(siteId, doc, version, sha256, reason, now);
-            } else if (!sha256.equals(known.getFirst())) {
-                // 다른 길로 이미 있는 버전. 같은 문서(해시)일 때만 원문을 붙인다
+                insertVersion(siteId, doc, version, contentHash, reason, now);
+            } else if (!contentHash.equals(known.getFirst())) {
+                // Tier 0 알림(calibration_update)으로 이미 있는 버전. 같은 보정 내용(다시 잰 content_hash)일 때만 원문을 붙인다
                 throw new BusinessException(ErrorCode.Config.CALIBRATION_VERSION_CONFLICT);
             }
             jdbc.update("""
@@ -97,10 +121,8 @@ public class CalibrationService {
         });
     }
 
-    private void insertVersion(String siteId, JsonNode doc, String version, String sha256, String reason, OffsetDateTime now) {
-        String previous = jdbc.queryForList("""
-                SELECT calibration_version FROM calibration_version WHERE site_id = :site ORDER BY created_at DESC LIMIT 1
-                """, new MapSqlParameterSource("site", siteId), String.class).stream().findFirst().orElse(null);
+    /** 문서에는 이전 버전이 없어 비워 둔다(추측하지 않는다). 이 버전의 calibration_update 가 오면 Tier 0 값으로 채운다 */
+    private void insertVersion(String siteId, JsonNode doc, String version, String contentHash, String reason, OffsetDateTime now) {
         List<String> crossCheck = new ArrayList<>();
         doc.path("scale_cross_check_basis").values().forEach(v -> crossCheck.add(v.asString()));
         JsonNode validation = doc.get("validation");
@@ -108,13 +130,13 @@ public class CalibrationService {
                 INSERT INTO calibration_version (calibration_version, site_id, previous_calibration_version, state, provider_source,
                     provider_version, reason, effective_at, calibration_ref, calibration_hash, scale_basis, scale_cross_check_basis,
                     validation, created_at)
-                VALUES (:v, :site, :previous, :state, :source, :providerVersion, :reason, :now, :ref, :sha, :scaleBasis,
+                VALUES (:v, :site, NULL, :state, :source, :providerVersion, :reason, :now, :ref, :sha, :scaleBasis,
                     CAST(:crossCheck AS text[]), CAST(:validation AS jsonb), :now)
                 """, new MapSqlParameterSource()
-                .addValue("v", version).addValue("site", siteId).addValue("previous", previous)
+                .addValue("v", version).addValue("site", siteId)
                 .addValue("state", doc.get("state").asString()).addValue("source", doc.get("provider_source").asString())
                 .addValue("providerVersion", doc.path("provider_version").asString(null)).addValue("reason", reason)
-                .addValue("now", now).addValue("ref", "ec2:calibration_document/" + version).addValue("sha", sha256)
+                .addValue("now", now).addValue("ref", "ec2:calibration_document/" + version).addValue("sha", contentHash)
                 .addValue("scaleBasis", doc.path("scale_basis").asString(null))
                 .addValue("crossCheck", crossCheck.isEmpty() ? null : I1Json.arrayLiteral(crossCheck))
                 .addValue("validation", validation == null || validation.isNull() ? null : mapper.writeValueAsString(validation)));

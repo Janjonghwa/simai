@@ -49,6 +49,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | C. 보정·설치 | `scale_reference` | M1 | 일반 | 미리 치수를 잰 시연용 안전 장비 목록 | 수정 16 추가 | `/api/scale-references` |  |
 | C. 보정·설치 | `calibration_scale_check` | M1 | 일반 | 보정에서 실측 정물별로 잰 크기와 오차 | 수정 16 추가 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
 | C. 보정·설치 | `coverage_guide` | MVP | 일반 | 커버리지 계산 결과와 카메라별 안내 문구 | 수정 16 추가 | `/api/cameras/coverage-guides` | 이연주 |
+| C. 보정·설치 | `calibration_update_message` | MVP | 일반 | I1 calibration_update 수신 기록(추가만, msg_id 로 재전송 제거). 현재 보정 상태는 sent_at 이 가장 늦은 것(V10, S15P31A101-263) | V10 추가 | `/api/calibrations/current` |  |
 | C. 보정·설치 | `floor_plan` | MVP | 일반 | BEV 평면도(보조 화면) | 수정 16 추가 | `/api/floor-plans/current` | 이연주 |
 | C. 보정·설치 | `scene_version` | MVP | 버전 | 정적 3D Scene. 테이블은 MVP(버전 ID 참조), 생성은 M3 | 있음 | `/api/scenes/current`, `/api/scenes/rebuild`, `/api/scenes/{}` | 이연주 |
 | D. 시계열 관측 | `world_track_state` | MVP | hypertable | World Track 상태 10 Hz(최소 리플레이 근거) | 있음 | `/api/replay`, `/api/world`, `/topic/world` | 이연주 |
