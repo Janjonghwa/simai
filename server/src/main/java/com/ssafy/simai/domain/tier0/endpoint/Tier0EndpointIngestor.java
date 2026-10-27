@@ -11,7 +11,6 @@ import java.util.Set;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.node.ObjectNode;
 
 /**
  * tier0_endpoint(Tier 0 → EC2, I1, 명세 3.12·12.6·12.7, FR-138) → tier0_endpoint 표에 한 행 추가.
@@ -47,7 +46,7 @@ class Tier0EndpointIngestor implements I1MessageIngestor {
 
     @Override
     public Outcome ingest(I1Envelope envelope, Instant receivedAt, I1Connection connection) {
-        List<String> problems = schemas.violations(SCHEMA, mapper.writeValueAsString(message(envelope)));
+        List<String> problems = schemas.violations(SCHEMA, mapper.writeValueAsString(envelope.toContractJson(mapper)));
         if (!problems.isEmpty()) {
             // 검사 문구는 경로와 규칙만 담는다(값 없음)
             throw new InvalidI1Message("tier0_endpoint 가 계약에 맞지 않는다: " + problems);
@@ -56,17 +55,5 @@ class Tier0EndpointIngestor implements I1MessageIngestor {
             throw new InvalidI1Message("gateway_id 가 source_id 와 다르다");
         }
         return repository.insert(envelope, receivedAt) ? Outcome.STORED : Outcome.DUPLICATE;
-    }
-
-    /** 받은 봉투를 계약 모양으로 다시 쓴다. 봉투의 모르는 필드는 I1Envelope 가 이미 버렸다(계약상 무시) */
-    private ObjectNode message(I1Envelope envelope) {
-        ObjectNode root = mapper.createObjectNode();
-        root.put("schema_version", envelope.schemaVersion());
-        root.put("msg_type", envelope.msgType());
-        root.put("msg_id", envelope.msgId().toString());
-        root.put("sent_at", envelope.sentAt().toEpochMilli());
-        root.put("source_id", envelope.sourceId());
-        root.set("payload", envelope.payload());
-        return root;
     }
 }

@@ -1,6 +1,7 @@
 -- S15P31A101-263: Tier 0 의 보정 상태 알림(I1 calibration_update)을 받아 GET /api/calibrations/current 로 돌려준다.
--- DRIFTED 표시는 새 보정 버전을 만들지 않고 같은 버전의 상태만 바꾸므로(ai calibration/watch.py) 버전 행만으로는 순서와 재전송을
--- 가릴 수 없다. 받은 메시지를 추가만 하는 기록으로 남기고(msg_id 로 재전송 제거, 명세 12.1), 현재 상태는 sent_at 이 가장 늦은 것이다.
+-- DRIFTED 표시는 새 보정 버전을 만들지 않고 같은 버전의 상태만 바꾼다(ai calibration/watch.py). 버전 행은 덮어쓰지 않으므로(AGENTS 6)
+-- 받은 메시지를 추가만 하는 기록으로 남기고(msg_id 로 재전송 제거, 명세 12.1), 현재 상태는 sent_at 이 가장 늦은 것이다.
+-- V9 는 S15P31A101-69(upload_grant_content)가 쓴다.
 CREATE TABLE calibration_update_message (
     msg_id uuid NOT NULL,
     gateway_id text NOT NULL,

@@ -64,6 +64,18 @@ public record I1Envelope(
                 payload);
     }
 
+    /** 받은 봉투를 계약 모양으로 다시 쓴다(계약 스키마 검사용). 봉투의 모르는 필드는 parse 가 이미 버렸다(계약상 무시) */
+    public ObjectNode toContractJson(ObjectMapper mapper) {
+        ObjectNode root = mapper.createObjectNode();
+        root.put("schema_version", schemaVersion);
+        root.put("msg_type", msgType);
+        root.put("msg_id", msgId.toString());
+        root.put("sent_at", sentAt.toEpochMilli());
+        root.put("source_id", sourceId);
+        root.set("payload", payload);
+        return root;
+    }
+
     /** EC2 가 보내는 메시지의 봉투(source_id ec2, 새 msg_id). I1 응답과 I2 STOMP 발행이 같이 쓴다 */
     public static ObjectNode outbound(ObjectMapper mapper, long sentAtMs, String msgType, String schemaVersion, JsonNode payload) {
         ObjectNode envelope = mapper.createObjectNode();

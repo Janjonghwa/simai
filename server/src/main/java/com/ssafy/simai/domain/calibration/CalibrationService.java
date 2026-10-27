@@ -65,8 +65,8 @@ public class CalibrationService {
         }
         String version = doc.get("calibration_version").asString();
         String sha256 = ConfigFiles.sha256(content);
-        // calibration_update 의 calibration_hash 는 문서의 content_hash(버전·시각·상태를 뺀 내용 해시)다. 없으면 원문 해시로 대신한다
-        String contentHash = doc.path("content_hash").asString(sha256);
+        // 버전 행의 해시는 Tier 0 의 calibration_update.calibration_hash 와 같은 content_hash 다. 문서가 적은 값은 믿지 않고 다시 잰다
+        String contentHash = CalibrationContentHash.of(doc);
         OffsetDateTime now = OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
         String reason = request.reason() == null || request.reason().isBlank() ? "관리자 업로드" : request.reason().strip();
 
@@ -87,7 +87,7 @@ public class CalibrationService {
             if (known.isEmpty()) {
                 insertVersion(siteId, doc, version, contentHash, reason, now);
             } else if (!contentHash.equals(known.getFirst())) {
-                // Tier 0 알림(calibration_update)으로 이미 있는 버전. 같은 보정 내용일 때만 원문을 붙인다
+                // Tier 0 알림(calibration_update)으로 이미 있는 버전. 같은 보정 내용(다시 잰 content_hash)일 때만 원문을 붙인다
                 throw new BusinessException(ErrorCode.Config.CALIBRATION_VERSION_CONFLICT);
             }
             jdbc.update("""
@@ -99,10 +99,8 @@ public class CalibrationService {
         });
     }
 
+    /** 문서에는 이전 버전이 없어 비워 둔다(추측하지 않는다). 이 버전의 calibration_update 가 오면 Tier 0 값으로 채운다 */
     private void insertVersion(String siteId, JsonNode doc, String version, String contentHash, String reason, OffsetDateTime now) {
-        String previous = jdbc.queryForList("""
-                SELECT calibration_version FROM calibration_version WHERE site_id = :site ORDER BY created_at DESC LIMIT 1
-                """, new MapSqlParameterSource("site", siteId), String.class).stream().findFirst().orElse(null);
         List<String> crossCheck = new ArrayList<>();
         doc.path("scale_cross_check_basis").values().forEach(v -> crossCheck.add(v.asString()));
         JsonNode validation = doc.get("validation");
@@ -110,10 +108,10 @@ public class CalibrationService {
                 INSERT INTO calibration_version (calibration_version, site_id, previous_calibration_version, state, provider_source,
                     provider_version, reason, effective_at, calibration_ref, calibration_hash, scale_basis, scale_cross_check_basis,
                     validation, created_at)
-                VALUES (:v, :site, :previous, :state, :source, :providerVersion, :reason, :now, :ref, :sha, :scaleBasis,
+                VALUES (:v, :site, NULL, :state, :source, :providerVersion, :reason, :now, :ref, :sha, :scaleBasis,
                     CAST(:crossCheck AS text[]), CAST(:validation AS jsonb), :now)
                 """, new MapSqlParameterSource()
-                .addValue("v", version).addValue("site", siteId).addValue("previous", previous)
+                .addValue("v", version).addValue("site", siteId)
                 .addValue("state", doc.get("state").asString()).addValue("source", doc.get("provider_source").asString())
                 .addValue("providerVersion", doc.path("provider_version").asString(null)).addValue("reason", reason)
                 .addValue("now", now).addValue("ref", "ec2:calibration_document/" + version).addValue("sha", contentHash)

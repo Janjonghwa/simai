@@ -55,8 +55,8 @@ class CalibrationStatusIntegrationTest {
     private static final Path CONTRACTS = Path.of(System.getProperty("simai.contracts.dir", "../contracts"));
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
     private static final String METRIC = "simai.i1.messages";
-    /** 계약 예시 calibration.json 의 content_hash. 같은 내용의 문서를 올리면 이 해시로 맞춘다 */
-    private static final String EXAMPLE_HASH = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+    /** 계약 예시 calibration.json 의 content_hash(Python 으로 잰 값, CalibrationContentHashTest). 같은 내용의 문서를 올리면 이 해시가 된다 */
+    private static final String EXAMPLE_HASH = "sha256:75ffde54159aff5cf3cc892429f920c2b3d12ce45c3b35af89eb6f54393ae846";
 
     @LocalServerPort
     int port;
@@ -120,7 +120,7 @@ class CalibrationStatusIntegrationTest {
     }
 
     @Test
-    void DRIFTED_는_같은_버전의_상태만_바꾸고_늦게_온_옛_알림은_상태를_되돌리지_않는다() throws Exception {
+    void DRIFTED_는_같은_버전의_현재_상태만_바꾸고_늦게_온_옛_알림은_현재가_되지_않는다() throws Exception {
         try (Tier0 tier0 = tier0()) {
             tier0.send(update(prefix + "-a", null, "CALIBRATED", "INITIAL", base));
             awaitCount(() -> messages(prefix + "-a"), 1);
@@ -135,8 +135,9 @@ class CalibrationStatusIntegrationTest {
         assertThat(current.get("calibration_state").asString()).isEqualTo("DRIFTED");
         assertThat(current.get("reason").asString()).isEqualTo("DRIFT_DETECTED");
         assertThat(current.get("updated_at").asLong()).isEqualTo(base + 2_000);
+        // 버전 행은 덮어쓰지 않는다(처음 알린 값 그대로)
         assertThat(jdbc.queryForObject("SELECT state FROM calibration_version WHERE calibration_version = ?", String.class,
-                prefix + "-a")).isEqualTo("DRIFTED");
+                prefix + "-a")).isEqualTo("CALIBRATED");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM calibration_version WHERE calibration_version LIKE ?", Integer.class,
                 prefix + "%")).isEqualTo(1);
     }
@@ -184,24 +185,76 @@ class CalibrationStatusIntegrationTest {
     }
 
     @Test
-    void Tier0_가_알린_버전에_같은_내용의_문서를_올리면_받고_다른_내용이면_거부한다() throws Exception {
+    void Tier0_가_알린_버전에_같은_내용의_문서를_올리면_받고_다른_내용은_해시를_맞춰_적어도_거부한다() throws Exception {
         try (Tier0 tier0 = tier0()) {
             tier0.send(update(prefix + "-a", null, "CALIBRATED", "INITIAL", base));
-        }
-        awaitCount(() -> messages(prefix + "-a"), 1);
-
-        // 문서 원문 해시가 아니라 content_hash(버전·시각·상태를 뺀 내용)로 맞춘다
-        call("POST", "/api/calibrations", admin(), upload(document(prefix + "-a", EXAMPLE_HASH)), 201);
-        assertThat(call("/api/calibrations/current", viewer(), 200).get("document_uploaded").asBoolean()).isTrue();
-
-        try (Tier0 tier0 = tier0()) {
             ObjectNode other = update(prefix + "-b", prefix + "-a", "CALIBRATED", "RECALIBRATED", base + 1_000);
             ((ObjectNode) other.get("payload")).put("calibration_hash", "sha256:" + "4".repeat(64));
             tier0.send(other);
         }
         awaitCount(() -> messages(prefix + "-b"), 1);
-        assertThat(call("POST", "/api/calibrations", admin(), upload(document(prefix + "-b", EXAMPLE_HASH)), 409)
+        assertThat(call("/api/calibrations/current", viewer(), 200).get("document_uploaded").asBoolean()).isFalse();
+
+        // 원문 해시가 아니라 다시 잰 content_hash(버전·시각·상태를 뺀 내용)로 맞춘다. 문서가 적은 content_hash 는 무시한다
+        call("POST", "/api/calibrations", admin(), upload(document(prefix + "-a", "sha256:" + "9".repeat(64))), 201);
+        // 내용이 다른 문서가 Tier 0 의 해시를 적어 와도 다시 재서 거부한다
+        assertThat(call("POST", "/api/calibrations", admin(), upload(document(prefix + "-b", "sha256:" + "4".repeat(64))), 409)
                 .get("code").asString()).isEqualTo("CALIBRATION_VERSION_CONFLICT");
+        JsonNode current = call("/api/calibrations/current", viewer(), 200);
+        assertThat(current.get("calibration_version").asString()).isEqualTo(prefix + "-b");
+        assertThat(current.get("document_uploaded").asBoolean()).isFalse();
+        assertThat(current.get("latest_uploaded_version").asString()).isEqualTo(prefix + "-a");
+    }
+
+    @Test
+    void 업로드로_먼저_만든_버전은_이전_버전을_비워_두고_Tier0_알림이_채운다() throws Exception {
+        try (Tier0 tier0 = tier0()) {
+            tier0.send(update(prefix + "-a", null, "CALIBRATED", "INITIAL", base));
+        }
+        awaitCount(() -> messages(prefix + "-a"), 1);
+        ObjectNode doc = document(prefix + "-b", null);
+        ((ObjectNode) doc.get("cameras").get(0)).put("camera_height_m", 2.75);
+        call("POST", "/api/calibrations", admin(), upload(doc), 201);
+        assertThat(previous(prefix + "-b")).isNull();
+        String uploadedHash = jdbc.queryForObject("SELECT calibration_hash FROM calibration_version WHERE calibration_version = ?",
+                String.class, prefix + "-b");
+
+        try (Tier0 tier0 = tier0()) {
+            ObjectNode next = update(prefix + "-b", prefix + "-a", "PROVISIONAL", "RECALIBRATED", base + 1_000);
+            ((ObjectNode) next.get("payload")).put("calibration_hash", uploadedHash);
+            tier0.send(next);
+        }
+
+        awaitCount(() -> messages(prefix + "-b"), 1);
+        assertThat(previous(prefix + "-b")).isEqualTo(prefix + "-a");
+        // 처음 만든 값(업로드한 문서의 상태·주소)은 그대로다
+        assertThat(jdbc.queryForObject("SELECT calibration_ref FROM calibration_version WHERE calibration_version = ?",
+                String.class, prefix + "-b")).isEqualTo("ec2:calibration_document/" + prefix + "-b");
+        assertThat(call("/api/calibrations/current", viewer(), 200).get("document_uploaded").asBoolean()).isTrue();
+    }
+
+    @Test
+    void 예전에_원문_해시로_남긴_업로드_행은_같은_내용이면_해시를_바로잡고_받는다() throws Exception {
+        String version = prefix + "-a";
+        byte[] content = MAPPER.writeValueAsBytes(document(version, null));
+        jdbc.update("""
+                INSERT INTO calibration_version (calibration_version, site_id, state, provider_source, reason, effective_at,
+                    calibration_ref, calibration_hash, created_at)
+                VALUES (?, 'classroom-1', 'PROVISIONAL', 'G1_AUTO', '관리자 업로드', now(), ?, 'sha256:raw-bytes', now())
+                """, version, "ec2:calibration_document/" + version);
+        jdbc.update("""
+                INSERT INTO calibration_document (calibration_version, content, sha256, uploaded_by, uploaded_at)
+                VALUES (?, ?, 'sha256:raw-bytes', ?, now())
+                """, version, content, adminId);
+
+        try (Tier0 tier0 = tier0()) {
+            tier0.send(update(version, null, "CALIBRATED", "STATE_CHANGED", base));
+        }
+
+        awaitCount(() -> messages(version), 1);
+        assertThat(jdbc.queryForObject("SELECT calibration_hash FROM calibration_version WHERE calibration_version = ?",
+                String.class, version)).isEqualTo(EXAMPLE_HASH);
+        assertThat(call("/api/calibrations/current", viewer(), 200).get("calibration_state").asString()).isEqualTo("CALIBRATED");
     }
 
     @Test
@@ -247,11 +300,19 @@ class CalibrationStatusIntegrationTest {
         return root;
     }
 
-    private ObjectNode document(String version, String contentHash) throws Exception {
+    /** 계약 예시 보정 문서. claimedHash 가 있으면 문서의 content_hash 칸에 적는다(EC2 는 믿지 않고 다시 잰다) */
+    private ObjectNode document(String version, String claimedHash) throws Exception {
         ObjectNode doc = read("calibration.json");
         doc.put("calibration_version", version);
-        doc.put("content_hash", contentHash);
+        if (claimedHash != null) {
+            doc.put("content_hash", claimedHash);
+        }
         return doc;
+    }
+
+    private String previous(String version) {
+        return jdbc.queryForObject("SELECT previous_calibration_version FROM calibration_version WHERE calibration_version = ?",
+                String.class, version);
     }
 
     private static ObjectNode upload(ObjectNode doc) {
