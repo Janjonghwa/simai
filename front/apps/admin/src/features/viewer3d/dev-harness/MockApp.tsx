@@ -1,4 +1,5 @@
 import { createSpatialDataStore } from '@/features/viewer3d/data/spatialData.store';
+import { ContractPanel } from '@/features/viewer3d/dev-harness/ContractPanel';
 import { DataPanel } from '@/features/viewer3d/dev-harness/DataPanel';
 import {
   readSceneOption,
@@ -34,6 +35,11 @@ import { MockScene, type SceneColors } from '@/features/viewer3d/dev-harness/Moc
 import { MockTopBar } from '@/features/viewer3d/dev-harness/MockTopBar';
 import type { MenuKey } from '@/features/viewer3d/dev-harness/mockUi';
 import type { SpatialMockApi } from '@/features/viewer3d/dev-harness/mswHandlers';
+import {
+  readGeometryMode,
+  withGeometryMode,
+  type GeometryMode,
+} from '@/features/viewer3d/dev-harness/officialFixtures';
 import { useRoster } from '@/features/viewer3d/dev-harness/useRoster';
 import type {
   ViewerEditPreview,
@@ -41,11 +47,13 @@ import type {
   ViewerObjectEditPreview,
   ViewerObjectEditResult,
 } from '@/features/viewer3d/editing/editTypes';
+import { DEFAULT_LAYERS, type ResolvedLayers } from '@/features/viewer3d/layers';
 import { parseReplayLog, type ReplayLog } from '@/features/viewer3d/replay/replayLog';
 import type { ViewerSceneStatus } from '@/features/viewer3d/scene/sceneContract';
 import type {
   Viewer3DHandle,
   ViewerMode,
+  ViewerSelectRequest,
   ViewerStatus,
   ViewerTarget,
 } from '@/features/viewer3d/types';
@@ -97,6 +105,12 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   const [dataStore] = useState(createSpatialDataStore);
   const [sourceKey, setSourceKey] = useState(() => readDataSource(window.location.search));
   const [epoch, setEpoch] = useState(0);
+  // -234 계약 시험: 형상 입력 형식·레이어 값·대기 선택 진행.
+  const [geometry, setGeometry] = useState<GeometryMode>(() =>
+    readGeometryMode(window.location.search),
+  );
+  const [layers, setLayers] = useState<ResolvedLayers>(DEFAULT_LAYERS);
+  const [selectRequest, setSelectRequest] = useState<ViewerSelectRequest | null>(null);
   // 개발 화면에서 고른 녹화 기록. null 이면 예시 기록을 재생한다.
   const [replayLog, setReplayLog] = useState<ReplayLog | null>(null);
   // 재생 입력이면 모드는 REPLAY 다. 처음 고른 입력에 맞춰 시작하고, 이후에는 입력·메뉴를 바꾸는 동작에서 정한다.
@@ -134,10 +148,20 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   const roster = useRoster(dataStore, legacy, status?.mode ?? 'LIVE');
   // 입력을 바꾸거나 처음부터 다시 재생할 때만 새 Source 를 만든다(epoch 는 재시작 표시).
   const harness = useMemo(
-    () => createHarnessSource(sourceKey, restBase, mockApi, replayLog),
+    () => createHarnessSource(sourceKey, restBase, mockApi, replayLog, geometry),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sourceKey, restBase, mockApi, epoch, replayLog],
+    [sourceKey, restBase, mockApi, epoch, replayLog, geometry],
   );
+
+  const changeGeometry = (next: GeometryMode) => {
+    // 새 Source 로 다시 받는다(다른 형식 형상을 섞지 않는다).
+    setGeometry(next);
+    window.history.replaceState(
+      window.history.state,
+      '',
+      withGeometryMode(window.location.href, next),
+    );
+  };
 
   const changeView = (next: DevViewKey) => {
     setView(next);
@@ -213,12 +237,14 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           ref={viewer}
           initialMode={initialMode}
           onSelectionChange={setSelected}
+          onSelectRequestChange={setSelectRequest}
           onStatusChange={setStatus}
           onEditPreview={setEditPreview}
           onEditResult={receiveEditResult}
           onObjectEditPreview={setObjectPreview}
           onObjectEditResult={receiveObjectResult}
           source={harness.source}
+          layers={layers}
           dataStore={dataStore}
           personModelUrl={avatar === 'xbot' ? DEV_XBOT_URL : null}
           zoneApplyState={zoneApply}
@@ -280,6 +306,17 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           <p className="smk-data-dim smk-mono" data-testid="scene-status">
             {sceneStatusText(sceneStatus)}
           </p>
+          <ContractPanel
+            viewer={viewer}
+            store={dataStore}
+            selected={selected}
+            geometry={geometry}
+            onGeometryChange={changeGeometry}
+            layers={layers}
+            onLayersChange={setLayers}
+            selectRequest={selectRequest}
+            external={harness.external ?? null}
+          />
           <DataPanel
             store={dataStore}
             sourceKey={sourceKey}

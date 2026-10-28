@@ -55,6 +55,10 @@ export function SpatialDataProvider({ store, source, children }: SpatialDataProv
       onWorkSurfaces: (result, receivedAt) => {
         if (active) store.getState().ingestWorkSurfaces(result, receivedAt);
       },
+      // Source 가 보관하던 형상을 명시적으로 버렸다(로그아웃·Scene 변경 등). 그 채널만 비운다.
+      onSnapshotClear: (channel) => {
+        if (active) store.getState().clearSnapshot(channel);
+      },
       // 재생 Source 가 뒤로 돌릴 때. Source 는 그대로 두고 받은 데이터만 비운다.
       onReset: () => {
         if (active) store.getState().reset(sourceId);

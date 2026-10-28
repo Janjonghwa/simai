@@ -42,8 +42,11 @@ export interface WorkSurfaceView extends WorkSurfaceGeometry {
 
 export interface WorkSurfaceSnapshot {
   status: 'NONE' | 'READY' | 'REJECTED';
-  /** 항목 형식은 계약을 따르지만 Viewer 로 넘기는 경로·버전 계약(BE -58)이 아직 없다는 표시다. */
-  contract: 'OPERATIONAL_GEOMETRY_UNCONFIRMED';
+  /**
+   * 받은 형상의 출처. OPERATIONAL_GEOMETRY_UNCONFIRMED 구성 묶음 모양(전달 경로 미확정) ·
+   * BE_STATIC_OBJECTS_V1 BE GET /api/static-objects 응답(-58). 저장·적용(ACK) 상태가 아니다.
+   */
+  contract: WorkSurfaceContract;
   /** 묶음에 실린 version(구성 묶음 geometry_version). 없으면 null. */
   geometryVersion: string | null;
   surfaces: readonly WorkSurfaceView[];
@@ -55,7 +58,12 @@ export interface WorkSurfaceSnapshot {
   invalidObstacles: readonly InvalidObstacle[];
   receivedAt: number | null;
   reason: string | null;
+  /** BE 정식 응답이면 그린 객체의 object_version(ID → 버전). 묶음 모양 입력에는 없다. */
+  objectVersions?: Readonly<Record<string, number>>;
 }
+
+/** 작업면·정적 객체 형상 출처. */
+export type WorkSurfaceContract = 'OPERATIONAL_GEOMETRY_UNCONFIRMED' | 'BE_STATIC_OBJECTS_V1';
 
 export const NO_WORK_SURFACES: WorkSurfaceSnapshot = {
   status: 'NONE',

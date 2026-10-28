@@ -20,7 +20,9 @@ import {
   type WorldBox,
   type WorldObb,
 } from '@/features/viewer3d/editing/editGeometry';
+import { readEditBox, readEditObb } from '@/features/viewer3d/editing/editRestore';
 import type {
+  ViewerBeginEditOptions,
   ViewerEditCancelReason,
   ViewerEditCommandResult,
   ViewerEditPreview,
@@ -33,6 +35,7 @@ import type {
   ViewerObjectEditResult,
   ViewerObjectKind,
 } from '@/features/viewer3d/editing/editTypes';
+import type { ViewerLayerKey } from '@/features/viewer3d/layers';
 import {
   obbObstacle,
   obstacleItem,
@@ -110,6 +113,11 @@ const KIND_SUBJECT: Record<ViewerObjectKind, string> = {
   WORK_SURFACE: '작업면이',
   OBSTACLE: '정적 객체가',
 };
+/** 대상 종류마다 그 대상을 그리는 레이어(-234). interactive 가 아니면 편집하지 않는다. */
+const KIND_LAYER: Record<ViewerObjectKind, ViewerLayerKey> = {
+  WORK_SURFACE: 'workSurfaces',
+  OBSTACLE: 'obstacles',
+};
 
 export interface EditSession {
   target: ViewerTarget;
@@ -154,7 +162,8 @@ export interface EditState {
   objectSession: ObjectEditSession | null;
   /** 작업면 편집의 마지막 결과(시작 거부 포함). */
   lastObjectResult: ViewerObjectEditResult | null;
-  begin(input: unknown): ViewerEditCommandResult;
+  /** options 로 미저장 초안을 한 번에 다시 연다(-234). 없으면 원본에서 시작한다. */
+  begin(input: unknown, options?: ViewerBeginEditOptions): ViewerEditCommandResult;
   /** from(보통 끌기 시작 때 초안)에 조작을 적용해 초안으로 둔다. 거부되면 초안은 그대로다. */
   preview(from: WorldBox, operation: EditOperation): EditOutcome;
   setDragging(handle: EditHandle | null): void;
@@ -356,7 +365,10 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
     };
 
     /** 작업면·정적 객체 OBB 편집 시작(-188·-274). 구역 시작과 같은 순서로 검사한다. */
-    const beginObject = (target: ViewerTarget): ViewerEditCommandResult => {
+    const beginObject = (
+      target: ViewerTarget,
+      options: ViewerBeginEditOptions = {},
+    ): ViewerEditCommandResult => {
       const { phase, mode } = viewer.getState();
       if (phase !== 'ready') return refuseObject(target, 'NOT_READY', '뷰어가 준비되지 않았다');
       if (mode === 'REPLAY') {
@@ -375,8 +387,30 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
       if (!isValidShape({ kind: 'obb', ...base })) {
         return refuseObject(target, 'INVALID_GEOMETRY', '원본 형상이 유효하지 않다');
       }
+      if (viewer.getState().layers[KIND_LAYER[found.objectKind]] !== 'interactive') {
+        return refuseObject(target, 'NOT_EDITABLE', '이 레이어는 지금 조작할 수 없다(layers)');
+      }
+      // 미저장 초안으로 다시 열기(-234). 원본이 그새 바뀌었거나 초안이 틀리면 열지 않는다.
+      let draft = base;
+      if (options.before !== undefined) {
+        const before = readEditObb(found.objectKind, options.before);
+        if (!before) return refuseObject(target, 'INVALID_GEOMETRY', 'before 형상이 유효하지 않다');
+        if (!sameObb(before, base)) {
+          return refuseObject(target, 'STALE_SOURCE', '초안을 만든 뒤 원본 형상이 바뀌었다');
+        }
+      }
+      if (options.draft !== undefined) {
+        const parsed = readEditObb(found.objectKind, options.draft);
+        if (!parsed) return refuseObject(target, 'INVALID_GEOMETRY', '초안 형상이 유효하지 않다');
+        draft = parsed;
+      }
       const current = get().objectSession;
-      if (current && sameTarget(current.target, target)) return { ok: true };
+      if (current && sameTarget(current.target, target)) {
+        if (options.draft !== undefined && !current.dragging) {
+          set({ objectSession: { ...current, draft, settled: draft, refused: null } });
+        }
+        return { ok: true };
+      }
       if (!viewer.getState().targets.has(targetKey(target))) {
         return refuseObject(
           target,
@@ -394,8 +428,8 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
           objectKind: found.objectKind,
           policy: KIND_POLICY[found.objectKind],
           base,
-          draft: copyObb(base),
-          settled: copyObb(base),
+          draft: copyObb(draft),
+          settled: copyObb(draft),
           provenance: {
             sourceId: state.sourceId,
             geometryContract: state.workSurfaces.contract,
@@ -403,6 +437,10 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
             geometryVersion: state.workSurfaces.geometryVersion,
             sceneVersion: state.world?.sceneVersion ?? null,
             configVersion: null,
+            // BE 정식 응답일 때만 싣는다(묶음 모양 입력의 출처 값은 예전과 같다).
+            ...(state.workSurfaces.objectVersions
+              ? { objectVersion: state.workSurfaces.objectVersions[target.id] ?? null }
+              : {}),
           },
           origin: 'REGISTERED',
           source: found.source,
@@ -485,11 +523,11 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
       objectSession: null,
       lastObjectResult: null,
 
-      begin: (input) => {
+      begin: (input, options = {}) => {
         const target = parseTarget(input);
         if (!target) return refuse(null, 'INVALID_TARGET', '대상 모양이 틀렸다');
         // 사람은 관측 결과라 편집 대상이 아니다. 작업면(object)은 등록 OBB 편집(-188)으로 보낸다.
-        if (target.type === 'object') return beginObject(target);
+        if (target.type === 'object') return beginObject(target, options);
         if (target.type !== 'zone') {
           return refuse(target, 'NOT_EDITABLE', `${target.type} 는 아직 편집 대상이 아니다`);
         }
@@ -507,11 +545,42 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
         if (state.zones.status !== 'READY' || !zone) {
           return refuse(target, 'NOT_FOUND', '장면에 그 구역이 없다');
         }
+        // 다각형(PRISM)·바닥 판정(FOOTPRINT) 구역은 둘레 상자가 구역이 아니라 상자로 편집하지 않는다(2D 편집 몫).
+        if (zone.shape === 'PRISM' || zone.shape === 'FOOTPRINT') {
+          return refuse(
+            target,
+            'NOT_EDITABLE',
+            zone.shape === 'PRISM'
+              ? '직사각형이 아닌 구역은 3D 상자로 편집하지 않는다'
+              : '바닥 판정 구역은 높이가 판정에 쓰이지 않아 3D 상자로 편집하지 않는다',
+          );
+        }
         const base = copyBox(zone);
         if (!isValidBox(base))
           return refuse(target, 'INVALID_GEOMETRY', '원본 형상이 유효하지 않다');
+        if (viewer.getState().layers.zones !== 'interactive') {
+          return refuse(target, 'NOT_EDITABLE', '이 레이어는 지금 조작할 수 없다(layers)');
+        }
+        let draft = base;
+        if (options.before !== undefined) {
+          const before = readEditBox(options.before);
+          if (!before) return refuse(target, 'INVALID_GEOMETRY', 'before 형상이 유효하지 않다');
+          if (!sameBox(before, base)) {
+            return refuse(target, 'STALE_SOURCE', '초안을 만든 뒤 원본 구역 형상이 바뀌었다');
+          }
+        }
+        if (options.draft !== undefined) {
+          const parsed = readEditBox(options.draft);
+          if (!parsed) return refuse(target, 'INVALID_GEOMETRY', '초안 형상이 유효하지 않다');
+          draft = parsed;
+        }
         const current = get().session;
-        if (current && sameTarget(current.target, target)) return { ok: true };
+        if (current && sameTarget(current.target, target)) {
+          if (options.draft !== undefined && !current.dragging) {
+            set({ session: { ...current, draft, settled: draft, refused: null } });
+          }
+          return { ok: true };
+        }
         if (!viewer.getState().targets.has(targetKey(target))) {
           return refuse(target, 'NOT_FOUND', '장면에 그 구역이 등록되지 않았다');
         }
@@ -525,14 +594,16 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
             mode,
             policy: ZONE_AABB_POLICY,
             base,
-            draft: copyBox(base),
-            settled: copyBox(base),
+            draft: copyBox(draft),
+            settled: copyBox(draft),
             provenance: {
               sourceId: state.sourceId,
               zoneContract: state.zones.contract,
               zonesReceivedAt: state.zones.receivedAt,
               sceneVersion: state.world?.sceneVersion ?? null,
               configVersion: null,
+              // BE 정식 구역일 때만 싣는다(DEMO 구역의 출처 값은 예전과 같다).
+              ...(zone.official ? { zoneVersion: zone.official.zoneVersion } : {}),
             },
             dragging: null,
             refused: null,
@@ -802,6 +873,8 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
         if (!zone) return end('STALE_SOURCE', '원본 구역이 사라졌다');
         if (!sameBox(zone, session.base, 0))
           return end('STALE_SOURCE', '원본 구역 형상이 바뀌었다');
+        if ((zone.official?.zoneVersion ?? null) !== (session.provenance.zoneVersion ?? null))
+          return end('STALE_SOURCE', '원본 구역 버전이 바뀌었다');
       }
       const scene = state.world?.sceneVersion ?? null;
       const began = session.provenance.sceneVersion;

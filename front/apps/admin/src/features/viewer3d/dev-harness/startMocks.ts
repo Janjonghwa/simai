@@ -1,4 +1,5 @@
 import type { SpatialMockApi } from '@/features/viewer3d/dev-harness/mswHandlers';
+import type { GeometryMode } from '@/features/viewer3d/dev-harness/officialFixtures';
 import type { ScenarioKey } from '@/features/viewer3d/dev-harness/scenarios';
 
 let started: Promise<SpatialMockApi | null> | null = null;
@@ -10,6 +11,7 @@ let started: Promise<SpatialMockApi | null> | null = null;
 export function startSpatialMocks(initial: {
   scenario: ScenarioKey;
   t0: number;
+  geometry?: GeometryMode;
 }): Promise<SpatialMockApi | null> {
   if (!import.meta.env.DEV) return Promise.resolve(null);
   started ??= (async () => {

@@ -1,0 +1,111 @@
+# SpatialViewer 공개 계약
+
+`@/features/viewer3d`(index.ts)가 이 폴더의 유일한 입구다. FE 앱 코드와 FE 시험은 내부 파일을 import 하지 않는다.
+이 문서는 Spatial 이 구현해 둔 계약과 그 의미를 적는다. 화면별 정책 값과 저장 흐름은 FE 가 정하며, 여기 적힌 선택 사항을 쓸지도 FE 가 결정한다.
+변경 이력은 [CHANGELOG.md](./CHANGELOG.md)에 둔다.
+
+## 책임 경계
+
+| 영역        | Spatial(viewer3d)                                                                           | FE                                                  |
+| ----------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| 형상 해석   | BE 응답 원문을 검사해 World 형상으로 바꾼다. 받기·빼기 규칙은 BE 저장 검사·Tier 0 와 맞춘다 | 응답 원문을 그대로 넘긴다                           |
+| 데이터 수명 | Source 가 구역·정적 객체의 마지막 응답을 보관하고, 구독할 때 다시 보낸다                    | 로그인·로그아웃·세션·STOMP 연결, 언제 다시 조회할지 |
+| 3D 조작     | 대기 선택, 미저장 초안 다시 열기, 손잡이·숫자 편집 엔진                                     | 초안 보관, 저장·버전 충돌·발행·ACK                  |
+| 표시        | 레이어 값(hidden·visible·interactive)의 의미와 렌더링                                       | 화면마다 어떤 레이어 값을 쓸지                      |
+| 이벤트      | 대상(person·zone·object)과 위험 강조만                                                      | 대상 → event_id 묶음, 경보 UI                       |
+
+Viewer 는 위험을 다시 판정하지 않고, 저장 성공을 만들지 않는다(편집 결과는 늘 `saved: false`).
+
+## 형상 입력
+
+`ExternalSpatialSource.pushZones(result)`, `pushWorkSurfaces(result)`의 `result.raw` 는 응답 본문 그대로다. 본문 모양으로 출처를 가른다.
+
+| 채널      | 본문                                                                 | 처리                           | 표시 출처(contract)                |
+| --------- | -------------------------------------------------------------------- | ------------------------------ | ---------------------------------- |
+| 구역      | 배열 = BE `GET /api/zones`(-120)                                     | `adaptOfficialZones`           | `BE_ZONES_V1`                      |
+| 구역      | `{ contract: 'DEMO_UNCONFIRMED', zones }`                            | 기존 DEMO 상자(전환 기간 유지) | `DEMO_UNCONFIRMED`                 |
+| 정적 객체 | 배열 = BE `GET /api/static-objects`(-58, WORK_SURFACE·OBSTACLE 모두) | `adaptOfficialStaticObjects`   | `BE_STATIC_OBJECTS_V1`             |
+| 정적 객체 | `{ version?, work_surfaces?, static_objects? }`                      | 구성 묶음 모양(기존 경로)      | `OPERATIONAL_GEOMETRY_UNCONFIRMED` |
+
+READY 는 형상을 받아 검사했다는 뜻이다. 구성 묶음 발행이나 Tier 0 적용(ACK)의 증거가 아니다. 적용 상태 표시는 여전히 `UNVERIFIED`가 기본이다.
+
+### 정식 구역 규칙
+
+- 꼭짓점은 3~256개, 유한수여야 한다. 닫는 점과 이어진 같은 점은 뺀다. 변이 서로 닿거나 넓이가 0 이면 거부한다(BE `ST_IsValid`·넓이 검사와 같다).
+- `eval_type` 은 GROUND_FOOTPRINT 또는 VOLUME_3D, `severity` 는 CRITICAL·HIGH·CAUTION·INFO, `zone_version` 은 1 이상 정수여야 한다. `valid_to` 가 있으면 지난 버전이라 뺀다.
+- VOLUME_3D 는 `z_min_m < z_max_m` 가 있어야 한다. 없으면 높이를 지어내지 않고 뺀다.
+- 같은 `zone_id` 가 둘 이상이면 어느 쪽이 지금 버전인지 몰라 모두 뺀다.
+- 표시 형상(`shape`):
+  - BOX: VOLUME_3D 축 정렬 직사각형이다. 상자로 그리고 3D 상자 편집을 쓸 수 있다.
+  - PRISM: 직사각형이 아닌 VOLUME_3D 다. 다각형 기둥으로 그리고, 상자 편집은 `NOT_EDITABLE` 이다.
+  - FOOTPRINT: GROUND_FOOTPRINT 다. 바닥 판정면으로 그리고(높이 무관 표시), 상자 편집은 `NOT_EDITABLE` 이다.
+- 비직사각형을 둘레 상자로 넓혀 위험구역처럼 그리지 않는다. `ZoneView.min·max` 는 PRISM·FOOTPRINT 에서 초점·이름표 위치에만 쓴다.
+
+### 정식 정적 객체 규칙
+
+BE 구성 묶음 변환(ConfigBundleService.geometry)과 똑같이 옮긴 뒤 기존 묶음 검사기로 검사한다. 그래서 Viewer 와 Tier 0 가 같은 작업면을 본다.
+
+- WORK_SURFACE: `center_xy = obb.center[0..1]`, `size_xy = obb.size[0..1]`, `top_height_m` 은 0 보다 커야 한다. 작업면 OBB 는 바닥~상판이며, `obb.center` 의 Z 와 `size` 의 Z 는 쓰지 않는다.
+- OBSTACLE: `obb` 를 그대로 쓴다(3D 중심, 바닥에서 떠 있을 수 있다).
+- 모르는 `kind`, 버전 누락, 지난 버전, 형식 오류는 이유와 함께 뺀다. 같은 ID 는 앞 항목을 쓴다(묶음 규칙과 같다).
+- `snapshot.objectVersions` 에 그린 객체의 `object_version` 을 싣는다. 버전은 실제로 그린 항목의 행에서 읽는다(같은 ID 가 겹치거나 앞 행이 빠져도 형상과 버전이 같은 행이다).
+
+## Source 수명
+
+`createExternalSource(id)` 는 FE 가 세션마다 하나 만든다. 사용자가 바뀌면 새 Source 를 만들거나 `clearSnapshot()` 한다.
+
+| 동작                                         | 의미                                                                                                                                                                                           |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 형상 보관                                    | 구역·정적 객체는 채널마다 마지막으로 받은 응답을 보관한다. 새로 구독하는 Viewer(재마운트·StrictMode)에 다시 보내 지금 구독 중인 쪽과 같은 상태가 된다                                          |
+| 실패 응답                                    | 구독 중인 Viewer 는 REJECTED(형상 없음)가 된다. 새 구독자도 실패를 받는다(이전 정상 형상을 지금 형상으로 다시 보내지 않는다). 마지막 정상 시각은 `snapshotInfo().lastOkReceivedAt` 에만 남는다 |
+| `pushX(result, receivedAt, { requestedAt })` | 더 늦게 요청한 응답을 이미 받았거나, 그 채널을 비운(`clearSnapshot`·`setScope`) 시각보다 앞서 요청한 응답이면 버린다(`STALE_REQUEST`). 실패 응답도 같다                                        |
+| `setScope(key)` / `pushX(..., { scope })`    | 범위가 바뀌면 보관한 형상을 버리고 Viewer 도 비운다. 범위가 다르거나, 범위를 정한 뒤 scope 없이 넘긴 응답은 버린다(`SCOPE_MISMATCH`)                                                           |
+| `clearSnapshot(channel?)`                    | 보관한 형상을 버리고 Viewer 의 그 채널만 비운다. 진행 중 편집은 `STALE_SOURCE` 로 끝난다                                                                                                       |
+| World·Health·이벤트                          | 보관하지 않는다. STOMP 최신 값 재생은 FE `lib/stomp` 의 `withReplay` 가 한다(역할을 겹치지 않는다)                                                                                             |
+
+push 의 반환값(`ACCEPTED`·`STALE_REQUEST`·`SCOPE_MISMATCH`)은 새로 생긴 것이다. `setScope` 를 쓰지 않고 옵션 없이 부르면 예전처럼 늘 `ACCEPTED` 다.
+
+### FE 가 지켜야 할 호출 조건(제안, FE 합의 대상)
+
+- **세션 범위**: 로그인 세션마다 Source 를 새로 만들거나(현재 `lib/stomp` 방식), 한 Source 를 계속 쓰면 로그인 때 `setScope(사용자·세션 키)`, 로그아웃 때 `setScope(null)` 을 부르고 모든 형상 push 에 같은 `scope` 를 단다.
+- **늦은 응답**: 조회를 시작한 시각을 `requestedAt` 으로 늘 함께 넘긴다(`now()` 와 같은 시계). 같은 채널에서 섞어 쓰지 않는다.
+- **재조회 조건**: 구역·정적 객체 저장 성공(새 버전), Scene 변경, 세션 시작 때 다시 조회해 push 한다. Viewer 재마운트·3D 화면 복귀 때 다시 push 할 필요는 없다(Source 가 보관한다).
+- **신선도·실패**: Viewer 는 실패를 받으면 그 채널을 비운다. 조회 실패에도 마지막 형상을 계속 보일지는 FE 가 정한다(그렇다면 실패를 push 하지 않는다). 형상이 오래됐는지 화면에 알리는 일도 FE 몫이다.
+- **적용 상태**: READY(형상 수신·검사)는 적용(ACK)이 아니다. 적용 확인 계약이 생기기 전까지 3D 표시는 `적용 미확인` 이다.
+
+## 명령(Viewer3DHandle)
+
+- `select(target, { waitMs?, focus? })`:
+  - 대상이 아직 장면에 없거나 준비 중이면 `waitMs`(최대 `MAX_SELECT_WAIT_MS` = 30 초)까지 기다린다. 기다리는 동안 `{ ok: true, pending: true }` 를 돌려준다.
+  - 진행은 `onSelectRequestChange` 로 알린다: PENDING → APPLIED, EXPIRED, 또는 CANCELLED(`REPLACED`·`SELECTION_CHANGED`·`NOT_READY`·`UNMOUNTED`).
+  - 기다리는 요청은 하나뿐이고, 새 select·clearSelection·3D 클릭이 오면 취소된다. 옵션이 없으면 예전과 같다.
+- `beginEdit(target, { draft?, before? })`:
+  - 화면이 보관한 미저장 초안으로 편집을 한 번에 다시 연다. 미리보기 알림은 한 번만 간다.
+  - `before` 가 지금 원본과 다르면 `STALE_SOURCE`, `draft` 가 유효하지 않으면 `INVALID_GEOMETRY` 로 거부한다. 거부되면 편집도 선택도 바뀌지 않는다.
+  - 형상 모양은 다음과 같다. zone 은 `ViewerEditBox`, WORK_SURFACE 는 `ViewerWorkSurfaceGeometry`, OBSTACLE 은 `ViewerObstacleGeometry`.
+  - 칸마다 `updateEditField` 를 차례로 다시 부르는 방식(`restoreZoneBoxSteps`)은 그대로 둔다. 제거는 FE 전환 뒤 별도로 예고한다.
+- 편집 출처(provenance): 정식 입력이면 `zoneVersion`·`objectVersion` 을 싣는다(PUT 충돌 확인용). DEMO·묶음 입력의 출처 값은 예전과 같다. 정식 구역의 버전만 바뀌어도 진행 중 편집은 `STALE_SOURCE` 로 끝난다.
+
+## 레이어(`layers` prop)
+
+`layers={{ zones, workSurfaces, obstacles }}` 의 값은 다음 셋이다.
+
+- hidden: 그리지 않는다. 장면 대상에서도 내려가며, 선택돼 있었으면 풀린다.
+- visible: 그리지만 클릭을 받지 않는다. 광선이 지나가서 뒤의 대상이나 빈 곳 클릭이 그대로 된다. 명령(select·focus)으로는 고를 수 있고, 편집은 `NOT_EDITABLE` 이다.
+- interactive: 그리고 클릭·선택·편집을 받는다. 적지 않은 레이어의 값이다(기존 동작).
+
+사람과 위험 강조는 레이어로 끄지 않는다. 피킹 순서는 바꾸지 않았다: 광선의 가까운 대상부터 고르고, 투명 구역·작업면·장애물은 광선 위의 사람을 먼저 고른다. 화면별 값과 우선순위 정책은 FE 합의 전이라 정하지 않았다.
+
+## 기타 공개 항목
+
+- `personModelUrl`: 사람 모델 GLB 주소(선택). 읽지 못하면 캡슐로 그린다. 에셋 권리와 배포 경로는 미정이다.
+- `createViewerTestHandle(overrides)`: FE 시험용 가짜 핸들이다. 부른 명령을 `calls` 에 남긴다. FE 시험이 viewer3d 내부 Store 를 직접 조립하지 않게 한다.
+- 순수 검사 함수 `readPolygonXy`·`readOfficialZone`·`adaptOfficialZones`·`adaptOfficialStaticObjects`·`geometryProblem`: 2D 폼 검사에서 같은 규칙을 쓸 수 있다. 다만 three.js 가 없는 공용 위치로 옮기는 일은 FE 합의 뒤에 한다(이 입구는 Viewer3D 도 내보낸다).
+
+## FE 소비처 영향(dev 570bd45 기준)
+
+`git grep -l "from '@/features/viewer3d'" -- front/apps/admin/src` 결과(viewer3d 밖)는 앱 코드 11파일, FE 시험 9파일이다(`plan/independence.test` 는 문자열 검사). 바뀐 것은 모두 더하기이고, 기존 호출은 그대로 컴파일·통과한다.
+
+- `pushZones`·`pushWorkSurfaces` 반환형이 `void` 에서 `SnapshotPushOutcome` 으로 바뀌었다. 반환값을 쓰지 않는 호출과 `vi.fn()` 가짜는 영향이 없다.
+- `ZoneSnapshot.contract`·`ViewerEditProvenance.zoneContract`·`geometryContract` 의 값 종류가 늘었다. 기존 값을 직접 적는 FE 시험은 그대로 맞다.
+- `CommandResult` 의 성공 값에 선택 필드 `pending` 이 생겼다. `select` 를 `waitMs` 로 부를 때만 붙는다.

@@ -29,7 +29,12 @@ import {
   sceneVersionsOf,
   type SceneAssetLoader,
 } from '@/features/viewer3d/scene/sceneStore';
-import type { Viewer3DProps, ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
+import type {
+  Viewer3DProps,
+  ViewerSelectRequest,
+  ViewerStatus,
+  ViewerTarget,
+} from '@/features/viewer3d/types';
 import { createViewerStore, toStatus } from '@/features/viewer3d/viewer3d.store';
 import { ViewerCanvas } from '@/features/viewer3d/ViewerCanvas';
 import { ViewerErrorBoundary } from '@/features/viewer3d/ViewerErrorBoundary';
@@ -51,8 +56,6 @@ export interface ViewerShellProps extends Viewer3DProps {
   children?: ReactNode;
   /** 데이터 Store 를 바깥에서 읽어야 할 때(개발 진단·시험)만 넘긴다. 없으면 인스턴스마다 하나 만든다. */
   dataStore?: SpatialDataStore;
-  /** 사람 모델(리깅 glTF) 주소. 배포 경로가 정해지기 전이라 개발 화면만 넘긴다. 없으면 캡슐 아바타. */
-  personModelUrl?: string | null;
   /**
    * 구역 적용 상태 표시. 적용 증거 계약(BE -120·FE -189)이 없어 기본은 UNVERIFIED 이고, DEMO 값은 개발 화면 시험용이다.
    * 바꿔도 Canvas·장면은 그대로이고 구역 모양만 바뀐다.
@@ -69,11 +72,13 @@ export function ViewerShell({
   onSelectionChange,
   onTargetDoubleClick,
   onStatusChange,
+  onSelectRequestChange,
   onEditPreview,
   onEditResult,
   onObjectEditPreview,
   onObjectEditResult,
   editDraftOverlay = null,
+  layers,
   source,
   className,
   children,
@@ -84,7 +89,12 @@ export function ViewerShell({
   onSceneStatusChange,
   sceneLoader = loadGltfScene,
 }: ViewerShellProps) {
-  const [store] = useState(() => createViewerStore(initialMode));
+  const [store] = useState(() => {
+    const created = createViewerStore(initialMode);
+    // 첫 장면부터 레이어 값을 따른다(기본값으로 한 번 그렸다가 숨기지 않게).
+    created.getState().setLayers(layers);
+    return created;
+  });
   // 처음 받은 dataStore 를 계속 쓴다. 바꿔 넘겨도 장면의 구독을 옮기지 않는다.
   const [data] = useState(() => dataStore ?? createSpatialDataStore());
   // 편집 세션(-195). 뷰어 Store·데이터 Store 를 읽기만 하고 원본을 바꾸지 않는다.
@@ -95,7 +105,7 @@ export function ViewerShell({
   const phase = useStore(store, (s) => s.phase);
 
   useImperativeHandle(ref, () => {
-    const { select, clearSelection, focusOn, setMode } = store.getState();
+    const { requestSelect, clearSelection, focusOn, setMode } = store.getState();
     const {
       begin,
       cancel,
@@ -107,11 +117,11 @@ export function ViewerShell({
       createObject,
     } = edit.store.getState();
     return {
-      select,
+      select: (target, options) => requestSelect(target, options),
       clearSelection,
       focus: focusOn,
       setMode,
-      beginEdit: begin,
+      beginEdit: (target, options) => begin(target, options),
       cancelEdit: () => cancel('USER'),
       finishEdit: finish,
       updateEditField: (change) => updateField(change.field, change.value),
@@ -128,6 +138,9 @@ export function ViewerShell({
   const emitTargetDoubleClick = useEffectEvent((target: ViewerTarget) =>
     onTargetDoubleClick?.(target),
   );
+  const emitSelectRequest = useEffectEvent((request: ViewerSelectRequest) =>
+    onSelectRequestChange?.(request),
+  );
   const emitStatus = useEffectEvent((status: ViewerStatus) => onStatusChange?.(status));
   const emitEditPreview = useEffectEvent((preview: ViewerEditPreview) => onEditPreview?.(preview));
   const emitEditResult = useEffectEvent((result: ViewerEditResult) => onEditResult?.(result));
@@ -140,6 +153,14 @@ export function ViewerShell({
   const emitSceneStatus = useEffectEvent((status: ViewerSceneStatus) =>
     onSceneStatusChange?.(status),
   );
+
+  // 레이어 값이 같으면 Store 를 바꾸지 않는다(렌더마다 새 객체를 넘겨도 다시 그리지 않는다).
+  useEffect(() => {
+    store.getState().setLayers(layers);
+  }, [store, layers]);
+
+  // 기다리던 선택은 뷰어가 내려갈 때 UNMOUNTED 로 끝내고 타이머를 푼다.
+  useEffect(() => () => store.getState().dispose(), [store]);
 
   useEffect(() => {
     sceneStore.getState().setInput(scene);
@@ -173,6 +194,9 @@ export function ViewerShell({
     emitStatus(last);
     return store.subscribe((state, prev) => {
       if (state.selected !== prev.selected) emitSelection(state.selected);
+      if (state.selectRequest && state.selectRequest !== prev.selectRequest) {
+        emitSelectRequest(state.selectRequest);
+      }
       if (state.activated && state.activated !== prev.activated) {
         emitTargetDoubleClick(state.activated.target);
       }

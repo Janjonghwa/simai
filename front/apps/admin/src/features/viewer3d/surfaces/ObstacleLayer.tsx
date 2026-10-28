@@ -49,16 +49,28 @@ export function obstacleEdges(obstacle: ObstacleView): ThreePoint[] {
 
 export function ObstacleLayer() {
   const obstacles = useSpatialData((s) => s.workSurfaces.obstacles);
+  const layer = useStore(useViewerStore(), (s) => s.layers.obstacles);
+  if (layer === 'hidden') return null;
   return (
     <group name="obstacle-layer">
       {obstacles.map((obstacle) => (
-        <ObstacleVolume key={obstacle.objectId} obstacle={obstacle} />
+        <ObstacleVolume
+          key={obstacle.objectId}
+          obstacle={obstacle}
+          interactive={layer === 'interactive'}
+        />
       ))}
     </group>
   );
 }
 
-function ObstacleVolume({ obstacle }: { obstacle: ObstacleView }) {
+function ObstacleVolume({
+  obstacle,
+  interactive,
+}: {
+  obstacle: ObstacleView;
+  interactive: boolean;
+}) {
   const selected = useStore(
     useViewerStore(),
     (s) => s.selected?.type === 'object' && s.selected.id === obstacle.objectId,
@@ -70,7 +82,11 @@ function ObstacleVolume({ obstacle }: { obstacle: ObstacleView }) {
 
   return (
     <group name={`obstacle-entry:${obstacle.objectId}`}>
-      <Selectable target={{ type: 'object', id: obstacle.objectId }} pickInstead={pickPerson}>
+      <Selectable
+        target={{ type: 'object', id: obstacle.objectId }}
+        pickInstead={pickPerson}
+        interactive={interactive}
+      >
         {/* Three Y 축 회전 = World +Z 축 회전(World→Three 가 +Z→+Y 라 같은 방향이다). */}
         <group position={worldToThree(obb.center)} rotation-y={obb.yaw}>
           <mesh name={`obstacle-box:${obstacle.objectId}`}>

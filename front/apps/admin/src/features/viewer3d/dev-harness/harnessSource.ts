@@ -1,9 +1,14 @@
-import { createExternalSource, type SpatialSource } from '@/features/viewer3d/data/spatialSource';
+import {
+  createExternalSource,
+  type ExternalSpatialSource,
+  type SpatialSource,
+} from '@/features/viewer3d/data/spatialSource';
 import {
   createMockSource,
   type MockSpatialSource,
 } from '@/features/viewer3d/dev-harness/mockSource';
 import type { SpatialMockApi } from '@/features/viewer3d/dev-harness/mswHandlers';
+import type { GeometryMode } from '@/features/viewer3d/dev-harness/officialFixtures';
 import {
   DEMO_MAX_TICKS,
   isScenarioKey,
@@ -101,6 +106,8 @@ export interface HarnessSource {
   mock: MockSpatialSource | null;
   /** 녹화 재생 조작 대상. 재생 입력이 아니면 null. */
   replay: ReplaySpatialSource | null;
+  /** 외부 입력 시험의 ExternalSpatialSource(형상 보관·비우기 시험용, -234). 그 밖에는 null. */
+  external?: ExternalSpatialSource | null;
 }
 
 /**
@@ -125,10 +132,13 @@ export function readReplayFiles(list: FileList | readonly File[]): Promise<Repla
  * 외부 입력 시험: Mock 정상 시나리오를 JSON 문자열로 바꿨다가 다시 읽어 createExternalSource 로 밀어 넣는다.
  * FE 가 STOMP 본문을 받아 push 하는 경로와 같다. 구독이 모두 풀리면 Mock 도 멈춘다.
  */
-function relay(mock: MockSpatialSource): SpatialSource {
+function relay(mock: MockSpatialSource): {
+  source: SpatialSource;
+  external: ExternalSpatialSource;
+} {
   const external = createExternalSource(`external:${mock.id}`);
   let stop: (() => void) | null = null;
-  return {
+  const source: SpatialSource = {
     id: external.id,
     kind: 'EXTERNAL',
     subscribe(sink) {
@@ -148,6 +158,7 @@ function relay(mock: MockSpatialSource): SpatialSource {
       };
     },
   };
+  return { source, external };
 }
 
 /**
@@ -159,6 +170,7 @@ export function createHarnessSource(
   restBase: string | null,
   api: SpatialMockApi | null,
   replayLog: ReplayLog | null = null,
+  geometry: GeometryMode = 'demo',
 ): HarnessSource {
   if (key === 'off') return { source: null, mock: null, replay: null };
   if (key === 'replay') {
@@ -171,8 +183,12 @@ export function createHarnessSource(
     restBase,
     reactivateMocks: api ? () => api.reactivate() : undefined,
     maxTicks: DEMO_MAX_TICKS[scenario],
+    geometry,
   });
   // REST 스냅샷이 같은 시나리오·시각축에서 나오게 맞춘다.
   api?.setScenario(scenario, mock.t0);
-  return { source: key === 'external' ? relay(mock) : mock, mock, replay: null };
+  api?.setGeometry(geometry);
+  if (key !== 'external') return { source: mock, mock, replay: null };
+  const relayed = relay(mock);
+  return { source: relayed.source, mock, replay: null, external: relayed.external };
 }
