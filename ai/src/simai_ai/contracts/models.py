@@ -2941,6 +2941,21 @@ class CalibrationCameraCalibration(BaseModel):
     reprojection_error_px: ReprojectionErrorPx | MISSING = MISSING
 
 
+class CctvPreview(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    kind: Literal['hello', 'codec']
+    protocol: Literal['simai-cctv-preview/1']
+    cameras: Annotated[list[DefsCameraId] | MISSING, Field(max_length=16, min_length=1)] = (
+        MISSING
+    )
+    codec_info: CodecInfo | MISSING = MISSING
+    codec_string: Annotated[StrictStr | MISSING, Field(pattern='^avc1\\.[0-9A-F]{6}$')] = (
+        MISSING
+    )
+
+
 class Rules(ConfigBundleComponent):
     model_config = ConfigDict(
         extra='allow',
@@ -3152,6 +3167,7 @@ class Contracts(BaseModel):
     bev_floorplan: BevFloorplan | MISSING = MISSING
     calibration: Calibration | MISSING = MISSING
     calibration_update: CalibrationUpdate | MISSING = MISSING
+    cctv_preview: CctvPreview | MISSING = MISSING
     clock_sync_request: ClockSyncRequest | MISSING = MISSING
     clock_sync_response: ClockSyncResponse | MISSING = MISSING
     codec_info: CodecInfo | MISSING = MISSING

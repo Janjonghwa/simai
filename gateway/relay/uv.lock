@@ -279,6 +279,7 @@ source = { editable = "." }
 dependencies = [
     { name = "simai-recorder" },
     { name = "simai-site-alert" },
+    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -291,6 +292,7 @@ dev = [
 requires-dist = [
     { name = "simai-recorder", editable = "../recorder" },
     { name = "simai-site-alert", editable = "../site_alert" },
+    { name = "websockets", specifier = ">=14" },
 ]
 
 [package.metadata.requires-dev]

@@ -1,0 +1,7 @@
+{
+  "_expect_error": "hello 에 codec_string 을 실었다. 카메라별 codec 은 codec 메시지로만 보낸다",
+  "kind": "hello",
+  "protocol": "simai-cctv-preview/1",
+  "cameras": ["cam1"],
+  "codec_string": "avc1.64002A"
+}

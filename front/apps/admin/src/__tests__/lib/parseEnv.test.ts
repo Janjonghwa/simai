@@ -8,7 +8,12 @@ const valid = {
 
 describe('parseEnv', () => {
   it('http(s)·ws(s) 주소를 받는다', () => {
-    expect(parseEnv(valid)).toEqual({ ...valid, VITE_API_MOCK: false, VITE_API_REAL: [] });
+    expect(parseEnv(valid)).toEqual({
+      ...valid,
+      VITE_API_MOCK: false,
+      VITE_API_REAL: [],
+      VITE_CCTV_PREVIEW_URL: 'ws://127.0.0.1:47032',
+    });
     expect(
       parseEnv({
         VITE_API_BASE_URL: 'https://simai.example',
@@ -51,6 +56,31 @@ describe('parseEnv', () => {
       ).VITE_API_BASE_URL,
     ).toBe('');
     expect(() => parseEnv({ VITE_STOMP_URL: valid.VITE_STOMP_URL })).toThrow(/VITE_API_BASE_URL/);
+  });
+
+  it('CCTV 미리보기 주소는 같은 노트북의 ws 주소만 받고 비우면 기본 포트다', () => {
+    expect(parseEnv({ ...valid, VITE_CCTV_PREVIEW_URL: '' }).VITE_CCTV_PREVIEW_URL).toBe(
+      'ws://127.0.0.1:47032',
+    );
+    expect(
+      parseEnv({ ...valid, VITE_CCTV_PREVIEW_URL: 'ws://localhost:47100' }).VITE_CCTV_PREVIEW_URL,
+    ).toBe('ws://localhost:47100');
+    // 운영 빌드(https 화면)에서도 루프백 ws 는 받는다(영상은 노트북 밖으로 나가지 않는다)
+    expect(
+      parseEnv(
+        { ...valid, VITE_API_BASE_URL: '', VITE_STOMP_URL: 'wss://simai.example/ws' },
+        { production: true },
+      ).VITE_CCTV_PREVIEW_URL,
+    ).toBe('ws://127.0.0.1:47032');
+    for (const value of [
+      'ws://192.168.0.10:47032',
+      'ws://simai.live:47032',
+      'http://127.0.0.1:47032',
+    ]) {
+      expect(() => parseEnv({ ...valid, VITE_CCTV_PREVIEW_URL: value })).toThrow(
+        /VITE_CCTV_PREVIEW_URL/,
+      );
+    }
   });
 
   it('실서버 경로는 /api/… 를 쉼표로 나눠 받고 없으면 비운다', () => {

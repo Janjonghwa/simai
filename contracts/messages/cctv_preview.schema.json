@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/cctv_preview.schema.json",
+  "title": "현장 노트북 CCTV 로컬 미리보기 제어 메시지",
+  "description": "노트북 영상 중계(gateway/relay, --preview-port) → 같은 노트북의 관제 앱 CCTV 화면. 127.0.0.1 루프백 WebSocket(simai-cctv-preview/1)으로만 보낸다(EC2 를 거치지 않음, 카메라 RTSP 세션을 더 열지 않음, 명세 3.3). 이 스키마는 텍스트(JSON) 메시지다: 접속 직후 hello 한 번, 카메라별 마지막 codec 을 이어서 보내고, 그 뒤 카메라가 새 stream_epoch 를 시작할 때마다 그 카메라의 codec 을 다시 보낸다. 압축 프레임은 이진 메시지 = 헤더 길이(u32 BE) | I0 frame_header JSON(그대로, UTF-8) | H.264 접근 단위(Annex B, 받은 그대로)이고, 소비자마다 카메라별 다음 키프레임부터 보낸다(그 헤더는 frame_header.schema.json 으로 검증). I0 영상 기록처럼 영상 연결의 기록이라 공통 봉투를 쓰지 않는다. 알림 채널이 아니고 위험 판정에 들어가지 않는다. 값 객체라 닫혀 있다(RTSP 주소·계정 같은 다른 값을 실을 자리가 없다). 1.0.0 신설(S15P31A101-310).",
+  "type": "object",
+  "required": ["kind", "protocol"],
+  "properties": {
+    "kind": { "enum": ["hello", "codec"] },
+    "protocol": { "const": "simai-cctv-preview/1", "description": "미리보기 연결 형식과 판. 모르는 판이면 관제 앱은 그리지 않는다" },
+    "cameras": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+      "description": "hello 에만. 중계가 맡은 카메라 전체(설정 순서). 아직 영상이 없는 카메라도 싣는다"
+    },
+    "codec_info": {
+      "$ref": "codec_info.schema.json",
+      "description": "codec 에만. 중계가 그 카메라의 현재 stream_epoch 로 Tier 0 에 보내는 I0 codec_info 그대로"
+    },
+    "codec_string": {
+      "type": "string",
+      "pattern": "^avc1\\.[0-9A-F]{6}$",
+      "description": "codec 에만. WebCodecs VideoDecoder 의 codec 문자열. SPS 의 profile_idc·constraint 플래그·level_idc 세 바이트(대문자 16진). description(avcC) 없이 Annex B 로 넣는다. SPS 와 맞는지는 중계 시험이 본다"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "hello" } } },
+      "then": {
+        "required": ["cameras"],
+        "not": { "anyOf": [{ "required": ["codec_info"] }, { "required": ["codec_string"] }] }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "codec" } } },
+      "then": {
+        "required": ["codec_info", "codec_string"],
+        "not": { "required": ["cameras"] }
+      }
+    }
+  ]
+}

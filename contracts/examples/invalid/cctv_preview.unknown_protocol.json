@@ -1,0 +1,6 @@
+{
+  "_expect_error": "모르는 미리보기 형식 판",
+  "kind": "hello",
+  "protocol": "simai-cctv-preview/2",
+  "cameras": ["cam1"]
+}

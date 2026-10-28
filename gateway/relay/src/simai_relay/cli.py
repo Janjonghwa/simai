@@ -2,10 +2,12 @@
 
     uv run simai-relay run --config configs/dry-run.toml --seconds 30             # 전송 없이 측정만
     uv run simai-relay run --config configs/my-cameras.toml --send                # Tier 0 로 전송, Ctrl+C 로 멈춤
+    uv run simai-relay run --config configs/my-cameras.toml --preview-port 47032  # 관제 앱 CCTV 로컬 미리보기(127.0.0.1)
     uv run simai-relay bench-transport --seconds 20                               # 카메라별 연결 vs 단일 연결 다중화
 
 --send 는 .env 의 SIMAI_EC2_BASE_URL·SIMAI_DEVICE_TOKEN·SIMAI_TIER0_PINNED_SPKI_SHA256 로 Tier 0 엔드포인트를 조회하고
 카메라마다 TLS 연결을 연다(tls_sink). 없으면 CountingSink 로 개수만 센다. 카메라별 상태·측정을 주기적으로 로그에 쓴다.
+--preview-port 를 주면(기본 꺼짐) 같은 기록을 127.0.0.1 WebSocket 으로 관제 앱 CCTV 화면에 넘긴다(preview, --send 와 무관).
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from simai_relay.config import (
     secret_values,
 )
 from simai_relay.epoch_store import DEFAULT_EPOCH_STATE, EpochStore
+from simai_relay.preview import DEFAULT_ORIGINS, DEFAULT_PREVIEW_PORT, PreviewHub, PreviewServer, preview_factory
 from simai_relay.relay import RelaySession
 from simai_relay.sink import CountingSink, SinkFactory
 from simai_relay.status_report import DEFAULT_PORT as DEFAULT_STATUS_PORT
@@ -47,14 +50,18 @@ def _setup_logging(secrets: list[str], verbose: bool) -> None:
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
 
 
-def _report(session: RelaySession, transport: object | None = None) -> None:
+def _report(session: RelaySession, transport: object | None = None, preview: PreviewHub | None = None) -> None:
     sends = {s["camera_id"]: s for s in transport.snapshots()} if transport is not None else {}  # type: ignore[attr-defined]
     # 로그는 도착 간격 창을 비우지 않는다(창은 1초마다 단말로 보내는 상태 보고가 비운다)
     for entry, snap in zip(session.heartbeat_cameras(reset_window=False), session.snapshots(), strict=True):
         record = {**snap, "heartbeat": entry}
         if snap["camera_id"] in sends:
             record["tier0_send"] = sends[snap["camera_id"]]
+        if preview is not None:
+            record["preview"] = preview.camera_snapshot(snap["camera_id"])
         log.info("상태 %s", json.dumps(record, ensure_ascii=False))
+    if preview is not None:
+        log.info("미리보기 상태 %s", json.dumps(preview.snapshot(), ensure_ascii=False))
 
 
 def _tier0_transport(env: dict[str, str]):  # noqa: ANN202
@@ -85,6 +92,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         if not 0 <= args.status_port <= 65535:
             raise ValueError("--status-port 는 0~65535 다")
+        if args.preview_port is not None and not 1 <= args.preview_port <= 65535:
+            raise ValueError("--preview-port 는 1~65535 다")
         cameras = load_cameras(Path(args.config), clock, env)
         epochs = EpochStore(Path(args.epoch_state))
         if args.send:
@@ -93,6 +102,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"설정 오류: {e}", file=sys.stderr)
         return 2
     sink_factory: SinkFactory = factory if factory is not None else CountingSink
+    hub = preview_server = None
+    if args.preview_port is not None:
+        hub = PreviewHub([c.camera_id for c in cameras])
+        preview_server = PreviewServer(hub, args.preview_port, args.preview_origin or DEFAULT_ORIGINS)
+        try:
+            preview_server.start()
+        except OSError as e:
+            print(f"미리보기 포트를 열지 못했다(127.0.0.1:{args.preview_port}): {type(e).__name__}", file=sys.stderr)
+            return 2
+        sink_factory = preview_factory(sink_factory, hub)
     session = RelaySession(cameras, sink_factory, clock, epoch_store=epochs)
     log.info("중계 시작 (simai-relay %s, 카메라 %d대, %s, %s)", __version__, len(cameras),
              "Ctrl+C 로 멈춤" if args.seconds is None else f"{args.seconds:.0f}초",
@@ -108,7 +127,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         publisher.start()
     try:
         while not session.join(timeout=args.report_interval):
-            _report(session, factory)
+            _report(session, factory, hub)
     except KeyboardInterrupt:
         session.stop()
         session.join()
@@ -117,7 +136,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             publisher.stop()
         if watcher is not None:
             watcher.stop()
-    _report(session, factory)
+        if preview_server is not None:
+            preview_server.stop()
+    _report(session, factory, hub)
     errors = session.errors()
     if errors:
         log.error("오류로 멈춘 카메라: %s", errors)
@@ -139,6 +160,11 @@ def main(argv: list[str] | None = None) -> int:
                      help="Tier 0 로 전송한다 (.env 의 SIMAI_EC2_BASE_URL·SIMAI_DEVICE_TOKEN·SIMAI_TIER0_PINNED_SPKI_SHA256)")
     run.add_argument("--status-port", type=int, default=DEFAULT_STATUS_PORT,
                      help="현장 경보 단말에 상태를 알리는 127.0.0.1 UDP 포트 (기본 47031, 단말 SIMAI_RELAY_STATUS_PORT 와 같게. 0 이면 끔)")
+    run.add_argument("--preview-port", type=int, default=None,
+                     help=f"관제 앱 CCTV 로컬 미리보기 WebSocket 포트 (127.0.0.1 에서만, 주지 않으면 끔. 관제 앱 기본 {DEFAULT_PREVIEW_PORT})")
+    run.add_argument("--preview-origin", action="append", default=None,
+                     help="미리보기에 붙을 수 있는 관제 앱 출처 (여러 번, 주면 기본 목록을 바꾼다. 기본: "
+                          + ", ".join(DEFAULT_ORIGINS) + ")")
     run.add_argument("--verbose", action="store_true")
     from simai_relay import bench
 

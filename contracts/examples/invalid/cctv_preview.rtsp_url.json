@@ -1,0 +1,7 @@
+{
+  "_expect_error": "닫힌 메시지에 RTSP 주소를 실었다. 계정이 섞일 수 있는 값은 미리보기 메시지에 싣지 않는다",
+  "kind": "hello",
+  "protocol": "simai-cctv-preview/1",
+  "cameras": ["cam1"],
+  "rtsp_url": "rtsp://user:pass@192.168.0.19/stream1"
+}
