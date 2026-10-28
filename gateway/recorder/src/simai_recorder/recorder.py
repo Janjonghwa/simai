@@ -163,6 +163,9 @@ class CameraRecorder:
                                             model, t, received_at_ms)
                 writer.write(header, packet.data)
         finally:
+            if estimator.raised:  # 단조 보장으로 올린 프레임(S15P31A101-316): 프레임마다 남기지 않고 epoch 끝에 요약 한 줄
+                self._event("capture_time_raised", stream_epoch=epoch, frames=estimator.raised,
+                            max_raise_ms=estimator.max_raise_ms)
             if writer is not None:
                 writer.close()
 

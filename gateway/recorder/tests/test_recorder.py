@@ -221,3 +221,47 @@ def test_broken_pts_timeline_is_recorded_with_frame_clock(tmp_path, contract_val
     for h in headers:
         contract_validator("frame_header", h)
         assert abs(h["estimated_capture_time_ms"] - synth.capture_time_ms(h["frame_sequence"] * 3600)) <= 1
+    assert not [e for e in _events(tmp_path) if e["event"] == "capture_time_raised"]  # 뒤로 간 값이 없었다
+
+
+class _EarlyPts(PacketSource):
+    """정해진 패킷의 PTS 만 120 ms 일찍 찍는다(깨짐 기준 150 ms 안). 영상·수신 간격은 그대로다."""
+
+    kind = "SYNTHETIC"
+
+    def __init__(self, inner: SyntheticSource, early: tuple[int, ...]) -> None:
+        self._inner, self._early, self._n = inner, early, 0
+
+    def open(self) -> StreamInfo:
+        return self._inner.open()
+
+    def read(self) -> SourcePacket | None:
+        p = self._inner.read()
+        if p is None:
+            return None
+        self._n += 1
+        return SourcePacket(p.data, p.pts - (10800 if self._n - 1 in self._early else 0), p.keyframe)
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def describe(self) -> dict:
+        return {"kind": self.kind}
+
+
+def test_capture_time_raise_is_recorded_once_per_epoch(tmp_path, contract_validator):
+    """PTS 식 촬영 시각이 뒤로 가면 직전 + 1 ms 로 올리고 불확실성을 올린 양만큼 키운다. events.jsonl 에는 epoch 끝에
+    capture_time_raised(올린 프레임 수·최대 올림량) 한 줄만 남긴다(S15P31A101-316)."""
+    clock = FakeClock()
+    synth = SyntheticSource(clock, width=64, height=48, fps=25, keyframe_interval_s=1.0)
+    _record(tmp_path, _EarlyPts(synth, early=(20, 30)), clock, seconds=3.0)
+
+    (headers,) = _headers(tmp_path)
+    times = [h["estimated_capture_time_ms"] for h in headers]
+    assert all(b > a for a, b in zip(times, times[1:]))
+    assert [h["frame_sequence"] for h in headers if h["timestamp_uncertainty_ms"] != 20.0] == [20, 30]
+    assert headers[20]["timestamp_uncertainty_ms"] == 20.0 + 81 and times[20] == times[19] + 1
+    for h in headers:
+        contract_validator("frame_header", h)
+    raised = [e for e in _events(tmp_path) if e["event"] == "capture_time_raised"]
+    assert raised == [{**raised[0], "stream_epoch": 0, "frames": 2, "max_raise_ms": 81}]

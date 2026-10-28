@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from simai_recorder.capture_time import CaptureTimeModel, ReceiveTimeEstimator, lower_envelope_line
+from simai_recorder.capture_time import CaptureTimeModel, EpochMonotonic, ReceiveTimeEstimator, lower_envelope_line
 
 T0 = 1_760_342_400_000
 FPS = 25
@@ -143,7 +143,7 @@ def _normal_stream(n: int, *, reorder: bool, stall_at: int | None = None, seed: 
 
 @pytest.mark.parametrize("reorder, stall_at", [(False, None), (True, None), (False, 300), (True, 301)])  # 301: B 묶음 경계
 def test_healthy_pts_is_left_unchanged(reorder, stall_at):
-    """흔들림·B 프레임 재정렬·한 번의 멈춤은 깨짐이 아니다: 공칭 fps 를 줘도 결과가 바꾸기 전 PTS 식과 같다."""
+    """흔들림·B 프레임 재정렬·한 번의 멈춤은 깨짐이 아니다: 공칭 fps 를 줘도 결과가 PTS 식(단조 보장 포함)과 같다."""
     frames = _normal_stream(1500, reorder=reorder, stall_at=stall_at)
     model = CaptureTimeModel()
     with_fps = ReceiveTimeEstimator(model, Fraction(1, 90000), nominal_fps=FPS)
@@ -181,27 +181,142 @@ def test_lower_envelope_line_is_the_supporting_hull_edge():
     assert lower_envelope_line([(1.0, 1.0)]) is None
 
 
+def _vector_frames():
+    """처음 점프가 앞으로(+400 ms)이고 그 묶음(13~25장)이 100 ms 늦게 온 깨진 스트림. 그 묶음의 PTS 식 값이 전환 순간(26장)
+    프레임 시계 값보다 커서 전환 순간에 단조 보장으로 올린다(S15P31A101-316). 빠진 프레임·첫 PTS 없음도 담는다."""
+    frames = _broken_stream(600, seed=7, drops=(150, 151, 400), first_pts_none=True, jump_ms=-400.0)
+    return _in_arrival_order([(t, p, r + (100 if 13 <= i < 26 else 0)) for i, (t, p, r) in enumerate(frames)])
+
+
 def _vector_doc() -> dict:
     model = CaptureTimeModel(latency_ms=10)
-    frames = _broken_stream(600, seed=7, drops=(150, 151, 400), first_pts_none=True)
+    frames = _vector_frames()
     est = ReceiveTimeEstimator(model, Fraction(1, 90000), nominal_fps=FPS)
     out = _run(est, frames)
+    unguarded = ReceiveTimeEstimator(model, Fraction(1, 90000), nominal_fps=FPS)  # -316 전 녹화 도구가 남긴 헤더 값
+    recorded = [unguarded._estimate(received, pts) for _, pts, received in frames]
     return {
-        "description": "S15P31A101-315 프레임 시계 시험 벡터. gateway/recorder capture_time.ReceiveTimeEstimator 출력이고 "
-                       "ai simai_ai.io.capture_clock 이 같은 값을 내야 한다. 다시 만들기: gateway/recorder 에서 "
-                       "uv run python tests/test_capture_time.py --write-vector",
+        "description": "S15P31A101-315·316 프레임 시계·단조 보장 시험 벡터. expected 는 gateway/recorder "
+                       "capture_time.ReceiveTimeEstimator 출력, recorded 는 단조 보장 전(-316 전) 녹화 도구의 헤더 값이다. "
+                       "ai simai_ai.io.capture_clock 이 recorded 헤더에서 expected 와 같은 값을 내야 한다. 다시 만들기: "
+                       "gateway/recorder 에서 uv run python tests/test_capture_time.py --write-vector",
         "nominal_fps": FPS,
         "pts_timebase": "1/90000",
         "capture_time_model": model.to_dict(),
         "broken_since": est.broken_since,
+        "raised": est.raised,
+        "max_raise_ms": est.max_raise_ms,
         "frames": [[received, pts] for _, pts, received in frames],
+        "recorded": [[t.estimated_capture_time_ms, t.timestamp_uncertainty_ms] for t in recorded],
         "expected": [[t.estimated_capture_time_ms, t.timestamp_uncertainty_ms] for t in out],
     }
 
 
 def test_shared_vector_matches_this_implementation():
     """ai 녹화 재생과 같이 쓰는 벡터. 이 구현을 바꾸면 벡터를 다시 만들고 ai 쪽(capture_clock)도 같이 고친다."""
-    assert json.loads(VECTOR.read_text(encoding="utf-8")) == _vector_doc()
+    doc = json.loads(VECTOR.read_text(encoding="utf-8"))
+    assert doc == _vector_doc()
+    k = doc["broken_since"]
+    (t0, _), (t1, u1) = doc["expected"][k - 1], doc["expected"][k]
+    assert k == 26 and t1 == t0 + 1 and u1 > 45.0  # 전환 순간 올림을 담는다(올린 양만큼 불확실성이 크다)
+    assert doc["raised"] >= 2 and doc["max_raise_ms"] > 40
+
+
+# --------------------------------------------------------------------------- 단조 보장·멈춤 (S15P31A101-316)
+
+def _in_arrival_order(frames):
+    """수신 시각이 줄지 않게(한 연결의 도착 순서) 고친다."""
+    out, prev = [], None
+    for t, p, r in frames:
+        prev = r if prev is None else max(prev, r)
+        out.append((t, p, prev))
+    return out
+
+
+def _mixed_stream(n: int, *, seed: int, jumps: bool, stalls: tuple[tuple[int, float], ...] = (),
+                  drops: tuple[int, ...] = (), jitter: float = 80.0):
+    """(정답 촬영 시각, PTS, 수신 시각). 수신은 정답 + 100 ms ± jitter(도착 순서 유지). stalls 는 (카메라 프레임 번호, 멈춘 ms)로
+    PTS·촬영·수신이 같이 건너뛴다. jumps 면 C110 처럼 PTS 가 13장 묶음마다 400 ms 번갈아 당겨진다. drops 는 보내지 않은 프레임."""
+    rng = random.Random(seed)
+    out, cam_i = [], 0
+    while len(out) < n:
+        if cam_i in drops:
+            cam_i += 1
+            continue
+        shift = sum(ms for at, ms in stalls if cam_i >= at)
+        true_ms = T0 + cam_i * TRUE_INTERVAL_MS + shift
+        pts_ms = 1000 + cam_i * 40.0 + shift - (400.0 if jumps and (cam_i // 13) % 2 else 0.0)
+        out.append((true_ms, round(pts_ms * 90), round(true_ms + 100 + rng.uniform(-jitter, jitter))))
+        cam_i += 1
+    return _in_arrival_order(out)
+
+
+def test_epoch_monotonic_raises_to_previous_plus_one_and_widens_uncertainty():
+    g = EpochMonotonic()
+    assert [g.apply(t, 20.0) for t in (100, 140, 120, 141, 141, 300)] == [
+        (100, 20.0), (140, 20.0), (141, 41.0), (142, 21.0), (143, 22.0), (300, 20.0)]
+    assert (g.raised, g.max_raise_ms) == (3, 21)
+
+
+@pytest.mark.parametrize("jumps", [True, False])
+@pytest.mark.parametrize("seed", range(8))
+def test_capture_time_never_goes_back_within_an_epoch(seed, jumps):
+    """수신 ±80 ms 흔들림·2~3 s 멈춤 2회(10 s 안)·빠진 프레임·묶음 점프를 섞어도 epoch 안 촬영 시각은 매 프레임 1 ms 이상
+    앞으로 간다. 올린 프레임은 올린 양만큼 불확실성이 커서 기본값 아래로 내려가지 않는다."""
+    rng = random.Random(100 + seed)
+    a = rng.randrange(60, 400)
+    stalls = ((a, rng.uniform(2000, 3000)), (a + rng.randrange(40, 200), rng.uniform(2000, 3000)))
+    drops = tuple(sorted(rng.sample(range(50, 1500), 6)))
+    frames = _mixed_stream(1500, seed=seed, jumps=jumps, stalls=stalls, drops=drops)
+    model = CaptureTimeModel()
+    est = ReceiveTimeEstimator(model, Fraction(1, 90000), nominal_fps=FPS)
+    out = _run(est, frames)
+    times = [t.estimated_capture_time_ms for t in out]
+    assert all(b >= a + 1 for a, b in zip(times, times[1:]))
+    assert min(t.timestamp_uncertainty_ms for t in out) >= model.uncertainty_ms
+    if jumps:
+        assert est.broken_since is not None and est.broken_since <= 26
+    else:  # 멀쩡한 PTS 의 멈춤 두 번은 깨짐이 아니다(아래 시험)
+        assert est.broken_since is None
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_two_stalls_on_healthy_pts_are_not_broken(seed):
+    """멀쩡한 PTS 카메라가 10 s 안에 2~3 s 멈췄다 이어지기를 두 번 겪어도 프레임 시계로 바꾸지 않는다(S15P31A101-316).
+
+    멈춤은 PTS 와 수신 시각이 같이 건너뛰므로 수신 간격도 같이 벌어진 걸음은 깨진 걸음으로 세지 않는다. -315 규칙은 두 번째
+    멈춤에서 바꾸어 그 순간 촬영 시각이 약 2 s 뒤로 갔다(Tier 0 OUT_OF_ORDER 약 49장, 하한 계단으로 30 s 동안 최대 5 s 이름)."""
+    frames = _mixed_stream(1500, seed=seed, jumps=False, stalls=((100, 2000.0), (160, 3000.0)))
+    model = CaptureTimeModel()
+    with_fps = ReceiveTimeEstimator(model, Fraction(1, 90000), nominal_fps=FPS)
+    out = _run(with_fps, frames)
+    assert with_fps.broken_since is None and with_fps.mode == "pts"
+    assert out == _run(ReceiveTimeEstimator(model, Fraction(1, 90000)), frames)  # 공칭 fps 없는 PTS 식과 같다
+    times = [t.estimated_capture_time_ms for t in out]
+    assert all(b > a for a, b in zip(times, times[1:]))
+    # 흔들림 80 ms + 30 s 창 안 시계 비율 차(0.2%) 60 ms 안. -315 규칙은 같은 입력에서 최대 약 5 s 틀렸다
+    assert max(abs(t.estimated_capture_time_ms - f[0] - 100) for t, f in zip(out[300:], frames[300:])) <= 140
+
+
+def test_reconnect_on_healthy_pts_starts_a_new_epoch_in_pts_mode():
+    """재연결(새 epoch)은 새 추정기다. 멀쩡한 카메라는 두 epoch 모두 PTS 식이고 epoch 안에서 앞으로만 간다.
+    재접속 뒤 PTS 원점이 바뀌어도(카메라가 0 부터 다시 셈) 이전 epoch 와 잇지 않는다."""
+    frames = _mixed_stream(600, seed=3, jumps=False, stalls=((200, 2500.0),))
+    second = [(t, p - frames[300][1], r) for t, p, r in frames[300:]]  # 새 연결: PTS 원점이 바뀐다
+    for part in (frames[:300], second):
+        est = ReceiveTimeEstimator(CaptureTimeModel(), Fraction(1, 90000), nominal_fps=FPS)
+        times = [t.estimated_capture_time_ms for t in _run(est, part)]
+        assert est.broken_since is None
+        assert all(b > a for a, b in zip(times, times[1:]))
+
+
+def test_stall_on_broken_pts_still_switches_at_the_first_backward_jump():
+    """묶음 점프 카메라는 멈춤을 겪어도 첫 뒤로 간 점프(13장째)에서 바꾼다. 멈춤 판별은 앞으로 간 걸음만 거른다."""
+    frames = _mixed_stream(400, seed=5, jumps=True, stalls=((5, 2000.0),), jitter=20.0)
+    est = ReceiveTimeEstimator(CaptureTimeModel(), Fraction(1, 90000), nominal_fps=FPS)
+    times = [t.estimated_capture_time_ms for t in _run(est, frames)]
+    assert est.broken_since == 13
+    assert all(b > a for a, b in zip(times, times[1:]))
 
 
 if __name__ == "__main__" and "--write-vector" in sys.argv:

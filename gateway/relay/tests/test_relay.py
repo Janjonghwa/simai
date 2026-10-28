@@ -226,3 +226,37 @@ def test_broken_pts_timeline_switches_to_frame_clock_per_epoch(contract_validato
             assert f.header["estimated_capture_time_ms"] <= f.header["received_at_ms"]
     first = epochs[0][1]
     assert first[14].header["source_pts"] - first[12].header["source_pts"] == 2 * 3600 - 36000
+
+
+def test_capture_time_raise_is_summarized_once_per_epoch(contract_validator, caplog):
+    """PTS 가 한 장 일찍 찍히면(깨짐 기준 150 ms 안이라 PTS 식 그대로) 촬영 시각이 직전보다 뒤로 간다. 직전 + 1 ms 로 올리고
+    불확실성을 올린 양만큼 키운다. 로그는 프레임마다가 아니라 epoch 끝에 한 줄이다(S15P31A101-316): 앞 60장 안에서 25 ms 이하로만
+    올렸으면 INFO(접속 직후 몰림과 같은 경우), 25 ms 넘게 올렸거나 60장 뒤에도 올렸으면 WARNING."""
+    clock = FakeClock()
+    synth = SyntheticSource(clock, width=64, height=48, fps=25, keyframe_interval_s=1.0)
+    info = synth.open()
+    early = {20: 5400, 60: 10800, 170: 5400}  # 패킷 번호: 당긴 PTS(60 ms → 21 ms 올림, 120 ms → 81 ms 올림)
+    packets = []
+    for i in range(200):
+        p = synth.read()
+        packets.append(SourcePacket(p.data, p.pts - early.get(i, 0), p.keyframe))
+    # 연결 0: 패킷 0~39, 연결 1: 50~79(키프레임부터), 연결 2: 100~199. 패킷 170 은 연결 2 의 70장째
+    source = FaultySource(ListSource(info, packets, clock), FaultPlan(disconnect_after=(40, 40)), clock)
+    with caplog.at_level("INFO", logger="simai_relay"):
+        _, sink = _relay(source, clock)
+
+    epochs = _epochs(sink)
+    assert len(epochs) == 3
+    for _, frames in epochs:
+        times = [f.header["estimated_capture_time_ms"] for f in frames]
+        assert all(b > a for a, b in zip(times, times[1:]))
+        for f in frames:
+            contract_validator("frame_header", f.header)
+    first = epochs[0][0]["stream_epoch"]
+    raised = [f.header for _, frames in epochs for f in frames if f.header["timestamp_uncertainty_ms"] != 20.0]
+    assert [(h["stream_epoch"] - first, h["frame_sequence"], h["timestamp_uncertainty_ms"]) for h in raised] == [
+        (0, 20, 41.0), (1, 10, 101.0), (2, 70, 41.0)]
+    lines = [(r.levelname, r.getMessage()) for r in caplog.records if "capture_time_raised" in r.getMessage()]
+    assert [level for level, _ in lines] == ["INFO", "WARNING", "WARNING"]
+    assert [m.split("capture_time_raised ")[1].split(" ", 1)[1] for _, m in lines] == [
+        "frames=1 max_raise_ms=21", "frames=1 max_raise_ms=81", "frames=1 max_raise_ms=21"]

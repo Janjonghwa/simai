@@ -7,7 +7,7 @@
 | 명세 | 이 도구에서 |
 |---|---|
 | 3.3 RTSP 접속 규칙 | 카메라당 RTSP 세션 1개(over TCP). 다시 열기 전에 반드시 닫는다 |
-| 3.9 촬영 시각 추정·계약 | 녹화 도구와 같은 추정기(`simai_recorder.capture_time`). 프레임마다 `estimated_capture_time_ms`·`timestamp_source`·`timestamp_uncertainty_ms`, 원본 `received_at_ms`·`source_pts`. 카메라 PTS 시각선이 깨지면(C110 묶음 점프) 그 epoch 를 프레임 시계로 매기고 WARNING `pts_timeline_broken` 을 남긴다([설계](../../docs/design/capture-time-broken-pts.md)) |
+| 3.9 촬영 시각 추정·계약 | 녹화 도구와 같은 추정기(`simai_recorder.capture_time`). 프레임마다 `estimated_capture_time_ms`·`timestamp_source`·`timestamp_uncertainty_ms`, 원본 `received_at_ms`·`source_pts`. 카메라 PTS 시각선이 깨지면(C110 묶음 점프) 그 epoch 를 프레임 시계로 매기고 WARNING `pts_timeline_broken` 을 남긴다. 촬영 시각은 epoch 안에서 앞으로만 간다: 직전 값 + 1 ms 보다 작으면 그 값으로 올리고 불확실성을 올린 양만큼 키우며, 올린 epoch 는 끝날 때 `capture_time_raised`(frames·max_raise_ms) 한 줄을 남긴다(접속 직후 몰림에서 늘 생기므로 INFO, epoch 앞 60장 뒤에도 올렸거나 최대 올림량이 25 ms 를 넘으면 WARNING)([설계](../../docs/design/capture-time-broken-pts.md)) |
 | 12.7 I0 프레임 식별 | 헤더는 I0 `frame_header` 그대로. 재접속마다 `stream_epoch` +1, 새 epoch 는 `codec_info` 먼저, 키프레임부터 |
 | 12.7 전송, 14 보안 | 카메라별 TLS over TCP(공개키 고정 `simai_site_alert.pinning`, 지문 확인 뒤에만 기기 토큰), 길이 접두 레코드(`wire.py`), 재접속마다 codec_info → 키프레임. 주소·카메라별 포트는 EC2 조회(`simai_site_alert.endpoint`), 바뀌면 다시 붙음 |
 | 12.7 재접속, stream_epoch | 접속마다 카메라별 epoch 를 max(저장된 최대 + 1, 세션 시작 UTC ms) 로 정하고 로컬 파일(`--epoch-state`, 기본 `~/.simai/relay-epochs.json`)에 먼저 남긴다(`epoch_store.py`, 임시 파일 fsync 뒤 교체). 재시작·시계 역행·같은 시작 ms 에도 줄지 않는다. 저장 파일을 잃고 시계까지 뒤로 갔다면 Tier 0 가 STREAM_REJECT 로 거절하고, 중계는 상태(`tier0_rejection`)와 오류 로그를 남긴 뒤 더 큰 epoch 가 올 때까지 다시 붙지 않는다 |

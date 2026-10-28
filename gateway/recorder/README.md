@@ -88,7 +88,7 @@ uv run simai-recorder manifest <세션 디렉터리>   # 중간에 끊긴 세션
   session.json                        세션 설정 스냅숏 (계정 없음). manifest 를 다시 계산할 때 쓴다
   manifest.json                       contracts/data/recording_manifest.schema.json (설명 docs/data/recording-manifest.md)
   <camera_id>/
-    events.jsonl                      접속·끊김·재접속 실패·키프레임 전 버림·PTS 시각선 깨짐(pts_timeline_broken) 기록
+    events.jsonl                      접속·끊김·재접속 실패·키프레임 전 버림·PTS 시각선 깨짐(pts_timeline_broken)·촬영 시각 올림(capture_time_raised) 기록
     epoch_NNNN.codec_info.json        I0 codec_info (contracts/messages/codec_info.schema.json)
     epoch_NNNN.h264                   H.264 Annex B. 받은 접근 단위를 받은 순서대로 이어 붙임
     epoch_NNNN.frames.jsonl           한 줄 = 한 프레임
@@ -129,6 +129,10 @@ PTS 간격(카메라 RTP 시계)은 믿고 원점만 수신 시각에 맞추므�
 뒤로도 간다. 공칭 fps 를 알면 epoch 마다 이것을 감지해(이웃 PTS 간격이 공칭에서 150 ms 넘게 벗어난 걸음이 10 s 안 2번, 또는
 뒤로 1번) 그 프레임부터 epoch 끝까지 프레임 시계(이어 붙인 PTS + 수신 하한 직선)로 매기고 `events.jsonl` 에
 `pts_timeline_broken`(stream_epoch, frame_sequence)을 남긴다. 직선이 서기 전 약 5 s 는 불확실성 45, 그 뒤 20 이다.
+PTS 와 수신 간격이 같이 벌어진 걸음(카메라 멈춤 뒤 재개)은 깨진 걸음으로 세지 않는다(S15P31A101-316).
+**단조 보장(S15P31A101-316).** 어느 식이든 epoch 안에서 촬영 시각이 직전 값 + 1 ms 보다 작으면 직전 값 + 1 ms 로 올리고 올린
+양만큼 `timestamp_uncertainty_ms` 를 키운다. 올린 epoch 는 끝날 때 `events.jsonl` 에 `capture_time_raised`(stream_epoch, frames,
+max_raise_ms) 한 줄을 남긴다. C110 실녹화에서는 접속 직후 몰림(같은 ms 수신) 20여 장이 1~24 ms 올라간다.
 `source_pts`·`received_at_ms` 는 원본 그대로라 PTS 식 값은 다시 계산된다. 근거·수치는
 [`docs/design/capture-time-broken-pts.md`](../../docs/design/capture-time-broken-pts.md).
 

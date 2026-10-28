@@ -9,7 +9,10 @@
 - 촬영 시각은 녹화 도구와 같은 추정기(simai_recorder.capture_time.ReceiveTimeEstimator)로, 헤더는 같은 함수
   (simai_recorder.i0)로 만든다. 녹화 파일과 LIVE 헤더가 같은 규칙을 따른다.
   카메라 PTS 시각선이 깨지면(C110 묶음 점프) 그 epoch 의 남은 프레임은 프레임 시계로 매기고 WARNING pts_timeline_broken 을
-  한 번 남긴다(S15P31A101-315, docs/design/capture-time-broken-pts.md).
+  한 번 남긴다(S15P31A101-315, docs/design/capture-time-broken-pts.md). 촬영 시각은 epoch 안에서 앞으로만 가고, 뒤로 가거나 같은
+  값을 직전 + 1 ms 로 올린 epoch 는 끝날 때 capture_time_raised(올린 프레임 수·최대 올림량) 한 줄을 남긴다(S15P31A101-316).
+  접속 직후 몰림(같은 ms 수신)에서 늘 생기므로 INFO 이고, epoch 앞 RAISE_BURST_FRAMES 장 뒤에도 올렸거나 최대 올림량이
+  RAISE_WARN_MS 를 넘으면 WARNING 이다.
 - 비밀 값: RTSP 계정은 입력(RtspSource) 안에만 있다. 로그·상태에는 camera_id 와 입력 설명(계정 없음)만 쓴다.
 """
 
@@ -33,6 +36,8 @@ from simai_relay.sink import CameraSink, I0CodecInfo, I0Frame, SinkFactory
 log = logging.getLogger("simai_relay")
 
 DEFAULT_RECONNECT_DELAYS_S = (1.0, 2.0, 5.0)
+RAISE_BURST_FRAMES = 60  # 접속 직후 몰림 구간(C110 실녹화에서 올림은 epoch 앞 2~29장)보다 넉넉히
+RAISE_WARN_MS = 25  # 명세 3.9 삼각측량 기준: 이만큼 넘게 올리면 촬영 시각이 크게 틀렸다는 뜻이다
 
 
 class CameraRelay:
@@ -57,6 +62,7 @@ class CameraRelay:
         self._delays = tuple(reconnect_delays_s) or (1.0,)
         self._next_epoch = initial_epoch
         self._allocate = epoch_allocator
+        self._raised_after_burst = False  # 이 epoch 에서 몰림 구간 뒤에도 촬영 시각을 올렸는지
         self.error: BaseException | None = None
 
     @property
@@ -132,9 +138,19 @@ class CameraRelay:
             self._wait(self._delays[0])
 
     def _relay_epoch(self, source: PacketSource, info: StreamInfo, epoch: int) -> str:
+        estimator = ReceiveTimeEstimator(self.spec.capture_time, info.pts_timebase, info.nominal_fps)  # epoch 마다 새로
+        self._raised_after_burst = False
+        try:
+            return self._relay_frames(source, info, epoch, estimator)
+        finally:
+            if estimator.raised:  # 단조 보장으로 올린 프레임: 프레임마다 남기지 않고 epoch 끝에 요약 한 줄
+                unusual = self._raised_after_burst or estimator.max_raise_ms > RAISE_WARN_MS
+                self._event(logging.WARNING if unusual else logging.INFO, "capture_time_raised", stream_epoch=epoch,
+                            frames=estimator.raised, max_raise_ms=estimator.max_raise_ms)
+
+    def _relay_frames(self, source: PacketSource, info: StreamInfo, epoch: int, estimator: ReceiveTimeEstimator) -> str:
         cid = self.camera_id
         model = self.spec.capture_time
-        estimator = ReceiveTimeEstimator(model, info.pts_timebase, info.nominal_fps)  # epoch 마다 새로 (PTS 원점이 바뀐다)
         timebase = pts_timebase_string(info)
         sequence: int | None = None  # None: codec_info·키프레임 대기
         dropped = 0
@@ -161,7 +177,10 @@ class CameraRelay:
                 self.stats.on_stream_started(codec[0], dropped)
                 self._event(logging.INFO, "stream_started", stream_epoch=epoch, dropped_before_keyframe=dropped)
                 sequence = 0
+            raised = estimator.raised
             t = estimator.estimate(received_at_ms, packet.pts)
+            if estimator.raised != raised and sequence >= RAISE_BURST_FRAMES:
+                self._raised_after_burst = True
             if estimator.broken_since == sequence:
                 self._event(logging.WARNING, "pts_timeline_broken", stream_epoch=epoch, frame_sequence=sequence,
                             clock=estimator.mode)
