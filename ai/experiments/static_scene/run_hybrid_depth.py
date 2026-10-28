@@ -278,6 +278,7 @@ class DepthAnything3Adapter:
         return info | self._perf
 
     def predict(self, views: list[PredictView]) -> list[DepthOut]:
+        import intrinsics_check  # 같은 폴더(스크립트 실행 시 sys.path 첫 항목), 표준 라이브러리·numpy 만(S15P31A101-312)
         import torch
         from depth_anything_3.api import DepthAnything3
 
@@ -311,16 +312,24 @@ class DepthAnything3Adapter:
         conf = getattr(pred, "conf", None)
         conf = None if conf is None else np.asarray(conf, dtype=np.float32)
         Kp = np.asarray(pred.intrinsics, dtype=float)
-        out = []
+        out, kv = [], []
         for i, v in enumerate(views):
             d = depth[i]
             m = np.isfinite(d) & (d > 0)
             Kd, k_note = k_for_depth_grid(Kp[i], d.shape, v.image_hw)
+            # 출력 K 검사(S15P31A101-312): 처리 해상도는 축마다 따로 늘인다(14 배수). 자세 없이(--no-pose)는 예측 K 와 펴진 K 비교
+            kv.append({"name": v.name, "output": Kd,
+                       "expected": intrinsics_check.expected_axis_resize_k(v.K, v.image_hw[::-1], d.shape[::-1])})
             full, ok = resample_depth(d, m, Kd, v.K, v.image_hw)
             c = None
             if conf is not None:
                 c, _ = resample_depth(conf[i], m, Kd, v.K, v.image_hw, edge_tol=np.inf)
             out.append(DepthOut(full, ok, c, tuple(d.shape), {"intrinsics_depth_grid": Kd.tolist(), "intrinsics_note": k_note}))
+        self._perf["intrinsics_check"] = intrinsics_check.check(kv)
+        warn = intrinsics_check.warning(self._perf["intrinsics_check"])
+        if warn:
+            self._perf["warnings"] = [warn]
+            print(f"경고: {warn}", file=sys.stderr, flush=True)
         return out
 
 

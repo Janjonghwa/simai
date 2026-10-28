@@ -16,6 +16,8 @@
 
 좌표: 출력 world = MapAnything world, camera_poses는 OpenCV(+X 오른쪽, +Y 아래, +Z 앞) cam2world, 단위 m(모델 추정, 실측 미검증).
 출력: <runs>/<run_id>/{metrics.json, cameras.json, raw.npz, fused.ply, pointcloud.glb, gridmesh.glb, panels/}
+출력 K 검사(S15P31A101-312): K 를 넘긴 모드(known·prepared)는 출력 K 를 기대 K(넘긴 K × 해상도 비, 자르기 반영)와 비교해
+metrics `intrinsics_check`(status OK·MISMATCH·SKIPPED)에 남기고, 허용치(5%)를 넘으면 `warnings` 에 적는다(result 는 그대로).
 """
 import argparse
 import glob
@@ -214,6 +216,7 @@ def main():
     from mapanything.utils.image import load_images, preprocess_inputs
     from mapanything.utils.viz import predictions_to_glb
     import cv2
+    import intrinsics_check  # 같은 폴더(스크립트 실행 시 sys.path 첫 항목), 출력 K 검사(S15P31A101-312)
 
     out = Path(a.runs_dir) / a.run_id
     (out / "panels").mkdir(parents=True, exist_ok=True)
@@ -249,12 +252,14 @@ def main():
         res["alloc_after_load_mb"] = mb(torch.cuda.memory_allocated())
 
         t1 = time.perf_counter()
+        given = []  # (넘긴 K, 원본 W×H): 출력 K 검사의 기대 K 근거. images 모드는 K 를 넘기지 않아 비운다
         if a.mode == "images":
             views = load_images(paths, **resize)
-        elif a.mode == "prepared":
-            views = preprocess_inputs(build_prepared_views(specs), **resize)
         else:
-            views = preprocess_inputs(build_known_views(paths, a.known_from, a.use_poses, a.pose_scale, "cuda"), **resize)
+            src = (build_prepared_views(specs) if a.mode == "prepared"
+                   else build_known_views(paths, a.known_from, a.use_poses, a.pose_scale, "cuda"))
+            given = [(np.asarray(v["intrinsics"], float), (int(v["img"].shape[1]), int(v["img"].shape[0]))) for v in src]
+            views = preprocess_inputs(src, **resize)
         res["preprocess_ms"] = round((time.perf_counter() - t1) * 1000, 1)
         res["model_input_hw"] = list(views[0]["img"].shape[-2:])
         res["resize"] = {k: (list(v) if isinstance(v, tuple) else v) for k, v in resize.items()}
@@ -332,6 +337,18 @@ def main():
         do = np.linalg.norm(co[:, None] - co[None], axis=-1)
         iu = np.triu_indices(len(ci), 1)
         res["camera_distance_ratio_out_over_in"] = stats(do[iu] / np.maximum(di[iu], 1e-9))
+
+    # 출력 K 검사(S15P31A101-312): 모델은 넘긴 K 를 조건으로만 쓰고 출력 K 를 다시 예측한다. 기대 K = 넘긴 K 를 전처리 규칙으로
+    # 옮긴 것. 라이브러리가 모델에 넘긴 K(input)도 같이 봐 전처리 쪽 어긋남과 모델 쪽 어긋남을 가른다. 실패가 아니라 경고다.
+    kv = [{"name": n, "output": raw[f"{n}__intrinsics"],
+           "expected": intrinsics_check.expected_crop_resize_k(Kg, wh, tuple(raw[f"{n}__depth_z"].shape[::-1])),
+           "input": views[i]["intrinsics"][0].float().cpu().numpy() if "intrinsics" in views[i] else None}
+          for i, (n, (Kg, wh)) in enumerate(zip(names, given))]
+    res["intrinsics_check"] = intrinsics_check.check(kv)
+    warn = intrinsics_check.warning(res["intrinsics_check"])
+    if warn:
+        res.setdefault("warnings", []).append(warn)
+        print(f"[{a.run_id}] 경고: {warn}", flush=True)
 
     xyz, rgb = np.concatenate(all_xyz), np.concatenate(all_rgb)
     write_ply(out / "fused.ply", xyz, rgb)
