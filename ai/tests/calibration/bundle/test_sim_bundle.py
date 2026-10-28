@@ -25,6 +25,7 @@ from simai_ai.calibration.bundle import (
 )
 from simai_ai.calibration.bundle import adjust as ba_adjust
 from simai_ai.calibration.bundle import solver as ba_solver
+from simai_ai.calibration.bundle.skeleton import KEYPOINT_NOISE_SCALE
 from simai_ai.calibration.criteria import decide_scale
 from simai_ai.tracking.system_health import CalibrationState
 
@@ -350,3 +351,42 @@ def test_too_many_outliers_is_uncertain(loop_case, ba):
         assert before["p95"] > cam["reprojection_error_px"]["p95"]  # 제거 전 기준도 함께 남는다
     with pytest.raises(BundleNotUsable):
         result.propose_to(CalibrationVersionStore(), at_ms=ba.T0)
+
+
+def _with_joint_noise(observations, base_px, seed=13):
+    """관절별 잡음(σ = base_px × COCO κ 배율): 실제 YOLO pose 처럼 엉덩이·무릎이 눈보다 4배 남짓 흔들린다(-313 로비)."""
+    rng = np.random.default_rng(seed)
+    out = []
+    for obs in observations:
+        views = {}
+        for cid, kps in obs.views.items():
+            moved = []
+            for j, kp in enumerate(kps):
+                if kp is not None and kp[2] > 0:
+                    d = rng.normal(scale=base_px * KEYPOINT_NOISE_SCALE[j], size=2)
+                    kp = (kp[0] + d[0], kp[1] + d[1], kp[2])
+                moved.append(kp)
+            views[cid] = moved
+        out.append(PersonObservation(obs.person_id, obs.t, views))
+    return out
+
+
+def test_joint_noise_scaling_keeps_noisy_hips_as_inliers(loop_case, ba):
+    """관절별 잡음이 다르면(엉덩이 σ 약 6 px) 같은 8 px 기준은 정상 관측을 대량으로 이상치로 버려 불확실이 된다(-313 로비 원인 2).
+    COCO κ 배율로 잡음·기준을 관절마다 넓히면 수렴하고, 40~80 px 검출 실수는 여전히 이상치로 빠진다."""
+    intr, extr = loop_case.initial(seed=7)
+    noisy = _with_joint_noise(_subset(loop_case.observations, until_ms=12000), base_px=1.5)
+    noisy = _with_outliers(noisy, rate=0.02)
+    kwargs = dict(input_provenance=loop_case.input_provenance, created_at=ba.T0)
+    uniform = adjust_human_bundle(noisy, intr, extr, config=BundleConfig(joint_noise_scaling=False), **kwargs)
+    scaled = adjust_human_bundle(noisy, intr, extr, config=BundleConfig(), **kwargs)
+    print("관절별 잡음:", json.dumps({"uniform": uniform.record["outliers"], "scaled": scaled.record["outliers"]}))
+    assert uniform.status == STATUS_UNCERTAIN and "TOO_MANY_OUTLIERS" in uniform.flags
+    assert scaled.status == STATUS_CONVERGED, scaled.flags
+    assert 0.01 <= scaled.record["outliers"]["removed_ratio"] <= 0.06  # 주입한 검출 실수(2%)만큼은 빠진다
+    assert scaled.record["outliers"]["joint_noise_scaling"] is True
+    for cam in scaled.cameras:
+        gt = loop_case.truth_cameras[cam.camera_id]
+        C = -np.array(cam.R).T @ np.array(cam.t)
+        assert abs(C[2] - loop_case.truth_center(cam.camera_id)[2]) < 0.06, cam.camera_id
+        assert abs(_pitch_deg(cam.R) - _pitch_deg(gt["R"])) < 0.3, cam.camera_id

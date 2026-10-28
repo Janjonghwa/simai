@@ -8,7 +8,8 @@
         --intrinsics experiments/recordings/intrinsics/intrinsics-….json --cameras-json <MapAnything>/cameras.json \\
         [--world-alignment <-102 결과>.json] [--measured-objects <정물 관측>.json] [--walkable-area "x,y;x,y;…"]
 
-단계: 녹화 → YOLO pose keypoint(카메라별, `extract`) → 한 명 걷기 대응·공통 시각 PersonObservation(`keypoints`) →
+단계: 녹화 → YOLO pose keypoint(카메라별, `extract`) → 촬영 시각 바로잡기(`sync`, -313) →
+한 명 걷기 대응·공통 시각 PersonObservation(`keypoints`) →
 cameras.json → World 기준 초기 외부 파라미터(`initial`) → `adjust_human_bundle` → 계약 camera_calibration 카메라 문서·
 판정 근거(재투영 오차, 커버리지, 퇴화 표시) → 보정 버전 저장소 제안(`HumanBundleResult.propose_to`, 판정은 criteria).
 
@@ -71,6 +72,11 @@ def build_parser() -> argparse.ArgumentParser:
     ad.add_argument("--walkable-area", help="걸을 수 있는 바닥 다각형 World XY 'x,y;x,y;…' (바닥 커버리지)")
     ad.add_argument("--min-person-score", type=float, default=0.5)
     ad.add_argument("--sample-period-ms", type=int, default=300)
+    ad.add_argument(
+        "--no-time-sync",
+        action="store_true",
+        help="촬영 시각 바로잡기(깨진 PTS 시각선 다시 매기기·카메라별 시각 보정값)를 하지 않는다(비교용)",
+    )
     ad.add_argument("--out", type=Path, help=f"결과 JSON (기본 {DEFAULT_OUT_DIR}/extrinsics-<UTC>.json)")
     return p
 
@@ -157,7 +163,9 @@ def _adjust(args: argparse.Namespace, created_at: int) -> int:
         CorrespondenceError,
         build_observations,
         read_keypoint_file,
+        single_person_samples,
     )
+    from simai_ai.calibration.extrinsics.sync import estimate_time_offsets, repair_timelines, rigs_from_initial
     from simai_ai.calibration.intrinsics.record import bundle_init_from_record
     from simai_ai.calibration.versions import CalibrationVersionStore
 
@@ -222,11 +230,33 @@ def _adjust(args: argparse.Namespace, created_at: int) -> int:
         "proposal": None,
         "proposal_skipped": None,
     }
+    # 촬영 시각 바로잡기(-313): 깨진 PTS 시각선은 frame_sequence 시계로 다시 매기고, 카메라별 상수 보정값을 초기 카메라로 잰다
+    time_offsets = None
+    if args.no_time_sync:
+        record["timing"] = None
+    else:
+        rows, timeline = repair_timelines(rows)
+        retimed = sorted(k for k, v in timeline.items() if v.get("retimed"))
+        if retimed:
+            record["warnings"].append(
+                f"{', '.join(retimed)}: 촬영 시각이 frame_sequence 순서와 어긋나(PTS 묶음 어긋남) frame_sequence 시계로 다시 매겼다"
+            )
+        samples, _ = single_person_samples(header, rows, args.min_person_score)
+        offsets = estimate_time_offsets(samples, rigs_from_initial(intrinsics, initial.extrinsics))
+        if offsets.usable:
+            time_offsets = dict(offsets.offsets_ms)
+        else:
+            why = offsets.record.get("reason") or {
+                c: v["reason"] for c, v in offsets.record.get("cameras", {}).items() if v.get("reason")
+            }
+            record["warnings"].append(f"카메라별 시각 보정값을 정하지 못해 보정하지 않았다: {why}")
+        record["timing"] = {"timeline": timeline, "offsets": dict(offsets.record), "applied_offsets_ms": time_offsets}
     try:
         report = build_observations(
             header,
             rows,
             CorrespondenceConfig(min_person_score=args.min_person_score, sample_period_ms=args.sample_period_ms),
+            time_offsets_ms=time_offsets,
         )
     except CorrespondenceError as e:
         record["correspondence_error"] = str(e)

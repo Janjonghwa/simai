@@ -33,6 +33,7 @@ from simai_ai.calibration.bundle.inputs import BundleConfig, MeasuredObjectObser
 from simai_ai.calibration.bundle.skeleton import (
     BONE_NAMES,
     FEET,
+    KEYPOINT_NOISE_SCALE,
     L_ANKLE,
     L_SHOULDER,
     R_ANKLE,
@@ -192,7 +193,8 @@ def adjust_human_bundle(
     # 이상치 제거 전 기준의 카메라별 재투영 오차(1차 풀이, 모든 관측). 판정 지표(제거 뒤)와 함께 기록한다
     before_removal = _per_camera_errors(problem, solution)
     for r in range(1, config.rounds):
-        keep = solution.reprojection_errors(problem) <= config.outlier_px
+        # 관절별 잡음 배율만큼 기준을 넓힌다(엉덩이 κ 는 눈의 4.3배). 배율이 없으면 모두 outlier_px
+        keep = solution.reprojection_errors(problem) <= config.outlier_px * problem.scales
         rebased = solver.rebase(problem, solution)
         dropped, old_of_new = rebased.drop_observations(keep)
         if dropped.n_points >= MIN_POINTS:
@@ -214,6 +216,7 @@ def adjust_human_bundle(
         "removed_ratio": round(1.0 - len(problem.obs_cam) / initial_observations, 4) if initial_observations else None,
         "max_removed_ratio": config.max_outlier_ratio,
         "outlier_px": config.outlier_px,
+        "joint_noise_scaling": config.joint_noise_scaling,
     }
     return _finish(problem, solution, built, cams, config, provider_source, base, history, outliers, before_removal)
 
@@ -346,6 +349,7 @@ def _build_problem(
     obs_cam: list[int] = []
     obs_pt: list[int] = []
     obs_uv: list[tuple[float, float]] = []
+    obs_scale: list[float] = []
     index: dict[tuple[int, int], int] = {}
 
     projectors = {
@@ -361,10 +365,13 @@ def _build_problem(
         p = len(points)
         points.append(X)
         keys.append(key)
+        # 사람 관절은 관절별 잡음 배율, 정물 끝점은 1
+        scale = KEYPOINT_NOISE_SCALE[key[2]] if key[0] == "person" and config.joint_noise_scaling else 1.0
         for cid, uv in used.items():
             obs_cam.append(cam_index[cid])
             obs_pt.append(p)
             obs_uv.append(uv)
+            obs_scale.append(scale)
         return p
 
     joint_count = 17
@@ -430,6 +437,7 @@ def _build_problem(
         gauge_sigma=config.gauge_sigma,
         fix_scale_to_initial=not object_rows,
         fix_floor_to_initial=len(contacts) < 3,
+        obs_scale=np.array(obs_scale, dtype=float) if config.joint_noise_scaling else None,
     )
     return _Built(problem, tuple(keys), samples, bone_vars, floor_reference, tuple(objects))
 
@@ -665,6 +673,7 @@ def _finish(
             "config": {
                 "pixel_sigma_px": config.pixel_sigma_px,
                 "outlier_px": config.outlier_px,
+                "joint_noise_scale": list(KEYPOINT_NOISE_SCALE) if config.joint_noise_scaling else None,
                 "bone_sigma_m": config.bone_sigma_m,
                 "floor_sigma_m": config.floor_sigma_m,
                 "toe_contact_height_m": config.toe_contact_height_m,

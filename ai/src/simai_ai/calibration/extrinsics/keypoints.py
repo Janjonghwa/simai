@@ -17,7 +17,7 @@ import json
 import math
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -118,21 +118,16 @@ class CorrespondenceReport:
     record: Mapping[str, Any]
 
 
-def build_observations(
-    header: Mapping[str, Any], rows: Sequence[Mapping[str, Any]], config: CorrespondenceConfig | None = None
-) -> CorrespondenceReport:
-    """한 명 걷기 규칙으로 카메라별 keypoint 시퀀스 → 공통 시각 PersonObservation.
-
-    한 명 프레임이 있는 카메라가 2대 미만이거나 관측이 하나도 없으면 CorrespondenceError. 두 명 이상 프레임 비율이 크거나
-    관측이 적으면 경고(warnings)만 낸다. 판정은 번들 조정·criteria 가 한다.
-    """
-    config = config or CorrespondenceConfig()
+def single_person_samples(
+    header: Mapping[str, Any], rows: Sequence[Mapping[str, Any]], min_person_score: float
+) -> tuple[dict[str, list[KeypointSample]], dict[str, dict[str, int]]]:
+    """한 명 걷기 규칙으로 카메라별 KeypointSample(촬영 시각 순서)과 카메라별 집계(frames·empty·single·ambiguous)."""
     camera_ids = [c["camera_id"] for c in header["cameras"]]
     samples: dict[str, list[KeypointSample]] = defaultdict(list)
     counts = {cid: {"frames": 0, "empty": 0, "single": 0, "ambiguous": 0} for cid in camera_ids}
     for row in sorted(rows, key=lambda r: (r["camera_id"], r["estimated_capture_time_ms"])):
         cid = row["camera_id"]
-        people = [d for d in row.get("detections") or [] if float(d.get("score", 0.0)) >= config.min_person_score]
+        people = [d for d in row.get("detections") or [] if float(d.get("score", 0.0)) >= min_person_score]
         c = counts[cid]
         c["frames"] += 1
         if not people:
@@ -154,6 +149,32 @@ def build_observations(
                 keypoints=kps,
             )
         )
+    return dict(samples), counts
+
+
+def build_observations(
+    header: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+    config: CorrespondenceConfig | None = None,
+    time_offsets_ms: Mapping[str, int] | None = None,
+) -> CorrespondenceReport:
+    """한 명 걷기 규칙으로 카메라별 keypoint 시퀀스 → 공통 시각 PersonObservation.
+
+    time_offsets_ms(camera_id → ms)가 있으면 그 카메라의 촬영 시각에 더한 뒤 공통 시각에 맞춘다(`sync.estimate_time_offsets`).
+    한 명 프레임이 있는 카메라가 2대 미만이거나 관측이 하나도 없으면 CorrespondenceError. 두 명 이상 프레임 비율이 크거나
+    관측이 적으면 경고(warnings)만 낸다. 판정은 번들 조정·criteria 가 한다.
+    """
+    config = config or CorrespondenceConfig()
+    camera_ids = [c["camera_id"] for c in header["cameras"]]
+    samples, counts = single_person_samples(header, rows, config.min_person_score)
+    if time_offsets_ms:
+        samples = {
+            cid: [
+                replace(s, estimated_capture_time=s.estimated_capture_time + int(time_offsets_ms.get(cid) or 0))
+                for s in ss
+            ]
+            for cid, ss in samples.items()
+        }
     warnings: list[str] = []
     for cid, c in counts.items():
         seen = c["single"] + c["ambiguous"]
@@ -173,6 +194,7 @@ def build_observations(
         },
         "cameras": {cid: dict(c) for cid, c in counts.items()},
         "cameras_with_single_person": used,
+        "time_offsets_ms": dict(time_offsets_ms) if time_offsets_ms else None,
     }
     if len(used) < 2:
         raise CorrespondenceError(f"한 명만 보인 프레임이 있는 카메라가 2대 미만이다: {used} (집계 {counts})")

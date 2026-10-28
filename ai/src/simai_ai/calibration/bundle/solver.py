@@ -6,7 +6,7 @@
 - 회전은 R = R0 · exp([ω]×) 이다. ω 는 World 축 기준 회전이므로, 장면 전체를 World Z 축으로 α 만큼 돌리는 것은
   모든 카메라의 ω 가 (0, 0, −α) 만큼 바뀌는 것과 같다(1차). 그래서 ω_z 의 평균을 0 으로 묶으면 벽 방향이 고정된다.
 - 잔차(모두 표준편차로 나눈 무차원 값):
-  1. 재투영: (투영 픽셀 − 관측 픽셀) / pixel_sigma. 투영은 OpenCV 핀홀 + 방사 왜곡 2계수
+  1. 재투영: (투영 픽셀 − 관측 픽셀) / (pixel_sigma × 관측별 잡음 배율 obs_scale). 투영은 OpenCV 핀홀 + 방사 왜곡 2계수
   2. 내부 파라미터 사전(같은 렌즈 공유 초기값): (f − f0)/σ_f, (k − k0)/σ_k
   3. 뼈 길이 일관성: (|X_a − X_b| − L_사람,뼈) / bone_sigma
   4. 바닥(게이지: Z = 0 과 기울기): 접지한 발 keypoint 의 (Z − 접지 높이) / floor_sigma
@@ -77,6 +77,7 @@ class Problem:
     gauge_sigma: float
     fix_scale_to_initial: bool
     fix_floor_to_initial: bool
+    obs_scale: np.ndarray | None = None  # (M,) 관측별 픽셀 잡음 배율(관절별 κ). 없으면 모두 1
 
     @property
     def n_cams(self) -> int:
@@ -85,6 +86,11 @@ class Problem:
     @property
     def n_points(self) -> int:
         return len(self.points0)
+
+    @property
+    def scales(self) -> np.ndarray:
+        """관측별 픽셀 잡음 배율 (M,)."""
+        return np.ones(len(self.obs_cam)) if self.obs_scale is None else np.asarray(self.obs_scale, dtype=float)
 
     @property
     def n_bones(self) -> int:
@@ -96,12 +102,13 @@ class Problem:
         돌려주는 두 번째 값은 새 점 번호 → 이전 점 번호다. 남은 접지점이 3개 미만이면 바닥 게이지를 초기값으로 바꾼다.
         """
         obs_cam, obs_pt, obs_uv = self.obs_cam[keep], self.obs_pt[keep], self.obs_uv[keep]
+        obs_scale = self.scales[keep]
         while True:
             alive = np.bincount(obs_pt, minlength=self.n_points) >= 2
             m = alive[obs_pt]
             if m.all():
                 break
-            obs_cam, obs_pt, obs_uv = obs_cam[m], obs_pt[m], obs_uv[m]
+            obs_cam, obs_pt, obs_uv, obs_scale = obs_cam[m], obs_pt[m], obs_uv[m], obs_scale[m]
         old_of_new = np.flatnonzero(alive)
         new_of_old = np.full(self.n_points, -1)
         new_of_old[old_of_new] = np.arange(len(old_of_new))
@@ -115,6 +122,7 @@ class Problem:
                 obs_cam=obs_cam,
                 obs_pt=new_of_old[obs_pt],
                 obs_uv=obs_uv,
+                obs_scale=None if self.obs_scale is None else obs_scale,
                 bone_a=new_of_old[self.bone_a[bone_keep]],
                 bone_b=new_of_old[self.bone_b[bone_keep]],
                 bone_var=self.bone_var[bone_keep],
@@ -271,7 +279,7 @@ def _evaluate(problem: Problem, x: np.ndarray, with_jacobian: bool) -> tuple[np.
     # 1. 재투영
     ci, pi = problem.obs_cam, problem.obs_pt
     M = len(ci)
-    sig = problem.pixel_sigma
+    sig = (problem.pixel_sigma * problem.scales)[:, None]  # (M, 1)
     Y = X[pi] - C[ci]
     Rm = R[ci]
     Xc = np.einsum("mij,mj->mi", Rm, Y)
@@ -293,7 +301,7 @@ def _evaluate(problem: Problem, x: np.ndarray, with_jacobian: bool) -> tuple[np.
         dX = A @ Rm
         dW = -(dX @ _skew(Y) @ _right_jacobian(omega)[ci])
         dk1 = (fm * s)[:, None, None] * xn[:, :, None]
-        block = np.concatenate([dW, -dX, xd[:, :, None], dk1, dk1 * s[:, None, None], dX], axis=2) / sig
+        block = np.concatenate([dW, -dX, xd[:, :, None], dk1, dk1 * s[:, None, None], dX], axis=2) / sig[:, :, None]
         obs_cols = np.hstack([L.cam(ci, tuple(range(CAM_PARAMS))), L.pt(pi)])  # (M, 12)
         for comp in range(2):
             J.put(row + 2 * np.arange(M) + comp, obs_cols, block[:, comp, :])

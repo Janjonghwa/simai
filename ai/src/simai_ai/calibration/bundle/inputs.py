@@ -67,7 +67,11 @@ class BundleConfig:
     init_outlier_px: float = 150.0
     """초기 삼각측량에서 이 값보다 재투영 오차가 큰 관측은 뺀다 (초기 외부 파라미터 오차를 견딜 만큼 크게)"""
     outlier_px: float = 8.0
-    """1차 조정 뒤 이 값보다 재투영 오차가 큰 관측은 빼고 다시 조정한다"""
+    """1차 조정 뒤 이 값보다 재투영 오차가 큰 관측은 빼고 다시 조정한다(관절별 잡음 배율을 쓰면 눈 기준 값이고 관절마다 배율을 곱한다)"""
+    joint_noise_scaling: bool = True
+    """관절별 픽셀 잡음 배율(`skeleton.KEYPOINT_NOISE_SCALE`, COCO κ / 눈 κ)을 pixel_sigma_px·outlier_px 에 곱한다.
+    끄면 모든 관절이 같은 잡음이다(-313 이전 동작). 배율은 데이터에서 다시 재지 않는 고정값이라, 보정이 나쁘면 눈·코처럼
+    배율 1 인 관절이 여전히 기준을 넘어 이상치 비율 검사(max_outlier_ratio)가 그대로 걸린다"""
     bone_sigma_m: float = 0.02
     """표본마다 뼈 길이가 사람별 길이 변수에서 벗어날 수 있는 표준편차"""
     floor_sigma_m: float = 0.01

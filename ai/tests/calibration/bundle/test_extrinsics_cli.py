@@ -373,3 +373,49 @@ def test_world_alignment_made_with_other_intrinsics_is_refused(inputs, tmp_path,
                     now_ms=1_760_342_500_000)
     assert code == cli.EXIT_CONFIG and "다른 내부 파라미터" in capsys.readouterr().err
     assert not out.exists()
+
+
+# --------------------------------------------------------------------------- 촬영 시각 바로잡기 (-313)
+
+
+def _with_broken_pts(src, dst, cameras=("cam1", "cam2", "cam3")):
+    """로비 녹화 같은 시각 오류를 넣은 사본: cameras 의 PTS 가 13장 묶음마다 번갈아 420 ms 이르다(로비 실측 370~440 ms, 묶음 안 간격은 맞다)."""
+    lines = src.read_text(encoding="utf-8").splitlines()
+    out = [lines[0]]
+    for ln in lines[1:]:
+        row = json.loads(ln)
+        if row["camera_id"] in cameras and (row["frame_sequence"] // 13) % 2:
+            row["estimated_capture_time_ms"] -= 420
+        out.append(json.dumps(row))
+    dst.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return dst
+
+
+@pytest.fixture(scope="module")
+def broken_pts_keypoints(inputs):
+    return _with_broken_pts(inputs["keypoints"], inputs["dir"] / "kp-time.jsonl")
+
+
+def test_broken_pts_make_too_many_outliers_without_sync(inputs, broken_pts_keypoints):
+    code, out = _run(inputs, inputs["dir"] / "out-time-off.json", "--world-alignment", str(inputs["align"]),
+                     "--no-time-sync", keypoints=broken_pts_keypoints)
+    print("시각 바로잡기 없음:", json.dumps(out["bundle"]["outliers"]))
+    assert code == cli.EXIT_NOT_USABLE
+    assert out["bundle"]["status"] == "UNCERTAIN" and "TOO_MANY_OUTLIERS" in out["bundle"]["flags"]
+    assert out["timing"] is None and out["correspondence"]["time_offsets_ms"] is None
+
+
+def test_time_sync_retimes_broken_pts_and_converges(inputs, broken_pts_keypoints, one_walker):
+    code, out = _run(inputs, inputs["dir"] / "out-time-on.json", "--world-alignment", str(inputs["align"]),
+                     keypoints=broken_pts_keypoints)
+    print("시각 바로잡기:", json.dumps(out["bundle"]["outliers"]), json.dumps(out["timing"]["applied_offsets_ms"]))
+    assert code == cli.EXIT_OK, (out.get("proposal_skipped"), out["bundle"].get("flags"))
+    timeline = out["timing"]["timeline"]
+    assert timeline["cam1"]["retimed"] and timeline["cam2"]["retimed"] and timeline["cam3"]["retimed"]
+    assert not timeline["cam4"]["retimed"]
+    assert any("frame_sequence 시계로 다시 매겼다" in w for w in out["warnings"])
+    assert out["bundle"]["status"] == "CONVERGED" and out["bundle"]["outliers"]["removed_ratio"] <= 0.10
+    for cam in out["cameras"]:
+        C = -np.array(cam["R"]).T @ np.array(cam["t"])
+        assert abs(C[2] - one_walker.truth_center(cam["camera_id"])[2]) < 0.06, cam["camera_id"]
+        assert cam["reprojection_error_px"]["median"] <= 2.0, cam["camera_id"]
