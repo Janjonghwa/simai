@@ -5,6 +5,8 @@ import { toWorldPoint, type WorldPoint } from '@/features/viewer3d/worldCoordina
 // - 구역(zone, -47 AABB): X·Y 이동, 6개 면 경계(반대 면 고정), 회전·기울임 없음.
 // - 작업면(object, -188 OBB): X·Y 이동, World +Z 축 수평 회전(yaw), 지역 축 4개 면(폭·깊이), 상판 높이(윗면).
 //   바닥(Z=0)에 놓인 형상이라 Z 이동·하단 면은 없다. 등록·저장·위험 판정은 FE -165·BE -58·AI 가 한다.
+// - 정적 객체(object, -274 OBSTACLE OBB): X·Y·Z 이동, 수평 회전(yaw), 6개 면(폭·깊이·아랫면·윗면). 계약 center 가
+//   3D 중심이라 바닥에서 떠 있을 수 있다. 기울임(pitch·roll)은 없다.
 // - TBM 가상 객체(PLANNED, -186): 이 파일의 OBB 계산과 정책 매개변수만 시험 Fixture 로 보인다.
 //
 // 입력 정책(명세에 정해지지 않은 것은 새로 만들지 않는다):
@@ -64,6 +66,17 @@ export const WORK_SURFACE_OBB_POLICY: EditPolicy = {
   name: 'work-surface-obb',
   translate: { x: true, y: true, z: false },
   faces: ['x-', 'x+', 'y-', 'y+', 'z+'],
+  rotate: { yaw: true, pitch: false, roll: false },
+};
+
+/**
+ * -274 등록 정적 객체(OBSTACLE) OBB. 계약 obb.center 가 3D 중심이라 바닥에 붙지 않을 수 있어
+ * X·Y·Z 이동, 6개 면(지역 축 폭·깊이, 아랫면·윗면), 수평 회전(yaw)을 바꾼다. 기울임(pitch·roll)은 없다.
+ */
+export const OBSTACLE_OBB_POLICY: EditPolicy = {
+  name: 'obstacle-obb',
+  translate: { x: true, y: true, z: true },
+  faces: EDIT_FACES,
   rotate: { yaw: true, pitch: false, roll: false },
 };
 
@@ -304,6 +317,8 @@ export function restoreZoneBoxSteps(
  * 숫자로 고치는 작업면 값(World, m·rad, -188). 계약 필드와 같다.
  * centerX·centerY 중심(center_xy) · width·depth 지역 축 전체 길이(size_xy, 중심 고정) · topHeight 상판 높이(top_height_m, 바닥 고정) ·
  * yaw 수평 회전(yaw_rad, [-π, π]).
+ * 정적 객체(-274)는 centerZ 중심 높이(obb.center[2], 크기 유지 이동) · height 높이(obb.size[2], 중심 고정)를 더 쓴다.
+ * 대상 정책이 허용하지 않는 값(작업면의 centerZ·height)은 엔진이 NOT_EDITABLE 로 거부한다.
  */
 export const OBJECT_EDIT_FIELDS = [
   'centerX',
@@ -312,6 +327,8 @@ export const OBJECT_EDIT_FIELDS = [
   'depth',
   'topHeight',
   'yaw',
+  'centerZ',
+  'height',
 ] as const;
 export type ObjectEditField = (typeof OBJECT_EDIT_FIELDS)[number];
 
@@ -333,6 +350,8 @@ export function objectFieldOperations(
       return [{ type: 'translate', delta: [value - obb.center[0], 0, 0] }];
     case 'centerY':
       return [{ type: 'translate', delta: [0, value - obb.center[1], 0] }];
+    case 'centerZ':
+      return [{ type: 'translate', delta: [0, 0, value - obb.center[2]] }];
     case 'width': {
       const half = (value - obb.size[0]) / 2;
       return [
@@ -349,6 +368,13 @@ export function objectFieldOperations(
     }
     case 'topHeight':
       return [{ type: 'face', face: 'z+', delta: value - (obb.center[2] + obb.size[2] / 2) }];
+    case 'height': {
+      const half = (value - obb.size[2]) / 2;
+      return [
+        { type: 'face', face: 'z+', delta: half },
+        { type: 'face', face: 'z-', delta: -half },
+      ];
+    }
     case 'yaw':
       if (Math.abs(value) > YAW_INPUT_LIMIT) return null;
       return [{ type: 'rotate', axis: 'yaw', radians: value - obb.yaw }];

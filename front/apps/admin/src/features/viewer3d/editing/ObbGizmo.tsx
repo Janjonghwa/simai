@@ -1,10 +1,12 @@
 import type { WorldObb } from '@/features/viewer3d/editing/editGeometry';
 import {
-  OBJECT_EDIT_HANDLES,
+  objectEditHandles,
   type EditStore,
   type ObjectEditHandle,
+  type WorkSurfaceEditHandle,
 } from '@/features/viewer3d/editing/editSession.store';
 import { useEditStore } from '@/features/viewer3d/editing/EditStoreContext';
+import type { ViewerObjectKind } from '@/features/viewer3d/editing/editTypes';
 import {
   createHandleRaycast,
   createPlaneReader,
@@ -23,6 +25,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   BoxGeometry,
   ConeGeometry,
+  OctahedronGeometry,
   SphereGeometry,
   TorusGeometry,
   Vector3,
@@ -33,6 +36,7 @@ import { useStore } from 'zustand';
 // 작업면 OBB 조작기(S15P31A101-188). -195 공통 편집 Store·엔진(applyEditOperation)·손잡이 입력을 그대로 쓰고,
 // OBB 에 필요한 손잡이만 더한다: X·Y 이동, 지역 축 4개 면(반대 면 고정), 상판(바닥 고정), World +Z 축 수평 회전.
 // 원본 작업면(WorkSurfaceLayer)은 그대로 두고 초안만 따로 그린다. 기울임·Z 이동·하단 손잡이는 없다.
+// 등록 정적 객체(OBSTACLE, -274)는 같은 조작기에 아랫면(z-)·Z 이동(lift) 손잡이를 더하고, 상판 가장자리 선은 그리지 않는다.
 
 const noRaycast = () => null;
 const Z_HANDLE_GAP = 0.35;
@@ -46,10 +50,12 @@ const HANDLE_COLORS: Record<ObjectEditHandle, string> = {
   'y-': '#6cc070',
   'y+': '#6cc070',
   'z+': '#5b9cf0',
+  'z-': '#5b9cf0',
   yaw: '#ff9f43',
+  lift: '#9ad0ff',
 };
 
-export const OBJECT_HANDLE_HINTS: Record<ObjectEditHandle, string> = {
+export const OBJECT_HANDLE_HINTS: Record<WorkSurfaceEditHandle, string> = {
   move: '작업면 전체 이동 · X/Y (크기·상판 높이·회전 유지)',
   'x-': "X' − 면 · 반대쪽 X' + 고정(작업면 축)",
   'x+': "X' + 면 · 반대쪽 X' − 고정(작업면 축)",
@@ -59,13 +65,34 @@ export const OBJECT_HANDLE_HINTS: Record<ObjectEditHandle, string> = {
   yaw: '수평 회전(World Z 축) · 기울임 없음',
 };
 
+/** 정적 객체(-274) 손잡이 설명. */
+export const OBSTACLE_HANDLE_HINTS: Record<ObjectEditHandle, string> = {
+  move: '정적 객체 전체 이동 · X/Y (크기·높이·회전 유지)',
+  'x-': "X' − 면 · 반대쪽 X' + 고정(객체 축)",
+  'x+': "X' + 면 · 반대쪽 X' − 고정(객체 축)",
+  'y-': "Y' − 면 · 반대쪽 Y' + 고정(객체 축)",
+  'y+': "Y' + 면 · 반대쪽 Y' − 고정(객체 축)",
+  'z+': '윗면 높이 · 아랫면 고정',
+  'z-': '아랫면 높이 · 윗면 고정',
+  yaw: '수평 회전(World Z 축) · 기울임 없음',
+  lift: '전체 위아래 이동 · Z (크기·회전 유지)',
+};
+
+/** 대상 종류에 맞는 손잡이 설명. 작업면에는 z-·lift 손잡이가 없다(바닥에 놓인 형상). */
+function handleHint(kind: ViewerObjectKind, handle: ObjectEditHandle): string {
+  if (kind === 'OBSTACLE') return OBSTACLE_HANDLE_HINTS[handle];
+  return handle === 'z-' || handle === 'lift' ? '' : OBJECT_HANDLE_HINTS[handle];
+}
+
 const FACE_GEOMETRY = new BoxGeometry(0.16, 0.16, 0.16);
 const MOVE_GEOMETRY = new SphereGeometry(0.18, 24, 16);
 const Z_GEOMETRY = new ConeGeometry(0.1, 0.22, 16);
 const YAW_GEOMETRY = new TorusGeometry(0.13, 0.04, 8, 24);
+const LIFT_GEOMETRY = new OctahedronGeometry(0.14);
 const UNIT_EDGES = boxEdges([1, 1, 1]);
 
 const topOf = (obb: WorldObb) => obb.center[2] + obb.size[2] / 2;
+const bottomOf = (obb: WorldObb) => obb.center[2] - obb.size[2] / 2;
 const degrees = (radians: number) => (radians * 180) / Math.PI;
 
 /** 작업면 축(yaw 회전)의 지역 좌표 (u, v) 를 World 점으로 옮긴다. */
@@ -74,7 +101,10 @@ function localToWorld(obb: WorldObb, u: number, v: number, z: number): WorldPoin
   return worldPoint(obb.center[0] + u * c - v * s, obb.center[1] + u * s + v * c, z);
 }
 
-/** 손잡이의 World 위치. 이동·회전은 윗면, 면은 그 면 가운데(높이 절반), 상판은 윗면 위로 띄운 곳이다. */
+/**
+ * 손잡이의 World 위치. 이동·회전은 윗면, 면은 그 면 가운데(높이 절반), 상판은 윗면 위로 띄운 곳이다.
+ * 정적 객체의 아랫면(z-)은 아랫면 아래로 띄운 곳, Z 이동(lift)은 회전 손잡이 반대쪽 윗면 모서리 바깥이다.
+ */
 export function objectHandleWorld(obb: WorldObb, handle: ObjectEditHandle): WorldPoint {
   const [hx, hy] = [obb.size[0] / 2, obb.size[1] / 2];
   const [cz, top] = [obb.center[2], topOf(obb)];
@@ -91,8 +121,12 @@ export function objectHandleWorld(obb: WorldObb, handle: ObjectEditHandle): Worl
       return localToWorld(obb, 0, hy, cz);
     case 'z+':
       return localToWorld(obb, 0, 0, top + Z_HANDLE_GAP);
+    case 'z-':
+      return localToWorld(obb, 0, 0, bottomOf(obb) - Z_HANDLE_GAP);
     case 'yaw':
       return localToWorld(obb, hx + YAW_HANDLE_GAP, hy + YAW_HANDLE_GAP, top);
+    case 'lift':
+      return localToWorld(obb, -hx - YAW_HANDLE_GAP, -hy - YAW_HANDLE_GAP, top);
   }
 }
 
@@ -121,7 +155,7 @@ export function createObjectHandleDrag(store: EditStore, get: () => RootState) {
     const session = store.getState().objectSession;
     if (!session) return;
     const anchor = new Vector3(...worldToThree(objectHandleWorld(session.draft, handle)));
-    const plane = dragPlane(get, anchor, handle === 'z+');
+    const plane = dragPlane(get, anchor, handle === 'z+' || handle === 'z-' || handle === 'lift');
     if (!plane) return;
     const worldAt = createPlaneReader(get, plane);
     const origin = worldAt(event.nativeEvent.clientX, event.nativeEvent.clientY);
@@ -146,7 +180,11 @@ export function createObjectHandleDrag(store: EditStore, get: () => RootState) {
           edit.previewObject(from, { type: 'translate', delta: [dx, dy, 0] });
           return;
         case 'z+':
-          edit.previewObject(from, { type: 'face', face: 'z+', delta: dz });
+        case 'z-':
+          edit.previewObject(from, { type: 'face', face: handle, delta: dz });
+          return;
+        case 'lift':
+          edit.previewObject(from, { type: 'translate', delta: [0, 0, dz] });
           return;
         case 'yaw': {
           const turn = angleAt(now) - startAngle;
@@ -213,8 +251,16 @@ function ObbGizmoForStore({ store }: { store: EditStore }) {
   return <ObbGizmo store={store} />;
 }
 
-/** 초안 이름표. 저장되지 않은 미리보기임을 함께 적는다. */
-export function objectPreviewLabel(id: string, obb: WorldObb, created = false) {
+/** 초안 이름표. 저장되지 않은 미리보기임을 함께 적는다. 정적 객체는 아랫면~윗면 높이를 적는다. */
+export function objectPreviewLabel(
+  id: string,
+  obb: WorldObb,
+  created = false,
+  kind: ViewerObjectKind = 'WORK_SURFACE',
+) {
+  if (kind === 'OBSTACLE') {
+    return `${id} · 정적 객체 · 미저장 · Z ${bottomOf(obb).toFixed(2)}~${topOf(obb).toFixed(2)}m · ${degrees(obb.yaw).toFixed(1)}°`;
+  }
   const state = created ? '새 작업면 · 미등록' : '미저장';
   return `${id} · ${state} · 상판 ${topOf(obb).toFixed(2)}m · ${degrees(obb.yaw).toFixed(1)}°`;
 }
@@ -230,6 +276,8 @@ function ObbGizmo({ store }: { store: EditStore }) {
   const refused = useStore(store, (s) => s.objectSession?.refused ?? null);
   const id = useStore(store, (s) => s.objectSession?.target.id ?? '');
   const created = useStore(store, (s) => s.objectSession?.origin === 'NEW');
+  const kind = useStore(store, (s) => s.objectSession?.objectKind ?? 'WORK_SURFACE');
+  const handles = objectEditHandles(kind);
 
   useEffect(() => () => drag.end(), [drag]);
   const cursor = dragging ? 'grabbing' : hovered ? 'grab' : '';
@@ -243,12 +291,12 @@ function ObbGizmo({ store }: { store: EditStore }) {
   useEditKeys(drag.escape, drag.enter);
 
   const hint = dragging ?? hovered;
-  // 윗면 둘레는 World 꼭짓점을 그대로 옮겨 그린다(회전 행렬을 따로 거치지 않는다).
+  // 윗면 둘레는 World 꼭짓점을 그대로 옮겨 그린다(회전 행렬을 따로 거치지 않는다). 정적 객체에는 상판 가장자리가 없다.
   const topEdge = useMemo(() => {
-    if (!draft) return [];
+    if (!draft || kind === 'OBSTACLE') return null;
     const corners = surfaceCorners(obbWorkSurface(draft), topOf(draft)).map(worldToThree);
     return [...corners, corners[0]!];
-  }, [draft]);
+  }, [draft, kind]);
   const yawRing = useMemo(() => {
     if (!draft || hint !== 'yaw') return null;
     const handle = objectHandleWorld(draft, 'yaw');
@@ -299,21 +347,23 @@ function ObbGizmo({ store }: { store: EditStore }) {
         <LabelSprite
           text={
             refused
-              ? `${objectPreviewLabel(id, settled, created)} · 편집 거부 · ${refused.detail}`
-              : objectPreviewLabel(id, settled, created)
+              ? `${objectPreviewLabel(id, settled, created, kind)} · 편집 거부 · ${refused.detail}`
+              : objectPreviewLabel(id, settled, created, kind)
           }
           y={h / 2 + Z_HANDLE_GAP + 0.3}
           height={0.22}
           color={refused ? '#ffb4b4' : PREVIEW_COLOR}
         />
       </group>
-      <Line
-        name="object-edit-top-edge"
-        points={topEdge}
-        color={PREVIEW_COLOR}
-        lineWidth={3}
-        raycast={noRaycast}
-      />
+      {topEdge && (
+        <Line
+          name="object-edit-top-edge"
+          points={topEdge}
+          color={PREVIEW_COLOR}
+          lineWidth={3}
+          raycast={noRaycast}
+        />
+      )}
       {yawRing && (
         <Line
           points={yawRing}
@@ -325,7 +375,7 @@ function ObbGizmo({ store }: { store: EditStore }) {
           raycast={noRaycast}
         />
       )}
-      {OBJECT_EDIT_HANDLES.map((handle) => {
+      {handles.map((handle) => {
         const active = hint === handle;
         return (
           <mesh
@@ -335,7 +385,9 @@ function ObbGizmo({ store }: { store: EditStore }) {
             scale={active ? 1.2 : 1}
             geometry={geometryOf(handle)}
             raycast={handleRaycast}
-            rotation={handle === 'yaw' ? [Math.PI / 2, 0, 0] : undefined}
+            rotation={
+              handle === 'yaw' ? [Math.PI / 2, 0, 0] : handle === 'z-' ? [Math.PI, 0, 0] : undefined
+            }
             renderOrder={20}
             onPointerDown={(event) => drag.start(handle, event)}
             onPointerOver={(event) => {
@@ -359,8 +411,8 @@ function ObbGizmo({ store }: { store: EditStore }) {
             // 회전 중에는 1° 단위로만 글자를 바꿔 끄는 동안 이름표 텍스처를 덜 만든다.
             text={
               hint === 'yaw'
-                ? `${OBJECT_HANDLE_HINTS.yaw} · ${Math.round(degrees(draft.yaw))}°`
-                : OBJECT_HANDLE_HINTS[hint]
+                ? `${handleHint(kind, 'yaw')} · ${Math.round(degrees(draft.yaw))}°`
+                : handleHint(kind, hint)
             }
             y={0.32}
             height={0.2}
@@ -375,5 +427,6 @@ function ObbGizmo({ store }: { store: EditStore }) {
 function geometryOf(handle: ObjectEditHandle): BufferGeometry {
   if (handle === 'move') return MOVE_GEOMETRY;
   if (handle === 'yaw') return YAW_GEOMETRY;
-  return handle === 'z+' ? Z_GEOMETRY : FACE_GEOMETRY;
+  if (handle === 'lift') return LIFT_GEOMETRY;
+  return handle === 'z+' || handle === 'z-' ? Z_GEOMETRY : FACE_GEOMETRY;
 }

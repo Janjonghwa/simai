@@ -42,15 +42,26 @@ export function useRoster(
         .filter(Boolean)
         .join(' · '),
       rejectedZones: zones.invalid.map(({ zoneId, reason }) => ({ id: zoneId, reason })),
-      surfaces: surfaces.surfaces.map((surface) => ({
-        id: surface.surfaceId,
-        name: `작업면 ${surface.surfaceId}`,
-        detail: `상판 ${surface.topHeightM.toFixed(2)}m · ${Math.round((surface.yawRad * 180) / Math.PI)}°`,
-      })),
+      surfaces: [
+        ...surfaces.surfaces.map((surface) => ({
+          id: surface.surfaceId,
+          name: `작업면 ${surface.surfaceId}`,
+          detail: `상판 ${surface.topHeightM.toFixed(2)}m · ${Math.round((surface.yawRad * 180) / Math.PI)}°`,
+        })),
+        // 등록 정적 객체(-274)도 같은 object 대상이라 같은 목록에서 고르고 초점을 맞춘다.
+        ...surfaces.obstacles.map((obstacle) => ({
+          id: obstacle.objectId,
+          name: `정적 객체 ${obstacle.objectId}`,
+          detail: `Z ${(obstacle.center[2] - obstacle.size[2] / 2).toFixed(2)}~${(obstacle.center[2] + obstacle.size[2] / 2).toFixed(2)}m · ${Math.round((obstacle.yawRad * 180) / Math.PI)}°`,
+        })),
+      ],
       surfaceNote: [
         `작업면 입력 ${surfaces.status}`,
         surfaces.reason,
         surfaces.invalid.length ? `형식 오류 ${surfaces.invalid.length}건 제외` : null,
+        surfaces.invalidObstacles.length
+          ? `정적 객체 ${surfaces.invalidObstacles.length}건 제외`
+          : null,
         '등록 OBB · 전달 계약 미확정',
       ]
         .filter(Boolean)

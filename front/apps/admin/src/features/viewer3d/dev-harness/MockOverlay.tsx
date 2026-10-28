@@ -180,7 +180,7 @@ function ZonesBody({
     selected?.type === 'zone' ? roster.zones.find((row) => row.id === selected.id) : undefined;
   return (
     <>
-      <p className="smk-hint">구역·작업면 목록 · 편집과 저장은 연결하지 않는다</p>
+      <p className="smk-hint">구역·작업면·정적 객체 목록 · 편집과 저장은 연결하지 않는다</p>
       <p className="smk-hint smk-mono" data-testid="zone-note">
         {roster.zoneNote}
       </p>
@@ -320,7 +320,7 @@ export function SelectionCard({
         </>
       ) : (
         <p className="smk-id" data-testid="selected-id">
-          없음 · 3D 에서 사람·구역·작업면을 누른다
+          없음 · 3D 에서 사람·구역·작업면·정적 객체를 누른다
         </p>
       )}
     </aside>

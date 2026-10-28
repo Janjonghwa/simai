@@ -749,3 +749,39 @@ export const DEMO_WORK_SURFACES = {
     { surface_id: 'floor', top_height_m: 0.1, center_xy: [1, 1], size_xy: [1, 1] },
   ],
 };
+
+/**
+ * 작업면 DEMO 묶음에 등록 정적 객체(-274)를 더한 operational_geometry 묶음. static_objects 항목은 BE -58 구성 묶음
+ * 형식({ object_id, kind: 'OBSTACLE', obb: { center 3D 중심, size 전체 길이, yaw_rad } })이다. 실측 치수가 아니다.
+ * so-projector 는 바닥에서 떠 있다. so-bad 는 크기 0, desk-1 은 작업면 ID 와 겹치고, so-ws 는 작업면 kind 라 빠져야 한다.
+ */
+export const DEMO_OPERATIONAL_GEOMETRY = {
+  ...DEMO_WORK_SURFACES,
+  static_objects: [
+    {
+      object_id: 'so-cabinet',
+      kind: 'OBSTACLE',
+      obb: { center: [0.6, 8.8, 0.9], size: [0.5, 1.2, 1.8], yaw_rad: 0 },
+    },
+    {
+      object_id: 'so-projector',
+      kind: 'OBSTACLE',
+      obb: { center: [5, 5.5, 2.6], size: [0.4, 0.3, 0.15], yaw_rad: 0.3 },
+    },
+    {
+      object_id: 'so-bad',
+      kind: 'OBSTACLE',
+      obb: { center: [3, 1, 0.5], size: [0.5, 0, 1], yaw_rad: 0 },
+    },
+    {
+      object_id: 'desk-1',
+      kind: 'OBSTACLE',
+      obb: { center: [2.4, 3.6, 0.37], size: [1.2, 0.6, 0.74], yaw_rad: 0 },
+    },
+    {
+      object_id: 'so-ws',
+      kind: 'WORK_SURFACE',
+      obb: { center: [1, 1, 0.2], size: [1, 1, 0.4], yaw_rad: 0 },
+    },
+  ],
+};

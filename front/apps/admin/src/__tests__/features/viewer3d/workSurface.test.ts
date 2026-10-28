@@ -347,7 +347,8 @@ describe('작업면 편집 세션', () => {
       changed: true,
       saved: false,
     });
-    if (result?.status !== 'FINISHED') throw new Error('FINISHED 가 아니다');
+    if (result?.status !== 'FINISHED' || result.objectKind !== 'WORK_SURFACE')
+      throw new Error('작업면 FINISHED 가 아니다');
     near(result.after.centerXy, [2.4, 3.6]);
     expect(result.after.yawRad).toBeCloseTo(0.7236, 12);
     expect(result.after.topHeightM).toBeCloseTo(0.9, 12);
@@ -467,7 +468,8 @@ describe('작업면 편집 세션', () => {
     const second = edit.store.getState().finishObject();
     expect(first).toMatchObject({ target: DESK1, after: { centerXy: [3, 3.6] } });
     expect(second).toMatchObject({ target: PODIUM, before: { sizeXy: [2.4, 1.1] } });
-    if (second?.status !== 'FINISHED') throw new Error('FINISHED 가 아니다');
+    if (second?.status !== 'FINISHED' || second.objectKind !== 'WORK_SURFACE')
+      throw new Error('작업면 FINISHED 가 아니다');
     expect(second.after.sizeXy[1]).toBeCloseTo(1.5, 12);
     near(second.after.centerXy, [7.6, 7.4]);
   });
