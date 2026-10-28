@@ -15,6 +15,7 @@ G0 LED 시험으로 latency_ms 가 정해지면 사이드카를 다시 계산할
 장기 비율은 맞음). 위 식은 PTS 를 따르므로 추정 촬영 시각이 묶음째 약 0.4 s 앞뒤로 흔들리고 뒤로도 간다. 그래서 같은 epoch
 안에서 이웃 프레임의 PTS 간격이 공칭 간격에서 BROKEN_STEP_MS 넘게 벗어난 걸음이 최근 BROKEN_WINDOW_FRAMES 장 안에
 BROKEN_MIN_STEPS 번 생기거나 PTS 가 그만큼 뒤로 가면, 그 epoch 의 남은 프레임은 프레임 시계(FrameClock)로 매긴다(되돌리지 않음).
+PTS 가 앞으로 벌어진 걸음 중 수신 간격도 같이 벌어진 것(카메라 멈춤 뒤 재개)은 깨진 걸음으로 세지 않는다(S15P31A101-316).
 
     clock     = 이어 붙인 PTS: 간격이 공칭의 0.5~2.5 배면 그 간격(빠진 프레임 1장까지 센다), 아니면 공칭 간격 1장
     floor     = 최근 window_ms 의 1초 칸별 min(received_at_ms − clock) 아래를 지나는 직선(하한 포락선, 위로 거리 합 최소)
@@ -22,7 +23,11 @@ BROKEN_MIN_STEPS 번 생기거나 PTS 가 그만큼 뒤로 가면, 그 epoch 의
 
 지나간 프레임만 쓴다(인과). 직선 맞춤은 칸이 ENVELOPE_MIN_SPAN_MS 넘게 쌓인 뒤부터이고 그 전에는 최솟값(기울기 0)이며,
 그동안의 불확실성은 PTS 없음 값(uncertainty_no_pts_ms)이다. 원본 source_pts·received_at_ms 는 헤더에 그대로 남는다.
-PTS 가 멀쩡한 스트림(흔들림·B 프레임 재정렬 포함)은 깨짐으로 보지 않아 위 PTS 식 결과가 그대로다. 공칭 fps 를 모르면 감지하지 않는다.
+PTS 가 멀쩡한 스트림(흔들림·B 프레임 재정렬·멈춤 포함)은 깨짐으로 보지 않아 위 PTS 식 결과가 그대로다. 공칭 fps 를 모르면 감지하지 않는다.
+
+단조 보장(S15P31A101-316). 어느 식이든 한 epoch 안에서 내보내는 촬영 시각이 직전 값 + 1 ms 보다 작으면 직전 값 + 1 ms 로
+올리고, 올린 양만큼 그 프레임의 불확실성을 키운다(EpochMonotonic). Tier 0 는 뒤로 간 프레임을 OUT_OF_ORDER 로, 같은 시각의
+결과를 ResultGate 에서 버리기 때문이다(명세 5.1). 올린 횟수·최대 올림량은 epoch 마다 센다(raised, max_raise_ms).
 ai 녹화 재생(simai_ai.io.capture_clock)이 같은 FrameClock 을 옮겨 쓴다(ai 는 gateway 를 import 하지 않음). 두 구현이 같은 값을
 내는지 tests/data/capture_clock_vector.json 으로 확인한다. 근거·수치는 docs/design/capture-time-broken-pts.md.
 
@@ -80,6 +85,9 @@ CLOCK_FRAMES = "frame_clock"
 BROKEN_STEP_MS = 150.0  # B 프레임 재정렬(80 ms 이하)·흔들림보다 크고 C110 묶음 점프(약 360~440 ms)보다 작다(-313 과 같은 기준)
 BROKEN_WINDOW_FRAMES = 250  # 25 fps 에서 10 s
 BROKEN_MIN_STEPS = 2  # 한 번의 앞으로 뛴 걸음(카메라 멈춤 뒤 재개)은 깨짐으로 보지 않는다
+# 앞으로 벌어진 PTS 걸음에서 수신 간격도 공칭보다 BROKEN_STEP_MS 넘게, 그리고 PTS 가 벌어진 양의 절반 이상 벌어졌으면 멈춤이다
+# (S15P31A101-316). C110 묶음 점프는 수신 간격이 그대로라(실녹화 최대 273 ms, 대부분 40~100 ms) 거의 걸리지 않고, 걸려도 뒤로 가는
+# 점프가 바로 감지한다.
 ENVELOPE_BIN_MS = 1000.0
 ENVELOPE_MIN_SPAN_MS = 5000.0
 ENVELOPE_MAX_SKEW = 0.005  # 하한 직선 기울기 상한(5000 ppm). 넘으면 맞춤을 믿지 않고 최솟값을 쓴다
@@ -120,6 +128,7 @@ class FrameClock:
         self._index = -1
         self._clock: float | None = None
         self._prev_pts: float | None = None
+        self._prev_received: int | None = None
         self._broken: deque[int] = deque()  # 깨진 걸음이 난 프레임 번호(최근 BROKEN_WINDOW_FRAMES 장)
         self._bins: deque[list[float]] = deque()  # [칸 번호, clock, received − clock] 칸별 최솟값
         self.broken_since: int | None = None  # 프레임 시계로 바꾼 프레임 번호(epoch 안 0 부터). None 이면 PTS 그대로
@@ -134,7 +143,7 @@ class FrameClock:
             d = pts_ms - self._prev_pts
             if 0.5 * self._interval <= d <= 2.5 * self._interval:
                 step = d
-            if abs(d - self._interval) > BROKEN_STEP_MS:
+            if abs(d - self._interval) > BROKEN_STEP_MS and not self._stalled(d, received_at_ms):
                 self._broken.append(self._index)
                 if self.broken_since is None and (d < self._interval or len(self._broken) >= BROKEN_MIN_STEPS):
                     self.broken_since = self._index
@@ -142,6 +151,7 @@ class FrameClock:
         else:
             self._clock += step
         self._prev_pts = pts_ms
+        self._prev_received = received_at_ms
         while self._broken and self._broken[0] <= self._index - BROKEN_WINDOW_FRAMES:
             self._broken.popleft()
 
@@ -170,11 +180,41 @@ class FrameClock:
         floor = min(floor, y)
         return CaptureTime(round(x + floor - m.latency_ms), m.uncertainty_ms if warm else m.uncertainty_no_pts_ms)
 
+    def _stalled(self, pts_step_ms: float, received_at_ms: int) -> bool:
+        """앞으로 벌어진 PTS 걸음이 카메라 멈춤 뒤 재개인지: 수신 간격도 같이 벌어졌다(STALL 기준, 모듈 상수 설명)."""
+        if self._prev_received is None or pts_step_ms <= self._interval:
+            return False
+        gap = received_at_ms - self._prev_received - self._interval
+        return gap > BROKEN_STEP_MS and 2 * gap >= pts_step_ms - self._interval
+
+
+class EpochMonotonic:
+    """한 epoch 에서 내보내는 촬영 시각을 앞으로만 가게 한다 (S15P31A101-316, 모듈 설명 "단조 보장").
+
+    직전 값 + 1 ms 보다 작으면 직전 값 + 1 ms 로 올리고 올린 양(ms)만큼 불확실성을 키운다(올린 값은 추정이 아니라 순서를
+    지키려고 정한 값이다). raised 는 올린 프레임 수, max_raise_ms 는 가장 크게 올린 양이다.
+    """
+
+    def __init__(self) -> None:
+        self.last: int | None = None
+        self.raised = 0
+        self.max_raise_ms = 0
+
+    def apply(self, time_ms: int, uncertainty_ms: float) -> tuple[int, float]:
+        if self.last is not None and time_ms <= self.last:
+            lift = self.last + 1 - time_ms
+            self.raised += 1
+            self.max_raise_ms = max(self.max_raise_ms, lift)
+            time_ms, uncertainty_ms = self.last + 1, uncertainty_ms + lift
+        self.last = time_ms
+        return time_ms, uncertainty_ms
+
 
 class ReceiveTimeEstimator:
     """한 stream_epoch 의 촬영 시각 추정기. 재접속하면 새로 만든다(PTS 원점이 바뀐다).
 
     nominal_fps 를 주면 깨진 PTS 시각선을 감지해 프레임 시계로 바꾼다(모듈 설명). 프레임마다 순서대로 한 번씩 estimate 한다.
+    내보내는 값은 epoch 안에서 앞으로만 간다(EpochMonotonic). raised·max_raise_ms 는 이 epoch 에서 올린 횟수·최대 올림량(ms).
     """
 
     def __init__(self, model: CaptureTimeModel, pts_timebase: Fraction | None,
@@ -185,6 +225,7 @@ class ReceiveTimeEstimator:
         self._window: deque[tuple[int, float]] = deque()
         ok = nominal_fps is not None and 0 < nominal_fps < float("inf")
         self._frames = FrameClock(model, 1000.0 / nominal_fps) if ok else None
+        self._monotonic = EpochMonotonic()
 
     @property
     def mode(self) -> str:
@@ -195,7 +236,19 @@ class ReceiveTimeEstimator:
         """프레임 시계로 바꾼 프레임 번호(epoch 안 0 부터 estimate 호출 순서). 바꾸지 않았으면 None."""
         return self._frames.broken_since if self._frames is not None else None
 
+    @property
+    def raised(self) -> int:
+        return self._monotonic.raised
+
+    @property
+    def max_raise_ms(self) -> int:
+        return self._monotonic.max_raise_ms
+
     def estimate(self, received_at_ms: int, pts: int | None) -> CaptureTime:
+        t = self._estimate(received_at_ms, pts)
+        return CaptureTime(*self._monotonic.apply(t.estimated_capture_time_ms, t.timestamp_uncertainty_ms))
+
+    def _estimate(self, received_at_ms: int, pts: int | None) -> CaptureTime:
         m = self._model
         pts_ms = float(pts * self._tb_ms) if pts is not None and self._tb_ms is not None else None
         if self._frames is not None:

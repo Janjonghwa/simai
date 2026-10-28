@@ -7,8 +7,11 @@ FrameClock 을 그대로 옮긴 것이다(ai 는 gateway 를 import 하지 않�
 촬영 시각이 나온다. 두 구현이 같은 값을 내는지는 같은 시험 벡터(gateway/recorder/tests/data/capture_clock_vector.json)로
 확인한다. 고칠 때는 두 곳을 같이 고치고 벡터를 다시 만든다.
 
-입력은 녹화 헤더의 원본 값(received_at_ms, source_pts)과 manifest 의 capture_time_model 뿐이다. 깨짐을 보기 전 프레임은
-녹화 헤더 값을 그대로 둔다(그때까지 녹화 도구도 PTS 추정을 썼다). 공칭 fps·수신 시각을 모르면 고치지 않는다.
+입력은 녹화 헤더의 원본 값(received_at_ms, source_pts)·촬영 시각·불확실성과 manifest 의 capture_time_model 뿐이다. 깨짐을
+보기 전 프레임은 녹화 헤더 값을 쓴다(그때까지 녹화 도구도 PTS 추정을 썼다). 공칭 fps·수신 시각을 모르면 프레임 시계는 쓰지 않는다.
+어느 경우든 녹화 도구와 같은 단조 보장(EpochMonotonic, S15P31A101-316)을 거친다: 세그먼트 안에서 촬영 시각이 직전 값 + 1 ms 보다
+작으면 직전 값 + 1 ms 로 올리고 올린 양만큼 불확실성을 키운다. 이 수정 전 녹화(헤더가 뒤로 가거나 같은 ms 가 반복됨)도 지금 LIVE 와
+같은 값이 된다.
 근거·수치는 docs/design/capture-time-broken-pts.md.
 """
 
@@ -23,6 +26,7 @@ from typing import Any
 BROKEN_STEP_MS = 150.0
 BROKEN_WINDOW_FRAMES = 250
 BROKEN_MIN_STEPS = 2
+# 앞으로 벌어진 PTS 걸음에서 수신 간격도 공칭보다 BROKEN_STEP_MS 넘게, PTS 가 벌어진 양의 절반 이상 벌어졌으면 멈춤(깨짐으로 세지 않음)
 ENVELOPE_BIN_MS = 1000.0
 ENVELOPE_MIN_SPAN_MS = 5000.0
 ENVELOPE_MAX_SKEW = 0.005
@@ -79,6 +83,7 @@ class FrameClock:
         self._index = -1
         self._clock: float | None = None
         self._prev_pts: float | None = None
+        self._prev_received: int | None = None
         self._broken: deque[int] = deque()
         self._bins: deque[list[float]] = deque()
         self.broken_since: int | None = None
@@ -92,7 +97,7 @@ class FrameClock:
             d = pts_ms - self._prev_pts
             if 0.5 * self._interval <= d <= 2.5 * self._interval:
                 step = d
-            if abs(d - self._interval) > BROKEN_STEP_MS:
+            if abs(d - self._interval) > BROKEN_STEP_MS and not self._stalled(d, received_at_ms):
                 self._broken.append(self._index)
                 if self.broken_since is None and (d < self._interval or len(self._broken) >= BROKEN_MIN_STEPS):
                     self.broken_since = self._index
@@ -100,6 +105,7 @@ class FrameClock:
         else:
             self._clock += step
         self._prev_pts = pts_ms
+        self._prev_received = received_at_ms
         while self._broken and self._broken[0] <= self._index - BROKEN_WINDOW_FRAMES:
             self._broken.popleft()
 
@@ -128,6 +134,35 @@ class FrameClock:
         floor = min(floor, y)
         return round(x + floor - m.latency_ms), m.uncertainty_ms if warm else m.uncertainty_no_pts_ms
 
+    def _stalled(self, pts_step_ms: float, received_at_ms: int) -> bool:
+        if self._prev_received is None or pts_step_ms <= self._interval:
+            return False
+        gap = received_at_ms - self._prev_received - self._interval
+        return gap > BROKEN_STEP_MS and 2 * gap >= pts_step_ms - self._interval
+
+
+class EpochMonotonic:
+    """한 epoch 에서 내보내는 촬영 시각을 앞으로만 가게 한다. gateway/recorder capture_time.EpochMonotonic 과 같은 코드다.
+
+    직전 값 + 1 ms 보다 작으면 직전 값 + 1 ms 로 올리고 올린 양(ms)만큼 불확실성을 키운다. raised 는 올린 프레임 수,
+    max_raise_ms 는 가장 크게 올린 양이다. 녹화 헤더의 불확실성이 없으면(None) 없는 채로 둔다(지어내지 않음).
+    """
+
+    def __init__(self) -> None:
+        self.last: int | None = None
+        self.raised = 0
+        self.max_raise_ms = 0
+
+    def apply(self, time_ms: int, uncertainty_ms: float | None) -> tuple[int, float | None]:
+        if self.last is not None and time_ms <= self.last:
+            lift = self.last + 1 - time_ms
+            self.raised += 1
+            self.max_raise_ms = max(self.max_raise_ms, lift)
+            time_ms = self.last + 1
+            uncertainty_ms = None if uncertainty_ms is None else uncertainty_ms + lift
+        self.last = time_ms
+        return time_ms, uncertainty_ms
+
 
 def pts_to_ms(pts: int | None, timebase: str | None) -> float | None:
     """source_pts·pts_timebase("1/90000") → ms. 녹화 도구와 같은 값이 나오도록 분수로 계산한다."""
@@ -138,20 +173,30 @@ def pts_to_ms(pts: int | None, timebase: str | None) -> float | None:
 
 @dataclass(frozen=True)
 class SegmentRepair:
-    """한 세그먼트(stream_epoch)의 프레임 시계 결과. times[i] 가 None 이면 그 프레임은 녹화 헤더 그대로다."""
+    """한 세그먼트(stream_epoch)의 다시 매김 결과. times[i] 가 None 이면 그 프레임은 녹화 헤더 그대로다."""
 
-    broken_since: int | None  # 프레임 시계로 바꾼 세그먼트 안 프레임 위치(0 부터). None 이면 고치지 않았다
-    times: tuple[tuple[int, float] | None, ...]
+    broken_since: int | None  # 프레임 시계로 바꾼 세그먼트 안 프레임 위치(0 부터). None 이면 프레임 시계를 쓰지 않았다
+    times: tuple[tuple[int, float | None] | None, ...]
+    raised: int = 0  # 단조 보장으로 올린 프레임 수
+    max_raise_ms: int = 0  # 가장 크게 올린 양
 
 
-def repair_segment(frames: Sequence[tuple[int, int | None, str | None]], nominal_fps: float | None,
-                   model: CaptureClockModel) -> SegmentRepair:
-    """세그먼트 프레임(received_at_ms, source_pts, pts_timebase)을 녹화 순서대로 받아 프레임 시계로 다시 매긴다.
+def repair_segment(frames: Sequence[tuple[int | None, int | None, str | None]], nominal_fps: float | None,
+                   model: CaptureClockModel, recorded: Sequence[tuple[int, float | None]]) -> SegmentRepair:
+    """세그먼트 프레임(received_at_ms, source_pts, pts_timebase)과 녹화 헤더 값(촬영 시각, 불확실성)을 녹화 순서대로 받아
+    녹화 도구·노트북 중계와 같은 값으로 다시 매긴다(모듈 설명).
 
-    지나간 프레임만 쓴다(LIVE 와 같은 인과 추정). 공칭 fps 를 모르면 아무것도 고치지 않는다.
+    지나간 프레임만 쓴다(LIVE 와 같은 인과 추정). 공칭 fps 나 수신 시각을 모르면 프레임 시계는 쓰지 않고 단조 보장만 한다.
     """
-    if nominal_fps is None or not 0 < nominal_fps < float("inf"):
-        return SegmentRepair(None, (None,) * len(frames))
-    clock = FrameClock(model, 1000.0 / nominal_fps)
-    times = tuple(clock.update(received, pts_to_ms(pts, tb)) for received, pts, tb in frames)
-    return SegmentRepair(clock.broken_since, times)
+    if len(recorded) != len(frames):
+        raise ValueError("frames 와 recorded 의 길이가 다르다")
+    usable = (nominal_fps is not None and 0 < nominal_fps < float("inf")
+              and all(received is not None for received, _, _ in frames))
+    clock = FrameClock(model, 1000.0 / nominal_fps) if usable else None
+    guard = EpochMonotonic()
+    times: list[tuple[int, float | None] | None] = []
+    for (received, pts, tb), header in zip(frames, recorded):
+        t = clock.update(received, pts_to_ms(pts, tb)) if clock is not None else None
+        out = guard.apply(*(header if t is None else t))
+        times.append(None if out == tuple(header) else out)
+    return SegmentRepair(clock.broken_since if clock is not None else None, tuple(times), guard.raised, guard.max_raise_ms)

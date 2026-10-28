@@ -462,9 +462,10 @@ class _Segment:
 class CaptureTimeRepair:
     """한 세그먼트의 촬영 시각 다시 매김 결과 (capture_clock, S15P31A101-315). 녹화 파일은 그대로다.
 
-    broken_since: 프레임 시계로 바꾼 frame_sequence. None 이면 녹화 헤더 그대로 냈다.
-    repaired: 촬영 시각·불확실성을 바꾼 프레임 수.
-    skipped: 고치지 못한 까닭(공칭 fps·수신 시각 없음, 재생에서 끔). 없으면 None.
+    broken_since: 프레임 시계로 바꾼 frame_sequence. None 이면 프레임 시계를 쓰지 않았다(단조 보장만).
+    repaired: 촬영 시각·불확실성을 바꾼 프레임 수(프레임 시계와 단조 보장 모두).
+    skipped: 프레임 시계를 쓰지 못한 까닭(공칭 fps·수신 시각 없음, 재생에서 끔). 없으면 None.
+    raised·max_raise_ms: 단조 보장(S15P31A101-316)으로 올린 프레임 수와 가장 크게 올린 양(ms).
     """
 
     camera_id: str
@@ -472,6 +473,8 @@ class CaptureTimeRepair:
     broken_since: int | None
     repaired: int
     skipped: str | None = None
+    raised: int = 0
+    max_raise_ms: int = 0
 
 
 _HEADER_REQUIRED = ("source_pts", "pts_timebase", "keyframe")  # contracts/messages/frame_header required
@@ -559,28 +562,28 @@ def _repair_capture_times(
     camera_id: str, epoch: int, refs: list[_FrameRef], received: list[int | None], nominal_fps: Any,
     model: CaptureClockModel | None,
 ) -> tuple[tuple[_FrameRef, ...], CaptureTimeRepair]:
-    """깨진 PTS 시각선이면 노트북 중계와 같은 프레임 시계로 촬영 시각·불확실성을 다시 매긴다(capture_clock 모듈 설명).
+    """깨진 PTS 시각선이면 노트북 중계와 같은 프레임 시계로 촬영 시각·불확실성을 다시 매기고, 어느 경우든 노트북 중계와 같은
+    단조 보장을 거친다(capture_clock 모듈 설명).
 
-    원본 source_pts·received_at_ms(release_ms)·timestamp_source 는 그대로다. 공칭 fps·수신 시각을 모르면 고치지 않는다(지어내지 않음).
+    원본 source_pts·received_at_ms(release_ms)·timestamp_source 는 그대로다. 공칭 fps·수신 시각을 모르면 프레임 시계는 쓰지 않는다
+    (지어내지 않음).
     """
-    def kept(reason: str | None) -> tuple[tuple[_FrameRef, ...], CaptureTimeRepair]:
-        return tuple(refs), CaptureTimeRepair(camera_id, epoch, None, 0, reason)
-
     if model is None:
-        return kept("disabled")
+        return tuple(refs), CaptureTimeRepair(camera_id, epoch, None, 0, "disabled")
+    skipped = None
     if isinstance(nominal_fps, bool) or not isinstance(nominal_fps, (int, float)) or not 0 < nominal_fps < float("inf"):
-        return kept("no_nominal_fps")
-    if any(r is None for r in received):
-        return kept("no_received_at_ms")
+        skipped, nominal_fps = "no_nominal_fps", None
+    elif any(r is None for r in received):
+        skipped = "no_received_at_ms"
     rows = [(r, ref.header.source_pts, ref.header.pts_timebase) for r, ref in zip(received, refs)]
-    result = repair_segment(rows, float(nominal_fps), model)
-    if result.broken_since is None:
-        return kept(None)
+    recorded = [(ref.header.estimated_capture_time_ms, ref.header.timestamp_uncertainty_ms) for ref in refs]
+    result = repair_segment(rows, None if nominal_fps is None else float(nominal_fps), model, recorded)
     out = [ref if t is None else replace(ref, header=replace(ref.header, estimated_capture_time_ms=t[0],
                                                                timestamp_uncertainty_ms=t[1]))
            for ref, t in zip(refs, result.times)]
+    since = None if result.broken_since is None else refs[result.broken_since].header.frame_sequence
     repaired = sum(t is not None for t in result.times)
-    return tuple(out), CaptureTimeRepair(camera_id, epoch, refs[result.broken_since].header.frame_sequence, repaired)
+    return tuple(out), CaptureTimeRepair(camera_id, epoch, since, repaired, skipped, result.raised, result.max_raise_ms)
 
 
 def _replay_camera(camera_id: str, segments: Sequence[_Segment]) -> Iterator[ReplayMessage]:
