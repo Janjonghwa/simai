@@ -70,17 +70,25 @@ def test_storage_choice_env_then_workspace_then_container(bs, tmp_path, monkeypa
     assert bs.choose_root({"SIMAI_ROOT": str(tmp_path / "x")}, ws, ct) == (tmp_path / "x", "env")
     assert bs.choose_root({}, ws, ct) == (ct, "container")  # /workspace 없음 → 컨테이너 디스크
     ws.mkdir()
-    assert bs.choose_root({}, ws, ct) == (ws / "simai", "workspace")
-    assert bs.choose_root({"SIMAI_ROOT": ""}, ws, ct) == (ws / "simai", "workspace")  # 빈 값은 없는 것
-    # main 경로: SIMAI_ROOT 없음 + /workspace 없음 → 컨테이너 디스크에 가중치를 받고 그 위치를 Tier 0 에 넘긴다
+    # S15P31A101-311: RunPod 의 볼륨 없는 /workspace 폴더처럼 마운트 지점이 아니면 고르지 않고 컨테이너 디스크를 쓴다
+    assert bs.choose_root({}, ws, ct, is_mount=lambda _p: False) == (ct, "container")
+    assert bs.choose_root({"SIMAI_ROOT": ""}, ws, ct, is_mount=lambda _p: False) == (ct, "container")
+    # 마운트 지점(볼륨)이고 쓸 수 있을 때만 /workspace/simai, SIMAI_ROOT 가 있으면 마운트 여부와 상관없이 우선
+    mounted = lambda p: Path(p) == ws  # noqa: E731
+    assert bs.choose_root({}, ws, ct, is_mount=mounted) == (ws / "simai", "workspace")
+    assert bs.choose_root({"SIMAI_ROOT": ""}, ws, ct, is_mount=mounted) == (ws / "simai", "workspace")  # 빈 값은 없는 것
+    assert bs.choose_root({"SIMAI_ROOT": str(tmp_path / "x")}, ws, ct, is_mount=mounted) == (tmp_path / "x", "env")
+    # main 경로: SIMAI_ROOT 없음 + /workspace 가 있지만 마운트 지점이 아님 → 컨테이너 디스크에 가중치를 받고 그 위치를 Tier 0 에 넘긴다
     st = _setup(bs, tmp_path, monkeypatch)
     monkeypatch.delenv("SIMAI_ROOT")
-    monkeypatch.setattr(bs, "WORKSPACE", tmp_path / "no-workspace")
+    monkeypatch.setattr(bs, "WORKSPACE", ws)
     monkeypatch.setattr(bs, "CONTAINER_ROOT", ct)
+    monkeypatch.setattr(bs.os.path, "ismount", lambda _p: False)
     assert bs.main([]) == 0
     argv, env = st["calls"][0]
     assert argv == ["simai-tier0"] and env["SIMAI_ROOT"] == str(ct)
     assert (ct / "weights" / "yolo" / "yolo26x-pose.pt").read_bytes() == WEIGHTS
+    assert not (ws / "simai").exists()
     assert _records(ct)[0]["storage"]["source"] == "container"
 
 

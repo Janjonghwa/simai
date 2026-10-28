@@ -12,7 +12,7 @@
     simai-bootstrap <다른 명령...>              준비 없이 그대로 실행 (sleep infinity, bash, simai-wait-tier0 등)
 
 준비 순서:
-  1) 저장 위치: SIMAI_ROOT 가 있으면 그것, 없으면 /workspace 가 있고 쓸 수 있으면 /workspace/simai(RunPod 볼륨·Pod 볼륨·docker -v),
+  1) 저장 위치: SIMAI_ROOT 가 있으면 그것, 없으면 /workspace 가 마운트 지점(볼륨)이고 쓸 수 있을 때만 /workspace/simai(RunPod 볼륨·Pod 볼륨·docker -v, S15P31A101-311),
      둘 다 아니면 컨테이너 디스크 /srv/simai. 만들고 남은 용량이 하한(SIMAI_MIN_FREE_GB, 기본 20) 이상인지 본다.
   2) GPU: nvidia-smi 의 compute_cap → sm_XX, 메모리를 기록한다. GPU 가 없거나 최소 사양(Ampere 이상 = compute_cap 8.0,
      VRAM 24GB급) 미만이면 시작하지 않는다.
@@ -161,14 +161,16 @@ def log(msg: str) -> None:
 # ---------------------------------------------------------------- 저장 위치
 
 
-def choose_root(env: dict | None = None, workspace: Path | None = None, container: Path | None = None) -> tuple[Path, str]:
-    """(SIMAI_ROOT, 고른 이유 env|workspace|container)."""
+def choose_root(env: dict | None = None, workspace: Path | None = None, container: Path | None = None,
+                is_mount=None) -> tuple[Path, str]:
+    """(SIMAI_ROOT, 고른 이유 env|workspace|container). /workspace 는 마운트 지점(볼륨)이고 쓸 수 있을 때만 고른다(S15P31A101-311)."""
     env = os.environ if env is None else env
     workspace = WORKSPACE if workspace is None else workspace
     container = CONTAINER_ROOT if container is None else container
+    is_mount = os.path.ismount if is_mount is None else is_mount
     if env.get("SIMAI_ROOT"):
         return Path(env["SIMAI_ROOT"]), "env"
-    if workspace.is_dir() and os.access(workspace, os.W_OK):
+    if workspace.is_dir() and is_mount(workspace) and os.access(workspace, os.W_OK):
         return workspace / "simai", "workspace"
     return container, "container"
 

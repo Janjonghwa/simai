@@ -139,7 +139,7 @@ RunPod 은 Container Registry Auth(읽기 전용 토큰)로 접근한다. 토큰
 
 준비 순서와 종료 코드(simai-tier0·engine_cache 와 같은 규칙: 2 저장·가중치, 3 GPU):
 
-1. 저장 위치: `SIMAI_ROOT` → `/workspace` 가 있고 쓸 수 있으면 `/workspace/simai`(RunPod 볼륨·Pod 볼륨·`docker run -v`) → 컨테이너 디스크 `/srv/simai`. 남은 용량 하한 `SIMAI_MIN_FREE_GB`(기본 20) 미만이면 2.
+1. 저장 위치: `SIMAI_ROOT` → `/workspace` 가 마운트 지점(`os.path.ismount`: RunPod 볼륨·Pod 볼륨·`docker run -v`)이고 쓸 수 있을 때만 `/workspace/simai`(볼륨 없이 있는 `/workspace` 폴더는 고르지 않는다, S15P31A101-311) → 컨테이너 디스크 `/srv/simai`. 남은 용량 하한 `SIMAI_MIN_FREE_GB`(기본 20) 미만이면 2.
 2. GPU: `nvidia-smi` compute_cap → `sm_XX`(`SIMAI_GPU_ARCH` 로 넘김), 메모리·드라이버 기록. GPU 없음, compute_cap·메모리를 읽지 못함, Ampere(8.0) 미만, VRAM 24GB급(22,500 MiB) 미만이면 3. 가중치를 받기 전에 끝난다.
 3. 가중치: `weights.json`(이미지 `/opt/simai/deploy/weights.json`)의 `tier0` 항목. 있고 sha256 이 맞으면 건너뜀(엘리스 블록 스토리지 재사용), 없으면 옆 임시 파일(`<이름>.part`)로 받아 sha256 이 맞을 때만 이름을 바꾼다.
    받기가 끊기거나 429·5xx 면 지수 백오프(2·4·8·16초)로 `SIMAI_FETCH_ATTEMPTS`(5)번까지 다시 하고 임시 파일에서 HTTP Range 로 이어받는다(원본이 Range 를 무시하거나 범위가 다르면·416 이면 처음부터, 401·403·404 는 다시 하지 않음). 다 실패해도 받은 바이트는 남겨 다음 시작이 잇는다. 항목마다 지우지 않는 잠금 파일(`$SIMAI_ROOT/weights/.locks/`)로 재확인·받기·해시·게시(rename)·스탬프를 한 임계 구역으로 묶어, 같은 저장 위치의 두 부트스트랩은 앞의 것이 끝날 때까지 기다렸다가 그 파일을 다시 확인한다.
@@ -163,14 +163,14 @@ HMR 이미지 `exp02`, MapAnything 이미지 `static`)의 묶음을 준비한다
 | Container Disk | 100GB 이상(이미지 풀면 약 19.5GB + 가중치·엔진·결과. 볼륨이 없으므로 여기가 `$SIMAI_ROOT=/srv/simai`) |
 | Volume | 붙이지 않는다(Network Volume 은 데이터센터에 묶인다). Pod 볼륨을 쓰면 `/workspace/simai` 가 된다 |
 | 공개 HTTP 포트 | 8080(막힌 망 예비 SSH·I0 의 wstunnel, `https://<POD_ID>-8080.proxy.runpod.net`. 아래 "막힌 망 예비 SSH") |
-| 공개 TCP 포트 | 22(SSH, 키 인증만), I0 수신 포트(70000 이상 대칭 매핑, 실제 포트는 `SIMAI_PUBLIC_PORT_<번호>` 또는 RunPod 가 넣는 `RUNPOD_TCP_PORT_<번호>`, 명세 3.12) |
+| 공개 TCP 포트 | 22(SSH, 키 인증만), I0 수신 포트(70000 이상 대칭 매핑, 실제 포트는 `SIMAI_PUBLIC_PORT_<번호>` 또는 RunPod 가 넣는 `RUNPOD_TCP_PORT_<번호>`, 명세 3.12). 공개 TCP 70000 대칭 포트 요청은 새 RunPod 템플릿 화면이 1~65535 만 받아 할 수 없으므로 방법을 찾기 전까지 -288 (b) LTE Direct 비교는 빼고, 443 터널 LIVE 는 공개 TCP 포트 없이 돌린다(`SIMAI_TUNNEL_ALLOW=17000,17001`, S15P31A101-311) |
 | 공개 주소 환경 변수 | Tier 0 가 읽는 순서(앞이 우선, 값이 있는 첫 이름만 쓰고 틀린 값이면 오류): 공개 IP `SIMAI_PUBLIC_HOST` → `RUNPOD_PUBLIC_IP`, 공개 포트 `SIMAI_PUBLIC_PORT_<번호>` → `RUNPOD_TCP_PORT_<번호>`. 어느 것도 없으면 등록·기동 오류. RunPod 는 자동으로 들어오고 그 밖의 사이트는 사람이 사이트 무관 이름으로 넣는다. Vast 이름은 docs.vast.ai 로 확인하지 못해 읽지 않는다 |
 | 시작 명령 | 비움(이미지 기본: `simai-bootstrap tier0`). 검증 세션은 `sleep infinity` 로 띄우고 SSH 로 `simai-bootstrap queue` |
 | GPU 기능 | 이미지 `NVIDIA_DRIVER_CAPABILITIES=compute,utility,video`(video 는 선택 디코더 NVDEC 용, -182. Tier 0 기본 디코더는 CPU 라 없어도 기본 경로는 선다, -236). 템플릿에서 덮어쓰지 않는다 |
 | 환경 변수 | `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}`(RunPod Secret, 값은 템플릿에 쓰지 않음), `SIMAI_TIER0_GPU_RESERVE_MB=8192`(Tier 0 GPU 선확보, -60, G0 실측 전 초기값), `SIMAI_IMAGE_DIGEST=sha256:...`(이미지 다이제스트와 같은 값), `PUBLIC_KEY=<계정 SSH 공개키>`(비밀 아님), `SIMAI_TUNNEL_PREFIX={{ RUNPOD_SECRET_simai_tunnel_prefix }}`(RunPod Secret, 막힌 망 예비 SSH), 막힌 망에서 I0 를 터널로 보낼 때만 `SIMAI_TUNNEL_ALLOW=17000,17001`(비밀 아님, 아래 "I0 터널"). `SIMAI_ROOT`·가중치 경로·해시·엔진 캐시는 부트스트랩이 정한다(`SIMAI_ENGINE_CACHE` 기본 `$SIMAI_ROOT/engines`, `SIMAI_OBS2D_ROOT` 는 필요하면 `$SIMAI_ROOT/obs2d`). 선택: `SIMAI_TIER0_MODE`(e2e), `SIMAI_TIER0_IMGSZ`(1280), `SIMAI_TIER0_MAX_BATCH`(4), `SIMAI_TIER0_CAMERA`(2304x1296) |
 | 분석 워커 환경 변수 | 같은 Pod 에서 워커를 띄울 때(아래 "분석 워커"): `SIMAI_EC2_BASE_URL`, `SIMAI_WORKER_ID=worker-01`, `SIMAI_WORKER_GPU_MEMORY_FRACTION=0.70`, `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION=0.55`, `SIMAI_WORKER_VLLM_MAX_NUM_SEQS=4`, `SIMAI_GPU_TIER0_FRACTION=0.20`, `SIMAI_WORKER_LAG_BUDGET_MS=600`. 선택(기본값): `SIMAI_WORKER_MARKER_MAX_AGE_S`(15), `SIMAI_WORKER_RESUME_AFTER_S`(30), `SIMAI_WORKER_LIVE_BLOCKED_TYPES`(static_reconstruct,hmr_refine,hmr_appearance_update), `SIMAI_WORKER_LIVE_WAIT_MS`(5000), `SIMAI_WORKER_HOLD_MAX_S`(60), `SIMAI_TIER0_MARKER`. 값의 뜻은 docs/design/tier0-gpu-priority.md |
 | 비밀 | 템플릿에 값으로 넣지 않는다(HF 토큰·터널 비밀값만 Secret 참조). 워커 토큰은 `.simai-private/worker.env` 의 `SIMAI_WORKER_TOKEN=` |
-| 공개키 | RunPod 은 계정 SSH 키를 `PUBLIC_KEY` 로 넣지만, 템플릿에 `PUBLIC_KEY` 를 빈 값으로 두면 그 값이 덮어써 공개키가 하나도 없게 되고 sshd 가 뜨지 않는다(3차 세션 2026-10-26: 빈 `PUBLIC_KEY` + 이름 칸에 이미지 다이제스트가 들어간 `SSH_PUBLIC_KEY`). 그래서 템플릿에 계정 공개키 값을 그대로 넣는다(공개키는 비밀이 아니다). 로그에 `sshd 시작 (키 인증만, 키 N개)` 가 없으면 이 줄부터 본다 |
+| 공개키 | RunPod 은 계정 SSH 키를 `PUBLIC_KEY` 로 넣지만, 템플릿에 `PUBLIC_KEY` 를 빈 값으로 두면 그 값이 덮어써 공개키가 하나도 없게 되고 sshd 가 뜨지 않는다(3차 세션 2026-10-26: 빈 `PUBLIC_KEY` + 이름 칸에 이미지 다이제스트가 들어간 `SSH_PUBLIC_KEY`). 그래서 템플릿에 계정 공개키 값을 그대로 넣는다(공개키는 비밀이 아니다). Pod 를 켠 직후 RunPod Logs 에서 `simai-start: sshd 시작 (키 인증만, 키 N개)` 와 `wstunnel 시작` 줄을 먼저 보고, `공개키 형식이 아닌 줄 … 버렸다` / `sshd 를 띄우지 않아 443 예비 터널도 띄우지 않는다` 가 보이면 템플릿 `PUBLIC_KEY` 값(한 줄, `ssh-ed25519 …`)을 고친다(4차 세션: 이 때문에 약 45분 접속 불가) |
 
 결과는 컨테이너 디스크에 있으므로 Pod 를 지우기(Terminate) 전에 scp 로 가져온다(세션 큐가 명령을 출력한다). Stop 만 해도 같은 GPU 를 다시 못 잡을 수 있다.
 
@@ -245,8 +245,20 @@ wstunnel client --log-lvl OFF --tls-verify-certificate -L tcp://127.0.0.1:17000:
   모든 카메라·제어가 SSH 연결 하나(TCP 하나)에 묶여 한 카메라의 지연·끊김이 다른 카메라에 번지고, 그 연결이 끊기면 다 같이 끊긴다. 측정 결과를 wstunnel 직접 전달과 섞지 않는다.
 
 **SSH 세션의 환경 변수.** sshd 가 띄운 셸에는 컨테이너 ENV 가 없다. `simai-start` 가 sshd 를 띄울 때 비밀이 아닌 이름(`SIMAI_*`·`CUDA_*`·`NVIDIA_*`·`UV_*`·`RUNPOD_*`·`PYTHON*`·`PATH`·`LD_LIBRARY_PATH`, 이름에 TOKEN·SECRET·PASSW·API_KEY·PRIVATE·CREDENTIAL 이 든 것 제외)만
-`/etc/profile.d/simai-env.sh` 에 적는다. 로그인 셸(`ssh simai-pod`)은 자동으로 읽고, 명령 한 줄은 `ssh simai-pod 'bash -lc "simai-bootstrap queue ..."'` 처럼 로그인 셸로 돌린다.
+`/etc/profile.d/simai-env.sh` 에 적는다. 로그인 셸(`ssh simai-pod`)은 자동으로 읽고, 명령 한 줄은 `ssh simai-pod 'bash -lc "simai-bootstrap queue ..."'` 처럼 로그인 셸로 돌린다(비로그인 셸은 PATH 에 `python3`·`simai-bootstrap` 이 없다). 백그라운드 스크립트도 `SIMAI_ROOT=/srv/simai` 를 명시한다(이 티켓 수정 뒤에도 습관으로).
 HF 토큰·터널 비밀값은 이 파일에 없다. SSH 에서 가중치를 받아야 하면 그 명령에만 `HF_TOKEN="$(tr '\0' '\n' </proc/1/environ | sed -n 's/^HF_TOKEN=//p')" simai-bootstrap ...` 로 넘긴다.
+
+**GPU 세션 공통 주의 (4차 세션 교훈, S15P31A101-311, 4차 결과 요약은 Jira S15P31A101-293 2026-10-28 댓글).**
+
+- Pod 를 켠 직후 RunPod Logs 에서 `simai-start: sshd 시작 (키 인증만, 키 N개)` 와 `wstunnel 시작` 줄을 먼저 본다. `공개키 형식이 아닌 줄 … 버렸다` / `sshd 를 띄우지 않아 443 예비 터널도 띄우지 않는다` 가 보이면 템플릿 `PUBLIC_KEY` 값(한 줄, `ssh-ed25519 …`)을 고친다(4차: 이 때문에 약 45분 접속 불가).
+- Pod 셸 명령은 `bash -lc '…'` 로 부른다(비로그인 셸은 PATH 에 `python3`·`simai-bootstrap` 이 없다). 백그라운드 스크립트도 `SIMAI_ROOT=/srv/simai` 를 명시한다(이 티켓 수정 뒤에도 습관으로).
+- 노트북(Windows)에서 만든 tar 는 Pod 에서 `tar --no-same-owner -xf` 로 푼다(소유자 uid 변경 실패로 tar 가 실패 종료).
+- 저장소 사본 코드를 이미지에 깔린 패키지보다 먼저 쓰려면 Job `env` 에 `PYTHONPATH=<repo>/ai/src:<repo>/ai`(4차: 이미지 37c7ae5 에 없는 `simai_ai.hmr.prompt` 로 HMR 실패).
+- `gpu_queue` 는 실패한 Job 도 끝난 것으로 기억하고, `exp_job` 은 결과 폴더(metrics.json)가 있으면 덮어쓰지 않는다(종료 4) → 다시 돌릴 때는 큐 이름과 Run 이름을 새로 준다.
+- Tier 0 file 모드(녹화 재생)는 저장소 `ai/` 에서 `simai-bootstrap run simai-tier0 --config <json>` 으로(다른 위치면 `services` 모듈을 못 찾는다).
+- 공개 TCP 70000 대칭 포트 요청은 새 RunPod 템플릿 화면이 1~65535 만 받아 할 수 없다 → -288 (b) LTE Direct 비교는 그 방법을 찾기 전까지 뺀다. 443 터널 LIVE 는 공개 TCP 포트 없이 된다(`SIMAI_TUNNEL_ALLOW=17000,17001`).
+- 4차 실제 순서(다음 세션 기준안): 촬영(빈 장소 25 s ×2: 배경용·축척 정물용, 보정 걷기 180 s) → Pod: 장소 MapAnything·걷기 관절 추출(GPU 수 분) → EXP 큐 동안 노트북에서 World 고정·정물 축척·보정 문서·R1 묶음 → LIVE(+동시 녹화) → 검증 큐(v4)·남은 EXP → 녹화 재생 → 결과 받기(4차 1.85 GB 가 443 터널로 약 8분) → sha256 확인 → Terminate.
+- 4차 결과 요약은 문서에 숫자를 옮기지 않고 Jira S15P31A101-293 2026-10-28 댓글을 본다.
 
 ### Vast.ai (예비)
 
@@ -379,7 +391,7 @@ simai-bootstrap scene -- python <사본>/ai/experiments/static_scene/run_mapanyt
 
 위 "RunPod 템플릿" 과 같고 다음만 다르다. 이미지 `<레지스트리>/<프로젝트>/tier0@sha256:<unified 다이제스트>`(무료 플랜 저장소 하나라 태그 접두 `unified-`), Container Disk 150GB 이상,
 환경 변수에 `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}`(Cosmos3-Nano 는 승인제가 아니지만 HF 속도 제한 완화), 분석 워커 값(`SIMAI_WORKER_*`, 위 표), 필요하면 `SIMAI_WORKER_ARGS`.
-시작 명령은 비운다(이미지 기본 = 감시 프로세스). 검증 세션은 `sleep infinity` 로 띄우고 SSH 로 `SIMAI_WEIGHTS_SET=exp02 simai-bootstrap queue`(이 이미지의 큐는 a·b·t·c·d·u1·u2·u3·u4, 아래 "Pod 검증 큐". u3·u4 는 장면 준비 모드로 `static` 가중치를 따로 받는다). 통합 이미지에는 `SIMAI_WEIGHTS_SET` 이 없어(기본 tier0) 그대로 부르면 u2(HMR 보정 K)·`simai-exp02` 가 sam-3d-body 체크포인트 없음(종료 코드 2)으로 실패한다. HMR 만 따로 돌릴 때도 `SIMAI_WEIGHTS_SET=exp02 simai-bootstrap run simai-exp02 python <사본>/ai/experiments/hmr/run_image.py --mode official --calibration <K> --no-render ...`.
+시작 명령은 비운다(이미지 기본 = 감시 프로세스). 검증 세션은 `sleep infinity` 로 띄우고 SSH 로 `SIMAI_WEIGHTS_SET=exp02 simai-bootstrap queue`(이 이미지의 큐는 a·b·t·c·d·u1·u2·u3·u4, 아래 "Pod 검증 큐". u3·u4 는 장면 준비 모드로 `static` 가중치를 따로 받는다). 통합 이미지에는 `SIMAI_WEIGHTS_SET` 이 없어(기본 tier0) 그대로 부르면 u2(HMR 보정 K)·`simai-exp02` 가 sam-3d-body 체크포인트 없음(종료 코드 2)으로 실패한다. HMR 만 따로 돌릴 때도 `SIMAI_WEIGHTS_SET=exp02 simai-bootstrap run simai-exp02 python <사본>/ai/experiments/hmr/run_image.py --mode official --calibration <K> --no-render ...`(저장소 사본 코드를 이미지 패키지보다 먼저 쓰려면 `PYTHONPATH=<사본>/ai/src:<사본>/ai`, Tier 0 file 모드 녹화 재생은 `<사본>/ai/` 에서 `simai-bootstrap run simai-tier0 --config <json>`).
 RunPod Stop 이 SIGTERM 뒤 얼마를 기다리는지는 문서로 확인하지 못했다: 저널은 기록마다 fsync 라(명세 3.2) 강제 종료돼도 재시작 복구가 된다.
 
 ### VM형 (엘리스 등 GPU VM + 블록 스토리지, `docker run --gpus all`)
