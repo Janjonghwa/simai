@@ -1,5 +1,11 @@
 import { SKELETON_VISIBLE_KEY } from '@/features/viewer3d/data/contractAdapter';
 import type { SourceConnection } from '@/features/viewer3d/data/spatialSource';
+import {
+  avatarMeshUrl,
+  rootRotationFor,
+  SYNTHETIC_MHR,
+  walkRotations,
+} from '@/features/viewer3d/dev-harness/avatarFixture';
 
 // 개발·시험 전용 Mock 시나리오. 실제 관측·판정이 아니다. 브라우저에서 위험을 판정하지 않고, 계약에 맞게 미리 만든 이벤트만 재생한다.
 // 같은 (시나리오, tick, t0) 는 늘 같은 메시지를 만든다. MockSource 스트림과 MSW REST 응답이 이 한 곳에서 나온다.
@@ -23,6 +29,11 @@ export const SCENARIOS = [
     key: 'crowd',
     label: '다인원 골격',
     hint: '12명(골격 10·관절 결손·접지 미확인·예측·확인 불가). -56 렌더 성능 측정용',
+  },
+  {
+    key: 'avatar-mesh',
+    label: '아바타 메시(EXP-02)',
+    hint: '5 Hz avatar_frame(합성 리그). w-0002 2초 끊김·w-0001 0.8초 늦음 → 캡슐, w-0003 자산 404 → 캡슐',
   },
 ] as const;
 
@@ -49,6 +60,7 @@ export const PERIOD: Record<ScenarioKey, number> = {
   disconnect: 70,
   'invalid-input': 10,
   crowd: 120,
+  'avatar-mesh': 120,
 };
 
 /**
@@ -72,6 +84,7 @@ const CODE: Record<ScenarioKey, number> = {
   'invalid-input': 5,
   geofence: 6,
   crowd: 7,
+  'avatar-mesh': 8,
 };
 
 const hex = (n: number, width: number) => n.toString(16).padStart(width, '0').slice(-width);
@@ -684,7 +697,95 @@ export function scenarioTick(key: ScenarioKey, tick: number, t0: number): Scenar
   if (key === 'invalid-input' && (INVALID_STEPS as readonly number[]).includes(p)) {
     message(invalidMessage(p, tick, t0));
   }
+  if (key === 'avatar-mesh' && tick % AVATAR_EVERY === 0) {
+    const frame = avatarFrameMessage(tick, t0);
+    if (frame) message(frame);
+  }
   return out;
+}
+
+// ---- 아바타 메시(EXP-02, -65) ----
+
+/** avatar_frame 간격(tick). 10 Hz World 의 절반, 5 Hz. */
+export const AVATAR_EVERY = 2;
+/** 평소 HMR 지연(촬영 → World 최신, ms). 되돌아가기 기준(500 ms) 안이다. */
+export const AVATAR_LAG_MS = 300;
+/** 늦음 구간의 지연(ms). 기준을 넘어 캡슐로 돌아간다. */
+export const AVATAR_LATE_LAG_MS = 800;
+/** 주기 안 tick 구간. w-0002 포즈 끊김, w-0001 늦음. */
+export const AVATAR_STALL = [50, 70] as const;
+export const AVATAR_LATE = [80, 100] as const;
+/**
+ * 자산 버전. w-0003 은 없는 버전(MSW 404)을 가리켜 자산 실패를 보인다. sha256 은 캐시 키라 다른 파일인 것처럼 다른 값을 단다
+ * (같은 sha256 이면 Viewer 는 이미 받은 파일을 다시 쓴다).
+ */
+export const avatarVersionOf = (id: string) => (id === 'w-0003' ? 9 : 0);
+const MISSING_MESH_SHA256 = 'sha256:' + 'e'.repeat(64);
+
+const inRange = (p: number, [from, to]: readonly [number, number]) => p >= from && p < to;
+
+/** tick 시점의 avatar_frame. 보낼 사람이 없으면 null. 위치는 싣지 않는다(world_state 정본). */
+export function avatarFrameMessage(tick: number, t0: number) {
+  const key: ScenarioKey = 'avatar-mesh';
+  const p = tick % PERIOD[key];
+  const t = tAt(t0, tick);
+  const avatars = MOCK_TRACK_IDS.flatMap((id) => {
+    if (id === 'w-0002' && inRange(p, AVATAR_STALL)) return [];
+    const lag = id === 'w-0001' && inRange(p, AVATAR_LATE) ? AVATAR_LATE_LAG_MS : AVATAR_LAG_MS;
+    // 촬영 시각의 위치로 진행 방향과 걸음을 정한다(관절 회전만 싣는다).
+    const at = tick - lag / TICK_MS;
+    const [x0, y0] = poseOf(id, at);
+    const [x1, y1] = poseOf(id, at + 1);
+    const speed = Math.hypot(x1 - x0, y1 - y0) * (1000 / TICK_MS);
+    const heading = Math.atan2(y1 - y0, x1 - x0);
+    const revision = id === 'w-0003' ? 1 : 0;
+    const version = avatarVersionOf(id);
+    return [
+      {
+        world_id: id,
+        identity_revision: revision,
+        capture_time_ms: t - lag,
+        received_at_ms: t + 10,
+        calibration_version: VERSIONS.calibration,
+        appearance_version: version,
+        joint_source: 'inferred',
+        pose: {
+          root_rotation: rootRotationFor(heading),
+          joint_rotations: walkRotations((2 * Math.PI * at) / 10, Math.min(1, speed)),
+        },
+        asset: {
+          stream_epoch: t0,
+          identity_revision: revision,
+          mesh_url: avatarMeshUrl(id, t0, version),
+          mesh_sha256: version === 0 ? SYNTHETIC_MHR.meshSha256 : MISSING_MESH_SHA256,
+          mesh_format: 'GLB_SKINNED',
+          joint_count: SYNTHETIC_MHR.jointCount,
+          joint_parents_sha256: SYNTHETIC_MHR.jointParentsSha256,
+          pelvis_joint_index: SYNTHETIC_MHR.pelvisJointIndex,
+          texture_url: null,
+          surface_source_url: null,
+          surface_ratios: { OBSERVED: 0, INTERPOLATED: 0, UNOBSERVED: 1 },
+          face_ratios: { OBSERVED: 0, UNOBSERVED: 1 },
+          face_policy: 'EXCLUDED',
+        },
+      },
+    ];
+  });
+  if (avatars.length === 0) return null;
+  return envelope(
+    'avatar_frame',
+    mockMsgId(key, tick, 3),
+    t + 30,
+    {
+      input_provenance: {
+        frames: { source: 'SIM', dataset_id: 'mock/avatar-mesh' },
+        tracks: { source: 'SIM', provider_version: 'spatial-mock-0.1.0' },
+        is_upper_bound: true,
+      },
+      avatars,
+    },
+    '1.0.0',
+  );
 }
 
 // ---- 구역(DEMO 형상) ----

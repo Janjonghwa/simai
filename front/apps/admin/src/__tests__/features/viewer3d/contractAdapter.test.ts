@@ -52,19 +52,30 @@ describe('정본 예제', () => {
         risk_event: 'event',
         viewer_health: 'health',
         action_mismatch: 'ignored',
-        avatar_frame: 'ignored',
+        avatar_frame: 'avatar',
       }[type!];
       expect([name(path), result.kind]).toEqual([name(path), expected]);
     }
   });
 
-  it('/topic/avatar(avatar_frame)는 검사만 하고 그리지 않는다(EXP-02 뷰어 연결 전)', () => {
-    const result = adaptMessage(example('avatar_frame'), 0);
-    expect(result).toEqual({
-      kind: 'ignored',
-      msgType: 'avatar_frame',
-      msgId: '7f1c2a10-4b6e-4c1d-9a2b-000000000252',
+  it('/topic/avatar(avatar_frame)는 사람별 관절 회전·자산만 옮기고 위치는 싣지 않는다(-65)', () => {
+    const result = adaptMessage(example('avatar_frame'), 5);
+    if (result.kind !== 'avatar') throw new Error(result.kind);
+    expect(result.frame.msgId).toBe('7f1c2a10-4b6e-4c1d-9a2b-000000000252');
+    expect(result.frame.dropped).toEqual([]);
+    const [first] = result.frame.avatars;
+    expect(first).toMatchObject({
+      worldId: 'w-0012',
+      identityRevision: 2,
+      captureTimeMs: 1760342400100,
+      receivedAt: 5,
+      calibrationVersion: 'cal-7',
+      rootRotation: [1.5192, 0.47, 0.47],
+      asset: { jointCount: 127, pelvisJointIndex: 1, meshFormat: 'GLB_SKINNED' },
     });
+    expect(first!.jointRotations).toHaveLength(127);
+    expect(first!.jointRotations[43]).toBeNull();
+    expect(Object.keys(first!)).not.toContain('position');
   });
 
   it('잘못된 예제는 모두 계약 오류로 거부한다', () => {

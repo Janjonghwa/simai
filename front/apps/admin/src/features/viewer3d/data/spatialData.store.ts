@@ -19,6 +19,7 @@ import type {
   WorkSurfacesResult,
   ZonesResult,
 } from '@/features/viewer3d/data/spatialSource';
+import { isNewerPose, type AvatarPoseView } from '@/features/viewer3d/people/avatarFrame';
 import { adaptGeometry } from '@/features/viewer3d/surfaces/officialStaticObjects';
 import {
   NO_WORK_SURFACES,
@@ -30,12 +31,14 @@ import { createStore, type StoreApi } from 'zustand/vanilla';
 // 10 Hz World 는 여기만 바꾸고 Canvas·장면 트리는 다시 만들지 않는다. 구독하는 렌더러만 갱신한다.
 
 export type IngestOutcome =
-  'world' | 'event' | 'health' | 'ignored' | 'rejected' | 'duplicate' | 'out_of_order';
+  'world' | 'event' | 'health' | 'avatar' | 'ignored' | 'rejected' | 'duplicate' | 'out_of_order';
 
 export interface IngestCounts {
   world: number;
   event: number;
   health: number;
+  /** 사람 포즈를 하나 이상 받은 avatar_frame(-65). */
+  avatar: number;
   ignored: number;
   rejected: number;
   /** 같은 msg_id, 또는 같은 event_sequence 를 다시 받았다. */
@@ -63,6 +66,11 @@ export interface SpatialDataState {
   /** 키 `${source}:${event_id}`. LIVE·PLANNED·REPLAY·WHAT_IF 를 섞지 않는다. 해소된 이벤트도 남긴다. */
   events: ReadonlyMap<string, RiskEventView>;
   health: HealthView | null;
+  /**
+   * 사람별 가장 새 아바타 포즈(EXP-02, -65). 키 world_id. 존재·위치는 world 가 정본이라 여기 있어도 world 에 없으면 그리지 않는다.
+   * 30초 넘게 새 포즈가 없는 사람은 뺀다(설계 '사람 제거').
+   */
+  avatars: ReadonlyMap<string, AvatarPoseView>;
   zones: ZoneSnapshot;
   /** 등록 작업면 OBB(Operational Geometry, -188). 10 Hz World 와 따로 바뀐다. */
   workSurfaces: WorkSurfaceSnapshot;
@@ -85,6 +93,7 @@ const ZERO: IngestCounts = {
   world: 0,
   event: 0,
   health: 0,
+  avatar: 0,
   ignored: 0,
   rejected: 0,
   duplicate: 0,
@@ -92,6 +101,8 @@ const ZERO: IngestCounts = {
 };
 // 중복 확인용으로 기억하는 msg_id 수. 10 Hz World 기준 약 100초.
 const SEEN_LIMIT = 1024;
+/** 이만큼 새 포즈가 없으면 그 사람의 아바타 포즈를 지운다(ms, 설계 '사람 제거'). */
+export const AVATAR_FORGET_MS = 30_000;
 
 const eventKey = (source: EventSource, eventId: string) => `${source}:${eventId}`;
 // event_sequence 가 없을 때(LIVE 가 아닌 출처 등) 순서를 가릴 시각.
@@ -127,6 +138,7 @@ export function createSpatialDataStore(): SpatialDataStore {
       world: null,
       events: new Map(),
       health: null,
+      avatars: new Map(),
       zones: NO_ZONES,
       workSurfaces: NO_WORK_SURFACES,
       lastRejected: null,
@@ -139,7 +151,12 @@ export function createSpatialDataStore(): SpatialDataStore {
           bump('rejected', { lastRejected: { reason, msgType, detail, at: receivedAt } });
           return 'rejected';
         }
-        const msgId = result.kind === 'ignored' ? result.msgId : metaId(result);
+        const msgId =
+          result.kind === 'ignored'
+            ? result.msgId
+            : result.kind === 'avatar'
+              ? result.frame.msgId
+              : metaId(result);
         if (seen.has(msgId)) {
           bump('duplicate');
           return 'duplicate';
@@ -150,6 +167,28 @@ export function createSpatialDataStore(): SpatialDataStore {
           case 'ignored':
             bump('ignored');
             return 'ignored';
+          case 'avatar': {
+            const avatars = new Map(get().avatars);
+            let pruned = 0;
+            for (const [id, pose] of avatars) {
+              if (receivedAt - pose.receivedAt > AVATAR_FORGET_MS) {
+                avatars.delete(id);
+                pruned += 1;
+              }
+            }
+            let accepted = 0;
+            for (const pose of result.frame.avatars) {
+              if (!isNewerPose(avatars.get(pose.worldId), pose)) continue;
+              avatars.set(pose.worldId, pose);
+              accepted += 1;
+            }
+            if (accepted === 0) {
+              bump('outOfOrder', pruned > 0 ? { avatars } : {});
+              return 'out_of_order';
+            }
+            bump('avatar', { avatars });
+            return 'avatar';
+          }
           case 'world': {
             const prev = get().world;
             if (prev && result.frame.tLatestGlobal <= prev.tLatestGlobal) {
@@ -230,6 +269,7 @@ export function createSpatialDataStore(): SpatialDataStore {
           world: null,
           events: new Map(),
           health: null,
+          avatars: new Map(),
           zones: NO_ZONES,
           workSurfaces: NO_WORK_SURFACES,
           lastRejected: null,

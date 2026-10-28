@@ -86,6 +86,12 @@ export type {
 } from '@/features/viewer3d/editing/editTypes';
 export { DEFAULT_LAYERS, VIEWER_LAYER_KEYS, VIEWER_LAYER_MODES } from '@/features/viewer3d/layers';
 export type { ViewerLayerKey, ViewerLayerMode, ViewerLayers } from '@/features/viewer3d/layers';
+export type { AvatarMeshFetch } from '@/features/viewer3d/people/avatarMesh';
+export {
+  AVATAR_LATE_MS,
+  AVATAR_PLAYBACK_DELAY_MS,
+  AVATAR_STALL_MS,
+} from '@/features/viewer3d/people/avatarMeshPolicy';
 export {
   PLANNED_KINDS,
   plannedGeometryProblem,

@@ -18,6 +18,11 @@ import type {
   ViewerPlannedEditPreview,
   ViewerPlannedEditResult,
 } from '@/features/viewer3d/editing/editTypes';
+import {
+  AvatarMeshContext,
+  fetchAvatarMesh,
+  type AvatarMeshConfig,
+} from '@/features/viewer3d/people/avatarMesh';
 import { PersonModelContext } from '@/features/viewer3d/people/PersonLayer';
 import { createPlannedStore, PlannedStoreContext } from '@/features/viewer3d/planned/plannedLayout';
 import {
@@ -50,6 +55,7 @@ import {
   useEffect,
   useEffectEvent,
   useImperativeHandle,
+  useMemo,
   useState,
   type ReactNode,
 } from 'react';
@@ -91,6 +97,8 @@ export function ViewerShell({
   children,
   dataStore,
   personModelUrl = null,
+  avatarMesh = 'auto',
+  avatarMeshFetch = fetchAvatarMesh,
   zoneApplyState = 'UNVERIFIED',
   scene = null,
   onSceneStatusChange,
@@ -104,6 +112,10 @@ export function ViewerShell({
   });
   // 처음 받은 dataStore 를 계속 쓴다. 바꿔 넘겨도 장면의 구독을 옮기지 않는다.
   const [data] = useState(() => dataStore ?? createSpatialDataStore());
+  const meshConfig = useMemo<AvatarMeshConfig>(
+    () => ({ enabled: avatarMesh !== 'off', fetch: avatarMeshFetch }),
+    [avatarMesh, avatarMeshFetch],
+  );
   // 편집 세션(-195). 뷰어 Store·데이터 Store 를 읽기만 하고 원본을 바꾸지 않는다.
   // PLANNED 가상 배치(-186). LIVE 데이터 Store 와 따로 둔다. 입력은 FE 가 넘긴 배치 그대로다.
   const [planned] = useState(() => {
@@ -305,15 +317,17 @@ export function ViewerShell({
             <EditStoreContext value={edit.store}>
               <EditOverlayContext value={editDraftOverlay}>
                 <PersonModelContext value={personModelUrl}>
-                  <ZoneApplyContext value={zoneApplyState}>
-                    <SceneStoreContext value={sceneStore}>
-                      <SceneLoaderContext value={sceneLoader}>
-                        <PlannedStoreContext value={planned}>
-                          <ViewerCanvas>{children}</ViewerCanvas>
-                        </PlannedStoreContext>
-                      </SceneLoaderContext>
-                    </SceneStoreContext>
-                  </ZoneApplyContext>
+                  <AvatarMeshContext value={meshConfig}>
+                    <ZoneApplyContext value={zoneApplyState}>
+                      <SceneStoreContext value={sceneStore}>
+                        <SceneLoaderContext value={sceneLoader}>
+                          <PlannedStoreContext value={planned}>
+                            <ViewerCanvas>{children}</ViewerCanvas>
+                          </PlannedStoreContext>
+                        </SceneLoaderContext>
+                      </SceneStoreContext>
+                    </ZoneApplyContext>
+                  </AvatarMeshContext>
                 </PersonModelContext>
               </EditOverlayContext>
             </EditStoreContext>

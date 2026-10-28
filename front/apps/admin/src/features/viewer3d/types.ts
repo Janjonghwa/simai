@@ -174,6 +174,17 @@ export interface Viewer3DProps {
    * 처음 값을 쓰며 바꾸면 모델을 다시 읽는다.
    */
   personModelUrl?: string | null;
+  /**
+   * EXP-02 사람 메시(-65, 선택 사항). 'auto'(기본)면 source 로 avatar_frame(/topic/avatar)이 들어온 사람만 스키닝 메시로 그리고,
+   * 끊김(0.5 s)·늦음(500 ms)·ID 불확실·보정 불일치·자산 실패면 기존 캡슐·골격으로 되돌아간다. 'off' 면 늘 기존 경로다.
+   * 위치·접지·관측 상태는 늘 world_state 를 따른다.
+   */
+  avatarMesh?: 'auto' | 'off';
+  /**
+   * 아바타 자산(mesh_url, 같은 출처 /api/avatars/...) 내려받기(선택 사항). FE 가 인증된 요청 함수를 넘긴다.
+   * 없으면 fetch(url, { credentials: 'same-origin' }). 렌더마다 새 함수를 만들지 말고 고정해 넘긴다.
+   */
+  avatarMeshFetch?: (url: string) => Promise<ArrayBuffer>;
   /** 3D 대상을 더블클릭했을 때 부른다(구역 편집 모드에서 구역 더블클릭 즉시 수정 진입용). */
   onTargetDoubleClick?: (target: ViewerTarget) => void;
   /** 마운트 직후 한 번, 이후 단계·모드·오류가 바뀔 때마다 부른다. */
