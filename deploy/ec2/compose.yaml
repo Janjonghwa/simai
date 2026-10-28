@@ -48,6 +48,9 @@ services:
       SIMAI_STORAGE_REGION: ${SIMAI_STORAGE_REGION:-ap-northeast-2}
       SIMAI_STORAGE_ACCESS_KEY: ${SIMAI_STORAGE_ACCESS_KEY:-}
       SIMAI_STORAGE_SECRET_KEY: ${SIMAI_STORAGE_SECRET_KEY:-}
+      # 시연용 기본 장면(배경 glTF)의 버킷 객체 키(S15P31A101-264). Scene 생성 전까지 GET /api/scenes/current 가 이 객체를 준다.
+      # 비우면 그 조회만 404 SCENE_NOT_FOUND 이고 배경이 안 뜬다
+      SIMAI_SCENE_DEFAULT_GLTF_KEY: ${SIMAI_SCENE_DEFAULT_GLTF_KEY:-}
     networks: [edge, ec2-internal]
     depends_on:
       db:
