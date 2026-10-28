@@ -177,3 +177,47 @@ def test_stop_event_ends_recording(tmp_path):
     (headers,) = _headers(tmp_path)
     assert len(headers) == 11
     assert _events(tmp_path)[-2]["event"] == "stopped"
+
+
+class _BundleJumpPts(PacketSource):
+    """C110 처럼 PTS 를 13장 묶음마다 400 ms 번갈아 당기는 입력 흉내 (S15P31A101-315). 영상·수신 간격은 그대로다."""
+
+    kind = "SYNTHETIC"
+
+    def __init__(self, inner: SyntheticSource) -> None:
+        self._inner = inner
+        self._n = 0
+
+    def open(self) -> StreamInfo:
+        return self._inner.open()
+
+    def read(self) -> SourcePacket | None:
+        p = self._inner.read()
+        if p is None:
+            return None
+        shift = 36000 if (self._n // 13) % 2 else 0  # 400 ms (1/90000)
+        self._n += 1
+        return SourcePacket(p.data, p.pts + 90000 - shift, p.keyframe)
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def describe(self) -> dict:
+        return {"kind": self.kind}
+
+
+def test_broken_pts_timeline_is_recorded_with_frame_clock(tmp_path, contract_validator):
+    """깨진 PTS 시각선이면 그 프레임부터 프레임 시계로 매기고 events.jsonl 에 남긴다. 원본 source_pts 는 그대로 쓴다."""
+    clock = FakeClock()
+    synth = SyntheticSource(clock, width=64, height=48, fps=25, keyframe_interval_s=1.0)
+    _record(tmp_path, _BundleJumpPts(synth), clock, seconds=10.0)
+
+    (headers,) = _headers(tmp_path)
+    switch = [e for e in _events(tmp_path) if e["event"] == "pts_timeline_broken"]
+    assert switch == [{**switch[0], "stream_epoch": 0, "frame_sequence": 13, "clock": "frame_clock"}]
+    assert headers[14]["source_pts"] - headers[12]["source_pts"] == 2 * 3600 - 36000  # 원본 PTS 는 바꾸지 않는다
+    times = [h["estimated_capture_time_ms"] for h in headers[13:]]
+    assert all(b > a for a, b in zip(times, times[1:]))
+    for h in headers:
+        contract_validator("frame_header", h)
+        assert abs(h["estimated_capture_time_ms"] - synth.capture_time_ms(h["frame_sequence"] * 3600)) <= 1

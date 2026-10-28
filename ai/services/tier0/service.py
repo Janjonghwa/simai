@@ -561,6 +561,13 @@ class Tier0Service:
             self._replay = RecordingReplay(f.session_dir, f.camera_ids)
         except (OSError, ValueError, KeyError, TypeError) as e:
             raise Tier0StartError(f"녹화를 열지 못했다: {f.session_dir} ({type(e).__name__}: {e})", 4) from e
+        for r in self._replay.capture_time_repairs:  # 깨진 PTS 시각선 → 프레임 시계(S15P31A101-315). 녹화 파일은 그대로다
+            if r.broken_since is not None:
+                log.warning("녹화 재생: %s epoch %d 의 PTS 시각선이 깨져 frame_sequence %d 부터 %d 장의 촬영 시각을 프레임 시계로 "
+                            "다시 매긴다", r.camera_id, r.stream_epoch, r.broken_since, r.repaired)
+            elif r.skipped is not None and r.skipped != "disabled":
+                log.info("녹화 재생: %s epoch %d 의 촬영 시각은 녹화 헤더 그대로다(깨짐 감지 불가: %s)",
+                         r.camera_id, r.stream_epoch, r.skipped)
         self.replay_clock = ReplayClock(self._replay.start_ms, f.speed)
         self._mono_ns, self._wall_ms = self.replay_clock.mono_ns, self.replay_clock.wall_ms
 

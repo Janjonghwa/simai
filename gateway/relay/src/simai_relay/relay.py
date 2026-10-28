@@ -8,6 +8,8 @@
 - 새 epoch 는 codec_info 를 먼저 넘기고 키프레임부터 프레임을 넘긴다. 키프레임 전에 온 패킷은 버리고 개수를 센다.
 - 촬영 시각은 녹화 도구와 같은 추정기(simai_recorder.capture_time.ReceiveTimeEstimator)로, 헤더는 같은 함수
   (simai_recorder.i0)로 만든다. 녹화 파일과 LIVE 헤더가 같은 규칙을 따른다.
+  카메라 PTS 시각선이 깨지면(C110 묶음 점프) 그 epoch 의 남은 프레임은 프레임 시계로 매기고 WARNING pts_timeline_broken 을
+  한 번 남긴다(S15P31A101-315, docs/design/capture-time-broken-pts.md).
 - 비밀 값: RTSP 계정은 입력(RtspSource) 안에만 있다. 로그·상태에는 camera_id 와 입력 설명(계정 없음)만 쓴다.
 """
 
@@ -132,7 +134,7 @@ class CameraRelay:
     def _relay_epoch(self, source: PacketSource, info: StreamInfo, epoch: int) -> str:
         cid = self.camera_id
         model = self.spec.capture_time
-        estimator = ReceiveTimeEstimator(model, info.pts_timebase)  # epoch 마다 새로 (PTS 원점이 바뀐다)
+        estimator = ReceiveTimeEstimator(model, info.pts_timebase, info.nominal_fps)  # epoch 마다 새로 (PTS 원점이 바뀐다)
         timebase = pts_timebase_string(info)
         sequence: int | None = None  # None: codec_info·키프레임 대기
         dropped = 0
@@ -160,6 +162,9 @@ class CameraRelay:
                 self._event(logging.INFO, "stream_started", stream_epoch=epoch, dropped_before_keyframe=dropped)
                 sequence = 0
             t = estimator.estimate(received_at_ms, packet.pts)
+            if estimator.broken_since == sequence:
+                self._event(logging.WARNING, "pts_timeline_broken", stream_epoch=epoch, frame_sequence=sequence,
+                            clock=estimator.mode)
             header = build_frame_header(cid, epoch, sequence, packet, timebase, model, t, received_at_ms)
             self.stats.on_frame(header)
             self.sink.send_frame(I0Frame(header, packet.data))

@@ -197,3 +197,32 @@ def test_no_pts_uses_receive_time_with_wider_uncertainty(contract_validator):
         assert h["source_pts"] is None and h["pts_timebase"] == "1/90000"
         assert h["estimated_capture_time_ms"] == h["received_at_ms"] - 30
         assert h["timestamp_uncertainty_ms"] == 45.0
+
+
+def test_broken_pts_timeline_switches_to_frame_clock_per_epoch(contract_validator, caplog):
+    """C110 묶음 점프 PTS(13장마다 400 ms 번갈아): 헤더 촬영 시각이 뒤로 가지 않고, epoch 마다 한 번 WARNING 을 남긴다
+    (S15P31A101-315). 재접속한 epoch 는 PTS 식으로 다시 시작해 다시 감지한다. 원본 source_pts·received_at_ms 는 그대로다."""
+    clock = FakeClock()
+    synth = SyntheticSource(clock, width=64, height=48, fps=25, keyframe_interval_s=1.0)
+    info = synth.open()
+    packets = []
+    for i in range(300):
+        p = synth.read()
+        shift = 36000 if (i // 13) % 2 else 0  # 400 ms (1/90000)
+        packets.append(SourcePacket(p.data, p.pts + 90000 - shift, p.keyframe))
+    source = FaultySource(ListSource(info, packets, clock), FaultPlan(disconnect_after=(120,)), clock)
+    with caplog.at_level("WARNING", logger="simai_relay"):
+        _, sink = _relay(source, clock)
+
+    epochs = _epochs(sink)
+    assert len(epochs) == 2
+    warnings = [r.getMessage() for r in caplog.records if "pts_timeline_broken" in r.getMessage()]
+    assert len(warnings) == 2 and "stream_epoch=0 frame_sequence=13 clock=frame_clock" in warnings[0]
+    for _, frames in epochs:
+        times = [f.header["estimated_capture_time_ms"] for f in frames]
+        assert all(b >= a for a, b in zip(times, times[1:]))
+        for f in frames:
+            contract_validator("frame_header", f.header)
+            assert f.header["estimated_capture_time_ms"] <= f.header["received_at_ms"]
+    first = epochs[0][1]
+    assert first[14].header["source_pts"] - first[12].header["source_pts"] == 2 * 3600 - 36000
