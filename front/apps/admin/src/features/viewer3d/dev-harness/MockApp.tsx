@@ -1,6 +1,14 @@
 import { createSpatialDataStore } from '@/features/viewer3d/data/spatialData.store';
 import { DataPanel } from '@/features/viewer3d/dev-harness/DataPanel';
 import {
+  readSceneOption,
+  SCENE_OPTIONS,
+  sceneInputOf,
+  sceneStatusText,
+  withSceneOption,
+  type SceneOptionKey,
+} from '@/features/viewer3d/dev-harness/devScene';
+import {
   devViewOf,
   readDevView,
   readDiagnosticsOpen,
@@ -34,6 +42,7 @@ import type {
   ViewerObjectEditResult,
 } from '@/features/viewer3d/editing/editTypes';
 import { parseReplayLog, type ReplayLog } from '@/features/viewer3d/replay/replayLog';
+import type { ViewerSceneStatus } from '@/features/viewer3d/scene/sceneContract';
 import type {
   Viewer3DHandle,
   ViewerMode,
@@ -95,6 +104,12 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   const replaying = sourceKey === 'replay';
   const [avatar] = useState(() => readAvatar(window.location.search));
   const [zoneApply, setZoneApply] = useState(() => readZoneApply(window.location.search));
+  // 배경 Scene 입력(-59). FE 가 GET /api/scenes/current 로 받는 본문을 흉내 낸다.
+  const [sceneKey, setSceneKey] = useState(() => readSceneOption(window.location.search));
+  // 만료 시각은 고른 순간 기준이다(렌더 중에 시각을 읽지 않는다).
+  const [sceneInput, setSceneInput] = useState(() => sceneInputOf(sceneKey, Date.now()));
+  const sceneSwap = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [sceneStatus, setSceneStatus] = useState<ViewerSceneStatus | null>(null);
   // 3D 편집 소비 예시(-195). 받은 초안·결과를 보여 주기만 한다.
   const [editPreview, setEditPreview] = useState<ViewerEditPreview | null>(null);
   const [editResult, setEditResult] = useState<ViewerEditResult | null>(null);
@@ -151,6 +166,20 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
     );
   };
 
+  const changeScene = (next: SceneOptionKey) => {
+    setSceneKey(next);
+    // 시험 경우 여럿이 같은 scene_version 을 쓴다. 뷰어는 같은 버전이면 읽은 자산을 유지하므로(계약),
+    // 입력을 한 번 비워 각 경우를 새로 읽게 한다. 실제 FE 는 이렇게 할 필요가 없다.
+    setSceneInput(null);
+    if (sceneSwap.current) clearTimeout(sceneSwap.current);
+    sceneSwap.current = setTimeout(() => setSceneInput(sceneInputOf(next, Date.now())), 0);
+    window.history.replaceState(
+      window.history.state,
+      '',
+      withSceneOption(window.location.href, next),
+    );
+  };
+
   const selectMenu = (next: MenuKey) => {
     if (next === menu) {
       // 같은 메뉴는 패널만 열고 닫는다. 업무 모드는 그대로다.
@@ -193,6 +222,8 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           dataStore={dataStore}
           personModelUrl={avatar === 'xbot' ? DEV_XBOT_URL : null}
           zoneApplyState={zoneApply}
+          scene={sceneInput}
+          onSceneStatusChange={setSceneStatus}
         >
           <MockScene colors={colors} selected={selected} legacy={legacy} />
           {spatial && <WorldReference />}
@@ -233,6 +264,22 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           status={status}
           selected={selected}
         >
+          <div className="smk-data-row">
+            <select
+              aria-label="배경 Scene"
+              value={sceneKey}
+              onChange={(e) => changeScene(e.target.value as SceneOptionKey)}
+            >
+              {SCENE_OPTIONS.map((o) => (
+                <option key={o.key} value={o.key}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="smk-data-dim smk-mono" data-testid="scene-status">
+            {sceneStatusText(sceneStatus)}
+          </p>
           <DataPanel
             store={dataStore}
             sourceKey={sourceKey}

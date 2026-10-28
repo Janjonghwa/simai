@@ -1,0 +1,251 @@
+// 정적 배경 Scene(S15P31A101-59)의 입력 계약과 상태 판정. 렌더러·React 와 떨어진 순수 함수라 시험한다.
+//
+// 입력은 BE -264 GET /api/scenes/current 응답 본문 그대로다(docs/design/server-rules-scenes.md, 서버 SceneService):
+//   { scene_version, state: 'COMMITTED'|'DEFAULT', default, calibration_version, committed_at_ms, quality,
+//     gltf_url, gltf_expires_at_ms }
+// FE 가 인증된 HTTP 로 받아 그대로 넘긴다. Viewer 는 조회·재시도·인증을 하지 않는다(서명 주소 5분 만료 뒤 다시 받기는 FE 몫).
+//
+// 좌표: 배경 glTF 는 scene_output 계약의 GLTF_VISUAL 자산이고 glTF 규약(+Y 위, World (x, y, z) → (x, z, −y))으로
+// 내보낸다(contracts/experiments/scene_output.schema.json assets.axis_convention, "변환은 내보내기 어댑터 한 곳에서만").
+// 그래서 Viewer 는 받은 장면을 회전·이동·배율 없이 그대로 둔다. 응답에 축 규약이 없어 위 계약을 전제로 하고, 상태에 적는다.
+//
+// 배경은 보기용 Visual Geometry 다. 위험 판정·작업면·구역 형상으로 쓰지 않는다(명세 5.3·7.5).
+
+export const SCENE_STATES = ['COMMITTED', 'DEFAULT'] as const;
+export type SceneState = (typeof SCENE_STATES)[number];
+
+/** FE 가 넘기는 조회 결과. 실패면 이유와 HTTP 상태(있으면)만 넘긴다. 주소·토큰은 넘기지 않는다. */
+export type ViewerSceneInput =
+  { ok: true; raw: unknown } | { ok: false; reason: string; httpStatus?: number };
+
+/** 검사를 통과한 현재 Scene. */
+export interface CurrentScene {
+  sceneVersion: string;
+  state: SceneState;
+  /** COMMITTED 는 늘 있다. 시연용 기본 Scene(DEFAULT)은 보정 근거가 없어 null 이다. */
+  calibrationVersion: string | null;
+  committedAtMs: number | null;
+  /** 서명 주소. 자산이 없거나 저장소를 쓸 수 없으면 null(서버는 Scene 정보는 준다). */
+  gltfUrl: string | null;
+  gltfExpiresAtMs: number | null;
+}
+
+export type SceneReadResult = { ok: true; scene: CurrentScene } | { ok: false; reason: string };
+
+const field = (value: unknown, key: string): unknown =>
+  typeof value === 'object' && value !== null ? Reflect.get(value, key) : undefined;
+const isText = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim() !== '';
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+/** 브라우저가 읽을 수 있는 주소인지. http(s)·같은 출처 경로·blob 만 받는다(javascript: 등은 거부). */
+function readableUrl(value: string): boolean {
+  try {
+    const url = new URL(value, 'http://viewer.invalid/');
+    return url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'blob:';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 응답을 검사한다. 값을 고쳐 받지 않고, 틀리면 이유를 돌려준다(주소는 이유에 넣지 않는다).
+ * state 와 default 가 서로 맞지 않거나, COMMITTED 인데 보정 버전이 없으면 거부한다.
+ */
+export function readCurrentScene(raw: unknown): SceneReadResult {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return { ok: false, reason: '응답이 객체가 아니다' };
+  }
+  const sceneVersion = field(raw, 'scene_version');
+  if (!isText(sceneVersion)) return { ok: false, reason: 'scene_version 이 비었다' };
+  const state = field(raw, 'state');
+  if (!SCENE_STATES.some((s) => s === state)) {
+    return { ok: false, reason: 'state 는 COMMITTED 또는 DEFAULT 여야 한다' };
+  }
+  const isDefault = field(raw, 'default');
+  if (typeof isDefault !== 'boolean' || isDefault !== (state === 'DEFAULT')) {
+    return { ok: false, reason: 'default 와 state 가 맞지 않는다' };
+  }
+  const calibration = field(raw, 'calibration_version');
+  if (calibration !== null && calibration !== undefined && !isText(calibration)) {
+    return { ok: false, reason: 'calibration_version 형식이 틀렸다' };
+  }
+  if (state === 'COMMITTED' && !isText(calibration)) {
+    return { ok: false, reason: 'COMMITTED Scene 에 calibration_version 이 없다' };
+  }
+  const committedAt = field(raw, 'committed_at_ms');
+  if (committedAt !== null && committedAt !== undefined && !isFiniteNumber(committedAt)) {
+    return { ok: false, reason: 'committed_at_ms 형식이 틀렸다' };
+  }
+  const url = field(raw, 'gltf_url');
+  if (url !== null && url !== undefined && (!isText(url) || !readableUrl(url))) {
+    return { ok: false, reason: 'gltf_url 이 읽을 수 있는 주소가 아니다' };
+  }
+  const expires = field(raw, 'gltf_expires_at_ms');
+  if (expires !== null && expires !== undefined && !isFiniteNumber(expires)) {
+    return { ok: false, reason: 'gltf_expires_at_ms 형식이 틀렸다' };
+  }
+  return {
+    ok: true,
+    scene: {
+      sceneVersion,
+      state: state as SceneState,
+      calibrationVersion: isText(calibration) ? calibration : null,
+      committedAtMs: isFiniteNumber(committedAt) ? committedAt : null,
+      gltfUrl: isText(url) ? url : null,
+      gltfExpiresAtMs: isFiniteNumber(expires) ? expires : null,
+    },
+  };
+}
+
+/** 배경 자산을 읽는 단계. */
+export type SceneLoadPhase = 'IDLE' | 'LOADING' | 'LOADED' | 'FAILED' | 'EXPIRED';
+
+export interface SceneLoad {
+  phase: SceneLoadPhase;
+  /** 읽은 Scene 버전. 다른 Scene 의 늦은 결과를 섞지 않으려고 같이 둔다. */
+  sceneVersion: string | null;
+  /** 실패 이유(주소 없음). */
+  reason: string | null;
+  /** 읽은 자산의 World 경계(m). 정합을 눈으로 확인할 때 쓴다. */
+  boundsWorld: { min: [number, number, number]; max: [number, number, number] } | null;
+}
+
+export const IDLE_LOAD: SceneLoad = {
+  phase: 'IDLE',
+  sceneVersion: null,
+  reason: null,
+  boundsWorld: null,
+};
+
+/**
+ * 화면 전체 상태.
+ * - NONE: 입력 없음 · UNAVAILABLE: FE 조회 실패(404 SCENE_NOT_FOUND 포함) · REJECTED: 응답 형식 오류
+ * - NO_ASSET: Scene 은 있으나 glTF 주소가 없음 · EXPIRED: 서명 주소 만료·권한 거부(다시 받아야 함)
+ * - LOADING · LOADED · FAILED(404·손상·빈 자산)
+ */
+export type SceneStatusPhase =
+  'NONE' | 'UNAVAILABLE' | 'REJECTED' | 'NO_ASSET' | 'EXPIRED' | 'LOADING' | 'LOADED' | 'FAILED';
+
+/**
+ * 정합 판정.
+ * - VERIFIED: COMMITTED 이고 world_state 의 scene·calibration 버전이 같고 viewer_health 와도 어긋나지 않음
+ * - DEFAULT_UNVERIFIED: 시연용 기본 Scene. 현장 정합 근거가 없다
+ * - UNCONFIRMED: 비교할 world_state 가 아직 없음
+ * - MISMATCH: 버전이 다름(배경을 숨긴다)
+ */
+export type SceneVerification = 'VERIFIED' | 'DEFAULT_UNVERIFIED' | 'UNCONFIRMED' | 'MISMATCH';
+
+/** FULL 그대로 · DIMMED 흐리게(정합 근거 없음) · HIDDEN 숨기고 기본 바닥만. */
+export type SceneDisplay = 'FULL' | 'DIMMED' | 'HIDDEN';
+
+export interface ViewerSceneStatus {
+  phase: SceneStatusPhase;
+  sceneVersion: string | null;
+  state: SceneState | null;
+  calibrationVersion: string | null;
+  verification: SceneVerification | null;
+  display: SceneDisplay;
+  /** 어긋난 항목(예: 'world.scene_version=scene-4'). 비교하지 못한 항목은 넣지 않는다. */
+  mismatches: string[];
+  /** FE 가 /api/scenes/current 를 다시 받아야 한다(서명 주소 만료·권한 거부). */
+  needsRefetch: boolean;
+  reason: string | null;
+  boundsWorld: SceneLoad['boundsWorld'];
+  /** 축 규약은 응답에 없어 scene_output 계약(GLTF_Y_UP)을 전제로 한다. */
+  axisConvention: 'GLTF_Y_UP_ASSUMED';
+}
+
+/** 정합 판정에 쓰는 지금 값. 모르면 null. */
+export interface SceneVersions {
+  worldScene: string | null;
+  worldCalibration: string | null;
+  healthCommitted: string | null;
+  healthLive: string | null;
+  healthMismatch: boolean | null;
+}
+
+export function verifyScene(
+  scene: CurrentScene,
+  v: SceneVersions,
+): { verification: SceneVerification; mismatches: string[] } {
+  if (scene.state === 'DEFAULT') return { verification: 'DEFAULT_UNVERIFIED', mismatches: [] };
+  const mismatches: string[] = [];
+  if (v.worldScene !== null && v.worldScene !== scene.sceneVersion)
+    mismatches.push(`world.scene_version=${v.worldScene}`);
+  if (v.worldCalibration !== null && v.worldCalibration !== scene.calibrationVersion)
+    mismatches.push(`world.calibration_version=${v.worldCalibration}`);
+  if (v.healthCommitted !== null && v.healthCommitted !== scene.sceneVersion)
+    mismatches.push(`health.scene.committed_version=${v.healthCommitted}`);
+  if (v.healthMismatch === true) mismatches.push('health.scene.mismatch=true');
+  if (mismatches.length > 0) return { verification: 'MISMATCH', mismatches };
+  if (v.worldScene === null || v.worldCalibration === null) {
+    return { verification: 'UNCONFIRMED', mismatches };
+  }
+  return { verification: 'VERIFIED', mismatches };
+}
+
+/** 입력·읽기 단계·지금 버전으로 화면 상태를 만든다. 같은 입력이면 같은 값이다. */
+export function sceneStatusOf(
+  input: ViewerSceneInput | null,
+  load: SceneLoad,
+  versions: SceneVersions,
+): ViewerSceneStatus {
+  const base: ViewerSceneStatus = {
+    phase: 'NONE',
+    sceneVersion: null,
+    state: null,
+    calibrationVersion: null,
+    verification: null,
+    display: 'HIDDEN',
+    mismatches: [],
+    needsRefetch: false,
+    reason: null,
+    boundsWorld: null,
+    axisConvention: 'GLTF_Y_UP_ASSUMED',
+  };
+  if (!input) return base;
+  if (!input.ok) {
+    const forbidden = input.httpStatus === 401 || input.httpStatus === 403;
+    return { ...base, phase: 'UNAVAILABLE', reason: input.reason, needsRefetch: forbidden };
+  }
+  const read = readCurrentScene(input.raw);
+  if (!read.ok) return { ...base, phase: 'REJECTED', reason: read.reason };
+  const { scene } = read;
+  const { verification, mismatches } = verifyScene(scene, versions);
+  const known = {
+    ...base,
+    sceneVersion: scene.sceneVersion,
+    state: scene.state,
+    calibrationVersion: scene.calibrationVersion,
+    verification,
+    mismatches,
+  };
+  const current = load.sceneVersion === scene.sceneVersion ? load : IDLE_LOAD;
+  // 같은 Scene 을 이미 읽었으면 새 응답의 주소가 없거나 만료여도 그 자산을 그대로 쓴다(내용이 같다).
+  if (!scene.gltfUrl && current.phase !== 'LOADED') {
+    return { ...known, phase: 'NO_ASSET', reason: 'glTF 주소가 없다' };
+  }
+  const phase: SceneStatusPhase =
+    current.phase === 'IDLE' ? 'LOADING' : (current.phase as SceneStatusPhase);
+  const display: SceneDisplay =
+    phase !== 'LOADED' || verification === 'MISMATCH'
+      ? 'HIDDEN'
+      : verification === 'VERIFIED'
+        ? 'FULL'
+        : 'DIMMED';
+  return {
+    ...known,
+    phase,
+    display,
+    reason: current.reason,
+    needsRefetch: phase === 'EXPIRED',
+    boundsWorld: current.boundsWorld,
+  };
+}
+
+/** 같은 상태인지(알림을 줄이려고 비교한다). */
+export function sameSceneStatus(a: ViewerSceneStatus, b: ViewerSceneStatus): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}

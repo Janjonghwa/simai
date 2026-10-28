@@ -71,6 +71,23 @@ export type {
   ReplayStatus,
 } from '@/features/viewer3d/replay/replaySource';
 export {
+  SCENE_STATES,
+  readCurrentScene,
+  sceneStatusOf,
+  verifyScene,
+} from '@/features/viewer3d/scene/sceneContract';
+export type {
+  CurrentScene,
+  SceneDisplay,
+  SceneReadResult,
+  SceneState,
+  SceneStatusPhase,
+  SceneVerification,
+  SceneVersions,
+  ViewerSceneInput,
+  ViewerSceneStatus,
+} from '@/features/viewer3d/scene/sceneContract';
+export {
   adaptWorkSurfaces,
   geometryProblem,
   obbWorkSurface,

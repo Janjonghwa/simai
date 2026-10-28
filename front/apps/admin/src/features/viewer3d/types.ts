@@ -10,6 +10,7 @@ import type {
   ViewerObjectEditResult,
   ViewerWorkSurfaceGeometry,
 } from '@/features/viewer3d/editing/editTypes';
+import type { ViewerSceneInput, ViewerSceneStatus } from '@/features/viewer3d/scene/sceneContract';
 import type { Ref } from 'react';
 
 // FE 와 주고받는 값의 모양이다. FE 통합(S15P31A101-193 완료 조건) 때 함께 확정하며, 아직 팀 공통 계약이 아니다.
@@ -126,5 +127,16 @@ export interface Viewer3DProps {
    * 단일 구역 또는 여러 구역 배열을 모두 받는다.
    */
   editDraftOverlay?: ViewerEditOverlayInput;
+  /**
+   * 정적 배경 Scene(S15P31A101-59). FE 가 인증된 HTTP 로 받은 GET /api/scenes/current 결과를 그대로 넘긴다
+   * (`{ ok: true, raw: 응답 본문 }` 또는 실패 `{ ok: false, reason, httpStatus? }`). 없거나 null 이면 기본 바닥만 그린다.
+   * 렌더마다 새 객체를 만들지 말고 응답이 바뀔 때만 바꾼다. 같은 scene_version 의 서명 주소만 바뀌면 자산을 다시 읽지 않는다.
+   */
+  scene?: ViewerSceneInput | null;
+  /**
+   * 배경 상태(읽기 단계·정합 판정·표시 방식·다시 받기 필요)가 바뀔 때 부른다. needsRefetch 면 FE 가 다시 조회한다.
+   * 서명 주소·토큰은 싣지 않는다.
+   */
+  onSceneStatusChange?: (status: ViewerSceneStatus) => void;
   className?: string;
 }

@@ -16,6 +16,19 @@ import type {
   ViewerObjectEditResult,
 } from '@/features/viewer3d/editing/editTypes';
 import { PersonModelContext } from '@/features/viewer3d/people/PersonLayer';
+import {
+  sameSceneStatus,
+  sceneStatusOf,
+  type ViewerSceneStatus,
+} from '@/features/viewer3d/scene/sceneContract';
+import {
+  createSceneStore,
+  loadGltfScene,
+  SceneLoaderContext,
+  SceneStoreContext,
+  sceneVersionsOf,
+  type SceneAssetLoader,
+} from '@/features/viewer3d/scene/sceneStore';
 import type { Viewer3DProps, ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
 import { createViewerStore, toStatus } from '@/features/viewer3d/viewer3d.store';
 import { ViewerCanvas } from '@/features/viewer3d/ViewerCanvas';
@@ -45,6 +58,8 @@ export interface ViewerShellProps extends Viewer3DProps {
    * 바꿔도 Canvas·장면은 그대로이고 구역 모양만 바뀐다.
    */
   zoneApplyState?: ZoneApplyState;
+  /** 배경 glTF 읽기 함수. 시험만 바꿔 끼운다. 없으면 GLTFLoader. */
+  sceneLoader?: SceneAssetLoader;
 }
 
 /** 뷰어 상태·명령·알림과 데이터 입력을 묶는다. 인스턴스가 살아 있는 동안 store 와 Canvas 는 하나다. */
@@ -65,12 +80,17 @@ export function ViewerShell({
   dataStore,
   personModelUrl = null,
   zoneApplyState = 'UNVERIFIED',
+  scene = null,
+  onSceneStatusChange,
+  sceneLoader = loadGltfScene,
 }: ViewerShellProps) {
   const [store] = useState(() => createViewerStore(initialMode));
   // 처음 받은 dataStore 를 계속 쓴다. 바꿔 넘겨도 장면의 구독을 옮기지 않는다.
   const [data] = useState(() => dataStore ?? createSpatialDataStore());
   // 편집 세션(-195). 뷰어 Store·데이터 Store 를 읽기만 하고 원본을 바꾸지 않는다.
   const [edit] = useState(() => createEditStore(store, data));
+  // 정적 배경 Scene(-59). 입력은 FE 가 받은 /api/scenes/current 결과 그대로다.
+  const [sceneStore] = useState(createSceneStore);
   const mode = useStore(store, (s) => s.mode);
   const phase = useStore(store, (s) => s.phase);
 
@@ -117,6 +137,36 @@ export function ViewerShell({
   const emitObjectEditResult = useEffectEvent((result: ViewerObjectEditResult) =>
     onObjectEditResult?.(result),
   );
+  const emitSceneStatus = useEffectEvent((status: ViewerSceneStatus) =>
+    onSceneStatusChange?.(status),
+  );
+
+  useEffect(() => {
+    sceneStore.getState().setInput(scene);
+  }, [sceneStore, scene]);
+
+  // 배경 상태는 입력·읽기 단계·World·Health 버전이 바뀔 때만 알린다(10 Hz World 마다 알리지 않는다).
+  useEffect(() => {
+    let last: ViewerSceneStatus | null = null;
+    const update = () => {
+      const { input, load } = sceneStore.getState();
+      const next = sceneStatusOf(input, load, sceneVersionsOf(data.getState()));
+      if (last && sameSceneStatus(last, next)) return;
+      last = next;
+      emitSceneStatus(next);
+    };
+    update();
+    const offScene = sceneStore.subscribe(update);
+    const offData = data.subscribe((state, prev) => {
+      if (state.world?.sceneVersion !== prev.world?.sceneVersion) update();
+      else if (state.world?.calibrationVersion !== prev.world?.calibrationVersion) update();
+      else if (state.health !== prev.health) update();
+    });
+    return () => {
+      offScene();
+      offData();
+    };
+  }, [sceneStore, data]);
 
   useEffect(() => {
     let last = toStatus(store.getState());
@@ -190,7 +240,11 @@ export function ViewerShell({
               <EditOverlayContext value={editDraftOverlay}>
                 <PersonModelContext value={personModelUrl}>
                   <ZoneApplyContext value={zoneApplyState}>
-                    <ViewerCanvas>{children}</ViewerCanvas>
+                    <SceneStoreContext value={sceneStore}>
+                      <SceneLoaderContext value={sceneLoader}>
+                        <ViewerCanvas>{children}</ViewerCanvas>
+                      </SceneLoaderContext>
+                    </SceneStoreContext>
                   </ZoneApplyContext>
                 </PersonModelContext>
               </EditOverlayContext>

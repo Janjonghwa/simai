@@ -4,6 +4,7 @@ import { GizmoController } from '@/features/viewer3d/editing/GizmoController';
 import { ObbGizmoController } from '@/features/viewer3d/editing/ObbGizmo';
 import { PersonLayer } from '@/features/viewer3d/people/PersonLayer';
 import { RiskScope } from '@/features/viewer3d/risk/RiskScope';
+import { SceneBackground } from '@/features/viewer3d/scene/SceneBackground';
 import { SceneBase } from '@/features/viewer3d/SceneBase';
 import { WorkSurfaceLayer } from '@/features/viewer3d/surfaces/WorkSurfaceLayer';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
@@ -78,6 +79,8 @@ export const ViewerCanvas = memo(function ViewerCanvas({ children }: ViewerCanva
       <RendererStatus />
       <CameraRig />
       <SceneBase />
+      {/* 정적 배경 Scene(-59). 같은 깊이 버퍼라 배경 뒤 사람은 가려진다. 클릭은 받지 않는다. */}
+      <SceneBackground />
       <RiskScope>
         <ZoneLayer />
         <PersonLayer />
