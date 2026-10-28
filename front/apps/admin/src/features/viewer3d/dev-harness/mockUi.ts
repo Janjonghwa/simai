@@ -119,7 +119,9 @@ export function fixtureName(target: ViewerTarget): string | null {
  * object 대상은 작업면(-188)과 정적 객체(-274)가 함께 쓰므로 둘을 묶어 '등록 객체'로 부른다.
  */
 export function displayName(target: ViewerTarget): string | null {
-  const fallback = { person: '작업자', zone: '구역', object: '등록 객체' }[target.type];
+  const fallback = { person: '작업자', zone: '구역', object: '등록 객체', planned: '가상 객체' }[
+    target.type
+  ];
   return fixtureName(target) ?? (fallback ? `${fallback} ${target.id}` : null);
 }
 

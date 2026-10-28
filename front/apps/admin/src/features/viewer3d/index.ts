@@ -30,6 +30,7 @@ export {
   EDIT_FIELDS,
   OBJECT_EDIT_FIELDS,
   OBSTACLE_OBB_POLICY,
+  PLANNED_OBB_POLICY,
   WORK_SURFACE_OBB_POLICY,
   ZONE_AABB_POLICY,
   applyEditOperation,
@@ -76,10 +77,27 @@ export type {
   ViewerObjectEditResult,
   ViewerObjectKind,
   ViewerObstacleGeometry,
+  ViewerPlannedEditField,
+  ViewerPlannedEditPreview,
+  ViewerPlannedEditResult,
+  ViewerPlannedGeometry,
+  ViewerPlannedKind,
   ViewerWorkSurfaceGeometry,
 } from '@/features/viewer3d/editing/editTypes';
 export { DEFAULT_LAYERS, VIEWER_LAYER_KEYS, VIEWER_LAYER_MODES } from '@/features/viewer3d/layers';
 export type { ViewerLayerKey, ViewerLayerMode, ViewerLayers } from '@/features/viewer3d/layers';
+export {
+  PLANNED_KINDS,
+  plannedGeometryProblem,
+  readPlannedLayout,
+} from '@/features/viewer3d/planned/plannedLayout';
+export type {
+  PlannedGeometry,
+  PlannedKind,
+  PlannedLayoutInput,
+  PlannedObjectInput,
+  PlannedSnapshot,
+} from '@/features/viewer3d/planned/plannedLayout';
 export { parseReplayLog } from '@/features/viewer3d/replay/replayLog';
 export type {
   ReplayFile,

@@ -80,6 +80,17 @@ export const OBSTACLE_OBB_POLICY: EditPolicy = {
   rotate: { yaw: true, pitch: false, roll: false },
 };
 
+/**
+ * -186 PLANNED 가상 객체(개구부·비계·장비) OBB. 정적 객체와 같은 조작(X·Y·Z 이동, 6개 면, 수평 회전)이고 기울임은 없다.
+ * 정책 이름만 달라 진단·시험에서 LIVE 정적 객체와 구분한다.
+ */
+export const PLANNED_OBB_POLICY: EditPolicy = {
+  name: 'planned-obb',
+  translate: { x: true, y: true, z: true },
+  faces: EDIT_FACES,
+  rotate: { yaw: true, pitch: false, roll: false },
+};
+
 export type EditFailureReason = 'NOT_EDITABLE' | 'INVALID_GEOMETRY';
 
 export type EditOutcome =

@@ -109,3 +109,22 @@ push 의 반환값(`ACCEPTED`·`STALE_REQUEST`·`SCOPE_MISMATCH`)은 새로 생�
 - `pushZones`·`pushWorkSurfaces` 반환형이 `void` 에서 `SnapshotPushOutcome` 으로 바뀌었다. 반환값을 쓰지 않는 호출과 `vi.fn()` 가짜는 영향이 없다.
 - `ZoneSnapshot.contract`·`ViewerEditProvenance.zoneContract`·`geometryContract` 의 값 종류가 늘었다. 기존 값을 직접 적는 FE 시험은 그대로 맞다.
 - `CommandResult` 의 성공 값에 선택 필드 `pending` 이 생겼다. `select` 를 `waitMs` 로 부를 때만 붙는다.
+
+## PLANNED 가상 배치(-186)
+
+TBM 계획의 가상 개구부·비계·장비를 3D 에 놓고 고친다. 배치 목록·저장·평가·보고서는 FE -62·BE -30 몫이고, Viewer 는 받은 배치를 그리고 편집 결과를 World 값으로 돌려준다(`saved: false`).
+
+- 입력: `plannedLayout={{ layoutId, objects: [{ id, kind, geometry: { center, size, yawRad }, label? }] }}`. `kind` 는 OPENING·SCAFFOLD·EQUIPMENT.
+  - 형상은 World(m, +Z 위) OBB 다. `center` 는 3D 중심, `size` 는 지역 X'·Y'·높이 전체 길이(> 0), `yawRad` 는 [-π, π] 다. 도 값과 0 크기는 거부한다.
+  - 같은 `id` 는 모두 빼고, 모르는 종류도 뺀다(`readPlannedLayout`·`plannedGeometryProblem` 으로 FE 폼 검사에 같은 규칙을 쓸 수 있다).
+- 격리:
+  - PLANNED 모드에서만 그리고 장면 대상(`{ type: 'planned', id }`)으로 올린다. LIVE·REPLAY 로 바뀌면 내려가고, 선택이 풀리며 편집은 끝난다(LIVE 는 `MODE_CHANGED` 취소, REPLAY 는 `NOT_EDITABLE` 거부).
+  - 배치는 LIVE 데이터 Store 와 따로 두어 World·구역·작업면·위험 이벤트를 바꾸지 않는다. 위험 강조 대상도 아니다.
+- 편집:
+  - 기존 객체는 `beginEdit({ type: 'planned', id }, { draft?, before? })`, 새 객체는 `beginPlannedCreate({ id, kind, geometry })` 로 연다.
+  - 손잡이·엔진은 작업면·장애물과 같은 OBB 조작기다(X·Y·Z 이동, 6면 크기, 수평 회전, 기울임 없음, 정책 `PLANNED_OBB_POLICY`).
+  - 숫자 입력은 `updatePlannedEditField`, 끝내기는 `finishPlannedEdit`·`cancelPlannedEdit` 다.
+  - 결과는 `onPlannedEditPreview`·`onPlannedEditResult` 로만 알리고, LIVE `onObjectEdit*` 에는 섞지 않는다. LIVE object 명령(`cancelObjectEdit` 등)은 가상 객체 편집에 쓰이지 않는다.
+- 결과: `{ status, target, mode: 'PLANNED', origin: REGISTERED|NEW, plannedKind, layoutId, before, after, changed, saved: false }`. FE 가 FINISHED 결과로 배치를 고쳐 다시 넘기면 그 값이 새 원본이다.
+  - 편집 중 그 객체가 배치에서 사라지거나 바뀌거나 `layoutId` 가 바뀌면 `STALE_SOURCE` 로 끝난다. NEW 와 같은 ID 가 배치에 들어와도 같다.
+- 하지 않는 것: 가상 객체로 위험 판정·평가, 서버 저장·발행, 종류별 의미 해석(예: 개구부를 바닥 구멍으로 렌더링).

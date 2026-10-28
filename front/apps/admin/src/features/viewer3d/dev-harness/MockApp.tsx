@@ -40,12 +40,19 @@ import {
   withGeometryMode,
   type GeometryMode,
 } from '@/features/viewer3d/dev-harness/officialFixtures';
+import {
+  applyPlannedResult,
+  DEMO_PLANNED_LAYOUT,
+  PlannedPanel,
+} from '@/features/viewer3d/dev-harness/PlannedPanel';
 import { useRoster } from '@/features/viewer3d/dev-harness/useRoster';
 import type {
   ViewerEditPreview,
   ViewerEditResult,
   ViewerObjectEditPreview,
   ViewerObjectEditResult,
+  ViewerPlannedEditPreview,
+  ViewerPlannedEditResult,
 } from '@/features/viewer3d/editing/editTypes';
 import { DEFAULT_LAYERS, type ResolvedLayers } from '@/features/viewer3d/layers';
 import { parseReplayLog, type ReplayLog } from '@/features/viewer3d/replay/replayLog';
@@ -111,6 +118,15 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   );
   const [layers, setLayers] = useState<ResolvedLayers>(DEFAULT_LAYERS);
   const [selectRequest, setSelectRequest] = useState<ViewerSelectRequest | null>(null);
+  // -186 PLANNED 가상 배치 소비 예시. FINISHED 결과를 받으면 배치를 바꿔 다시 넘긴다(FE 계획 화면 흉내).
+  const [plannedLayout, setPlannedLayout] = useState(DEMO_PLANNED_LAYOUT);
+  const [plannedPreview, setPlannedPreview] = useState<ViewerPlannedEditPreview | null>(null);
+  const [plannedResult, setPlannedResult] = useState<ViewerPlannedEditResult | null>(null);
+  const receivePlannedResult = (result: ViewerPlannedEditResult) => {
+    setPlannedResult(result);
+    setPlannedPreview(null);
+    setPlannedLayout((layout) => applyPlannedResult(layout, result));
+  };
   // 개발 화면에서 고른 녹화 기록. null 이면 예시 기록을 재생한다.
   const [replayLog, setReplayLog] = useState<ReplayLog | null>(null);
   // 재생 입력이면 모드는 REPLAY 다. 처음 고른 입력에 맞춰 시작하고, 이후에는 입력·메뉴를 바꾸는 동작에서 정한다.
@@ -243,6 +259,9 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           onEditResult={receiveEditResult}
           onObjectEditPreview={setObjectPreview}
           onObjectEditResult={receiveObjectResult}
+          plannedLayout={plannedLayout}
+          onPlannedEditPreview={setPlannedPreview}
+          onPlannedEditResult={receivePlannedResult}
           source={harness.source}
           layers={layers}
           dataStore={dataStore}
@@ -306,6 +325,14 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           <p className="smk-data-dim smk-mono" data-testid="scene-status">
             {sceneStatusText(sceneStatus)}
           </p>
+          <PlannedPanel
+            viewer={viewer}
+            layout={plannedLayout}
+            mode={status?.mode ?? 'LIVE'}
+            selected={selected}
+            preview={plannedPreview}
+            result={plannedResult}
+          />
           <ContractPanel
             viewer={viewer}
             store={dataStore}

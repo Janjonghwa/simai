@@ -1,4 +1,5 @@
 import type { ZoneContract } from '@/features/viewer3d/data/spatialFrame';
+import type { PlannedGeometry, PlannedKind } from '@/features/viewer3d/planned/plannedLayout';
 import type { ObstacleGeometry } from '@/features/viewer3d/surfaces/obstacleGeometry';
 import type {
   WorkSurfaceContract,
@@ -229,3 +230,51 @@ export type ViewerObjectEditResult =
  */
 export type ViewerObjectEditField =
   'centerX' | 'centerY' | 'width' | 'depth' | 'topHeight' | 'yaw' | 'centerZ' | 'height';
+
+// ---- PLANNED 가상 배치 편집(S15P31A101-186) ----
+// 구역·작업면 콜백과 따로 알린다(onPlannedEditPreview·onPlannedEditResult). LIVE 편집 결과와 섞이지 않는다.
+// 형상은 World(m, +Z 위) OBB(center 3D 중심·size 전체 길이·yawRad)이고, 저장·평가·발행은 FE -62·BE -30 몫이다(saved: false).
+
+/** 가상 객체 종류. 개구부·비계·장비. */
+export type ViewerPlannedKind = PlannedKind;
+/** 가상 객체 형상(World m·rad). */
+export type ViewerPlannedGeometry = PlannedGeometry;
+/** 숫자로 고치는 가상 객체 값. 정적 객체와 같다(centerX·centerY·centerZ·width·depth·height·topHeight·yaw). */
+export type ViewerPlannedEditField = ViewerObjectEditField;
+
+interface PlannedEditBase {
+  target: ViewerTarget;
+  /** 늘 PLANNED 다. */
+  mode: ViewerMode;
+  /** REGISTERED 받은 배치의 객체를 고침 · NEW 3D 에서 새로 만듦(아직 배치에 없음). */
+  origin: ViewerObjectEditOrigin;
+  plannedKind: ViewerPlannedKind;
+  /** 편집을 시작할 때 받은 배치의 layoutId(없으면 null). */
+  layoutId: string | null;
+  saved: false;
+}
+
+export interface ViewerPlannedEditPreview extends PlannedEditBase {
+  before: ViewerPlannedGeometry;
+  draft: ViewerPlannedGeometry;
+}
+
+export type ViewerPlannedEditResult =
+  | (PlannedEditBase & {
+      status: 'FINISHED';
+      before: ViewerPlannedGeometry;
+      after: ViewerPlannedGeometry;
+      changed: boolean;
+    })
+  | (PlannedEditBase & {
+      status: 'CANCELLED';
+      before: ViewerPlannedGeometry;
+      reason: ViewerEditCancelReason;
+    })
+  | {
+      status: 'REJECTED';
+      target: ViewerTarget | null;
+      reason: ViewerEditRejectReason;
+      detail: string;
+      saved: false;
+    };

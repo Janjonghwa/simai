@@ -8,6 +8,7 @@ import {
   isValidShape,
   objectFieldOperations,
   OBSTACLE_OBB_POLICY,
+  PLANNED_OBB_POLICY,
   sameBox,
   WORK_SURFACE_OBB_POLICY,
   ZONE_AABB_POLICY,
@@ -34,8 +35,20 @@ import type {
   ViewerObjectEditProvenance,
   ViewerObjectEditResult,
   ViewerObjectKind,
+  ViewerPlannedEditPreview,
+  ViewerPlannedEditResult,
 } from '@/features/viewer3d/editing/editTypes';
 import type { ViewerLayerKey } from '@/features/viewer3d/layers';
+import {
+  createPlannedStore,
+  isPlannedKind,
+  plannedGeometryProblem,
+  plannedIdProblem,
+  plannedJson,
+  type PlannedGeometry,
+  type PlannedKind,
+  type PlannedStore,
+} from '@/features/viewer3d/planned/plannedLayout';
 import {
   obbObstacle,
   obstacleItem,
@@ -75,9 +88,12 @@ export type WorkSurfaceEditHandle = (typeof OBJECT_EDIT_HANDLES)[number];
 export const OBSTACLE_EDIT_HANDLES = [...OBJECT_EDIT_HANDLES, 'z-', 'lift'] as const;
 export type ObjectEditHandle = (typeof OBSTACLE_EDIT_HANDLES)[number];
 
-/** 대상 종류마다 띄우는 손잡이. */
-export const objectEditHandles = (kind: ViewerObjectKind): readonly ObjectEditHandle[] =>
-  kind === 'OBSTACLE' ? OBSTACLE_EDIT_HANDLES : OBJECT_EDIT_HANDLES;
+/** OBB 세션의 대상 종류. PLANNED 는 -186 가상 배치 객체다(결과는 따로 알린다). */
+export type EditObjectKind = ViewerObjectKind | 'PLANNED';
+
+/** 대상 종류마다 띄우는 손잡이. 바닥에 놓인 작업면만 z-·lift 가 없다. */
+export const objectEditHandles = (kind: EditObjectKind): readonly ObjectEditHandle[] =>
+  kind === 'WORK_SURFACE' ? OBJECT_EDIT_HANDLES : OBSTACLE_EDIT_HANDLES;
 
 /** object 대상의 원본(작업면 또는 정적 객체)을 찾는다. 없으면 null. */
 export function findEditableObject(snapshot: WorkSurfaceSnapshot, id: string) {
@@ -100,18 +116,21 @@ export function findEditableObject(snapshot: WorkSurfaceSnapshot, id: string) {
   return null;
 }
 
-const KIND_POLICY: Record<ViewerObjectKind, EditPolicy> = {
+const KIND_POLICY: Record<EditObjectKind, EditPolicy> = {
   WORK_SURFACE: WORK_SURFACE_OBB_POLICY,
   OBSTACLE: OBSTACLE_OBB_POLICY,
+  PLANNED: PLANNED_OBB_POLICY,
 };
-const KIND_LABEL: Record<ViewerObjectKind, string> = {
+const KIND_LABEL: Record<EditObjectKind, string> = {
   WORK_SURFACE: '작업면',
   OBSTACLE: '정적 객체',
+  PLANNED: '가상 객체',
 };
 /** 주어 꼴(조사 포함). */
-const KIND_SUBJECT: Record<ViewerObjectKind, string> = {
+const KIND_SUBJECT: Record<EditObjectKind, string> = {
   WORK_SURFACE: '작업면이',
   OBSTACLE: '정적 객체가',
+  PLANNED: '가상 객체가',
 };
 /** 대상 종류마다 그 대상을 그리는 레이어(-234). interactive 가 아니면 편집하지 않는다. */
 const KIND_LAYER: Record<ViewerObjectKind, ViewerLayerKey> = {
@@ -139,8 +158,12 @@ export interface EditSession {
 export interface ObjectEditSession {
   target: ViewerTarget;
   mode: ViewerMode;
-  /** WORK_SURFACE 등록 작업면 · OBSTACLE 등록 정적 객체(-274). 정책·결과 모양이 갈린다. */
-  objectKind: ViewerObjectKind;
+  /** WORK_SURFACE 등록 작업면 · OBSTACLE 등록 정적 객체(-274) · PLANNED 가상 배치(-186). 정책·결과 모양이 갈린다. */
+  objectKind: EditObjectKind;
+  /** PLANNED 일 때 가상 객체 종류. 그 밖에는 null. */
+  plannedKind: PlannedKind | null;
+  /** PLANNED 일 때 시작한 배치의 layoutId. 그 밖에는 null. */
+  layoutId: string | null;
   policy: EditPolicy;
   base: WorldObb;
   draft: WorldObb;
@@ -162,6 +185,8 @@ export interface EditState {
   objectSession: ObjectEditSession | null;
   /** 작업면 편집의 마지막 결과(시작 거부 포함). */
   lastObjectResult: ViewerObjectEditResult | null;
+  /** PLANNED 가상 객체 편집의 마지막 결과(시작 거부 포함, -186). */
+  lastPlannedResult: ViewerPlannedEditResult | null;
   /** options 로 미저장 초안을 한 번에 다시 연다(-234). 없으면 원본에서 시작한다. */
   begin(input: unknown, options?: ViewerBeginEditOptions): ViewerEditCommandResult;
   /** from(보통 끌기 시작 때 초안)에 조작을 적용해 초안으로 둔다. 거부되면 초안은 그대로다. */
@@ -186,6 +211,12 @@ export interface EditState {
   finishObject(): ViewerObjectEditResult | null;
   /** 새 작업면을 3D 에서 만든다(-188). ID·처음 형상을 받아 NEW 편집 세션을 연다. 등록·저장은 하지 않는다. */
   createObject(input: unknown): ViewerEditCommandResult;
+  /** 새 가상 객체를 만든다(-186, PLANNED 모드만). ID·종류·처음 형상으로 NEW 편집 세션을 연다. */
+  createPlanned(input: unknown): ViewerEditCommandResult;
+  /** 가상 객체 편집을 취소한다. 가상 객체 편집 중이 아니면 null. */
+  cancelPlanned(reason?: ViewerEditCancelReason): ViewerPlannedEditResult | null;
+  /** 가상 객체 편집을 끝내고 World 결과를 돌려준다(저장 아님). 편집 중이 아니면 null. */
+  finishPlanned(): ViewerPlannedEditResult | null;
 }
 
 export type EditStore = StoreApi<EditState>;
@@ -264,11 +295,39 @@ function releaseCreated(viewer: ViewerStore, session: ObjectEditSession) {
   if (session.origin === 'NEW') viewer.getState().unregisterTarget(session.target);
 }
 
+/** 가상 객체 세션의 내부 출처 칸. 바깥에 알리지 않는다(가상 배치 결과는 layoutId 만 싣는다). */
+const PLANNED_PROVENANCE: ViewerObjectEditProvenance = Object.freeze({
+  sourceId: null,
+  geometryContract: 'OPERATIONAL_GEOMETRY_UNCONFIRMED',
+  surfacesReceivedAt: null,
+  geometryVersion: null,
+  sceneVersion: null,
+  configVersion: null,
+});
+
+/** 가상 객체 세션의 미리보기(-186). 형상은 World OBB(center·size·yawRad)다. */
+export function plannedPreviewOf(session: ObjectEditSession): ViewerPlannedEditPreview {
+  return {
+    target: session.target,
+    mode: session.mode,
+    origin: session.origin,
+    plannedKind: session.plannedKind!,
+    layoutId: session.layoutId,
+    before: plannedJson(obbObstacle(session.base)),
+    draft: plannedJson(obbObstacle(session.draft)),
+    saved: false,
+  };
+}
+
 /**
  * 뷰어 인스턴스마다 하나. 뷰어 선택·모드·데이터를 읽어 세션을 지킨다.
  * connect() 가 돌려준 해제 함수를 뷰어가 내려갈 때 부른다(진행 중인 편집은 UNMOUNTED 로 취소).
  */
-export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
+export function createEditStore(
+  viewer: ViewerStore,
+  data: SpatialDataStore,
+  planned: PlannedStore = createPlannedStore(),
+) {
   const store = createStore<EditState>()((set, get) => {
     const reject = (
       target: ViewerTarget | null,
@@ -315,6 +374,11 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
     const cancelObject = (reason: ViewerEditCancelReason = 'USER') => {
       const { objectSession } = get();
       if (!objectSession) return null;
+      // 가상 객체 세션은 결과 모양이 달라 따로 끝낸다(LIVE object 결과로 알리지 않는다).
+      if (objectSession.objectKind === 'PLANNED') {
+        cancelPlanned(reason);
+        return null;
+      }
       const result: ViewerObjectEditResult = {
         status: 'CANCELLED',
         target: objectSession.target,
@@ -336,6 +400,170 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
     ): ViewerEditCommandResult => {
       set({ lastObjectResult: { status: 'REJECTED', target, reason, detail, saved: false } });
       return { ok: false, reason };
+    };
+
+    // ---- PLANNED 가상 배치(-186). 같은 OBB 세션·손잡이(ObbGizmo)·엔진을 쓰고 결과만 따로 알린다 ----
+    // 배치는 planned Store 에서만 읽는다(LIVE 데이터 Store 와 섞지 않는다). PLANNED 모드에서만 연다.
+    const plannedCommon = (session: ObjectEditSession) => ({
+      target: session.target,
+      mode: session.mode,
+      origin: session.origin,
+      plannedKind: session.plannedKind!,
+      layoutId: session.layoutId,
+      saved: false as const,
+    });
+    const plannedOf = (obb: WorldObb): PlannedGeometry => plannedJson(obbObstacle(obb));
+    const closePlanned = (session: ObjectEditSession, result: ViewerPlannedEditResult) => {
+      set({ objectSession: null, lastPlannedResult: result });
+      releaseCreated(viewer, session);
+    };
+    const refusePlanned = (
+      target: ViewerTarget | null,
+      reason: ViewerEditRejectReason,
+      detail: string,
+    ): ViewerEditCommandResult => {
+      set({ lastPlannedResult: { status: 'REJECTED', target, reason, detail, saved: false } });
+      return { ok: false, reason };
+    };
+    const cancelPlanned = (reason: ViewerEditCancelReason = 'USER') => {
+      const session = get().objectSession;
+      if (!session || session.objectKind !== 'PLANNED') return null;
+      const result: ViewerPlannedEditResult = {
+        ...plannedCommon(session),
+        status: 'CANCELLED',
+        before: plannedOf(session.base),
+        reason,
+      };
+      closePlanned(session, result);
+      return result;
+    };
+    const finishPlanned = () => {
+      const session = get().objectSession;
+      if (!session || session.objectKind !== 'PLANNED' || session.dragging) return null;
+      const result: ViewerPlannedEditResult = isValidShape({ kind: 'obb', ...session.draft })
+        ? {
+            ...plannedCommon(session),
+            status: 'FINISHED',
+            before: plannedOf(session.base),
+            after: plannedOf(session.draft),
+            changed: !sameObb(session.base, session.draft, 0),
+          }
+        : {
+            status: 'REJECTED',
+            target: session.target,
+            reason: 'INVALID_GEOMETRY',
+            detail: '초안 형상이 유효하지 않다',
+            saved: false,
+          };
+      closePlanned(session, result);
+      return result;
+    };
+    /** 가상 객체 세션을 연다. 진행 중인 다른 편집은 바뀐 것으로 끝낸다. 새 객체는 장면 대상으로 임시로 올린다. */
+    const openPlanned = (
+      target: ViewerTarget,
+      base: WorldObb,
+      draft: WorldObb,
+      origin: ViewerObjectEditOrigin,
+      plannedKind: PlannedKind,
+      layoutId: string | null,
+    ) => {
+      if (get().objectSession) cancelObject('REPLACED');
+      if (get().session) cancel('REPLACED');
+      if (origin === 'NEW') viewer.getState().registerTarget(target);
+      viewer.getState().select(target);
+      set({
+        objectSession: {
+          target,
+          mode: 'PLANNED',
+          objectKind: 'PLANNED',
+          plannedKind,
+          layoutId,
+          policy: PLANNED_OBB_POLICY,
+          base,
+          draft: copyObb(draft),
+          settled: copyObb(draft),
+          provenance: PLANNED_PROVENANCE,
+          origin,
+          source: {},
+          dragging: null,
+          refused: null,
+        },
+      });
+    };
+    /** 모드·준비 검사. PLANNED 가 아니면 가상 배치를 열지 않는다(LIVE·REPLAY 와 격리). */
+    const plannedGate = (target: ViewerTarget | null): ViewerEditCommandResult | null => {
+      const { phase, mode } = viewer.getState();
+      if (phase !== 'ready') return refusePlanned(target, 'NOT_READY', '뷰어가 준비되지 않았다');
+      if (mode !== 'PLANNED') {
+        return refusePlanned(target, 'NOT_EDITABLE', '가상 배치는 PLANNED 모드에서만 편집한다');
+      }
+      return null;
+    };
+    const beginPlanned = (
+      target: ViewerTarget,
+      options: ViewerBeginEditOptions = {},
+    ): ViewerEditCommandResult => {
+      const gated = plannedGate(target);
+      if (gated) return gated;
+      const { snapshot } = planned.getState();
+      const found = snapshot.objects.find((o) => o.id === target.id);
+      if (!found) return refusePlanned(target, 'NOT_FOUND', '배치에 그 가상 객체가 없다');
+      const base = obstacleObb(found);
+      let draft = base;
+      if (options.before !== undefined) {
+        const before = readEditObb('OBSTACLE', options.before);
+        if (!before)
+          return refusePlanned(target, 'INVALID_GEOMETRY', 'before 형상이 유효하지 않다');
+        if (!sameObb(before, base)) {
+          return refusePlanned(target, 'STALE_SOURCE', '초안을 만든 뒤 원본 가상 객체가 바뀌었다');
+        }
+      }
+      if (options.draft !== undefined) {
+        const parsed = readEditObb('OBSTACLE', options.draft);
+        if (!parsed) return refusePlanned(target, 'INVALID_GEOMETRY', '초안 형상이 유효하지 않다');
+        draft = parsed;
+      }
+      const current = get().objectSession;
+      if (current && sameTarget(current.target, target)) {
+        if (options.draft !== undefined && !current.dragging) {
+          set({ objectSession: { ...current, draft, settled: draft, refused: null } });
+        }
+        return { ok: true };
+      }
+      if (!viewer.getState().targets.has(targetKey(target))) {
+        return refusePlanned(target, 'NOT_FOUND', '장면에 그 가상 객체가 등록되지 않았다');
+      }
+      openPlanned(target, base, draft, 'REGISTERED', found.kind, snapshot.layoutId);
+      return { ok: true };
+    };
+    const createPlanned = (input: unknown): ViewerEditCommandResult => {
+      const read = (key: string): unknown =>
+        typeof input === 'object' && input !== null ? Reflect.get(input, key) : undefined;
+      const [id, kind, geometry] = [read('id'), read('kind'), read('geometry')];
+      const idProblem = plannedIdProblem(id);
+      if (idProblem) return refusePlanned(null, 'INVALID_TARGET', idProblem);
+      const target: ViewerTarget = { type: 'planned', id: id as string };
+      const gated = plannedGate(target);
+      if (gated) return gated;
+      if (!isPlannedKind(kind)) {
+        return refusePlanned(
+          target,
+          'INVALID_TARGET',
+          'kind 는 OPENING·SCAFFOLD·EQUIPMENT 중 하나여야 한다',
+        );
+      }
+      const { snapshot } = planned.getState();
+      if (
+        snapshot.objects.some((o) => o.id === target.id) ||
+        viewer.getState().targets.has(targetKey(target))
+      ) {
+        return refusePlanned(target, 'INVALID_TARGET', '이미 배치에 있는 ID 다');
+      }
+      const problem = plannedGeometryProblem(geometry);
+      if (problem) return refusePlanned(target, 'INVALID_GEOMETRY', problem);
+      const base = obstacleObb(geometry as PlannedGeometry);
+      openPlanned(target, base, base, 'NEW', kind, snapshot.layoutId);
+      return { ok: true };
     };
 
     /** 엔진 결과를 작업면 초안에 반영한다. 거부되면 이유만 남기고 초안은 마지막 유효 값이다. */
@@ -426,6 +654,8 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
           target,
           mode,
           objectKind: found.objectKind,
+          plannedKind: null,
+          layoutId: null,
           policy: KIND_POLICY[found.objectKind],
           base,
           draft: copyObb(draft),
@@ -496,6 +726,8 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
           target,
           mode,
           objectKind: 'WORK_SURFACE',
+          plannedKind: null,
+          layoutId: null,
           policy: WORK_SURFACE_OBB_POLICY,
           base,
           draft: copyObb(base),
@@ -522,12 +754,14 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
       lastResult: null,
       objectSession: null,
       lastObjectResult: null,
+      lastPlannedResult: null,
 
       begin: (input, options = {}) => {
         const target = parseTarget(input);
         if (!target) return refuse(null, 'INVALID_TARGET', '대상 모양이 틀렸다');
         // 사람은 관측 결과라 편집 대상이 아니다. 작업면(object)은 등록 OBB 편집(-188)으로 보낸다.
         if (target.type === 'object') return beginObject(target, options);
+        if (target.type === 'planned') return beginPlanned(target, options);
         if (target.type !== 'zone') {
           return refuse(target, 'NOT_EDITABLE', `${target.type} 는 아직 편집 대상이 아니다`);
         }
@@ -763,6 +997,10 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
       finishObject: () => {
         const session = get().objectSession;
         if (!session || session.dragging) return null;
+        if (session.objectKind === 'PLANNED') {
+          finishPlanned();
+          return null;
+        }
         if (!isValidShape({ kind: 'obb', ...session.draft })) {
           const result: ViewerObjectEditResult = {
             status: 'REJECTED',
@@ -789,6 +1027,9 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
       },
 
       createObject,
+      createPlanned,
+      cancelPlanned,
+      finishPlanned,
     };
   });
 
@@ -809,6 +1050,20 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
     const endObject = (reason: ViewerEditRejectReason, detail: string) => {
       const session = store.getState().objectSession;
       if (!session) return;
+      if (session.objectKind === 'PLANNED') {
+        store.setState({
+          objectSession: null,
+          lastPlannedResult: {
+            status: 'REJECTED',
+            target: session.target,
+            reason,
+            detail,
+            saved: false,
+          },
+        });
+        releaseCreated(viewer, session);
+        return;
+      }
       const result: ViewerObjectEditResult = {
         status: 'REJECTED',
         target: session.target,
@@ -846,7 +1101,8 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
     });
     const offData = data.subscribe((state, prev) => {
       const object = store.getState().objectSession;
-      if (object) {
+      // 가상 배치는 LIVE 입력(Source·작업면·Scene)과 무관하다. planned Store 쪽에서 따로 지킨다.
+      if (object && object.objectKind !== 'PLANNED') {
         const scene = state.world?.sceneVersion ?? null;
         const began = object.provenance.sceneVersion;
         if (state.sourceId !== object.provenance.sourceId) {
@@ -882,9 +1138,30 @@ export function createEditStore(viewer: ViewerStore, data: SpatialDataStore) {
         end('STALE_SOURCE', `Scene 버전이 바뀌었다(${began} → ${scene})`);
       }
     });
+    // 가상 배치(-186)의 원본은 FE 가 넘긴 배치다. 편집 중 그 객체가 사라지거나 바뀌면 STALE_SOURCE 로 끝낸다.
+    const offPlanned = planned.subscribe((state, prev) => {
+      const object = store.getState().objectSession;
+      if (!object || object.objectKind !== 'PLANNED' || state.snapshot === prev.snapshot) return;
+      if (state.snapshot.layoutId !== object.layoutId) {
+        endObject('STALE_SOURCE', '가상 배치(layoutId)가 바뀌었다');
+        return;
+      }
+      const found = state.snapshot.objects.find((o) => o.id === object.target.id);
+      if (object.origin === 'NEW') {
+        if (found) endObject('STALE_SOURCE', '같은 ID 의 가상 객체가 배치에 들어왔다');
+      } else if (!found) {
+        endObject('STALE_SOURCE', '원본 가상 객체가 사라졌다');
+      } else if (
+        found.kind !== object.plannedKind ||
+        !sameObb(obstacleObb(found), object.base, 0)
+      ) {
+        endObject('STALE_SOURCE', '원본 가상 객체가 바뀌었다');
+      }
+    });
     return () => {
       offViewer();
       offData();
+      offPlanned();
       store.getState().cancel('UNMOUNTED');
       store.getState().cancelObject('UNMOUNTED');
     };
