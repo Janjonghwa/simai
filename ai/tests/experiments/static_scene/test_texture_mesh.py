@@ -305,6 +305,30 @@ def test_face_provenance_never_fabricates(tp):
     assert cam.tolist() == [1, -1, -1, -1, -1, 2]
 
 
+def test_face_provenance_marks_plane_faces_estimated_not_observed(tp):
+    """-314: 평면에 맞춘 면은 관측 색이면 ESTIMATED_PLANE(관측 아님), 보간·미관측은 그대로(더 낮은 신뢰), 카메라는 남는다."""
+    labels = np.array([2, 2, 0, 0, 1])
+    eligible = np.array([False, False, True, False, False])
+    present = np.array([True, True, True, False, False])
+    plane = np.array([True, False, True, True, True])
+    cls, cam = tp.face_provenance(labels, eligible, present, plane)
+    assert cls.tolist() == [tp.ESTIMATED_PLANE, tp.OBSERVED, tp.INTERPOLATED, tp.UNOBSERVED, tp.UNOBSERVED]
+    assert cam.tolist() == [1, 1, -1, -1, -1]
+    assert "ESTIMATED_PLANE" in tp.SURFACE_VALUES and "ESTIMATED_PLANE" not in tp.RESERVED_VALUES
+
+
+def test_provenance_maps_overlap_follows_trust_order(tp):
+    """겹친 텍셀: 추정 평면(3)은 관측(2)보다 낮은 신뢰라 남고, 보간(1)보다는 높은 신뢰라 보간이 남는다(숫자 최소가 아니다)."""
+    uv_px = np.array([[[0, 0], [8, 0], [8, 8]], [[0, 0], [8, 8], [0, 8]]], float)
+    hw = (10, 10)
+    uv = np.stack([uv_px[..., 0] / hw[1], 1.0 - uv_px[..., 1] / hw[0]], -1)
+    src, cam, _ = tp.provenance_maps(uv, np.array([2, 3], np.uint8), np.array([0, 0]), hw)
+    assert src[4, 4] == 3 and src[1, 6] == 2 and src[6, 1] == 3
+    assert cam[4, 4] == 1 and cam[6, 1] == 1  # 추정 평면도 색은 그 카메라 관측
+    src2, cam2, _ = tp.provenance_maps(uv, np.array([3, 1], np.uint8), np.array([0, -1]), hw)
+    assert src2[4, 4] == 1 and cam2[4, 4] == 0 and src2[1, 6] == 3
+
+
 def test_rasterize_keeps_lowest_value_on_shared_texels(tp):
     # 정사각형 [0,8]² 를 대각선으로 나눈 두 삼각형: 관측(2)과 보간(1). 대각선 위 텍셀은 보간이어야 한다
     t_obs = [[0, 0], [8, 0], [8, 8]]
@@ -336,10 +360,13 @@ def test_ratios(tp):
     V, F, _ = _grid(2, 2.0)
     cls = np.array([2, 2, 1, 0, 2, 2, 0, 0], np.uint8)
     r = tp.area_ratios(V, F, cls)
-    assert r == {"OBSERVED": 0.5, "INTERPOLATED": 0.125, "UNOBSERVED": 0.375}
+    assert r == {"OBSERVED": 0.5, "INTERPOLATED": 0.125, "UNOBSERVED": 0.375, "ESTIMATED_PLANE": 0.0}
+    r3 = tp.area_ratios(V, F, np.array([3, 3, 1, 0, 2, 2, 0, 0], np.uint8))
+    assert r3["ESTIMATED_PLANE"] == 0.25 and r3["OBSERVED"] == 0.25
     m = np.array([[2, 1], [0, 2]], np.uint8)
     cov = np.array([[True, True], [False, True]])
-    assert tp.texel_ratios([m], [cov]) == {"OBSERVED": round(2 / 3, 5), "INTERPOLATED": round(1 / 3, 5), "UNOBSERVED": 0.0}
+    assert tp.texel_ratios([m], [cov]) == {"OBSERVED": round(2 / 3, 5), "INTERPOLATED": round(1 / 3, 5), "UNOBSERVED": 0.0,
+                                          "ESTIMATED_PLANE": 0.0}
     assert tp.texel_ratios([m], [np.zeros_like(cov)])["OBSERVED"] is None
 
 
@@ -405,6 +432,24 @@ def test_write_ply_header_and_layout(tm, tmp_path):
     assert b"property list uchar int vertex_indices" in head
     assert len(body) == 3 * 12 + (1 + 12)
     assert struct.unpack_from("<B3i", body, 36) == (3, 0, 1, 2)
+
+
+def test_glb_points_follow_gltf_y_up_contract(tm):
+    """contracts scene_output assets.axis_convention: GLTF_VISUAL 은 glTF 규약(+Y 상방, World (x, y, z) → (x, z, −y)).
+    World 정렬 M(닮음 변환)을 적용한 뒤 그 변환을 한 번만 한다. M 이 없으면(MapAnything world) 그대로."""
+    M = np.eye(4)
+    M[:3, :3] = 2.0 * np.array([[0, -1.0, 0], [1, 0, 0], [0, 0, 1]])  # 축척 2, Z 축 90° 회전
+    M[:3, 3] = [0.5, -1.0, 0.25]
+    X = np.array([[0.0, 0, 0], [1, 2, 3], [0, 0, 1]])
+    W = X @ M[:3, :3].T + M[:3, 3]  # World 점
+    G = tm.to_glb_points(M, X)
+    np.testing.assert_allclose(G, np.column_stack([W[:, 0], W[:, 2], -W[:, 1]]))
+    up = tm.to_glb_points(M, X[2:]) - tm.to_glb_points(M, X[:1])  # World +Z 방향 → glTF +Y
+    assert up[0, 1] > 0 and abs(up[0, 0]) < 1e-12 and abs(up[0, 2]) < 1e-12
+    assert np.isclose(np.linalg.det(tm.GLTF_Y_UP), 1.0)  # 회전(면 감김 방향 유지)
+    assert tm.glb_axis_convention(M) == "GLTF_Y_UP"
+    np.testing.assert_array_equal(tm.to_glb_points(None, X), X)
+    assert tm.glb_axis_convention(None) != "GLTF_Y_UP"
 
 
 def test_inject_extras_keeps_glb_valid(tm):

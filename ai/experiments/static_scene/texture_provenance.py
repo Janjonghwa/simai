@@ -4,9 +4,10 @@ texture_mesh.py(명령 하나로 굽기)가 쓰고, 시험(ai/tests/experiments/
 numpy 만 쓴다(Open3D·OpenCV·Docker 없이 시험이 돈다). 설계·정한 수치의 근거는 docs/design/exp01-textured-mesh.md.
 
 출처 값(EXP-02 아바타 표면 출처 지도와 같은 값, contracts avatar_asset surface_source.mask_uri): 2 = OBSERVED(실제 관측 픽셀),
-1 = INTERPOLATED(작은 구멍을 둘레 관측으로 보간), 0 = UNOBSERVED(관측 없음, 중립 기본 재질). 3 = ESTIMATED_PLANE·4 = GENERATED 는
-값 자리만 예약하고 내지 않는다(같은 평면 복사·확산 inpainting 은 만들지 않는다, AGENTS 규칙 2·7). 얼굴 비트(+128)는 배경에 없다.
-겹치는 텍셀은 낮은 값을 남긴다(보간·미관측이 관측으로 승격되지 않게).
+1 = INTERPOLATED(작은 구멍을 둘레 관측으로 보간), 0 = UNOBSERVED(관측 없음, 중립 기본 재질), 3 = ESTIMATED_PLANE(색은 관측 픽셀이나
+형상을 맞춘 수평 평면에 올린 면, S15P31A101-314 --plane-cleanup 일 때만). 4 = GENERATED 는 값 자리만 예약하고 내지 않는다(같은 평면 복사·
+확산 inpainting 은 만들지 않는다, AGENTS 규칙 2·7). 얼굴 비트(+128)는 배경에 없다.
+겹치는 텍셀은 신뢰가 낮은 값을 남긴다(TRUST: 미관측 < 생성 < 보간 < 추정 평면 < 관측. 관측으로 승격되지 않게).
 
 좌표: 카메라는 OpenCV(+x 오른쪽, +y 아래, +z 앞) cam2world 4×4, 픽셀 정수 = 픽셀 중심.
 """
@@ -19,9 +20,12 @@ from typing import Any
 
 import numpy as np
 
-UNOBSERVED, INTERPOLATED, OBSERVED = 0, 1, 2
-SURFACE_VALUES = {"OBSERVED": OBSERVED, "INTERPOLATED": INTERPOLATED, "UNOBSERVED": UNOBSERVED}
-RESERVED_VALUES = {"ESTIMATED_PLANE": 3, "GENERATED": 4}  # 값 자리만(이 티켓은 내지 않는다)
+UNOBSERVED, INTERPOLATED, OBSERVED, ESTIMATED_PLANE, GENERATED = 0, 1, 2, 3, 4
+SURFACE_VALUES = {"OBSERVED": OBSERVED, "INTERPOLATED": INTERPOLATED, "UNOBSERVED": UNOBSERVED, "ESTIMATED_PLANE": ESTIMATED_PLANE}
+RESERVED_VALUES = {"GENERATED": GENERATED}  # 값 자리만(내지 않는다)
+# 겹친 텍셀에서 남길 값의 순서(낮을수록 먼저 남는다). 추정 평면은 색이 관측이라 보간보다 위, 형상이 맞춘 값이라 관측보다 아래
+TRUST = np.array([0, 2, 4, 3, 1], np.uint8)  # 값 → 신뢰 순위 (UNOBSERVED 0, GENERATED 1, INTERPOLATED 2, ESTIMATED_PLANE 3, OBSERVED 4)
+OBSERVED_COLOR = (OBSERVED, ESTIMATED_PLANE)  # 색이 그 카메라 관측 픽셀인 값
 _UNSET = 255
 _EPS = 1e-9  # 경계값(같으면 허용)을 부동소수 오차로 놓치지 않게
 
@@ -418,15 +422,19 @@ def classify_holes(V: np.ndarray, F: np.ndarray, labels: np.ndarray, views: list
     return eligible, records
 
 
-def face_provenance(labels: np.ndarray, eligible: np.ndarray, present: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """면 출처(0/1/2)와 관측 카메라(시점 번호, 관측이 아니면 −1). present = 최종 텍스처 메시에 실제로 들어간 면.
-    라벨이 있어도 텍스처에 없으면 미관측, 작은 구멍이어도 texrecon 이 채우지 못했으면(present 아님) 미관측이다."""
+def face_provenance(labels: np.ndarray, eligible: np.ndarray, present: np.ndarray,
+                    plane: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """면 출처(0/1/2/3)와 관측 카메라(시점 번호, 색이 관측이 아니면 −1). present = 최종 텍스처 메시에 실제로 들어간 면.
+    라벨이 있어도 텍스처에 없으면 미관측, 작은 구멍이어도 texrecon 이 채우지 못했으면(present 아님) 미관측이다.
+    plane = 정점을 맞춘 수평 평면에 올린 면: 관측 색이면 ESTIMATED_PLANE(관측으로 두지 않는다), 보간·미관측은 그대로(더 낮은 신뢰)."""
     labels = np.asarray(labels)
     cls = np.full(len(labels), UNOBSERVED, np.uint8)
     cam = np.full(len(labels), -1, np.int64)
     obs = (labels > 0) & present
     cls[obs] = OBSERVED
     cam[obs] = labels[obs] - 1
+    if plane is not None:
+        cls[obs & np.asarray(plane, bool)] = ESTIMATED_PLANE
     cls[(labels == 0) & eligible & present] = INTERPOLATED
     return cls, cam
 
@@ -490,14 +498,16 @@ def obj_uv_to_px(uv: np.ndarray, hw: tuple[int, int]) -> np.ndarray:
 
 
 def provenance_maps(Ft_uv: np.ndarray, cls: np.ndarray, cam: np.ndarray, hw: tuple[int, int]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """한 아틀라스의 면들(Ft_uv: (면, 3, 2) OBJ vt)로 출처 지도(0/1/2)·관측 카메라 지도(시점 번호 + 1, 모르면 0)·칠한 텍셀을 만든다.
-    카메라 지도는 출처가 OBSERVED 이고 겹친 면들의 카메라가 하나일 때만 값이 있다."""
+    """한 아틀라스의 면들(Ft_uv: (면, 3, 2) OBJ vt)로 출처 지도(0/1/2/3)·관측 카메라 지도(시점 번호 + 1, 모르면 0)·칠한 텍셀을 만든다.
+    겹친 텍셀은 신뢰(TRUST)가 가장 낮은 값. 카메라 지도는 출처가 관측 색(OBSERVED·ESTIMATED_PLANE)이고 겹친 면들의 카메라가 하나일
+    때만 값이 있다."""
     tri = obj_uv_to_px(Ft_uv, hw)
-    camv = np.where(cls == OBSERVED, cam + 1, 0)
-    lo, hi, cov = rasterize_uv(tri, np.column_stack([cls, camv]).astype(np.uint8), hw)
-    src = lo[0]
-    cam_map = np.where((src == OBSERVED) & (lo[1] == hi[1]), lo[1], 0).astype(np.uint8)
-    return src.astype(np.uint8), cam_map, cov
+    cls = np.asarray(cls, np.uint8)
+    camv = np.where(np.isin(cls, OBSERVED_COLOR), cam + 1, 0)
+    lo, hi, cov = rasterize_uv(tri, np.column_stack([TRUST[cls], camv]).astype(np.uint8), hw)
+    src = np.argsort(TRUST)[lo[0]].astype(np.uint8)  # 순위 → 값(칠하지 않은 텍셀은 순위 0 = UNOBSERVED)
+    cam_map = np.where(np.isin(src, OBSERVED_COLOR) & (lo[1] == hi[1]), lo[1], 0).astype(np.uint8)
+    return src, cam_map, cov
 
 
 def area_ratios(V: np.ndarray, F: np.ndarray, cls: np.ndarray) -> dict[str, float]:
