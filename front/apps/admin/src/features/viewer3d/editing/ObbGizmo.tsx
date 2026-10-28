@@ -1,12 +1,12 @@
 import type { WorldObb } from '@/features/viewer3d/editing/editGeometry';
 import {
   objectEditHandles,
+  type EditObjectKind,
   type EditStore,
   type ObjectEditHandle,
   type WorkSurfaceEditHandle,
 } from '@/features/viewer3d/editing/editSession.store';
 import { useEditStore } from '@/features/viewer3d/editing/EditStoreContext';
-import type { ViewerObjectKind } from '@/features/viewer3d/editing/editTypes';
 import {
   createHandleRaycast,
   createPlaneReader,
@@ -79,8 +79,8 @@ export const OBSTACLE_HANDLE_HINTS: Record<ObjectEditHandle, string> = {
 };
 
 /** 대상 종류에 맞는 손잡이 설명. 작업면에는 z-·lift 손잡이가 없다(바닥에 놓인 형상). */
-function handleHint(kind: ViewerObjectKind, handle: ObjectEditHandle): string {
-  if (kind === 'OBSTACLE') return OBSTACLE_HANDLE_HINTS[handle];
+function handleHint(kind: EditObjectKind, handle: ObjectEditHandle): string {
+  if (kind !== 'WORK_SURFACE') return OBSTACLE_HANDLE_HINTS[handle];
   return handle === 'z-' || handle === 'lift' ? '' : OBJECT_HANDLE_HINTS[handle];
 }
 
@@ -256,8 +256,11 @@ export function objectPreviewLabel(
   id: string,
   obb: WorldObb,
   created = false,
-  kind: ViewerObjectKind = 'WORK_SURFACE',
+  kind: EditObjectKind = 'WORK_SURFACE',
 ) {
+  if (kind === 'PLANNED') {
+    return `${id} · 계획(PLANNED) 가상 객체 · 미저장 · Z ${bottomOf(obb).toFixed(2)}~${topOf(obb).toFixed(2)}m · ${degrees(obb.yaw).toFixed(1)}°`;
+  }
   if (kind === 'OBSTACLE') {
     return `${id} · 정적 객체 · 미저장 · Z ${bottomOf(obb).toFixed(2)}~${topOf(obb).toFixed(2)}m · ${degrees(obb.yaw).toFixed(1)}°`;
   }
@@ -275,6 +278,7 @@ function ObbGizmo({ store }: { store: EditStore }) {
   const dragging = useStore(store, (s) => s.objectSession?.dragging ?? null);
   const refused = useStore(store, (s) => s.objectSession?.refused ?? null);
   const id = useStore(store, (s) => s.objectSession?.target.id ?? '');
+  const targetType = useStore(store, (s) => s.objectSession?.target.type ?? 'object');
   const created = useStore(store, (s) => s.objectSession?.origin === 'NEW');
   const kind = useStore(store, (s) => s.objectSession?.objectKind ?? 'WORK_SURFACE');
   const handles = objectEditHandles(kind);
@@ -293,7 +297,7 @@ function ObbGizmo({ store }: { store: EditStore }) {
   const hint = dragging ?? hovered;
   // 윗면 둘레는 World 꼭짓점을 그대로 옮겨 그린다(회전 행렬을 따로 거치지 않는다). 정적 객체에는 상판 가장자리가 없다.
   const topEdge = useMemo(() => {
-    if (!draft || kind === 'OBSTACLE') return null;
+    if (!draft || kind !== 'WORK_SURFACE') return null;
     const corners = surfaceCorners(obbWorkSurface(draft), topOf(draft)).map(worldToThree);
     return [...corners, corners[0]!];
   }, [draft, kind]);
@@ -318,8 +322,8 @@ function ObbGizmo({ store }: { store: EditStore }) {
   const [w, d, h] = draft.size;
   return (
     <group name="object-edit-gizmo">
-      {/* 새 작업면은 장면에 원본 상자가 없어 이 빈 그룹이 초점 대상(object:ID) 이름을 대신 쓴다. */}
-      {created && <group name={`object:${id}`} position={worldToThree(draft.center)} />}
+      {/* 새 작업면·가상 객체는 장면에 원본 상자가 없어 이 빈 그룹이 초점 대상(object:ID·planned:ID) 이름을 대신 쓴다. */}
+      {created && <group name={`${targetType}:${id}`} position={worldToThree(draft.center)} />}
       {/* 초안(미리보기). 원본 작업면과 따로 그리며 클릭을 받지 않는다. */}
       <group
         name="object-edit-preview"

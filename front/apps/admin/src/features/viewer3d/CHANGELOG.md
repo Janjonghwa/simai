@@ -2,6 +2,15 @@
 
 공개 입구(`index.ts`)와 그 타입을 바꾸면 여기에 적는다. 깨지는 변경은 FE 리뷰를 받은 뒤에만 한다.
 
+## S15P31A101-186 PLANNED 가상 배치
+
+모두 더하기이며 하위 호환이다.
+
+- 추가: `plannedLayout` prop, `onPlannedEditPreview`·`onPlannedEditResult`, 선택 명령 `beginPlannedCreate`·`cancelPlannedEdit`·`finishPlannedEdit`·`updatePlannedEditField`.
+- 추가: 대상 종류 `planned`(VIEWER_TARGET_TYPES), `PLANNED_OBB_POLICY`, `PLANNED_KINDS`·`readPlannedLayout`·`plannedGeometryProblem`, `ViewerPlanned*`·`Planned*` 타입.
+- 바뀜(호환): `ViewerTargetType` 에 `planned` 가 늘었다. FE 코드에 종류별 완전 분기는 없다(dev 기준 확인). `createViewerTestHandle` 이 새 명령을 갖는다.
+- 그대로: LIVE 작업면·장애물 편집 결과(`onObjectEdit*`)와 그 명령은 같은 모양이고 가상 객체 결과를 받지 않는다.
+
 ## S15P31A101-234 Spatial 독립 기반
 
 모두 더하기이며 하위 호환이다. 계약 설명은 [CONTRACT.md](./CONTRACT.md)에 있다.

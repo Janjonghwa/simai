@@ -9,9 +9,15 @@ import type {
   ViewerObjectEditField,
   ViewerObjectEditPreview,
   ViewerObjectEditResult,
+  ViewerPlannedEditField,
+  ViewerPlannedEditPreview,
+  ViewerPlannedEditResult,
+  ViewerPlannedGeometry,
+  ViewerPlannedKind,
   ViewerWorkSurfaceGeometry,
 } from '@/features/viewer3d/editing/editTypes';
 import type { ViewerLayers } from '@/features/viewer3d/layers';
+import type { PlannedLayoutInput } from '@/features/viewer3d/planned/plannedLayout';
 import type { ViewerSceneInput, ViewerSceneStatus } from '@/features/viewer3d/scene/sceneContract';
 import type { Ref } from 'react';
 
@@ -21,8 +27,11 @@ import type { Ref } from 'react';
 export const VIEWER_MODES = ['LIVE', 'PLANNED', 'REPLAY'] as const;
 export type ViewerMode = (typeof VIEWER_MODES)[number];
 
-/** 3D 에서 고를 수 있는 대상. person 은 world_id, zone 은 zone_id, object 는 등록 OBB(작업면·정적 객체)의 ID 다. */
-export const VIEWER_TARGET_TYPES = ['person', 'zone', 'object'] as const;
+/**
+ * 3D 에서 고를 수 있는 대상. person 은 world_id, zone 은 zone_id, object 는 등록 OBB(작업면·정적 객체)의 ID,
+ * planned 는 PLANNED 가상 배치 객체의 ID 다(-186, PLANNED 모드에서만 장면에 있다).
+ */
+export const VIEWER_TARGET_TYPES = ['person', 'zone', 'object', 'planned'] as const;
 export type ViewerTargetType = (typeof VIEWER_TARGET_TYPES)[number];
 
 export interface ViewerTarget {
@@ -124,6 +133,27 @@ export interface Viewer3DHandle {
     id: string;
     geometry: ViewerWorkSurfaceGeometry;
   }): ViewerEditCommandResult;
+  // 아래 PLANNED 명령(-186)도 FE 가짜 핸들과 호환되도록 선택 멤버다. Viewer3D 는 늘 채운다.
+  // 기존 가상 객체 편집은 beginEdit({ type: 'planned', id }) 로 연다. PLANNED 모드가 아니면 NOT_EDITABLE 이다.
+  /**
+   * 새 가상 객체를 3D 에서 만든다(-186). FE 가 정한 ID·종류·처음 형상으로 NEW 편집을 열고 손잡이를 띄운다.
+   * PLANNED 모드가 아니면 NOT_EDITABLE, ID 가 비었거나 배치에 이미 있으면 INVALID_TARGET, 형상이 틀리면 INVALID_GEOMETRY.
+   * 끝나면 장면에서 사라진다(결과 after 로 FE 배치에 더하고, 다시 넘기면 그때 배치 객체로 그린다).
+   */
+  beginPlannedCreate?(input: {
+    id: string;
+    kind: ViewerPlannedKind;
+    geometry: ViewerPlannedGeometry;
+  }): ViewerEditCommandResult;
+  /** 가상 객체 초안을 버린다. 가상 객체 편집 중이 아니면 null. 결과는 onPlannedEditResult 로도 알린다. */
+  cancelPlannedEdit?(): ViewerPlannedEditResult | null;
+  /** 가상 객체 초안을 World 결과로 돌려주고 편집을 끝낸다. 저장하지 않는다. 편집 중이 아니면 null. */
+  finishPlannedEdit?(): ViewerPlannedEditResult | null;
+  /** 가상 객체 초안의 한 값을 절대값으로 고친다(숫자 입력). 손잡이와 같은 엔진으로 검사한다. */
+  updatePlannedEditField?(change: {
+    field: ViewerPlannedEditField;
+    value: number;
+  }): ViewerEditCommandResult;
 }
 
 export interface Viewer3DProps {
@@ -181,5 +211,14 @@ export interface Viewer3DProps {
    * 서명 주소·토큰은 싣지 않는다.
    */
   onSceneStatusChange?: (status: ViewerSceneStatus) => void;
+  /**
+   * PLANNED 가상 배치(-186, 선택 사항). FE 가 가진 계획의 가상 개구부·비계·장비 목록이다. PLANNED 모드에서만 그리고 고른다.
+   * LIVE World·판정·구역과 섞이지 않는다. 렌더마다 새 객체를 만들지 말고 배치가 바뀔 때만 바꾼다.
+   */
+  plannedLayout?: PlannedLayoutInput | null;
+  /** 가상 객체 편집 초안(-186). 시작할 때와 손잡이를 놓을 때마다 부른다. 저장이 아니다. */
+  onPlannedEditPreview?: (preview: ViewerPlannedEditPreview) => void;
+  /** 가상 객체 편집이 끝날 때(완료·취소·거부) 부른다. */
+  onPlannedEditResult?: (result: ViewerPlannedEditResult) => void;
   className?: string;
 }

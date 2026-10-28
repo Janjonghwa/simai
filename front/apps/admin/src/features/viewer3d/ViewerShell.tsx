@@ -6,6 +6,7 @@ import { SpatialDataProvider } from '@/features/viewer3d/data/SpatialDataProvide
 import {
   createEditStore,
   objectPreviewOf,
+  plannedPreviewOf,
   previewOf,
 } from '@/features/viewer3d/editing/editSession.store';
 import { EditOverlayContext, EditStoreContext } from '@/features/viewer3d/editing/EditStoreContext';
@@ -14,8 +15,11 @@ import type {
   ViewerEditResult,
   ViewerObjectEditPreview,
   ViewerObjectEditResult,
+  ViewerPlannedEditPreview,
+  ViewerPlannedEditResult,
 } from '@/features/viewer3d/editing/editTypes';
 import { PersonModelContext } from '@/features/viewer3d/people/PersonLayer';
+import { createPlannedStore, PlannedStoreContext } from '@/features/viewer3d/planned/plannedLayout';
 import {
   sameSceneStatus,
   sceneStatusOf,
@@ -77,6 +81,9 @@ export function ViewerShell({
   onEditResult,
   onObjectEditPreview,
   onObjectEditResult,
+  onPlannedEditPreview,
+  onPlannedEditResult,
+  plannedLayout = null,
   editDraftOverlay = null,
   layers,
   source,
@@ -98,7 +105,13 @@ export function ViewerShell({
   // 처음 받은 dataStore 를 계속 쓴다. 바꿔 넘겨도 장면의 구독을 옮기지 않는다.
   const [data] = useState(() => dataStore ?? createSpatialDataStore());
   // 편집 세션(-195). 뷰어 Store·데이터 Store 를 읽기만 하고 원본을 바꾸지 않는다.
-  const [edit] = useState(() => createEditStore(store, data));
+  // PLANNED 가상 배치(-186). LIVE 데이터 Store 와 따로 둔다. 입력은 FE 가 넘긴 배치 그대로다.
+  const [planned] = useState(() => {
+    const created = createPlannedStore();
+    created.getState().setInput(plannedLayout);
+    return created;
+  });
+  const [edit] = useState(() => createEditStore(store, data, planned));
   // 정적 배경 Scene(-59). 입력은 FE 가 받은 /api/scenes/current 결과 그대로다.
   const [sceneStore] = useState(createSceneStore);
   const mode = useStore(store, (s) => s.mode);
@@ -115,7 +128,12 @@ export function ViewerShell({
       finishObject,
       updateObjectField,
       createObject,
+      createPlanned,
+      cancelPlanned,
+      finishPlanned,
     } = edit.store.getState();
+    // LIVE object 명령은 가상 객체 세션을 건드리지 않고, 가상 객체 명령은 LIVE object 세션을 건드리지 않는다.
+    const objectKind = () => edit.store.getState().objectSession?.objectKind ?? null;
     return {
       select: (target, options) => requestSelect(target, options),
       clearSelection,
@@ -125,10 +143,20 @@ export function ViewerShell({
       cancelEdit: () => cancel('USER'),
       finishEdit: finish,
       updateEditField: (change) => updateField(change.field, change.value),
-      cancelObjectEdit: () => cancelObject('USER'),
-      finishObjectEdit: finishObject,
-      updateObjectEditField: (change) => updateObjectField(change.field, change.value),
+      cancelObjectEdit: () => (objectKind() === 'PLANNED' ? null : cancelObject('USER')),
+      finishObjectEdit: () => (objectKind() === 'PLANNED' ? null : finishObject()),
+      updateObjectEditField: (change) =>
+        objectKind() === 'PLANNED'
+          ? { ok: false, reason: 'NOT_EDITABLE' }
+          : updateObjectField(change.field, change.value),
       beginObjectCreate: createObject,
+      beginPlannedCreate: createPlanned,
+      cancelPlannedEdit: () => cancelPlanned('USER'),
+      finishPlannedEdit: finishPlanned,
+      updatePlannedEditField: (change) =>
+        objectKind() === 'PLANNED'
+          ? updateObjectField(change.field, change.value)
+          : { ok: false, reason: 'NOT_EDITABLE' },
     };
   }, [store, edit]);
 
@@ -150,6 +178,12 @@ export function ViewerShell({
   const emitObjectEditResult = useEffectEvent((result: ViewerObjectEditResult) =>
     onObjectEditResult?.(result),
   );
+  const emitPlannedEditPreview = useEffectEvent((preview: ViewerPlannedEditPreview) =>
+    onPlannedEditPreview?.(preview),
+  );
+  const emitPlannedEditResult = useEffectEvent((result: ViewerPlannedEditResult) =>
+    onPlannedEditResult?.(result),
+  );
   const emitSceneStatus = useEffectEvent((status: ViewerSceneStatus) =>
     onSceneStatusChange?.(status),
   );
@@ -158,6 +192,10 @@ export function ViewerShell({
   useEffect(() => {
     store.getState().setLayers(layers);
   }, [store, layers]);
+
+  useEffect(() => {
+    planned.getState().setInput(plannedLayout);
+  }, [planned, plannedLayout]);
 
   // 기다리던 선택은 뷰어가 내려갈 때 UNMOUNTED 로 끝내고 타이머를 푼다.
   useEffect(() => () => store.getState().dispose(), [store]);
@@ -218,6 +256,8 @@ export function ViewerShell({
           emitEditResult(state.lastResult);
         if (state.lastObjectResult && state.lastObjectResult !== prev.lastObjectResult)
           emitObjectEditResult(state.lastObjectResult);
+        if (state.lastPlannedResult && state.lastPlannedResult !== prev.lastPlannedResult)
+          emitPlannedEditResult(state.lastPlannedResult);
         const object = state.objectSession;
         const objectBefore = prev.objectSession;
         if (
@@ -228,7 +268,9 @@ export function ViewerShell({
             objectBefore.draft !== object.draft ||
             objectBefore.dragging)
         ) {
-          emitObjectEditPreview(objectPreviewOf(object));
+          // 가상 객체 초안은 따로 알린다(LIVE object 콜백에 섞지 않는다).
+          if (object.objectKind === 'PLANNED') emitPlannedEditPreview(plannedPreviewOf(object));
+          else emitObjectEditPreview(objectPreviewOf(object));
         }
         const now = state.session;
         const before = prev.session;
@@ -266,7 +308,9 @@ export function ViewerShell({
                   <ZoneApplyContext value={zoneApplyState}>
                     <SceneStoreContext value={sceneStore}>
                       <SceneLoaderContext value={sceneLoader}>
-                        <ViewerCanvas>{children}</ViewerCanvas>
+                        <PlannedStoreContext value={planned}>
+                          <ViewerCanvas>{children}</ViewerCanvas>
+                        </PlannedStoreContext>
                       </SceneLoaderContext>
                     </SceneStoreContext>
                   </ZoneApplyContext>

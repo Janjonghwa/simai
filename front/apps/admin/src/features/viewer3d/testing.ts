@@ -31,6 +31,10 @@ export function createViewerTestHandle(overrides: Partial<Viewer3DHandle> = {}):
     finishObjectEdit: () => null,
     updateObjectEditField: () => NOT_READY,
     beginObjectCreate: () => NOT_READY,
+    beginPlannedCreate: () => NOT_READY,
+    cancelPlannedEdit: () => null,
+    finishPlannedEdit: () => null,
+    updatePlannedEditField: () => NOT_READY,
   };
   const handle = { calls } as unknown as ViewerTestHandle;
   for (const method of Object.keys(defaults) as (keyof Viewer3DHandle)[]) {
