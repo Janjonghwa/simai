@@ -52,19 +52,32 @@ export function surfaceOutline(surface: WorkSurfaceView): {
 
 export function WorkSurfaceLayer() {
   const surfaces = useSpatialData((s) => s.workSurfaces.surfaces);
+  const layer = useStore(useViewerStore(), (s) => s.layers.workSurfaces);
   return (
     <>
-      <group name="work-surface-layer">
-        {surfaces.map((surface) => (
-          <WorkSurfaceVolume key={surface.surfaceId} surface={surface} />
-        ))}
-      </group>
+      {layer !== 'hidden' && (
+        <group name="work-surface-layer">
+          {surfaces.map((surface) => (
+            <WorkSurfaceVolume
+              key={surface.surfaceId}
+              surface={surface}
+              interactive={layer === 'interactive'}
+            />
+          ))}
+        </group>
+      )}
       <ObstacleLayer />
     </>
   );
 }
 
-function WorkSurfaceVolume({ surface }: { surface: WorkSurfaceView }) {
+function WorkSurfaceVolume({
+  surface,
+  interactive,
+}: {
+  surface: WorkSurfaceView;
+  interactive: boolean;
+}) {
   const selected = useStore(
     useViewerStore(),
     (s) => s.selected?.type === 'object' && s.selected.id === surface.surfaceId,
@@ -76,7 +89,11 @@ function WorkSurfaceVolume({ surface }: { surface: WorkSurfaceView }) {
 
   return (
     <group name={`surface-entry:${surface.surfaceId}`}>
-      <Selectable target={{ type: 'object', id: surface.surfaceId }} pickInstead={pickPerson}>
+      <Selectable
+        target={{ type: 'object', id: surface.surfaceId }}
+        pickInstead={pickPerson}
+        interactive={interactive}
+      >
         {/* Three Y 축 회전 = World +Z 축 회전(World→Three 가 +Z→+Y 라 같은 방향이다). */}
         <group position={worldToThree(obb.center)} rotation-y={obb.yaw}>
           <mesh name={`surface-box:${surface.surfaceId}`}>

@@ -1,5 +1,9 @@
+import type { ZoneContract } from '@/features/viewer3d/data/spatialFrame';
 import type { ObstacleGeometry } from '@/features/viewer3d/surfaces/obstacleGeometry';
-import type { WorkSurfaceGeometry } from '@/features/viewer3d/surfaces/workSurfaceGeometry';
+import type {
+  WorkSurfaceContract,
+  WorkSurfaceGeometry,
+} from '@/features/viewer3d/surfaces/workSurfaceGeometry';
 import type { ViewerMode, ViewerTarget } from '@/features/viewer3d/types';
 
 // 3D 편집(S15P31A101-195)이 바깥(FE)에 알리는 값. Spatial 이 먼저 낸 선택 접점이며 FE·BE 와 합의한 저장 계약이 아니다.
@@ -36,14 +40,16 @@ export interface ViewerEditBox {
 export interface ViewerEditProvenance {
   /** 뷰어가 구독 중이던 입력 Source 의 id. */
   sourceId: string | null;
-  /** 구역 형상 계약 표시. 지금은 개발용 DEMO 형상만 받는다. */
-  zoneContract: 'DEMO_UNCONFIRMED';
+  /** 구역 형상 출처. DEMO_UNCONFIRMED 개발·전환용 DEMO 상자 · BE_ZONES_V1 BE GET /api/zones(-120). */
+  zoneContract: ZoneContract;
   /** 구역 목록을 받은 시각(이 브라우저 시계, ms). */
   zonesReceivedAt: number | null;
   /** 편집을 시작할 때 받은 World 의 scene_version. World 를 받기 전이면 null. */
   sceneVersion: string | null;
-  /** 구역 형상에는 구성 버전이 실려 오지 않아 늘 null 이다(BE -120 계약 전). */
+  /** 구성 버전은 형상 응답에 실려 오지 않아 늘 null 이다(적용 ACK 는 FE·BE 몫). */
   configVersion: null;
+  /** BE 정식 구역이면 편집을 시작한 zone_version(PUT 충돌 확인용). DEMO 구역·모르면 null 이거나 없다. */
+  zoneVersion?: number | null;
 }
 
 /** 편집 중 초안. 원본(before)은 바뀌지 않는다. */
@@ -89,6 +95,18 @@ export type ViewerEditResult =
 export type ViewerEditCommandResult = { ok: true } | { ok: false; reason: ViewerEditRejectReason };
 
 /**
+ * beginEdit 선택 사항(S15P31A101-234). 화면이 보관한 미저장 초안으로 편집을 한 번에 다시 연다
+ * (칸별 updateEditField 를 차례로 다시 부르지 않는다). 둘 다 없으면 예전처럼 원본에서 시작한다.
+ * - zone: ViewerEditBox · object WORK_SURFACE: ViewerWorkSurfaceGeometry · object OBSTACLE: ViewerObstacleGeometry
+ * - draft: 다시 열 초안. 유효하지 않으면 INVALID_GEOMETRY 로 거부하고 편집을 열지 않는다.
+ * - before: 초안을 만들 때 본 원본. 지금 원본과 다르면 STALE_SOURCE 로 거부한다(원본이 그새 바뀌었다).
+ */
+export interface ViewerBeginEditOptions {
+  draft?: ViewerEditBox | ViewerWorkSurfaceGeometry | ViewerObstacleGeometry;
+  before?: ViewerEditBox | ViewerWorkSurfaceGeometry | ViewerObstacleGeometry;
+}
+
+/**
  * 숫자로 고치는 값(World, m). originX·originY 는 min X·Y(크기 유지 이동), width·depth 는 min 을 고정한 폭·깊이,
  * zMin·zMax 는 하단·상단 높이다(S15P31A101-241).
  */
@@ -124,14 +142,16 @@ export type ViewerObjectEditOrigin = 'REGISTERED' | 'NEW';
 /** 작업면 편집을 시작할 때 실제로 확인한 출처. 모르는 값은 null 이다. */
 export interface ViewerObjectEditProvenance {
   sourceId: string | null;
-  /** 항목 형식은 계약을 따르지만 전달 경로·버전 계약(BE -58)이 아직 없다는 표시다. */
-  geometryContract: 'OPERATIONAL_GEOMETRY_UNCONFIRMED';
+  /** 형상 출처. OPERATIONAL_GEOMETRY_UNCONFIRMED 구성 묶음 모양 · BE_STATIC_OBJECTS_V1 BE GET /api/static-objects(-58). */
+  geometryContract: WorkSurfaceContract;
   /** 작업면 묶음을 받은 시각(이 브라우저 시계, ms). */
   surfacesReceivedAt: number | null;
   /** 묶음에 실린 version. 없으면 null. */
   geometryVersion: string | null;
   sceneVersion: string | null;
   configVersion: null;
+  /** BE 정식 응답이면 편집을 시작한 object_version. NEW·묶음 모양 입력은 null 이거나 없다. */
+  objectVersion?: number | null;
 }
 
 interface ObjectEditPreviewBase {

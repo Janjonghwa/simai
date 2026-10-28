@@ -15,10 +15,15 @@ interface SelectableProps {
    * 없으면 null 이고 이 대상을 고른다.
    */
   pickInstead?: (event: ThreeEvent<MouseEvent>) => ViewerTarget | null;
+  /**
+   * false 면 장면 대상으로는 올리되(명령 select·focus 가능) 클릭을 받지 않는다(-234 레이어 visible).
+   * 처리기가 없는 객체는 R3F 광선 검사에서 빠지므로 뒤의 대상·빈 곳 클릭을 가리지 않는다.
+   */
+  interactive?: boolean;
 }
 
 /** 장면 객체를 선택·초점 대상으로 올린다. 사람·구역·OBB 레이어가 이것으로 감싼다. */
-export function Selectable({ target, children, pickInstead }: SelectableProps) {
+export function Selectable({ target, children, pickInstead, interactive = true }: SelectableProps) {
   const store = useViewerStore();
   const { type, id } = target;
   const lastClickRef = useRef<{ key: string; at: number } | null>(null);
@@ -53,7 +58,7 @@ export function Selectable({ target, children, pickInstead }: SelectableProps) {
   );
 
   return (
-    <group name={targetKey({ type, id })} onClick={handleClick}>
+    <group name={targetKey({ type, id })} onClick={interactive ? handleClick : undefined}>
       {children}
     </group>
   );

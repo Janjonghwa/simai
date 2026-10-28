@@ -1,9 +1,25 @@
 // viewer3d 의 입구. 바깥에서는 여기서만 import 한다(front/CONVENTION.md 「의존 방향」).
-export { createExternalSource } from '@/features/viewer3d/data/spatialSource';
+// 공개 계약과 변경 이력은 같은 폴더의 CONTRACT.md·CHANGELOG.md 에 둔다. 여기서 빼거나 모양을 바꾸면 FE 리뷰가 필요하다.
+export { adaptZones } from '@/features/viewer3d/data/contractAdapter';
+export type {
+  OfficialZoneInfo,
+  ZoneContract,
+  ZoneEvalType,
+  ZoneSeverity,
+  ZoneShape,
+} from '@/features/viewer3d/data/spatialFrame';
+export {
+  SOURCE_SNAPSHOT_CHANNELS,
+  createExternalSource,
+} from '@/features/viewer3d/data/spatialSource';
 export type {
   ExternalSpatialSource,
+  SnapshotPushOptions,
+  SnapshotPushOutcome,
   SourceConnection,
   SourceConnectionChange,
+  SourceSnapshotChannel,
+  SourceSnapshotInfo,
   SpatialSource,
   SpatialSourceSink,
   WorkSurfacesResult,
@@ -13,6 +29,7 @@ export {
   EDIT_FACES,
   EDIT_FIELDS,
   OBJECT_EDIT_FIELDS,
+  OBSTACLE_OBB_POLICY,
   WORK_SURFACE_OBB_POLICY,
   ZONE_AABB_POLICY,
   applyEditOperation,
@@ -39,7 +56,9 @@ export type {
   WorldBox,
   WorldObb,
 } from '@/features/viewer3d/editing/editGeometry';
+export { VIEWER_EDIT_REJECT_REASONS } from '@/features/viewer3d/editing/editTypes';
 export type {
+  ViewerBeginEditOptions,
   ViewerEditBox,
   ViewerEditCancelReason,
   ViewerEditCommandResult,
@@ -55,8 +74,12 @@ export type {
   ViewerObjectEditPreview,
   ViewerObjectEditProvenance,
   ViewerObjectEditResult,
+  ViewerObjectKind,
+  ViewerObstacleGeometry,
   ViewerWorkSurfaceGeometry,
 } from '@/features/viewer3d/editing/editTypes';
+export { DEFAULT_LAYERS, VIEWER_LAYER_KEYS, VIEWER_LAYER_MODES } from '@/features/viewer3d/layers';
+export type { ViewerLayerKey, ViewerLayerMode, ViewerLayers } from '@/features/viewer3d/layers';
 export { parseReplayLog } from '@/features/viewer3d/replay/replayLog';
 export type {
   ReplayFile,
@@ -88,6 +111,11 @@ export type {
   ViewerSceneStatus,
 } from '@/features/viewer3d/scene/sceneContract';
 export {
+  OFFICIAL_STATIC_OBJECT_CONTRACT,
+  adaptGeometry,
+  adaptOfficialStaticObjects,
+} from '@/features/viewer3d/surfaces/officialStaticObjects';
+export {
   adaptWorkSurfaces,
   geometryProblem,
   obbWorkSurface,
@@ -98,10 +126,13 @@ export {
   workSurfaceObb,
 } from '@/features/viewer3d/surfaces/workSurfaceGeometry';
 export type {
+  WorkSurfaceContract,
   WorkSurfaceGeometry,
   WorkSurfaceSnapshot,
   WorkSurfaceView,
 } from '@/features/viewer3d/surfaces/workSurfaceGeometry';
+export { createViewerTestHandle } from '@/features/viewer3d/testing';
+export type { ViewerTestCall, ViewerTestHandle } from '@/features/viewer3d/testing';
 export type {
   CommandFailureReason,
   CommandResult,
@@ -111,9 +142,22 @@ export type {
   ViewerErrorCode,
   ViewerMode,
   ViewerPhase,
+  ViewerSelectCancelReason,
+  ViewerSelectOptions,
+  ViewerSelectRequest,
+  ViewerSelectRequestStatus,
   ViewerStatus,
   ViewerTarget,
   ViewerTargetType,
 } from '@/features/viewer3d/types';
 export { Viewer3D } from '@/features/viewer3d/Viewer3D';
+export { MAX_SELECT_WAIT_MS } from '@/features/viewer3d/viewer3d.store';
 export { toWorldPoint, worldPoint, type WorldPoint } from '@/features/viewer3d/worldCoordinates';
+export {
+  MAX_ZONE_VERTICES,
+  OFFICIAL_ZONE_CONTRACT,
+  adaptOfficialZones,
+  polygonArea,
+  readOfficialZone,
+  readPolygonXy,
+} from '@/features/viewer3d/zones/officialZones';

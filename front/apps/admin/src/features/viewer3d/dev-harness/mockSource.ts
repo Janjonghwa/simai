@@ -5,6 +5,10 @@ import type {
   ZonesResult,
 } from '@/features/viewer3d/data/spatialSource';
 import {
+  DEMO_STATIC_OBJECTS_BE_V1,
+  type GeometryMode,
+} from '@/features/viewer3d/dev-harness/officialFixtures';
+import {
   DEMO_OPERATIONAL_GEOMETRY,
   scenarioTick,
   TICK_MS,
@@ -27,6 +31,8 @@ export interface MockSourceOptions {
   reactivateMocks?: () => Promise<void>;
   /** 이 tick 에 이르면 재생을 멈춘다(개발 시연 상한). 없으면 계속 재생한다. */
   maxTicks?: number;
+  /** 작업면·정적 객체 형식(-234). demo 는 구성 묶음 모양, official 은 BE GET /api/static-objects 배열이다. */
+  geometry?: GeometryMode;
 }
 
 export interface MockSpatialSource extends SpatialSource {
@@ -173,7 +179,9 @@ export function createMockSource(options: MockSourceOptions): MockSpatialSource 
       sink.onConnectionChange(connection);
       // 등록 작업면(-188)·정적 객체(-274)는 Viewer 로 넘기는 경로가 아직 없어 구독마다 DEMO 묶음을 바로 넘긴다
       // (같은 값이라 다시 받아도 그대로다).
-      sink.onWorkSurfaces?.({ ok: true, raw: copy(DEMO_OPERATIONAL_GEOMETRY) }, now());
+      const geometryRaw =
+        options.geometry === 'official' ? DEMO_STATIC_OBJECTS_BE_V1 : DEMO_OPERATIONAL_GEOMETRY;
+      sink.onWorkSurfaces?.({ ok: true, raw: copy(geometryRaw) }, now());
       if (!opened) {
         opened = true;
         setConnection({ state: 'OPEN', at: now(), reason: 'Mock 시작' });

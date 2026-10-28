@@ -125,21 +125,53 @@ export interface HealthView {
   scene: { committedVersion: string | null; liveVersion: string | null; mismatch: boolean };
 }
 
-/** World 축 정렬 상자 구역. 형상 계약이 아직 없어 DEMO 형상으로만 받는다. */
+/** 구역 판정 유형(명세 8.2). GROUND_FOOTPRINT 는 바닥 위치만, VOLUME_3D 는 높이 범위까지 본다. */
+export type ZoneEvalType = 'GROUND_FOOTPRINT' | 'VOLUME_3D';
+export type ZoneSeverity = 'CRITICAL' | 'HIGH' | 'CAUTION' | 'INFO';
+
+/**
+ * 구역을 어떤 모양으로 그리는지.
+ * BOX 축 정렬 상자(min·max 가 정확한 구역, 상자 편집 가능) · PRISM 다각형 기둥(min·max 는 둘레 상자일 뿐) ·
+ * FOOTPRINT 바닥 판정면(높이 무관, min·max 의 Z 는 0).
+ */
+export type ZoneShape = 'BOX' | 'PRISM' | 'FOOTPRINT';
+
+/** BE 정식 구역(GET /api/zones, -120)에서 온 값. 손실 없이 옮긴다. DEMO 구역에는 없다. */
+export interface OfficialZoneInfo {
+  zoneVersion: number;
+  evalType: ZoneEvalType;
+  severity: ZoneSeverity;
+  zoneKind: string | null;
+  /** 바닥 XY 꼭짓점(World m, 닫는 점 없음). */
+  polygonXy: readonly (readonly [number, number])[];
+  /** [최저, 최고] World Z(m). 모르면 null(GROUND_FOOTPRINT 는 없어도 된다). */
+  zRange: readonly [number, number] | null;
+  hasGuardrail: boolean | null;
+  validFrom: number | null;
+}
+
+/**
+ * 구역. min·max 는 World 축 정렬 둘레 상자다. shape 가 없거나 BOX 면 그 상자가 곧 구역이다(DEMO 구역은 늘 BOX).
+ * PRISM·FOOTPRINT 는 official.polygonXy 가 실제 형상이고 min·max 는 초점·이름표 위치에만 쓴다.
+ */
 export interface ZoneView {
   zoneId: string;
   name: string;
   min: WorldPoint;
   max: WorldPoint;
+  /** 없으면 BOX. */
+  shape?: ZoneShape;
+  /** BE 정식 구역 정보. DEMO 구역은 없다. */
+  official?: OfficialZoneInfo;
 }
+
+/** 구역 형상 출처. DEMO_UNCONFIRMED 개발용 DEMO 상자 · BE_ZONES_V1 BE GET /api/zones 응답(-120). */
+export type ZoneContract = 'DEMO_UNCONFIRMED' | 'BE_ZONES_V1';
 
 export interface ZoneSnapshot {
   status: 'NONE' | 'READY' | 'REJECTED';
-  /**
-   * GET /api/zones 응답 형상 계약이 아직 없다(BE -120·FE -189 협의). DEMO 형상만 받는다는 표시다.
-   * 실제 형식이 정해지면 이 값과 adaptDemoZones 를 바꾼다.
-   */
-  contract: 'DEMO_UNCONFIRMED';
+  /** 받은 형상의 출처. 저장·적용(ACK) 상태가 아니다. */
+  contract: ZoneContract;
   zones: readonly ZoneView[];
   /** 형상이 틀려 뺀 구역과 이유. */
   invalid: readonly { zoneId: string | null; reason: string }[];

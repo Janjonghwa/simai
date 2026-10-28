@@ -1,4 +1,8 @@
 import {
+  DEMO_ZONES_BE_V1,
+  type GeometryMode,
+} from '@/features/viewer3d/dev-harness/officialFixtures';
+import {
   DEMO_ZONES_RESPONSE,
   isScenarioKey,
   scenarioWorld,
@@ -19,6 +23,9 @@ export interface SpatialMockApi {
   setScenario(scenario: ScenarioKey, t0: number): void;
   setFailure(mode: MockFailure): void;
   readonly failure: MockFailure;
+  /** 구역 응답 형식(-234). demo 는 DEMO 상자 묶음, official 은 BE GET /api/zones 배열이다. */
+  setGeometry(mode: GeometryMode): void;
+  readonly geometry: GeometryMode;
   /**
    * 서비스 워커가 이 페이지의 Mock 활성화를 잃었을 때 다시 켠다(disable → enable 로 MOCK_ACTIVATE 를 다시 보낸다).
    * 워커는 유휴로 종료됐다 다시 뜨면 활성 페이지 목록(메모리)이 비어 모든 요청을 그대로 넘기고, 그러면 Vite 가 index.html 을 준다.
@@ -34,10 +41,12 @@ export function createSpatialMockApi(initial: {
   scenario: ScenarioKey;
   t0: number;
   slowMs?: number;
+  geometry?: GeometryMode;
 }): SpatialMockApi {
   let scenario = initial.scenario;
   let t0 = initial.t0;
   let failure: MockFailure = 'none';
+  let geometry: GeometryMode = initial.geometry ?? 'demo';
   const slowMs = initial.slowMs ?? 1500;
   let reactivator: (() => Promise<void>) | null = null;
   let pending: Promise<void> | null = null;
@@ -73,7 +82,7 @@ export function createSpatialMockApi(initial: {
     http.get('*/api/zones', async () => {
       const failed = await failOrWait();
       if (failed) return failed;
-      return HttpResponse.json(DEMO_ZONES_RESPONSE);
+      return HttpResponse.json(geometry === 'official' ? DEMO_ZONES_BE_V1 : DEMO_ZONES_RESPONSE);
     }),
   ];
 
@@ -88,6 +97,12 @@ export function createSpatialMockApi(initial: {
     },
     get failure() {
       return failure;
+    },
+    setGeometry(mode) {
+      geometry = mode;
+    },
+    get geometry() {
+      return geometry;
     },
     reactivate() {
       if (!reactivator) return Promise.resolve();

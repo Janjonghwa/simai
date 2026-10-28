@@ -2,6 +2,10 @@ import {
   selectActiveEvents,
   type SpatialDataStore,
 } from '@/features/viewer3d/data/spatialData.store';
+import {
+  surfaceContractText,
+  zoneContractText,
+} from '@/features/viewer3d/dev-harness/geometryText';
 import { LEGACY_ROSTER, type Roster } from '@/features/viewer3d/dev-harness/mockUi';
 import { MODE_EVENT_SOURCE } from '@/features/viewer3d/risk/riskPresentation';
 import type { ViewerMode } from '@/features/viewer3d/types';
@@ -38,7 +42,7 @@ export function useRoster(
         height: zoneHeightText(zone),
         legacy: false,
       })),
-      zoneNote: [`구역 입력 ${zones.status}`, zones.reason, 'DEMO 형상(계약 미확정)']
+      zoneNote: [`구역 입력 ${zones.status}`, zones.reason, zoneContractText(zones.contract)]
         .filter(Boolean)
         .join(' · '),
       rejectedZones: zones.invalid.map(({ zoneId, reason }) => ({ id: zoneId, reason })),
@@ -62,7 +66,7 @@ export function useRoster(
         surfaces.invalidObstacles.length
           ? `정적 객체 ${surfaces.invalidObstacles.length}건 제외`
           : null,
-        '등록 OBB · 전달 계약 미확정',
+        surfaceContractText(surfaces.contract),
       ]
         .filter(Boolean)
         .join(' · '),

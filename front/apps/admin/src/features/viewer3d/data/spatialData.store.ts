@@ -1,6 +1,6 @@
 import {
-  adaptDemoZones,
   adaptMessage,
+  adaptZones,
   NO_ZONES,
   type RejectReason,
 } from '@/features/viewer3d/data/contractAdapter';
@@ -15,11 +15,12 @@ import type {
 import { isActiveEvent } from '@/features/viewer3d/data/spatialFrame';
 import type {
   SourceConnectionChange,
+  SourceSnapshotChannel,
   WorkSurfacesResult,
   ZonesResult,
 } from '@/features/viewer3d/data/spatialSource';
+import { adaptGeometry } from '@/features/viewer3d/surfaces/officialStaticObjects';
 import {
-  adaptWorkSurfaces,
   NO_WORK_SURFACES,
   type WorkSurfaceSnapshot,
 } from '@/features/viewer3d/surfaces/workSurfaceGeometry';
@@ -71,6 +72,8 @@ export interface SpatialDataState {
   ingest(raw: unknown, receivedAt: number): IngestOutcome;
   ingestZones(result: ZonesResult, receivedAt: number): void;
   ingestWorkSurfaces(result: WorkSurfacesResult, receivedAt: number): void;
+  /** 한 형상 채널(구역·작업면/정적 객체)만 받기 전 상태로 비운다. World·이벤트·연결은 그대로다. */
+  clearSnapshot(channel: SourceSnapshotChannel): void;
   setConnection(change: SourceConnectionChange): void;
   /** 다른 Source 로 바꿀 때 받은 데이터를 모두 비운다. */
   reset(sourceId: string | null): void;
@@ -189,7 +192,7 @@ export function createSpatialDataStore(): SpatialDataStore {
       ingestZones: (result, receivedAt) => {
         set({
           zones: result.ok
-            ? adaptDemoZones(result.raw, receivedAt)
+            ? adaptZones(result.raw, receivedAt)
             : { ...NO_ZONES, status: 'REJECTED', receivedAt, reason: result.reason },
         });
       },
@@ -197,9 +200,17 @@ export function createSpatialDataStore(): SpatialDataStore {
       ingestWorkSurfaces: (result, receivedAt) => {
         set({
           workSurfaces: result.ok
-            ? adaptWorkSurfaces(result.raw, receivedAt)
+            ? adaptGeometry(result.raw, receivedAt)
             : { ...NO_WORK_SURFACES, status: 'REJECTED', receivedAt, reason: result.reason },
         });
+      },
+
+      clearSnapshot: (channel) => {
+        if (channel === 'zones') {
+          if (get().zones !== NO_ZONES) set({ zones: NO_ZONES });
+        } else if (get().workSurfaces !== NO_WORK_SURFACES) {
+          set({ workSurfaces: NO_WORK_SURFACES });
+        }
       },
 
       setConnection: (change) => {

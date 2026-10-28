@@ -5,6 +5,7 @@ import {
   type SpatialDataStore,
 } from '@/features/viewer3d/data/spatialData.store';
 import { trackPlacement, type TrackView } from '@/features/viewer3d/data/spatialFrame';
+import { zoneContractText } from '@/features/viewer3d/dev-harness/geometryText';
 import type { HarnessSource } from '@/features/viewer3d/dev-harness/harnessSource';
 import {
   DATA_SOURCES,
@@ -400,7 +401,8 @@ export function DataPanel({
       <p className="smk-data-dim smk-mono" data-testid="data-zones">
         구역 {state.zones.status} · {state.zones.zones.map((z) => z.zoneId).join(', ') || '—'}
         {state.zones.invalid.map((z) => ` · 거부 ${z.zoneId ?? 'ID 없음'}(${z.reason})`).join('')}
-        {state.zones.reason ? ` · ${state.zones.reason}` : ''} · DEMO 형상(계약 미확정)
+        {state.zones.reason ? ` · ${state.zones.reason}` : ''} ·{' '}
+        {zoneContractText(state.zones.contract)}
       </p>
       <p className="smk-data-dim smk-mono" data-testid="data-risk">
         위험 강조({risk.source}) 사람 {riskText(risk.people)} · 구역 {riskText(risk.zones)}

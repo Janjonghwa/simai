@@ -1,5 +1,6 @@
 import type { SpatialSource } from '@/features/viewer3d/data/spatialSource';
 import type {
+  ViewerBeginEditOptions,
   ViewerEditCommandResult,
   ViewerEditField,
   ViewerEditOverlayInput,
@@ -10,6 +11,7 @@ import type {
   ViewerObjectEditResult,
   ViewerWorkSurfaceGeometry,
 } from '@/features/viewer3d/editing/editTypes';
+import type { ViewerLayers } from '@/features/viewer3d/layers';
 import type { ViewerSceneInput, ViewerSceneStatus } from '@/features/viewer3d/scene/sceneContract';
 import type { Ref } from 'react';
 
@@ -47,11 +49,40 @@ export interface ViewerStatus {
 /** INVALID_*: 값의 모양이 틀렸다. NOT_FOUND: 장면에 없는 대상이다. NOT_READY: 렌더러가 준비되지 않았거나 오류 상태다. */
 export type CommandFailureReason = 'INVALID_TARGET' | 'INVALID_MODE' | 'NOT_FOUND' | 'NOT_READY';
 
-export type CommandResult = { ok: true } | { ok: false; reason: CommandFailureReason };
+/** pending 은 select 를 waitMs 로 불렀고 대상이 아직 장면에 없어 기다리는 중이라는 뜻이다(결과는 onSelectRequestChange). */
+export type CommandResult =
+  { ok: true; pending?: true } | { ok: false; reason: CommandFailureReason };
+
+/** select 선택 사항(S15P31A101-234). 없으면 예전처럼 지금 장면에 있을 때만 고른다. */
+export interface ViewerSelectOptions {
+  /**
+   * 대상이 아직 장면에 없거나 뷰어가 준비 중이면 이 시간(ms)까지 기다렸다가 고른다. 0·없음이면 기다리지 않는다.
+   * 최대 MAX_SELECT_WAIT_MS 로 자른다. 기다리는 요청은 하나뿐이고, 새 select·clearSelection·3D 클릭이 오면 취소된다.
+   */
+  waitMs?: number;
+  /** 고르면서 카메라 초점도 맞춘다. */
+  focus?: boolean;
+}
+
+/**
+ * 기다리는 선택 요청의 진행. PENDING 기다리기 시작 · APPLIED 장면에 올라와 골랐음 ·
+ * EXPIRED waitMs 가 지남 · CANCELLED 다른 선택·해제·오류·뷰어 내려감으로 그만둠.
+ */
+export type ViewerSelectRequestStatus = 'PENDING' | 'APPLIED' | 'EXPIRED' | 'CANCELLED';
+export type ViewerSelectCancelReason = 'REPLACED' | 'SELECTION_CHANGED' | 'NOT_READY' | 'UNMOUNTED';
+
+export interface ViewerSelectRequest {
+  target: ViewerTarget;
+  status: ViewerSelectRequestStatus;
+  focus: boolean;
+  /** CANCELLED 일 때만. */
+  reason?: ViewerSelectCancelReason;
+}
 
 /** FE → 뷰어 명령. 실패해도 예외를 던지지 않고 이유를 돌려준다. */
 export interface Viewer3DHandle {
-  select(target: ViewerTarget): CommandResult;
+  /** 대상을 고른다. options.waitMs 를 주면 아직 없는 대상을 기다렸다가 고른다(-234, 선택 사항). */
+  select(target: ViewerTarget, options?: ViewerSelectOptions): CommandResult;
   clearSelection(): CommandResult;
   focus(target: ViewerTarget): CommandResult;
   setMode(mode: ViewerMode): CommandResult;
@@ -60,7 +91,7 @@ export interface Viewer3DHandle {
    * 원본은 바꾸지 않고 초안만 바꾼다. REPLAY 는 NOT_EDITABLE. zone(구역 AABB)과 object(등록 작업면 OBB, -188)를 받는다.
    * 작업면 편집의 초안·결과는 onObjectEditPreview·onObjectEditResult 로 따로 알린다(구역 콜백은 부르지 않는다).
    */
-  beginEdit(target: ViewerTarget): ViewerEditCommandResult;
+  beginEdit(target: ViewerTarget, options?: ViewerBeginEditOptions): ViewerEditCommandResult;
   /** 구역 초안을 버린다. 구역 편집 중이 아니면 null. 결과는 onEditResult 로도 알린다. */
   cancelEdit(): ViewerEditResult | null;
   /** 구역 초안을 World 결과로 돌려주고 편집을 끝낸다. 저장하지 않는다(saved: false). 구역 편집 중이 아니면 null. */
@@ -101,6 +132,18 @@ export interface Viewer3DProps {
   initialMode?: ViewerMode;
   /** 3D 클릭이든 FE 명령이든 선택이 바뀔 때마다 부른다. 해제는 null. */
   onSelectionChange?: (target: ViewerTarget | null) => void;
+  /** 기다리는 선택(select 의 waitMs)의 진행을 알린다(-234, 선택 사항). */
+  onSelectRequestChange?: (request: ViewerSelectRequest) => void;
+  /**
+   * 레이어별 표시·피킹(-234, 선택 사항). 적지 않은 레이어는 interactive(기존 동작)다.
+   * 데이터는 그대로 두고 화면에서 보이는 방식만 바꾼다. 렌더마다 새 객체를 만들어도 값이 같으면 다시 그리지 않는다.
+   */
+  layers?: ViewerLayers;
+  /**
+   * 사람 모델(glTF/GLB) 주소(선택). 읽지 못하면 캡슐 아바타로 그린다. 에셋 권리·배포 경로는 FE·팀이 정한다.
+   * 처음 값을 쓰며 바꾸면 모델을 다시 읽는다.
+   */
+  personModelUrl?: string | null;
   /** 3D 대상을 더블클릭했을 때 부른다(구역 편집 모드에서 구역 더블클릭 즉시 수정 진입용). */
   onTargetDoubleClick?: (target: ViewerTarget) => void;
   /** 마운트 직후 한 번, 이후 단계·모드·오류가 바뀔 때마다 부른다. */

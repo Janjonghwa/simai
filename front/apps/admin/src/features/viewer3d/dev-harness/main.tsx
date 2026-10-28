@@ -5,6 +5,7 @@ import '@/index.css';
 
 import { MockApp } from '@/features/viewer3d/dev-harness/MockApp';
 import { readDataSource } from '@/features/viewer3d/dev-harness/harnessSource';
+import { readGeometryMode } from '@/features/viewer3d/dev-harness/officialFixtures';
 import { isScenarioKey } from '@/features/viewer3d/dev-harness/scenarios';
 import { startSpatialMocks } from '@/features/viewer3d/dev-harness/startMocks';
 import { StrictMode } from 'react';
@@ -15,6 +16,7 @@ const initial = readDataSource(window.location.search);
 const mockApi = await startSpatialMocks({
   scenario: isScenarioKey(initial) ? initial : 'normal',
   t0: Date.now(),
+  geometry: readGeometryMode(window.location.search),
 }).catch((error: unknown) => {
   console.warn('Spatial MSW 를 켜지 못했다', error);
   return null;

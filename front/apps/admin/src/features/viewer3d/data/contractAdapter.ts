@@ -9,6 +9,7 @@ import type {
   ZoneView,
 } from '@/features/viewer3d/data/spatialFrame';
 import { toWorldPoint, type WorldPoint } from '@/features/viewer3d/worldCoordinates';
+import { adaptOfficialZones } from '@/features/viewer3d/zones/officialZones';
 import {
   isMessageType,
   validateMessage,
@@ -323,4 +324,14 @@ export function adaptDemoZones(raw: unknown, receivedAt: number): ZoneSnapshot {
     receivedAt,
     reason: null,
   };
+}
+
+/**
+ * 구역 조회 결과 본문을 받는 입구. 본문 모양으로 출처를 가른다(값을 추측해 섞지 않는다).
+ * - 배열: BE 정식 GET /api/zones 응답(-120) → adaptOfficialZones
+ * - { contract: 'DEMO_UNCONFIRMED', zones }: 개발·FE 전환 기간의 DEMO 상자 → adaptDemoZones(기존 그대로)
+ * - 그 밖: 거부
+ */
+export function adaptZones(raw: unknown, receivedAt: number): ZoneSnapshot {
+  return Array.isArray(raw) ? adaptOfficialZones(raw, receivedAt) : adaptDemoZones(raw, receivedAt);
 }
