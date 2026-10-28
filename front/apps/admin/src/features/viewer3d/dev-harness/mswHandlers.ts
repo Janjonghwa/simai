@@ -1,3 +1,4 @@
+import syntheticMhrUrl from '@/features/viewer3d/dev-harness/fixtures/synthetic-mhr.glb?url';
 import {
   DEMO_ZONES_BE_V1,
   type GeometryMode,
@@ -9,7 +10,7 @@ import {
   TICK_MS,
   type ScenarioKey,
 } from '@/features/viewer3d/dev-harness/scenarios';
-import { delay, http, HttpResponse } from 'msw';
+import { bypass, delay, http, HttpResponse } from 'msw';
 
 // Spatial 개발 화면 전용 REST Mock. 앱 공용 핸들러(src/mocks/handlers.ts)와 따로 두고 개발 화면 진입점에서만 켠다.
 // 응답은 MockSource 스트림과 같은 시나리오 데이터(scenarios.ts)에서 나온다. 경로는 명세 12.6 기본안이다.
@@ -84,6 +85,19 @@ export function createSpatialMockApi(initial: {
       if (failed) return failed;
       return HttpResponse.json(geometry === 'official' ? DEMO_ZONES_BE_V1 : DEMO_ZONES_RESPONSE);
     }),
+    // EXP-02 아바타 자산(-65). 버전 0 은 합성 리그 GLB, 그 밖의 버전은 없는 자산(404)이다. REST 실패 시험(503 등)과는 따로 둔다.
+    http.get(
+      '*/api/avatars/:worldId/epochs/:epoch/versions/:version/mesh.glb',
+      async ({ params }) => {
+        if (params.version !== '0') {
+          return HttpResponse.json({ message: 'Mock: 자산 없음' }, { status: 404 });
+        }
+        const file = await fetch(bypass(syntheticMhrUrl));
+        return new HttpResponse(await file.arrayBuffer(), {
+          headers: { 'content-type': 'model/gltf-binary' },
+        });
+      },
+    ),
   ];
 
   return {

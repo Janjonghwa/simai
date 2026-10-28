@@ -20,7 +20,7 @@ describe('Mock 시나리오 계약', () => {
         if (out.type !== 'message') continue;
         const result = adaptMessage(out.raw, 0);
         if (result.kind === 'rejected') rejected.push(tick % PERIOD[key]);
-        else expect(['world', 'event', 'health']).toContain(result.kind);
+        else expect(['world', 'event', 'health', 'avatar']).toContain(result.kind);
       }
     }
     if (key === 'invalid-input') {

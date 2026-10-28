@@ -128,3 +128,23 @@ TBM 계획의 가상 개구부·비계·장비를 3D 에 놓고 고친다. 배�
 - 결과: `{ status, target, mode: 'PLANNED', origin: REGISTERED|NEW, plannedKind, layoutId, before, after, changed, saved: false }`. FE 가 FINISHED 결과로 배치를 고쳐 다시 넘기면 그 값이 새 원본이다.
   - 편집 중 그 객체가 배치에서 사라지거나 바뀌거나 `layoutId` 가 바뀌면 `STALE_SOURCE` 로 끝난다. NEW 와 같은 ID 가 배치에 들어와도 같다.
 - 하지 않는 것: 가상 객체로 위험 판정·평가, 서버 저장·발행, 종류별 의미 해석(예: 개구부를 바닥 구멍으로 렌더링).
+
+## EXP-02 사람 메시(-65)
+
+AI -88 의 사람별 스키닝 glTF 와 `avatar_frame`(/topic/avatar) 관절 회전으로 사람을 메시로 그린다. 구독·인증은 FE, 자산 생성·포즈 계산은 AI(-88·-227), 중계는 BE(-138) 몫이다.
+
+- 입력: FE 가 /topic/avatar 본문을 world_state 와 같은 Source 에 `push` 한다. 스키마 검사 뒤 스키마 밖 규칙도 본다.
+  - 같은 메시지에 같은 `world_id` 가 둘이면 그 사람을 모두 뺀다. 회전각 > π, 관절 0 회전이 0 이 아니면 그 사람만 뺀다.
+  - 자산 `identity_revision` 이 포즈보다 크면 자산을 쓰지 않는다(캡슐).
+  - 사람별로 `(identity_revision, capture_time_ms)` 가 더 클 때만 바꾼다. 30 초 넘게 새 포즈가 없는 사람은 지운다.
+- 위치: 사람의 존재·위치·접지·관측 상태·ID 신뢰도는 늘 world_state 다. 메시는 pelvis 뼈를 그 표본의 Tier 0 `pelvis_xyz` 에 맞추고, 관절 회전만 재생 지연 250 ms 로 두 표본 사이를 slerp 한다(새 표본이 없으면 마지막 포즈 유지, 외삽 없음).
+  - 회전: 감싼 그룹 = `quat(Rx(−π/2))·quat(root_rotation)`, 뼈 i = `joint_rotations[i]`(null 이면 바인드 회전). 노드 이동·크기(체형)는 glTF 값 그대로다.
+- 자산: `mesh_url` 을 `avatarMeshFetch`(없으면 같은 출처 fetch)로 받고, 바이트 sha256 = `mesh_sha256`, 뼈 수 = `joint_count`, 부모 배열 해시 = `joint_parents_sha256`, `pelvis_joint_index` 범위를 확인한다. `mesh_sha256` 이 캐시 키다. 실패하면 10 초 뒤 다시 받는다. 텍스처·표면 출처 지도는 아직 쓰지 않는다(기본 회색 재질).
+- 되돌아가기(하나라도 맞으면 기존 캡슐·골격 경로):
+  1. 0.5 초 넘게 새 포즈 없음(`AVATAR_STALL_MS`)
+  2. world_state `t_latest_global` − 포즈 `capture_time_ms` > 500 ms(`AVATAR_LATE_MS`)
+  3. 트랙 `IDENTITY_UNCERTAIN` 이거나 `identity_revision` 이 트랙과 다름
+  4. 포즈 `calibration_version` 이 world_state 와 다름
+  5. 자산 없음·내려받기/sha256/리그 확인 실패·`joint_count` ≠ 관절 회전 길이, 그리고 Tier 0 pelvis 없음
+- 표시: 메시로 그리면 이름표에 `메시(추정) 0.3s`(HMR 지연, 0.1 s 단위)를, 되돌아가면 `메시 지연`·`메시 없음`·`메시 보류` 를 붙인다. 상태 표시줄의 수치 표시는 FE 몫이다.
+- `avatarMesh="off"` 면 포즈가 와도 늘 기존 경로다. 메시는 위험 판정·이벤트·선택 규칙을 바꾸지 않는다(같은 사람 대상 `{ type: 'person', id }`).

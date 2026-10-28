@@ -8,11 +8,13 @@ import type {
   ZoneSnapshot,
   ZoneView,
 } from '@/features/viewer3d/data/spatialFrame';
+import { avatarFrameOf, type AvatarFrameView } from '@/features/viewer3d/people/avatarFrame';
 import { toWorldPoint, type WorldPoint } from '@/features/viewer3d/worldCoordinates';
 import { adaptOfficialZones } from '@/features/viewer3d/zones/officialZones';
 import {
   isMessageType,
   validateMessage,
+  type AvatarFrameMessage,
   type Envelope,
   type RiskEventMessage,
   type Skeleton,
@@ -32,9 +34,10 @@ export type AdaptResult =
   | { kind: 'world'; frame: WorldFrame }
   | { kind: 'event'; event: RiskEventView }
   | { kind: 'health'; health: HealthView }
-  /** action_mismatch 는 관리자 토픽의 조치 불일치다. 3D 렌더 대상이 아니라 검사만 하고 버린다.
-   *  avatar_frame(/topic/avatar, EXP-02)은 아직 그리지 않아 검사만 하고 버린다. */
-  | { kind: 'ignored'; msgType: 'action_mismatch' | 'avatar_frame'; msgId: string }
+  /** avatar_frame(/topic/avatar, EXP-02, -65). 사람별 관절 회전과 자산만 싣는다(위치는 world_state). */
+  | { kind: 'avatar'; frame: AvatarFrameView }
+  /** action_mismatch 는 관리자 토픽의 조치 불일치다. 3D 렌더 대상이 아니라 검사만 하고 버린다. */
+  | { kind: 'ignored'; msgType: 'action_mismatch'; msgId: string }
   | { kind: 'rejected'; reason: RejectReason; msgType: string | null; detail: string };
 
 class NonFinite extends Error {}
@@ -218,9 +221,12 @@ export function adaptMessage(raw: unknown, receivedAt: number): AdaptResult {
           kind: 'health',
           health: healthOf(checked.message as ViewerHealthMessage, receivedAt),
         };
-      // shortcut: /topic/avatar 는 아직 그리지 않는다(EXP-02 뷰어 -65·-88 에서 SkinnedMesh 로 연결)
-      case 'action_mismatch':
       case 'avatar_frame':
+        return {
+          kind: 'avatar',
+          frame: avatarFrameOf(checked.message as AvatarFrameMessage, receivedAt),
+        };
+      case 'action_mismatch':
         return { kind: 'ignored', msgType, msgId: (checked.message as Envelope).msg_id };
     }
   } catch (error) {

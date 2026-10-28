@@ -2,6 +2,14 @@
 
 공개 입구(`index.ts`)와 그 타입을 바꾸면 여기에 적는다. 깨지는 변경은 FE 리뷰를 받은 뒤에만 한다.
 
+## S15P31A101-65 EXP-02 사람 메시
+
+모두 더하기이며 하위 호환이다. 계약 설명은 [CONTRACT.md](./CONTRACT.md) 'EXP-02 사람 메시' 절에 있다.
+
+- 추가: `avatarMesh`('auto' | 'off', 기본 auto)·`avatarMeshFetch` prop, `AvatarMeshFetch` 타입, `AVATAR_STALL_MS`·`AVATAR_LATE_MS`·`AVATAR_PLAYBACK_DELAY_MS`.
+- 바뀜: source 로 들어온 `avatar_frame`(/topic/avatar)을 검사만 하고 버리던 것을 사람별 최신 포즈로 받아 그린다. avatar_frame 을 넘기지 않으면 화면은 예전과 같다.
+- 그대로: 사람의 존재·위치·접지·관측 상태·선택·위험 강조는 world_state·risk_event 그대로다. avatar_frame 은 재생 기록(-187)에는 넣지 않는다.
+
 ## S15P31A101-186 PLANNED 가상 배치
 
 모두 더하기이며 하위 호환이다.

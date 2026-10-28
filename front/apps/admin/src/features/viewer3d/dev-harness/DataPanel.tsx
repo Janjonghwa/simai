@@ -16,6 +16,7 @@ import {
 import type { MockFailure, SpatialMockApi } from '@/features/viewer3d/dev-harness/mswHandlers';
 import { SCENARIOS } from '@/features/viewer3d/dev-harness/scenarios';
 import { zoneContainment } from '@/features/viewer3d/dev-harness/zoneContainment';
+import { selectAvatarMeshStatus } from '@/features/viewer3d/people/avatarMesh';
 import type { ReplayFile } from '@/features/viewer3d/replay/replayLog';
 import { REPLAY_SPEEDS, type ReplaySpatialSource } from '@/features/viewer3d/replay/replaySource';
 import {
@@ -364,7 +365,8 @@ export function DataPanel({
         </dd>
         <dt>누계</dt>
         <dd data-testid="data-counts">
-          W{state.counts.world} E{state.counts.event} H{state.counts.health} 중복
+          W{state.counts.world} E{state.counts.event} H{state.counts.health} A{state.counts.avatar}{' '}
+          중복
           {state.counts.duplicate} 역전
           {state.counts.outOfOrder} 거부{state.counts.rejected} 무시{state.counts.ignored}
         </dd>
@@ -379,14 +381,26 @@ export function DataPanel({
         )}
       </dl>
       <ul className="smk-data-list smk-mono" aria-label="Track">
-        {(state.world?.tracks ?? []).map((track) => (
-          <li key={track.worldId} data-world-id={track.worldId}>
-            <b>{track.worldId}</b> {track.observationState} {track.lifecycle} Z {track.zValidity}
-            {track.aliases.length > 0 ? ` 별칭 ${track.aliases.join(',')}` : ''}
-            <br />
-            <span className="smk-data-dim">{where(track)}</span>
-          </li>
-        ))}
+        {(state.world?.tracks ?? []).map((track) => {
+          // 아바타 포즈를 받은 사람만 메시 판정을 적는다(-65).
+          const mesh = state.avatars.has(track.worldId)
+            ? selectAvatarMeshStatus(state, track.worldId, now)
+            : null;
+          return (
+            <li
+              key={track.worldId}
+              data-world-id={track.worldId}
+              data-avatar-mesh={mesh ? (mesh.use ? 'ON' : mesh.fallback) : undefined}
+            >
+              <b>{track.worldId}</b> {track.observationState} {track.lifecycle} Z {track.zValidity}
+              {track.aliases.length > 0 ? ` 별칭 ${track.aliases.join(',')}` : ''}
+              {mesh ? ` · 메시 ${mesh.use ? 'ON' : mesh.fallback} HMR ${ms(mesh.hmrLagMs)}` : ''}
+              {mesh?.detail ? ` (${mesh.detail})` : ''}
+              <br />
+              <span className="smk-data-dim">{where(track)}</span>
+            </li>
+          );
+        })}
       </ul>
       <ul className="smk-data-list smk-mono" aria-label={`${source} 이벤트`}>
         {shown.map((event) => (

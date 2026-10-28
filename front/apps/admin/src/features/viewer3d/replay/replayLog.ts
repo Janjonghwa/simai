@@ -144,8 +144,13 @@ export function parseReplayLog(files: readonly ReplayFile[]): ReplayLog {
         issues.push({ ...at, reason: result.reason, detail: label + ': ' + result.detail });
         return;
       }
-      if (result.kind === 'ignored' || result.kind === 'health') {
-        const type = result.kind === 'health' ? 'viewer_health' : result.msgType;
+      if (result.kind === 'ignored' || result.kind === 'health' || result.kind === 'avatar') {
+        const type =
+          result.kind === 'health'
+            ? 'viewer_health'
+            : result.kind === 'avatar'
+              ? 'avatar_frame'
+              : result.msgType;
         issues.push({
           ...at,
           reason: 'NOT_REPLAYABLE',

@@ -7,11 +7,25 @@ import {
 } from '@/features/viewer3d/data/spatialFrame';
 import { LabelSprite } from '@/features/viewer3d/LabelSprite';
 import {
+  avatarAssetKey,
+  avatarAssetState,
+  AvatarMeshContext,
+  instantiateAvatarMesh,
+  useAvatarMesh,
+  type AvatarMeshAsset,
+} from '@/features/viewer3d/people/avatarMesh';
+import {
+  AVATAR_PLAYBACK_DELAY_MS,
+  avatarMeshStatus,
+  avatarMeshTag,
+} from '@/features/viewer3d/people/avatarMeshPolicy';
+import {
   instantiateAvatar,
   useAvatarModel,
   type AvatarInstance,
   type AvatarModel,
 } from '@/features/viewer3d/people/avatarModel';
+import { applyPose, PosePlayer } from '@/features/viewer3d/people/avatarPose';
 import {
   approach,
   approachAngle,
@@ -38,7 +52,7 @@ import { riskLabel, riskStyle } from '@/features/viewer3d/risk/riskPresentation'
 import { useRiskHighlight } from '@/features/viewer3d/risk/RiskScope';
 import { Selectable } from '@/features/viewer3d/Selectable';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
-import type { ThreePoint } from '@/features/viewer3d/worldCoordinates';
+import { worldToThree, type ThreePoint } from '@/features/viewer3d/worldCoordinates';
 import { Line } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import {
@@ -51,7 +65,7 @@ import {
   useState,
   type RefObject,
 } from 'react';
-import type { Group, MeshStandardMaterial } from 'three';
+import { Vector3, type Group, type Material, type MeshStandardMaterial } from 'three';
 import { useStore } from 'zustand';
 
 // -44 사람 레이어. -194 Provider 의 World 를 같은 Canvas·Scene 안에서 world_id 마다 하나씩 그린다.
@@ -129,7 +143,20 @@ interface Motion {
   walk: number;
   /** 이번 표본의 Tier 0 골격 모양(발 위치 기준). 골격을 쓸 수 없으면 null. */
   figure: SkeletonFigure | null;
+  /** 이번 표본의 Tier 0 pelvis(Three). 메시 정렬 기준. 없으면 null. */
+  pelvis: ThreePoint | null;
 }
+
+interface MeshView {
+  use: boolean;
+  tag: string | null;
+}
+
+/**
+ * 이름표에 적는 HMR 지연이 이만큼(ms) 바뀔 때만 고친다. World 10 Hz·포즈 5 Hz 라 지연이 100 ms 씩 오르내려,
+ * 그대로 적으면 이름표 텍스처를 초당 여러 번 다시 만든다.
+ */
+const LAG_LABEL_STEP_MS = 150;
 
 function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel | null }) {
   const store = useSpatialDataStore();
@@ -142,6 +169,21 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
   // 위험 강조는 이벤트가 바뀔 때만 달라진다. 위치·동작 기록(motion)은 그대로 둔다.
   const risk = useRiskHighlight('person', worldId);
   const [hasLastValid, setHasLastValid] = useState(false);
+  // EXP-02 메시(-65). 자산 key 가 바뀔 때만 다시 그린다(포즈는 5 Hz 로 오지만 useFrame 에서만 읽는다).
+  const meshConfig = useContext(AvatarMeshContext);
+  const meshKey = useSpatialData((s) => {
+    const asset = meshConfig.enabled ? s.avatars.get(worldId)?.asset : undefined;
+    return asset ? avatarAssetKey(asset) : null;
+  });
+  const { mesh } = useAvatarMesh(
+    meshKey,
+    () => store.getState().avatars.get(worldId)?.asset ?? null,
+    meshConfig.fetch,
+  );
+  const [player] = useState(() => new PosePlayer());
+  const [meshView, setMeshView] = useState<MeshView>({ use: false, tag: null });
+  const meshViewRef = useRef(meshView);
+  const lagShown = useRef<number | null>(null);
   const root = useRef<Group>(null);
   // 위험 표식 자리. 선택 그룹 밖에 두어 초점 중심·클릭 경계에 끼지 않게 하고, 위치만 아바타를 따라간다.
   const riskRoot = useRef<Group>(null);
@@ -166,6 +208,7 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
     speed: 0,
     walk: 0,
     figure: null,
+    pelvis: null,
   });
 
   useFrame((_, dt) => {
@@ -201,6 +244,7 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
         m.sampleAt = at;
         m.observation = track.observationState;
         m.speed = speed;
+        m.pelvis = track.pelvis ? worldToThree(track.pelvis) : null;
         // 관절은 이번 표본의 목표 발 위치 기준으로 둔다. 확인된 접지면 그 지지면 높이까지 발 막대를 잇는다.
         const placement = trackPlacement(track);
         m.figure =
@@ -248,6 +292,32 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
       fresh: pose.fresh,
     });
     m.walk = approach(m.walk, walking ? 1 : 0, dt, WALK_RATE);
+
+    // 메시를 쓸지 프레임마다 다시 본다(끊김·늦음은 시간이 지나며 생긴다). 바뀔 때만 다시 그린다.
+    const track = trackOf(data.world, worldId);
+    if (track) {
+      const avatar = meshConfig.enabled ? data.avatars.get(worldId) : undefined;
+      if (avatar) player.push(avatar);
+      const status = avatarMeshStatus({
+        enabled: meshConfig.enabled,
+        track,
+        world: data.world,
+        avatar,
+        asset: avatarAssetState(avatar?.asset ?? null),
+        now: Date.now(),
+      });
+      const lag = status.hmrLagMs;
+      if (lag === null) lagShown.current = null;
+      else if (lagShown.current === null || Math.abs(lag - lagShown.current) >= LAG_LABEL_STEP_MS) {
+        lagShown.current = lag;
+      }
+      const tag = avatarMeshTag({ ...status, hmrLagMs: lagShown.current });
+      const shown = meshViewRef.current;
+      if (status.use !== shown.use || tag !== shown.tag) {
+        meshViewRef.current = { use: status.use, tag };
+        setMeshView(meshViewRef.current);
+      }
+    }
   });
 
   const { world, connection } = store.getState();
@@ -260,14 +330,27 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
   const skeleton = pose.kind === 'BODY' && skeletonUsable(track);
   const placement = trackPlacement(track).basis;
   const base = personLabel(track, pose, connection?.state === 'OPEN');
+  const meshOn = meshView.use && mesh !== null && pose.kind === 'BODY';
+  const tagged = meshView.tag ? `${base} · ${meshView.tag}` : base;
   // 이름표 하나에 위험 > 대상 ID·관측 상태 순서로 적어 겹치지 않게 한다.
-  const label = risk ? `${riskLabel(risk)} · ${base}` : base;
+  const label = risk ? `${riskLabel(risk)} · ${tagged}` : tagged;
 
   return (
     <>
       <Selectable target={{ type: 'person', id: worldId }}>
+        {meshOn && mesh && (
+          // 메시는 보간되는 루트 밖에 둔다. 관절은 재생 지연만큼 늦지만 pelvis 는 늘 이번 표본의 Tier 0 위치다.
+          <MeshBody
+            key={mesh.key}
+            mesh={mesh}
+            player={player}
+            motion={motion}
+            tone={tone}
+            selected={selected}
+          />
+        )}
         <group ref={root} name={`person-avatar:${worldId}`}>
-          {skeleton ? (
+          {meshOn ? null : skeleton ? (
             <group ref={skeletonRoot} name="person-skeleton-root">
               <SkeletonBody
                 motion={motion}
@@ -412,7 +495,7 @@ function ModelBody({ model, tone, selected, motion, worldId }: ModelBodyProps) {
 
   // 위 효과 다음에 돌아 새 복제본에도 바로 칠한다.
   useEffect(() => {
-    if (instance.current) paint(instance.current, tone, selected);
+    if (instance.current) paint(instance.current.materials, tone, selected);
   }, [tone, selected, model, worldId]);
 
   useFrame((_, dt) => {
@@ -429,9 +512,57 @@ function ModelBody({ model, tone, selected, motion, worldId }: ModelBodyProps) {
   return <group ref={holder} />;
 }
 
+interface MeshBodyProps {
+  mesh: AvatarMeshAsset;
+  player: PosePlayer;
+  motion: RefObject<Motion>;
+  tone: PersonTone;
+  selected: boolean;
+}
+
+/**
+ * EXP-02 스키닝 메시(-65). 사람마다 복제본을 두고, 관절 회전은 재생 버퍼에서 보간하며 pelvis 를 Tier 0 pelvis_xyz 에 맞춘다.
+ * 처음 자세를 넣기 전에는 숨겨 바인드 자세가 원점에 한 번 보이지 않게 한다.
+ */
+function MeshBody({ mesh, player, motion, tone, selected }: MeshBodyProps) {
+  const holder = useRef<Group>(null);
+  const instance = useRef<ReturnType<typeof instantiateAvatarMesh> | null>(null);
+  const [target] = useState(() => new Vector3());
+
+  useEffect(() => {
+    const parent = holder.current;
+    if (!parent) return;
+    const created = instantiateAvatarMesh(mesh);
+    parent.add(created.root);
+    instance.current = created;
+    return () => {
+      parent.remove(created.root);
+      created.dispose();
+      instance.current = null;
+    };
+  }, [mesh]);
+
+  useEffect(() => {
+    if (instance.current) paint(instance.current.materials, tone, selected);
+  }, [tone, selected, mesh]);
+
+  useFrame(() => {
+    const group = holder.current;
+    const rig = instance.current;
+    const pelvis = motion.current.pelvis;
+    if (!group || !rig || !pelvis) return;
+    const frame = player.frame(Date.now(), AVATAR_PLAYBACK_DELAY_MS);
+    if (!frame) return;
+    applyPose(rig, group, frame, target.set(pelvis[0], pelvis[1], pelvis[2]));
+    group.visible = true;
+  });
+
+  return <group ref={holder} name="person-mesh" visible={false} />;
+}
+
 /** 상태 색·투명도. 관절(Joints) 재질은 경보색과 헷갈리지 않게 무채색으로 둔다. */
-function paint(avatar: AvatarInstance, tone: PersonTone, selected: boolean) {
-  for (const material of avatar.materials) {
+function paint(materials: readonly Material[], tone: PersonTone, selected: boolean) {
+  for (const material of materials) {
     const m = material as MeshStandardMaterial;
     const joint = /joints/i.test(m.name);
     m.color?.setHex(
