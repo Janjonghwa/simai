@@ -5,6 +5,9 @@
 - 뼈 길이 사전은 좌우 대칭인 뼈가 길이 변수 하나를 함께 쓴다(사람마다 한 벌). 길이 자체는 모르므로 변수로 두고,
   표본마다 같은 길이를 유지하게만 한다(HumanCalib 의 뼈 길이 일관성과 같은 원리). 그래서 뼈 사전은 스케일을 정하지 않는다.
 - 얼굴 관절(코·눈·귀)은 뼈 사전에 넣지 않는다. 짧고 검출 잡음이 커 사전이 정보를 거의 더하지 않는다.
+- 관절별 픽셀 잡음 배율(`KEYPOINT_NOISE_SCALE`)은 COCO keypoint 평가의 관절별 표준편차 κ(사람 표기 흔들림, OKS 정의)를
+  눈 κ(0.025)로 나눈 값이다. 엉덩이는 눈의 4.3배, 어깨는 3.2배 흔들린다. 로비 걷기 실측 잔차(-313)도 같은 비율이었다
+  (κ 로 나눈 관절별 잔차 중앙값 0.9~1.6). 발 끝은 COCO-WholeBody 엄지발가락 κ 0.068 을 쓴다.
 """
 
 from __future__ import annotations
@@ -33,6 +36,11 @@ BONE_GROUPS: dict[str, tuple[tuple[int, int], ...]] = {
     "foot": ((L_ANKLE, L_TOE), (R_ANKLE, R_TOE)),
 }
 BONE_NAMES: tuple[str, ...] = tuple(BONE_GROUPS)
+
+# 관절별 픽셀 잡음 배율 = COCO κ / 눈 κ(0.025). 순서는 COCO17 + 발 끝 2개
+_COCO_KAPPA = (0.026, 0.025, 0.025, 0.035, 0.035, 0.079, 0.079, 0.072, 0.072, 0.062, 0.062, 0.107, 0.107, 0.087, 0.087,
+               0.089, 0.089, 0.068, 0.068)
+KEYPOINT_NOISE_SCALE: tuple[float, ...] = tuple(round(k / 0.025, 4) for k in _COCO_KAPPA)
 
 # 발: (발목, 발 끝) 왼쪽·오른쪽
 FEET: tuple[tuple[int, int], ...] = ((L_ANKLE, L_TOE), (R_ANKLE, R_TOE))
