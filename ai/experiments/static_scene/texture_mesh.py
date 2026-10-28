@@ -8,6 +8,9 @@
        위 거르기를 데이터 비용 파일(-D)에 적용한 뒤 시점 선택. 데이터 항 area·gmi 를 모두 굽는다.
   2층  관측 없는 면의 연결 성분 중 HoleRule(미터·원본 픽셀·둘러싸임)을 만족하는 것만 texrecon 구멍 채우기(-L 라벨로 통제)에 맡긴다.
   큰 미관측: 텍스처 없이 중립 회색 재질(지어내지 않음). 같은 평면 복사·확산 inpainting 은 만들지 않는다.
+  형상 정리(S15P31A101-314, 옵션, mesh_cleanup.py): --align-views sim3|scale 은 TSDF 전 카메라 간 깊이 정렬(기준 카메라 고정, 보정된
+  자세로 텍스처도 투영), --plane-cleanup 은 수평 평면(바닥·책상·소파 윗면)을 찾아 깊이·정점을 평면에 맞추고 그 면을 ESTIMATED_PLANE 으로
+  표시한다(World 정렬이 있을 때만).
   확인: (a) 한 카메라 빼고 굽기 → 그 카메라 시점 렌더 vs 실제 사진(사람 마스크 밖·관측 영역 PSNR·SSIM), (b) 기존 gridmesh.glb
        (정점 색) 대비 같은 시점 그림, (c) 출처 비율. 개발 교실 관측 기반 지표이고 DATASET_GT 가 아니다.
 
@@ -19,8 +22,9 @@
         --out <새 결과 폴더> [--depth <혼합 깊이 폴더>] [--world-alignment <world_frame fix 결과>] [--texture-images <빈 교실 사진 폴더>]
 
 좌표: 계산은 MapAnything world(OpenCV cam2world)에서 한다. --world-alignment 가 status OK 면 glb 정점을 World(m, 오른손, +Z 상방,
-바닥 Z=0)로 옮기고, 없거나 FAILED 면 MapAnything world 그대로 두고 그렇게 적는다(World·Scene 으로 쓰지 않는다). glb 정점은 출력
-좌표 그대로다(run_hybrid_depth 와 같다. Three.js (x, z, −y) 변환은 뷰어 어댑터 한 곳, AGENTS 3).
+바닥 Z=0)로 옮긴 뒤 glTF 규약(+Y 상방, World (x, y, z) → (x, z, −y), extras axis_convention GLTF_Y_UP)으로 낸다(contracts
+scene_output assets.axis_convention: GLTF_VISUAL 은 GLTF_Y_UP, 변환은 내보내기 어댑터 한 곳 = to_glb_points. 관제 앱은 회전을 더하지
+않는다). 없거나 FAILED 면 MapAnything world 그대로 두고 그렇게 적는다(World·Scene 으로 쓰지 않는다). metrics·출처 지도·확인 지표는 World.
 이 결과는 보기용 Visual Geometry 다. Tier 0 위치·판정과 Operational Geometry 에 넣지 않는다(명세 5.3).
 
 종료 코드: 0 성공, 2 입력 오류(다른 입력으로 돈 결과 섞기, 결과 폴더가 비어 있지 않음 등), 3 결과 없음, 4 texrecon 실행 실패.
@@ -44,6 +48,7 @@ from typing import Any
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import mesh_cleanup as mc  # noqa: E402 - 같은 폴더(카메라 간 정렬·수평 평면 정리, -314)
 import run_hybrid_depth as hd  # noqa: E402 - 같은 폴더(입력 확인·깊이 정합·World 정렬을 그대로 쓴다)
 import texture_provenance as tp  # noqa: E402 - 같은 폴더
 
@@ -105,6 +110,9 @@ class Config:
     loo_terms: tuple[str, ...] = ("area", "gmi")
     hole: tp.HoleRule = field(default_factory=tp.HoleRule)
     num_threads: int = 0
+    align_views: str = "off"  # off | sim3 | scale (-314)
+    plane_cleanup: bool = False  # 수평 평면 정리 (-314)
+    check_regions: dict[str, tuple[float, ...]] = field(default_factory=dict)  # 이름 → World x0, x1, y0, y1, z0, z1: 가구 윗면 확인 영역
 
 
 # --------------------------------------------------------------------------- 입력
@@ -298,6 +306,53 @@ def fuse_mesh(views: list[DepthView], cfg: Config) -> tuple[np.ndarray, np.ndarr
     return V, F, rec
 
 
+def geometry(dviews: list[DepthView], cams: dict[str, Any], M: np.ndarray | None, cfg: Config, warnings: list[str]):
+    """0층 형상 + 정리(-314). 카메라 간 거리 분포(정렬 전·후) → [정렬] → [수평 평면: 찾기 → 깊이를 평면에 → TSDF → 정점을 평면에]
+    → 확인 영역 지표. 반환 (깊이 시점(정렬된 자세·평면에 맞춘 깊이), 텍스처 자세, V, F, 평면 면 마스크 또는 None, 기록)."""
+    s = unit_scale(M)
+    rec: dict[str, Any] = {"cross_view_before": mc.cross_view_distances(dviews, unit_scale=s)}
+    if cfg.align_views != "off":
+        res = mc.align_views(dviews, mc.AlignConfig(mode=cfg.align_views))
+        dviews = res.views
+        rec["alignment"] = res.record
+        rec["cross_view_after"] = mc.cross_view_distances(dviews, unit_scale=s)
+    poses = {name: np.asarray(c["cam2world"], float) for name, c in cams.items()}
+    poses.update({v.name: np.asarray(v.cam2world, float) for v in dviews})
+    if M is not None:  # 평면에 맞추기 전 입력 깊이의 겹(정렬 효과)
+        rec["regions"] = {k: {"layers": mc.region_layers(dviews, M, r[:4], r[4], r[5])} for k, r in cfg.check_regions.items()}
+    planes: list[mc.Plane] = []
+    pcfg = mc.PlaneConfig()
+    if cfg.plane_cleanup and M is None:
+        warnings.append("World 정렬이 없어 수평 평면 정리를 하지 않았다(+Z 를 모른다)")
+    elif cfg.plane_cleanup:
+        A, b = np.asarray(M, float)[:3, :3], np.asarray(M, float)[:3, 3]
+        Xs, Ns = [], []
+        for v in dviews:
+            P, N, ok = mc.oriented_normals(v)
+            Xs.append(P[ok] @ A.T + b)
+            Ns.append(N[ok] @ (A / s).T)
+        planes, prec = mc.find_horizontal_planes(np.concatenate(Xs), np.concatenate(Ns), pcfg)
+        snapped = []
+        rec["planes"] = {**prec, "depth_snap": {}}
+        for v in dviews:
+            v2, srec = mc.snap_depth_to_planes(v, planes, M, pcfg)
+            snapped.append(v2)
+            rec["planes"]["depth_snap"][v.name] = srec
+        dviews = snapped
+    V, F, fuse_rec = fuse_mesh(dviews, cfg)
+    plane_faces = None
+    if planes:
+        V, plane_faces, mrec = mc.snap_mesh_to_planes(V, F, planes, M, pcfg)
+        rec["planes"]["mesh_snap"] = mrec
+    elif cfg.plane_cleanup and M is not None:
+        plane_faces = np.zeros(len(F), bool)
+    if M is not None:
+        for k, r in cfg.check_regions.items():
+            rec["regions"][k]["flatness"] = mc.region_flatness(hd.transform_points(M, V), F, r[:4], r[4], r[5])
+    rec["fuse"] = fuse_rec
+    return dviews, poses, V, F, plane_faces, rec
+
+
 def write_ply(path: Path, V: np.ndarray, F: np.ndarray) -> None:
     head = (f"ply\nformat binary_little_endian 1.0\nelement vertex {len(V)}\nproperty float x\nproperty float y\n"
             f"property float z\nelement face {len(F)}\nproperty list uchar int vertex_indices\nend_header\n")
@@ -405,13 +460,13 @@ class TexreconError(RuntimeError):
 SKIP_LEVELING = ["--skip_global_seam_leveling", "--skip_local_seam_leveling", "--skip_hole_filling"]
 
 
-def write_scene(scene: Path, tex: dict[str, dict[str, Any]], cams: dict[str, Any], names: list[str]) -> None:
+def write_scene(scene: Path, tex: dict[str, dict[str, Any]], poses: dict[str, np.ndarray], names: list[str]) -> None:
+    """poses = 카메라 이름 → cam2world(정렬했으면 보정된 자세)."""
     scene.mkdir(parents=True)
     for name in names:
         t = tex[name]
         shutil.copyfile(t["path"], scene / f"{name}{t['path'].suffix.lower()}")
-        (scene / f"{name}.cam").write_text(tp.cam_file_text(t["K"], np.asarray(cams[name]["cam2world"], float), t["hw"]),
-                                           encoding="ascii")
+        (scene / f"{name}.cam").write_text(tp.cam_file_text(t["K"], np.asarray(poses[name], float), t["hw"]), encoding="ascii")
 
 
 # --------------------------------------------------------------------------- 1·2층: 굽기
@@ -436,7 +491,8 @@ def unit_scale(M: np.ndarray | None) -> float:
 
 
 def bake(tr: Texrecon, out: Path, scene: Path, mesh_ply: Path, V: np.ndarray, F: np.ndarray, costs: tp.DataCosts,
-         entries: np.ndarray, views: list[tp.TexView], cfg: Config, pairs: np.ndarray, tag: str, scale: float = 1.0) -> Bake:
+         entries: np.ndarray, views: list[tp.TexView], cfg: Config, pairs: np.ndarray, tag: str, scale: float = 1.0,
+         plane: np.ndarray | None = None) -> Bake:
     """거른 데이터 비용 → 시점 선택(-D) → 구멍 판정 → 관측·작은 구멍 면만 최종 굽기(-L, 구멍 채우기·이음매 보정)."""
     from PIL import Image
 
@@ -460,7 +516,7 @@ def bake(tr: Texrecon, out: Path, scene: Path, mesh_ply: Path, V: np.ndarray, F:
     full_face = sub_faces[tp.map_faces(Fs, obj["Fv"])]
     present = np.zeros(len(F), bool)
     present[full_face] = True
-    cls, cam = tp.face_provenance(labels, eligible, present)
+    cls, cam = tp.face_provenance(labels, eligible, present, plane)
     obj["full_face"] = full_face
     obj["atlases"] = [np.asarray(Image.open(out / "final" / obj["textures"][m]).convert("RGB")) for m in obj["materials"]]
     small = [r for r in recs if r["inradius_m"] is not None]
@@ -494,15 +550,31 @@ def write_provenance(b: Bake, out: Path) -> tuple[list[dict[str, Any]], list[np.
     return files, maps, covered
 
 
+GLTF_Y_UP = np.array([[1.0, 0, 0], [0, 0, 1.0], [0, -1.0, 0]])  # World (x, y, z) → glTF (x, z, −y), 회전(det +1, 감김 방향 유지)
+
+
+def glb_axis_convention(M: np.ndarray | None) -> str:
+    return "GLTF_Y_UP" if M is not None else "MAPANYTHING_WORLD_OPENCV(NOT_WORLD)"
+
+
+def to_glb_points(M: np.ndarray | None, X: np.ndarray) -> np.ndarray:
+    """메시(MapAnything) 좌표 → glb 정점. World 정렬(M)이 있으면 World 로 옮긴 뒤 glTF 규약(+Y 상방, (x, z, −y))으로 바꾼다
+    (contracts scene_output assets.axis_convention: GLTF_VISUAL 은 GLTF_Y_UP, 변환은 내보내기 어댑터 한 곳). 여기가 그 한 곳이고,
+    받는 쪽(관제 앱 SceneBackground)은 회전을 더하지 않는다. M 이 없으면 World 가 아니라 MapAnything world 그대로 둔다."""
+    if M is None:
+        return np.asarray(X, float)
+    return hd.transform_points(M, np.asarray(X, float)) @ GLTF_Y_UP.T
+
+
 def export_glb(path: Path, V: np.ndarray, F: np.ndarray, b: Bake, M: np.ndarray | None, extras: dict[str, Any]) -> int:
-    """관측·보간 면은 아틀라스마다 텍스처 메시 하나, 미관측 면은 중립 회색 메시 하나. 정점은 출력 좌표(M 적용) 그대로.
-    반환 glb 의 삼각형 수."""
+    """관측·보간·추정 평면 면은 아틀라스마다 텍스처 메시 하나, 미관측 면은 중립 회색 메시 하나. 정점은 to_glb_points(World 면
+    glTF +Y 상방), UV·출처 지도는 그대로. 반환 glb 의 삼각형 수."""
     import trimesh
     from PIL import Image
 
     obj = b.obj
     scene = trimesh.Scene()
-    sub_V = hd.transform_points(M, obj["V"])
+    sub_V = to_glb_points(M, obj["V"])
     tris = 0
     for k, m in enumerate(obj["materials"]):
         sel = np.nonzero(obj["Fm"] == k)[0]
@@ -519,7 +591,7 @@ def export_glb(path: Path, V: np.ndarray, F: np.ndarray, b: Bake, M: np.ndarray 
         used, inv = np.unique(F[un], return_inverse=True)
         mat = trimesh.visual.material.PBRMaterial(name="unobserved_neutral", baseColorFactor=[*NEUTRAL_RGB, 255],
                                                   metallicFactor=0.0, roughnessFactor=1.0)
-        mesh = trimesh.Trimesh(hd.transform_points(M, V[used]), inv.reshape(-1, 3),
+        mesh = trimesh.Trimesh(to_glb_points(M, V[used]), inv.reshape(-1, 3),
                                visual=trimesh.visual.TextureVisuals(material=mat), process=False)
         scene.add_geometry(mesh, geom_name="unobserved_neutral", node_name="unobserved_neutral")
         tris += len(un)
@@ -630,12 +702,23 @@ def shade_vertex_colors(prim: np.ndarray, bary: np.ndarray, F: np.ndarray, C: np
     return rgb
 
 
-SRC_COLORS = np.array([[220, 60, 60], [240, 200, 40], [60, 180, 90]], np.uint8)  # 미관측 빨강, 보간 노랑, 관측 초록
+def shade_geometry(prim: np.ndarray, V: np.ndarray, F: np.ndarray, cam2world: np.ndarray) -> np.ndarray:
+    """형상 확인용 회색 음영: 면 법선과 시선(카메라 앞 방향)의 |cos|. 뾰족함·겹친 면·구멍이 색 없이 보인다. 맞지 않은 픽셀은 검정."""
+    n = mc.face_normals(V, F)
+    fwd = np.asarray(cam2world, float)[:3, 2]
+    lam = np.abs(np.nan_to_num(n @ fwd))
+    g = np.zeros(prim.shape, np.uint8)
+    hit = prim >= 0
+    g[hit] = np.clip(40 + 215 * lam[prim[hit]], 0, 255).astype(np.uint8)
+    return np.repeat(g[..., None], 3, -1)
+
+
+SRC_COLORS = np.array([[220, 60, 60], [240, 200, 40], [60, 180, 90], [60, 120, 240]], np.uint8)  # 미관측 빨강, 보간 노랑, 관측 초록, 추정 평면 파랑
 
 
 def overlay(rgb: np.ndarray, src: np.ndarray) -> np.ndarray:
     out = rgb.copy()
-    m = src < 3
+    m = src < len(SRC_COLORS)
     out[m] = (0.5 * rgb[m] + 0.5 * SRC_COLORS[src[m]]).astype(np.uint8)
     return out
 
@@ -689,7 +772,8 @@ def _run(a: argparse.Namespace, cfg: Config, out: Path, tr: Texrecon, tr_rec: di
     dviews, depth_rec = load_depth_views(a.ma_run, prepared, cams, a.depth, cameras_sha, cfg.align)
     if not dviews:
         raise RuntimeError("형상에 쓸 카메라 깊이가 없다")
-    V, F, geo_rec = fuse_mesh(dviews, cfg)
+    dviews, poses, V, F, plane_faces, cleanup_rec = geometry(dviews, cams, M, cfg, warnings)
+    geo_rec = cleanup_rec.pop("fuse")
     (out / "mesh").mkdir()
     write_ply(out / "mesh" / "mesh.ply", V, F)
     pairs = tp.face_pairs(F)
@@ -711,10 +795,10 @@ def _run(a: argparse.Namespace, cfg: Config, out: Path, tr: Texrecon, tr_rec: di
             edge = tp.dilate(tp.discontinuity_mask(d.depth, d.valid, hd.FLYING_JUMP, d.cut), r)
         else:
             warnings.append(f"{name}: 깊이가 없어(정합 실패) 깊이 경계·가림 검사 없이 텍스처 소스로 쓴다")
-        views.append(tp.TexView(name, t["K"], np.asarray(cams[name]["cam2world"], float), t["hw"], t["person"],
+        views.append(tp.TexView(name, t["K"], np.asarray(poses[name], float), t["hw"], t["person"],
                                 None if d is None else d.depth, None if d is None else d.valid,
                                 None if d is None else d.K, edge))
-    write_scene(out / "scene", tex, cams, names)
+    write_scene(out / "scene", tex, poses, names)
 
     # 1·2층: 데이터 항마다 굽기
     report: dict[str, Any] = {"bakes": {}, "loo": {}}
@@ -737,7 +821,8 @@ def _run(a: argparse.Namespace, cfg: Config, out: Path, tr: Texrecon, tr_rec: di
         costs_by_term[term], filtered[term] = costs, entries
         report["bakes"][term] = {"filter": frec, "cost_entries": int(len(costs.entries)), "kept_entries": int(len(entries))}
         if term in cfg.terms:
-            b = bake(tr, bdir / "all", out / "scene", out / "mesh" / "mesh.ply", V, F, costs, entries, views, cfg, pairs, term, scale)
+            b = bake(tr, bdir / "all", out / "scene", out / "mesh" / "mesh.ply", V, F, costs, entries, views, cfg, pairs, term, scale,
+                     plane_faces)
             bakes[term] = b
             files, maps, covered = write_provenance(b, bdir / "all")
             for k, f_ in enumerate(files):
@@ -747,19 +832,21 @@ def _run(a: argparse.Namespace, cfg: Config, out: Path, tr: Texrecon, tr_rec: di
             per_cam = {names[c]: round(float(tp.face_areas(V, F)[b.cam == c].sum() / max(tp.face_areas(V, F).sum(), 1e-12)), 5)
                        for c in range(len(names))}
             extras = {
-                "format": RESULT_FORMAT, "format_version": RESULT_VERSION, "jira_key": "S15P31A101-298", "experiment_id": "EXP-01",
+                "format": RESULT_FORMAT, "format_version": RESULT_VERSION, "jira_key": a.jira_key, "experiment_id": "EXP-01",
                 "geometry_role": "VISUAL", "safety_use": False, "frame": frame,
-                "axis_convention": "WORLD_Z_UP" if M is not None else "MAPANYTHING_WORLD_OPENCV(NOT_WORLD)",
+                "axis_convention": glb_axis_convention(M),
                 "unit": unit,
                 "data_term": term,
                 "surface_source": {"values": tp.SURFACE_VALUES, "reserved_not_emitted": tp.RESERVED_VALUES,
-                                   "encoding": "무손실 8비트 단일 채널 PNG, 알베도 아틀라스와 같은 UV·해상도, 겹치면 낮은 값(보간이 관측으로 승격 안 됨). 최근접 표본으로 읽는다",
+                                   "encoding": "무손실 8비트 단일 채널 PNG, 알베도 아틀라스와 같은 UV·해상도, 겹치면 신뢰가 낮은 값(미관측 < 보간 < 추정 평면 < 관측, 관측으로 승격 안 됨). 최근접 표본으로 읽는다. 0/1/2 만 읽는 쪽은 3 을 0 으로 읽는다",
                                    "observed_camera_encoding": "값 = camera_ids 번호 + 1, 0 = 관측 아님·모름",
                                    "camera_ids": names, "maps": files, "ratios_area": ratios, "ratios_texel": texel,
                                    "observed_area_by_camera": per_cam},
                 "unobserved": {"material_rgb": list(NEUTRAL_RGB), "node": "unobserved_neutral",
                                "note": "형상은 관측 깊이(TSDF)이고 색 근거가 없다. 색을 지어내지 않았다"},
-                "geometry_source": "OBSERVED_DEPTH_TSDF",
+                "geometry_source": "OBSERVED_DEPTH_TSDF" + ("+HORIZONTAL_PLANE_FIT" if plane_faces is not None else ""),
+                "geometry_cleanup": {"align_views": cfg.align_views, "plane_cleanup": plane_faces is not None,
+                                     "estimated_plane_note": "ESTIMATED_PLANE 면은 색이 관측 픽셀이나 정점을 맞춘 수평 평면에 올렸다(관측 형상 그대로가 아니다)"},
             }
             tris = export_glb(bdir / "all" / "textured.glb", V, F, b, M, extras)
             report["bakes"][term].update({"ratios_area": ratios, "ratios_texel": texel, "observed_area_by_camera": per_cam,
@@ -770,20 +857,20 @@ def _run(a: argparse.Namespace, cfg: Config, out: Path, tr: Texrecon, tr_rec: di
 
     # 확인 (a) 한 카메라 빼고 굽기
     t0 = time.perf_counter()
-    casts = {name: rend.cast(tex[name]["K"], np.asarray(cams[name]["cam2world"], float), tex[name]["hw"]) for name in names}
+    casts = {name: rend.cast(tex[name]["K"], np.asarray(poses[name], float), tex[name]["hw"]) for name in names}
     (out / "compare").mkdir()
     for term in cfg.loo_terms:
         rows = {}
         for ci, name in enumerate(names):
             ent = filtered[term][filtered[term]["view"] != ci]
             b = bake(tr, out / f"bake-{term}" / f"loo-{name}", out / "scene", out / "mesh" / "mesh.ply", V, F,
-                     costs_by_term[term], ent, views, cfg, pairs, f"{term}-loo-{name}", scale)
+                     costs_by_term[term], ent, views, cfg, pairs, f"{term}-loo-{name}", scale, plane_faces)
             prim, bary = casts[name]
             rgb, src = shade_bake(prim, bary, b)
             photo = tex[name]["rgb"]
             person = tex[name]["person"] if tex[name]["person"] is not None else np.zeros(prim.shape, bool)
             usable = ~person & (prim >= 0)
-            m = usable & (src == tp.OBSERVED)
+            m = usable & np.isin(src, tp.OBSERVED_COLOR)
             rows[name] = {"psnr_db": tp.psnr(rgb, photo, m), "ssim": tp.ssim(rgb, photo, m),
                           "psnr_db_blur8": tp.psnr_blurred(rgb, photo, m, BLUR_SIGMA_PX),
                           "observed_pixels": int(m.sum()),
@@ -810,7 +897,7 @@ def _run(a: argparse.Namespace, cfg: Config, out: Path, tr: Texrecon, tr_rec: di
             rgb, src = shade_bake(prim, bary, b)
             photo = tex[name]["rgb"]
             person = tex[name]["person"] if tex[name]["person"] is not None else np.zeros(prim.shape, bool)
-            m = ~person & (prim >= 0) & (src == tp.OBSERVED) & (b.cam[np.maximum(prim, 0)] == ci)
+            m = ~person & (prim >= 0) & np.isin(src, tp.OBSERVED_COLOR) & (b.cam[np.maximum(prim, 0)] == ci)
             rows[name] = {"psnr_db": tp.psnr(rgb, photo, m), "ssim": tp.ssim(rgb, photo, m), "pixels": int(m.sum())}
         ok = [r for r in rows.values() if r["psnr_db"] is not None]
         report["self_view"][term] = {"cameras": rows,
@@ -834,19 +921,25 @@ def _run(a: argparse.Namespace, cfg: Config, out: Path, tr: Texrecon, tr_rec: di
         report["baseline"] = {"glb": str(grid), "sha256": sha256_file(grid)}
     else:
         warnings.append(f"기준 gridmesh.glb 가 없어 (b) 비교 그림을 만들지 않았다: {grid}")
+    # 형상 확인(-314): 음영 형상·텍스처·출처(파랑 = 추정 평면)를 같은 시점에서. gridmesh 는 원래 자세, 이 메시는 정렬된 자세
+    for name in names if primary else []:
+        rgb, src = shade_bake(*casts[name], bakes[primary])
+        save_jpg(out / "compare" / f"geometry-{name}.jpg",
+                 tile([tex[name]["rgb"], shade_geometry(casts[name][0], V, F, poses[name]), rgb, overlay(rgb, src)], 0.25,
+                      [f"{name} photo", "geometry (|cos|)", f"textured ({primary})", "provenance (blue = plane)"]))
 
     times["total_s"] = round(time.perf_counter() - t_all, 1)
     rec = {
         "format": RESULT_FORMAT, "format_version": RESULT_VERSION, "created_at": datetime.now(timezone.utc).isoformat(),
-        "jira_key": "S15P31A101-298", "experiment_id": "EXP-01", "status": "OK",
+        "jira_key": a.jira_key, "experiment_id": "EXP-01", "status": "OK",
         "inputs": {"mapanything": ma_rec, "cameras_json_sha256": cameras_sha, "prepared_sha256": prepared["_sha256"],
                    "depth": depth_rec, "texture": tex_rec, "world_alignment": wa_rec,
                    "input_provenance": prepared.get("input_provenance")},
-        "output_frame": {"frame": frame, "note": ("World(+Z 상방, 바닥 Z=0), 보정 PROVISIONAL" if M is not None else
+        "output_frame": {"frame": frame, "glb_axis_convention": glb_axis_convention(M), "note": ("World(+Z 상방, 바닥 Z=0), 보정 PROVISIONAL" if M is not None else
                                                   "World 고정 결과가 없거나 FAILED 라 MapAnything world(cam_A 기준, OpenCV 축) 그대로다. World·Scene 으로 쓰지 않는다")},
         "config": {**{k: v for k, v in asdict(cfg).items() if k != "hole"}, "hole": asdict(cfg.hole)},
         "texrecon": {**tr_rec, "calls": tr.calls},
-        "geometry": geo_rec, **report, "times": times, "warnings": warnings,
+        "geometry": geo_rec, "cleanup": cleanup_rec, **report, "times": times, "warnings": warnings,
         "metrics_note": "개발 교실 관측 기반 지표(DATASET_GT 아님). 한 카메라 빼고 굽기는 텍스처만 뺐고 형상(TSDF)은 네 카메라로 만들었다",
     }
     (out / "metrics.json").write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -857,7 +950,8 @@ def _run(a: argparse.Namespace, cfg: Config, out: Path, tr: Texrecon, tr_rec: di
 def flat_metrics(rec: dict[str, Any]) -> dict[str, Any]:
     """run_record.metrics(평면 숫자·문자). 이름은 설계 문서 "Run 기록 지표"에 정의한 것만."""
     m: dict[str, Any] = {"mesh_faces": rec["geometry"]["faces"], "mesh_vertices": rec["geometry"]["vertices"],
-                         "mesh_area_m2": rec["geometry"]["area_m2"], "output_frame": rec["output_frame"]["frame"]}
+                         "mesh_area_m2": rec["geometry"]["area_m2"], "output_frame": rec["output_frame"]["frame"],
+                         "glb_axis_convention": rec["output_frame"]["glb_axis_convention"]}
     for term, b in rec["bakes"].items():
         if "ratios_area" not in b:
             continue
@@ -878,6 +972,36 @@ def flat_metrics(rec: dict[str, Any]) -> dict[str, Any]:
     for term, sv in rec.get("self_view", {}).items():
         m[f"self_{term}_psnr_db_mean"] = sv["psnr_db_mean"]
         m[f"self_{term}_ssim_mean"] = sv["ssim_mean"]
+    c = rec.get("cleanup") or {}
+    for when in ("before", "after"):
+        a = (c.get(f"cross_view_{when}") or {}).get("all") or {}
+        if a.get("abs_rel_depth"):
+            m[f"cross_view_{when}_abs_rel_p50"] = a["abs_rel_depth"]["p50"]
+            m[f"cross_view_{when}_abs_rel_p90"] = a["abs_rel_depth"]["p90"]
+            m[f"cross_view_{when}_within_1pct"] = a["within_1pct"]
+        if a.get("point_to_plane_m"):
+            m[f"cross_view_{when}_p2p_m_p50"] = a["point_to_plane_m"]["p50"]
+            m[f"cross_view_{when}_p2p_m_p90"] = a["point_to_plane_m"]["p90"]
+    if "alignment" in c:
+        m["align_mode"] = c["alignment"]["mode"]
+        m["align_reference"] = c["alignment"]["reference"]
+        m["align_converged"] = c["alignment"]["converged"]
+        m["align_iterations"] = c["alignment"]["iterations"]
+        for cam, st in c["alignment"]["status"].items():
+            m[f"align_{cam}_status"] = st
+            t = c["alignment"]["totals"][cam]
+            m[f"align_{cam}_scale"], m[f"align_{cam}_rot_deg"], m[f"align_{cam}_center_shift"] = t["scale"], t["rot_deg"], t["center_shift"]
+    if "planes" in c:
+        m["planes"] = c["planes"]["planes"]
+        if "mesh_snap" in c["planes"]:
+            m["plane_faces"] = c["planes"]["mesh_snap"]["plane_faces"]
+    for k, r in (c.get("regions") or {}).items():
+        if (r.get("layers") or {}).get("layer_spread_m"):
+            m[f"region_{k}_layer_spread_m_p50"] = r["layers"]["layer_spread_m"]["p50"]
+        sm = (r.get("flatness") or {}).get("summary")
+        if sm:
+            for key in ("rms_m", "within_1cm", "rough_area_ratio", "top_tilt_gt10_ratio", "top_tilt_mean_deg"):
+                m[f"region_{k}_{key}"] = sm.get(key)
     m.update({k: v for k, v in rec["times"].items()})
     return m
 
@@ -911,7 +1035,7 @@ def write_run_record(a: argparse.Namespace, cfg: Config, rec: dict[str, Any], ou
     tr = rec["texrecon"]
     record = {
         "schema_version": RUN_RECORD_SCHEMA_VERSION, "run_id": a.run_id, "experiment_id": "EXP-01",
-        "jira_key": "S15P31A101-298", "owner": a.owner, **a.git,
+        "jira_key": a.jira_key, "owner": a.owner, **a.git,
         "env_hash": tr.get("image_id") or tr.get("sha256") or "unknown",
         "model_version": f"{MVS_TEXTURING} + open3d TSDF + MapAnything {rec['inputs']['mapanything'].get('model_version')}",
         "config": {"path": "ai/experiments/static_scene/texture_mesh.py", "sha256": sha256_file(Path(__file__)),
@@ -952,6 +1076,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--hole-max-inradius", type=float, default=tp.HoleRule.max_inradius_m)
     ap.add_argument("--hole-max-inradius-px", type=float, default=tp.HoleRule.max_inradius_px)
     ap.add_argument("--num-threads", type=int, default=0, help="texrecon 스레드(1 이면 결정적, 0 = 전부)")
+    ap.add_argument("--align-views", choices=["off", "sim3", "scale"], default="off",
+                    help="TSDF 전 카메라 간 깊이 정렬(-314): sim3 = 카메라별 회전·이동·축척, scale = 깊이 배율만")
+    ap.add_argument("--plane-cleanup", action="store_true", help="수평 평면 정리(-314, World 정렬 필요): 면은 ESTIMATED_PLANE")
+    ap.add_argument("--check-region", action="append", default=[],
+                    help="가구 윗면 확인 영역 이름=x0,x1,y0,y1,z0,z1 (World m, 여러 번). 입력 깊이 겹·메시 평평함을 metrics 에")
+    ap.add_argument("--jira-key", default="S15P31A101-298", help="Run 기록·glb extras 의 Jira 키")
     ap.add_argument("--run-id", default=None)
     ap.add_argument("--owner", default=None, help="Run 기록 owner(기본 git user.name)")
     return ap
@@ -962,7 +1092,18 @@ def main(argv: list[str] | None = None) -> int:
     split = lambda s: tuple(x for x in s.split(",") if x)  # noqa: E731
     cfg = Config(voxel_m=a.voxel, target_faces=a.target_faces, edge_band_px=a.edge_band_px, align=a.align,
                  terms=split(a.terms), loo_terms=split(a.loo_terms), num_threads=a.num_threads,
-                 hole=tp.HoleRule(a.hole_max_area, a.hole_max_inradius, a.hole_max_inradius_px))
+                 hole=tp.HoleRule(a.hole_max_area, a.hole_max_inradius, a.hole_max_inradius_px),
+                 align_views=a.align_views, plane_cleanup=a.plane_cleanup)
+    for spec in a.check_region:
+        name, _, vals = spec.partition("=")
+        try:
+            region = tuple(float(x) for x in vals.split(","))
+        except ValueError:
+            region = ()
+        if not name or len(region) != 6:
+            print(f"입력 오류: --check-region 은 이름=x0,x1,y0,y1,z0,z1: {spec}", file=sys.stderr)
+            return EXIT_CONFIG
+        cfg.check_regions[name] = region
     a.run_id = a.run_id or f"exp01-tex-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
     if a.owner is None:
         r = subprocess.run(["git", "-C", str(REPO), "config", "user.name"], capture_output=True, text=True)
@@ -996,6 +1137,17 @@ def _summary(rec: dict[str, Any]) -> None:
               + " ".join(f"{k}:{v['psnr_db']}/{v['ssim']}" for k, v in lo["cameras"].items()))
     for term, sv in rec.get("self_view", {}).items():
         print(f"[self {term}] psnr {sv['psnr_db_mean']} ssim {sv['ssim_mean']}")
+    c = rec.get("cleanup") or {}
+    for when in ("before", "after"):
+        x = (c.get(f"cross_view_{when}") or {}).get("all")
+        if x:
+            print(f"[cross-view {when}] |Δd|/d {x['abs_rel_depth']} p2p m {x['point_to_plane_m']}")
+    if "alignment" in c:
+        print(f"[align] ref {c['alignment']['reference']} status {c['alignment']['status']} totals {c['alignment']['totals']}")
+    if "planes" in c:
+        print(f"[planes] {c['planes']['planes']} mesh {(c['planes'].get('mesh_snap') or {}).get('plane_faces')} faces")
+    for k, r in (c.get("regions") or {}).items():
+        print(f"[region {k}] layers {(r.get('layers') or {}).get('layer_spread_m')} flatness {(r.get('flatness') or {}).get('summary')}")
     if rec["warnings"]:
         print("warnings: " + " | ".join(rec["warnings"]))
 
