@@ -129,7 +129,7 @@ class CameraRecorder:
 
     def _record_epoch(self, source: PacketSource, info: StreamInfo, epoch: int) -> str:
         model = self.spec.capture_time
-        estimator = ReceiveTimeEstimator(model, info.pts_timebase)
+        estimator = ReceiveTimeEstimator(model, info.pts_timebase, info.nominal_fps)
         writer: SegmentWriter | None = None
         timebase = pts_timebase_string(info)
         dropped = 0
@@ -156,6 +156,9 @@ class CameraRecorder:
                     writer = SegmentWriter(self.camera_dir, codec[0], prefix_parameter_sets=codec[1])
                     self._event("segment_started", stream_epoch=epoch, dropped_before_keyframe=dropped)
                 t = estimator.estimate(received_at_ms, packet.pts)
+                if estimator.broken_since == writer.frame_count:  # 깨진 PTS 시각선 → 이 프레임부터 프레임 시계(capture_time.py)
+                    self._event("pts_timeline_broken", stream_epoch=epoch, frame_sequence=writer.frame_count,
+                                clock=estimator.mode)
                 header = build_frame_header(self.spec.camera_id, epoch, writer.frame_count, packet, timebase,
                                             model, t, received_at_ms)
                 writer.write(header, packet.data)

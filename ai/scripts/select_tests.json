@@ -18,6 +18,12 @@
     ],
     "gateway/site_alert/**": [
       "tests/services/tier0/test_site_alert_clock_sync.py"
+    ],
+    "gateway/recorder/src/simai_recorder/capture_time.py": [
+      "tests/io/test_capture_clock.py"
+    ],
+    "gateway/recorder/tests/data/**": [
+      "tests/io/test_capture_clock.py"
     ]
   }
 }

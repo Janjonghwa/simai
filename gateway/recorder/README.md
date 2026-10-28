@@ -88,7 +88,7 @@ uv run simai-recorder manifest <세션 디렉터리>   # 중간에 끊긴 세션
   session.json                        세션 설정 스냅숏 (계정 없음). manifest 를 다시 계산할 때 쓴다
   manifest.json                       contracts/data/recording_manifest.schema.json (설명 docs/data/recording-manifest.md)
   <camera_id>/
-    events.jsonl                      접속·끊김·재접속 실패·키프레임 전 버림 기록
+    events.jsonl                      접속·끊김·재접속 실패·키프레임 전 버림·PTS 시각선 깨짐(pts_timeline_broken) 기록
     epoch_NNNN.codec_info.json        I0 codec_info (contracts/messages/codec_info.schema.json)
     epoch_NNNN.h264                   H.264 Annex B. 받은 접근 단위를 받은 순서대로 이어 붙임
     epoch_NNNN.frames.jsonl           한 줄 = 한 프레임
@@ -125,6 +125,13 @@ PTS 간격(카메라 RTP 시계)은 믿고 원점만 수신 시각에 맞추므�
 창 안 최솟값을 쓰므로 카메라·노트북 시계의 느린 표류를 따라간다. PTS 가 없으면 `received_at_ms − latency_ms`.
 `latency_ms`(노출 → 수신 고정 지연)와 `timestamp_uncertainty_ms` 는 **G0 LED 시험 전 잠정값**이다(기본 0, 20, PTS 없음 45).
 원본 `received_at_ms`·`source_pts` 를 함께 남기므로 G0 에서 값이 정해지면 사이드카를 다시 계산할 수 있다.
+**깨진 PTS 시각선(S15P31A101-315).** C110 은 PTS 가 13장 묶음마다 +410/−360 ms 번갈아 뛰어 위 식이 묶음째 약 0.4 s 틀리고
+뒤로도 간다. 공칭 fps 를 알면 epoch 마다 이것을 감지해(이웃 PTS 간격이 공칭에서 150 ms 넘게 벗어난 걸음이 10 s 안 2번, 또는
+뒤로 1번) 그 프레임부터 epoch 끝까지 프레임 시계(이어 붙인 PTS + 수신 하한 직선)로 매기고 `events.jsonl` 에
+`pts_timeline_broken`(stream_epoch, frame_sequence)을 남긴다. 직선이 서기 전 약 5 s 는 불확실성 45, 그 뒤 20 이다.
+`source_pts`·`received_at_ms` 는 원본 그대로라 PTS 식 값은 다시 계산된다. 근거·수치는
+[`docs/design/capture-time-broken-pts.md`](../../docs/design/capture-time-broken-pts.md).
+
 RTSP 입력은 RTCP SR 로 환산한 카메라 시각도 `SourcePacket.camera_time_us`(SR 전·파일·합성은 None)로 넘기지만 녹화·중계는 쓰지 않는다.
 이 값의 유무·흔들림은 측정 도구 [`gateway/rtsp_probe`](../rtsp_probe/README.md) 가 잰다.
 
@@ -137,7 +144,8 @@ RTSP 입력은 RTCP SR 로 환산한 카메라 시각도 `SourcePacket.camera_ti
    프레임별 촬영 시각·epoch·키프레임이 LIVE 와 같은 경로로 들어간다. 판정 출처는 REPLAY 이고 I1·I0 제어 채널을 열지 않으며(실제 알림 없음),
    `input.jsonl_dir` 을 주면 `world_state.jsonl`·`risk_event.jsonl` 을 남긴다(명세 21.3). 실행 방법·시계·종료 코드는
    [`docs/design/tier0-recording-replay.md`](../../docs/design/tier0-recording-replay.md). 읽는 순서는
-   `simai_recorder.segment.read_segment` 와 같다(ai 는 gateway 를 import 하지 않으므로 형식만 따른다).
+   `simai_recorder.segment.read_segment` 와 같다(ai 는 gateway 를 import 하지 않으므로 형식만 따른다). 이 수정 전에 찍힌 녹화의
+   깨진 PTS 시각선은 재생할 때 같은 프레임 시계로 다시 매긴다(`simai_ai.io.capture_clock`, 녹화 파일은 그대로).
 2. **VideoFileFrameSource.** `VideoFileFrameSource.from_manifest(<세션 디렉터리>, epochs={...})` 가 manifest 를 녹화 도구와 같은 판정(계약 스키마 + 스키마 밖 규칙)으로 검사하고
    카메라마다 `Recording(camera_id, path=epoch_NNNN.h264, start_time_ms=세그먼트 첫 추정 촬영 시각, fps=settings.nominal_fps)` 를 만든다.
    간단하지만 촬영 시각을 `start + index/fps` 로 다시 만들므로 도착 끊김·epoch 사이 공백이 사라진다. 프레임별 시각이 필요하면 1 을 쓴다.

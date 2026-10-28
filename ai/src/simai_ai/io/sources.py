@@ -10,6 +10,7 @@
   (`VideoFileFrameSource.from_manifest`, `recordings_from_manifest`).
 - RecordingReplay: gateway/recorder 녹화 세션을 I0 메시지(코덱 정보 → 헤더 + 압축 프레임)로 다시 낸다(I0 재생).
   프레임별 촬영 시각·epoch·키프레임이 LIVE 와 같은 I0Ingest 경로로 들어간다(Tier 0 파일 입력, S15P31A101-215).
+  깨진 PTS 시각선은 노트북 중계와 같은 프레임 시계로 다시 매긴다(capture_clock, S15P31A101-315).
 """
 
 from __future__ import annotations
@@ -18,10 +19,11 @@ import hashlib
 import heapq
 import json
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
+from simai_ai.io.capture_clock import CaptureClockModel, repair_segment
 from simai_ai.io.freshness import InferenceTicket
 from simai_ai.io.ingest import I0Ingest
 from simai_ai.io.messages import (
@@ -453,6 +455,23 @@ class _Segment:
     video: Path
     codec: I0CodecInfo
     frames: tuple[_FrameRef, ...]
+    repair: CaptureTimeRepair
+
+
+@dataclass(frozen=True)
+class CaptureTimeRepair:
+    """한 세그먼트의 촬영 시각 다시 매김 결과 (capture_clock, S15P31A101-315). 녹화 파일은 그대로다.
+
+    broken_since: 프레임 시계로 바꾼 frame_sequence. None 이면 녹화 헤더 그대로 냈다.
+    repaired: 촬영 시각·불확실성을 바꾼 프레임 수.
+    skipped: 고치지 못한 까닭(공칭 fps·수신 시각 없음, 재생에서 끔). 없으면 None.
+    """
+
+    camera_id: str
+    stream_epoch: int
+    broken_since: int | None
+    repaired: int
+    skipped: str | None = None
 
 
 _HEADER_REQUIRED = ("source_pts", "pts_timebase", "keyframe")  # contracts/messages/frame_header required
@@ -479,15 +498,20 @@ def _checked_file(session_dir: Path, entry: Mapping[str, Any], where: str) -> Pa
     return path
 
 
-def _read_segment(session_dir: Path, camera_id: str, seg: Mapping[str, Any]) -> _Segment:
-    """세그먼트 파일 셋을 확인하고 프레임 줄을 읽는다(영상 바이트는 재생할 때 읽는다)."""
+def _read_segment(session_dir: Path, camera_id: str, seg: Mapping[str, Any],
+                  capture_model: CaptureClockModel | None) -> _Segment:
+    """세그먼트 파일 셋을 확인하고 프레임 줄을 읽는다(영상 바이트는 재생할 때 읽는다).
+
+    capture_model 이 있으면 깨진 PTS 시각선을 프레임 시계로 다시 매긴 헤더를 낸다(_repair_capture_times).
+    """
     epoch = seg["stream_epoch"]
     where = f"{camera_id}/epoch {epoch}"
     video = _checked_file(session_dir, seg["video"], where)
     frames_path = _checked_file(session_dir, seg["frames"], where)
     codec_path = _checked_file(session_dir, seg["codec_info"], where)
     try:
-        codec = codec_info_from_contract(json.loads(codec_path.read_text(encoding="utf-8")))
+        codec_raw = json.loads(codec_path.read_text(encoding="utf-8"))
+        codec = codec_info_from_contract(codec_raw)
     except (ValueError, KeyError, TypeError) as e:
         raise ValueError(f"{where}: codec_info 를 읽지 못했다 ({type(e).__name__})") from None
     if (codec.camera_id, codec.stream_epoch) != (camera_id, epoch):
@@ -495,6 +519,7 @@ def _read_segment(session_dir: Path, camera_id: str, seg: Mapping[str, Any]) -> 
     video_bytes = seg["video"]["bytes"]
     first = (seg.get("frame_sequence_range") or [0])[0]
     refs: list[_FrameRef] = []
+    received_all: list[int | None] = []
     with frames_path.open(encoding="utf-8") as f:
         for n, line in enumerate(f, start=1):
             if not line.strip():
@@ -522,9 +547,40 @@ def _read_segment(session_dir: Path, camera_id: str, seg: Mapping[str, Any]) -> 
                     and offset + size <= video_bytes):
                 raise ValueError(f"{where}: 프레임 줄 {n} 의 offset·size 가 영상 파일 밖이다")
             refs.append(_FrameRef(header.estimated_capture_time_ms if received is None else received, header, offset, size))
+            received_all.append(received)
     if len(refs) != seg["frame_count"]:
         raise ValueError(f"{where}: 프레임 줄 수가 manifest frame_count 와 다르다")
-    return _Segment(epoch, video, codec, tuple(refs))
+    frames, repair = _repair_capture_times(camera_id, epoch, refs, received_all, codec_raw.get("nominal_fps"),
+                                           capture_model)
+    return _Segment(epoch, video, codec, frames, repair)
+
+
+def _repair_capture_times(
+    camera_id: str, epoch: int, refs: list[_FrameRef], received: list[int | None], nominal_fps: Any,
+    model: CaptureClockModel | None,
+) -> tuple[tuple[_FrameRef, ...], CaptureTimeRepair]:
+    """깨진 PTS 시각선이면 노트북 중계와 같은 프레임 시계로 촬영 시각·불확실성을 다시 매긴다(capture_clock 모듈 설명).
+
+    원본 source_pts·received_at_ms(release_ms)·timestamp_source 는 그대로다. 공칭 fps·수신 시각을 모르면 고치지 않는다(지어내지 않음).
+    """
+    def kept(reason: str | None) -> tuple[tuple[_FrameRef, ...], CaptureTimeRepair]:
+        return tuple(refs), CaptureTimeRepair(camera_id, epoch, None, 0, reason)
+
+    if model is None:
+        return kept("disabled")
+    if isinstance(nominal_fps, bool) or not isinstance(nominal_fps, (int, float)) or not 0 < nominal_fps < float("inf"):
+        return kept("no_nominal_fps")
+    if any(r is None for r in received):
+        return kept("no_received_at_ms")
+    rows = [(r, ref.header.source_pts, ref.header.pts_timebase) for r, ref in zip(received, refs)]
+    result = repair_segment(rows, float(nominal_fps), model)
+    if result.broken_since is None:
+        return kept(None)
+    out = [ref if t is None else replace(ref, header=replace(ref.header, estimated_capture_time_ms=t[0],
+                                                               timestamp_uncertainty_ms=t[1]))
+           for ref, t in zip(refs, result.times)]
+    repaired = sum(t is not None for t in result.times)
+    return tuple(out), CaptureTimeRepair(camera_id, epoch, refs[result.broken_since].header.frame_sequence, repaired)
 
 
 def _replay_camera(camera_id: str, segments: Sequence[_Segment]) -> Iterator[ReplayMessage]:
@@ -547,10 +603,12 @@ class RecordingReplay:
     열 때 manifest 를 계약으로 검사하고(load_recording_manifest), 고른 카메라의 세그먼트마다 파일 크기·sha256·codec_info·
     프레임 줄(카메라·epoch·frame_sequence 연속·offset 범위·줄 수)을 확인한다. 어긋나면 ValueError(경로·규칙만, 받은 값 없음).
     카메라마다 세그먼트(stream_epoch)를 차례로 내고, 카메라 사이는 release_ms 순서로 합친다(같으면 camera_ids 순서).
-    촬영 시각·timestamp_source 는 녹화 헤더 그대로다(지어내지 않음). 입력 출처는 FILE 이다(명세 20.4).
+    촬영 시각·timestamp_source 는 녹화 헤더 그대로이되, 깨진 PTS 시각선은 노트북 중계와 같은 프레임 시계로 다시 매긴다
+    (repair_capture_time, 기본 켬. 녹화 파일은 고치지 않는다. 결과는 capture_time_repairs). 입력 출처는 FILE 이다(명세 20.4).
     """
 
-    def __init__(self, session_dir: Path | str, camera_ids: Sequence[str] | None = None) -> None:
+    def __init__(self, session_dir: Path | str, camera_ids: Sequence[str] | None = None,
+                 repair_capture_time: bool = True) -> None:
         self.session_dir = Path(session_dir)
         self.manifest = load_recording_manifest(self.session_dir)
         cameras = {c["camera_id"]: c for c in self.manifest["cameras"]}
@@ -564,10 +622,13 @@ class RecordingReplay:
         self._segments: dict[str, tuple[_Segment, ...]] = {}
         for cid in ids:
             segs = sorted(cameras[cid]["segments"], key=lambda s: s["stream_epoch"])
-            read = tuple(_read_segment(self.session_dir, cid, s) for s in segs if s["frame_count"] > 0)
+            model = CaptureClockModel.from_manifest(cameras[cid]["capture_time_model"]) if repair_capture_time else None
+            read = tuple(_read_segment(self.session_dir, cid, s, model) for s in segs if s["frame_count"] > 0)
             if not read:
                 raise ValueError(f"{cid}: 녹화된 프레임이 없다")
             self._segments[cid] = read
+        self.capture_time_repairs: tuple[CaptureTimeRepair, ...] = tuple(
+            seg.repair for cid in ids for seg in self._segments[cid])
         self.start_ms = min(segs[0].frames[0].release_ms for segs in self._segments.values())
         self.end_ms = max(segs[-1].frames[-1].release_ms for segs in self._segments.values())
         self._streams = [_replay_camera(c, self._segments[c]) for c in ids]
