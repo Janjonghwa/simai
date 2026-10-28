@@ -33,7 +33,13 @@ import type {
   ViewerObjectEditPreview,
   ViewerObjectEditResult,
 } from '@/features/viewer3d/editing/editTypes';
-import type { Viewer3DHandle, ViewerStatus, ViewerTarget } from '@/features/viewer3d/types';
+import { parseReplayLog, type ReplayLog } from '@/features/viewer3d/replay/replayLog';
+import type {
+  Viewer3DHandle,
+  ViewerMode,
+  ViewerStatus,
+  ViewerTarget,
+} from '@/features/viewer3d/types';
 import { ViewerShell } from '@/features/viewer3d/ViewerShell';
 import { WorldReference } from '@/features/viewer3d/WorldReference';
 import type { ZoneApplyState } from '@/features/viewer3d/zones/zonePresentation';
@@ -82,6 +88,11 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   const [dataStore] = useState(createSpatialDataStore);
   const [sourceKey, setSourceKey] = useState(() => readDataSource(window.location.search));
   const [epoch, setEpoch] = useState(0);
+  // 개발 화면에서 고른 녹화 기록. null 이면 예시 기록을 재생한다.
+  const [replayLog, setReplayLog] = useState<ReplayLog | null>(null);
+  // 재생 입력이면 모드는 REPLAY 다. 처음 고른 입력에 맞춰 시작하고, 이후에는 입력·메뉴를 바꾸는 동작에서 정한다.
+  const [initialMode] = useState<ViewerMode>(() => (sourceKey === 'replay' ? 'REPLAY' : 'LIVE'));
+  const replaying = sourceKey === 'replay';
   const [avatar] = useState(() => readAvatar(window.location.search));
   const [zoneApply, setZoneApply] = useState(() => readZoneApply(window.location.search));
   // 3D 편집 소비 예시(-195). 받은 초안·결과를 보여 주기만 한다.
@@ -108,9 +119,9 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   const roster = useRoster(dataStore, legacy, status?.mode ?? 'LIVE');
   // 입력을 바꾸거나 처음부터 다시 재생할 때만 새 Source 를 만든다(epoch 는 재시작 표시).
   const harness = useMemo(
-    () => createHarnessSource(sourceKey, restBase, mockApi),
+    () => createHarnessSource(sourceKey, restBase, mockApi, replayLog),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sourceKey, restBase, mockApi, epoch],
+    [sourceKey, restBase, mockApi, epoch, replayLog],
   );
 
   const changeView = (next: DevViewKey) => {
@@ -121,6 +132,9 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
 
   const changeSource = (next: DataSourceKey) => {
     setSourceKey(next);
+    // 재생 기록은 REPLAY 로만 보인다. 재생을 떠나면 지금 업무 메뉴의 모드로 돌아간다.
+    if (next === 'replay') viewer.current?.setMode('REPLAY');
+    else if (replaying) viewer.current?.setMode(menu === 'tbm' ? 'PLANNED' : 'LIVE');
     window.history.replaceState(
       window.history.state,
       '',
@@ -146,7 +160,8 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
     setMenu(next);
     setPanelOpen(true);
     // 다른 업무 메뉴를 고른 명시적 동작만 모드를 바꾼다. TBM 계획만 PLANNED 이고 나머지는 LIVE 다.
-    viewer.current?.setMode(next === 'tbm' ? 'PLANNED' : 'LIVE');
+    // 녹화 재생 중에는 재생 기록을 LIVE·PLANNED 로 보이지 않게 REPLAY 를 둔다.
+    viewer.current?.setMode(replaying ? 'REPLAY' : next === 'tbm' ? 'PLANNED' : 'LIVE');
   };
 
   const toggleTheme = () => {
@@ -167,6 +182,7 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
       <div className="smk-layer" data-testid="spatial-layer">
         <ViewerShell
           ref={viewer}
+          initialMode={initialMode}
           onSelectionChange={setSelected}
           onStatusChange={setStatus}
           onEditPreview={setEditPreview}
@@ -187,7 +203,13 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
 
       {mockUi && (
         <div className="smk-ui" data-testid="mock-ui">
-          <MockTopBar status={status} light={light} onToggleTheme={toggleTheme} store={dataStore} />
+          <MockTopBar
+            status={status}
+            light={light}
+            onToggleTheme={toggleTheme}
+            store={dataStore}
+            replay={harness.replay}
+          />
           <SelectionCard selected={selected} focus={commands.focus} clear={commands.clear} />
           {panelOpen && (
             <MockOverlay
@@ -221,6 +243,11 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
             onZoneApplyChange={changeZoneApply}
             mode={status?.mode ?? 'LIVE'}
             onRestart={() => setEpoch((n) => n + 1)}
+            onReplayFiles={(files) => setReplayLog(parseReplayLog(files))}
+            onReplayExample={() => {
+              setReplayLog(null);
+              setEpoch((n) => n + 1);
+            }}
           />
           <EditPanel
             viewer={viewer}

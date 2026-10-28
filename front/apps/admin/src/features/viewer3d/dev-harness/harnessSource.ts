@@ -10,17 +10,29 @@ import {
   SCENARIOS,
   type ScenarioKey,
 } from '@/features/viewer3d/dev-harness/scenarios';
+import riskEventExample from '@/features/viewer3d/replay/fixtures/risk_event.example.jsonl?raw';
+import worldStateExample from '@/features/viewer3d/replay/fixtures/world_state.example.jsonl?raw';
+import {
+  parseReplayLog,
+  type ReplayFile,
+  type ReplayLog,
+} from '@/features/viewer3d/replay/replayLog';
+import {
+  createReplaySource,
+  type ReplaySpatialSource,
+} from '@/features/viewer3d/replay/replaySource';
 import type { ZoneApplyState } from '@/features/viewer3d/zones/zonePresentation';
 
-// 개발 화면의 데이터 입력 선택. 시나리오 Mock 5종, 외부 Live 주입 시험, 입력 없음.
+// 개발 화면의 데이터 입력 선택. 시나리오 Mock, 외부 Live 주입 시험, 녹화 재생(JSONL), 입력 없음.
 
 export const DATA_SOURCES = [
   ...SCENARIOS.map((s) => ({ key: s.key as DataSourceKey, label: `Mock · ${s.label}` })),
   { key: 'external' as DataSourceKey, label: '외부 입력 시험(JSON 주입)' },
+  { key: 'replay' as DataSourceKey, label: '녹화 재생(world_state JSONL)' },
   { key: 'off' as DataSourceKey, label: '입력 없음' },
 ];
 
-export type DataSourceKey = ScenarioKey | 'external' | 'off';
+export type DataSourceKey = ScenarioKey | 'external' | 'replay' | 'off';
 
 const PARAM = 'source';
 const DEFAULT: DataSourceKey = 'normal';
@@ -42,7 +54,7 @@ export function readAvatar(search: string): AvatarKind {
 }
 
 const isDataSourceKey = (value: unknown): value is DataSourceKey =>
-  isScenarioKey(value) || value === 'external' || value === 'off';
+  isScenarioKey(value) || value === 'external' || value === 'replay' || value === 'off';
 
 /** 개발 화면의 구역 적용 상태 표시 시험. ?zones=preview|applied, 없거나 모르면 적용 미확인. */
 const ZONE_PARAM: Record<string, ZoneApplyState> = {
@@ -70,7 +82,7 @@ export function withZoneApply(href: string, state: ZoneApplyState): string {
   return url.toString();
 }
 
-/** ?source=normal|observation-loss|risk-lifecycle|disconnect|invalid-input|external|off. 없거나 모르면 normal. */
+/** ?source=<시나리오>|external|replay|off. 없거나 모르면 normal. */
 export function readDataSource(search: string): DataSourceKey {
   const value = new URLSearchParams(search).get(PARAM)?.toLowerCase();
   return isDataSourceKey(value) ? value : DEFAULT;
@@ -87,6 +99,26 @@ export interface HarnessSource {
   source: SpatialSource | null;
   /** 재생 조작 대상. 입력 없음이면 null. */
   mock: MockSpatialSource | null;
+  /** 녹화 재생 조작 대상. 재생 입력이 아니면 null. */
+  replay: ReplaySpatialSource | null;
+}
+
+/**
+ * 녹화 재생 예시. contracts/examples 의 world_state·risk_event 를 여러 프레임으로 이어 쓴 것이다(1.5초 기록 없는 구간 포함).
+ * Tier 0 file 입력(-215) 출력과 같은 두 파일 이름이다. 실제 교실 녹화 결과는 개발 화면에서 파일로 고른다.
+ */
+export const EXAMPLE_REPLAY_FILES: readonly ReplayFile[] = [
+  { name: 'world_state.example.jsonl', text: worldStateExample },
+  { name: 'risk_event.example.jsonl', text: riskEventExample },
+];
+
+export const exampleReplayLog = (): ReplayLog => parseReplayLog(EXAMPLE_REPLAY_FILES);
+
+/** 고른 재생 기록 파일을 글자(UTF-8)로 읽는다. */
+export function readReplayFiles(list: FileList | readonly File[]): Promise<ReplayFile[]> {
+  return Promise.all(
+    Array.from(list, async (file) => ({ name: file.name, text: await file.text() })),
+  );
 }
 
 /**
@@ -118,13 +150,21 @@ function relay(mock: MockSpatialSource): SpatialSource {
   };
 }
 
-/** 고른 입력의 Source 를 만든다. 다시 만들면 새 id 라 Viewer 가 데이터를 비우고 처음부터 받는다. */
+/**
+ * 고른 입력의 Source 를 만든다. 다시 만들면 새 id 라 Viewer 가 데이터를 비우고 처음부터 받는다.
+ * 재생은 고른 기록(replayLog), 없으면 예시 기록을 처음부터 재생한다.
+ */
 export function createHarnessSource(
   key: DataSourceKey,
   restBase: string | null,
   api: SpatialMockApi | null,
+  replayLog: ReplayLog | null = null,
 ): HarnessSource {
-  if (key === 'off') return { source: null, mock: null };
+  if (key === 'off') return { source: null, mock: null, replay: null };
+  if (key === 'replay') {
+    const replay = createReplaySource(replayLog ?? exampleReplayLog(), { autoplay: true });
+    return { source: replay, mock: null, replay };
+  }
   const scenario: ScenarioKey = key === 'external' ? 'normal' : key;
   const mock = createMockSource({
     scenario,
@@ -134,5 +174,5 @@ export function createHarnessSource(
   });
   // REST 스냅샷이 같은 시나리오·시각축에서 나오게 맞춘다.
   api?.setScenario(scenario, mock.t0);
-  return { source: key === 'external' ? relay(mock) : mock, mock };
+  return { source: key === 'external' ? relay(mock) : mock, mock, replay: null };
 }

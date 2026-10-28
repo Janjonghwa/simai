@@ -1,8 +1,9 @@
 import type { SpatialDataStore } from '@/features/viewer3d/data/spatialData.store';
+import type { ReplaySpatialSource } from '@/features/viewer3d/replay/replaySource';
 import type { ViewerStatus } from '@/features/viewer3d/types';
 import { Button } from '@simai/ui/components/button';
 import { Moon, Sun } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { useStore } from 'zustand';
 
 const NONE = '—';
@@ -42,15 +43,38 @@ function DataAge({ store }: { store: SpatialDataStore }) {
   );
 }
 
+/** 녹화 재생 시각(기록 시계). 실시간이 아니라는 것을 데이터 연령과 따로 보인다. */
+function ReplayClock({ replay }: { replay: ReplaySpatialSource }) {
+  const status = useSyncExternalStore(replay.subscribeStatus, replay.getStatus);
+  const at = status.playhead === null ? NONE : new Date(status.playhead).toTimeString().slice(0, 8);
+  return (
+    <span data-testid="replay-clock" data-gap={status.gap ? '' : undefined}>
+      재생{' '}
+      <b className="smk-mono">
+        {at}
+        {status.gap ? ' · 기록 없음' : ''}
+      </b>
+    </span>
+  );
+}
+
 interface MockTopBarProps {
   status: ViewerStatus | null;
   light: boolean;
   onToggleTheme: () => void;
   store: SpatialDataStore;
+  /** 녹화 재생 입력이면 그 Source. */
+  replay?: ReplaySpatialSource | null;
 }
 
 /** 3D 위에 떠 있는 상단 바. 운영 상태 값은 연결하지 않아 비워 둔다. */
-export function MockTopBar({ status, light, onToggleTheme, store }: MockTopBarProps) {
+export function MockTopBar({
+  status,
+  light,
+  onToggleTheme,
+  store,
+  replay = null,
+}: MockTopBarProps) {
   return (
     <header className="smk-top">
       <strong className="smk-brand">
@@ -60,6 +84,7 @@ export function MockTopBar({ status, light, onToggleTheme, store }: MockTopBarPr
       <span className="smk-chip">개발 목업 · 예시 데이터</span>
       <div className="smk-meta">
         <DataAge store={store} />
+        {replay && <ReplayClock replay={replay} />}
         <Meta label="카메라" />
         <Meta label="보정" />
         <Meta label="구성" />

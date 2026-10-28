@@ -57,6 +57,19 @@ export type {
   ViewerObjectEditResult,
   ViewerWorkSurfaceGeometry,
 } from '@/features/viewer3d/editing/editTypes';
+export { parseReplayLog } from '@/features/viewer3d/replay/replayLog';
+export type {
+  ReplayFile,
+  ReplayIssue,
+  ReplayIssueReason,
+  ReplayLog,
+} from '@/features/viewer3d/replay/replayLog';
+export { REPLAY_SPEEDS, createReplaySource } from '@/features/viewer3d/replay/replaySource';
+export type {
+  ReplaySourceOptions,
+  ReplaySpatialSource,
+  ReplayStatus,
+} from '@/features/viewer3d/replay/replaySource';
 export {
   adaptWorkSurfaces,
   geometryProblem,
