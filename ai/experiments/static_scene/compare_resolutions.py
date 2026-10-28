@@ -4,7 +4,8 @@
 
 Run 폴더마다 run_mapanything.py 의 metrics.json 과(있으면) `world_frame.cli fix --out <Run>/world-fix` 기록을 읽는다.
 보정용(바닥 rms·지지 점·카메라 간 재투영)과 배경용(모델 입력 크기·원본 한 점이 덮는 픽셀·유효 점 비율·융합 점 수)을 나눠 낸다.
-판정은 하지 않는다(값만). 사람이 찍힌 입력이라 결과는 커밋하지 않는다.
+판정은 하지 않는다(값만). 사람이 찍힌 입력이라 결과는 커밋하지 않는다. "출력 K 검사" 가 MISMATCH 인 Run 은 모델이 K 를
+틀리게 예측한 것이라 나머지 값도 비교 근거로 쓰지 않는다(S15P31A101-312).
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ def row(run_dir: Path, original_width: int | None = None) -> dict:
     m = _load(run_dir / "metrics.json") or {}
     fix = _load(run_dir / "world-fix")
     hw = m.get("model_input_hw")
+    kc = m.get("intrinsics_check") or {}
     views = m.get("per_view") or []
     valid = [v.get("valid_ratio") for v in views if isinstance(v.get("valid_ratio"), (int, float))]
     out = {
@@ -40,6 +42,9 @@ def row(run_dir: Path, original_width: int | None = None) -> dict:
         "peak_alloc_mb": m.get("peak_alloc_mb"),
         "valid_ratio_mean": round(statistics.fmean(valid), 4) if valid else None,
         "points": m.get("points_conf_filtered"),
+        # 출력 K 검사(S15P31A101-312). 검사 전 Run 은 None(intrinsics_check.py 로 노트북에서 다시 볼 수 있다)
+        "k_check": (f"{kc['status']} {kc['max_rel_err']:.1%}" if isinstance(kc.get("max_rel_err"), (int, float))
+                    else kc.get("status")),
         "fix_status": None, "floor_inliers": None, "floor_rms": None,
         "reproj_median_px": None, "reproj_p95_px": None,
     }
@@ -56,7 +61,8 @@ def row(run_dir: Path, original_width: int | None = None) -> dict:
 
 
 COLUMNS = (("run", "Run"), ("model_input_hw", "입력 H×W"), ("px_per_point", "원본 px/점"), ("infer_ms_warm", "추론 ms"),
-           ("peak_alloc_mb", "VRAM MB"), ("valid_ratio_mean", "유효 비율"), ("points", "점 수"), ("fix_status", "World 고정"),
+           ("peak_alloc_mb", "VRAM MB"), ("valid_ratio_mean", "유효 비율"), ("points", "점 수"), ("k_check", "출력 K 검사"),
+           ("fix_status", "World 고정"),
            ("floor_inliers", "바닥 지지점"), ("floor_rms", "바닥 rms"), ("reproj_median_px", "재투영 중앙 px"),
            ("reproj_p95_px", "재투영 p95 px"))
 
