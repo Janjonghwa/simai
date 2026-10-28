@@ -1,0 +1,5 @@
+{
+  "kind": "hello",
+  "protocol": "simai-cctv-preview/1",
+  "cameras": ["cam1", "cam2", "cam3", "cam4"]
+}

@@ -2,6 +2,7 @@
 
 노트북에서 Tapo C110 4대의 RTSP 를 카메라별로 받아, 디코딩하지 않은 압축 프레임(H.264 접근 단위)마다 I0 촬영 시각 헤더를
 붙인다(S15P31A101-80). `--send` 면 카메라마다 TLS 연결 하나로 RunPod Tier 0 에 보낸다(S15P31A101-83, `tls_sink.py`).
+`--preview-port` 면 같은 압축 프레임을 127.0.0.1 WebSocket 으로 같은 노트북의 관제 앱 CCTV 화면에 넘긴다(S15P31A101-310, `preview.py`).
 
 | 명세 | 이 도구에서 |
 |---|---|
@@ -12,6 +13,7 @@
 | 12.7 재접속, stream_epoch | 접속마다 카메라별 epoch 를 max(저장된 최대 + 1, 세션 시작 UTC ms) 로 정하고 로컬 파일(`--epoch-state`, 기본 `~/.simai/relay-epochs.json`)에 먼저 남긴다(`epoch_store.py`, 임시 파일 fsync 뒤 교체). 재시작·시계 역행·같은 시작 ms 에도 줄지 않는다. 저장 파일을 잃고 시계까지 뒤로 갔다면 Tier 0 가 STREAM_REJECT 로 거절하고, 중계는 상태(`tier0_rejection`)와 오류 로그를 남긴 뒤 더 큰 epoch 가 올 때까지 다시 붙지 않는다 |
 | 12.7 송신 큐, D-G0-11 | 카메라별 큐 상한(기본 25프레임). 넘치면 다음 키프레임까지 버리고 skipped 로 셈, 버린 범위는 SKIP_NOTICE 로 Tier 0 에 알려 손실과 섞이지 않게 함(Tier 0 에 닿았는지 알 수 없으므로 지금 epoch 의 버린 범위를 합친 구간 집합으로 들고 새 연결마다 다시 보냄. 서로 떨어진 구간이 1024 개를 넘으면 오래된 구간을 잘라 내고 `unknown_before` 로 알려, Tier 0 가 그 앞 빈칸을 손실이 아니라 구분 불가로 셈). 소켓 송신 버퍼 64 KiB |
 | 3.10 장애별 표시, `laptop_heartbeat` | 1초마다 127.0.0.1 UDP(`--status-port`, 기본 47031, 0 이면 끔)로 현장 경보 단말에 카메라별 상태(`laptop_heartbeat.cameras[]` 항목)와 Tier 0 영상 연결이 살아 있는 카메라를 알린다(`status_report.py`, S15P31A101-91). 단말이 '영상 단절 → 관제 중단'을 판단하고 하트비트를 채운다. 형식은 `simai_site_alert.relay_status` |
+| 3.3 RTSP 접속 규칙, 16장 관제 화면 실시간 영상 | CCTV 로컬 미리보기(`--preview-port`, 기본 꺼짐): 수신 루프가 Tier 0 로 넘기는 I0 기록을 그대로 나눠 받아(RTSP 세션을 더 열지 않음, 디코딩·재인코딩 없음) 127.0.0.1 에서만 듣는 WebSocket 으로 보낸다(EC2 를 거치지 않음). 형식 `contracts/messages/cctv_preview.schema.json`(접속 직후 hello → 카메라별 마지막 codec → 카메라별 다음 키프레임부터 이진 프레임 = u32 BE 헤더 길이 + I0 frame_header + Annex B). 브라우저 Origin 허용 목록(기본 `https://simai.live`, `localhost`·`127.0.0.1` 의 5173·4173, `--preview-origin` 으로 바꿈), 소비자 4개, 소비자마다 큐 50프레임·16 MiB, 넘치면 그 소비자의 그 카메라만 다음 키프레임까지 건너뜀. 상태 로그에 카메라별 `preview`(sent·dropped_overflow·waiting_keyframe)와 `미리보기 상태`(소비자 수 등). 설계 `docs/design/cctv-local-preview.md` |
 | 12.7 누락 | `camera_to_gateway_gap`: 도착 간격이 공칭 간격의 1.5배를 넘은 횟수·최대(RTP 간격도 따로). `laptop_heartbeat.cameras[]` 항목을 만든다 |
 
 ## 구조
@@ -31,6 +33,7 @@ src/simai_relay/
   wire.py         I0 영상 연결 길이 접두 레코드 형식 simai-i0-video/1 (Tier 0 쪽은 ai/services/tier0/video_ingest.py)
   epoch_store.py  카메라별로 쓴 최대 stream_epoch 저장(재시작에도 epoch 가 줄지 않게)
   status_report.py 현장 경보 단말로 1초마다 상태 보고(loopback UDP)
+  preview.py      관제 앱 CCTV 로컬 미리보기(127.0.0.1 WebSocket, PreviewSink 가 원래 CameraSink 를 감쌈)
   bench.py        G0 전송 비교 측정: 카메라별 연결 vs 단일 연결 다중화 (bench-transport)
   config.py       설정(TOML)·카메라 계정(.env) 읽기, 로그의 비밀 값 가리기(RedactSecrets)
   cli.py          simai-relay run
@@ -64,6 +67,7 @@ uv run pytest
 uv run simai-relay run --config configs/dry-run.toml --seconds 30      # 카메라 없이
 uv run simai-relay run --config configs/my-cameras.toml                # 실제 카메라, Ctrl+C 로 멈춤
 uv run simai-relay run --config configs/my-cameras.toml --send         # Tier 0 로 전송
+uv run simai-relay run --config configs/my-cameras.toml --send --preview-port 47032   # + 관제 앱 CCTV 로컬 미리보기
 uv run simai-relay bench-transport --seconds 20                        # 카메라별 연결 vs 다중화 (로컬)
 uv run simai-relay bench-transport --mode per-camera --slow-camera none --seconds 1800   # 30분 연속 중계
 ```
@@ -102,6 +106,6 @@ Tier 0 를 다시 띄워도 받게 되지만(Tier 0 가 epoch 기준을 잊는�
 
 ## 하지 않는 것
 
-- 디코딩·재인코딩·얼굴 처리, 영상 저장(녹화는 `gateway/recorder`).
+- 디코딩·재인코딩·얼굴 처리, 영상 저장(녹화는 `gateway/recorder`). 미리보기도 받은 압축 프레임을 그대로 넘긴다.
 - 비밀 값 기록. RTSP 계정은 입력 안에만 있고, 로그에는 camera_id 와 계정 없는 입력 설명만 쓴다. 로그 처리기에는 `.env` 계정 값을
   `***` 로 바꾸는 필터를 덧붙인다.

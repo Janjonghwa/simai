@@ -1,0 +1,16 @@
+{
+  "_expect_error": "codec_string 이 avc1.XXXXXX(SPS 세 바이트) 형식이 아니다",
+  "kind": "codec",
+  "protocol": "simai-cctv-preview/1",
+  "codec_info": {
+    "camera_id": "cam1",
+    "stream_epoch": 1761609600000,
+    "codec": "H264",
+    "sps": "Z2QAKqw0yAoA9sBEAAADAAQAAAMA8jxgykA=",
+    "pps": "aO48sA==",
+    "pts_timebase": "1/90000",
+    "width": 2304,
+    "height": 1296
+  },
+  "codec_string": "h264"
+}
