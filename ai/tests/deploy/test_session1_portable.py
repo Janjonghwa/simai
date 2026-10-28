@@ -29,7 +29,13 @@ def _clear(monkeypatch):
 
 def test_volume_less_pod_plan_skips_volume_measure_and_drops_fixed_region(gs, tmp_path, monkeypatch):
     _clear(monkeypatch)
-    monkeypatch.setenv("SIMAI_ROOT", str(tmp_path / "srv" / "simai"))  # simai-bootstrap 이 컨테이너 디스크를 고른 Pod
+    # S15P31A101-311: SIMAI_ROOT 가 없고 마운트되지 않은 /workspace 폴더가 있어도 컨테이너 디스크를 고른다
+    unmounted_ws = tmp_path / "workspace"
+    unmounted_ws.mkdir()
+    monkeypatch.delenv("SIMAI_ROOT", raising=False)
+    monkeypatch.setattr(gs.simai_bootstrap, "WORKSPACE", unmounted_ws)
+    monkeypatch.setattr(gs.simai_bootstrap, "CONTAINER_ROOT", tmp_path / "srv" / "simai")
+    monkeypatch.setattr(gs.os.path, "ismount", lambda p: False)
     lay = gs.Layout("pod", None, "s", "/opt/simai/ai/.venv/bin/python")
     assert lay.simai == tmp_path / "srv" / "simai" and lay.root == tmp_path / "srv" and lay.has_volume is False
     doc, held = gs.build_jobs(lay, None)

@@ -159,7 +159,7 @@ T_lag p50 78·p95 122 ms(같은 컴퓨터), health lag null 0/27, 끊김 0 이�
   - g4 는 아직 돌리지 않았다. g3(14장, 적재 포함 58.3초)에 그림 수(20장)·다인원(노트북 원본 93명)·펴기(CPU, 그림당 수십 ms)를 더해 3분으로 잡았다(3차 세션 실측으로 바꾼다).
   - e·f 는 GPU 세션에서 빠져 1차 때 값(노트북 실측 e 약 40초, f 1회 약 35초에 여유)을 그대로 둔다.
 - **H100 총 예상**: Tier 0 Pod 큐 약 29분(실측 1,216.6초 ≈ 20분) + Pod 기동·이미지 받기(압축 약 7.9GB) 약 10분 + 가중치 받기(볼륨 없음, 수십 초) + 사본 올리기·결과 회수 약 5분 ≈ **45분**. d 를 G0 판정용(`--full`, watch 600·600·180·120초)으로 돌리면 +약 19분(watch 합 1,500초 − 390초). 전체 시간 상한 기본값은 9000초(2.5시간). 다른 GPU 는 엔진 빌드·추론 시간이 다르다(H100 실측만 적었다).
-- 볼륨 없는 Pod(-205): 저장 위치는 `simai-bootstrap` 과 같은 규칙(`SIMAI_ROOT` → `/workspace/simai` → `/srv/simai`)이고, 마운트 지점이 아니면 a 에 `--no-volume`(볼륨 측정 SKIP)을 붙이고 Job 파일에 볼륨·데이터센터를 적지 않는다(`provider`·`datacenter` 는 run_record 가 `RUNPOD_POD_ID`·`RUNPOD_DC_ID` 등 사이트 신호로 채움, 신호가 없으면 LOCAL). 결과 묶음은 컨테이너 디스크에 있으므로 **Pod 를 지우기(Terminate) 전에** scp 로 가져온다(실행기가 출력).
+- 볼륨 없는 Pod(-205): 저장 위치는 `simai-bootstrap` 과 같은 규칙(`SIMAI_ROOT` → `/workspace` 가 마운트 지점이고 쓸 수 있을 때만 `/workspace/simai` → `/srv/simai`, S15P31A101-311)이고, 마운트 지점이 아니면 a 에 `--no-volume`(볼륨 측정 SKIP)을 붙이고 Job 파일에 볼륨·데이터센터를 적지 않는다(`provider`·`datacenter` 는 run_record 가 `RUNPOD_POD_ID`·`RUNPOD_DC_ID` 등 사이트 신호로 채움, 신호가 없으면 LOCAL). 결과 묶음은 컨테이너 디스크에 있으므로 **Pod 를 지우기(Terminate) 전에** scp 로 가져온다(실행기가 출력).
 - 결과 기록은 run_record 계약을 따른다. `experiment_id` 는 운영 경로 검증 Run 값 `VAL-01`(run_record 2.1.0, `e_gate` 없음, S15P31A101-197), `experiment_state` 는 `BENCHMARK`, 입력 출처는 `SIM`·`is_upper_bound: true` 다(제품 성능 지표로 쓰지 않는다). 종료 코드는 `notes`, 지표는 각 스크립트가 `metrics.json` 에 남긴다.
 
 ### 실행 순서
@@ -246,7 +246,7 @@ H100 80GB·CUDA 13.0 이상, Container Disk 150GB 이상, 볼륨 없음, 공개 
 ```sh
 ssh simai-pod-443 'mkdir -p /srv/simai/setup/session1 /srv/simai/datasets /srv/simai/runs/exp01'
 scp <T>/simai-repo.tar <T>/git-stamp.json <T>/exp-jobs-s4.json <T>/s4-prepared.tar <T>/s4-w1.tar simai-pod-443:/srv/simai/setup/session1/
-ssh simai-pod-443 'cd /srv/simai/setup/session1 && rm -rf repo && mkdir repo && tar -xf simai-repo.tar -C repo && cp git-stamp.json repo/ && tar -xf s4-prepared.tar -C /srv/simai/datasets && tar -xf s4-w1.tar -C /srv/simai/runs/exp01'
+ssh simai-pod-443 'cd /srv/simai/setup/session1 && rm -rf repo && mkdir repo && tar --no-same-owner -xf simai-repo.tar -C repo && cp git-stamp.json repo/ && tar --no-same-owner -xf s4-prepared.tar -C /srv/simai/datasets && tar --no-same-owner -xf s4-w1.tar -C /srv/simai/runs/exp01'
 ```
 
 **3) 미리 받기·시험 도구 (GPU 안 씀, 약 5~10분, LIVE 측정이 시작되기 전에 끝낸다).** v4 의 Cosmos3-Nano(31.5GB, 검증 스탬프)와 I0 측정 도구가 import 하는 시험 도구(pytest·cryptography, `ai/uv.lock` 판).
@@ -335,6 +335,19 @@ scp simai-pod-443:/srv/simai/runs/s4-results.tar.gz ai/experiments/runs/gpu-sess
 재현: v4 는 큐 밖에서도 `python deploy/scripts/vlm_int.py --images /srv/simai/datasets/classroom4-prepared-20261026 --out <폴더>` 로 돈다. 3차의 v-int 는 손으로 돌려 스크립트가 남지 않아,
 노트북 `ai/experiments/runs/gpu-session1/20261026-s3/v-int/summary.json`(단계·인자)과 `pod-logs/v-int.log` 를 따라 다시 썼다. 3차와 다른 점: vLLM 인자·환경·CPU 묶기를 손으로 적지 않고 감시 프로세스 코드에서 받는다,
 요청마다 질문 앞에 다른 표식(prefix 캐시로 지연이 낙관적으로 나오지 않게), 영상 입력 시도는 뺐다(3차에서 됨), kill -9 뒤 감시 프로세스와 같은 그룹 정리로 그룹이 비는지 판정한다.
+
+#### 4차 세션 교훈·GPU 세션 공통 주의 (S15P31A101-311)
+
+- 4차 결과 요약은 문서에 숫자를 옮기지 않고 **Jira S15P31A101-293 2026-10-28 댓글**을 본다.
+- 볼륨 없는 RunPod 에도 마운트되지 않은 `/workspace` 폴더가 있으므로 `choose_root()` 는 `/workspace` 가 마운트 지점(`os.path.ismount`)이고 쓸 수 있을 때만 `/workspace/simai` 를 고르고, 아니면 `/srv/simai` 하나로 모은다(4차: `SIMAI_ROOT` 없는 스크립트·큐가 `/workspace/simai` 를 골라 가중치 경로가 갈림).
+- Pod 를 켠 직후 RunPod Logs 에서 `simai-start: sshd 시작 (키 인증만, 키 N개)` 와 `wstunnel 시작` 줄을 먼저 본다. `공개키 형식이 아닌 줄 … 버렸다` / `sshd 를 띄우지 않아 443 예비 터널도 띄우지 않는다` 가 보이면 템플릿 `PUBLIC_KEY` 값(한 줄, `ssh-ed25519 …`)을 고친다(4차: 이 때문에 약 45분 접속 불가).
+- Pod 셸 명령은 `bash -lc '…'` 로 부른다(비로그인 셸은 PATH 에 `python3`·`simai-bootstrap` 이 없다). 백그라운드 스크립트도 `SIMAI_ROOT=/srv/simai` 를 명시한다(이 티켓 수정 뒤에도 습관으로).
+- 노트북(Windows)에서 만든 tar 는 Pod 에서 `tar --no-same-owner -xf` 로 푼다(소유자 uid 변경 실패로 tar 가 실패 종료).
+- 저장소 사본 코드를 이미지에 깔린 패키지보다 먼저 쓰려면 Job `env` 에 `PYTHONPATH=<repo>/ai/src:<repo>/ai`(4차: 이미지 37c7ae5 에 없는 `simai_ai.hmr.prompt` 로 HMR 실패).
+- `gpu_queue` 는 실패한 Job 도 끝난 것으로 기억하고, `exp_job` 은 결과 폴더(metrics.json)가 있으면 덮어쓰지 않는다(종료 4) → 다시 돌릴 때는 큐 이름과 Run 이름을 새로 준다.
+- Tier 0 file 모드(녹화 재생)는 저장소 `ai/` 에서 `simai-bootstrap run simai-tier0 --config <json>` 으로(다른 위치면 `services` 모듈을 못 찾는다).
+- 공개 TCP 70000 대칭 포트 요청은 새 RunPod 템플릿 화면이 1~65535 만 받아 할 수 없다 → -288 (b) LTE Direct 비교는 그 방법을 찾기 전까지 뺀다. 443 터널 LIVE 는 공개 TCP 포트 없이 된다(`SIMAI_TUNNEL_ALLOW=17000,17001`).
+- 4차 실제 순서(다음 세션 기준안): 촬영(빈 장소 25 s ×2: 배경용·축척 정물용, 보정 걷기 180 s) → Pod: 장소 MapAnything·걷기 관절 추출(GPU 수 분) → EXP 큐 동안 노트북에서 World 고정·정물 축척·보정 문서·R1 묶음 → LIVE(+동시 녹화) → 검증 큐(v4)·남은 EXP → 녹화 재생 → 결과 받기(4차 1.85 GB 가 443 터널로 약 8분) → sha256 확인 → Terminate.
 
 ### 실행기 규칙
 
@@ -448,7 +461,7 @@ D-G3-09 의 구역 대상 기준(S15P31A101-198): 복원 보호(-174)대로 구�
 | Tier 0 + 분석 공유 하한 45,000 MiB(48GB급) | 결정 "Tier 0+실험 48GB". L40S 46,068·A6000 49,140 MiB 를 포함한다. 이 아래는 d 의 P3·P5·P6 SKIP |
 | d 부하 기준 81,559 MiB | H100 80GB 의 nvidia-smi memory.total. 이 값에서 -60 MR 의 40·20·70 GB 와 같다 |
 | 부트스트랩 남은 용량 하한 20GB(`SIMAI_MIN_FREE_GB`) | 가중치(약 0.1GB)·엔진(수백 MB)·obs2d·결과 여유. 컨테이너 디스크 100GB 에서 이미지(약 19.5GB)를 빼도 넉넉하다 |
-| 볼륨 없을 때 저장 위치 `/srv/simai` | 이미지의 `/opt/simai`(코드)와 나누고, `/workspace` 는 이미지에 없어야 한다(check_image) |
+| 볼륨 없을 때 저장 위치 `/srv/simai` | 이미지의 `/opt/simai`(코드)와 나누고, `/workspace` 는 이미지에 없어야 한다(check_image). RunPod 은 볼륨이 없어도 마운트되지 않은 `/workspace` 폴더를 두므로 `os.path.ismount('/workspace')` 가 참일 때만 `/workspace/simai` 를 고른다(S15P31A101-311) |
 | yolo26x-pose sha256 `08ed9e01…` | E-GATE-0 일본 볼륨의 `weights/hmr_weights.sha256`(ultralytics 릴리스 v8.4.0 에서 받은 파일) |
 
 버린 대안: 가중치 받기를 GPU 확인보다 먼저(GPU 없는 곳에서 받기만 하고 실패), 목록에 해시가 없을 때 첫 다운로드를 믿고 기록(TOFU, '모르면 비움'과 어긋남),

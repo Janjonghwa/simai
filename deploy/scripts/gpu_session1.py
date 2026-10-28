@@ -29,7 +29,7 @@ g4 입력(교실 사진·보정 기록)은 사람이 찍혀 있어 저장소에 
 (실험 이미지 venv) 시작 전에 컨테이너 디스크에 깔고, 그래도 없으면 시작하지 않는다(종료 코드 5).
 
 GPU·지역은 그때그때 남은 것(RunPod·Vast.ai, 볼륨 없음)을 쓴다(S15P31A101-205). Pod 모드 저장 위치는 simai-bootstrap 과 같다:
-SIMAI_ROOT → /workspace/simai → 컨테이너 디스크 /srv/simai. 볼륨이 없으면(마운트 지점 아님) a 의 볼륨 측정은 '볼륨 없음' SKIP 이고,
+SIMAI_ROOT → (/workspace 가 마운트 지점일 때만) /workspace/simai → 컨테이너 디스크 /srv/simai. 볼륨이 없으면(마운트 지점 아님) a 의 볼륨 측정은 '볼륨 없음' SKIP 이고,
 결과 묶음은 컨테이너 디스크에 있으므로 Pod 를 지우기(Terminate) 전에 scp 로 가져온다.
 
 한 항목이 실패해도 다음 항목으로 간다(continue_on_failure). 항목마다 제한 시간과 Run 기록(run_record 계약)은 gpu_queue 가 맡는다.
