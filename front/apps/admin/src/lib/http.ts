@@ -46,6 +46,8 @@ export interface RequestOptions<T> {
   body?: unknown;
   /** 응답 본문 검사. 통과한 값만 돌려준다. */
   schema: ZodType<T>;
+  /** 바이너리 자산은 JSON 변환 없이 읽고 schema 로 검사한다. */
+  responseType?: 'json' | 'arrayBuffer';
   signal?: AbortSignal;
   /** 쿠키를 실을지. 갱신 쿠키를 주고받는 인증 요청만 'include' 로 부른다. */
   credentials?: RequestCredentials;
@@ -79,7 +81,10 @@ export function createHttp({
 }: HttpOptions): Http {
   const base = baseUrl.replace(/\/+$/, '');
 
-  return async (path, { method = 'GET', body, schema, signal, credentials }) => {
+  return async (
+    path,
+    { method = 'GET', body, schema, responseType = 'json', signal, credentials },
+  ) => {
     // base 뒤에 붙이므로 / 로 시작해야 한다. '@host/…' 같은 값은 http://base@host/… 가 되어 토큰이 다른 서버로 간다.
     // base 가 비면(같은 출처) 주소 해석이 '/\host'·탭·줄바꿈이 낀 '//host' 를 다른 호스트로 읽어서 그런 글자도 받지 않는다.
     if (!path.startsWith('/') || path.startsWith('//') || hasUnsafeChar(path)) {
@@ -90,7 +95,9 @@ export function createHttp({
 
     // 보낼 때마다 시간 제한을 새로 둔다. 갱신을 기다린 시간이 다시 보내는 요청의 몫을 먹지 않게 한다.
     const send = async (token: string | undefined) => {
-      const headers = new Headers({ Accept: 'application/json' });
+      const headers = new Headers({
+        Accept: responseType === 'arrayBuffer' ? 'application/octet-stream' : 'application/json',
+      });
       if (payload !== undefined) headers.set('Content-Type', 'application/json');
       if (token) headers.set('Authorization', `Bearer ${token}`);
       const timeout = AbortSignal.timeout(timeoutMs);
@@ -102,7 +109,12 @@ export function createHttp({
           credentials,
           signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
         });
-        return { response, text: await response.text() };
+        const binary = response.ok && responseType === 'arrayBuffer';
+        return {
+          response,
+          text: binary ? '' : await response.text(),
+          buffer: binary ? await response.arrayBuffer() : undefined,
+        };
       } catch (error) {
         if (signal?.aborted) throw error;
         throw new ApiError(NETWORK_ERROR, {
@@ -113,14 +125,14 @@ export function createHttp({
     };
 
     const token = getToken?.();
-    let { response, text } = await send(token);
+    let { response, text, buffer } = await send(token);
     if (response.status === 401 && token) {
       if (refreshToken) {
         // 401 은 서버 보안 필터가 요청을 처리하기 전에 거절한 것이라 POST 도 다시 보내도 된다.
         const next = await refreshToken(token).catch(() => undefined);
         if (signal?.aborted) throw signal.reason;
         if (next && next !== token) {
-          ({ response, text } = await send(next));
+          ({ response, text, buffer } = await send(next));
           if (response.status === 401) onUnauthorized?.(next);
         }
       } else {
@@ -133,7 +145,7 @@ export function createHttp({
     }
     let data: unknown;
     try {
-      data = text === '' ? undefined : JSON.parse(text);
+      data = responseType === 'arrayBuffer' ? buffer : text === '' ? undefined : JSON.parse(text);
     } catch (error) {
       throw new ApiError(response.status, { kind: 'INVALID_RESPONSE', cause: error });
     }

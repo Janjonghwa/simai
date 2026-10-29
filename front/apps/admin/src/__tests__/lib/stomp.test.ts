@@ -7,6 +7,12 @@ import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const URL = 'ws://stomp.test/ws';
+const [avatarFrame] = Object.values(
+  import.meta.glob('../../../../../../contracts/examples/avatar_frame.json', {
+    eager: true,
+    import: 'default',
+  }),
+);
 /** 브로커가 받은 CONNECT 의 Authorization. */
 const authorizations: (string | undefined)[] = [];
 const broker = createStompBroker({
@@ -65,6 +71,43 @@ async function untilHealth() {
 }
 
 describe('createRealtime', () => {
+  it('/topic/avatar 본문과 수신 시각을 Source 에 넘기고 재연결 때 다시 구독한다', async () => {
+    const receivedAt = 1_800_000_000_000;
+    await realtime.stop();
+    realtime = createRealtime({
+      url: URL,
+      store: useRealtimeStore,
+      now: () => receivedAt,
+      reconnectDelayMs: 20,
+    });
+    realtime.start({ userId: 'u-1', getToken: () => 't-1' });
+    const { source } = await watchSource();
+    const frames: { raw: unknown; at: number | undefined }[] = [];
+    source.subscribe({
+      onMessage: (raw, at) => frames.push({ raw, at }),
+      onConnectionChange: () => undefined,
+    });
+    await until(() => {
+      broker.publish('/topic/avatar', avatarFrame);
+      return frames.length > 0;
+    });
+    expect(frames[0]).toEqual({ raw: avatarFrame, at: receivedAt });
+    expect(useRealtimeStore.getState().world).toBeNull();
+    expect(useRealtimeStore.getState().rejected).toBe(0);
+
+    broker.dropAll();
+    await until(() => useRealtimeStore.getState().phase === 'CLOSED');
+    await until(() => useRealtimeStore.getState().phase === 'OPEN');
+    frames.length = 0;
+    await until(() => {
+      broker.publish('/topic/avatar', avatarFrame);
+      return frames.length > 0;
+    });
+    expect(frames[0]?.raw).toEqual(avatarFrame);
+    broker.publish('/topic/avatar', { msg_type: 'avatar_frame', payload: {} });
+    await until(() => useRealtimeStore.getState().rejected === 1);
+  });
+
   it('다시 연결할 때 가장 새 토큰을 싣는다(토큰 갱신이 연결을 다시 열지 않는다)', async () => {
     let token: string | undefined = 't-1';
     realtime.start({ userId: 'u-1', getToken: () => token });

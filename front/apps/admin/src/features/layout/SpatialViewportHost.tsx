@@ -22,6 +22,7 @@ import type {
 import type { ViewerZones, Zone } from '@/features/zones/types';
 import { useZones } from '@/features/zones/useZones';
 import { continueOrder, rejectReasonText, sameEditBox } from '@/features/zones/zoneEditor';
+import { avatarMeshFetch } from '@/lib/avatarMeshFetch';
 import { useObjectEditStore } from '@/store/objectEdit.store';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore } from '@/store/session.store';
@@ -948,6 +949,7 @@ export function SpatialViewportHost({
                   ref={viewer}
                   theme={theme}
                   source={source}
+                  avatarMeshFetch={avatarMeshFetch}
                   onSelectionChange={onViewerSelect}
                   onTargetDoubleClick={onViewerDoubleClick}
                   onStatusChange={onViewerStatus}
