@@ -1,5 +1,6 @@
 import { useSpatialData } from '@/features/viewer3d/data/SpatialDataProvider';
 import { LabelSprite } from '@/features/viewer3d/LabelSprite';
+import { useScenePalette } from '@/features/viewer3d/sceneTheme';
 import { Selectable } from '@/features/viewer3d/Selectable';
 import { ObstacleLayer } from '@/features/viewer3d/surfaces/ObstacleLayer';
 import {
@@ -25,9 +26,6 @@ import { useStore } from 'zustand';
 const noRaycast = () => null;
 const pickPerson = (event: ThreeEvent<MouseEvent>) => personOnRay(event.intersections);
 // WebGL 재질은 CSS 토큰을 바로 읽지 못해 장면 전용 값을 여기에만 둔다.
-const SURFACE_COLOR = '#8fa6c8';
-const SURFACE_SELECTED = '#7fd1ff';
-const TOP_EDGE_COLOR = '#e6edf8';
 /** 이름표를 윗면에서 띄우는 높이(m). */
 const LABEL_LIFT = 0.22;
 
@@ -85,7 +83,8 @@ function WorkSurfaceVolume({
   const obb = useMemo(() => workSurfaceObb(surface), [surface]);
   const outline = useMemo(() => surfaceOutline(surface), [surface]);
   const [w, d, h] = obb.size;
-  const color = selected ? SURFACE_SELECTED : SURFACE_COLOR;
+  const { surface: look } = useScenePalette();
+  const color = selected ? look.selected : look.color;
 
   return (
     <group name={`surface-entry:${surface.surfaceId}`}>
@@ -110,7 +109,7 @@ function WorkSurfaceVolume({
       <Line
         name={`surface-top-edge:${surface.surfaceId}`}
         points={outline.top}
-        color={selected ? SURFACE_SELECTED : TOP_EDGE_COLOR}
+        color={selected ? look.selected : look.topEdge}
         lineWidth={selected ? 3.5 : 2.5}
         raycast={noRaycast}
       />

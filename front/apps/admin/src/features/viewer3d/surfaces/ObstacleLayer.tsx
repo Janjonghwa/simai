@@ -1,5 +1,6 @@
 import { useSpatialData } from '@/features/viewer3d/data/SpatialDataProvider';
 import { LabelSprite } from '@/features/viewer3d/LabelSprite';
+import { useScenePalette } from '@/features/viewer3d/sceneTheme';
 import { Selectable } from '@/features/viewer3d/Selectable';
 import {
   obstacleCorners,
@@ -23,8 +24,6 @@ import { useStore } from 'zustand';
 const noRaycast = () => null;
 const pickPerson = (event: ThreeEvent<MouseEvent>) => personOnRay(event.intersections);
 // WebGL 재질은 CSS 토큰을 바로 읽지 못해 장면 전용 값을 여기에만 둔다. 작업면(푸른 회색)과 구분되는 주황 계열이다.
-const OBSTACLE_COLOR = '#d98b5f';
-const OBSTACLE_SELECTED = '#ffb27a';
 /** 이름표를 윗면에서 띄우는 높이(m). */
 const LABEL_LIFT = 0.22;
 
@@ -78,7 +77,8 @@ function ObstacleVolume({
   const obb = useMemo(() => obstacleObb(obstacle), [obstacle]);
   const edges = useMemo(() => obstacleEdges(obstacle), [obstacle]);
   const [w, d, h] = obb.size;
-  const color = selected ? OBSTACLE_SELECTED : OBSTACLE_COLOR;
+  const { obstacle: look } = useScenePalette();
+  const color = selected ? look.selected : look.color;
 
   return (
     <group name={`obstacle-entry:${obstacle.objectId}`}>

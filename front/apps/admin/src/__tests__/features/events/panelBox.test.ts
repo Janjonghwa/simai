@@ -1,0 +1,88 @@
+import {
+  fitPanel,
+  movePanel,
+  noticeInset,
+  PANEL_GAP,
+  PANEL_MAX_WIDTH,
+  PANEL_MIN_HEIGHT,
+  PANEL_MIN_WIDTH,
+  PANEL_TOP,
+  resizePanel,
+} from '@/features/events/panelBox';
+import { describe, expect, it } from 'vitest';
+
+const bounds = { width: 1280, height: 760 };
+// 오른쪽 기본 자리(right 14, top 72, bottom 14, 폭 340)와 같은 상자.
+const start = { left: 1280 - 14 - 340, top: 72, width: 340, height: 760 - 72 - 14 };
+
+describe('movePanel', () => {
+  it('끈 만큼 옮긴다', () => {
+    const short = { ...start, height: 300 };
+    expect(movePanel(short, -300, 40, bounds)).toEqual({
+      ...short,
+      left: start.left - 300,
+      top: 112,
+    });
+  });
+
+  it('상단 바 아래·화면 안에 머문다', () => {
+    expect(movePanel(start, -5000, -500, bounds)).toMatchObject({
+      left: PANEL_GAP,
+      top: PANEL_TOP,
+    });
+    expect(movePanel(start, 500, 5000, bounds)).toEqual({
+      left: bounds.width - start.width - PANEL_GAP,
+      top: bounds.height - PANEL_MIN_HEIGHT - PANEL_GAP,
+      width: start.width,
+      height: PANEL_MIN_HEIGHT,
+    });
+  });
+
+  it('아래로 내려 화면을 넘으면 높이를 줄이고, 같은 끌기에서 다시 올리면 처음 높이로 돌아간다', () => {
+    const down = movePanel(start, 0, 300, bounds);
+    expect(down.top).toBe(372);
+    expect(down.top + down.height).toBe(bounds.height - PANEL_GAP);
+    expect(movePanel(start, 0, 0, bounds).height).toBe(start.height);
+  });
+});
+
+describe('noticeInset', () => {
+  it('알림은 옮긴 패널 양옆 가운데 넓은 쪽에 둔다', () => {
+    // 오른쪽 기본 자리와 같으면 알림 오른쪽 370px(기본 자리와 같다).
+    expect(noticeInset({ left: 926, width: 340, right: 14 })).toEqual({ right: 370 });
+    expect(noticeInset({ left: 14, width: 340, right: 926 })).toEqual({ left: 370 });
+  });
+});
+
+describe('resizePanel', () => {
+  it('왼쪽 가장자리를 끌면 오른쪽은 그대로 두고 폭만 바뀐다', () => {
+    const wider = resizePanel(start, 'x', -100, 0, bounds);
+    expect(wider.width).toBe(440);
+    expect(wider.left + wider.width).toBe(start.left + start.width);
+    expect(wider.height).toBe(start.height);
+  });
+
+  it('폭은 280~720px 이다', () => {
+    expect(resizePanel(start, 'x', 500, 0, bounds).width).toBe(PANEL_MIN_WIDTH);
+    expect(resizePanel(start, 'x', -900, 0, bounds).width).toBe(PANEL_MAX_WIDTH);
+  });
+
+  it('아래 가장자리는 높이만, 모서리는 둘 다 바꾼다. 높이는 화면 아래를 넘지 않는다', () => {
+    const shorter = resizePanel(start, 'y', -50, -200, bounds);
+    expect(shorter).toEqual({ ...start, height: start.height - 200 });
+    expect(resizePanel(start, 'y', 0, -2000, bounds).height).toBe(PANEL_MIN_HEIGHT);
+    expect(resizePanel(start, 'y', 0, 2000, bounds).height).toBe(
+      bounds.height - start.top - PANEL_GAP,
+    );
+    const corner = resizePanel(start, 'xy', -60, -100, bounds);
+    expect(corner).toMatchObject({ width: 400, height: start.height - 100 });
+  });
+});
+
+describe('fitPanel', () => {
+  it('창이 줄면 화면 안으로 다시 맞춘다', () => {
+    const fitted = fitPanel({ ...start, left: 1200 }, { width: 900, height: 600 });
+    expect(fitted.left + fitted.width).toBeLessThanOrEqual(900 - PANEL_GAP);
+    expect(fitted.top + fitted.height).toBeLessThanOrEqual(600 - PANEL_GAP);
+  });
+});

@@ -154,10 +154,17 @@ export interface Viewer3DHandle {
     field: ViewerPlannedEditField;
     value: number;
   }): ViewerEditCommandResult;
+  /**
+   * 카메라를 처음 시점(방 가운데를 내려다봄)으로 돌린다(관제 화면 '시점 초기화'). 선택은 그대로다.
+   * 기존 FE 가짜 핸들과 호환되도록 선택 멤버로 둔다. Viewer3D 는 늘 채운다.
+   */
+  resetView?(): CommandResult;
 }
 
 export interface Viewer3DProps {
   ref?: Ref<Viewer3DHandle>;
+  /** 장면 색표. 화면 테마(다크·화이트)를 넘긴다. 바꿔도 장면은 그대로이고 색만 바뀐다. 없으면 다크. */
+  theme?: 'dark' | 'light';
   /** 처음 마운트할 때만 읽는다. 이후 바꾸려면 setMode 를 쓴다. */
   initialMode?: ViewerMode;
   /** 3D 클릭이든 FE 명령이든 선택이 바뀔 때마다 부른다. 해제는 null. */

@@ -1,4 +1,5 @@
 import type { ZoneView } from '@/features/viewer3d/data/spatialFrame';
+import { PALETTE, type ScenePalette } from '@/features/viewer3d/palette';
 import { targetKey } from '@/features/viewer3d/target';
 import type { ViewerTarget } from '@/features/viewer3d/types';
 import { createContext } from 'react';
@@ -28,15 +29,11 @@ export interface ZoneStyle {
   stateLabel: string;
 }
 
-// WebGL 재질은 CSS 토큰을 바로 읽지 못해 장면 전용 값을 여기에만 둔다.
-// 구역 색은 경보색(빨강·주황)과 겹치지 않는 청록, 미리보기는 보라다. 구역 유형별 색은 유형 계약이 생기면 정한다.
-const ZONE_COLOR = 0x4fb6c9;
-const PREVIEW_COLOR = 0xa58bf0;
-const SELECTED_COLOR = 0x6886d5;
-
+// 구역 색은 경보색(빨강·주황)과 겹치지 않는 청록, 미리보기는 보라다(장면 색표 palette). 구역 유형별 색은 유형 계약이
+// 생기면 정한다. 아래 표의 color 는 다크 값이고, 화면은 zoneStyle 에 넘긴 색표 값으로 바꿔 그린다.
 const STYLES: Record<ZoneApplyState, ZoneStyle> = {
   UNVERIFIED: {
-    color: ZONE_COLOR,
+    color: PALETTE.dark.zone.color,
     fillOpacity: 0.08,
     edgeOpacity: 0.85,
     dashed: true,
@@ -45,7 +42,7 @@ const STYLES: Record<ZoneApplyState, ZoneStyle> = {
     stateLabel: '적용 미확인',
   },
   DEMO_PREVIEW: {
-    color: PREVIEW_COLOR,
+    color: PALETTE.dark.zone.preview,
     fillOpacity: 0.05,
     edgeOpacity: 0.9,
     dashed: true,
@@ -54,7 +51,7 @@ const STYLES: Record<ZoneApplyState, ZoneStyle> = {
     stateLabel: '미리보기(DEMO)',
   },
   DEMO_ASSUMED_APPLIED: {
-    color: ZONE_COLOR,
+    color: PALETTE.dark.zone.color,
     fillOpacity: 0.16,
     edgeOpacity: 1,
     dashed: false,
@@ -65,10 +62,23 @@ const STYLES: Record<ZoneApplyState, ZoneStyle> = {
 };
 
 /** 적용 상태와 선택 여부에 따른 모양. 선택은 색만 바꾸고 선 모양(적용 상태)은 그대로 둔다. */
-export function zoneStyle(state: ZoneApplyState, selected: boolean): ZoneStyle {
-  const style = STYLES[state];
+export function zoneStyle(
+  state: ZoneApplyState,
+  selected: boolean,
+  palette: ScenePalette = PALETTE.dark,
+): ZoneStyle {
+  const base = STYLES[state];
+  const style = {
+    ...base,
+    color: state === 'DEMO_PREVIEW' ? palette.zone.preview : palette.zone.color,
+  };
   return selected
-    ? { ...style, color: SELECTED_COLOR, fillOpacity: style.fillOpacity + 0.1, edgeOpacity: 1 }
+    ? {
+        ...style,
+        color: palette.zone.selected,
+        fillOpacity: style.fillOpacity + 0.1,
+        edgeOpacity: 1,
+      }
     : style;
 }
 

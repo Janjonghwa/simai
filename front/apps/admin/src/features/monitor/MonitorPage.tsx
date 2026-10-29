@@ -22,8 +22,8 @@ function MonitorZoneAction({ onEditZone }: { onEditZone?: (zoneId: string) => vo
       {zone && (
         <span className="max-w-[160px] truncate text-xs text-muted-foreground">{zone.name}</span>
       )}
-      <Button size="sm" onClick={() => onEditZone(zoneId)}>
-        구역 수정 · {zoneId}
+      <Button size="sm" aria-label={`구역 수정 ${zoneId}`} onClick={() => onEditZone(zoneId)}>
+        구역 수정
       </Button>
     </div>
   );

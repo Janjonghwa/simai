@@ -1,3 +1,4 @@
+import { HoverTip, useDwell, type TipTone } from '@/features/plan/HoverTip';
 import {
   markFor,
   markTone,
@@ -10,10 +11,11 @@ import {
   type PlanMark,
   type PlanMarks,
 } from '@/features/plan/plan';
-import type { ZoneBox } from '@/features/zones/types';
+import type { Zone, ZoneBox } from '@/features/zones/types';
+import { ZONE_TYPE_LABEL } from '@/features/zones/zoneForm';
 import type { WorldTrack } from '@simai/contracts';
 import { cn } from '@simai/ui/lib/utils';
-import { memo, type KeyboardEvent } from 'react';
+import { memo, type KeyboardEvent, type PointerEvent } from 'react';
 
 // 위에서 내려다본 2D 평면(명세 13.6 비상 화면, 4.1 BEV 2D 개요). 단위는 m 이고 색은 토큰만 쓴다.
 // 데이터는 props 로만 받는다. 실시간 관제는 LivePlan 이 채운다.
@@ -25,10 +27,30 @@ const RING_TONE = {
   critical: 'fill-sev-critical/15 stroke-sev-critical',
   caution: 'fill-sev-caution/15 stroke-sev-caution',
 } as const;
-const TEXT_TONE = { critical: 'fill-sev-critical', caution: 'fill-sev-caution' } as const;
+/** 구역 기본 색: 입체 판정은 점선, 바닥 판정은 실선(관제 데모와 같다). 위험이 걸리면 등급 색으로 바뀐다. */
+const ZONE_LOOK = {
+  VOLUME_3D: { className: 'fill-zone-volume/10 stroke-zone-volume', dash: '0.18 0.1' },
+  GROUND_FOOTPRINT: { className: 'fill-zone-floor/10 stroke-zone-floor', dash: undefined },
+} as const;
+const NEUTRAL_LOOK = { className: 'fill-foreground/5 stroke-muted-foreground', dash: '0.18 0.1' };
 
-/** 이름표 뒤에 배경색 테두리를 둘러 선·구역 위에서도 읽히게 한다. */
-const HALO = { paintOrder: 'stroke', strokeWidth: 0.08, strokeLinejoin: 'round' } as const;
+const GLYPH = { CRITICAL: '▲▲', HIGH: '▲', CAUTION: '!', INFO: 'i' } as const;
+
+/** 2D 에 그리는 구역. 서버 구역이면 판정 유형·유형·등급으로 색과 말풍선을 정한다. */
+export type PlanZone = ZoneBox & Partial<Pick<Zone, 'judgeType' | 'zoneType' | 'severity'>>;
+
+function zoneTip(zone: PlanZone): string {
+  const parts = [`${zone.zoneId} ${zone.name}`];
+  if (zone.zoneType) parts.push(ZONE_TYPE_LABEL[zone.zoneType] ?? zone.zoneType);
+  if (zone.severity) parts.push(`${GLYPH[zone.severity]} ${zone.severity}`);
+  return parts.join(' · ');
+}
+
+type Bind = (key: string) => {
+  onPointerEnter: (e: PointerEvent) => void;
+  onPointerMove: (e: PointerEvent) => void;
+  onPointerLeave: () => void;
+};
 
 const RoomBase = memo(function RoomBase() {
   const lines = [];
@@ -58,56 +80,47 @@ const ZoneLayer = memo(function ZoneLayer({
   zones,
   marks,
   selectedKey,
+  onSelect,
+  bind,
 }: {
-  zones: readonly ZoneBox[];
+  zones: readonly PlanZone[];
   marks: PlanMarks['zones'];
   selectedKey: string | null;
+  onSelect?: (key: string) => void;
+  bind: Bind;
 }) {
   return (
-    <g className="pointer-events-none">
+    <g>
       {zones.map((zone) => {
         const [x, y] = toPlan(zone.min[0], zone.max[1]);
         const width = zone.max[0] - zone.min[0];
         const height = zone.max[1] - zone.min[1];
         const mark = marks.get(zone.zoneId);
         const tone = mark && markTone(mark);
+        const key = `zone:${zone.zoneId}`;
+        const selected = selectedKey === key;
+        const look = (zone.judgeType && ZONE_LOOK[zone.judgeType]) ?? NEUTRAL_LOOK;
         return (
-          <g key={zone.zoneId}>
-            <rect
-              x={x}
-              y={y}
-              width={width}
-              height={height}
-              // 확인 대기는 점멸에 더해 선을 굵게 한다. 움직임 줄이기 설정이면 점멸이 멈추기 때문이다.
-              strokeWidth={mark?.alarming ? 0.1 : 0.05}
-              strokeDasharray={tone ? undefined : '0.18 0.1'}
-              className={cn(
-                tone ? RING_TONE[tone] : 'fill-foreground/5 stroke-muted-foreground',
-                mark?.alarming && 'motion-safe:animate-alarm-blink',
-              )}
-            />
-            {selectedKey === `zone:${zone.zoneId}` && (
-              <rect
-                x={x - 0.12}
-                y={y - 0.12}
-                width={width + 0.24}
-                height={height + 0.24}
-                fill="none"
-                strokeWidth={0.05}
-                className="stroke-primary"
-              />
+          <rect
+            key={zone.zoneId}
+            data-zone={zone.zoneId}
+            x={x}
+            y={y}
+            width={width}
+            height={height}
+            // 확인 대기는 점멸에 더해 선을 굵게 한다. 움직임 줄이기 설정이면 점멸이 멈추기 때문이다.
+            strokeWidth={mark?.alarming || selected ? 0.09 : 0.05}
+            strokeDasharray={tone || selected ? undefined : look.dash}
+            fillOpacity={selected ? 0.24 : undefined}
+            onClick={onSelect && (() => onSelect(key))}
+            {...bind(key)}
+            className={cn(
+              tone ? RING_TONE[tone] : look.className,
+              selected && 'stroke-point-soft',
+              mark?.alarming && 'motion-safe:animate-alarm-blink',
+              onSelect && 'cursor-pointer',
             )}
-            <text
-              x={x + 0.1}
-              y={y + 0.32}
-              fontSize={0.25}
-              fontWeight={700}
-              style={HALO}
-              className={cn('stroke-surface-2', tone ? TEXT_TONE[tone] : 'fill-muted-foreground')}
-            >
-              {zone.name} · {zone.zoneId}
-            </text>
-          </g>
+          />
         );
       })}
     </g>
@@ -116,16 +129,24 @@ const ZoneLayer = memo(function ZoneLayer({
 
 const LOOK_LABEL = { observed: '', predicted: ' · 예측', unknown: ' · 확인 불가' } as const;
 
+function personTip(track: WorldTrack, mark: PlanMark | undefined): string {
+  const look = trackLook(track);
+  const glyph = mark ? `${GLYPH[mark.severity]} ` : look === 'unknown' ? '? ' : '';
+  return `${glyph}${track.world_id}${LOOK_LABEL[look]}`;
+}
+
 function Person({
   track,
   mark,
   selected,
   onSelect,
+  bind,
 }: {
   track: WorldTrack;
   mark: PlanMark | undefined;
   selected: boolean;
   onSelect?: (key: string) => void;
+  bind: Bind;
 }) {
   const [x, y] = toPlan(...track.position_xy);
   const look = trackLook(track);
@@ -158,6 +179,7 @@ function Person({
         onClick: select,
         onKeyDown,
       })}
+      {...bind(key)}
       className={cn('group/person', select && 'cursor-pointer outline-hidden')}
     >
       {/* 불확실 원·고리·속도선은 보이기만 한다. 누르는 자리는 아래 투명 원이라 겹친 다른 사람을 고르지 않는다. */}
@@ -246,31 +268,13 @@ function Person({
           </text>
         </>
       )}
-      <text
-        x={x + 0.36}
-        y={y + 0.1}
-        fontSize={0.27}
-        fontWeight={600}
-        style={HALO}
-        className={cn(
-          'stroke-surface-2 font-mono',
-          tone
-            ? TEXT_TONE[tone]
-            : look === 'observed'
-              ? 'fill-foreground'
-              : 'fill-muted-foreground',
-        )}
-      >
-        {track.world_id}
-        {LOOK_LABEL[look]}
-      </text>
     </g>
   );
 }
 
 export interface FloorPlanProps {
   tracks: readonly WorldTrack[];
-  zones: readonly ZoneBox[];
+  zones: readonly PlanZone[];
   marks: PlanMarks;
   /** 고른 대상(이벤트 패널과 같은 키, 예: person:w-0012). */
   selectedKey?: string | null;
@@ -290,30 +294,59 @@ export function FloorPlan({
   className,
 }: FloorPlanProps) {
   const size = (n: number) => n + PLAN_MARGIN * 2;
+  const dwell = useDwell();
+  const tip = dwell.tip && planTip(dwell.tip.key, tracks, zones, marks);
   return (
-    <svg
-      viewBox={`${-PLAN_MARGIN} ${-PLAN_MARGIN} ${size(ROOM.width)} ${size(ROOM.depth)}`}
-      preserveAspectRatio="xMidYMid meet"
-      role="group"
-      aria-label="2D 평면"
-      className={cn('transition-opacity', stale && 'opacity-50', className)}
-    >
-      <RoomBase />
-      <ZoneLayer zones={zones} marks={marks.zones} selectedKey={selectedKey} />
-      <g>
-        {tracks.map((track) => {
-          const ids = trackIds(track);
-          return (
-            <Person
-              key={track.world_id}
-              track={track}
-              mark={markFor(marks.people, ids)}
-              selected={ids.some((id) => selectedKey === `person:${id}`)}
-              onSelect={onSelect}
-            />
-          );
-        })}
-      </g>
-    </svg>
+    <>
+      <svg
+        viewBox={`${-PLAN_MARGIN} ${-PLAN_MARGIN} ${size(ROOM.width)} ${size(ROOM.depth)}`}
+        preserveAspectRatio="xMidYMid meet"
+        role="group"
+        aria-label="2D 평면"
+        className={cn('transition-opacity', stale && 'opacity-50', className)}
+      >
+        <RoomBase />
+        <ZoneLayer
+          zones={zones}
+          marks={marks.zones}
+          selectedKey={selectedKey}
+          onSelect={onSelect}
+          bind={dwell.on}
+        />
+        <g>
+          {tracks.map((track) => {
+            const ids = trackIds(track);
+            return (
+              <Person
+                key={track.world_id}
+                track={track}
+                mark={markFor(marks.people, ids)}
+                selected={ids.some((id) => selectedKey === `person:${id}`)}
+                onSelect={onSelect}
+                bind={dwell.on}
+              />
+            );
+          })}
+        </g>
+      </svg>
+      <HoverTip tip={dwell.tip} text={tip?.text} tone={tip?.tone} />
+    </>
   );
+}
+
+/** 지금 머무는 대상의 말풍선 글자. 그 사이 대상이 사라졌으면 없다. */
+function planTip(
+  key: string,
+  tracks: readonly WorldTrack[],
+  zones: readonly PlanZone[],
+  marks: PlanMarks,
+): { text: string; tone?: TipTone } | undefined {
+  if (key.startsWith('zone:')) {
+    const zone = zones.find((z) => `zone:${z.zoneId}` === key);
+    return zone && { text: zoneTip(zone) };
+  }
+  const track = tracks.find((t) => `person:${t.world_id}` === key);
+  if (!track) return undefined;
+  const mark = markFor(marks.people, trackIds(track));
+  return { text: personTip(track, mark), tone: mark && markTone(mark) };
 }

@@ -81,6 +81,47 @@ export function readFieldValue(box: ViewerEditBox, field: ViewerEditField): numb
   }
 }
 
+/**
+ * 한 칸을 고친 상자. 뷰어 숫자 입력과 같은 규칙이다(시작 X·Y 는 크기를 두고 옮기고, 폭·깊이는 시작 쪽을, 하단·상단은 반대쪽을
+ * 고정한다). 폭·깊이가 0 이하이거나 하단이 상단 이상이면(또는 하단이 바닥 아래면) null 이다.
+ * viewer3d 의 fieldOperation 은 값으로 불러오면 3D 묶음(three.js)이 첫 화면에 실려, 3D 밖 새 구역 양식은 이것을 쓴다.
+ */
+export function writeFieldValue(
+  box: ViewerEditBox,
+  field: ViewerEditField,
+  value: number,
+): ViewerEditBox | null {
+  const min: [number, number, number] = [box.min[0], box.min[1], box.min[2]];
+  const max: [number, number, number] = [box.max[0], box.max[1], box.max[2]];
+  switch (field) {
+    case 'originX':
+      max[0] = value + (box.max[0] - box.min[0]);
+      min[0] = value;
+      break;
+    case 'originY':
+      max[1] = value + (box.max[1] - box.min[1]);
+      min[1] = value;
+      break;
+    case 'width':
+      if (value <= 0) return null;
+      max[0] = box.min[0] + value;
+      break;
+    case 'depth':
+      if (value <= 0) return null;
+      max[1] = box.min[1] + value;
+      break;
+    case 'zMin':
+      if (value < 0 || value >= box.max[2]) return null;
+      min[2] = value;
+      break;
+    case 'zMax':
+      if (value <= box.min[2]) return null;
+      max[2] = value;
+      break;
+  }
+  return { min, max };
+}
+
 export function formatFieldDraft(box: ViewerEditBox): Record<ViewerEditField, string> {
   return {
     originX: formatFieldNumber(readFieldValue(box, 'originX')),

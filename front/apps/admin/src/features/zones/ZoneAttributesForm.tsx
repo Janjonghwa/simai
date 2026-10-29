@@ -75,10 +75,11 @@ export function ZoneAttributesForm({
 
   const set = <K extends keyof ZoneForm>(key: K, value: ZoneForm[K]) =>
     onChange({ ...form, [key]: value });
-  // 받은 유형이 입력 목록에 없으면(다른 곳에서 만든 구역) 그 값도 고를 수 있게 둔다.
-  const zoneTypes: string[] = !(ZONE_TYPES as readonly string[]).includes(form.zoneType)
-    ? [...ZONE_TYPES, form.zoneType]
-    : [...ZONE_TYPES];
+  // 받은 유형이 입력 목록에 없으면(다른 곳에서 만든 구역) 그 값도 고를 수 있게 둔다. 비었으면(새 구역) 고르게 한다.
+  const zoneTypes: string[] =
+    form.zoneType !== '' && !(ZONE_TYPES as readonly string[]).includes(form.zoneType)
+      ? [...ZONE_TYPES, form.zoneType]
+      : [...ZONE_TYPES];
 
   return (
     <fieldset
@@ -131,14 +132,20 @@ export function ZoneAttributesForm({
           </select>
         )}
       </Field>
-      <Field label="유형">
-        {() => (
+      <Field label="유형" error={errors.zoneType}>
+        {(describedBy) => (
           <select
             aria-label="유형"
+            aria-describedby={describedBy}
             value={form.zoneType}
             onChange={(e) => set('zoneType', e.target.value)}
             className={SELECT_CLASS}
           >
+            {form.zoneType === '' && (
+              <option value="" disabled>
+                선택
+              </option>
+            )}
             {zoneTypes.map((type) => (
               <option key={type} value={type}>
                 {zoneTypeText(type)}

@@ -1,5 +1,6 @@
 import { BUNDLES_KEY } from '@/features/zones/api';
 import {
+  applySummary,
   publishErrorText,
   readBundles,
   unpublishedZoneIds,
@@ -88,7 +89,7 @@ describe('발행 전 판정', () => {
   });
 
   it('발행 실패 이유를 서버 오류 코드로 알린다', () => {
-    expect(publishErrorText(new ApiError(403))).toBe('현장에 적용할 권한이 없습니다.');
+    expect(publishErrorText(new ApiError(403))).toBe('현장에 반영할 권한이 없습니다.');
     expect(publishErrorText(new ApiError(409, { code: 'CALIBRATION_MISSING' }))).toContain(
       '보정 문서',
     );
@@ -97,7 +98,7 @@ describe('발행 전 판정', () => {
       '공개 주소',
     );
     expect(publishErrorText(new ApiError(500))).toBe(
-      '현장에 적용하지 못했습니다. 다시 시도하세요.',
+      '현장에 반영하지 못했습니다. 다시 시도하세요.',
     );
   });
 });
@@ -224,5 +225,29 @@ describe('useConfigApply', () => {
     );
     await waitFor(() => expect([...(page.result.current.unpublished ?? [])]).toEqual(['z-04']));
     expect(page.result.current.canPublish).toBe(true);
+  });
+});
+
+describe('applySummary', () => {
+  const at = (status: 'PENDING' | 'APPLIED' | 'REJECTED' | 'MISMATCH') =>
+    ({ config_version: 'cfg-12', issued_at: 100, status, applied_at: 150 }) as Parameters<
+      typeof applySummary
+    >[0];
+
+  it('묶음 번호 없이 현장 반영 상태를 쉬운 말로 보인다', () => {
+    expect(applySummary(at('APPLIED'), 0)).toBe('현장 반영됨');
+    expect(applySummary(at('APPLIED'), 2)).toBe('현장 미반영 2건');
+    expect(applySummary(at('PENDING'), 0)).toBe('현장에 보내는 중');
+    expect(applySummary(null, 3)).toBe('현장 미반영 3건');
+    expect(applySummary(null, 0)).toBe('현장 미반영');
+  });
+
+  it('묶음 목록을 받는 중이거나 받지 못했으면 미반영이라 하지 않는다', () => {
+    expect(applySummary(undefined, 0)).toBe('—');
+  });
+
+  it('거부·확인 안 됨은 미반영 건수보다 먼저 알린다', () => {
+    expect(applySummary(at('REJECTED'), 1)).toBe('현장이 거부함');
+    expect(applySummary(at('MISMATCH'), 1)).toBe('현장 반영 확인 안 됨');
   });
 });

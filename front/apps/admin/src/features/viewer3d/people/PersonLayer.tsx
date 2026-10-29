@@ -6,6 +6,7 @@ import {
   type WorldFrame,
 } from '@/features/viewer3d/data/spatialFrame';
 import { LabelSprite } from '@/features/viewer3d/LabelSprite';
+import { PALETTE, type ScenePalette } from '@/features/viewer3d/palette';
 import {
   avatarAssetKey,
   avatarAssetState,
@@ -50,6 +51,7 @@ import {
 import { PersonRiskMark } from '@/features/viewer3d/risk/RiskMarks';
 import { riskLabel, riskStyle } from '@/features/viewer3d/risk/riskPresentation';
 import { useRiskHighlight } from '@/features/viewer3d/risk/RiskScope';
+import { useIsHovered, useScenePalette } from '@/features/viewer3d/sceneTheme';
 import { Selectable } from '@/features/viewer3d/Selectable';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
 import { worldToThree, type ThreePoint } from '@/features/viewer3d/worldCoordinates';
@@ -74,14 +76,9 @@ import { useStore } from 'zustand';
 /** 사람 모델 주소(XBot 같은 리깅 glTF). 없으면 캡슐 아바타. 배포 경로가 정해지기 전에는 개발 화면만 넘긴다. */
 export const PersonModelContext = createContext<string | null>(null);
 
-// WebGL 재질은 CSS 토큰을 바로 읽지 못해 장면 전용 값을 여기에만 둔다.
-const COLOR = { body: 0xdde3ef, joint: 0x7d89a8, unknown: 0x6b7797, selected: 0x6886d5 };
+// 몸·관절·선택·이름표 색은 장면 색표(palette)를 따른다.
+type PersonColor = ScenePalette['person'];
 const OPACITY: Record<PersonTone, number> = { observed: 1, predicted: 0.45, unknown: 0.3 };
-const LABEL_COLOR: Record<PersonTone, string> = {
-  observed: '#eef1f8',
-  predicted: '#9ba7c5',
-  unknown: '#9ba7c5',
-};
 const LABEL_Y = 2.05;
 const COLUMN_TOP = 2.0;
 const noRaycast = () => null;
@@ -168,6 +165,8 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
   useSpatialData((s) => statusKey(s, worldId));
   // 위험 강조는 이벤트가 바뀔 때만 달라진다. 위치·동작 기록(motion)은 그대로 둔다.
   const risk = useRiskHighlight('person', worldId);
+  const palette = useScenePalette();
+  const hovered = useIsHovered(`person:${worldId}`);
   const [hasLastValid, setHasLastValid] = useState(false);
   // EXP-02 메시(-65). 자산 key 가 바뀔 때만 다시 그린다(포즈는 5 Hz 로 오지만 useFrame 에서만 읽는다).
   const meshConfig = useContext(AvatarMeshContext);
@@ -354,7 +353,7 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
             <group ref={skeletonRoot} name="person-skeleton-root">
               <SkeletonBody
                 motion={motion}
-                color={bodyColor(tone, selected)}
+                color={bodyColor(palette.person, tone, selected)}
                 opacity={OPACITY[tone]}
                 anchor={
                   placement === 'GROUND_ANCHOR'
@@ -377,17 +376,19 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
                   worldId={worldId}
                 />
               ) : (
-                <CapsuleBody tone={tone} selected={selected} />
+                <CapsuleBody color={palette.person} tone={tone} selected={selected} />
               )}
             </group>
           ) : (
-            <HeightUnknownColumn selected={selected} />
+            <HeightUnknownColumn color={palette.person} selected={selected} />
           )}
+          {/* 이름표는 1초 머물 때·선택·위험일 때만 보인다(관제 데모와 같다). */}
           <LabelSprite
             text={label}
             y={pose.kind === 'BODY' ? LABEL_Y : COLUMN_TOP + 0.2}
             height={0.24}
-            color={risk ? riskStyle(risk).labelColor : LABEL_COLOR[tone]}
+            color={risk ? riskStyle(risk, palette).labelColor : palette.label[tone]}
+            visible={hovered || selected || risk !== null}
           />
         </group>
       </Selectable>
@@ -400,14 +401,22 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
   );
 }
 
-function bodyColor(tone: PersonTone, selected: boolean) {
+function bodyColor(COLOR: PersonColor, tone: PersonTone, selected: boolean) {
   if (selected) return COLOR.selected;
   return tone === 'unknown' ? COLOR.unknown : COLOR.body;
 }
 
 /** 캡슐 아바타(명세 13.1 MVP). 모델이 없어도 늘 그린다. 앞쪽 표식으로 진행 방향을 보인다. */
-function CapsuleBody({ tone, selected }: { tone: PersonTone; selected: boolean }) {
-  const color = bodyColor(tone, selected);
+function CapsuleBody({
+  color: COLOR,
+  tone,
+  selected,
+}: {
+  color: PersonColor;
+  tone: PersonTone;
+  selected: boolean;
+}) {
+  const color = bodyColor(COLOR, tone, selected);
   const opacity = OPACITY[tone];
   const solid = tone === 'observed';
   return (
@@ -441,7 +450,13 @@ function CapsuleBody({ tone, selected }: { tone: PersonTone; selected: boolean }
 }
 
 /** 높이를 모르는 사람의 세로 표식. 바닥에 세우지 않고 높이 범위를 점선으로만 보인다(Z 를 지어내지 않는다). */
-function HeightUnknownColumn({ selected }: { selected: boolean }) {
+function HeightUnknownColumn({
+  color: COLOR,
+  selected,
+}: {
+  color: PersonColor;
+  selected: boolean;
+}) {
   const color = selected ? COLOR.selected : COLOR.unknown;
   return (
     <>
@@ -476,6 +491,7 @@ interface ModelBodyProps {
 
 /** 리깅 모델 아바타. 사람마다 복제본·mixer 를 따로 두고 Canvas 의 useFrame 으로만 돌린다. */
 function ModelBody({ model, tone, selected, motion, worldId }: ModelBodyProps) {
+  const { person: color } = useScenePalette();
   const holder = useRef<Group>(null);
   const instance = useRef<AvatarInstance | null>(null);
 
@@ -495,8 +511,8 @@ function ModelBody({ model, tone, selected, motion, worldId }: ModelBodyProps) {
 
   // 위 효과 다음에 돌아 새 복제본에도 바로 칠한다.
   useEffect(() => {
-    if (instance.current) paint(instance.current.materials, tone, selected);
-  }, [tone, selected, model, worldId]);
+    if (instance.current) paint(instance.current.materials, tone, selected, color);
+  }, [color, tone, selected, model, worldId]);
 
   useFrame((_, dt) => {
     const avatar = instance.current;
@@ -561,7 +577,12 @@ function MeshBody({ mesh, player, motion, tone, selected }: MeshBodyProps) {
 }
 
 /** 상태 색·투명도. 관절(Joints) 재질은 경보색과 헷갈리지 않게 무채색으로 둔다. */
-function paint(materials: readonly Material[], tone: PersonTone, selected: boolean) {
+function paint(
+  materials: readonly Material[],
+  tone: PersonTone,
+  selected: boolean,
+  COLOR: PersonColor = PALETTE.dark.person,
+) {
   for (const material of materials) {
     const m = material as MeshStandardMaterial;
     const joint = /joints/i.test(m.name);

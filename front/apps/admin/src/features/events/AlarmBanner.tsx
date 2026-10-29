@@ -56,9 +56,15 @@ export function AlarmBanner({ withPanel }: { withPanel: boolean }) {
       />
       <SeverityBadge severity={event.severity} />
       {/* 가장 위 경보가 바뀔 때만 읽는다. 버튼·건수는 읽지 않는다. */}
+      {/* 칸 사이 공백은 화면 낭독기가 낱말을 붙여 읽지 않게 둔다. */}
       <span role="alert" className="min-w-0 truncate font-medium">
-        {ruleName(event.rule_id)} · {subject}
-        {event.zone_id && event.world_ids[0] ? ` · ${event.zone_id}` : ''}
+        <span>{ruleName(event.rule_id)}</span> <span className="ml-1">{subject}</span>
+        {event.zone_id && event.world_ids[0] && (
+          <>
+            {' '}
+            <span className="ml-1">{event.zone_id}</span>
+          </>
+        )}
       </span>
       {alarms.length > 1 && (
         <span className="text-sm whitespace-nowrap text-muted-foreground">

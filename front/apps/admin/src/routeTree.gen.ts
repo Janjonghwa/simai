@@ -13,8 +13,9 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppCctvRouteImport } from './routes/_app/cctv'
+import { Route as AppDashboardRouteImport } from './routes/_app/dashboard'
+import { Route as AppSetupRouteImport } from './routes/_app/setup'
 import { Route as AppSurfacesRouteImport } from './routes/_app/surfaces'
-import { Route as AppSystemRouteImport } from './routes/_app/system'
 import { Route as AppTbmRouteImport } from './routes/_app/tbm'
 import { Route as AppZonesRouteImport } from './routes/_app/zones'
 
@@ -37,14 +38,19 @@ const AppCctvRoute = AppCctvRouteImport.update({
   path: '/cctv',
   getParentRoute: () => AppRoute,
 } as any)
+const AppDashboardRoute = AppDashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSetupRoute = AppSetupRouteImport.update({
+  id: '/setup',
+  path: '/setup',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppSurfacesRoute = AppSurfacesRouteImport.update({
   id: '/surfaces',
   path: '/surfaces',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppSystemRoute = AppSystemRouteImport.update({
-  id: '/system',
-  path: '/system',
   getParentRoute: () => AppRoute,
 } as any)
 const AppTbmRoute = AppTbmRouteImport.update({
@@ -62,16 +68,18 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
   '/cctv': typeof AppCctvRoute
+  '/dashboard': typeof AppDashboardRoute
+  '/setup': typeof AppSetupRoute
   '/surfaces': typeof AppSurfacesRoute
-  '/system': typeof AppSystemRoute
   '/tbm': typeof AppTbmRoute
   '/zones': typeof AppZonesRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/cctv': typeof AppCctvRoute
+  '/dashboard': typeof AppDashboardRoute
+  '/setup': typeof AppSetupRoute
   '/surfaces': typeof AppSurfacesRoute
-  '/system': typeof AppSystemRoute
   '/tbm': typeof AppTbmRoute
   '/zones': typeof AppZonesRoute
   '/': typeof AppIndexRoute
@@ -81,8 +89,9 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/_app/cctv': typeof AppCctvRoute
+  '/_app/dashboard': typeof AppDashboardRoute
+  '/_app/setup': typeof AppSetupRoute
   '/_app/surfaces': typeof AppSurfacesRoute
-  '/_app/system': typeof AppSystemRoute
   '/_app/tbm': typeof AppTbmRoute
   '/_app/zones': typeof AppZonesRoute
   '/_app/': typeof AppIndexRoute
@@ -90,16 +99,32 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/login' | '/cctv' | '/surfaces' | '/system' | '/tbm' | '/zones'
+    | '/'
+    | '/login'
+    | '/cctv'
+    | '/dashboard'
+    | '/setup'
+    | '/surfaces'
+    | '/tbm'
+    | '/zones'
   fileRoutesByTo: FileRoutesByTo
-  to: '/login' | '/cctv' | '/surfaces' | '/system' | '/tbm' | '/zones' | '/'
+  to:
+    | '/login'
+    | '/cctv'
+    | '/dashboard'
+    | '/setup'
+    | '/surfaces'
+    | '/tbm'
+    | '/zones'
+    | '/'
   id:
     | '__root__'
     | '/_app'
     | '/login'
     | '/_app/cctv'
+    | '/_app/dashboard'
+    | '/_app/setup'
     | '/_app/surfaces'
-    | '/_app/system'
     | '/_app/tbm'
     | '/_app/zones'
     | '/_app/'
@@ -140,18 +165,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppCctvRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/dashboard': {
+      id: '/_app/dashboard'
+      path: '/dashboard'
+      fullPath: '/dashboard'
+      preLoaderRoute: typeof AppDashboardRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/setup': {
+      id: '/_app/setup'
+      path: '/setup'
+      fullPath: '/setup'
+      preLoaderRoute: typeof AppSetupRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/surfaces': {
       id: '/_app/surfaces'
       path: '/surfaces'
       fullPath: '/surfaces'
       preLoaderRoute: typeof AppSurfacesRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/system': {
-      id: '/_app/system'
-      path: '/system'
-      fullPath: '/system'
-      preLoaderRoute: typeof AppSystemRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/tbm': {
@@ -173,8 +205,9 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppCctvRoute: typeof AppCctvRoute
+  AppDashboardRoute: typeof AppDashboardRoute
+  AppSetupRoute: typeof AppSetupRoute
   AppSurfacesRoute: typeof AppSurfacesRoute
-  AppSystemRoute: typeof AppSystemRoute
   AppTbmRoute: typeof AppTbmRoute
   AppZonesRoute: typeof AppZonesRoute
   AppIndexRoute: typeof AppIndexRoute
@@ -182,8 +215,9 @@ interface AppRouteChildren {
 
 const AppRouteChildren: AppRouteChildren = {
   AppCctvRoute: AppCctvRoute,
+  AppDashboardRoute: AppDashboardRoute,
+  AppSetupRoute: AppSetupRoute,
   AppSurfacesRoute: AppSurfacesRoute,
-  AppSystemRoute: AppSystemRoute,
   AppTbmRoute: AppTbmRoute,
   AppZonesRoute: AppZonesRoute,
   AppIndexRoute: AppIndexRoute,

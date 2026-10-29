@@ -3,8 +3,10 @@ import { EventPanel } from '@/features/events/EventPanel';
 import type { Incident } from '@/features/events/events';
 import { useEventsStore } from '@/features/events/events.store';
 import { useLiveEvents } from '@/features/events/useLiveEvents';
+import { useThemeStore } from '@/features/layout/theme.store';
 import { ViewerLoadBoundary } from '@/features/monitor/ViewerLoadBoundary';
 import { LivePlan } from '@/features/plan/LivePlan';
+import { PlanMinimap } from '@/features/plan/PlanMinimap';
 import type {
   CommandResult,
   Viewer3DHandle,
@@ -154,12 +156,15 @@ export function SpatialViewportHost({
   loadViewer = importViewer,
   planFallbackMs = PLAN_FALLBACK_MS,
   zoneEditor = false,
+  eventPanel = true,
   children,
 }: {
   loadViewer?: () => Promise<ViewerModule>;
   /** 3D 가 준비되지 않았을 때 2D 를 띄우기까지 기다리는 시간(ms). 시험에서 줄인다. */
   planFallbackMs?: number;
   zoneEditor?: boolean;
+  /** 오른쪽 이벤트 패널과 왼쪽 아래 2D 미니맵을 두는 화면인지(라우트 staticData.eventPanel, 실시간 관제). */
+  eventPanel?: boolean;
   children?: ReactNode;
 }) {
   const source = useRealtimeStore((s) => s.source);
@@ -929,6 +934,8 @@ export function SpatialViewportHost({
 
   const { Viewer3D } = loader;
   const ariaLabel = isZonesRoute ? '구역 편집' : '실시간 관제';
+  const theme = useThemeStore((s) => s.theme);
+  const showEventPanel = eventPanel && !isZonesRoute;
 
   return (
     <SpatialViewportContext value={viewportValue}>
@@ -939,6 +946,7 @@ export function SpatialViewportHost({
               <Suspense fallback={null}>
                 <Viewer3D
                   ref={viewer}
+                  theme={theme}
                   source={source}
                   onSelectionChange={onViewerSelect}
                   onTargetDoubleClick={onViewerDoubleClick}
@@ -955,7 +963,13 @@ export function SpatialViewportHost({
             </ViewerLoadBoundary>
           )}
           {(view === '2d' || (!viewerReady && planBeforeReady)) && (
-            <div className="absolute top-[72px] right-[370px] bottom-[96px] left-5">
+            <div
+              className={cn(
+                'absolute top-[72px] bottom-[96px]',
+                // 구역 편집·작업면 등록은 왼쪽에 편집 패널이 있고 이벤트 패널이 없다.
+                showEventPanel ? 'right-[370px] left-5' : 'right-5 left-[384px]',
+              )}
+            >
               <LivePlan selectedKey={selectedKey} onSelect={setSelectedKey} className="size-full" />
             </div>
           )}
@@ -971,38 +985,39 @@ export function SpatialViewportHost({
               <div className="absolute inset-y-0 right-0 w-[12%] bg-linear-to-l from-primary/20 via-primary/7 to-transparent dark:from-primary/26 dark:via-primary/9" />
             </div>
           )}
+          {/* 3D 는 처음 시점으로 돌리고, 3D 가 멈춰 2D 를 보고 있으면 3D 를 다시 띄운다(관제 데모와 같다).
+              2D 는 왼쪽 아래 미니맵을 눌러 큰 창으로 본다. */}
           <div
             role="group"
             aria-label="보기"
             className="absolute top-[72px] left-3.5 z-[5] flex gap-1 rounded-[12px] bg-card/94 p-1 shadow-float backdrop-blur-[8px]"
           >
-            <Button
-              size="sm"
-              variant={view === '3d' ? 'default' : 'ghost'}
-              aria-pressed={view === '3d'}
-              onClick={show3d}
-            >
-              3D
-            </Button>
-            <Button
-              size="sm"
-              variant={view === '2d' ? 'default' : 'ghost'}
-              aria-pressed={view === '2d'}
-              onClick={show2d}
-            >
-              2D
-            </Button>
+            {view === '3d' ? (
+              <Button size="sm" variant="ghost" onClick={() => viewer.current?.resetView?.()}>
+                시점 초기화
+              </Button>
+            ) : (
+              <Button size="sm" variant="ghost" onClick={show3d}>
+                3D 다시 시도
+              </Button>
+            )}
           </div>
           {children}
-          <EventPanel
-            entries={entries}
-            loaded={loaded}
-            failed={failed}
-            selectedKey={selectedKey}
-            onSelect={selectIncident}
-            openEventId={openEventId}
-            onOpen={openEvent}
-          />
+          {showEventPanel && view === '3d' && (
+            <PlanMinimap selectedKey={selectedKey} onSelect={setSelectedKey} />
+          )}
+          {/* 구역 편집·작업면 등록은 편집 패널과 장면만 둔다(경보 배너는 그대로 뜬다). */}
+          {showEventPanel && (
+            <EventPanel
+              entries={entries}
+              loaded={loaded}
+              failed={failed}
+              selectedKey={selectedKey}
+              onSelect={selectIncident}
+              openEventId={openEventId}
+              onOpen={openEvent}
+            />
+          )}
         </main>
       </ZoneEditContext>
     </SpatialViewportContext>

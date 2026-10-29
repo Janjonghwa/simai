@@ -341,7 +341,7 @@ describe('실제 Store 기반 구역 편집 회귀', () => {
     const kept = useZoneDraftsStore.getState().drafts['z-02']!;
     expect(kept.before.min).toEqual([1, 6.2, 0]);
     expect(kept.provenance.sourceId).toBe('s-1');
-    expect(screen.getByText(/전체 미저장\s*2\s*건/)).toBeTruthy();
+    expect(screen.getByText(/미저장 미리보기 보관 중 \(2개 구역\)/)).toBeTruthy();
   });
 
   it('F20: 화면이 내려가 있는 동안 Source 가 바뀌었으면 다시 들어와도 이전 초안을 보이지 않는다', async () => {
@@ -519,7 +519,7 @@ describe('실제 Store 기반 구역 편집 회귀', () => {
     enter('7');
     begin('z-02');
     enter('2');
-    expect(screen.getByText('전체 미저장 2건')).toBeTruthy();
+    expect(screen.getByText('미저장 미리보기 보관 중 (2개 구역)')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '전체 복원' }));
     fireEvent.click(screen.getByRole('button', { name: '돌아가기' }));
     expect(overlays()).toHaveLength(2);

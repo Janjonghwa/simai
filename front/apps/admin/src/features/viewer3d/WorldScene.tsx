@@ -1,4 +1,5 @@
 import { createSceneStore, SceneStoreContext } from '@/features/viewer3d/scene/sceneStore';
+import { useScenePalette } from '@/features/viewer3d/sceneTheme';
 import {
   worldBoxToThree,
   worldPoint,
@@ -48,9 +49,7 @@ export function roomLayout({ sizeX, sizeY, wallHeight }: WorldRoom): RoomLayout 
 }
 
 // WebGL 재질은 CSS 토큰을 바로 읽지 못해 장면 전용 값을 여기에만 둔다. 다크·화이트 배경 모두에서 바닥이 구분되는 중간 톤이다.
-const FLOOR_COLOR = 0x6b7da3;
 const FLOOR_OPACITY = 0.3;
-const WALL_COLOR = 0x6b7797;
 
 // 바닥·벽은 선택을 받지 않는다. 사람·구역 클릭과 빈 곳 클릭(선택 해제)을 가리지 않게 한다.
 const noRaycast = () => null;
@@ -64,6 +63,7 @@ interface WorldSceneProps {
 /** World 바닥(Z=0)과 벽 경계. 바닥은 격자보다 깊이를 조금 밀어 격자선이 위에 보이게 한다(위치는 Z=0 그대로). */
 export function WorldScene({ room = DEMO_ROOM }: WorldSceneProps) {
   const layout = useMemo(() => roomLayout(room), [room]);
+  const palette = useScenePalette();
   // 정적 배경(-59)이 보이면 배경 바닥과 겹쳐 깜박이지 않게 기본 바닥 면만 숨긴다. 벽 경계선은 그대로 둔다.
   const sceneStore = useContext(SceneStoreContext) ?? NO_SCENE;
   const backgroundShown = useStore(sceneStore, (s) => s.display !== 'HIDDEN');
@@ -80,7 +80,7 @@ export function WorldScene({ room = DEMO_ROOM }: WorldSceneProps) {
       >
         <planeGeometry args={layout.floor.size} />
         <meshStandardMaterial
-          color={FLOOR_COLOR}
+          color={palette.floor}
           transparent
           opacity={FLOOR_OPACITY}
           polygonOffset
@@ -91,7 +91,7 @@ export function WorldScene({ room = DEMO_ROOM }: WorldSceneProps) {
       <mesh name="world-walls" position={layout.walls.position} raycast={noRaycast}>
         <boxGeometry args={layout.walls.size} />
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-        <Edges color={WALL_COLOR} raycast={noRaycast} />
+        <Edges color={palette.wall} raycast={noRaycast} />
       </mesh>
     </group>
   );

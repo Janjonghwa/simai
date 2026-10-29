@@ -19,7 +19,7 @@ import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore, type Role } from '@/store/session.store';
 import { useZoneDraftsStore } from '@/store/zoneDrafts.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useEffect, useImperativeHandle, useRef, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -102,6 +102,7 @@ const fake = vi.hoisted(() => ({
   onSelect: null as Viewer3DProps['onSelectionChange'] | null,
   onPreview: null as Viewer3DProps['onEditPreview'] | null,
   onResult: null as Viewer3DProps['onEditResult'] | null,
+  onStatus: null as Viewer3DProps['onStatusChange'] | null,
 }));
 
 function applyField(
@@ -274,6 +275,7 @@ function FakeViewer({
 
   const reported = useRef(false);
   useEffect(() => {
+    fake.onStatus = onStatusChange ?? null;
     if (!reported.current) {
       reported.current = true;
       onStatusChange?.({ phase: 'ready', mode: 'LIVE', error: null } as ViewerStatus);
@@ -291,11 +293,25 @@ function signInAs(role: Role) {
   });
 }
 
-/** '새 구역' 메뉴를 연다(항목은 구역 유형). */
-function openNewZoneMenu() {
+/** 구역을 고르지 않았을 때 보이는 새 구역 양식에서 유형을 고른다. */
+function chooseNewZoneType(zoneType: string) {
+  const form = screen.getByRole('region', { name: '새 구역' });
   act(() => {
-    fireEvent.click(screen.getByRole('button', { name: '새 구역' }));
+    fireEvent.change(within(form).getByRole('combobox', { name: '유형' }), {
+      target: { value: zoneType },
+    });
   });
+}
+const addZoneButton = () => screen.getByRole('button', { name: '구역 추가' }) as HTMLButtonElement;
+/** 구역 목록 드롭다운을 연다. */
+function openZoneList() {
+  act(() => screen.getByRole('button', { name: /^구역 목록/ }).click());
+  return screen.getByRole('region', { name: '구역 목록 선택' });
+}
+/** 드롭다운의 「새 구역」을 골라 선택을 풀고 새 구역 양식을 연다. */
+function pickNewZone() {
+  const list = openZoneList();
+  act(() => within(list).getByRole('button', { name: '새 구역' }).click());
 }
 
 function renderZones(ui: ReactNode = <ZonesPage />) {
@@ -341,16 +357,22 @@ describe('ZonesPage 경량 플로팅 편집 도구', () => {
   it('구역 선택 전에는 최소 안내와 접이식 구역 목록 버튼만 보이고 3열 고정 패널이나 도구 탭을 두지 않는다', async () => {
     renderZones();
     await screen.findByTestId('viewer3d');
-    expect(screen.getByText('구역 편집 모드')).toBeTruthy();
-    expect(screen.getByText(/3D 구역을 클릭해 선택 · 더블클릭해 바로 수정/)).toBeTruthy();
+    // 드롭다운 기본은 「새 구역」이고, 모드·상태 칩은 두지 않는다.
+    expect(screen.getByRole('button', { name: '구역 목록: 새 구역' })).toBeTruthy();
+    expect(screen.queryByText('구역 편집 모드')).toBeNull();
+    // 설명 문구는 두지 않는다.
+    expect(screen.queryByText(/3D 구역을 클릭해 선택/)).toBeNull();
     expect(screen.queryByRole('region', { name: '구역 목록 선택' })).toBeNull();
     expect(screen.queryByRole('group', { name: 'World 수치 입력' })).toBeNull();
 
-    act(() => screen.getByRole('button', { name: /구역 목록/ }).click());
+    const list = openZoneList();
+    expect(within(list).getByRole('button', { name: '새 구역' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
     const searchInput = screen.getByLabelText('구역 검색');
     fireEvent.change(searchInput, { target: { value: '북동' } });
-    expect(screen.getByRole('button', { name: /z-04/ })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /z-02/ })).toBeNull();
+    expect(within(list).getByRole('button', { name: /z-04/ })).toBeTruthy();
+    expect(within(list).queryByRole('button', { name: /z-02/ })).toBeNull();
   });
 
   it('한 편집 세션에서 도구 탭 전환 없이 XY·폭/깊이·높이 수치를 누적하고, 숫자 칸 Esc 는 칸 값만 되돌린다', async () => {
@@ -490,7 +512,7 @@ describe('ZonesPage 경량 플로팅 편집 도구', () => {
       fireEvent.change(screen.getByRole('combobox', { name: '심각도' }), {
         target: { value: 'HIGH' },
       });
-      expect(screen.getByText('미저장 변경')).toBeTruthy();
+      expect(save.disabled).toBe(false);
       act(() => save.click());
 
       expect(await screen.findByText('저장했습니다 (z-04 v4).')).toBeTruthy();
@@ -602,11 +624,12 @@ describe('ZonesPage 경량 플로팅 편집 도구', () => {
       expect(save.disabled).toBe(true);
       await waitFor(() => expect(calls).toHaveLength(1));
 
-      openNewZoneMenu();
+      // 드롭다운에서 「새 구역」을 고르면 새 구역 양식이 보인다. 같은 틱에 두 번 눌러도 한 번만 만든다.
+      pickNewZone();
+      chooseNewZoneType('OPENING');
       act(() => {
-        const opening = screen.getByRole('menuitem', { name: '개구부' });
-        opening.click();
-        opening.click();
+        addZoneButton().click();
+        addZoneButton().click();
       });
       await waitFor(() => expect(calls).toHaveLength(2));
       await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
@@ -673,9 +696,8 @@ describe('ZonesPage 경량 플로팅 편집 도구', () => {
       mockZonesState.raw = undefined;
       renderZones();
       await screen.findByTestId('viewer3d');
-      expect((screen.getByRole('button', { name: '새 구역' }) as HTMLButtonElement).disabled).toBe(
-        true,
-      );
+      chooseNewZoneType('OPENING');
+      expect(addZoneButton().disabled).toBe(true);
     });
 
     it('형상을 고치는 중에 저장하면 편집을 끝내고 그 형상을 함께 보낸다', async () => {
@@ -726,7 +748,7 @@ describe('ZonesPage 경량 플로팅 편집 도구', () => {
       );
     });
 
-    it('새 구역은 고른 유형으로 기존 구역들 가운데에 만들고 바로 형상 편집을 시작한다', async () => {
+    it('구역을 고르지 않으면 새 구역 양식이 보이고, 유형을 고르면 그 속성으로 기존 구역들 가운데에 만들고 바로 형상 편집을 시작한다', async () => {
       const created = zoneOf({ zoneId: 'z-05', name: '새 구역', min: [4, 2, 0], max: [6, 4, 2] });
       apiMock.fn = (path, options) => {
         const { method, body } = options as { method?: string; body?: Record<string, unknown> };
@@ -736,13 +758,12 @@ describe('ZonesPage 경량 플로팅 편집 도구', () => {
       };
       renderZones();
       await screen.findByTestId('viewer3d');
-      openNewZoneMenu();
-      expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
-        '개구부',
-        '장비 주차',
-        '양중 하부',
-      ]);
-      act(() => screen.getByRole('menuitem', { name: '장비 주차' }).click());
+      // 유형은 비어 있어 고르기 전에는 만들 수 없다(개구부를 기본으로 두지 않는다).
+      expect(addZoneButton().disabled).toBe(true);
+      expect(screen.getByText('유형을 고르세요.')).toBeTruthy();
+      chooseNewZoneType('EQUIPMENT_PARKING');
+      expect(addZoneButton().disabled).toBe(false);
+      act(() => addZoneButton().click());
 
       await waitFor(() => expect(fake.editing?.target).toEqual({ type: 'zone', id: 'z-05' }));
       expect(calls[0]).toMatchObject({ path: '/api/zones', method: 'POST' });
@@ -764,7 +785,12 @@ describe('ZonesPage 경량 플로팅 편집 도구', () => {
       expect(screen.getByLabelText('구역 속성').textContent).toContain('CRITICAL');
       expect(screen.queryByRole('textbox', { name: '이름' })).toBeNull();
       expect(screen.queryByRole('button', { name: '저장' })).toBeNull();
-      expect(screen.queryByRole('button', { name: '새 구역' })).toBeNull();
+      // 관리자가 아니어도 드롭다운 「새 구역」으로 선택을 풀 수 있다. 새 구역 양식은 없다.
+      pickNewZone();
+      expect(screen.getByRole('button', { name: '구역 목록: 새 구역' })).toBeTruthy();
+      expect(screen.queryByLabelText('구역 속성')).toBeNull();
+      expect(screen.queryByRole('region', { name: '새 구역' })).toBeNull();
+      expect(screen.queryByRole('button', { name: '구역 추가' })).toBeNull();
     });
   });
 
@@ -784,70 +810,68 @@ describe('ZonesPage 경량 플로팅 편집 도구', () => {
         return Promise.reject(new Error(`no api in test: ${path}`));
       };
     });
-    const status = () => screen.getByRole('group', { name: '현장 적용' }).textContent;
+    const status = () => screen.getByRole('group', { name: '현장 반영' }).textContent;
 
-    it('최근 묶음의 구성 버전과 현장 적용 상태, 발행 전 건수를 보이고 발행 전 구역에 표시한다', async () => {
+    it('현장에 반영하지 않은 저장 건수를 쉬운 말로 보이고(묶음 번호는 보이지 않는다) 목록에서 그 구역에 표시한다', async () => {
       renderZones();
       await screen.findByTestId('viewer3d');
-      await waitFor(() => expect(status()).toContain('발행 전 1건'));
-      expect(status()).toContain('cfg-12');
-      expect(status()).toContain('현장 적용됨');
+      await waitFor(() => expect(status()).toContain('현장 미반영 1건'));
+      expect(status()).not.toContain('cfg-12');
 
       act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
-      expect(screen.getByText('v3 · 발행 전')).toBeTruthy();
-      act(() => screen.getByRole('button', { name: /구역 목록/ }).click());
-      const row = screen.getByRole('button', { name: /z-04/ });
+      const list = openZoneList();
+      const row = within(list).getByRole('button', { name: /z-04/ });
+      expect(row.textContent).toContain('v3');
       expect(row.textContent).toContain('발행 전');
-      expect(screen.getByRole('button', { name: /z-02/ }).textContent).not.toContain('발행 전');
+      expect(within(list).getByRole('button', { name: /z-02/ }).textContent).not.toContain(
+        '발행 전',
+      );
     });
 
-    it('현장에 적용하면 새 묶음을 적용 대기로 보이고 발행 전이 사라진다', async () => {
+    it('현장에 반영하면 보내는 중으로 보이고 미반영 건수가 사라진다', async () => {
       renderZones();
       await screen.findByTestId('viewer3d');
-      await waitFor(() => expect(status()).toContain('발행 전 1건'));
+      await waitFor(() => expect(status()).toContain('현장 미반영 1건'));
 
-      act(() => screen.getByRole('button', { name: '현장에 적용' }).click());
-      await waitFor(() => expect(status()).toContain('cfg-13'));
+      act(() => screen.getByRole('button', { name: '현장에 반영' }).click());
+      await waitFor(() => expect(status()).toContain('현장에 보내는 중'));
       expect(published).toEqual(['/api/config-bundles']);
-      expect(status()).toContain('적용 대기');
-      expect(status()).not.toContain('발행 전');
+      expect(status()).not.toContain('미반영');
       expect(
-        (screen.getByRole('button', { name: '현장에 적용' }) as HTMLButtonElement).disabled,
+        (screen.getByRole('button', { name: '현장에 반영' }) as HTMLButtonElement).disabled,
       ).toBe(true);
     });
 
-    it('현장에 적용하지 못하면 이유를 알린다', async () => {
+    it('현장에 반영하지 못하면 이유를 알린다', async () => {
       apiMock.fn = () => Promise.reject(new ApiError(403));
       renderZones();
       await screen.findByTestId('viewer3d');
-      await waitFor(() => expect(status()).toContain('발행 전 1건'));
-      act(() => screen.getByRole('button', { name: '현장에 적용' }).click());
-      expect(await screen.findByText('현장에 적용할 권한이 없습니다.')).toBeTruthy();
+      await waitFor(() => expect(status()).toContain('현장 미반영 1건'));
+      act(() => screen.getByRole('button', { name: '현장에 반영' }).click());
+      expect(await screen.findByText('현장에 반영할 권한이 없습니다.')).toBeTruthy();
     });
 
-    it('Tier 0 가 묶음을 거부하면 적용 거부와 현장이 계속 쓰는 묶음을 보이고, 발행 전 구역이 없어도 다시 발행할 수 있다', async () => {
+    it('Tier 0 가 묶음을 거부하면 현장이 거부함으로 보이고, 미반영 구역이 없어도 다시 반영할 수 있다', async () => {
       bundlesMock.list = [
         bundleOf('cfg-13', 300, 'REJECTED', 'cfg-12'),
         bundleOf('cfg-12', 100, 'APPLIED'),
       ];
       renderZones();
       await screen.findByTestId('viewer3d');
-      await waitFor(() => expect(status()).toContain('cfg-13'));
-      expect(status()).toContain('적용 거부');
-      expect(status()).toContain('현장 cfg-12');
-      expect(status()).not.toContain('현장 적용됨');
-      expect(status()).not.toContain('발행 전');
+      await waitFor(() => expect(status()).toContain('현장이 거부함'));
+      expect(status()).not.toContain('현장 반영됨');
+      expect(status()).not.toContain('미반영');
       expect(
-        (screen.getByRole('button', { name: '현장에 적용' }) as HTMLButtonElement).disabled,
+        (screen.getByRole('button', { name: '현장에 반영' }) as HTMLButtonElement).disabled,
       ).toBe(false);
     });
 
-    it('관리자가 아니면 상태만 보고 발행하지 못한다', async () => {
+    it('관리자가 아니면 상태만 보고 반영하지 못한다', async () => {
       signInAs('FOREMAN');
       renderZones();
       await screen.findByTestId('viewer3d');
-      await waitFor(() => expect(status()).toContain('현장 적용됨'));
-      expect(screen.queryByRole('button', { name: '현장에 적용' })).toBeNull();
+      await waitFor(() => expect(status()).toContain('현장 미반영 1건'));
+      expect(screen.queryByRole('button', { name: '현장에 반영' })).toBeNull();
     });
   });
 
@@ -875,7 +899,15 @@ describe('ZonesPage 경량 플로팅 편집 도구', () => {
     await screen.findByTestId('viewer3d');
 
     act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
-    act(() => screen.getByRole('button', { name: '2D' }).click());
+    // 3D 가 멈추면 2D 로 바뀐다(손으로 2D 로 바꾸는 버튼은 없다).
+    act(() =>
+      fake.onStatus?.({
+        phase: 'error',
+        mode: 'LIVE',
+        error: { code: 'RENDER_FAILED', message: 'x' },
+      } as ViewerStatus),
+    );
+    expect(screen.queryByTestId('viewer3d')).toBeNull();
     act(() => screen.getByRole('button', { name: '구역 수정' }).click());
     await screen.findByTestId('viewer3d');
     expect(fake.editing?.target).toEqual({ type: 'zone', id: 'z-04' });

@@ -1,4 +1,5 @@
 import { riskStyle, type RiskHighlight } from '@/features/viewer3d/risk/riskPresentation';
+import { useScenePalette } from '@/features/viewer3d/sceneTheme';
 import { boxEdges } from '@/features/viewer3d/zones/zoneGeometry';
 import { Line } from '@react-three/drei';
 import { useEffect, useMemo, useRef } from 'react';
@@ -61,7 +62,7 @@ interface PersonRiskMarkProps {
 }
 
 export function PersonRiskMark({ risk, kind, worldId }: PersonRiskMarkProps) {
-  const style = riskStyle(risk);
+  const style = riskStyle(risk, useScenePalette());
   const ref = useMarkInfo(risk, { kind });
   const line = {
     color: style.color,
@@ -95,7 +96,7 @@ interface ZoneRiskMarkProps {
 export const ZONE_RISK_MARGIN = 0.06;
 
 export function ZoneRiskMark({ risk, zoneId, size }: ZoneRiskMarkProps) {
-  const style = riskStyle(risk);
+  const style = riskStyle(risk, useScenePalette());
   const ref = useMarkInfo(risk);
   const [sx, sy, sz] = size;
   const edges = useMemo(

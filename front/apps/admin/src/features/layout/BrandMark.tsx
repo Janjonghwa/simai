@@ -22,3 +22,12 @@ export function BrandMark({ size = 32 }: { size?: number }) {
     </svg>
   );
 }
+
+/** 로고 옆에 쓰는 이름. 상단 바와 로그인 화면이 같은 모양을 쓴다. */
+export function Wordmark() {
+  return (
+    <strong className="text-[21px] font-bold tracking-[-0.4px]">
+      sim<span className="text-primary">AI</span>
+    </strong>
+  );
+}

@@ -1,10 +1,15 @@
+import { useScenePalette } from '@/features/viewer3d/sceneTheme';
 import { useEffect, useMemo } from 'react';
 import { CanvasTexture, SRGBColorSpace } from 'three';
 
 // 장면 안 이름표(스프라이트). DOM 이름표(drei Html)는 StrictMode 이중 마운트에서 첫 이름표가 비는 문제가 있었다.
 const LABEL_PX = 48;
 
-function labelTexture(text: string, color: string): { texture: CanvasTexture; aspect: number } {
+function labelTexture(
+  text: string,
+  color: string,
+  background: string,
+): { texture: CanvasTexture; aspect: number } {
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d');
   const font = `600 ${LABEL_PX * 0.62}px ui-monospace, Consolas, monospace`;
@@ -13,7 +18,7 @@ function labelTexture(text: string, color: string): { texture: CanvasTexture; as
   canvas.width = width;
   canvas.height = LABEL_PX;
   if (context) {
-    context.fillStyle = 'rgba(10, 14, 24, 0.72)';
+    context.fillStyle = background;
     context.beginPath();
     context.roundRect(0, 0, width, LABEL_PX, 10);
     context.fill();
@@ -37,14 +42,25 @@ interface LabelSpriteProps {
   /** 글자 높이(m). */
   height?: number;
   color?: string;
+  /** 거짓이면 그리지 않는다. 숨겨도 장면에 남겨 대상의 초점 중심(경계 상자)이 바뀌지 않게 한다. */
+  visible?: boolean;
 }
 
-/** 늘 카메라를 보는 이름표. 선택을 받지 않고 깊이와 상관없이 위에 그린다. 글자가 바뀔 때만 텍스처를 새로 만든다. */
-export function LabelSprite({ text, y, height = 0.3, color = '#f5f5f5' }: LabelSpriteProps) {
-  const { texture, aspect } = useMemo(() => labelTexture(text, color), [text, color]);
+/**
+ * 늘 카메라를 보는 이름표. 선택을 받지 않고 깊이와 상관없이 위에 그린다. 글자·색·테마가 바뀔 때만 텍스처를 새로 만든다.
+ * 색을 주지 않으면 테마의 기본 글자색이다.
+ */
+export function LabelSprite({ text, y, height = 0.3, color, visible = true }: LabelSpriteProps) {
+  const { label } = useScenePalette();
+  const ink = color ?? label.observed;
+  const { texture, aspect } = useMemo(
+    () => labelTexture(text, ink, label.background),
+    [text, ink, label.background],
+  );
   useEffect(() => () => texture.dispose(), [texture]);
   return (
     <sprite
+      visible={visible}
       position-y={y}
       scale={[height * aspect, height, 1]}
       renderOrder={10}

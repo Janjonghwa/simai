@@ -1,23 +1,12 @@
 import { ROLE_LABEL } from '@/features/auth/roleLabel';
 import { useCurrentRole } from '@/features/auth/useCurrentRole';
 import { useLogout } from '@/features/auth/useLogout';
-import { BrandMark } from '@/features/layout/BrandMark';
-import {
-  calibrationLabel,
-  cameraLabel,
-  chipState,
-  clockLabel,
-  configLabel,
-  dataAgeSec,
-  sceneLabel,
-  sceneMismatch,
-} from '@/features/layout/status';
-import { SystemHealthChip } from '@/features/layout/SystemHealthChip';
+import { BrandMark, Wordmark } from '@/features/layout/BrandMark';
+import { clockLabel } from '@/features/layout/status';
 import { useThemeStore } from '@/features/layout/theme.store';
 import { useNow } from '@/features/layout/useNow';
-import { useLinkAlive } from '@/hooks/useLinkAlive';
-import { playTestAlarm } from '@/lib/alarmSound';
-import { useRealtimeStore, type HealthSnapshot } from '@/store/realtime.store';
+import { ROOM } from '@/features/plan/plan';
+import { useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
 import {
   DropdownMenu,
@@ -26,92 +15,22 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@simai/ui/components/dropdown-menu';
-import { Separator } from '@simai/ui/components/separator';
 import { cn } from '@simai/ui/lib/utils';
-import { Link } from '@tanstack/react-router';
-import { BellRing, ChevronDown, LogOut, Moon, Sun } from 'lucide-react';
+import { Link, useNavigate } from '@tanstack/react-router';
+import { ChevronDown, LogOut, Moon, Ruler, Sun } from 'lucide-react';
 
-// 값마다 작은 컴포넌트가 실시간 저장소를 직접 구독한다. health 가 1초마다 와도 바뀐 칸만 다시 그린다.
+// 상단 바는 로고·현장명·시계·관리자 메뉴만 둔다(관제 데모와 같다). 상태 값(System Health·데이터 연령·카메라·보정·구성·장면)은
+// 시스템 상태 화면에서 보고, 장애·연결 끊김은 상단 바 아래 장애 띠가 알린다.
 
 const NONE = '—';
-
-function Meta({
-  label,
-  value,
-  late,
-  warn,
-  shrink,
-}: {
-  label: string;
-  value?: string;
-  late?: boolean;
-  /** 시스템 이상(장면 불일치)이면 장애 띠와 같은 줄무늬로 보인다. */
-  warn?: boolean;
-  /** 자리가 모자라면 이 칸이 말줄임으로 준다. 짧고 급한 값(데이터·카메라·장면)은 줄이지 않는다. */
-  shrink?: boolean;
-}) {
-  return (
-    <span className={cn('whitespace-nowrap', shrink ? 'min-w-0 truncate' : 'shrink-0')}>
-      {label}{' '}
-      <b
-        className={cn(
-          'font-mono font-medium text-muted-foreground',
-          late && 'text-delay',
-          warn && 'rounded bg-stripes px-1 text-foreground',
-        )}
-      >
-        {value ?? NONE}
-      </b>
-    </span>
-  );
-}
-
-/** health 에서 문구 하나를 보인다. 연결이 끊기면 지금 값을 모르므로 비운다. */
-function HealthMeta({
-  label,
-  alive,
-  select,
-  shrink,
-}: {
-  label: string;
-  alive: boolean;
-  select: (health: HealthSnapshot | null) => string | undefined;
-  shrink?: boolean;
-}) {
-  const value = useRealtimeStore((s) => select(s.health));
-  return <Meta label={label} value={alive ? value : undefined} shrink={shrink} />;
-}
-
-/** 데이터 연령. 끊겨도 마지막으로 받은 때부터 계속 늘어나고, 지연 색으로 바뀐다. */
-function DataAgeMeta({ alive }: { alive: boolean }) {
-  const now = useNow();
-  const age = useRealtimeStore((s) => dataAgeSec(s.health, now));
-  return (
-    <Meta
-      label="데이터"
-      value={age === undefined ? undefined : `${age.toFixed(1)}초`}
-      late={!alive && age !== undefined}
-    />
-  );
-}
-
-/** 장면 버전. 현장이 다른 Scene 으로 판정하고 있으면 두 버전을 경고로 보인다(명세 FR-12). */
-function SceneMeta({ alive }: { alive: boolean }) {
-  const value = useRealtimeStore((s) => sceneLabel(s.health));
-  const mismatch = useRealtimeStore((s) => sceneMismatch(s.health) !== undefined);
-  return <Meta label="장면" value={alive ? value : undefined} warn={alive && mismatch} />;
-}
-
-function HealthStatus({ alive }: { alive: boolean }) {
-  const state = useRealtimeStore((s) => chipState(s, alive));
-  return <SystemHealthChip state={state} />;
-}
 
 function Ec2Clock() {
   const now = useNow();
   const offset = useRealtimeStore((s) => s.health?.clockOffsetMs);
   return (
-    <span className="font-mono text-sm whitespace-nowrap">{clockLabel(offset, now) ?? NONE}</span>
+    <span className="ml-auto font-mono text-sm whitespace-nowrap">
+      {clockLabel(offset, now) ?? NONE}
+    </span>
   );
 }
 
@@ -120,6 +39,7 @@ function AccountMenu() {
   const toggleTheme = useThemeStore((s) => s.toggle);
   const role = useCurrentRole();
   const logout = useLogout();
+  const navigate = useNavigate();
 
   return (
     <DropdownMenu>
@@ -130,13 +50,13 @@ function AccountMenu() {
         <ChevronDown aria-hidden />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-[220px]">
+        <DropdownMenuItem onClick={() => void navigate({ to: '/setup' })}>
+          <Ruler />
+          설치 · 보정
+        </DropdownMenuItem>
         <DropdownMenuItem onClick={toggleTheme}>
           {theme === 'dark' ? <Sun /> : <Moon />}
           {theme === 'dark' ? '화이트 모드' : '다크 모드'}
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => void playTestAlarm()}>
-          <BellRing />
-          시험 경보
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => logout()}>
@@ -148,12 +68,7 @@ function AccountMenu() {
   );
 }
 
-const Divider = () => <Separator orientation="vertical" className="h-3" aria-hidden />;
-
 export function TopBar({ floating }: { floating: boolean }) {
-  // 끊김 여부가 바뀔 때만 다시 그린다(값들은 아래 칸이 각자 구독한다).
-  const alive = useLinkAlive();
-
   return (
     <header
       className={cn(
@@ -163,25 +78,11 @@ export function TopBar({ floating }: { floating: boolean }) {
     >
       <Link to="/" className="flex items-center gap-2.5">
         <BrandMark />
-        <strong className="text-[21px] font-bold tracking-[-0.4px]">
-          sim<span className="text-primary">AI</span>
-        </strong>
+        <Wordmark />
       </Link>
       <span className="text-[13px] whitespace-nowrap text-muted-foreground">
-        교실 테스트베드 · 10×10m
+        교실 테스트베드 · {ROOM.width}×{ROOM.depth}m
       </span>
-      <HealthStatus alive={alive} />
-      <div className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden text-[13px] text-faint">
-        <DataAgeMeta alive={alive} />
-        <Divider />
-        <HealthMeta label="카메라" alive={alive} select={cameraLabel} />
-        <Divider />
-        <HealthMeta label="보정" alive={alive} select={calibrationLabel} shrink />
-        <Divider />
-        <HealthMeta label="구성" alive={alive} select={configLabel} shrink />
-        <Divider />
-        <SceneMeta alive={alive} />
-      </div>
       <Ec2Clock />
       <AccountMenu />
     </header>

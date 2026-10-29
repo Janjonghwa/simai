@@ -1,7 +1,13 @@
 import { ZONES_KEY } from '@/features/zones/api';
 import { useZones } from '@/features/zones/useZones';
 import { saveErrorText, useZoneSave } from '@/features/zones/useZoneSave';
-import { bodyOf, formOf, newZoneBody } from '@/features/zones/zoneForm';
+import {
+  bodyOf,
+  formOf,
+  NEW_ZONE_FORM,
+  newZoneBodyOf,
+  newZoneBox,
+} from '@/features/zones/zoneForm';
 import { createZonesMock } from '@/mocks/zones';
 import { useZoneDraftsStore, type KeptZoneDraft } from '@/store/zoneDrafts.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -188,7 +194,10 @@ describe('useZoneSave', () => {
     const view = await run();
     const created = await act(() =>
       view.result.current.writes.create.mutateAsync(
-        newZoneBody(view.result.current.list.zones, 'OPENING'),
+        newZoneBodyOf(
+          { ...NEW_ZONE_FORM, zoneType: 'OPENING' },
+          newZoneBox(view.result.current.list.zones),
+        ),
       ),
     );
     expect(created.zone_id).toMatch(/^z-[0-9a-f]{8}$/);

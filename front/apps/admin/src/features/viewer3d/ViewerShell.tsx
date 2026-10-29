@@ -103,6 +103,7 @@ export function ViewerShell({
   scene = null,
   onSceneStatusChange,
   sceneLoader = loadGltfScene,
+  theme = 'dark',
 }: ViewerShellProps) {
   const [store] = useState(() => {
     const created = createViewerStore(initialMode);
@@ -110,6 +111,7 @@ export function ViewerShell({
     created.getState().setLayers(layers);
     return created;
   });
+  useEffect(() => store.getState().setTheme(theme), [store, theme]);
   // 처음 받은 dataStore 를 계속 쓴다. 바꿔 넘겨도 장면의 구독을 옮기지 않는다.
   const [data] = useState(() => dataStore ?? createSpatialDataStore());
   const meshConfig = useMemo<AvatarMeshConfig>(
@@ -130,7 +132,7 @@ export function ViewerShell({
   const phase = useStore(store, (s) => s.phase);
 
   useImperativeHandle(ref, () => {
-    const { requestSelect, clearSelection, focusOn, setMode } = store.getState();
+    const { requestSelect, clearSelection, focusOn, setMode, resetView } = store.getState();
     const {
       begin,
       cancel,
@@ -169,6 +171,7 @@ export function ViewerShell({
         objectKind() === 'PLANNED'
           ? updateObjectField(change.field, change.value)
           : { ok: false, reason: 'NOT_EDITABLE' },
+      resetView,
     };
   }, [store, edit]);
 
