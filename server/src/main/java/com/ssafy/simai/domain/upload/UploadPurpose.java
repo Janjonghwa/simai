@@ -6,9 +6,10 @@ import java.util.Set;
 
 /**
  * 업로드 목적(upload_grant.purpose, 명세 12.6). 목적마다 받는 형식·최대 크기·키 앞부분·요청할 수 있는 주체가 정해져 있다.
- * 이벤트 프레임·클립은 Tier 0 가 올리고(계약 event_frame_ready·media_clip), 조치 사진은 반장이 올린다(FR-41).
+ * 이벤트 프레임·클립은 Tier 0 가 올리고(계약 event_frame_ready·media_clip), 조치 사진은 반장이 올리며(FR-41),
+ * 아바타 자산(glTF/GLB·텍스처·표면 출처 지도)은 분석 워커가 올린다(I6, S15P31A101-325).
  */
-enum UploadPurpose {
+public enum UploadPurpose {
     // VLM 근거 입력 프레임 한 장(event_frame_ready.frames[].frame_uri)
     EVENT_FRAME("event-frames", Map.of("image/jpeg", ".jpg", "image/png", ".png"), 16L << 20,
             Set.of(Requester.Kind.TIER0, Requester.Kind.DEVICE)),
@@ -17,7 +18,19 @@ enum UploadPurpose {
             Set.of(Requester.Kind.TIER0, Requester.Kind.DEVICE)),
     // 조치 완료 사진(반장 PWA, FR-41)
     TICKET_PHOTO("ticket-photos", Map.of("image/jpeg", ".jpg", "image/png", ".png", "image/webp", ".webp"), 20L << 20,
-            Set.of(Requester.Kind.USER));
+            Set.of(Requester.Kind.USER)),
+    // EXP-02 아바타 메시(GLB·glTF)·텍스처·표면 출처 지도(워커 토큰, S15P31A101-325)
+    AVATAR_ASSET(
+            "avatars",
+            Map.of(
+                    "model/gltf-binary", ".glb",
+                    "model/gltf+json", ".gltf",
+                    "application/octet-stream", ".glb",
+                    "image/png", ".png",
+                    "image/jpeg", ".jpg",
+                    "image/webp", ".webp"),
+            64L << 20,
+            Set.of(Requester.Kind.WORKER));
 
     private final String prefix;
     private final Map<String, String> extensions;
