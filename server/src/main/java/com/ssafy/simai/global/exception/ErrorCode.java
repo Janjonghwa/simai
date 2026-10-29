@@ -422,4 +422,30 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    /** 상시 영상 조각 조회(S15P31A101-330) */
+    enum Video implements ErrorCode {
+        INVALID_VIDEO_QUERY(HttpStatus.BAD_REQUEST, "조회 시각이 맞지 않습니다(from·to 는 UTC 밀리초, from ≤ to, 24시간 이내)"),
+        SEGMENT_NOT_FOUND(HttpStatus.NOT_FOUND, "영상 조각을 찾을 수 없습니다"),
+        // 보관 기간이 지나 삭제 작업이 객체를 지웠다(기록은 남는다)
+        SEGMENT_DELETED(HttpStatus.GONE, "보관 기간이 지나 삭제된 영상 조각입니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Video(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }

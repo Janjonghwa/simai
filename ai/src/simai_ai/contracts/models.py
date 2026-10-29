@@ -1563,6 +1563,47 @@ class Tier0EndpointPortMapping(BaseModel):
     public_port: Annotated[StrictInt, Field(ge=1, le=65535)]
 
 
+class Payload37(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+        regex_engine="python-re",
+    )
+    segment_id: DefsUuidV7
+    gateway_id: DefsInstanceId
+    camera_id: DefsCameraId
+    stream_epochs: Annotated[list[StreamEpoch], Field(min_length=1)]
+    segment_start_capture_ms: DefsTimestampMs
+    segment_end_capture_ms: DefsTimestampMs
+    frame_count: Annotated[StrictInt, Field(ge=1)]
+    starts_with_keyframe: StrictBool
+    has_gaps: StrictBool
+    content_type: Annotated[StrictStr, Field(min_length=1)]
+    container: Annotated[StrictStr, Field(min_length=1)]
+    size_bytes: Annotated[StrictInt, Field(ge=1)]
+    sha256: DefsSha256
+    face_redaction: Literal['NONE']
+    created_at_ms: DefsTimestampMs
+    delete_after_ms: DefsTimestampMs
+    object_key: Annotated[
+        StrictStr,
+        Field(
+            max_length=1024,
+            min_length=1,
+            pattern='^(?![A-Za-z][A-Za-z0-9+.-]*:)(?!/)[^?#\\s]+$',
+        ),
+    ]
+    uploaded_at_ms: DefsTimestampMs
+    upload_attempts: Annotated[StrictInt | MISSING, Field(ge=1)] = MISSING
+
+
+class VideoSegment(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['video_segment'], Field(min_length=1)]
+    payload: Payload37
+
+
 class Laptop(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1593,7 +1634,7 @@ class Scene(BaseModel):
     mismatch: StrictBool
 
 
-class Payload37(BaseModel):
+class Payload38(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -1614,7 +1655,7 @@ class ViewerHealth(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['viewer_health'], Field(min_length=1)]
-    payload: Payload37
+    payload: Payload38
 
 
 class VlmRationale(RootModel[Any]):
@@ -2768,7 +2809,7 @@ class VlmRationaleInput(BaseModel):
     world_state_ref: DefsUuid | MISSING = MISSING
 
 
-class Payload38(BaseModel):
+class Payload39(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -2785,7 +2826,7 @@ class WorldState(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['world_state'], Field(min_length=1)]
-    payload: Payload38
+    payload: Payload39
 
 
 class Track(WorldStateWorldTrack):
@@ -3231,6 +3272,7 @@ class Contracts(BaseModel):
     site_ack: SiteAck | MISSING = MISSING
     tbm_report: TbmReport | MISSING = MISSING
     tier0_endpoint: Tier0Endpoint | MISSING = MISSING
+    video_segment: VideoSegment | MISSING = MISSING
     viewer_health: ViewerHealth | MISSING = MISSING
     vlm_rationale: VlmRationale | MISSING = MISSING
     world_state: WorldState | MISSING = MISSING

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/video_segment.schema.json",
+  "title": "I1 video_segment",
+  "description": "RunPod Tier 0 → EC2. 관제 중 카메라 영상을 상시 저장하는 조각 하나(카메라 하나 × 일정 길이)를 객체 저장소에 올린 뒤 보내는 기록 (명세 3장 데이터 흐름, 5.1 상시 영상 조각, 11.3 video_segment, 11.5 보관, 12.3). 영상은 메시지에 넣지 않고 객체 키로만 가리킨다. 업로드 주소는 POST /api/uploads/sign(purpose VIDEO_SEGMENT, segment_id)으로 받는다. 시각은 UTC int64 ms, 조각 구간(*_capture_ms)은 촬영 시각축이다. 한 번 보낸 기록은 고치지 않는다(AGENTS.md 규칙 6). 이벤트 클립(media_clip)과 달리 이벤트와 묶이지 않고 보존 표시가 없다: 보관 기간(14일)이 지나면 EC2 삭제 작업이 지운다. 1.0.0 신설(팀 결정 2026-10-29, S15P31A101-330)",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "video_segment" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "segment_id", "gateway_id", "camera_id", "stream_epochs", "segment_start_capture_ms", "segment_end_capture_ms",
+        "frame_count", "starts_with_keyframe", "has_gaps", "content_type", "container", "size_bytes", "sha256",
+        "face_redaction", "created_at_ms", "delete_after_ms", "object_key", "uploaded_at_ms"
+      ],
+      "properties": {
+        "segment_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7", "description": "조각 식별자. 업로드 서명의 segment_id 와 같다" },
+        "gateway_id": { "$ref": "../common/defs.schema.json#/$defs/instance_id", "description": "조각을 만든 Tier 0 인스턴스. 봉투 source_id 와 같다" },
+        "camera_id": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+        "stream_epochs": {
+          "type": "array", "items": { "type": "integer", "minimum": 0 }, "minItems": 1, "uniqueItems": true,
+          "description": "조각에 들어간 I0 stream_epoch (12.7). 조각 안에서 카메라 RTSP 가 다시 붙으면 둘 이상이다"
+        },
+        "segment_start_capture_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "조각 첫 프레임의 촬영 시각" },
+        "segment_end_capture_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "조각 마지막 프레임의 촬영 시각 (≥ segment_start_capture_ms, 계약 시험)" },
+        "frame_count": { "type": "integer", "minimum": 1 },
+        "starts_with_keyframe": { "type": "boolean", "description": "키프레임부터 자른다(디코딩 없이 재생 가능)" },
+        "has_gaps": { "type": "boolean", "description": "조각 구간 안에 frame_sequence 빈칸(손실·버림)이 있음. 지어내지 않는다" },
+        "content_type": { "type": "string", "minLength": 1, "description": "예: video/h264 (이벤트 클립과 같은 형식표)" },
+        "container": { "type": "string", "minLength": 1, "description": "예: h264-annexb (H.264 Annex B 기본 스트림, 재인코딩 없음)" },
+        "size_bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "../common/defs.schema.json#/$defs/sha256", "description": "올린 객체 내용의 해시" },
+        "face_redaction": { "enum": ["NONE"], "description": "얼굴 흐림 여부 (명세 11.5). 상시 영상은 이벤트 클립처럼 흐림 없이 보관한다" },
+        "created_at_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "조각을 자른 시각(Tier 0 주입 시계)" },
+        "delete_after_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "삭제 예정일 = created_at_ms + 보관 기간(14일, 11.5). 이 시각 뒤 EC2 삭제 작업이 지운다" },
+        "object_key": {
+          "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^(?![A-Za-z][A-Za-z0-9+.-]*:)(?!/)[^?#\\s]+$",
+          "description": "업로드 서명(POST /api/uploads/sign)이 돌려준 버킷 안 키. 스킴·쿼리·앞 슬래시가 없다(서명 주소를 싣지 않는다)"
+        },
+        "uploaded_at_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "upload_attempts": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}
