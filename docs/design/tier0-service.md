@@ -181,11 +181,118 @@ join 하고, 남으면 실패로 남긴다. 영상 포트 일부만 열고 실�
 - health 계약은 2.0.0 에서 정했다(-179): 시계 차이를 모르면 `pipeline_lag_ms` null + 하한 `pipeline_lag_lower_bound_ms`, 운영 경고
   `tier0_warnings`(정리 주기에 Checkpointer·저널·outbox·스냅샷 상태를 읽어 기억), 카메라 `sync_valid`(근거 없으면 null). 송신 봉투(i1_client·i0_control)는
   `HEALTH_SCHEMA_VERSION` 을 쓴다. 남은 일: 카메라 sync_offset_ms·동기화 무효 판정 모듈.
-- 보정 감시(-117): CalibrationVersionStore 영속·현장 보정 채택 경로가 생기면 `drift_watch_factory` 로 감시를 만들고 판정 tick 에서
-  Cross-view 클러스터를 `PersonObservation` 으로 넘긴다.
+- 보정 감시(-117): -344가 검증된 문서의 영속 보관·실행 중 채택을 연결했다(아래). `drift_watch_factory` 감시 저장소와의
+  통합 및 Cross-view 클러스터 → `PersonObservation` 입력은 -346에서 연결한다.
 - 정책 해석을 기능 패키지 API 로 옮기기(리뷰 권장): 공통 시각 선택(`Perception.choose_t`), health 카메라 상태 계산
   (`HealthReporter.payload`), 위험 관측 시각 판단(`JudgmentLoop._note_risk`). 지금은 services 에 있다.
 - 클립 트리거(-57) 회귀 시험(영상·업로더가 생긴 뒤), Network Volume 강제 종료 영속성 실측(-92).
 - ID 교정 기록(`IdentityRevision.to_payload`)은 저널에 넣지 않는다: outbox 가 저널의 모든 기록을 I1 risk_event_transition 으로 보내므로
   다른 종류의 기록을 넣으면 보낼 수 없다. 교정은 IDENTITY_CORRECTED 전이로 남는다.
 - 구성 묶음 내려받기 주소 형식(서버 확정 전, `config_fetch` 는 https 만), 체크포인트에 묶음 applied_at 이 없어 복원 시각을 기동 시각으로 둔다.
+
+## S15P31A101-344 — 실행 중 검증된 보정 버전으로 전환
+
+관련 명세는 §4.1(World 고정), §4.4(내부 파라미터 변경 시 별도 절차), §4.5(검증·개선 뒤 원자적 전환),
+§12.6(관리자 확정)이다. `contracts/`와 I1 LIVE 계약은 변경하지 않는다. 후보 계산(-345), 틀어짐 감시 입력(-346),
+서버·프런트·연관 임계값 변경은 이 작업의 범위 밖이다.
+
+### 진입점과 검증
+
+같은 프로세스의 백그라운드 실행기가 `Tier0Service.propose_calibration(document, report) -> bool`을 부른다.
+document는 CalibrationProvider 문서, report는 -343의 `calibration/extrinsics/session.py`가 만든 session 보고서다.
+True는 다음 tick을 기다리는 후보 수락이며 활성화 완료가 아니다. 실행 전·종료 중·다른 후보 대기 중이면 거부한다.
+입력은 엄격한 JSON 사본으로 보관해 호출자가 나중에 수정해도 바뀌지 않는다.
+
+`calibration/runtime.py::validate_candidate`에서 계약 스키마·기하·상태·`document.content_hash`를 검증한다.
+현재와 같은 비어 있지 않은 site_id, 동일 카메라 집합, 카메라별 image_size·K·distortion의 정확한 동등성을 요구한다.
+보고서의 previous_version은 활성 버전이어야 하고 calibration.version/content_hash/state는 문서와 일치해야 한다.
+보고서 계산 실패·스키마 오류·미상 값·NaN/무한대는 수락하지 않는다. 자동 후보는 PROVISIONAL만 받으며 CALIBRATED로
+자동 승격하거나 기존 문서의 상태를 덮어쓰지 않는다. 관리자 확정 경로는 기존 §12.6의 별도 절차다.
+
+| 검사 | 채택 기준 | 근거 |
+|---|---|---|
+| fit 데이터 | 공통 tick 30, 활성 tick 25, 다중 카메라 사람 관측 40, 3대 이상 관측 25, 카메라별 3대 이상 관측 15 이상 | -343 `DEFAULT_DATA_CRITERIA` 재사용 |
+| holdout 데이터 | 공통 tick 15, 활성 tick 10 이상, fit과 중첩 0 | 같은 기본값, session split 보고 |
+| holdout 재투영 | 모든 설치 카메라 median ≤ 2px, p95 ≤ 5px | §4.4의 수치를 후보 채택에 재사용. **명세 없음, 임시 결정** |
+| 의미 있는 개선 | holdout의 최악 카메라 median이 같은 구간의 직전 보정보다 10% 이상 감소, 직전 값 0·미상이면 거부 | 기존 `VersionSwitchConfig.min_relative_improvement=0.10`. holdout에 적용하는 것은 **명세 없음, 임시 결정** |
+| World 정렬 | usable=true, 설치 카메라 중 서로 다른 기준 2대 이상. 기준 중심 잔차 각각 ≤ 15cm, 회전 잔차 각각 ≤ 1.5° | 기준 2대·1.5°는 session의 기준 카메라 선택 기본값, 15cm는 §4.4의 위치 불일치 수치. 채택 잔차 상한은 **명세 없음, 임시 결정** |
+
+session.py에는 holdout 개선율·World 잔차의 최종 채택 상한이 없다. 위 표의 임시 결정은 그 공백을 채운 것이며
+보고서의 usable 플래그만으로 통과시키지 않는다. 이 수치들은 실제 교실 측정으로 검증한 제품 성능이 아니다.
+
+### tick 경계와 위치 결과
+
+후보 수락·활성화는 서비스 판정 RLock으로 직렬화한다. 후보 문서·보고서를 먼저 로컬 불변 파일로 저장하고 rig도
+미리 만든다. `JudgmentLoop.tick` 시작에서 `_begin_calibration_tick`을 부른 뒤 구성 묶음의 begin_tick과 인지를 수행한다.
+활성 head·전환 기록을 fsync 후 원자적으로 저장한 다음 서비스 rig, Perception rig, CrossViewAssociator rig,
+WorldTrackManager의 input_provenance를 같은 lock 안에서 바꾼다. Cross-view의 essential matrix 캐시는 비우고
+연결 이력·World Track·World ID·접지 추정기·입력 버퍼는 유지한다. 삼각측량은 매번 manager.update에 새 rig를 넘긴다.
+아바타 공유도 Perception의 같은 rig를 읽는다. 구역 가시성 캐시 키에는 기존부터 보정 버전이 포함되어 있다.
+클립은 보정 rig를 보관하지 않는다.
+
+전환 tick의 첫 새 위치 계산부터 frame·world_state·input_provenance·아바타 보정에 새 버전이 붙는다. 전환 시각은
+주입된 판정 시계의 UTC ms로 기록한다. 입력 정지 tick은 새 world_state를 만들거나 옛 좌표에 새 버전을 붙이지 않는다.
+그동안의 판정은 직전 실제 World와 원래 버전·상태를 사용하며, 같은 버전의 DRIFTED 등 운영 상태 변화는 계속 반영한다.
+이전 버전의 drift_watch 저장소 상태를 새 rig의 상태로 쓰지 않는다. health payload도 판정 lock 전체에서 만들어
+전환 중 버전과 상태를 서로 다른 시점에서 읽지 않는다.
+
+활성 head 저장이 실패하면 모든 메모리 참조를 유지하고 기존 보정으로 판정한다. 후보는 다음 tick에서 재시도하고
+실패 사유를 기록한다. 디스크가 멈추면 이 경계의 fsync도 지연될 수 있다(잔여 위험).
+
+### 로컬 영속과 I1
+
+`RuntimeCalibrationStore`는 완성된 보정 문서를 받는 Provider와 버전 보관소다. 기존 `CalibrationVersionStore.propose`
+는 근거에서 문서를 다시 만들고 버전 ID도 다시 발급하며 CALIBRATED를 동결하므로, -343이 만든 문서·해시·버전을
+그대로 수락하는 데 재사용하지 않았다. 기존 클래스의 판정·상태 전이 정책은 바꾸지 않는다.
+
+- 문서: `state_dir/calibrations/<sha256(version_id)>.json`, 보고서: 같은 이름의 `.report.json`. 같은 경로에 다른 내용을
+  덮어쓰지 않는다. 버전 ID가 파일 경로로 해석되지 않게 ID를 해시한다.
+- `active.json`: bootstrap 버전, 알려진 버전 목록, 활성 버전, 문서별 보관 해시, 추가만 하는 전환 이력. 임시 파일
+  flush/fsync 뒤 os.replace로 한 번에 바꾸고 성공한 뒤 메모리 head를 갱신한다. head가 가리키지 않는 대기 문서는
+  재시작 때 활성화하거나 알려진 버전으로 인정하지 않는다.
+- 재시작은 저장된 활성 head가 시작 calibration_file보다 우선한다. 시작 파일이 없어도 복원한다. 보관 파일 손상·누락·
+  문서 ID/해시 불일치·활성 버전 누락은 종료 코드 2로 기동 거부하며 옛 시작 파일로 돌아가지 않는다.
+- 기존 SIM 등 시작 문서에는 다른 content_hash 계산 규칙이 있어 시작 파일 원문과 기존 해시는 유지한다. 저장소의 별도
+  문서 해시로 그 후 무결성을 확인한다. 새 후보에는 content_hash 검사를 예외 없이 적용한다. 이 호환 정책도
+  **명세 없음, 임시 결정**이다.
+- 전환 이력에 `calibration_update` payload와 msg_id를 함께 저장한다. I1Publisher source가 신뢰 대기열로 보내며 포화 때
+  기존 publisher의 carry에 보관한다. reason=RECALIBRATED, previous_calibration_version=직전 버전,
+  effective_at=전환 tick 시각, state=PROVISIONAL, calibration_hash=문서 content_hash다.
+- `calibration_ref`는 위 로컬 문서의 절대 file URI다. 공통 저장 위치 규칙이 아직 없어 **명세 없음, 임시 결정**으로
+  최소 형태를 쓴다. 원격 EC2/worker에서 파일을 가져오는 경로는 -345 또는 후속 전달 경로에서 해결해야 한다.
+- 프로세스 재시작마다 전환 이력을 같은 msg_id로 다시 내보낸다. 대기열에 넣은 뒤 종료돼도 유실되지 않게 하는
+  **명세 없음, 임시 결정**이다. 수신 측의 중복 처리가 필요하고 장기 실행의 이력 정리는 후속이다.
+
+### 구성 묶음과 health
+
+BundleVerifier의 calibration_known은 현재 rig 하나 대신 영속 저장소의 커밋된 모든 버전을 조회한다.
+전환 뒤 옛 보정의 묶음을 받아도 구역·규칙·작업면은 정상적으로 적용하고 활성 보정은 유지한다.
+§4.1은 World가 고정되어 구역 등이 보정 변경의 영향을 받지 않는다고 정하지만, 이때의 config_sync 표현은 정하지
+않는다. 따라서 **명세 없음, 임시 결정**으로 원래 묶음을 수정하지 않고 health에 config_sync=STALE을 덧씌운다.
+활성 보정을 가리키는 새 묶음이 적용되면 원래 ConfigSync 상태로 돌아간다. 묶음에 없는 보정은 계속 거부한다.
+
+후보 거부 또는 활성화 저장 실패는 로그와 `status.calibration.last_rejection`(시각·사유)에 남긴다. 기존 health 계약에는
+보정 후보 거부용 warning code·사유 필드가 없다. 계약을 확장하지 않고 health.system_health의 NOMINAL을 DEGRADED로
+올리며 구체 사유는 로컬 상태 표시 파일에 둔다(**명세 없음, 임시 결정**). UNSAFE_UNKNOWN은 내리지 않는다.
+성공적으로 전환하면 거부 표시를 해제한다. 구성 버전 불일치는 `status.calibration.config_mismatch`에도 기록한다.
+
+### 시험과 잔여 위험
+
+`tests/services/tier0/test_calibration_swap.py`는 실제 서비스 조립·SIM 관측·인지·판정을 사용한다.
+전환 전후 버전, 같은 tick 중 다른 스레드의 후보 진입, 기하 캐시·출처·아바타 일관성, Track 연속성,
+내부 파라미터/검증/보고서/해시/현장/데이터 부족 거부, I1 계약 및 포화 대기열, 옛 구성 묶음 수용,
+재시작 활성 버전 복원, 저장 실패 시 유지·재시도, 저장소 손상 기동 거부를 확인한다. SIM 결과는 상한이다.
+최종 전환·판정·health 시험은 65개 통과(새 시험 27개 포함), import 검사는 6 kept/0 broken이다.
+지시서의 넓은 관련 영역 시험은 번들 조정 최적화가 오래 걸려 중단했다. 기존 프로세스 E2E의 초기 R1 수신 대기는
+현재 코드와 HEAD 서비스 원본 대조에서 모두 실패했다(`test_tier0_e2e.py:112`). 이를 이 변경의 통과 시험으로 세지 않는다.
+정확한 명령과 로그는 `.agy/notes.md`에 남겼다.
+
+버린 대안은 수신 스레드에서 즉시 rig 교체(같은 tick 혼합), 보정 변경 때 Track 초기화(World ID 단절),
+옛 보정의 구성 묶음 전체 거부(같은 World의 구역/규칙 갱신도 차단), 시작 파일을 항상 우선(재시작 시 보정 후퇴),
+거부 사유 때문에 I1 계약 확장(승인 없는 계약 변경), 전환 알림을 메모리 대기열에만 보관(재시작 유실)이다.
+
+후보 검증과 로컬 파일 fsync는 판정 lock을 잠깐 잡으므로 실제 디스크 지연이 Tier 0 지연에 미치는 영향은 실측해야 한다.
+전원 차단 시 디렉터리 rename의 저장장치 내구성은 운영 환경에서 확인해야 한다. 여러 프로세스가 같은 state_dir를
+동시에 쓰는 것은 지원하지 않는다. World 정렬 보고서는 같은 프로세스 실행기의 신뢰 경계이며 이 진입점에서 관측을
+다시 계산하지 않는다. 실제 GPU·교실 영상 측정, -345 실행기 연결, -346 감시 저장소 통합, EC2의 로컬 보정 문서 접근은
+후속 작업이다. 관리자 확정 및 Scene 재생성은 기존 인터페이스 책임으로 남긴다.

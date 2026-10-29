@@ -349,6 +349,12 @@ class Perception:
         # 중이어도 융합에 쓰지 못한 카메라는 R7 의 정상 관측 카메라로 세지 않는다)
         self.lagging: tuple[str, ...] = ()
 
+    def replace_rig(self, rig: CameraRig, provenance: Mapping[str, Any]) -> None:
+        """판정 lock 안의 tick 경계 전용. World Track·접지·입력 버퍼는 유지한다(-344)."""
+        self.associator.replace_rig(rig)
+        self.manager.input_provenance = dict(provenance)
+        self.rig = rig
+
     def camera_clocks(self) -> tuple[CameraClock, ...]:
         with self._lock:
             return tuple(CameraClock(c, t, True) for c, t in sorted(self._last_capture.items()))
