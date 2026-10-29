@@ -11,6 +11,17 @@ export const SYNTHETIC_MHR = {
   pelvisJointIndex: 1,
 } as const;
 
+/**
+ * fixtures/synthetic-mhr-dense.glb(make_synthetic_mhr.py --dense). 관절은 같고 메시만 실제 MHR 크기(정점 21,168·삼각형 36,504,
+ * 관절 근처 2개 가중치)다. 다인원 성능 시험(avatar-crowd-*)용. 실제 체형·외형이 아니다.
+ */
+export const SYNTHETIC_MHR_DENSE = {
+  ...SYNTHETIC_MHR,
+  meshSha256: 'sha256:4b8b9d405753d7113e7cf999e83f96e7fe4e9055ad95271ba488efb4748216fc',
+} as const;
+/** MSW 가 dense 자산으로 주는 자산 버전(0 은 기본 합성 리그, 그 밖은 404). */
+export const DENSE_ASSET_VERSION = 1;
+
 /** 합성 리그 관절 번호(make_synthetic_mhr.py 의 BODY 순서). */
 const J = {
   lShoulder: 8,

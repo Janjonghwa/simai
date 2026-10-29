@@ -2,8 +2,10 @@ import { SKELETON_VISIBLE_KEY } from '@/features/viewer3d/data/contractAdapter';
 import type { SourceConnection } from '@/features/viewer3d/data/spatialSource';
 import {
   avatarMeshUrl,
+  DENSE_ASSET_VERSION,
   rootRotationFor,
   SYNTHETIC_MHR,
+  SYNTHETIC_MHR_DENSE,
   walkRotations,
 } from '@/features/viewer3d/dev-harness/avatarFixture';
 
@@ -35,6 +37,21 @@ export const SCENARIOS = [
     label: '아바타 메시(EXP-02)',
     hint: '5 Hz avatar_frame(합성 리그). w-0002 2초 끊김·w-0001 0.8초 늦음 → 캡슐, w-0003 자산 404 → 캡슐',
   },
+  {
+    key: 'avatar-crowd-1',
+    label: '아바타 메시 1명(성능)',
+    hint: '실제 MHR 크기 합성 메시(정점 2.1만) 1명, 5 Hz. 1·5·10명 성능 비교용',
+  },
+  {
+    key: 'avatar-crowd-5',
+    label: '아바타 메시 5명(성능)',
+    hint: '실제 MHR 크기 합성 메시(정점 2.1만) 5명, 5 Hz. 1·5·10명 성능 비교용',
+  },
+  {
+    key: 'avatar-crowd-10',
+    label: '아바타 메시 10명(성능)',
+    hint: '실제 MHR 크기 합성 메시(정점 2.1만) 10명, 5 Hz. 1·5·10명 성능 비교용',
+  },
 ] as const;
 
 export type ScenarioKey = (typeof SCENARIOS)[number]['key'];
@@ -61,6 +78,9 @@ export const PERIOD: Record<ScenarioKey, number> = {
   'invalid-input': 10,
   crowd: 120,
   'avatar-mesh': 120,
+  'avatar-crowd-1': 120,
+  'avatar-crowd-5': 120,
+  'avatar-crowd-10': 120,
 };
 
 /**
@@ -85,6 +105,9 @@ const CODE: Record<ScenarioKey, number> = {
   geofence: 6,
   crowd: 7,
   'avatar-mesh': 8,
+  'avatar-crowd-1': 9,
+  'avatar-crowd-5': 10,
+  'avatar-crowd-10': 11,
 };
 
 const hex = (n: number, width: number) => n.toString(16).padStart(width, '0').slice(-width);
@@ -411,15 +434,18 @@ function sceneAt(key: ScenarioKey, tick: number) {
 /** 시나리오의 tick 시점 World(world_state 메시지). 연결 상태와 관계없이 서버 쪽에 있는 값이다(REST 스냅샷도 이것을 쓴다). */
 export function scenarioWorld(key: ScenarioKey, tick: number, t0: number) {
   const t = tAt(t0, tick);
+  const crowdSize = avatarCrowdSize(key);
   const tracks =
     key === 'crowd'
       ? Array.from({ length: CROWD_SIZE }, (_, i) => crowdTrack(i, tick, t))
-      : MOCK_TRACK_IDS.map((id) => {
-          if (key === 'observation-loss' && id === 'w-0002') return lossTrack(tick, t0);
-          if (key === 'invalid-input' && id === 'w-0003') return unknownZTrack(tick, t);
-          if (key === 'geofence') return observed(id, tick, t, geofencePose);
-          return observed(id, tick, t);
-        });
+      : crowdSize !== null
+        ? Array.from({ length: crowdSize }, (_, i) => crowdTrack(i, tick, t))
+        : MOCK_TRACK_IDS.map((id) => {
+            if (key === 'observation-loss' && id === 'w-0002') return lossTrack(tick, t0);
+            if (key === 'invalid-input' && id === 'w-0003') return unknownZTrack(tick, t);
+            if (key === 'geofence') return observed(id, tick, t, geofencePose);
+            return observed(id, tick, t);
+          });
   return envelope(
     'world_state',
     mockMsgId(key, tick, 0),
@@ -701,6 +727,10 @@ export function scenarioTick(key: ScenarioKey, tick: number, t0: number): Scenar
     const frame = avatarFrameMessage(tick, t0);
     if (frame) message(frame);
   }
+  const crowdSize = avatarCrowdSize(key);
+  if (crowdSize !== null && tick % AVATAR_EVERY === 0) {
+    message(avatarCrowdFrame(key, crowdSize, tick, t0));
+  }
   return out;
 }
 
@@ -724,6 +754,105 @@ const MISSING_MESH_SHA256 = 'sha256:' + 'e'.repeat(64);
 
 const inRange = (p: number, [from, to]: readonly [number, number]) => p >= from && p < to;
 
+/** avatar-crowd-N 시나리오의 사람 수. 그 밖의 시나리오는 null. */
+export function avatarCrowdSize(key: ScenarioKey): number | null {
+  switch (key) {
+    case 'avatar-crowd-1':
+      return 1;
+    case 'avatar-crowd-5':
+      return 5;
+    case 'avatar-crowd-10':
+      return 10;
+    default:
+      return null;
+  }
+}
+
+interface AvatarEntryInput {
+  id: string;
+  revision: number;
+  captureTimeMs: number;
+  receivedAtMs: number;
+  heading: number;
+  speed: number;
+  phase: number;
+  version: number;
+  meshSha256: string;
+  t0: number;
+}
+
+/** 한 사람의 avatar_frame 항목(계약 avatar_frame.avatars[]). 위치는 싣지 않는다. */
+function avatarEntry(a: AvatarEntryInput) {
+  return {
+    world_id: a.id,
+    identity_revision: a.revision,
+    capture_time_ms: a.captureTimeMs,
+    received_at_ms: a.receivedAtMs,
+    calibration_version: VERSIONS.calibration,
+    appearance_version: a.version,
+    joint_source: 'inferred',
+    pose: {
+      root_rotation: rootRotationFor(a.heading),
+      joint_rotations: walkRotations(a.phase, Math.min(1, a.speed)),
+    },
+    asset: {
+      stream_epoch: a.t0,
+      identity_revision: a.revision,
+      mesh_url: avatarMeshUrl(a.id, a.t0, a.version),
+      mesh_sha256: a.meshSha256,
+      mesh_format: 'GLB_SKINNED',
+      joint_count: SYNTHETIC_MHR.jointCount,
+      joint_parents_sha256: SYNTHETIC_MHR.jointParentsSha256,
+      pelvis_joint_index: SYNTHETIC_MHR.pelvisJointIndex,
+      texture_url: null,
+      surface_source_url: null,
+      surface_ratios: { OBSERVED: 0, INTERPOLATED: 0, UNOBSERVED: 1 },
+      face_ratios: { OBSERVED: 0, UNOBSERVED: 1 },
+      face_policy: 'EXCLUDED',
+    },
+  };
+}
+
+function avatarEnvelope(key: ScenarioKey, tick: number, t: number, avatars: unknown[]) {
+  return envelope(
+    'avatar_frame',
+    mockMsgId(key, tick, 3),
+    t + 30,
+    {
+      input_provenance: {
+        frames: { source: 'SIM', dataset_id: `mock/${key}` },
+        tracks: { source: 'SIM', provider_version: 'spatial-mock-0.1.0' },
+        is_upper_bound: true,
+      },
+      avatars,
+    },
+    '1.0.0',
+  );
+}
+
+/** avatar-crowd-N 의 tick 시점 avatar_frame. crowd 원 궤도의 앞 N 명이 모두 dense 자산(같은 sha256)을 쓴다. */
+export function avatarCrowdFrame(key: ScenarioKey, size: number, tick: number, t0: number) {
+  const t = tAt(t0, tick);
+  const at = tick - AVATAR_LAG_MS / TICK_MS;
+  const avatars = Array.from({ length: size }, (_, i) => {
+    const { heading } = crowdPose(i, at);
+    const speed = (2 * Math.PI * (1 + 0.32 * (i % 10))) / (PERIOD.crowd * (TICK_MS / 1000));
+    return avatarEntry({
+      id: crowdTrackId(i),
+      revision: 0,
+      captureTimeMs: t - AVATAR_LAG_MS,
+      receivedAtMs: t + 10,
+      heading,
+      speed,
+      phase: (2 * Math.PI * at) / 10 + i,
+      version: DENSE_ASSET_VERSION,
+      meshSha256: SYNTHETIC_MHR_DENSE.meshSha256,
+      t0,
+    });
+  });
+  return avatarEnvelope(key, tick, t, avatars);
+}
+
 /** tick 시점의 avatar_frame. 보낼 사람이 없으면 null. 위치는 싣지 않는다(world_state 정본). */
 export function avatarFrameMessage(tick: number, t0: number) {
   const key: ScenarioKey = 'avatar-mesh';
@@ -741,51 +870,22 @@ export function avatarFrameMessage(tick: number, t0: number) {
     const revision = id === 'w-0003' ? 1 : 0;
     const version = avatarVersionOf(id);
     return [
-      {
-        world_id: id,
-        identity_revision: revision,
-        capture_time_ms: t - lag,
-        received_at_ms: t + 10,
-        calibration_version: VERSIONS.calibration,
-        appearance_version: version,
-        joint_source: 'inferred',
-        pose: {
-          root_rotation: rootRotationFor(heading),
-          joint_rotations: walkRotations((2 * Math.PI * at) / 10, Math.min(1, speed)),
-        },
-        asset: {
-          stream_epoch: t0,
-          identity_revision: revision,
-          mesh_url: avatarMeshUrl(id, t0, version),
-          mesh_sha256: version === 0 ? SYNTHETIC_MHR.meshSha256 : MISSING_MESH_SHA256,
-          mesh_format: 'GLB_SKINNED',
-          joint_count: SYNTHETIC_MHR.jointCount,
-          joint_parents_sha256: SYNTHETIC_MHR.jointParentsSha256,
-          pelvis_joint_index: SYNTHETIC_MHR.pelvisJointIndex,
-          texture_url: null,
-          surface_source_url: null,
-          surface_ratios: { OBSERVED: 0, INTERPOLATED: 0, UNOBSERVED: 1 },
-          face_ratios: { OBSERVED: 0, UNOBSERVED: 1 },
-          face_policy: 'EXCLUDED',
-        },
-      },
+      avatarEntry({
+        id,
+        revision,
+        captureTimeMs: t - lag,
+        receivedAtMs: t + 10,
+        heading,
+        speed,
+        phase: (2 * Math.PI * at) / 10,
+        version,
+        meshSha256: version === 0 ? SYNTHETIC_MHR.meshSha256 : MISSING_MESH_SHA256,
+        t0,
+      }),
     ];
   });
   if (avatars.length === 0) return null;
-  return envelope(
-    'avatar_frame',
-    mockMsgId(key, tick, 3),
-    t + 30,
-    {
-      input_provenance: {
-        frames: { source: 'SIM', dataset_id: 'mock/avatar-mesh' },
-        tracks: { source: 'SIM', provider_version: 'spatial-mock-0.1.0' },
-        is_upper_bound: true,
-      },
-      avatars,
-    },
-    '1.0.0',
-  );
+  return avatarEnvelope(key, tick, t, avatars);
 }
 
 // ---- 구역(DEMO 형상) ----
