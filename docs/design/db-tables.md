@@ -3,10 +3,10 @@
 S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verification.md`](db-verification.md) 에 있다. ERD 1단계(테이블 목록)·2단계(계약 → 컬럼)의 결과다.
 
 - **기준:** 기획서 v1.3 수정 19 11장(데이터)·부록 C, 계약 v5.3.0, API 명세 표 v11(노션, 166행)
-- **범위:** 테이블 70개, 컬럼 743개. 확장 테이블도 컬럼까지 썼다
-- **단계별:** MVP 34 · M1 9 · M2 2 · M3 9 · 확장 16 (M3 `rag_query_template` 은 S15P31A101-27 에서 추가)
+- **범위:** 테이블 76개, 컬럼 797개. 확장 테이블도 컬럼까지 썼다. 이 중 V1~V13 으로 만든 테이블은 51개(MVP 40 · M1 9 · M3 `rag_clause`·`rag_query_template`), 컬럼 575개, FK 76개
+- **단계별:** MVP 40 · M1 9 · M2 2 · M3 9 · 확장 16 (M3 `rag_query_template` 은 S15P31A101-27, MVP `config_bundle_file`·`calibration_document`·`system_outage`·`calibration_update_message`·`i1_deferred_message`·`bev_frame_set` 은 V6·V7·V10·V11·V12 에서 추가)
 - **작성·검토:** DB 는 EC2 에 있으므로 곽나혁이 작성한다. Tier 0·분석 워커가 채우는 테이블은 이연주가 검토한다("검토" 표시)
-- **마이그레이션:** `server/src/main/resources/db/migration/` 의 V1(MVP·M1 테이블 43개), V2(현장·카메라 시드), V3(`rag_clause`·`rag_query_template`, pgvector), `R__rule_versions.sql`(ai 규칙 등록부에서 자동 생성), `R__rag_clauses.sql`(ai RAG 조항·임베딩에서 자동 생성)
+- **마이그레이션:** `server/src/main/resources/db/migration/` 의 V1(MVP·M1 테이블 43개), V2(현장·카메라 시드), V3(`rag_clause`·`rag_query_template`, pgvector), V4(저널 세대 `journal_epoch`), V5(`token_hash` 유일, `worker.rotated_at`), V6(`config_bundle_file`·`calibration_document`, `config_bundle.rule_profile`), V7(`system_outage`), V8(`tier0_endpoint` 봉투 칸), V9(`upload_grant` 요청 주체·내용 칸), V10(`calibration_update_message`), V11(`media_clip_retention.msg_id`, `i1_deferred_message`), V12(`bev_frame_set`, `floor_plan` 작업 칸), V13(`notification` 유일 키·`claimed_until`), `R__rule_versions.sql`(ai 규칙 등록부에서 자동 생성), `R__rag_clauses.sql`(ai RAG 조항·임베딩에서 자동 생성)
 
 ## 1. 표기와 공통 규칙
 
@@ -38,19 +38,22 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | B. 구성·기준 데이터 | `rule_version` | MVP | 버전 | Risk Engine 규칙 임계값 세트. 규칙 등록부에서 자동 생성한 Flyway 시드로 채운다 | 있음 | `/api/rules` | 이연주 |
 | B. 구성·기준 데이터 | `config_bundle` | MVP | 버전 | 구성 묶음 발행과 현장 적용 | 있음 | `/api/config-bundles`, `/api/config-bundles/{}` | 이연주 |
 | B. 구성·기준 데이터 | `config_bundle_item` | MVP | 일반 | 묶음에 들어간 구역·규칙·형상 버전 목록 | 수정 16 추가 | `/api/config-bundles` |  |
+| B. 구성·기준 데이터 | `config_bundle_file` | MVP | 일반 | 구성 묶음이 가리키는 파일 바이트(매니페스트·구성 요소). Tier 0 가 서명 주소로 내려받는다(V6, S15P31A101-120) | V6 추가 | `/api/config-bundles/{}/files/{}` | 이연주 |
 | B. 구성·기준 데이터 | `config_ack` | MVP | 일반 | Tier 0 의 구성 묶음 적용·거부 응답 | 수정 16 추가 | `/api/config-bundles/{}`, `/topic/health` |  |
 | B. 구성·기준 데이터 | `tier0_endpoint` | MVP | 일반 | Tier 0 Pod 엔드포인트 등록 이력(최신 행을 노트북에 줌) | 수정 16 추가 | `/api/endpoints/tier0` | 이연주 |
 | B. 구성·기준 데이터 | `layout_plan` | M3 | 일반 | 가상 레이아웃(개구부·비계·장비 주차 구역) | 있음 | `/api/layouts`, `/api/layouts/{}` |  |
 | B. 구성·기준 데이터 | `equipment_asset` | 확장 2 | 일반 | 장비 GLB 와 반경·형상 파라미터 | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
 | C. 보정·설치 | `calibration_version` | MVP | 버전 | 보정 버전(상태·스케일 근거·검증 요약) | 있음 | `/api/calibrations/current`, `/api/calibrations/{}/confirmation` | 이연주 |
 | C. 보정·설치 | `calibration_camera` | MVP | 일반 | 보정 버전의 카메라별 K·왜곡·R·t | 수정 16 추가 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
+| C. 보정·설치 | `calibration_document` | MVP | 일반 | 보정 문서 원문. 구성 묶음 calibration 구성 요소로 그대로 내려준다(V6, S15P31A101-120) | V6 추가 | `/api/calibrations` | 이연주 |
 | C. 보정·설치 | `calibration_run` | M1 | 일반 | 자동 보정 실행 요청(걷기 보정) | 수정 16 추가 | `/api/calibrations` | 이연주 |
 | C. 보정·설치 | `calibration_verification` | M1 | 일반 | 키를 아는 사람 3~5곳 검산 결과 | 수정 16 추가 | `/api/calibrations/{}/verifications` | 이연주 |
 | C. 보정·설치 | `scale_reference` | M1 | 일반 | 미리 치수를 잰 시연용 안전 장비 목록 | 수정 16 추가 | `/api/scale-references` |  |
 | C. 보정·설치 | `calibration_scale_check` | M1 | 일반 | 보정에서 실측 정물별로 잰 크기와 오차 | 수정 16 추가 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
 | C. 보정·설치 | `coverage_guide` | MVP | 일반 | 커버리지 계산 결과와 카메라별 안내 문구 | 수정 16 추가 | `/api/cameras/coverage-guides` | 이연주 |
-| C. 보정·설치 | `calibration_update_message` | MVP | 일반 | I1 calibration_update 수신 기록(추가만, msg_id 로 재전송 제거). 현재 보정 상태는 sent_at 이 가장 늦은 것(V10, S15P31A101-263) | V10 추가 | `/api/calibrations/current` |  |
+| C. 보정·설치 | `calibration_update_message` | MVP | 일반 | I1 calibration_update 수신 기록(추가만, msg_id 로 재전송 제거). 현재 보정 상태는 LEAST(sent_at, received_at) 가 가장 늦은 것, 같으면 늦게 받은 것(V10, S15P31A101-263) | V10 추가 | `/api/calibrations/current` |  |
 | C. 보정·설치 | `floor_plan` | MVP | 일반 | BEV 평면도(보조 화면) | 수정 16 추가 | `/api/floor-plans/current` | 이연주 |
+| C. 보정·설치 | `bev_frame_set` | MVP | 일반 | BEV 평면도 입력 프레임 묶음(관리 명령으로 등록, 추가만)(V12, S15P31A101-240) | V12 추가 | 없음(관리 명령 `admin floorplan frames`) | 이연주 |
 | C. 보정·설치 | `scene_version` | MVP | 버전 | 정적 3D Scene. 테이블은 MVP(버전 ID 참조), 생성은 M3 | 있음 | `/api/scenes/current`, `/api/scenes/rebuild`, `/api/scenes/{}` | 이연주 |
 | D. 시계열 관측 | `world_track_state` | MVP | hypertable | World Track 상태 10 Hz(최소 리플레이 근거) | 있음 | `/api/replay`, `/api/world`, `/topic/world` | 이연주 |
 | D. 시계열 관측 | `skeleton_3d` | MVP | hypertable | 3D 골격 5~10 Hz(리플레이 확장·뷰어) | 있음 | `/api/world` | 이연주 |
@@ -64,6 +67,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | E. 이벤트·조치 | `event_close` | MVP | 일반 | 관리자의 구역 대상 이벤트 종료 명령과 결과 | 수정 16 추가 | `/api/events/{}/close` | 이연주 |
 | E. 이벤트·조치 | `event_escalation` | M3 | 일반 | 승인한 VLM 상향 의견의 적용 명령과 결과 | 수정 16 추가 | `/api/events/{}/escalation` | 이연주 |
 | E. 이벤트·조치 | `journal_cursor` | MVP | 일반 | Tier 0 인스턴스별 저널 수신 상태 | 수정 16 추가 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
+| E. 이벤트·조치 | `i1_deferred_message` | MVP | 일반 | 앞선 메시지를 기다리는 I1 메시지(받은 봉투 그대로, 처리되면 지움)(V11, S15P31A101-261) | V11 추가 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) |  |
 | E. 이벤트·조치 | `event_frame` | M3 | 일반 | 이벤트 프레임 주소(VLM 입력) | 수정 16 추가 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
 | E. 이벤트·조치 | `action_ticket` | M2 | 일반 | 조치 티켓(현재 상태) | 있음 | `/api/events/{}`, `/api/tickets`, `/api/tickets/{}` 외 |  |
 | E. 이벤트·조치 | `action_ticket_history` | M2 | 일반 | 티켓 상태 변경 이력 | 수정 16 추가 | `/api/tickets/{}` |  |
@@ -152,7 +156,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 |---|---|---|---|---|
 | `device_id` | text | PK | `envelope.source_id` | 예: laptop-01 |
 | `kind` | text | NN, CK(LAPTOP·WATCH) |  | WATCH 는 확장(C.6) |
-| `token_hash` | text | NN |  | 기기마다 따로 발급 |
+| `token_hash` | text | UQ, NN |  | 기기마다 따로 발급. 요청마다 이 값으로 찾고 두 기기가 같은 해시를 갖지 않게 유일(V5, S15P31A101-222) |
 | `issued_at` | ts | NN |  |  |
 | `rotated_at` | ts |  |  | 주기 회전(14장) |
 | `revoked_at` | ts |  |  | 분실·교체 시 폐기 |
@@ -184,11 +188,12 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
 | `worker_id` | text | PK | `envelope.source_id` | 예: worker-01 |
-| `token_hash` | text | NN |  |  |
+| `token_hash` | text | UQ, NN |  | 요청마다 이 값으로 찾는다(V5, S15P31A101-222) |
 | `job_types` | text[] | NN | `job_lease_request.job_types` | 마지막 대여 요청의 처리 가능 유형 |
 | `issued_at` | ts | NN |  |  |
 | `revoked_at` | ts |  |  |  |
 | `last_seen_at` | ts |  |  |  |
+| `rotated_at` | ts |  |  | 토큰 회전(14장). 회전해도 issued_at 은 처음 발급 시각(V5, S15P31A101-222) |
 
 ### B. 구성·기준 데이터
 
@@ -297,6 +302,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `components` | jsonb | NN | `config_bundle.components` | 구성 요소별 version·sha256·uri |
 | `calibration_version` | text | FK>calibration_version.calibration_version, NN | `config_bundle.components.calibration` |  |
 | `applied_at` | ts |  | `config_ack.applied_at` | 현장 적용 시각(APPLIED 받은 뒤) |
+| `rule_profile` | text | CK(OPERATION·CLASSROOM_TEST) |  | 묶음에 넣은 규칙 묶음(7.4 운영·교실 시험 프로필). 다음 발행의 기본값(V6, S15P31A101-120) |
 
 #### `config_bundle_item` — 묶음에 들어간 구역·규칙·형상 버전 목록
 
@@ -308,6 +314,17 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `item_type` | text | PK(2), CK(ZONE·RULE·STATIC_OBJECT) |  |  |
 | `item_id` | text | PK(3) |  | zone_id·rule_id·object_id |
 | `item_version` | int | NN |  |  |
+
+#### `config_bundle_file` — 구성 묶음이 가리키는 파일 바이트(매니페스트·구성 요소)
+
+- 단계 **MVP** · 일반 · 근거: 3.2 구성 묶음, 11.1, GET /api/config-bundles/{}/files/{} (V6, S15P31A101-120)
+
+| 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
+|---|---|---|---|---|
+| `config_version` | text | PK(1), FK>config_bundle.config_version |  |  |
+| `name` | text | PK(2), CK(manifest·zones·rules·calibration·operational_geometry) |  | 매니페스트 또는 구성 요소 이름 |
+| `content` | bytea | NN |  | EC2 가 발행한 바이트 그대로(같은 주소는 늘 같은 바이트). Tier 0 가 서명 주소로 내려받아 해시를 검사한다 |
+| `sha256` | text | NN |  |  |
 
 #### `config_ack` — Tier 0 의 구성 묶음 적용·거부 응답
 
@@ -422,6 +439,18 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `reprojection_median_px` | real |  | `calibration.cameras.reprojection_error_px.median` |  |
 | `reprojection_p95_px` | real |  | `calibration.cameras.reprojection_error_px.p95` |  |
 
+#### `calibration_document` — 보정 문서 원문
+
+- 단계 **MVP** · 일반 · 근거: contracts/providers/calibration, 구성 묶음 calibration 구성 요소, POST /api/calibrations (V6, S15P31A101-120)
+
+| 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
+|---|---|---|---|---|
+| `calibration_version` | text | PK, FK>calibration_version.calibration_version |  |  |
+| `content` | bytea | NN |  | 보정 문서 원문. 구성 묶음 calibration 구성 요소로 그대로 내려준다. Tier 0 → EC2 전달 길이 없어 관리자가 올린다 |
+| `sha256` | text | NN |  |  |
+| `uploaded_by` | bigint | FK>app_user.user_id |  |  |
+| `uploaded_at` | ts | NN |  |  |
+
 #### `calibration_run` — 자동 보정 실행 요청(걷기 보정)
 
 - 단계 **M1** · 일반 · 근거: POST /api/calibrations, 4.3 · 검토: 이연주
@@ -501,6 +530,21 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `message` | text | NN |  | 예: 카메라 3번이 너무 아래를 봄 |
 | `metrics` | jsonb |  |  | 바닥 커버리지 비율 등 |
 | `created_at` | ts | NN |  |  |
+
+#### `calibration_update_message` — I1 calibration_update 수신 기록(추가만)
+
+- 단계 **MVP** · 일반 · 근거: calibration_update(I1), 12.1 재전송 제거, GET /api/calibrations/current (V10, S15P31A101-263)
+
+| 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
+|---|---|---|---|---|
+| `msg_id` | uuid | PK | `envelope.msg_id` | 재전송 제거 |
+| `gateway_id` | text | NN | `envelope.source_id` |  |
+| `calibration_version` | text | FK>calibration_version.calibration_version, NN | `calibration_update.calibration_version` | DRIFTED 는 새 버전을 만들지 않고 같은 버전의 상태만 바꾼다 |
+| `calibration_state` | text | NN, CK(UNCALIBRATED·PROVISIONAL·CALIBRATED·DRIFTED) | `calibration_update.calibration_state` |  |
+| `reason` | text | NN | `calibration_update.reason` |  |
+| `sent_at` | ts | NN | `envelope.sent_at` | Tier 0 시계. 현재 상태는 LEAST(sent_at, received_at) 가 가장 늦은 것, 같으면 늦게 받은 것 |
+| `received_at` | ts | NN |  |  |
+| `payload` | jsonb | NN | `calibration_update` | 받은 payload 원문(카메라별 운영 중 재투영 오차 포함) |
 
 #### `floor_plan` — BEV 평면도(보조 화면)
 
@@ -640,6 +684,20 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `laptop_clock_offset` | jsonb |  | `health.laptop_clock_offset` |  |
 | `received_at` | ts | NN |  |  |
 
+#### `system_outage` — 장애 기록(관제 정지·현장 장비 응답 없음·원격 전달 단절)
+
+- 단계 **MVP** · 일반 · 근거: 6.5, FR-11, G3 단절 감지 시간 (V7, S15P31A101-122)
+
+| 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
+|---|---|---|---|---|
+| `outage_id` | bigint identity | PK |  |  |
+| `kind` | text | NN, CK(CONTROL_HALTED·DEVICE_DOWN·REMOTE_LINK_LOST) |  |  |
+| `last_seen_at` | ts |  |  | 실패한 쪽의 마지막 정상 근거(하트비트·health 수신, 처리 진행). 모르면 null |
+| `detected_at` | ts | NN |  | EC2 가 장애로 판정한 시각(받는 쪽 단조 시계로 3회 누락) |
+| `ended_at` | ts | CHECK(end) |  | 열린 장애는 하나(`ended_at IS NULL` 부분 유일 인덱스) |
+| `end_reason` | text | CK(RECOVERED·CHANGED·EC2_RESTART), CHECK(end) |  | end: ended_at 과 end_reason 은 함께 채우거나 함께 비운다 |
+| `details` | jsonb |  |  |  |
+
 #### `system_metric` — 구간별 지연·FPS·큐·손실 지표(긴 형식)
 
 - 단계 **MVP** · hypertable · 근거: 11.2 system_metric, 6.6 지연 목표
@@ -721,6 +779,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `event_sequence` | int | PK(2) | `risk_event_transition.event_sequence` |  |
 | `msg_id` | uuid | UQ, NN | `envelope.msg_id` |  |
 | `gateway_id` | text | NN, UQ(journal) | `risk_event_transition.gateway_id` |  |
+| `journal_epoch` | int | NN, UQ(journal) |  | 저널 세대. 기본 0. Tier 0 저널이 새로 시작하면(offset 0 부터) EC2 가 올린다. 유일 키가 (gateway_id, journal_offset) 에서 (gateway_id, journal_epoch, journal_offset) 으로 바뀌었다(V4, S15P31A101-106) |
 | `journal_offset` | bigint | NN, UQ(journal) | `risk_event_transition.journal_offset` |  |
 | `transition` | text | NN, CK(RAISED·UPDATED·RESOLVED·ACKNOWLEDGED) | `risk_event_transition.transition` |  |
 | `occurred_at` | ts | NN | `risk_event_transition.occurred_at` |  |
@@ -815,6 +874,21 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `last_snapshot_at` | ts |  | `event_state_snapshot.snapshot_at` |  |
 | `last_snapshot_offset` | bigint |  | `event_state_snapshot.journal_offset` |  |
 | `updated_at` | ts | NN |  |  |
+| `journal_epoch` | int | NN |  | 지금 받는 저널 세대. 기본 0(V4, S15P31A101-106, docs/design/server-event-journal.md) |
+
+#### `i1_deferred_message` — 앞선 메시지를 기다리는 I1 메시지
+
+- 단계 **MVP** · 일반 · 근거: media_clip·media_clip_retention(I1), 12.1 (V11, S15P31A101-261)
+
+| 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
+|---|---|---|---|---|
+| `msg_id` | uuid | PK | `envelope.msg_id` |  |
+| `msg_type` | text | NN | `envelope.msg_type` |  |
+| `envelope` | jsonb | NN | `envelope` | 받은 봉투 그대로. 이벤트 전이보다 먼저 온 클립, 클립보다 먼저 온 보존 기록을 두었다가 다시 처리하고, 처리되면 지운다 |
+| `reason` | text | NN |  | 미룬 이유 |
+| `received_at` | ts | NN |  | EC2 가 처음 받은 시각. 저장할 때도 이 시각을 받은 시각으로 쓴다 |
+| `attempts` | int | NN |  | 기본 0 |
+| `next_attempt_at` | ts | NN |  |  |
 
 #### `event_frame` — 이벤트 프레임 주소(VLM 입력)
 
@@ -950,10 +1024,10 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `issued_at` | ts | NN |  |  |
 | `expires_at` | ts | NN |  |  |
 | `used_at` | ts |  |  |  |
-| `requester` | text | NN, CK(TIER0·DEVICE·USER) |  | 요청 주체 종류. Tier 0 토큰이면 기기·사용자 칸이 비어 이것으로 가른다(V9, S15P31A101-69) |
+| `requester` | text | NN, CK(TIER0·DEVICE·USER), CHECK(requester_ref) |  | 요청 주체 종류. Tier 0 토큰이면 기기·사용자 칸이 비어 이것으로 가른다(V9, S15P31A101-69). requester_ref: DEVICE 이면 requested_by_device 만, USER 이면 requested_by_user 만 채운다(V9) |
 | `content_type` | text | NN |  | 서명에 묶은 형식(V9) |
-| `size_bytes` | bigint | NN |  | 서명에 묶은 크기(V9) |
-| `sha256` | text | NN |  | 서명에 묶은 내용 해시, 같은 클립 재발급·올라온 키 검증(V9) |
+| `size_bytes` | bigint | NN, CHECK > 0 |  | 서명에 묶은 크기(V9) |
+| `sha256` | text | NN, CHECK 소문자 16진수 64자 |  | 서명에 묶은 내용 해시, 같은 클립 재발급·올라온 키 검증(V9) |
 | `event_id` | uuid |  |  | 이벤트 프레임·클립(V9) |
 
 ### F. 알림
@@ -967,12 +1041,12 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
 | `notification_id` | bigint identity | PK |  |  |
-| `event_id` | uuid | NN, FK(event_id, source)>risk_event | `risk_alert.event_id` | 복합 FK |
+| `event_id` | uuid | NN, FK(event_id, source)>risk_event, UQ(transition_target) | `risk_alert.event_id` | 복합 FK. transition_target: 같은 전이·채널·대상에 한 번(NULLS NOT DISTINCT, V13, S15P31A101-123) |
 | `source` | text | NN, CK(LIVE) | `risk_alert.source` | 11.4-3 |
-| `event_sequence` | int | NN |  | 알린 상태 |
-| `channel` | text | NN, CK(WEB_PUSH·WATCH) |  | WATCH 는 확장(C.6) |
-| `subscription_id` | bigint | FK>push_subscription.subscription_id |  |  |
-| `target_user_id` | bigint | FK>app_user.user_id |  |  |
+| `event_sequence` | int | NN, UQ(transition_target) |  | 알린 상태 |
+| `channel` | text | NN, CK(WEB_PUSH·WATCH), UQ(transition_target) |  | WATCH 는 확장(C.6) |
+| `subscription_id` | bigint | FK>push_subscription.subscription_id, UQ(transition_target) |  |  |
+| `target_user_id` | bigint | FK>app_user.user_id, UQ(transition_target) |  |  |
 | `severity` | text | NN, CK(CRITICAL·HIGH) | `risk_alert.severity` |  |
 | `summary` | text | NN | `risk_alert.summary` | 규칙 근거 한 줄 |
 | `delivery` | text | NN, CK(REALTIME·DELAYED_ACTIVE) | `risk_alert.delivery` |  |
@@ -982,6 +1056,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `acked_at` | ts |  |  |  |
 | `status` | text | NN, CK(QUEUED·SENT·FAILED·EXPIRED) |  |  |
 | `error` | text |  |  |  |
+| `claimed_until` | ts |  |  | 발송 워커 임대 기한(QUEUED 일 때만 뜻). 비었거나 지났으면 다시 꺼낼 수 있다(V13, S15P31A101-123) |
 
 #### `push_subscription` — Web Push 구독
 
@@ -1439,5 +1514,6 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 ## 5. 검증한 것
 
 - FK 가 가리키는 테이블·컬럼이 모두 이 정의에 있다(자동 검사).
+- V1~V13 을 적용한 임시 DB(`timescaledb-ha:pg17-all`)의 테이블·컬럼·타입·NN·PK·FK·UQ·CHECK 와 이 정의를 기계로 대조해 DB 에만 있는 것을 0건으로 맞췄다(2026-10-29, S15P31A101-318). 문서에만 있는 것은 M2·M3·확장 테이블과 그 테이블을 가리키는 `risk_event_update.escalation_id` FK 다.
 - I1·I5 주요 메시지 17종(`risk_event_transition`, `media_clip`, `health`, `config_ack`, `tier0_endpoint`, `job_request` 등)의 payload 최상위 필드가 모두 어느 컬럼의 출처로 쓰였다(자동 검사, 미반영 0건).
 - API 명세 표 v11 의 REST·WS 경로 전부가 이 정의의 테이블로 연결된다(자동 검사, 연결 안 된 경로 0개). `/api/push/vapid-public-key` 는 설정값이라 테이블이 없다.
