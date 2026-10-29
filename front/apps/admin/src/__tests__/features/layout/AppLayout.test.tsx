@@ -55,17 +55,19 @@ describe('AppLayout 알림 자리', () => {
     expect(screen.getByTestId('alarm').dataset.withPanel).toBe('true');
   });
 
-  it('다른 화면에서는 본문을 가리지 않게 본문 위에 자리를 차지한다', () => {
+  it('다른 화면에서도 본문 위에 띄워 본문 높이를 차지하지 않는다(이벤트 패널이 없어 오른쪽은 비키지 않는다)', () => {
     route.staticData = {};
     render(<AppLayout />);
 
     const box = notices();
     expect(ids(box)).toEqual(['failure', 'alarm']);
-    expect(box.className).not.toContain('absolute');
+    expect(box.className).toContain('absolute');
+    expect(box.className).toContain('pointer-events-none');
     expect(box.className).not.toContain('right-[370px]');
-    // 본문(main)보다 앞에 온다.
+    // 본문(main) 흐름 밖, 본문 뒤에 둔다.
     const page = screen.getByRole('main');
-    expect(box.compareDocumentPosition(page) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(page.contains(box)).toBe(false);
+    expect(page.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('알릴 것이 없으면 자리가 비어 숨는다(empty:hidden)', () => {

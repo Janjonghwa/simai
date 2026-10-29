@@ -13,23 +13,30 @@ import { useEffect, useMemo } from 'react';
 /** 적용 대기 동안 적용 상태를 다시 받는 간격(ms). 서버는 Tier 0 의 config_ack 를 받으면 상태를 바꾼다. */
 const PENDING_POLL_MS = 3_000;
 
-/** 구성 묶음 적용 상태(명세 FR-17). 서버가 Tier 0 의 config_ack 로 정한다. */
-export const APPLY_LABEL: Record<BundleStatus, string> = {
-  PENDING: '적용 대기',
-  APPLIED: '현장 적용됨',
-  REJECTED: '적용 거부',
-  MISMATCH: '적용 불일치',
-};
+/**
+ * 현장 반영 줄 문구(명세 FR-17). 저장한 구역·작업면은 구성 묶음으로 발행해야 현장 판정(Tier 0)에 가고, 상태는 서버가
+ * Tier 0 의 config_ack 로 정한다. 묶음 번호 대신 쉬운 말로 보인다. unpublished 는 발행하지 않은 저장 건수다.
+ */
+export function applySummary(latest: ConfigBundle | null | undefined, unpublished: number): string {
+  // 묶음 목록을 받는 중이거나 받지 못했으면 반영 여부를 모른다(묶음이 하나도 없으면 null).
+  if (latest === undefined) return '—';
+  const status: BundleStatus | undefined = latest?.status;
+  if (status === 'PENDING') return '현장에 보내는 중';
+  if (status === 'REJECTED') return '현장이 거부함';
+  if (status === 'MISMATCH') return '현장 반영 확인 안 됨';
+  if (unpublished > 0) return `현장 미반영 ${unpublished}건`;
+  return latest ? '현장 반영됨' : '현장 미반영';
+}
 
 export function publishErrorText(error: unknown): string {
-  if (error instanceof ApiError && error.status === 403) return '현장에 적용할 권한이 없습니다.';
+  if (error instanceof ApiError && error.status === 403) return '현장에 반영할 권한이 없습니다.';
   if (error instanceof ApiError && error.code === 'CALIBRATION_MISSING')
-    return '보정 문서가 없어 현장에 적용할 수 없습니다.';
+    return '보정 문서가 없어 현장에 반영할 수 없습니다.';
   if (error instanceof ApiError && error.code === 'RULES_MISSING')
-    return '유효한 규칙 버전이 없어 현장에 적용할 수 없습니다.';
+    return '유효한 규칙 버전이 없어 현장에 반영할 수 없습니다.';
   if (error instanceof ApiError && error.code === 'PUBLIC_URL_NOT_SET')
-    return '서버 공개 주소가 설정되지 않아 현장에 적용할 수 없습니다.';
-  return '현장에 적용하지 못했습니다. 다시 시도하세요.';
+    return '서버 공개 주소가 설정되지 않아 현장에 반영할 수 없습니다.';
+  return '현장에 반영하지 못했습니다. 다시 시도하세요.';
 }
 
 /** 받은 묶음 목록(새것부터)에서 형식이 맞는 것만 고른다. */

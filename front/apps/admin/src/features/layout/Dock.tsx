@@ -1,7 +1,7 @@
 import { buttonVariants } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { Link } from '@tanstack/react-router';
-import { Activity, Box, FileText, LayoutGrid, Monitor, Video } from 'lucide-react';
+import { Box, FileText, Gauge, LayoutGrid, Monitor, Video } from 'lucide-react';
 
 const ITEMS = [
   { to: '/', label: '실시간 관제', short: '실시간 관제', icon: Monitor },
@@ -9,14 +9,15 @@ const ITEMS = [
   { to: '/zones', label: '구역 편집', short: '구역 편집', icon: LayoutGrid },
   { to: '/surfaces', label: '작업면 등록', short: '작업면 등록', icon: Box },
   { to: '/tbm', label: '레이아웃 · TBM 보고서', short: 'TBM 보고서', icon: FileText },
-  { to: '/system', label: '시스템 상태', short: '시스템 상태', icon: Activity },
+  { to: '/dashboard', label: '대시보드', short: '대시보드', icon: Gauge },
 ] as const;
 
+// 평소에는 흐리게 두어 장면을 덜 가리고, 마우스를 올리거나 키보드 초점이 들어오면 진하게 보인다(관제 데모와 같다).
 export function Dock() {
   return (
     <nav
       aria-label="주 메뉴"
-      className="absolute bottom-3.5 left-1/2 z-[6] flex -translate-x-1/2 gap-0.5 rounded-[16px] bg-card/94 p-1.5 shadow-float ring-1 ring-border backdrop-blur-[8px] ring-inset"
+      className="absolute bottom-3.5 left-1/2 z-[6] flex -translate-x-1/2 gap-0.5 rounded-[16px] bg-card/94 p-1.5 opacity-30 shadow-float ring-1 ring-border backdrop-blur-[8px] transition-opacity duration-200 ring-inset hover:opacity-100 has-focus-visible:opacity-100"
     >
       {ITEMS.map(({ to, label, short, icon: Icon }) => (
         <Link

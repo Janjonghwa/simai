@@ -16,14 +16,17 @@ import {
 import { Input } from '@simai/ui/components/input';
 import { useEffect, useRef, useState } from 'react';
 
-/** 편집 세션마다 마운트하여 입력 문자열과 타이머가 다른 구역에 남지 않게 한다. */
+/**
+ * 편집 세션마다 마운트하여 입력 문자열과 타이머가 다른 구역에 남지 않게 한다.
+ * 새 구역 양식도 같은 칸을 쓴다(3D 편집 없이 상자만 넘긴다).
+ */
 export function ZoneNumericFields({
   preview,
   disabled,
   updateField,
   finish,
 }: {
-  preview: ViewerEditPreview;
+  preview: Pick<ViewerEditPreview, 'draft'>;
   disabled: boolean;
   updateField: (field: ViewerEditField, value: number) => ViewerEditCommandResult;
   finish: () => unknown;

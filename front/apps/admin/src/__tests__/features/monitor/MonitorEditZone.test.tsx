@@ -212,7 +212,7 @@ describe('MonitorPage 구역 선택 수정 동작 및 단일 Canvas 공유', () 
     expect(screen.queryByRole('button', { name: /구역 수정/ })).toBeNull();
 
     act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
-    const btn = screen.getByRole('button', { name: '구역 수정 · z-04' });
+    const btn = screen.getByRole('button', { name: '구역 수정 z-04' });
     act(() => btn.click());
     expect(onEditZone).toHaveBeenCalledWith('z-04');
 
@@ -260,7 +260,7 @@ describe('MonitorPage 구역 선택 수정 동작 및 단일 Canvas 공유', () 
     expect(fake.mounts).toBe(1);
     expect(fake.unmounts).toBe(0);
     // 왕복 후에도 z-04 선택이 그대로 유지된다.
-    expect(screen.getByRole('button', { name: '구역 수정 · z-04' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '구역 수정 z-04' })).toBeTruthy();
 
     // /zones 에서 편집 중 값을 바꾼 뒤 관제(/)로 이동하면 손잡이는 닫히고 변경분은 Ghost 로 유지된다.
     act(() => screen.getByRole('button', { name: 'go-zones' }).click());

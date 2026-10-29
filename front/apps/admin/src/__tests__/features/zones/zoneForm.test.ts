@@ -3,7 +3,10 @@ import {
   bodyOf,
   formErrors,
   formOf,
-  newZoneBody,
+  NEW_ZONE_FORM,
+  newZoneBodyOf,
+  newZoneBox,
+  newZoneErrors,
   patchOf,
   sameForm,
   type ZoneForm,
@@ -135,7 +138,10 @@ describe('zoneForm', () => {
   });
 
   it('새 구역은 기존 구역들의 가운데 바닥에 2×2 m, 높이 2 m 로 고른 유형으로 만들고, 구역이 없으면 원점에 둔다', () => {
-    const body = newZoneBody([ZONE, { ...ZONE, min: [6, 7, 0], max: [8, 9, 1] }], 'LIFTING');
+    const body = newZoneBodyOf(
+      { ...NEW_ZONE_FORM, zoneType: 'LIFTING' },
+      newZoneBox([ZONE, { ...ZONE, min: [6, 7, 0], max: [8, 9, 1] }]),
+    );
     expect(body.polygon_xy).toEqual([
       [3, 3.5],
       [5, 3.5],
@@ -143,6 +149,35 @@ describe('zoneForm', () => {
       [3, 5.5],
     ]);
     expect(body).toMatchObject({ zone_kind: 'LIFTING', z_min_m: 0, z_max_m: 2 });
-    expect(newZoneBody([], 'OPENING').polygon_xy[0]).toEqual([-1, -1]);
+    expect(newZoneBox([]).min).toEqual([-1, -1, 0]);
+  });
+});
+
+describe('새 구역 양식', () => {
+  it('유형을 고르기 전에는 만들 수 없고, 이름 규칙은 저장과 같다', () => {
+    expect(newZoneErrors(NEW_ZONE_FORM)).toEqual({ zoneType: '유형을 고르세요.' });
+    expect(newZoneErrors({ ...NEW_ZONE_FORM, zoneType: 'LIFTING' })).toEqual({});
+    expect(newZoneErrors({ ...NEW_ZONE_FORM, zoneType: 'LIFTING', name: ' ' }).name).toBe(
+      '이름을 입력하세요.',
+    );
+  });
+
+  it('처음 상자는 기존 구역들 가운데 바닥의 2×2×2m 이고, 본문은 양식 값과 상자를 그대로 싣는다', () => {
+    const zones = [ZONE, { ...ZONE, min: [6, 7, 0] as const, max: [8, 9, 1] as const }];
+    const box = newZoneBox(zones);
+    expect(box.max[0] - box.min[0]).toBe(2);
+    expect(box.max[2]).toBe(2);
+    const body = newZoneBodyOf(
+      { ...NEW_ZONE_FORM, zoneType: 'LIFTING', severity: 'CRITICAL' },
+      box,
+    );
+    expect(body).toMatchObject({
+      name: '새 구역',
+      zone_kind: 'LIFTING',
+      eval_type: 'VOLUME_3D',
+      severity: 'CRITICAL',
+      z_min_m: box.min[2],
+      z_max_m: box.max[2],
+    });
   });
 });

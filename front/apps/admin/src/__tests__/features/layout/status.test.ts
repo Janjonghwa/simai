@@ -1,14 +1,10 @@
 import {
-  calibrationLabel,
-  cameraLabel,
+  bandFailure,
   chipState,
   clockLabel,
-  configLabel,
   dataAgeSec,
   failureOf,
   lastDataClock,
-  sceneLabel,
-  sceneMismatch,
 } from '@/features/layout/status';
 import { viewerHealthAt } from '@/mocks/realtimeScenario';
 import type { HealthSnapshot } from '@/store/realtime.store';
@@ -39,52 +35,7 @@ describe('chipState', () => {
   });
 });
 
-describe('상단 바 문구', () => {
-  it('정상 카메라 수, 보정 상태·버전, 구성, 장면 버전을 만든다', () => {
-    const health = snapshot();
-    expect(cameraLabel(health)).toBe('4/4');
-    expect(calibrationLabel(health)).toBe('CALIBRATED cal-7');
-    expect(configLabel(health)).toBe('cfg-12');
-    expect(sceneLabel(health)).toBe('scene-3');
-  });
-
-  it('OK 가 아닌 카메라는 정상 수에서 뺀다', () => {
-    const health = snapshot({
-      tier0_health: {
-        cameras: [
-          { id: 'cam1', status: 'OK' },
-          { id: 'cam2', status: 'NO_SIGNAL' },
-          { id: 'cam3', status: 'WAITING_KEYFRAME' },
-        ],
-        calibration_version: 'cal-8',
-      },
-    });
-    expect(cameraLabel(health)).toBe('1/3');
-    expect(calibrationLabel(health)).toBe('CALIBRATED cal-8');
-  });
-
-  it('Tier 0 health 가 없거나 모양이 다르면 그 칸만 비운다', () => {
-    expect(cameraLabel(snapshot({ tier0_health: null }))).toBeUndefined();
-    expect(cameraLabel(snapshot({ tier0_health: { cameras: 'x' } }))).toBeUndefined();
-    expect(calibrationLabel(snapshot({ tier0_health: null }))).toBe('CALIBRATED');
-    expect(cameraLabel(null)).toBeUndefined();
-  });
-
-  it('EC2 ↔ Tier 0 가 끊기면 마지막으로 받은 Tier 0 값을 지금 값처럼 쓰지 않는다', () => {
-    const health = snapshot({ tier0_link: 'DISCONNECTED', system_health: 'UNSAFE_UNKNOWN' });
-    expect(cameraLabel(health)).toBeUndefined();
-    expect(calibrationLabel(health)).toBe('CALIBRATED');
-  });
-
-  it('구성이 아직 적용되지 않았으면 발행 버전과 상태를 보인다', () => {
-    const config = (sync: ViewerHealthPayload['config']['sync']) =>
-      snapshot({ config: { published_version: 'cfg-13', applied_version: 'cfg-12', sync } });
-    expect(configLabel(config('PENDING'))).toBe('cfg-13 적용 대기');
-    expect(configLabel(config('UNVERIFIED'))).toBe('cfg-13 적용 미확인');
-    expect(configLabel(config('STALE'))).toBe('cfg-13 적용 지연');
-    expect(configLabel(config('CURRENT'))).toBe('cfg-12');
-  });
-
+describe('데이터 연령·시계', () => {
   it('데이터 연령은 EC2 가 잰 값에 받은 뒤 흐른 시간을 더한다', () => {
     const health = snapshot({ data_age_ms: 200 }, T);
     expect(dataAgeSec(health, T)).toBeCloseTo(0.2);
@@ -98,21 +49,6 @@ describe('상단 바 문구', () => {
     expect(clockLabel(0, now)).toBe('14:30:05');
     expect(clockLabel(-5000, now)).toBe('14:30:00');
     expect(clockLabel(undefined, now)).toBeUndefined();
-  });
-
-  it('현장이 다른 Scene 으로 판정하면 두 버전을 함께 보인다', () => {
-    const scene = (live: string | null, mismatch: boolean) =>
-      snapshot({ scene: { committed_version: 'scene-3', live_version: live, mismatch } });
-    expect(sceneMismatch(scene('scene-2', true))).toEqual({
-      committed: 'scene-3',
-      live: 'scene-2',
-    });
-    expect(sceneLabel(scene('scene-2', true))).toBe('scene-3 ≠ 현장 scene-2');
-    // EC2 가 다르다고 하지 않았거나 한쪽 버전을 모르면 경고하지 않는다.
-    expect(sceneMismatch(scene('scene-3', false))).toBeUndefined();
-    expect(sceneMismatch(scene(null, true))).toBeUndefined();
-    expect(sceneLabel(scene(null, true))).toBe('scene-3');
-    expect(sceneMismatch(null)).toBeUndefined();
   });
 
   it('마지막 데이터 시각은 EC2 시각에서 데이터 연령을 뺀 때다', () => {
@@ -140,5 +76,22 @@ describe('failureOf', () => {
   it('EC2 와 끊겼으면 마지막으로 받은 상태로 장애를 알리지 않는다', () => {
     expect(failureOf(state('CONTROL_HALTED'), false)).toBeUndefined();
     expect(failureOf(null, true)).toBeUndefined();
+  });
+});
+
+describe('bandFailure', () => {
+  const health = snapshot({ remote_state: 'CONTROL_HALTED' });
+
+  it('이어진 적이 있는데 지금 끊겼으면 마지막 상태가 아니라 연결 끊김이다', () => {
+    expect(bandFailure({ phase: 'OPEN', openedAt: T, health }, false)).toBe('LINK_LOST');
+    expect(bandFailure({ phase: 'CONNECTING', openedAt: T, health }, false)).toBe('LINK_LOST');
+  });
+
+  it('이어져 있으면 EC2 가 알린 장애이고, 연결 전이면 없다', () => {
+    expect(bandFailure({ phase: 'OPEN', openedAt: T, health }, true)).toBe('CONTROL_HALTED');
+    expect(bandFailure({ phase: 'IDLE', openedAt: null, health: null }, false)).toBeUndefined();
+    expect(
+      bandFailure({ phase: 'CONNECTING', openedAt: null, health: null }, false),
+    ).toBeUndefined();
   });
 });

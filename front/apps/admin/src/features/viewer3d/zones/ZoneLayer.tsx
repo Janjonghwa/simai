@@ -4,6 +4,7 @@ import { LabelSprite } from '@/features/viewer3d/LabelSprite';
 import { ZoneRiskMark } from '@/features/viewer3d/risk/RiskMarks';
 import { riskLabel, riskStyle } from '@/features/viewer3d/risk/riskPresentation';
 import { useRiskHighlight } from '@/features/viewer3d/risk/RiskScope';
+import { useIsHovered, useScenePalette } from '@/features/viewer3d/sceneTheme';
 import { Selectable } from '@/features/viewer3d/Selectable';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
 import { worldPoint, worldToThree } from '@/features/viewer3d/worldCoordinates';
@@ -75,6 +76,8 @@ function ZoneVolume({ zone, interactive }: ZoneEntryProps) {
     (s) => s.selected?.type === 'zone' && s.selected.id === zone.zoneId,
   );
   const box = zoneBox(zone);
+  const palette = useScenePalette();
+  const hovered = useIsHovered(`zone:${zone.zoneId}`);
   // 위험 강조는 형상·적용 상태 표시와 따로 얹는다. 구역 상자·모서리·이름표는 바꾸지 않는다.
   const risk = useRiskHighlight('zone', zone.zoneId);
   const [sx, sy, sz] = box?.size ?? [0, 0, 0];
@@ -83,7 +86,7 @@ function ZoneVolume({ zone, interactive }: ZoneEntryProps) {
   const edges = useMemo(() => boxEdges([sx, sy, sz]), [sx, sy, sz]);
   const guides = useMemo(() => aerialGuides([sx, sy, sz], py), [sx, sy, sz, py]);
   if (!box) return null;
-  const style = zoneStyle(applyState, selected);
+  const style = zoneStyle(applyState, selected, palette);
 
   return (
     <group name={`zone-entry:${zone.zoneId}`}>
@@ -135,6 +138,7 @@ function ZoneVolume({ zone, interactive }: ZoneEntryProps) {
         {/* 이름표는 상자 앞쪽(World min X·min Y, 기본 시점 쪽) 모서리의 하단 높이에 둔다.
             사람 이름표(머리 위)와 높이대가 달라 구역 안·가장자리의 사람과 겹치지 않는다.
             위험이 있으면 위험 > 구역 이름·높이·적용 상태 순서로 한 줄에 적는다. */}
+        {/* 이름표는 1초 머물 때·선택·위험일 때만 보인다(관제 데모와 같다). */}
         <group position={[-sx / 2, -sy / 2, sz / 2]}>
           <LabelSprite
             text={
@@ -144,7 +148,8 @@ function ZoneVolume({ zone, interactive }: ZoneEntryProps) {
             }
             y={ZONE_LABEL_LIFT}
             height={0.22}
-            color={risk ? riskStyle(risk).labelColor : undefined}
+            color={risk ? riskStyle(risk, palette).labelColor : undefined}
+            visible={hovered || selected || risk !== null}
           />
         </group>
         {risk && <ZoneRiskMark risk={risk} zoneId={zone.zoneId} size={[sx, sy, sz]} />}

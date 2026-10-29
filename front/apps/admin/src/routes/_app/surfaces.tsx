@@ -10,5 +10,5 @@ function SurfacesRoute() {
 
 export const Route = createFileRoute('/_app/surfaces')({
   component: SurfacesRoute,
-  staticData: { fullBleed: true, eventPanel: true },
+  staticData: { fullBleed: true },
 });

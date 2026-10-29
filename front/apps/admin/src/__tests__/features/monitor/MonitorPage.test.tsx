@@ -4,7 +4,7 @@ import type { Viewer3DHandle, Viewer3DProps, ViewerStatus } from '@/features/vie
 import { worldStateAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import { useImperativeHandle, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -27,6 +27,7 @@ type Phase = 'initializing' | 'ready' | 'error';
 const fake = vi.hoisted(() => ({
   phase: 'ready' as Phase,
   select: vi.fn(),
+  resetView: vi.fn(),
   report: (() => undefined) as (phase: Phase) => void,
 }));
 
@@ -36,6 +37,7 @@ function FakeViewer({ ref, onStatusChange }: Viewer3DProps) {
     () =>
       ({
         select: fake.select,
+        resetView: fake.resetView,
         focus: () => ({ ok: true }),
         clearSelection: () => ({ ok: true }),
         setMode: () => ({ ok: true }),
@@ -72,7 +74,7 @@ function renderPage(loadViewer = loadFake, planFallbackMs?: number) {
 }
 
 const plan = () => screen.queryByRole('group', { name: '2D 평면' });
-const toggle = (name: '3D' | '2D') => screen.getByRole('button', { name });
+const button = (name: string) => screen.getByRole('button', { name });
 
 describe('MonitorPage 3D·2D 전환', () => {
   beforeEach(() => {
@@ -89,7 +91,8 @@ describe('MonitorPage 3D·2D 전환', () => {
     expect(plan()).toBeNull();
     expect(await screen.findByTestId('viewer3d')).toBeTruthy();
     await vi.waitFor(() => expect(plan()).toBeTruthy());
-    expect(toggle('3D').getAttribute('aria-pressed')).toBe('true');
+    // 3D 는 아직 띄우는 중이라 다시 시도가 아니라 시점 초기화다.
+    expect(button('시점 초기화')).toBeTruthy();
     act(() => fake.report('ready'));
     expect(plan()).toBeNull();
     cleanup();
@@ -103,40 +106,40 @@ describe('MonitorPage 3D·2D 전환', () => {
     expect(plan()).toBeNull();
   });
 
-  it('토글로 2D 로 바꾸면 3D 뷰어를 그리지 않고, 다시 3D 로 돌아오면 3D 가 준비될 때까지 2D 를 그대로 둔다', async () => {
+  it('2D 미니맵을 누르면 3D 는 그대로 두고 큰 2D 창을 연다. 바깥을 누르면 닫힌다', async () => {
     renderPage();
     await screen.findByTestId('viewer3d');
+    // 미니맵 그림은 버튼 안에 있어 2D 평면으로 따로 읽히지 않는다.
     expect(plan()).toBeNull();
 
-    act(() => toggle('2D').click());
-    expect(plan()).toBeTruthy();
-    expect(screen.queryByTestId('viewer3d')).toBeNull();
+    act(() => button('2D 평면 크게 보기').click());
+    const dialog = screen.getByRole('dialog', { name: '2D 평면' });
+    expect(within(dialog).getByRole('group', { name: '2D 평면' })).toBeTruthy();
+    expect(screen.getByTestId('viewer3d')).toBeTruthy();
 
-    fake.phase = 'initializing';
-    act(() => toggle('3D').click());
-    expect(await screen.findByTestId('viewer3d')).toBeTruthy();
-    // 정한 시간(기본 2초)을 기다리지 않고 보던 2D 를 그대로 둔다.
-    expect(plan()).toBeTruthy();
-    act(() => fake.report('ready'));
-    expect(plan()).toBeNull();
+    act(() => screen.getByTestId('plan-modal').click());
+    expect(screen.queryByRole('dialog', { name: '2D 평면' })).toBeNull();
   });
 
-  it('이미 3D 일 때 3D 를 다시 눌러도 2D 가 덮지 않는다', async () => {
+  it('시점 초기화는 3D 에 처음 시점을 요청하고 2D 로 덮지 않는다', async () => {
     renderPage();
     await screen.findByTestId('viewer3d');
     await vi.waitFor(() => expect(plan()).toBeNull());
 
-    act(() => toggle('3D').click());
+    act(() => button('시점 초기화').click());
+    expect(fake.resetView).toHaveBeenCalledTimes(1);
     expect(plan()).toBeNull();
     expect(screen.getByTestId('viewer3d')).toBeTruthy();
   });
 
-  it('3D 가 렌더에 실패하면(RENDER_FAILED) 2D 로 바꾼다', async () => {
+  it('3D 가 렌더에 실패하면(RENDER_FAILED) 2D 로 바꾸고 3D 다시 시도를 보인다', async () => {
     fake.phase = 'error';
     renderPage();
-    await vi.waitFor(() => expect(toggle('2D').getAttribute('aria-pressed')).toBe('true'));
+    await vi.waitFor(() => expect(button('3D 다시 시도')).toBeTruthy());
     expect(plan()).toBeTruthy();
     expect(screen.queryByTestId('viewer3d')).toBeNull();
+    // 2D 를 크게 보고 있으면 미니맵은 두지 않는다.
+    expect(screen.queryByTestId('plan-minimap')).toBeNull();
   });
 
   it('3D 코드를 받지 못하면 2D 로 바꾸고, 3D 로 다시 바꾸면 새로 불러온다', async () => {
@@ -146,10 +149,10 @@ describe('MonitorPage 3D·2D 전환', () => {
       const flaky = () =>
         ++calls === 1 ? Promise.reject(new Error('chunk load failed')) : loadFake();
       renderPage(flaky);
-      await vi.waitFor(() => expect(toggle('2D').getAttribute('aria-pressed')).toBe('true'));
+      await vi.waitFor(() => expect(button('3D 다시 시도')).toBeTruthy());
       expect(screen.queryByTestId('viewer3d')).toBeNull();
 
-      act(() => toggle('3D').click());
+      act(() => button('3D 다시 시도').click());
       expect(await screen.findByTestId('viewer3d')).toBeTruthy();
       expect(calls).toBe(2);
     } finally {
@@ -157,7 +160,7 @@ describe('MonitorPage 3D·2D 전환', () => {
     }
   });
 
-  it('3D 가 준비되면 구역을 넘기고, 2D 에서 고른 사람이 장면에 올라오면 3D 에서도 고른다', async () => {
+  it('3D 가 준비되면 구역을 넘기고, 2D 창에서 고른 사람이 장면에 올라오면 3D 에서도 고른다', async () => {
     // 준비 직후에는 사람이 아직 장면에 없다(NOT_FOUND). 올라올 때까지 다시 시도해야 한다.
     let calls = 0;
     fake.select.mockImplementation(() =>
@@ -172,13 +175,12 @@ describe('MonitorPage 3D·2D 전환', () => {
     await screen.findByTestId('viewer3d');
     expect(pushZones).toHaveBeenLastCalledWith({ ok: true, raw: ZONES_RAW });
 
-    act(() => toggle('2D').click());
-    const person = screen.getByRole('button', { name: /^w-0012/ });
+    act(() => button('2D 평면 크게 보기').click());
+    const dialog = screen.getByRole('dialog', { name: '2D 평면' });
+    const person = within(dialog).getByRole('button', { name: /^w-0012/ });
     act(() => person.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     expect(person.getAttribute('aria-pressed')).toBe('true');
 
-    act(() => toggle('3D').click());
-    await screen.findByTestId('viewer3d');
     await vi.waitFor(() => expect(calls).toBe(3));
     expect(fake.select).toHaveBeenLastCalledWith({ type: 'person', id: 'w-0012' });
     // 고르고 나면 더 시도하지 않는다.

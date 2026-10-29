@@ -1,41 +1,30 @@
 import { useSpatialViewport, useZoneEditor } from '@/features/layout/SpatialViewportHost';
+import { ConfigApplyBar } from '@/features/surfaces/ConfigApplyBar';
 import type { ViewerEditBox } from '@/features/viewer3d';
-import { ZONE_TYPES, type ZoneBox } from '@/features/zones/types';
-import { APPLY_LABEL, publishErrorText, useConfigApply } from '@/features/zones/useConfigApply';
+import { NewZoneForm } from '@/features/zones/NewZoneForm';
+import type { ZoneBox } from '@/features/zones/types';
+import { useConfigApply } from '@/features/zones/useConfigApply';
 import { saveErrorText, useZoneSave } from '@/features/zones/useZoneSave';
 import { ZoneAttributesForm } from '@/features/zones/ZoneAttributesForm';
 import { changedFieldDeltas, formatMeters, sameEditBox } from '@/features/zones/zoneEditor';
 import {
   formErrors,
   formOf,
-  newZoneBody,
+  NEW_ZONE_FORM,
+  newZoneBodyOf,
+  newZoneBox,
+  newZoneErrors,
   patchOf,
   sameForm,
-  ZONE_TYPE_LABEL,
   type ZoneForm,
   type ZonePatch,
 } from '@/features/zones/zoneForm';
 import { ZoneNumericFields } from '@/features/zones/ZoneNumericFields';
 import { Button } from '@simai/ui/components/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@simai/ui/components/dropdown-menu';
 import { Input } from '@simai/ui/components/input';
-import {
-  ChevronDown,
-  ChevronUp,
-  FolderSearch,
-  Play,
-  Plus,
-  RotateCcw,
-  Save,
-  SlidersHorizontal,
-  X,
-} from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronUp, Play, RotateCcw, Save, SlidersHorizontal, X } from 'lucide-react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 function boxOfZone(zone: ZoneBox): ViewerEditBox {
   return {
@@ -176,6 +165,41 @@ export function ZonesPage({
   } = editor;
 
   const [pickerOpen, setPickerOpen] = useState(false);
+  // 드롭다운은 패널(스크롤 영역) 밖으로 펼쳐지도록 화면 위에 띄우고, 목록 버튼 바로 아래에 둔다.
+  const [pickerAnchor, setPickerAnchor] = useState<DOMRect | null>(null);
+  // 구역 목록은 바깥을 누르면 닫는다(관제 데모와 같다). 목록 버튼은 바깥으로 치지 않는다(누르면 직접 토글한다).
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const pickerButtonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!pickerOpen) return undefined;
+    const close = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (pickerRef.current?.contains(target) || pickerButtonRef.current?.contains(target)) return;
+      setPickerOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [pickerOpen]);
+  // 열려 있는 동안 패널이 스크롤되거나 창 크기가 바뀌면 목록 버튼 아래로 다시 맞춘다.
+  useLayoutEffect(() => {
+    if (!pickerOpen) return undefined;
+    const place = () => {
+      const rect = pickerButtonRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setPickerAnchor((prev) =>
+        prev && prev.bottom === rect.bottom && prev.left === rect.left && prev.width === rect.width
+          ? prev
+          : rect,
+      );
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [pickerOpen]);
   const [query, setQuery] = useState('');
   const [numericOpen, setNumericOpen] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
@@ -185,6 +209,11 @@ export function ZonesPage({
   const [edits, setEdits] = useState<Record<string, FormEdit>>({});
   const consumedSearchRef = useRef<string | null>(null);
   const { save, create } = useZoneSave();
+  // 새 구역 양식. 상자를 손대기 전에는 구역 목록이 바뀌면 그 가운데로 따라간다.
+  const [newForm, setNewForm] = useState(NEW_ZONE_FORM);
+  const [newBoxEdit, setNewBoxEdit] = useState<ViewerEditBox | null>(null);
+  const newBox = useMemo(() => newBoxEdit ?? newZoneBox(zones), [newBoxEdit, zones]);
+  const newErrors = useMemo(() => newZoneErrors(newForm), [newForm]);
   const apply = useConfigApply(zones);
 
   const selectedZone = useMemo(
@@ -281,8 +310,8 @@ export function ZonesPage({
   };
 
   // isPending 은 다음 턴에 바뀌어, 같은 턴에 두 번 눌리면 두 번 보낸다. 보내는 중인 요청은 여기서 바로 막는다.
-  const sending = useRef(new Set<'save' | 'create' | 'publish'>());
-  const begin = (key: 'save' | 'create' | 'publish') => {
+  const sending = useRef(new Set<'save' | 'create'>());
+  const begin = (key: 'save' | 'create') => {
     if (sending.current.has(key)) return null;
     sending.current.add(key);
     return () => sending.current.delete(key);
@@ -325,23 +354,25 @@ export function ZonesPage({
     setEdits((prev) => withoutEdit(prev, selectedZone.zoneId));
   };
 
-  // 저장한 구역은 구성 묶음을 발행해야 현장(Tier 0)에 간다(명세 3.2). 결과는 최근 묶음 목록으로 안다(useConfigApply).
-  const handlePublish = () => {
-    const done = begin('publish');
-    if (!done) return;
-    apply.publish.mutate(undefined, {
-      onSettled: done,
-      onError: (error) => setEditNotice({ tone: 'warning', text: publishErrorText(error) }),
-    });
+  // 드롭다운의 「새 구역」: 고친 형상은 미리보기로 남기고 선택을 풀어 새 구역 양식을 보인다.
+  const handlePickNew = () => {
+    if (isEditingSelected) finishZoneEdit();
+    viewport.clearSelection();
+    setPickerOpen(false);
   };
 
-  // 새 구역은 고른 유형의 기본 상자로 먼저 만들고(v1) 바로 형상 편집을 시작한다. 현장에는 발행해야 간다.
-  const handleCreate = (zoneType: string) => {
+  // 새 구역은 양식의 속성·상자로 만들고(v1) 바로 형상 편집을 시작한다. 양식은 처음 값으로 돌린다. 현장에는 발행해야 간다.
+  const handleCreate = () => {
+    if (Object.keys(newErrors).length > 0) return;
     const done = begin('create');
     if (!done) return;
-    create.mutate(newZoneBody(zones, zoneType), {
+    create.mutate(newZoneBodyOf(newForm, newBox), {
       onSettled: done,
-      onSuccess: (zone) => requestZoneEdit(zone.zone_id, { focus: true }),
+      onSuccess: (zone) => {
+        setNewForm(NEW_ZONE_FORM);
+        setNewBoxEdit(null);
+        requestZoneEdit(zone.zone_id, { focus: true });
+      },
       onError: (error) => setEditNotice({ tone: 'warning', text: saveErrorText(error) }),
     });
   };
@@ -388,201 +419,160 @@ export function ZonesPage({
         </div>
       )}
 
-      {/* 1단: 모드·상태 배지(좌) + 구역 목록 토글 버튼(우) */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-          <span className="shrink-0 rounded-md bg-surface-3 px-2 py-0.5 font-semibold whitespace-nowrap text-point-soft">
-            구역 편집 모드
-          </span>
-          <span className="shrink-0 rounded-md bg-surface-2 px-2 py-0.5 font-medium whitespace-nowrap text-muted-foreground">
-            {!selectedZone
-              ? draftList.length > 0
-                ? `미저장 ${draftList.length}건`
-                : '구역 미선택'
-              : hasUnsavedChange || formDirty
-                ? '미저장 변경'
-                : '변경 없음'}
-          </span>
-          {draftList.length > 0 && (
-            <span className="text-muted-foreground">전체 미저장 {draftList.length}건</span>
-          )}
-        </div>
-        <div className="flex shrink-0 gap-1.5">
-          {canEditZones && (
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                disabled={create.isPending || !zonesRaw}
-                render={<Button size="sm" variant="secondary" className="whitespace-nowrap" />}
-              >
-                <Plus className="size-3.5" aria-hidden />새 구역
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                {ZONE_TYPES.map((type) => (
-                  <DropdownMenuItem key={type} onClick={() => handleCreate(type)}>
-                    {ZONE_TYPE_LABEL[type]}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-          <Button
-            size="sm"
-            variant="secondary"
-            aria-expanded={pickerOpen}
-            onClick={() => setPickerOpen((prev) => !prev)}
-            className="whitespace-nowrap"
-          >
-            <FolderSearch className="size-3.5" aria-hidden />
-            구역 목록 ({zones.length})
-          </Button>
-        </div>
-      </div>
-
-      {/* 현장 적용(명세 FR-17): 구성 묶음 버전과 Tier 0 적용 상태, 발행하지 않은 저장 건수 */}
-      <div
-        role="group"
-        aria-label="현장 적용"
-        className="flex items-center justify-between gap-2 rounded-[10px] bg-surface-2 px-2.5 py-1.5 text-xs"
+      {/* 구역 선택 드롭다운. 기본은 「새 구역」(양식), 구역을 고르면 그 구역이다(관제 데모와 같다). */}
+      <Button
+        ref={pickerButtonRef}
+        variant="secondary"
+        aria-label={`구역 목록: ${selectedZone ? `${selectedZone.zoneId} ${selectedZone.name}` : '새 구역'}`}
+        aria-haspopup="dialog"
+        aria-expanded={pickerOpen}
+        onClick={() => setPickerOpen((prev) => !prev)}
+        className="w-full justify-between"
       >
-        {/* 적용 대기 → 현장 적용됨 변화를 화면 읽기 프로그램도 알린다. */}
-        <span aria-live="polite" className="flex min-w-0 flex-wrap items-center gap-x-1.5">
-          <span className="text-muted-foreground">구성</span>
-          {apply.latest ? (
+        <span className="min-w-0 truncate">
+          {selectedZone ? (
             <>
-              <span className="font-mono font-semibold text-foreground">
-                {apply.latest.config_version}
-              </span>
-              <span className="font-medium text-foreground">
-                {APPLY_LABEL[apply.latest.status]}
-              </span>
-              {/* 거부·불일치면 Tier 0 가 계속 쓰는 묶음을 함께 보인다. */}
-              {apply.latest.status !== 'PENDING' &&
-                apply.latest.status !== 'APPLIED' &&
-                apply.latest.last_ack?.active_config_version && (
-                  <span className="text-muted-foreground">
-                    · 현장 {apply.latest.last_ack.active_config_version}
-                  </span>
-                )}
+              <span className="font-mono font-semibold">{selectedZone.zoneId}</span> ·{' '}
+              {selectedZone.name}
             </>
           ) : (
-            <span className="text-muted-foreground">—</span>
-          )}
-          {apply.unpublished && apply.unpublished.size > 0 && (
-            <span className="text-muted-foreground">· 발행 전 {apply.unpublished.size}건</span>
+            '새 구역'
           )}
         </span>
-        {canEditZones && (
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={apply.publish.isPending || !apply.canPublish}
-            onClick={handlePublish}
-            className="shrink-0 whitespace-nowrap"
-          >
-            현장에 적용
-          </Button>
-        )}
-      </div>
+        <ChevronDown className="size-4 shrink-0" aria-hidden />
+      </Button>
 
-      {/* 2단: 미선택 안내 또는 선택된 구역 식별 헤더 (전체 폭 사용으로 줄바꿈 깨짐 방지) */}
-      {selectedZone ? (
-        <div
-          onDoubleClick={() => {
-            if (!isEditingSelected && canEditZones) handleStartEdit();
-          }}
-          className="flex items-center gap-2 rounded-[10px] bg-surface-2 px-2.5 py-1.5"
-        >
-          <span className="shrink-0 rounded-md bg-surface-3 px-2 py-0.5 font-mono text-xs font-semibold whitespace-nowrap text-foreground">
-            {isEditingSelected ? `구역 수정 중 · ${selectedZoneId}` : selectedZone.zoneId}
-          </span>
-          <span className="min-w-0 truncate text-xs font-medium text-foreground">
-            {selectedZone.name}
-          </span>
-          <span className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground">
-            v{selectedZone.version}
-            {apply.unpublished?.has(selectedZone.zoneId) && ' · 발행 전'}
-          </span>
-        </div>
-      ) : (
-        <p className="rounded-[10px] bg-surface-2 px-3 py-2 text-xs text-muted-foreground">
-          3D 구역을 클릭해 선택 · 더블클릭해 바로 수정
-        </p>
+      <ConfigApplyBar
+        apply={apply}
+        unpublishedCount={apply.unpublished?.size ?? 0}
+        canEdit={canEditZones}
+        onError={(text) => setEditNotice({ tone: 'warning', text })}
+      />
+
+      {!selectedZone && canEditZones && (
+        <NewZoneForm
+          form={newForm}
+          box={newBox}
+          errors={newErrors}
+          ready={Boolean(zonesRaw)}
+          pending={create.isPending}
+          summary={
+            <CurrentBoxSummary
+              box={newBox}
+              before={newBox}
+              compareOpen={false}
+              onToggleCompare={() => undefined}
+            />
+          }
+          onFormChange={setNewForm}
+          onBoxChange={setNewBoxEdit}
+          onAdd={handleCreate}
+        />
       )}
 
-      {/* 접이식 구역 검색·선택 목록 */}
-      {pickerOpen && (
-        <div
-          role="region"
-          aria-label="구역 목록 선택"
-          className="flex flex-col gap-1.5 rounded-[12px] bg-surface-2 p-2 ring-1 ring-border ring-inset"
-        >
-          <Input
-            aria-label="구역 검색"
-            placeholder="구역 ID 또는 이름 검색…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(event) => {
-              if (event.key !== 'Escape') return;
-              event.preventDefault();
-              event.stopPropagation();
-              setPickerOpen(false);
-            }}
-            className="h-8 text-xs"
-          />
-          {zonesFailed && (
-            <p role="alert" className="text-xs text-muted-foreground">
-              구역 목록을 불러오지 못했습니다. 자동으로 다시 시도합니다.
-            </p>
-          )}
-          <div className="flex max-h-[168px] flex-col gap-1 overflow-y-auto">
-            {filteredZones.map((zone) => {
-              const active = zone.zoneId === selectedZoneId;
-              const hasDraft = Boolean(localDrafts[zone.zoneId]);
-              return (
-                <button
-                  key={zone.zoneId}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() => handlePickZone(zone.zoneId)}
-                  className={
-                    'flex items-center justify-between rounded-[8px] px-2.5 py-1.5 text-left text-xs transition-colors ' +
-                    (active
-                      ? 'bg-surface-3 font-semibold text-foreground ring-1 ring-primary'
-                      : 'text-muted-foreground hover:bg-surface-3 hover:text-foreground')
+      {/* 구역 목록 드롭다운: 검색과 목록. 바깥을 누르거나 Esc 로 닫는다(관제 데모와 같다). */}
+      {pickerOpen &&
+        createPortal(
+          <div
+            ref={pickerRef}
+            role="region"
+            aria-label="구역 목록 선택"
+            style={
+              pickerAnchor
+                ? {
+                    top: pickerAnchor.bottom + 6,
+                    left: pickerAnchor.left,
+                    width: pickerAnchor.width,
                   }
-                >
-                  <span className="truncate">
-                    <span className="font-mono font-semibold text-foreground">{zone.zoneId}</span> ·{' '}
-                    {zone.name}
-                  </span>
-                  <span className="flex shrink-0 items-center gap-1">
-                    {zone.min[2] > 0 && (
-                      <span className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-                        공중 {formatMeters(zone.min[2])}m
-                      </span>
-                    )}
-                    {hasDraft && (
-                      <span className="rounded bg-point-soft/20 px-1.5 py-0.5 text-[10px] font-medium text-point-soft">
-                        미저장 미리보기
-                      </span>
-                    )}
-                    {apply.unpublished?.has(zone.zoneId) && (
-                      <span className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                        발행 전
-                      </span>
-                    )}
-                  </span>
-                </button>
-              );
-            })}
-            {filteredZones.length === 0 && (
-              <p className="py-2 text-center text-xs text-muted-foreground">
-                조건에 맞는 구역이 없습니다.
+                : undefined
+            }
+            className="fixed z-[20] flex w-[330px] flex-col gap-1.5 rounded-[12px] bg-popover p-2 shadow-float ring-1 ring-border ring-inset"
+          >
+            <Input
+              aria-label="구역 검색"
+              placeholder="검색"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Escape') return;
+                event.preventDefault();
+                event.stopPropagation();
+                setPickerOpen(false);
+              }}
+              className="h-8 text-xs"
+            />
+            {zonesFailed && (
+              <p role="alert" className="text-xs text-muted-foreground">
+                구역 목록을 불러오지 못했습니다. 자동으로 다시 시도합니다.
               </p>
             )}
-          </div>
-        </div>
-      )}
+            <div className="flex max-h-[220px] flex-col gap-1 overflow-y-auto">
+              {/* 관리자가 아니면 양식은 없고 선택만 푼다. */}
+              <button
+                type="button"
+                aria-pressed={!selectedZone}
+                onClick={handlePickNew}
+                className={
+                  'flex items-center rounded-[8px] px-2.5 py-1.5 text-left text-xs transition-colors ' +
+                  (!selectedZone
+                    ? 'bg-surface-3 font-semibold text-foreground ring-1 ring-primary'
+                    : 'text-muted-foreground hover:bg-surface-3 hover:text-foreground')
+                }
+              >
+                새 구역
+              </button>
+              {filteredZones.map((zone) => {
+                const active = zone.zoneId === selectedZoneId;
+                const hasDraft = Boolean(localDrafts[zone.zoneId]);
+                return (
+                  <button
+                    key={zone.zoneId}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => handlePickZone(zone.zoneId)}
+                    className={
+                      'flex items-center justify-between rounded-[8px] px-2.5 py-1.5 text-left text-xs transition-colors ' +
+                      (active
+                        ? 'bg-surface-3 font-semibold text-foreground ring-1 ring-primary'
+                        : 'text-muted-foreground hover:bg-surface-3 hover:text-foreground')
+                    }
+                  >
+                    <span className="truncate">
+                      <span className="font-mono font-semibold text-foreground">{zone.zoneId}</span>{' '}
+                      · {zone.name}
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1">
+                      <span className="font-mono text-[10px] text-muted-foreground">
+                        v{zone.version}
+                      </span>
+                      {zone.min[2] > 0 && (
+                        <span className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                          공중 {formatMeters(zone.min[2])}m
+                        </span>
+                      )}
+                      {hasDraft && (
+                        <span className="rounded bg-point-soft/20 px-1.5 py-0.5 text-[10px] font-medium text-point-soft">
+                          미저장 미리보기
+                        </span>
+                      )}
+                      {apply.unpublished?.has(zone.zoneId) && (
+                        <span className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          발행 전
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+              {filteredZones.length === 0 && (
+                <p className="py-2 text-center text-xs text-muted-foreground">
+                  조건에 맞는 구역이 없습니다.
+                </p>
+              )}
+            </div>
+          </div>,
+          document.body,
+        )}
 
       {/* 보관 중인 미저장 미리보기(다중 구역) 바로가기 칩 */}
       {draftList.length > 0 && (
@@ -678,18 +668,6 @@ export function ZonesPage({
       {/* 활성 3D 연속 편집 세션: 중심 노란 구 + 면/높이 7핸들 동시 조작 + 접이식 정밀 입력 + 저장 판단 */}
       {selectedZone && isEditingSelected && editPreview && (
         <div className="flex flex-col gap-2">
-          <div className="grid grid-cols-3 gap-1 text-center text-[11px] text-muted-foreground">
-            <span className="rounded-md bg-surface-2 px-1.5 py-1 whitespace-nowrap">
-              중앙 구 · XY 이동
-            </span>
-            <span className="rounded-md bg-surface-2 px-1.5 py-1 whitespace-nowrap">
-              옆면(4) · 폭/깊이
-            </span>
-            <span className="rounded-md bg-surface-2 px-1.5 py-1 whitespace-nowrap">
-              원뿔(2) · 높이 Z
-            </span>
-          </div>
-
           <CurrentBoxSummary
             box={editPreview.draft}
             before={editPreview.before}
@@ -708,7 +686,7 @@ export function ZonesPage({
             >
               <span className="flex items-center gap-1.5">
                 <SlidersHorizontal className="size-3.5" aria-hidden />
-                정밀 입력 (World, m)
+                정밀 입력 (m)
               </span>
               {numericOpen ? (
                 <ChevronUp className="size-3.5" aria-hidden />

@@ -1,20 +1,16 @@
-import { isStale, noticeText, showsNotice, tileLabel } from '@/features/cctv/cctv';
+import { isStale, tileLabel } from '@/features/cctv/cctv';
 import { useCctvStore } from '@/features/cctv/cctv.store';
+import { CctvDemo } from '@/features/cctv/CctvDemo';
 import { frameAgeSec } from '@/features/cctv/protocol';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import { PageTitle } from '@/features/layout/PageTitle';
 import { useNow } from '@/features/layout/useNow';
-import { cameraRows } from '@/features/system/health';
-import { useLinkAlive } from '@/hooks/useLinkAlive';
 import { env } from '@/lib/env';
-import { useRealtimeStore } from '@/store/realtime.store';
-import { Alert, AlertDescription, AlertTitle } from '@simai/ui/components/alert';
-import { Card, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
 
 // CCTV 관제(명세 3.3·16장, FR-133): 현장 노트북 영상 중계가 이미 받은 카메라 4대 H.264 를 루프백 WebSocket 으로 받아
-// WebCodecs 로 원본 해상도 그대로 4분할에 그린다. 영상은 EC2 를 거치지 않으므로 현장 노트북이 아니면 안내와
-// EC2 가 알린 카메라 상태만 보인다. 영상은 알림·판정에 쓰지 않는다.
+// WebCodecs 로 원본 해상도 그대로 4분할에 그린다. 영상은 EC2 를 거치지 않는다. 영상은 알림·판정에 쓰지 않는다.
+// 중계와 이어지지 않은 동안(연결 중·붙지 못함·끊김·WebCodecs 없음)은 연결 상태 한 줄과 그 아래 모의 화면을 보인다.
 
 type Attach = (cameraId: string, canvas: HTMLCanvasElement | null) => void;
 
@@ -50,48 +46,20 @@ function CameraTile({ cameraId, attach }: { cameraId: string; attach: Attach }) 
   );
 }
 
-/** 현장 노트북이 아닐 때: EC2 가 알린 카메라 상태(시스템 상태 화면과 같은 값). */
-function CameraStatus() {
-  const alive = useLinkAlive();
-  const rows = cameraRows(useRealtimeStore((s) => (alive ? s.health : null)));
-  return (
-    <Card size="sm">
-      <CardHeader>
-        <CardTitle>카메라 상태</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {rows.length === 0 ? (
-          <p className="text-muted-foreground">카메라 상태 없음</p>
-        ) : (
-          <ul aria-label="카메라 상태" className="grid grid-cols-4 gap-3">
-            {rows.map((row) => (
-              <li key={row.id} className="flex items-center gap-2">
-                <span className="font-mono">{row.id}</span>
-                <span className={cn(!row.ok && 'font-semibold')}>{row.status ?? '—'}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
 export function CctvPage() {
   const attach = useCctvPreview(env.VITE_CCTV_PREVIEW_URL);
   const link = useCctvStore((s) => s.link);
-  const everOpened = useCctvStore((s) => s.everOpened);
   const cameras = useCctvStore((s) => s.cameras);
 
-  if (showsNotice(link, everOpened)) {
+  // 현장 노트북 중계와 이어지지 않았으면 모의 화면을 보인다(한 번 붙은 뒤 끊겨도 같다).
+  if (link !== 'open') {
     return (
       <>
         <PageTitle>CCTV 관제</PageTitle>
-        <Alert>
-          <AlertTitle>현장 노트북에서만 표시</AlertTitle>
-          <AlertDescription>{noticeText(link)}</AlertDescription>
-        </Alert>
-        <CameraStatus />
+        <p role="status" className="text-sm font-semibold">
+          {tileLabel(undefined, link)}
+        </p>
+        <CctvDemo />
       </>
     );
   }

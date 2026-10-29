@@ -9,12 +9,29 @@ import { SceneBackground } from '@/features/viewer3d/scene/SceneBackground';
 import { SceneBase } from '@/features/viewer3d/SceneBase';
 import { WorkSurfaceLayer } from '@/features/viewer3d/surfaces/WorkSurfaceLayer';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
+import { worldPoint, worldToThree } from '@/features/viewer3d/worldCoordinates';
+import { DEMO_ROOM } from '@/features/viewer3d/WorldScene';
 import { ZoneLayer } from '@/features/viewer3d/zones/ZoneLayer';
 import { Canvas, useThree } from '@react-three/fiber';
 import { memo, useCallback, useEffect, type ReactNode } from 'react';
 
+// 처음 시점: 방 가운데를 앞·오른쪽 10m 위에서 내려다본다. 모두 World 좌표다.
+const ROOM_CENTER = worldToThree(worldPoint(DEMO_ROOM.sizeX / 2, DEMO_ROOM.sizeY / 2, 0));
+const VIEW_DISTANCE = 10;
+
 // 모듈 상수로 둬서 Canvas 가 다시 렌더돼도 카메라·렌더러 설정을 다시 적용하지 않는다.
-const CAMERA = { position: [8, 8, 8] as [number, number, number], fov: 50, near: 0.1, far: 500 };
+const CAMERA = {
+  position: worldToThree(
+    worldPoint(
+      DEMO_ROOM.sizeX / 2 + VIEW_DISTANCE,
+      DEMO_ROOM.sizeY / 2 - VIEW_DISTANCE,
+      VIEW_DISTANCE,
+    ),
+  ),
+  fov: 50,
+  near: 0.1,
+  far: 500,
+};
 const GL = { antialias: true, alpha: true };
 const DPR: [number, number] = [1, 2];
 
@@ -78,7 +95,7 @@ export const ViewerCanvas = memo(function ViewerCanvas({ children }: ViewerCanva
   return (
     <Canvas camera={CAMERA} gl={GL} dpr={DPR} onPointerMissed={handlePointerMissed}>
       <RendererStatus />
-      <CameraRig />
+      <CameraRig target={ROOM_CENTER} home={CAMERA.position} />
       <SceneBase />
       {/* 정적 배경 Scene(-59). 같은 깊이 버퍼라 배경 뒤 사람은 가려진다. 클릭은 받지 않는다. */}
       <SceneBackground />

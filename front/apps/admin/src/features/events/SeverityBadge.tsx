@@ -8,13 +8,13 @@ const LOOK: Record<Severity, { glyph: string; className: string }> = {
   CRITICAL: { glyph: '▲▲', className: 'border-sev-critical bg-sev-critical text-background' },
   HIGH: { glyph: '▲', className: 'border-sev-critical text-sev-critical' },
   CAUTION: { glyph: '!', className: 'border-sev-caution text-sev-caution' },
-  INFO: { glyph: 'i', className: 'border-faint text-faint' },
+  INFO: { glyph: 'i', className: 'border-faint text-muted-foreground' },
 };
 
 export function SeverityBadge({ severity, className }: { severity: Severity; className?: string }) {
   const look = LOOK[severity];
   return (
-    <Badge variant="outline" className={cn('font-mono font-bold', look.className, className)}>
+    <Badge variant="outline" className={cn('rounded-[4px] font-bold', look.className, className)}>
       <span aria-hidden>{look.glyph}</span>
       {severity}
     </Badge>

@@ -78,10 +78,6 @@ export function createAlarmSound(
 
 export const alarmSound = createAlarmSound();
 
-/** 시험 경보(명세 FR-114): 이벤트를 만들지 않고 소리만 한 번. 메뉴를 누른 입력 안에서 부르므로 소리도 깨운다. */
-export const playTestAlarm = (sound: AlarmSound = alarmSound) =>
-  sound.unlock().then(() => sound.beep());
-
 /**
  * 사용자 입력(로그인 버튼 포함)에서 소리를 깨운다. 리스너는 떼지 않는다.
  * 나중에 소리가 멈춰도(절전 복귀 등) 다음 입력에서 다시 깨운다. 깨어 있으면 아무것도 하지 않는다.

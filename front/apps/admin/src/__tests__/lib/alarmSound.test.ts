@@ -1,4 +1,4 @@
-import { createAlarmSound, installAudioUnlock, playTestAlarm } from '@/lib/alarmSound';
+import { createAlarmSound, installAudioUnlock } from '@/lib/alarmSound';
 import { describe, expect, it, vi } from 'vitest';
 
 /** 예약된 소리만 기록하는 AudioContext 대역. resume 이 막히면 suspended 로 남는다. */
@@ -166,13 +166,5 @@ describe('installAudioUnlock', () => {
     await unlock.mock.results[0]!.value;
     target.dispatchEvent(new Event('pointerdown'));
     expect(unlock).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe('playTestAlarm', () => {
-  it('소리를 깨우고 경보를 한 번 낸다', async () => {
-    const { sound, contexts } = setup();
-    await playTestAlarm(sound);
-    expect(contexts[0]!.tones).toHaveLength(2);
   });
 });

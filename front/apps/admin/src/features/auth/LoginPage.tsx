@@ -1,6 +1,6 @@
 import { loginFormSchema } from '@/features/auth/types';
 import { useLogin } from '@/features/auth/useLogin';
-import { BrandMark } from '@/features/layout/BrandMark';
+import { BrandMark, Wordmark } from '@/features/layout/BrandMark';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Alert, AlertDescription } from '@simai/ui/components/alert';
 import { Button } from '@simai/ui/components/button';
@@ -32,14 +32,12 @@ export function LoginPage() {
   });
 
   return (
-    <main className="flex min-h-svh items-center justify-center bg-background">
-      <Card className="w-[400px] gap-6 ring-border [--card-spacing:--spacing(8)]">
+    <main className="flex min-h-svh items-center justify-center bg-background bg-blueprint">
+      <Card className="w-[400px] gap-6 rounded-[16px] shadow-float ring-border [--card-spacing:--spacing(8)]">
         <CardHeader className="gap-4">
           <div className="flex items-center gap-2.5">
             <BrandMark />
-            <strong className="text-[21px] font-bold tracking-[-0.4px]">
-              sim<span className="text-primary">AI</span>
-            </strong>
+            <Wordmark />
           </div>
           <h1 className="text-[22px] font-bold">관제 로그인</h1>
         </CardHeader>
@@ -62,6 +60,8 @@ export function LoginPage() {
               <Input
                 id="username"
                 autoComplete="username"
+                autoCapitalize="none"
+                spellCheck={false}
                 autoFocus
                 aria-invalid={errors.username ? true : undefined}
                 aria-describedby={errors.username ? 'username-error' : undefined}
@@ -107,7 +107,7 @@ export function LoginPage() {
               </Alert>
             )}
             <Button type="submit" size="lg" disabled={pending} className="mt-2">
-              {pending ? '로그인 중' : '로그인'}
+              {pending ? '로그인 중…' : '로그인'}
             </Button>
           </form>
         </CardContent>

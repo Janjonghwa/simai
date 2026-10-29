@@ -17,5 +17,5 @@ function ZonesRoute() {
 export const Route = createFileRoute('/_app/zones')({
   validateSearch: parseZonesSearch,
   component: ZonesRoute,
-  staticData: { fullBleed: true, eventPanel: true, zoneEditor: true },
+  staticData: { fullBleed: true, zoneEditor: true },
 });

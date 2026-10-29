@@ -5,6 +5,7 @@ import {
   type RiskEventView,
   type TrackView,
 } from '@/features/viewer3d/data/spatialFrame';
+import { PALETTE, type ScenePalette } from '@/features/viewer3d/palette';
 import type { ViewerMode } from '@/features/viewer3d/types';
 
 // -185 위험 강조 계산. 렌더러와 떨어진 순수 함수라 시험할 수 있다.
@@ -196,7 +197,7 @@ export function riskLabel(risk: RiskHighlight): string {
   return parts.join(' · ');
 }
 
-/** 표시 모양. CRITICAL 빨강 이중선·HIGH 주황, 실시간 관측이 아니면(계획·재생·마지막 수신) 점선. */
+/** 표시 모양. CRITICAL 진한 빨강 이중선·HIGH 옅은 빨강, 실시간 관측이 아니면(계획·재생·마지막 수신) 점선. */
 export interface RiskStyle {
   color: number;
   labelColor: string;
@@ -204,15 +205,10 @@ export interface RiskStyle {
   dashed: boolean;
 }
 
-// WebGL 재질은 CSS 토큰을 바로 읽지 못해 장면 전용 값을 여기에만 둔다.
-// 구역 색(청록·보라)·선택 색(파랑)과 겹치지 않는 경보색이다.
-const LEVEL_COLOR: Record<RiskLevel, { color: number; label: string }> = {
-  CRITICAL: { color: 0xff4d5a, label: '#ff8a92' },
-  HIGH: { color: 0xff9f1c, label: '#ffc46b' },
-};
-
-export function riskStyle(risk: RiskHighlight): RiskStyle {
-  const { color, label } = LEVEL_COLOR[risk.level];
+// 색은 장면 색표(palette)를 따른다. 구역 색(청록·보라)·선택 색(파랑)과 겹치지 않는 경보색이다. 이벤트 패널처럼
+// HIGH 도 빨강 계열이고(주황은 지연 전용, CONVENTION) CRITICAL 보다 옅게 해 등급을 가른다.
+export function riskStyle(risk: RiskHighlight, palette: ScenePalette = PALETTE.dark): RiskStyle {
+  const { color, label } = palette.risk[risk.level];
   return {
     color,
     labelColor: label,

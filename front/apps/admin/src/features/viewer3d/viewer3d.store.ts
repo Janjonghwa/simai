@@ -4,6 +4,7 @@ import {
   sameLayers,
   type ResolvedLayers,
 } from '@/features/viewer3d/layers';
+import type { ViewerTheme } from '@/features/viewer3d/palette';
 import { isViewerMode, parseTarget, sameTarget, targetKey } from '@/features/viewer3d/target';
 import type {
   CommandResult,
@@ -41,6 +42,12 @@ export interface ViewerState {
   activated: FocusRequest | null;
   /** 장면에 올라온 선택 가능 대상의 키별 등록 수. 같은 키가 잠시 겹쳐도 하나가 빠질 때 지우지 않는다. */
   targets: ReadonlyMap<string, number>;
+  /** 장면 색표(화면 테마와 같다). */
+  theme: ViewerTheme;
+  /** 포인터가 1초 넘게 머문 대상 키. 그 대상의 이름표를 보인다(관제 데모와 같다). */
+  hovered: string | null;
+  /** 처음 시점으로 돌아가기 요청 수. 늘 때마다 카메라를 처음 자리로 옮긴다. */
+  viewResets: number;
   /** 레이어별 표시·피킹(-234). 기본값은 모두 interactive(기존 동작). */
   layers: ResolvedLayers;
   /** 기다리는 선택 요청(-234). 하나뿐이다. */
@@ -62,6 +69,9 @@ export interface ViewerState {
   markError(error: ViewerError): void;
   /** 뷰어가 내려갈 때 기다리던 선택을 UNMOUNTED 로 끝내고 타이머를 푼다. */
   dispose(): void;
+  setTheme(theme: ViewerTheme): void;
+  setHovered(key: string | null): void;
+  resetView(): CommandResult;
 }
 
 export type ViewerStore = StoreApi<ViewerState>;
@@ -142,6 +152,9 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       layers: DEFAULT_LAYERS,
       pendingSelect: null,
       selectRequest: null,
+      theme: 'dark',
+      hovered: null,
+      viewResets: 0,
 
       registerTarget: (target) => {
         const key = targetKey(target);
@@ -259,6 +272,20 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       },
 
       dispose: () => settle('CANCELLED', 'UNMOUNTED'),
+
+      setTheme: (theme) => {
+        if (get().theme !== theme) set({ theme });
+      },
+
+      setHovered: (key) => {
+        if (get().hovered !== key) set({ hovered: key });
+      },
+
+      resetView: () => {
+        if (get().phase !== 'ready') return { ok: false, reason: 'NOT_READY' };
+        set({ viewResets: get().viewResets + 1 });
+        return OK;
+      },
     };
   });
 }

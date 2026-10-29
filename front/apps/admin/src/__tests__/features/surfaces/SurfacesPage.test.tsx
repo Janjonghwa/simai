@@ -375,7 +375,7 @@ describe('작업면 등록 화면', () => {
     act(() => row(STAGE).click());
     expect(screen.getByLabelText('작업면 값')).toBeTruthy();
     expect(screen.queryByLabelText('폭 (m)')).toBeNull();
-    for (const name of ['새 작업면', '3D 로 고치기', '저장', '현장에 적용'])
+    for (const name of ['새 작업면', '3D 로 고치기', '저장', '현장에 반영'])
       expect(screen.queryByRole('button', { name })).toBeNull();
   });
 
@@ -574,7 +574,14 @@ describe('작업면 등록 화면', () => {
     const writes = recordWrites();
     await renderPage();
     act(() => row(DESK).click());
-    act(() => button('2D').click());
+    // 3D 가 멈추면 2D 로 바뀐다(손으로 2D 로 바꾸는 버튼은 없다).
+    act(() =>
+      (fake.props as Viewer3DProps | null)?.onStatusChange?.({
+        phase: 'error',
+        mode: 'LIVE',
+        error: { code: 'RENDER_FAILED', message: 'x' },
+      } as ViewerStatus),
+    );
     act(() => button('새 작업면').click());
     expect(fake.beginObjectCreate).not.toHaveBeenCalled();
     expect(button('3D 로 고치기').disabled).toBe(true);
@@ -653,17 +660,17 @@ describe('작업면 등록 화면', () => {
     ).toBeNull();
   });
 
-  it('저장한 작업면은 발행 전으로 세고, 현장에 적용하면 적용 대기가 된다', async () => {
+  it('저장한 작업면은 현장 미반영으로 세고, 현장에 반영하면 보내는 중이 된다', async () => {
     await renderPage();
     act(() => row(DESK).click());
     act(() => typeInto('폭 (m)', '1.5'));
     act(() => button('저장').click());
     await screen.findByText('저장했습니다 · v2');
-    await screen.findByText('· 발행 전 1건');
+    await screen.findByText('현장 미반영 1건');
     expect(within(row(DESK)).getByText('발행 전')).toBeTruthy();
 
-    act(() => button('현장에 적용').click());
-    await screen.findByText('적용 대기');
+    act(() => button('현장에 반영').click());
+    await screen.findByText('현장에 보내는 중');
   });
 
   it('화면을 떠나면 편집을 취소하고 초안을 버리며, 3D 에서 작업면을 지우고 고른 작업면을 놓는다', async () => {

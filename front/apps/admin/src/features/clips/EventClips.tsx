@@ -25,7 +25,7 @@ function ClipRow({ eventId, clip, auto }: { eventId: string; clip: Clip; auto: b
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
         <span className="font-mono font-semibold">{clip.camera_id}</span>
         <span className="font-mono text-muted-foreground">
-          {formatTime(clip.clip_start_capture_ms)}–{formatTime(clip.clip_end_capture_ms)}
+          {formatTime(clip.clip_start_capture_ms)} ~ {formatTime(clip.clip_end_capture_ms)}
         </span>
         {clipTags(clip).map((tag) => (
           <span key={tag} className={TAG}>
@@ -94,16 +94,19 @@ function ClipRow({ eventId, clip, auto }: { eventId: string; clip: Clip; auto: b
   );
 }
 
-/** 이벤트 상세의 카메라별 클립. 관리자가 아니거나 클립이 생기지 않는 이벤트면 그리지 않는다. */
-export function EventClips({ event }: { event: EventItem }) {
+/**
+ * 이벤트 상세의 카메라별 클립. 관리자가 아니거나 클립이 생기지 않는 이벤트면 그리지 않는다.
+ * 사건 상세에서는 규칙마다 하나씩 두므로 제목에 규칙 이름을 넘긴다.
+ */
+export function EventClips({ event, title = '클립' }: { event: EventItem; title?: string }) {
   const { enabled, clips, failed } = useEventClips(event);
   if (!enabled) return null;
   const groups = groupClips(clips ?? []);
   const auto = autoRetained(event);
 
   return (
-    <section aria-label="클립" className="flex flex-col gap-2">
-      <h3 className="text-sm text-muted-foreground">클립</h3>
+    <section aria-label={title} className="flex flex-col gap-2">
+      <h3 className="text-sm text-muted-foreground">{title}</h3>
       {failed && (
         <p role="alert" className="text-sm text-muted-foreground">
           클립 목록을 받지 못했습니다

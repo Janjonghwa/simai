@@ -13,6 +13,8 @@
 @theme inline {
   --font-sans: 'Noto Sans KR Variable', 'Noto Sans KR', 'Malgun Gothic', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, Consolas, monospace;
+  /* 누름·메뉴처럼 사람이 한 일에 답하는 움직임은 처음이 빠른 강한 ease-out 으로 한다. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --font-heading: var(--font-sans);
   --color-surface-2: var(--surface-2);
   --color-surface-3: var(--surface-3);
@@ -23,6 +25,8 @@
   --color-delay: var(--delay);
   --color-delay-soft: var(--delay-soft);
   --color-ok: var(--ok);
+  --color-zone-volume: var(--zone-volume);
+  --color-zone-floor: var(--zone-floor);
   --color-stripe-a: var(--stripe-a);
   --color-stripe-b: var(--stripe-b);
   --color-brand-hat: var(--brand-hat);
@@ -67,26 +71,32 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* simAI 화이트 모드. 위험·지연·정상 색은 흰 배경에서 글자 대비 4.5:1 이 되게 다크보다 진하다. */
-:root {
-  --background: #f2f4f9;
-  --foreground: #172036;
+/*
+ * 도면 관제반: 다크는 청사진(짙은 도면 파랑 바탕), 화이트는 백사진(옅은 종이에 도면 잉크 파랑).
+ * 값은 팀에 공유한 관제 데모(simAI demo.html)와 같다. 본문 글자(foreground·muted-foreground)는 배경·카드 위에서
+ * 4.5:1 이상이고, 보조 표시인 faint 는 그보다 낮다. 화이트 모드의 상태색은 다크보다 진하다.
+ */
+/* simAI 화이트 모드(백사진). .paper 를 붙인 영역(TBM 회의록 종이)은 다크 모드에서도 이 값을 쓴다. */
+:root,
+.paper {
+  --background: #edf2f8;
+  --foreground: #0b2140;
   --card: #ffffff;
-  --card-foreground: #172036;
+  --card-foreground: #0b2140;
   --popover: #ffffff;
-  --popover-foreground: #172036;
-  --primary: #6886d5;
-  --primary-foreground: #081221;
-  --secondary: #f1f4f9;
-  --secondary-foreground: #172036;
-  --muted: #f1f4f9;
-  --muted-foreground: #56607a;
-  --accent: #e3e8f1;
-  --accent-foreground: #172036;
-  --destructive: #b42330;
-  --border: #d6dce8;
-  --input: #d6dce8;
-  --ring: #6886d5;
+  --popover-foreground: #0b2140;
+  --primary: #2257b8;
+  --primary-foreground: #ffffff;
+  --secondary: #e9eff6;
+  --secondary-foreground: #0b2140;
+  --muted: #e9eff6;
+  --muted-foreground: #3e5677;
+  --accent: #dce5f0;
+  --accent-foreground: #0b2140;
+  --destructive: #c21d1d;
+  --border: #c9d6e7;
+  --input: #7e93b1;
+  --ring: #1d4f9e;
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -94,66 +104,71 @@
   --chart-5: oklch(0.269 0 0);
   --radius: 0.625rem;
   --sidebar: #ffffff;
-  --sidebar-foreground: #172036;
-  --sidebar-primary: #6886d5;
-  --sidebar-primary-foreground: #081221;
-  --sidebar-accent: #e3e8f1;
-  --sidebar-accent-foreground: #172036;
-  --sidebar-border: #d6dce8;
-  --sidebar-ring: #6886d5;
+  --sidebar-foreground: #0b2140;
+  --sidebar-primary: #2257b8;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #dce5f0;
+  --sidebar-accent-foreground: #0b2140;
+  --sidebar-border: #c9d6e7;
+  --sidebar-ring: #1d4f9e;
 
-  --surface-2: #f1f4f9;
-  --surface-3: #e3e8f1;
-  --faint: #636e8c;
-  --point-soft: #495e95;
-  --sev-critical: #b42330;
-  --sev-caution: #8a5800;
-  --delay: #b04a05;
-  --delay-soft: #b04a05;
-  --ok: #1b7f4b;
-  --stripe-a: #e3e8f1;
-  --stripe-b: #d6dce8;
-  --brand-hat: #495e95;
-  --float-shadow: 0 12px 32px rgb(23 32 54 / 0.12);
+  --surface-2: #e9eff6;
+  --surface-3: #dce5f0;
+  --faint: #5f7596;
+  --point-soft: #1d4f9e;
+  --sev-critical: #c21d1d;
+  --sev-caution: #835600;
+  --delay: #c2500c;
+  --delay-soft: #a3400a;
+  --ok: #137a3e;
+  /* 구역 판정 유형(2D·3D): 입체는 빨강 점선, 바닥은 청록(관제 데모와 같다). */
+  --zone-volume: #c21d1d;
+  --zone-floor: #0f766e;
+  --stripe-a: #dce5f0;
+  --stripe-b: #c3d2e5;
+  --brand-hat: #16467f;
+  /* 도면 모눈 선(bg-blueprint). */
+  --grid-line: color-mix(in oklab, #1f5bb5 9%, transparent);
+  --float-shadow: 0 10px 28px rgb(11 33 64 / 0.14);
 }
 
-/* simAI 다크 네이비(기본). */
+/* simAI 다크(청사진, 기본). */
 .dark {
-  --background: #0a1020;
+  --background: #0a1b33;
   --foreground: #eef1f8;
-  --card: #111a2e;
+  --card: #0f2645;
   --card-foreground: #eef1f8;
-  --popover: #19233b;
+  --popover: #14305a;
   --popover-foreground: #eef1f8;
   --primary: #6886d5;
   --primary-foreground: #081221;
-  --secondary: #19233b;
+  --secondary: #14305a;
   --secondary-foreground: #eef1f8;
-  --muted: #19233b;
+  --muted: #14305a;
   --muted-foreground: #9ba7c5;
-  --accent: #222d4a;
+  --accent: #1b3b6b;
   --accent-foreground: #eef1f8;
   --destructive: #ff6b74;
   --border: #26324e;
-  --input: #26324e;
-  --ring: #6886d5;
+  --input: #5d7da8;
+  --ring: #b4c4ee;
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --sidebar: #111a2e;
+  --sidebar: #0f2645;
   --sidebar-foreground: #eef1f8;
   --sidebar-primary: #6886d5;
   --sidebar-primary-foreground: #081221;
-  --sidebar-accent: #222d4a;
+  --sidebar-accent: #1b3b6b;
   --sidebar-accent-foreground: #eef1f8;
   --sidebar-border: #26324e;
-  --sidebar-ring: #6886d5;
+  --sidebar-ring: #b4c4ee;
 
-  --surface-2: #19233b;
-  --surface-3: #222d4a;
-  --faint: #8591b1;
+  --surface-2: #14305a;
+  --surface-3: #1b3b6b;
+  --faint: #6b7797;
   --point-soft: #b4c4ee;
   /* 빨강·노랑은 위험 등급, 주황은 지연에만 쓴다. */
   --sev-critical: #ff6b74;
@@ -161,10 +176,17 @@
   --delay: #ff9447;
   --delay-soft: #ffb380;
   --ok: #4fc98a;
-  --stripe-a: #222d47;
-  --stripe-b: #323e5c;
+  --zone-volume: #ff6b74;
+  --zone-floor: #5fb3a8;
+  --stripe-a: #173560;
+  --stripe-b: #234a7c;
   --brand-hat: #c3cfee;
-  --float-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
+  --grid-line: color-mix(in oklab, #7ccbff 8%, transparent);
+  --float-shadow: 0 10px 28px rgb(2 8 20 / 0.5);
+}
+
+.paper {
+  color-scheme: light;
 }
 
 @layer base {
@@ -173,5 +195,12 @@
   }
   body {
     @apply bg-background text-foreground;
+  }
+  /* 브라우저가 그리는 선택 영역·스크롤바도 팔레트를 따른다. */
+  html {
+    scrollbar-color: var(--border) transparent;
+  }
+  ::selection {
+    background-color: color-mix(in oklab, var(--primary) 35%, transparent);
   }
 }

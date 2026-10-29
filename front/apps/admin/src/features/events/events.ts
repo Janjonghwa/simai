@@ -197,16 +197,60 @@ export function groupIncidents(entries: readonly EventEntry[]): Incident[] {
   );
 }
 
-/** 상단 등급 칸: 진행 중 이벤트 수. */
-export function severityCounts(entries: readonly EventEntry[]) {
-  const live = entries.filter((e) => isActive(e.event));
-  const count = (severity: Severity) => live.filter((e) => e.event.severity === severity).length;
-  return {
-    critical: count('CRITICAL'),
-    high: count('HIGH'),
-    caution: count('CAUTION'),
-    needsCheck: live.filter((e) => needsCheck(e.event)).length,
-  };
+/** 묶음에서 가장 먼저 발생한 시각(카드 머리줄). 발생 시각을 모르면 null. */
+export function firstRaisedAt(incident: Incident): number | null {
+  const times = incident.entries
+    .map((e) => e.event.raised_at)
+    .filter((t): t is number => t !== undefined);
+  return times.length > 0 ? Math.min(...times) : null;
+}
+
+/** 이 이벤트가 든 묶음. 목록에서 빠졌으면 없다. */
+export function incidentOf(entries: readonly EventEntry[], eventId: string): Incident | undefined {
+  return groupIncidents(entries).find((i) => i.entries.some((e) => e.event.event_id === eventId));
+}
+
+/** 확인(ACK)이 들어온 곳. */
+export const ACK_CHANNEL: Record<string, string> = {
+  CONTROL_ROOM: '관제',
+  FOREMAN_PWA: '반장 휴대폰',
+  SITE_BUTTON: '현장 버튼',
+};
+
+export interface TimelineItem {
+  at: number;
+  who: string;
+  text: string;
+}
+
+/** 사건 상세 타임라인: 규칙마다 발생·확인·해소(운영자 종료)를 시각 순으로. 받은 이벤트 값만으로 만든다. */
+export function incidentTimeline(incident: Incident): TimelineItem[] {
+  const items: TimelineItem[] = [];
+  for (const { event } of incident.entries) {
+    const rule = ruleName(event.rule_id);
+    if (event.raised_at !== undefined) {
+      items.push({ at: event.raised_at, who: '시스템', text: `${rule} 발생` });
+    }
+    for (const ack of event.acks ?? []) {
+      items.push({
+        at: ack.acked_at,
+        who: ACK_CHANNEL[ack.channel] ?? ack.channel,
+        text: `${rule} 확인 · ${ack.actor_id}`,
+      });
+    }
+    if (!isActive(event)) {
+      const at = event.resolved_at ?? eventTime(event);
+      const closed = event.resolution?.kind === 'OPERATOR_CLOSED';
+      if (at !== null) {
+        items.push({
+          at,
+          who: closed ? '운영자' : '시스템',
+          text: `${rule} ${closed ? '종료' : '해소'}`,
+        });
+      }
+    }
+  }
+  return items.sort((a, b) => a.at - b.at);
 }
 
 /** 규칙 하나의 표시 상태. */

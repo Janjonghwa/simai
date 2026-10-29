@@ -6,6 +6,8 @@ import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 
 /** 같은 대상을 연속 클릭했을 때 더블클릭으로 인정하는 최대 간격(ms). */
 const DOUBLE_CLICK_MS = 400;
+/** 포인터가 이만큼(ms) 머물면 그 대상의 이름표를 보인다(관제 데모와 같다). */
+export const HOVER_LABEL_MS = 1000;
 
 interface SelectableProps {
   target: ViewerTarget;
@@ -27,6 +29,8 @@ export function Selectable({ target, children, pickInstead, interactive = true }
   const store = useViewerStore();
   const { type, id } = target;
   const lastClickRef = useRef<{ key: string; at: number } | null>(null);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const hoverKey = useRef<string | null>(null);
 
   useEffect(() => {
     const registered = { type, id };
@@ -57,8 +61,34 @@ export function Selectable({ target, children, pickInstead, interactive = true }
     [store, type, id, pickInstead],
   );
 
+  // 투명 구역 안·뒤의 사람은 클릭처럼 사람을 먼저 잡는다. 가장 앞의 대상만 머무름을 잰다.
+  const handlePointerOver = useCallback(
+    (event: ThreeEvent<PointerEvent>) => {
+      event.stopPropagation();
+      const key = targetKey(pickInstead?.(event) ?? { type, id });
+      clearTimeout(hoverTimer.current);
+      hoverKey.current = key;
+      hoverTimer.current = setTimeout(() => store.getState().setHovered(key), HOVER_LABEL_MS);
+    },
+    [store, type, id, pickInstead],
+  );
+
+  const handlePointerOut = useCallback(() => {
+    clearTimeout(hoverTimer.current);
+    const key = hoverKey.current;
+    hoverKey.current = null;
+    if (key !== null && store.getState().hovered === key) store.getState().setHovered(null);
+  }, [store]);
+
+  useEffect(() => () => clearTimeout(hoverTimer.current), []);
+
   return (
-    <group name={targetKey({ type, id })} onClick={interactive ? handleClick : undefined}>
+    <group
+      name={targetKey({ type, id })}
+      onClick={interactive ? handleClick : undefined}
+      onPointerOver={interactive ? handlePointerOver : undefined}
+      onPointerOut={interactive ? handlePointerOut : undefined}
+    >
       {children}
     </group>
   );

@@ -2,7 +2,7 @@ import { EventClips } from '@/features/clips/EventClips';
 import type { Clip } from '@/features/clips/types';
 import { clipsKey } from '@/features/clips/useEventClips';
 import { EventDetail } from '@/features/events/EventDetail';
-import { formatTime } from '@/features/events/events';
+import { formatTime, groupIncidents } from '@/features/events/events';
 import type { EventItem } from '@/features/events/types';
 import { type Role, useSessionStore } from '@/store/session.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -143,8 +143,8 @@ describe('EventClips', () => {
     expect(within(section).getByText('cam2')).toBeTruthy();
     expect(within(section).getByText('앞 잘림')).toBeTruthy();
     expect(within(section).getByText('프레임 빠짐')).toBeTruthy();
-    // 촬영 구간은 시작–끝 순서다.
-    const range = `${formatTime(T - 20_000)}–${formatTime(T + 20_000)}`;
+    // 촬영 구간은 시작 ~ 끝 순서다.
+    const range = `${formatTime(T - 20_000)} ~ ${formatTime(T + 20_000)}`;
     expect(within(section).getAllByText(range)).toHaveLength(3);
     // 영상 주소를 받을 때 EC2 가 조회 기록을 남긴다. 상세를 열기만 해서는 받지 않는다.
     expect(urlCalls).toBe(0);
@@ -391,13 +391,15 @@ describe('EventClips', () => {
     expect(listCalls).toBe(0);
   });
 
-  it('이벤트 상세 아래에 클립 칸이 들어간다', async () => {
+  it('사건 상세 창의 이벤트 클립 칸에 규칙별 클립이 들어간다', async () => {
+    const item = event();
+    const [incident] = groupIncidents([{ event: item, stageStartedAt: T }]);
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <EventDetail entry={{ event: event(), stageStartedAt: T }} onBack={() => {}} />
+        <EventDetail incident={incident!} openEventId={item.event_id} onClose={() => {}} />
       </QueryClientProvider>,
     );
-    const detail = screen.getByRole('region', { name: '이벤트 상세' });
+    const detail = screen.getByRole('region', { name: '이벤트 클립' });
     expect(await within(detail).findByRole('button', { name: 'cam1 재생' })).toBeTruthy();
   });
 });

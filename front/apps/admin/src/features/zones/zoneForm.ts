@@ -61,6 +61,7 @@ export function patchOf(saved: ZoneForm, next: ZoneForm): ZonePatch {
 export interface ZoneFormErrors {
   name?: string;
   judgeType?: string;
+  zoneType?: string;
 }
 
 /** saved 는 받은 구역의 값, hasHeight 는 높이(z_min_m·z_max_m)가 있는지다. */
@@ -104,10 +105,18 @@ const NEW_ZONE_SIZE_M = 2;
 const NEW_ZONE_HEIGHT_M = 2;
 
 /**
- * 새 구역(v1) 본문. 기존 구역들을 감싸는 상자의 가운데 바닥에 둔다. 구역이 없으면 World 원점이다. 유형은 비울 수 없고
- * Tier 0 판정이 유형을 보므로(개구부는 가장자리 규칙) 관리자가 고른 것을 쓴다.
+ * 새 구역 양식의 처음 값. 유형은 비워 두고 관리자가 고르게 한다(Tier 0 판정이 유형을 보고, 개구부는 가장자리 규칙이라
+ * 기본값으로 두지 않는다).
  */
-export function newZoneBody(zones: readonly ZoneBox[], zoneType: string): ZoneBody {
+export const NEW_ZONE_FORM: ZoneForm = {
+  name: '새 구역',
+  judgeType: 'VOLUME_3D',
+  zoneType: '',
+  severity: 'HIGH',
+};
+
+/** 새 구역의 처음 상자. 기존 구역들을 감싸는 상자의 가운데 바닥에 둔다. 구역이 없으면 World 원점이다. */
+export function newZoneBox(zones: readonly ZoneBox[]): ViewerEditBox {
   const center = (axis: 0 | 1) =>
     zones.length === 0
       ? 0
@@ -115,14 +124,26 @@ export function newZoneBody(zones: readonly ZoneBox[], zoneType: string): ZoneBo
         2;
   const half = NEW_ZONE_SIZE_M / 2;
   const [cx, cy] = [center(0), center(1)];
+  return { min: [cx - half, cy - half, 0], max: [cx + half, cy + half, NEW_ZONE_HEIGHT_M] };
+}
+
+/** 새 구역 양식 검사. 이름·판정 유형은 저장과 같은 규칙이고, 유형은 골라야 한다. 상자는 숫자 칸이 미리 걸러 늘 높이가 있다. */
+export function newZoneErrors(form: ZoneForm): ZoneFormErrors {
+  const errors = formErrors(form, { saved: { ...form, name: '' }, hasHeight: true });
+  if (form.zoneType === '') errors.zoneType = '유형을 고르세요.';
+  return errors;
+}
+
+/** 새 구역(v1) 본문. */
+export function newZoneBodyOf(form: ZoneForm, box: ViewerEditBox): ZoneBody {
   return {
-    name: '새 구역',
-    zone_kind: zoneType,
-    eval_type: 'VOLUME_3D',
-    polygon_xy: boxToPolygon({ min: [cx - half, cy - half, 0], max: [cx + half, cy + half, 0] }),
-    z_min_m: 0,
-    z_max_m: NEW_ZONE_HEIGHT_M,
-    severity: 'HIGH',
+    name: form.name.trim(),
+    zone_kind: form.zoneType,
+    eval_type: form.judgeType,
+    polygon_xy: boxToPolygon(box),
+    z_min_m: box.min[2],
+    z_max_m: box.max[2],
+    severity: form.severity,
     has_guardrail: null,
     requirements: null,
   };

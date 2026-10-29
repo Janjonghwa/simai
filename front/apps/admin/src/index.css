@@ -15,6 +15,14 @@
   }
 }
 
+/* 도면 모눈(24px). 장면이 없는 화면의 바탕에 깐다. */
+@utility bg-blueprint {
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
 /* 시스템 이상(장애 띠, 장면 불일치) 줄무늬(디자인 데모의 띠). 위험 등급 색(빨강·노랑)과 지연 색(주황)을 쓰지 않는다. */
 @utility bg-stripes {
   background-image: repeating-linear-gradient(

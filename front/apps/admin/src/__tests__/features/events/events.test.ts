@@ -1,10 +1,12 @@
 import {
   acknowledgedAt,
+  firstRaisedAt,
   groupIncidents,
+  incidentOf,
+  incidentTimeline,
   isAlarming,
   mergeEvent,
   metricLabels,
-  severityCounts,
   upsertEvents,
   type EventEntry,
 } from '@/features/events/events';
@@ -196,22 +198,59 @@ describe('groupIncidents', () => {
 });
 
 describe('표시 값', () => {
-  it('등급 칸은 진행 중 이벤트만 센다', () => {
-    expect(
-      severityCounts([
-        entry({ event_id: 'a' }),
-        entry({ event_id: 'b', severity: 'HIGH', confidence_reasons: ['Z_UNKNOWN'] }),
-        entry({ event_id: 'c', severity: 'CAUTION', needs_check: true }),
-        entry({ event_id: 'd', lifecycle: 'RESOLVED' }),
-      ]),
-    ).toEqual({ critical: 1, high: 1, caution: 1, needsCheck: 2 });
-  });
-
   it('지표는 단위를 붙여 보인다', () => {
     expect(metricLabels({ edge_distance_m: 0.823, height_diff_m: 2.1, dwell_s: 1.44 })).toEqual([
       '가장자리 0.82m',
       '높이 차 2.10m',
       'dwell 1.4초',
     ]);
+  });
+});
+
+describe('사건 상세', () => {
+  const r2 = entry({ event_id: 'r2', rule_id: 'R2', raised_at: T + 5_000, updated_at: T + 5_000 });
+  const r1 = entry({
+    event_id: 'r1',
+    rule_id: 'R1',
+    severity: 'HIGH',
+    raised_at: T,
+    updated_at: T + 9_000,
+    lifecycle: 'RESOLVED',
+    resolved_at: T + 9_000,
+    acks: [ack(T + 2_000)],
+  });
+
+  it('카드 머리줄 시각은 묶음에서 가장 먼저 발생한 시각이다', () => {
+    const [incident] = groupIncidents([r2, r1]);
+    expect(firstRaisedAt(incident!)).toBe(T);
+  });
+
+  it('누른 이벤트가 든 묶음을 찾고, 목록에 없으면 없다', () => {
+    expect(incidentOf([r2, r1], 'r1')?.key).toBe('person:w-1');
+    expect(incidentOf([r2, r1], 'missing')).toBeUndefined();
+  });
+
+  it('타임라인은 규칙마다 발생·확인·해소를 시각 순으로 늘어놓는다', () => {
+    const [incident] = groupIncidents([r2, r1]);
+    expect(incidentTimeline(incident!)).toEqual([
+      { at: T, who: '시스템', text: '위험 구역 진입 발생' },
+      { at: T + 2_000, who: '관제', text: expect.stringMatching(/^위험 구역 진입 확인 · /) },
+      { at: T + 5_000, who: '시스템', text: '개구부·가장자리 근접 발생' },
+      { at: T + 9_000, who: '시스템', text: '위험 구역 진입 해소' },
+    ]);
+  });
+
+  it('운영자가 끝낸 규칙은 운영자 종료로 적는다', () => {
+    const closed = entry({
+      lifecycle: 'RESOLVED',
+      resolved_at: T + 1_000,
+      resolution: { kind: 'OPERATOR_CLOSED', reason: '오탐', requested_at: T },
+    });
+    const [incident] = groupIncidents([closed]);
+    expect(incidentTimeline(incident!).at(-1)).toEqual({
+      at: T + 1_000,
+      who: '운영자',
+      text: '개구부·가장자리 근접 종료',
+    });
   });
 });

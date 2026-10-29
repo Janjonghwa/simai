@@ -20,7 +20,8 @@ export function LivePlan({
   className,
 }: {
   selectedKey: string | null;
-  onSelect: (key: string) => void;
+  /** 없으면 고르지 않고 보기만 한다(미니맵). */
+  onSelect?: (key: string) => void;
   className?: string;
 }) {
   const tracks = useRealtimeStore((s) => s.world?.payload.tracks ?? NO_TRACKS);

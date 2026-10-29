@@ -38,18 +38,24 @@ afterEach(() => {
 
 describe('FailureBand', () => {
   it.each([
-    ['CONTROL_HALTED', 'CONNECTED', '관제 정지'],
-    ['CONTROL_HALTED', 'DISCONNECTED', '현장 장비 응답 없음'],
-    ['REMOTE_LINK_LOST', 'CONNECTED', '원격 전달 단절 · 현장 경보 동작 중'],
+    ['CONTROL_HALTED', 'CONNECTED', '관제 정지', ' · 판정 서버(Tier 0) 응답 없음'],
+    [
+      'CONTROL_HALTED',
+      'DISCONNECTED',
+      '현장 장비 응답 없음',
+      ' · 현장 노트북(영상 중계·현장 경보) 하트비트 끊김',
+    ],
+    ['REMOTE_LINK_LOST', 'CONNECTED', '원격 전달 단절 · 현장 경보 동작 중', ''],
   ] as const)(
-    '%s · 노트북 %s 이면 「%s」 띠와 마지막 수신 시각·경과를 보인다',
-    (remote, link, text) => {
+    '%s · 노트북 %s 이면 「%s」 띠와 설명, 마지막 수신 시각·경과를 보인다',
+    (remote, link, text, detail) => {
       seed({ remote_state: remote, laptop: laptop(link), system_health: 'UNSAFE_UNKNOWN' });
       render(<FailureBand />);
 
-      // 장애 종류만 읽는다(경과 시간은 1초마다 바뀌어 읽지 않는다).
+      // 장애 종류만 읽는다(설명과 경과 시간은 읽지 않는다).
       expect(title()).toBe(text);
-      expect(band()!.textContent).toContain('마지막 수신 14:29:52 · 12초 경과');
+      expect(band()!.textContent).toContain(`${text}${detail}마지막 수신 14:29:52 · 12초 경과`);
+      expect(band()!.textContent).toContain('화면은 마지막으로 받은 상태');
     },
   );
 
@@ -64,16 +70,22 @@ describe('FailureBand', () => {
     expect(title()).toBe('현장 장비 응답 없음');
   });
 
-  it('EC2 와 끊기면(health 가 정한 시간 넘게 안 오면) 띠를 거두고, 다시 오면 보인다', () => {
+  it('EC2 와 끊기면(health 가 정한 시간 넘게 안 오면) 마지막 상태 대신 현장 연결 끊김을 보이고, 다시 오면 돌아온다', () => {
     seed(halted);
     render(<FailureBand />);
-    expect(band()).toBeTruthy();
+    expect(title()).toBe('관제 정지');
 
     act(() => vi.advanceTimersByTime(HEALTH_TIMEOUT_MS + 600));
-    expect(band()).toBeNull();
+    expect(title()).toBe('현장 연결 끊김');
+    expect(band()!.textContent).toContain('현장 노트북 경보는 계속될 수 있음');
 
     act(() => seed(halted));
     expect(title()).toBe('관제 정지');
+  });
+
+  it('아직 EC2 와 이어진 적이 없으면 연결 끊김 띠를 보이지 않는다', () => {
+    render(<FailureBand />);
+    expect(band()).toBeNull();
   });
 
   it('장애 띠는 줄무늬로만 보이고 위험 등급 색·지연 색을 쓰지 않는다', () => {
@@ -93,6 +105,8 @@ describe('FailureBand', () => {
   it('데이터를 받은 적 없으면 장애 문구만 보인다', () => {
     seed({ remote_state: 'CONTROL_HALTED', laptop: laptop('DISCONNECTED'), data_age_ms: null });
     render(<FailureBand />);
-    expect(band()!.textContent).toBe('현장 장비 응답 없음');
+    expect(band()!.textContent).toBe(
+      '현장 장비 응답 없음 · 현장 노트북(영상 중계·현장 경보) 하트비트 끊김',
+    );
   });
 });
