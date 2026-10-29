@@ -6,7 +6,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 - **범위:** 테이블 76개, 컬럼 797개. 확장 테이블도 컬럼까지 썼다. 이 중 V1~V13 으로 만든 테이블은 51개(MVP 40 · M1 9 · M3 `rag_clause`·`rag_query_template`), 컬럼 575개, FK 76개
 - **단계별:** MVP 40 · M1 9 · M2 2 · M3 9 · 확장 16 (M3 `rag_query_template` 은 S15P31A101-27, MVP `config_bundle_file`·`calibration_document`·`system_outage`·`calibration_update_message`·`i1_deferred_message`·`bev_frame_set` 은 V6·V7·V10·V11·V12 에서 추가)
 - **작성·검토:** DB 는 EC2 에 있으므로 곽나혁이 작성한다. Tier 0·분석 워커가 채우는 테이블은 이연주가 검토한다("검토" 표시)
-- **마이그레이션:** `server/src/main/resources/db/migration/` 의 V1(MVP·M1 테이블 43개), V2(현장·카메라 시드), V3(`rag_clause`·`rag_query_template`, pgvector), V4(저널 세대 `journal_epoch`), V5(`token_hash` 유일, `worker.rotated_at`), V6(`config_bundle_file`·`calibration_document`, `config_bundle.rule_profile`), V7(`system_outage`), V8(`tier0_endpoint` 봉투 칸), V9(`upload_grant` 요청 주체·내용 칸), V10(`calibration_update_message`), V11(`media_clip_retention.msg_id`, `i1_deferred_message`), V12(`bev_frame_set`, `floor_plan` 작업 칸), V13(`notification` 유일 키·`claimed_until`), `R__rule_versions.sql`(ai 규칙 등록부에서 자동 생성), `R__rag_clauses.sql`(ai RAG 조항·임베딩에서 자동 생성)
+- **마이그레이션:** `server/src/main/resources/db/migration/` 의 V1(MVP·M1 테이블 43개), V2(현장·카메라 시드), V3(`rag_clause`·`rag_query_template`, pgvector), V4(저널 세대 `journal_epoch`), V5(`token_hash` 유일, `worker.rotated_at`), V6(`config_bundle_file`·`calibration_document`, `config_bundle.rule_profile`), V7(`system_outage`), V8(`tier0_endpoint` 봉투 칸), V9(`upload_grant` 요청 주체·내용 칸), V10(`calibration_update_message`), V11(`media_clip_retention.msg_id`, `i1_deferred_message`), V12(`bev_frame_set`, `floor_plan` 작업 칸), V13(`notification` 유일 키·`claimed_until`), V14(`avatar_asset`, `upload_grant` 목적 `AVATAR_ASSET`·워커 요청, -325), V15(`video_segment`·`video_access_log`, `upload_grant` 목적 `VIDEO_SEGMENT`), `R__rule_versions.sql`(ai 규칙 등록부에서 자동 생성), `R__rag_clauses.sql`(ai RAG 조항·임베딩에서 자동 생성)
 
 ## 1. 표기와 공통 규칙
 
@@ -74,6 +74,8 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | E. 이벤트·조치 | `media_clip` | MVP | 일반 | 이벤트 클립 기록(카메라 하나 × 위험 구간 하나) | 있음 | `/api/clips/{}`, `/api/clips/{}/retention`, `/api/events/{}/clips` | 이연주 |
 | E. 이벤트·조치 | `media_clip_retention` | MVP | 일반 | 보존 표시 이력(CRITICAL 자동, 관리자 붙이기·떼기) | 있음 | `/api/clips/{}/retention` |  |
 | E. 이벤트·조치 | `clip_access_log` | MVP | 일반 | 클립 열람 기록 | 수정 16 추가 | `/api/clips/{}` |  |
+| E. 이벤트·조치 | `video_segment` | MVP | 일반 | 상시 영상 조각 기록(14일 뒤 객체 삭제, 행은 남김) | 수정 36 추가 | `/api/videos`, I1 `video_segment` |  |
+| E. 이벤트·조치 | `video_access_log` | MVP | 일반 | 상시 영상 열람 기록 | 수정 36 추가 | `/api/videos/{}` |  |
 | E. 이벤트·조치 | `upload_grant` | MVP | 일반 | 임시 업로드 주소 발급 기록(올라온 키 검증) | 수정 16 추가 | `/api/uploads/sign` |  |
 | F. 알림 | `notification` | M1 | 일반 | 실제 알림 발송 기록. LIVE 이벤트만(넣기·꺼내기는 `NotificationQueue`, 같은 전이·채널·대상 유일 V13, S15P31A101-123) | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) |  |
 | F. 알림 | `push_subscription` | M1 | 일반 | Web Push 구독 | 수정 16 추가 | `/api/push/subscribe` |  |

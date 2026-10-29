@@ -16,6 +16,8 @@ public enum UploadPurpose {
     // 이벤트 클립(형식은 ClipFormat, 클립 기록 수신과 같은 표). 수십 초 분량
     EVENT_CLIP("event-clips", ClipFormat.extensions(), 256L << 20,
             Set.of(Requester.Kind.TIER0, Requester.Kind.DEVICE)),
+    // 상시 영상 조각(video_segment, S15P31A101-330). 카메라 하나 × 1분 남짓이라 클립보다 작게 잡는다. Tier 0 만 올린다
+    VIDEO_SEGMENT("video-segments", ClipFormat.extensions(), 128L << 20, Set.of(Requester.Kind.TIER0)),
     // 조치 완료 사진(반장 PWA, FR-41)
     TICKET_PHOTO("ticket-photos", Map.of("image/jpeg", ".jpg", "image/png", ".png", "image/webp", ".webp"), 20L << 20,
             Set.of(Requester.Kind.USER)),

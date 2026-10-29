@@ -23,7 +23,7 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 
 | ID | 구간 | 방식 | 메시지 |
 |---|---|---|---|
-| I1 | RunPod Tier 0 ↔︎ EC2 | WebSocket + JSON | 위로(Tier 0 → EC2): `world_state`(10 Hz), `health`(1 Hz), `observation_summary`(필요 시 카메라별 요약만. 2D 관측 원본 `observation_batch` 는 RunPod 에 Parquet 로 보관, 11.2), `calibration_update`, `risk_event_transition`, `event_state_snapshot`, `config_ack`, `event_frame_ready`, `media_clip`·`media_clip_retention`(이벤트 클립 기록, 11.3), `tier0_endpoint`(엔드포인트 등록, 3.12), `event_close_result`(운영자 종료 결과, 6.4), `event_escalate_result`(운영자 상향 결과, 5.4) / 아래로(EC2 → Tier 0): `event_ack`, `event_close`(관리자의 구역 대상 이벤트 종료, 6.4), `event_escalate`(관리자가 승인한 VLM 상향 의견 적용, 5.4), `journal_ack`, `config_bundle` |
+| I1 | RunPod Tier 0 ↔︎ EC2 | WebSocket + JSON | 위로(Tier 0 → EC2): `world_state`(10 Hz), `health`(1 Hz), `observation_summary`(필요 시 카메라별 요약만. 2D 관측 원본 `observation_batch` 는 RunPod 에 Parquet 로 보관, 11.2), `calibration_update`, `risk_event_transition`, `event_state_snapshot`, `config_ack`, `event_frame_ready`, `media_clip`·`media_clip_retention`(이벤트 클립 기록, 11.3), `video_segment`(상시 영상 조각 기록, 5.1·11.3), `tier0_endpoint`(엔드포인트 등록, 3.12), `event_close_result`(운영자 종료 결과, 6.4), `event_escalate_result`(운영자 상향 결과, 5.4) / 아래로(EC2 → Tier 0): `event_ack`, `event_close`(관리자의 구역 대상 이벤트 종료, 6.4), `event_escalate`(관리자가 승인한 VLM 상향 의견 적용, 5.4), `journal_ack`, `config_bundle` |
 | I2 | EC2 → 뷰어 | WebSocket(STOMP) + REST | 토픽 `/topic/world`(`world_state`), `/topic/avatar`(`avatar_frame`), `/topic/events`(`risk_event`), `/topic/health`(`viewer_health`), 관리자 전용 `/topic/admin/events`(`action_mismatch`)(12.4) / REST: 리플레이, 구역 CRUD, 작업면 등록, 보정·설치, Scene·아바타 자산(`/api/avatars/...`), 레이아웃, 보고서, 이벤트 상세·요약·상향(12.6) |
 | I3 | EC2 ↔︎ PWA | Web Push + REST | 푸시 `risk_alert`, 시험 푸시 / REST: 티켓 상태 변경, 사진 업로드 주소 발급, 푸시 구독·해지, 수신 확인(12.6) |
 | I4 | EC2 ↔︎ 워치 | — | 이동(v1.3) → 부록 C |
@@ -86,6 +86,8 @@ EC2 내부: Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON �
 `event_frame_ready`는 EC2가 발급한 임시 업로드 주소로 프레임을 올린 뒤 그 주소와 촬영 시각·카메라만 보낸다.
 
 `media_clip` 은 이벤트 클립(카메라 하나 × 위험 구간 하나)을 임시 업로드 주소로 올린 뒤 객체 키, 촬영 시각 구간, 해시·크기, 얼굴 흐림 여부(`face_redaction`, 기본 NONE), 구간 안 빈칸(`has_gaps`), 삭제 예정일, 보존 표시를 보낸다. 영상은 싣지 않는다. 보낸 뒤 이벤트가 CRITICAL 로 오르면 기록을 고치지 않고 `media_clip_retention` 으로 보존 표시를 더한다(11.5).
+
+`video_segment` 는 상시 영상 조각(카메라 하나 × 일정 길이)을 임시 업로드 주소(목적 `VIDEO_SEGMENT`, `segment_id`)로 올린 뒤 객체 키, 촬영 시각 구간, stream_epoch, 해시·크기, 구간 안 빈칸, 삭제 예정일을 보낸다. 영상은 싣지 않는다. 이벤트와 묶이지 않고 보존 표시가 없다(5.1, 11.5, v1.3 수정 36).
 
 `risk_event_transition`은 RunPod Tier 0 서비스가 전이를 확정할 때마다 저널·outbox를 거쳐 보낸다(3.2).
 
@@ -202,6 +204,8 @@ VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커�
 | POST | /api/uploads/sign | 사진·프레임·클립 임시 업로드 주소 | 기기·반장 |
 | GET | /api/clips/\{id\} | 이벤트 클립 조회(임시 서명 주소) | 관리자 |
 | PUT | /api/clips/\{id\}/retention | 클립 보존 표시 붙이기·떼기 | 관리자 |
+| GET | /api/videos?from=\{t1\}&amp;to=\{t2\}&amp;camera_id= | 촬영 구간이 겹치는 상시 영상 조각 목록(주소 없음, 24시간 이내) | 관리자 |
+| GET | /api/videos/\{segmentId\} | 상시 영상 조각 재생(임시 서명 주소, 조회 기록) | 관리자 |
 | GET | /api/push/vapid-public-key | Web Push 구독용 VAPID 공개키 | 반장 |
 | POST · DELETE | /api/push/subscribe | Web Push 구독 등록·해지 | 반장 |
 | POST | /api/push/receipts | 푸시 수신 확인(Service Worker) | 반장 기기 |

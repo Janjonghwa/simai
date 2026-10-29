@@ -39,6 +39,9 @@ beforeEach(() => {
 });
 afterEach(() => realtime.stop());
 
+/** 재연결을 기다리는 시험의 상한(ms). 조건이 맞으면 바로 넘어가므로 평소 시간은 늘지 않는다 */
+const RECONNECT_WAIT_MS = 10_000;
+
 const until = async (check: () => boolean, ms = 2000) => {
   const start = Date.now();
   while (!check()) {
@@ -305,8 +308,12 @@ describe('createRealtime', () => {
     });
 
     broker.dropAll();
-    await until(() => useRealtimeStore.getState().phase !== 'OPEN');
-    await until(() => useRealtimeStore.getState().phase === 'OPEN' && broker.connections === 1);
+    // 다시 붙기까지는 재연결 지연·STOMP 연결이 겹쳐 부하가 큰 CI(jsdom 동시 생성)에서 2초를 넘길 수 있다. 기다림만 늘린다
+    await until(() => useRealtimeStore.getState().phase !== 'OPEN', RECONNECT_WAIT_MS);
+    await until(
+      () => useRealtimeStore.getState().phase === 'OPEN' && broker.connections === 1,
+      RECONNECT_WAIT_MS,
+    );
     const earlier = worldStateAt(t - 60_000);
     await until(() => {
       broker.publish('/topic/world', earlier);
@@ -314,7 +321,7 @@ describe('createRealtime', () => {
         useRealtimeStore.getState().world?.payload.t_latest_global ===
         earlier.payload.t_latest_global
       );
-    });
+    }, RECONNECT_WAIT_MS);
   });
 
   it('JSON 이 아니거나 계약에 맞지 않는 health 는 버리고 개수만 센다', async () => {

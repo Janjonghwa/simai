@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "video_segment",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000330",
+  "sent_at": 1760342461500,
+  "source_id": "tier0-01",
+  "payload": {
+    "segment_id": "0192a6f2-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
+    "gateway_id": "tier0-01",
+    "camera_id": "cam1",
+    "stream_epochs": [12],
+    "segment_start_capture_ms": 1760342400000,
+    "segment_end_capture_ms": 1760342459960,
+    "frame_count": 1500,
+    "starts_with_keyframe": true,
+    "has_gaps": false,
+    "content_type": "video/h264",
+    "container": "h264-annexb",
+    "size_bytes": 13824000,
+    "sha256": "sha256:7c1e9f2d3c4b5a6d7e8f0192a6f07c1e9f2d3c4b5a6d7e8f0192a6f07c1e9f2d",
+    "face_redaction": "NONE",
+    "created_at_ms": 1760342460100,
+    "delete_after_ms": 1761552060100,
+    "object_key": "video-segments/0192a6f2-1a2b-7c3d-8e4f-5a6b7c8d9e0f.h264",
+    "uploaded_at_ms": 1760342461400,
+    "upload_attempts": 1
+  }
+}
