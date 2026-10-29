@@ -146,6 +146,7 @@ class JudgmentLoop:
         observe_progress: Callable[[int | None], Any] | None = None,
         restore_link: Any | None = None,
         new_msg_id: Callable[[], str] = lambda: str(uuid.uuid4()),
+        begin_tick: Callable[[], Any] | None = None,
     ) -> None:
         self.lock = lock
         self._now_ms = now_ms
@@ -164,6 +165,8 @@ class JudgmentLoop:
         self._observe_progress = observe_progress
         self._restore_link = restore_link  # 재시작 뒤 이전 이벤트 연결(services.tier0.restore_link.RestoreLink, -178)
         self._new_msg_id = new_msg_id
+        self._begin_tick = begin_tick
+        self._last_calibration_state = "UNCALIBRATED"
         self._coverage_key: tuple[str, str] | None = None
         self._coverage: Mapping[str, tuple[str, ...]] = {}
         self._risk_seen: dict[str, tuple[int, int]] = {}
@@ -204,6 +207,8 @@ class JudgmentLoop:
     def tick(self) -> TickResult:
         with self.lock:
             self.stats.ticks += 1
+            if self._begin_tick is not None:
+                self._begin_tick()  # 보정도 인지 전에 같은 경계에서만 전환한다(-344)
             active = self.config_sync.begin_tick()  # 1) 구성 묶음 전환 경계
             self.active_config = active
             surfaces = SurfaceSet.from_active_config(active)
@@ -227,8 +232,11 @@ class JudgmentLoop:
             return TickResult(None, version, None, ())
         payload, msg_id = self._last
         world = WorldState.from_payload(payload)
+        state = (self._active_calibration_state()
+                 if payload["calibration_version"] == self.perception.rig.calibration_version
+                 else self._last_calibration_state)
         evaluation = active.evaluate(world, self.tracker.origin, monitoring=self._monitoring(active),
-                                     calibration_state=self._active_calibration_state())
+                                     calibration_state=state)
         step = self.tracker.apply(evaluation, world, config_version=active.config_version, evidence_ref=msg_id,
                                   related=self._related(self._last_frame))
         self.stats.frozen_evaluations += 1
@@ -251,6 +259,7 @@ class JudgmentLoop:
         return str(state)
 
     def _judge(self, perceived: Perceived, active: ActiveConfig | None) -> TickResult:
+        self._last_calibration_state = self._active_calibration_state()
         msg_id = self._new_msg_id()
         payload = dict(perceived.payload)
         if active is not None:
@@ -278,7 +287,7 @@ class JudgmentLoop:
         else:
             world = WorldState.from_payload(payload)
             evaluation = active.evaluate(world, self.tracker.origin, monitoring=self._monitoring(active),
-                                         calibration_state=self._active_calibration_state())  # 4) 판정(작업면·보정 상태 포함)
+                                         calibration_state=self._last_calibration_state)  # 4) 판정(작업면·보정 상태 포함)
             step = self.tracker.apply(evaluation, world, config_version=active.config_version, evidence_ref=msg_id,
                                       related=related)
             self.stats.evaluated += 1

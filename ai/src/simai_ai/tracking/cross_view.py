@@ -312,6 +312,11 @@ class CrossViewAssociator:
 
     # ------------------------------------------------------------------ 공개
 
+    def replace_rig(self, rig: CameraRig) -> None:
+        """tick 경계에서 호출한다. 트랙 연속성은 유지하고 보정 의존 기하 캐시만 비운다."""
+        self.rig = rig
+        self._essential.clear()
+
     def link_age(self, a: TrackKey, b: TrackKey) -> int:
         """두 로컬 트랙이 같은 클러스터였던 시각 수 (궤적 일관성 근거).
 

@@ -125,6 +125,7 @@ class HealthReporter:
         config_active: Callable[[], bool],
         calibration_state: Callable[[], str],
         calibration_version: Callable[[], str | None],
+        calibration_issue: Callable[[], bool] | None = None,
         lock: Any = None,
         time_config: TimeModelConfig = TimeModelConfig(),
     ) -> None:
@@ -141,6 +142,7 @@ class HealthReporter:
         self._config_active = config_active
         self._calibration_state = calibration_state
         self._calibration_version = calibration_version
+        self._calibration_issue = calibration_issue
         self._lock = lock if lock is not None else threading.RLock()
         self._time_config = time_config
         self._fps_lock = threading.Lock()
@@ -211,6 +213,10 @@ class HealthReporter:
         return snap
 
     def payload(self) -> dict[str, Any]:
+        with self._lock:
+            return self._payload()
+
+    def _payload(self) -> dict[str, Any]:
         snap = self.evaluate()
         report = snap.report
         with self._fps_lock:
@@ -237,6 +243,8 @@ class HealthReporter:
                 }
             )
         system_health = str(report.system_health)
+        if self._calibration_issue is not None and self._calibration_issue() and system_health == "NOMINAL":
+            system_health = "DEGRADED"
         lag: float | None = None
         if report.lag_ms is not None:
             lag = max(report.lag_ms, 0)

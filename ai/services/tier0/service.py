@@ -60,6 +60,7 @@ from services.tier0.settings import Tier0Settings
 from services.tier0.site_alert_sync import SiteAlertResync
 from services.tier0.video_ingest import TokenVerifier, build_server, parse_token_hashes, server_context
 from simai_ai.calibration.monitor import BaselineRecord
+from simai_ai.calibration.runtime import RuntimeCalibrationStore
 from simai_ai.config import BundleArchive, BundleRejected, BundleVerifier, ConfigBundle, ConfigSync
 from simai_ai.eventlog import ACKED_NAME, AckedOffsetStore, EventJournal, JournalWriter, Outbox, TransportError
 from simai_ai.geometry.rig import CameraRig
@@ -303,6 +304,9 @@ class Tier0Service:
         self.control: ControlServer | None = None
         self.clock_sync: LockedClockSync | None = None
         self._warned: dict[str, Any] = {}
+        self._pending_calibration: tuple[dict[str, Any], CameraRig] | None = None
+        self.calibration_status: dict[str, Any] = {"last_rejection": None, "effective_at": None}
+        self._calibration_message_cursor = 0
 
     def _event(self, name: str) -> None:
         self.events.append(name)
@@ -337,9 +341,10 @@ class Tier0Service:
 
         # 보정
         try:
-            self.calibration = FileCalibrationProvider(s.calibration_file)
+            self.calibration = RuntimeCalibrationStore(
+                s.state_dir / "calibrations", lambda: FileCalibrationProvider(s.calibration_file).current())
             self.rig = CameraRig.from_provider(self.calibration)
-        except (OSError, ValueError, KeyError) as e:
+        except (OSError, ValueError, KeyError, TypeError) as e:
             raise Tier0StartError(f"보정 문서를 읽지 못했다: {s.calibration_file} ({type(e).__name__}: {e})", 2) from e
 
         # 노트북 쪽(I0 제어 채널·시계 교환·연결 감시)
@@ -403,7 +408,7 @@ class Tier0Service:
         assert r is not None
         # 4) 구성 묶음
         registry = default_registry()
-        known = lambda version: version == self.rig.calibration_version  # noqa: E731
+        known = self.calibration.known
         self.archive = BundleArchive(s.archive_dir)
         restored = self._restore_config(r, registry, known)
         verifier = BundleVerifier(HttpsFetcher(ca_file=(s.env.get("SIMAI_EC2_CA_FILE") or None)), registry, known,
@@ -441,8 +446,9 @@ class Tier0Service:
             watchdog=self.watchdog, ec2_connected=self._ec2_ok, gateway_ok=self._gateway_ok,
             capture_clock=self._health_capture_clock(),
             laptop_clock_offset=self._health_laptop_offset(),
-            config_fields=self.config_sync.health_fields, config_active=lambda: self.config_sync.active is not None,
+            config_fields=self._config_health_fields, config_active=lambda: self.config_sync.active is not None,
             calibration_state=self._calibration_state, calibration_version=lambda: self.rig.calibration_version,
+            calibration_issue=lambda: self.calibration_status["last_rejection"] is not None,
             lock=self.judge_lock,
         )
         self.resync = SiteAlertResync(
@@ -479,6 +485,7 @@ class Tier0Service:
             checkpoint_inputs=self.checkpointer.update_inputs, clips=self.clips, snapshot=self.snapshot,
             observe_progress=lambda t: self.watchdog.observe(t, self._mono_ns()), restore_link=self.restore_link,
             new_msg_id=self._new_msg_id,
+            begin_tick=self._begin_calibration_tick,
         )
         if self._drift_watch_factory is not None:
             # 보정 감시(-117): 저장한 기준선을 검증 여부 그대로 돌려주고(CalibrationDriftWatch(baselines=...)), 정리 주기마다 저장한다
@@ -700,7 +707,65 @@ class Tier0Service:
             endpoint_build=lambda: registrar.build(env, read_cert_pem(env)),
         )
         link_ref["link"] = link
+        link.publisher.add_source(self._calibration_messages)
         return link
+
+    # --- 검증된 보정 후보(-344). 후보 계산은 -345의 백그라운드 실행기가 한다. ----------------
+
+    def propose_calibration(self, document: Mapping[str, Any], report: Mapping[str, Any]) -> bool:
+        """다른 스레드에서 호출 가능. True는 대기 수락이며 활성화는 다음 판정 tick이다."""
+        with self.judge_lock:
+            try:
+                if not self.started or self._stop.is_set():
+                    raise ValueError("실행 중인 서비스가 아니다")
+                if self._pending_calibration is not None:
+                    raise ValueError("이미 대기 중인 보정 후보가 있다")
+                doc = self.calibration.prepare(document, report)
+                rig = CameraRig.from_provider(FileCalibrationProvider(self.calibration.path(doc["calibration_version"])))
+                self._pending_calibration = doc, rig
+                self.calibration_status["pending_version"] = rig.calibration_version
+                return True
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                clock = getattr(self, "clock", None)
+                self.calibration_status["last_rejection"] = {
+                    "at_ms": None if clock is None else clock.now_ms(), "reason": str(exc)}
+                log.warning("보정 후보 거부: %s", exc)
+                return False
+
+    def _begin_calibration_tick(self) -> None:
+        pending = self._pending_calibration
+        if pending is None:
+            return
+        doc, rig = pending
+        at_ms = self.clock.now_ms()
+        provenance = build_input_provenance(self.perception.feed.provenance(), calibration=rig.calibration_provenance)
+        try:
+            self.calibration.activate(doc, effective_at=at_ms, msg_id=self._new_msg_id())
+        except (OSError, ValueError) as exc:
+            self.calibration_status["last_rejection"] = {"at_ms": at_ms, "reason": f"활성화 저장 실패: {exc}"}
+            log.error("보정 전환 보류: %s", exc)
+            return  # 같은 후보를 다음 tick에 다시 저장하며 직전 rig로 판정을 계속한다
+        self.perception.replace_rig(rig, provenance)
+        self.rig = rig
+        self._pending_calibration = None
+        self.calibration_status.update(pending_version=None, last_rejection=None, effective_at=at_ms)
+        self._event(f"calibration_switched:{rig.calibration_version}:{at_ms}")
+
+    def _calibration_messages(self):
+        """I1 신뢰 대기열 source. 재시작 때 같은 msg_id의 전환 이력을 다시 보내 유실을 막는다."""
+        with self.judge_lock:
+            records = self.calibration.transitions[self._calibration_message_cursor:]
+            messages = [self.link.publisher.envelope.make("calibration_update", r["payload"], msg_id=r["msg_id"])
+                        for r in records]
+            self._calibration_message_cursor += len(records)
+            return messages
+
+    def _config_health_fields(self) -> dict[str, Any]:
+        fields = dict(self.config_sync.health_fields())
+        active = self.config_sync.active
+        if active is not None and active.calibration_version != self.rig.calibration_version:
+            fields["config_sync"] = "STALE"
+        return fields
 
     # --- 상태 조회 ------------------------------------------------------------------
 
@@ -716,7 +781,9 @@ class Tier0Service:
 
     def _calibration_state(self) -> str:
         if self.drift_watch is not None:
-            return str(self.drift_watch.store.state)
+            snap = self.drift_watch.store.snapshot()
+            if snap is not None and snap.calibration_version == self.rig.calibration_version:
+                return str(snap.state)
         return str(self.rig.state)
 
     def _health_capture_clock(self) -> Callable[[bool], Any] | None:
@@ -897,6 +964,9 @@ class Tier0Service:
                 "rejected": [r.name for r in self.recovery.rejected]},
             "restore_link": dict(self.restore_link.status()) if getattr(self, "restore_link", None) is not None else None,
             "config_check": self.config_check,
+            "calibration": {**self.calibration_status, "active_version": self.rig.calibration_version,
+                            "config_mismatch": (self.config_sync.active is not None
+                                and self.config_sync.active.calibration_version != self.rig.calibration_version)},
             "config_sync": self.config_sync.health_fields(),
             "system_health": None if snap_health is None else str(snap_health.report.system_health),
             "health_reasons": [] if snap_health is None else [str(x) for x in snap_health.report.reasons],
