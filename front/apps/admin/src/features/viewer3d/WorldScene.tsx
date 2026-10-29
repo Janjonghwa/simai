@@ -1,4 +1,8 @@
-import { createSceneStore, SceneStoreContext } from '@/features/viewer3d/scene/sceneStore';
+import {
+  createSceneStore,
+  SceneReviewContext,
+  SceneStoreContext,
+} from '@/features/viewer3d/scene/sceneStore';
 import { useScenePalette } from '@/features/viewer3d/sceneTheme';
 import {
   worldBoxToThree,
@@ -67,6 +71,8 @@ export function WorldScene({ room = DEMO_ROOM }: WorldSceneProps) {
   // 정적 배경(-59)이 보이면 배경 바닥과 겹쳐 깜박이지 않게 기본 바닥 면만 숨긴다. 벽 경계선은 그대로 둔다.
   const sceneStore = useContext(SceneStoreContext) ?? NO_SCENE;
   const backgroundShown = useStore(sceneStore, (s) => s.display !== 'HIDDEN');
+  // 개발 검수에서 실제 배경을 보는 동안에는 DEMO 교실 경계선이 실제 벽과 겹쳐 헷갈리지 않게 숨긴다.
+  const review = useContext(SceneReviewContext);
   if (!layout) return null;
 
   return (
@@ -88,7 +94,12 @@ export function WorldScene({ room = DEMO_ROOM }: WorldSceneProps) {
           polygonOffsetUnits={1}
         />
       </mesh>
-      <mesh name="world-walls" position={layout.walls.position} raycast={noRaycast}>
+      <mesh
+        name="world-walls"
+        visible={!(review && backgroundShown)}
+        position={layout.walls.position}
+        raycast={noRaycast}
+      >
         <boxGeometry args={layout.walls.size} />
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
         <Edges color={palette.wall} raycast={noRaycast} />

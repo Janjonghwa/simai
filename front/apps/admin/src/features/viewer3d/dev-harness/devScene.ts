@@ -1,5 +1,6 @@
 import brokenSceneUrl from '@/features/viewer3d/dev-harness/fixtures/scene-broken.gltf?url';
 import demoSceneUrl from '@/features/viewer3d/dev-harness/fixtures/scene-demo.gltf?url';
+import { DEV_LOBBY_GLB_URL } from '@/features/viewer3d/dev-harness/lobbyPreview';
 import type { ViewerSceneInput, ViewerSceneStatus } from '@/features/viewer3d/scene/sceneContract';
 
 // 개발 화면 전용 배경 Scene 입력(S15P31A101-59). FE 가 GET /api/scenes/current 로 받는 본문을 흉내 내 ViewerShell 에 넘긴다.
@@ -18,6 +19,7 @@ export const SCENE_OPTIONS = [
   { key: 'expired', label: '배경 · 서명 만료' },
   { key: 'rejected', label: '배경 · 응답 형식 오류' },
   { key: 'not-found', label: '배경 · 조회 실패(404 SCENE_NOT_FOUND)' },
+  { key: 'lobby-preview', label: '배경 · 실측 로비 재구성(로컬 프리뷰)' },
 ] as const;
 
 export type SceneOptionKey = (typeof SCENE_OPTIONS)[number]['key'];
@@ -85,6 +87,17 @@ export function sceneInputOf(key: SceneOptionKey, now: number): ViewerSceneInput
       return committed({ state: 'COMMITTED', default: true });
     case 'not-found':
       return { ok: false, reason: 'SCENE_NOT_FOUND', httpStatus: 404 };
+    case 'lobby-preview':
+      // 실영상 재구성 프리뷰(RECONSTRUCTED_PREVIEW·CALIBRATION_UNVERIFIED). COMMITTED·보정 버전을 꾸미지 않고 DEFAULT 로 넘겨
+      // 판정은 DEFAULT_UNVERIFIED 그대로다. 자산은 저장소 밖 로컬 캐시에만 있다(없으면 FAILED).
+      return committed({
+        scene_version: 'lobby-recon-preview',
+        state: 'DEFAULT',
+        default: true,
+        calibration_version: null,
+        committed_at_ms: null,
+        gltf_url: absolute(DEV_LOBBY_GLB_URL),
+      });
   }
 }
 

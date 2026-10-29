@@ -9,6 +9,7 @@ import { sceneStatusOf, type ViewerSceneInput } from '@/features/viewer3d/scene/
 import {
   createSceneStore,
   SceneLoaderContext,
+  SceneReviewContext,
   SceneStoreContext,
   sceneVersionsOf,
   type SceneAssetLoader,
@@ -97,7 +98,7 @@ function fakeRenderer(canvas: HTMLCanvasElement) {
 }
 
 let root: ReconcilerRoot<HTMLCanvasElement> | null = null;
-async function mount() {
+async function mount(review = false) {
   const canvas = document.createElement('canvas');
   root = createRoot(canvas);
   await root.configure({
@@ -111,9 +112,11 @@ async function mount() {
         <SpatialDataContext value={data}>
           <SceneStoreContext value={scene}>
             <SceneLoaderContext value={loader}>
-              <Probe />
-              <WorldScene />
-              <SceneBackground />
+              <SceneReviewContext value={review}>
+                <Probe />
+                <WorldScene />
+                <SceneBackground />
+              </SceneReviewContext>
             </SceneLoaderContext>
           </SceneStoreContext>
         </SpatialDataContext>
@@ -238,6 +241,48 @@ describe('SceneBackground', () => {
     await act(async () => world());
     expect(status().display).toBe('FULL');
     expect([bm.transparent, bm.opacity]).toEqual([false, 1]);
+  });
+
+  it('개발 검수(review)는 DEFAULT 배경을 불투명하게 그리고 DEMO 벽 경계선을 숨기지만 판정·상태는 그대로다', async () => {
+    await mount(true);
+    const walls = find('world-walls')!;
+    expect(walls.visible).toBe(true);
+    await setInput(
+      committed({
+        scene_version: 'lobby-recon-preview',
+        state: 'DEFAULT',
+        default: true,
+        calibration_version: null,
+        committed_at_ms: null,
+      }),
+    );
+    const a = asset();
+    await settle(calls[0]!, a.root);
+    const material = a.mesh.material as THREE.Material;
+    expect([material.transparent, material.opacity]).toEqual([false, 1]);
+    expect(status()).toMatchObject({ verification: 'DEFAULT_UNVERIFIED', display: 'DIMMED' });
+    expect(walls.visible).toBe(false);
+
+    // 배경을 거두면 DEMO 벽 경계선이 돌아온다.
+    await setInput(null);
+    expect(status().phase).toBe('NONE');
+    expect(walls.visible).toBe(true);
+  });
+
+  it('검수가 꺼져 있으면 같은 DEFAULT 배경도 흐리고 DEMO 벽 경계선을 유지한다', async () => {
+    await mount(false);
+    await setInput(
+      committed({
+        scene_version: 'lobby-recon-preview',
+        state: 'DEFAULT',
+        default: true,
+        calibration_version: null,
+      }),
+    );
+    const a = asset();
+    await settle(calls[0]!, a.root);
+    expect((a.mesh.material as THREE.Material).opacity).toBe(DIMMED_OPACITY);
+    expect(find('world-walls')!.visible).toBe(true);
   });
 
   it('늦게 끝난 이전 Scene 읽기는 버리고 해제한다', async () => {
