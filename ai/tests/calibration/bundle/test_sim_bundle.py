@@ -390,3 +390,159 @@ def test_joint_noise_scaling_keeps_noisy_hips_as_inliers(loop_case, ba):
         C = -np.array(cam.R).T @ np.array(cam.t)
         assert abs(C[2] - loop_case.truth_center(cam.camera_id)[2]) < 0.06, cam.camera_id
         assert abs(_pitch_deg(cam.R) - _pitch_deg(gt["R"])) < 0.3, cam.camera_id
+
+
+# --------------------------------------------------------------------------- 렌즈 모드·실측 카메라 높이 축척 (-321)
+
+
+def _truth_lens(case):
+    gt = case.truth_cameras["cam1"]
+    return gt["K"][0][0], tuple(gt["distortion"]["coeffs"][:2])
+
+
+def test_default_is_per_camera_lens(loop_result):
+    """기본 모드는 카메라마다 렌즈를 따로 맞춘다(이전 동작). 기록에 모드가 남는다."""
+    assert loop_result.record["lens"] == {"mode": "per_camera"}
+    assert loop_result.record["config"]["lens_mode"] == "per_camera"
+    assert len({c.K[0][0] for c in loop_result.cameras}) == 4
+    assert loop_result.record["scale"]["camera_heights"] is None
+
+
+def test_shared_lens_recovers_common_lens(loop_case, ba):
+    """4대가 같은 렌즈(시뮬레이터)일 때 shared 는 초점 +4%·k1 +0.03 교란에서 그 값을 되찾고 4대가 한 값을 쓴다."""
+    intr, extr = loop_case.initial(seed=7)
+    result = adjust_human_bundle(
+        _subset(loop_case.observations, until_ms=12000),
+        intr,
+        extr,
+        input_provenance=loop_case.input_provenance,
+        created_at=ba.T0,
+        config=BundleConfig(lens_mode="shared"),
+    )
+    f_true, (k1_true, k2_true) = _truth_lens(loop_case)
+    assert result.status == STATUS_CONVERGED, result.flags
+    docs = [c.to_contract() for c in result.cameras]
+    assert len({d["K"][0][0] for d in docs}) == 1 and len({tuple(d["distortion"]["coeffs"]) for d in docs}) == 1
+    f, (k1, k2) = docs[0]["K"][0][0], docs[0]["distortion"]["coeffs"][:2]
+    print("SIM 상한 공유 렌즈(정답 대비):", round(f / f_true - 1, 5), round(k1 - k1_true, 5), round(k2 - k2_true, 5))
+    assert abs(f / f_true - 1) < 0.005 and abs(k1 - k1_true) < 0.005 and abs(k2 - k2_true) < 0.01
+    assert all(d["K"][0][0] == d["K"][1][1] for d in docs)  # fx = fy
+    assert result.record["lens"]["shared"]["focal_px"] == pytest.approx(f, abs=1e-3)
+    for d in docs:
+        assert d["reprojection_error_px"]["median"] <= 2.0, d["camera_id"]
+
+
+def test_fixed_lens_keeps_given_lens(loop_case, ba):
+    """fixed 는 렌즈를 바꾸지 않는다: 값을 안 주면 내부 파라미터 초기값, 주면 그 값(주점은 초기값)."""
+    intr, extr = loop_case.initial(seed=7)
+    observations = _subset(loop_case.observations, until_ms=12000)
+    kwargs = {"input_provenance": loop_case.input_provenance, "created_at": ba.T0}
+    kept = adjust_human_bundle(observations, intr, extr, config=BundleConfig(lens_mode="fixed"), **kwargs)
+    for cam, init in zip(kept.cameras, intr.cameras, strict=True):
+        doc = cam.to_contract()
+        assert doc["K"] == init.camera["K"]
+        assert doc["distortion"]["coeffs"][:2] == init.camera["distortion"]["coeffs"][:2]
+    assert kept.record["lens"] == {"mode": "fixed", "fixed_from": "INTRINSICS_INIT", "fixed_lens": None}
+
+    f_true, (k1_true, k2_true) = _truth_lens(loop_case)
+    config = BundleConfig(lens_mode="fixed", fixed_lens=(f_true, k1_true, k2_true))
+    given = adjust_human_bundle(observations, intr, extr, config=config, **kwargs)
+    assert given.status == STATUS_CONVERGED, given.flags
+    for cam, init in zip(given.cameras, intr.cameras, strict=True):
+        doc = cam.to_contract()
+        assert doc["K"][0][0] == doc["K"][1][1] == f_true
+        assert doc["distortion"]["coeffs"][:2] == [k1_true, k2_true]
+        assert (doc["K"][0][2], doc["K"][1][2]) == (init.camera["K"][0][2], init.camera["K"][1][2])
+        assert doc["reprojection_error_px"]["median"] <= 2.0
+    # 초점·왜곡을 틀린 값(초기값, 초점 +4%·k1 +0.03)으로 고정하면 재투영이 나빠진다(R·t 가 렌즈를 흡수하지 못함)
+    assert max(c.reprojection_median_px for c in kept.cameras) > max(c.reprojection_median_px for c in given.cameras)
+
+
+def test_lens_config_is_checked():
+    with pytest.raises(ValueError, match="lens_mode"):
+        BundleConfig(lens_mode="per_lens")
+    with pytest.raises(ValueError, match="fixed_lens"):
+        BundleConfig(lens_mode="shared", fixed_lens=(1000.0, -0.1, 0.0))
+    with pytest.raises(ValueError, match="fixed_lens"):
+        BundleConfig(lens_mode="fixed", fixed_lens=(1000.0, -0.1))
+
+
+def _truth_heights(case, ids=None):
+    return {cid: float(case.truth_center(cid)[2]) for cid in sorted(ids or case.truth_cameras)}
+
+
+def test_measured_camera_heights_fix_scale(loop_case, ba):
+    """초기 스케일이 5% 틀려도 실측 카메라 높이(2대 이상, 일치)로 축척을 정하고 문서 근거가 MEASURED_CAMERA_HEIGHT 다."""
+    intr, extr = loop_case.initial(seed=3)
+    extr = _scaled(extr, 1.05)
+    observations = _subset(loop_case.observations, until_ms=12000)
+    heights = _truth_heights(loop_case, ("cam1", "cam2", "cam3"))
+    result = adjust_human_bundle(
+        observations,
+        intr,
+        extr,
+        measured_camera_heights=heights,
+        input_provenance=loop_case.input_provenance,
+        created_at=ba.T0,
+    )
+    assert result.status == STATUS_CONVERGED, result.flags
+    rec = result.record["scale"]["camera_heights"]
+    # 초기 스케일 +5% 와 중심 교란(σ 0.15 m)이 남긴 축척을 줄인다(정답 높이로 보면 약 0.94)
+    assert rec["applied"] is True and 0.92 < rec["scale"] < 0.97
+    assert result.scale_determined is True and result.record["scale"]["source"] == "MEASURED_CAMERA_HEIGHT"
+    assert "SCALE_NOT_DETERMINED" not in result.notes
+    [estimate] = result.scale_estimates
+    assert estimate.basis is ScaleBasis.MEASURED_CAMERA_HEIGHT and estimate.scale == pytest.approx(1.0)
+    assert estimate.sample_count == 3
+    for cid, cam in _metrics(loop_case, result)["cameras"].items():
+        assert abs(cam["height_error_m"]) < 0.02, cid  # 실측에 쓰지 않은 cam4 도
+        assert cam["reprojection_median_px"] <= 2.0, cid
+    proposal = result.propose_to(CalibrationVersionStore(camera_ids=("cam1", "cam2", "cam3", "cam4")), at_ms=ba.T0)
+    assert proposal.adopted, proposal.violations
+    assert proposal.doc["scale_basis"] == "MEASURED_CAMERA_HEIGHT"
+    assert Criterion.SCALE_PRIMARY in proposal.judgement.failed_criteria  # 카메라 높이는 CALIBRATED 주 근거가 아니다
+
+
+def test_measured_camera_heights_not_used_when_too_few_or_disagreeing(loop_case, ba):
+    """2대 미만이거나 카메라끼리 3% 넘게 어긋나면 축척을 바꾸지 않고 이유를 남긴다(모르면 비운다)."""
+    intr, extr = loop_case.initial(seed=3)
+    observations = _subset(loop_case.observations, until_ms=12000)
+    kwargs = {"input_provenance": loop_case.input_provenance, "created_at": ba.T0}
+    plain = adjust_human_bundle(observations, intr, extr, **kwargs)
+    heights = _truth_heights(loop_case)
+    heights["cam4"] *= 1.08  # 한 대를 잘못 잰 경우
+    for measured, reason in (({"cam1": heights["cam1"]}, "1대 < 2대"), (heights, "cam4")):
+        result = adjust_human_bundle(observations, intr, extr, measured_camera_heights=measured, **kwargs)
+        rec = result.record["scale"]["camera_heights"]
+        assert rec["applied"] is False and reason in rec["rejected"]
+        assert result.scale_estimates == () and result.scale_determined is False
+        assert {"SCALE_NOT_DETERMINED", "CAMERA_HEIGHT_SCALE_REJECTED"} <= set(result.notes)
+        for a, b in zip(result.cameras, plain.cameras, strict=True):
+            assert a.t == b.t  # 축척을 바꾸지 않았다: 높이 실측이 없을 때와 같은 결과
+    assert set(rec["exceeding"]) == {"cam4"}
+    proposal = result.propose_to(CalibrationVersionStore(camera_ids=("cam1", "cam2", "cam3", "cam4")), at_ms=ba.T0)
+    assert proposal.doc["scale_basis"] == "MODEL_ESTIMATE"
+
+
+def test_measured_objects_take_priority_over_camera_heights(loop_case, ba):
+    """실측 정물이 있으면 정물이 축척을 정하고, 카메라 높이는 교차 확인 근거로만 들어간다(명세 4.3 우선순위)."""
+    intr, extr = loop_case.initial(seed=3)
+    extr = _scaled(extr, 1.05)
+    result = adjust_human_bundle(
+        _subset(loop_case.observations, until_ms=12000),
+        intr,
+        extr,
+        measured_objects=_poles(loop_case, np.random.default_rng(1)),
+        measured_camera_heights=_truth_heights(loop_case),
+        input_provenance=loop_case.input_provenance,
+        created_at=ba.T0,
+    )
+    assert result.status == STATUS_CONVERGED, result.flags
+    rec = result.record["scale"]["camera_heights"]
+    assert rec["applied"] is False and "not_applied_reason" in rec
+    assert result.record["scale"]["source"] == "MEASURED_OBJECT"
+    heights = [e for e in result.scale_estimates if e.basis is ScaleBasis.MEASURED_CAMERA_HEIGHT]
+    assert len(heights) == 1 and abs(heights[0].scale - 1.0) < 0.02
+    decision, failures = decide_scale(result.scale_estimates)
+    assert decision.primary is ScaleBasis.MEASURED_OBJECT, failures
+    assert ScaleBasis.MEASURED_CAMERA_HEIGHT in decision.cross_checks

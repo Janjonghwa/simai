@@ -419,3 +419,49 @@ def test_time_sync_retimes_broken_pts_and_converges(inputs, broken_pts_keypoints
         C = -np.array(cam["R"]).T @ np.array(cam["t"])
         assert abs(C[2] - one_walker.truth_center(cam["camera_id"])[2]) < 0.06, cam["camera_id"]
         assert cam["reprojection_error_px"]["median"] <= 2.0, cam["camera_id"]
+
+
+# --------------------------------------------------------------------------- 렌즈 모드·실측 카메라 높이 (-321)
+
+
+def _heights_file(path, heights):
+    path.write_text(
+        json.dumps({"format": "simai.camera_heights", "heights_m": heights, "method": "SIM 정답", "measured_at": "t"}),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_shared_lens_and_camera_heights_end_to_end(inputs, one_walker, tmp_path):
+    heights = {cid: float(one_walker.truth_center(cid)[2]) for cid in ("cam1", "cam2", "cam3", "cam4")}
+    hfile = _heights_file(tmp_path / "heights.json", heights)
+    code, out = _run(inputs, tmp_path / "o.json", "--world-alignment", str(inputs["align"]), "--lens", "shared",
+                     "--camera-heights", str(hfile))
+    assert code == cli.EXIT_OK, (out.get("proposal_skipped"), out["bundle"].get("flags"))
+    bundle = out["bundle"]
+    assert bundle["lens"]["mode"] == "shared" and len({c["K"][0][0] for c in out["cameras"]}) == 1
+    assert bundle["scale"]["source"] == "MEASURED_CAMERA_HEIGHT" and bundle["scale"]["camera_heights"]["applied"]
+    assert out["inputs"]["camera_heights"]["heights_m"] == heights
+    assert out["inputs"]["camera_heights"]["sha256"].startswith("sha256:")
+    assert out["proposal"]["doc"]["scale_basis"] == "MEASURED_CAMERA_HEIGHT"
+    for cam in out["cameras"]:
+        C = -np.array(cam["R"]).T @ np.array(cam["t"])
+        assert abs(C[2] - heights[cam["camera_id"]]) < 0.03, cam["camera_id"]
+
+
+@pytest.mark.parametrize(
+    "extra,message",
+    [
+        (["--fixed-lens", "1000,-0.1,0.0"], "--lens fixed"),
+        (["--lens", "fixed", "--fixed-lens", "1000,-0.1"], "F,K1,K2"),
+        (["--camera-heights", "HEIGHTS"], "cam9"),
+    ],
+)
+def test_lens_and_height_config_errors_exit_2(inputs, tmp_path, capsys, extra, message):
+    hfile = _heights_file(tmp_path / "h.json", {"cam1": 2.7, "cam9": 2.6})
+    extra = [str(hfile) if v == "HEIGHTS" else v for v in extra]
+    code = cli.main(["adjust", "--keypoints", str(inputs["keypoints"]), "--intrinsics", str(inputs["intrinsics"]),
+                     "--cameras-json", str(inputs["cameras"]), "--out", str(tmp_path / "o.json"), *extra],
+                    now_ms=1_760_342_500_000)
+    assert code == cli.EXIT_CONFIG and message in capsys.readouterr().err
+    assert not (tmp_path / "o.json").exists()

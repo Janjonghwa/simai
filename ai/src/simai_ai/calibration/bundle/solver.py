@@ -3,6 +3,13 @@
 변수: 카메라마다 [회전 보정 ω(3), 카메라 중심 C(3), 초점 f, 방사 왜곡 k1, k2], 사람별 뼈 길이, 3D 점(관절·정물 끝점).
 주점은 내부 파라미터 초기값 그대로 고정한다(사람 관측으로는 회전과 섞여 잘 정해지지 않는다).
 
+렌즈 모드(`Problem.lens_mode`, -321): 잔차·야코비안은 위 전체 변수로 계산하고, 풀이만 변수를 줄인다(x_full = expand(x_red),
+J_red = J_full · T, T 는 0/1 행렬).
+- `per_camera`(기본): 카메라마다 f·k1·k2. 줄이지 않는다(이전 동작 그대로).
+- `shared`: 4대가 f·k1·k2 하나를 공유하고 카메라별로는 ω·C 만. 내부 파라미터 사전 행은 카메라마다 그대로 두되 σ 를
+  √(카메라 수) 배로 넓혀, 공유 변수 하나에 사전 하나(중심 = 카메라 f0 평균)가 걸린 것과 같게 한다. 시작값은 카메라 값의 평균.
+- `fixed`: f·k1·k2 를 시작 벡터 값(= 초기값 또는 이전 라운드 해) 그대로 두고 ω·C 만 맞춘다. 사전 행은 상수가 된다.
+
 - 회전은 R = R0 · exp([ω]×) 이다. ω 는 World 축 기준 회전이므로, 장면 전체를 World Z 축으로 α 만큼 돌리는 것은
   모든 카메라의 ω 가 (0, 0, −α) 만큼 바뀌는 것과 같다(1차). 그래서 ω_z 의 평균을 0 으로 묶으면 벽 방향이 고정된다.
 - 잔차(모두 표준편차로 나눈 무차원 값):
@@ -33,6 +40,11 @@ from scipy.spatial.transform import Rotation
 from simai_ai.geometry import distortion
 
 CAM_PARAMS = 9  # ω(3), C(3), f, k1, k2
+LENS_PARAMS = 3  # f, k1, k2 (카메라 변수 안 6~8 번)
+LENS_PER_CAMERA = "per_camera"
+LENS_SHARED = "shared"
+LENS_FIXED = "fixed"
+LENS_MODES = (LENS_PER_CAMERA, LENS_SHARED, LENS_FIXED)
 _MIN_DEPTH = 1e-6
 _XYZ = (0, 1, 2)
 
@@ -78,6 +90,11 @@ class Problem:
     fix_scale_to_initial: bool
     fix_floor_to_initial: bool
     obs_scale: np.ndarray | None = None  # (M,) 관측별 픽셀 잡음 배율(관절별 κ). 없으면 모두 1
+    lens_mode: str = LENS_PER_CAMERA  # 렌즈 변수 모드(모듈 설명, -321)
+
+    def __post_init__(self) -> None:
+        if self.lens_mode not in LENS_MODES:
+            raise ValueError(f"lens_mode 는 {LENS_MODES} 중 하나다: {self.lens_mode!r}")
 
     @property
     def n_cams(self) -> int:
@@ -448,6 +465,74 @@ class _Blocks:
         return csr_matrix((inv[self.group[r], self.slot[r], self.slot[cc]], (r, cc)), shape=(n, n))
 
 
+class _Reduction:
+    """렌즈 모드에 따라 줄인 변수 ↔ 전체 변수(모듈 설명). per_camera 는 줄이지 않고 전체 변수를 그대로 쓴다.
+
+    줄인 변수 순서: 카메라마다 ω·C(6), [shared: 공유 f·k1·k2(3)], 뼈 길이, 점. 점 변수가 맨 뒤라 Schur 소거가 그대로다.
+    """
+
+    def __init__(self, problem: Problem, x_full: np.ndarray):
+        nc = problem.n_cams
+        n_full = len(x_full)
+        self.mode = problem.lens_mode
+        self.base = np.array(x_full, dtype=float)
+        self.T: csr_matrix | None = None
+        self.red_of_full: np.ndarray | None = None  # 전체 변수 → 줄인 변수 번호(고정이면 −1)
+        self.problem = problem
+        self.n_global = CAM_PARAMS * nc + problem.n_bones
+        if self.mode == LENS_PER_CAMERA:
+            return
+        cam_cols = np.arange(CAM_PARAMS * nc).reshape(nc, CAM_PARAMS)
+        red_of_full = np.full(n_full, -1)
+        red_of_full[cam_cols[:, :6].ravel()] = np.arange(6 * nc)
+        n_lens = LENS_PARAMS if self.mode == LENS_SHARED else 0
+        if self.mode == LENS_SHARED:
+            red_of_full[cam_cols[:, 6:]] = 6 * nc + np.arange(LENS_PARAMS)[None, :]
+            # 사전 행이 카메라마다 걸리므로 σ 를 √n 배로 넓혀 공유 변수에 사전 하나와 같게 한다
+            widen = float(np.sqrt(nc))
+            self.problem = replace(
+                problem,
+                cameras=tuple(
+                    replace(c, focal_std_px=c.focal_std_px * widen, k_std=(c.k_std[0] * widen, c.k_std[1] * widen))
+                    for c in problem.cameras
+                ),
+            )
+        rest = np.arange(CAM_PARAMS * nc, n_full)
+        red_of_full[rest] = 6 * nc + n_lens + (rest - CAM_PARAMS * nc)
+        used = np.flatnonzero(red_of_full >= 0)
+        self.red_of_full = red_of_full
+        self.T = csr_matrix(
+            (np.ones(len(used)), (used, red_of_full[used])), shape=(n_full, 6 * nc + n_lens + len(rest))
+        )
+        self.n_global = 6 * nc + n_lens + problem.n_bones
+
+    def reduce(self, x_full: np.ndarray) -> np.ndarray:
+        if self.T is None:
+            return np.array(x_full, dtype=float)
+        nc = self.problem.n_cams
+        cam = x_full[: CAM_PARAMS * nc].reshape(nc, CAM_PARAMS)
+        parts = [cam[:, :6].ravel()]
+        if self.mode == LENS_SHARED:
+            parts.append(cam[:, 6:].mean(axis=0))  # 카메라마다 다르면 평균에서 시작한다
+        parts.append(x_full[CAM_PARAMS * nc :])
+        return np.concatenate(parts)
+
+    def expand(self, x_red: np.ndarray) -> np.ndarray:
+        if self.T is None:
+            return x_red
+        x = self.base.copy()
+        used = self.red_of_full >= 0
+        x[used] = x_red[self.red_of_full[used]]
+        return x
+
+    def residuals(self, x_red: np.ndarray) -> np.ndarray:
+        return residuals(self.problem, self.expand(x_red))
+
+    def jacobian(self, x_red: np.ndarray) -> csr_matrix:
+        J = jacobian(self.problem, self.expand(x_red))
+        return J if self.T is None else (J @ self.T).tocsr()
+
+
 def solve(
     problem: Problem, max_iterations: int = 50, x0: np.ndarray | None = None, tolerance: float = 1e-8
 ) -> tuple[Solution, np.ndarray]:
@@ -455,17 +540,22 @@ def solve(
 
     강건 손실(soft_l1)은 반복 가중 최소제곱(가중치 1/sqrt(1 + r²))으로 다룬다. 받아들인 한 걸음의 상대 비용 감소가
     tolerance 미만이면 수렴으로 본다. max_iterations 안에 수렴하지 못하면 success = False 다.
+    렌즈 모드(problem.lens_mode)에 따라 줄인 변수로 풀고, 해와 두 번째 값은 전체 변수로 돌려준다. `cost` 는 풀이에 쓴
+    잔차(shared 는 넓힌 사전 σ)의 강건 비용이다.
     """
-    x = _initial_vector(problem) if x0 is None else np.array(x0, dtype=float)
-    n_global = CAM_PARAMS * problem.n_cams + problem.n_bones
-    blocks = _Blocks.of(problem)
-    r = residuals(problem, x)
+    x_full = _initial_vector(problem) if x0 is None else np.array(x0, dtype=float)
+    reduction = _Reduction(problem, x_full)
+    p = reduction.problem
+    x = reduction.reduce(x_full)
+    n_global = reduction.n_global
+    blocks = _Blocks.of(p)
+    r = reduction.residuals(x)
     cost = robust_cost(r)
     lam = 1e-4
     nfev, status, success, message = 1, 0, False, "최대 반복 수에 이르렀다"
     for iteration in range(max_iterations):
         w = np.sqrt(1.0 / np.sqrt(1.0 + r * r))
-        Jw = diags(w) @ jacobian(problem, x)
+        Jw = diags(w) @ reduction.jacobian(x)
         H = (Jw.T @ Jw).tocsr()
         g = Jw.T @ (w * r)
         D = np.maximum(H.diagonal(), 1e-12)
@@ -485,7 +575,7 @@ def solve(
                 continue
             db = Vinv @ (-g[n_global:] - B.T @ da)
             x_new = x + np.concatenate([da, db])
-            r_new = residuals(problem, x_new)
+            r_new = reduction.residuals(x_new)
             nfev += 1
             cost_new = robust_cost(r_new)
             if np.isfinite(cost_new) and cost_new < cost:
@@ -505,6 +595,7 @@ def solve(
         if decrease < tolerance:
             status, success, message = 1, True, "상대 비용 감소가 기준 미만(수렴)"
             break
+    x = reduction.expand(x)
     cam, lengths, X = _unpack(problem, x)
     R = _rotations(problem, cam[:, :3])
     cams = tuple(

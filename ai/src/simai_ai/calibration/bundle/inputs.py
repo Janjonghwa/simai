@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from simai_ai.calibration.bundle.skeleton import SUPPORTED_COUNTS
+from simai_ai.calibration.bundle.solver import LENS_FIXED, LENS_MODES, LENS_PER_CAMERA
 from simai_ai.tracking.time_model import require_ms
 
 # [u, v, confidence] 또는 None(검출되지 않음)
@@ -113,6 +114,16 @@ class BundleConfig:
     walkable_area_xy: tuple[tuple[float, float], ...] = field(default=())
     """걸을 수 있는 바닥 다각형(World XY). 주면 바닥 커버리지를 계산하고, 없으면 커버리지를 비운다"""
     coverage_cell_m: float = 0.5
+    lens_mode: str = LENS_PER_CAMERA
+    """렌즈 변수(-321). per_camera: 카메라마다 f·k1·k2(기본, 이전 동작). shared: 4대가 f(=fx=fy)·k1·k2 하나를 함께 맞추고
+    카메라별로는 R·t 만. fixed: 렌즈를 바꾸지 않고 R·t 만. 주점은 어느 모드든 초기값 고정이다"""
+    fixed_lens: tuple[float, float, float] | None = None
+    """fixed 에서 모든 카메라에 쓸 (f px, k1, k2). 없으면 카메라별 내부 파라미터 초기값 그대로다. fixed 에서만 줄 수 있다"""
+    camera_height_min_cameras: int = 2
+    """실측 카메라 높이 축척에 필요한 최소 카메라 수 (명세 4.3: 2대 미만이면 쓰지 않는다)"""
+    camera_height_max_spread: float = 0.03
+    """카메라별 높이 비가 중앙값에서 벗어날 수 있는 최대 비율. 넘는 카메라가 있으면 근거를 쓰지 않는다
+    (-277 World 고정과 같은 값과 근거: 줄자·렌즈 중심·바닥 평면 오차 1σ 약 1.1% 의 2~3σ)"""
 
     def __post_init__(self) -> None:
         for name in ("pixel_sigma_px", "bone_sigma_m", "floor_sigma_m", "gauge_sigma", "measured_object_sigma_rel"):
@@ -123,3 +134,17 @@ class BundleConfig:
             raise ValueError(f"rounds 는 1 이상이어야 한다: {self.rounds}")
         if self.min_cameras < 2:
             raise ValueError(f"min_cameras 는 2 이상이어야 한다: {self.min_cameras}")
+        if self.lens_mode not in LENS_MODES:
+            raise ValueError(f"lens_mode 는 {LENS_MODES} 중 하나다: {self.lens_mode!r}")
+        if self.fixed_lens is not None:
+            if self.lens_mode != LENS_FIXED:
+                raise ValueError(f"fixed_lens 는 lens_mode {LENS_FIXED} 에서만 준다: {self.lens_mode}")
+            values = tuple(self.fixed_lens)
+            if len(values) != 3 or not all(isinstance(v, int | float) and math.isfinite(v) for v in values):
+                raise ValueError(f"fixed_lens 는 유한한 수 3개 (f, k1, k2) 다: {self.fixed_lens}")
+            if not values[0] > 0:
+                raise ValueError(f"fixed_lens 초점은 양수여야 한다: {values[0]}")
+        if self.camera_height_min_cameras < 2:
+            raise ValueError(f"camera_height_min_cameras 는 2 이상이어야 한다: {self.camera_height_min_cameras}")
+        if not (math.isfinite(self.camera_height_max_spread) and self.camera_height_max_spread > 0):
+            raise ValueError(f"camera_height_max_spread 는 유한한 양수여야 한다: {self.camera_height_max_spread}")

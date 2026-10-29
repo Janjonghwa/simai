@@ -6,7 +6,8 @@
     # 2) 번들 조정 (노트북 CPU)
     uv run python -m simai_ai.calibration.extrinsics.cli adjust --keypoints <추출 결과>.jsonl \\
         --intrinsics experiments/recordings/intrinsics/intrinsics-….json --cameras-json <MapAnything>/cameras.json \\
-        [--world-alignment <-102 결과>.json] [--measured-objects <정물 관측>.json] [--walkable-area "x,y;x,y;…"]
+        [--world-alignment <-102 결과>.json] [--measured-objects <정물 관측>.json] [--walkable-area "x,y;x,y;…"] \\
+        [--lens per_camera|shared|fixed [--fixed-lens F,K1,K2]] [--camera-heights <실측 카메라 높이>.json]
 
 단계: 녹화 → YOLO pose keypoint(카메라별, `extract`) → 촬영 시각 바로잡기(`sync`, -313) →
 한 명 걷기 대응·공통 시각 PersonObservation(`keypoints`) →
@@ -19,6 +20,11 @@ cameras.json → World 기준 초기 외부 파라미터(`initial`) → `adjust_
   결과 파일의 proposal.doc 이 저장소가 받아 준 보정 문서다(운영 저장소 반영은 이 도구 밖).
 - 출처: keypoint 파일·내부 파라미터 기록·World 정렬·실측 정물의 input_provenance 를 합쳐 결과와 번들 조정에 넘긴다
   (`initial.combine_input_provenance`). 하나라도 SIM·DATASET_GT 면 상한이고 provider_source 도 그 출처다(CALIBRATED 불가).
+- 렌즈(-321): `--lens` 기본 per_camera(카메라별 f·k1·k2), shared(4대 공통 f·k1·k2, 카메라별 R·t 만), fixed(렌즈를 바꾸지
+  않고 R·t 만. `--fixed-lens` 가 없으면 내부 파라미터 기록 값 그대로). 결과 bundle.lens.
+- 실측 카메라 높이(-321, 선택): `--camera-heights` 는 world_frame 과 같은 `simai.camera_heights` 형식(바닥 → 렌즈 중심 m).
+  2대 이상·카메라끼리 3% 안이면 중앙값 배율로 World 축척을 정한다(스케일 근거 MEASURED_CAMERA_HEIGHT, 실측 정물이 있으면
+  교차 확인만). 결과 bundle.scale.camera_heights 에 카메라별 비·잔차·버린 이유. keypoint 파일에 없는 카메라는 입력 오류다.
 - 출력 기본 위치: `ai/experiments/recordings/extrinsics/` (.gitignore 의 recordings/ 로 제외). 영상·이미지는 쓰지 않는다.
   결과 파일이 이미 있으면 덮어쓰지 않고 오류(종료 2)다.
 - 종료 코드: 0 제안이 받아들여짐, 2 인자·입력 오류, 3 조정 불확실·실패·대응 불가·제안 거절, 4 임시 World 라 제안하지 않음.
@@ -76,6 +82,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-time-sync",
         action="store_true",
         help="촬영 시각 바로잡기(깨진 PTS 시각선 다시 매기기·카메라별 시각 보정값)를 하지 않는다(비교용)",
+    )
+    ad.add_argument(
+        "--lens",
+        choices=("per_camera", "shared", "fixed"),
+        default="per_camera",
+        help="렌즈 변수: per_camera 카메라별 f·k1·k2(기본), shared 4대 공통 f·k1·k2, fixed 렌즈 고정(R·t 만)",
+    )
+    ad.add_argument("--fixed-lens", metavar="F,K1,K2", help="--lens fixed 에서 4대에 쓸 초점(px)·k1·k2. 없으면 내부 파라미터 기록")
+    ad.add_argument(
+        "--camera-heights",
+        type=Path,
+        help='실측 카메라 높이(m, 바닥 → 렌즈 중심) {"format": "simai.camera_heights", "heights_m": {"cam_A": 2.21, …}}',
     )
     ad.add_argument("--out", type=Path, help=f"결과 JSON (기본 {DEFAULT_OUT_DIR}/extrinsics-<UTC>.json)")
     return p
@@ -168,6 +186,7 @@ def _adjust(args: argparse.Namespace, created_at: int) -> int:
     from simai_ai.calibration.extrinsics.sync import estimate_time_offsets, repair_timelines, rigs_from_initial
     from simai_ai.calibration.intrinsics.record import bundle_init_from_record
     from simai_ai.calibration.versions import CalibrationVersionStore
+    from simai_ai.calibration.world_frame.inputs import load_camera_heights
 
     out = args.out or DEFAULT_OUT_DIR / f"extrinsics-{_utc_stamp(created_at)}.json"
     _require_new(out)
@@ -194,7 +213,20 @@ def _adjust(args: argparse.Namespace, created_at: int) -> int:
     expected = None if provided is None else provided.record.get("intrinsics_sha256")
     if expected and expected != _sha256(intr_raw):
         raise ValueError("World 정렬이 다른 내부 파라미터 기록(--intrinsics)으로 만든 것이다")
-    config = BundleConfig(walkable_area_xy=_polygon(args.walkable_area) if args.walkable_area else ())
+    if args.fixed_lens and args.lens != "fixed":
+        raise ValueError("--fixed-lens 는 --lens fixed 와 함께 준다")
+    heights, heights_input = None, None
+    if args.camera_heights:
+        heights, heights_input = load_camera_heights(args.camera_heights)
+        heights_input["input_provenance"] = checked_provenance(heights_input["input_provenance"], args.camera_heights.name)
+        unknown = sorted(set(heights) - set(sizes))
+        if unknown:
+            raise ValueError(f"카메라 높이에 keypoint 파일에 없는 카메라가 있다: {unknown} (keypoint 카메라 {sorted(sizes)})")
+    config = BundleConfig(
+        walkable_area_xy=_polygon(args.walkable_area) if args.walkable_area else (),
+        lens_mode=args.lens,
+        fixed_lens=_lens(args.fixed_lens) if args.fixed_lens else None,
+    )
     # 모든 입력의 출처를 합친다: 하나라도 SIM·DATASET_GT 면 결과 전체가 상한이다(CALIBRATED 불가)
     provenance, provenance_record = combine_input_provenance(
         header["input_provenance"],
@@ -202,6 +234,7 @@ def _adjust(args: argparse.Namespace, created_at: int) -> int:
             "intrinsics": checked_provenance(intr_doc.get("input_provenance"), args.intrinsics.name),
             "world_alignment": None if provided is None else provided.record.get("input_provenance"),
             "measured_objects": None if objects_input is None else objects_input["input_provenance"],
+            "camera_heights": None if heights_input is None else heights_input["input_provenance"],
         },
         f"mapanything-{initial.record.get('run_id') or initial.record['sha256'][7:19]}",
     )
@@ -225,6 +258,7 @@ def _adjust(args: argparse.Namespace, created_at: int) -> int:
             }},
             "cameras_json": dict(initial.record),
             "measured_objects": objects_input,
+            "camera_heights": heights_input,
         },
         "warnings": [],
         "proposal": None,
@@ -292,6 +326,7 @@ def _adjust(args: argparse.Namespace, created_at: int) -> int:
         input_provenance=provenance,
         created_at=created_at,
         measured_objects=objects,
+        measured_camera_heights=heights,
         config=config,
     )
     record["bundle"] = dict(result.record)
@@ -342,6 +377,16 @@ def _measured_objects(path: Path, cls, checked_provenance) -> tuple[tuple, dict[
     return tuple(out), info
 
 
+def _lens(text: str) -> tuple[float, float, float]:
+    try:
+        values = tuple(float(v) for v in text.split(","))
+    except ValueError:
+        values = ()
+    if len(values) != 3:
+        raise ValueError(f"--fixed-lens 는 'F,K1,K2' (수 3개)다: {text!r}")
+    return values  # type: ignore[return-value]
+
+
 def _polygon(text: str) -> tuple[tuple[float, float], ...]:
     pts = tuple(tuple(float(v) for v in p.split(",")) for p in text.split(";") if p.strip())
     if len(pts) < 3 or any(len(p) != 2 for p in pts):
@@ -373,8 +418,20 @@ def _print_summary(result) -> None:
         e = cam["reprojection_error_px"]
         print(
             f"  {cam['camera_id']}: 재투영 중앙값 {e['median']} px, p95 {e['p95']} px, 높이 {cam['camera_height_m']} m, "
-            f"덮음 {cam['image_coverage']}"
+            f"덮음 {cam['image_coverage']}, 초점 {cam['focal_px']} px, k {cam['k']}"
         )
+    lens = result.record.get("lens") or {}
+    if lens:
+        print(f"렌즈: {lens.get('mode')} {lens.get('shared') or lens.get('fixed_lens') or ''}")
+    heights = (result.record.get("scale") or {}).get("camera_heights")
+    if heights:
+        if heights.get("rejected"):
+            print(f"실측 카메라 높이 축척: 쓰지 않음 — {heights['rejected']} {heights.get('exceeding') or ''}")
+        else:
+            print(
+                f"실측 카메라 높이 축척: 배율 {heights['scale']} (적용 {heights['applied']}), 비 {heights['ratio']}, "
+                f"잔차 m {heights['residual_m']}"
+            )
 
 
 def _sha256(raw: bytes) -> str:

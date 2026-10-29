@@ -119,3 +119,65 @@ def test_drop_observations_removes_points_seen_once():
     assert dropped.n_points == problem.n_points - 1
     assert len(dropped.bone_a) == len(problem.bone_a) - 1  # 점 0 을 쓰던 뼈가 빠진다
     assert np.all(np.bincount(dropped.obs_pt) >= 2)
+
+
+# --------------------------------------------------------------------------- 렌즈 모드 (-321)
+
+
+def _lens_problem(mode):
+    from dataclasses import replace
+
+    p = _problem()
+    # 카메라마다 다른 초기 렌즈(공유 시작값이 평균인지 보려고)
+    cams = tuple(replace(c, f0=c.f0 + 4 * i, k0=(c.k0[0] + 0.01 * i, c.k0[1])) for i, c in enumerate(p.cameras))
+    return replace(p, cameras=cams, lens_mode=mode)
+
+
+@pytest.mark.parametrize("mode", [solver.LENS_SHARED, solver.LENS_FIXED])
+def test_reduced_jacobian_matches_finite_difference(mode):
+    problem = _lens_problem(mode)
+    x_full = solver._initial_vector(problem)
+    red = solver._Reduction(problem, x_full)
+    x = red.reduce(x_full) + np.random.default_rng(2).normal(scale=1e-3, size=len(red.reduce(x_full)))
+    analytic = red.jacobian(x).toarray()
+    numeric = _central_difference(red.residuals, x)
+    n_lens = 3 if mode == solver.LENS_SHARED else 0
+    assert analytic.shape[1] == 6 * problem.n_cams + n_lens + problem.n_bones + 3 * problem.n_points
+    assert np.max(np.abs(analytic - numeric) / np.maximum(1.0, np.abs(numeric))) < 1e-4
+
+
+def test_shared_starts_from_mean_and_keeps_one_lens():
+    problem = _lens_problem(solver.LENS_SHARED)
+    solution, _ = solver.solve(problem, max_iterations=3)
+    f = {c.f for c in solution.cameras}
+    k = {c.k for c in solution.cameras}
+    assert len(f) == 1 and len(k) == 1
+    red = solver._Reduction(problem, solver._initial_vector(problem))
+    start = red.reduce(solver._initial_vector(problem))[6 * problem.n_cams : 6 * problem.n_cams + 3]
+    assert start[0] == pytest.approx(np.mean([c.f0 for c in problem.cameras]))
+    # 사전 σ 는 √(카메라 수) 배로 넓힌다(공유 변수 하나에 사전 하나)
+    assert red.problem.cameras[0].focal_std_px == pytest.approx(2.0 * problem.cameras[0].focal_std_px)
+
+
+def test_fixed_lens_does_not_move():
+    problem = _lens_problem(solver.LENS_FIXED)
+    solution, _ = solver.solve(problem, max_iterations=5)
+    for c, c0 in zip(solution.cameras, problem.cameras, strict=True):
+        assert c.f == c0.f0 and c.k == c0.k0
+
+
+def test_per_camera_is_not_reduced():
+    """기본 모드는 변수를 줄이지 않는다(이전 풀이와 같은 계산 경로)."""
+    problem = _problem()
+    assert problem.lens_mode == solver.LENS_PER_CAMERA
+    x = solver._initial_vector(problem)
+    red = solver._Reduction(problem, x)
+    assert red.T is None and red.problem is problem and red.reduce(x) is not x and np.array_equal(red.reduce(x), x)
+    assert np.array_equal(red.residuals(x), solver.residuals(problem, x))
+
+
+def test_unknown_lens_mode_is_rejected():
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="lens_mode"):
+        replace(_problem(), lens_mode="per_lens")
