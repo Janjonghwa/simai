@@ -73,8 +73,6 @@ class UltralyticsPose:
         kwargs: dict[str, Any] = {"imgsz": self._imgsz, "verbose": False}
         if self._device is not None:
             kwargs["device"] = self._device
-        if str(self._device).startswith("cuda"):
-            kwargs["half"] = True
         out = []
         for result in self._model.predict(list(images), **kwargs):
             boxes, keypoints = result.boxes, result.keypoints

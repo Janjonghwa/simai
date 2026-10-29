@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from pathlib import Path
 
 from simai_ai.calibration.extrinsics.initial import checked_provenance, combine_input_provenance
 from simai_ai.calibration.extrinsics.keypoints import read_keypoint_file, write_keypoint_file
-from simai_ai.calibration.extrinsics.session import adjust_session
+from simai_ai.calibration.extrinsics.session import adjust_session, select_anchor_cameras
 from simai_ai.calibration.extrinsics.session_tracks import track_session
 from simai_ai.calibration.world_frame.inputs import load_camera_heights
 from simai_ai.io.sources import load_recording_manifest
@@ -34,6 +35,10 @@ def run_session(args, created_at):
     from simai_ai.calibration.bundle import BundleConfig
 
     BundleConfig(lens_mode="fixed", fixed_lens=fixed_lens)
+    anchor_cameras = None
+    if getattr(args, "anchor_cameras", None):
+        anchor_cameras = [c.strip() for c in args.anchor_cameras.split(",") if c.strip()]
+        select_anchor_cameras(previous, previous["cameras"], anchor_cameras=anchor_cameras)
     if args.start_s < 0 or (args.duration_s is not None and args.duration_s <= 0):
         raise ValueError("시작은 0 이상, 추출 길이는 양수다")
     if args.window_step_s < 0 or args.window_duration_s <= 0:
@@ -50,10 +55,11 @@ def run_session(args, created_at):
     for c in previous["cameras"]:
         if recording_sizes[c["camera_id"]] != c["image_size"]:
             raise ValueError("해상도가 바뀌었다. 내부 파라미터부터 다시 추정해야 한다")
+    extract_elapsed_s = None
     if args.keypoints:
         header, rows = read_keypoint_file(args.keypoints)
     else:
-        from simai_ai.calibration.extrinsics.extract import UltralyticsPose, extract_keypoints
+        from simai_ai.calibration.extrinsics.extract import UltralyticsPose
         from simai_ai.io.pyav_decoder import PyAvDecoder
 
         if not Path(args.model).is_file():
@@ -63,16 +69,29 @@ def run_session(args, created_at):
             raise ValueError("공통 촬영 창이 없다")
         start = window[0] + round(args.start_s * 1000)
         end = window[1] if args.duration_s is None else min(window[1], start + round(args.duration_s * 1000))
+        t_extract0 = time.monotonic()
         detector = UltralyticsPose(args.model, imgsz=args.imgsz, device=args.device)
         if args.window_step_s:
             windows = [(lo, min(end, lo + round(args.window_duration_s * 1000)))
                        for lo in range(start, end, round(args.window_step_s * 1000))]
+            windows = [(lo, hi) for lo, hi in windows if hi - lo >= max(1000, args.sample_period_ms * 2)]
         else:
             windows = [(start, end)]
         header, rows = extract_windows(
             args.recording, detector, windows, created_at=created_at, decoder_factory=PyAvDecoder,
             every_n=args.every_n, batch=args.batch,
         )
+        extract_elapsed_s = round(time.monotonic() - t_extract0, 2)
+        header["extraction_config"] = {
+            "start_s": args.start_s,
+            "duration_s": args.duration_s,
+            "window_step_s": args.window_step_s,
+            "window_duration_s": args.window_duration_s,
+            "every_n": args.every_n,
+            "batch": args.batch,
+            "window_count": len(windows),
+            "elapsed_s": extract_elapsed_s,
+        }
     if header.get("session_id") != manifest["session_id"]:
         raise ValueError("keypoint 캐시가 다른 회차다")
     if {c["camera_id"]: c["image_size"] for c in header["cameras"]} != recording_sizes:
@@ -90,16 +109,30 @@ def run_session(args, created_at):
         write_keypoint_file(args.out / "keypoints.jsonl", header, rows)
     tracks = track_session(header, rows, sample_period_ms=args.sample_period_ms)
     print(f"로컬 추적: {tracks.record['local_tracks']}개 트랙, {len(tracks.ticks)}개 공통 시각", flush=True)
+    t_adjust0 = time.monotonic()
     outcome = adjust_session(
         tracks, previous, measured_camera_heights=heights, input_provenance=provenance,
         created_at=created_at, rounds=args.rounds, fixed_lens=fixed_lens,
+        anchor_cameras=anchor_cameras,
         progress=lambda message: print(message, flush=True),
     )
+    adjust_elapsed_s = round(time.monotonic() - t_adjust0, 2)
     report = dict(outcome.report)
-    report["inputs"] = {"session_id": manifest["session_id"], "recording": str(args.recording),
-                        "previous_sha256": _hash(args.previous), "camera_heights": height_input,
-                        "input_sources": sources, "detector": header.get("detector"),
-                        "keypoints_sha256": _hash(args.keypoints or (args.out / "keypoints.jsonl"))}
+    report["inputs"] = {
+        "session_id": manifest["session_id"],
+        "recording": str(args.recording),
+        "previous_sha256": _hash(args.previous),
+        "camera_heights": height_input,
+        "input_sources": sources,
+        "detector": header.get("detector"),
+        "every_n": header.get("every_n"),
+        "window_ms": header.get("window_ms"),
+        "sample_windows_ms": header.get("sample_windows_ms"),
+        "extraction_config": header.get("extraction_config"),
+        "extraction_elapsed_s": extract_elapsed_s if extract_elapsed_s is not None else (header.get("extraction_config") or {}).get("elapsed_s"),
+        "adjust_elapsed_s": adjust_elapsed_s,
+        "keypoints_sha256": _hash(args.keypoints or (args.out / "keypoints.jsonl")),
+    }
     _write(args.out / "report.json", report)
     if outcome.calibration is None:
         print(f"새 보정 미생성: {report.get('failure_reason')}. 진단: {args.out / 'report.json'}")
@@ -110,7 +143,7 @@ def run_session(args, created_at):
 
 
 def extract_windows(recording, detector, windows, **kwargs):
-    """既存extractで分散した短い連続窓を処理する。時刻や観測を埋めず、窓の間は欠測のまま。"""
+    """분산된 짧은 연속 구간들을 추출한다. 구간 사이의 빈 시각이나 관측은 메우지 않는다."""
     from simai_ai.calibration.extrinsics.extract import extract_keypoints
 
     header, rows = None, []

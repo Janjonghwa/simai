@@ -107,14 +107,15 @@ def build_parser() -> argparse.ArgumentParser:
     se.add_argument("--model", help="로컬 YOLO pose 가중치/엔진 경로")
     se.add_argument("--imgsz", type=int, default=1280)
     se.add_argument("--device", default=None)
-    se.add_argument("--start-s", type=float, default=0.)
+    se.add_argument("--start-s", type=float, default=5.0, help="공통 촬영 창 시작에서 건너뛸 초(기본 5초: 시각 수렴 전 제외)")
     se.add_argument("--duration-s", type=float)
-    se.add_argument("--window-step-s", type=float, default=0., help="0은 연속 추출, 양수는 회차 전체에 짧은 창을 분산")
-    se.add_argument("--window-duration-s", type=float, default=1.2, help="분산 추출 창 길이(기본 1.2초)")
-    se.add_argument("--every-n", type=int, default=3)
+    se.add_argument("--window-step-s", type=float, default=24.0, help="0은 연속 추출, 양수는 회차 전체에 짧은 창을 분산(기본 24초)")
+    se.add_argument("--window-duration-s", type=float, default=9.0, help="분산 추출 창 길이(기본 9초)")
+    se.add_argument("--every-n", type=int, default=5, help="창 안 프레임 n장마다 한 장 검출(25fps에서 5 → 200ms 간격, 보간 창 이내)")
     se.add_argument("--batch", type=int, default=8)
     se.add_argument("--sample-period-ms", type=int, default=300)
     se.add_argument("--rounds", type=int, choices=(2, 3), default=3)
+    se.add_argument("--anchor-cameras", help="World 정렬 기준 카메라 목록(쉼표). 없으면 자동으로 고른다")
     return p
 
 
