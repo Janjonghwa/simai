@@ -13,10 +13,11 @@ import { validateMessage, type RiskEventPayload } from '@simai/contracts';
 import { Client, ReconnectionTimeMode, type IMessage } from '@stomp/stompjs';
 
 /** 관제 앱이 구독하는 토픽(명세 12.4). 조치 불일치(/topic/admin/events)는 그 화면을 만들 때 더한다. */
-export const TOPICS = ['/topic/world', '/topic/health', '/topic/events'] as const;
+export const TOPICS = ['/topic/world', '/topic/health', '/topic/events', '/topic/avatar'] as const;
 const WORLD_TOPIC = '/topic/world';
 const HEALTH_TOPIC = '/topic/health';
 const EVENTS_TOPIC = '/topic/events';
+const AVATAR_TOPIC = '/topic/avatar';
 
 /** 연결에서 화면 쪽으로 알리는 일. 화면 데이터(Query 캐시 등)는 받는 쪽이 정한다. */
 export interface RealtimeListeners {
@@ -262,6 +263,12 @@ export function createRealtime({
     const handle = (topic: string, received: Received) => {
       const { raw, receivedAt } = received;
       const { replay } = connection;
+      if (topic === AVATAR_TOPIC) {
+        const avatar = validateMessage('avatar_frame', raw);
+        if (!avatar.ok) return store.getState().reject();
+        // 포즈는 실시간 표시용이다. 이전 포즈를 재생하지 않고 다음 갱신을 기다린다(0.5 s 캡슐 폴백).
+        return;
+      }
       if (topic === WORLD_TOPIC) {
         // 2D 비상 화면은 3D 뷰어 없이 그리므로 앱도 검사해 최신 프레임을 둔다.
         const world = validateMessage('world_state', raw);

@@ -24,7 +24,9 @@ vi.mock('@/features/zones/useZones', () => ({
 const api = vi.hoisted(() =>
   vi.fn<(path: string) => Promise<never>>(() => Promise.reject(new Error('no api in test'))),
 );
+const avatarMeshFetch = vi.hoisted(() => vi.fn<(url: string) => Promise<ArrayBuffer>>());
 vi.mock('@/lib/api', () => ({ api }));
+vi.mock('@/lib/avatarMeshFetch', () => ({ avatarMeshFetch }));
 
 // 3D 뷰어 대역: 마운트마다 준비를 한 번 알리고, 마지막으로 받은 props 를 남긴다.
 const fake = vi.hoisted(() => ({
@@ -101,6 +103,12 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('틀의 작업면 연결', () => {
+  it('3D 에 앱의 인증된 아바타 fetch 를 넘긴다', async () => {
+    renderHost();
+    await screen.findByTestId('viewer3d');
+    expect(fake.props?.avatarMeshFetch).toBe(avatarMeshFetch);
+  });
+
   it('틀은 작업면 목록을 받지 않고 3D 에 넣지도 않는다', async () => {
     renderHost();
     await screen.findByTestId('viewer3d');
