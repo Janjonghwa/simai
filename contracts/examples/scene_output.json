@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.0.0",
+  "schema_version": "2.1.0",
   "scene_version": "scene-cand-0001",
   "state": "CANDIDATE",
   "geometry_role": "VISUAL",
@@ -23,7 +23,7 @@
     "reconstructor_detail": "facebook/map-anything (CC-BY-NC 4.0), known K·pose 입력",
     "uses_known_pose": true,
     "human_removal": "EMPTY_ROOM",
-    "postprocess": ["DEPTH_ALIGNMENT", "OUTLIER_REMOVAL", "TSDF_FUSION", "DECIMATION", "WORLD_ALIGNMENT"]
+    "postprocess": ["DEPTH_ALIGNMENT", "CROSS_VIEW_ALIGNMENT", "OUTLIER_REMOVAL", "TSDF_FUSION", "PLANE_CLEANUP", "TEXTURE", "DECIMATION", "WORLD_ALIGNMENT"]
   },
   "assets": [
     {
@@ -33,6 +33,14 @@
       "bytes": 48213004,
       "axis_convention": "GLTF_Y_UP",
       "triangle_count": 250000
+    },
+    {
+      "kind": "SURFACE_SOURCE_MAP",
+      "uri": "volume://US-KS-2/exp01/runs/exp01-20261020-0001/surface_source_0000.png",
+      "sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "bytes": 412337,
+      "surface_values": { "0": "UNOBSERVED", "1": "INTERPOLATED", "2": "OBSERVED", "3": "ESTIMATED_PLANE", "4": "GENERATED" },
+      "ratios": { "UNOBSERVED": 0.22, "INTERPOLATED": 0.01, "OBSERVED": 0.72, "ESTIMATED_PLANE": 0.05 }
     }
   ],
   "quality": {

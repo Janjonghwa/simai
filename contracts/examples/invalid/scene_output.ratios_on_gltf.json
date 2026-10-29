@@ -1,0 +1,98 @@
+{
+  "_expect_error": "출처 지도 전용 필드(ratios)를 보기용 glTF 자산(GLTF_VISUAL)에 실었다(그 자산의 텍셀 출처가 아니다)",
+  "schema_version": "2.1.0",
+  "scene_version": "scene-cand-0001",
+  "state": "CANDIDATE",
+  "geometry_role": "VISUAL",
+  "created_at": 1760342400000,
+  "experiment_id": "EXP-01",
+  "calibration_version": "cal-0",
+  "coordinate_frame": {
+    "frame": "WORLD",
+    "unit": "m",
+    "handedness": "right",
+    "up_axis": "+Z",
+    "site_id": "classroom-1"
+  },
+  "input_provenance": {
+    "frames": {
+      "source": "FILE",
+      "dataset_id": "classroom-empty/2026-10-20",
+      "dataset_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "camera_ids": [
+        "cam1",
+        "cam2",
+        "cam3",
+        "cam4"
+      ]
+    },
+    "calibration": {
+      "source": "G1_AUTO",
+      "calibration_version": "cal-0"
+    },
+    "is_upper_bound": false
+  },
+  "reproducibility": {
+    "run_id": "exp01-20261020-0001",
+    "model_version": "map-anything@3d10cf7",
+    "weights_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "input_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "method": {
+    "reconstructor": "MAPANYTHING_NATIVE",
+    "reconstructor_detail": "facebook/map-anything (CC-BY-NC 4.0), known K·pose 입력",
+    "uses_known_pose": true,
+    "human_removal": "EMPTY_ROOM",
+    "postprocess": [
+      "DEPTH_ALIGNMENT",
+      "CROSS_VIEW_ALIGNMENT",
+      "OUTLIER_REMOVAL",
+      "TSDF_FUSION",
+      "PLANE_CLEANUP",
+      "TEXTURE",
+      "DECIMATION",
+      "WORLD_ALIGNMENT"
+    ]
+  },
+  "assets": [
+    {
+      "kind": "GLTF_VISUAL",
+      "uri": "volume://US-KS-2/exp01/runs/exp01-20261020-0001/scene.glb",
+      "sha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "bytes": 48213004,
+      "axis_convention": "GLTF_Y_UP",
+      "triangle_count": 250000,
+      "ratios": {
+        "OBSERVED": 0.72,
+        "UNOBSERVED": 0.28
+      }
+    }
+  ],
+  "quality": {
+    "wall_deviation_m": {
+      "median": 0.031,
+      "p95": 0.058,
+      "max": 0.091
+    },
+    "desk_top_height_error_m": null,
+    "desk_position_error_m": null,
+    "coobserved_point_disagreement_median_m": 0.044,
+    "scale_factor_vs_floor_plan": 1.01,
+    "observed_surface_ratio": 0.72,
+    "failure_cases": [
+      "창문 반사로 벽면 깊이 누락",
+      "카메라 바로 아래 사각"
+    ],
+    "notes": "책상 GT 미측정"
+  },
+  "performance": {
+    "stage_latency_ms": {
+      "inference": {
+        "p50": 2450,
+        "p95": 2610
+      }
+    },
+    "vram_peak_mb": 11800,
+    "gpu_model": "NVIDIA A40"
+  }
+}

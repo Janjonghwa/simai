@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/experiments/scene_output.schema.json",
   "title": "정적 장면 결과 (EXP-01, static_reconstruct)",
-  "description": "정적 3D 복원 결과 한 건 (명세 5.3, 20.2, 20.4). 보기용 Visual Geometry이며 안전 판단용 Operational Geometry(등록 작업면·정적 객체의 보수적 OBB, 명세 7.5)가 아니다. 2.0.0 의미 변경(메이저): input_provenance.calibration.source(common/defs calibration_source)에서 v1.3 에서 쓰지 않는 마커 보정·평면도 대응점 출처 값을 뺐다.",
+  "description": "정적 3D 복원 결과 한 건 (명세 5.3, 20.2, 20.4). 보기용 Visual Geometry이며 안전 판단용 Operational Geometry(등록 작업면·정적 객체의 보수적 OBB, 명세 7.5)가 아니다. 2.1.0(-317, 마이너): 자산 종류 SURFACE_SOURCE_MAP(배경 메시 텍셀 출처 지도)과 그 자산에만 쓰는 값 표 surface_values·표면적 비율 ratios(추정 평면 ESTIMATED_PLANE = 3, 생성 GENERATED = 4 예약), 후처리 CROSS_VIEW_ALIGNMENT·PLANE_CLEANUP(-314) 추가. 2.0.0 의미 변경(메이저): input_provenance.calibration.source(common/defs calibration_source)에서 v1.3 에서 쓰지 않는 마커 보정·평면도 대응점 출처 값을 뺐다.",
   "type": "object",
   "required": [
     "schema_version", "scene_version", "state", "geometry_role", "created_at",
@@ -31,8 +31,8 @@
         "human_removal": { "enum": ["EMPTY_ROOM", "MASK_COMPOSITE", "NONE"], "description": "사람 제거 방식 (명세 5.3 촬영 조건)" },
         "postprocess": {
           "type": "array",
-          "items": { "enum": ["DEPTH_ALIGNMENT", "OUTLIER_REMOVAL", "TSDF_FUSION", "POISSON", "TEXTURE", "DECIMATION", "WORLD_ALIGNMENT"] },
-          "description": "적용한 후처리 순서"
+          "items": { "enum": ["DEPTH_ALIGNMENT", "CROSS_VIEW_ALIGNMENT", "OUTLIER_REMOVAL", "TSDF_FUSION", "PLANE_CLEANUP", "POISSON", "TEXTURE", "DECIMATION", "WORLD_ALIGNMENT"] },
+          "description": "적용한 후처리 순서. CROSS_VIEW_ALIGNMENT 는 카메라 간 깊이 겹침으로 자세를 되맞춤, PLANE_CLEANUP 은 수평 평면 군집의 정점을 맞춘 평면에 올림(그 면은 출처 지도에서 ESTIMATED_PLANE, -314)"
         }
       },
       "additionalProperties": false
@@ -45,7 +45,10 @@
         "type": "object",
         "required": ["kind", "uri", "sha256"],
         "properties": {
-          "kind": { "enum": ["GLTF_VISUAL", "POINT_CLOUD", "DEPTH_MAPS", "MESH_RAW", "PREVIEW_IMAGE"] },
+          "kind": {
+            "enum": ["GLTF_VISUAL", "POINT_CLOUD", "DEPTH_MAPS", "MESH_RAW", "PREVIEW_IMAGE", "SURFACE_SOURCE_MAP"],
+            "description": "SURFACE_SOURCE_MAP(2.1.0): GLTF_VISUAL 의 텍셀 출처 지도. 무손실 8비트 단일 채널 PNG, 알베도 아틀라스와 같은 UV·해상도, 최근접 표본으로 읽는다(밉맵·선형 보간 금지). 아틀라스(재질)마다 한 장이면 재질 순서대로 한 자산씩 싣는다(glb extras.simai.surface_source.maps 와 같은 순서). 겹친 텍셀은 신뢰가 낮은 값을 남긴다(미관측 < 생성 < 보간 < 추정 평면 < 관측, docs/design/exp01-textured-mesh.md '텍셀 출처 지도')"
+          },
           "uri": { "$ref": "../common/defs.schema.json#/$defs/uri" },
           "sha256": { "$ref": "../common/defs.schema.json#/$defs/sha256" },
           "bytes": { "type": "integer", "minimum": 0 },
@@ -53,9 +56,38 @@
             "enum": ["WORLD_Z_UP", "GLTF_Y_UP"],
             "description": "GLTF_VISUAL은 glTF 규약(+Y 상방, World (x,y,z) → (x, z, −y))으로 내보낸다. 변환은 내보내기 어댑터 한 곳에서만 한다"
           },
-          "triangle_count": { "type": "integer", "minimum": 0 }
+          "triangle_count": { "type": "integer", "minimum": 0 },
+          "surface_values": {
+            "type": "object",
+            "description": "SURFACE_SOURCE_MAP 에만. 텍셀 값 → 출처 이름 표. 0·1·2 는 EXP-02 아바타 표면 출처 지도(avatar_asset surface_source.mask_uri)와 같은 값이고 배경에는 얼굴 비트(+128)가 없다. 3 = ESTIMATED_PLANE: 색은 그 카메라 관측 픽셀이나 정점을 맞춘 수평 평면에 올린 면(형상이 관측 그대로가 아니다, 원칙 8). 4 = GENERATED: 값 자리만 예약(관측 근거 없는 색은 만들지 않는다). 표에 없는 값과 이 표를 모르는 쪽(0·1·2 만 읽는 쪽)은 그 텍셀을 0(미관측)으로 읽는다(관측으로 승격 금지)",
+            "required": ["0", "1", "2"],
+            "properties": {
+              "0": { "const": "UNOBSERVED" },
+              "1": { "const": "INTERPOLATED" },
+              "2": { "const": "OBSERVED" },
+              "3": { "const": "ESTIMATED_PLANE" },
+              "4": { "const": "GENERATED" }
+            },
+            "additionalProperties": false
+          },
+          "ratios": {
+            "type": "object",
+            "description": "SURFACE_SOURCE_MAP 에만. 출처별 비율 0~1, 배경 메시 전체 표면적 기준(미관측 면은 아틀라스에 없어 텍셀 기준이 아니다). 지도가 여러 장이어도 같은 값이다. 잰 값만 싣는다(모르면 키를 뺀다)",
+            "minProperties": 1,
+            "properties": {
+              "UNOBSERVED": { "type": "number", "minimum": 0, "maximum": 1 },
+              "INTERPOLATED": { "type": "number", "minimum": 0, "maximum": 1 },
+              "OBSERVED": { "type": "number", "minimum": 0, "maximum": 1 },
+              "ESTIMATED_PLANE": { "type": "number", "minimum": 0, "maximum": 1 },
+              "GENERATED": { "type": "number", "minimum": 0, "maximum": 1 }
+            },
+            "additionalProperties": false
+          }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "if": { "properties": { "kind": { "const": "SURFACE_SOURCE_MAP" } }, "required": ["kind"] },
+        "then": { "required": ["surface_values"] },
+        "else": { "properties": { "surface_values": false, "ratios": false } }
       }
     },
 

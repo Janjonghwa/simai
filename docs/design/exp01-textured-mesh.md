@@ -8,7 +8,8 @@ S15P31A101-298. 기획서 §5.3(정적 3D, 복원 후처리 순서 "뷰 간 깊�
 깊이 정합·융합 규칙은 `docs/design/exp01-hybrid-depth.md`(-283)의 것을 그대로 가져다 쓴다(`run_hybrid_depth.py` 함수 재사용).
 S15P31A101-314 가 형상 정리(카메라 간 깊이 정렬·수평 평면 정리, `mesh_cleanup.py`, 시험 `test_mesh_cleanup.py`)와 glb 의 glTF 축 규약을
 더했다(아래 "형상 정리(-314)", "좌표").
-명세·계약·잠금(`ai/uv.lock`)은 바꾸지 않았다(아래 "넘긴 일").
+명세·잠금(`ai/uv.lock`)은 바꾸지 않았다(아래 "넘긴 일"). S15P31A101-317 이 계약 `scene_output` 2.1.0 에 출처 지도 자산
+(`SURFACE_SOURCE_MAP`)·값 표(`surface_values`, 3 = ESTIMATED_PLANE·4 = GENERATED 예약)·표면적 비율(`ratios`)을 실을 자리를 더했다(아래 "텍셀 출처 지도").
 
 ## 무엇을 내나
 
@@ -90,7 +91,8 @@ texrecon 의 구멍 채우기는 성공 여부를 따로 알려 주지 않는다
   배경에는 얼굴 비트(+128)가 없다. **3 = ESTIMATED_PLANE** 은 `--plane-cleanup`(-314) 일 때만 낸다: 색은 그 카메라 관측 픽셀이지만 정점을
   맞춘 수평 평면에 올린 면이다(형상이 관측 그대로가 아니다, AGENTS 규칙 7). **4 = GENERATED 는 값 자리만 예약**하고 내지 않는다
   (`extras.simai.surface_source.reserved_not_emitted`). EXP-02 처럼 0/1/2 만 읽는 쪽은 3·4 를 0(미관측)으로 읽어야 한다(관측으로 승격 금지).
-  계약 enum(`common/defs surface_source`)에는 3·4 가 없다(넘긴 일).
+  공통 enum(`common/defs surface_source`, 관제 앱이 쓰는 world_state·아바타 계약)에는 3·4 를 넣지 않는다. 배경의 값 표는
+  `scene_output` 2.1.0 `SURFACE_SOURCE_MAP` 자산의 `surface_values` 에 싣는다(-317).
 - 면 출처를 아틀라스 UV 에 칠한다(텍셀 중심이 삼각형 안). **겹치는 텍셀은 신뢰가 가장 낮은 값**을 남긴다. 신뢰 순서는 숫자 순서가 아니라
   UNOBSERVED < GENERATED < INTERPOLATED < ESTIMATED_PLANE < OBSERVED 다(`texture_provenance.TRUST`. 추정 평면은 색이 관측이라 보간보다 위,
   형상을 맞췄으니 관측보다 아래). 관측 카메라 지도는 OBSERVED·ESTIMATED_PLANE 텍셀에 값이 있다.
@@ -99,7 +101,7 @@ texrecon 의 구멍 채우기는 성공 여부를 따로 알려 주지 않는다
   다르면 0(모름). 국소 이음매 보정을 거친 색이라 원본 픽셀 값 그대로는 아니다(처리 이력은 `metrics.json` texrecon 호출 목록).
 - 미관측 면은 아틀라스에 없으므로 **비율은 표면적 기준**(`ratios_area`, `scene_output.quality.observed_surface_ratio` 와 같은 뜻)을
   주 지표로, 텍셀 기준(`ratios_texel`, 칠한 텍셀 안)은 참고로 낸다.
-- 별도 텍스처 + glTF `extras` 로 낸 이유: 계약에 배경 glTF 출처 필드가 없고(`scene_output` 은 자산 목록·`observed_surface_ratio` 만),
+- 별도 텍스처 + glTF `extras` 로 낸 이유: -298 당시 계약에 배경 glTF 출처 필드가 없었고(지금은 `scene_output` 2.1.0 `SURFACE_SOURCE_MAP` 자산, -317),
   EXP-02 가 이미 "아틀라스와 같은 UV 의 8비트 PNG" 형식을 쓴다. glTF 확장(`extensionsUsed`)을 새로 만들면 뷰어가 모르는 확장을 받아야 한다.
 
 ### 좌표 (AGENTS 3, 계약 `scene_output` assets.axis_convention)
@@ -343,7 +345,7 @@ DA3 1008: B 0.991·0.65°·10 cm, C 1.006·1.73°·20 cm, D 1.020·1.00°·17 cm
 - DA3 1008 은 바닥 위 3~5 cm 평면(0.86 m² 등)이 남았다(겹 거절 30% 기준 밖). 무엇인지 확인하지 않았다.
 - DA3 2304 는 정렬이 상한(회전 4~9°)을 넘어 네 카메라 모두 원래대로 남았다. 입력 깊이 자체가 MapAnything 깊이와 4~6%(p50) 어긋나 이 조합은
   쓰지 않는다.
-- ESTIMATED_PLANE 은 계약 enum 에 아직 없다(넘긴 일). EXP-02 처럼 0/1/2 만 읽는 쪽은 0 으로 읽어야 한다.
+- ESTIMATED_PLANE 은 `scene_output` 2.1.0 값 표에만 있고 공통 `surface_source` enum 에는 없다(-317). EXP-02 처럼 0/1/2 만 읽는 쪽은 0 으로 읽어야 한다.
 - 수치는 로비 한 장면·조합마다 한 번 실행(base 만 두 번, 자기 시점 PSNR 차 0.05 dB). 평면 정리를 켜면 정렬만보다 자기 시점 PSNR 이 0.6 dB
   낮다(원인 미확인). 한 카메라 빼고 굽기는 이번에 돌리지 않았다(`--loo-terms ""`).
 
@@ -384,12 +386,15 @@ DA3 1008: B 0.991·0.65°·10 cm, C 1.006·1.73°·20 cm, D 1.020·1.00°·17 cm
 
 ## 넘긴 일
 
-- 계약: 배경 glTF 의 출처 지도·비율을 실을 자리(`scene_output` 자산 종류 `SURFACE_SOURCE_MAP`·`ratios` 등), `surface_source` enum 의
-  ESTIMATED_PLANE·GENERATED 예약, 출력 좌표가 World 가 아닐 때의 표시. `contracts/` 는 바꾸지 않았다.
+- 계약: 출력 좌표가 World 가 아닐 때의 표시. (정리됨, -317: 배경 glTF 출처 지도·값 표·비율은 `scene_output` 2.1.0 `SURFACE_SOURCE_MAP`
+  자산·`surface_values`·`ratios`, 후처리 `CROSS_VIEW_ALIGNMENT`·`PLANE_CLEANUP`. 공통 `surface_source` enum 은 관제 앱 계약이라 그대로 둔다.
+  `texture_mesh.py` 는 `scene_output` 문서를 내지 않아 코드는 바꾸지 않았다. 문서를 낼 때 출처 지도 PNG 를 이 자산으로, `ratios_area` 를
+  `ratios` 로 싣는다.)
+- 평면에 정점을 올렸지만 UNOBSERVED 로 남은 면은 형상은 추정이고 출처는 미관측(회색)이다.
 - 뷰어: `textured.glb` 표시, `unobserved_neutral` 를 사각지대로 보이기, 출처 지도 최근접 표본 겹쳐 보기.
 - 관측 영역 일부를 일부러 가려 2층 보간 오차를 재는 시험(작은 구멍 기준 검증).
 - World 고정 성공 Run(-100 실측 정물 등)과 4차 결과(-282 해상도, -283 DA3 혼합)로 다시 굽기.
 - 채택 시 Open3D·trimesh·Pillow 를 `scene` extra·잠금으로, 함수는 `ai/src/simai_ai/scene/` 로.
 - `scene_output` 문서는 World 정렬이 OK 일 때만 낼 수 있어(좌표계 WORLD 고정) 이번에는 내지 않았다.
-- (-314) 계약 `surface_source` enum 에 ESTIMATED_PLANE(3) 넣기, 정렬된 자세를 보정 쪽(world_frame)에 다시 넣어 World 를 다시 고정할지 결정,
+- (-314) 정렬된 자세를 보정 쪽(world_frame)에 다시 넣어 World 를 다시 고정할지 결정,
   정렬 뒤 World 높이 실측(G4), 관제 앱에서 GLTF_Y_UP glb 확인(-59), 빈 교실 사진으로 다시 굽기.

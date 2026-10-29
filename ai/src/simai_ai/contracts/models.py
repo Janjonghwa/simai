@@ -1358,21 +1358,45 @@ class Method(BaseModel):
     reconstructor_detail: StrictStr | MISSING = MISSING
     uses_known_pose: StrictBool
     human_removal: Literal['EMPTY_ROOM', 'MASK_COMPOSITE', 'NONE'] | MISSING = MISSING
-    postprocess: list[Literal['DEPTH_ALIGNMENT', 'OUTLIER_REMOVAL', 'TSDF_FUSION', 'POISSON', 'TEXTURE', 'DECIMATION', 'WORLD_ALIGNMENT']] | MISSING = (
+    postprocess: list[Literal['DEPTH_ALIGNMENT', 'CROSS_VIEW_ALIGNMENT', 'OUTLIER_REMOVAL', 'TSDF_FUSION', 'PLANE_CLEANUP', 'POISSON', 'TEXTURE', 'DECIMATION', 'WORLD_ALIGNMENT']] | MISSING = (
         MISSING
     )
+
+
+class SurfaceValues(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field_0: Annotated[Literal['UNOBSERVED'], Field(alias='0')]
+    field_1: Annotated[Literal['INTERPOLATED'], Field(alias='1')]
+    field_2: Annotated[Literal['OBSERVED'], Field(alias='2')]
+    field_3: Annotated[Literal['ESTIMATED_PLANE'] | MISSING, Field(alias='3')] = MISSING
+    field_4: Annotated[Literal['GENERATED'] | MISSING, Field(alias='4')] = MISSING
+
+
+class Ratios2(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    UNOBSERVED: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=1.0)] = MISSING
+    INTERPOLATED: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=1.0)] = MISSING
+    OBSERVED: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=1.0)] = MISSING
+    ESTIMATED_PLANE: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=1.0)] = MISSING
+    GENERATED: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=1.0)] = MISSING
 
 
 class Asset(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    kind: Literal['GLTF_VISUAL', 'POINT_CLOUD', 'DEPTH_MAPS', 'MESH_RAW', 'PREVIEW_IMAGE']
+    kind: Literal['GLTF_VISUAL', 'POINT_CLOUD', 'DEPTH_MAPS', 'MESH_RAW', 'PREVIEW_IMAGE', 'SURFACE_SOURCE_MAP']
     uri: DefsUri
     sha256: DefsSha256
     bytes: Annotated[StrictInt | MISSING, Field(ge=0)] = MISSING
     axis_convention: Literal['WORLD_Z_UP', 'GLTF_Y_UP'] | MISSING = MISSING
     triangle_count: Annotated[StrictInt | MISSING, Field(ge=0)] = MISSING
+    surface_values: SurfaceValues | MISSING = MISSING
+    ratios: Ratios2 | MISSING = MISSING
 
 
 class WallDeviationM(BaseModel):
