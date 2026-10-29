@@ -164,6 +164,11 @@ $C exec -T db pg_restore -U postgres -d postgres --clean --create < /opt/simai/b
 전에 비우면 옛 V1 로 다시 만들어져 또 깨지므로, 머지 뒤 배포 직전에 한다. 데이터와 관리자 계정이 모두 사라진다.
 첫 운영 배포 MR 은 `rule_catalog.FIRST_OPERATION_DEPLOY` 에 날짜를 넣는다 → `docs/design/rule-seed-preop-exception.md`.
 
+첫 운영 배포 때도 이 절차로 EC2 DB 를 `pg_dump` 로 보관한 뒤 비우고 운영 현장 하나만 시드한다. 옛 map(시험 Scene·구역·보정·시험 구성 묶음)과
+리허설 때 `source=LIVE` 로 남은 시험 이벤트는 앱에 남기지 않고 덤프로만 보관한다(사용자 결정 2026-10-29, 명세 개정 이력 v1.3 수정 35). 첫 운영 배포 전에는 지킬 운영 판정 기록이
+없고(11.4-1 과 같은 근거), `SceneService.CURRENT_COMMITTED` 는 현장(`site_id`) 구분 없이 최근 `COMMITTED` Scene 하나만 고르므로 옛 시험 Scene 이 남으면
+운영 현장과 섞이기 때문이다.
+
 ```sh
 C="docker compose --env-file /opt/simai/.env -f /opt/simai/repo/deploy/ec2/compose.yaml"
 $C stop server
@@ -174,7 +179,24 @@ $C exec -T db psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE 
 # 관리자 계정을 다시 만든다("관리자 계정 만들기")
 ```
 
-`before-reset` 덤프는 자동 정리(최근 5개)에 들어가니 오래 둘 것은 따로 옮긴다.
+`before-reset` 덤프는 자동 정리(최근 5개)에 들어가니 바로 EC2 밖(현장 노트북)으로 옮겨 오래 보관한다:
+`scp -i ~/.ssh/K15A101T.pem "ubuntu@k15a101.p.ssafy.io:/opt/simai/backups/*-before-reset.dump" ./`
+
+#### 운영 현장 시드
+
+선행 조건: 보정은 걷기 보정(`cal-walk`)을 r4 재생과 카메라 C 높이 실측으로 확정한 뒤 `site_id`·축척 근거를 채운다.
+
+| 단계 | 하는 곳 | 확인 항목 |
+|---|---|---|
+| 1. 관리자 계정 | EC2 관리 명령 `admin create-user --login <아이디> --role ADMIN` (`app_user` 생성 Controller 없음) | `POST /api/auth/login`(`AuthController`) 200·`user.role=ADMIN`, 관제 화면 로그인 |
+| 2. site(`site_id`, 축척 근거) | 없음 — 넘긴 일 (Flyway V2 가 `classroom-1` 을 시드하고 `SiteLookup` 이 단일 행을 읽음. `site`·`scale_reference` 등록 Controller 없음) | `site` 테이블 단일 행(`site_id`)이 보정 문서의 `coordinate_frame.site_id` 와 일치 |
+| 3. 보정 버전 | `POST /api/calibrations`(`CalibrationController`, 관리자) 또는 관제 화면 보정 문서 업로드 | 201 응답(`calibration_version`·`state`·`sha256`), `GET /api/calibrations/current` 의 `latest_uploaded_version`(Tier 0 알림 후 `document_uploaded=true`) |
+| 4. Scene(그 보정을 가리킴) | 없음 — 넘긴 일 (`SceneController` 는 `GET /api/scenes/current` 만 있고 `scene_version` 등록·COMMITTED 전환 Controller 없음) | `GET /api/scenes/current` 200(`state=COMMITTED`, `default=false`, `calibration_version` 이 3단계 보정과 일치, `gltf_url` 발급), 관제 화면 3D 배경 |
+| 5. 구역·등록 작업면·정적 객체 | 구역 `POST /api/zones`·`PUT /api/zones/{zoneId}`(`ZoneController`), 작업면·정적 객체 `POST /api/static-objects`·`PUT /api/static-objects/{objectId}`(`StaticObjectController`) 또는 관제 화면 편집 | `GET /api/zones`, `GET /api/static-objects` 에 현재 유효 버전(`valid_to` 없음) 조회, 관제 화면 3D 표시 |
+| 6. 구성 묶음 발행 | `POST /api/config-bundles`(`ConfigBundleController`, 본문 `{"rule_profile": "OPERATION"}` 또는 생략 — 생략하면 직전 묶음의 프로필, 직전 묶음이 없으면 OPERATION. 선행: Tier 0 를 빈 저장 위치(state)로 새로 기동한다. DB 초기화로 번호가 `cfg-1` 부터 다시 시작해 옛 state 의 Tier 0 는 REFERENCE_INVALID 로 거부한다) 또는 관제 화면 발행 | 201 응답 및 `GET /api/config-bundles` 최신 행의 `config_version`(`cfg-1`), `rule_profile=OPERATION`, `calibration_version`, `components` 4종 |
+| 7. Tier 0 ACK 확인 | `GET /api/config-bundles/{version}`(`ConfigBundleController`), `GET /api/health`(`HealthController`) 또는 관제 화면 상태 패널 | `GET /api/config-bundles/{version}` 의 `status=APPLIED`·`applied_at`·`last_ack.result=APPLIED`, `GET /api/health` 의 `payload.config.applied_version` 일치·`payload.config.sync=CURRENT` |
+| 8. 기본 Scene 설정 `simai.scene.default-gltf-key` 제거(4단계 Scene 이 COMMITTED 된 뒤에만. 4단계 경로가 생기기 전에는 지우지 않고 시연용 기본 배경을 유지한다) | EC2 `/opt/simai/.env` 의 `SIMAI_SCENE_DEFAULT_GLTF_KEY` 비우기(`application.yaml` 의 `simai.scene.default-gltf-key`) 후 `server` 재기동 | `GET /api/scenes/current` 가 시연용 기본 배경(`default=true`, `scene-demo`)으로 빠지지 않고 4단계의 `state=COMMITTED`, `default=false` Scene 만 반환 |
+
 - 전부 내리기: `docker compose ... down`(볼륨은 남는다). `down -v` 는 DB·인증서까지 지우니 쓰지 않는다.
 
 ## 버린 대안
@@ -200,6 +222,7 @@ $C exec -T db psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE 
 - 정기 DB 백업과 EC2 밖 보관.
 - CI 에서 이미 dev 에 있는 `V*.sql` 의 수정·삭제·번호 겹침을 막는다. 첫 운영 배포 전 예외(DB 초기화)가 끝난 뒤에 넣는다.
 - STOMP 엔드포인트 `/ws`(server), `/actuator/health` 공개(server).
+- 운영 현장 시드 경로: `site`(`site_id`·축척 근거) 등록·수정과 `Scene`(`scene_version` COMMITTED, 보정 버전 참조) 등록 API 또는 관리 명령.
 
 ## 검증
 
