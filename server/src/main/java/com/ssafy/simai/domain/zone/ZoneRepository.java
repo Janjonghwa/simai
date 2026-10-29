@@ -22,6 +22,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * 위험 구역(V1 zone, 명세 8.2·11.4). 수정은 지금 버전을 닫고(valid_to) 새 버전을 더한다. 지우지 않는다.
+ * 보관은 지금 버전만 닫고 새 버전을 더하지 않는다(이력·이벤트가 가리키는 버전은 남는다).
  * 다각형은 PostGIS(SRID 0, 로컬 미터)에 두고 저장·조회만 한다. 판정은 Tier 0 가 구성 묶음으로 받아서 한다.
  * 응답·구성 묶음의 polygon_xy 는 닫는 점을 뺀 꼭짓점 목록이다.
  */
@@ -84,14 +85,40 @@ public class ZoneRepository {
                 SELECT zone_version FROM zone WHERE zone_id = :zoneId AND valid_to IS NULL FOR UPDATE
                 """, params, Integer.class);
         if (current.isEmpty()) {
-            // 같이 고치던 다른 요청이 먼저 새 버전을 만들었으면 지금 버전이 바뀌었다(잠금이 풀린 뒤 다시 읽음)
-            throw new BusinessException(exists(zoneId) ? ErrorCode.Config.CONCURRENT_EDIT : ErrorCode.Config.ZONE_NOT_FOUND);
+            throw notCurrent(zoneId);
         }
         String siteId = jdbc.queryForObject("SELECT site_id FROM zone WHERE zone_id = :zoneId LIMIT 1", params, String.class);
         jdbc.update("UPDATE zone SET valid_to = :now WHERE zone_id = :zoneId AND valid_to IS NULL", params);
         int version = current.getFirst() + 1;
         insert(zoneId, version, siteId, checked, userId, now);
         return findVersion(zoneId, version);
+    }
+
+    /**
+     * 지금 버전을 닫는다. 다음 구성 묶음부터 빠진다. 한 트랜잭션 안에서 부른다.
+     * 이미 보관한 항목을 다시 보관하면 그대로 성공이다(두 번 누름·재시도). 없는 ID 만 404 다
+     */
+    public void archive(String zoneId, OffsetDateTime now) {
+        int closed = jdbc.update("UPDATE zone SET valid_to = :now WHERE zone_id = :zoneId AND valid_to IS NULL",
+                new MapSqlParameterSource("zoneId", zoneId).addValue("now", now));
+        boolean alreadyArchived = closed == 0 && exists(zoneId) && !hasCurrent(zoneId);
+        if (closed == 0 && !alreadyArchived) {
+            throw notCurrent(zoneId);
+        }
+    }
+
+    /**
+     * 잠근 지금 버전이 없을 때. 같이 고치던 다른 요청이 먼저 새 버전을 만들었으면(잠금이 풀린 뒤 다시 읽음) 충돌이고,
+     * 지금 버전이 없으면(없는 ID·보관한 구역) 없는 것이다
+     */
+    private BusinessException notCurrent(String zoneId) {
+        boolean current = hasCurrent(zoneId);
+        return new BusinessException(current ? ErrorCode.Config.CONCURRENT_EDIT : ErrorCode.Config.ZONE_NOT_FOUND);
+    }
+
+    private boolean hasCurrent(String zoneId) {
+        return !jdbc.queryForList("SELECT 1 FROM zone WHERE zone_id = :zoneId AND valid_to IS NULL LIMIT 1",
+                new MapSqlParameterSource("zoneId", zoneId), Integer.class).isEmpty();
     }
 
     private boolean exists(String zoneId) {

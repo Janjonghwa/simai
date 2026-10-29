@@ -11,6 +11,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -22,7 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * 작업면·정적 객체 조회·등록·새 버전(명세 12.6, 7.5). 쓰기는 관리자, 조회는 열람 이상.
+ * 작업면·정적 객체 조회·등록·새 버전·보관(명세 12.6, 7.5). 쓰기는 관리자, 조회는 열람 이상.
  * 등록한 작업면은 구성 묶음 operational_geometry 로 Tier 0 에 전달된다(3.2).
  */
 @RestController
@@ -65,6 +66,14 @@ class StaticObjectController {
     ObjectNode newVersion(@PathVariable String objectId, @RequestBody StaticObjectRequest request,
             @AuthenticationPrincipal Jwt jwt) {
         return transaction.execute(s -> objects.newVersion(objectId, request, Long.parseLong(jwt.getSubject()), now()));
+    }
+
+    /** 보관: 지금 버전을 닫아 목록·다음 묶음에서 뺀다. 이미 적용된 묶음은 다음 발행까지 그대로 쓰인다 */
+    @DeleteMapping("/{objectId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @PreAuthorize("hasRole('ADMIN')")
+    void archive(@PathVariable String objectId) {
+        transaction.executeWithoutResult(s -> objects.archive(objectId, now()));
     }
 
     private OffsetDateTime now() {

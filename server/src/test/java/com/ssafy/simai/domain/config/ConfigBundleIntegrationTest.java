@@ -313,7 +313,76 @@ class ConfigBundleIntegrationTest {
         call("POST", "/api/config-bundles", viewer(), MAPPER.createObjectNode(), 403);
     }
 
+    @Test
+    void 보관한_구역과_작업면은_목록과_다음_묶음에서_빠지고_이력은_남는다() throws Exception {
+        call("POST", "/api/calibrations", admin(), upload(calibration("cal-test-" + tag + "-e")), 201);
+        String zoneId = call("POST", "/api/zones", admin(), zone("잘못 만든 구역", 3.0), 201).get("zone_id").asString();
+        String surfaceId = call("POST", "/api/static-objects", admin(), podium(0.4), 201).get("object_id").asString();
+        JsonNode before = publish(null);
+        assertThat(itemIds(before)).contains(zoneId, surfaceId);
+
+        call("DELETE", "/api/zones/" + zoneId, viewer(), null, 403);
+        call("DELETE", "/api/zones/" + zoneId, admin(), null, 204);
+        call("DELETE", "/api/static-objects/" + surfaceId, admin(), null, 204);
+
+        assertThat(call("GET", "/api/zones", viewer(), null, 200).valueStream().map(z -> z.get("zone_id").asString()))
+                .doesNotContain(zoneId);
+        assertThat(call("GET", "/api/static-objects", viewer(), null, 200).valueStream()
+                .map(o -> o.get("object_id").asString())).doesNotContain(surfaceId);
+        JsonNode history = call("GET", "/api/zones/" + zoneId + "/versions", viewer(), null, 200);
+        assertThat(history).hasSize(1);
+        assertThat(history.get(0).get("valid_to").isNull()).isFalse();
+
+        // 보관한 항목은 고칠 수 없다(새 ID 로 다시 만든다). 다시 보관하는 것은 성공(두 번 누름), 없는 ID 는 404
+        assertThat(call("PUT", "/api/zones/" + zoneId, admin(), zone("되살림", 3.0), 404).get("code").asString())
+                .isEqualTo("ZONE_NOT_FOUND");
+        call("DELETE", "/api/zones/" + zoneId, admin(), null, 204);
+        call("DELETE", "/api/static-objects/" + surfaceId, admin(), null, 204);
+        assertThat(call("PUT", "/api/static-objects/" + surfaceId, admin(), podium(0.5), 404).get("code").asString())
+                .isEqualTo("STATIC_OBJECT_NOT_FOUND");
+        call("DELETE", "/api/zones/z-none", admin(), null, 404);
+        call("DELETE", "/api/static-objects/so-none", admin(), null, 404);
+
+        JsonNode after = publish(null);
+        assertThat(itemIds(after)).doesNotContain(zoneId, surfaceId);
+        // 이미 발행한 묶음의 항목 목록은 그대로다
+        assertThat(itemIds(call("GET", "/api/config-bundles/" + before.get("config_version").asString(), viewer(), null, 200)))
+                .contains(zoneId, surfaceId);
+    }
+
+    @Test
+    void 묶음_조회는_실은_구역_규칙_작업면의_ID_와_버전을_싣는다() throws Exception {
+        call("POST", "/api/calibrations", admin(), upload(calibration("cal-test-" + tag + "-f")), 201);
+        String zoneId = call("POST", "/api/zones", admin(), zone("양중 하부", 3.0), 201).get("zone_id").asString();
+        call("PUT", "/api/zones/" + zoneId, admin(), zone("양중 하부(넓힘)", 4.0), 200);
+        String surfaceId = call("POST", "/api/static-objects", admin(), podium(0.4), 201).get("object_id").asString();
+        JsonNode published = publish(null);
+        String version = published.get("config_version").asString();
+
+        for (JsonNode bundle : List.of(published, call("GET", "/api/config-bundles/" + version, viewer(), null, 200),
+                call("GET", "/api/config-bundles", viewer(), null, 200).valueStream()
+                        .filter(b -> b.get("config_version").asString().equals(version)).findFirst().orElseThrow())) {
+            JsonNode zoneItem = item(bundle, zoneId);
+            assertThat(zoneItem.get("item_type").asString()).isEqualTo("ZONE");
+            assertThat(zoneItem.get("item_version").intValue()).isEqualTo(2);
+            assertThat(zoneItem.has("kind")).isFalse();
+            JsonNode surfaceItem = item(bundle, surfaceId);
+            assertThat(surfaceItem.get("item_type").asString()).isEqualTo("STATIC_OBJECT");
+            assertThat(surfaceItem.get("item_version").intValue()).isEqualTo(1);
+            assertThat(surfaceItem.get("kind").asString()).isEqualTo("WORK_SURFACE");
+            assertThat(bundle.get("items").valueStream().filter(i -> i.get("item_type").asString().equals("RULE"))).isNotEmpty();
+        }
+    }
+
     // ---- 도우미
+
+    private static List<String> itemIds(JsonNode bundle) {
+        return bundle.get("items").valueStream().map(i -> i.get("item_id").asString()).toList();
+    }
+
+    private static JsonNode item(JsonNode bundle, String itemId) {
+        return bundle.get("items").valueStream().filter(i -> i.get("item_id").asString().equals(itemId)).findFirst().orElseThrow();
+    }
 
     private JsonNode publish(String profile) throws Exception {
         ObjectNode body = MAPPER.createObjectNode();
