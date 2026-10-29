@@ -374,4 +374,29 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    /** 리플레이 조회(S15P31A101-136) */
+    enum Replay implements ErrorCode {
+        INVALID_REPLAY_QUERY(HttpStatus.BAD_REQUEST, "조회 시각이 맞지 않습니다(from·to·at 은 UTC 밀리초, from < to, step_ms 는 100~60000)"),
+        // 잘라서 주면 화면이 빠진 부분을 "기록 없음"으로 볼 수 있어 거부한다
+        REPLAY_RANGE_TOO_LARGE(HttpStatus.BAD_REQUEST, "구간이 너무 큽니다. 구간을 나눠 부르거나 step_ms 를 늘리세요(구간 1시간, World 3000개, 이벤트 전이 5000개 이하)");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Replay(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }
