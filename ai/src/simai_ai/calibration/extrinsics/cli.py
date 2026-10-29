@@ -96,6 +96,25 @@ def build_parser() -> argparse.ArgumentParser:
         help='실측 카메라 높이(m, 바닥 → 렌즈 중심) {"format": "simai.camera_heights", "heights_m": {"cam_A": 2.21, …}}',
     )
     ad.add_argument("--out", type=Path, help=f"결과 JSON (기본 {DEFAULT_OUT_DIR}/extrinsics-<UTC>.json)")
+    se = sub.add_parser("session", help="회차의 여러 사람 궤적 + 직전 보정 → 새 외부 파라미터")
+    se.add_argument("--recording", type=Path, required=True)
+    se.add_argument("--previous", type=Path, required=True)
+    se.add_argument("--camera-heights", type=Path, required=True)
+    se.add_argument("--lens", choices=("fixed",), default="fixed")
+    se.add_argument("--fixed-lens", default="1284.27,-0.29198,0.05982", metavar="F,K1,K2")
+    se.add_argument("--out", type=Path, required=True, help="새 출력 디렉터리(덮어쓰기 금지)")
+    se.add_argument("--keypoints", type=Path, help="같은 회차의 추출 캐시(없으면 --model로 추출)")
+    se.add_argument("--model", help="로컬 YOLO pose 가중치/엔진 경로")
+    se.add_argument("--imgsz", type=int, default=1280)
+    se.add_argument("--device", default=None)
+    se.add_argument("--start-s", type=float, default=0.)
+    se.add_argument("--duration-s", type=float)
+    se.add_argument("--window-step-s", type=float, default=0., help="0은 연속 추출, 양수는 회차 전체에 짧은 창을 분산")
+    se.add_argument("--window-duration-s", type=float, default=1.2, help="분산 추출 창 길이(기본 1.2초)")
+    se.add_argument("--every-n", type=int, default=3)
+    se.add_argument("--batch", type=int, default=8)
+    se.add_argument("--sample-period-ms", type=int, default=300)
+    se.add_argument("--rounds", type=int, choices=(2, 3), default=3)
     return p
 
 
@@ -105,6 +124,10 @@ def main(argv: Sequence[str] | None = None, *, now_ms: int | None = None) -> int
     try:
         if args.command == "extract":
             return _extract(args, created_at)
+        if args.command == "session":
+            from simai_ai.calibration.extrinsics.session_cli import run_session
+
+            return run_session(args, created_at)
         return _adjust(args, created_at)
     except (ValueError, KeyError, OSError, RuntimeError) as e:  # RuntimeError: 검출기 extras 없음
         print(f"설정·입력 오류: {e}", file=sys.stderr)
