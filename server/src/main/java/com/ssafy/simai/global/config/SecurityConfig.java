@@ -1,5 +1,6 @@
 package com.ssafy.simai.global.config;
 
+import com.ssafy.simai.domain.avatar.AvatarPaths;
 import com.ssafy.simai.domain.machine.MachineKind;
 import com.ssafy.simai.domain.machine.MachineTokenService;
 import com.ssafy.simai.domain.realtime.RealtimeTopics;
@@ -11,6 +12,7 @@ import com.ssafy.simai.global.security.AccessTokenIssuer;
 import com.ssafy.simai.global.security.MachineTokenAuthenticationFilter;
 import com.ssafy.simai.global.security.SecurityErrorResponder;
 import com.ssafy.simai.global.security.Tier0TokenAuthenticationFilter;
+import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -75,11 +77,16 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/endpoints/tier0"));
     }
 
-    /** RunPod 분석 워커(I5 작업 대여·결과, 워커 객체 서명). 워커 토큰(명세 12.5, S15P31A101-222) */
+    /**
+     * RunPod 분석 워커(I5 작업 대여·결과·워커 객체 서명 `/api/worker/**`, I6 아바타 포즈·자산 스트림 `/ws/worker/avatar`).
+     * 워커 토큰(명세 12.2·12.5·14, S15P31A101-222·-325).
+     */
     @Bean
     @Order(3)
     SecurityFilterChain workerFilterChain(HttpSecurity http, MachineTokenService tokens) throws Exception {
-        return machineChain(http, MachineKind.WORKER, tokens, matchers -> matchers.requestMatchers("/api/worker/**"));
+        return machineChain(http, MachineKind.WORKER, tokens, matchers -> matchers
+                .requestMatchers("/api/worker/**")
+                .requestMatchers(AvatarPaths.WORKER_WS));
     }
 
     private static SecurityFilterChain machineChain(HttpSecurity http, MachineKind kind, MachineTokenService tokens,
@@ -98,9 +105,10 @@ public class SecurityConfig {
     }
 
     /**
-     * 업로드 서명 주소(POST /api/uploads/sign, 명세 12.6 "기기·반장", S15P31A101-69). 기기 토큰·Tier 0 토큰·사용자 JWT 를 모두 받는다.
+     * 업로드 서명 주소(POST /api/uploads/sign, 명세 12.6 "기기·반장·워커", S15P31A101-69·-325).
+     * 기기 토큰·Tier 0 토큰·워커 토큰·사용자 JWT 를 모두 받는다.
      * 기계 토큰 필터가 먼저 보고, 맞으면 JWT 해석을 건너뛴다(기계 토큰을 JWT 로 읽다가 401 을 내지 않게). 아니면 JWT 로 본다.
-     * 목적별로 받을 수 있는 주체(Tier 0·기기는 이벤트 프레임·클립, 반장은 조치 사진)는 UploadSignService 가 가른다.
+     * 목적별로 받을 수 있는 주체(Tier 0·기기는 이벤트 프레임·클립, 반장은 조치 사진, 워커는 아바타 자산)는 UploadSignService 가 가른다.
      */
     @Bean
     @Order(4)
@@ -114,11 +122,15 @@ public class SecurityConfig {
                 .cors(Customizer.withDefaults())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .addFilterBefore(new Tier0TokenAuthenticationFilter(tier0), BearerTokenAuthenticationFilter.class)
-                // Tier 0 필터 뒤에 둔다. Tier 0 토큰으로 인증되면 기기 토큰 DB 조회를 건너뛴다
-                .addFilterAfter(new MachineTokenAuthenticationFilter(MachineKind.DEVICE, tokens),
+                // Tier 0 필터 뒤에 둔다. Tier 0 토큰으로 인증되면 기기·워커 토큰 DB 조회를 건너뛴다
+                .addFilterAfter(
+                        new MachineTokenAuthenticationFilter(List.of(MachineKind.DEVICE, MachineKind.WORKER), tokens),
                         Tier0TokenAuthenticationFilter.class)
-                .authorizeHttpRequests(auth -> auth.anyRequest().hasAnyAuthority(Tier0TokenAuthenticationFilter.ROLE,
-                        MachineKind.DEVICE.authority(), "ROLE_" + Role.FOREMAN.name()))
+                .authorizeHttpRequests(auth -> auth.anyRequest().hasAnyAuthority(
+                        Tier0TokenAuthenticationFilter.ROLE,
+                        MachineKind.DEVICE.authority(),
+                        MachineKind.WORKER.authority(),
+                        "ROLE_" + Role.FOREMAN.name()))
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint(errors)
                         .accessDeniedHandler(errors))

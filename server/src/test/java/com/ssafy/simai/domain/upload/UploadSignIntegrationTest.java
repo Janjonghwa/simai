@@ -48,7 +48,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * POST /api/uploads/sign(S15P31A101-69). 서명은 계산만 하므로 저장소 없이 주소 모양·서명에 묶인 헤더·발급 기록을 본다.
+ * POST /api/uploads/sign(S15P31A101-69·-325). 서명은 계산만 하므로 저장소 없이 주소 모양·서명에 묶인 헤더·발급 기록을 본다.
  * 시험 설정은 path-style 로컬 주소(application-test.yaml). 실제 업로드·만료 거부는 S3 호환 저장소로 따로 확인한다(설계 문서).
  */
 @SpringBootTest
@@ -179,6 +179,69 @@ class UploadSignIntegrationTest {
     }
 
     @Test
+    void 워커는_AVATAR_ASSET_주소를_받고_버전_경로는_덮어쓰지_않는다() throws Exception {
+        String workerId = "worker-" + tag;
+        String worker = issued("worker", "register", "--id", workerId, "--job-types", "tbm_report");
+
+        Map<String, Object> meshReq = Map.of(
+                "purpose", "AVATAR_ASSET",
+                "content_type", "model/gltf-binary",
+                "size_bytes", 1843200,
+                "sha256", SHA,
+                "world_id", "w-0012",
+                "stream_epoch", 1760342000000L,
+                "appearance_version", 3);
+        JsonNode meshSigned = ok(sign(worker, meshReq));
+        String expectedKey = "avatars/w-0012/e1760342000000/v3/mesh.glb";
+        assertThat(meshSigned.get("object_key").stringValue()).isEqualTo(expectedKey);
+        assertThat(meshSigned.get("object_uri").stringValue()).isEqualTo("s3://simai-test-bucket/" + expectedKey);
+        assertThat(jdbc.queryForMap(
+                        "SELECT purpose, requester, requested_by_worker, sha256 FROM upload_grant WHERE object_key = ?",
+                        expectedKey))
+                .containsEntry("purpose", "AVATAR_ASSET")
+                .containsEntry("requester", "WORKER")
+                .containsEntry("requested_by_worker", workerId)
+                .containsEntry("sha256", SHA);
+
+        // 같은 내용으로 재시도하면 같은 키로 다시 서명받는다
+        assertThat(ok(sign(worker, meshReq)).get("object_key").stringValue()).isEqualTo(expectedKey);
+
+        // 다른 내용(해시)으로 같은 버전 경로를 덮어쓰려 하면 만료 뒤에도 409 로 거부한다(규칙 6)
+        jdbc.update("UPDATE upload_grant SET expires_at = now() - interval '1 second' WHERE object_key = ?", expectedKey);
+        Map<String, Object> overwriteReq = new HashMap<>(meshReq);
+        overwriteReq.put("sha256", "b".repeat(64));
+        sign(worker, overwriteReq)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("UPLOAD_KEY_CONFLICT"));
+
+        // 표면 출처 지도(file_name 지정)와 식별자 없는 기본 요청도 동작한다
+        JsonNode maskSigned = ok(sign(worker, Map.of(
+                "purpose", "AVATAR_ASSET",
+                "content_type", "image/png",
+                "size_bytes", 4096,
+                "sha256", SHA,
+                "world_id", "w-0012",
+                "stream_epoch", 1760342000000L,
+                "appearance_version", 3,
+                "file_name", "surface_source.png")));
+        assertThat(maskSigned.get("object_key").stringValue())
+                .isEqualTo("avatars/w-0012/e1760342000000/v3/surface_source.png");
+
+        JsonNode simpleSigned = ok(sign(worker, Map.of(
+                "purpose", "AVATAR_ASSET",
+                "content_type", "model/gltf-binary",
+                "size_bytes", 1024,
+                "sha256", SHA)));
+        assertThat(simpleSigned.get("object_key").stringValue()).matches("avatars/[0-9a-f-]{36}\\.glb");
+
+        // 워커가 아닌 주체는 AVATAR_ASSET 을 받지 못하고, 워커는 다른 목적(TICKET_PHOTO 등)을 받지 못한다
+        sign(TIER0_TOKEN, meshReq).andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("UPLOAD_NOT_ALLOWED"));
+        sign(device(), meshReq).andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("UPLOAD_NOT_ALLOWED"));
+        sign(jwt("FOREMAN"), meshReq).andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("UPLOAD_NOT_ALLOWED"));
+        sign(worker, photo()).andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("UPLOAD_NOT_ALLOWED"));
+    }
+
+    @Test
     void 반장이_아닌_사용자와_토큰_없음_틀린_토큰은_거부한다() throws Exception {
         sign(jwt("VIEWER"), photo()).andExpect(status().isForbidden());
         sign(jwt("ADMIN"), photo()).andExpect(status().isForbidden());
@@ -186,9 +249,6 @@ class UploadSignIntegrationTest {
         sign(jwt("FOREMAN", "not-a-number"), photo()).andExpect(status().isForbidden());
         sign(null, photo()).andExpect(status().isUnauthorized());
         sign("not-a-token", photo()).andExpect(status().isUnauthorized());
-        // 워커 토큰은 이 경로의 주체가 아니다(워커 자산 주소는 따로 연다, 명세 14)
-        String worker = issued("worker", "register", "--id", "upload-" + tag, "--job-types", "tbm_report");
-        sign(worker, photo()).andExpect(status().isUnauthorized());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM upload_grant WHERE requested_by_user = ?", Long.class, userId))
                 .isZero();
     }

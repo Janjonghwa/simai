@@ -265,3 +265,15 @@ EXP-02 를 시연 범위로 올린 결정(2026-10-23)이라 아바타 스트림�
 9. **14장:** 아바타 스트림 연결의 워커 토큰 인증, `/api/avatars/...` 관제 앱 인증.
 10. **12장 머리말·19.1:** 계약에 반영한 목록에 아바타 스트림 3개 메시지 추가.
 11. **20.3·11.5·17장·AGENTS 규칙 8 (2026-10-23 결정):** 외형 누적의 '별도 동의 뒤' 조건 삭제(SSAFY 관계자 허가로 참여자 동의 제한 없음). 얼굴은 '원본 얼굴 픽셀을 저장하지 않는다' 에서 '관측된 얼굴 픽셀은 그대로(흐림 선택) 쓸 수 있고, 안 보이는 얼굴을 지어내는 생성형 복원·표정 추정·재식별은 하지 않는다' 로. 얼굴 영역도 관측·미관측을 구분한다(`face_ratios`). `experiments/human_mesh_output` 의 `face_policy`(EXCLUDED·BLURRED)·`consent_ref` 는 이 티켓에서 바꾸지 않았다(기록 스키마 판 변경은 -227 과 함께).
+
+## EC2 중계 확정 (S15P31A101-325)
+
+| 구분 | 확정 값 | 설명 |
+|---|---|---|
+| 워커 → EC2 WebSocket (I6) | `/ws/worker/avatar` (`AvatarPaths.WORKER_WS`) | `Authorization: Bearer <worker_token>` (I5 와 동일한 `MachineKind.WORKER` 토큰, `MachineTokenAuthenticationFilter`). `avatar_pose_batch` 1.0.0 · `avatar_asset` 1.0.0 수신 |
+| 수신 한도·검증 | 64명 · 256자 · 512 KiB (524,288 B) | `ContractSchemas` JSON Schema 검증 + 스키마 밖 불변식(회전각 길이 ≤ π, 관절 0 회전 `[0, 0, 0]`, `joint_rotations` 길이 = 자산 `joint_count`, `pelvis_joint_index < joint_count`, `previous_appearance_version` 순서, `ratios`·`face_ratios` 합 1, 묶음 내 `world_id` 유일). 한도·계약 위반 메시지는 연결을 끊지 않고 버림 |
+| 최신·제거 규칙 | `msg_id` 중복 제거, `(identity_revision, capture_time_ms)` 비교 | 사람별로 `(identity_revision, capture_time_ms)` 가 현재 값보다 클 때만 갱신. `/topic/world`(`world_state.tracks`)에서 빠진 `world_id` 와 30초(`POSE_TTL`) 넘게 포즈가 없는 사람은 메모리에서 제거. 포즈는 DB 에 저장하지 않으며 위험 판정·Tier 0 위치에 쓰지 않음(규칙 1) |
+| 업로드 서명 (`POST /api/uploads/sign`) | `UploadPurpose.AVATAR_ASSET` | 워커 토큰(`ROLE_WORKER`, `Requester.Kind.WORKER`, `upload_grant.requested_by_worker`) 허용. 형식: `model/gltf-binary`(`.glb`), `model/gltf+json`(`.gltf`), `application/octet-stream`(`.glb`), `image/png`(`.png`), `image/jpeg`(`.jpg`), `image/webp`(`.webp`), 최대 64 MiB. `(world_id, stream_epoch, appearance_version)` 지정 시 키 `avatars/<world_id>/e<stream_epoch>/v<appearance_version>/<file>`(`mesh.glb`, `mesh.gltf`, `albedo.png`, `surface_source.png`), 미지정 시 `avatars/<uuid><ext>` |
+| 자산 버전 DB 기록 | `avatar_asset` (`V14__avatar_asset.sql`) | PK `(world_id, stream_epoch, appearance_version)` 추가 전용(append-only). 같은 키 재알림은 처음 기록을 유지하고 `sha256` 불일치 시 경고 로그. 다른 자산 키와의 파일 주소 공유 거부(규칙 6) |
+| 뷰어 자산 조회 REST | `GET /api/avatars/{worldId}/epochs/{streamEpoch}/versions/{appearanceVersion}/{file}` | 관제 앱 사용자 JWT 인증(`VIEWER`·`FOREMAN`·`ADMIN`). `{file}` 은 `mesh.glb`·`mesh.gltf`·`albedo.png`·`surface_source.png`. 기록된 `avatar_asset` 의 객체 키를 `ObjectStorage.signGet` 으로 서명해 `302 Found`(`Cache-Control: no-store`) 리다이렉트 |
+| 뷰어 STOMP 발행 (I2) | `/topic/avatar` (`RealtimeTopics.AVATAR`) | 받은 묶음마다 갱신된 사람에 대해 같은 `(world_id, stream_epoch, appearance_version)` 이고 `asset.identity_revision <= pose.identity_revision` 인 자산을 묶어(없거나 차수가 크면 `asset: null`) `avatar_frame` 1.0.0 발행. 송신 큐가 밀리면 오래된 대기 프레임을 최신 포즈로 대체(`replaced`) |

@@ -399,4 +399,27 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    /** 아바타 자산 조회(S15P31A101-325) */
+    enum Avatar implements ErrorCode {
+        AVATAR_ASSET_NOT_FOUND(HttpStatus.NOT_FOUND, "아바타 자산을 찾을 수 없습니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Avatar(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }

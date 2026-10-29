@@ -20,8 +20,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * 기기(/api/devices/**·GET /api/endpoints/tier0)·워커(/api/worker/**) 경로의 Authorization: Bearer 를 그 종류의 토큰으로 확인한다
- * (S15P31A101-222, 명세 14). 맞으면 주체 ID 를 principal(문자열)로, ROLE_DEVICE·ROLE_WORKER 로 인증하고, 아니면 아무것도 하지 않는다
+ * 기기(/api/devices/**·GET /api/endpoints/tier0)·워커(/api/worker/**·/ws/worker/avatar) 경로의
+ * Authorization: Bearer 를 그 종류의 토큰으로 확인한다(S15P31A101-222·-325, 명세 14).
+ * 맞으면 주체 ID 를 principal(문자열)로, ROLE_DEVICE·ROLE_WORKER 로 인증하고, 아니면 아무것도 하지 않는다
  * (뒤의 authorizeHttpRequests 가 401). 폐기·회전된 토큰은 바로 거부된다(요청마다 DB 확인). 사용자 JWT 체인과 따로 둔다.
  * DB 를 못 읽으면 503 + ProblemDetail 로 끝낸다(토큰 거부 401 과 구분해 기기가 다시 시도하게).
  */
@@ -30,11 +31,15 @@ public class MachineTokenAuthenticationFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(MachineTokenAuthenticationFilter.class);
     private static final String BEARER = "Bearer ";
 
-    private final MachineKind kind;
+    private final List<MachineKind> kinds;
     private final MachineTokenService tokens;
 
     public MachineTokenAuthenticationFilter(MachineKind kind, MachineTokenService tokens) {
-        this.kind = kind;
+        this(List.of(kind), tokens);
+    }
+
+    public MachineTokenAuthenticationFilter(List<MachineKind> kinds, MachineTokenService tokens) {
+        this.kinds = List.copyOf(kinds);
         this.tokens = tokens;
     }
 
@@ -48,17 +53,22 @@ public class MachineTokenAuthenticationFilter extends OncePerRequestFilter {
             String token = header.substring(BEARER.length()).strip();
             // 기계 토큰은 점이 없는 Base64url 이다(TokenHashes.newToken). 점 두 개인 JWT 는 DB 를 보지 않고 JWT 해석에 넘긴다
             if (!token.isEmpty() && !looksLikeJwt(token)) {
-                Optional<String> id;
-                try {
-                    id = tokens.authenticate(kind, token);
-                } catch (DataAccessException e) {
-                    log.warn("{} 토큰을 확인하지 못했다: {}", kind, e.getMessage());
-                    SecurityErrorResponder.write(response, ErrorCode.Machine.TOKEN_CHECK_UNAVAILABLE);
-                    return;
+                for (MachineKind kind : kinds) {
+                    Optional<String> id;
+                    try {
+                        id = tokens.authenticate(kind, token);
+                    } catch (DataAccessException e) {
+                        log.warn("{} 토큰을 확인하지 못했다: {}", kind, e.getMessage());
+                        SecurityErrorResponder.write(response, ErrorCode.Machine.TOKEN_CHECK_UNAVAILABLE);
+                        return;
+                    }
+                    if (id.isPresent()) {
+                        SecurityContextHolder.getContext().setAuthentication(
+                                UsernamePasswordAuthenticationToken.authenticated(id.get(), null,
+                                        List.of(new SimpleGrantedAuthority(kind.authority()))));
+                        break;
+                    }
                 }
-                id.ifPresent(principal -> SecurityContextHolder.getContext().setAuthentication(
-                        UsernamePasswordAuthenticationToken.authenticated(principal, null,
-                                List.of(new SimpleGrantedAuthority(kind.authority())))));
             }
         }
         chain.doFilter(request, response);
