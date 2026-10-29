@@ -170,7 +170,7 @@ def match_kps(ext_boxes, yolo_boxes, yolo_kps, thr=0.3):
 def build(variant="dinov3", detector=None, detector_model=None, fov=None, device="cuda", log=print, precomputed_pose=False):
     """구성요소별 로드 시간·VRAM 증가 기록. detector: None | 'yolo_pose' | 'vitdet'. fov: None | 'moge2'."""
     t = torch_()
-    from sam_3d_body import SAM3DBodyEstimator, load_sam_3d_body
+    from sam_3d_body import SAM3DBodyEstimator
     info = {"variant": variant, "detector": detector, "fov": fov, "load": [], "env": {k: os.environ.get(k) for k in sorted(set(sum([list(v) for v in PRESETS.values()], [])) | {"USE_TRT_BACKBONE", "TRT_BACKBONE_PATH", "FOV_MODEL", "FOV_FAST", "FOV_TRT", "FOV_LEVEL"})}}
     timed = Timed(); comps = {}
 
@@ -194,7 +194,8 @@ def build(variant="dinov3", detector=None, detector_model=None, fov=None, device
         return obj
 
     d = ckpt_dir(variant)
-    model, cfg = step(f"hmr_{variant}", lambda: load_sam_3d_body(str(d / "model.ckpt"), device=device, mhr_path=str(d / "assets" / "mhr_model.pt")))
+    from simai_ai.hmr.loader import load_model
+    model, cfg = step(f"hmr_{variant}", lambda: load_model(d, device=device))
     info["hmr_params_M"] = round(sum(p.numel() for p in model.parameters()) / 1e6, 1)
     info["hmr_param_dtypes"] = sorted({str(p.dtype) for p in model.parameters()})
     info["fp16_type_cfg"] = f"USE_FP16={cfg.TRAIN.USE_FP16} {cfg.TRAIN.FP16_TYPE}"

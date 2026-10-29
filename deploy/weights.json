@@ -14,7 +14,7 @@
     },
     {
       "name": "sam-3d-body-dinov3",
-      "sets": ["exp02"],
+      "sets": ["exp02", "avatar"],
       "path": "weights/sam-3d-body-dinov3/model.ckpt",
       "source": {"hf": {"repo": "facebook/sam-3d-body-dinov3", "revision": "11aaa346c7204874a1cbafe3d39a979080b2c55a", "file": "model.ckpt"}},
       "sha256": "b5a2f9d305dd02626b967aa2e86021fba07065df66ce7a7e00ffb9664f150abf",
@@ -23,7 +23,7 @@
     },
     {
       "name": "sam-3d-body-dinov3-mhr",
-      "sets": ["exp02"],
+      "sets": ["exp02", "avatar"],
       "path": "weights/sam-3d-body-dinov3/assets/mhr_model.pt",
       "source": {"hf": {"repo": "facebook/sam-3d-body-dinov3", "revision": "11aaa346c7204874a1cbafe3d39a979080b2c55a", "file": "assets/mhr_model.pt"}},
       "sha256": "352e271a6c42729c68554ceaea0c955e866970160c31e35506d782dc0f7377bc",

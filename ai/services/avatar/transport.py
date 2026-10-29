@@ -1,0 +1,138 @@
+"""I6 전송. 네트워크는 송신 스레드만 소유하고 사람별 포즈 한 개만 보관한다."""
+
+import json
+import threading
+import uuid
+from urllib.parse import urlsplit, urlunsplit
+from urllib.request import Request, build_opener
+
+from services.worker.transport import HttpTransport, NoRedirect
+
+
+class AvatarUpload:
+    def __init__(self, base_url, token):
+        self.http = HttpTransport(base_url, token)
+
+    def __call__(self, world_id, epoch, version, glb):
+        response = self.http.post("/api/uploads/sign", {"purpose": "AVATAR_ASSET", "world_id": world_id,
+                    "stream_epoch": epoch, "appearance_version": version, "content_type": "model/gltf-binary",
+                    "size_bytes": glb.size_bytes, "sha256": glb.sha256.removeprefix("sha256:")}, 15)
+        if response.status != 200 or not response.body:
+            raise ValueError("아바타 업로드 서명 실패")
+        signed = response.body
+        if urlsplit(signed["upload_url"]).scheme != "https" or signed.get("method") != "PUT":
+            raise ValueError("아바타 업로드는 HTTPS PUT이어야 한다")
+        uri = signed["object_uri"]
+        suffix = f"/{world_id}/e{epoch}/v{version}/mesh.glb"
+        if not uri.startswith("s3://") or not uri.endswith(suffix):
+            raise ValueError("아바타 객체 키에 World ID·epoch·version이 없다")
+        request = Request(signed["upload_url"], data=glb.data, method="PUT", headers=signed["headers"])
+        with build_opener(NoRedirect()).open(request, timeout=30) as result:
+            if result.status not in (200, 201, 204):
+                raise ValueError("아바타 업로드 실패")
+        return uri
+
+
+def websocket_connector(base_url, token):
+    parts = urlsplit(base_url)
+    if parts.scheme != "https" or not parts.netloc or parts.username or parts.password:
+        raise ValueError("아바타 EC2 주소는 HTTPS여야 한다")
+    url = urlunsplit(("wss", parts.netloc, "/ws/worker/avatar", "", ""))
+
+    def connect():
+        from websockets.sync.client import connect as ws_connect
+        return ws_connect(url, additional_headers={"Authorization": f"Bearer {token}"},
+                          open_timeout=10, close_timeout=1, max_queue=1, compression="deflate")
+    return connect
+
+
+class AvatarSender:
+    def __init__(self, connect, *, clock_ms, monotonic, source_id="worker-01", stream_epoch=None):
+        self.connect, self.clock_ms, self.monotonic, self.source_id = connect, clock_ms, monotonic, source_id
+        self.epoch = clock_ms() if stream_epoch is None else stream_epoch
+        self.sequence = self.dropped = 0
+        self._lock = threading.Lock()
+        self._poses, self._assets = {}, {}
+        self._seen = {}
+        self._context = {}
+        self._socket = None
+        self._retry_at, self._backoff, self._announce_at = 0., 1., 0.
+
+    def asset(self, payload):
+        with self._lock:
+            self._assets[payload["world_id"]] = payload
+            self._seen[payload["world_id"]] = self.clock_ms()
+            self._announce_at = 0.
+
+    def poses(self, poses, **context):
+        with self._lock:
+            if self._context != context:
+                self.dropped += len(self._poses)
+                self._poses.clear()
+            self._context = context
+            for pose in poses:
+                wid = pose["world_id"]
+                self.dropped += int(wid in self._poses)
+                self._poses[wid] = pose
+
+    def discard_poses(self):
+        with self._lock:
+            self.dropped += len(self._poses)
+            self._poses.clear()
+
+    def retain(self, active):
+        with self._lock:
+            self._assets = {k: v for k, v in self._assets.items() if k in active}
+            self._seen = {k: self.clock_ms() for k in active}
+            gone = set(self._poses) - active
+            for wid in gone:
+                del self._poses[wid]
+            self.dropped += len(gone)
+
+    def _send(self, kind, payload):
+        msg = {"schema_version": "1.0.0", "msg_type": kind, "msg_id": str(uuid.uuid4()),
+               "sent_at": self.clock_ms(), "source_id": self.source_id, "payload": payload}
+        raw = json.dumps(msg, allow_nan=False, separators=(",", ":"))
+        if len(raw.encode("utf-8")) > 512 * 1024:
+            raise ValueError("I6 메시지 크기 상한 초과")
+        self._socket.send(raw)
+
+    def tick(self):
+        now = self.monotonic()
+        if now < self._retry_at:
+            return
+        try:
+            if self._socket is None:
+                self._socket = self.connect()
+                self.discard_poses()  # 연결 전 포즈는 재생하지 않는다
+                self._announce_at = 0.
+            with self._lock:
+                self._assets = {k: v for k, v in self._assets.items()
+                                if self.clock_ms() - self._seen.get(k, 0) <= 30_000}
+                assets = list(self._assets.values()) if now >= self._announce_at else []
+                self._announce_at = now + 10 if assets else self._announce_at
+                poses, self._poses = list(self._poses.values()), {}
+                context, dropped = dict(self._context), self.dropped
+            for asset in assets:
+                self._send("avatar_asset", asset)
+            fresh = [p for p in poses if 0 <= self.clock_ms() - p["capture_time_ms"] <= 500]
+            for start in range(0, len(fresh), 64):
+                group = fresh[start:start + 64]
+                sequence = self.sequence
+                self.sequence += 1  # 전송 중 잃은 묶음도 순번 빈칸으로 남긴다
+                self._send("avatar_pose_batch", {"stream_epoch": self.epoch, "batch_sequence": sequence,
+                           "dropped_poses": dropped, **context, "poses": group})
+            self._backoff = 1.
+        except Exception:  # 예외 문자열에는 토큰·서명 URL이 있을 수 있어 기록하지 않는다
+            self.close()
+            self.discard_poses()
+            self._retry_at = now + self._backoff
+            self._backoff = min(10., self._backoff * 2)
+
+    def close(self):
+        sock, self._socket = self._socket, None
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass

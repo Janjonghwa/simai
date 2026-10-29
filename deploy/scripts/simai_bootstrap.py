@@ -106,7 +106,7 @@ TIER0_CMD = "simai-tier0"
 SET_ENV = "SIMAI_WEIGHTS_SET"  # check·queue·run 이 받을 가중치 묶음(이미지 ENV). 없으면 tier0
 SERVICES_ENV = "SIMAI_SERVICES"  # tier0 명령이 띄울 프로세스. 없으면 tier0(단독)
 WORKER_SET_ENV = "SIMAI_WORKER_WEIGHTS_SET"  # 감시 모드에서 Tier 0 준비 뒤 받는 묶음. 없으면 vlm
-SERVICES = ("tier0", "vllm", "worker")  # 기동 순서. 종료는 거꾸로
+SERVICES = ("tier0", "vllm", "worker", "avatar")  # avatar는 명시 선택, 기본은 꺼짐
 SCENE_SET = "static"  # 장면 준비 모드의 가중치 묶음(MapAnything 기본·apache)
 SCENE_MARKER_MAX_AGE_S = 30.0  # 이 안에 갱신된 Tier 0 표시 파일 = LIVE (gpu_session1 live_guard 의 marker_max_age_s 와 같음)
 SCENE_POLL_S = 0.5  # 장면 작업 실행 중 Tier 0 시작 확인 주기
@@ -546,7 +546,7 @@ def parse_services(text: str | None) -> list[str]:
     names = [s.strip() for s in (text or "tier0").split(",") if s.strip()]
     if not names or "tier0" not in names or len(set(names)) != len(names) or set(names) - set(SERVICES):
         hint = " (scene 은 서비스가 아니다: 장면 준비는 LIVE 와 따로 'simai-bootstrap scene <명령>')" if "scene" in names else ""
-        raise BootstrapError(EXIT_USAGE, f"{SERVICES_ENV}={text!r} 오류: tier0 를 넣고 tier0·vllm·worker 중에서 쉼표로 고른다{hint}")
+        raise BootstrapError(EXIT_USAGE, f"{SERVICES_ENV}={text!r} 오류: tier0 를 넣고 tier0·vllm·worker·avatar 중에서 쉼표로 고른다{hint}")
     return [n for n in SERVICES if n in names]
 
 
@@ -837,6 +837,7 @@ class Supervisor:
         self.nice = int(_env_float(env, "SIMAI_SIDECAR_NICE", 10))
         self.tick_s = _env_float(env, "SIMAI_SUPERVISE_TICK_S", 0.5)
         self.worker_set = env.get(WORKER_SET_ENV) or "vlm"
+        self.avatar_set = env.get("SIMAI_AVATAR_WEIGHTS_SET") or "avatar"
         self.manifest = Path(env.get("SIMAI_WEIGHTS_MANIFEST") or DEFAULT_MANIFEST)
         if ready is None:
             waiter = _load_waiter()
@@ -856,6 +857,21 @@ class Supervisor:
         self.svc: dict[str, Service] = {}
         for name in services:
             e = dict(base)
+            if "avatar" in services:
+                # 세 GPU 프로세스 상한의 합이 분석 워커 예산을 넘지 않게 나눈다.
+                from simai_ai.gpu.budget import WorkerGpuSettings
+                budget = WorkerGpuSettings.from_env(env).budget
+                avatar_fraction = float(env.get("SIMAI_AVATAR_GPU_MEMORY_FRACTION") or "0.10")
+                vllm_fraction = budget.vllm_gpu_memory_utilization if "vllm" in services else 0.
+                worker_fraction = budget.worker_fraction - vllm_fraction - avatar_fraction
+                if (not 0 < avatar_fraction <= budget.worker_fraction or worker_fraction < 0
+                        or ("worker" in services and worker_fraction <= 0)):
+                    raise BootstrapError(EXIT_USAGE, "avatar·vLLM·worker GPU 상한 합이 분석 워커 예산을 넘는다")
+                e["SIMAI_AVATAR_GPU_MEMORY_FRACTION"] = str(avatar_fraction)
+                if name == "worker":
+                    e["SIMAI_WORKER_TORCH_MEMORY_FRACTION"] = str(worker_fraction)
+                if name == "tier0":
+                    e["SIMAI_AVATAR_SHARE"] = "1"
             cache = cache_root / name
             e["TRITON_CACHE_DIR"], e["TORCHINDUCTOR_CACHE_DIR"] = str(cache / "triton"), str(cache / "inductor")
             e["CUDA_CACHE_PATH"] = str(cache / "cuda")
@@ -867,7 +883,8 @@ class Supervisor:
                 # runtime 이미지에 nvcc 가 없어 FlashInfer top-k/top-p 샘플러 JIT 가 메모리 측정 중 실패한다(3차 GPU 세션). PyTorch 샘플러로
                 e.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
                 e["HF_HUB_OFFLINE"] = "1"  # 모델은 확인한 로컬 폴더만. 토큰 없이 HF 로 나가지 않는다
-            argv = {"tier0": tier0_argv, "vllm": self._vllm_argv(env), "worker": self._worker_argv(env)}[name]
+            argv = {"tier0": tier0_argv, "vllm": self._vllm_argv(env), "worker": self._worker_argv(env),
+                    "avatar": self._worker_argv(env, avatar=True)}[name]
             self.svc[name] = Service(name, argv, e)
         self.phase = "wait_tier0"  # → weights → run | off(워커 쪽 포기)
         self.last_why = ""
@@ -891,11 +908,13 @@ class Supervisor:
                 "--mm-encoder-tp-mode", "data", "--async-scheduling",
                 *extra]
 
-    def _worker_argv(self, env: dict) -> list[str]:
-        cmd = shlex.split(env["SIMAI_WORKER_CMD"]) if env.get("SIMAI_WORKER_CMD") else [sys.executable, "-m", "services.worker"]
+    def _worker_argv(self, env: dict, avatar: bool = False) -> list[str]:
+        cmd = ([sys.executable, "-m", "services.avatar"] if avatar else
+               shlex.split(env["SIMAI_WORKER_CMD"]) if env.get("SIMAI_WORKER_CMD") else [sys.executable, "-m", "services.worker"])
         # 설정 자리(S15P31A101-246): 받을 작업 유형(VLM·HMR hmr_refine 등)은 워커 설정 파일의 처리기가 정한다(services.worker --config, 조립은 -227 등).
         # 예: SIMAI_WORKER_ARGS="--config /workspace/simai/worker.json"
-        cmd += shlex.split(env.get("SIMAI_WORKER_ARGS") or "")
+        if not avatar:
+            cmd += shlex.split(env.get("SIMAI_WORKER_ARGS") or "")
         env_file = env.get("SIMAI_WORKER_ENV_FILE")
         if not env_file and (default := self.root.parent / ".simai-private" / "worker.env").is_file():
             env_file = str(default)
@@ -919,7 +938,10 @@ class Supervisor:
         rec: dict = {"bootstrap": "S15P31A101-246", "stage": "worker-weights", "set": self.worker_set,
                      "started_at": time.time_ns() // 1_000_000, "hf_token": "present" if _hf_token else "absent"}
         try:
-            rec["weights"] = ensure_weights(self.root, load_manifest(self.manifest, self.worker_set))
+            entries = load_manifest(self.manifest, self.worker_set) if "vllm" in self.svc else []
+            if "avatar" in self.svc:
+                entries += load_manifest(self.manifest, self.avatar_set)
+            rec["weights"] = ensure_weights(self.root, entries)
             rec["exit"] = EXIT_OK
             log(f"워커 가중치 {self.worker_set} 준비: " + ", ".join(f"{w['name']} {w['status']}" for w in rec["weights"]))
         except Exception as e:  # noqa: BLE001 - 워커 가중치 실패는 Tier 0 를 멈추지 않는다
@@ -933,7 +955,7 @@ class Supervisor:
         now = self.clock()
         if self.phase == "wait_tier0" and self._tier0_ready():
             log("Tier 0 준비됨(phase=running, reserve OK) → 워커 쪽 준비")
-            if "vllm" in self.svc:
+            if "vllm" in self.svc or "avatar" in self.svc:
                 self.phase = "weights"
                 self._weights = threading.Thread(target=self._prepare_worker_weights, name="worker-weights", daemon=True)
                 self._weights.start()
@@ -946,7 +968,7 @@ class Supervisor:
             else:
                 self.phase = "run"
         if self.phase == "run":
-            for name in ("vllm", "worker"):
+            for name in ("vllm", "worker", "avatar"):
                 if name in self.svc:
                     self._tend(self.svc[name], now)
 
@@ -1025,7 +1047,7 @@ class Supervisor:
         return rc
 
     def _stop_sidecars(self) -> None:
-        for name in ("worker", "vllm"):  # 워커가 vLLM 을 쓰므로 워커 먼저
+        for name in ("avatar", "worker", "vllm"):  # 아바타도 Tier 0 전에 정리한다
             if name in self.svc:
                 self._stop(self.svc[name])
 
