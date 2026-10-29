@@ -1,10 +1,11 @@
 # simAI DB ERD
 
-S15P31A101-210. 기획서 11장(데이터)·11.4(스키마 원칙)·부록 C(각 절의 “확장 DB 테이블”)와 계약 v5.3.0 을 따른다. 테이블마다의 컬럼·타입·제약·출처 계약 필드는 [`db-tables.md`](db-tables.md) 에 있다. DB 의 정본은 Flyway SQL(`server/` 의 `V1__init.sql`, 후속 이슈)이고 이 문서는 그 설계도다.
+S15P31A101-210. 기획서 11장(데이터)·11.4(스키마 원칙)·부록 C(각 절의 “확장 DB 테이블”)와 계약 v5.3.0 을 따른다. 테이블마다의 컬럼·타입·제약·출처 계약 필드는 [`db-tables.md`](db-tables.md) 에 있다. DB 의 정본은 Flyway SQL(`server/src/main/resources/db/migration/` 의 V1~V13)이고 이 문서는 그 설계도다.
 
 ## 범위
 
-- 테이블 70개: MVP 34 · M1 9 · M2 2 · M3 9 · 확장 16(부록 C 의 확장 2~5 포함). 관계(FK) 118개. 개수는 `db-tables.md` 의 테이블 절(`#### `)과 단계 칸을 센 값이다(S15P31A101-284).
+- 테이블 76개: MVP 40 · M1 9 · M2 2 · M3 9 · 확장 16(부록 C 의 확장 2~5 포함). 관계(FK) 124개. 개수는 `db-tables.md` 의 테이블 절(`#### `)과 단계 칸을 센 값이다(S15P31A101-284, S15P31A101-318 에서 다시 셈).
+- 이 중 V1~V13 으로 실제 만든 테이블은 51개(MVP 40 · M1 9 · M3 `rag_clause`·`rag_query_template`), FK 76개다. V1~V13 을 적용한 임시 DB 와 `db-tables.md` 를 기계로 대조해 맞췄다(2026-10-29, S15P31A101-318).
 - 작성은 곽나혁, Tier 0·분석 워커가 채우는 테이블(`db-tables.md` 의 “검토” 표시)은 이연주가 검토한다.
 - 범위 밖: 기업·공사 계정 계층(부록 C.9, 채택 전), 마이그레이션 SQL. 검증은 [`db-verification.md`](db-verification.md).
 
@@ -17,9 +18,9 @@ S15P31A101-210. 기획서 11장(데이터)·11.4(스키마 원칙)·부록 C(각
 - 타입의 `timestamptz` 는 UTC, PostGIS `geometry` 는 SRID 0(World 로컬 미터)이다. 그림에는 SRID 를 뺐다. 타입의 SRID 0 은 "제한 없음"이라 V1 은 `CHECK (ST_SRID(컬럼) = 0)` 을 따로 건다.
 - hypertable 로 들어오는 선은 없다. 다른 테이블은 hypertable 을 FK 로 참조하지 않고(11장 첫머리), 버전 ID 같은 논리 참조는 선으로 그리지 않는다.
 
-## 1. 전체 관계 (MVP·M1)
+## 1. 전체 관계 (V1~V13 실제 테이블)
 
-`V1__init.sql` 대상인 MVP·M1 테이블 43개의 관계만 그린다(컬럼 생략). 거의 모든 테이블이 참조하는 `app_user`(작성자·처리자, FK 31개)와 `site`(FK 14개)로 가는 선은 이 그림에서 뺐다. 묶음별 그림에는 있다.
+V1~V13 마이그레이션으로 실제 만든 테이블 51개(MVP 40 · M1 9 · M3 2)의 관계만 그린다(컬럼 생략). 거의 모든 테이블이 참조하는 `app_user`(작성자·처리자, FK 19개)와 `site`(FK 10개)로 가는 선은 이 그림에서 뺐다. 묶음별 그림에는 있다.
 
 ```mermaid
 erDiagram
@@ -29,11 +30,13 @@ erDiagram
     config_bundle |o--o{ config_bundle : "previous_config_version"
     calibration_version ||--o{ config_bundle : "calibration_version"
     config_bundle ||--o{ config_bundle_item : "config_version"
+    config_bundle ||--o{ config_bundle_file : "config_version"
     config_bundle ||--o{ config_ack : "config_version"
     calibration_version |o--o{ calibration_version : "previous_calibration_version"
     analysis_job |o--o{ calibration_version : "source_job_id"
     calibration_version ||--o{ calibration_camera : "calibration_version"
     camera ||--o{ calibration_camera : "camera_id"
+    calibration_version ||--o| calibration_document : "calibration_version"
     analysis_job |o--o{ calibration_run : "job_id"
     calibration_version |o--o{ calibration_run : "result_calibration_version"
     calibration_version ||--o{ calibration_verification : "calibration_version"
@@ -41,9 +44,11 @@ erDiagram
     scale_reference ||--o{ calibration_scale_check : "scale_reference_id"
     calibration_version |o--o{ coverage_guide : "calibration_version"
     camera |o--o{ coverage_guide : "camera_id"
+    calibration_version ||--o{ calibration_update_message : "calibration_version"
     calibration_version ||--o{ floor_plan : "calibration_version"
     scene_version |o--o{ floor_plan : "scene_version"
     analysis_job |o--o{ floor_plan : "job_id"
+    bev_frame_set |o--o{ floor_plan : "frame_set_id"
     calibration_version ||--o{ scene_version : "calibration_version"
     analysis_job |o--o{ scene_version : "job_id"
     risk_event |o--o{ risk_event : "related_event_id"
@@ -68,7 +73,7 @@ erDiagram
     worker ||--o{ job_lease : "worker_id"
 ```
 
-이 그림에서 선이 없는 MVP·M1 테이블: `refresh_token`, `zone`, `static_object`, `rule_version`, `tier0_endpoint`, `world_track_state`, `skeleton_3d`, `system_health`, `system_metric`, `observation_summary`, `journal_cursor`(hypertable 이거나, `app_user`·`site` 만 참조하는 테이블).
+이 그림에서 선이 없는 테이블: `refresh_token`, `zone`, `static_object`, `rule_version`, `tier0_endpoint`, `world_track_state`, `skeleton_3d`, `system_health`, `system_outage`, `system_metric`, `observation_summary`, `journal_cursor`, `i1_deferred_message`, `rag_clause`, `rag_query_template`(hypertable 이거나, FK 가 없거나, `app_user`·`site` 만 참조하는 테이블).
 
 ## 2. A. 계정·기기·인증
 
@@ -95,6 +100,7 @@ erDiagram
     }
     device {
         text device_id PK
+        text token_hash UK
     }
     device_heartbeat {
         timestamptz received_at PK
@@ -102,12 +108,13 @@ erDiagram
     }
     worker {
         text worker_id PK
+        text token_hash UK
     }
     app_user ||--o{ refresh_token : "user_id"
     device ||--o{ device_heartbeat : "device_id"
 ```
 
-다른 묶음에서 이 묶음을 참조하는 테이블: `action_ticket`, `action_ticket_history`, `agentic_report`, `analysis_job`, `calibration_run`, `calibration_verification`, `calibration_version`, `clip_access_log`, `config_bundle`, `event_ack`, `event_close`, `event_escalation`, `job_lease`, `layout_plan`, `media_clip_retention`, `notification`, `operator_qa`, `push_subscription`, `report`, `scale_reference`, `scene_version`, `sim.evaluation_run`, `sim.placement_recommendation`, `sim.trajectory_plan`, `sim.what_if_scenario`, `static_object`, `test_push`, `upload_grant`, `vlm_assessment`, `watch_alert`, `watch_binding`, `watch_impact`, `watch_registrant`, `work_schedule`, `zone`.
+다른 묶음에서 이 묶음을 참조하는 테이블: `action_ticket`, `action_ticket_history`, `agentic_report`, `analysis_job`, `calibration_document`, `calibration_run`, `calibration_verification`, `calibration_version`, `clip_access_log`, `config_bundle`, `event_ack`, `event_close`, `event_escalation`, `job_lease`, `layout_plan`, `media_clip_retention`, `notification`, `operator_qa`, `push_subscription`, `report`, `scale_reference`, `scene_version`, `sim.evaluation_run`, `sim.placement_recommendation`, `sim.trajectory_plan`, `sim.what_if_scenario`, `static_object`, `test_push`, `upload_grant`, `vlm_assessment`, `watch_alert`, `watch_binding`, `watch_impact`, `watch_registrant`, `work_schedule`, `zone`.
 
 ## 3. B. 구성·기준 데이터
 
@@ -122,6 +129,7 @@ erDiagram
 | `rule_version` | MVP | 버전 |
 | `config_bundle` | MVP | 버전 |
 | `config_bundle_item` | MVP | 일반 |
+| `config_bundle_file` | MVP | 일반 |
 | `config_ack` | MVP | 일반 |
 | `tier0_endpoint` | MVP | 일반 |
 | `layout_plan` | M3 | 일반 |
@@ -166,12 +174,17 @@ erDiagram
         text item_type PK
         text item_id PK
     }
+    config_bundle_file {
+        text config_version PK,FK
+        text name PK
+    }
     config_ack {
         uuid ack_msg_id PK
         text config_version FK
     }
     tier0_endpoint {
         bigint_identity endpoint_id PK
+        uuid msg_id UK
     }
     layout_plan {
         bigint_identity layout_id PK
@@ -202,12 +215,13 @@ erDiagram
     app_user |o--o{ config_bundle : "issued_by"
     calibration_version ||--o{ config_bundle : "calibration_version"
     config_bundle ||--o{ config_bundle_item : "config_version"
+    config_bundle ||--o{ config_bundle_file : "config_version"
     config_bundle ||--o{ config_ack : "config_version"
     site ||--o{ layout_plan : "site_id"
     app_user |o--o{ layout_plan : "created_by"
 ```
 
-다른 묶음에서 이 묶음을 참조하는 테이블: `calibration_camera`, `calibration_run`, `calibration_version`, `coverage_guide`, `floor_plan`, `region_state`, `report`, `scale_reference`, `scene_version`, `sim.evaluation_run`, `sim.trajectory_plan`, `sim.what_if_scenario`, `work_schedule`.
+다른 묶음에서 이 묶음을 참조하는 테이블: `bev_frame_set`, `calibration_camera`, `calibration_run`, `calibration_version`, `coverage_guide`, `floor_plan`, `region_state`, `report`, `scale_reference`, `scene_version`, `sim.evaluation_run`, `sim.trajectory_plan`, `sim.what_if_scenario`, `work_schedule`.
 
 ## 4. C. 보정·설치
 
@@ -217,12 +231,15 @@ erDiagram
 |---|---|---|
 | `calibration_version` | MVP | 버전 |
 | `calibration_camera` | MVP | 일반 |
+| `calibration_document` | MVP | 일반 |
 | `calibration_run` | M1 | 일반 |
 | `calibration_verification` | M1 | 일반 |
 | `scale_reference` | M1 | 일반 |
 | `calibration_scale_check` | M1 | 일반 |
 | `coverage_guide` | MVP | 일반 |
+| `calibration_update_message` | MVP | 일반 |
 | `floor_plan` | MVP | 일반 |
+| `bev_frame_set` | MVP | 일반 |
 | `scene_version` | MVP | 버전 |
 
 ```mermaid
@@ -237,6 +254,10 @@ erDiagram
     calibration_camera {
         text calibration_version PK,FK
         text camera_id PK,FK
+    }
+    calibration_document {
+        text calibration_version PK,FK
+        bigint uploaded_by FK
     }
     calibration_run {
         bigint_identity run_id PK
@@ -264,12 +285,21 @@ erDiagram
         text calibration_version FK
         text camera_id FK
     }
+    calibration_update_message {
+        uuid msg_id PK
+        text calibration_version FK
+    }
     floor_plan {
         bigint_identity floor_plan_id PK
         text site_id FK
-        text calibration_version FK
+        text calibration_version FK,UK
         text scene_version FK
         text job_id FK
+        bigint frame_set_id FK,UK
+    }
+    bev_frame_set {
+        bigint_identity frame_set_id PK
+        text site_id FK
     }
     scene_version {
         text scene_version PK
@@ -296,6 +326,8 @@ erDiagram
     app_user |o--o{ calibration_version : "confirmed_by"
     calibration_version ||--o{ calibration_camera : "calibration_version"
     camera ||--o{ calibration_camera : "camera_id"
+    calibration_version ||--o| calibration_document : "calibration_version"
+    app_user |o--o{ calibration_document : "uploaded_by"
     site ||--o{ calibration_run : "site_id"
     app_user |o--o{ calibration_run : "requested_by"
     analysis_job |o--o{ calibration_run : "job_id"
@@ -308,10 +340,13 @@ erDiagram
     scale_reference ||--o{ calibration_scale_check : "scale_reference_id"
     calibration_version |o--o{ coverage_guide : "calibration_version"
     camera |o--o{ coverage_guide : "camera_id"
+    calibration_version ||--o{ calibration_update_message : "calibration_version"
     site ||--o{ floor_plan : "site_id"
     calibration_version ||--o{ floor_plan : "calibration_version"
     scene_version |o--o{ floor_plan : "scene_version"
     analysis_job |o--o{ floor_plan : "job_id"
+    bev_frame_set |o--o{ floor_plan : "frame_set_id"
+    site ||--o{ bev_frame_set : "site_id"
     site ||--o{ scene_version : "site_id"
     calibration_version ||--o{ scene_version : "calibration_version"
     analysis_job |o--o{ scene_version : "job_id"
@@ -329,6 +364,7 @@ erDiagram
 | `world_track_state` | MVP | hypertable |
 | `skeleton_3d` | MVP | hypertable |
 | `system_health` | MVP | hypertable |
+| `system_outage` | MVP | 일반 |
 | `system_metric` | MVP | hypertable |
 | `observation_summary` | M1 | 일반 |
 
@@ -345,6 +381,9 @@ erDiagram
     system_health {
         timestamptz reported_at PK
         text gateway_id PK
+    }
+    system_outage {
+        bigint_identity outage_id PK
     }
     system_metric {
         timestamptz measured_at PK
@@ -369,6 +408,7 @@ erDiagram
 | `event_close` | MVP | 일반 |
 | `event_escalation` | M3 | 일반 |
 | `journal_cursor` | MVP | 일반 |
+| `i1_deferred_message` | MVP | 일반 |
 | `event_frame` | M3 | 일반 |
 | `action_ticket` | M2 | 일반 |
 | `action_ticket_history` | M2 | 일반 |
@@ -389,6 +429,7 @@ erDiagram
         int event_sequence PK
         uuid msg_id UK
         text gateway_id UK
+        int journal_epoch UK
         bigint journal_offset UK
         uuid ack_id FK
         uuid close_id FK
@@ -415,6 +456,9 @@ erDiagram
     journal_cursor {
         text gateway_id PK
     }
+    i1_deferred_message {
+        uuid msg_id PK
+    }
     event_frame {
         bigint_identity frame_id PK
         uuid event_id FK
@@ -439,6 +483,7 @@ erDiagram
         bigint_identity retention_id PK
         uuid clip_id FK
         bigint actor_user_id FK
+        uuid msg_id UK
     }
     clip_access_log {
         bigint_identity access_id PK
@@ -504,10 +549,12 @@ erDiagram
 erDiagram
     notification {
         bigint_identity notification_id PK
-        uuid event_id FK
+        uuid event_id FK,UK
         text source FK
-        bigint subscription_id FK
-        bigint target_user_id FK
+        int event_sequence UK
+        text channel UK
+        bigint subscription_id FK,UK
+        bigint target_user_id FK,UK
     }
     push_subscription {
         bigint_identity subscription_id PK
@@ -591,6 +638,7 @@ erDiagram
 | `vlm_assessment` | M3 | 일반 |
 | `report` | M3 | 일반 |
 | `rag_clause` | M3 | 일반 |
+| `rag_query_template` | M3 | 일반 |
 
 ```mermaid
 erDiagram
@@ -609,6 +657,9 @@ erDiagram
     }
     rag_clause {
         text clause_id PK
+    }
+    rag_query_template {
+        text template_key PK
     }
     analysis_job {
         text job_id PK
@@ -864,14 +915,16 @@ erDiagram
 | 시각 컬럼 | `timestamptz`(UTC). 계약의 UTC int64 ms 는 EC2 수신 경계에서 변환하고 이름의 `_ms` 를 `_at` 으로 바꾼다. 길이(`*_ms`)는 `int` | hypertable 시간 컬럼, 11.4 |
 | hypertable 참조 | FK 로 참조하지 않고 버전 ID·`world_id` 는 논리 참조만 둔다. hypertable 쪽에서 일반 테이블로 거는 FK 는 둔다 | 11장 첫머리 |
 | 버전 테이블 | `zone`·`static_object`·`rule_version`·`calibration_version`·`scene_version` 은 수정하지 않고 새 버전을 추가하며 `valid_from`·`valid_to` 를 둔다. `zone` 은 (`zone_id`, `zone_version`) 복합 PK | 11.4-1, 리플레이 |
-| LIVE 이벤트 | `risk_event.event_id`(UUIDv7) PK. 전이는 `risk_event_update` 에 (`event_id`, `event_sequence`) PK, 저널 위치 (`gateway_id`, `journal_offset`) 유일로 중복을 막는다 | FR-95, 3.2 |
-| 알림은 LIVE 만 | `notification` 은 (`event_id`, `source`) 복합 FK 로 `risk_event` 의 (`event_id`, `source`) 유일 키를 참조하고 `source` 를 CHECK(LIVE) 로 묶는다 | 11.4-3 |
+| LIVE 이벤트 | `risk_event.event_id`(UUIDv7) PK. 전이는 `risk_event_update` 에 (`event_id`, `event_sequence`) PK, 저널 위치 (`gateway_id`, `journal_epoch`, `journal_offset`) 유일로 중복을 막는다. `journal_epoch` 는 Tier 0 저널이 새로 시작할 때 올리는 세대다(V4) | FR-95, 3.2, S15P31A101-106 |
+| 알림은 LIVE 만 | `notification` 은 (`event_id`, `source`) 복합 FK 로 `risk_event` 의 (`event_id`, `source`) 유일 키를 참조하고 `source` 를 CHECK(LIVE) 로 묶는다. 같은 전이·채널·대상은 (`event_id`, `event_sequence`, `channel`, `subscription_id`, `target_user_id`) 유일(NULLS NOT DISTINCT, V13)로 한 번만 넣는다 | 11.4-3, S15P31A101-123 |
 | 운영자 확인·종료·상향 | 명령·결과는 `event_ack`·`event_close`·`event_escalation` 에 두고, Tier 0 가 확정한 전이 행(`risk_event_update`)이 그 행을 FK 로 가리킨다. 등급은 EC2 가 직접 바꾸지 않는다 | 3.2, 16장(상향 의견 적용) |
 | 클립 | `media_clip` 은 (`event_id`, `resume_count`, `camera_id`) 유일. 재개마다 새 구간 | 11.3, `media_clip`(I1) |
 | 계획·시뮬레이션 | PLANNED·WHAT_IF 결과는 `sim` 스키마의 별도 테이블. `risk_event.source` 는 LIVE·REPLAY 만 | 11.3, 11.4 |
 | 열거값 | PostgreSQL enum 대신 `text` + CHECK | Flyway 로 값 추가가 쉽다 |
 | hypertable 보관·압축 | 좌표·골격·health 는 상시 삭제 없이 7일 뒤 압축, `system_metric`·`device_heartbeat` 는 30일. 디스크 70% 초과 시 `skeleton_3d` 30일 | 11.5, 16장, EC2 디스크 320 GB. 추정은 `db-verification.md` 6장 |
 | 기준 데이터 시드 | 현장 `classroom-1`(교실 테스트베드)·카메라 `cam1`~`cam4` 는 V2 시드. 계약 예시·Tier 0·게이트웨이가 쓰는 ID 그대로이고, 카메라 ID 에 설치 위치를 넣지 않는다(위치는 보정이 정함). RTSP 주소·계정은 DB 에 넣지 않는다. `rule_version` 은 ai 규칙 등록부(`simai_ai.risk.rule_catalog`)에서 자동 생성 | 16장, 14장 |
+| I1 재전송 제거 | 추가만 하는 수신 기록은 봉투 `msg_id` 를 PK 나 유일 키로 둔다: `tier0_endpoint`(V8), `calibration_update_message`(V10), `media_clip_retention`(V11, 관리자 기록은 비움), `i1_deferred_message`(V11) | 12.1, S15P31A101-290·263·261 |
+| 기기·워커 토큰 | `device`·`worker` 의 `token_hash` 유일(V5). 요청마다 해시로 찾고 두 주체가 같은 해시를 갖지 않는다 | 14장, S15P31A101-222 |
 | 운영자 종료 멱등 키 | `event_close.idempotency_key`(유일)에 REST 요청 키, `close_id` 는 EC2 발급 PK | 12.6, 16장 |
 
 ## 검사한 것
@@ -882,5 +935,5 @@ erDiagram
 ## 남은 일
 
 - 4단계 검증(API 행별 읽기·쓰기 매핑, 리플레이 질의, 보관·파기, 출처)은 [`db-verification.md`](db-verification.md) 에 있다. 거기서 나온 결정 사항(초기 데이터·관리 명령, 클립 삭제 방법 등)을 정하면 이 그림과 `db-tables.md` 를 고친다.
-- 5단계(S15P31A101-211): MVP·M1 테이블 43개는 `server/src/main/resources/db/migration/V1__init.sql`, 현장·카메라는 V2 시드, 규칙 버전은 ai 규칙 등록부에서 자동 생성한 `R__rule_versions.sql`. 점검 SQL 은 `server/src/test/resources/db/v1-smoke.sql`.
+- 5단계(S15P31A101-211): MVP·M1 테이블 43개는 `server/src/main/resources/db/migration/V1__init.sql`, 현장·카메라는 V2 시드, 규칙 버전은 ai 규칙 등록부에서 자동 생성한 `R__rule_versions.sql`. 점검 SQL 은 `server/src/test/resources/db/v1-smoke.sql`. 그 뒤 V3~V13 이 테이블 8개(`rag_clause`·`rag_query_template`·`config_bundle_file`·`calibration_document`·`system_outage`·`calibration_update_message`·`i1_deferred_message`·`bev_frame_set`)와 컬럼·유일 키를 더했다(목록은 `db-tables.md` 머리말).
 - 기업·공사 계정 계층(부록 C.9)을 채택하면 11장 `site`(World 좌표계 정의)와 공사 개념의 이름을 나누고 이 그림을 고친다.
