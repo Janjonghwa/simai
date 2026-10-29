@@ -7,9 +7,17 @@
 
 - 판정은 하지 않는다. CALIBRATED/PROVISIONAL 은 `CalibrationVersionStore.propose`(criteria)만 정한다.
   `propose_to` 는 조정이 실패·불확실이면 제안하지 않을 뿐, 판정을 바꾸거나 건너뛰지 않는다.
-- 모르면 비운다: 스케일 근거(실측 정물)가 없으면 스케일은 외부 파라미터 초기값(MapAnything 메트릭)을 그대로 이어받고
-  확정하지 않았다고 기록한다(scale_estimates 비움, 문서 scale_basis 는 MODEL_ESTIMATE). 2대 미만에서 보인 관절은
-  변수로 만들지 않는다. 바닥 평면을 맞출 접지점이 부족한 카메라가 있으면 바닥 평면 차이를 비운다.
+- 모르면 비운다: 스케일 근거(실측 정물·실측 카메라 높이)가 없으면 스케일은 외부 파라미터 초기값(MapAnything 메트릭)을
+  그대로 이어받고 확정하지 않았다고 기록한다(scale_estimates 비움, 문서 scale_basis 는 MODEL_ESTIMATE). 2대 미만에서 보인
+  관절은 변수로 만들지 않는다. 바닥 평면을 맞출 접지점이 부족한 카메라가 있으면 바닥 평면 차이를 비운다.
+- 렌즈 모드(-321, `BundleConfig.lens_mode`): per_camera(기본, 카메라별 f·k1·k2), shared(4대 공통 f·k1·k2 + 카메라별 R·t),
+  fixed(렌즈 고정, R·t 만). 풀이는 `solver` 모듈 설명.
+- 실측 카메라 높이 축척(-321, `measured_camera_heights`, 명세 4.3 스케일 근거 MEASURED_CAMERA_HEIGHT): 조정이 끝난 뒤
+  카메라별 (실측 / 조정 높이) 비의 중앙값을 낸다(`checks.camera_height_scale`: 2대 이상, 카메라끼리 3% 안일 때만).
+  실측 정물 제약이 없으면 그 배율로 World 전체(카메라 중심·점·뼈 길이)를 원점·바닥 Z=0 기준으로 늘리고, 근거를
+  scale_estimates 에 넣는다(문서 scale_basis MEASURED_CAMERA_HEIGHT, CALIBRATED 주 근거는 아님). 사람 관측만으로는
+  축척이 게이지(재투영이 바뀌지 않음)라 조정 뒤 배율과 같다. 실측 정물이 있으면 정물이 축척을 정하고(우선순위가 높다)
+  카메라 높이는 교차 확인 근거로만 넣는다. 쓰지 못하면 이유를 기록하고 축척을 바꾸지 않는다.
 - 출처: 입력이 시뮬레이터·정답(input_provenance.is_upper_bound)이면 문서 출처를 SIM·DATASET_GT 로 둔다. 그 결과는
   계약상 CALIBRATED 가 될 수 없고 지표는 상한이다(명세 20.4 규칙 3·4). 상한 입력이 아니면(LIVE·FILE·공개 데이터 영상
   DATASET 등) G1_AUTO 다. 공개 데이터 영상으로 돌린 결과는 우리 현장 보정이 아니므로 버전 저장소에 넣지 않는다(호출자 책임).
@@ -22,7 +30,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -51,8 +59,8 @@ from simai_ai.providers.contract import check_input_provenance
 from simai_ai.tracking.time_model import require_ms
 
 BUNDLE_RECORD_FORMAT = "simai.human_bundle_adjustment"
-BUNDLE_RECORD_VERSION = "0.1.0"
-PROVIDER_VERSION = "simai-human-bundle-0.1.0"
+BUNDLE_RECORD_VERSION = "0.2.0"  # 0.2.0: lens, scale.camera_heights, config.lens_mode (-321)
+PROVIDER_VERSION = "simai-human-bundle-0.2.0"  # 0.2.0: 렌즈 모드·실측 카메라 높이 축척 (-321)
 
 STATUS_CONVERGED = "CONVERGED"
 STATUS_UNCERTAIN = "UNCERTAIN"
@@ -72,6 +80,7 @@ FLAG_HEIGHT_CHECK_UNKNOWN = "CAMERA_HEIGHT_CHECK_UNKNOWN"
 # 기록용(불확실로 만들지 않음)
 NOTE_SCALE_NOT_DETERMINED = "SCALE_NOT_DETERMINED"
 NOTE_FLOOR_FROM_ANKLES = "FLOOR_FROM_ANKLES"
+NOTE_CAMERA_HEIGHT_REJECTED = "CAMERA_HEIGHT_SCALE_REJECTED"
 
 MIN_POINTS = 50
 # 라운드별 수렴 기준(받아들인 걸음의 상대 비용 감소)
@@ -150,9 +159,13 @@ def adjust_human_bundle(
     input_provenance: Mapping[str, Any],
     created_at: int,
     measured_objects: Sequence[MeasuredObjectObservation] = (),
+    measured_camera_heights: Mapping[str, float] | None = None,
     config: BundleConfig = DEFAULT_CONFIG,
 ) -> HumanBundleResult:
-    """번들 조정 한 번. initial_extrinsics 는 camera_id → (R, t) (OpenCV World → 카메라)."""
+    """번들 조정 한 번. initial_extrinsics 는 camera_id → (R, t) (OpenCV World → 카메라).
+
+    measured_camera_heights: camera_id → 줄자로 잰 바닥 → 렌즈 중심 높이(m). 주면 축척 근거로 쓴다(모듈 설명).
+    """
     require_ms("created_at", created_at)
     problems = check_input_provenance(input_provenance)
     if problems:
@@ -176,7 +189,7 @@ def adjust_human_bundle(
     if len(camera_ids) < 2:
         return _failed(provider_source, base, [FLAG_TOO_FEW_CAMERAS], "카메라 2대 미만")
 
-    cams = tuple(_camera_init(intrinsics, initial_extrinsics, cid) for cid in camera_ids)
+    cams = tuple(_camera_init(intrinsics, initial_extrinsics, cid, config.fixed_lens) for cid in camera_ids)
     rigs0 = {c.camera_id: _rig(c.camera_id, c.image_size, c.R0, c.C0, c.f0, c.principal_point, c.k0) for c in cams}
     built = _build_problem(observations, measured_objects, cams, rigs0, config)
     if built.problem.n_points < MIN_POINTS:
@@ -218,7 +231,58 @@ def adjust_human_bundle(
         "outlier_px": config.outlier_px,
         "joint_noise_scaling": config.joint_noise_scaling,
     }
-    return _finish(problem, solution, built, cams, config, provider_source, base, history, outliers, before_removal)
+    solution, height_scale = _camera_height_scale(problem, solution, measured_camera_heights, config)
+    return _finish(
+        problem, solution, built, cams, config, provider_source, base, history, outliers, before_removal, height_scale
+    )
+
+
+@dataclass(frozen=True)
+class _HeightScale:
+    """실측 카메라 높이 축척 결과. scale_after 는 최종 World 에서 본 (실측 / 조정 높이) 중앙값(적용했으면 1, 못 쓰면 None)."""
+
+    record: Mapping[str, Any]
+    scale_after: float | None
+    applied: bool
+    camera_count: int
+
+
+def _camera_height_scale(
+    problem: solver.Problem,
+    solution: solver.Solution,
+    measured: Mapping[str, float] | None,
+    config: BundleConfig,
+) -> tuple[solver.Solution, _HeightScale | None]:
+    """실측 카메라 높이 비의 중앙값을 내고, 실측 정물 제약이 없으면 World 를 그 배율로 늘린다(모듈 설명)."""
+    if measured is None:
+        return solution, None
+    adjusted = {c.camera_id: float(c.C[2]) for c in solution.cameras}
+    scale, record = checks.camera_height_scale(
+        adjusted,
+        measured,
+        min_cameras=config.camera_height_min_cameras,
+        max_spread=config.camera_height_max_spread,
+        floor_known=not problem.fix_floor_to_initial,
+    )
+    record = dict(record)
+    if scale is None:
+        record["applied"] = False
+        return solution, _HeightScale(record, None, False, 0)
+    if len(problem.object_a) > 0:
+        record["applied"] = False
+        record["not_applied_reason"] = "실측 정물 제약이 축척을 정했다(우선순위가 높다). 교차 확인 근거로만 쓴다"
+        return solution, _HeightScale(record, scale, False, int(record["cameras"]))
+    scaled = _scale_solution(solution, scale)
+    record["applied"] = True
+    record["applied_scale"] = round(scale, 6)
+    record["adjusted_height_after_m"] = {c.camera_id: round(float(c.C[2]), 4) for c in scaled.cameras}
+    return scaled, _HeightScale(record, 1.0, True, int(record["cameras"]))
+
+
+def _scale_solution(solution: solver.Solution, s: float) -> solver.Solution:
+    """World 원점 기준 닮음 확대(회전 그대로). 바닥 Z=0·원점·벽 방향은 그대로이고 재투영은 바뀌지 않는다."""
+    cams = tuple(replace(c, C=c.C * s) for c in solution.cameras)
+    return replace(solution, cameras=cams, points=solution.points * s, bone_lengths=solution.bone_lengths * s)
 
 
 def _per_camera_errors(problem: solver.Problem, solution: solver.Solution) -> dict[str, dict[str, float | None]]:
@@ -259,7 +323,13 @@ class _Built:
         )
 
 
-def _camera_init(intr: BundleAdjustmentInit, extr: Mapping[str, Any], camera_id: str) -> solver.CameraInit:
+def _camera_init(
+    intr: BundleAdjustmentInit,
+    extr: Mapping[str, Any],
+    camera_id: str,
+    fixed_lens: tuple[float, float, float] | None = None,
+) -> solver.CameraInit:
+    """초기값. fixed_lens(fixed 모드)를 주면 초점·왜곡을 그 값으로 바꾼다(주점은 기록 그대로)."""
     init = intr.camera(camera_id)
     cam = init.camera
     K = np.asarray(cam["K"], dtype=float)
@@ -270,6 +340,9 @@ def _camera_init(intr: BundleAdjustmentInit, extr: Mapping[str, Any], camera_id:
         k0 = (float(coeffs[0]) if coeffs else 0.0, float(coeffs[1]) if len(coeffs) > 1 else 0.0)
     else:
         raise ValueError(f"{camera_id}: 번들 조정은 OPENCV_PINHOLE 방사 2계수(k1, k2)만 다룬다: {model} {coeffs}")
+    f0 = float((K[0, 0] + K[1, 1]) / 2)
+    if fixed_lens is not None:
+        f0, k0 = float(fixed_lens[0]), (float(fixed_lens[1]), float(fixed_lens[2]))
     R, t = extr[camera_id]
     R = np.asarray(R, dtype=float)
     t = np.asarray(t, dtype=float)
@@ -279,7 +352,7 @@ def _camera_init(intr: BundleAdjustmentInit, extr: Mapping[str, Any], camera_id:
         image_size=(int(width), int(height)),
         R0=R,
         C0=-R.T @ t,
-        f0=float((K[0, 0] + K[1, 1]) / 2),
+        f0=f0,
         principal_point=(float(K[0, 2]), float(K[1, 2])),
         k0=k0,
         focal_std_px=float(init.focal_prior_std_px),
@@ -438,6 +511,7 @@ def _build_problem(
         fix_scale_to_initial=not object_rows,
         fix_floor_to_initial=len(contacts) < 3,
         obs_scale=np.array(obs_scale, dtype=float) if config.joint_noise_scaling else None,
+        lens_mode=config.lens_mode,
     )
     return _Built(problem, tuple(keys), samples, bone_vars, floor_reference, tuple(objects))
 
@@ -527,6 +601,7 @@ def _finish(
     history: list[dict[str, Any]],
     outliers: dict[str, Any],
     before_removal: Mapping[str, Mapping[str, Any]],
+    height_scale: _HeightScale | None = None,
 ) -> HumanBundleResult:
     flags: list[str] = []
     ratio = outliers["removed_ratio"]
@@ -624,8 +699,23 @@ def _finish(
         object_records.append(record_obj)
         if measured is not None and measured > 0:
             scale_estimates.append(ScaleEstimate(ScaleBasis.MEASURED_OBJECT, float(L) / measured, label=obj.label))
-    # 스케일은 정물 치수 제약이 조정에 들어갔을 때만 정해진다(배율 기록은 다시 삼각측량할 수 있는 정물만)
-    scale_determined = len(problem.object_a) > 0
+    # 스케일은 정물 치수 제약이 조정에 들어갔거나 실측 카메라 높이 배율을 적용했을 때만 정해진다
+    # (배율 기록은 다시 삼각측량할 수 있는 정물만)
+    if height_scale is not None and height_scale.scale_after is not None:
+        scale_estimates.append(
+            ScaleEstimate(
+                ScaleBasis.MEASURED_CAMERA_HEIGHT, height_scale.scale_after, sample_count=height_scale.camera_count
+            )
+        )
+    elif height_scale is not None:
+        notes.append(NOTE_CAMERA_HEIGHT_REJECTED)
+    if len(problem.object_a) > 0:
+        scale_source = "MEASURED_OBJECT"
+    elif height_scale is not None and height_scale.applied:
+        scale_source = "MEASURED_CAMERA_HEIGHT"
+    else:
+        scale_source = "INITIAL_EXTRINSICS"
+    scale_determined = scale_source != "INITIAL_EXTRINSICS"
     if not scale_determined:
         notes.append(NOTE_SCALE_NOT_DETERMINED)
 
@@ -662,10 +752,12 @@ def _finish(
                 ),
             },
             "outliers": outliers,
+            "lens": _lens_record(solution, config),
             "scale": {
                 "determined": scale_determined,
-                "source": "MEASURED_OBJECT" if scale_determined else "INITIAL_EXTRINSICS",
+                "source": scale_source,
                 "measured_objects": object_records,
+                "camera_heights": None if height_scale is None else dict(height_scale.record),
             },
             "camera_height_check": [hc.to_record() for hc in height_checks],
             "bone_lengths_m": dict(bones),
@@ -678,6 +770,7 @@ def _finish(
                 "floor_sigma_m": config.floor_sigma_m,
                 "toe_contact_height_m": config.toe_contact_height_m,
                 "ankle_contact_height_m": config.ankle_contact_height_m,
+                "lens_mode": config.lens_mode,
             },
         }
     )
@@ -695,6 +788,18 @@ def _finish(
         camera_height_checks=tuple(height_checks),
         record=record,
     )
+
+
+def _lens_record(solution: solver.Solution, config: BundleConfig) -> dict[str, Any]:
+    """렌즈 모드와 (shared 면) 공통 값, (fixed 면) 고정 값의 출처."""
+    out: dict[str, Any] = {"mode": config.lens_mode}
+    if config.lens_mode == solver.LENS_SHARED and solution.cameras:
+        c = solution.cameras[0]
+        out["shared"] = {"focal_px": round(c.f, 3), "k": [round(c.k[0], 6), round(c.k[1], 6)]}
+    elif config.lens_mode == solver.LENS_FIXED:
+        out["fixed_from"] = "CONFIG" if config.fixed_lens is not None else "INTRINSICS_INIT"
+        out["fixed_lens"] = None if config.fixed_lens is None else [float(v) for v in config.fixed_lens]
+    return out
 
 
 def _retriangulated_length(obj: MeasuredObjectObservation, rigs: Mapping[str, RigCamera]) -> float | None:

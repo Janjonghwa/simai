@@ -84,3 +84,43 @@ def test_floor_planes_agree_for_consistent_cameras_and_detect_tilted_camera():
     assert checks.floor_planes(rigs, shifted, min_points=10).disagreement_m > 0.005
     # 평면을 맞출 접지점이 부족한 카메라가 있으면 차이를 비운다
     assert checks.floor_planes(rigs, contacts[:4], min_points=10).disagreement_m is None
+
+
+# --------------------------------------------------------------------------- 실측 카메라 높이 축척 (-321)
+
+ADJUSTED = {"cam_A": 2.108, "cam_B": 2.107, "cam_C": 2.154, "cam_D": 2.150}
+
+
+def _height_scale(measured, adjusted=ADJUSTED, **kw):
+    return checks.camera_height_scale(adjusted, measured, min_cameras=2, max_spread=0.03, **kw)
+
+
+def test_camera_height_scale_is_median_ratio_with_residuals():
+    scale, rec = _height_scale({"cam_A": 2.21, "cam_B": 2.195, "cam_C": 2.23})
+    assert scale == pytest.approx(2.195 / 2.107)
+    assert rec["cameras"] == 3 and rec["missing_cameras"] == ["cam_D"] and "rejected" not in rec
+    assert rec["residual_m"]["cam_A"] == pytest.approx(scale * 2.108 - 2.21, abs=1e-4)  # 보정 − 실측
+    assert rec["residual_m"]["cam_B"] == pytest.approx(0.0, abs=1e-4)
+
+
+def test_camera_height_scale_needs_two_cameras():
+    scale, rec = _height_scale({"cam_A": 2.21})
+    assert scale is None and "1대 < 2대" in rec["rejected"]
+    scale, rec = _height_scale({"cam_X": 2.2, "cam_A": 2.21})  # 조정 결과에 없는 카메라는 세지 않는다
+    assert scale is None and rec["unknown_cameras"] == ["cam_X"]
+
+
+def test_camera_height_scale_rejects_disagreeing_cameras_with_reasons():
+    scale, rec = _height_scale({"cam_A": 2.21, "cam_B": 2.195, "cam_C": 2.23, "cam_D": 2.45})  # D 만 약 +9%
+    assert scale is None
+    assert set(rec["exceeding"]) == {"cam_D"} and "벗어남" in rec["exceeding"]["cam_D"]
+    assert "cam_D" in rec["rejected"]
+
+
+def test_camera_height_scale_needs_floor_and_positive_values():
+    scale, rec = _height_scale({"cam_A": 2.21, "cam_B": 2.195}, floor_known=False)
+    assert scale is None and "바닥" in rec["rejected"]
+    scale, rec = _height_scale({"cam_A": 2.21, "cam_B": 2.195}, adjusted={"cam_A": 2.1, "cam_B": -0.1})
+    assert scale is None and "cam_B" in rec["rejected"]
+    with pytest.raises(ValueError, match="양의 유한한 수"):
+        _height_scale({"cam_A": 0.0, "cam_B": 2.195})

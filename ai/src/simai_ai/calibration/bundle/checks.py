@@ -11,6 +11,9 @@
   카메라별 방향·높이의 일관성 검산이다). 명세 16장은 CCVS 를 미뤘다(4.4 독립 검증이 대신). criteria(CALIBRATED 판정)
   항목은 아니지만, 차이가 한도를 넘거나 검산할 수 없으면 조정 결과를 불확실(UNCERTAIN)로 표시해 보정 후보로 넣지 않는다
   (`HumanBundleResult.propose_to`). 판정을 바꾸지 않고 후보를 더 엄격하게 거르는 쪽이다.
+- `camera_height_scale`: 실측 카메라 높이 축척(명세 4.3 스케일 근거 MEASURED_CAMERA_HEIGHT, -321). 줄자로 잰 바닥 →
+  렌즈 중심 높이 / 조정 결과 카메라 높이(World Z, 바닥 Z=0 은 발 접지점)의 카메라별 비 → 중앙값. 2대 미만이거나 비가
+  중앙값에서 한도(3%)보다 벗어나는 카메라가 있으면 쓰지 않는다(-277 `world_frame.frame.camera_height_scale` 과 같은 규칙).
 - 퇴화: 카메라 수, 접지점 수·수평 분포(한 사람 직선 보행), 카메라별 영상 덮음 비율.
 """
 
@@ -191,3 +194,63 @@ def camera_height_check(
         single_view_height_m=float(np.median(estimates)) if estimates else None,
         sample_count=len(estimates),
     )
+
+
+def camera_height_scale(
+    adjusted_m: Mapping[str, float],
+    measured_m: Mapping[str, float],
+    *,
+    min_cameras: int,
+    max_spread: float,
+    floor_known: bool = True,
+) -> tuple[float | None, dict]:
+    """(실측 / 조정 높이 비의 중앙값 또는 None, 기록). adjusted_m: camera_id → 조정 결과 카메라 높이(World Z).
+
+    쓰지 않는 경우(None, 기록의 rejected 에 이유): 바닥을 접지점으로 정하지 못함(높이의 기준이 없음), 조정 높이가 바닥
+    위가 아닌 카메라, 쓸 수 있는 카메라 min_cameras 대 미만, 중앙값에서 max_spread 넘게 벗어난 카메라(카메라별 이유는
+    exceeding). 조정 결과에 없는 실측 카메라·실측이 없는 조정 카메라는 쓰지 않고 기록만 한다. 잔차는 (중앙값 × 조정 높이
+    − 실측) m 이다. 실측 값이 양의 유한한 수가 아니면 입력 오류다.
+    """
+    for cid, v in measured_m.items():
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+            raise ValueError(f"카메라 높이 {cid} 는 양의 유한한 수(m)다: {v!r}")
+    used = sorted(c for c in measured_m if c in adjusted_m)
+    rec: dict = {
+        "measured_m": {c: float(measured_m[c]) for c in sorted(measured_m)},
+        "adjusted_height_m": {c: round(float(adjusted_m[c]), 4) for c in used},
+        "unknown_cameras": sorted(set(measured_m) - set(adjusted_m)),
+        "missing_cameras": sorted(set(adjusted_m) - set(measured_m)),
+        "min_cameras": min_cameras,
+        "max_spread": max_spread,
+    }
+    if not floor_known:
+        rec["rejected"] = "바닥(Z=0)을 발 접지점으로 정하지 못해 카메라 높이의 기준이 없다"
+        return None, rec
+    below = [c for c in used if not adjusted_m[c] > 0]
+    if below:
+        rec["rejected"] = f"조정 결과 바닥 위가 아닌 카메라: {below}"
+        return None, rec
+    rec["cameras"] = len(used)
+    if len(used) < min_cameras:
+        rec["rejected"] = f"쓸 수 있는 카메라 {len(used)}대 < {min_cameras}대"
+        return None, rec
+    ratios = {c: float(measured_m[c]) / float(adjusted_m[c]) for c in used}
+    med = float(np.median(list(ratios.values())))
+    deviation = {c: r / med - 1.0 for c, r in ratios.items()}
+    rec |= {
+        "ratio": {c: round(r, 5) for c, r in ratios.items()},
+        "scale": round(med, 6),
+        "deviation": {c: round(d, 5) for c, d in deviation.items()},
+        "spread": round(max(abs(d) for d in deviation.values()), 5),
+        "residual_m": {c: round(med * float(adjusted_m[c]) - float(measured_m[c]), 4) for c in used},
+    }
+    exceeding = {
+        c: f"배율 {ratios[c]:.4f} 이 중앙값 {med:.4f} 에서 {d:+.1%} 벗어남(한도 {max_spread:.0%})"
+        for c, d in deviation.items()
+        if abs(d) > max_spread
+    }
+    if exceeding:
+        rec["exceeding"] = exceeding
+        rec["rejected"] = f"카메라끼리 어긋남: {sorted(exceeding)}"
+        return None, rec
+    return med, rec
