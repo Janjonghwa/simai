@@ -21,7 +21,7 @@ from simai_ai.calibration.extrinsics.sync import repair_timelines
 from simai_ai.geometry import distortion
 from simai_ai.geometry.interpolation import KeypointSample, interpolate_camera
 from simai_ai.geometry.rig import CameraRig, RigCamera
-from simai_ai.geometry.triangulation import triangulate_point
+from simai_ai.geometry.triangulation import triangulate_normalized_many, triangulate_point
 from simai_ai.tracking.cross_view import AssociationFrame, CrossViewAssociator, LocalView
 from simai_ai.tracking.local_config import tracker_config
 from simai_ai.tracking.local_tracker import CameraDetections, CameraLocalTracker, PoseDetection
@@ -222,11 +222,24 @@ def _project_point(cam: RigCamera, X: np.ndarray) -> np.ndarray:
     return xd @ cam.K[:2, :2].T + cam.K[:2, 2]
 
 
+def _project_points(cam: RigCamera, X: np.ndarray) -> np.ndarray:
+    Xc = cam.to_camera(X.reshape(-1, 3))
+    out = np.full((len(Xc), 2), math.nan, dtype=float)
+    front = Xc[:, 2] > _MIN_DEPTH
+    if not front.any():
+        return out
+    xn = Xc[front, :2] / Xc[front, 2:3]
+    xd = distortion.distort(xn, cam.distortion_model, cam.distortion_coeffs)
+    out[front] = xd @ cam.K[:2, :2].T + cam.K[:2, 2]
+    return out
+
+
 def reprojection_metrics(
     frames: Sequence[AssociationFrame], rig: CameraRig, *, min_confidence: float = 0.3
 ) -> dict[str, Any]:
     """연관된 다중 카메라 클러스터에서 관절을 삼각측량해 카메라별 재투영 오차(중앙값·p95)를 잰다."""
     by_cam: dict[str, list[float]] = {cid: [] for cid in sorted(rig.cameras)}
+    grouped: dict[tuple[str, ...], list[list[tuple[float, float]]]] = defaultdict(list)
     for obs in bundle_observations(frames):
         counts = {len(kps) for kps in obs.views.values()}
         for j in range(max(counts, default=0)):
@@ -237,17 +250,22 @@ def reprojection_metrics(
             }
             if len(views) < 2:
                 continue
-            ids = sorted(views)
-            cams = [rig.cameras[cid] for cid in ids]
-            pixels = np.array([views[cid] for cid in ids], dtype=float)
-            X = triangulate_point(cams, pixels)
-            if X is None:
-                continue
-            for cid, cam, uv in zip(ids, cams, pixels, strict=True):
-                proj = _project_point(cam, X)
-                err = float(np.linalg.norm(proj - uv))
-                if math.isfinite(err):
-                    by_cam[cid].append(err)
+            ids = tuple(sorted(views))
+            grouped[ids].append([views[cid] for cid in ids])
+    for ids, rows in grouped.items():
+        cams = [rig.cameras[cid] for cid in ids]
+        pixels = np.asarray(rows, dtype=float)
+        norm = np.stack([cam.normalize(pixels[:, i]) for i, cam in enumerate(cams)], axis=1)
+        X = triangulate_normalized_many(cams, norm)
+        valid = np.isfinite(X).all(axis=1)
+        if not valid.any():
+            continue
+        X_valid = X[valid]
+        px_valid = pixels[valid]
+        for i, (cid, cam) in enumerate(zip(ids, cams, strict=True)):
+            proj = _project_points(cam, X_valid)
+            errs = np.linalg.norm(proj - px_valid[:, i], axis=1)
+            by_cam[cid].extend(float(e) for e in errs[np.isfinite(errs)])
     all_err = [e for errs in by_cam.values() for e in errs]
     out: dict[str, Any] = {}
     for cid, errs in sorted(by_cam.items()):

@@ -8,6 +8,8 @@
   틀어짐으로 확정(명세 4.5, 6.5, D-G1-03). 사람이 없으면 감시 근거 없음으로 보고한다
 - `watch`: 감시 → 버전 저장소 DRIFTED 표시 → 자동 재보정 요청, calibration_update payload
 - `recalibration`: DRIFTED 뒤 관측을 모아 -104 번들 조정을 부르는 트리거(판정은 저장소 criteria)
+- `live_candidate`: 운영 중 모은 Tier 0 2D 관절·로컬 트랙 고리 버퍼(`LiveJointBuffer`)와 백그라운드 후보 보정 실행기
+  (`LiveCandidateCalibrationRunner`, 명세 3.2·3.12·4.5, -345)
 - `coverage`: 커버리지 기반 설치 안내("카메라가 너무 아래를 봄", 사각·약한 바닥)와 걷기 경로 안내
 - `structure`: 보정 문서의 계약 형식 검사(계약 스키마 직접 검증). 버전 저장소가 저장 전에 쓴다
 - `versions`: 보정 버전 저장소(추가만, 원자적 전환)와 calibration_version 태깅, 판정 근거 감사 기록,
@@ -19,7 +21,7 @@
   `CalibrationEvidence` 로 넘기면 판정·버전 전환·계약 출력이 된다. 여기서 다시 내보내지 않는다
   (`simai_ai.calibration.bundle` 로 import, scipy 필요)
 
-`monitor`·`watch`·`recalibration`·`coverage` 는 여기서 다시 내보내지 않는다(numpy·scipy 가 필요해 서브모듈로 import).
+`monitor`·`watch`·`recalibration`·`live_candidate`·`coverage` 는 여기서 다시 내보내지 않는다(numpy·scipy 가 필요해 서브모듈로 import).
 
 - `world_frame`(하위 패키지): MapAnything 입력 준비(왜곡 펴기·펴진 K·사람 마스크)와 결과의 바닥·벽으로 World 좌표계 고정,
   PROVISIONAL 보정 문서와 외부 파라미터 도구의 World 정렬 입력 (명세 4.3 1·2단계, -102). 여기서 다시 내보내지 않는다
