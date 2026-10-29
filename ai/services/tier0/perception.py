@@ -35,10 +35,11 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from simai_ai.contact import ContactEstimator, SurfaceSet
+from simai_ai.calibration.drift import CameraObservation
 from simai_ai.geometry.rig import CameraRig
 from simai_ai.io import ResultGate, SimObservationFrameSource
 from simai_ai.providers.base import Frame
-from simai_ai.tracking.cross_view import CrossViewAssociator, LocalTrackletBuffer
+from simai_ai.tracking.cross_view import AssociationFrame, CrossViewAssociator, LocalTrackletBuffer
 from simai_ai.tracking.local_tracker import (
     CameraDetections,
     MultiCameraLocalTracker,
@@ -230,6 +231,7 @@ class DetectorFeed:
         self.avatar_frames: dict[str, Frame] = {}
         self.avatar_observations: dict[str, Observation2DFrame] = {}
         self.avatar_enabled = False
+        self.camera_streams: dict[str, CameraObservation] = {}
         self.stats = DetectorFeedStats()
 
     @property
@@ -244,6 +246,11 @@ class DetectorFeed:
         batch = [getattr(t, "frame", t) for t in self._tickets()]
         if not batch:
             return []
+        for frame in batch:
+            shape = getattr(frame.image, "shape", ())
+            if len(shape) >= 2:
+                self.camera_streams[frame.camera_id] = CameraObservation(
+                    frame.camera_id, image_size=(int(shape[1]), int(shape[0])))
         self.stats.batches += 1
         self.stats.frames += len(batch)
         try:
@@ -325,6 +332,7 @@ class Perception:
         world_config: WorldTrackConfig | None = None,
         contact: ContactEstimator | None = None,
         avatar_writer: Any = None,
+        observe_association: Callable[[AssociationFrame], None] | None = None,
     ) -> None:
         missing = [c for c in feed.camera_ids if c not in rig.cameras]
         if missing:
@@ -338,6 +346,7 @@ class Perception:
         self.manager = WorldTrackManager(WorldIdIssuer(session), world_config, input_provenance=input_provenance)
         self.contact = contact or ContactEstimator()
         self.avatar_writer = avatar_writer
+        self.observe_association = observe_association
         if isinstance(feed, DetectorFeed):
             feed.avatar_enabled = avatar_writer is not None
         self._lock = threading.Lock()  # 카메라 상태(health 가 다른 스레드에서 읽는다)
@@ -406,6 +415,11 @@ class Perception:
             self.lagging_ticks[c] += 1
         views, _drops = self.buffer.views_at(t)
         assoc = self.associator.associate(t, views, exclude_cameras=tuple(sync_invalid))
+        if self.observe_association is not None:
+            try:
+                self.observe_association(assoc)
+            except Exception:
+                log.exception("보정 감시 표본 공급 실패(판정은 계속한다)")
         self.buffer.prune(t)
         frame = self.manager.update(assoc, self.rig, tuple(sync_invalid))
         contacts = self.contact.update(frame, surfaces)

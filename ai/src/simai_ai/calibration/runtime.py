@@ -15,10 +15,11 @@ from pathlib import Path
 from typing import Any
 
 from simai_ai.calibration.document import content_hash
+from simai_ai.calibration.monitor import STREAM_REASONS, MonitorReport
 from simai_ai.calibration.structure import check_calibration_structure
 from simai_ai.calibration.versions import VersionSwitchConfig
 from simai_ai.providers.base import CalibrationProvider
-from simai_ai.providers.contract import DEFAULT_CALIBRATED_CRITERIA, check_calibration
+from simai_ai.providers.contract import DEFAULT_CALIBRATED_CRITERIA, NEVER_CALIBRATED_SOURCES, check_calibration
 
 
 def _copy(value):
@@ -129,6 +130,11 @@ class RuntimeCalibrationStore(CalibrationProvider):
                           "versions": [doc["calibration_version"]], "transitions": [],
                           "document_hashes": {doc["calibration_version"]: self._digest(doc)}}
             self._save(self._head)
+        self._state = self.current()["state"]
+        for record in self._head["transitions"]:
+            payload = record["payload"]
+            if payload["calibration_version"] == self._head["active"]:
+                self._state = payload["calibration_state"]
 
     def path(self, version: str) -> Path:
         return self.root / (hashlib.sha256(version.encode("utf-8")).hexdigest() + ".json")
@@ -141,6 +147,45 @@ class RuntimeCalibrationStore(CalibrationProvider):
 
     def known(self, version: str) -> bool:
         return version in self._head["versions"]
+
+    @property
+    def state(self) -> str:
+        """문서 원본을 바꾸지 않고 활성 버전의 마지막 운영 상태를 읽는다."""
+        return self._state
+
+    def report_drift(self, report: MonitorReport, *, effective_at: int, msg_id: str) -> bool:
+        """판정 lock 안에서 호출. 동일 버전의 DRIFTED 전이를 추가하고 문서는 보존한다."""
+        if report.calibration_version != self._head["active"] or not report.findings:
+            return False
+        doc = self.current()
+        stream_changed = any(f.reason in STREAM_REASONS for f in report.findings)
+        if doc["provider_source"] in NEVER_CALIBRATED_SOURCES:
+            return False
+        if self.state not in ("CALIBRATED", "PROVISIONAL") and not (self.state == "DRIFTED" and stream_changed):
+            return False
+        previous = None
+        for record in self._head["transitions"]:
+            payload = record["payload"]
+            if payload["calibration_version"] == report.calibration_version and payload["reason"] == "RECALIBRATED":
+                previous = payload["previous_calibration_version"]
+        payload = {
+            "calibration_version": report.calibration_version, "previous_calibration_version": previous,
+            "calibration_state": "DRIFTED", "provider_source": doc["provider_source"],
+            "reason": "STREAM_CHANGED" if stream_changed else "DRIFT_DETECTED",
+            "effective_at": effective_at, "calibration_ref": self.path(report.calibration_version).resolve().as_uri(),
+            "calibration_hash": doc["content_hash"],
+        }
+        cameras = report.reprojection_errors()
+        if cameras:
+            payload["cameras"] = cameras
+        head = _copy(self._head)
+        head["transitions"].append({"msg_id": msg_id, "payload": payload,
+                                    "findings": [{"camera_id": f.camera_id, "reason": str(f.reason),
+                                                  "message": f.message} for f in report.findings]})
+        self._save(head)
+        self._head = head
+        self._state = "DRIFTED"
+        return True
 
     @property
     def transitions(self):
@@ -173,6 +218,7 @@ class RuntimeCalibrationStore(CalibrationProvider):
         head["transitions"].append({"msg_id": msg_id, "payload": payload})
         self._save(head)
         self._head = head
+        self._state = doc["state"]
 
     def _write_document(self, doc):
         self._write_once(self.path(doc["calibration_version"]), doc)

@@ -22,6 +22,7 @@
       "bootstrap": {"archive": "...", "config_version": "cfg-1"},   체크포인트의 묶음을 보관소에서 찾지 못할 때 쓸 시작 묶음
       "lifecycle": {"clear_hold_ms": 3000, "persistence": [2, 3], "resume_window_ms": 10000},
       "tick_ms": 100,                          판정 주기 (10 Hz, 명세 12.2 world_state)
+      "drift_watch_enabled": true,             운영 중 보정 틀어짐 감시(별도 스레드, 기본 켜짐)
       "checkpoint_interval_s": 1.0,            체크포인트 주기 (명세 3.2 초기값 1초)
       "drain_s": 5.0,                          종료 때 저널 쓰기·스레드 정리를 기다리는 상한
       "gpu": {"reserve_mb": 8192, "device": 0, "lag_budget_ms": 600}
@@ -140,6 +141,7 @@ class Tier0Settings:
     i1: I1Settings | None = None
     control: ControlSettings | None = None
     env: Mapping[str, str] = field(default_factory=dict, repr=False)
+    drift_watch_enabled: bool = True
 
     @property
     def journal_dir(self) -> Path:
@@ -353,12 +355,16 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         if not reserve_env.isdigit():
             raise Tier0ConfigError("SIMAI_TIER0_GPU_RESERVE_MB 는 0 이상 정수다")
         gpu = {**gpu, "reserve_mb": int(reserve_env)}
+    drift_watch_enabled = doc.get("drift_watch_enabled", True)
+    if not isinstance(drift_watch_enabled, bool):
+        raise Tier0ConfigError("drift_watch_enabled 는 bool이다")
     return Tier0Settings(
         gateway_id=gateway_id,
         state_dir=state_dir,
         scene_version=scene_version,
         input_mode=mode,
         calibration_file=calibration_file,
+        drift_watch_enabled=drift_watch_enabled,
         sim=sim,
         camera_ids=camera_ids,
         bootstrap_archive=archive,

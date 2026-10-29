@@ -45,6 +45,7 @@ from typing import Any
 from services.tier0.clips.ring_buffer import PacketRingBuffer
 from services.tier0.clips.service import EventClipService
 from services.tier0.config_fetch import HttpsFetcher
+from services.tier0.drift_watch import BackgroundDriftWatch
 from services.tier0.endpoint_registration import EndpointRegistrar, read_cert_pem
 from services.tier0.event_snapshot import EventStateSnapshot
 from services.tier0.file_input import FileInput, JsonlOutput, ReplayClock
@@ -59,7 +60,7 @@ from services.tier0.restore_link import RestoreLink
 from services.tier0.settings import Tier0Settings
 from services.tier0.site_alert_sync import SiteAlertResync
 from services.tier0.video_ingest import TokenVerifier, build_server, parse_token_hashes, server_context
-from simai_ai.calibration.monitor import BaselineRecord
+from simai_ai.calibration.monitor import BaselineRecord, MonitorReport, MonitorStatus
 from simai_ai.calibration.runtime import RuntimeCalibrationStore
 from simai_ai.config import BundleArchive, BundleRejected, BundleVerifier, ConfigBundle, ConfigSync
 from simai_ai.eventlog import ACKED_NAME, AckedOffsetStore, EventJournal, JournalWriter, Outbox, TransportError
@@ -266,6 +267,7 @@ class Tier0Service:
         detector_factory: Callable[[], PoseDetector] | None = None,
         tracker_backend_factory: BackendFactory | None = None,
         gpu_torch: Any | None = None,
+        on_camera_drifted: Callable[[str], None] | None = None,
     ) -> None:
         """detector_factory·tracker_backend_factory: LIVE 검출기·Local Tracker 백엔드를 바꿔 끼운다(ultralytics 가 없는
         노트북 시험의 대역). 없으면 설정의 엔진·가중치와 ultralytics 추적기를 쓴다."""
@@ -290,6 +292,10 @@ class Tier0Service:
         self._feed_override = feed
         self._drift_watch_factory = drift_watch_factory
         self.drift_watch: Any | None = None
+        self._on_camera_drifted = on_camera_drifted
+        self._drift_report: MonitorReport | None = None
+        self._pending_drift_report: MonitorReport | None = None
+        self._drift_notified: set[tuple[str, str]] = set()
         self._new_msg_id = new_msg_id
         self.judge_lock = threading.RLock()  # 판정 lock: 추적기·인지·클립·현장 경보 송신 순서
         self._stop = threading.Event()
@@ -487,11 +493,19 @@ class Tier0Service:
             new_msg_id=self._new_msg_id,
             begin_tick=self._begin_calibration_tick,
         )
-        if self._drift_watch_factory is not None:
+        if s.drift_watch_enabled and self._drift_watch_factory is not None:
             # 보정 감시(-117): 저장한 기준선을 검증 여부 그대로 돌려주고(CalibrationDriftWatch(baselines=...)), 정리 주기마다 저장한다
             self.drift_watch = self._drift_watch_factory(load_baselines(s.baselines_file))
+        elif s.drift_watch_enabled:
+            self.drift_watch = BackgroundDriftWatch(self._apply_drift_report,
+                                                   baselines=load_baselines(s.baselines_file))
+            self._drift_document = self.calibration.current()
+            self.perception.observe_association = lambda assoc: self.drift_watch.offer(
+                self._drift_document, assoc, tuple(getattr(self.perception.feed, "camera_streams", {}).values()))
 
         # 6) 시작
+        if isinstance(self.drift_watch, BackgroundDriftWatch):
+            self._spawn("tier0-drift-watch", lambda: self.drift_watch.run(self._stop))
         self.writer.start()
         self._event("journal_writer")
         self.checkpointer.start()
@@ -747,9 +761,39 @@ class Tier0Service:
             return  # 같은 후보를 다음 tick에 다시 저장하며 직전 rig로 판정을 계속한다
         self.perception.replace_rig(rig, provenance)
         self.rig = rig
+        self._drift_document = doc
+        self._drift_report = self._pending_drift_report = None
         self._pending_calibration = None
         self.calibration_status.update(pending_version=None, last_rejection=None, effective_at=at_ms)
         self._event(f"calibration_switched:{rig.calibration_version}:{at_ms}")
+
+    def _apply_drift_report(self, report: MonitorReport, changed_streams: tuple[str, ...]) -> None:
+        """보조 스레드에서 계산한 근거만 반영한다. 새 rig에 옛 근거를 적용하지 않는다."""
+        notify = []
+        with self.judge_lock:
+            if self._stop.is_set() or report.calibration_version != self.rig.calibration_version:
+                return
+            self._drift_report = report
+            if report.findings:
+                self._pending_drift_report = report
+            pending = self._pending_drift_report
+            if pending is not None:
+                # 저장 실패 시 근거를 유지해 다음 표본 때 다시 저장한다(감시기는 확정 근거를 한 번만 낸다).
+                self.calibration.report_drift(pending, effective_at=self.clock.now_ms(), msg_id=self._new_msg_id())
+                self._pending_drift_report = None
+            if self.calibration.state == "DRIFTED" and not changed_streams:
+                for camera in report.cameras:
+                    key = report.calibration_version, camera.camera_id
+                    if camera.status is MonitorStatus.DRIFTED and key not in self._drift_notified:
+                        self._drift_notified.add(key)
+                        notify.append(camera.camera_id)
+        # -345 reset_camera의 연결점. 무거운 후보 계산/콜백은 판정 lock 밖이다.
+        for cid in notify:
+            if self._on_camera_drifted is not None:
+                try:
+                    self._on_camera_drifted(cid)
+                except Exception:
+                    log.exception("카메라 재수집 콜백 실패: %s", cid)
 
     def _calibration_messages(self):
         """I1 신뢰 대기열 source. 재시작 때 같은 msg_id의 전환 이력을 다시 보내 유실을 막는다."""
@@ -780,11 +824,11 @@ class Tier0Service:
         return None if active is None else active.config_version
 
     def _calibration_state(self) -> str:
-        if self.drift_watch is not None:
+        if self.drift_watch is not None and hasattr(self.drift_watch, "store"):
             snap = self.drift_watch.store.snapshot()
             if snap is not None and snap.calibration_version == self.rig.calibration_version:
                 return str(snap.state)
-        return str(self.rig.state)
+        return str(self.calibration.state)
 
     def _health_capture_clock(self) -> Callable[[bool], Any] | None:
         """health 의 촬영 시계 입력. None 이면 SAME_CLOCK(노트북 없는 SIM 만). LIVE 에 제어 채널이 없으면 늘 모름(None 반환)."""
@@ -955,6 +999,7 @@ class Tier0Service:
         blocked = self.outbox.blocked
         snap_health = self.health.last
         avatar_writer = getattr(getattr(self, "perception", None), "avatar_writer", None)
+        drift_report = self._drift_report
         return {
             "gateway_id": self.settings.gateway_id,
             "pid": os.getpid(),
@@ -965,6 +1010,11 @@ class Tier0Service:
             "restore_link": dict(self.restore_link.status()) if getattr(self, "restore_link", None) is not None else None,
             "config_check": self.config_check,
             "calibration": {**self.calibration_status, "active_version": self.rig.calibration_version,
+                            "state": self._calibration_state(),
+                            "drift_watch": None if drift_report is None else {
+                                "t_ms": drift_report.t_ms, "evidence": str(drift_report.evidence),
+                                "cameras": {c.camera_id: {"status": str(c.status), "baseline_verified": c.baseline_verified}
+                                            for c in drift_report.cameras}},
                             "config_mismatch": (self.config_sync.active is not None
                                 and self.config_sync.active.calibration_version != self.rig.calibration_version)},
             "config_sync": self.config_sync.health_fields(),
@@ -1120,6 +1170,9 @@ class Tier0Service:
             t.join(left())
         failures += [f"thread:{t.name}" for t in self._threads if t.is_alive()]
         self._event("judge_stopped")
+        if self.drift_watch is not None:
+            self._bounded(deadline, "calibration_baselines",
+                          lambda: save_baselines(self.settings.baselines_file, self.drift_watch.baselines()), failures)
         control, link, live = self.control, self.link, self.live_input
         if live is not None:
             stuck: list[str] = []
