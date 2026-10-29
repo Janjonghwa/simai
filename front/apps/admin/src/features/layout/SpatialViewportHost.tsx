@@ -4,6 +4,7 @@ import type { Incident } from '@/features/events/events';
 import { useEventsStore } from '@/features/events/events.store';
 import { useLiveEvents } from '@/features/events/useLiveEvents';
 import { useThemeStore } from '@/features/layout/theme.store';
+import { useCurrentScene } from '@/features/layout/useCurrentScene';
 import { ViewerLoadBoundary } from '@/features/monitor/ViewerLoadBoundary';
 import { LivePlan } from '@/features/plan/LivePlan';
 import { PlanMinimap } from '@/features/plan/PlanMinimap';
@@ -175,6 +176,7 @@ export function SpatialViewportHost({
   const viewer = useRef<Viewer3DHandle>(null);
   const { entries, loaded, failed } = useLiveEvents();
   const { zones, raw: zonesRaw, failed: zonesFailed } = useZones();
+  const { scene, onSceneStatusChange } = useCurrentScene();
   const [view, setView] = useState<SpatialViewMode>('3d');
   const [loader, setLoader] = useState(() => ({ attempt: 0, Viewer3D: lazy(loadViewer) }));
   const loadFailed = useRef(false);
@@ -950,6 +952,8 @@ export function SpatialViewportHost({
                   theme={theme}
                   source={source}
                   avatarMeshFetch={avatarMeshFetch}
+                  scene={scene}
+                  onSceneStatusChange={onSceneStatusChange}
                   onSelectionChange={onViewerSelect}
                   onTargetDoubleClick={onViewerDoubleClick}
                   onStatusChange={onViewerStatus}

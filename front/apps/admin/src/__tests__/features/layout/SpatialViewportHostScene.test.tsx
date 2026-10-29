@@ -1,0 +1,134 @@
+import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
+import type { Viewer3DProps } from '@/features/viewer3d';
+import { IDLE_LOAD, sceneStatusOf } from '@/features/viewer3d/scene/sceneContract';
+import { createQueryClient } from '@/lib/queryClient';
+import { handlers } from '@/mocks/handlers';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { http, HttpResponse } from 'msw/http';
+import { setupServer } from 'msw/node';
+import { useLayoutEffect } from 'react';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@/lib/api', async () => {
+  const { createHttp } = await import('@/lib/http');
+  return {
+    api: createHttp({ baseUrl: 'http://api.test', getToken: () => 'mock-token.viewer' }),
+  };
+});
+vi.mock('@/features/events/useLiveEvents', () => ({
+  useLiveEvents: () => ({ entries: [], loaded: true, failed: false }),
+}));
+const ZONES_RAW = { contract: 'DEMO_UNCONFIRMED', zones: [] };
+vi.mock('@/features/zones/useZones', () => ({
+  useZones: () => ({ zones: [], raw: ZONES_RAW, failed: false }),
+}));
+
+const viewer = { props: null as Viewer3DProps | null };
+function FakeViewer(props: Viewer3DProps) {
+  const { onStatusChange } = props;
+  useLayoutEffect(() => {
+    viewer.props = props;
+  });
+  useLayoutEffect(() => {
+    onStatusChange?.({ phase: 'ready', mode: 'LIVE', error: null });
+  }, [onStatusChange]);
+  return <div data-testid="viewer3d" />;
+}
+const loadViewer = () => Promise.resolve({ default: FakeViewer });
+const server = setupServer(...handlers);
+const clients: ReturnType<typeof createQueryClient>[] = [];
+beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
+afterAll(() => server.close());
+afterEach(() => {
+  cleanup();
+  clients.splice(0).forEach((client) => client.clear());
+  server.resetHandlers();
+  viewer.props = null;
+});
+
+function renderHost() {
+  const client = createQueryClient();
+  client.setDefaultOptions({ queries: { retry: false } });
+  clients.push(client);
+  return render(
+    <QueryClientProvider client={client}>
+      <SpatialViewportHost loadViewer={loadViewer} eventPanel={false} />
+    </QueryClientProvider>,
+  );
+}
+
+describe('관제 호스트의 Scene 연결', () => {
+  it('mock 모드의 인증된 DEFAULT 본문과 데모 자산 주소를 Viewer3D 에 넘긴다', async () => {
+    renderHost();
+    await waitFor(() => expect(viewer.props?.scene?.ok).toBe(true));
+    expect(viewer.props?.scene).toMatchObject({
+      ok: true,
+      raw: {
+        scene_version: 'scene-demo',
+        state: 'DEFAULT',
+        default: true,
+        calibration_version: null,
+        gltf_url: expect.stringContaining('scene-demo.gltf'),
+        gltf_expires_at_ms: expect.any(Number),
+      },
+    });
+    expect(screen.getByRole('main', { name: '실시간 관제' })).toBeTruthy();
+  });
+
+  it.each([401, 503])('Scene 조회 %s 에도 관제 화면과 뷰어를 띄운다', async (status) => {
+    let calls = 0;
+    server.use(
+      http.get('*/api/scenes/current', () => {
+        calls++;
+        return HttpResponse.json({}, { status });
+      }),
+    );
+    renderHost();
+    await screen.findByTestId('viewer3d');
+    await waitFor(() => expect(calls).toBe(1));
+    expect(viewer.props?.scene).toBeNull();
+    expect(screen.getByRole('main', { name: '실시간 관제' })).toBeTruthy();
+  });
+
+  it('뷰어가 만료를 알리면 재조회한 본문을 다시 넘긴다', async () => {
+    let calls = 0;
+    server.use(
+      http.get('*/api/scenes/current', () =>
+        HttpResponse.json({
+          scene_version: 'scene-current',
+          state: 'DEFAULT',
+          default: true,
+          calibration_version: null,
+          gltf_url: `/scene.glb?signature=${++calls}`,
+          gltf_expires_at_ms: Date.now() + 300_000,
+        }),
+      ),
+    );
+    renderHost();
+    await waitFor(() => expect(viewer.props?.scene?.ok).toBe(true));
+    const status = sceneStatusOf(
+      viewer.props!.scene!,
+      {
+        ...IDLE_LOAD,
+        phase: 'EXPIRED',
+        sceneVersion: 'scene-current',
+      },
+      {
+        worldScene: null,
+        worldCalibration: null,
+        healthCommitted: null,
+        healthLive: null,
+        healthMismatch: null,
+      },
+    );
+    act(() => viewer.props?.onSceneStatusChange?.(status));
+    await waitFor(() =>
+      expect(viewer.props?.scene).toMatchObject({
+        ok: true,
+        raw: { gltf_url: '/scene.glb?signature=2' },
+      }),
+    );
+    expect(calls).toBe(2);
+  });
+});

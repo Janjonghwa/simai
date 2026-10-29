@@ -19,3 +19,8 @@ const viewerHealthMessage = z.unknown().transform((raw, ctx) => {
 export function requestHealth(http: Http, signal?: AbortSignal) {
   return http('/api/health', { schema: viewerHealthMessage, signal });
 }
+
+/** Scene 본문의 형식 판단은 뷰어가 맡는다. 앱은 받은 JSON 을 바꾸지 않는다. */
+export function requestCurrentScene(http: Http, signal?: AbortSignal) {
+  return http('/api/scenes/current', { schema: z.unknown(), signal });
+}

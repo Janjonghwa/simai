@@ -79,17 +79,22 @@ vi.mock('@/features/zones/useZones', () => ({
   useZones: () => mockZonesState,
 }));
 // 조회(GET)는 시험마다 정한 묶음 목록과, 저장 전 확인용으로 화면의 구역 버전을 그대로 답한다. 쓰기는 apiMock 이 답한다.
-vi.mock('@/lib/api', () => ({
-  api: (path: string, options: unknown) => {
-    if ((options as { method?: string }).method) return apiMock.fn(path, options);
-    if (path === '/api/config-bundles') return Promise.resolve(bundlesMock.list);
-    if (path === '/api/zones')
-      return Promise.resolve(
-        mockZonesState.zones.map((z) => ({ zone_id: z.zoneId, zone_version: z.version })),
-      );
-    return apiMock.fn(path, options);
-  },
-}));
+// 관제 레이아웃의 배경 Scene 조회(-323)는 없음(404)으로 답해 기본 바닥을 쓰게 하고 저장 요청 기록에 넣지 않는다.
+vi.mock('@/lib/api', async () => {
+  const { ApiError } = await import('@/lib/http');
+  return {
+    api: (path: string, options: unknown) => {
+      if ((options as { method?: string }).method) return apiMock.fn(path, options);
+      if (path === '/api/scenes/current') return Promise.reject(new ApiError(404));
+      if (path === '/api/config-bundles') return Promise.resolve(bundlesMock.list);
+      if (path === '/api/zones')
+        return Promise.resolve(
+          mockZonesState.zones.map((z) => ({ zone_id: z.zoneId, zone_version: z.version })),
+        );
+      return apiMock.fn(path, options);
+    },
+  };
+});
 
 const fake = vi.hoisted(() => ({
   selected: null as ViewerTarget | null,

@@ -15,6 +15,7 @@ import type {
   ViewerStatus,
   ViewerTarget,
 } from '@/features/viewer3d';
+import { sceneHandlers } from '@/mocks/scenes';
 import { createStaticObjectsMock, MOCK_STATIC_OBJECTS } from '@/mocks/staticObjects';
 import { createZonesMock } from '@/mocks/zones';
 import { useObjectEditStore } from '@/store/objectEdit.store';
@@ -272,6 +273,7 @@ let pushWorkSurfaces: Mock;
 beforeEach(() => {
   signInAs('ADMIN');
   server.resetHandlers(
+    ...sceneHandlers,
     ...createStaticObjectsMock().handlers,
     ...createZonesMock({ ackDelayMs: 200 }).handlers,
   );

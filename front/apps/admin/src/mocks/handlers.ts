@@ -1,4 +1,5 @@
 import { type MockAccount, MOCK_ACCOUNTS } from '@/mocks/accounts';
+import { sceneHandlers } from '@/mocks/scenes';
 import { createStaticObjectsMock } from '@/mocks/staticObjects';
 import { http, HttpResponse } from 'msw/http';
 
@@ -61,4 +62,5 @@ export const handlers = [
   ),
   // 작업면은 앱이 살아 있는 동안 상태를 둔다(구성 묶음 발행·ACK 는 main.tsx 의 구역 mock 이 맡는다).
   ...createStaticObjectsMock().handlers,
+  ...sceneHandlers,
 ];
