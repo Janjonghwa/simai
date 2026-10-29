@@ -28,6 +28,11 @@ import {
   withZoneApply,
   type DataSourceKey,
 } from '@/features/viewer3d/dev-harness/harnessSource';
+import {
+  DevCameraPoseApplier,
+  readCamPose,
+  useDevCameraPose,
+} from '@/features/viewer3d/dev-harness/lobbyPreview';
 import { DebugProbe, SpatialDiagnostics } from '@/features/viewer3d/dev-harness/MockDebug';
 import { MockNav } from '@/features/viewer3d/dev-harness/MockNav';
 import { MockOverlay, SelectionCard } from '@/features/viewer3d/dev-harness/MockOverlay';
@@ -136,6 +141,9 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   const [zoneApply, setZoneApply] = useState(() => readZoneApply(window.location.search));
   // 배경 Scene 입력(-59). FE 가 GET /api/scenes/current 로 받는 본문을 흉내 낸다.
   const [sceneKey, setSceneKey] = useState(() => readSceneOption(window.location.search));
+  // 실측 로비 프리뷰를 원본 카메라 시점에서 비교(?camPose=cam_A). 처음 한 번만 옮기고 이후 조작은 자유다.
+  const [camPoseId] = useState(() => readCamPose(window.location.search));
+  const camPose = useDevCameraPose(sceneKey === 'lobby-preview' ? camPoseId : null);
   // 만료 시각은 고른 순간 기준이다(렌더 중에 시각을 읽지 않는다).
   const [sceneInput, setSceneInput] = useState(() => sceneInputOf(sceneKey, Date.now()));
   const sceneSwap = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -269,11 +277,13 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           zoneApplyState={zoneApply}
           scene={sceneInput}
           onSceneStatusChange={setSceneStatus}
+          sceneReview={sceneKey === 'lobby-preview'}
         >
           <MockScene colors={colors} selected={selected} legacy={legacy} />
           {spatial && <WorldReference />}
           <DebugProbe />
           <EditProbe />
+          <DevCameraPoseApplier pose={camPose} />
         </ViewerShell>
       </div>
 

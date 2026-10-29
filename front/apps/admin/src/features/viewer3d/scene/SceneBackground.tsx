@@ -8,6 +8,7 @@ import {
 } from '@/features/viewer3d/scene/sceneContract';
 import {
   SceneLoaderContext,
+  SceneReviewContext,
   SceneStoreContext,
   type SceneStore,
 } from '@/features/viewer3d/scene/sceneStore';
@@ -103,6 +104,7 @@ export function SceneBackground() {
 
 function Background({ store }: { store: SceneStore }) {
   const loader = useContext(SceneLoaderContext);
+  const review = useContext(SceneReviewContext);
   const input = useStore(store, (s) => s.input);
   const load = useStore(store, (s) => s.load);
   const worldScene = useSpatialData((s) => s.world?.sceneVersion ?? null);
@@ -188,9 +190,10 @@ function Background({ store }: { store: SceneStore }) {
   const shown: SceneDisplay = loaded && loaded.sceneVersion === sceneVersion ? display : 'HIDDEN';
 
   useEffect(() => {
-    if (loaded) applyDisplay(loaded.root, shown);
+    // 검수 표시는 흐림만 거둔다. 숨김(HIDDEN)·판정은 그대로다.
+    if (loaded) applyDisplay(loaded.root, review && shown === 'DIMMED' ? 'FULL' : shown);
     store.getState().setDisplay(shown);
-  }, [store, loaded, shown]);
+  }, [store, loaded, shown, review]);
   useEffect(() => () => store.getState().setDisplay('HIDDEN'), [store]);
 
   if (!loaded) return null;

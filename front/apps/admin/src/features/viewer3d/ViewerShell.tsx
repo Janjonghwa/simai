@@ -34,6 +34,7 @@ import {
   createSceneStore,
   loadGltfScene,
   SceneLoaderContext,
+  SceneReviewContext,
   SceneStoreContext,
   sceneVersionsOf,
   type SceneAssetLoader,
@@ -73,6 +74,8 @@ export interface ViewerShellProps extends Viewer3DProps {
   zoneApplyState?: ZoneApplyState;
   /** 배경 glTF 읽기 함수. 시험만 바꿔 끼운다. 없으면 GLTFLoader. */
   sceneLoader?: SceneAssetLoader;
+  /** 개발 검수 전용: 정합 근거 없는 배경도 불투명하게 그린다(판정·상태는 그대로). 운영 화면은 넘기지 않는다. */
+  sceneReview?: boolean;
 }
 
 /** 뷰어 상태·명령·알림과 데이터 입력을 묶는다. 인스턴스가 살아 있는 동안 store 와 Canvas 는 하나다. */
@@ -103,6 +106,7 @@ export function ViewerShell({
   scene = null,
   onSceneStatusChange,
   sceneLoader = loadGltfScene,
+  sceneReview = false,
   theme = 'dark',
 }: ViewerShellProps) {
   const [store] = useState(() => {
@@ -324,9 +328,11 @@ export function ViewerShell({
                     <ZoneApplyContext value={zoneApplyState}>
                       <SceneStoreContext value={sceneStore}>
                         <SceneLoaderContext value={sceneLoader}>
-                          <PlannedStoreContext value={planned}>
-                            <ViewerCanvas>{children}</ViewerCanvas>
-                          </PlannedStoreContext>
+                          <SceneReviewContext value={sceneReview}>
+                            <PlannedStoreContext value={planned}>
+                              <ViewerCanvas>{children}</ViewerCanvas>
+                            </PlannedStoreContext>
+                          </SceneReviewContext>
                         </SceneLoaderContext>
                       </SceneStoreContext>
                     </ZoneApplyContext>

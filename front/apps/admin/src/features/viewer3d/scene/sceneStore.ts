@@ -51,6 +51,12 @@ export const loadGltfScene: SceneAssetLoader = (url) =>
 
 export const SceneLoaderContext = createContext<SceneAssetLoader>(loadGltfScene);
 
+/**
+ * 개발 검수 전용(개발 화면·시험만 켠다). 켜면 정합 근거 없는 배경(DIMMED)도 불투명하게 그려 재구성 형상을 눈으로 확인하고,
+ * 배경이 보이는 동안 DEMO 교실 경계선을 숨긴다. 판정·상태(verification·display)는 그대로다. 운영 화면은 켜지 않는다.
+ */
+export const SceneReviewContext = createContext(false);
+
 /** 정합 판정에 쓰는 지금 버전. World·Health 가 없으면 null. */
 export const sceneVersionsOf = (state: SpatialDataState): SceneVersions => ({
   worldScene: state.world?.sceneVersion ?? null,
