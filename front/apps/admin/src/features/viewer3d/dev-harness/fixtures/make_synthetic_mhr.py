@@ -4,12 +4,15 @@
 만들고 AI -88 의 내보내기(simai_ai.hmr.gltf_export.build_skinned_glb)를 그대로 불러 .glb 로 쓴다.
 실제 체형·관절 순서·손가락 위치와는 다르다(뷰어 적재·회전 적용·pelvis 정렬·폴백 시험용).
 
-실행(저장소 루트): PYTHONPATH=ai/src python front/apps/admin/src/features/viewer3d/dev-harness/fixtures/make_synthetic_mhr.py
+실행(저장소 루트): PYTHONPATH=ai/src python front/apps/admin/src/features/viewer3d/dev-harness/fixtures/make_synthetic_mhr.py [--dense]
+--dense 는 실제 MHR 메시와 비슷한 크기(면을 13×13 으로 나눔, 정점 약 2.1만·삼각형 약 3.7만, 관절 근처는 부모 관절과 가중치를 섞음)의
+synthetic-mhr-dense.glb 를 만든다. 여러 명 동시 표시 성능 시험용이다(-65).
 """
 
 from __future__ import annotations
 
 import hashlib
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +20,10 @@ import numpy as np
 from simai_ai.hmr.gltf_export import build_skinned_glb
 from simai_ai.hmr.rig import CM_TO_M, MhrRig, PersonRig, joint_parents_sha256
 
-OUT = Path(__file__).with_name("synthetic-mhr.glb")
+DENSE = "--dense" in sys.argv
+OUT = Path(__file__).with_name("synthetic-mhr-dense.glb" if DENSE else "synthetic-mhr.glb")
+GRID = 13 if DENSE else 1
+BLEND_CM = 8.0  # dense: 관절 원점에서 이 거리 안의 정점은 부모 관절과 가중치를 나눈다
 J = 127
 
 # (이름, 부모, 부모 기준 이동 cm). 리그 좌표는 glTF Y-up, 사람은 +Z 를 본다.
@@ -94,30 +100,50 @@ FACES = [  # (축, 부호)
     (0, 1), (0, -1), (1, 1), (1, -1), (2, 1), (2, -1),
 ]
 verts, faces, joints = [], [], []
+weights_rows: list[tuple[list[int], list[float]]] = []
 for joint, lo, hi in boxes:
     for axis, sign in FACES:
         u, v = [a for a in range(3) if a != axis]
-        quad = []
-        for cu, cv in ((0, 0), (1, 0), (1, 1), (0, 1)):
-            p = np.empty(3)
-            p[axis] = hi[axis] if sign > 0 else lo[axis]
-            p[u] = hi[u] if cu else lo[u]
-            p[v] = hi[v] if cv else lo[v]
-            quad.append(p)
         n = np.zeros(3)
         n[axis] = sign
-        if np.dot(np.cross(quad[1] - quad[0], quad[2] - quad[0]), n) < 0:
-            quad = quad[::-1]
+        corner = lambda fu, fv: np.array(
+            [
+                (hi[a] if sign > 0 else lo[a]) if a == axis else (lo[a] + (hi[a] - lo[a]) * (fu if a == u else fv))
+                for a in range(3)
+            ]
+        )
+        flip = np.dot(np.cross(corner(1, 0) - corner(0, 0), corner(1, 1) - corner(0, 0)), n) < 0
         base = len(verts)
-        verts += quad
-        joints += [joint] * 4
-        faces += [[base, base + 1, base + 2], [base, base + 2, base + 3]]
+        if not DENSE:
+            # 기본 fixture 는 처음 만든 순서 그대로 쓴다(바이트·sha256 이 시나리오 상수와 같아야 한다).
+            quad = [corner(cu, cv) for cu, cv in ((0, 0), (1, 0), (1, 1), (0, 1))]
+            if flip:
+                quad = quad[::-1]
+            verts += quad
+            weights_rows += [([joint], [1.0])] * 4
+            faces += [[base, base + 1, base + 2], [base, base + 2, base + 3]]
+            continue
+        for gv in range(GRID + 1):
+            for gu in range(GRID + 1):
+                q = corner(gu / GRID, gv / GRID)
+                verts.append(q)
+                parent = parents[joint]
+                d = float(np.linalg.norm(q - glob[joint]))
+                share = max(0.0, 0.5 - d / (2 * BLEND_CM)) if DENSE and parent > 0 else 0.0
+                weights_rows.append(([joint, parent], [1.0 - share, share]) if share > 0 else ([joint], [1.0]))
+        for gv in range(GRID):
+            for gu in range(GRID):
+                a = base + gv * (GRID + 1) + gu
+                b, c, d4 = a + 1, a + GRID + 2, a + GRID + 1
+                tri = [[a, b, c], [a, c, d4]]
+                faces += [t[::-1] for t in tri] if flip else tri
 
 V = len(verts)
 skin_j = np.zeros((V, 4), dtype=np.int64)
-skin_j[:, 0] = joints
 skin_w = np.zeros((V, 4))
-skin_w[:, 0] = 1.0
+for i, (js, ws) in enumerate(weights_rows):
+    skin_j[i, : len(js)] = js
+    skin_w[i, : len(ws)] = ws
 ident = np.tile([0.0, 0.0, 0.0, 1.0], (J, 1))
 inv_bind = np.concatenate([-glob, ident, np.ones((J, 1))], axis=1)
 rig = MhrRig(

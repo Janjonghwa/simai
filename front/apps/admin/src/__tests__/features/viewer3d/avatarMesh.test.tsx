@@ -6,10 +6,16 @@ import {
 } from '@/features/viewer3d/data/spatialData.store';
 import { SpatialDataContext } from '@/features/viewer3d/data/SpatialDataProvider';
 import type { TrackView, WorldFrame } from '@/features/viewer3d/data/spatialFrame';
-import { SYNTHETIC_MHR, walkRotations } from '@/features/viewer3d/dev-harness/avatarFixture';
+import {
+  SYNTHETIC_MHR,
+  SYNTHETIC_MHR_DENSE,
+  walkRotations,
+} from '@/features/viewer3d/dev-harness/avatarFixture';
 import {
   AVATAR_LATE,
   AVATAR_STALL,
+  avatarCrowdFrame,
+  avatarCrowdSize,
   avatarFrameMessage,
   scenarioWorld,
 } from '@/features/viewer3d/dev-harness/scenarios';
@@ -60,6 +66,9 @@ const FIXTURE = fs.readFileSync(
 );
 // Node Buffer 는 공유 풀의 일부라 .buffer 를 바로 쓰지 않고 복사한다.
 const bytes = () => new Uint8Array(FIXTURE).buffer;
+const DENSE = fs.readFileSync(
+  cwd + '/src/features/viewer3d/dev-harness/fixtures/synthetic-mhr-dense.glb',
+);
 const clone = <T,>(v: T): T => structuredClone(v);
 // 계약 정본 예시(contracts/examples/avatar_frame.json, 사람 2명).
 const [avatarFrameExample] = Object.values(
@@ -235,6 +244,38 @@ describe('자산 확인(합성 127관절 GLB)', () => {
     expect(await sha256Of(bytes())).toBe(SYNTHETIC_MHR.meshSha256);
     const mesh = await readAvatarMesh(bytes(), asset());
     expect(mesh.jointCount).toBe(127);
+  });
+
+  it('dense fixture(실제 MHR 크기)도 같은 리그이고 sha256 이 상수와 같다', async () => {
+    const data = new Uint8Array(DENSE).buffer;
+    expect(await sha256Of(data)).toBe(SYNTHETIC_MHR_DENSE.meshSha256);
+    const mesh = await readAvatarMesh(data, {
+      ...asset(),
+      meshSha256: SYNTHETIC_MHR_DENSE.meshSha256,
+    });
+    let vertices = 0;
+    mesh.scene.traverse((o) => {
+      const g = (o as THREE.Mesh).geometry;
+      if ((o as THREE.SkinnedMesh).isSkinnedMesh && g) vertices += g.attributes.position!.count;
+    });
+    expect([mesh.jointCount, vertices]).toEqual([127, 21168]);
+  });
+
+  it('avatar-crowd 시나리오는 1·5·10명의 포즈를 계약대로 싣는다', () => {
+    for (const key of ['avatar-crowd-1', 'avatar-crowd-5', 'avatar-crowd-10'] as const) {
+      const size = avatarCrowdSize(key)!;
+      const result = adaptMessage(avatarCrowdFrame(key, size, 20, T0), T0);
+      if (result.kind !== 'avatar') throw new Error(result.kind);
+      expect(result.frame.avatars).toHaveLength(size);
+      expect(new Set(result.frame.avatars.map((a) => a.asset?.meshSha256))).toEqual(
+        new Set([SYNTHETIC_MHR_DENSE.meshSha256]),
+      );
+      const world = adaptMessage(scenarioWorld(key, 20, T0), T0);
+      if (world.kind !== 'world') throw new Error(world.kind);
+      expect(world.frame.tracks.map((t) => t.worldId)).toEqual(
+        result.frame.avatars.map((a) => a.worldId),
+      );
+    }
   });
 
   it('부모 배열 해시는 -88 rig.py 와 같은 식이다(공백 없는 JSON)', async () => {

@@ -1,3 +1,5 @@
+import { DENSE_ASSET_VERSION } from '@/features/viewer3d/dev-harness/avatarFixture';
+import syntheticMhrDenseUrl from '@/features/viewer3d/dev-harness/fixtures/synthetic-mhr-dense.glb?url';
 import syntheticMhrUrl from '@/features/viewer3d/dev-harness/fixtures/synthetic-mhr.glb?url';
 import {
   DEMO_ZONES_BE_V1,
@@ -85,14 +87,16 @@ export function createSpatialMockApi(initial: {
       if (failed) return failed;
       return HttpResponse.json(geometry === 'official' ? DEMO_ZONES_BE_V1 : DEMO_ZONES_RESPONSE);
     }),
-    // EXP-02 아바타 자산(-65). 버전 0 은 합성 리그 GLB, 그 밖의 버전은 없는 자산(404)이다. REST 실패 시험(503 등)과는 따로 둔다.
+    // EXP-02 아바타 자산(-65). 버전 0 은 합성 리그 GLB, 1 은 실제 MHR 크기의 dense 합성 리그, 그 밖의 버전은 없는 자산(404)이다.
+    // REST 실패 시험(503 등)과는 따로 둔다.
     http.get(
       '*/api/avatars/:worldId/epochs/:epoch/versions/:version/mesh.glb',
       async ({ params }) => {
-        if (params.version !== '0') {
+        const dense = params.version === String(DENSE_ASSET_VERSION);
+        if (params.version !== '0' && !dense) {
           return HttpResponse.json({ message: 'Mock: 자산 없음' }, { status: 404 });
         }
-        const file = await fetch(bypass(syntheticMhrUrl));
+        const file = await fetch(bypass(dense ? syntheticMhrDenseUrl : syntheticMhrUrl));
         return new HttpResponse(await file.arrayBuffer(), {
           headers: { 'content-type': 'model/gltf-binary' },
         });
