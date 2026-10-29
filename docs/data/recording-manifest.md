@@ -3,7 +3,7 @@
 4대 동기화 녹화 세션 하나의 파일 목록·해시·프레임 수·시각 범위·카메라 설정·동의 범위·저장 위치를 적는 문서다
 (명세 15.3 시나리오 데이터셋, 11.5 보관과 개인정보, 21.1). 녹화 도구 `gateway/recorder` 가 만든다(S15P31A101-107).
 
-- 영상·사람 이미지는 저장소에 넣지 않는다. 세션 디렉터리는 Network Volume 에 두고, 저장소에는 `manifest.json` 만 둔다.
+- 영상·사람 이미지는 저장소에 넣지 않는다. 4대 녹화 원본(세션 디렉터리)은 현장 노트북 세션 폴더에만 두고 재생할 때만 GPU Pod 로 올리며, EC2 에는 원본·백업을 두지 않는다(사용자 결정 2026-10-29, Network Volume 은 2026-10-20 폐기. 명세 15.3·19.1 의 보관 위치 미결을 닫는 갱신은 넘긴 일). 저장소에는 `manifest.json` 만 둔다.
 - **형식의 정본은 계약 스키마 [`contracts/data/recording_manifest.schema.json`](../../contracts/data/recording_manifest.schema.json) 이다**(S15P31A101-158).
   이 문서는 필드 뜻과 운용을 설명하며, 스키마와 다르면 스키마가 우선한다. 필드를 바꿀 때는 스키마를 먼저 고치고
   `contracts/examples/recording_manifest*.json` 과 이 문서를 같이 고친다(필드 추가는 마이너, 삭제·의미 변경은 메이저).
@@ -16,12 +16,12 @@
 
 | 무엇 | 위치 |
 |---|---|
-| 세션 디렉터리 전체(영상, 사이드카, `session.json`, `manifest.json`) | Network Volume `volume://AP-JP-1/simai/recordings/<session_id>/` (`storage.uri`) |
-| 녹화 직후 노트북 사본 | `ai/experiments/recordings/<session_id>/` (`.gitignore` 의 `recordings/`) |
+| 세션 디렉터리 전체(영상, 사이드카, `session.json`, `manifest.json`) | 현장 노트북 세션 폴더 `ai/experiments/recordings/<session_id>/` (`.gitignore` 의 `recordings/`). 노트북에만 두고 재생할 때만 GPU Pod 로 올리며 EC2 에는 두지 않는다(스키마 `storage.uri` 형식은 `volume://…/`·`s3://…/` 유지) |
+| 재생할 때만 올리는 사본 | GPU Pod 컨테이너 디스크(재생할 때만 올리고 EC2 에는 두지 않음) |
 | 저장소에 커밋하는 것 | `docs/data/sessions/<session_id>.json` = `manifest.json` 사본 (영상 없음) |
 
 `docs/data/sessions/` 처럼 `.gitignore` 에 걸리지 않는 이름을 쓴다(`recordings/`, `datasets/`, `runs/`, `output/` 는 무시된다).
-Network Volume 에 올린 뒤 `uv run simai-recorder verify <세션 디렉터리>` 로 해시를 확인하고 커밋한다.
+현장 노트북 세션 폴더에서 `uv run simai-recorder verify <세션 디렉터리>` 로 해시를 확인하고 커밋한다.
 
 ## 필드
 
@@ -43,10 +43,10 @@ Network Volume 에 올린 뒤 `uv run simai-recorder verify <세션 디렉터리
 | `common_capture_window_ms` | `[from, to]` / null | 네 카메라가 모두 찍고 있던 촬영 시각 구간 |
 | `calibration_version` | 문자열 / null | 이 녹화에 쓸 보정 버전(있으면) |
 | `consent` | 객체 / null | 아래 "동의와 보관". RTSP 녹화는 필수 |
-| `storage.uri` | `volume://…/` 또는 `s3://…/` | 세션 디렉터리를 둔 곳. 로컬 경로 금지 |
+| `storage.uri` | `volume://…/` 또는 `s3://…/` | 세션 디렉터리를 둔 곳. 로컬 경로 금지. 원본을 노트북에만 두는 지금은 실재 위치를 가리키지 못한다(스키마가 노트북 위치를 표현하지 못함, 스키마 정리는 넘긴 일. 위치는 위 "어디에 두나" 표가 정본) |
 | `storage.layout` | 문자열 | 세션 디렉터리 안 파일 배치 |
 | `recorded_by` | 객체 | `tool`, `version`, `git_commit`(녹화 도구 커밋), `gateway_id`(노트북) |
-| `deleted_at_ms` | int (선택) | 보관 기한이 지나 Network Volume 에서 지운 시각. 아래 "동의와 보관" |
+| `deleted_at_ms` | int (선택) | 보관 기한이 지나 현장 노트북 세션 폴더에서 지운 시각. 아래 "동의와 보관" |
 | `cameras` | 배열 | 카메라별 항목 |
 
 ### 카메라 (`cameras[]`)
@@ -91,7 +91,7 @@ Network Volume 에 올린 뒤 `uv run simai-recorder verify <세션 디렉터리
 | `purpose` | (선택) 녹화 용도 `dev_test` / `dataset`. 없으면 `dataset` 과 같다. 아래 "내부 테스트 용도" |
 | `consent_ref` | 참여자 동의서 문서 ID. 동의서 원본은 저장소 밖에 둔다. `contains_people` 이 true 면 필수(`purpose` 가 `dev_test` 이면 제외) |
 | `scope` | 동의 범위(용도·전송 리전) 코드 목록. `contains_people` 이 true 면 필수(`purpose` 가 `dev_test` 이면 제외) |
-| `retention_until` | `YYYY-MM-DD`. 이 날이 지나면 Network Volume 에서 세션 디렉터리를 지운다. RTSP 녹화는 필수 |
+| `retention_until` | `YYYY-MM-DD`. 이 날이 지나면 현장 노트북 세션 폴더에서 세션 디렉터리를 지운다. RTSP 녹화는 필수 |
 
 `scope` 코드(스키마 `$defs/consent_scope`. 코드를 더하려면 스키마에 먼저 더한다, 마이너):
 
@@ -109,7 +109,7 @@ Network Volume 에 올린 뒤 `uv run simai-recorder verify <세션 디렉터리
 ### 내부 테스트 용도 (`purpose = "dev_test"`)
 
 수업 중 우연히 찍힌 사람이 있는 교실 영상은 내부 개발·테스트에만 쓴다(사용자 결정 2026-10-20). `contains_people = true` 여도 `consent_ref`·`scope` 없이 녹화할 수 있지만 `retention_until` 은 필수다.
-영상은 저장소에 커밋하지 않고 노트북과 프로젝트 Network Volume 에만 두며, 얼굴 복원·재식별은 하지 않고, 프로젝트 종료 시 지운다.
+영상은 저장소에 커밋하지 않고 현장 노트북 세션 폴더에만 두며(재생할 때만 GPU Pod 로 올리고 EC2 에는 두지 않는다), 얼굴 복원·재식별은 하지 않고, 프로젝트 종료 시 지운다.
 **시연·발표·보고서·공개 자료에는 쓰지 않는다**(그런 자료는 사람이 없는 영상이나 동의자 영상만). 시나리오 촬영·데이터셋(`purpose = "dataset"` 또는 생략)은 참여자 동의가 그대로 필수다.
 보관 기한이 지나 지우면 저장소의 manifest 는 지우지 않고(추가만, AGENTS 규칙 6) 같은 파일에 `deleted_at_ms` 를 더하는 커밋을 한다.
 
