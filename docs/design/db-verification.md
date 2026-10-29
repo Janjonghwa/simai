@@ -310,9 +310,10 @@ DB 를 읽거나 쓰는 행만 적는다. "v11" 표시는 4장에서 더한 행�
 | FR-13 | 시스템 지표 조회 | `GET /api/metrics` | EC2 | `system_metric` | — | — |  |
 | FR-14, FR-15 | 입체 구역 생성 | `POST /api/zones` | EC2 | — | `zone` | 관리자 |  |
 | FR-16 | 구역 수정(새 버전 추가) | `PUT /api/zones` | EC2 | `zone` | `zone` | 관리자 | 이전 버전 valid_to |
+| FR-16 | 구역 보관(지금 버전 닫기) | `DELETE /api/zones/{zoneId}` | EC2 | `zone` | `zone` | 관리자 | 지금 버전 valid_to, 새 버전 없음 |
 | FR-16 | 구역 버전 이력 조회 | `GET /api/zones/{zoneId}/versions` | EC2 | `zone` | — | — |  |
 | FR-17 | 구성 묶음 발행 | `POST /api/config-bundles` | EC2 | `zone`, `static_object`, `rule_version`, `calibration_version` | `config_bundle`, `config_bundle_item` | 관리자 |  |
-| FR-17 | 구성 묶음 적용 상태 조회 | `GET /api/config-bundles/{version}` | EC2 | `config_bundle`, `config_ack` | — | — |  |
+| FR-17 | 구성 묶음 적용 상태 조회 | `GET /api/config-bundles/{version}` | EC2 | `config_bundle`, `config_ack`, `config_bundle_item`, `static_object` | — | — | items: 실은 항목 ID·버전 |
 | FR-17, FR-97 | 구성 묶음 적용 수신 | `WS /topic/health` | EC2 | `config_ack` | — | — |  |
 | FR-18 | 가상 레이아웃 생성 | `POST /api/layouts` | EC2 | — | `layout_plan` | 관리자 |  |
 | FR-18 | 가상 레이아웃 단건 조회 | `GET /api/layouts/{layoutId}` | EC2 | `layout_plan` | — | — |  |
@@ -372,6 +373,7 @@ DB 를 읽거나 쓰는 행만 적는다. "v11" 표시는 4장에서 더한 행�
 | FR-112 | 정적 객체·작업면 등록 | `POST /api/static-objects` | EC2 | — | `static_object` | 관리자 |  |
 | FR-112 | 정적 객체·작업면 조회 | `GET /api/static-objects` | EC2 | `static_object` | — | — |  |
 | FR-112 | 정적 객체·작업면 새 버전 | `PUT /api/static-objects` | EC2 | `static_object` | `static_object` | 관리자 |  |
+| FR-112 | 정적 객체·작업면 보관 | `DELETE /api/static-objects/{objectId}` | EC2 | `static_object` | `static_object` | 관리자 | 지금 버전 valid_to, 새 버전 없음 |
 | FR-113 | 규칙 버전 조회 | `GET /api/rules` | EC2 | `rule_version` | — | — |  |
 | FR-116 | 상향 의견 적용 확인 | `POST /api/events/{id}/escalation` | EC2 | `vlm_assessment`, `risk_event` | `vlm_assessment`, `event_escalation` | 관리자 | decision |
 | FR-78 | 이벤트 운영자 종료 (v11) | `POST /api/events/{id}/close` | EC2 | `risk_event`, `event_close` | `event_close` | 관리자 | 멱등 키는 event_close.idempotency_key. 결과 컬럼은 운영자 종료 적용 행(Tier 0) |

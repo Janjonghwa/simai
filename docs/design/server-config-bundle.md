@@ -7,6 +7,7 @@ S15P31A101-120(구역 CRUD·구성 묶음 발행·config_ack 수신)·S15P31A101
 ## 흐름
 
 1. 관리자가 구역(`/api/zones`)·작업면(`/api/static-objects`)을 만들거나 새 버전을 더한다. 수정은 지금 버전을 닫고(`valid_to`) 다음 버전을 더한다.
+   잘못 만든 항목은 `DELETE /api/zones/{id}`·`DELETE /api/static-objects/{id}` 로 보관한다(지금 버전만 닫고 새 버전을 더하지 않는다).
 2. 관리자가 Tier 0 의 보정 문서를 올린다(`POST /api/calibrations`). EC2 는 계약(`contracts/providers/calibration`)과 현장을 검사해 `calibration_version`·`calibration_document` 에 둔다.
 3. 관리자가 묶음을 발행한다(`POST /api/config-bundles`). EC2 는 지금 유효한 구역·규칙·최근 보정·작업면으로 파일 5개(매니페스트 + 구성 요소 4개)를 만들어 바이트·해시를 저장하고, 열린 I1 연결에 `config_bundle` 을 보낸다.
 4. Tier 0 는 서명 주소로 파일을 받아 해시·형식·참조를 검사하고 원자적으로 전환한 뒤 `config_ack` 로 답한다. EC2 는 APPLIED 이고 해시가 같을 때만 `applied_at` 을 채운다. 그 전까지 상태는 PENDING(적용 대기)이다.
@@ -32,17 +33,20 @@ S15P31A101-120(구역 CRUD·구성 묶음 발행·config_ack 수신)·S15P31A101
 | 적용 상태 | 가장 늦게 받은 `config_ack` 로 PENDING·APPLIED·REJECTED, APPLIED 인데 해시가 다르면 MISMATCH. 화면 응답에는 서명 주소를 싣지 않는다 | |
 | 높이 값 | `z_min_m`·`z_max_m`·`top_height_m` 은 real(float4) 열에 들어간 값으로 검사한다 | 1.0 과 1.00000001 이 같아져 Tier 0 가 묶음을 거부하지 않게 |
 | 동시 수정 | 같은 구역·객체를 동시에 고치면 늦은 쪽은 409 `CONCURRENT_EDIT` | 지금 버전을 잠그고 다시 읽는다 |
+| 보관(삭제) | `DELETE` 는 행을 지우지 않고 지금 버전의 `valid_to` 만 닫는다(204). 목록·다음 묶음에서 빠지고 이력(`/versions`)과 이벤트가 가리키는 버전은 남는다. 보관한 ID 는 고칠 수 없고(404) 되살리지 않는다(새로 만든다). 다시 보관하면 204(두 번 누름·재시도), 없는 ID 는 404 | 11.1·11.4 덮어쓰지 않음. 이미 적용된 묶음은 다음 발행 전까지 현장에서 그대로 쓰인다 |
+| 묶음 항목 | 묶음 조회(`GET /api/config-bundles`, `/{version}`, 발행 응답)에 `items`: [{`item_type` ZONE·RULE·STATIC_OBJECT, `item_id`, `item_version`, 정적 객체는 `kind`}] | 발행 때 남긴 `config_bundle_item` 그대로. 화면이 시각 비교(`valid_from > issued_at`) 없이 항목마다 실린 묶음과 적용 여부를 맞춘다 |
 | issued_at | ms 로 자른다 | DB(µs) 반올림으로 매니페스트와 알림이 달라지면 Tier 0 가 거부한다 |
 
 ## 시험
 
 `ConfigBundleIntegrationTest`: 실제 포트로 관리자 API 를 부르고 Tier 0 처럼 I1 에 붙는다. 구역 새 버전·이력, 꼬인 다각형·높이 없는 VOLUME_3D·권한 거부,
 작업면 상판 높이, 보정 문서 계약·같은 버전 충돌, 발행 → `config_bundle`(계약 검사) → 서명 주소로 파일 5개를 받아 Tier 0 와 같은 순서로 해시·버전 대조 →
-`config_ack` APPLIED(중복 msg_id 한 번) → 상태 APPLIED, 다음 묶음의 이전 버전·프로필 이어받기.
+`config_ack` APPLIED(중복 msg_id 한 번) → 상태 APPLIED, 다음 묶음의 이전 버전·프로필 이어받기,
+보관(권한·목록과 다음 묶음에서 빠짐·이력 유지·보관 뒤 수정 404·재보관 204·없는 ID 404·지난 묶음 항목 유지), 묶음 `items`(발행 응답·단건·목록에서 구역 버전·작업면 kind·규칙).
 
 ## 남은 일
 
 - Tier 0 가 보정 문서를 EC2 로 직접 올리는 길(`calibration_update` 수신 + 업로드). 그전에는 보정이 바뀔 때마다 관리자가 올린다.
 - `/topic/health`(`viewer_health`)의 구성 묶음 적용 상태 표시는 S15P31A101-122.
 - 관제 앱 구역·작업면 화면(FE -189·-165)은 이 형식으로 바꾼다(지금 `features/zones/types.ts` 는 DEMO 형식).
-- 구역 삭제(비활성화)는 명세 12.6 에 없어 만들지 않았다.
+- Tier 0 가 형식이 틀려 뺀 작업면(`SurfaceSet.rejected`)을 `config_ack` 에 싣는 일은 계약 변경이라 AI 와 합의가 필요하다. 서버 등록 검사가 Tier 0 검사와 같아 실제로 빠질 일은 드물다.

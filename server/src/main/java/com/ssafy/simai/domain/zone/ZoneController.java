@@ -11,6 +11,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -22,7 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * 구역 조회·생성·새 버전(명세 12.6, 8.2). 쓰기는 관리자, 조회는 열람 이상.
+ * 구역 조회·생성·새 버전·보관(명세 12.6, 8.2). 쓰기는 관리자, 조회는 열람 이상.
  * 바꾼 구역은 구성 묶음(POST /api/config-bundles)으로 발행해야 Tier 0 판정에 쓰인다(3.2).
  */
 @RestController
@@ -66,6 +67,14 @@ class ZoneController {
     @PreAuthorize("hasRole('ADMIN')")
     ObjectNode newVersion(@PathVariable String zoneId, @RequestBody ZoneRequest request, @AuthenticationPrincipal Jwt jwt) {
         return transaction.execute(s -> zones.newVersion(zoneId, request, Long.parseLong(jwt.getSubject()), now()));
+    }
+
+    /** 보관: 지금 버전을 닫아 목록·다음 묶음에서 뺀다. 이미 적용된 묶음은 다음 발행까지 그대로 쓰인다 */
+    @DeleteMapping("/{zoneId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @PreAuthorize("hasRole('ADMIN')")
+    void archive(@PathVariable String zoneId) {
+        transaction.executeWithoutResult(s -> zones.archive(zoneId, now()));
     }
 
     private OffsetDateTime now() {
