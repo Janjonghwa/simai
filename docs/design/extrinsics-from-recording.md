@@ -409,3 +409,145 @@ python -m simai_ai.calibration.extrinsics.cli session
   - 녹화에 단상·계단처럼 `Z > 0`인 높은 바닥 위 정지 인원이 많으면 정렬 전 bundle의 바닥 평면 추정치가 기울어질 수 있다. 현재는 움직이지 않은 기준 카메라(`>= 2`대)로의 World 정렬이 이 기울기를 제거하고 정렬 후 카메라 높이 잔차(`max_spread <= 3%`)를 다시 검산하지만, 향후 접지 후보에서 높이 이상치를 먼저 걸러내면 정렬 전 bundle 자체의 평면 잔차도 더 줄일 수 있다.
   - 4대 중 3대 이상이 한꺼번에 움직인 회차에서는 자동 기준 카메라가 2대 미만이 되어 `session` 보정이 `INSUFFICIENT_ANCHOR_CAMERAS`로 거절된다(이 경우 보정 걷기 녹화로 전체 초기 보정을 다시 수행해야 한다).
   - 독립 실측 검산점(`checkpoints`)이 없으므로 출력 보정 상태는 계약대로 `PROVISIONAL`이다.
+
+
+## 운영 중 관절 모음과 백그라운드 후보 보정 실행기 (-345)
+
+`-331`과 `-343`이 회차 녹화 영상 파일에서 오프라인으로 외부 파라미터를 갱신했다면, `-345`는 운영 중 Tier 0가 이미 매 프레임 생성하는 2D 사람 관절·로컬 추적 결과를 메모리 고리 버퍼에 모아 두었다가, 실시간 파이프라인(`P0_LIVE`)을 방해하지 않는 별도 저우선순위 프로세스에서 후보 보정(`CalibrationDocument`)을 만들고 독립 `holdout` 개선이 확인될 때만 Tier 0에 제안(`propose_calibration(document, report)`)하는 온라인 후보 보정 경로를 구현한다. 코드는 `ai/src/simai_ai/calibration/live_candidate.py`(공개 재수출 `simai_ai.calibration`), 시험은 `ai/tests/calibration/test_live_candidate.py`에 있다.
+
+### 데이터 양에 따른 보정 품질 곡선 측정 (2026-10-29 녹화 `session-calib-1029-v2`)
+
+`rec-20261029-015512z-lobby-railing-pose` 전 구간 추출 캐시(`keypoints.jsonl`, 23개 창·`4,080`프레임)에서 고정된 전역 독립 `holdout`(홀수 창 10개, 공통 시각 `301`개 / 활성 `290`개)을 기준으로, `fit`에 넣는 녹화 분량(`30 s`, `1 m`, `2 m`, `5 m`, 전체 `~9 m`)과 시작 위치(초반 `early` / 중반 `mid` / 후반 `late`, 각 3회)를 바꿔 가며 직전 보정 `cal-walkshm-20261029-033008z`에서 출발한 보정 품질과 소요 시간을 측정했다(`ai/experiments/runs/live-candidate-curve/curve_summary.json`).
+
+- **보정 전(`cal-walkshm-20261029-033008z`) 고정 `holdout` 기준선**:
+  - `cam_D` 포함 쌍 통과율: `cam_A/cam_D` `3.92%`, `cam_B/cam_D` `0.35%`, `cam_C/cam_D` `32.99%`(평균 **`12.42%`**)
+  - 다중 뷰 클러스터 `3+` / `4`대 융합률: **`19.10%` / `0.00%`**
+  - 3+대 삼각측량 재투영 오차(전체): 중앙값 **`3.492 px`** / p95 **`12.983 px`**(관절 `13,344`개, `cam_D` `1,010`개)
+
+| 녹화 분량 | 시작 구간 (`fit` 창) | 녹화 구간(s) | 공통 시각 (활성) | `fit` 다중인 관측 (R1→R3) | 수렴 여부 (R1/R2/R3) | `holdout` D쌍 평균 (A/D, B/D, C/D) | `holdout` 3+ / 4대 융합률 | `holdout` 재투영 중앙 / p95 (px) | 기준 카메라 중심 잔차 평균 / 최대 (cm) | `-343` 최종판 대비 `cam_D` 차이 (회전 / 위치) | CPU / Wall 시간 (s) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `30 s` | `early_w0` (`[0]`) | `0~9` | `30 (29)` | `57 → 0` | 미수렴 (`cam_D` 3+ `0`개) | `12.4%` (`3.9/0.4/33.0%`) | `19.1%` / `0.0%` | `3.492 / 12.983` | - | `4.455° / 4.82 cm` | `15.9 / 16.4` |
+| `30 s` | `mid_w4` (`[4]`) | `192~201` | `30 (29)` | `45 → 44` | 미수렴 (`U/U/U`, 높이 검산) | `45.5%` (`55.6/30.7/50.2%`) | `56.1%` / `18.2%` | `4.082 / 14.141` | `4.26 / 5.37` | `2.159° / 17.62 cm` | `43.0 / 43.6` |
+| `30 s` | `late_w7` (`[7]`) | `336~345` | `30 (29)` | `37 → 52` | 수렴 (`C/C/C`, 초기 관측 `37 < 40`) | `51.6%` (`60.7/44.0/50.1%`) | `73.5%` / `36.0%` | `4.073 / 15.259` | `2.94 / 3.75` | `0.460° / 5.50 cm` | `40.1 / 40.7` |
+| `1 m` | `early_w0_1` (`[0,1]`) | `0~57` | `60 (58)` | `115 → 0` | 미수렴 (`cam_D` 3+ `0`개) | `12.4%` (`3.9/0.4/33.0%`) | `19.1%` / `0.0%` | `3.492 / 12.983` | - | `4.455° / 4.82 cm` | `30.2 / 30.7` |
+| `1 m` | `mid_w4_5` (`[4,5]`) | `192~249` | `60 (58)` | `114 → 94` | **수렴** (`C/C/C`) | `51.6%` (`60.0/44.9/50.1%`) | `70.7%` / `33.9%` | `4.216 / 15.454` | `1.15 / 1.15` | `0.992° / 7.33 cm` | `136.0 / 95.1` |
+| `1 m` | `late_w7_8` (`[7,8]`) | `336~393` | `60 (58)` | `68 → 92` | **수렴** (`C/C/C`) | **`51.2%`** (`60.6/43.0/50.2%`) | **`74.6%` / `29.6%`** | `3.993 / 14.868` | `2.88 / 3.49` | **`0.403° / 2.96 cm`** | `61.7 / 62.8` |
+| `2 m` | `early_w0_2` (`[0..2]`) | `0~105` | `90 (87)` | `120 → 142` | **수렴** (`C/C/C`) | **`51.6%`** (`60.4/44.2/50.2%`) | **`74.8%` / `36.5%`** | `3.986 / 15.164` | `2.02 / 2.99` | **`0.170° / 2.71 cm`** | `109.1 / 96.0` |
+| `2 m` | `mid_w3_5` (`[3..5]`) | `144~249` | `90 (87)` | `143 → 147` | R2 수렴 / R3 불확실 | `51.4%` (`60.6/43.7/50.1%`) | `75.4%` / `34.5%` | `4.084 / 15.302` | `4.01 / 5.18` | `0.344° / 3.36 cm` | `165.0 / 129.5` |
+| `2 m` | `late_w6_8` (`[6..8]`) | `288~393` | `90 (88)` | `115 → 137` | 미수렴 (`U/U/U`, 높이 검산) | `51.9%` (`60.6/44.9/50.2%`) | `76.2%` / `34.3%` | `4.020 / 14.993` | `1.64 / 2.37` | `0.213° / 2.37 cm` | `167.6 / 119.4` |
+| `5 m` | `early_w0_6` (`[0..6]`) | `0~297` | `210 (204)` | `322 → 334` | R1 수렴 / R3 불확실 | `51.7%` (`60.6/44.4/50.2%`) | `74.1%` / `35.2%` | `3.912 / 15.100` | `1.55 / 1.82` | `0.097° / 1.09 cm` | `521.1 / 311.0` |
+| `5 m` | `mid_w1_7` (`[1..7]`) | `48~345` | `210 (204)` | `322 → 336` | **수렴** (`U/U/C`) | **`51.6%`** (`60.6/44.2/50.2%`) | **`74.6%` / `35.3%`** | `3.969 / 15.126` | `2.00 / 2.50` | **`0.120° / 2.91 cm`** | `514.7 / 320.4` |
+| `5 m` | `late_w3_9` (`[3..9]`) | `144~441` | `210 (204)` | `321 → 348` | **수렴** (`U/U/C`) | **`51.6%`** (`60.4/44.3/50.2%`) | **`75.5%` / `36.8%`** | `3.967 / 15.039` | `1.85 / 2.34` | **`0.184° / 1.62 cm`** | `514.7 / 305.3` |
+| 전체(`~9 m`) | `all_w0_9` (`[0..9]`) | `0~441` | `300 (291)` | `435 → 488` | **수렴** (`C/C/C`) | **`51.8%`** (`60.7/44.5/50.2%`) | **`75.3%` / `35.3%`** | `3.924 / 15.033` | `1.44 / 1.57` | **`0.000° / 0.00 cm`** | `717.7 / 416.0` |
+
+- **곡선 해석 및 운영 기본값 도출**:
+  1. **품질 포화 지점 (`2분`, `fit` `90`시각)**: `30 s`와 `1 m` 초반 구간(`early`)은 `cam_D` 시야에 다중인 교차 궤적이 부족해 PnP 초기화가 일어나지 않거나(`cam_D` 3+ 관측 `0`개) 위치가 `5.5~17.6 cm` 흔들린다. 반면 **`2 m`(`fit` `90`시각, 다중인 관측 `~120`개)**부터는 시작 위치와 무관하게 `holdout` D쌍 평균 통과율 **`51.4~51.9%`**, 3+대 융합률 **`74.8~76.2%`**, 4대 융합률 **`34.3~36.5%`**로 전체 9분(`51.8%` / `75.3%` / `35.3%`)과 **`1.5%p` 이내에서 완전히 포화**되며, `-343` 최종판 대비 `cam_D` 차이도 회전 **`0.17~0.34°`**, 위치 **`2.37~3.36 cm`** 안으로 수렴한다.
+  2. **수렴 안정성 및 고리 버퍼 길이 (`5분`)**: `5 m`(`fit` `210`시각) 구간에서는 `-343` 대비 `cam_D` 회전 **`0.10~0.18°`**, 위치 **`1.09~2.91 cm`**, 기준 카메라 중심 잔차 평균 **`1.55~2.00 cm`**로 한층 더 조밀해진다. 따라서 운영 고리 버퍼 기본 시간 창은 **`5분`(`max_duration_ms = 300_000`)**(최대 10분 이내 조정 가능), 후보 보정 실행 주기는 **`60 s`**로 설정했다.
+  3. **`reprojection_metrics` 군집 삼각측량 벡터화**: 곡선 측정 과정에서 `session_tracks.reprojection_metrics`가 관절마다 개별 삼각측량 루프를 돌아 평가 1회에 `29.1 s`가 걸리던 병목을 확인하고, 관측 카메라 조합(`ids = tuple(sorted(views))`)별로 묶어 `triangulate_normalized_many`와 `_project_points`로 일괄 계산하도록 벡터화해 수치 변화 없이(`0.0 px` 차이) **`29.1 s → 0.31 s` (`94`배)**로 단축했다.
+
+### 운영 중 관절 고리 버퍼 (`LiveJointBuffer`)
+
+GPU를 다시 돌리지 않고 Tier 0 perception/local-tracker 출력 또는 추출 검출 행을 그대로 받아 최근 시간 창만 유지하는 스레드 안전(`threading.Lock`) 고리 버퍼다.
+
+- **입력 형식**:
+  - `append_frame(frame: Observation2DFrame)`: Tier 0의 카메라별 프레임 출력(`camera_id`, `capture_timestamp_ms`, `timestamp_source`, `timestamp_uncertainty_ms`, `frame_sequence`, `tracked_detections: tuple[TrackedDetection, ...]`)을 직접 받는다. 각 `TrackedDetection`의 `local_track_id`를 보존해 카메라 로컬 추적을 다시 돌리지 않고도 바로 시간 보간에 쓸 수 있다.
+  - `append_detection_row(row: Mapping[str, Any])`: `keypoints.jsonl`의 `type="frame"` 행(또는 원시 `detections` 목록)을 받아 버퍼에 넣는다. `window_index`가 있으면 창 경계를 보존한다.
+- **메모리·용량 상한 (`LiveBufferConfig`)**:
+  - `max_duration_ms = 300_000` (기본 5분): 카메라별 최신 프레임 시각 기준 `latest_ts - max_duration_ms` 이전 프레임을 즉시 버린다.
+  - `max_frames_per_camera = 1_500`: 카메라당 최대 프레임 수 상한(5분 × `5 fps` 상당).
+  - `max_total_samples = 24_000`: 전체 카메라 합산 사람 표본(`TrackedPersonSample`) 상한.
+  - `max_bytes = 32 * 1024 * 1024` (32 MiB): 표본당 추정 바이트(`_estimate_frame_bytes`) 합계가 상한을 넘으면 가장 오래된 카메라 프레임부터 제거해 메모리 사용량이 무한히 자라지 않도록 보장한다.
+- **카메라별 선택 비우기 (`reset_camera(camera_id)`)**:
+  - `-346` 실시간 흔들림 감지가 특정 카메라를 `DRIFTED`로 판정해 알림을 보냈을 때, 이동 전 옛 관절이 이동 후 새 관절과 섞여 잘못된 평균 자세를 만들지 않도록 해당 카메라의 버퍼 프레임만 즉시 비우고(`reset_camera("cam_D")`), 움직이지 않은 다른 카메라들의 기준 궤적 버퍼는 그대로 유지한다.
+- **`SessionTracks` 변환 (`to_session_tracks()`)**:
+  - 이미 `local_track_id`가 부여된 Tier 0 프레임은 창별로 묶어 `interpolate_camera`로 공통 시각(`sample_period_ms = 300 ms`)을 만들고, 원시 검출 행은 `track_session`을 통해 창별 독립 추적과 시간 보간을 수행한다.
+
+### 백그라운드 후보 보정 실행기 (`LiveCandidateCalibrationRunner`)
+
+실시간 추론(`P0_LIVE`)의 지연 예산을 침범하지 않으면서 주기적으로 후보 보정을 계산하고 검증하는 실행기다.
+
+1. **자원 격리와 `P0_LIVE` 우선순위 양보 (`LiveCandidateConfig`)**:
+   - **우선순위 게이트 (`AdmissionGate` / `can_run`)**: 실행 시작 전 `admission_gate.check()`(명세 §3.4: `P0_LIVE > P1_CALIBRATION > P2_ANALYSIS`)와 선택 콜백 `can_run()`을 검사한다. `P0_LIVE` 과부하로 `P1_CALIBRATION`이 차단된 상태면 작업을 띄우지 않고 즉시 `SKIPPED_RESOURCE_BUSY`를 반환한다.
+   - **단일 실행 보장**: 이전 백그라운드 보정 프로세스가 아직 돌고 있으면 겹쳐 띄우지 않고 `SKIPPED_ALREADY_RUNNING`을 반환한다.
+   - **별도 `spawn` 프로세스 및 낮은 OS 우선순위**: `use_subprocess = True`(기본)에서 `multiprocessing.get_context("spawn")`으로 별도 워커 프로세스를 띄운다. 워커 시작 즉시 Windows에서는 `SetPriorityClass(..., BELOW_NORMAL_PRIORITY_CLASS = 0x00004000)`, POSIX에서는 `os.nice(10)`으로 OS 스케줄링 우선순위를 낮추고, `OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `NUMEXPR_NUM_THREADS=1`로 BLAS 스레드 폭주를 막는다.
+   - **시간 상한 (`timeout_s = 180.0`)**: 워커가 `timeout_s` 안에 결과를 내지 못하면 부모가 워커를 강제 종료(`terminate()` → `kill()`)하고 `FAILED_TIMEOUT`을 기록한다. 워커 결과 전달 시에는 대용량 파이프 교착을 막기 위해 `queue.get` 폴링 후 `proc.join`을 수행한다.
+2. **2단계 추정 경로 (회전 빠른 길 → 전체 회차 보정)**:
+   - 버퍼 스냅샷을 `split_session_tracks`로 교대 분할(`fit` / `holdout`, `overlap_ticks = 0`)하고 `SessionDataCriteria`를 먼저 검사한다. 미달 시 `INSUFFICIENT_DATA`로 즉시 중단한다.
+   - **1단계 — 중심 고정 회전 빠른 길 (`try_fast_rotation_path`)**: 카메라 위치를 고정한 채 `realign_rotation`(다중인 시 `rotation_candidates`의 중심 고정 회전 후보 포함)으로 1대 이상의 카메라 회전만 빠르게 갱신해 본다. 회전 갱신 후 독립 `holdout`에서 개선 기준(`CandidateImprovementCriteria`)을 만족하고 모든 카메라 쌍의 통과율이 최소 하한(`fast_rotation_min_pair_pass_ratio = 0.25`) 이상이면 비싼 번들 조정 없이 즉시 채택(`mode = "fast_rotation"`)한다. (예: 순수 거치대 회전만 발생한 경우 수 초 내 해결. 반면 10/29 녹화처럼 `cam_D`가 회전 `4.45°` + 중심 `4.82 cm` 이동을 함께 겪어 순수 회전만으로는 `cam_B/cam_D` 통과율이 `0.1%`에 머무는 경우에는 자동으로 기각하고 전체 회차 보정으로 넘어간다.)
+   - **2단계 — 전체 회차 보정 (`adjust_session`, `mode = "full_session"`)**: 회전 빠른 길이 기각되면 `-343`의 다중인 PnP 부트스트랩 + 3라운드 `adjust_human_bundle` + `align_world_to_previous`(직전 World 정렬) + 실측 카메라 높이 축척 검산을 수행한다.
+3. **개선 판정 기준 (`CandidateImprovementCriteria`)**:
+   - 후보 보정이 수렴(`CONVERGED`, 높이 축척 검산 및 World 기준 카메라 정렬 통과)했더라도, 독립 `holdout`에서 기존 활성 보정(`before`) 대비 **실질적인 개선**이 있을 때만 제안한다.
+   - **기각 조건 (하나라도 해당하면 `NO_MEANINGFUL_IMPROVEMENT`)**:
+     - `holdout` 3+대 융합률 변화 `< -1.0%p` (`max_fusion_3plus_drop = 0.01`)
+     - `holdout` 4대 융합률 변화 `< -1.0%p` (`max_fusion_4_drop = 0.01`)
+     - `holdout` 최소 카메라 쌍 통과율 변화 `< -2.0%p` (`max_min_pair_pass_drop = 0.02`)
+     - `holdout` 전체 재투영 중앙값 증가 `> +0.60 px` (`max_reproj_median_increase_px = 0.60`) 또는 p95 증가 `> +2.50 px` (`max_reproj_p95_increase_px = 2.50`)
+     - World 기준 카메라 중심 잔차 평균 `> 3.5 cm` 또는 최대 `> 5.0 cm`
+   - **채택 조건 (기각 조건이 없고 아래 중 최소 하나 만족 시 `PROPOSED`)**:
+     - `holdout` 3+대 융합률 증가 `>= +3.0%p` (`min_fusion_3plus_gain = 0.03`)
+     - `holdout` 4대 융합률 증가 `>= +3.0%p` (`min_fusion_4_gain = 0.03`)
+     - `holdout` 최소 카메라 쌍 통과율 증가 `>= +5.0%p` (`min_pair_pass_gain = 0.05`)
+     - `holdout` 전체 재투영 중앙값 감소 `>= 0.25 px` (`min_reproj_median_reduction_px = 0.25`) (단, 융합 관절 수가 줄어든 착시가 아닌 경우)
+   - **수치 근거**: 1단계 곡선 측정에서 이미 수렴한 보정들(`2 m`·`5 m`·`9 m`) 사이의 `holdout` 흔들림 폭이 3+대 융합률 `±1.4%p`, 4대 융합률 `±2.5%p`, 재투영 중앙값 `±0.17 px`였다. 채택 문턱(`+3.0%p` / `+5.0%p` / `-0.25 px`)을 이 흔들림 폭 바로 위로 두어, 실제 드리프트 복구(`+35~+65%p`)는 확실히 통과시키면서 이미 수렴한 뒤의 불필요한 보정 버전 교체(churn)는 모두 차단한다.
+
+### Tier 0 넘김 인터페이스 (`propose_calibration(document, report)`)와 보고 스키마
+
+`ai/services/tier0/`나 `contracts/`를 수정하지 않고, Tier 0가 실행기 생성 시 콜백 `propose_calibration: Callable[[CalibrationDocument, dict[str, Any]], None]`을 주입하거나 `runner.propose_calibration`을 호출해 새 보정 문서와 검증 요약을 넘겨받는다.
+
+- `document`: `providers.contract.check_calibration`의 스키마·기하·상태 검사를 통과한 `CalibrationDocument`(`calibration_state = PROVISIONAL`, `scale_basis = MEASURED_CAMERA_HEIGHT` 등).
+- `report`: `schema_name = "simai.live_candidate_calibration"`, `schema_version = "0.1.0"`을 따르는 JSON 직렬화 가능 `dict`:
+  - `status`: `"PROPOSED"`
+  - `mode`: `"fast_rotation"` | `"full_session"`
+  - `triggered_at_ms`: 실행 시각(ms)
+  - `elapsed_wall_s`, `elapsed_cpu_s`: 소요 시간(s)
+  - `previous_calibration_version`, `previous_content_hash`: 기존 활성 보정 버전 및 해시
+  - `candidate_calibration_version`, `candidate_content_hash`, `calibration_state`, `scale_basis`: 제안 보정 버전·해시·상태·축척 근거
+  - `split`: `{"fit_ticks", "fit_active_ticks", "holdout_ticks", "holdout_active_ticks", "overlap_ticks": 0}`
+  - `data_sufficiency`: `SessionDataCriteria` 통과 여부 및 세부 집계(`fit_observations`, `fit_3plus_observations`, `camera_3plus_observations`, `reasons`)
+  - `holdout`:
+    - `before`: 기존 활성 보정의 독립 `holdout` 지표(`fusion_3plus_ratio`, `fusion_4_ratio`, `view_fusion_3plus_ratio`, `view_fusion_4_ratio`, `min_pair_pass_ratio`, `mean_pair_pass_ratio`, `pair_pass_ratios`, `reproj_overall_median_px`, `reproj_overall_p95_px`, `reproj_overall_count`, `reproj_by_camera`)
+    - `after`: 후보 보정의 독립 `holdout` 지표(동일 구조)
+    - `delta`: `after - before` 변화량(`fusion_3plus_gain`, `fusion_4_gain`, `min_pair_pass_gain`, `mean_pair_pass_gain`, `reproj_median_change_px`, `reproj_p95_change_px`, `reproj_count_change`)
+  - `improvement_decision`: `{"accepted": True, "reasons": [...], "deltas": {...}}`
+  - `world_alignment`: 기준 카메라 목록(`anchor_cameras`), `similarity_scale`, 기준 카메라 중심 잔차 평균/최대(`anchor_center_residual_mean_cm`, `anchor_center_residual_max_cm`), 카메라별 높이 잔차(`height_residuals_m`)
+  - `camera_deltas`: 직전 활성 보정 대비 카메라별 회전(`rotation_deg`)·중심 이동(`translation_cm`)
+
+### 2026-10-29 녹화 시간순 재생 모의 실행 (`run_replay.py`)
+
+`session-calib-1029-v2/keypoints.jsonl`의 `4,080`개 프레임을 촬영 시각 순서대로 `LiveJointBuffer(max_duration_ms = 300_000)`에 흘려 넣으면서 녹화 시각 `60 s`마다 `LiveCandidateCalibrationRunner`(`use_subprocess = True`)를 호출해 총 9회 주기를 모의 실행했다(`ai/experiments/runs/live-candidate-curve/replay_summary.json`). 초기 활성 보정은 `cal-walkshm-20261029-033008z`이다.
+
+| 주기 | 녹화 경과 시각 | 버퍼 창 수 / 프레임 / 표본 | `fit` / `holdout` 시각 | 실행 결과 (`status`) | `holdout` 3+ 융합 (`before → after`) | `holdout` 4대 융합 (`before → after`) | `holdout` 최소 쌍 통과율 (`before → after`) | Wall / CPU (s) | 비고 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `60.0 s` (`1.0 m`) | `3` / `540` / `2,068` | `60` / `30` | `INSUFFICIENT_DATA` | - | - | - | `29.3 / 26.8` | `cam_D` 3+ 관측 `0 < 15`로 거절 |
+| 2 | **`120.0 s` (`2.0 m`)** | `5` / `900` / `2,812` | `90` / `60` | **`PROPOSED` (`full_session`)** | **`12.7% → 77.5%` (`+64.8%p`)** | **`0.0% → 29.2%` (`+29.2%p`)** | **`0.0% → 42.1%` (`+42.1%p`)** | `97.1 / 94.1` | **`cal-session-20261029-015719-468z` 제안 및 활성 보정 교체** |
+| 3 | `180.0 s` (`3.0 m`) | `8` / `1,440` / `4,244` | `120` / `120` | `NO_MEANINGFUL_IMPROVEMENT` | `78.5% → 77.5%` (`-1.0%p`) | `34.2% → 30.8%` (`-3.4%p`) | `43.5% → 43.2%` (`-0.2%p`) | `149.1 / 128.0` | 주기 2 보정이 이미 수렴해 교체 안 함 |
+| 4 | `240.0 s` (`4.0 m`) | `10` / `1,500` / `4,335` | `120` / `113` | `NO_MEANINGFUL_IMPROVEMENT` | `73.7% → 73.1%` (`-0.6%p`) | `38.9% → 39.3%` (`+0.3%p`) | `45.5% → 45.4%` (`-0.0%p`) | `204.2 / 159.3` | 교체 안 함 |
+| 5 | `300.0 s` (`5.0 m`) | `13` / `1,500` / `4,468` | `113` / `120` | `NOT_CONVERGED` | - | - | - | `191.4 / 152.9` | 높이 배율 편차 초과로 거절 |
+| 6 | `360.0 s` (`6.0 m`) | `13` / `1,500` / `4,167` | `120` / `97` | `NO_MEANINGFUL_IMPROVEMENT` | `69.9% → 71.5%` (`+1.6%p`) | `31.1% → 32.7%` (`+1.6%p`) | `40.4% → 42.6%` (`+2.2%p`) | `181.2 / 145.0` | 개선 폭(`< 3%p`) 미달로 교체 안 함 |
+| 7 | `420.0 s` (`7.0 m`) | `13` / `1,500` / `4,427` | `120` / `97` | `NOT_CONVERGED` | - | - | - | `266.2 / 199.1` | 높이 배율 편차 초과로 거절 |
+| 8 | `480.0 s` (`8.0 m`) | `13` / `1,500` / `4,877` | `120` / `97` | `NO_MEANINGFUL_IMPROVEMENT` | `75.8% → 73.4%` (`-2.4%p`) | `35.0% → 30.9%` (`-4.1%p`) | `40.7% → 40.3%` (`-0.5%p`) | `258.5 / 201.9` | 교체 안 함 |
+| 9 | `533.4 s` (`8.9 m`) | `12` / `1,500` / `4,901` | `118` / `92` | `NO_MEANINGFUL_IMPROVEMENT` | `73.7% → 73.0%` (`-0.7%p`) | `29.3% → 27.6%` (`-1.7%p`) | `38.6% → 39.2%` (`+0.5%p`) | `219.9 / 172.0` | 교체 안 함 |
+
+- **모의 실행 핵심 결과**:
+  - **첫 제안 시점**: 녹화 시작 후 **`2.0분`(`120.0 s`, 주기 2)** 만에 첫 후보 보정 `cal-session-20261029-015719-468z`가 제안됐다.
+  - **총 제안 횟수**: 9분 녹화 전체(9회 주기) 동안 **단 `1`회**만 제안되었고, 이후 주기 3~9에서는 이미 채택된 2분 보정의 `holdout` 품질이 포화 상태이므로 불필요한 보정 교체가 한 번도 일어나지 않았다.
+  - **`-343` 전 구간 최종판(`cal-session-20261029-100247-699z`)과의 일치도**:
+    - 2분 시점에 제안된 `cal-session-20261029-015719-468z`와 `-343` 9분 전체 최종판 사이의 카메라별 차이는:
+      - `cam_A`: 회전 **`0.138°`**, 위치 **`1.784 cm`**, 실측 대비 높이 잔차 `-1.58 cm`
+      - `cam_B`: 회전 **`0.180°`**, 위치 **`1.156 cm`**, 실측 대비 높이 잔차 `+0.15 cm`
+      - `cam_C`: 회전 **`0.180°`**, 위치 **`1.180 cm`**, 실측 대비 높이 잔차 `+1.41 cm`
+      - `cam_D`: 회전 **`0.170°`**, 위치 **`2.712 cm`**, 실측 대비 높이 잔차 `+1.62 cm`
+    - 전역 독립 `holdout`(10개 창, `301`시각)에서 평가한 성능도 `-343` 최종판과 사실상 동일하다:
+      - D 포함 쌍 통과율 평균: **`51.59%`** (`A/D 60.44%`, `B/D 44.16%`, `C/D 50.17%`) vs `-343` **`51.78%`** (`A/D 60.67%`, `B/D 44.51%`, `C/D 50.17%`)
+      - 3+대 / 4대 융합률: **`74.83%` / `36.54%`** vs `-343` **`75.26%` / `35.29%`**
+      - 전체 3+대 재투영 오차: **`3.986 / 15.164 px`** (`20,484`관절) vs `-343` **`3.924 / 15.033 px`** (`20,006`관절)
+
+### 버린 대안과 남은 위험 (-345)
+
+- **버린 대안**:
+  - **Tier 0 프로세스 내부 스레드에서 후보 보정 실행**: Python GIL과 SciPy/NumPy 연산이 `P0_LIVE` 프레임 처리 지연을 흔들고, 타임아웃 시 스레드를 강제 종료할 수 없으므로 `spawn` 별도 프로세스 + OS 우선순위 하향(`BELOW_NORMAL_PRIORITY_CLASS` / `nice(10)`) + 단일 BLAS 스레드 격리를 택했다.
+  - **수렴할 때마다 무조건 새 보정 제안**: 이미 보정이 회복된 뒤에도 창 표본이 바뀔 때마다 카메라 위치가 `1~2 cm`씩 미세하게 다른 새 버전이 매분 제안되어 Tier 0 상태가 흔들린다. 독립 `holdout` 개선 문턱(`+3.0%p` 융합률 등)을 두어 유의미한 개선이 있을 때만 제안하도록 막았다.
+  - **회전 빠른 길(`realign_rotation`)만으로 종료**: 평행이동(`4.82 cm`)이 함께 일어난 `cam_D`에서는 중심 고정 회전만으로는 `cam_B/cam_D` 에피폴라 게이트가 열리지 않는다(`0.1%`). 따라서 회전 빠른 길은 모든 카메라 쌍 통과율 하한(`>= 25%`)과 `holdout` 개선을 통과할 때만 채택하고, 아니면 자동으로 전체 회차 보정(`adjust_session`)으로 넘어가도록 2단계로 구성했다.
+- **남은 위험**:
+  - 단일 코어 저우선순위 서브프로세스에서 5분 버퍼 전체에 대한 3라운드 번들 조정은 약 `95~200 s`가 걸린다. 기본 `timeout_s = 180.0 s`(필요 시 조정 가능)와 카메라당 프레임 상한(`max_frames_per_camera = 1,500`)으로 상한을 두었으나, 실시간 부하가 높을 때는 OS 스케줄러에 의해 워커 실행 시간이 더 길어질 수 있다.
+  - `-346` 실시간 흔들림 감지와 Tier 0 보정 교체 상태 기계(`propose_calibration` 수신 후 실제 전환 시점 결정)와의 배선은 후속 통합 범위다.
