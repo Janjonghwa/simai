@@ -159,7 +159,7 @@ join 하고, 남으면 실패로 남긴다. 영상 포트 일부만 열고 실�
 | -79 저널·outbox | 판정 전이 evidence_ref = world_state msg_id | 배선 / `test_evidence_ref_is_the_world_state_msg_id_of_the_same_tick` |
 | -79 | Outbox.blocked 보고 | 로그·표시 파일(health 계약 필드 없음) / 시험 없음(경고 경로) |
 | -160 시계 | DecisionClock·ClockAwareVerification·generation_source | 배선 / `test_unknown_clock_offset_keeps_health_unsafe_and_blocks_resolution` |
-| -117 보정 감시 | DRIFTED 기준선 저장·복원 | 부분: 저장·복원 배선(`drift_watch_factory`, `state/calibration_baselines.json`) / `test_calibration_baselines_round_trip_keeps_verification`. 감시 입력(버전 저장소)은 남은 일 |
+| -117·-346 보정 감시 | 클러스터 공급·DRIFTED 영속·기준선 저장/복원 | 배선(-346, 아래): 기본 보조 스레드 감시, `test_drift_watch.py`. -345 재수집 실행기 연결과 카메라별 관제 표시는 후속 |
 | -40 ID 교정 | revisions → correct_identity, apply 전 | 배선 / 위 순서 시험 |
 | -45·-170 I1 | health payload, ec2_link_ok, with_world_state_drops, ack_seen, I1 경로 설정 | 배선 / E2E, `test_i1_path_is_configurable_and_gateway_id_is_shared` |
 | -84·-48·-170 | world_state config_version | 배선 / E2E, 경계 시험 |
@@ -181,8 +181,8 @@ join 하고, 남으면 실패로 남긴다. 영상 포트 일부만 열고 실�
 - health 계약은 2.0.0 에서 정했다(-179): 시계 차이를 모르면 `pipeline_lag_ms` null + 하한 `pipeline_lag_lower_bound_ms`, 운영 경고
   `tier0_warnings`(정리 주기에 Checkpointer·저널·outbox·스냅샷 상태를 읽어 기억), 카메라 `sync_valid`(근거 없으면 null). 송신 봉투(i1_client·i0_control)는
   `HEALTH_SCHEMA_VERSION` 을 쓴다. 남은 일: 카메라 sync_offset_ms·동기화 무효 판정 모듈.
-- 보정 감시(-117): -344가 검증된 문서의 영속 보관·실행 중 채택을 연결했다(아래). `drift_watch_factory` 감시 저장소와의
-  통합 및 Cross-view 클러스터 → `PersonObservation` 입력은 -346에서 연결한다.
+- 보정 감시(-117·-346): -344의 영속 저장소와 Cross-view 입력을 연결했다(아래). -345 재수집 실행기 연결과
+  카메라별 관제 표시는 후속이다.
 - 정책 해석을 기능 패키지 API 로 옮기기(리뷰 권장): 공통 시각 선택(`Perception.choose_t`), health 카메라 상태 계산
   (`HealthReporter.payload`), 위험 관측 시각 판단(`JudgmentLoop._note_risk`). 지금은 services 에 있다.
 - 클립 트리거(-57) 회귀 시험(영상·업로더가 생긴 뒤), Network Volume 강제 종료 영속성 실측(-92).
@@ -294,5 +294,86 @@ BundleVerifier의 calibration_known은 현재 rig 하나 대신 영속 저장소
 후보 검증과 로컬 파일 fsync는 판정 lock을 잠깐 잡으므로 실제 디스크 지연이 Tier 0 지연에 미치는 영향은 실측해야 한다.
 전원 차단 시 디렉터리 rename의 저장장치 내구성은 운영 환경에서 확인해야 한다. 여러 프로세스가 같은 state_dir를
 동시에 쓰는 것은 지원하지 않는다. World 정렬 보고서는 같은 프로세스 실행기의 신뢰 경계이며 이 진입점에서 관측을
-다시 계산하지 않는다. 실제 GPU·교실 영상 측정, -345 실행기 연결, -346 감시 저장소 통합, EC2의 로컬 보정 문서 접근은
+다시 계산하지 않는다. 실제 GPU·교실 영상 측정, -345 실행기 연결, EC2의 로컬 보정 문서 접근은
 후속 작업이다. 관리자 확정 및 Scene 재생성은 기존 인터페이스 책임으로 남긴다.
+
+## S15P31A101-346 운영 중 틀어짐 감시 연결
+
+관련 명세는 §4.4의 감시 근거 없음·기준선·귀속·재보정 시작 조건, §4.5의 보정 버전이다.
+계약 및 Tier 0 연관 판정 규칙은 바꾸지 않는다. 서버·프런트는 읽기만 했다.
+
+### 입력과 스레드
+
+`Perception.step`의 Cross-view 결과를 `observe_association` 연결점으로 넘긴다. 기본 서비스는
+`BackgroundDriftWatch.offer`에 해당 tick의 보정 문서·연관 결과·실제 검출 입력 해상도를 넣는다.
+설정 파일의 `drift_watch_enabled`는 bool이고 기본 true, false이면 공급과 감시 스레드를 만들지 않는다.
+기존 `drift_watch_factory`는 명시적으로 주입하는 대역 연결점으로 보존한다(끄기 설정은 대역에도 적용).
+
+판정 경로는 최신 1칸의 참조만 바꾸고 기다리지 않는다. 기본 표본 간격은 공통 촬영 시각 기준 1초이고,
+스트림 정보가 바뀌거나 버전이 바뀌면 간격을 기다리지 않는다. `tier0-drift-watch` 한 스레드에서
+확실히 연결된 3대 이상 클러스터를 `PersonObservation`으로 복사하고 기존 `ReprojectionMonitor`에 준다.
+카메라별 원본 해상도 픽셀·신뢰도·null을 보존한다. World XYZ나 추정 관절은 입력하지 않는다.
+연관 불확실 클러스터는 제외하고 한 표본에서 최대 8명까지 쓴다. 최신 대기 표본이 밀리면 과거 대기 표본을 버린다.
+이미 시작한 계산 하나는 끝내되 결과의 버전을 확인해 새 rig에 이전 근거가 들어가지 않게 한다.
+
+표본 1초는 기존 `CalibrationDriftWatch.min_update_interval_ms` 기본값을 재사용했다.
+최신 1칸·최대 8명·불확실 연결 제외는 **명세 없음, 임시 결정**이다. 판정 경로의 기하 중복 계산과
+밀린 표본 재생을 피하고 잘못된 사람 연결로 틀어짐을 확정하지 않기 위해 정했다. 3대는 leave-one-out의
+최소 관측 수다. 귀속 가능 여부와 지속 조건·절대 상한 8px는 기존 감시기의 판정을 그대로 쓴다.
+
+### 상태·알림·재수집
+
+감시 결과 반영은 판정 lock으로 버전 전환과 직렬화한다. `RuntimeCalibrationStore.report_drift`는
+보정 문서를 덮어쓰거나 새 버전을 만들지 않고 같은 버전의 운영 상태 전이를 추가한다. active.json에
+기존 방식으로 fsync/원자 저장한 뒤 메모리 운영 상태를 DRIFTED로 바꾼다. 원문·content_hash는 유지한다.
+감시기에서 확정 근거가 한 번만 나오므로 저장 실패 시 서비스가 근거를 보관해 다음 표본 때 재시도한다.
+DATASET_GT·SIM·MODEL_ESTIMATE 보정은 DRIFTED로 표시하지 않는다.
+
+전이 기록에 같은 버전·해시·msg_id의 `calibration_update`를 보관한다. reason은 재투영 틀어짐이면
+DRIFT_DETECTED, 해상도·화각 변경이면 STREAM_CHANGED다. 이미 DRIFTED여도 새 스트림 변경은 알린다.
+기존 I1 신뢰 대기열 source가 보내고 재시작 때 같은 msg_id로 다시 보낸다. 운영 상태도 전이에서 복원한다.
+기존 health/판정의 보정 상태 조회가 이 운영 상태를 읽는다. DRIFTED는 기존 매핑으로 DEGRADED이며
+시계·연결 등으로 UNSAFE_UNKNOWN인 상태는 낮추지 않는다.
+
+특정 카메라의 MonitorStatus가 DRIFTED이고 어느 카메라에도 스트림 변경이 없으면
+`Tier0Service(..., on_camera_drifted=callback)`을 버전·카메라마다 한 번 부른다. 이 자리에 -345의
+관절 버퍼 `reset_camera`를 연결한다. 콜백은 감시 스레드의 판정 lock 밖에서 실행하며 예외는 로그에 남긴다.
+귀속 불확실(AMBIGUOUS)은 DRIFTED와 calibration_update만 알리고 콜백을 부르지 않는다.
+사람 관측이 비면 기존 상태를 유지하며 보고의 evidence는 NONE이다. 감시 보고는 관측 시각을 함께 남긴다.
+
+기존 `CalibrationDriftWatch`의 자체 후보 수집·재정렬 트리거까지 돌리는 대안은 사용하지 않았다.
+-345가 후보 수집/계산을 맡으므로 동일한 수집기를 이중으로 실행하지 않고 감시기와 재수집 신호만 조립한다.
+
+### 기준선과 버전 전환
+
+`state/calibration_baselines.json`의 버전별 BaselineRecord를 그대로 복원한다. 검증 여부와 출처를
+보존하고 현재 버전의 기록만 적용한다. 없으면 미확정 기준선을 배우며 시간이 지나도 검증으로 승격하지 않는다.
+절대 상한은 학습 중에도 적용한다. 기준선은 정리 주기와 종료 시 저장한다.
+-344의 tick 경계 전환은 새 문서로 감시 입력을 바꾸고 서비스 보고·저장 재시도 근거를 비운다.
+보조 스레드는 첫 새 버전 표본에서 ReprojectionMonitor를 새로 만든다. 이전 창·지속·DRIFTED 표시를
+이어 쓰지 않고 새 버전 기준선만 찾는다. 이전 버전의 기준선은 저장 기록으로 보존한다.
+검증된 새 기준선은 해당 보정을 만든 관측으로 별도 계산해 버전별 기록으로 제공해야 하며,
+holdout 요약 오차를 검증 기준선으로 복사하지 않는다.
+
+### 관제 전달 확인과 잔여 위험
+
+`health.calibration_state`와 EC2의 보정 알림 저장소(`CalibrationUpdateIngestor`)·보정 조회는
+전체 보정 상태를 전달한다. 관제 `viewer3d/data/contractAdapter.ts`도 전체 calibrationState를 읽는다.
+현재 health.cameras에는 보정 상태가 없고 world_state.cameras는 관측 카메라 ID 목록이다.
+calibration_update.cameras 역시 재투영 오차만 담고 귀속 상태는 담지 않는다. 따라서 카메라별 DRIFTED와
+귀속 불확실/감시 근거는 EC2·관제로 전달되지 않는다. 현재 로컬 status.calibration.drift_watch에
+카메라별 감시 상태·기준선 검증 여부와 관측 시각을 남겼다. 계약 확장·EC2·관제 연결은 후속이다.
+
+실제 해상도는 검출 입력 프레임에서 얻는다. 줌/렌즈 변경의 명시적 화각 통지 수신은 아직 없고 후속이다.
+틀어짐이 커서 기존 연관이 카메라를 분리하거나 불확실로 만들면 그 관측은 감시에 못 쓰므로 감지하지 못할 수 있다.
+3대 관측만으로는 불일치를 알아도 원인을 특정할 수 없다. 군중에서 최대 8명 이외의 표본이 늦어질 수 있다.
+별도 CPU 스레드도 CPU/BLAS 자원을 공유한다. 실제 GPU·교실 영상의 2분 내 감지/오경보·지연은 미측정이다.
+전이 fsync는 계산과 달리 판정 lock 안이므로 느린 디스크가 판정을 지연시킬 수 있다(-344와 같은 제한).
+콜백은 메모리 신호이며 프로세스 종료를 넘는 전달 보장/실패 재시도는 -345에서 다뤄야 한다.
+
+검증 위치는 `tests/services/tier0/test_drift_watch.py`, 기존 서비스 및
+`tests/calibration/test_monitor*.py`, `test_watch*.py`다. 지정 영역은 557 passed / 1 skipped(가중치 없음),
+마지막 변경 뒤 서비스·전환·새 연결은 45 passed, import 규칙은 6 kept / 0 broken이다.
+감시 계산을 멈춘 동안에도 판정 12 tick이 274.922ms에 진행됐고 표본 제출 1,000회 p95는 0.004500ms였다.
+CPU 합성 시험으로 스레드 격리/제출 비용만 확인했으며 실제 현장 지연/제품 성능을 뜻하지 않는다.
+최종 명령·결과와 측정 조건은 `.agy/notes.md`에 기록한다.
