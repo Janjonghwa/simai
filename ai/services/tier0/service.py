@@ -414,8 +414,13 @@ class Tier0Service:
         # 5) 인지·판정
         feed = self._feed_override or self._build_feed(now)
         provenance = build_input_provenance(feed.provenance(), calibration=self.rig.calibration_provenance)
+        avatar_writer = None
+        if s.env.get("SIMAI_AVATAR_SHARE") == "1":
+            from simai_ai.io.avatar_channel import LatestChannelWriter
+            root = Path(s.env.get("SIMAI_ROOT") or "/workspace/simai")
+            avatar_writer = LatestChannelWriter(Path(s.env.get("SIMAI_AVATAR_CHANNEL") or root / "state/avatar-input.npz"))
         self.perception = Perception(self.rig, feed, session=session_prefix_from_ms(now), scene_version=s.scene_version,
-                                     input_provenance=provenance)
+                                     input_provenance=provenance, avatar_writer=avatar_writer)
         # 복원 Track 후보·이전 이벤트 연결: 첫 World Track update 전(판정 스레드 시작 전, -178)
         self.restore_link = RestoreLink(self.perception.manager, r)
         self.writer = JournalWriter(self.journal)
@@ -882,6 +887,7 @@ class Tier0Service:
         cp = self.checkpointer
         blocked = self.outbox.blocked
         snap_health = self.health.last
+        avatar_writer = getattr(getattr(self, "perception", None), "avatar_writer", None)
         return {
             "gateway_id": self.settings.gateway_id,
             "pid": os.getpid(),
@@ -912,6 +918,8 @@ class Tier0Service:
             "ec2_connected": self._ec2_ok(),
             "laptop_connected": self.control is not None and self.control.connected,
             "marker_error": self.marker_error,
+            "avatar_share": None if avatar_writer is None else {
+                "dropped": avatar_writer.dropped, "errors": avatar_writer.errors},
         }
 
     def _sample_load(self) -> None:
@@ -1070,6 +1078,9 @@ class Tier0Service:
                 if self._bounded(deadline, "final_checkpoint", checkpointer.run_once, failures):
                     self._event("final_checkpoint")
         feed = getattr(getattr(self, "perception", None), "feed", None)
+        avatar_writer = getattr(getattr(self, "perception", None), "avatar_writer", None)
+        if avatar_writer is not None:
+            avatar_writer.close()
         if feed is not None:
             feed.close()
         if self.jsonl is not None:

@@ -227,6 +227,9 @@ class DetectorFeed:
         self._on_close = on_close
         self._provenance = None if provenance is None else dict(provenance)  # 녹화 재생: dataset_id 포함(-215)
         self._gate = ResultGate()
+        self.avatar_frames: dict[str, Frame] = {}
+        self.avatar_observations: dict[str, Observation2DFrame] = {}
+        self.avatar_enabled = False
         self.stats = DetectorFeedStats()
 
     @property
@@ -265,7 +268,15 @@ class DetectorFeed:
                 self.stats.stale_results += 1
                 continue
             accepted.append(result)
-        return self._tracker.update_batch(accepted) if accepted else []
+        observations = self._tracker.update_batch(accepted) if accepted else []
+        if self.avatar_enabled:
+            images = {_ids(f): f for f in batch}
+            for obs in observations:
+                key = (obs.camera_id, obs.stream_epoch, obs.frame_sequence, obs.estimated_capture_time_ms)
+                if key in images:
+                    self.avatar_frames[obs.camera_id] = images[key]
+                    self.avatar_observations[obs.camera_id] = obs
+        return observations
 
     def camera_connected(self, camera_id: str) -> bool:
         return self._connected(camera_id)
@@ -313,6 +324,7 @@ class Perception:
         time_config: TimeModelConfig = TimeModelConfig(),
         world_config: WorldTrackConfig | None = None,
         contact: ContactEstimator | None = None,
+        avatar_writer: Any = None,
     ) -> None:
         missing = [c for c in feed.camera_ids if c not in rig.cameras]
         if missing:
@@ -325,6 +337,9 @@ class Perception:
         self.associator = CrossViewAssociator(rig)
         self.manager = WorldTrackManager(WorldIdIssuer(session), world_config, input_provenance=input_provenance)
         self.contact = contact or ContactEstimator()
+        self.avatar_writer = avatar_writer
+        if isinstance(feed, DetectorFeed):
+            feed.avatar_enabled = avatar_writer is not None
         self._lock = threading.Lock()  # 카메라 상태(health 가 다른 스레드에서 읽는다)
         self._last_capture: dict[str, int | None] = {c: None for c in feed.camera_ids}
         self._frames_since: dict[str, int] = {c: 0 for c in feed.camera_ids}
@@ -391,4 +406,41 @@ class Perception:
         payload = world_state_payload(
             frame, t_latest, self.scene_version, contacts=contacts.contacts(), time_config=self.time_config
         )
+        if self.avatar_writer is not None:
+            try:
+                self._share_avatar(frame, payload, t_latest)
+            except Exception:  # 보조 출력 실패가 판정 경로에 전파되지 않는다
+                log.warning("아바타 입력 공유 실패", exc_info=False)
         return Perceived(t=t, frame=frame, payload=payload, t_latest_global=t_latest, lagging=fusion.lagging)
+
+    def _share_avatar(self, frame, payload, t_latest) -> None:
+        images = dict(getattr(self.feed, "avatar_frames", {}))
+        observations = getattr(self.feed, "avatar_observations", {})
+        tracks = []
+        for snapshot, track in zip(frame.tracks, payload["tracks"], strict=True):
+            per_camera = []
+            for cid, local_id in snapshot.local_keys:
+                obs, image = observations.get(cid), images.get(cid)
+                if obs is None or image is None or abs(t_latest - image.estimated_capture_time) > 100:
+                    continue
+                for detection in obs.detections:
+                    if detection.local_track_id == local_id:
+                        d = detection.detection
+                        per_camera.append({"camera_id": cid, "local_track_id": str(local_id),
+                                           "bbox": list(d.bbox), "keypoints_2d": list(d.keypoints_2d),
+                                           "joint_layout": "COCO17", "estimated_capture_time": obs.estimated_capture_time_ms,
+                                           "frame_ref": dict(image.frame_ref)})
+            tracks.append({**track, "per_camera": per_camera})
+        rig = self.rig
+        cameras = [{"camera_id": cid, "K": cam.K.tolist(), "R": cam.R.tolist(), "t": cam.t.tolist(),
+                    "image_size": list(cam.image_size),
+                    "distortion": {"model": cam.distortion_model, "coeffs": list(cam.distortion_coeffs)}}
+                   for cid, cam in rig.cameras.items()]
+        calibration = {"calibration_version": rig.calibration_version, "provider_source": rig.provider_source,
+                       "state": rig.state, "coordinate_frame": {"frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z"},
+                       "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA", "cameras": cameras}
+        provenance = dict(payload["input_provenance"])
+        provenance["tracks"] = {"source": "TIER0_LIVE", "provider_version": "tier0-avatar-1"}
+        self.avatar_writer.offer({"world": {"t": t_latest, "calibration_version": rig.calibration_version,
+                                           "coordinate_frame": calibration["coordinate_frame"], "tracks": tracks,
+                                           "input_provenance": provenance}, "calibration": calibration}, images)

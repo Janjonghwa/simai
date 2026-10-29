@@ -115,7 +115,14 @@ def main(argv: list[str] | None = None) -> int:
     except BudgetError as e:
         print(f"services.worker: GPU 공유 설정 오류: {e}", file=sys.stderr)
         return 2
-    cap = cap_process_memory(gpu.budget.worker_fraction)
+    try:
+        torch_fraction = float(os.environ.get("SIMAI_WORKER_TORCH_MEMORY_FRACTION") or gpu.budget.worker_fraction)
+        if not 0 < torch_fraction <= gpu.budget.worker_fraction:
+            raise ValueError("torch 상한은 분석 워커 예산 이하여야 한다")
+    except ValueError:
+        print("services.worker: torch GPU 상한 설정 오류", file=sys.stderr)
+        return 2
+    cap = cap_process_memory(torch_fraction)
     if cap.state == FAILED:
         print(f"services.worker: GPU 메모리 상한을 두지 못했다: {cap.reason}", file=sys.stderr)
         return 2

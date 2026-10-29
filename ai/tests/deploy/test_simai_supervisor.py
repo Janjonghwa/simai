@@ -162,6 +162,39 @@ def _marker(root: Path, written_at, pid, phase="running") -> None:
                  encoding="utf-8")  # mtime 은 지금(15초 안): simai-wait-tier0 판정만으로는 준비로 보인다
 
 
+def test_avatar_opt_in_weights_and_total_worker_budget(bs, tmp_path, monkeypatch):
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "vllm", "worker", "avatar"),
+               env={"SIMAI_WORKER_ENV_FILE": "/runtime/worker.env", "SIMAI_AVATAR_WEIGHTS_SET": "vlm"})
+    _start(sup, w)
+    assert w.envs["tier0"]["SIMAI_AVATAR_SHARE"] == "1"
+    w.ready = w.healthy = True
+    _settle(sup, w, 12)
+    assert "avatar" in w.spawned and sup.weight_calls == [["m", "m"]]
+    assert "services.avatar" in w.argvs["avatar"]
+    assert w.argvs["avatar"][:3] == ["simai-wait-tier0", "--env-file", "/runtime/worker.env"]
+    assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(.05)
+    assert float(w.envs["avatar"]["SIMAI_AVATAR_GPU_MEMORY_FRACTION"]) == pytest.approx(.10)
+    w.signals.clear()
+    sup._stop_sidecars()
+    assert [n for n, s in w.signals if s == signal.SIGTERM] == ["avatar", "worker", "vllm"]
+
+
+def test_avatar_budget_overflow_refused_before_spawn(bs, tmp_path, monkeypatch):
+    w = World()
+    with pytest.raises(bs.BootstrapError):
+        _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "vllm", "worker", "avatar"),
+             env={"SIMAI_AVATAR_GPU_MEMORY_FRACTION": "0.20"})
+    assert w.spawned == []
+
+
+def test_avatar_weight_set_only_contains_hmr_model_and_rig(bs):
+    manifest = REPO / "deploy" / "weights.json"
+    assert {w["name"] for w in bs.load_manifest(manifest, "avatar")} == {"sam-3d-body-dinov3", "sam-3d-body-dinov3-mhr"}
+    assert bs.parse_services(None) == ["tier0"]
+    assert bs.parse_services("tier0,avatar") == ["tier0", "avatar"]
+
+
 def test_stale_running_marker_from_previous_run_is_not_ready_until_this_tier0_writes(bs, tmp_path, monkeypatch, capsys):
     """리뷰 -246 필수: 이전 실행이 비정상 종료로 남긴 running·OK 표시(mtime 새것)를 이번 Tier 0 의 준비로 보지 않는다.
     진입점이 엔진을 다시 만드는 동안(약 550초) vLLM·워커가 GPU 를 먼저 잡으면 안 된다. 표시 파일은 지우지 않는다(previous_unclean)."""
