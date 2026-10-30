@@ -19,6 +19,7 @@ import type {
 } from '@/features/viewer3d/editing/editTypes';
 import type { ViewerLayers } from '@/features/viewer3d/layers';
 import type { PlannedLayoutInput } from '@/features/viewer3d/planned/plannedLayout';
+import type { ViewerPostProcessingInput } from '@/features/viewer3d/PostProcessingLayer';
 import type { ViewerSceneInput, ViewerSceneStatus } from '@/features/viewer3d/scene/sceneContract';
 import type { Ref } from 'react';
 
@@ -150,7 +151,7 @@ export interface Viewer3DHandle {
   cancelPlannedEdit?(): ViewerPlannedEditResult | null;
   /** 가상 객체 초안을 World 결과로 돌려주고 편집을 끝낸다. 저장하지 않는다. 편집 중이 아니면 null. */
   finishPlannedEdit?(): ViewerPlannedEditResult | null;
-  /** 가상 객체 초안의 한 값을 절대값으로 고친다(숫자 입력). 손잡이와 같은 엔진으로 검사한다. */
+  /** 가상 객체 초안을 절대값으로 고친다(숫자 입력). 손잡이와 같은 엔진으로 검사한다. */
   updatePlannedEditField?(change: {
     field: ViewerPlannedEditField;
     value: number;
@@ -270,5 +271,10 @@ export interface Viewer3DProps {
   onBoxEditChange?: (box: ViewerEditBox) => void;
   /** 보관된 미저장 초안의 읽기 전용 윤곽(점선). 클릭을 받지 않고, boxEdit.id 와 같은 id 는 그리지 않는다. */
   boxGhosts?: readonly ViewerBoxGhost[];
+  /**
+   * 후처리 옵션(-360, 선택 사항). N8AO 주변 차폐와 SMAA 안티앨리어싱을 켜고 끈다.
+   * 노트북 부하를 고려해 기본값은 false(끔)다.
+   */
+  postProcessing?: ViewerPostProcessingInput;
   className?: string;
 }

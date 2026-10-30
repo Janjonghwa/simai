@@ -104,6 +104,15 @@ export type {
   PlannedObjectInput,
   PlannedSnapshot,
 } from '@/features/viewer3d/planned/plannedLayout';
+export {
+  DEFAULT_POST_PROCESSING,
+  resolvePostProcessing,
+} from '@/features/viewer3d/PostProcessingLayer';
+export type {
+  ResolvedPostProcessing,
+  ViewerPostProcessingInput,
+  ViewerPostProcessingOptions,
+} from '@/features/viewer3d/PostProcessingLayer';
 export { parseReplayLog } from '@/features/viewer3d/replay/replayLog';
 export type {
   ReplayFile,
@@ -119,6 +128,7 @@ export type {
 } from '@/features/viewer3d/replay/replaySource';
 export {
   SCENE_STATES,
+  SURFACE_SOURCE_VALUES,
   readCurrentScene,
   sceneStatusOf,
   verifyScene,
@@ -131,6 +141,7 @@ export type {
   SceneStatusPhase,
   SceneVerification,
   SceneVersions,
+  SurfaceSourceMapUrls,
   ViewerSceneInput,
   ViewerSceneStatus,
 } from '@/features/viewer3d/scene/sceneContract';

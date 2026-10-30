@@ -163,3 +163,20 @@ AI -88 의 사람별 스키닝 glTF 와 `avatar_frame`(/topic/avatar) 관절 회
   5. 자산 없음·내려받기/sha256/리그 확인 실패·`joint_count` ≠ 관절 회전 길이, 그리고 Tier 0 pelvis 없음
 - 표시: 메시로 그리면 이름표에 `메시(추정) 0.3s`(HMR 지연, 0.1 s 단위)를, 되돌아가면 `메시 지연`·`메시 없음`·`메시 보류` 를 붙인다. 상태 표시줄의 수치 표시는 FE 몫이다.
 - `avatarMesh="off"` 면 포즈가 와도 늘 기존 경로다. 메시는 위험 판정·이벤트·선택 규칙을 바꾸지 않는다(같은 사람 대상 `{ type: 'person', id }`).
+
+## 배경 사진 화질·출처 지도·접지 그림자·후처리(-360)
+
+실영상 재구성 glTF 배경이 이중 조명·톤매핑으로 흐려지지 않고 사진 그대로 보이게 하며, 표면 출처 지도(`SURFACE_SOURCE_MAP`)·접지 그림자·선택적 후처리(N8AO·SMAA)를 지원한다.
+
+- 사진 배경(`SceneBackground`):
+  - `map` 텍스처가 있는 배경 메시는 광원·톤매핑을 거치지 않는 `MeshBasicMaterial`(`SRGBColorSpace`, `toneMapped: false`, `DoubleSide`)로 바꾼다. Canvas 출력도 `SRGBColorSpace`·`NoToneMapping`(`flat`)으로 맞춘다.
+  - `map` 이 없는 정점색·회색 메시는 기존 조명 재질(`MeshStandardMaterial` 등)을 유지하고, 정점 법선이 없으면 `computeVertexNormals()` 로 계산한다.
+  - 정합 근거가 없을 때(`DIMMED`, 즉 `DEFAULT_UNVERIFIED`·`UNCONFIRMED`): 무텍스처 메시는 반투명(`DIMMED_OPACITY = 0.35`)으로, 사진 텍스처 메시는 앞뒤 삼각형 알파 정렬 깨짐을 막기 위해 불투명(깊이 가림)을 유지하되 명도(`0.65`)·채도(`0.25`)를 낮춘다.
+- 표면 출처 지도(`SURFACE_SOURCE_MAP`):
+  - `scene_output` 2.1.0 규칙에 맞춰 `CurrentScene.surfaceSourceMapUrls`(`surface_source_map_urls` 배열 또는 재질/메시 이름 키 맵) 또는 재질·메시 `userData.surfaceSourceMap` 을 받는다.
+  - 보간·색공간 변환으로 값이 섞이지 않게 `NearestFilter`·`generateMipmaps = false`·`NoColorSpace` 로 읽는다.
+  - `2`(`OBSERVED`)는 사진 그대로(`1.0`), `3`(`ESTIMATED_PLANE`)과 `1`(`INTERPOLATED`)은 명도·채도를 약간 낮추고(`0.82` / `0.72`), `0`(`UNOBSERVED`) 및 미정의 값은 어둡게 흐리고(`0.38`) 빗금을 얹는다.
+- 접지 그림자(`GroundShadowLayer`):
+  - `ground_contact.state === 'VALID'` 로 바닥 접지가 확인된 사람 발밑에만 가벼운 방사형 접지 그림자를 그린다(`people/` 파일은 건드리지 않는 별도 레이어).
+- 후처리(`postProcessing` prop):
+  - `postProcessing?: boolean | Partial<ViewerPostProcessingOptions>` 로 N8AO + SMAA 후처리를 켜고 끌 수 있다. 기본값은 `false`(끔)이며, 개발 하네스에서는 `?post=on|off` 쿼리로 전환할 수 있다.

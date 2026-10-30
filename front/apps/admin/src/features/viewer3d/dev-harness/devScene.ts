@@ -87,9 +87,12 @@ export function sceneInputOf(key: SceneOptionKey, now: number): ViewerSceneInput
       return committed({ state: 'COMMITTED', default: true });
     case 'not-found':
       return { ok: false, reason: 'SCENE_NOT_FOUND', httpStatus: 404 };
-    case 'lobby-preview':
+    case 'lobby-preview': {
       // 실영상 재구성 프리뷰(RECONSTRUCTED_PREVIEW·CALIBRATION_UNVERIFIED). COMMITTED·보정 버전을 꾸미지 않고 DEFAULT 로 넘겨
       // 판정은 DEFAULT_UNVERIFIED 그대로다. 자산은 저장소 밖 로컬 캐시에만 있다(없으면 FAILED).
+      const withSourceMap =
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('sourceMap') === 'on';
       return committed({
         scene_version: 'lobby-recon-preview',
         state: 'DEFAULT',
@@ -97,7 +100,17 @@ export function sceneInputOf(key: SceneOptionKey, now: number): ViewerSceneInput
         calibration_version: null,
         committed_at_ms: null,
         gltf_url: absolute(DEV_LOBBY_GLB_URL),
+        ...(withSourceMap
+          ? {
+              surface_source_map_urls: Array.from({ length: 8 }, (_, i) =>
+                absolute(
+                  `/node_modules/.cache/spatial-dev/surface_source_${String(i).padStart(4, '0')}.png`,
+                ),
+              ),
+            }
+          : {}),
       });
+    }
   }
 }
 
