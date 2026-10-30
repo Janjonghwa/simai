@@ -1,4 +1,5 @@
 import type { SpatialDataState } from '@/features/viewer3d/data/spatialData.store';
+import { attachAvatarAppearanceShader } from '@/features/viewer3d/people/avatarAppearance';
 import type { AvatarAssetView } from '@/features/viewer3d/people/avatarFrame';
 import {
   avatarMeshStatus,
@@ -7,7 +8,17 @@ import {
 } from '@/features/viewer3d/people/avatarMeshPolicy';
 import type { PoseTarget } from '@/features/viewer3d/people/avatarPose';
 import { createContext, useEffect, useEffectEvent, useReducer, useState } from 'react';
-import type { Bone, Material, Mesh, Object3D, Quaternion, Skeleton, SkinnedMesh } from 'three';
+import {
+  BufferAttribute,
+  type Bone,
+  type BufferGeometry,
+  type Material,
+  type Mesh,
+  type Object3D,
+  type Quaternion,
+  type Skeleton,
+  type SkinnedMesh,
+} from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 
@@ -78,6 +89,39 @@ function firstSkinned(root: Object3D): SkinnedMesh | null {
   return found;
 }
 
+/**
+ * 실제 MHR GLB(-88 gltf_export.py)는 TEXCOORD_0(uv)을 싣지만, 합성 fixture GLB 는 sha256 고정 채로 uv 가 없다.
+ * uv 가 없을 때만 바인드 자세 좌표에서 glTF 상단 원점(머리 v≈0, 발끝 v≈1, 앞면 u∈[0.05,0.45], 뒷면 u∈[0.55,0.95]) UV 를 채운다.
+ */
+export function ensureAvatarMeshUv(geometry: BufferGeometry): void {
+  if (geometry.getAttribute('uv')) return;
+  const pos = geometry.getAttribute('position');
+  if (!pos || pos.count === 0) return;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  const spanX = Math.max(1e-5, maxX - minX);
+  const spanY = Math.max(1e-5, maxY - minY);
+  const uvs = new Float32Array(pos.count * 2);
+  for (let i = 0; i < pos.count; i++) {
+    const nx = (pos.getX(i) - minX) / spanX;
+    const ny = (pos.getY(i) - minY) / spanY;
+    const front = pos.getZ(i) >= 0;
+    uvs[i * 2] = (front ? 0.05 : 0.55) + nx * 0.4;
+    uvs[i * 2 + 1] = 1 - ny;
+  }
+  geometry.setAttribute('uv', new BufferAttribute(uvs, 2));
+}
+
 /** 내려받은 바이트를 확인하고 읽는다. 맞지 않으면 이유를 담은 Error 를 던진다. */
 export async function readAvatarMesh(
   data: ArrayBuffer,
@@ -95,6 +139,12 @@ export async function readAvatarMesh(
     throw new Error('관절 부모 해시 불일치');
   }
   if (asset.pelvisJointIndex >= bones.length) throw new Error('pelvis 관절 범위 밖');
+  gltf.scene.traverse((node) => {
+    const mesh = node as Mesh;
+    if (mesh.isMesh && mesh.geometry) {
+      ensureAvatarMeshUv(mesh.geometry);
+    }
+  });
   return {
     key: avatarAssetKey(asset),
     scene: gltf.scene,
@@ -274,6 +324,7 @@ export function instantiateAvatarMesh(asset: AvatarMeshAsset): AvatarMeshInstanc
     if (!mesh.isMesh || !mesh.material || Array.isArray(mesh.material)) return;
     const material = mesh.material.clone();
     material.transparent = true;
+    attachAvatarAppearanceShader(material);
     mesh.material = material;
     // 스키닝 뒤 경계 구가 실제 자세와 달라 화면 밖으로 잘리지 않게 한다(-88 권장).
     node.frustumCulled = false;

@@ -8,6 +8,18 @@ import {
 import { LabelSprite } from '@/features/viewer3d/LabelSprite';
 import { PALETTE, type ScenePalette } from '@/features/viewer3d/palette';
 import {
+  applyAvatarAppearanceToMaterials,
+  AVATAR_ENV_MAP_INTENSITY,
+  AVATAR_PBR_METALNESS,
+  AVATAR_PBR_ROUGHNESS,
+  avatarAppearanceKey,
+  updateAvatarBaseColors,
+  useAvatarAppearance,
+  useAvatarPmremEnvMap,
+  type AvatarAppearanceTextures,
+  type AvatarFacePolicy,
+} from '@/features/viewer3d/people/avatarAppearance';
+import {
   avatarAssetKey,
   avatarAssetState,
   AvatarMeshContext,
@@ -67,7 +79,7 @@ import {
   useState,
   type RefObject,
 } from 'react';
-import { Vector3, type Group, type Material, type MeshStandardMaterial } from 'three';
+import { Vector3, type Group, type Material, type MeshStandardMaterial, type Texture } from 'three';
 import { useStore } from 'zustand';
 
 // -44 사람 레이어. -194 Provider 의 World 를 같은 Canvas·Scene 안에서 world_id 마다 하나씩 그린다.
@@ -115,11 +127,12 @@ export function PersonLayer() {
   const idsKey = useSpatialData(selectIds);
   const ids = useMemo(() => (idsKey ? idsKey.split('\n') : []), [idsKey]);
   const model = useAvatarModel(useContext(PersonModelContext));
+  const envMap = useAvatarPmremEnvMap();
   return (
     <group name="person-layer">
       {ids.map((id) => (
         // Source 가 바뀌면 key 가 달라져 이전 Source 의 위치·방향·동작 기록을 이어받지 않는다.
-        <PersonAvatar key={`${sourceId}:${id}`} worldId={id} model={model} />
+        <PersonAvatar key={`${sourceId}:${id}`} worldId={id} model={model} envMap={envMap} />
       ))}
     </group>
   );
@@ -155,7 +168,15 @@ interface MeshView {
  */
 const LAG_LABEL_STEP_MS = 150;
 
-function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel | null }) {
+function PersonAvatar({
+  worldId,
+  model,
+  envMap,
+}: {
+  worldId: string;
+  model: AvatarModel | null;
+  envMap: Texture;
+}) {
   const store = useSpatialDataStore();
   const selected = useStore(
     useViewerStore(),
@@ -177,6 +198,19 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
   const { mesh } = useAvatarMesh(
     meshKey,
     () => store.getState().avatars.get(worldId)?.asset ?? null,
+    meshConfig.fetch,
+  );
+  // EXP-02 외형 텍스처(-359). 사람(worldId)별 appearance_version 이 바뀔 때만 새로 받는다.
+  const appearanceKey = useSpatialData((s) =>
+    meshConfig.enabled ? avatarAppearanceKey(worldId, s.avatars.get(worldId)) : null,
+  );
+  const facePolicy = useSpatialData((s) =>
+    meshConfig.enabled ? (s.avatars.get(worldId)?.asset?.facePolicy ?? 'EXCLUDED') : 'EXCLUDED',
+  );
+  const { appearance } = useAvatarAppearance(
+    worldId,
+    appearanceKey,
+    () => store.getState().avatars.get(worldId),
     meshConfig.fetch,
   );
   const [player] = useState(() => new PosePlayer());
@@ -346,6 +380,10 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
             motion={motion}
             tone={tone}
             selected={selected}
+            color={palette.person}
+            appearance={appearance}
+            facePolicy={facePolicy}
+            envMap={envMap}
           />
         )}
         <group ref={root} name={`person-avatar:${worldId}`}>
@@ -374,6 +412,7 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
                   selected={selected}
                   motion={motion}
                   worldId={worldId}
+                  envMap={envMap}
                 />
               ) : (
                 <CapsuleBody color={palette.person} tone={tone} selected={selected} />
@@ -487,10 +526,11 @@ interface ModelBodyProps {
   selected: boolean;
   motion: RefObject<Motion>;
   worldId: string;
+  envMap: Texture | null;
 }
 
 /** 리깅 모델 아바타. 사람마다 복제본·mixer 를 따로 두고 Canvas 의 useFrame 으로만 돌린다. */
-function ModelBody({ model, tone, selected, motion, worldId }: ModelBodyProps) {
+function ModelBody({ model, tone, selected, motion, worldId, envMap }: ModelBodyProps) {
   const { person: color } = useScenePalette();
   const holder = useRef<Group>(null);
   const instance = useRef<AvatarInstance | null>(null);
@@ -511,8 +551,8 @@ function ModelBody({ model, tone, selected, motion, worldId }: ModelBodyProps) {
 
   // 위 효과 다음에 돌아 새 복제본에도 바로 칠한다.
   useEffect(() => {
-    if (instance.current) paint(instance.current.materials, tone, selected, color);
-  }, [color, tone, selected, model, worldId]);
+    if (instance.current) paint(instance.current.materials, tone, selected, color, envMap);
+  }, [color, tone, selected, model, worldId, envMap]);
 
   useFrame((_, dt) => {
     const avatar = instance.current;
@@ -534,13 +574,27 @@ interface MeshBodyProps {
   motion: RefObject<Motion>;
   tone: PersonTone;
   selected: boolean;
+  color: PersonColor;
+  appearance: AvatarAppearanceTextures | null;
+  facePolicy: AvatarFacePolicy;
+  envMap: Texture | null;
 }
 
 /**
- * EXP-02 스키닝 메시(-65). 사람마다 복제본을 두고, 관절 회전은 재생 버퍼에서 보간하며 pelvis 를 Tier 0 pelvis_xyz 에 맞춘다.
+ * EXP-02 스키닝 메시(-65·-359). 사람마다 복제본을 두고, 관절 회전은 재생 버퍼에서 보간하며 pelvis 를 Tier 0 pelvis_xyz 에 맞춘다.
  * 처음 자세를 넣기 전에는 숨겨 바인드 자세가 원점에 한 번 보이지 않게 한다.
  */
-function MeshBody({ mesh, player, motion, tone, selected }: MeshBodyProps) {
+function MeshBody({
+  mesh,
+  player,
+  motion,
+  tone,
+  selected,
+  color,
+  appearance,
+  facePolicy,
+  envMap,
+}: MeshBodyProps) {
   const holder = useRef<Group>(null);
   const instance = useRef<ReturnType<typeof instantiateAvatarMesh> | null>(null);
   const [target] = useState(() => new Vector3());
@@ -559,8 +613,10 @@ function MeshBody({ mesh, player, motion, tone, selected }: MeshBodyProps) {
   }, [mesh]);
 
   useEffect(() => {
-    if (instance.current) paint(instance.current.materials, tone, selected);
-  }, [tone, selected, mesh]);
+    if (!instance.current) return;
+    paint(instance.current.materials, tone, selected, color, envMap);
+    applyAvatarAppearanceToMaterials(instance.current.materials, appearance, facePolicy, envMap);
+  }, [tone, selected, color, appearance, facePolicy, envMap, mesh]);
 
   useFrame(() => {
     const group = holder.current;
@@ -576,31 +632,36 @@ function MeshBody({ mesh, player, motion, tone, selected }: MeshBodyProps) {
   return <group ref={holder} name="person-mesh" visible={false} />;
 }
 
-/** 상태 색·투명도. 관절(Joints) 재질은 경보색과 헷갈리지 않게 무채색으로 둔다. */
+/** 상태 색·투명도·PBR·환경맵. 관절(Joints) 재질은 경보색과 헷갈리지 않게 무채색으로 둔다. */
 function paint(
   materials: readonly Material[],
   tone: PersonTone,
   selected: boolean,
   COLOR: PersonColor = PALETTE.dark.person,
+  envMap: Texture | null = null,
 ) {
   for (const material of materials) {
     const m = material as MeshStandardMaterial;
     const joint = /joints/i.test(m.name);
-    m.color?.setHex(
-      selected
-        ? COLOR.selected
-        : tone === 'unknown'
-          ? COLOR.unknown
-          : joint
-            ? COLOR.joint
-            : COLOR.body,
-    );
+    const hex = selected
+      ? COLOR.selected
+      : tone === 'unknown'
+        ? COLOR.unknown
+        : joint
+          ? COLOR.joint
+          : COLOR.body;
+    m.color?.setHex(hex);
     m.opacity = OPACITY[tone];
     m.depthWrite = tone === 'observed';
     if ('metalness' in m) {
-      m.metalness = 0.05;
-      m.roughness = 0.65;
+      m.metalness = AVATAR_PBR_METALNESS;
+      m.roughness = AVATAR_PBR_ROUGHNESS;
     }
+    if ('envMap' in m && m.envMap !== envMap) {
+      m.envMap = envMap;
+      m.envMapIntensity = AVATAR_ENV_MAP_INTENSITY;
+    }
+    updateAvatarBaseColors([m], hex, tone, selected);
     m.needsUpdate = true;
   }
 }
