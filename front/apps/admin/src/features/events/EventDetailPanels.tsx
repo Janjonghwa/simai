@@ -4,10 +4,14 @@ import { EventClips } from '@/features/clips/EventClips';
 import { AckButton } from '@/features/events/AckButton';
 import { CONFIDENCE_REASON } from '@/features/events/constants';
 import { entryStatus, needsConfirmation, type EventEntry } from '@/features/events/entries';
+import { escalationStatusLabel, mergedEscalations } from '@/features/events/escalation';
+import { EscalationControl } from '@/features/events/EscalationControl';
 import { formatTime, metricLabels, ruleName, statusText } from '@/features/events/format';
 import type { Incident } from '@/features/events/incidents';
 import { incidentTimeline } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
+import type { EventEscalation } from '@/features/events/types';
+import { useEscalationHistory } from '@/features/events/useEscalateEvent';
 import { cn } from '@simai/ui/lib/utils';
 import type { ReactNode } from 'react';
 
@@ -91,26 +95,57 @@ export function RulesPanel({
   );
 }
 
+function EscalationHistoryList({ items }: { items: readonly EventEscalation[] }) {
+  if (items.length === 0) return null;
+  return (
+    <ol aria-label="상향 이력" className="flex flex-col gap-1 pt-1 text-xs">
+      {items.map((item, idx) => (
+        <li
+          key={item.escalation_id ?? `${item.requested_at}-${idx}`}
+          className="flex flex-wrap items-center gap-2 text-muted-foreground"
+        >
+          <span className="font-mono text-faint">{formatTime(item.requested_at)}</span>
+          <SeverityBadge severity={item.target_severity} />
+          <span className="font-semibold text-foreground">{escalationStatusLabel(item)}</span>
+          {item.actor_id && <span className="text-point-soft">{item.actor_id}</span>}
+          {item.note && <span>{item.note}</span>}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 export function AiPanel({ entries }: EntriesProps) {
-  const ai = entries.filter((e) => e.event.rationale || e.event.proposed_severity);
+  const historyByEvent = useEscalationHistory();
+  const ai = entries.filter(({ event }) => {
+    const history = mergedEscalations(event, historyByEvent[event.event_id]);
+    return Boolean(event.rationale || event.proposed_severity || history.length > 0);
+  });
   return (
     <DetailPanel title="AI 설명">
       {ai.length === 0 ? (
         <None />
       ) : (
-        ai.map(({ event }) => (
-          <div key={event.event_id} className="flex flex-col gap-1 text-sm">
-            {ai.length > 1 && (
-              <span className="text-muted-foreground">{ruleName(event.rule_id)}</span>
-            )}
-            {event.rationale && <p>{event.rationale}</p>}
-            {event.proposed_severity && (
-              <span className="flex items-center gap-2">
-                상향 의견 <SeverityBadge severity={event.proposed_severity} />
-              </span>
-            )}
-          </div>
-        ))
+        ai.map(({ event }) => {
+          const history = mergedEscalations(event, historyByEvent[event.event_id]);
+          return (
+            <div key={event.event_id} className="flex flex-col gap-1.5 text-sm">
+              {ai.length > 1 && (
+                <span className="text-muted-foreground">{ruleName(event.rule_id)}</span>
+              )}
+              {event.rationale && <p>{event.rationale}</p>}
+              {event.proposed_severity && (
+                <div className="flex flex-col gap-1.5">
+                  <span className="flex flex-wrap items-center gap-2">
+                    상향 의견 <SeverityBadge severity={event.proposed_severity} />
+                  </span>
+                  <EscalationControl event={event} />
+                </div>
+              )}
+              <EscalationHistoryList items={history} />
+            </div>
+          );
+        })
       )}
     </DetailPanel>
   );
