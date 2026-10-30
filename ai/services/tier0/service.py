@@ -514,6 +514,7 @@ class Tier0Service:
                     self.calibration.current(), provenance, settings=s.live_calibration,
                     now_ms=self.clock.now_ms, stop=self._stop, propose=self._propose_live_calibration,
                     can_run=lambda: self.started and self._calibration_state() != "CALIBRATED",
+                    active_report=self.calibration.current_report,
                 )
                 self.perception.observe_frame = self.live_calibration.buffer.append_frame
                 self._spawn("tier0-live-calibration", self.live_calibration.run)

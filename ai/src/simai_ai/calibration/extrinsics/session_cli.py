@@ -26,8 +26,8 @@ def run_session(args, created_at):
     manifest = load_recording_manifest(args.recording)
     provider = FileCalibrationProvider(args.previous)
     previous = provider.current()
-    heights, height_input = load_camera_heights(args.camera_heights)
-    height_prov = checked_provenance(height_input["input_provenance"], "camera_heights")
+    heights, height_input = load_camera_heights(args.camera_heights) if args.camera_heights else ({}, None)
+    height_prov = checked_provenance(height_input["input_provenance"], "camera_heights") if height_input else None
     if args.out.exists():
         raise ValueError(f"결과 디렉터리가 이미 있다(덮어쓰지 않는다): {args.out}")
     fixed_lens = _lens(args.fixed_lens)
@@ -99,7 +99,8 @@ def run_session(args, created_at):
     # 직전 보정과 실측 높이 중 상한 입력이 있으면 결과도 상한이다.
     provenance, sources = combine_input_provenance(
         header["input_provenance"], {"previous": build_input_provenance(
-            header["input_provenance"]["frames"], provider.provenance()), "camera_heights": height_prov},
+            header["input_provenance"]["frames"], provider.provenance()),
+            **({"camera_heights": height_prov} if height_prov is not None else {})},
         previous["calibration_version"],
     )
     if not provenance["is_upper_bound"]:

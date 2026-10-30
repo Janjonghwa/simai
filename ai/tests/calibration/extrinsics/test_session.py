@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 cv2 = pytest.importorskip("cv2")  # extras calibration (CI 기본 가상환경에는 없다)
+pytest.importorskip("scipy")
 from scipy.spatial.transform import Rotation
 
 from simai_ai.calibration.criteria import CalibrationEvidence, judge_calibration
@@ -158,7 +159,8 @@ def test_alternating_fixed_lens_height_scale_and_contract(case):
     assert doc["calibration_version"] != previous["calibration_version"]
     assert doc["coordinate_frame"]["site_id"] == "lobby"
     assert doc["state"] == "PROVISIONAL" and doc["provider_source"] == "SIM"
-    assert doc["scale_basis"] == "MEASURED_CAMERA_HEIGHT"
+    assert doc["scale_basis"] == previous["scale_basis"]
+    assert outcome.report["world_alignment"]["height_scale_check_after"]["scale_after"] is not None
     assert all(c["K"][0][0] == FIXED_LENS[0] for c in doc["cameras"])
     assert all(abs(v["height_residual_m"]) < .02 for v in outcome.report["camera_changes"].values())
     assert outcome.report["world_alignment"]["usable"] is True
@@ -316,3 +318,120 @@ def test_cli_session_defaults():
     assert args.window_duration_s == 9.0
     assert args.every_n == 5
     assert args.anchor_cameras is None
+
+
+def test_loo_excludes_translation_only_outlier_after_rotation_repair(case):
+    previous = case[0]
+    cams = copy.deepcopy(previous["cameras"])
+    d = cams[-1]
+    r = np.array(d["R"])
+    center = -r.T @ np.array(d["t"])
+    d["t"] = (-r @ (center + [.05, 0, 0])).tolist()
+    _, report = align_world_to_previous(previous, cams)
+    assert report["anchor_cameras"] == ["cam_A", "cam_B", "cam_C"]
+    assert report["anchor_center_residual_max_cm"] < .001
+    assert "cam_D" in report["leave_one_out"][0]["candidates"]
+
+
+def test_session_inherits_scale_without_measured_heights(case):
+    from simai_ai.calibration.bundle import BundleConfig
+    previous, _, _, _, tracks, provenance = case
+    outcome = adjust_session(tracks, previous, input_provenance=provenance,
+                             created_at=T0 + 21000, rounds=2)
+    assert outcome.calibration is not None, outcome.report.get("failure_reason")
+    assert outcome.calibration["scale_basis"] == previous["scale_basis"]
+    assert outcome.report["scale_basis"] == "PREVIOUS_CALIBRATION"
+    assert outcome.report["world_alignment"]["height_scale_check_after"] is None
+    assert all(r["bundle"]["config"]["floor_contacts_for_gauge"] is False for r in outcome.report["rounds"])
+    assert all(r["floor_check"] is not None for r in outcome.report["rounds"])
+    # 다른 신발/단상 높이 가정은 검산 결과만 바꾸고 카메라 World를 끌어당기지 않는다.
+    raised_floor = adjust_session(tracks, previous, input_provenance=provenance,
+                                 created_at=T0 + 22000, rounds=2,
+                                 bundle_config=BundleConfig(lens_mode="fixed", fixed_lens=FIXED_LENS,
+                                                            ankle_contact_height_m=.5))
+    assert raised_floor.calibration is not None, raised_floor.report.get("failure_reason")
+    for a, b in zip(outcome.calibration["cameras"], raised_floor.calibration["cameras"]):
+        np.testing.assert_allclose(a["R"], b["R"], atol=1e-9)
+        np.testing.assert_allclose(a["t"], b["t"], atol=1e-9)
+
+
+@pytest.mark.parametrize("with_heights", [False, True])
+def test_similarity_inherits_previous_metric_scale_and_floor(case, with_heights):
+    previous = case[0]
+    cams = copy.deepcopy(previous["cameras"])
+    rotation = Rotation.from_euler("xyz", [8, -4, 13], degrees=True).as_matrix()
+    heights = {}
+    for c in cams:
+        r = np.array(c["R"])
+        center = -r.T @ np.array(c["t"])
+        heights[c["camera_id"]] = float(center[2])
+        c["R"] = (r @ rotation.T).tolist()
+        c["t"] = (-np.array(c["R"]) @ (1.2 * rotation @ center + [.3, -.5, .8])).tolist()
+    aligned, report = align_world_to_previous(previous, cams, heights if with_heights else None)
+    assert report["usable"], report
+    assert report["scale"] == pytest.approx(1 / 1.2, abs=1e-6)
+    for old, new in zip(previous["cameras"], aligned):
+        np.testing.assert_allclose(old["R"], new.R, atol=1e-10)
+        np.testing.assert_allclose(old["t"], new.t, atol=1e-10)
+    assert bool(report["height_scale_check_after"]) == with_heights
+
+
+def test_height_cross_check_rejects_common_absolute_offset_without_rescaling(case):
+    previous = case[0]
+    heights = {c["camera_id"]: float((-np.array(c["R"]).T @ np.array(c["t"]))[2] + .2)
+               for c in previous["cameras"]}
+    aligned, report = align_world_to_previous(previous, previous["cameras"], heights)
+    assert not report["usable"]
+    assert "높이 검산 실패" in report["failure_reason"]
+    np.testing.assert_allclose(aligned[0].t, previous["cameras"][0]["t"], atol=1e-10)
+
+
+def test_two_anchor_mode_and_too_few_anchors(case):
+    previous = case[0]
+    bootstrap = {"cameras": [{"camera_id": cid, "candidates": [{"accepted": True}]}
+                              for cid in ("cam_C", "cam_D")]}
+    _, report = align_world_to_previous(previous, previous["cameras"], bootstrap=bootstrap)
+    assert report["anchor_cameras"] == ["cam_A", "cam_B"]
+    assert report["strict_two_anchor_limits_applied"] is True
+    bootstrap["cameras"].append({"camera_id": "cam_B", "candidates": [{"accepted": True}]})
+    _, report = align_world_to_previous(previous, previous["cameras"], bootstrap=bootstrap)
+    assert report["usable"] is False
+    assert "기준 카메라 부족" in report["failure_reason"]
+
+
+def test_fixed_center_rotation_metadata_excludes_target(case):
+    previous = case[0]
+    _, report = align_world_to_previous(previous, previous["cameras"], fixed_center_rotation_cameras=["cam_D"])
+    assert report["anchor_cameras"] == ["cam_A", "cam_B", "cam_C"]
+    assert "회전만 변경" in report["excluded_cameras"]["cam_D"]
+
+
+def test_session_cli_allows_omitting_heights():
+    args = build_parser().parse_args(["session", "--recording", "rec", "--previous", "cal.json", "--out", "new"])
+    assert args.camera_heights is None
+
+
+@pytest.mark.parametrize("count", [2, 3])
+def test_multiple_moved_camera_rotations_leave_two_strict_anchors_or_reject(case, count):
+    from simai_ai.calibration.live_candidate import evaluate_world_consistency
+    previous = case[0]
+    cams = copy.deepcopy(previous["cameras"])
+    for c, angle in zip(cams[-count:], [7., -9., 12.]):
+        r = np.array(c["R"])
+        center = -r.T @ np.array(c["t"])
+        r = Rotation.from_euler("y", angle, degrees=True).as_matrix() @ r
+        c["R"], c["t"] = r.tolist(), (-r @ center).tolist()
+    _, report = align_world_to_previous(previous, cams)
+    if count == 2:
+        assert report["anchor_cameras"] == ["cam_A", "cam_B"]
+        assert evaluate_world_consistency(report)["strict_two_anchor_limits_applied"]
+    else:
+        assert not evaluate_world_consistency(report)["accepted"]
+
+
+def test_uncalibrated_previous_cannot_supply_metric_scale(case):
+    previous = copy.deepcopy(case[0])
+    previous["state"] = "UNCALIBRATED"
+    _, report = align_world_to_previous(previous, previous["cameras"])
+    assert not report["usable"]
+    assert "처음 설치" in report["failure_reason"]

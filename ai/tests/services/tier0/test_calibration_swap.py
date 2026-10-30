@@ -474,3 +474,40 @@ def test_corrupt_persistent_head_fails_closed(site):
     restarted = Tier0Service(site.settings)
     with pytest.raises(Tier0StartError, match="보정 문서"):
         restarted.start()
+
+
+def test_runtime_enforces_two_anchor_limits_and_reports_axes(site):
+    doc, report = candidate(site.service)
+    anchors = [c['camera_id'] for c in doc['cameras'][:2]]
+    report['world_alignment']['anchor_cameras'] = anchors
+    for key in ('anchor_center_residuals_cm', 'anchor_rotation_residuals_deg'):
+        report['world_alignment'][key] = {cid: report['world_alignment'][key][cid] for cid in anchors}
+    report['world_alignment']['anchor_center_residuals_cm'][anchors[0]] = 2.51
+    assert not site.service.propose_calibration(doc, report)
+    comparison = site.service.calibration_status['last_decision']['comparison']
+    assert comparison['geometry_quality']['accepted']
+    assert not comparison['world_consistency']['accepted']
+    assert comparison['world_consistency']['strict_two_anchor_limits_applied']
+
+
+def test_runtime_checks_document_drift_even_when_report_claims_small_residual(site):
+    doc, report = candidate(site.service)
+    doc['cameras'][0]['t'][0] += .1
+    doc['content_hash'] = content_hash(doc)
+    report['calibration']['content_hash'] = doc['content_hash']
+    assert not site.service.propose_calibration(doc, report)
+    comparison = site.service.calibration_status['last_decision']['comparison']
+    assert comparison['geometry_quality']['accepted']
+    assert not comparison['document_world_consistency']['accepted']
+
+
+def test_fixed_rotation_target_metadata_survives_store_restart(site):
+    doc, report = candidate(site.service)
+    cid = doc['cameras'][-1]['camera_id']
+    report['world_alignment']['fixed_center_rotation_cameras'] = [cid]
+    store = site.service.calibration
+    assert store.current_report() is None
+    assert site.service.propose_calibration(doc, report)
+    site.tick()
+    restarted = RuntimeCalibrationStore(store.root, lambda: store.current())
+    assert restarted.current_report()['world_alignment']['fixed_center_rotation_cameras'] == [cid]

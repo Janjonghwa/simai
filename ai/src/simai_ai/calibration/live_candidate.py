@@ -35,13 +35,14 @@ import psutil
 from scipy.spatial.transform import Rotation
 
 from simai_ai.calibration.bundle import PersonObservation
-from simai_ai.calibration.criteria import CalibrationEvidence, ScaleBasis, ScaleEstimate, judge_calibration
+from simai_ai.calibration.criteria import CalibrationEvidence, judge_calibration
 from simai_ai.calibration.document import CameraCalibration, build_calibration_doc
 from simai_ai.calibration.extrinsics.session import (
     DEFAULT_DATA_CRITERIA,
     PROVIDER_VERSION,
     SessionDataCriteria,
     adjust_session,
+    align_world_to_previous,
     camera_changes,
     check_data_sufficiency,
     evaluate_calibration,
@@ -496,6 +497,11 @@ class CandidateImprovementCriteria:
     """후보 카메라별 holdout p95 절대 상한 (Lead 임시 결정, 25.0 px)."""
     max_anchor_residual_cm: float = 5.0
     """안전 게이트: World 정렬 기준 카메라 중심 잔차 최대 허용치 (5.0 cm)."""
+    max_anchor_rotation_deg: float = 1.5
+    max_scale_change_ratio: float = 0.03
+    two_anchor_max_residual_cm: float = 2.5
+    two_anchor_max_rotation_deg: float = 1.0
+    two_anchor_max_scale_change_ratio: float = 0.02
 
 
 DEFAULT_IMPROVEMENT_CRITERIA = CandidateImprovementCriteria()
@@ -628,6 +634,35 @@ def common_reprojection_metrics(tracks: SessionTracks, previous: Mapping[str, An
     return {"method": "common_observations", "cameras": cameras}
 
 
+def evaluate_world_consistency(world_alignment, criteria=DEFAULT_IMPROVEMENT_CRITERIA):
+    """(나) World 일관성은 개선 점수와 독립된 하드 조건이다. 미상은 거부한다."""
+    wa = world_alignment or {}
+    anchors = wa.get("anchor_cameras") or []
+    strict = len(set(anchors)) == 2
+    limits = {
+        "center_cm": min(criteria.max_anchor_residual_cm, criteria.two_anchor_max_residual_cm) if strict else criteria.max_anchor_residual_cm,
+        "rotation_deg": min(criteria.max_anchor_rotation_deg, criteria.two_anchor_max_rotation_deg) if strict else criteria.max_anchor_rotation_deg,
+        "scale_change_ratio": min(criteria.max_scale_change_ratio, criteria.two_anchor_max_scale_change_ratio) if strict else criteria.max_scale_change_ratio,
+    }
+    rejected = []
+    valid = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0
+    if not wa.get("usable") or len(set(anchors)) < 2 or len(anchors) != len(set(anchors)):
+        rejected.append("World 정렬 결과 사용 불가 또는 기준 카메라 부족")
+    for key, limit in (("anchor_center_residuals_cm", limits["center_cm"]),
+                       ("anchor_rotation_residuals_deg", limits["rotation_deg"])):
+        values = wa.get(key) or {}
+        if set(values) != set(anchors) or not values or any(not valid(v) for v in values.values()):
+            rejected.append(f"World 정렬 기준 잔차 미상/유효하지 않음: {key}")
+        elif max(values.values()) > limit:
+            rejected.append(f"World 정렬 기준 잔차 초과: {key} {max(values.values()):.3f} > {limit:.3f}")
+    scale = wa.get("scale", 1.)
+    scale_change = wa.get("scale_change_ratio", abs(scale - 1.) if valid(scale) else None)
+    if not valid(scale_change) or scale_change > limits["scale_change_ratio"]:
+        rejected.append(f"World 축척 변화 초과/미상: {scale_change}")
+    return {"accepted": not rejected, "rejected_reasons": rejected, "limits": limits,
+            "strict_two_anchor_limits_applied": strict, "scale_change_ratio": scale_change}
+
+
 def evaluate_improvement(
     before_summary: Mapping[str, Any],
     after_summary: Mapping[str, Any],
@@ -707,14 +742,7 @@ def evaluate_improvement(
     }
 
     rejected: list[str] = []
-    if not world_alignment or not world_alignment.get("usable"):
-        rejected.append("World 정렬 결과가 사용 불가(usable=False)")
-    else:
-        max_res = world_alignment.get("anchor_center_residual_max_cm")
-        if max_res is not None and float(max_res) > criteria.max_anchor_residual_cm:
-            rejected.append(
-                f"World 기준 카메라 중심 잔차 최대값 {float(max_res):.2f} cm > {criteria.max_anchor_residual_cm:.2f} cm"
-            )
+    world_consistency = evaluate_world_consistency(world_alignment, criteria)
 
     if delta_f3 < -criteria.max_fusion_3plus_drop:
         rejected.append(f"holdout 3+ 융합률 하락 {delta_f3 * 100:.2f}%p < -{criteria.max_fusion_3plus_drop * 100:.2f}%p")
@@ -791,9 +819,12 @@ def evaluate_improvement(
 
     accepted = len(rejected) == 0 and len(triggered) > 0
     decision = {
-        "accepted": accepted,
+        "accepted": accepted and world_consistency["accepted"],
+        "geometry_quality": {"accepted": accepted, "rejected_reasons": list(rejected), "triggered_gates": triggered},
+        "world_consistency": world_consistency,
         "triggered_gates": triggered,
-        "rejected_reasons": rejected,
+        "rejected_reasons": ([f"(가) 기하 품질: {r}" for r in rejected]
+                             + [f"(나) World 일관성: {r}" for r in world_consistency["rejected_reasons"]]),
         "criteria": asdict(criteria),
         "camera_comparison": camera_comparison,
     }
@@ -842,7 +873,7 @@ def try_fast_rotation_path(
     holdout_tracks: SessionTracks,
     previous: Mapping[str, Any],
     *,
-    measured_camera_heights: Mapping[str, float],
+    measured_camera_heights: Mapping[str, float] | None = None,
     created_at: int,
     fit_before_summary: Mapping[str, Any],
     holdout_before_summary: Mapping[str, Any],
@@ -854,6 +885,7 @@ def try_fast_rotation_path(
     동시에 달성하면 전체 `session` 번들 조정 없이 즉시 후보 문서를 만든다.
     """
     rig = session_rig(previous)
+    measured_camera_heights = measured_camera_heights or {}
     old_by_id = {c["camera_id"]: c for c in previous["cameras"]}
     per_cam_fit = fit_before_summary.get("per_camera_pair_pass_mean") or {}
     candidates_order = sorted(
@@ -863,6 +895,9 @@ def try_fast_rotation_path(
     attempts: list[dict[str, Any]] = []
     for target_cid in candidates_order:
         fit_pair_mean = float(per_cam_fit.get(target_cid, 0.0))
+        max_pair_mean = max(per_cam_fit.values(), default=0.)
+        if max_pair_mean > 0 and fit_pair_mean >= 0.8 * max_pair_mean:
+            continue
         if fit_pair_mean >= config.fast_pair_pass_threshold and len(attempts) > 0:
             break
         ref_cams = {cid: cam for cid, cam in rig.cameras.items() if cid != target_cid}
@@ -967,20 +1002,9 @@ def try_fast_rotation_path(
         cam_contracts = [c.to_contract() for c in cand_cameras]
 
         anchor_cids = sorted(ref_cams.keys())
-        world_alignment = {
-            "usable": True,
-            "mode": "fixed_centers_rotation_only",
-            "anchor_cameras": anchor_cids,
-            "rotation_deg": 0.0,
-            "translation_cm": 0.0,
-            "scale": 1.0,
-            "anchor_center_residuals_cm": {cid: 0.0 for cid in anchor_cids},
-            "anchor_rotation_residuals_deg": {cid: 0.0 for cid in anchor_cids},
-            "anchor_center_residual_mean_cm": 0.0,
-            "anchor_center_residual_max_cm": 0.0,
-            "height_scale_check_after": {"scale_after": 1.0, "max_spread": 0.03},
-            "height_residuals_m": None,
-        }
+        _, world_alignment = align_world_to_previous(previous, cand_cameras, measured_camera_heights,
+                                                      anchor_cameras=anchor_cids)
+        world_alignment.update(mode="fixed_centers_rotation_only", fixed_center_rotation_cameras=[target_cid])
         common = common_reprojection_metrics(holdout_tracks, previous, temp_doc)
         delta, decision = evaluate_improvement(
             holdout_before_summary,
@@ -996,15 +1020,7 @@ def try_fast_rotation_path(
             attempts.append(attempt_rec)
             continue
 
-        evidence = CalibrationEvidence(
-            scale_estimates=(
-                ScaleEstimate(
-                    ScaleBasis.MEASURED_CAMERA_HEIGHT,
-                    1.0,
-                    sample_count=len(cand_cameras),
-                ),
-            ) if len(measured_camera_heights) >= 2 else ()
-        )
+        evidence = CalibrationEvidence()
         expected_ids = [c["camera_id"] for c in previous["cameras"]]
         provider_source = str(previous.get("provider_source") or "G1_AUTO")
         judgement = judge_calibration(
@@ -1072,11 +1088,12 @@ def execute_candidate_cycle(
     buffer_summary: Mapping[str, Any],
     previous: Mapping[str, Any],
     *,
-    measured_camera_heights: Mapping[str, float],
+    measured_camera_heights: Mapping[str, float] | None = None,
     input_provenance: Mapping[str, Any],
     created_at: int,
     config: LiveCandidateConfig = DEFAULT_LIVE_CANDIDATE_CONFIG,
     worker_info: Mapping[str, Any] | None = None,
+    fixed_center_rotation_cameras: Sequence[str] = (),
 ) -> CandidateRunResult:
     """스냅샷 `SessionTracks` 로 데이터 기준 점검 → 빠른 길(`realign_rotation`) → 전체 회차 보정(`adjust_session`) → holdout 비교를 수행한다."""
     require_ms("created_at", created_at)
@@ -1163,6 +1180,8 @@ def execute_candidate_cycle(
             "attempts": fast_info["attempts"],
         }
         if fast_doc is not None and fast_info["accepted"]:
+            fast_info["world_alignment"]["fixed_center_rotation_cameras"] = sorted(
+                set(fixed_center_rotation_cameras) | {fast_info["target_camera_id"]})
             init_obs = bundle_observations(associate_session(fit_tracks, session_rig(fast_doc)))
             suff = check_data_sufficiency(
                 fit_tracks, holdout_tracks, init_obs, expected_camera_ids, config.data_criteria
@@ -1181,6 +1200,7 @@ def execute_candidate_cycle(
                 base_report["holdout"]["delta"] = fast_info["holdout_delta"]
                 base_report["holdout"]["common_reprojection"] = fast_info["common_reprojection"]
                 base_report["world_alignment"] = fast_info["world_alignment"]
+                base_report["scale_basis"] = "PREVIOUS_CALIBRATION"
                 base_report["camera_changes"] = fast_info["camera_changes"]
                 base_report["improvement_decision"] = fast_info["improvement_decision"]
                 base_report["elapsed_wall_s"] = round(time.perf_counter() - t_wall0, 3)
@@ -1204,6 +1224,7 @@ def execute_candidate_cycle(
         input_provenance=input_provenance,
         created_at=created_at,
         rounds=config.rounds,
+        fixed_center_rotation_cameras=fixed_center_rotation_cameras,
         fixed_lens=fixed_lens,
         holdout_tracks=holdout_tracks,
         data_criteria=config.data_criteria,
@@ -1221,6 +1242,7 @@ def execute_candidate_cycle(
             input_provenance=input_provenance,
             created_at=created_at,
             rounds=2,
+            fixed_center_rotation_cameras=fixed_center_rotation_cameras,
             fixed_lens=fixed_lens,
             holdout_tracks=holdout_tracks,
             data_criteria=config.data_criteria,
@@ -1232,6 +1254,8 @@ def execute_candidate_cycle(
     base_report["data_sufficiency"] = suff
     base_report["mode"] = MODE_FULL_SESSION
     base_report["world_alignment"] = s_rep.get("world_alignment")
+    base_report["scale_basis"] = "PREVIOUS_CALIBRATION"
+    base_report["floor_check"] = [r.get("floor_check") for r in s_rep.get("rounds", ())]
     base_report["camera_changes"] = s_rep.get("camera_changes")
 
     if not suff["usable"]:
@@ -1302,6 +1326,7 @@ def _subprocess_worker_entry(
             created_at=payload["created_at"],
             config=payload["config"],
             worker_info=worker_info,
+            fixed_center_rotation_cameras=payload.get("fixed_center_rotation_cameras", ()),
         )
         result_queue.put(("ok", res))
     except Exception as exc:  # pragma: no cover - 자식 프로세스 예외 전달
@@ -1316,7 +1341,7 @@ class LiveCandidateCalibrationRunner:
         buffer: LiveJointBuffer,
         active_calibration: Mapping[str, Any] | Callable[[], Mapping[str, Any]],
         *,
-        measured_camera_heights: Mapping[str, float],
+        measured_camera_heights: Mapping[str, float] | None = None,
         input_provenance: Mapping[str, Any],
         propose_calibration: Callable[[Mapping[str, Any], dict[str, Any]], Any] | None = None,
         config: LiveCandidateConfig = DEFAULT_LIVE_CANDIDATE_CONFIG,
@@ -1325,13 +1350,14 @@ class LiveCandidateCalibrationRunner:
         clock_ms: Callable[[], int] | None = None,
         adopt_proposed_as_active: bool = True,
         stop_event: threading.Event | None = None,
+        active_report: Callable[[], Mapping[str, Any] | None] | None = None,
     ) -> None:
         self._buffer = buffer
         self._active_source = active_calibration
         self._active_doc: Mapping[str, Any] | None = (
             None if callable(active_calibration) else copy.deepcopy(dict(active_calibration))
         )
-        self._heights = dict(measured_camera_heights)
+        self._heights = dict(measured_camera_heights or {})
         self._provenance = dict(input_provenance)
         self._propose_cb = propose_calibration
         self._config = config
@@ -1340,6 +1366,8 @@ class LiveCandidateCalibrationRunner:
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
         self._adopt_proposed = adopt_proposed_as_active
         self._stop_event = stop_event or threading.Event()
+        self._active_report_source = active_report
+        self._last_proposed_report: Mapping[str, Any] | None = None
         self._last_run_at_ms: int | None = None
         self._history: deque[CandidateRunResult] = deque(maxlen=16)
         self._simulate_sleep_s: float = 0.0
@@ -1381,6 +1409,11 @@ class LiveCandidateCalibrationRunner:
         require_ms("now_ms", ts)
         self._last_run_at_ms = ts
         previous = copy.deepcopy(dict(self.current_calibration()))
+        active_report = self._active_report_source() if self._active_report_source else self._last_proposed_report
+        self._fixed_center_rotation_cameras = ()
+        if active_report and (active_report.get("calibration") or {}).get("version") == previous["calibration_version"]:
+            self._fixed_center_rotation_cameras = tuple(
+                (active_report.get("world_alignment") or {}).get("fixed_center_rotation_cameras", ()))
         buf_summary = self._buffer.summary()
 
         # 명세 3.2, 3.12: Tier 0 실시간 판정 자원 우선순위 확인
@@ -1409,9 +1442,11 @@ class LiveCandidateCalibrationRunner:
                 input_provenance=self._provenance,
                 created_at=ts,
                 config=self._config,
+                fixed_center_rotation_cameras=self._fixed_center_rotation_cameras,
             )
 
         if res.proposed and res.calibration is not None:
+            self._last_proposed_report = res.report
             if self._adopt_proposed and not callable(self._active_source):
                 self._active_doc = copy.deepcopy(dict(res.calibration))
             if self._propose_cb is not None:
@@ -1471,6 +1506,7 @@ class LiveCandidateCalibrationRunner:
             "config": self._config,
             "worker_nice": self._config.worker_nice,
             "simulate_sleep_s": self._simulate_sleep_s,
+            "fixed_center_rotation_cameras": self._fixed_center_rotation_cameras,
         }
         proc = ctx.Process(target=_subprocess_worker_entry, args=(payload, queue), daemon=True)
         proc.start()

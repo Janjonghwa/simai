@@ -99,10 +99,13 @@ class FrameFeed:
         pass
 
 
+@pytest.mark.parametrize("with_heights", [True, False])
 def test_synthetic_perception_candidate_switch_and_next_world_version(tmp_path, recording, monkeypatch,
-                                                                      synthetic_rig_and_frames):
+                                                                      synthetic_rig_and_frames, with_heights):
     truth, heights, provenance, frames = synthetic_rig_and_frames
-    initial = _perturb_camera_rotation(truth, "cam_D", 1.)
+    # -352: 빠른 길은 상대 통과율이 최상 카메라의 80% 미만인 카메라만 시도한다.
+    # 1도는 D/max=0.926이므로, 명확한 틀어짐(5도, D/max=0.273)으로 전환 경로를 검증한다.
+    initial = _perturb_camera_rotation(truth, "cam_D", 5.)
     # 실제 직전 보정처럼 녹화 도구의 반올림한 기본 렌즈와 약간 달라도 값을 보존해야 한다.
     for camera in initial["cameras"]:
         camera["K"][0][0] += .015
@@ -113,7 +116,7 @@ def test_synthetic_perception_candidate_switch_and_next_world_version(tmp_path, 
     now = [frames[0].estimated_capture_time_ms]
     settings = replace(_settings(tmp_path, recording, anchor_ms=now[0], bootstrap=False),
                        calibration_file=cal_file, drift_watch_enabled=False,
-                       live_calibration=LiveCalibrationSettings(measured_camera_heights=heights))
+                       live_calibration=LiveCalibrationSettings(measured_camera_heights=heights if with_heights else {}))
     monkeypatch.setattr(Tier0Service, "_run_judge", lambda self: None)
     monkeypatch.setattr(Tier0Service, "_run_housekeeping", lambda self: None)
     # 실행만 시험 스레드에서 돌린다. 후보 계산·검증·전환 경로는 실제 구현을 쓴다.
@@ -132,6 +135,8 @@ def test_synthetic_perception_candidate_switch_and_next_world_version(tmp_path, 
         assert live.buffer.summary()["total_samples"] == 2 * len(frames)
         result = live.run_once()
         assert result.proposed, result.report.get("failure_reason")
+        assert result.calibration["scale_basis"] == initial["scale_basis"]
+        assert result.report["world_alignment"]["fixed_center_rotation_cameras"] == ["cam_D"]
         assert all(a["K"] == b["K"] and a["distortion"] == b["distortion"]
                    for a, b in zip(initial["cameras"], result.calibration["cameras"], strict=True))
         assert service.calibration_status.get("pending_version") == result.calibration["calibration_version"], (service.calibration_status, result.report["holdout"])

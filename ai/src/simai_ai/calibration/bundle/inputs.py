@@ -77,6 +77,8 @@ class BundleConfig:
     """표본마다 뼈 길이가 사람별 길이 변수에서 벗어날 수 있는 표준편차"""
     floor_sigma_m: float = 0.01
     """접지한 발 keypoint 높이가 접지 높이에서 벗어날 수 있는 표준편차"""
+    floor_contacts_for_gauge: bool = True
+    """False면 접지점은 검산에만 쓰고 바닥 게이지는 초기 포즈에서 이어받는다(session)."""
     toe_contact_height_m: float = 0.02
     """접지한 발 끝 keypoint 의 바닥 위 높이 (신발 앞코). 발 끝점이 없으면 발목을 쓴다"""
     ankle_contact_height_m: float = 0.08

@@ -12,7 +12,11 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from simai_ai.calibration.bundle import BundleConfig, adjust_human_bundle, checks
-from simai_ai.calibration.criteria import ScaleBasis, ScaleEstimate, judge_calibration
+from simai_ai.calibration.bundle.adjust import (
+    FLAG_CONTACTS_COLLINEAR, FLAG_FEW_CONTACTS, FLAG_FLOOR_PLANE_UNKNOWN,
+    FLAG_HEIGHT_CHECK_MISMATCH, FLAG_HEIGHT_CHECK_UNKNOWN,
+)
+from simai_ai.calibration.criteria import judge_calibration
 from simai_ai.calibration.document import CameraCalibration, build_calibration_doc, content_hash
 from simai_ai.calibration.extrinsics.session_bootstrap import rotation_candidates
 from simai_ai.calibration.extrinsics.session_tracks import (
@@ -128,6 +132,36 @@ def _svd_rotation(H: np.ndarray) -> np.ndarray:
     return u @ np.diag([1.0, 1.0, 1.0 if d >= 0 else -1.0]) @ vt
 
 
+def _pose_alignment(previous, cameras, anchors):
+    """중심과 방향을 함께 쓰는 닮음 정렬. 모든 카메라의 잔차를 같은 변환으로 잰다."""
+    old = {c["camera_id"]: c for c in previous["cameras"]}
+    new = {(c.camera_id if isinstance(c, CameraCalibration) else c["camera_id"]):
+           (c.to_contract() if isinstance(c, CameraCalibration) else c) for c in cameras}
+    r0 = {cid: np.asarray(old[cid]["R"]) for cid in new}
+    r = {cid: np.asarray(c["R"]) for cid, c in new.items()}
+    c0 = {cid: -r0[cid].T @ np.asarray(old[cid]["t"]) for cid in new}
+    centers = {cid: -r[cid].T @ np.asarray(new[cid]["t"]) for cid in new}
+    a0, a = np.array([c0[c] for c in anchors]), np.array([centers[c] for c in anchors])
+    d0, d = a0 - a0.mean(axis=0), a - a.mean(axis=0)
+    norm = float(np.linalg.norm(d0) * np.linalg.norm(d))
+    denom = float(np.sum(d ** 2))
+    if norm <= 1e-12 or denom <= 1e-12:
+        raise ValueError("기준 카메라 중심 간 거리가 없어 축척을 이어받을 수 없다")
+    rw = _svd_rotation(d0.T @ d / norm + sum(r0[c].T @ r[c] for c in anchors))
+    scale = float(np.sum(d0 * (d @ rw.T)) / denom)
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError("직전 보정 기준 닮음 축척이 유효하지 않다")
+    translation = a0.mean(axis=0) - scale * rw @ a.mean(axis=0)
+    residuals = {cid: float(np.linalg.norm(scale * rw @ centers[cid] + translation - c0[cid]) * 100)
+                 for cid in new}
+    rotations = {cid: float(np.degrees(Rotation.from_matrix(r[cid] @ rw.T @ r0[cid].T).magnitude()))
+                 for cid in new}
+    return {"scale": scale, "center_residuals_cm": residuals, "rotation_residuals_deg": rotations,
+            "max_cm": max(residuals[c] for c in anchors),
+            "rms_cm": float(np.sqrt(np.mean([residuals[c] ** 2 for c in anchors]))),
+            "max_rotation_deg": max(rotations[c] for c in anchors)}
+
+
 def select_anchor_cameras(
     previous: Mapping[str, Any],
     cameras: Sequence[CameraCalibration | Mapping[str, Any]],
@@ -135,6 +169,8 @@ def select_anchor_cameras(
     bootstrap: Mapping[str, Any] | None = None,
     anchor_cameras: Sequence[str] | None = None,
     max_rotation_deg: float = 1.5,
+    diagnostics: dict[str, Any] | None = None,
+    fixed_center_rotation_cameras: Sequence[str] = (),
 ) -> tuple[list[str], str, dict[str, str]]:
     """직전 World에 정렬할 기준 카메라를 고른다(기본 auto: PnP 복구 불필요·회전 변화 작은 카메라 최소 2대)."""
     old_by_id = {c["camera_id"]: np.asarray(c["R"], dtype=float) for c in previous["cameras"]}
@@ -165,6 +201,41 @@ def select_anchor_cameras(
             excluded[cid] = "PnP 회전 초기 복구가 적용됨"
         else:
             pool.append(cid)
+    diagnostics = diagnostics if diagnostics is not None else {}
+    # 먼저 전체 정렬을 기록한다. 과거 fast_rotation은 중심을 고치지 않았으므로 기준에서 뺀다.
+    try:
+        if len(known) >= 2:
+            diagnostics["all_cameras_alignment"] = _pose_alignment(previous, cameras, known)
+    except ValueError as exc:
+        diagnostics["all_cameras_alignment"] = {"failure_reason": str(exc)}
+    for cid in fixed_center_rotation_cameras:
+        if cid in pool:
+            pool.remove(cid)
+            excluded[cid] = "직전 빠른 회전 보정에서 중심은 고정되고 회전만 변경됨"
+    diagnostics["leave_one_out"] = []
+    while len(pool) >= 3:
+        candidates = {}
+        for cid in pool:
+            try:
+                candidates[cid] = _pose_alignment(previous, cameras, [c for c in pool if c != cid])
+            except ValueError:
+                continue
+        diagnostics["leave_one_out"].append({"pool": list(pool), "candidates": candidates})
+        if not candidates:
+            break
+        worst = min(candidates, key=lambda c: (candidates[c]["max_cm"], candidates[c]["rms_cm"],
+                                               candidates[c]["max_rotation_deg"]))
+        fit = candidates[worst]
+        center_outlier = (fit["center_residuals_cm"][worst] > 3.5
+                          and fit["center_residuals_cm"][worst] > 1.8 * fit["max_cm"])
+        rotation_outlier = (fit["rotation_residuals_deg"][worst] > max_rotation_deg
+                            and fit["max_rotation_deg"] <= max_rotation_deg)
+        if not center_outlier and not rotation_outlier:
+            break
+        excluded[worst] = (f"LOO 이탈: 중심 {fit['center_residuals_cm'][worst]:.3f} cm, "
+                           f"회전 {fit['rotation_residuals_deg'][worst]:.3f}°, "
+                           f"남은 최대 중심 잔차 {fit['max_cm']:.3f} cm")
+        pool.remove(worst)
     while len(pool) >= 2:
         R_w = _svd_rotation(sum(old_by_id[c].T @ new_by_id[c] for c in pool))
         residuals = {
@@ -194,6 +265,7 @@ def align_world_to_previous(
     anchor_cameras: Sequence[str] | None = None,
     max_anchor_rotation_deg: float = 1.5,
     apply_scale: bool = True,
+    fixed_center_rotation_cameras: Sequence[str] = (),
 ) -> tuple[tuple[CameraCalibration, ...], dict[str, Any]]:
     """기준 카메라들의 중심과 방향을 써서 새 보정의 World를 직전 보정의 World에 닮음 변환으로 맞춘다."""
     cam_objs = tuple(
@@ -210,17 +282,28 @@ def align_world_to_previous(
         )
         for c in cameras
     )
+    if previous.get("state") == "UNCALIBRATED":
+        return cam_objs, {"usable": False, "anchor_cameras": [],
+                          "failure_reason": "직전 미터 보정이 없어 처음 설치 보정이 필요하다"}
+    diagnostics: dict[str, Any] = {}
     anchors, mode, excluded = select_anchor_cameras(
-        previous, cam_objs, bootstrap=bootstrap, anchor_cameras=anchor_cameras, max_rotation_deg=max_anchor_rotation_deg
+        previous, cam_objs, bootstrap=bootstrap, anchor_cameras=anchor_cameras, max_rotation_deg=max_anchor_rotation_deg,
+        diagnostics=diagnostics, fixed_center_rotation_cameras=fixed_center_rotation_cameras,
     )
     if len(anchors) < 2:
         return cam_objs, {
+            **diagnostics,
             "usable": False,
             "selection_mode": mode,
             "anchor_cameras": anchors,
             "excluded_cameras": excluded,
             "failure_reason": f"World 정렬 기준 카메라 부족({len(anchors)}대 < 2대)",
         }
+    try:
+        _pose_alignment(previous, cam_objs, anchors)
+    except ValueError as exc:
+        return cam_objs, {**diagnostics, "usable": False, "anchor_cameras": anchors,
+                          "excluded_cameras": excluded, "failure_reason": str(exc)}
     old_map = {c["camera_id"]: c for c in previous["cameras"]}
     new_map = {c.camera_id: c for c in cam_objs}
     R0_map = {cid: np.asarray(old_map[cid]["R"], dtype=float) for cid in new_map}
@@ -298,8 +381,13 @@ def align_world_to_previous(
                 for cid in sorted(C_rig_map) if cid in measured_camera_heights
             },
         }
-        if scale_after is None:
+        # 검산 배율로 World를 바꾸지 않는다. 카메라 간 3% 또는 절대 높이 10cm 초과는 거부한다.
+        height_max_error = max((abs(C_used_map[c][2] - measured_camera_heights[c])
+                                for c in C_used_map if c in measured_camera_heights), default=0.)
+        height_record["max_absolute_residual_m"] = round(float(height_max_error), 6)
+        if scale_after is None or height_max_error > 0.10:
             return tuple(aligned), {
+                **diagnostics,
                 "usable": False,
                 "mode": "similarity" if apply_scale else "rigid",
                 "selection_mode": mode,
@@ -313,11 +401,19 @@ def align_world_to_previous(
                 "height_scale_check_after": height_record,
                 "height_residuals_m": height_residuals,
                 "anchor_center_residuals_cm": anchor_res_cm,
-                "failure_reason": f"World 정렬 뒤 실측 카메라 높이 검산 실패: {h_rec.get('rejected')}",
+                "failure_reason": f"World 정렬 뒤 실측 카메라 높이 검산 실패: {h_rec.get('rejected') or '절대 높이 잔차 > 0.10 m'}",
             }
 
     return tuple(aligned), {
+        **diagnostics,
         "usable": True,
+        "scale_basis": "PREVIOUS_CALIBRATION",
+        "strict_two_anchor_limits_applied": len(anchors) == 2,
+        "scale_change_ratio": max(
+            abs(float(np.linalg.norm(C_used_map[a] - C_used_map[b]) / np.linalg.norm(C0_map[a] - C0_map[b])) - 1)
+            for i, a in enumerate(anchors) for b in anchors[i + 1:]
+            if np.linalg.norm(C0_map[a] - C0_map[b]) > 1e-12
+        ),
         "mode": "similarity" if apply_scale else "rigid",
         "selection_mode": mode,
         "anchor_cameras": anchors,
@@ -410,7 +506,7 @@ def adjust_session(
     tracks: SessionTracks,
     previous: Mapping[str, Any],
     *,
-    measured_camera_heights: Mapping[str, float],
+    measured_camera_heights: Mapping[str, float] | None = None,
     input_provenance: Mapping[str, Any],
     created_at: int,
     rounds: int = 3,
@@ -421,8 +517,10 @@ def adjust_session(
     data_criteria: SessionDataCriteria = DEFAULT_DATA_CRITERIA,
     apply_world_scale: bool = True,
     progress: Callable[[str], None] | None = None,
+    fixed_center_rotation_cameras: Sequence[str] = (),
 ) -> SessionResult:
     require_ms("created_at", created_at)
+    measured_camera_heights = measured_camera_heights or {}
     if rounds not in (2, 3):
         raise ValueError("session 연관/조정 라운드는 2 또는 3이다")
     problems = check_calibration(previous)
@@ -433,6 +531,7 @@ def adjust_session(
     config = bundle_config or BundleConfig(lens_mode="fixed", fixed_lens=fixed_lens)
     if config.lens_mode != "fixed" or config.fixed_lens != fixed_lens:
         raise ValueError("session은 공유 고정 렌즈를 쓴다")
+    config = replace(config, floor_contacts_for_gauge=False)
     if anchor_cameras is not None:
         select_anchor_cameras(previous, previous["cameras"], anchor_cameras=anchor_cameras)
 
@@ -478,6 +577,7 @@ def adjust_session(
     report: dict[str, Any] = {
         "format": "simai.session_calibration",
         "format_version": "0.2.0",
+        "scale_basis": "PREVIOUS_CALIBRATION",
         "created_at": created_at,
         "previous_version": previous["calibration_version"],
         "input_provenance": dict(input_provenance),
@@ -515,11 +615,20 @@ def adjust_session(
             break
         result = adjust_human_bundle(
             observations, intrinsics_init(current), {c["camera_id"]: (c["R"], c["t"]) for c in current["cameras"]},
-            measured_camera_heights=measured_camera_heights, input_provenance=input_provenance,
+            measured_camera_heights=None, input_provenance=input_provenance,
             created_at=created_at, config=config,
         )
         entry["bundle"] = dict(result.record)
         entry["status"], entry["flags"] = result.status, list(result.flags)
+        # 바닥·단안 높이 검산의 미상/불일치는 상대 포즈의 수렴 실패가 아니다.
+        check_flags = {FLAG_CONTACTS_COLLINEAR, FLAG_FEW_CONTACTS, FLAG_FLOOR_PLANE_UNKNOWN,
+                       FLAG_HEIGHT_CHECK_MISMATCH, FLAG_HEIGHT_CHECK_UNKNOWN}
+        blocking_flags = tuple(f for f in result.flags if f.split(":")[0] not in check_flags)
+        entry["blocking_flags"] = list(blocking_flags)
+        if result.status == "UNCERTAIN" and not blocking_flags:
+            result = replace(result, status="CONVERGED")
+        entry["status"] = result.status
+        entry["floor_check"] = result.record.get("floor")
         if progress:
             progress(f"라운드 {n + 1}: {len(observations)}개 사람/시각, {result.status}, {list(result.flags)}")
         if not result.cameras:
@@ -533,6 +642,7 @@ def adjust_session(
             bootstrap=bootstrap,
             anchor_cameras=anchor_cameras,
             apply_scale=apply_world_scale,
+            fixed_center_rotation_cameras=fixed_center_rotation_cameras,
         )
         entry["world_alignment"] = world_alignment
         report["world_alignment"] = world_alignment
@@ -571,29 +681,10 @@ def adjust_session(
     if not report.get("world_alignment") or not report["world_alignment"].get("usable"):
         report.setdefault("failure_reason", "직전 World 정렬에 실패했다")
         return SessionResult(None, report)
-    scale = result.record.get("scale", {}).get("camera_heights") or {}
-    wa_height = report["world_alignment"].get("height_scale_check_after") or {}
-    if not scale.get("applied") and wa_height.get("scale_after") is None:
-        report["failure_reason"] = "실측 카메라 높이 축척을 적용하지 못했다"
-        return SessionResult(None, report)
-
     cameras = [c.to_contract() for c in aligned_cameras]
     evidence = result.evidence()
-    if (
-        not any(e.basis is ScaleBasis.MEASURED_CAMERA_HEIGHT for e in evidence.scale_estimates)
-        and wa_height.get("scale_after") is not None
-    ):
-        evidence = replace(
-            evidence,
-            scale_estimates=(
-                *evidence.scale_estimates,
-                ScaleEstimate(
-                    ScaleBasis.MEASURED_CAMERA_HEIGHT,
-                    float(wa_height["scale_after"]),
-                    sample_count=int(wa_height.get("cameras") or len(cameras)),
-                ),
-            ),
-        )
+    # 높이는 검산만 한다. 문서에는 축척을 실제로 정한 직전 근거를 이어받는다.
+    evidence = replace(evidence, scale_estimates=())
     judgement = judge_calibration(result.provider_source, cameras, evidence,
                                   expected_camera_ids=expected_camera_ids)
     stamp = dt.datetime.fromtimestamp(created_at / 1000, dt.UTC).strftime("%Y%m%d-%H%M%S")
@@ -601,7 +692,7 @@ def adjust_session(
         calibration_version=f"cal-session-{stamp}-{created_at % 1000:03d}z",
         provider_source=result.provider_source, provider_version=PROVIDER_VERSION,
         created_at=created_at, cameras=aligned_cameras, judgement=judgement,
-        fallback_scale_basis=result.fallback_scale_basis,
+        fallback_scale_basis=previous["scale_basis"],
         site_id=previous["coordinate_frame"].get("site_id"), world_axes_source=previous.get("world_axes_source"),
     )
     if doc["state"] != "PROVISIONAL":
@@ -614,7 +705,8 @@ def adjust_session(
     return SessionResult(doc, report)
 
 
-def camera_changes(previous, current, heights):
+def camera_changes(previous, current, heights=None):
+    heights = heights or {}
     old = {c["camera_id"]: c for c in previous["cameras"]}
     changes = {}
     for c in current["cameras"]:

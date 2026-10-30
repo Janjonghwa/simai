@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 cv2 = pytest.importorskip("cv2")  # extras calibration (CI 기본 가상환경에는 없다)
+pytest.importorskip("scipy")
 from scipy.spatial.transform import Rotation
 
 from simai_ai.calibration.criteria import CalibrationEvidence, judge_calibration
@@ -380,3 +381,79 @@ def test_subprocess_timeout_and_priority_deferral(synthetic_rig_and_frames, tmp_
     assert res_to.status == STATUS_TIMEOUT
     assert res_to.proposed is False
     assert "시간 상한 초과" in res_to.report["failure_reason"]
+
+
+def _axis_case():
+    from simai_ai.calibration.live_candidate import summarize_holdout_metrics
+    ids = ['cam_A', 'cam_B', 'cam_C', 'cam_D']
+    def metrics(ratio, median):
+        return summarize_holdout_metrics({
+            'fusion_3plus_ratio': ratio, 'fusion_4_ratio': ratio,
+            'pairs': {f'{a}/{b}': {'pass_ratio': ratio} for i, a in enumerate(ids) for b in ids[i + 1:]},
+            'reprojection_error_px': {cid: {'median': median, 'p95': 5., 'observations': 300}
+                                      for cid in [*ids, 'overall']},
+        })
+    alignment = {'usable': True, 'anchor_cameras': ids,
+                 'anchor_center_residuals_cm': dict.fromkeys(ids, 1.),
+                 'anchor_rotation_residuals_deg': dict.fromkeys(ids, .1), 'scale_change_ratio': 0.}
+    common = {'method': 'common_observations', 'cameras': {
+        cid: {'observations': 300, 'before_median_px': 3., 'after_median_px': 2.} for cid in ids}}
+    return metrics(.2, 3.), metrics(.5, 2.), alignment, common
+
+
+@pytest.mark.parametrize('axis', ['geometry', 'center', 'rotation', 'scale', 'unknown', 'few'])
+def test_acceptance_requires_both_geometry_and_world_axes(axis):
+    from simai_ai.calibration.live_candidate import evaluate_improvement
+    before, after, alignment, common = _axis_case()
+    if axis == 'geometry':
+        after = copy.deepcopy(before)
+    elif axis == 'center':
+        alignment['anchor_center_residuals_cm']['cam_A'] = 5.01
+    elif axis == 'rotation':
+        alignment['anchor_rotation_residuals_deg']['cam_A'] = 1.51
+    elif axis == 'scale':
+        alignment['scale_change_ratio'] = .0301
+    elif axis == 'unknown':
+        alignment['anchor_center_residuals_cm']['cam_A'] = float('nan')
+    else:
+        alignment['anchor_cameras'] = ['cam_A']
+    _, decision = evaluate_improvement(before, after, world_alignment=alignment, common_reprojection=common)
+    assert not decision['accepted']
+    assert decision['geometry_quality']['accepted'] == (axis != 'geometry')
+    assert decision['world_consistency']['accepted'] == (axis == 'geometry')
+    assert decision['rejected_reasons'][0].startswith('(가)' if axis == 'geometry' else '(나)')
+
+
+@pytest.mark.parametrize('field,value', [('anchor_center_residuals_cm', 2.51),
+                                         ('anchor_rotation_residuals_deg', 1.01),
+                                         ('scale_change_ratio', .0201)])
+def test_two_anchors_apply_stricter_limits(field, value):
+    from simai_ai.calibration.live_candidate import evaluate_improvement
+    before, after, alignment, common = _axis_case()
+    if field == 'scale_change_ratio':
+        alignment[field] = value
+    else:
+        alignment[field]['cam_A'] = value
+    _, decision = evaluate_improvement(before, after, world_alignment=alignment, common_reprojection=common)
+    assert decision['accepted']
+    alignment['anchor_cameras'] = ['cam_A', 'cam_B']
+    for key in ('anchor_center_residuals_cm', 'anchor_rotation_residuals_deg'):
+        alignment[key] = {cid: alignment[key][cid] for cid in alignment['anchor_cameras']}
+    _, decision = evaluate_improvement(before, after, world_alignment=alignment, common_reprojection=common)
+    assert not decision['accepted']
+    assert decision['world_consistency']['strict_two_anchor_limits_applied']
+
+
+def test_fast_rotation_does_not_try_healthy_cameras_after_weak_camera_fails(monkeypatch):
+    import simai_ai.calibration.live_candidate as mod
+    from types import SimpleNamespace
+    attempts = []
+    monkeypatch.setattr(mod, 'session_rig', lambda doc: SimpleNamespace(cameras=dict.fromkeys(['cam_A', 'cam_B', 'cam_C', 'cam_D'])))
+    monkeypatch.setattr(mod, '_collect_rotation_observations', lambda *args: [])
+    monkeypatch.setattr(mod, 'realign_rotation', lambda doc, cid, obs: attempts.append(cid))
+    monkeypatch.setattr(mod, 'associate_session', lambda *args, **kwargs: [])
+    monkeypatch.setattr(mod, 'rotation_candidates', lambda *args: ([], []))
+    mod.try_fast_rotation_path(None, None, {'cameras': []}, created_at=T0,
+        fit_before_summary={'per_camera_pair_pass_mean': {'cam_A': .4, 'cam_B': .4, 'cam_C': .4, 'cam_D': .1}},
+        holdout_before_summary={})
+    assert attempts == ['cam_D']

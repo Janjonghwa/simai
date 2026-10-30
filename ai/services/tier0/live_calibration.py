@@ -23,7 +23,8 @@ class BackgroundLiveCalibration:
     def __init__(self, document: Mapping[str, Any], provenance: Mapping[str, Any], *,
                  settings: LiveCalibrationSettings, now_ms: Callable[[], int], stop: threading.Event,
                  propose: Callable[[Mapping[str, Any], Mapping[str, Any], int], bool],
-                 can_run: Callable[[], bool]) -> None:
+                 can_run: Callable[[], bool],
+                 active_report: Callable[[], Mapping[str, Any] | None] | None = None) -> None:
         self.buffer = LiveJointBuffer(LiveBufferConfig(max_duration_ms=settings.buffer_duration_ms))
         self.document = document
         self.provenance = provenance
@@ -40,6 +41,7 @@ class BackgroundLiveCalibration:
             config=LiveCandidateConfig(interval_ms=settings.interval_ms, timeout_s=settings.timeout_s),
             can_run=lambda: not stop.is_set() and self.blocked_reason is None and can_run(),
             clock_ms=now_ms, adopt_proposed_as_active=False, stop_event=stop,
+            active_report=active_report,
         )
         self.last_status: str | None = None
         self.last_error: str | None = None
