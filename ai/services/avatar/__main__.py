@@ -15,6 +15,7 @@ from simai_ai.hmr.runtime import FastBodyModel
 from simai_ai.hmr.diagnostics import exception_summary
 from simai_ai.hmr.loader import prepare_checkpoint
 from simai_ai.hmr.stream import AvatarLoop
+from simai_ai.hmr.appearance_stream import appearance_from_env, face_faces_from_rig
 from simai_ai.io.avatar_channel import LatestChannelReader
 
 from .transport import AvatarSender, AvatarUpload, websocket_connector
@@ -54,12 +55,23 @@ def main():
         checkpoint = env.get("SIMAI_AVATAR_CHECKPOINT")
         path = Path(checkpoint) if checkpoint else prepare_checkpoint(root, Path(env["SIMAI_FS3DB_REPO"]))
         model = FastBodyModel(path)
+        appearance = appearance_from_env(env)
+        if appearance is not None:
+            try:
+                face_faces_from_rig(model.rig, appearance.face_region)
+            except ValueError as e:
+                # auto 로 켜진 누적은 얼굴 영역을 못 정하면 끄고 메시·대표색으로 계속한다. 1 로 강제했으면 멈춘다
+                if env.get("SIMAI_AVATAR_APPEARANCE", "auto") == "1":
+                    raise
+                logging.warning("텍스처 누적 끔: 얼굴 영역 확인 실패 (%s)", e)
+                appearance = None
         clock_ms = lambda: time.time_ns() // 1_000_000
         sender = AvatarSender(websocket_connector(base, token), clock_ms=clock_ms, monotonic=time.monotonic,
                               source_id=env.get("SIMAI_WORKER_ID") or "worker-01", stream_epoch=stream_epoch,
                               log_secrets=(token,))
         source = LatestChannelReader(Path(env.get("SIMAI_AVATAR_CHANNEL") or root / "state/avatar-input.npz"))
-        loop = AvatarLoop(source, gate, model, AvatarUpload(base, token), sender, clock_ms=clock_ms)
+        loop = AvatarLoop(source, gate, model, AvatarUpload(base, token), sender, clock_ms=clock_ms,
+                          appearance=appearance)
         def send_loop():
             while not stop.is_set():
                 sender.tick()

@@ -118,7 +118,7 @@ def build_skinned_glb(person: PersonRig, *, include_uv: bool = True, name: str =
     normals_src = vertex_normals(rest, rig.faces)
     if include_uv and rig.texcoords is not None and rig.texcoord_faces is not None:
         src, uv_idx, faces = split_uv_seams(rig.faces, rig.texcoord_faces)
-        # MHR UV 는 아래 왼쪽 원점(FBX·OBJ 규약)으로 보고 glTF(위 왼쪽 원점)로 v 를 뒤집는다(텍스처가 생기면 -89 가 확인)
+        # MHR UV(아래 원점) → glTF TEXCOORD_0(위 원점). appearance.py PNG 행도 이 좌표를 쓴다.
         uv = rig.texcoords[uv_idx].copy()
         uv[:, 1] = 1.0 - uv[:, 1]
     else:

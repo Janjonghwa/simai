@@ -148,6 +148,36 @@ def test_upload_failure_logs_status_and_preserves_exception(monkeypatch, caplog)
     assert "업로드 실패" in caplog.text and "ValueError" in caplog.text and "HTTP=403" in caplog.text
 
 
+@pytest.mark.parametrize("file_name", ["albedo.png", "surface_source.png"])
+def test_png_uses_distinct_signed_versioned_key_and_exact_bytes(monkeypatch, file_name):
+    posts, puts = [], []
+    uri = f"s3://avatars/w-1/e1000/v2/{file_name}"
+    def post(path, body, timeout):
+        posts.append(body)
+        return SimpleNamespace(status=200, body={"upload_url": "https://storage.test/put",
+            "method": "PUT", "object_uri": uri, "headers": {"Content-Type": "image/png"}})
+    monkeypatch.setattr(transport, "HttpTransport", lambda *args: SimpleNamespace(post=post))
+    class Result:
+        status = 200
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+    def put(request, timeout):
+        puts.append(request)
+        return Result()
+    monkeypatch.setattr(transport, "build_opener", lambda *args: SimpleNamespace(open=put))
+    asset = SimpleNamespace(data=b"png-bytes", size_bytes=9, sha256="sha256:" + "a" * 64)
+    upload = AvatarUpload("https://ec2.test", "private-worker-token")
+    assert upload.png("w-1", 1000, 2, file_name, asset) == uri
+    assert posts == [{"purpose": "AVATAR_ASSET", "world_id": "w-1", "stream_epoch": 1000,
+        "appearance_version": 2, "content_type": "image/png", "size_bytes": 9, "sha256": "a" * 64,
+        "file_name": file_name}]
+    assert puts[0].data == asset.data and not puts[0].has_header("Authorization")
+    with pytest.raises(ValueError, match="PNG 이름"):
+        upload.png("w-1", 1000, 2, "../surface.png", asset)
+
+
 def test_exception_summary_keeps_type_and_message_on_one_line_without_credentials():
     error = ValueError("shape mismatch\nhttps://host.test/a?signature=secret "
                        "Authorization: Bearer abc token='def' password=ghi private-worker-token")
