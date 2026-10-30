@@ -47,7 +47,15 @@ def load_cameras(path: Path, clock: Clock, env: Mapping[str, str]) -> list[Camer
     for c in cams:
         if not c.get("camera_id"):
             raise ConfigError("[[cameras]] 에 camera_id 가 없다")
-        model = CaptureTimeModel(**{**base, **(c.get("capture_time") or {})})
+        defaults = {}
+        if c.get("kind") == "file":
+            defaults["timestamp_source"] = "FILE"
+            if c.get("realtime", True):
+                # FileSource.read() 는 _pace() 뒤 반환한다. PTS 없음 시 수신 시각은 파일 페이싱 시각이고
+                # RTSP 의 Wi-Fi 지터를 위한 45 ms 대신 정상 PTS 와 같은 잠정 20 ms 를 쓴다(-353).
+                # 근거·한계: README 의 파일 재생 절. 명시 설정은 공통 → 카메라 순으로 우선한다.
+                defaults["uncertainty_no_pts_ms"] = 20.0
+        model = CaptureTimeModel(**{**defaults, **base, **(c.get("capture_time") or {})})
         specs.append(CameraSpec(camera_id=c["camera_id"], source=build_source(c, clock, env, path.parent),
                                 capture_time=model, firmware=c.get("firmware") or None))
     ids = [s.camera_id for s in specs]

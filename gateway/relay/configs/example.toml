@@ -1,4 +1,5 @@
 # 노트북 영상 중계 설정 예시 (S15P31A101-80). 복사해서 쓴다. 형식은 녹화 도구 세션 설정의 [capture_time]·[[cameras]] 와 같다.
+# 녹화 파일 재생은 file-playback.toml 참고. 여기의 공통 45 ms 는 RTSP 용이며 파일 기본 20 ms 보다 우선한다.
 # 카메라 계정은 여기에 쓰지 않는다. 저장소 루트 .env 의 RTSP_USER / RTSP_PASS 를 읽는다(gateway/recorder/.env.example 참고).
 # C110 은 RTSP 동시 접속이 2세션이다. 중계와 녹화 도구를 같은 카메라에 함께 붙이면 Tapo 앱·VLC 로는 더 붙지 못한다.
 

@@ -23,6 +23,7 @@
 `uv sync` 해야 한다. `cryptography` 는 개발 의존성이라 시험과 `bench-transport` 의 임시 인증서 만들기에만 쓴다(개발 의존성 없이
 설치했으면 `--cert`·`--key` 를 준다). 입력(RTSP·파일·합성), 촬영 시각 추정, I0 헤더·코덱 정보 만들기는 `gateway/recorder`
 (`simai-recorder`, 저장소 안 경로 의존)를 그대로 쓴다. 녹화 파일의 헤더와 LIVE 헤더가 같은 코드에서 나온다.
+relay 파일 입력의 기본 촬영 시각 설정만 아래 파일 재생 절처럼 구분한다.
 
 ```
 src/simai_relay/
@@ -37,7 +38,7 @@ src/simai_relay/
   bench.py        G0 전송 비교 측정: 카메라별 연결 vs 단일 연결 다중화 (bench-transport)
   config.py       설정(TOML)·카메라 계정(.env) 읽기, 로그의 비밀 값 가리기(RedactSecrets)
   cli.py          simai-relay run
-configs/          example.toml(실제 카메라), dry-run.toml(카메라 없이)
+configs/          example.toml(실제 카메라), dry-run.toml(카메라 없이), file-playback.toml(녹화 파일 재생)
 tests/            시험 (카메라 없이 돈다)
 ```
 
@@ -79,6 +80,43 @@ uv run simai-relay bench-transport --mode per-camera --slow-camera none --second
   (`gateway/recorder/.env.example`). 설정 파일에 쓰지 않는다.
 - `--send` 가 없으면 `CountingSink` 로 개수만 센다. 카메라별 상태·측정(전송하면 `tier0_send`)을 `--report-interval` 초마다 로그에 쓴다.
 - C110 은 RTSP 동시 접속이 2세션이다. 중계 중에 녹화 도구·Tapo 앱·VLC 를 같은 카메라에 붙이면 한도를 넘길 수 있다.
+
+## 녹화 파일 재생
+
+`configs/file-playback.toml` 을 복사해 파일 경로를 맞춘다. H.264 raw·MP4·MKV 를 지원하며 `realtime = true`(기본),
+`loop = true`, `fps = 25` 로 녹화 파일을 반복 재생할 수 있다. PTS 가 있으면 그 간격으로, 없으면 설정 fps(없으면
+파일 공칭 fps, 그것도 없으면 25 fps)로 페이싱한다. `fps` 는 원본 녹화 속도와 맞춘다.
+
+```toml
+[[cameras]]
+camera_id = "cam_A"
+kind = "file"
+file = "C:/path/to/cam_A.h264"
+realtime = true
+loop = true
+fps = 25
+# 선택: 카메라별 덮어쓰기. 생략해도 실시간 파일 모드는 20 ms 이다.
+# capture_time = { uncertainty_no_pts_ms = 20 }
+```
+
+`FileSource.read()` 는 페이싱을 마친 뒤 반환하고 relay 는 그 직후 `received_at_ms` 를 읽는다. PTS 가 없을 때도
+기존 추정기의 `received_at_ms − latency_ms` 식이 곧 페이싱 시각 기반 재생 시각이므로, 별도 시계나 가짜 PTS 를 만들지 않는다.
+`source_pts` 는 null 그대로다. 파일 입력은 `timestamp_source = "FILE"` 이 기본이며, 실시간 파일의 PTS 없음 불확실성은
+RTSP 의 Wi-Fi 지터용 45 ms 대신 **20 ms** 를 기본으로 쓴다. RTSP 의 PTS 있음 20 ms·없음 45 ms 는 그대로다.
+`realtime = false` 인 파일은 페이싱 근거가 없으므로 PTS 없음 기본 45 ms 를 유지한다.
+
+20 ms 는 정상 PTS 경로와 같은 잠정 여유이며, 이 노트북의 25 fps raw H.264 100프레임·10회 순환 측정에서 페이싱 오차
+p95 14 ms·최대 15 ms 를 덮었다. Tier 0 `cross_view.py` 가 가져오는 `geometry/interpolation.py` 의
+`InterpolationConfig.max_timestamp_uncertainty_ms` 기본 25 ms 보다 작다. 부하·다른 fps 에서의 상한이나 원본 촬영 동기화를
+보증하는 값은 아니다. 큰 지연·동시 수신에 따른 시각 올림은 기존 추정기가 불확실성에 더한다.
+공통 `[capture_time]` 이 파일 기본값보다 우선하고, `[[cameras]].capture_time` 이 공통값보다 우선한다.
+원본 촬영 때의 불확실성을 복원하는 기능이 아니며, 실제 RTSP 촬영 성능이나 G0 측정을 대신하지 않는다.
+
+**녹화 재생에서 Tier 0 트랙이 0개면** 먼저 I0 헤더의 `timestamp_uncertainty_ms` 가 25 ms 를 넘는지 확인한다.
+45 ms 가 계속 나오면 `kind = "file"`·`realtime = true` 와 공통/카메라별 `uncertainty_no_pts_ms` 명시값을 확인한다.
+RTSP 예시의 공통 45 ms 를 복사했다면 파일 설정에서 제거하거나 카메라별 20 ms 로 덮는다. 불확실성이 작아도 트랙이 없으면
+카메라 간 재생 시작 오프셋·원본 동기화·보정·검출을 확인한다. 단순히 불확실성만 낮춰 실제 오차를 숨기지 않는다.
+값의 근거와 시험 위치는 [설계](../../docs/design/relay-file-capture-time.md)에 적었다.
 
 ## Tier 0 가 stream_epoch 를 거절했을 때 (STREAM_REJECT)
 
