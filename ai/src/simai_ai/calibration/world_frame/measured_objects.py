@@ -38,6 +38,7 @@ import numpy as np
 
 from simai_ai.calibration.world_frame.frame import Plane, WorldFrameConfig, _up_prior, find_floor
 from simai_ai.calibration.world_frame.inputs import MapAnythingRun, View, mask_to_model_res, prepared_to_model_px
+from simai_ai.calibration.world_frame.stool_tops import HSVStoolDetector, StoolTopMeasurer
 
 CATALOG_FORMAT = "simai.measured_objects"
 EVIDENCE_FORMAT = "simai.scale_evidence"
@@ -193,6 +194,7 @@ def _ultralytics_seg(spec: Mapping[str, Any], weights_dir: Path | None, device: 
 # detector.kind → 만드는 함수(spec, 가중치 폴더, 장치). 라바콘(YOLOE 텍스트 프롬프트 등)은 여기에 하나 더한다
 DETECTORS: dict[str, Callable[[Mapping[str, Any], Path | None, str | None], ObjectDetector]] = {
     "ULTRALYTICS_SEG": _ultralytics_seg,
+    "HSV_STOOL": lambda spec, weights_dir, device: HSVStoolDetector(spec),
 }
 
 
@@ -472,7 +474,9 @@ class LaptopLidMeasurer:
 
 
 # measurement.kind → 재는 쪽. 라바콘(꼭대기·바닥 끝점 높이)은 여기에 하나 더한다
-MEASURERS: dict[str, LaptopLidMeasurer] = {"LAPTOP_LID": LaptopLidMeasurer()}
+MEASURERS: dict[str, LaptopLidMeasurer | StoolTopMeasurer] = {
+    "LAPTOP_LID": LaptopLidMeasurer(), "STOOL_TOP": StoolTopMeasurer(),
+}
 
 
 def _min_area_axes(P: np.ndarray, alpha: float) -> np.ndarray:
@@ -865,6 +869,8 @@ def measure_object(
     펴진 그림 [폭, 높이], person_masks 는 camera_id → 펴진 그림 해상도 사람 마스크(있으면 윗변 끝점이 닿을 때만 버린다).
     """
     measurer = MEASURERS[obj.measurement["kind"]]
+    if isinstance(measurer, StoolTopMeasurer):
+        return _measure_stool_run(obj, points_run, floor, detections, image_sizes, person_masks)
     cfg = measurer.config(obj.measurement)
     ms: list[Measurement] = []
     for view in points_run.views:
@@ -926,6 +932,29 @@ def measure_object(
     return result[0], result[1], rec
 
 
+def _measure_stool_run(obj: MeasuredObject, run: MapAnythingRun, floor: Plane,
+                       detections: Mapping[str, Sequence[Detection]], image_sizes: Mapping[str, Sequence[int]],
+                       person_masks: Mapping[str, np.ndarray] | None) -> tuple[float | None, int, dict[str, Any]]:
+    """MapAnything 모델 K 를 준비 영상 해상도로 옮겨 공통 스툴 측정기에 전달한다."""
+    from simai_ai.calibration.world_frame.stool_tops import measure_stools
+    from simai_ai.geometry.rig import RigCamera
+
+    cameras = {}
+    for view in run.views:
+        w, h = image_sizes[view.camera_id]
+        # prepared_to_model_px 는 아핀 변환이다. 역행렬로 모델 K → 준비 영상 K.
+        p = prepared_to_model_px(np.array([[0., 0.], [1., 0.], [0., 1.]]), (w, h), view.depth.shape)
+        A = np.array([[p[1, 0] - p[0, 0], 0, p[0, 0]], [0, p[2, 1] - p[0, 1], p[0, 1]], [0, 0, 1.]])
+        K = np.linalg.solve(A, view.K)
+        R = view.cam2world[:3, :3].T
+        t = -R @ view.cam2world[:3, 3]
+        cameras[view.camera_id] = RigCamera.from_calibration({
+            "camera_id": view.camera_id, "image_size": [w, h], "K": K.tolist(), "R": R.tolist(), "t": t.tolist(),
+            "distortion": {"model": "NONE", "coeffs": []},
+        })
+    return measure_stools(obj, cameras, detections, normal=floor.normal, offset=-floor.offset, person_masks=person_masks)
+
+
 def build_evidence(
     objects: Sequence[MeasuredObject],
     run_with_masks: MapAnythingRun,
@@ -984,6 +1013,10 @@ def draw_diagnostics(image_bgr: np.ndarray, detections: Sequence[Detection], mea
     import cv2
 
     out = image_bgr.copy()
+    if any("corners_px" in m for m in measurements):
+        from simai_ai.calibration.world_frame.stool_tops import draw_stools
+
+        return draw_stools(image_bgr, measurements)
     recs = {m["index"]: m for m in measurements}
     for i, det in enumerate(detections):
         m = recs.get(i, {})

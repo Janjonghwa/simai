@@ -154,6 +154,7 @@ TEAM = [
 
 def _catalog(**agg):
     doc = json.loads(mo.DEFAULT_CATALOG.read_text(encoding="utf-8"))
+    doc["objects"] = [o for o in doc["objects"] if o["id"] == "laptop_lid_team"]
     doc["objects"][0]["aggregation"].update(agg)
     return doc
 
@@ -465,7 +466,7 @@ def test_cli_measure_objects_then_fix_uses_measured_object(tmp_path, monkeypatch
     monkeypatch.setitem(mo.DETECTORS, "ULTRALYTICS_SEG", lambda spec, wdir, dev: FakeDetector(by_marker))
     ev = tmp_path / "evidence.json"
     code = cli.main(["measure-objects", "--run-dir", str(run_dir), "--prepared", str(prep), "--out", str(ev),
-                     "--debug-dir", str(tmp_path / "diag")], now_ms=NOW)
+                     "--object", "laptop_lid_team", "--debug-dir", str(tmp_path / "diag")], now_ms=NOW)
     assert code == cli.EXIT_OK
     assert sorted(f.name for f in (tmp_path / "diag").iterdir()) == [f"det_laptop_lid_team_{c}.jpg" for c in sorted(CAMS)]
     doc = json.loads(ev.read_text(encoding="utf-8"))
