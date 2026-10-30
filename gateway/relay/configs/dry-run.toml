@@ -31,3 +31,5 @@ height = 360
 # kind = "file"
 # file = "C:/path/to/video.mp4"   # H.264 (raw .h264, MP4, MKV). 사람이 찍힌 영상은 쓰지 않는다
 # loop = true
+# fps = 25                       # 원본 녹화 fps. 자세한 파일 설정은 file-playback.toml 참고
+# realtime = true                # 기본 true: PTS 없어도 페이싱 뒤 시각·기본 불확실성 20 ms 사용
