@@ -1,3 +1,4 @@
+import { ADMIN_EVENTS_TOPIC } from '@/lib/stomp';
 import { ws } from 'msw';
 
 // 개발 서버와 시험에서 서버 STOMP 대신 쓰는 작은 브로커(msw WebSocket 가로채기).
@@ -9,10 +10,26 @@ export interface StompFrame {
   body: string;
 }
 
-const ESCAPES: Record<string, string> = { '\\\\': '\\', '\\n': '\n', '\\r': '\r', '\\c': ':' };
-const unescapeHeader = (value: string) => value.replace(/\\[\\nrc]/g, (s) => ESCAPES[s] ?? s);
+const STOMP_VERSION = '1.2';
+const NO_HEART_BEAT = '0,0';
+/** 연결을 닫는 코드. 1008: 정책 위반(거절), 1012: 서비스 재시작(연결 끊김 흉내). */
+const CLOSE_POLICY_VIOLATION = 1008;
+const CLOSE_SERVICE_RESTART = 1012;
+
+/** 헤더 값의 이스케이프(STOMP 1.2). 읽을 때는 거꾸로 푼다. */
+const HEADER_ESCAPES: Record<string, string> = {
+  '\\': '\\\\',
+  '\n': '\\n',
+  '\r': '\\r',
+  ':': '\\c',
+};
+const HEADER_UNESCAPES = Object.fromEntries(
+  Object.entries(HEADER_ESCAPES).map(([char, escaped]) => [escaped, char]),
+);
+const unescapeHeader = (value: string) =>
+  value.replace(/\\[\\nrc]/g, (escaped) => HEADER_UNESCAPES[escaped] ?? escaped);
 const escapeHeader = (value: string) =>
-  value.replace(/[\\\n\r:]/g, (c) => ({ '\\': '\\\\', '\n': '\\n', '\r': '\\r', ':': '\\c' })[c]!);
+  value.replace(/[\\\n\r:]/g, (char) => HEADER_ESCAPES[char] ?? char);
 
 /** 프레임 하나를 읽는다. 하트비트(빈 줄)만 왔으면 null. */
 export function parseFrame(data: string): StompFrame | null {
@@ -49,13 +66,24 @@ interface Connection {
   /** 구독 id → 경로 */
   subscriptions: Map<string, string>;
   connected: boolean;
+  /** 관리자 전용 토픽을 구독할 수 있는지(authorize 가 알려 준다). */
+  admin: boolean;
 }
+
+/** 관리자만 구독하는 토픽(서버 RealtimeTopics.ADMIN_EVENTS). 다른 계정이 구독하면 서버처럼 ERROR 를 보내고 닫는다. */
+const ADMIN_TOPICS: readonly string[] = [ADMIN_EVENTS_TOPIC];
+
+/**
+ * authorize 의 답. false·undefined 는 거절, true 는 모든 토픽을 구독할 수 있는 계정이다(역할을 따지지 않는 시험용).
+ * { role } 이면 역할을 따진다: ADMIN 만 관리자 전용 토픽을 구독할 수 있다(readMockUser 의 결과를 그대로 넘길 수 있다).
+ */
+export type BrokerAuth = boolean | undefined | { role?: string };
 
 export interface StompBrokerOptions {
   /** 가로챌 STOMP 주소(VITE_STOMP_URL). */
   url: string;
-  /** CONNECT 의 Authorization 헤더를 받는다. false 면 ERROR 를 보내고 닫는다. */
-  authorize?: (authorization: string | undefined) => boolean;
+  /** CONNECT 의 Authorization 헤더를 받는다. 거절(false·undefined)이면 ERROR 를 보내고 닫는다. */
+  authorize?: (authorization: string | undefined) => BrokerAuth;
 }
 
 export interface StompBroker {
@@ -67,6 +95,11 @@ export interface StompBroker {
   publishText(destination: string, text: string): void;
   /** 연결을 모두 끊는다(서버 재시작·네트워크 단절 흉내). 클라이언트는 다시 연결한다. */
   dropAll(): void;
+  /**
+   * 다음 CONNECT count 번을 인증과 상관없이 ERROR 로 거절한다(토큰 만료 흉내). 클라이언트가 토큰을 갱신해 다시 붙는지 본다.
+   * dropAll 과 함께 부르면 그 재연결부터 거절한다.
+   */
+  rejectNextConnects(count?: number): void;
   /** CONNECTED 까지 마친 연결 수. */
   readonly connections: number;
 }
@@ -78,6 +111,59 @@ export function createStompBroker({
   const link = ws.link(url);
   const connections = new Set<Connection>();
   let messageId = 0;
+  let rejectConnects = 0;
+
+  // 서버는 ERROR 프레임을 보낸 뒤 연결을 닫는다. 바로 닫으면 msw 가 아직 보내지 않은 ERROR 를 버리므로 한 틱 뒤에 닫는다.
+  const reject = (connection: Connection, message: string) => {
+    connection.send(serializeFrame('ERROR', { message }));
+    setTimeout(() => connection.close(CLOSE_POLICY_VIOLATION, message), 0);
+  };
+
+  function onConnect(connection: Connection, frame: StompFrame) {
+    const auth = authorize(frame.headers.Authorization ?? frame.headers.authorization);
+    if (rejectConnects > 0 || !auth) {
+      if (rejectConnects > 0) rejectConnects -= 1;
+      return reject(connection, 'Unauthorized');
+    }
+    connection.admin = auth === true || auth.role === 'ADMIN';
+    connection.connected = true;
+    connection.send(
+      serializeFrame('CONNECTED', { version: STOMP_VERSION, 'heart-beat': NO_HEART_BEAT }),
+    );
+  }
+
+  function onSubscribe(connection: Connection, { headers }: StompFrame) {
+    const { id, destination } = headers;
+    if (!id || !destination) return;
+    // 관리자 전용 토픽은 관리자만 구독한다. 아니면 서버처럼 ERROR 로 연결을 닫는다.
+    if (ADMIN_TOPICS.includes(destination) && !connection.admin) {
+      connection.connected = false;
+      return reject(connection, 'Access is denied');
+    }
+    connection.subscriptions.set(id, destination);
+  }
+
+  function onDisconnect(connection: Connection, { headers }: StompFrame) {
+    if (headers.receipt) {
+      connection.send(serializeFrame('RECEIPT', { 'receipt-id': headers.receipt }));
+    }
+    connection.close();
+  }
+
+  function onFrame(connection: Connection, frame: StompFrame) {
+    switch (frame.command) {
+      case 'CONNECT':
+      case 'STOMP':
+        return onConnect(connection, frame);
+      case 'SUBSCRIBE':
+        return onSubscribe(connection, frame);
+      case 'UNSUBSCRIBE':
+        if (frame.headers.id) connection.subscriptions.delete(frame.headers.id);
+        return;
+      case 'DISCONNECT':
+        return onDisconnect(connection, frame);
+    }
+  }
 
   const handler = link.addEventListener('connection', ({ client }) => {
     const connection: Connection = {
@@ -85,59 +171,33 @@ export function createStompBroker({
       close: (code, reason) => client.close(code, reason),
       subscriptions: new Map(),
       connected: false,
+      admin: false,
     };
     connections.add(connection);
     client.addEventListener('close', () => connections.delete(connection));
     client.addEventListener('message', (event) => {
       const frame = typeof event.data === 'string' ? parseFrame(event.data) : null;
-      if (!frame) return;
-      switch (frame.command) {
-        case 'CONNECT':
-        case 'STOMP':
-          if (!authorize(frame.headers.Authorization ?? frame.headers.authorization)) {
-            client.send(serializeFrame('ERROR', { message: 'Unauthorized' }));
-            // 바로 닫으면 msw 가 아직 보내지 않은 ERROR 를 버린다. 서버처럼 보낸 뒤 닫는다.
-            setTimeout(() => client.close(1008, 'Unauthorized'), 0);
-            return;
-          }
-          connection.connected = true;
-          client.send(serializeFrame('CONNECTED', { version: '1.2', 'heart-beat': '0,0' }));
-          return;
-        case 'SUBSCRIBE':
-          if (frame.headers.id && frame.headers.destination) {
-            connection.subscriptions.set(frame.headers.id, frame.headers.destination);
-          }
-          return;
-        case 'UNSUBSCRIBE':
-          if (frame.headers.id) connection.subscriptions.delete(frame.headers.id);
-          return;
-        case 'DISCONNECT':
-          if (frame.headers.receipt) {
-            client.send(serializeFrame('RECEIPT', { 'receipt-id': frame.headers.receipt }));
-          }
-          client.close();
-          return;
-      }
+      if (frame) onFrame(connection, frame);
     });
   });
+
+  const messageFrame = (destination: string, subscription: string, text: string) =>
+    serializeFrame(
+      'MESSAGE',
+      {
+        destination,
+        subscription,
+        'message-id': String(++messageId),
+        'content-type': 'application/json',
+      },
+      text,
+    );
 
   function publishText(destination: string, text: string) {
     for (const connection of connections) {
       if (!connection.connected) continue;
       for (const [id, path] of connection.subscriptions) {
-        if (path !== destination) continue;
-        connection.send(
-          serializeFrame(
-            'MESSAGE',
-            {
-              destination,
-              subscription: id,
-              'message-id': String(++messageId),
-              'content-type': 'application/json',
-            },
-            text,
-          ),
-        );
+        if (path === destination) connection.send(messageFrame(destination, id, text));
       }
     }
   }
@@ -147,7 +207,12 @@ export function createStompBroker({
     publish: (destination, body) => publishText(destination, JSON.stringify(body)),
     publishText,
     dropAll() {
-      for (const connection of connections) connection.close(1012, 'mock drop');
+      for (const connection of connections) {
+        connection.close(CLOSE_SERVICE_RESTART, 'mock drop');
+      }
+    },
+    rejectNextConnects(count = 1) {
+      rejectConnects = count;
     },
     get connections() {
       return [...connections].filter((c) => c.connected).length;

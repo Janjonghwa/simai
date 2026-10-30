@@ -1,4 +1,5 @@
 import { PageTitle } from '@/features/layout/PageTitle';
+import { RulesPanel } from '@/features/rules/RulesPanel';
 import { SetupMap } from '@/features/setup/SetupMap';
 import { CameraPanel, StagePanel } from '@/features/setup/SetupPanels';
 import {
@@ -153,6 +154,8 @@ export function SetupPage() {
           <StagePanel view={view} />
         </div>
       </div>
+
+      <RulesPanel />
     </>
   );
 }

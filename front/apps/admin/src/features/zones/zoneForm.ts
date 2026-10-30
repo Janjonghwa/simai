@@ -1,5 +1,5 @@
 import type { ViewerEditBox } from '@/features/viewer3d';
-import type { JudgeType, Severity, Zone, ZoneBody, ZoneBox } from '@/features/zones/types';
+import type { JudgeType, Severity, Zone, ZoneBody } from '@/features/zones/types';
 import { boxToPolygon } from '@/features/zones/zones';
 
 /**
@@ -14,12 +14,8 @@ export interface ZoneForm {
   severity: Severity;
 }
 
+/** 구역 이름 최대 글자 수(화면 제한). */
 export const NAME_MAX = 40;
-
-export const JUDGE_TYPE_LABEL: Record<JudgeType, string> = {
-  VOLUME_3D: '입체 (VOLUME_3D)',
-  GROUND_FOOTPRINT: '바닥 (GROUND_FOOTPRINT)',
-};
 
 /** 계약 설명에 있는 유형 예. */
 export const ZONE_TYPE_LABEL: Record<string, string> = {
@@ -35,27 +31,6 @@ export function formOf(zone: Zone): ZoneForm {
     zoneType: zone.zoneType,
     severity: zone.severity,
   };
-}
-
-export function sameForm(a: ZoneForm, b: ZoneForm): boolean {
-  return (
-    a.name.trim() === b.name.trim() &&
-    a.judgeType === b.judgeType &&
-    a.zoneType === b.zoneType &&
-    a.severity === b.severity
-  );
-}
-
-/** 사용자가 고친 칸만. 나머지 칸은 늘 서버의 최신 버전을 보인다(다시 받은 다른 사람의 변경을 덮지 않는다). */
-export type ZonePatch = Partial<ZoneForm>;
-
-/** saved 와 다른 칸만 남긴다. */
-export function patchOf(saved: ZoneForm, next: ZoneForm): ZonePatch {
-  const patch: ZonePatch = {};
-  for (const key of Object.keys(next) as (keyof ZoneForm)[]) {
-    if (next[key] !== saved[key]) Object.assign(patch, { [key]: next[key] });
-  }
-  return patch;
 }
 
 export interface ZoneFormErrors {
@@ -81,6 +56,22 @@ export function formErrors(
   return errors;
 }
 
+type ZoneShape = Pick<ZoneBody, 'polygon_xy' | 'z_min_m' | 'z_max_m'>;
+
+/** 고친 상자의 바닥 직사각형과 높이. */
+const shapeOfBox = (box: ViewerEditBox): ZoneShape => ({
+  polygon_xy: boxToPolygon(box),
+  z_min_m: box.min[2],
+  z_max_m: box.max[2],
+});
+
+/** 받은 구역의 다각형과 높이. 상자를 고치지 않았을 때 그대로 보낸다. */
+const shapeOfZone = (zone: Zone): ZoneShape => ({
+  polygon_xy: zone.polygon.map(([x, y]) => [x, y] as [number, number]),
+  z_min_m: zone.zBounds[0],
+  z_max_m: zone.zBounds[1],
+});
+
 /**
  * 새 버전 본문. 서버는 기록을 통째로 바꾸므로 화면에서 고치지 않는 칸(has_guardrail·requirements)도 받은 값을 그대로 보낸다.
  * 상자(box)를 고쳤으면 그 바닥 직사각형과 높이를, 아니면 받은 다각형·높이를 그대로 보낸다(속성만 고쳐도 직사각형이 아닌
@@ -91,40 +82,11 @@ export function bodyOf(zone: Zone, form: ZoneForm, box: ViewerEditBox | null): Z
     name: form.name === zone.name ? zone.name : form.name.trim(),
     zone_kind: form.zoneType,
     eval_type: form.judgeType,
-    polygon_xy: box ? boxToPolygon(box) : zone.polygon.map(([x, y]) => [x, y] as [number, number]),
-    z_min_m: box ? box.min[2] : zone.zBounds[0],
-    z_max_m: box ? box.max[2] : zone.zBounds[1],
+    ...(box ? shapeOfBox(box) : shapeOfZone(zone)),
     severity: form.severity,
     has_guardrail: zone.hasGuardrail,
     requirements: zone.requirements && { ...zone.requirements },
   };
-}
-
-/** 새 구역의 바닥 크기(m)와 높이(m). 만든 뒤 바로 형상을 고친다. */
-const NEW_ZONE_SIZE_M = 2;
-const NEW_ZONE_HEIGHT_M = 2;
-
-/**
- * 새 구역 양식의 처음 값. 유형은 비워 두고 관리자가 고르게 한다(Tier 0 판정이 유형을 보고, 개구부는 가장자리 규칙이라
- * 기본값으로 두지 않는다).
- */
-export const NEW_ZONE_FORM: ZoneForm = {
-  name: '새 구역',
-  judgeType: 'VOLUME_3D',
-  zoneType: '',
-  severity: 'HIGH',
-};
-
-/** 새 구역의 처음 상자. 기존 구역들을 감싸는 상자의 가운데 바닥에 둔다. 구역이 없으면 World 원점이다. */
-export function newZoneBox(zones: readonly ZoneBox[]): ViewerEditBox {
-  const center = (axis: 0 | 1) =>
-    zones.length === 0
-      ? 0
-      : (Math.min(...zones.map((z) => z.min[axis])) + Math.max(...zones.map((z) => z.max[axis]))) /
-        2;
-  const half = NEW_ZONE_SIZE_M / 2;
-  const [cx, cy] = [center(0), center(1)];
-  return { min: [cx - half, cy - half, 0], max: [cx + half, cy + half, NEW_ZONE_HEIGHT_M] };
 }
 
 /** 새 구역 양식 검사. 이름·판정 유형은 저장과 같은 규칙이고, 유형은 골라야 한다. 상자는 숫자 칸이 미리 걸러 늘 높이가 있다. */
@@ -140,9 +102,7 @@ export function newZoneBodyOf(form: ZoneForm, box: ViewerEditBox): ZoneBody {
     name: form.name.trim(),
     zone_kind: form.zoneType,
     eval_type: form.judgeType,
-    polygon_xy: boxToPolygon(box),
-    z_min_m: box.min[2],
-    z_max_m: box.max[2],
+    ...shapeOfBox(box),
     severity: form.severity,
     has_guardrail: null,
     requirements: null,

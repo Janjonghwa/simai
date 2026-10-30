@@ -44,7 +44,7 @@ export interface ViewerState {
   targets: ReadonlyMap<string, number>;
   /** 장면 색표(화면 테마와 같다). */
   theme: ViewerTheme;
-  /** 포인터가 1초 넘게 머문 대상 키. 그 대상의 이름표를 보인다(관제 데모와 같다). */
+  /** 포인터가 HOVER_LABEL_MS 넘게 머문 대상 키. 그 대상의 이름표를 보인다(관제 데모와 같다). */
   hovered: string | null;
   /** 처음 시점으로 돌아가기 요청 수. 늘 때마다 카메라를 처음 자리로 옮긴다. */
   viewResets: number;

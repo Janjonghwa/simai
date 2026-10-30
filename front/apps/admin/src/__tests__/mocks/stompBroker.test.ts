@@ -4,7 +4,16 @@ import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 const URL = 'ws://stomp.test/ws';
-const broker = createStompBroker({ url: URL, authorize: (auth) => auth === 'Bearer ok' });
+// 'Bearer ok' 는 역할을 따지지 않는 계정(true), 나머지는 역할이 있는 계정이다.
+const broker = createStompBroker({
+  url: URL,
+  authorize: (auth) => {
+    if (auth === 'Bearer ok') return true;
+    if (auth === 'Bearer admin') return { role: 'ADMIN' };
+    if (auth === 'Bearer foreman') return { role: 'FOREMAN' };
+    return undefined;
+  },
+});
 const server = setupServer(broker.handler);
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 afterAll(() => server.close());
@@ -94,6 +103,83 @@ describe('createStompBroker', () => {
 
     broker.dropAll();
     await until(() => connects === 2);
+    expect(broker.connections).toBe(1);
+  });
+});
+
+describe('관리자 전용 토픽', () => {
+  const ADMIN_TOPIC = '/topic/admin/events';
+
+  /** 연결해 관리자 토픽을 구독하고 받은 본문·ERROR 를 모은다. */
+  function subscribeAdmin(authorization: string) {
+    const received: unknown[] = [];
+    const errors: string[] = [];
+    const client = connect(authorization);
+    client.onConnect = () => {
+      client.subscribe(ADMIN_TOPIC, (m) => received.push(JSON.parse(m.body)));
+    };
+    client.onStompError = (frame) => errors.push(frame.headers.message ?? '');
+    client.activate();
+    return { received, errors };
+  }
+
+  it('관리자는 구독해 publish 한 본문을 받는다', async () => {
+    const { received, errors } = subscribeAdmin('Bearer admin');
+    await until(() => {
+      broker.publish(ADMIN_TOPIC, { cleared: false });
+      return received.length > 0;
+    });
+    expect(received[0]).toEqual({ cleared: false });
+    expect(errors).toEqual([]);
+  });
+
+  it('역할을 따지지 않는 계정(true)도 구독한다(기존 시험과 호환)', async () => {
+    const { received } = subscribeAdmin('Bearer ok');
+    await until(() => {
+      broker.publish(ADMIN_TOPIC, { n: 1 });
+      return received.length > 0;
+    });
+  });
+
+  it('관리자가 아니면 서버처럼 ERROR 를 보내고 연결을 닫는다', async () => {
+    const { received, errors } = subscribeAdmin('Bearer foreman');
+    await until(() => errors.length > 0);
+    expect(errors[0]).toBe('Access is denied');
+    await until(() => broker.connections === 0);
+    broker.publish(ADMIN_TOPIC, { secret: true });
+    expect(received).toEqual([]);
+  });
+
+  it('관리자가 아닌 연결도 일반 토픽은 계속 받는다', async () => {
+    const received: unknown[] = [];
+    const client = connect('Bearer foreman');
+    client.onConnect = () => {
+      client.subscribe('/topic/health', (m) => received.push(JSON.parse(m.body)));
+    };
+    client.activate();
+    await until(() => {
+      broker.publish('/topic/health', { n: 1 });
+      broker.publish(ADMIN_TOPIC, { secret: true });
+      return received.length > 0;
+    });
+    expect(received.every((r) => (r as { n?: number }).n === 1)).toBe(true);
+    expect(broker.connections).toBe(1);
+  });
+
+  it('rejectNextConnects: 다음 연결을 인증과 상관없이 ERROR 로 거절하고, 그다음은 받는다', async () => {
+    broker.rejectNextConnects();
+    const errors: string[] = [];
+    let connects = 0;
+    const client = connect('Bearer ok');
+    client.reconnectDelay = 20;
+    client.onStompError = (frame) => errors.push(frame.headers.message ?? '');
+    client.onConnect = () => {
+      connects += 1;
+    };
+    client.activate();
+
+    await until(() => connects === 1);
+    expect(errors).toEqual(['Unauthorized']);
     expect(broker.connections).toBe(1);
   });
 });

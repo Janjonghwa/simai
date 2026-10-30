@@ -1,17 +1,22 @@
 import type { Zone } from '@/features/zones/types';
+import { defaultNewBox } from '@/features/zones/zoneEditModel';
 import {
   bodyOf,
   formErrors,
   formOf,
-  NEW_ZONE_FORM,
   newZoneBodyOf,
-  newZoneBox,
   newZoneErrors,
-  patchOf,
-  sameForm,
   type ZoneForm,
 } from '@/features/zones/zoneForm';
 import { describe, expect, it } from 'vitest';
+
+/** 유형을 아직 고르지 않은 새 구역 양식. */
+const NEW_ZONE_FORM: ZoneForm = {
+  name: '새 구역',
+  judgeType: 'VOLUME_3D',
+  zoneType: '',
+  severity: 'HIGH',
+};
 
 const ZONE: Zone = {
   zoneId: 'z-04',
@@ -60,13 +65,6 @@ describe('zoneForm', () => {
     expect(formErrors(volume, { saved, hasHeight: false }).judgeType).toBeDefined();
     expect(formErrors(volume, { saved, hasHeight: true }).judgeType).toBeUndefined();
     expect(formErrors(saved, { saved, hasHeight: false })).toEqual({});
-  });
-
-  it('이름 앞뒤 공백만 다르면 고친 것으로 보지 않고, 고친 칸만 남긴다', () => {
-    const saved = formOf(ZONE);
-    expect(sameForm(saved, { ...saved, name: ` ${saved.name} ` })).toBe(true);
-    expect(patchOf(saved, { ...saved, severity: 'INFO' })).toEqual({ severity: 'INFO' });
-    expect(patchOf(saved, saved)).toEqual({});
   });
 
   it('형상을 고쳤으면 그 상자를 서버 형식(eval_type·zone_kind·z_min_m·z_max_m)으로 보내고, 고치지 않는 칸은 받은 값을 그대로 보낸다', () => {
@@ -137,10 +135,10 @@ describe('zoneForm', () => {
     });
   });
 
-  it('새 구역은 기존 구역들의 가운데 바닥에 2×2 m, 높이 2 m 로 고른 유형으로 만들고, 구역이 없으면 원점에 둔다', () => {
+  it('새 구역은 기존 구역들의 가운데 바닥에 2×2 m, 높이 2 m 로 고른 유형으로 만든다', () => {
     const body = newZoneBodyOf(
       { ...NEW_ZONE_FORM, zoneType: 'LIFTING' },
-      newZoneBox([ZONE, { ...ZONE, min: [6, 7, 0], max: [8, 9, 1] }]),
+      defaultNewBox([ZONE, { ...ZONE, min: [6, 7, 0], max: [8, 9, 1] }]),
     );
     expect(body.polygon_xy).toEqual([
       [3, 3.5],
@@ -149,7 +147,6 @@ describe('zoneForm', () => {
       [3, 5.5],
     ]);
     expect(body).toMatchObject({ zone_kind: 'LIFTING', z_min_m: 0, z_max_m: 2 });
-    expect(newZoneBox([]).min).toEqual([-1, -1, 0]);
   });
 });
 
@@ -164,7 +161,7 @@ describe('새 구역 양식', () => {
 
   it('처음 상자는 기존 구역들 가운데 바닥의 2×2×2m 이고, 본문은 양식 값과 상자를 그대로 싣는다', () => {
     const zones = [ZONE, { ...ZONE, min: [6, 7, 0] as const, max: [8, 9, 1] as const }];
-    const box = newZoneBox(zones);
+    const box = defaultNewBox(zones);
     expect(box.max[0] - box.min[0]).toBe(2);
     expect(box.max[2]).toBe(2);
     const body = newZoneBodyOf(

@@ -3,6 +3,7 @@ import {
   type SpatialDataStore,
 } from '@/features/viewer3d/data/spatialData.store';
 import { SpatialDataProvider } from '@/features/viewer3d/data/SpatialDataProvider';
+import { BoxEditContext, type BoxEditBinding } from '@/features/viewer3d/editing/BoxEditGizmo';
 import {
   createEditStore,
   objectPreviewOf,
@@ -41,6 +42,7 @@ import {
 } from '@/features/viewer3d/scene/sceneStore';
 import type {
   Viewer3DProps,
+  ViewerBoxGhost,
   ViewerSelectRequest,
   ViewerStatus,
   ViewerTarget,
@@ -61,6 +63,9 @@ import {
   type ReactNode,
 } from 'react';
 import { useStore } from 'zustand';
+
+/** boxGhosts 를 안 넘겼을 때의 빈 목록. 렌더마다 새 배열을 만들면 boxEditBinding 이 매번 바뀐다. */
+const NO_GHOSTS: readonly ViewerBoxGhost[] = [];
 
 export interface ViewerShellProps extends Viewer3DProps {
   /** 장면 레이어. viewer3d 안과 시험에서만 넘긴다. */
@@ -94,6 +99,9 @@ export function ViewerShell({
   onPlannedEditResult,
   plannedLayout = null,
   editDraftOverlay = null,
+  boxEdit = null,
+  onBoxEditChange,
+  boxGhosts = NO_GHOSTS,
   layers,
   source,
   className,
@@ -109,6 +117,11 @@ export function ViewerShell({
   sceneReview = false,
   theme = 'dark',
 }: ViewerShellProps) {
+  // 호스트가 쥔 상자 편집(controlled). 뷰어 안 편집 세션과 따로이며 Canvas 안 BoxEditGizmo 가 읽는다.
+  const boxEditBinding = useMemo<BoxEditBinding>(
+    () => ({ boxEdit, onBoxEditChange, boxGhosts }),
+    [boxEdit, onBoxEditChange, boxGhosts],
+  );
   const [store] = useState(() => {
     const created = createViewerStore(initialMode);
     // 첫 장면부터 레이어 값을 따른다(기본값으로 한 번 그렸다가 숨기지 않게).
@@ -330,7 +343,9 @@ export function ViewerShell({
                         <SceneLoaderContext value={sceneLoader}>
                           <SceneReviewContext value={sceneReview}>
                             <PlannedStoreContext value={planned}>
-                              <ViewerCanvas>{children}</ViewerCanvas>
+                              <BoxEditContext value={boxEditBinding}>
+                                <ViewerCanvas>{children}</ViewerCanvas>
+                              </BoxEditContext>
                             </PlannedStoreContext>
                           </SceneReviewContext>
                         </SceneLoaderContext>

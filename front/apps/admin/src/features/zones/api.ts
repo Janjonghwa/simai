@@ -6,6 +6,7 @@ import {
   type ZoneBody,
 } from '@/features/zones/types';
 import type { Http } from '@/lib/http';
+import { z } from 'zod';
 
 // 구역 목록 조회 키. 화면(useZones)과 저장(useZoneSave)이 함께 쓴다.
 export const ZONES_KEY = ['zones'] as const;
@@ -30,6 +31,14 @@ export function updateZone(http: Http, zoneId: string, body: ZoneBody) {
     body,
     schema: zoneItemSchema,
   });
+}
+
+/**
+ * 구역 보관(삭제, 관리자). 서버는 행을 지우지 않고 지금 버전의 valid_to 만 닫는다(204, 본문 없음). 목록과 다음 묶음에서 빠지고
+ * 이미 발행한 묶음은 다음 발행 전까지 현장에서 그대로 쓰인다. 이미 보관한 구역은 다시 눌러도 204, 없는 ID 는 404 다.
+ */
+export async function deleteZone(http: Http, zoneId: string): Promise<void> {
+  await http(`/api/zones/${encodeURIComponent(zoneId)}`, { method: 'DELETE', schema: z.void() });
 }
 
 // 최근 구성 묶음 조회 키. 첫 항목이 가장 최근에 발행한 묶음이다.

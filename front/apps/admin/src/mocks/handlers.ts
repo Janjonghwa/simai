@@ -1,4 +1,7 @@
 import { type MockAccount, MOCK_ACCOUNTS } from '@/mocks/accounts';
+import { createFloorPlanMock } from '@/mocks/floorPlan';
+import { createHistoryMock } from '@/mocks/history';
+import { createRulesMock } from '@/mocks/rules';
 import { sceneHandlers } from '@/mocks/scenes';
 import { createStaticObjectsMock } from '@/mocks/staticObjects';
 import { http, HttpResponse } from 'msw/http';
@@ -28,6 +31,9 @@ const signedIn = (account: MockAccount) =>
     },
     { headers: { 'Set-Cookie': refreshCookie(account.id, REFRESH_MAX_AGE_S) } },
   );
+
+// 작업면은 앱이 살아 있는 동안 상태를 둔다. 구성 묶음 mock(startBackend 의 createZonesMock)이 발행 때 지금 작업면을 싣도록 같은 인스턴스를 나눈다.
+export const staticObjectsMock = createStaticObjectsMock();
 
 // 경로 앞의 * 는 VITE_API_BASE_URL 이 무엇이든 맞추려는 것이다.
 export const handlers = [
@@ -60,7 +66,11 @@ export const handlers = [
     '*/api/auth/logout',
     () => new HttpResponse(null, { status: 204, headers: { 'Set-Cookie': refreshCookie('', 0) } }),
   ),
-  // 작업면은 앱이 살아 있는 동안 상태를 둔다(구성 묶음 발행·ACK 는 main.tsx 의 구역 mock 이 맡는다).
-  ...createStaticObjectsMock().handlers,
+  // 구성 묶음 발행·ACK 는 startBackend 의 구역 mock 이 맡는다.
+  ...staticObjectsMock.handlers,
   ...sceneHandlers,
+  ...createRulesMock().handlers,
+  ...createFloorPlanMock().handlers,
+  // 히스토리 작업 목록·구간 기록(그때그때 합성한다).
+  ...createHistoryMock().handlers,
 ];

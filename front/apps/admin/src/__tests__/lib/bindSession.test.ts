@@ -1,7 +1,8 @@
+import type { TargetDraft } from '@/features/zones/zoneEditModel';
 import { bindSession } from '@/lib/bindSession';
 import type { RealtimeSession } from '@/lib/stomp';
 import type { Session } from '@/store/session.store';
-import { clearZoneDrafts, useZoneDraftsStore, type KeptZoneDraft } from '@/store/zoneDrafts.store';
+import { clearZoneDrafts, useZoneEditStore } from '@/store/zoneEdit.store';
 import { describe, expect, it } from 'vitest';
 import { createStore } from 'zustand/vanilla';
 
@@ -175,12 +176,48 @@ describe('bindSession', () => {
       queryClient: { clear: () => {} },
       onUserChange: clearZoneDrafts,
     });
-    const draft = { zoneId: 'z-04' } as KeptZoneDraft;
-    useZoneDraftsStore.getState().setDrafts({ 'z-04': draft });
+    const draft: TargetDraft = { patch: {}, box: null };
+    useZoneEditStore.setState({ drafts: { 'z-04': draft } });
 
     sessionStore.setState({ session: { ...alice, accessToken: 'a-2' } });
-    expect(useZoneDraftsStore.getState().drafts).toEqual({ 'z-04': draft });
+    expect(useZoneEditStore.getState().drafts).toEqual({ 'z-04': draft });
     sessionStore.setState({ session: undefined });
-    expect(useZoneDraftsStore.getState().drafts).toEqual({});
+    expect(useZoneEditStore.getState().drafts).toEqual({});
+  });
+
+  it('토큰 갱신 함수를 실시간 연결에 그대로 넘긴다(ERROR 로 거절되면 연결이 갱신한다)', () => {
+    const started: RealtimeSession[] = [];
+    const refreshToken = async () => 'a-2';
+    const sessionStore = createStore<{ session?: Session }>()(() => ({ session: undefined }));
+    bindSession({
+      sessionStore,
+      realtime: { start: (session) => started.push(session), stop: async () => {} },
+      router: { invalidate: async () => {}, clearCache: () => {} },
+      queryClient: { clear: () => {} },
+      refreshToken,
+    });
+    sessionStore.setState({ session: alice });
+    sessionStore.setState({ session: bob });
+    expect(started.map((s) => s.refreshToken)).toEqual([refreshToken, refreshToken]);
+  });
+
+  it('실시간 연결이 읽는 역할은 세션의 지금 역할이다(재연결 때 바뀐 역할을 읽는다)', () => {
+    const started: RealtimeSession[] = [];
+    const sessionStore = createStore<{ session?: Session }>()(() => ({ session: alice }));
+    bindSession({
+      sessionStore,
+      realtime: { start: (session) => started.push(session), stop: async () => {} },
+      router: { invalidate: async () => {}, clearCache: () => {} },
+      queryClient: { clear: () => {} },
+    });
+    expect(started).toHaveLength(1);
+    expect(started[0]!.getRole?.()).toBe('ADMIN');
+
+    // 같은 사용자의 권한이 바뀌어도 연결은 다시 열지 않는다. 다음 재연결이 새 역할을 읽는다.
+    sessionStore.setState({ session: { ...alice, user: { id: 'alice', role: 'FOREMAN' } } });
+    expect(started).toHaveLength(1);
+    expect(started[0]!.getRole?.()).toBe('FOREMAN');
+    sessionStore.setState({ session: undefined });
+    expect(started[0]!.getRole?.()).toBeUndefined();
   });
 });

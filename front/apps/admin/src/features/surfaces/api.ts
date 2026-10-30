@@ -4,8 +4,9 @@ import {
   type StaticObjectBody,
 } from '@/features/surfaces/types';
 import type { Http } from '@/lib/http';
+import { z } from 'zod';
 
-// 작업면·정적 객체 목록 조회 키. 작업면 등록 화면(3D 에 넣기 포함)과 저장이 함께 쓴다.
+// 작업면·정적 객체 목록 조회 키. 3D 틀, 구역·작업면 편집, 저장이 함께 쓴다.
 export const STATIC_OBJECTS_KEY = ['static-objects'] as const;
 
 // http 를 인자로 받는다. 테스트가 env 없이 createHttp 로 부를 수 있게 한다.
@@ -27,5 +28,16 @@ export function updateStaticObject(http: Http, objectId: string, body: StaticObj
     method: 'PUT',
     body,
     schema: staticObjectItemSchema,
+  });
+}
+
+/**
+ * 작업면·정적 객체 보관(삭제, 관리자). 서버는 행을 지우지 않고 지금 버전의 valid_to 만 닫는다(204, 본문 없음). 목록과 다음
+ * 묶음에서 빠지고 이미 발행한 묶음은 다음 발행 전까지 현장에서 그대로 쓰인다. 이미 보관한 객체는 다시 눌러도 204, 없는 ID 는 404 다.
+ */
+export async function deleteStaticObject(http: Http, objectId: string): Promise<void> {
+  await http(`/api/static-objects/${encodeURIComponent(objectId)}`, {
+    method: 'DELETE',
+    schema: z.void(),
   });
 }

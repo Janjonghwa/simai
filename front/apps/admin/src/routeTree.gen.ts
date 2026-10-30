@@ -13,11 +13,11 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppCctvRouteImport } from './routes/_app/cctv'
-import { Route as AppDashboardRouteImport } from './routes/_app/dashboard'
 import { Route as AppSetupRouteImport } from './routes/_app/setup'
-import { Route as AppSurfacesRouteImport } from './routes/_app/surfaces'
 import { Route as AppTbmRouteImport } from './routes/_app/tbm'
 import { Route as AppZonesRouteImport } from './routes/_app/zones'
+import { Route as AppHistoryIndexRouteImport } from './routes/_app/history.index'
+import { Route as AppHistoryWorkIdRouteImport } from './routes/_app/history.$workId'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -38,19 +38,9 @@ const AppCctvRoute = AppCctvRouteImport.update({
   path: '/cctv',
   getParentRoute: () => AppRoute,
 } as any)
-const AppDashboardRoute = AppDashboardRouteImport.update({
-  id: '/dashboard',
-  path: '/dashboard',
-  getParentRoute: () => AppRoute,
-} as any)
 const AppSetupRoute = AppSetupRouteImport.update({
   id: '/setup',
   path: '/setup',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppSurfacesRoute = AppSurfacesRouteImport.update({
-  id: '/surfaces',
-  path: '/surfaces',
   getParentRoute: () => AppRoute,
 } as any)
 const AppTbmRoute = AppTbmRouteImport.update({
@@ -63,38 +53,48 @@ const AppZonesRoute = AppZonesRouteImport.update({
   path: '/zones',
   getParentRoute: () => AppRoute,
 } as any)
+const AppHistoryIndexRoute = AppHistoryIndexRouteImport.update({
+  id: '/history/',
+  path: '/history/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppHistoryWorkIdRoute = AppHistoryWorkIdRouteImport.update({
+  id: '/history/$workId',
+  path: '/history/$workId',
+  getParentRoute: () => AppRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
   '/cctv': typeof AppCctvRoute
-  '/dashboard': typeof AppDashboardRoute
   '/setup': typeof AppSetupRoute
-  '/surfaces': typeof AppSurfacesRoute
   '/tbm': typeof AppTbmRoute
   '/zones': typeof AppZonesRoute
+  '/history/$workId': typeof AppHistoryWorkIdRoute
+  '/history/': typeof AppHistoryIndexRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/cctv': typeof AppCctvRoute
-  '/dashboard': typeof AppDashboardRoute
   '/setup': typeof AppSetupRoute
-  '/surfaces': typeof AppSurfacesRoute
   '/tbm': typeof AppTbmRoute
   '/zones': typeof AppZonesRoute
   '/': typeof AppIndexRoute
+  '/history/$workId': typeof AppHistoryWorkIdRoute
+  '/history': typeof AppHistoryIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/_app/cctv': typeof AppCctvRoute
-  '/_app/dashboard': typeof AppDashboardRoute
   '/_app/setup': typeof AppSetupRoute
-  '/_app/surfaces': typeof AppSurfacesRoute
   '/_app/tbm': typeof AppTbmRoute
   '/_app/zones': typeof AppZonesRoute
   '/_app/': typeof AppIndexRoute
+  '/_app/history/$workId': typeof AppHistoryWorkIdRoute
+  '/_app/history/': typeof AppHistoryIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -102,32 +102,32 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/cctv'
-    | '/dashboard'
     | '/setup'
-    | '/surfaces'
     | '/tbm'
     | '/zones'
+    | '/history/$workId'
+    | '/history/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
     | '/cctv'
-    | '/dashboard'
     | '/setup'
-    | '/surfaces'
     | '/tbm'
     | '/zones'
     | '/'
+    | '/history/$workId'
+    | '/history'
   id:
     | '__root__'
     | '/_app'
     | '/login'
     | '/_app/cctv'
-    | '/_app/dashboard'
     | '/_app/setup'
-    | '/_app/surfaces'
     | '/_app/tbm'
     | '/_app/zones'
     | '/_app/'
+    | '/_app/history/$workId'
+    | '/_app/history/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -165,25 +165,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppCctvRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/dashboard': {
-      id: '/_app/dashboard'
-      path: '/dashboard'
-      fullPath: '/dashboard'
-      preLoaderRoute: typeof AppDashboardRouteImport
-      parentRoute: typeof AppRoute
-    }
     '/_app/setup': {
       id: '/_app/setup'
       path: '/setup'
       fullPath: '/setup'
       preLoaderRoute: typeof AppSetupRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/surfaces': {
-      id: '/_app/surfaces'
-      path: '/surfaces'
-      fullPath: '/surfaces'
-      preLoaderRoute: typeof AppSurfacesRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/tbm': {
@@ -200,27 +186,41 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppZonesRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/history/': {
+      id: '/_app/history/'
+      path: '/history'
+      fullPath: '/history/'
+      preLoaderRoute: typeof AppHistoryIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/history/$workId': {
+      id: '/_app/history/$workId'
+      path: '/history/$workId'
+      fullPath: '/history/$workId'
+      preLoaderRoute: typeof AppHistoryWorkIdRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
 interface AppRouteChildren {
   AppCctvRoute: typeof AppCctvRoute
-  AppDashboardRoute: typeof AppDashboardRoute
   AppSetupRoute: typeof AppSetupRoute
-  AppSurfacesRoute: typeof AppSurfacesRoute
   AppTbmRoute: typeof AppTbmRoute
   AppZonesRoute: typeof AppZonesRoute
   AppIndexRoute: typeof AppIndexRoute
+  AppHistoryWorkIdRoute: typeof AppHistoryWorkIdRoute
+  AppHistoryIndexRoute: typeof AppHistoryIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppCctvRoute: AppCctvRoute,
-  AppDashboardRoute: AppDashboardRoute,
   AppSetupRoute: AppSetupRoute,
-  AppSurfacesRoute: AppSurfacesRoute,
   AppTbmRoute: AppTbmRoute,
   AppZonesRoute: AppZonesRoute,
   AppIndexRoute: AppIndexRoute,
+  AppHistoryWorkIdRoute: AppHistoryWorkIdRoute,
+  AppHistoryIndexRoute: AppHistoryIndexRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)

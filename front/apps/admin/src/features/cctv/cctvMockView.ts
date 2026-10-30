@@ -1,4 +1,5 @@
-import { ROOM } from '@/features/plan/plan';
+import { ROOM, toPlan, trackLook } from '@/features/plan/plan';
+import type { WorldTrack } from '@simai/contracts';
 
 // 중계와 이어지지 않았을 때 보이는 CCTV 모의 화면의 투영 계산(관제 데모와 같다). 실제 영상이 없으므로
 // 방 모서리 카메라에서 본 교실을 평면 좌표(m, x 오른쪽, y 아래, toPlan)로 투영해 그린다. 화면 컴포넌트 없이 시험한다.
@@ -139,6 +140,28 @@ export function cctvBackdrop(project: CctvProjector): { grid: string; room: stri
   return { grid, room };
 }
 
+/** 화면에 그릴 사람(평면 좌표, m). */
+export interface CctvPerson {
+  id: string;
+  x: number;
+  y: number;
+}
+
+/** World 트랙을 그릴 사람으로 바꾼다. 위치를 모르는 사람(LOST·UNKNOWN)은 뺀다. */
+export function cctvPeople(
+  tracks: readonly Pick<
+    WorldTrack,
+    'world_id' | 'position_xy' | 'observation_state' | 'track_lifecycle'
+  >[],
+): CctvPerson[] {
+  return tracks
+    .filter((track) => trackLook(track) !== 'unknown')
+    .map((track) => {
+      const [x, y] = toPlan(...track.position_xy);
+      return { id: track.world_id, x, y };
+    });
+}
+
 export interface CctvFigure {
   id: string;
   body: { x: number; y: number; width: number; height: number; rx: number };
@@ -149,10 +172,7 @@ export interface CctvFigure {
  * 사람(평면 좌표)을 몸통 + 머리 모양으로 투영한다. 카메라 뒤·화면 밖은 빼고,
  * 먼 사람부터 그려 가까운 사람이 위에 오게 한다.
  */
-export function cctvFigures(
-  project: CctvProjector,
-  people: readonly { id: string; x: number; y: number }[],
-): CctvFigure[] {
+export function cctvFigures(project: CctvProjector, people: readonly CctvPerson[]): CctvFigure[] {
   return people
     .flatMap((p) => {
       const feet = project(p.x, p.y, 0);

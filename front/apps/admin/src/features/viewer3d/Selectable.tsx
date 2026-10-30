@@ -6,8 +6,10 @@ import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 
 /** 같은 대상을 연속 클릭했을 때 더블클릭으로 인정하는 최대 간격(ms). */
 const DOUBLE_CLICK_MS = 400;
+/** 끌기와 클릭을 가르는 이동 거리(px). R3F 가 빈 곳 클릭(onPointerMissed)에 쓰는 기준과 같다. */
+const CLICK_MAX_DRAG_PX = 2;
 /** 포인터가 이만큼(ms) 머물면 그 대상의 이름표를 보인다(관제 데모와 같다). */
-export const HOVER_LABEL_MS = 1000;
+export const HOVER_LABEL_MS = 300;
 
 interface SelectableProps {
   target: ViewerTarget;
@@ -24,11 +26,27 @@ interface SelectableProps {
   interactive?: boolean;
 }
 
+interface LastClick {
+  key: string;
+  at: number;
+}
+
+/** 브라우저가 센 더블클릭이거나, 같은 대상을 짧은 간격으로 다시 눌렀는지. */
+function isDoubleClick(
+  event: ThreeEvent<MouseEvent>,
+  prev: LastClick | null,
+  key: string,
+  now: number,
+) {
+  if (event.nativeEvent && event.nativeEvent.detail >= 2) return true;
+  return prev !== null && prev.key === key && now - prev.at <= DOUBLE_CLICK_MS;
+}
+
 /** 장면 객체를 선택·초점 대상으로 올린다. 사람·구역·OBB 레이어가 이것으로 감싼다. */
 export function Selectable({ target, children, pickInstead, interactive = true }: SelectableProps) {
   const store = useViewerStore();
   const { type, id } = target;
-  const lastClickRef = useRef<{ key: string; at: number } | null>(null);
+  const lastClickRef = useRef<LastClick | null>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const hoverKey = useRef<string | null>(null);
 
@@ -38,39 +56,41 @@ export function Selectable({ target, children, pickInstead, interactive = true }
     return () => store.getState().unregisterTarget(registered);
   }, [store, type, id]);
 
+  // 더 먼저 골라야 할 대상(예: 투명 구역 안의 사람)이 있으면 그것을, 없으면 이 대상을 고른다.
+  const pickTarget = useCallback(
+    (event: ThreeEvent<MouseEvent>): ViewerTarget => pickInstead?.(event) ?? { type, id },
+    [type, id, pickInstead],
+  );
+
   const handleClick = useCallback(
     (event: ThreeEvent<MouseEvent>) => {
-      // 끈 동작(카메라 회전·손잡이 끌기)은 클릭이 아니다. R3F 가 빈 곳 클릭(onPointerMissed)에 쓰는 기준(2px)과 같다.
-      if (event.delta > 2) return;
+      // 끈 동작(카메라 회전·손잡이 끌기)은 클릭이 아니다.
+      if (event.delta > CLICK_MAX_DRAG_PX) return;
       event.stopPropagation();
-      const picked = pickInstead?.(event) ?? { type, id };
+      const picked = pickTarget(event);
       const key = targetKey(picked);
       const now = Date.now();
-      const prev = lastClickRef.current;
       store.getState().select(picked);
-      if (
-        (event.nativeEvent && event.nativeEvent.detail >= 2) ||
-        (prev !== null && prev.key === key && now - prev.at <= DOUBLE_CLICK_MS)
-      ) {
+      if (isDoubleClick(event, lastClickRef.current, key, now)) {
         lastClickRef.current = null;
         store.getState().activate(picked);
         return;
       }
       lastClickRef.current = { key, at: now };
     },
-    [store, type, id, pickInstead],
+    [store, pickTarget],
   );
 
   // 투명 구역 안·뒤의 사람은 클릭처럼 사람을 먼저 잡는다. 가장 앞의 대상만 머무름을 잰다.
   const handlePointerOver = useCallback(
     (event: ThreeEvent<PointerEvent>) => {
       event.stopPropagation();
-      const key = targetKey(pickInstead?.(event) ?? { type, id });
+      const key = targetKey(pickTarget(event));
       clearTimeout(hoverTimer.current);
       hoverKey.current = key;
       hoverTimer.current = setTimeout(() => store.getState().setHovered(key), HOVER_LABEL_MS);
     },
-    [store, type, id, pickInstead],
+    [store, pickTarget],
   );
 
   const handlePointerOut = useCallback(() => {

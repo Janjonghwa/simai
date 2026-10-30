@@ -5,7 +5,7 @@ function MonitorRoute() {
   const navigate = useNavigate();
   return (
     <MonitorPage
-      onEditZone={(zoneId) => void navigate({ to: '/zones', search: { zone: zoneId, edit: '1' } })}
+      onEditZone={(zoneId) => void navigate({ to: '/zones', search: { zone: zoneId } })}
     />
   );
 }

@@ -7,10 +7,12 @@ import { z } from 'zod';
 export const staticObjectsResponseSchema = z.array(z.unknown());
 export type StaticObjectsResponse = z.infer<typeof staticObjectsResponseSchema>;
 
-export const STATIC_OBJECT_KINDS = ['WORK_SURFACE', 'OBSTACLE'] as const;
-export type StaticObjectKind = (typeof STATIC_OBJECT_KINDS)[number];
+const STATIC_OBJECT_KINDS = ['WORK_SURFACE', 'OBSTACLE'] as const;
 
 const vec3 = z.tuple([z.number(), z.number(), z.number()]);
+
+// 가운데 [x, y, z], 가로·세로·높이 전체 길이, +Z 축 회전(rad). 작업면은 바닥(Z=0)부터 상판까지다.
+const obbSchema = z.object({ center: vec3, size: vec3, yaw_rad: z.number() });
 
 export const staticObjectItemSchema = z.object({
   // 공백만 있는 ID 는 받지 않는다. 값은 자르지 않는다(world_state support_surface_id 와 그대로 맞춘다).
@@ -18,8 +20,7 @@ export const staticObjectItemSchema = z.object({
   object_version: z.number().int().positive(),
   kind: z.enum(STATIC_OBJECT_KINDS),
   name: z.string().nullable(),
-  // 가운데 [x, y, z], 가로·세로·높이 전체 길이, +Z 축 회전(rad). 작업면은 바닥(Z=0)부터 상판까지다.
-  obb: z.object({ center: vec3, size: vec3, yaw_rad: z.number() }),
+  obb: obbSchema,
   // 상판 높이(m). 서버가 real(float4)로 저장해 0.74 가 0.7400000095367432 처럼 돌아온다.
   top_height_m: z.number().nullable(),
   // 상판 높이 표준편차(m). 화면에서 고치지 않고 받은 값을 그대로 다시 보낸다(없으면 Tier 0 가 0.02 로 읽는다).
@@ -34,7 +35,7 @@ export type StaticObjectItem = z.infer<typeof staticObjectItemSchema>;
 export const staticObjectBodySchema = z.object({
   kind: z.enum(STATIC_OBJECT_KINDS),
   name: z.string().nullable(),
-  obb: z.object({ center: vec3, size: vec3, yaw_rad: z.number() }),
+  obb: obbSchema,
   top_height_m: z.number().nullable(),
   top_height_sigma_m: z.number().nullable(),
 });

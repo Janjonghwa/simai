@@ -4,26 +4,33 @@ import {
   CCTV_W,
   cctvBackdrop,
   cctvFigures,
+  cctvPeople,
   cctvProj,
   type CctvCam,
+  type CctvPerson,
   type CctvProjector,
 } from '@/features/cctv/cctvMockView';
+import { CctvWall } from '@/features/cctv/CctvWall';
+import { DIMMED, LIVE_DOT, TILE_FRAME, tileZoom } from '@/features/cctv/tileStyle';
+import { useCameraStates } from '@/features/cctv/useCameraStates';
 import { clockLabel, lastDataClock } from '@/features/layout/status';
 import { useNow } from '@/features/layout/useNow';
-import { toPlan, trackLook } from '@/features/plan/plan';
-import { useWorldFresh } from '@/features/plan/useWorldFresh';
-import { cameraRows } from '@/features/system/health';
-import { useLinkAlive } from '@/hooks/useLinkAlive';
 import { useRealtimeStore } from '@/store/realtime.store';
 import type { WorldTrack } from '@simai/contracts';
-import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
-import { useState } from 'react';
+import type { ReactNode } from 'react';
 
 // 중계와 이어지지 않았을 때의 CCTV 모의 화면(관제 데모와 같다). 실제 영상 대신 각 카메라에서 본 교실에
 // World 의 사람을 투영해 그린다. 그림은 두 모드 모두 어두운 영상처럼 보이게 slate 색만 쓴다.
+// 화면 틀(CctvMockWall)은 사람·멈춤·배지 글을 받아 그리고, 실시간(CctvDemo)과 히스토리 다시 보기가 함께 쓴다.
 
 const NO_TRACKS: WorldTrack[] = [];
+const NO_CAMS: ReadonlySet<string> = new Set();
+
+/** 모의 화면의 선 굵기와 글자 크기(SVG viewBox 단위). */
+const GRID_STROKE = 0.3;
+const ROOM_STROKE = 0.6;
+const NO_SIGNAL_FONT = 7;
 
 interface CamView {
   cam: CctvCam;
@@ -37,19 +44,20 @@ const VIEWS: readonly CamView[] = CCTV_CAMS.map((cam) => {
   const project = cctvProj(cam);
   return { cam, project, ...cctvBackdrop(project) };
 });
+const VIEW_IDS = VIEWS.map((view) => view.cam.id);
+const VIEW_BY_ID = new Map(VIEWS.map((view) => [view.cam.id, view]));
 
 const PILL =
   'pointer-events-none absolute top-2 rounded-md bg-slate-950/70 px-2 py-0.5 text-xs leading-[18px] text-slate-100';
 
-/** World 의 사람. world 가 올 때마다(10Hz) 이 층만 다시 그린다. */
-function People({ project }: { project: CctvProjector }) {
-  const tracks = useRealtimeStore((s) => s.world?.payload.tracks) ?? NO_TRACKS;
-  const people = tracks
-    .filter((track) => trackLook(track) !== 'unknown')
-    .map((track) => {
-      const [x, y] = toPlan(...track.position_xy);
-      return { id: track.world_id, x, y };
-    });
+/** 사람(평면 좌표)을 그 카메라에서 본 몸통·머리로 그린다. */
+export function CctvFigures({
+  project,
+  people,
+}: {
+  project: CctvProjector;
+  people: readonly CctvPerson[];
+}) {
   return cctvFigures(project, people).map(({ id, body, head }) => (
     <g key={id}>
       <rect {...body} className="fill-slate-400" />
@@ -58,7 +66,41 @@ function People({ project }: { project: CctvProjector }) {
   ));
 }
 
-function Feed({ view, down, frozen }: { view: CamView; down: boolean; frozen: boolean }) {
+/** 실시간 World 의 사람. world 가 올 때마다(10Hz) 이 층만 다시 그린다. */
+function LivePeople({ project }: { project: CctvProjector }) {
+  const tracks = useRealtimeStore((s) => s.world?.payload.tracks) ?? NO_TRACKS;
+  return <CctvFigures project={project} people={cctvPeople(tracks)} />;
+}
+
+function NoSignal() {
+  return (
+    <g>
+      <rect width={CCTV_W} height={CCTV_H} className="fill-slate-900" />
+      <text
+        x={CCTV_W / 2}
+        y={CCTV_H / 2}
+        textAnchor="middle"
+        dominantBaseline="middle"
+        fontSize={NO_SIGNAL_FONT}
+        className="fill-slate-400"
+      >
+        신호 없음
+      </text>
+    </g>
+  );
+}
+
+function Feed({
+  view,
+  down,
+  frozen,
+  figures,
+}: {
+  view: CamView;
+  down: boolean;
+  frozen: boolean;
+  figures: (project: CctvProjector) => ReactNode;
+}) {
   const sky = `cctv-sky-${view.cam.id}`;
   return (
     <svg
@@ -66,7 +108,7 @@ function Feed({ view, down, frozen }: { view: CamView; down: boolean; frozen: bo
       preserveAspectRatio="xMidYMid slice"
       role="img"
       aria-label={`${view.cam.id} 카메라 영상`}
-      className={cn('block size-full', frozen && 'opacity-45')}
+      className={cn('block size-full', frozen && DIMMED)}
     >
       <defs>
         <linearGradient id={sky} x1="0" y1="0" x2="0" y2="1">
@@ -76,24 +118,12 @@ function Feed({ view, down, frozen }: { view: CamView; down: boolean; frozen: bo
       </defs>
       <rect width={CCTV_W} height={CCTV_H} fill={`url(#${sky})`} />
       {down ? (
-        <g>
-          <rect width={CCTV_W} height={CCTV_H} className="fill-slate-900" />
-          <text
-            x={CCTV_W / 2}
-            y={CCTV_H / 2}
-            textAnchor="middle"
-            dominantBaseline="middle"
-            fontSize={7}
-            className="fill-slate-400"
-          >
-            신호 없음
-          </text>
-        </g>
+        <NoSignal />
       ) : (
         <g>
-          <path d={view.grid} strokeWidth={0.3} className="fill-none stroke-slate-600" />
-          <path d={view.room} strokeWidth={0.6} className="fill-none stroke-slate-400" />
-          <People project={view.project} />
+          <path d={view.grid} strokeWidth={GRID_STROKE} className="fill-none stroke-slate-600" />
+          <path d={view.room} strokeWidth={ROOM_STROKE} className="fill-none stroke-slate-400" />
+          {figures(view.project)}
         </g>
       )}
     </svg>
@@ -107,27 +137,15 @@ function LiveClock() {
   return <>LIVE {clockLabel(offset, now) ?? '—'}</>;
 }
 
-function Badge({ down, frozen }: { down: boolean; frozen: boolean }) {
+/** 실시간 배지 글: 멈췄으면 마지막 데이터 시각, 아니면 LIVE 시계. */
+function LiveBadge({ frozen }: { frozen: boolean }) {
   const last = useRealtimeStore((s) => lastDataClock(s.health));
+  if (frozen) return <>정지 · {last ?? '—'}</>;
   return (
-    <span
-      className={cn(
-        PILL,
-        'right-2 inline-flex items-center gap-1.5 font-mono',
-        (down || frozen) && 'text-slate-400',
-      )}
-    >
-      {down ? (
-        '끊김'
-      ) : frozen ? (
-        `정지 · ${last ?? '—'}`
-      ) : (
-        <>
-          <i aria-hidden className="size-[7px] rounded-full bg-sev-critical" />
-          <LiveClock />
-        </>
-      )}
-    </span>
+    <>
+      <i aria-hidden className={LIVE_DOT} />
+      <LiveClock />
+    </>
   );
 }
 
@@ -136,15 +154,17 @@ function Tile({
   focused,
   down,
   frozen,
+  figures,
+  badge,
   onToggle,
-  className,
 }: {
   view: CamView;
   focused: boolean;
   down: boolean;
   frozen: boolean;
+  figures: (project: CctvProjector) => ReactNode;
+  badge: ReactNode;
   onToggle: () => void;
-  className?: string;
 }) {
   const { id, dir } = view.cam;
   return (
@@ -152,73 +172,78 @@ function Tile({
       type="button"
       onClick={onToggle}
       aria-label={`${id} ${focused ? '작게 보기' : '크게 보기'}`}
-      // 테두리는 그림 위에 겹쳐 그린다(안쪽 그림자는 그림에 가린다).
-      className={cn(
-        'relative flex-none cursor-zoom-in overflow-hidden rounded-[10px] bg-slate-900 outline-none after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:ring-1 after:ring-border after:ring-inset focus-visible:ring-3 focus-visible:ring-ring/50',
-        focused && 'cursor-zoom-out after:ring-2 after:ring-primary',
-        className,
-      )}
+      className={cn(TILE_FRAME, 'bg-slate-900', tileZoom(focused))}
     >
-      <Feed view={view} down={down} frozen={frozen} />
+      <Feed view={view} down={down} frozen={frozen} figures={figures} />
       <span className={cn(PILL, 'left-2')}>
         <b className="font-mono">{id}</b> {dir} 모서리
       </span>
-      <Badge down={down} frozen={frozen} />
+      <span
+        className={cn(
+          PILL,
+          'right-2 inline-flex items-center gap-1.5 font-mono',
+          (down || frozen) && 'text-slate-400',
+        )}
+      >
+        {down ? '끊김' : badge}
+      </span>
     </button>
   );
 }
 
-/** 2×2 화면. 한 칸을 누르면 그 칸을 크게, 나머지 셋을 옆에 세로로 둔다. */
-export function CctvDemo() {
-  const [focus, setFocus] = useState<string | null>(null);
-  const alive = useLinkAlive();
-  const health = useRealtimeStore((s) => (alive ? s.health : null));
-  const fresh = useWorldFresh();
-  const down = new Set(
-    cameraRows(health)
-      .filter((row) => !row.ok)
-      .map((row) => row.id),
-  );
+interface CctvMockWallProps {
+  /** 카메라마다 그릴 사람 층. 자주 바뀌는 사람은 이 층이 직접 구독하면 화면 틀을 다시 그리지 않는다. */
+  figures: (project: CctvProjector) => ReactNode;
+  /** 신호 없음으로 보일 카메라 id. */
+  down?: ReadonlySet<string>;
+  /** 그림이 멈췄다(흐리게). */
+  frozen?: boolean;
+  /** 각 칸 오른쪽 위 글(신호 없는 칸은 "끊김"). */
+  badge: ReactNode;
+}
 
-  const tile = (view: CamView, className?: string) => (
-    <Tile
-      key={view.cam.id}
-      view={view}
-      focused={focus === view.cam.id}
-      down={down.has(view.cam.id)}
-      frozen={!fresh}
-      onToggle={() => setFocus(focus === view.cam.id ? null : view.cam.id)}
-      className={className}
+/** 2×2 모의 화면. 칸 배치(크게 보기 포함)는 CctvWall 이 하고, 이 컴포넌트는 칸 안의 그림을 채운다. */
+export function CctvMockWall({
+  figures,
+  down = NO_CAMS,
+  frozen = false,
+  badge,
+}: CctvMockWallProps) {
+  return (
+    <CctvWall
+      ids={VIEW_IDS}
+      tile={(id, wall) => {
+        const view = VIEW_BY_ID.get(id);
+        return (
+          view && (
+            <Tile
+              view={view}
+              focused={wall.focused}
+              down={down.has(id)}
+              frozen={frozen}
+              figures={figures}
+              badge={badge}
+              onToggle={wall.toggle}
+            />
+          )
+        );
+      }}
     />
   );
-  const focused = VIEWS.find((view) => view.cam.id === focus);
+}
 
+const livePeople = (project: CctvProjector) => <LivePeople project={project} />;
+
+/** 실시간 CCTV 목 화면. health 카메라 상태가 정상이 아니면 그 칸은 신호 없음, World 가 끊기면 멈춤이다. */
+export function CctvDemo() {
+  const { fresh, stateOf } = useCameraStates();
+  const down = new Set(CCTV_CAMS.filter((cam) => stateOf(cam.id) === 'down').map((cam) => cam.id));
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3">
-      {focused && (
-        <div className="flex justify-end">
-          <Button variant="outline" size="sm" onClick={() => setFocus(null)}>
-            4분할로
-          </Button>
-        </div>
-      )}
-      {/* 남은 공간에 맞는 16:9 상자를 컨테이너 단위로 계산한다. */}
-      <div className="[container-type:size] flex min-h-0 flex-1 items-start justify-center">
-        {focused ? (
-          <div className="flex h-(--h) gap-2.5 [--h:min(100cqh,calc((100cqw_-_10px)*27/64))]">
-            {tile(focused, 'h-(--h) w-[calc(var(--h)*16/9)]')}
-            <div className="flex flex-col gap-2.5">
-              {VIEWS.filter((view) => view !== focused).map((view) =>
-                tile(view, 'h-[calc((var(--h)_-_20px)/3)] w-[calc((var(--h)_-_20px)/3*16/9)]'),
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="grid h-(--g) w-[calc(var(--g)*16/9)] grid-cols-2 grid-rows-2 gap-2.5 [--g:min(100cqh,calc(100cqw*9/16))]">
-            {VIEWS.map((view) => tile(view, 'size-full'))}
-          </div>
-        )}
-      </div>
-    </div>
+    <CctvMockWall
+      figures={livePeople}
+      down={down}
+      frozen={!fresh}
+      badge={<LiveBadge frozen={!fresh} />}
+    />
   );
 }

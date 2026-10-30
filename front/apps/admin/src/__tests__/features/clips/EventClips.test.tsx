@@ -4,6 +4,7 @@ import { clipsKey } from '@/features/clips/useEventClips';
 import { EventDetail } from '@/features/events/EventDetail';
 import { formatTime, groupIncidents } from '@/features/events/events';
 import type { EventItem } from '@/features/events/types';
+import { buildTestH264Stream } from '@/mocks/h264TestStream';
 import { type Role, useSessionStore } from '@/store/session.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -24,10 +25,16 @@ const clip = (change: Partial<Clip> = {}): Clip => ({
   resume_count: 0,
   clip_start_capture_ms: T - 20_000,
   clip_end_capture_ms: T + 20_000,
+  frame_count: 600,
   truncated_start: false,
   truncated_end: false,
   has_gaps: false,
+  content_type: 'video/h264',
+  container: 'h264-annexb',
+  size_bytes: 1_200_000,
   retention_hold: false,
+  auto_retained: false,
+  delete_after_ms: T + 14 * 24 * 60 * 60 * 1000,
   deleted_at_ms: null,
   ...change,
 });
@@ -56,6 +63,15 @@ let listCalls = 0;
 let urlCalls = 0;
 let puts: unknown[] = [];
 let urlExpiresIn = 60_000;
+/** 재생 주소 응답의 형식. 기본은 그대로 재생하는 mp4 다. */
+let urlFormat: { content_type: string; container: string } = {
+  content_type: 'video/mp4',
+  container: 'mp4',
+};
+/** 저장소(서명 주소)가 주는 바이트와 상태. */
+let storageBody: Uint8Array = new Uint8Array();
+let storageStatus = 200;
+let storageAuthorization: string | null | undefined;
 /** 정해 두면 서버가 그때까지 답하지 않는다(답하기 전 화면을 본다). */
 let urlGate: Promise<void> | undefined;
 let putGate: Promise<void> | undefined;
@@ -72,16 +88,25 @@ function gate() {
 const server = setupServer(
   http.get('http://api.test/api/events/:id/clips', ({ params }) => {
     listCalls += 1;
-    return HttpResponse.json({ contract: 'DEMO_UNCONFIRMED', event_id: params.id, clips });
+    return HttpResponse.json({ event_id: params.id, clips });
   }),
   http.get('http://api.test/api/clips/:id', async ({ params }) => {
     const n = ++urlCalls;
     await urlGate;
     return HttpResponse.json({
-      contract: 'DEMO_UNCONFIRMED',
       clip_id: params.id,
-      url: `/clips/${String(params.id)}-${n}.mp4`,
+      url:
+        urlFormat.container === 'mp4'
+          ? `/clips/${String(params.id)}-${n}.mp4`
+          : `http://storage.test/clips/${String(params.id)}.h264`,
       expires_at_ms: Date.now() + urlExpiresIn,
+      ...urlFormat,
+    });
+  }),
+  http.get('http://storage.test/clips/:name', ({ request }) => {
+    storageAuthorization = request.headers.get('Authorization');
+    return new HttpResponse(storageStatus === 200 ? (storageBody as BodyInit) : null, {
+      status: storageStatus,
     });
   }),
   http.put('http://api.test/api/clips/:id/retention', async ({ params, request }) => {
@@ -107,6 +132,10 @@ beforeEach(() => {
   urlCalls = 0;
   puts = [];
   urlExpiresIn = 60_000;
+  urlFormat = { content_type: 'video/mp4', container: 'mp4' };
+  storageBody = new Uint8Array();
+  storageStatus = 200;
+  storageAuthorization = undefined;
   urlGate = undefined;
   putGate = undefined;
   signIn('ADMIN');
@@ -239,13 +268,113 @@ describe('EventClips', () => {
     expect((await screen.findByRole('alert')).textContent).toBe('재생 주소를 받지 못했습니다');
   });
 
-  it('지운 클립은 삭제됨이고 재생·보존 버튼이 없다', async () => {
+  it('지운 클립은 삭제됨과 지운 시각이 보이고 재생·보존 버튼이 없다', async () => {
     clips = [clip({ deleted_at_ms: T })];
     renderClips();
 
-    expect(await screen.findByText('삭제됨')).toBeTruthy();
+    expect(await screen.findByText(/^삭제됨 · /)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'cam1 재생' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'cam1 보존' })).toBeNull();
+  });
+
+  it('목록을 받은 뒤 지워진 클립을 재생하면(410 CLIP_DELETED) 알리고 목록을 다시 받아 삭제됨으로 그린다', async () => {
+    server.use(
+      http.get('http://api.test/api/clips/:id', () => {
+        // 서버가 그사이 지웠다: 목록도 이제 지운 시각을 준다.
+        clips = clips.map((c) => (c.clip_id === 'c-1' ? { ...c, deleted_at_ms: T } : c));
+        return HttpResponse.json({ status: 410, code: 'CLIP_DELETED' }, { status: 410 });
+      }),
+    );
+    renderClips();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+    expect(await screen.findByText(/^삭제됨 · /)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'cam1 재생' })).toBeNull();
+  });
+
+  describe('h264-annexb 클립(서버는 변환하지 않는다)', () => {
+    const created: Blob[] = [];
+    const revoked: string[] = [];
+    const createObjectURL = vi.fn((blob: Blob) => {
+      created.push(blob);
+      return `blob:test/${created.length}`;
+    });
+    const revokeObjectURL = vi.fn((url: string) => {
+      revoked.push(url);
+    });
+    const original = { create: URL.createObjectURL, revoke: URL.revokeObjectURL };
+
+    beforeEach(() => {
+      created.length = 0;
+      revoked.length = 0;
+      createObjectURL.mockClear();
+      URL.createObjectURL = createObjectURL;
+      URL.revokeObjectURL = revokeObjectURL;
+      urlFormat = { content_type: 'video/h264', container: 'h264-annexb' };
+      storageBody = buildTestH264Stream({ frames: 30 }).data;
+    });
+    afterEach(() => {
+      URL.createObjectURL = original.create;
+      URL.revokeObjectURL = original.revoke;
+    });
+
+    it('저장소에서 받아 MP4 로 감싼 blob 으로 재생하고, 서명 주소에는 Authorization 을 싣지 않는다', async () => {
+      renderClips();
+
+      fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+      await waitFor(() => expect(video('cam1').getAttribute('src')).toBe('blob:test/1'));
+      expect(storageAuthorization).toBeNull();
+      const blob = created[0]!;
+      expect(blob.type).toBe('video/mp4');
+      // 감싼 MP4: 처음 상자가 ftyp 다.
+      const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
+      expect(new TextDecoder().decode(head.subarray(4, 8))).toBe('ftyp');
+      expect(urlCalls).toBe(1);
+    });
+
+    it('감싼 영상은 만료가 없어 다시 눌러도 주소를 또 받지 않고, 화면을 닫으면 blob 을 해제한다', async () => {
+      urlExpiresIn = 1_000;
+      renderClips();
+
+      fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+      await waitFor(() => expect(video('cam1').getAttribute('src')).toBe('blob:test/1'));
+      await act(() => new Promise((resolve) => setTimeout(resolve, 1_200)));
+      fireEvent.click(playButton('cam1'));
+      await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+      expect(urlCalls).toBe(1);
+      expect(video('cam1').getAttribute('src')).toBe('blob:test/1');
+
+      expect(revoked).toEqual([]);
+      cleanup();
+      expect(revoked).toEqual(['blob:test/1']);
+    });
+
+    it('저장소에서 받지 못하면 알린다', async () => {
+      storageStatus = 403;
+      renderClips();
+
+      fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+      expect((await screen.findByRole('alert')).textContent).toBe('영상을 받지 못했습니다');
+      expect(screen.queryByLabelText('cam1 클립')).toBeNull();
+    });
+
+    it('H.264 로 읽히지 않는 바이트면 알린다', async () => {
+      storageBody = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+      renderClips();
+
+      fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+      expect((await screen.findByRole('alert')).textContent).toBe('영상 형식을 읽지 못했습니다');
+      expect(createObjectURL).not.toHaveBeenCalled();
+    });
+
+    it('모르는 container 면 받지 않고 알린다', async () => {
+      urlFormat = { content_type: 'video/x-matroska', container: 'mkv' };
+      renderClips();
+
+      fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
+      expect((await screen.findByRole('alert')).textContent).toBe('지원하지 않는 영상 형식입니다');
+      expect(storageAuthorization).toBeUndefined();
+    });
   });
 
   const holdButton = () => screen.getByRole('button', { name: 'cam1 보존' });
@@ -279,13 +408,45 @@ describe('EventClips', () => {
     await waitFor(() => expect(holdButton().getAttribute('aria-pressed')).toBe('true'));
   });
 
-  it('CRITICAL 이벤트 클립은 자동 보존이라 보존 표시만 있고 바꾸는 버튼이 없다', async () => {
-    clips = [clip({ retention_hold: true })];
+  it('자동 보존 클립은 자동 보존 표시만 있고 바꾸는 버튼이 없다', async () => {
+    clips = [clip({ retention_hold: true, auto_retained: true })];
     renderClips(event({ severity: 'CRITICAL' }));
 
     const section = await screen.findByRole('region', { name: '클립' });
-    expect(await within(section).findByText('보존')).toBeTruthy();
+    expect(await within(section).findByText('자동 보존')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'cam1 보존' })).toBeNull();
+  });
+
+  it('CRITICAL 이벤트라도 서버가 자동 보존이라 하지 않은 클립(표시 꺼짐)은 보존 버튼이 있다', async () => {
+    clips = [clip({ retention_hold: false, auto_retained: false })];
+    renderClips(event({ severity: 'CRITICAL' }));
+
+    expect(await screen.findByRole('button', { name: 'cam1 보존' })).toBeTruthy();
+    expect(screen.queryByText('자동 보존')).toBeNull();
+  });
+
+  it('관리자가 붙인 보존 표시는 보존 버튼이 눌린 채로 보이고 자동 보존 글자는 없다', async () => {
+    clips = [clip({ retention_hold: true, auto_retained: false })];
+    renderClips();
+
+    const button = await screen.findByRole('button', { name: 'cam1 보존' });
+    expect(button.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.queryByText('자동 보존')).toBeNull();
+  });
+
+  it('자동 보존을 떼려다 서버가 거절하면(409 CLIP_AUTO_RETAINED) 이유를 알린다', async () => {
+    server.use(
+      http.put('http://api.test/api/clips/:id/retention', () =>
+        HttpResponse.json({ status: 409, code: 'CLIP_AUTO_RETAINED' }, { status: 409 }),
+      ),
+    );
+    clips = [clip({ retention_hold: true })];
+    renderClips();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'cam1 보존' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      '자동 보존 클립은 보존 표시를 뗄 수 없습니다',
+    );
   });
 
   it('재개 구간이 있으면 발생·재개로 묶는다', async () => {

@@ -3,16 +3,16 @@ import { MonitorPage } from '@/features/monitor/MonitorPage';
 import type {
   Viewer3DHandle,
   Viewer3DProps,
-  ViewerEditBox,
   ViewerStatus,
   ViewerTarget,
 } from '@/features/viewer3d';
 import { ZonesPage } from '@/features/zones/ZonesPage';
+import { useBoxEditStore } from '@/store/boxEdit.store';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore, type Role } from '@/store/session.store';
-import { useZoneDraftsStore } from '@/store/zoneDrafts.store';
+import { useZoneEditStore } from '@/store/zoneEdit.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -53,26 +53,12 @@ const fake = vi.hoisted(() => ({
   mounts: 0,
   unmounts: 0,
   onSelect: null as ((target: ViewerTarget | null) => void) | null,
-  onEditPreview: null as Viewer3DProps['onEditPreview'] | null,
-  onEditResult: null as Viewer3DProps['onEditResult'] | null,
-  overlay: null as Viewer3DProps['editDraftOverlay'] | null,
-  draft: { min: [5.8, 1.2, 0], max: [8.6, 3.8, 2.4] } as ViewerEditBox,
 }));
 
-function FakeViewer({
-  ref,
-  onSelectionChange,
-  onStatusChange,
-  onEditPreview,
-  onEditResult,
-  editDraftOverlay,
-}: Viewer3DProps) {
+function FakeViewer({ ref, onSelectionChange, onStatusChange }: Viewer3DProps) {
   useEffect(() => {
     fake.onSelect = onSelectionChange ?? null;
-    fake.onEditPreview = onEditPreview ?? null;
-    fake.onEditResult = onEditResult ?? null;
-    fake.overlay = editDraftOverlay ?? null;
-  }, [onSelectionChange, onEditPreview, onEditResult, editDraftOverlay]);
+  }, [onSelectionChange]);
 
   useImperativeHandle(
     ref,
@@ -88,73 +74,7 @@ function FakeViewer({
           return { ok: true };
         },
         setMode: () => ({ ok: true }),
-        beginEdit: (target: ViewerTarget) => {
-          fake.draft = { min: [5.8, 1.2, 0], max: [8.6, 3.8, 2.4] };
-          fake.onEditPreview?.({
-            target,
-            mode: 'LIVE',
-            before: { min: [5.8, 1.2, 0], max: [8.6, 3.8, 2.4] },
-            draft: fake.draft,
-            provenance: {
-              sourceId: 's-1',
-              zoneContract: 'DEMO_UNCONFIRMED',
-              zonesReceivedAt: 1000,
-              sceneVersion: 'scene-3',
-              configVersion: null,
-            },
-            saved: false,
-          });
-          return { ok: true };
-        },
-        updateEditField: ({ field, value }) => {
-          if (field === 'originX') {
-            const w = fake.draft.max[0] - fake.draft.min[0];
-            fake.draft = {
-              min: [value, fake.draft.min[1], fake.draft.min[2]],
-              max: [value + w, fake.draft.max[1], fake.draft.max[2]],
-            };
-          }
-          fake.onEditPreview?.({
-            target: { type: 'zone', id: 'z-04' },
-            mode: 'LIVE',
-            before: { min: [5.8, 1.2, 0], max: [8.6, 3.8, 2.4] },
-            draft: fake.draft,
-            provenance: {
-              sourceId: 's-1',
-              zoneContract: 'DEMO_UNCONFIRMED',
-              zonesReceivedAt: 1000,
-              sceneVersion: 'scene-3',
-              configVersion: null,
-            },
-            saved: false,
-          });
-          return { ok: true };
-        },
-        finishEdit: () => {
-          const res = {
-            status: 'FINISHED' as const,
-            target: { type: 'zone' as const, id: 'z-04' },
-            mode: 'LIVE' as const,
-            before: {
-              min: [5.8, 1.2, 0] as [number, number, number],
-              max: [8.6, 3.8, 2.4] as [number, number, number],
-            },
-            after: fake.draft,
-            changed: true,
-            provenance: {
-              sourceId: 's-1',
-              zoneContract: 'DEMO_UNCONFIRMED' as const,
-              zonesReceivedAt: 1000,
-              sceneVersion: 'scene-3',
-              configVersion: null,
-            },
-            saved: false as const,
-          };
-          fake.onEditResult?.(res);
-          return res;
-        },
-        cancelEdit: () => null,
-      }) as Viewer3DHandle,
+      }) as unknown as Viewer3DHandle,
   );
 
   const reported = useRef(false);
@@ -183,15 +103,18 @@ function signInAs(role: Role) {
 describe('MonitorPage 구역 선택 수정 동작 및 단일 Canvas 공유', () => {
   beforeEach(() => {
     signInAs('ADMIN');
-    useZoneDraftsStore.getState().clear();
+    useZoneEditStore.getState().clear();
+    useBoxEditStore.getState().clear();
     useRealtimeStore.setState(
-      { ...useRealtimeStore.getInitialState(), source: { id: 's-1', pushZones: vi.fn() } as never },
+      {
+        ...useRealtimeStore.getInitialState(),
+        source: { id: 's-1', pushZones: vi.fn(), pushWorkSurfaces: vi.fn() } as never,
+      },
       true,
     );
     fake.mounts = 0;
     fake.unmounts = 0;
     fake.onSelect = null;
-    fake.overlay = null;
   });
   afterEach(cleanup);
 
@@ -262,23 +185,23 @@ describe('MonitorPage 구역 선택 수정 동작 및 단일 Canvas 공유', () 
     // 왕복 후에도 z-04 선택이 그대로 유지된다.
     expect(screen.getByRole('button', { name: '구역 수정 z-04' })).toBeTruthy();
 
-    // /zones 에서 편집 중 값을 바꾼 뒤 관제(/)로 이동하면 손잡이는 닫히고 변경분은 Ghost 로 유지된다.
+    // /zones 에서 3D 손잡이로 구역 상자를 고친 뒤 관제(/)로 이동하면 손잡이는 내려가고, 돌아오면 고친 초안이 그대로다.
     act(() => screen.getByRole('button', { name: 'go-zones' }).click());
-    act(() => screen.getByRole('button', { name: '구역 수정' }).click());
-    act(() => screen.getByRole('button', { name: /정밀 입력/ }).click());
-    const xInput = screen.getByLabelText('시작 X (m)') as HTMLInputElement;
-    fireEvent.focus(xInput);
-    fireEvent.change(xInput, { target: { value: '6.5' } });
-    fireEvent.keyDown(xInput, { key: 'Enter' });
+    await waitFor(() => expect(useBoxEditStore.getState().boxEdit?.id).toBe('z-04'));
+    act(() => useBoxEditStore.getState().onChange({ min: [6.5, 1.2, 0], max: [9.3, 3.8, 2.4] }));
 
     act(() => screen.getByRole('button', { name: 'go-monitor' }).click());
-    expect(fake.overlay).toBeNull();
+    expect(useBoxEditStore.getState().boxEdit).toBeNull();
 
     act(() => screen.getByRole('button', { name: 'go-zones' }).click());
-    expect(fake.overlay).toEqual({
-      target: { type: 'zone', id: 'z-04' },
-      box: { min: [6.5, 1.2, 0], max: [9.3, 3.8, 2.4] },
-    });
+    await waitFor(() =>
+      expect(useBoxEditStore.getState().boxEdit).toMatchObject({
+        id: 'z-04',
+        kind: 'zone',
+        box: { min: [6.5, 1.2, 0], max: [9.3, 3.8, 2.4] },
+      }),
+    );
+    expect(screen.getByRole('option', { name: 'z-04 · 북동 위험 구역 · 저장 전' })).toBeTruthy();
     // 구역 편집 화면을 10번 다시 그리는 시험이라, 전체 시험을 함께 돌리는 부하에서는 기본 5초가 빠듯하다.
   }, 15_000);
 });

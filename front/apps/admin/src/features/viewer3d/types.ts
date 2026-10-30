@@ -1,6 +1,7 @@
 import type { SpatialSource } from '@/features/viewer3d/data/spatialSource';
 import type {
   ViewerBeginEditOptions,
+  ViewerEditBox,
   ViewerEditCommandResult,
   ViewerEditField,
   ViewerEditOverlayInput,
@@ -161,6 +162,25 @@ export interface Viewer3DHandle {
   resetView?(): CommandResult;
 }
 
+/**
+ * 호스트가 쥐고 있는 상자 편집(제어형 조작기, `boxEdit` prop). 뷰어 안 편집 세션(beginEdit)과 따로이며 서로 영향이 없다.
+ * 화면에는 상자 미리보기와 가운데 이동 구, 면별 화살표를 그린다. 상자는 늘 호스트가 정본이다(onBoxEditChange 로 올리고 다시 내려 받는다).
+ */
+export interface ViewerBoxEdit {
+  /** 바뀌면 끌던 조작을 끝낸다(구역 ID · "surface:<zoneId>" · "new"). */
+  id: string;
+  /** zone 은 여섯 화살표 모두, surface 는 z- 화살표를 숨긴다(작업면은 바닥 위 판이라 아래쪽 끝을 끌지 못한다). */
+  kind: 'zone' | 'surface';
+  /** World 축 정렬 상자(m). */
+  box: ViewerEditBox;
+}
+
+/** 호스트가 보관한 미저장 초안 하나(읽기 전용 윤곽, `boxGhosts` prop). */
+export interface ViewerBoxGhost {
+  id: string;
+  box: ViewerEditBox;
+}
+
 export interface Viewer3DProps {
   ref?: Ref<Viewer3DHandle>;
   /** 장면 색표. 화면 테마(다크·화이트)를 넘긴다. 바꿔도 장면은 그대로이고 색만 바뀐다. 없으면 다크. */
@@ -238,5 +258,17 @@ export interface Viewer3DProps {
   onPlannedEditPreview?: (preview: ViewerPlannedEditPreview) => void;
   /** 가상 객체 편집이 끝날 때(완료·취소·거부) 부른다. */
   onPlannedEditResult?: (result: ViewerPlannedEditResult) => void;
+  /**
+   * 호스트가 쥐고 있는 상자 편집 조작기(선택 사항). 넘기면 상자 미리보기와 손잡이(가운데 구 = 바닥 이동, 면별 화살표 = 그 면만 이동)를 그린다.
+   * null·없음이면 조작기를 그리지 않는다. 뷰어 안 편집 세션과 따로 동작한다.
+   */
+  boxEdit?: ViewerBoxEdit | null;
+  /**
+   * 끄는 동안 맞춘 결과(0.05 m 단위, 교실 범위 안)가 지금 상자와 다를 때마다 새 상자를 올린다. Esc 는 끌기 전 상자로 올린다.
+   * 호스트는 받은 상자를 boxEdit.box 로 다시 내려 준다(끄는 동안은 끌기 시작 때의 상자에서 계산한다).
+   */
+  onBoxEditChange?: (box: ViewerEditBox) => void;
+  /** 보관된 미저장 초안의 읽기 전용 윤곽(점선). 클릭을 받지 않고, boxEdit.id 와 같은 id 는 그리지 않는다. */
+  boxGhosts?: readonly ViewerBoxGhost[];
   className?: string;
 }

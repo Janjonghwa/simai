@@ -1,4 +1,5 @@
 import type { CameraPhase, PreviewLink } from '@/features/cctv/cctv.store';
+import type { HealthCamera } from '@/features/cctv/cctvCameras';
 
 // CCTV 로컬 미리보기 화면 문구와 판단. 화면 컴포넌트 없이 시험한다.
 
@@ -12,9 +13,16 @@ const PHASE: Record<CameraPhase, string> = {
   decode_error: '디코딩 오류',
 };
 
+/** 중계와 이어지지 않았을 때의 문구. */
+const LINK_LABEL: Record<Exclude<PreviewLink, 'open'>, string> = {
+  connecting: '연결 중',
+  unavailable: '중계 끊김',
+  unsupported: '중계 끊김',
+};
+
 /** 카메라 칸 상태 문구. 중계와 끊겼으면 카메라 단계보다 끊김을 먼저 보인다. */
 export function tileLabel(phase: CameraPhase | undefined, link: PreviewLink): string {
-  if (link !== 'open') return link === 'connecting' ? '연결 중' : '중계 끊김';
+  if (link !== 'open') return LINK_LABEL[link];
   return PHASE[phase ?? 'no_video'];
 }
 
@@ -33,3 +41,41 @@ export function noticeText(link: PreviewLink): string {
 }
 
 export const isStale = (ageSec: number | undefined) => ageSec !== undefined && ageSec > STALE_SEC;
+
+/**
+ * 카메라 칸 상태(tier0_health.cameras 기준). live: 실시간, down: 끊김, frozen: 정지.
+ * 끊김은 Tier 0 가 그 카메라의 신호 없음·키프레임 대기를 알린 것이고, 정지는 지금 값을 알 수 없는 것
+ * (EC2 와 끊김·Tier 0 가 안 알림·카메라 목록이나 상태에 없음·World 가 멈춤)이다.
+ */
+export type CameraState = 'live' | 'down' | 'frozen';
+
+export const STATE_LABEL: Record<CameraState, string> = {
+  live: '실시간',
+  down: '끊김',
+  frozen: '정지',
+};
+
+/** 프레임이 들어오는 health status. SYNC_INVALID 는 시각 동기만 무효이므로 실시간으로 본다. */
+const FRAMES_ARRIVING_STATUS: ReadonlySet<string> = new Set(['OK', 'SYNC_INVALID']);
+
+/** fresh 는 최근 World 를 받았는지(useWorldFresh). */
+export function cameraState(camera: HealthCamera | undefined, fresh: boolean): CameraState {
+  if (camera?.status === undefined) return 'frozen';
+  if (!FRAMES_ARRIVING_STATUS.has(camera.status)) return 'down';
+  return fresh ? 'live' : 'frozen';
+}
+
+/** 칸에 보일 상태 글. 정지는 마지막으로 데이터를 받은 시각이 있으면 함께 보인다. */
+export function stateText(state: CameraState, lastClock?: string): string {
+  if (state === 'frozen' && lastClock) return `${STATE_LABEL[state]} · ${lastClock}`;
+  return STATE_LABEL[state];
+}
+
+/** LIVE 점은 영상 프레임이 실제로 들어올 때만 켠다(디코딩해 그리는 중이고 마지막 프레임이 지연되지 않음). */
+export function framesArriving(
+  phase: CameraPhase | undefined,
+  link: PreviewLink,
+  ageSec: number | undefined,
+): boolean {
+  return link === 'open' && phase === 'playing' && !isStale(ageSec);
+}

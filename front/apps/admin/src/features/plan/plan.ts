@@ -1,20 +1,61 @@
 import { isActive, isAlarming, SEVERITY_RANK, type EventEntry } from '@/features/events/events';
 import type { Severity } from '@/features/events/types';
+import type { Zone, ZoneBox } from '@/features/zones/types';
 import type { WorldTrack } from '@simai/contracts';
 
 // 2D 평면(명세 13.6 비상 화면, 4.1 BEV 2D 개요)의 계산. three.js 없이 World 상태만으로 그린다.
 
-/** 교실 테스트베드 크기(m). 장면·평면도(GET /api/floor-plans/current)가 생기면 그 값을 쓴다. */
+/** 교실 테스트베드 크기(m). 평면도(GET /api/floor-plans/current)가 없을 때의 기본 방 크기다. */
 export const ROOM = { width: 10, depth: 10 } as const;
+
+/** World (x, y) 한 점(m). */
+export type PlanPoint = readonly [number, number];
+
+/** 평면이 그리는 World 범위(m). */
+export interface PlanBounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+/** 기본 범위: 교실 테스트베드(원점에서 ROOM 크기). */
+export const ROOM_BOUNDS: PlanBounds = { minX: 0, minY: 0, maxX: ROOM.width, maxY: ROOM.depth };
+
+export const boundsWidth = (bounds: PlanBounds) => bounds.maxX - bounds.minX;
+export const boundsDepth = (bounds: PlanBounds) => bounds.maxY - bounds.minY;
+
+/** 2D 에 그리는 구역. 서버 구역이면 판정 유형·유형·등급으로 색과 말풍선을 정한다. */
+export type PlanZone = ZoneBox & Partial<Pick<Zone, 'judgeType' | 'zoneType' | 'severity'>>;
+
+/** 평면도(BEV) 바탕. 이미지는 bounds 를 덮는다. */
+export interface PlanBackdrop {
+  /** 이미 받아 둔 평면도 이미지 주소. 아직 받지 못했으면 없다. */
+  imageUrl?: string;
+  /** 대략 방 외곽(World m, 정확도 주장 없음). */
+  outline?: readonly PlanPoint[];
+  /** 지금 보정 버전으로 만든 평면도가 아니다. */
+  outdated?: boolean;
+}
+
+/** 대상 키(이벤트 패널과 같은 규칙): 구역은 zone:{zoneId}, 사람은 person:{worldId}. */
+export const ZONE_KEY_PREFIX = 'zone:';
+export const PERSON_KEY_PREFIX = 'person:';
+export const zoneKey = (zoneId: string) => `${ZONE_KEY_PREFIX}${zoneId}`;
+export const personKey = (worldId: string) => `${PERSON_KEY_PREFIX}${worldId}`;
 
 /** 방 바깥 여백(m). 방 가장자리의 사람·이름표가 잘리지 않게 한다. */
 export const PLAN_MARGIN = 0.9;
 
 /**
  * World(m, +X 오른쪽, +Y 앞) → 평면 SVG 좌표(m, +y 아래). World 와 화면 좌표의 변환은 여기서만 한다.
- * 위에서 내려다본 지도처럼 +Y 가 화면 위쪽이 되게 뒤집는다.
+ * 위에서 내려다본 지도처럼 +Y 가 화면 위쪽이 되게 뒤집고, 범위의 왼쪽 위(min x, max y)를 원점으로 옮긴다.
  */
-export const toPlan = (x: number, y: number): readonly [number, number] => [x, ROOM.depth - y];
+export const toPlan = (
+  x: number,
+  y: number,
+  bounds: PlanBounds = ROOM_BOUNDS,
+): readonly [number, number] => [x - bounds.minX, bounds.maxY - y];
 
 /** 사람 표시 모양(명세 13.2 관측 상태 표시를 따른다). */
 export type TrackLook = 'observed' | 'predicted' | 'unknown';

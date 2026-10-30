@@ -41,7 +41,7 @@ export interface TbmTask {
   measures: readonly string[];
 }
 
-export interface TbmZone extends Rect {
+interface TbmZone extends Rect {
   id: string;
   name: string;
 }
@@ -51,8 +51,8 @@ export const TBM_DATE = '2026년 10월 16일';
 
 /** 작업 구역. 관제 mock 구역(z-04 · z-02)과 같은 자리다. */
 export const TBM_ZONES: readonly TbmZone[] = [
-  { id: 'z-04', name: '개구부 위 작업 공간', x: 5.8, y: 1.2, w: 2.8, h: 2.6 },
-  { id: 'z-02', name: '단상 40cm', x: 1, y: 6.2, w: 3, h: 2.2 },
+  { id: 'z-04', name: '개구부 구역', x: 5.8, y: 1.2, w: 2.8, h: 2.6 },
+  { id: 'z-02', name: '단상 구역', x: 1, y: 6.2, w: 3, h: 2.2 },
 ];
 
 export const TBM_OPENING: Rect = { x: 7.2, y: 1.2, w: 1.2, h: 0.6 };

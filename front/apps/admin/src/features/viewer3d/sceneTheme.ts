@@ -13,7 +13,7 @@ export function useScenePalette(): ScenePalette {
   return PALETTE[useStore(store, (s) => s.theme)];
 }
 
-/** 포인터가 이 대상에 1초 넘게 머물렀는지(이름표를 보일지). */
+/** 포인터가 이 대상에 HOVER_LABEL_MS 넘게 머물렀는지(이름표를 보일지). */
 export function useIsHovered(key: string): boolean {
   const store = useContext(ViewerStoreContext) ?? NO_VIEWER;
   return useStore(store, (s) => s.hovered === key);

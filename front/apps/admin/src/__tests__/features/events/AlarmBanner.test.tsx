@@ -1,7 +1,9 @@
 import { AlarmBanner } from '@/features/events/AlarmBanner';
 import type { EventEntry } from '@/features/events/events';
 import { useEventsStore } from '@/features/events/events.store';
+import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore } from '@/store/session.store';
+import type { WorldStatePayload } from '@simai/contracts';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -57,6 +59,8 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
+  useRealtimeStore.setState(useRealtimeStore.getInitialState(), true);
   useSessionStore.setState(useSessionStore.getInitialState(), true);
   useEventsStore.setState(useEventsStore.getInitialState(), true);
 });
@@ -85,5 +89,63 @@ describe('AlarmBanner', () => {
 
     expect(useEventsStore.getState().openEventId).toBe('e-1');
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('등급 배지, 규칙 · 대상 · 구역, 발생 뒤 경과를 이벤트 카드와 같은 규칙으로 보인다', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T + 12_000);
+    const banner = renderBanner(true);
+
+    expect(within(banner).getByText('위험')).toBeTruthy();
+    expect(within(banner).getByRole('alert').textContent).toBe(
+      '개구부·가장자리 근접 · w-0015 · z-04',
+    );
+    // 경과는 낭독 영역(role=alert) 밖에 둔다.
+    expect(within(banner).getByText('12초 전').closest('[role="alert"]')).toBeNull();
+    // 개구부 수치 같은 근거 줄은 배너에 없다.
+    expect(banner.textContent).not.toContain('가장자리 0');
+  });
+
+  it('확인 대기 경보가 더 있으면 +N 을 보이고 가장 높은 등급이 먼저다', () => {
+    const second: EventEntry = {
+      stageStartedAt: T,
+      event: {
+        ...alarm.event,
+        event_id: 'e-2',
+        rule_id: 'R1',
+        severity: 'HIGH',
+        world_ids: ['w-0021'],
+      },
+    };
+    live.entries = [second, alarm];
+    const banner = renderBanner(true);
+
+    expect(within(banner).getByText('+1')).toBeTruthy();
+    expect(within(banner).getByText('외 1건').className).toContain('sr-only');
+    expect(within(banner).getByRole('alert').textContent).toContain('w-0015');
+  });
+
+  it('확인 버튼은 확인 대기 경보에만 있고, 확인을 누를 수 있다', () => {
+    const banner = renderBanner(true);
+    expect(within(banner).getByRole('button', { name: /확인$/ })).toBeTruthy();
+    expect(within(banner).queryByRole('button', { name: '소리 켜기' })).toBeNull();
+  });
+
+  it('카메라 버튼은 이벤트 패널이 있는 화면에서 사람을 담은 카메라가 있을 때만 있다', () => {
+    useRealtimeStore.setState({
+      world: {
+        receivedAt: T,
+        payload: {
+          tracks: [{ world_id: 'w-0015', cameras: ['cam3'] }],
+        } as unknown as WorldStatePayload,
+      },
+    });
+    const withPanel = renderBanner(true);
+    fireEvent.click(within(withPanel).getByRole('button', { name: /cam3로 확인/ }));
+    expect(navigate).toHaveBeenCalledWith({ to: '/cctv' });
+    cleanup();
+
+    const without = renderBanner(false);
+    expect(within(without).queryByRole('button', { name: /로 확인/ })).toBeNull();
   });
 });
