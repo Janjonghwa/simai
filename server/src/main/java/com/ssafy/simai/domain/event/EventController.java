@@ -1,5 +1,6 @@
 package com.ssafy.simai.domain.event;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.ssafy.simai.domain.user.entity.Role;
 import com.ssafy.simai.global.exception.BusinessException;
@@ -18,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
@@ -36,10 +38,12 @@ public class EventController {
 
     private final EventQueryRepository events;
     private final EventAckService acks;
+    private final EventEscalationService escalations;
 
-    EventController(EventQueryRepository events, EventAckService acks) {
+    EventController(EventQueryRepository events, EventAckService acks, EventEscalationService escalations) {
         this.events = events;
         this.acks = acks;
+        this.escalations = escalations;
     }
 
     /** Spring Page 와 같은 모양. 관제 앱은 content 만 읽는다 */
@@ -48,6 +52,13 @@ public class EventController {
 
     /** 확인 본문. event_sequence 는 화면이 본 sequence(없으면 EC2 가 마지막 sequence 로 채운다) */
     public record AckRequest(@JsonProperty("event_sequence") Integer eventSequence, @JsonProperty("channel") String channel) {
+    }
+
+    /** VLM 상향 의견 승인·거절 본문(명세 5.4·12.6, S15P31A101-276). assessmentId·decision 필수, note 선택 */
+    public record EscalationRequest(
+            @JsonProperty("assessmentId") @JsonAlias({"assessment_id", "assessmentJobId", "assessment_job_id", "jobId", "job_id"}) JsonNode assessmentId,
+            @JsonProperty("decision") String decision,
+            @JsonProperty("note") String note) {
     }
 
     @GetMapping
@@ -72,5 +83,18 @@ public class EventController {
         String channel = request == null ? null : request.channel();
         Role role = Role.valueOf(jwt.getClaimAsString(AccessTokenIssuer.ROLE_CLAIM));
         return acks.acknowledge(eventId, seen, channel, Long.parseLong(jwt.getSubject()), role);
+    }
+
+    /** VLM 상향 의견 승인·거절(명세 5.4·12.6, S15P31A101-276). 관리자 전용이며 승인만 I1 event_escalate 로 보낸다 */
+    @PostMapping("/{eventId}/escalation")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode escalate(@PathVariable UUID eventId, @RequestBody(required = false) EscalationRequest request,
+            @AuthenticationPrincipal Jwt jwt) {
+        String assessmentId = request == null || request.assessmentId() == null || request.assessmentId().isNull()
+                ? null
+                : request.assessmentId().asString();
+        String decision = request == null ? null : request.decision();
+        String note = request == null ? null : request.note();
+        return escalations.decide(eventId, assessmentId, decision, note, Long.parseLong(jwt.getSubject()));
     }
 }

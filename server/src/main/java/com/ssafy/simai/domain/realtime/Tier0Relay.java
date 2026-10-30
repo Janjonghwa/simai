@@ -37,8 +37,7 @@ class Tier0Relay implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(Tier0Relay.class);
     private static final String WORLD_STATE = "world_state";
     private static final String RISK_EVENT = "risk_event";
-    // escalations(2.1.0)는 아직 싣지 않는다
-    private static final String RISK_EVENT_VERSION = "2.0.0";
+    private static final String RISK_EVENT_VERSION = "2.1.0";
     // 이벤트 발행 대기 상한. 전이는 많아야 초당 수십 개라 넘치면 DB·브로커가 멈춘 것이다
     private static final int EVENT_QUEUE_LIMIT = 10_000;
 

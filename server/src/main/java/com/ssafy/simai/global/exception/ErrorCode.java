@@ -75,7 +75,13 @@ public sealed interface ErrorCode {
         // Tier 0 는 해소된 이벤트의 확인을 응답 없이 버린다. 미리 막아 화면에 알린다
         EVENT_RESOLVED(HttpStatus.CONFLICT, "이미 해소된 이벤트입니다"),
         INVALID_EVENT_SEQUENCE(HttpStatus.BAD_REQUEST, "event_sequence 는 1 이상이어야 합니다"),
-        INVALID_ACK_CHANNEL(HttpStatus.BAD_REQUEST, "channel 은 CONTROL_ROOM 또는 FOREMAN_PWA 여야 합니다");
+        INVALID_ACK_CHANNEL(HttpStatus.BAD_REQUEST, "channel 은 CONTROL_ROOM 또는 FOREMAN_PWA 여야 합니다"),
+        ASSESSMENT_NOT_FOUND(HttpStatus.NOT_FOUND, "VLM 평가 기록을 찾을 수 없습니다"),
+        ASSESSMENT_ALREADY_DECIDED(HttpStatus.CONFLICT, "이미 승인 또는 거절된 상향 의견입니다"),
+        ESCALATION_NOT_UPWARD(HttpStatus.CONFLICT, "현재 등급보다 높은 상향 의견만 승인할 수 있습니다"),
+        INVALID_ASSESSMENT_ID(HttpStatus.BAD_REQUEST, "assessmentId 가 필요합니다"),
+        INVALID_ESCALATION_DECISION(HttpStatus.BAD_REQUEST, "decision 은 APPROVED 또는 REJECTED 여야 합니다"),
+        INVALID_ESCALATION_NOTE(HttpStatus.BAD_REQUEST, "note 는 1~500자여야 합니다");
 
         private final HttpStatus status;
         private final String message;
