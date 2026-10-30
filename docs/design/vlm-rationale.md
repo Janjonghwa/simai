@@ -1,4 +1,4 @@
-# 이벤트 근거 설명 빠른 경로 — 분석 워커 `vlm_rationale` 처리기 (S15P31A101-25)
+# 이벤트 근거 설명 빠른 경로 — 분석 워커 `vlm_rationale` 처리기 (S15P31A101-25, S15P31A101-273)
 
 명세 5.4(VLM 빠른 경로·VLM 입력 프레임·권한), 12.5(I5 작업), 15.1 G7(이벤트→근거 p95 5 s, 하향·직접 변경 0건, 사후 클립 대기 0건).
 계약 `contracts/messages/vlm_rationale.schema.json`(input·result), `job_request`(priority `VLM_FAST`, timeout_ms 5000), `job_callback`.
@@ -8,10 +8,10 @@
 
 | 위치 | 내용 |
 |---|---|
-| `ai/src/simai_ai/vlm/rationale.py` | 시스템·사용자 프롬프트, 응답 JSON 스키마(`RESPONSE_FORMAT`), 응답 파싱, 상향 강제(`upward_only`), G7 도구와 같이 쓰는 `PROMPT` (순수 함수) |
-| `ai/services/worker/vlm_rationale.py` | 처리기: 계약 검사 → 프레임 정렬·사후 프레임 제외 → 얼굴 처리 관문(270) → VLM(22) → 파싱·상향 강제 → 결과 계약 검사 |
+| `ai/src/simai_ai/vlm/rationale.py` | 시스템·사용자 프롬프트, 응답 JSON 스키마(`RESPONSE_FORMAT`), 응답 파싱, 상향 의견 검증(`check_proposal`·`upward_only`, 사유 코드 `PROPOSAL_DISCARD_REASON = "NOT_UPWARD"`), G7 도구와 같이 쓰는 `PROMPT` (순수 함수) |
+| `ai/services/worker/vlm_rationale.py` | 처리기: 계약 검사 → 프레임 정렬·사후 프레임 제외 → 얼굴 처리 관문(270) → VLM(22) → 파싱·상향 강제(버린 사유 로그) → 결과 계약 검사 |
 | `ai/services/worker/__main__.py` | 객체 저장소·VLM 설정·pose 가중치가 다 있을 때만 등록 |
-| `ai/tests/services/worker/test_vlm_rationale.py` | 가짜 저장소·pose·VLM 시험(계약 예시 입력, 하향·같은 등급, 사후 프레임, 얼굴 처리 0개, 형식 오류 재질문, VLM 오류, VlmFrame 만) |
+| `ai/tests/services/worker/test_vlm_rationale.py` | 가짜 저장소·pose·VLM 시험(계약 예시 입력, 상향만 남음, 같은 등급·하향은 사유 코드 `NOT_UPWARD` 와 함께 버림, CRITICAL 입력은 늘 null, `severity` 불변, 사후 프레임, 얼굴 처리 0개, 형식 오류 재질문, VLM 오류, VlmFrame 만) |
 
 ## 흐름
 
@@ -23,7 +23,7 @@
 4. `PROMPT.build` 로 질문을 만들고 `response_format` json_schema 로 VLM 을 부른다.
 5. 응답을 파싱한다. 형식이 어긋나거나 `finish_reason == "length"`(잘림)면, 첫 호출 지연만큼 시간이 남았을 때(처리기 시작부터 5000 ms 기준)
    "앞 답이 형식에 맞지 않았다" 한 줄을 붙여 한 번 다시 묻는다. 그래도 어긋나면 재시도 불가 `VLM_ANSWER_INVALID`. 응답 원문은 로그에 남기지 않는다.
-6. 상향 강제 후 결과를 조립하고 결과 계약으로 다시 검사한다(`severity_upward_only`).
+6. 상향 강제(`check_proposal`) 후 결과를 조립하고 결과 계약으로 다시 검사한다(`severity_upward_only`).
 
 결과: `event_id`·`event_sequence`·`severity` 는 입력 그대로, `rationale` 은 VLM 문장(앞뒤 공백 제거), `proposed_severity` 는 상향만,
 `clause_ids` 는 `[]`, `model_version` 은 vLLM 응답의 `model`(없으면 `SIMAI_VLLM_MODEL`), `latency_ms` 는 처리기 시작부터 결과까지.
@@ -48,9 +48,15 @@
 - `rationale` 150자: 1~3문장. 한글은 글자당 토큰이 1 안팎이라 클라이언트 `SIMAI_VLM_MAX_TOKENS` 기본 256 안에 JSON 이 끝나게 잡았다.
 - 프롬프트·스키마를 바꾸면 `PROMPT.prompt_id`(지금 `vlm-rationale-1`)를 올린다. G7 답 묶음이 어느 프롬프트로 만든 것인지 이 값으로 가린다.
 
+## 상향 의견 검증과 제안 (S15P31A101-273)
+
+- **등급 순서와 상향만 허용:** 계약·명세 정의(`INFO < CAUTION < HIGH < CRITICAL`, `contracts/common/defs.schema.json` `severity_upward_only`)를 그대로 쓴다. `check_proposal(severity, proposed_severity)`는 `proposed_severity` 가 입력 이벤트의 현재 `severity` 보다 **높을 때만** `(proposed_severity, None)`으로 남긴다.
+- **같거나 낮은 의견 폐기와 사유 코드:** 같은 등급이거나 낮은 등급이면 결과를 `null` 로 바꾸고 단일 사유 코드 `NOT_UPWARD`(`PROPOSAL_DISCARD_REASON`, 계약 `event_escalate_result.reject_reason` 과 동일)를 돌려준다. `vlm_rationale` 결과 스키마(`additionalProperties: false`)는 바꾸지 않고 워커 경고 로그에 `reason=NOT_UPWARD`, 이벤트 ID, 현재 등급, 제안 등급(검증된 enum 값만, 응답 원문 제외)을 남긴다. 원래 `proposed_severity` 가 `null` 이면 버린 것이 아니므로 경고 로그를 남기지 않는다.
+- **CRITICAL 입력과 `severity` 불변(D-G7-01):** CRITICAL 입력은 더 높은 등급이 없으므로 어떤 의견이 오든 `proposed_severity` 는 늘 `null` 이다(명세 5.4 MVP). 결과의 `severity` 는 항상 입력값 그대로이며, 모든 입력 등급(4) × VLM 의견(5) 조합에서 등급 변경 0건과 결과 계약(`severity_upward_only`) 통과를 자동 시험으로 확인한다.
+
 ## 결정
 
-- **상향만 강제:** VLM 이 같거나 낮은 등급을 내면 `null` 로 바꾸고 경고 로그(이벤트 ID 만)를 남긴다. 결과 계약 검사(`severity_upward_only`)로 한 번 더 막는다.
+- **상향만 강제:** VLM 이 같거나 낮은 등급을 내면 `null` 로 바꾸고 사유 코드(`NOT_UPWARD`)와 함께 경고 로그를 남긴다. 결과 계약 검사(`severity_upward_only`)로 한 번 더 막는다.
   결과에는 하향·해소를 표현할 필드가 없다(invalid 예시 `vlm_downgrade`·`vlm_resolve` 로 가는 경로가 없음을 등급 4 × 의견 5 조합 시험으로 보인다).
 - **clause_ids 는 `[]`:** 계약상 "RAG 로 검색된 조항 ID 만"이다. 워커에는 조항 검색이 없다(`tbm_report` 는 EC2 가 검색한 조항을 입력으로 받는다,
   `simai_ai.rag` 는 시드·임베딩만). VLM 응답 스키마에 조항 칸을 두지 않고 시스템 프롬프트로 조항 번호를 금지한다. VLM 이 쓴 조항 문자열은 결과에 들어갈 길이 없다.

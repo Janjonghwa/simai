@@ -1,11 +1,11 @@
-"""vlm_rationale 프롬프트·응답 형식·상향 의견 강제 (명세 5.4 빠른 경로, 12.5, S15P31A101-25).
+"""vlm_rationale 프롬프트·응답 형식·상향 의견 강제 (명세 5.4 빠른 경로, 12.5, S15P31A101-25, S15P31A101-273).
 
 이미지·VLM 호출·작업 실패 코드는 처리기(`services.worker.vlm_rationale`)에 있고, 여기는 문자열·JSON 만 다루는 순수 함수다.
 
 - 프롬프트는 규칙 결과(ID·이름·등급·신뢰도·확인 필요)·구역·수치·트랙 위치·프레임별 카메라와 상대 시각을 텍스트로 준다.
   위치의 정본은 Tier 0 값이고 VLM 은 고치지 않는다(AGENTS 1). 프레임 순서는 이미지 파트 순서와 같다.
 - 응답은 `{"rationale": 한국어 1~3문장, "proposed_severity": 등급 | null}` 하나. response_format json_schema 로 건다.
-- 상향만: VLM 이 같거나 낮은 등급을 내면 null 로 바꾼다(계약 severity_upward_only, AGENTS 4). 조항 ID 는 응답에서 받지 않는다.
+- 상향만: VLM 이 같거나 낮은 등급을 내면 null 로 바꾸고 사유 코드 `NOT_UPWARD` 를 돌려준다(계약 severity_upward_only, AGENTS 4). 조항 ID 는 응답에서 받지 않는다.
 - `PROMPT` 는 처리기와 G7 평가 도구(`experiments/g7_eval/g7_answers.py --prompt simai_ai.vlm.rationale:PROMPT`)가 같이 쓴다.
 """
 
@@ -18,6 +18,7 @@ from typing import Any
 
 SEVERITY_RANK = {"INFO": 0, "CAUTION": 1, "HIGH": 2, "CRITICAL": 3}
 SEVERITIES = ("CRITICAL", "HIGH", "CAUTION", "INFO")
+PROPOSAL_DISCARD_REASON = "NOT_UPWARD"  # 현재 등급보다 높지 않은 상향 의견을 버린 사유 코드(계약 event_escalate_result 와 동일)
 RATIONALE_MAX_CHARS = 150  # 1~3문장. 한글은 글자당 토큰이 1 안팎이라 클라이언트 max_tokens 기본 256 안에 JSON 이 끝나게
 
 RULE_NAMES = {  # 명세 7.1 규칙 표
@@ -143,8 +144,19 @@ def parse_answer(content: str) -> Answer:
     return Answer(rationale.strip(), proposed)
 
 
+def check_proposal(severity: str, proposed: str | None) -> tuple[str | None, str | None]:
+    """상향 의견을 검증해 (남길 값, 버린 사유 코드)를 돌려준다 (명세 5.4, S15P31A101-273).
+
+    계약·명세 등급 순서(INFO < CAUTION < HIGH < CRITICAL)로 비교해 현재 등급보다 높을 때만 남기고,
+    같거나 낮으면 (None, "NOT_UPWARD")로 버린다. 의견이 원래 None 이면 버린 것이 아니므로 (None, None)이다.
+    """
+    if proposed is None:
+        return None, None
+    if SEVERITY_RANK[proposed] <= SEVERITY_RANK[severity]:
+        return None, PROPOSAL_DISCARD_REASON
+    return proposed, None
+
+
 def upward_only(severity: str, proposed: str | None) -> str | None:
     """규칙 등급보다 높은 의견만 남긴다. 같거나 낮으면 None(하향 불가)."""
-    if proposed is None or SEVERITY_RANK[proposed] <= SEVERITY_RANK[severity]:
-        return None
-    return proposed
+    return check_proposal(severity, proposed)[0]

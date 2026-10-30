@@ -8,7 +8,8 @@
 - VLM 에는 관문을 거친 VlmFrame 만 넣는다. 남는 프레임이 없으면 관문의 JobFailed(NO_FACE_SAFE_FRAMES 등) 그대로.
 - VLM 오류는 VlmError 의 code·retryable 그대로. 응답 형식이 어긋나면 남은 시간이 있을 때 한 번 다시 묻고, 그래도 어긋나면 재시도
   불가 VLM_ANSWER_INVALID(같은 입력에 GPU 만 더 쓰지 않게). 응답 원문은 로그에 남기지 않는다.
-- 상향만: 같거나 낮은 등급 의견은 null 로 바꾼다. clause_ids 는 워커에 조항 검색이 없어 늘 [] 다(VLM 이 쓴 조항은 넣지 않는다).
+- 상향만(S15P31A101-273): 입력 이벤트의 현재 severity 보다 높은 proposed_severity 만 남기고, 같거나 낮은 의견은 null 로 바꾸며
+  버린 사유 코드(NOT_UPWARD)를 로그에 남긴다. 결과의 severity 는 입력 그대로다. clause_ids 는 워커에 조항 검색이 없어 늘 [] 다.
 - 시간 제한은 러너가 timeout_ms(VLM_FAST 5000)로 취소한다. 처리기는 단계 사이마다 ctx.cancelled 를 본다.
 """
 
@@ -24,7 +25,7 @@ from typing import Any
 from simai_ai.providers.contract import schema_errors
 from simai_ai.vlm.client import VlmClient, VlmError, VlmSettings
 from simai_ai.vlm.face_blur import KeypointProvider
-from simai_ai.vlm.rationale import PROMPT, RETRY_NOTE, parse_answer, upward_only
+from simai_ai.vlm.rationale import PROPOSAL_DISCARD_REASON, PROMPT, RETRY_NOTE, check_proposal, parse_answer, upward_only
 
 from .handlers import JobContext, JobFailed
 from .objects import ObjectStore
@@ -101,9 +102,15 @@ class VlmRationaleHandler:
                 if retry or elapsed_ms + r.latency_ms > JOB_BUDGET_MS:
                     raise JobFailed("VLM_ANSWER_INVALID", f"VLM 응답이 형식에 맞지 않는다: {e}") from None
 
-        proposed = upward_only(inp["severity"], answer.proposed_severity)
-        if answer.proposed_severity is not None and proposed is None:
-            log.warning("이벤트 %s: 상향이 아닌 의견을 버렸다", event_id)
+        proposed, discard_reason = check_proposal(inp["severity"], answer.proposed_severity)
+        if discard_reason is not None:
+            log.warning(
+                "이벤트 %s: 상향이 아닌 의견을 버렸다 (reason=%s, severity=%s, proposed_severity=%s)",
+                event_id,
+                discard_reason,
+                inp["severity"],
+                answer.proposed_severity,
+            )
         result = {
             "event_id": event_id,
             "event_sequence": inp["event_sequence"],

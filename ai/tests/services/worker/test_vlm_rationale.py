@@ -1,9 +1,10 @@
-"""vlm_rationale 처리기 (S15P31A101-25): 가짜 저장소·pose·VLM 으로 계약 예시 입력 → 계약에 맞는 결과, 상향만, VlmFrame 만."""
+"""vlm_rationale 처리기 (S15P31A101-25, S15P31A101-273): 가짜 저장소·pose·VLM 으로 계약 예시 입력 → 계약에 맞는 결과, 상향만, VlmFrame 만."""
 
 from __future__ import annotations
 
 import copy
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -15,7 +16,17 @@ from services.worker.vlm_rationale import VlmRationaleHandler
 from simai_ai.providers.contract import schema_errors
 from simai_ai.vlm.client import VlmClient, VlmResult, VlmSettings, VlmTimeout, VlmUnavailable
 from simai_ai.vlm.face_blur import Person, VlmFrame
-from simai_ai.vlm.rationale import PROMPT, RESPONSE_FORMAT, build_prompt, parse_answer, upward_only
+from simai_ai.vlm.rationale import (
+    PROMPT,
+    PROPOSAL_DISCARD_REASON,
+    RESPONSE_FORMAT,
+    SEVERITIES,
+    SEVERITY_RANK,
+    build_prompt,
+    check_proposal,
+    parse_answer,
+    upward_only,
+)
 
 EXAMPLES = Path(__file__).resolve().parents[4] / "contracts" / "examples"
 REQUEST = json.loads((EXAMPLES / "job_request.vlm_rationale.json").read_text(encoding="utf-8"))
@@ -110,15 +121,43 @@ def test_frames_reaching_vlm_are_face_processed():
         assert not f.pixels.flags.writeable
 
 
+@pytest.mark.parametrize(
+    "severity,proposed",
+    [
+        ("INFO", "CAUTION"),
+        ("INFO", "HIGH"),
+        ("INFO", "CRITICAL"),
+        ("CAUTION", "HIGH"),
+        ("CAUTION", "CRITICAL"),
+        ("HIGH", "CRITICAL"),
+    ],
+)
+def test_strictly_upward_opinion_is_kept_without_discard_log(severity, proposed, caplog):
+    with caplog.at_level(logging.WARNING, logger="services.worker"):
+        result = _run(_input(severity=severity), FakeVlm(_answer(proposed)))
+    assert result["proposed_severity"] == proposed and result["severity"] == severity
+    assert PROPOSAL_DISCARD_REASON not in caplog.text
+
+
 @pytest.mark.parametrize("proposed", ["HIGH", "CAUTION", "INFO"])
-def test_same_or_lower_opinion_becomes_null(proposed):
-    result = _run(_input(severity="HIGH"), FakeVlm(_answer(proposed)))
+def test_same_or_lower_opinion_becomes_null_and_logs_reason_code(proposed, caplog):
+    inp = _input(severity="HIGH")
+    with caplog.at_level(logging.WARNING, logger="services.worker"):
+        result = _run(inp, FakeVlm(_answer(proposed)))
     assert result["proposed_severity"] is None and result["severity"] == "HIGH"
+    assert f"reason={PROPOSAL_DISCARD_REASON}" in caplog.text
+    assert inp["event_id"] in caplog.text and f"proposed_severity={proposed}" in caplog.text
 
 
-def test_critical_event_never_gets_opinion():
-    result = _run(_input(severity="CRITICAL"), FakeVlm(_answer("CRITICAL")))
+@pytest.mark.parametrize("proposed", ["CRITICAL", "HIGH", "CAUTION", "INFO", None])
+def test_critical_event_never_gets_opinion(proposed, caplog):
+    with caplog.at_level(logging.WARNING, logger="services.worker"):
+        result = _run(_input(severity="CRITICAL"), FakeVlm(_answer(proposed)))
     assert result["proposed_severity"] is None and result["severity"] == "CRITICAL"
+    if proposed is None:
+        assert PROPOSAL_DISCARD_REASON not in caplog.text
+    else:
+        assert f"reason={PROPOSAL_DISCARD_REASON}" in caplog.text
 
 
 def test_frames_after_observation_time_are_dropped():
@@ -209,6 +248,21 @@ def test_no_path_to_downgrade_or_resolve(severity, proposed):
     assert result["severity"] == severity and set(result) <= set(EXPECTED) | {"clause_ids"}
 
 
+def test_severity_never_changes_across_all_combinations():
+    """D-G7-01: 모든 입력 등급 × VLM 의견 조합에서 결과 severity 가 입력과 달라진 경우 0건."""
+    severity_changed = 0
+    for severity in SEVERITIES:
+        for proposed in (*SEVERITIES, None):
+            result = _run(_input(severity=severity), FakeVlm(_answer(proposed)))
+            if result["severity"] != severity:
+                severity_changed += 1
+            if proposed is not None and SEVERITY_RANK[proposed] > SEVERITY_RANK[severity]:
+                assert result["proposed_severity"] == proposed
+            else:
+                assert result["proposed_severity"] is None
+    assert severity_changed == 0
+
+
 def test_real_client_rejects_non_vlmframe_images():
     """실제 클라이언트로 보내는 요청 본문에도 VlmFrame 으로 만든 data URL 이외의 이미지가 없다."""
     sent = []
@@ -250,6 +304,11 @@ def test_upward_only():
     assert upward_only("CAUTION", "HIGH") == "HIGH"
     assert upward_only("HIGH", "HIGH") is None and upward_only("HIGH", "CAUTION") is None
     assert upward_only("CRITICAL", None) is None
+    assert check_proposal("CAUTION", "HIGH") == ("HIGH", None)
+    assert check_proposal("HIGH", "HIGH") == (None, PROPOSAL_DISCARD_REASON)
+    assert check_proposal("HIGH", "CAUTION") == (None, PROPOSAL_DISCARD_REASON)
+    assert check_proposal("CRITICAL", "CRITICAL") == (None, PROPOSAL_DISCARD_REASON)
+    assert check_proposal("CRITICAL", None) == (None, None)
 
 
 def test_build_prompt_without_zone_or_tracks():
