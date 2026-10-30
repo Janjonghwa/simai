@@ -7,7 +7,7 @@ import {
   type ViewerSceneInput,
 } from '@/features/viewer3d/scene/sceneContract';
 import { createContext } from 'react';
-import type { Object3D } from 'three';
+import { TextureLoader, type Object3D, type Texture } from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 
@@ -50,6 +50,13 @@ export const loadGltfScene: SceneAssetLoader = (url) =>
   new GLTFLoader().loadAsync(url).then((gltf) => gltf.scene);
 
 export const SceneLoaderContext = createContext<SceneAssetLoader>(loadGltfScene);
+
+/** SURFACE_SOURCE_MAP 같은 보조 텍스처를 읽는다. 시험은 이 함수를 바꿔 끼운다. */
+export type SceneTextureLoader = (url: string) => Promise<Texture>;
+
+export const loadSceneTexture: SceneTextureLoader = (url) => new TextureLoader().loadAsync(url);
+
+export const SceneTextureLoaderContext = createContext<SceneTextureLoader>(loadSceneTexture);
 
 /**
  * 개발 검수 전용(개발 화면·시험만 켠다). 켜면 정합 근거 없는 배경(DIMMED)도 불투명하게 그려 재구성 형상을 눈으로 확인하고,

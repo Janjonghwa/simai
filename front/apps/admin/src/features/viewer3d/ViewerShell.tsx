@@ -27,6 +27,10 @@ import {
 import { PersonModelContext } from '@/features/viewer3d/people/PersonLayer';
 import { createPlannedStore, PlannedStoreContext } from '@/features/viewer3d/planned/plannedLayout';
 import {
+  PostProcessingContext,
+  resolvePostProcessing,
+} from '@/features/viewer3d/PostProcessingLayer';
+import {
   sameSceneStatus,
   sceneStatusOf,
   type ViewerSceneStatus,
@@ -34,11 +38,14 @@ import {
 import {
   createSceneStore,
   loadGltfScene,
+  loadSceneTexture,
   SceneLoaderContext,
   SceneReviewContext,
   SceneStoreContext,
+  SceneTextureLoaderContext,
   sceneVersionsOf,
   type SceneAssetLoader,
+  type SceneTextureLoader,
 } from '@/features/viewer3d/scene/sceneStore';
 import type {
   Viewer3DProps,
@@ -79,6 +86,8 @@ export interface ViewerShellProps extends Viewer3DProps {
   zoneApplyState?: ZoneApplyState;
   /** 배경 glTF 읽기 함수. 시험만 바꿔 끼운다. 없으면 GLTFLoader. */
   sceneLoader?: SceneAssetLoader;
+  /** 배경 보조 텍스처(SURFACE_SOURCE_MAP 등) 읽기 함수. 시험만 바꿔 끼운다. */
+  sceneTextureLoader?: SceneTextureLoader;
   /** 개발 검수 전용: 정합 근거 없는 배경도 불투명하게 그린다(판정·상태는 그대로). 운영 화면은 넘기지 않는다. */
   sceneReview?: boolean;
 }
@@ -114,7 +123,9 @@ export function ViewerShell({
   scene = null,
   onSceneStatusChange,
   sceneLoader = loadGltfScene,
+  sceneTextureLoader = loadSceneTexture,
   sceneReview = false,
+  postProcessing = false,
   theme = 'dark',
 }: ViewerShellProps) {
   // 호스트가 쥔 상자 편집(controlled). 뷰어 안 편집 세션과 따로이며 Canvas 안 BoxEditGizmo 가 읽는다.
@@ -134,6 +145,10 @@ export function ViewerShell({
   const meshConfig = useMemo<AvatarMeshConfig>(
     () => ({ enabled: avatarMesh !== 'off', fetch: avatarMeshFetch }),
     [avatarMesh, avatarMeshFetch],
+  );
+  const resolvedPostProcessing = useMemo(
+    () => resolvePostProcessing(postProcessing),
+    [postProcessing],
   );
   // 편집 세션(-195). 뷰어 Store·데이터 Store 를 읽기만 하고 원본을 바꾸지 않는다.
   // PLANNED 가상 배치(-186). LIVE 데이터 Store 와 따로 둔다. 입력은 FE 가 넘긴 배치 그대로다.
@@ -329,6 +344,7 @@ export function ViewerShell({
       className={cn('relative size-full', className)}
       data-viewer-mode={mode}
       data-viewer-phase={phase}
+      data-viewer-post={resolvedPostProcessing.enabled ? 'on' : 'off'}
     >
       {/* 렌더 오류로 Canvas 가 내려가도 데이터 구독은 이어 간다(뷰어는 경보 경로가 아니지만 상태는 잃지 않는다). */}
       <SpatialDataProvider store={data} source={source}>
@@ -341,13 +357,17 @@ export function ViewerShell({
                     <ZoneApplyContext value={zoneApplyState}>
                       <SceneStoreContext value={sceneStore}>
                         <SceneLoaderContext value={sceneLoader}>
-                          <SceneReviewContext value={sceneReview}>
-                            <PlannedStoreContext value={planned}>
-                              <BoxEditContext value={boxEditBinding}>
-                                <ViewerCanvas>{children}</ViewerCanvas>
-                              </BoxEditContext>
-                            </PlannedStoreContext>
-                          </SceneReviewContext>
+                          <SceneTextureLoaderContext value={sceneTextureLoader}>
+                            <SceneReviewContext value={sceneReview}>
+                              <PlannedStoreContext value={planned}>
+                                <BoxEditContext value={boxEditBinding}>
+                                  <PostProcessingContext value={resolvedPostProcessing}>
+                                    <ViewerCanvas>{children}</ViewerCanvas>
+                                  </PostProcessingContext>
+                                </BoxEditContext>
+                              </PlannedStoreContext>
+                            </SceneReviewContext>
+                          </SceneTextureLoaderContext>
                         </SceneLoaderContext>
                       </SceneStoreContext>
                     </ZoneApplyContext>

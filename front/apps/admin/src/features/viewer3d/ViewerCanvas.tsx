@@ -3,8 +3,10 @@ import { BoxEditGizmo } from '@/features/viewer3d/editing/BoxEditGizmo';
 import { DraftOverlay } from '@/features/viewer3d/editing/DraftOverlay';
 import { GizmoController } from '@/features/viewer3d/editing/GizmoController';
 import { ObbGizmoController } from '@/features/viewer3d/editing/ObbGizmo';
+import { GroundShadowLayer } from '@/features/viewer3d/GroundShadowLayer';
 import { PersonLayer } from '@/features/viewer3d/people/PersonLayer';
 import { PlannedLayer } from '@/features/viewer3d/planned/PlannedLayer';
+import { PostProcessingLayer } from '@/features/viewer3d/PostProcessingLayer';
 import { RiskScope } from '@/features/viewer3d/risk/RiskScope';
 import { SceneBackground } from '@/features/viewer3d/scene/SceneBackground';
 import { SceneBase } from '@/features/viewer3d/SceneBase';
@@ -15,6 +17,7 @@ import { DEMO_ROOM } from '@/features/viewer3d/WorldScene';
 import { ZoneLayer } from '@/features/viewer3d/zones/ZoneLayer';
 import { Canvas, useThree } from '@react-three/fiber';
 import { memo, useCallback, useEffect, type ReactNode } from 'react';
+import { NoToneMapping, SRGBColorSpace } from 'three';
 
 // 처음 시점: 방 가운데를 앞·오른쪽 10m 위에서 내려다본다. 모두 World 좌표다.
 const ROOM_CENTER = worldToThree(worldPoint(DEMO_ROOM.sizeX / 2, DEMO_ROOM.sizeY / 2, 0));
@@ -33,7 +36,13 @@ const CAMERA = {
   near: 0.1,
   far: 500,
 };
-const GL = { antialias: true, alpha: true };
+// 사진 텍스처 배경 색이 톤매핑으로 틀어지지 않게 SRGB 출력·NoToneMapping 으로 맞춘다(-360).
+export const VIEWER_GL_CONSTRAINTS = {
+  antialias: true,
+  alpha: true,
+  outputColorSpace: SRGBColorSpace,
+  toneMapping: NoToneMapping,
+} as const;
 const DPR: [number, number] = [1, 2];
 
 /**
@@ -94,12 +103,20 @@ export const ViewerCanvas = memo(function ViewerCanvas({ children }: ViewerCanva
   }, [store]);
 
   return (
-    <Canvas camera={CAMERA} gl={GL} dpr={DPR} onPointerMissed={handlePointerMissed}>
+    <Canvas
+      camera={CAMERA}
+      gl={VIEWER_GL_CONSTRAINTS}
+      dpr={DPR}
+      flat
+      onPointerMissed={handlePointerMissed}
+    >
       <RendererStatus />
       <CameraRig target={ROOM_CENTER} home={CAMERA.position} />
       <SceneBase />
       {/* 정적 배경 Scene(-59). 같은 깊이 버퍼라 배경 뒤 사람은 가려진다. 클릭은 받지 않는다. */}
       <SceneBackground />
+      {/* 접지 확인(VALID) 인원 발아래 접지 그림자(-360). people/ 와 분리된 별도 레이어다. */}
+      <GroundShadowLayer />
       <RiskScope>
         <ZoneLayer />
         <PersonLayer />
@@ -114,6 +131,7 @@ export const ViewerCanvas = memo(function ViewerCanvas({ children }: ViewerCanva
       <DraftOverlay />
       {/* 호스트가 쥔 상자 편집 조작기. 뷰어 안 편집 세션과 따로이고 위험 강조 밖이다. */}
       <BoxEditGizmo />
+      <PostProcessingLayer />
       {children}
     </Canvas>
   );

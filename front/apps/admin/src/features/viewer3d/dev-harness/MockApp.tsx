@@ -60,6 +60,10 @@ import type {
   ViewerPlannedEditResult,
 } from '@/features/viewer3d/editing/editTypes';
 import { DEFAULT_LAYERS, type ResolvedLayers } from '@/features/viewer3d/layers';
+import {
+  readPostProcessingParam,
+  withPostProcessingParam,
+} from '@/features/viewer3d/PostProcessingLayer';
 import { parseReplayLog, type ReplayLog } from '@/features/viewer3d/replay/replayLog';
 import type { ViewerSceneStatus } from '@/features/viewer3d/scene/sceneContract';
 import type {
@@ -139,6 +143,9 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   const replaying = sourceKey === 'replay';
   const [avatar] = useState(() => readAvatar(window.location.search));
   const [zoneApply, setZoneApply] = useState(() => readZoneApply(window.location.search));
+  const [postProcessing, setPostProcessing] = useState(() =>
+    readPostProcessingParam(window.location.search),
+  );
   // 배경 Scene 입력(-59). FE 가 GET /api/scenes/current 로 받는 본문을 흉내 낸다.
   const [sceneKey, setSceneKey] = useState(() => readSceneOption(window.location.search));
   // 실측 로비 프리뷰를 원본 카메라 시점에서 비교(?camPose=cam_A). 처음 한 번만 옮기고 이후 조작은 자유다.
@@ -214,6 +221,15 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
     );
   };
 
+  const changePostProcessing = (next: boolean) => {
+    setPostProcessing(next);
+    window.history.replaceState(
+      window.history.state,
+      '',
+      withPostProcessingParam(window.location.href, next),
+    );
+  };
+
   const changeScene = (next: SceneOptionKey) => {
     setSceneKey(next);
     // 시험 경우 여럿이 같은 scene_version 을 쓴다. 뷰어는 같은 버전이면 읽은 자산을 유지하므로(계약),
@@ -278,6 +294,7 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           scene={sceneInput}
           onSceneStatusChange={setSceneStatus}
           sceneReview={sceneKey === 'lobby-preview'}
+          postProcessing={postProcessing}
         >
           <MockScene colors={colors} selected={selected} legacy={legacy} />
           {spatial && <WorldReference />}
@@ -331,6 +348,14 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
                 </option>
               ))}
             </select>
+            <label className="smk-check">
+              <input
+                type="checkbox"
+                checked={postProcessing}
+                onChange={(e) => changePostProcessing(e.target.checked)}
+              />
+              후처리(AO·SMAA)
+            </label>
           </div>
           <p className="smk-data-dim smk-mono" data-testid="scene-status">
             {sceneStatusText(sceneStatus)}

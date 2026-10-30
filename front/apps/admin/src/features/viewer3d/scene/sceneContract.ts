@@ -2,7 +2,7 @@
 //
 // 입력은 BE -264 GET /api/scenes/current 응답 본문 그대로다(docs/design/server-rules-scenes.md, 서버 SceneService):
 //   { scene_version, state: 'COMMITTED'|'DEFAULT', default, calibration_version, committed_at_ms, quality,
-//     gltf_url, gltf_expires_at_ms }
+//     gltf_url, gltf_expires_at_ms, surface_source_map_urls? }
 // FE 가 인증된 HTTP 로 받아 그대로 넘긴다. Viewer 는 조회·재시도·인증을 하지 않는다(서명 주소 5분 만료 뒤 다시 받기는 FE 몫).
 //
 // 좌표: 배경 glTF 는 scene_output 계약의 GLTF_VISUAL 자산이고 glTF 규약(+Y 위, World (x, y, z) → (x, z, −y))으로
@@ -13,6 +13,20 @@
 
 export const SCENE_STATES = ['COMMITTED', 'DEFAULT'] as const;
 export type SceneState = (typeof SCENE_STATES)[number];
+
+/**
+ * scene_output 2.1.0(-317) SURFACE_SOURCE_MAP 픽셀 값(8-bit 단일 채널).
+ * 2 = OBSERVED(관측), 1 = INTERPOLATED(보간), 0 = UNOBSERVED(미관측), 3 = ESTIMATED_PLANE(평면 추정).
+ */
+export const SURFACE_SOURCE_VALUES = {
+  UNOBSERVED: 0,
+  INTERPOLATED: 1,
+  OBSERVED: 2,
+  ESTIMATED_PLANE: 3,
+} as const;
+
+/** 재질·메시 순서 배열 또는 재질·메시 이름별 SURFACE_SOURCE_MAP 서명 주소. */
+export type SurfaceSourceMapUrls = readonly string[] | Readonly<Record<string, string>>;
 
 /** FE 가 넘기는 조회 결과. 실패면 이유와 HTTP 상태(있으면)만 넘긴다. 주소·토큰은 넘기지 않는다. */
 export type ViewerSceneInput =
@@ -28,6 +42,8 @@ export interface CurrentScene {
   /** 서명 주소. 자산이 없거나 저장소를 쓸 수 없으면 null(서버는 Scene 정보는 준다). */
   gltfUrl: string | null;
   gltfExpiresAtMs: number | null;
+  /** 선택: scene_output 2.1.0 SURFACE_SOURCE_MAP 서명 주소(서버가 함께 내려줄 때만 채운다). */
+  surfaceSourceMapUrls?: SurfaceSourceMapUrls;
 }
 
 export type SceneReadResult = { ok: true; scene: CurrentScene } | { ok: false; reason: string };
@@ -39,14 +55,38 @@ const isText = (value: unknown): value is string =>
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
 
-/** 브라우저가 읽을 수 있는 주소인지. http(s)·같은 출처 경로·blob 만 받는다(javascript: 등은 거부). */
+/** 브라우저가 읽을 수 있는 주소인지. http(s)·같은 출처 경로·blob·data 만 받는다(javascript: 등은 거부). */
 function readableUrl(value: string): boolean {
   try {
     const url = new URL(value, 'http://viewer.invalid/');
-    return url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'blob:';
+    return (
+      url.protocol === 'http:' ||
+      url.protocol === 'https:' ||
+      url.protocol === 'blob:' ||
+      url.protocol === 'data:'
+    );
   } catch {
     return false;
   }
+}
+
+function readSurfaceSourceMapUrls(raw: unknown): SurfaceSourceMapUrls | null | 'INVALID' {
+  if (raw === undefined || raw === null) return null;
+  if (Array.isArray(raw)) {
+    if (raw.every((item) => isText(item) && readableUrl(item))) {
+      return [...raw];
+    }
+    return 'INVALID';
+  }
+  if (typeof raw === 'object') {
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (!isText(k) || !isText(v) || !readableUrl(v)) return 'INVALID';
+      out[k] = v;
+    }
+    return out;
+  }
+  return 'INVALID';
 }
 
 /**
@@ -86,16 +126,24 @@ export function readCurrentScene(raw: unknown): SceneReadResult {
   if (expires !== null && expires !== undefined && !isFiniteNumber(expires)) {
     return { ok: false, reason: 'gltf_expires_at_ms 형식이 틀렸다' };
   }
+  const sourceMaps = readSurfaceSourceMapUrls(field(raw, 'surface_source_map_urls'));
+  if (sourceMaps === 'INVALID') {
+    return { ok: false, reason: 'surface_source_map_urls 형식이 틀렸다' };
+  }
+  const scene: CurrentScene = {
+    sceneVersion,
+    state: state as SceneState,
+    calibrationVersion: isText(calibration) ? calibration : null,
+    committedAtMs: isFiniteNumber(committedAt) ? committedAt : null,
+    gltfUrl: isText(url) ? url : null,
+    gltfExpiresAtMs: isFiniteNumber(expires) ? expires : null,
+  };
+  if (sourceMaps !== null) {
+    scene.surfaceSourceMapUrls = sourceMaps;
+  }
   return {
     ok: true,
-    scene: {
-      sceneVersion,
-      state: state as SceneState,
-      calibrationVersion: isText(calibration) ? calibration : null,
-      committedAtMs: isFiniteNumber(committedAt) ? committedAt : null,
-      gltfUrl: isText(url) ? url : null,
-      gltfExpiresAtMs: isFiniteNumber(expires) ? expires : null,
-    },
+    scene,
   };
 }
 

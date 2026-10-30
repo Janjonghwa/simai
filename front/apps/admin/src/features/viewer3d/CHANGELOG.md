@@ -2,6 +2,15 @@
 
 공개 입구(`index.ts`)와 그 타입을 바꾸면 여기에 적는다. 깨지는 변경은 FE 리뷰를 받은 뒤에만 한다.
 
+## S15P31A101-360 뷰어 배경 화질·출처 지도·접지 그림자·후처리
+
+모두 더하기이며 하위 호환이다. 계약 설명은 [CONTRACT.md](./CONTRACT.md)와 `docs/design/viewer-background-quality.md`에 있다.
+
+- 추가: `postProcessing` prop(`ViewerPostProcessingProp`, `ViewerPostProcessingOptions`, `DEFAULT_POST_PROCESSING`, `resolvePostProcessing`), `sceneTextureLoader` prop(`SceneTextureLoader`).
+- 추가: `SURFACE_SOURCE_VALUES`, `SurfaceSourceMapUrls`, `CurrentScene.surfaceSourceMapUrls`(`surface_source_map_urls` 선택 필드), `hasValidGroundShadow`.
+- 바뀜(호환): `SceneBackground` 가 텍스처(`map`) 있는 배경 메시를 `MeshBasicMaterial`(`SRGBColorSpace`, `toneMapped: false`)로 바꾸고, `DIMMED` 상태에서 사진 텍스처 메시의 깊이 가림(불투명)을 유지하면서 채도·명도를 낮춘다. `VALID` 접지 사람 발밑에만 `GroundShadowLayer` 그림자를 그린다.
+- 그대로: `DIMMED` 판정 규칙(`DEFAULT_UNVERIFIED`·`UNCONFIRMED`), 무텍스처 메시의 조명·반투명 흐림(`DIMMED_OPACITY = 0.35`), `people/` 내부 구현.
+
 ## 제어형 상자 편집 조작기(`boxEdit`)
 
 모두 더하기이며 하위 호환이다. 계약 설명은 [CONTRACT.md](./CONTRACT.md) '제어형 상자 편집(boxEdit)' 절에 있다.
@@ -36,7 +45,7 @@
 - 추가: `ExternalSpatialSource` 의 형상 보관·재전송, `clearSnapshot`, `setScope`·`scope`, `snapshotInfo`, push 옵션(`requestedAt`·`scope`)과 결과(`SnapshotPushOutcome`). 받는 쪽 `SpatialSourceSink.onSnapshotClear` 도 추가했다.
 - 추가: `select(target, { waitMs, focus })`, `onSelectRequestChange`, `MAX_SELECT_WAIT_MS`.
 - 추가: `beginEdit(target, { draft, before })` 로 초안을 한 번에 다시 연다(`ViewerBeginEditOptions`). 출처에는 `zoneVersion`·`objectVersion` 을 싣는다(정식 입력일 때만).
-- 추가: `layers` prop(`ViewerLayers`, `VIEWER_LAYER_KEYS`·`VIEWER_LAYER_MODES`·`DEFAULT_LAYERS`).
+- 추가: `layers` prop(`ViewerLayers`, `ViewerLayerKey`·`ViewerLayerMode`, `VIEWER_LAYER_KEYS`·`VIEWER_LAYER_MODES`·`DEFAULT_LAYERS`).
 - 추가: `personModelUrl` 공개 prop, `createViewerTestHandle`.
 - 추가 export: `OBSTACLE_OBB_POLICY`, `ViewerObstacleGeometry`, `ViewerObjectKind`, `VIEWER_EDIT_REJECT_REASONS`.
 - 바뀜(호환): `pushZones`·`pushWorkSurfaces` 반환형이 `void` 에서 `SnapshotPushOutcome` 이 됐다. `ZoneSnapshot.contract`·`zoneContract`·`geometryContract` 의 값 종류가 늘었다. `CommandResult` 성공 값에 선택 필드 `pending` 이 생겼다.

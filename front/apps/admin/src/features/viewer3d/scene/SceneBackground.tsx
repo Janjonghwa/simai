@@ -3,29 +3,234 @@ import {
   IDLE_LOAD,
   readCurrentScene,
   sceneStatusOf,
+  SURFACE_SOURCE_VALUES,
   type CurrentScene,
   type SceneDisplay,
+  type SurfaceSourceMapUrls,
 } from '@/features/viewer3d/scene/sceneContract';
 import {
   SceneLoaderContext,
   SceneReviewContext,
   SceneStoreContext,
+  SceneTextureLoaderContext,
   type SceneStore,
+  type SceneTextureLoader,
 } from '@/features/viewer3d/scene/sceneStore';
 import { threeToWorld, toThreePoint } from '@/features/viewer3d/worldCoordinates';
 import { useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Box3, Mesh, type Material, type Object3D, type Texture } from 'three';
+import {
+  Box3,
+  Color,
+  DataTexture,
+  DoubleSide,
+  Mesh,
+  MeshBasicMaterial,
+  NearestFilter,
+  NoColorSpace,
+  RGBAFormat,
+  SRGBColorSpace,
+  UnsignedByteType,
+  type Material,
+  type Object3D,
+  type Texture,
+  type WebGLProgramParametersWithUniforms,
+} from 'three';
 import { useStore } from 'zustand';
 
-// 정적 배경 Scene 레이어(S15P31A101-59). 같은 Canvas·깊이 버퍼에 그려 책상 뒤 사람의 가림이 맞게 한다(명세 13 머리말).
+// 정적 배경 Scene 레이어(S15P31A101-59, S15P31A101-360). 같은 Canvas·깊이 버퍼에 그려 책상 뒤 사람의 가림이 맞게 한다(명세 13 머리말).
 // - 받은 glTF 는 GLTF_Y_UP 계약대로 이미 Three 축이라 회전·이동·배율을 더하지 않는다(축 변환 한 곳 원칙).
 // - 배경은 클릭을 받지 않는다(사람·구역·작업면 선택과 빈 곳 클릭 해제를 가리지 않는다).
-// - 정합 근거가 없으면(시연용 기본·버전 비교 전) 흐리게, 버전이 어긋나면 숨기고 기본 바닥을 보인다.
-// - 늦게 끝난 이전 Scene 읽기는 버리고 자원을 해제한다. 바뀌거나 내려가면 이전 자산을 해제한다.
+// - 사진 텍스처(map)가 있는 메시는 이미 카메라 조명이 구워져 있으므로 광원 계산·톤매핑을 거치지 않는 MeshBasicMaterial(SRGBColorSpace, toneMapped: false)로 바꾼다.
+// - 텍스처가 없는 정점색·회색 메시는 기존 조명 재질(MeshStandardMaterial 등)을 유지하고 법선이 없으면 계산해 입체감을 남긴다.
+// - 정합 근거가 없을 때(DIMMED): 무텍스처 메시는 반투명(DIMMED_OPACITY)으로, 사진 텍스처 메시는 깊이 가림이 깨지지 않게 불투명을 유지하되 채도·명도를 낮춘다.
+// - scene_output 2.1.0 SURFACE_SOURCE_MAP 이 주어지면 최근접 샘플링(NearestFilter, NoColorSpace, mipmap 끔)으로 읽어
+//   2(OBSERVED)는 그대로, 3(ESTIMATED_PLANE)·1(INTERPOLATED)은 약간 낮추고, 0(UNOBSERVED)·기타는 어둡게 흐리고 빗금을 얹는다.
 
 const noRaycast = () => {};
-/** 정합 근거가 없을 때 배경 불투명도. 사람·구역보다 눈에 덜 띄게 한다. */
+/** 정합 근거가 없을 때 무텍스처 배경 불투명도. 사람·구역보다 눈에 덜 띄게 한다. */
 export const DIMMED_OPACITY = 0.35;
+/** 정합 근거가 없을 때 사진 텍스처 배경의 명도 배율(불투명 깊이 가림은 유지). */
+export const DIMMED_TEXTURE_BRIGHTNESS = 0.65;
+/** 정합 근거가 없을 때 사진 텍스처 배경의 채도 유지 비율(0 = 무채색, 1 = 원본). */
+export const DIMMED_TEXTURE_SATURATION = 0.25;
+
+export interface SurfaceSourceShade {
+  brightness: number;
+  saturation: number;
+  hatch: number;
+}
+
+export const SURFACE_SOURCE_SHADING: Readonly<
+  Record<'OBSERVED' | 'ESTIMATED_PLANE' | 'INTERPOLATED' | 'UNOBSERVED', SurfaceSourceShade>
+> = {
+  OBSERVED: { brightness: 1.0, saturation: 1.0, hatch: 0.0 },
+  ESTIMATED_PLANE: { brightness: 0.82, saturation: 0.85, hatch: 0.0 },
+  INTERPOLATED: { brightness: 0.72, saturation: 0.75, hatch: 0.0 },
+  UNOBSERVED: { brightness: 0.38, saturation: 0.25, hatch: 0.18 },
+};
+
+/**
+ * SURFACE_SOURCE_MAP 픽셀 값(0, 1, 2, 3 및 미정의 값)에 대응하는 명도·채도·빗금 강도를 돌려준다.
+ * 셰이더 분기식과 동일한 규칙이며 단위 시험에서 검증한다.
+ */
+export function surfaceSourceShade(code: number): SurfaceSourceShade {
+  const rounded = Math.round(code);
+  if (rounded === SURFACE_SOURCE_VALUES.OBSERVED) return SURFACE_SOURCE_SHADING.OBSERVED;
+  if (rounded === SURFACE_SOURCE_VALUES.ESTIMATED_PLANE)
+    return SURFACE_SOURCE_SHADING.ESTIMATED_PLANE;
+  if (rounded === SURFACE_SOURCE_VALUES.INTERPOLATED) return SURFACE_SOURCE_SHADING.INTERPOLATED;
+  return SURFACE_SOURCE_SHADING.UNOBSERVED;
+}
+
+/**
+ * 셰이더와 동일한 계산으로 사진 텍스처 RGB(0~1)에 SURFACE_SOURCE_MAP 코드와 DIMMED 상태를 적용한 RGB 를 돌려준다.
+ */
+export function sampleSurfaceSourceColor(
+  rgb: readonly [number, number, number],
+  code: number | null,
+  dimmed = false,
+  hatchStripe = 0,
+): [number, number, number] {
+  let [r, g, b] = rgb;
+  if (code !== null) {
+    const { brightness, saturation, hatch } = surfaceSourceShade(code);
+    const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const factor = brightness * (1 - hatch * (hatchStripe > 0 ? 1 : 0));
+    r = (luma + (r - luma) * saturation) * factor;
+    g = (luma + (g - luma) * saturation) * factor;
+    b = (luma + (b - luma) * saturation) * factor;
+  }
+  if (dimmed) {
+    r *= DIMMED_TEXTURE_BRIGHTNESS;
+    g *= DIMMED_TEXTURE_BRIGHTNESS;
+    b *= DIMMED_TEXTURE_BRIGHTNESS;
+    const dimLuma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    r = dimLuma + (r - dimLuma) * DIMMED_TEXTURE_SATURATION;
+    g = dimLuma + (g - dimLuma) * DIMMED_TEXTURE_SATURATION;
+    b = dimLuma + (b - dimLuma) * DIMMED_TEXTURE_SATURATION;
+  }
+  return [r, g, b];
+}
+
+/**
+ * SURFACE_SOURCE_MAP 텍스처가 보간·색공간 변환으로 값이 섞이지 않게 최근접 샘플링·비색공간으로 맞춘다.
+ */
+export function configureSurfaceSourceMap(texture: Texture, albedoMap?: Texture | null): Texture {
+  texture.minFilter = NearestFilter;
+  texture.magFilter = NearestFilter;
+  texture.generateMipmaps = false;
+  texture.colorSpace = NoColorSpace;
+  if (albedoMap) {
+    texture.flipY = albedoMap.flipY;
+  }
+  texture.needsUpdate = true;
+  return texture;
+}
+
+const FALLBACK_SOURCE_MAP = (() => {
+  const tex = new DataTexture(
+    new Uint8Array([SURFACE_SOURCE_VALUES.OBSERVED, 0, 0, 255]),
+    1,
+    1,
+    RGBAFormat,
+    UnsignedByteType,
+  );
+  return configureSurfaceSourceMap(tex);
+})();
+
+interface SceneMaterialBase {
+  transparent: boolean;
+  opacity: number;
+  textured: boolean;
+  colorHex: number;
+}
+
+interface SceneShaderUniforms {
+  uSurfaceSourceMap: { value: Texture };
+  uSurfaceSourceEnabled: { value: number };
+  uSceneDimmed: { value: number };
+}
+
+type LoadedSourceMaps =
+  | { kind: 'list'; textures: readonly (Texture | null)[] }
+  | { kind: 'record'; textures: Readonly<Record<string, Texture>> }
+  | null;
+
+function resolveSourceMapForMesh(
+  node: Mesh,
+  material: Material,
+  texturedIndex: number,
+  loadedMaps: LoadedSourceMaps,
+): Texture | null {
+  const fromMat = (material.userData as { surfaceSourceMap?: unknown } | undefined)
+    ?.surfaceSourceMap;
+  if (fromMat && typeof fromMat === 'object' && (fromMat as Texture).isTexture) {
+    return fromMat as Texture;
+  }
+  const fromMesh = (node.userData as { surfaceSourceMap?: unknown } | undefined)?.surfaceSourceMap;
+  if (fromMesh && typeof fromMesh === 'object' && (fromMesh as Texture).isTexture) {
+    return fromMesh as Texture;
+  }
+  if (!loadedMaps) return null;
+  if (loadedMaps.kind === 'record') {
+    return loadedMaps.textures[material.name] ?? loadedMaps.textures[node.name] ?? null;
+  }
+  return loadedMaps.textures[texturedIndex] ?? loadedMaps.textures[0] ?? null;
+}
+
+function attachPhotoShader(material: MeshBasicMaterial, sourceMap: Texture | null) {
+  const uniforms: SceneShaderUniforms = {
+    uSurfaceSourceMap: { value: sourceMap ?? FALLBACK_SOURCE_MAP },
+    uSurfaceSourceEnabled: { value: sourceMap ? 1 : 0 },
+    uSceneDimmed: { value: material.userData.sceneDimmed ? 1 : 0 },
+  };
+  material.userData.sceneUniforms = uniforms;
+  material.customProgramCacheKey = () =>
+    sourceMap ? 'scene-photo-basic-provenance-v1' : 'scene-photo-basic-v1';
+  material.onBeforeCompile = (shader: WebGLProgramParametersWithUniforms) => {
+    shader.uniforms.uSurfaceSourceMap = uniforms.uSurfaceSourceMap;
+    shader.uniforms.uSurfaceSourceEnabled = uniforms.uSurfaceSourceEnabled;
+    shader.uniforms.uSceneDimmed = uniforms.uSceneDimmed;
+    shader.fragmentShader =
+      `uniform sampler2D uSurfaceSourceMap;\nuniform float uSurfaceSourceEnabled;\nuniform float uSceneDimmed;\n` +
+      shader.fragmentShader.replace(
+        '#include <map_fragment>',
+        `#include <map_fragment>
+#ifdef USE_MAP
+  if (uSurfaceSourceEnabled > 0.5) {
+    float rawCode = floor(texture2D(uSurfaceSourceMap, vMapUv).r * 255.0 + 0.5);
+    float srcBrightness = ${SURFACE_SOURCE_SHADING.UNOBSERVED.brightness.toFixed(2)};
+    float srcSaturation = ${SURFACE_SOURCE_SHADING.UNOBSERVED.saturation.toFixed(2)};
+    float srcHatch = ${SURFACE_SOURCE_SHADING.UNOBSERVED.hatch.toFixed(2)};
+    if (abs(rawCode - 2.0) < 0.25) {
+      srcBrightness = ${SURFACE_SOURCE_SHADING.OBSERVED.brightness.toFixed(2)};
+      srcSaturation = ${SURFACE_SOURCE_SHADING.OBSERVED.saturation.toFixed(2)};
+      srcHatch = 0.0;
+    } else if (abs(rawCode - 3.0) < 0.25) {
+      srcBrightness = ${SURFACE_SOURCE_SHADING.ESTIMATED_PLANE.brightness.toFixed(2)};
+      srcSaturation = ${SURFACE_SOURCE_SHADING.ESTIMATED_PLANE.saturation.toFixed(2)};
+      srcHatch = 0.0;
+    } else if (abs(rawCode - 1.0) < 0.25) {
+      srcBrightness = ${SURFACE_SOURCE_SHADING.INTERPOLATED.brightness.toFixed(2)};
+      srcSaturation = ${SURFACE_SOURCE_SHADING.INTERPOLATED.saturation.toFixed(2)};
+      srcHatch = 0.0;
+    }
+    float srcLuma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+    vec3 srcColor = mix(vec3(srcLuma), diffuseColor.rgb, srcSaturation) * srcBrightness;
+    if (srcHatch > 0.0) {
+      float stripe = step(0.5, fract((gl_FragCoord.x + gl_FragCoord.y) * 0.125));
+      srcColor *= (1.0 - srcHatch * stripe);
+    }
+    diffuseColor.rgb = srcColor;
+  }
+  if (uSceneDimmed > 0.5) {
+    float dimLuma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+    diffuseColor.rgb = mix(vec3(dimLuma), diffuseColor.rgb, ${DIMMED_TEXTURE_SATURATION.toFixed(2)});
+  }
+#endif`,
+      );
+  };
+}
 
 /** 장면 아래 모든 형상·재질·텍스처를 해제한다. */
 export function disposeObject(root: Object3D) {
@@ -39,6 +244,16 @@ export function disposeObject(root: Object3D) {
         if (value && typeof value === 'object' && (value as Texture).isTexture) {
           (value as Texture).dispose();
         }
+      }
+      const sourceMap = (material.userData as { surfaceSourceMap?: unknown } | undefined)
+        ?.surfaceSourceMap;
+      if (
+        sourceMap &&
+        typeof sourceMap === 'object' &&
+        (sourceMap as Texture).isTexture &&
+        sourceMap !== FALLBACK_SOURCE_MAP
+      ) {
+        (sourceMap as Texture).dispose();
       }
       material.dispose();
     }
@@ -60,18 +275,80 @@ export function worldBoundsOf(root: Object3D) {
   return { min, max };
 }
 
-/** 배경으로 쓰기 전 준비: 클릭을 받지 않게 하고, 흐리게 바꿀 수 있게 재질을 이 장면 전용으로 복사해 원래 값을 기억한다. */
-function prepare(root: Object3D) {
+/**
+ * 배경으로 쓰기 전 준비:
+ * - 클릭을 받지 않게 한다.
+ * - 텍스처(map)가 있는 재질은 사진 색이 그대로 보이도록 MeshBasicMaterial(SRGBColorSpace, toneMapped: false)로 바꾼다.
+ * - 텍스처가 없는 정점색·회색 메시는 기존 재질을 복제해 유지하고, 정점 법선이 없으면 계산해 입체감을 살린다.
+ */
+export function prepareSceneRoot(root: Object3D, loadedMaps: LoadedSourceMaps = null) {
+  let texturedIndex = 0;
   root.traverse((node) => {
     if (!(node instanceof Mesh)) return;
     node.raycast = noRaycast;
-    const copy = (m: Material) => {
+    const convert = (m: Material) => {
+      const mapCandidate = (m as { map?: unknown }).map;
+      const map =
+        mapCandidate && typeof mapCandidate === 'object' && (mapCandidate as Texture).isTexture
+          ? (mapCandidate as Texture)
+          : null;
+      const baseColor =
+        'color' in m && (m as { color?: unknown }).color instanceof Color
+          ? ((m as { color: Color }).color.clone() as Color)
+          : new Color(0xffffff);
+
+      if (map) {
+        map.colorSpace = SRGBColorSpace;
+        map.needsUpdate = true;
+        const currentIndex = texturedIndex;
+        texturedIndex += 1;
+        const rawSourceMap = resolveSourceMapForMesh(node, m, currentIndex, loadedMaps);
+        const sourceMap = rawSourceMap ? configureSurfaceSourceMap(rawSourceMap, map) : null;
+        const basic = new MeshBasicMaterial({
+          name: m.name,
+          map,
+          color: baseColor,
+          transparent: m.transparent,
+          opacity: m.opacity,
+          alphaTest: m.alphaTest,
+          depthWrite: m.depthWrite,
+          depthTest: m.depthTest,
+          side: DoubleSide,
+          vertexColors: m.vertexColors,
+          toneMapped: false,
+        });
+        basic.userData = {
+          ...m.userData,
+          surfaceSourceMap: sourceMap,
+          sceneDimmed: false,
+          sceneBase: {
+            transparent: basic.transparent,
+            opacity: basic.opacity,
+            textured: true,
+            colorHex: baseColor.getHex(),
+          } satisfies SceneMaterialBase,
+        };
+        attachPhotoShader(basic, sourceMap);
+        m.dispose();
+        return basic;
+      }
+
+      if (node.geometry && !node.geometry.getAttribute('normal')) {
+        node.geometry.computeVertexNormals();
+      }
       const c = m.clone();
-      c.userData.sceneBase = { transparent: c.transparent, opacity: c.opacity };
+      c.userData.sceneBase = {
+        transparent: c.transparent,
+        opacity: c.opacity,
+        textured: false,
+        colorHex: baseColor.getHex(),
+      } satisfies SceneMaterialBase;
       m.dispose();
       return c;
     };
-    node.material = Array.isArray(node.material) ? node.material.map(copy) : copy(node.material);
+    node.material = Array.isArray(node.material)
+      ? node.material.map(convert)
+      : convert(node.material);
   });
 }
 
@@ -81,14 +358,53 @@ function applyDisplay(root: Object3D, display: SceneDisplay) {
     if (!(node instanceof Mesh)) return;
     const materials: Material[] = Array.isArray(node.material) ? node.material : [node.material];
     for (const m of materials) {
-      const base = m.userData.sceneBase as { transparent: boolean; opacity: number } | undefined;
+      const base = m.userData.sceneBase as SceneMaterialBase | undefined;
       if (!base) continue;
       const dim = display === 'DIMMED';
-      m.transparent = dim || base.transparent;
-      m.opacity = dim ? Math.min(base.opacity, DIMMED_OPACITY) : base.opacity;
+      if (base.textured) {
+        // 사진 텍스처 메시는 반투명 알파 블렌딩 시 앞뒤 삼각형 정렬 깨짐으로 거칠고 뿌옇게 죽으므로,
+        // 깊이 버퍼 가림(불투명)은 유지하고 명도·채도만 낮춰 미검증(DIMMED) 상태임을 드러낸다.
+        m.transparent = base.transparent;
+        m.opacity = base.opacity;
+        m.userData.sceneDimmed = dim;
+        if ('color' in m && (m as MeshBasicMaterial).color instanceof Color) {
+          (m as MeshBasicMaterial).color
+            .setHex(base.colorHex)
+            .multiplyScalar(dim ? DIMMED_TEXTURE_BRIGHTNESS : 1);
+        }
+        const uniforms = m.userData.sceneUniforms as SceneShaderUniforms | undefined;
+        if (uniforms) {
+          uniforms.uSceneDimmed.value = dim ? 1 : 0;
+        }
+      } else {
+        m.transparent = dim || base.transparent;
+        m.opacity = dim ? Math.min(base.opacity, DIMMED_OPACITY) : base.opacity;
+      }
       m.needsUpdate = true;
     }
   });
+}
+
+async function loadSurfaceSourceMaps(
+  urls: SurfaceSourceMapUrls | undefined,
+  textureLoader: SceneTextureLoader,
+): Promise<LoadedSourceMaps> {
+  if (!urls) return null;
+  if (Array.isArray(urls)) {
+    const textures = await Promise.all(urls.map((u) => textureLoader(u).catch(() => null)));
+    return { kind: 'list', textures };
+  }
+  const entries = await Promise.all(
+    Object.entries(urls).map(async ([k, u]) => {
+      const tex = await textureLoader(u).catch(() => null);
+      return tex ? ([k, tex] as const) : null;
+    }),
+  );
+  const record: Record<string, Texture> = {};
+  for (const entry of entries) {
+    if (entry) record[entry[0]] = entry[1];
+  }
+  return { kind: 'record', textures: record };
 }
 
 /** HTTP 상태가 실린 읽기 오류면 그 값(three FileLoader 의 HttpError.response.status). 주소는 꺼내지 않는다. */
@@ -104,6 +420,7 @@ export function SceneBackground() {
 
 function Background({ store }: { store: SceneStore }) {
   const loader = useContext(SceneLoaderContext);
+  const textureLoader = useContext(SceneTextureLoaderContext);
   const review = useContext(SceneReviewContext);
   const input = useStore(store, (s) => s.input);
   const load = useStore(store, (s) => s.load);
@@ -126,6 +443,7 @@ function Background({ store }: { store: SceneStore }) {
   const sceneVersion = scene?.sceneVersion ?? null;
   const url = scene?.gltfUrl ?? null;
   const expiresAt = scene?.gltfExpiresAtMs ?? null;
+  const surfaceSourceMapUrls = scene?.surfaceSourceMapUrls;
 
   useEffect(() => {
     // 같은 Scene 을 이미 읽었으면 서명 주소만 새로 받은 것이라 다시 읽지 않는다.
@@ -143,8 +461,8 @@ function Background({ store }: { store: SceneStore }) {
     }
     let alive = true;
     at('LOADING');
-    loader(url).then(
-      (root) => {
+    Promise.all([loader(url), loadSurfaceSourceMaps(surfaceSourceMapUrls, textureLoader)]).then(
+      ([root, sourceMaps]) => {
         if (!alive) {
           disposeObject(root);
           return;
@@ -155,7 +473,7 @@ function Background({ store }: { store: SceneStore }) {
           at('FAILED', '빈 자산이다');
           return;
         }
-        prepare(root);
+        prepareSceneRoot(root, sourceMaps);
         root.name = `scene-background:${sceneVersion}`;
         setLoaded({ sceneVersion, root });
         store.getState().setLoad({ phase: 'LOADED', sceneVersion, reason: null, boundsWorld });
@@ -172,7 +490,7 @@ function Background({ store }: { store: SceneStore }) {
     return () => {
       alive = false;
     };
-  }, [store, loader, sceneVersion, url, expiresAt]);
+  }, [store, loader, textureLoader, sceneVersion, url, expiresAt, surfaceSourceMapUrls]);
 
   // 바뀌거나 내려가면 이전 자산을 해제한다.
   useEffect(() => {
