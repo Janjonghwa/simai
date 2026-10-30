@@ -102,6 +102,15 @@ def build_parser() -> argparse.ArgumentParser:
     mo.add_argument("--out", type=Path, help=f"근거 JSON (기본 {DEFAULT_OUT_DIR}/scale-evidence-<UTC>.json)")
     mo.add_argument("--debug-dir", type=Path,
                     help="진단 그림 폴더(det_<정물>_<카메라>.jpg: 채택·버림 표시. 사람이 찍힌 그림이라 커밋하지 않는 곳)")
+    st = sub.add_parser("measure-stools", help="보정 Provider + 같은 시각 사진 → 스툴 축척 제안(-357, 보정은 변경하지 않음)")
+    st.add_argument("--calibration", type=Path, required=True)
+    source = st.add_mutually_exclusive_group(required=True)
+    source.add_argument("--image", action="append", metavar="CAM=PATH", help="왜곡된 원본 사진(같은 시각 묶음)")
+    source.add_argument("--prepared", type=Path, help="prepare 입력 폴더(펴진 그림·K)")
+    st.add_argument("--capture-id", required=True, help="사진의 동일 시각/정물 배치 묶음 식별자(다른 묶음을 섞지 않는다)")
+    st.add_argument("--catalog", type=Path)
+    st.add_argument("--out", type=Path, required=True)
+    st.add_argument("--debug-dir", type=Path)
     return p
 
 
@@ -116,6 +125,8 @@ def main(argv: Sequence[str] | None = None, *, now_ms: int | None = None) -> int
             return _prepare(args)
         if args.command == "measure-objects":
             return _measure_objects(args, created_at)
+        if args.command == "measure-stools":
+            return _measure_stools(args, created_at)
         return _fix(args, created_at)
     except (ValueError, KeyError, FileNotFoundError, FileExistsError, ImportError) as e:
         print(f"입력 오류: {type(e).__name__}: {e}", file=sys.stderr)
@@ -439,6 +450,110 @@ def _measure_objects(args: argparse.Namespace, created_at: int) -> int:
             print(f"  이 배율로 본 카메라 높이(m): {rec['camera_heights_m']}")
     print(f"근거: {out}")
     return EXIT_OK if doc["estimates"] else EXIT_NOT_FIXED
+
+
+def _measure_stools(args: argparse.Namespace, created_at: int) -> int:
+    import cv2
+    import numpy as np
+
+    from simai_ai.calibration.world_frame.inputs import load_prepared
+    from simai_ai.calibration.world_frame.measured_objects import DEFAULT_CATALOG, DETECTORS, load_catalog
+    from simai_ai.calibration.world_frame.stool_tops import draw_stools, measure_stools
+    from simai_ai.geometry.rig import CameraRig, RigCamera
+    from simai_ai.providers.files import FileCalibrationProvider
+
+    if args.out.exists():
+        raise ValueError(f"결과 파일이 이미 있다(덮어쓰지 않는다): {args.out}")
+    provider = FileCalibrationProvider(args.calibration)
+    rig = CameraRig.from_provider(provider)
+    if rig.state not in ("PROVISIONAL", "CALIBRATED"):
+        raise ValueError(f"스툴 측정에 사용할 수 없는 보정 상태: {rig.state}")
+    objects, catalog = load_catalog(args.catalog or DEFAULT_CATALOG)
+    objects = [o for o in objects if o.measurement["kind"] == "STOOL_TOP"]
+    if len(objects) != 1:
+        raise ValueError("목록에 STOOL_TOP 항목이 정확히 하나 있어야 한다")
+    obj = objects[0]
+    prepared = load_prepared(args.prepared) if args.prepared else None
+    if prepared:
+        views = {v["camera_id"]: v for v in prepared["views"]}
+        paths = {cid: Path(prepared["_dir"]) / v["image"] for cid, v in views.items()}
+    else:
+        pairs = [_pair(p, "--image") for p in args.image]
+        if len({c for c, _ in pairs}) != len(pairs):
+            raise ValueError("같은 카메라 사진이 두 번 있다")
+        paths = {c: Path(p) for c, p in pairs}
+    if not paths or set(paths) - set(rig.cameras):
+        raise ValueError("사진 카메라가 비었거나 보정에 없다")
+    detector = DETECTORS[obj.detector["kind"]](obj.detector, None, None)
+    images, cameras, dets, inputs, persons = {}, {}, {}, {}, {}
+    for cid, path in sorted(paths.items()):
+        cam = rig.cameras[cid]
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if image is None or image.shape[1::-1] != cam.image_size:
+            raise ValueError(f"{cid}: 사진을 읽지 못했거나 보정 해상도와 다르다")
+        if prepared:
+            v = views[cid]
+            original = v.get("source_camera") or {}
+            if "K" not in original or original.get("distortion", {}).get("model") not in ("OPENCV_PINHOLE", "NONE"):
+                raise ValueError(f"{cid}: 준비 영상의 원본 K·왜곡 기록이 없다")
+            K = np.asarray(v["K_undistorted"], float)
+            mapx = mapy = None
+            if (not np.allclose(original["K"], cam.K, rtol=1e-4, atol=.05)
+                    or original["distortion"]["model"] != cam.distortion_model
+                    or not np.allclose(original["distortion"]["coeffs"], cam.distortion_coeffs, atol=1e-4)):
+                # 보정의 이상적 픽셀 → 원본 왜곡 픽셀 → 준비 영상 픽셀. 두 K를 혼용하지 않는다.
+                w, h = cam.image_size
+                dist = np.asarray(cam.distortion_coeffs) if cam.distortion_coeffs else None
+                rawx, rawy = cv2.initUndistortRectifyMap(cam.K, dist, None, cam.K, (w, h), cv2.CV_32FC1)
+                rawpx = np.stack([rawx, rawy], axis=-1).reshape(-1, 1, 2)
+                olddist = np.asarray(original["distortion"]["coeffs"]) if original["distortion"]["coeffs"] else None
+                oldpx = cv2.undistortPoints(rawpx, np.asarray(original["K"], float), olddist, P=K).reshape(h, w, 2)
+                mapx, mapy = oldpx[..., 0], oldpx[..., 1]
+                image = cv2.remap(image, mapx, mapy, cv2.INTER_LINEAR)
+                K = cam.K
+            if v.get("mask"):
+                pm = cv2.imread(str(Path(prepared["_dir"]) / v["mask"]), cv2.IMREAD_GRAYSCALE)
+                if pm is None:
+                    raise ValueError(f"{cid}: 사람 마스크를 읽지 못함")
+                if mapx is not None:
+                    pm = cv2.remap(pm, mapx, mapy, cv2.INTER_NEAREST)
+                persons[cid] = pm > 127
+        else:
+            K = cam.K
+            if cam.distortion_model not in ("NONE", "OPENCV_PINHOLE"):
+                raise ValueError(f"{cid}: 이 실행 도구가 펴지 못하는 왜곡 모델: {cam.distortion_model}")
+            if cam.distortion_model != "NONE":
+                image = cv2.undistort(image, K, np.asarray(cam.distortion_coeffs), None, K)
+        cameras[cid] = RigCamera.from_calibration({
+            "camera_id": cid, "image_size": list(cam.image_size), "K": K.tolist(), "R": cam.R.tolist(),
+            "t": cam.t.tolist(), "distortion": {"model": "NONE", "coeffs": []},
+        })
+        images[cid], dets[cid] = image, detector.detect(image)
+        inputs[cid] = {"path": str(path), "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
+    scale, count, rec = measure_stools(obj, cameras, dets, person_masks=persons)
+    frames = (prepared or {}).get("input_provenance", {}).get("frames") or {
+        "source": "FILE", "camera_ids": sorted(paths), "dataset_id": args.capture_id,
+    }
+    upper_bound = (rig.provider_source in ("SIM", "DATASET_GT") or frames.get("source") == "SIM"
+                   or bool((prepared or {}).get("input_provenance", {}).get("is_upper_bound")))
+    doc = {"format": "simai.stool_measurement", "format_version": "0.1.0", "created_at": created_at,
+           "capture_id": args.capture_id, "calibration_version": rig.calibration_version, "calibration_state": rig.state,
+           "calibration_sha256": "sha256:" + hashlib.sha256(args.calibration.read_bytes()).hexdigest(),
+           "input_provenance": {"frames": frames,
+                                "calibration": provider.provenance(),
+                                "is_upper_bound": upper_bound},
+           "images": inputs, "catalog": catalog, "detector": detector.describe(), "object": rec,
+           "scale": scale, "sample_count": count,
+           "note": "입력 보정 단위에 대한 추가 배율 제안. 높이 평면은 보조이며 이 결과로 보정 문서를 자동 변경하지 않는다"}
+    _write(args.out, doc)
+    if args.debug_dir:
+        args.debug_dir.mkdir(parents=True, exist_ok=True)
+        for cid, image in images.items():
+            ms = [m for m in rec["measurements"] if m["camera_id"] == cid]
+            cv2.imwrite(str(args.debug_dir / f"stool_{cid}.jpg"), draw_stools(image, ms))
+    print(f"{args.capture_id}: 검출 {rec['detections']}, 후보 스툴 {rec['stool_candidates']}, "
+          f"다시점 {rec['multiview_samples']}, 채택 표본 {count}, 축척 {scale}, {rec['reason'] or 'OK'}")
+    return EXIT_OK if scale is not None else EXIT_NOT_FIXED
 
 
 def _provider_source(provenance: dict[str, Any]) -> str:
