@@ -233,6 +233,7 @@ class DetectorFeed:
         self.avatar_enabled = False
         self.camera_streams: dict[str, CameraObservation] = {}
         self.stats = DetectorFeedStats()
+        self.observe_decoded: Callable[[Frame, CameraDetections], Any] | None = None
 
     @property
     def source(self) -> str:
@@ -275,6 +276,11 @@ class DetectorFeed:
                 self.stats.stale_results += 1
                 continue
             accepted.append(result)
+            if self.observe_decoded is not None:
+                try:
+                    self.observe_decoded(frame, result)
+                except Exception:
+                    log.exception("배경 프레임 전달 실패(판정은 계속한다)")
         observations = self._tracker.update_batch(accepted) if accepted else []
         if self.avatar_enabled:
             images = {_ids(f): f for f in batch}
