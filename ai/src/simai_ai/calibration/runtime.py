@@ -18,7 +18,7 @@ from simai_ai.calibration.document import content_hash
 from simai_ai.calibration.monitor import STREAM_REASONS, MonitorReport
 from simai_ai.calibration.structure import check_calibration_structure
 from simai_ai.providers.base import CalibrationProvider
-from simai_ai.providers.contract import DEFAULT_CALIBRATED_CRITERIA, NEVER_CALIBRATED_SOURCES, check_calibration
+from simai_ai.providers.contract import NEVER_CALIBRATED_SOURCES, check_calibration
 
 
 def _copy(value):
@@ -87,7 +87,6 @@ def validate_candidate(document: Mapping[str, Any], report: Mapping[str, Any], p
                 raise ValueError("카메라별 3대 이상 관측 부족")
         elif _number(counts[field.removeprefix("min_")]) < minimum:
             raise ValueError(f"최소 데이터 기준 미달: {field}")
-    limits = DEFAULT_CALIBRATED_CRITERIA
     before = {k: v for k, v in report["holdout"]["before"]["reprojection_error_px"].items() if k != "overall"}
     after = {k: v for k, v in report["holdout"]["after"]["reprojection_error_px"].items() if k != "overall"}
     if set(before) != set(old) or set(after) != set(old):
@@ -119,11 +118,33 @@ def validate_candidate(document: Mapping[str, Any], report: Mapping[str, Any], p
     anchors = alignment["anchor_cameras"]
     if alignment["usable"] is not True or len(set(anchors)) < 2 or not set(anchors) <= set(old):
         raise CandidateValidationError("World 정렬 기준 부족", comparison)
-    for key, maximum in (("anchor_center_residuals_cm", limits.max_pairwise_position_disagreement_m * 100),
-                         ("anchor_rotation_residuals_deg", 1.5)):
-        values = alignment[key]
-        if set(values) != set(anchors) or any(_number(v) > maximum for v in values.values()):
-            raise CandidateValidationError(f"World 정렬 잔차 미달: {key}", comparison)
+    # 보고서가 주장한 잔차와 별개로, 이미 World 정렬된 문서의 실제 변화도 확인한다.
+    from simai_ai.calibration.extrinsics.session import camera_changes
+    from simai_ai.calibration.live_candidate import evaluate_world_consistency
+    import numpy as np
+
+    changes = camera_changes(previous, document)
+    centers = lambda cams: {cid: -np.asarray(c["R"]).T @ np.asarray(c["t"]) for cid, c in cams.items()}
+    old_centers, new_centers = centers(old), centers(new)
+    ratios = []
+    for i, a in enumerate(anchors):
+        for b in anchors[i + 1:]:
+            baseline = float(np.linalg.norm(old_centers[a] - old_centers[b]))
+            if baseline <= 1e-12:
+                raise CandidateValidationError("World 정렬 기준 카메라 중심 간 거리 미상", comparison)
+            ratios.append(abs(float(np.linalg.norm(new_centers[a] - new_centers[b])) / baseline - 1.))
+    actual = evaluate_world_consistency({
+        "usable": True, "anchor_cameras": anchors,
+        "anchor_center_residuals_cm": {c: changes[c]["position_cm"] for c in anchors},
+        "anchor_rotation_residuals_deg": {c: changes[c]["rotation_deg"] for c in anchors},
+        "scale_change_ratio": max(ratios),
+    })
+    comparison["document_world_consistency"] = actual
+    if not actual["accepted"]:
+        comparison["accepted"] = False
+        comparison["world_consistency"] = actual
+        comparison["rejected_reasons"] = [f"(나) World 일관성: {r}" for r in actual["rejected_reasons"]]
+        raise CandidateValidationError("(나) World 일관성: " + "; ".join(actual["rejected_reasons"]), comparison)
     return comparison
 
 
@@ -166,6 +187,11 @@ class RuntimeCalibrationStore(CalibrationProvider):
 
     def document(self, version: str):
         return json.loads(self.path(version).read_text(encoding="utf-8"))
+
+    def current_report(self):
+        """재시작 뒤에도 중심을 고치지 않은 빠른 회전 카메라 정보를 이어받는다."""
+        path = self.path(self._head["active"]).with_suffix(".report.json")
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
 
     def current(self):
         return self.document(self._head["active"])

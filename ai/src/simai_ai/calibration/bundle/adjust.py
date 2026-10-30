@@ -509,7 +509,8 @@ def _build_problem(
         object_sigma_rel=config.measured_object_sigma_rel,
         gauge_sigma=config.gauge_sigma,
         fix_scale_to_initial=not object_rows,
-        fix_floor_to_initial=len(contacts) < 3,
+        fix_floor_to_initial=not config.floor_contacts_for_gauge or len(contacts) < 3,
+        floor_contacts_for_gauge=config.floor_contacts_for_gauge,
         obs_scale=np.array(obs_scale, dtype=float) if config.joint_noise_scaling else None,
         lens_mode=config.lens_mode,
     )
@@ -768,6 +769,7 @@ def _finish(
                 "joint_noise_scale": list(KEYPOINT_NOISE_SCALE) if config.joint_noise_scaling else None,
                 "bone_sigma_m": config.bone_sigma_m,
                 "floor_sigma_m": config.floor_sigma_m,
+                "floor_contacts_for_gauge": config.floor_contacts_for_gauge,
                 "toe_contact_height_m": config.toe_contact_height_m,
                 "ankle_contact_height_m": config.ankle_contact_height_m,
                 "lens_mode": config.lens_mode,

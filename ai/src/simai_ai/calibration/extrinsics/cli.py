@@ -99,7 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     se = sub.add_parser("session", help="회차의 여러 사람 궤적 + 직전 보정 → 새 외부 파라미터")
     se.add_argument("--recording", type=Path, required=True)
     se.add_argument("--previous", type=Path, required=True)
-    se.add_argument("--camera-heights", type=Path, required=True)
+    se.add_argument("--camera-heights", type=Path, help="직전 World 정렬 뒤 높이 검산용(선택)")
     se.add_argument("--lens", choices=("fixed",), default="fixed")
     se.add_argument("--fixed-lens", default="1284.27,-0.29198,0.05982", metavar="F,K1,K2")
     se.add_argument("--out", type=Path, required=True, help="새 출력 디렉터리(덮어쓰기 금지)")

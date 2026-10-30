@@ -91,6 +91,7 @@ class Problem:
     fix_floor_to_initial: bool
     obs_scale: np.ndarray | None = None  # (M,) 관측별 픽셀 잡음 배율(관절별 κ). 없으면 모두 1
     lens_mode: str = LENS_PER_CAMERA  # 렌즈 변수 모드(모듈 설명, -321)
+    floor_contacts_for_gauge: bool = True
 
     def __post_init__(self) -> None:
         if self.lens_mode not in LENS_MODES:
@@ -358,7 +359,7 @@ def _evaluate(problem: Problem, x: np.ndarray, with_jacobian: bool) -> tuple[np.
         row += n
 
     # 4. 바닥 접지
-    Q = len(problem.contact_pt)
+    Q = len(problem.contact_pt) if problem.floor_contacts_for_gauge else 0
     if Q:
         res.append((X[problem.contact_pt, 2] - problem.contact_h) / problem.floor_sigma)
         if with_jacobian:
