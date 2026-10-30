@@ -138,7 +138,8 @@ def _bundle(tmp_path, n=3, product=True):
         sdir.mkdir(parents=True)
         (sdir / "cam_A_p0.jpg").write_bytes(str(20 + i).encode())
         inp = {**_event(f"e{i}", "R2")["payload"], "observation_time": T0, "structured_state": {"tracks": []},
-               "frames": [{"camera_id": "cam_A", "file": "frames/cam_A_p0.jpg", "offset_ms": 0, "face_policy": "BLURRED"}]}
+               "frames": [{"camera_id": "cam_A", "file": "frames/cam_A_p0.jpg", "offset_ms": 0, "estimated_capture_time_ms": T0,
+                           "face_policy": "BLURRED"}]}
         (b / "samples" / sid / "input.json").write_text(json.dumps(inp, ensure_ascii=False), encoding="utf-8")
         (b / "samples" / sid / "truth.json").write_text(json.dumps({"summary": f"정답 {i}"}, ensure_ascii=False), encoding="utf-8")
         samples.append({"sample_id": sid, "strata": {"rule_id": "R2", "severity": "CRITICAL", "check": "확정" if i % 2 else "확인 필요",
@@ -165,12 +166,44 @@ class _Resp(io.BytesIO):
         return False
 
 
-def _fake_vlm(sent):
+def _fake_vlm(sent, replies=(("근거: 단상 가장자리", "stop"),)):
     def opener(req, timeout):
         sent.append(json.loads(req.data))
-        return _Resp(json.dumps({"model": "cosmos3-nano", "choices": [{"message": {"content": "근거: 단상 가장자리"}, "finish_reason": "stop"}],
+        content, finish = replies[min(len(sent), len(replies)) - 1]
+        return _Resp(json.dumps({"model": "cosmos3-nano", "choices": [{"message": {"content": content}, "finish_reason": finish}],
                                  "usage": {"prompt_tokens": 10, "completion_tokens": 5}}).encode())
     return opener
+
+
+def _text(body):
+    return next(p["text"] for p in body["messages"][-1]["content"] if p["type"] == "text")
+
+
+def test_answers_with_product_prompt_match_processor(A, tmp_path):
+    from simai_ai.vlm.rationale import PROMPT, RETRY_NOTE
+
+    bundle = _bundle(tmp_path, 2)
+    sdir = bundle / "samples" / "g7-001"
+    (sdir / "frames" / "cam_B_m4000.jpg").write_bytes(b"30")
+    (sdir / "frames" / "cam_B_p40.jpg").write_bytes(b"31")
+    inp = json.loads((sdir / "input.json").read_text(encoding="utf-8"))
+    inp["frames"] += [{**inp["frames"][0], "camera_id": "cam_B", "file": "frames/cam_B_p40.jpg", "estimated_capture_time_ms": T0 + 40},
+                      {**inp["frames"][0], "camera_id": "cam_B", "file": "frames/cam_B_m4000.jpg", "estimated_capture_time_ms": T0 - 4000}]
+    (sdir / "input.json").write_text(json.dumps(inp, ensure_ascii=False), encoding="utf-8")
+    good = json.dumps({"rationale": "사람이 단상 가장자리에 서 있다.", "proposed_severity": None}, ensure_ascii=False)
+    # 표본 1: 첫 답이 잘림 → 재질문 → 정상. 표본 2: 형식 오류 두 번 → VLM_ANSWER_INVALID
+    sent = []
+    client = VlmClient(VlmSettings(), encode=lambda px: ("image/png", b"x"), opener=_fake_vlm(sent, [('{"rationale": "사람', "length"), (good, "stop"),
+                                                                                                       ("자유 문장", "stop"), ("자유 문장", "stop")]))
+    meta = A.run(bundle, tmp_path / "ans", client, PROMPT, Provider(), decode=_decode)
+    assert meta["ok"] == 1 and meta["error"] == 1 and len(sent) == 4
+    first = _text(sent[0])
+    assert "1. 카메라 cam_B, 이벤트 시점 기준 -4.0초" in first and "2. 카메라 cam_A, 이벤트 시점 기준 +0.0초" in first
+    assert "cam_B, 이벤트 시점 기준 +0.0" not in first and "3." not in first  # 사후 프레임(+40 ms)은 처리기처럼 뺀다
+    assert _text(sent[1]) == first + RETRY_NOTE
+    rows = [json.loads(x) for x in (tmp_path / "ans" / "answers.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["content"] == good and rows[0]["retried"] is True and rows[0]["error"] is None
+    assert rows[1]["content"] is None and rows[1]["error"]["code"] == "VLM_ANSWER_INVALID"  # 채점표에서 빠진다
 
 
 def test_answers_send_only_blurred_vlmframes(A, tmp_path):
