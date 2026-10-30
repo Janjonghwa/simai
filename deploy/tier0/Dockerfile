@@ -110,11 +110,13 @@ CMD ["tier0"]
 
 # ---------------------------------------------------------------- 통합 이미지 의존성 (Tier 0 층 위에 워커 층)
 FROM tier0-deps AS unified-deps
+# SSAFY 망의 HTTP(80) 프록시가 Ubuntu 저장소 요청 일부를 400 으로 거절한다(S15P31A101-366). 받는 패키지는 같고 경로만 HTTPS 로 바꾼다.
+RUN sed -i 's#http://\(archive\|security\).ubuntu.com#https://\1.ubuntu.com#g' /etc/apt/sources.list.d/ubuntu.sources
 # pyrender EGL 렌더용 glvnd 로더(libEGL.so 무버전 이름은 libegl-dev), pyglet 이 여는 X11 라이브러리(-207 에서 발견),
 # (sam_3d_body 가 import 때 pyrender 를 연다), triton(vLLM·torch.compile) 런처를 컴파일할 C 컴파일러, git(잠금의 git 의존성 vllm-cosmos3·transformers-cosmos3·utils3d-moge·pipeline 설치)
 # hadolint ignore=DL3008
-RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=8 update \
+ && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=8 install -y --no-install-recommends \
       libegl1 libegl-dev libgl1 libglvnd0 libglib2.0-0 libxrender1 libxext6 libsm6 gcc libc6-dev git \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=layer-lists /src/worker.txt /tmp/layers/
@@ -163,8 +165,8 @@ ARG MVST_COMMIT=f3374298ac959cb5afe47a14e4d35d2ac7fbdbb1
 ARG MVE_COMMIT=91c0f3fde0781399b2fe872d8e52e4899274a84a
 ARG RAYINT_COMMIT=b62c8905f6dd11a179128517e814e0e00f9bb809
 # hadolint ignore=DL3008
-RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=8 update \
+ && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=8 install -y --no-install-recommends \
       build-essential cmake git ca-certificates libpng-dev libjpeg-dev libtiff-dev libtbb-dev \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
@@ -182,9 +184,9 @@ RUN set -eu; \
 
 # ---------------------------------------------------------------- unified 타깃
 FROM unified-deps AS unified
-# CPU 텍스처 굽기 실행 파일만 복사한다. 빌드 도구는 최종 이미지에 남기지 않는다.
-RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libpng16-16t64 libjpeg-turbo8 libtiff6 libtbb12 libgomp1 \
+# CPU 텍스처 굽기 실행 파일만 복사한다. 빌드 도구는 최종 이미지에 남기지 않는다. libusb 는 open3d import 에 필요하다(-366).
+RUN apt-get -o Acquire::Retries=8 update \
+ && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=8 install -y --no-install-recommends libpng16-16t64 libjpeg-turbo8 libtiff6 libtbb12 libgomp1 libusb-1.0-0 \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=texrecon-build /src/mvs-texturing/build/apps/texrecon/texrecon /usr/local/bin/texrecon
 COPY --from=texrecon-build /src/mvs-texturing/LICENSE.txt /usr/local/share/licenses/mvs-texturing/LICENSE.txt
