@@ -9,6 +9,8 @@ import com.ssafy.simai.global.security.AccessTokenIssuer;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -39,11 +41,14 @@ public class EventController {
     private final EventQueryRepository events;
     private final EventAckService acks;
     private final EventEscalationService escalations;
+    private final IncidentSummaryService summaries;
 
-    EventController(EventQueryRepository events, EventAckService acks, EventEscalationService escalations) {
+    EventController(EventQueryRepository events, EventAckService acks, EventEscalationService escalations,
+            IncidentSummaryService summaries) {
         this.events = events;
         this.acks = acks;
         this.escalations = escalations;
+        this.summaries = summaries;
     }
 
     /** Spring Page 와 같은 모양. 관제 앱은 content 만 읽는다 */
@@ -96,5 +101,14 @@ public class EventController {
         String decision = request == null ? null : request.decision();
         String note = request == null ? null : request.note();
         return escalations.decide(eventId, assessmentId, decision, note, Long.parseLong(jwt.getSubject()));
+    }
+
+    /** 사고 구간 VLM 사후 요약 요청(명세 5.6·12.6, S15P31A101-369). 관리자 전용, 본문 없음 */
+    @PostMapping("/{eventId}/summary")
+    @PreAuthorize("hasRole('ADMIN')")
+    ResponseEntity<ObjectNode> summary(@PathVariable UUID eventId, @AuthenticationPrincipal Jwt jwt) {
+        Long userId = jwt == null || jwt.getSubject() == null ? null : Long.parseLong(jwt.getSubject());
+        IncidentSummaryService.SummaryResponse res = summaries.requestSummary(eventId, userId);
+        return ResponseEntity.status(res.created() ? HttpStatus.ACCEPTED : HttpStatus.OK).body(res.body());
     }
 }

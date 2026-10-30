@@ -81,7 +81,9 @@ public sealed interface ErrorCode {
         ESCALATION_NOT_UPWARD(HttpStatus.CONFLICT, "현재 등급보다 높은 상향 의견만 승인할 수 있습니다"),
         INVALID_ASSESSMENT_ID(HttpStatus.BAD_REQUEST, "assessmentId 가 필요합니다"),
         INVALID_ESCALATION_DECISION(HttpStatus.BAD_REQUEST, "decision 은 APPROVED 또는 REJECTED 여야 합니다"),
-        INVALID_ESCALATION_NOTE(HttpStatus.BAD_REQUEST, "note 는 1~500자여야 합니다");
+        INVALID_ESCALATION_NOTE(HttpStatus.BAD_REQUEST, "note 는 1~500자여야 합니다"),
+        EVENT_NOT_LIVE(HttpStatus.CONFLICT, "LIVE 이벤트만 사고 구간 요약을 요청할 수 있습니다"),
+        CLIP_NOT_READY(HttpStatus.CONFLICT, "이벤트 클립이 아직 준비되지 않았습니다");
 
         private final HttpStatus status;
         private final String message;
