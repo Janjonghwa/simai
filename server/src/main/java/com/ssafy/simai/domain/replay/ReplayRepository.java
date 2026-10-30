@@ -107,7 +107,7 @@ class ReplayRepository {
                 SELECT u.event_id, u.event_sequence, u.msg_id, u.gateway_id, u.transition, u.occurred_at, u.observation_at,
                        u.rule_id, u.rule_version, u.config_version, u.calibration_version, u.scene_version, u.source,
                        u.severity, u.confidence, u.verification, u.needs_check, u.confidence_reasons, u.world_ids, u.zone_id,
-                       u.metrics, u.related_event_id, u.received_at,
+                       u.metrics, u.related_event_id, u.received_at, u.delivery_mode,
                        min(u.occurred_at) FILTER (WHERE u.transition = 'RAISED') OVER w AS raised_at,
                        count(*) FILTER (WHERE u.resumed) OVER w AS resume_count
                 FROM risk_event_update u
@@ -376,6 +376,11 @@ class ReplayRepository {
             e.put("resolved_at", occurredAt);
         }
         putOptional(e, "related_event_id", rs.getString("related_event_id"));
+        // 재시작 복원 표시(계약 delivery, 3.2): 재동기화 중 받은 전이는 AUDIT_ONLY, 그 뒤에도 활성이라 늦게 알린 것은 DELAYED_ACTIVE
+        if ("LIVE".equals(rs.getString("source"))) {
+            // 계약은 delivery 를 LIVE 이벤트에만 둔다
+            e.put("delivery", rs.getString("delivery_mode"));
+        }
         ObjectNode envelope = envelope(RISK_EVENT_VERSION, "risk_event", rs.getString("msg_id"),
                 rs.getTimestamp("received_at").getTime());
         envelope.set("payload", e);

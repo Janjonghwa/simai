@@ -15,6 +15,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
@@ -66,6 +67,60 @@ public class EventQueryRepository {
                 new MapSqlParameterSource("id", eventId), (rs, i) -> toPayload(rs));
         attachAcks(events);
         return events.stream().findFirst();
+    }
+
+    /**
+     * 이벤트 상세(명세 12.6 GET /api/events/{id}, S15P31A101-320 히스토리). findOne 의 칸에 더한다:
+     * <ul>
+     *   <li>zone: 관련 구역의 이름·종류·판정 방식·등급. 이벤트가 난 시각(raised_at, 모르면 목록 정렬과 같이 updated_at)에 유효했던 판이다(구역은 새 판을 더한다, 11.4).
+     *       구역이 없으면(구역 밖 규칙, zone_id 도 null) null. zone_id 는 있는데 null 이면 그 시각에 유효했던 판을 찾지 못한 것이다.
+     *   <li>transitions: Tier 0 전이 기록(risk_event_update) event_sequence 순. delivery 는 그 전이의 재동기화 복원 여부(3.2, 계약 risk_event.delivery 와 같은 값)다.
+     * </ul>
+     */
+    public Optional<ObjectNode> detail(UUID eventId) {
+        Optional<ObjectNode> found = findOne(eventId);
+        found.ifPresent(event -> {
+            MapSqlParameterSource params = new MapSqlParameterSource("id", eventId);
+            event.set("zone", jdbc.query("""
+                    SELECT z.zone_id, z.zone_version, z.name, z.zone_kind, z.eval_type, z.severity
+                    FROM risk_event e JOIN zone z ON z.zone_id = e.zone_id
+                    WHERE e.event_id = :id AND z.valid_from <= COALESCE(e.raised_at, e.updated_at, now())
+                      AND (z.valid_to IS NULL OR z.valid_to > COALESCE(e.raised_at, e.updated_at, now()))
+                    ORDER BY z.zone_version DESC LIMIT 1
+                    """, params, (rs, i) -> {
+                ObjectNode zone = mapper.createObjectNode();
+                zone.put("zone_id", rs.getString("zone_id"));
+                zone.put("zone_version", rs.getInt("zone_version"));
+                zone.put("name", rs.getString("name"));
+                zone.put("zone_kind", rs.getString("zone_kind"));
+                zone.put("eval_type", rs.getString("eval_type"));
+                zone.put("severity", rs.getString("severity"));
+                return (JsonNode) zone;
+            }).stream().findFirst().orElse(mapper.nullNode()));
+            ArrayNode transitions = event.putArray("transitions");
+            jdbc.query("""
+                    SELECT event_sequence, transition, occurred_at, observation_at, severity, verification, confidence, needs_check,
+                        resumed, resent, delivery_mode, ack_id, close_id, escalation_id
+                    FROM risk_event_update WHERE event_id = :id ORDER BY event_sequence
+                    """, params, rs -> {
+                ObjectNode t = transitions.addObject();
+                t.put("event_sequence", rs.getInt("event_sequence"));
+                t.put("transition", rs.getString("transition"));
+                t.put("occurred_at", rs.getTimestamp("occurred_at").getTime());
+                t.put("observation_at", rs.getTimestamp("observation_at").getTime());
+                t.put("severity", rs.getString("severity"));
+                t.put("verification", rs.getString("verification"));
+                t.put("confidence", rs.getString("confidence"));
+                t.put("needs_check", rs.getBoolean("needs_check"));
+                t.put("resumed", rs.getBoolean("resumed"));
+                t.put("resent", rs.getBoolean("resent"));
+                t.put("delivery", rs.getString("delivery_mode"));
+                putIfPresent(t, "ack_id", rs.getString("ack_id"));
+                putIfPresent(t, "close_id", rs.getString("close_id"));
+                putIfPresent(t, "escalation_id", rs.getString("escalation_id"));
+            });
+        });
+        return found;
     }
 
     /** 확인 기록 하나(EC2 가 만든 확인). target 은 화면이 본 event_sequence */
