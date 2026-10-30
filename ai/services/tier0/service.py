@@ -294,6 +294,7 @@ class Tier0Service:
         self._drift_watch_factory = drift_watch_factory
         self.drift_watch: Any | None = None
         self.live_calibration: Any | None = None
+        self.clean_background: Any | None = None
         self._live_calibration_error: str | None = None
         self._on_camera_drifted = on_camera_drifted
         self._drift_report: MonitorReport | None = None
@@ -541,6 +542,17 @@ class Tier0Service:
             except Exception as exc:
                 self._live_calibration_error = str(exc)
                 log.exception("후보 보정 기동 실패(판정은 계속한다)")
+        if s.clean_background.enabled and isinstance(feed, DetectorFeed):
+            try:
+                from services.tier0.clean_background import BackgroundCleanBackground
+
+                self.clean_background = BackgroundCleanBackground(
+                    self.calibration.current(), provenance, settings=s.clean_background,
+                    state_dir=s.state_dir, stop=self._stop)
+                feed.observe_decoded = self.clean_background.offer
+                self._spawn("tier0-clean-background", self.clean_background.run)
+            except Exception:
+                log.exception("배경 수집 기동 실패(판정은 계속한다)")
         if isinstance(self.drift_watch, BackgroundDriftWatch):
             self._spawn("tier0-drift-watch", lambda: self.drift_watch.run(self._stop))
         self.writer.start()
@@ -845,6 +857,8 @@ class Tier0Service:
             if self.live_calibration.safety_enabled and (self.calibration.current_report() or {}).get("rollback_of"):
                 self.live_calibration.block("되돌림 뒤 자동 보정 보류: 운영자 확인 필요")
         self._drift_document = doc
+        if self.clean_background is not None:
+            self.clean_background.activate(doc, provenance)
         self._drift_report = self._pending_drift_report = None
         self._pending_calibration = None
         self.calibration_status.update(pending_version=None, last_rejection=None, effective_at=at_ms)
@@ -910,6 +924,9 @@ class Tier0Service:
                     if self.calibration_status.get("pending_version") == self._live_pending_version:
                         self._pending_calibration = None
                         self.calibration_status["pending_version"] = None
+            if self.clean_background is not None:
+                for cid in set(notify) | set(changed_streams):
+                    self.clean_background.reset_camera(cid)
         # -345 reset_camera의 연결점. 무거운 후보 계산/콜백은 판정 lock 밖이다.
         for cid in notify:
             if self._on_camera_drifted is not None:

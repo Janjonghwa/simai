@@ -59,4 +59,88 @@ MapAnything 으로 사람 없는 정적 3D 배경과 초기 카메라 자세를 
 ## 잔여 위험과 넘긴 일
 
 - 내내 한자리에 앉아 있거나 서 있는 사람이 카메라 화각의 2% 이상을 차지하면 `never_revealed_ratio >= 0.02` 가 되어 `is_ready()` 가 계속 `False` 로 남는다(의도된 보류). 사람이 자리를 비우거나 `require_ready=False` 강제 내보내기 + `prepare_inputs` 의 세그멘테이션 마스크로 남아 있는 사람 점을 빼는 운영 연결은 호출자(서비스 조립 단계) 몫이다.
-- `services/tier0/` 런타임 루프에 누적기를 직접 연결하는 작업은 현행 병렬 티켓(-352·-356)과의 충돌을 피하기 위해 이번 범위에서 제외했다.
+- `services/tier0/` 런타임 연결은 아래 S15P31A101-363 절에서 구현했다.
+
+## S15P31A101-363: Tier 0 비동기 수집과 Pod 내보내기
+
+관련 명세는 §3.2(Tier 0 우선·MapAnything 배치 실행 보류), §4.5(DRIFTED 재수집), AGENTS 규칙 1·5·6이다. 계약·health·`ai/uv.lock`은 변경하지 않는다. 배경 사진은 보조 분석 입력이며 World 위치·ID·위험 판정에 주입하지 않는다. MapAnything 실행은 후속 -364의 `static_reconstruct` 작업이다.
+
+### 연결 지점과 실행 경계
+
+`services/tier0/perception.py`의 `DetectorFeed.poll`에서 프레임 식별자와 시각 최신성을 통과한 원본 `Frame`과 **동일 프레임의 `CameraDetections`**를 `observe_decoded`로 넘긴다. 추적기가 확정하지 못한 사람 박스도 포함하며, 사람이 없는 정상 검출 결과(빈 박스)도 수집한다. 검출 실패·프레임 불일치·중복·역순 결과는 수집하지 않는다. 검출·디코딩을 다시 실행하지 않는다.
+
+`services/tier0/service.py`는 이미지가 있는 `DetectorFeed`에만 `BackgroundCleanBackground`를 조립한다. 영상 없는 SIM 관측 공급기는 수집하지 않는다. LIVE와 FILE(REPLAY) 모두 기존 `build_input_provenance` 결과를 메타·상태 파일에 보존한다. 알림 채널은 추가하지 않는다.
+
+tick의 `offer`는 표본 간격 확인과 참조 enqueue만 한다. 큐 lock을 즉시 잡지 못하거나 깊이·바이트 상한을 넘으면 버린다. 프레임 배열은 현재 디코더가 새로 생성하고 이후 수정하지 않는 BGR 배열을 참조한다. `np.array(copy=True)`·사람 마스크·준비 비율·중앙값·JPEG·JSON·디렉터리 공개는 `tier0-clean-background` 스레드에서만 실행한다. 큐 lock을 잡은 채 이 작업들을 하지 않는다. 서비스의 기존 stop 이벤트·스레드 종료 제한을 함께 쓰며, 파일 쓰기 실패는 로그·상태로 알리고 1초 뒤 보유 표본으로 재시도한다. 실패나 수집 지연 때문에 판정을 기다리게 하지 않는다.
+
+### 설정과 값의 근거
+
+Tier 0 JSON 설정의 `clean_background` 객체를 쓴다. `output_dir` 상대 경로는 해당 설정 파일의 부모 기준이다.
+
+```json
+{
+  "clean_background": {
+    "enabled": true,
+    "sample_interval_ms": 5000,
+    "min_samples_per_camera": 20,
+    "max_samples_per_camera": 60,
+    "max_bytes": 2306867200,
+    "queue_depth": 4,
+    "max_pending_bytes": 67108864
+  }
+}
+```
+
+- 서비스 기본 간격은 5초다. 독립 누적기의 3초 기본값은 유지한다. 관제 중 CPU·복사 빈도를 낮추며 약 100초에 최소 20장을 모으는 초기 운영값이다.
+- 최소 20장·최대 60장·누적 표본+마스크 상한 2,200 MiB, 박스 확장·충분 기준(`< 2%`)·64행 중앙값은 -358 값을 재사용한다.
+- 큐 깊이 4는 카메라 한 묶음을 수용한다. 보류 프레임 상한 64 MiB는 2304×1296 BGR 4장(약 34 MiB)을 수용하되 큰 영상이 무제한 쌓이지 않게 한다. 이 값은 **큐에 남은 참조** 상한이다. 처리 중 프레임 1장, 누적기의 복사·마스크·중앙값 임시 배열, 원본 디코더 메모리는 별도다. 프로세스 RSS 상한이라는 뜻이 아니다.
+- 카메라가 충분해지면 사진을 한 번 공개하고 그 카메라의 추가 수집은 중단한다. 완성 뒤 계속 중앙값을 계산하지 않는다. 버전 교체·reset 때만 다시 수집/공개한다.
+- `enabled: false`이면 수집 스레드·콜백·배경 출력 경로를 만들지 않는다. 양수·bool·최소/최대 표본 관계를 기동 전에 검증한다.
+
+### DRIFTED·보정 교체
+
+`Tier0Service._apply_drift_report`에서 기존 감시가 귀속한 DRIFTED 카메라만 `reset_camera` 요청한다. 스트림 해상도 등 변경이 보고된 카메라도 비운다. 귀속 불확실한 전체 DRIFTED를 임의로 모든 카메라의 틀어짐으로 해석하지 않는다.
+
+`_begin_calibration_tick`에서 실제 활성화 성공 뒤 새 보정 문서와 출처를 넘긴다. 카메라별 `R`·`t`를 비교해 자세가 바뀐 카메라만 비운다. `K`·`distortion`·`image_size` 변화도 영상 해석이 달라지므로 같은 방식으로 무효화한다. 다른 카메라의 표본은 유지하고 새 보정 버전 메타로 다시 내보낸다. 버전 ID만 바뀌면 표본을 모두 보존한다.
+
+tick은 작은 불변 문맥과 카메라 세대 번호만 교체한다. 실제 누적기 reset은 수집 스레드가 적용한다. 세대가 다른 큐 표본은 버리고, 중앙값 계산 중 문맥이 바뀌었으면 그 임시 산출물을 공개하지 않는다. 기존 완성 산출물은 이력으로 남는다.
+
+### 경로·형식과 -364 인계
+
+기본 루트는 `state_dir/clean-background/`다(기본 `state_dir`이면 `$SIMAI_ROOT/state/clean-background/`). FILE 입력은 기존 설정의 `state_dir/replay/<run>/` 격리도 따른다. 별도 `output_dir`를 주면 그 경로를 쓴다.
+
+```text
+clean-background/
+  status.json
+  <calibration_version>/
+    camera-<uuid>/
+      <camera_id>.jpg
+      clean_backgrounds.json
+    bundle-<uuid>/
+      <camera_1>.jpg ... <camera_4>.jpg
+      clean_backgrounds.json
+      COMPLETE
+```
+
+카메라마다 충분해지면 `camera-<uuid>`에 사진·메타를 먼저 공개한다. 설정된 카메라가 모두(현장 기본 4대) 준비되면 이미 공개한 사진을 묶어 `bundle-<uuid>`와 `COMPLETE`를 공개한다. 기존 `simai.clean_backgrounds` 0.1.0의 `cameras[camera_id].image`·해상도·SHA256·표본 수·촬영 범위·못 채운 비율·보정 버전을 그대로 쓰고, 서비스 메타에 `input_provenance`·`camera_generations`·`complete`를 덧붙인다. 이 파일은 기존 내부 준비 형식이며 구간 계약 스키마를 바꾸지 않는다. `COMPLETE`는 JSON으로 `calibration_version`, `metadata: "clean_backgrounds.json"`, `camera_ids`를 담는다.
+
+파일은 같은 부모의 숨김 `.pending-<uuid>`에 먼저 완성한 뒤 **새 UUID 디렉터리로 rename**한다. 따라서 부분 작성된 사진·메타·완료 표시는 소비자에게 완성 묶음으로 보이지 않는다. 실패 임시 폴더는 정리하며 기존 산출물은 덮어쓰지 않는다. 완료 표시 없는 카메라별 폴더는 전체 입력으로 쓰지 않는다.
+
+`status.json`은 최신 상태 포인터로 임시 파일 + replace한다. 카메라별 현재 `sample_count`·`never_revealed_ratio`·`ready`, 공개 여부 `exported`·경로 `export_path`, 전체 `complete`·`bundle`, 버전·세대·출처·큐 버림 수·마지막 오류를 담는다. 메모리 압박으로 누적 표본이 빠져도 이미 검증해 공개한 카메라 사진은 유효하므로 `ready`와 `exported`가 다를 수 있다.
+
+소비자는 **`status.json`의 활성 `calibration_version`·`complete: true`·`bundle`과 그 폴더의 `COMPLETE`**를 함께 확인하고, 메타의 버전·세대를 대조한다. 이전 `bundle-*`는 이력이므로 단순 디렉터리 검색으로 최신 입력을 고르지 않는다. `cameras`를 `{cid: bundle / camera["image"]}`로 바꾸면 `prepare_inputs`가 받는 이미지 매핑이다. 보정·DRIFTED 요청은 비동기로 반영되므로 상태 파일은 수집 스레드가 마지막으로 처리한 문맥의 스냅샷이다. 소비 작업 시작 시 현재 보정과의 적합성 확인은 -364가 맡는다.
+
+### 시험·9차 세션 확인 로그와 잔여 위험
+
+새 시험 `ai/tests/services/tier0/test_clean_background.py`는 합성 BGR 영상과 움직이는 사람 박스만 쓴다. 간격 경계·큐 초과/lock 경합·지속 가림 보류·검출 식별자 게이트·수집 지연 중 실제 judge tick·DRIFTED 및 보정 전환 연결·기존 산출물 보존·계산 중 reset·같은 버전 재수집·파일 실패 재시도·끄기를 확인한다. -358 누적기 및 기존 drift/live-calibration 시험을 함께 실행한다. 합성 지연은 CPU/GPU 현장 성능을 뜻하지 않는다.
+
+9차 GPU 세션에서는 다음 로그와 `status.json`을 확인한다.
+
+```text
+clean_background context version=... generations=...
+clean_background status {... "sample_count": ..., "never_revealed_ratio": ..., "exported": ...}
+clean_background camera_ready camera=... version=... path=...
+clean_background complete version=... path=...
+```
+
+`clean_background failed`·`status_write_failed`는 CPU/저장 경로 장애다. 별도 I1 health 필드는 추가하지 않는다. 큐 버림이 지속되면 표본 수집은 늦어져도 tick은 진행한다. 원본 해상도 중앙값의 CPU/GIL·메모리 대역폭 경쟁과 실제 Pod RSS·Tier 0 지연은 9차 세션에서 확인해야 한다. 계속 가려진 픽셀 비율이 2% 이상이면 의도적으로 완료하지 않는다. 프로세스 종료 뒤 표본 자동 복구·묶음 보존 기간 정리·강제 내보내기는 범위 밖이며, 불변 묶음이 쌓이므로 운영자가 저장 공간을 관리해야 한다. 원자 rename은 부분 노출 방지이며 전원 손실에 대한 fsync 영속성 보장은 아니다.

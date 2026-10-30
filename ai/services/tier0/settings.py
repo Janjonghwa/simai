@@ -126,6 +126,18 @@ class LiveCalibrationSettings:
 
 
 @dataclass(frozen=True)
+class CleanBackgroundSettings:
+    enabled: bool = True
+    output_dir: Path | None = None  # None: state_dir/clean-background
+    sample_interval_ms: int = 5_000
+    min_samples_per_camera: int = 20
+    max_samples_per_camera: int = 60
+    max_bytes: int = 2_200 * 1024 * 1024
+    queue_depth: int = 4
+    max_pending_bytes: int = 64 * 1024 * 1024
+
+
+@dataclass(frozen=True)
 class Tier0Settings:
     gateway_id: str
     state_dir: Path
@@ -153,6 +165,7 @@ class Tier0Settings:
     env: Mapping[str, str] = field(default_factory=dict, repr=False)
     drift_watch_enabled: bool = True
     live_calibration: LiveCalibrationSettings = field(default_factory=LiveCalibrationSettings)
+    clean_background: CleanBackgroundSettings = field(default_factory=CleanBackgroundSettings)
 
     @property
     def journal_dir(self) -> Path:
@@ -233,6 +246,22 @@ def _live_calibration(doc: Any) -> LiveCalibrationSettings:
         raise Tier0ConfigError("live_calibration.measured_camera_heights 는 카메라 ID별 실측 높이(m)다")
     return LiveCalibrationSettings(enabled, _int(doc, "interval_ms", 60_000, minimum=1), float(timeout),
                                    _int(doc, "buffer_duration_ms", 300_000, minimum=1_000), dict(heights), safety_enabled)
+
+
+def _clean_background(doc: Any, base: Path) -> CleanBackgroundSettings:
+    if not isinstance(doc, dict):
+        raise Tier0ConfigError("clean_background 는 객체다")
+    enabled = doc.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise Tier0ConfigError("clean_background.enabled 는 bool이다")
+    values = {key: _int(doc, key, default, minimum=1) for key, default in (
+        ("sample_interval_ms", 5_000), ("min_samples_per_camera", 20),
+        ("max_samples_per_camera", 60), ("max_bytes", 2_200 * 1024 * 1024),
+        ("queue_depth", 4), ("max_pending_bytes", 64 * 1024 * 1024))}
+    if values["min_samples_per_camera"] > values["max_samples_per_camera"]:
+        raise Tier0ConfigError("clean_background 최소 표본 수가 최대 표본 수보다 크다")
+    output = _path(base, doc["output_dir"], "clean_background.output_dir") if "output_dir" in doc else None
+    return CleanBackgroundSettings(enabled=enabled, output_dir=output, **values)
 
 
 def _control(env: Mapping[str, str]) -> ControlSettings | None:
@@ -401,6 +430,7 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         calibration_file=calibration_file,
         drift_watch_enabled=drift_watch_enabled,
         live_calibration=_live_calibration(doc.get("live_calibration", {})),
+        clean_background=_clean_background(doc.get("clean_background", {}), base),
         sim=sim,
         camera_ids=camera_ids,
         bootstrap_archive=archive,
