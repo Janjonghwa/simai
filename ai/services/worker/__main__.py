@@ -38,6 +38,7 @@ from simai_ai.vlm.client import VlmError, VlmSettings
 from .client import AuthError, LeaseClient, RequestRejected
 from .bev_floorplan import BevFloorplanHandler
 from .handlers import JobHandler
+from .static_reconstruct import StaticReconstructHandler
 from .tbm_report import TbmReportHandler
 from .objects import HttpObjectStore, ObjectStore
 from .runner import HandlerStuck, Worker
@@ -65,6 +66,7 @@ def build_handlers(config: Path | None, store: ObjectStore | None = None, *, env
     handlers: dict[str, JobHandler] = {"tbm_report": TbmReportHandler(clock_ms=lambda: time.time_ns() // 1_000_000)}
     if store is not None:
         handlers["bev_floorplan"] = BevFloorplanHandler(store, clock_ms=lambda: time.time_ns() // 1_000_000)
+        handlers["static_reconstruct"] = StaticReconstructHandler(store, clock_ms=lambda: time.time_ns() // 1_000_000, env=env)
     if (why := _vlm_rationale_missing(store, env)) is None:
         try:
             handlers["vlm_rationale"] = VlmRationaleHandler(store, pose(env["SIMAI_TIER0_WEIGHTS"]))  # type: ignore[arg-type]
