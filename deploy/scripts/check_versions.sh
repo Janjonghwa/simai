@@ -40,4 +40,9 @@ for p in ai/pyproject.toml gateway/*/pyproject.toml; do
     check "Python ($p ↔ PYTHON_VERSION)" "$py_project" "$python_image"
 done
 
+# Android: watch 앱 compileSdk 와 Jenkins 이미지에 넣는 플랫폼(android-<판>[.<부판>])의 주 판
+sdk_project=$(sed -n 's/^ *compileSdk = \([0-9]*\).*/\1/p' watch/app/build.gradle.kts)
+sdk_image=$(bake_var ANDROID_PLATFORM | sed -n 's/^android-\([0-9]*\).*/\1/p')
+check "Android (watch compileSdk ↔ ANDROID_PLATFORM)" "$sdk_project" "$sdk_image"
+
 exit $fail

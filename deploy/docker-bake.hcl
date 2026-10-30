@@ -36,6 +36,12 @@ variable "SIMAI_DOMAIN" { default = "simai.live" }
 # CI Jenkins(S15P31A101-28). docker.io/jenkins/jenkins:lts-jdk21 (2026-10-22: Jenkins 2.580.1, JDK 21.0.12, Debian 13)
 # Node·uv·Python 은 위 NODE_WEB·UV_IMAGE·PYTHON_VERSION 을 같이 쓴다(배포 이미지와 같은 판으로 검사)
 variable "JENKINS_IMAGE" { default = "jenkins/jenkins:lts-jdk21@sha256:a660310e39ade10631f774bacd5219de767dfd08947ea5c32a739b5e5bb382c1" }
+# 워치 앱(watch/) 빌드용 Android SDK(S15P31A101-335). 명령줄 도구 19.0 의 Linux 묶음과 그 sha256, 그리고 sdkmanager 로 넣을 꾸러미.
+# ANDROID_PLATFORM 은 watch/app/build.gradle.kts 의 compileSdk 와 같게 둔다(판 점검이 본다)
+variable "ANDROID_CMDLINE_TOOLS" { default = "13114758" }
+variable "ANDROID_CMDLINE_TOOLS_SHA256" { default = "7ec965280a073311c339e571cd5de778b9975026cfcbe79f2b1cdcb1e15317ee" }
+variable "ANDROID_PLATFORM" { default = "android-37.0" }
+variable "ANDROID_BUILD_TOOLS" { default = "36.0.0" }
 # MapAnything 은 볼륨 venv(Python 3.12)와 같은 판대
 variable "PYTHON_VERSION_MAPANYTHING" { default = "3.12.13" }
 # Detectron2 CPU 확장 컴파일 병렬 수(exp02). Docker Desktop 메모리가 작으면(2GB) 1~2
@@ -177,6 +183,10 @@ target "jenkins" {
     NODE_IMAGE     = "${NODE_WEB}"
     UV_IMAGE       = "${UV_IMAGE}"
     PYTHON_VERSION = "${PYTHON_VERSION}"
+    ANDROID_CMDLINE_TOOLS        = "${ANDROID_CMDLINE_TOOLS}"
+    ANDROID_CMDLINE_TOOLS_SHA256 = "${ANDROID_CMDLINE_TOOLS_SHA256}"
+    ANDROID_PLATFORM             = "${ANDROID_PLATFORM}"
+    ANDROID_BUILD_TOOLS          = "${ANDROID_BUILD_TOOLS}"
   }
   tags = ["${REGISTRY}/jenkins:${TAG}"]
 }

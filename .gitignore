@@ -92,3 +92,11 @@ Thumbs.db
 
 # Orca 개인 설정 (팀원 중 한 명만 사용)
 .claude/orca/
+
+# Android (watch/): SDK 경로는 PC 마다 다르고, 서명 키·빌드 산출물은 올리지 않는다
+local.properties
+*.jks
+*.keystore
+*.apk
+*.aab
+.kotlin/

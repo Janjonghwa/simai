@@ -30,6 +30,7 @@ GitLab ──Webhook──▶ https://simai.live/jenkins/ (Nginx) ──▶ jenk
 | server | `ci-db` 에 시험 DB `simai_ci` 를 지우고 새로 만든 뒤 `sh gradlew build`. `@SpringBootTest` 가 Flyway 로 V1·V2·R 을 적용한다. JUnit 결과를 Jenkins 에 올린다 | `server/`, `contracts/` |
 | front | `pnpm install --frozen-lockfile` → `format:check` → `lint`(계약 생성물 최신 여부 포함) → `typecheck` → `test` → `build` | `front/`, `contracts/` |
 | gateway | 패키지 4개(recorder, relay, rtsp_probe, site_alert)를 차례로 `uv sync --frozen` → `uv run pytest` | `gateway/`, `contracts/` |
+| watch | 워치 앱 `sh gradlew assembleDebug testDebugUnitTest`(JVM 단위 시험). JUnit 결과를 Jenkins 에 올린다. 실기기 설치는 하지 않는다(S15P31A101-335) | `watch/` |
 | ai | `uv sync --frozen` → `uv run lint-imports`(의존 방향). **pytest 는 새벽 작업에서만**: 작업 매개변수 `FULL_AI_TESTS=true` 이면 `pytest -m "not gpu"` 전체, 아니면(MR·dev push) 생략한다. 새벽 작업 `simai-nightly-ai` 가 매일 02:00 KST 에 dev 로 돈다(아래 설정 8). 빌드가 한 줄로 하나씩 돌아 ai 전체 시험(30분대) 하나가 뒤 MR 을 막았기 때문이다(2026-10-26, 빌드 #43·#44, S15P31A101-269). MR 에서 ai 를 바로 확인하려면 로컬에서 `scripts.select_tests` 로 고른 시험을 돌린다(`docs/design/test-selection.md`) | `ai/`, `contracts/`, `deploy/` |
 
 `Jenkinsfile`·`deploy/jenkins/` 가 바뀌면 모든 단계가 돈다. 결과는 GitLab 커밋 상태 `jenkins` 로 MR 에 보인다(running → success·failed·canceled).
@@ -48,7 +49,10 @@ GitLab ──Webhook──▶ https://simai.live/jenkins/ (Nginx) ──▶ jenk
   Spring 시험은 설정이 다른 컨텍스트를 여러 개 캐시하고 컨텍스트마다 연결 풀을 잡는다. 그래서 `ci-db` 연결 상한을 100
   (`TS_TUNE_MAX_CONNS`, 메모리 1 GB 자동 조정값 25 대신)으로 올리고 CI 풀을 컨텍스트당 5 로 줄였다(첫 빌드에서 "too many clients" 로 실패).
 - **이미지에 넣은 것**: `git`(ai 의 gpu_queue·deploy 시험이 저장소 git 정보를 읽는다), `libtk8.6`(site_alert Tk 시험. 없으면 pytest 가
-  건너뛰지 않고 ImportError 로 실패한다. 화면이 없으면 시험이 스스로 건너뛴다), `postgresql-client`(시험 DB 만들기).
+  건너뛰지 않고 ImportError 로 실패한다. 화면이 없으면 시험이 스스로 건너뛴다), `postgresql-client`(시험 DB 만들기),
+  Android SDK(`/opt/android-sdk`, 약 0.5 GB: 명령줄 도구·`platform-tools`·`platforms;android-37.0`·`build-tools;36.0.0`, 라이선스는 이미지 빌드 때 받는다. 판은
+  `docker-bake.hcl` 의 `ANDROID_*`, `판 점검` 이 watch `compileSdk` 와 맞는지 본다). watch 단계는 Kotlin 컴파일을 Gradle 프로세스 안에서
+  돌려(`kotlin.compiler.execution.strategy=in-process`) Kotlin 데몬을 따로 띄우지 않는다(컨테이너 메모리 4 GB).
 - **트리거**: GitLab 플러그인 Webhook. MR 은 대상 브랜치가, push 는 그 브랜치가 `dev`·`master` 일 때만 돈다. 같은 MR 에 새 push 가 오면
   대기 중인 빌드를 취소한다. 관제 서비스와 같은 EC2 라 `disableConcurrentBuilds` 로 한 번에 하나만 돈다.
 - **바뀐 경로만**: 파트마다 커밋 속도가 달라(front·ai 는 하루 여러 번) 관계없는 단계를 돌리지 않는다. `contracts/` 가 바뀌면 계약을 읽는

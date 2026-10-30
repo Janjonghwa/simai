@@ -1,6 +1,6 @@
 // MR·dev·master 자동 검사 (기획서 21.4, S15P31A101-28). 설명과 Jenkins 준비는 docs/design/ci-pipeline.md
 // 바뀐 경로의 단계만 돈다. GPU 없이 돈다(GPU 시험은 pytest marker gpu 로 뺀다).
-// 검사는 Docker 없이 Jenkins 컨테이너 안에서 직접 돈다. 도구(JDK 21·Node·pnpm·uv·Python 3.11)는 deploy/jenkins/Dockerfile 이 넣는다.
+// 검사는 Docker 없이 Jenkins 컨테이너 안에서 직접 돈다. 도구(JDK 21·Node·pnpm·uv·Python 3.11·Android SDK)는 deploy/jenkins/Dockerfile 이 넣는다.
 // dev 에 들어온 커밋은 검사를 모두 통과하면 EC2 에 배포한다(S15P31A101-254, docs/design/ec2-deploy.md "자동 배포").
 // 아직 없는 단계: Risk Engine 공통 벡터(부록 D-G3-04), 통합(Compose)
 
@@ -58,6 +58,8 @@ pipeline {
                         ['GATEWAY', ['gateway/', 'contracts/']],
                         ['FRONT', ['front/', 'contracts/']],
                         ['SERVER', ['server/', 'contracts/']],
+                        // 워치 앱은 아직 계약을 읽지 않는다. I4 를 읽게 되면(S15P31A101-337) contracts/ 를 더한다
+                        ['WATCH', ['watch/']],
                     ]
                     for (int i = 0; i < parts.size(); i++) {
                         def run = touched(files, parts[i][1] + always) ? 'true' : 'false'
@@ -141,6 +143,29 @@ pipeline {
                             sh 'uv run pytest'
                         }
                     }
+                }
+            }
+        }
+
+        stage('watch') {
+            when { environment name: 'RUN_WATCH', value: 'true' }
+            steps {
+                script {
+                    // Android SDK 는 이미지의 ANDROID_HOME. EC2 의 Jenkins 이미지를 다시 빌드하기 전이면 SDK 가 없다.
+                    // 그때 실패로 끝내면 dev 배포까지 막히므로 불안정(GitLab 상태 failed)으로 알리고 넘어간다
+                    if (!env.ANDROID_HOME) {
+                        unstable 'watch 생략: Jenkins 이미지에 Android SDK 가 없다. docs/design/ci-pipeline.md "Jenkins 준비" 1 로 이미지를 다시 빌드한다'
+                        return
+                    }
+                    dir('watch') {
+                        // Kotlin 컴파일을 Gradle 프로세스 안에서 돌려(별도 데몬 없이) 컨테이너 메모리 상한(4 GB) 안에 둔다
+                        sh 'sh gradlew assembleDebug testDebugUnitTest --no-daemon -Pkotlin.compiler.execution.strategy=in-process'
+                    }
+                }
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'watch/app/build/test-results/testDebugUnitTest/*.xml'
                 }
             }
         }
