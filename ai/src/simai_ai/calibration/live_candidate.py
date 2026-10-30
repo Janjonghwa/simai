@@ -52,6 +52,7 @@ from simai_ai.calibration.extrinsics.session_tracks import (
     SessionTracks,
     associate_session,
     bundle_observations,
+    reprojection_metrics,
     split_session_tracks,
 )
 from simai_ai.calibration.recalibration import (
@@ -486,13 +487,13 @@ class CandidateImprovementCriteria:
     max_worst_pair_pass_drop: float = 0.02
     """안전 게이트: 최저 카메라 쌍 통과율 평균 허용 최대 하락폭 (2.0%p)."""
     max_reproj_median_increase_px: float = 1.0
-    """안전 게이트: 새 카메라가 융합될 때 전체 재투영 중앙값 허용 최대 증가폭 (1.0 px)."""
-    max_reproj_p95_increase_px: float = 3.5
-    """안전 게이트: 새 카메라가 융합될 때 전체 재투영 p95 허용 최대 증가폭 (3.5 px)."""
-    max_holdout_reproj_median_px: float = 6.0
-    """안전 게이트: 후보 holdout 전체 재투영 중앙값 절대 상한 (6.0 px)."""
-    max_holdout_reproj_p95_px: float = 20.0
-    """안전 게이트: 후보 holdout 전체 재투영 p95 절대 상한 (20.0 px)."""
+    """공통 관측의 카메라별 holdout 중앙값 허용 최대 증가폭 (1.0 px)."""
+    min_common_reproj_observations: int = 200
+    """악화 비교 최소 관절 수. COCO17 약 12개 사람·시각 분량으로 소표본 중앙값 변동을 줄인다."""
+    max_holdout_reproj_median_px: float = 8.0
+    """후보 카메라별 holdout 중앙값 절대 상한 (Lead 임시 결정, 8.0 px)."""
+    max_holdout_reproj_p95_px: float = 25.0
+    """후보 카메라별 holdout p95 절대 상한 (Lead 임시 결정, 25.0 px)."""
     max_anchor_residual_cm: float = 5.0
     """안전 게이트: World 정렬 기준 카메라 중심 잔차 최대 허용치 (5.0 cm)."""
 
@@ -570,6 +571,7 @@ def summarize_holdout_metrics(eval_metrics: Mapping[str, Any]) -> dict[str, Any]
     overall = reproj.get("overall") or {}
     return {
         "pair_pass_ratio": pair_ratios,
+        "reprojection_error_px": copy.deepcopy(reproj),
         "per_camera_pair_pass_mean": per_cam_mean,
         "per_camera_pair_strict_mean": per_cam_strict_mean,
         "worst_camera_id": worst_cam,
@@ -601,14 +603,46 @@ def summarize_holdout_metrics(eval_metrics: Mapping[str, Any]) -> dict[str, Any]
     }
 
 
+def common_reprojection_metrics(tracks: SessionTracks, previous: Mapping[str, Any],
+                                candidate: Mapping[str, Any]) -> dict[str, Any]:
+    """두 연관 결과에 실제로 남은 같은 (시각, 카메라, 로컬 트랙, 관절)의 오차만 비교한다.
+
+    각 보정으로 연관·삼각측량한 오차를 쓴다. 연관 ID는 보정마다 달라질 수 있어 키에 쓰지 않는다.
+    원시 관절별 값은 자식 프로세스 안에서만 보관하고 보고서에는 짝지은 통계만 남긴다.
+    """
+    errors = []
+    for document in (previous, candidate):
+        rig = session_rig(document)
+        values = {}
+        reprojection_metrics(associate_session(tracks, rig), rig, observation_errors=values)
+        errors.append(values)
+    common = errors[0].keys() & errors[1].keys()
+    cameras = {}
+    for cid in sorted(c["camera_id"] for c in previous["cameras"]):
+        keys = sorted(key for key in common if key[1] == cid)
+        cameras[cid] = {
+            "observations": len(keys),
+            "before_median_px": float(np.median([errors[0][key] for key in keys])) if keys else None,
+            "after_median_px": float(np.median([errors[1][key] for key in keys])) if keys else None,
+        }
+    return {"method": "common_observations", "cameras": cameras}
+
+
 def evaluate_improvement(
     before_summary: Mapping[str, Any],
     after_summary: Mapping[str, Any],
     *,
     world_alignment: Mapping[str, Any] | None,
+    common_reprojection: Mapping[str, Any] | None = None,
     criteria: CandidateImprovementCriteria = DEFAULT_IMPROVEMENT_CRITERIA,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """현재 활성 보정(`before_summary`)과 후보 보정(`after_summary`)의 같은 holdout 지표를 비교해 채택 여부를 판정한다."""
+    for summary in (before_summary, after_summary):
+        ratios = [summary.get(k) for k in ("fusion_3plus_ratio", "fusion_4_ratio", "worst_camera_pair_pass_mean")]
+        ratios.extend((summary.get("per_camera_pair_pass_mean") or {}).values())
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1
+               for v in ratios):
+            raise ValueError("holdout 검증 지표 누락 또는 유효하지 않은 융합/쌍 통과율")
     before_cids = set((before_summary.get("per_camera_pair_pass_mean") or {}).keys())
     after_cids = set((after_summary.get("per_camera_pair_pass_mean") or {}).keys())
     all_cids = sorted(before_cids | after_cids)
@@ -691,25 +725,43 @@ def evaluate_improvement(
             f"holdout 최저 카메라 쌍 통과율 하락 {delta_worst * 100:.2f}%p < -{criteria.max_worst_pair_pass_drop * 100:.2f}%p"
         )
 
-    if med_after is None or p95_after is None:
-        rejected.append("holdout 재투영 오차 관측 없음")
-    else:
-        if float(med_after) > criteria.max_holdout_reproj_median_px:
-            rejected.append(
-                f"holdout 재투영 중앙값 {float(med_after):.3f} px > {criteria.max_holdout_reproj_median_px:.3f} px"
-            )
-        if float(p95_after) > criteria.max_holdout_reproj_p95_px:
-            rejected.append(
-                f"holdout 재투영 p95 {float(p95_after):.3f} px > {criteria.max_holdout_reproj_p95_px:.3f} px"
-            )
-        if delta_med is not None and delta_med > criteria.max_reproj_median_increase_px:
-            rejected.append(
-                f"holdout 재투영 중앙값 증가 +{delta_med:.3f} px > +{criteria.max_reproj_median_increase_px:.3f} px"
-            )
-        if delta_p95 is not None and delta_p95 > criteria.max_reproj_p95_increase_px:
-            rejected.append(
-                f"holdout 재투영 p95 증가 +{delta_p95:.3f} px > +{criteria.max_reproj_p95_increase_px:.3f} px"
-            )
+    # 자동 PROVISIONAL 전환은 CALIBRATED 확정(2px/5px)과 구분한다.
+    # 전체 중앙값은 절대 상한에만 쓴다. 악화는 같은 관측의 중앙값끼리 비교한다.
+    before_cameras = before_summary.get("reproj_by_camera") or {}
+    after_cameras = after_summary.get("reproj_by_camera") or {}
+    camera_comparison = {}
+    common_cameras = (common_reprojection or {}).get("cameras") or {}
+    if common_reprojection is not None and (
+        common_reprojection.get("method") != "common_observations" or set(common_cameras) != set(after_cameras)
+    ):
+        rejected.append("공통 관측 검증 지표 형식/카메라 누락")
+    if not after_cameras or set(before_cameras) != set(after_cameras):
+        rejected.append("holdout 카메라 누락")
+    for cid, stats in after_cameras.items():
+        median, p95 = stats.get("median"), stats.get("p95")
+        valid = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0
+        shared = common_cameras.get(cid) or {}
+        count = shared.get("observations", 0)
+        baseline, paired_after = shared.get("before_median_px"), shared.get("after_median_px")
+        count_valid = isinstance(count, int) and not isinstance(count, bool) and count >= 0
+        if not count_valid or (count > 0 and (not valid(baseline) or not valid(paired_after))):
+            rejected.append(f"공통 관측 검증 지표가 유효하지 않음: {cid}")
+        comparable = count_valid and count >= criteria.min_common_reproj_observations and valid(baseline) and valid(paired_after)
+        increase = paired_after - baseline if comparable else None
+        camera_comparison[cid] = {"comparable": comparable,
+                                  "reason": None if comparable else "비교 불가: 공통 관측 부족 또는 없음",
+                                  "common_observations": count, "method": "common_observations",
+                                  "before_median_px": baseline, "after_median_px": paired_after,
+                                  "all_before_median_px": (before_cameras.get(cid) or {}).get("median"),
+                                  "all_after_median_px": median,
+                                  "after_p95_px": p95, "median_increase_px": increase}
+        if not valid(median) or not valid(p95):
+            rejected.append(f"holdout 검증 지표가 없거나 유효하지 않음: {cid}/after")
+            continue
+        if median > criteria.max_holdout_reproj_median_px or p95 > criteria.max_holdout_reproj_p95_px:
+            rejected.append(f"holdout 재투영 절대 상한 초과: {cid} median={median:.3f}px p95={p95:.3f}px")
+        if increase is not None and increase > criteria.max_reproj_median_increase_px:
+            rejected.append(f"holdout 중앙값 악화 초과: {cid} +{increase:.3f}px")
 
     triggered: list[str] = []
     if delta_f4 >= criteria.min_fusion_4_gain and eff_pair_gain >= criteria.min_worst_pair_pass_gain:
@@ -743,6 +795,7 @@ def evaluate_improvement(
         "triggered_gates": triggered,
         "rejected_reasons": rejected,
         "criteria": asdict(criteria),
+        "camera_comparison": camera_comparison,
     }
     return delta, decision
 
@@ -922,15 +975,18 @@ def try_fast_rotation_path(
             "translation_cm": 0.0,
             "scale": 1.0,
             "anchor_center_residuals_cm": {cid: 0.0 for cid in anchor_cids},
+            "anchor_rotation_residuals_deg": {cid: 0.0 for cid in anchor_cids},
             "anchor_center_residual_mean_cm": 0.0,
             "anchor_center_residual_max_cm": 0.0,
             "height_scale_check_after": {"scale_after": 1.0, "max_spread": 0.03},
             "height_residuals_m": None,
         }
+        common = common_reprojection_metrics(holdout_tracks, previous, temp_doc)
         delta, decision = evaluate_improvement(
             holdout_before_summary,
             holdout_after_summary,
             world_alignment=world_alignment,
+            common_reprojection=common,
             criteria=config.improvement_criteria,
         )
         attempt_rec["holdout_delta"] = delta
@@ -947,7 +1003,7 @@ def try_fast_rotation_path(
                     1.0,
                     sample_count=len(cand_cameras),
                 ),
-            )
+            ) if len(measured_camera_heights) >= 2 else ()
         )
         expected_ids = [c["camera_id"] for c in previous["cameras"]]
         provider_source = str(previous.get("provider_source") or "G1_AUTO")
@@ -965,7 +1021,7 @@ def try_fast_rotation_path(
             created_at=created_at,
             cameras=cand_cameras,
             judgement=judgement,
-            fallback_scale_basis=ScaleBasis.MEASURED_CAMERA_HEIGHT,
+            fallback_scale_basis=previous["scale_basis"],
             site_id=(previous.get("coordinate_frame") or {}).get("site_id"),
             world_axes_source=previous.get("world_axes_source"),
         )
@@ -983,6 +1039,7 @@ def try_fast_rotation_path(
             "attempts": attempts,
             "holdout_after": holdout_after_summary,
             "holdout_delta": delta,
+            "common_reprojection": common,
             "improvement_decision": decision,
             "world_alignment": world_alignment,
             "camera_changes": camera_changes(previous, doc, measured_camera_heights),
@@ -1115,9 +1172,14 @@ def execute_candidate_cycle(
                 base_report["mode"] = MODE_FAST_ROTATION
                 base_report["proposed"] = True
                 base_report["candidate_version"] = str(fast_doc["calibration_version"])
+                base_report["calibration"] = {
+                    "version": fast_doc["calibration_version"], "content_hash": fast_doc["content_hash"],
+                    "state": fast_doc["state"], "schema_errors": check_calibration(fast_doc),
+                }
                 base_report["data_sufficiency"] = suff
                 base_report["holdout"]["after"] = fast_info["holdout_after"]
                 base_report["holdout"]["delta"] = fast_info["holdout_delta"]
+                base_report["holdout"]["common_reprojection"] = fast_info["common_reprojection"]
                 base_report["world_alignment"] = fast_info["world_alignment"]
                 base_report["camera_changes"] = fast_info["camera_changes"]
                 base_report["improvement_decision"] = fast_info["improvement_decision"]
@@ -1126,6 +1188,15 @@ def execute_candidate_cycle(
                 return CandidateRunResult(STATUS_PROPOSED, True, MODE_FAST_ROTATION, fast_doc, base_report)
 
     # 2) 전체 회차 보정(`adjust_session`, 직전 = 현재 활성 보정, World 유지) 실행
+    # 운영 중 내부 파라미터를 바꾸지 않는다(-344). 녹화 도구의 반올림된 FIXED_LENS를
+    # 적용하면 동일 렌즈도 다른 값이 되어 전환이 거부된다. 활성 공유 렌즈를 그대로 계승한다.
+    first = previous["cameras"][0]
+    coeffs = first["distortion"]["coeffs"]
+    fixed_lens = (first["K"][0][0], coeffs[0], coeffs[1])
+    for camera in previous["cameras"]:
+        if (camera["K"][0][0] != fixed_lens[0] or camera["K"][1][1] != fixed_lens[0]
+                or camera["distortion"] != {"model": "OPENCV_PINHOLE", "coeffs": [*fixed_lens[1:], 0., 0., 0.]}):
+            raise ValueError("전체 후보 보정은 활성 공유 고정 렌즈만 지원한다(내부 파라미터 변경 금지)")
     outcome = adjust_session(
         fit_tracks,
         previous,
@@ -1133,6 +1204,7 @@ def execute_candidate_cycle(
         input_provenance=input_provenance,
         created_at=created_at,
         rounds=config.rounds,
+        fixed_lens=fixed_lens,
         holdout_tracks=holdout_tracks,
         data_criteria=config.data_criteria,
     )
@@ -1149,6 +1221,7 @@ def execute_candidate_cycle(
             input_provenance=input_provenance,
             created_at=created_at,
             rounds=2,
+            fixed_lens=fixed_lens,
             holdout_tracks=holdout_tracks,
             data_criteria=config.data_criteria,
         )
@@ -1172,10 +1245,14 @@ def execute_candidate_cycle(
     # (previous 의 렌즈가 FIXED_LENS 가 아니었으면 holdout_before_summary 는 실제 활성 보정 기준이다)
     holdout_after_summary = summarize_holdout_metrics(s_rep["holdout"]["after"])
     base_report["holdout"]["after"] = holdout_after_summary
+    common = (common_reprojection_metrics(holdout_tracks, previous, outcome.calibration)
+              if outcome.calibration is not None else None)
+    base_report["holdout"]["common_reprojection"] = common
     delta, decision = evaluate_improvement(
         holdout_before_summary,
         holdout_after_summary,
         world_alignment=s_rep.get("world_alignment"),
+        common_reprojection=common,
         criteria=config.improvement_criteria,
     )
     base_report["holdout"]["delta"] = delta
@@ -1201,6 +1278,7 @@ def execute_candidate_cycle(
     base_report["status"] = STATUS_PROPOSED
     base_report["proposed"] = True
     base_report["candidate_version"] = str(outcome.calibration["calibration_version"])
+    base_report["calibration"] = s_rep["calibration"]
     base_report["elapsed_wall_s"] = round(time.perf_counter() - t_wall0, 3)
     base_report["elapsed_cpu_s"] = round(time.process_time() - t_cpu0, 3)
     return CandidateRunResult(STATUS_PROPOSED, True, MODE_FULL_SESSION, outcome.calibration, base_report)
@@ -1246,6 +1324,7 @@ class LiveCandidateCalibrationRunner:
         can_run: Callable[[], bool] | None = None,
         clock_ms: Callable[[], int] | None = None,
         adopt_proposed_as_active: bool = True,
+        stop_event: threading.Event | None = None,
     ) -> None:
         self._buffer = buffer
         self._active_source = active_calibration
@@ -1260,8 +1339,9 @@ class LiveCandidateCalibrationRunner:
         self._can_run = can_run
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
         self._adopt_proposed = adopt_proposed_as_active
+        self._stop_event = stop_event or threading.Event()
         self._last_run_at_ms: int | None = None
-        self._history: list[CandidateRunResult] = []
+        self._history: deque[CandidateRunResult] = deque(maxlen=16)
         self._simulate_sleep_s: float = 0.0
 
     @property
@@ -1283,6 +1363,10 @@ class LiveCandidateCalibrationRunner:
         if problems:
             raise ValueError(f"활성 보정이 계약에 맞지 않는다: {problems}")
         self._active_doc = copy.deepcopy(dict(calibration))
+
+    def set_input_provenance(self, provenance: Mapping[str, Any]) -> None:
+        """다음 실행부터 활성 보정에 맞는 입력 출처를 쓴다(실행 스레드 전용)."""
+        self._provenance = copy.deepcopy(dict(provenance))
 
     def maybe_run(self, *, now_ms: int | None = None) -> CandidateRunResult | None:
         """마지막 실행 시각으로부터 `config.interval_ms` 이상 지났을 때만 후보 보정을 실행한다."""
@@ -1394,6 +1478,15 @@ class LiveCandidateCalibrationRunner:
         timed_out = False
         deadline = t0 + float(self._config.timeout_s)
         while True:
+            if self._stop_event.is_set():
+                if proc.is_alive():
+                    proc.terminate()
+                proc.join(timeout=0.5)
+                if proc.is_alive():
+                    proc.kill()
+                    proc.join(timeout=0.5)
+                queue.close()
+                return self._deferred_result(created_at, previous, buf_summary, "서비스 종료로 후보 계산 취소")
             remaining = deadline - time.perf_counter()
             if remaining <= 0:
                 timed_out = True
@@ -1416,6 +1509,8 @@ class LiveCandidateCalibrationRunner:
                 if proc.is_alive():
                     proc.kill()
                     proc.join(timeout=1.0)
+            proc.join(timeout=0.1)
+            queue.close()
             elapsed = round(time.perf_counter() - t0, 3)
             rep: dict[str, Any] = {
                 "format": LIVE_CANDIDATE_REPORT_FORMAT,
@@ -1442,6 +1537,13 @@ class LiveCandidateCalibrationRunner:
             return CandidateRunResult(STATUS_TIMEOUT, False, None, None, rep)
 
         proc.join(timeout=2.0)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=0.5)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=0.5)
+        queue.close()
         if item is not None:
             tag, value = item
             if tag == "ok":

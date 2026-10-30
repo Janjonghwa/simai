@@ -292,6 +292,8 @@ class Tier0Service:
         self._feed_override = feed
         self._drift_watch_factory = drift_watch_factory
         self.drift_watch: Any | None = None
+        self.live_calibration: Any | None = None
+        self._live_calibration_error: str | None = None
         self._on_camera_drifted = on_camera_drifted
         self._drift_report: MonitorReport | None = None
         self._pending_drift_report: MonitorReport | None = None
@@ -504,6 +506,20 @@ class Tier0Service:
                 self._drift_document, assoc, tuple(getattr(self.perception.feed, "camera_streams", {}).values()))
 
         # 6) 시작
+        if s.live_calibration.enabled:
+            try:
+                from services.tier0.live_calibration import BackgroundLiveCalibration
+
+                self.live_calibration = BackgroundLiveCalibration(
+                    self.calibration.current(), provenance, settings=s.live_calibration,
+                    now_ms=self.clock.now_ms, stop=self._stop, propose=self._propose_live_calibration,
+                    can_run=lambda: self.started and self._calibration_state() != "CALIBRATED",
+                )
+                self.perception.observe_frame = self.live_calibration.buffer.append_frame
+                self._spawn("tier0-live-calibration", self.live_calibration.run)
+            except Exception as exc:
+                self._live_calibration_error = str(exc)
+                log.exception("후보 보정 기동 실패(판정은 계속한다)")
         if isinstance(self.drift_watch, BackgroundDriftWatch):
             self._spawn("tier0-drift-watch", lambda: self.drift_watch.run(self._stop))
         self.writer.start()
@@ -726,6 +742,17 @@ class Tier0Service:
 
     # --- 검증된 보정 후보(-344). 후보 계산은 -345의 백그라운드 실행기가 한다. ----------------
 
+    def _propose_live_calibration(self, document, report, generation: int) -> bool:
+        with self.judge_lock:
+            live = self.live_calibration
+            if live is None or generation != live.generation or live.blocked_reason is not None:
+                log.warning("보정 후보 거부: 재수집/활성 버전 변경 또는 자동 보정 보류")
+                return False
+            accepted = self.propose_calibration(document, report)
+            if accepted:
+                self._live_pending_version = document["calibration_version"]
+            return accepted
+
     def propose_calibration(self, document: Mapping[str, Any], report: Mapping[str, Any]) -> bool:
         """다른 스레드에서 호출 가능. True는 대기 수락이며 활성화는 다음 판정 tick이다."""
         with self.judge_lock:
@@ -738,12 +765,18 @@ class Tier0Service:
                 rig = CameraRig.from_provider(FileCalibrationProvider(self.calibration.path(doc["calibration_version"])))
                 self._pending_calibration = doc, rig
                 self.calibration_status["pending_version"] = rig.calibration_version
+                self.calibration_status["last_decision"] = {
+                    "accepted": True, "reason": "PROVISIONAL 후보 검증 통과, 다음 tick 전환 대기",
+                    "comparison": self.calibration.last_validation}
+                log.info("보정 후보 채택: %s, 비교=%s", rig.calibration_version, self.calibration.last_validation)
                 return True
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 clock = getattr(self, "clock", None)
                 self.calibration_status["last_rejection"] = {
                     "at_ms": None if clock is None else clock.now_ms(), "reason": str(exc)}
-                log.warning("보정 후보 거부: %s", exc)
+                self.calibration_status["last_decision"] = {
+                    "accepted": False, "reason": str(exc), "comparison": getattr(exc, "comparison", None)}
+                log.warning("보정 후보 거부: %s, 비교=%s", exc, getattr(exc, "comparison", None))
                 return False
 
     def _begin_calibration_tick(self) -> None:
@@ -761,6 +794,8 @@ class Tier0Service:
             return  # 같은 후보를 다음 tick에 다시 저장하며 직전 rig로 판정을 계속한다
         self.perception.replace_rig(rig, provenance)
         self.rig = rig
+        if self.live_calibration is not None:
+            self.live_calibration.activate(doc, provenance)
         self._drift_document = doc
         self._drift_report = self._pending_drift_report = None
         self._pending_calibration = None
@@ -787,6 +822,23 @@ class Tier0Service:
                     if camera.status is MonitorStatus.DRIFTED and key not in self._drift_notified:
                         self._drift_notified.add(key)
                         notify.append(camera.camera_id)
+            if self.live_calibration is not None:
+                if changed_streams:
+                    if self.live_calibration.blocked_reason != "스트림 변경: 내부 파라미터 재추정 필요":
+                        self.live_calibration.block("스트림 변경: 내부 파라미터 재추정 필요")
+                elif self.calibration.state == "DRIFTED":
+                    if notify and self.live_calibration.blocked_reason != "스트림 변경: 내부 파라미터 재추정 필요":
+                        self.live_calibration.blocked_reason = None
+                    elif not any(c.status is MonitorStatus.DRIFTED for c in report.cameras):
+                        if self.live_calibration.blocked_reason is None:
+                            self.live_calibration.block("틀어짐 귀속 불확실: 운영자 확인 필요")
+                for cid in notify:
+                    self.live_calibration.reset_camera(cid)
+                # reset 이전에 만들어 대기하던 자동 후보도 폐기한다. 수동 후보(-344)는 기준 검증을 유지한다.
+                if (notify or self.live_calibration.blocked_reason) and getattr(self, "_live_pending_version", None):
+                    if self.calibration_status.get("pending_version") == self._live_pending_version:
+                        self._pending_calibration = None
+                        self.calibration_status["pending_version"] = None
         # -345 reset_camera의 연결점. 무거운 후보 계산/콜백은 판정 lock 밖이다.
         for cid in notify:
             if self._on_camera_drifted is not None:
@@ -1010,6 +1062,9 @@ class Tier0Service:
             "restore_link": dict(self.restore_link.status()) if getattr(self, "restore_link", None) is not None else None,
             "config_check": self.config_check,
             "calibration": {**self.calibration_status, "active_version": self.rig.calibration_version,
+                            "live_candidate": ({"enabled": self.settings.live_calibration.enabled,
+                                                "last_error": self._live_calibration_error}
+                                               if self.live_calibration is None else self.live_calibration.status()),
                             "state": self._calibration_state(),
                             "drift_watch": None if drift_report is None else {
                                 "t_ms": drift_report.t_ms, "evidence": str(drift_report.evidence),

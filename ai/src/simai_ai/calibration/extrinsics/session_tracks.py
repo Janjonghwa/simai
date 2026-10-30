@@ -235,23 +235,30 @@ def _project_points(cam: RigCamera, X: np.ndarray) -> np.ndarray:
 
 
 def reprojection_metrics(
-    frames: Sequence[AssociationFrame], rig: CameraRig, *, min_confidence: float = 0.3
+    frames: Sequence[AssociationFrame], rig: CameraRig, *, min_confidence: float = 0.3,
+    observation_errors: dict | None = None,
 ) -> dict[str, Any]:
     """연관된 다중 카메라 클러스터에서 관절을 삼각측량해 카메라별 재투영 오차(중앙값·p95)를 잰다."""
     by_cam: dict[str, list[float]] = {cid: [] for cid in sorted(rig.cameras)}
     grouped: dict[tuple[str, ...], list[list[tuple[float, float]]]] = defaultdict(list)
-    for obs in bundle_observations(frames):
-        counts = {len(kps) for kps in obs.views.values()}
+    grouped_keys = defaultdict(list)
+    for frame, cluster in ((f, c) for f in frames for c in f.clusters
+                           if len(c.views) >= 2 and not c.identity_uncertain):
+        local_views = {v.camera_id: v for v in cluster.views}
+        counts = {len(v.view.keypoints) for v in cluster.views}
         for j in range(max(counts, default=0)):
             views = {
                 cid: (float(kps[j][0]), float(kps[j][1]))
-                for cid, kps in obs.views.items()
+                for cid, v in local_views.items()
+                for kps in (v.view.keypoints,)
                 if cid in rig.cameras and _usable_kp(kps[j], min_confidence)
             }
             if len(views) < 2:
                 continue
             ids = tuple(sorted(views))
             grouped[ids].append([views[cid] for cid in ids])
+            if observation_errors is not None:
+                grouped_keys[ids].append([(frame.t, cid, local_views[cid].local_track_id, j) for cid in ids])
     for ids, rows in grouped.items():
         cams = [rig.cameras[cid] for cid in ids]
         pixels = np.asarray(rows, dtype=float)
@@ -266,6 +273,9 @@ def reprojection_metrics(
             proj = _project_points(cam, X_valid)
             errs = np.linalg.norm(proj - px_valid[:, i], axis=1)
             by_cam[cid].extend(float(e) for e in errs[np.isfinite(errs)])
+            if observation_errors is not None:
+                keys = [row[i] for row, keep in zip(grouped_keys[ids], valid, strict=True) if keep]
+                observation_errors.update((key, float(e)) for key, e in zip(keys, errs, strict=True) if math.isfinite(e))
     all_err = [e for errs in by_cam.values() for e in errs]
     out: dict[str, Any] = {}
     for cid, errs in sorted(by_cam.items()):
