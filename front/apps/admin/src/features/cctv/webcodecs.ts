@@ -81,8 +81,9 @@ export function browserDeps(renderer: CanvasRenderer): PreviewDeps {
         get decodeQueueSize() {
           return decoder.decodeQueueSize;
         },
+        // 하드웨어 디코더는 키프레임(2초)마다 출력을 약 350 ms 붙잡아 멈춤·점프로 보인다(-349). 소프트웨어 디코딩은 25 fps 를 지킨다
         configure: (config) =>
-          decoder.configure({ ...config, hardwareAcceleration: 'no-preference' }),
+          decoder.configure({ ...config, hardwareAcceleration: 'prefer-software' }),
         decode: (chunk) => decoder.decode(new EncodedVideoChunk(chunk)),
         close: () => decoder.close(),
       };
