@@ -45,12 +45,15 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
     private final JournalService journal;
     private final TransactionTemplate transaction;
     private final EventAckForwarder acks;
+    private final EventEscalationForwarder escalations;
     private final Clock clock;
     private final ApplicationEventPublisher publisher;
 
     EventStateSnapshotIngestor(RiskEventRepository events, JournalCursorRepository cursors, JournalService journal,
-            TransactionTemplate transaction, EventAckForwarder acks, Clock clock, ApplicationEventPublisher publisher) {
+            TransactionTemplate transaction, EventAckForwarder acks, EventEscalationForwarder escalations,
+            Clock clock, ApplicationEventPublisher publisher) {
         this.acks = acks;
+        this.escalations = escalations;
         this.events = events;
         this.cursors = cursors;
         this.journal = journal;
@@ -103,12 +106,17 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
         tracker.finishSync();
         cursors.saveSyncMode(gatewayId, false, I1Json.utc(clock.instant()));
         journal.send(connection, tracker, null);
-        // 끊긴 동안 저장만 한 운영자 확인을 같은 ack_id 로 다시 보낸다(S15P31A101-121)
+        // 끊긴 동안 저장만 한 운영자 확인·상향을 같은 ID 로 다시 보낸다(S15P31A101-121, S15P31A101-276)
         try {
             acks.resendPending(connection);
         } catch (RuntimeException e) {
             // 동기화는 끝났다. 다시 보내기는 주기 작업이 이어 한다
             log.warn("I1 미반영 확인 다시 보내기 실패: gateway={} error={}", gatewayId, e.getClass().getSimpleName());
+        }
+        try {
+            escalations.resendPending(connection);
+        } catch (RuntimeException e) {
+            log.warn("I1 미반영 상향 다시 보내기 실패: gateway={} error={}", gatewayId, e.getClass().getSimpleName());
         }
         log.info("I1 저널 동기화 끝: gateway={} active={} changed_during_sync={}", gatewayId, active.size(), touched.size());
         return Outcome.STORED;

@@ -23,6 +23,7 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * 관제 화면이 읽는 LIVE 이벤트(risk_event)와 확인 기록(event_ack). 응답 항목은 계약 risk_event payload 와 같은 snake_case 이고
  * 시각은 UTC ms 다(명세 12.4·12.6, 관제 앱 features/events/types.ts). acks[] 는 event_ack 에서 만든다(risk_event 에 칸이 없다).
+ * escalations[] 는 Tier 0 저널 전이(UPDATED escalation)로 반영된 상향 기록이다(S15P31A101-276).
  */
 @Repository
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -32,7 +33,7 @@ public class EventQueryRepository {
             event_id, source, gateway_id, rule_id, rule_version, lifecycle, verification, severity, confidence, needs_check,
             confidence_reasons, world_ids, zone_id, metrics, rationale, proposed_severity, resume_count, event_sequence,
             config_version, calibration_version, scene_version, raised_at, updated_at, resolved_at, delivery,
-            related_event_id, resolution
+            related_event_id, resolution, escalations
             """;
 
     private final NamedParameterJdbcTemplate jdbc;
@@ -75,6 +76,7 @@ public class EventQueryRepository {
      *   <li>zone: 관련 구역의 이름·종류·판정 방식·등급. 이벤트가 난 시각(raised_at, 모르면 목록 정렬과 같이 updated_at)에 유효했던 판이다(구역은 새 판을 더한다, 11.4).
      *       구역이 없으면(구역 밖 규칙, zone_id 도 null) null. zone_id 는 있는데 null 이면 그 시각에 유효했던 판을 찾지 못한 것이다.
      *   <li>transitions: Tier 0 전이 기록(risk_event_update) event_sequence 순. delivery 는 그 전이의 재동기화 복원 여부(3.2, 계약 risk_event.delivery 와 같은 값)다.
+     *   <li>assessments: VLM 평가 기록(vlm_assessment) 최신순(S15P31A101-276).
      * </ul>
      */
     public Optional<ObjectNode> detail(UUID eventId) {
@@ -118,6 +120,30 @@ public class EventQueryRepository {
                 putIfPresent(t, "ack_id", rs.getString("ack_id"));
                 putIfPresent(t, "close_id", rs.getString("close_id"));
                 putIfPresent(t, "escalation_id", rs.getString("escalation_id"));
+            });
+            ArrayNode assessments = event.putArray("assessments");
+            jdbc.query("""
+                    SELECT assessment_id, event_sequence, job_id, job_type, model_version, rule_severity,
+                        text, clause_ids, proposed_severity, decision, decided_by, decided_at, created_at
+                    FROM vlm_assessment WHERE event_id = :id ORDER BY created_at DESC, assessment_id DESC
+                    """, params, rs -> {
+                ObjectNode a = assessments.addObject();
+                a.put("assessment_id", rs.getLong("assessment_id"));
+                a.put("event_sequence", rs.getInt("event_sequence"));
+                a.put("job_id", rs.getString("job_id"));
+                a.put("job_type", rs.getString("job_type"));
+                a.put("model_version", rs.getString("model_version"));
+                a.put("rule_severity", rs.getString("rule_severity"));
+                a.put("text", rs.getString("text"));
+                putTextArray(a, "clause_ids", rs.getArray("clause_ids"));
+                a.put("proposed_severity", rs.getString("proposed_severity"));
+                a.put("decision", rs.getString("decision"));
+                long decidedBy = rs.getLong("decided_by");
+                if (!rs.wasNull()) {
+                    a.put("decided_by", decidedBy);
+                }
+                putMillis(a, "decided_at", rs.getTimestamp("decided_at"));
+                putMillis(a, "created_at", rs.getTimestamp("created_at"));
             });
         });
         return found;
@@ -208,6 +234,12 @@ public class EventQueryRepository {
         putIfPresent(e, "related_event_id", rs.getString("related_event_id"));
         if (rs.getString("resolution") != null) {
             e.set("resolution", mapper.readTree(rs.getString("resolution")));
+        }
+        if (rs.getString("escalations") != null) {
+            JsonNode escalations = mapper.readTree(rs.getString("escalations"));
+            if (escalations.isArray() && !escalations.isEmpty()) {
+                e.set("escalations", escalations);
+            }
         }
         return e;
     }

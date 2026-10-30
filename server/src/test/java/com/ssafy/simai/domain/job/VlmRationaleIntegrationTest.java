@@ -143,10 +143,10 @@ class VlmRationaleIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT event_to_rationale_ms = (extract(epoch FROM created_at) * 1000)::bigint"
                 + " - (extract(epoch FROM event_observed_at) * 1000)::bigint FROM vlm_assessment WHERE event_id = ?", Boolean.class, eventId)).isTrue();
         var payload = ArgumentCaptor.forClass(JsonNode.class);
-        verify(publisher, timeout(3000)).publish(eq("/topic/events"), eq("risk_event"), eq("2.0.0"), payload.capture());
+        verify(publisher, timeout(3000)).publish(eq("/topic/events"), eq("risk_event"), eq("2.1.0"), payload.capture());
         assertThat(payload.getValue().path("rationale").asString()).isEqualTo(callback.at("/result/rationale").asString());
         assertThat(payload.getValue().path("proposed_severity").isNull()).isTrue();
-        JsonNode message = I1Envelope.outbound(mapper, observed.toEpochMilli(), "risk_event", "2.0.0", payload.getValue());
+        JsonNode message = I1Envelope.outbound(mapper, observed.toEpochMilli(), "risk_event", "2.1.0", payload.getValue());
         assertThat(schemas.violations("messages/risk_event", message.toString())).isEmpty();
     }
 
