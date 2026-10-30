@@ -3,15 +3,23 @@
 import copy
 from dataclasses import replace
 
-import cv2
 import numpy as np
 import pytest
+
+cv2 = pytest.importorskip("cv2")  # extras calibration (CI 기본 가상환경에는 없다)
 from scipy.spatial.transform import Rotation
 
 from simai_ai.calibration.criteria import CalibrationEvidence, judge_calibration
-from simai_ai.calibration.document import CameraCalibration, build_calibration_doc, content_hash
+from simai_ai.calibration.document import (
+    CameraCalibration,
+    build_calibration_doc,
+    content_hash,
+)
 from simai_ai.calibration.extrinsics.cli import build_parser
-from simai_ai.calibration.extrinsics.keypoints import CorrespondenceError, build_observations
+from simai_ai.calibration.extrinsics.keypoints import (
+    CorrespondenceError,
+    build_observations,
+)
 from simai_ai.calibration.extrinsics.session import (
     FIXED_LENS,
     adjust_session,

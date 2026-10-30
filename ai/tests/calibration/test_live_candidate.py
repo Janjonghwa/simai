@@ -12,9 +12,10 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pytest
+
+cv2 = pytest.importorskip("cv2")  # extras calibration (CI 기본 가상환경에는 없다)
 from scipy.spatial.transform import Rotation
 
 from simai_ai.calibration.criteria import CalibrationEvidence, judge_calibration
@@ -37,7 +38,11 @@ from simai_ai.calibration.live_candidate import (
 )
 from simai_ai.gpu.admission import AdmissionGate
 from simai_ai.providers.contract import check_calibration
-from simai_ai.tracking.local_tracker import Observation2DFrame, PoseDetection, TrackedDetection
+from simai_ai.tracking.local_tracker import (
+    Observation2DFrame,
+    PoseDetection,
+    TrackedDetection,
+)
 
 T0 = 1793238900000
 K = [[FIXED_LENS[0], 0.0, 1152.0], [0.0, FIXED_LENS[0], 648.0], [0.0, 0.0, 1.0]]
