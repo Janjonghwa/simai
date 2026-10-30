@@ -204,6 +204,8 @@ class CameraMonitorReport:
     """귀속 가능 창의 마지막 표본 시각"""
     ambiguous_reported: bool = False
     """이 감시기에서 귀속 불확실 근거를 낸 적이 있는지(과거 이력. 현재 근거와 별개)"""
+    change_point_ms: int | None = None
+    """귀속 가능 오차가 연속 상승하기 시작한 시각. 모르면 None."""
 
 
 @dataclass(frozen=True)
@@ -216,6 +218,7 @@ class MonitorReport:
     findings: tuple[DriftFinding, ...]
     min_window_samples: int = 1
     max_sample_age_ms: int | None = None
+    fusion_3plus_ratio: float | None = None
 
     @property
     def evidence(self) -> MonitorEvidence:
@@ -370,6 +373,28 @@ class _CameraTrack:
     ambiguous: _Judge
     final_status: MonitorStatus | None = None
     ambiguous_reported: bool = False
+    change_point_ms: int | None = None
+    change_level: float | None = None
+    change_run: list[tuple[int, float]] = field(default_factory=list)
+
+    def observe_change(self, t_ms: int, errors: list[float]) -> None:
+        value = float(np.median(errors))
+        threshold = self.attributed.threshold()
+        if threshold is None:
+            return
+        # 최초 상승은 정상 문턱, 복구 도중 재이동은 직전 상승 수준 대비 변화로 추정한다.
+        changed = value > threshold if self.change_level is None else abs(value - self.change_level) > max(3., self.change_level * .5)
+        if not changed:
+            self.change_run.clear()
+            return
+        if self.change_run and t_ms - self.change_run[-1][0] > self.attributed.cfg.max_sample_age_ms:
+            self.change_run.clear()
+        if not self.change_run or self.change_run[-1][0] != t_ms:
+            self.change_run.append((t_ms, value))
+        if len(self.change_run) >= 3:
+            self.change_point_ms = self.change_run[0][0]
+            self.change_level = float(np.median([v for _, v in self.change_run]))
+            self.change_run.clear()
 
 
 class ReprojectionMonitor:
@@ -448,8 +473,10 @@ class ReprojectionMonitor:
                 track.attributed.window.clear()  # 바뀐 스트림에서는 이 보정의 재투영 오차를 모른다
                 track.ambiguous.window.clear()
                 new_findings.append(finding)
-        usable = {cid: cam for cid, cam in self._cameras.items() if self._tracks[cid].final_status is None}
-        samples = leave_one_out_samples(usable, people, self.config)
+        usable = {cid: cam for cid, cam in self._cameras.items() if cid not in self._stream_changed}
+        samples = leave_one_out_samples(usable, people, self.config,
+            excluded_reference_camera_ids=tuple(cid for cid, track in self._tracks.items()
+                                                if track.final_status is MonitorStatus.DRIFTED))
         return self._ingest(t_ms, samples, new_findings)
 
     def ingest(self, t_ms: int, samples: Iterable[tuple[str, float] | tuple[str, float, bool]]) -> MonitorReport:
@@ -468,13 +495,19 @@ class ReprojectionMonitor:
     def _ingest(
         self, t_ms: int, samples: Iterable[tuple[str, float] | tuple[str, float, bool]], findings: list[DriftFinding]
     ) -> MonitorReport:
+        change_samples: dict[str, list[float]] = {}
         for sample in samples:
             camera_id, error = sample[0], sample[1]
             attributable = True if len(sample) < 3 else bool(sample[2])  # type: ignore[misc]
             track = self._tracks.get(camera_id)
-            if track is None or track.final_status is not None or not is_finite_number(error) or error < 0:
+            if track is None or camera_id in self._stream_changed or not is_finite_number(error) or error < 0:
                 continue
             (track.attributed if attributable else track.ambiguous).add(t_ms, float(error))
+            if attributable:
+                change_samples.setdefault(camera_id, []).append(float(error))
+
+        for cid, errors in change_samples.items():
+            self._tracks[cid].observe_change(t_ms, errors)
 
         evaluated = {
             cid: (tr.attributed.evaluate(t_ms), tr.ambiguous.evaluate(t_ms)) for cid, tr in self._tracks.items()
@@ -543,6 +576,7 @@ class ReprojectionMonitor:
                     ambiguous_window_median_px=amedian,
                     window_last_sample_ms=track.attributed.window[-1][0] if track.attributed.window else None,
                     ambiguous_reported=track.ambiguous_reported,
+                    change_point_ms=track.change_point_ms,
                 )
             )
         return MonitorReport(
@@ -594,7 +628,8 @@ def baseline_from_observations(
 
 
 def leave_one_out_samples(
-    cameras: Mapping[str, RigCamera], people: Iterable[PersonViews], config: MonitorConfig = MonitorConfig()
+    cameras: Mapping[str, RigCamera], people: Iterable[PersonViews], config: MonitorConfig = MonitorConfig(),
+    *, excluded_reference_camera_ids: Sequence[str] = (),
 ) -> list[tuple[str, float, bool]]:
     """사람별 카메라 keypoint → 표본 (camera_id, 한 카메라 제외 재투영 오차 중앙값 px, 귀속 가능) 목록.
 
@@ -628,7 +663,7 @@ def leave_one_out_samples(
     pairs = {key: np.zeros(len(mask), dtype=np.int64) for key, mask in usable.items()}
 
     for c in camera_ids:
-        for a, b in combinations([cid for cid in camera_ids if cid != c], 2):
+        for a, b in combinations([cid for cid in camera_ids if cid != c and cid not in excluded_reference_camera_ids], 2):
             rows = []
             for p in range(len(persons)):
                 if (p, c) in usable and (p, a) in usable and (p, b) in usable:

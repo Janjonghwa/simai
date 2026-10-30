@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import os
+import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -195,6 +196,51 @@ class RuntimeCalibrationStore(CalibrationProvider):
 
     def current(self):
         return self.document(self._head["active"])
+
+    def safety_reference(self):
+        """최초 확정 보정과 이후 이동/기준 제외 이력을 재시작 후에도 계승한다."""
+        versions = self._head["versions"]
+        reference = self.document(self._head["bootstrap"])
+        for version in versions:
+            doc = self.document(version)
+            if doc["state"] == "CALIBRATED":
+                reference = doc
+                break
+        moved = set()
+        start = versions.index(reference["calibration_version"])
+        for version in versions[start:]:
+            path = self.path(version).with_suffix(".report.json")
+            if path.is_file():
+                report = json.loads(path.read_text(encoding="utf-8"))
+                wa = report.get("world_alignment") or {}
+                moved.update(wa.get("excluded_cameras") or ())
+                moved.update(wa.get("fixed_center_rotation_cameras") or ())
+                moved.update(report.get("moved_camera_ids") or ())
+        for record in self._head["transitions"]:
+            if record["payload"]["calibration_version"] in versions[start:]:
+                moved.update(f["camera_id"] for f in record.get("findings", ()))
+        return reference, tuple(sorted(moved))
+
+    def prepare_rollback(self, previous_version: str, *, created_at: int):
+        """직전 문서의 자세를 새 버전으로 보관한다. 과거 문서·보고서는 덮어쓰지 않는다."""
+        if not self.known(previous_version):
+            raise ValueError("되돌릴 버전이 없다")
+        doc = self.document(previous_version)
+        doc["calibration_version"] = "cal-rollback-" + uuid.uuid4().hex
+        # 이전 자세도 현재 관측의 독립 검증을 통과한 것은 아니다.
+        doc["state"] = "PROVISIONAL"
+        doc["created_at"] = created_at
+        doc["content_hash"] = content_hash(doc)
+        _validate(doc)
+        self._write_document(doc)
+        report = {"rollback_of": self._head["active"], "restored_from": previous_version,
+                  "created_at": created_at, "reason": "교체 뒤 감시/융합 악화 지속"}
+        old_path = self.path(previous_version).with_suffix(".report.json")
+        if old_path.is_file():
+            old = json.loads(old_path.read_text(encoding="utf-8"))
+            report["world_alignment"] = old.get("world_alignment")
+        self._write_once(self.path(doc["calibration_version"]).with_suffix(".report.json"), report)
+        return doc
 
     def known(self, version: str) -> bool:
         return version in self._head["versions"]

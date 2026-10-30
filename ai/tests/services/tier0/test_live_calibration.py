@@ -135,6 +135,16 @@ def test_synthetic_perception_candidate_switch_and_next_world_version(tmp_path, 
         assert live.buffer.summary()["total_samples"] == 2 * len(frames)
         result = live.run_once()
         assert result.proposed, result.report.get("failure_reason")
+        assert service._pending_calibration is None
+        assert live.confirmation.count == 1
+        # 새 관측을 15초 뒤 추가하고 같은 활성 보정 대비 개선을 한 번 더 확인한다.
+        extra = [replace(f, frame_sequence=f.frame_sequence + 60,
+                         estimated_capture_time_ms=f.estimated_capture_time_ms + 18_000) for f in frames[:200]]
+        service.perception.feed.frames.extend(extra)
+        now[0] += 15_000
+        service.judge.tick()
+        result = live.run_once()
+        assert result.proposed, result.report.get("failure_reason")
         assert result.calibration["scale_basis"] == initial["scale_basis"]
         assert result.report["world_alignment"]["fixed_center_rotation_cameras"] == ["cam_D"]
         assert all(a["K"] == b["K"] and a["distortion"] == b["distortion"]
@@ -142,7 +152,7 @@ def test_synthetic_perception_candidate_switch_and_next_world_version(tmp_path, 
         assert service.calibration_status.get("pending_version") == result.calibration["calibration_version"], (service.calibration_status, result.report["holdout"])
         assert service.rig.calibration_version == initial["calibration_version"]
         assert live.runner.current_calibration()["calibration_version"] == initial["calibration_version"]
-        next_frames = [replace(f, frame_sequence=60, estimated_capture_time_ms=now[0] + 300) for f in frames[-4:]]
+        next_frames = [replace(f, frame_sequence=110, estimated_capture_time_ms=now[0] + 300) for f in frames[-4:]]
         service.perception.feed.frames.extend(next_frames)
         now[0] += 300
         tick = service.judge.tick()
@@ -277,6 +287,9 @@ def test_reset_rejects_inflight_candidate_and_discards_queued_candidate(site, ca
     live = service.live_calibration
     generation = live.generation
     proposal, report = candidate(service, "cal-auto-waiting")
+    report.update(improvement_decision={"accepted": True}, validation_end_ms=service.clock.now_ms())
+    assert not service._propose_live_calibration(proposal, report, generation)
+    report["validation_end_ms"] += 1
     assert service._propose_live_calibration(proposal, report, generation)
     assert service._pending_calibration is not None
     drive(site, service, doc)
@@ -329,7 +342,8 @@ def test_setting_disables_collection_and_worker(tmp_path, recording, monkeypatch
     finally:
         assert service.stop()
     for value in ({"enabled": "false"}, {"timeout_s": float("nan")}, {"interval_ms": 0},
-                  {"buffer_duration_ms": 1}, {"measured_camera_heights": {"cam_A": -1}}):
+                  {"buffer_duration_ms": 1}, {"measured_camera_heights": {"cam_A": -1}},
+                  {"safety_enabled": "false"}):
         doc["live_calibration"] = value
         config.write_text(json.dumps(doc), encoding="utf-8")
         with pytest.raises(Tier0ConfigError):

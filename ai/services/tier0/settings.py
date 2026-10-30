@@ -122,6 +122,7 @@ class LiveCalibrationSettings:
     timeout_s: float = 180.0
     buffer_duration_ms: int = 300_000
     measured_camera_heights: Mapping[str, float] = field(default_factory=dict)
+    safety_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -218,6 +219,9 @@ def _live_calibration(doc: Any) -> LiveCalibrationSettings:
     enabled = doc.get("enabled", True)
     if not isinstance(enabled, bool):
         raise Tier0ConfigError("live_calibration.enabled 는 bool이다")
+    safety_enabled = doc.get("safety_enabled", True)
+    if not isinstance(safety_enabled, bool):
+        raise Tier0ConfigError("live_calibration.safety_enabled 는 bool이다")
     timeout = doc.get("timeout_s", 180.0)
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
         raise Tier0ConfigError("live_calibration.timeout_s 는 유한한 양수다")
@@ -228,7 +232,7 @@ def _live_calibration(doc: Any) -> LiveCalibrationSettings:
     ):
         raise Tier0ConfigError("live_calibration.measured_camera_heights 는 카메라 ID별 실측 높이(m)다")
     return LiveCalibrationSettings(enabled, _int(doc, "interval_ms", 60_000, minimum=1), float(timeout),
-                                   _int(doc, "buffer_duration_ms", 300_000, minimum=1_000), dict(heights))
+                                   _int(doc, "buffer_duration_ms", 300_000, minimum=1_000), dict(heights), safety_enabled)
 
 
 def _control(env: Mapping[str, str]) -> ControlSettings | None:

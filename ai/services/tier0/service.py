@@ -62,6 +62,7 @@ from services.tier0.site_alert_sync import SiteAlertResync
 from services.tier0.video_ingest import TokenVerifier, build_server, parse_token_hashes, server_context
 from simai_ai.calibration.monitor import BaselineRecord, MonitorReport, MonitorStatus
 from simai_ai.calibration.runtime import RuntimeCalibrationStore
+from simai_ai.calibration.live_safety import SwapProbation
 from simai_ai.config import BundleArchive, BundleRejected, BundleVerifier, ConfigBundle, ConfigSync
 from simai_ai.eventlog import ACKED_NAME, AckedOffsetStore, EventJournal, JournalWriter, Outbox, TransportError
 from simai_ai.geometry.rig import CameraRig
@@ -298,6 +299,8 @@ class Tier0Service:
         self._drift_report: MonitorReport | None = None
         self._pending_drift_report: MonitorReport | None = None
         self._drift_notified: set[tuple[str, str]] = set()
+        self._live_change_points: dict[tuple[str, str], int] = {}
+        self._swap_probation: SwapProbation | None = None
         self._new_msg_id = new_msg_id
         self.judge_lock = threading.RLock()  # 판정 lock: 추적기·인지·클립·현장 경보 송신 순서
         self._stop = threading.Event()
@@ -456,7 +459,8 @@ class Tier0Service:
             laptop_clock_offset=self._health_laptop_offset(),
             config_fields=self._config_health_fields, config_active=lambda: self.config_sync.active is not None,
             calibration_state=self._calibration_state, calibration_version=lambda: self.rig.calibration_version,
-            calibration_issue=lambda: self.calibration_status["last_rejection"] is not None,
+            calibration_issue=lambda: (self.calibration_status["last_rejection"] is not None
+                                       or bool(self.calibration_status.get("cumulative_warning"))),
             lock=self.judge_lock,
         )
         self.resync = SiteAlertResync(
@@ -513,9 +517,25 @@ class Tier0Service:
                 self.live_calibration = BackgroundLiveCalibration(
                     self.calibration.current(), provenance, settings=s.live_calibration,
                     now_ms=self.clock.now_ms, stop=self._stop, propose=self._propose_live_calibration,
-                    can_run=lambda: self.started and self._calibration_state() != "CALIBRATED",
+                    can_run=lambda: (self.started and self._calibration_state() != "CALIBRATED"
+                                     and self._swap_probation is None),
                     active_report=self.calibration.current_report,
+                    safety_reference=self.calibration.safety_reference,
                 )
+                active_report = self.calibration.current_report() or {}
+                deviation = active_report.get("cumulative_deviation") or {}
+                self.calibration_status.update(cumulative_deviation=deviation,
+                                               cumulative_warning=deviation.get("warnings", []))
+                if s.live_calibration.safety_enabled and active_report.get("rollback_of"):
+                    self.live_calibration.block("되돌림 뒤 자동 보정 보류: 운영자 확인 필요")
+                elif s.live_calibration.safety_enabled and active_report.get("consecutive_confirmation"):
+                    last = next((r["payload"] for r in reversed(self.calibration.transitions)
+                                 if r["payload"]["reason"] == "RECALIBRATED"
+                                 and r["payload"]["calibration_version"] == self.rig.calibration_version), None)
+                    if last is not None and self.clock.now_ms() <= last["effective_at"] + 60_000:
+                        self._swap_probation = SwapProbation(last["previous_calibration_version"],
+                            last["calibration_version"], last["effective_at"],
+                            fusion_before=((active_report.get("holdout") or {}).get("after") or {}).get("fusion_3plus_ratio"))
                 self.perception.observe_frame = self.live_calibration.buffer.append_frame
                 self._spawn("tier0-live-calibration", self.live_calibration.run)
             except Exception as exc:
@@ -749,6 +769,13 @@ class Tier0Service:
             if live is None or generation != live.generation or live.blocked_reason is not None:
                 log.warning("보정 후보 거부: 재수집/활성 버전 변경 또는 자동 보정 보류")
                 return False
+            if live.safety_enabled:
+                if self._swap_probation is not None:
+                    return False
+                if not live.confirmation.observe(report):
+                    self.calibration_status["last_decision"] = {
+                        "accepted": False, "reason": "새 관측에 의한 연속 개선 확인 대기"}
+                    return False
             accepted = self.propose_calibration(document, report)
             if accepted:
                 self._live_pending_version = document["calibration_version"]
@@ -781,10 +808,14 @@ class Tier0Service:
                 return False
 
     def _begin_calibration_tick(self) -> None:
+        if self._swap_probation is not None and self.clock.now_ms() > self._swap_probation.started_ms + self._swap_probation.window_ms:
+            self.calibration_status["probation"] = "감시 기간 종료(관측 없음은 정상 확인을 뜻하지 않음)"
+            self._swap_probation = None
         pending = self._pending_calibration
         if pending is None:
             return
         doc, rig = pending
+        previous_version = self.rig.calibration_version
         at_ms = self.clock.now_ms()
         provenance = build_input_provenance(self.perception.feed.provenance(), calibration=rig.calibration_provenance)
         try:
@@ -795,8 +826,24 @@ class Tier0Service:
             return  # 같은 후보를 다음 tick에 다시 저장하며 직전 rig로 판정을 계속한다
         self.perception.replace_rig(rig, provenance)
         self.rig = rig
+        if (self.live_calibration is not None and self.live_calibration.safety_enabled
+                and getattr(self, "_live_pending_version", None) == doc["calibration_version"]):
+            report = self.calibration.current_report() or {}
+            self._swap_probation = SwapProbation(previous_version, rig.calibration_version, at_ms,
+                fusion_before=((report.get("holdout") or {}).get("after") or {}).get("fusion_3plus_ratio"))
+            self.calibration_status["probation"] = "교체 뒤 감시 중"
+            deviation = report.get("cumulative_deviation") or {}
+            self.calibration_status["cumulative_deviation"] = deviation
+            self.calibration_status["cumulative_warning"] = deviation.get("warnings", [])
+            if deviation.get("warnings"):
+                log.warning("최초 기준 대비 누적 편차 초과: %s", deviation)
+        else:
+            self._swap_probation = None
+        self._live_pending_version = None
         if self.live_calibration is not None:
             self.live_calibration.activate(doc, provenance)
+            if self.live_calibration.safety_enabled and (self.calibration.current_report() or {}).get("rollback_of"):
+                self.live_calibration.block("되돌림 뒤 자동 보정 보류: 운영자 확인 필요")
         self._drift_document = doc
         self._drift_report = self._pending_drift_report = None
         self._pending_calibration = None
@@ -810,6 +857,25 @@ class Tier0Service:
             if self._stop.is_set() or report.calibration_version != self.rig.calibration_version:
                 return
             self._drift_report = report
+            if (self._pending_calibration is not None
+                    and self.calibration_status.get("probation") == "악화 지속: 되돌림 대기"):
+                return
+            if (not changed_streams and self._swap_probation is not None
+                    and self._swap_probation.observe(report, report.fusion_3plus_ratio)):
+                try:
+                    doc = self.calibration.prepare_rollback(self._swap_probation.previous_version,
+                                                           created_at=self.clock.now_ms())
+                    rig = CameraRig.from_provider(FileCalibrationProvider(self.calibration.path(doc["calibration_version"])))
+                    self._pending_calibration = doc, rig
+                    self.calibration_status.update(pending_version=rig.calibration_version,
+                        probation="악화 지속: 되돌림 대기", rollback_from=self.rig.calibration_version)
+                    self._swap_probation = None
+                    if self.live_calibration is not None:
+                        self.live_calibration.block("교체 뒤 악화: 되돌림 대기")
+                    log.warning("보정 교체 뒤 악화 지속: 새 버전 %s로 되돌림 대기", rig.calibration_version)
+                    return
+                except (OSError, ValueError) as exc:
+                    log.error("되돌림 보관 실패(다음 근거에서 재시도): %s", exc)
             if report.findings:
                 self._pending_drift_report = report
             pending = self._pending_drift_report
@@ -820,21 +886,25 @@ class Tier0Service:
             if self.calibration.state == "DRIFTED" and not changed_streams:
                 for camera in report.cameras:
                     key = report.calibration_version, camera.camera_id
-                    if camera.status is MonitorStatus.DRIFTED and key not in self._drift_notified:
+                    cp = camera.change_point_ms
+                    newer = cp is not None and cp > self._live_change_points.get(key, -1)
+                    if camera.status is MonitorStatus.DRIFTED and (key not in self._drift_notified or newer):
                         self._drift_notified.add(key)
+                        self._live_change_points[key] = report.t_ms if cp is None else cp
                         notify.append(camera.camera_id)
             if self.live_calibration is not None:
                 if changed_streams:
                     if self.live_calibration.blocked_reason != "스트림 변경: 내부 파라미터 재추정 필요":
                         self.live_calibration.block("스트림 변경: 내부 파라미터 재추정 필요")
                 elif self.calibration.state == "DRIFTED":
-                    if notify and self.live_calibration.blocked_reason != "스트림 변경: 내부 파라미터 재추정 필요":
+                    if notify and self.live_calibration.blocked_reason == "틀어짐 귀속 불확실: 운영자 확인 필요":
                         self.live_calibration.blocked_reason = None
                     elif not any(c.status is MonitorStatus.DRIFTED for c in report.cameras):
                         if self.live_calibration.blocked_reason is None:
                             self.live_calibration.block("틀어짐 귀속 불확실: 운영자 확인 필요")
                 for cid in notify:
-                    self.live_calibration.reset_camera(cid)
+                    cp = next((c.change_point_ms for c in report.cameras if c.camera_id == cid), None)
+                    self.live_calibration.reset_camera(cid, cp)
                 # reset 이전에 만들어 대기하던 자동 후보도 폐기한다. 수동 후보(-344)는 기준 검증을 유지한다.
                 if (notify or self.live_calibration.blocked_reason) and getattr(self, "_live_pending_version", None):
                     if self.calibration_status.get("pending_version") == self._live_pending_version:

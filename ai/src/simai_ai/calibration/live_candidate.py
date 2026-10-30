@@ -36,7 +36,7 @@ from scipy.spatial.transform import Rotation
 
 from simai_ai.calibration.bundle import PersonObservation
 from simai_ai.calibration.criteria import CalibrationEvidence, judge_calibration
-from simai_ai.calibration.document import CameraCalibration, build_calibration_doc
+from simai_ai.calibration.document import CameraCalibration, build_calibration_doc, content_hash
 from simai_ai.calibration.extrinsics.session import (
     DEFAULT_DATA_CRITERIA,
     PROVIDER_VERSION,
@@ -160,22 +160,30 @@ class LiveJointBuffer:
         self._total_samples: int = 0
         self._total_bytes: int = 0
         self._newest_time_ms: int | None = None
+        self._cutoffs: dict[str, int] = {}
 
     @property
     def config(self) -> LiveBufferConfig:
         return self._config
 
-    def reset_camera(self, camera_id: str) -> int:
+    def reset_camera(self, camera_id: str, *, since_ms: int | None = None) -> int:
         """특정 카메라의 버퍼 관측과 로컬 추적 상태를 비운다 (DRIFTED 신호 수신 시 호출)."""
         if not camera_id or not isinstance(camera_id, str):
             raise ValueError("camera_id 는 비어 있지 않은 문자열이어야 한다")
         with self._lock:
+            if since_ms is not None:
+                self._cutoffs[camera_id] = max(since_ms, self._cutoffs.get(camera_id, since_ms))
+                since_ms = self._cutoffs[camera_id]
             q = self._frames.pop(camera_id, None)
-            removed_frames = len(q) if q is not None else 0
+            retained = deque(bf for bf in (q or ()) if since_ms is not None and bf.estimated_capture_time_ms >= since_ms)
+            removed_frames = len(q or ()) - len(retained)
             if q is not None:
                 for bf in q:
-                    self._total_samples -= len(bf.samples)
-                    self._total_bytes -= bf.approx_bytes
+                    if since_ms is None or bf.estimated_capture_time_ms < since_ms:
+                        self._total_samples -= len(bf.samples)
+                        self._total_bytes -= bf.approx_bytes
+            if retained:
+                self._frames[camera_id] = retained
             self._trackers.pop(camera_id, None)
             self._last_meta.pop(camera_id, None)
             self._segment_ids[camera_id] = self._segment_ids.get(camera_id, 0) + 1
@@ -206,6 +214,8 @@ class LiveJointBuffer:
                 raise ValueError(f"{cid}: COCO17 은 관절 17개여야 한다")
 
         with self._lock:
+            if t_ms < self._cutoffs.get(cid, t_ms):
+                return False
             prev = self._last_meta.get(cid)
             if prev is not None:
                 prev_epoch, prev_seq, prev_t = prev
@@ -1083,7 +1093,7 @@ def _lower_process_priority(nice_delta: int = 10) -> dict[str, Any]:
     return {"pid": os.getpid(), "priority": applied}
 
 
-def execute_candidate_cycle(
+def _execute_candidate_cycle(
     tracks: SessionTracks | None,
     buffer_summary: Mapping[str, Any],
     previous: Mapping[str, Any],
@@ -1308,6 +1318,72 @@ def execute_candidate_cycle(
     return CandidateRunResult(STATUS_PROPOSED, True, MODE_FULL_SESSION, outcome.calibration, base_report)
 
 
+def execute_candidate_cycle(tracks, buffer_summary, previous, *, world_reference=None,
+                            moved_camera_ids=(), **kwargs) -> CandidateRunResult:
+    """이전 버전으로 추정한 뒤, 움직이지 않은 기준의 최초 자세에 정렬하고 다시 검증한다."""
+    started_wall, started_cpu = time.perf_counter(), time.process_time()
+    result = _execute_candidate_cycle(tracks, buffer_summary, previous, **kwargs)
+    if tracks is not None:
+        result.report["validation_end_ms"] = max((t for t, views in tracks.ticks if views), default=None)
+    if not result.proposed or world_reference is None:
+        return result
+    config = kwargs.get("config", DEFAULT_LIVE_CANDIDATE_CONFIG)
+    report = result.report
+    moved = set(moved_camera_ids)
+    moved.update((report.get("world_alignment") or {}).get("excluded_cameras") or ())
+    moved.update((report.get("world_alignment") or {}).get("fixed_center_rotation_cameras") or ())
+    anchors = [c for c in report["world_alignment"]["anchor_cameras"] if c not in moved]
+    if len(anchors) < 2:
+        report.update(status=STATUS_NOT_CONVERGED, proposed=False, failure_reason="움직이지 않은 최초 기준 카메라가 2대 미만")
+        return replace(result, status=STATUS_NOT_CONVERGED, proposed=False, calibration=None)
+    aligned, alignment = align_world_to_previous(
+        world_reference, result.calibration["cameras"], anchor_cameras=anchors,
+        measured_camera_heights=kwargs.get("measured_camera_heights"))
+    report["moved_camera_ids"] = sorted(moved)
+    report["reference_version"] = world_reference["calibration_version"]
+    if not alignment.get("usable"):
+        report.update(status=STATUS_NOT_CONVERGED, proposed=False,
+                      failure_reason="최초 기준 정렬 실패: " + alignment.get("failure_reason", "기준 부족"))
+        return replace(result, status=STATUS_NOT_CONVERGED, proposed=False, calibration=None)
+    document = copy.deepcopy(result.calibration)
+    poses = {c.camera_id: c for c in aligned}
+    for camera in document["cameras"]:
+        pose = poses[camera["camera_id"]]
+        camera.update(R=np.asarray(pose.R).tolist(), t=np.asarray(pose.t).tolist())
+    document["content_hash"] = content_hash(document)
+    report["world_alignment"]["reference_alignment"] = alignment
+    # 활성 World에 대한 기존 하드 한계도 계속 검사한다.
+    actual = camera_changes(previous, document)
+    wa = report["world_alignment"]
+    wa["anchor_cameras"] = anchors
+    wa["anchor_center_residuals_cm"] = {c: actual[c]["position_cm"] for c in anchors}
+    wa["anchor_rotation_residuals_deg"] = {c: actual[c]["rotation_deg"] for c in anchors}
+    wa["scale_change_ratio"] = alignment["scale_change_ratio"]
+    cumulative = camera_changes(world_reference, document)
+    warnings = [c for c in cumulative if cumulative[c]["position_cm"] > 5. or cumulative[c]["rotation_deg"] > 1.5]
+    if alignment["scale_change_ratio"] > .03:
+        warnings.append("scale")
+    report["cumulative_deviation"] = {"reference_version": world_reference["calibration_version"],
+        "reference_state": world_reference["state"], "cameras": cumulative,
+        "scale_change_ratio": alignment["scale_change_ratio"], "warnings": warnings}
+    _, holdout, _ = split_session_tracks(tracks, block_ticks=config.block_ticks)
+    after = summarize_holdout_metrics(evaluate_calibration(holdout, document))
+    common = common_reprojection_metrics(holdout, previous, document)
+    delta, decision = evaluate_improvement(report["holdout"]["before"], after,
+        common_reprojection=common, world_alignment=wa, criteria=config.improvement_criteria)
+    report["holdout"].update(after=after, delta=delta, common_reprojection=common)
+    report["improvement_decision"] = decision
+    report["camera_changes"] = actual
+    report["calibration"]["content_hash"] = document["content_hash"]
+    report["elapsed_wall_s"] = round(time.perf_counter() - started_wall, 3)
+    report["elapsed_cpu_s"] = round(time.process_time() - started_cpu, 3)
+    if not decision["accepted"]:
+        report.update(status=STATUS_NO_MEANINGFUL_IMPROVEMENT, proposed=False,
+                      failure_reason="최초 기준 정렬 뒤 개선/World 검증 미달")
+        return replace(result, status=STATUS_NO_MEANINGFUL_IMPROVEMENT, proposed=False, calibration=None)
+    return replace(result, calibration=document)
+
+
 def _subprocess_worker_entry(
     payload: Mapping[str, Any],
     result_queue: Any,
@@ -1327,6 +1403,8 @@ def _subprocess_worker_entry(
             config=payload["config"],
             worker_info=worker_info,
             fixed_center_rotation_cameras=payload.get("fixed_center_rotation_cameras", ()),
+            world_reference=payload.get("world_reference"),
+            moved_camera_ids=payload.get("moved_camera_ids", ()),
         )
         result_queue.put(("ok", res))
     except Exception as exc:  # pragma: no cover - 자식 프로세스 예외 전달
@@ -1351,6 +1429,7 @@ class LiveCandidateCalibrationRunner:
         adopt_proposed_as_active: bool = True,
         stop_event: threading.Event | None = None,
         active_report: Callable[[], Mapping[str, Any] | None] | None = None,
+        safety_reference: Callable[[], tuple[Mapping[str, Any], Sequence[str]]] | None = None,
     ) -> None:
         self._buffer = buffer
         self._active_source = active_calibration
@@ -1367,6 +1446,9 @@ class LiveCandidateCalibrationRunner:
         self._adopt_proposed = adopt_proposed_as_active
         self._stop_event = stop_event or threading.Event()
         self._active_report_source = active_report
+        self._safety_reference_source = safety_reference
+        self._world_reference = None
+        self._moved_camera_ids = ()
         self._last_proposed_report: Mapping[str, Any] | None = None
         self._last_run_at_ms: int | None = None
         self._history: deque[CandidateRunResult] = deque(maxlen=16)
@@ -1396,10 +1478,11 @@ class LiveCandidateCalibrationRunner:
         """다음 실행부터 활성 보정에 맞는 입력 출처를 쓴다(실행 스레드 전용)."""
         self._provenance = copy.deepcopy(dict(provenance))
 
-    def maybe_run(self, *, now_ms: int | None = None) -> CandidateRunResult | None:
+    def maybe_run(self, *, now_ms: int | None = None, interval_ms: int | None = None) -> CandidateRunResult | None:
         """마지막 실행 시각으로부터 `config.interval_ms` 이상 지났을 때만 후보 보정을 실행한다."""
         ts = int(now_ms if now_ms is not None else self._clock_ms())
-        if self._last_run_at_ms is not None and (ts - self._last_run_at_ms) < self._config.interval_ms:
+        interval = self._config.interval_ms if interval_ms is None else interval_ms
+        if self._last_run_at_ms is not None and (ts - self._last_run_at_ms) < interval:
             return None
         return self.run_once(now_ms=ts)
 
@@ -1409,6 +1492,8 @@ class LiveCandidateCalibrationRunner:
         require_ms("now_ms", ts)
         self._last_run_at_ms = ts
         previous = copy.deepcopy(dict(self.current_calibration()))
+        if self._safety_reference_source:
+            self._world_reference, self._moved_camera_ids = self._safety_reference_source()
         active_report = self._active_report_source() if self._active_report_source else self._last_proposed_report
         self._fixed_center_rotation_cameras = ()
         if active_report and (active_report.get("calibration") or {}).get("version") == previous["calibration_version"]:
@@ -1443,6 +1528,8 @@ class LiveCandidateCalibrationRunner:
                 created_at=ts,
                 config=self._config,
                 fixed_center_rotation_cameras=self._fixed_center_rotation_cameras,
+                world_reference=self._world_reference,
+                moved_camera_ids=self._moved_camera_ids,
             )
 
         if res.proposed and res.calibration is not None:
@@ -1507,6 +1594,8 @@ class LiveCandidateCalibrationRunner:
             "worker_nice": self._config.worker_nice,
             "simulate_sleep_s": self._simulate_sleep_s,
             "fixed_center_rotation_cameras": self._fixed_center_rotation_cameras,
+            "world_reference": self._world_reference,
+            "moved_camera_ids": self._moved_camera_ids,
         }
         proc = ctx.Process(target=_subprocess_worker_entry, args=(payload, queue), daemon=True)
         proc.start()
