@@ -126,7 +126,8 @@ def test_check_fetched_run_and_cli_exit_code(ic, tmp_path, capsys):
 def test_module_imports_only_stdlib_and_numpy():
     """DA3 전용 가상환경(simai_ai·torch 없음)의 predict 에서도 불린다."""
     names = set()
-    for node in ast.parse(SCRIPT.read_text(encoding="utf-8")).body:
+    library = STATIC.parents[1] / "src" / "simai_ai" / "scene" / "intrinsics_check.py"
+    for node in ast.parse(library.read_text(encoding="utf-8")).body:
         if isinstance(node, ast.Import):
             names |= {a.name.split(".")[0] for a in node.names}
         elif isinstance(node, ast.ImportFrom):

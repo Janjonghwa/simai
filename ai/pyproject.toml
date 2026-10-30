@@ -39,6 +39,8 @@ scene = [
     "requests; sys_platform == 'linux'",
     "tqdm; sys_platform == 'linux'",
     "trimesh>=4.11; sys_platform == 'linux'",
+    # TSDF 합치기·렌더(simai_ai.scene.texture_mesh, -298). 워커 static_reconstruct 가 Pod 에서 굽기까지 하려면 필요하다(S15P31A101-364).
+    "open3d>=0.19; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 # HMR(Fast SAM 3D Body @d72aa36) 실행 의존성. deploy/exp02/requirements.in 에서 옮겼다(S15P31A101-235, docs/design/unified-env.md).
 #   torch 는 Tier 0·vLLM 과 같은 판(한 가상환경). Linux GPU 에서만 돌므로 torch 밖은 모두 Linux 전용이다.
@@ -83,6 +85,8 @@ hmr = [
     "pyzmq; sys_platform == 'linux'",
     "plyfile; sys_platform == 'linux'",
     "trimesh>=4.11; sys_platform == 'linux'",
+    # TSDF 합치기·렌더(simai_ai.scene.texture_mesh, -298). 워커 static_reconstruct 가 Pod 에서 굽기까지 하려면 필요하다(S15P31A101-364).
+    "open3d>=0.19; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "websockets>=14; sys_platform == 'linux'",
     "ultralytics>=8.4.178,<8.5; sys_platform == 'linux'",
     # MoGe @74fbce0 의 실행 의존성(flex-gemm·gradio 는 뺀다: triton 판 충돌과 데모 앱 전용)

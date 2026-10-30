@@ -157,8 +157,38 @@ RUN git clone -q https://github.com/facebookresearch/map-anything /opt/code/map-
 RUN --mount=type=cache,target=/root/.cache/uv uv build -q --no-config --wheel --out-dir /opt/code/dist /opt/code/map-anything \
  && rm -rf /opt/code/map-anything/build /opt/code/map-anything/*.egg-info
 
+# texrecon: deploy/texrecon/Dockerfile 과 같은 고정 커밋·빌드 절차, 최종 ABI 는 unified 와 같다.
+FROM unified-deps AS texrecon-build
+ARG MVST_COMMIT=f3374298ac959cb5afe47a14e4d35d2ac7fbdbb1
+ARG MVE_COMMIT=91c0f3fde0781399b2fe872d8e52e4899274a84a
+ARG RAYINT_COMMIT=b62c8905f6dd11a179128517e814e0e00f9bb809
+# hadolint ignore=DL3008
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      build-essential cmake git ca-certificates libpng-dev libjpeg-dev libtiff-dev libtbb-dev \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+# hadolint ignore=DL3003
+RUN set -eu; \
+    git clone https://github.com/nmoehrle/mvs-texturing.git; \
+    git -C mvs-texturing checkout --quiet "$MVST_COMMIT"; \
+    cd mvs-texturing; \
+    sed -i "s#GIT_REPOSITORY  https://github.com/nmoehrle/mve.git#GIT_REPOSITORY  https://github.com/nmoehrle/mve.git\n    GIT_TAG         $MVE_COMMIT#" elibs/CMakeLists.txt; \
+    sed -i "s#GIT_TAG         cuda#GIT_TAG         $RAYINT_COMMIT#" elibs/CMakeLists.txt; \
+    grep -q "$MVE_COMMIT" elibs/CMakeLists.txt && grep -q "$RAYINT_COMMIT" elibs/CMakeLists.txt; \
+    mkdir build; cd build; cmake -DCMAKE_BUILD_TYPE=RELEASE ..; make -j"$(nproc)"; \
+    test -x apps/texrecon/texrecon
+
+
 # ---------------------------------------------------------------- unified 타깃
 FROM unified-deps AS unified
+# CPU 텍스처 굽기 실행 파일만 복사한다. 빌드 도구는 최종 이미지에 남기지 않는다.
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libpng16-16t64 libjpeg-turbo8 libtiff6 libtbb12 libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=texrecon-build /src/mvs-texturing/build/apps/texrecon/texrecon /usr/local/bin/texrecon
+COPY --from=texrecon-build /src/mvs-texturing/LICENSE.txt /usr/local/share/licenses/mvs-texturing/LICENSE.txt
+ENV SIMAI_TEXRECON=/usr/local/bin/texrecon
 ARG MA_COMMIT
 COPY --from=hmr-code /opt/code/Fast-SAM-3D-Body /opt/simai/hmr/Fast-SAM-3D-Body
 COPY --from=hmr-code /opt/code/facebookresearch_dinov3_main /root/.cache/torch/hub/facebookresearch_dinov3_main

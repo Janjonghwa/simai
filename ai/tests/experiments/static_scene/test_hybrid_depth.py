@@ -228,7 +228,9 @@ def test_k_for_depth_grid_and_pose_difference(hd):
 
 def test_predict_side_imports_only_stdlib_and_numpy():
     """predict 는 깊이 모델 전용 가상환경(simai_ai 없음)에서도 돈다: 모듈 최상위 import 는 표준 라이브러리와 numpy 뿐."""
-    tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+    # 실험 진입점은 scene 라이브러리를 재사용한다. 무거운 모델 import 지연은 구현에서 검사한다.
+    library = AI / "src" / "simai_ai" / "scene" / "run_hybrid_depth.py"
+    tree = ast.parse(library.read_text(encoding="utf-8"))
     names = set()
     for node in tree.body:
         if isinstance(node, ast.Import):
