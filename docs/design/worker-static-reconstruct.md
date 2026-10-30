@@ -94,7 +94,7 @@ admin job enqueue --type static_reconstruct --input-file static-input.json
 
 실험 파일을 워커가 직접 import하거나 sys.path/importlib로 우회하는 대안은 의존 방향 위반이라 버렸다. 같은 알고리즘을 워커에 복사하는 대안은 실험과 운영의 동작 차이를 만들므로 버렸다. 외부 명령을 같은 처리기 스레드에서 무기한 실행하는 대안은 LIVE 선점 시 GPU를 반환하지 못하므로 버렸다. 스툴 축척으로 보정을 자동 덮어쓰는 대안은 Tier 0 정본·버전 규칙 위반이라 쓰지 않는다.
 
-`open3d`는 기존 TSDF/렌더 구현의 의존성인데 ai/uv.lock에 없었다. Lead 가 `scene` 묶음에 `open3d>=0.19`(Linux x86_64)를 더하고 다시 잠갔다(open3d 0.20.0, 잠금은 추가만 있고 바뀐 판 없음). `worker` 묶음이 `scene` 을 포함하므로 통합 이미지를 다시 빌드하면 texrecon 과 함께 들어간다. 다시 빌드하기 전 이미지에서는 위 폴백(정점색)으로 돈다. 9차 실 GPU·texrecon 빌드/실행·S3/EC2 왕복·정렬 문턱 실측, -363 배경 자동 제출·-365 접수/Scene 등록이 남는다. 실패/취소 때 임시 작업 폴더는 정리된다. 실패 로그는 유효 대여가 남아 있을 때 failed-이름.log 객체로 보존하고 오류 메시지에 주소를 남긴다. 취소·대여 상실 뒤에는 업로드하지 않으므로 그때의 로그 보존은 후속 보완 대상이다.
+`open3d`는 기존 TSDF/렌더 구현의 의존성인데 ai/uv.lock에 없었다. `open3d>=0.19`로 잠갔을 때 들어간 `open3d 0.20.0`은 Linux 휠에서도 `ScalableTSDFVolume` 추출이 면 0개(빈 메시, `STATIC_BAKE_EMPTY`)를 내는 결함이 있어(`docs/design/exp01-textured-mesh.md`와 같은 원인), Lead 가 `scene`·`hmr` 묶음을 `open3d==0.19.0`(Linux x86_64)으로 고정하고 다시 잠갔다(S15P31A101-374). `worker` 묶음이 `scene` 을 포함하므로 통합 이미지를 다시 빌드하면 texrecon 과 함께 들어간다. 다시 빌드하기 전 이미지에서는 위 폴백(정점색)으로 돈다. 9차 실 GPU·texrecon 빌드/실행·S3/EC2 왕복·정렬 문턱 실측, -363 배경 자동 제출·-365 접수/Scene 등록이 남는다. 실패/취소 때 임시 작업 폴더는 정리된다. 실패 로그는 유효 대여가 남아 있을 때 failed-이름.log 객체로 보존하고 오류 메시지에 주소를 남긴다. 취소·대여 상실 뒤에는 업로드하지 않으므로 그때의 로그 보존은 후속 보완 대상이다.
 
 ## S15P31A101-372: 배경 묶음 업로드 및 작업 입력 생성 세션 도구(`simai_ai.scene.clean_bg_job`)
 
@@ -112,7 +112,7 @@ admin job enqueue --type static_reconstruct --input-file static-input.json
   - `--calibration <path>`: 활성 보정 문서(`calibration.json`). `calibration` 스키마 통과 여부와 `state in {"PROVISIONAL", "CALIBRATED"}` 를 확인하고 원문 바이트의 `sha256:<hex64>`(`calibration_hash`)를 계산한다.
   - `--calibration-ref s3://<bucket>/<key>` 또는 `--upload-calibration`(`AVATAR_ASSET` `application/octet-stream` 서명 업로드로 보정 문서를 함께 올림).
 - **서명 업로드 및 실패 중단**:
-  - `--dry-run` 이 아니면 `POST /api/uploads/sign` 으로 서명 주소를 받고 `PUT upload_url` 로 각 카메라 이미지를 올린다(기본 토큰 환경변수: `SIMAI_UPLOAD_TOKEN`, `SIMAI_TIER0_TOKEN`, `SIMAI_DEVICE_TOKEN`, `SIMAI_WORKER_TOKEN` 또는 `--token-file`).
+  - `--dry-run` 이 아니면 `GET /api/calibrations/current` 로 EC2 의 현재·최근·직전 보정과 `calibration_version` 을 먼저 비교하고(서버에 버전별 조회가 없어 목록에 없으면 경고만 출력: 등록돼 있지만 현재가 아닌 보정도 있고, 정말 미등록이면 `SceneJobListener` 가 결과를 거절한다. 기계 토큰이라 401/403 이거나 `--skip-calibration-check` 면 확인 없이 경고), `POST /api/uploads/sign` + `PUT upload_url` 로 각 카메라 이미지를 올린다(사진은 `EVENT_FRAME`[Tier 0·DEVICE 토큰] 또는 `AVATAR_ASSET`[워커 토큰], 보정 문서 `application/octet-stream` 은 `AVATAR_ASSET`[워커 토큰]만 허용하므로 `--upload-calibration` 이면 워커 토큰·`AVATAR_ASSET` 하나로 보정 문서와 사진을 모두 올림. 토큰 종류와 용도가 맞지 않으면 업로드 전에 안내하고 중단, S15P31A101-374).
   - 로컬 검증이나 서명·업로드 중 하나라도 실패하면 즉시 멈추고 `--output` 파일을 만들지 않는다. 토큰과 서명 URL 쿼리는 표준 출력·오류·로그에 남기지 않는다.
 - **작업 입력 계약 검증**:
   - 생성한 입력 사전을 `simai_ai.scene.reconstruct.validate_input` 과 I5 `job_request` 스키마(`schema_errors(..., "job_request")`)로 검증한 뒤 `--output` 에 저장한다.

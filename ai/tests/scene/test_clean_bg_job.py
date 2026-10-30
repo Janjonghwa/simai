@@ -181,6 +181,9 @@ class _FakeUploadServer:
         put_status: int = 200,
         fail_put_on_call: int | None = None,
         bad_object_uri: str | None = None,
+        current_calibration_version: str | None = "cal-room-01",
+        latest_uploaded_version: str | None = "cal-room-01",
+        calibration_status: int = 200,
     ) -> None:
         self.expected_token = expected_token
         self.bucket = bucket
@@ -188,6 +191,10 @@ class _FakeUploadServer:
         self.put_status = put_status
         self.fail_put_on_call = fail_put_on_call
         self.bad_object_uri = bad_object_uri
+        self.current_calibration_version = current_calibration_version
+        self.latest_uploaded_version = latest_uploaded_version
+        self.calibration_status = calibration_status
+        self.calibration_requests: list[dict[str, Any]] = []
         self.sign_requests: list[dict[str, Any]] = []
         self.put_requests: list[dict[str, Any]] = []
         self._lock = threading.Lock()
@@ -195,6 +202,31 @@ class _FakeUploadServer:
         parent = self
 
         class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                if self.path != "/api/calibrations/current":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                auth = self.headers.get("Authorization", "")
+                with parent._lock:
+                    parent.calibration_requests.append({"auth": auth, "path": self.path})
+                if parent.calibration_status != 200:
+                    self.send_response(parent.calibration_status)
+                    self.end_headers()
+                    self.wfile.write(b'{"error":"calibration_check_failed"}')
+                    return
+                resp = {
+                    "calibration_state": "CALIBRATED" if parent.current_calibration_version else "UNCALIBRATED",
+                    "calibration_version": parent.current_calibration_version,
+                    "latest_uploaded_version": parent.latest_uploaded_version,
+                    "document_uploaded": parent.latest_uploaded_version is not None,
+                }
+                raw = json.dumps(resp).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
             def do_POST(self) -> None:  # noqa: N802
                 if self.path != "/api/uploads/sign":
                     self.send_response(404)
@@ -682,3 +714,240 @@ def test_images_dir_token_file_and_contract_mismatch_guards(
     captured = capsys.readouterr()
     assert secret not in captured.out
     assert secret not in captured.err
+
+
+def test_purpose_selection_and_token_mismatch_guards(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`UploadPurpose` 규칙: `--upload-calibration` 은 워커 토큰·`AVATAR_ASSET` 기본, 토큰·용도 불일치 시 업로드 전 중단."""
+    cal = _make_calibration_doc()
+    cal_path = tmp_path / "calibration.json"
+    cal_path.write_bytes(json.dumps(cal).encode("utf-8"))
+    bundle_root, _, _ = _write_clean_bg_bundle(tmp_path / "clean-background", cal)
+
+    tier0_tok = "tier0-secret-tok-111"
+    worker_tok = "worker-secret-tok-222"
+
+    # 1) --upload-calibration 시 SIMAI_TIER0_TOKEN 과 SIMAI_WORKER_TOKEN 이 함께 있어도 워커 토큰·AVATAR_ASSET 하나로 모두 올린다
+    out_both = tmp_path / "out_both.json"
+    with _FakeUploadServer(expected_token=worker_tok, bucket="simai-prod-bucket") as server:
+        rc = run_cli(
+            [
+                "--bundle",
+                str(bundle_root),
+                "--calibration",
+                str(cal_path),
+                "--upload-calibration",
+                "--output",
+                str(out_both),
+                "--server",
+                server.base_url,
+            ],
+            env={"SIMAI_TIER0_TOKEN": tier0_tok, "SIMAI_WORKER_TOKEN": worker_tok},
+        )
+        assert rc == 0
+        assert out_both.is_file()
+        assert len(server.sign_requests) == 5
+        assert all(req["body"]["purpose"] == "AVATAR_ASSET" for req in server.sign_requests)
+        assert server.sign_requests[0]["body"]["content_type"] == "application/octet-stream"
+
+    # 2) --upload-calibration 인데 SIMAI_TIER0_TOKEN 만 있으면 업로드 전에 멈춘다
+    out_mismatch_1 = tmp_path / "out_mismatch_1.json"
+    with _FakeUploadServer(expected_token=tier0_tok) as server:
+        rc = run_cli(
+            [
+                "--bundle",
+                str(bundle_root),
+                "--calibration",
+                str(cal_path),
+                "--upload-calibration",
+                "--output",
+                str(out_mismatch_1),
+                "--server",
+                server.base_url,
+            ],
+            env={"SIMAI_TIER0_TOKEN": tier0_tok},
+        )
+        assert rc == 2
+        assert not out_mismatch_1.exists()
+        assert len(server.sign_requests) == 0
+    err_1 = capsys.readouterr().err
+    assert "AVATAR_ASSET" in err_1 and "SIMAI_WORKER_TOKEN" in err_1
+
+    # 3) --upload-calibration 과 --purpose EVENT_FRAME 충돌 시 업로드 전에 멈춘다
+    out_mismatch_2 = tmp_path / "out_mismatch_2.json"
+    with _FakeUploadServer(expected_token=worker_tok) as server:
+        rc = run_cli(
+            [
+                "--bundle",
+                str(bundle_root),
+                "--calibration",
+                str(cal_path),
+                "--upload-calibration",
+                "--purpose",
+                "EVENT_FRAME",
+                "--output",
+                str(out_mismatch_2),
+                "--server",
+                server.base_url,
+            ],
+            env={"SIMAI_WORKER_TOKEN": worker_tok},
+        )
+        assert rc == 2
+        assert not out_mismatch_2.exists()
+        assert len(server.sign_requests) == 0
+    err_2 = capsys.readouterr().err
+    assert "AVATAR_ASSET" in err_2
+
+    # 4) --purpose AVATAR_ASSET 인데 SIMAI_TIER0_TOKEN 만 있으면 업로드 전에 멈춘다
+    out_mismatch_3 = tmp_path / "out_mismatch_3.json"
+    with _FakeUploadServer(expected_token=tier0_tok) as server:
+        rc = run_cli(
+            [
+                "--bundle",
+                str(bundle_root),
+                "--calibration",
+                str(cal_path),
+                "--calibration-ref",
+                "s3://simai-prod-bucket/calibrations/cal-room-01.json",
+                "--purpose",
+                "AVATAR_ASSET",
+                "--output",
+                str(out_mismatch_3),
+                "--server",
+                server.base_url,
+            ],
+            env={"SIMAI_TIER0_TOKEN": tier0_tok},
+        )
+        assert rc == 2
+        assert not out_mismatch_3.exists()
+        assert len(server.sign_requests) == 0
+    err_3 = capsys.readouterr().err
+    assert "AVATAR_ASSET" in err_3
+
+    # 5) --purpose EVENT_FRAME 인데 SIMAI_WORKER_TOKEN 만 있으면 업로드 전에 멈춘다
+    out_mismatch_4 = tmp_path / "out_mismatch_4.json"
+    with _FakeUploadServer(expected_token=worker_tok) as server:
+        rc = run_cli(
+            [
+                "--bundle",
+                str(bundle_root),
+                "--calibration",
+                str(cal_path),
+                "--calibration-ref",
+                "s3://simai-prod-bucket/calibrations/cal-room-01.json",
+                "--purpose",
+                "EVENT_FRAME",
+                "--output",
+                str(out_mismatch_4),
+                "--server",
+                server.base_url,
+            ],
+            env={"SIMAI_WORKER_TOKEN": worker_tok},
+        )
+        assert rc == 2
+        assert not out_mismatch_4.exists()
+        assert len(server.sign_requests) == 0
+    err_4 = capsys.readouterr().err
+    assert "EVENT_FRAME" in err_4
+
+
+def test_ec2_calibration_version_registration_check(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """EC2 `GET /api/calibrations/current` 로 `calibration_version` 을 확인한다. 현재·최근이 아니면 경고만 하고 진행한다."""
+    cal = _make_calibration_doc(calibration_version="cal-room-01")
+    cal_path = tmp_path / "calibration.json"
+    cal_path.write_bytes(json.dumps(cal).encode("utf-8"))
+    bundle_root, _, _ = _write_clean_bg_bundle(tmp_path / "clean-background", cal)
+    worker_tok = "worker-secret-tok-333"
+
+    # 1) EC2 현재·최근이 다른 보정일 때 -> 등록돼 있지만 현재가 아닐 수 있어(9차 266z) 경고만 하고 진행한다
+    out_unregistered = tmp_path / "out_unregistered.json"
+    with _FakeUploadServer(
+        expected_token=worker_tok,
+        current_calibration_version="cal-other-99",
+        latest_uploaded_version="cal-other-99",
+    ) as server:
+        rc = run_cli(
+            [
+                "--bundle",
+                str(bundle_root),
+                "--calibration",
+                str(cal_path),
+                "--upload-calibration",
+                "--output",
+                str(out_unregistered),
+                "--server",
+                server.base_url,
+            ],
+            env={"SIMAI_WORKER_TOKEN": worker_tok},
+        )
+        assert rc == 0
+        assert out_unregistered.exists()
+        assert len(server.calibration_requests) == 1
+        assert len(server.sign_requests) > 0
+    err_unreg = capsys.readouterr().err
+    assert "경고: EC2 의 현재·최근 보정이 아니다(cal-other-99)" in err_unreg
+    assert (
+        "EC2 에 등록된 보정만 쓸 수 있다(SceneJobListener 가 결과를 거절). "
+        "등록된 보정 문서를 쓰거나 simai_ai.calibration.publish 로 먼저 올린다"
+    ) in err_unreg
+
+    # 2) --skip-calibration-check 지정 시 경고만 남기고 진행한다
+    out_skipped = tmp_path / "out_skipped.json"
+    with _FakeUploadServer(
+        expected_token=worker_tok,
+        current_calibration_version="cal-other-99",
+        latest_uploaded_version="cal-other-99",
+    ) as server:
+        rc = run_cli(
+            [
+                "--bundle",
+                str(bundle_root),
+                "--calibration",
+                str(cal_path),
+                "--upload-calibration",
+                "--skip-calibration-check",
+                "--output",
+                str(out_skipped),
+                "--server",
+                server.base_url,
+            ],
+            env={"SIMAI_WORKER_TOKEN": worker_tok},
+        )
+        assert rc == 0
+        assert out_skipped.is_file()
+        assert len(server.calibration_requests) == 0
+        assert len(server.sign_requests) == 5
+    err_skip = capsys.readouterr().err
+    assert "--skip-calibration-check" in err_skip
+
+    # 3) 워커 토큰으로 GET /api/calibrations/current 가 401 을 반환할 때도 경고만 남기고 진행한다
+    out_401 = tmp_path / "out_401.json"
+    with _FakeUploadServer(
+        expected_token=worker_tok,
+        calibration_status=401,
+    ) as server:
+        rc = run_cli(
+            [
+                "--bundle",
+                str(bundle_root),
+                "--calibration",
+                str(cal_path),
+                "--upload-calibration",
+                "--output",
+                str(out_401),
+                "--server",
+                server.base_url,
+            ],
+            env={"SIMAI_WORKER_TOKEN": worker_tok},
+        )
+        assert rc == 0
+        assert out_401.is_file()
+        assert len(server.calibration_requests) == 1
+        assert len(server.sign_requests) == 5
+    err_401 = capsys.readouterr().err
+    assert "경고" in err_401

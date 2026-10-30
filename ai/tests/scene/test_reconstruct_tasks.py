@@ -1,5 +1,6 @@
 """실제 CPU 입력 준비·World 정렬·정점색 폴백을 작은 합성 자료로 확인한다."""
 import json
+import subprocess
 import threading
 import sys
 import types
@@ -143,3 +144,31 @@ def test_process_timeout_and_cancel_are_bounded(tmp_path):
     with pytest.raises(ReconstructionError) as err:
         stages.run("measure", tmp_path, timeout_s=10, cancelled=event)
     assert err.value.code == "CANCELLED"
+
+
+@pytest.mark.parametrize("stage", ["prepare", "mapanything", "bake", "fallback", "measure"])
+def test_subprocess_stage_entrypoints_do_not_fail_with_import_error(tmp_path, stage):
+    stage_dir = tmp_path / stage
+    stage_dir.mkdir()
+    env = ProcessStages().env
+    proc = subprocess.run(
+        [sys.executable, "-m", "simai_ai.scene.reconstruct_tasks", stage, str(stage_dir)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 1
+    assert "ImportError" not in proc.stderr
+    err = read_json(stage_dir / f"{stage}.error.json")
+    assert err["message"] != "ImportError"
+    assert err["code"] != "STATIC_GPU_BUDGET_FAILED"
+    if stage == "mapanything":
+        assert err["code"] == "STATIC_MODEL_MISSING"
+
+
+def test_process_stage_prepare_runs_end_to_end_in_subprocess(tmp_path):
+    synthetic(tmp_path)
+    ProcessStages().run("prepare", tmp_path, timeout_s=30, cancelled=threading.Event())
+    prepared = read_json(tmp_path / "prepared" / "prepared.json")
+    assert len(prepared["views"]) == 2

@@ -239,7 +239,8 @@ def main() -> int:
     root = Path(root_arg)
     try:
         if stage in ("prepare", "mapanything"):
-            from simai_ai.gpu.budget import FAILED, WorkerGpuSettings, cap_process_memory
+            from simai_ai.gpu.budget import WorkerGpuSettings
+            from simai_ai.gpu.reserve import FAILED, cap_process_memory
             settings = WorkerGpuSettings.from_env(os.environ)
             fraction = float(os.environ.get("SIMAI_WORKER_TORCH_MEMORY_FRACTION") or settings.budget.worker_fraction)
             if not 0 < fraction <= settings.budget.worker_fraction or cap_process_memory(fraction).state == FAILED:

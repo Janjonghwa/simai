@@ -195,7 +195,7 @@ class StaticReconstructor:
                 check("upload", started)
                 path = (root / spec["path"]).resolve()
                 if not path.is_relative_to(root.resolve()) or not path.is_file() or path.stat().st_size == 0:
-                    raise ReconstructionError("STATIC_OUTPUT_EMPTY", "산출물 경로·내용 오류")
+                    raise ReconstructionError("STATIC_OUTPUT_EMPTY", f"산출물 경로·내용 오류: {spec['path']}")
                 content = path.read_bytes()
                 asset = {"kind": spec["kind"], "uri": put(path.name, content, spec["content_type"]),
                          "sha256": sha256(content), "bytes": len(content)}
@@ -211,8 +211,8 @@ class StaticReconstructor:
             for rel in bake.get("auxiliary", []):
                 check("upload", started)
                 path = (root / rel).resolve()
-                if not path.is_relative_to(root.resolve()) or not path.is_file():
-                    raise ReconstructionError("STATIC_OUTPUT_EMPTY", "보조 지도 경로 오류")
+                if not path.is_relative_to(root.resolve()) or not path.is_file() or path.stat().st_size == 0:
+                    raise ReconstructionError("STATIC_OUTPUT_EMPTY", f"보조 지도 경로·내용 오류: {rel}")
                 content = path.read_bytes()
                 metrics["auxiliary_assets"].append({"name": path.name, "uri": put(path.name, content, "image/png"), "sha256": sha256(content)})
             write_json(root / "metrics.json", metrics)
@@ -242,6 +242,8 @@ class StaticReconstructor:
             result["quality"]["notes"] += f"; run_record_uri={run_uri}"
             for log in sorted(root.glob("*.log")):
                 check("upload", started)
+                if log.stat().st_size == 0:
+                    continue
                 log_uri = put(log.name, log.read_bytes(), "text/plain")
                 result["quality"]["notes"] += f"; {log.name}={log_uri}"
 
