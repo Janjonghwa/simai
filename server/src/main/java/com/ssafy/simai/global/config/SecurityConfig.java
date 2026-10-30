@@ -108,7 +108,7 @@ public class SecurityConfig {
      * 업로드 서명 주소(POST /api/uploads/sign, 명세 12.6 "기기·반장·워커", S15P31A101-69·-325).
      * 기기 토큰·Tier 0 토큰·워커 토큰·사용자 JWT 를 모두 받는다.
      * 기계 토큰 필터가 먼저 보고, 맞으면 JWT 해석을 건너뛴다(기계 토큰을 JWT 로 읽다가 401 을 내지 않게). 아니면 JWT 로 본다.
-     * 목적별로 받을 수 있는 주체(Tier 0·기기는 이벤트 프레임·클립, 반장은 조치 사진, 워커는 아바타 자산)는 UploadSignService 가 가른다.
+     * 목적별로 받을 수 있는 주체(Tier 0·기기는 이벤트 프레임·클립, 반장은 조치 사진, 워커는 아바타 자산, 관리자는 Scene glTF)는 UploadSignService 가 가른다.
      */
     @Bean
     @Order(4)
@@ -130,7 +130,8 @@ public class SecurityConfig {
                         Tier0TokenAuthenticationFilter.ROLE,
                         MachineKind.DEVICE.authority(),
                         MachineKind.WORKER.authority(),
-                        "ROLE_" + Role.FOREMAN.name()))
+                        "ROLE_" + Role.FOREMAN.name(),
+                        "ROLE_" + Role.ADMIN.name()))
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint(errors)
                         .accessDeniedHandler(errors))

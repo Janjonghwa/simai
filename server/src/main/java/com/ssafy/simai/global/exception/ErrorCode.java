@@ -354,7 +354,17 @@ public sealed interface ErrorCode {
     /** 현재 Scene 조회(S15P31A101-264) */
     enum Scene implements ErrorCode {
         // COMMITTED Scene 이 없고 시연용 기본 Scene(simai.scene.default-gltf-key)도 등록하지 않았다
-        SCENE_NOT_FOUND(HttpStatus.NOT_FOUND, "확정된 Scene 이 없고 기본 Scene 도 등록되지 않았습니다");
+        SCENE_NOT_FOUND(HttpStatus.NOT_FOUND, "확정된 Scene 이 없고 기본 Scene 도 등록되지 않았습니다"),
+        // 이하 Scene 등록·확정(S15P31A101-322)
+        INVALID_SCENE(HttpStatus.BAD_REQUEST, "Scene 값이 올바르지 않습니다(scene_version 은 소문자·숫자·. _ - 1~63자이고 current 가 아님, calibration_version·gltf_key 필수, quality 는 객체, 거절은 reason 500자 이하)"),
+        SCENE_VERSION_NOT_FOUND(HttpStatus.NOT_FOUND, "Scene 을 찾을 수 없습니다"),
+        SCENE_EXISTS(HttpStatus.CONFLICT, "같은 scene_version 이 이미 있습니다"),
+        // 4.5: Scene 은 보정 위에서만 만든다. 등록은 PROVISIONAL·CALIBRATED 보정만 받는다
+        SCENE_CALIBRATION_INVALID(HttpStatus.CONFLICT, "이 현장의 PROVISIONAL·CALIBRATED 보정 버전이 아닙니다"),
+        SCENE_GLTF_NOT_UPLOADED(HttpStatus.BAD_REQUEST, "gltf_key 가 SCENE_GLTF 로 발급받아 아직 쓰이지 않은 업로드가 아닙니다(POST /api/uploads/sign)"),
+        SCENE_STATE_CONFLICT(HttpStatus.CONFLICT, "확정·거절할 수 있는 상태(CANDIDATE)가 아닙니다"),
+        // 서명 주소만 받고 올리지 않았거나 다른 크기다. 확정하면 화면 배경이 깨지므로 막는다
+        SCENE_GLTF_MISSING(HttpStatus.CONFLICT, "glb 가 저장소에 없거나 발급한 크기와 다릅니다. 서명 주소로 올린 뒤 확정하세요");
 
         private final HttpStatus status;
         private final String message;
@@ -434,6 +444,33 @@ public sealed interface ErrorCode {
         private final String message;
 
         Video(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
+    /** 현장 등록·수정(S15P31A101-322) */
+    enum Site implements ErrorCode {
+        INVALID_SITE(HttpStatus.BAD_REQUEST, "현장 값이 올바르지 않습니다(site_id 는 소문자·숫자·- 1~63자, name 1~100자, world_origin 은 객체)"),
+        // MVP 는 현장 하나다(16장). 이름·ID 는 PUT /api/sites/current 로 바꾼다
+        SITE_EXISTS(HttpStatus.CONFLICT, "현장이 이미 있습니다. PUT /api/sites/current 로 고치세요"),
+        // 구역·보정·Scene·구성 묶음이 이 ID 에 붙은 뒤에는 ID 를 바꾸지 않는다
+        SITE_IN_USE(HttpStatus.CONFLICT, "이 현장에 구역·보정·Scene 등이 이미 있어 site_id 를 바꿀 수 없습니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Site(HttpStatus status, String message) {
             this.status = status;
             this.message = message;
         }

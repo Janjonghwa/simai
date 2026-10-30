@@ -12,6 +12,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,6 +30,7 @@ import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
@@ -126,6 +128,28 @@ public class ObjectStorage implements AutoCloseable {
             throw new BusinessException(ErrorCode.Storage.STORAGE_UNAVAILABLE);
         } catch (SdkException e) {
             log.warn("객체 저장소에 닿지 못해 객체를 지우지 못했다: {}", e.getClass().getSimpleName());
+            throw new BusinessException(ErrorCode.Storage.STORAGE_UNAVAILABLE);
+        }
+    }
+
+    /**
+     * 객체 크기(HEAD). 없으면 빈 값. 서명 주소만 내고 올렸는지 모르는 객체를 화면 전체가 쓰는 곳(현재 Scene)에 걸기 전에 본다(S15P31A101-322).
+     * 저장소에 닿지 못하거나 권한이 없으면 STORAGE_UNAVAILABLE. 로그에는 키를 남기지 않는다.
+     */
+    public OptionalLong size(String key) {
+        requireConfigured();
+        try {
+            return OptionalLong.of(client.headObject(HeadObjectRequest.builder().bucket(properties.bucket()).key(key).build())
+                    .contentLength());
+        } catch (AwsServiceException e) {
+            if (e.statusCode() == 404) {
+                return OptionalLong.empty();
+            }
+            log.warn("객체 저장소에서 객체 크기를 읽지 못했다: status={} code={}", e.statusCode(),
+                    e.awsErrorDetails() == null ? null : e.awsErrorDetails().errorCode());
+            throw new BusinessException(ErrorCode.Storage.STORAGE_UNAVAILABLE);
+        } catch (SdkException e) {
+            log.warn("객체 저장소에 닿지 못해 객체 크기를 읽지 못했다: {}", e.getClass().getSimpleName());
             throw new BusinessException(ErrorCode.Storage.STORAGE_UNAVAILABLE);
         }
     }

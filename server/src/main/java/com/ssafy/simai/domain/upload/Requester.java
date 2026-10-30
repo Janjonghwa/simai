@@ -11,11 +11,20 @@ import org.springframework.security.core.GrantedAuthority;
 record Requester(Kind kind, String deviceId, Long userId, String workerId) {
 
     enum Kind {
-        TIER0, DEVICE, USER, WORKER
+        TIER0, DEVICE, USER, WORKER,
+        // 관리자(Scene glTF, S15P31A101-322). 발급 기록에는 사람이라 USER 로 남긴다(upload_grant.requester CHECK)
+        ADMIN;
+
+        /** upload_grant.requester 에 쓰는 값 */
+        String stored() {
+            return this == ADMIN ? USER.name() : name();
+        }
     }
 
     /** 조치 사진을 받는 사람 역할. 업로드 체인(SecurityConfig)도 같은 Role 값으로 막는다 */
     static final String FOREMAN = "ROLE_" + Role.FOREMAN.name();
+    /** Scene glTF 를 올리는 관리자 역할(S15P31A101-322) */
+    static final String ADMIN = "ROLE_" + Role.ADMIN.name();
 
     /** 업로드 체인(SecurityConfig)이 붙인 권한으로 고른다. 사람은 JWT sub(user_id) 가 이름이다 */
     static Optional<Requester> of(Authentication auth) {
@@ -28,10 +37,11 @@ record Requester(Kind kind, String deviceId, Long userId, String workerId) {
         if (has(auth, MachineKind.WORKER.authority())) {
             return Optional.of(new Requester(Kind.WORKER, null, null, auth.getName()));
         }
-        if (has(auth, FOREMAN)) {
+        Kind person = has(auth, FOREMAN) ? Kind.USER : has(auth, ADMIN) ? Kind.ADMIN : null;
+        if (person != null) {
             // sub 는 user_id 다(AccessTokenIssuer). 숫자가 아니면 우리가 발급한 사용자 토큰이 아니라 거부한다
             try {
-                return Optional.of(new Requester(Kind.USER, null, Long.parseLong(auth.getName()), null));
+                return Optional.of(new Requester(person, null, Long.parseLong(auth.getName()), null));
             } catch (NumberFormatException e) {
                 return Optional.empty();
             }
