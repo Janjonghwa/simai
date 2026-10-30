@@ -75,13 +75,15 @@ public class AnalysisJobService {
         }
         jdbc.update("""
                 INSERT INTO analysis_job (job_id, job_type, priority, status, attempt, max_attempts, timeout_ms, input, event_id,
-                    requested_by, created_at)
+                    requested_by, created_at, deadline_at)
                 VALUES (:jobId, :jobType, :priority, 'QUEUED', 1, :maxAttempts, :timeoutMs, CAST(:input AS jsonb), :eventId,
-                    :requestedBy, :now)
+                    :requestedBy, :now, :deadline)
                 """, new MapSqlParameterSource().addValue("jobId", jobId).addValue("jobType", spec.jobType())
                 .addValue("priority", priority).addValue("maxAttempts", spec.maxAttempts()).addValue("timeoutMs", spec.timeoutMs())
                 .addValue("input", mapper.writeValueAsString(spec.input())).addValue("eventId", spec.eventId())
-                .addValue("requestedBy", spec.requestedBy()).addValue("now", I1Json.utc(now)));
+                .addValue("requestedBy", spec.requestedBy()).addValue("now", I1Json.utc(now))
+                .addValue("deadline", "vlm_rationale".equals(spec.jobType()) && spec.eventId() != null
+                        ? I1Json.utc(Instant.ofEpochMilli(spec.input().path("observation_time").longValue()).plusMillis(5000)) : null));
         signal.wake();
         return jobId;
     }

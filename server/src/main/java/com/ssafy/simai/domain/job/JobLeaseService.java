@@ -61,12 +61,13 @@ class JobLeaseService {
                 WITH next AS (
                     SELECT job_id FROM analysis_job
                     WHERE status = 'QUEUED' AND job_type = ANY(CAST(:types AS text[]))
+                        AND (deadline_at IS NULL OR deadline_at > :now)
                     ORDER BY CASE priority WHEN 'VLM_FAST' THEN 0 WHEN 'REPORT' THEN 1 ELSE 2 END, created_at, job_id
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED)
                 UPDATE analysis_job j SET status = 'LEASED' FROM next WHERE j.job_id = next.job_id
                 RETURNING j.job_id, j.job_type, j.priority, j.attempt, j.max_attempts, j.timeout_ms, j.input::text AS input
-                """, new MapSqlParameterSource("types", textArray(jobTypes)));
+                """, new MapSqlParameterSource("types", textArray(jobTypes)).addValue("now", I1Json.utc(now)));
         if (rows.isEmpty()) {
             return Optional.empty();
         }
@@ -154,6 +155,10 @@ class JobLeaseService {
         if (consume != null && !consume.booleanValue()) {
             // 반납: Tier 0 우선으로 돌려준 작업. 시도를 쓰지 않고 같은 attempt 로 다시 대기(마지막 시도여도 끝내지 않는다)
             closeLease(leaseId, "RELEASED", false, now);
+            if (job.pastDeadline(now)) {
+                finish(jobId, "TIMED_OUT", null, error("VLM_DEADLINE", "이벤트 관측부터 5초가 지났다"), startedAt, I1Json.utc(now));
+                return LeaseStatus.accepted();
+            }
             jdbc.update("UPDATE analysis_job SET status = 'QUEUED', error = CAST(:error AS jsonb) WHERE job_id = :jobId",
                     new MapSqlParameterSource().addValue("jobId", jobId).addValue("error", json(error)));
             signal.wake();
@@ -165,7 +170,9 @@ class JobLeaseService {
             case "TIMED_OUT" -> finish(jobId, "TIMED_OUT", null, error, startedAt, finishedAt);
             default -> {
                 // FAILED: 재시도 가능하고 시도가 남으면 새 대여로 다시 내준다
-                if (error.path("retryable").asBoolean(false) && job.attempt() < job.maxAttempts()) {
+                if (error.path("retryable").asBoolean(false) && job.pastDeadline(now)) {
+                    finish(jobId, "TIMED_OUT", null, error("VLM_DEADLINE", "이벤트 관측부터 5초가 지났다"), startedAt, I1Json.utc(now));
+                } else if (error.path("retryable").asBoolean(false) && job.attempt() < job.maxAttempts()) {
                     jdbc.update("""
                             UPDATE analysis_job SET status = 'QUEUED', attempt = attempt + 1, error = CAST(:error AS jsonb)
                             WHERE job_id = :jobId
@@ -182,6 +189,13 @@ class JobLeaseService {
     /** 만료 시각이 지난 ACTIVE 대여를 모두 만료 처리한다(스케줄러·대여 요청마다) */
     @Transactional
     void expireDue(Instant now) {
+        List<String> queued = jdbc.queryForList("""
+                SELECT job_id FROM analysis_job WHERE status = 'QUEUED' AND deadline_at <= :now
+                FOR UPDATE SKIP LOCKED
+                """, new MapSqlParameterSource("now", I1Json.utc(now)), String.class);
+        for (String jobId : queued) {
+            finish(jobId, "TIMED_OUT", null, error("VLM_DEADLINE", "이벤트 관측부터 5초가 지났다"), null, I1Json.utc(now));
+        }
         List<Lease> expired = jdbc.query("""
                 UPDATE job_lease SET status = 'EXPIRED' WHERE status = 'ACTIVE' AND lease_expires_at <= :now
                 RETURNING lease_id, job_id, worker_id, status, leased_at, lease_expires_at, reject_reason
@@ -223,7 +237,7 @@ class JobLeaseService {
             return;
         }
         boolean pastTimeout = !now.isBefore(lease.leasedAt().plusMillis(job.timeoutMs()));
-        if (!pastTimeout && job.attempt() < job.maxAttempts()) {
+        if (!pastTimeout && !job.pastDeadline(now) && job.attempt() < job.maxAttempts()) {
             jdbc.update("UPDATE analysis_job SET status = 'QUEUED', attempt = attempt + 1 WHERE job_id = :jobId",
                     new MapSqlParameterSource("jobId", lease.jobId()));
             signal.wake();
@@ -268,9 +282,10 @@ class JobLeaseService {
 
     private Job lockJob(String jobId) {
         return jdbc.query("""
-                SELECT job_type, status, attempt, max_attempts, timeout_ms FROM analysis_job WHERE job_id = :jobId FOR UPDATE
+                SELECT job_type, status, attempt, max_attempts, timeout_ms, deadline_at FROM analysis_job WHERE job_id = :jobId FOR UPDATE
                 """, new MapSqlParameterSource("jobId", jobId), (rs, i) -> new Job(rs.getString("job_type"),
-                rs.getString("status"), rs.getInt("attempt"), rs.getInt("max_attempts"), rs.getInt("timeout_ms")))
+                rs.getString("status"), rs.getInt("attempt"), rs.getInt("max_attempts"), rs.getInt("timeout_ms"),
+                rs.getObject("deadline_at", OffsetDateTime.class)))
                 .stream().findFirst().orElse(null);
     }
 
@@ -301,6 +316,10 @@ class JobLeaseService {
         }
     }
 
-    private record Job(String jobType, String status, int attempt, int maxAttempts, int timeoutMs) {
+    private record Job(String jobType, String status, int attempt, int maxAttempts, int timeoutMs, OffsetDateTime deadlineAt) {
+
+        boolean pastDeadline(Instant now) {
+            return deadlineAt != null && !now.isBefore(deadlineAt.toInstant());
+        }
     }
 }

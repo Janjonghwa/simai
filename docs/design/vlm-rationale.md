@@ -105,3 +105,94 @@
 
 - 실제 vLLM(Cosmos3-Nano)에서 json_schema 강제와 한국어 응답을 아직 보지 않았다(GPU 세션 없음). 다음 GPU 세션에서 합성 이미지 1건으로 스키마 적합과 지연을 본다.
 - 관문의 pose 검출은 워커 프로세스에서 프레임마다 한 번 돈다. 그 지연이 G7 5 s 안에 드는지 실제 GPU 에서 재야 한다.
+
+## EC2 작업 생성·결과 반영 (S15P31A101-329)
+
+관련 명세는 5.4·11.3·12.3·12.5·15.1 G7이다. 계약은 변경하지 않았다.
+
+### 서버 흐름과 코드·시험 위치
+
+1. `domain/event/VlmRationaleIngestor`를 I1 저장기로 등록했다. `event_frame_ready` 1.x를 원본 계약으로 검사하고,
+   `source_id`가 이벤트의 `gateway_id`와 같은지 확인한다. 이벤트 행을 잠근 뒤 LIVE·CRITICAL이고 AUDIT_ONLY가 아니며,
+   현재 sequence의 관측 시각에서 5초 전이고 기존 `vlm_rationale` 작업이 없을 때만 등록한다.
+   재전송의 msg_id가 달라도 이벤트 ID로 중복을 거른다. V18의 부분 유일 인덱스가 DB에서도 병합 이벤트당 한 작업을 보장한다.
+   이미 성공·실패·취소된 작업도 재생성하지 않는다. 이벤트 전이가 아직 없거나 스냅샷만 있어 관측 시각을 모르면 생성하지 않는다.
+2. 작업은 `AnalysisJobService`에 `vlm_rationale`로 넣는다. 우선순위 `VLM_FAST`, `timeout_ms=5000`, `max_attempts=2`다.
+   두 시도는 기존 계약 예시와 같은 초기값이며, 재시도가 GPU를 계속 점유하지 않게 제한했다.
+   이벤트의 규칙·등급·확인 필요·지표·World ID·관측 시각을 입력에 복사하고 프레임 주소와 촬영 시각 세 값은 그대로 둔다.
+   모든 프레임의 `face_policy`는 BLURRED다. 사후 클립을 기다리지 않으며 사후 프레임 제외는 -25 워커가 한다.
+3. `structured_state.tracks[]`는 같은 gateway·World ID의 이벤트 `evidence_ref`가 가리킨 World 상태만 읽는다.
+   ref가 없을 때는 이벤트 관측 시각과 정확히 같은 상태만 쓴다. 이벤트보다 미래의 상태를 붙이지 않고, 없으면 빈 tracks다.
+   위치는 미터 XY 그대로다. `head_z_validity=VALID`일 때만 머리 높이를 넣고 나머지는 null이며,
+   `head_z_validity`·`observation_state`·존재하는 `input_provenance`도 함께 둔다.
+   zone은 이벤트 관측 시각에 유효한 판의 `eval_type`을 `judge_type`에 넣는다. 없으면 null로 둔다.
+4. 이벤트 관련 VLM 작업의 `analysis_job.deadline_at`은 입력 `observation_time+5000ms`다.
+   기준은 이번 작업이 설명하는 이벤트 상태의 Tier 0 관측 시각이며, EC2 프레임 수신·큐 등록·워커 실행 시작 시각으로 미루지 않는다.
+   대여 SELECT가 이 시각부터 작업을 제외하고, 스케줄러/대여 요청의 만료 정리에서 대기 작업을 TIMED_OUT으로 끝낸다.
+   재시도 가능한 실패는 5초 전이면서 시도가 남았을 때만 다음 attempt로 돌린다. 시도 미소비 반납도 5초가 지나면 끝낸다.
+   대여 만료 후 재할당에도 같은 제한을 둔다. 실패하면 근거를 만들거나 기존 등급을 바꾸지 않는다.
+5. I5 컨트롤러가 `job_callback` 계약을 검사한다. `JobLeaseService`가 소유 워커·대여 유효성·중복을 확인한 뒤
+   `VlmRationaleListener`가 입력의 event_id·event_sequence·severity와 결과를 비교하고 현재 이벤트의 LIVE·severity도 확인한다.
+   MVP의 `proposed_severity`는 null, `clause_ids`는 없거나 빈 배열만 허용한다. 어긋난 결과는 제출 전체를 롤백한다.
+   나중에 이벤트 sequence가 증가했어도 입력 상태에 대한 근거는 저장할 수 있다. 결과 sequence를 현재 sequence로 바꾸지는 않는다.
+6. 성공 제출 트랜잭션 안에서 `vlm_assessment`에 추가하고 `risk_event.rationale`·`proposed_severity` 최신 투영만 갱신한다.
+   등급·생명주기·전이 이력·World 값은 변경하지 않는다. 저장 중 오류가 나면 제출 상태·평가·투영 모두 롤백된다.
+   중복 대여 제출은 DUPLICATE이고, 평가의 job_id 유일성도 중복 추가를 막는다.
+7. `RiskEventsDelivered`를 발행하면 기존 `Tier0Relay`가 커밋 뒤 `/topic/events`에 `risk_event` 2.0.0 봉투로 보낸다.
+   payload는 `EventQueryRepository`의 기존 화면 투영이므로 `rationale` 문자열과 null인 `proposed_severity`를 그대로 읽는다.
+   이 이벤트는 새 현장 경보·알림 생성에 쓰지 않는다.
+
+V18은 로컬 `origin/dev`의 최신 V17 다음 번호다. V1에는 `vlm_assessment`가 주석에만 있었으므로
+`docs/design/db-tables.md` H절의 칸에 G7용 `event_observed_at`·`event_to_rationale_ms`를 더해 신설했다.
+`created_at`은 EC2 저장 시계, `latency_ms`는 워커 처리 지연이라 서로 다르다.
+이미 유효한 대여의 성공 결과는 I5 계약대로 5초 뒤에도 받으며, 실제 지연을 그대로 기록한다. 5초는 신규 대여·재시도 중단선이며,
+늦은 성공을 버려 G7 지표가 좋아 보이게 하지 않는다.
+
+시험 위치:
+
+- `domain/event/VlmRationaleTest`: I1 입력 계약·필터·BLURRED·중복·출처·콜백 일치·근거 투영·발행 요청·G7 시각.
+- `domain/job/VlmDeadlineTest`: 4999/5000ms 경계, 남은 시도, 시도 미소비 반납 제한.
+- `domain/job/VlmRationaleIntegrationTest`: 동시 프레임 통지의 실제 잠금·한 작업, World 입력, 결과 저장·I2 릴레이의 화면 계약,
+  중복 콜백, 잘못된 결과의 제출 전체 롤백, 새 lease/attempt 재시도, 5초 뒤 대여 중단.
+- 기존 `WorkerJobIntegrationTest`: 다른 작업 유형과 I5 대여·연장·제출·반납 회귀.
+
+### 9차 GPU 세션에서 볼 로그·DB
+
+Pod는 검증 큐를 준비한 뒤에만 켠다. LIVE CRITICAL 한 건에서 Tier 0의 `event_frame_ready` 전송,
+EC2 `simai.i1.messages{msg_type=event_frame_ready,result=stored}` 증가, 워커의 `vlm_rationale` 대여·처리를 연결해 본다.
+성공 시 EC2 로그 `VLM 근거 저장: event_id=... job_id=... event_to_rationale_ms=...`가 한 번 나온다.
+로그에는 프레임 주소·영상·근거 본문을 남기지 않는다. 다음 SQL은 읽기 전용이다.
+
+```sql
+-- 등록·대여·실패 코드: 한 이벤트에 한 행, VLM_FAST/5000/최대 2시도
+SELECT event_id, job_id, priority, timeout_ms, status, attempt, max_attempts,
+       created_at, deadline_at, error->>'code' AS error_code
+FROM analysis_job WHERE job_type = 'vlm_rationale' ORDER BY created_at DESC LIMIT 20;
+
+-- G7: 워커 지연과 이벤트→EC2 저장 지연을 별도로 본다
+SELECT a.event_id, a.job_id, a.event_sequence, a.rule_severity, e.severity,
+       a.proposed_severity, a.latency_ms, a.event_observed_at, a.created_at, a.event_to_rationale_ms,
+       e.rationale = a.text AS latest_matches
+FROM vlm_assessment a JOIN risk_event e USING (event_id) ORDER BY a.created_at DESC LIMIT 20;
+
+SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY event_to_rationale_ms) AS g7_p95_ms,
+       count(*) AS succeeded_samples
+FROM vlm_assessment WHERE job_type = 'vlm_rationale';
+
+SELECT job_id, lease_id, attempt, status, leased_at, submitted_at, consume_attempt
+FROM job_lease WHERE job_id IN (SELECT job_id FROM analysis_job WHERE job_type = 'vlm_rationale')
+ORDER BY leased_at DESC LIMIT 30;
+```
+
+측정 시 해당 세션의 event_id/시간 범위로 제한한다. 성공 지연 분포와 함께 FAILED·TIMED_OUT·근거 없는 이벤트 수도 별도로 센다.
+관제 화면의 AI 설명이 새로고침 없이 나타나는지, 등급과 원본 전이 수가 그대로인지, 같은 이벤트 재통지에도 작업/평가가 한 건인지 확인한다.
+입력 받기/VLM 실패를 재현해 5초 전에는 남은 시도만 다시 나가고 5초부터는 대여가 없으며 근거 없이 남는지도 확인한다.
+
+### 잔여 위험·넘긴 일
+
+- 실제 Postgres(PostGIS·TimescaleDB) 마이그레이션·잠금·STOMP 경로는 로컬 DB 통합 시험과 9차 세션에서 확인한다.
+  배포 전 기존 데이터에 같은 event_id의 `vlm_rationale` 작업이 여러 건 없는지 확인한다(유일 인덱스는 중복 데이터에서 실패한다).
+- 프레임 통지가 이벤트 전이보다 먼저 오거나 관측 시각 없는 스냅샷만 있으면 작업을 생성하지 않는다.
+  프레임을 별도 보관해 뒤늦게 결합하는 큐는 이번 범위 밖이다. -328 송신 순서를 함께 확인한다.
+- 이벤트 상태 전이와 프레임 업로드·객체 내려받기·얼굴 관문·GPU 대기·VLM·DB 지연을 합친 G7 실측은 9차 세션 몫이다.
+- STOMP는 기존 비영속 릴레이를 따른다. 브로커 오류 시 DB 근거는 보존되고 REST 재조회로 읽을 수 있으나 실시간 재전송은 보장하지 않는다.
