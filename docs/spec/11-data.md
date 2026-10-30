@@ -20,7 +20,8 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `site` | World 좌표계 정의(원점·축·스케일 근거), BEV 평면도 참조, 좌표계 이전 이력 |
 | `camera` | 카메라 ID, 모델, 하드웨어·펌웨어 버전, 해상도·fps |
 | `calibration_version` | 카메라별 K·왜곡·R·t·높이, 재투영 오차, 스케일 근거, 상태 |
-| `scene_version` | 정적 3D 자산 주소, 사용한 보정 버전, 상태 |
+| `scene_version` | 정적 3D 자산 주소(`GLTF_VISUAL`, `SURFACE_SOURCE_MAP`), 사용한 보정 버전, 작업·생성 기록(`job_id`, `run_id`), 상태(`CANDIDATE`·`COMMITTED`·`REJECTED`) |
+| `scene_activation` | Scene 버전 활성화·되돌리기 이력(누가·언제·이유, 추가만). 가장 최근 이력이 가리키는 버전이 현재 활성(`COMMITTED`) Scene 정본이다(12.6, `docs/design/scene-version-from-job.md`) |
 | `zone` | 다각형 + 높이 범위, 판정 유형(GROUND_FOOTPRINT/VOLUME_3D), 유형, 심각도, 요구 조건, 유효 시작·종료 |
 | `rule_version` | 규칙 ID, 임계값 세트, 적용 기간(시험 프로파일 포함, 7.4). 값은 AI 규칙 등록부에서 뽑으며 같은 버전의 값은 바꾸지 않는다(첫 운영 배포 전 예외, 11.4-1). 근거 조항(`legal_basis`)은 비어 있으면 시드가 채우고, 다른 값이 있으면 첫 운영 배포 전에는 갱신하고 뒤에는 마이그레이션이 멈춘다(7.1) |
 | `equipment_asset` | GLB 주소, 반경·형상 파라미터(확장, 부록 C) |
@@ -53,14 +54,14 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 |---|---|
 | `risk_event` | 규칙·버전, World ID·구역, 출처, 생명주기·검증 상태, severity·confidence·confidence_reasons, 발생·해소 시각, 근거 스냅샷, 관련 이벤트(related_event_id), 보존 표시 |
 | `risk_event_update` | RunPod Tier 0 전이의 시간순 기록(event_sequence, config_version, 지연 전달·감사 전용 여부). 저널 위치는 저널 세대(`journal_epoch`)와 offset 으로 가른다(Tier 0 저널이 offset 0 부터 새로 시작하면 EC2 가 세대를 올린다) |
-| `vlm_assessment` | 이벤트, 작업 유형(`vlm_rationale`·`incident_summary`)·job_id, 모델·버전, 입력 참조, 근거·요약 문장, 인용 조항 ID, 상향 의견(proposed_severity), 관리자 결정(승인·거절, 누가·언제, `escalation_id`), 지연 |
+| `vlm_assessment` | 이벤트, 작업 유형(`vlm_rationale`·`incident_summary`)·job_id, 모델·버전, 입력 참조, 근거·요약 문장, 인용 조항 ID, 상향 의견(proposed_severity), 관리자 결정(승인·거절, 누가·언제, `escalation_id`), G7 종단간 지연(`event_observed_at`, `event_to_rationale_ms`)과 추론 지연 |
 | `notification` | 이벤트, 채널, 대상, 발송·수신 확인·ACK 시각 (LIVE 이벤트만 연결 가능. 시험 알림은 이 테이블에 넣지 않음). 발송 대기열을 겸해 발송 워커 임대 기한(`claimed_until`)을 두고, 비었거나 지난 대기 건은 다시 꺼낸다 |
 | `action_ticket` | 조치 상태, 사진 주소, 해소 상태와의 불일치 표시 |
 | `media_clip` | 이벤트 연결 영상 구간의 객체 키, 카메라·구간(촬영 시각)·해시·크기, 얼굴 흐림 여부, 삭제 예정일, 보존 표시. Tier 0 가 I1 `media_clip` 으로 보내고, 보낸 뒤 붙는 CRITICAL 자동 보존은 고치지 않고 `media_clip_retention` 으로 이력을 더한다 |
 | `report` | 보고서 종류(TBM·DAILY), 레이아웃·계산 결과(`sim.*`) 참조, 생성 상태, 본문, 인용 목록 |
 | `event_ack` | 운영자 확인: 누가·어디서·확인 대상 `event_sequence`(3.10). 저널의 ACKNOWLEDGED 전이가 가리킨다 |
 | `event_close` | 운영자 종료 명령과 Tier 0 결과(6.4). REST 요청의 멱등 키는 따로 저장하고(유일), `close_id` 는 EC2 가 발급한다. 종료 전이가 가리킨다 |
-| `event_escalation` | 승인한 VLM 상향 의견의 적용 명령과 Tier 0 결과(5.4). 상향 전이가 가리킨다 |
+| `event_escalation` | 승인한 VLM 상향 의견의 적용 명령과 Tier 0 응답 결과(`result_status`: `PENDING`·`ACCEPTED`·`DUPLICATE`·`REJECTED`, `reject_reason`, `result_received_at`, 5.4). 상향 전이가 가리킨다 |
 | `journal_cursor` | Tier 0 인스턴스별 저널 수신 상태: 지금 받는 저널 세대(`journal_epoch`), `acked_offset`, 재동기화 중 여부, 마지막 스냅샷(3.2) |
 | `i1_deferred_message` | 앞선 메시지를 기다리는 I1 메시지(받은 봉투 그대로, 처리되면 지움) |
 | `event_frame` | 이벤트 프레임 주소와 촬영 시각(I1 `event_frame_ready`, VLM 입력) |
