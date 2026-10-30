@@ -19,6 +19,7 @@ from simai_ai.tracking.cross_view import (
     LocalTrackletBuffer,
     LocalView,
     PairEvidence,
+    RejectReason,
     UncertainReason,
     ViewCluster,
 )
@@ -185,7 +186,7 @@ def _shifted_duplicate_views(rig):
     """cam1 이 같은 사람을 6 px 어긋나게 한 번 더 검출한 입력. 비용 차가 커서 애매함 검사에는 걸리지 않는다."""
     person = skeleton(4.0, 3.0)
     views = views_of(rig, {"a": person})
-    views.append(lv("cam1", "cam1-a2", project(rig, "cam1", person, shift=(6.0, 0.0))))
+    views.append(lv("cam1", "cam1-a2", project(rig, "cam1", person, shift=(6.5, 0.0))))
     return views
 
 
@@ -339,7 +340,7 @@ def test_floor_cost_is_monotonic_in_gap(rig):
         moved = project(rig, "cam2", other)
         kps[15], kps[16] = moved[15], moved[16]
         ev = assoc._pair(base, assoc._prepare(lv("cam2", "cam2-a", tuple(kps))))
-        floor_cost = ev.cost - ev.epipolar_px / config.epipolar_scale_px - ev.residual_px / config.residual_scale_px
+        floor_cost = round(ev.cost - ev.epipolar_px / config.epipolar_scale_px - ev.residual_px / config.residual_scale_px, 12)
         costs.append(floor_cost)
     assert costs == sorted(costs)
     assert costs[0] < 0.05 and costs[2] < config.floor_missing_cost
@@ -423,3 +424,93 @@ def test_non_finite_keypoint_is_not_an_observation(rig, bad):
     assert len(a.keys) == 4 and not a.identity_uncertain
     assert "cam1" not in a.skeleton.joints[0].camera_ids
     assert a.skeleton.joints[0].xyz is not None
+
+
+def _noisy_lower_body_views(rig):
+    """cam2 에서 머리·상체(0..7)는 정확하고 하체·말단 9개 관절(8..16: 팔꿈치·손목·엉덩이·무릎·발목)이 흔들린 입력."""
+    person = skeleton(3.5, 3.0)
+    views = views_of(rig, {"a": person}, cameras=("cam1", "cam3", "cam4"))
+    kps = list(project(rig, "cam2", person))
+    for j in range(8, 17):
+        u, v, c = kps[j]
+        kps[j] = (u, v + 26.0, c)
+    views.append(lv("cam2", "cam2-a", tuple(kps)))
+    return views
+
+
+def _epipolar_noisy_lower_body_pair(rig):
+    """cam2 에서 상체(0..10)는 약간(10 px), 하체 6개 관절(11..16: 엉덩이·무릎·발목)은 크게(48 px) 흔들린 2대 입력."""
+    person = skeleton(3.5, 3.0)
+    v1 = lv("cam1", "cam1-a", project(rig, "cam1", person))
+    kps = list(project(rig, "cam2", person))
+    for j in range(11):
+        u, v, c = kps[j]
+        kps[j] = (u, v + 10.0, c)
+    for j in range(11, 17):
+        u, v, c = kps[j]
+        kps[j] = (u, v + 48.0, c)
+    v2 = lv("cam2", "cam2-a", tuple(kps))
+    return [v1, v2]
+
+
+def test_noisy_lower_body_pair_passes_with_joint_noise_weighting(rig):
+    """흔들리는 하체·말단 관절 때문에 비가중 중앙값·평균에서는 기각되던 쌍이 관절 잡음 가중(V1a) 뒤 통과한다 (-354)."""
+    assoc = CrossViewAssociator(rig)
+    frame = assoc.associate(T, _noisy_lower_body_views(rig))
+    assert len(frame.clusters) == 1
+    (c,) = frame.clusters
+    assert set(c.camera_ids) == set(CORNERS) and not c.identity_uncertain
+    cam2_pairs = [p for p in frame.pairs if "cam2" in (p.a[0], p.b[0])]
+    assert len(cam2_pairs) == 3
+    assert all(p.feasible and not p.marginal and p.residual_px <= assoc.config.residual_marginal_px for p in cam2_pairs)
+
+    epi_frame = CrossViewAssociator(rig).associate(T, _epipolar_noisy_lower_body_pair(rig))
+    (ep,) = epi_frame.pairs
+    assert ep.epipolar_px <= assoc.config.epipolar_gate_px
+    assert ep.reject is not RejectReason.EPIPOLAR
+
+
+def test_wrong_person_pair_still_rejected_with_joint_noise_weighting(rig):
+    """관절 잡음 가중(V1a)을 켜도 전신이 어긋난 다른 사람 쌍은 여전히 기각된다 (-354)."""
+    people = {"a": skeleton(2.0, 5.0), "b": skeleton(7.0, 2.5)}
+    frame = CrossViewAssociator(rig).associate(T, views_of(rig, people))
+    assert len(frame.clusters) == 2
+    assert_pure_and_exclusive(frame)
+    for p in frame.pairs:
+        if owner(p.a) == owner(p.b):
+            assert p.feasible
+        else:
+            assert not p.feasible and math.isinf(p.cost)
+
+    # 모든 관절이 고르게 20 px 어긋난 다른 트랙도 정규화 가중 합이 1 이라 문턱이 느슨해지지 않고 기각된다
+    person = skeleton(3.5, 3.0)
+    shifted_all = [
+        lv("cam1", "cam1-a", project(rig, "cam1", person)),
+        lv("cam2", "cam2-b", project(rig, "cam2", person, shift=(0.0, 28.0))),
+    ]
+    (bad_pair,) = CrossViewAssociator(rig).associate(T, shifted_all).pairs
+    assert not bad_pair.feasible and math.isinf(bad_pair.cost)
+
+
+def test_joint_noise_weighted_false_matches_unweighted_behavior(rig):
+    """설정(`joint_noise_weighted=False`)으로 끄면 예전 비가중 평균·중앙값과 같고 하체 흔들림 쌍을 기각한다 (-354)."""
+    unweighted_cfg = CrossViewConfig(joint_noise_weighted=False)
+    assoc_off = CrossViewAssociator(rig, unweighted_cfg)
+    frame_off = assoc_off.associate(T, _noisy_lower_body_views(rig))
+    cam2_pairs = [p for p in frame_off.pairs if "cam2" in (p.a[0], p.b[0])]
+    assert any(p.reject is RejectReason.RESIDUAL and p.residual_px > unweighted_cfg.residual_gate_px for p in cam2_pairs)
+    assert frame_off.cluster_of(("cam2", "cam2-a")).keys == (("cam2", "cam2-a"),)
+
+    (ep_off,) = CrossViewAssociator(rig, unweighted_cfg).associate(T, _epipolar_noisy_lower_body_pair(rig)).pairs
+    assert ep_off.reject is RejectReason.EPIPOLAR and ep_off.epipolar_px > unweighted_cfg.epipolar_gate_px
+
+    # 묶음 경로(`_pairs`)와 단일 쌍 경로(`_pair`)가 켬·끔 모두에서 일치한다
+    for weighted in (True, False):
+        assoc = CrossViewAssociator(rig, CrossViewConfig(joint_noise_weighted=weighted))
+        prepared = {v.key: assoc._prepare(v) for v in _noisy_lower_body_views(rig)}
+        for (ka, kb), ev in assoc._pairs(prepared).items():
+            single = assoc._pair(prepared[ka], prepared[kb])
+            assert ev.reject == single.reject and ev.marginal == single.marginal
+            assert ev.epipolar_px == pytest.approx(single.epipolar_px, abs=1e-9)
+            assert ev.residual_px == pytest.approx(single.residual_px, abs=1e-9)
+            assert ev.cost == pytest.approx(single.cost, abs=1e-9)
