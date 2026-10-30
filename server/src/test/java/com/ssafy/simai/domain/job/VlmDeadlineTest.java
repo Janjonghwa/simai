@@ -56,7 +56,8 @@ class VlmDeadlineTest {
     void 재시도가능_실패는_5초_전이면_다음_시도로_돌린다() {
         assertThat(leases.submit("worker", "job-vlm", failed(false), observed.plusMillis(4999)).status()).isEqualTo(LeaseStatus.Status.ACCEPTED);
         verify(jdbc).update(contains("attempt = attempt + 1"), any(SqlParameterSource.class));
-        verifyNoInteractions(events);
+        // 다시 대기열로 돌아가는 상태 변경(JobStateChanged, -369)은 나가도 되고, 작업이 끝났다는 JobFinished 는 나가지 않아야 한다
+        verify(events, never()).publishEvent(argThat((Object e) -> e instanceof JobFinished));
     }
 
     @Test

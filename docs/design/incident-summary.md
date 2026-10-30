@@ -83,4 +83,68 @@ job_request (incident_summary, priority REPORT)
 
 - EC2(`S15P31A101-369`)는 이벤트 클립(`media_clip`)이 모이거나 운영자가 구간 요약을 요청할 때 `job_request` 3.4.0 형식으로 `incident_summary` 작업을 등록한다:
   - `clips[]` 각 원소에 `media_clip` 의 `clip_id`, `camera_id`, `object_key`, `clip_uri`(`s3://<버킷>/<object_key>`), `clip_start_capture_ms`, `clip_end_capture_ms`, `frame_count`, `container` 를 채운다.
-  - `job_callback` 2.4.0 `SUCCEEDED` 의 `result`(`summary`, `evidence_timestamps_ms`, `window_start_ms`, `window_end_ms`, `frames_used`, `model_version`, `latency_ms`)를 받아 이벤트 요약 기록으로 저장하고 관제 화면에 제공한다.
+  ## EC2 서버 흐름·API (`S15P31A101-369`)
+
+명세 5.2(비용 제한·클립 생성 뒤 사후 요청), 5.6(사고 구간 사후 요약), 12.5(I5 `incident_summary`), 12.6(`POST /api/events/{eventId}/summary`, `GET /api/events/{eventId}`).
+코드는 `server/src/main/resources/db/migration/V20__incident_summary.sql`, `IncidentSummaryService.java`, `EventController.java`, `EventQueryRepository.java`, `JobLeaseService.java`(`JobStateChanged`).
+
+### 1. 서버 흐름
+
+```
+POST /api/events/{eventId}/summary (ROLE_ADMIN, 본문 없음)
+  → risk_event 행 잠금(FOR UPDATE): 없으면 404 EVENT_NOT_FOUND, source != 'LIVE' 면 409 EVENT_NOT_LIVE
+  → 진행 중인 요약(incident_summary.status IN ('QUEUED', 'RUNNING')) 확인: 있으면 새 작업을 만들지 않고 200 OK 로 기존 항목 반환
+  → 삭제되지 않은 클립(media_clip.deleted_at IS NULL) 조회: 0개면 409 CLIP_NOT_READY
+  → 클립 구간(window_start_ms = min(clip_start_capture_at), window_end_ms = max(clip_end_capture_at), anchor_capture_ms) + face_policy = "BLURRED" + structured_state(rule_id, severity, zone_id, metrics, transitions, tracks, zone) 조립
+  → AnalysisJobService.enqueue(jobType = "incident_summary", priority = REPORT, maxAttempts = 2, timeoutMs = 120_000) → job_request 3.4.0 스키마 검사 통과
+  → incident_summary 정본 행 INSERT (status = 'QUEUED') + RiskEventsDelivered 발행(STOMP /topic/events) → 202 Accepted
+
+워커 대여·반납·재시도 (JobStateChanged)
+  → tryLease(LEASED): incident_summary.status 를 RUNNING 으로 바꾸고 RiskEventsDelivered 발행
+  → unlease / consume_attempt=false 반납 / retryable 실패 재큐잉(QUEUED): incident_summary.status 를 QUEUED 로 되돌리고 RiskEventsDelivered 발행
+
+워커 콜백·만료 (JobFinished)
+  → SUCCEEDED: input 과 result 의 event_id·event_sequence·window_start_ms·window_end_ms 일치, evidence_timestamps_ms 모두 구간 안, severity·proposed_severity 미포함, LIVE 이벤트 확인(위반 시 400 INVALID_WORKER_MESSAGE 로 트랜잭션 롤백)
+    → incident_summary 행을 SUCCEEDED 로 갱신(summary, evidence_timestamps_ms, frames_used, model_version, latency_ms, finished_at) + RiskEventsDelivered 발행
+    → risk_event 의 severity·proposed_severity·rationale 은 절대 바꾸지 않는다(AGENTS 규칙 4)
+  → FAILED / TIMED_OUT / CANCELLED: incident_summary 행을 FAILED 또는 TIMED_OUT 으로 갱신(error_code, finished_at) + RiskEventsDelivered 발행
+  → 완료(SUCCEEDED)·실패(FAILED)·타임아웃(TIMED_OUT) 뒤 재요청하면 기존 행을 덮어쓰지 않고 새 job_id·summary_id 행을 추가한다(AGENTS 규칙 6 추가 전용)
+```
+
+### 2. API·투영 형식 (`-368` 관제 화면과 공유)
+
+- `POST /api/events/{eventId}/summary` (관리자 전용, 본문 없음)
+  - 신규 생성 시 `202 Accepted`, 진행 중(`QUEUED`·`RUNNING`) 중복 요청 시 `200 OK` 로 아래 요약 항목 JSON 을 반환한다.
+  - 오류: `404 EVENT_NOT_FOUND`, `409 EVENT_NOT_LIVE`, `409 CLIP_NOT_READY`, `401`/`403`.
+- `GET /api/events/{eventId}`, `GET /api/events`, STOMP `/topic/events` 이벤트 객체 안 `summaries` 배열(최신순 `requested_at DESC, summary_id DESC`):
+
+```json
+"summaries": [
+  {
+    "summary_id": 1,
+    "job_id": "job-0199df4d-0002-7000-8000-000000000002",
+    "status": "QUEUED | RUNNING | SUCCEEDED | FAILED | TIMED_OUT",
+    "requested_at": 1760342400400,
+    "finished_at": 1760342412050,
+    "summary": "비계 2단 작업 중 안전대 미체결 상태로 몸을 내밀어 추락 위험이 발생한 뒤 복귀했습니다.",
+    "evidence_timestamps_ms": [1760342395000, 1760342400100],
+    "window_start_ms": 1760342380000,
+    "window_end_ms": 1760342420000,
+    "error_code": null
+  }
+]
+```
+
+### 3. 9차 GPU 세션 검증 방법 (EC2 ↔ 워커 종단 확인)
+
+- 관리자 토큰으로 클립이 올라온 `LIVE` 이벤트에 `POST /api/events/{eventId}/summary` 를 호출해 `202 Accepted`(`status: "QUEUED"`)를 확인한다.
+- GPU 워커가 대여(`/api/worker/jobs/lease`) → 클립 GET 서명(`/api/worker/jobs/{jobId}/objects/sign`) → VLM 요약 → 콜백(`/api/worker/jobs/{jobId}/result`)을 마친 뒤 `GET /api/events/{eventId}` 와 PostgreSQL 정본을 대조한다:
+  ```sql
+  SELECT summary_id, event_id, event_sequence, job_id, status, requested_at, finished_at,
+         window_start_ms, window_end_ms, frames_used, model_version, latency_ms, error_code,
+         evidence_timestamps_ms, summary
+  FROM incident_summary
+  WHERE event_id = '<event_id>'
+  ORDER BY requested_at DESC, summary_id DESC;
+  ```
+- STOMP `/topic/events` 구독 화면에서 `QUEUED` → `RUNNING` → `SUCCEEDED` 상태 변화와 근거 시각(`evidence_timestamps_ms`) 표시, 이벤트 `severity` 불변을 함께 확인한다.

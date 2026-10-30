@@ -81,6 +81,7 @@ class JobLeaseService {
                 """, new MapSqlParameterSource().addValue("leaseId", job.leaseId()).addValue("jobId", job.jobId())
                 .addValue("workerId", workerId).addValue("attempt", job.attempt()).addValue("leasedAt", I1Json.utc(now))
                 .addValue("expiresAt", I1Json.utc(job.leaseExpiresAt())).addValue("interval", job.heartbeatIntervalMs()));
+        events.publishEvent(new JobStateChanged(job.jobId(), job.jobType(), "LEASED"));
         return Optional.of(job);
     }
 
@@ -94,8 +95,10 @@ class JobLeaseService {
                 UPDATE job_lease SET status = 'REJECTED', reject_reason = 'LEASE_EXPIRED' WHERE lease_id = :leaseId AND status = 'ACTIVE'
                 RETURNING job_id
                 """, new MapSqlParameterSource("leaseId", leaseId), (rs, i) -> rs.getString("job_id"))
-                .forEach(jobId -> jdbc.update("UPDATE analysis_job SET status = 'QUEUED' WHERE job_id = :jobId AND status = 'LEASED'",
-                        new MapSqlParameterSource("jobId", jobId)));
+                .forEach(jobId -> jdbc.queryForList("UPDATE analysis_job SET status = 'QUEUED' WHERE job_id = :jobId AND status = 'LEASED' RETURNING job_type",
+                        new MapSqlParameterSource("jobId", jobId), String.class)
+                        .forEach(type -> events.publishEvent(new JobStateChanged(jobId, type, "QUEUED"))));
+
         signal.wake();
     }
 
@@ -160,7 +163,8 @@ class JobLeaseService {
                 return LeaseStatus.accepted();
             }
             jdbc.update("UPDATE analysis_job SET status = 'QUEUED', error = CAST(:error AS jsonb) WHERE job_id = :jobId",
-                    new MapSqlParameterSource().addValue("jobId", jobId).addValue("error", json(error)));
+                        new MapSqlParameterSource().addValue("jobId", jobId).addValue("error", json(error)));
+            events.publishEvent(new JobStateChanged(jobId, job.jobType(), "QUEUED"));
             signal.wake();
             return LeaseStatus.accepted();
         }
@@ -177,6 +181,7 @@ class JobLeaseService {
                             UPDATE analysis_job SET status = 'QUEUED', attempt = attempt + 1, error = CAST(:error AS jsonb)
                             WHERE job_id = :jobId
                             """, new MapSqlParameterSource().addValue("jobId", jobId).addValue("error", json(error)));
+                    events.publishEvent(new JobStateChanged(jobId, job.jobType(), "QUEUED"));
                     signal.wake();
                 } else {
                     finish(jobId, "FAILED", null, error, startedAt, finishedAt);
@@ -240,6 +245,7 @@ class JobLeaseService {
         if (!pastTimeout && !job.pastDeadline(now) && job.attempt() < job.maxAttempts()) {
             jdbc.update("UPDATE analysis_job SET status = 'QUEUED', attempt = attempt + 1 WHERE job_id = :jobId",
                     new MapSqlParameterSource("jobId", lease.jobId()));
+            events.publishEvent(new JobStateChanged(lease.jobId(), job.jobType(), "QUEUED"));
             signal.wake();
         } else {
             finish(lease.jobId(), "TIMED_OUT", null,

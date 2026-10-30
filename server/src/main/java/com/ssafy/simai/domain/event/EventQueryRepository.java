@@ -55,6 +55,7 @@ public class EventQueryRepository {
                 new MapSqlParameterSource().addValue("size", size).addValue("offset", (long) page * size),
                 (rs, i) -> toPayload(rs));
         attachAcks(events);
+        attachSummaries(events);
         return events;
     }
 
@@ -67,6 +68,7 @@ public class EventQueryRepository {
         List<ObjectNode> events = jdbc.query("SELECT " + COLUMNS + " FROM risk_event WHERE source = 'LIVE' AND event_id = :id",
                 new MapSqlParameterSource("id", eventId), (rs, i) -> toPayload(rs));
         attachAcks(events);
+        attachSummaries(events);
         return events.stream().findFirst();
     }
 
@@ -159,6 +161,27 @@ public class EventQueryRepository {
                 .addValue("ackId", ackId).addValue("eventId", eventId).addValue("target", target)
                 .addValue("channel", channel).addValue("role", actorRole).addValue("userId", userId)
                 .addValue("ackedAt", ackedAt));
+    }
+
+    private void attachSummaries(List<ObjectNode> events) {
+        if (events.isEmpty()) {
+            return;
+        }
+        Map<String, ArrayNode> byEvent = new LinkedHashMap<>();
+        for (ObjectNode event : events) {
+            byEvent.put(event.get("event_id").asString(), event.putArray("summaries"));
+        }
+        Collection<UUID> ids = byEvent.keySet().stream().map(UUID::fromString).toList();
+        jdbc.query("""
+                SELECT summary_id, event_id, job_id, status, requested_at, finished_at, summary,
+                    evidence_timestamps_ms, window_start_ms, window_end_ms, error_code
+                FROM incident_summary
+                WHERE event_id IN (:ids)
+                ORDER BY requested_at DESC, summary_id DESC
+                """, new MapSqlParameterSource("ids", ids), rs -> {
+            ObjectNode s = byEvent.get(rs.getString("event_id")).addObject();
+            IncidentSummaryService.mapSummaryRow(rs, s);
+        });
     }
 
     private void attachAcks(List<ObjectNode> events) {
