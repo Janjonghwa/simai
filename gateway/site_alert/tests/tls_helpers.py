@@ -248,6 +248,32 @@ class FakeEc2:
         self._srv.server_close()
 
 
+class _TlsThreadingServer(http.server.ThreadingHTTPServer):
+    """TLS 수립을 받는 스레드가 아니라 요청 스레드에서, 제한 시간을 두고 한다(S15P31A101-370).
+
+    듣는 소켓을 통째로 감싸면 accept 안에서 제한 없이 수립해, 느린 CI 에서 수립 하나가 끝나지 않을 때
+    serve_forever 가 멈추고 shutdown() 이 끝없이 기다렸다.
+    """
+
+    daemon_threads = True
+    handshake_timeout_s = 5.0
+
+    def __init__(self, address, handler, context: ssl.SSLContext) -> None:
+        self._tls_context = context
+        super().__init__(address, handler)
+
+    def finish_request(self, request, client_address) -> None:
+        request.settimeout(self.handshake_timeout_s)
+        try:
+            tls = self._tls_context.wrap_socket(request, server_side=True)
+        except (OSError, ssl.SSLError):
+            return  # 수립 실패·시간 초과는 그 연결만 버린다
+        try:
+            super().finish_request(tls, client_address)
+        finally:
+            tls.close()
+
+
 class HttpsEc2:
     """하트비트 시험용 로컬 HTTPS EC2 (S15P31A101-91). 인증서는 시험 중에만 만든 자체 서명(loopback_san).
 
@@ -289,9 +315,7 @@ class HttpsEc2:
             def log_message(self, *args) -> None:
                 pass
 
-        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.server.daemon_threads = True
-        self.server.socket = server_context(cert).wrap_socket(self.server.socket, server_side=True)
+        self.server = _TlsThreadingServer(("127.0.0.1", 0), Handler, server_context(cert))
         self.port = self.server.server_address[1]
         self.base_url = f"https://127.0.0.1:{self.port}"
         self._thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)

@@ -26,3 +26,5 @@ build-backend = "uv_build"
 testpaths = ["tests"]
 pythonpath = ["tests"]
 addopts = ["--import-mode=importlib", "-ra"]
+# 시험이 멈추면 어디서 멈췄는지 스택을 남긴다(CI 10분 끊김 진단, S15P31A101-370). 멈춘 시험을 죽이지는 않는다
+faulthandler_timeout = 120
