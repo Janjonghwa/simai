@@ -1,6 +1,11 @@
 import { CONTROL_ROOM_CHANNEL } from '@/features/events/constants';
 import { isActive } from '@/features/events/entries';
-import { eventsPageSchema, type EventItem, type EventsPage } from '@/features/events/types';
+import {
+  eventsPageSchema,
+  type EscalationDecision,
+  type EventItem,
+  type EventsPage,
+} from '@/features/events/types';
 import type { Http } from '@/lib/http';
 import { z } from 'zod';
 
@@ -52,6 +57,29 @@ export function requestAck(http: Http, eventId: string, eventSequence: number | 
     body: {
       ...(eventSequence === undefined ? {} : { event_sequence: eventSequence }),
       channel: CONTROL_ROOM_CHANNEL,
+    },
+    schema: z.unknown(),
+  });
+}
+
+export interface EscalationRequestBody {
+  assessmentId: string | number;
+  decision: EscalationDecision;
+  note?: string;
+}
+
+/**
+ * VLM 상향 의견 승인·거절(명세 5.4, 12.6 POST /api/events/{id}/escalation).
+ * 본문은 assessmentId 와 decision(APPROVED·REJECTED)을 싣는다.
+ * 등급 정본은 Tier 0 전이라, 이 응답만으로 화면 이벤트 등급을 바꾸지 않고 STOMP /topic/events 전이를 기다린다.
+ */
+export function requestEscalation(http: Http, eventId: string, body: EscalationRequestBody) {
+  return http(`/api/events/${encodeURIComponent(eventId)}/escalation`, {
+    method: 'POST',
+    body: {
+      assessmentId: body.assessmentId,
+      decision: body.decision,
+      ...(body.note ? { note: body.note } : {}),
     },
     schema: z.unknown(),
   });

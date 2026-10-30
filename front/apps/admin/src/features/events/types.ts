@@ -30,12 +30,28 @@ const operatorEscalation = z.object({
   escalation_id: z.string().optional(),
   basis: z.string().optional(),
   assessment_job_id: z.string().optional(),
+  assessment_id: z.union([z.string(), z.number()]).optional(),
+  assessmentId: z.union([z.string(), z.number()]).optional(),
   target_severity: severity,
   channel: z.string().optional(),
   actor_role: z.string().optional(),
   actor_id: z.string().optional(),
   requested_at: z.number(),
+  decided_at: z.number().nullable().optional(),
+  event_sequence: z.number().int().optional(),
   note: z.string().optional(),
+  decision: z.string().optional(),
+  result: z.string().nullable().optional(),
+  reject_reason: z.string().nullable().optional(),
+  status: z.string().optional(),
+});
+
+/** 서버 이벤트 상세의 VLM 평가 기록(vlm_assessment) 한 건, 최신순(S15P31A101-276). 승인·거절 대상 ID 는 여기서 읽는다. */
+const vlmAssessment = z.object({
+  assessment_id: z.union([z.string(), z.number()]),
+  job_id: z.string().nullable().optional(),
+  proposed_severity: severity.nullable().optional(),
+  decision: z.string().nullable().optional(),
 });
 
 export const eventItemSchema = z.object({
@@ -56,6 +72,9 @@ export const eventItemSchema = z.object({
   metrics: z.record(z.string(), z.number()),
   rationale: z.string().nullable(),
   proposed_severity: severity.nullable(),
+  assessment_id: z.union([z.string(), z.number()]).nullable().optional(),
+  assessmentId: z.union([z.string(), z.number()]).nullable().optional(),
+  assessment_job_id: z.string().nullable().optional(),
   gateway_id: z.string().optional(),
   config_version: z.string().optional(),
   calibration_version: z.string().optional(),
@@ -68,6 +87,7 @@ export const eventItemSchema = z.object({
   delivery: z.enum(['REALTIME', 'DELAYED_ACTIVE', 'AUDIT_ONLY']).optional(),
   resolution: operatorResolution.optional(),
   escalations: z.array(operatorEscalation).optional(),
+  assessments: z.array(vlmAssessment).optional(),
 });
 
 /** 화면이 쓰는 이벤트 값. STOMP 의 risk_event payload 도 그대로 넣을 수 있다. */
@@ -92,3 +112,9 @@ export type EventsPage = z.infer<typeof eventsPageSchema>;
 
 /** 운영자 확인(ACK) 한 건. */
 export type EventAck = NonNullable<EventItem['acks']>[number];
+
+/** 운영자 상향(escalation) 한 건. */
+export type EventEscalation = NonNullable<EventItem['escalations']>[number];
+
+/** 관리자가 VLM 상향 의견에 내리는 결정(명세 5.4, 12.6). */
+export type EscalationDecision = 'APPROVED' | 'REJECTED';

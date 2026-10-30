@@ -1,5 +1,5 @@
 import { MAX_RESOLVED, SEVERITY_RANK } from '@/features/events/constants';
-import type { EventItem, Severity } from '@/features/events/types';
+import type { EventEscalation, EventItem, Severity } from '@/features/events/types';
 
 // 이벤트 하나하나의 상태 계산(명세 3.10, 12.4, FR-8). 화면 없이 시험한다.
 
@@ -57,6 +57,26 @@ function unionAcks(base: EventItem['acks'], other: EventItem['acks']): EventItem
   return added.length ? [...base, ...added] : base;
 }
 
+function escalationKey(item: EventEscalation): string {
+  return (
+    item.escalation_id ??
+    item.assessment_job_id ??
+    `${item.requested_at}:${item.target_severity}:${item.actor_id ?? ''}`
+  );
+}
+
+/** 재개 전까지는 운영자 상향 기록도 유지한다(명세 5.4). */
+function unionEscalations(
+  base: EventItem['escalations'],
+  other: EventItem['escalations'],
+): EventItem['escalations'] {
+  if (!other?.length) return base;
+  if (!base?.length) return other;
+  const known = new Set(base.map(escalationKey));
+  const added = other.filter((e) => !known.has(escalationKey(e)));
+  return added.length ? [...base, ...added] : base;
+}
+
 /** next 가 prev 보다 새 상태인지. event_sequence 가 있으면 그것으로, 없으면 시각으로 본다. */
 function isNewer(prev: EventItem, next: EventItem): boolean {
   if (prev.event_sequence !== undefined && next.event_sequence !== undefined) {
@@ -74,17 +94,29 @@ const opensNewStage = (prev: EventItem, next: EventItem) =>
 
 /**
  * 받은 이벤트를 반영한다. 같거나 오래된 상태면 prev 를 그대로 돌려준다.
- * 다만 확인 기록은 합친다. EC2 가 순번을 올리지 않고 acks 만 늘려 보내도 소리를 멈춘다.
+ * 다만 확인·상향 기록은 합친다. 재개(resume_count 증가)된 전이는 이전 상향 기록을 비운다(명세 5.4).
  */
 export function mergeEvent(prev: EventEntry | undefined, next: EventItem): EventEntry {
   if (!prev) return { event: next, stageStartedAt: firstStageStart(next) };
+  const resumed = (next.resume_count ?? 0) > (prev.event.resume_count ?? 0);
   if (!isNewer(prev.event, next)) {
     const acks = unionAcks(prev.event.acks, next.acks);
-    return acks === prev.event.acks ? prev : { ...prev, event: { ...prev.event, acks } };
+    const escalations = resumed
+      ? prev.event.escalations
+      : unionEscalations(prev.event.escalations, next.escalations);
+    return acks === prev.event.acks && escalations === prev.event.escalations
+      ? prev
+      : { ...prev, event: { ...prev.event, acks, escalations } };
   }
   const acks = unionAcks(next.acks, prev.event.acks);
+  const escalations = resumed
+    ? next.escalations
+    : unionEscalations(next.escalations, prev.event.escalations);
   return {
-    event: acks === next.acks ? next : { ...next, acks },
+    event:
+      acks === next.acks && escalations === next.escalations
+        ? next
+        : { ...next, acks, escalations },
     stageStartedAt: opensNewStage(prev.event, next)
       ? (eventTime(next) ?? prev.stageStartedAt)
       : prev.stageStartedAt,

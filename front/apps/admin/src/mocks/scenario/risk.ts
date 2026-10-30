@@ -9,9 +9,9 @@ type Base = Pick<Payload, 'rule_id' | 'severity' | 'world_ids' | 'zone_id'>;
 
 /**
  * - edge: w-0015 개구부 근접 CRITICAL(발생 → 가까워짐 → 해소)
- * - zone: 같은 사람 w-0015 의 위험 구역 진입 HIGH(한 묶음 표시)
+ * - zone: 같은 사람 w-0015 의 위험 구역 진입 HIGH(한 묶음 표시, VLM 상향 의견 CRITICAL 포함)
  * - predict: w-0012 진입 예측 CAUTION(안내만, 소리 없음)
- * - unsure: w-0021 높이를 몰라 확인 필요인 HIGH(해소 → 재개 → 해소)
+ * - unsure: w-0021 높이를 몰라 확인 필요인 HIGH(해소 → 재개 → 해소, VLM 상향 의견 CRITICAL 포함)
  */
 const EVENTS: Record<'edge' | 'zone' | 'predict' | 'unsure', Base> = {
   edge: { rule_id: 'R2', severity: 'CRITICAL', world_ids: ['w-0015'], zone_id: 'z-04' },
@@ -22,11 +22,18 @@ const EVENTS: Record<'edge' | 'zone' | 'predict' | 'unsure', Base> = {
 type EventKey = keyof typeof EVENTS;
 const KEYS = Object.keys(EVENTS) as EventKey[];
 
+const ZONE_VLM: Partial<Payload> = {
+  rationale: '작업자가 위험 구역 경계 안쪽 단상 위에 서 있다. 난간이 보이지 않는다.',
+  proposed_severity: 'CRITICAL',
+};
+
 const UNSURE: Partial<Payload> = {
   verification: 'UNVERIFIABLE',
   confidence: 'LOW',
   needs_check: true,
   confidence_reasons: ['Z_UNKNOWN', 'PREDICTED'],
+  rationale: '한쪽 카메라 시야가 가려져 높이를 확정할 수 없으나 개구부 경계 안쪽 진입이 관측된다.',
+  proposed_severity: 'CRITICAL',
 };
 
 /** 바퀴 안에서 at(ms)에 일어나는 이벤트 전이 하나. */
@@ -47,7 +54,13 @@ const STEPS: Step[] = [
     lifecycle: 'RAISED',
     metrics: { edge_distance_m: 0.82, height_diff_m: 2.1 },
   },
-  { at: 12_000, key: 'zone', lifecycle: 'RAISED', metrics: { zone_distance_m: 0 } },
+  {
+    at: 12_000,
+    key: 'zone',
+    lifecycle: 'RAISED',
+    metrics: { zone_distance_m: 0 },
+    change: ZONE_VLM,
+  },
   {
     at: 16_000,
     key: 'edge',

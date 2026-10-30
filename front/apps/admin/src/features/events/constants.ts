@@ -45,6 +45,29 @@ export const ACK_ERROR_CODE = {
   INVALID_CHANNEL: 'INVALID_ACK_CHANNEL',
 } as const;
 
+/** 상향 의견 처리 상태 문구(명세 5.4, 12.3). */
+export const ESCALATION_STATUS_LABEL = {
+  approved: '승인',
+  rejected: '거절',
+  applied: '적용',
+  already_applied: '이미 적용',
+  event_closed: '이벤트 종료',
+} as const;
+
+/** 서버가 ProblemDetail 의 code 로 알리는 VLM 상향 의견 처리 실패(명세 12.6). */
+export const ESCALATION_ERROR_CODE = {
+  NOT_FOUND: 'EVENT_NOT_FOUND',
+  ASSESSMENT_NOT_FOUND: 'ASSESSMENT_NOT_FOUND',
+  RESOLVED: 'EVENT_RESOLVED',
+  NOT_ACTIVE: 'NOT_ACTIVE',
+  NOT_UPWARD: 'NOT_UPWARD',
+  DUPLICATE: 'DUPLICATE',
+  ALREADY_DECIDED: 'ALREADY_DECIDED',
+  JOURNAL_UNAVAILABLE: 'JOURNAL_UNAVAILABLE',
+  INVALID_DECISION: 'INVALID_DECISION',
+  INVALID_ASSESSMENT: 'INVALID_ASSESSMENT_ID',
+} as const;
+
 /** 규칙 ID 의 화면 이름. */
 export const RULE_NAME: Record<string, string> = {
   R1: '위험 구역 진입',
