@@ -2,6 +2,8 @@ package com.ssafy.simai.domain.event;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.ssafy.simai.domain.user.entity.Role;
+import com.ssafy.simai.global.exception.BusinessException;
+import com.ssafy.simai.global.exception.ErrorCode;
 import com.ssafy.simai.global.security.AccessTokenIssuer;
 import java.util.List;
 import java.util.UUID;
@@ -54,6 +56,13 @@ public class EventController {
         int safePage = Math.max(page, 0);
         int safeSize = Math.clamp(size, 1, MAX_SIZE);
         return new EventPage(events.findPage(safePage, safeSize), events.count(), safePage, safeSize);
+    }
+
+    /** 이벤트 상세(명세 12.6): 목록과 같은 칸에 관련 구역과 전이 이력을 더한다. LIVE 만 */
+    @GetMapping("/{eventId}")
+    @PreAuthorize("hasAnyRole('FOREMAN', 'ADMIN')")
+    ObjectNode detail(@PathVariable UUID eventId) {
+        return events.detail(eventId).orElseThrow(() -> new BusinessException(ErrorCode.Event.EVENT_NOT_FOUND));
     }
 
     @PostMapping("/{eventId}/ack")

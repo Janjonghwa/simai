@@ -169,6 +169,8 @@ class ReplayIntegrationTest {
         assertThat(startPayload.get("event_sequence").intValue()).isEqualTo(1);
         assertThat(startPayload.get("raised_at").longValue()).isEqualTo(baseMs - 1000);
         assertThat(startPayload.get("rationale").isNull()).isTrue();
+        // 재시작 복원 표시(delivery): 이 시험의 전이는 실시간(REALTIME)이다
+        assertThat(startPayload.get("delivery").asString()).isEqualTo("REALTIME");
 
         List<JsonNode> events = mine(body.get("events"));
         assertThat(events).extracting(e -> e.get("payload").get("event_sequence").intValue() + "/"

@@ -42,6 +42,7 @@ world_state 는 그대로 넣을 수 있다. 이벤트는 저장된 출처 `LIVE
 | 항목 | 정한 값 | 근거 |
 |---|---|---|
 | 메시지 모양 | 실시간과 같은 봉투(world_state 계약, I2 risk_event 2.0.0). `source_id` 는 `ec2`, `msg_id` 는 Tier 0 가 붙인 원래 값, `sent_at` 은 EC2 가 받은 시각 | 화면이 재생 엔진(-187)을 그대로 쓴다(-320). 원래 msg_id 라 같은 구간을 다시 읽어도 같고 엔진의 중복 검사에 걸리지 않는다 |
+| 복원 표시 | 이벤트에 `delivery`(전이의 `delivery_mode`: REALTIME·DELAYED_ACTIVE·AUDIT_ONLY)를 싣는다(S15P31A101-355) | 히스토리 화면이 재시작·재동기화로 복원된 이벤트를 구분한다(계약 risk_event.delivery, 3.2) |
 | 이벤트 출처 | 저장된 그대로 `LIVE` 로 준다 | 기록의 사실을 바꾸지 않는다. 화면이 REPLAY 로 바꿔 넣어 실제 알림 경로와 섞지 않는다(-320 작업 항목) |
 | world_state 판 | 받은 `schema_version` 은 저장하지 않으므로 값으로 고른다: UNCERTAIN 인데 `head_z` 가 null 인 트랙이 있으면 `1.4.0`, 그 밖은 `2.1.0` | 판에 따라 뜻이 갈리는 칸은 head_z 하나다(계약 설명). 2.1.0 의 split_from 은 1.x 메시지에 없어 부딪히지 않는다 |
 | 칸 복원 | 필수 칸은 값이 없으면 null, 선택 칸은 값이 없으면 뺀다. real(float4) 칸은 float 의 가장 짧은 표기로 되돌린다(0.08 → 0.08) | 저장할 때 빠진 칸과 null 을 나누지 않았다. 선택 칸은 빼는 쪽이 어느 판에서도 계약에 맞다 |
