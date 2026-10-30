@@ -10,7 +10,7 @@ MV3DT 원칙(공유 World 좌표, tracklet 연결, 전체 1:1 배정)을 Python 
 
 1. 공통 시각 보간: 같은 t 로 보간된 view 끼리만 비교한다(시간 근거). 보간에 실패한 카메라·트랙은 그 t 에서 빠진다.
 2. 연결 후보 생성 (카메라가 다른 view 쌍마다):
-   - 에피폴라 거리: 두 view 모두 신뢰도 기준 이상인 관절의 대칭 에피폴라 거리 평균(근사 픽셀).
+   - 에피폴라 거리: 두 view 모두 신뢰도 기준 이상인 관절의 대칭 에피폴라 거리(근사 픽셀)를 관절 잡음 배율 역수(`1/KEYPOINT_NOISE_SCALE`)로 정규화한 가중 평균(`joint_noise_weighted=False` 이면 비가중 평균).
    - 임시 바닥 가설: 발목(양쪽 중점) 시선이 수평면 Z=h 와 만나는 XY 끼리의 거리. h 는 바닥(0)이 기본이고, 단상·
      작업면 위 사람을 놓치지 않도록 0 ~ `floor_hypothesis_max_height_m` 중 두 시선이 가장 가까운 높이로 본다.
      **이 값은 후보 비용에만 쓰는 근사다. World 위치·`ground_anchor_xyz`·Z 로 쓰지 않고, 결과 객체에도 내보내지
@@ -21,7 +21,7 @@ MV3DT 원칙(공유 World 좌표, tracklet 연결, 전체 1:1 배정)을 Python 
    - 궤적 일관성: 로컬 트랙 쌍이 이전 시각들에 같은 클러스터였던 횟수(연결 이력, `link_age`). 비용을 깎을 뿐
      기하 문턱을 넘은 쌍을 살리지 않는다.
 3. 후보별 삼각측량 검증: 두 view 의 공통 관절을 2-view 선형 DLT(`geometry.triangulation` 과 같은 식, 관절 묶음으로
-   벡터화한 `_two_view_triangulation`)로 풀어 재투영 잔차, 일관된 관절 비율, 관절 높이의 물리적 범위를 본다.
+   벡터화한 `_two_view_triangulation`)로 풀어 재투영 잔차(관절별 `1/KEYPOINT_NOISE_SCALE` 가중 중앙값, `joint_noise_weighted=False` 이면 비가중 중앙값), 일관된 관절 비율, 관절 높이의 물리적 범위를 본다.
    클러스터 최종 관절(6단계·출력)은 `triangulate_skeleton` 그대로다. 관절 유효성 게이트(VALID/UNCERTAIN/UNAVAILABLE 상세)는 S15P31A101-29 몫이다.
 4. 배정(제약 있는 최선 우선 병합): view 하나씩인 클러스터에서 시작해 합칠 수 있는 클러스터 쌍 중 비용이 가장 낮은
    쌍부터 합친다. 병합 비용은 두 클러스터 사이 view 쌍 비용의 평균에서 연결 이력 보너스를 뺀 값이다. 기하가 반대하는
@@ -62,6 +62,7 @@ from enum import StrEnum
 
 import numpy as np
 
+from simai_ai.calibration.bundle.skeleton import KEYPOINT_NOISE_SCALE
 from simai_ai.geometry.interpolation import (
     FrameDrop,
     InterpolatedView,
@@ -153,6 +154,8 @@ class CrossViewConfig:
     same_camera_exclusive: bool = True
     """같은 카메라 금지 제약. **음성 대조 시험 전용으로만 끈다(운영에서 끄지 않는다).** 끄면 카메라가 겹치는 클러스터도
     합칠 수 있고, 같은 카메라 자리를 다투는 경쟁 병합이 없어지므로 그 애매함 검사도 함께 빠진다"""
+    joint_noise_weighted: bool = True
+    """쌍 에피폴라 거리 평균과 2-view 삼각측량 잔차 중앙값을 관절별 `1/KEYPOINT_NOISE_SCALE` 로 정규화 가중한다 (V1a, 명세 5.2)"""
     triangulation: TriangulationConfig = field(default_factory=TriangulationConfig)
 
     def __post_init__(self) -> None:
@@ -303,6 +306,7 @@ class CrossViewAssociator:
         self.config = config if config is not None else CrossViewConfig()
         self.joint_layout = joint_layout
         self._n_joints = JOINT_COUNTS[joint_layout]
+        self._joint_weights = _joint_noise_weights(self._n_joints)
         self._essential: dict[tuple[str, str], np.ndarray] = {}
         self._history: dict[tuple[TrackKey, TrackKey], tuple[int, int]] = {}
         """정렬한 트랙 키 쌍 → (같은 클러스터였던 시각 수, 마지막으로 같은 클러스터였던 시각)"""
@@ -474,12 +478,17 @@ class CrossViewAssociator:
         # 일관된 관절의 재투영 오차 중앙값 (np.median 과 같은 값: 홀수면 가운데, 짝수면 가운데 둘의 평균)
         ranked = np.full((Q, J), np.inf)
         ranked[q, j] = err
-        ranked = np.sort(np.where(solved, ranked, np.inf), axis=1)
+        masked = np.where(solved, ranked, np.inf)
+        ranked = np.sort(masked, axis=1)
         rows = np.arange(Q)
         upper = ranked[rows, np.maximum(n_ok // 2, 0)]
         lower = ranked[rows, np.maximum(n_ok // 2 - 1, 0)]
         with np.errstate(invalid="ignore"):
-            residual = np.where(n_ok % 2 == 1, upper, (lower + upper) / 2.0)
+            residual = (
+                _weighted_median_rows(masked, solved, self._joint_weights)
+                if self.config.joint_noise_weighted
+                else np.where(n_ok % 2 == 1, upper, (lower + upper) / 2.0)
+            )
         z = np.full((Q, J), np.nan)
         z[q, j] = xyz[:, 2]
         z_lo, z_hi = self.config.joint_z_range_m
@@ -536,7 +545,11 @@ class CrossViewAssociator:
         xyz, err = tri
         solved = np.isfinite(err) & (err <= cfg.triangulation.outlier_reprojection_error_px)
         n_ok = int(solved.sum())
-        residual = float(np.median(err[solved])) if n_ok else math.nan
+        residual = (
+            _weighted_median(err[solved], self._joint_weights[common][solved])
+            if (n_ok and cfg.joint_noise_weighted)
+            else (float(np.median(err[solved])) if n_ok else math.nan)
+        )
         z_lo, z_hi = cfg.joint_z_range_m
         z = xyz[solved, 2]
         outside = int(np.sum((z < z_lo) | (z > z_hi)))
@@ -583,7 +596,11 @@ class CrossViewAssociator:
         alg = np.abs(np.sum(xb * lb, axis=1))
         db = alg / np.maximum(np.hypot(lb[:, 0], lb[:, 1]), 1e-12) * _focal(pb.camera)
         da = alg / np.maximum(np.hypot(la[:, 0], la[:, 1]), 1e-12) * _focal(pa.camera)
-        return float(np.mean((da + db) / 2.0))
+        e = (da + db) / 2.0
+        if not self.config.joint_noise_weighted:
+            return float(np.mean(e))
+        w = self._joint_weights[common]
+        return float(np.sum(w * e) / np.sum(w))
 
     def _epipolar_matrix(self, pas: Sequence[_Prepared], pbs: Sequence[_Prepared]) -> tuple[np.ndarray, np.ndarray]:
         """카메라 a 의 view 들 × 카메라 b 의 view 들의 대칭 에피폴라 거리 평균 (len(pas), len(pbs))과 공통 관절
@@ -603,7 +620,11 @@ class CrossViewAssociator:
         da = alg / np.maximum(np.hypot(la[..., 0], la[..., 1]), 1e-12)[None, :, :] * _focal(pas[0].camera)
         n = common.sum(axis=2)
         with np.errstate(invalid="ignore", divide="ignore"):
-            epi = np.where(common, (da + db) / 2.0, 0.0).sum(axis=2) / n
+            if self.config.joint_noise_weighted:
+                w = np.where(common, self._joint_weights, 0.0)
+                epi = (w * ((da + db) / 2.0)).sum(axis=2) / w.sum(axis=2)
+            else:
+                epi = np.where(common, (da + db) / 2.0, 0.0).sum(axis=2) / n
         return np.where(n > 0, epi, np.nan), common
 
     # ------------------------------------------------------------------ 4·5단계: 배정
@@ -948,6 +969,43 @@ def _block_key(a: _Work, b: _Work) -> frozenset[frozenset[TrackKey]]:
 
 def _pair_key(a: TrackKey, b: TrackKey) -> tuple[TrackKey, TrackKey]:
     return (a, b) if a <= b else (b, a)
+
+
+def _joint_noise_weights(n_joints: int) -> np.ndarray:
+    """관절별 역잡음 가중치 `1 / KEYPOINT_NOISE_SCALE` (V1a, 명세 5.2)."""
+    scales = [
+        KEYPOINT_NOISE_SCALE[j] if j < len(KEYPOINT_NOISE_SCALE) else KEYPOINT_NOISE_SCALE[-1]
+        for j in range(n_joints)
+    ]
+    return 1.0 / np.asarray(scales, dtype=float)
+
+
+def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+    """양수 가중치 `weights` 에 대한 1차원 가중 중앙값 (`_weighted_median_rows` 와 같은 정의)."""
+    order = np.argsort(values, kind="stable")
+    v = values[order]
+    cum = np.cumsum(weights[order])
+    half = 0.5 * cum[-1]
+    lo = int(np.argmax(cum >= half - 1e-12 * cum[-1]))
+    hi = int(np.argmax(cum > half + 1e-12 * cum[-1]))
+    return float((v[lo] + v[hi]) / 2.0)
+
+
+def _weighted_median_rows(masked_err: np.ndarray, solved: np.ndarray, joint_weights: np.ndarray) -> np.ndarray:
+    """행별(쌍별) 일관 관절 재투영 오차의 가중 중앙값 (Q,). 일관 관절이 없으면 NaN."""
+    Q, _ = masked_err.shape
+    order = np.argsort(masked_err, axis=1, kind="stable")
+    ranked = np.take_along_axis(masked_err, order, axis=1)
+    w_sorted = np.take_along_axis(np.where(solved, joint_weights, 0.0), order, axis=1)
+    cum = np.cumsum(w_sorted, axis=1)
+    total = cum[:, -1:]
+    half = 0.5 * total
+    rows = np.arange(Q)
+    lo = np.argmax(cum >= half - 1e-12 * total, axis=1)
+    hi = np.argmax(cum > half + 1e-12 * total, axis=1)
+    with np.errstate(invalid="ignore"):
+        out = (ranked[rows, lo] + ranked[rows, hi]) / 2.0
+    return np.where(total[:, 0] > 0.0, out, np.nan)
 
 
 def _two_view_triangulation(pa: _Prepared, pb: _Prepared, common: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
