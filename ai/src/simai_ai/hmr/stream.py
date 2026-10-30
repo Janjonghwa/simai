@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 class HmrModel(Protocol):
     model_version: str
 
-    def infer(self, image, observation, track, camera): ...
+    def infer(self, image, observation, track, camera, *, prepared=None): ...
     def bake(self, samples): ...
 
 
@@ -46,7 +46,7 @@ class PersonState:
 
 class AvatarLoop:
     def __init__(self, source, gate, model, upload, sender, *, clock_ms, freeze_frames=30, max_age_ms=500,
-                 appearance=None):
+                 appearance=None, segmentation=None):
         self.source, self.gate, self.model = source, gate, model
         self.upload, self.sender, self.clock_ms = upload, sender, clock_ms
         self.freeze_frames, self.max_age_ms = freeze_frames, max_age_ms
@@ -55,6 +55,7 @@ class AvatarLoop:
         self.skipped = 0
         self._report_at = 0
         self.appearance = appearance
+        self.segmentation = segmentation
 
     def reannounce_appearance(self, world_id, version):
         """기록을 덮어쓰지 않고 이전 확정 자산을 다시 선택해 알린다."""
@@ -99,7 +100,7 @@ class AvatarLoop:
             self.appearance.retain(active)
         self.sender.retain(active)
         rig = CameraRig.from_provider(SnapshotCalibration(snapshot["calibration"]))
-        candidates, bodies = [], {}
+        candidates, bodies, jobs = [], {}, []
         for tr in doc["tracks"]:
             wid, rev = tr["world_id"], tr["identity_revision"]
             if wid not in active:
@@ -121,15 +122,34 @@ class AvatarLoop:
                 if (cid not in images or ref is None or ref["frame_ref"] != obs["frame_ref"]
                         or abs(t - ref["capture_time_ms"]) > 100):
                     continue
-                # 카메라별·사람별 호출 전마다 확인한다. 앞 사람 추론 중 Tier 0 부하가 바뀔 수 있다.
-                if not self.gate.check().admit:
-                    self.skipped += 1
-                    self.sender.discard_poses()
-                    self._report("추론 중 AdmissionGate 차단")
-                    return
+                jobs.append((tr, obs))
+        prepared, masks = {}, {}
+        if self.segmentation is not None and jobs:
+            if not self.gate.check().admit:
+                self.skipped += 1
+                self.sender.discard_poses()
+                self._report("seg 전 AdmissionGate 차단")
+                return
+            prepared = self.segmentation.prepare(jobs, images, rig)
+        for tr, obs in jobs:
+            wid, cid = tr["world_id"], obs["camera_id"]
+            # seg 배치 뒤에도 매 사람·카메라 추론 전에 Tier 0 부하를 다시 확인한다.
+            if not self.gate.check().admit:
+                self.skipped += 1
+                self.sender.discard_poses()
+                self._report("추론 중 AdmissionGate 차단")
+                return
+            person_input = prepared.get((wid, cid))
+            if self.segmentation is not None and not self.segmentation.failed:
+                if person_input is None:  # 중복 World ID·잘못된 bbox는 build_prompts가 거른다.
+                    continue
+                candidate, body = self.model.infer(images[cid], obs, tr, rig.cameras[cid], prepared=person_input)
+                if person_input.original_mask is not None:
+                    masks[(wid, cid)] = person_input.original_mask
+            else:
                 candidate, body = self.model.infer(images[cid], obs, tr, rig.cameras[cid])
-                candidates.append(candidate)
-                bodies[(wid, cid)] = body
+            candidates.append(candidate)
+            bodies[(wid, cid)] = body
         frame = aggregate_frame(candidates, doc, rig)
         poses = []
         for person in frame.people:
@@ -181,7 +201,7 @@ class AvatarLoop:
         if self.appearance is not None:
             try:
                 self.appearance.update(frame, doc, snapshot, images, rig, self.people, self.upload,
-                                       self.sender, self.clock_ms, lambda: self.gate.check().admit)
+                                       self.sender, self.clock_ms, lambda: self.gate.check().admit, masks)
             except Exception as error:
                 # 기존 확정 외형·포즈는 계속 쓴다. 실패한 PNG는 다음 회차에 같은 바이트로 재시도한다.
                 log.warning("외형 갱신 실패: %s; 마지막 확정 외형 유지", type(error).__name__)

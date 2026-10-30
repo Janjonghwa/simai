@@ -137,7 +137,7 @@ class AppearancePipeline:
         self.people[wid] = acc
         self.pending.pop(wid, None)
 
-    def update(self, frame, doc, snapshot, images, rig, states, upload, sender, clock_ms, admit):
+    def update(self, frame, doc, snapshot, images, rig, states, upload, sender, clock_ms, admit, masks=None):
         if self.calibration_version != frame.calibration_version:
             self.camera_colors.gains.clear()
             for acc in self.people.values():
@@ -169,7 +169,8 @@ class AppearancePipeline:
                         continue
                     # 메시가 없는 다른 사람(불확실/아직 체형 고정 전)은 bbox 전체를 가림막으로 뺀다.
                     view = AppearanceView(rig.cameras[cid], images[cid], ref["capture_time_ms"],
-                                          bbox=obs["bbox"], mask=obs.get("mask"),
+                                          bbox=obs["bbox"], mask=(masks.get((wid, cid)) if masks is not None
+                                                                 else obs.get("mask")),
                                           keypoints_2d=obs.get("keypoints_2d")
                                           if obs.get("joint_layout", "COCO17") == "COCO17" else None)
                     boxes = [o["bbox"] for other, tr in tracks.items() if other != wid and other not in meshes
