@@ -36,7 +36,7 @@ export async function startMockBackend() {
       return user && (user.expiresAt === undefined || user.expiresAt > Date.now()) ? user : false;
     },
   });
-  const events = createEventsMock({ broker });
+  const events = createEventsMock({ broker, summaryCompleteDelayMs: 1_500 });
   const clips = createClipsMock({ findEvent: events.find });
   // health 의 구성 묶음 상태(발행·ACK)는 구역 mock 이 정한다. 발행하는 묶음에는 지금 작업면을 싣는다.
   const zones = createZonesMock({ staticObjects: staticObjectsMock.current });
@@ -79,6 +79,8 @@ export async function startMockBackend() {
     simaiMock: {
       ...realtimeMock,
       expireAuth: events.expireAuth,
+      failNextSummary: events.failNextSummary,
+      updateSummary: events.updateSummary,
       rejectNextBundle: zones.rejectNextBundle,
       failNextPublish: zones.failNextPublish,
     },

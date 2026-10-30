@@ -1,3 +1,4 @@
+import type { EventSummary } from '@/features/events/types';
 import { EVENTS_TOPIC } from '@/lib/stomp';
 import { problem, readLiveUser, unauthorized } from '@/mocks/problem';
 import { nextMsgId } from '@/mocks/realtimeScenario';
@@ -5,8 +6,8 @@ import type { StompBroker } from '@/mocks/stompBroker';
 import type { RiskEventMessage } from '@simai/contracts';
 import { http, HttpResponse } from 'msw/http';
 
-// 서버 이벤트 API(S15P31A101-121, -276) 대신 쓰는 mock. 시나리오 전이와 운영자 확인·상향을 한 저장소에 모은다.
-// 순번(event_sequence)은 이 저장소가 매긴다. 확인(ACK)·운영자 종료·상향 승인도 전이라 순번을 올려 /topic/events 로 다시 보낸다.
+// 서버 이벤트 API(S15P31A101-121, -276, -369) 대신 쓰는 mock. 시나리오 전이와 운영자 확인·상향·사고 구간 요약을 한 저장소에 모은다.
+// 순번(event_sequence)은 이 저장소가 매긴다. 확인(ACK)·운영자 종료·상향 승인·구간 요약 상태 변경도 /topic/events 로 다시 보낸다.
 // REST 모양은 실서버를 따른다: 목록은 Spring Page(최신순, 해소 포함, 열람 계정은 403), 오류는 ProblemDetail + code.
 
 /** 해소된 이벤트를 목록에 남기는 시간(ms). */
@@ -22,9 +23,13 @@ const CONTROL_ROOM = 'CONTROL_ROOM';
 /** ACK 본문의 channel 로 받는 값(서버가 관제·반장 PWA 만 받는다). 없으면 CONTROL_ROOM. */
 const ACK_CHANNELS = [CONTROL_ROOM, 'FOREMAN_PWA'] as const;
 const DEFAULT_CLOSE_REASON = '운영자 종료';
+const SUMMARY_WINDOW_HALF_MS = 20_000;
+const DEFAULT_SUMMARY_TEXT =
+  '작업자가 위험 구역 경계 안쪽으로 진입해 개구부 주변에서 작업한 뒤 구역 밖으로 이동했습니다.';
 
-type Payload = RiskEventMessage['payload'];
+type Payload = RiskEventMessage['payload'] & { summaries?: EventSummary[] };
 type AckActor = { id: string; role: 'ADMIN' | 'FOREMAN' };
+export type SummaryFailureCode = 'CLIP_NOT_READY' | 'EVENT_NOT_LIVE';
 
 const SEVERITY_ORDER: Record<Payload['severity'], number> = {
   CRITICAL: 3,
@@ -34,9 +39,9 @@ const SEVERITY_ORDER: Record<Payload['severity'], number> = {
 };
 
 export interface EventsMock {
-  /** 시나리오 전이를 저장소에 반영하고 보낼 메시지를 돌려준다. 앞선 확인·상향 기록은 이어 간다. */
+  /** 시나리오 전이를 저장소에 반영하고 보낼 메시지를 돌려준다. 앞선 확인·상향·요약 기록은 이어 간다. */
   record(message: RiskEventMessage): RiskEventMessage;
-  /** GET /api/events, POST /api/events/:id/ack, POST /api/events/:id/escalation */
+  /** GET /api/events, POST /api/events/:id/ack, POST /api/events/:id/escalation, POST /api/events/:id/summary */
   handlers: ReturnType<typeof http.get>[];
   /** 저장소의 이벤트 하나(클립 mock 이 읽는다). */
   find(eventId: string): Payload | undefined;
@@ -47,6 +52,10 @@ export interface EventsMock {
   close(eventId: string, actor: { id: string }, reason?: string): RiskEventMessage | undefined;
   /** 다음 ACK 하나를 토큰 만료(401)로 거절한다. 갱신 후 다시 보내기를 30분 기다리지 않고 본다(개발 콘솔 simaiMock). */
   expireAuth(): void;
+  /** 다음 구간 요약 요청(POST /api/events/:id/summary) 하나를 409 오류(기본 CLIP_NOT_READY)로 거절한다. */
+  failNextSummary(code?: SummaryFailureCode): void;
+  /** 이벤트의 최신 구간 요약 상태를 갱신하고 /topic/events 로 다시 발행한다(시험·개발 콘솔용). */
+  updateSummary(eventId: string, patch: Partial<EventSummary>): RiskEventMessage | undefined;
 }
 
 // 서버는 비어 있는 선택 칸을 보내지 않는다(zone_id·rationale·proposed_severity 는 null 로 보낸다).
@@ -99,32 +108,44 @@ const isUnknownSequence = (seen: unknown, current: number) =>
 export function createEventsMock({
   broker,
   now = Date.now,
+  isClipReady,
+  summaryCompleteDelayMs,
 }: {
   broker: StompBroker;
   now?: () => number;
+  /** 구간 요약 요청 시 클립 준비 여부를 판단한다. 생략하면 준비된 것으로 본다. */
+  isClipReady?: (event: Payload, now: number) => boolean;
+  /** 지정하면 구간 요약 요청 뒤 이 시간(ms)에 걸쳐 RUNNING → SUCCEEDED 전이를 자동 발행한다(개발 서버용). */
+  summaryCompleteDelayMs?: number;
 }): EventsMock {
   const events = new Map<string, RiskEventMessage>();
   const decidedTargets = new Map<string, Payload['severity']>();
+  const summariesByEvent = new Map<string, EventSummary[]>();
   const nextSequence = (eventId: string) => (events.get(eventId)?.payload.event_sequence ?? 0) + 1;
   let rejectNextAck = false;
+  let failNextSummaryCode: SummaryFailureCode | null = null;
+  let summarySeq = 0;
 
   function prune(t: number) {
     for (const [id, { payload }] of events) {
       if (payload.lifecycle === 'RESOLVED' && (payload.updated_at ?? 0) < t - KEEP_RESOLVED_MS) {
         events.delete(id);
+        summariesByEvent.delete(id);
       }
     }
   }
 
   function record(message: RiskEventMessage): RiskEventMessage {
     const id = message.payload.event_id;
-    const prev = events.get(id)?.payload;
+    const prev = events.get(id)?.payload as Payload | undefined;
     const acks = prev?.acks;
     const resumed =
       prev !== undefined && (message.payload.resume_count ?? 0) > (prev.resume_count ?? 0);
     const escalations = resumed
       ? message.payload.escalations
       : (prev?.escalations ?? message.payload.escalations);
+    const summaries = summariesByEvent.get(id) ?? (message.payload as Payload).summaries;
+    if (summaries?.length) summariesByEvent.set(id, summaries);
     const severity =
       !resumed &&
       prev &&
@@ -137,16 +158,18 @@ export function createEventsMock({
       SEVERITY_ORDER[message.payload.proposed_severity] > SEVERITY_ORDER[severity]
         ? message.payload.proposed_severity
         : null;
+    const payload: Payload = {
+      ...message.payload,
+      severity,
+      proposed_severity: proposed,
+      event_sequence: nextSequence(id),
+      ...(acks ? { acks } : {}),
+      ...(escalations ? { escalations } : {}),
+      ...(summaries?.length ? { summaries } : {}),
+    };
     const stored: RiskEventMessage = {
       ...message,
-      payload: {
-        ...message.payload,
-        severity,
-        proposed_severity: proposed,
-        event_sequence: nextSequence(id),
-        ...(acks ? { acks } : {}),
-        ...(escalations ? { escalations } : {}),
-      },
+      payload,
     };
     events.set(id, stored);
     prune(message.sent_at);
@@ -156,18 +179,40 @@ export function createEventsMock({
   /** prev 에서 한 전이를 저장한다: 새 msg_id, 순번 +1, updated_at = t. change 는 msg_id 를 매긴 뒤에 만든다(id 번호 순서). */
   function advance(prev: RiskEventMessage, t: number, change: () => Partial<Payload>) {
     const eventId = prev.payload.event_id;
+    const summaries = summariesByEvent.get(eventId);
+    const payload: Payload = {
+      ...prev.payload,
+      event_sequence: nextSequence(eventId),
+      updated_at: t,
+      ...(summaries?.length ? { summaries } : {}),
+      ...change(),
+    };
     const stored: RiskEventMessage = {
       ...prev,
       msg_id: nextMsgId(),
       sent_at: t,
-      payload: {
-        ...prev.payload,
-        event_sequence: nextSequence(eventId),
-        updated_at: t,
-        ...change(),
-      },
+      payload,
     };
     events.set(eventId, stored);
+    return stored;
+  }
+
+  /** 요약 목록만 갱신해 이벤트를 저장하고 /topic/events 로 발행한다(이벤트 등급·단계는 바꾸지 않는다). */
+  function publishSummaries(prev: RiskEventMessage, t: number, list: EventSummary[]) {
+    const eventId = prev.payload.event_id;
+    summariesByEvent.set(eventId, list);
+    const payload: Payload = {
+      ...prev.payload,
+      summaries: list,
+    };
+    const stored: RiskEventMessage = {
+      ...prev,
+      msg_id: nextMsgId(),
+      sent_at: t,
+      payload,
+    };
+    events.set(eventId, stored);
+    broker.publish(EVENTS_TOPIC, stored);
     return stored;
   }
 
@@ -203,7 +248,7 @@ export function createEventsMock({
     }
     const { page, size } = paging;
     const sorted = [...events.values()]
-      .map((message) => message.payload)
+      .map((message) => message.payload as Payload)
       .sort(newestFirst)
       .map(toRest);
     return HttpResponse.json({
@@ -380,6 +425,166 @@ export function createEventsMock({
     });
   }
 
+  function updateSummary(
+    eventId: string,
+    patch: Partial<EventSummary>,
+  ): RiskEventMessage | undefined {
+    const prev = events.get(eventId);
+    if (!prev) return undefined;
+    const t = now();
+    const anchor = prev.payload.raised_at ?? prev.payload.updated_at ?? t;
+    const existingList = summariesByEvent.get(eventId) ?? [];
+    const base: EventSummary = existingList[0] ?? {
+      summary_id: ++summarySeq,
+      job_id: `job-summary-${summarySeq}`,
+      status: 'QUEUED',
+      requested_at: t,
+      finished_at: null,
+      summary: null,
+      evidence_timestamps_ms: [],
+      window_start_ms: null,
+      window_end_ms: null,
+      error_code: null,
+    };
+    const nextStatus = patch.status ?? base.status;
+    const updated: EventSummary = {
+      ...base,
+      ...patch,
+      status: nextStatus,
+      finished_at:
+        patch.finished_at !== undefined
+          ? patch.finished_at
+          : nextStatus === 'SUCCEEDED' || nextStatus === 'FAILED' || nextStatus === 'TIMED_OUT'
+            ? t
+            : base.finished_at,
+      summary:
+        patch.summary !== undefined
+          ? patch.summary
+          : nextStatus === 'SUCCEEDED'
+            ? (base.summary ?? DEFAULT_SUMMARY_TEXT)
+            : base.summary,
+      evidence_timestamps_ms:
+        patch.evidence_timestamps_ms !== undefined
+          ? patch.evidence_timestamps_ms
+          : nextStatus === 'SUCCEEDED' && base.evidence_timestamps_ms.length === 0
+            ? [anchor, anchor + 4_000]
+            : base.evidence_timestamps_ms,
+      window_start_ms:
+        patch.window_start_ms !== undefined
+          ? patch.window_start_ms
+          : nextStatus === 'SUCCEEDED'
+            ? (base.window_start_ms ?? anchor - SUMMARY_WINDOW_HALF_MS)
+            : base.window_start_ms,
+      window_end_ms:
+        patch.window_end_ms !== undefined
+          ? patch.window_end_ms
+          : nextStatus === 'SUCCEEDED'
+            ? (base.window_end_ms ?? anchor + SUMMARY_WINDOW_HALF_MS)
+            : base.window_end_ms,
+      error_code:
+        patch.error_code !== undefined
+          ? patch.error_code
+          : nextStatus === 'TIMED_OUT'
+            ? (base.error_code ?? 'TIMED_OUT')
+            : nextStatus === 'FAILED'
+              ? (base.error_code ?? 'VLM_TIMEOUT')
+              : null,
+    };
+    const nextList = [updated, ...existingList.slice(existingList.length > 0 ? 1 : 0)];
+    return publishSummaries(prev, t, nextList);
+  }
+
+  function requestSummary(eventId: string, request: Request) {
+    const t = now();
+    const user = readLiveUser(request, t);
+    if (!user) return unauthorized();
+    if (user.role !== 'ADMIN') {
+      return problem(403, 'FORBIDDEN', '구간 요약을 요청할 권한이 없습니다');
+    }
+
+    const prev = events.get(eventId);
+    if (!prev) return problem(404, 'EVENT_NOT_FOUND', '이벤트를 찾을 수 없습니다');
+
+    if (failNextSummaryCode !== null) {
+      const code = failNextSummaryCode;
+      failNextSummaryCode = null;
+      return code === 'EVENT_NOT_LIVE'
+        ? problem(409, 'EVENT_NOT_LIVE', '실시간(LIVE) 이벤트에서만 구간 요약을 요청할 수 있습니다')
+        : problem(409, 'CLIP_NOT_READY', '클립이 아직 준비되지 않았습니다');
+    }
+
+    if (prev.payload.source !== 'LIVE') {
+      return problem(
+        409,
+        'EVENT_NOT_LIVE',
+        '실시간(LIVE) 이벤트에서만 구간 요약을 요청할 수 있습니다',
+      );
+    }
+
+    if (isClipReady && !isClipReady(prev.payload as Payload, t)) {
+      return problem(409, 'CLIP_NOT_READY', '클립이 아직 준비되지 않았습니다');
+    }
+
+    const existingList = summariesByEvent.get(eventId) ?? [];
+    const inProgress = existingList.find((s) => s.status === 'QUEUED' || s.status === 'RUNNING');
+    if (inProgress) {
+      return HttpResponse.json(
+        {
+          summary_id: inProgress.summary_id,
+          job_id: inProgress.job_id,
+          status: inProgress.status,
+        },
+        { status: 200 },
+      );
+    }
+
+    const summaryId = ++summarySeq;
+    const jobId = `job-summary-${summaryId}`;
+    const item: EventSummary = {
+      summary_id: summaryId,
+      job_id: jobId,
+      status: 'QUEUED',
+      requested_at: t,
+      finished_at: null,
+      summary: null,
+      evidence_timestamps_ms: [],
+      window_start_ms: null,
+      window_end_ms: null,
+      error_code: null,
+    };
+    publishSummaries(prev, t, [item, ...existingList]);
+
+    if (summaryCompleteDelayMs !== undefined && summaryCompleteDelayMs > 0) {
+      setTimeout(
+        () => {
+          const current = summariesByEvent.get(eventId)?.[0];
+          if (current?.summary_id === summaryId && current.status === 'QUEUED') {
+            updateSummary(eventId, { status: 'RUNNING' });
+          }
+        },
+        Math.max(1, Math.floor(summaryCompleteDelayMs / 2)),
+      );
+      setTimeout(() => {
+        const current = summariesByEvent.get(eventId)?.[0];
+        if (
+          current?.summary_id === summaryId &&
+          (current.status === 'QUEUED' || current.status === 'RUNNING')
+        ) {
+          updateSummary(eventId, { status: 'SUCCEEDED' });
+        }
+      }, summaryCompleteDelayMs);
+    }
+
+    return HttpResponse.json(
+      {
+        summary_id: summaryId,
+        job_id: jobId,
+        status: 'QUEUED',
+      },
+      { status: 202 },
+    );
+  }
+
   function close(eventId: string, actor: { id: string }, reason = DEFAULT_CLOSE_REASON) {
     const prev = events.get(eventId);
     if (!prev || prev.payload.lifecycle === 'RESOLVED') return undefined;
@@ -410,11 +615,18 @@ export function createEventsMock({
       http.post('*/api/events/:id/escalation', ({ params, request }) =>
         escalate(String(params.id), request),
       ),
+      http.post('*/api/events/:id/summary', ({ params, request }) =>
+        requestSummary(String(params.id), request),
+      ),
     ],
-    find: (eventId) => events.get(eventId)?.payload,
+    find: (eventId) => events.get(eventId)?.payload as Payload | undefined,
     close,
     expireAuth: () => {
       rejectNextAck = true;
     },
+    failNextSummary: (code = 'CLIP_NOT_READY') => {
+      failNextSummaryCode = code;
+    },
+    updateSummary,
   };
 }

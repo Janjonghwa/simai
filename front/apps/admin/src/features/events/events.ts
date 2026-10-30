@@ -5,9 +5,11 @@ export {
   ESCALATION_STATUS_LABEL,
   SEVERITY_LABEL,
   SEVERITY_RANK,
+  SUMMARY_STATUS_LABEL,
 } from '@/features/events/constants';
 export * from '@/features/events/entries';
 export * from '@/features/events/escalation';
 export * from '@/features/events/format';
 export * from '@/features/events/incidents';
 export * from '@/features/events/incidentView';
+export * from '@/features/events/summary';

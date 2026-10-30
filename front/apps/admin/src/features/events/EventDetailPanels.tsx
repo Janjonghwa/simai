@@ -8,10 +8,13 @@ import { escalationStatusLabel, mergedEscalations } from '@/features/events/esca
 import { EscalationControl } from '@/features/events/EscalationControl';
 import { formatTime, metricLabels, ruleName, statusText } from '@/features/events/format';
 import type { Incident } from '@/features/events/incidents';
+import { IncidentSummaryControl } from '@/features/events/IncidentSummaryControl';
 import { incidentTimeline } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
+import { canRequestSummary, latestSummary } from '@/features/events/summary';
 import type { EventEscalation } from '@/features/events/types';
 import { useEscalationHistory } from '@/features/events/useEscalateEvent';
+import { useSummaryState } from '@/features/events/useIncidentSummary';
 import { cn } from '@simai/ui/lib/utils';
 import type { ReactNode } from 'react';
 
@@ -115,11 +118,25 @@ function EscalationHistoryList({ items }: { items: readonly EventEscalation[] })
   );
 }
 
-export function AiPanel({ entries }: EntriesProps) {
+export function AiPanel({
+  entries,
+  onSeekTimestamp,
+}: EntriesProps & {
+  onSeekTimestamp?: (timestampMs: number) => void;
+}) {
+  const role = useCurrentRole();
   const historyByEvent = useEscalationHistory();
+  const summaryByEvent = useSummaryState();
   const ai = entries.filter(({ event }) => {
     const history = mergedEscalations(event, historyByEvent[event.event_id]);
-    return Boolean(event.rationale || event.proposed_severity || history.length > 0);
+    const summary = latestSummary(event, summaryByEvent[event.event_id]);
+    return Boolean(
+      event.rationale ||
+      event.proposed_severity ||
+      history.length > 0 ||
+      summary !== undefined ||
+      canRequestSummary(event, role),
+    );
   });
   return (
     <DetailPanel title="AI 설명">
@@ -143,6 +160,7 @@ export function AiPanel({ entries }: EntriesProps) {
                 </div>
               )}
               <EscalationHistoryList items={history} />
+              <IncidentSummaryControl event={event} onSeekTimestamp={onSeekTimestamp} />
             </div>
           );
         })

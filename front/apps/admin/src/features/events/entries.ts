@@ -1,5 +1,11 @@
 import { MAX_RESOLVED, SEVERITY_RANK } from '@/features/events/constants';
-import type { EventEscalation, EventItem, Severity } from '@/features/events/types';
+import type {
+  EventEscalation,
+  EventItem,
+  EventSummary,
+  EventSummaryStatus,
+  Severity,
+} from '@/features/events/types';
 
 // 이벤트 하나하나의 상태 계산(명세 3.10, 12.4, FR-8). 화면 없이 시험한다.
 
@@ -77,6 +83,75 @@ function unionEscalations(
   return added.length ? [...base, ...added] : base;
 }
 
+const SUMMARY_RANK: Record<EventSummaryStatus, number> = {
+  QUEUED: 0,
+  RUNNING: 1,
+  SUCCEEDED: 2,
+  FAILED: 2,
+  TIMED_OUT: 2,
+};
+
+function summaryKey(item: EventSummary): string {
+  return `${item.summary_id}:${item.job_id}`;
+}
+
+function sameSummary(a: EventSummary, b: EventSummary): boolean {
+  return (
+    a.summary_id === b.summary_id &&
+    a.job_id === b.job_id &&
+    a.status === b.status &&
+    a.requested_at === b.requested_at &&
+    a.finished_at === b.finished_at &&
+    a.summary === b.summary &&
+    a.window_start_ms === b.window_start_ms &&
+    a.window_end_ms === b.window_end_ms &&
+    a.error_code === b.error_code &&
+    a.evidence_timestamps_ms.length === b.evidence_timestamps_ms.length &&
+    a.evidence_timestamps_ms.every((v, i) => v === b.evidence_timestamps_ms[i])
+  );
+}
+
+function preferSummary(base: EventSummary, incoming: EventSummary): EventSummary {
+  if (sameSummary(base, incoming)) return base;
+  const rankDiff = SUMMARY_RANK[incoming.status] - SUMMARY_RANK[base.status];
+  if (rankDiff !== 0) return rankDiff > 0 ? incoming : base;
+  if ((incoming.finished_at ?? 0) !== (base.finished_at ?? 0)) {
+    return (incoming.finished_at ?? 0) > (base.finished_at ?? 0) ? incoming : base;
+  }
+  return incoming;
+}
+
+const bySummaryNewest = (a: EventSummary, b: EventSummary) =>
+  b.requested_at - a.requested_at || b.summary_id - a.summary_id;
+
+/** 구간 요약 기록(summaries)을 최신순으로 합친다. 같은 요약 건은 더 진행된 상태를 남긴다. */
+function unionSummaries(
+  base: EventItem['summaries'],
+  other: EventItem['summaries'],
+): EventItem['summaries'] {
+  if (!other?.length) return base;
+  if (!base?.length) return other;
+  const byId = new Map<string, EventSummary>();
+  for (const item of base) byId.set(summaryKey(item), item);
+  let changed = false;
+  for (const item of other) {
+    const key = summaryKey(item);
+    const prev = byId.get(key);
+    if (!prev) {
+      byId.set(key, item);
+      changed = true;
+    } else {
+      const chosen = preferSummary(prev, item);
+      if (chosen !== prev) {
+        byId.set(key, chosen);
+        changed = true;
+      }
+    }
+  }
+  if (!changed) return base;
+  return [...byId.values()].sort(bySummaryNewest);
+}
+
 /** next 가 prev 보다 새 상태인지. event_sequence 가 있으면 그것으로, 없으면 시각으로 본다. */
 function isNewer(prev: EventItem, next: EventItem): boolean {
   if (prev.event_sequence !== undefined && next.event_sequence !== undefined) {
@@ -94,7 +169,7 @@ const opensNewStage = (prev: EventItem, next: EventItem) =>
 
 /**
  * 받은 이벤트를 반영한다. 같거나 오래된 상태면 prev 를 그대로 돌려준다.
- * 다만 확인·상향 기록은 합친다. 재개(resume_count 증가)된 전이는 이전 상향 기록을 비운다(명세 5.4).
+ * 다만 확인·상향·구간 요약 기록은 합친다. 재개(resume_count 증가)된 전이는 이전 상향 기록을 비운다(명세 5.4).
  */
 export function mergeEvent(prev: EventEntry | undefined, next: EventItem): EventEntry {
   if (!prev) return { event: next, stageStartedAt: firstStageStart(next) };
@@ -104,19 +179,36 @@ export function mergeEvent(prev: EventEntry | undefined, next: EventItem): Event
     const escalations = resumed
       ? prev.event.escalations
       : unionEscalations(prev.event.escalations, next.escalations);
-    return acks === prev.event.acks && escalations === prev.event.escalations
+    const summaries = unionSummaries(prev.event.summaries, next.summaries);
+    return acks === prev.event.acks &&
+      escalations === prev.event.escalations &&
+      summaries === prev.event.summaries
       ? prev
-      : { ...prev, event: { ...prev.event, acks, escalations } };
+      : {
+          ...prev,
+          event: {
+            ...prev.event,
+            acks,
+            escalations,
+            ...(summaries !== undefined ? { summaries } : {}),
+          },
+        };
   }
   const acks = unionAcks(next.acks, prev.event.acks);
   const escalations = resumed
     ? next.escalations
     : unionEscalations(next.escalations, prev.event.escalations);
+  const summaries = unionSummaries(next.summaries, prev.event.summaries);
   return {
     event:
-      acks === next.acks && escalations === next.escalations
+      acks === next.acks && escalations === next.escalations && summaries === next.summaries
         ? next
-        : { ...next, acks, escalations },
+        : {
+            ...next,
+            acks,
+            escalations,
+            ...(summaries !== undefined ? { summaries } : {}),
+          },
     stageStartedAt: opensNewStage(prev.event, next)
       ? (eventTime(next) ?? prev.stageStartedAt)
       : prev.stageStartedAt,

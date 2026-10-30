@@ -54,6 +54,32 @@ const vlmAssessment = z.object({
   decision: z.string().nullable().optional(),
 });
 
+export const summaryStatusSchema = z.enum([
+  'QUEUED',
+  'RUNNING',
+  'SUCCEEDED',
+  'FAILED',
+  'TIMED_OUT',
+]);
+
+export type EventSummaryStatus = z.infer<typeof summaryStatusSchema>;
+
+/** 서버 이벤트 상세·STOMP(/topic/events)의 사고 구간 요약(incident_summary) 한 건, 최신순(S15P31A101-368, -369). */
+export const eventSummarySchema = z.object({
+  summary_id: z.number(),
+  job_id: z.string(),
+  status: summaryStatusSchema,
+  requested_at: z.number(),
+  finished_at: z.number().nullable().default(null),
+  summary: z.string().nullable().default(null),
+  evidence_timestamps_ms: z.array(z.number()).default([]),
+  window_start_ms: z.number().nullable().default(null),
+  window_end_ms: z.number().nullable().default(null),
+  error_code: z.string().nullable().default(null),
+});
+
+export type EventSummary = z.infer<typeof eventSummarySchema>;
+
 export const eventItemSchema = z.object({
   event_id: z.string(),
   event_sequence: z.number().int().optional(),
@@ -88,6 +114,7 @@ export const eventItemSchema = z.object({
   resolution: operatorResolution.optional(),
   escalations: z.array(operatorEscalation).optional(),
   assessments: z.array(vlmAssessment).optional(),
+  summaries: z.array(eventSummarySchema).optional(),
 });
 
 /** 화면이 쓰는 이벤트 값. STOMP 의 risk_event payload 도 그대로 넣을 수 있다. */
