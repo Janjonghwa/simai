@@ -1,5 +1,12 @@
 import {
   acknowledgedAt,
+  bestCamera,
+  cardChip,
+  confirmationText,
+  ec2Now,
+  elapsedLabel,
+  entryEtaLine,
+  firstActiveRaisedAt,
   firstRaisedAt,
   groupIncidents,
   incidentOf,
@@ -7,6 +14,8 @@ import {
   isAlarming,
   mergeEvent,
   metricLabels,
+  needsConfirmation,
+  placeLine,
   upsertEvents,
   type EventEntry,
 } from '@/features/events/events';
@@ -252,5 +261,116 @@ describe('사건 상세', () => {
       who: '운영자',
       text: '개구부·가장자리 근접 종료',
     });
+  });
+});
+
+describe('카드 표시 계산', () => {
+  const incidentOfEntries = (...entries: EventEntry[]) => groupIncidents(entries)[0]!;
+  const HH = /^확인 \d{2}:\d{2}:\d{2}$/;
+
+  it('경과는 초, 1분 넘으면 분과 초로 쓰고 음수는 0초다', () => {
+    expect(elapsedLabel(0)).toBe('0초');
+    expect(elapsedLabel(12_900)).toBe('12초');
+    expect(elapsedLabel(60_000)).toBe('1분');
+    expect(elapsedLabel(200_000)).toBe('3분 20초');
+    expect(elapsedLabel(-5_000)).toBe('0초');
+    expect(ec2Now(T, 250)).toBe(T + 250);
+    expect(ec2Now(T, undefined)).toBe(T);
+  });
+
+  it('경과 기준은 진행 중인 규칙 중 가장 먼저 발생한 시각이다', () => {
+    const incident = incidentOfEntries(
+      entry({ event_id: 'a', raised_at: T + 5_000 }),
+      entry({ event_id: 'b', rule_id: 'R1', severity: 'HIGH', raised_at: T + 2_000 }),
+      entry({ event_id: 'c', rule_id: 'R3', lifecycle: 'RESOLVED', raised_at: T - 9_000 }),
+    );
+    expect(firstActiveRaisedAt(incident)).toBe(T + 2_000);
+    expect(
+      firstActiveRaisedAt(incidentOfEntries(entry({ lifecycle: 'RESOLVED', resolved_at: T }))),
+    ).toBeNull();
+  });
+
+  it('진입 예측만 N초 뒤 진입 예상 줄을 만들고, 개구부 수치는 만들지 않는다', () => {
+    const r5 = item({ rule_id: 'R5', severity: 'CAUTION', metrics: { time_to_entry_s: 1.64 } });
+    expect(entryEtaLine(r5)).toBe('1.6초 뒤 진입 예상');
+    expect(entryEtaLine({ ...r5, lifecycle: 'RESOLVED' })).toBeNull();
+    expect(entryEtaLine({ ...r5, metrics: {} })).toBeNull();
+    expect(
+      entryEtaLine(item({ metrics: { edge_distance_m: 0.82, height_diff_m: 2.1 } })),
+    ).toBeNull();
+  });
+
+  it('처리 상태 칩: 불일치 > 조치 단계 > 확인 시각 > 미확인, 해소되면 해소 시각', () => {
+    const open = incidentOfEntries(entry({ updated_at: T }));
+    expect(cardChip(open)).toEqual({ kind: 'unacked', label: '미확인' });
+    expect(cardChip(open, { ticketStage: '조치 중' })).toEqual({
+      kind: 'ticket',
+      label: '조치 중',
+    });
+    expect(cardChip(open, { ticketStage: '조치 중', mismatches: { 'e-1': {} } })).toEqual({
+      kind: 'mismatch',
+      label: '불일치',
+    });
+
+    const acked = incidentOfEntries(entry({ acks: [ack(T + 3_000)], updated_at: T + 3_000 }));
+    expect(cardChip(acked)?.kind).toBe('ack');
+    expect(cardChip(acked)?.label).toMatch(HH);
+    // 확인했어도 불일치가 나중에 걸리면 불일치가 앞선다.
+    expect(cardChip(acked, { mismatches: { 'e-1': {} } })?.kind).toBe('mismatch');
+
+    const done = incidentOfEntries(
+      entry({ lifecycle: 'RESOLVED', resolved_at: T + 9_000, updated_at: T + 9_000 }),
+    );
+    expect(cardChip(done)?.kind).toBe('resolved');
+    expect(cardChip(done)?.label).toMatch(/^해소 \d{2}:\d{2}:\d{2}$/);
+    // 해소된 규칙의 불일치는 보이지 않는다.
+    expect(cardChip(done, { mismatches: { 'e-1': {} } })?.kind).toBe('resolved');
+  });
+
+  it('주의·안내만 있는 묶음은 처리 상태 칩이 없다', () => {
+    expect(cardChip(incidentOfEntries(entry({ severity: 'CAUTION' })))).toBeNull();
+    expect(cardChip(incidentOfEntries(entry({ severity: 'INFO' })))).toBeNull();
+  });
+
+  it('장소 줄: 대상 · 첫 구역은 번호와 이름, 나머지 구역은 번호만', () => {
+    const names: Record<string, string> = { 'z-04': '개구부', 'z-02': '단상' };
+    const name = (id: string) => names[id];
+    const incident = incidentOfEntries(
+      entry({ event_id: 'a', zone_id: 'z-04' }),
+      entry({ event_id: 'b', rule_id: 'R1', severity: 'HIGH', zone_id: 'z-02' }),
+      entry({ event_id: 'c', rule_id: 'R3', severity: 'HIGH', zone_id: 'z-04' }),
+    );
+    expect(placeLine(incident, name)).toBe('w-1 · z-04 개구부 · z-02');
+    expect(placeLine(incident)).toBe('w-1 · z-04 · z-02');
+  });
+
+  it('구역이 대상인 묶음은 그 구역을 먼저 적고 되풀이하지 않는다', () => {
+    const incident = incidentOfEntries(entry({ world_ids: [], zone_id: 'z-04' }));
+    expect(placeLine(incident, () => '개구부')).toBe('z-04 개구부');
+  });
+
+  it('카메라는 사람이 지금 담긴 카메라 중 첫 번째이고, 사람이 아니거나 없으면 없다', () => {
+    const tracks: Parameters<typeof bestCamera>[0] = [
+      { world_id: 'w-1', cameras: ['cam2', 'cam1'] },
+      { world_id: 'w-2', aliases: ['w-9'], cameras: [] },
+      { world_id: 'w-3', aliases: ['w-8'], cameras: ['cam3'] },
+    ];
+    expect(bestCamera(tracks, { type: 'person', id: 'w-1' })).toBe('cam2');
+    expect(bestCamera(tracks, { type: 'person', id: 'w-8' })).toBe('cam3');
+    expect(bestCamera(tracks, { type: 'person', id: 'w-2' })).toBeUndefined();
+    expect(bestCamera(tracks, { type: 'zone', id: 'z-1' })).toBeUndefined();
+    expect(bestCamera(undefined, { type: 'person', id: 'w-1' })).toBeUndefined();
+  });
+
+  it('확인 필요: UNVERIFIABLE·needs_check·이유 중 하나면 요청하고, 첫 이유를 붙인다(복원 이벤트)', () => {
+    expect(needsConfirmation(item())).toBe(false);
+    expect(needsConfirmation(item({ needs_check: true }))).toBe(true);
+    expect(needsConfirmation(item({ confidence_reasons: ['PREDICTED'] }))).toBe(true);
+    const restored = item({ verification: 'UNVERIFIABLE' });
+    expect(needsConfirmation(restored)).toBe(true);
+    expect(confirmationText(restored)).toBe('확인 필요');
+    expect(
+      confirmationText(item({ needs_check: true, confidence_reasons: ['Z_UNKNOWN', 'PREDICTED'] })),
+    ).toBe('확인 필요 · 높이 모름');
   });
 });

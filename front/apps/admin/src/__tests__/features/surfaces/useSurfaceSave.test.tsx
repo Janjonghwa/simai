@@ -230,4 +230,23 @@ describe('useSurfaceSave', () => {
       expect(surfaceIn(view, 'ws-0a0c0002')).toMatchObject({ version: 2, name: '저장됨' }),
     );
   });
+
+  it('작업면을 보관(DELETE)하면 응답이 온 뒤 목록에서 빼고, 보관한 작업면은 고칠 수 없다(404)', async () => {
+    const view = await run();
+    await act(() => view.result.current.writes.archive.mutateAsync('ws-0a0c0002'));
+    await waitFor(() =>
+      expect(view.result.current.list.surfaces.map((s) => s.objectId)).toEqual(['ws-0a0c0001']),
+    );
+    const desk = {
+      ...surfaceIn(view, 'ws-0a0c0001'),
+      objectId: 'ws-0a0c0002',
+    };
+    const error = await failure(
+      view.result.current.writes.save.mutateAsync({
+        surface: desk,
+        body: bodyOf(desk, '고침', desk.geometry),
+      }),
+    );
+    expect(surfaceSaveErrorText(error)).toBe('작업면을 찾지 못해 최신 목록을 다시 받았습니다.');
+  });
 });

@@ -1,0 +1,61 @@
+import { confirmationText } from '@/features/events/format';
+import type { CardChip } from '@/features/events/incidentView';
+import type { EventItem } from '@/features/events/types';
+import { Badge } from '@simai/ui/components/badge';
+import { cn } from '@simai/ui/lib/utils';
+
+/** 조용한 칩: 확인됨 · 조치 단계 · 해소. 눈에 띄는 칩(미확인 · 불일치)과 갈린다. */
+const QUIET_CHIP = 'border-border text-muted-foreground';
+
+/** 처리 상태 칩 모양(알약). 미확인은 굵은 빨강 외곽선(위험 등급 색), 불일치는 주황(지연과 같은 경고 색)이다. */
+const CHIP_CLASS: Record<CardChip['kind'], string> = {
+  unacked: 'border-[1.5px] border-sev-critical font-bold text-sev-critical',
+  mismatch: 'border-delay font-semibold text-delay',
+  ticket: QUIET_CHIP,
+  ack: QUIET_CHIP,
+  resolved: QUIET_CHIP,
+};
+
+/** 카드 꼬리표(작은 네모). 확인 필요는 회색 바탕, 지연은 주황 외곽선이다. */
+const TAG = 'rounded-[4px] px-[7px] py-px text-xs whitespace-nowrap';
+const TAG_CONFIRM = `${TAG} bg-surface-3 text-muted-foreground`;
+const TAG_DELAYED = `${TAG} text-delay ring-1 ring-delay ring-inset`;
+
+/** 카드 머리줄 오른쪽의 처리 상태 칩. */
+export function StateChip({ chip }: { chip: CardChip }) {
+  return (
+    <span
+      data-chip={chip.kind}
+      className={cn(
+        'shrink-0 rounded-full border px-2 py-px text-xs leading-[18px] whitespace-nowrap tabular-nums',
+        CHIP_CLASS[chip.kind],
+      )}
+    >
+      {chip.label}
+    </span>
+  );
+}
+
+/**
+ * 확인 필요 꼬리표. 사건 상세는 첫 이유까지 글자로 붙이고, 카드(compact)는 작은 꼬리표에
+ * "확인 필요"만 적고 이유는 올려 보면 나온다.
+ */
+export function ConfirmBadge({ event, compact }: { event: EventItem; compact?: boolean }) {
+  const text = confirmationText(event);
+  if (!compact) return <Badge variant="outline">{text}</Badge>;
+  return (
+    <span title={text} className={TAG_CONFIRM}>
+      확인 필요
+    </span>
+  );
+}
+
+/** 지연 알림 꼬리표(심각도와 함께 보여야 하는 것, 명세 7.3). 색은 지연(주황) 몫이다. */
+export function DelayedBadge({ compact }: { compact?: boolean }) {
+  if (compact) return <span className={TAG_DELAYED}>지연 알림</span>;
+  return (
+    <Badge variant="outline" className="border-delay text-delay">
+      지연 알림
+    </Badge>
+  );
+}

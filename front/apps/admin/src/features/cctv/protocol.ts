@@ -4,6 +4,7 @@ import {
   type FrameHeader,
   type PreviewText,
 } from '@/features/cctv/types';
+import { NAL, NAL_TYPE_MASK } from '@/features/clips/constants';
 
 // 미리보기 메시지 해석과 H.264 Annex B 다루기. 디코더·소켓 없이 시험한다.
 
@@ -27,35 +28,35 @@ export interface PreviewFrame {
 
 const decoder = new TextDecoder();
 
+/** 이진 메시지 맨 앞의 헤더 길이 칸(u32 BE)의 바이트 수. */
+const LENGTH_PREFIX_BYTES = 4;
+
 /** 이진 메시지 = 헤더 길이(u32 BE) | I0 frame_header JSON | 접근 단위. 틀리면 null. */
 export function parseFrame(buffer: ArrayBuffer): PreviewFrame | null {
-  if (buffer.byteLength < 4) return null;
+  if (buffer.byteLength < LENGTH_PREFIX_BYTES) return null;
   const length = new DataView(buffer).getUint32(0);
-  if (length === 0 || 4 + length > buffer.byteLength) return null;
+  if (length === 0 || LENGTH_PREFIX_BYTES + length > buffer.byteLength) return null;
   let raw: unknown;
   try {
-    raw = JSON.parse(decoder.decode(new Uint8Array(buffer, 4, length)));
+    raw = JSON.parse(decoder.decode(new Uint8Array(buffer, LENGTH_PREFIX_BYTES, length)));
   } catch {
     return null;
   }
   const header = frameHeaderSchema.safeParse(raw);
   if (!header.success) return null;
-  return { header: header.data, data: new Uint8Array(buffer, 4 + length) };
+  return { header: header.data, data: new Uint8Array(buffer, LENGTH_PREFIX_BYTES + length) };
 }
 
 export function base64Bytes(value: string): Uint8Array {
   return Uint8Array.from(atob(value), (c) => c.charCodeAt(0));
 }
 
-const NAL_SPS = 7;
-const NAL_PPS = 8;
-
 /** Annex B 접근 단위 안의 NAL 종류들(3·4바이트 시작 코드). */
 export function nalTypes(data: Uint8Array): number[] {
   const types: number[] = [];
   for (let i = 0; i + 3 < data.length; i++) {
     if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
-      types.push(data[i + 3] & 0x1f);
+      types.push(data[i + 3] & NAL_TYPE_MASK);
       i += 2;
     }
   }
@@ -70,7 +71,7 @@ const START = Uint8Array.of(0, 0, 0, 1);
  */
 export function withParameterSets(data: Uint8Array, sps: Uint8Array, pps: Uint8Array): Uint8Array {
   const types = nalTypes(data);
-  if (types.includes(NAL_SPS) && types.includes(NAL_PPS)) return data;
+  if (types.includes(NAL.SPS) && types.includes(NAL.PPS)) return data;
   const out = new Uint8Array(START.length * 2 + sps.length + pps.length + data.length);
   let at = 0;
   for (const part of [START, sps, START, pps, data]) {

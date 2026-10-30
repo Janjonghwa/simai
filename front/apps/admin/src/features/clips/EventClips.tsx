@@ -1,4 +1,10 @@
-import { autoRetained, clipTags, groupClips, isDeleted } from '@/features/clips/clips';
+import {
+  clipTags,
+  deletedLabel,
+  groupClips,
+  isDeleted,
+  retentionState,
+} from '@/features/clips/clips';
 import type { Clip } from '@/features/clips/types';
 import { useClipPlayback } from '@/features/clips/useClipPlayback';
 import { useClipRetention } from '@/features/clips/useClipRetention';
@@ -13,15 +19,56 @@ import { useState } from 'react';
 
 const TAG = 'rounded bg-surface-3 px-1.5 py-0.5';
 
-function ClipRow({ eventId, clip, auto }: { eventId: string; clip: Clip; auto: boolean }) {
+type Playback = ReturnType<typeof useClipPlayback>;
+type Retention = ReturnType<typeof useClipRetention>;
+
+/** 보존 표시 붙이기·떼기. 자동 보존은 뗄 수 없어 표시만 보인다. */
+function RetentionControl({ clip, retention }: { clip: Clip; retention: Retention }) {
+  const held = retentionState(clip);
+  if (held === 'AUTO') return <span className={TAG}>자동 보존</span>;
+  return (
+    <Button
+      size="xs"
+      variant={held === 'HELD' ? 'secondary' : 'ghost'}
+      aria-pressed={held === 'HELD'}
+      aria-label={`${clip.camera_id} 보존`}
+      disabled={retention.pending}
+      onClick={() => retention.setRetention(!clip.retention_hold)}
+    >
+      보존
+    </Button>
+  );
+}
+
+function ClipVideo({ clip, playback, url }: { clip: Clip; playback: Playback; url: string }) {
+  return (
+    <video
+      key={playback.videoKey}
+      src={url}
+      aria-label={`${clip.camera_id} 클립`}
+      controls
+      // 브라우저 기본 메뉴의 내려받기·다른 이름으로 저장을 감춘다(완전히 막지는 못한다).
+      controlsList="nodownload"
+      onContextMenu={(e) => e.preventDefault()}
+      autoPlay
+      muted
+      playsInline
+      preload="metadata"
+      onError={playback.onError}
+      className="aspect-video w-full rounded-md bg-black"
+    />
+  );
+}
+
+function ClipRow({ eventId, clip }: { eventId: string; clip: Clip }) {
   const [open, setOpen] = useState(false);
-  const playback = useClipPlayback(clip.clip_id);
+  const playback = useClipPlayback(eventId, clip);
   const retention = useClipRetention(eventId, clip.clip_id);
-  const deleted = isDeleted(clip);
+  const deleted = isDeleted(clip) || playback.deleted;
   const error = playback.error ?? retention.error;
 
   return (
-    <li className="flex flex-col gap-1.5 rounded-[10px] bg-surface-2 px-2.5 py-2">
+    <li className="flex flex-col gap-1.5 rounded-lg bg-surface-2 px-2.5 py-2">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
         <span className="font-mono font-semibold">{clip.camera_id}</span>
         <span className="font-mono text-muted-foreground">
@@ -34,23 +81,10 @@ function ClipRow({ eventId, clip, auto }: { eventId: string; clip: Clip; auto: b
         ))}
         <span className="ml-auto flex items-center gap-1">
           {deleted ? (
-            <span className="text-muted-foreground">삭제됨</span>
+            <span className="text-muted-foreground">{deletedLabel(clip)}</span>
           ) : (
             <>
-              {auto ? (
-                clip.retention_hold && <span className={TAG}>보존</span>
-              ) : (
-                <Button
-                  size="xs"
-                  variant={clip.retention_hold ? 'secondary' : 'ghost'}
-                  aria-pressed={clip.retention_hold}
-                  aria-label={`${clip.camera_id} 보존`}
-                  disabled={retention.pending}
-                  onClick={() => retention.setRetention(!clip.retention_hold)}
-                >
-                  보존
-                </Button>
-              )}
+              <RetentionControl clip={clip} retention={retention} />
               <Button
                 size="xs"
                 variant="secondary"
@@ -69,21 +103,7 @@ function ClipRow({ eventId, clip, auto }: { eventId: string; clip: Clip; auto: b
         </span>
       </div>
       {open && !deleted && playback.url && (
-        <video
-          key={playback.videoKey}
-          src={playback.url}
-          aria-label={`${clip.camera_id} 클립`}
-          controls
-          // 브라우저 기본 메뉴의 내려받기·다른 이름으로 저장을 감춘다(완전히 막지는 못한다).
-          controlsList="nodownload"
-          onContextMenu={(e) => e.preventDefault()}
-          autoPlay
-          muted
-          playsInline
-          preload="metadata"
-          onError={playback.onError}
-          className="aspect-video w-full rounded-md bg-black"
-        />
+        <ClipVideo clip={clip} playback={playback} url={playback.url} />
       )}
       {error && (
         <span role="alert" className="text-xs text-muted-foreground">
@@ -102,7 +122,6 @@ export function EventClips({ event, title = '클립' }: { event: EventItem; titl
   const { enabled, clips, failed } = useEventClips(event);
   if (!enabled) return null;
   const groups = groupClips(clips ?? []);
-  const auto = autoRetained(event);
 
   return (
     <section aria-label={title} className="flex flex-col gap-2">
@@ -122,7 +141,7 @@ export function EventClips({ event, title = '클립' }: { event: EventItem; titl
           )}
           <ul className="flex flex-col gap-1.5">
             {group.clips.map((clip) => (
-              <ClipRow key={clip.clip_id} eventId={event.event_id} clip={clip} auto={auto} />
+              <ClipRow key={clip.clip_id} eventId={event.event_id} clip={clip} />
             ))}
           </ul>
         </div>

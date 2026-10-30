@@ -382,7 +382,7 @@ function PersonAvatar({ worldId, model }: { worldId: string; model: AvatarModel 
           ) : (
             <HeightUnknownColumn color={palette.person} selected={selected} />
           )}
-          {/* 이름표는 1초 머물 때·선택·위험일 때만 보인다(관제 데모와 같다). */}
+          {/* 이름표는 잠깐(HOVER_LABEL_MS) 머물 때·선택·위험일 때만 보인다(관제 데모와 같다). */}
           <LabelSprite
             text={label}
             y={pose.kind === 'BODY' ? LABEL_Y : COLUMN_TOP + 0.2}

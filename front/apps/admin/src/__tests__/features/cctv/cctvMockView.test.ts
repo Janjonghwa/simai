@@ -5,9 +5,10 @@ import {
   cctvFigures,
   cctvLine,
   cctvPath,
+  cctvPeople,
   cctvProj,
 } from '@/features/cctv/cctvMockView';
-import { ROOM } from '@/features/plan/plan';
+import { ROOM, toPlan } from '@/features/plan/plan';
 import { describe, expect, it } from 'vitest';
 
 const cam1 = CCTV_CAMS.find((cam) => cam.id === 'cam1')!;
@@ -64,5 +65,30 @@ describe('CCTV 모의 화면 투영', () => {
     expect(near!.body.height).toBeGreaterThan(far!.body.height);
     // 머리는 몸통 위에 있다.
     expect(near!.head.cy).toBeLessThan(near!.body.y + near!.body.height);
+  });
+
+  it('World 트랙을 평면 좌표의 사람으로 바꾸고, 위치를 모르는 사람(LOST·UNKNOWN)은 뺀다', () => {
+    const track = (
+      world_id: string,
+      observation_state: 'OBSERVED' | 'PREDICTED' | 'UNKNOWN',
+      track_lifecycle: 'CONFIRMED' | 'LOST',
+    ) => ({
+      world_id,
+      position_xy: [2, 7] as [number, number],
+      observation_state,
+      track_lifecycle,
+    });
+    const [x, y] = toPlan(2, 7);
+    expect(
+      cctvPeople([
+        track('w-1', 'OBSERVED', 'CONFIRMED'),
+        track('w-2', 'PREDICTED', 'CONFIRMED'),
+        track('w-3', 'UNKNOWN', 'CONFIRMED'),
+        track('w-4', 'OBSERVED', 'LOST'),
+      ]),
+    ).toEqual([
+      { id: 'w-1', x, y },
+      { id: 'w-2', x, y },
+    ]);
   });
 });

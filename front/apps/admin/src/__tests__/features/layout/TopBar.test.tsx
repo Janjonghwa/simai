@@ -1,6 +1,8 @@
+import { ROLE_LABEL } from '@/features/auth/roleLabel';
 import { TopBar } from '@/features/layout/TopBar';
 import { viewerHealthAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
+import { useSessionStore, type Role } from '@/store/session.store';
 import type { ViewerHealthPayload } from '@simai/contracts';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
@@ -29,9 +31,14 @@ function seed(change: Partial<ViewerHealthPayload> = {}) {
   });
 }
 
+function signInAs(role: Role) {
+  useSessionStore.getState().signIn({ accessToken: 't', user: { id: 'u-1', role } });
+}
+
 afterEach(() => {
   cleanup();
   navigate.mockClear();
+  useSessionStore.getState().signOut();
   useRealtimeStore.setState(useRealtimeStore.getInitialState(), true);
 });
 
@@ -59,5 +66,37 @@ describe('TopBar', () => {
 
     act(() => fireEvent.click(screen.getByRole('menuitem', { name: '설치 · 보정' })));
     expect(navigate).toHaveBeenCalledWith({ to: '/setup' });
+  });
+
+  it.each(['ADMIN', 'FOREMAN'] as const)(
+    '%s 계정에는 시계와 관리자 메뉴 사이에 경보 소리 버튼이 있다',
+    (role) => {
+      seed();
+      signInAs(role);
+      const { container } = render(<TopBar floating={false} />);
+
+      const sound = screen.getByRole('button', { name: /경보 소리/ });
+      const clock = container.querySelector('header span.font-mono')!;
+      const account = screen.getByRole('button', { name: new RegExp(ROLE_LABEL[role]) });
+      expect(clock.compareDocumentPosition(sound) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(
+        sound.compareDocumentPosition(account) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    },
+  );
+
+  it('열람 계정은 확인 권한이 없어 소리를 못 끄므로 소리 버튼이 없다', () => {
+    seed();
+    signInAs('VIEWER');
+    render(<TopBar floating={false} />);
+
+    expect(screen.queryByRole('button', { name: /경보 소리/ })).toBeNull();
+    expect(screen.getByRole('button', { name: new RegExp(ROLE_LABEL.VIEWER) })).toBeTruthy();
+  });
+
+  it('로그인 전에는 소리 버튼이 없다', () => {
+    seed();
+    render(<TopBar floating={false} />);
+    expect(screen.queryByRole('button', { name: /경보 소리/ })).toBeNull();
   });
 });

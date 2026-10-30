@@ -162,6 +162,8 @@ export type {
   CommandResult,
   Viewer3DHandle,
   Viewer3DProps,
+  ViewerBoxEdit,
+  ViewerBoxGhost,
   ViewerError,
   ViewerErrorCode,
   ViewerMode,

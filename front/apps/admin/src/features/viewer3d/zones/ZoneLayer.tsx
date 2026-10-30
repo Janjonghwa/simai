@@ -138,7 +138,7 @@ function ZoneVolume({ zone, interactive }: ZoneEntryProps) {
         {/* 이름표는 상자 앞쪽(World min X·min Y, 기본 시점 쪽) 모서리의 하단 높이에 둔다.
             사람 이름표(머리 위)와 높이대가 달라 구역 안·가장자리의 사람과 겹치지 않는다.
             위험이 있으면 위험 > 구역 이름·높이·적용 상태 순서로 한 줄에 적는다. */}
-        {/* 이름표는 1초 머물 때·선택·위험일 때만 보인다(관제 데모와 같다). */}
+        {/* 이름표는 잠깐(HOVER_LABEL_MS) 머물 때·선택·위험일 때만 보인다(관제 데모와 같다). */}
         <group position={[-sx / 2, -sy / 2, sz / 2]}>
           <LabelSprite
             text={

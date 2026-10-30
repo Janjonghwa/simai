@@ -1,29 +1,33 @@
 import {
-  attendeeRows,
   createTask,
-  evalText,
-  formOf,
-  fromMin,
-  hasEdits,
-  interferencesOf,
-  itemRects,
   nextTaskId,
-  overlapsTime,
-  parseEdits,
-  rectAnd,
-  rectHit,
   TASK_INPUT_DEFAULT,
   taskInputValid,
+} from '@/features/tbm/taskInput';
+import {
+  evalText,
+  fromMin,
+  interferencesOf,
+  itemRects,
+  overlapsTime,
+  rectAnd,
+  rectHit,
   taskPeak,
   taskPlace,
-  tbmFill,
   tbmInterferences,
   toMin,
-  withEdit,
-  withoutEdits,
 } from '@/features/tbm/tbm';
 import { TBM_FORM_KEY, useTbmFormStore } from '@/features/tbm/tbm.store';
 import { TBM_TASKS, type TbmTask } from '@/features/tbm/tbmDemo';
+import {
+  attendeeRows,
+  formOf,
+  hasEdits,
+  parseEdits,
+  tbmFill,
+  withEdit,
+  withoutEdits,
+} from '@/features/tbm/tbmForm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const [T1, T2, T3] = TBM_TASKS as [TbmTask, TbmTask, TbmTask];
@@ -140,7 +144,7 @@ describe('동시 작업 간섭', () => {
   });
 
   it('구역이 없으면 적어 둔 장소를 보인다', () => {
-    expect(taskPlace(T1)).toBe('개구부 위 작업 공간 (z-04)');
+    expect(taskPlace(T1)).toBe('개구부 구역 (z-04)');
     expect(taskPlace(T3)).toBe('북서쪽 바닥');
     expect(taskPlace(task({}))).toBe('구역 밖');
   });
@@ -159,9 +163,7 @@ describe('TBM 회의록 칸', () => {
     expect(f.date).toBe('2026년 10월 16일 09:00 ~ 12:00');
     expect(f.same).toBe(true);
     expect(f.riskDone).toBe(true);
-    expect(f.content).toBe(
-      '개구부 위 작업 공간 (z-04) · 4명 · 반장 A조 · 장비 없음 · 배치 비계 S1 2.4m',
-    );
+    expect(f.content).toBe('개구부 구역 (z-04) · 4명 · 반장 A조 · 장비 없음 · 배치 비계 S1 2.4m');
     expect(f.r0).toBe('비계 S1 ↔ 개구부 · R2 · ▲▲ CRITICAL · 수평 0.6m · 높이 차 2.1m');
     expect(f.c1).toBe(evalText(T1.evals[1]!));
     expect(f.m0).toBe(T1.measures[0]);

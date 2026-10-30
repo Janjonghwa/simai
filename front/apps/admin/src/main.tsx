@@ -2,9 +2,11 @@ import '@/index.css';
 // 저장된 다크·화이트 모드를 화면을 그리기 전에 적용한다.
 import '@/features/layout/theme.store';
 
+import { requestAck } from '@/features/events/api';
 import { bindEventsCache } from '@/features/events/eventsCache';
+import { bindMismatchCache } from '@/features/events/mismatch';
 import { installAudioUnlock } from '@/lib/alarmSound';
-import { authSession } from '@/lib/api';
+import { api, authSession } from '@/lib/api';
 import { bindSession } from '@/lib/bindSession';
 // 환경변수가 틀리면 화면을 그리기 전에 멈춘다.
 import { env } from '@/lib/env';
@@ -12,7 +14,7 @@ import { queryClient } from '@/lib/queryClient';
 import { realtime } from '@/lib/realtime';
 import { routeTree } from '@/routeTree.gen';
 import { useSessionStore } from '@/store/session.store';
-import { clearZoneDrafts } from '@/store/zoneDrafts.store';
+import { clearZoneDrafts } from '@/store/zoneEdit.store';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createRouter, RouterProvider } from '@tanstack/react-router';
 import { StrictMode } from 'react';
@@ -43,75 +45,8 @@ declare module '@tanstack/react-router' {
 // 서버가 아직 없는 API 는 개발 서버에서 msw 로 REST·STOMP 를 흉내 낸다. DEV 조건이라 빌드에는 들어가지 않는다.
 // VITE_API_REAL 에 적은 경로(예: /api/auth)는 흉내 내지 않고 개발 서버 프록시로 실서버에 보낸다(vite.config.ts).
 if (import.meta.env.DEV && env.VITE_API_MOCK) {
-  const [
-    { network },
-    { handlers },
-    { readMockUser },
-    { withoutRealPaths },
-    { createStompBroker },
-    { startRealtimeMock },
-    { createEventsMock },
-    { createClipsMock },
-    { createZonesMock },
-  ] = await Promise.all([
-    import('virtual:msw'),
-    import('@/mocks/handlers'),
-    import('@/mocks/mockUser'),
-    import('@/mocks/realPaths'),
-    import('@/mocks/stompBroker'),
-    import('@/mocks/realtime'),
-    import('@/mocks/events'),
-    import('@/mocks/clips'),
-    import('@/mocks/zones'),
-  ]);
-  // 토큰 모양만 본다: mock 로그인 토큰이나 sub·role 이 있는 JWT(혼합 모드, 서명·만료는 보지 않는다).
-  // 로그아웃 뒤 토큰 없이 붙지 않는지 볼 수 있다.
-  const broker = createStompBroker({
-    url: env.VITE_STOMP_URL,
-    authorize: (authorization) => readMockUser(authorization) !== undefined,
-  });
-  const events = createEventsMock({ broker });
-  const clips = createClipsMock({ findEvent: events.find });
-  // health 의 구성 묶음 상태(발행·ACK)는 구역 mock 이 정한다.
-  const zones = createZonesMock();
-  // GET /api/health 가 STOMP 흉내와 같은 상태를 주도록 실시간 mock 을 먼저 만든다.
-  const { handlers: realtimeHandlers, ...realtimeMock } = startRealtimeMock(
-    broker,
-    events,
-    Date.now,
-    zones.config,
-  );
-  network.configure({
-    // 실서버 경로의 mock 은 빼서 그 요청이 그대로 나가게 한다(처리되지 않은 요청은 bypass).
-    handlers: [
-      ...withoutRealPaths(
-        [
-          ...handlers,
-          ...events.handlers,
-          ...clips.handlers,
-          ...zones.handlers,
-          ...realtimeHandlers,
-        ],
-        env.VITE_API_REAL,
-      ),
-      broker.handler,
-    ],
-    onUnhandledFrame: 'bypass',
-    // msw 는 가로챈 요청·프레임마다 콘솔에 남긴다. world 가 초당 10번 와서 콘솔이 넘치므로 끈다(REST 기록도 같이 꺼진다).
-    context: { quiet: true },
-  });
-  await network.enable();
-  // 개발 도구 콘솔에서 흉내 낸다: simaiMock.pauseHealth(5000), simaiMock.drop(),
-  // simaiMock.expireAuth()(다음 ACK 를 토큰 만료로 거절해 갱신 뒤 다시 보내기를 본다),
-  // simaiMock.outage('tier0' | 'laptop' | 'remote' | null)(장애 띠), simaiMock.sceneMismatch(true),
-  // simaiMock.rejectNextBundle()(다음 구성 묶음을 Tier 0 가 거부해 STALE)
-  Object.assign(globalThis, {
-    simaiMock: {
-      ...realtimeMock,
-      expireAuth: events.expireAuth,
-      rejectNextBundle: zones.rejectNextBundle,
-    },
-  });
+  const { startMockBackend } = await import('@/mocks/startBackend');
+  await startMockBackend();
 }
 
 // 새로고침해도 로그인이 이어지게 갱신 쿠키로 세션을 되살린다. 서버가 늦으면 정한 시간만 기다리고 그린다
@@ -131,10 +66,16 @@ bindSession({
   router,
   queryClient,
   getToken: authSession.freshToken,
+  // 서버가 STOMP 연결을 ERROR 로 거절하면 토큰을 갱신해 다시 붙는다. 갱신 쿠키가 거부되면 authSession 이 로그아웃시킨다.
+  refreshToken: authSession.refresh,
   onUserChange: clearZoneDrafts,
 });
-// /topic/events 로 받은 이벤트를 경보 목록 캐시에 반영한다.
-bindEventsCache(realtime, queryClient);
+// /topic/events 로 받은 이벤트를 경보 목록 캐시에 반영한다. 연결이 다시 열리면 끊긴 사이 누른 확인을 서버로 보낸다.
+bindEventsCache(realtime, queryClient, (eventId, eventSequence) =>
+  requestAck(api, eventId, eventSequence),
+);
+// /topic/admin/events(관리자 전용)의 조치 불일치를 캐시에 반영한다.
+bindMismatchCache(realtime, queryClient);
 // 브라우저는 사용자가 누르기 전에는 소리를 막는다. 첫 클릭·키 입력(로그인 포함)에서 경보음을 깨운다.
 installAudioUnlock();
 

@@ -2,6 +2,14 @@
 
 공개 입구(`index.ts`)와 그 타입을 바꾸면 여기에 적는다. 깨지는 변경은 FE 리뷰를 받은 뒤에만 한다.
 
+## 제어형 상자 편집 조작기(`boxEdit`)
+
+모두 더하기이며 하위 호환이다. 계약 설명은 [CONTRACT.md](./CONTRACT.md) '제어형 상자 편집(boxEdit)' 절에 있다.
+
+- 추가: `boxEdit`(`ViewerBoxEdit`)·`onBoxEditChange`·`boxGhosts`(`ViewerBoxGhost[]`) prop. 호스트가 상자를 쥐고, 뷰어는 미리보기·손잡이(가운데 구 = 바닥 이동, 면별 화살표 = 그 면만 이동)를 그린다.
+- 추가 export(타입): `ViewerBoxEdit`, `ViewerBoxGhost`.
+- 그대로: 뷰어 안 편집 세션(`beginEdit`·`GizmoController`·`ObbGizmo`)과 그 콜백·시험은 건드리지 않았다. 두 방식은 서로 영향이 없다.
+
 ## S15P31A101-65 EXP-02 사람 메시
 
 모두 더하기이며 하위 호환이다. 계약 설명은 [CONTRACT.md](./CONTRACT.md) 'EXP-02 사람 메시' 절에 있다.

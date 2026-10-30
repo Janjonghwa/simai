@@ -1,6 +1,7 @@
 import { useLiveEvents } from '@/features/events/useLiveEvents';
 import { FloorPlan } from '@/features/plan/FloorPlan';
 import { planMarks } from '@/features/plan/plan';
+import { usePlanBackdrop } from '@/features/plan/usePlanBackdrop';
 import { useWorldFresh } from '@/features/plan/useWorldFresh';
 import { useZones } from '@/features/zones/useZones';
 import { useLinkAlive } from '@/hooks/useLinkAlive';
@@ -11,7 +12,7 @@ import { useMemo } from 'react';
 const NO_TRACKS: WorldTrack[] = [];
 
 /**
- * 실시간 2D 평면. 앱 연결이 받은 최신 world·구역·진행 중 이벤트로 그리고 3D 뷰어 코드에 기대지 않는다(명세 13.6).
+ * 실시간 2D 평면. 앱 연결이 받은 최신 world·구역·진행 중 이벤트와 현재 평면도로 그리고 3D 뷰어 코드에 기대지 않는다(명세 13.6).
  * world 가 올 때마다(10Hz) 이 컴포넌트만 다시 그린다. 바탕·구역 층은 바뀔 때만 그린다.
  */
 export function LivePlan({
@@ -31,6 +32,8 @@ export function LivePlan({
   // 연결이 끊겼거나, 연결은 살아 있어도 world 만 멈췄으면(파이프라인 정지) 위치가 지금 것이 아니다.
   const alive = useLinkAlive();
   const fresh = useWorldFresh();
+  // 방 크기와 바탕은 평면도(GET /api/floor-plans/current)에서 온다. 없으면 기본 10×10m 모눈이다.
+  const { bounds, backdrop } = usePlanBackdrop();
   return (
     <FloorPlan
       tracks={tracks}
@@ -39,6 +42,8 @@ export function LivePlan({
       selectedKey={selectedKey}
       onSelect={onSelect}
       stale={!alive || !fresh}
+      bounds={bounds}
+      backdrop={backdrop}
       className={className}
     />
   );

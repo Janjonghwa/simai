@@ -1,4 +1,5 @@
 import { CameraRig } from '@/features/viewer3d/CameraRig';
+import { BoxEditGizmo } from '@/features/viewer3d/editing/BoxEditGizmo';
 import { DraftOverlay } from '@/features/viewer3d/editing/DraftOverlay';
 import { GizmoController } from '@/features/viewer3d/editing/GizmoController';
 import { ObbGizmoController } from '@/features/viewer3d/editing/ObbGizmo';
@@ -111,6 +112,8 @@ export const ViewerCanvas = memo(function ViewerCanvas({ children }: ViewerCanva
       <GizmoController />
       <ObbGizmoController />
       <DraftOverlay />
+      {/* 호스트가 쥔 상자 편집 조작기. 뷰어 안 편집 세션과 따로이고 위험 강조 밖이다. */}
+      <BoxEditGizmo />
       {children}
     </Canvas>
   );

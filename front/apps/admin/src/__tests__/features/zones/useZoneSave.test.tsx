@@ -2,14 +2,15 @@ import { ZONES_KEY } from '@/features/zones/api';
 import { useZones } from '@/features/zones/useZones';
 import { saveErrorText, useZoneSave } from '@/features/zones/useZoneSave';
 import {
-  bodyOf,
-  formOf,
-  NEW_ZONE_FORM,
-  newZoneBodyOf,
-  newZoneBox,
-} from '@/features/zones/zoneForm';
+  defaultNewBox,
+  NEW_EVAL_TYPE,
+  NEW_ZONE_KIND,
+  NEW_ZONE_NAME,
+  NEW_ZONE_SEVERITY,
+} from '@/features/zones/zoneEditModel';
+import { bodyOf, formOf, newZoneBodyOf } from '@/features/zones/zoneForm';
+import { ApiError } from '@/lib/http';
 import { createZonesMock } from '@/mocks/zones';
-import { useZoneDraftsStore, type KeptZoneDraft } from '@/store/zoneDrafts.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { delay } from 'msw';
@@ -30,7 +31,6 @@ afterAll(() => server.close());
 beforeEach(() => {
   auth.token = 'mock-token.admin';
   server.resetHandlers(...createZonesMock().handlers);
-  useZoneDraftsStore.getState().clear();
 });
 afterEach(cleanup);
 
@@ -47,7 +47,6 @@ async function run() {
 type View = Awaited<ReturnType<typeof run>>;
 const zoneIn = (view: View, id: string) =>
   view.result.current.list.zones.find((z) => z.zoneId === id)!;
-const draft = (zoneId: string) => ({ zoneId }) as KeptZoneDraft;
 /** 지금부터 구역 목록 조회(GET)나 새 버전 저장(PUT) 요청을 센다. 답은 원래 mock 이 한다. */
 const countRequests = (method: 'GET' | 'PUT') => {
   const counter = { count: 0 };
@@ -69,9 +68,8 @@ const failure = async (promise: Promise<unknown>) => {
 };
 
 describe('useZoneSave', () => {
-  it('저장하면 응답(새 버전)으로 목록을 바꾸고 그 구역의 보관 초안만 지운다', async () => {
+  it('저장하면 응답(새 버전)으로 목록을 바꾼다', async () => {
     const view = await run();
-    useZoneDraftsStore.getState().setDrafts({ 'z-04': draft('z-04'), 'z-02': draft('z-02') });
     const zone = zoneIn(view, 'z-04');
 
     await act(() =>
@@ -91,7 +89,6 @@ describe('useZoneSave', () => {
         max: [9, 3.8, 3],
       }),
     );
-    expect(Object.keys(useZoneDraftsStore.getState().drafts)).toEqual(['z-02']);
   });
 
   it('형상을 고치지 않았으면 받은 다각형·높이를 그대로 보낸다', async () => {
@@ -195,8 +192,13 @@ describe('useZoneSave', () => {
     const created = await act(() =>
       view.result.current.writes.create.mutateAsync(
         newZoneBodyOf(
-          { ...NEW_ZONE_FORM, zoneType: 'OPENING' },
-          newZoneBox(view.result.current.list.zones),
+          {
+            name: NEW_ZONE_NAME,
+            judgeType: NEW_EVAL_TYPE,
+            zoneType: NEW_ZONE_KIND,
+            severity: NEW_ZONE_SEVERITY,
+          },
+          defaultNewBox(view.result.current.list.zones),
         ),
       ),
     );
@@ -268,5 +270,30 @@ describe('useZoneSave', () => {
     );
     await act(() => new Promise((resolve) => setTimeout(resolve, 300)));
     expect(zoneIn(view, 'z-04')).toMatchObject({ version: 2, name: 'A' });
+  });
+
+  it('구역을 보관(DELETE)하면 응답이 온 뒤 목록에서 뺀다', async () => {
+    const view = await run();
+    await act(() => view.result.current.writes.archive.mutateAsync('z-04'));
+    await waitFor(() =>
+      expect(view.result.current.list.zones.map((z) => z.zoneId)).toEqual(['z-02']),
+    );
+    // 서버도 목록에서 뺀다(이력은 남는다).
+    const list = (await (
+      await fetch('http://api.test/api/zones', {
+        headers: { Authorization: 'Bearer mock-token.admin' },
+      })
+    ).json()) as { zone_id: string }[];
+    expect(list.map((z) => z.zone_id)).toEqual(['z-02']);
+  });
+
+  it('보관이 실패하면 목록은 그대로이고 최신 목록을 다시 받는다', async () => {
+    const view = await run();
+    const gets = countRequests('GET');
+    server.use(http.delete('*/api/zones/:zoneId', () => HttpResponse.json({}, { status: 500 })));
+    const error = await failure(view.result.current.writes.archive.mutateAsync('z-04'));
+    expect(error).toBeInstanceOf(ApiError);
+    expect(view.result.current.list.zones.map((z) => z.zoneId)).toContain('z-04');
+    await waitFor(() => expect(gets.count).toBeGreaterThan(0));
   });
 });

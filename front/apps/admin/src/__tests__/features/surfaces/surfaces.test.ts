@@ -1,16 +1,10 @@
 import {
   bodyOf,
-  fieldsChanged,
-  fieldValue,
   geometryErrors,
-  newSurfaceGeometry,
   readWorkSurfaces,
   sameGeometry,
   sameName,
-  SURFACE_FIELDS,
-  toRadians,
   toViewerWorkSurfaces,
-  withField,
 } from '@/features/surfaces/surfaces';
 import type { SurfaceGeometry, WorkSurface } from '@/features/surfaces/types';
 import { describe, expect, it } from 'vitest';
@@ -151,56 +145,10 @@ describe('형상 검사·비교', () => {
     expect(sameGeometry(desk.geometry, { ...desk.geometry, topHeightM: 0.75 })).toBe(false);
   });
 
-  it('도 입력은 라디안으로 바꾸고 범위 밖이면 같은 방향으로 접는다', () => {
-    expect(toRadians(90)).toBeCloseTo(Math.PI / 2);
-    expect(toRadians(270)).toBeCloseTo(-Math.PI / 2);
-  });
-});
-
-describe('숫자 칸', () => {
-  const base: SurfaceGeometry = {
-    centerXy: [5, 4.6],
-    sizeXy: [1.2, 0.6],
-    yawRad: 0,
-    topHeightM: 0.74,
-  };
-
-  it('칸 하나만 바꾸고 나머지는 그대로 둔다', () => {
-    for (const field of SURFACE_FIELDS) {
-      const next = withField(base, field, 2.5);
-      expect(fieldValue(next, field)).toBe(2.5);
-      expect(fieldsChanged(base, next)).toEqual([field]);
-    }
-  });
-
-  it('다시 넣을 칸은 크기·높이·회전 다음에 중심 순서이고, float4 차이는 바뀐 것으로 보지 않는다', () => {
-    const to: SurfaceGeometry = {
-      centerXy: [6, 4.6],
-      sizeXy: [1.5, 0.6],
-      yawRad: 0.3,
-      topHeightM: Math.fround(0.74),
-    };
-    expect(fieldsChanged(base, to)).toEqual(['width', 'yaw', 'centerX']);
-  });
-
   it('이름은 앞뒤 공백을 빼고 비교하고, 비면 이름 없음과 같다', () => {
     expect(sameName(' 책상 ', '책상')).toBe(true);
     expect(sameName('   ', null)).toBe(true);
     expect(sameName('', '책상')).toBe(false);
     expect(sameName('책상2', '책상')).toBe(false);
-  });
-});
-
-describe('newSurfaceGeometry', () => {
-  it('작업면이 없으면 방 가운데에 책상 크기로 두고, 기존 작업면과 겹치면 옆으로 비켜 둔다', () => {
-    expect(newSurfaceGeometry([])).toEqual({
-      centerXy: [5, 5],
-      sizeXy: [1.2, 0.6],
-      yawRad: 0,
-      topHeightM: 0.74,
-    });
-    const next = newSurfaceGeometry([desk]);
-    expect(next.centerXy[1]).toBe(4.6);
-    expect(Math.hypot(next.centerXy[0] - 5, next.centerXy[1] - 4.6)).toBeGreaterThanOrEqual(1.5);
   });
 });

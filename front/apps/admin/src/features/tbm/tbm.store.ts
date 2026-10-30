@@ -4,7 +4,7 @@ import {
   withoutEdits,
   type TbmEditsByTask,
   type TbmFormValue,
-} from '@/features/tbm/tbm';
+} from '@/features/tbm/tbmForm';
 import { create } from 'zustand';
 import { persist, type PersistStorage, type StorageValue } from 'zustand/middleware';
 

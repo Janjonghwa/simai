@@ -12,7 +12,7 @@ export const clipsKey = (eventId: string) => ['clips', 'event', eventId] as cons
 const RELOAD_MS = 5_000;
 
 /** 다시 받아도 같은 답이 오는 오류(주소 없음·권한 없음·형식 다름)면 상세를 다시 열 때까지 받지 않는다. */
-const settled = (error: unknown) =>
+const isPermanentError = (error: unknown) =>
   error instanceof ApiError &&
   (error.kind === 'INVALID_RESPONSE' || (error.status >= 400 && error.status < 500));
 
@@ -27,7 +27,7 @@ export function useEventClips(event: EventItem) {
     queryKey: clipsKey(event.event_id),
     queryFn: ({ signal }) => requestEventClips(api, event.event_id, signal),
     enabled,
-    refetchInterval: (q) => (settled(q.state.error) ? false : RELOAD_MS),
+    refetchInterval: (q) => (isPermanentError(q.state.error) ? false : RELOAD_MS),
     // 실패하면 다음 갱신 때 다시 받는다.
     retry: false,
   });

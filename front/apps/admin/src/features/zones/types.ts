@@ -7,11 +7,8 @@ import { z } from 'zod';
 export const zonesResponseSchema = z.array(z.unknown());
 export type ZonesResponse = z.infer<typeof zonesResponseSchema>;
 
-export const JUDGE_TYPES = ['GROUND_FOOTPRINT', 'VOLUME_3D'] as const;
+const JUDGE_TYPES = ['GROUND_FOOTPRINT', 'VOLUME_3D'] as const;
 export type JudgeType = (typeof JUDGE_TYPES)[number];
-
-// 서버는 비지 않은 문자열이면 받는다. 입력 칸은 계약(risk_plan_request zone_type) 설명에 있는 예만 고르게 한다.
-export const ZONE_TYPES = ['OPENING', 'EQUIPMENT_PARKING', 'LIFTING'] as const;
 
 export const SEVERITIES = ['CRITICAL', 'HIGH', 'CAUTION', 'INFO'] as const;
 export type Severity = (typeof SEVERITIES)[number];
@@ -60,8 +57,18 @@ export type ZoneBody = z.infer<typeof zoneBodySchema>;
  * 구성 묶음(명세 3.2, FR-17). 발행하면 서버가 그때 유효한 구역·규칙·보정·작업면으로 묶는다. status 는 Tier 0 가 마지막으로
  * 보낸 config_ack 로 정한다: 없으면 PENDING(적용 대기), APPLIED(현장 적용됨), REJECTED(거부), 해시가 다르면 MISMATCH.
  */
-export const BUNDLE_STATUSES = ['PENDING', 'APPLIED', 'REJECTED', 'MISMATCH'] as const;
+const BUNDLE_STATUSES = ['PENDING', 'APPLIED', 'REJECTED', 'MISMATCH'] as const;
 export type BundleStatus = (typeof BUNDLE_STATUSES)[number];
+
+/** 묶음에 실린 항목 하나(서버 config_bundle_item). 정적 객체만 kind(WORK_SURFACE·OBSTACLE)가 있다. */
+const BUNDLE_ITEM_TYPES = ['ZONE', 'RULE', 'STATIC_OBJECT'] as const;
+const bundleItemSchema = z.object({
+  item_type: z.enum(BUNDLE_ITEM_TYPES),
+  item_id: z.string(),
+  item_version: z.number().int(),
+  kind: z.string().nullish(),
+});
+export type BundleItem = z.infer<typeof bundleItemSchema>;
 
 export const configBundleSchema = z.object({
   config_version: z.string().min(1),
@@ -75,6 +82,8 @@ export const configBundleSchema = z.object({
       reject_reason: z.string().nullable(),
     })
     .nullish(),
+  // 발행 때 실린 구역·규칙·작업면의 ID 와 버전. 화면이 시각을 비교하지 않고 이 목록으로 발행 전을 가린다. 없으면 빈 목록이다.
+  items: z.array(bundleItemSchema).default([]),
 });
 export type ConfigBundle = z.infer<typeof configBundleSchema>;
 

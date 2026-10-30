@@ -10,6 +10,10 @@ import {
 /** 높이(z_min_m·z_max_m)가 없는 바닥 구역을 3D·2D 에 그릴 때의 두께(m). 형상 편집은 막는다. */
 const FOOTPRINT_SLAB_M = 0.05;
 
+/** 직사각형 꼭짓점 수. 닫힌 고리는 끝점이 첫 점을 한 번 더 가져 하나 더 많다. */
+const RECT_CORNERS = 4;
+const CLOSED_RECT_POINTS = RECT_CORNERS + 1;
+
 type Polygon = readonly (readonly [number, number])[];
 
 /**
@@ -19,17 +23,17 @@ type Polygon = readonly (readonly [number, number])[];
 function isAxisRect(polygon: Polygon): boolean {
   const [first, last] = [polygon[0], polygon[polygon.length - 1]];
   const closed =
-    polygon.length === 5 &&
+    polygon.length === CLOSED_RECT_POINTS &&
     first !== undefined &&
     last !== undefined &&
     first[0] === last[0] &&
     first[1] === last[1];
-  if (closed) return isAxisRect(polygon.slice(0, 4));
-  if (polygon.length !== 4) return false;
+  if (closed) return isAxisRect(polygon.slice(0, RECT_CORNERS));
+  if (polygon.length !== RECT_CORNERS) return false;
   const xs = new Set(polygon.map(([x]) => x));
   const ys = new Set(polygon.map(([, y]) => y));
   const corners = new Set(polygon.map(([x, y]) => `${x},${y}`));
-  return xs.size === 2 && ys.size === 2 && corners.size === 4;
+  return xs.size === 2 && ys.size === 2 && corners.size === RECT_CORNERS;
 }
 
 function toZone(item: ZoneItem): Zone | null {
