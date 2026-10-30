@@ -29,17 +29,34 @@ class AvatarUpload:
                  world_id, epoch, version, glb.size_bytes)
         return uri
 
-    def _upload(self, world_id, epoch, version, glb):
-        response = self.http.post("/api/uploads/sign", {"purpose": "AVATAR_ASSET", "world_id": world_id,
-                    "stream_epoch": epoch, "appearance_version": version, "content_type": "model/gltf-binary",
-                    "size_bytes": glb.size_bytes, "sha256": glb.sha256.removeprefix("sha256:")}, 15)
+    def png(self, world_id, epoch, version, file_name, asset):
+        if file_name not in {"albedo.png", "surface_source.png"}:
+            raise ValueError("지원하지 않는 아바타 PNG 이름")
+        try:
+            uri = self._upload(world_id, epoch, version, asset, file_name=file_name)
+        except Exception as error:
+            log.warning("아바타 PNG 업로드 실패: world_id=%s version=%s file=%s %s",
+                        world_id, version, file_name, exception_summary(error, secrets=(self._token,)))
+            raise
+        log.info("아바타 PNG 업로드 성공: world_id=%s version=%s file=%s bytes=%s",
+                 world_id, version, file_name, asset.size_bytes)
+        return uri
+
+    def _upload(self, world_id, epoch, version, glb, *, file_name=None):
+        body = {"purpose": "AVATAR_ASSET", "world_id": world_id,
+                "stream_epoch": epoch, "appearance_version": version,
+                "content_type": "image/png" if file_name else "model/gltf-binary",
+                "size_bytes": glb.size_bytes, "sha256": glb.sha256.removeprefix("sha256:")}
+        if file_name:
+            body["file_name"] = file_name
+        response = self.http.post("/api/uploads/sign", body, 15)
         if response.status != 200 or not response.body:
             raise ValueError(f"아바타 업로드 서명 실패 HTTP={response.status}")
         signed = response.body
         if urlsplit(signed["upload_url"]).scheme != "https" or signed.get("method") != "PUT":
             raise ValueError("아바타 업로드는 HTTPS PUT이어야 한다")
         uri = signed["object_uri"]
-        suffix = f"/{world_id}/e{epoch}/v{version}/mesh.glb"
+        suffix = f"/{world_id}/e{epoch}/v{version}/{file_name or 'mesh.glb'}"
         if not uri.startswith("s3://") or not uri.endswith(suffix):
             raise ValueError("아바타 객체 키에 World ID·epoch·version이 없다")
         request = Request(signed["upload_url"], data=glb.data, method="PUT", headers=signed["headers"])

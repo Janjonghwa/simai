@@ -39,10 +39,14 @@ class PersonState:
     asset: dict | None = None
     pending_glb: object = None
     rig_source: str = ""
+    baked: object = None
+    high_version: int = -1
+    history: dict = field(default_factory=dict)
 
 
 class AvatarLoop:
-    def __init__(self, source, gate, model, upload, sender, *, clock_ms, freeze_frames=30, max_age_ms=500):
+    def __init__(self, source, gate, model, upload, sender, *, clock_ms, freeze_frames=30, max_age_ms=500,
+                 appearance=None):
         self.source, self.gate, self.model = source, gate, model
         self.upload, self.sender, self.clock_ms = upload, sender, clock_ms
         self.freeze_frames, self.max_age_ms = freeze_frames, max_age_ms
@@ -50,6 +54,17 @@ class AvatarLoop:
         self.last_t = -1
         self.skipped = 0
         self._report_at = 0
+        self.appearance = appearance
+
+    def reannounce_appearance(self, world_id, version):
+        """기록을 덮어쓰지 않고 이전 확정 자산을 다시 선택해 알린다."""
+        state = self.people[world_id]
+        asset = state.history[version]
+        self.sender.discard_poses()
+        self.sender.asset(asset)
+        state.asset, state.version = asset, version
+        if self.appearance is not None:
+            self.appearance.pending.pop(world_id, None)
 
     def _report(self, status):
         now = self.clock_ms()
@@ -80,6 +95,8 @@ class AvatarLoop:
         self.last_t = t
         active = {tr["world_id"] for tr in doc["tracks"] if tr.get("track_lifecycle") != "LOST"}
         self.people = {wid: st for wid, st in self.people.items() if wid in active}
+        if self.appearance is not None:
+            self.appearance.retain(active)
         self.sender.retain(active)
         rig = CameraRig.from_provider(SnapshotCalibration(snapshot["calibration"]))
         candidates, bodies = [], {}
@@ -88,6 +105,8 @@ class AvatarLoop:
             if wid not in active:
                 continue
             state = self.people.setdefault(wid, PersonState(rev))
+            if self.appearance is not None:
+                self.appearance.track(tr, t)
             if state.revision != rev:
                 state.revision, state.stable, state.samples = rev, 0, []
                 state.pending_glb = None
@@ -124,14 +143,17 @@ class AvatarLoop:
                 if len(state.samples) >= self.freeze_frames and state.stable >= self.freeze_frames:
                     if state.pending_glb is None:
                         baked = self.model.bake(state.samples)
+                        if self.appearance is not None:
+                            state.baked = baked
+                            self.appearance.register(person.world_id, state, t)
                         state.pending_glb = build_skinned_glb(baked)
                         state.rig_source = baked.rig.rig_source
                     glb = state.pending_glb
-                    version = state.version + 1
+                    version = max(state.version, state.high_version) + 1
                     uri = self.upload(person.world_id, self.sender.epoch, version, glb)
                     asset = {"world_id": person.world_id, "stream_epoch": self.sender.epoch,
                              "identity_revision": state.revision, "appearance_version": version,
-                             "previous_appearance_version": None if state.version < 0 else state.version,
+                             "previous_appearance_version": max(state.history) if state.history else None,
                              "created_at_ms": self.clock_ms(), "calibration_version": frame.calibration_version,
                              "model_version": self.model.model_version, "input_provenance": doc["input_provenance"],
                              "mesh": {"format": "GLB_SKINNED", "object_uri": uri, "sha256": glb.sha256,
@@ -145,13 +167,26 @@ class AvatarLoop:
                              "ratios": {"OBSERVED": 0., "INTERPOLATED": 0., "UNOBSERVED": 1.},
                              "face_ratios": {"OBSERVED": 0., "UNOBSERVED": 1.}}, "face_policy": "OBSERVED"}
                     state.asset, state.version, state.samples = asset, version, []
+                    state.high_version = version
+                    state.history[version] = asset
                     state.pending_glb = None
+                    if self.appearance is not None:
+                        asset["face_policy"] = self.appearance.config.face_policy
                     self.sender.asset(asset)
             if state.asset is None:
                 continue
             poses.append({"world_id": person.world_id, "identity_revision": person.identity_revision,
                           "capture_time_ms": t, "appearance_version": state.version, "joint_source": "inferred",
                           "pose": mhr_pose(person.root_rotation, list(person.joint_rotations))})
+        if self.appearance is not None:
+            try:
+                self.appearance.update(frame, doc, snapshot, images, rig, self.people, self.upload,
+                                       self.sender, self.clock_ms, lambda: self.gate.check().admit)
+            except Exception as error:
+                # 기존 확정 외형·포즈는 계속 쓴다. 실패한 PNG는 다음 회차에 같은 바이트로 재시도한다.
+                log.warning("외형 갱신 실패: %s; 마지막 확정 외형 유지", type(error).__name__)
+            for pose in poses:
+                pose["appearance_version"] = self.people[pose["world_id"]].version
         if poses and 0 <= self.clock_ms() - t <= self.max_age_ms and self.gate.check().admit:
             self.sender.poses(poses, calibration_version=frame.calibration_version,
                               model_version=self.model.model_version, input_provenance=doc["input_provenance"])

@@ -182,6 +182,44 @@ def test_upload_retry_reuses_identical_bytes_for_same_asset_version(rig):
     assert loop.people["w-1"].asset is not None
 
 
+def test_optional_appearance_is_gate_controlled_and_failure_keeps_confirmed_poses(rig, caplog):
+    clock, source, sock, sender, model, loop, uploads = harness(rig, freeze=1)
+    calls = []
+    def update(*args):
+        calls.append("update")
+        raise OSError("temporary upload error")
+    loop.appearance = SimpleNamespace(retain=lambda *args: calls.append("retain"),
+        track=lambda *args: calls.append("track"), register=lambda *args: calls.append("register"),
+        update=update, config=SimpleNamespace(face_policy="EXCLUDED"))
+    loop.step()
+    sender.tick()
+    assert calls == ["retain", "track", "register", "update"]
+    assert loop.people["w-1"].asset["face_policy"] == "EXCLUDED"
+    assert any(message["msg_type"] == "avatar_pose_batch" for message in sock.messages)
+    assert "마지막 확정 외형 유지" in caplog.text
+    calls.clear()
+    loop.gate = SimpleNamespace(check=lambda: SimpleNamespace(admit=False))
+    clock[0] += 200
+    source.item = snapshot(clock[0])
+    loop.step()
+    assert not calls
+
+
+def test_rollback_reannounces_previous_asset_and_keeps_allocated_version(rig):
+    clock, source, sock, sender, model, loop, uploads = harness(rig, freeze=1)
+    loop.step()
+    original = copy.deepcopy(loop.people["w-1"].asset)
+    clock[0] += 200
+    source.item = snapshot(clock[0], revision=1)
+    loop.step()
+    state = loop.people["w-1"]
+    assert state.version == 1
+    loop.reannounce_appearance("w-1", 0)
+    assert state.asset == original and state.version == 0 and state.high_version == 1
+    sender.tick()
+    assert sock.messages[-1]["payload"] == original
+
+
 def test_i5_live_hmr_remains_blocked_with_healthy_marker(tmp_path):
     marker = tmp_path / "tier0.live"
     marker.write_text(json.dumps({"gpu_priority": {"phase": "running", "reserve": {"state": "OK"},
