@@ -51,6 +51,8 @@ class BufferedPacket:
     capture_time_ms: int
     keyframe: bool
     payload: bytes = field(repr=False)
+    timestamp_source: str | None = None
+    timestamp_uncertainty_ms: float | None = None
 
     @property
     def size(self) -> int:
@@ -199,7 +201,7 @@ class CameraRing:
                 self._open = None  # 참조가 끊겼다: 다음 키프레임까지 버린다
             self._last_sequence = h.frame_sequence
             packet = BufferedPacket(h.stream_epoch, h.frame_sequence, h.estimated_capture_time_ms, h.keyframe,
-                                    bytes(frame.payload))
+                                    bytes(frame.payload), h.timestamp_source, h.timestamp_uncertainty_ms)
             if h.keyframe:
                 self._open = _Gop(self._codec, [])
                 self._gops.append(self._open)

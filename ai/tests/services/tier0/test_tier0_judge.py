@@ -375,6 +375,21 @@ def test_site_alert_still_sent_when_journal_rejects(tmp_path) -> None:
         s.journal.close()
 
 
+def test_event_frame_failure_cannot_change_journal_or_site_alert(site) -> None:
+    class FailingFrames:
+        def on_transitions(self, transitions, tracks):
+            # JPEG·HTTP 로 넘어가기 전에 현장 경보를 이미 보냈어야 한다.
+            assert [kind for kind, _ in site.i0] == ["local_alert"]
+            raise OSError("프레임 경로 실패")
+
+    site.loop._event_frames = FailingFrames()
+    result = site.tick({"w-x": (INSIDE, 0)})
+    assert [kind for kind, _ in site.i0] == ["local_alert"]
+    assert site.loop.stats.errors == 0 and site.loop.stats.journal_errors == 0
+    transitions = [t for step in result.steps for t in step.transitions]
+    assert transitions and len(site.flush()) == len(transitions)
+
+
 def test_resolved_alert_sends_local_alert_resolved(site) -> None:
     site.tick({"w-x": (INSIDE, 0)})
     for _ in range(6):

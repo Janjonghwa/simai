@@ -2,7 +2,7 @@
 
 명세 5.4(VLM 빠른 경로·VLM 입력 프레임·권한), 12.5(I5 작업), 15.1 G7(이벤트→근거 p95 5 s, 하향·직접 변경 0건, 사후 클립 대기 0건).
 계약 `contracts/messages/vlm_rationale.schema.json`(input·result), `job_request`(priority `VLM_FAST`, timeout_ms 5000), `job_callback`.
-이번 범위는 분석 워커 몫이다. Tier 0 의 이벤트 프레임 업로드·`event_frame_ready`, EC2 의 작업 생성·콜백 반영·STOMP 는 아래 "넘긴 일".
+분석 워커와 Tier 0 프레임 업로드(-328)를 다룬다. EC2 의 작업 생성·콜백 반영·STOMP 는 아래 "넘긴 일".
 
 ## 코드
 
@@ -90,9 +90,7 @@
 
 ## 넘긴 일
 
-- **Tier 0(이벤트 프레임):** `event_frame_ready` 로 이벤트 시점 프레임과 직전 3~5초 프레임을 올린다. 프레임마다 `camera_id`·`frame_uri`·촬영 시각 세 값(3.9)을
-  그대로 넘긴다. 처리기는 `observation_time` 뒤 프레임을 쓰지 않으므로 사후 프레임은 올려도 버려진다. 얼굴은 워커가 처리하므로 원본을 올려도 된다(206).
-  프레임 수가 지연을 정한다(3차 세션 G7 p95 2.0~2.1 s 는 그림 4장 기준). 카메라·시각별 개수는 Tier 0·EC2 가 정하되 4장 안팎을 권한다.
+- **Tier 0(이벤트 프레임):** -328 구현·선택 기준·운영 로그는 아래 절. 실제 교실에서 지연·선택 품질 측정은 9차 GPU 세션에 남긴다.
 - **EC2(작업 생성·콜백):** `job_type vlm_rationale`, priority `VLM_FAST`, timeout_ms 5000, CRITICAL 이벤트에만·병합 이벤트당 1회(5.4, D-G7-03).
   각 프레임 `face_policy` 는 BLURRED(기본) 또는 EXCLUDED. `structured_state` 는 `tracks[]`(`world_id`·`position_xy`·`head_z`)와 `zone`(`zone_id`·`judge_type`) 모양을 읽는다
   (계약은 객체만 정한다). 콜백 반영 때 `severity` 가 이벤트의 현재 등급과 같은지, `proposed_severity` 는 의견으로만 저장하는지(경보 등급을 바꾸지 않음, 273) 확인한다.
@@ -196,3 +194,58 @@ ORDER BY leased_at DESC LIMIT 30;
   프레임을 별도 보관해 뒤늦게 결합하는 큐는 이번 범위 밖이다. -328 송신 순서를 함께 확인한다.
 - 이벤트 상태 전이와 프레임 업로드·객체 내려받기·얼굴 관문·GPU 대기·VLM·DB 지연을 합친 G7 실측은 9차 세션 몫이다.
 - STOMP는 기존 비영속 릴레이를 따른다. 브로커 오류 시 DB 근거는 보존되고 REST 재조회로 읽을 수 있으나 실시간 재전송은 보장하지 않는다.
+
+## S15P31A101-328 — Tier 0 이벤트 프레임
+
+관련 명세: 3.2(Tier 0 우선), 3.9(촬영 시각), 5.4(R1~R4 CRITICAL·병합 이벤트당 1회·사후 대기 없음), 12.3(I1).
+코드 `ai/services/tier0/event_frames.py`, 배선 `judge.py`·`service.py`, 합성 시험 `ai/tests/services/tier0/test_event_frames.py`.
+기존 I1 `event_frame_ready` 1.0.0과 업로드 API `POST /api/uploads/sign` 목적 `EVENT_FRAME`을 그대로 쓴다. 계약 변경 없음.
+
+### 발생과 카메라·시각 선택
+
+- LIVE 출처의 R1~R4 CRITICAL이 처음 RAISED 된 때만 이벤트 ID를 기억한다. UPDATED·RESUMED·RESTORED·중복 RAISED는 보내지 않는다.
+  같은 병합 이벤트는 재개돼도 1회다. 실패·큐 초과도 재판정이나 반복 업로드를 만들지 않는다. 기억은 프로세스 메모리이며 재기동 복원 전이는 대상이 아니다.
+- 해당 tick의 대상 World Track에서 `cameras`에 나타난 카메라를 우선한다. 여러 사람이면 더 많은 대상이 보인 카메라 우선, 동률·관측 근거 없음은 카메라 ID 순이다.
+  별도 pose 추론·새 위치 추정은 하지 않는다. 이것은 대상 관측 카메라 우선순위이며 실제 가림 정도나 선명도의 최적화를 보장하지 않는다.
+- 기본 최대 2카메라 × 2시점 = 4장. `observation_time` 기준 최근 프레임(0~500 ms 전)과 3~5초 전 중 가장 최근 프레임을 고른다.
+  현재 프레임의 500 ms는 끊긴 카메라의 옛 영상을 현재 장면으로 쓰지 않기 위한 초기 상한이다. 과거 구간의 목표는 3초 전으로 두어 움직임 문맥과 G7 예산을 함께 고려했다.
+  해당 창에 없으면 그 장은 비운다. 카메라에 영상·디코딩·업로드 성공분이 없으면 다음 우선순위 카메라를 확인한다. 최소 1장 성공 때만 메시지를 보낸다.
+- 사후 촬영 프레임은 cut 끝과 선택 창에서 제외한다. 디코더 지연 출력은 이미 가진 패킷의 flush만 쓴다. 사후 프레임 수신이나 이벤트 클립 완료를 기다리지 않는다.
+- 기존 압축 링 버퍼에 I0 헤더의 `timestamp_source`·`timestamp_uncertainty_ms`를 함께 보관하고 촬영 시각과 함께 그대로 송신한다(모르는 불확실성은 null).
+  디코더 출력은 `(stream_epoch, frame_sequence)`로 원본 헤더와 결합한다. epoch·코덱 변경·손실 뒤 키프레임에는 디코더를 다시 연다.
+
+### 부하·실패 격리와 설정
+
+`JournalWriter.submit_step → 현장 경보 → 클립 대상 → EventFrameService.on_transitions(put_nowait)` 순서다.
+판정 tick에서 영상 복사·디코딩·JPEG·HTTP·계약 검사를 하지 않는다. 작업 큐는 8건이며 영상 바이트를 담지 않는다.
+단일 CPU 스레드가 기존 60초 압축 링 버퍼에서 잘라 기존 PyAV CPU 디코더로 복원하고 JPEG 품질 85로 인코딩한다.
+JPEG 85는 안전모·자세 문맥을 유지하면서 전송 크기를 줄이기 위한 초기값으로, 실제 입력 품질·G7은 세션에서 확인한다.
+상시 JPEG 저장이나 두 번째 RTSP 연결은 만들지 않는다. 얼굴은 기존 워커 관문이 VLM 호출 전에 처리한다.
+
+서명 요청에는 이벤트 ID·JPEG 형식·크기·SHA-256을 보내고 기존 `HttpPutTransport`로 서명 주소에 PUT한다.
+서명·PUT 시간 제한은 각각 2초다. 한 장 실패는 로그만 남기며 성공한 나머지 장을 보낼 수 있다. 재업로드 재시도는 없다.
+메시지는 만료되는 업로드 URL이 아닌 서버 응답 `object_uri`(`s3://...`)를 쓴다. 계약 검사 뒤 `I1Publisher.send_event`로 신뢰 큐에 넣는다.
+I1 큐가 가득 차면 같은 payload만 붙들고 50 ms 간격으로 다시 넣는다(업로드 반복 없음). 이동안 다른 프레임 작업은 8건까지만 대기한다.
+신뢰 큐 이후 단절·재연결은 기존 I1 정책을 따른다. 큐 초과·종료 시 메모리 작업은 유실될 수 있고 디스크 재시도함은 추가하지 않는다.
+한 이벤트의 업로드 도중 프로세스가 끝나면 일부 객체만 남을 수 있다. 프레임 보존·고아 객체 정리는 저장소 운영 정책 확인이 필요하다.
+
+Tier 0 JSON 설정 `event_frames_enabled`는 기본 true이며 false로 끈다. 실제 LIVE 입력과 I1 연결 설정이 있을 때만 조립한다.
+SIM 입력·file(REPLAY) 입력은 조립하지 않고 전이 출처도 LIVE만 통과시킨다. PLANNED·WHAT_IF·REPLAY에는 계약에 없는 출처 필드를 끼워 보내지 않는다.
+종료 때 판정 스레드를 멈춘 뒤 프레임 스레드에 중지를 알리고 기존 종료 deadline 안에서 기다린 다음 I1을 닫는다.
+JPEG·디코딩·HTTP 실패, 링 버퍼 부재, 계약 오류는 경보·저널·Tier 0 값에 영향을 주지 않는다.
+
+### 9차 GPU 세션에서 볼 로그와 남은 검증
+
+```text
+event_frames_uploaded event_id=... frames=4 event_to_upload_ms=...
+event_frame_ready_queued event_id=... frames=4
+event_frames_failed event_id=... reason=queue_full|no_frames|...
+event_frames_camera_failed event_id=... camera_id=... reason=예외종류
+event_frames_upload_failed event_id=... camera_id=... reason=예외종류
+```
+
+`event_to_upload_ms`는 Tier 0 주입 시계의 전이 `occurred_at`부터 마지막 성공 업로드까지다(노트북 촬영 시각과 다른 시계를 빼지 않는다).
+큐 대기·디코딩·JPEG·서명·PUT을 포함한다. EC2 -329와 워커 완료 로그의 같은 event_id를 연결해 G7 이벤트→근거 p95 5초를 잰다.
+위 로그에는 토큰·서명 URL·예외 원문을 싣지 않는다. 실제 느린 네트워크에서 4장 순차 업로드와 CPU 디코딩이 5초 예산 안에 드는지는 미측정이다.
+Tier 0 `capture_to_risk`·`frame_age`와 함께 비교해 CPU 공유 영향이 보이면 설정으로 끄고 우선순위·프레임 수를 후속 조정한다.
+원격 API·객체 저장소·EC2 작업 생성까지의 통합 시험은 이 로컬 합성 시험으로 대체할 수 없으며 -329 연동과 함께 확인해야 한다.

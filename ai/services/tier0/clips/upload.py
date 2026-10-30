@@ -71,6 +71,7 @@ class SignedUpload:
     object_key: str
     expires_at_ms: int
     headers: Mapping[str, str] = field(default_factory=dict, repr=False)
+    object_uri: str | None = None  # EVENT_FRAME 은 버킷을 포함한 영구 객체 주소를 I1 에 싣는다
 
 
 class SignerUnavailable(Exception):
