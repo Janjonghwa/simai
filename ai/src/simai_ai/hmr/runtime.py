@@ -1,4 +1,4 @@
-"""Fast SAM 3D Body body 모드 어댑터. 이미 있는 보정 K·Tier 0 bbox만 쓴다."""
+"""Fast SAM 3D Body body 모드 어댑터. 보정 K·Tier 0 bbox와 일치한 seg 마스크를 쓴다."""
 
 import os
 
@@ -22,12 +22,13 @@ class FastBodyModel:
                            "MHR_USE_CUDA_GRAPH": "0"}.items():
             os.environ[key] = value
         model, cfg = load_model(checkpoint)
+        self.device = next(model.parameters()).device
         from sam_3d_body import SAM3DBodyEstimator
         self.estimator = SAM3DBodyEstimator(sam_3d_body_model=model, model_cfg=cfg, human_detector=None,
                                           human_segmentor=None, fov_estimator=None)
         self.rig = load_mhr_rig(checkpoint / "assets/mhr_model.pt")
 
-    def infer(self, image, observation, track, camera):
+    def infer(self, image, observation, track, camera, *, prepared=None):
         import cv2
         import torch
 
@@ -35,19 +36,17 @@ class FastBodyModel:
             raise ValueError("HMR 그림과 보정 해상도가 다르다")
         # 원본 bbox를 같은 K의 왜곡 제거 그림으로 옮긴다. 알 수 없으면 실패한다.
         imap = HmrImageMap(camera, camera.K)
-        box = imap.bbox(observation["bbox"])
+        box = imap.bbox(observation["bbox"]) if prepared is None else prepared.prompt.bbox
         if box is None:
             raise ValueError("HMR bbox 왜곡 제거 실패")
-        if camera.distortion_model == "NONE":
-            undistorted = image
-        elif camera.distortion_model == "OPENCV_PINHOLE":
-            undistorted = cv2.undistort(image, camera.K, np.array(camera.distortion_coeffs), None, camera.K)
-        else:
-            raise ValueError("지원하지 않는 HMR 보정 왜곡 모델")
+        undistorted = imap.prepare_image(image) if prepared is None else prepared.image
+        mask_args = {}
+        if prepared is not None and prepared.prompt.mask is not None:
+            mask_args["masks"] = np.asarray(prepared.prompt.mask, dtype=np.uint8)[None]
         with torch.inference_mode():
             out = self.estimator.process_one_image(cv2.cvtColor(undistorted, cv2.COLOR_BGR2RGB),
                     bboxes=np.asarray([box], np.float32), cam_int=torch.as_tensor(camera.K, dtype=torch.float32)[None],
-                    inference_type="body", hand_box_source="body_decoder")
+                    inference_type="body", hand_box_source="body_decoder", **mask_args)
         if len(out) != 1:
             raise ValueError("HMR 프롬프트 한 명과 결과 수가 다르다")
         p = out[0]

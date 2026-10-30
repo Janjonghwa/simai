@@ -168,3 +168,66 @@ ID/revision·보정 불일치, Tier 0 pelvis 없음, HMR 지연/포즈 중단 50
 Lead 후속: 실제 Pod에서 30샘플/업로드 성공/분당 송신 로그를 확인하고 EC2 배포 재기동 뒤 재접속과 관제 메시까지 확인한다.
 남은 위험은 당시 예외 원인 미확정, 지속 인증 거부, GPU 순차 추론/IPC 지연으로 500ms 신선도 탈락,
 실제 모델 GLB 검증 및 S3/CORS 설정이다. 정답/합성 시험 결과를 제품 성능 수치로 해석하지 않는다.
+
+## S15P31A101-362: YOLO26x-seg 프롬프트·텍스처 마스크
+
+관련 명세는 3.2(Tier 0 우선), 5.6(mask 프롬프트·inferred 표시)다. 계약·Tier 0 관측을 바꾸지 않는다.
+코드는 `hmr/{segmentation,prompt,runtime,stream,appearance_stream}.py`, 조립은 `services/avatar/__main__.py`다.
+시험은 `tests/hmr/test_segmentation.py`, manifest 회귀는 `tests/deploy/test_simai_supervisor.py`에 있다.
+
+### 주기와 좌표
+
+서비스의 기존 200ms 회차에서 새롭고 500ms 이내인 World 입력을 HMR에 처리할 때마다 seg도 한 번 실행한다.
+같은 촬영 시각·프레임 참조 불일치·100ms 넘는 카메라 시차·불확실 ID·LOST는 seg 입력에서도 제외한다.
+쓸 사람이 있는 카메라만 묶어 `YOLO.predict(list[BGR])` 한 번으로 실행하며 사람 클래스 0, conf 0.25,
+imgsz 1280, retina_masks를 쓴다. 1280은 기존 오프라인 HMR 프롬프트 경로와 같은 초기값이며 GPU에서 조정할 수 있다.
+장치는 HMR 파라미터의 device를 그대로 쓰고 기존 아바타 프로세스 GPU 메모리 상한 안에서 함께 돈다.
+seg 배치 직전과 이후의 사람·카메라 HMR 호출 직전에 AdmissionGate를 다시 확인한다.
+
+`HmrImageMap(camera, camera.K)`가 만든 왜곡을 편 BGR 그림을 seg와 HMR이 공유한다.
+`build_prompts`의 bbox IoU ≥ 0.5·인스턴스 일대일 배정을 그대로 쓰며 중복 World ID는 건너뛴다.
+Fast SAM 3D Body에 `(1,H,W)` uint8 `masks`를 함께 넣고, 배정되지 않은 사람은 `masks` 인자를 생략한다.
+이번 변경은 mask 프롬프트만 추가한다. body 모드의 keypoint 재프롬프트 설정은 기존대로 유지한다.
+
+같은 배정 마스크를 `HmrImageMap.mask_to_original`로 원본 왜곡 영상에 돌려 외형 누적에 전달한다.
+원본 픽셀을 HMR 좌표로 사상해 최근접 표본을 읽으며 사상 실패·영상 밖은 False다(마스크를 퍼뜨리지 않음).
+보정 버전별 사상 표를 캐시하고 버전이 바뀌면 비운다. 역변환 표는 64행씩 계산해 큰 중간 배열을 제한한다.
+1080p 4카메라에서 정방향 float32 x/y 표와 역변환 int32 표는 합계 약 95MiB다.
+사람별 원본 마스크는 해당 회차의 `(world_id,camera_id)` 사전에만 두며 상류 per_camera에 필드를 쓰지 않는다.
+`AppearanceView.mask`에서 기존 bbox/다른 사람 가림막·메시 실루엣 안쪽 감쇠(-361)와 교집합으로 사용한다.
+
+### 설정·폴백
+
+- `SIMAI_AVATAR_SEG=auto|0|1`: 기본 auto는 CUDA가 있으면 켜고 없으면 끈다. 0은 모델·가중치·CUDA 검사도 생략한다.
+  1은 CPU 시험도 허용한다. 서비스에서는 HMR과 같은 장치를 주입한다.
+- `SIMAI_AVATAR_SEG_WEIGHTS`: 기본 `$SIMAI_ROOT/weights/yolo/yolo26x-seg.pt`.
+  `SIMAI_AVATAR_SEG_WEIGHTS_SHA256`은 접두어 유무를 모두 받으며 기본은 `docs/data/weights.md`의 해시다.
+- `deploy/weights.json`에 새 이름으로 `avatar`·`exp02` 묶음을 추가했다. bootstrap은 이 env와 `_SHA256`을 채운다.
+  URL·해시·라이선스는 기존 가중치 문서와 같다. 잠금 파일과 의존성은 바꾸지 않는다.
+
+ultralytics는 첫 seg 호출에서만 import하며, 먼저 로컬 파일과 해시를 확인해 런타임 자동 다운로드를 막는다.
+가중치 없음·해시 오류·seg 추론/출력/역변환 실패는 한 번 경고하고 해당 프로세스의 seg를 끈 뒤 bbox로 계속한다.
+실패한 모델 참조도 놓아 HMR이 GPU 메모리를 다시 쓸 수 있게 한다. 재시작해야 seg를 다시 시도한다.
+예외 본문 대신 종류만 기록한다. 마스크가 없거나 IoU가 낮은 정상 결과는 경고 없이 bbox로 처리한다.
+retina 마스크 크기가 다르면 실패로 본다. letterbox를 포함한 마스크를 단순 resize하는 대안은 좌표가 틀릴 수 있어 쓰지 않는다.
+bootstrap의 다운로드·해시 검사 실패는 기존 규칙대로 분석 서비스 시작을 막는다. 여기의 bbox 폴백은 **서비스 실행 중** seg 실패에 적용된다.
+
+### CPU 합성 측정·9차 GPU 세션
+
+측정 스크립트는 `.agy/seg_cpu.py`, 기록은 `.agy/seg-cpu-run.json`이다.
+실가중치 없이 합성 640×480 4카메라의 사각형을 밝기 임계값으로 분할하는 가짜 seg를 CPU에서 한 번 실행한다.
+측정 지표는 `fake_seg_batch_ms`(가짜 seg 호출만), `prepare_total_ms`(그림 준비·최초 역변환 표·프롬프트까지)다.
+이는 배선 비용 확인이며 YOLO26x-seg 지연·제품 성능·게이트 통과 근거가 아니다. 수치는 `.agy/notes.md`에 남긴다.
+
+9차 세션에서 매 배치의 다음 INFO 줄을 수집한다.
+
+```text
+아바타 seg batch cameras=4 instances=... matched=... elapsed_ms=... device=cuda:0
+```
+
+`elapsed_ms`는 seg 호출 앞뒤 CUDA synchronize를 포함하는 벽시계 시간이다. 첫 호출은 가중치 검증·적재·워밍업도 포함한다.
+그림 준비·역변환·HMR·텍스처·송신 시간은 포함하지 않으므로 처음/후속 호출을 나눠 보고 기존 Tier 0 지연·VRAM·포즈 신선도 로그와 대조한다.
+가중치 실패는 `아바타 seg 끔: <예외 종류>; bbox만 사용 (재시작 전까지)`로 확인한다.
+실제 YOLO 결과와 Fast SAM mask 프롬프트의 GPU 통합, 다인 일대일 배정/윤곽, Tier 0 p95·최대 지연,
+아바타 프로세스의 기존 0.10 GPU 예산 내 공존, 최초 역변환 표 생성 때 신선도 탈락은 GPU 세션에서 확인한다.
+CUDA 호출은 중간 취소할 수 없으며 seg 도입으로 기존 500ms 신선도 조건을 완화하지 않는다.

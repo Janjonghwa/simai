@@ -74,8 +74,8 @@ E-GATE-0(2026-10-16) 전이어서, E-GATE-0 때 받은 파일과 같은 revision
 
 ## yolo26x-seg (보정 입력 사람 마스크, S15P31A101-102)
 
-MapAnything 보정 입력(`simai_ai.calibration.world_frame.cli prepare`)에서 교실 사진의 사람 영역을 찾는 분할 모델이다. 노트북 CPU 에서만 쓰고
-`deploy/weights.json`(Pod 시작 묶음)에는 넣지 않았다(Pod 에서 쓰지 않는다).
+MapAnything 보정 입력(`simai_ai.calibration.world_frame.cli prepare`)에서 교실 사진의 사람 영역을 찾는 분할 모델이다.
+S15P31A101-362부터 아바타 루프도 HMR·텍스처 마스크로 쓰며 `deploy/weights.json`의 `avatar`·`exp02` 묶음에 포함한다.
 
 | 항목 | 값 |
 |---|---|
@@ -84,6 +84,7 @@ MapAnything 보정 입력(`simai_ai.calibration.world_frame.cli prepare`)에서 
 | sha256 | `92b3de0065766a17180d6219858717dc9d03cdce8a3ca9576c97fd75aabb64f3` (142,129,861 B) |
 | 라이선스 | AGPL-3.0 (Ultralytics) |
 | 쓰는 곳 | `world_frame.prepare.UltralyticsPersonSegmenter`(person 클래스만, 가중치 해시 확인 뒤 사용, 코드가 내려받지 않음) |
+| 아바타 루프 | `hmr.segmentation.YoloPersonSegmenter`, `SIMAI_AVATAR_SEG_WEIGHTS`(기본 `$SIMAI_ROOT/weights/yolo/yolo26x-seg.pt`) |
 
 획득 기록: 2026-10-22 노트북에서 위 URL 을 `curl -L` 로 받아 `sha256sum` 으로 쟀다(ultralytics 8.4.178 이 받는 릴리스와 같은 `v8.4.0`).
 

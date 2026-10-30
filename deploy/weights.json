@@ -13,6 +13,16 @@
       "hash_from": "docs/data/weights.md (E-GATE-0 weights/hmr_weights.sha256, ultralytics 릴리스 v8.4.0)"
     },
     {
+      "name": "yolo26x-seg",
+      "sets": ["avatar", "exp02"],
+      "path": "weights/yolo/yolo26x-seg.pt",
+      "source": {"url": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26x-seg.pt"},
+      "sha256": "92b3de0065766a17180d6219858717dc9d03cdce8a3ca9576c97fd75aabb64f3",
+      "license": "AGPL-3.0 (Ultralytics)",
+      "env": "SIMAI_AVATAR_SEG_WEIGHTS",
+      "hash_from": "docs/data/weights.md (2026-10-22 노트북 sha256sum, ultralytics 릴리스 v8.4.0)"
+    },
+    {
       "name": "sam-3d-body-dinov3",
       "sets": ["exp02", "avatar"],
       "path": "weights/sam-3d-body-dinov3/model.ckpt",

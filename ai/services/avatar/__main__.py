@@ -15,6 +15,7 @@ from simai_ai.hmr.runtime import FastBodyModel
 from simai_ai.hmr.diagnostics import exception_summary
 from simai_ai.hmr.loader import prepare_checkpoint
 from simai_ai.hmr.stream import AvatarLoop
+from simai_ai.hmr.segmentation import segmentation_from_env
 from simai_ai.hmr.appearance_stream import appearance_from_env, face_faces_from_rig
 from simai_ai.io.avatar_channel import LatestChannelReader
 
@@ -55,6 +56,7 @@ def main():
         checkpoint = env.get("SIMAI_AVATAR_CHECKPOINT")
         path = Path(checkpoint) if checkpoint else prepare_checkpoint(root, Path(env["SIMAI_FS3DB_REPO"]))
         model = FastBodyModel(path)
+        segmentation = segmentation_from_env(env, device=model.device)
         appearance = appearance_from_env(env)
         if appearance is not None:
             try:
@@ -71,7 +73,7 @@ def main():
                               log_secrets=(token,))
         source = LatestChannelReader(Path(env.get("SIMAI_AVATAR_CHANNEL") or root / "state/avatar-input.npz"))
         loop = AvatarLoop(source, gate, model, AvatarUpload(base, token), sender, clock_ms=clock_ms,
-                          appearance=appearance)
+                          appearance=appearance, segmentation=segmentation)
         def send_loop():
             while not stop.is_set():
                 sender.tick()

@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any
 
 import numpy as np
@@ -120,6 +121,57 @@ class HmrImageMap:
         xn = self.camera.normalize(uv)
         homo = np.column_stack([xn, np.ones(len(xn))]) @ self.K_used.T
         return homo[:, :2] / homo[:, 2:3]
+
+    def prepare_image(self, image: np.ndarray) -> np.ndarray:
+        """seg와 HMR이 함께 쓸 BGR 그림. 해상도와 K는 보정에 맞춘다."""
+        if tuple(image.shape[1::-1]) != self.camera.image_size:
+            raise ValueError("HMR 그림과 보정 해상도가 다르다")
+        if self.K_used is None:
+            return image
+        if self.camera.distortion_model == "NONE" and np.array_equal(self.K_used, self.camera.K):
+            return image
+        import cv2
+
+        mx, my = self._image_remap
+        return cv2.remap(image, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+
+    @cached_property
+    def _image_remap(self):
+        import cv2
+
+        return cv2.initUndistortRectifyMap(self.camera.K, np.asarray(self.camera.distortion_coeffs),
+                                          None, self.K_used, self.size, cv2.CV_32FC1)
+
+    @cached_property
+    def _original_mask_indices(self) -> np.ndarray:
+        # 원본의 각 픽셀에서 HMR 마스크를 읽는 역방향 표. 보정·K·해상도마다 한 번 만든다.
+        width, height = self.camera.image_size
+        w, h = self.size
+        indices = np.full((height, width), -1, dtype=np.int32)
+        # 고해상도 전체의 뉴턴법 중간 배열을 한 번에 만들지 않는다.
+        for y0 in range(0, height, 64):
+            yy, xx = np.meshgrid(np.arange(y0, min(y0 + 64, height)), np.arange(width), indexing="ij")
+            uv = self.points(np.column_stack([xx.ravel(), yy.ravel()]))
+            valid = np.isfinite(uv).all(axis=1)
+            ij = np.rint(np.where(np.isfinite(uv), uv, -1)).astype(np.int64)
+            valid &= (ij[:, 0] >= 0) & (ij[:, 0] < w) & (ij[:, 1] >= 0) & (ij[:, 1] < h)
+            block = indices[y0:y0 + len(yy)].reshape(-1)
+            block[valid] = ij[valid, 1] * w + ij[valid, 0]
+        return indices
+
+    def mask_to_original(self, mask: np.ndarray) -> np.ndarray:
+        """HMR bool 마스크 → 원본 왜곡 영상. 최근접 표본, 사상 실패·영상 밖은 False."""
+        mask = np.asarray(mask, dtype=bool)
+        if mask.shape != self.size[::-1]:
+            raise ValueError("seg 마스크와 HMR 그림 해상도가 다르다")
+        if self.size == self.camera.image_size and (self.K_used is None or (
+                self.camera.distortion_model == "NONE" and np.array_equal(self.K_used, self.camera.K))):
+            return mask.copy()
+        indices = self._original_mask_indices
+        out = np.zeros(indices.shape, dtype=bool)
+        valid = indices >= 0
+        out[valid] = mask.ravel()[indices[valid]]
+        return out
 
     def bbox(self, box: Box) -> Box | None:
         """bbox 의 변을 따라 찍은 점을 옮겨 외접 사각형을 낸다. 옮길 수 없는 점이 있으면 None(지어내지 않음)."""

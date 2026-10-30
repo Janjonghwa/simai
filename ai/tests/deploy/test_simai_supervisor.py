@@ -188,9 +188,10 @@ def test_avatar_budget_overflow_refused_before_spawn(bs, tmp_path, monkeypatch):
     assert w.spawned == []
 
 
-def test_avatar_weight_set_only_contains_hmr_model_and_rig(bs):
+def test_avatar_weight_set_contains_hmr_model_rig_and_seg(bs):
     manifest = REPO / "deploy" / "weights.json"
-    assert {w["name"] for w in bs.load_manifest(manifest, "avatar")} == {"sam-3d-body-dinov3", "sam-3d-body-dinov3-mhr"}
+    assert {w["name"] for w in bs.load_manifest(manifest, "avatar")} == {
+        "sam-3d-body-dinov3", "sam-3d-body-dinov3-mhr", "yolo26x-seg"}
     assert bs.parse_services(None) == ["tier0"]
     assert bs.parse_services("tier0,avatar") == ["tier0", "avatar"]
 
