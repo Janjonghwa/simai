@@ -18,7 +18,7 @@
 | 5.3 정적 3D | RunPod 분석 워커 | 설치 시 1회 | MVP |
 | 5.4 VLM·LLM | RunPod 분석 워커(VLM), 외부 API(LLM) | 이벤트 발생 시, 보고서 요청 시 | MVP |
 | 5.5 PPE 검출 | RunPod Tier 0 | 1\~2 Hz | 확장(부록 C) |
-| 5.6 SAM 3D Body 강화·메시 아바타(EXP-02) | 분석 워커 프로세스 | 아바타 포즈 스트림 사람별 2\~5 Hz(body 모드 기본, LIVE 중 지연 감시 예외 3.2), 손 포함(full)은 표시용 저주기 | 시연 범위(1단계 메시·포즈 스트림, 2단계 UV 텍스처 누적) |
+| 5.6 SAM 3D Body 강화·메시 아바타(EXP-02) | 분석 워커·상시 아바타 프로세스(`services/avatar`) | 아바타 포즈 스트림 사람별 2\~5 Hz(body 모드 기본, LIVE 중 지연 감시 예외 3.2), 손 포함(full)은 표시용 저주기 | 시연 범위(1단계 메시·포즈 스트림, 2단계 UV 텍스처 누적 CUDA 기본 `auto`) |
 | 5.7 정적 공간 갱신 | RunPod 분석 워커 | 저주기 | 확장(부록 C) |
 | 5.8 Unreal 배경 빌드 | 빌드 워커 | Scene 커밋 시 | 확장(부록 C) |
 
@@ -30,7 +30,7 @@
 - 추적: 카메라별로 독립된 TrackTrack 상태(추적기 설정은 명시 지정, 카메라 움직임 보정 `gmc_method: none`). 추론 모델은 공유해 묶음 추론하되 ID 공간·시간 기록·추적 상태는 카메라마다 분리한다. 카메라 간 통합은 5.2의 추적 3계층이 맡는다
 - 검출 클래스: 사람(MVP). 확장: 장비 대체물(카트), 책상·의자, 방향 마커(부록 C)
 - 출력: 카메라별 `observation_2d`(bbox, 카메라 내 트랙 ID, keypoint 배열과 신뢰도). 원본은 Tier 0 저장 위치(3.12)에 보관하고 EC2 로 보내지 않는다(11.2)
-- 2D keypoint는 카메라 간 연결, 삼각측량, 자동 보정, SAM 3D Body 프롬프트(그리고 확장의 PPE crop 위치·워치 움직임 대조)의 공통 입력이라 단일 실패점이다. 가림 시 신뢰도 동작을 G0·G2에서 검증하고 bbox와 트랙 이력을 독립 근거로 함께 쓴다. 실시간 경로에서 사람 마스크를 쓰는 것은 확장이고, 설치 시 정적 3D 용 사람 지우기 마스크는 MVP 에서 분석 워커의 YOLO26-seg 로 만든다.
+- 2D keypoint는 카메라 간 연결, 삼각측량, 자동 보정, SAM 3D Body 프롬프트(그리고 확장의 PPE crop 위치·워치 움직임 대조)의 공통 입력이라 단일 실패점이다. 가림 시 신뢰도 동작을 G0·G2에서 검증하고 bbox와 트랙 이력을 독립 근거로 함께 쓴다. Tier 0 실시간 안전 경로에서는 분할 마스크를 추론하지 않는 대신, 이미 만든 원본 해상도 BGR 프레임과 사람 검출 상자를 비동기 스레드(`tier0-clean-background`)로 넘겨 사람 없는 정적 배경을 시간 중앙값으로 누적한다(5.3, `docs/design/clean-background-accumulator.md`). 정적 3D 복원(`static_reconstruct`)의 단일 프레임(`FRAME`) 입력과 상시 아바타 루프(`services/avatar`, 5.6)에서는 `YOLO26x-seg` 사람 분할 마스크를 쓴다.
 
 **입력 추상화.** Tier 0 서비스는 노트북 중계 스트림, 녹화 파일(시나리오 데이터셋), 시뮬레이터 출력을 같은 형식(카메라 ID + 촬영 시각 + 프레임)으로 받는다. 시뮬레이터는 2D keypoint 단계부터 바로 넣을 수도 있다. 장비 없이 개발하고 같은 데이터로 반복 검증하기 위한 장치다.
 
@@ -43,7 +43,7 @@
 - 카메라당 12 FPS는 평균값이므로, 최대 결과 간격과 촬영부터 추론 시점까지의 전체 경과 시간인 프레임 연령(`frame_age_ms`)을 함께 잰다.
 - GPU가 포화되면 Tier 0 포즈 추론을 지키고 분석 워커 작업(확장 시 PPE 프레임 포함)부터 건너뛴다.
 
-**이벤트 클립 링 버퍼.** Tier 0 서비스는 카메라별 최근 영상(예: 60초)을 압축 상태로 메모리에만 보관한다. LIVE 의 CRITICAL·HIGH 이벤트가 발생하거나 해소 후 재개되면 앞뒤 구간(예: 각 20초)을 키프레임부터 디코딩 없이 잘라 객체 저장소에 올리고 `media_clip`에 기록한다(얼굴 흐림 없음, 11.5). 같은 위험 구간이 HIGH 에서 CRITICAL 로 오르면 새 클립을 만들지 않고 보존 표시만 붙인다. 버퍼에 구간이 다 없거나 구간 안에 빈칸이 있으면 지어내지 않고 기록에 남긴다. EC2 가 끊겨 업로드 주소를 받을 수 없으면 클립을 Tier 0 저장 위치(3.12)에 먼저 저장하고, 복구 후 업로드한다. 링 버퍼의 나머지 영상은 덮어써진다.
+**이벤트 클립 링 버퍼와 CRITICAL 이벤트 프레임.** Tier 0 서비스는 카메라별 최근 영상(예: 60초)을 압축 상태로 메모리에만 보관한다. LIVE 의 CRITICAL·HIGH 이벤트가 발생하거나 해소 후 재개되면 앞뒤 구간(예: 각 20초)을 키프레임부터 디코딩 없이 잘라 객체 저장소에 올리고 `media_clip`에 기록한다(얼굴 흐림 없음, 11.5). 같은 위험 구간이 HIGH 에서 CRITICAL 로 오르면 새 클립을 만들지 않고 보존 표시만 붙인다. 또한 LIVE 의 R1\~R4 가 처음 CRITICAL 로 발생할 때(병합된 이벤트당 1회)는 판정 스레드와 분리된 비동기 스레드에서 같은 60초 압축 링 버퍼로부터 대상 관측 카메라 우선 최대 2대 × 2시점(이벤트 0\~500 ms 전, 3\~5초 전, 사후 프레임 제외)을 디코딩·JPEG 인코딩해 객체 저장소에 올리고(`EVENT_FRAME`) I1 `event_frame_ready` 를 보낸다(5.4, 12.3, `docs/design/vlm-rationale.md`). 버퍼에 구간이 다 없거나 구간 안에 빈칸이 있으면 지어내지 않고 기록에 남긴다. EC2 가 끊겨 업로드 주소를 받을 수 없으면 클립을 Tier 0 저장 위치(3.12)에 먼저 저장하고, 복구 후 업로드한다. 링 버퍼의 나머지 영상은 덮어써진다.
 
 **상시 영상 조각.** Tier 0 서비스는 받은 영상을 카메라별로 일정 길이(초기값 1분) 조각으로 키프레임부터 디코딩 없이 잘라, 업로드 주소(`POST /api/uploads/sign`, 목적 `VIDEO_SEGMENT`)를 받아 객체 저장소에 올리고 I1 `video_segment` 로 기록을 보낸다(얼굴 흐림 없음, 삭제 예정일 = 자른 시각 + 14일, 11.5). 이벤트와 묶이지 않고 보존 표시가 없다. 구간 안 빈칸은 지어내지 않고 기록에 남긴다. 관리자는 `GET /api/videos` 로 구간을 찾아 조각마다 재생 주소를 받는다(12.6). 사고 구간을 오래 남기려면 이벤트 클립의 보존 표시를 쓴다(v1.3 수정 36, 팀 결정 2026-10-29).
 
@@ -147,14 +147,14 @@
 G4 목표는 개발 교실 줄자 실측 대비 10cm다. Experiment는 재현성·실패 사례·렌더링·VRAM 지표를 함께 제출한다.
 
 - 안전 판단용 Operational Geometry 정본은 보정으로 확정한 바닥 평면과 관리자가 등록한 정적 객체·작업면(보수적 OBB와 상판 높이, 7.5)·위험 구역이다. 정적 3D·BEV 평면도의 벽은 보기용이다.
-- 사물(책상, 사물함)은 CALIBRATED 이후 MapAnything Native에 알려진 K·pose를 넣어 복원하고, glTF로 Three.js에 넣는다.
-- MVP 산출물은 점군 → 단순 메시 glTF 다. 텍스처 메시는 확장이다(부록 C).
+- 사물(책상, 사물함)과 배경은 분석 워커의 I5 `static_reconstruct` 작업에서 MapAnything Native에 알려진 K·pose를 넣어 복원하고, Open3D TSDF 와 `texrecon` 으로 구운 텍스처 메시(`GLTF_VISUAL`)와 표면 출처 지도(`SURFACE_SOURCE_MAP`)를 객체 저장소에 올린다(2026-10-30 사용자 결정, `docs/design/worker-static-reconstruct.md`, S15P31A101-364).
+- 산출물과 폴백: 기본 산출물은 텍스처 메시 glTF(`GLTF_VISUAL`)와 표면 출처 지도(`SURFACE_SOURCE_MAP`, `0` 미관측·`1` 보간·`2` 관측·`3` 추정 평면)이며, `texrecon` 실행 파일이나 `open3d` 가 없는 환경에서는 정점색 단순 메시 glTF 로 폴백한다. 작업 성공 콜백(`scene_output` 2.1.0)은 EC2 에서 `CANDIDATE` Scene 버전으로 저장되고, 관리자가 확인 후 명시적으로 활성화(`commit`)하면 서버 재기동 없이 현재 Scene 에 반영된다(12.5·12.6, `docs/design/scene-version-from-job.md`, S15P31A101-365).
 - MapAnything이 G4에서 실패하면 DA3 혼합 경로(MapAnything 자세 + 원본 해상도 깊이, 위 (a), S15P31A101-283) + 실측 정물 축척(S15P31A101-100)을 시험하고, 그래도 기준 미달이면 관리자가 등록한 단순 형상(바닥 평면 + 보수적 OBB)을 쓴다. 최종 대체 경로는 관리자 등록 단순 형상이다.
 - 안전 판단용 사물 형상은 보수적 OBB로 쓴다. 정적 3D 는 R2·R3 가장자리 판정에 쓰지 않는다(7.5).
 
-**촬영 조건.** 정적 3D용 프레임은 설치 시 교실을 비운 상태로 카메라마다 여러 장 확보한다. 빈 교실을 만들 수 없으면 YOLO26-seg 사람 분할 마스크로 사람 영역을 빼고 여러 시점의 프레임을 합성한다. 사람이 찍힌 프레임을 그대로 쓰면 사람이 배경 형상에 섞인다.
+**촬영 조건과 사람 지운 배경 누적.** 정적 3D용 입력은 두 경로다. (1) 관제 중 Tier 0 가 이미 디코딩한 원본 해상도 BGR 프레임과 사람 검출 상자를 별도 비동기 스레드(`tier0-clean-background`, 큐 1장·포화 시 버림)로 받아 사람 상자(여유 확장) 바깥 픽셀만 카메라별 표본 버퍼(최소 20장·최대 60장)에 쌓고, 노출된 픽셀의 시간 중앙값으로 사람 지운 정적 배경(`CLEAN_BACKGROUND`, 미노출 비율 < 2% 완료 기준)을 만들어 4대가 모두 준비되면 `$SIMAI_ROOT/state/clean-background/<calibration_version>/bundle-<uuid>/` 와 `status.json` 으로 원자적으로 내보낸다(DRIFTED 귀속 카메라나 보정이 바뀐 카메라는 해당 카메라 버퍼만 비움, `docs/design/clean-background-accumulator.md`, S15P31A101-358·-363). (2) 설치 시 단일 시점 프레임(`FRAME`)을 넣을 때는 분석 워커 `static_reconstruct` 의 `prepare` 단계에서 `YOLO26x-seg` 사람 분할 마스크로 사람 영역을 지우고, `CLEAN_BACKGROUND` 입력이면 분할 추론을 건너뛴다(`docs/design/worker-static-reconstruct.md`).
 
-**복원 후처리.** MapAnything 출력(점 지도·깊이)은 바로 배경 메시가 아니다. 뷰 간 깊이 정합 → 이상점 제거 → 표면 생성 → 메시 단순화 → 개발 교실 줄자 실측 대비 검증(G4) → glTF 순서로 만든다(텍스처는 확장). 이 결과는 보기용 Visual Geometry다. 안전 판단용 Operational Geometry는 보정으로 확정한 바닥 평면과 등록 정적 객체 OBB·위험 구역으로 만든다.
+**복원 후처리(`static_reconstruct`).** 분석 워커는 LIVE 관제가 아닐 때만 `static_reconstruct` 작업을 대여해 별도 자식 프로세스 그룹에서 `download` → `prepare`(왜곡 펴기, `FRAME` 입력만 `YOLO26x-seg` 마스크) → `mapanything`(known-K 점군·신뢰도) → `bake`(Open3D TSDF 표면 복원 → `texrecon` area 1회 텍스처 굽기 → 구멍 규칙·`SURFACE_SOURCE_MAP`, 도구 부재 시 정점색 glTF 폴백) → `measure`(스툴 정물 축척 점검, 4.3) → `upload`(`GLTF_VISUAL`, `SURFACE_SOURCE_MAP`, `metrics.json`, `run_record.json`, 로그) 순서로 실행하고 `scene_output` 2.1.0 을 돌려준다(`docs/design/worker-static-reconstruct.md`). 이 결과는 보기용 Visual Geometry다. 안전 판단용 Operational Geometry는 보정으로 확정한 바닥 평면과 등록 정적 객체 OBB·위험 구역으로 만든다.
 
 ## 5.4 VLM·LLM
 
@@ -169,14 +169,14 @@ G4 목표는 개발 교실 줄자 실측 대비 10cm다. Experiment는 재현성
   - SSAFY GMS 를 거쳐 OpenAI(국외)로 텍스트만 보낸다(11.5).
 - **임베딩(RAG):** 안전 수칙 조항과 질문을 같은 모델로 벡터화해 pgvector 로 검색한다. 모델은 BAAI/bge-m3 dense 1024차원, float32, L2 정규화, cosine. 문서·질문에 같은 revision·설정을 쓰고, 가중치 revision 은 `5617a9f…` 로 고정했다(11장). M3 는 조항(조 단위, 1,000자 넘는 조만 항·호 경계로 나눔)과 TBM 질문 템플릿을 노트북 CPU(fp32, 배치 1)에서 미리 임베딩해 시드로 넣고, 자유 문장 질의 임베딩 위치는 확장에서 정한다. 영상·이미지는 넣지 않는다.
 - 용도:
-  1. R1\~R4 이벤트 근거 설명(VLM 빠른 경로: 이벤트 시점 프레임 + 직전 3\~5초 + 구조화 상태, G7의 5초 목표 대상). MVP 에서는 CRITICAL 이벤트에만, 병합된 이벤트당 1회 실행한다. 그래서 MVP 에서는 더 높은 등급이 없어 상향 의견이 늘 null 이고, 상향 의견 검증·제안(S15P31A101-273)과 아래 운영자 확인 상향의 승인(S15P31A101-276)은 대상을 넓힐 때 쓴다. 분석 워커는 입력 등급을 거르지 않으므로 대상이 넓어지면 그대로 상향 의견을 낸다. 이벤트 프레임 업로드·`event_frame_ready` 는 Tier 0(S15P31A101-328), 작업 생성·결과 저장은 EC2(S15P31A101-329) 몫이다.
-  2. 사고·아차사고 구간 요약(VLM 사후 경로: 이벤트 전후 20초 클립, F-10 리플레이 연계). M3 이다. 관리자가 이벤트 상세·리플레이에서 요청하면(`POST /api/events/{id}/summary`) EC2 가 `incident_summary` 작업을 등록한다. 상향 의견은 내지 않고 우선순위는 보고서와 같다(3.2).
+  1. R1\~R4 이벤트 근거 설명(VLM 빠른 경로: 이벤트 시점 프레임 + 직전 3\~5초 + 구조화 상태, G7의 5초 목표 대상). MVP 에서는 CRITICAL 이벤트에만, 병합된 이벤트당 1회 실행한다. Tier 0 가 60초 압축 링 버퍼에서 최대 2대 × 2시점(0\~500 ms 전, 3\~5초 전) 프레임을 올려 I1 `event_frame_ready` 를 보내면(S15P31A101-328), EC2 `VlmRationaleIngestor` 가(LIVE·CRITICAL·비감사·관측 시각 5초 이내·중복 없음) `vlm_rationale` 작업(`VLM_FAST`, `timeout_ms=5000`, `max_attempts=2`, `deadline_at = observation_time + 5000 ms`, `face_policy=BLURRED`)을 등록하고 성공 콜백 때 `vlm_assessment`(G7 측정용 `event_observed_at`·`event_to_rationale_ms` 포함) 저장과 `risk_event` 투영·`/topic/events` 발행을 수행한다(S15P31A101-329). 분석 워커는 `proposed_severity` 가 입력 이벤트의 현재 등급보다 높을 때만 남기고 같거나 낮으면 `null` 로 비우며 사유 코드 `NOT_UPWARD` 를 로그에 남긴다(CRITICAL 입력은 더 높은 등급이 없어 늘 `null`, S15P31A101-273, `docs/design/vlm-rationale.md`).
+  2. 사고·아차사고 구간 요약(VLM 사후 경로: 이벤트 전후 20초 클립, F-10 리플레이 연계). M3 이다. 관리자가 이벤트 상세·리플레이에서 요청하면(`POST /api/events/{id}/summary`) EC2 가 `incident_summary` 작업을 등록한다(분석 워커 처리기는 진행 중, S15P31A101-271). 상향 의견은 내지 않고 우선순위는 보고서와 같다(3.2).
   3. TBM 보고서·일일 일지(규칙 계산 결과 + RAG + LLM 문장). EC2 가 Risk Engine 컨테이너로 PLANNED 계산을 하고 pgvector 에서 조항을 검색해 `tbm_report` 입력에 담는다. 일일 일지는 같은 작업의 `report_kind` DAILY 다(8.3, 12.5).
   4. 정적 공간 변화 의견(확장, 부록 C).
   5. 공정 맥락 진단(F-07)과 운영자 질의응답(LLM, 로그 조회 도구 사용). 둘 다 확장(부록 C).
 - 맡기지 않는 일: PPE 판정·신호수 구별(YOLO26), 낙상 검출(3D 골격 규칙), 구역 판정(Risk Engine). 전용 모델과 규칙이 더 빠르고 수치로 검증되기 때문이다.
 - 권한: 근거 설명과 상향 의견(proposed_severity) 제시만 가능하다. 이벤트 심각도는 규칙 결과로 유지하고, 상향은 검증된 규칙 조건이나 운영자 확인을 거쳐 적용한다. 하향·해소 불가.
-- 운영자 확인 상향(M3): 관리자가 이벤트 상세에서 상향 의견을 승인하거나 거절한다(`POST /api/events/{id}/escalation`). 거절은 EC2 `vlm_assessment` 에만 남는다. 승인하면 EC2 가 I1 `event_escalate` 를 보내고, LIVE 이벤트의 단일 소유자인 Tier 0 가 지금 등급보다 높을 때만 같은 `event_id` 의 UPDATED 전이(`escalation`)를 저널에 기록한다(12.3). EC2 는 등급을 직접 바꾸지 않는다(3.2). 올린 등급은 그 이벤트가 관측으로 해소될 때까지 바닥값이라 이후 규칙 판정이 낮추지 않고(규칙이 더 높이면 따른다), 재개(RESUMED)하면 비운다.
+- 운영자 확인 상향(M3): 관리자가 관제 화면 이벤트 상세(`EscalationControl`)에서 상향 의견을 승인하거나 거절한다(`POST /api/events/{id}/escalation`, `assessmentId` 는 숫자 ID 또는 `job_id`, S15P31A101-276·-367). 거절은 EC2 `vlm_assessment` 에 기록하고 `risk_event` 투영의 `proposed_severity` 를 비워 `/topic/events` 로 알린다. 승인하면 활성 이벤트이고 상향일 때 `event_escalation` 에 기록한 뒤 I1 `event_escalate` 를 보내고(EC2 는 등급을 직접 바꾸지 않음, 3.2), LIVE 이벤트의 단일 소유자인 Tier 0 가 `event_escalate_result`(`ACCEPTED`, `DUPLICATE`, 또는 `REJECTED` — `NOT_ACTIVE`·`NOT_UPWARD` 는 제안 해제, `JOURNAL_UNAVAILABLE` 은 같은 `escalation_id` 로 재시도 가능)와 같은 `event_id` 의 UPDATED 전이(`escalation`)를 보내면 EC2 가 `risk_event.severity` 와 `escalations[]` 를 갱신·발행한다(12.3, `docs/design/server-event-journal.md`). 올린 등급은 그 이벤트가 관측으로 해소될 때까지 바닥값이라 이후 규칙 판정이 낮추지 않고(규칙이 더 높이면 따른다), 재개(RESUMED)하면 비운다.
 - 보고서 인용은 RAG로 검색된 조항 ID만 허용하고 자동 검사한다. RAG 문서는 산업안전보건기준에 관한 규칙의 관련 조항 수십 개로 시작한다.
 - 큐: 이벤트 근거가 보고서보다 우선한다.
 
@@ -198,16 +198,16 @@ G4 목표는 개발 교실 줄자 실측 대비 10cm다. Experiment는 재현성
 
 ## 5.6 SAM 3D Body 강화 (시연 범위 · EXP-02)
 
-**시연 범위 — EXP-02.** Fast SAM 3D Body로 MHR 리깅 메시·포즈를 복원해 인물별 동적 아바타를 구성하며, 카메라 연속 관측이 쌓일수록 실제 관측 기반 외형·텍스처를 개선한다. 확장 후보·별도 승인이 아니라 시연 범위다(2026-10-23 사용자 결정). 점진 도입으로 1단계는 MHR 리깅 메시 + 포즈 스트림(상·하의 대표색), 2단계는 관측 픽셀 UV 텍스처 누적이며, 3DGS는 쓰지 않는다. 상시 스트림 루프는 LIVE 관제 중에도 분석 워커 GPU 상한 안에서 돌되, Tier 0 지연 감시(3.2)로 지연이 목표를 넘거나 모르면 멈추고 뷰어는 0.5 s 뒤 캡슐 아바타로 돌아간다(13.2).
+**시연 범위 — EXP-02.** Fast SAM 3D Body로 MHR 리깅 메시·포즈를 복원해 인물별 동적 아바타를 구성하며, 카메라 연속 관측이 쌓일수록 실제 관측 기반 외형·텍스처를 개선한다. 확장 후보·별도 승인이 아니라 시연 범위다(2026-10-23·2026-10-30 사용자 결정). 1단계는 MHR 리깅 메시 + 포즈 스트림(상·하의 대표색), 2단계는 관측 픽셀 UV 텍스처 누적(`SIMAI_AVATAR_APPEARANCE=auto`, CUDA 가 있으면 기본으로 켜고 CPU 에서는 끔, S15P31A101-89)이며, 3DGS는 쓰지 않는다. 상시 스트림 루프(`services/avatar`, S15P31A101-324·-351)는 LIVE 관제 중에도 분석 워커 GPU 상한(0.10) 안에서 돌되, Tier 0 지연 감시(3.2)로 지연이 목표를 넘거나 모르면 멈추고 뷰어는 0.5 s 뒤 캡슐 아바타로 돌아가며(13.2), 유휴 중에도 I6 WebSocket 끊김(`recv(timeout=0)`·10초 ping)을 즉시 감지해 재연결 시 캐시된 `avatar_asset` 을 다시 알린다(`docs/design/hmr-avatar-loop.md`, `docs/design/hmr-appearance-texture.md`).
 
 - 역할: 삼각측량에서 빠진 관절(책상 뒤 하체 등)을 채우고 체형·손을 더한다.
-- 사용: Fast SAM 3D Body 변형, mask 프롬프트(분석 워커의 YOLO26-seg 마스크), keypoint 프롬프트는 몸통·고관절 같은 안정 관절만(손목·손 제외).
+- 사용: Fast SAM 3D Body 변형, mask 프롬프트(상시 아바타 루프 `SIMAI_AVATAR_SEG=auto` 가 CUDA 에서 왜곡을 편 영상으로 `YOLO26x-seg` 배치 추론을 돌려 bbox IoU ≥ 0.5 일대일 배정한 사람 분할 마스크를 HMR 프롬프트와 원본 좌표 역변환 뒤 UV 텍스처 누적의 전경 가림 마스크에 함께 사용하며, 추론 실패 시 경고 후 bbox 로 폴백, 2026-10-30 사용자 결정, S15P31A101-362, `docs/design/hmr-avatar-loop.md`), keypoint 프롬프트는 몸통·고관절 같은 안정 관절만(손목·손 제외).
 - 검출기·입력: 사람 박스·손 영역은 Tier 0와 같은 YOLO26x-pose 로 잡는다. 아바타 포즈 스트림은 body 모드를 기본(사람별 2\~5 Hz 목표, 손가락 관절은 null)으로 하고, 손 포함(full) 모드는 표시용으로 낮은 주기에서만 돌린다(참고: 일본 H100 웹캠 라이브 full 모드 e2e p50 450 ms, EXP-02 6.4). 카메라 K 는 보정(CalibrationProvider) 값을 쓰고, MoGe2 화각 추정은 E-GATE-0 공식 설정 재현에만 쓴다.
 - 다시점 집계: 직접 만들기 전에 Fast SAM 3D Body 에 내장된 다시점 융합을 E-GATE-1 에서 먼저 시험한다. 쓸 수 없으면 카메라당 최대 1개 제약 클러스터링 → 대표 포즈의 translation만 다시점 재투영 오차로 보정한다. 최종 root는 5.2를 따른다.
 - 품질·성능 검증 기준(E-GATE-1·3, 20.6): G5의 “한 카메라 제외 재투영 오차”와 “책상 뒤 하체 누락률”을 삼각측량 기준선보다 의미 있게 개선. Multi-HMR 2는 비교 기준선이다.
 - 표현 계약: 실시간 아바타 스트림(I6 `avatar_pose_batch` → I2 `avatar_frame`, 12.2·12.4)은 `native_pose`(MHR 127관절 부모 기준 축각 라디안 회전과 `root_rotation`, 위치 필드 없음)만 싣고, 공통 관절(COCO17) 위치인 `canonical_motion`은 오프라인 실험 Run 기록(`experiments/human_mesh_output`, G5·한 카메라 제외 재투영 평가용)에만 둔다(실시간 캡슐 아바타의 공통 관절 정본은 Tier 0 `world_state`의 `skeleton`이다). SOMA-X 변환은 확장 후보다(부록 C).
 
-**observed / inferred 구분.** Tier 0 삼각측량 관절은 observed, Tier 1 HMR이 채운 관절은 inferred로 표시한다(`joint_source: "inferred"`). 위험 규칙은 observed이면서 VALID인 관절만 확정 근거로 쓰고, inferred 관절은 표시·보조에만 쓴다(Tier 1 안전 판단 권한 없음). HMR 메시의 각 표면/텍스처에는 관측 근거(OBSERVED·INTERPOLATED·UNOBSERVED와 얼굴 영역 `face_ratios`)·버전을 구분한다. World root 위치·접지 기준의 정본은 계속 Tier 0 `world_state`(5.2)이다.
+**observed / inferred 구분과 UV 텍스처 누적.** Tier 0 삼각측량 관절은 observed, Tier 1 HMR이 채운 관절은 inferred로 표시한다(`joint_source: "inferred"`). 위험 규칙은 observed이면서 VALID인 관절만 확정 근거로 쓰고, inferred 관절은 표시·보조에만 쓴다(Tier 1 안전 판단 권한 없음). 2단계 관측 픽셀 UV 텍스처 누적(`hmr/appearance.py`·`hmr/raster.py`)은 새 외부 렌더링 의존성 없이 `torch`/`numpy` 원근 보정 z-buffer 래스터화로 사람별 `1024×1024` `albedo.png` 와 `surface_source.png`(코드 `0` 미관측·`1` 보간·`2` 관측, 얼굴 영역 `+128`, `face_ratios`)를 갱신해 `AVATAR_ASSET` 으로 올리고 `avatar_asset` 새 버전을 발행하며, 메시 실루엣 침식·감쇠, 동일 시각 공통 고품질 텍셀의 카메라 간 RGB 채널 이득 EMA 맞춤, 인물 영역 라플라시안 선명도 가중, Tier 0 대 HMR World COCO17 재투영 오차 가중(큰 오차 카메라 배제)을 적용한다(세부 수치는 `docs/design/hmr-appearance-texture.md`, S15P31A101-89·-361). World root 위치·접지 기준의 정본은 계속 Tier 0 `world_state`(5.2)이다.
 
 ## 5.7 정적 공간 갱신 (확장)
 

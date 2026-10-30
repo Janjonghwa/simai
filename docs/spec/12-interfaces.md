@@ -28,7 +28,7 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 | I3 | EC2 ↔︎ PWA | Web Push + REST | 푸시 `risk_alert`, 시험 푸시 / REST: 티켓 상태 변경, 사진 업로드 주소 발급, 푸시 구독·해지, 수신 확인(12.6) |
 | I4 | EC2 ↔︎ 워치 | — | 이동(v1.3) → 부록 C |
 | I5 | RunPod 분석 워커 → EC2 | 작업 가져가기(HTTPS long-poll 기본, WebSocket 대안), TLS + 워커 토큰 | 워커가 EC2 에 먼저 접속해 `job_lease_request`로 작업을 대여하고(응답 `job_request`), `job_heartbeat`로 대여를 연장하며, 결과·실패를 `job_callback`으로 제출한다. 하트비트·제출 응답은 `job_lease_status`(12.5) |
-| I6 | RunPod 분석 워커 → EC2 (아바타 스트림) | WebSocket(wss) + JSON, 워커 토큰(I1 과 분리된 별도 연결, 기본 경로 `/ws/worker/avatar`) | 위로(워커 → EC2, 단방향): `avatar_pose_batch`(1.0.0, 사람별 2\~5 Hz 묶음, MHR 축각 회전만·위치 없음), `avatar_asset`(1.0.0, 스키닝 glTF·UV 텍스처·표면 출처 지도 버전 알림, 처음·버전 변경·재접속 직후·10초 재알림). `avatar_asset.mesh.vertex_count` 는 glTF 정점 수(UV 이음매에서 나눈 뒤, MHR 자산 기준 19,455)이고 MHR 정점 수(18,439)와 다르다. 관절 순서의 기준은 MHR 자산 관절 인덱스다(자산에 관절 이름이 있어 glTF 노드 이름에 넣지만 기준은 인덱스, 0 `body_world`·1 `root`(pelvis) …). 몸 방향은 `root_rotation` 에 싣으므로 관절 0·1 회전은 늘 [0, 0, 0] 이다. `skeleton.rig_source` 는 자산 출처(HF `facebook/sam-3d-body-dinov3@11aaa34`)를 적는다(S15P31A101-88, `docs/design/mhr-skinned-gltf.md`). 세부는 `docs/design/avatar-pose-stream.md` 와 `contracts/`(묶음 6.2.0)가 정본이고, 오프라인 Run 기록은 `experiments/human_mesh_output`(2.0.0)을 그대로 둔다 |
+| I6 | RunPod 분석 워커 → EC2 (아바타 스트림) | WebSocket(wss) + JSON, 워커 토큰(I1 과 분리된 별도 연결, 기본 경로 `/ws/worker/avatar`) | 위로(워커 → EC2, 단방향): `avatar_pose_batch`(1.0.0, 사람별 2\~5 Hz 묶음, MHR 축각 회전만·위치 없음), `avatar_asset`(1.0.0, 스키닝 glTF·UV 텍스처·표면 출처 지도 버전 알림, 처음·버전 변경·재접속 직후·10초 재알림). 상시 아바타 루프(`services/avatar`)는 유휴 중에도 `recv(timeout=0)` 와 10초 ping 으로 반쯤 닫힌 연결을 감지해 재접속 직후 캐시된 `avatar_asset` 을 다시 알린다(`docs/design/hmr-avatar-loop.md`). `avatar_asset.mesh.vertex_count` 는 glTF 정점 수(UV 이음매에서 나눈 뒤, MHR 자산 기준 19,455)이고 MHR 정점 수(18,439)와 다르다. 관절 순서의 기준은 MHR 자산 관절 인덱스다(자산에 관절 이름이 있어 glTF 노드 이름에 넣지만 기준은 인덱스, 0 `body_world`·1 `root`(pelvis) …). 몸 방향은 `root_rotation` 에 싣으므로 관절 0·1 회전은 늘 [0, 0, 0] 이다. `skeleton.rig_source` 는 자산 출처(HF `facebook/sam-3d-body-dinov3@11aaa34`)를 적는다(S15P31A101-88, `docs/design/mhr-skinned-gltf.md`). 세부는 `docs/design/avatar-pose-stream.md` 와 `contracts/`(묶음 6.2.0)가 정본이고, 오프라인 Run 기록은 `experiments/human_mesh_output`(2.0.0)을 그대로 둔다 |
 | I0 | 노트북 ↔︎ RunPod Tier 0 | 카메라별 TLS 연결(프레임 헤더 + 압축 프레임), 제어는 WebSocket(wss) | 위로: 프레임 헤더를 붙인 카메라 4대 압축 프레임(`frame_header`, 12.7), `codec_info`, `laptop_heartbeat` / 위로(제어): `site_ack`(현장 확인) / 아래로: `local_alert`, `alarm_stop`, `health`(활성 현장 경보 목록 `active_site_alerts` 포함, 3.10) / 양방향: 노트북–Pod 시계 차이 교환(아래로 `clock_sync_request`, 위로 `clock_sync_response`, 3.9) |
 
 EC2 내부: Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON 이다(공개 포트 없음, 기본 경로 `POST /v1/plan/evaluate`). Spring 이 `risk_plan_request`(출처 PLANNED, 판정 기준 시각, 규칙 묶음, 레이아웃의 구역·작업면·선택 계획 작업 위치)를 보내고 컨테이너가 `risk_plan_result`(등급 + 근거 위험 항목, 판정에 쓴 위치 목록, 또는 오류)로 답한다. 결과는 `sim.*` 에만 저장하고 알림 채널로 보내지 않는다(7.4, 8.3). 오류 판정 순서·HTTP 상태·본문 없는 실패의 처리는 계약(`contracts/`)이 정본이다. MVP 는 PLANNED 만 쓰고 REPLAY·WHAT_IF 재계산은 확장(부록 C)이다.
@@ -83,7 +83,7 @@ EC2 내부: Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON �
 
 `health`는 활성 현장 경보 목록(`active_site_alerts`, 3.10)과 노트북–Pod 시계 차이·불확실성(`laptop_clock_offset`, 3.9. 모르면 null)도 싣는다. `pipeline_lag_ms` 는 시계 차이를 보정한 T_lag 이고, 모르면 null(그때 UNSAFE_UNKNOWN, 아는 하한은 `pipeline_lag_lower_bound_ms`)이다(6.1). 카메라별 `sync_valid` 는 동기화 근거(true/false, 근거 없으면 null)다(6.1). Tier 0 운영 경고(체크포인트·저널·EC2 전송 보류·재동기화 스냅샷)는 `tier0_warnings` 에 code 와 처음 확인한 시각으로 싣고, 빈 배열은 경고 없음, 필드가 없으면 모름이다(6.5). 카메라별 프레임 집계(`cameras[].frames`)에는 손실 3종과 따로 노트북 송신 큐 버림(`laptop_skipped`)과 구분 불가 빈칸(`unattributed_gap`)을 싣는다(12.7).
 
-`event_frame_ready`는 EC2가 발급한 임시 업로드 주소로 프레임을 올린 뒤 그 주소와 촬영 시각·카메라만 보낸다.
+`event_frame_ready`는 LIVE R1\~R4 CRITICAL 이벤트가 처음 발생할 때(병합 이벤트당 1회) Tier 0 가 60초 압축 링 버퍼에서 대상 관측 카메라 우선 최대 2대 × 2시점(이벤트 0\~500 ms 전, 3\~5초 전, 사후 프레임 제외)을 디코딩·JPEG 인코딩해 EC2 가 발급한 임시 업로드 주소(`EVENT_FRAME`)로 올린 뒤 그 객체 키와 촬영 시각 세 값(3.9)·카메라만 보낸다(5.4, `docs/design/vlm-rationale.md`).
 
 `media_clip` 은 이벤트 클립(카메라 하나 × 위험 구간 하나)을 임시 업로드 주소로 올린 뒤 객체 키, 촬영 시각 구간, 해시·크기, 얼굴 흐림 여부(`face_redaction`, 기본 NONE), 구간 안 빈칸(`has_gaps`), 삭제 예정일, 보존 표시를 보낸다. 영상은 싣지 않는다. 보낸 뒤 이벤트가 CRITICAL 로 오르면 기록을 고치지 않고 `media_clip_retention` 으로 보존 표시를 더한다(11.5).
 
@@ -110,7 +110,7 @@ EC2 내부: Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON �
 
 `evidence_ref` 키는 늘 싣는다. 판정 전이는 판정에 쓴 `world_state` 의 msg_id 이고, 판정이 아닌 전이(운영자 확인·재시작 복원·ID 교정·운영자 상향)는 근거를 모르면 null 이다(3.2 저널 계약).
 
-`event_escalate` 는 관리자가 VLM 상향 의견을 승인했을 때만 EC2 가 보낸다(거절은 EC2 `vlm_assessment` 에만 기록, 5.4). Tier 0 는 활성 이벤트이고 올릴 등급이 지금 등급보다 높을 때만 같은 `event_id` 의 UPDATED 전이(`escalation` 포함, `resumed` false)를 저널에 기록하고 `event_escalate_result` 로 답한다. 같은 `escalation_id` 는 다시 기록하지 않는다(DUPLICATE). 이 전이로 등급이 오르므로 3.10 의 상향 재경보를 따른다. 올린 등급은 관측 해소까지 바닥값이다(5.4). Tier 0 는 모든 `risk_event_transition` 을 2.1.0 으로 보낸다.
+`event_escalate` 는 관리자가 VLM 상향 의견을 승인했을 때만 EC2 가 보낸다(거절은 EC2 `vlm_assessment` 에 기록하고 `risk_event` 투영의 `proposed_severity` 를 비움, 5.4). Tier 0 는 활성 이벤트이고 올릴 등급이 지금 등급보다 높을 때만 같은 `event_id` 의 UPDATED 전이(`escalation` 포함, `resumed` false)를 저널에 기록하고 `event_escalate_result`(`ACCEPTED`, `DUPLICATE`, `REJECTED`)로 답한다. 같은 `escalation_id` 는 다시 기록하지 않는다(DUPLICATE). EC2 는 `REJECTED` 사유가 `NOT_ACTIVE`·`NOT_UPWARD` 이면 상향 제안을 해제하고, `JOURNAL_UNAVAILABLE` 이면 같은 `escalation_id` 로 재시도할 수 있게 둔다(`docs/design/server-event-journal.md`). 이 전이로 등급이 오르므로 3.10 의 상향 재경보를 따른다. 올린 등급은 관측 해소까지 바닥값이다(5.4). Tier 0 는 모든 `risk_event_transition` 을 2.1.0 으로 보낸다.
 
 ## 12.4 I2·I3 주요 메시지
 
@@ -151,14 +151,14 @@ EC2 내부: Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON �
 
 | `job_type` | 입력 | 출력 |
 |---|---|---|
-| `vlm_rationale` | 이벤트 프레임 주소(프레임마다 카메라·촬영 시각 세 값(3.9)·`face_policy`, 워커는 `observation_time` 뒤 프레임을 쓰지 않음), 구조화 상태 `structured_state`(계약은 객체만 정한다. 워커는 `tracks[]` 의 `world_id`·`position_xy`·`head_z` 와 `zone` 의 `zone_id`·`judge_type` 을 읽고 없는 키는 건너뛴다) | 근거 문장(한국어 1\~3문장), 상향 의견(상향만, MVP 는 CRITICAL 만 대상이라 늘 null, 5.4), `clause_ids`(지금 늘 `[]`: 입력에 조항이 없고 워커는 조항을 검색하지 않는다, 19.1) |
+| `vlm_rationale` | 이벤트 프레임 주소(프레임마다 카메라·촬영 시각 세 값(3.9)·`face_policy`, 워커는 `observation_time` 뒤 프레임을 쓰지 않음), 구조화 상태 `structured_state`(계약은 객체만 정한다. 워커는 `tracks[]` 의 `world_id`·`position_xy`·`head_z` 와 `zone` 의 `zone_id`·`judge_type` 을 읽고 없는 키는 건너뛴다). 우선순위 `VLM_FAST`(`timeout_ms=5000`, `max_attempts=2`, `deadline_at = observation_time + 5000 ms`) | 근거 문장(한국어 1\~3문장), 상향 의견(입력 등급보다 높을 때만 남기고 같거나 낮으면 `null` + `NOT_UPWARD` 로그, MVP 는 CRITICAL 만 대상이라 늘 null, 5.4), `clause_ids`(지금 늘 `[]`: 입력에 조항이 없고 워커는 조항을 검색하지 않는다, 19.1). 성공 시 EC2 가 `vlm_assessment`(G7 지연 포함)와 `risk_event` 투영을 갱신하고 `/topic/events` 로 발행(`docs/design/vlm-rationale.md`) |
 | `tbm_report` | `tbm_report.schema.json` 입력(`job_request` 3.3.0): 보고서 종류 `report_kind`(TBM·DAILY)·보고서 ID·현장·날짜, TBM 은 PLANNED 계산 결과(`risk_plan_result` 의 위험 항목·위치), DAILY 는 그날 이벤트 요약(사람 필드 없음), EC2 pgvector 로 검색한 조항 `clauses[]`(ID·본문). 텍스트만 | 결과(`job_callback` 2.3.0): 섹션·문단별 본문과 인용 조항 ID(입력에 담긴 조항 ID 만), 입력 등급 그대로의 계산 근거 표, 인용 목록, 생성 모델·프롬프트 버전·시도 수(분석 워커가 외부 LLM 호출, 텍스트만) |
-| `incident_summary` | 이벤트, 이벤트 전후 20초 클립 객체 키(`media_clip`), 얼굴 처리 `face_policy`, 구조화 상태 | 요약 문장(상향 의견 없음). 우선순위 REPORT |
+| `incident_summary` | 이벤트, 이벤트 전후 20초 클립 객체 키(`media_clip`), 얼굴 처리 `face_policy`, 구조화 상태 | 요약 문장(상향 의견 없음, 분석 워커 처리기는 진행 중 S15P31A101-271). 우선순위 REPORT |
 | `bev_floorplan` | `bev_floorplan.schema.json` 입력(`job_request` 3.2.0): 보정 버전·보정 문서 주소와 해시, 프레임 출처, 카메라마다 사람 없는 프레임 한 장(주소·촬영 시각), 선택 Scene 버전 | BEV 평면도 이미지·메타데이터 주소, 픽셀 ↔ World 대응, 방 외곽, `input_provenance`(보조 화면, 안전 판단에 쓰지 않음, 4.1, `job_callback` 2.2.0). 우선순위 BACKGROUND |
-| `static_reconstruct` | 카메라 프레임 주소, 보정 버전 | glTF 주소, 품질 지표 |
+| `static_reconstruct` | `static_reconstruct.schema.json` 입력(`job_request` 3.2.0): 보정 버전·보정 문서 주소와 해시(`PROVISIONAL`·`CALIBRATED`), 카메라 4대의 프레임(`FRAME`) 또는 Tier 0 사람 지운 배경(`CLEAN_BACKGROUND`) 주소·해시·촬영 시각, 옵션(`resolution_tier`, `use_person_mask`). LIVE 관제 중에는 대여에서 제외하고 LIVE 진입 시 반납(3.2, 5.3) | `scene_output` 2.1.0(`CANDIDATE`, `VISUAL`): Open3D TSDF + `texrecon` 으로 구운 텍스처 메시(`GLTF_VISUAL`, 도구 부재 시 정점색 glTF 폴백)와 표면 출처 지도(`SURFACE_SOURCE_MAP`), `metrics.json`(스툴 축척 점검 포함), `run_record.json` 을 `static-3d/{job_id}/{lease_id}/...` 에 올리고 반환. EC2 `SceneJobListener` 는 `CANDIDATE` 로만 저장하고 자동 활성화하지 않음(`docs/design/worker-static-reconstruct.md`, `docs/design/scene-version-from-job.md`). 우선순위 BACKGROUND |
 | `calibration_ba` | 2D 관측 묶음(Tier 0 저장 위치), 초기 보정 | 보정 후보 |
 | `hmr_refine` (시연 범위·EXP-02) | LIVE 관제 중에는 I5 대여 작업이 아니라 분석 워커의 상시 스트림 루프(Tier 0 공유 메모리 입력, 3.2 지연 감시 적용)로 돌며, 출력을 I5 콜백이 아닌 I6 아바타 스트림(`avatar_pose_batch`·`avatar_asset`)으로 보낸다. I5 배치 대여는 관제 외 오프라인 재처리·실험에만 쓰며 LIVE 중에는 받지 않는다(오프라인 산출물은 `experiments/human_mesh_output`) | I6 `avatar_pose_batch`·`avatar_asset` (오프라인 배치는 MHR 메시·포즈, 관절 출처, 품질 메타데이터) |
-| `hmr_appearance_update` (시연 범위·EXP-02 2단계) | 동일 World ID의 연속 관측 샘플, 이전 시각 자산(I5 배치 작업은 LIVE 중 받지 않으며, 스트림 중 갱신된 자산은 I6 `avatar_asset` 과 객체 업로드로 알림) | 신규 텍스처/외형 버전(`appearance_version`), 표면 출처 지도·비율(`surface_source`·`face_ratios`), 아티팩트 참조 |
+| `hmr_appearance_update` (시연 범위·EXP-02 2단계) | 동일 World ID의 연속 관측 샘플, 이전 시각 자산(I5 배치 작업은 LIVE 중 받지 않으며, 상시 아바타 루프 `services/avatar` 에서는 `SIMAI_AVATAR_APPEARANCE=auto` 로 CUDA 에서 기본 실행돼 갱신된 `1024×1024` `albedo.png`·`surface_source.png` 를 `AVATAR_ASSET` 업로드 후 I6 `avatar_asset` 으로 알림, 5.6) | 신규 텍스처/외형 버전(`appearance_version`), 표면 출처 지도·비율(`surface_source`·`face_ratios`), 아티팩트 참조 |
 
 VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커가 VLM 호출 직전에 `face_policy` 대로 얼굴 영역을 흐린다(5.4). 외부 LLM 호출은 분석 워커의 `tbm_report` 작업 안에서만 한다(SSAFY GMS 경유, 설정 `SIMAI_LLM_BASE_URL`·`SIMAI_LLM_MODEL`·`SIMAI_LLM_API_KEY`·`SIMAI_LLM_TIMEOUT_S` 는 Pod `.env`, 14장). `tbm_report` 입출력은 계약 묶음 6.3.0 이다. `bev_floorplan` 은 CALIBRATED 가 되거나 보정 버전이 바뀌면 EC2 가 등록한다.
 
@@ -190,12 +190,12 @@ VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커�
 | GET | /api/events/\{id\} | 이벤트 상세(위치·근거·관련 구역·조치 상태·VLM 근거·상향 의견) | 반장·관리자 |
 | POST | /api/events/\{id\}/summary | 사고 구간 요약 요청(`incident_summary`, 5.4) | 관리자 |
 | POST | /api/events/\{id\}/close | 구역 대상 이벤트 운영자 종료(본문 사유 1\~500자·요청 멱등 키). 멱등 키는 EC2 가 따로 저장해 같은 키 재요청에 처음 결과를 돌려준다. EC2 가 발급한 `close_id` 로 I1 `event_close` 를 보내고 결과 `event_close_result` 를 돌려줌(6.4) | 관리자 |
-| POST | /api/events/\{id\}/escalation | VLM 상향 의견 승인·거절(본문 `assessmentId`·`decision`). 승인만 I1 `event_escalate` 로 보냄(5.4) | 관리자 |
-| GET | /api/scenes/current | COMMITTED Scene과 glTF 주소 | 열람 |
+| POST | /api/events/\{id\}/escalation | VLM 상향 의견 승인·거절(본문 `assessmentId` 숫자 ID 또는 `job_id`, `decision` `APPROVED`·`REJECTED`). 거절은 `vlm_assessment` 에 기록하고 투영 `proposed_severity` 를 비우며, 승인은 `event_escalation` 기록 후 I1 `event_escalate` 로 보냄(관제 이벤트 상세 `EscalationControl` UI, 5.4, `docs/design/server-event-journal.md`) | 관리자 |
+| GET | /api/scenes/current | 현재 활성(`COMMITTED`) Scene 과 glTF 서명 주소(`gltf_url`), 표면 출처 지도 서명 주소 배열(`surface_source_map_urls`, `SURFACE_SOURCE_MAP` 이 있을 때) | 열람 |
 | GET | /api/scenes/\{sceneId\} | Scene 생성 상태(CANDIDATE·VALIDATING·COMMITTED·REJECTED) | 관리자 |
 | POST | /api/scenes/rebuild | 정적 3D 재생성 요청 | 관리자 |
 | POST | /api/scenes | 관리자가 올린 glb(업로드 목적 `SCENE_GLTF`)를 Scene 후보(CANDIDATE)로 등록. PROVISIONAL·CALIBRATED 보정에만 | 관리자 |
-| POST | /api/scenes/\{sceneId\}/commit · /reject | 후보 Scene 확정(COMMITTED, 이전 현재 Scene 은 `valid_to` 로 닫음)·거절(REJECTED, 사유) | 관리자 |
+| POST | /api/scenes/\{sceneId\}/commit · /reject | 후보 Scene 활성화(COMMITTED, 워커 생성 후보는 `CALIBRATED` 보정 확인, `scene_activation` 이력 기록, 이전 현재 Scene 은 `valid_to` 로 닫고 서버 재기동 없이 `/api/scenes/current`·`/topic/health` 반영, 관리 명령 `admin scene list\|activate`·작업 등록 `admin job enqueue --type static_reconstruct` 지원, `docs/design/scene-version-from-job.md`)·거절(REJECTED, 사유) | 관리자 |
 | GET | /api/sites/current | 현장(MVP 하나) 조회 | 열람 |
 | POST · PUT | /api/sites · /api/sites/current | 현장 등록(없을 때만)·수정(이름·원점 근거, 구성이 붙기 전이면 `site_id`) | 관리자 |
 | GET · POST | /api/layouts | 가상 레이아웃 | 관리자 |

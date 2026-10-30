@@ -30,7 +30,7 @@ Jira는 **EXP-01 / EXP-02**를 큰 Feature 티켓으로 유지하고, 티켓 하
 **연구 질문:** MapAnything Native의 결과(비교군: Depth Anything 3 의 두 경로, 5.3)를 10×10m, 4대 고정 카메라 관측과 World 좌표(4.1)에 정합해 COMMITTED Scene에 사용할 수 있는 시각 배경(glTF)으로 만들 수 있는가?
 
 1. **Baseline:** 소수의 빈 교실 프레임, K·pose, 가중치·CUDA 환경을 고정하고 depth/point map/camera 출력을 기록.
-2. **복원:** 뷰 간 정합→이상점 제거→표면 생성/메시→단순화. MVP 산출물은 점군 → 단순 메시 glTF 이고 텍스처 메시는 확장(부록 C). 동적 사람 영역은 YOLO26-seg 마스크로 제거.
+2. **복원:** 뷰 간 정합→이상점 제거→표면 생성/메시→단순화. 분석 워커의 I5 `static_reconstruct` 작업은 Tier 0 가 누적한 사람 없는 배경(`CLEAN_BACKGROUND`) 또는 `YOLO26x-seg` 마스크로 사람을 지운 프레임(`FRAME`)으로 MapAnything(known-K) → Open3D TSDF → `texrecon` 텍스처 메시(`GLTF_VISUAL`)와 표면 출처 지도(`SURFACE_SOURCE_MAP`)를 생성하며, 도구 미설치 환경에서는 정점색 단순 메시 glTF 로 폴백한다(5.3, `docs/design/worker-static-reconstruct.md`).
 3. **정렬:** §4의 월드 미터/Z-up, World 원점/축/스케일, calibration_version에 정렬. 관측된 형상과 추정된 공간 구분.
 4. **검증:** G4 개발 교실 줄자 실측 대비 10cm, 책상 상판 높이 ±5cm·위치 10cm, 공동 관측 점 중앙값 5cm. 실패/가림/반사/저텍스처 사례도 보고.
 5. **통합:** glTF와 Scene 버전/해시/검증 결과를 내보내고 Three.js 실제 화면에서 배경을 확인.
@@ -50,7 +50,7 @@ Jira는 **EXP-01 / EXP-02**를 큰 Feature 티켓으로 유지하고, 티켓 하
 3. **좌표 정렬:** §5.2 Tier 0 pelvis_xyz·position_xy·ground_anchor_xyz와 카메라/월드 변환을 계약으로 연결. 지지면 모를 때 Z=0을 가정하지 않음.
 4. **외형 개선:** 인물별로 관측된 표면의 텍스처와 관측되지 않은/보간된 영역을 구분해 누적 갱신한다. 외형 개선과 신원 재식별은 분리하고, 생성형 얼굴 복원·표정 추정·실명 인식은 범위 밖이다(재식별은 전신 임베딩을 기하 게이트 뒤 보조 비용으로만 쓰되 10/30 이후 G2 측정 뒤 검토, 19.1). 두 단계로 점진 도입한다(3DGS 미사용).
    - 1단계(E-GATE-2): MHR 리깅 메시(SkinnedMesh) + 포즈 스트림(I6 `avatar_pose_batch` → I2 `avatar_frame`, 12.2)으로 구동하고 기본 재질(상·하의 대표색)로 칠한다.
-   - 2단계: 관측 픽셀만 쓰는 다시점 UV 텍스처 누적. 가시성 필터(z-buffer·시선 각도·마스크) → UV 투영(PyTorch3D 또는 nvdiffrast) → 신뢰도 가중 누적 `T_new = (W_old·T_old + w·C_obs) / (W_old + w)` → 이상 관측 거절 → 버전 기록(`appearance_version`, 추가만)·되돌리기. 사람별 canonical 메시(MHR 스키닝으로 기준 자세에 정렬) 위에 쌓는다. 촬영·외형 누적은 기관(SSAFY) 허가 기준이며 별도 참여자 동의 조건은 두지 않는다(11.5). MHR↔SMPL 변환은 https://github.com/facebookresearch/MHR/blob/main/tools/mhr_smpl_conversion/README.md 를 참고한다.
+   - 2단계: 관측 픽셀만 쓰는 다시점 UV 텍스처 누적(`SIMAI_AVATAR_APPEARANCE=auto`, CUDA 기본 켬, 2026-10-30 사용자 결정). 가시성 필터(z-buffer·시선 각도·아바타 루프 `YOLO26x-seg` 전경 마스크 `SIMAI_AVATAR_SEG=auto`·메시 실루엣 침식 및 감쇠) → UV 투영(구현은 새 외부 의존성 없는 `torch`/`numpy` 원근 보정 z-buffer 래스터화, 후보 PyTorch3D·nvdiffrast) → 품질 가중(라플라시안 선명도·Tier 0 대 HMR COCO17 재투영 오차 가중·카메라 간 공통 고품질 텍셀 RGB 채널 이득 EMA 맞춤) 및 신뢰도 가중 누적 `T_new = (W_old·T_old + w·C_obs) / (W_old + w)` → 이상 관측 거절 → 버전 기록(`appearance_version`, 추가만)·되돌리기(`docs/design/hmr-appearance-texture.md`, `docs/design/hmr-avatar-loop.md`). 사람별 canonical 메시(MHR 스키닝으로 기준 자세에 정렬) 위에 쌓는다. 촬영·외형 누적은 기관(SSAFY) 허가 기준이며 별도 참여자 동의 조건은 두지 않는다(11.5). MHR↔SMPL 변환은 https://github.com/facebookresearch/MHR/blob/main/tools/mhr_smpl_conversion/README.md 를 참고한다.
    - 보이지 않는 면·얼굴을 생성하는 방식(SiTH·FISHuman, 30\~50px 물리 한계)과 옷 형상 복원(ReMu, ECON), 3DGS 아바타는 쓰지 않는다(16장).
    - World ID 가 `IDENTITY_UNCERTAIN` 이거나 `identity_revision` 이 바뀐 직후(병합·분할·교정 뒤 다시 안정될 때까지, 초기값 30 프레임)에는 텍스처 누적을 멈추고 마지막 확정 외형을 유지한다(자산 차수 ≤ 포즈 차수 허용, 갈라져 나간 새 ID 는 원래 ID 자산을 물려받지 않고 새 자산 전까지 캡슐, 13.2). 다른 사람의 외형이 같은 아바타에 섞이지 않게 하기 위해서다.
    - 얼굴 영역은 관측된 얼굴 픽셀을 그대로 쓸 수 있고(`face_policy` 기본 OBSERVED, BLURRED·EXCLUDED 선택), 안 보이는 얼굴을 지어내는 생성형 복원·표정 추정은 하지 않는다. 표면 출처 지도(무손실 8비트 PNG, 값 0·1·2 와 얼굴 +128)와 비율(`surface_source.ratios`·`face_ratios`, 얼굴 영역은 보간 없음)로 관측·보간·미관측을 구분하며, 안 보인 얼굴 면(`face_ratios.UNOBSERVED`)은 기본 재질로 둔다(11.5, 13.2).
@@ -105,7 +105,7 @@ Jira는 **EXP-01 / EXP-02**를 큰 Feature 티켓으로 유지하고, 티켓 하
 ## 20.5 RunPod GPU Job Queue, 자원 보호와 실험 이력
 
 - **개발 기본 정책:** 두 Worker는 설계/구현을 병렬 진행하되 무거운 단일 GPU 추론 작업은 공유 큐로 순차 실행. 중량 Job에 잠금, TTL/heartbeat, 타임아웃, 종료 시 메모리 회수, 재시작 시 상태 복구를 적용한다.
-- **안전 경로 격리:** Tier 0와 분석 워커는 같은 GPU를 쓴다(3.2). LIVE 관제 시간에는 VLM 등 기존 관제용 분석과 시연 범위인 EXP-02 상시 아바타 스트림 루프(Tier 0 지연 감시 표시 파일로 지연 초과·모름 시 즉시 멈춤, 3.2)만 분석 워커 자원 상한 안에서 실행하고, 오프라인·배치 EXP 추론(I5 배치 `hmr_*` 포함)은 관제가 없는 시간에만 실행한다.
+- **안전 경로 격리:** Tier 0와 분석 워커는 같은 GPU를 쓴다(3.2). LIVE 관제 시간에는 VLM 등 기존 관제용 분석과 시연 범위인 EXP-02 상시 아바타 스트림 루프(`services/avatar`, Tier 0 지연 감시 표시 파일로 지연 초과·모름 시 즉시 멈춤, 3.2)만 분석 워커 자원 상한 안에서 실행하고, 오프라인·배치 EXP 추론(I5 배치 `hmr_*`·`static_reconstruct` 포함)은 관제가 없는 시간에만 실행한다.
 - **격리:** 모델별 Python/CUDA/Torch 환경 또는 컨테이너 격리. 코드 작업은 20.1의 티켓별 Feature Branch, 런 메타데이터와 요약 보고서는 GitLab, 중량 영상·모델·3D 아티팩트는 GPU 실행 사이트의 저장 위치(3.12)에 두고 볼륨이 없으면 결과 묶음으로 가져오며, 환경은 Docker 이미지(Tier 0 `tier0`, Tier 0·VLM·HMR·MapAnything 통합 `unified`, 실험 이미지 HMR `exp02-fs3db`·MapAnything `mapanything`, 3.12)로 관리한다. 통합 이미지의 MapAnything 은 LIVE 가 아닐 때 `simai-bootstrap scene` 일회성 모드로 돌리고(`mapanything` 이미지는 2.7.1↔2.11 동등성 비교까지만 유지), 별도 실험 이미지는 Tier 0 와 다른 인스턴스로 띄운다.
 - **측정:** GPU 실제 모델명과 드라이버·CUDA, 배치/해상도, inference+I/O+render 별 p50/p95, VRAM peak, 처리량/실패율/스토리지 사용을 기록. A40 등 특정 GPU 수치는 실측 없이 확정하지 않는다. 판정·선택에는 시연 GPU(3.12, 미정) 실측값과 공식 벤치마크를 쓰고(시연 GPU 가 정해지기 전 모델 선택은 H100 80GB 기준), 노트북 등 다른 GPU 수치는 참고값으로 구분해 기록한다. GPU 제공 사이트는 Run 기록 `gpu.provider` 에 RUNPOD·VAST·OTHER(그 밖의 클라우드, 사이트 신호가 없으면 Job 에 적음)·LOCAL(클라우드가 아닌 로컬 장비)로 남긴다.
 - **재현:** run_id, experiment_id(실험 EXP-01·EXP-02·INT-01, 운영 경로 검증 Run 은 VAL-01: GPU 세션 검증 큐 등, 채택 게이트 근거 아님·`e_gate` 없음, 정답·SIM 입력 지표는 제품 성능 아님), owner, git_commit, env_hash(이미지 다이제스트, 21.5), model_version, weights_hash, dataset_hash, config, source_camera/calibration_version, 결과 URI, 메트릭, 리뷰 의견을 필수로 남긴다.
