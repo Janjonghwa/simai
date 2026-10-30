@@ -1,0 +1,17 @@
+# 판은 나온 지 2주 넘은 안정판으로 고정한다(2026-10-30 기준, docs/design/watch-app.md)
+[versions]
+agp = "9.4.1"
+kotlin = "2.4.21"
+activity-compose = "1.13.0"
+wear-compose = "1.7.1"
+junit = "4.13.2"
+
+[libraries]
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity-compose" }
+wear-compose-foundation = { module = "androidx.wear.compose:compose-foundation", version.ref = "wear-compose" }
+wear-compose-material3 = { module = "androidx.wear.compose:compose-material3", version.ref = "wear-compose" }
+junit = { module = "junit:junit", version.ref = "junit" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

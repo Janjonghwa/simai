@@ -44,6 +44,7 @@ ai/          기능별 패키지(src/simai_ai), 배포 단위(services), 실험(
 gateway/     노트북 중계·현장 경보 앱
 server/      EC2 Spring Boot
 front/       Three.js 뷰어, 반장 PWA
+watch/       갤럭시워치(Wear OS) 앱, 확장(부록 C.6). 빌드·설치는 watch/README.md
 deploy/      모델별 Docker 이미지, Compose, RunPod 템플릿
 docs/        기획서(spec/), 요구사항 명세서(requirements.md), 팀 규칙, 구현 설계(design/), 데이터 manifest(data/), 실험 설계(experiments/)
 ```
