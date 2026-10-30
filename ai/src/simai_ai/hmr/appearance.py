@@ -10,6 +10,7 @@ import zlib
 
 import numpy as np
 
+from simai_ai.hmr.appearance_quality import CameraColors, blur_weight, fit_weight, silhouette_weight
 from simai_ai.hmr.raster import RasterInterrupted, uv_map, z_buffer
 
 log = logging.getLogger(__name__)
@@ -29,6 +30,27 @@ class AppearanceConfig:
     outlier_rgb: float = 80.
     seam_width: int = 2
     sync_tolerance_ms: int = 40
+    silhouette_enabled: bool = True
+    silhouette_erode_px: float = 3.
+    silhouette_fade_px: float = 3.
+    color_enabled: bool = True
+    color_ema: float = .2
+    color_gain_min: float = .7
+    color_gain_max: float = 1.4
+    color_min_common: int = 64
+    color_min_quality: float = .25
+    color_min_rgb: float = 10.
+    color_max_rgb: float = 245.
+    blur_enabled: bool = True
+    blur_history: int = 15
+    blur_min_pixels: int = 64
+    blur_floor: float = .1
+    fit_enabled: bool = True
+    fit_full_px: float = 8.
+    fit_reject_px: float = 40.
+    fit_min_joints: int = 6
+    fit_min_confidence: float = .3
+    fit_sparse_weight: float = .5
 
     def __post_init__(self):
         if (self.resolution < 4 or self.freeze_frames < 1 or self.sample_interval_ms < 1
@@ -39,6 +61,18 @@ class AppearanceConfig:
             raise ValueError("외형 누적 설정 범위 오류")
         if self.face_policy not in {"OBSERVED", "BLURRED", "EXCLUDED"}:
             raise ValueError("지원하지 않는 face_policy")
+        numeric = [v for v in vars(self).values() if isinstance(v, (float, int))]
+        if (not np.isfinite(numeric).all() or self.silhouette_erode_px < 0
+                or self.silhouette_fade_px <= 0 or not 0 < self.color_ema <= 1
+                or not 0 < self.color_gain_min <= 1 <= self.color_gain_max
+                or self.color_min_common < 1 or not 0 < self.color_min_quality <= 1
+                or not 0 < self.color_min_rgb < self.color_max_rgb < 255
+                or self.blur_history < 1 or self.blur_min_pixels < 1
+                or not 0 < self.blur_floor <= 1
+                or not 0 <= self.fit_full_px < self.fit_reject_px
+                or not 1 <= self.fit_min_joints <= 17 or not 0 <= self.fit_min_confidence <= 1
+                or not 0 < self.fit_sparse_weight <= 1):
+            raise ValueError("외형 품질 설정 범위 오류")
 
 
 @dataclass(frozen=True)
@@ -48,6 +82,7 @@ class AppearanceView:
     capture_time_ms: int
     bbox: tuple | list | None = None  # 원본 왜곡 영상의 xyxy
     mask: np.ndarray | None = None  # 원본 왜곡 영상의 사람 마스크
+    keypoints_2d: list | tuple | None = None  # Tier 0 COCO17, 원본 픽셀·신뢰도
 
 
 @dataclass(frozen=True)
@@ -137,8 +172,10 @@ def _ideal_view(view):
 class AppearanceAccumulator:
     """한 World ID의 UV 상태. revision 변경은 새 누적, 마지막 확정 결과는 유지."""
 
-    def __init__(self, faces, texcoords, texcoord_faces, face_faces, *, config=None):
+    def __init__(self, faces, texcoords, texcoord_faces, face_faces, *, config=None, camera_colors=None):
         self.config = config or AppearanceConfig()
+        self.camera_colors = camera_colors if camera_colors is not None else CameraColors()
+        self.sharpness = {}
         self.faces = np.asarray(faces, dtype=np.int64)
         self.texcoords = np.asarray(texcoords, dtype=float)
         self.texcoord_faces = np.asarray(texcoord_faces, dtype=np.int64)
@@ -178,6 +215,7 @@ class AppearanceAccumulator:
             self.published_coverage = 0.
             self.last_sample = self.last_publish = -1
             self.dirty = False
+            self.sharpness.clear()
         if confidence == "IDENTITY_UNCERTAIN":
             self.stable = 0
         else:
@@ -185,7 +223,7 @@ class AppearanceAccumulator:
         self.ready = self.stable >= self.config.freeze_frames
         return self.ready
 
-    def accumulate(self, world_id, vertices_world, views, t, *, occluders=(), admit=lambda: True):
+    def accumulate(self, world_id, vertices_world, views, t, *, joints_world=None, occluders=(), admit=lambda: True):
         """동시각의 다른 사람 (World 정점, 면)도 z-buffer에 넣는다. gate 중단 시 회차를 버린다."""
         import torch
 
@@ -230,6 +268,9 @@ class AppearanceAccumulator:
         if not np.isfinite(all_vertices).all():
             raise ValueError("같은 시각 가림막 정점이 유한하지 않다")
         colors, weights = tensor(self.colors).clone(), tensor(self.weights).clone()
+        camera_colors = self.camera_colors.copy()
+        sharpness = {k: list(v) for k, v in self.sharpness.items()}
+        samples, color_samples = [], {}
         accepted = rejected = 0
         if cfg.device.startswith("cuda"):
             prep_end.record(torch.cuda.current_stream(cfg.device))
@@ -240,6 +281,11 @@ class AppearanceAccumulator:
             if not admit():
                 return False
             camera = view.camera
+            fit, error, joint_count = fit_weight(view, joints_world, cfg)
+            if fit <= 0:
+                log.info("외형 품질 world_id=%s camera=%s fit=%.3f error_px=%s joints=%s blur=NA",
+                         world_id, camera.camera_id, fit, error, joint_count)
+                continue
             image, distance = _ideal_view(view)
             if not admit():
                 return False
@@ -255,6 +301,15 @@ class AppearanceAccumulator:
                                     camera.image_size, device=cfg.device, admit=admit)
             except RasterInterrupted:
                 return False
+            # 타인 면 번호와 빈 픽셀은 0. 삼각형 사이 내부 모서리는 실루엣이 아니다.
+            edge, blur, variance = None, 1., None
+            if cfg.silhouette_enabled or cfg.blur_enabled:
+                silhouette = ((owner >= 0) & (owner < len(self.faces))).cpu().numpy().astype(np.uint8)
+                edge = silhouette_weight(silhouette, cfg)
+                blur, variance = blur_weight(image, silhouette & (distance >= 1),
+                                            sharpness.setdefault(camera, []), cfg)
+            log.info("외형 품질 world_id=%s camera=%s fit=%.3f error_px=%s joints=%s blur=%.3f sharpness=%s",
+                     world_id, camera.camera_id, fit, error, joint_count, blur, variance)
             cam_points = points @ tensor(camera.R).T + tensor(camera.t)
             homo = cam_points @ tensor(camera.K).T
             pixels = homo[:, :2] / homo[:, 2:3]
@@ -277,8 +332,32 @@ class AppearanceAccumulator:
             a, b = projected[:, 1] - projected[:, 0], projected[:, 2] - projected[:, 0]
             screen_area = np.abs(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0])
             resolution_weight = (tensor(screen_area)[fi] / uv_area[fi].clamp_min(1e-8)).clamp(0, 1)
-            w = cosine ** 2 * resolution_weight * (distance[y, x] / cfg.boundary_px).clamp_max(1)
+            quality = cosine ** 2 * (distance[y, x] / cfg.boundary_px).clamp_max(1)
+            if edge is not None:
+                quality *= tensor(edge)[y, x]
+            quality *= blur * fit
+            w = quality * resolution_weight
             observed = tensor(image[..., ::-1].copy())[y, x]
+            good &= torch.isfinite(w) & (w > 0)
+            if cfg.color_enabled:
+                high = good & (quality >= cfg.color_min_quality)
+                color_samples[camera] = (ids_np[high.cpu().numpy()], observed[high].cpu().numpy())
+            samples.append((camera, good, w, observed))
+            if cfg.device.startswith("cuda"):
+                end.record(torch.cuda.current_stream(cfg.device))
+                end.synchronize()
+                gpu_ms += begin.elapsed_time(end)
+        if not admit():
+            return False
+        if cfg.color_enabled:
+            camera_colors.estimate(color_samples, cfg)
+        for camera, good, w, observed in samples:
+            if not admit():
+                return False
+            if cfg.device.startswith("cuda"):
+                begin.record(torch.cuda.current_stream(cfg.device))
+            if cfg.color_enabled:
+                observed = (observed * tensor(camera_colors.gain(camera))).clamp(0, 255)
             outlier = (weights[ids] > 0) & ((colors[ids] - observed).abs().amax(dim=1) > cfg.outlier_rgb)
             rejected += int((good & outlier).sum())
             good &= ~outlier & torch.isfinite(w) & (w > 0)
@@ -294,6 +373,12 @@ class AppearanceAccumulator:
         if not admit():
             return False
         self.colors, self.weights = colors.cpu().numpy(), weights.cpu().numpy()
+        self.camera_colors.commit(camera_colors)
+        self.sharpness = sharpness
+        if cfg.color_enabled:
+            for camera, *_ in samples:
+                log.info("외형 색 이득 camera=%s rgb=%s", camera.camera_id,
+                         np.round(camera_colors.gain(camera), 4).tolist())
         self.last_sample = t
         self.dirty |= accepted > 0
         if cfg.device.startswith("cuda"):

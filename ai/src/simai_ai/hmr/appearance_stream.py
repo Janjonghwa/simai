@@ -10,8 +10,10 @@ import re
 import numpy as np
 
 from simai_ai.hmr.appearance import AppearanceAccumulator, AppearanceConfig, AppearanceView
+from simai_ai.hmr.appearance_quality import CameraColors
 from simai_ai.hmr.appearance_report import save_result
 from simai_ai.hmr.lbs import global_matrices, node_matrices, posed_rotations, skin_vertices
+from simai_ai.hmr.multiview import COCO17_INDEX
 from simai_ai.hmr.rotation import rotvec_to_matrix
 
 log = logging.getLogger(__name__)
@@ -76,13 +78,22 @@ def appearance_from_env(env, *, cuda_available=None):
     cuda = _cuda_available() if cuda_available is None else cuda_available
     if enabled == "auto" and not cuda:
         return None
+    def quality_enabled(name):
+        value = env.get(f"SIMAI_AVATAR_TEXTURE_{name}", "1")
+        if value not in {"0", "1"}:
+            raise ValueError(f"SIMAI_AVATAR_TEXTURE_{name}는 0 또는 1")
+        return value == "1"
     cfg = AppearanceConfig(
         resolution=int(env.get("SIMAI_AVATAR_TEXTURE_SIZE", "1024")),
         device=env.get("SIMAI_AVATAR_TEXTURE_DEVICE", "cuda" if cuda else "cpu"),
         face_policy=env.get("SIMAI_AVATAR_FACE_POLICY", "OBSERVED"),
         freeze_frames=int(env.get("SIMAI_AVATAR_APPEARANCE_FREEZE_FRAMES", "30")),
         sample_interval_ms=int(env.get("SIMAI_AVATAR_TEXTURE_INTERVAL_MS", "2000")),
-        publish_interval_ms=int(env.get("SIMAI_AVATAR_TEXTURE_PUBLISH_MS", "30000")))
+        publish_interval_ms=int(env.get("SIMAI_AVATAR_TEXTURE_PUBLISH_MS", "30000")),
+        silhouette_enabled=quality_enabled("SILHOUETTE"),
+        color_enabled=quality_enabled("COLOR"),
+        blur_enabled=quality_enabled("BLUR"),
+        fit_enabled=quality_enabled("FIT"))
     region_path = env.get("SIMAI_AVATAR_FACE_REGION")
     region = json.loads(Path(region_path).read_text(encoding="utf-8")) if region_path else None
     return AppearancePipeline(cfg, face_region=region, output_dir=env.get("SIMAI_AVATAR_TEXTURE_OUTPUT_DIR"))
@@ -95,6 +106,8 @@ class AppearancePipeline:
         self.people = {}
         self.pending = {}
         self.output_dir = output_dir
+        self.camera_colors = CameraColors()
+        self.calibration_version = None
 
     def retain(self, active):
         self.people = {k: v for k, v in self.people.items() if k in active}
@@ -114,7 +127,8 @@ class AppearancePipeline:
         if rig.texcoords is None or rig.texcoord_faces is None:
             raise ValueError("관측 텍스처에는 MHR TEXCOORD_0가 필요하다")
         acc = AppearanceAccumulator(rig.faces, rig.texcoords, rig.texcoord_faces,
-                                   face_faces_from_rig(rig, self.face_region), config=self.config)
+                                   face_faces_from_rig(rig, self.face_region), config=self.config,
+                                   camera_colors=self.camera_colors)
         old = self.people.get(wid)
         acc.last_confirmed = old.last_confirmed if old else None
         acc.track(state.revision, "CONFIRMED", t)
@@ -124,6 +138,11 @@ class AppearancePipeline:
         self.pending.pop(wid, None)
 
     def update(self, frame, doc, snapshot, images, rig, states, upload, sender, clock_ms, admit):
+        if self.calibration_version != frame.calibration_version:
+            self.camera_colors.gains.clear()
+            for acc in self.people.values():
+                acc.sharpness.clear()
+            self.calibration_version = frame.calibration_version
         tracks = {tr["world_id"]: tr for tr in doc["tracks"]}
         meshes = {}
         for person in frame.people:
@@ -150,7 +169,9 @@ class AppearancePipeline:
                         continue
                     # 메시가 없는 다른 사람(불확실/아직 체형 고정 전)은 bbox 전체를 가림막으로 뺀다.
                     view = AppearanceView(rig.cameras[cid], images[cid], ref["capture_time_ms"],
-                                          bbox=obs["bbox"], mask=obs.get("mask"))
+                                          bbox=obs["bbox"], mask=obs.get("mask"),
+                                          keypoints_2d=obs.get("keypoints_2d")
+                                          if obs.get("joint_layout", "COCO17") == "COCO17" else None)
                     boxes = [o["bbox"] for other, tr in tracks.items() if other != wid and other not in meshes
                              for o in tr.get("per_camera", []) if o["camera_id"] == cid]
                     if boxes:
@@ -166,7 +187,9 @@ class AppearancePipeline:
                             mask[y0:y1, x0:x1] = 0
                         view = replace(view, mask=mask)
                     views.append(view)
+                joints = getattr(person, "world_keypoints", None)
                 acc.accumulate(wid, meshes[wid][0], views, t,
+                    joints_world=None if joints is None else joints[COCO17_INDEX],
                     occluders=[m for other, m in meshes.items() if other != wid], admit=admit)
                 if acc.last_sample == t:
                     # 느린 CPU 회차가 간격보다 길어도 다음 회차는 포즈를 보낼 여유를 둔다.
