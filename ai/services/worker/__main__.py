@@ -13,8 +13,9 @@
   워커 전용 서명 API(S15P31A101-248)를 쓰는 HttpObjectStore 를 넘긴다(같은 EC2 주소·워커 토큰).
 - tbm_report(S15P31A101-225): 늘 등록한다. 외부 LLM 설정(SIMAI_LLM_BASE_URL·SIMAI_LLM_MODEL·SIMAI_LLM_API_KEY·SIMAI_LLM_TIMEOUT_S,
   simai_ai.report.llm)은 작업마다 읽고, 없으면 그 작업을 재시도 불가 LLM_CONFIG 로 끝낸다(설정 오류를 EC2 에서 보이게).
-- vlm_rationale(S15P31A101-25): 객체 저장소, VLM 설정(SIMAI_VLLM_*·SIMAI_VLM_*, simai_ai.vlm.client), 얼굴 처리용 pose 검출기
-  (SIMAI_TIER0_WEIGHTS 의 YOLO26x-pose .pt, Tier 0 와 같은 가중치)가 다 있을 때만 등록한다. 빠지면 시작 로그에 이유 한 줄.
+- vlm_rationale(S15P31A101-25)·incident_summary(S15P31A101-271): 객체 저장소, VLM 설정(SIMAI_VLLM_*·SIMAI_VLM_*,
+  simai_ai.vlm.client), 얼굴 처리용 pose 검출기(SIMAI_TIER0_WEIGHTS 의 YOLO26x-pose .pt, Tier 0 와 같은 가중치)가 다 있을 때만
+  등록한다. 빠지면 시작 로그에 이유 한 줄.
 """
 
 from __future__ import annotations
@@ -35,13 +36,14 @@ from simai_ai.gpu.budget import BudgetError, WorkerGpuSettings
 from simai_ai.gpu.reserve import FAILED, cap_process_memory
 from simai_ai.vlm.client import VlmError, VlmSettings
 
-from .client import AuthError, LeaseClient, RequestRejected
 from .bev_floorplan import BevFloorplanHandler
+from .client import AuthError, LeaseClient, RequestRejected
 from .handlers import JobHandler
-from .static_reconstruct import StaticReconstructHandler
-from .tbm_report import TbmReportHandler
+from .incident_summary import IncidentSummaryHandler
 from .objects import HttpObjectStore, ObjectStore
 from .runner import HandlerStuck, Worker
+from .static_reconstruct import StaticReconstructHandler
+from .tbm_report import TbmReportHandler
 from .transport import HttpTransport
 from .vlm_rationale import VlmRationaleHandler
 
@@ -69,11 +71,13 @@ def build_handlers(config: Path | None, store: ObjectStore | None = None, *, env
         handlers["static_reconstruct"] = StaticReconstructHandler(store, clock_ms=lambda: time.time_ns() // 1_000_000, env=env)
     if (why := _vlm_rationale_missing(store, env)) is None:
         try:
-            handlers["vlm_rationale"] = VlmRationaleHandler(store, pose(env["SIMAI_TIER0_WEIGHTS"]))  # type: ignore[arg-type]
+            provider = pose(env["SIMAI_TIER0_WEIGHTS"])
+            handlers["vlm_rationale"] = VlmRationaleHandler(store, provider)  # type: ignore[arg-type]
+            handlers["incident_summary"] = IncidentSummaryHandler(store, provider)  # type: ignore[arg-type]
         except Exception as e:  # ultralytics 없음·가중치 손상: 다른 처리기는 돈다
             why = f"pose 검출기를 열지 못했다: {type(e).__name__}: {e}"
     if why:
-        log.warning("vlm_rationale 처리기를 등록하지 않는다: %s", why)
+        log.warning("vlm_rationale·incident_summary 처리기를 등록하지 않는다: %s", why)
     return handlers
 
 

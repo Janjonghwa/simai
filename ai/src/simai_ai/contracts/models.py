@@ -705,6 +705,53 @@ class Quality(BaseModel):
     foot_to_anchor_error_m: StrictFloat | None | MISSING = MISSING
 
 
+class IncidentSummary(RootModel[Any]):
+    root: Any
+
+
+class Clip(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    clip_id: Annotated[StrictStr, Field(min_length=1)]
+    camera_id: DefsCameraId
+    object_key: Annotated[StrictStr, Field(min_length=1, pattern='^[^:?#]+$')]
+    clip_uri: DefsObjectUri
+    clip_start_capture_ms: DefsTimestampMs
+    clip_end_capture_ms: DefsTimestampMs
+    frame_count: Annotated[StrictInt | MISSING, Field(ge=1)] = MISSING
+    container: Annotated[StrictStr | MISSING, Field(min_length=1)] = MISSING
+
+
+class IncidentSummaryInput(BaseModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    event_id: DefsUuidV7
+    event_sequence: Annotated[StrictInt, Field(ge=1)]
+    window_start_ms: DefsTimestampMs | MISSING = MISSING
+    window_end_ms: DefsTimestampMs | MISSING = MISSING
+    anchor_capture_ms: DefsTimestampMs | MISSING = MISSING
+    clips: Annotated[list[Clip], Field(min_length=1)]
+    face_policy: Literal['BLURRED', 'EXCLUDED']
+    structured_state: dict[str, Any]
+
+
+class IncidentSummaryResult(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    event_id: DefsUuidV7
+    event_sequence: Annotated[StrictInt, Field(ge=1)]
+    summary: Annotated[StrictStr, Field(max_length=400, min_length=1)]
+    evidence_timestamps_ms: Annotated[list[DefsTimestampMs], Field(min_length=1)]
+    window_start_ms: DefsTimestampMs
+    window_end_ms: DefsTimestampMs
+    frames_used: Annotated[StrictInt, Field(ge=1)]
+    model_version: Annotated[StrictStr, Field(min_length=1)]
+    latency_ms: DefsDurationMs | MISSING = MISSING
+
+
 class Error(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -752,26 +799,6 @@ class JobLeaseStatus(Envelope):
     )
     msg_type: Annotated[Literal['job_lease_status'], Field(min_length=1)]
     payload: Payload21
-
-
-class Clip(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    clip_id: Annotated[StrictStr, Field(min_length=1)]
-    camera_id: DefsCameraId
-    object_key: Annotated[StrictStr, Field(min_length=1, pattern='^[^:?#]+$')]
-
-
-class JobRequestIncidentSummaryInput(BaseModel):
-    model_config = ConfigDict(
-        extra='allow',
-    )
-    event_id: DefsUuidV7
-    event_sequence: Annotated[StrictInt, Field(ge=1)]
-    clips: Annotated[list[Clip], Field(min_length=1)]
-    face_policy: Literal['BLURRED', 'EXCLUDED']
-    structured_state: dict[str, Any]
 
 
 class JobRequestJobType(
@@ -3249,6 +3276,7 @@ class Contracts(BaseModel):
     frame_header: FrameHeader | MISSING = MISSING
     health: Health | MISSING = MISSING
     human_mesh_output: HumanMeshOutput | MISSING = MISSING
+    incident_summary: IncidentSummary | MISSING = MISSING
     job_callback: JobCallback | MISSING = MISSING
     job_heartbeat: JobHeartbeat | MISSING = MISSING
     job_lease_request: JobLeaseRequest | MISSING = MISSING

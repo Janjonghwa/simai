@@ -1,5 +1,5 @@
 {
-  "schema_version": "3.1.0",
+  "schema_version": "3.4.0",
   "msg_type": "job_request",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000302",
   "sent_at": 1760342400400,
@@ -18,11 +18,19 @@
     "input": {
       "event_id": "0192a6f1-0a00-7c00-8a00-000000000002",
       "event_sequence": 3,
+      "window_start_ms": 1760342380000,
+      "window_end_ms": 1760342420000,
+      "anchor_capture_ms": 1760342400000,
       "clips": [
         {
           "clip_id": "clip-0192a6f1-cam1-0",
           "camera_id": "cam1",
-          "object_key": "clips/2026/10/17/0192a6f1-0a00-7c00-8a00-000000000002/cam1-0.h264"
+          "object_key": "clips/2026/10/17/0192a6f1-0a00-7c00-8a00-000000000002/cam1-0.h264",
+          "clip_uri": "s3://simai-site/clips/2026/10/17/0192a6f1-0a00-7c00-8a00-000000000002/cam1-0.h264",
+          "clip_start_capture_ms": 1760342380000,
+          "clip_end_capture_ms": 1760342420000,
+          "frame_count": 200,
+          "container": "h264-annexb"
         }
       ],
       "face_policy": "NONE",

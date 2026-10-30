@@ -1,0 +1,30 @@
+{
+  "schema_version": "2.4.0",
+  "msg_type": "job_callback",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000031d",
+  "sent_at": 1760342412100,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261020-0002",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-000000000312",
+    "job_type": "incident_summary",
+    "status": "SUCCEEDED",
+    "started_at": 1760342400500,
+    "finished_at": 1760342412050,
+    "result": {
+      "event_id": "0192a6f1-0a00-7c00-8a00-000000000002",
+      "event_sequence": 3,
+      "summary": "작업자가 제한구역 z-01 경계 안쪽으로 진입해 개구부 부근에 머문 뒤 바깥쪽으로 이동했다.",
+      "evidence_timestamps_ms": [
+        1760342395000,
+        1760342400000,
+        1760342408000
+      ],
+      "window_start_ms": 1760342380000,
+      "window_end_ms": 1760342420000,
+      "frames_used": 8,
+      "model_version": "cosmos3-nano",
+      "latency_ms": 4200
+    }
+  }
+}
