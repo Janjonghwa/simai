@@ -277,3 +277,64 @@ EXP-02 를 시연 범위로 올린 결정(2026-10-23)이라 아바타 스트림�
 | 자산 버전 DB 기록 | `avatar_asset` (`V14__avatar_asset.sql`) | PK `(world_id, stream_epoch, appearance_version)` 추가 전용(append-only). 같은 키 재알림은 처음 기록을 유지하고 `sha256` 불일치 시 경고 로그. 다른 자산 키와의 파일 주소 공유 거부(규칙 6) |
 | 뷰어 자산 조회 REST | `GET /api/avatars/{worldId}/epochs/{streamEpoch}/versions/{appearanceVersion}/{file}` | 관제 앱 사용자 JWT 인증(`VIEWER`·`FOREMAN`·`ADMIN`). `{file}` 은 `mesh.glb`·`mesh.gltf`·`albedo.png`·`surface_source.png`. 기록된 `avatar_asset` 의 객체 키를 `ObjectStorage.signGet` 으로 서명해 `302 Found`(`Cache-Control: no-store`) 리다이렉트 |
 | 뷰어 STOMP 발행 (I2) | `/topic/avatar` (`RealtimeTopics.AVATAR`) | 받은 묶음마다 갱신된 사람에 대해 같은 `(world_id, stream_epoch, appearance_version)` 이고 `asset.identity_revision <= pose.identity_revision` 인 자산을 묶어(없거나 차수가 크면 `asset: null`) `avatar_frame` 1.0.0 발행. 송신 큐가 밀리면 오래된 대기 프레임을 최신 포즈로 대체(`replaced`) |
+
+## 뷰어 외형 텍스처·표면 출처 지도·아바타 PBR (S15P31A101-359)
+
+### 1. 텍스처와 표면 출처 지도 읽기
+
+| 자산 필드 | 색 공간·필터·밉맵 | 이유 |
+|---|---|---|
+| `asset.texture_url` (`albedo.png`) | `SRGBColorSpace`, `LinearFilter`, `generateMipmaps = false`, `flipY = false` | 관측 색상 텍스처. glTF `TEXCOORD_0` 상단 원점(`v = 0` 이 첫 행)을 그대로 따른다 |
+| `asset.surface_source_url` (`surface_source.png`) | `NoColorSpace`, `NearestFilter`, `generateMipmaps = false`, `flipY = false` | 8비트 정수 부호(`0`·`1`·`2`·`128`·`130`)가 선형 보간이나 밉맵으로 섞여 중간 값(예: `0` 과 `2` 사이 `1`)으로 왜곡되는 것을 막는다 |
+
+- **인증 내려받기·디코딩:** `AvatarMeshContext` 의 `fetch`(`AvatarMeshFetch`)로 두 PNG 바이트를 함께 내려받아 `DataTexture` 로 구성한다.
+- **사람별·버전별 생명주기:** 외형 자산 키는 `(worldId, streamEpoch, appearanceVersion, textureUrl, surfaceSourceUrl)` 이다. 같은 사람의 같은 `appearance_version` 은 한 번만 내려받으며, 다른 `world_id` 와 텍스처 인스턴스나 캐시를 공유하지 않는다(ID 분리로 생긴 새 `world_id` 가 이전 ID 의 외형을 물려받지 않는다).
+- **비깜빡임 교체와 해제:** `appearance_version` 이 올라가면 새 버전의 두 텍스처를 모두 읽을 때까지 이전 버전 텍스처를 재질에 유지하고, 교체가 끝난 즉시 이전 `DataTexture` 두 개에 `.dispose()` 를 호출한다.
+- **실패 폴백과 재시도:** `texture_url` 또는 `surface_source_url` 중 하나라도 없거나 내려받기·디코딩에 실패하면 부분 생성된 텍스처를 즉시 해제하고 기본 재질(상·하의 대표색)로 그리며, `AVATAR_ASSET_RETRY_MS`(`10,000 ms`) 뒤 다시 시도한다. `asset` 이 `null` 이 되거나 되돌아가기 5조건에 걸리면 기존대로 캡슐로 돌아간다.
+
+### 2. 표면 출처 부호별 표시와 `face_policy` (`onBeforeCompile`)
+
+`MeshStandardMaterial.onBeforeCompile`(`avatarAppearance.ts`)에서 `surface_source.png` 의 `R` 채널 정수 부호(`int(floor(raw.r * 255.0 + 0.5))`)와 `asset.face_policy` 에 따라 텍셀 색을 결정한다.
+
+| 부호 | 의미 | `face_policy` | 표시 색 |
+|---|---|---|---|
+| `2` | 몸통·사지 `OBSERVED` | 무관 | 관측 텍스처 색(`texRgb`) 그대로 |
+| `1` | 몸통·사지 `INTERPOLATED` | 무관 | 채도 `0.45`·명도 `0.85` 감쇠한 텍스처 색 |
+| `0` | 몸통·사지 `UNOBSERVED` | 무관 | 기본 재질 색(바인드 높이 `restY >= 0.88 m` 상의 대표색, `< 0.88 m` 하의 대표색) |
+| `128` (`0x80 \| 0`) | 얼굴 `UNOBSERVED` | 무관 | 늘 기본 재질 색(관측되지 않은 얼굴 면을 피부색 등으로 지어내지 않음) |
+| `130` (`0x80 \| 2`) | 얼굴 `OBSERVED` | `OBSERVED` | 관측 텍스처 색(`texRgb`) 그대로 |
+| `130` (`0x80 \| 2`) | 얼굴 `OBSERVED` | `BLURRED` | 같은 얼굴 관측(`130`) 이웃 텍셀만 가중 평균한 3×3 저해상도 샘플 + 채도 `0.85`·명도 `0.96` 완화 |
+| `130` (`0x80 \| 2`) | 얼굴 `OBSERVED` | `EXCLUDED` | 기본 재질 색 |
+| `129` 및 그 밖의 값 | 미정의·얼굴 보간 금지 | 무관 | 모르는 값으로 보아 기본 재질 색 |
+
+#### `INTERPOLATED`(`1`)와 `BLURRED`(`130` + `BLURRED`) 표현 근거
+
+1. **`INTERPOLATED`(`1`) — Rec.709 루마 기준 채도 `0.45` · 명도 `0.85` 감쇠**
+   - 식: $Y = 0.2126 R + 0.7152 G + 0.0722 B$, $\text{color} = \operatorname{clamp}(\operatorname{mix}(\mathbf{Y}, \text{texRgb}, 0.45) \times 0.85, 0, 1)$.
+   - 이유: 인접·대칭 복사된 소규모 틈(`1`)에서 작업복의 색상 계열은 이어 주면서, 직접 관측(`2`, 채도·명도 100%)보다 채도를 55% 낮추고 명도를 15% 어둡게 하여 관제 화면에서 실측 면과 추정 보간 면이 한눈에 구분되게 한다(명세 20.3).
+2. **`BLURRED`(`130` + `face_policy = 'BLURRED'`) — `code == 130` 한정 3×3 가우시안 커널(`±6 / texSize`) + 채도 `0.85` · 명도 `0.96` 완화**
+   - 식: UV 공간에서 $\Delta uv = 6.0 / \text{uAvatarTexSize}$ 간격의 3×3 가우시안 가중치($1, 2, 1; 2, 4, 2; 1, 2, 1$)로 주변 텍셀을 표본화하되, `surface_source` 부호가 `130`(얼굴 관측)인 탭만 누적 평균한 뒤 채도 `0.85`·명도 `0.96` 을 적용한다.
+   - 이유: 워커가 이미 블러 처리한 텍스처를 보내더라도 뷰어 셰이더에서 한 번 더 저주파 평균과 채도 완화를 적용해 이목구비 고주파 식별 정보를 확실히 뭉갠다. 이때 `tapCode == 130` 조건으로 필터링하여 UV 아틀라스 경계의 배경(`0`)이나 얼굴 미관측(`128`) 텍셀이 얼굴 가장자리로 번지는 아티팩트를 방지한다.
+
+### 3. 아바타 전용 PBR 과 PMREM 환경맵
+
+- 아바타 `MeshStandardMaterial` 의 PBR 파라미터를 `roughness = 0.55`, `metalness = 0.08`, `envMapIntensity = 0.65` 로 설정한다.
+- `PersonLayer` 내부(`createAvatarPmremEnvMap`)에서 소형 조명 돔으로 생성한 PMREM 환경맵을 아바타 재질의 `material.envMap` 에만 주입한다.
+- `SceneBase.tsx`·`ViewerCanvas.tsx`·`scene/` 및 `scene.environment` 는 건드리지 않아 배경·구역·작업면 등 장면 전역 조명에는 영향을 주지 않는다.
+
+### 4. 다인원(1·5·10명) 텍스처 ON/OFF 성능 실측
+
+- 환경: Windows 11 노트북, Chromium 헤드리스 `1280×800`, `dev-harness` `?view=spatial&source=avatar-crowd-{1,5,10}&avatarTex={off,observed}`, 정점 21,168·삼각형 36,504·127관절 dense 합성 MHR 자산, 로드 안정화 뒤 3초간 `requestAnimationFrame` 평균.
+
+| 시나리오 | 인원 | 총 정점 / 삼각형 | 텍스처 OFF (`?avatarTex=off`) | 텍스처 ON (`?avatarTex=observed`) | 목표 기준 |
+|---|---:|---:|---:|---:|---|
+| `avatar-crowd-1` | 1명 | 21,168 / 36,504 | 120.1 FPS | 120.1 FPS | ≥ 30 FPS |
+| `avatar-crowd-5` | 5명 | 105,840 / 182,520 | 120.3 FPS | 120.3 FPS | 5명 기준 ≥ 30 FPS |
+| `avatar-crowd-10` | 10명 | 211,680 / 365,040 | 120.3 FPS | 120.1 FPS | 참고 상한 |
+
+- `customProgramCacheKey` 로 셰이더 프로그램을 공유하고 밉맵 생성 없이 2D 텍스처 표본화만 수행하므로, 1·5·10명 모두에서 텍스처 ON/OFF 간 프레임 저하가 관측되지 않았다(모두 ~120 FPS 유지).
+
+### 5. 남은 일
+
+- `-358` 워커(`hmr_appearance.py`)가 실제 카메라 프레임에서 누적·내보낸 `albedo.png`·`surface_source.png` 와 MHR `TEXCOORD_0` 아틀라스를 현장 리허설 스트림에서 연결 확인.
+

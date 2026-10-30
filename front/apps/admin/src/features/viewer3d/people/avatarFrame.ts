@@ -19,7 +19,17 @@ export interface AvatarAssetView {
   jointParentsSha256: string;
   pelvisJointIndex: number;
   textureUrl: string | null;
+  surfaceSourceUrl: string | null;
+  surfaceRatios: {
+    OBSERVED: number;
+    INTERPOLATED: number;
+    UNOBSERVED: number;
+  };
   facePolicy: 'OBSERVED' | 'BLURRED' | 'EXCLUDED';
+  faceRatios: {
+    OBSERVED: number;
+    UNOBSERVED: number;
+  };
 }
 
 export interface AvatarPoseView {
@@ -88,7 +98,10 @@ function assetOf(avatar: FrameAvatar): { asset: AvatarAssetView | null; rejected
       jointParentsSha256: a.joint_parents_sha256,
       pelvisJointIndex: a.pelvis_joint_index,
       textureUrl: a.texture_url,
+      surfaceSourceUrl: a.surface_source_url,
+      surfaceRatios: { ...a.surface_ratios },
       facePolicy: a.face_policy,
+      faceRatios: { ...a.face_ratios },
     },
     rejected: null,
   };

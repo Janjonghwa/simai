@@ -2,11 +2,16 @@ import { SKELETON_VISIBLE_KEY } from '@/features/viewer3d/data/contractAdapter';
 import type { SourceConnection } from '@/features/viewer3d/data/spatialSource';
 import {
   avatarMeshUrl,
+  avatarSurfaceSourceUrl,
+  avatarTextureUrl,
   DENSE_ASSET_VERSION,
+  facePolicyForDevMode,
+  readAvatarTextureMode,
   rootRotationFor,
   SYNTHETIC_MHR,
   SYNTHETIC_MHR_DENSE,
   walkRotations,
+  type AvatarTextureDevMode,
 } from '@/features/viewer3d/dev-harness/avatarFixture';
 
 // 개발·시험 전용 Mock 시나리오. 실제 관측·판정이 아니다. 브라우저에서 위험을 판정하지 않고, 계약에 맞게 미리 만든 이벤트만 재생한다.
@@ -782,7 +787,8 @@ interface AvatarEntryInput {
 }
 
 /** 한 사람의 avatar_frame 항목(계약 avatar_frame.avatars[]). 위치는 싣지 않는다. */
-function avatarEntry(a: AvatarEntryInput) {
+function avatarEntry(a: AvatarEntryInput, texMode: AvatarTextureDevMode = readAvatarTextureMode()) {
+  const textured = texMode !== 'off';
   return {
     world_id: a.id,
     identity_revision: a.revision,
@@ -804,11 +810,16 @@ function avatarEntry(a: AvatarEntryInput) {
       joint_count: SYNTHETIC_MHR.jointCount,
       joint_parents_sha256: SYNTHETIC_MHR.jointParentsSha256,
       pelvis_joint_index: SYNTHETIC_MHR.pelvisJointIndex,
-      texture_url: null,
-      surface_source_url: null,
-      surface_ratios: { OBSERVED: 0, INTERPOLATED: 0, UNOBSERVED: 1 },
-      face_ratios: { OBSERVED: 0, UNOBSERVED: 1 },
-      face_policy: 'EXCLUDED',
+      texture_url: textured ? avatarTextureUrl(a.id, a.t0, a.version) : null,
+      surface_source_url: textured ? avatarSurfaceSourceUrl(a.id, a.t0, a.version) : null,
+      surface_ratios: textured
+        ? { OBSERVED: 0.42, INTERPOLATED: 0.18, UNOBSERVED: 0.4 }
+        : { OBSERVED: 0, INTERPOLATED: 0, UNOBSERVED: 1 },
+      face_ratios:
+        textured && facePolicyForDevMode(texMode) !== 'EXCLUDED'
+          ? { OBSERVED: 0.65, UNOBSERVED: 0.35 }
+          : { OBSERVED: 0, UNOBSERVED: 1 },
+      face_policy: facePolicyForDevMode(texMode),
     },
   };
 }

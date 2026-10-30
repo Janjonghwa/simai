@@ -1,4 +1,7 @@
-import { DENSE_ASSET_VERSION } from '@/features/viewer3d/dev-harness/avatarFixture';
+import {
+  DENSE_ASSET_VERSION,
+  getSyntheticAvatarPngPair,
+} from '@/features/viewer3d/dev-harness/avatarFixture';
 import syntheticMhrDenseUrl from '@/features/viewer3d/dev-harness/fixtures/synthetic-mhr-dense.glb?url';
 import syntheticMhrUrl from '@/features/viewer3d/dev-harness/fixtures/synthetic-mhr.glb?url';
 import {
@@ -99,6 +102,36 @@ export function createSpatialMockApi(initial: {
         const file = await fetch(bypass(dense ? syntheticMhrDenseUrl : syntheticMhrUrl));
         return new HttpResponse(await file.arrayBuffer(), {
           headers: { 'content-type': 'model/gltf-binary' },
+        });
+      },
+    ),
+    // EXP-02 아바타 합성 텍스처(-359). 버전 0·1 은 코드로 생성한 PNG 바이트, 그 밖의 버전은 404 다.
+    http.get('*/api/avatars/:worldId/epochs/:epoch/versions/:version/albedo.png', ({ params }) => {
+      const dense = params.version === String(DENSE_ASSET_VERSION);
+      if (params.version !== '0' && !dense) {
+        return HttpResponse.json({ message: 'Mock: 외형 텍스처 없음' }, { status: 404 });
+      }
+      const { albedoPng } = getSyntheticAvatarPngPair(
+        String(params.worldId),
+        Number(params.version),
+      );
+      return new HttpResponse(new Uint8Array(albedoPng), {
+        headers: { 'content-type': 'image/png' },
+      });
+    }),
+    http.get(
+      '*/api/avatars/:worldId/epochs/:epoch/versions/:version/surface_source.png',
+      ({ params }) => {
+        const dense = params.version === String(DENSE_ASSET_VERSION);
+        if (params.version !== '0' && !dense) {
+          return HttpResponse.json({ message: 'Mock: 표면 출처 지도 없음' }, { status: 404 });
+        }
+        const { surfaceSourcePng } = getSyntheticAvatarPngPair(
+          String(params.worldId),
+          Number(params.version),
+        );
+        return new HttpResponse(new Uint8Array(surfaceSourcePng), {
+          headers: { 'content-type': 'image/png' },
         });
       },
     ),
