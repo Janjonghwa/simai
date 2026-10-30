@@ -68,6 +68,32 @@ export const ESCALATION_ERROR_CODE = {
   INVALID_ASSESSMENT: 'INVALID_ASSESSMENT_ID',
 } as const;
 
+/** 사고 구간 요약 진행 상태 문구(명세 5.4, 12.6, S15P31A101-368). */
+export const SUMMARY_STATUS_LABEL = {
+  QUEUED: '구간 요약 대기 중',
+  RUNNING: '구간 요약 실행 중',
+  SUCCEEDED: '요약 완료',
+  FAILED: '요약 실패',
+  TIMED_OUT: '시간 초과',
+} as const;
+
+/** 서버·워커가 알리는 사고 구간 요약 실패 코드(명세 12.6, S15P31A101-271, -369). */
+export const SUMMARY_ERROR_CODE = {
+  NOT_FOUND: 'EVENT_NOT_FOUND',
+  CLIP_NOT_READY: 'CLIP_NOT_READY',
+  EVENT_NOT_LIVE: 'EVENT_NOT_LIVE',
+  CLIP_FETCH_FAILED: 'CLIP_FETCH_FAILED',
+  NO_FACE_SAFE_FRAMES: 'NO_FACE_SAFE_FRAMES',
+  VLM_ANSWER_INVALID: 'VLM_ANSWER_INVALID',
+  VLM_INPUT_INVALID: 'VLM_INPUT_INVALID',
+  VLM_TIMEOUT: 'VLM_TIMEOUT',
+  VLM_UNAVAILABLE: 'VLM_UNAVAILABLE',
+  VLM_REQUEST_REJECTED: 'VLM_REQUEST_REJECTED',
+  VLM_CONFIG: 'VLM_CONFIG',
+  CANCELLED: 'CANCELLED',
+  TIMED_OUT: 'TIMED_OUT',
+} as const;
+
 /** 규칙 ID 의 화면 이름. */
 export const RULE_NAME: Record<string, string> = {
   R1: '위험 구역 진입',

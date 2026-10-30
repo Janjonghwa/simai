@@ -84,3 +84,15 @@ export function requestEscalation(http: Http, eventId: string, body: EscalationR
     schema: z.unknown(),
   });
 }
+
+/**
+ * 사고 구간 요약 요청(명세 5.4, 12.6 POST /api/events/{id}/summary).
+ * 본문 없이 보내고, 응답(202 QUEUED 또는 이미 진행 중이면 200)은 summary_id·job_id·status 를 싣는다.
+ * 완료·실패 결과와 summaries 배열 갱신은 STOMP /topic/events 전이로 받는다.
+ */
+export function requestSummary(http: Http, eventId: string) {
+  return http(`/api/events/${encodeURIComponent(eventId)}/summary`, {
+    method: 'POST',
+    schema: z.unknown(),
+  });
+}

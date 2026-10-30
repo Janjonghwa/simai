@@ -14,13 +14,15 @@ interface EventDetailProps {
   /** 눌러서 연 규칙. 근거 목록에서 표시한다. */
   openEventId: string;
   onClose: () => void;
+  /** 근거 시각을 눌렀을 때 그 시각으로 이동하는 콜백. 없으면 표시만 한다. */
+  onSeekTimestamp?: (timestampMs: number) => void;
 }
 
 /**
  * 사건 상세 창(관제 데모와 같다). 한 대상에 걸린 규칙 전부를 장면 위에 띄워 보인다. 바깥을 누르거나 Esc 로 닫는다.
  * 상세 API(GET /api/events/{id}) 형식이 정해지기 전이라 받은 이벤트 값으로 그린다. 조치 요청·조치 단계는 서버 API(M2)가 없어 두지 않는다.
  */
-export function EventDetail({ incident, openEventId, onClose }: EventDetailProps) {
+export function EventDetail({ incident, openEventId, onClose, onSeekTimestamp }: EventDetailProps) {
   const close = useRef<HTMLButtonElement>(null);
   const { entries } = incident;
 
@@ -53,7 +55,7 @@ export function EventDetail({ incident, openEventId, onClose }: EventDetailProps
         <div className="grid min-h-0 flex-1 grid-cols-2 gap-3.5">
           <div className="flex min-h-0 flex-col gap-3 overflow-auto">
             <RulesPanel entries={entries} openEventId={openEventId} />
-            <AiPanel entries={entries} />
+            <AiPanel entries={entries} onSeekTimestamp={onSeekTimestamp} />
             <ClipsPanel entries={entries} />
           </div>
           <div className="flex min-h-0 flex-col gap-3 overflow-auto">
