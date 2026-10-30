@@ -1,12 +1,15 @@
 """상시 EXP-02 루프. 상류·모델·업로드·송신·시계를 주입하며 Tier 0 값은 읽기만 한다."""
 
 from dataclasses import dataclass, field
+import logging
 from typing import Protocol
 
 from simai_ai.geometry.rig import CameraRig
 from simai_ai.hmr.gltf_export import build_skinned_glb
 from simai_ai.hmr.multiview import aggregate_frame
 from simai_ai.hmr.pose import mhr_pose
+
+log = logging.getLogger(__name__)
 
 
 class HmrModel(Protocol):
@@ -46,19 +49,33 @@ class AvatarLoop:
         self.people = {}
         self.last_t = -1
         self.skipped = 0
+        self._report_at = 0
+
+    def _report(self, status):
+        now = self.clock_ms()
+        if now < self._report_at:
+            return
+        log.info("아바타 입력 상태: %s people=%s samples_max=%s/%s assets=%s gate_skipped=%s",
+                 status, len(self.people), max((len(s.samples) for s in self.people.values()), default=0),
+                 self.freeze_frames, sum(s.asset is not None for s in self.people.values()), self.skipped)
+        self._report_at = now + 60_000
 
     def step(self):
-        if not self.gate.check().admit:
+        admission = self.gate.check()
+        if not admission.admit:
             self.skipped += 1
             self.sender.discard_poses()
+            self._report("AdmissionGate 차단: " + getattr(admission, "reason", "unknown"))
             return
         item = self.source.latest()
         if item is None:
+            self._report("공유 통로 입력 없음/읽기 실패")
             return
         snapshot, images = item
         doc = snapshot["world"]
         t = doc["t"]
         if t <= self.last_t or not 0 <= self.clock_ms() - t <= self.max_age_ms:
+            self._report("중복/신선도 초과 입력")
             return
         self.last_t = t
         active = {tr["world_id"] for tr in doc["tracks"] if tr.get("track_lifecycle") != "LOST"}
@@ -89,6 +106,7 @@ class AvatarLoop:
                 if not self.gate.check().admit:
                     self.skipped += 1
                     self.sender.discard_poses()
+                    self._report("추론 중 AdmissionGate 차단")
                     return
                 candidate, body = self.model.infer(images[cid], obs, tr, rig.cameras[cid])
                 candidates.append(candidate)
@@ -137,3 +155,7 @@ class AvatarLoop:
         if poses and 0 <= self.clock_ms() - t <= self.max_age_ms and self.gate.check().admit:
             self.sender.poses(poses, calibration_version=frame.calibration_version,
                               model_version=self.model.model_version, input_provenance=doc["input_provenance"])
+            self._report(f"포즈 대기열 전달 poses={len(poses)}")
+        else:
+            self._report(f"포즈 없음/신선도·gate 차단 candidates={len(candidates)} "
+                         f"selected={len(frame.people)} rejected={len(frame.rejected)}")

@@ -12,6 +12,7 @@ from simai_ai.gpu.admission import AdmissionGate
 from simai_ai.gpu.budget import WorkerGpuSettings
 from simai_ai.gpu.reserve import FAILED, cap_process_memory
 from simai_ai.hmr.runtime import FastBodyModel
+from simai_ai.hmr.diagnostics import exception_summary
 from simai_ai.hmr.loader import prepare_checkpoint
 from simai_ai.hmr.stream import AvatarLoop
 from simai_ai.io.avatar_channel import LatestChannelReader
@@ -42,7 +43,11 @@ def main():
         cap = cap_process_memory(fraction)
         if cap.state == FAILED:
             raise ValueError("아바타 GPU 상한 설정 실패")
-        while not stop.is_set() and not gate.check().admit:
+        report_at = 0.
+        while not stop.is_set() and not (admission := gate.check()).admit:
+            if time.monotonic() >= report_at:
+                logging.info("아바타 시작 대기: AdmissionGate=%s", admission.reason)
+                report_at = time.monotonic() + 60
             stop.wait(0.2)
         if stop.is_set():
             return 0
@@ -51,7 +56,8 @@ def main():
         model = FastBodyModel(path)
         clock_ms = lambda: time.time_ns() // 1_000_000
         sender = AvatarSender(websocket_connector(base, token), clock_ms=clock_ms, monotonic=time.monotonic,
-                              source_id=env.get("SIMAI_WORKER_ID") or "worker-01", stream_epoch=stream_epoch)
+                              source_id=env.get("SIMAI_WORKER_ID") or "worker-01", stream_epoch=stream_epoch,
+                              log_secrets=(token,))
         source = LatestChannelReader(Path(env.get("SIMAI_AVATAR_CHANNEL") or root / "state/avatar-input.npz"))
         loop = AvatarLoop(source, gate, model, AvatarUpload(base, token), sender, clock_ms=clock_ms)
         def send_loop():
@@ -64,13 +70,14 @@ def main():
         while not stop.is_set():
             try:
                 loop.step()
-            except Exception:
-                logging.warning("아바타 회차 실패: 다음 최신 입력으로 재시도")
+            except Exception as error:
+                logging.warning("아바타 회차 실패: %s; 다음 최신 입력으로 재시도",
+                                exception_summary(error, secrets=(token,)))
             stop.wait(0.2)
         thread.join(timeout=2)
         return 0
-    except Exception:
-        logging.error("아바타 서비스 시작 실패: 설정·가중치·GPU 예산 확인 필요")
+    except Exception as error:
+        logging.error("아바타 서비스 시작 실패: %s", exception_summary(error, secrets=(env.get("SIMAI_WORKER_TOKEN", ""),)))
         return 2
 
 
