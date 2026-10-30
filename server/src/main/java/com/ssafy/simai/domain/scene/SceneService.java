@@ -13,12 +13,13 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * 현재 Scene 조회(GET /api/scenes/current, S15P31A101-264, 명세 3.7·4.5·12.6, FR-3). COMMITTED 이고 끝나지 않은(valid_to 없음)
- * 가장 최근 Scene 과 glTF 의 짧게 사는 GET 서명 주소를 준다(viewer_health.scene.committed_version 과 같은 선택, ViewerHealthService).
+ * 현재 Scene 조회(GET /api/scenes/current, S15P31A101-264, 명세 3.7·4.5·12.6, FR-3). DB 활성 이력이 고른 COMMITTED
+ * Scene 과 glTF 의 짧게 사는 GET 서명 주소를 준다(viewer_health.scene.committed_version 과 같은 선택, ViewerHealthService).
  * Scene 생성(S15P31A101-137, M3) 전에는 설정으로 등록한 시연용 기본 Scene(simai.scene.default-gltf-key)을 default=true 로 준다.
  * 기본 Scene 을 DB 행으로 두지 않는 것은 scene_version 이 보정 버전(FK, CALIBRATED 에서만 생성 4.5)을 요구하기 때문이다.
  */
@@ -27,13 +28,20 @@ import tools.jackson.databind.node.ObjectNode;
 public class SceneService {
 
     /**
-     * 현재 Scene: COMMITTED 이고 끝나지 않은 가장 최근 것(한 행, scene_version 표의 열 그대로). 관제 상태의 Scene 불일치(FR-12,
+     * 현재 Scene: 현장별 마지막 활성화 버전(이력이 없으면 기존 COMMITTED 버전)(현장별 한 행, scene_version 표의 열 그대로). 관제 상태의 Scene 불일치(FR-12,
      * ViewerHealthService)와 이 조회가 같은 Scene 을 가리키도록 이 질의 하나를 쓴다.
      */
     private static final Logger log = LoggerFactory.getLogger(SceneService.class);
 
     public static final String CURRENT_COMMITTED = """
-            SELECT * FROM scene_version WHERE state = 'COMMITTED' AND valid_to IS NULL ORDER BY committed_at DESC NULLS LAST LIMIT 1
+            SELECT s.* FROM scene_version s
+            WHERE s.scene_version = COALESCE(
+                (SELECT a.scene_version FROM scene_activation a WHERE a.site_id = s.site_id ORDER BY a.activation_id DESC LIMIT 1),
+                (SELECT legacy.scene_version FROM scene_version legacy
+                 WHERE legacy.site_id = s.site_id AND legacy.state = 'COMMITTED' AND legacy.valid_to IS NULL
+                 ORDER BY legacy.committed_at DESC NULLS LAST, legacy.scene_version LIMIT 1))
+            AND s.state = 'COMMITTED'
+            ORDER BY s.committed_at DESC NULLS LAST
             """;
 
     private final NamedParameterJdbcTemplate jdbc;
@@ -54,9 +62,9 @@ public class SceneService {
 
     public ObjectNode current() {
         List<Committed> committed = jdbc.query("""
-                SELECT scene_version, calibration_version, gltf_key, quality::text AS quality, committed_at FROM (
-                """ + CURRENT_COMMITTED + ") s", Map.of(), (rs, i) -> new Committed(rs.getString("scene_version"), rs.getString("calibration_version"),
-                rs.getString("gltf_key"), rs.getString("quality"), rs.getObject("committed_at", OffsetDateTime.class)));
+                SELECT scene_version, calibration_version, gltf_key, quality::text AS quality, scene_output::text AS output, committed_at FROM (
+                """ + CURRENT_COMMITTED + ") s LIMIT 1", Map.of(), (rs, i) -> new Committed(rs.getString("scene_version"), rs.getString("calibration_version"),
+                rs.getString("gltf_key"), rs.getString("quality"), rs.getString("output"), rs.getObject("committed_at", OffsetDateTime.class)));
         ObjectNode node = mapper.createObjectNode();
         if (!committed.isEmpty()) {
             Committed s = committed.getFirst();
@@ -67,6 +75,7 @@ public class SceneService {
             node.put("committed_at_ms", s.committedAt() == null ? null : s.committedAt().toInstant().toEpochMilli());
             node.set("quality", s.quality() == null ? mapper.nullNode() : mapper.readTree(s.quality()));
             gltf(node, s.gltfKey());
+            sourceMaps(node, s.output());
             return node;
         }
         if (defaultGltfKey.isEmpty()) {
@@ -83,7 +92,33 @@ public class SceneService {
         return node;
     }
 
-    private record Committed(String version, String calibrationVersion, String gltfKey, String quality, OffsetDateTime committedAt) {
+    private record Committed(String version, String calibrationVersion, String gltfKey, String quality, String output, OffsetDateTime committedAt) {
+    }
+
+    /** 재질 순서대로 내려준다. 한 장이라도 서명하지 못하면 부분 배열을 보내 순서를 틀리지 않는다. */
+    private void sourceMaps(ObjectNode node, String output) {
+        if (output == null || !storage.configured()) {
+            return;
+        }
+        var urls = mapper.createArrayNode();
+        try {
+            for (JsonNode asset : mapper.readTree(output).path("assets")) {
+                if ("SURFACE_SOURCE_MAP".equals(asset.path("kind").asString())) {
+                    String uri = asset.path("uri").asString();
+                    String prefix = storage.uri("");
+                    if (!uri.startsWith(prefix) || uri.length() == prefix.length()) {
+                        return;
+                    }
+                    urls.add(storage.signGet(uri.substring(prefix.length())).url());
+                }
+            }
+        } catch (BusinessException e) {
+            log.warn("Scene 출처 지도 서명 실패: {}", e.getErrorCode());
+            return;
+        }
+        if (!urls.isEmpty()) {
+            node.set("surface_source_map_urls", urls);
+        }
     }
 
     /**

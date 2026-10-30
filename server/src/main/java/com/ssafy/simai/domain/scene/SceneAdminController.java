@@ -3,8 +3,6 @@ package com.ssafy.simai.domain.scene;
 import com.ssafy.simai.domain.config.SiteLookup;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
-import com.ssafy.simai.global.storage.ObjectStorage;
-import org.springframework.dao.DuplicateKeyException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -12,11 +10,11 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.http.HttpStatus;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -61,17 +59,17 @@ class SceneAdminController {
     private final TransactionTemplate transaction;
     private final ObjectMapper mapper;
     private final SiteLookup sites;
-    private final ObjectStorage storage;
     private final Clock clock;
+    private final SceneActivationService activations;
 
     SceneAdminController(NamedParameterJdbcTemplate jdbc, TransactionTemplate transaction, ObjectMapper mapper, SiteLookup sites,
-            ObjectStorage storage, Clock clock) {
+            Clock clock, SceneActivationService activations) {
         this.jdbc = jdbc;
         this.transaction = transaction;
         this.mapper = mapper;
         this.sites = sites;
-        this.storage = storage;
         this.clock = clock;
+        this.activations = activations;
     }
 
     @PostMapping("/api/scenes")
@@ -123,18 +121,13 @@ class SceneAdminController {
 
     @PostMapping("/api/scenes/{sceneVersion}/commit")
     @PreAuthorize("hasRole('ADMIN')")
-    ObjectNode commit(@PathVariable String sceneVersion) {
+    ObjectNode commit(@PathVariable String sceneVersion, @AuthenticationPrincipal Jwt jwt) {
         return transaction.execute(status -> {
-            // 확정은 한 번에 하나씩(현재 Scene 이 둘이 되지 않게)
-            jdbc.queryForList("SELECT pg_advisory_xact_lock(hashtext('simai.scene.commit'))", Map.of());
-            MapSqlParameterSource params = new MapSqlParameterSource("v", sceneVersion).addValue("now", Timestamp.from(now()));
+            activations.lock();
+            MapSqlParameterSource params = new MapSqlParameterSource("v", sceneVersion);
             requireOpen(params);
-            requireCommittable(params);
-            // 지금 현재인 Scene 을 닫는다(기록은 남고 valid_to 로 그 시각까지 유효했음을 남긴다, 11.4 그 시각의 Scene)
-            jdbc.update("UPDATE scene_version SET valid_to = :now WHERE state = 'COMMITTED' AND valid_to IS NULL", params);
-            jdbc.update("""
-                    UPDATE scene_version SET state = 'COMMITTED', committed_at = :now, valid_from = :now WHERE scene_version = :v
-                    """, params);
+            String site = jdbc.queryForObject("SELECT site_id FROM scene_version WHERE scene_version = :v", params, String.class);
+            activations.activate(site, sceneVersion, "user:" + jwt.getSubject(), "관리자 Scene 확정 API");
             return view(sceneVersion);
         });
     }
@@ -169,28 +162,6 @@ class SceneAdminController {
         }
         if (!OPEN_STATES.contains(state.getFirst())) {
             throw new BusinessException(ErrorCode.Scene.SCENE_STATE_CONFLICT);
-        }
-    }
-
-    /**
-     * 확정 직전 검사. 확정하면 화면 전체 배경이 이 Scene 이 되고 기본 Scene 으로 물러나지 않으므로 둘을 다시 본다.
-     * 등록 뒤 보정이 DRIFTED 등으로 바뀌었으면 확정하지 않는다(4.5). glb 는 서명 주소만 내고 올렸는지 모르므로 저장소에 있고
-     * 발급에 묶은 크기와 같은지 본다(서명이 크기·해시를 묶어 저장소가 다른 내용을 받지 않으므로 크기가 같으면 그 내용이다).
-     */
-    private void requireCommittable(MapSqlParameterSource params) {
-        Map<String, Object> scene = jdbc.queryForMap("""
-                SELECT c.state AS calibration_state, s.gltf_key, g.size_bytes
-                FROM scene_version s JOIN calibration_version c ON c.calibration_version = s.calibration_version
-                LEFT JOIN upload_grant g ON g.object_key = s.gltf_key AND g.purpose = 'SCENE_GLTF'
-                WHERE s.scene_version = :v
-                """, params);
-        if (!CALIBRATION_STATES.contains((String) scene.get("calibration_state"))) {
-            throw new BusinessException(ErrorCode.Scene.SCENE_CALIBRATION_INVALID);
-        }
-        Number granted = (Number) scene.get("size_bytes");
-        var stored = storage.size((String) scene.get("gltf_key"));
-        if (granted == null || stored.isEmpty() || stored.getAsLong() != granted.longValue()) {
-            throw new BusinessException(ErrorCode.Scene.SCENE_GLTF_MISSING);
         }
     }
 

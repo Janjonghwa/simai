@@ -3,10 +3,19 @@ package com.ssafy.simai.domain.job;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.ssafy.simai.domain.job.AnalysisJobService.JobSpec;
+import com.ssafy.simai.domain.scene.SceneActivationService;
+import com.ssafy.simai.domain.scene.SceneJobListener;
+import com.ssafy.simai.domain.health.ViewerHealthService;
+import com.ssafy.simai.global.storage.ObjectStorage;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import com.ssafy.simai.domain.machine.MachineTokenService;
 import com.ssafy.simai.global.command.AdminCommands;
 import com.ssafy.simai.global.command.CommandIo;
@@ -50,7 +59,7 @@ import tools.jackson.databind.node.ObjectNode;
  * I5 작업 대여·연장·제출·재할당(S15P31A101-229). 대여의 행 잠금을 실제로 보려고 시험 트랜잭션 없이 커밋하고 매번 지운다.
  * 서버가 내는 job_request·job_lease_status 는 contracts/ 스키마로 검사한다.
  */
-@SpringBootTest
+@SpringBootTest(properties = "simai.scene.default-gltf-key=scenes/demo.glb")
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class WorkerJobIntegrationTest {
@@ -85,12 +94,39 @@ class WorkerJobIntegrationTest {
 
     private final String workerA = "worker-a-" + UUID.randomUUID().toString().substring(0, 8);
     private final String workerB = "worker-b-" + UUID.randomUUID().toString().substring(0, 8);
+    private final String calibration = "cal-scene-" + UUID.randomUUID();
+    private final String scene = "scene-" + UUID.randomUUID();
+    private String site;
+
+    @MockitoBean
+    ObjectStorage storage;
+
+    @Autowired
+    SceneActivationService activations;
+
+    @Autowired
+    SceneJobListener sceneJobs;
+
+    @Autowired
+    ViewerHealthService health;
+
     private String tokenA;
     private String tokenB;
 
     @BeforeEach
     void setUp() {
         clearJobs();
+        site = jdbc.queryForObject("SELECT site_id FROM site LIMIT 1", String.class);
+        jdbc.update("""
+                INSERT INTO calibration_version (calibration_version, site_id, state, provider_source, reason, effective_at,
+                    calibration_ref, calibration_hash, created_at)
+                VALUES (?, ?, 'CALIBRATED', 'G1_AUTO', 'scene test', now(), 's3://test/cal.json', ?, now())
+                """, calibration, site, "sha256:" + "a".repeat(64));
+        when(storage.uri(anyString())).thenAnswer(call -> "s3://simai-test-bucket/" + call.getArgument(0));
+        when(storage.configured()).thenReturn(true);
+        when(storage.size(anyString())).thenReturn(java.util.OptionalLong.of(1000));
+        when(storage.signGet(anyString())).thenAnswer(call -> new ObjectStorage.SignedRequest(
+                "https://objects.test/" + call.getArgument(0), java.util.Map.of(), Instant.now().plusSeconds(300)));
         tokenA = machines.registerWorker(workerA, ALL_TYPES).token();
         tokenB = machines.registerWorker(workerB, ALL_TYPES).token();
     }
@@ -98,10 +134,12 @@ class WorkerJobIntegrationTest {
     @AfterEach
     void tearDown() {
         clearJobs();
+        jdbc.update("DELETE FROM calibration_version WHERE calibration_version = ?", calibration);
         jdbc.update("DELETE FROM worker WHERE worker_id IN (?, ?)", workerA, workerB);
     }
 
     private void clearJobs() {
+        jdbc.update("DELETE FROM scene_version WHERE calibration_version = ?", calibration);
         jdbc.update("DELETE FROM job_lease");
         jdbc.update("DELETE FROM analysis_job");
     }
@@ -217,7 +255,7 @@ class WorkerJobIntegrationTest {
         assertThat(schemas.violations("messages/job_lease_status", accepted.toString())).isEmpty();
         assertThat(jobStatus(jobId)).isEqualTo("SUCCEEDED");
         assertThat(jdbc.queryForObject("SELECT result->>'scene_version' FROM analysis_job WHERE job_id = ?", String.class, jobId))
-                .isEqualTo("scene-9");
+                .isEqualTo(scene);
 
         // 응답을 못 받아 다시 보낸 제출은 대여가 끝났어도 DUPLICATE
         mvc.perform(submit(tokenB, workerB, succeeded(jobId, newLease))).andExpect(status().isOk())
@@ -351,10 +389,119 @@ class WorkerJobIntegrationTest {
                 .isNotZero();
     }
 
+    @Test
+    void 콜백은_후보와_근거를_한번만_추가하고_활성전환과_되돌리기를_즉시_조회한다() throws Exception {
+        String job = enqueue("static_reconstruct", 2);
+        String lease = leasePayload(tokenA, workerA).get("lease_id").asString();
+        ObjectNode callback = succeeded(job, lease);
+        mvc.perform(submit(tokenA, workerA, callback)).andExpect(status().isOk());
+        mvc.perform(submit(tokenA, workerA, callback)).andExpect(jsonPath("$.payload.status").value("DUPLICATE"));
+        // 이벤트를 다시 받아도 처음 결과만 남는다.
+        sceneJobs.finished(new JobFinished(job, "static_reconstruct", "SUCCEEDED", callback.get("result"), null));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM scene_version WHERE job_id = ?", Integer.class, job)).isOne();
+        assertThat(jdbc.queryForObject("SELECT state FROM scene_version WHERE job_id = ?", String.class, job)).isEqualTo("CANDIDATE");
+        JsonNode saved = mapper.readTree(jdbc.queryForObject("SELECT scene_output::text FROM scene_version WHERE job_id = ?",
+                String.class, job));
+        assertThat(saved).isEqualTo(callback.get("result"));
+        assertThat(current().get("default").asBoolean()).isTrue();
+        assertThat(current().has("surface_source_map_urls")).isFalse();
+        activations.activate(site, scene, "test-admin", "첫 배경");
+        JsonNode first = current();
+        assertThat(first.get("scene_version").asString()).isEqualTo(scene);
+        assertThat(first.get("surface_source_map_urls")).hasSize(1);
+        assertThat(first.at("/surface_source_map_urls/0").asString()).contains("/" + lease + "/asset-1");
+        assertThat(first.get("gltf_url").asString()).contains("/" + lease + "/asset-0");
+        String secondJob = enqueue("static_reconstruct", 2);
+        String secondLease = leasePayload(tokenA, workerA).get("lease_id").asString();
+        ObjectNode second = succeeded(secondJob, secondLease);
+        ((ObjectNode) second.get("result")).put("scene_version", scene + "-b");
+        // Native 복원은 보정 입력 근거를 생략할 수 있다. 선택 필드가 없어도 보정 FK의 현장을 쓴다.
+        ((ObjectNode) second.at("/result/input_provenance")).remove("calibration");
+        ((ObjectNode) second.at("/result/coordinate_frame")).remove("site_id");
+        mvc.perform(submit(tokenA, workerA, second)).andExpect(status().isOk());
+        assertThat(current().get("scene_version").asString()).isEqualTo(scene);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        assertThat(commands.execute(List.of("scene", "activate", "--site", site, "--version", scene + "-b",
+                "--actor", "test-admin", "--reason", "두번째"), io(out))).isZero();
+        assertThat(current().get("scene_version").asString()).isEqualTo(scene + "-b");
+        assertThat(health.message().at("/payload/scene/committed_version").asString()).isEqualTo(scene + "-b");
+        activations.activate(site, scene, "test-admin", "되돌림");
+        assertThat(current().get("scene_version").asString()).isEqualTo(scene);
+        assertThat(health.message().at("/payload/scene/committed_version").asString()).isEqualTo(scene);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM scene_activation WHERE site_id = ?", Integer.class, site)).isEqualTo(3);
+        assertThat(mapper.readTree(jdbc.queryForObject("SELECT scene_output::text FROM scene_version WHERE job_id = ?",
+                String.class, job))).isEqualTo(saved);
+        activations.activate(site, scene, "test-admin", "같은 대상 재시도");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM scene_activation WHERE site_id = ?", Integer.class, site)).isEqualTo(3);
+        assertThat(commands.execute(List.of("scene", "list", "--site", site), io(out))).isZero();
+        assertThat(out.toString(StandardCharsets.UTF_8)).contains(job, "되돌림");
+    }
+
+    @Test
+    void 잘못된_결과는_작업과_대여까지_되돌려_수정한_콜백을_받는다() throws Exception {
+        String job = enqueue("static_reconstruct", 2);
+        String lease = leasePayload(tokenA, workerA).get("lease_id").asString();
+        ObjectNode callback = succeeded(job, lease);
+        ObjectNode output = (ObjectNode) callback.get("result");
+        ObjectNode asset = (ObjectNode) output.at("/assets/0");
+        String validUri = asset.get("uri").asString();
+        for (String bad : List.of("s3://other-bucket/static-3d/asset.glb",
+                "s3://simai-test-bucket/static-3d/other-job/" + lease + "/asset.glb",
+                "s3://simai-test-bucket/static-3d/" + job + "/other-lease/asset.glb")) {
+            asset.put("uri", bad);
+            mvc.perform(submit(tokenA, workerA, callback)).andExpect(status().isBadRequest());
+            assertThat(jobStatus(job)).isEqualTo("LEASED");
+            assertThat(jdbc.queryForObject("SELECT status FROM job_lease WHERE lease_id = ?::uuid", String.class, lease)).isEqualTo("ACTIVE");
+        }
+        asset.put("uri", validUri);
+        ((ObjectNode) output.get("coordinate_frame")).put("site_id", "wrong-site");
+        mvc.perform(submit(tokenA, workerA, callback)).andExpect(status().isBadRequest());
+        ((ObjectNode) output.get("coordinate_frame")).put("site_id", site);
+        output.put("calibration_version", "wrong-calibration");
+        mvc.perform(submit(tokenA, workerA, callback)).andExpect(status().isBadRequest());
+        output.put("calibration_version", calibration);
+        output.remove("quality");
+        mvc.perform(submit(tokenA, workerA, callback)).andExpect(status().isBadRequest());
+        mvc.perform(submit(tokenA, workerA, succeeded(job, lease))).andExpect(status().isOk());
+        String otherJob = enqueue("static_reconstruct", 2);
+        String otherLease = leasePayload(tokenA, workerA).get("lease_id").asString();
+        // 다른 작업이 같은 Scene ID를 주장해도 처음 Scene을 보존한다.
+        mvc.perform(submit(tokenA, workerA, succeeded(otherJob, otherLease))).andExpect(status().isConflict());
+        assertThat(jobStatus(otherJob)).isEqualTo("LEASED");
+        assertThat(jdbc.queryForObject("SELECT job_id FROM scene_version WHERE scene_version = ?", String.class, scene)).isEqualTo(job);
+    }
+
+    @Test
+    void 상한입력과_보정오류와_누락자산과_다른현장과_거절된_후보는_활성화하지_않는다() throws Exception {
+        String job = enqueue("static_reconstruct", 2);
+        String lease = leasePayload(tokenA, workerA).get("lease_id").asString();
+        mvc.perform(submit(tokenA, workerA, succeeded(job, lease))).andExpect(status().isOk());
+        assertThatThrownBy(() -> activations.activate("other-site", scene, "test", "현장 오류")).isInstanceOf(BusinessException.class);
+        jdbc.update("UPDATE scene_version SET is_upper_bound = true WHERE scene_version = ?", scene);
+        assertThatThrownBy(() -> activations.activate(site, scene, "test", "상한")).isInstanceOf(BusinessException.class);
+        jdbc.update("UPDATE scene_version SET is_upper_bound = false WHERE scene_version = ?", scene);
+        jdbc.update("UPDATE calibration_version SET state = 'DRIFTED' WHERE calibration_version = ?", calibration);
+        assertThatThrownBy(() -> activations.activate(site, scene, "test", "보정 오류")).isInstanceOf(BusinessException.class);
+        jdbc.update("UPDATE calibration_version SET state = 'CALIBRATED' WHERE calibration_version = ?", calibration);
+        when(storage.size(anyString())).thenReturn(java.util.OptionalLong.empty());
+        assertThatThrownBy(() -> activations.activate(site, scene, "test", "자산 누락")).isInstanceOf(BusinessException.class);
+        assertThat(current().get("default").asBoolean()).isTrue();
+        when(storage.size(anyString())).thenReturn(java.util.OptionalLong.of(1000));
+        jdbc.update("UPDATE scene_version SET state = 'REJECTED' WHERE scene_version = ?", scene);
+        assertThatThrownBy(() -> activations.activate(site, scene, "test", "거절 후보")).isInstanceOf(BusinessException.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM scene_activation WHERE site_id = ?", Integer.class, site)).isZero();
+    }
+
+    private JsonNode current() throws Exception {
+        return body(mvc.perform(get("/api/scenes/current").with(jwt().authorities(
+                new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_VIEWER"))))
+                .andExpect(status().isOk()).andReturn());
+    }
+
     // ---- 도우미
 
     private String enqueue(String type, int maxAttempts) {
-        return jobs.enqueue(new JobSpec(type, mapper.createObjectNode().put("calibration_version", "cal-7"), maxAttempts,
+        return jobs.enqueue(new JobSpec(type, mapper.createObjectNode().put("calibration_version", calibration), maxAttempts,
                 600_000, null, null));
     }
 
@@ -400,7 +547,21 @@ class WorkerJobIntegrationTest {
 
     private ObjectNode succeeded(String jobId, String leaseId) {
         ObjectNode p = callback(jobId, leaseId, "SUCCEEDED");
-        p.putObject("result").put("scene_version", "scene-9");
+        ObjectNode output;
+        try {
+            output = (ObjectNode) mapper.readTree(Files.readString(EXAMPLES.resolve("scene_output.json")));
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+        output.put("scene_version", scene).put("calibration_version", calibration);
+        ((ObjectNode) output.get("coordinate_frame")).put("site_id", site);
+        ((ObjectNode) output.at("/input_provenance/calibration")).put("calibration_version", calibration);
+        int i = 0;
+        for (JsonNode asset : output.get("assets")) {
+            ((ObjectNode) asset).put("uri", "s3://simai-test-bucket/static-3d/" + jobId + "/" + leaseId + "/asset-" + i++)
+                    .put("bytes", 1000);
+        }
+        p.set("result", output);
         return p;
     }
 
