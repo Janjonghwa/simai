@@ -106,8 +106,13 @@ const snap = (t: number, w: Work = T2) => w.from + Math.round((t - w.from) / w.s
 // 구간 기록(1.5시간, 2,800여 프레임)을 합성·검사·색인하느라 전체 시험을 함께 돌리면 1초를 넘긴다.
 const LOAD = { timeout: 10_000 };
 const SLOW_MS = 20_000;
-/** CCTV 4화면이 뜰 때까지(기록을 받아 재생을 만든 뒤). */
-const ready = () => screen.findAllByRole('img', { name: /카메라 영상/ }, LOAD);
+/** CCTV 4화면이 뜨고 재생 상태·시계 구독(수동 Effect)까지 마칠 때까지. */
+const ready = async () => {
+  const feeds = await screen.findAllByRole('img', { name: /카메라 영상/ }, LOAD);
+  await waitFor(() => expect(engine.replays.at(-1)?.subscriberCount).toBeGreaterThan(0), LOAD);
+  await act(async () => {});
+  return feeds;
+};
 
 const timeline = () => screen.getByRole('region', { name: '타임라인' });
 const slider = () => screen.getByRole('slider', { name: '재생 시각' });
@@ -147,6 +152,7 @@ const pressed = (list: HTMLElement, id: RegExp) =>
 beforeAll(() => import('@/features/viewer3d'), 30_000);
 afterEach(() => {
   cleanup();
+  engine.replays.forEach((replay) => replay.pause());
   navigate.mockClear();
   engine.replays = [];
   server.stepScale = 1;
