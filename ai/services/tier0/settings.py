@@ -23,6 +23,7 @@
       "lifecycle": {"clear_hold_ms": 3000, "persistence": [2, 3], "resume_window_ms": 10000},
       "tick_ms": 100,                          판정 주기 (10 Hz, 명세 12.2 world_state)
       "drift_watch_enabled": true,             운영 중 보정 틀어짐 감시(별도 스레드, 기본 켜짐)
+      "event_frames_enabled": true,            CRITICAL R1~R4 발생 프레임 비동기 업로드(기본 켜짐, LIVE 입력·I1 필요)
       "checkpoint_interval_s": 1.0,            체크포인트 주기 (명세 3.2 초기값 1초)
       "drain_s": 5.0,                          종료 때 저널 쓰기·스레드 정리를 기다리는 상한
       "gpu": {"reserve_mb": 8192, "device": 0, "lag_budget_ms": 600}
@@ -164,6 +165,7 @@ class Tier0Settings:
     control: ControlSettings | None = None
     env: Mapping[str, str] = field(default_factory=dict, repr=False)
     drift_watch_enabled: bool = True
+    event_frames_enabled: bool = True
     live_calibration: LiveCalibrationSettings = field(default_factory=LiveCalibrationSettings)
     clean_background: CleanBackgroundSettings = field(default_factory=CleanBackgroundSettings)
 
@@ -422,6 +424,9 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
     drift_watch_enabled = doc.get("drift_watch_enabled", True)
     if not isinstance(drift_watch_enabled, bool):
         raise Tier0ConfigError("drift_watch_enabled 는 bool이다")
+    event_frames_enabled = doc.get("event_frames_enabled", True)
+    if not isinstance(event_frames_enabled, bool):
+        raise Tier0ConfigError("event_frames_enabled 는 bool이다")
     return Tier0Settings(
         gateway_id=gateway_id,
         state_dir=state_dir,
@@ -429,6 +434,7 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         input_mode=mode,
         calibration_file=calibration_file,
         drift_watch_enabled=drift_watch_enabled,
+        event_frames_enabled=event_frames_enabled,
         live_calibration=_live_calibration(doc.get("live_calibration", {})),
         clean_background=_clean_background(doc.get("clean_background", {}), base),
         sim=sim,

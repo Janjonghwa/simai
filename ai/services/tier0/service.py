@@ -38,16 +38,19 @@ import os
 import threading
 import time
 import uuid
+from urllib.parse import urlsplit, urlunsplit
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from services.tier0.clips.ring_buffer import PacketRingBuffer
 from services.tier0.clips.service import EventClipService
+from services.tier0.clips.upload import HttpPutTransport
 from services.tier0.config_fetch import HttpsFetcher
 from services.tier0.drift_watch import BackgroundDriftWatch
 from services.tier0.endpoint_registration import EndpointRegistrar, read_cert_pem
 from services.tier0.event_snapshot import EventStateSnapshot
+from services.tier0.event_frames import EventFrameService, EventFrameSigner
 from services.tier0.file_input import FileInput, JsonlOutput, ReplayClock
 from services.tier0.health import HealthReporter, WarningSources
 from services.tier0.i0_control import ControlServer
@@ -295,6 +298,7 @@ class Tier0Service:
         self.drift_watch: Any | None = None
         self.live_calibration: Any | None = None
         self.clean_background: Any | None = None
+        self.event_frames: EventFrameService | None = None
         self._live_calibration_error: str | None = None
         self._on_camera_drifted = on_camera_drifted
         self._drift_report: MonitorReport | None = None
@@ -469,6 +473,20 @@ class Tier0Service:
             lock=self.judge_lock, ready=lambda: self._restored,
         )
         self.link = self._build_link() if s.i1 is not None else None
+        if s.event_frames_enabled and s.input_mode == "live" and self.link is not None:
+            try:
+                parts = urlsplit(s.i1.url)
+                base = s.env.get("SIMAI_EC2_BASE_URL") or urlunsplit(("https", parts.netloc, "", "", ""))
+                self.event_frames = EventFrameService(
+                    self.clips.ring, self.clock,
+                    signer=EventFrameSigner(base, s.i1.token, ca_file=s.i1.ca_file),
+                    transport=HttpPutTransport(timeout_s=2.0), send_event=self.link.publisher.send_event,
+                    decoder_factory=PyAvDecoder,
+                )
+                self.event_frames.start()
+            except Exception as error:  # noqa: BLE001 - 부가 근거 경로 실패가 관제 기동을 막지 않는다
+                self.event_frames = None
+                log.warning("이벤트 프레임 기동 실패: %s", type(error).__name__)
         if s.file is not None and s.file.jsonl_dir is not None:
             try:
                 self.jsonl = JsonlOutput(s.file.jsonl_dir, Envelope(s.gateway_id, self.clock, new_msg_id=self._new_msg_id),
@@ -495,7 +513,8 @@ class Tier0Service:
             offer_world_state=(self.jsonl.world_state if self.jsonl is not None
                                else None if self.link is None else self.link.publisher.offer_world_state),
             record_transitions=None if self.jsonl is None else self.jsonl.transitions,
-            checkpoint_inputs=self.checkpointer.update_inputs, clips=self.clips, snapshot=self.snapshot,
+            checkpoint_inputs=self.checkpointer.update_inputs, clips=self.clips, event_frames=self.event_frames,
+            snapshot=self.snapshot,
             observe_progress=lambda t: self.watchdog.observe(t, self._mono_ns()), restore_link=self.restore_link,
             new_msg_id=self._new_msg_id,
             begin_tick=self._begin_calibration_tick,
@@ -1313,6 +1332,9 @@ class Tier0Service:
             t.join(left())
         failures += [f"thread:{t.name}" for t in self._threads if t.is_alive()]
         self._event("judge_stopped")
+        if self.event_frames is not None:
+            if not self.event_frames.stop(left()):
+                failures.append("thread:tier0-event-frames")
         if self.drift_watch is not None:
             self._bounded(deadline, "calibration_baselines",
                           lambda: save_baselines(self.settings.baselines_file, self.drift_watch.baselines()), failures)

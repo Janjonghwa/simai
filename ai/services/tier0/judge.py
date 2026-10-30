@@ -141,6 +141,7 @@ class JudgmentLoop:
         offer_world_state: Callable[..., Any] | None = None,
         checkpoint_inputs: Callable[..., Any] | None = None,
         clips: Any | None = None,
+        event_frames: Any | None = None,
         record_transitions: Callable[[tuple[Any, ...]], Any] | None = None,
         snapshot: Any | None = None,
         observe_progress: Callable[[int | None], Any] | None = None,
@@ -160,6 +161,7 @@ class JudgmentLoop:
         self._offer_world_state = offer_world_state
         self._checkpoint_inputs = checkpoint_inputs
         self._clips = clips
+        self._event_frames = event_frames
         self._record_transitions = record_transitions  # 확정 전이 사본(file 입력의 risk_event JSONL, -215)
         self._snapshot = snapshot
         self._observe_progress = observe_progress
@@ -259,6 +261,7 @@ class JudgmentLoop:
         return str(state)
 
     def _judge(self, perceived: Perceived, active: ActiveConfig | None) -> TickResult:
+        self._last_frame = perceived.frame  # 근거 프레임 카메라는 이 tick 의 관측으로 고른다
         self._last_calibration_state = self._active_calibration_state()
         msg_id = self._new_msg_id()
         payload = dict(perceived.payload)
@@ -295,7 +298,6 @@ class JudgmentLoop:
             steps.append(step)
             self._note_risk(evaluation)
         self._last = (payload, msg_id)
-        self._last_frame = perceived.frame
         if self._offer_world_state is not None:  # 6) world_state (msg_id = 이 tick 의 evidence_ref)
             self._offer_world_state(payload, msg_id=msg_id)
         if self._checkpoint_inputs is not None:
@@ -399,6 +401,12 @@ class JudgmentLoop:
                 self._clips.on_transitions(step.transitions)
             except Exception:  # noqa: BLE001 - 클립 실패가 판정을 막지 않는다
                 log.exception("클립 대상 전이 처리 실패")
+        if self._event_frames is not None and step.transitions:
+            try:
+                tracks = () if self._last_frame is None else self._last_frame.tracks
+                self._event_frames.on_transitions(step.transitions, tracks)
+            except Exception as error:  # noqa: BLE001 - 근거용 프레임 실패가 판정·경보를 막지 않는다
+                log.warning("이벤트 프레임 접수 실패: %s", type(error).__name__)
 
     def _send_signals(self, step: LifecycleStep, ack_id: str | None) -> None:
         if self._send_i0 is None:

@@ -85,6 +85,7 @@ CONTRACTS_VERSION = "2.0.0"
 # 봉투 schema_version: 그 메시지 계약이 마지막으로 바뀐 버전 (contracts/README.md, contracts/examples).
 # config_ack(ConfigSync)·tier0_endpoint(EndpointRegistrar)·risk_event_transition(outbox)은 만드는 모듈이 정한다.
 MESSAGE_SCHEMA_VERSIONS: Mapping[str, str] = {
+    "event_frame_ready": "1.0.0",
     "world_state": WORLD_STATE_SCHEMA_VERSION,  # 2.1.0: 분할 출처 split_from (-201). 만드는 모듈(tracking.world_state)이 정한다
     "health": HEALTH_SCHEMA_VERSION,  # 2.1.0: 2.0.0(-179) + tier0_warnings LIVE_MARKER_WRITE_FAILED(-197). health.py 가 정한다
     "observation_summary": "1.3.0",  # -155

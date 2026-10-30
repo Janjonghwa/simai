@@ -83,6 +83,10 @@ def test_stop_flushes_slow_journal_and_ends_threads(tmp_path, sim_run) -> None:
         assert settings.live_marker.exists()
         assert ts.wait_until(lambda: bool(_r1(service)), timeout=20)
         slow.set()
+        # 장면에서 다음 전이가 언제 생길지는 CPU·프레임 건너뛰기에 따라 달라진다.
+        # 종료 시 쓰기 대기열 비우기를 검증할 기록은 직접 넣어 전제 조건을 고정한다.
+        for sequence in range(2):
+            service.writer.submit("shutdown_probe", {"sequence": sequence})
         assert ts.wait_until(lambda: service.writer.backlog() >= 2, timeout=20)
     finally:
         produced_before = service.judge.stats.transitions
@@ -91,7 +95,8 @@ def test_stop_flushes_slow_journal_and_ends_threads(tmp_path, sim_run) -> None:
     assert produced >= produced_before
     with EventJournal.open(settings.journal_dir, clock=SystemClock(), readonly=True) as journal:
         entries = journal.read(0)
-    assert len(entries) == len(service.recovery.restore_entries) + produced  # 넣은 단계를 하나도 잃지 않았다
+    assert len(entries) == len(service.recovery.restore_entries) + produced + 2  # 넣은 단계를 하나도 잃지 않았다
+    assert [e.payload["sequence"] for e in entries if e.kind == "shutdown_probe"] == [0, 1]
     assert not settings.live_marker.exists()
     assert service.events.index("judge_stopped") < service.events.index("links_closed") < service.events.index(
         "journal_flushed:0") < service.events.index("final_checkpoint") < service.events.index("stopped")
@@ -146,11 +151,15 @@ def test_recovery_health_is_unsafe_until_reobserved_and_restored_alerts_listed(t
 
 
 def test_unknown_clock_offset_keeps_health_unsafe_and_blocks_resolution(tmp_path, sim_run, control) -> None:
-    settings = _settings(tmp_path, sim_run, anchor_ms=_now() + 300, env=control["env"])
+    # Windows 에서 제어 채널이 열리기 전에 먼저 붙으면 TCP SYN 재전송(~2s) 동안 장면이 R1 발생 시점(anchor+1.8s)을 지나
+    # 연결 전 local_alert 가 드롭될 수 있으므로, 서비스 기동 뒤 노트북을 연결하고 여유 anchor 를 둔다.
+    settings = _settings(tmp_path, sim_run, anchor_ms=_now() + 1500, env=control["env"])
     service = Tier0Service(settings)
-    laptop = ts.Laptop(control["port"], control["cert"], answer_clock=False).start()
+    laptop = ts.Laptop(control["port"], control["cert"], answer_clock=False)
     service.start()
     try:
+        laptop.start()
+        assert ts.wait_until(laptop.connected.is_set, timeout=5)
         assert ts.wait_until(lambda: bool(_r1(service)) and bool(laptop.all_messages("local_alert")), timeout=20)
         mark = len(laptop.all_messages())
         assert ts.wait_until(lambda: len([m for m in laptop.all_messages()[mark:] if m["msg_type"] == "health"]) >= 2,
