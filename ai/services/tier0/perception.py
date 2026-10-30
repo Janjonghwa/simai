@@ -333,6 +333,7 @@ class Perception:
         contact: ContactEstimator | None = None,
         avatar_writer: Any = None,
         observe_association: Callable[[AssociationFrame], None] | None = None,
+        observe_frame: Callable[[Observation2DFrame], None] | None = None,
     ) -> None:
         missing = [c for c in feed.camera_ids if c not in rig.cameras]
         if missing:
@@ -347,6 +348,7 @@ class Perception:
         self.contact = contact or ContactEstimator()
         self.avatar_writer = avatar_writer
         self.observe_association = observe_association
+        self.observe_frame = observe_frame
         if isinstance(feed, DetectorFeed):
             feed.avatar_enabled = avatar_writer is not None
         self._lock = threading.Lock()  # 카메라 상태(health 가 다른 스레드에서 읽는다)
@@ -392,6 +394,11 @@ class Perception:
                 self.dropped_frames += 1
                 continue
             self.buffer.add(f)
+            if self.observe_frame is not None:
+                try:
+                    self.observe_frame(f)
+                except Exception:
+                    log.exception("후보 보정 관절 공급 실패(판정은 계속한다)")
             with self._lock:
                 prev = self._last_capture[f.camera_id]
                 if prev is None or f.estimated_capture_time_ms > prev:

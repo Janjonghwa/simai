@@ -17,7 +17,6 @@ from typing import Any
 from simai_ai.calibration.document import content_hash
 from simai_ai.calibration.monitor import STREAM_REASONS, MonitorReport
 from simai_ai.calibration.structure import check_calibration_structure
-from simai_ai.calibration.versions import VersionSwitchConfig
 from simai_ai.providers.base import CalibrationProvider
 from simai_ai.providers.contract import DEFAULT_CALIBRATED_CRITERIA, NEVER_CALIBRATED_SOURCES, check_calibration
 
@@ -42,10 +41,19 @@ def _number(value):
     return value
 
 
-def validate_candidate(document: Mapping[str, Any], report: Mapping[str, Any], previous: Mapping[str, Any]) -> None:
-    """-343 session 보고서를 문서/기준 버전에 결속하고 부족·미상 근거는 거부한다."""
+class CandidateValidationError(ValueError):
+    """거부 근거와 같은 holdout의 지표 비교를 함께 전달한다."""
+
+    def __init__(self, reason, comparison):
+        super().__init__(reason)
+        self.comparison = comparison
+
+
+def validate_candidate(document: Mapping[str, Any], report: Mapping[str, Any], previous: Mapping[str, Any]) -> dict:
+    """운영 후보 보고서를 문서/기준 버전에 결속하고 부족·미상 근거는 거부한다."""
     # 이전 보정으로 시작할 때 후보 계산 스택(cv2 등)을 미리 불러오지 않는다.
     from simai_ai.calibration.extrinsics.session import DEFAULT_DATA_CRITERIA
+    from simai_ai.calibration.live_candidate import evaluate_improvement, summarize_holdout_metrics
 
     _validate(document)
     if document["state"] != "PROVISIONAL":
@@ -84,29 +92,46 @@ def validate_candidate(document: Mapping[str, Any], report: Mapping[str, Any], p
     after = {k: v for k, v in report["holdout"]["after"]["reprojection_error_px"].items() if k != "overall"}
     if set(before) != set(old) or set(after) != set(old):
         raise ValueError("holdout 카메라 누락")
-    for values in after.values():
-        if (_number(values["median"]) > limits.max_reprojection_median_px
-                or _number(values["p95"]) > limits.max_reprojection_p95_px):
-            raise ValueError("holdout 재투영 검증 미달")
-    baseline = max(_number(v["median"]) for v in before.values())
-    improved = max(_number(v["median"]) for v in after.values())
-    if baseline <= 0 or improved > baseline * (1 - VersionSwitchConfig().min_relative_improvement):
-        raise ValueError("holdout 개선율 미달")
+    # -345와 동일 함수·기준으로 같은 holdout을 비교한다. 원시 session 보고서도 지원한다.
+    summaries = {}
+    for key in ("before", "after"):
+        values = report["holdout"][key]
+        for metric in ("fusion_3plus_ratio", "fusion_4_ratio"):
+            if _number(values[metric]) > 1:
+                raise ValueError(f"holdout 검증 지표 범위 초과: {metric}")
+        # 실행기 요약의 중복 파생 필드를 믿지 않고 원시 재투영/쌍 통과율에서 다시 만든다.
+        if "pair_pass_ratio" in values:
+            values = {**values, "pairs": {pair: {"pass_ratio": ratio}
+                                          for pair, ratio in values["pair_pass_ratio"].items()}}
+        summaries[key] = summarize_holdout_metrics(values)
+        if set(summaries[key]["per_camera_pair_pass_mean"]) != set(old):
+            raise ValueError("holdout 카메라별 쌍 통과율 누락")
+    common = report["holdout"].get("common_reprojection")
+    if not isinstance(common, Mapping):
+        raise ValueError("공통 관측 검증 지표 누락")
+    delta, decision = evaluate_improvement(summaries["before"], summaries["after"],
+                                         common_reprojection=common,
+                                         world_alignment=report["world_alignment"])
+    comparison = {"before": summaries["before"], "after": summaries["after"], "delta": delta, **decision}
+    if not decision["accepted"]:
+        raise CandidateValidationError("holdout 개선율/검증 미달: " + "; ".join(decision["rejected_reasons"]), comparison)
     alignment = report["world_alignment"]
     anchors = alignment["anchor_cameras"]
     if alignment["usable"] is not True or len(set(anchors)) < 2 or not set(anchors) <= set(old):
-        raise ValueError("World 정렬 기준 부족")
+        raise CandidateValidationError("World 정렬 기준 부족", comparison)
     for key, maximum in (("anchor_center_residuals_cm", limits.max_pairwise_position_disagreement_m * 100),
                          ("anchor_rotation_residuals_deg", 1.5)):
         values = alignment[key]
         if set(values) != set(anchors) or any(_number(v) > maximum for v in values.values()):
-            raise ValueError(f"World 정렬 잔차 미달: {key}")
+            raise CandidateValidationError(f"World 정렬 잔차 미달: {key}", comparison)
+    return comparison
 
 
 class RuntimeCalibrationStore(CalibrationProvider):
     """문서 Provider이자 영속 버전 저장소. 별도 계약 변경 없이 완성 문서를 보관한다."""
 
     def __init__(self, root: Path, bootstrap: Callable[[], Mapping[str, Any]]) -> None:
+        self.last_validation: dict | None = None
         self.root = root
         root.mkdir(parents=True, exist_ok=True)
         self._head_file = root / "active.json"
@@ -193,7 +218,8 @@ class RuntimeCalibrationStore(CalibrationProvider):
 
     def prepare(self, document, report):
         doc, audit = _copy(document), _copy(report)
-        validate_candidate(doc, audit, self.current())
+        self.last_validation = validate_candidate(doc, audit, self.current())
+        audit["runtime_validation"] = self.last_validation
         version = doc["calibration_version"]
         if self.known(version):
             raise ValueError("이미 저장한 보정 버전")

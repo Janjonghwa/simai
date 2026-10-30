@@ -116,6 +116,15 @@ class ControlSettings:
 
 
 @dataclass(frozen=True)
+class LiveCalibrationSettings:
+    enabled: bool = True
+    interval_ms: int = 60_000
+    timeout_s: float = 180.0
+    buffer_duration_ms: int = 300_000
+    measured_camera_heights: Mapping[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class Tier0Settings:
     gateway_id: str
     state_dir: Path
@@ -142,6 +151,7 @@ class Tier0Settings:
     control: ControlSettings | None = None
     env: Mapping[str, str] = field(default_factory=dict, repr=False)
     drift_watch_enabled: bool = True
+    live_calibration: LiveCalibrationSettings = field(default_factory=LiveCalibrationSettings)
 
     @property
     def journal_dir(self) -> Path:
@@ -198,6 +208,27 @@ def _lifecycle(doc: Mapping[str, Any] | None) -> LifecyclePolicy:
         return LifecyclePolicy(**kwargs)
     except ValueError as e:
         raise Tier0ConfigError(f"lifecycle: {e}") from None
+
+
+def _live_calibration(doc: Any) -> LiveCalibrationSettings:
+    import math
+
+    if not isinstance(doc, dict):
+        raise Tier0ConfigError("live_calibration 는 객체다")
+    enabled = doc.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise Tier0ConfigError("live_calibration.enabled 는 bool이다")
+    timeout = doc.get("timeout_s", 180.0)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+        raise Tier0ConfigError("live_calibration.timeout_s 는 유한한 양수다")
+    heights = doc.get("measured_camera_heights", {})
+    if not isinstance(heights, dict) or any(
+        not isinstance(cid, str) or not cid or isinstance(h, bool) or not isinstance(h, (int, float))
+        or not math.isfinite(h) or h <= 0 for cid, h in heights.items()
+    ):
+        raise Tier0ConfigError("live_calibration.measured_camera_heights 는 카메라 ID별 실측 높이(m)다")
+    return LiveCalibrationSettings(enabled, _int(doc, "interval_ms", 60_000, minimum=1), float(timeout),
+                                   _int(doc, "buffer_duration_ms", 300_000, minimum=1_000), dict(heights))
 
 
 def _control(env: Mapping[str, str]) -> ControlSettings | None:
@@ -365,6 +396,7 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         input_mode=mode,
         calibration_file=calibration_file,
         drift_watch_enabled=drift_watch_enabled,
+        live_calibration=_live_calibration(doc.get("live_calibration", {})),
         sim=sim,
         camera_ids=camera_ids,
         bootstrap_archive=archive,

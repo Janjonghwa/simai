@@ -9,6 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
+pytest.importorskip("cv2")
+pytest.importorskip("scipy")
+
 HERE = Path(__file__).resolve().parent
 for path in (HERE, HERE.parents[2]):
     if str(path) not in sys.path:
@@ -89,7 +92,74 @@ def candidate(service, version="cal-swap-2"):
                             "anchor_center_residuals_cm": dict.fromkeys(ids, 1.),
                             "anchor_rotation_residuals_deg": dict.fromkeys(ids, 0.1)},
     }
+    for phase, ratio, median, p95 in (("before", 0.3, 3., 7.), ("after", 0.6, 1., 3.)):
+        metrics = report["holdout"][phase]
+        metrics.update(fusion_4_ratio=ratio, fusion_3plus_ratio=ratio,
+                       pairs={f"{a}/{b}": {"pass_ratio": ratio} for i, a in enumerate(ids) for b in ids[i + 1:]})
+        metrics["reprojection_error_px"]["overall"] = {"median": median, "p95": p95, "observations": 100}
+    report["holdout"]["common_reprojection"] = {
+        "method": "common_observations",
+        "cameras": {cid: {"observations": 200, "before_median_px": 3., "after_median_px": 1.} for cid in ids},
+    }
     return doc, report
+
+
+def test_different_observation_sets_do_not_trigger_false_deterioration(site):
+    doc, report = candidate(site.service)
+    cid = doc["cameras"][0]["camera_id"]
+    report["holdout"]["before"]["reprojection_error_px"][cid]["median"] = 1.
+    report["holdout"]["after"]["reprojection_error_px"][cid] = {"median": 4., "p95": 15.}
+    report["holdout"]["common_reprojection"]["cameras"][cid].update(before_median_px=3., after_median_px=3.)
+    assert site.service.propose_calibration(doc, report)
+    comparison = site.service.status()["calibration"]["last_decision"]["comparison"]["camera_comparison"][cid]
+    assert comparison["median_increase_px"] == 0.
+
+
+def test_same_observations_deterioration_rejected_even_if_overall_improves(site):
+    doc, report = candidate(site.service)
+    cid = doc["cameras"][0]["camera_id"]
+    report["holdout"]["common_reprojection"]["cameras"][cid].update(before_median_px=2., after_median_px=3.001)
+    assert not site.service.propose_calibration(doc, report)
+    assert "악화 초과" in site.service.calibration_status["last_rejection"]["reason"]
+
+
+@pytest.mark.parametrize("count,accepted", [(0, True), (199, True), (200, False)])
+def test_common_observation_minimum_is_per_camera(site, count, accepted):
+    doc, report = candidate(site.service)
+    cid = doc["cameras"][0]["camera_id"]
+    report["holdout"]["common_reprojection"]["cameras"][cid] = {
+        "observations": count, "before_median_px": 1. if count else None,
+        "after_median_px": 3. if count else None,
+    }
+    assert site.service.propose_calibration(doc, report) == accepted
+    comparison = site.service.status()["calibration"]["last_decision"]["comparison"]["camera_comparison"]
+    assert comparison[cid]["common_observations"] == count
+    assert comparison[cid]["comparable"] == (count >= 200)
+    assert all(v["comparable"] for key, v in comparison.items() if key != cid)
+    if count < 200:
+        assert "비교 불가" in comparison[cid]["reason"]
+        assert comparison[cid]["median_increase_px"] is None
+
+
+@pytest.mark.parametrize("change", ["negative_count", "fractional_count", "missing_median", "missing_camera", "missing_report", "method"])
+def test_invalid_common_observation_report_is_rejected(site, change):
+    doc, report = candidate(site.service)
+    common = report["holdout"]["common_reprojection"]
+    cid = doc["cameras"][0]["camera_id"]
+    if change == "negative_count":
+        common["cameras"][cid]["observations"] = -1
+    elif change == "fractional_count":
+        common["cameras"][cid]["observations"] = 200.5
+    elif change == "missing_median":
+        common["cameras"][cid]["after_median_px"] = None
+    elif change == "missing_camera":
+        del common["cameras"][cid]
+    elif change == "missing_report":
+        del report["holdout"]["common_reprojection"]
+    else:
+        common["method"] = "different_observations"
+    assert not site.service.propose_calibration(doc, report)
+    assert "공통 관측" in site.service.calibration_status["last_rejection"]["reason"]
 
 
 def test_switch_boundary_versions_provenance_geometry_avatar_and_track_continuity(site):
@@ -166,6 +236,62 @@ def test_proposal_from_other_thread_during_tick_does_not_mix(site):
     assert site.output[-1]["calibration_version"] == doc["calibration_version"]
 
 
+@pytest.mark.parametrize("median,p95,baseline", [(3.9, 15., 3.), (8., 25., 7.), (3.9, 15., None)])
+def test_provisional_accepts_relative_gain_above_calibrated_limits(site, median, p95, baseline, caplog):
+    caplog.set_level("INFO", logger="services.tier0")
+    doc, report = candidate(site.service)
+    ids = [c["camera_id"] for c in doc["cameras"]]
+    for cid in ids:
+        report["holdout"]["before"]["reprojection_error_px"][cid] = {"median": median - 0.5, "p95": p95}
+        report["holdout"]["after"]["reprojection_error_px"][cid] = {"median": median, "p95": p95}
+    cid = ids[-1]
+    report["holdout"]["before"]["reprojection_error_px"][cid] = {
+        "median": baseline, "p95": None if baseline is None else p95,
+        "observations": 0 if baseline is None else 100,
+    }
+    report["holdout"]["common_reprojection"]["cameras"][cid] = {
+        "observations": 0 if baseline is None else 200,
+        "before_median_px": baseline, "after_median_px": None if baseline is None else median,
+    }
+    assert site.service.propose_calibration(doc, report)
+    decision = site.service.status()["calibration"]["last_decision"]
+    assert decision["accepted"]
+    comparison = decision["comparison"]["camera_comparison"][cid]
+    assert comparison["comparable"] == (baseline is not None)
+    if baseline is None:
+        assert "비교 불가" in comparison["reason"]
+        assert comparison["before_median_px"] is None
+        assert comparison["median_increase_px"] is None
+    assert "보정 후보 채택" in caplog.text
+    site.tick()
+    assert site.output[-1]["calibration_version"] == doc["calibration_version"]
+    assert site.service.calibration.state == "PROVISIONAL"
+
+
+@pytest.mark.parametrize("median,p95,baseline,reason", [
+    (4.000001, 15., 3., "악화 초과"),
+    (8.000001, 25., None, "절대 상한"),
+    (3.9, 25.000001, None, "절대 상한"),
+])
+def test_relative_gain_cannot_override_per_camera_guards(site, median, p95, baseline, reason, caplog):
+    doc, report = candidate(site.service)
+    cid = doc["cameras"][-1]["camera_id"]
+    report["holdout"]["before"]["reprojection_error_px"][cid] = {"median": baseline, "p95": None}
+    report["holdout"]["after"]["reprojection_error_px"][cid] = {"median": median, "p95": p95}
+    report["holdout"]["common_reprojection"]["cameras"][cid] = {
+        "observations": 0 if baseline is None else 200,
+        "before_median_px": baseline, "after_median_px": None if baseline is None else median,
+    }
+    old_version = site.service.rig.calibration_version
+    assert not site.service.propose_calibration(doc, report)
+    decision = site.service.status()["calibration"]["last_decision"]
+    assert not decision["accepted"] and reason in decision["reason"]
+    assert cid in decision["comparison"]["camera_comparison"]
+    assert "비교=" in caplog.text
+    site.tick()
+    assert site.output[-1]["calibration_version"] == old_version
+
+
 @pytest.mark.parametrize("change, reason", [
     ("K", "내부 파라미터"), ("image_size", "내부 파라미터"), ("distortion", "내부 파라미터"),
     ("site", "site_id"), ("cameras", "카메라 집합"), ("hash", "content_hash"),
@@ -191,10 +317,9 @@ def test_rejected_candidates_keep_active_and_record_reason(site, change, reason,
     elif change == "cameras":
         doc["cameras"].pop()
     elif change == "holdout":
-        report["holdout"]["after"]["reprojection_error_px"][cid]["p95"] = 6.
+        report["holdout"]["after"]["reprojection_error_px"][cid]["p95"] = 25.01
     elif change == "improvement":
-        for v in report["holdout"]["before"]["reprojection_error_px"].values():
-            v["median"] = 1.
+        report["holdout"]["before"] = copy.deepcopy(report["holdout"]["after"])
     elif change == "alignment":
         report["world_alignment"]["anchor_center_residuals_cm"][cid] = 16.
     elif change == "rotation":
