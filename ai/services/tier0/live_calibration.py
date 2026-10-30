@@ -9,6 +9,7 @@ from typing import Any
 
 from services.tier0.settings import LiveCalibrationSettings
 from simai_ai.calibration.live_candidate import LiveBufferConfig, LiveCandidateCalibrationRunner, LiveCandidateConfig, LiveJointBuffer
+from simai_ai.calibration.live_safety import CandidateConfirmation
 
 log = logging.getLogger("services.tier0.live_calibration")
 
@@ -24,12 +25,17 @@ class BackgroundLiveCalibration:
                  settings: LiveCalibrationSettings, now_ms: Callable[[], int], stop: threading.Event,
                  propose: Callable[[Mapping[str, Any], Mapping[str, Any], int], bool],
                  can_run: Callable[[], bool],
-                 active_report: Callable[[], Mapping[str, Any] | None] | None = None) -> None:
+                 active_report: Callable[[], Mapping[str, Any] | None] | None = None,
+                 safety_reference: Callable | None = None) -> None:
         self.buffer = LiveJointBuffer(LiveBufferConfig(max_duration_ms=settings.buffer_duration_ms))
         self.document = document
         self.provenance = provenance
         self.generation = 0
         self.blocked_reason: str | None = None
+        self.safety_enabled = settings.safety_enabled
+        self.confirmation = CandidateConfirmation()
+        self.recovering: dict[str, int] = {}
+        self._run_lock = threading.Lock()
         self._cycle_generation = 0
         self._propose = propose
         self._now_ms = now_ms
@@ -42,6 +48,7 @@ class BackgroundLiveCalibration:
             can_run=lambda: not stop.is_set() and self.blocked_reason is None and can_run(),
             clock_ms=now_ms, adopt_proposed_as_active=False, stop_event=stop,
             active_report=active_report,
+            safety_reference=(lambda: self._reference(safety_reference)) if settings.safety_enabled and safety_reference else None,
         )
         self.last_status: str | None = None
         self.last_error: str | None = None
@@ -52,54 +59,84 @@ class BackgroundLiveCalibration:
     def _submit(self, document, report) -> bool:
         return self._propose(document, report, self._cycle_generation)
 
+    def _reference(self, source):
+        reference, moved = source()
+        return reference, tuple(set(moved) | set(self.recovering))
+
     def activate(self, document, provenance) -> None:
         self.document, self.provenance = document, provenance
         self.generation += 1
         self.blocked_reason = None
+        self.recovering.clear()
+        self.confirmation.reset()
 
-    def reset_camera(self, camera_id: str) -> int:
+    def reset_camera(self, camera_id: str, since_ms: int | None = None) -> int:
         self.generation += 1
-        removed = self.buffer.reset_camera(camera_id)
+        self.confirmation.reset()
+        if self.safety_enabled:
+            cutoff = self._now_ms() if since_ms is None else since_ms
+            self.recovering[camera_id] = max(cutoff, self.recovering.get(camera_id, cutoff))
+            removed = self.buffer.reset_camera(camera_id, since_ms=cutoff)
+            self._next_run_ms = min(self._next_run_ms, self._now_ms())
+        else:
+            removed = self.buffer.reset_camera(camera_id)
         log.info("후보 보정 재수집: %s, 제거 프레임=%d", camera_id, removed)
         return removed
 
     def block(self, reason: str) -> None:
         self.generation += 1
         self.blocked_reason = reason
+        self.confirmation.reset()
         log.warning("후보 보정 보류: %s", reason)
 
     def run_once(self):
         """서비스 스레드와 시험/재생 도구가 같은 실행·오류 경로를 쓴다."""
+        if not self._run_lock.acquire(blocking=False):
+            return None
         self._cycle_generation = self.generation
         self.running = True
         try:
             self.runner.set_input_provenance(self.provenance)
-            result = self.runner.maybe_run(now_ms=self._now_ms())
+            # 복구는 일반 60초 주기를 소유한다. 별도 후보가 끼어들 수 없고,
+            # 첫 개선 뒤 15초간 새 표본을 더 모아 확인한다.
+            now = self._now_ms()
+            if self.safety_enabled and (self.recovering or self.confirmation.count):
+                result = self.runner.maybe_run(now_ms=now, interval_ms=15_000)
+            else:
+                result = self.runner.maybe_run(now_ms=now)
             if result is not None:
+                if self._cycle_generation == self.generation and not result.proposed:
+                    self.confirmation.reset()
                 self.cycles += 1
                 self.last_status = result.status
                 self.last_error = result.report.get("failure_reason")
                 self.last_comparison = {"holdout": result.report.get("holdout"),
-                                        "decision": result.report.get("improvement_decision")}
+                                        "decision": result.report.get("improvement_decision"),
+                                        "cumulative_deviation": result.report.get("cumulative_deviation")}
                 log.info("후보 보정 결과: %s, 사유=%s, 비교=%s", result.status, self.last_error, self.last_comparison)
             return result
         except Exception as exc:
+            self.confirmation.reset()
             self.cycles += 1
             self.last_status, self.last_error = "FAILED", str(exc)
             log.exception("후보 보정 실행 실패(판정은 계속한다)")
             return None
         finally:
             self.running = False
+            self._run_lock.release()
 
     def run(self) -> None:
         # 기동 직후 직전 보정으로 판정을 시작한다. 첫 주기까지 수집하고 겹쳐 실행하지 않는다.
         while not self._stop.wait(0.1):
             if self._now_ms() >= self._next_run_ms:
-                self._next_run_ms = self._now_ms() + self.runner.config.interval_ms
                 self.run_once()
+                delay = 15_000 if self.safety_enabled and (self.recovering or self.confirmation.count) else self.runner.config.interval_ms
+                self._next_run_ms = self._now_ms() + delay
 
     def status(self) -> dict[str, Any]:
         return {"active_version": self.document["calibration_version"], "running": self.running,
                 "cycles": self.cycles, "last_status": self.last_status, "last_error": self.last_error,
                 "last_comparison": self.last_comparison,
-                "blocked_reason": self.blocked_reason, "buffer": self.buffer.summary()}
+                "blocked_reason": self.blocked_reason, "buffer": self.buffer.summary(),
+                "safety_enabled": self.safety_enabled, "recovering": dict(self.recovering),
+                "confirmation_count": self.confirmation.count}

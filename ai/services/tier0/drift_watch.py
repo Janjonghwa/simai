@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import threading
+from dataclasses import replace
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from simai_ai.calibration.bundle import PersonObservation
 from simai_ai.calibration.drift import CameraObservation
 from simai_ai.calibration.monitor import BaselineRecord, MonitorConfig, MonitorReport, ReprojectionMonitor
+from simai_ai.calibration.live_safety import FusionWindow
 from simai_ai.tracking.cross_view import AssociationFrame
 
 log = logging.getLogger("services.tier0.drift_watch")
@@ -47,6 +49,7 @@ class BackgroundDriftWatch:
         self._last_offer: tuple[str, int] | None = None
         self._last_streams: tuple[CameraObservation, ...] = ()
         self._monitor: ReprojectionMonitor | None = None
+        self._fusion = FusionWindow(config.window_ms, config.min_window_samples)
         self._wake = threading.Event()
         self.errors = 0
         self.dropped = 0
@@ -86,8 +89,10 @@ class BackgroundDriftWatch:
         version = association.calibration_version
         if self._monitor is None or self._monitor.calibration_version != version:
             self._monitor = ReprojectionMonitor(document, self._config, baseline=self.baselines().get(version))
+            self._fusion = FusionWindow(self._config.window_ms, self._config.min_window_samples)
         people = person_observations(association)
         report = self._monitor.observe(association.t, [p.views for p in people], streams)
+        report = replace(report, fusion_3plus_ratio=self._fusion.observe(association))
         baseline = self._monitor.baseline_record()
         with self._lock:
             self._baselines[version] = baseline
