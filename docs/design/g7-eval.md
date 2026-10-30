@@ -133,16 +133,15 @@
 
 계약 예시의 위반 내용은 각 파일의 `_expect_error` 로 확인했다.
 
-## 25 에 넘길 요구
+## 제품 처리기와 맞춘 점 (25 반영)
 
-- 프롬프트는 `g7_answers.Prompt` 꼴로 낸다. 필요한 것은 `prompt_id: str`, `placeholder: False`, `build(input) -> PromptParts(text, system, response_format)`.
-  - `simai_ai` 안 모듈(예: `simai_ai.vlm.rationale:PROMPT`)에 두면 `--prompt simai_ai.vlm.rationale:PROMPT` 로 바로 쓴다.
-  - 처리기와 평가가 같은 객체를 써야 G7 이 제품 프롬프트를 평가한다.
-- `build` 입력은 vlm_rationale input 에서 `frames` 를 뺀 값에 `confidence_reasons` 를 더한 것이다. 구조화 상태 정리(15.1 대응 "입력 구조화")는 이 함수 안에서 한다.
-- JSON 스키마(`response_format` json_schema)는 결과의 `rationale`·`proposed_severity` 를 담는다. 답 생성기는 응답 원문(`content`)만 남긴다.
-  - 채점표에 무엇을 보일지(`rationale` 문장만 또는 원문 전체)는 25 의 파서가 나오면 `export_rationale_sheets` 에서 정한다.
-  - 지금은 원문 전체를 보인다.
-- `finish_reason == "length"`(잘린 JSON)를 처리기가 어떻게 다루는지 정해 주면, 답 생성기도 같은 규칙으로 표본을 제외한다.
+제품 프롬프트는 `--prompt simai_ai.vlm.rationale:PROMPT`(25, `vlm-rationale.md`)다. 처리기와 평가가 같은 객체를 쓰고, 답 생성기는 처리기(`ai/services/worker/vlm_rationale.py`)와 같은 입력·답 규칙을 따른다.
+
+- 프레임: `estimated_capture_time_ms` 순으로 놓고 `observation_time` 뒤 프레임은 뺀다. 관문을 지난 프레임의 `camera_id`·시각을 `build` 에 넘겨 질문의 프레임 줄(카메라·상대 시각, 이미지 순서)이 처리기와 같다.
+  - `build` 입력은 표본 `input.json` 전체(`confidence_reasons` 포함)에 관문을 지난 `frames` 를 넣은 값이다.
+- 답 규칙(자리 표시 프롬프트가 아닐 때): `finish_reason == "length"`(잘림) 또는 `parse_answer` 형식 오류면, 관문 앞부터 잰 시간 + 첫 호출 지연이 5000 ms 안일 때 `RETRY_NOTE` 를 붙여 한 번 다시 묻는다. 그래도 어긋나면 `VLM_ANSWER_INVALID` 로 남기고 `content` 를 비워 채점표에서 뺀다(key_map `excluded`). 다시 물었으면 answers 에 `retried: true`.
+- 지연: answers `latency_ms` 는 관문(얼굴 처리) 앞부터 답까지다(처리기 결과 `latency_ms` 와 같은 구간, 재질문 포함). 동시 1 이다.
+- 채점표에는 응답 원문(JSON, `rationale`·`proposed_severity`)을 그대로 보인다. `proposed_severity` 는 처리기가 상향만 남기므로(`upward_only`) 평가자는 원문의 하향·같은 등급 의견도 등급변경 칸 메모로 남길 수 있다.
 
 ## 남은 일·잔여 위험
 
