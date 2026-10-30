@@ -25,8 +25,9 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `rule_version` | 규칙 ID, 임계값 세트, 적용 기간(시험 프로파일 포함, 7.4). 값은 AI 규칙 등록부에서 뽑으며 같은 버전의 값은 바꾸지 않는다(첫 운영 배포 전 예외, 11.4-1). 근거 조항(`legal_basis`)은 비어 있으면 시드가 채우고, 다른 값이 있으면 첫 운영 배포 전에는 갱신하고 뒤에는 마이그레이션이 멈춘다(7.1) |
 | `equipment_asset` | GLB 주소, 반경·형상 파라미터(확장, 부록 C) |
 | `layout_plan` | 가상 레이아웃(개구부·장비 주차 구역은 구역, 가설 비계는 작업면)·계획 궤적(F-02·F-01), 출처 PLANNED. 계획 작업 위치는 선택이다: 관리자가 주면 그 위치만 쓰고, 없으면(빈 목록 포함) Risk Engine 컨테이너가 작업면·구역에서 만든다(8.3) |
-| `config_bundle` | 구역·규칙·보정·형상(등록 정적 객체·작업면 OBB) 버전 묶음, 해시, 발행 시각, 현장 적용 시각(RunPod Tier 0 ACK) |
+| `config_bundle` | 구역·규칙·보정·형상(등록 정적 객체·작업면 OBB) 버전 묶음, 해시, 발행 시각, 현장 적용 시각(RunPod Tier 0 ACK), 묶음에 넣은 규칙 프로필(`rule_profile`: 운영·교실 시험, 7.4. 다음 발행의 기본값) |
 | `config_bundle_item` | 묶음에 들어간 구역·규칙·형상의 ID 와 버전 |
+| `config_bundle_file` | 묶음이 가리키는 파일 바이트(매니페스트·구성 요소). Tier 0 가 서명 주소로 내려받는다 |
 | `config_ack` | Tier 0 의 묶음 적용·거부 응답(I1 `config_ack`) |
 | `static_object` | 등록 작업면·정적 객체: 보수적 OBB, 상판 높이(7.5). 수정은 새 버전 |
 | `tier0_endpoint` | Tier 0 Pod 공개 IP·포트·공개키 지문 등록 이력(3.12) |
@@ -42,6 +43,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `system_metric` | 구간별 지연, FPS, 큐 길이, GPU 사용률, 프레임 손실 | 1\~5 Hz | 11.5 |
 | `device_heartbeat` | 노트북 하트비트(Tier 0 연결, 현장 표시, 카메라 수신 상태). 원격 단절 구분(3.2) 근거 | 1 Hz | 11.5 |
 | `observation_summary` | 2D 관측 카메라별 요약(I1 `observation_summary`, 원본 위치 `archive_uri`) | 필요 시 | 11.5 |
+| `system_outage` | 장애 기록(관제 정지·현장 장비 응답 없음·원격 전달 단절, 6.5): 마지막 정상 근거, EC2 판정 시각, 끝 시각과 끝난 이유(복구·종류 바뀜·EC2 재시작). 열린 장애는 하나다(G3 근거) | 장애 시작·끝마다 | 11.5 |
 
 `ppe_state`, `channel_state`, `watch_feature`, `region_state`(와 11.3 의 `watch_binding`) 등 확장 테이블은 MVP DB 에 두지 않는다. 목록은 부록 C 각 절의 “확장 DB 테이블”에 있다.
 
@@ -50,22 +52,24 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | 테이블 | 주요 내용 |
 |---|---|
 | `risk_event` | 규칙·버전, World ID·구역, 출처, 생명주기·검증 상태, severity·confidence·confidence_reasons, 발생·해소 시각, 근거 스냅샷, 관련 이벤트(related_event_id), 보존 표시 |
-| `risk_event_update` | RunPod Tier 0 전이의 시간순 기록(event_sequence, config_version, 지연 전달·감사 전용 여부) |
+| `risk_event_update` | RunPod Tier 0 전이의 시간순 기록(event_sequence, config_version, 지연 전달·감사 전용 여부). 저널 위치는 저널 세대(`journal_epoch`)와 offset 으로 가른다(Tier 0 저널이 offset 0 부터 새로 시작하면 EC2 가 세대를 올린다) |
 | `vlm_assessment` | 이벤트, 작업 유형(`vlm_rationale`·`incident_summary`)·job_id, 모델·버전, 입력 참조, 근거·요약 문장, 인용 조항 ID, 상향 의견(proposed_severity), 관리자 결정(승인·거절, 누가·언제, `escalation_id`), 지연 |
-| `notification` | 이벤트, 채널, 대상, 발송·수신 확인·ACK 시각 (LIVE 이벤트만 연결 가능. 시험 알림은 이 테이블에 넣지 않음) |
+| `notification` | 이벤트, 채널, 대상, 발송·수신 확인·ACK 시각 (LIVE 이벤트만 연결 가능. 시험 알림은 이 테이블에 넣지 않음). 발송 대기열을 겸해 발송 워커 임대 기한(`claimed_until`)을 두고, 비었거나 지난 대기 건은 다시 꺼낸다 |
 | `action_ticket` | 조치 상태, 사진 주소, 해소 상태와의 불일치 표시 |
 | `media_clip` | 이벤트 연결 영상 구간의 객체 키, 카메라·구간(촬영 시각)·해시·크기, 얼굴 흐림 여부, 삭제 예정일, 보존 표시. Tier 0 가 I1 `media_clip` 으로 보내고, 보낸 뒤 붙는 CRITICAL 자동 보존은 고치지 않고 `media_clip_retention` 으로 이력을 더한다 |
 | `report` | 보고서 종류(TBM·DAILY), 레이아웃·계산 결과(`sim.*`) 참조, 생성 상태, 본문, 인용 목록 |
 | `event_ack` | 운영자 확인: 누가·어디서·확인 대상 `event_sequence`(3.10). 저널의 ACKNOWLEDGED 전이가 가리킨다 |
 | `event_close` | 운영자 종료 명령과 Tier 0 결과(6.4). REST 요청의 멱등 키는 따로 저장하고(유일), `close_id` 는 EC2 가 발급한다. 종료 전이가 가리킨다 |
 | `event_escalation` | 승인한 VLM 상향 의견의 적용 명령과 Tier 0 결과(5.4). 상향 전이가 가리킨다 |
-| `journal_cursor` | Tier 0 인스턴스별 저널 수신 상태: `acked_offset`, 재동기화 중 여부, 마지막 스냅샷(3.2) |
+| `journal_cursor` | Tier 0 인스턴스별 저널 수신 상태: 지금 받는 저널 세대(`journal_epoch`), `acked_offset`, 재동기화 중 여부, 마지막 스냅샷(3.2) |
+| `i1_deferred_message` | 앞선 메시지를 기다리는 I1 메시지(받은 봉투 그대로, 처리되면 지움) |
 | `event_frame` | 이벤트 프레임 주소와 촬영 시각(I1 `event_frame_ready`, VLM 입력) |
 | `action_ticket_history` | 조치 티켓 상태 변경 이력(추가만) |
 | `clip_access_log` | 이벤트 클립 열람 기록(14장) |
 | `video_segment` | 상시 영상 조각의 객체 키, Tier 0·카메라·구간(촬영 시각)·stream_epoch·해시·크기, 삭제 예정일, 삭제 시각. Tier 0 가 I1 `video_segment` 로 보낸다(5.1, v1.3 수정 36) |
 | `video_access_log` | 상시 영상 열람 기록(14장) |
-| `upload_grant` | 임시 업로드 주소 발급 기록(프레임·클립·사진 객체 키 검증) |
+| `upload_grant` | 임시 업로드 주소 발급 기록(올라온 객체 키 검증): 목적(이벤트 프레임·클립, 조치 사진, 아바타 자산, 상시 영상 조각, Scene glTF), 요청 주체(Tier 0·기기·사용자), 서명에 묶은 형식·크기·sha256, 이벤트 프레임·클립이면 이벤트 |
+| `avatar_asset` | 아바타 자산 버전(키 `(world_id, stream_epoch, appearance_version)`, 추가만, 11.5·12.2) |
 | `push_subscription` | Web Push 구독 |
 | `test_push` | 시험 푸시(RiskEvent 아님, `notification` 에 넣지 않음) |
 | `push_receipt` | Service Worker 수신 확인(실제 알림·시험 푸시 중 하나) |
@@ -119,19 +123,22 @@ PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evalua
 | `refresh_token` | 갱신 토큰(해시만 저장) |
 | `device` | 현장 노트북 기기와 토큰(확장: 워치) |
 | `worker` | 분석 워커와 토큰, 처리 가능 작업 유형 |
-
-계정, 기기·워커 토큰은 API 없이 EC2 관리 명령으로 만들고 회전·폐기한다(14장). `site`·`camera` 는 Flyway 시드(현장 `classroom-1`, 카메라 `cam1`~`cam4`)로, `rule_version` 은 AI 규칙 등록부에서 자동 생성한 Flyway 반복 마이그레이션으로 넣는다(16장).
 | `analysis_job` | I5 작업: 유형·우선순위·시도 횟수·입력·결과(12.5) |
 | `job_lease` | 작업 대여: 만료·하트비트·반납(12.5) |
+
+계정, 기기·워커 토큰은 API 없이 EC2 관리 명령으로 만들고 회전·폐기한다(14장). `site`·`camera` 는 Flyway 시드(현장 `classroom-1`, 카메라 `cam1`~`cam4`)로, `rule_version` 은 AI 규칙 등록부에서 자동 생성한 Flyway 반복 마이그레이션으로 넣는다(16장).
 
 ## 11.7 보정·설치
 
 | 테이블 | 주요 내용 |
 |---|---|
 | `calibration_camera` | 보정 버전의 카메라별 K·왜곡·R·t·재투영 오차 |
+| `calibration_document` | 보정 문서 원문. 구성 묶음의 calibration 구성 요소로 그대로 내려준다 |
+| `calibration_update_message` | I1 `calibration_update` 수신 기록(추가만, `msg_id` 로 재전송 제거). 현재 보정 상태는 보낸·받은 시각 중 이른 쪽이 가장 늦은 기록이고, 같으면 늦게 받은 것이다 |
 | `calibration_run` | 자동 보정 실행(걷기 시간, 2D 관측 위치, `calibration_ba` 작업, 결과 후보) |
 | `calibration_verification` | 독립 검증점 결과(4.4) |
 | `scale_reference` | 실측 정물 목록(이름·치수·측정일, 4.3) |
 | `calibration_scale_check` | 보정에서 정물별로 잰 크기·오차·불일치 경고 |
 | `coverage_guide` | 커버리지 계산과 카메라별 설치 안내(4.5) |
 | `floor_plan` | BEV 평면도(보정·Scene 버전, 이미지 키, `bev_floorplan` 작업, 4.1) |
+| `bev_frame_set` | BEV 평면도 입력 프레임 묶음(관리 명령으로 등록, 추가만). 같은 보정·묶음의 평면도는 한 번만 만든다 |

@@ -18,7 +18,7 @@
       "rationale": "작업자가 단상 가장자리 쪽으로 몸을 기울이고 있고 난간이 보이지 않는다.",
       "proposed_severity": null,
       "clause_ids": [],
-      "model_version": "qwen3-vl-32b@2026-10",
+      "model_version": "cosmos3-nano",
       "latency_ms": 3300
     }
   }

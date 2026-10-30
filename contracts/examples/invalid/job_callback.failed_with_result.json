@@ -21,7 +21,7 @@
       "clause_ids": [
         "KOSHA-G-123-4.2"
       ],
-      "model_version": "qwen3-vl-32b@2026-10",
+      "model_version": "cosmos3-nano",
       "latency_ms": 3300
     },
     "error": {

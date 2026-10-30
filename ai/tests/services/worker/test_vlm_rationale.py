@@ -112,7 +112,7 @@ def test_frames_reaching_vlm_are_face_processed():
 
 @pytest.mark.parametrize("proposed", ["HIGH", "CAUTION", "INFO"])
 def test_same_or_lower_opinion_becomes_null(proposed):
-    result = _run(_input(), FakeVlm(_answer(proposed)))
+    result = _run(_input(severity="HIGH"), FakeVlm(_answer(proposed)))
     assert result["proposed_severity"] is None and result["severity"] == "HIGH"
 
 
@@ -157,7 +157,7 @@ def test_bad_json_is_asked_again_once_then_fails():
 
 
 def test_bad_json_then_good_answer_succeeds():
-    result = _run(_input(), FakeVlm("not json", _answer()))
+    result = _run(_input(severity="HIGH"), FakeVlm("not json", _answer()))
     assert result["proposed_severity"] == "CRITICAL"
 
 
@@ -229,7 +229,7 @@ def test_real_client_rejects_non_vlmframe_images():
         return R()
 
     client = VlmClient(VlmSettings(), opener=opener, encode=lambda px: ("image/jpeg", b"jpg"))
-    result = _run(_input(), client)
+    result = _run(_input(severity="HIGH"), client)
     images = [p for p in sent[0]["messages"][-1]["content"] if p["type"] == "image_url"]
     assert len(images) == 2 and all(p["image_url"]["url"].startswith("data:image/jpeg;base64,") for p in images)
     assert sent[0]["response_format"]["type"] == "json_schema" and result["proposed_severity"] == "CRITICAL"

@@ -151,7 +151,7 @@ EC2 내부: Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON �
 
 | `job_type` | 입력 | 출력 |
 |---|---|---|
-| `vlm_rationale` | 이벤트 프레임 주소, 구조화 상태 | 근거 문장, 상향 의견 |
+| `vlm_rationale` | 이벤트 프레임 주소(프레임마다 카메라·촬영 시각 세 값(3.9)·`face_policy`, 워커는 `observation_time` 뒤 프레임을 쓰지 않음), 구조화 상태 `structured_state`(계약은 객체만 정한다. 워커는 `tracks[]` 의 `world_id`·`position_xy`·`head_z` 와 `zone` 의 `zone_id`·`judge_type` 을 읽고 없는 키는 건너뛴다) | 근거 문장(한국어 1\~3문장), 상향 의견(상향만, MVP 는 CRITICAL 만 대상이라 늘 null, 5.4), `clause_ids`(지금 늘 `[]`: 입력에 조항이 없고 워커는 조항을 검색하지 않는다, 19.1) |
 | `tbm_report` | `tbm_report.schema.json` 입력(`job_request` 3.3.0): 보고서 종류 `report_kind`(TBM·DAILY)·보고서 ID·현장·날짜, TBM 은 PLANNED 계산 결과(`risk_plan_result` 의 위험 항목·위치), DAILY 는 그날 이벤트 요약(사람 필드 없음), EC2 pgvector 로 검색한 조항 `clauses[]`(ID·본문). 텍스트만 | 결과(`job_callback` 2.3.0): 섹션·문단별 본문과 인용 조항 ID(입력에 담긴 조항 ID 만), 입력 등급 그대로의 계산 근거 표, 인용 목록, 생성 모델·프롬프트 버전·시도 수(분석 워커가 외부 LLM 호출, 텍스트만) |
 | `incident_summary` | 이벤트, 이벤트 전후 20초 클립 객체 키(`media_clip`), 얼굴 처리 `face_policy`, 구조화 상태 | 요약 문장(상향 의견 없음). 우선순위 REPORT |
 | `bev_floorplan` | `bev_floorplan.schema.json` 입력(`job_request` 3.2.0): 보정 버전·보정 문서 주소와 해시, 프레임 출처, 카메라마다 사람 없는 프레임 한 장(주소·촬영 시각), 선택 Scene 버전 | BEV 평면도 이미지·메타데이터 주소, 픽셀 ↔ World 대응, 방 외곽, `input_provenance`(보조 화면, 안전 판단에 쓰지 않음, 4.1, `job_callback` 2.2.0). 우선순위 BACKGROUND |
@@ -206,6 +206,7 @@ VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커�
 | POST | /api/reports/daily | 일일 일지 생성 요청(`tbm_report`, `report_kind` DAILY) | 관리자 |
 | GET · PATCH | /api/tickets, /api/tickets/\{id\} | 조치 티켓 조회·상태 변경 | 반장(조회는 관리자도) |
 | POST | /api/uploads/sign | 사진·프레임·클립 임시 업로드 주소 | 기기·반장 |
+| GET | /api/events/\{id\}/clips | 이벤트의 클립 목록(위험 구간·카메라 순, 보존 표시, 지운 클립은 삭제 시각과 함께, 주소 없음) | 관리자 |
 | GET | /api/clips/\{id\} | 이벤트 클립 조회(임시 서명 주소) | 관리자 |
 | PUT | /api/clips/\{id\}/retention | 클립 보존 표시 붙이기·떼기 | 관리자 |
 | GET | /api/videos?from=\{t1\}&amp;to=\{t2\}&amp;camera_id= | 촬영 구간이 겹치는 상시 영상 조각 목록(주소 없음, 24시간 이내) | 관리자 |
