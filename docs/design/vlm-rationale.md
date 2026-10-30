@@ -90,8 +90,8 @@
 - **EC2(작업 생성·콜백):** `job_type vlm_rationale`, priority `VLM_FAST`, timeout_ms 5000, CRITICAL 이벤트에만·병합 이벤트당 1회(5.4, D-G7-03).
   각 프레임 `face_policy` 는 BLURRED(기본) 또는 EXCLUDED. `structured_state` 는 `tracks[]`(`world_id`·`position_xy`·`head_z`)와 `zone`(`zone_id`·`judge_type`) 모양을 읽는다
   (계약은 객체만 정한다). 콜백 반영 때 `severity` 가 이벤트의 현재 등급과 같은지, `proposed_severity` 는 의견으로만 저장하는지(경보 등급을 바꾸지 않음, 273) 확인한다.
-- **G7 도구(35):** `--prompt simai_ai.vlm.rationale:PROMPT` 로 제품 프롬프트를 쓴다. 도구는 `frames` 를 빼고 `build` 를 불러 프레임 줄(카메라·상대 시각)이 빠진다.
-  처리기와 같은 질문을 평가하려면 도구가 `frames[]` 의 `camera_id`·`estimated_capture_time_ms` 를 남겨 넘기면 된다. 잘린 답(`finish_reason == "length"`)은 처리기처럼 실패로 본다.
+- **G7 도구(35):** `--prompt simai_ai.vlm.rationale:PROMPT` 로 제품 프롬프트를 쓴다. 도구가 처리기와 같은 프레임 순서·사후 프레임 제외·프레임 줄(카메라·상대 시각)과
+  같은 답 규칙(잘림·형식 오류는 한 번 다시 묻고, 그래도 어긋나면 `VLM_ANSWER_INVALID` 로 채점에서 뺌)을 쓰도록 맞췄다(`docs/design/g7-eval.md` "제품 처리기와 맞춘 점").
 - **실제 녹화 재생 결과가 오면:** 얼굴 처리 영역이 실제 교실 각도에서 눈·코·입을 덮는지, 근거 문장이 프레임·구조화 상태와 맞는지(G7 표본), p95 지연(관문 + VLM),
   `VLM_ANSWER_INVALID` 비율, 150자 상한에서 잘림이 없는지.
 

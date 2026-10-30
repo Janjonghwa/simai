@@ -21,7 +21,7 @@
       "event_sequence": 1,
       "rule_id": "R2",
       "rule_version": 3,
-      "severity": "HIGH",
+      "severity": "CRITICAL",
       "confidence": "HIGH",
       "needs_check": false,
       "world_ids": [
