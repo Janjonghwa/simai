@@ -35,6 +35,9 @@ class Socket:
     def close(self):
         pass
 
+    def recv(self, timeout):
+        raise TimeoutError
+
 
 def snapshot(t=T0, revision=0, uncertain=False):
     rig = make_rig()
@@ -251,6 +254,7 @@ def test_body_adapter_uses_calibration_and_drops_translation(monkeypatch, rig, n
         p["mhr_model_params"] = np.r_[np.ones(3), np.zeros(201)]
     calls = []
     def process(image, **kwargs):
+        np.testing.assert_array_equal(image[0, 0], [30, 20, 10])
         calls.append(kwargs)
         return [p]
     adapter = FastBodyModel.__new__(FastBodyModel)
@@ -258,7 +262,9 @@ def test_body_adapter_uses_calibration_and_drops_translation(monkeypatch, rig, n
     adapter.estimator = SimpleNamespace(process_one_image=process, model=SimpleNamespace(head_pose=
         SimpleNamespace(scale_mean=np.zeros(68), scale_comps=np.zeros((28, 68)))))
     track = {"world_id": "w-1", "identity_revision": 2}
-    candidate, (shape, params) = adapter.infer(np.zeros((1080, 1920, 3), np.uint8), {"bbox": [100., 100., 500., 800.]}, track, camera)
+    image = np.full((1080, 1920, 3), [10, 20, 30], np.uint8)
+    candidate, (shape, params) = adapter.infer(image, {"bbox": [100., 100., 500., 800.]}, track, camera)
+    np.testing.assert_array_equal(image[0, 0], [10, 20, 30])
     assert calls[0]["inference_type"] == "body"
     np.testing.assert_array_equal(calls[0]["cam_int"][0], camera.K)
     assert params.shape == (204,) and list(params[:3]) == [0., 0., 0.]

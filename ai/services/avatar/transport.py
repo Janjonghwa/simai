@@ -1,24 +1,40 @@
 """I6 전송. 네트워크는 송신 스레드만 소유하고 사람별 포즈 한 개만 보관한다."""
 
 import json
+import logging
 import threading
 import uuid
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, build_opener
 
 from services.worker.transport import HttpTransport, NoRedirect
+from simai_ai.hmr.diagnostics import exception_summary
+
+log = logging.getLogger(__name__)
 
 
 class AvatarUpload:
     def __init__(self, base_url, token):
         self.http = HttpTransport(base_url, token)
+        self._token = token
 
     def __call__(self, world_id, epoch, version, glb):
+        try:
+            uri = self._upload(world_id, epoch, version, glb)
+        except Exception as error:
+            log.warning("아바타 자산 업로드 실패: world_id=%s epoch=%s version=%s %s",
+                        world_id, epoch, version, exception_summary(error, secrets=(self._token,)))
+            raise
+        log.info("아바타 자산 업로드 성공: world_id=%s epoch=%s version=%s bytes=%s",
+                 world_id, epoch, version, glb.size_bytes)
+        return uri
+
+    def _upload(self, world_id, epoch, version, glb):
         response = self.http.post("/api/uploads/sign", {"purpose": "AVATAR_ASSET", "world_id": world_id,
                     "stream_epoch": epoch, "appearance_version": version, "content_type": "model/gltf-binary",
                     "size_bytes": glb.size_bytes, "sha256": glb.sha256.removeprefix("sha256:")}, 15)
         if response.status != 200 or not response.body:
-            raise ValueError("아바타 업로드 서명 실패")
+            raise ValueError(f"아바타 업로드 서명 실패 HTTP={response.status}")
         signed = response.body
         if urlsplit(signed["upload_url"]).scheme != "https" or signed.get("method") != "PUT":
             raise ValueError("아바타 업로드는 HTTPS PUT이어야 한다")
@@ -42,12 +58,13 @@ def websocket_connector(base_url, token):
     def connect():
         from websockets.sync.client import connect as ws_connect
         return ws_connect(url, additional_headers={"Authorization": f"Bearer {token}"},
-                          open_timeout=10, close_timeout=1, max_queue=1, compression="deflate")
+                          open_timeout=10, close_timeout=1, ping_interval=10, ping_timeout=10,
+                          max_queue=1, compression="deflate")
     return connect
 
 
 class AvatarSender:
-    def __init__(self, connect, *, clock_ms, monotonic, source_id="worker-01", stream_epoch=None):
+    def __init__(self, connect, *, clock_ms, monotonic, source_id="worker-01", stream_epoch=None, log_secrets=()):
         self.connect, self.clock_ms, self.monotonic, self.source_id = connect, clock_ms, monotonic, source_id
         self.epoch = clock_ms() if stream_epoch is None else stream_epoch
         self.sequence = self.dropped = 0
@@ -57,6 +74,9 @@ class AvatarSender:
         self._context = {}
         self._socket = None
         self._retry_at, self._backoff, self._announce_at = 0., 1., 0.
+        self._connections = self._sent_batches = 0
+        self._report_at = monotonic() + 60
+        self._log_secrets = log_secrets
 
     def asset(self, payload):
         with self._lock:
@@ -99,6 +119,11 @@ class AvatarSender:
 
     def tick(self):
         now = self.monotonic()
+        if now >= self._report_at:
+            log.info("아바타 1분 송신 집계: pose_batches=%s dropped_poses=%s connected=%s",
+                     self._sent_batches, self.dropped, self._socket is not None)
+            self._sent_batches = 0
+            self._report_at = now + 60
         if now < self._retry_at:
             return
         try:
@@ -106,6 +131,14 @@ class AvatarSender:
                 self._socket = self.connect()
                 self.discard_poses()  # 연결 전 포즈는 재생하지 않는다
                 self._announce_at = 0.
+                self._connections += 1
+                log.info("아바타 %s: epoch=%s", "연결됨" if self._connections == 1 else "재연결됨", self.epoch)
+            # I6는 단방향이다. 수신 대기 없이 close/keepalive 실패를 확인한다.
+            # 자산 확정 전이나 AdmissionGate 차단 중에도 서버 재기동을 감지한다.
+            try:
+                self._socket.recv(timeout=0)
+            except TimeoutError:
+                pass
             with self._lock:
                 self._assets = {k: v for k, v in self._assets.items()
                                 if self.clock_ms() - self._seen.get(k, 0) <= 30_000}
@@ -122,8 +155,11 @@ class AvatarSender:
                 self.sequence += 1  # 전송 중 잃은 묶음도 순번 빈칸으로 남긴다
                 self._send("avatar_pose_batch", {"stream_epoch": self.epoch, "batch_sequence": sequence,
                            "dropped_poses": dropped, **context, "poses": group})
+                self._sent_batches += 1
             self._backoff = 1.
-        except Exception:  # 예외 문자열에는 토큰·서명 URL이 있을 수 있어 기록하지 않는다
+        except Exception as error:
+            log.warning("아바타 연결 끊김/접속 실패: %s retry_s=%s",
+                        exception_summary(error, secrets=self._log_secrets), self._backoff)
             self.close()
             self.discard_poses()
             self._retry_at = now + self._backoff
