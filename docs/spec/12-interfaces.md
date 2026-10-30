@@ -194,6 +194,10 @@ VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커�
 | GET | /api/scenes/current | COMMITTED Scene과 glTF 주소 | 열람 |
 | GET | /api/scenes/\{sceneId\} | Scene 생성 상태(CANDIDATE·VALIDATING·COMMITTED·REJECTED) | 관리자 |
 | POST | /api/scenes/rebuild | 정적 3D 재생성 요청 | 관리자 |
+| POST | /api/scenes | 관리자가 올린 glb(업로드 목적 `SCENE_GLTF`)를 Scene 후보(CANDIDATE)로 등록. PROVISIONAL·CALIBRATED 보정에만 | 관리자 |
+| POST | /api/scenes/\{sceneId\}/commit · /reject | 후보 Scene 확정(COMMITTED, 이전 현재 Scene 은 `valid_to` 로 닫음)·거절(REJECTED, 사유) | 관리자 |
+| GET | /api/sites/current | 현장(MVP 하나) 조회 | 열람 |
+| POST · PUT | /api/sites · /api/sites/current | 현장 등록(없을 때만)·수정(이름·원점 근거, 구성이 붙기 전이면 `site_id`) | 관리자 |
 | GET · POST | /api/layouts | 가상 레이아웃 | 관리자 |
 | GET · PUT | /api/layouts/\{id\} | 가상 레이아웃 조회·수정 | 조회는 열람, 수정은 관리자 |
 | POST | /api/layouts/\{id\}/evaluate | 계획 모드 단독 평가(확장, 부록 C.4. M3 TBM 보고서는 아래 `/api/reports/tbm` 안에서 계산) | 관리자 |

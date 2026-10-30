@@ -75,13 +75,13 @@ public class UploadSignService {
         Instant now = clock.instant().truncatedTo(ChronoUnit.MILLIS);
 
         UUID eventId = (purpose == UploadPurpose.TICKET_PHOTO || purpose == UploadPurpose.AVATAR_ASSET
-                || purpose == UploadPurpose.VIDEO_SEGMENT)
+                || purpose == UploadPurpose.VIDEO_SEGMENT || purpose == UploadPurpose.SCENE_GLTF)
                 ? null
                 : request.eventId();
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("key", key)
                 .addValue("purpose", purpose.name())
-                .addValue("requester", who.kind().name())
+                .addValue("requester", who.kind().stored())
                 .addValue("device", who.deviceId())
                 .addValue("user", who.userId())
                 .addValue("worker", who.workerId())
@@ -143,7 +143,7 @@ public class UploadSignService {
                 }
                 yield purpose.prefix() + "/" + request.segmentId() + extension;
             }
-            case TICKET_PHOTO -> purpose.prefix() + "/" + UUID.randomUUID() + extension;
+            case TICKET_PHOTO, SCENE_GLTF -> purpose.prefix() + "/" + UUID.randomUUID() + extension;
             case AVATAR_ASSET -> avatarKey(purpose, request, extension);
         };
     }

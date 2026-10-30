@@ -21,6 +21,8 @@ public enum UploadPurpose {
     // 조치 완료 사진(반장 PWA, FR-41)
     TICKET_PHOTO("ticket-photos", Map.of("image/jpeg", ".jpg", "image/png", ".png", "image/webp", ".webp"), 20L << 20,
             Set.of(Requester.Kind.USER)),
+    // 관리자가 올리는 정적 배경 Scene glTF(GLB 한 파일, S15P31A101-322). 교실 메시는 수십~수백 MB 라 클립보다 크게 잡는다
+    SCENE_GLTF("scenes", Map.of("model/gltf-binary", ".glb"), 512L << 20, Set.of(Requester.Kind.ADMIN)),
     // EXP-02 아바타 메시(GLB·glTF)·텍스처·표면 출처 지도(워커 토큰, S15P31A101-325)
     AVATAR_ASSET(
             "avatars",
