@@ -85,5 +85,5 @@ World 좌표계는 첫 CALIBRATED 때 교실의 바닥·벽으로 한 번 정하
 
 - 후보 보정은 백그라운드에서 계산하고, 의미 있게 좋아졌고 검증을 통과할 때만 새 버전으로 원자적 전환한다.
 - 모든 위치 계산 결과에 `calibration_version`을 붙인다.
-- 정적 3D 배경 복원(`static_reconstruct`, 5.3) 결과는 사용 보정 버전을 기록해 `CANDIDATE` Scene 버전으로 먼저 저장하고, 관리자가 보정 상태(`CALIBRATED`)와 지표를 확인해 명시적으로 활성화(`commit`)하면 서버 재기동 없이 현재 Scene 이 된다(직접 glb 등록은 12.6). 보정이 크게 바뀌면 해당 Scene을 재생성 대상으로 표시한다(`docs/design/scene-version-from-job.md`).
+- 정적 3D 배경 복원(`static_reconstruct`, 5.3) 결과는 사용 보정 버전을 기록해 `CANDIDATE` Scene 버전으로 먼저 저장하고, 관리자가 보정 상태와 지표를 확인해 명시적으로 활성화(`commit`)하면 서버 재기동 없이 현재 Scene 이 된다(직접 glb 등록은 12.6). 활성화는 직접 등록과 같이 보정이 `PROVISIONAL`·`CALIBRATED` 일 때만 되고(`UNCALIBRATED`·`DRIFTED` 는 거부), `PROVISIONAL` 이면 관리자 확인이 곧 예외 승인이며 뷰어는 ‘임시 보정 기준 배경’ 으로 표시한다. 배경은 표시용이고 위치 정본은 Tier 0 라 판정에 영향이 없다. Scene 과 보정의 정합은 버전 문자열이 아니라 같은 World 계보인지와 보정 변화 크기로 판단한다: 실행 중 보정(4.3)처럼 World 를 유지한 작은 변화는 배경을 그대로 쓰고, 문턱을 넘는 큰 변화는 흐리게 그리며 해당 Scene 을 재생성 대상으로 표시하고, 다른 World 면 숨긴다(문턱·판정 위치는 `docs/design/scene-version-from-job.md`). Tier 0 의 `world_state.scene_version` 은 설정 고정값이 아니라 EC2 현재 Scene 을 따른다.
 - 운영 중에는 지나가는 사람들의 keypoint로 재투영 오차를 계속 계산한다. 자동 보정 과정의 커버리지 계산으로 “카메라 3번이 너무 아래를 봄” 같은 설치 안내와 걷기 경로 안내를 띄운다.
