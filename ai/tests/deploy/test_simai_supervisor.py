@@ -1017,3 +1017,252 @@ def test_real_tier0_exit_brings_down_others_with_same_code(tmp_path):
     assert [e[0] for e in ev if e[1] == "term"] == ["worker", "vllm"]
     kids = [int(e[2]) for e in ev if e[1] == "grandchild"]
     assert kids and not any(_alive(k) for k in kids)
+
+
+
+# ---------------------------------------------------------------- S15P31A101-382: GPU 상한·로비 LIVE 통합 기동·기동 전 점검
+
+
+def _tlv(tag: int, content: bytes) -> bytes:
+    n = len(content)
+    if n < 0x80:
+        return bytes([tag, n]) + content
+    raw = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([tag, 0x80 | len(raw)]) + raw + content
+
+
+_TEST_SPKI = _tlv(
+    0x30,
+    _tlv(0x30, _tlv(0x06, bytes.fromhex("2a8648ce3d0201")) + _tlv(0x06, bytes.fromhex("2a8648ce3d030107")))
+    + _tlv(0x03, b"\x00\x04" + bytes(range(64))),
+)
+
+
+def _test_cert_pem() -> bytes:
+    import base64
+
+    name = _tlv(0x30, _tlv(0x31, _tlv(0x30, _tlv(0x06, b"\x55\x04\x03") + _tlv(0x0C, b"tier0-lobby"))))
+    validity = _tlv(0x30, _tlv(0x17, b"261017000000Z") + _tlv(0x17, b"361017000000Z"))
+    tbs = (
+        _tlv(0xA0, _tlv(0x02, b"\x02"))
+        + _tlv(0x02, b"\x01\x23")
+        + _tlv(0x30, _tlv(0x06, b"\x2a"))
+        + name
+        + validity
+        + name
+        + _TEST_SPKI
+        + _tlv(0xA3, _tlv(0x30, b""))
+    )
+    der = _tlv(0x30, _tlv(0x30, tbs) + _tlv(0x30, _tlv(0x06, b"\x2a")) + _tlv(0x03, b"\x00" + b"\x11" * 70))
+    return b"-----BEGIN CERTIFICATE-----\n" + base64.encodebytes(der) + b"-----END CERTIFICATE-----\n"
+
+
+def test_worker_torch_memory_fraction_is_capped_even_without_avatar(bs, tmp_path, monkeypatch):
+    """avatar 가 꺼진 기본 구성(tier0,vllm,worker)에서도 worker 상한은 0.15(0.70 - 0.55)로 묶여야 한다 (S15P31A101-382)."""
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "vllm", "worker"))
+    assert float(sup.svc["worker"].env["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(0.15)
+    assert sup.svc["worker"].env["SIMAI_TIER0_MARKER"] == str(tmp_path / "simai" / "state" / "tier0.live")
+    assert sup.svc["worker"].env["SIMAI_TIER0_WEIGHTS"] == str(tmp_path / "simai" / "weights" / "yolo" / "yolo26x-pose.pt")
+    assert sup.svc["worker"].env["SIMAI_VLLM_PORT"] == "8000"
+    assert sup.svc["worker"].env["SIMAI_VLM_MODEL"] == "cosmos3-nano"
+
+    # vLLM 이 없는(tier0,worker) 구성은 worker_fraction 전체(0.70)를 쓴다
+    sup_no_vllm = _sup(bs, tmp_path, monkeypatch, World(), services=("tier0", "worker"))
+    assert float(sup_no_vllm.svc["worker"].env["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(0.70)
+
+    # avatar 없이도 vLLM + worker 상한 합이 예산을 넘으면 기동 전에 거부한다
+    with pytest.raises(bs.BootstrapError) as exc:
+        _sup(bs, tmp_path, monkeypatch, World(), services=("tier0", "vllm", "worker"),
+             env={"SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION": "0.70"})
+    assert exc.value.code == bs.EXIT_USAGE
+
+    with pytest.raises(bs.BootstrapError) as exc2:
+        _sup(bs, tmp_path, monkeypatch, World(), services=("tier0", "vllm", "worker"),
+             env={"SIMAI_WORKER_TORCH_MEMORY_FRACTION": "0.25"})
+    assert exc2.value.code == bs.EXIT_USAGE
+
+
+def test_lobby_mode_prepares_work_runs_supervisor_and_propagates_nonzero_exit_code(bs, tmp_path, monkeypatch, capsys):
+    """로비 LIVE 통합 기동(simai-bootstrap lobby): 설정·토큰 파일 격리·pod.jsonl·Supervisor·비-0 종료 코드 전파 (S15P31A101-382)."""
+    root = tmp_path / "simai"
+    work = root / "runs" / "lobby-live-s9"
+    bundle = tmp_path / "bundle"
+    (bundle / "tls").mkdir(parents=True)
+    (bundle / "calibration.json").write_text('{"cameras": ["cam1", "cam2", "cam3"]}\n', encoding="utf-8")
+    (bundle / "tls" / "tier0.crt").write_bytes(_test_cert_pem())
+    (bundle / "tls" / "tier0.key").write_text("FAKE-PRIVATE-KEY\n", encoding="utf-8")
+    (bundle / "laptop_token.sha256").write_text("a" * 64 + "\n", encoding="utf-8")
+
+    tier0_tok = "tier0-secret-tok-999"
+    worker_tok = "worker-secret-tok-888"
+    t0_file = tmp_path / "tier0.token"
+    wk_file = tmp_path / "worker.token"
+    t0_file.write_text(tier0_tok + "\n", encoding="utf-8")
+    wk_file.write_text(worker_tok + "\n", encoding="utf-8")
+
+    monkeypatch.setenv("SIMAI_ROOT", str(root))
+    monkeypatch.setattr(bs, "prepare", lambda want_set: {
+        "storage": {"root": str(root)},
+        "gpu": {"name": "NVIDIA H100", "arch": "sm_90", "memory_total_mb": 81559.0},
+        "weights": [],
+        "exit": 0,
+    })
+    monkeypatch.setattr(bs, "ensure_weights", lambda r, entries: [{"name": e["name"], "status": "present"} for e in entries])
+
+    w = World()
+    orig_sup = bs.Supervisor
+
+    def make_sup(r, services, tier0_argv, env=None, **kw):
+        sup = orig_sup(
+            r, services, tier0_argv, env=env, spawn=w.spawn,
+            ready=lambda: (w.ready, "ready" if w.ready else "waiting"),
+            health=lambda: w.healthy, clock=lambda: w.now, wall_ms=lambda: int(w.now * 1000) + 10_000,
+            **kw,
+        )
+
+        def step_and_exit(_s):
+            if sup._weights is not None:
+                sup._weights.join(5)
+            w.now += 1
+            if w.now == 1:
+                marker = work / "state" / "tier0.live"
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text(json.dumps({
+                    "gpu_priority": {"phase": "running", "pid": w.last("tier0").pid, "written_at": 15_000, "reserve": {"state": "OK"}}
+                }), encoding="utf-8")
+                w.ready = True
+                w.healthy = True
+            if w.now >= 6:
+                w.last("tier0").rc = 17  # 비-0 종료 코드(lobby_live_s9.py 의 return 0 버그 회귀)
+
+        sup.sleep = step_and_exit
+        return sup
+
+    monkeypatch.setattr(bs, "Supervisor", make_sup)
+    rc = bs.main([
+        "lobby",
+        "--work", str(work),
+        "--bundle-dir", str(bundle),
+        "--public-host", "203.0.113.77",
+        "--ec2-base-url", "https://ec2.example.invalid",
+        "--tier0-token-file", str(t0_file),
+        "--worker-token-file", str(wk_file),
+        "--no-clean-background",
+    ])
+    assert rc == 17, "Tier 0 의 비-0 종료 코드를 삼키지 않고 그대로 돌려줘야 한다"
+    assert w.spawned == ["tier0", "vllm", "avatar", "worker"]
+
+    # 생성된 설정 파일 검증
+    cfg = json.loads((work / "tier0-live.json").read_text(encoding="utf-8"))
+    assert cfg["clean_background"] == {"enabled": False}
+    assert cfg["live_calibration"]["enabled"] is True
+    assert cfg["live_calibration"]["measured_camera_heights"] == {"cam1": 2.49, "cam2": 2.76, "cam3": 2.39}
+    endpoint = json.loads((work / "endpoint.json").read_text(encoding="utf-8"))
+    assert endpoint["tls_public_key_sha256"] == "sha256:" + hashlib.sha256(_TEST_SPKI).hexdigest()
+    assert endpoint["public_host"] == "203.0.113.77"
+
+    # GPU 상한 및 아바타 채널 검증
+    assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(0.05)
+    assert float(w.envs["avatar"]["SIMAI_AVATAR_GPU_MEMORY_FRACTION"]) == pytest.approx(0.10)
+    assert w.envs["tier0"]["SIMAI_AVATAR_SHARE"] == "1"
+    assert w.envs["avatar"]["SIMAI_AVATAR_CHANNEL"] == "wss://127.0.0.1:19446"
+    for svc_name in ("tier0", "vllm", "worker", "avatar"):
+        assert w.envs[svc_name]["SIMAI_TIER0_MARKER"] == str(work / "state" / "tier0.live")
+
+    # 토큰 격리 및 로그 비노출 검증
+    assert w.envs["tier0"]["SIMAI_TIER0_TOKEN"] == tier0_tok
+    for sidecar in ("vllm", "worker", "avatar"):
+        assert "SIMAI_TIER0_TOKEN" not in w.envs[sidecar]
+        assert tier0_tok not in json.dumps(w.envs[sidecar])
+    for svc_name in ("tier0", "vllm", "worker", "avatar"):
+        assert "SIMAI_WORKER_TOKEN" not in w.envs[svc_name]
+        assert worker_tok not in json.dumps(w.envs[svc_name])
+        assert tier0_tok not in " ".join(w.argvs[svc_name])
+        assert worker_tok not in " ".join(w.argvs[svc_name])
+    worker_env_path = work / ".private" / "worker.env"
+    assert worker_env_path.is_file()
+    assert worker_env_path.read_text(encoding="utf-8").strip() == f"SIMAI_WORKER_TOKEN={worker_tok}"
+    assert w.argvs["worker"][:4] == ["simai-wait-tier0", "--env-file", str(worker_env_path), "--"]
+    assert w.argvs["avatar"][:4] == ["simai-wait-tier0", "--env-file", str(worker_env_path), "--"]
+
+    # pod.jsonl 기록 검증
+    pod_rows = [json.loads(line) for line in (work / "pod.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(pod_rows) == 1 and pod_rows[0]["gpu_priority"]["written_at"] == 15_000
+
+    captured = capsys.readouterr()
+    assert tier0_tok not in captured.out and tier0_tok not in captured.err
+    assert worker_tok not in captured.out and worker_tok not in captured.err
+
+
+def test_check_preflight_verifies_multiple_sets_budget_and_runtime_and_fails_nonzero(bs, tmp_path, monkeypatch, capsys):
+    """기동 전 점검(preflight / check --sets): 다중 가중치·GPU 예산·런타임을 모두 검증하고 실패 시 비-0 으로 끝난다 (S15P31A101-382)."""
+    root = tmp_path / "simai"
+    manifest = tmp_path / "weights.json"
+    manifest.write_text(json.dumps({
+        "weights": [
+            {"name": "w-t0", "sets": ["tier0"], "path": "weights/t0.bin", "source": {"url": "x"}, "sha256": "0" * 64},
+            {"name": "w-av", "sets": ["avatar"], "path": "weights/av.bin", "source": {"url": "x"}, "sha256": "0" * 64},
+            {"name": "w-st", "sets": ["static"], "path": "weights/st.bin", "source": {"url": "x"}, "sha256": "0" * 64},
+            {"name": "w-vl", "sets": ["vlm"], "path": "weights/vl.bin", "source": {"url": "x"}, "sha256": "0" * 64},
+        ]
+    }), encoding="utf-8")
+    monkeypatch.setenv("SIMAI_ROOT", str(root))
+    monkeypatch.setenv("SIMAI_WEIGHTS_MANIFEST", str(manifest))
+    monkeypatch.setenv("SIMAI_MIN_FREE_GB", "0.001")
+    monkeypatch.setattr(bs, "detect_gpu", lambda smi: {"name": "NVIDIA H100", "arch": "sm_90", "memory_total_mb": 81559.0})
+    monkeypatch.setattr(bs, "ensure_weights", lambda r, entries: [{"name": e["name"], "status": "present"} for e in entries])
+
+    # 1) 모든 세트·예산·런타임(python, json/sys) 정상 → 종료 코드 0
+    rc = bs.main([
+        "preflight",
+        "--require-bins", Path(sys.executable).name,
+        "--require-modules", "json,math",
+    ])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0 and out["exit"] == 0
+    assert set(out["sets"]) == {"tier0", "avatar", "static", "vlm"}
+    assert out["gpu_budget"]["worker_fraction"] == pytest.approx(0.05)
+    assert out["runtime"]["modules"] == {"json": True, "math": True}
+
+    # 2) 필수 바이너리 누락 → 종료 코드 2 (chain-s9.sh 처럼 0 으로 삼키지 않는다)
+    rc_bin = bs.main([
+        "preflight",
+        "--require-bins", "nonexistent-texrecon-binary-xyz",
+        "--require-modules", "json",
+    ])
+    out_bin = json.loads(capsys.readouterr().out)
+    assert rc_bin == bs.EXIT_STORAGE and out_bin["exit"] == bs.EXIT_STORAGE
+    assert "nonexistent-texrecon-binary-xyz" in out_bin["error"]
+
+    # 3) 필수 파이썬 모듈 누락 → 종료 코드 2
+    rc_mod = bs.main([
+        "check",
+        "--sets", "tier0,static",
+        "--require-modules", "nonexistent_open3d_module_xyz",
+    ])
+    out_mod = json.loads(capsys.readouterr().out)
+    assert rc_mod == bs.EXIT_STORAGE and out_mod["exit"] == bs.EXIT_STORAGE
+
+    # 4) 가중치 세트 중 하나라도 실패 → 종료 코드 2
+    def fail_static(r, entries):
+        if any("static" in e.get("sets", []) for e in entries):
+            raise bs.BootstrapError(bs.EXIT_STORAGE, "static 가중치 손상")
+        return [{"name": e["name"], "status": "present"} for e in entries]
+
+    monkeypatch.setattr(bs, "ensure_weights", fail_static)
+    rc_w = bs.main(["check", "--sets", "tier0,static"])
+    out_w = json.loads(capsys.readouterr().out)
+    assert rc_w == bs.EXIT_STORAGE and out_w["sets"]["static"]["status"] == "error"
+
+
+def test_scene_accepts_worker_token_file_without_exposing_token_in_argv_or_logs(bs, tmp_path, capsys):
+    """scene 모드는 --worker-token-file 로 워커 토큰을 파일에서만 읽어 자식 환경에 넣는다 (S15P31A101-382)."""
+    tok = "scene-worker-secret-token-555"
+    tok_file = tmp_path / "worker.token"
+    tok_file.write_text(tok + "\n", encoding="utf-8")
+    extra_env, cmd = bs._parse_scene_args(["--worker-token-file", str(tok_file), "--", "python", "-m", "services.worker", "--once"])
+    assert extra_env["SIMAI_WORKER_TOKEN"] == tok
+    assert cmd == ["python", "-m", "services.worker", "--once"]
+    bs.log(f"scene test leak check: {tok}")
+    assert tok not in capsys.readouterr().err

@@ -110,11 +110,6 @@ def main(argv: list[str] | None = None) -> int:
     if not base_url or not token:
         print("services.worker: SIMAI_EC2_BASE_URL·SIMAI_WORKER_TOKEN 이 필요하다 (.env)", file=sys.stderr)
         return 2
-    transport = HttpTransport(base_url, token)
-    handlers = build_handlers(args.config, HttpObjectStore(transport))
-    if not handlers:
-        print("services.worker: 등록된 작업 처리기가 없다 (처리기 조립은 후속 티켓)", file=sys.stderr)
-        return 1
 
     try:
         gpu = WorkerGpuSettings.from_env(os.environ)
@@ -133,6 +128,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"services.worker: GPU 메모리 상한을 두지 못했다: {cap.reason}", file=sys.stderr)
         return 2
     logging.getLogger("services.worker").info("GPU 메모리 상한 %s (%s), Tier 0 표시 파일 %s", cap.state, cap.fraction, gpu.marker)
+
+    transport = HttpTransport(base_url, token)
+    handlers = build_handlers(args.config, HttpObjectStore(transport))
+    if not handlers:
+        print("services.worker: 등록된 작업 처리기가 없다 (처리기 조립은 후속 티켓)", file=sys.stderr)
+        return 1
 
     stop = threading.Event()
     client = LeaseClient(

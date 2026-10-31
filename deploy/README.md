@@ -132,9 +132,10 @@ RunPod 은 Container Registry Auth(읽기 전용 토큰)로 접근한다. 토큰
 | 명령 | 하는 일 |
 |---|---|
 | (인자 없음) / `tier0 [Tier 0 인자]` / `--config ...` | 준비 → `simai-tier0`(엔진 준비 `engine_cache ensure` → `python -m services.tier0`) |
+| `lobby [로비 인자...]` | 로비 LIVE 통합 기동(S15P31A101-382): `endpoint.json`·`tier0-live.json`·`pod.jsonl` 구성 → 단일 `Supervisor` 로 `tier0,vllm,worker,avatar` 를 띄우고 Tier 0 종료 코드 그대로 끝난다(아래 "로비 LIVE 통합 기동") |
 | `queue [gpu_session1 run 인자]` | 준비 → GPU 1차 세션 큐(저장소 사본 `$SIMAI_SESSION_REPO`, 기본 `$SIMAI_ROOT/setup/session1/repo`). 엔진 첫 빌드 시간은 큐 b 항목이 재므로 엔진 준비는 하지 않는다 |
-| `check` | 준비만 하고 결과 JSON 출력(사이트 첫 확인) |
-| `scene [--] <명령...>` | 장면 준비 모드(S15P31A101-250, 통합 이미지의 MapAnything 일회성 작업): Tier 0·GPU 확인 → `static` 가중치 → 재확인 → 그 명령을 자식으로 실행하며 Tier 0 시작을 감시(나타나면 장면 작업을 끝내고 75). 종료 코드는 명령의 것. 아래 "장면 준비 모드" |
+| `check [--preflight\|--sets ...]` / `preflight` | 준비만 하고 결과 JSON 출력. `preflight`(또는 `check --preflight`)는 `tier0,avatar,static,vlm` 가중치·GPU 예산·`texrecon`·`open3d`·`ultralytics` 를 일괄 점검하고 하나라도 실패하면 비-0 종료 코드(2·3·64)로 끝난다 |
+| `scene [--worker-token-file <경로>] [--] <명령...>` | 장면 준비 모드(S15P31A101-250·-382, 통합 이미지의 MapAnything·정적 장면 일회성 작업): Tier 0·GPU 확인 → `static` 가중치 → 재확인 → 그 명령을 자식으로 실행하며 Tier 0 시작을 감시(나타나면 장면 작업을 끝내고 75). 종료 코드는 명령의 것. 아래 "장면 준비 모드" |
 | 그 밖의 명령(`sleep infinity`, `bash`, `simai-wait-tier0`, `python ...`) | 준비 없이 그대로 실행 |
 
 준비 순서와 종료 코드(simai-tier0·engine_cache 와 같은 규칙: 2 저장·가중치, 3 GPU):
@@ -343,7 +344,9 @@ Tier 0 재시작(엔진 캐시 사용, 1초대) 때는 워커 접수 문이 표�
 2. Tier 0 표시 파일 `state/tier0.live` 가 `phase=running`·`reserve.state=OK`(simai-wait-tier0 와 같은 판정)이고 이번에 띄운 Tier 0 가 쓴 것(`gpu_priority.written_at` ≥ 기동 시각, `pid` 같음)이면 워커 가중치를 받는다(받는 동안에도 Tier 0 는 돈다). 이전 실행이 비정상 종료로 남긴 표시는 준비로 보지 않고 지우지도 않는다.
 3. vLLM 서버: `vllm serve $SIMAI_ROOT/weights/cosmos3-nano --served-model-name cosmos3-nano --hf-overrides '{"architectures": ["Cosmos3ReasonerForConditionalGeneration"]}' --gpu-memory-utilization $SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION(0.55) --max-num-seqs $SIMAI_WORKER_VLLM_MAX_NUM_SEQS(4) --max-model-len $SIMAI_WORKER_VLLM_MAX_MODEL_LEN(32768) --host 127.0.0.1 --port $SIMAI_VLLM_PORT(8000) --mm-encoder-tp-mode data --async-scheduling $SIMAI_VLLM_EXTRA_ARGS`, `VLLM_USE_DEEP_GEMM=0`, `VLLM_USE_FLASHINFER_SAMPLER=0`, `HF_HUB_OFFLINE=1`. `/health` 가 200 이 될 때까지 기다린다(`SIMAI_VLLM_READY_TIMEOUT_S`, 기본 1800).
    `--max-model-len` 이 없으면 모델 기본 262,144 토큰(한 요청 KV 36 GiB)이 0.55 에서 남는 KV(H100 23.99 GiB)를 넘어 기동이 실패하고, runtime 이미지에는 nvcc 가 없어 FlashInfer top-k/top-p 샘플러 JIT 가 실패한다(3차 GPU 세션, `docs/design/unified-env.md`). `SIMAI_VLLM_EXTRA_ARGS` 에 `--max-model-len` 이 있으면 그 값을 쓰고(중복하지 않음), 두 환경 변수는 컨테이너 환경에 주면 그 값이 우선이다.
-4. 분석 워커: `python -m services.worker $SIMAI_WORKER_ARGS`(받을 작업 유형 VLM·`hmr_refine` 등의 처리기는 워커 설정 파일 `--config` 가 정한다. 조립은 -227 등). 워커 토큰 파일은 `SIMAI_WORKER_ENV_FILE`, 없으면 `$SIMAI_ROOT/../.simai-private/worker.env` 가 있을 때 `simai-wait-tier0 --env-file` 로 워커 환경에만 넣는다.
+4. 분석 워커·아바타(S15P31A101-246·-382): `python -m services.worker $SIMAI_WORKER_ARGS` 와(`avatar` 선택 시) `python -m services.avatar`.
+   - **GPU 메모리 상한(S15P31A101-382)**: `Supervisor` 는 분석 워커 전체 예산(`budget.worker_fraction`, 기본 `0.70`)에서 `vllm`(기본 `0.55`)과 `avatar`(`avatar` 포함 시 기본 `0.10`, 미포함 시 `0.0`)를 뺀 나머지(`tier0,vllm,worker` 는 `0.15`, `tier0,vllm,worker,avatar` 는 `0.05`)를 `SIMAI_WORKER_TORCH_MEMORY_FRACTION` 으로 계산해 `worker` 환경에 넣는다. 합이 예산을 넘으면 아무 프로세스도 띄우기 전에 종료 코드 64 로 거부한다. `services.worker` 진입점도 `build_handlers`(`YOLO26x-pose` 가중치 GPU 적재) **이전에** `cap_process_memory(torch_fraction)` 를 먼저 호출한다.
+   - **토큰 파일 격리**: 워커 토큰 파일은 `SIMAI_WORKER_ENV_FILE`(또는 `SIMAI_WORKER_TOKEN_FILE` 로부터 생성한 `0600` `worker.env`, 없으면 `$SIMAI_ROOT/../.simai-private/worker.env`)을 `simai-wait-tier0 --env-file` 로 `worker`·`avatar` 환경에만 넣는다. Tier 0 토큰 파일(`SIMAI_TIER0_TOKEN_FILE`)은 `tier0` 환경에만 넣는다(명령줄·로그·기록·다른 자식 프로세스 환경에 노출하지 않는다).
 
 - vLLM·워커가 죽으면 그 그룹을 SIGKILL 로 정리하고(vLLM EngineCore 같은 손자까지, GPU 메모리를 남기지 않게) 백오프(`SIMAI_SUPERVISE_BACKOFF_S` 5초 → 최대 300초) 뒤 **Tier 0 가 준비 상태일 때만** 다시 띄운다. 60초 안에 끝나는 일이 `SIMAI_SUPERVISE_MAX_FAST_FAILURES`(5)번 이어지면 그 프로세스는 포기한다(지금 `services.worker` 는 처리기가 없어 종료 1 로 바로 끝나므로 5번 뒤 포기한다). Tier 0 에는 신호를 보내지 않는다.
 - Tier 0 가 끝나면 워커 → vLLM 을 내리고 Tier 0 종료 코드 그대로 컨테이너가 끝난다(VM 은 `--restart unless-stopped` 가 컨테이너를 다시 띄운다).
@@ -354,6 +357,35 @@ Tier 0 재시작(엔진 캐시 사용, 1초대) 때는 워커 접수 문이 표�
   세 프로세스 모두 `TRITON_CACHE_DIR`·`TORCHINDUCTOR_CACHE_DIR`·`CUDA_CACHE_PATH` 가 `SIMAI_CACHE_ROOT`(기본 `/tmp/simai-cache`)`/<이름>/` 로 나뉜다. HF 토큰은 어느 자식에도 넘기지 않는다.
 - vLLM 은 Tier 0 의 TensorRT 엔진 빌드·적재와 GPU 선확보가 끝난 뒤에 뜬다: 진입점이 엔진을 준비한 뒤에야 Tier 0 서비스가 시작해 표시 파일을 쓰고, 감시자는 `phase=running`·`reserve.state=OK` 를 본 뒤에 워커 쪽을 시작한다(엔진 빌드 중 vLLM 이 메모리를 먼저 잡아 빌드가 실패하는 일을 막는다).
 - 시험·점검용 덮어쓰기: `SIMAI_TIER0_CMD`·`SIMAI_VLLM_CMD`·`SIMAI_WORKER_CMD`(셸 따옴표 규칙), `SIMAI_TIER0_MARKER`, `SIMAI_VLLM_MODEL`.
+
+### 로비 LIVE 통합 기동 (`simai-bootstrap lobby`) 및 기동 전 점검 (`preflight`) (S15P31A101-382)
+
+9차 세션에서 수동 스크립트(`chain-s9.sh`, `static-s9.sh`, `live-s9.sh`, `avatar-s9.sh`, `worker-s9.sh`, `lobby_live_s9.py`)를 여러 셸로 쪼개 띄우면서 발생했던 문제(GPU 메모리 상한 155% 초과, CPU 친화도·스레드 제한 누락, Tier 0 비정상 종료 시 `return 0` 반환, 기동 전 점검 실패 무시)를 `simai-bootstrap` 단일 경로로 통합했다.
+
+```sh
+# 1) 기동 전 일괄 점검 (tier0,avatar,static,vlm 가중치 + GPU 메모리 예산 + texrecon 바이너리 + open3d·ultralytics 모듈)
+#    하나라도 실패하면 비-0 종료 코드(2·3·64)로 즉시 실패한다.
+simai-bootstrap preflight
+
+# 2) 관제 전 정적 장면 1회 재구성 (Tier 0 LIVE 가 없을 때만 실행되고 Tier 0 시작 시 75 로 선점, 토큰은 파일에서만 읽음)
+SIMAI_EC2_BASE_URL=https://<EC2> SIMAI_WORKER_ID=worker-static \
+  simai-bootstrap scene --worker-token-file /root/.simai_worker_token -- \
+  python -m services.worker --once --wait-ms 5000
+
+# 3) 로비 LIVE 통합 기동 (Tier 0 + vLLM + worker + avatar 를 단일 Supervisor 로 기동)
+#    - endpoint.json(TLS SPKI sha256)·tier0-live.json·pod.jsonl 자동 생성
+#    - 정적 장면이 이미 준비된 경우 --no-clean-background 로 배경 표본 수집(2.2 GiB RSS·중앙값 계산) 비활성화
+#    - 토큰은 --tier0-token-file / --worker-token-file 에서만 읽고 명령줄·로그·다른 프로세스 환경에 노출하지 않음
+#    - Tier 0 종료 코드를 삼키지 않고 그대로 반환
+simai-bootstrap lobby \
+  --work /workspace/simai/runs/lobby-live \
+  --bundle-dir /workspace/simai/bundles/lobby-s8 \
+  --public-host <공개 IP> \
+  --ec2-base-url https://<EC2> \
+  --tier0-token-file /root/.simai_tier0_token \
+  --worker-token-file /root/.simai_worker_token \
+  --no-clean-background
+```
 
 ### 장면 준비 모드 (`simai-bootstrap scene`, MapAnything, S15P31A101-250)
 

@@ -5,7 +5,9 @@
 - 대여가 만료된 뒤 낸 결과는 거부되고, 워커는 그 결과를 다시 보내지 않고 버린다.
 """
 
+import services.worker.__main__ as worker_main
 from services.worker.handlers import JobContext
+from simai_ai.gpu.reserve import FAILED, OK, CapResult
 from simai_ai.providers.testing import load_example
 
 VLM_INPUT = load_example("job_request.vlm_rationale.json")["payload"]["input"]
@@ -40,3 +42,41 @@ def test_result_after_lease_expired_is_rejected_and_dropped(ec2, run_main):
     assert job.state == "QUEUED" and job.result is None  # 늦은 결과는 반영되지 않고 새 대여를 기다린다
     [lease] = ec2.leases_of(job_id)
     assert lease.state == "EXPIRED" and not lease.submissions
+
+
+def test_cap_process_memory_runs_before_build_handlers(run_main, monkeypatch):
+    """GPU 메모리 상한(cap_process_memory)은 pose 가중치를 여는 build_handlers 보다 먼저 설정돼야 한다 (S15P31A101-382)."""
+    order: list[str] = []
+    monkeypatch.setenv("SIMAI_WORKER_TORCH_MEMORY_FRACTION", "0.05")
+
+    def fake_cap(fraction: float, device: int = 0) -> CapResult:
+        order.append(f"cap:{fraction}")
+        return CapResult(state=OK, fraction=fraction)
+
+    def fake_build(config, store=None, **_kw):
+        order.append("build_handlers")
+        return {"vlm_rationale": lambda _ctx: VLM_RESULT}
+
+    monkeypatch.setattr(worker_main, "cap_process_memory", fake_cap)
+    monkeypatch.setattr(worker_main, "build_handlers", fake_build)
+    assert worker_main.main(["--once", "--wait-ms", "0"]) == 0
+    assert order == ["cap:0.05", "build_handlers"]
+
+
+def test_gpu_cap_failure_or_budget_error_skips_build_handlers(run_main, monkeypatch):
+    """GPU 예산 설정 오류나 cap_process_memory 실패 시 build_handlers(가중치 적재)를 호출하지 않고 종료 코드 2 를 돌려준다."""
+    called = []
+    monkeypatch.setattr(worker_main, "build_handlers", lambda *_a, **_kw: called.append(True) or {})
+
+    monkeypatch.setenv("SIMAI_WORKER_TORCH_MEMORY_FRACTION", "0.95")
+    assert worker_main.main(["--once", "--wait-ms", "0"]) == 2
+    assert not called
+
+    monkeypatch.setenv("SIMAI_WORKER_TORCH_MEMORY_FRACTION", "0.05")
+    monkeypatch.setattr(
+        worker_main,
+        "cap_process_memory",
+        lambda fraction, device=0: CapResult(state=FAILED, fraction=fraction, reason="cuda error"),
+    )
+    assert worker_main.main(["--once", "--wait-ms", "0"]) == 2
+    assert not called

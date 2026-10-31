@@ -457,3 +457,19 @@ S15P31A101-246 이 위 "2단계" 로 처리한 것: 통합 Dockerfile·opencv-py
 - `exp02` 이미지를 통합 잠금으로 옮길지(E-GATE-0 대조 기준 torch 판 줄 `compare_egate0.EXPECTED` 에 2.11.0 추가 필요), `deploy/exp02/requirements.in` 정리.
 - Tier 0 의 CUDA 12 계열 미사용 짐(`onnxruntime-gpu`·`cupy-cuda12x`, 약 0.65GB, modelopt[onnx] 의존성) 정리: override 가 필요하고 엔진 빌드를 GPU 에서 다시 봐야 한다.
 - 명세 §3.2 예산표의 VLM 0.55(48GB 에서 26.4GB)는 v1 의 Reasoner VRAM 실측 뒤 §3.2·§3.12 정리(-172, 명세 결함 후보).
+
+
+## 4단계: 로비 LIVE·아바타·워커·vLLM 단일 Supervisor 통합 및 GPU 상한·기동 전 점검 교정 (S15P31A101-382)
+
+9차 세션에서 수동 스크립트(`live-s9.sh`, `avatar-s9.sh`, `worker-s9.sh`, `lobby_live_s9.py`, `chain-s9.sh`, `static-s9.sh`)로 프로세스를 쪼개 띄우면서 드러난 네 가지 문제를 교정했다.
+
+1. **`Supervisor` GPU 메모리 상한 상시 적용 (`deploy/scripts/simai_bootstrap.py`)**
+   - 이전에는 `"avatar" in services` 일 때만 `SIMAI_WORKER_TORCH_MEMORY_FRACTION` 을 계산해, 기본 `tier0,vllm,worker` 구성에서 `worker` 가 기본값 `0.70` 으로 뜨면서 `0.20 + 0.55 + 0.70 = 1.45 > 0.95` 로 예산을 넘겼다.
+   - 이제 `compute_gpu_fractions` 가 `avatar` 포함 여부와 무관하게 `budget.worker_fraction - vllm_fraction - avatar_fraction`(`tier0,vllm,worker` 는 `0.15`, `tier0,vllm,worker,avatar` 는 `0.05`)을 계산·검증해 `SIMAI_WORKER_TORCH_MEMORY_FRACTION` 으로 주입하며, 합이 예산을 넘으면 기동 전에 종료 코드 64 로 거부한다.
+2. **`services.worker` 메모리 상한 호출 순서 교정 (`ai/services/worker/__main__.py`)**
+   - `build_handlers`(내부 `open_pose` 가 `YOLO26x-pose` 가중치를 GPU 에 적재) 호출보다 **먼저** `WorkerGpuSettings.from_env` 검증과 `cap_process_memory(torch_fraction)` 를 수행하도록 순서를 바로잡았다.
+3. **로비 LIVE 통합 기동 (`simai-bootstrap lobby`) 및 종료 코드 전파**
+   - `endpoint.json`(TLS SPKI sha256), `tier0-live.json`(`--no-clean-background` 시 `"clean_background": {"enabled": false}` 포함), `pod.jsonl` 기록, 토큰 파일 격리(`--tier0-token-file` 은 `tier0` 환경에만, `--worker-token-file` 은 `0600` `worker.env` 를 거쳐 `simai-wait-tier0 --env-file` 로 `worker`·`avatar` 에만 전달)와 `Supervisor`(`tier0,vllm,worker,avatar`)를 한 명령으로 묶었다.
+   - `lobby_live_s9.py` 마지막 줄이 `return 0` 으로 고정돼 Tier 0 비정상 종료 코드를 삼키던 버그를 없애고 `Supervisor.run()` 이 `exit_code(rc)` 를 그대로 반환한다.
+4. **기동 전 일괄 점검 (`simai-bootstrap preflight` / `check --preflight`)**
+   - `tier0,avatar,static,vlm` 다중 가중치 묶음, GPU 예산 합산, `texrecon` 실행 파일 및 `open3d`·`ultralytics` 모듈을 한 번에 점검하고 하나라도 실패하면 비-0 종료 코드(2·3·64)를 반환한다.
