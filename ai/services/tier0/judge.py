@@ -6,6 +6,8 @@
    ActiveConfig 하나에서 온다(반쪽 적용 없음). 묶음이 없으면 위험 판정을 하지 않는다(health NO_ACTIVE_CONFIG).
 2. 인지(Perception.step): 공통 시각 t 의 World Track·접지·world_state payload. world_state 에 이 tick 의 config_version 을
    싣고(-84·-169), 봉투 msg_id 를 여기서 정한다. 같은 값이 이 tick 판정 전이의 evidence_ref 다(-79).
+   검출·로컬추적(DetectorFeed.detect_once)은 판정 lock 밖에서 돌고(LIVE 는 tier0-detect 스레드, 단건 tick·재생은 lock 진입 전),
+   Perception.step 은 대기열에 쌓인 관측만 꺼내 보간·융합에 쓴다(-383).
 3. ID 교정: WorldTrackFrame.revisions 를 병합은 correct_identity, 분할은 split_identity 로 넘긴다. **반드시 같은 tick 의 apply 전**
    (-40, docs/design/tier0-world-track.md G3). 순서를 지키면 새 ID 로 들어오는 같은 규칙 판정이 기존 이벤트를 갱신한다.
 4. 판정: ActiveConfig.evaluate(world, LIVE, monitoring, calibration_state) → LifecycleTracker.apply(config_version, evidence_ref, related).
@@ -49,14 +51,14 @@ event_escalate_result payload 를 돌려준다(docs/design/tier0-recovery.md "�
 
 from __future__ import annotations
 
-import logging
-import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+import logging
 from types import MappingProxyType
 from typing import Any
+import uuid
 
-from services.tier0.perception import Perceived, Perception
+from services.tier0.perception import DetectorFeed, Perceived, Perception
 from simai_ai.config import ActiveConfig, ConfigSync
 from simai_ai.contact import SurfaceSet
 from simai_ai.eventlog import EventJournal, JournalError, JournalWriter
@@ -207,6 +209,9 @@ class JudgmentLoop:
     # --- tick ------------------------------------------------------------------------
 
     def tick(self) -> TickResult:
+        feed = getattr(self.perception, "feed", None)
+        if isinstance(feed, DetectorFeed) and not feed.async_mode:
+            feed.detect_once()  # 비동기 검출 스레드가 없는 경로(단건 tick·녹화 재생)도 검출·로컬추적은 판정 lock 밖에서 한다
         with self.lock:
             self.stats.ticks += 1
             if self._begin_tick is not None:

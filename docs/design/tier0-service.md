@@ -10,7 +10,7 @@ S15P31A101-171. 기획서 §3.2(이벤트 소유권·저널 계약·재시작 �
 ## 흐름
 
 ```
-SIM 2D keypoint ─┐                      (LIVE: I0 영상 → 디코딩 → 최신성 대기열 → YOLO 엔진 → Local Tracker, live_input)
+SIM 2D keypoint ─┐        (LIVE: I0 영상 → 디코딩 → 최신성 대기열 ─► tier0-detect(20 Hz, lock 밖): YOLO 엔진 → Local Tracker → 유계 관측 큐)
                  ▼
  observation_2d → LocalTrackletBuffer → CrossViewAssociator → WorldTrackManager → ContactEstimator → world_state payload
                                                                      │ revisions(ID 교정)
@@ -39,6 +39,7 @@ flowchart LR
     HB[health payload<br/>카메라 시각·구성 묶음 읽기]
     CP[clips.poll]
   end
+  DET[tier0-detect 20 Hz<br/>YOLO 검출 + Local Tracker] -->|유계 관측 대기열<br/>카메라당 최대 8건| J
   J -->|submit_step| W[event-journal-writer<br/>fsync]
   J -->|send| Q[(I0 송신 대기열<br/>한 줄)]
   J -->|tick 뒤 1 Hz 확인| RS
@@ -58,6 +59,7 @@ flowchart LR
 
 | 스레드 | 하는 일 | 잡는 lock |
 |---|---|---|
+| `tier0-detect` | LIVE 입력에서 `DetectorFeed.detect_once` (기본 20 Hz, `detect_tick_ms=50`): `I0Ingest.next_batch` → `PoseDetector.detect` → `ResultGate` → `MultiCameraLocalTracker.update_batch` → 카메라별 유계 관측 큐 적재(-383) | `DetectorFeed` 내부 검출 lock·큐 lock 만 잡는다. **판정 lock 을 잡지 않는다** |
 | `tier0-judge` | `JudgmentLoop.tick` (10 Hz), 그 뒤 `SiteAlertResync.tick`(1 Hz health). 재시작 뒤 연결 함수(`RestoreLink.related`)도 tick 안에서 만든다 | tick 과 목록 만들기·health 대기열 넣기에서 판정 lock. 초과 주기 뒤 양보는 lock 밖 |
 | `event-journal-writer` | `EventJournal.append_step` + fsync (단일 작성자) | 저널 내부 lock |
 | `tier0-checkpointer` | 투영 따라잡기 → 체크포인트 저장 → `SnapshotOutbox.compact` | Checkpointer 내부 lock |
@@ -82,6 +84,7 @@ lock 순서는 **판정 lock → (스냅샷 lock, 시계 lock, 각 모듈 내부
 
 | 불변식 | 지키는 곳 | 시험 |
 |---|---|---|
+| 검출(`PoseDetector.detect`)과 카메라별 Local Tracker(`MultiCameraLocalTracker.update_batch`)는 판정 lock 밖에서 돌고, `Perception.step` 은 유계 큐에 쌓인 관측만 꺼내 보간·융합에 쓴다(-383) | `DetectorFeed.detect_once`·`poll`, `Tier0Service._run_detect`, `JudgmentLoop.tick` | `test_detect_loop_split.py` (`test_detect_loop_achieves_12_fps_per_camera_while_judge_runs_at_10_hz`, `test_judge_lock_is_not_held_during_slow_detection_or_local_tracking`, `test_direct_judge_tick_also_runs_detect_outside_judge_lock`, `test_bounded_observation_queue_evicts_oldest_when_judge_is_stalled`) |
 | 같은 tick 의 ID 교정은 판정보다 먼저: `correct_identity(rev.to_correction())` → `apply` | `JudgmentLoop._judge` 3) → 4) | `test_tier0_judge::test_identity_correction_is_applied_before_judgment_in_the_same_tick`, 음성 대조 `test_negative_control_reversed_order_duplicates_event` |
 | 복원 Track 은 첫 World Track update 전에 후보로만 넘긴다(`manager.restore(result.tracks, result.tracks_t)`, 판정 스레드 시작 전). 위치 정본이 아니라 world_state·체크포인트 Track 에 나가지 않는다 | `Tier0Service._assemble_and_run`(인지 직후 `RestoreLink`) | `test_tier0_restore_link::test_restart_links_new_event_to_restored_event_without_moving_or_resolving_it`, E2E `test_tier0_restore_e2e`(재시작 뒤 world_state 에 이전 세션 World ID 없음) |
 | 이전 이벤트 연결은 같은 tick 의 교정 뒤·판정 lock 안에서 만들어 `apply(..., related=linker.for_frame(frame, manager.restore_status))` 로 넘긴다. 입력 정지 tick 은 마지막 실제 World 의 frame. 연결은 정보뿐(복원 이벤트를 옮기거나 해소하지 않음), 실패는 연결 없음 | `JudgmentLoop._judge`·`_judge_frozen`·`_related`, `RestoreLink.related` | `test_judge_builds_related_after_identity_correction_inside_lock_and_on_frozen_ticks`, `test_related_failure_degrades_to_no_link_and_keeps_alert`, E2E(다른 사람이 같은 자리 → 이전 경보 유지) |
@@ -120,21 +123,21 @@ lock 순서는 **판정 lock → (스냅샷 lock, 시계 lock, 각 모듈 내부
    `manager.restore(result.tracks, result.tracks_t)` 를 부르고(첫 update 전) `RestoredEventLinker(result.restored)` 를 만든다.
    체크포인트 Track 을 restore 가 거부하면(중복·같은 세션 ID) 쓰지 않고 빈 후보로 다시 부른다(연결은 같은 규칙·같은 구역만).
    Checkpointer 재료는 첫 인지 tick 전까지 복구 결과로 둔다.
-7. 시작: 저널 쓰기 스레드 → Checkpointer → I1 → I0 제어 채널 → I0 영상 수신(LIVE) → 정리 주기 → 판정 루프 → 표시 파일.
+7. 시작: 저널 쓰기 스레드 → Checkpointer → I1 → I0 제어 채널 → I0 영상 수신(LIVE) → 검출·로컬추적 루프(`tier0-detect`, LIVE) → 정리 주기 → 판정 루프 → 표시 파일.
 
 LIVE 입력(-182)은 6 에서 만들고 7 에서 연다. 만드는 순서와 종료 코드: 검출기(TensorRT 엔진 `SIMAI_TIER0_ENGINE` → 없으면
 `.pt` 가중치 `SIMAI_TIER0_WEIGHTS` 를 경고와 함께 → 둘 다 없거나 ultralytics 가 없으면 4) → 디코더(`input.decoder`: `cpu` 기본,
 `nvdec` 선택(-236, 근거 `tier0-nvdec-throughput.md`). nvdec 을 골랐는데 NVDEC 을 열지 못하면 CPU 로 바꾸지 않고 4) → 영상 포트 설정(`SIMAI_TIER0_VIDEO_PORTS` 등이 모자라거나 카메라 목록과
 다르면 2). 클립 링 버퍼를 브리지에 붙인 뒤 영상 포트를 연다(열지 못하면 4). 수신 스레드는 카메라별(`VideoIngestServer`)이고,
-디코딩은 그 스레드에서 카메라별 lock 으로(`CameraIngest`), 검출·추적은 판정 tick 에서(`DetectorFeed.poll` → `I0Ingest.next_batch`)
-한다. 판정 lock 은 수신·디코딩 경로에서 잡지 않는다. LIVE 인데 I0 제어 채널이 없으면 노트북 시계 차이를 모르는 것으로
+디코딩은 그 스레드에서 카메라별 lock 으로(`CameraIngest`), 검출·Local Tracker 는 `tier0-detect` 스레드에서(`DetectorFeed.detect_once` → `I0Ingest.next_batch`, 기본 `detect_tick_ms=50` ms)
+돌아 카메라별 유계 대기열(`detect_queue_depth=8`)에 `Observation2DFrame` 을 적재한다(-383). 판정 tick(`DetectorFeed.poll`)은 대기열에 쌓인 관측만 꺼내 보간·융합에 쓴다. 판정 lock 은 수신·디코딩·검출·로컬추적 경로 어느 곳에서도 잡지 않는다. LIVE 인데 I0 제어 채널이 없으면 노트북 시계 차이를 모르는 것으로
 조립한다(`ClockAwareVerification(offset_source=None 반환)`, health capture_clock 모름 → UNSAFE_UNKNOWN·해소 확인 금지).
 SAME_CLOCK(`ObservedTracksPolicy`)은 노트북 없는 SIM 에만 쓴다. 종료 때 영상 수신(accept·연결) 스레드는 공통 deadline 안에서
 join 하고, 남으면 실패로 남긴다. 영상 포트 일부만 열고 실패하면 연 포트를 닫는다.
 
 ## 종료 (`Tier0Service.stop`, SIGTERM·SIGINT·Windows CTRL_BREAK)
 
-판정 루프·정리 주기 멈춤 → I0 닫기(영상 수신 → 제어 채널) → I1 닫기(outbox 가 더는 저널을 읽지 않음) → `JournalWriter.stop`(넣은 단계를 모두 fsync)
+검출 루프·판정 루프·정리 주기 멈춤 → I0 닫기(영상 수신 → 제어 채널) → I1 닫기(outbox 가 더는 저널을 읽지 않음) → `JournalWriter.stop`(넣은 단계를 모두 fsync)
 → Checkpointer 멈춤 → 마지막 체크포인트(저널 끝까지) → 저널 닫기 → 표시 파일 삭제.
 
 모든 단계는 공통 deadline(`stop(timeout_s)`, 기본 drain_s) 하나를 나눠 쓰고, 각 단계는 별도 스레드에서 돌려 남은 시간만 기다린다
@@ -184,7 +187,7 @@ join 하고, 남으면 실패로 남긴다. 영상 포트 일부만 열고 실�
 | -159 엔드포인트 | (재)연결마다 tier0_endpoint | 배선 / E2E(계약 검증) |
 | -161 현장 경보 재동기화 | 접속 직후·1 Hz, 같은 lock·한 줄 대기열 | 배선 / E2E |
 | -32 이미지 | SIMAI_TIER0_ENGINE, state/tier0.live | 배선 / `test_live_without_engine_exits_4_without_judging`, `test_live_start_errors_have_clear_exit_codes` |
-| -83·-80·-21·-57 LIVE 입력 | I0 영상 수신 → 링 버퍼 + PyAV 디코딩(CPU 기본·NVDEC 선택) → latest-frame-wins → 검출 → Local Tracker, health cameras[].frames·WAITING_KEYFRAME | 배선(-182) / `test_tier0_live_e2e.py`(실제 H.264, 검출·추적 대역), `test_live_input.py`, `tests/io/test_pyav_decoder.py`. Pod 의 CPU 디코딩·TensorRT 실경로는 -183 큐 c |
+| -83·-80·-21·-57 LIVE 입력 | I0 영상 수신 → 링 버퍼 + PyAV 디코딩(CPU 기본·NVDEC 선택) → latest-frame-wins → 검출 → Local Tracker, health cameras[].frames·WAITING_KEYFRAME | 배선(-182, -383 루프 분리) / `test_tier0_live_e2e.py`(실제 H.264, 검출·추적 대역), `test_live_input.py`, `test_detect_loop_split.py`, `tests/io/test_pyav_decoder.py`. Pod 의 CPU 디코딩·TensorRT 실경로는 -183 큐 c |
 
 ## 남은 일
 
@@ -603,3 +606,52 @@ world-state-counts, run_record, state에 보존한다(git 무시). 1·2차 결�
 전후 창의 사람·가림·트랙 구성은 같지 않으므로 개선의 인과 효과를 분리한 실험은 아니다.
 cam_B는 1px 경계에 가깝고 cam_D는 공통 표본이 부족하다. 200개 기준의 현장 적합성,
 독립 World 정확도, GPU 동시 부하에서 지연과 메모리는 후속 검증이 필요하다.
+
+## S15P31A101-383 — 검출·로컬추적 루프 분리 및 유계 관측 대기열
+
+관련 명세는 §5.1(Tier 0 관측: 카메라당 12 FPS 이상, Tier 0 판정: 10 Hz 고정 100 ms 주기, 최신 프레임 우선), §5.2(공통 시각 보간 및 다중 카메라 융합), §3.10(현장 경보·제어 채널 응답성)이다.
+
+### 문제 원인
+
+기존 조립에서는 `JudgmentLoop.tick()`(10 Hz, `tick_ms=100` ms)이 판정 lock(`judge_lock`)을 잡은 채 `Perception.step()` → `DetectorFeed.poll()` 을 동기 호출했고, `DetectorFeed.poll()` 안에서 `I0Ingest.next_batch()`(카메라당 최대 1프레임) 추출, `PoseDetector.detect()`(YOLO26x-pose GPU 추론, H100 기준 4대 배치 25~38 ms), `MultiCameraLocalTracker.update_batch()`(TrackTrack)까지 모두 수행했다. 이로 인해 두 가지 병목이 발생했다:
+
+1. **카메라당 10 FPS 구조적 상한(명세 §5.1 위반)**: 판정 주기(10 Hz)마다 카메라당 최대 1프레임만 추론 대기열에서 꺼내므로, 추론이 아무리 빨라도 카메라당 관측 FPS 가 10 FPS 를 넘을 수 없었다.
+2. **판정 lock 과도 점유**: 매 tick 마다 GPU 추론과 로컬 추적 시간(수십 ms) 동안 `judge_lock` 을 쥐고 있어 `tier0-housekeeping`(`health.evaluate`, `clips.poll`), `i1-publisher`, `i0-control`(`site_ack`, 재동기화 목록) 스레드의 lock 획득 대기가 길어졌다.
+
+### 구조 및 스레드·lock 분리
+
+`DetectorFeed` 의 역할을 **관측 생산(`detect_once`)** 과 **관측 소비(`poll`)** 로 분리했다:
+
+- **`DetectorFeed.detect_once()` (생산, 판정 lock 밖)**:
+  - `self._detect_lock` 아래에서 `self._tickets()`(`I0Ingest.next_batch`)를 꺼내 `self._detector.detect(batch)` → `ResultGate.admit` → `observe_decoded` → `self._tracker.update_batch(accepted)` 를 실행한다.
+  - 생성된 `Observation2DFrame` 과 `camera_streams`·`avatar_frames`·`avatar_observations` 사본(copy-on-write dict 교체), `DetectorFeedStats` 집계는 짧은 내부 lock(`self._lock`) 아래에서만 갱신한다.
+  - 관측은 카메라별 유계 `deque`(`max_queued_per_camera`)에 적재하며, 상한을 넘기면 가장 오래된 관측을 버리고(`stats.dropped_observations` 증가) 최신 관측을 유지한다.
+- **`DetectorFeed.poll(now_ms)` (소비, 판정 lock 안)**:
+  - `Perception.step()` 이 판정 lock 안에서 호출할 때는 `self._lock` 만 잠깐 잡고 카메라별 대기열에 쌓인 `Observation2DFrame` 들을 꺼내 `(estimated_capture_time_ms, camera_order, frame_sequence)` 순으로 정렬해 반환한다.
+  - `Perception.ingest()` 는 한 판정 tick 동안 도착한 여러 관측(예: 100 ms 동안 카메라당 2건)을 모두 `LocalTrackletBuffer` 에 넣고 `_frames_since` 를 프레임마다 올린다. 따라서 `LocalTrackletBuffer` 의 200 ms 보간 창이 더 촘촘한 2D 궤적을 쓰게 되고, `HealthReporter.update_fps()` 도 실제 카메라별 관측 FPS 를 보고한다.
+- **실행 경로별 동작**:
+  - **LIVE (`Tier0Service._run_detect`)**: `tier0-detect` 스레드가 `async_mode=True` 로 `detect_once()` 를 주기적으로 호출한다. `poll()` 은 큐 비우기만 수행한다.
+  - **단건 tick·녹화 재생(`file` 입력, `async_mode=False`)**: `JudgmentLoop.tick()` 이 `with self.lock:` 에 들어가기 **직전(판정 lock 밖)** 에 `feed.detect_once()` 를 호출하고, lock 안의 `poll()` 은 방금 적재된 관측만 꺼낸다. 최대 속도 재생(`speed="max"`)의 결정론(`test_max_speed_replay_is_deterministic`)을 그대로 보존하면서도 판정 lock 안에서는 추론·로컬추적을 하지 않는다. `DetectorFeed.poll()` 만 단독으로 부르는 기존 단위 시험은 `_stepped` 플래그로 감지해 `detect_once()` 를 1회 자동 수행한다.
+
+### 수치·임계값 근거 및 기각한 대안
+
+| 설정 / 상수 | 값 | 선택 근거 (명세 여부) |
+|---|---|---|
+| `detect_tick_ms` | `50` ms (20 Hz) | **명세 없음, 구현 결정**(명세 §5.1 은 "카메라당 12 FPS 이상"만 규정). 카메라 입력 주기 $T_{\text{cam}}=40\text{ ms}$(25 fps)와 판정 주기 $T_{\text{judge}}=100\text{ ms}$(10 Hz) 사이의 $T_{\text{det}}=50\text{ ms}$(20 Hz)로 두면, 비둘기집 원리에 의해 매 검출 주기마다 4대 카메라 모두 새 프레임이 최소 1장씩 도착해 **4카메라 배치 추론 효율을 유지**하면서도 카메라당 약 **20 FPS($\ge 12$ FPS)** 를 낸다. 동시에 25 fps 중 약 5 fps 는 `latest-frame-wins` 로 건너뛰어 최신성 정책(`skipped_by_policy`)도 그대로 작동한다. H100 4카메라 배치 추론(25~38 ms)이 50 ms 안에 끝나며, 혹시 추론이 50~80 ms 로 늘어나도 대기 없이 즉시 다음 배치를 돌아 12.5~20 FPS 를 유지한다 |
+| `detect_queue_depth` (`max_queued_per_camera`) | `8` 건/카메라 | **명세 없음, 구현 결정**. 20~25 Hz 검출 기준 카메라당 8건은 320~400 ms 분량으로, `LocalTrackletBuffer` 기본 보간 창(200 ms)과 정상 10 Hz 판정 tick 당 소비량(2~3건)을 여유 있게 덮으면서도 판정 스레드가 일시 지연될 때 메모리와 다음 `Perception.ingest()` 처리량이 무한히 커지지 않게 막는다 |
+| `DETECT_IDLE_WAIT_MAX_S` | `0.005` s (5 ms) | **명세 없음, 구현 결정**. `I0Ingest.next_batch()` 가 비었을 때 전체 `detect_tick_ms`(50 ms)를 기다리면 방금 디코딩된 첫 프레임이 최대 50 ms 를 허비하므로, `min(period / 4, 5 ms)` 만 짧게 쉬어 프레임 도착 직후 검출을 시작한다 |
+
+- **기각한 대안**:
+  1. *`JudgmentLoop` 주기를 10 Hz 에서 20 Hz 로 상향*: 명세 §5.1("Tier 0 판정: 10 Hz 고정 (100 ms 주기)")과 §12.2(`world_state` 10 Hz 발행)를 위반하며, `judge_lock` 점유 시간 문제도 남는다.
+  2. *카메라별 개별 추론 스레드 4개 운영*: GPU 추론이 4카메라 묶음(batch=4) 대신 단건(batch=1)으로 쪼개져 커널 런치 오버헤드와 GIL 경합이 커지고 `MultiCameraLocalTracker` 동기화가 복잡해진다.
+  3. *`detect_tick_ms` 를 대기 없는 무한 폴링(0 ms)으로 운영*: 카메라 간 디코딩 시각이 수 ms 어긋날 때 4카메라 배치가 깨져 batch=1 추론이 남발되고, 입력이25 fps 일 때 `latest-frame-wins` 여유 없이 모든 프레임을 개별 배치로 밀어 넣어 GPU 효율이 떨어진다.
+
+### 검증 및 잔여 위험
+
+- `tests/services/tier0/test_detect_loop_split.py` (5개 시험) 및 기존 Tier 0 스위트(`live_input`, `tier0_service`, `tier0_judge`, `tier0_live_e2e`, `tier0_file_replay`, `clean_background`, `avatar_channel`, `tier0_health`) 총 **112 passed**, `lint-imports` **6 kept, 0 broken** 으로 검증했다.
+  - 25 fps 4카메라 입력 + 10 Hz 판정 루프에서 카메라당 관측 FPS $\ge 12.0$ (`health` 보고 및 실제 추론 프레임 수), 프레임 간 촬영 시각 간격 중앙값 $\le 80\text{ ms}$ 확인.
+  - 60 ms 검출 + 16 ms 로컬추적 부하 주입 상태에서 검출·추적 중 `judge_lock` 미보유(100% 즉시 획득) 및 동시 스레드의 `judge_lock` 획득 대기 중앙값 $< 5\text{ ms}$ 확인.
+  - 판정 루프 정지 시 `max_queued_per_camera` 상한 유지 및 `dropped_observations` 집계, 최신 관측 보존 확인.
+- **잔여 위험**:
+  - `tier0-detect` 와 `tier0-judge` 는 같은 프로세스 안에서 돌므로 Python GIL 과 CPU/메모리 대역폭을 공유한다.
+  - 이번 시험은 합성 SIM keypoint 와 경량/PyAV CPU 디코더 대역으로 검증한 결과이며, 실제 RunPod H100 GPU + TensorRT 엔진 + 4대 실시간 카메라 스트림에서의 장시간 추론 주기와 발열/부하 변동은 Pod 실측(-183)에서 추가로 확인해야 한다.

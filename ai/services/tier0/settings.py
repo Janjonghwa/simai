@@ -22,6 +22,8 @@
       "bootstrap": {"archive": "...", "config_version": "cfg-1"},   체크포인트의 묶음을 보관소에서 찾지 못할 때 쓸 시작 묶음
       "lifecycle": {"clear_hold_ms": 3000, "persistence": [2, 3], "resume_window_ms": 10000},
       "tick_ms": 100,                          판정 주기 (10 Hz, 명세 12.2 world_state)
+      "detect_tick_ms": 50,                    LIVE 검출·Local Tracker 루프 목표 주기 (20 Hz, 명세 5.1 카메라당 12 FPS 이상, -383)
+      "detect_queue_depth": 8,                 검출 루프 → 판정 루프 사이 카메라별 최대 관측 대기 수 (초과 시 오래된 관측 버림, -383)
       "drift_watch_enabled": true,             운영 중 보정 틀어짐 감시(별도 스레드, 기본 켜짐)
       "event_frames_enabled": true,            CRITICAL R1~R4 발생 프레임 비동기 업로드(기본 켜짐, LIVE 입력·I1 필요)
       "checkpoint_interval_s": 1.0,            체크포인트 주기 (명세 3.2 초기값 1초)
@@ -55,14 +57,14 @@
 
 from __future__ import annotations
 
-import json
-import os
-import time
-import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+import json
+import os
 from pathlib import Path
+import time
 from typing import Any
+import uuid
 
 from services.tier0.endpoint_registration import DEFAULT_TIER0_ID, public_port_env
 from services.tier0.i1_client import I1ConfigError, I1Settings
@@ -151,6 +153,8 @@ class Tier0Settings:
     bootstrap_config_version: str | None = None
     lifecycle: LifecyclePolicy = field(default_factory=LifecyclePolicy)
     tick_ms: int = 100
+    detect_tick_ms: int = 50
+    detect_queue_depth: int = 8
     checkpoint_interval_s: float = 1.0
     drain_s: float = 5.0
     engine_path: str | None = None
@@ -443,6 +447,8 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         bootstrap_config_version=version,
         lifecycle=_lifecycle(doc.get("lifecycle")),
         tick_ms=_int(doc, "tick_ms", 100, minimum=1),
+        detect_tick_ms=_int(doc, "detect_tick_ms", 50, minimum=1),
+        detect_queue_depth=_int(doc, "detect_queue_depth", 8, minimum=1),
         checkpoint_interval_s=float(checkpoint_interval_s),
         drain_s=float(drain_s),
         engine_path=engine,

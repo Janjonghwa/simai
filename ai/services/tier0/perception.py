@@ -12,6 +12,9 @@
 - DetectorFeed: 실제 경로. 추론 대상 프레임(I0 수신·디코딩·최신성 정책을 거친 InferenceTicket)을 검출기(YOLO26-pose
   엔진, yolo_detector)에 묶음으로 넣고 MultiCameraLocalTracker 로 카메라 내 트랙 ID 를 붙인다. 영상 수신·디코딩 조립은
   live_input.LiveInput 이 한다(S15P31A101-182). 녹화 재생(file 입력)도 같은 DetectorFeed 를 쓴다(file_input, -215).
+  검출·로컬추적(detect_once)은 10 Hz 판정 루프(judge_lock) 밖에서 별도 주기(tier0-detect, 기본 20 Hz)로 돌아 카메라당
+  12 FPS 이상 관측을 카메라별 유계 대기열에 쌓고, 판정 루프(Perception.step → poll)는 대기열에 쌓인 관측만 꺼내 보간·융합에
+  쓴다(S15P31A101-383).
 
 공통 시각(Perception.choose_t, time_model.choose_fusion_time): 융합에 넣을 카메라의 최신 촬영 시각 중 가장 이른 값이다
 (docs/design/tier0-triangulation.md: 외삽하지 않으므로 넣을 카메라 모두에 그 시각 이후 프레임이 있어야 한다). 멈춘 카메라
@@ -27,15 +30,16 @@ LIVE 동기화 무효 판정은 남은 일). 현재 시각은 주입받는다(no
 
 from __future__ import annotations
 
-import logging
-import threading
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+import logging
 from pathlib import Path
+import threading
 from typing import Any, Protocol
 
-from simai_ai.contact import ContactEstimator, SurfaceSet
 from simai_ai.calibration.drift import CameraObservation
+from simai_ai.contact import ContactEstimator, SurfaceSet
 from simai_ai.geometry.rig import CameraRig
 from simai_ai.io import ResultGate, SimObservationFrameSource
 from simai_ai.providers.base import Frame
@@ -61,6 +65,7 @@ log = logging.getLogger("services.tier0.perception")
 
 DEFAULT_ARRIVAL_LAG_MS = 60
 DEFAULT_MAX_BACKLOG_MS = 500
+DEFAULT_MAX_QUEUED_OBSERVATIONS_PER_CAMERA = 8
 
 
 class FrameFeed(Protocol):
@@ -158,8 +163,8 @@ class SimObservationFeed:
             self._i += 1
             if now_ms - arrived > self._backlog:
                 self.stale_skipped += 1  # 재시작 전·멈춘 동안의 장면: 몰아서 처리하지 않는다
-                continue
-            out.append(f)
+            else:
+                out.append(f)
         return out
 
     def camera_connected(self, camera_id: str) -> bool:
@@ -188,6 +193,7 @@ class DetectorFeedStats:
     frames_lost_to_errors: int = 0  # 그 묶음의 프레임(관측을 내지 못함)
     mismatched: int = 0  # 검출 결과의 카메라·프레임 식별자·촬영 시각이 넣은 프레임과 달라 버린 결과
     stale_results: int = 0  # 이미 반영한 결과보다 촬영 시각이 늦지 않아 버린 결과(ResultGate)
+    dropped_observations: int = 0  # 판정 소비가 밀려 카메라별 관측 대기열 상한을 넘겨 버린 오래된 관측
 
 
 def _ids(frame: Frame) -> tuple[str, int | None, int | None, int]:
@@ -201,6 +207,8 @@ class DetectorFeed:
     tickets: 지금 추론할 프레임 묶음(I0Ingest.next_batch 등, InferenceTicket 이나 Frame). connected: 카메라 입력이 관측을
     낼 수 있는지(R7·health 의 카메라 상태). on_close: 닫을 때 부를 함수(영상 수신 정지 등).
 
+    - 검출·로컬추적(detect_once)은 판정 lock 밖에서 돌고, 결과 Observation2DFrame 은 카메라별 유계 대기열에 넣는다.
+    - 판정 루프(Perception.step → poll)는 대기열에 쌓인 관측만 꺼내 보간·다중 카메라 융합에 쓴다.
     - 검출기가 예외를 내면 그 묶음은 관측 없이 버리고 센다(판정 tick 은 이어 간다. 지난 관측을 다시 내지 않는다).
     - 검출 결과는 넣은 프레임과 카메라·(stream_epoch, frame_sequence)·촬영 시각이 같아야 한다. 다르면 버린다
       (검출기가 시각을 바꾸거나 순서를 섞으면 다른 프레임에 시각이 붙는다, G3).
@@ -218,8 +226,13 @@ class DetectorFeed:
         source: str = "LIVE",
         on_close: Callable[[], None] | None = None,
         provenance: Mapping[str, Any] | None = None,
+        max_queued_per_camera: int = DEFAULT_MAX_QUEUED_OBSERVATIONS_PER_CAMERA,
+        async_mode: bool = False,
     ) -> None:
+        if max_queued_per_camera < 1:
+            raise ValueError("max_queued_per_camera 는 1 이상이다")
         self._camera_ids = tuple(camera_ids)
+        self._camera_order = {c: i for i, c in enumerate(self._camera_ids)}
         self._tickets = tickets
         self._detector = detector
         self._tracker = tracker
@@ -228,6 +241,15 @@ class DetectorFeed:
         self._on_close = on_close
         self._provenance = None if provenance is None else dict(provenance)  # 녹화 재생: dataset_id 포함(-215)
         self._gate = ResultGate()
+        self._max_queued_per_camera = max_queued_per_camera
+        self.async_mode = async_mode
+        self._lock = threading.Lock()
+        self._detect_lock = threading.Lock()
+        self._queued_observations: dict[str, deque[Observation2DFrame]] = {
+            c: deque() for c in self._camera_ids
+        }
+        self._in_flight = 0
+        self._stepped = False
         self.avatar_frames: dict[str, Frame] = {}
         self.avatar_observations: dict[str, Observation2DFrame] = {}
         self.avatar_enabled = False
@@ -243,53 +265,119 @@ class DetectorFeed:
     def camera_ids(self) -> tuple[str, ...]:
         return self._camera_ids
 
-    def poll(self, now_ms: int) -> list[Observation2DFrame]:
-        batch = [getattr(t, "frame", t) for t in self._tickets()]
-        if not batch:
-            return []
-        for frame in batch:
-            shape = getattr(frame.image, "shape", ())
-            if len(shape) >= 2:
-                self.camera_streams[frame.camera_id] = CameraObservation(
-                    frame.camera_id, image_size=(int(shape[1]), int(shape[0])))
-        self.stats.batches += 1
-        self.stats.frames += len(batch)
-        try:
-            results = list(self._detector.detect(batch))
-        except Exception:  # noqa: BLE001 - 검출기 오류가 판정 루프를 멈추지 않는다(모듈 설명)
-            self.stats.detector_errors += 1
-            self.stats.frames_lost_to_errors += len(batch)
-            if self.stats.detector_errors == 1 or self.stats.detector_errors % 100 == 0:
-                log.exception("검출기 오류 %d회째: 이 묶음(%d장)은 관측 없이 버린다", self.stats.detector_errors, len(batch))
-            return []
-        if len(results) != len(batch):
-            self.stats.mismatched += len(batch)
-            log.error("검출 결과 수(%d)가 넣은 프레임 수(%d)와 다르다: 묶음을 버린다", len(results), len(batch))
-            return []
-        accepted: list[CameraDetections] = []
-        for frame, result in zip(batch, results, strict=True):
-            got = (result.camera_id, result.stream_epoch, result.frame_sequence, result.estimated_capture_time_ms)
-            if got != _ids(frame):
-                self.stats.mismatched += 1
-                continue
-            if not self._gate.admit(result.camera_id, result.estimated_capture_time_ms):
-                self.stats.stale_results += 1
-                continue
-            accepted.append(result)
-            if self.observe_decoded is not None:
+    def pending_observations(self) -> int:
+        """검출·로컬추적을 마치고 판정 루프가 아직 꺼내 가지 않은 관측 수."""
+        with self._lock:
+            return sum(len(q) for q in self._queued_observations.values())
+
+    def drained(self) -> bool:
+        """진행 중인 검출 묶음이 없고 대기 중인 관측도 모두 소비됐다."""
+        with self._lock:
+            return self._in_flight == 0 and all(len(q) == 0 for q in self._queued_observations.values())
+
+    def detect_once(self) -> int:
+        """추론 대기열에서 한 묶음을 꺼내 검출·Local Tracker 를 돌리고 유계 대기열에 넣는다(판정 lock 밖)."""
+        with self._detect_lock:
+            with self._lock:
+                self._in_flight += 1
+            try:
+                batch = [getattr(t, "frame", t) for t in self._tickets()]
+                if not batch:
+                    with self._lock:
+                        self._stepped = True
+                    return 0
+                streams: dict[str, CameraObservation] = {}
+                for frame in batch:
+                    shape = getattr(frame.image, "shape", ())
+                    if len(shape) >= 2:
+                        streams[frame.camera_id] = CameraObservation(
+                            frame.camera_id, image_size=(int(shape[1]), int(shape[0])))
+                with self._lock:
+                    if streams:
+                        self.camera_streams = {**self.camera_streams, **streams}
+                    self.stats.batches += 1
+                    self.stats.frames += len(batch)
                 try:
-                    self.observe_decoded(frame, result)
-                except Exception:
-                    log.exception("배경 프레임 전달 실패(판정은 계속한다)")
-        observations = self._tracker.update_batch(accepted) if accepted else []
-        if self.avatar_enabled:
-            images = {_ids(f): f for f in batch}
-            for obs in observations:
-                key = (obs.camera_id, obs.stream_epoch, obs.frame_sequence, obs.estimated_capture_time_ms)
-                if key in images:
-                    self.avatar_frames[obs.camera_id] = images[key]
-                    self.avatar_observations[obs.camera_id] = obs
-        return observations
+                    results = list(self._detector.detect(batch))
+                except Exception:  # noqa: BLE001 - 검출기 오류가 판정 루프를 멈추지 않는다(모듈 설명)
+                    with self._lock:
+                        self.stats.detector_errors += 1
+                        self.stats.frames_lost_to_errors += len(batch)
+                        err_count = self.stats.detector_errors
+                        self._stepped = True
+                    if err_count == 1 or err_count % 100 == 0:
+                        log.exception("검출기 오류 %d회째: 이 묶음(%d장)은 관측 없이 버린다", err_count, len(batch))
+                    return len(batch)
+                if len(results) != len(batch):
+                    with self._lock:
+                        self.stats.mismatched += len(batch)
+                        self._stepped = True
+                    log.error("검출 결과 수(%d)가 넣은 프레임 수(%d)와 다르다: 묶음을 버린다", len(results), len(batch))
+                    return len(batch)
+                accepted: list[CameraDetections] = []
+                mismatched = 0
+                stale = 0
+                for frame, result in zip(batch, results, strict=True):
+                    got = (result.camera_id, result.stream_epoch, result.frame_sequence, result.estimated_capture_time_ms)
+                    if got != _ids(frame):
+                        mismatched += 1
+                        continue
+                    if not self._gate.admit(result.camera_id, result.estimated_capture_time_ms):
+                        stale += 1
+                        continue
+                    accepted.append(result)
+                    if self.observe_decoded is not None:
+                        try:
+                            self.observe_decoded(frame, result)
+                        except Exception:
+                            log.exception("배경 프레임 전달 실패(판정은 계속한다)")
+                observations = self._tracker.update_batch(accepted) if accepted else []
+                avatar_f: dict[str, Frame] = {}
+                avatar_o: dict[str, Observation2DFrame] = {}
+                if self.avatar_enabled and observations:
+                    images = {_ids(f): f for f in batch}
+                    for obs in observations:
+                        key = (obs.camera_id, obs.stream_epoch, obs.frame_sequence, obs.estimated_capture_time_ms)
+                        if key in images:
+                            avatar_f[obs.camera_id] = images[key]
+                            avatar_o[obs.camera_id] = obs
+                with self._lock:
+                    self.stats.mismatched += mismatched
+                    self.stats.stale_results += stale
+                    if avatar_f:
+                        self.avatar_frames = {**self.avatar_frames, **avatar_f}
+                        self.avatar_observations = {**self.avatar_observations, **avatar_o}
+                    for obs in observations:
+                        q = self._queued_observations.setdefault(obs.camera_id, deque())
+                        if len(q) >= self._max_queued_per_camera:
+                            q.popleft()
+                            self.stats.dropped_observations += 1
+                        q.append(obs)
+                    self._stepped = True
+                return len(batch)
+            finally:
+                with self._lock:
+                    self._in_flight -= 1
+
+    def poll(self, now_ms: int) -> list[Observation2DFrame]:
+        if not self.async_mode:
+            with self._lock:
+                need_step = not self._stepped and all(len(q) == 0 for q in self._queued_observations.values())
+            if need_step:
+                self.detect_once()
+        with self._lock:
+            self._stepped = False
+            out: list[Observation2DFrame] = []
+            for q in self._queued_observations.values():
+                out.extend(q)
+                q.clear()
+        if len(out) > 1:
+            out.sort(key=lambda o: (
+                o.estimated_capture_time_ms,
+                self._camera_order.get(o.camera_id, len(self._camera_order)),
+                o.frame_sequence,
+            ))
+        return out
 
     def camera_connected(self, camera_id: str) -> bool:
         return self._connected(camera_id)
