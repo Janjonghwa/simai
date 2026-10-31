@@ -49,8 +49,6 @@ class SceneAdminController {
 
     /** 계약 version_id 는 비어 있지만 않으면 된다. 경로에 쓰이므로 좁게 받고, current 는 GET /api/scenes/current 와 겹쳐 받지 않는다 */
     private static final Pattern VERSION = Pattern.compile("^[a-z0-9][a-z0-9._-]{0,62}$");
-    /** Scene 을 만들 수 있는 보정 상태. 4.5 는 CALIBRATED 뒤에만 생성하지만, 직접 등록은 교실 PROVISIONAL 보정(-293)에도 쓴다 */
-    private static final Set<String> CALIBRATION_STATES = Set.of("PROVISIONAL", "CALIBRATED");
     /** 관리자가 확정·거절하는 상태. VALIDATING 은 워커 검증(-137)이 쥔 상태라 관리자 경로에서 건드리지 않는다 */
     private static final Set<String> OPEN_STATES = Set.of("CANDIDATE");
     private static final int MAX_REASON = 500;
@@ -95,7 +93,7 @@ class SceneAdminController {
             }
             List<String> calibrationState = jdbc.queryForList(
                     "SELECT state FROM calibration_version WHERE calibration_version = :cal AND site_id = :site", params, String.class);
-            if (calibrationState.isEmpty() || !CALIBRATION_STATES.contains(calibrationState.getFirst())) {
+            if (calibrationState.isEmpty() || !SceneActivationService.CALIBRATION_STATES.contains(calibrationState.getFirst())) {
                 throw new BusinessException(ErrorCode.Scene.SCENE_CALIBRATION_INVALID);
             }
             // 발급을 쓰인 것으로 표시한다(행 잠금). 같은 glb 로 두 Scene 을 만들지 않는다
