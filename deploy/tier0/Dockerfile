@@ -186,8 +186,13 @@ RUN set -eu; \
 FROM unified-deps AS unified
 # CPU 텍스처 굽기 실행 파일만 복사한다. 빌드 도구는 최종 이미지에 남기지 않는다. libusb 는 open3d import 에 필요하다(-366).
 RUN apt-get -o Acquire::Retries=8 update \
- && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=8 install -y --no-install-recommends libpng16-16t64 libjpeg-turbo8 libtiff6 libtbb12 libgomp1 libusb-1.0-0 \
+ && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=8 install -y --no-install-recommends libpng16-16t64 libjpeg-turbo8 libtiff6 libtbb12 libgomp1 libusb-1.0-0 procps \
  && rm -rf /var/lib/apt/lists/*
+# 진단 도구(-389): procps(ps·top)와 py-spy(샘플링 프로파일러). 9차에 Pod 에 없어 판정 지연을 손 계측으로 쟀다.
+# py-spy 는 앱 가상환경(잠금)과 섞지 않게 별도 경로에 해시로 고정해 둔다. 컨테이너에 ptrace 권한이 없으면 부착되지 않는다(-382 기동 전 점검이 알린다).
+RUN printf '%s\n' 'py-spy==0.4.2 --hash=sha256:aeb0323409199c785f730645e9f4bb7a7b9ca2c481f2c331a55642b5d13fa52f' > /tmp/tools.txt \
+ && uv pip install -q --no-config --no-deps --require-hashes --python /opt/simai/ai/.venv/bin/python --target /opt/simai/tools -r /tmp/tools.txt \
+ && ln -s /opt/simai/tools/bin/py-spy /usr/local/bin/py-spy && rm /tmp/tools.txt
 COPY --from=texrecon-build /src/mvs-texturing/build/apps/texrecon/texrecon /usr/local/bin/texrecon
 COPY --from=texrecon-build /src/mvs-texturing/LICENSE.txt /usr/local/share/licenses/mvs-texturing/LICENSE.txt
 ENV SIMAI_TEXRECON=/usr/local/bin/texrecon
