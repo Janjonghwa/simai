@@ -1,7 +1,10 @@
-"""분석 워커 `incident_summary` 처리기 시험 (명세 5.4 용도 2, 12.5, FR-88, S15P31A101-271).
+"""분석 워커 `incident_summary` 처리기 시험 (명세 5.4 용도 2, 12.5, FR-88, S15P31A101-271, S15P31A101-387).
 
 - 계약 예시 `job_request.incident_summary.json` 입력 → `job_callback` `incident_summary` 결과 스키마 통과.
 - 클립에서 뽑은 프레임에 촬영 시각을 보간해 붙이고 이벤트 구간 필터와 장수 상한(`max_frames`)을 지킨다.
+- 클립 전체를 BGR 배열로 디코딩해 쥐지 않고 `count_clip_frames` + `plan_clip_frames` 로 표본 인덱스를 먼저 고른 뒤
+  선택된 프레임만 BGR 로 변환하며, 전체 디코딩(`sample_clip_frames`)과 완전히 같은 표본(표본 동등성)을 보장한다.
+- 디코딩 도중 프레임마다 취소(`cancelled`)와 남은 시간 예산(`remaining_s`)을 확인해 즉시 중단한다.
 - VLM 에 들어가는 모든 프레임은 `prepare_vlm_frames` 얼굴 흐림 관문을 통과한 `VlmFrame` 이고 안전모 영역은 보존된다.
 - 근거 시각(`evidence_timestamps_ms`) 중 이벤트 구간 밖 시각은 버리고, 구간 안 시각이 하나도 없으면 재시도 후 `VLM_ANSWER_INVALID`.
 - 결과에는 `severity`·`proposed_severity` 가 없으며 VLM 이 등급 필드를 내면 거부한다.
@@ -16,7 +19,6 @@ import io
 import json
 from typing import Any
 
-import av
 import numpy as np
 import pytest
 
@@ -25,7 +27,10 @@ from services.worker.handlers import JobContext, JobFailed
 from services.worker.incident_summary import (
     INPUT_SCHEMA,
     RESULT_SCHEMA,
+    ClipDecodeBudgetExceeded,
+    ClipDecodeCancelled,
     IncidentSummaryHandler,
+    count_clip_frames,
     decode_clip_frames,
 )
 from services.worker.objects import ObjectStoreError
@@ -45,6 +50,7 @@ from simai_ai.vlm.incident_summary import (
     RETRY_NOTE,
     assign_clip_timestamps,
     parse_answer,
+    plan_clip_frames,
     resolve_event_window,
     sample_clip_frames,
     uniform_indices,
@@ -81,8 +87,10 @@ class Provider:
     def __init__(self, error: Exception | None = None, *, fn=None) -> None:
         self.error = error
         self.fn = fn
+        self.calls = 0
 
     def people(self, image: np.ndarray) -> list[Person]:
+        self.calls += 1
         if self.error is not None:
             raise self.error
         if self.fn is not None:
@@ -104,6 +112,7 @@ def _unpack_frames(data: bytes) -> list[np.ndarray]:
 
 
 def _encode_h264_annexb(frames: list[np.ndarray]) -> bytes:
+    av = pytest.importorskip("av")
     buf = io.BytesIO()
     with av.open(buf, mode="w", format="h264") as container:
         stream = container.add_stream("libx264", rate=10)
@@ -199,6 +208,7 @@ def _handler(
     provider: Provider | None = None,
     monotonic=lambda: 1.0,
     decode_clip=_unpack_frames,
+    count_clip=None,
     max_frames: int = 16,
 ) -> tuple[IncidentSummaryHandler, FakeStore, FakeVlm]:
     s = store or FakeStore()
@@ -211,6 +221,7 @@ def _handler(
             client_factory=lambda: c,  # type: ignore[arg-type,return-value]
             monotonic=monotonic,
             decode_clip=decode_clip,
+            count_clip=count_clip,
             max_frames=max_frames,
         ),
         s,
@@ -465,12 +476,14 @@ def test_cancelled_context_stops_before_vlm():
     assert not store.gets and not vlm.calls
 
 
-# --- 실제 PyAV H.264 Annex B 디코딩 및 실제 VlmClient 연동 ---
+# --- 실제 PyAV H.264 Annex B 디코딩·선택적 BGR 보관·표본 동등성·취소/예산 전파 ---
 
 
 def test_decode_clip_frames_decodes_real_h264_annexb_stream():
+    pytest.importorskip("av")
     raw_frames = [_make_person_frame(i) for i in range(4)]
     h264_bytes = _encode_h264_annexb(raw_frames)
+    assert count_clip_frames(h264_bytes) == 4
     decoded = decode_clip_frames(h264_bytes)
     assert len(decoded) == 4
     assert all(f.shape == (240, 320, 3) and f.dtype == np.uint8 for f in decoded)
@@ -481,6 +494,174 @@ def test_decode_clip_frames_decodes_real_h264_annexb_stream():
     r = h(_ctx())
     assert r["frames_used"] == 4
     assert len(vlm.calls[0]["frames"]) == 4
+
+
+def test_selective_decode_only_converts_chosen_frames_and_matches_sample_clip_frames():
+    """여러 클립에서 전체 BGR 배열을 만들지 않고 표본 인덱스만 변환해도 sample_clip_frames 와 결과가 완전히 같다."""
+    pytest.importorskip("av")
+    # cam1: 20장(일부 구간 밖 포함), cam2: 15장(전부 구간 안), cam3: 8장(전부 구간 밖)
+    cam1_raw = [_make_person_frame(i) for i in range(20)]
+    cam2_raw = [_make_person_frame(100 + i) for i in range(15)]
+    cam3_raw = [_make_person_frame(200 + i) for i in range(8)]
+    cam1_h264 = _encode_h264_annexb(cam1_raw)
+    cam2_h264 = _encode_h264_annexb(cam2_raw)
+    cam3_h264 = _encode_h264_annexb(cam3_raw)
+
+    uri1 = "s3://simai-site/clips/cam1.h264"
+    uri2 = "s3://simai-site/clips/cam2.h264"
+    uri3 = "s3://simai-site/clips/cam3.h264"
+    inp = copy.deepcopy(EXAMPLE_INPUT)
+    inp["window_start_ms"] = 1760342390000
+    inp["window_end_ms"] = 1760342415000
+    base_clip = inp["clips"][0]
+    inp["clips"] = [
+        {
+            **base_clip,
+            "clip_id": "clip-cam1",
+            "camera_id": "cam1",
+            "object_key": "clips/cam1.h264",
+            "clip_uri": uri1,
+            "clip_start_capture_ms": 1760342380000,
+            "clip_end_capture_ms": 1760342420000,
+        },
+        {
+            **base_clip,
+            "clip_id": "clip-cam2",
+            "camera_id": "cam2",
+            "object_key": "clips/cam2.h264",
+            "clip_uri": uri2,
+            "clip_start_capture_ms": 1760342392000,
+            "clip_end_capture_ms": 1760342412000,
+        },
+        {
+            **base_clip,
+            "clip_id": "clip-cam3",
+            "camera_id": "cam3",
+            "object_key": "clips/cam3.h264",
+            "clip_uri": uri3,
+            "clip_start_capture_ms": 1760342350000,
+            "clip_end_capture_ms": 1760342370000,
+        },
+    ]
+
+    # 기준(전체 디코딩 후 sample_clip_frames)
+    full_cam1 = decode_clip_frames(cam1_h264)
+    full_cam2 = decode_clip_frames(cam2_h264)
+    full_cam3 = decode_clip_frames(cam3_h264)
+    expected = sample_clip_frames(
+        [(inp["clips"][0], full_cam1), (inp["clips"][1], full_cam2), (inp["clips"][2], full_cam3)],
+        window_start_ms=inp["window_start_ms"],
+        window_end_ms=inp["window_end_ms"],
+        max_frames=6,
+    )
+    assert len(expected) == 6
+
+    store = FakeStore()
+    store.objects = {uri1: cam1_h264, uri2: cam2_h264, uri3: cam3_h264}
+    requested_indices: list[list[int]] = []
+
+    def tracking_decode(data: bytes, *, frame_indices=None, cancelled=None, remaining_s=None):
+        assert frame_indices is not None, "처리기 경로는 클립 전체 BGR 디코딩(frame_indices=None)을 호출하지 않아야 한다"
+        idx_list = list(frame_indices)
+        requested_indices.append(idx_list)
+        return decode_clip_frames(
+            data,
+            frame_indices=idx_list,
+            cancelled=cancelled,
+            remaining_s=remaining_s,
+        )
+
+    seen_by_provider: list[np.ndarray] = []
+    provider = Provider(fn=lambda img: seen_by_provider.append(img.copy()) or [_person()])
+    h, _, vlm = _handler(
+        store,
+        provider=provider,
+        decode_clip=tracking_decode,
+        count_clip=count_clip_frames,
+        max_frames=6,
+    )
+    r = h(_ctx(inp))
+    assert r["frames_used"] == 6
+    # 총 43장(20+15+8) 중 최종 표본 6장만 BGR 로 변환됐고, 구간 밖 cam3 은 2차 디코딩조차 하지 않았다
+    assert sum(len(indices) for indices in requested_indices) == 6
+    assert len(requested_indices) == 2
+
+    sent = vlm.calls[0]["frames"]
+    assert [f.source for f in sent] == [sf.source_id for sf in expected]
+    for got_img, exp_sf in zip(seen_by_provider, expected, strict=True):
+        assert np.array_equal(got_img, exp_sf.image), f"{exp_sf.source_id} 픽셀이 전체 디코딩 표본과 일치해야 한다"
+
+
+def test_decode_clip_frames_checks_cancellation_and_budget_mid_stream():
+    pytest.importorskip("av")
+    h264_bytes = _encode_h264_annexb([_make_person_frame(i) for i in range(12)])
+
+    # count_clip_frames 도중 취소
+    checks = 0
+
+    def cancel_after_three() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks > 5
+
+    with pytest.raises(ClipDecodeCancelled):
+        count_clip_frames(h264_bytes, cancelled=cancel_after_three)
+    assert checks == 6
+
+    # decode_clip_frames(선택 인덱스) 도중 시간 예산 소진
+    rem_values = iter([1.0, 1.0, 1.0, 1.0, 0.0])
+    with pytest.raises(ClipDecodeBudgetExceeded):
+        decode_clip_frames(h264_bytes, frame_indices=[0, 5, 10], remaining_s=lambda: next(rem_values))
+
+
+def test_handler_cancels_or_stops_on_budget_during_clip_decode_before_face_gate():
+    pytest.importorskip("av")
+    h264_bytes = _encode_h264_annexb([_make_person_frame(i) for i in range(10)])
+    store = FakeStore()
+    store.objects[CLIP_URI] = h264_bytes
+
+    # 1) 디코딩 도중 ctx.cancelled 가 켜지면 즉시 CANCELLED 로 멈추고 얼굴 검출·VLM 을 부르지 않는다
+    ctx_cancel = _ctx()
+    decode_calls = 0
+
+    def cancel_during_decode(data: bytes, *, frame_indices=None, cancelled=None, remaining_s=None):
+        nonlocal decode_calls
+        decode_calls += 1
+        ctx_cancel.cancelled.set()
+        return decode_clip_frames(data, frame_indices=frame_indices, cancelled=cancelled, remaining_s=remaining_s)
+
+    provider_cancel = Provider()
+    h_cancel, _, vlm_cancel = _handler(
+        store,
+        provider=provider_cancel,
+        decode_clip=cancel_during_decode,
+        count_clip=count_clip_frames,
+    )
+    with pytest.raises(JobFailed) as exc_cancel:
+        h_cancel(ctx_cancel)
+    assert exc_cancel.value.code == "CANCELLED"
+    assert decode_calls == 1 and provider_cancel.calls == 0 and not vlm_cancel.calls
+
+    # 2) 디코딩 도중 120초 예산이 소진되면 retryable NO_FACE_SAFE_FRAMES(budget)로 멈춘다
+    now = [0.0]
+
+    def expire_during_decode(data: bytes, *, frame_indices=None, cancelled=None, remaining_s=None):
+        now[0] = 120.5
+        return decode_clip_frames(data, frame_indices=frame_indices, cancelled=cancelled, remaining_s=remaining_s)
+
+    provider_budget = Provider()
+    h_budget, _, vlm_budget = _handler(
+        store,
+        provider=provider_budget,
+        monotonic=lambda: now[0],
+        decode_clip=expire_during_decode,
+        count_clip=count_clip_frames,
+    )
+    with pytest.raises(JobFailed) as exc_budget:
+        h_budget(_ctx())
+    assert (exc_budget.value.code, exc_budget.value.retryable) == ("NO_FACE_SAFE_FRAMES", True)
+    assert "budget" in exc_budget.value.message
+    assert provider_budget.calls == 0 and not vlm_budget.calls
 
 
 def test_handler_with_real_vlm_client_sends_blurred_jpeg_and_strict_schema():
@@ -546,7 +727,11 @@ def test_pure_helpers_validation():
     with pytest.raises(ValueError):
         uniform_indices(3, 0)
     with pytest.raises(ValueError):
+        plan_clip_frames([], window_start_ms=0, window_end_ms=10, max_frames=0)
+    with pytest.raises(ValueError):
         sample_clip_frames([], window_start_ms=0, window_end_ms=10, max_frames=0)
+    with pytest.raises(ValueError):
+        decode_clip_frames(b"x", frame_indices=[-1])
     with pytest.raises(ValueError):
         resolve_event_window({"clips": []})
     with pytest.raises(ValueError):

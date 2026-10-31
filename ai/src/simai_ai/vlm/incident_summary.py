@@ -1,10 +1,12 @@
-"""incident_summary 프롬프트·클립 프레임 표본 추출·응답 파싱 및 구간 검증 (명세 5.4 용도 2, 12.5, FR-88, S15P31A101-271).
+"""incident_summary 프롬프트·클립 프레임 표본 추출·응답 파싱 및 구간 검증 (명세 5.4 용도 2, 12.5, FR-88, S15P31A101-271, S15P31A101-387).
 
 클립 내려받기·디코딩·얼굴 흐림 관문·VLM 호출·작업 실패 코드는 처리기(`services.worker.incident_summary`)에 있고,
-여기는 클립 프레임 촬영 시각 보간·장수 상한 표본 추출·프롬프트 생성·응답 파싱(이벤트 구간 검증)만 다루는 순수 함수다.
+여기는 클립 프레임 촬영 시각 보간·장수 상한 표본 계획(`plan_clip_frames`) 및 표본 추출(`sample_clip_frames`)·프롬프트 생성·응답 파싱(이벤트 구간 검증)만 다루는 순수 함수다.
 
 - 클립 프레임 시각: 각 클립(`clip_start_capture_ms` ~ `clip_end_capture_ms`)에서 디코딩된 N장의 촬영 시각을 등간격으로 계산하고,
   이벤트 구간(`[window_start_ms, window_end_ms]`) 안의 프레임만 남긴 뒤 전체 장수 상한(`DEFAULT_MAX_FRAMES = 16`)으로 균등 표본 추출한다.
+- `plan_clip_frames` 는 클립별 프레임 수(N)만으로 표본 선택 순서와 프레임 인덱스를 먼저 확정해, 클립 전체를 BGR 배열로 디코딩해 쥐지 않고도
+  `sample_clip_frames` 와 완전히 같은 표본(`source_id`, `clip_id`, `camera_id`, `frame_index`, `capture_time_ms`)을 고를 수 있게 한다.
 - 응답은 `{"summary": 한국어 요약문, "evidence_timestamps_ms": [촬영 시각(UTC ms), ...]}` 하나다(`response_format` `json_schema`).
 - 등급(`severity`)이나 상향 의견(`proposed_severity`) 필드는 스키마와 파서 모두에서 받지 않는다(명세 5.4 용도 2).
 - 근거 시각(`evidence_timestamps_ms`)은 모두 이벤트 구간(`[window_start_ms, window_end_ms]`) 안이어야 한다:
@@ -55,6 +57,18 @@ RESPONSE_FORMAT: Mapping[str, Any] = {
         },
     },
 }
+
+
+@dataclass(frozen=True)
+class PlannedFrame:
+    """클립 전체를 BGR 배열로 디코딩해 쥐기 전에 확정하는 표본 프레임 계획."""
+
+    clip_order: int
+    source_id: str
+    clip_id: str
+    camera_id: str
+    frame_index: int
+    capture_time_ms: int
 
 
 @dataclass(frozen=True)
@@ -126,6 +140,47 @@ def uniform_indices(total: int, max_items: int) -> list[int]:
     return [round(i * (total - 1) / (max_items - 1)) for i in range(max_items)]
 
 
+def plan_clip_frames(
+    clips_with_counts: Sequence[tuple[Mapping[str, Any], int]],
+    *,
+    window_start_ms: int,
+    window_end_ms: int,
+    max_frames: int = DEFAULT_MAX_FRAMES,
+) -> list[PlannedFrame]:
+    """클립별 프레임 수만으로 촬영 시각 보간·이벤트 구간 필터·장수 상한(`max_frames`) 표본 계획을 세운다.
+
+    BGR 프레임을 메모리에 쥐지 않고도 `sample_clip_frames` 와 동일한 `(clip, frame_index, capture_time_ms)` 순서를 확정한다.
+    """
+    if max_frames <= 0:
+        raise ValueError("max_frames 는 1 이상이어야 한다")
+    candidates: list[PlannedFrame] = []
+    for clip_order, (clip, frame_count) in enumerate(clips_with_counts):
+        if frame_count <= 0:
+            continue
+        clip_id = str(clip["clip_id"])
+        camera_id = str(clip["camera_id"])
+        timestamps = assign_clip_timestamps(
+            int(clip["clip_start_capture_ms"]),
+            int(clip["clip_end_capture_ms"]),
+            frame_count,
+        )
+        for idx, ts in enumerate(timestamps):
+            if window_start_ms <= ts <= window_end_ms:
+                candidates.append(
+                    PlannedFrame(
+                        clip_order=clip_order,
+                        source_id=f"{clip_id}#{idx}",
+                        clip_id=clip_id,
+                        camera_id=camera_id,
+                        frame_index=idx,
+                        capture_time_ms=ts,
+                    )
+                )
+    candidates.sort(key=lambda f: (f.capture_time_ms, f.camera_id, f.clip_id, f.frame_index, f.clip_order))
+    chosen = uniform_indices(len(candidates), max_frames)
+    return [candidates[i] for i in chosen]
+
+
 def sample_clip_frames(
     clips_with_images: Sequence[tuple[Mapping[str, Any], Sequence[Any]]],
     *,
@@ -134,34 +189,23 @@ def sample_clip_frames(
     max_frames: int = DEFAULT_MAX_FRAMES,
 ) -> list[SampledFrame]:
     """클립별 디코딩 프레임에 촬영 시각을 붙이고 이벤트 구간 필터 및 장수 상한(`max_frames`)을 적용한다."""
-    if max_frames <= 0:
-        raise ValueError("max_frames 는 1 이상이어야 한다")
-    candidates: list[SampledFrame] = []
-    for clip, images in clips_with_images:
-        if not images:
-            continue
-        clip_id = str(clip["clip_id"])
-        camera_id = str(clip["camera_id"])
-        timestamps = assign_clip_timestamps(
-            int(clip["clip_start_capture_ms"]),
-            int(clip["clip_end_capture_ms"]),
-            len(images),
+    plan = plan_clip_frames(
+        [(clip, len(images)) for clip, images in clips_with_images],
+        window_start_ms=window_start_ms,
+        window_end_ms=window_end_ms,
+        max_frames=max_frames,
+    )
+    return [
+        SampledFrame(
+            source_id=p.source_id,
+            clip_id=p.clip_id,
+            camera_id=p.camera_id,
+            frame_index=p.frame_index,
+            capture_time_ms=p.capture_time_ms,
+            image=clips_with_images[p.clip_order][1][p.frame_index],
         )
-        for idx, (ts, img) in enumerate(zip(timestamps, images, strict=True)):
-            if window_start_ms <= ts <= window_end_ms:
-                candidates.append(
-                    SampledFrame(
-                        source_id=f"{clip_id}#{idx}",
-                        clip_id=clip_id,
-                        camera_id=camera_id,
-                        frame_index=idx,
-                        capture_time_ms=ts,
-                        image=img,
-                    )
-                )
-    candidates.sort(key=lambda f: (f.capture_time_ms, f.camera_id, f.clip_id, f.frame_index))
-    chosen = uniform_indices(len(candidates), max_frames)
-    return [candidates[i] for i in chosen]
+        for p in plan
+    ]
 
 
 def build_prompt(
