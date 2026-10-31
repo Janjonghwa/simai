@@ -92,14 +92,21 @@ class AvatarLoop:
             self.sender.discard_poses()
             self._report("AdmissionGate 차단: " + getattr(admission, "reason", "unknown"))
             return
-        item = self.source.latest()
+        now_ms = self.clock_ms()
+        accept = lambda snapshot: (
+            snapshot.get("world", {}).get("t", -1) > self.last_t
+            and 0 <= now_ms - snapshot.get("world", {}).get("t", -1) <= self.max_age_ms
+        )
+        item = (self.source.latest(predicate=accept)
+                if getattr(self.source, "supports_predicate", False)
+                else self.source.latest())
         if item is None:
             self._report("공유 통로 입력 없음/읽기 실패")
             return
         snapshot, images = item
         doc = snapshot["world"]
         t = doc["t"]
-        if t <= self.last_t or not 0 <= self.clock_ms() - t <= self.max_age_ms:
+        if t <= self.last_t or not 0 <= now_ms - t <= self.max_age_ms:
             self._report("중복/신선도 초과 입력")
             return
         self.last_t = t

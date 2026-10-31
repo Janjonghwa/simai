@@ -17,7 +17,7 @@ from simai_ai.hmr.loader import prepare_checkpoint
 from simai_ai.hmr.stream import AvatarLoop
 from simai_ai.hmr.segmentation import segmentation_from_env
 from simai_ai.hmr.appearance_stream import appearance_from_env, face_faces_from_rig
-from simai_ai.io.avatar_channel import LatestChannelReader
+from simai_ai.io.avatar_channel import LatestChannelReader, avatar_channel_path
 
 from .transport import AvatarSender, AvatarUpload, websocket_connector
 
@@ -71,7 +71,7 @@ def main():
         sender = AvatarSender(websocket_connector(base, token), clock_ms=clock_ms, monotonic=time.monotonic,
                               source_id=env.get("SIMAI_WORKER_ID") or "worker-01", stream_epoch=stream_epoch,
                               log_secrets=(token,))
-        source = LatestChannelReader(Path(env.get("SIMAI_AVATAR_CHANNEL") or root / "state/avatar-input.npz"))
+        source = LatestChannelReader(avatar_channel_path(env, root))
         loop = AvatarLoop(source, gate, model, AvatarUpload(base, token), sender, clock_ms=clock_ms,
                           appearance=appearance, segmentation=segmentation)
         def send_loop():

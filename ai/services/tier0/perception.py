@@ -66,6 +66,7 @@ log = logging.getLogger("services.tier0.perception")
 DEFAULT_ARRIVAL_LAG_MS = 60
 DEFAULT_MAX_BACKLOG_MS = 500
 DEFAULT_MAX_QUEUED_OBSERVATIONS_PER_CAMERA = 8
+DEFAULT_AVATAR_SHARE_PERIOD_S = 0.2
 
 
 class FrameFeed(Protocol):
@@ -441,6 +442,9 @@ class Perception:
         self.manager = WorldTrackManager(WorldIdIssuer(session), world_config, input_provenance=input_provenance)
         self.contact = contact or ContactEstimator()
         self.avatar_writer = avatar_writer
+        self._last_avatar_t: int | None = None
+        self._avatar_calibration_rig: CameraRig | None = None
+        self._avatar_calibration_doc: dict[str, Any] | None = None
         self.observe_association = observe_association
         self.observe_frame = observe_frame
         if isinstance(feed, DetectorFeed):
@@ -459,6 +463,9 @@ class Perception:
         self.associator.replace_rig(rig)
         self.manager.input_provenance = dict(provenance)
         self.rig = rig
+        self._last_avatar_t = None
+        self._avatar_calibration_rig = None
+        self._avatar_calibration_doc = None
 
     def camera_clocks(self) -> tuple[CameraClock, ...]:
         with self._lock:
@@ -535,6 +542,11 @@ class Perception:
         return Perceived(t=t, frame=frame, payload=payload, t_latest_global=t_latest, lagging=fusion.lagging)
 
     def _share_avatar(self, frame, payload, t_latest) -> None:
+        period_s = float(getattr(self.avatar_writer, "period_s", DEFAULT_AVATAR_SHARE_PERIOD_S))
+        period_ms = int(round(period_s * 1000))
+        last_t = getattr(self, "_last_avatar_t", None)
+        if last_t is not None and 0 <= t_latest - last_t < period_ms:
+            return
         images = dict(getattr(self.feed, "avatar_frames", {}))
         observations = getattr(self.feed, "avatar_observations", {})
         tracks = []
@@ -553,15 +565,21 @@ class Perception:
                                            "frame_ref": dict(image.frame_ref)})
             tracks.append({**track, "per_camera": per_camera})
         rig = self.rig
-        cameras = [{"camera_id": cid, "K": cam.K.tolist(), "R": cam.R.tolist(), "t": cam.t.tolist(),
-                    "image_size": list(cam.image_size),
-                    "distortion": {"model": cam.distortion_model, "coeffs": list(cam.distortion_coeffs)}}
-                   for cid, cam in rig.cameras.items()]
-        calibration = {"calibration_version": rig.calibration_version, "provider_source": rig.provider_source,
-                       "state": rig.state, "coordinate_frame": {"frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z"},
-                       "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA", "cameras": cameras}
+        calibration = getattr(self, "_avatar_calibration_doc", None)
+        if calibration is None or getattr(self, "_avatar_calibration_rig", None) is not rig:
+            cameras = [{"camera_id": cid, "K": cam.K.tolist(), "R": cam.R.tolist(), "t": cam.t.tolist(),
+                        "image_size": list(cam.image_size),
+                        "distortion": {"model": cam.distortion_model, "coeffs": list(cam.distortion_coeffs)}}
+                       for cid, cam in rig.cameras.items()]
+            calibration = {"calibration_version": rig.calibration_version, "provider_source": rig.provider_source,
+                           "state": rig.state, "coordinate_frame": {"frame": "WORLD", "unit": "m", "handedness": "right", "up_axis": "+Z"},
+                           "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA", "cameras": cameras}
+            self._avatar_calibration_rig = rig
+            self._avatar_calibration_doc = calibration
         provenance = dict(payload["input_provenance"])
         provenance["tracks"] = {"source": "TIER0_LIVE", "provider_version": "tier0-avatar-1"}
-        self.avatar_writer.offer({"world": {"t": t_latest, "calibration_version": rig.calibration_version,
-                                           "coordinate_frame": calibration["coordinate_frame"], "tracks": tracks,
-                                           "input_provenance": provenance}, "calibration": calibration}, images)
+        offered = self.avatar_writer.offer({"world": {"t": t_latest, "calibration_version": rig.calibration_version,
+                                                      "coordinate_frame": calibration["coordinate_frame"], "tracks": tracks,
+                                                      "input_provenance": provenance}, "calibration": calibration}, images)
+        if offered is not False:
+            self._last_avatar_t = t_latest
