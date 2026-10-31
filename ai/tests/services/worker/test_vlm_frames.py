@@ -90,3 +90,186 @@ def test_decode_image_rejects_garbage():
     pytest.importorskip("cv2")
     with pytest.raises(ValueError):
         decode_image(b"not an image")
+
+
+def test_frames_are_fetched_in_parallel_and_preserve_input_order():
+    import threading
+    import time
+
+    uris = [f"s3://bucket/f{i}.jpg" for i in range(4)]
+    policies = ["BLURRED", "EXCLUDED", "BLURRED", "EXCLUDED"]
+    barrier = threading.Barrier(4, timeout=2.0)
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    class ParallelStore:
+        def get(self, ctx, uri):
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                barrier.wait()  # 4장이 동시에 들어와야 통과한다
+                idx = uris.index(uri)
+                # 뒤쪽 프레임이 먼저 끝나도 입력 순서를 유지하는지 확인
+                time.sleep(0.01 * (3 - idx))
+                return str(10 + idx * 10).encode()
+            finally:
+                with lock:
+                    active -= 1
+
+        def put(self, ctx, name, content, content_type):  # pragma: no cover
+            raise AssertionError
+
+    frames = [{"camera_id": f"cam{i + 1}", "frame_uri": u, "face_policy": p} for i, (u, p) in enumerate(zip(uris, policies, strict=True))]
+    result = gate_input_frames(_ctx(), ParallelStore(), frames, Provider(), decode=_decode)
+    assert max_active == 4
+    assert [(f.source, f.face_policy) for f in result.frames] == list(zip(uris, policies, strict=True))
+    assert result.dropped == ()
+
+
+def test_face_processing_runs_only_within_remaining_time_budget_and_keeps_fail_closed():
+    now = [0.0]
+    uris = [f"s3://bucket/f{i}.jpg" for i in range(4)]
+    store = Store({u: str(10 + i * 10).encode() for i, u in enumerate(uris)})
+    detected: list[int] = []
+
+    class TimedProvider:
+        def people(self, image):
+            detected.append(int(image[0, 0, 0]))
+            now[0] += 2.0  # 프레임당 검출에 2.0초 소비 (예산 3.5초면 2장 처리 뒤 4.0초가 돼 나머지 2장은 건너뛴다)
+            return [PERSON]
+
+    ctx = JobContext(
+        job_id="j",
+        lease_id="l",
+        job_type="vlm_rationale",
+        attempt=1,
+        input={},
+        deadline=3.5,
+        monotonic=lambda: now[0],
+    )
+    frames = _frames(*((u, "BLURRED") for u in uris))
+    result = gate_input_frames(ctx, store, frames, TimedProvider(), decode=_decode)
+    assert detected == [10, 20], "예산 소진 뒤 남은 프레임에는 pose 검출을 돌리지 않는다"
+    assert [f.source for f in result.frames] == ["s3://bucket/f0.jpg", "s3://bucket/f1.jpg"]
+    assert [(d.source, d.reason) for d in result.dropped] == [
+        ("s3://bucket/f2.jpg", "budget"),
+        ("s3://bucket/f3.jpg", "budget"),
+    ]
+
+
+def test_all_frames_dropped_by_budget_fails_retryable_without_detector_calls():
+    now = [0.0]
+
+    class SlowFetchStore:
+        def get(self, ctx, uri):
+            now[0] = 5.0  # 다운로드가 끝났을 때 예산(5.0초) 소진
+            return b"10"
+
+        def put(self, ctx, name, content, content_type):  # pragma: no cover
+            raise AssertionError
+
+    class CountingProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def people(self, image):
+            self.calls += 1
+            return [PERSON]
+
+    ctx = JobContext(
+        job_id="j",
+        lease_id="l",
+        job_type="vlm_rationale",
+        attempt=1,
+        input={},
+        deadline=5.0,
+        monotonic=lambda: now[0],
+    )
+    provider = CountingProvider()
+    with pytest.raises(JobFailed) as e:
+        gate_input_frames(ctx, SlowFetchStore(), _frames(("s3://a", "BLURRED")), provider, decode=_decode)
+    assert e.value.code == "NO_FACE_SAFE_FRAMES" and e.value.retryable
+    assert provider.calls == 0
+
+
+def test_expired_budget_before_fetch_does_not_call_store():
+    class ForbiddenStore:
+        def get(self, ctx, uri):
+            raise AssertionError("시간 예산이 없으면 store.get 을 부르면 안 된다")
+
+        def put(self, ctx, name, content, content_type):  # pragma: no cover
+            raise AssertionError
+
+    ctx = JobContext(
+        job_id="j",
+        lease_id="l",
+        job_type="vlm_rationale",
+        attempt=1,
+        input={},
+        deadline=5.0,
+        monotonic=lambda: 5.0,
+    )
+    with pytest.raises(JobFailed) as e:
+        gate_input_frames(ctx, ForbiddenStore(), _frames(("s3://a", "BLURRED"), ("s3://b", "BLURRED")), Provider(), decode=_decode)
+    assert e.value.code == "FRAME_FETCH_FAILED" and e.value.retryable
+
+
+def test_http_object_store_parallel_fetch_over_loopback_within_budget():
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from services.worker.objects import HttpObjectStore
+    from services.worker.transport import HttpTransport
+
+    barrier = threading.Barrier(4, timeout=2.0)
+    state: dict[str, int] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            req = json.loads(raw)
+            key = req["uri"].removeprefix("s3://bucket/")
+            reply = {
+                "op": "GET",
+                "uri": req["uri"],
+                "method": "GET",
+                "url": f"http://127.0.0.1:{state['port']}/bucket/{key}?sig=ok",
+                "headers": {},
+                "expires_at_ms": 1,
+            }
+            body = json.dumps(reply).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):  # noqa: N802
+            barrier.wait()  # 4개 GET 이 동시에 열려야 통과
+            idx = int(self.path.split("/bucket/f")[1].split(".")[0])
+            body = str(20 + idx * 10).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    state["port"] = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        store = HttpObjectStore(HttpTransport(f"http://127.0.0.1:{state['port']}", "worker-token"))
+        ctx = JobContext(job_id="job-1", lease_id="lease-1", job_type="vlm_rationale", attempt=1, input={}, timeout_ms=5000)
+        frames = _frames(*((f"s3://bucket/f{i}.jpg", "BLURRED") for i in range(4)))
+        result = gate_input_frames(ctx, store, frames, Provider(), decode=_decode)
+        assert [f.source for f in result.frames] == [f"s3://bucket/f{i}.jpg" for i in range(4)]
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -266,6 +266,34 @@ def test_timeout(fake):
     assert (e.value.code, e.value.retryable) == ("VLM_TIMEOUT", True)
 
 
+def test_timeout_override_clamps_to_remaining_budget_and_rejects_zero():
+    seen_timeouts: list[float] = []
+
+    def opener(req, timeout):
+        seen_timeouts.append(timeout)
+
+        class R:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps(OK).encode()
+
+        return R()
+
+    _, fs = frames(1)
+    c = VlmClient(VlmSettings(timeout_s=30.0), encode=raw_encode, opener=opener)
+    c.complete("q", fs, timeout_s=1.75)
+    assert seen_timeouts == [pytest.approx(1.75)]
+
+    with pytest.raises(VlmTimeout):
+        c.complete("q", fs, timeout_s=0.0)
+    assert len(seen_timeouts) == 1
+
+
 # ------------------------------------------------------------------ 설정
 
 

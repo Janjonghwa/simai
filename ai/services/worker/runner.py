@@ -182,12 +182,22 @@ class Worker:
     def process(self, lease: Lease, *, should_stop: Callable[[], bool] = lambda: False) -> Outcome:
         received = self._monotonic()  # 남은 시간은 받은 순간부터 센다
         handler = self.handlers.get(lease.job_type)
-        ctx = JobContext(lease.job_id, lease.lease_id, lease.job_type, lease.attempt, lease.input)
+        timeout_deadline = received + lease.time_left_ms / 1000
+        ctx = JobContext(
+            lease.job_id,
+            lease.lease_id,
+            lease.job_type,
+            lease.attempt,
+            lease.input,
+            timeout_ms=lease.timeout_ms,
+            deadline=timeout_deadline,
+            monotonic=self._monotonic,
+        )
         if handler is None:  # EC2 가 요청 밖의 유형을 내준 경우
             deadline = received + lease.ttl_ms / 1000
             return self._submit_failure(lease, self._clock_ms(), "NO_HANDLER", f"처리기 없음: {lease.job_type}", deadline)
         interval = lease.heartbeat_interval_ms / 1000
-        beat = _Beat(received + lease.ttl_ms / 1000, received + lease.time_left_ms / 1000, interval, received + interval)
+        beat = _Beat(received + lease.ttl_ms / 1000, timeout_deadline, interval, received + interval)
         if self.admission is not None:
             held = self._hold(lease, ctx, beat, received, should_stop)
             if held is not None:

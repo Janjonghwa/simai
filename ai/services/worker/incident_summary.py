@@ -38,7 +38,7 @@ from simai_ai.vlm.incident_summary import (
 
 from .handlers import JobContext, JobFailed
 from .objects import ObjectStore, ObjectStoreError
-from .vlm_rationale import client_from_env
+from .vlm_rationale import _complete_vlm, client_from_env
 
 INPUT_SCHEMA = {"$ref": "https://simai.dev/contracts/messages/incident_summary.schema.json#/$defs/input"}
 RESULT_SCHEMA = {"$ref": "https://simai.dev/contracts/messages/incident_summary.schema.json#/$defs/result"}
@@ -86,7 +86,8 @@ class IncidentSummaryHandler:
         self._max_frames = max_frames
 
     def __call__(self, ctx: JobContext) -> Mapping[str, Any]:
-        t0 = self._monotonic()
+        custom_clock = self._monotonic if self._monotonic is not time.monotonic else None
+        t0 = ctx.bind_budget(JOB_BUDGET_MS, monotonic=custom_clock)
         inp = json.loads(json.dumps(ctx.input))
         if errors := schema_errors(inp, INPUT_SCHEMA):
             raise JobFailed("VLM_INPUT_INVALID", "; ".join(errors))
@@ -107,6 +108,8 @@ class IncidentSummaryHandler:
             try:
                 raw = self._store.get(ctx, clip["clip_uri"])
             except ObjectStoreError as e:
+                if ctx.cancelled.is_set():
+                    raise JobFailed("CANCELLED", "작업이 취소됐다") from None
                 raise JobFailed("CLIP_FETCH_FAILED", str(e), retryable=e.retryable) from e
             try:
                 images = list(self._decode_clip(raw))
@@ -134,11 +137,14 @@ class IncidentSummaryHandler:
             [(sf.source_id, sf.image) for sf in sampled],
             inp["face_policy"],
             self._provider,
+            cancelled=ctx.cancelled.is_set,
+            remaining_s=ctx.remaining_s,
         )
+        _check_cancelled(ctx)
         if gate.dropped:
             log.warning("이벤트 %s: 얼굴 처리 못 한 클립 프레임 %d개를 뺐다", event_id, len(gate.dropped))
         if not gate.frames:
-            retryable = any(d.reason == "detect" for d in gate.dropped)
+            retryable = any(d.reason in ("detect", "budget") for d in gate.dropped)
             reasons = ", ".join(f"{d.source}: {d.reason}" for d in gate.dropped)
             raise JobFailed("NO_FACE_SAFE_FRAMES", f"얼굴을 처리한 프레임이 없다({reasons})", retryable=retryable)
 
@@ -156,12 +162,15 @@ class IncidentSummaryHandler:
 
         for retry in (False, True):
             _check_cancelled(ctx)
+            rem_s = ctx.remaining_s()
             try:
-                r = client.complete(
+                r = _complete_vlm(
+                    client,
                     parts.text + RETRY_NOTE if retry else parts.text,
                     gate.frames,
                     system=parts.system,
                     response_format=parts.response_format,
+                    timeout_s=rem_s,
                 )
             except VlmError as e:
                 raise JobFailed(e.code, str(e), retryable=e.retryable) from None
@@ -175,11 +184,17 @@ class IncidentSummaryHandler:
                 )
                 break
             except ValueError as e:
-                elapsed_ms = (self._monotonic() - t0) * 1000
+                rem_after_s = ctx.remaining_s()
+                rem_after_ms = (
+                    rem_after_s * 1000
+                    if rem_after_s is not None
+                    else (JOB_BUDGET_MS - (ctx.monotonic() - t0) * 1000)
+                )
                 log.warning("이벤트 %s: VLM 요약 응답 형식 오류(%s, finish_reason=%s)", event_id, e, r.finish_reason)
-                if retry or elapsed_ms + r.latency_ms > JOB_BUDGET_MS:
+                if retry or rem_after_ms < r.latency_ms:
                     raise JobFailed("VLM_ANSWER_INVALID", f"VLM 응답이 형식에 맞지 않는다: {e}") from None
 
+        _check_cancelled(ctx)
         if answer.dropped_timestamps_ms:
             log.warning("이벤트 %s: 이벤트 구간 밖 근거 시각 %d개를 버렸다", event_id, len(answer.dropped_timestamps_ms))
 
@@ -192,7 +207,7 @@ class IncidentSummaryHandler:
             "window_end_ms": window_end_ms,
             "frames_used": len(gate.frames),
             "model_version": r.model,
-            "latency_ms": round((self._monotonic() - t0) * 1000),
+            "latency_ms": round((ctx.monotonic() - t0) * 1000),
         }
         if errors := schema_errors(result, RESULT_SCHEMA):
             raise JobFailed("VLM_RESULT_INVALID", "; ".join(errors))

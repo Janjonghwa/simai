@@ -349,3 +349,100 @@ def test_registered_only_with_store_vlm_settings_and_weights(tmp_path):
 
     handlers = entry.build_handlers(None, Store(), env=env, pose=broken)
     assert "vlm_rationale" not in handlers and "tbm_report" in handlers
+
+
+def test_four_frames_parallel_download_propagates_remaining_budget_to_vlm():
+    """9차 세션 재현: 프레임 4장 병렬 다운로드(1.8초) + 얼굴 처리(0.4초) 뒤 남은 2.8초 예산으로 VLM 을 호출한다."""
+    import threading
+
+    now = [0.0]
+    barrier = threading.Barrier(4, timeout=2.0)
+    lock = threading.Lock()
+    finished_fetch = 0
+
+    class ParallelStore:
+        def get(self, ctx, uri):
+            nonlocal finished_fetch
+            assert ctx.remaining_s() == pytest.approx(5.0)
+            barrier.wait()
+            with lock:
+                finished_fetch += 1
+                if finished_fetch == 4:
+                    now[0] += 1.8  # 4장 병렬 다운로드 총 1.8초(순차였으면 7.2초로 시간 초과)
+            return b"synthetic:" + uri.encode()
+
+        def put(self, ctx, name, content, content_type):  # pragma: no cover
+            raise AssertionError
+
+    class TimedProvider:
+        def people(self, image):
+            now[0] += 0.1  # 프레임당 0.1초 × 4장 = 0.4초
+            return [Person(bbox=(65.0, 60.0, 155.0, 300.0), keypoints=FACE_KPS + (None,) * 12)]
+
+    seen_timeouts: list[float] = []
+
+    def opener(request, timeout):
+        seen_timeouts.append(timeout)
+        now[0] += 1.2
+
+        class R:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {"model": "cosmos3-nano", "choices": [{"message": {"content": json.dumps(_answer())}}]}
+                ).encode()
+
+        return R()
+
+    inp = _input(severity="HIGH")
+    base_ts = inp["observation_time"]
+    template = inp["frames"][0]
+    inp["frames"] = [
+        {
+            **template,
+            "camera_id": f"cam{(i % 2) + 1}",
+            "frame_uri": f"s3://simai-events/0192a6f0/frame-{i}.jpg",
+            "estimated_capture_time_ms": base_ts - (3 - i) * 1000,
+            "face_policy": "BLURRED",
+        }
+        for i in range(4)
+    ]
+    client = VlmClient(VlmSettings(timeout_s=30.0), opener=opener, encode=lambda px: ("image/jpeg", b"jpg"))
+    handler = VlmRationaleHandler(
+        ParallelStore(),
+        TimedProvider(),
+        client_factory=lambda: client,
+        decode=_decode,
+        monotonic=lambda: now[0],
+    )
+    result = handler(_ctx(inp))
+    assert seen_timeouts == [pytest.approx(2.8)]
+    assert result["proposed_severity"] == "CRITICAL"
+    assert result["latency_ms"] == 3400
+
+
+def test_budget_exhausted_during_gate_skips_vlm_call():
+    now = [0.0]
+
+    class SlowProvider:
+        def people(self, image):
+            now[0] = 5.0  # 첫 프레임 검출 직후 5초 예산 소진
+            return [Person(bbox=(65.0, 60.0, 155.0, 300.0), keypoints=FACE_KPS + (None,) * 12)]
+
+    vlm = FakeVlm(_answer())
+    handler = VlmRationaleHandler(
+        Store(),
+        SlowProvider(),
+        client_factory=lambda: vlm,
+        decode=_decode,
+        monotonic=lambda: now[0],
+    )
+    with pytest.raises(JobFailed) as e:
+        handler(_ctx(_input()))
+    assert e.value.code == "VLM_TIMEOUT" and e.value.retryable
+    assert vlm.calls == []
