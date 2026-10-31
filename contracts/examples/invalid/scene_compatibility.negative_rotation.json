@@ -1,0 +1,9 @@
+{
+  "scene_version": "scene-3",
+  "calibration_version": "cal-2",
+  "verification": "DIMMED",
+  "regeneration_required": true,
+  "reason": "LARGE_CHANGE",
+  "max_center_delta_m": 0.12,
+  "max_rotation_delta_rad": -0.1
+}

@@ -24,6 +24,7 @@ const MESSAGES = {
 // 메시지 스키마가 $ref 하는 파일. 새 파일을 $ref 하면 여기에 더한다.
 const SCHEMAS = [
   'common/defs',
+  'common/scene_compatibility',
   'messages/envelope',
   ...Object.keys(MESSAGES).map((m) => `messages/${m}`),
 ];

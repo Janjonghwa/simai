@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "scene_reference",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000309",
+  "sent_at": 1760342401000,
+  "source_id": "ec2",
+  "payload": {
+    "site_id": "classroom-1",
+    "scene_version": "scene-1"
+  }
+}

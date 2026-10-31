@@ -30,7 +30,8 @@ class SceneServiceTest {
     private final ObjectStorage storage = mock(ObjectStorage.class);
     private final JsonMapper mapper = JsonMapper.builder().build();
     private final ResultSet row = mock(ResultSet.class);
-    private final SceneService scenes = new SceneService(jdbc, storage, mapper, "demo", "scenes/demo.glb");
+    private final SceneCompatibility compatibility = mock(SceneCompatibility.class);
+    private final SceneService scenes = new SceneService(jdbc, storage, mapper, compatibility, "demo", "scenes/demo.glb");
     private boolean hasActive = true;
 
     @BeforeEach
@@ -42,6 +43,9 @@ class SceneServiceTest {
             RowMapper<Object> rowMapper = call.getArgument(2);
             return List.of(rowMapper.mapRow(row, 0));
         }).when(jdbc).query(anyString(), anyMap(), ArgumentMatchers.<RowMapper<Object>>any());
+        when(compatibility.current("scene-a", "cal-a")).thenReturn(mapper.createObjectNode()
+                .put("scene_version", "scene-a").put("calibration_version", "cal-live")
+                .put("verification", "VERIFIED").put("regeneration_required", false));
         when(row.getString("scene_version")).thenReturn("scene-a");
         when(row.getString("calibration_version")).thenReturn("cal-a");
         when(row.getString("calibration_state")).thenReturn("PROVISIONAL");
@@ -57,6 +61,8 @@ class SceneServiceTest {
         maps("material-z.png", "material-a.png");
         ObjectNode result = scenes.current();
         assertThat(result.get("calibration_state").asString()).isEqualTo("PROVISIONAL");
+        assertThat(result.at("/compatibility/calibration_version").asString()).isEqualTo("cal-live");
+        assertThat(result.at("/compatibility/verification").asString()).isEqualTo("VERIFIED");
         assertThat(result.at("/surface_source_map_urls/0").asString()).isEqualTo("https://objects.test/static-3d/material-z.png");
         assertThat(result.at("/surface_source_map_urls/1").asString()).isEqualTo("https://objects.test/static-3d/material-a.png");
         assertThat(result.at("/quality/observed_surface_ratio").asDouble()).isEqualTo(0.72);
@@ -95,7 +101,7 @@ class SceneServiceTest {
         assertThat(result.has("calibration_state")).isFalse();
         assertThat(result.get("gltf_url").asString()).endsWith("/scenes/demo.glb");
         assertThat(result.has("surface_source_map_urls")).isFalse();
-        SceneService empty = new SceneService(jdbc, storage, mapper, "demo", "");
+        SceneService empty = new SceneService(jdbc, storage, mapper, mock(SceneCompatibility.class), "demo", "");
         assertThatThrownBy(empty::current).isInstanceOfSatisfying(BusinessException.class,
                 e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.Scene.SCENE_NOT_FOUND));
     }

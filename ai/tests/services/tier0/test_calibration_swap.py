@@ -511,3 +511,79 @@ def test_fixed_rotation_target_metadata_survives_store_restart(site):
     site.tick()
     restarted = RuntimeCalibrationStore(store.root, lambda: store.current())
     assert restarted.current_report()['world_alignment']['fixed_center_rotation_cameras'] == [cid]
+
+
+def test_scene_reference_changes_next_world_without_changing_calibration(site):
+    service = site.service
+    previous = service.rig.calibration_version
+    from services.tier0.i1_dispatch import I1Dispatcher
+    dispatcher = I1Dispatcher()
+    dispatcher.register("scene_reference", service._accept_scene_reference)
+    dispatcher.on_connected()
+    notice = {"msg_type": "scene_reference", "msg_id": "scene-ref-1", "schema_version": "1.0.0",
+              "payload": {"site_id": "swap-test-site", "scene_version": "scene-new"}}
+    dispatcher.handle(notice)
+    site.tick()
+    assert site.output[-1]["scene_version"] == "scene-new"
+    assert site.output[-1]["calibration_version"] == previous
+    doc, report = candidate(service)
+    assert service.propose_calibration(doc, report)
+    site.tick()
+    assert site.output[-1]["scene_version"] == "scene-new"
+    assert site.output[-1]["calibration_version"] == doc["calibration_version"]
+    dispatcher.on_disconnected()
+    dispatcher.on_connected()
+    notice["payload"]["scene_version"] = "scene-rollback"
+    dispatcher.handle(notice)
+    site.tick()
+    assert site.output[-1]["scene_version"] == "scene-rollback"
+    dispatcher.close()
+
+
+@pytest.mark.parametrize("site_id,version,major", [
+    ("other-site", "scene-other", "1.0.0"), ("swap-test-site", None, "1.0.0"),
+    ("swap-test-site", "", "1.0.0"), ("swap-test-site", "scene-other", "2.0.0"),
+])
+def test_scene_reference_rejects_wrong_site_missing_version_and_major(site, site_id, version, major):
+    service = site.service
+    previous = service.perception.scene_version
+    service._accept_scene_reference({"schema_version": major, "payload": {"site_id": site_id, "scene_version": version}})
+    site.tick()
+    assert site.output[-1]["scene_version"] == previous
+
+
+def test_scene_lineage_and_original_poses_survive_swap_and_restart(site):
+    service = site.service
+    store = service.calibration
+    original = store.current()
+    store.ensure_scene_snapshot(effective_at=T0, msg_id="snapshot")
+    assert len(store.transitions) == 1
+    store.ensure_scene_snapshot(effective_at=T0 + 1, msg_id="unused")
+    assert len(store.transitions) == 1
+    doc, report = candidate(service)
+    assert service.propose_calibration(doc, report)
+    site.tick()
+    first = store.transitions[0]["payload"]
+    last = store.transitions[-1]["payload"]
+    assert first["world_frame_id"] == last["world_frame_id"] == original["calibration_version"]
+    assert first["camera_poses"][0]["t"] == original["cameras"][0]["t"]
+    assert last["camera_poses"][0]["t"] == doc["cameras"][0]["t"]
+    restored = RuntimeCalibrationStore(store.root, lambda: pytest.fail("저장소가 있어 bootstrap을 다시 읽으면 안 된다"))
+    assert restored.scene_metadata() == store.scene_metadata()
+    assert restored.document(original["calibration_version"]) == original
+    restored.ensure_scene_snapshot(effective_at=T0 + 10, msg_id="unused-restart")
+    assert restored.transitions == store.transitions
+    rollback = restored.prepare_rollback(original["calibration_version"], created_at=T0 + 20)
+    restored.activate(rollback, effective_at=T0 + 21, msg_id="rollback")
+    payload = restored.transitions[-1]["payload"]
+    assert payload["world_frame_id"] == original["calibration_version"]
+    assert payload["camera_poses"] == first["camera_poses"]
+
+
+def test_scene_reference_handler_does_not_read_calibration_files(site, monkeypatch):
+    service = site.service
+    with monkeypatch.context() as patch:
+        patch.setattr(service.calibration, "current", lambda: pytest.fail("참조 수신 lock 안에서 디스크를 읽으면 안 된다"))
+        service._accept_scene_reference({"schema_version": "1.0.0", "payload": {
+            "site_id": "swap-test-site", "scene_version": "scene-without-io"}})
+    assert service.perception.scene_version == "scene-without-io"

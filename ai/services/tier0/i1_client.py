@@ -89,7 +89,7 @@ MESSAGE_SCHEMA_VERSIONS: Mapping[str, str] = {
     "world_state": WORLD_STATE_SCHEMA_VERSION,  # 2.1.0: 분할 출처 split_from (-201). 만드는 모듈(tracking.world_state)이 정한다
     "health": HEALTH_SCHEMA_VERSION,  # 2.1.0: 2.0.0(-179) + tier0_warnings LIVE_MARKER_WRITE_FAILED(-197). health.py 가 정한다
     "observation_summary": "1.3.0",  # -155
-    "calibration_update": "2.0.0",  # 보정 출처 값 정리 (-167)
+    "calibration_update": "2.1.0",  # World 계보·카메라 자세 추가 (-381, Lead 승인 필요)
     "event_close_result": "1.1.0",  # 운영자 종료 결과, 1.1.0 JOURNAL_UNAVAILABLE (-200)
     "event_escalate_result": "1.0.0",  # 운영자 상향 결과 (계약 -206, Tier 0 처리 -272)
 }

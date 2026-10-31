@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/common/scene_compatibility.schema.json",
+  "title": "Scene–보정 정합 결과",
+  "type": "object",
+  "required": [
+    "scene_version",
+    "calibration_version",
+    "verification",
+    "regeneration_required",
+    "reason",
+    "max_center_delta_m",
+    "max_rotation_delta_rad"
+  ],
+  "properties": {
+    "scene_version": {
+      "$ref": "defs.schema.json#/$defs/version_id"
+    },
+    "calibration_version": {
+      "oneOf": [
+        {
+          "$ref": "defs.schema.json#/$defs/version_id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "verification": {
+      "enum": [
+        "VERIFIED",
+        "DIMMED",
+        "MISMATCH"
+      ]
+    },
+    "regeneration_required": {
+      "type": "boolean"
+    },
+    "reason": {
+      "enum": [
+        "SAME_CALIBRATION",
+        "SMALL_CHANGE",
+        "LARGE_CHANGE",
+        "DIFFERENT_WORLD",
+        "UNKNOWN"
+      ]
+    },
+    "max_center_delta_m": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "max_rotation_delta_rad": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 3.141592653589793
+    }
+  },
+  "additionalProperties": false
+}

@@ -97,6 +97,7 @@ class CalibrationStatusIntegrationTest {
             jdbc.update("DELETE FROM config_bundle_item WHERE config_version = ?", version);
             jdbc.update("DELETE FROM config_bundle WHERE config_version = ?", version);
         }
+        jdbc.update("DELETE FROM scene_version WHERE scene_version LIKE ?", like);
         jdbc.update("DELETE FROM calibration_update_message WHERE calibration_version LIKE ?", like);
         jdbc.update("DELETE FROM coverage_guide WHERE calibration_version LIKE ?", like);
         jdbc.update("DELETE FROM calibration_document WHERE calibration_version LIKE ?", like);
@@ -362,6 +363,77 @@ class CalibrationStatusIntegrationTest {
         assertThat(body.get("guides").get(0).at("/metrics/floor_coverage_ratio").asDouble()).isEqualTo(0.42);
         assertThat(body.get("guides").get(1).get("camera_id").isNull()).isTrue();
         call("/api/cameras/coverage-guides", viewer(), 403);
+    }
+
+    @Autowired
+    com.ssafy.simai.domain.scene.SceneCompatibility sceneCompatibility;
+
+    @Autowired
+    com.ssafy.simai.domain.health.HealthState healthState;
+
+    @Autowired
+    com.ssafy.simai.domain.health.ViewerHealthService viewerHealth;
+
+    @Test
+    void I1_자세와_World계보를_저장하고_Scene생성보정_대비_누적변화를_판정한다() throws Exception {
+        String root = prefix + "-a";
+        try (Tier0 tier0 = tier0()) {
+            String previous = null;
+            for (String suffix : List.of("a", "b", "c", "d")) {
+                String version = prefix + "-" + suffix;
+                var message = update(version, previous, "PROVISIONAL", previous == null ? "INITIAL" : "RECALIBRATED", base);
+                message.put("schema_version", "2.1.0");
+                var p = (ObjectNode) message.get("payload");
+                p.put("world_frame_id", suffix.equals("d") ? "another-world" : root);
+                var pose = p.putArray("camera_poses").addObject().put("camera_id", "cam_A");
+                pose.set("R", MAPPER.valueToTree(new int[][] {{1,0,0},{0,1,0},{0,0,1}}));
+                double x = suffix.equals("b") ? .06 : suffix.equals("c") ? .12 : 0;
+                pose.set("t", MAPPER.valueToTree(new double[] {-x,0,-2}));
+                tier0.send(message);
+                awaitCount(() -> messages(version), 1);
+                previous = version;
+            }
+            var small = sceneCompatibility.compare("scene-lineage", root, prefix + "-b");
+            assertThat(small.path("verification").asString()).isEqualTo("VERIFIED");
+            var large = sceneCompatibility.compare("scene-lineage", root, prefix + "-c");
+            assertThat(large.path("verification").asString()).isEqualTo("DIMMED");
+            assertThat(large.path("regeneration_required").asBoolean()).isTrue();
+            assertThat(large.path("max_center_delta_m").asDouble()).isEqualTo(.12);
+            assertThat(sceneCompatibility.compare("scene-lineage", root, prefix + "-d").path("verification").asString())
+                    .isEqualTo("MISMATCH");
+
+            String scene = prefix + "-scene";
+            jdbc.update("""
+                    INSERT INTO scene_version (scene_version, site_id, calibration_version, state, gltf_key, is_upper_bound,
+                        committed_at, valid_from)
+                    VALUES (?, 'classroom-1', ?, 'COMMITTED', 'scenes/lineage.glb', false, now() + interval '1 day', now())
+                    """, scene, root);
+            for (String suffix : List.of("b", "c", "d")) {
+                String version = prefix + "-" + suffix;
+                ObjectNode world = (ObjectNode) MAPPER.readTree(Files.readString(CONTRACTS.resolve("examples/world_state.json")));
+                long now = Instant.now().toEpochMilli();
+                world.put("msg_id", UUID.randomUUID().toString());
+                world.put("source_id", gatewayId);
+                world.put("sent_at", now);
+                ObjectNode p = (ObjectNode) world.get("payload");
+                p.put("t_latest_global", now);
+                p.put("scene_version", scene);
+                p.put("calibration_version", version);
+                p.putArray("tracks");
+                p.remove("input_provenance");
+                p.remove("config_version");
+                tier0.send(world);
+                awaitCount(() -> healthState.world() != null && version.equals(healthState.world().calibrationVersion()) ? 1 : 0, 1);
+                JsonNode rest = call("/api/scenes/current", viewer(), 200);
+                JsonNode health = viewerHealth.message().at("/payload/scene/compatibility");
+                assertThat(rest.get("compatibility")).isEqualTo(health);
+                assertThat(health.path("scene_version").asString()).isEqualTo(scene);
+                assertThat(health.path("calibration_version").asString()).isEqualTo(version);
+                assertThat(health.path("verification").asString()).isEqualTo(
+                        suffix.equals("b") ? "VERIFIED" : suffix.equals("c") ? "DIMMED" : "MISMATCH");
+                assertThat(rest.path("calibration_state").asString()).isEqualTo("PROVISIONAL");
+            }
+        }
     }
 
     // ---- 도우미

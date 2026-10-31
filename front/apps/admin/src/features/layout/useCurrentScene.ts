@@ -9,6 +9,7 @@ const RELOAD_MS = 10_000;
 
 /** 현재 배경. 조회 실패에는 마지막 본문을 유지하고, 처음 받기 전에는 기본 바닥을 쓴다. */
 export function useCurrentScene() {
+  const [sceneStatus, setSceneStatus] = useState<ViewerSceneStatus | null>(null);
   const [needsRefetch, setNeedsRefetch] = useState(false);
   const nextRefetchAt = useRef(0);
   const { data, refetch } = useQuery({
@@ -26,6 +27,7 @@ export function useCurrentScene() {
 
   const onSceneStatusChange = useCallback(
     (status: ViewerSceneStatus) => {
+      setSceneStatus(status);
       setNeedsRefetch(status.needsRefetch);
       if (!status.needsRefetch || Date.now() < nextRefetchAt.current) return;
       // 첫 만료·권한 거부는 즉시 받는다. 같은 신호가 반복되면 위 주기 조회로 회복한다.
@@ -35,5 +37,5 @@ export function useCurrentScene() {
     [refetch],
   );
 
-  return { scene: data ?? null, onSceneStatusChange };
+  return { scene: data ?? null, sceneStatus, onSceneStatusChange };
 }

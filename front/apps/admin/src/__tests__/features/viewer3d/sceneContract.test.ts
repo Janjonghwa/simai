@@ -33,7 +33,17 @@ const defaultScene = (patch: Record<string, unknown> = {}) =>
     ...patch,
   });
 
+const COMPAT = {
+  scene_version: 'scene-4',
+  calibration_version: 'cal-2',
+  verification: 'VERIFIED' as const,
+  regeneration_required: false,
+  reason: 'SMALL_CHANGE' as const,
+  max_center_delta_m: 0.02,
+  max_rotation_delta_rad: 0.01,
+};
 const MATCH: SceneVersions = {
+  compatibility: COMPAT,
   worldScene: 'scene-4',
   worldCalibration: 'cal-2',
   healthCommitted: 'scene-4',
@@ -121,7 +131,7 @@ describe('readCurrentScene', () => {
 describe('verifyScene', () => {
   const scene = sceneOf(committed());
 
-  it('World·Health 버전이 모두 같으면 VERIFIED', () => {
+  it('현재 World에 결속된 서버 판정이 VERIFIED면 유지한다', () => {
     expect(verifyScene(scene, MATCH)).toEqual({ verification: 'VERIFIED', mismatches: [] });
   });
 
@@ -147,15 +157,12 @@ describe('verifyScene', () => {
       }),
     ).toEqual({
       verification: 'MISMATCH',
-      mismatches: [
-        'world.scene_version=scene-5',
-        'world.calibration_version=cal-3',
-        'health.scene.committed_version=scene-5',
-        'health.scene.mismatch=true',
-      ],
+      mismatches: ['world.scene_version=scene-5', 'health.scene.committed_version=scene-5'],
     });
-    // World 가 없어도 Health 가 어긋남을 알리면 MISMATCH 다.
-    expect(verifyScene(scene, { ...UNKNOWN, healthMismatch: true }).verification).toBe('MISMATCH');
+    // 기존 mismatch 불리언만으로 World 계보를 추측하지 않는다.
+    expect(verifyScene(scene, { ...UNKNOWN, healthMismatch: true }).verification).toBe(
+      'UNCONFIRMED',
+    );
   });
 });
 
@@ -263,5 +270,90 @@ describe('sceneStatusOf', () => {
       needsRefetch: false,
       display: 'HIDDEN',
     });
+  });
+});
+
+describe('서버 Scene 계보 판정', () => {
+  it('Scene 생성 보정과 현재 보정의 버전이 달라도 같은 World의 작은 변화면 FULL이다', () => {
+    const versions = {
+      ...MATCH,
+      worldCalibration: 'cal-3',
+      compatibility: { ...COMPAT, calibration_version: 'cal-3' },
+    };
+    expect(
+      sceneStatusOf(
+        { ok: true, raw: committed({ calibration_state: 'PROVISIONAL' }) },
+        loaded(),
+        versions,
+      ),
+    ).toMatchObject({
+      verification: 'VERIFIED',
+      display: 'FULL',
+      provisionalBackground: true,
+      regenerationRequired: false,
+    });
+  });
+  it('큰 누적 변화는 숨기지 않고 DIMMED와 재생성 필요로 표시한다', () => {
+    const versions = {
+      ...MATCH,
+      compatibility: {
+        ...COMPAT,
+        verification: 'DIMMED' as const,
+        regeneration_required: true,
+        reason: 'LARGE_CHANGE' as const,
+      },
+    };
+    expect(sceneStatusOf({ ok: true, raw: committed() }, loaded(), versions)).toMatchObject({
+      verification: 'DIMMED',
+      display: 'DIMMED',
+      regenerationRequired: true,
+    });
+  });
+  it('서버의 다른 World 판정은 HIDDEN이다', () => {
+    expect(
+      sceneStatusOf({ ok: true, raw: committed() }, loaded(), {
+        ...MATCH,
+        compatibility: { ...COMPAT, verification: 'MISMATCH', reason: 'DIFFERENT_WORLD' },
+      }).display,
+    ).toBe('HIDDEN');
+  });
+  it('보정 전환 중 낡은 서버 판정은 흐리게 유지하고, 판정이 없어도 Scene 과 같은 보정이면 변화 0 이라 VERIFIED 다', () => {
+    expect(
+      verifyScene(sceneOf(committed()), { ...MATCH, worldCalibration: 'cal-new' }).verification,
+    ).toBe('UNCONFIRMED');
+    const scene = sceneOf(committed());
+    expect(
+      verifyScene(scene, {
+        ...MATCH,
+        worldCalibration: scene.calibrationVersion,
+        compatibility: undefined,
+      }).verification,
+    ).toBe('VERIFIED');
+    expect(
+      verifyScene(scene, { ...MATCH, worldCalibration: 'cal-other', compatibility: undefined })
+        .verification,
+    ).toBe('UNCONFIRMED');
+  });
+  it('새 활성 Scene을 받으면 자산을 다시 조회한다', () => {
+    expect(
+      sceneStatusOf({ ok: true, raw: committed() }, loaded(), {
+        ...MATCH,
+        healthCommitted: 'scene-next',
+      }).needsRefetch,
+    ).toBe(true);
+  });
+  it('잘못된 REST 판정과 Scene 결속을 거부하고 유효한 REST 판정은 health 전에 사용한다', () => {
+    expect(
+      readCurrentScene(committed({ compatibility: { ...COMPAT, scene_version: 'other' } })).ok,
+    ).toBe(false);
+    expect(
+      readCurrentScene(committed({ compatibility: { ...COMPAT, max_rotation_delta_rad: -1 } })).ok,
+    ).toBe(false);
+    expect(
+      sceneStatusOf({ ok: true, raw: committed({ compatibility: COMPAT }) }, loaded(), {
+        ...MATCH,
+        compatibility: undefined,
+      }).display,
+    ).toBe('FULL');
   });
 });

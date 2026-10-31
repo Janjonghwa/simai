@@ -35,6 +35,15 @@ const committed = (patch: Record<string, unknown> = {}) => ({
     state: 'COMMITTED',
     default: false,
     calibration_version: 'cal-demo',
+    compatibility: {
+      scene_version: patch.scene_version ?? 'scene-demo-1',
+      calibration_version: 'calibration_version' in patch ? patch.calibration_version : 'cal-demo',
+      verification: 'VERIFIED',
+      regeneration_required: false,
+      reason: 'SMALL_CHANGE',
+      max_center_delta_m: 0.02,
+      max_rotation_delta_rad: 0.01,
+    },
     committed_at_ms: T0,
     quality: null,
     gltf_url: 'https://bucket.example/scene-demo-1.glb?sig=1',
@@ -193,6 +202,36 @@ describe('SceneBackground', () => {
     const ray = new THREE.Raycaster(new THREE.Vector3(5, 5, -5), new THREE.Vector3(0, -1, 0));
     a.mesh.raycast(ray, hits);
     expect(hits).toHaveLength(0);
+  });
+
+  it('큰 보정 변화의 서버 판정은 자산 재적재 없이 흐리게 유지한다', async () => {
+    world();
+    await mount();
+    await setInput(committed());
+    const a = asset();
+    await settle(calls[0]!, a.root);
+    await setInput(
+      committed({
+        compatibility: {
+          scene_version: 'scene-demo-1',
+          calibration_version: 'cal-demo',
+          verification: 'DIMMED',
+          regeneration_required: true,
+          reason: 'LARGE_CHANGE',
+          max_center_delta_m: 0.12,
+          max_rotation_delta_rad: 0.01,
+        },
+      }),
+    );
+    expect(calls).toHaveLength(1);
+    expect(a.root.visible).toBe(true);
+    expect(floor().visible).toBe(false);
+    expect(status()).toMatchObject({
+      verification: 'DIMMED',
+      display: 'DIMMED',
+      regenerationRequired: true,
+    });
+    expect((a.mesh.material as THREE.Material).opacity).toBe(DIMMED_OPACITY);
   });
 
   it('World 버전이 바뀌어 어긋나면 배경을 숨기고 기본 바닥을 되돌린다', async () => {

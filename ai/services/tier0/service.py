@@ -365,6 +365,7 @@ class Tier0Service:
             self.calibration = RuntimeCalibrationStore(
                 s.state_dir / "calibrations", lambda: FileCalibrationProvider(s.calibration_file).current())
             self.rig = CameraRig.from_provider(self.calibration)
+            self._scene_site_id = self.calibration.current()["coordinate_frame"].get("site_id")
         except (OSError, ValueError, KeyError, TypeError) as e:
             raise Tier0StartError(f"보정 문서를 읽지 못했다: {s.calibration_file} ({type(e).__name__}: {e})", 2) from e
 
@@ -801,7 +802,9 @@ class Tier0Service:
             on_event_escalate=lambda request: self.judge.escalate(request),
             endpoint_build=lambda: registrar.build(env, read_cert_pem(env)),
         )
+        link.dispatcher.register("scene_reference", self._accept_scene_reference)
         link_ref["link"] = link
+        self.calibration.ensure_scene_snapshot(effective_at=self.clock.now_ms(), msg_id=self._new_msg_id())
         link.publisher.add_source(self._calibration_messages)
         return link
 
@@ -966,6 +969,20 @@ class Tier0Service:
                     self._on_camera_drifted(cid)
                 except Exception:
                     log.exception("카메라 재수집 콜백 실패: %s", cid)
+
+    def _accept_scene_reference(self, message):
+        """자산 조회 없이 EC2의 현재 Scene 참조만 다음 world 프레임에 적용한다."""
+        payload = message.get("payload", {})
+        version = payload.get("scene_version")
+        schema_version = message.get("schema_version")
+        if not isinstance(schema_version, str) or schema_version.split(".")[0] != "1":
+            return
+        with self.judge_lock:
+            site = self._scene_site_id
+            if not site or payload.get("site_id") != site:
+                return
+            if isinstance(version, str) and version.strip():
+                self.perception.scene_version = version
 
     def _calibration_messages(self):
         """I1 신뢰 대기열 source. 재시작 때 같은 msg_id의 전환 이력을 다시 보내 유실을 막는다."""

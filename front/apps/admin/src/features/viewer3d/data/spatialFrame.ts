@@ -1,4 +1,5 @@
 import type { WorldPoint } from '@/features/viewer3d/worldCoordinates';
+import type { ViewerHealthMessage } from '@simai/contracts';
 
 // Spatial 이 렌더러(-44 사람, -47 구역, -185 강조)에 넘기는 View Model. 값은 계약(contracts/)을 그대로 옮기고 단위는 World(m, Z-up)다.
 // Three.js 좌표는 여기 두지 않는다. 장면에 놓을 때 worldToThree 를 한 번만 부른다.
@@ -122,7 +123,12 @@ export interface HealthView {
     appliedVersion: string | null;
     sync: 'CURRENT' | 'PENDING' | 'UNVERIFIED' | 'STALE';
   };
-  scene: { committedVersion: string | null; liveVersion: string | null; mismatch: boolean };
+  scene: {
+    committedVersion: string | null;
+    liveVersion: string | null;
+    mismatch: boolean;
+    compatibility?: ViewerHealthMessage['payload']['scene']['compatibility'];
+  };
 }
 
 /** 구역 판정 유형(명세 8.2). GROUND_FOOTPRINT 는 바닥 위치만, VOLUME_3D 는 높이 범위까지 본다. */

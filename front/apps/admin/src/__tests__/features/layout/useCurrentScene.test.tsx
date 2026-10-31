@@ -131,6 +131,37 @@ describe('현재 Scene 조회', () => {
     expect(result.current.scene).toEqual({ ok: true, raw: updated });
   });
 
+  it('활성 Scene 불일치로 새 자산을 자동 조회하고 해소되면 반복 조회를 멈춘다', async () => {
+    const { result } = run();
+    await advance();
+    const updated = { scene_version: 'scene-2', gltf_url: '/scene-2.glb' };
+    api.mockResolvedValue(updated);
+    const mismatch: ViewerSceneStatus = {
+      ...EXPIRED,
+      phase: 'LOADED',
+      verification: 'MISMATCH',
+      mismatches: ['health.scene.committed_version=scene-2'],
+      reason: null,
+    };
+    act(() => result.current.onSceneStatusChange(mismatch));
+    await advance();
+    expect(result.current.scene).toEqual({ ok: true, raw: updated });
+    expect(api).toHaveBeenCalledTimes(2);
+    const verified: ViewerSceneStatus = {
+      ...mismatch,
+      sceneVersion: 'scene-2',
+      verification: 'VERIFIED',
+      display: 'FULL',
+      mismatches: [],
+      needsRefetch: false,
+      provisionalBackground: true,
+    };
+    act(() => result.current.onSceneStatusChange(verified));
+    expect(result.current.sceneStatus).toEqual(verified);
+    await advance(20_000);
+    expect(api).toHaveBeenCalledTimes(2);
+  });
+
   it('내려가면 진행 중 요청을 중단하고 재요청 타이머를 해제한다', async () => {
     api.mockImplementation(() => new Promise(() => {}));
     const { unmount } = run();

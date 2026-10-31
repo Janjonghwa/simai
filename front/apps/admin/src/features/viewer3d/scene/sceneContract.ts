@@ -1,3 +1,25 @@
+import type { ViewerHealthMessage } from '@simai/contracts';
+import { z } from 'zod';
+
+export type SceneCompatibility = NonNullable<
+  ViewerHealthMessage['payload']['scene']['compatibility']
+>;
+const compatibilitySchema = z.object({
+  scene_version: z.string().min(1),
+  calibration_version: z.string().min(1).nullable(),
+  verification: z.enum(['VERIFIED', 'DIMMED', 'MISMATCH']),
+  regeneration_required: z.boolean(),
+  reason: z.enum([
+    'SAME_CALIBRATION',
+    'SMALL_CHANGE',
+    'LARGE_CHANGE',
+    'DIFFERENT_WORLD',
+    'UNKNOWN',
+  ]),
+  max_center_delta_m: z.number().finite().nonnegative().nullable(),
+  max_rotation_delta_rad: z.number().finite().min(0).max(Math.PI).nullable(),
+});
+
 // 정적 배경 Scene(S15P31A101-59)의 입력 계약과 상태 판정. 렌더러·React 와 떨어진 순수 함수라 시험한다.
 //
 // 입력은 BE -264 GET /api/scenes/current 응답 본문 그대로다(docs/design/server-rules-scenes.md, 서버 SceneService):
@@ -39,6 +61,8 @@ export interface CurrentScene {
   /** COMMITTED 는 늘 있다. 시연용 기본 Scene(DEFAULT)은 보정 근거가 없어 null 이다. */
   calibrationVersion: string | null;
   committedAtMs: number | null;
+  calibrationState?: string;
+  compatibility?: SceneCompatibility;
   /** 서명 주소. 자산이 없거나 저장소를 쓸 수 없으면 null(서버는 Scene 정보는 준다). */
   gltfUrl: string | null;
   gltfExpiresAtMs: number | null;
@@ -130,6 +154,18 @@ export function readCurrentScene(raw: unknown): SceneReadResult {
   if (sourceMaps === 'INVALID') {
     return { ok: false, reason: 'surface_source_map_urls 형식이 틀렸다' };
   }
+  const compatibility = field(raw, 'compatibility');
+  const parsed = compatibility === undefined ? null : compatibilitySchema.safeParse(compatibility);
+  if (parsed && (!parsed.success || parsed.data.scene_version !== sceneVersion)) {
+    return { ok: false, reason: 'compatibility 형식 또는 Scene 참조가 틀렸다' };
+  }
+  const calibrationState = field(raw, 'calibration_state');
+  if (
+    calibrationState !== undefined &&
+    !['UNCALIBRATED', 'PROVISIONAL', 'CALIBRATED', 'DRIFTED'].includes(String(calibrationState))
+  ) {
+    return { ok: false, reason: 'calibration_state 형식이 틀렸다' };
+  }
   const scene: CurrentScene = {
     sceneVersion,
     state: state as SceneState,
@@ -138,6 +174,8 @@ export function readCurrentScene(raw: unknown): SceneReadResult {
     gltfUrl: isText(url) ? url : null,
     gltfExpiresAtMs: isFiniteNumber(expires) ? expires : null,
   };
+  if (parsed?.success) scene.compatibility = parsed.data;
+  if (typeof calibrationState === 'string') scene.calibrationState = calibrationState;
   if (sourceMaps !== null) {
     scene.surfaceSourceMapUrls = sourceMaps;
   }
@@ -178,12 +216,13 @@ export type SceneStatusPhase =
 
 /**
  * 정합 판정.
- * - VERIFIED: COMMITTED 이고 world_state 의 scene·calibration 버전이 같고 viewer_health 와도 어긋나지 않음
+ * - VERIFIED·DIMMED: 같은 Scene·현재 보정에 결속된 서버 정합 판정
  * - DEFAULT_UNVERIFIED: 시연용 기본 Scene. 현장 정합 근거가 없다
  * - UNCONFIRMED: 비교할 world_state 가 아직 없음
- * - MISMATCH: 버전이 다름(배경을 숨긴다)
+ * - MISMATCH: 서버가 다른 World로 판정했거나 조회 자산이 활성 Scene과 다름(숨김)
  */
-export type SceneVerification = 'VERIFIED' | 'DEFAULT_UNVERIFIED' | 'UNCONFIRMED' | 'MISMATCH';
+export type SceneVerification =
+  'VERIFIED' | 'DIMMED' | 'DEFAULT_UNVERIFIED' | 'UNCONFIRMED' | 'MISMATCH';
 
 /** FULL 그대로 · DIMMED 흐리게(정합 근거 없음) · HIDDEN 숨기고 기본 바닥만. */
 export type SceneDisplay = 'FULL' | 'DIMMED' | 'HIDDEN';
@@ -194,6 +233,8 @@ export interface ViewerSceneStatus {
   state: SceneState | null;
   calibrationVersion: string | null;
   verification: SceneVerification | null;
+  provisionalBackground?: boolean;
+  regenerationRequired?: boolean;
   display: SceneDisplay;
   /** 어긋난 항목(예: 'world.scene_version=scene-4'). 비교하지 못한 항목은 넣지 않는다. */
   mismatches: string[];
@@ -212,6 +253,7 @@ export interface SceneVersions {
   healthCommitted: string | null;
   healthLive: string | null;
   healthMismatch: boolean | null;
+  compatibility?: SceneCompatibility;
 }
 
 export function verifyScene(
@@ -222,16 +264,26 @@ export function verifyScene(
   const mismatches: string[] = [];
   if (v.worldScene !== null && v.worldScene !== scene.sceneVersion)
     mismatches.push(`world.scene_version=${v.worldScene}`);
-  if (v.worldCalibration !== null && v.worldCalibration !== scene.calibrationVersion)
-    mismatches.push(`world.calibration_version=${v.worldCalibration}`);
   if (v.healthCommitted !== null && v.healthCommitted !== scene.sceneVersion)
     mismatches.push(`health.scene.committed_version=${v.healthCommitted}`);
-  if (v.healthMismatch === true) mismatches.push('health.scene.mismatch=true');
   if (mismatches.length > 0) return { verification: 'MISMATCH', mismatches };
-  if (v.worldScene === null || v.worldCalibration === null) {
+  if (v.worldCalibration === null || v.worldScene === null) {
     return { verification: 'UNCONFIRMED', mismatches };
   }
-  return { verification: 'VERIFIED', mismatches };
+  const verdict = v.compatibility ?? scene.compatibility;
+  if (
+    verdict &&
+    verdict.scene_version === scene.sceneVersion &&
+    verdict.calibration_version === v.worldCalibration
+  ) {
+    return { verification: verdict.verification, mismatches };
+  }
+  // Scene 을 만든 보정과 같은 보정이면 변화가 0 이라 서버 판정(SAME_CALIBRATION) 없이도 VERIFIED 다.
+  // 서버 판정이 늦거나 배포 전환 중에도 배경을 불필요하게 흐리지 않는다.
+  if (v.worldCalibration === scene.calibrationVersion) {
+    return { verification: 'VERIFIED', mismatches };
+  }
+  return { verification: 'UNCONFIRMED', mismatches };
 }
 
 /** 입력·읽기 단계·지금 버전으로 화면 상태를 만든다. 같은 입력이면 같은 값이다. */
@@ -268,6 +320,10 @@ export function sceneStatusOf(
     state: scene.state,
     calibrationVersion: scene.calibrationVersion,
     verification,
+    needsRefetch:
+      versions.healthCommitted !== null && versions.healthCommitted !== scene.sceneVersion,
+    provisionalBackground: scene.calibrationState === 'PROVISIONAL',
+    regenerationRequired: verification === 'DIMMED',
     mismatches,
   };
   const current = load.sceneVersion === scene.sceneVersion ? load : IDLE_LOAD;
@@ -288,7 +344,7 @@ export function sceneStatusOf(
     phase,
     display,
     reason: current.reason,
-    needsRefetch: phase === 'EXPIRED',
+    needsRefetch: phase === 'EXPIRED' || known.needsRefetch,
     boundsWorld: current.boundsWorld,
   };
 }

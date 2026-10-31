@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.ssafy.simai.domain.scene.SceneService;
+import com.ssafy.simai.domain.scene.SceneCompatibility;
 import com.ssafy.simai.global.config.JwtConfig;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
@@ -51,6 +52,9 @@ class RuleSceneIntegrationTest {
 
     @Autowired
     JdbcTemplate jdbc;
+
+    @Autowired
+    SceneCompatibility compatibility;
 
     @Autowired
     NamedParameterJdbcTemplate named;
@@ -166,7 +170,7 @@ class RuleSceneIntegrationTest {
         String scene = "scene-264-" + tag;
         commitScene(scene, "scenes/" + tag + "/scene.glb");
         ObjectStorage unconfigured = new ObjectStorage(new StorageProperties("", "ap-northeast-2", "", false, "", "", null, null));
-        SceneService withoutStorage = new SceneService(named, unconfigured, MAPPER, "scene-demo", "");
+        SceneService withoutStorage = new SceneService(named, unconfigured, MAPPER, compatibility, "scene-demo", "");
 
         var node = withoutStorage.current();
 
@@ -231,7 +235,7 @@ class RuleSceneIntegrationTest {
     @Test
     void 기본_Scene_도_등록하지_않았으면_SCENE_NOT_FOUND() {
         assertThat(openCommitted()).as("다른 시험이 남긴 COMMITTED Scene 이 없어야 한다").isZero();
-        SceneService withoutDefault = new SceneService(named, storage, MAPPER, "scene-demo", "");
+        SceneService withoutDefault = new SceneService(named, storage, MAPPER, compatibility, "scene-demo", "");
 
         assertThatThrownBy(withoutDefault::current).isInstanceOf(BusinessException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.Scene.SCENE_NOT_FOUND);

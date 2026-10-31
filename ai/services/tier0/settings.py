@@ -5,7 +5,7 @@
     {
       "gateway_id": "tier0-01",               봉투 source_id·이벤트 gateway_id (환경 변수 SIMAI_TIER0_ID 가 우선)
       "state_dir": "/workspace/simai/state",   Network Volume 상태 루트 (기본 $SIMAI_ROOT/state)
-      "scene_version": "scene-0",              world_state scene_version (정적 3D 확정 전 기본안)
+      "scene_version": "scene-0",              world_state 초기 Scene 참조 (I1 scene_reference 수신 뒤 EC2 현재 Scene을 따름)
       "calibration_file": "calibration.json",  보정 문서(contracts/providers/calibration). SIM 은 기본 run_dir/calibration.json,
                                                LIVE·file 은 필수(외부 파라미터 포함, 없으면 시작하지 않는다)
       "input": {"mode": "sim", "run_dir": "...", "anchor_wall_ms": 1760342400000, "arrival_lag_ms": 60},

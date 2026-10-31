@@ -261,7 +261,7 @@ actor_id: string
 acked_at: number
 })
 /**
- * EC2 → 뷰어, STOMP /topic/health (명세 12.2, 12.4, 6.2, 13장). EC2 가 Tier 0 health(I1), 노트북 하트비트, 구성 묶음 적용(config_ack), COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보내는 화면용 상태다. Tier 0 health 원문은 tier0_health 에 그대로 싣는다(없으면 null). EC2 가 Tier 0 나 노트북 하트비트를 잃으면 system_health 는 UNSAFE_UNKNOWN 이다(3.2 이중 감시). Scene 불일치는 Tier 0 가 판정에 쓰는 scene_version(world_state)과 EC2 의 COMMITTED Scene 버전이 다를 때다(FR-12). 1.0.0 신설(S15P31A101-206).
+ * EC2 → 뷰어, STOMP /topic/health (명세 12.2, 12.4, 6.2, 13장). EC2 가 Tier 0 health(I1), 노트북 하트비트, 구성 묶음 적용(config_ack), COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보내는 화면용 상태다. Tier 0 health 원문은 tier0_health 에 그대로 싣는다(없으면 null). EC2 가 Tier 0 나 노트북 하트비트를 잃으면 system_health 는 UNSAFE_UNKNOWN 이다(3.2 이중 감시). Scene 불일치는 Tier 0 가 판정에 쓰는 scene_version(world_state)과 EC2 의 COMMITTED Scene 버전이 다를 때다(FR-12). 1.1.0: scene.compatibility 선택 추가(S15P31A101-381). 1.0.0 신설(S15P31A101-206).
  */
 export type ViewerHealthMessage = (Envelope & {
 msg_type?: "viewer_health"
@@ -324,6 +324,7 @@ committed_version: (string | null)
  * 마지막 world_state.scene_version
  */
 live_version: (string | null)
+compatibility?: Scene
 /**
  * 두 값이 모두 있고 다르면 true (FR-12 경고)
  */
@@ -623,6 +624,18 @@ requested_at: number
  * 관리자 메모(선택)
  */
 note?: string
+}
+export interface Scene {
+/**
+ * calibration_version, scene_version, config_version 등 (예: cal-7)
+ */
+scene_version: string
+calibration_version: (string | null)
+verification: ("VERIFIED" | "DIMMED" | "MISMATCH")
+regeneration_required: boolean
+reason: ("SAME_CALIBRATION" | "SMALL_CHANGE" | "LARGE_CHANGE" | "DIFFERENT_WORLD" | "UNKNOWN")
+max_center_delta_m: (number | null)
+max_rotation_delta_rad: (number | null)
 }
 export interface AvatarFramePayload {
 /**

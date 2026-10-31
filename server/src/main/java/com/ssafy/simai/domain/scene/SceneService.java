@@ -47,15 +47,17 @@ public class SceneService {
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectStorage storage;
     private final ObjectMapper mapper;
+    private final SceneCompatibility compatibility;
     private final String defaultVersion;
     private final String defaultGltfKey;
 
-    public SceneService(NamedParameterJdbcTemplate jdbc, ObjectStorage storage, ObjectMapper mapper,
+    public SceneService(NamedParameterJdbcTemplate jdbc, ObjectStorage storage, ObjectMapper mapper, SceneCompatibility compatibility,
             @Value("${simai.scene.default-version:scene-demo}") String defaultVersion,
             @Value("${simai.scene.default-gltf-key:}") String defaultGltfKey) {
         this.jdbc = jdbc;
         this.storage = storage;
         this.mapper = mapper;
+        this.compatibility = compatibility;
         this.defaultVersion = defaultVersion;
         this.defaultGltfKey = defaultGltfKey.strip();
     }
@@ -83,6 +85,7 @@ public class SceneService {
             }
             node.put("committed_at_ms", s.committedAt() == null ? null : s.committedAt().toInstant().toEpochMilli());
             node.set("quality", s.quality() == null ? mapper.nullNode() : mapper.readTree(s.quality()));
+            node.set("compatibility", compatibility.current(s.version(), s.calibrationVersion()));
             gltf(node, s.gltfKey());
             sourceMaps(node, s.output());
             return node;
