@@ -2,6 +2,7 @@
 
 import copy
 import json
+import os
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -14,9 +15,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from services.avatar.transport import AvatarSender
-from simai_ai.gpu.admission import AdmissionGate, AdmissionPolicy
+from simai_ai.gpu.admission import DEFAULT_LAG_BUDGET_MS, AdmissionGate, AdmissionPolicy, LoadWindow, marker_section
 from simai_ai.hmr.rig import bake_person_rig_from_model_params
-from simai_ai.hmr.stream import AvatarLoop
+from simai_ai.hmr.stream import (
+    DEFAULT_MAX_AGE_MS,
+    HMR_STREAM_SLACK_MS,
+    TIER0_LAG_BUDGET_MS,
+    AvatarLoop,
+)
 from simai_ai.hmr.runtime import FastBodyModel
 from tests.contracts.test_avatar_stream import _schema_errors, violations
 from tests.hmr.multiview_scene import PROVENANCE, T0, Person, hmr_candidate, make_rig, track_doc
@@ -153,7 +159,7 @@ def test_identity_change_freezes_again_and_does_not_inherit_other_id(rig):
 
 def test_stale_frame_and_mismatched_frame_reference_are_not_inferred(rig):
     clock, source, sock, sender, model, loop, _ = harness(rig)
-    clock[0] += 501
+    clock[0] += DEFAULT_MAX_AGE_MS + 1
     loop.step()
     assert model.calls == 0
     source.item = snapshot(clock[0])
@@ -161,6 +167,103 @@ def test_stale_frame_and_mismatched_frame_reference_are_not_inferred(rig):
         ref["frame_ref"]["frame_sequence"] = 999
     loop.step()
     assert model.calls == 0
+
+
+@pytest.mark.parametrize(
+    "age_ms, expected_admitted",
+    [
+        (-1, False),
+        (0, True),
+        (500, True),
+        (550, True),
+        (TIER0_LAG_BUDGET_MS, True),
+        (DEFAULT_MAX_AGE_MS, True),
+        (DEFAULT_MAX_AGE_MS + 1, False),
+    ],
+)
+def test_freshness_max_age_ms_boundaries_and_tier0_lag_budget_alignment(rig, age_ms, expected_admitted):
+    assert TIER0_LAG_BUDGET_MS == DEFAULT_LAG_BUDGET_MS == 600
+    assert HMR_STREAM_SLACK_MS == 500
+    assert DEFAULT_MAX_AGE_MS == 1100
+    clock, source, sock, sender, model, loop, uploads = harness(rig, freeze=1)
+    assert loop.max_age_ms == DEFAULT_MAX_AGE_MS
+    assert sender.max_age_ms == DEFAULT_MAX_AGE_MS
+    capture_t = T0 + 1_000
+    source.item = snapshot(capture_t)
+    clock[0] = capture_t + age_ms
+    loop.step()
+    sender.tick()
+    if expected_admitted:
+        assert model.calls == 4 and len(uploads) == 1
+        batches = [m for m in sock.messages if m["msg_type"] == "avatar_pose_batch"]
+        assert len(batches) == 1
+        assert batches[0]["payload"]["poses"][0]["capture_time_ms"] == capture_t
+    else:
+        assert model.calls == 0 and not uploads and not sock.messages
+
+
+def test_avatar_loop_with_session9_marker_pattern_infers_and_blocks_on_consecutive_or_unknown(tmp_path, rig):
+    clock, source, sock, sender, model, loop, uploads = harness(rig, freeze=2)
+    marker = tmp_path / "tier0.live"
+    loop.gate = AdmissionGate(
+        marker,
+        AdmissionPolicy(),
+        wall_s=lambda: clock[0] / 1000.0,
+        monotonic=lambda: clock[0] / 1000.0,
+    )
+
+    def write_marker(lags, *, unknown=0):
+        w = LoadWindow(DEFAULT_LAG_BUDGET_MS)
+        for v in lags:
+            w.add(v)
+        for _ in range(unknown):
+            w.add(None)
+        doc = {
+            "started": True,
+            "gpu_priority": marker_section(
+                phase="running",
+                reserve={"state": "OK"},
+                load=w.take(),
+                written_at_ms=clock[0],
+                pid=1,
+            ),
+        }
+        marker.write_text(json.dumps(doc), encoding="utf-8")
+        ts = clock[0] / 1000.0
+        os.utime(marker, (ts, ts))
+
+    # 0~30s 안정 대기 중 26s 에 672ms 1회 단발 초과가 나와도 리셋되지 않고 30s 에 열린다.
+    write_marker((320.0, 410.0, 480.0, 520.0, 540.0))
+    loop.step()
+    assert model.calls == 0
+    for sec in range(1, 31):
+        clock[0] = T0 + sec * 1_000
+        if sec == 26:
+            write_marker((350.0, 420.0, 490.0, 530.0, 672.0))
+        elif sec % 5 == 0:
+            write_marker((330.0, 400.0, 470.0, 515.0, 545.0))
+        # 촬영 시각이 현재 시각보다 520ms 전(9차 평시 지연 300~550ms 범위)인 스냅샷 입력
+        source.item = snapshot(clock[0] - 520)
+        loop.step()
+        if sec < 30:
+            assert model.calls == 0
+
+    # 30s 시점에 첫 추론이 수행되었고, 31s 에 단발 672ms 표본이 있어도 2번째 추론·자산 업로드·포즈 송신이 완료된다.
+    assert model.calls == 4 and not uploads
+    clock[0] = T0 + 31_000
+    write_marker((360.0, 430.0, 500.0, 535.0, 672.0))
+    source.item = snapshot(clock[0] - 540)
+    loop.step()
+    sender.tick()
+    assert model.calls == 8 and len(uploads) == 1
+    assert any(m["msg_type"] == "avatar_pose_batch" for m in sock.messages)
+
+    # 다음 표시 파일 창에서도 연속으로 666ms 초과가 발생하면 즉시 차단된다.
+    clock[0] = T0 + 36_000
+    write_marker((380.0, 440.0, 510.0, 540.0, 666.0))
+    source.item = snapshot(clock[0] - 400)
+    loop.step()
+    assert model.calls == 8
 
 
 def test_upload_retry_reuses_identical_bytes_for_same_asset_version(rig):

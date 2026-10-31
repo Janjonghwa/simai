@@ -9,6 +9,7 @@
 """
 
 from simai_ai.gpu.admission import (
+    DEFAULT_LAG_BUDGET_MS,
     Admission,
     AdmissionGate,
     AdmissionPolicy,
@@ -24,6 +25,7 @@ __all__ = [
     "AdmissionPolicy",
     "BudgetError",
     "CapResult",
+    "DEFAULT_LAG_BUDGET_MS",
     "GpuBudget",
     "LoadWindow",
     "ReserveResult",

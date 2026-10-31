@@ -5,11 +5,20 @@ import logging
 from typing import Protocol
 
 from simai_ai.geometry.rig import CameraRig
+from simai_ai.gpu.admission import DEFAULT_LAG_BUDGET_MS
 from simai_ai.hmr.gltf_export import build_skinned_glb
 from simai_ai.hmr.multiview import aggregate_frame
 from simai_ai.hmr.pose import mhr_pose
 
 log = logging.getLogger(__name__)
+
+# 아바타 루프의 clock_ms() - snapshot["world"]["t"] 는 Pod 현재 시각과 카메라 촬영 시각의 차이이므로
+# (1) Tier 0 capture_to_risk 지연 예산(명세 6.6 p95 600ms, simai_ai.gpu.admission.DEFAULT_LAG_BUDGET_MS)과
+# (2) 아바타 공유 통로(5 Hz)·루프 폴링(200ms)·YOLO26x-seg·Fast SAM 3D Body 다중 뷰 추론 여유(명세 5.6 2~5 Hz,
+#     명세 13.2/20.4 관제 화면 포즈 신선도 상한 500ms)의 합을 기본 신선도 상한으로 둔다.
+TIER0_LAG_BUDGET_MS = DEFAULT_LAG_BUDGET_MS
+HMR_STREAM_SLACK_MS = 500
+DEFAULT_MAX_AGE_MS = TIER0_LAG_BUDGET_MS + HMR_STREAM_SLACK_MS
 
 
 class HmrModel(Protocol):
@@ -45,8 +54,8 @@ class PersonState:
 
 
 class AvatarLoop:
-    def __init__(self, source, gate, model, upload, sender, *, clock_ms, freeze_frames=30, max_age_ms=500,
-                 appearance=None, segmentation=None):
+    def __init__(self, source, gate, model, upload, sender, *, clock_ms, freeze_frames=30,
+                 max_age_ms=DEFAULT_MAX_AGE_MS, appearance=None, segmentation=None):
         self.source, self.gate, self.model = source, gate, model
         self.upload, self.sender, self.clock_ms = upload, sender, clock_ms
         self.freeze_frames, self.max_age_ms = freeze_frames, max_age_ms

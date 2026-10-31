@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from simai_ai.gpu.admission import (
+    DEFAULT_LAG_BUDGET_MS,
     DEFAULT_LIVE_BLOCKED,
     Admission,
     AdmissionGate,
@@ -36,7 +37,7 @@ class Clock:
         self.wall += s
 
 
-def load(lags, *, unknown: int = 0, budget: int = 600, qwe=None) -> dict:
+def load(lags, *, unknown: int = 0, budget: int = DEFAULT_LAG_BUDGET_MS, qwe=None) -> dict:
     w = LoadWindow(budget)
     for v in lags:
         w.add(v)
@@ -236,6 +237,89 @@ def test_flicker_never_admits_until_continuously_ok(env):
     clock.advance(1.0)
     write(marker, clock)
     assert gate.check().admit
+
+
+def test_session9_single_672ms_spike_does_not_reset_30s_stabilization_or_close_open_gate(tmp_path):
+    """9차 로그 패턴: 평시 300~550ms 에서 26/30s 지점에 672ms 단발 1회가 나와도 30s 안정 대기가 리셋되지 않고 통과한다."""
+    clock = Clock()
+    marker = tmp_path / "tier0.live"
+    gate = AdmissionGate(marker, AdmissionPolicy(), wall_s=lambda: clock.wall, monotonic=lambda: clock.mono)
+
+    # 0~25s: 5초마다 표시 파일 갱신(평시 300~550ms), 아바타 루프처럼 1초마다 여러 번 check 호출
+    write(marker, clock, lags=(310.0, 380.0, 440.0, 510.0, 545.0))
+    assert not gate.check().admit
+    for second in range(1, 26):
+        clock.advance(1.0)
+        if second % 5 == 0:
+            write(marker, clock, lags=(320.0, 390.0, 460.0, 520.0, 550.0))
+        adm = gate.check()
+        assert not adm.admit and f"안정 대기 {second}/30s" in adm.reason
+
+    # 26s: 5개 표본 중 단발 1회만 672ms 초과. 같은 표시 파일을 여러 번 읽어도(0.2s 폴링·카메라별 재확인) 리셋되지 않는다.
+    clock.advance(1.0)
+    write(marker, clock, lags=(340.0, 410.0, 480.0, 530.0, 672.0))
+    for _ in range(5):
+        adm = gate.check()
+        assert not adm.admit and "안정 대기 26/30s" in adm.reason
+
+    # 27~29s: 같은 표시 파일 유지 중에도 안정 대기 시계가 이어진다.
+    for second in (27, 28, 29):
+        clock.advance(1.0)
+        adm = gate.check()
+        assert not adm.admit and f"안정 대기 {second}/30s" in adm.reason
+
+    # 30s: 다음 표시 파일이 300~550ms 로 돌아오면 리셋 없이 즉시 열린다.
+    clock.advance(1.0)
+    write(marker, clock, lags=(330.0, 405.0, 470.0, 515.0, 540.0))
+    assert gate.check().admit
+
+    # 이미 열린 뒤에도 단발 672ms 1회는 열림 상태를 깨지 않는다.
+    clock.advance(5.0)
+    write(marker, clock, lags=(350.0, 420.0, 490.0, 525.0, 672.0))
+    for _ in range(4):
+        assert gate.check().admit
+
+
+def test_consecutive_over_budget_or_multi_sample_spike_or_unknown_resets_gate(tmp_path):
+    """연속 초과(예: 9차 678ms → 666ms)·창 내 다수 표본 초과·지연 불명은 즉시 차단하고 30s 안정 대기를 처음부터 다시 센다."""
+    clock = Clock()
+    marker = tmp_path / "tier0.live"
+    gate = AdmissionGate(marker, AdmissionPolicy(), wall_s=lambda: clock.wall, monotonic=lambda: clock.mono)
+
+    write(marker, clock, lags=(320.0, 410.0, 490.0, 530.0, 550.0))
+    assert settle(gate, clock, marker, 30, lags=(320.0, 410.0, 490.0, 530.0, 550.0)).admit
+
+    # 1) 첫 번째 단발 초과(678ms)는 허용되지만, 다음 창에서도 연속 초과(666ms)가 나오면 즉시 닫힌다.
+    clock.advance(5.0)
+    write(marker, clock, lags=(360.0, 420.0, 480.0, 510.0, 678.0))
+    assert gate.check().admit
+    clock.advance(5.0)
+    write(marker, clock, lags=(370.0, 430.0, 495.0, 520.0, 666.0))
+    adm = gate.check()
+    assert not adm.admit and "666ms > 예산 600ms" in adm.reason
+
+    # 닫힌 뒤에는 다시 30초를 채워야 열린다(29초 유지 시점에는 아직 대기, 30초 유지 시점에 열림).
+    clock.advance(1.0)
+    write(marker, clock, lags=(320.0, 400.0, 470.0, 510.0, 540.0))
+    assert not settle(gate, clock, marker, 29, lags=(320.0, 400.0, 470.0, 510.0, 540.0)).admit
+    clock.advance(1.0)
+    write(marker, clock, lags=(320.0, 400.0, 470.0, 510.0, 540.0))
+    assert gate.check().admit
+
+    # 2) 한 표시 파일 창 안에서 2개 이상 표본이 예산을 넘으면 단 한 번의 창이라도 즉시 닫힌다.
+    clock.advance(5.0)
+    write(marker, clock, lags=(350.0, 410.0, 520.0, 666.0, 678.0))
+    adm = gate.check()
+    assert not adm.admit and "678ms > 예산 600ms" in adm.reason
+
+    # 다시 30초 안정화 뒤 열림 확인 후, 지연 불명(unknown=1) 발생 시 즉시 닫히는지 확인한다.
+    clock.advance(1.0)
+    write(marker, clock, lags=(320.0, 400.0, 470.0, 510.0, 540.0))
+    assert settle(gate, clock, marker, 30, lags=(320.0, 400.0, 470.0, 510.0, 540.0)).admit
+    clock.advance(5.0)
+    write(marker, clock, lags=(350.0, 420.0, 480.0, 510.0), unknown=1)
+    adm = gate.check()
+    assert not adm.admit and "모르는 표본" in adm.reason
 
 
 def test_marker_removed_lingers_as_live_then_admits_all(env):
