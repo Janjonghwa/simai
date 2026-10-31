@@ -9,6 +9,7 @@ from urllib.request import Request, build_opener
 
 from services.worker.transport import HttpTransport, NoRedirect
 from simai_ai.hmr.diagnostics import exception_summary
+from simai_ai.hmr.stream import DEFAULT_MAX_AGE_MS
 
 log = logging.getLogger(__name__)
 
@@ -81,9 +82,11 @@ def websocket_connector(base_url, token):
 
 
 class AvatarSender:
-    def __init__(self, connect, *, clock_ms, monotonic, source_id="worker-01", stream_epoch=None, log_secrets=()):
+    def __init__(self, connect, *, clock_ms, monotonic, source_id="worker-01", stream_epoch=None,
+                 max_age_ms=DEFAULT_MAX_AGE_MS, log_secrets=()):
         self.connect, self.clock_ms, self.monotonic, self.source_id = connect, clock_ms, monotonic, source_id
         self.epoch = clock_ms() if stream_epoch is None else stream_epoch
+        self.max_age_ms = max_age_ms
         self.sequence = self.dropped = 0
         self._lock = threading.Lock()
         self._poses, self._assets = {}, {}
@@ -165,7 +168,7 @@ class AvatarSender:
                 context, dropped = dict(self._context), self.dropped
             for asset in assets:
                 self._send("avatar_asset", asset)
-            fresh = [p for p in poses if 0 <= self.clock_ms() - p["capture_time_ms"] <= 500]
+            fresh = [p for p in poses if 0 <= self.clock_ms() - p["capture_time_ms"] <= self.max_age_ms]
             for start in range(0, len(fresh), 64):
                 group = fresh[start:start + 64]
                 sequence = self.sequence

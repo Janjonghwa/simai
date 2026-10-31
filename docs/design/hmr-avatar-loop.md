@@ -231,3 +231,31 @@ bootstrap의 다운로드·해시 검사 실패는 기존 규칙대로 분석 �
 실제 YOLO 결과와 Fast SAM mask 프롬프트의 GPU 통합, 다인 일대일 배정/윤곽, Tier 0 p95·최대 지연,
 아바타 프로세스의 기존 0.10 GPU 예산 내 공존, 최초 역변환 표 생성 때 신선도 탈락은 GPU 세션에서 확인한다.
 CUDA 호출은 중간 취소할 수 없으며 seg 도입으로 기존 500ms 신선도 조건을 완화하지 않는다.
+
+
+## S15P31A101-376: 입력 신선도(`max_age_ms`)와 접수 안정 대기(`AdmissionGate`)의 Tier 0 지연 예산 정합
+
+관련 명세는 3.2(GPU 공유·Tier 0 우선), 5.6(HMR 2~5 Hz 보조 스트림), 6.6(`capture_to_risk` p95 600ms), 13.2·20.4(관제 화면 포즈 신선도 `t_latest_global - capture_time_ms ≤ 500ms`), 20.5(안전 경로 격리)다. 변경 위치는 `ai/src/simai_ai/gpu/{admission,__init__}.py`, `ai/src/simai_ai/hmr/stream.py`, `ai/services/avatar/transport.py`, 시험은 `ai/tests/gpu/test_admission.py`, `ai/tests/hmr/test_avatar_loop.py`다.
+
+### 9차 세션 실패 원인과 수치 근거
+
+9차 GPU 세션(`s9-j4-avatar.log`, `s9-j7-avatar.log`)에서 Tier 0 `capture_to_risk` 보정 지연(`T_lag`)은 평시 300~550ms(예산 600ms 이내)였고 가끔 단발 표본 1개가 672ms로 튀었다. 그러나 아바타 루프는 두 곳에서 막혀 `samples_max=0/30 assets=0`에 머물렀다.
+
+1. **Pod 벽시계 기준 신선도 상한(`DEFAULT_MAX_AGE_MS = 1,100ms`)**:
+   - 명세 13.2·20.4의 500ms는 관제 화면(브라우저)에서 **같은 촬영 시계축 위의 두 시각 차이**(`world_state.t_latest_global - avatar.capture_time_ms ≤ 500ms`)에 대한 상한이다.
+   - 반면 Pod의 `AvatarLoop.step()`과 `AvatarSender.tick()`이 비교하는 `clock_ms() - t`(`t = snapshot["world"]["t"] = t_latest_global`)는 **Pod 현재 벽시계 시각과 카메라 촬영 시각의 차이**이므로, (a) Tier 0가 촬영 프레임을 받아 판정·공유 통로에 내보내기까지의 지연과 (b) 아바타 루프가 공유 통로를 읽고 `YOLO26x-seg`·`Fast SAM 3D Body` 다중 뷰 추론·송신을 마치는 시간을 모두 포함한다.
+   - 기존 `max_age_ms=500`은 Tier 0 지연이 정상 예산(300~550ms ≤ 600ms) 안에 있어도 `clock_ms() - t`가 즉시 500ms를 넘기거나 HMR 추론 직후 500ms를 넘겨 입력·포즈를 전부 버렸다(`s9-j7-avatar.log`: `중복/신선도 초과 입력 people=0 samples_max=0/30`).
+   - 따라서 `simai_ai.hmr.stream`에서 분석 워커 접수 문과 같은 Tier 0 지연 예산 상수(`TIER0_LAG_BUDGET_MS = DEFAULT_LAG_BUDGET_MS = 600`, 명세 6.6 `capture_to_risk` p95 600ms)에 아바타 스트림 처리·표시 여유(`HMR_STREAM_SLACK_MS = 500`, 명세 5.6 2~5 Hz 주기 및 명세 13.2/20.4 500ms 여유)를 더한 `DEFAULT_MAX_AGE_MS = TIER0_LAG_BUDGET_MS + HMR_STREAM_SLACK_MS = 1_100`을 기본값으로 두고, `AvatarSender`도 같은 `DEFAULT_MAX_AGE_MS`를 쓰도록 맞췄다.
+
+2. **`AdmissionGate` 30초 안정 대기의 단발 초과 허용(`max_over_budget_samples = 1`)**:
+   - Tier 0는 약 1 Hz로 `T_lag` 표본을 `LoadWindow`에 넣고 5초마다 `$SIMAI_ROOT/state/tier0.live`를 갱신한다. `resume_after_s = 30.0` 창은 5초 표시 파일 6개(약 30개 표본)에 해당한다.
+   - 명세 6.6의 목표는 `capture_to_risk` **p95 ≤ 600ms**이므로 30초(30표본) 창에서 단발 표본 1개(`1/30 = 3.3% ≤ 5%`)가 600ms를 넘더라도 p95는 여전히 600ms 이하를 만족한다. 반면 30초 창에서 2개 이상(`2/30 = 6.7% > 5%`) 넘거나 한 5초 창에서 2개 이상 넘거나 두 표시 파일 창 연속으로 넘으면 p95 600ms 위반 또는 지속 과부하다.
+   - 기존 `AdmissionGate`는 `lag_ms_max > 600`이 단 1회만 나와도 `_ok_since`를 무조건 `None`으로 리셋해 `안정 대기 26/30s`에서 다시 0초로 돌아갔다(`s9-j4-avatar.log`).
+   - `AdmissionPolicy`에 `max_over_budget_samples: int = 1`을 추가하고, **이미 예산 이내로 동작 중이던 Tier 0(`_ok_since is not None`)**에서 `resume_after_s`(30초) 창 안의 초과 표본 합계·연속 초과 표본 수·단일 창 초과 표본 수가 모두 `max_over_budget_samples`(1개) 이하일 때만 안정 대기 시계(`_ok_since`)와 열림 상태를 유지한다.
+   - 아바타 루프는 5초짜리 표시 파일 하나가 유지되는 동안 0.2초 폴링 및 카메라별 추론 전 확인으로 `gate.check()`를 수십 번 호출하므로, `(st_mtime_ns, raw_bytes)`로 표시 파일 갱신을 식별해 같은 파일의 단발 표본을 중복 합산하지 않는다.
+   - 지연을 모르는 상태(표시 파일 없음/오래됨/깨짐, `phase != "running"`, GPU 선확보 미완, `samples == 0`, `unknown ≥ 1`, `queue_wait_exceeded ≥ 1`), 초기 기동 직후(`_ok_since is None`)의 초과, 단일 창 다수 표본 초과(`≥ 2`), 연속 창 초과(예: `678ms → 666ms`), `resume_after_s` 내 반복 초과는 기존과 똑같이 즉시 차단하고 30초 안정 대기를 처음부터 다시 센다.
+
+### `AdmissionGate` 호출자 영향 범위
+
+- `services/avatar`(`__main__.py` 기동 대기 및 `AvatarLoop.step()`): 9차 로그 패턴(평시 300~550ms + 가끔 672ms 단발 1회)에서 30초 안정 대기가 리셋되지 않고 통과하며, 열려 있는 동안에도 단발 1회 스파이크로 추론이 끊기지 않는다.
+- `services/worker`(`runner.py`, VLM 설명·보정 BA·TBM 보고서 등 I5 Job): 같은 `AdmissionGate` 기본 정책을 공유한다. 명세 3.2·6.6 기준이 동일하므로 공통 적용이 타당하며, `DEFAULT_LIVE_BLOCKED`(`static_reconstruct`, `hmr_refine`, `hmr_appearance_update`) 차단과 지시문 4(불명·연속 초과 즉시 차단)는 그대로 유지된다.
