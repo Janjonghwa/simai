@@ -25,17 +25,18 @@ for path in (HERE, HERE.parents[2]):
         sys.path.insert(0, str(path))
 
 from clip_stream import T0, transition  # noqa: E402
-from live_video import codec_meta, encode, frame_meta, read_index  # noqa: E402
+from live_video import codec_meta, encode, read_index  # noqa: E402
 
-from services.tier0.clips.ring_buffer import PacketRingBuffer  # noqa: E402
 from services.tier0.clips.upload import SignedUpload  # noqa: E402
-from services.tier0.event_frames import EventFrameService, EventFrameSigner, decode_selected, selected_packets  # noqa: E402
+from services.tier0.event_frames import EventFrameService, EventFrameSigner  # noqa: E402
+from services.tier0.event_frame_buffer import EventFrameBuffer, MAX_FRAME_BYTES, MAX_HISTORY, MAX_CURRENT  # noqa: E402
 from services.tier0.i1_client import Envelope, I1Client, QueueFull  # noqa: E402
 from services.tier0.i1_publisher import I1Publisher  # noqa: E402
 from services.tier0.settings import Tier0ConfigError, load_settings  # noqa: E402
-from simai_ai.io.messages import codec_info_from_contract, frame_from_contract  # noqa: E402
+from simai_ai.io.messages import codec_info_from_contract  # noqa: E402
 from simai_ai.io.pyav_decoder import PyAvDecoder  # noqa: E402
 from simai_ai.providers.contract import schema_errors  # noqa: E402
+from simai_ai.providers.base import Frame  # noqa: E402
 from simai_ai.risk import FixedClock, Origin, Severity  # noqa: E402
 from simai_ai.risk.lifecycle import Change, Lifecycle  # noqa: E402
 
@@ -53,24 +54,32 @@ def wait_until(predicate, timeout=5):
 
 @pytest.fixture
 def ring():
-    ring = PacketRingBuffer(("cam_A", "cam_B", "cam_C"))
-    encoded = encode(list(range(121)))
+    ring = EventFrameBuffer(("cam_A", "cam_B", "cam_C"))
+    encoded = encode(list(range(101)))
     for camera in ring.camera_ids:
-        ring.receive(codec_info_from_contract(codec_meta(camera, 0, encoded)))
+        decoder = PyAvDecoder()
+        decoder.configure(codec_info_from_contract(codec_meta(camera, 0, encoded)))
+        pictures = []
         for sequence, (data, keyframe) in enumerate(encoded.frames):
-            header = frame_meta(camera, 0, sequence, T0 + sequence * 40, keyframe,
-                                source="RECEIVE_ESTIMATED", uncertainty=17.5)
-            ring.receive(frame_from_contract(header, data))
+            pictures.extend(decoder.decode(data, (0, sequence), keyframe))
+        pictures.extend(decoder.flush())
+        decoder.reset()
+        for picture in pictures:
+            sequence = picture.key[1]
+            ring.offer(Frame(camera, T0 + sequence * 40, "RECEIVE_ESTIMATED",
+                             {"stream_epoch": 0, "frame_sequence": sequence}, 17.5, picture.image))
     return ring
 
 
 class Signer:
     def __init__(self):
         self.calls = []
+        self.lock = threading.Lock()
 
     def sign(self, request):
-        self.calls.append(request)
-        key = f"event-frames/{request.event_id}/{len(self.calls)}.jpg"
+        with self.lock:
+            self.calls.append(request)
+            key = f"event-frames/{request.event_id}/{len(self.calls)}.jpg"
         return SignedUpload("https://objects.example/put?secret=hidden", key, ANCHOR + 10_000,
                             object_uri=f"s3://frames/{key}")
 
@@ -97,7 +106,7 @@ def service_for(ring, *, transport=None, send=None, **kwargs):
     transport = transport or Transport()
     service = EventFrameService(ring, clock, signer=signer, transport=transport,
                                 send_event=send or (lambda kind, payload: messages.append((kind, payload))),
-                                decoder_factory=PyAvDecoder, **kwargs)
+                                **kwargs)
     return service, messages, signer, transport
 
 
@@ -133,7 +142,10 @@ def test_critical_event_uploads_four_past_frames_once_to_reliable_i1(ring, caplo
     frames = message["payload"]["frames"]
     assert {f["camera_id"] for f in frames} == {"cam_B", "cam_C"}
     assert {f["estimated_capture_time_ms"] for f in frames} == {ANCHOR, ANCHOR - 3000}
-    for frame, (_, content, content_type), request in zip(frames, transport.puts, signer.calls):
+    for frame in frames:
+        signed, content, content_type = next(p for p in transport.puts if p[0].object_uri == frame["frame_uri"])
+        request = next(r for r in signer.calls if r.sha256 == hashlib.sha256(content).hexdigest()
+                       and r.camera_id == frame["camera_id"])
         image = cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)
         assert read_index(image) == (frame["estimated_capture_time_ms"] - T0) // 40
         assert content_type == "image/jpeg" and request.purpose == "EVENT_FRAME"
@@ -173,7 +185,7 @@ def test_only_r1_through_r4_initial_raised_and_disable(ring):
 
 
 def test_empty_ring_and_upload_failure_only_log(ring, caplog):
-    for buffer, transport in ((PacketRingBuffer(ring.camera_ids), Transport()), (ring, Transport(fail=True))):
+    for buffer, transport in ((EventFrameBuffer(ring.camera_ids), Transport()), (ring, Transport(fail=True))):
         service, sent, _, _ = service_for(buffer, transport=transport)
         service.start()
         try:
@@ -235,12 +247,14 @@ def test_i1_full_retries_message_without_uploading_again(ring):
 
 
 def test_no_future_or_stale_frame_substitution_and_unknown_uncertainty(ring):
-    cut = ring.camera("cam_A").cut(T0, T0 + 4800)
-    selected = selected_packets(cut, ANCHOR + 2000)
-    assert [p.capture_time_ms for p in selected] == [ANCHOR - 1000]  # 현재는 1.2초 전이라 버림
-    selected = tuple(replace(p, timestamp_uncertainty_ms=None) for p in selected_packets(cut, ANCHOR))
-    pictures = decode_selected(cut, selected, PyAvDecoder)
-    assert len(pictures) == 2 and all(p.timestamp_uncertainty_ms is None for p, _ in pictures)
+    selected = ring.snapshot(("cam_A",), ANCHOR + 2000, 2)
+    assert [p.capture_time_ms for p in selected] == [ANCHOR - 1000]
+    selected = ring.snapshot(("cam_A",), ANCHOR, 2)
+    assert [p.capture_time_ms for p in selected] == [ANCHOR, ANCHOR - 3000]
+    frame = Frame("cam_A", ANCHOR + 840, "RECEIVE_ESTIMATED",
+                  {"stream_epoch": 0, "frame_sequence": 121}, None, selected[0].image)
+    ring.offer(frame)
+    assert ring.snapshot(("cam_A",), frame.estimated_capture_time, 2)[0].timestamp_uncertainty_ms is None
 
 
 def test_settings_default_on_and_explicit_off(tmp_path):
@@ -280,3 +294,145 @@ def test_signer_uses_server_request_and_persistent_object_uri():
     result["object_uri"] = result["upload_url"]
     with pytest.raises(ValueError):
         signer.sign(request)
+
+
+def test_event_frames_slow_puts_overlap_and_ready_before_serial_budget(ring, monkeypatch):
+    def unexpected_decode(*_args, **_kwargs):
+        pytest.fail("이벤트 처리에서 이미 디코딩한 영상을 다시 디코딩했다")
+
+    monkeypatch.setattr(PyAvDecoder, "decode", unexpected_decode)
+    monkeypatch.setattr(PyAvDecoder, "flush", unexpected_decode)
+    class SlowTransport(Transport):
+        def __init__(self):
+            super().__init__()
+            self.lock = threading.Lock()
+            self.active = self.peak = 0
+
+        def put(self, signed, content, content_type):
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            try:
+                time.sleep(0.15)
+                super().put(signed, content, content_type)
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    transport = SlowTransport()
+    service, sent, _, _ = service_for(ring, transport=transport)
+    service.start()
+    started = time.monotonic()
+    try:
+        service.on_transitions([raised()])
+        assert wait_until(lambda: len(sent) == 1)
+        elapsed = time.monotonic() - started
+        assert transport.peak == 4
+        assert elapsed < 0.5  # 직렬 PUT만 0.6s. 디코딩·JPEG·준비 통지도 포함한다.
+        print(f"event_frames_slow_put peak={transport.peak} ready_ms={elapsed * 1000:.1f} serial_put_ms=600")
+    finally:
+        assert service.stop(5)
+
+
+def test_event_frames_buffer_memory_is_bounded_and_references_are_not_copied():
+    cameras = ("cam_A", "cam_B", "cam_C", "cam_D")
+    ring = EventFrameBuffer(cameras)
+    # 시험 배열은 작게 두되 서로 다른 실제 ndarray를 넣어 참조 수·바이트를 검증한다.
+    for n in range(1000):
+        for camera in cameras:
+            image = np.full((12, 16, 3), n % 256, dtype=np.uint8)
+            frame = Frame(camera, T0 + n * 40, "RECEIVE_ESTIMATED",
+                          {"stream_epoch": 0, "frame_sequence": n}, 7.5, image)
+            assert ring.offer(frame)
+            assert ring._current[camera][-1].image is image
+    held = [p for c in cameras for p in (*ring._history[c], *ring._current[c])]
+    assert len(held) <= len(cameras) * (MAX_HISTORY + MAX_CURRENT)
+    assert sum(p.image.nbytes for p in held) <= len(cameras) * (MAX_HISTORY + MAX_CURRENT) * image.nbytes
+    oversized = replace(frame, image=SimpleNamespace(nbytes=MAX_FRAME_BYTES + 1))
+    assert not ring.offer(oversized)
+    assert not ring.offer(replace(frame, camera_id="unknown"))
+    ring.clear()
+    assert ring.snapshot(cameras, frame.estimated_capture_time, 2) == ()
+
+
+def test_event_frames_current_window_epoch_and_frozen_queue_snapshot(ring):
+    service, _, _, _ = service_for(ring)
+    service.on_transitions([raised()])
+    frozen = service._queue.get_nowait()
+    original = tuple((p.capture_time_ms, p.image) for p in frozen.pictures)
+    for n in range(1, 7):
+        ring.offer(Frame("cam_A", ANCHOR + n * 100, "RECEIVE_ESTIMATED",
+                         {"stream_epoch": 0, "frame_sequence": 100 + n}, None, original[0][1]))
+    selected = ring.snapshot(("cam_A",), ANCHOR + 350, 2)
+    assert selected[0].capture_time_ms == ANCHOR + 300  # 최신 600ms는 미래라 버리고 300ms를 쓴다.
+    assert all(p.capture_time_ms <= ANCHOR + 350 for p in selected)
+    ring.offer(Frame("cam_A", ANCHOR + 700, "RECEIVE_ESTIMATED",
+                     {"stream_epoch": 1, "frame_sequence": 0}, None, original[0][1]))
+    assert [p.capture_time_ms for p in ring.snapshot(("cam_A",), ANCHOR + 700, 2)] == [ANCHOR + 700]
+    assert not ring.offer(Frame("cam_A", ANCHOR + 800, "RECEIVE_ESTIMATED",
+                                {"stream_epoch": 0, "frame_sequence": 200}, None, original[0][1]))
+    assert all(p.capture_time_ms == at and p.image is image for p, (at, image) in zip(frozen.pictures, original))
+
+
+def test_event_frames_partial_upload_failure_keeps_successes(ring, caplog):
+    class PartialTransport(Transport):
+        def put(self, signed, content, content_type):
+            if read_index(cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)) == 100:
+                raise TimeoutError("synthetic")
+            super().put(signed, content, content_type)
+
+    service, sent, _, _ = service_for(ring, transport=PartialTransport())
+    service.start()
+    try:
+        service.on_transitions([raised()])
+        assert wait_until(lambda: bool(sent))
+        assert len(sent[0][1]["frames"]) == 2
+        assert "event_frames_upload_failed" in caplog.text
+    finally:
+        assert service.stop(5)
+
+
+def test_event_frames_feed_shares_matched_frames_with_background():
+    from services.tier0.perception import DetectorFeed
+
+    image = np.zeros((12, 16, 3), dtype=np.uint8)
+    frame = Frame("cam_A", ANCHOR, "RECEIVE_ESTIMATED",
+                  {"stream_epoch": 0, "frame_sequence": 1}, None, image)
+    result = SimpleNamespace(camera_id="cam_A", stream_epoch=0, frame_sequence=1,
+                             estimated_capture_time_ms=ANCHOR)
+    feed = DetectorFeed(camera_ids=("cam_A",), tickets=lambda: [frame],
+                        detector=SimpleNamespace(detect=lambda _: [result]),
+                        tracker=SimpleNamespace(update_batch=lambda _: []))
+    background = []
+    feed.observe_decoded = lambda *args: background.append(args)
+    ring = EventFrameBuffer(("cam_A",))
+    service, _, _, _ = service_for(ring)
+    service.attach(feed)
+    feed.poll(ANCHOR)
+    assert len(background) == 1
+    assert ring.snapshot(("cam_A",), ANCHOR, 2)[0].image is image
+    feed.poll(ANCHOR)  # 검출 중복은 배경과 사진 양쪽에 전달하지 않는다.
+    assert len(background) == 1
+    result.frame_sequence = 2  # 잘못 결합한 결과도 전달하지 않는다.
+    feed.poll(ANCHOR)
+    assert len(background) == 1
+
+
+def test_event_frames_stop_releases_waiting_images_and_reports_running_put(ring):
+    release = threading.Event()
+    service, _, _, transport = service_for(ring, transport=Transport(block=release))
+    service.start()
+    try:
+        service.on_transitions([raised()])
+        assert transport.entered.wait(2)
+        for n in range(2, 12):
+            service.on_transitions([raised(event_id=f"0192a0a0-0000-7000-8000-{n:012d}")])
+        queued = list(service._queue.queue)
+        assert len(queued) == service._queue.maxsize == 8
+        assert all(len(r.pictures) <= 4 for r in queued)
+        assert not service.stop(0.01)
+        assert service._queue.empty()
+        assert not ring.snapshot(ring.camera_ids, ANCHOR, 2)
+    finally:
+        release.set()
+        assert service.stop(5)
