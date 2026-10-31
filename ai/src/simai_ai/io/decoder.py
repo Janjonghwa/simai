@@ -12,9 +12,11 @@
 from __future__ import annotations
 
 import json
+import threading
 from abc import ABC, abstractmethod
 from collections import deque
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import FrozenInstanceError, dataclass
 from typing import Any
 
 from simai_ai.io.messages import FrameKey, I0CodecInfo
@@ -24,12 +26,64 @@ class DecodeError(Exception):
     """압축 프레임 하나를 디코딩하지 못했다. 다음 키프레임까지 그 카메라의 프레임을 버린다."""
 
 
-@dataclass(frozen=True)
-class DecodedPicture:
-    """디코더 출력 한 장. key 는 그 그림을 만든 입력에 넘긴 열쇠이고, image 형식은 구현이 정한다."""
+_UNSET = object()
 
-    key: FrameKey
-    image: Any
+
+class DecodedPicture:
+    """디코더 출력 한 장. key 는 그 그림을 만든 입력에 넘긴 열쇠이고, image 형식은 구현이 정한다.
+
+    loader 를 주면 image 를 처음 읽을 때 한 번만 부르고 결과를 캐시한 뒤 loader 참조(내부 av.VideoFrame 포함)를 놓는다.
+    추론 대기열(LatestFrameScheduler)에서 최신 프레임에 밀려 버려지는 그림은 image 를 읽지 않으므로 색 변환(BGR)과
+    배열 할당이 일어나지 않는다(-386).
+    """
+
+    __slots__ = ("_image", "_loader", "_lock", "key")
+
+    def __init__(
+        self,
+        key: FrameKey,
+        image: Any = _UNSET,
+        *,
+        loader: Callable[[], Any] | None = None,
+    ) -> None:
+        if loader is not None and image is not _UNSET:
+            raise ValueError("image 와 loader 를 함께 줄 수 없다")
+        if loader is None and image is _UNSET:
+            raise ValueError("image 나 loader 중 하나를 주어야 한다")
+        object.__setattr__(self, "key", key)
+        object.__setattr__(self, "_image", None if loader is not None else image)
+        object.__setattr__(self, "_loader", loader)
+        object.__setattr__(self, "_lock", threading.Lock() if loader is not None else None)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise FrozenInstanceError(f"cannot assign to field {name!r}")
+
+    @property
+    def converted(self) -> bool:
+        """그림이 이미 구체화(변환)되었는지."""
+        return self._loader is None
+
+    @property
+    def image(self) -> Any:
+        loader = self._loader
+        if loader is not None:
+            assert self._lock is not None
+            with self._lock:
+                loader = self._loader
+                if loader is not None:
+                    object.__setattr__(self, "_image", loader())
+                    object.__setattr__(self, "_loader", None)
+        return self._image
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, DecodedPicture):
+            return NotImplemented
+        return (self.key, self.image) == (other.key, other.image)
+
+    def __repr__(self) -> str:
+        if self._loader is not None:
+            return f"DecodedPicture(key={self.key!r}, converted=False)"
+        return f"DecodedPicture(key={self.key!r}, image={self._image!r})"
 
 
 class Decoder(ABC):

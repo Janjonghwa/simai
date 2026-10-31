@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from simai_ai.io import FrameDisposition, FreshnessConfig, LatestFrameScheduler, ResultGate, SkipReason
+from simai_ai.io import DecodedPicture, FrameDisposition, FreshnessConfig, LatestFrameScheduler, ResultGate, SkipReason
 from simai_ai.io.freshness import FrameLog, percentile
 from simai_ai.providers import Frame
 from simai_ai.risk.clock import FixedClock
@@ -153,6 +153,54 @@ def test_result_gate_drops_older_results():
     assert gate.last_applied("cam1") == T0 + 120
 
 
+def test_lazy_decoded_picture_is_only_materialized_on_take_and_never_when_skipped(setup):
+    """-386: 대기열에서 SUPERSEDED·OUT_OF_ORDER·QUEUE_WAIT_EXCEEDED·STREAM_RESET 으로 버려진 프레임은
+    DecodedPicture.image 를 읽지 않고, take/take_one 으로 꺼낸 프레임만 잠금 밖에서 구체화한다."""
+    sched, clock, _, _ = setup()
+    converted: list[int] = []
+
+    def _lazy_frame(cam: str, seq: int, t: int | None = None) -> tuple[Frame, DecodedPicture]:
+        def _load() -> str:
+            # 대기열 잠금 밖에서 불리는지 확인(잠금 안이면 pending() 이 데드락에 걸린다)
+            assert sched.pending(cam) == 0
+            converted.append(seq)
+            return f"bgr-{cam}-{seq}"
+
+        pic = DecodedPicture((0, seq), loader=_load)
+        return (
+            Frame(
+                camera_id=cam,
+                estimated_capture_time=T0 + 40 * seq if t is None else t,
+                timestamp_source="RECEIVE_ESTIMATED",
+                frame_ref={"stream_epoch": 0, "frame_sequence": seq},
+                image=pic,
+            ),
+            pic,
+        )
+
+    f0, p0 = _lazy_frame("cam1", 0)
+    f1, p1 = _lazy_frame("cam1", 1)
+    f_old, p_old = _lazy_frame("cam1", 99, t=T0)  # f1(T0+40) 보다 이른 시각 -> OUT_OF_ORDER
+    sched.offer(f0)
+    sched.offer(f1)  # f0 은 SUPERSEDED
+    assert not sched.offer(f_old)
+    assert converted == [] and not p0.converted and not p1.converted and not p_old.converted
+
+    (ticket,) = sched.take()
+    assert ticket.frame.image == "bgr-cam1-1"
+    assert converted == [1] and p1.converted and not p0.converted and not p_old.converted
+
+    # 만료(QUEUE_WAIT_EXCEEDED)와 discard(STREAM_RESET)도 변환하지 않는다
+    f2, p2 = _lazy_frame("cam1", 2, t=T0 + 80)
+    f3, p3 = _lazy_frame("cam2", 3, t=T0 + 80)
+    sched.offer(f2)
+    sched.offer(f3)
+    sched.discard("cam2", SkipReason.STREAM_RESET)
+    clock.advance(200)
+    assert sched.take_one() is None
+    assert converted == [1] and not p2.converted and not p3.converted
+
+
 # --------------------------------------------------------------------------- 수신·추론 스레드 경합 (리뷰 R2)
 
 
@@ -241,7 +289,7 @@ class _PauseOnceClock:
 
 
 @pytest.mark.parametrize("method", ["take", "take_one"])
-@pytest.mark.parametrize("paused_at, resumed_at, handed", [(150, 151, False), (149, 150, True)])
+@pytest.mark.parametrize(("paused_at", "resumed_at", "handed"), [(150, 151, False), (149, 150, True)])
 def test_preempted_after_clock_read_rechecks_wait_before_handoff(method, paused_at, resumed_at, handed):
     """consumer 가 시각을 읽은 직후 선점돼 그사이 대기가 상한을 넘으면, 넘기지 않고 QUEUE_WAIT_EXCEEDED 로 버린다."""
     clock = _PauseOnceClock(T0)

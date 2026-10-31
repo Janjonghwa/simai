@@ -25,16 +25,20 @@ configure 는 예외를 내지 않는다: 디코더를 열지 못하면 그 사�
 출력 그림은 numpy BGR 배열(H×W×3 uint8, ultralytics·OpenCV 입력 형식)이다. NVDEC 그림도 시스템 메모리로 내려 같은
 형식으로 낸다(장치에 둔 채 넘기는 것은 처리 시간 실측 뒤 판단, -183).
 
-**색 변환(-212).** BGR 변환은 configure 마다 하나 만든 swscale 문맥(VideoReformatter)으로 한다. `frame.to_ndarray(format=...)` 는
+**색 변환(-212, -386).** BGR 변환은 configure 마다 하나 만든 swscale 문맥(VideoReformatter)으로 한다. `frame.to_ndarray(format=...)` 는
 그림마다 새 문맥을 만들어 swscale 초기화·스레드 묶음 생성을 매 그림 치르고, NVDEC 출력(nv12)은 그 비용이 커서 그림 한 장이
-CPU 디코딩보다 느렸다(docs/design/tier0-nvdec-throughput.md). 변환 스레드는 convert_threads 개로 묶는다(0 은 보이는 CPU 전부라
-Pod 224 코어에서 카메라마다 수백 스레드가 된다).
+CPU 디코딩보다 느렸다(docs/design/tier0-nvdec-throughput.md). 또한 H.264 참조 의존성 때문에 디코더는 모든 프레임을 풀어야 하지만,
+색 변환(yuv420p/nv12 → bgr24)과 8.96 MB 배열 할당은 `DecodedPicture.image` 를 실제로 읽을 때(추론 대기열이 take/take_one 으로
+꺼낼 때)만 수행한다(-386, docs/design/tier0-decoder-lazy-bgr.md). 대기열에서 최신 프레임에 밀려 버려지는 프레임(SUPERSEDED 등)은
+변환하지 않는다. 변환 스레드는 convert_threads 개로 묶는다(기본 2, 0 은 보이는 CPU 전부라 Pod 224 코어에서 카메라마다 수백 스레드가 된다).
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from typing import Any
 
 from simai_ai.io.decoder import DecodedPicture, DecodeError, Decoder
@@ -44,7 +48,7 @@ log = logging.getLogger("simai_ai.io.pyav_decoder")
 
 ANNEXB_START = b"\x00\x00\x00\x01"
 DEFAULT_MAX_PENDING = 64  # 그림 없이 디코더 안에 남을 수 있는 입력 번호 수(넘으면 오래된 번호를 잊는다)
-DEFAULT_CONVERT_THREADS = 4  # 카메라 하나의 색 변환 스레드(노트북 실측 4 ≈ 자동, 근거는 설계 문서). Pod 값은 c3 변형으로 다시 잰다
+DEFAULT_CONVERT_THREADS = 2  # 카메라 하나의 색 변환 스레드(4대 합계 8 스레드, 근거는 docs/design/tier0-decoder-lazy-bgr.md)
 
 
 class DecoderUnavailable(RuntimeError):
@@ -83,6 +87,7 @@ class PyAvDecoder(Decoder):
         self.convert_threads = convert_threads
         self._ctx: Any = None
         self._reformatter: Any = None
+        self._reformat_lock = threading.Lock()
         self._codec: I0CodecInfo | None = None
         self._open_error: str | None = None
         self._prefix = b""
@@ -91,6 +96,7 @@ class PyAvDecoder(Decoder):
         self.unmatched = 0  # 열쇠를 찾지 못해 버린 그림
         self.corrupt = 0  # 손상 표시가 붙어 버린 그림
         self.forgotten = 0  # max_pending 을 넘겨 잊은 입력 번호
+        self.converted = 0  # 실제로 색 변환(BGR)까지 수행한 그림 수 (-386)
         if hwaccel is not None:
             available = self._hw_types()
             if hwaccel not in available:
@@ -138,6 +144,7 @@ class PyAvDecoder(Decoder):
         self._prefix = b"".join(ANNEXB_START + nal for nal in (codec.sps, codec.pps) if nal)
         try:
             self._reformatter = self._av.video.reformatter.VideoReformatter()
+            self._reformat_lock = threading.Lock()
             self._ctx = self._new_context()
         except Exception as e:  # noqa: BLE001 - decode 가 DecodeError 로 알린다(모듈 설명)
             self._open_error = f"디코더를 열지 못했다: {type(e).__name__}: {e}"
@@ -166,8 +173,29 @@ class PyAvDecoder(Decoder):
             self._pending.pop(pts, None)
             raise DecodeError(f"{key}: {type(e).__name__}") from e
 
+    def _make_loader(
+        self,
+        frame: Any,
+        reformatter: Any,
+        reformat_lock: threading.Lock,
+        output_format: str,
+        convert_threads: int,
+    ) -> Callable[[], Any]:
+        def _load() -> Any:
+            with reformat_lock:
+                image = reformatter.reformat(frame, format=output_format, threads=convert_threads)
+                arr = image.to_ndarray()
+                self.converted += 1
+                return arr
+
+        return _load
+
     def _pictures(self, frames: Any) -> list[DecodedPicture]:
         out: list[DecodedPicture] = []
+        reformatter = self._reformatter
+        reformat_lock = self._reformat_lock
+        output_format = self.output_format
+        convert_threads = self.convert_threads
         for frame in frames:
             key = None if frame.pts is None else self._pending.pop(frame.pts, None)
             if key is None:
@@ -176,8 +204,12 @@ class PyAvDecoder(Decoder):
             if frame.is_corrupt:
                 self.corrupt += 1  # 메운 그림은 관측으로 쓰지 않는다
                 continue
-            image = self._reformatter.reformat(frame, format=self.output_format, threads=self.convert_threads)
-            out.append(DecodedPicture(key, image.to_ndarray()))
+            out.append(
+                DecodedPicture(
+                    key,
+                    loader=self._make_loader(frame, reformatter, reformat_lock, output_format, convert_threads),
+                )
+            )
         return out
 
     def flush(self) -> list[DecodedPicture]:
