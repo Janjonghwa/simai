@@ -30,6 +30,8 @@ import tier0_site as ts  # noqa: E402
 from test_i1_tls import make_cert  # noqa: E402
 
 from services.tier0.service import Tier0Service  # noqa: E402
+from services.tier0.perception import SimObservationFeed  # noqa: E402
+from services.tier0.site_alert_sync import SiteAlertResync  # noqa: E402
 from services.tier0.settings import load_settings  # noqa: E402
 from simai_ai.eventlog import EventJournal  # noqa: E402
 from simai_ai.providers.contract import schema_errors  # noqa: E402
@@ -111,6 +113,92 @@ def control(tmp_path):
     port = ts.free_port()
     env = ts.tier0_env(cert=cert, key=key, control_port=port, ec2_url=None)
     return {"cert": cert, "env": env, "port": port}
+
+
+def test_slow_ticks_keep_laptop_health_and_housekeeping_running(tmp_path, sim_run, control, monkeypatch, caplog) -> None:
+    """실제 인지·판정·health·I0 대기열을 통과한다. 입력만 300ms 늦추고 관측 래퍼는 원래 메서드를 호출한다."""
+    class SlowFeed(SimObservationFeed):
+        def poll(self, now_ms):
+            time.sleep(0.3)  # 100ms 판정 주기를 계속 초과하는 perception 부하
+            return super().poll(now_ms)
+
+    settings = _settings(tmp_path, sim_run, anchor_ms=_now() + 1500, env=control["env"])
+    service = Tier0Service(settings, feed=SlowFeed(sim_run, anchor_wall_ms=settings.sim.anchor_wall_ms))
+    laptop = ts.Laptop(control["port"], control["cert"])
+    sends, evaluations, markers, waits = [], [], [], []
+
+    from services.tier0.health import HealthReporter
+    from services.tier0.i0_control import ControlServer
+
+    send = ControlServer.send
+    evaluate = HealthReporter.evaluate
+    write_marker = service._write_marker
+    wait = service._stop.wait
+    resync_tick = SiteAlertResync.tick
+    failed_once = False
+
+    def observed_send(self, kind, payload):
+        sent = send(self, kind, payload)
+        if kind == "health" and sent:
+            sends.append((time.monotonic(), threading.current_thread().name))
+        return sent
+
+    def observed_evaluate(self):
+        result = evaluate(self)
+        if threading.current_thread().name == "tier0-housekeeping":
+            evaluations.append(time.monotonic())
+        return result
+
+    def observed_marker(*args, **kwargs):
+        write_marker(*args, **kwargs)
+        if threading.current_thread().name == "tier0-housekeeping":
+            markers.append((time.monotonic(), json.loads(settings.live_marker.read_text(encoding="utf-8"))))
+
+    def observed_wait(delay=None):
+        if threading.current_thread().name == "tier0-judge":
+            waits.append(delay)
+        return wait(delay)
+
+    def fail_first_resync(self):
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise RuntimeError("injected resync failure")
+        return resync_tick(self)
+
+    monkeypatch.setattr(ControlServer, "send", observed_send)
+    monkeypatch.setattr(HealthReporter, "evaluate", observed_evaluate)
+    monkeypatch.setattr(service, "_write_marker", observed_marker)
+    monkeypatch.setattr(service._stop, "wait", observed_wait)
+    monkeypatch.setattr(SiteAlertResync, "tick", fail_first_resync)
+    service.start()
+    try:
+        laptop.start()
+        assert ts.wait_until(laptop.connected.is_set, timeout=5)
+        started = time.monotonic()
+        time.sleep(6.5)  # 표시 파일의 실제 5초 주기도 한 번 이상 지난다
+        ended = time.monotonic()
+        health_times = [t for t, _ in sends if t >= started]
+        gaps = [b - a for a, b in zip([started, *health_times], [*health_times, ended])]
+        assert len(health_times) >= 4, sends
+        assert max(gaps) < 3.0, gaps  # 노트북의 health 3회 누락 기준
+        assert any(name == "tier0-judge" for _, name in sends), sends
+        # 접속 직후 송신은 별도 훅이다. 1Hz 중복 여부는 판정 스레드의 주기 송신끼리 비교한다.
+        periodic = [t for t, name in sends if name == "tier0-judge"]
+        assert len(periodic) >= 4, sends
+        assert all(b - a >= 0.9 for a, b in zip(periodic, periodic[1:])), periodic
+        assert waits and all(delay > 0 for delay in waits), waits
+        assert len(evaluations) >= 4, evaluations
+        assert max(b - a for a, b in zip([started, *evaluations], [*evaluations, ended])) < 3.0, evaluations
+        assert markers and all(doc["gpu_priority"]["phase"] == "running" for _, doc in markers)
+        assert service.marker_error is None
+        assert service.judge.stats.perceived >= 5 and service.judge.stats.errors == 0
+        assert failed_once and "injected resync failure" in caplog.text
+        print(f"health 최대 간격={max(gaps):.3f}s, health={len(health_times)}, "
+              f"housekeeping.evaluate={len(evaluations)}, marker={len(markers)}")
+    finally:
+        assert service.stop(timeout_s=10)
+        laptop.close()
 
 
 def test_recovery_health_is_unsafe_until_reobserved_and_restored_alerts_listed(tmp_path, sim_run, control) -> None:

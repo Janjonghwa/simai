@@ -107,7 +107,7 @@ class HealthSnapshot:
 
 
 class HealthReporter:
-    """health payload 를 만든다. I1 송신 스레드와 노트북 송신(정리 주기)에서 불러도 된다."""
+    """health payload 를 만든다. I1·노트북 송신(판정 스레드·접속 훅)과 정리 주기 평가에서 불러도 된다."""
 
     def __init__(
         self,

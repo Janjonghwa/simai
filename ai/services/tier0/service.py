@@ -88,6 +88,7 @@ from simai_ai.tracking.world_track import session_prefix_from_ms
 log = logging.getLogger("services.tier0")
 
 HOUSEKEEPING_S = 0.1
+JUDGE_OVERRUN_YIELD_S = 0.01  # 비공정한 판정 lock 의 즉시 재획득을 쉬어 정리 주기에 기회를 준다(9차 Pod 검증값, -375)
 STATUS_EVERY_S = 1.0
 MARKER_EVERY_S = 5.0
 QUEUE_WAIT_EXCEEDED = str(SkipReason.QUEUE_WAIT_EXCEEDED)  # LIVE 입력 추론 대기 상한 초과(지연 표본에 싣는다)
@@ -1079,6 +1080,10 @@ class Tier0Service:
             except Exception:  # noqa: BLE001 - 한 tick 실패로 판정 루프를 멈추지 않는다(로그·통계)
                 self.judge.stats.errors += 1
                 log.exception("판정 tick 실패")
+            try:
+                self.resync.tick()  # local_alert 송신 뒤 같은 판정 스레드에서 1Hz health 를 보낸다(-375)
+            except Exception:  # noqa: BLE001 - health 실패로 판정 루프를 멈추지 않는다
+                log.exception("판정 스레드 health 송신 실패")
             if replay is not None:
                 if self.jsonl is not None and self.jsonl.failed is not None:
                     self.output_failed = dict(self.jsonl.failed)  # 결과를 잃었다: 정상 완료로 보지 않는다
@@ -1098,14 +1103,13 @@ class Tier0Service:
             delay = next_at - time.monotonic()
             if delay < 0:
                 next_at = time.monotonic()
-                delay = 0
+                delay = JUDGE_OVERRUN_YIELD_S
             self._stop.wait(delay)
 
     def _run_housekeeping(self) -> None:
         last_status = last_marker = time.monotonic()
         while not self._stop.wait(HOUSEKEEPING_S):
             try:
-                self.resync.tick()
                 if self.clock_sync is not None and self.control is not None and self.control.connected:
                     if self.clock_sync.request_due():
                         try:
