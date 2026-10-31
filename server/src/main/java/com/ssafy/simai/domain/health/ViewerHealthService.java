@@ -1,6 +1,7 @@
 package com.ssafy.simai.domain.health;
 
 import com.ssafy.simai.domain.scene.SceneService;
+import com.ssafy.simai.domain.scene.SceneCompatibility;
 import com.ssafy.simai.domain.tier0.i1.I1Envelope;
 import java.time.Clock;
 import java.time.Instant;
@@ -38,20 +39,22 @@ import tools.jackson.databind.node.ObjectNode;
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class ViewerHealthService {
 
-    public static final String SCHEMA_VERSION = "1.0.0";
+    public static final String SCHEMA_VERSION = "1.1.0";
     static final String CONNECTED = "CONNECTED";
     static final String DISCONNECTED = "DISCONNECTED";
     static final String UNSAFE_UNKNOWN = "UNSAFE_UNKNOWN";
 
     private final HealthState state;
+    private final SceneCompatibility compatibility;
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper mapper;
     private final Clock clock;
     private final long linkTimeoutMs;
 
-    public ViewerHealthService(HealthState state, NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, Clock clock,
+    public ViewerHealthService(HealthState state, NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, Clock clock, SceneCompatibility compatibility,
             @Value("${simai.health.link-timeout-ms:3000}") long linkTimeoutMs) {
         this.state = state;
+        this.compatibility = compatibility;
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.clock = clock;
@@ -145,6 +148,12 @@ public class ViewerHealthService {
         s.put("committed_version", committed);
         s.put("live_version", live);
         s.put("mismatch", committed != null && live != null && !committed.equals(live));
+        if (committed != null) {
+            var sources = jdbc.queryForList("SELECT calibration_version FROM scene_version WHERE scene_version = :v",
+                    Map.of("v", committed), String.class);
+            String source = sources.isEmpty() ? null : sources.getFirst();
+            s.set("compatibility", compatibility.compare(committed, source, world == null ? null : world.calibrationVersion()));
+        }
         return s;
     }
 

@@ -183,6 +183,31 @@ class RuntimeCalibrationStore(CalibrationProvider):
             if payload["calibration_version"] == self._head["active"]:
                 self._state = payload["calibration_state"]
 
+    def scene_metadata(self, version: str | None = None):
+        """World를 유지한 runtime 후보만 bootstrap 계보를 물려받는다."""
+        doc = self.current() if version is None else self.document(version)
+        return {"world_frame_id": self._head["bootstrap"],
+                "camera_poses": [{k: c[k] for k in ("camera_id", "R", "t")} for c in doc["cameras"]]}
+
+    def ensure_scene_snapshot(self, *, effective_at: int, msg_id: str):
+        """초기/구형 저장소도 현재 자세를 append-only 알림으로 한 번 보낸다."""
+        version = self._head["active"]
+        if any(r["payload"].get("world_frame_id") and r["payload"]["calibration_version"] == version
+               for r in self._head["transitions"]):
+            return
+        doc = self.current()
+        previous = next((r["payload"]["previous_calibration_version"] for r in reversed(self._head["transitions"])
+                         if r["payload"]["calibration_version"] == version), None)
+        payload = {"calibration_version": version, "previous_calibration_version": previous,
+                   "calibration_state": self.state, "provider_source": doc["provider_source"],
+                   "reason": "INITIAL" if not self._head["transitions"] else "STATE_CHANGED",
+                   "effective_at": effective_at, "calibration_ref": self.path(version).resolve().as_uri(),
+                   "calibration_hash": doc["content_hash"], **self.scene_metadata()}
+        head = _copy(self._head)
+        head["transitions"].append({"msg_id": msg_id, "payload": payload})
+        self._save(head)
+        self._head = head
+
     def path(self, version: str) -> Path:
         return self.root / (hashlib.sha256(version.encode("utf-8")).hexdigest() + ".json")
 
@@ -270,7 +295,7 @@ class RuntimeCalibrationStore(CalibrationProvider):
             "calibration_state": "DRIFTED", "provider_source": doc["provider_source"],
             "reason": "STREAM_CHANGED" if stream_changed else "DRIFT_DETECTED",
             "effective_at": effective_at, "calibration_ref": self.path(report.calibration_version).resolve().as_uri(),
-            "calibration_hash": doc["content_hash"],
+            "calibration_hash": doc["content_hash"], **self.scene_metadata(report.calibration_version),
         }
         cameras = report.reprojection_errors()
         if cameras:
@@ -308,6 +333,7 @@ class RuntimeCalibrationStore(CalibrationProvider):
             "calibration_state": doc["state"], "provider_source": doc["provider_source"],
             "reason": "RECALIBRATED", "effective_at": effective_at,
             "calibration_ref": self.path(version).resolve().as_uri(), "calibration_hash": doc["content_hash"],
+            **self.scene_metadata(version),
         }
         head = _copy(self._head)
         head["active"] = version

@@ -1377,6 +1377,21 @@ class Review(BaseModel):
     reproduced: StrictBool | MISSING = MISSING
 
 
+class SceneCompatibility(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    scene_version: DefsVersionId
+    calibration_version: DefsVersionId | None
+    verification: Literal['VERIFIED', 'DIMMED', 'MISMATCH']
+    regeneration_required: StrictBool
+    reason: Literal['SAME_CALIBRATION', 'SMALL_CHANGE', 'LARGE_CHANGE', 'DIFFERENT_WORLD', 'UNKNOWN']
+    max_center_delta_m: Annotated[StrictFloat | None, Field(ge=0.0)]
+    max_rotation_delta_rad: Annotated[
+        StrictFloat | None, Field(ge=0.0, le=3.141592653589793)
+    ]
+
+
 class Method(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1456,6 +1471,22 @@ class Performance1(BaseModel):
     stage_latency_ms: dict[str, DefsPercentilesMs] | MISSING = MISSING
     vram_peak_mb: Annotated[StrictFloat | MISSING, Field(ge=0.0)] = MISSING
     gpu_model: StrictStr | MISSING = MISSING
+
+
+class Payload35(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    site_id: Annotated[StrictStr, Field(min_length=1)]
+    scene_version: DefsVersionId | None
+
+
+class SceneReference(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['scene_reference'], Field(min_length=1)]
+    payload: Payload35
 
 
 class TbmReport(RootModel[Any]):
@@ -1590,7 +1621,7 @@ class Tier0EndpointPortMapping(BaseModel):
     public_port: Annotated[StrictInt, Field(ge=1, le=65535)]
 
 
-class Payload37(BaseModel):
+class Payload38(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
         regex_engine="python-re",
@@ -1628,7 +1659,7 @@ class VideoSegment(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['video_segment'], Field(min_length=1)]
-    payload: Payload37
+    payload: Payload38
 
 
 class Laptop(BaseModel):
@@ -1658,10 +1689,11 @@ class Scene(BaseModel):
     )
     committed_version: DefsVersionId | None
     live_version: DefsVersionId | None
+    compatibility: SceneCompatibility | MISSING = MISSING
     mismatch: StrictBool
 
 
-class Payload38(BaseModel):
+class Payload39(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -1682,7 +1714,7 @@ class ViewerHealth(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['viewer_health'], Field(min_length=1)]
-    payload: Payload38
+    payload: Payload39
 
 
 class VlmRationale(RootModel[Any]):
@@ -1909,29 +1941,6 @@ class Camera(BaseModel):
     )
     camera_id: DefsCameraId
     reprojection_error_px: ReprojectionErrorPx1
-
-
-class Payload5(BaseModel):
-    model_config = ConfigDict(
-        extra='allow',
-    )
-    calibration_version: DefsVersionId
-    previous_calibration_version: DefsVersionId | None
-    calibration_state: DefsCalibrationState
-    provider_source: DefsCalibrationSource
-    reason: Literal['INITIAL', 'RECALIBRATED', 'STATE_CHANGED', 'DRIFT_DETECTED', 'STREAM_CHANGED']
-    effective_at: DefsTimestampMs
-    calibration_ref: DefsUri
-    calibration_hash: DefsSha256
-    cameras: list[Camera] | MISSING = MISSING
-
-
-class CalibrationUpdate(Envelope):
-    model_config = ConfigDict(
-        extra='allow',
-    )
-    msg_type: Annotated[Literal['calibration_update'], Field(min_length=1)]
-    payload: Payload5
 
 
 class Payload6(BaseModel):
@@ -2761,7 +2770,7 @@ class Ack1(DefsOperatorAck):
     actor_id: Annotated[StrictStr, Field(min_length=1)]
 
 
-class Payload35(BaseModel):
+class Payload36(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -2775,10 +2784,10 @@ class SiteAck(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['site_ack'], Field(min_length=1)]
-    payload: Payload35
+    payload: Payload36
 
 
-class Payload36(BaseModel):
+class Payload37(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -2801,7 +2810,7 @@ class Tier0Endpoint(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['tier0_endpoint'], Field(min_length=1)]
-    payload: Payload36
+    payload: Payload37
 
 
 class Frame2(DefsCaptureTime):
@@ -2836,7 +2845,7 @@ class VlmRationaleInput(BaseModel):
     world_state_ref: DefsUuid | MISSING = MISSING
 
 
-class Payload39(BaseModel):
+class Payload40(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -2853,7 +2862,7 @@ class WorldState(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['world_state'], Field(min_length=1)]
-    payload: Payload39
+    payload: Payload40
 
 
 class Track(WorldStateWorldTrack):
@@ -3031,6 +3040,40 @@ class CalibrationCameraCalibration(BaseModel):
     t: DefsVec3
     camera_height_m: StrictFloat | MISSING = MISSING
     reprojection_error_px: ReprojectionErrorPx | MISSING = MISSING
+
+
+class CameraPose(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    R: DefsMat3
+    t: DefsVec3
+
+
+class Payload5(BaseModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    world_frame_id: DefsVersionId | MISSING = MISSING
+    camera_poses: Annotated[list[CameraPose] | MISSING, Field(min_length=1)] = MISSING
+    calibration_version: DefsVersionId
+    previous_calibration_version: DefsVersionId | None
+    calibration_state: DefsCalibrationState
+    provider_source: DefsCalibrationSource
+    reason: Literal['INITIAL', 'RECALIBRATED', 'STATE_CHANGED', 'DRIFT_DETECTED', 'STREAM_CHANGED']
+    effective_at: DefsTimestampMs
+    calibration_ref: DefsUri
+    calibration_hash: DefsSha256
+    cameras: list[Camera] | MISSING = MISSING
+
+
+class CalibrationUpdate(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['calibration_update'], Field(min_length=1)]
+    payload: Payload5
 
 
 class CctvPreview(BaseModel):
@@ -3296,7 +3339,9 @@ class Contracts(BaseModel):
     risk_plan_request: RiskPlanRequest | MISSING = MISSING
     risk_plan_result: RiskPlanResult | MISSING = MISSING
     run_record: RunRecord | MISSING = MISSING
+    scene_compatibility: SceneCompatibility | MISSING = MISSING
     scene_output: SceneOutput | MISSING = MISSING
+    scene_reference: SceneReference | MISSING = MISSING
     site_ack: SiteAck | MISSING = MISSING
     tbm_report: TbmReport | MISSING = MISSING
     tier0_endpoint: Tier0Endpoint | MISSING = MISSING

@@ -88,6 +88,7 @@ describe('원본 스키마와 같은 판단', () => {
   const ajv = new Ajv2020({ allErrors: true, strict: false });
   for (const rel of [
     'common/defs',
+    'common/scene_compatibility',
     'messages/envelope',
     ...MESSAGE_TYPES.map((m) => `messages/${m}`),
   ]) {

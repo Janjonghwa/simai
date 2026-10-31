@@ -1,4 +1,4 @@
-# static_reconstruct 결과와 활성 Scene (S15P31A101-365, S15P31A101-380)
+# static_reconstruct 결과와 활성 Scene (S15P31A101-365, S15P31A101-380, S15P31A101-381)
 
 ## 범위와 근거
 
@@ -22,7 +22,9 @@
 
 출처 지도가 있으면 `surface_source_map_urls`를 재질 순서의 서명 URL 배열로 보낸다(-360 뷰어가 허용하는 배열 형식). glTF 주소와 같은 저장소 기본 서명 수명인 5분을 사용한다. 지도가 없거나 저장소를 쓸 수 없거나 한 장이라도 서명 실패하면 필드를 생략한다. 일부 지도만 보내 재질 인덱스를 바꾸지 않는다. surface_values·ratios는 원문에 보존하며 여기서 관측 비율이나 지도 픽셀을 바꾸지 않는다.
 
-`ViewerHealthService`가 같은 현재 Scene 질의를 사용하고, 기존 `HealthPublisher`가 `/topic/health`에 DB 변경을 1초 주기로 반영한다. 별도 Scene 자산 갱신 토픽은 없다. 이미 열린 뷰어는 배경 버전 불일치 경고를 보고 **새로고침해야 새 자산을 조회**한다. 서버 프로세스 재기동은 필요 없다. Tier 0의 위치·Scene 참조값을 강제로 바꾸거나 알림을 발송하지 않는다.
+`ViewerHealthService`가 같은 현재 Scene 질의를 사용하고, 기존 `HealthPublisher`가 `/topic/health`에 DB 변경을 1초 주기로 반영한다. 별도 Scene 자산 갱신 토픽은 없다. -381부터 열린 뷰어는 활성 Scene 변경을 받으면 현재 자산을 자동 재조회한다(반복 실패는 10초 간격). EC2는 기존 인증 I1의 `scene_reference`를 1초 주기로 보내 Tier 0의 다음 `world_state.scene_version`을 갱신한다. 서버 프로세스 재기동이나 수동 새로고침이 필요 없다.
+
+배경 정합은 서버 `SceneCompatibility`가 Scene 생성 보정 대비 누적 변화로 판정한다. 같은 World 계보에서 카메라 중심 최대 이동 0.10 m 이하·최대 회전 2° 이하이면 VERIFIED, 문턱 초과·근거 부족이면 DIMMED + 재생성 필요, 다른 World이면 MISMATCH(숨김)이다. REST와 health가 같은 판정을 Scene·현재 프레임 보정 버전에 결속해 보내며, 임시 보정 기준 배경도 표시한다. 계보 전달 경로·수식·문턱 근거와 남은 현장 검증은 [Scene–보정 계보 정합](scene-calibration-lineage.md)에 기록한다. 이 판정은 보기용이며 Tier 0 위치·위험 판정·알림에 사용하지 않는다.
 
 ## 9차 세션 명령 예시
 
@@ -38,7 +40,7 @@ java -jar simai.jar admin scene list --site classroom-1
 # 저장된 정합·출처 근거와 미리보기를 확인한 뒤 명시적으로 활성화한다.
 java -jar simai.jar admin scene activate --site classroom-1 --version scene-session9 --actor lead --reason '9차 세션 배경 확인'
 
-# 열람 권한으로 GET /api/scenes/current의 버전·glTF·지도 주소를 확인하고 뷰어를 새로고침한다.
+# 열람 권한으로 GET /api/scenes/current의 버전·glTF·지도 주소와 열린 뷰어의 자동 배경 전환을 확인한다.
 # 문제가 있으면 목록에서 직전 버전을 골라 같은 명령으로 되돌린다.
 java -jar simai.jar admin scene activate --site classroom-1 --version scene-session8 --actor lead --reason '9차 배경 정합 문제로 되돌림'
 ```

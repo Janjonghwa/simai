@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/scene_reference.schema.json",
+  "title": "I1 scene_reference 1.0.0",
+  "description": "EC2→Tier 0, 인증된 기존 I1에서 1초마다 현재 Scene 참조. null은 활성·설정 Scene 없음, 마지막 참조 유지. 자산/판정/보정 교체 권한 없음.",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    }
+  ],
+  "type": "object",
+  "properties": {
+    "msg_type": {
+      "const": "scene_reference"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "site_id",
+        "scene_version"
+      ],
+      "properties": {
+        "site_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scene_version": {
+          "oneOf": [
+            {
+              "$ref": "../common/defs.schema.json#/$defs/version_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

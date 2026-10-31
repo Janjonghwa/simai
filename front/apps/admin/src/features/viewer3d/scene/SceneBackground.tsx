@@ -426,6 +426,7 @@ function Background({ store }: { store: SceneStore }) {
   const load = useStore(store, (s) => s.load);
   const worldScene = useSpatialData((s) => s.world?.sceneVersion ?? null);
   const worldCalibration = useSpatialData((s) => s.world?.calibrationVersion ?? null);
+  const compatibility = useSpatialData((s) => s.health?.scene.compatibility);
   const healthCommitted = useSpatialData((s) => s.health?.scene.committedVersion ?? null);
   const healthLive = useSpatialData((s) => s.health?.scene.liveVersion ?? null);
   const healthMismatch = useSpatialData((s) => (s.health ? s.health.scene.mismatch : null));
@@ -499,6 +500,7 @@ function Background({ store }: { store: SceneStore }) {
   }, [loaded]);
 
   const display = sceneStatusOf(input, load, {
+    compatibility,
     worldScene,
     worldCalibration,
     healthCommitted,

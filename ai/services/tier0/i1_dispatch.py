@@ -45,7 +45,7 @@ from simai_ai.risk.lifecycle import CloseRequest, EscalationRequest
 
 log = logging.getLogger("services.tier0.i1.dispatch")
 
-DOWNSTREAM_TYPES = frozenset({"journal_ack", "config_bundle", "event_ack", "event_close", "event_escalate"})
+DOWNSTREAM_TYPES = frozenset({"scene_reference", "journal_ack", "config_bundle", "event_ack", "event_close", "event_escalate"})
 
 Handler = Callable[[Mapping[str, Any]], Any]
 _STOP = object()

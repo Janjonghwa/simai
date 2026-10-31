@@ -176,6 +176,7 @@ function healthOf(message: ViewerHealthMessage, receivedAt: number): HealthView 
       committedVersion: p.scene.committed_version,
       liveVersion: p.scene.live_version,
       mismatch: p.scene.mismatch,
+      ...(p.scene.compatibility ? { compatibility: p.scene.compatibility } : {}),
     },
   };
 }

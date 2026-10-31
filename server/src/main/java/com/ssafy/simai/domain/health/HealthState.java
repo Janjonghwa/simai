@@ -37,7 +37,7 @@ public class HealthState {
     public record Received(JsonNode payload, Instant receivedAt, long receivedNanos) {
     }
 
-    public record World(long tLatestGlobalMs, String sceneVersion, Instant receivedAt) {
+    public record World(long tLatestGlobalMs, String sceneVersion, Instant receivedAt, String calibrationVersion) {
     }
 
     public record Heartbeat(String deviceId, JsonNode payload, Instant receivedAt, long receivedNanos) {
@@ -101,7 +101,7 @@ public class HealthState {
             return;
         }
         String sceneVersion = scene != null && scene.isString() ? scene.stringValue() : null;
-        world = new World(tMs, sceneVersion, now);
+        world = new World(tMs, sceneVersion, now, envelope.payload().path("calibration_version").asString(null));
         progressed(tMs);
         if (previous == null || !Objects.equals(previous.sceneVersion(), sceneVersion)) {
             onChange.run(); // Scene 불일치가 바뀔 수 있다

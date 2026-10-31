@@ -66,6 +66,7 @@ export const SceneReviewContext = createContext(false);
 
 /** 정합 판정에 쓰는 지금 버전. World·Health 가 없으면 null. */
 export const sceneVersionsOf = (state: SpatialDataState): SceneVersions => ({
+  compatibility: state.health?.scene.compatibility,
   worldScene: state.world?.sceneVersion ?? null,
   worldCalibration: state.world?.calibrationVersion ?? null,
   healthCommitted: state.health?.scene.committedVersion ?? null,

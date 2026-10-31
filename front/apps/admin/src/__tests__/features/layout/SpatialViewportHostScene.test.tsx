@@ -132,3 +132,24 @@ describe('관제 호스트의 Scene 연결', () => {
     expect(calls).toBe(2);
   });
 });
+
+it('임시 보정 기준 배경과 재생성 필요를 관제 호스트에 표시한다', async () => {
+  renderHost();
+  await waitFor(() => expect(viewer.props?.scene?.ok).toBe(true));
+  const status = sceneStatusOf(null, IDLE_LOAD, {
+    worldScene: null,
+    worldCalibration: null,
+    healthCommitted: null,
+    healthLive: null,
+    healthMismatch: null,
+  });
+  act(() =>
+    viewer.props?.onSceneStatusChange?.({
+      ...status,
+      provisionalBackground: true,
+      regenerationRequired: true,
+    }),
+  );
+  expect(screen.getByRole('status').textContent).toContain('임시 보정 기준 배경');
+  expect(screen.getByRole('status').textContent).toContain('재생성 필요');
+});
