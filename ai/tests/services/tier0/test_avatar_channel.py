@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from simai_ai.io.avatar_channel import LatestChannelReader, LatestChannelWriter
+from simai_ai.io.avatar_channel import LatestChannelReader, LatestChannelWriter, avatar_channel_path
 from simai_ai.providers.base import Frame
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -96,5 +96,48 @@ def test_perception_shares_exact_frame_observation_and_world_id_without_changing
     assert "per_camera" not in payload["tracks"][0]
     assert frames[cid] is image
     calls.clear()
-    perception._share_avatar(frame, payload, 1101)
+    perception._share_avatar(SimpleNamespace(tracks=None), payload, 1101)
+    assert calls == []  # 5 Hz(200 ms) 주기 전에는 트랙·스냅샷 조립 자체를 생략한다
+    perception._share_avatar(frame, payload, 1200)
     assert calls[0][0]["world"]["tracks"][0]["per_camera"] == []  # 오래된 영상 연결 금지
+    assert calls[0][0]["calibration"] is metadata["calibration"]  # 같은 rig 는 보정 직렬화 재사용
+    new_rig = make_rig()
+    perception.associator = SimpleNamespace(replace_rig=lambda _r: None)
+    perception.manager = SimpleNamespace(input_provenance={})
+    perception.replace_rig(new_rig, {"source": "FILE"})
+    calls.clear()
+    perception._share_avatar(frame, payload, 1300)  # 보정 교체 직후 tick 은 200 ms 전이어도 즉시 공유
+    assert len(calls) == 1 and calls[0][0]["calibration"] is not metadata["calibration"]
+
+
+def test_avatar_channel_path_prefers_explicit_then_shm_then_state_dir(tmp_path):
+    shm = tmp_path / "shm"
+    shm.mkdir()
+    root = tmp_path / "root"
+    assert avatar_channel_path({"SIMAI_AVATAR_CHANNEL": str(tmp_path / "custom.npz")}, root, shm_dir=shm) == tmp_path / "custom.npz"
+    assert avatar_channel_path({}, root, shm_dir=shm) == shm / "simai-avatar-input.npz"
+    assert avatar_channel_path({"SIMAI_ROOT": str(root)}, shm_dir=tmp_path / "missing-shm") == root / "state/avatar-input.npz"
+
+
+def test_reader_predicate_skips_loading_image_arrays_when_rejected(tmp_path):
+    path = tmp_path / "latest.npz"
+    writer = LatestChannelWriter(path)
+    image = np.full((64, 64, 3), 7, np.uint8)
+    frame = Frame("cam1", 500, "FILE", {"stream_epoch": 1, "frame_sequence": 9}, image=image)
+    try:
+        writer._write({"world": {"t": 500}}, {"cam1": frame})
+        raw = bytearray(path.read_bytes())
+        # ZIP 앞쪽의 metadata 엔트리는 두고 뒤쪽의 image_0.npy 본문 바이트를 망가뜨려 이미지 읽기가 일어나면 실패하게 만든다.
+        idx = raw.rindex(b"image_0.npy")
+        corrupt_pos = max(0, idx - 512)
+        raw[corrupt_pos:corrupt_pos + 64] = b"\xff" * 64
+        corrupted = tmp_path / "corrupted.npz"
+        corrupted.write_bytes(raw)
+        reader = LatestChannelReader(corrupted)
+        doc, images = reader.latest(predicate=lambda d: d["world"]["t"] > 500)
+        assert doc["world"]["t"] == 500 and images == {}
+        doc_ok, images_ok = LatestChannelReader(path).latest(predicate=lambda d: d["world"]["t"] == 500)
+        assert doc_ok["world"]["t"] == 500
+        np.testing.assert_array_equal(images_ok["cam1"], image)
+    finally:
+        writer.close()

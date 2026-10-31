@@ -21,7 +21,7 @@ I5 배치 HMR은 계속 차단된다. 개발용 표시 파일 없음 허용 설�
 
 ## Tier 0 공유 통로
 
-기본 `$SIMAI_ROOT/state/avatar-input.npz`, `SIMAI_AVATAR_CHANNEL`로 경로를 바꾼다.
+기본 경로는 `avatar_channel_path(env, root)`가 정한다: `SIMAI_AVATAR_CHANNEL` 명시값 → POSIX `/dev/shm`이 쓰기 가능한 디렉터리면 `/dev/shm/simai-avatar-input.npz`(tmpfs) → 그 외 `$SIMAI_ROOT/state/avatar-input.npz` 폴백(S15P31A101-385).
 독립 Tier 0는 `SIMAI_AVATAR_SHARE=1`일 때만 공유한다. 감시 모드에서는 avatar 선택 시 Tier 0 자식에만 이 설정을 넣는다.
 
 NPZ는 로컬 IPC이며 `allow_pickle=False`로 읽는다. 파일은 임시 파일에 다 쓴 뒤 `os.replace`하므로 독자는 완성된 한 묶음을 읽는다.
@@ -41,10 +41,10 @@ Tracker가 수락한 실제 프레임과 2D 관측을 같은 epoch/sequence/촬�
 전역 최신 시각과 100ms 넘게 다른 카메라는 공유 관측에서 뺀다. HMR에서도 frame_ref가 같은지 검사한다.
 모르는 관절·pelvis·접지는 null 그대로이며 프레임 촬영 시각을 송신 시각으로 바꾸지 않는다.
 
-Tier 0 판정 스레드는 최신 참조 한 건을 `offer`할 뿐이다. lock을 즉시 얻지 못하면 버리고, 디스크 I/O는 daemon이 한다.
-daemon은 최대 5Hz로 쓰며 대기 중인 참조를 최신으로 바꾼다. 디스크 실패는 errors로 세고 Tier 0를 멈추지 않는다.
+Tier 0 판정 스레드는 직전 공유 시각으로부터 `period_s`(기본 0.2s, 5Hz)가 지났을 때만 스냅샷을 조립해 최신 참조 한 건을 `offer`한다(보정이 교체된 tick은 즉시 공유, S15P31A101-385). lock을 즉시 얻지 못하면 버리고, 파일 I/O는 daemon이 한다.
+daemon은 최대 5Hz로 쓰며(`period_s - write_elapsed`만큼 대기) 대기 중인 참조를 최신으로 바꾼다. 파일 실패는 errors로 세고 Tier 0를 멈추지 않는다.
 Frame.image는 전달 뒤 수정하지 않는 기존 소유권을 따른다. 원자 교체 파일과 최대 한 임시 파일만 유지하므로 프레임 이력을 저장하지 않는다.
-공유 메모리 대신 파일 기반 로컬 IPC를 고른 이유는 독자 종료·재시작 때 자원 추적·seqlock 복구가 필요 없기 때문이다.
+POSIX 공유 메모리 세그먼트(`multiprocessing.shared_memory`) 대신 tmpfs(`/dev/shm`) 위 원자 교체 파일 기반 로컬 IPC를 고른 이유는 독자 종료·재시작 때 자원 추적·seqlock 복구가 필요 없으면서도 컨테이너 overlayfs 디스크 쓰기를 피할 수 있기 때문이다.
 
 ## 체형·송신
 
@@ -259,3 +259,29 @@ CUDA 호출은 중간 취소할 수 없으며 seg 도입으로 기존 500ms 신�
 
 - `services/avatar`(`__main__.py` 기동 대기 및 `AvatarLoop.step()`): 9차 로그 패턴(평시 300~550ms + 가끔 672ms 단발 1회)에서 30초 안정 대기가 리셋되지 않고 통과하며, 열려 있는 동안에도 단발 1회 스파이크로 추론이 끊기지 않는다.
 - `services/worker`(`runner.py`, VLM 설명·보정 BA·TBM 보고서 등 I5 Job): 같은 `AdmissionGate` 기본 정책을 공유한다. 명세 3.2·6.6 기준이 동일하므로 공통 적용이 타당하며, `DEFAULT_LIVE_BLOCKED`(`static_reconstruct`, `hmr_refine`, `hmr_appearance_update`) 차단과 지시문 4(불명·연속 초과 즉시 차단)는 그대로 유지된다.
+
+## S15P31A101-385: 공유 통로 /dev/shm 이전·5 Hz 스냅샷 조립 게이팅·메타데이터 우선 읽기
+
+관련 명세는 3.2(Tier 0 우선), 3.12(저장 위치), 5.6(상시 아바타 루프)이다. 계약 스키마(`contracts/`)는 바꾸지 않는다.
+변경 위치는 `src/simai_ai/io/avatar_channel.py`, `services/tier0/{perception,service}.py`, `services/avatar/__main__.py`, `src/simai_ai/hmr/stream.py`이며 시험은 `tests/services/tier0/test_avatar_channel.py`, `tests/hmr/test_avatar_loop.py`다.
+
+### 배경과 변경
+
+1. **공유 파일 경로 `/dev/shm` 이전 (`avatar_channel_path`)**:
+   - 2304×1296×3 BGR 4장(비압축 34.17 MiB, 35.83 MB)을 5 Hz로 `$SIMAI_ROOT/state/avatar-input.npz`에 쓰면 컨테이너 overlayfs에 초당 약 179 MB 쓰기·읽기가 발생한다.
+   - `avatar_channel_path(env, root)`는 `SIMAI_AVATAR_CHANNEL`이 지정되면 그대로 쓰고, 지정되지 않았을 때 POSIX `/dev/shm`이 쓰기 가능한 디렉터리면 `/dev/shm/simai-avatar-input.npz`(tmpfs)를 기본값으로 선택하며, 그 외 환경(Windows 노트북 등)에서는 기존 `$SIMAI_ROOT/state/avatar-input.npz`로 폴백한다.
+2. **Tier 0 `Perception._share_avatar` 5 Hz(200 ms) 스냅샷 조립 게이팅 및 보정 직렬화 캐시**:
+   - 기존에는 10 Hz `Perception.step`마다(`judge_lock` 보유 중) 모든 트랙의 `per_camera` 사전·관절 목록과 카메라 4대의 `K/R/t` `.tolist()`를 조립해 `LatestChannelWriter.offer`에 넘기고, writer 주기가 0.2 s(5 Hz)라 절반을 덮어쓰며 버렸다(`dropped` 증가).
+   - `Perception._share_avatar`는 직전 공유 시각(`_last_avatar_t`)으로부터 `period_s`(기본 0.2 s = 200 ms)가 지나지 않았으면(`0 <= t_latest - last_t < period_ms`) 트랙·보정·참조 사전을 조립하지 않고 즉시 반환한다.
+   - 같은 `CameraRig` 인스턴스 동안 보정 직렬화 사전(`_avatar_calibration_doc`)을 재사용하고, `replace_rig`로 보정이 교체되면 캐시와 `_last_avatar_t`를 함께 비워 교체 직후 tick은 200 ms 전이어도 새 보정으로 즉시 공유한다.
+   - `LatestChannelWriter._run`은 `_write` 소요 시간을 뺀 남은 주기(`period_s - elapsed`)만 대기해 쓰기 시간 누적에 따른 주기 밀림을 막는다.
+3. **소비자(`LatestChannelReader`·`AvatarLoop`) 메타데이터 우선 읽기**:
+   - `LatestChannelWriter._write`는 NPZ 첫 엔트리로 `metadata`를 기록한다.
+   - `LatestChannelReader.latest(predicate=...)`는 `self.path.read_bytes()`로 34.17 MiB 전체를 메모리에 복제한 뒤 읽던 방식을 바꿔, 열린 파일 핸들(`self.path.open("rb")`)에서 `metadata`만 먼저 읽고 `predicate(doc)`가 거짓(중복 `t <= last_t` 또는 신선도 `max_age_ms` 초과)이면 `image_0..3` 배열을 읽지 않고 `(doc, {})`를 반환한다.
+
+### 합성 측정과 남은 위험
+
+노트북 CPU 합성 벤치마크(5명×4카메라×17관절 10 Hz 200 tick 및 2304×1296×3×4 NPZ 34.17 MiB, 제품 성능 지표 아님):
+- `_share_avatar` 200 tick 총 소요: 게이팅 전 7.57 ms(`offer` 200회, 절반 덮어쓰기) → 5 Hz 게이팅·보정 캐시 적용 후 4.19 ms(`offer` 100회).
+- 34.17 MiB NPZ 읽기 중앙값(10회): 기존 `BytesIO(read_bytes())` 전체 읽기 35.89 ms → 단일 파일 핸들 통과 읽기 27.94 ms, 중복·신선도 초과(`predicate` 거부) 시 메타데이터만 읽기 **0.298 ms**(영상 배열 34.17 MiB 읽기·할당 생략).
+- 남은 위험: 9차 조사(`findings-tier0-control-drops.md`)의 j6에서 아바타 공유를 꺼도 4~5명 구간의 느린 `perception.step`은 남았으므로 이 변경만으로 `perception.step` 병목이나 `max_age_ms=500` 탈락이 모두 해소되지는 않는다. Pod `/dev/shm` 실측과 다인 동시 부하 검증은 다음 GPU 세션에서 확인한다.

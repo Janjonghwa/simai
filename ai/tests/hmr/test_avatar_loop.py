@@ -24,6 +24,8 @@ from simai_ai.hmr.stream import (
     AvatarLoop,
 )
 from simai_ai.hmr.runtime import FastBodyModel
+from simai_ai.io.avatar_channel import LatestChannelReader, LatestChannelWriter
+from simai_ai.providers.base import Frame
 from tests.contracts.test_avatar_stream import _schema_errors, violations
 from tests.hmr.multiview_scene import PROVENANCE, T0, Person, hmr_candidate, make_rig, track_doc
 
@@ -264,6 +266,40 @@ def test_avatar_loop_with_session9_marker_pattern_infers_and_blocks_on_consecuti
     source.item = snapshot(clock[0] - 400)
     loop.step()
     assert model.calls == 8
+
+def test_channel_reader_skips_image_loads_on_duplicate_or_stale_snapshots(tmp_path, rig):
+    clock, _, sock, sender, model, loop, _ = harness(rig)
+    path = tmp_path / "avatar-input.npz"
+    writer = LatestChannelWriter(path)
+    reader = LatestChannelReader(path)
+    loop.source = reader
+    meta, imgs = snapshot(clock[0])
+    frames = {cid: Frame(cid, clock[0], "FILE", meta["frames"][cid]["frame_ref"], image=img)
+              for cid, img in imgs.items()}
+    try:
+        writer._write({"world": meta["world"], "calibration": meta["calibration"]}, frames)
+        loop.step()
+        assert model.calls == 4
+        # 중복 시각(t == last_t)과 신선도 초과(clock - t > DEFAULT_MAX_AGE_MS)에서는 predicate 가 거짓이라 영상을 읽지 않는다.
+        calls = []
+        orig_latest = reader.latest
+        def spy_latest(*, predicate=None):
+            res = orig_latest(predicate=predicate)
+            calls.append(res[1] if res is not None else None)
+            return res
+        reader.latest = spy_latest
+        loop.step()
+        assert calls[-1] == {} and model.calls == 4
+        clock[0] += DEFAULT_MAX_AGE_MS + 100
+        stale = DEFAULT_MAX_AGE_MS + 1
+        meta2, imgs2 = snapshot(clock[0] - stale)
+        frames2 = {cid: Frame(cid, clock[0] - stale, "FILE", meta2["frames"][cid]["frame_ref"], image=img)
+                   for cid, img in imgs2.items()}
+        writer._write({"world": meta2["world"], "calibration": meta2["calibration"]}, frames2)
+        loop.step()
+        assert calls[-1] == {} and model.calls == 4
+    finally:
+        writer.close()
 
 
 def test_upload_retry_reuses_identical_bytes_for_same_asset_version(rig):

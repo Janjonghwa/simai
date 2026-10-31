@@ -442,9 +442,9 @@ class Tier0Service:
         provenance = build_input_provenance(feed.provenance(), calibration=self.rig.calibration_provenance)
         avatar_writer = None
         if s.env.get("SIMAI_AVATAR_SHARE") == "1":
-            from simai_ai.io.avatar_channel import LatestChannelWriter
+            from simai_ai.io.avatar_channel import LatestChannelWriter, avatar_channel_path
             root = Path(s.env.get("SIMAI_ROOT") or "/workspace/simai")
-            avatar_writer = LatestChannelWriter(Path(s.env.get("SIMAI_AVATAR_CHANNEL") or root / "state/avatar-input.npz"))
+            avatar_writer = LatestChannelWriter(avatar_channel_path(s.env, root))
         self.perception = Perception(self.rig, feed, session=session_prefix_from_ms(now), scene_version=s.scene_version,
                                      input_provenance=provenance, avatar_writer=avatar_writer)
         # 복원 Track 후보·이전 이벤트 연결: 첫 World Track update 전(판정 스레드 시작 전, -178)
