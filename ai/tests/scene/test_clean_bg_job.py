@@ -9,9 +9,10 @@ import threading
 from typing import Any
 import uuid
 
-import cv2
 import numpy as np
 import pytest
+
+cv2 = pytest.importorskip("cv2")  # clean_bg_job 도 cv2 를 쓴다. nightly CI 는 extras 없이 돈다(-388)
 
 from simai_ai.providers.contract import schema_errors
 from simai_ai.scene.clean_bg_job import run_cli
