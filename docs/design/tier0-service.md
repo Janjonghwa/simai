@@ -41,28 +41,29 @@ flowchart LR
   end
   J -->|submit_step| W[event-journal-writer<br/>fsync]
   J -->|send| Q[(I0 송신 대기열<br/>한 줄)]
+  J -->|tick 뒤 1 Hz 확인| RS
   RS --> Q
   ACK2 --> Q
   Q --> I0W[i0-control-writer]
   W --> JF[(저널 파일)]
   JF --> OB[i1-writer: outbox.pump<br/>→ follow → 스냅샷]
   JF --> CK[tier0-checkpointer<br/>1 s, 투영·저장·정리]
-  HK[tier0-housekeeping 0.1 s<br/>목록·시계 교환·fps·경고·표시 파일] --> RS
-  HK --> CP
+  HK[tier0-housekeeping 0.1 s<br/>시계 교환·fps·경고·표시 파일] --> CP
   PUB[i1-publisher<br/>world_state 10 Hz·health 1 Hz] --> HB
   I1C[i1-connection: 수신] --> ACK1
   I1C --> CFG[i1-config-worker<br/>ConfigSync.receive]
   I0C[i0-control 연결 스레드: 수신] --> ACK2
+  I0C -->|접속 직후| RS
 ```
 
 | 스레드 | 하는 일 | 잡는 lock |
 |---|---|---|
-| `tier0-judge` | `JudgmentLoop.tick` (10 Hz). 재시작 뒤 연결 함수(`RestoreLink.related`)도 이 안에서 만든다 | 판정 lock 전체 |
+| `tier0-judge` | `JudgmentLoop.tick` (10 Hz), 그 뒤 `SiteAlertResync.tick`(1 Hz health). 재시작 뒤 연결 함수(`RestoreLink.related`)도 tick 안에서 만든다 | tick 과 목록 만들기·health 대기열 넣기에서 판정 lock. 초과 주기 뒤 양보는 lock 밖 |
 | `event-journal-writer` | `EventJournal.append_step` + fsync (단일 작성자) | 저널 내부 lock |
 | `tier0-checkpointer` | 투영 따라잡기 → 체크포인트 저장 → `SnapshotOutbox.compact` | Checkpointer 내부 lock |
 | `i1-connection`·`i1-writer`·`i1-send-watchdog`·`i1-publisher`·`i1-config-worker` | I1 연결·송신(outbox pump, 스냅샷)·주기 송신·구성 묶음 검증 | health 를 만들 때만 판정 lock(짧게), event_ack 처리 때 판정 lock. 스냅샷(스냅샷 lock 안)의 콜백 current_state·risk_observed_at 은 판정 lock 을 잡지 않고 판정 상태 사본을 읽는다 |
-| `i0-control-listen`·연결 스레드·`i0-control-writer` | 노트북 연결 수락·수신·송신(한 줄 대기열) | site_ack 처리 때 판정 lock. 송신 스레드는 판정 lock 을 잡지 않는다 |
-| `tier0-housekeeping` | 현장 경보 목록 1 Hz, 시계 교환 요청, fps, 경고, 표시 파일 | 목록·clips.poll 때 판정 lock. 표시 파일의 `restore_link` 는 lock 없이 불변 사본을 읽는다 |
+| `i0-control-listen`·연결 스레드·`i0-control-writer` | 노트북 연결 수락·수신·송신(한 줄 대기열), 접속 직후 health | site_ack·접속 직후 목록·health 처리 때 판정 lock. 송신 스레드는 판정 lock 을 잡지 않는다 |
+| `tier0-housekeeping` | 시계 교환 요청, 지연 표본(`health.evaluate`), fps, 경고, 표시 파일 | health 평가·clips.poll 때 판정 lock. 표시 파일의 `restore_link` 는 lock 없이 불변 사본을 읽는다 |
 
 공유 시계는 lock 으로 감싼다: `SharedDecisionClock`(판정 시각, 앞으로만) → `SharedTier0Clock`(단조 기준 UTC) 순서로만 잡는다.
 `Tier0ClockSync` 는 `LockedClockSync` 하나의 lock 으로 감싼다(요청은 정리 주기, 응답은 I0 수신, 추정은 판정·health).
@@ -89,6 +90,8 @@ lock 순서는 **판정 lock → (스냅샷 lock, 시계 lock, 각 모듈 내부
 | 구성 묶음 전환은 tick 시작(`begin_tick`)에서만. 한 tick 의 작업면(인지)·규칙·구역·config_version(world_state·전이)은 한 묶음 | `JudgmentLoop.tick` 1) | `test_config_bundle_switch_only_at_tick_boundary`, 음성 대조 `test_negative_control_switch_after_perception_mixes_bundles` |
 | 판정 전이의 evidence_ref = 그 tick world_state 봉투 msg_id | `_judge` 2)·6) (`offer_world_state(msg_id=)`) | `test_evidence_ref_is_the_world_state_msg_id_of_the_same_tick` |
 | 저널 넣기 → 현장 경보(fsync 를 기다리지 않음). 저널이 실패해도 현장 경보는 나간다 | `JudgmentLoop._record` | `test_site_alert_still_sent_when_journal_rejects` |
+| 주기 I0 health 는 판정 tick 의 local_alert·alarm_stop 뒤 같은 스레드에서 확인한다. 목록 생성·대기열 넣기는 같은 판정 RLock 안, 1 Hz 판단은 SiteAlertResync 에만 있다. health 실패는 다음 tick 의 판정을 막지 않는다 | `Tier0Service._run_judge`, `SiteAlertResync` | `test_slow_ticks_keep_laptop_health_and_housekeeping_running`(실제 인지·판정·I0, 첫 resync 예외 뒤 계속 송신) |
+| tick 이 주기를 넘기면 lock 밖에서 10 ms 양보해 정리 주기의 health.evaluate·표시 파일 갱신을 굶기지 않는다 | `Tier0Service._run_judge`, `JUDGE_OVERRUN_YIELD_S` | 같은 느린 입력 시험(송신 간격 < 3 s, 양수 대기, 정리 평가·실제 표시 파일 갱신) |
 | 복원 → 쓰기 스레드·체크포인트·I0·I1 시작(단일 작성자, 복원 전 현장 경보 목록 금지) | `Tier0Service.start` 3)·6), `SiteAlertResync(ready=)`, `_site_fields` | `test_tier0_service::test_startup_recovers_before_any_link_and_no_alert_fields_before_restore`, E2E 재시작 첫 health |
 | 재전송 → 스냅샷: 새 연결에서 health → acked_offset 이후 전이(오름차순, 같은 msg_id, resent) → event_state_snapshot | `build_i1_link`(첫 메시지 관문·outbox.reset) + `EventStateSnapshot.attach` | `test_tier0_e2e` 4) |
 | 저널 정리는 `SnapshotOutbox.compact` 로만(스냅샷이 접지 않은 기록을 지우지 않음) | `Checkpointer(compact=self.outbox.compact)` | (기존 -81 시험) |
@@ -149,6 +152,15 @@ join 하고, 남으면 실패로 남긴다. 영상 포트 일부만 열고 실�
   ec2_world_state_drops = `with_world_state_drops`(I1·I0 health 둘 다), active_site_alerts·as_of = `SiteAlertResync.fields`(복원 뒤에만).
 - 노트북이 (재)접속하면 이전 연결의 시계 표본을 버리고 바로 시계 교환을 요청하고, 1 Hz 를 기다리지 않고 health(현장 경보 목록)를
   보낸다(-161). 이 health 는 하트비트를 아직 받지 못해 gateway_link DISCONNECTED·UNSAFE_UNKNOWN 이다(모르면 정상으로 보지 않는다).
+- 주기 I0 health 는 `tier0-judge` 가 `judge.tick()` 직후 `resync.tick()` 으로 확인한다(-375). 정리 주기에서는 호출하지 않는다.
+  local_alert·alarm_stop 과 같은 스레드에서 뒤이어 보내되, 목록 만들기부터 I0 FIFO 대기열 넣기까지 판정 RLock 으로 감싼다.
+  접속 훅·site_ack 가 사이에 들어와도 같은 lock 으로 직렬화하고, `active_site_alerts_as_of` 경합 방어는 유지한다.
+  active_states·health.evaluate 의 재진입에는 같은 RLock 을 쓰므로 일반 Lock 의 자기 교착이 없다. 스냅샷 콜백의 불변 사본
+  읽기와 판정 → 스냅샷 lock 순서는 그대로다(`judge.py` 모듈 설명 8).
+- 판정 주기 초과 시 `Event.wait(0.01)` 로 lock 밖에서 양보한다. 10 ms 는 명세 수치가 아니라 9차 Pod 사본에서 제어 채널
+  끊김이 14분간 0회였던 초기값이다(9차 조사, S15P31A101-375). 즉시 재획득으로 정리 스레드가 굶는 것을
+  줄이며 종료 신호에는 바로 깨어난다. lock 공정성이나 3초 상한을 보장하지는 않는다. 단일 tick 의 3초 초과·송신 경로 정체는
+  별도 위험이고, 최대 속도 REPLAY 는 기존처럼 실제 시간 대기를 생략한다.
 - health 계약에 필드가 없는 운영 경고(Checkpointer 정체·오류, 저널 쓰기 정체·실패, outbox blocked, 스냅샷 broken)는 로그(바뀔 때)와
   표시 파일 `state/tier0.live` 의 status 에 싣는다(5초마다 갱신).
 
