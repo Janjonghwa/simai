@@ -195,4 +195,48 @@ def test_failed_tool_log_survives_temporary_directory_cleanup(tmp_path):
     assert err.value.code == "STATIC_PREPARE_TOOL_FAILED"
     assert "s3://site/output/failed-prepare.log" in err.value.message
     assert store.puts["failed-prepare.log"] == b"synthetic tool diagnostic"
+    assert store.puts["failed-prepare.log"] == b"synthetic tool diagnostic"
     assert not list(tmp_path.iterdir())
+
+
+def test_upload_skips_empty_logs_and_includes_filename_on_empty_asset_or_auxiliary(tmp_path):
+    store = Store()
+
+    class MixedLogsStages(FakeStages):
+        def run(self, stage, root, **kwargs):
+            super().run(stage, root, **kwargs)
+            if stage == "prepare":
+                (root / "prepare.log").write_bytes(b"")
+            elif stage == "bake":
+                (root / "bake.log").write_bytes(b"texrecon completed\n")
+
+    result = handler(store, MixedLogsStages(), tmp_path)(context(store))
+    assert "prepare.log" not in store.puts
+    assert "prepare.log=" not in result["quality"]["notes"]
+    assert store.puts["bake.log"] == b"texrecon completed\n"
+    assert "bake.log=s3://site/output/bake.log" in result["quality"]["notes"]
+
+    class EmptyAssetStages(FakeStages):
+        def run(self, stage, root, **kwargs):
+            super().run(stage, root, **kwargs)
+            if stage == "bake":
+                (root / "scene.glb").write_bytes(b"")
+
+    with pytest.raises(JobFailed) as asset_err:
+        handler(Store(), EmptyAssetStages(), tmp_path)(context(store))
+    assert asset_err.value.code == "STATIC_OUTPUT_EMPTY"
+    assert "scene.glb" in asset_err.value.message
+
+    class EmptyAuxStages(FakeStages):
+        def run(self, stage, root, **kwargs):
+            super().run(stage, root, **kwargs)
+            if stage == "bake":
+                (root / "observed_camera_0000.png").write_bytes(b"")
+                rec = json.loads((root / "bake.json").read_text(encoding="utf-8"))
+                rec["auxiliary"] = ["observed_camera_0000.png"]
+                write_json(root / "bake.json", rec)
+
+    with pytest.raises(JobFailed) as aux_err:
+        handler(Store(), EmptyAuxStages(), tmp_path)(context(store))
+    assert aux_err.value.code == "STATIC_OUTPUT_EMPTY"
+    assert "observed_camera_0000.png" in aux_err.value.message

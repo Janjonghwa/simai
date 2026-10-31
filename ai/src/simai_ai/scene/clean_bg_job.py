@@ -40,7 +40,7 @@ from simai_ai.scene.reconstruct import (
 IMAGE_KINDS = ("CLEAN_BACKGROUND", "FRAME")
 OBJECT_URI_RE = re.compile(r"^s3://(?P<bucket>[a-z0-9][a-z0-9.-]{1,61}[a-z0-9])/\S+$")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-UPLOAD_PURPOSES = ("EVENT_FRAME", "AVATAR_ASSET", "TICKET_PHOTO")
+UPLOAD_PURPOSES = ("EVENT_FRAME", "AVATAR_ASSET")
 TOKEN_ENV_VARS = ("SIMAI_UPLOAD_TOKEN", "SIMAI_TIER0_TOKEN", "SIMAI_DEVICE_TOKEN", "SIMAI_WORKER_TOKEN")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -652,29 +652,166 @@ def _resolve_token_and_purpose(
     token_file: Path | None,
     purpose_arg: str | None,
     env: dict[str, str],
+    upload_calibration: bool = False,
 ) -> tuple[str, str]:
-    """토큰 파일 또는 환경변수에서 인증 토큰을 읽고 업로드 purpose 를 결정한다."""
+    """토큰 파일 또는 환경변수에서 인증 토큰을 읽고 서버 UploadPurpose 규칙에 맞게 purpose 를 결정한다."""
+    if purpose_arg is not None and purpose_arg not in UPLOAD_PURPOSES:
+        raise CleanBgJobError(
+            f"지원하지 않는 업로드 purpose 다: {purpose_arg!r} "
+            "(사진은 EVENT_FRAME[Tier 0·DEVICE 토큰] 또는 AVATAR_ASSET[워커 토큰]만 허용)"
+        )
+    if upload_calibration and purpose_arg is not None and purpose_arg != "AVATAR_ASSET":
+        raise CleanBgJobError(
+            "--upload-calibration 은 보정 문서(application/octet-stream)가 AVATAR_ASSET(워커 토큰)만 허용하므로 "
+            f"--purpose {purpose_arg} 와 함께 쓸 수 없다(워커 토큰·AVATAR_ASSET 사용 필요)"
+        )
+
     if token_file is not None:
         if not token_file.is_file():
             raise CleanBgJobError(f"토큰 파일이 없다: {token_file}")
         token = token_file.read_text(encoding="utf-8").strip()
         if not token:
             raise CleanBgJobError(f"토큰 파일이 비어 있다: {token_file}")
-        return token, (purpose_arg or "EVENT_FRAME")
+        return token, (purpose_arg or ("AVATAR_ASSET" if upload_calibration else "EVENT_FRAME"))
 
-    for var_name in TOKEN_ENV_VARS:
-        val = (env.get(var_name) or "").strip()
-        if val:
-            if purpose_arg:
-                return val, purpose_arg
-            if var_name == "SIMAI_WORKER_TOKEN":
-                return val, "AVATAR_ASSET"
-            return val, "EVENT_FRAME"
+    upload_tok = (env.get("SIMAI_UPLOAD_TOKEN") or "").strip()
+    tier0_tok = (env.get("SIMAI_TIER0_TOKEN") or "").strip()
+    device_tok = (env.get("SIMAI_DEVICE_TOKEN") or "").strip()
+    worker_tok = (env.get("SIMAI_WORKER_TOKEN") or "").strip()
+
+    if upload_calibration or purpose_arg == "AVATAR_ASSET":
+        if worker_tok:
+            return worker_tok, "AVATAR_ASSET"
+        if upload_tok:
+            return upload_tok, "AVATAR_ASSET"
+        if tier0_tok or device_tok:
+            raise CleanBgJobError(
+                "토큰 종류와 업로드 용도(AVATAR_ASSET)가 맞지 않는다: "
+                "보정 문서(application/octet-stream)와 AVATAR_ASSET 사진 업로드는 워커 토큰(SIMAI_WORKER_TOKEN)만 허용하며 "
+                "SIMAI_TIER0_TOKEN·SIMAI_DEVICE_TOKEN 은 EVENT_FRAME(사진 전용)만 허용한다"
+            )
+    elif purpose_arg == "EVENT_FRAME":
+        if upload_tok:
+            return upload_tok, "EVENT_FRAME"
+        if tier0_tok:
+            return tier0_tok, "EVENT_FRAME"
+        if device_tok:
+            return device_tok, "EVENT_FRAME"
+        if worker_tok:
+            raise CleanBgJobError(
+                "토큰 종류와 업로드 용도(EVENT_FRAME)가 맞지 않는다: "
+                "EVENT_FRAME 업로드는 Tier 0·DEVICE 토큰(SIMAI_TIER0_TOKEN / SIMAI_DEVICE_TOKEN)만 허용하며 "
+                "워커 토큰(SIMAI_WORKER_TOKEN)은 AVATAR_ASSET 만 허용한다"
+            )
+    else:
+        if upload_tok:
+            return upload_tok, "EVENT_FRAME"
+        if tier0_tok:
+            return tier0_tok, "EVENT_FRAME"
+        if device_tok:
+            return device_tok, "EVENT_FRAME"
+        if worker_tok:
+            return worker_tok, "AVATAR_ASSET"
 
     raise CleanBgJobError(
         "업로드 인증 토큰이 없다(--token-file 또는 SIMAI_UPLOAD_TOKEN / SIMAI_TIER0_TOKEN / "
         "SIMAI_DEVICE_TOKEN / SIMAI_WORKER_TOKEN 환경변수 필요)"
     )
+
+
+def check_calibration_registered(
+    *,
+    server_url: str,
+    token: str,
+    calibration_version: str,
+    env: dict[str, str],
+    timeout_s: float = 30.0,
+) -> None:
+    """EC2 `GET /api/calibrations/current` 로 `calibration_version` 이 서버에 등록돼 있는지 확인한다."""
+    base = _check_transport_url(server_url, label="서버 주소")
+    opener = build_opener(_NoRedirect)
+    auth_token = token
+
+    admin_user = (env.get("SIMAI_ADMIN_USER") or "").strip()
+    admin_password = env.get("SIMAI_ADMIN_PASSWORD") or ""
+    if admin_user and admin_password:
+        login_url = f"{base}/api/auth/login"
+        login_req = Request(
+            login_url,
+            data=json.dumps({"username": admin_user, "password": admin_password}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        try:
+            with opener.open(login_req, timeout=timeout_s) as resp:
+                login_body = json.loads(resp.read().decode("utf-8", errors="replace"))
+            if (
+                isinstance(login_body, dict)
+                and isinstance(login_body.get("accessToken"), str)
+                and login_body["accessToken"].strip()
+            ):
+                auth_token = login_body["accessToken"].strip()
+        except Exception:
+            pass
+
+    check_url = f"{base}/api/calibrations/current"
+    req = Request(
+        check_url,
+        headers={
+            "Authorization": f"Bearer {auth_token}",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    unregistered_msg = (
+        "EC2 에 등록된 보정만 쓸 수 있다(SceneJobListener 가 결과를 거절). "
+        f"등록된 보정 문서를 쓰거나 simai_ai.calibration.publish 로 먼저 올린다 (calibration_version={calibration_version})"
+    )
+    try:
+        with opener.open(req, timeout=timeout_s) as resp:
+            status = getattr(resp, "status", 200)
+            resp_body = resp.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        if exc.code == 404:
+            raise CleanBgJobError(unregistered_msg) from None
+        if exc.code in {401, 403}:
+            print(
+                "[clean_bg_job] 경고: GET /api/calibrations/current 는 사용자 JWT 가 필요해 기계 토큰으로 "
+                "EC2 보정 등록 여부를 확인하지 못했다(--skip-calibration-check 또는 SIMAI_ADMIN_USER·SIMAI_ADMIN_PASSWORD 사용 가능). "
+                "EC2 에 등록된 보정만 쓸 수 있다(SceneJobListener 가 결과를 거절). "
+                "등록된 보정 문서를 쓰거나 simai_ai.calibration.publish 로 먼저 올린다",
+                file=sys.stderr,
+            )
+            return
+        raise CleanBgJobError(f"EC2 보정 등록 확인 실패: HTTP {exc.code} ({_sanitize_url(check_url)})") from None
+    except URLError as exc:
+        raise CleanBgJobError(f"EC2 보정 등록 확인 서버 연결 실패 ({_sanitize_url(check_url)}): {exc.reason}") from None
+
+    if status != 200:
+        raise CleanBgJobError(f"EC2 보정 등록 확인 실패: HTTP {status}")
+
+    try:
+        current = json.loads(resp_body)
+    except Exception as exc:
+        raise CleanBgJobError(f"EC2 보정 등록 확인 응답 JSON 파싱 실패: {exc}") from None
+
+    if not isinstance(current, dict):
+        raise CleanBgJobError("EC2 보정 등록 확인 응답이 JSON 객체가 아니다")
+
+    known_versions: set[str] = set()
+    for field in ("calibration_version", "latest_uploaded_version", "previous_calibration_version"):
+        val = current.get(field)
+        if isinstance(val, str) and val.strip():
+            known_versions.add(val.strip())
+
+    # 서버에는 버전별 조회가 없고 current 는 현재·최근·직전 버전만 준다. 등록돼 있지만 현재가 아닌 보정(9차 266z)을
+    # 막지 않도록 여기서는 경고만 한다(등록되지 않았다면 SceneJobListener 가 결과를 거절한다).
+    if calibration_version not in known_versions:
+        print(
+            "[clean_bg_job] 경고: EC2 의 현재·최근 보정이 아니다(" + ", ".join(sorted(known_versions)) + "). "
+            + unregistered_msg,
+            file=sys.stderr,
+        )
 
 
 def _parse_image_arg(raw: str) -> tuple[str, Path]:
@@ -781,6 +918,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_DRY_RUN_BUCKET,
         help=f"--dry-run 시 s3:// 주소에 쓸 버킷 이름 (기본: {DEFAULT_DRY_RUN_BUCKET})",
     )
+    parser.add_argument(
+        "--skip-calibration-check",
+        action="store_true",
+        help="EC2 에 calibration_version 이 등록돼 있는지 확인하는 단계를 건너뛴다(경고만 출력)",
+    )
     parser.add_argument("--timeout", type=float, default=30.0, help="HTTP 요청 타임아웃 초 (기본: 30)")
     return parser
 
@@ -869,7 +1011,24 @@ def run_cli(argv: list[str] | None = None, *, env: dict[str, str] | None = None)
                 token_file=args.token_file,
                 purpose_arg=args.purpose,
                 env=runtime_env,
+                upload_calibration=args.upload_calibration,
             )
+            if args.skip_calibration_check:
+                print(
+                    "[clean_bg_job] 경고: --skip-calibration-check 로 EC2 보정 등록 확인을 건너뛴다. "
+                    "EC2 에 등록된 보정만 쓸 수 있다(SceneJobListener 가 결과를 거절). "
+                    "등록된 보정 문서를 쓰거나 simai_ai.calibration.publish 로 먼저 올린다",
+                    file=sys.stderr,
+                )
+            else:
+                check_calibration_registered(
+                    server_url=server_url,
+                    token=token,
+                    calibration_version=cal_version,
+                    env=runtime_env,
+                    timeout_s=args.timeout,
+                )
+
             if args.upload_calibration:
                 cal_hex = hashlib.sha256(cal_bytes).hexdigest()
                 calibration_ref = sign_and_upload_object(
