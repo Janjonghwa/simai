@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""simai-bootstrap: 어느 GPU·지역·사이트(RunPod·Vast.ai·엘리스 GPU VM)에서든 같은 순서로 이미지를 준비한다 (S15P31A101-205·-207·-246·-250).
+"""simai-bootstrap: 어느 GPU·지역·사이트(RunPod·Vast.ai·엘리스 GPU VM)에서든 같은 순서로 이미지를 준비한다 (S15P31A101-205·-207·-246·-250·-382).
 
     simai-bootstrap [tier0] [Tier 0 인자...]   준비 → simai-tier0 (엔진 준비 engine_cache ensure → python -m services.tier0)
-                                                SIMAI_SERVICES 에 vllm·worker 가 있으면 감시 프로세스로 Tier 0 → vLLM 서버 → 분석 워커 (아래)
+                                                SIMAI_SERVICES 에 vllm·worker·avatar 가 있으면 감시 프로세스로 Tier 0 → vLLM 서버 → 분석 워커·아바타 (아래)
+    simai-bootstrap lobby [로비 인자...]        로비 LIVE 통합 기동: endpoint.json·tier0-live.json·pod.jsonl 준비 → 단일 Supervisor 로
+                                                Tier 0·vLLM·worker·avatar 를 한 번에 띄우고 Tier 0 종료 코드 그대로 끝난다
     simai-bootstrap queue [gpu_session1 run 인자...]   준비 → GPU 1차 세션 큐 (저장소 사본 $SIMAI_SESSION_REPO, 기본 $SIMAI_ROOT/setup/session1/repo)
-    simai-bootstrap check                       준비만 하고 결과 JSON 을 출력한다
+    simai-bootstrap check [--preflight|--sets ...]     준비만 하고 결과 JSON 을 출력한다 (--preflight / preflight 는 가중치 묶음·GPU 예산·런타임 일괄 점검)
+    simai-bootstrap preflight [check 인자...]   tier0,avatar,static,vlm 가중치·GPU 예산·texrecon·open3d·ultralytics 일괄 점검(하나라도 실패하면 비-0 종료)
     simai-bootstrap run <명령...>               준비 → 그 명령 (실험 이미지: simai-bootstrap run simai-exp02 python ...)
     simai-bootstrap scene [--] <명령...>        장면 준비 모드(일회성, 통합 이미지의 MapAnything): Tier 0·GPU 확인 → static 가중치 → 재확인 → 그 명령을
                                                 자식으로 실행하며 Tier 0 시작을 감시(나타나면 장면 작업을 끝내고 75). 명령의 종료 코드로 끝난다(아래 "장면 준비 모드")
@@ -71,6 +74,9 @@ HF 토큰: 시작하자마자 HF_TOKEN 을 환경에서 꺼내 이 프로세스 
 
 from __future__ import annotations
 
+import argparse
+import base64
+import binascii
 import hashlib
 import http.client
 import importlib.machinery
@@ -101,12 +107,17 @@ MIN_CC = (8, 0)  # Ampere 이상
 MIN_VRAM_MB = 22_500  # 24GB급(A10·L4 는 nvidia-smi 에서 약 23,000 MiB 로 보인다)
 MIN_WORKER_VRAM_MB = 45_000  # 48GB급(A40·L40S 는 약 46,000 MiB). 그보다 작으면 분석 부하를 같은 GPU 에 올리지 않는다(명세 3.12)
 TOKEN_ENVS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")  # 자식 환경에서 지울 이름. 읽는 것은 HF_TOKEN 하나
+SECRET_ENVS = (*TOKEN_ENVS, "SIMAI_WORKER_TOKEN", "SIMAI_TIER0_TOKEN")
 _hf_token: str | None = None  # take_token() 이 환경에서 꺼내 둔 값. _request·_redact 만 쓴다
+_extra_secrets: set[str] = set()  # 파일에서 읽은 비밀 토큰(_redact 가 로그·기록에서 가린다)
 TIER0_CMD = "simai-tier0"
 SET_ENV = "SIMAI_WEIGHTS_SET"  # check·queue·run 이 받을 가중치 묶음(이미지 ENV). 없으면 tier0
 SERVICES_ENV = "SIMAI_SERVICES"  # tier0 명령이 띄울 프로세스. 없으면 tier0(단독)
 WORKER_SET_ENV = "SIMAI_WORKER_WEIGHTS_SET"  # 감시 모드에서 Tier 0 준비 뒤 받는 묶음. 없으면 vlm
 SERVICES = ("tier0", "vllm", "worker", "avatar")  # avatar는 명시 선택, 기본은 꺼짐
+PREFLIGHT_SETS = ("tier0", "avatar", "static", "vlm")
+PREFLIGHT_BINS = ("texrecon",)
+PREFLIGHT_MODULES = ("open3d", "ultralytics")
 SCENE_SET = "static"  # 장면 준비 모드의 가중치 묶음(MapAnything 기본·apache)
 SCENE_MARKER_MAX_AGE_S = 30.0  # 이 안에 갱신된 Tier 0 표시 파일 = LIVE (gpu_session1 live_guard 의 marker_max_age_s 와 같음)
 SCENE_POLL_S = 0.5  # 장면 작업 실행 중 Tier 0 시작 확인 주기
@@ -147,10 +158,47 @@ def child_env() -> dict[str, str]:
 
 
 def _redact(text: str) -> str:
-    for tok in {_hf_token, *(os.environ.get(k) for k in TOKEN_ENVS)}:
+    for tok in {_hf_token, *_extra_secrets, *(os.environ.get(k) for k in SECRET_ENVS)}:
         if tok:
             text = text.replace(tok, "***")
     return re.sub(r"hf_[A-Za-z0-9]{20,}", "hf_***", text)
+
+
+def read_secret_file(path: Path, env_key: str) -> str:
+    """토큰 파일(단일 토큰 문자열 또는 KEY=VALUE 형식)에서 비밀 값을 읽는다. 명령줄·로그에 노출하지 않는다."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise BootstrapError(EXIT_STORAGE, f"토큰 파일 {path} 를 읽지 못함 ({type(e).__name__})") from e
+    token = ""
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if "=" in s:
+            k, v = s.split("=", 1)
+            if k.strip().removeprefix("export ").strip() == env_key:
+                token = v.strip().strip("'\"")
+                break
+        elif not token:
+            token = s
+    if not token:
+        raise BootstrapError(EXIT_STORAGE, f"토큰 파일 {path} 에 {env_key} 값이 없다")
+    _extra_secrets.add(token)
+    return token
+
+
+def ensure_worker_env_file(token_file: Path, out_path: Path) -> Path:
+    """워커 토큰 파일을 읽어 0600 권한의 KEY=VALUE env-file 로 만든다(simai-wait-tier0 --env-file 전용)."""
+    token = read_secret_file(token_file, "SIMAI_WORKER_TOKEN")
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(f"SIMAI_WORKER_TOKEN={token}\n")
+    except OSError as e:
+        raise BootstrapError(EXIT_STORAGE, f"워커 env 파일 {out_path} 를 쓰지 못함 ({type(e).__name__})") from e
+    return out_path
 
 
 def log(msg: str) -> None:
@@ -800,6 +848,40 @@ def sidecar_cpus(spec: str | None, avail: list[int], quota: float | None = None)
     return out
 
 
+def compute_gpu_fractions(services: list[str], env: dict[str, str]) -> dict[str, float]:
+    """서비스 목록에 맞춰 GPU 메모리 상한(vllm·avatar·worker)을 계산·검증한다 (S15P31A101-382).
+
+    분석 워커 전체 예산(budget.worker_fraction, 기본 0.70) 안에서 vLLM(기본 0.55)·avatar(기본 0.10)·worker(남은 몫)의 합이
+    예산을 넘지 않게 나눈다. avatar 가 꺼져 있어도(tier0,vllm,worker) worker 상한을 남은 예산(0.15)으로 묶는다.
+    """
+    from simai_ai.gpu.budget import BudgetError, WorkerGpuSettings
+
+    try:
+        budget = WorkerGpuSettings.from_env(env).budget
+    except BudgetError as e:
+        raise BootstrapError(EXIT_USAGE, f"GPU 예산 설정 오류: {e}") from e
+    vllm_fraction = budget.vllm_gpu_memory_utilization if "vllm" in services else 0.0
+    avatar_fraction = _env_float(env, "SIMAI_AVATAR_GPU_MEMORY_FRACTION", 0.10) if "avatar" in services else 0.0
+    remaining = round(budget.worker_fraction - vllm_fraction - avatar_fraction, 6)
+    worker_fraction = (
+        _env_float(env, "SIMAI_WORKER_TORCH_MEMORY_FRACTION", remaining)
+        if "worker" in services
+        else remaining
+    )
+    if (
+        ("avatar" in services and not 0 < avatar_fraction <= budget.worker_fraction)
+        or remaining < 0
+        or ("worker" in services and not 0 < worker_fraction <= remaining)
+    ):
+        raise BootstrapError(EXIT_USAGE, "avatar·vLLM·worker GPU 상한 합이 분석 워커 예산을 넘는다")
+    return {
+        "budget_worker_fraction": budget.worker_fraction,
+        "vllm_fraction": vllm_fraction,
+        "avatar_fraction": avatar_fraction,
+        "worker_fraction": worker_fraction,
+    }
+
+
 class Service:
     def __init__(self, name: str, argv: list[str], env: dict[str, str]) -> None:
         self.name, self.argv, self.env = name, argv, env
@@ -817,7 +899,8 @@ class Supervisor:
     """Tier 0 → (Tier 0 준비) → 워커 가중치 → vLLM → 분석 워커. Tier 0 가 끝나면 나머지를 내리고 Tier 0 종료 코드로 끝난다."""
 
     def __init__(self, root: Path, services: list[str], tier0_argv: list[str], env: dict[str, str] | None = None, *,
-                 spawn=Proc, ready=None, health=None, clock=time.monotonic, sleep=time.sleep, wall_ms=None) -> None:
+                 spawn=Proc, ready=None, health=None, clock=time.monotonic, sleep=time.sleep, wall_ms=None,
+                 pod_jsonl: Path | None = None) -> None:
         env = dict(os.environ) if env is None else env
         self.root = root
         self.services = services
@@ -827,6 +910,8 @@ class Supervisor:
         self.t0_pid: int | None = None
         self.log_dir = root / "logs"
         self.marker = Path(env.get("SIMAI_TIER0_MARKER") or root / "state" / "tier0.live")
+        self.pod_jsonl = pod_jsonl or (Path(env["SIMAI_POD_JSONL"]) if env.get("SIMAI_POD_JSONL") else None)
+        self._last_marker_written: int | None = None
         self.port = int(_env_float(env, "SIMAI_VLLM_PORT", 8000))
         self.ready_timeout_s = _env_float(env, "SIMAI_VLLM_READY_TIMEOUT_S", 1800)
         self.grace_s = _env_float(env, "SIMAI_STOP_GRACE_S", 15)
@@ -844,7 +929,8 @@ class Supervisor:
             ready = lambda: tier0_marker_ready(self.marker, waiter, self.t0_since_ms, self.t0_pid)  # noqa: E731
         self.ready = ready
         self.health = health or (lambda: http_ok(f"http://127.0.0.1:{self.port}/health"))
-        base = {k: v for k, v in env.items() if k not in TOKEN_ENVS}
+        base = {k: v for k, v in env.items() if k not in (*SECRET_ENVS, "SIMAI_TIER0_TOKEN_FILE", "SIMAI_WORKER_TOKEN_FILE")}
+        base["SIMAI_TIER0_MARKER"] = str(self.marker)
         threads = env.get("SIMAI_SIDECAR_THREADS") or "1"
         avail = usable_cpus()
         quota, quota_src = cgroup_vcpu()
@@ -854,24 +940,36 @@ class Supervisor:
                          f"{f'{_cpu_ranges(self.cpus)} ({len(self.cpus)}개)' if self.cpus else '묶지 않음'}, Tier 0 묶지 않음")
         # 프로세스마다 JIT·커널 캐시를 나눈다(같은 판이어도 동시에 쓰는 경합을 피한다). 컨테이너 디스크(/tmp): 저장 위치에 남길 산출물이 아니다
         cache_root = Path(env.get("SIMAI_CACHE_ROOT") or ("/tmp/simai-cache" if os.name != "nt" else Path(tempfile.gettempdir()) / "simai-cache"))
+        worker_env = dict(env)
+        if not worker_env.get("SIMAI_WORKER_ENV_FILE") and worker_env.get("SIMAI_WORKER_TOKEN_FILE"):
+            worker_env["SIMAI_WORKER_ENV_FILE"] = str(
+                ensure_worker_env_file(Path(worker_env["SIMAI_WORKER_TOKEN_FILE"]), cache_root / "private" / "worker.env")
+            )
+        tier0_token = (
+            read_secret_file(Path(env["SIMAI_TIER0_TOKEN_FILE"]), "SIMAI_TIER0_TOKEN")
+            if env.get("SIMAI_TIER0_TOKEN_FILE")
+            else env.get("SIMAI_TIER0_TOKEN")
+        )
+        if tier0_token:
+            _extra_secrets.add(tier0_token)
+        fractions = compute_gpu_fractions(services, env) if any(s in services for s in ("vllm", "worker", "avatar")) else None
         self.svc: dict[str, Service] = {}
         for name in services:
             e = dict(base)
-            if "avatar" in services:
-                # 세 GPU 프로세스 상한의 합이 분석 워커 예산을 넘지 않게 나눈다.
-                from simai_ai.gpu.budget import WorkerGpuSettings
-                budget = WorkerGpuSettings.from_env(env).budget
-                avatar_fraction = float(env.get("SIMAI_AVATAR_GPU_MEMORY_FRACTION") or "0.10")
-                vllm_fraction = budget.vllm_gpu_memory_utilization if "vllm" in services else 0.
-                worker_fraction = budget.worker_fraction - vllm_fraction - avatar_fraction
-                if (not 0 < avatar_fraction <= budget.worker_fraction or worker_fraction < 0
-                        or ("worker" in services and worker_fraction <= 0)):
-                    raise BootstrapError(EXIT_USAGE, "avatar·vLLM·worker GPU 상한 합이 분석 워커 예산을 넘는다")
-                e["SIMAI_AVATAR_GPU_MEMORY_FRACTION"] = str(avatar_fraction)
+            if name == "tier0" and tier0_token:
+                e["SIMAI_TIER0_TOKEN"] = tier0_token
+            if fractions is not None:
+                if "avatar" in services:
+                    e["SIMAI_AVATAR_GPU_MEMORY_FRACTION"] = str(fractions["avatar_fraction"])
+                    if name == "tier0":
+                        e["SIMAI_AVATAR_SHARE"] = "1"
+                    if name == "avatar" and not e.get("SIMAI_AVATAR_CHANNEL") and e.get("SIMAI_AVATAR_PORT"):
+                        e["SIMAI_AVATAR_CHANNEL"] = f"wss://127.0.0.1:{e['SIMAI_AVATAR_PORT']}"
                 if name == "worker":
-                    e["SIMAI_WORKER_TORCH_MEMORY_FRACTION"] = str(worker_fraction)
-                if name == "tier0":
-                    e["SIMAI_AVATAR_SHARE"] = "1"
+                    e["SIMAI_WORKER_TORCH_MEMORY_FRACTION"] = str(fractions["worker_fraction"])
+                    e.setdefault("SIMAI_TIER0_WEIGHTS", str(self.root / "weights" / "yolo" / "yolo26x-pose.pt"))
+                    e.setdefault("SIMAI_VLLM_PORT", str(self.port))
+                    e.setdefault("SIMAI_VLM_MODEL", env.get("SIMAI_VLLM_SERVED_NAME") or "cosmos3-nano")
             cache = cache_root / name
             e["TRITON_CACHE_DIR"], e["TORCHINDUCTOR_CACHE_DIR"] = str(cache / "triton"), str(cache / "inductor")
             e["CUDA_CACHE_PATH"] = str(cache / "cuda")
@@ -883,14 +981,29 @@ class Supervisor:
                 # runtime 이미지에 nvcc 가 없어 FlashInfer top-k/top-p 샘플러 JIT 가 메모리 측정 중 실패한다(3차 GPU 세션). PyTorch 샘플러로
                 e.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
                 e["HF_HUB_OFFLINE"] = "1"  # 모델은 확인한 로컬 폴더만. 토큰 없이 HF 로 나가지 않는다
-            argv = {"tier0": tier0_argv, "vllm": self._vllm_argv(env), "worker": self._worker_argv(env),
-                    "avatar": self._worker_argv(env, avatar=True)}[name]
+            argv = {"tier0": tier0_argv, "vllm": self._vllm_argv(worker_env), "worker": self._worker_argv(worker_env),
+                    "avatar": self._worker_argv(worker_env, avatar=True)}[name]
             self.svc[name] = Service(name, argv, e)
         self.phase = "wait_tier0"  # → weights → run | off(워커 쪽 포기)
         self.last_why = ""
         self.stop_signal: int | None = None
         self._weights: threading.Thread | None = None
         self.weights_error: str | None = None
+
+    def _record_pod_marker(self) -> None:
+        if self.pod_jsonl is None or not self.marker.is_file():
+            return
+        try:
+            gp = json.loads(self.marker.read_text(encoding="utf-8")).get("gpu_priority", {})
+            w = gp.get("written_at")
+            if w and w != self._last_marker_written:
+                self._last_marker_written = w
+                self.pod_jsonl.parent.mkdir(parents=True, exist_ok=True)
+                row = {"ts_ms": self.wall_ms(), "gpu_priority": gp}
+                with self.pod_jsonl.open("a", encoding="utf-8", newline="\n") as f:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
 
     def _vllm_argv(self, env: dict) -> list[str]:
         model = env.get("SIMAI_VLLM_MODEL") or str(self.root / "weights" / "cosmos3-nano")
@@ -953,6 +1066,7 @@ class Supervisor:
 
     def step(self) -> None:
         now = self.clock()
+        self._record_pod_marker()
         if self.phase == "wait_tier0" and self._tier0_ready():
             log("Tier 0 준비됨(phase=running, reserve OK) → 워커 쪽 준비")
             if "vllm" in self.svc or "avatar" in self.svc:
@@ -1072,9 +1186,11 @@ class Supervisor:
                 log(f"신호 {self.stop_signal} → 워커 → vLLM → Tier 0 순서로 내린다")
                 self._stop_sidecars()
                 rc = self._stop(t0)
+                self._record_pod_marker()
                 return exit_code(rc) if rc is not None else 128 + int(self.stop_signal)
             rc = t0.proc.poll()
             if rc is not None:
+                self._record_pod_marker()
                 log(f"Tier 0 종료(코드 {exit_code(rc)}) → 워커·vLLM 을 내리고 같은 코드로 끝낸다")
                 self._stop_sidecars()
                 t0.proc.signal(KILL)
@@ -1453,7 +1569,7 @@ SCENE_HANDSHAKE = (
 )
 
 
-def run_scene_child(root: Path, argv: list[str]) -> int:
+def run_scene_child(root: Path, argv: list[str], extra_env: dict[str, str] | None = None) -> int:
     """장면 작업을 새 프로세스 그룹 자식으로 돌리고 SCENE_POLL_S 마다 Tier 0 시작을 본다. Tier 0 가 나타나면 그룹 SIGTERM →
     SCENE_STOP_GRACE_S 뒤 SIGKILL 하고 75(Tier 0 우선). 끝나면 자식 종료 코드 그대로(신호 종료는 128 + 번호). 자식 환경에 HF 토큰 없음."""
     stop: dict = {"sig": None}
@@ -1461,10 +1577,15 @@ def run_scene_child(root: Path, argv: list[str]) -> int:
     if threading.current_thread() is threading.main_thread():  # 시험은 다른 스레드에서도 부른다(신호 처리는 주 스레드만)
         for sig in (signal.SIGTERM, signal.SIGINT):
             old[sig] = signal.signal(sig, lambda s, _f: stop.update(sig=s))
+    env = child_env()
+    env.setdefault("SIMAI_ALLOW_WITHOUT_TIER0_MARKER", "1")
+    env.setdefault("SIMAI_TIER0_WEIGHTS", str(root / "weights" / "yolo" / "yolo26x-pose.pt"))
+    if extra_env:
+        env |= extra_env
     try:
         gated = os.name != "nt"  # Windows(노트북 시험)의 exec 는 pid 를 바꿔 handshake 를 쓰지 않는다(기록을 바로 쓴다)
         try:
-            proc = Proc("scene", [sys.executable, "-c", SCENE_HANDSHAKE, *argv] if gated else argv, child_env(), root / "logs",
+            proc = Proc("scene", [sys.executable, "-c", SCENE_HANDSHAKE, *argv] if gated else argv, env, root / "logs",
                         die_with_parent=True, stdin_pipe=gated)
         except OSError as e:
             log(f"장면 작업을 띄우지 못함: {type(e).__name__}: {e}")
@@ -1503,13 +1624,69 @@ def run_scene_child(root: Path, argv: list[str]) -> int:
             signal.signal(sig, h)
 
 
+def _parse_scene_args(rest: list[str]) -> tuple[dict[str, str], list[str]]:
+    """scene 모드 앞쪽의 선택 인자(--worker-token-file, --env-file)를 분리하고 비밀 값을 자식 환경 사전에 담는다."""
+    extra_env: dict[str, str] = {}
+    token_file = os.environ.get("SIMAI_WORKER_TOKEN_FILE")
+    env_file = os.environ.get("SIMAI_WORKER_ENV_FILE")
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        if arg == "--":
+            i += 1
+            break
+        if arg == "--worker-token-file":
+            if i + 1 >= len(rest):
+                raise BootstrapError(EXIT_USAGE, "--worker-token-file 뒤에 경로가 필요하다")
+            token_file = rest[i + 1]
+            i += 2
+            continue
+        if arg.startswith("--worker-token-file="):
+            token_file = arg.split("=", 1)[1]
+            i += 1
+            continue
+        if arg == "--env-file":
+            if i + 1 >= len(rest):
+                raise BootstrapError(EXIT_USAGE, "--env-file 뒤에 경로가 필요하다")
+            env_file = rest[i + 1]
+            i += 2
+            continue
+        if arg.startswith("--env-file="):
+            env_file = arg.split("=", 1)[1]
+            i += 1
+            continue
+        break
+    cmd = rest[i:]
+    if env_file:
+        try:
+            raw_lines = Path(env_file).read_text(encoding="utf-8").splitlines()
+        except OSError as e:
+            raise BootstrapError(EXIT_STORAGE, f"env 파일 {env_file} 를 읽지 못함 ({type(e).__name__})") from e
+        for line in raw_lines:
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, v = s.split("=", 1)
+            key = k.strip().removeprefix("export ").strip()
+            val = v.strip().strip("'\"")
+            extra_env[key] = val
+            if "TOKEN" in key and val:
+                _extra_secrets.add(val)
+    if token_file:
+        extra_env["SIMAI_WORKER_TOKEN"] = read_secret_file(Path(token_file), "SIMAI_WORKER_TOKEN")
+    return extra_env, cmd
+
+
 def scene(rest: list[str]) -> int:
     """장면 준비 모드: 장면 잠금 → Tier 0·GPU 확인 → static 가중치 → 재확인 → 자식으로 실행하며 Tier 0 시작을 감시한다
     (종료 코드는 자식의 것, 끝나면 VRAM 을 돌려준다, Tier 0 가 시작하면 장면 작업을 끝내고 75)."""
-    if rest[:1] == ["--"]:
-        rest = rest[1:]
-    if not rest:
-        log("사용법: simai-bootstrap scene [--] <명령...>")
+    try:
+        extra_env, cmd = _parse_scene_args(rest)
+    except BootstrapError as e:
+        log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
+        return e.code
+    if not cmd:
+        log("사용법: simai-bootstrap scene [--worker-token-file <경로>] [--env-file <경로>] [--] <명령...>")
         return EXIT_USAGE
     root, _source = choose_root()
     smi = shlex.split(os.environ.get("SIMAI_NVIDIA_SMI") or "nvidia-smi")
@@ -1532,8 +1709,452 @@ def scene(rest: list[str]) -> int:
         root = Path(os.environ["SIMAI_ROOT"])
         if why := scene_busy(root, smi):
             return _scene_refuse(root, why)
-        log(f"장면 준비 모드: 가중치 {SCENE_SET} 확인, Tier 0·LIVE 없음 → {shlex.join(rest)}")
-        return run_scene_child(root, rest)
+        log(f"장면 준비 모드: 가중치 {SCENE_SET} 확인, Tier 0·LIVE 없음 → {shlex.join(cmd)}")
+        return run_scene_child(root, cmd, extra_env=extra_env)
+
+
+# ---------------------------------------------------------------- 기동 전 점검 (check / preflight, S15P31A101-382)
+
+
+def run_check(rest: list[str], *, preflight: bool = False) -> int:
+    """가중치·GPU 예산·런타임 의존성을 점검한다. 인자 없는 check 는 기존과 같고, --preflight / --sets 는 하나라도 실패하면 비-0 으로 끝난다."""
+    if not rest and not preflight:
+        want_set = os.environ.get(SET_ENV) or "tier0"
+        try:
+            rec = prepare(want_set)
+        except BootstrapError as e:
+            log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
+            return e.code
+        print(json.dumps(rec, ensure_ascii=False, indent=2))
+        return EXIT_OK
+
+    ap = argparse.ArgumentParser(prog="simai-bootstrap check", add_help=False)
+    ap.add_argument("--preflight", action="store_true", default=preflight)
+    ap.add_argument("--sets", default=None)
+    ap.add_argument("--services", default=None)
+    ap.add_argument("--require-bins", default=None)
+    ap.add_argument("--require-modules", default=None)
+    try:
+        args, unknown = ap.parse_known_args(rest)
+        if unknown:
+            raise BootstrapError(EXIT_USAGE, f"check 알 수 없는 인자: {' '.join(unknown)}")
+    except BootstrapError as e:
+        log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
+        return e.code
+
+    default_sets = ",".join(PREFLIGHT_SETS) if args.preflight else (os.environ.get(SET_ENV) or "tier0")
+    sets = [s.strip() for s in (args.sets if args.sets is not None else default_sets).split(",") if s.strip()]
+    if sets == ["all"]:
+        sets = list(PREFLIGHT_SETS)
+    if not sets:
+        log(f"check: 가중치 묶음 목록이 비었다 (종료 코드 {EXIT_USAGE})")
+        return EXIT_USAGE
+    default_services = (os.environ.get(SERVICES_ENV) or "tier0,vllm,worker,avatar") if args.preflight else (os.environ.get(SERVICES_ENV) or "tier0")
+    services_str = args.services if args.services is not None else default_services
+    bins_raw = args.require_bins if args.require_bins is not None else (",".join(PREFLIGHT_BINS) if args.preflight else "")
+    mods_raw = args.require_modules if args.require_modules is not None else (",".join(PREFLIGHT_MODULES) if args.preflight else "")
+    bins = [b.strip() for b in bins_raw.split(",") if b.strip()]
+    modules = [m.strip() for m in mods_raw.split(",") if m.strip()]
+
+    root, source = choose_root()
+    min_free = float(os.environ.get("SIMAI_MIN_FREE_GB") or 20)
+    manifest = Path(os.environ.get("SIMAI_WEIGHTS_MANIFEST") or DEFAULT_MANIFEST)
+    smi = shlex.split(os.environ.get("SIMAI_NVIDIA_SMI") or "nvidia-smi")
+    rec: dict = {
+        "bootstrap": "S15P31A101-382",
+        "stage": "preflight" if args.preflight else "check",
+        "set": ",".join(sets),
+        "started_at": time.time_ns() // 1_000_000,
+        "hf_token": "present" if _hf_token else "absent",
+        "sets": {},
+    }
+    errors: list[str] = []
+    code = EXIT_OK
+    storage_ok = False
+    try:
+        try:
+            rec["storage"] = prepare_storage(root, source, min_free)
+            storage_ok = True
+        except BootstrapError as e:
+            errors.append(str(e))
+            code = code or e.code
+        try:
+            rec["gpu"] = detect_gpu(smi)
+        except BootstrapError as e:
+            errors.append(str(e))
+            code = code or e.code
+        if storage_ok:
+            all_weights: list[dict] = []
+            for s in sets:
+                try:
+                    w = ensure_weights(root, load_manifest(manifest, s))
+                    rec["sets"][s] = {"status": "ok", "weights": w}
+                    all_weights.extend(w)
+                except BootstrapError as e:
+                    rec["sets"][s] = {"status": "error", "exit": e.code, "error": _redact(str(e))}
+                    errors.append(f"weights[{s}]: {e}")
+                    code = code or e.code
+            rec["weights"] = all_weights
+        try:
+            svc_list = parse_services(services_str)
+            if any(s in svc_list for s in ("vllm", "worker", "avatar")):
+                rec["gpu_budget"] = compute_gpu_fractions(svc_list, dict(os.environ))
+        except BootstrapError as e:
+            rec["gpu_budget"] = {"status": "error", "exit": e.code, "error": _redact(str(e))}
+            errors.append(f"gpu_budget: {e}")
+            code = code or e.code
+        if bins or modules:
+            bin_status = {b: shutil.which(b) for b in bins}
+            mod_status: dict[str, bool] = {}
+            for m in modules:
+                try:
+                    mod_status[m] = importlib.util.find_spec(m) is not None
+                except (ImportError, ValueError):
+                    mod_status[m] = False
+            rec["runtime"] = {"bins": bin_status, "modules": mod_status}
+            missing_bins = [b for b, p in bin_status.items() if not p]
+            missing_mods = [m for m, ok in mod_status.items() if not ok]
+            if missing_bins:
+                errors.append(f"필수 실행 파일 없음: {', '.join(missing_bins)}")
+                code = code or EXIT_STORAGE
+            if missing_mods:
+                errors.append(f"필수 파이썬 모듈 없음: {', '.join(missing_mods)}")
+                code = code or EXIT_STORAGE
+        rec["exit"] = code
+        if errors:
+            rec["error"] = _redact("; ".join(errors))
+    finally:
+        rec["finished_at"] = time.time_ns() // 1_000_000
+        if storage_ok or root.is_dir():
+            _write_record(root, rec)
+    if storage_ok and "gpu" in rec:
+        os.environ["SIMAI_ROOT"] = str(root)
+        os.environ["SIMAI_GPU_ARCH"] = rec["gpu"]["arch"]
+    print(json.dumps(rec, ensure_ascii=False, indent=2))
+    if code != EXIT_OK:
+        log(f"점검 실패: {rec.get('error', '')} (종료 코드 {code})")
+    return code
+
+
+# ---------------------------------------------------------------- 로비 LIVE 통합 기동 (lobby, S15P31A101-382)
+
+_PEM_CERT_RE = re.compile(rb"-----BEGIN CERTIFICATE-----(.+?)-----END CERTIFICATE-----", re.S)
+
+
+def _der_tlv(buf: bytes, i: int) -> tuple[int, int, int]:
+    if i + 2 > len(buf):
+        raise ValueError("DER 가 잘렸다")
+    tag, length = buf[i], buf[i + 1]
+    i += 2
+    if length & 0x80:
+        n = length & 0x7F
+        if n == 0 or n > 4 or i + n > len(buf):
+            raise ValueError("DER 길이가 올바르지 않다")
+        length = int.from_bytes(buf[i : i + n], "big")
+        i += n
+    end = i + length
+    if end > len(buf):
+        raise ValueError("DER 가 잘렸다")
+    return tag, i, end
+
+
+def spki_sha256_from_pem_file(cert_path: Path) -> str:
+    """인증서(PEM)에서 SubjectPublicKeyInfo(DER) SHA-256 지문(`sha256:<64 hex>`)을 계산한다. 비밀 키 파일은 거부한다."""
+    try:
+        pem = cert_path.read_bytes()
+    except OSError as e:
+        raise BootstrapError(EXIT_STORAGE, f"TLS 인증서 {cert_path} 를 읽지 못함 ({type(e).__name__})") from e
+    if b"PRIVATE KEY" in pem:
+        raise BootstrapError(EXIT_USAGE, f"인증서 파일 {cert_path} 에 비밀 키가 섞여 있다")
+    m = _PEM_CERT_RE.search(pem)
+    if m is None:
+        raise BootstrapError(EXIT_STORAGE, f"인증서 파일 {cert_path} 에 PEM BEGIN CERTIFICATE 가 없다")
+    try:
+        cert_der = base64.b64decode(b"".join(m.group(1).split()), validate=True)
+        tag, start, end = _der_tlv(cert_der, 0)
+        if tag != 0x30 or end != len(cert_der):
+            raise ValueError("X.509 인증서가 아니다")
+        tag, i, _ = _der_tlv(cert_der, start)
+        if tag != 0x30:
+            raise ValueError("tbsCertificate 가 없다")
+        tag, _, field_end = _der_tlv(cert_der, i)
+        if tag == 0xA0:
+            i = field_end
+        for name in ("serialNumber", "signature", "issuer", "validity", "subject"):
+            tag, _, field_end = _der_tlv(cert_der, i)
+            if (name == "serialNumber" and tag != 0x02) or (name != "serialNumber" and tag != 0x30):
+                raise ValueError(f"tbsCertificate.{name} 형식이 아니다")
+            i = field_end
+        tag, spki_start, spki_end = _der_tlv(cert_der, i)
+        if tag != 0x30:
+            raise ValueError("subjectPublicKeyInfo 가 없다")
+        alg_tag, _, alg_end = _der_tlv(cert_der, spki_start)
+        key_tag, _, key_end = _der_tlv(cert_der, alg_end)
+        if alg_tag != 0x30 or key_tag != 0x03 or key_end != spki_end:
+            raise ValueError("subjectPublicKeyInfo 형식이 아니다")
+        spki_der = cert_der[i:spki_end]
+    except (binascii.Error, ValueError) as e:
+        raise BootstrapError(EXIT_STORAGE, f"인증서 {cert_path} SPKI 파싱 실패: {e}") from e
+    return "sha256:" + hashlib.sha256(spki_der).hexdigest()
+
+
+def _parse_measured_heights(raw: str) -> dict[str, float]:
+    heights: dict[str, float] = {}
+    for item in (raw or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise BootstrapError(EXIT_USAGE, f"--measured-heights 항목 형식 오류(cam=높이): {item!r}")
+        k, v = item.split("=", 1)
+        try:
+            h = float(v.strip())
+        except ValueError as e:
+            raise BootstrapError(EXIT_USAGE, f"--measured-heights 숫자 오류: {item!r}") from e
+        if not k.strip() or not math.isfinite(h) or h <= 0:
+            raise BootstrapError(EXIT_USAGE, f"--measured-heights 값 오류: {item!r}")
+        heights[k.strip()] = h
+    return heights
+
+
+def prepare_lobby_work(
+    root: Path,
+    work: Path,
+    bundle_dir: Path,
+    *,
+    services: list[str],
+    public_host: str,
+    ec2_base_url: str,
+    tier0_token_file: Path,
+    worker_token_file: Path | None = None,
+    worker_env_file: Path | None = None,
+    ca_file: Path | None = None,
+    scene_version: str = "lobby-s7-v1",
+    config_version: str = "cfg-lobby-s9-1",
+    gateway_id: str = "tier0-lobby-s9",
+    camera_ids: str = "cam1,cam2,cam3",
+    measured_heights: str = "cam1=2.49,cam2=2.76,cam3=2.39",
+    control_port: int = 19443,
+    video_ports: str = "cam1:19444,cam2:19445,cam3:19447",
+    avatar_port: int = 19446,
+    avatar_channel: str | None = None,
+    live_cal_interval_ms: int = 60_000,
+    live_cal_buffer_ms: int = 120_000,
+    live_cal_timeout_s: float = 120.0,
+    no_live_calibration: bool = False,
+    clean_background: bool = True,
+    base_env: dict[str, str] | None = None,
+) -> tuple[Path, dict[str, str]]:
+    """로비 LIVE 작업 폴더(endpoint.json, tier0-live.json, calibration.json)와 Supervisor 환경을 조립한다."""
+    env = dict(os.environ if base_env is None else base_env)
+    if not public_host:
+        raise BootstrapError(EXIT_USAGE, "lobby: --public-host 또는 SIMAI_PUBLIC_HOST/RUNPOD_PUBLIC_IP 가 필요하다")
+    if not ec2_base_url:
+        raise BootstrapError(EXIT_USAGE, "lobby: --ec2-base-url 또는 SIMAI_EC2_BASE_URL 이 필요하다")
+    if not tier0_token_file:
+        raise BootstrapError(EXIT_USAGE, "lobby: --tier0-token-file 또는 SIMAI_TIER0_TOKEN_FILE 이 필요하다")
+    read_secret_file(tier0_token_file, "SIMAI_TIER0_TOKEN")  # 시작 전 존재·형식 검증 + _extra_secrets 등록
+
+    cal_src = bundle_dir / "calibration.json"
+    cert = bundle_dir / "tls" / "tier0.crt"
+    key = bundle_dir / "tls" / "tier0.key"
+    laptop_hash_file = bundle_dir / "laptop_token.sha256"
+    for req in (cal_src, cert, key, laptop_hash_file):
+        if not req.is_file():
+            raise BootstrapError(EXIT_STORAGE, f"lobby 번들 파일이 없다: {req}")
+    laptop_hash = laptop_hash_file.read_text(encoding="utf-8").strip()
+    if not laptop_hash:
+        raise BootstrapError(EXIT_STORAGE, f"lobby 기기 토큰 해시가 비었다: {laptop_hash_file}")
+    spki = spki_sha256_from_pem_file(cert)
+
+    cams = [c.strip() for c in camera_ids.split(",") if c.strip()]
+    if not cams:
+        raise BootstrapError(EXIT_USAGE, "lobby: --camera-ids 가 비었다")
+    heights = _parse_measured_heights(measured_heights)
+
+    for sub in ("state", "bootstrap", "logs"):
+        (work / sub).mkdir(parents=True, exist_ok=True)
+    cal_dst = work / "calibration.json"
+    shutil.copyfile(cal_src, cal_dst)
+
+    endpoint_doc = {
+        "tls_public_key_sha256": spki,
+        "public_host": public_host,
+        "control_port": control_port,
+        "video_ports": video_ports,
+        "avatar_port": avatar_port,
+        "scene_version": scene_version,
+        "config_version": config_version,
+    }
+    (work / "endpoint.json").write_text(json.dumps(endpoint_doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+    cfg = {
+        "gateway_id": gateway_id,
+        "state_dir": str(work / "state"),
+        "scene_version": scene_version,
+        "calibration_file": str(cal_dst),
+        "input": {"mode": "live", "camera_ids": cams, "decoder": "cpu", "max_queue_wait_ms": 150, "queue_depth": 1},
+        "bootstrap": {"archive": str(work / "bootstrap"), "config_version": config_version},
+        "tick_ms": 100,
+        "live_calibration": {
+            "enabled": not no_live_calibration,
+            "interval_ms": live_cal_interval_ms,
+            "timeout_s": live_cal_timeout_s,
+            "buffer_duration_ms": live_cal_buffer_ms,
+            "measured_camera_heights": heights,
+            "safety_enabled": True,
+        },
+        "clean_background": {
+            "enabled": bool(clean_background),
+        },
+    }
+    cfg_path = work / "tier0-live.json"
+    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+    resolved_worker_env: str | None = None
+    if worker_env_file is not None:
+        if not worker_env_file.is_file():
+            raise BootstrapError(EXIT_STORAGE, f"워커 env 파일이 없다: {worker_env_file}")
+        resolved_worker_env = str(worker_env_file)
+    elif worker_token_file is not None:
+        resolved_worker_env = str(ensure_worker_env_file(worker_token_file, work / ".private" / "worker.env"))
+
+    env["SIMAI_ROOT"] = str(root)
+    env["SIMAI_TIER0_ID"] = gateway_id
+    env["SIMAI_TIER0_MARKER"] = str(work / "state" / "tier0.live")
+    env["SIMAI_TIER0_TLS_CERT_FILE"] = str(cert)
+    env["SIMAI_TIER0_TLS_KEY_FILE"] = str(key)
+    env["SIMAI_LAPTOP_TOKEN_SHA256"] = laptop_hash
+    env["SIMAI_PUBLIC_HOST"] = public_host
+    env["SIMAI_TIER0_CONTROL_PORT"] = str(control_port)
+    env.setdefault(f"SIMAI_PUBLIC_PORT_{control_port}", str(control_port))
+    env["SIMAI_TIER0_VIDEO_PORTS"] = video_ports
+    for item in video_ports.split(","):
+        if ":" in item:
+            _, p_str = item.rsplit(":", 1)
+            p_str = p_str.strip()
+            if p_str.isdigit():
+                env.setdefault(f"SIMAI_PUBLIC_PORT_{p_str}", p_str)
+    if "avatar" in services:
+        env["SIMAI_AVATAR_PORT"] = str(avatar_port)
+        env.setdefault(f"SIMAI_PUBLIC_PORT_{avatar_port}", str(avatar_port))
+        env["SIMAI_AVATAR_CHANNEL"] = avatar_channel or f"wss://127.0.0.1:{avatar_port}"
+    env["SIMAI_EC2_BASE_URL"] = ec2_base_url
+    env["SIMAI_TIER0_TOKEN_FILE"] = str(tier0_token_file)
+    if resolved_worker_env:
+        env["SIMAI_WORKER_ENV_FILE"] = resolved_worker_env
+    if ca_file:
+        if not ca_file.is_file():
+            raise BootstrapError(EXIT_STORAGE, f"CA 인증서 파일이 없다: {ca_file}")
+        env["SIMAI_EC2_CA_FILE"] = str(ca_file)
+        env["SSL_CERT_FILE"] = str(ca_file)
+    env.setdefault("SIMAI_TIER0_ENGINE", str(root / "engines" / "yolo26x-pose-fp16-1280.engine"))
+    env.setdefault("SIMAI_TIER0_WEIGHTS", str(root / "weights" / "yolo" / "yolo26x-pose.pt"))
+    return cfg_path, env
+
+
+def lobby(rest: list[str]) -> int:
+    """로비 LIVE 통합 기동: Tier 0·vLLM·worker·avatar 를 단일 Supervisor 로 띄우고 Tier 0 종료 코드를 그대로 돌려준다."""
+    ap = argparse.ArgumentParser(prog="simai-bootstrap lobby", description="로비 LIVE 통합 기동 (Tier 0 + vLLM + worker + avatar)")
+    ap.add_argument("--work", type=Path, default=None)
+    ap.add_argument("--bundle-dir", type=Path, required=True)
+    ap.add_argument("--public-host", default=None)
+    ap.add_argument("--ec2-base-url", default=None)
+    ap.add_argument("--tier0-token-file", type=Path, default=None)
+    ap.add_argument("--worker-token-file", type=Path, default=None)
+    ap.add_argument("--worker-env-file", type=Path, default=None)
+    ap.add_argument("--ca-file", type=Path, default=None)
+    ap.add_argument("--scene-version", default="lobby-s7-v1")
+    ap.add_argument("--config-version", default="cfg-lobby-s9-1")
+    ap.add_argument("--gateway-id", default=None)
+    ap.add_argument("--camera-ids", default="cam1,cam2,cam3")
+    ap.add_argument("--measured-heights", default="cam1=2.49,cam2=2.76,cam3=2.39")
+    ap.add_argument("--control-port", type=int, default=None)
+    ap.add_argument("--video-ports", default=None)
+    ap.add_argument("--avatar-port", type=int, default=None)
+    ap.add_argument("--avatar-channel", default=None)
+    ap.add_argument("--live-cal-interval-ms", type=int, default=60_000)
+    ap.add_argument("--live-cal-buffer-ms", type=int, default=120_000)
+    ap.add_argument("--live-cal-timeout-s", type=float, default=120.0)
+    ap.add_argument("--no-live-calibration", action="store_true")
+    clean_default = (os.environ.get("SIMAI_CLEAN_BACKGROUND") or "1").strip().lower() not in ("0", "false", "no", "off")
+    ap.add_argument("--clean-background", dest="clean_background", action="store_true", default=clean_default)
+    ap.add_argument("--no-clean-background", dest="clean_background", action="store_false")
+    ap.add_argument("--services", default=None)
+    try:
+        args = ap.parse_args(rest)
+    except SystemExit as e:
+        return EXIT_USAGE if e.code else EXIT_OK
+
+    try:
+        services = parse_services(args.services or os.environ.get(SERVICES_ENV) or "tier0,vllm,worker,avatar")
+    except BootstrapError as e:
+        log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
+        return e.code
+
+    claim_tier0(choose_root()[0])
+    try:
+        rec = prepare("tier0")
+    except BootstrapError as e:
+        log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
+        return e.code
+
+    root = Path(os.environ["SIMAI_ROOT"])
+    if len(services) > 1 and rec["gpu"]["memory_total_mb"] < MIN_WORKER_VRAM_MB:
+        log(f"GPU VRAM {rec['gpu']['memory_total_mb']:.0f} MiB < 48GB급({MIN_WORKER_VRAM_MB} MiB): 분석 부하를 같은 GPU 에 올리지 않는다 "
+            f"→ Tier 0 단독 ({','.join(services)} 무시, 명세 3.12)")
+        services = ["tier0"]
+    wait_scene_released(root)
+
+    work = args.work or (root / "runs" / "lobby-live")
+    public_host = args.public_host or os.environ.get("SIMAI_PUBLIC_HOST") or os.environ.get("RUNPOD_PUBLIC_IP") or ""
+    ec2_base_url = args.ec2_base_url or os.environ.get("SIMAI_EC2_BASE_URL") or ""
+    tier0_token_file = args.tier0_token_file or (Path(os.environ["SIMAI_TIER0_TOKEN_FILE"]) if os.environ.get("SIMAI_TIER0_TOKEN_FILE") else None)
+    worker_token_file = args.worker_token_file or (Path(os.environ["SIMAI_WORKER_TOKEN_FILE"]) if os.environ.get("SIMAI_WORKER_TOKEN_FILE") else None)
+    worker_env_file = args.worker_env_file or (Path(os.environ["SIMAI_WORKER_ENV_FILE"]) if os.environ.get("SIMAI_WORKER_ENV_FILE") else None)
+    ca_file = args.ca_file or (Path(os.environ["SIMAI_EC2_CA_FILE"]) if os.environ.get("SIMAI_EC2_CA_FILE") else None)
+    gateway_id = args.gateway_id or os.environ.get("SIMAI_TIER0_ID") or "tier0-lobby-s9"
+    control_port = args.control_port if args.control_port is not None else int(os.environ.get("SIMAI_TIER0_CONTROL_PORT") or 19443)
+    video_ports = args.video_ports or os.environ.get("SIMAI_TIER0_VIDEO_PORTS") or "cam1:19444,cam2:19445,cam3:19447"
+    avatar_port = args.avatar_port if args.avatar_port is not None else int(os.environ.get("SIMAI_AVATAR_PORT") or 19446)
+    avatar_channel = args.avatar_channel or os.environ.get("SIMAI_AVATAR_CHANNEL")
+
+    try:
+        cfg_path, lobby_env = prepare_lobby_work(
+            root,
+            work,
+            args.bundle_dir,
+            services=services,
+            public_host=public_host,
+            ec2_base_url=ec2_base_url,
+            tier0_token_file=tier0_token_file,  # type: ignore[arg-type]
+            worker_token_file=worker_token_file,
+            worker_env_file=worker_env_file,
+            ca_file=ca_file,
+            scene_version=args.scene_version,
+            config_version=args.config_version,
+            gateway_id=gateway_id,
+            camera_ids=args.camera_ids,
+            measured_heights=args.measured_heights,
+            control_port=control_port,
+            video_ports=video_ports,
+            avatar_port=avatar_port,
+            avatar_channel=avatar_channel,
+            live_cal_interval_ms=args.live_cal_interval_ms,
+            live_cal_buffer_ms=args.live_cal_buffer_ms,
+            live_cal_timeout_s=args.live_cal_timeout_s,
+            no_live_calibration=args.no_live_calibration,
+            clean_background=args.clean_background,
+        )
+        tier0_argv = [*shlex.split(lobby_env.get("SIMAI_TIER0_CMD") or TIER0_CMD), "--config", str(cfg_path)]
+        sup = Supervisor(root, services, tier0_argv, env=lobby_env, pod_jsonl=work / "pod.jsonl")
+    except BootstrapError as e:
+        log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
+        return e.code
+    if threading.current_thread() is threading.main_thread():
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, sup.request_stop)
+    return sup.run()
 
 
 def supervise(rec: dict, services: list[str], rest: list[str]) -> int:
@@ -1564,7 +2185,13 @@ def main(argv: list[str] | None = None) -> int:
     mode, rest = args[0], args[1:]
     if mode == "scene":
         return scene(rest)
-    if mode not in ("tier0", "queue", "check", "run"):
+    if mode == "lobby":
+        return lobby(rest)
+    if mode == "check":
+        return run_check(rest, preflight=False)
+    if mode == "preflight":
+        return run_check(rest, preflight=True)
+    if mode not in ("tier0", "queue", "run"):
         execvp(args)  # 준비 없이 그대로 (sleep infinity 로 띄운 개발 Pod, 셸, 점검 도구)
         return EXIT_OK
     if mode == "run" and not rest:
@@ -1585,9 +2212,6 @@ def main(argv: list[str] | None = None) -> int:
     except BootstrapError as e:
         log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
         return e.code
-    if mode == "check":
-        print(json.dumps(rec, ensure_ascii=False, indent=2))
-        return EXIT_OK
     if mode == "queue":
         repo = Path(os.environ.get("SIMAI_SESSION_REPO") or Path(os.environ["SIMAI_ROOT"]) / "setup" / "session1" / "repo")
         script = repo / "deploy" / "scripts" / "gpu_session1.py"
