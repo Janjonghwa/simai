@@ -304,6 +304,8 @@ class CameraIngest:
                 # 넣지 않았거나 이미 버린 열쇠다. 어느 헤더인지 추측해 붙이지 않는다.
                 raise RuntimeError(f"{self.camera_id}: 디코더가 모르는 열쇠 {picture.key} 의 그림을 냈다")
             self._log.count(self.camera_id, decoded=1)
+            # picture.image 를 여기서 읽지 않고 DecodedPicture 자체를 넘긴다(-386).
+            # LatestFrameScheduler 가 추론에 넘기는 프레임(take/take_one)만 .image 를 읽어 BGR 로 변환한다.
             self._scheduler.offer(
                 Frame(
                     camera_id=self.camera_id,
@@ -311,7 +313,7 @@ class CameraIngest:
                     timestamp_source=header.timestamp_source,
                     frame_ref={"stream_epoch": header.stream_epoch, "frame_sequence": header.frame_sequence},
                     timestamp_uncertainty_ms=header.timestamp_uncertainty_ms,
-                    image=picture.image,
+                    image=picture,
                 )
             )
 

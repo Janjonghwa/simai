@@ -1,4 +1,4 @@
-"""PyAV H.264 디코더 (S15P31A101-182): 실제 H.264 바이트(시험 안에서 만듦)로 열쇠 묶기·키프레임·실패·NVDEC 자리를 본다.
+"""PyAV H.264 디코더 (S15P31A101-182, -212, -386): 실제 H.264 바이트(시험 안에서 만듦)로 열쇠 묶기·키프레임·실패·지연 BGR 변환·NVDEC 자리를 본다.
 
 그림에 새긴 번호와 디코더가 돌려준 열쇠가 맞는지로 결합 오류(G3)를 센다. NVDEC 시험은 SIMAI_TEST_GPU=1 일 때만 돌고(Pod 확인용), CUDA 장치가 없으면 건너뛴다.
 """
@@ -27,6 +27,7 @@ from simai_ai.io import (  # noqa: E402
     PyAvDecoder,
     SkipReason,
 )
+from simai_ai.io.pyav_decoder import DEFAULT_CONVERT_THREADS  # noqa: E402
 from simai_ai.risk.clock import FixedClock  # noqa: E402
 
 T0 = 1_760_342_400_000
@@ -174,7 +175,7 @@ def test_nvdec_bgr_matches_cpu_bgr(video) -> None:
     assert max(int(np.abs(x.image.astype(int) - y.image.astype(int)).max()) for x, y in zip(a, b)) <= 2
 
 
-# ---------------------------------------------------------------------------- 색 변환 문맥 (-212)
+# ---------------------------------------------------------------------------- 색 변환 문맥 (-212) · 지연 BGR 변환 (-386)
 
 
 @pytest.fixture
@@ -198,17 +199,31 @@ def spy_reformatter(monkeypatch) -> list:
 
 
 def test_one_converter_per_configure_is_reused_for_every_picture(video, spy_reformatter) -> None:
-    """반례(-212 원인): 그림마다 swscale 문맥을 새로 만들면(frame.to_ndarray(format=...)) 변환 초기화를 매 그림 치른다.
-    configure 한 번에 문맥 하나, 모든 그림이 그것을 쓰고 threads 는 묶은 값으로 넘어간다. 다시 configure 하면 새로 만든다."""
+    """반례(-212, -386): 그림마다 swscale 문맥을 새로 만들면 변환 초기화를 매 그림 치른다.
+    configure 한 번에 문맥 하나이고, decode 직후에는 색 변환을 하지 않다가 .image 를 읽는 그림만 같은 문맥으로 한 번씩 변환한다."""
     dec = PyAvDecoder(convert_threads=3)
     dec.configure(_codec(video))
     pictures, errors = _feed(dec, video, range(12))
     assert errors == [] and len(pictures) == 12
     assert len(spy_reformatter) == 1
+    assert spy_reformatter[0].calls == [] and dec.converted == 0
+    assert all(not p.converted for p in pictures)
+    for p in pictures:
+        assert lv.read_index(p.image) == 500 + p.key[1]
+    assert all(p.converted for p in pictures) and dec.converted == 12
     assert [c["threads"] for c in spy_reformatter[0].calls] == [3] * 12
     assert all(c["format"] == "bgr24" for c in spy_reformatter[0].calls)
+    # 이미 변환된 그림을 다시 읽어도 재변환하지 않는다
+    _ = [p.image for p in pictures]
+    assert len(spy_reformatter[0].calls) == 12 and dec.converted == 12
     dec.configure(_codec(video, epoch=1))
     assert len(spy_reformatter) == 2
+
+
+def test_default_convert_threads_is_two() -> None:
+    """-386: 카메라당 기본 swscale 스레드 수를 4 → 2(4대 합계 16 → 8)로 낮춰 디코딩·추론 스레드와의 경합을 줄인다."""
+    assert DEFAULT_CONVERT_THREADS == 2
+    assert PyAvDecoder().convert_threads == 2
 
 
 def test_pictures_kept_by_caller_are_not_overwritten_by_later_conversions(video) -> None:
@@ -222,6 +237,18 @@ def test_pictures_kept_by_caller_are_not_overwritten_by_later_conversions(video)
             kept.append((p, p.image.copy()))
     assert len(kept) == 40
     assert all((p.image == snap).all() and lv.read_index(p.image) == 500 + p.key[1] for p, snap in kept)
+
+
+def test_lazy_picture_converts_safely_even_after_decoder_reset_or_reconfigure(video) -> None:
+    """-386: decode 가 돌려준 DecodedPicture 를 디코더 reset/configure 뒤에 읽어도 해당 그림의 변환 문맥과 원본 프레임으로 정상 변환된다."""
+    dec = PyAvDecoder()
+    dec.configure(_codec(video))
+    pictures, errors = _feed(dec, video, range(5))
+    assert errors == [] and len(pictures) == 5 and dec.converted == 0
+    dec.reset()
+    dec.configure(_codec(video, epoch=1))
+    assert [lv.read_index(p.image) for p in pictures] == [500, 501, 502, 503, 504]
+    assert dec.converted == 5
 
 
 def test_in_band_resolution_change_reuses_converter_with_new_size(video) -> None:
@@ -291,6 +318,117 @@ def _ingest(depth=2) -> tuple[I0Ingest, FixedClock]:
     clock = FixedClock(T0)
     cfg = FreshnessConfig(queue_depth=depth, max_queue_wait_ms=150, reorder_window_ms=0)
     return I0Ingest(["cam1"], lambda _c: PyAvDecoder(), clock, cfg), clock
+
+
+def test_ingest_lazy_bgr_skips_conversion_for_superseded_expired_and_reset_frames(video, spy_reformatter) -> None:
+    """-386 핵심 검증: 4카메라 × 25fps(40ms 간격) 수신 + 10Hz(100ms 간격) next_batch 에서
+    H.264 디코딩은 100장 전부 수행하지만(참조 프레임 유지), BGR 색 변환은 추론에 넘긴 40장만 수행한다(SUPERSEDED 60장 변환 0회)."""
+    cams = ("cam1", "cam2", "cam3", "cam4")
+    decoders: dict[str, PyAvDecoder] = {}
+    clock = FixedClock(T0)
+    cfg = FreshnessConfig(queue_depth=1, max_queue_wait_ms=150, reorder_window_ms=0)
+
+    def _make_dec(cam: str) -> PyAvDecoder:
+        decoders[cam] = PyAvDecoder()
+        return decoders[cam]
+
+    ingest = I0Ingest(cams, _make_dec, clock, cfg)
+    for cam in cams:
+        ingest.receive(_codec(video, cam=cam))
+
+    # 1초 동안 25fps(0, 40, 80, ..., 960ms) 수신, 10Hz(100, 200, ..., 1000ms) 추론
+    events: list[tuple[int, str, int]] = []
+    for seq in range(25):
+        events.append((T0 + 40 * seq, "recv", seq))
+    for tick in range(1, 11):
+        events.append((T0 + 100 * tick, "take", tick))
+    events.sort(key=lambda e: (e[0], 0 if e[1] == "recv" else 1))
+
+    taken = []
+    for t_ms, kind, val in events:
+        clock.set(t_ms)
+        if kind == "recv":
+            for cam in cams:
+                ingest.receive(_frame(video, val, cam=cam))
+        else:
+            batch = ingest.next_batch()
+            assert len(batch) == 4
+            for ticket in batch:
+                assert ticket.frame.image.shape == (lv.SIZE[1], lv.SIZE[0], 3)
+                assert lv.read_index(ticket.frame.image) == 500 + ticket.frame.frame_ref["frame_sequence"]
+            taken.extend(batch)
+
+    assert len(taken) == 40
+    for i, cam in enumerate(cams):
+        counts = ingest.log.counts(cam)
+        assert counts["decoded"] == 25
+        assert counts["inferred"] == 10
+        assert counts["skipped_by_reason"][str(SkipReason.SUPERSEDED)] == 15
+        assert decoders[cam].converted == 10
+        assert len(spy_reformatter[i].calls) == 10
+
+    # 대기 상한 초과(QUEUE_WAIT_EXCEEDED)와 재접속(STREAM_RESET)으로 버려지는 프레임도 변환하지 않는다
+    clock.set(T0 + 1000)
+    ingest.receive(_frame(video, 25, cam="cam1"))
+    ingest.receive(_frame(video, 25, cam="cam2"))
+    ingest.connection_lost("cam2")  # cam2 대기 프레임은 STREAM_RESET
+    clock.set(T0 + 1200)  # cam1 대기 프레임은 200ms > 150ms 로 QUEUE_WAIT_EXCEEDED
+    assert ingest.next_batch() == []
+    assert decoders["cam1"].converted == 10
+    assert decoders["cam2"].converted == 10
+
+
+def test_downstream_event_frame_buffer_and_clean_background_share_materialized_bgr(video, tmp_path) -> None:
+    """-386 + -378 + -363 공존 검증: next_batch 가 구체화한 단일 BGR ndarray 를 검출기·EventFrameBuffer·BackgroundCleanBackground 가
+    그대로 공유하며 추가 색 변환이 일어나지 않는다."""
+    import threading
+
+    pytest.importorskip("av")
+    pytest.importorskip("cv2")
+    pytest.importorskip("numpy")
+    from services.tier0.clean_background import BackgroundCleanBackground
+    from services.tier0.event_frame_buffer import EventFrameBuffer
+    from services.tier0.settings import CleanBackgroundSettings
+
+    dec = PyAvDecoder()
+    clock = FixedClock(T0)
+    ingest = I0Ingest(
+        ["cam1"],
+        lambda _c: dec,
+        clock,
+        FreshnessConfig(queue_depth=1, max_queue_wait_ms=150, reorder_window_ms=0),
+    )
+    ingest.receive(_codec(video))
+    ingest.receive(_frame(video, 0))
+    ingest.receive(_frame(video, 1))  # seq 0 은 SUPERSEDED -> 미변환
+    assert dec.converted == 0
+
+    [ticket] = ingest.next_batch()
+    frame = ticket.frame
+    assert dec.converted == 1
+    bgr = frame.image
+    assert bgr.shape == (lv.SIZE[1], lv.SIZE[0], 3) and bgr.nbytes == lv.SIZE[0] * lv.SIZE[1] * 3
+
+    ring = EventFrameBuffer(("cam1",))
+    assert ring.offer(frame)
+    [picked] = ring.snapshot(("cam1",), frame.estimated_capture_time, max_cameras=1)
+    assert picked.image is bgr  # 같은 BGR ndarray 참조를 공유한다
+
+    stop = threading.Event()
+    doc = {
+        "calibration_version": "cal-1",
+        "cameras": [{"camera_id": "cam1", "image_size": list(lv.SIZE)}],
+    }
+    bg = BackgroundCleanBackground(
+        doc,
+        {"cam1": {}},
+        settings=CleanBackgroundSettings(sample_interval_ms=0, min_samples_per_camera=1, max_samples_per_camera=2),
+        state_dir=tmp_path,
+        stop=stop,
+    )
+    assert bg.offer(frame, [])
+    assert bg._queue[0][0].image is bgr  # 복사·재변환 없이 같은 BGR ndarray 참조를 공유한다
+    assert dec.converted == 1
 
 
 def test_repeated_decode_failures_wait_for_next_good_keyframe_and_never_misbind(video) -> None:

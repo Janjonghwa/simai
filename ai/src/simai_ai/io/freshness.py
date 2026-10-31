@@ -17,9 +17,10 @@ from __future__ import annotations
 import threading
 from collections import Counter, deque
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
+from simai_ai.io.decoder import DecodedPicture
 from simai_ai.providers.base import Frame
 from simai_ai.risk.clock import Clock
 from simai_ai.tracking.time_model import advance_ms, require_ms
@@ -272,6 +273,14 @@ def _frame_ids(frame: Frame) -> tuple[int | None, int | None]:
     return ref.get("stream_epoch"), ref.get("frame_sequence", ref.get("frame_index"))
 
 
+def _materialize(ticket: InferenceTicket) -> InferenceTicket:
+    """추론에 넘기기로 확정된 티켓의 frame.image 가 DecodedPicture 면 실제 그림(BGR ndarray 등)으로 풀어 넣는다(-386)."""
+    picture = ticket.frame.image
+    if isinstance(picture, DecodedPicture):
+        return replace(ticket, frame=replace(ticket.frame, image=picture.image))
+    return ticket
+
+
 class LatestFrameScheduler:
     """카메라별 latest-frame-wins 추론 대기열. offer 는 디코더 쪽, take·take_one 은 추론 루프 쪽에서 부른다. 스레드 안전.
 
@@ -384,6 +393,7 @@ class LatestFrameScheduler:
         만료 기록의 sink 는 잠금 밖에서 부르고 시각을 다시 읽는다(sink 가 걸린 시간도 대기에 넣는다). 고른 뒤 시각을
         한 번 더 읽어 그사이(선점 등) 상한을 넘겼으면 넘기지 않고 처음부터 다시 한다. 넘기는 시각은 이 마지막 읽기이고,
         그 뒤 돌려줄 때까지 sink 를 부르지 않는다. 다시 할 때마다 프레임을 하나 이상 버리므로 반복은 끝난다.
+        추론에 넘기기로 확정된 프레임만 대기열 잠금 밖에서 DecodedPicture.image 를 풀어 BGR 배열로 구체화한다(-386).
         """
         while True:
             self._log.deliver()
@@ -397,7 +407,9 @@ class LatestFrameScheduler:
                 cap = self._config.max_queue_wait_ms
                 if any(now - self._queues[cam][0].enqueued_at_ms > cap for cam in cams):
                     continue
-                return [self._dispatch_locked(cam, now) for cam in cams]
+                tickets = [self._dispatch_locked(cam, now) for cam in cams]
+                break
+        return [_materialize(t) for t in tickets]
 
     def _round_robin_locked(self) -> list[str]:
         n = len(self.camera_ids)
