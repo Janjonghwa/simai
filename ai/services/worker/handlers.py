@@ -7,9 +7,30 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+
+def safe_monotonic(clock: Callable[[], float]) -> Callable[[], float]:
+    """시험용 시계(반복자 등)도 병렬 스레드에서 안전하게 읽고, 원소가 다하면 마지막 시각을 유지한다."""
+    if getattr(clock, "_is_safe_monotonic", False):
+        return clock
+    lock = threading.Lock()
+    last = 0.0
+
+    def _now() -> float:
+        nonlocal last
+        with lock:
+            try:
+                last = float(clock())
+            except StopIteration:
+                pass
+            return last
+
+    _now._is_safe_monotonic = True  # type: ignore[attr-defined]
+    return _now
 
 
 class JobFailed(Exception):
@@ -26,7 +47,10 @@ class JobFailed(Exception):
 
 @dataclass
 class JobContext:
-    """처리기에 넘기는 작업 하나. cancelled 가 켜지면(대여 상실·시간 초과·취소) 처리기는 되도록 빨리 멈춘다."""
+    """처리기에 넘기는 작업 하나. cancelled 가 켜지면(대여 상실·시간 초과·취소) 처리기는 되도록 빨리 멈춘다.
+
+    deadline(monotonic 초)이 있으면 처리기·객체 저장소·얼굴 처리·VLM 호출은 remaining_s() 안에서만 동작한다.
+    """
 
     job_id: str
     lease_id: str
@@ -35,6 +59,42 @@ class JobContext:
     input: Mapping[str, Any]
     cancelled: threading.Event = field(default_factory=threading.Event)
     _progress: float | None = None
+    timeout_ms: int | None = None
+    deadline: float | None = None
+    monotonic: Callable[[], float] = time.monotonic
+
+    def __post_init__(self) -> None:
+        self.monotonic = safe_monotonic(self.monotonic)
+        if self.deadline is None and self.timeout_ms is not None:
+            self.deadline = self.monotonic() + self.timeout_ms / 1000.0
+
+    def bind_budget(
+        self,
+        default_timeout_ms: int,
+        *,
+        monotonic: Callable[[], float] | None = None,
+    ) -> float:
+        """처리기 시작 시점에 시계·실행 상한(deadline)을 확정하고 시작 시각(monotonic 초)을 돌려준다."""
+        if monotonic is not None:
+            self.monotonic = safe_monotonic(monotonic)
+        now = self.monotonic()
+        if self.timeout_ms is None:
+            self.timeout_ms = default_timeout_ms
+        if self.deadline is None:
+            self.deadline = now + self.timeout_ms / 1000.0
+        return now
+
+    def remaining_s(self, now: float | None = None) -> float | None:
+        """실행 상한(deadline)까지 남은 시간(초). deadline 이 없으면 None."""
+        if self.deadline is None:
+            return None
+        current = self.monotonic() if now is None else now
+        return max(0.0, self.deadline - current)
+
+    def is_expired(self, now: float | None = None) -> bool:
+        """실행 상한(deadline)이 지났는지 여부. deadline 이 없으면 False."""
+        rem = self.remaining_s(now)
+        return rem is not None and rem <= 0.0
 
     def report_progress(self, fraction: float | None) -> None:
         """진행률 0~1 (하트비트에 실려 표시에만 쓰인다)."""

@@ -48,8 +48,10 @@ class HttpObjectStore:
     - 전송: 서명 주소로 GET·PUT. PUT 은 응답의 headers(형식·크기·해시가 서명에 묶임)를 그대로 싣는다.
       서명 만료(403 "expired")·408·429·5xx·연결 실패는 retryable(새 대여에서 새 주소로). 그 밖 403(AccessDenied·
       SignatureDoesNotMatch)은 설정 오류라 retryable 아님. 서명 주소는 로그·예외 문구에 넣지 않는다.
-    - 취소(ctx.cancelled)되면 서명·전송을 시작하지 않는다. 시간 상한은 러너가 취소된 처리기를 기다리는 시간(abandon_grace_s 30초)
-      보다 짧게 둔다(막힌 전송이 워커 프로세스를 HandlerStuck 으로 끝내지 않게). urllib 의 timeout 은 소켓 동작 하나의 상한이다.
+    - 취소(ctx.cancelled)되면 서명·전송을 시작하지 않는다. 작업에 남은 시간 예산(ctx.remaining_s)이 있으면 단계마다 남은 시간을
+      다시 확인해 0 이하면 시작하지 않고, 양수면 설정 상한(sign_timeout_s·data_timeout_s)과 남은 시간 중 짧은 값을 소켓 상한으로
+      쓴다. 시간 상한은 러너가 취소된 처리기를 기다리는 시간(abandon_grace_s 30초)보다 짧게 둔다(막힌 전송이 워커 프로세스를
+      HandlerStuck 으로 끝내지 않게). urllib 의 timeout 은 소켓 동작 하나의 상한이다.
     - TLS 검증을 끄지 않는다. 평문 http 서명 주소는 루프백 개발 저장소만.
     """
 
@@ -77,10 +79,12 @@ class HttpObjectStore:
 
     def _sign(self, ctx: JobContext, body: Mapping[str, Any]) -> Mapping[str, Any]:
         _stop_if_cancelled(ctx)
+        timeout_s = _timeout_for(ctx, self._sign_timeout_s, "서명 요청")
         try:
             resp = self._transport.post(objects_sign_path(ctx.job_id), {"lease_id": ctx.lease_id, **body},
-                                        self._sign_timeout_s)
+                                        timeout_s)
         except TransportError as e:
+            _stop_if_cancelled(ctx)
             raise ObjectStoreError(f"서명 요청 실패: {e}", retryable=True) from None
         if resp.status == 200 and resp.body and isinstance(resp.body.get("url"), str):
             return resp.body
@@ -100,9 +104,10 @@ class HttpObjectStore:
             raise ObjectStoreError("서명 응답의 headers 가 객체가 아니다", retryable=True)
         headers = {str(k): str(v) for k, v in raw_headers.items()}
         _stop_if_cancelled(ctx)
+        timeout_s = _timeout_for(ctx, self._data_timeout_s, f"{method} 전송")
         request = urllib.request.Request(url, data=content, method=method, headers=headers)
         try:
-            with self._open(request, timeout=self._data_timeout_s) as resp:
+            with self._open(request, timeout=timeout_s) as resp:
                 status = getattr(resp, "status", 200)
                 data = resp.read()
         except urllib.error.HTTPError as e:
@@ -110,7 +115,9 @@ class HttpObjectStore:
                 retryable = e.code in (408, 429) or e.code >= 500 or (e.code == 403 and _expired(e))
             raise ObjectStoreError(f"{method} 응답 {e.code}", retryable=retryable) from None
         except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+            _stop_if_cancelled(ctx)
             raise ObjectStoreError(f"{method} 연결 실패: {type(e).__name__}", retryable=True) from None
+        _stop_if_cancelled(ctx)
         if not 200 <= status < 300:
             raise ObjectStoreError(f"{method} 응답 {status}", retryable=status in (408, 429) or status >= 500)
         return data
@@ -119,6 +126,15 @@ class HttpObjectStore:
 def _stop_if_cancelled(ctx: JobContext) -> None:
     if ctx.cancelled.is_set():
         raise ObjectStoreError("작업이 취소돼 객체 저장소를 쓰지 않는다", retryable=False)
+
+
+def _timeout_for(ctx: JobContext, limit_s: float, what: str) -> float:
+    rem = ctx.remaining_s()
+    if rem is None:
+        return limit_s
+    if rem <= 0:
+        raise ObjectStoreError(f"남은 시간 예산이 없어 {what}을 시작하지 않는다", retryable=True)
+    return min(limit_s, rem)
 
 
 def _expired(error: urllib.error.HTTPError) -> bool:

@@ -28,6 +28,10 @@ Tier 0 실시간 경로에는 아무것도 더하지 않는다. 얼굴은 pose k
   (근거 설명에는 사람의 자세·위치·안전모가 필요하다).
 - **fail-closed:** 디코드 실패·형식 오류, 검출 예외인 프레임은 VLM 에 넘기지 않는다(흐리지 않은 프레임으로 대신하지 않는다). 남는 프레임이 없으면
   `NO_FACE_SAFE_FRAMES` 로 작업 실패(검출 실패가 있으면 재시도 가능, 디코드 실패뿐이면 불가). 프레임 받기 실패는 `FRAME_FETCH_FAILED`(저장소 오류의 재시도 여부).
+- **병렬 프레임 다운로드와 남은 시간 예산 전파(S15P31A101-384):**
+  - `gate_input_frames` 는 `input.frames[]` 를 최대 `DEFAULT_FETCH_WORKERS = 4` 스레드로 병렬 다운로드(`store.get`)해 입력 순서를 그대로 유지한다. 다운로드 도중 취소(`ctx.cancelled`), 시간 예산 소진(`ctx.is_expired()`), 또는 프레임 오류가 나면 아직 시작하지 않은 다운로드를 즉시 건너뛴다.
+  - `prepare_vlm_frames` 는 `cancelled` 와 `remaining_s` 콜백을 받아 각 프레임의 이미지 디코드 전과 `provider.people(image)` 호출 전에 확인한다. 취소되었거나 남은 시간이 `<= 0` 이면 그 이후 프레임을 `DroppedFrame(reason="cancelled" | "budget")` 으로 버리고 더 이상 검출기를 돌리지 않는다(얼굴 처리 전 원본 프레임이 VLM 에 넘어가는 일은 없다).
+  - 모든 프레임이 `"budget"` 사유로 버려져 안전 프레임이 0장일 때는 재시도 가능한 `JobFailed("NO_FACE_SAFE_FRAMES", retryable=True)` 로 실패한다.
 - **관문:** `VlmFrame` 은 `prepare_vlm_frames` 만 만들 수 있고(내부 토큰), 픽셀은 읽기 전용이다. VLM 클라이언트(S15P31A101-22·25)는 `VlmFrame` 만 받는다.
   처리한 이미지는 메모리에서만 쓰고 객체 저장소에 올리지 않는다. 저장된 원본은 그대로다(11.5).
 - **face_policy:** 계약상 프레임마다 있으므로 프레임마다 그 값으로 처리한다.

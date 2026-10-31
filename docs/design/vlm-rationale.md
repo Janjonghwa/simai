@@ -1,4 +1,4 @@
-# 이벤트 근거 설명 빠른 경로 — 분석 워커 `vlm_rationale` 처리기 (S15P31A101-25, S15P31A101-273)
+# 이벤트 근거 설명 빠른 경로 — 분석 워커 `vlm_rationale` 처리기 (S15P31A101-25, S15P31A101-273, S15P31A101-384)
 
 명세 5.4(VLM 빠른 경로·VLM 입력 프레임·권한), 12.5(I5 작업), 15.1 G7(이벤트→근거 p95 5 s, 하향·직접 변경 0건, 사후 클립 대기 0건).
 계약 `contracts/messages/vlm_rationale.schema.json`(input·result), `job_request`(priority `VLM_FAST`, timeout_ms 5000), `job_callback`.
@@ -63,9 +63,7 @@
   규칙 근거 조항(`rule_version.legal_basis`)을 붙이려면 EC2 가 입력에 조항(검색 결과)을 넣어 주는 계약 변경이 필요하다.
 - **다시 묻기 1회:** 형식 강제(json_schema)를 걸어도 vLLM structured outputs 가 꺼졌거나 잘리면 어긋날 수 있다. 두 번째도 어긋나면 같은 입력으로 다시 해도
   같을 가능성이 커서 재시도 불가로 끝낸다(GPU 를 더 쓰지 않게).
-- **시간:** 처리기는 작업의 `timeout_ms` 를 받지 않는다(`JobContext` 에 없음). 다시 묻기 판단은 계약의 VLM_FAST 값 5000 ms 를 처리기 시작부터 잰다.
-  실제 상한은 러너가 `leased_at + timeout_ms` 로 `ctx.cancelled` 를 켜고 TIMED_OUT 을 낸다. 처리기는 단계 사이(관문 전, 호출 전)마다 취소를 본다.
-  VLM 요청 하나는 중간에 멈출 수 없다(클라이언트 `SIMAI_VLM_TIMEOUT_S` 기본 30 s).
+- **시간 예산 전파(S15P31A101-384):** 러너(`Worker.process`)가 대여의 `timeout_ms` 와 `deadline`(`received + lease.time_left_ms / 1000`)을 `JobContext` 에 넣어 넘기고, 직접 호출(단위 시험 등)에서 `deadline` 이 비어 있으면 처리기가 시작 시각(`t0`) 기준으로 `JOB_BUDGET_MS`(5000 ms) 상한을 묶는다. 객체 서명·전송(`HttpObjectStore`), 프레임 병렬 다운로드·얼굴 처리 관문(`gate_input_frames`·`prepare_vlm_frames`), VLM 호출(`VlmClient.complete(timeout_s=...)`), 재질문 판단이 모두 `ctx.remaining_s()` 와 `ctx.cancelled` 를 단계마다 확인해 남은 시간 예산 안에서만 실행된다.
 - **pose 검출기:** `SIMAI_TIER0_WEIGHTS`(deploy/compose.yaml, YOLO26x-pose `.pt`)를 `calibration.extrinsics.extract.UltralyticsPose` 로 열어
   `face_blur.PoseDetectorProvider` 로 감싼다. 새 검출 코드는 없다. Tier 0 의 TensorRT 엔진(`SIMAI_TIER0_ENGINE`)은 Tier 0 프로세스 몫이라 쓰지 않는다.
   가중치가 없거나 ultralytics 가 없으면 등록하지 않고 시작 로그에 이유를 남긴다(다른 처리기는 돈다).
@@ -249,3 +247,38 @@ event_frames_upload_failed event_id=... camera_id=... reason=예외종류
 위 로그에는 토큰·서명 URL·예외 원문을 싣지 않는다. 실제 느린 네트워크에서 4장 순차 업로드와 CPU 디코딩이 5초 예산 안에 드는지는 미측정이다.
 Tier 0 `capture_to_risk`·`frame_age`와 함께 비교해 CPU 공유 영향이 보이면 설정으로 끄고 우선순위·프레임 수를 후속 조정한다.
 원격 API·객체 저장소·EC2 작업 생성까지의 통합 시험은 이 로컬 합성 시험으로 대체할 수 없으며 -329 연동과 함께 확인해야 한다.
+
+## S15P31A101-384 — 이벤트 사진 병렬 다운로드와 남은 시간 예산 전파
+
+관련 명세: 3.2(Tier 0 우선·분석 워커 시간 제한), 5.4(VLM 빠른 경로·VLM 입력 프레임·얼굴 처리 fail-closed), 12.5(I5 `vlm_rationale` `timeout_ms=5000`), 14(객체 저장소 서명·전송), 15.1 G7(이벤트→근거 p95 ≤ 5 s). 계약 변경 없음.
+
+### 배경
+
+9차 GPU 세션(일본 H100 ↔ 시드니 S3 `ap-southeast-2`, 프레임당 왕복 약 1.8\~1.9 s)에서 `vlm_rationale` 워커가 이벤트 사진 4장을 순차적으로 서명·GET·얼굴 처리하면서 다운로드 단계만으로 `VLM_FAST` 실행 상한 5 s를 넘겨(`TIMED_OUT`) vLLM 호출이 0회였다. 또한 `HttpObjectStore`(`sign_timeout_s=10.0`, `data_timeout_s=20.0`)와 `VlmClient`(`timeout_s=30.0`)가 작업의 남은 시간 예산을 모르고 고정 타임아웃으로 동작해, 시간 초과 뒤에도 워커 스레드가 소켓 응답이나 추가 프레임 검출을 기다리는 잔여 작업 위험이 있었다.
+
+### 코드와 시험 위치
+
+| 위치 | 내용 |
+|---|---|
+| `ai/services/worker/handlers.py`, `runner.py` | `JobContext` 에 `timeout_ms`, `deadline`(monotonic 초), `monotonic` 주입과 `bind_budget`·`remaining_s`·`is_expired` 추가. `Worker.process` 가 `received + lease.time_left_ms / 1000` 을 `deadline` 으로 전달 |
+| `ai/services/worker/objects.py` | `HttpObjectStore._sign`·`_transfer` 시작 전 `ctx.cancelled` 와 `ctx.remaining_s()` 확인. 남은 시간이 0 이하면 요청을 시작하지 않고 즉시 `ObjectStoreError(..., retryable=True)` 발생, 양수면 `min(설정 상한, remaining_s)` 를 소켓 타임아웃으로 사용 |
+| `ai/services/worker/vlm_frames.py` | `gate_input_frames` 가 입력 프레임을 제한된 병렬 스레드(`DEFAULT_FETCH_WORKERS = 4`, `min(max_workers, len(frames))`)로 동시에 내려받고 촬영 시각 정렬 순서를 보존. 그 뒤 남은 시간 예산 안에서만 순차적으로 얼굴 처리 수행 |
+| `ai/src/simai_ai/vlm/face_blur.py` | `prepare_vlm_frames` 에 `cancelled`·`remaining_s` 인자 추가. 각 프레임 디코드 전과 `provider.people(image)` 검출 전에 확인해 예산 소진(`reason="budget"`)·취소(`reason="cancelled"`) 프레임을 건너뛰고 `VlmFrame` 생성을 차단(fail-closed 유지) |
+| `ai/src/simai_ai/vlm/client.py`, `ai/services/worker/vlm_rationale.py`, `incident_summary.py` | `VlmClient.complete(..., timeout_s=...)` 지원(`min(settings.timeout_s, timeout_s)`, 0 이하면 인코딩·전송 전 즉시 `VlmTimeout`). 처리기가 VLM 초회·재질문 호출마다 `ctx.remaining_s()` 를 전달 |
+| `ai/tests/services/worker/test_objects.py`, `test_vlm_frames.py`, `test_vlm_rationale.py`, `test_runner.py`, `ai/tests/vlm/test_face_blur.py`, `test_client.py` | 서명·GET 남은 시간 클램핑, 4장 병렬 다운로드 동시성·입력 순서 보존, 얼굴 처리 도중 예산 소진 시 검출 중단 및 fail-closed, 9차 세션(4장 병렬 1.8 s + 검출 0.4 s → 남은 2.8 s 로 VLM 호출) 재현 시험 |
+
+### 정한 수치와 근거
+
+- **`DEFAULT_FETCH_WORKERS = 4` (`vlm_frames.py`):** Tier 0 이벤트 프레임(`-328`)이 최대 2카메라 × 2시점 = 4장을 올리므로 기본 병렬 다운로드 상한을 4로 두어 4장의 서명·GET 왕복을 1회 왕복 시간(약 1.8 s)으로 겹친다. 프레임 수가 더 적으면 `min(max_workers, len(frames))` 로 줄이고, 1장이면 스레드 풀을 띄우지 않고 현재 스레드에서 바로 받는다.
+- **단계별 소켓 타임아웃 = `min(기존 상한, ctx.remaining_s())`:** 기존 `sign_timeout_s = 10.0`, `data_timeout_s = 20.0`, `SIMAI_VLM_TIMEOUT_S = 30.0` 은 `incident_summary`(120 s)나 `static_reconstruct` 같은 긴 작업에서는 단일 소켓 동작 상한으로 유효하지만 `vlm_rationale`(5 s)에서는 전체 예산보다 길다. 둘 중 짧은 값을 쓰면 긴 작업의 단일 소켓 보호와 짧은 작업의 전체 예산 상한을 동시에 만족한다.
+- **예산 소진으로 모든 프레임이 빠진 경우 `NO_FACE_SAFE_FRAMES(..., retryable=True)`:** 네트워크·GPU 일시 지연으로 첫 시도에서 얼굴 처리까지 마치지 못한 경우, EC2 `deadline_at`(`observation_time + 5000 ms`) 전이고 남은 시도가 있으면 재시도할 수 있게 `detect` 실패와 같이 `retryable=True` 로 분류한다(디코드 실패만 있을 때만 `retryable=False`).
+
+### 버린 대안
+
+- **얼굴 검출(`provider.people`)까지 멀티스레드로 병렬 실행:** 워커의 `PoseDetectorProvider` 는 단일 `UltralyticsPose`(PyTorch/CUDA) 인스턴스를 공유한다. 여러 스레드가 동시에 `detect()` 를 호출하면 내부 predictor 상태 경합과 CUDA 메모리 급증으로 워커 GPU 메모리 상한(`cap_process_memory`)을 깨뜨릴 수 있어, 네트워크 I/O(`store.get`)만 병렬화하고 디코드·검출은 핸들러 스레드에서 남은 시간 예산 안에서 순차 실행한다.
+- **시간 예산이 모자랄 때 얼굴 처리를 생략하고 원본 프레임을 VLM 에 전달:** 명세 5.4·11.5 및 `AGENTS.md` 규칙 8(fail-closed 원칙) 위반이다. 예산 부족으로 얼굴을 처리하지 못한 프레임은 반드시 `DroppedFrame(reason="budget")` 으로 버리고 `VlmFrame` 토큰을 발급하지 않는다.
+
+### 잔여 위험과 넘긴 일
+
+- Python `urllib` 소켓 호출은 시작 시점에 남은 시간(`timeout=min(limit_s, remaining_s)`)으로 타임아웃이 걸리므로, 요청이 이미 시작된 도중에 EC2 가 대여를 취소(`REJECTED`)하면 해당 소켓 읽기 완료(최대 남은 작업 예산, `vlm_rationale` 은 ≤ 5 s) 시점에 스레드가 정리된다. 이는 워커 `abandon_grace_s`(30 s)보다 충분히 짧아 `HandlerStuck` 을 일으키지 않는다.
+- S3 버킷 리전 이전(시드니 → 서울)과 실제 GPU Pod 에서 4장 병렬 다운로드 적용 후 G7 `event_to_rationale_ms` p95 실측은 다음 GPU 세션에서 확인한다.

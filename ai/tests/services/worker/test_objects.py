@@ -193,3 +193,96 @@ def test_put_without_object_uri_in_reply_does_not_upload():
     store = HttpObjectStore(_FakeTransport(reply), opener=lambda *a, **k: pytest.fail("올리면 안 된다"))
     with pytest.raises(ObjectStoreError):
         store.put(_ctx(), "bev.png", b"x", "image/png")
+
+
+def test_sign_and_transfer_clamp_timeouts_to_remaining_budget():
+    now = [100.0]
+    sign_timeouts: list[float] = []
+    data_timeouts: list[float] = []
+
+    class TimedTransport:
+        def post(self, path, body, timeout_s):
+            sign_timeouts.append(timeout_s)
+            now[0] += 1.2  # 서명에 1.2초 소비
+            return Response(
+                200,
+                {"op": "GET", "uri": body["uri"], "url": "https://storage.example/frame.jpg", "headers": {}},
+            )
+
+    def fake_opener(request, timeout):
+        data_timeouts.append(timeout)
+        now[0] += 0.8
+
+        class _Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b"jpeg-bytes"
+
+        return _Resp()
+
+    ctx = JobContext(
+        job_id=JOB,
+        lease_id="lease-1",
+        job_type="vlm_rationale",
+        attempt=1,
+        input={},
+        timeout_ms=3000,
+        deadline=103.0,
+        monotonic=lambda: now[0],
+    )
+    store = HttpObjectStore(TimedTransport(), sign_timeout_s=10.0, data_timeout_s=20.0, opener=fake_opener)
+    assert store.get(ctx, "s3://bucket/frame.jpg") == b"jpeg-bytes"
+    assert sign_timeouts == [pytest.approx(3.0)]
+    assert data_timeouts == [pytest.approx(1.8)]
+
+
+def test_expired_budget_before_sign_does_not_call_transport():
+    ctx = JobContext(
+        job_id=JOB,
+        lease_id="lease-1",
+        job_type="vlm_rationale",
+        attempt=1,
+        input={},
+        deadline=50.0,
+        monotonic=lambda: 50.0,
+    )
+    store = HttpObjectStore(_FakeTransport(error=AssertionError("예산이 없으면 서명 요청을 보내면 안 된다")))
+    with pytest.raises(ObjectStoreError) as e:
+        store.get(ctx, "s3://bucket/a.jpg")
+    assert e.value.retryable
+
+
+def test_expired_budget_after_sign_does_not_open_transfer():
+    now = [10.0]
+
+    class SlowSignTransport:
+        def post(self, path, body, timeout_s):
+            now[0] = 15.0  # 서명 직후 예산(15.0) 소진
+            return Response(
+                200,
+                {"op": "GET", "uri": body["uri"], "url": "https://storage.example/a.jpg", "headers": {}},
+            )
+
+    ctx = JobContext(
+        job_id=JOB,
+        lease_id="lease-1",
+        job_type="vlm_rationale",
+        attempt=1,
+        input={},
+        deadline=15.0,
+        monotonic=lambda: now[0],
+    )
+    store = HttpObjectStore(
+        SlowSignTransport(),
+        opener=lambda *a, **k: pytest.fail("서명 뒤 예산이 0 이하면 전송을 시작하면 안 된다"),
+    )
+    with pytest.raises(ObjectStoreError) as e:
+        store.get(ctx, "s3://bucket/a.jpg")
+    assert e.value.retryable

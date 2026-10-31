@@ -221,3 +221,30 @@ def test_pose_detector_provider_converts_detector_output():
     (person,) = PoseDetectorProvider(Detector()).people(_image())
     assert person.bbox == (1.0, 2.0, 3.0, 4.0)
     assert person.keypoints == ((5.0, 6.0, 0.7), None)
+
+
+def test_gate_stops_decode_and_detect_when_budget_or_cancelled():
+    provider = FakeProvider([_person()])
+    rem = [1.0, 1.0, 0.0, 0.0]
+    result = prepare_vlm_frames(
+        [("f1", b"1"), ("f2", b"2")],
+        "BLURRED",
+        provider,
+        decode=_decode_ok,
+        remaining_s=lambda: rem.pop(0),
+    )
+    assert [f.source for f in result.frames] == ["f1"]
+    assert [(d.source, d.reason) for d in result.dropped] == [("f2", "budget")]
+    assert provider.calls == 1
+
+    provider_cancelled = FakeProvider([_person()])
+    cancelled_res = prepare_vlm_frames(
+        [("f1", b"1")],
+        "BLURRED",
+        provider_cancelled,
+        decode=_decode_ok,
+        cancelled=lambda: True,
+    )
+    assert cancelled_res.frames == ()
+    assert [(d.source, d.reason) for d in cancelled_res.dropped] == [("f1", "cancelled")]
+    assert provider_cancelled.calls == 0

@@ -319,3 +319,19 @@ def test_handler_for_unknown_job_type_is_refused_at_start(client):
     # 계약 밖 유형으로 대여를 요청하면 EC2 가 400 으로 거부해 워커가 멈춘다. 시작할 때 막는다
     with pytest.raises(ValueError, match="vlm_rationle"):
         Worker(client, {"vlm_rationle": lambda ctx: {}}, clock_ms=lambda: 0, monotonic=time.monotonic)
+
+
+def test_worker_process_propagates_timeout_deadline_to_job_context(ec2, make_worker):
+    ec2.add_job("vlm_rationale", copy.deepcopy(VLM_INPUT), priority="VLM_FAST", timeout_ms=5000)
+    observed: list[tuple[int | None, float | None]] = []
+
+    def handler(ctx: JobContext):
+        observed.append((ctx.timeout_ms, ctx.remaining_s()))
+        return copy.deepcopy(VLM_RESULT)
+
+    worker = make_worker({"vlm_rationale": handler})
+    assert worker.run_once() is Outcome.ACCEPTED
+    assert len(observed) == 1
+    timeout_ms, rem_s = observed[0]
+    assert timeout_ms == 5000
+    assert rem_s is not None and 0.0 < rem_s <= 5.0

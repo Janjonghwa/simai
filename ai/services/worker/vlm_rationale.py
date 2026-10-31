@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -23,13 +24,13 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from simai_ai.providers.contract import schema_errors
-from simai_ai.vlm.client import VlmClient, VlmError, VlmSettings
+from simai_ai.vlm.client import VlmClient, VlmError, VlmSettings, VlmTimeout
 from simai_ai.vlm.face_blur import KeypointProvider
 from simai_ai.vlm.rationale import PROPOSAL_DISCARD_REASON, PROMPT, RETRY_NOTE, check_proposal, parse_answer, upward_only
 
 from .handlers import JobContext, JobFailed
 from .objects import ObjectStore
-from .vlm_frames import decode_image, gate_input_frames
+from .vlm_frames import DEFAULT_FETCH_WORKERS, decode_image, gate_input_frames
 
 INPUT_SCHEMA = {"$ref": "https://simai.dev/contracts/messages/vlm_rationale.schema.json#/$defs/input"}
 RESULT_SCHEMA = {"$ref": "https://simai.dev/contracts/messages/vlm_rationale.schema.json#/$defs/result"}
@@ -42,6 +43,31 @@ def client_from_env(env: Mapping[str, str] = os.environ) -> VlmClient:
     return VlmClient(VlmSettings.from_env(env))
 
 
+def _complete_vlm(
+    client: Any,
+    prompt: str,
+    frames: Any,
+    *,
+    system: str | None,
+    response_format: Mapping[str, Any] | None,
+    timeout_s: float | None,
+) -> Any:
+    """남은 시간 예산(timeout_s)이 있으면 client.complete 에 전달한다(timeout_s 인자가 없는 시험용 가짜 클라이언트는 그대로 호출)."""
+    if timeout_s is not None:
+        if timeout_s <= 0:
+            raise VlmTimeout("VLM 호출에 남은 시간 예산이 없다")
+        params = inspect.signature(client.complete).parameters
+        if "timeout_s" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            return client.complete(
+                prompt,
+                frames,
+                system=system,
+                response_format=response_format,
+                timeout_s=timeout_s,
+            )
+    return client.complete(prompt, frames, system=system, response_format=response_format)
+
+
 class VlmRationaleHandler:
     def __init__(
         self,
@@ -51,15 +77,18 @@ class VlmRationaleHandler:
         client_factory: Callable[[], VlmClient] = client_from_env,
         monotonic: Callable[[], float] = time.monotonic,
         decode: Callable[[bytes], Any] = decode_image,
+        max_fetch_workers: int = DEFAULT_FETCH_WORKERS,
     ) -> None:
         self._store = store
         self._provider = provider
         self._client_factory = client_factory
         self._monotonic = monotonic
         self._decode = decode
+        self._max_fetch_workers = max_fetch_workers
 
     def __call__(self, ctx: JobContext) -> Mapping[str, Any]:
-        t0 = self._monotonic()
+        custom_clock = self._monotonic if self._monotonic is not time.monotonic else None
+        t0 = ctx.bind_budget(JOB_BUDGET_MS, monotonic=custom_clock)
         inp = json.loads(json.dumps(ctx.input))
         if errors := schema_errors(inp, INPUT_SCHEMA):
             raise JobFailed("VLM_INPUT_INVALID", "; ".join(errors))
@@ -77,7 +106,9 @@ class VlmRationaleHandler:
             raise JobFailed(e.code, str(e), retryable=e.retryable) from None
 
         _check_cancelled(ctx)
-        gate = gate_input_frames(ctx, self._store, frames, self._provider, decode=self._decode)
+        gate = gate_input_frames(
+            ctx, self._store, frames, self._provider, decode=self._decode, max_workers=self._max_fetch_workers
+        )
         if gate.dropped:
             log.warning("이벤트 %s: 얼굴 처리 못 한 프레임 %d개를 뺐다", event_id, len(gate.dropped))
         meta = {f["frame_uri"]: f for f in frames}
@@ -86,9 +117,16 @@ class VlmRationaleHandler:
 
         for retry in (False, True):
             _check_cancelled(ctx)
+            rem_s = ctx.remaining_s()
             try:
-                r = client.complete(parts.text + RETRY_NOTE if retry else parts.text, gate.frames, system=parts.system,
-                                    response_format=parts.response_format)
+                r = _complete_vlm(
+                    client,
+                    parts.text + RETRY_NOTE if retry else parts.text,
+                    gate.frames,
+                    system=parts.system,
+                    response_format=parts.response_format,
+                    timeout_s=rem_s,
+                )
             except VlmError as e:
                 raise JobFailed(e.code, str(e), retryable=e.retryable) from None
             try:
@@ -97,11 +135,17 @@ class VlmRationaleHandler:
                 answer = parse_answer(r.content)
                 break
             except ValueError as e:
-                elapsed_ms = (self._monotonic() - t0) * 1000
+                rem_after_s = ctx.remaining_s()
+                rem_after_ms = (
+                    rem_after_s * 1000
+                    if rem_after_s is not None
+                    else (JOB_BUDGET_MS - (ctx.monotonic() - t0) * 1000)
+                )
                 log.warning("이벤트 %s: VLM 응답 형식 오류(%s, finish_reason=%s)", event_id, e, r.finish_reason)
-                if retry or elapsed_ms + r.latency_ms > JOB_BUDGET_MS:
+                if retry or rem_after_ms < r.latency_ms:
                     raise JobFailed("VLM_ANSWER_INVALID", f"VLM 응답이 형식에 맞지 않는다: {e}") from None
 
+        _check_cancelled(ctx)
         proposed, discard_reason = check_proposal(inp["severity"], answer.proposed_severity)
         if discard_reason is not None:
             log.warning(
@@ -119,7 +163,7 @@ class VlmRationaleHandler:
             "proposed_severity": proposed,
             "clause_ids": [],
             "model_version": r.model,
-            "latency_ms": round((self._monotonic() - t0) * 1000),
+            "latency_ms": round((ctx.monotonic() - t0) * 1000),
         }
         if errors := schema_errors(result, RESULT_SCHEMA):
             raise JobFailed("VLM_RESULT_INVALID", "; ".join(errors))

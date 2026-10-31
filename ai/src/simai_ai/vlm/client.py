@@ -203,29 +203,39 @@ class VlmClient:
         return payload
 
     def complete(self, prompt: str, frames: Sequence[VlmFrame], *, system: str | None = None,
-                 response_format: Mapping[str, Any] | None = None) -> VlmResult:
+                 response_format: Mapping[str, Any] | None = None,
+                 timeout_s: float | None = None) -> VlmResult:
         """질문 + 얼굴 처리된 프레임 → 답. response_format 은 형식 강제(json_schema 등, 스키마는 처리기가 정한다)."""
+        effective_timeout = self._effective_timeout(timeout_s)
         payload = self.build_payload(prompt, frames, system=system, response_format=response_format)
         t0 = time.monotonic()
-        raw = self._post(payload)
+        raw = self._post(payload, timeout_s=effective_timeout)
         return _parse(raw, self._s.model, round((time.monotonic() - t0) * 1000))
 
-    def _post(self, payload: Mapping[str, Any]) -> bytes:
+    def _effective_timeout(self, timeout_s: float | None) -> float:
+        if timeout_s is None:
+            return self._s.timeout_s
+        if timeout_s <= 0:
+            raise VlmTimeout("VLM 호출에 남은 시간 예산이 없다")
+        return min(self._s.timeout_s, float(timeout_s))
+
+    def _post(self, payload: Mapping[str, Any], *, timeout_s: float | None = None) -> bytes:
         s = self._s
+        limit_s = self._effective_timeout(timeout_s)
         request = urllib.request.Request(s.url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                                          method="POST", headers={"Content-Type": "application/json"})
         try:
-            with self._open(request, timeout=s.timeout_s) as response:
+            with self._open(request, timeout=limit_s) as response:
                 return response.read()
         except urllib.error.HTTPError as e:
             if e.code == 429 or e.code >= 500:
                 raise VlmUnavailable(f"VLM 일시 오류(HTTP {e.code})") from None
             raise VlmRejected(f"VLM 이 요청을 거부했다(HTTP {e.code}){_error_hint(e)}") from None
         except TimeoutError as e:
-            raise VlmTimeout(f"VLM 응답이 {s.timeout_s:g}초 안에 오지 않았다") from e
+            raise VlmTimeout(f"VLM 응답이 {limit_s:g}초 안에 오지 않았다") from e
         except urllib.error.URLError as e:
             if isinstance(e.reason, (TimeoutError, socket.timeout)):
-                raise VlmTimeout(f"VLM 응답이 {s.timeout_s:g}초 안에 오지 않았다") from e
+                raise VlmTimeout(f"VLM 응답이 {limit_s:g}초 안에 오지 않았다") from e
             raise VlmUnavailable(f"VLM 에 연결하지 못했다: {e.reason}") from e
         except (ConnectionError, OSError) as e:  # 응답 읽는 중 끊김
             raise VlmUnavailable(f"VLM 연결이 끊겼다: {type(e).__name__}") from e

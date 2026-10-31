@@ -222,10 +222,10 @@ class VlmFrame:
 
 @dataclass(frozen=True)
 class DroppedFrame:
-    """VLM 에 넘기지 않은 프레임과 사유. reason: decode | detect."""
+    """VLM 에 넘기지 않은 프레임과 사유. reason: decode | detect | budget | cancelled."""
 
     source: str
-    reason: Literal["decode", "detect"]
+    reason: Literal["decode", "detect", "budget", "cancelled"]
     detail: str
 
 
@@ -244,10 +244,13 @@ def prepare_vlm_frames(
     provider: KeypointProvider,
     *,
     decode: Decoder | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    remaining_s: Callable[[], float | None] | None = None,
 ) -> GateResult:
     """(source, 인코딩된 바이트 또는 디코드된 BGR 배열) 목록 → 얼굴을 처리한 VLM 프레임과 뺀 프레임.
 
     바이트는 decode 로 푼다(이벤트 프레임). 배열은 클립에서 뽑은 프레임이다(incident_summary, S15P31A101-271).
+    취소(cancelled)됐거나 남은 시간 예산(remaining_s)이 0 이하면 디코드·검출을 시작하지 않고 뺀다.
     디코드·검출이 실패한 프레임은 빼고 사유를 남긴다. 남는 프레임이 없어도 예외를 던지지 않는다(작업 실패는 호출자가 정한다).
     """
     if face_policy not in FACE_POLICIES:
@@ -255,6 +258,12 @@ def prepare_vlm_frames(
     frames: list[VlmFrame] = []
     dropped: list[DroppedFrame] = []
     for source, item in items:
+        if cancelled is not None and cancelled():
+            dropped.append(DroppedFrame(source, "cancelled", "작업 취소로 얼굴 처리를 건너뛰었다"))
+            continue
+        if remaining_s is not None and (rem := remaining_s()) is not None and rem <= 0:
+            dropped.append(DroppedFrame(source, "budget", f"남은 시간 예산 부족({rem:.3f}s)"))
+            continue
         try:
             if isinstance(item, np.ndarray):
                 image = item
@@ -266,10 +275,19 @@ def prepare_vlm_frames(
         except Exception as e:  # 디코드 실패·형식 오류: 이 프레임은 넘기지 않는다
             dropped.append(DroppedFrame(source, "decode", f"{type(e).__name__}: {e}"))
             continue
+        if cancelled is not None and cancelled():
+            dropped.append(DroppedFrame(source, "cancelled", "작업 취소로 얼굴 검출을 건너뛰었다"))
+            continue
+        if remaining_s is not None and (rem := remaining_s()) is not None and rem <= 0:
+            dropped.append(DroppedFrame(source, "budget", f"남은 시간 예산 부족({rem:.3f}s)"))
+            continue
         try:
             people = list(provider.people(image))
         except Exception as e:  # 검출 실패: 얼굴을 모르므로 넘기지 않는다(fail-closed)
             dropped.append(DroppedFrame(source, "detect", f"{type(e).__name__}: {e}"))
+            continue
+        if cancelled is not None and cancelled():
+            dropped.append(DroppedFrame(source, "cancelled", "작업 취소로 얼굴 처리를 중단했다"))
             continue
         out, record, _ = apply_face_policy(image, people, face_policy)
         frames.append(VlmFrame(_GATE, source, face_policy, record, out))
