@@ -1,6 +1,6 @@
-"""CRITICAL 발생 전이 → 제한 큐 → 링 버퍼 디코딩·JPEG·서명 업로드 → I1 (명세 5.4).
+"""CRITICAL 발생 전이 → 제한 큐 → 추론 프레임 재사용·JPEG·서명 업로드 → I1 (명세 5.4).
 
-판정 tick 은 작은 불변 작업만 put_nowait 한다. 영상·네트워크는 단일 CPU 스레드에서만 처리한다.
+판정 tick 은 이미지 참조만 put_nowait 한다. JPEG·네트워크는 상한 있는 스레드 풀에서 처리한다.
 사후 프레임·클립 완료를 기다리지 않고, 실패는 경보·저널로 전파하지 않는다.
 """
 
@@ -12,28 +12,26 @@ import logging
 import queue
 import ssl
 import threading
-import time
 import urllib.parse
 import urllib.request
 from collections import Counter
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
-from services.tier0.clips.ring_buffer import BufferedPacket, CameraCut, PacketRingBuffer
 from services.tier0.clips.upload import ClipTransport, SignedUpload, UploadSigner, UploadSignRequest
+from services.tier0.event_frame_buffer import EventFrameBuffer, EventPicture
 from services.tier0.i1_client import QueueFull
-from simai_ai.io.decoder import Decoder
+from simai_ai.providers.base import Frame
 from simai_ai.providers.contract import schema_errors
 from simai_ai.risk import Origin, Severity
 from simai_ai.risk.clock import Clock
 from simai_ai.risk.lifecycle import Change, EventTransition, Lifecycle
 
 log = logging.getLogger("services.tier0.event_frames")
-PRE_MS = 3_000
-WINDOW_MS = 5_000
-CURRENT_MAX_AGE_MS = 500
 MAX_CAMERAS = 2
+UPLOAD_WORKERS = 4
 QUEUE_DEPTH = 8
 JPEG_QUALITY = 85
 
@@ -85,64 +83,24 @@ def encode_jpeg(image: Any) -> bytes:
     return encoded.tobytes()
 
 
-def selected_packets(cut: CameraCut, anchor_ms: int) -> tuple[BufferedPacket, ...]:
-    """현재(최대 0.5초 전) + 3~5초 전의 가장 최근 프레임. 사후·너무 오래된 영상은 쓰지 않는다."""
-    packets = cut.packets
-    chosen = []
-    for start, end in ((anchor_ms - CURRENT_MAX_AGE_MS, anchor_ms), (anchor_ms - WINDOW_MS, anchor_ms - PRE_MS)):
-        candidates = [p for p in packets if start <= p.capture_time_ms <= end and p.timestamp_source is not None]
-        if candidates:
-            chosen.append(max(candidates, key=lambda p: p.capture_time_ms))
-    return tuple(chosen)
-
-
-def decode_selected(cut: CameraCut, selected: tuple[BufferedPacket, ...],
-                    decoder_factory: Callable[[], Decoder]) -> list[tuple[BufferedPacket, Any]]:
-    """기존 디코더의 FrameKey 로만 원본 헤더와 그림을 결합한다(B 프레임·flush 포함)."""
-    wanted = {(p.stream_epoch, p.frame_sequence): p for p in selected}
-    decoded: dict[tuple[int, int], Any] = {}
-    decoder = decoder_factory()
-
-    def collect(pictures):
-        for picture in pictures:
-            if picture.key in wanted:
-                decoded[picture.key] = picture.image
-
-    try:
-        for segment in cut.segments:
-            # 빈칸 뒤 키프레임은 새 디코더에서 시작(깨진 참조를 재사용하지 않음).
-            previous = None
-            decoder.configure(segment.codec)
-            for packet in segment.packets:
-                if previous is not None and packet.frame_sequence != previous + 1:
-                    collect(decoder.flush())
-                    decoder.configure(segment.codec)
-                collect(decoder.decode(packet.payload, (packet.stream_epoch, packet.frame_sequence), packet.keyframe))
-                previous = packet.frame_sequence
-            collect(decoder.flush())
-    finally:
-        decoder.reset()
-    return [(p, decoded[key]) for key, p in wanted.items() if key in decoded]
-
-
 @dataclass(frozen=True)
 class _Request:
     event_id: str
     anchor_ms: int
     occurred_at: int
-    cameras: tuple[str, ...]
+    pictures: tuple[EventPicture, ...]
 
 
 class EventFrameService:
     """병합 이벤트 ID 당 최초 RAISED 1회. 큐 상한 초과·실패도 재판정이나 재경보를 만들지 않는다."""
 
-    def __init__(self, ring: PacketRingBuffer, clock: Clock, *, signer: UploadSigner, transport: ClipTransport,
-                 send_event: Callable[..., Any], decoder_factory: Callable[[], Decoder],
+    def __init__(self, ring: EventFrameBuffer, clock: Clock, *, signer: UploadSigner, transport: ClipTransport,
+                 send_event: Callable[..., Any],
                  jpeg: Callable[[Any], bytes] = encode_jpeg, enabled: bool = True,
                  queue_depth: int = QUEUE_DEPTH) -> None:
         self._ring, self._clock = ring, clock
         self._signer, self._transport = signer, transport
-        self._send_event, self._decoder_factory, self._jpeg = send_event, decoder_factory, jpeg
+        self._send_event, self._jpeg = send_event, jpeg
         self._enabled = enabled
         if queue_depth < 1:
             raise ValueError("event_frames queue_depth 는 양수다")
@@ -160,6 +118,13 @@ class EventFrameService:
         self._closing.set()
         if self._thread is not None:
             self._thread.join(timeout_s)
+        # 호출자는 판정 스레드를 먼저 멈춘다. 종료 후 대기 사진 참조를 해제한다.
+        self._ring.clear()
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
         return self._thread is None or not self._thread.is_alive()
 
     def on_transitions(self, transitions: Iterable[EventTransition], tracks: Iterable[Any] = ()) -> None:
@@ -178,7 +143,8 @@ class EventFrameService:
             visibility = Counter(camera for track in tracks if track.world_id in state.world_ids for camera in track.cameras)
             cameras = tuple(sorted(self._ring.camera_ids, key=lambda c: (-visibility[c], c)))
             try:
-                self._queue.put_nowait(_Request(state.event_id, state.observation_time, transition.occurred_at, cameras))
+                pictures = self._ring.snapshot(cameras, state.observation_time, MAX_CAMERAS)
+                self._queue.put_nowait(_Request(state.event_id, state.observation_time, transition.occurred_at, pictures))
             except queue.Full:
                 log.warning("event_frames_failed event_id=%s reason=queue_full", state.event_id)
 
@@ -192,44 +158,52 @@ class EventFrameService:
                 self._process(request)
             except Exception as error:  # noqa: BLE001 - 영상·네트워크 오류가 경보 경로로 새지 않는다
                 log.warning("event_frames_failed event_id=%s reason=%s", request.event_id, type(error).__name__)
+            finally:
+                del request  # 다음 이벤트를 기다리는 동안 이미지를 붙들지 않는다.
+
+    def offer(self, frame: Frame, _detections: Any = None) -> None:
+        """판정 스레드에서 참조만 보관한다. JPEG·복사·네트워크를 하지 않는다."""
+        if self._enabled and not self._closing.is_set() and not self._ring.offer(frame):
+            log.warning("event_frames_cache_dropped camera_id=%s", frame.camera_id)
+
+    def attach(self, feed: Any) -> None:
+        """기존 배경 수집과 함께, 검출 결과가 원본 헤더와 일치한 프레임만 받는다."""
+        background_offer = feed.observe_decoded
+
+        def offer_both(frame, detections):
+            try:
+                self.offer(frame, detections)
+            finally:
+                if background_offer is not None:
+                    background_offer(frame, detections)
+
+        feed.observe_decoded = offer_both
+
+    def _upload(self, event_id: str, picture: EventPicture) -> dict[str, Any] | None:
+        if self._closing.is_set():
+            return None
+        try:
+            jpeg = self._jpeg(picture.image)
+            digest = hashlib.sha256(jpeg).hexdigest()
+            signed = self._signer.sign(UploadSignRequest("EVENT_FRAME", "", event_id, picture.camera_id,
+                                                        "image/jpeg", len(jpeg), digest))
+            if not signed.object_uri:
+                raise ValueError("영구 객체 주소 없음")
+            self._transport.put(signed, jpeg, "image/jpeg")
+            return {"camera_id": picture.camera_id, "frame_uri": signed.object_uri,
+                    "estimated_capture_time_ms": picture.capture_time_ms,
+                    "timestamp_source": picture.timestamp_source,
+                    "timestamp_uncertainty_ms": picture.timestamp_uncertainty_ms}
+        except Exception as error:  # noqa: BLE001 - 한 사진의 실패가 다른 사진·경보로 전파되지 않는다
+            log.warning("event_frames_upload_failed event_id=%s camera_id=%s reason=%s",
+                        event_id, picture.camera_id, type(error).__name__)
+            return None
 
     def _process(self, request: _Request) -> None:
-        frames = []
-        used_cameras = 0
-        for camera in request.cameras:
-            if self._closing.is_set():
-                return
-            cut = self._ring.camera(camera).cut(request.anchor_ms - WINDOW_MS, request.anchor_ms)
-            selected = selected_packets(cut, request.anchor_ms)
-            if not selected:
-                continue
-            try:
-                pictures = decode_selected(cut, selected, self._decoder_factory)
-            except Exception as error:  # noqa: BLE001 - 한 카메라 오류에도 다른 카메라를 확인한다
-                log.warning("event_frames_camera_failed event_id=%s camera_id=%s reason=%s",
-                            request.event_id, camera, type(error).__name__)
-                continue
-            before = len(frames)
-            for packet, image in pictures:
-                try:
-                    jpeg = self._jpeg(image)
-                    digest = hashlib.sha256(jpeg).hexdigest()
-                    signed = self._signer.sign(UploadSignRequest("EVENT_FRAME", "", request.event_id, camera,
-                                                                "image/jpeg", len(jpeg), digest))
-                    if not signed.object_uri:
-                        raise ValueError("영구 객체 주소 없음")
-                    self._transport.put(signed, jpeg, "image/jpeg")
-                    frames.append({"camera_id": camera, "frame_uri": signed.object_uri,
-                                   "estimated_capture_time_ms": packet.capture_time_ms,
-                                   "timestamp_source": packet.timestamp_source,
-                                   "timestamp_uncertainty_ms": packet.timestamp_uncertainty_ms})
-                except Exception as error:  # noqa: BLE001 - 업로드 실패는 로그만
-                    log.warning("event_frames_upload_failed event_id=%s camera_id=%s reason=%s",
-                                request.event_id, camera, type(error).__name__)
-            if len(frames) > before:
-                used_cameras += 1
-                if used_cameras == MAX_CAMERAS:
-                    break
+        # 이벤트는 단일 소비자가 처리한다. 풀의 대기 작업도 이벤트당 최대 4개다.
+        with ThreadPoolExecutor(max_workers=UPLOAD_WORKERS, thread_name_prefix="tier0-event-upload") as pool:
+            futures = [pool.submit(self._upload, request.event_id, picture) for picture in request.pictures]
+            frames = [frame for future in futures if (frame := future.result()) is not None]
         if not frames:
             log.warning("event_frames_failed event_id=%s reason=no_frames", request.event_id)
             return

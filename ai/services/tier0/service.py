@@ -51,6 +51,7 @@ from services.tier0.drift_watch import BackgroundDriftWatch
 from services.tier0.endpoint_registration import EndpointRegistrar, read_cert_pem
 from services.tier0.event_snapshot import EventStateSnapshot
 from services.tier0.event_frames import EventFrameService, EventFrameSigner
+from services.tier0.event_frame_buffer import EventFrameBuffer
 from services.tier0.file_input import FileInput, JsonlOutput, ReplayClock
 from services.tier0.health import HealthReporter, WarningSources
 from services.tier0.i0_control import ControlServer
@@ -479,10 +480,9 @@ class Tier0Service:
                 parts = urlsplit(s.i1.url)
                 base = s.env.get("SIMAI_EC2_BASE_URL") or urlunsplit(("https", parts.netloc, "", "", ""))
                 self.event_frames = EventFrameService(
-                    self.clips.ring, self.clock,
+                    EventFrameBuffer(feed.camera_ids), self.clock,
                     signer=EventFrameSigner(base, s.i1.token, ca_file=s.i1.ca_file),
                     transport=HttpPutTransport(timeout_s=2.0), send_event=self.link.publisher.send_event,
-                    decoder_factory=PyAvDecoder,
                 )
                 self.event_frames.start()
             except Exception as error:  # noqa: BLE001 - 부가 근거 경로 실패가 관제 기동을 막지 않는다
@@ -573,6 +573,8 @@ class Tier0Service:
                 self._spawn("tier0-clean-background", self.clean_background.run)
             except Exception:
                 log.exception("배경 수집 기동 실패(판정은 계속한다)")
+        if self.event_frames is not None and isinstance(feed, DetectorFeed):
+            self.event_frames.attach(feed)
         if isinstance(self.drift_watch, BackgroundDriftWatch):
             self._spawn("tier0-drift-watch", lambda: self.drift_watch.run(self._stop))
         self.writer.start()
