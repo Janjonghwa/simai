@@ -191,11 +191,11 @@ VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커�
 | POST | /api/events/\{id\}/summary | 사고 구간 요약 요청(`incident_summary`, 5.4) | 관리자 |
 | POST | /api/events/\{id\}/close | 구역 대상 이벤트 운영자 종료(본문 사유 1\~500자·요청 멱등 키). 멱등 키는 EC2 가 따로 저장해 같은 키 재요청에 처음 결과를 돌려준다. EC2 가 발급한 `close_id` 로 I1 `event_close` 를 보내고 결과 `event_close_result` 를 돌려줌(6.4) | 관리자 |
 | POST | /api/events/\{id\}/escalation | VLM 상향 의견 승인·거절(본문 `assessmentId` 숫자 ID 또는 `job_id`, `decision` `APPROVED`·`REJECTED`). 거절은 `vlm_assessment` 에 기록하고 투영 `proposed_severity` 를 비우며, 승인은 `event_escalation` 기록 후 I1 `event_escalate` 로 보냄(관제 이벤트 상세 `EscalationControl` UI, 5.4, `docs/design/server-event-journal.md`) | 관리자 |
-| GET | /api/scenes/current | 현재 활성(`COMMITTED`) Scene 과 glTF 서명 주소(`gltf_url`), 표면 출처 지도 서명 주소 배열(`surface_source_map_urls`, `SURFACE_SOURCE_MAP` 이 있을 때) | 열람 |
+| GET | /api/scenes/current | 현재 활성(`COMMITTED`) Scene 과 glTF 서명 주소(`gltf_url`), 표면 출처 지도 서명 주소 배열(`surface_source_map_urls`, `SURFACE_SOURCE_MAP` 이 있을 때), Scene 을 만든 보정의 상태(`calibration_state`, 뷰어 ‘임시 보정 기준 배경’ 표시) | 열람 |
 | GET | /api/scenes/\{sceneId\} | Scene 생성 상태(CANDIDATE·VALIDATING·COMMITTED·REJECTED) | 관리자 |
 | POST | /api/scenes/rebuild | 정적 3D 재생성 요청 | 관리자 |
 | POST | /api/scenes | 관리자가 올린 glb(업로드 목적 `SCENE_GLTF`)를 Scene 후보(CANDIDATE)로 등록. PROVISIONAL·CALIBRATED 보정에만 | 관리자 |
-| POST | /api/scenes/\{sceneId\}/commit · /reject | 후보 Scene 활성화(COMMITTED, 워커 생성 후보는 `CALIBRATED` 보정 확인, `scene_activation` 이력 기록, 이전 현재 Scene 은 `valid_to` 로 닫고 서버 재기동 없이 `/api/scenes/current`·`/topic/health` 반영, 관리 명령 `admin scene list\|activate`·작업 등록 `admin job enqueue --type static_reconstruct` 지원, `docs/design/scene-version-from-job.md`)·거절(REJECTED, 사유) | 관리자 |
+| POST | /api/scenes/\{sceneId\}/commit · /reject | 후보 Scene 활성화(COMMITTED, 워커 생성 후보도 직접 등록과 같이 `PROVISIONAL`·`CALIBRATED` 보정에서 관리자 확인으로, 4.5, `scene_activation` 이력 기록, 이전 현재 Scene 은 `valid_to` 로 닫고 서버 재기동 없이 `/api/scenes/current`·`/topic/health` 반영, 관리 명령 `admin scene list\|activate`·작업 등록 `admin job enqueue --type static_reconstruct` 지원, `docs/design/scene-version-from-job.md`)·거절(REJECTED, 사유) | 관리자 |
 | GET | /api/sites/current | 현장(MVP 하나) 조회 | 열람 |
 | POST · PUT | /api/sites · /api/sites/current | 현장 등록(없을 때만)·수정(이름·원점 근거, 구성이 붙기 전이면 `site_id`) | 관리자 |
 | GET · POST | /api/layouts | 가상 레이아웃 | 관리자 |
