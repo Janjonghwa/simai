@@ -16,7 +16,7 @@
     (RestoreLink: manager.restore → RestoredEventLinker, -178). 체크포인트 재료는 첫 인지 tick 전까지 복구 결과로 채운다
     (그 전에 쓰는 체크포인트가 복구가 알던 config_version·Track 을 잃지 않게).
  6. 시작: 저널 쓰기 스레드 → Checkpointer(정리는 SnapshotOutbox.compact 로만) → I1 → I0 제어 채널 → I0 영상 수신(LIVE)
-    → 정리 주기 → 판정 루프.
+    → 검출·Local Tracker 루프(tier0-detect, LIVE, S15P31A101-383) → 정리 주기 → 판정 루프.
 
 file 입력(녹화 재생, S15P31A101-215, file_input.py): 보정보다 먼저 녹화(manifest·세그먼트 파일)를 확인하고(어긋나면 종료 코드 4)
 시계를 녹화 시각(ReplayClock)으로 바꾼다. 판정 출처는 REPLAY 이고 I1·I0 제어 채널을 열지 않는다(설정이 막는다). 판정 루프가
@@ -25,23 +25,25 @@ world_state·확정 전이는 설정하면 JSONL 로 남긴다(I1 과 별개).
 
 LIVE 입력(S15P31A101-182, live_input.py): 검출기(TensorRT 엔진 → 없으면 .pt 가중치, 둘 다 없으면 종료 코드 4) → 디코더
 (`input.decoder`: CPU 기본, NVDEC 선택. 열지 못하면 4) → 영상 포트 설정(모자라면 2) 순서로 확인한다. 영상 수신은 클립 링 버퍼를 붙인 뒤 연다.
+검출과 카메라별 Local Tracker 는 10 Hz 판정 루프에서 분리된 `tier0-detect` 스레드(기본 `detect_tick_ms=50` ms, 20 Hz)가
+판정 lock 밖에서 돌려 카메라당 12 FPS 이상 관측을 내고, 유계 큐(`detect_queue_depth=8`)를 통해 판정 루프로 넘긴다(S15P31A101-383).
 
-종료(stop, 종료 신호): 판정 루프 → 정리 주기 → I0(영상 수신·제어 채널) → I1(더는 저널을 읽지 않는다) → 저널 쓰기 스레드 비우기(넣은 단계를 모두
+종료(stop, 종료 신호): 검출·판정 루프 → 정리 주기 → I0(영상 수신·제어 채널) → I1(더는 저널을 읽지 않는다) → 저널 쓰기 스레드 비우기(넣은 단계를 모두
 fsync) → 마지막 체크포인트 → 저널 닫기 → 표시 파일 지우기. 제한 시간 안에 끝나지 않은 스레드는 이름을 로그에 남긴다.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 import json
 import logging
 import os
+from pathlib import Path
 import threading
 import time
-import uuid
-from urllib.parse import urlsplit, urlunsplit
-from collections.abc import Callable, Mapping
-from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
+import uuid
 
 from services.tier0.clips.ring_buffer import PacketRingBuffer
 from services.tier0.clips.service import EventClipService
@@ -49,9 +51,9 @@ from services.tier0.clips.upload import HttpPutTransport
 from services.tier0.config_fetch import HttpsFetcher
 from services.tier0.drift_watch import BackgroundDriftWatch
 from services.tier0.endpoint_registration import EndpointRegistrar, read_cert_pem
-from services.tier0.event_snapshot import EventStateSnapshot
 from services.tier0.event_frames import EventFrameService, EventFrameSigner
 from services.tier0.event_frame_buffer import EventFrameBuffer
+from services.tier0.event_snapshot import EventStateSnapshot
 from services.tier0.file_input import FileInput, JsonlOutput, ReplayClock
 from services.tier0.health import HealthReporter, WarningSources
 from services.tier0.i0_control import ControlServer
@@ -64,16 +66,16 @@ from services.tier0.restore_link import RestoreLink
 from services.tier0.settings import Tier0Settings
 from services.tier0.site_alert_sync import SiteAlertResync
 from services.tier0.video_ingest import TokenVerifier, build_server, parse_token_hashes, server_context
+from simai_ai.calibration.live_safety import SwapProbation
 from simai_ai.calibration.monitor import BaselineRecord, MonitorReport, MonitorStatus
 from simai_ai.calibration.runtime import RuntimeCalibrationStore
-from simai_ai.calibration.live_safety import SwapProbation
 from simai_ai.config import BundleArchive, BundleRejected, BundleVerifier, ConfigBundle, ConfigSync
 from simai_ai.eventlog import ACKED_NAME, AckedOffsetStore, EventJournal, JournalWriter, Outbox, TransportError
 from simai_ai.geometry.rig import CameraRig
-from simai_ai.io import DecoderUnavailable, FreshnessConfig, I0Ingest, NvdecDecoder, PyAvDecoder, RecordingReplay
-from simai_ai.io.freshness import SkipReason
 from simai_ai.gpu.admission import RUNNING, STARTING, LoadWindow, marker_section
 from simai_ai.gpu.reserve import GpuReservation
+from simai_ai.io import DecoderUnavailable, FreshnessConfig, I0Ingest, NvdecDecoder, PyAvDecoder, RecordingReplay
+from simai_ai.io.freshness import SkipReason
 from simai_ai.providers.files import FileCalibrationProvider
 from simai_ai.providers.provenance import build_input_provenance
 from simai_ai.recovery import Checkpointer, CheckpointStore, RecoveryHealthGate, RecoveryResult, recover
@@ -90,6 +92,7 @@ log = logging.getLogger("services.tier0")
 
 HOUSEKEEPING_S = 0.1
 JUDGE_OVERRUN_YIELD_S = 0.01  # 비공정한 판정 lock 의 즉시 재획득을 쉬어 정리 주기에 기회를 준다(9차 Pod 검증값, -375)
+DETECT_IDLE_WAIT_MAX_S = 0.005  # 새 프레임이 아직 없을 때 검출 루프가 짧게 쉬는 상한(-383)
 STATUS_EVERY_S = 1.0
 MARKER_EVERY_S = 5.0
 QUEUE_WAIT_EXCEEDED = str(SkipReason.QUEUE_WAIT_EXCEEDED)  # LIVE 입력 추론 대기 상한 초과(지연 표본에 싣는다)
@@ -593,6 +596,11 @@ class Tier0Service:
             except OSError as e:
                 raise Tier0StartError(f"LIVE 입력: I0 영상 포트를 열지 못했다 ({type(e).__name__}: {e})", 4) from e
             self._event("i0_video")
+        if isinstance(feed, DetectorFeed) and self.file_input is None and (
+            self.live_input is not None or s.input_mode == "live" or feed.async_mode
+        ):
+            feed.async_mode = True
+            self._spawn("tier0-detect", self._run_detect)
         self._spawn("tier0-housekeeping", self._run_housekeeping)
         self._spawn("tier0-judge", self._run_judge)
         self._event("judge")
@@ -707,7 +715,8 @@ class Tier0Service:
         tracker = MultiCameraLocalTracker(**tracker_kwargs)
         self.live_input = live
         return DetectorFeed(camera_ids=s.camera_ids, tickets=ingest.next_batch, detector=detector, tracker=tracker,
-                            connected=live.connected, source="LIVE", on_close=live.stop)
+                            connected=live.connected, source="LIVE", on_close=live.stop,
+                            max_queued_per_camera=s.detect_queue_depth, async_mode=True)
 
     def _build_file_feed(self) -> FrameFeed:
         """file: 녹화 I0 메시지 → I0Ingest(LIVE 와 같은 디코딩·최신성 대기열) → YOLO → Local Tracker (file_input.py)."""
@@ -730,7 +739,8 @@ class Tier0Service:
         self.file_input = FileInput(replay, ingest, self.replay_clock)
         return DetectorFeed(camera_ids=replay.camera_ids, tickets=ingest.next_batch, detector=detector,
                             tracker=MultiCameraLocalTracker(**tracker_kwargs), connected=self.file_input.connected,
-                            source="FILE", on_close=self.file_input.close, provenance=replay.provenance())
+                            source="FILE", on_close=self.file_input.close, provenance=replay.provenance(),
+                            max_queued_per_camera=s.detect_queue_depth)
 
     def _build_detector(self) -> PoseDetector:
         """TensorRT 엔진(SIMAI_TIER0_ENGINE) → 없으면 .pt 가중치(SIMAI_TIER0_WEIGHTS, 경고) → 둘 다 없으면 종료 코드 4."""
@@ -1065,6 +1075,31 @@ class Tier0Service:
         self._threads.append(t)
         t.start()
 
+    def _run_detect(self) -> None:
+        """LIVE 검출·Local Tracker 루프(판정 lock 밖, -383). 유계 큐에 Observation2DFrame 을 적재한다."""
+        feed = self.perception.feed
+        if not isinstance(feed, DetectorFeed):
+            return
+        period = self.settings.detect_tick_ms / 1000.0
+        idle_wait = min(period / 4.0, DETECT_IDLE_WAIT_MAX_S)
+        next_at = time.monotonic()
+        while not self._stop.is_set():
+            try:
+                processed = feed.detect_once()
+            except Exception:  # noqa: BLE001 - 한 묶음 실패로 검출 루프를 멈추지 않는다
+                log.exception("검출 루프 단계 실패")
+                processed = 0
+            if processed <= 0:
+                self._stop.wait(idle_wait)
+                next_at = time.monotonic()
+                continue
+            next_at += period
+            delay = next_at - time.monotonic()
+            if delay < 0:
+                next_at = time.monotonic()
+                continue
+            self._stop.wait(delay)
+
     def _run_judge(self) -> None:
         period = self.settings.tick_ms / 1000.0
         next_at = time.monotonic()
@@ -1095,7 +1130,8 @@ class Tier0Service:
                     self._event("replay_failed")
                     self.finished.set()
                     return
-                if replay.drained():
+                feed = self.perception.feed
+                if replay.drained() and (not isinstance(feed, DetectorFeed) or feed.drained()):
                     self._event("replay_finished")
                     self.finished.set()
                     return

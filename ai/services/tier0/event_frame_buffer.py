@@ -1,5 +1,10 @@
-"""판정 스레드 소유의 작은 프레임 링. 이미지 복사·인코딩·디코딩은 하지 않는다."""
+"""작은 프레임 링. 이미지 복사·인코딩·디코딩은 하지 않는다.
 
+-383 뒤로 offer 는 검출 스레드(tier0-detect), snapshot 은 판정 스레드에서 불린다. 짧은 lock 으로 둘을 나눈다
+(참조 보관·선택만 하므로 lock 보유 시간은 짧다).
+"""
+
+import threading
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
@@ -25,7 +30,7 @@ class EventPicture:
 
 
 class EventFrameBuffer:
-    """카메라별 최대 6개 이력 + 최근 6개. 호출자는 판정 스레드 하나다.
+    """카메라별 최대 6개 이력 + 최근 6개. offer(검출 스레드)와 snapshot·clear(판정 스레드)는 self._lock 으로 나눈다.
 
     디코더가 넘긴 BGR은 이후 수정하지 않는 기존 배경/아바타 경로의 소유권 규칙을 따른다.
     snapshot은 최대 두 카메라의 네 이미지 참조만 작업 큐에 고정한다.
@@ -36,8 +41,13 @@ class EventFrameBuffer:
         self._history: dict[str, deque[EventPicture]] = {c: deque(maxlen=MAX_HISTORY) for c in camera_ids}
         self._current: dict[str, deque[EventPicture]] = {c: deque(maxlen=MAX_CURRENT) for c in camera_ids}
         self._epochs: dict[str, int] = {}
+        self._lock = threading.Lock()
 
     def offer(self, frame: Frame) -> bool:
+        with self._lock:
+            return self._offer(frame)
+
+    def _offer(self, frame: Frame) -> bool:
         camera = frame.camera_id
         size = int(getattr(frame.image, "nbytes", 0))
         epoch = frame.frame_ref.get("stream_epoch")
@@ -67,6 +77,10 @@ class EventFrameBuffer:
         return True
 
     def snapshot(self, cameras: tuple[str, ...], anchor_ms: int, max_cameras: int) -> tuple[EventPicture, ...]:
+        with self._lock:
+            return self._snapshot(cameras, anchor_ms, max_cameras)
+
+    def _snapshot(self, cameras: tuple[str, ...], anchor_ms: int, max_cameras: int) -> tuple[EventPicture, ...]:
         selected = []
         used = 0
         for camera in cameras:
@@ -86,6 +100,7 @@ class EventFrameBuffer:
         return tuple(selected)
 
     def clear(self) -> None:
-        for pictures in (*self._history.values(), *self._current.values()):
-            pictures.clear()
-        self._epochs.clear()
+        with self._lock:
+            for pictures in (*self._history.values(), *self._current.values()):
+                pictures.clear()
+            self._epochs.clear()
