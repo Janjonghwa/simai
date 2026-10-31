@@ -19,6 +19,9 @@ import tools.jackson.databind.ObjectMapper;
 @Service
 public class SceneActivationService {
 
+    /** Scene 등록·활성화에 허용하는 보정 상태. 4.5(14차 개정: 워커 Scene 도 PROVISIONAL 관리자 확인), 12.6 */
+    public static final Set<String> CALIBRATION_STATES = Set.of("PROVISIONAL", "CALIBRATED");
+
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectStorage storage;
     private final ObjectMapper mapper;
@@ -51,12 +54,11 @@ public class SceneActivationService {
         if (!Set.of("CANDIDATE", "COMMITTED").contains(row.get("state")) || Boolean.TRUE.equals(row.get("is_upper_bound"))) {
             throw new BusinessException(ErrorCode.Scene.SCENE_STATE_CONFLICT);
         }
-        // 워커 생성은 CALIBRATED 뒤에만 활성화(4.5). 직접 등록의 PROVISIONAL 예외는 유지한다(12.6).
-        boolean worker = row.get("job_id") != null;
-        if (!(worker ? Set.of("CALIBRATED") : Set.of("PROVISIONAL", "CALIBRATED")).contains(row.get("calibration_state"))) {
+        // 워커 생성과 직접 등록 모두 PROVISIONAL·CALIBRATED 를 허용한다(4.5(14차 개정: 워커 Scene 도 PROVISIONAL 관리자 확인), 12.6).
+        if (!CALIBRATION_STATES.contains(row.get("calibration_state"))) {
             throw new BusinessException(ErrorCode.Scene.SCENE_CALIBRATION_INVALID);
         }
-        requireAssets(row, params, worker);
+        requireAssets(row, params, row.get("job_id") != null);
         List<String> current = jdbc.queryForList("SELECT scene_version FROM (" + SceneService.CURRENT_COMMITTED
                 + ") s WHERE site_id = :site", params, String.class);
         String previous = current.isEmpty() ? null : current.getFirst();

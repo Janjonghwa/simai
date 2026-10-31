@@ -44,6 +44,7 @@ class SceneServiceTest {
         }).when(jdbc).query(anyString(), anyMap(), ArgumentMatchers.<RowMapper<Object>>any());
         when(row.getString("scene_version")).thenReturn("scene-a");
         when(row.getString("calibration_version")).thenReturn("cal-a");
+        when(row.getString("calibration_state")).thenReturn("PROVISIONAL");
         when(row.getString("gltf_key")).thenReturn("static-3d/job/lease/scene.glb");
         when(storage.configured()).thenReturn(true);
         when(storage.uri(anyString())).thenAnswer(call -> "s3://test-bucket/" + call.getArgument(0));
@@ -51,14 +52,18 @@ class SceneServiceTest {
     }
 
     @Test
-    void 재질_순서대로_지도를_서명하고_지표를_유지한다() throws Exception {
+    void 재질_순서대로_지도를_서명하고_보정상태와_지표를_유지한다() throws Exception {
         when(row.getString("quality")).thenReturn("{\"observed_surface_ratio\":0.72}");
         maps("material-z.png", "material-a.png");
         ObjectNode result = scenes.current();
+        assertThat(result.get("calibration_state").asString()).isEqualTo("PROVISIONAL");
         assertThat(result.at("/surface_source_map_urls/0").asString()).isEqualTo("https://objects.test/static-3d/material-z.png");
         assertThat(result.at("/surface_source_map_urls/1").asString()).isEqualTo("https://objects.test/static-3d/material-a.png");
         assertThat(result.at("/quality/observed_surface_ratio").asDouble()).isEqualTo(0.72);
         assertThat(result.get("gltf_url").asString()).endsWith("/scene.glb");
+
+        when(row.getString("calibration_state")).thenReturn(null);
+        assertThat(scenes.current().has("calibration_state")).isFalse();
     }
 
     @Test
@@ -87,6 +92,7 @@ class SceneServiceTest {
         hasActive = false;
         ObjectNode result = scenes.current();
         assertThat(result.get("default").asBoolean()).isTrue();
+        assertThat(result.has("calibration_state")).isFalse();
         assertThat(result.get("gltf_url").asString()).endsWith("/scenes/demo.glb");
         assertThat(result.has("surface_source_map_urls")).isFalse();
         SceneService empty = new SceneService(jdbc, storage, mapper, "demo", "");

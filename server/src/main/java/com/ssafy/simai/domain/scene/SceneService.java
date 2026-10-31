@@ -21,7 +21,7 @@ import tools.jackson.databind.node.ObjectNode;
  * 현재 Scene 조회(GET /api/scenes/current, S15P31A101-264, 명세 3.7·4.5·12.6, FR-3). DB 활성 이력이 고른 COMMITTED
  * Scene 과 glTF 의 짧게 사는 GET 서명 주소를 준다(viewer_health.scene.committed_version 과 같은 선택, ViewerHealthService).
  * Scene 생성(S15P31A101-137, M3) 전에는 설정으로 등록한 시연용 기본 Scene(simai.scene.default-gltf-key)을 default=true 로 준다.
- * 기본 Scene 을 DB 행으로 두지 않는 것은 scene_version 이 보정 버전(FK, CALIBRATED 에서만 생성 4.5)을 요구하기 때문이다.
+ * 기본 Scene 을 DB 행으로 두지 않는 것은 scene_version 이 보정 버전(FK)을 요구하기 때문이다.
  */
 @Service
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -62,9 +62,15 @@ public class SceneService {
 
     public ObjectNode current() {
         List<Committed> committed = jdbc.query("""
-                SELECT scene_version, calibration_version, gltf_key, quality::text AS quality, scene_output::text AS output, committed_at FROM (
-                """ + CURRENT_COMMITTED + ") s LIMIT 1", Map.of(), (rs, i) -> new Committed(rs.getString("scene_version"), rs.getString("calibration_version"),
-                rs.getString("gltf_key"), rs.getString("quality"), rs.getString("output"), rs.getObject("committed_at", OffsetDateTime.class)));
+                SELECT s.scene_version, s.calibration_version, c.state AS calibration_state, s.gltf_key,
+                    s.quality::text AS quality, s.scene_output::text AS output, s.committed_at
+                FROM (""" + CURRENT_COMMITTED + """
+                ) s
+                LEFT JOIN calibration_version c ON c.calibration_version = s.calibration_version AND c.site_id = s.site_id
+                LIMIT 1
+                """, Map.of(), (rs, i) -> new Committed(rs.getString("scene_version"), rs.getString("calibration_version"),
+                rs.getString("calibration_state"), rs.getString("gltf_key"), rs.getString("quality"), rs.getString("output"),
+                rs.getObject("committed_at", OffsetDateTime.class)));
         ObjectNode node = mapper.createObjectNode();
         if (!committed.isEmpty()) {
             Committed s = committed.getFirst();
@@ -72,6 +78,9 @@ public class SceneService {
             node.put("state", "COMMITTED");
             node.put("default", false);
             node.put("calibration_version", s.calibrationVersion());
+            if (s.calibrationState() != null && !s.calibrationState().isBlank()) {
+                node.put("calibration_state", s.calibrationState());
+            }
             node.put("committed_at_ms", s.committedAt() == null ? null : s.committedAt().toInstant().toEpochMilli());
             node.set("quality", s.quality() == null ? mapper.nullNode() : mapper.readTree(s.quality()));
             gltf(node, s.gltfKey());
@@ -92,7 +101,8 @@ public class SceneService {
         return node;
     }
 
-    private record Committed(String version, String calibrationVersion, String gltfKey, String quality, String output, OffsetDateTime committedAt) {
+    private record Committed(String version, String calibrationVersion, String calibrationState, String gltfKey, String quality,
+            String output, OffsetDateTime committedAt) {
     }
 
     /** 재질 순서대로 내려준다. 한 장이라도 서명하지 못하면 부분 배열을 보내 순서를 틀리지 않는다. */

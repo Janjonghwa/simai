@@ -21,6 +21,7 @@ import com.ssafy.simai.global.command.AdminCommands;
 import com.ssafy.simai.global.command.CommandIo;
 import com.ssafy.simai.global.contract.ContractSchemas;
 import com.ssafy.simai.global.exception.BusinessException;
+import com.ssafy.simai.global.exception.ErrorCode;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
@@ -390,7 +391,7 @@ class WorkerJobIntegrationTest {
     }
 
     @Test
-    void 콜백은_후보와_근거를_한번만_추가하고_활성전환과_되돌리기를_즉시_조회한다() throws Exception {
+    void 콜백은_후보와_근거를_한번만_추가하고_PROVISIONAL_포함_활성전환과_되돌리기를_즉시_조회한다() throws Exception {
         String job = enqueue("static_reconstruct", 2);
         String lease = leasePayload(tokenA, workerA).get("lease_id").asString();
         ObjectNode callback = succeeded(job, lease);
@@ -404,10 +405,12 @@ class WorkerJobIntegrationTest {
                 String.class, job));
         assertThat(saved).isEqualTo(callback.get("result"));
         assertThat(current().get("default").asBoolean()).isTrue();
+        assertThat(current().has("calibration_state")).isFalse();
         assertThat(current().has("surface_source_map_urls")).isFalse();
         activations.activate(site, scene, "test-admin", "첫 배경");
         JsonNode first = current();
         assertThat(first.get("scene_version").asString()).isEqualTo(scene);
+        assertThat(first.get("calibration_state").asString()).isEqualTo("CALIBRATED");
         assertThat(first.get("surface_source_map_urls")).hasSize(1);
         assertThat(first.at("/surface_source_map_urls/0").asString()).contains("/" + lease + "/asset-1");
         assertThat(first.get("gltf_url").asString()).contains("/" + lease + "/asset-0");
@@ -420,13 +423,21 @@ class WorkerJobIntegrationTest {
         ((ObjectNode) second.at("/result/coordinate_frame")).remove("site_id");
         mvc.perform(submit(tokenA, workerA, second)).andExpect(status().isOk());
         assertThat(current().get("scene_version").asString()).isEqualTo(scene);
+        // PROVISIONAL 보정에서도 워커가 만든 Scene을 admin scene activate 및 서비스로 활성화하고 출처 지도와 calibration_state를 내려준다.
+        jdbc.update("UPDATE calibration_version SET state = 'PROVISIONAL' WHERE calibration_version = ?", calibration);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         assertThat(commands.execute(List.of("scene", "activate", "--site", site, "--version", scene + "-b",
                 "--actor", "test-admin", "--reason", "두번째"), io(out))).isZero();
-        assertThat(current().get("scene_version").asString()).isEqualTo(scene + "-b");
+        JsonNode provisional = current();
+        assertThat(provisional.get("scene_version").asString()).isEqualTo(scene + "-b");
+        assertThat(provisional.get("calibration_state").asString()).isEqualTo("PROVISIONAL");
+        assertThat(provisional.get("surface_source_map_urls")).hasSize(1);
+        assertThat(provisional.at("/surface_source_map_urls/0").asString()).contains("/" + secondLease + "/asset-1");
         assertThat(health.message().at("/payload/scene/committed_version").asString()).isEqualTo(scene + "-b");
         activations.activate(site, scene, "test-admin", "되돌림");
-        assertThat(current().get("scene_version").asString()).isEqualTo(scene);
+        JsonNode reverted = current();
+        assertThat(reverted.get("scene_version").asString()).isEqualTo(scene);
+        assertThat(reverted.get("calibration_state").asString()).isEqualTo("PROVISIONAL");
         assertThat(health.message().at("/payload/scene/committed_version").asString()).isEqualTo(scene);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM scene_activation WHERE site_id = ?", Integer.class, site)).isEqualTo(3);
         assertThat(mapper.readTree(jdbc.queryForObject("SELECT scene_output::text FROM scene_version WHERE job_id = ?",
@@ -480,11 +491,19 @@ class WorkerJobIntegrationTest {
         jdbc.update("UPDATE scene_version SET is_upper_bound = true WHERE scene_version = ?", scene);
         assertThatThrownBy(() -> activations.activate(site, scene, "test", "상한")).isInstanceOf(BusinessException.class);
         jdbc.update("UPDATE scene_version SET is_upper_bound = false WHERE scene_version = ?", scene);
-        jdbc.update("UPDATE calibration_version SET state = 'DRIFTED' WHERE calibration_version = ?", calibration);
-        assertThatThrownBy(() -> activations.activate(site, scene, "test", "보정 오류")).isInstanceOf(BusinessException.class);
-        jdbc.update("UPDATE calibration_version SET state = 'CALIBRATED' WHERE calibration_version = ?", calibration);
+        for (String invalidCalibration : List.of("UNCALIBRATED", "DRIFTED")) {
+            jdbc.update("UPDATE calibration_version SET state = ? WHERE calibration_version = ?", invalidCalibration, calibration);
+            assertThatThrownBy(() -> activations.activate(site, scene, "test", "보정 오류"))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.Scene.SCENE_CALIBRATION_INVALID));
+            assertThat(commands.execute(List.of("scene", "activate", "--site", site, "--version", scene,
+                    "--actor", "test", "--reason", "보정 오류"), io(new ByteArrayOutputStream()))).isNotZero();
+        }
+        jdbc.update("UPDATE calibration_version SET state = 'PROVISIONAL' WHERE calibration_version = ?", calibration);
         when(storage.size(anyString())).thenReturn(java.util.OptionalLong.empty());
-        assertThatThrownBy(() -> activations.activate(site, scene, "test", "자산 누락")).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> activations.activate(site, scene, "test", "자산 누락"))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.Scene.SCENE_GLTF_MISSING));
         assertThat(current().get("default").asBoolean()).isTrue();
         when(storage.size(anyString())).thenReturn(java.util.OptionalLong.of(1000));
         jdbc.update("UPDATE scene_version SET state = 'REJECTED' WHERE scene_version = ?", scene);
