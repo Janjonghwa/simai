@@ -3,6 +3,9 @@
 
     <uses-feature android:name="android.hardware.type.watch" />
 
+    <!-- 위험 알림의 등급별 진동 -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <!-- 기기 토큰이 백업으로 워치 밖에 나가지 않게 백업을 끈다 -->
     <application
         android:allowBackup="false"
@@ -23,6 +26,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 위험 알림 화면. 앱 안(EC2 연결 서비스)에서만 부른다. 잠금 화면 위에 띄우고 화면을 켠다.
+             singleTop: 이미 떠 있으면 같은 화면이 새 알림을 더 받는다 -->
+        <activity
+            android:name=".AlertActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true" />
 
         <!-- adb 로 EC2 주소·기기 토큰을 넣는 입구(화면 없음). 사용법은 watch/README.md
              DUMP 는 adb shell 이 갖고 일반 앱은 받을 수 없어, 워치의 다른 앱이 설정을 바꾸거나 지우지 못한다 -->

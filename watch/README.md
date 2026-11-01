@@ -1,8 +1,8 @@
 # SIMAI 워치 앱 (Wear OS)
 
-위험에 처한 작업자 본인에게 진동 알림을 주는 갤럭시워치 앱이다(기획서 부록 C.6, 확장). 지금은 뼈대만 있다:
-EC2 주소·기기 토큰을 넣고 상태를 보는 화면. EC2 연결·진동·ACK 는 S15P31A101-337, 걸음 특징은 -339 에서 붙인다.
-설계와 정한 값은 `docs/design/watch-app.md`.
+위험에 처한 작업자 본인에게 진동 알림을 주는 갤럭시워치 앱이다(기획서 부록 C.6, 확장). 지금은 EC2 주소·기기 토큰을 넣고
+상태를 보는 화면과, 위험 알림이 왔을 때 등급별로 보이고 울리고 확인을 받는 화면(S15P31A101-390)까지 있다.
+EC2 연결·ACK 전송은 S15P31A101-337, 걸음 특징은 -339 에서 붙인다. 설계와 정한 값은 `docs/design/watch-app.md`.
 
 - 대상: Wear OS 3 이상(minSdk 30). 확인한 기기는 갤럭시워치5·6
 - Play 스토어에 올리지 않는다. 개발 PC 에서 ADB 로 바로 설치한다
@@ -71,3 +71,22 @@ adb -s <IP:포트> shell "am start -n com.ssafy.simai.watch/.ConfigActivity --ez
 - 결과는 워치 토스트와 `adb logcat -s SimaiWatchConfig` 로 본다. 토큰은 어디에도 찍히지 않는다
 - 기기 토큰은 워치마다 따로 발급한다(NFR-12). 발급 API 는 S15P31A101-336 에서 만든다
 - 토큰을 셸 기록에 남기지 않으려면 명령을 스크립트 파일에 두지 말고 매번 입력한다
+
+## 가짜 알림으로 알림 화면 시험하기 (debug 빌드)
+
+EC2 연결이 없는 동안 알림 화면·진동·확인 단추를 adb 로 시험한다. debug 빌드에만 있는 입구다(DUMP 권한으로 adb shell 만 부른다).
+
+```bash
+adb -s <IP:포트> shell "am start -n com.ssafy.simai.watch/.DebugAlertActivity --es severity CRITICAL --es word stop --es direction LEFT"
+adb -s <IP:포트> shell "am start -n com.ssafy.simai.watch/.DebugAlertActivity --es severity HIGH --es needs_check true"
+adb -s <IP:포트> shell "am start -n com.ssafy.simai.watch/.DebugAlertActivity --es severity CAUTION --es ack_within_ms 5000"
+```
+
+- `severity`(CRITICAL·HIGH·CAUTION)만 필요하다. 나머지는 `word`(기본 "시험", 8자 이하), `direction`(FRONT·BACK·LEFT·RIGHT),
+  `needs_check`(true·false), `ack_within_ms`(기본 30000), `vibration`(DANGER_LONG·CAUTION_DOUBLE·CAUTION_WEAK, 없으면 등급으로 정함),
+  `event_id`(기본 debug-시각)다. 같은 `event_id` 로 다시 부르면 같은 알림이 한 번 더 온 것이다
+- 한글 값(`--es word 멈춤`)은 Windows 의 adb 가 깨뜨릴 수 있다. 깨지면 영문 단어를 쓴다
+- 위험은 확인하거나 기한이 지날 때까지 길게 되풀이해 울리고, 경고는 짧게 두 번, 주의는 약하게 한 번 울린다. 기한이 지나도 알림 화면과 확인 단추는 남는다
+- 확인하면 "확인함 시각" 을 잠깐 보이고 닫는다. 확인 기록은 `adb logcat -s SimaiWatchAck`, 낸 진동 패턴은 `adb logcat -s SimaiWatchVibe` 로 본다(확인은 EC2 로 아직 보내지 않는다)
+- 잘못된 값은 토스트와 `adb logcat -s SimaiWatchDebugAlert` 로 이유가 나온다
+- 화면이 꺼져 있어도 알림이 오면 켜진다. 에뮬레이터는 `adb shell input keyevent 223` 로 화면을 끈 뒤 시험한다
