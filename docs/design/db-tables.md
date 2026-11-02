@@ -87,6 +87,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | H. AI 결과·보고서 | `report` | M3 | 일반 | TBM 보고서·일일 일지 | 있음 | `/api/reports/daily`, `/api/reports/tbm`, `/api/reports/tbm/{}` | 이연주 |
 | H. AI 결과·보고서 | `rag_clause` | M3 | 일반 | 안전 수칙 조항과 임베딩 | 수정 16 추가 | `/api/reports/tbm` | 이연주 |
 | H. AI 결과·보고서 | `rag_query_template` | M3 | 일반 | TBM 질문 템플릿과 질문 임베딩 | S15P31A101-27 추가 | `/api/reports/tbm` | 이연주 |
+| H. AI 결과·보고서 | `work_unit` | M3 | 일반 | TBM 작업(히스토리 작업 다시 보기) | V21 추가 | `/api/work-units`, `/api/work-units/{}` | 곽나혁 |
 | I. 계획·시뮬레이션 (sim 스키마) | `sim.evaluation_run` | M3 | 일반 | EC2 Risk Engine 컨테이너 계산 실행(PLANNED·WHAT_IF) | 있음 | `/api/layouts/{}/evaluate`, `/api/layouts/{}/evaluations/{}`, `/api/reports/tbm` 외 | 이연주 |
 | I. 계획·시뮬레이션 (sim 스키마) | `sim.risk_result` | M3 | 일반 | 계산된 위험 항목(실제 알림 채널로 가지 않음) | 있음 | `/api/layouts/{}/evaluate`, `/api/layouts/{}/evaluations/{}`, `/api/simulations/{}` 외 | 이연주 |
 | I. 계획·시뮬레이션 (sim 스키마) | `sim.trajectory_plan` | 확장 2 | 일반 | 시간 구간이 있는 계획 궤적 | 있음 | `/api/simulations` | 이연주 |
@@ -1227,6 +1228,27 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `embedding` | vector(1024) | NN |  | `rag_clause.embedding` 과 같은 모델·revision·설정 |
 | `embedding_model` | text | NN |  | BAAI/bge-m3 |
 | `embedding_revision` | text | NN |  | `rag_clause` 와 같은 값이어야 한다(`R__rag_clauses.sql` 이 확인) |
+
+#### `work_unit` — TBM 작업(히스토리 작업 다시 보기)
+
+- 단계 **M3** · 일반 · 근거: 히스토리 작업 다시 보기, `docs/design/server-work-units.md` · V21
+- 작업자 이름은 두지 않는다(NFR-14). `zone_id` 는 구역 ID(버전 무관)라 FK 없이 쓰기 때 존재를 검사한다
+
+| 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
+|---|---|---|---|---|
+| `work_id` | bigint identity | PK |  | 응답은 글자로 준다 |
+| `site_id` | text | FK>site.site_id, NN |  |  |
+| `work_date` | date | NN |  | 현장 시각의 작업 날짜 |
+| `name` | text | NN |  | 1~100자 |
+| `starts_at` | ts | NN |  |  |
+| `ends_at` | ts | NN, CK(> starts_at) |  | 24시간 이내(API 검사) |
+| `zone_id` | text |  |  | null 이면 구역 밖 작업 |
+| `place` | text |  |  | 구역 밖 장소(없으면 응답에 구역 이름) |
+| `planned_people` | int | NN, CK(>= 0) |  | 0~100(API 검사) |
+| `lead_team` | text |  |  | 담당 조 이름 |
+| `created_by` | bigint | FK>app_user.user_id |  |  |
+| `created_at` | ts | NN |  |  |
+| `updated_at` | ts | NN |  |  |
 
 ### I. 계획·시뮬레이션 (sim 스키마)
 
