@@ -104,7 +104,7 @@ ENV SIMAI_CONTRACTS_DIR=/opt/simai/contracts \
     YOLO_CONFIG_DIR=/tmp/ultralytics \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
 
-# 기본(인자 없음)은 준비 → Tier 0. 'sleep infinity'·bash 같은 다른 명령은 준비 없이 그대로 실행한다.
+# 기본 CMD tier0 = 준비 → Tier 0(인자 없는 simai-bootstrap 은 사용법만 보이고 64, S15P31A101-414). 'sleep infinity'·bash 같은 다른 명령은 준비 없이 그대로 실행한다.
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/simai-start", "/usr/local/bin/simai-bootstrap"]
 CMD ["tier0"]
 

@@ -3,7 +3,8 @@
 접속 정보는 환경 변수(.env)로 받는다. 토큰 값은 저장소에 두지 않는다.
 - SIMAI_EC2_BASE_URL: EC2 주소 (https)
 - SIMAI_WORKER_TOKEN: 워커 토큰 (Authorization: Bearer)
-- SIMAI_WORKER_ID: 워커 ID, 봉투 source_id (기본 worker-01)
+- SIMAI_WORKER_ID: 워커 ID, 봉투 source_id (기본 worker-01). EC2 에 등록한 ID 와 토큰이 짝이 맞아야 한다(다르면 대여가 401·403).
+  simai-bootstrap 은 --worker-id → SIMAI_WORKER_ID → 토큰 파일 이름(worker-s10.token → worker-s10)으로 정해 넘긴다(S15P31A101-414)
 - GPU 공유(Tier 0 우선, 명세 3.2): simai_ai.gpu.budget.WorkerGpuSettings.from_env 의 SIMAI_TIER0_MARKER·SIMAI_WORKER_* 값.
   시작할 때 이 프로세스의 torch 할당 상한(SIMAI_WORKER_GPU_MEMORY_FRACTION)을 두고, 대여마다 Tier 0 표시 파일로 접수를 정한다.
   상한을 두지 못하면(FAILED) 시작하지 않는다. torch CUDA 가 없으면 상한 없이 돈다(노트북).
@@ -110,7 +111,8 @@ def main(argv: list[str] | None = None) -> int:
 
     base_url = os.environ.get("SIMAI_EC2_BASE_URL", "")
     token = os.environ.get("SIMAI_WORKER_TOKEN", "")
-    worker_id = os.environ.get("SIMAI_WORKER_ID", "worker-01")
+    worker_id_env = os.environ.get("SIMAI_WORKER_ID") or ""
+    worker_id = worker_id_env or "worker-01"
     if not base_url or not token:
         print("services.worker: SIMAI_EC2_BASE_URL·SIMAI_WORKER_TOKEN 이 필요하다 (.env)", file=sys.stderr)
         return 2
@@ -132,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"services.worker: GPU 메모리 상한을 두지 못했다: {cap.reason}", file=sys.stderr)
         return 2
     logging.getLogger("services.worker").info("GPU 메모리 상한 %s (%s), Tier 0 표시 파일 %s", cap.state, cap.fraction, gpu.marker)
+    log.info("워커 ID %s (%s)", worker_id, "SIMAI_WORKER_ID" if worker_id_env else "SIMAI_WORKER_ID 없음 → 기본값")
 
     transport = HttpTransport(base_url, token)
     handlers = build_handlers(args.config, HttpObjectStore(transport))
@@ -159,7 +162,12 @@ def main(argv: list[str] | None = None) -> int:
             worker.run_once(should_stop=stop.is_set)
         else:
             worker.run(stop)
-    except (AuthError, RequestRejected) as e:
+    except AuthError as e:  # 10차 세션: ID 없이 떠 기본 worker-01 로 401 → 감시 프로세스가 빠른 실패 5번 뒤 포기(S15P31A101-414)
+        src = "SIMAI_WORKER_ID" if worker_id_env else "SIMAI_WORKER_ID 없음 → 기본값"
+        print(f"services.worker: {e} — 워커 ID 와 토큰이 맞지 않음(현재 ID={worker_id}, {src}). EC2 에 등록한 워커 ID 를 SIMAI_WORKER_ID 로 준다"
+              "(simai-bootstrap 은 --worker-id 또는 토큰 파일 이름 <워커 ID>.token)", file=sys.stderr)
+        return 2
+    except RequestRejected as e:
         print(f"services.worker: {e}", file=sys.stderr)
         return 2
     except HandlerStuck as e:  # 멈추지 않는 처리기 스레드는 프로세스를 다시 띄워야 정리된다

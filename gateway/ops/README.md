@@ -6,7 +6,7 @@
 | 파일 | 하는 일 |
 |---|---|
 | `simai-gateway.cmd` | 더블클릭 → 메뉴. 명령줄 `simai-gateway.cmd run -PodIp … -ControlPort … -VideoPort …` |
-| `simai-gateway.ps1` | 1 설치·갱신, 2 점검, 3 관제 시작, 4 끄기, 5 카메라 미리보기만, 6~8 원격(S15P31A101-394) (Windows PowerShell 5.1) |
+| `simai-gateway.ps1` | 1 설치·갱신, 2 점검, 3 관제 시작, 4 끄기, 5 카메라 미리보기만, 6~8 원격(S15P31A101-394), SSH 전용 `update-remote`(S15P31A101-414) (Windows PowerShell 5.1) |
 | `make-gateway-usb.ps1` | 개발 노트북에서 첫 설치용 폴더(도우미 + 비밀 묶음)를 만든다 |
 | `../relay/configs/lobby.toml` | 로비 카메라 cam_A~D 주소(공유기 DHCP 예약 사설 IP, 계정 없음) |
 
@@ -23,7 +23,7 @@
 ## 그 뒤
 
 - 개발이 진행되면: 관제를 끄고(`4`) → `1`(git pull + uv sync, 도우미 자신도 갱신) → `3`.
-  도우미가 바뀌었으면 창을 닫고 바로가기로 다시 열라고 알린다.
+  도우미가 바뀌었으면 창을 닫고 바로가기로 다시 열라고 알린다. 원격(`ssh simai-gw`)에서는 `1` 대신 `update-remote`(아래 "원격").
 - 게이트웨이 저장소에서 파일을 고치지 않는다. 고친 파일이 있으면 갱신을 건너뛴다.
 
 ## 관제 시작(3)
@@ -67,10 +67,13 @@ EC2 sshd 의 GatewayPorts 기본값(no) 때문에 EC2 루프백에만 열리고,
 
 - 원격 데스크톱: 개발 노트북 `simai-gateway.cmd rdp`(메뉴 8). 경보 소리가 로비에서 나게 "로컬 리소스 → 원격 오디오 → 원격 컴퓨터에서 재생".
 - 명령만: `ssh simai-gw` 뒤
-  - 갱신 `powershell -ExecutionPolicy Bypass -File C:\simai\S15P31A101\gateway\ops\simai-gateway.ps1 setup`
+  - 갱신 `powershell -ExecutionPolicy Bypass -File C:\simai\S15P31A101\gateway\ops\simai-gateway.ps1 update-remote` (S15P31A101-414)
+    - 지금 모드(관제·미리보기)를 멈추고 → 로그인 세션 예약 작업 `simai-gateway-update` 로 `update`(`git fetch` → `checkout dev` → `pull --ff-only` → relay·site_alert `uv sync`)를 돌려 → 로그 `C:\simai-local\gateway-update.log` 의 `exit=<코드>` 를 기다린 뒤(최대 15분, 끝 15줄을 보여 준다) → 이전 모드로 되돌린다(실패해도 이전 코드로 되돌림, 15분 안에 안 끝나면 되돌리지 않는다).
+    - `setup` 을 SSH 에서 부르면 안 된다: SSH 세션은 Windows 자격 증명 관리자(wincredman)를 못 써 `git pull` 이 "could not read Username" 으로 실패한다(10차 세션). `setup` 은 게이트웨이 화면(원격 데스크톱)에서만 한다.
+    - 도우미 자신이 바뀌어도 다음 명령부터 새 판이 돈다. 비밀 묶음·SSH 설정·시계는 `update` 가 건드리지 않는다(`setup` 몫).
   - 관제 시작 `… simai-gateway.ps1 run-remote -PodIp <IP> -ControlPort <17000 매핑> -VideoPort <17001 매핑>` (SSH 세션의 창은 화면에 안 보이므로 로그인 세션의 예약 작업으로 `run` 을 띄운다)
   - 미리보기만 `… simai-gateway.ps1 preview-remote`
   - 끄기 `… simai-gateway.ps1 stop` (관제·미리보기 공통, 모드를 바꿀 때는 끄지 않고 바로 다른 모드를 시작해도 된다)
   - 상태 `… simai-gateway.ps1 status` (모드·창 생존·역터널 작업·카메라 RTSP 응답 수)
 - 조건: 게이트웨이는 전원 연결·절전 해제·Windows 로그인 상태(재부팅 뒤 로그인 전에는 역터널이 없다).
-- 끊긴 세션이 EC2 포트를 쥐고 있으면 역터널이 그 포트를 쥔 옛 ubuntu sshd 를 끝내고 다시 붙는다(`~/simai-gateway/free-ports.sh`).
+- 끊긴 세션이 EC2 포트를 쥐고 있으면 역터널이 그 포트를 쥔 옛 sshd 를 끝내고 다시 붙는다(`~/simai-gateway/free-ports.sh`). 다른 sshd 세션의 PID 는 sudo 없이 `ss -p` 에 안 보여 `sudo -n ss`·`sudo -n kill` 로 찾고 끝낸다(EC2 ubuntu 는 비밀번호 없는 sudo, S15P31A101-414). 스크립트는 `6`(원격 열기 설정)이 EC2 에 올리므로, 옛 판이 올라가 있으면 게이트웨이에서 `6` 을 다시 한다.

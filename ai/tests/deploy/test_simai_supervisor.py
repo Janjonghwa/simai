@@ -578,13 +578,13 @@ def test_services_go_to_supervisor_in_fixed_order(bs, tmp_path, monkeypatch):
 def test_bad_services_is_usage_error_before_any_download(bs, tmp_path, monkeypatch, value):
     calls, sup = _main_env(bs, tmp_path, monkeypatch, services=value)
     monkeypatch.setattr(bs, "urlopen", lambda req: (_ for _ in ()).throw(AssertionError("받으면 안 된다")))
-    assert bs.main([]) == bs.EXIT_USAGE and calls == [] and sup == []
+    assert bs.main(["tier0"]) == bs.EXIT_USAGE and calls == [] and sup == []
     assert not (tmp_path / "simai").exists()
 
 
 def test_gpu_below_48gb_runs_tier0_alone_even_with_services(bs, tmp_path, monkeypatch, capsys):
     calls, sup = _main_env(bs, tmp_path, monkeypatch, total_mb="24564", services="tier0,vllm,worker")  # RTX 4090
-    assert bs.main([]) == 0
+    assert bs.main(["tier0"]) == 0
     assert calls == [["simai-tier0"]] and sup == [] and "48GB" in capsys.readouterr().err
 
 
@@ -1097,11 +1097,13 @@ def test_lobby_mode_prepares_work_runs_supervisor_and_propagates_nonzero_exit_co
     tier0_tok = "tier0-secret-tok-999"
     worker_tok = "worker-secret-tok-888"
     t0_file = tmp_path / "tier0.token"
-    wk_file = tmp_path / "worker.token"
+    wk_file = tmp_path / "worker-s10.token"  # 워커 ID 는 토큰 파일 이름에서(-414, 10차: 기본 worker-01 로 떠 401)
     t0_file.write_text(tier0_tok + "\n", encoding="utf-8")
     wk_file.write_text(worker_tok + "\n", encoding="utf-8")
 
     monkeypatch.setenv("SIMAI_ROOT", str(root))
+    monkeypatch.setenv("SIMAI_SERVICES", "tier0,vllm,worker")  # 통합 이미지 ENV·10차 템플릿 값: lobby 는 따르지 않고 아바타를 띄운다(-414)
+    monkeypatch.delenv("SIMAI_WORKER_ID", raising=False)
     monkeypatch.setattr(bs, "prepare", lambda want_set: {
         "storage": {"root": str(root)},
         "gpu": {"name": "NVIDIA H100", "arch": "sm_90", "memory_total_mb": 81559.0},
@@ -1152,6 +1154,8 @@ def test_lobby_mode_prepares_work_runs_supervisor_and_propagates_nonzero_exit_co
     ])
     assert rc == 17, "Tier 0 의 비-0 종료 코드를 삼키지 않고 그대로 돌려줘야 한다"
     assert w.spawned == ["tier0", "vllm", "avatar", "worker"]
+    assert w.envs["worker"]["SIMAI_WORKER_ID"] == w.envs["avatar"]["SIMAI_WORKER_ID"] == "worker-s10"
+    assert "SIMAI_WORKER_ID" not in w.envs["tier0"] and "SIMAI_WORKER_ID" not in w.envs["vllm"]
 
     # 생성된 설정 파일 검증
     cfg = json.loads((work / "tier0-live.json").read_text(encoding="utf-8"))
@@ -1193,6 +1197,8 @@ def test_lobby_mode_prepares_work_runs_supervisor_and_propagates_nonzero_exit_co
     captured = capsys.readouterr()
     assert tier0_tok not in captured.out and tier0_tok not in captured.err
     assert worker_tok not in captured.out and worker_tok not in captured.err
+    assert "SIMAI_SERVICES=tier0,vllm,worker 는 lobby 에서 쓰지 않는다" in captured.err
+    assert "워커 ID worker-s10 (토큰 파일 이름 worker-s10.token)" in captured.err
 
 
 def test_check_preflight_verifies_multiple_sets_budget_and_runtime_and_fails_nonzero(bs, tmp_path, monkeypatch, capsys):
@@ -1266,3 +1272,93 @@ def test_scene_accepts_worker_token_file_without_exposing_token_in_argv_or_logs(
     assert cmd == ["python", "-m", "services.worker", "--once"]
     bs.log(f"scene test leak check: {tok}")
     assert tok not in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- S15P31A101-414: 10차 세션 기동 결함
+
+
+def test_worker_id_order_explicit_env_file_value_then_token_file_name(bs, tmp_path):
+    named = tmp_path / "worker-s10.token"
+    named.write_text("tok-a\n", encoding="utf-8")
+    keyed = tmp_path / "worker.env"
+    keyed.write_text("SIMAI_WORKER_TOKEN=tok-b\nSIMAI_WORKER_ID=worker-kv\n", encoding="utf-8")
+    generic = tmp_path / "worker.token"
+    generic.write_text("tok-c\n", encoding="utf-8")
+    assert bs.resolve_worker_id("worker-cli", {"SIMAI_WORKER_ID": "worker-env"}, named) == ("worker-cli", "--worker-id")
+    assert bs.resolve_worker_id(None, {"SIMAI_WORKER_ID": "worker-env"}, named) == ("worker-env", "SIMAI_WORKER_ID")
+    assert bs.resolve_worker_id(None, {}, named, keyed)[0] == "worker-kv"  # 파일 안의 값이 파일 이름보다 앞선다
+    assert bs.resolve_worker_id(None, {}, named) == ("worker-s10", "토큰 파일 이름 worker-s10.token")
+    assert bs.resolve_worker_id(None, {}, generic)[0] is None  # worker.token 같은 흔한 이름은 ID 로 보지 않는다
+    assert bs.resolve_worker_id(None, {}, tmp_path / "Worker_S10.token")[0] is None  # EC2 규칙(소문자·숫자·-) 밖
+    assert bs.resolve_worker_id(None, {})[0] is None
+    with pytest.raises(bs.BootstrapError) as exc:
+        bs.resolve_worker_id("Worker 01", {})
+    assert exc.value.code == bs.EXIT_USAGE
+
+
+def test_tier0_supervise_mode_gives_worker_id_from_token_file_name_and_image_pythonpath(bs, tmp_path, monkeypatch):
+    tok = tmp_path / "worker-s10.token"
+    tok.write_text("worker-secret-414\n", encoding="utf-8")
+    ai_dir = tmp_path / "opt-ai"
+    (ai_dir / "services").mkdir(parents=True)
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "vllm", "worker", "avatar"),
+               env={"SIMAI_WORKER_TOKEN_FILE": str(tok), "SIMAI_CACHE_ROOT": str(tmp_path / "cache"),
+                    "SIMAI_AI_DIR": str(ai_dir), "PYTHONPATH": str(tmp_path / "repo-copy")})
+    for name in ("worker", "avatar"):
+        assert sup.svc[name].env["SIMAI_WORKER_ID"] == "worker-s10"
+    assert "SIMAI_WORKER_ID" not in sup.svc["tier0"].env
+    for name in ("tier0", "vllm", "worker", "avatar"):  # 저장소 사본(앞)이 이미지 ai 폴더(끝)보다 앞선다
+        assert sup.svc[name].env["PYTHONPATH"] == os.pathsep.join([str(tmp_path / "repo-copy"), str(ai_dir)])
+        assert "worker-secret-414" not in json.dumps(sup.svc[name].env)
+    assert "워커 ID worker-s10 (토큰 파일 이름 worker-s10.token)" in sup.worker_id_note
+
+    # ID 를 정하지 못하면 워커 기본값(worker-01)을 쓴다는 경고를 남긴다
+    plain = _sup(bs, tmp_path, monkeypatch, World(), services=("tier0", "worker"), env={"SIMAI_AI_DIR": str(tmp_path / "none")})
+    assert "SIMAI_WORKER_ID" not in plain.svc["worker"].env and "PYTHONPATH" not in plain.svc["worker"].env
+    assert "401" in plain.worker_id_note and "worker-01" in plain.worker_id_note
+
+
+def test_preflight_budgets_lobby_services_and_reports_py_spy_without_failing(bs, tmp_path, monkeypatch, capsys):
+    manifest = tmp_path / "weights.json"
+    manifest.write_text(json.dumps({"weights": [
+        {"name": f"w-{s}", "sets": [s], "path": f"weights/{s}.bin", "source": {"url": "x"}, "sha256": "0" * 64}
+        for s in ("tier0", "avatar", "static", "vlm")]}), encoding="utf-8")
+    monkeypatch.setenv("SIMAI_ROOT", str(tmp_path / "simai"))
+    monkeypatch.setenv("SIMAI_WEIGHTS_MANIFEST", str(manifest))
+    monkeypatch.setenv("SIMAI_MIN_FREE_GB", "0.001")
+    monkeypatch.setenv("SIMAI_SERVICES", "tier0,vllm,worker")  # 통합 이미지 ENV: preflight 는 lobby 기본(아바타 포함)으로 본다
+    monkeypatch.setattr(bs, "detect_gpu", lambda smi: {"name": "NVIDIA H100", "arch": "sm_90", "memory_total_mb": 81559.0})
+    monkeypatch.setattr(bs, "ensure_weights", lambda r, entries: [{"name": e["name"], "status": "present"} for e in entries])
+    real_which = bs.shutil.which
+    monkeypatch.setattr(bs.shutil, "which", lambda name: "/usr/local/bin/py-spy" if name == "py-spy" else real_which(name))
+    monkeypatch.setattr(bs, "ptrace_capable", lambda: False)  # RunPod: SYS_PTRACE 없음
+    rc = bs.main(["preflight", "--require-bins", Path(sys.executable).name, "--require-modules", "json"])
+    cap = capsys.readouterr()
+    out = json.loads(cap.out)
+    assert rc == 0 and out["exit"] == 0
+    assert out["gpu_budget"]["worker_fraction"] == pytest.approx(0.05)  # avatar 0.10 을 뺀 값
+    assert out["diagnostics"]["py_spy"]["status"] == "unavailable"
+    assert "내장 계측" in cap.err and "실패 아님" in cap.err
+
+    monkeypatch.setattr(bs, "ptrace_capable", lambda: True)
+    assert bs.main(["preflight", "--require-bins", Path(sys.executable).name, "--require-modules", "json"]) == 0
+    assert json.loads(capsys.readouterr().out)["diagnostics"]["py_spy"]["status"] == "ok"
+
+
+def test_ptrace_capability_reads_cap_eff_bit_19(bs, tmp_path):
+    status = tmp_path / "status"
+    status.write_text("Name:\tpython\nCapEff:\t00000000a80425fb\n", encoding="ascii")  # Docker 기본 권한(SYS_PTRACE 없음)
+    assert bs.ptrace_capable(status) is False
+    status.write_text("CapEff:\t00000000a80c25fb\n", encoding="ascii")  # + CAP_SYS_PTRACE(1<<19)
+    assert bs.ptrace_capable(status) is True
+    assert bs.ptrace_capable(tmp_path / "missing") is None
+
+
+def test_lobby_explicit_services_without_avatar_warns_and_bad_worker_id_stops_before_prepare(bs, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(bs, "prepare", lambda want_set: (_ for _ in ()).throw(AssertionError("준비하면 안 된다")))
+    monkeypatch.setattr(bs, "claim_tier0", lambda root: (_ for _ in ()).throw(AssertionError("잠그면 안 된다")))
+    assert bs.main(["lobby", "--bundle-dir", str(tmp_path), "--worker-id", "Worker_01"]) == bs.EXIT_USAGE
+    assert "--worker-id" in capsys.readouterr().err
+    bs._warn_lobby_services("tier0,vllm,worker", None, ["tier0", "vllm", "worker"])
+    assert "아바타를 띄우지 않는다" in capsys.readouterr().err

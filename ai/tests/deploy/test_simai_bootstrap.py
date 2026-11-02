@@ -84,7 +84,7 @@ def test_storage_choice_env_then_workspace_then_container(bs, tmp_path, monkeypa
     monkeypatch.setattr(bs, "WORKSPACE", ws)
     monkeypatch.setattr(bs, "CONTAINER_ROOT", ct)
     monkeypatch.setattr(bs.os.path, "ismount", lambda _p: False)
-    assert bs.main([]) == 0
+    assert bs.main(["tier0"]) == 0
     argv, env = st["calls"][0]
     assert argv == ["simai-tier0"] and env["SIMAI_ROOT"] == str(ct)
     assert (ct / "weights" / "yolo" / "yolo26x-pose.pt").read_bytes() == WEIGHTS
@@ -112,7 +112,7 @@ def test_no_gpu_or_below_minimum_exits_3_before_downloading(bs, tmp_path, monkey
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     monkeypatch.setattr(bs, "urlopen", _no_network)
-    assert bs.main([]) == bs.EXIT_GPU
+    assert bs.main(["tier0"]) == bs.EXIT_GPU
     assert st["calls"] == [] and not st["target"].exists()
     assert why in capsys.readouterr().err
     assert _records(st["root"])[0]["exit"] == bs.EXIT_GPU
@@ -121,7 +121,7 @@ def test_no_gpu_or_below_minimum_exits_3_before_downloading(bs, tmp_path, monkey
 def test_missing_nvidia_smi_binary_exits_3(bs, tmp_path, monkeypatch):
     st = _setup(bs, tmp_path, monkeypatch)
     monkeypatch.setenv("SIMAI_NVIDIA_SMI", (tmp_path / "no-such-nvidia-smi").as_posix())
-    assert bs.main([]) == bs.EXIT_GPU and st["calls"] == []
+    assert bs.main(["tier0"]) == bs.EXIT_GPU and st["calls"] == []
 
 
 def test_gpu_arch_is_recorded_and_exported(bs, tmp_path, monkeypatch):
@@ -139,7 +139,7 @@ def test_gpu_arch_is_recorded_and_exported(bs, tmp_path, monkeypatch):
 
 def test_missing_weights_are_downloaded_verified_and_exported(bs, tmp_path, monkeypatch):
     st = _setup(bs, tmp_path, monkeypatch)
-    assert bs.main([]) == 0
+    assert bs.main(["tier0"]) == 0
     _argv, env = st["calls"][0]
     want = hashlib.sha256(WEIGHTS).hexdigest()
     assert st["target"].read_bytes() == WEIGHTS
@@ -153,7 +153,7 @@ def test_present_weights_with_matching_hash_are_reused_without_download(bs, tmp_
     st["target"].parent.mkdir(parents=True)
     st["target"].write_bytes(WEIGHTS)
     monkeypatch.setattr(bs, "urlopen", _no_network)  # 엘리스 블록 스토리지 재사용: 받지 않는다
-    assert bs.main([]) == 0 and len(st["calls"]) == 1
+    assert bs.main(["tier0"]) == 0 and len(st["calls"]) == 1
     assert _records(st["root"])[0]["weights"][0]["status"] == "present"
 
 
@@ -162,21 +162,21 @@ def test_present_weights_with_wrong_hash_refuse_and_are_not_deleted(bs, tmp_path
     st["target"].parent.mkdir(parents=True)
     st["target"].write_bytes(b"tampered")
     monkeypatch.setattr(bs, "urlopen", _no_network)
-    assert bs.main([]) == bs.EXIT_STORAGE and st["calls"] == []
+    assert bs.main(["tier0"]) == bs.EXIT_STORAGE and st["calls"] == []
     assert st["target"].read_bytes() == b"tampered"  # 덮어쓰거나 지우지 않는다
     assert "해시 불일치" in capsys.readouterr().err
 
 
 def test_downloaded_file_with_wrong_hash_is_discarded(bs, tmp_path, monkeypatch):
     st = _setup(bs, tmp_path, monkeypatch, sha="0" * 64)
-    assert bs.main([]) == bs.EXIT_STORAGE and st["calls"] == []
+    assert bs.main(["tier0"]) == bs.EXIT_STORAGE and st["calls"] == []
     assert not st["target"].exists() and not list(st["target"].parent.glob("*.part-*"))
 
 
 def test_manifest_without_hash_refuses_instead_of_trusting_the_download(bs, tmp_path, monkeypatch):
     st = _setup(bs, tmp_path, monkeypatch, sha="")
     monkeypatch.setattr(bs, "urlopen", _no_network)
-    assert bs.main([]) == bs.EXIT_STORAGE and st["calls"] == [] and not st["target"].exists()
+    assert bs.main(["tier0"]) == bs.EXIT_STORAGE and st["calls"] == [] and not st["target"].exists()
 
 
 def test_repo_manifest_is_valid_and_pins_tier0_weights(bs):
@@ -198,7 +198,7 @@ def test_hf_token_goes_only_to_first_request_and_never_to_logs_records_or_childr
         return io.BytesIO(WEIGHTS)
 
     monkeypatch.setattr(bs, "urlopen", fake_open)
-    assert bs.main([]) == 0
+    assert bs.main(["tier0"]) == 0
     req = seen[0]
     assert req.full_url == "https://huggingface.co/org/model/resolve/main/w.pt"
     assert req.unredirected_hdrs.get("Authorization") == f"Bearer {TOKEN}"
@@ -219,7 +219,7 @@ def test_hf_token_is_redacted_from_download_errors(bs, tmp_path, monkeypatch, ca
         raise RuntimeError(f"401 for header Bearer {TOKEN}")
 
     monkeypatch.setattr(bs, "urlopen", leaky)
-    assert bs.main([]) == bs.EXIT_STORAGE and st["calls"] == []
+    assert bs.main(["tier0"]) == bs.EXIT_STORAGE and st["calls"] == []
     out = capsys.readouterr()
     rec = _records(st["root"])[0]
     assert TOKEN not in out.out + out.err + json.dumps(rec)
@@ -235,6 +235,18 @@ def test_other_commands_pass_through_without_preparation(bs, tmp_path, monkeypat
     assert bs.main(["sleep", "infinity"]) == 0
     assert st["calls"][0][0] == ["sleep", "infinity"] and not st["root"].exists()
     assert bs.main(["--help"]) == 0 and st["calls"][1][0] == ["simai-tier0", "--help"]
+
+
+def test_no_args_shows_usage_and_starts_nothing(bs, tmp_path, monkeypatch, capsys):
+    """S15P31A101-414: 10차 세션에서 SSH 셸의 맨 simai-bootstrap 이 예전 교실 기본값으로 Tier 0 를 띄웠다. 인자 없으면 사용법만(64)."""
+    st = _setup(bs, tmp_path, monkeypatch)
+    monkeypatch.setattr(bs, "urlopen", _no_network)
+    assert bs.main([]) == bs.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert st["calls"] == [] and not st["root"].exists()
+    assert "simai-bootstrap tier0" in err and "simai-bootstrap lobby" in err
+    # 컨테이너 시작 경로(이미지 CMD tier0, RunPod 시작 명령 sleep infinity)는 그대로다
+    assert bs.main(["sleep", "infinity"]) == 0 and st["calls"][0][0] == ["sleep", "infinity"]
 
 
 def test_queue_mode_needs_repo_copy_and_runs_session_queue(bs, tmp_path, monkeypatch):
@@ -384,7 +396,7 @@ def test_no_child_process_inherits_hf_token(bs, tmp_path, monkeypatch):
     # take_token 전에 detect_gpu 를 바로 불러도 새지 않는다(리뷰 재현 그대로)
     monkeypatch.setenv("HF_TOKEN", TOKEN)
     assert bs.detect_gpu([PY, smi.as_posix()])["arch"] == "sm_90"
-    for argv in ([], ["tier0", "--config", "x"], ["check"], ["queue"], ["sleep", "infinity"], ["--help"]):
+    for argv in (["tier0"], ["tier0", "--config", "x"], ["check"], ["queue"], ["sleep", "infinity"], ["--help"]):
         monkeypatch.setenv("HF_TOKEN", TOKEN)
         monkeypatch.setenv("HUGGING_FACE_HUB_TOKEN", TOKEN)
         bs.main(argv)

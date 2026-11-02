@@ -80,3 +80,14 @@ def test_gpu_cap_failure_or_budget_error_skips_build_handlers(run_main, monkeypa
     )
     assert worker_main.main(["--once", "--wait-ms", "0"]) == 2
     assert not called
+
+
+def test_401_names_worker_id_mismatch_without_printing_token(ec2, run_main, monkeypatch, capsys):
+    """S15P31A101-414: SIMAI_WORKER_ID 없이 떠 기본 worker-01 로 401 이면 원인(ID·토큰 불일치, 현재 ID)을 분명히 남긴다. 토큰은 찍지 않는다."""
+    token = "test-worker-token"  # conftest.TOKEN
+    ec2.token_ok = False
+    monkeypatch.delenv("SIMAI_WORKER_ID")
+    assert run_main({"vlm_rationale": lambda _ctx: VLM_RESULT}) == 2
+    err = capsys.readouterr().err
+    assert "워커 ID 와 토큰이 맞지 않음(현재 ID=worker-01, SIMAI_WORKER_ID 없음 → 기본값)" in err
+    assert token not in err
