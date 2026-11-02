@@ -31,8 +31,8 @@ from simai_recorder.recorder import CameraSpec
 REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_ENV_FILE = REPO_ROOT / ".env"
 
-__all__ = ["DEFAULT_ENV_FILE", "ConfigError", "RedactSecrets", "Tier0Settings", "load_cameras", "load_env",
-           "load_tier0_settings", "secret_values"]
+__all__ = ["DEFAULT_ENV_FILE", "ConfigError", "RedactSecrets", "RemoteCctvSettings", "Tier0Settings", "load_cameras",
+           "load_env", "load_remote_cctv_settings", "load_tier0_settings", "secret_values"]
 
 SECRET_ENV_KEYS = ("SIMAI_DEVICE_TOKEN",)
 
@@ -96,6 +96,25 @@ def load_tier0_settings(env: Mapping[str, str]) -> Tier0Settings:
         pinned_spki=merged["SIMAI_TIER0_PINNED_SPKI_SHA256"].strip(),
         ca_file=(merged.get("SIMAI_TIER0_CA_FILE") or "").strip() or None,
     )
+
+
+@dataclass(frozen=True)
+class RemoteCctvSettings:
+    ec2_base_url: str
+    device_token: str
+
+    def __repr__(self) -> str:  # 토큰을 찍지 않는다
+        return f"RemoteCctvSettings(ec2_base_url={self.ec2_base_url!r}, device_token=***)"
+
+
+def load_remote_cctv_settings(env: Mapping[str, str]) -> RemoteCctvSettings:
+    """CCTV 원격 시청 업로드(--remote-cctv, S15P31A101-400) 설정. Tier 0 전송과 같은 EC2 주소·기기 토큰을 쓴다."""
+    merged = {**env, **{k: v for k, v in os.environ.items() if k.startswith("SIMAI_")}}
+    missing = [k for k in ("SIMAI_EC2_BASE_URL", "SIMAI_DEVICE_TOKEN") if not (merged.get(k) or "").strip()]
+    if missing:
+        raise ConfigError("원격 CCTV 업로드에 필요한 .env 값이 없다: " + ", ".join(missing))
+    return RemoteCctvSettings(ec2_base_url=merged["SIMAI_EC2_BASE_URL"].strip(),
+                              device_token=merged["SIMAI_DEVICE_TOKEN"].strip())
 
 
 class RedactSecrets(logging.Filter):

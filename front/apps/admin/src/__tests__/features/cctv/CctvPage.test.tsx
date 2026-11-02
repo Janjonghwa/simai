@@ -1,6 +1,7 @@
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { CctvPage } from '@/features/cctv/CctvPage';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
+import { useRemoteStatus } from '@/features/cctv/useRemoteStatus';
 import { viewerHealthAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore, type Role } from '@/store/session.store';
@@ -8,8 +9,14 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // 현장 노트북 중계(WebSocket·WebCodecs)는 붙이지 않는다. 연결·카메라 단계는 cctv.store 에 직접 넣는다.
-vi.mock('@/lib/env', () => ({ env: { VITE_CCTV_PREVIEW_URL: 'ws://127.0.0.1:47032' } }));
-vi.mock('@/features/cctv/useCctvPreview', () => ({ useCctvPreview: vi.fn(() => vi.fn()) }));
+vi.mock('@/lib/env', () => ({
+  env: { VITE_CCTV_PREVIEW_URL: 'ws://127.0.0.1:47032', VITE_STOMP_URL: 'wss://simai.live/ws' },
+}));
+const resume = vi.fn();
+vi.mock('@/features/cctv/useCctvPreview', () => ({
+  useCctvPreview: vi.fn(() => ({ attach: vi.fn(), resume })),
+}));
+vi.mock('@/features/cctv/useRemoteStatus', () => ({ useRemoteStatus: vi.fn(() => undefined) }));
 
 // T 는 mock 바퀴(40초)의 0초라 카메라 4대가 정상이다. T + 20초부터 6초 동안 cam3 가 키프레임을 기다린다.
 const T = 1_760_342_400_000;
@@ -60,6 +67,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.mocked(useCctvPreview).mockClear();
+  vi.mocked(useRemoteStatus).mockReset();
+  resume.mockClear();
   useCctvStore.getState().reset();
   useRealtimeStore.setState(useRealtimeStore.getInitialState(), true);
   useSessionStore.setState({ session: undefined });
@@ -152,6 +161,64 @@ describe('CctvPage 관리자 · 중계가 이어지지 않았을 때', () => {
     fireEvent.click(screen.getByRole('button', { name: 'cam3 크게 보기' }));
     expect(screen.getByRole('button', { name: 'cam3 작게 보기' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '4분할로' })).toBeTruthy();
+  });
+});
+
+describe('CctvPage 관리자 · 원격 시청(S15P31A101-400)', () => {
+  it('원격 CCTV 월 송출과 차단 여부를 보인다', () => {
+    vi.mocked(useRemoteStatus).mockReturnValue({
+      month: '2026-11',
+      monthly_sent_bytes: 1_932_735_283,
+      monthly_quota_bytes: 80_000_000_000,
+      blocked: false,
+      viewers: 1,
+      max_viewers: 5,
+      source_connected: true,
+      demand: true,
+    });
+    seedRealtime();
+    render(<CctvPage />);
+    expect(screen.getByLabelText('원격 CCTV 월 송출').textContent).toBe(
+      '원격 CCTV 월 송출 1.9 / 80 GB · 정상',
+    );
+  });
+
+  it('입력이 없어 멈추면 안내와 다시 보기를 보이고 누르면 다시 붙는다', () => {
+    seedRealtime();
+    const store = useCctvStore.getState();
+    store.setMode('remote');
+    store.setPause('idle');
+    store.setLink('stopped');
+    render(<CctvPage />);
+    expect(screen.getByLabelText('원격 시청 안내').textContent).toContain('10분 동안 입력이 없어');
+    fireEvent.click(screen.getByRole('button', { name: '다시 보기' }));
+    expect(resume).toHaveBeenCalledOnce();
+  });
+
+  it('동시 시청 상한·월 상한이면 그 안내를, 게이트웨이 대기면 다시 보기 없이 안내만 보인다', () => {
+    seedRealtime();
+    const store = useCctvStore.getState();
+    store.setMode('remote');
+    store.status({ kind: 'status', protocol: 'simai-cctv-preview/1', state: 'viewer_limit' });
+    const { unmount } = render(<CctvPage />);
+    expect(screen.getByLabelText('원격 시청 안내').textContent).toContain('동시 시청 인원');
+    unmount();
+
+    act(() =>
+      store.status({ kind: 'status', protocol: 'simai-cctv-preview/1', state: 'monthly_quota' }),
+    );
+    render(<CctvPage />);
+    expect(screen.getByLabelText('원격 시청 안내').textContent).toContain('송출 한도');
+    cleanup();
+
+    act(() =>
+      store.status({ kind: 'status', protocol: 'simai-cctv-preview/1', state: 'waiting_source' }),
+    );
+    render(<CctvPage />);
+    expect(screen.getByLabelText('원격 시청 안내').textContent).toContain(
+      '서버에 연결되지 않았습니다',
+    );
+    expect(screen.queryByRole('button', { name: '다시 보기' })).toBeNull();
   });
 });
 

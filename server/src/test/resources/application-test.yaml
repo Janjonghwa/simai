@@ -36,3 +36,8 @@ simai:
   clip:
     # 시험은 클립 삭제 작업을 직접 부른다(ClipPurgeIntegrationTest). 주기 작업이 다른 시험의 행을 건드리지 않게 미룬다
     purge-initial-delay: PT24H
+  cctv-remote:
+    # 시험은 시청자 상한·수요 끄기를 빨리 본다(CctvRemoteIntegrationTest). 사용 기록은 시험이 직접 부른다
+    max-viewers: 2
+    demand-linger: 400ms
+    usage-flush-interval: 1h

@@ -67,6 +67,20 @@ simai:
   tier0:
     # Tier 0 토큰(Tier 0 의 SIMAI_TIER0_TOKEN) 원문의 SHA-256 16진수. 비어 있으면 I1(/ws/tier0) 연결을 모두 거부한다
     token-sha256: ${SIMAI_TIER0_TOKEN_SHA256:}
+  cctv-remote:
+    # 관제 화면 CCTV 원격 시청(S15P31A101-400, 설계 docs/design/cctv-remote-view.md). 게이트웨이 영상 중계가 올린 H.264 를 저장 없이
+    # 관리자 브라우저에 나눠 준다. 동시 시청 상한, 월(UTC) 송출 상한(80 GB = 80×10^9 바이트, 넘으면 모두 닫고 막음)
+    max-viewers: 5
+    monthly-quota-bytes: 80000000000
+    # 마지막 시청자가 나가고 이만큼 뒤에도 0 이면 게이트웨이에 수요 없음(새로고침 깜빡임 방지)
+    demand-linger: 15s
+    # 시청 입장권 수명(한 번만)
+    ticket-ttl: 60s
+    # 수신·시청 모두 ping 간격, pong 없이 이만큼이면 끊는다
+    ping-interval: 15s
+    pong-timeout: 30s
+    # 송출 사용 기록(추가만)을 남기는 간격
+    usage-flush-interval: 1m
   clip:
     # 클립 삭제 작업(명세 11.5, S15P31A101-72). delete_after 가 지났고 보존 표시가 없는 클립의 객체를 지우고 deleted_at 을 쓴다
     purge-interval: PT10M

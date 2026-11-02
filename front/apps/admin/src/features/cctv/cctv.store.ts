@@ -1,13 +1,26 @@
+import type { RemoteState, StatusMessage } from '@/features/cctv/types';
 import { create } from 'zustand';
 
-// CCTV 로컬 미리보기 화면 상태. 프레임마다 바꾸지 않는다: 그리기는 캔버스가 직접 하고, 여기에는 연결·카메라 단계와
+// CCTV 미리보기(로컬·원격) 화면 상태. 프레임마다 바꾸지 않는다: 그리기는 캔버스가 직접 하고, 여기에는 연결·카메라 단계와
 // 마지막으로 그린 프레임의 촬영 시각(카메라마다 0.25초에 한 번까지)만 둔다.
 
 /**
- * connecting: 여는 중(처음·다시), open: 중계와 이어짐, unavailable: 붙지 못함(현장 노트북이 아니거나 중계 미리보기가 꺼짐),
- * unsupported: 이 브라우저에 WebCodecs VideoDecoder 가 없다.
+ * connecting: 여는 중(처음·다시), open: 중계(로컬) 또는 EC2(원격)와 이어짐, unavailable: 붙지 못함(다시 시도 중),
+ * unsupported: 이 브라우저에 WebCodecs VideoDecoder 가 없다, stopped: 원격 시청을 멈춤(다시 보기를 눌러야 이어짐).
  */
-export type PreviewLink = 'connecting' | 'open' | 'unavailable' | 'unsupported';
+export type PreviewLink = 'connecting' | 'open' | 'unavailable' | 'unsupported' | 'stopped';
+
+/** probing: 로컬 미리보기를 짧게 시도하는 중, local: 같은 노트북 중계(127.0.0.1), remote: EC2 원격 시청. */
+export type ViewMode = 'probing' | 'local' | 'remote';
+
+/** 원격 시청을 멈춘 까닭. idle: 입력 없음 10분, watch_limit: 한 번 시청 30분, hidden: 탭이 숨음(보이면 다시 붙음). */
+export type PauseReason = 'idle' | 'watch_limit' | 'hidden';
+
+export interface RemoteView {
+  state: RemoteState;
+  monthlySentBytes?: number;
+  monthlyQuotaBytes?: number;
+}
 
 /**
  * no_video: 중계가 이 카메라의 영상을 아직 못 받음(codec 없음), waiting_keyframe: codec 은 왔고 키프레임 대기,
@@ -30,7 +43,14 @@ interface CctvState {
   views: Record<string, CameraView>;
   /** 이번 화면에서 한 번이라도 중계에 붙었는지. 끊겨도 마지막 화면을 안내로 덮지 않는다. */
   everOpened: boolean;
+  mode: ViewMode;
+  pause: PauseReason | null;
+  /** 원격 시청에서 마지막으로 받은 status. */
+  remote: RemoteView | null;
   setLink: (link: PreviewLink) => void;
+  setMode: (mode: ViewMode) => void;
+  setPause: (pause: PauseReason | null) => void;
+  status: (message: StatusMessage) => void;
   hello: (cameras: string[]) => void;
   codec: (cameraId: string, width: number, height: number) => void;
   waitKeyframe: (cameraId: string) => void;
@@ -39,7 +59,15 @@ interface CctvState {
   reset: () => void;
 }
 
-const initial = { link: 'connecting' as PreviewLink, cameras: [], views: {}, everOpened: false };
+const initial = {
+  link: 'connecting' as PreviewLink,
+  cameras: [],
+  views: {},
+  everOpened: false,
+  mode: 'probing' as ViewMode,
+  pause: null,
+  remote: null,
+};
 
 const patch = (
   views: Record<string, CameraView>,
@@ -53,6 +81,17 @@ const patch = (
 export const useCctvStore = create<CctvState>()((set) => ({
   ...initial,
   setLink: (link) => set((s) => ({ link, everOpened: s.everOpened || link === 'open' })),
+  setMode: (mode) => set({ mode }),
+  // 멈추거나 다시 볼 때 지난 원격 status 는 지운다(다시 붙으면 새로 온다)
+  setPause: (pause) => set({ pause, remote: null }),
+  status: (message) =>
+    set({
+      remote: {
+        state: message.state,
+        monthlySentBytes: message.monthly_sent_bytes,
+        monthlyQuotaBytes: message.monthly_quota_bytes,
+      },
+    }),
   hello: (cameras) =>
     set((s) => ({
       cameras,

@@ -20,7 +20,8 @@ const schema = z.object({
     })
     .refine((value) => !/[?#]/.test(value), '? 나 # 없이 주소만 쓴다'),
   VITE_STOMP_URL: z.url({ protocol: /^wss?$/, error: 'ws(s) 주소여야 한다' }),
-  // 현장 노트북 CCTV 로컬 미리보기(중계 --preview-port). 영상은 노트북 밖으로 나가지 않으므로 루프백 주소만 받는다.
+  // 현장 노트북 CCTV 로컬 미리보기(중계 --preview-port). 같은 노트북에서만 붙으므로 루프백 주소만 받는다
+  // (노트북 밖에서는 EC2 원격 시청으로 붙는다, features/cctv/cctvView.ts).
   // 비우거나 없으면 기본값.
   VITE_CCTV_PREVIEW_URL: z
     .string()
