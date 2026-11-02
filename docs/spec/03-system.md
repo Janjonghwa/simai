@@ -222,7 +222,7 @@ flowchart TB
 1. 노트북은 RTSP 프레임에 추정 촬영 시각(3.9)을 붙여 RunPod Tier 0 서비스로 중계한다. 노트북은 GPU 작업을 하지 않는다.
 2. Tier 0 서비스는 YOLO26x-pose로 사람과 2D keypoint를 찾고, 카메라별 트랙을 World ID로 묶은 뒤 시간 보간과 삼각측량으로 World XYZ와 3D 골격을 만든다. 이 값이 위험 판단의 위치 정본이다.
 3. 같은 서비스의 LIVE Risk Engine이 규칙을 판정하고, 현장 경보는 `local_alert`로 노트북에 바로 보낸다. 이벤트 전이는 저널·outbox를 거쳐 EC2로 간다.
-4. EC2는 `world_state`와 이벤트 전이를 받아 생명주기를 갱신하고 Spatial DB에 기록한 뒤 STOMP 토픽 `/topic/world`, `/topic/events`, `/topic/health`(관리자는 `/topic/admin/events` 도, 12.4)로 발행한다. PWA 알림도 이때 나간다.
+4. EC2는 `world_state`와 이벤트 전이를 받아 생명주기를 갱신하고 Spatial DB에 기록한 뒤 STOMP 토픽 `/topic/world`, `/topic/events`, `/topic/health`(12.4)로 발행한다. PWA 알림도 이때 나간다.
 5. 브라우저는 토픽을 구독해 World 좌표를 Three.js 좌표 (x, z, −y)로 바꾼 뒤 아바타·구역·경보를 갱신해 렌더링한다. 변환은 뷰어 어댑터 한 곳에서만 한다.
 6. 정적 배경은 설치 시 EC2가 빈 교실 프레임과 보정 버전으로 정적 3D 작업을 만들고, 분석 워커가 그 작업을 가져가 MapAnything으로 복원한 뒤 glTF를 객체 저장소에 둔다. 뷰어는 REST로 COMMITTED Scene 주소를 받아 로드한다. 이 경로의 모델·후처리·품질은 EXP-01에서 선행 검증한다.
 7. 인체 메시/외형은 EXP-02에서 Fast SAM 3D Body 기반 비동기 파이프라인으로 검증한다. World ID·timestamp·calibration_version·scene_version을 기준으로 Tier 0 상태에 맞춰 렌더링만 보강하며, 안전 판정 좌표·이벤트를 수정하지 않는다.

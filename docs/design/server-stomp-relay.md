@@ -36,6 +36,6 @@ CONNECT 거부, `world_state` 그대로 중계, 동기화 중 해소 이벤트 �
 ## 남은 일
 
 - `/topic/health`(`viewer_health`) 조립·1초 발행은 S15P31A101-122. 그전까지 관제 앱은 health 가 오지 않아 연결을 끊김으로 표시한다.
-- `/topic/admin/events`(`action_mismatch`)는 조치 기능(M2), `/topic/avatar` 는 S15P31A101-138. 경로와 권한만 열어 두었다.
+- `/topic/admin/events`(`action_mismatch`)는 반장 조치 티켓 취소로 쓰지 않는다(2026-11-02, S15P31A101-411). 관제 앱이 관리자일 때 아직 구독하므로 구독 권한은 남겨 두고(지우면 ERROR 로 연결이 끊긴다), 관제 앱 정리 뒤 계약과 함께 지운다.
 - Web Push(I3)는 M1 알림 이슈.
 - 브로커는 메모리(simple broker)다. EC2 한 대 기준이며, 여러 대로 늘리면 외부 브로커가 필요하다.
