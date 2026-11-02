@@ -1,11 +1,8 @@
 import { z } from 'zod';
 
 // 히스토리(작업 다시 보기) 응답. 시각은 모두 epoch ms 다.
-// 작업 목록(GET /api/work-units)은 서버 API 가 아직 없어 형식을 가정한다(contract: WORK_UNITS_CONTRACT).
+// 작업 목록(GET /api/work-units)은 서버 응답 그대로다(docs/design/server-work-units.md). 서버는 lead(조 이름) 도 주지만 화면은 쓰지 않는다.
 // 구간 기록은 서버가 있는 GET /api/replay(명세 12.6, docs/design/server-replay.md)의 실제 응답 모양이다.
-
-/** 작업 목록 응답의 contract 값. 서버 API 가 생기면 이 가정(과 mock)을 걷어 낸다. */
-export const WORK_UNITS_CONTRACT = 'DEMO_UNCONFIRMED';
 
 /** 작업 하나(TBM 작업). 작업자 이름은 없다(NFR-14). */
 export const workUnitSchema = z.object({
@@ -29,7 +26,6 @@ export type WorkUnit = z.infer<typeof workUnitSchema>;
 
 /** GET /api/work-units. 작업은 하나씩 검사해 틀린 것만 뺀다. */
 export const workUnitsResponseSchema = z.object({
-  contract: z.literal(WORK_UNITS_CONTRACT),
   works: z.array(z.unknown()),
 });
 export type WorkUnitsResponse = z.infer<typeof workUnitsResponseSchema>;

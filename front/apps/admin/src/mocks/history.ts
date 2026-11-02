@@ -1,11 +1,10 @@
-import { WORK_UNITS_CONTRACT } from '@/features/history/types';
 import { TBM_TASKS, TBM_ZONES } from '@/features/tbm/tbmDemo';
 import { problem, readLiveUser, unauthorized } from '@/mocks/problem';
 import { EVENT_CYCLE_MS, riskEventsBetween, worldStateAt } from '@/mocks/realtimeScenario';
 import { http, HttpResponse } from 'msw/http';
 
 // 히스토리(작업 다시 보기) mock.
-// - 작업 목록(GET /api/work-units)은 서버 API 가 아직 없어 형식을 가정한다(contract: WORK_UNITS_CONTRACT).
+// - 작업 목록(GET /api/work-units)은 서버의 실제 응답 모양(docs/design/server-work-units.md)이다: { works: [...] }.
 // - 구간 기록(GET /api/replay)은 서버의 실제 응답 모양(docs/design/server-replay.md)이다: 봉투의 world_states·initial_events·
 //   events(출처 LIVE)·gaps 와 한도(1시간·3000 칸·400 코드)가 같다. 실시간 mock 장면(worldStateAt·riskEventsBetween)을 합성한다.
 
@@ -225,7 +224,7 @@ export function createHistoryMock({ now = Date.now }: { now?: () => number } = {
     http.get('*/api/work-units', ({ request }) => {
       const denied = deny(request);
       if (denied) return denied;
-      return HttpResponse.json({ contract: WORK_UNITS_CONTRACT, works: historyWorks(now()) });
+      return HttpResponse.json({ works: historyWorks(now()) });
     }),
     http.get('*/api/replay', ({ request }) => {
       const denied = deny(request);

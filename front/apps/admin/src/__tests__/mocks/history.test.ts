@@ -87,7 +87,7 @@ describe('히스토리 mock: 작업 목록', () => {
 
   it('작업 목록을 주고, 로그인하지 않았으면 401 이다', async () => {
     const body = await (await get('/api/work-units?days=7')).json();
-    expect(body.contract).toBe('DEMO_UNCONFIRMED');
+    expect(body).not.toHaveProperty('contract');
     expect(body.works).toHaveLength(works.length);
     expect((await get('/api/work-units?days=7', null)).status).toBe(401);
   });
