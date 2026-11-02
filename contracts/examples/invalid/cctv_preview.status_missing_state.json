@@ -1,0 +1,6 @@
+{
+  "_expect_error": "status 메시지에 state 가 없다",
+  "kind": "status",
+  "protocol": "simai-cctv-preview/1",
+  "monthly_sent_bytes": 100
+}

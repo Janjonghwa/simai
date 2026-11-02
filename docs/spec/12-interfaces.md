@@ -33,7 +33,7 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 
 EC2 내부: Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON 이다(공개 포트 없음, 기본 경로 `POST /v1/plan/evaluate`). Spring 이 `risk_plan_request`(출처 PLANNED, 판정 기준 시각, 규칙 묶음, 레이아웃의 구역·작업면·선택 계획 작업 위치)를 보내고 컨테이너가 `risk_plan_result`(등급 + 근거 위험 항목, 판정에 쓴 위치 목록, 또는 오류)로 답한다. 결과는 `sim.*` 에만 저장하고 알림 채널로 보내지 않는다(7.4, 8.3). 오류 판정 순서·HTTP 상태·본문 없는 실패의 처리는 계약(`contracts/`)이 정본이다. MVP 는 PLANNED 만 쓰고 REPLAY·WHAT_IF 재계산은 확장(부록 C)이다.
 
-노트북 → EC2 는 HTTPS(기기 토큰)로 `laptop_heartbeat`(1초)를 보내고 Tier 0 엔드포인트(`tier0_endpoint`)를 조회한다(12.6).
+노트북 → EC2 는 HTTPS(기기 토큰)로 `laptop_heartbeat`(1초)를 보내고 Tier 0 엔드포인트(`tier0_endpoint`)를 조회한다(12.6). 또한 관제 화면 CCTV 원격 시청(3.3, v1.3 수정 46)을 위해 기기 토큰 헤더로 `wss://<ec2>/ws/devices/cctv` 연결을 상시 유지하고, EC2 가 보내는 `cctv_remote_control`(1.0.0, `demand active`)이 `true` 인 동안에만 `simai-cctv-preview/1` 형식(`cctv_preview` 1.1.0 `hello`·`codec` 과 이진 프레임)으로 영상을 올린다. 로그인한 관리자는 `POST /api/cctv/remote/tickets` 로 유효 60 s 일회용 입장권을 받아 원시 WebSocket `wss://<ec2>/ws/cctv/view?ticket=…` 로 시청한다(묶음 6.11.0, `docs/design/cctv-remote-view.md`).
 
 ## 12.3 I1 주요 메시지
 
@@ -211,6 +211,7 @@ VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커�
 | PUT | /api/clips/\{id\}/retention | 클립 보존 표시 붙이기·떼기 | 관리자 |
 | GET | /api/videos?from=\{t1\}&amp;to=\{t2\}&amp;camera_id= | 촬영 구간이 겹치는 상시 영상 조각 목록(주소 없음, 24시간 이내) | 관리자 |
 | GET | /api/videos/\{segmentId\} | 상시 영상 조각 재생(임시 서명 주소, 조회 기록) | 관리자 |
+| POST | /api/cctv/remote/tickets | 관제 화면 CCTV 원격 시청용 일회용 입장권 발급(유효 60 s, 1회 소비, `wss://<ec2>/ws/cctv/view?ticket=…`, 3.3, v1.3 수정 46) | 관리자 |
 | GET | /api/push/vapid-public-key | Web Push 구독용 VAPID 공개키 | 반장 |
 | POST · DELETE | /api/push/subscribe | Web Push 구독 등록·해지 | 반장 |
 | POST | /api/push/receipts | 푸시 수신 확인(Service Worker) | 반장 기기 |

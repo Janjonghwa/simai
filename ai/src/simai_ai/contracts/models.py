@@ -2070,6 +2070,15 @@ class Camera(BaseModel):
     reprojection_error_px: ReprojectionErrorPx1
 
 
+class CctvRemoteControl(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    kind: Literal['demand']
+    active: StrictBool
+    sent_at_ms: DefsTimestampMs
+
+
 class Payload6(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -3207,7 +3216,7 @@ class CctvPreview(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    kind: Literal['hello', 'codec']
+    kind: Literal['hello', 'codec', 'status']
     protocol: Literal['simai-cctv-preview/1']
     cameras: Annotated[list[DefsCameraId] | MISSING, Field(max_length=16, min_length=1)] = (
         MISSING
@@ -3216,6 +3225,11 @@ class CctvPreview(BaseModel):
     codec_string: Annotated[StrictStr | MISSING, Field(pattern='^avc1\\.[0-9A-F]{6}$')] = (
         MISSING
     )
+    state: Literal['live', 'waiting_source', 'viewer_limit', 'monthly_quota'] | MISSING = (
+        MISSING
+    )
+    monthly_sent_bytes: Annotated[StrictInt | MISSING, Field(ge=0)] = MISSING
+    monthly_quota_bytes: Annotated[StrictInt | MISSING, Field(ge=1)] = MISSING
 
 
 class Rules(ConfigBundleComponent):
@@ -3430,6 +3444,7 @@ class Contracts(BaseModel):
     calibration: Calibration | MISSING = MISSING
     calibration_update: CalibrationUpdate | MISSING = MISSING
     cctv_preview: CctvPreview | MISSING = MISSING
+    cctv_remote_control: CctvRemoteControl | MISSING = MISSING
     clock_sync_request: ClockSyncRequest | MISSING = MISSING
     clock_sync_response: ClockSyncResponse | MISSING = MISSING
     codec_info: CodecInfo | MISSING = MISSING

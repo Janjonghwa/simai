@@ -1,0 +1,5 @@
+{
+  "kind": "status",
+  "protocol": "simai-cctv-preview/1",
+  "state": "waiting_source"
+}
