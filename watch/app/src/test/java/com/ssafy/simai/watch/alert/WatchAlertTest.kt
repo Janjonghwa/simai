@@ -9,10 +9,11 @@ import org.junit.Test
 
 class WatchAlertTest {
     private val base = mapOf(
+        AlertFields.ALERT_MSG_ID to "m1",
         AlertFields.EVENT_ID to "e1",
         AlertFields.SEVERITY to "CRITICAL",
         AlertFields.WORD to "멈춤",
-        AlertFields.SENT_AT_MS to "1000",
+        AlertFields.SENT_AT to "1000",
         AlertFields.ACK_WITHIN_MS to "30000",
     )
 
@@ -25,7 +26,9 @@ class WatchAlertTest {
     @Test
     fun readsRequiredFieldsAndDefaultsTheRest() {
         val alert = WatchAlert.fromFields(base)
+        assertEquals("m1", alert.alertMsgId)
         assertEquals("e1", alert.eventId)
+        assertNull(alert.eventSequence)
         assertEquals(AlertSeverity.CRITICAL, alert.severity)
         assertEquals("멈춤", alert.word)
         assertEquals(1000L, alert.sentAtMs)
@@ -39,11 +42,13 @@ class WatchAlertTest {
     fun readsOptionalFields() {
         val alert = WatchAlert.fromFields(
             fields(
-                AlertFields.VIBRATION to "CAUTION_DOUBLE",
+                AlertFields.EVENT_SEQUENCE to "3",
+                AlertFields.VIBRATION_PATTERN to "CAUTION_DOUBLE",
                 AlertFields.DIRECTION to "LEFT",
                 AlertFields.NEEDS_CHECK to "true",
             ),
         )
+        assertEquals(3L, alert.eventSequence)
         assertEquals(VibrationPattern.CAUTION_DOUBLE, alert.vibration)
         assertEquals(AlertDirection.LEFT, alert.direction)
         assertTrue(alert.needsCheck)
@@ -53,7 +58,7 @@ class WatchAlertTest {
     fun explicitVibrationBeatsTheSeverityDefault() {
         val plain = WatchAlert.fromFields(base)
         assertEquals(VibrationPattern.DANGER_LONG, plain.pattern)
-        val explicit = WatchAlert.fromFields(fields(AlertFields.VIBRATION to "CAUTION_WEAK"))
+        val explicit = WatchAlert.fromFields(fields(AlertFields.VIBRATION_PATTERN to "CAUTION_WEAK"))
         assertEquals(VibrationPattern.CAUTION_WEAK, explicit.pattern)
     }
 
@@ -73,17 +78,19 @@ class WatchAlertTest {
     fun roundTripsThroughFields() {
         val alert = WatchAlert.fromFields(
             fields(
-                AlertFields.VIBRATION to "DANGER_LONG",
+                AlertFields.EVENT_SEQUENCE to "7",
+                AlertFields.VIBRATION_PATTERN to "DANGER_LONG",
                 AlertFields.DIRECTION to "FRONT",
                 AlertFields.NEEDS_CHECK to "true",
             ),
         )
         assertEquals(alert, WatchAlert.fromFields(alert.toFields()))
+        assertEquals(alert.toFields(), WatchAlert.fromFields(alert.toFields()).toFields())
     }
 
     @Test
     fun rejectsMissingRequiredFields() {
-        for (name in listOf(AlertFields.EVENT_ID, AlertFields.SEVERITY, AlertFields.WORD, AlertFields.SENT_AT_MS, AlertFields.ACK_WITHIN_MS)) {
+        for (name in listOf(AlertFields.ALERT_MSG_ID, AlertFields.EVENT_ID, AlertFields.SEVERITY, AlertFields.WORD, AlertFields.SENT_AT, AlertFields.ACK_WITHIN_MS)) {
             assertThrows(name, IllegalArgumentException::class.java) { WatchAlert.fromFields(fields(name to null)) }
             assertThrows(name, IllegalArgumentException::class.java) { WatchAlert.fromFields(fields(name to "  ")) }
         }
@@ -94,12 +101,14 @@ class WatchAlertTest {
         val bad = listOf(
             AlertFields.SEVERITY to "INFO", // 워치는 위험·경고·주의만 받는다
             AlertFields.SEVERITY to "critical",
-            AlertFields.VIBRATION to "BUZZ",
+            AlertFields.VIBRATION_PATTERN to "BUZZ",
+            AlertFields.EVENT_SEQUENCE to "0",
+            AlertFields.EVENT_SEQUENCE to "two",
             AlertFields.DIRECTION to "UP",
             AlertFields.NEEDS_CHECK to "yes",
             AlertFields.WORD to "아주아주아주긴단어입니다", // 작은 화면에서 잘린다
-            AlertFields.SENT_AT_MS to "0",
-            AlertFields.SENT_AT_MS to "abc",
+            AlertFields.SENT_AT to "0",
+            AlertFields.SENT_AT to "abc",
             AlertFields.ACK_WITHIN_MS to "0",
             AlertFields.ACK_WITHIN_MS to "-5",
             AlertFields.ACK_WITHIN_MS to (MAX_ACK_WITHIN_MS + 1).toString(),

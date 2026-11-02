@@ -11,7 +11,21 @@ class AlertBoardTest {
         severity: AlertSeverity = AlertSeverity.CRITICAL,
         ackWithinMs: Long = 30_000L,
         word: String = "멈춤",
-    ) = WatchAlert(eventId, severity, null, null, word, sentAtMs = 1L, ackWithinMs = ackWithinMs, needsCheck = false)
+        msgId: String = "msg-$eventId",
+    ) = WatchAlert(msgId, eventId, null, severity, null, null, word, sentAtMs = 1L, ackWithinMs = ackWithinMs, needsCheck = false)
+
+    @Test
+    fun newAlertForAnAckedEventRingsAgainButARepeatDoesNot() {
+        val acked = AlertBoard().receive(alert("a"), 1_000).acknowledge("a", 5_000)
+        assertEquals(AlertPhase.ACKED, acked.items.single().phase)
+        val repeated = acked.receive(alert("a", word = "다시"), 6_000)
+        assertEquals(AlertPhase.ACKED, repeated.items.single().phase)
+        assertEquals("다시", repeated.items.single().alert.word)
+        val escalated = acked.receive(alert("a", msgId = "msg-a-2"), 7_000)
+        assertEquals(AlertPhase.ACTIVE, escalated.items.single().phase)
+        assertEquals(7_000L, escalated.items.single().receivedAtMs)
+        assertEquals("a", escalated.vibrating?.alert?.eventId)
+    }
 
     @Test
     fun emptyBoardShowsNothing() {

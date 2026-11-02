@@ -58,8 +58,8 @@ pipeline {
                         ['GATEWAY', ['gateway/', 'contracts/']],
                         ['FRONT', ['front/', 'contracts/']],
                         ['SERVER', ['server/', 'contracts/']],
-                        // 워치 앱은 아직 계약을 읽지 않는다. I4 를 읽게 되면(S15P31A101-337) contracts/ 를 더한다
-                        ['WATCH', ['watch/']],
+                        // 워치 앱 단위 시험이 I4 계약 예시(contracts/examples)를 읽는다(S15P31A101-337)
+                        ['WATCH', ['watch/', 'contracts/']],
                     ]
                     for (int i = 0; i < parts.size(); i++) {
                         def run = touched(files, parts[i][1] + always) ? 'true' : 'false'

@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <application>
+    <!-- PC 의 가짜 EC2(ws://, TLS 없음)에 붙을 수 있게 debug 빌드만 평문을 허용한다. release 는 기본값(금지) -->
+    <application android:usesCleartextTraffic="true">
         <!-- 가짜 알림 입구(debug 빌드에만 있다). 사용법은 watch/README.md. ConfigActivity 와 같이 DUMP 로 adb shell 만 부른다.
              taskAffinity 를 비워 알림 화면이 떠 있는 작업에 끼어들지 않게 한다(끼어들면 새 알림이 전달되지 않는다) -->
         <activity

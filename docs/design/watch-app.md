@@ -72,10 +72,10 @@
 | 같은 event_id 가 다시 옴 | 확인 대기 중이면 내용만 바꾸고 기한 기준은 지킨다 / 기한이 지났으면 새로 받은 것 / 확인한 것은 내용만 바꾸고 다시 울리지 않는다 | 서버가 되풀이해 보내도 기한이 밀려 격상이 늦어지지 않게 한다 |
 | 한 단어 | 1~8자. 글자 크기는 화면 폭 × 0.7 ÷ 글자 수(36~20sp) | 작은 화면에서 잘리지 않게(FR-45 "한 단어"). 20sp 이상은 사용자 글꼴 설정으로 커지지 않는 Wear 규칙을 따른다 |
 | 방향 | FRONT·BACK·LEFT·RIGHT(↑ ↓ ← →), 없을 수 있다 | FR-45 "방향". 어느 쪽이 기준인지(작업자가 보는 쪽인지)는 -334 계약에서 정한다 |
-| 칸 이름 | `event_id, severity, vibration, direction, word, sent_at_ms, ack_within_ms, needs_check` | -334 계약이 없어 정한 초안. 계약이 나오면 이름만 맞춘다. 인텐트 extra 도 같은 이름을 쓴다 |
-| 알림 보관 | 지금은 화면(Activity)이 들고 있다 | EC2 연결 서비스(-337)가 생기면 보관을 서비스로 옮긴다. 화면은 `AlertActivity.intentFor` 로 부르기만 하면 된다 |
+| 칸 이름 | 계약 `watch_alert` 의 payload 이름 그대로(`event_id, event_sequence, severity, vibration_pattern, direction, word, ack_within_ms, needs_check`) + 봉투의 `msg_id` → `alert_msg_id`, `sent_at` | -334 계약으로 맞췄다(-337). 인텐트 extra 도 같은 이름을 쓴다 |
+| 알림 보관 | 연결 서비스 `I4Service` 가 들고 있고 화면은 `AlertCenter.board` 를 관찰한다(-337 에서 옮김) | 화면이 없어도 진동·기한·확인이 돌아야 한다 |
 | 확인 단추 | 화면 아래 25% 를 차지하는 반달 단추(너비 76%, 어두운 회색 `#2E2E2E` 바탕에 흰 글자). 한 번 탭하면 확인이다 | 장갑 낀 손가락으로도 누르게 크게, 길게 누르기·슬라이드는 쓰지 않는다(취소할 수 없는 행동이 아니다). Wear 의 가장자리 단추(EdgeButton)는 목록이 끝에 닿아야 커져서 짧은 알림 화면에서는 작은 알약으로 남아 쓰지 않았고, 같은 모양을 직접 그렸다(에뮬레이터에서 확인) |
-| 확인 보내기 | `AlertAcker` 인터페이스. 지금은 `LogAlertAcker`(logcat `SimaiWatchAck`) | 서버가 없다. -337 이 실제 전송으로 바꾼다 |
+| 확인 보내기 | 서비스가 `watch_ack`(VIBRATED 자동·CONFIRMED 단추)를 보낸다(-337). 기록은 logcat `SimaiWatchI4` | 계약 watch_ack |
 | 가짜 알림 | debug 빌드에만 `DebugAlertActivity`(DUMP 권한, adb shell 만, `taskAffinity` 를 비움) | release 앱에 시험 입구가 남지 않게 한다. 작업 소속을 비우지 않으면 시스템이 알림 화면이 떠 있는 작업으로 입구를 끼워 넣다가 새 알림을 전달하지 않았다 |
 
 ### 화면 디자인 (안 A 큰 아이콘형, 한눈에 읽기)
@@ -126,6 +126,74 @@
   PWA 가 없어졌으므로 FR-44 의 UNBOUND 대체 경로
 - 확인 시각 표시는 워치 시계를 쓴다. EC2 시계와의 차이는 -337 의 시계 오차 처리에서 다룬다
 - 백그라운드에서 알림 화면을 띄우는 방법은 -337 에서 정한다. Android 10 이상은 앱이 앞에 없으면 서비스가 화면을 바로 띄울 수 없어서(전체 화면 알림 또는 앞에 떠 있는 앱이 필요) 이 스토리는 앱이 앞에 있거나 adb 로 띄운 경우만 확인했다
+
+## EC2 연결·확인 전송 (S15P31A101-337)
+
+I4 계약(-334, `docs/design/watch-i4-contract.md`)대로 EC2 와 wss 지속 연결을 맺고, `watch_alert` 를 받아 울리고 `watch_ack` 를 보내며,
+하트비트로 연결을 지킨다. EC2 쪽(-336 연결·등록, -338 발송·격상)이 아직 없어 PC 의 가짜 EC2(`watch/tools/fake_ec2.py`)로 시험한다.
+
+| 위치 | 하는 일 |
+|---|---|
+| `service/I4Service.kt` | 포그라운드 서비스(connectedDevice 유형). 연결 루프·하트비트·알림 보관(`AlertBoard`)·진동·확인 전송·확인 보류. 모든 상태는 메인 스레드 |
+| `service/AlertCenter.kt` | 화면이 관찰하는 보드·연결 상태 흐름(StateFlow)과 확인 입구. 서비스가 없으면 빈 값 |
+| `service/AlertNotifier.kt` | 상시 알림(연결 상태)과 전체 화면 인텐트 알림(화면이 꺼진 채 알림 화면 띄우기) |
+| `service/DeviceStatus.kt`, `service/BootReceiver.kt` | 배터리·전송 경로 읽기, 부팅 뒤 재연결 |
+| `i4/I4Codec.kt` | I4 JSON 읽기·만들기(org.json, 의존성 없음). 잘못된 메시지는 버린다 |
+| `i4/HeartbeatState.kt`, `i4/Backoff.kt`, `i4/PendingAcks.kt` | 하트비트 seq·echo·시계 차이·끊김 판정, 재연결 대기, 보류 확인. 순수한 값이라 JVM 시험 |
+| `i4/I4Connection.kt` | OkHttp WebSocket 하나(Authorization: Bearer 기기 토큰, ping 30초) |
+| `config/WatchConfig.kt` | 기기 ID(봉투 `source_id`) 추가, `wsUrl`, debug 전용 평문 http |
+| `AlertActivity.kt`, `MainActivity.kt`, `ui/StatusScreen.kt` | 화면은 `AlertCenter` 를 관찰만 한다. 상태 화면에 연결·하트비트·시계 차이·배터리 |
+| `watch/tools/fake_ec2.py` | PC 용 가짜 EC2: 토큰 검사, 계약 검사, 하트비트 답, 표준 입력으로 알림 발송, 확인 지연 출력 |
+
+흐름: 설정 저장(ConfigActivity) 또는 앱 열기(MainActivity)·부팅 → `I4Service` 시작 → `wss://EC2/ws/watch` 연결 → 하트비트(기본 10초, EC2 가
+`interval_ms` 로 바꿈) → `watch_alert` 수신 → 보드에 넣고 진동 → `watch_ack` VIBRATED 전송 → 알림 화면(앞에 있으면 바로, 아니면 전체 화면
+인텐트) → 작업자 확인 → `watch_ack` CONFIRMED. 끊기면 1·2·4…30초 간격으로 다시 잇고, 그동안의 확인은 보류했다가 보낸다.
+
+### 명세가 비워 둔 곳에서 정한 것
+
+| 항목 | 정한 값 | 근거 |
+|---|---|---|
+| 연결 경로·인증 | `wss://<EC2>/ws/watch`, `Authorization: Bearer <기기 토큰>` | I1 Tier 0(`/ws/tier0`)·I6 워커와 같은 방식(`Tier0TokenAuthenticationFilter`). -336 이 같은 경로를 쓴다 |
+| 기기 ID | adb 로 주소·토큰과 함께 넣는 `device_id`(`instance_id` 패턴, `ec2` 불가) | 봉투 `source_id` 는 EC2 의 `device.device_id` 여야 한다(계약). 토큰에서 끌어낼 수 없다 |
+| 연결 유지 | 포그라운드 서비스 `connectedDevice` 유형 + `requestNetwork(INTERNET)` + OkHttp ping 30초 + 연결돼 있는 동안 부분 wake lock | dataSync 유형은 Android 15 부터 시간 상한이 있다. connectedDevice 는 "망으로 외부 기기와 상호작용" 에 쓰고 상한이 없다(전제 권한 CHANGE_WIFI_STATE). 망 요청은 화면이 꺼져도 Wi-Fi·휴대폰 경유 망을 내리지 않게 한다. 포그라운드 서비스는 CPU 수면을 막지 못해 하트비트 타이머가 밀리면 EC2 가 끊김으로 보므로 wake lock 을 쥔다(배터리 영향은 실기기에서 잰다, 아래 남은 일) |
+| 끊김 판정·재연결 | 내 하트비트 3회에 EC2 echo 가 없으면 끊고(기본 30초) 1·2·4·8·16·30초 지수 대기. 대기는 첫 echo 를 받아야 처음으로 돌아간다. 내가 보낸 범위 밖의 echo 는 무시, EC2 가 준 주기는 1~60초로 끌어온다 | 계약 설계 문서의 규칙. EC2 하트비트에 echo 가 필수라 echo 로 생존을 본다. 핸드셰이크 뒤 바로 닫는 서버에 1초마다 붙지 않게 |
+| 시계 차이 | echo 로 ((t1 − t2) + (t4 − t3)) / 2, 상태 화면에 표시. 기한 판정에는 쓰지 않는다 | 계약 watch_heartbeat. 기한은 단조 시계로 재므로 시계 차이와 무관(-390). gait_features(-339)가 이 값을 싣는다 |
+| 확인 전송 | VIBRATED 는 그 이벤트가 울리는 상태일 때 받는 즉시(acked_at = received_at = 받은 시각), CONFIRMED 는 확인 단추. 끊겨 있으면 (alert_msg_id, kind) 별로 64건까지 보류하고, 다시 이어지면 보류분과 최근 10분 안에 보낸 확인을 다시 보낸다 | 계약 watch_ack. `ws.send` 의 true 는 큐에 넣었다는 뜻이라 끊기기 직전 확인이 사라질 수 있다. EC2 가 중복을 뺀다. 확인한 이벤트의 같은 알림이 되풀이되면 VIBRATED 를 보내지 않는다(격상을 풀면 안 된다) |
+| 같은 알림 다시 옴 | `alert_msg_id` 가 같으면 울리지 않고 보낸 VIBRATED 확인을 다시 보낸다(64건 기억). 확인한 이벤트에 다른 `alert_msg_id`(등급 상향·재발송)가 오면 다시 울린다 | 계약 watch_alert "같은 msg_id 를 다시 받으면 한 번만 진동", "확인 뒤 등급이 오른 경보는 그 확인으로 확인된 것이 아니다" |
+| 알림 보관 위치 | 서비스(`AlertBoard`). 화면은 `AlertCenter.board` 를 관찰 | 화면이 없어도(꺼짐·닫힘) 진동·기한·확인이 돌아야 한다. -390 의 "서비스로 옮긴다" 이행 |
+| 화면 띄우기 | 앱이 앞에 있으면 `startActivity`, 아니면 전체 화면 인텐트 알림(`USE_FULL_SCREEN_INTENT`, 채널 HIGH) | Android 10 이상 백그라운드 화면 시작 제한. Android 14 이상에서 권한이 꺼져 있으면 logcat 에 알리고 README 에 켜는 법 |
+| 깨어 있기 | 알림을 받으면 부분 wake lock 10초 | 진동 시작·확인 전송·화면 띄우기가 잠들기 전에 끝나게 |
+| 평문 http | debug 빌드에서만 허용(`BuildConfig.DEBUG`), release 는 저장된 http 설정도 지운다 | PC 의 가짜 EC2 는 TLS 가 없다. 운영 앱에는 남지 않는다 |
+| 수신 너그러움 | 모르는 msg_type 무시, 한 단어 앞뒤 공백은 지움, 정수 자리의 소수·문자열은 거부 | 명세 12.1 "모르는 필드 무시". 계약 반례 `word_padded` 는 송신 측 규칙이라 워치 시험에서 뺐다 |
+| 알림 권한 | 첫 실행에 POST_NOTIFICATIONS 요청. 거부해도 연결·진동은 된다 | 상시 알림·전체 화면 인텐트 알림이 보이려면 필요 |
+
+### 시험
+
+- JVM: `./gradlew assembleDebug testDebugUnitTest` 62 통과(2026-11-02, 리뷰 반영 뒤). `I4CodecTest` 는 계약 예시·반례(`contracts/examples`)를 그대로 읽어
+  Jenkins 의 WATCH 파트에 `contracts/` 를 더했다. `HeartbeatStateTest`(시계 차이 부호, 3회 누락), `BackoffTest`, `PendingAcksTest`, 설정·알림 시험 갱신.
+- 가짜 EC2: `uv run watch/tools/fake_ec2.py --token dev-token` 뒤 워치에 PC 주소를 넣고 연결·하트비트·알림·확인·재연결을 본다(README).
+  서버 자체는 PC 에서 워치를 흉내 낸 스크립트로 토큰 거부(401)·하트비트 echo 답·계약 위반 출력·알림 발송·확인 지연 출력을 확인했다.
+- 실기기(2026-11-02, 갤럭시워치6 SM-R940 Android 14, 같은 Wi-Fi 의 PC 가짜 EC2 `http://192.168.0.24:8765`):
+  - 설정 입력 → 서비스가 바로 붙고 10초 하트비트(배터리·WIFI), 상태 화면에 연결됨·EC2 하트비트 시각·시계차(−2.1초)·배터리
+  - 평문 http 는 targetSdk 28 이상 기본 정책에 막혀 debug 매니페스트에 `usesCleartextTraffic` 을 더했다(release 는 금지 그대로)
+  - CRITICAL 알림: 즉시 DANGER_LONG 진동, VIBRATED 확인이 서버에 닿음, 알림 화면(링·위험·↑ 추락·확인 단추). 기한 10초 뒤 진동만 멈춤. 확인 단추 → CONFIRMED
+  - 화면 꺼진 채 90초 뒤 HIGH 알림: 하트비트가 끊기지 않았고 진동·VIBRATED 즉시. 알림 화면은 전체 화면 인텐트가 appop 기본값(거부)이라
+    시스템 알림 팝업으로 떴고, `appops set … USE_FULL_SCREEN_INTENT allow` 뒤에는 Asleep 상태에서도 알림이 올라가 손목을 들자 알림 화면이 떴다
+    (Wear 는 꺼진 화면을 알림이 직접 켜지 않고 손목 들기·탭으로 연다). 앱이 앞에 있거나 방금 만졌으면 `startActivity` 로 바로 뜬다
+  - 같은 알림 재전송: 울리지 않고 VIBRATED 확인만 다시 보냄
+  - 서버를 죽이면 연결 끊김(SocketTimeout)으로 바뀌고 다시 띄우자 50초 안에 재연결, 최근 10분의 확인 6건을 다시 보냄
+  - 알림 권한은 첫 실행 대화상자(또는 `pm grant`)로 줬다
+  - 화면 꺼진 채 30분 대기(13:03~13:33, Asleep → Dozing): 연결이 한 번도 끊기지 않았고, 알림이 Dozing 상태에서 즉시 DANGER_LONG 진동·VIBRATED 확인(전달 지연은 시계차 안).
+    하트비트는 31분에 127건으로 10초 주기(약 186건)보다 적어 절전 중 간격이 늘어난 것으로 보인다(평균 14.6초). 간격의 최대값은 못 쟀다(가짜 EC2 로그에 시각을 붙여 다음에 잰다).
+    EC2 의 LOST 판정(3×주기)에 걸릴 수 있으면 -336 에서 주기를 늘리거나 워치가 AlarmManager 로 깨우는 쪽으로 바꾼다. 배터리는 충전 중이라(97 → 100%) 재지 못했다
+
+### 남은 일
+
+- 실기기 시험: 절전 중 하트비트 최대 간격 측정(시각 붙인 가짜 EC2 로), 충전 안 한 상태의 배터리 측정, 휴대폰 경유(블루투스)와 Wi-Fi 직접의 지연 비교 기록, 나머지 2대.
+  -337 완료 조건(3대·30분·EC2 System Health)은 EC2 쪽(-336·-338)이 붙은 뒤에 닫는다
+- 전체 화면 인텐트 appop 을 켜는 절차(adb 또는 설정)가 기기마다 필요하다. 꺼진 화면을 직접 켜는 대신 손목 들기·탭으로 여는 Wear 동작으로 충분한지 현장 의견을 듣는다
+- 배터리 8시간 목표(C.6) 측정, 하트비트 주기·ping 간격 조정. 연결 중 wake lock 이 무거우면 AlarmManager(허용 간격 안)로 하트비트를 깨우는 방식으로 바꾼다
+- 걸음 특징 전송(-339)은 같은 연결에 `gait_features` 를 더한다
 
 ## Jenkins
 
