@@ -368,14 +368,14 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 
 #### `layout_plan` — 가상 레이아웃(개구부·비계·장비 주차 구역)
 
-- 단계 **M3** · 일반 · 근거: 11.1 layout_plan, 8.3, 12.6 /api/layouts
+- 단계 **M3** · 일반 · 근거: 11.1 layout_plan, 8.3, 12.6 /api/layouts · V23(S15P31A101-30, `docs/design/server-layouts.md`)
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
-| `layout_id` | bigint identity | PK |  |  |
+| `layout_id` | bigint identity | PK | `risk_plan_request.layout.layout_id` |  |
 | `site_id` | text | FK>site.site_id, NN |  |  |
 | `name` | text | NN |  |  |
-| `items` | jsonb | NN |  | 배치 요소(유형·형상·높이) |
+| `items` | jsonb | NN |  | 배치 요소 `[{item_id, kind(OPENING·SCAFFOLD·EQUIPMENT), center[3], size[3], yaw_rad, label}]`(관제 앱 PLANNED OBB). revision 마다의 사본은 `layout_plan_revision`(layout_id, revision PK, name, items, created_by, created_at, 추가만) |
 | `revision` | int | NN |  | PUT 마다 증가(보고서는 계산한 revision 을 참조) |
 | `source` | text | NN, CK(PLANNED) |  |  |
 | `created_by` | bigint | FK>app_user.user_id |  |  |

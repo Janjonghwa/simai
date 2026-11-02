@@ -529,4 +529,30 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    /** 가상 레이아웃(GET·POST·PUT /api/layouts, S15P31A101-30) */
+    enum Layout implements ErrorCode {
+        LAYOUT_NOT_FOUND(HttpStatus.NOT_FOUND, "레이아웃을 찾을 수 없습니다"),
+        INVALID_LAYOUT(HttpStatus.BAD_REQUEST, "레이아웃 값이 올바르지 않습니다(name 1~100자, items 200개 이내, item_id 1~64자 겹치지 않게, kind 는 OPENING·SCAFFOLD·EQUIPMENT, center·size 는 유한한 수 3개(size > 0), yaw_rad 는 [-π, π])"),
+        // 다른 사람이 먼저 고쳤다. 다시 불러와 고친다
+        LAYOUT_REVISION_CONFLICT(HttpStatus.CONFLICT, "다른 요청이 먼저 레이아웃을 고쳤습니다. 다시 불러와 고치세요");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Layout(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }
