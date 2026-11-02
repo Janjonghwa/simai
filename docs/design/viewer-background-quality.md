@@ -74,6 +74,6 @@ S15P31A101-360. 기획서 §5.3(정적 3D 배경 glTF), §20.2(EXP-01 관측된 
 
 ## 5. 세션 9 배경이 온 뒤 남은 일
 
-1. **기하·텍스처 압축(Draco / Meshopt / KTX2)**: 현재 `textured.glb` 는 비압축 정점·인덱스와 PNG 아틀라스(`4096×4096`)로 약 16~17 MB 다. 세션 9 정식 배경이 오면 `EXT_meshopt_compression` 또는 Draco 로 기하 크기를 줄이고, 아틀라스는 KTX2(BasisU UASTC)로 변환해 GPU VRAM 점유와 초기 네트워크 전송 시간을 줄인다(단, `SURFACE_SOURCE_MAP` 은 손실 압축 시 코드 값 `0·1·2·3` 이 깨지므로 무손실 8비트 PNG 유지).
+1. **기하·텍스처 압축(Draco / Meshopt / KTX2, S15P31A101-404 구현 완료 — 설계 [`docs/design/scene-mesh-compress.md`](./scene-mesh-compress.md))**: 현재 `textured.glb` 는 비압축 정점·인덱스와 PNG 아틀라스(`4096×4096`)로 약 16~17 MB 다. 세션 9 정식 배경이 오면 `EXT_meshopt_compression` 또는 Draco 로 기하 크기를 줄이고, 아틀라스는 KTX2(BasisU UASTC)로 변환해 GPU VRAM 점유와 초기 네트워크 전송 시간을 줄인다(단, `SURFACE_SOURCE_MAP` 은 손실 압축 시 코드 값 `0·1·2·3` 이 깨지므로 무손실 8비트 PNG 유지).
 2. **다단계 LOD**: 전체 층 조감 시점과 카메라 근접 시점에 따라 메시 단순화 단계(예: 40만 면 / 10만 면)를 나누어 전환한다.
 3. **BE `surface_source_map_urls` 서명 연결**: 위 3절의 `GET /api/scenes/current` 응답에 `surface_source_map_urls` 서명 주소를 실어 뷰어와 종단 간 연결한다.

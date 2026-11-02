@@ -36,7 +36,11 @@ import {
   type ViewerSceneInput,
 } from '@/features/viewer3d/scene/sceneContract';
 import {
+  configureSceneKtx2Loader,
+  createSceneGltfLoader,
   createSceneStore,
+  parseGltfScene,
+  SCENE_KTX2_TRANSCODER_PATH,
   SceneLoaderContext,
   SceneReviewContext,
   SceneStoreContext,
@@ -51,9 +55,11 @@ import { WorldScene } from '@/features/viewer3d/WorldScene';
 import { createRoot, extend, useThree, type ReconcilerRoot } from '@react-three/fiber';
 import { act, StrictMode, useEffect } from 'react';
 import * as THREE from 'three';
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
+import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// S15P31A101-360 배경 텍스처 무조명 재질·SURFACE_SOURCE_MAP 흐림·VALID 접지 그림자·후처리 옵션 시험.
+// S15P31A101-360·404 배경 텍스처 무조명 재질·SURFACE_SOURCE_MAP 흐림·VALID 접지 그림자·후처리·압축 glb 로더 시험.
 
 extend(THREE as unknown as Parameters<typeof extend>[0]);
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
@@ -117,6 +123,192 @@ function fakeRenderer(canvas: HTMLCanvasElement) {
     outputColorSpace: '',
     toneMapping: 0,
   };
+}
+
+/** JSON·바이너리 청크를 합쳐 GLB 2.0 ArrayBuffer 를 만든다. */
+function packGlbBuffer(jsonDoc: Record<string, unknown>, binData: Uint8Array): ArrayBuffer {
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(jsonDoc));
+  const jsonPad = (4 - (jsonBytes.byteLength % 4)) % 4;
+  const binPad = (4 - (binData.byteLength % 4)) % 4;
+  const jsonChunkLen = jsonBytes.byteLength + jsonPad;
+  const binChunkLen = binData.byteLength + binPad;
+  const totalLen = 12 + 8 + jsonChunkLen + 8 + binChunkLen;
+
+  const buffer = new ArrayBuffer(totalLen);
+  const view = new DataView(buffer);
+  const bytes = new Uint8Array(buffer);
+
+  // Header: magic 'glTF' (0x46546C67), version 2, length
+  view.setUint32(0, 0x46546c67, true);
+  view.setUint32(4, 2, true);
+  view.setUint32(8, totalLen, true);
+
+  // JSON chunk (0x4E4F534A)
+  view.setUint32(12, jsonChunkLen, true);
+  view.setUint32(16, 0x4e4f534a, true);
+  bytes.set(jsonBytes, 20);
+  for (let i = 0; i < jsonPad; i += 1) {
+    bytes[20 + jsonBytes.byteLength + i] = 0x20;
+  }
+
+  // BIN chunk (0x004E4942)
+  const binOffset = 20 + jsonChunkLen;
+  view.setUint32(binOffset, binChunkLen, true);
+  view.setUint32(binOffset + 4, 0x004e4942, true);
+  bytes.set(binData, binOffset + 8);
+  return buffer;
+}
+
+/** 비압축 사각 바닥(Three 축 (0,0,0)..(4,0,-4) → World X·Y 0..4, Z 0) GLB 를 만든다. */
+function buildUncompressedQuadGlb(): ArrayBuffer {
+  const positions = new Float32Array([0, 0, 0, 4, 0, 0, 4, 0, -4, 0, 0, -4]);
+  const uvs = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
+  const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
+  const posBytes = new Uint8Array(positions.buffer);
+  const uvBytes = new Uint8Array(uvs.buffer);
+  const idxBytes = new Uint8Array(indices.buffer);
+
+  const bin = new Uint8Array(posBytes.byteLength + uvBytes.byteLength + idxBytes.byteLength);
+  bin.set(posBytes, 0);
+  bin.set(uvBytes, posBytes.byteLength);
+  bin.set(idxBytes, posBytes.byteLength + uvBytes.byteLength);
+
+  return packGlbBuffer(
+    {
+      asset: { version: '2.0', generator: 'simai-test' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ name: 'textured_0000', mesh: 0 }],
+      materials: [
+        { name: 'observed_0000', pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] } },
+      ],
+      meshes: [
+        {
+          name: 'textured_0000',
+          primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, indices: 2, material: 0 }],
+        },
+      ],
+      accessors: [
+        {
+          bufferView: 0,
+          componentType: 5126,
+          count: 4,
+          type: 'VEC3',
+          min: [0, 0, -4],
+          max: [4, 0, 0],
+        },
+        { bufferView: 1, componentType: 5126, count: 4, type: 'VEC2' },
+        { bufferView: 2, componentType: 5123, count: 6, type: 'SCALAR' },
+      ],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: posBytes.byteLength, target: 34962 },
+        {
+          buffer: 0,
+          byteOffset: posBytes.byteLength,
+          byteLength: uvBytes.byteLength,
+          target: 34962,
+        },
+        {
+          buffer: 0,
+          byteOffset: posBytes.byteLength + uvBytes.byteLength,
+          byteLength: idxBytes.byteLength,
+          target: 34963,
+        },
+      ],
+      buffers: [{ byteLength: bin.byteLength }],
+    },
+    bin,
+  );
+}
+
+/** EXT_meshopt_compression 으로 압축된 같은 사각 바닥(Three 축 (0,0,0)..(4,0,-4)) GLB 를 만든다. */
+function buildMeshoptCompressedQuadGlb(): ArrayBuffer {
+  // MeshoptEncoder.encodeGltfBuffer 로 부호화한 4 정점(POSITION float32x3)·6 인덱스(TRIANGLES uint16) 바이트.
+  const encodedAttributes = new Uint8Array([
+    160, 0, 0, 1, 51, 0, 0, 0, 255, 255, 1, 51, 0, 0, 0, 128, 127, 0, 0, 0, 0, 0, 0, 1, 12, 0, 0, 0,
+    255, 1, 12, 0, 0, 0, 127, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0,
+  ]);
+  const encodedTriangles = new Uint8Array([
+    225, 240, 0, 0, 118, 135, 86, 103, 120, 169, 134, 101, 137, 104, 152, 1, 105, 0, 0,
+  ]);
+  const attrPad = (4 - (encodedAttributes.byteLength % 4)) % 4;
+  const triOffset = encodedAttributes.byteLength + attrPad;
+  const bin = new Uint8Array(triOffset + encodedTriangles.byteLength);
+  bin.set(encodedAttributes, 0);
+  bin.set(encodedTriangles, triOffset);
+
+  return packGlbBuffer(
+    {
+      asset: { version: '2.0', generator: 'simai-test-meshopt' },
+      extensionsUsed: ['EXT_meshopt_compression'],
+      extensionsRequired: ['EXT_meshopt_compression'],
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ name: 'textured_0000', mesh: 0 }],
+      materials: [
+        { name: 'observed_0000', pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] } },
+      ],
+      meshes: [
+        {
+          name: 'textured_0000',
+          primitives: [{ attributes: { POSITION: 0 }, indices: 1, material: 0 }],
+        },
+      ],
+      accessors: [
+        {
+          bufferView: 0,
+          componentType: 5126,
+          count: 4,
+          type: 'VEC3',
+          min: [0, 0, -4],
+          max: [4, 0, 0],
+        },
+        { bufferView: 1, componentType: 5123, count: 6, type: 'SCALAR' },
+      ],
+      bufferViews: [
+        {
+          buffer: 1,
+          byteOffset: 0,
+          byteLength: 48,
+          byteStride: 12,
+          extensions: {
+            EXT_meshopt_compression: {
+              buffer: 0,
+              byteOffset: 0,
+              byteLength: encodedAttributes.byteLength,
+              byteStride: 12,
+              count: 4,
+              mode: 'ATTRIBUTES',
+            },
+          },
+        },
+        {
+          buffer: 1,
+          byteOffset: 48,
+          byteLength: 12,
+          extensions: {
+            EXT_meshopt_compression: {
+              buffer: 0,
+              byteOffset: triOffset,
+              byteLength: encodedTriangles.byteLength,
+              byteStride: 2,
+              count: 6,
+              mode: 'TRIANGLES',
+            },
+          },
+        },
+      ],
+      buffers: [
+        { byteLength: bin.byteLength },
+        {
+          byteLength: 60,
+          extensions: { EXT_meshopt_compression: { fallback: true } },
+        },
+      ],
+    },
+    bin,
+  );
 }
 
 async function mountScene(options: { review?: boolean; post?: ViewerPostProcessingInput } = {}) {
@@ -191,10 +383,178 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe('S15P31A101-360 배경 텍스처·출처 맵·접지 그림자·후처리', () => {
+describe('S15P31A101-360·404 배경 텍스처·출처 맵·접지 그림자·후처리·압축 로더', () => {
   it('렌더러 출력 색공간은 SRGBColorSpace 이고 톤매핑은 NoToneMapping 이다', () => {
     expect(VIEWER_GL_CONSTRAINTS.outputColorSpace).toBe(THREE.SRGBColorSpace);
     expect(VIEWER_GL_CONSTRAINTS.toneMapping).toBe(THREE.NoToneMapping);
+  });
+
+  it('배경 GLTFLoader 에 MeshoptDecoder 와 KTX2Loader(/basis/)가 설정되고 압축·비압축 glb 를 모두 읽는다', async () => {
+    const gltfLoader = createSceneGltfLoader() as unknown as {
+      meshoptDecoder: unknown;
+      ktx2Loader: KTX2Loader & {
+        transcoderPath: string;
+        workerConfig: Record<string, boolean> | null;
+      };
+    };
+    expect(gltfLoader.meshoptDecoder).toBe(MeshoptDecoder);
+    expect(MeshoptDecoder.supported).toBe(true);
+    expect(gltfLoader.ktx2Loader).toBeInstanceOf(KTX2Loader);
+    expect(gltfLoader.ktx2Loader.transcoderPath).toBe(SCENE_KTX2_TRANSCODER_PATH);
+    expect(gltfLoader.ktx2Loader.workerConfig).not.toBeNull();
+
+    // WebGLRenderer 의 extensions 를 넘기면 하드웨어 압축 포맷 지원 여부를 KTX2Loader 에 반영한다
+    const mockRendererWithBptc = {
+      extensions: {
+        has: (ext: string) =>
+          ext === 'EXT_texture_compression_bptc' || ext === 'WEBGL_compressed_texture_s3tc',
+        get: () => ({ getSupportedProfiles: () => [] }),
+      },
+    };
+    const configuredKtx2 = configureSceneKtx2Loader(mockRendererWithBptc) as unknown as {
+      transcoderPath: string;
+      workerConfig: Record<string, boolean>;
+    };
+    expect(configuredKtx2.transcoderPath).toBe('/basis/');
+    expect(configuredKtx2.workerConfig).toMatchObject({
+      bptcSupported: true,
+      dxtSupported: true,
+      astcSupported: false,
+    });
+
+    // 1. 비압축 glb 해석 및 SceneBackground 적재 확인
+    const uncompressedScene = await parseGltfScene(buildUncompressedQuadGlb());
+    loadedRoot = uncompressedScene;
+    ingestWorld();
+    await mountScene();
+    await setInput(committed({ scene_version: 'scene-uncompressed' }));
+    await act(async () => {
+      ingestWorld({ scene_version: 'scene-uncompressed' });
+    });
+
+    expect(status()).toMatchObject({ phase: 'LOADED', verification: 'VERIFIED', display: 'FULL' });
+    expect(status().boundsWorld?.min.map((v) => +v.toFixed(4))).toEqual([0, 0, 0]);
+    expect(status().boundsWorld?.max.map((v) => +v.toFixed(4))).toEqual([4, 4, 0]);
+
+    // 2. EXT_meshopt_compression 압축 glb 해석 및 사진 텍스처·SURFACE_SOURCE_MAP·DIMMED 동작 확인
+    const compressedScene = await parseGltfScene(buildMeshoptCompressedQuadGlb());
+    const compressedMesh = compressedScene.getObjectByName('textured_0000') as THREE.Mesh;
+    expect(compressedMesh).toBeInstanceOf(THREE.Mesh);
+    expect(compressedMesh.geometry.getAttribute('position')?.count).toBe(4);
+    expect(compressedMesh.geometry.index?.count).toBe(6);
+
+    const ktx2LikeAlbedo = new THREE.CompressedTexture(
+      [{ data: new Uint8Array(16), width: 4, height: 4 }],
+      4,
+      4,
+    );
+    compressedMesh.material = new THREE.MeshStandardMaterial({
+      name: 'observed_0000',
+      map: ktx2LikeAlbedo,
+    });
+    const sourceMapUrl = 'https://bucket.example/surface_source_0000.png';
+    const sourceMapTex = new THREE.DataTexture(
+      new Uint8Array([SURFACE_SOURCE_VALUES.OBSERVED, 0, 0, 255]),
+      1,
+      1,
+    );
+    texMap[sourceMapUrl] = sourceMapTex;
+    loadedRoot = compressedScene;
+
+    await setInput(
+      committed({
+        scene_version: 'scene-meshopt-404',
+        gltf_url: 'https://bucket.example/scene-meshopt-404.glb?sig=1',
+        surface_source_map_urls: { observed_0000: sourceMapUrl },
+      }),
+    );
+
+    // 아직 world 의 scene_version 이 scene-uncompressed 라 MISMATCH 이므로 world 를 scene-meshopt-404 로 맞춘다
+    await act(async () => {
+      ingestWorld({ scene_version: 'scene-meshopt-404' });
+    });
+    expect(status()).toMatchObject({ phase: 'LOADED', verification: 'VERIFIED', display: 'FULL' });
+    expect(status().boundsWorld?.min.map((v) => +v.toFixed(4))).toEqual([0, 0, 0]);
+    expect(status().boundsWorld?.max.map((v) => +v.toFixed(4))).toEqual([4, 4, 0]);
+
+    const preparedMat = compressedMesh.material as unknown as THREE.MeshBasicMaterial;
+    expect(preparedMat).toBeInstanceOf(THREE.MeshBasicMaterial);
+    expect(preparedMat.toneMapped).toBe(false);
+    expect(preparedMat.map).toBe(ktx2LikeAlbedo);
+    expect(ktx2LikeAlbedo.colorSpace).toBe(THREE.SRGBColorSpace);
+    expect(preparedMat.userData.surfaceSourceMap).toBe(sourceMapTex);
+    expect(sourceMapTex.minFilter).toBe(THREE.NearestFilter);
+    expect(sourceMapTex.colorSpace).toBe(THREE.NoColorSpace);
+
+    // 3. SIMAI_SCENE_MESH_SAMPLE 로 실제 변환 산출물(scene-mesh-404/textured.glb)을 주면 뷰어 로더·prepareSceneRoot·worldBoundsOf 로 직접 열어 검증한다
+    const nodeProcess = (
+      globalThis as {
+        process?: {
+          getBuiltinModule?: (id: string) => {
+            existsSync(p: string): boolean;
+            readFileSync(p: string): Uint8Array;
+          };
+          env?: Record<string, string | undefined>;
+        };
+      }
+    ).process;
+    const fsModule = nodeProcess?.getBuiltinModule?.('node:fs');
+    // 실제 변환 산출물은 저장소에 두지 않는다. 경로를 환경 변수로 줄 때만 연다(CI 는 건너뜀)
+    const realGlbPath = nodeProcess?.env?.SIMAI_SCENE_MESH_SAMPLE;
+    if (realGlbPath && fsModule?.existsSync(realGlbPath)) {
+      const ktx2 = configureSceneKtx2Loader();
+      const loadSpy = vi.spyOn(ktx2, 'load').mockImplementation((_url, onLoad) => {
+        const tex = new THREE.CompressedTexture(
+          [{ data: new Uint8Array(16), width: 4096, height: 4096 }],
+          4096,
+          4096,
+        );
+        onLoad?.(tex);
+        return tex;
+      });
+      try {
+        const rawBytes = fsModule.readFileSync(realGlbPath);
+        const arrayBuffer = new Uint8Array(rawBytes).buffer;
+        const realScene = await parseGltfScene(arrayBuffer);
+        let meshCount = 0;
+        let totalFaces = 0;
+        realScene.traverse((obj) => {
+          if (obj instanceof THREE.Mesh) {
+            meshCount += 1;
+            const idxCount = obj.geometry.index?.count ?? 0;
+            totalFaces += idxCount / 3;
+          }
+        });
+        expect(meshCount).toBe(36);
+        expect(totalFaces).toBe(395_730);
+        loadedRoot = realScene;
+        await setInput(
+          committed({
+            scene_version: 'scene-3ce8c02f-404',
+            gltf_url: 'https://bucket.example/scene-3ce8c02f-404.glb?sig=1',
+            surface_source_map_urls: { observed_0000: sourceMapUrl },
+          }),
+        );
+        await act(async () => {
+          ingestWorld({ scene_version: 'scene-3ce8c02f-404' });
+        });
+        expect(status()).toMatchObject({
+          phase: 'LOADED',
+          verification: 'VERIFIED',
+          display: 'FULL',
+        });
+        const realBounds = status().boundsWorld!;
+        expect(realBounds.max[0] - realBounds.min[0]).toBeGreaterThan(7.5);
+        expect(realBounds.max[1] - realBounds.min[1]).toBeGreaterThan(7.5);
+        expect(realBounds.max[2] - realBounds.min[2]).toBeGreaterThan(2.0);
+        const unobserved = realScene.getObjectByName('unobserved_neutral') as
+          THREE.Mesh | undefined;
+        expect(unobserved).toBeInstanceOf(THREE.Mesh);
+        expect(unobserved?.geometry.getAttribute('normal')).toBeDefined();
+      } finally {
+        loadSpy.mockRestore();
+      }
+    }
   });
 
   it('텍스처 있는 배경 메시는 MeshBasicMaterial(SRGB·toneMapped:false)로 바꾸고 무텍스처 메시는 기존 조명 재질과 법선을 유지한다', async () => {

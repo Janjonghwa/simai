@@ -9,6 +9,7 @@ import {
   type SurfaceSourceMapUrls,
 } from '@/features/viewer3d/scene/sceneContract';
 import {
+  configureSceneKtx2Loader,
   SceneLoaderContext,
   SceneReviewContext,
   SceneStoreContext,
@@ -17,6 +18,7 @@ import {
   type SceneTextureLoader,
 } from '@/features/viewer3d/scene/sceneStore';
 import { threeToWorld, toThreePoint } from '@/features/viewer3d/worldCoordinates';
+import { useThree } from '@react-three/fiber';
 import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box3,
@@ -37,7 +39,7 @@ import {
 } from 'three';
 import { useStore } from 'zustand';
 
-// 정적 배경 Scene 레이어(S15P31A101-59, S15P31A101-360). 같은 Canvas·깊이 버퍼에 그려 책상 뒤 사람의 가림이 맞게 한다(명세 13 머리말).
+// 정적 배경 Scene 레이어(S15P31A101-59, S15P31A101-360, S15P31A101-404). 같은 Canvas·깊이 버퍼에 그려 책상 뒤 사람의 가림이 맞게 한다(명세 13 머리말).
 // - 받은 glTF 는 GLTF_Y_UP 계약대로 이미 Three 축이라 회전·이동·배율을 더하지 않는다(축 변환 한 곳 원칙).
 // - 배경은 클릭을 받지 않는다(사람·구역·작업면 선택과 빈 곳 클릭 해제를 가리지 않는다).
 // - 사진 텍스처(map)가 있는 메시는 이미 카메라 조명이 구워져 있으므로 광원 계산·톤매핑을 거치지 않는 MeshBasicMaterial(SRGBColorSpace, toneMapped: false)로 바꾼다.
@@ -419,6 +421,7 @@ export function SceneBackground() {
 }
 
 function Background({ store }: { store: SceneStore }) {
+  const gl = useThree((s) => s.gl);
   const loader = useContext(SceneLoaderContext);
   const textureLoader = useContext(SceneTextureLoaderContext);
   const review = useContext(SceneReviewContext);
@@ -462,6 +465,7 @@ function Background({ store }: { store: SceneStore }) {
     }
     let alive = true;
     at('LOADING');
+    configureSceneKtx2Loader(gl);
     Promise.all([loader(url), loadSurfaceSourceMaps(surfaceSourceMapUrls, textureLoader)]).then(
       ([root, sourceMaps]) => {
         if (!alive) {
@@ -491,7 +495,7 @@ function Background({ store }: { store: SceneStore }) {
     return () => {
       alive = false;
     };
-  }, [store, loader, textureLoader, sceneVersion, url, expiresAt, surfaceSourceMapUrls]);
+  }, [store, gl, loader, textureLoader, sceneVersion, url, expiresAt, surfaceSourceMapUrls]);
 
   // 바뀌거나 내려가면 이전 자산을 해제한다.
   useEffect(() => {
