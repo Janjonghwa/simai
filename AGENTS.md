@@ -65,4 +65,4 @@ docs/        기획서(spec/), 요구사항 명세서(requirements.md), 팀 규�
 - 실험 Run마다 `contracts/experiments/run_record.schema.json` 형식의 기록을 남긴다.
 - GPU 실행 사이트·지역은 고정하지 않는다(개발·시험은 그때그때 남은 GPU·지역, 볼륨 없음. 최소 사양은 명세 3.12). 한 시점에 GPU 인스턴스는 하나이며 Tier 0가 자원을 먼저 쓴다. LIVE 관제 시간에 오프라인·배치 EXP Job(`hmr_*` I5 작업 포함)은 돌리지 않는다(예외: 시연 범위인 EXP-02 상시 HMR 아바타 스트림 루프는 분석 워커 GPU 상한 안에서 돌되, Tier 0 지연 감시 표시 파일로 지연 초과·모름이면 멈추고 뷰어는 0.5 s 뒤 캡슐로 돌아간다, 명세 3.2).
 - GPU Pod는 검증할 때만 켠다. 코드·설치 스크립트·실험 큐는 노트북에서 완성하고, Pod에서 큐를 실행한 뒤 바로 Stop 한다.
-- 노트북↔GPU 인스턴스는 인스턴스 공개 IP:포트 SSH 직접 연결(기본, 키 인증만)로 잇는다. 막힌 망의 예비는 RunPod 에서만 되는 HTTPS 프록시 443(토큰 인증)이다. Tailscale은 쓰지 않는다.
+- 노트북↔GPU 인스턴스는 인스턴스 공개 IP:포트 직접 연결(기본, SSH 는 키 인증만)로 잇는다. SSAFY 망(시연장 포함, 일반 외부 임의 포트 차단)에서는 팀 EC2(`simai.live:22`) SSH 경유 + Pod 공개 포트 Direct TCP 를 기본으로 쓰고(I0 는 노트북→EC2 로컬 포워드 `-L 127.0.0.1:17000/17001:<Pod IP>:<매핑 포트>` + EC2→Pod 연결별 Direct TCP, 관리 SSH 는 `ssh -J simai-ec2`, I0 를 Pod SSH 하나에 묶지 않음), LTE 테더링을 두 번째 업링크로, RunPod 에서만 되는 HTTPS 프록시 443 + wstunnel(토큰·경로 비밀값 인증)은 최후 예비로 둔다. Tailscale은 쓰지 않는다.

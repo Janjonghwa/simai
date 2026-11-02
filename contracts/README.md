@@ -81,12 +81,12 @@ I4(워치, 확장) 형식은 아직 없다. I2 `/topic/world` 는 I1 `world_stat
 
 명세 12.7, 3.12(수정 6). 연결 자체는 스키마로 검증하지 않으므로 여기 적는다.
 
-- **영상:** 카메라마다 독립 연결을 연다(한 카메라의 지연이 다른 카메라를 막지 않도록). RunPod Pod 의 공개 Direct TCP 포트로 접속하고, TLS 는 Tier 0 서비스가 직접 종료한다. SSH 터널이나 Tailscale 로 보내지 않는다. 접속 시 노트북 기기 토큰으로 인증한다.
+- **영상:** 카메라마다 독립 연결을 연다(한 카메라의 지연이 다른 카메라를 막지 않도록). RunPod Pod 의 공개 Direct TCP 포트로 접속하고(SSAFY 망에서는 노트북→EC2 짧은 구간만 SSH 로컬 포워드를 같이 쓰고 EC2→Pod 긴 구간은 포워드된 연결마다 별도 Direct TCP), TLS 는 Tier 0 서비스가 직접 종료한다. Pod 까지 단일 SSH 터널로 묶거나 Tailscale 로 보내지 않는다. 접속 시 노트북 기기 토큰으로 인증한다.
 - **기록 순서:** 연결(또는 새 `stream_epoch`) 직후 `codec_info` 한 번, 그 뒤 키프레임부터 `frame_header` + 압축 프레임(H.264 접근 단위)을 길이 접두 방식으로 싣는다. 헤더와 프레임은 같은 기록에 싣는다. 코덱 정보와 키프레임이 모두 오기 전까지 그 카메라는 관측 없음이다.
 - **누락:** `frame_sequence` 빈 구간은 `gateway_to_runpod_loss`로 기록하고 재요청하지 않는다. 카메라 → 노트북 끊김(`camera_to_gateway_gap`)과 정책상 건너뛴 프레임(`skipped_by_policy`)은 따로 센다.
 - **제어:** `local_alert`, `alarm_stop`, `health`(아래로), `site_ack`, `laptop_heartbeat`(위로)는 같은 기기 토큰으로 인증한 WebSocket 으로 주고받는다.
 - **시계 차이·엔드포인트:** 시계 차이 교환(`clock_sync_request`·`clock_sync_response`)도 같은 제어 WebSocket 으로 주고받는다. 노트북은 `GET /api/endpoints/tier0`(기기 토큰)로 받은 `tier0_endpoint` 로 접속하고, 공개키 지문이 미리 고정한 값과 다르면 접속하지 않는다.
-- **예비 경로:** 막힌 망에서는 RunPod HTTPS 프록시(443) WebSocket 을 쓰고 토큰 인증이 필수다.
+- **막힌 망·예비 경로:** SSAFY 망(시연장 포함) 기본은 EC2(`simai.live:22`) SSH 로컬 포워드 경유 + Pod 공개 포트 Direct TCP 이고, 두 번째 업링크는 LTE 테더링, 최후 예비는 RunPod HTTPS 프록시(443) WebSocket + wstunnel(토큰·경로 비밀값 인증 필수)이다.
 - 노트북 → EC2 `laptop_heartbeat`는 HTTPS(기기 토큰)로 1초마다 보낸다.
 
 ## 스키마로 막는 불변 규칙
