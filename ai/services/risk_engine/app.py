@@ -63,6 +63,29 @@ def create_app(now_ms: Callable[[], int] | None = None) -> FastAPI:
         code, content = await run_in_threadpool(handle, b"".join(chunks), now_ms)
         return respond(code, content)
 
+    @app.post("/v1/report/generate")
+    async def report(request: Request):
+        # 보고서 의존성은 해당 경로에서만 불러온다.
+        import os
+        from fastapi import HTTPException
+        from simai_ai.report.llm import LlmSettings, make_client
+        from simai_ai.report.tbm_graph import generate
+        from .graph_store import PgGraphStore
+
+        if int(request.headers.get("content-length", "0") or 0) > MAX_BODY_BYTES:
+            raise HTTPException(413)
+        body = await request.body()
+        if len(body) > MAX_BODY_BYTES:
+            raise HTTPException(413)
+        try:
+            data = json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(400) from None
+        if not isinstance(data, dict) or data.get("report_kind") != "TBM":
+            raise HTTPException(400)
+        return await run_in_threadpool(generate, data, PgGraphStore(os.environ.get("SIMAI_RAG_PG_DSN", "")),
+                                       lambda: make_client(LlmSettings.from_env(os.environ)))
+
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
         return status

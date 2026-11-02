@@ -90,6 +90,16 @@ services:
       file: ../compose.yaml
       service: risk-engine
     image: ${SIMAI_REGISTRY:-simai}/risk-engine:${SIMAI_TAG:-dev}
+    networks: [ec2-internal, edge]
+    environment:
+      SIMAI_RAG_PG_DSN: ${SIMAI_RAG_PG_DSN:-}
+      SIMAI_LLM_BASE_URL: ${SIMAI_LLM_BASE_URL:-}
+      SIMAI_LLM_MODEL: ${SIMAI_LLM_MODEL:-}
+      SIMAI_LLM_API_KEY: ${SIMAI_LLM_API_KEY:-}
+      SIMAI_LLM_API_STYLE: ${SIMAI_LLM_API_STYLE:-}
+      SIMAI_LLM_TIMEOUT_S: ${SIMAI_LLM_TIMEOUT_S:-40}  # 작성+재작성 2회가 서버 90 s 제한 안에 들게(S15P31A101-417)
+      SIMAI_LLM_TEMPERATURE: ${SIMAI_LLM_TEMPERATURE:-}
+      SIMAI_LLM_MAX_OUTPUT_TOKENS: ${SIMAI_LLM_MAX_OUTPUT_TOKENS:-}
 
   # CI(S15P31A101-28). 이미지는 따로 빌드한다: TAG=... docker buildx bake jenkins, 태그는 SIMAI_JENKINS_TAG.
   # 검사는 이 컨테이너 안에서 직접 돈다. 호스트 Docker 소켓·운영 DB·/opt/simai/.env 를 받지 않는다(docs/design/ci-pipeline.md).
