@@ -1,6 +1,6 @@
 import type { Severity } from '@/features/events/types';
 
-// 레이아웃 · TBM 보고서의 가짜 자료. 작업 등록·계획 모드 평가 API 가 아직 없어 디자인 데모(demo.html)의 값을 그대로 둔다.
+// 레이아웃 · TBM 보고서의 데모 대체 자료. API 요청 실패(네트워크 끊김·5xx) 때만 대체 화면으로 쓴다.
 // 좌표는 World(m, 바닥 x·y)다. 화면에는 2D 평면 변환(toPlan)으로 그린다.
 
 /** 바닥 위 직사각형(m). x·y 는 작은 쪽 모서리다. */
@@ -27,6 +27,10 @@ export interface TaskEval {
 /** 작업 하나: 작업명 · 시간대 · 구역 · 인원 · 반장 · 장비 · 가상 레이아웃. */
 export interface TbmTask {
   id: string;
+  /** 서버 work_unit.work_id (데모 대체 화면에서는 없다). */
+  workId?: string;
+  /** 작업 날짜(YYYY-MM-DD). */
+  date?: string;
   name: string;
   from: string;
   to: string;
@@ -36,6 +40,10 @@ export interface TbmTask {
   people: number;
   lead: string;
   gear: string;
+  /** 연결된 가상 레이아웃 ID (layout_plan.layout_id). */
+  layoutId?: number | null;
+  /** 공종 코드 (work_type). */
+  workType?: string | null;
   items: readonly LayoutItem[];
   evals: readonly TaskEval[];
   measures: readonly string[];
@@ -48,6 +56,7 @@ interface TbmZone extends Rect {
 
 export const TBM_DAY = '10/16(금)';
 export const TBM_DATE = '2026년 10월 16일';
+export const TBM_ISO_DATE = '2026-10-16';
 
 /** 작업 구역. 관제 mock 구역(z-04 · z-02)과 같은 자리다. */
 export const TBM_ZONES: readonly TbmZone[] = [
@@ -70,6 +79,8 @@ export const TBM_TASKS: readonly TbmTask[] = [
     people: 4,
     lead: 'A조',
     gear: '장비 없음',
+    layoutId: 1,
+    workType: 'OPENING_WORK',
     items: [{ kind: 'scaffold', label: '비계 S1', hgt: 2.4, x: 5.6, y: 1.2, w: 1.0, h: 2.4 }],
     evals: [
       { item: '비계 S1 ↔ 개구부', rule: 'R2', sev: 'CRITICAL', why: '수평 0.6m · 높이 차 2.1m' },
@@ -86,6 +97,8 @@ export const TBM_TASKS: readonly TbmTask[] = [
     people: 3,
     lead: 'B조',
     gear: '지게차 1',
+    layoutId: 2,
+    workType: 'MATERIAL_HANDLING',
     items: [
       { kind: 'parking', label: '장비 주차 P1', x: 6.6, y: 6.6, w: 2.6, h: 2.6 },
       {
@@ -121,6 +134,8 @@ export const TBM_TASKS: readonly TbmTask[] = [
     people: 2,
     lead: 'A조',
     gear: '장비 없음',
+    layoutId: 3,
+    workType: 'FLOOR_FINISHING',
     items: [{ kind: 'area', label: '마감 구역 M1', x: 0.6, y: 0.6, w: 3.6, h: 4.4 }],
     evals: [
       {

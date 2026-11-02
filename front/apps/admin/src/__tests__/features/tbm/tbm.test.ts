@@ -1,8 +1,10 @@
 import {
   createTask,
+  inputToWorkUnitBody,
   nextTaskId,
   TASK_INPUT_DEFAULT,
   taskInputValid,
+  taskToInput,
 } from '@/features/tbm/taskInput';
 import {
   evalText,
@@ -28,6 +30,14 @@ import {
   withEdit,
   withoutEdits,
 } from '@/features/tbm/tbmForm';
+import {
+  dateHhmmToMs,
+  isFallbackApiError,
+  tbmFailureReasonText,
+  tbmReportRequestErrorText,
+  type TbmReport,
+} from '@/features/tbm/types';
+import { ApiError, NETWORK_ERROR } from '@/lib/http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const [T1, T2, T3] = TBM_TASKS as [TbmTask, TbmTask, TbmTask];
@@ -173,6 +183,127 @@ describe('TBM 회의록 칸', () => {
     expect(f.focusMeasure).toBe(T1.measures[0]);
   });
 
+  it('보고서(SUCCEEDED)가 있으면 header · risk_items · sections · citations 로 회의록 칸을 자동 채운다', () => {
+    const sampleReport: TbmReport = {
+      report_id: 301,
+      work_id: '1',
+      report_version: 2,
+      status: 'SUCCEEDED',
+      failure_reason: null,
+      layout_id: 101,
+      layout_revision: 3,
+      work_type: { code: 'SCAFFOLD_INSTALL', label: '비계 조립·해체 및 고소 작업발판' },
+      header: {
+        date: '2026-10-17',
+        name: '비계 보강(서버)',
+        from_ms: dateHhmmToMs('2026-10-17', '08:30'),
+        to_ms: dateHhmmToMs('2026-10-17', '11:30'),
+        zone_id: 'z-04',
+        place: null,
+        planned_people: 5,
+        lead: 'C조',
+      },
+      rule_version: 3,
+      risk_items: [
+        {
+          rule_id: 'R2',
+          severity: 'CRITICAL',
+          position_ids: ['pos-01'],
+          zone_id: 'z-04',
+          metrics: { edge_distance_m: 0.25, height_diff_m: 2.1 },
+          reason_codes: ['edge_within_raise_distance'],
+          confidence_reasons: [],
+          item: '비계 단부 추락 위험',
+          why: '수평 0.25m · 높이 차 2.1m',
+        },
+      ],
+      zone_history: [],
+      sections: [
+        {
+          key: 'measures',
+          title: '안전조치 대책',
+          body: '안전난간 선행 조립\n안전대 부착설비 체결 확인',
+          citations: ['OSH-STD-A43'],
+        },
+        {
+          key: 'focus',
+          title: '중점 위험 및 작업 전 확인',
+          body: '높이 2.1m 비계 상부 안전대 체결 상태 전수 점검',
+          citations: ['OSH-STD-A44'],
+        },
+        {
+          key: 'legal',
+          title: '관련 법령 근거 요약',
+          body: '산업안전보건기준에 관한 규칙 제43조 및 제44조 준수',
+          citations: ['OSH-STD-A43', 'OSH-STD-A44'],
+        },
+      ],
+      citations: [
+        {
+          node_id: 'OSH-STD-A43',
+          source_name: '산업안전보건기준에 관한 규칙',
+          article_ref: '제43조',
+          title: '개구부 등의 방호조치',
+          excerpt: '개구부 방호조치 본문',
+        },
+      ],
+      subgraph: { nodes: [], edges: [] },
+      steps: [],
+      llm_model: 'gpt-4o-mini',
+      created_at_ms: 1760573100000,
+      completed_at_ms: 1760573102000,
+    };
+
+    const f = tbmFill(T1, sampleReport);
+    expect(f.date).toBe('2026년 10월 17일 08:30 ~ 11:30');
+    expect(f.name).toBe('비계 보강(서버)');
+    expect(f.content).toContain('5명 · 반장 C조');
+    expect(f.r0).toContain('비계 단부 추락 위험');
+    expect(f.m0).toBe('안전난간 선행 조립');
+    expect(f.m1).toBe('안전대 부착설비 체결 확인');
+    expect(f.focusMeasure).toBe('높이 2.1m 비계 상부 안전대 체결 상태 전수 점검');
+    expect(f.daily).toContain('산업안전보건기준에 관한 규칙 제43조');
+  });
+
+  it('보고서가 FAILED 이면 대책·법령을 지어낸 문장으로 채우지 않는다', () => {
+    const failedReport: TbmReport = {
+      report_id: 302,
+      work_id: '1',
+      report_version: 2,
+      status: 'FAILED',
+      failure_reason: 'CITATION_VIOLATION',
+      layout_id: 101,
+      layout_revision: 3,
+      work_type: null,
+      header: {
+        date: '2026-10-16',
+        name: '개구부 옆 비계 설치',
+        from_ms: dateHhmmToMs('2026-10-16', '09:00'),
+        to_ms: dateHhmmToMs('2026-10-16', '12:00'),
+        zone_id: 'z-04',
+        place: null,
+        planned_people: 4,
+        lead: 'A조',
+      },
+      rule_version: 3,
+      risk_items: [],
+      zone_history: [],
+      sections: [],
+      citations: [],
+      subgraph: { nodes: [], edges: [] },
+      steps: [],
+      llm_model: 'gpt-4o-mini',
+      created_at_ms: 1760573100000,
+      completed_at_ms: 1760573102000,
+    };
+
+    const f = tbmFill(T1, failedReport);
+    expect(f.riskDone).toBe(false);
+    expect(f.m0).toBe('');
+    expect(f.focusMeasure).toBe('');
+    expect(f.daily).toBe('');
+  });
+
   it('참석자 서명 줄은 세 명씩, 적어도 네 줄이다', () => {
     expect(attendeeRows(2)).toBe(4);
     expect(attendeeRows(14)).toBe(5);
@@ -208,7 +339,7 @@ describe('TBM 회의록 칸', () => {
   });
 });
 
-describe('작업 등록', () => {
+describe('작업 등록 · 수정 변환 및 오류 문구', () => {
   it('이름이 있고 끝이 시작보다 늦어야 한다', () => {
     expect(taskInputValid(TASK_INPUT_DEFAULT)).toBe(false);
     expect(taskInputValid({ ...TASK_INPUT_DEFAULT, name: '전기 배선' })).toBe(true);
@@ -226,6 +357,8 @@ describe('작업 등록', () => {
       name: ' 전기 배선 ',
       zone: '',
       people: '0',
+      workType: 'OPENING_WORK',
+      layoutId: '102',
     });
     expect(created).toMatchObject({
       id: 'T4',
@@ -234,6 +367,8 @@ describe('작업 등록', () => {
       area: '구역 밖',
       people: 1,
       gear: '장비 미입력',
+      workType: 'OPENING_WORK',
+      layoutId: 102,
       items: [],
       evals: [],
     });
@@ -242,6 +377,55 @@ describe('작업 등록', () => {
       people: 2,
     });
     expect(createTask(TBM_TASKS, { ...TASK_INPUT_DEFAULT, name: 'a' })).not.toHaveProperty('area');
+  });
+
+  it('TaskInput 과 WorkUnitWriteBody 를 서로 변환한다', () => {
+    const input = taskToInput(T1);
+    expect(input).toMatchObject({
+      name: T1.name,
+      from: '09:00',
+      to: '12:00',
+      zone: 'z-04',
+      people: '4',
+      lead: 'A조',
+      workType: 'OPENING_WORK',
+      layoutId: '1',
+    });
+    const body = inputToWorkUnitBody({
+      ...input,
+      workType: 'SCAFFOLD_INSTALL',
+      layoutId: '101',
+    });
+    expect(body).toMatchObject({
+      name: T1.name,
+      zone_id: 'z-04',
+      planned_people: 4,
+      lead: 'A조',
+      work_type: 'SCAFFOLD_INSTALL',
+      layout_id: 101,
+    });
+  });
+
+  it('409 · FAILED · 폴백 오류를 올바르게 구분한다', () => {
+    const noLayoutErr = new ApiError(409, {
+      kind: 'HTTP',
+      code: 'WORK_HAS_NO_LAYOUT',
+      serverMessage: '레이아웃 없음',
+    });
+    const inProgressErr = new ApiError(409, {
+      kind: 'HTTP',
+      code: 'REPORT_IN_PROGRESS',
+      serverMessage: '생성 중',
+    });
+    const netErr = new ApiError(NETWORK_ERROR, { kind: 'NETWORK' });
+    const serverErr = new ApiError(503, { kind: 'HTTP' });
+
+    expect(tbmReportRequestErrorText(noLayoutErr)).toContain('WORK_HAS_NO_LAYOUT');
+    expect(tbmReportRequestErrorText(inProgressErr)).toContain('REPORT_IN_PROGRESS');
+    expect(tbmFailureReasonText('CITATION_VIOLATION')).toContain('CITATION_VIOLATION');
+    expect(isFallbackApiError(netErr)).toBe(true);
+    expect(isFallbackApiError(serverErr)).toBe(true);
+    expect(isFallbackApiError(noLayoutErr)).toBe(false);
   });
 });
 

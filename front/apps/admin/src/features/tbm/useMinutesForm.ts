@@ -7,6 +7,7 @@ import {
   type TbmForm,
   type TbmFormValue,
 } from '@/features/tbm/tbmForm';
+import type { TbmReport } from '@/features/tbm/types';
 import { useMemo } from 'react';
 
 interface MinutesForm {
@@ -21,12 +22,12 @@ interface MinutesForm {
   undo: () => void;
 }
 
-/** 한 작업의 회의록 양식: 받은 내용과 고친 칸을 합치고, 고치기와 되돌리기를 저장소에 이어 준다. */
-export function useMinutesForm(task: TbmTask): MinutesForm {
+/** 한 작업의 회의록 양식: 받은 내용(+보고서)과 고친 칸을 합치고, 고치기와 되돌리기를 저장소에 이어 준다. */
+export function useMinutesForm(task: TbmTask, report?: TbmReport | null): MinutesForm {
   const edits = useTbmFormStore((s) => s.edits);
   const setField = useTbmFormStore((s) => s.setField);
   const undo = useTbmFormStore((s) => s.undo);
-  const base = useMemo(() => tbmFill(task), [task]);
+  const base = useMemo(() => tbmFill(task, report), [task, report]);
   const taskEdits = edits[task.id];
   // 쪽 나눔은 양식 내용이 바뀔 때만 다시 하도록, 같은 내용이면 같은 객체를 쓴다.
   const filled = useMemo(() => ({ ...base, ...taskEdits }), [base, taskEdits]);

@@ -1,0 +1,507 @@
+import type { Severity } from '@/features/events/types';
+import { OUTSIDE_ZONE_TEXT } from '@/features/tbm/constants';
+import { fromMin } from '@/features/tbm/tbm';
+import { TBM_ZONES, type LayoutItem, type TaskEval, type TbmTask } from '@/features/tbm/tbmDemo';
+import { ApiError, NETWORK_ERROR } from '@/lib/http';
+import { z } from 'zod';
+
+// TBM 작업(work_unit)·공종(work_type)·가상 레이아웃(layout_plan)·TBM 보고서(report) 스키마와 변환.
+// 인터페이스 정본: .agy/tbm-interface.md B·C절, 설계 .agy/ref/tbm-legal-graph.md 5.1·5.2·5.4·5.5.
+
+const idString = z.union([z.string().min(1), z.number().int()]).transform(String);
+const intOrNumber = z.number();
+
+export const severitySchema = z.enum(['CRITICAL', 'HIGH', 'CAUTION', 'INFO']);
+
+// ── C. 공종 (/api/work-types) ────────────────────────────────────────────────
+
+export const workTypeOptionSchema = z.object({
+  code: z.string().min(1),
+  label: z.string().min(1),
+  rule_tags: z.array(z.string()).default([]),
+});
+export type WorkTypeOption = z.infer<typeof workTypeOptionSchema>;
+
+export const workTypesResponseSchema = z.union([
+  z.array(workTypeOptionSchema),
+  z.object({ work_types: z.array(workTypeOptionSchema) }).transform((v) => v.work_types),
+]);
+
+/** 설계 5.4 표의 7개 표준 공종 상수(서버 /api/work-types 응답의 기본값·폴백). */
+export const WORK_TYPE_OPTIONS: readonly WorkTypeOption[] = [
+  {
+    code: 'SCAFFOLD_INSTALL',
+    label: '비계 조립·해체 및 고소 작업발판',
+    rule_tags: ['R2', 'R3'],
+  },
+  {
+    code: 'OPENING_WORK',
+    label: '개구부 주변·단부 작업',
+    rule_tags: ['R1', 'R2'],
+  },
+  {
+    code: 'HIGH_PLACE',
+    label: '고소 작업(단상·사다리·작업면 상부)',
+    rule_tags: ['R2', 'R3', 'R4'],
+  },
+  {
+    code: 'MATERIAL_HANDLING',
+    label: '자재 반입·운반·정리',
+    rule_tags: ['R1', 'R5'],
+  },
+  {
+    code: 'EQUIPMENT_OP',
+    label: '중장비·지게차·양중기 운행',
+    rule_tags: ['R1', 'R5'],
+  },
+  {
+    code: 'FLOOR_FINISHING',
+    label: '바닥·내장 마감 및 일반 통행',
+    rule_tags: ['R1', 'R4'],
+  },
+  {
+    code: 'GENERAL',
+    label: '일반 작업(기타)',
+    rule_tags: ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7'],
+  },
+];
+
+export const workTypeLabelOf = (
+  code: string | null | undefined,
+  options: readonly WorkTypeOption[] = WORK_TYPE_OPTIONS,
+): string | null => {
+  if (!code) return null;
+  return options.find((w) => w.code === code)?.label ?? code;
+};
+
+// ── C. 작업 (/api/work-units) ────────────────────────────────────────────────
+
+const workTypeCodeField = z
+  .union([
+    z.string(),
+    z.object({ code: z.string(), label: z.string().optional() }).transform((v) => v.code),
+  ])
+  .nullish()
+  .transform((v) => (v && v.trim() !== '' ? v : null));
+
+export const tbmWorkUnitSchema = z.object({
+  work_id: idString,
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  name: z.string(),
+  from_ms: intOrNumber,
+  to_ms: intOrNumber,
+  zone_id: z.string().nullable().default(null),
+  place: z.string().nullish().default(null),
+  planned_people: z.number().int().nonnegative(),
+  lead: z.string().nullish().default(null),
+  layout_id: z.number().int().nullish().default(null),
+  work_type: workTypeCodeField,
+  event_counts: z
+    .object({ CRITICAL: z.number().int(), HIGH: z.number().int() })
+    .partial()
+    .nullish(),
+});
+export type TbmWorkUnit = z.infer<typeof tbmWorkUnitSchema>;
+
+export const tbmWorkUnitsResponseSchema = z.object({
+  works: z.array(z.unknown()),
+});
+
+export interface WorkUnitWriteBody {
+  date: string;
+  name: string;
+  from_ms: number;
+  to_ms: number;
+  zone_id: string | null;
+  place: string | null;
+  planned_people: number;
+  lead: string;
+  layout_id: number | null;
+  work_type: string | null;
+}
+
+// ── 가상 레이아웃 (/api/layouts) ─────────────────────────────────────────────
+
+export const layoutObbItemSchema = z.object({
+  item_id: z.string().min(1),
+  kind: z.enum(['OPENING', 'SCAFFOLD', 'EQUIPMENT']),
+  center: z.tuple([z.number(), z.number(), z.number()]),
+  size: z.tuple([z.number(), z.number(), z.number()]),
+  yaw_rad: z.number().default(0),
+  label: z.string().nullable().default(null),
+});
+export type LayoutObbItem = z.infer<typeof layoutObbItemSchema>;
+
+export const layoutSummarySchema = z.object({
+  layout_id: z.number().int(),
+  name: z.string(),
+  revision: z.number().int(),
+  layout_version: z.string().optional(),
+  source: z.string().optional(),
+  item_count: z.number().int().optional(),
+  items: z.array(layoutObbItemSchema).optional(),
+  created_at: z.number().optional(),
+  updated_at: z.number().optional(),
+});
+export type LayoutSummary = z.infer<typeof layoutSummarySchema>;
+
+export const layoutDetailSchema = layoutSummarySchema.extend({
+  items: z.array(layoutObbItemSchema).default([]),
+});
+export type LayoutDetail = z.infer<typeof layoutDetailSchema>;
+
+export const layoutsListSchema = z.union([
+  z.array(layoutSummarySchema),
+  z.object({ layouts: z.array(layoutSummarySchema) }).transform((v) => v.layouts),
+]);
+
+// ── B. TBM 보고서 (/api/reports/tbm) ─────────────────────────────────────────
+
+export const reportStatusSchema = z
+  .enum(['GENERATING', 'SUCCEEDED', 'FAILED', 'REQUESTED', 'DONE'])
+  .transform((s): 'GENERATING' | 'SUCCEEDED' | 'FAILED' => {
+    if (s === 'REQUESTED') return 'GENERATING';
+    if (s === 'DONE') return 'SUCCEEDED';
+    return s;
+  });
+export type TbmReportStatus = z.infer<typeof reportStatusSchema>;
+
+export const reportHeaderSchema = z.object({
+  date: z.string(),
+  name: z.string(),
+  from_ms: z.number(),
+  to_ms: z.number(),
+  zone_id: z.string().nullable().default(null),
+  place: z.string().nullish().default(null),
+  planned_people: z.number().int().nonnegative(),
+  lead: z.string().nullish().default(null),
+});
+export type TbmReportHeader = z.infer<typeof reportHeaderSchema>;
+
+export const reportRiskItemSchema = z.object({
+  rule_id: z.string().min(1),
+  rule_version: z.number().int().optional(),
+  severity: severitySchema,
+  position_ids: z.array(z.string()).default([]),
+  zone_id: z.string().nullable().default(null),
+  metrics: z.record(z.string(), z.number()).default({}),
+  reason_codes: z.array(z.string()).default([]),
+  confidence_reasons: z.array(z.string()).default([]),
+  item: z.string().optional(),
+  why: z.string().optional(),
+});
+export type TbmReportRiskItem = z.infer<typeof reportRiskItemSchema>;
+
+export const reportZoneHistorySchema = z.object({
+  zone_id: z.string(),
+  days: z.number().int().optional(),
+  live_event_count: z.number().int().nonnegative(),
+  rules: z.array(z.string()).default([]),
+  max_severity: severitySchema.nullish().default(null),
+  last_at_ms: z.number().nullish().default(null),
+});
+export type TbmReportZoneHistory = z.infer<typeof reportZoneHistorySchema>;
+
+export const reportSectionSchema = z.object({
+  key: z.string().min(1),
+  title: z.string(),
+  body: z.string(),
+  citations: z.array(z.string()).default([]),
+});
+export type TbmReportSection = z.infer<typeof reportSectionSchema>;
+
+export const reportCitationSchema = z.object({
+  node_id: z.string().min(1),
+  source_name: z.string(),
+  article_ref: z.string().nullish().default(null),
+  title: z.string(),
+  excerpt: z.string().default(''),
+});
+export type TbmReportCitation = z.infer<typeof reportCitationSchema>;
+
+export const subgraphNodeSchema = z.object({
+  node_id: z.string().min(1),
+  node_kind: z.string().default('ARTICLE'),
+  layer: z.string().default('OSH_STANDARD'),
+  source_name: z.string(),
+  article_ref: z.string().nullish().default(null),
+  title: z.string(),
+  rule_tags: z.array(z.string()).default([]),
+  hop: z.number().int().default(0),
+  cited: z.boolean().default(false),
+});
+export type SubgraphNode = z.infer<typeof subgraphNodeSchema>;
+
+export const subgraphEdgeSchema = z.object({
+  edge_id: z.string().min(1),
+  src_node_id: z.string().min(1),
+  dst_node_id: z.string().min(1),
+  edge_kind: z.string(),
+  relation_label: z.string().nullish().default(null),
+});
+export type SubgraphEdge = z.infer<typeof subgraphEdgeSchema>;
+
+export const subgraphSchema = z.object({
+  nodes: z.array(subgraphNodeSchema).default([]),
+  edges: z.array(subgraphEdgeSchema).default([]),
+});
+export type TbmSubgraph = z.infer<typeof subgraphSchema>;
+
+export const reportStepSchema = z.object({
+  step: z.string().min(1),
+  label: z.string(),
+  status: z.string(),
+  input_count: z.number().int().nonnegative().default(0),
+  output_count: z.number().int().nonnegative().default(0),
+  duration_ms: z.number().nonnegative().default(0),
+  detail: z.string().nullish().default(null),
+});
+export type TbmReportStep = z.infer<typeof reportStepSchema>;
+
+const reportWorkTypeField = z
+  .union([
+    z.object({ code: z.string(), label: z.string() }),
+    z.string().transform((code) => ({
+      code,
+      label: workTypeLabelOf(code) ?? code,
+    })),
+  ])
+  .nullish()
+  .default(null);
+
+export const tbmReportSchema = z.object({
+  report_id: z.number().int(),
+  work_id: idString,
+  report_version: z.number().int(),
+  status: reportStatusSchema,
+  failure_reason: z.string().nullish().default(null),
+  layout_id: z.number().int().nullish().default(null),
+  layout_revision: z.number().int().nullish().default(null),
+  work_type: reportWorkTypeField,
+  header: reportHeaderSchema.nullish().default(null),
+  rule_version: z.number().int().nullish().default(null),
+  risk_items: z.array(reportRiskItemSchema).default([]),
+  zone_history: z.array(reportZoneHistorySchema).default([]),
+  sections: z.array(reportSectionSchema).default([]),
+  citations: z.array(reportCitationSchema).default([]),
+  subgraph: subgraphSchema.default({ nodes: [], edges: [] }),
+  steps: z.array(reportStepSchema).default([]),
+  llm_model: z.string().nullish().default(null),
+  created_at_ms: z.number().default(0),
+  completed_at_ms: z.number().nullish().default(null),
+});
+export type TbmReport = z.infer<typeof tbmReportSchema>;
+
+export const tbmReportVersionSummarySchema = z.object({
+  report_id: z.number().int(),
+  report_version: z.number().int(),
+  status: reportStatusSchema,
+  created_at_ms: z.number().default(0),
+});
+export type TbmReportVersionSummary = z.infer<typeof tbmReportVersionSummarySchema>;
+
+export const tbmReportByWorkResponseSchema = z.object({
+  latest: tbmReportSchema.nullable().default(null),
+  versions: z.array(tbmReportVersionSummarySchema).default([]),
+});
+export type TbmReportByWorkResponse = z.infer<typeof tbmReportByWorkResponseSchema>;
+
+export const tbmReportGenerateResponseSchema = z.object({
+  report_id: z.number().int(),
+  work_id: idString,
+  report_version: z.number().int(),
+  status: reportStatusSchema,
+});
+export type TbmReportGenerateResponse = z.infer<typeof tbmReportGenerateResponseSchema>;
+
+// ── 변환 및 오류 문구 ────────────────────────────────────────────────────────
+
+const METRIC_LABELS: Record<string, string> = {
+  zone_distance_m: '구역 거리',
+  edge_distance_m: '수평',
+  height_diff_m: '높이 차',
+  surface_height_m: '작업면',
+  work_height_m: '작업면',
+  occupancy_z_min_m: '바닥 높이',
+};
+
+const REASON_LABELS: Record<string, string> = {
+  edge_within_raise_distance: '단부 인접',
+  standing_on_surface: '작업면 상부',
+  standing_surface_elevated: '난간 없음',
+  xy_inside_polygon: '위험 구역 진입',
+  xy_uncertainty_overlap: '위험 구역 경계 인접',
+};
+
+/** 보고서의 risk_item 하나를 화면 평가 표 행(TaskEval)으로 바꾼다. */
+export function riskItemToEval(item: TbmReportRiskItem): TaskEval {
+  const zoneLabel = item.zone_id
+    ? (TBM_ZONES.find((z) => z.id === item.zone_id)?.name ?? item.zone_id)
+    : null;
+  const posLabel = item.position_ids.length > 0 ? item.position_ids.join(', ') : null;
+  const defaultItem =
+    posLabel && item.zone_id
+      ? `${posLabel} ↔ ${item.zone_id}`
+      : item.zone_id
+        ? `${zoneLabel} (${item.zone_id})`
+        : posLabel
+          ? `계획 위치 ${posLabel}`
+          : `${item.rule_id} 위험 항목`;
+
+  const metricParts = Object.entries(item.metrics).map(([k, v]) => {
+    const label = METRIC_LABELS[k] ?? k;
+    const unit = k.endsWith('_m') ? 'm' : '';
+    return `${label} ${v}${unit}`;
+  });
+  const reasonParts = item.reason_codes
+    .map((code) => REASON_LABELS[code])
+    .filter((v): v is string => Boolean(v));
+  const defaultWhy = [...metricParts, ...reasonParts].join(' · ') || '물리 수치 판정';
+
+  return {
+    item: item.item ?? defaultItem,
+    rule: item.rule_id,
+    sev: item.severity as Severity,
+    why: item.why ?? defaultWhy,
+  };
+}
+
+/** 가상 레이아웃 OBB 항목을 2D 평면 도식(LayoutItem)으로 바꾼다. */
+export function layoutObbToItem(obb: LayoutObbItem): LayoutItem {
+  const [cx, cy] = obb.center;
+  const [sx, sy, sz] = obb.size;
+  const x = Number((cx - sx / 2).toFixed(3));
+  const y = Number((cy - sy / 2).toFixed(3));
+  const kind = obb.kind === 'SCAFFOLD' ? 'scaffold' : obb.kind === 'EQUIPMENT' ? 'parking' : 'area';
+  return {
+    kind,
+    label: obb.label ?? obb.item_id,
+    x,
+    y,
+    w: sx,
+    h: sy,
+    ...(kind === 'scaffold' ? { hgt: sz } : {}),
+  };
+}
+
+/** epoch ms → 'HH:MM' (현지 시각). */
+export function msToHhmm(ms: number): string {
+  const d = new Date(ms);
+  return fromMin(d.getHours() * 60 + d.getMinutes());
+}
+
+/** 날짜('YYYY-MM-DD')와 시각('HH:MM') → epoch ms. */
+export function dateHhmmToMs(date: string, hhmm: string): number {
+  const [y = 2026, m = 10, d = 16] = date.split('-').map(Number);
+  const [hh = 0, mm = 0] = hhmm.split(':').map(Number);
+  return new Date(y, m - 1, d, hh, mm, 0, 0).getTime();
+}
+
+/** 작업 ID 표기: 숫자 ID('1', '12')는 화면에서 'T1', 'T12' 로 보이고, 서버 요청에는 workId('1', '12')를 쓴다. */
+export const displayTaskId = (workId: string): string =>
+  /^\d+$/.test(workId) ? `T${workId}` : workId;
+
+/** 보고서 sections 에서 대책 문장 목록(최대 3줄)을 뽑는다. */
+export function extractReportMeasures(report: TbmReport | null | undefined): string[] {
+  if (!report || report.status !== 'SUCCEEDED') return [];
+  const measuresSec = report.sections.find((s) => s.key === 'measures');
+  const focusSec = report.sections.find((s) => s.key === 'focus');
+  const lines: string[] = [];
+  if (measuresSec?.body) {
+    const parts = measuresSec.body
+      .split(/\n|(?<=다\.)\s+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    lines.push(...parts);
+  }
+  if (lines.length === 0 && focusSec?.body) {
+    lines.push(focusSec.body.trim());
+  }
+  return lines;
+}
+
+/** 서버 WorkUnit + 연결된 레이아웃 + 최신 보고서를 화면 TbmTask 로 합친다. */
+export function workUnitToTbmTask(
+  work: TbmWorkUnit,
+  layout?: LayoutDetail | null,
+  report?: TbmReport | null,
+): TbmTask {
+  const items = layout ? layout.items.map(layoutObbToItem) : [];
+  const evals =
+    report && (report.status === 'SUCCEEDED' || report.risk_items.length > 0)
+      ? report.risk_items.map(riskItemToEval)
+      : [];
+  const measures = extractReportMeasures(report);
+  const gearItems = layout?.items.filter((i) => i.kind === 'EQUIPMENT') ?? [];
+  const gear =
+    gearItems.length > 0
+      ? gearItems.map((i) => i.label ?? i.item_id).join(', ')
+      : layout
+        ? '장비 없음'
+        : '장비 미입력';
+
+  return {
+    id: displayTaskId(work.work_id),
+    workId: work.work_id,
+    date: work.date,
+    name: work.name,
+    from: msToHhmm(work.from_ms),
+    to: msToHhmm(work.to_ms),
+    zone: work.zone_id,
+    ...(work.zone_id ? {} : { area: work.place ?? OUTSIDE_ZONE_TEXT }),
+    people: work.planned_people,
+    lead: work.lead ?? 'A조',
+    gear,
+    layoutId: work.layout_id ?? null,
+    workType: work.work_type ?? null,
+    items,
+    evals,
+    measures,
+  };
+}
+
+const FAILURE_REASON_TEXT: Record<string, string> = {
+  CITATION_VIOLATION: '법령 인용 검증 위반으로 초안이 거부되었습니다 (CITATION_VIOLATION)',
+  REPORT_DRAFT_REJECTED:
+    '법령 인용·규칙 검증 위반으로 초안이 거부되었습니다 (REPORT_DRAFT_REJECTED)',
+  LLM_UNAVAILABLE: '외부 LLM 서비스에 연결할 수 없습니다 (LLM_UNAVAILABLE)',
+  LLM_TIMEOUT: '외부 LLM 응답 시간이 초과되었습니다 (LLM_TIMEOUT)',
+  NO_CANDIDATES: '조건에 맞는 법령 후보 조문을 찾지 못했습니다 (NO_CANDIDATES)',
+  CORPUS_EMPTY: '법령 지식 그래프 코퍼스가 비어 있습니다 (CORPUS_EMPTY)',
+};
+
+/** FAILED 보고서의 failure_reason 을 화면 안내 문구로 바꾼다(지어낸 문장으로 채우지 않는다). */
+export function tbmFailureReasonText(reason: string | null | undefined): string {
+  if (!reason) return '보고서 생성에 실패했습니다.';
+  return FAILURE_REASON_TEXT[reason] ?? `보고서 생성에 실패했습니다 (${reason})`;
+}
+
+/** POST /api/reports/tbm 실패(409 등)를 화면 안내 문구로 바꾼다. */
+export function tbmReportRequestErrorText(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 409 && error.code === 'WORK_HAS_NO_LAYOUT') {
+      return '작업에 연결된 가상 레이아웃이 없습니다. 가상 레이아웃을 먼저 연결해 주세요. (WORK_HAS_NO_LAYOUT)';
+    }
+    if (error.status === 409 && error.code === 'REPORT_IN_PROGRESS') {
+      return '이미 생성 중인 보고서가 있습니다. 생성이 끝날 때까지 기다려 주세요. (REPORT_IN_PROGRESS)';
+    }
+    if (error.status === NETWORK_ERROR) {
+      return '서버에 연결하지 못했습니다.';
+    }
+    if (error.status >= 400 && error.status < 500 && error.serverMessage) {
+      return error.serverMessage;
+    }
+  }
+  return '보고서 생성을 요청하지 못했습니다.';
+}
+
+/** API 실패가 데모 폴백 대상(네트워크 끊김·시간 초과·5xx)인지 판정한다. */
+export function isFallbackApiError(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return true;
+  return (
+    error.status === NETWORK_ERROR ||
+    error.kind === 'NETWORK' ||
+    error.kind === 'TIMEOUT' ||
+    error.status >= 500
+  );
+}

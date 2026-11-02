@@ -1,14 +1,20 @@
 import { MAX_PEOPLE, MIN_PEOPLE, OUTSIDE_ZONE_TEXT } from '@/features/tbm/constants';
 import { ModalDialog } from '@/features/tbm/ModalDialog';
-import { TASK_INPUT_DEFAULT, taskInputValid, type TaskInput } from '@/features/tbm/taskInput';
-import { TBM_LEADS, TBM_ZONES } from '@/features/tbm/tbmDemo';
+import {
+  TASK_INPUT_DEFAULT,
+  taskInputValid,
+  taskToInput,
+  type TaskInput,
+} from '@/features/tbm/taskInput';
+import { TBM_LEADS, TBM_ZONES, type TbmTask } from '@/features/tbm/tbmDemo';
+import { WORK_TYPE_OPTIONS, type LayoutSummary, type WorkTypeOption } from '@/features/tbm/types';
 import { Button } from '@simai/ui/components/button';
 import { Input } from '@simai/ui/components/input';
 import { Label } from '@simai/ui/components/label';
 import { cn } from '@simai/ui/lib/utils';
 import { useState, type ChangeEvent, type ComponentProps, type ReactNode } from 'react';
 
-// 작업 등록(수동 입력): 작업명 · 시작·끝 · 구역 · 인원 · 반장. 배치와 평가는 등록 뒤에 붙는다.
+// 작업 등록·수정(수동 입력): 작업명 · 시작·끝 · 구역 · 인원 · 반장 · 공종(work_type) · 가상 레이아웃(layout_id).
 // 모달 창(Esc · 바깥 누르기로 닫힘)에 띄운다.
 
 const FIELD = 'flex-col items-stretch gap-1.5 text-xs font-normal text-muted-foreground';
@@ -47,13 +53,23 @@ function SelectField({
 }
 
 function TaskForm({
-  onAdd,
+  heading = '작업 등록 · 수동 입력',
+  submitLabel = '등록',
+  initial = TASK_INPUT_DEFAULT,
+  workTypes = WORK_TYPE_OPTIONS,
+  layouts = [],
+  onSubmit,
   onCancel,
 }: {
-  onAdd: (input: TaskInput) => void;
+  heading?: string;
+  submitLabel?: string;
+  initial?: TaskInput;
+  workTypes?: readonly WorkTypeOption[];
+  layouts?: readonly LayoutSummary[];
+  onSubmit: (input: TaskInput) => void;
   onCancel: () => void;
 }) {
-  const [input, setInput] = useState<TaskInput>(TASK_INPUT_DEFAULT);
+  const [input, setInput] = useState<TaskInput>(initial);
   const set = (key: keyof TaskInput) => (e: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { value } = e.target;
     setInput((prev) => ({ ...prev, [key]: value }));
@@ -64,10 +80,10 @@ function TaskForm({
       className="flex flex-col gap-3 px-5 py-[18px]"
       onSubmit={(e) => {
         e.preventDefault();
-        if (ok) onAdd(input);
+        if (ok) onSubmit(input);
       }}
     >
-      <h2 className="text-[15px] font-bold text-muted-foreground">작업 등록 · 수동 입력</h2>
+      <h2 className="text-[15px] font-bold text-muted-foreground">{heading}</h2>
       <InputField
         label="작업명"
         name="task-name"
@@ -104,9 +120,37 @@ function TaskForm({
           onChange={set('people')}
         />
       </div>
-      <SelectField label="반장" name="task-lead" value={input.lead} onChange={set('lead')}>
-        {TBM_LEADS.map((lead) => (
-          <option key={lead}>{lead}</option>
+      <div className="grid grid-cols-2 gap-2.5">
+        <SelectField label="반장" name="task-lead" value={input.lead} onChange={set('lead')}>
+          {TBM_LEADS.map((lead) => (
+            <option key={lead}>{lead}</option>
+          ))}
+        </SelectField>
+        <SelectField
+          label="공종"
+          name="task-work-type"
+          value={input.workType ?? ''}
+          onChange={set('workType')}
+        >
+          <option value="">미지정</option>
+          {workTypes.map((wt) => (
+            <option key={wt.code} value={wt.code}>
+              {wt.label} ({wt.code})
+            </option>
+          ))}
+        </SelectField>
+      </div>
+      <SelectField
+        label="가상 레이아웃"
+        name="task-layout"
+        value={input.layoutId ?? ''}
+        onChange={set('layoutId')}
+      >
+        <option value="">연결 안 함</option>
+        {layouts.map((layout) => (
+          <option key={layout.layout_id} value={String(layout.layout_id)}>
+            #{layout.layout_id} {layout.name} (rev.{layout.revision})
+          </option>
         ))}
       </SelectField>
       {input.name.trim() && !ok && (
@@ -114,7 +158,7 @@ function TaskForm({
       )}
       <div className="flex flex-wrap gap-2">
         <Button type="submit" disabled={!ok} className={cn(BUTTON, 'font-bold')}>
-          등록
+          {submitLabel}
         </Button>
         <Button type="button" variant="secondary" onClick={onCancel} className={BUTTON}>
           취소
@@ -126,9 +170,13 @@ function TaskForm({
 
 /** 작업 등록 모달. 열 때마다 새로 그려 입력을 비운다. */
 export function TaskAddDialog({
+  workTypes = WORK_TYPE_OPTIONS,
+  layouts = [],
   onAdd,
   onCancel,
 }: {
+  workTypes?: readonly WorkTypeOption[];
+  layouts?: readonly LayoutSummary[];
   onAdd: (input: TaskInput) => void;
   onCancel: () => void;
 }) {
@@ -137,9 +185,50 @@ export function TaskAddDialog({
       label="작업 등록"
       onClose={onCancel}
       closeOnBackdrop
-      className="w-[min(480px,calc(100vw-48px))]"
+      className="w-[min(520px,calc(100vw-48px))]"
     >
-      <TaskForm onAdd={onAdd} onCancel={onCancel} />
+      <TaskForm
+        heading="작업 등록 · 수동 입력"
+        submitLabel="등록"
+        workTypes={workTypes}
+        layouts={layouts}
+        onSubmit={onAdd}
+        onCancel={onCancel}
+      />
+    </ModalDialog>
+  );
+}
+
+/** 작업 수정 모달. 선택한 작업의 공종·가상 레이아웃·시간·구역·인원 등을 수정한다. */
+export function TaskEditDialog({
+  task,
+  workTypes = WORK_TYPE_OPTIONS,
+  layouts = [],
+  onSave,
+  onCancel,
+}: {
+  task: TbmTask;
+  workTypes?: readonly WorkTypeOption[];
+  layouts?: readonly LayoutSummary[];
+  onSave: (input: TaskInput) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <ModalDialog
+      label="작업 수정"
+      onClose={onCancel}
+      closeOnBackdrop
+      className="w-[min(520px,calc(100vw-48px))]"
+    >
+      <TaskForm
+        heading={`${task.id} 작업 수정`}
+        submitLabel="저장"
+        initial={taskToInput(task)}
+        workTypes={workTypes}
+        layouts={layouts}
+        onSubmit={onSave}
+        onCancel={onCancel}
+      />
     </ModalDialog>
   );
 }

@@ -1,0 +1,945 @@
+import { TBM_ISO_DATE } from '@/features/tbm/tbmDemo';
+import {
+  dateHhmmToMs,
+  type LayoutDetail,
+  type SubgraphEdge,
+  type SubgraphNode,
+  type TbmReport,
+  type TbmReportCitation,
+  type TbmReportStep,
+  type TbmWorkUnit,
+  WORK_TYPE_OPTIONS,
+  workTypeLabelOf,
+  type WorkTypeOption,
+} from '@/features/tbm/types';
+import { http, HttpResponse } from 'msw/http';
+
+// TBM 화면(작업·공종·가상 레이아웃·보고서) MSW 핸들러.
+// 정본: .agy/tbm-interface.md B·C절, 설계 .agy/ref/tbm-legal-graph.md 5.1·5.2·5.4·5.5.
+
+const INITIAL_LAYOUTS: readonly LayoutDetail[] = [
+  {
+    layout_id: 101,
+    name: '개구부 옆 비계 배치 (z-04)',
+    revision: 3,
+    layout_version: 'layout-101-r3',
+    source: 'EDITOR',
+    item_count: 1,
+    created_at: 1760572800000,
+    updated_at: 1760572800000,
+    items: [
+      {
+        item_id: 'pos-01',
+        kind: 'SCAFFOLD',
+        center: [6.1, 2.4, 1.2],
+        size: [1.0, 2.4, 2.4],
+        yaw_rad: 0,
+        label: '비계 S1',
+      },
+    ],
+  },
+  {
+    layout_id: 102,
+    name: '자재 반입 동선·주차 배치 (z-02)',
+    revision: 1,
+    layout_version: 'layout-102-r1',
+    source: 'EDITOR',
+    item_count: 2,
+    created_at: 1760572800000,
+    updated_at: 1760572800000,
+    items: [
+      {
+        item_id: 'eq-parking-p1',
+        kind: 'EQUIPMENT',
+        center: [7.9, 7.9, 0.5],
+        size: [2.6, 2.6, 1.0],
+        yaw_rad: 0,
+        label: '장비 주차 P1',
+      },
+      {
+        item_id: 'eq-forklift-path',
+        kind: 'EQUIPMENT',
+        center: [6.225, 3.0, 0.45],
+        size: [2.75, 0.9, 0.9],
+        yaw_rad: 0,
+        label: '지게차 동선',
+      },
+    ],
+  },
+  {
+    layout_id: 103,
+    name: '북서쪽 바닥 마감 배치',
+    revision: 1,
+    layout_version: 'layout-103-r1',
+    source: 'EDITOR',
+    item_count: 1,
+    created_at: 1760572800000,
+    updated_at: 1760572800000,
+    items: [
+      {
+        item_id: 'area-m1',
+        kind: 'OPENING',
+        center: [2.4, 2.8, 0.05],
+        size: [3.6, 4.4, 0.1],
+        yaw_rad: 0,
+        label: '마감 구역 M1',
+      },
+    ],
+  },
+];
+
+const INITIAL_WORKS: readonly TbmWorkUnit[] = [
+  {
+    work_id: '1',
+    date: TBM_ISO_DATE,
+    name: '개구부 옆 비계 설치',
+    from_ms: dateHhmmToMs(TBM_ISO_DATE, '09:00'),
+    to_ms: dateHhmmToMs(TBM_ISO_DATE, '12:00'),
+    zone_id: 'z-04',
+    place: null,
+    planned_people: 4,
+    lead: 'A조',
+    layout_id: 101,
+    work_type: 'SCAFFOLD_INSTALL',
+    event_counts: { CRITICAL: 1, HIGH: 1 },
+  },
+  {
+    work_id: '2',
+    date: TBM_ISO_DATE,
+    name: '자재 반입 · 정리',
+    from_ms: dateHhmmToMs(TBM_ISO_DATE, '10:00'),
+    to_ms: dateHhmmToMs(TBM_ISO_DATE, '11:30'),
+    zone_id: 'z-02',
+    place: null,
+    planned_people: 3,
+    lead: 'B조',
+    layout_id: 102,
+    work_type: 'MATERIAL_HANDLING',
+    event_counts: { CRITICAL: 0, HIGH: 2 },
+  },
+  {
+    work_id: '3',
+    date: TBM_ISO_DATE,
+    name: '바닥 마감',
+    from_ms: dateHhmmToMs(TBM_ISO_DATE, '13:00'),
+    to_ms: dateHhmmToMs(TBM_ISO_DATE, '17:00'),
+    zone_id: null,
+    place: '북서쪽 바닥',
+    planned_people: 2,
+    lead: 'A조',
+    layout_id: 103,
+    work_type: 'FLOOR_FINISHING',
+    event_counts: { CRITICAL: 0, HIGH: 0 },
+  },
+];
+
+const COMMON_CITATIONS: readonly TbmReportCitation[] = [
+  {
+    node_id: 'OSH-STD-A43',
+    source_name: '산업안전보건기준에 관한 규칙',
+    article_ref: '제43조',
+    title: '개구부 등의 방호조치',
+    excerpt:
+      '사업주는 작업발판 및 통로의 끝이나 개구부로서 근로자가 추락할 위험이 있는 장소에는 안전난간, 울타리, 수직형 추락방망 또는 덮개 등 방호조치를 충분한 강도를 가진 구조로 튼튼하게 설치하여야 한다.',
+  },
+  {
+    node_id: 'OSH-STD-A42',
+    source_name: '산업안전보건기준에 관한 규칙',
+    article_ref: '제42조',
+    title: '추락의 방지',
+    excerpt:
+      '사업주는 근로자가 추락하거나 넘어질 위험이 있는 장소 또는 기계·설비·선박블록 등에서 작업을 할 때에 근로자가 위험해질 우려가 있는 경우 비계를 조립하는 등의 방법으로 작업발판을 설치하여야 한다.',
+  },
+  {
+    node_id: 'OSH-STD-A44',
+    source_name: '산업안전보건기준에 관한 규칙',
+    article_ref: '제44조',
+    title: '안전대의 부착설비 등',
+    excerpt:
+      '사업주는 추락할 위험이 있는 높이 2미터 이상의 장소에서 근로자에게 안전대를 착용시킨 경우 안전대를 안전하게 걸어 사용할 수 있는 설비 등을 설치하여야 한다.',
+  },
+  {
+    node_id: 'OSH-STD-A56',
+    source_name: '산업안전보건기준에 관한 규칙',
+    article_ref: '제56조',
+    title: '작업발판의 구조',
+    excerpt:
+      '사업주는 비계의 높이가 2미터 이상인 작업장소에는 발판재료 간의 틈이 3센티미터 이하이고 폭이 40센티미터 이상인 작업발판을 설치하여야 한다.',
+  },
+];
+
+const COMMON_SUBGRAPH_NODES: readonly SubgraphNode[] = [
+  {
+    node_id: 'OSH-STD-A43',
+    node_kind: 'ARTICLE',
+    layer: 'OSH_STANDARD',
+    source_name: '산업안전보건기준에 관한 규칙',
+    article_ref: '제43조',
+    title: '개구부 등의 방호조치',
+    rule_tags: ['R1', 'R2'],
+    hop: 0,
+    cited: true,
+  },
+  {
+    node_id: 'OSH-STD-A42',
+    node_kind: 'ARTICLE',
+    layer: 'OSH_STANDARD',
+    source_name: '산업안전보건기준에 관한 규칙',
+    article_ref: '제42조',
+    title: '추락의 방지',
+    rule_tags: ['R2', 'R3'],
+    hop: 0,
+    cited: true,
+  },
+  {
+    node_id: 'OSH-STD-A44',
+    node_kind: 'ARTICLE',
+    layer: 'OSH_STANDARD',
+    source_name: '산업안전보건기준에 관한 규칙',
+    article_ref: '제44조',
+    title: '안전대의 부착설비 등',
+    rule_tags: ['R2', 'R3'],
+    hop: 0,
+    cited: true,
+  },
+  {
+    node_id: 'OSH-STD-A56',
+    node_kind: 'ARTICLE',
+    layer: 'OSH_STANDARD',
+    source_name: '산업안전보건기준에 관한 규칙',
+    article_ref: '제56조',
+    title: '작업발판의 구조',
+    rule_tags: ['R2', 'R3'],
+    hop: 0,
+    cited: true,
+  },
+  {
+    node_id: 'OSH-STD-A13',
+    node_kind: 'ARTICLE',
+    layer: 'OSH_STANDARD',
+    source_name: '산업안전보건기준에 관한 규칙',
+    article_ref: '제13조',
+    title: '안전난간의 구조 및 설치요건',
+    rule_tags: ['R2'],
+    hop: 1,
+    cited: false,
+  },
+  {
+    node_id: 'OSH-ACT-A38',
+    node_kind: 'ARTICLE',
+    layer: 'LAW',
+    source_name: '산업안전보건법',
+    article_ref: '제38조',
+    title: '안전조치',
+    rule_tags: ['R1', 'R2', 'R3'],
+    hop: 1,
+    cited: false,
+  },
+];
+
+const COMMON_SUBGRAPH_EDGES: readonly SubgraphEdge[] = [
+  {
+    edge_id: 'E-43-13',
+    src_node_id: 'OSH-STD-A43',
+    dst_node_id: 'OSH-STD-A13',
+    edge_kind: 'REFERENCES',
+    relation_label: '안전난간 구조 준용',
+  },
+  {
+    edge_id: 'E-42-44',
+    src_node_id: 'OSH-STD-A42',
+    dst_node_id: 'OSH-STD-A44',
+    edge_kind: 'REFERENCES',
+    relation_label: '안전대 부착설비 연계',
+  },
+  {
+    edge_id: 'E-42-56',
+    src_node_id: 'OSH-STD-A42',
+    dst_node_id: 'OSH-STD-A56',
+    edge_kind: 'REFERENCES',
+    relation_label: '비계 작업발판 기준',
+  },
+  {
+    edge_id: 'E-38-42',
+    src_node_id: 'OSH-ACT-A38',
+    dst_node_id: 'OSH-STD-A42',
+    edge_kind: 'DELEGATES',
+    relation_label: '추락 위험 예방 위임',
+  },
+  {
+    edge_id: 'E-38-43',
+    src_node_id: 'OSH-ACT-A38',
+    dst_node_id: 'OSH-STD-A43',
+    edge_kind: 'DELEGATES',
+    relation_label: '개구부 방호조치 위임',
+  },
+];
+
+const COMMON_STEPS: readonly TbmReportStep[] = [
+  {
+    step: 'CANDIDATE_SEARCH',
+    label: '법령 후보 검색 (1차)',
+    status: 'DONE',
+    input_count: 3,
+    output_count: 4,
+    duration_ms: 42,
+    detail: 'rule_tags=[R1, R2, R3], work_type 매칭 조문 4건',
+  },
+  {
+    step: 'GRAPH_EXPAND',
+    label: '법령 지식 그래프 확장 (1-hop)',
+    status: 'DONE',
+    input_count: 4,
+    output_count: 6,
+    duration_ms: 18,
+    detail: 'REFERENCES·DELEGATES 엣지 5개 확장 (노드 6개)',
+  },
+  {
+    step: 'LLM_GENERATE',
+    label: 'LLM 보고서 초안 생성',
+    status: 'DONE',
+    input_count: 6,
+    output_count: 4,
+    duration_ms: 1420,
+    detail: 'gpt-4o-mini · sections 4개 · 인용 4건 생성',
+  },
+  {
+    step: 'CITATION_VALIDATE',
+    label: '인용·수치 결정론 검증',
+    status: 'DONE',
+    input_count: 4,
+    output_count: 4,
+    duration_ms: 7,
+    detail: '화이트리스트 인용 4/4 통과 · 미인용 조문 제거 완료',
+  },
+];
+
+function buildReportForWork(
+  work: TbmWorkUnit,
+  reportId: number,
+  version: number,
+  status: 'GENERATING' | 'SUCCEEDED' | 'FAILED' = 'SUCCEEDED',
+  failureReason: string | null = null,
+): TbmReport {
+  const workTypeObj = work.work_type
+    ? { code: work.work_type, label: workTypeLabelOf(work.work_type) ?? work.work_type }
+    : null;
+  const header = {
+    date: work.date,
+    name: work.name,
+    from_ms: work.from_ms,
+    to_ms: work.to_ms,
+    zone_id: work.zone_id,
+    place: work.place,
+    planned_people: work.planned_people,
+    lead: work.lead,
+  };
+
+  if (status === 'GENERATING') {
+    return {
+      report_id: reportId,
+      work_id: work.work_id,
+      report_version: version,
+      status: 'GENERATING',
+      failure_reason: null,
+      layout_id: work.layout_id ?? null,
+      layout_revision: 3,
+      work_type: workTypeObj,
+      header,
+      rule_version: 3,
+      risk_items: [],
+      zone_history: [],
+      sections: [],
+      citations: [],
+      subgraph: { nodes: [], edges: [] },
+      steps: [
+        {
+          step: 'CANDIDATE_SEARCH',
+          label: '법령 후보 검색 (1차)',
+          status: 'RUNNING',
+          input_count: 2,
+          output_count: 0,
+          duration_ms: 12,
+          detail: '후보 조문 탐색 및 물리 위험 평가 대기 중',
+        },
+      ],
+      llm_model: null,
+      created_at_ms: 1760573100000,
+      completed_at_ms: null,
+    };
+  }
+
+  if (status === 'FAILED') {
+    return {
+      report_id: reportId,
+      work_id: work.work_id,
+      report_version: version,
+      status: 'FAILED',
+      failure_reason: failureReason ?? 'CITATION_VIOLATION',
+      layout_id: work.layout_id ?? null,
+      layout_revision: 3,
+      work_type: workTypeObj,
+      header,
+      rule_version: 3,
+      risk_items: [
+        {
+          rule_id: 'R2',
+          rule_version: 3,
+          severity: 'CRITICAL',
+          position_ids: ['pos-01'],
+          zone_id: work.zone_id ?? 'z-04',
+          metrics: { edge_distance_m: 0.6, height_diff_m: 2.1 },
+          reason_codes: ['edge_within_raise_distance', 'standing_surface_elevated'],
+          confidence_reasons: ['high_confidence'],
+          item: '비계 S1 ↔ 개구부',
+          why: '수평 0.6m · 높이 차 2.1m',
+        },
+      ],
+      zone_history: [],
+      sections: [],
+      citations: [],
+      subgraph: {
+        nodes: COMMON_SUBGRAPH_NODES.map((n) => ({ ...n, cited: false })),
+        edges: [...COMMON_SUBGRAPH_EDGES],
+      },
+      steps: [
+        COMMON_STEPS[0]!,
+        COMMON_STEPS[1]!,
+        COMMON_STEPS[2]!,
+        {
+          step: 'CITATION_VALIDATE',
+          label: '인용·수치 결정론 검증',
+          status: 'FAILED',
+          input_count: 4,
+          output_count: 0,
+          duration_ms: 9,
+          detail: `검증 실패: ${failureReason ?? 'CITATION_VIOLATION'}`,
+        },
+      ],
+      llm_model: 'gpt-4o-mini',
+      created_at_ms: 1760573100000,
+      completed_at_ms: 1760573102000,
+    };
+  }
+
+  if (work.work_id === '2') {
+    return {
+      report_id: reportId,
+      work_id: work.work_id,
+      report_version: version,
+      status: 'SUCCEEDED',
+      failure_reason: null,
+      layout_id: work.layout_id ?? 102,
+      layout_revision: 1,
+      work_type: workTypeObj,
+      header,
+      rule_version: 3,
+      risk_items: [
+        {
+          rule_id: 'R1',
+          rule_version: 3,
+          severity: 'HIGH',
+          position_ids: ['eq-forklift-path'],
+          zone_id: 'z-04',
+          metrics: { zone_distance_m: 0.0 },
+          reason_codes: ['xy_inside_polygon'],
+          confidence_reasons: ['high_confidence'],
+          item: '지게차 동선 ↔ z-04',
+          why: '동선이 위험 구역을 2.8m 가로지름',
+        },
+        {
+          rule_id: 'R1',
+          rule_version: 3,
+          severity: 'HIGH',
+          position_ids: ['eq-parking-p1'],
+          zone_id: 'z-02',
+          metrics: { zone_distance_m: 0.9 },
+          reason_codes: ['xy_uncertainty_overlap'],
+          confidence_reasons: ['high_confidence'],
+          item: '통로 ↔ 장비 P1',
+          why: '통로 폭 0.9m 겹침',
+        },
+      ],
+      zone_history: [
+        {
+          zone_id: 'z-02',
+          days: 7,
+          live_event_count: 3,
+          rules: ['R1'],
+          max_severity: 'HIGH',
+          last_at_ms: 1760515200000,
+        },
+      ],
+      sections: [
+        {
+          key: 'hazards',
+          title: '잠재 위험요인',
+          body: '지게차 이동 동선이 개구부 구역(z-04)을 가로지르며(R1 HIGH), 장비 주차 P1 구간이 보행 통로 폭 0.9m와 겹칩니다(R1 HIGH).',
+          citations: ['OSH-STD-A43'],
+        },
+        {
+          key: 'measures',
+          title: '안전조치 대책',
+          body: '반입 경로에 유도자 1명 배치\n장비 주차 P1에 표지와 차단봉 설치',
+          citations: ['OSH-STD-A43', 'OSH-STD-A44'],
+        },
+        {
+          key: 'focus',
+          title: '중점 위험 및 작업 전 확인',
+          body: '지게차 동선 ↔ z-04(R1 HIGH) 구간의 유도자 배치 및 개구부 방호울타리 간섭 여부를 작업 전 확인합니다.',
+          citations: ['OSH-STD-A43'],
+        },
+        {
+          key: 'legal',
+          title: '관련 법령 근거 요약',
+          body: '산업안전보건기준에 관한 규칙 제43조(개구부 등의 방호조치)에 따라 개구부 인접 자재 반입 동선에 울타리·표지 등 방호조치를 유지해야 합니다.',
+          citations: ['OSH-STD-A43'],
+        },
+      ],
+      citations: COMMON_CITATIONS.filter(
+        (c) => c.node_id === 'OSH-STD-A43' || c.node_id === 'OSH-STD-A44',
+      ),
+      subgraph: {
+        nodes: COMMON_SUBGRAPH_NODES.map((n) => ({
+          ...n,
+          cited: n.node_id === 'OSH-STD-A43' || n.node_id === 'OSH-STD-A44',
+        })),
+        edges: [...COMMON_SUBGRAPH_EDGES],
+      },
+      steps: [...COMMON_STEPS],
+      llm_model: 'gpt-4o-mini',
+      created_at_ms: 1760573100000,
+      completed_at_ms: 1760573102000,
+    };
+  }
+
+  if (work.work_id === '3') {
+    return {
+      report_id: reportId,
+      work_id: work.work_id,
+      report_version: version,
+      status: 'SUCCEEDED',
+      failure_reason: null,
+      layout_id: work.layout_id ?? 103,
+      layout_revision: 1,
+      work_type: workTypeObj,
+      header,
+      rule_version: 3,
+      risk_items: [
+        {
+          rule_id: 'R1',
+          rule_version: 3,
+          severity: 'CAUTION',
+          position_ids: ['area-m1'],
+          zone_id: null,
+          metrics: { zone_distance_m: 0.2 },
+          reason_codes: ['xy_uncertainty_overlap'],
+          confidence_reasons: ['high_confidence'],
+          item: '마감 구역 M1 ↔ 출입 동선',
+          why: '젖은 바닥 · 출입문에서 0.2m',
+        },
+      ],
+      zone_history: [],
+      sections: [
+        {
+          key: 'hazards',
+          title: '잠재 위험요인',
+          body: '북서쪽 바닥 마감 구역(M1)이 출입문에서 0.2m 인접하여(R1 CAUTION) 통행 중 미끄러짐·전도 위험이 있습니다.',
+          citations: ['OSH-STD-A42'],
+        },
+        {
+          key: 'measures',
+          title: '안전조치 대책',
+          body: '출입문 쪽 우회 동선 표시\n미끄럼 주의 표지 설치',
+          citations: ['OSH-STD-A42'],
+        },
+        {
+          key: 'focus',
+          title: '중점 위험 및 작업 전 확인',
+          body: '마감 구역 M1 ↔ 출입 동선(R1 CAUTION) 구간에 우회 동선 안내와 미끄럼 주의 표지를 작업 시작 전 설치합니다.',
+          citations: ['OSH-STD-A42'],
+        },
+        {
+          key: 'legal',
+          title: '관련 법령 근거 요약',
+          body: '산업안전보건기준에 관한 규칙 제42조(추락의 방지)에 따라 근로자가 넘어질 위험이 있는 작업장 바닥에 안전 통로 및 방호 표지를 확보합니다.',
+          citations: ['OSH-STD-A42'],
+        },
+      ],
+      citations: COMMON_CITATIONS.filter((c) => c.node_id === 'OSH-STD-A42'),
+      subgraph: {
+        nodes: COMMON_SUBGRAPH_NODES.map((n) => ({
+          ...n,
+          cited: n.node_id === 'OSH-STD-A42',
+        })),
+        edges: [...COMMON_SUBGRAPH_EDGES],
+      },
+      steps: [...COMMON_STEPS],
+      llm_model: 'gpt-4o-mini',
+      created_at_ms: 1760573100000,
+      completed_at_ms: 1760573102000,
+    };
+  }
+
+  // 기본(work_id === '1' 및 새로 등록된 작업)
+  return {
+    report_id: reportId,
+    work_id: work.work_id,
+    report_version: version,
+    status: 'SUCCEEDED',
+    failure_reason: null,
+    layout_id: work.layout_id ?? 101,
+    layout_revision: 3,
+    work_type: workTypeObj,
+    header,
+    rule_version: 3,
+    risk_items: [
+      {
+        rule_id: 'R2',
+        rule_version: 3,
+        severity: 'CRITICAL',
+        position_ids: ['pos-01'],
+        zone_id: work.zone_id ?? 'z-04',
+        metrics: { edge_distance_m: 0.6, height_diff_m: 2.1 },
+        reason_codes: ['edge_within_raise_distance'],
+        confidence_reasons: ['high_confidence'],
+        item: '비계 S1 ↔ 개구부',
+        why: '수평 0.6m · 높이 차 2.1m',
+      },
+      {
+        rule_id: 'R3',
+        rule_version: 3,
+        severity: 'HIGH',
+        position_ids: ['pos-01'],
+        zone_id: work.zone_id ?? 'z-04',
+        metrics: { surface_height_m: 2.4 },
+        reason_codes: ['standing_on_surface', 'standing_surface_elevated'],
+        confidence_reasons: ['high_confidence'],
+        item: '비계 S1 상부',
+        why: '작업면 2.4m · 난간 없음',
+      },
+    ],
+    zone_history: [
+      {
+        zone_id: 'z-04',
+        days: 7,
+        live_event_count: 5,
+        rules: ['R2', 'R3'],
+        max_severity: 'CRITICAL',
+        last_at_ms: 1760515200000,
+      },
+    ],
+    sections: [
+      {
+        key: 'hazards',
+        title: '잠재 위험요인',
+        body: '비계 S1이 개구부 구역(z-04) 단부에서 수평 0.6m·높이 차 2.1m에 위치하여 추락 위험(R2 CRITICAL)이 있으며, 높이 2.4m 비계 상부에 안전난간이 없는 상태(R3 HIGH)입니다.',
+        citations: ['OSH-STD-A42', 'OSH-STD-A43', 'OSH-STD-A56'],
+      },
+      {
+        key: 'measures',
+        title: '안전조치 대책',
+        body: '개구부 덮개와 안전 난간을 비계보다 먼저 설치\n비계 위 작업 전 안전대 체결 확인',
+        citations: ['OSH-STD-A42', 'OSH-STD-A43', 'OSH-STD-A44', 'OSH-STD-A56'],
+      },
+      {
+        key: 'focus',
+        title: '중점 위험 및 작업 전 확인',
+        body: '비계 S1 ↔ 개구부(R2 CRITICAL, 수평 0.6m·높이 차 2.1m) 구간의 개구부 덮개·안전난간 선행 설치와 안전대 부착설비 체결을 최우선 확인합니다.',
+        citations: ['OSH-STD-A43', 'OSH-STD-A44'],
+      },
+      {
+        key: 'legal',
+        title: '관련 법령 근거 요약',
+        body: '산업안전보건기준에 관한 규칙 제42조(추락의 방지), 제43조(개구부 등의 방호조치), 제44조(안전대의 부착설비 등), 제56조(작업발판의 구조)에 따라 개구부 방호조치 및 2m 이상 비계 작업발판·안전대 설비를 확보해야 합니다.',
+        citations: ['OSH-STD-A42', 'OSH-STD-A43', 'OSH-STD-A44', 'OSH-STD-A56'],
+      },
+    ],
+    citations: [...COMMON_CITATIONS],
+    subgraph: {
+      nodes: [...COMMON_SUBGRAPH_NODES],
+      edges: [...COMMON_SUBGRAPH_EDGES],
+    },
+    steps: [...COMMON_STEPS],
+    llm_model: 'gpt-4o-mini',
+    created_at_ms: 1760573100000,
+    completed_at_ms: 1760573102000,
+  };
+}
+
+export interface CreateTbmMockOptions {
+  /**
+   * true 이면 GET /api/work-units?days=... 요청을 다음 핸들러(createHistoryMock)에 넘긴다.
+   */
+  deferDaysToHistory?: boolean;
+  /**
+   * POST /api/reports/tbm 후 몇 번의 GET 폴링 뒤에 완료 상태로 바꿀지 설정한다(기본 1: 첫 폴링에서 완료).
+   */
+  pollsBeforeComplete?: number;
+  /**
+   * 다음에 생성되는 보고서의 최종 상태를 지정한다(기본 'SUCCEEDED').
+   */
+  nextReportOutcome?: {
+    status: 'SUCCEEDED' | 'FAILED';
+    failureReason?: string;
+  };
+}
+
+export function createTbmMock(options: CreateTbmMockOptions = {}) {
+  const workTypes: WorkTypeOption[] = WORK_TYPE_OPTIONS.map((w) => ({
+    ...w,
+    rule_tags: [...w.rule_tags],
+  }));
+  const layouts: LayoutDetail[] = INITIAL_LAYOUTS.map((l) => ({
+    ...l,
+    items: l.items.map((i) => ({ ...i })),
+  }));
+  const works: TbmWorkUnit[] = INITIAL_WORKS.map((w) => ({ ...w }));
+
+  let nextWorkSeq = 4;
+  let nextReportSeq = 300;
+  const pollsBeforeComplete = options.pollsBeforeComplete ?? 1;
+  let nextOutcome = options.nextReportOutcome ?? { status: 'SUCCEEDED' as const };
+
+  // work_id 별 보고서 버전 목록(오래된 순 → 최신 순)
+  const reportsByWork = new Map<string, TbmReport[]>();
+  const pollCounts = new Map<number, number>();
+  const pendingOutcomeByReport = new Map<
+    number,
+    { status: 'SUCCEEDED' | 'FAILED'; failureReason?: string }
+  >();
+
+  for (const w of works) {
+    const rep = buildReportForWork(w, ++nextReportSeq, 1, 'SUCCEEDED');
+    reportsByWork.set(w.work_id, [rep]);
+  }
+
+  const findReportById = (reportId: number): TbmReport | undefined => {
+    for (const list of reportsByWork.values()) {
+      const found = list.find((r) => r.report_id === reportId);
+      if (found) return found;
+    }
+    return undefined;
+  };
+
+  const handlers = [
+    http.get('*/api/work-types', () => HttpResponse.json({ work_types: workTypes })),
+
+    http.get('*/api/layouts', () =>
+      HttpResponse.json(
+        layouts.map(({ items, ...summary }) => ({
+          ...summary,
+          item_count: items.length,
+        })),
+      ),
+    ),
+
+    http.get('*/api/layouts/:id', ({ params }) => {
+      const id = Number(params.id);
+      const layout = layouts.find((l) => l.layout_id === id);
+      if (!layout) {
+        return HttpResponse.json(
+          { status: 404, code: 'LAYOUT_NOT_FOUND', detail: '가상 레이아웃을 찾을 수 없습니다.' },
+          { status: 404 },
+        );
+      }
+      return HttpResponse.json(layout);
+    }),
+
+    http.get('*/api/work-units', ({ request }) => {
+      const url = new URL(request.url);
+      if (options.deferDaysToHistory && url.searchParams.has('days')) {
+        return undefined;
+      }
+      return HttpResponse.json({ works });
+    }),
+
+    http.post('*/api/work-units', async ({ request }) => {
+      const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+      if (!body || typeof body.name !== 'string') {
+        return HttpResponse.json(
+          { status: 400, code: 'INVALID_WORK_UNIT', detail: '작업 이름이 필요합니다.' },
+          { status: 400 },
+        );
+      }
+      const created: TbmWorkUnit = {
+        work_id: String(nextWorkSeq++),
+        date: typeof body.date === 'string' ? body.date : TBM_ISO_DATE,
+        name: body.name,
+        from_ms:
+          typeof body.from_ms === 'number' ? body.from_ms : dateHhmmToMs(TBM_ISO_DATE, '09:00'),
+        to_ms: typeof body.to_ms === 'number' ? body.to_ms : dateHhmmToMs(TBM_ISO_DATE, '12:00'),
+        zone_id: typeof body.zone_id === 'string' ? body.zone_id : null,
+        place: typeof body.place === 'string' ? body.place : null,
+        planned_people: typeof body.planned_people === 'number' ? body.planned_people : 1,
+        lead: typeof body.lead === 'string' ? body.lead : 'A조',
+        layout_id: typeof body.layout_id === 'number' ? body.layout_id : null,
+        work_type: typeof body.work_type === 'string' ? body.work_type : null,
+        event_counts: { CRITICAL: 0, HIGH: 0 },
+      };
+      works.push(created);
+      return HttpResponse.json(created, { status: 201 });
+    }),
+
+    http.put('*/api/work-units/:id', async ({ params, request }) => {
+      const id = String(params.id);
+      const idx = works.findIndex((w) => w.work_id === id);
+      if (idx < 0) {
+        return HttpResponse.json(
+          { status: 404, code: 'WORK_NOT_FOUND', detail: '작업을 찾을 수 없습니다.' },
+          { status: 404 },
+        );
+      }
+      const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+      if (!body) {
+        return HttpResponse.json(
+          { status: 400, code: 'INVALID_WORK_UNIT', detail: '요청 본문이 올바르지 않습니다.' },
+          { status: 400 },
+        );
+      }
+      const prev = works[idx]!;
+      const updated: TbmWorkUnit = {
+        ...prev,
+        date: typeof body.date === 'string' ? body.date : prev.date,
+        name: typeof body.name === 'string' ? body.name : prev.name,
+        from_ms: typeof body.from_ms === 'number' ? body.from_ms : prev.from_ms,
+        to_ms: typeof body.to_ms === 'number' ? body.to_ms : prev.to_ms,
+        zone_id:
+          body.zone_id === null || typeof body.zone_id === 'string' ? body.zone_id : prev.zone_id,
+        place: body.place === null || typeof body.place === 'string' ? body.place : prev.place,
+        planned_people:
+          typeof body.planned_people === 'number' ? body.planned_people : prev.planned_people,
+        lead: body.lead === null || typeof body.lead === 'string' ? body.lead : prev.lead,
+        layout_id:
+          body.layout_id === null || typeof body.layout_id === 'number'
+            ? body.layout_id
+            : prev.layout_id,
+        work_type:
+          body.work_type === null || typeof body.work_type === 'string'
+            ? body.work_type
+            : prev.work_type,
+      };
+      works[idx] = updated;
+      return HttpResponse.json(updated);
+    }),
+
+    http.delete('*/api/work-units/:id', ({ params }) => {
+      const id = String(params.id);
+      const idx = works.findIndex((w) => w.work_id === id);
+      if (idx >= 0) works.splice(idx, 1);
+      return new HttpResponse(null, { status: 204 });
+    }),
+
+    http.get('*/api/reports/tbm', ({ request }) => {
+      const url = new URL(request.url);
+      const workId = url.searchParams.get('work_id');
+      if (!workId) {
+        return HttpResponse.json(
+          { status: 400, code: 'WORK_ID_REQUIRED', detail: 'work_id 쿼리가 필요합니다.' },
+          { status: 400 },
+        );
+      }
+      const list = reportsByWork.get(workId) ?? [];
+      const latest = list.length > 0 ? list[list.length - 1]! : null;
+      const versions = [...list].reverse().map((r) => ({
+        report_id: r.report_id,
+        report_version: r.report_version,
+        status: r.status,
+        created_at_ms: r.created_at_ms,
+      }));
+      return HttpResponse.json({ latest, versions });
+    }),
+
+    http.get('*/api/reports/tbm/:reportId', ({ params }) => {
+      const reportId = Number(params.reportId);
+      const report = findReportById(reportId);
+      if (!report) {
+        return HttpResponse.json(
+          { status: 404, code: 'REPORT_NOT_FOUND', detail: '보고서를 찾을 수 없습니다.' },
+          { status: 404 },
+        );
+      }
+      if (report.status === 'GENERATING') {
+        const count = (pollCounts.get(reportId) ?? 0) + 1;
+        pollCounts.set(reportId, count);
+        if (count >= pollsBeforeComplete) {
+          const work = works.find((w) => w.work_id === report.work_id);
+          const outcome = pendingOutcomeByReport.get(reportId) ?? { status: 'SUCCEEDED' };
+          if (work) {
+            const completed = buildReportForWork(
+              work,
+              report.report_id,
+              report.report_version,
+              outcome.status,
+              outcome.failureReason ?? null,
+            );
+            Object.assign(report, completed);
+          }
+        }
+      }
+      return HttpResponse.json(report);
+    }),
+
+    http.post('*/api/reports/tbm', async ({ request }) => {
+      const body = (await request.json().catch(() => null)) as { work_id?: string | number } | null;
+      const workId = body?.work_id !== undefined ? String(body.work_id) : '';
+      const work = works.find((w) => w.work_id === workId);
+      if (!work) {
+        return HttpResponse.json(
+          { status: 404, code: 'WORK_NOT_FOUND', detail: '작업을 찾을 수 없습니다.' },
+          { status: 404 },
+        );
+      }
+      if (work.layout_id === null || work.layout_id === undefined) {
+        return HttpResponse.json(
+          {
+            status: 409,
+            code: 'WORK_HAS_NO_LAYOUT',
+            detail: '작업에 연결된 가상 레이아웃이 없습니다.',
+          },
+          { status: 409 },
+        );
+      }
+      const list = reportsByWork.get(workId) ?? [];
+      const latest = list.length > 0 ? list[list.length - 1] : undefined;
+      if (latest?.status === 'GENERATING') {
+        return HttpResponse.json(
+          {
+            status: 409,
+            code: 'REPORT_IN_PROGRESS',
+            detail: '이미 생성 중인 보고서가 있습니다.',
+          },
+          { status: 409 },
+        );
+      }
+      const nextVersion = (latest?.report_version ?? 0) + 1;
+      const reportId = ++nextReportSeq;
+      const generating = buildReportForWork(work, reportId, nextVersion, 'GENERATING');
+      list.push(generating);
+      reportsByWork.set(workId, list);
+      pollCounts.set(reportId, 0);
+      pendingOutcomeByReport.set(reportId, { ...nextOutcome });
+
+      return HttpResponse.json(
+        {
+          report_id: reportId,
+          work_id: work.work_id,
+          report_version: nextVersion,
+          status: 'GENERATING',
+        },
+        { status: 202 },
+      );
+    }),
+  ];
+
+  return {
+    handlers,
+    works,
+    layouts,
+    workTypes,
+    reportsByWork,
+    setNextReportOutcome(outcome: { status: 'SUCCEEDED' | 'FAILED'; failureReason?: string }) {
+      nextOutcome = outcome;
+    },
+  };
+}
