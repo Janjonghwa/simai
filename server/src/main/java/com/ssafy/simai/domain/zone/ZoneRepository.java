@@ -116,6 +116,19 @@ public class ZoneRepository {
         return new BusinessException(current ? ErrorCode.Config.CONCURRENT_EDIT : ErrorCode.Config.ZONE_NOT_FOUND);
     }
 
+    /** 지금 버전이 없으면(없는 ID·보관한 구역) ZONE_NOT_FOUND. 작업면만 바꿀 때 구역을 잠가 같은 구역 저장과 줄을 세운다 */
+    public void requireCurrent(String zoneId) {
+        if (!lock(zoneId)) {
+            throw new BusinessException(ErrorCode.Config.ZONE_NOT_FOUND);
+        }
+    }
+
+    /** 지금 버전을 잠근다(구역 → 작업면 잠금 순서). 지금 버전이 있었으면 true. 한 트랜잭션 안에서 부른다 */
+    public boolean lock(String zoneId) {
+        return !jdbc.queryForList("SELECT zone_version FROM zone WHERE zone_id = :zoneId AND valid_to IS NULL FOR UPDATE",
+                new MapSqlParameterSource("zoneId", zoneId), Integer.class).isEmpty();
+    }
+
     private boolean hasCurrent(String zoneId) {
         return !jdbc.queryForList("SELECT 1 FROM zone WHERE zone_id = :zoneId AND valid_to IS NULL LIMIT 1",
                 new MapSqlParameterSource("zoneId", zoneId), Integer.class).isEmpty();

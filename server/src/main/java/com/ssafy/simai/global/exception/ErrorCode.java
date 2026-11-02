@@ -148,6 +148,10 @@ public sealed interface ErrorCode {
         // 같은 항목을 동시에 고쳐 다른 요청이 먼저 새 버전을 만들었다. 다시 읽고 고친다
         CONCURRENT_EDIT(HttpStatus.CONFLICT, "다른 요청이 먼저 새 버전을 만들었습니다. 다시 불러와 고치세요"),
         INVALID_STATIC_OBJECT(HttpStatus.BAD_REQUEST, "작업면·정적 객체 값이 올바르지 않습니다(kind, OBB center·size·yaw_rad, 작업면은 top_height_m > 0)"),
+        INVALID_SURFACE_ZONE(HttpStatus.BAD_REQUEST, "작업면만 구역에 이을 수 있고, zone_id 는 이 현장의 지금 구역이어야 합니다"),
+        // 한 구역에 지금 작업면은 하나다. 옛 작업면을 먼저 보관하거나 연결을 푼다
+        SURFACE_ZONE_TAKEN(HttpStatus.CONFLICT, "이 구역에는 이미 이어진 작업면이 있습니다"),
+        INVALID_ZONE_COMMIT(HttpStatus.BAD_REQUEST, "구역 저장 요청이 올바르지 않습니다(zone.op 는 CREATE·UPDATE·ARCHIVE·KEEP, surface.op 는 CREATE·UPDATE·REPLACE·ARCHIVE, 필요한 ID·본문)"),
         INVALID_CALIBRATION(HttpStatus.BAD_REQUEST, "보정 문서가 계약(contracts/providers/calibration)에 맞지 않습니다"),
         CALIBRATION_SITE_MISMATCH(HttpStatus.BAD_REQUEST, "보정 문서의 현장(coordinate_frame.site_id)이 이 서버의 현장과 다릅니다"),
         // 덮어쓰지 않는다. 다른 문서면 새 calibration_version 으로 올린다
