@@ -20,19 +20,23 @@ import type {
   CommandResult,
   Viewer3DHandle,
   ViewerLayers,
+  ViewerSceneStatus,
   ViewerStatus,
   ViewerTarget,
 } from '@/features/viewer3d';
 import type { ViewerZones, Zone } from '@/features/zones/types';
 import { useZones } from '@/features/zones/useZones';
 import { avatarMeshFetch } from '@/lib/avatarMeshFetch';
+import { usableScanBounds } from '@/lib/roomLimit';
 import { useRealtimeStore } from '@/store/realtime.store';
+import { useRoomBoundsStore } from '@/store/roomBounds.store';
 import { cn } from '@simai/ui/lib/utils';
 import {
   createContext,
   Suspense,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   type ReactNode,
@@ -53,6 +57,21 @@ export interface SpatialViewportValue {
 const SpatialViewportContext = createContext<SpatialViewportValue | null>(null);
 
 export const useSpatialViewport = () => useContext(SpatialViewportContext);
+
+/**
+ * 뷰어가 알린 장면 상태에서 보이는 스캔의 경계를 꺼내 호스트 저장소에 올린다(새 구역 자리·머리글이 읽는다).
+ * 스캔이 숨겨졌거나 쓸 수 없거나 3D 를 보고 있지 않을 때, 그리고 호스트가 내려갈 때는 비워 목업 교실로 돌아간다.
+ */
+function usePublishRoomBounds(view: SpatialViewMode, sceneStatus: ViewerSceneStatus | null) {
+  const shown =
+    view === '3d' && sceneStatus && sceneStatus.display !== 'HIDDEN'
+      ? usableScanBounds(sceneStatus.boundsWorld)
+      : null;
+  useEffect(() => {
+    useRoomBoundsStore.getState().set(shown);
+  }, [shown]);
+  useEffect(() => () => useRoomBoundsStore.getState().set(null), []);
+}
 
 /**
  * 관제(/)와 구역 편집(/zones)이 공유하는 단일 3D World · 2D 비상 평면 · 우측 이벤트 패널 호스트.
@@ -90,6 +109,7 @@ export function SpatialViewportHost({
     onLoadError,
     show3d,
   } = useViewerMode(loadViewer, planFallbackMs);
+  usePublishRoomBounds(view, sceneStatus);
   const pushSnapshots = useSpatialSnapshots(view, zonesRaw);
   const {
     selectedKey,

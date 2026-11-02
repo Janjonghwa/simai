@@ -3,6 +3,7 @@ import '@/index.css';
 import '@/features/layout/theme.store';
 
 import { requestAck } from '@/features/events/api';
+import { resetEventClear } from '@/features/events/eventClear.store';
 import { bindEventsCache } from '@/features/events/eventsCache';
 import { bindMismatchCache } from '@/features/events/mismatch';
 import { installAudioUnlock } from '@/lib/alarmSound';
@@ -22,6 +23,12 @@ import { createRoot } from 'react-dom/client';
 
 /** 앱을 켤 때 세션 복구를 기다리는 시간(ms). 넘으면 로그인 화면부터 그린다. */
 const RESTORE_WAIT_MS = 3000;
+
+/** 사용자가 끝나면(로그아웃·다른 계정·권한 변경) 그 사용자의 화면 상태를 비운다: 구역 초안, 지운 이벤트 기준 시각. */
+const clearUserScreenState = () => {
+  clearZoneDrafts();
+  resetEventClear();
+};
 
 const router = createRouter({
   routeTree,
@@ -68,7 +75,7 @@ bindSession({
   getToken: authSession.freshToken,
   // 서버가 STOMP 연결을 ERROR 로 거절하면 토큰을 갱신해 다시 붙는다. 갱신 쿠키가 거부되면 authSession 이 로그아웃시킨다.
   refreshToken: authSession.refresh,
-  onUserChange: clearZoneDrafts,
+  onUserChange: clearUserScreenState,
 });
 // /topic/events 로 받은 이벤트를 경보 목록 캐시에 반영한다. 연결이 다시 열리면 끊긴 사이 누른 확인을 서버로 보낸다.
 bindEventsCache(realtime, queryClient, (eventId, eventSequence) =>

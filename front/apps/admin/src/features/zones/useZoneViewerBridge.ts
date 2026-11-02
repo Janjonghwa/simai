@@ -3,15 +3,23 @@ import type { ViewerWorkSurfaces } from '@/features/surfaces/types';
 import type { ViewerBoxEdit, ViewerBoxGhost, ViewerEditBox } from '@/features/viewer3d';
 import type { Zone } from '@/features/zones/types';
 import {
+  sameBox,
   sameBoxEdit,
   sameGhosts,
+  surfaceBox,
   withSurfaceBox,
   withZoneBox,
   type SurfaceDraft,
 } from '@/features/zones/zoneEditModel';
 import { useBoxEditStore } from '@/store/boxEdit.store';
 import { useRealtimeStore } from '@/store/realtime.store';
-import { updateZoneDraft } from '@/store/zoneEdit.store';
+import {
+  discardZoneRecord,
+  lastZoneRecord,
+  recordZoneDraft,
+  updateZoneDraft,
+  type HistoryStep,
+} from '@/store/zoneEdit.store';
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef } from 'react';
 
@@ -52,6 +60,51 @@ interface BoxTarget {
   zoneBox: ViewerEditBox;
 }
 
+/** 끌기 하나(포인터를 누르고 있는 동안)의 대상, 시작·마지막 상자, 첫 변경 때 남긴 되돌리기 단계. */
+interface Drag {
+  key: string;
+  start: ViewerEditBox;
+  last: ViewerEditBox;
+  step: HistoryStep | undefined;
+}
+
+/** 끝난 끌기가 남긴 게 없는지: 시작 상자로 돌아왔고, 끌기가 남긴 단계가 아직 마지막이다(끄는 중 다른 고침이 단계를 더하지 않았다). */
+const leftNothing = ({ key, start, last, step }: Drag) =>
+  sameBox(start, last) && lastZoneRecord(key) === step;
+
+/**
+ * 3D 에서 한 번 끄는 동안의 변경을 되돌리기 한 단계로 묶는다. 끌기의 첫 변경에서만 단계를 남기고, 포인터를 놓거나
+ * 가로채이면 끝낸다. 끝났을 때 남긴 게 없으면(끄는 중 Esc) 그 단계를 버린다.
+ * 돌려주는 함수에 이번 변경의 대상·시작 상자(변경 전)·새 상자를 넘긴다.
+ */
+function useDragRecord() {
+  const drag = useRef<Drag | null>(null);
+  useEffect(() => {
+    const end = () => {
+      const current = drag.current;
+      drag.current = null;
+      if (current && leftNothing(current)) discardZoneRecord(current.key);
+    };
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+    // 새 끌기는 반드시 포인터를 누르며 시작한다. 누를 때도 끝내면 놓음을 못 받은 끌기가 다음 끌기에 합쳐지지 않는다(캡처라 3D 처리기보다 먼저).
+    window.addEventListener('pointerdown', end, true);
+    return () => {
+      window.removeEventListener('pointerup', end);
+      window.removeEventListener('pointercancel', end);
+      window.removeEventListener('pointerdown', end, true);
+    };
+  }, []);
+  return useCallback((key: string, start: ViewerEditBox, box: ViewerEditBox) => {
+    if (drag.current) {
+      drag.current.last = box;
+      return;
+    }
+    recordZoneDraft(key);
+    drag.current = { key, start, last: box, step: lastZoneRecord(key) };
+  }, []);
+}
+
 /**
  * 뷰어가 올린 상자(끄는 동안 0.05 m 단위)를 초안에 넣는 처리기. 작업면 조절이면 작업면 형상으로, 아니면 구역 상자로 넣는다.
  * 처리기 모양은 하나로 두고 고른 대상은 ref 로 읽는다(끄는 동안 3D 가 낡은 처리기를 부르지 않게).
@@ -61,15 +114,21 @@ export function useBoxChange(target: BoxTarget) {
   useEffect(() => {
     latest.current = target;
   });
-  return useCallback((box: ViewerEditBox) => {
-    const { key, zone, surface, surfMode, zoneBox } = latest.current;
-    if (!surfMode) {
-      updateZoneDraft(key, (prev) => withZoneBox(prev, zone, surface, zoneBox, box));
-      return;
-    }
-    if (!surface) return;
-    updateZoneDraft(key, (prev) => withSurfaceBox(prev, surface, box));
-  }, []);
+  const trackDrag = useDragRecord();
+  return useCallback(
+    (box: ViewerEditBox) => {
+      const { key, zone, surface, surfMode, zoneBox } = latest.current;
+      if (!surfMode) {
+        trackDrag(key, zoneBox, box);
+        updateZoneDraft(key, (prev) => withZoneBox(prev, zone, surface, zoneBox, box));
+        return;
+      }
+      if (!surface) return;
+      trackDrag(key, surfaceBox(surface.geometry), box);
+      updateZoneDraft(key, (prev) => withSurfaceBox(prev, surface, box));
+    },
+    [trackDrag],
+  );
 }
 
 /**

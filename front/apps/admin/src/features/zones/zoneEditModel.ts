@@ -3,6 +3,7 @@ import type { SurfaceGeometry, WorkSurface } from '@/features/surfaces/types';
 import type { ViewerBoxEdit, ViewerBoxGhost, ViewerEditBox } from '@/features/viewer3d';
 import type { Severity, Zone, ZoneBox } from '@/features/zones/types';
 import type { ZoneForm } from '@/features/zones/zoneForm';
+import type { RoomLimit } from '@/lib/roomLimit';
 
 // 구역 편집 화면의 초안 모델(순수 계산). 이름·심각도 고침, 구역 상자, 작업면 하나를 구역(또는 새 구역) 하나의 초안으로 묶는다.
 
@@ -21,8 +22,6 @@ export const SEVERITY_LABEL: Record<Severity, string> = {
   INFO: '안내',
 };
 
-/** 교실 범위(m). 새 구역 상자도 이 안에 둔다. 3D 손잡이의 범위(viewer3d boxEdit 의 ROOM_LIMIT)와 같다. */
-const ROOM: readonly [number, number, number] = [10, 10, 5];
 const NEW_ZONE_SIZE_M = 2;
 const NEW_ZONE_HEIGHT_M = 2;
 /** 새 작업면의 크기·상판 높이(m, 관제 데모와 같다). */
@@ -79,16 +78,19 @@ function sameEditBox(a: ViewerEditBox, b: ViewerEditBox): boolean {
   );
 }
 
-/** 새 구역의 처음 상자: 기존 구역들을 감싼 상자의 가운데 바닥에 2×2×2 m, 구역이 없으면 방 가운데. 교실 안에 둔다. */
-export function defaultNewBox(zones: readonly ZoneBox[]): ViewerEditBox {
+/**
+ * 새 구역의 처음 상자: 기존 구역들을 감싼 상자의 가운데 바닥에 2×2×2 m, 구역이 없으면 방 가운데. 교실 안에 둔다.
+ * 교실 범위(limit)는 3D 손잡이의 범위와 같다: 스캔이 보이면 스캔 범위, 아니면 목업 교실(10×10 m).
+ */
+export function defaultNewBox(zones: readonly ZoneBox[], limit: RoomLimit): ViewerEditBox {
   const mid = (axis: 0 | 1) =>
     zones.length === 0
-      ? ROOM[axis] / 2
+      ? (limit.min[axis] + limit.max[axis]) / 2
       : (Math.min(...zones.map((z) => z.min[axis])) + Math.max(...zones.map((z) => z.max[axis]))) /
         2;
   const half = NEW_ZONE_SIZE_M / 2;
-  const cx = clamp(r3(mid(0)), half, ROOM[0] - half);
-  const cy = clamp(r3(mid(1)), half, ROOM[1] - half);
+  const cx = clamp(r3(mid(0)), limit.min[0] + half, limit.max[0] - half);
+  const cy = clamp(r3(mid(1)), limit.min[1] + half, limit.max[1] - half);
   return { min: [cx - half, cy - half, 0], max: [cx + half, cy + half, NEW_ZONE_HEIGHT_M] };
 }
 
@@ -358,7 +360,8 @@ export function ghostsOf(
 
 // ---- 3D 로 내려 줄 값 비교 --------------------------------------------------------------------
 
-const sameBox = (a: ViewerEditBox, b: ViewerEditBox) =>
+/** 두 상자의 좌표가 정확히 같은지. */
+export const sameBox = (a: ViewerEditBox, b: ViewerEditBox) =>
   [0, 1, 2].every((axis) => a.min[axis] === b.min[axis] && a.max[axis] === b.max[axis]);
 
 /** 3D 에 내려 줄 편집 상자가 같은지(값 비교). 같으면 저장소를 다시 쓰지 않아 3D 를 다시 그리지 않는다. */

@@ -10,6 +10,7 @@ import {
 } from '@/features/zones/zoneEditModel';
 import { bodyOf, formOf, newZoneBodyOf } from '@/features/zones/zoneForm';
 import { ApiError } from '@/lib/http';
+import { DEFAULT_ROOM_LIMIT } from '@/lib/roomLimit';
 import { createZonesMock } from '@/mocks/zones';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -198,7 +199,7 @@ describe('useZoneSave', () => {
             zoneType: NEW_ZONE_KIND,
             severity: NEW_ZONE_SEVERITY,
           },
-          defaultNewBox(view.result.current.list.zones),
+          defaultNewBox(view.result.current.list.zones, DEFAULT_ROOM_LIMIT),
         ),
       ),
     );

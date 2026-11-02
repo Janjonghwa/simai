@@ -1,8 +1,9 @@
 import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
-import type { Viewer3DProps } from '@/features/viewer3d';
+import type { Viewer3DProps, ViewerSceneStatus } from '@/features/viewer3d';
 import { IDLE_LOAD, sceneStatusOf } from '@/features/viewer3d/scene/sceneContract';
 import { createQueryClient } from '@/lib/queryClient';
 import { handlers } from '@/mocks/handlers';
+import { useRoomBoundsStore } from '@/store/roomBounds.store';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw/http';
@@ -45,6 +46,7 @@ afterEach(() => {
   clients.splice(0).forEach((client) => client.clear());
   server.resetHandlers();
   viewer.props = null;
+  useRoomBoundsStore.setState(useRoomBoundsStore.getInitialState(), true);
 });
 
 function renderHost() {
@@ -130,6 +132,57 @@ describe('관제 호스트의 Scene 연결', () => {
       }),
     );
     expect(calls).toBe(2);
+  });
+});
+
+describe('관제 호스트의 교실 범위', () => {
+  const SCAN: NonNullable<ViewerSceneStatus['boundsWorld']> = {
+    min: [0, 0, 0],
+    max: [7.2, 5.8, 3],
+  };
+  const noVersions = {
+    worldScene: null,
+    worldCalibration: null,
+    healthCommitted: null,
+    healthLive: null,
+    healthMismatch: null,
+  };
+  const scanStatus = (patch: Partial<ViewerSceneStatus>): ViewerSceneStatus => ({
+    ...sceneStatusOf(null, IDLE_LOAD, noVersions),
+    phase: 'LOADED',
+    display: 'FULL',
+    boundsWorld: SCAN,
+    ...patch,
+  });
+  const report = (status: ViewerSceneStatus) =>
+    act(() => viewer.props?.onSceneStatusChange?.(status));
+  const bounds = () => useRoomBoundsStore.getState().bounds;
+
+  it('뷰어가 알린 보이는 스캔의 경계를 저장소에 올리고, 숨겨지면 비우며, 호스트가 내려가면 비운다', async () => {
+    const view = renderHost();
+    await waitFor(() => expect(viewer.props?.scene?.ok).toBe(true));
+    expect(bounds()).toBeNull();
+
+    report(scanStatus({ display: 'DIMMED' }));
+    expect(bounds()).toBe(SCAN);
+
+    report(scanStatus({ display: 'HIDDEN', verification: 'MISMATCH' }));
+    expect(bounds()).toBeNull();
+
+    report(scanStatus({ display: 'FULL' }));
+    expect(bounds()).toBe(SCAN);
+    view.unmount();
+    expect(bounds()).toBeNull();
+  });
+
+  it('스캔 경계가 없거나 쓸 수 없으면(한 변 0.2m) 올리지 않는다', async () => {
+    renderHost();
+    await waitFor(() => expect(viewer.props?.scene?.ok).toBe(true));
+
+    report(scanStatus({ boundsWorld: null }));
+    expect(bounds()).toBeNull();
+    report(scanStatus({ boundsWorld: { min: [0, 0, 0], max: [0.2, 0.2, 3] } }));
+    expect(bounds()).toBeNull();
   });
 });
 

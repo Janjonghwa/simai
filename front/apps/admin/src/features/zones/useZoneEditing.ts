@@ -1,11 +1,12 @@
 import { useCurrentRole } from '@/features/auth/useCurrentRole';
 import { useSpatialViewport } from '@/features/layout/SpatialViewportHost';
-import { geometryErrors } from '@/features/surfaces/surfaces';
+import { geometryErrors, sameGeometry } from '@/features/surfaces/surfaces';
 import { useWorkSurfaces } from '@/features/surfaces/useWorkSurfaces';
 import type { Severity } from '@/features/zones/types';
 import { useConfigApply } from '@/features/zones/useConfigApply';
 import { useZoneCommit } from '@/features/zones/useZoneCommit';
 import { useZoneTarget } from '@/features/zones/useZoneTarget';
+import { useZoneUndoKey } from '@/features/zones/useZoneUndoKey';
 import {
   useBoxChange,
   useBoxEditBridge,
@@ -31,8 +32,18 @@ import {
 import { formErrors, formOf, newZoneErrors } from '@/features/zones/zoneForm';
 import { boxToPolygon } from '@/features/zones/zones';
 import { linkSurfaces, pointInPolygon } from '@/features/zones/zoneSurfaceLink';
-import { removeZoneDraft, updateZoneDraft, useZoneEditStore } from '@/store/zoneEdit.store';
+import { useRoomLimit } from '@/store/roomBounds.store';
+import {
+  recordZoneDraft,
+  removeZoneDraft,
+  undoZoneDraft,
+  updateZoneDraft,
+  useZoneEditStore,
+} from '@/store/zoneEdit.store';
 import { useMemo } from 'react';
+
+/** 이름 글자 입력을 한 단계로 묶는 되돌리기 묶음 이름. */
+const NAME_EDIT_GROUP = 'name';
 
 /**
  * 발행 전: 마지막 묶음의 items 에 이 버전이 없는 구역·이은 작업면(보관해 묶음에서 빠질 것도 센다).
@@ -82,9 +93,10 @@ export function useZoneEditing({
   const linked = zone ? (links.get(zone.zoneId) ?? null) : null;
   const draft: TargetDraft | undefined = drafts[key];
   const surface = useMemo(() => currentSurface(draft, linked), [draft, linked]);
+  const roomLimit = useRoomLimit();
   const zoneBox = useMemo(
-    () => draft?.box ?? (zone ? boxOfZone(zone) : defaultNewBox(zones)),
-    [draft?.box, zone, zones],
+    () => draft?.box ?? (zone ? boxOfZone(zone) : defaultNewBox(zones, roomLimit)),
+    [draft?.box, zone, zones, roomLimit],
   );
   const form = zone ? formWithPatch(zone, draft?.patch ?? {}) : newZoneForm(draft?.patch ?? {});
   const errors = zone
@@ -154,9 +166,14 @@ export function useZoneEditing({
   });
 
   // ---- 고치기 -------------------------------------------------------------------------------
-  const edit = (next: (prev: TargetDraft | undefined) => TargetDraft) => updateZoneDraft(key, next);
-  const setPatch = (patch: ZonePatch) => edit((prev) => withPatch(prev, zone, patch));
-  const setName = (name: string) => setPatch({ name });
+  // 고칠 때마다 되돌릴 단계를 남긴다. group 이 같은 연속 고침(이름 글자 입력)은 한 단계로 묶는다.
+  const edit = (next: (prev: TargetDraft | undefined) => TargetDraft, group?: string) => {
+    recordZoneDraft(key, group);
+    updateZoneDraft(key, next);
+  };
+  const setPatch = (patch: ZonePatch, group?: string) =>
+    edit((prev) => withPatch(prev, zone, patch), group);
+  const setName = (name: string) => setPatch({ name }, NAME_EDIT_GROUP);
   const setSeverity = (severity: Severity) => setPatch({ severity });
   const addSurface = () => {
     edit((prev) => withSurface(prev, newSurfaceDraft(zoneBox)));
@@ -169,9 +186,10 @@ export function useZoneEditing({
   };
   const setSurfaceTop = (top: number) => {
     if (!surface) return;
-    edit((prev) =>
-      withSurface(prev, { ...surface, geometry: { ...surface.geometry, topHeightM: top } }),
-    );
+    const geometry = { ...surface.geometry, topHeightM: top };
+    // 같은 높이를 다시 받으면(입력 뒤 포커스를 잃을 때) 고친 것이 없으니 되돌릴 단계를 남기지 않는다.
+    if (sameGeometry(geometry, surface.geometry)) return;
+    edit((prev) => withSurface(prev, { ...surface, geometry }));
   };
   const pick = (value: string) => {
     commit.disarm();
@@ -183,6 +201,14 @@ export function useZoneEditing({
     target.setSurfaceMode(false);
     commit.clearNotice();
   };
+  // Ctrl+Z: 되돌린 결과 작업면이 없어졌으면 작업면 손잡이 모드도 끈다(손잡이가 숨은 채 남지 않게).
+  const undo = () => {
+    if (!undoZoneDraft(key)) return false;
+    const restored = useZoneEditStore.getState().drafts[key];
+    if (surfMode && !currentSurface(restored, linked)) target.setSurfaceMode(false);
+    return true;
+  };
+  useZoneUndoKey(canEdit && !commit.busy, undo);
 
   return {
     canEdit,

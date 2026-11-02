@@ -15,13 +15,17 @@ import {
   type SceneAssetLoader,
   type SceneStore,
 } from '@/features/viewer3d/scene/sceneStore';
-import { WorldScene } from '@/features/viewer3d/WorldScene';
+import { shownScanBoundsOf } from '@/features/viewer3d/scene/useShownRoom';
+import { SceneBase } from '@/features/viewer3d/SceneBase';
+import { createViewerStore } from '@/features/viewer3d/viewer3d.store';
+import { ViewerStoreContext } from '@/features/viewer3d/ViewerStoreContext';
 import { createRoot, extend, useThree, type ReconcilerRoot } from '@react-three/fiber';
 import { act, StrictMode, useEffect } from 'react';
 import * as THREE from 'three';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // -59 배경 Scene 레이어. 읽기 함수를 바꿔 끼워 적재·표시·해제·늦은 결과 처리를 장면 수준에서 본다.
+// 스캔이 보이는 동안 목업 바탕(격자·바닥·벽 경계)이 숨고 뷰어가 읽는 보이는 스캔 범위(shownScanBoundsOf)도 본다(-395).
 // 실제 glTF 해석·픽셀은 격리 WebGL 브라우저에서 따로 확인한다.
 
 extend(THREE as unknown as Parameters<typeof extend>[0]);
@@ -61,12 +65,12 @@ let calls: Deferred[];
 const loader: SceneAssetLoader = (url) =>
   new Promise((resolve, reject) => calls.push({ url, resolve, reject }));
 
-/** 바닥 판 하나(World 0..10 × 0..10, 두께 0.1). glTF 처럼 이미 Three 축이다. */
-function asset() {
+/** 바닥 판 하나(World 0..side × 0..side, 두께 0.1, 기본 한 변 10m). glTF 처럼 이미 Three 축이다. */
+function asset(side = 10) {
   const root = new THREE.Group();
-  const geometry = new THREE.BoxGeometry(10, 0.1, 10);
+  const geometry = new THREE.BoxGeometry(side, 0.1, side);
   const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ opacity: 1 }));
-  mesh.position.set(5, -0.05, -5);
+  mesh.position.set(side / 2, -0.05, -side / 2);
   root.add(mesh);
   const disposed = vi.spyOn(geometry, 'dispose');
   return { root, mesh, disposed };
@@ -119,15 +123,17 @@ async function mount(review = false) {
     root!.render(
       <StrictMode>
         <SpatialDataContext value={data}>
-          <SceneStoreContext value={scene}>
-            <SceneLoaderContext value={loader}>
-              <SceneReviewContext value={review}>
-                <Probe />
-                <WorldScene />
-                <SceneBackground />
-              </SceneReviewContext>
-            </SceneLoaderContext>
-          </SceneStoreContext>
+          <ViewerStoreContext value={createViewerStore()}>
+            <SceneStoreContext value={scene}>
+              <SceneLoaderContext value={loader}>
+                <SceneReviewContext value={review}>
+                  <Probe />
+                  <SceneBase />
+                  <SceneBackground />
+                </SceneReviewContext>
+              </SceneLoaderContext>
+            </SceneStoreContext>
+          </ViewerStoreContext>
         </SpatialDataContext>
       </StrictMode>,
     ),
@@ -136,6 +142,11 @@ async function mount(review = false) {
 
 const find = (name: string) => three?.getObjectByName(name) ?? null;
 const floor = () => find('world-floor')!;
+const walls = () => find('world-walls')!;
+const grid = () => three!.getObjectByProperty('type', 'GridHelper')!;
+const roomBounds = () => shownScanBoundsOf(scene.getState());
+/** 목업 바탕(격자·바닥·벽 경계)이 보이는지. 셋은 늘 같이 보이거나 같이 숨는다. */
+const mockBackdrop = () => [grid().visible, floor().visible, walls().visible];
 const status = () => {
   const s = scene.getState();
   return sceneStatusOf(s.input, s.load, sceneVersionsOf(data.getState()));
@@ -193,6 +204,9 @@ describe('SceneBackground', () => {
     ]);
     expect(floor().visible).toBe(false);
     expect(status()).toMatchObject({ phase: 'LOADED', verification: 'VERIFIED', display: 'FULL' });
+    // 스캔이 보이면 목업 격자·바닥·벽 경계가 숨고, 스캔 범위가 보이는 범위가 된다.
+    expect(mockBackdrop()).toEqual([false, false, false]);
+    expect(roomBounds()).toBe(status().boundsWorld);
     // World 경계: Three (5, −0.05, −5) 판 → World X·Y 0..10, Z −0.1..0.
     const bounds = status().boundsWorld!;
     expect(bounds.min.map((v) => +v.toFixed(6))).toEqual([0, 0, -0.1]);
@@ -245,6 +259,9 @@ describe('SceneBackground', () => {
     await act(async () => world({ scene_version: 'scene-demo-2' }));
     expect(a.root.visible).toBe(false);
     expect(floor().visible).toBe(true);
+    // 장면이 숨겨지면 목업 격자·바닥·벽 경계가 돌아오고 보이는 스캔 범위도 비워진다.
+    expect(mockBackdrop()).toEqual([true, true, true]);
+    expect(roomBounds()).toBeNull();
     expect(status()).toMatchObject({
       verification: 'MISMATCH',
       display: 'HIDDEN',
@@ -269,6 +286,9 @@ describe('SceneBackground', () => {
     expect([material.transparent, material.opacity]).toEqual([true, DIMMED_OPACITY]);
     expect(status()).toMatchObject({ verification: 'DEFAULT_UNVERIFIED', display: 'DIMMED' });
     expect(floor().visible).toBe(false);
+    // 흐리게 보여도 스캔이 보이는 중이라 목업 바탕은 숨고 스캔 범위를 쓴다.
+    expect(mockBackdrop()).toEqual([false, false, false]);
+    expect(roomBounds()).toBe(status().boundsWorld);
 
     // COMMITTED 라도 비교할 World 가 없으면 흐리게, World 가 맞으면 원래 불투명도로 돌아간다.
     await setInput(committed());
@@ -282,10 +302,9 @@ describe('SceneBackground', () => {
     expect([bm.transparent, bm.opacity]).toEqual([false, 1]);
   });
 
-  it('개발 검수(review)는 DEFAULT 배경을 불투명하게 그리고 DEMO 벽 경계선을 숨기지만 판정·상태는 그대로다', async () => {
+  it('개발 검수(review)는 DEFAULT 배경을 불투명하게 그리지만 판정·상태는 그대로다', async () => {
     await mount(true);
-    const walls = find('world-walls')!;
-    expect(walls.visible).toBe(true);
+    expect(walls().visible).toBe(true);
     await setInput(
       committed({
         scene_version: 'lobby-recon-preview',
@@ -300,15 +319,15 @@ describe('SceneBackground', () => {
     const material = a.mesh.material as THREE.Material;
     expect([material.transparent, material.opacity]).toEqual([false, 1]);
     expect(status()).toMatchObject({ verification: 'DEFAULT_UNVERIFIED', display: 'DIMMED' });
-    expect(walls.visible).toBe(false);
+    expect(walls().visible).toBe(false);
 
     // 배경을 거두면 DEMO 벽 경계선이 돌아온다.
     await setInput(null);
     expect(status().phase).toBe('NONE');
-    expect(walls.visible).toBe(true);
+    expect(walls().visible).toBe(true);
   });
 
-  it('검수가 꺼져 있으면 같은 DEFAULT 배경도 흐리고 DEMO 벽 경계선을 유지한다', async () => {
+  it('검수가 꺼져 있어도 같은 DEFAULT 배경은 흐리게 보이고 그동안 DEMO 벽 경계선은 숨는다', async () => {
     await mount(false);
     await setInput(
       committed({
@@ -321,7 +340,57 @@ describe('SceneBackground', () => {
     const a = asset();
     await settle(calls[0]!, a.root);
     expect((a.mesh.material as THREE.Material).opacity).toBe(DIMMED_OPACITY);
-    expect(find('world-walls')!.visible).toBe(true);
+    expect(walls().visible).toBe(false);
+  });
+
+  it('스캔이 없으면 목업 격자·바닥·벽 경계를 그대로 보이고 보이는 스캔 범위는 비어 있다', async () => {
+    await mount();
+    expect(mockBackdrop()).toEqual([true, true, true]);
+    expect(roomBounds()).toBeNull();
+    await setInput(null);
+    expect(mockBackdrop()).toEqual([true, true, true]);
+  });
+
+  it('읽는 동안과 읽기에 실패하면 목업 바탕을 유지하고, 성공하면 숨긴다', async () => {
+    world();
+    await mount();
+    await setInput(committed());
+    expect(status().phase).toBe('LOADING');
+    expect(mockBackdrop()).toEqual([true, true, true]);
+    expect(roomBounds()).toBeNull();
+
+    await settle(calls[0]!, asset().root);
+    expect(mockBackdrop()).toEqual([false, false, false]);
+
+    await setInput(committed({ scene_version: 'broken', gltf_url: 'https://b.example/x.gltf' }));
+    expect(mockBackdrop()).toEqual([true, true, true]);
+    await fail(calls[1]!, new SyntaxError('Unexpected token'));
+    expect(status().phase).toBe('FAILED');
+    expect(mockBackdrop()).toEqual([true, true, true]);
+    expect(roomBounds()).toBeNull();
+  });
+
+  it('스캔이 보여도 범위로 쓸 수 없으면(한 변 50m 초과) 목업 바탕과 범위가 같이 목업 교실로 돌아간다', async () => {
+    world();
+    await mount();
+    await setInput(committed());
+    await settle(calls[0]!, asset(80).root);
+    expect(status()).toMatchObject({ phase: 'LOADED', display: 'FULL' });
+    expect(find('scene-background:scene-demo-1')!.visible).toBe(true);
+    expect(roomBounds()).toBeNull();
+    expect(mockBackdrop()).toEqual([true, true, true]);
+  });
+
+  it('스캔이 내려가면(언마운트) 보이는 스캔 범위가 비워진다', async () => {
+    world();
+    await mount();
+    await setInput(committed());
+    await settle(calls[0]!, asset().root);
+    expect(roomBounds()).not.toBeNull();
+
+    await act(async () => root?.unmount());
+    root = null;
+    expect(roomBounds()).toBeNull();
   });
 
   it('늦게 끝난 이전 Scene 읽기는 버리고 해제한다', async () => {

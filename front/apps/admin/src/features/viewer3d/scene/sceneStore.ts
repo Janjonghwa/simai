@@ -6,9 +6,10 @@ import {
   type SceneVersions,
   type ViewerSceneInput,
 } from '@/features/viewer3d/scene/sceneContract';
-import { createContext } from 'react';
+import { createContext, useContext } from 'react';
 import { TextureLoader, type Object3D, type Texture } from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { useStore } from 'zustand';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 
 // 뷰어 인스턴스마다 하나 두는 배경 Scene 상태. 입력(FE 조회 결과)과 읽기 단계, 장면에 보이는 방식만 둔다.
@@ -43,6 +44,14 @@ export function createSceneStore(): SceneStore {
 /** ViewerShell 밖(시험 등)이면 null 이고 배경을 그리지 않는다. 기본 바닥은 늘 보인다. */
 export const SceneStoreContext = createContext<SceneStore | null>(null);
 
+// 배경 Scene 이 없는 곳(시험 등)에서 읽는 빈 상태. 늘 HIDDEN 이다.
+const NO_SCENE = createSceneStore();
+
+/** 이 뷰어의 장면 상태에서 값 하나를 읽는다. 배경 Scene 이 없는 곳이면 빈 상태(HIDDEN)를 읽는다. */
+export function useSceneState<T>(select: (state: SceneStoreState) => T): T {
+  return useStore(useContext(SceneStoreContext) ?? NO_SCENE, select);
+}
+
 /** 배경 glTF 를 읽어 장면 루트를 돌려준다. 시험은 이 함수를 바꿔 끼운다. */
 export type SceneAssetLoader = (url: string) => Promise<Object3D>;
 
@@ -59,8 +68,8 @@ export const loadSceneTexture: SceneTextureLoader = (url) => new TextureLoader()
 export const SceneTextureLoaderContext = createContext<SceneTextureLoader>(loadSceneTexture);
 
 /**
- * 개발 검수 전용(개발 화면·시험만 켠다). 켜면 정합 근거 없는 배경(DIMMED)도 불투명하게 그려 재구성 형상을 눈으로 확인하고,
- * 배경이 보이는 동안 DEMO 교실 경계선을 숨긴다. 판정·상태(verification·display)는 그대로다. 운영 화면은 켜지 않는다.
+ * 개발 검수 전용(개발 화면·시험만 켠다). 켜면 정합 근거 없는 배경(DIMMED)도 불투명하게 그려 재구성 형상을 눈으로 확인한다.
+ * 판정·상태(verification·display)는 그대로다. 운영 화면은 켜지 않는다.
  */
 export const SceneReviewContext = createContext(false);
 

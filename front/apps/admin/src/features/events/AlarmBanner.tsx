@@ -8,7 +8,7 @@ import { incidentTarget } from '@/features/events/incidents';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { Since } from '@/features/events/Since';
 import type { EventItem } from '@/features/events/types';
-import { useLiveEvents } from '@/features/events/useLiveEvents';
+import { useVisibleLiveEvents } from '@/features/events/useVisibleLiveEvents';
 import { Button } from '@simai/ui/components/button';
 import { useNavigate } from '@tanstack/react-router';
 import { useMemo } from 'react';
@@ -54,13 +54,14 @@ function AlarmSubline({ event }: { event: EventItem }) {
 /**
  * 확인 대기 경보 배너(명세 FR-8). 경보음이 어느 화면에서나 울리므로 배너도 모든 화면 상단 바 아래에 뜬다.
  * 가장 높은 등급·최근 경보 하나를 이벤트 카드와 같은 규칙으로 보인다: 등급 · 규칙 · 대상 · 구역, 발생 뒤 경과,
- * 버튼(상세 · 카메라 · 확인). 다른 확인 대기 경보가 더 있으면 +N. 테두리가 깜빡이고, 확인하면 사라진다.
+ * 버튼(상세 · 카메라 · 확인). 다른 확인 대기 경보가 더 있으면 +N. 테두리가 깜빡이고, 확인하거나 이벤트 패널에서
+ * 모두 지우면 사라진다.
  * 자리는 레이아웃(AppLayout)이 장애 띠 아래로 잡는다.
  * withPanel: 이 화면 오른쪽에 이벤트 패널이 있다(실시간 관제). 「상세」를 그 패널에서 열고 카메라 버튼도 둔다.
  * 소리를 켜고 끄는 버튼은 상단 바에 있다(SoundButton).
  */
 export function AlarmBanner({ withPanel }: { withPanel: boolean }) {
-  const { entries } = useLiveEvents();
+  const { entries } = useVisibleLiveEvents();
   const alarms = useMemo(() => entries.filter(isAlarming).sort(byAlarmPriority), [entries]);
   const openEvent = useEventsStore((s) => s.openEvent);
   const navigate = useNavigate();

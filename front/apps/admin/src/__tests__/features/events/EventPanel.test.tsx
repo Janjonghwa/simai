@@ -60,6 +60,7 @@ function panelProps(
     onSelect: vi.fn(),
     openEventId: null,
     onOpen: vi.fn(),
+    onClearAll: vi.fn(),
     ...props,
   };
 }
@@ -143,6 +144,50 @@ describe('EventPanel 접기', () => {
     const card = screen.getByRole('article', { name: 'w-0015 이벤트' });
     expect(within(card).getByText('w-0015 · z-04 개구부')).toBeTruthy();
     expect(card.textContent).toMatch(/초 전|분/);
+  });
+});
+
+describe('EventPanel 모두 지우기', () => {
+  const clearButton = () => screen.queryByRole('button', { name: '모두 지우기' });
+
+  it('보이는 묶음이 있으면 머리줄에 버튼이 있고, 누르면 onClearAll 을 한 번 부른다', () => {
+    const onClearAll = vi.fn();
+    renderPanel([entry()], { onClearAll });
+    const head = screen.getByTestId('event-panel-head');
+    expect(within(head).getByRole('button', { name: '모두 지우기' })).toBeTruthy();
+
+    fireEvent.click(clearButton()!);
+    expect(onClearAll).toHaveBeenCalledTimes(1);
+  });
+
+  it('해소된 묶음만 남아 있어도 지울 수 있다', () => {
+    renderPanel([entry({ lifecycle: 'RESOLVED', resolved_at: T + 1_000 })]);
+    expect(clearButton()).toBeTruthy();
+  });
+
+  it('보이는 묶음이 없으면 버튼이 없다(접힌 머리줄에도, 목록을 받는 중에도)', () => {
+    const view = renderPanel([]);
+    expect(clearButton()).toBeNull();
+
+    view.rerender([], { loaded: false, failed: false });
+    expect(clearButton()).toBeNull();
+
+    view.rerender([entry()]);
+    expect(clearButton()).toBeTruthy();
+  });
+
+  it('접어 둔 패널에서도 버튼은 접기 버튼 옆에 남는다', () => {
+    renderPanel([entry()]);
+    fireEvent.click(fold());
+    expect(fold().getAttribute('aria-expanded')).toBe('false');
+    expect(clearButton()).toBeTruthy();
+  });
+
+  it('지워서 비면 저절로 접히고 버튼이 사라진다', () => {
+    const view = renderPanel([entry()]);
+    view.rerender([]);
+    expect(fold().getAttribute('aria-expanded')).toBe('false');
+    expect(clearButton()).toBeNull();
   });
 });
 
