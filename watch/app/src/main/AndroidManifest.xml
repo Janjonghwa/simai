@@ -6,6 +6,9 @@
     <!-- 위험 알림의 등급별 진동 -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- 손목을 내렸을 때 어둡게 켜져 있는 화면(앰비언트 모드)에 필요하다 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <!-- 기기 토큰이 백업으로 워치 밖에 나가지 않게 백업을 끈다 -->
     <application
         android:allowBackup="false"
