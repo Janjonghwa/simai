@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""simai-bootstrap: 어느 GPU·지역·사이트(RunPod·Vast.ai·엘리스 GPU VM)에서든 같은 순서로 이미지를 준비한다 (S15P31A101-205·-207·-246·-250·-382).
+"""simai-bootstrap: 어느 GPU·지역·사이트(RunPod·Vast.ai·엘리스 GPU VM)에서든 같은 순서로 이미지를 준비한다 (S15P31A101-205·-207·-246·-250·-382·-414).
 
-    simai-bootstrap [tier0] [Tier 0 인자...]   준비 → simai-tier0 (엔진 준비 engine_cache ensure → python -m services.tier0)
+    simai-bootstrap tier0 [Tier 0 인자...]      준비 → simai-tier0 (엔진 준비 engine_cache ensure → python -m services.tier0). 옵션으로 시작해도(--config ...) tier0
                                                 SIMAI_SERVICES 에 vllm·worker·avatar 가 있으면 감시 프로세스로 Tier 0 → vLLM 서버 → 분석 워커·아바타 (아래)
+    simai-bootstrap                             (인자 없음) 이 사용법만 보이고 64 로 끝난다(아무것도 띄우지 않음. 이미지 기본 CMD 는 tier0 를 명시한다)
     simai-bootstrap lobby [로비 인자...]        로비 LIVE 통합 기동: endpoint.json·tier0-live.json·pod.jsonl 준비 → 단일 Supervisor 로
-                                                Tier 0·vLLM·worker·avatar 를 한 번에 띄우고 Tier 0 종료 코드 그대로 끝난다
+                                                Tier 0·vLLM·worker·avatar 를 한 번에 띄우고 Tier 0 종료 코드 그대로 끝난다. 프로세스는 --services(기본 넷 다)만 따르고
+                                                SIMAI_SERVICES 는 보지 않는다. 워커 ID 는 --worker-id → SIMAI_WORKER_ID → 토큰 파일 이름(worker-s10.token → worker-s10)
     simai-bootstrap queue [gpu_session1 run 인자...]   준비 → GPU 1차 세션 큐 (저장소 사본 $SIMAI_SESSION_REPO, 기본 $SIMAI_ROOT/setup/session1/repo)
     simai-bootstrap check [--preflight|--sets ...]     준비만 하고 결과 JSON 을 출력한다 (--preflight / preflight 는 가중치 묶음·GPU 예산·런타임 일괄 점검)
-    simai-bootstrap preflight [check 인자...]   tier0,avatar,static,vlm 가중치·GPU 예산·texrecon·open3d·ultralytics 일괄 점검(하나라도 실패하면 비-0 종료)
+    simai-bootstrap preflight [check 인자...]   tier0,avatar,static,vlm 가중치·GPU 예산(lobby 기본 넷)·texrecon·open3d·ultralytics 일괄 점검(하나라도 실패하면 비-0 종료).
+                                                py-spy 부착 가능 여부는 안내만 한다(RunPod 는 SYS_PTRACE 가 없어 불가 → 내장 계측 -383)
     simai-bootstrap run <명령...>               준비 → 그 명령 (실험 이미지: simai-bootstrap run simai-exp02 python ...)
     simai-bootstrap scene [--] <명령...>        장면 준비 모드(일회성, 통합 이미지의 MapAnything): Tier 0·GPU 확인 → static 가중치 → 재확인 → 그 명령을
                                                 자식으로 실행하며 Tier 0 시작을 감시(나타나면 장면 작업을 끝내고 75). 명령의 종료 코드로 끝난다(아래 "장면 준비 모드")
@@ -66,6 +69,9 @@
 HF 토큰: 시작하자마자 HF_TOKEN 을 환경에서 꺼내 이 프로세스 안에만 들고(가중치 받기에만 쓴다), HUGGING_FACE_HUB_TOKEN 은 읽지 않고 지우기만 한다.
 그래서 nvidia-smi 조회·도움말·그대로 넘기는 명령·Tier 0·vLLM·워커·큐 등 어떤 자식 프로세스에도 토큰이 상속되지 않는다(S15P31A101-205 리뷰 R1).
 
+자식 환경(S15P31A101-414): 이미지 ai 폴더(SIMAI_AI_DIR, 기본 /opt/simai/ai — services 패키지가 있을 때만)를 PYTHONPATH 끝에 더해 SSH 셸처럼 WORKDIR 밖에서
+기동해도 python -m services.* 를 찾는다(cwd 는 바꾸지 않아 상대 경로·저장소 사본이 앞선다). 감시 프로세스는 정한 워커 ID 를 worker·avatar 환경 SIMAI_WORKER_ID 로 넣는다.
+
 종료 코드(simai-tier0·engine_cache 와 같은 규칙): 0 정상, 2 저장 위치·용량·가중치(없음·해시 불일치·받기 실패·목록 오류·묶음 이름 오류),
 3 GPU 없음·최소 사양 미만, 64 사용법 오류(run·scene 뒤에 명령 없음, SIMAI_SERVICES 오류), 75 장면 준비 거부(LIVE 서비스·GPU 사용 중·모름, sysexits EX_TEMPFAIL),
 127 Tier 0 명령을 띄우지 못함.
@@ -114,7 +120,13 @@ TIER0_CMD = "simai-tier0"
 SET_ENV = "SIMAI_WEIGHTS_SET"  # check·queue·run 이 받을 가중치 묶음(이미지 ENV). 없으면 tier0
 SERVICES_ENV = "SIMAI_SERVICES"  # tier0 명령이 띄울 프로세스. 없으면 tier0(단독)
 WORKER_SET_ENV = "SIMAI_WORKER_WEIGHTS_SET"  # 감시 모드에서 Tier 0 준비 뒤 받는 묶음. 없으면 vlm
-SERVICES = ("tier0", "vllm", "worker", "avatar")  # avatar는 명시 선택, 기본은 꺼짐
+SERVICES = ("tier0", "vllm", "worker", "avatar")  # avatar는 명시 선택, 기본은 꺼짐(lobby 는 기본으로 켠다)
+LOBBY_SERVICES = "tier0,vllm,worker,avatar"  # lobby·preflight 기본. 아바타는 시연 필수(S15P31A101-414)
+IMAGE_AI_DIR = Path("/opt/simai/ai")  # 이미지 WORKDIR: services 패키지(설치하지 않음)가 여기 있다. SIMAI_AI_DIR 로 바꾼다
+WORKER_ID_ENV = "SIMAI_WORKER_ID"
+WORKER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")  # EC2 MachineTokenService.ID 와 같은 규칙
+GENERIC_TOKEN_STEMS = {"worker", "token", "worker-token", "secret"}  # 이름이 ID 가 아닌 흔한 토큰 파일(worker.token·worker.env)
+CAP_SYS_PTRACE = 19  # linux/capability.h. py-spy 부착에 필요(RunPod 컨테이너에는 없다)
 PREFLIGHT_SETS = ("tier0", "avatar", "static", "vlm")
 PREFLIGHT_BINS = ("texrecon",)
 PREFLIGHT_MODULES = ("open3d", "ultralytics")
@@ -154,7 +166,57 @@ def take_token() -> None:
 
 def child_env() -> dict[str, str]:
     """자식 프로세스 환경: 지금 환경에서 토큰 이름을 뺀 사본(take_token 전에 불려도 새지 않게)."""
-    return {k: v for k, v in os.environ.items() if k not in TOKEN_ENVS}
+    return with_image_pythonpath({k: v for k, v in os.environ.items() if k not in TOKEN_ENVS})
+
+
+def with_image_pythonpath(env: dict[str, str]) -> dict[str, str]:
+    """이미지 ai 폴더(WORKDIR /opt/simai/ai)를 PYTHONPATH 끝에 더한다(S15P31A101-414, 10차 세션).
+    SSH 셸에서 다른 폴더(/srv/simai/setup/...)에서 기동하면 `python -m services.tier0` 가 ModuleNotFoundError 였다(services 는 설치하지 않고
+    WORKDIR 에서 찾는다). cwd 는 바꾸지 않는다: 상대 경로 인자(--work·--bundle-dir)와 저장소 사본을 cwd·PYTHONPATH 앞쪽에 두는 방식이 그대로 이긴다."""
+    ai_dir = env.get("SIMAI_AI_DIR") or str(IMAGE_AI_DIR)
+    if not (Path(ai_dir) / "services").is_dir():
+        return env
+    parts = [p for p in (env.get("PYTHONPATH") or "").split(os.pathsep) if p]
+    if ai_dir not in parts:
+        env["PYTHONPATH"] = os.pathsep.join([*parts, ai_dir])
+    return env
+
+
+def _file_value(path: Path | None, key: str) -> str | None:
+    """KEY=VALUE 파일에서 비밀이 아닌 값 하나(SIMAI_WORKER_ID)를 읽는다. 없거나 못 읽으면 None."""
+    if path is None:
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        k, sep, v = line.strip().partition("=")
+        if sep and k.strip().removeprefix("export ").strip() == key:
+            return v.strip().strip("'\"") or None
+    return None
+
+
+def resolve_worker_id(explicit: str | None, env: dict[str, str], token_file: Path | None = None,
+                      env_file: Path | None = None) -> tuple[str | None, str]:
+    """워커 ID 를 정한다(S15P31A101-414): --worker-id → SIMAI_WORKER_ID → 토큰·env 파일 안의 SIMAI_WORKER_ID → 토큰 파일 이름
+    (worker-s10.token → worker-s10, EC2 ID 규칙에 맞고 worker.token 같은 흔한 이름이 아닐 때). 못 정하면 (None, 이유).
+    10차 세션: 토큰 파일만 주고 ID 를 안 넘겨 워커가 기본 worker-01 로 떠 EC2 대여가 401 이었다."""
+    if explicit:
+        if not WORKER_ID_RE.match(explicit):
+            raise BootstrapError(EXIT_USAGE, f"--worker-id {explicit!r} 형식 오류(EC2 규칙: 소문자·숫자·- 1~63자, 첫 글자 소문자·숫자)")
+        return explicit, "--worker-id"
+    if env.get(WORKER_ID_ENV):
+        return env[WORKER_ID_ENV], WORKER_ID_ENV
+    for f in (token_file, env_file):
+        if (v := _file_value(f, WORKER_ID_ENV)) is not None:
+            return v, f"{f.name} 의 {WORKER_ID_ENV}"
+    if token_file is not None:
+        stem = token_file.name.split(".", 1)[0]
+        if WORKER_ID_RE.match(stem) and stem not in GENERIC_TOKEN_STEMS:
+            return stem, f"토큰 파일 이름 {token_file.name}"
+        return None, f"토큰 파일 이름 {token_file.name} 이 워커 ID 가 아니다"
+    return None, "워커 ID·토큰 파일 없음"
 
 
 def _redact(text: str) -> str:
@@ -900,7 +962,7 @@ class Supervisor:
 
     def __init__(self, root: Path, services: list[str], tier0_argv: list[str], env: dict[str, str] | None = None, *,
                  spawn=Proc, ready=None, health=None, clock=time.monotonic, sleep=time.sleep, wall_ms=None,
-                 pod_jsonl: Path | None = None) -> None:
+                 pod_jsonl: Path | None = None, worker_id: tuple[str | None, str] | None = None) -> None:
         env = dict(os.environ) if env is None else env
         self.root = root
         self.services = services
@@ -931,6 +993,18 @@ class Supervisor:
         self.health = health or (lambda: http_ok(f"http://127.0.0.1:{self.port}/health"))
         base = {k: v for k, v in env.items() if k not in (*SECRET_ENVS, "SIMAI_TIER0_TOKEN_FILE", "SIMAI_WORKER_TOKEN_FILE")}
         base["SIMAI_TIER0_MARKER"] = str(self.marker)
+        with_image_pythonpath(base)  # SSH 셸처럼 WORKDIR 밖에서 띄워도 python -m services.* 를 찾는다(-414)
+        # 워커 ID(-414): 워커·아바타 환경에 넣는다. lobby 는 정한 값을 넘기고, tier0 감시 모드는 환경·토큰 파일 이름에서 정한다
+        if worker_id is None:
+            worker_id = resolve_worker_id(
+                None, env, Path(env["SIMAI_WORKER_TOKEN_FILE"]) if env.get("SIMAI_WORKER_TOKEN_FILE") else None,
+                Path(env["SIMAI_WORKER_ENV_FILE"]) if env.get("SIMAI_WORKER_ENV_FILE") else None)
+        self.worker_id, wid_src = worker_id
+        self.worker_id_note = None
+        if "worker" in services or "avatar" in services:
+            self.worker_id_note = (f"워커 ID {self.worker_id} ({wid_src}) → worker·avatar 환경 {WORKER_ID_ENV}" if self.worker_id else
+                                   f"주의: 워커 ID 를 정하지 못함({wid_src}) → 워커는 기본 worker-01 로 뜬다. EC2 에 등록한 ID 와 다르면 대여가 401 이다"
+                                   f"(--worker-id·{WORKER_ID_ENV} 또는 토큰 파일 이름 <워커 ID>.token)")
         threads = env.get("SIMAI_SIDECAR_THREADS") or "1"
         avail = usable_cpus()
         quota, quota_src = cgroup_vcpu()
@@ -958,6 +1032,8 @@ class Supervisor:
             e = dict(base)
             if name == "tier0" and tier0_token:
                 e["SIMAI_TIER0_TOKEN"] = tier0_token
+            if name in ("worker", "avatar") and self.worker_id:
+                e[WORKER_ID_ENV] = self.worker_id
             if fractions is not None:
                 if "avatar" in services:
                     e["SIMAI_AVATAR_GPU_MEMORY_FRACTION"] = str(fractions["avatar_fraction"])
@@ -1181,6 +1257,8 @@ class Supervisor:
             return EXIT_NOT_FOUND
         log(f"tier0 시작 pid {t0.proc.pid}: {shlex.join(t0.argv)} (이어서 {', '.join(self.services[1:])})")
         log(self.cpu_note)
+        if self.worker_id_note:
+            log(self.worker_id_note)
         while True:
             if self.stop_signal is not None:
                 log(f"신호 {self.stop_signal} → 워커 → vLLM → Tier 0 순서로 내린다")
@@ -1716,6 +1794,29 @@ def scene(rest: list[str]) -> int:
 # ---------------------------------------------------------------- 기동 전 점검 (check / preflight, S15P31A101-382)
 
 
+def ptrace_capable(status: Path = Path("/proc/self/status")) -> bool | None:  # 시험에서 바꿔 끼운다
+    """유효 권한(CapEff)에 CAP_SYS_PTRACE 가 있는가. 못 읽으면(Linux 아님) None."""
+    try:
+        m = re.search(r"^CapEff:\s*([0-9a-fA-F]+)\s*$", status.read_text(encoding="ascii", errors="replace"), re.MULTILINE)
+    except OSError:
+        return None
+    return None if m is None else bool(int(m.group(1), 16) >> CAP_SYS_PTRACE & 1)
+
+
+def py_spy_status(which=None, capable=None) -> dict:
+    """py-spy 를 쓸 수 있는지 안내한다(S15P31A101-414). RunPod 컨테이너는 SYS_PTRACE 를 줄 수 없어 부착이 Permission Denied 다(10차 세션).
+    그건 점검 실패가 아니다: Tier 0 내장 계측(-383 인지 단계 wall/thread_time)으로 GIL·스케줄 대기와 계산을 가른다."""
+    path = (which or shutil.which)("py-spy")
+    fallback = "내장 계측(-383 인지 단계 wall/thread_time)을 쓴다"
+    if not path:
+        return {"status": "absent", "note": f"py-spy 가 없다(-389 이전 이미지) → {fallback}"}
+    cap = (capable or ptrace_capable)()
+    if cap:
+        return {"status": "ok", "path": path, "ptrace": True}
+    return {"status": "unavailable", "path": path, "ptrace": cap,
+            "note": f"컨테이너에 SYS_PTRACE 가 없어 부착할 수 없다(RunPod 는 권한을 줄 수 없음, 실패 아님) → {fallback}"}
+
+
 def run_check(rest: list[str], *, preflight: bool = False) -> int:
     """가중치·GPU 예산·런타임 의존성을 점검한다. 인자 없는 check 는 기존과 같고, --preflight / --sets 는 하나라도 실패하면 비-0 으로 끝난다."""
     if not rest and not preflight:
@@ -1749,7 +1850,8 @@ def run_check(rest: list[str], *, preflight: bool = False) -> int:
     if not sets:
         log(f"check: 가중치 묶음 목록이 비었다 (종료 코드 {EXIT_USAGE})")
         return EXIT_USAGE
-    default_services = (os.environ.get(SERVICES_ENV) or "tier0,vllm,worker,avatar") if args.preflight else (os.environ.get(SERVICES_ENV) or "tier0")
+    # preflight 는 lobby 기동 전 점검이라 lobby 와 같은 기본(아바타 포함)으로 예산을 본다. SIMAI_SERVICES(이미지 기본 tier0,vllm,worker)는 보지 않는다(-414)
+    default_services = LOBBY_SERVICES if args.preflight else (os.environ.get(SERVICES_ENV) or "tier0")
     services_str = args.services if args.services is not None else default_services
     bins_raw = args.require_bins if args.require_bins is not None else (",".join(PREFLIGHT_BINS) if args.preflight else "")
     mods_raw = args.require_modules if args.require_modules is not None else (",".join(PREFLIGHT_MODULES) if args.preflight else "")
@@ -1820,6 +1922,10 @@ def run_check(rest: list[str], *, preflight: bool = False) -> int:
             if missing_mods:
                 errors.append(f"필수 파이썬 모듈 없음: {', '.join(missing_mods)}")
                 code = code or EXIT_STORAGE
+        if args.preflight:  # 진단 도구 안내(실패로 세지 않는다, -414)
+            spy = py_spy_status()
+            rec["diagnostics"] = {"py_spy": spy}
+            log(f"py-spy: {spy['status']}" + (f" — {spy['note']}" if spy.get("note") else ""))
         rec["exit"] = code
         if errors:
             rec["error"] = _redact("; ".join(errors))
@@ -2053,6 +2159,23 @@ def prepare_lobby_work(
     return cfg_path, env
 
 
+def _warn_lobby_services(given: str | None, env_value: str | None, services: list[str]) -> None:
+    """lobby 는 SIMAI_SERVICES 를 따르지 않는다(S15P31A101-414). 통합 이미지 ENV 기본값이 아바타 없는 tier0,vllm,worker 라
+    템플릿이 일부러 뺀 것과 구분할 수 없고, 10차 세션에서 그 값이 lobby 기본값을 덮어 시연 필수인 아바타가 빠졌다. 빼려면 --services 로 명시한다."""
+    if given is None and env_value and parse_services_quiet(env_value) != services:
+        log(f"주의: {SERVICES_ENV}={env_value} 는 lobby 에서 쓰지 않는다(tier0 감시 모드 전용) → {','.join(services)} 를 띄운다. "
+            f"줄이려면 --services 로 명시한다")
+    if "avatar" not in services:
+        log(f"주의: 아바타를 띄우지 않는다(--services {given}). 시연에는 아바타가 필요하다")
+
+
+def parse_services_quiet(text: str) -> list[str] | None:
+    try:
+        return parse_services(text)
+    except BootstrapError:
+        return None
+
+
 def lobby(rest: list[str]) -> int:
     """로비 LIVE 통합 기동: Tier 0·vLLM·worker·avatar 를 단일 Supervisor 로 띄우고 Tier 0 종료 코드를 그대로 돌려준다."""
     ap = argparse.ArgumentParser(prog="simai-bootstrap lobby", description="로비 LIVE 통합 기동 (Tier 0 + vLLM + worker + avatar)")
@@ -2080,17 +2203,23 @@ def lobby(rest: list[str]) -> int:
     clean_default = (os.environ.get("SIMAI_CLEAN_BACKGROUND") or "1").strip().lower() not in ("0", "false", "no", "off")
     ap.add_argument("--clean-background", dest="clean_background", action="store_true", default=clean_default)
     ap.add_argument("--no-clean-background", dest="clean_background", action="store_false")
-    ap.add_argument("--services", default=None)
+    ap.add_argument("--services", default=None,
+                    help=f"띄울 프로세스(기본 {LOBBY_SERVICES}). 환경 변수 {SERVICES_ENV} 는 보지 않는다(tier0 감시 모드 전용)")
+    ap.add_argument("--worker-id", default=None,
+                    help=f"EC2 에 등록한 워커 ID. 없으면 {WORKER_ID_ENV} → 토큰 파일 안의 {WORKER_ID_ENV} → 토큰 파일 이름(worker-s10.token → worker-s10)")
     try:
         args = ap.parse_args(rest)
     except SystemExit as e:
         return EXIT_USAGE if e.code else EXIT_OK
 
     try:
-        services = parse_services(args.services or os.environ.get(SERVICES_ENV) or "tier0,vllm,worker,avatar")
+        services = parse_services(args.services or LOBBY_SERVICES)
+        if args.worker_id:  # 형식 오류는 가중치를 받기 전에
+            resolve_worker_id(args.worker_id, {})
     except BootstrapError as e:
         log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
         return e.code
+    _warn_lobby_services(args.services, os.environ.get(SERVICES_ENV), services)
 
     claim_tier0(choose_root()[0])
     try:
@@ -2120,6 +2249,7 @@ def lobby(rest: list[str]) -> int:
     avatar_channel = args.avatar_channel or os.environ.get("SIMAI_AVATAR_CHANNEL")
 
     try:
+        worker_id = resolve_worker_id(args.worker_id, dict(os.environ), worker_token_file, worker_env_file)
         cfg_path, lobby_env = prepare_lobby_work(
             root,
             work,
@@ -2147,7 +2277,7 @@ def lobby(rest: list[str]) -> int:
             clean_background=args.clean_background,
         )
         tier0_argv = [*shlex.split(lobby_env.get("SIMAI_TIER0_CMD") or TIER0_CMD), "--config", str(cfg_path)]
-        sup = Supervisor(root, services, tier0_argv, env=lobby_env, pod_jsonl=work / "pod.jsonl")
+        sup = Supervisor(root, services, tier0_argv, env=lobby_env, pod_jsonl=work / "pod.jsonl", worker_id=worker_id)
     except BootstrapError as e:
         log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
         return e.code
@@ -2180,7 +2310,13 @@ def main(argv: list[str] | None = None) -> int:
         print(__doc__, file=sys.stderr)
         execvp([TIER0_CMD, "--help"])
         return EXIT_OK
-    if not args or args[0].startswith("-"):
+    if not args:
+        # 인자 없음은 기동하지 않는다(S15P31A101-414): 10차 세션에서 SSH 셸의 맨 `simai-bootstrap` 이 예전 교실 기본값으로 Tier 0 를 띄웠다.
+        # 이미지 기본은 CMD ["tier0"] 로 명시하고 RunPod 시작 명령은 `sleep infinity` 등을 넘기므로 컨테이너 시작 경로는 그대로다
+        print(__doc__.split("\n\n", 1)[0], file=sys.stderr)
+        log(f"인자가 없어 아무것도 띄우지 않는다. Tier 0 는 'simai-bootstrap tier0', 로비 LIVE 는 'simai-bootstrap lobby --help', 전체 설명은 --help (종료 코드 {EXIT_USAGE})")
+        return EXIT_USAGE
+    if args[0].startswith("-"):
         args = ["tier0", *args]
     mode, rest = args[0], args[1:]
     if mode == "scene":

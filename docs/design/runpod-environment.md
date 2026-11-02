@@ -349,6 +349,16 @@ scp simai-pod-443:/srv/simai/runs/s4-results.tar.gz ai/experiments/runs/gpu-sess
 - 공개 TCP 70000 대칭 포트 요청은 새 RunPod 템플릿 화면이 1~65535 만 받아 할 수 없다 → -288 (b) LTE Direct 비교는 그 방법을 찾기 전까지 뺀다. 443 터널 LIVE 는 공개 TCP 포트 없이 된다(`SIMAI_TUNNEL_ALLOW=17000,17001`).
 - 4차 실제 순서(다음 세션 기준안): 촬영(빈 장소 25 s ×2: 배경용·축척 정물용, 보정 걷기 180 s) → Pod: 장소 MapAnything·걷기 관절 추출(GPU 수 분) → EXP 큐 동안 노트북에서 World 고정·정물 축척·보정 문서·R1 묶음 → LIVE(+동시 녹화) → 검증 큐(v4)·남은 EXP → 녹화 재생 → 결과 받기(4차 1.85 GB 가 443 터널로 약 8분) → sha256 확인 → Terminate.
 
+#### 10차 세션 교훈 (S15P31A101-414, 2026-11-02)
+
+- 워커 ID: `lobby --worker-token-file …/worker-s10.token` 만 주고 ID 를 안 넘겨 워커가 기본 `worker-01` 로 떠 EC2 대여 401 → 빠른 실패 5번 뒤 포기(아바타는 서버가 토큰으로 ID 를 찾아 괜찮았다). 이제 기동기가 `--worker-id` → `SIMAI_WORKER_ID` → 토큰 파일 이름 순서로 정해 워커·아바타에 넘기고 로그에 남긴다. 토큰은 `<워커 ID>.token` 이름으로 올린다.
+- 아바타 빠짐: 템플릿 `SIMAI_SERVICES=tier0,vllm,worker`(통합 이미지 ENV 기본값과 같음)가 lobby 기본값을 덮었다. 이제 lobby·preflight 는 `SIMAI_SERVICES` 를 보지 않는다(줄이려면 `--services`). 템플릿에 둔다면 `tier0,vllm,worker,avatar`.
+- 작업 폴더: `/srv/simai/setup/...` 에서 기동하니 `python -m services.tier0` 가 ModuleNotFoundError(이미지 WORKDIR `/opt/simai/ai` 밖). 이제 기동기가 이미지 ai 폴더를 자식 `PYTHONPATH` 끝에 더한다(cwd 는 그대로).
+- SSH 셸 환경: 비로그인 셸은 컨테이너 PID 1 환경(PATH·SIMAI_*·RUNPOD_*)이 없어 `python3` 를 못 찾았다. `bash -lc` 또는 `. /etc/profile.d/simai-env.sh`, 그 파일이 없으면 `/proc/1/environ` 에서 비밀 아닌 이름만 싣는다(deploy/README "SSH 세션의 환경 변수").
+- 인자 없는 `simai-bootstrap` 이 예전 교실 기본값으로 Tier 0 를 띄웠다 → 이제 사용법만 보이고 64(이미지 CMD 는 `tier0` 명시, 시작 명령 `sleep infinity` 경로는 그대로).
+- py-spy: RunPod 컨테이너에는 SYS_PTRACE 가 없어 Permission Denied. preflight 가 `diagnostics.py_spy=unavailable` 로 안내만 하고(실패 아님) 내장 계측(-383 인지 단계 wall/thread_time)을 쓴다.
+- 게이트웨이 원격 갱신: `ssh simai-gw` 의 `setup`(git pull)은 wincredman 을 못 써 실패 → `update-remote`(로그인 세션 예약 작업으로 pull·uv sync, 끝나면 이전 모드 복구, gateway/ops/README "원격"). EC2 `free-ports.sh` 는 `sudo -n ss`·`sudo -n kill` 로 다른 sshd 세션의 PID 를 찾는다.
+
 ### 실행기 규칙
 
 | 상황 | 동작 | 종료 코드 |

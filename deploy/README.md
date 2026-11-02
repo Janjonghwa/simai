@@ -131,10 +131,11 @@ RunPod 은 Container Registry Auth(읽기 전용 토큰)로 접근한다. 토큰
 
 | 명령 | 하는 일 |
 |---|---|
-| (인자 없음) / `tier0 [Tier 0 인자]` / `--config ...` | 준비 → `simai-tier0`(엔진 준비 `engine_cache ensure` → `python -m services.tier0`) |
-| `lobby [로비 인자...]` | 로비 LIVE 통합 기동(S15P31A101-382): `endpoint.json`·`tier0-live.json`·`pod.jsonl` 구성 → 단일 `Supervisor` 로 `tier0,vllm,worker,avatar` 를 띄우고 Tier 0 종료 코드 그대로 끝난다(아래 "로비 LIVE 통합 기동") |
+| `tier0 [Tier 0 인자]` / `--config ...` | 준비 → `simai-tier0`(엔진 준비 `engine_cache ensure` → `python -m services.tier0`). 이미지 기본 CMD 가 `tier0` 를 명시한다 |
+| (인자 없음) | 사용법만 보이고 64 로 끝난다. 아무것도 띄우지 않는다(S15P31A101-414: 10차 세션에서 SSH 셸의 맨 `simai-bootstrap` 이 예전 교실 기본값으로 Tier 0 를 띄웠다). 컨테이너 시작 경로(CMD `tier0`, 시작 명령 `sleep infinity`)는 그대로다 |
+| `lobby [로비 인자...]` | 로비 LIVE 통합 기동(S15P31A101-382): `endpoint.json`·`tier0-live.json`·`pod.jsonl` 구성 → 단일 `Supervisor` 로 `tier0,vllm,worker,avatar` 를 띄우고 Tier 0 종료 코드 그대로 끝난다. 프로세스는 `--services` 만 따르고 `SIMAI_SERVICES` 는 보지 않는다, 워커 ID 는 `--worker-id` → `SIMAI_WORKER_ID` → 토큰 파일 이름(S15P31A101-414, 아래 "로비 LIVE 통합 기동") |
 | `queue [gpu_session1 run 인자]` | 준비 → GPU 1차 세션 큐(저장소 사본 `$SIMAI_SESSION_REPO`, 기본 `$SIMAI_ROOT/setup/session1/repo`). 엔진 첫 빌드 시간은 큐 b 항목이 재므로 엔진 준비는 하지 않는다 |
-| `check [--preflight\|--sets ...]` / `preflight` | 준비만 하고 결과 JSON 출력. `preflight`(또는 `check --preflight`)는 `tier0,avatar,static,vlm` 가중치·GPU 예산·`texrecon`·`open3d`·`ultralytics` 를 일괄 점검하고 하나라도 실패하면 비-0 종료 코드(2·3·64)로 끝난다 |
+| `check [--preflight\|--sets ...]` / `preflight` | 준비만 하고 결과 JSON 출력. `preflight`(또는 `check --preflight`)는 `tier0,avatar,static,vlm` 가중치·GPU 예산(lobby 기본 `tier0,vllm,worker,avatar`, `SIMAI_SERVICES` 무시)·`texrecon`·`open3d`·`ultralytics` 를 일괄 점검하고 하나라도 실패하면 비-0 종료 코드(2·3·64)로 끝난다. py-spy 는 `diagnostics.py_spy` 에 안내만 한다(RunPod 는 SYS_PTRACE 가 없어 `unavailable` → 내장 계측 -383, 실패 아님) |
 | `scene [--worker-token-file <경로>] [--] <명령...>` | 장면 준비 모드(S15P31A101-250·-382, 통합 이미지의 MapAnything·정적 장면 일회성 작업): Tier 0·GPU 확인 → `static` 가중치 → 재확인 → 그 명령을 자식으로 실행하며 Tier 0 시작을 감시(나타나면 장면 작업을 끝내고 75). 종료 코드는 명령의 것. 아래 "장면 준비 모드" |
 | 그 밖의 명령(`sleep infinity`, `bash`, `simai-wait-tier0`, `python ...`) | 준비 없이 그대로 실행 |
 
@@ -169,7 +170,7 @@ HMR 이미지 `exp02`, MapAnything 이미지 `static`)의 묶음을 준비한다
 | 시작 명령 | 비움(이미지 기본: `simai-bootstrap tier0`). 검증 세션은 `sleep infinity` 로 띄우고 SSH 로 `simai-bootstrap queue` |
 | GPU 기능 | 이미지 `NVIDIA_DRIVER_CAPABILITIES=compute,utility,video`(video 는 선택 디코더 NVDEC 용, -182. Tier 0 기본 디코더는 CPU 라 없어도 기본 경로는 선다, -236). 템플릿에서 덮어쓰지 않는다 |
 | 환경 변수 | `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}`(RunPod Secret, 값은 템플릿에 쓰지 않음), `SIMAI_TIER0_GPU_RESERVE_MB=8192`(Tier 0 GPU 선확보, -60, G0 실측 전 초기값), `SIMAI_IMAGE_DIGEST=sha256:...`(이미지 다이제스트와 같은 값), `PUBLIC_KEY=<계정 SSH 공개키>`(비밀 아님), `SIMAI_TUNNEL_PREFIX={{ RUNPOD_SECRET_simai_tunnel_prefix }}`(RunPod Secret, 막힌 망 최후 예비 SSH), 최후 예비로 I0 를 443 터널로 보낼 때만 `SIMAI_TUNNEL_ALLOW=17000,17001`(비밀 아님, 아래 "I0 터널"). `SIMAI_ROOT`·가중치 경로·해시·엔진 캐시는 부트스트랩이 정한다(`SIMAI_ENGINE_CACHE` 기본 `$SIMAI_ROOT/engines`, `SIMAI_OBS2D_ROOT` 는 필요하면 `$SIMAI_ROOT/obs2d`). 선택: `SIMAI_TIER0_MODE`(e2e), `SIMAI_TIER0_IMGSZ`(1280), `SIMAI_TIER0_MAX_BATCH`(4), `SIMAI_TIER0_CAMERA`(2304x1296) |
-| 분석 워커 환경 변수 | 같은 Pod 에서 워커를 띄울 때(아래 "분석 워커"): `SIMAI_EC2_BASE_URL`, `SIMAI_WORKER_ID=worker-01`, `SIMAI_WORKER_GPU_MEMORY_FRACTION=0.70`, `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION=0.55`, `SIMAI_WORKER_VLLM_MAX_NUM_SEQS=4`, `SIMAI_GPU_TIER0_FRACTION=0.20`, `SIMAI_WORKER_LAG_BUDGET_MS=600`. 선택(기본값): `SIMAI_WORKER_MARKER_MAX_AGE_S`(15), `SIMAI_WORKER_RESUME_AFTER_S`(10), `SIMAI_WORKER_MAX_QUEUE_WAIT_EXCEEDED`(2), `SIMAI_WORKER_LIVE_BLOCKED_TYPES`(static_reconstruct,hmr_refine,hmr_appearance_update), `SIMAI_WORKER_LIVE_WAIT_MS`(5000), `SIMAI_WORKER_HOLD_MAX_S`(60), `SIMAI_TIER0_MARKER`. 값의 뜻은 docs/design/tier0-gpu-priority.md |
+| 분석 워커 환경 변수 | 같은 Pod 에서 워커를 띄울 때(아래 "분석 워커"): `SIMAI_EC2_BASE_URL`, `SIMAI_WORKER_ID`(EC2 에 등록한 ID. 토큰과 짝이 다르면 대여가 401. `simai-bootstrap` 감시 모드·lobby 는 비어 있으면 토큰 파일 이름 `<워커 ID>.token` 에서 정한다, S15P31A101-414), `SIMAI_WORKER_GPU_MEMORY_FRACTION=0.70`, `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION=0.55`, `SIMAI_WORKER_VLLM_MAX_NUM_SEQS=4`, `SIMAI_GPU_TIER0_FRACTION=0.20`, `SIMAI_WORKER_LAG_BUDGET_MS=600`. 선택(기본값): `SIMAI_WORKER_MARKER_MAX_AGE_S`(15), `SIMAI_WORKER_RESUME_AFTER_S`(10), `SIMAI_WORKER_MAX_QUEUE_WAIT_EXCEEDED`(2), `SIMAI_WORKER_LIVE_BLOCKED_TYPES`(static_reconstruct,hmr_refine,hmr_appearance_update), `SIMAI_WORKER_LIVE_WAIT_MS`(5000), `SIMAI_WORKER_HOLD_MAX_S`(60), `SIMAI_TIER0_MARKER`. 값의 뜻은 docs/design/tier0-gpu-priority.md |
 | 비밀 | 템플릿에 값으로 넣지 않는다(HF 토큰·터널 비밀값만 Secret 참조). 워커 토큰은 `.simai-private/worker.env` 의 `SIMAI_WORKER_TOKEN=` |
 | 공개키 | RunPod 은 계정 SSH 키를 `PUBLIC_KEY` 로 넣지만, 템플릿에 `PUBLIC_KEY` 를 빈 값으로 두면 그 값이 덮어써 공개키가 하나도 없게 되고 sshd 가 뜨지 않는다(3차 세션 2026-10-26: 빈 `PUBLIC_KEY` + 이름 칸에 이미지 다이제스트가 들어간 `SSH_PUBLIC_KEY`). 그래서 템플릿에 계정 공개키 값을 그대로 넣는다(공개키는 비밀이 아니다). Pod 를 켠 직후 RunPod Logs 에서 `simai-start: sshd 시작 (키 인증만, 키 N개)` 와 `wstunnel 시작` 줄을 먼저 보고, `공개키 형식이 아닌 줄 … 버렸다` / `sshd 를 띄우지 않아 443 예비 터널도 띄우지 않는다` 가 보이면 템플릿 `PUBLIC_KEY` 값(한 줄, `ssh-ed25519 …`)을 고친다(4차 세션: 이 때문에 약 45분 접속 불가) |
 
@@ -282,6 +283,17 @@ wstunnel client --log-lvl OFF --tls-verify-certificate -L tcp://127.0.0.1:17000:
 
 **SSH 세션의 환경 변수.** sshd 가 띄운 셸에는 컨테이너 ENV 가 없다. `simai-start` 가 sshd 를 띄울 때 비밀이 아닌 이름(`SIMAI_*`·`CUDA_*`·`NVIDIA_*`·`UV_*`·`RUNPOD_*`·`PYTHON*`·`PATH`·`LD_LIBRARY_PATH`, 이름에 TOKEN·SECRET·PASSW·API_KEY·PRIVATE·CREDENTIAL 이 든 것 제외)만
 `/etc/profile.d/simai-env.sh` 에 적는다. 로그인 셸(`ssh simai-pod`)은 자동으로 읽고, 명령 한 줄은 `ssh simai-pod 'bash -lc "simai-bootstrap queue ..."'` 처럼 로그인 셸로 돌린다(비로그인 셸은 PATH 에 `python3`·`simai-bootstrap` 이 없다). 백그라운드 스크립트도 `SIMAI_ROOT=/srv/simai` 를 명시한다(이 티켓 수정 뒤에도 습관으로).
+이미 연 비로그인 셸(`ssh -J … 'cmd'`, tmux, `sh -c`)에서 `python3: not found` 가 나면(10차 세션) `. /etc/profile.d/simai-env.sh` 를 먼저 한다. 그 파일이 없으면(sshd 를 `simai-start` 가 띄우지 않은 컨테이너) 컨테이너 PID 1 환경에서 비밀 아닌 이름만 싣는다:
+
+```sh
+while IFS= read -r -d '' kv; do
+  case "$kv" in SIMAI_TUNNEL_PREFIX=*|*TOKEN*|*SECRET*|*PASSW*|*API_KEY*) ;;
+    PATH=*|VIRTUAL_ENV=*|LD_LIBRARY_PATH=*|SIMAI_*|RUNPOD_*|CUDA_*|NVIDIA_*|UV_*|PYTHON*|YOLO_*|PYOPENGL_PLATFORM=*) export "$kv" ;;
+  esac
+done < /proc/1/environ
+```
+
+작업 폴더는 어디든 된다: `simai-bootstrap` 이 이미지 ai 폴더(`/opt/simai/ai`, `SIMAI_AI_DIR`)를 자식의 `PYTHONPATH` 끝에 더해 `/srv/simai/setup/...` 에서 띄워도 `python -m services.tier0` 를 찾는다(10차 세션 ModuleNotFoundError, S15P31A101-414). cwd·앞쪽 `PYTHONPATH`(저장소 사본)가 여전히 먼저다.
 HF 토큰·터널 비밀값은 이 파일에 없다. SSH 에서 가중치를 받아야 하면 그 명령에만 `HF_TOKEN="$(tr '\0' '\n' </proc/1/environ | sed -n 's/^HF_TOKEN=//p')" simai-bootstrap ...` 로 넘긴다.
 
 **GPU 세션 공통 주의 (4차 세션 교훈, S15P31A101-311, 4차 결과 요약은 Jira S15P31A101-293 2026-10-28 댓글).**
@@ -367,7 +379,7 @@ Tier 0 재시작(엔진 캐시 사용, 1초대) 때는 워커 접수 문이 표�
 | 넣지 않은 것 | 잠금 밖 휠 Detectron2·MoGe·chumpy(시연 HMR 경로가 쓰지 않는다: 렌더 패널·K 없는 그림의 FOV 예비·mhr2smpl 전용. exp02 이미지에만), `onnxruntime-gpu`·`cupy-cuda12x`(CUDA 12 빌드, 두 이미지 모두 뺐다. AutoCast 는 CPU `onnxruntime`), 가중치·엔진·비밀 |
 | HMR 경로 | 보정 K → sam-3d-body 추론 → 메시·관절(`run_image.py --mode official --calibration <K> --no-render`). K 없는 그림·렌더 패널은 시작 전에 종료 코드 2(명확한 오류) |
 | `NVIDIA_DRIVER_CAPABILITIES` | `compute,utility,video,graphics`(NVDEC 선택 디코더 + pyrender·나중의 텍스처 래스터화 EGL) |
-| 기본 명령 | `simai-bootstrap tier0` + `SIMAI_SERVICES=tier0,vllm,worker`(아래 감시 프로세스). `SIMAI_SERVICES=tier0` 이면 `tier0` 이미지와 같은 Tier 0 단독 |
+| 기본 명령 | `simai-bootstrap tier0` + `SIMAI_SERVICES=tier0,vllm,worker`(아래 감시 프로세스). `SIMAI_SERVICES=tier0` 이면 `tier0` 이미지와 같은 Tier 0 단독. 이 ENV 는 `tier0` 감시 모드만 쓰고 `lobby`·`preflight` 는 보지 않는다(S15P31A101-414) |
 | 가중치 | 기동 전 `tier0` 묶음(YOLO26x-pose)만, Tier 0 준비 뒤 `SIMAI_WORKER_WEIGHTS_SET`(기본 `vlm`, Cosmos3-Nano 18개 31.5GB). 워커 가중치가 실패해도 Tier 0 는 돈다 |
 | MapAnything(S15P31A101-250) | 같은 가상환경(torch 2.11.0)에 map-anything @3d10cf7(잠금 밖 휠 `--no-deps`, 소스 사본 `SIMAI_MAPANYTHING_REPO=/opt/simai/mapanything/map-anything`)·DINOv2 허브 코드 @7764ea0. 의존성은 잠금 `scene` 묶음(uniception 0.1.7·rerun-sdk 0.24.1 등). 가중치(`static`)는 이미지에 없다. LIVE 와 따로 도는 준비 단계 일회성 작업이라 `simai-bootstrap scene` 으로만 돌린다(아래) |
 
@@ -418,9 +430,14 @@ simai-bootstrap lobby \
   --public-host <공개 IP> \
   --ec2-base-url https://<EC2> \
   --tier0-token-file /root/.simai_tier0_token \
-  --worker-token-file /root/.simai_worker_token \
+  --worker-token-file /root/worker-s10.token \
   --no-clean-background
 ```
+
+10차 세션에서 고친 것(S15P31A101-414):
+
+- **프로세스.** `lobby` 는 `--services`(기본 `tier0,vllm,worker,avatar`)만 따르고 `SIMAI_SERVICES` 는 보지 않는다. 통합 이미지 ENV 기본값과 10차 템플릿 값이 아바타 없는 `tier0,vllm,worker` 라 그 값이 lobby 기본값을 덮어 시연 필수인 아바타가 빠졌다(이미지 기본값과 일부러 뺀 값을 구분할 수 없어 "따르되 경고"가 아니라 "무시하고 경고"를 골랐다). 환경 값이 다르면 시작 로그에 `주의: SIMAI_SERVICES=… 는 lobby 에서 쓰지 않는다`, `--services` 로 아바타를 빼면 `주의: 아바타를 띄우지 않는다` 를 남긴다. `preflight` 의 GPU 예산도 같은 기본(아바타 포함)으로 본다.
+- **워커 ID.** `--worker-id` → `SIMAI_WORKER_ID` → 토큰·env 파일 안의 `SIMAI_WORKER_ID=` → 토큰 파일 이름(`worker-s10.token` → `worker-s10`, EC2 규칙 `^[a-z0-9][a-z0-9-]{0,62}$` 에 맞고 `worker.token` 같은 흔한 이름이 아닐 때) 순서로 정해 `worker`·`avatar` 환경 `SIMAI_WORKER_ID` 로 넣고, 시작 로그에 `워커 ID <값> (<출처>)` 를 남긴다. 못 정하면 워커가 기본 `worker-01` 로 뜬다는 경고를 남긴다. 10차: 토큰 파일만 주고 ID 를 안 넘겨 워커가 `worker-01` 로 떠 EC2 대여가 401 → 빠른 실패 5번 뒤 포기했다. 워커는 401·403 이면 `워커 ID 와 토큰이 맞지 않음(현재 ID=…)` 을 남긴다(토큰 값은 찍지 않는다). 그래서 EC2 에서 `admin worker register --id <ID>` 로 받은 토큰은 `<ID>.token` 이름으로 올린다.
 
 ### 장면 준비 모드 (`simai-bootstrap scene`, MapAnything, S15P31A101-250)
 
@@ -458,6 +475,7 @@ simai-bootstrap scene -- python <사본>/ai/experiments/static_scene/run_mapanyt
 
 위 "RunPod 템플릿" 과 같고 다음만 다르다. 이미지 `<레지스트리>/<프로젝트>/tier0@sha256:<unified 다이제스트>`(무료 플랜 저장소 하나라 태그 접두 `unified-`), Container Disk 150GB 이상,
 환경 변수에 `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}`(Cosmos3-Nano 는 승인제가 아니지만 HF 속도 제한 완화), 분석 워커 값(`SIMAI_WORKER_*`, 위 표), 필요하면 `SIMAI_WORKER_ARGS`.
+`SIMAI_SERVICES` 는 템플릿에 넣는다면 `tier0,vllm,worker,avatar`(아바타는 시연 필수. 이 값은 시작 명령을 비운 `tier0` 감시 모드만 쓰고 `simai-bootstrap lobby` 는 보지 않는다, S15P31A101-414). `SIMAI_WORKER_ID` 는 템플릿에 두지 않고 lobby 의 `--worker-id` 또는 토큰 파일 이름(`<워커 ID>.token`)으로 준다(세션마다 새 워커를 등록한다).
 시작 명령은 비운다(이미지 기본 = 감시 프로세스). 검증 세션은 `sleep infinity` 로 띄우고 SSH 로 `SIMAI_WEIGHTS_SET=exp02 simai-bootstrap queue`(이 이미지의 큐는 a·b·t·c·d·u1·u2·u3·u4, 아래 "Pod 검증 큐". u3·u4 는 장면 준비 모드로 `static` 가중치를 따로 받는다). 통합 이미지에는 `SIMAI_WEIGHTS_SET` 이 없어(기본 tier0) 그대로 부르면 u2(HMR 보정 K)·`simai-exp02` 가 sam-3d-body 체크포인트 없음(종료 코드 2)으로 실패한다. HMR 만 따로 돌릴 때도 `SIMAI_WEIGHTS_SET=exp02 simai-bootstrap run simai-exp02 python <사본>/ai/experiments/hmr/run_image.py --mode official --calibration <K> --no-render ...`(저장소 사본 코드를 이미지 패키지보다 먼저 쓰려면 `PYTHONPATH=<사본>/ai/src:<사본>/ai`, Tier 0 file 모드 녹화 재생은 `<사본>/ai/` 에서 `simai-bootstrap run simai-tier0 --config <json>`).
 RunPod Stop 이 SIGTERM 뒤 얼마를 기다리는지는 문서로 확인하지 못했다: 저널은 기록마다 fsync 라(명세 3.2) 강제 종료돼도 재시작 복구가 된다.
 

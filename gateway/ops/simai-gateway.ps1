@@ -1,10 +1,10 @@
 ﻿# simai 로비 게이트웨이 노트북 도우미 (Windows PowerShell 5.1 이상, S15P31A101-393). 설명은 같은 폴더 README.md.
 # 더블클릭: simai-gateway.cmd  →  메뉴(1 설치·갱신 · 2 점검 · 3 관제 시작 · 4 관제 끄기 · 5 미리보기만 · 6~8 원격)
 # 명령줄: simai-gateway.cmd run -PodIp 1.2.3.4 -ControlPort 40001 -VideoPort 40002   (CCTV 원격 시청 업로드를 끄려면 -NoRemoteCctv)
-# 원격(S15P31A101-394): 게이트웨이 remote-setup(관리자 1회) · 개발 노트북 dev-remote(1회)·rdp · ssh simai-gw 로 run-remote/preview-remote/stop/status
+# 원격(S15P31A101-394): 게이트웨이 remote-setup(관리자 1회) · 개발 노트북 dev-remote(1회)·rdp · ssh simai-gw 로 run-remote/preview-remote/update-remote/stop/status
 # 비밀 값(.env·토큰·키)은 화면에 찍지 않는다. 키 이름만 확인한다.
 param(
-  [ValidateSet('menu', 'setup', 'check', 'run', 'stop', 'preview', 'remote-setup', 'run-remote', 'preview-remote', 'status', 'dev-remote', 'rdp')][string]$Command = 'menu',
+  [ValidateSet('menu', 'setup', 'check', 'run', 'stop', 'preview', 'remote-setup', 'run-remote', 'preview-remote', 'update', 'update-remote', 'status', 'dev-remote', 'rdp')][string]$Command = 'menu',
   [string]$PodIp = '',
   [int]$ControlPort = 0,
   [int]$VideoPort = 0,
@@ -321,7 +321,8 @@ function Do-RemoteSetup {
   if ((Get-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server').fDenyTSConnections -ne 0) { Warn '원격 데스크톱이 정책으로 막혀 있다(SSH 는 된다)' } else { Say '원격 데스크톱 켬' }
 
   # 4) EC2 에 옛 역터널 포트 정리 스크립트(끊긴 세션이 포트를 쥐고 있으면 새 역터널이 실패한다)
-  $free = "#!/bin/sh`n# simai gateway reverse tunnel: kill stale ubuntu sshd holding 127.0.0.1:2222/13389 (S15P31A101-394)`nfor p in 2222 13389; do`n  for pid in `$(ss -ltnpH `"sport = :`$p`" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do kill `"`$pid`" 2>/dev/null; done`ndone`nexit 0`n"
+  #    다른 sshd 세션(같은 ubuntu 라도 privsep 자식)의 PID 는 sudo 없이 ss -p 에 안 보여 옛 세션이 2222 를 쥔 채 남았다(10차 세션) → sudo -n(EC2 ubuntu 는 비밀번호 없는 sudo, S15P31A101-414)
+  $free = "#!/bin/sh`n# simai gateway reverse tunnel: kill stale sshd holding 127.0.0.1:2222/13389 (S15P31A101-394, sudo -n S15P31A101-414)`nfor p in 2222 13389; do`n  for pid in `$(sudo -n ss -ltnpH `"sport = :`$p`" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do sudo -n kill `"`$pid`" 2>/dev/null; done`ndone`nexit 0`n"
   Ec2 "echo $(To-B64 $free) | base64 -d > $RemoteDir/free-ports.sh; chmod +x $RemoteDir/free-ports.sh" | Out-Null
 
   # 5) 역터널: 로그인 때 숨김 창으로 뜨고 끊기면 다시 붙는다
@@ -378,6 +379,89 @@ function Do-RunRemote {
 function Do-PreviewRemote {
   $extra = if ($NoRemoteCctv) { ' -NoRemoteCctv' } else { '' }
   Start-InSession "preview$extra" '카메라 미리보기'
+}
+
+# ---------- 원격 갱신 (S15P31A101-414) ----------
+# ssh simai-gw 세션은 Windows 자격 증명 관리자(wincredman)를 못 써 setup 의 git pull 이 "could not read Username" 으로 실패한다(10차 세션).
+# update-remote 는 지금 모드를 멈추고, 로그인 세션 예약 작업으로 update(git pull --ff-only + uv sync)를 돌려 로그 파일의 exit 코드를 기다린 뒤 이전 모드로 되돌린다.
+$UpdateTask = 'simai-gateway-update'
+$UpdateLog = Join-Path $LocalDir 'gateway-update.log'
+
+function Log-Update([string]$m) { [IO.File]::AppendAllText($UpdateLog, ("{0:yyyy-MM-dd HH:mm:ss} {1}`r`n" -f (Get-Date), $m), $Utf8) }
+
+function Invoke-Logged([string]$what, [scriptblock]$sb) {
+  Log-Update "> $what"
+  $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'   # git 은 진행 상황을 stderr 로 쓴다(5.1 은 2>&1 을 오류로 바꾼다)
+  try { $out = @(& $sb 2>&1 | ForEach-Object { "$_" }); $code = $LASTEXITCODE } finally { $ErrorActionPreference = $old }
+  if ($out.Count) { [IO.File]::AppendAllText($UpdateLog, (($out -join "`r`n") + "`r`n"), $Utf8) }
+  Log-Update "  코드 $code"
+  return $code
+}
+
+function Do-Update {
+  # 로그인 세션(예약 작업)에서 돈다. 대화형 질문 없이 저장소·의존성만 갱신한다(비밀 묶음·SSH·시계는 setup).
+  New-Item -ItemType Directory -Force $LocalDir | Out-Null
+  $code = 0
+  try {
+    if (Test-Path $PidFile) { Log-Update '관제·미리보기가 켜져 있어 갱신하지 않는다(Windows 는 실행 중 파일이 잠긴다)'; $code = 2 }
+    elseif (-not (Test-Path (Join-Path $Root '.git'))) { Log-Update "저장소가 없다: $Root (게이트웨이에서 1 설치·갱신을 먼저)"; $code = 3 }
+    elseif (git -C $Root status --porcelain --untracked-files=no) { Log-Update '저장소에 고친 파일이 있어 갱신하지 않는다(게이트웨이에서는 코드를 고치지 않는다)'; $code = 4 }
+    else {
+      $steps = @(
+        @('git fetch', { git -C $Root fetch origin }),
+        @('git checkout dev', { git -C $Root checkout dev }),
+        @('git pull --ff-only', { git -C $Root pull --ff-only origin dev }),
+        @("uv sync ($RelayDir)", { Push-Location $RelayDir; try { uv sync } finally { Pop-Location } }),
+        @("uv sync ($AlertDir)", { Push-Location $AlertDir; try { uv sync } finally { Pop-Location } }))
+      foreach ($s in $steps) { $code = Invoke-Logged $s[0] $s[1]; if ($code) { break } }
+      if (-not $code) { Log-Update "저장소: $(git -C $Root log --oneline -1)" }
+    }
+  } catch { Log-Update "멈춤: $($_.Exception.Message)"; if (-not $code) { $code = 1 } }
+  Log-Update "exit=$code"
+  exit $code
+}
+
+function Get-ResumeMode {
+  # 지금 모드 파일(Do-Run·Do-Preview 가 쓴다)에서 갱신 뒤 되돌릴 명령을 만든다. 꺼져 있으면 $null
+  if (-not (Test-Path $ModeFile)) { return $null }
+  $m = (Get-Content $ModeFile -Raw).Trim()
+  $extra = if ($m -match '원격 시청 끔') { ' -NoRemoteCctv' } else { '' }
+  if ($m.StartsWith('관제')) {
+    $s = Load-State
+    if ($s.PodIp -and $s.ControlPort -and $s.VideoPort) {
+      return @{ Args = "run -PodIp $($s.PodIp) -ControlPort $($s.ControlPort) -VideoPort $($s.VideoPort)$extra"; Label = '관제(창 3개)' }
+    }
+    return $null
+  }
+  if ($m.StartsWith('미리보기')) { return @{ Args = "preview$extra"; Label = '카메라 미리보기' } }
+  return $null
+}
+
+function Do-UpdateRemote {
+  $resume = Get-ResumeMode
+  if (Test-Path $PidFile) { Say "갱신하려고 지금 모드를 멈춘다(끝나면 되돌림: $(if ($resume) { $resume.Label } else { '없음' }))"; Do-Stop -Quiet }
+  New-Item -ItemType Directory -Force $LocalDir | Out-Null
+  Remove-Item $UpdateLog -Force -ErrorAction SilentlyContinue
+  if (Test-Path $UpdateLog) { Fail "지난 갱신 로그를 지우지 못했다(다른 갱신이 도는 중일 수 있다): $UpdateLog" }
+  $arg = "-NoProfile -WindowStyle Minimized -ExecutionPolicy Bypass -File `"$PSCommandPath`" update"
+  $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
+  $pri = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+  Register-ScheduledTask -TaskName $UpdateTask -Action $act -Principal $pri -Force | Out-Null
+  Start-ScheduledTask -TaskName $UpdateTask
+  Say "로그인 세션에서 갱신 중(git pull --ff-only + uv sync, 로그 $UpdateLog)"
+  $code = $null
+  for ($i = 0; $i -lt 900 -and $null -eq $code; $i++) {   # 최대 15분(처음 uv sync 는 몇 분 걸린다)
+    Start-Sleep -Seconds 1
+    try { $text = [IO.File]::ReadAllText($UpdateLog, $Utf8) } catch { continue }   # 아직 없음·쓰는 중
+    if ($text -match '(?m) exit=(\d+)\s*$') { $code = [int]$Matches[1] }
+  }
+  if (Test-Path $UpdateLog) { Get-Content $UpdateLog -Encoding UTF8 -Tail 15 | ForEach-Object { Write-Host "  $_" } }
+  if ($null -eq $code) {
+    Warn "15분 안에 갱신이 끝나지 않았다. 이전 모드로 되돌리지 않는다(설치 중 파일이 잠긴다). 로그를 보고 끝나면 run-remote/preview-remote 로 띄운다."
+    return
+  }
+  if ($code) { Warn "갱신 실패(exit=$code). 이전 코드 그대로 둔다." } else { Say '갱신 끝' }
+  if ($resume) { Start-InSession $resume.Args $resume.Label } else { Say '갱신 전 꺼져 있어 그대로 둔다(평상시는 preview-remote)' }
 }
 
 function Do-Status {
@@ -462,6 +546,7 @@ function Show-Menu {
 switch ($Command) {
   'setup' { Do-Setup } 'check' { Do-Check } 'run' { Do-Run } 'stop' { Do-Stop } 'preview' { Do-Preview }
   'remote-setup' { Do-RemoteSetup } 'run-remote' { Do-RunRemote } 'preview-remote' { Do-PreviewRemote } 'status' { Do-Status }
+  'update' { Do-Update } 'update-remote' { Do-UpdateRemote }
   'dev-remote' { Do-DevRemote } 'rdp' { Do-Rdp }
   default { Show-Menu }
 }
