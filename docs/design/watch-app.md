@@ -14,7 +14,7 @@
 | `config/WatchConfig.kt` | EC2 주소·기기 토큰 검증. 토큰을 `toString`·예외 문장에 넣지 않음 |
 | `config/WatchConfigStore.kt` | 앱 전용 SharedPreferences 에 저장·읽기·지우기 |
 | `ConfigActivity.kt` | adb `am start` 로 설정을 넣는 화면 없는 입구 |
-| `MainActivity.kt` | 설정 상태 화면(Wear Compose Material 3) |
+| `MainActivity.kt` | 기본(대기) 화면(Wear Compose Material 3). 손목을 내리면 어둡게 켜져 있는 화면(앰비언트 모드)이 된다 |
 | `app/src/test/.../WatchConfigTest.kt` | 주소·토큰 검증 단위 시험(JVM) |
 
 ## 명세가 비워 둔 곳에서 정한 것
@@ -24,7 +24,7 @@
 | 위치 | 저장소 최상위 `watch/`, Android Studio 는 이 폴더를 프로젝트로 연다 | 파트별 최상위 폴더 관례(`server/`·`front/`·`gateway/`). 서버 Gradle 과 빌드를 섞지 않는다 |
 | 패키지 | `com.ssafy.simai.watch` | 서버 `com.ssafy.simai` 아래 |
 | minSdk / targetSdk / compileSdk | 30 / 36 / 37 | Wear OS 3 = API 30(워치4 이상). Wear Compose 1.7.1 이 compileSdk 37 이상을 요구한다(AAR 메타데이터 검사). 실행 동작은 targetSdk 36 으로 둔다 |
-| 판 | AGP 9.4.1(2026-09-18), Kotlin 2.4.21(10-08), Wear Compose 1.7.1(10-07), activity-compose 1.13.0, JUnit 4.13.2, Gradle 9.8.1(서버와 같음) | 나온 지 2주 넘은 안정판. AGP 9.5.0(10-28)·Gradle 9.8.2(10-19)는 2주가 안 돼 뺐다. AGP 9 는 Kotlin 을 내장해 `kotlin-android` 플러그인을 쓰지 않고 Compose 컴파일러 플러그인만 단다 |
+| 판 | AGP 9.4.1(2026-09-18), Kotlin 2.4.21(10-08), Wear Compose 1.7.1(10-07), activity-compose 1.13.0, androidx.wear 1.3.0(2023-08, 앰비언트 모드용), JUnit 4.13.2, Gradle 9.8.1(서버와 같음) | 나온 지 2주 넘은 안정판. AGP 9.5.0(10-28)·Gradle 9.8.2(10-19)는 2주가 안 돼 뺐다. AGP 9 는 Kotlin 을 내장해 `kotlin-android` 플러그인을 쓰지 않고 Compose 컴파일러 플러그인만 단다 |
 | 설정 넣는 방법 | adb `am start` 로 `ConfigActivity` 에 `ec2_base_url`·`device_token` 을 함께 넘긴다 | 워치 키보드로 긴 토큰을 칠 수 없다. 이 단계의 "설정 화면(최소)" 은 상태 표시 + adb 입력으로 한다 |
 | 설정 입구 보호 | `ConfigActivity` 에 `android:permission="android.permission.DUMP"` | adb 가 부르려면 exported 여야 해 다른 앱도 부를 수 있다. DUMP 는 adb shell 이 갖고 일반 앱은 받을 수 없어, 다른 앱이 주소를 바꾸거나 설정을 지우지 못한다 |
 | 주소·토큰을 함께만 바꿈 | 둘 중 하나만 오면 거부, `clear` 와 새 값을 같이 주면 거부 | 주소만 바꿀 수 있으면 저장된 토큰이 다른 서버로 간다. 지우기와 새 값이 같이 오면 의도를 알 수 없다 |
@@ -52,8 +52,11 @@
 | `ui/AlertScreen.kt` | 검정 바탕 알림 화면: 남은 시간 링, 등급 아이콘, 큰 한 단어, 방향, 아래쪽 큰 확인 단추. 확인함 화면도 여기 |
 | `ui/AlertIcon.kt`, `ui/SeverityStyle.kt` | 등급 아이콘 그리기(위험 채운 팔각형, 경고 삼각형 윤곽, 주의 원 윤곽, 확인 체크), 등급 글자·색·모양 표 |
 | `ui/WordSize.kt`, `ui/ClockText.kt` | 한 단어 글자 크기(화면 폭과 글자 수로 정함), 시각·기한 경과 글자 |
-| `ui/StatusScreen.kt` | 대기 화면: 연결 상태와 마지막 알림, 개발용 값은 아래로 스크롤 |
+| `ui/StatusScreen.kt` | 기본(대기) 화면: 큰 시계와 이름·구역, 연결 상태·마지막 알림·개발용 값은 아래로 스크롤. 손목을 내리면 시계와 이름·구역만 어둡게 보인다 |
+| `ui/AmbientState.kt` | 어둡게 켜져 있는 화면의 상태(흑백 두 색 화면 여부, 번인 방지 필요 여부)와 번인 방지로 분마다 옮길 위치 |
+| `config/WorkerLabel.kt`, `config/WorkerLabelStore.kt` | 기본 화면의 착용자 이름·구역(각 12자 이하)과 저장소. 값을 줄 계약(-334)이 없어 지금은 debug 입구로만 넣는다 |
 | `src/debug/.../DebugAlertActivity.kt` | 가짜 알림 입구(debug 빌드 전용, adb). 사용법은 `watch/README.md` |
+| `src/debug/.../DebugWorkerActivity.kt` | 이름·구역 입구(debug 빌드 전용, adb). 사용법은 `watch/README.md` |
 
 ### 명세가 비워 둔 곳에서 정한 것
 
@@ -90,12 +93,13 @@
 | 크기 | 모든 크기는 화면 폭 대비 비율이다(192dp ~ 227dp 둥근 화면에서 같은 모양) | 둥근 화면 크기가 기기마다 다르다 |
 | "+N" | 아이콘 오른쪽 위의 흰 원에 숫자 | 다른 확인 대기 알림이 있다는 것만 알린다 |
 | 움직임 | 위험 아이콘만 1.0 ~ 1.06 배로 1.2초 주기 맥박. 글자는 깜빡이지 않는다. 사용자가 애니메이션을 껐으면(동작 줄이기) 멈춘다 | 초당 3회 미만. 깜빡임은 미확인 경보에만 쓴다 |
-| 상단 시계 | 알림 화면에는 두지 않는다 | 링과 겹치고 알림 판독을 방해한다. 대기 화면에는 있다 |
-| 대기 화면 | 큰 글자로 "연결 안 됨"(설정이 없으면 노랑 "설정 안 됨"), 마지막 알림 시각. EC2 주소·토큰 설정 여부·버전은 아래로 스크롤해야 나온다 | 작업자는 연결 상태와 마지막 알림만 보면 된다. 개발용 값은 숨긴다 |
+| 상단 시계 | 알림 화면에는 두지 않는다 | 링과 겹치고 알림 판독을 방해한다. 기본 화면은 큰 시계가 있어 위쪽 기본 시계를 끈다 |
+| 기본 화면 | 첫 화면은 큰 시계(화면 폭의 25%, 흰색 굵게, 워치의 12·24시간 설정을 따르고 분이 바뀔 때만 갱신)와 그 아래 이름(흰색 굵게)·구역(회색). 이름·구역은 값이 있을 때만 나온다. 연결 상태("연결 안 됨", 설정이 없으면 노랑 "설정 안 됨")·마지막 알림 시각·EC2 주소·토큰 설정 여부·버전은 아래로 스크롤해야 나온다 | 삼성 스마트싱스 프로·위드세이프 같은 시장 제품의 기본 화면이 시계와 이름·구역을 첫 화면에 둔다(사진·기사 확인). 이름·구역을 계속 둘지는 팀과 이야기해 정한다. 연결은 -337 이 붙이기 전이라 연결 상태는 아직 실제 상태가 아니다 |
+| 어둡게 켜져 있는 화면(앰비언트 모드, 상시표시) | 손목을 내리면 큰 시계(얇은 회색, 흑백 두 색 화면은 흰색)와 이름·구역(회색)만 남기고 스크롤 줄은 감춘다. 분마다 시스템이 알려 주는 때(`onUpdateAmbient`) 시계를 다시 읽는다. 번인 방지가 필요한 화면은 분마다 ±3dp 안에서 네 곳을 돌며 위치를 옮긴다. `androidx.wear` 의 `AmbientLifecycleObserver` 와 `WAKE_LOCK` 권한을 쓴다 | 켜진 픽셀을 줄여 배터리와 번인을 지킨다(에뮬레이터 측정 약 3.5%, 손목을 든 화면 5.3%). 처음에는 큰 시계를 글자 윤곽선으로 그렸는데 가변 글꼴의 겹친 획이 6·8·9·4 에서 비쳐 보여 얇은 회색 채움으로 바꿨다. Wear Compose 1.7.1 에도 앰비언트 API 가 있으나 새 Wear 서비스 SDK 에 기대 구형 워치에서 동작하지 않을 수 있어 널리 쓰이는 `androidx.wear` 로 했다. 알림 화면(`AlertActivity`)은 아직 앰비언트를 처리하지 않는다 |
 
 ### 시험
 
-`app/src/test/.../alert/WatchAlertTest.kt`, `AlertBoardTest.kt`, `ui/WordSizeTest.kt`, `ui/WordLineTest.kt`, `ui/ClockTextTest.kt` (JVM 단위 시험 43건)
+`app/src/test/.../alert/WatchAlertTest.kt`, `AlertBoardTest.kt`, `ui/WordSizeTest.kt`, `ui/WordLineTest.kt`, `ui/ClockTextTest.kt`, `ui/AmbientStateTest.kt`, `config/WorkerLabelTest.kt` (JVM 단위 시험 51건)
 
 - 알림 값: 필수·선택 칸, 기본값, 등급별 패턴, 왕복 변환, 잘못된 값(모르는 등급·빈 칸·긴 단어·범위 밖 기한)을 거부
 - 패턴 표: 칸 수가 같고 첫 칸이 시작 지연이며 위험만 되풀이한다

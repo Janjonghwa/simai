@@ -30,6 +30,7 @@ android {
 
 dependencies {
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.wear)
     implementation(libs.wear.compose.foundation)
     implementation(libs.wear.compose.material3)
 

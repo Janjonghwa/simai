@@ -12,6 +12,15 @@
             android:permission="android.permission.DUMP"
             android:taskAffinity=""
             android:theme="@android:style/Theme.NoDisplay" />
+
+        <!-- 기본 화면의 이름·구역을 넣는 입구(debug 빌드에만 있다). 사용법은 watch/README.md -->
+        <activity
+            android:name=".DebugWorkerActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:permission="android.permission.DUMP"
+            android:theme="@android:style/Theme.NoDisplay" />
     </application>
 
 </manifest>

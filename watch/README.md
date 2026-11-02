@@ -90,3 +90,18 @@ adb -s <IP:포트> shell "am start -n com.ssafy.simai.watch/.DebugAlertActivity 
 - 확인하면 "확인함 시각" 을 잠깐 보이고 닫는다. 확인 기록은 `adb logcat -s SimaiWatchAck`, 낸 진동 패턴은 `adb logcat -s SimaiWatchVibe` 로 본다(확인은 EC2 로 아직 보내지 않는다)
 - 잘못된 값은 토스트와 `adb logcat -s SimaiWatchDebugAlert` 로 이유가 나온다
 - 화면이 꺼져 있어도 알림이 오면 켜진다. 에뮬레이터는 `adb shell input keyevent 223` 로 화면을 끈 뒤 시험한다
+
+## 기본 화면의 이름·구역 넣기 (debug 빌드)
+
+기본 화면 첫 줄은 큰 시계이고, 그 아래 이름·구역은 값이 있을 때만 나온다. 값을 줄 서버 계약이 없는 동안 adb 로 넣는다.
+
+```bash
+adb -s <IP:포트> shell "am start -n com.ssafy.simai.watch/.DebugWorkerActivity --es name 김반장 --es zone '3층 A구역'"
+adb -s <IP:포트> shell "am start -n com.ssafy.simai.watch/.DebugWorkerActivity --ez clear true"   # 지우기
+```
+
+- 이름과 구역은 함께 줄 때만 바꾼다. 각각 12자 이하이고 비워 둘 수 없다
+- 결과는 워치 토스트와 `adb logcat -s SimaiWatchDebugWorker` 로 본다
+- 연결 상태·마지막 알림·개발용 값은 기본 화면을 아래로 스크롤하면 나온다
+- 손목을 내리면 어둡게 켜져 있는 화면(상시표시)이 되어 시계와 이름·구역만 남는다. 워치 설정의 "항상 켜짐"이 켜져 있어야 한다.
+  에뮬레이터는 `adb shell input keyevent 223` 로 화면을 끄고(진입) `224` 로 켜서(복귀) 시험하고, 진입·복귀는 `adb logcat -s SimaiWatchAmbient` 로 본다
