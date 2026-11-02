@@ -161,6 +161,39 @@ class EventAckIntegrationTest {
     }
 
     @Test
+    void Tier0_저널에_남은_현장_버튼_확인은_재연결_동기화로_EC2_에_반영된다() throws Exception {
+        // G3 D-G3-15 의 EC2 몫: Tier 0 저널에 남은 ACKNOWLEDGED(SITE_BUTTON) 전이가 재연결 뒤 resent 로 다시 오고,
+        // 동기화가 끝나면 EC2 가 같은 확인을 기록하고 이벤트 상세에 붙인다
+        UUID event = UUID.randomUUID();
+        String siteAck = UUID.randomUUID().toString();
+        String foreman = token("foreman", Role.FOREMAN);
+
+        try (Tier0 tier0 = connect()) {
+            tier0.send(transition(event, 1, 0, "RAISED", null));
+            tier0.await("journal_ack", p -> p.get("acked_offset").longValue() == 0);
+        }
+        // 연결이 끊긴 동안 노트북의 현장 버튼 확인은 Tier 0 저널에만 쌓인다. 다시 붙으면 Tier 0 가 그 전이를 다시 보낸다
+
+        try (Tier0 tier0 = connect()) {
+            ObjectNode resent = transition(event, 2, 1, "ACKNOWLEDGED", ack(siteAck, "SITE_BUTTON", "SITE", "laptop-01"));
+            ((ObjectNode) resent.get("payload")).put("resent", true);
+            tier0.send(resent);
+            tier0.send(snapshot(1L));
+            tier0.await("journal_ack", p -> p.get("acked_offset").longValue() == 1 && !p.get("sync_mode").booleanValue());
+        }
+
+        assertThat(jdbc.queryForObject("SELECT channel FROM event_ack WHERE ack_id = ?::uuid", String.class, siteAck))
+                .isEqualTo("SITE_BUTTON");
+        assertThat(jdbc.queryForObject("SELECT journal_event_sequence FROM event_ack WHERE ack_id = ?::uuid", Integer.class, siteAck))
+                .isEqualTo(2);
+        // 관제 화면 상세에도 현장 확인이 붙는다
+        mvc.perform(get("/api/events/{id}", event).header(HttpHeaders.AUTHORIZATION, foreman))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.acks[0].ack_id").value(siteAck))
+                .andExpect(jsonPath("$.acks[0].channel").value("SITE_BUTTON"));
+    }
+
+    @Test
     void 해소된_이벤트와_없는_이벤트는_확인하지_않는다() throws Exception {
         UUID event = UUID.randomUUID();
         String admin = token("admin", Role.ADMIN);

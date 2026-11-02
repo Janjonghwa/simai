@@ -36,6 +36,20 @@ G3 는 15.1 세 행이 모두 기준을 만족하고 부록 D.4 의 각 항목�
 
 | 항목 | 측정값(목표 대비) | 결과 | 근거(시험 파일::함수 또는 절차·로그 위치) | 실행 명령 | 날짜·커밋 | 담당 |
 |---|---|---|---|---|---|---|
+| D-G3-05 EC2 몫(재알림·DELAYED_ACTIVE) | 동기화 중 해소 이벤트 실시간 송신 0건(목표 0건), 아직 활성인 이벤트 DELAYED_ACTIVE 표시·송신 100%, 감사용 전이 알림 대기열 0건 | PASS | server `RiskEventJournalIntegrationTest::동기화_중_해소된_이벤트는_AUDIT_ONLY_아직_활성이면_DELAYED_ACTIVE_그_뒤는_REALTIME`·`근거_없는_활성_이벤트는_알리지_않고_AUDIT_ONLY_로_둔다`·`끝나지_못한_동기화에서_만든_이벤트도_다음_스냅샷에서_분류한다`, `StompRelayIntegrationTest::동기화_중_해소된_이벤트는_보내지_않고_DELAYED_ACTIVE_와_그_뒤_실시간_전이를_보낸다`, `NotificationQueueIntegrationTest::비LIVE_해소_CAUTION_감사용_모르는_전이와_틀린_요청은_대기열에_넣지_않는다` | 서버 ①(아래 실행 명령) | 2026-11-02, dev `57aa47f` | 곽나혁 |
+| D-G3-06 표시 몫(UNVERIFIED) | EC2: Tier 0 단절 중 `viewer_health.config.sync` = UNVERIFIED 100%. 관제 앱 화면: `config.sync` 를 받기만 하고(`viewer3d/data/contractAdapter.ts`) 보이는 곳이 없음 | EC2 PASS · 화면 근거 없음 | server `HealthIntegrationTest::Tier0_만_끊기면_노트북이_본_상태로_원격_단절과_관제_정지를_가른다`(`/payload/config/sync` UNVERIFIED). 화면 표시는 관제 앱 과제(남은 일) | 서버 ① | 2026-11-02, dev `57aa47f` | 곽나혁 |
+| D-G3-12 노트북 몫(관제 중단 오표시) | EC2 만 끊김 → 현장 표시 원격 장애(관제 중단 아님)·현장 경보 계속 100%, EC2 한 번 실패는 장애 아님, Tier 0·EC2 동시 상실만 관제 중단 | PASS | `gateway/site_alert/tests/test_link_status.py::test_ec2_only_down_is_remote_fault_and_site_alarm_keeps_working`·`test_single_ec2_failure_is_not_a_fault`·`test_simultaneous_tier0_and_ec2_loss_shows_control_halted` | 게이트웨이 ② | 2026-11-02, dev `57aa47f` | 곽나혁 |
+| D-G3-15 노트북·EC2 몫 | 노트북: 버튼 확인은 Tier 0 제어 채널로만 보내고(EC2 와 무관한 것은 경로 구조상이며 EC2 단절 상태에서 버튼을 누르는 시험은 없음) Tier 0 가 끊겼으면 재접속 때 보냄, `alarm_stop` 으로 소리 정지·표시 유지 100%. EC2: 단절 중 저널에 남은 ACKNOWLEDGED(SITE_BUTTON)가 재연결 동기화로 `event_ack`·이벤트 상세 `acks[]` 에 반영 100% | PASS | 게이트웨이 `test_transport_app.py::test_websocket_delivers_alert_and_sends_site_ack`·`test_site_ack_while_disconnected_is_sent_on_reconnect`, `test_core.py::test_alarm_stop_stops_sound_keeps_display`, `test_link_status.py::test_ec2_only_down_is_remote_fault_and_site_alarm_keeps_working`. server `EventAckIntegrationTest::Tier0_저널에_남은_현장_버튼_확인은_재연결_동기화로_EC2_에_반영된다`(이 MR 에서 더함)·`현장_버튼_확인은_전이가_오면_event_ack_로_남는다` | 게이트웨이 ②, 서버 ① | 2026-11-02, dev `57aa47f` + 이 MR | 곽나혁 |
+| D-G3-16 노트북 몫(목록 맞춤) | 재접속·`local_alert`/`alarm_stop` 유실 뒤 활성 현장 경보 목록으로 소리·표시 맞춤(놓친 경보 울림, 놓친 정지·해소 반영, 낮은 sequence 로 되돌리지 않음, 목록 없는 health 로 지우지 않음) 100% | PASS | `gateway/site_alert/tests/test_resync.py`(229 cases, 예: `test_missed_local_alert_is_shown_and_sounds`·`test_missed_alarm_stop_is_applied_from_list`·`test_missed_resolved_is_cleared_from_list`·`test_health_without_list_never_clears`) | 게이트웨이 ② | 2026-11-02, dev `57aa47f` | 곽나혁 |
+| D-G3-17 반쯤 열린 TCP·처리 정체 감지 | 소켓은 열린 채 health 끊김 → 3.5 s 이내 관제 중단·제어 채널 1회 재설정, `t_latest_global` 정지 → 현장 5 s 이내 관제 중단(목표 하트비트 3회 누락·현장 5 s). EC2 쪽도 처리 정체를 관제 정지로 기록 | PASS | `gateway/site_alert/tests/test_link_status.py::test_tier0_silent_with_open_socket_halts_within_5s_and_resets_channel`·`test_processing_stall_halts_within_5s_even_though_health_arrives`·`test_flapping_control_channel_never_shows_normal`, server `HealthIntegrationTest::health_는_오는데_처리가_멈추면_관제_정지로_보고_장애를_기록한다`(보조: `노트북이_끊기면_10초_안에_현장_장비_응답_없음으로_기록한다`, EC2 10 s 기준), 실제 시간 종단 `test_heartbeat_e2e.py`(가짜 시계 시험 외 1건) | 게이트웨이 ②, 서버 ① | 2026-11-02, dev `57aa47f` | 곽나혁 |
+| D-G3-20 EC2 단절 구간 리플레이 "데이터 없음" | 서버: Tier 0 health 가 3 s 넘게 없던 구간을 `gaps` 로 줌(시험). 그 구간 world_state 를 만들지 않는 것(보간 0건)은 저장된 행만 돌려주는 구조(`ReplayRepository`)에서 오는 것이고 시험이 따로 단언하지는 않음. 화면: 서버가 준 기록 없는 구간에서만 "데이터 없음", 기록 사이가 비어도 스스로 만들지 않음 100% | PASS | server `ReplayIntegrationTest::Tier0_health_가_3초_넘게_없던_구간을_기록_없음으로_준다`, 관제 앱 `__tests__/features/history/replay.test.ts`("기록 없는 구간" 6건)·`Timeline.test.tsx`("데이터 없음" 글 3건) | 서버 ①, 관제 앱 ③ | 2026-11-02, dev `57aa47f` | 곽나혁 |
+| 15.1 G3 셋째 행(비LIVE·시험 알림이 실제 알림으로 기록·발송) | 0건(목표 0건): 비LIVE·해소·CAUTION·감사용 전이는 대기열에 넣지 않음, DB 가 비LIVE 이벤트의 알림 행을 직접 넣어도 거부, 발송 워커가 REPLAY 를 한 건도 보내지 않음. 노트북도 비LIVE 출처는 울리지 않음 | PASS | server `NotificationQueueIntegrationTest::DB_는_비LIVE_이벤트의_알림_행을_직접_넣어도_거부한다`·`발송_워커는_REPLAY_이벤트를_한_건도_보내지_않고_LIVE_만_보낸다`·`비LIVE_해소_CAUTION_감사용_모르는_전이와_틀린_요청은_대기열에_넣지_않는다`, 게이트웨이 `test_core.py::test_non_live_source_rejected` | 서버 ①, 게이트웨이 ② | 2026-11-02, dev `57aa47f` | 곽나혁 |
+
+실행 명령(2026-11-02, Windows 노트북, 임시 PostgreSQL `simai-ci-db`):
+
+- ① 서버(`server/`): `SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/simai_test_228 ./gradlew test --tests '*EventAckIntegrationTest' --tests '*RiskEventJournalIntegrationTest' --tests '*StompRelayIntegrationTest' --tests '*HealthIntegrationTest' --tests '*ReplayIntegrationTest' --tests '*NotificationQueueIntegrationTest'` → EventAck 6·RiskEventJournal 7·StompRelay 9·Health 8·Replay 5·NotificationQueue 6, 실패 0
+- ② 게이트웨이(`gateway/site_alert/`): `uv run --frozen pytest -q tests/test_link_status.py tests/test_resync.py tests/test_core.py tests/test_transport_app.py tests/test_heartbeat.py tests/test_heartbeat_e2e.py` → 333 passed(link_status 25·resync 229·core 50·transport_app 8·heartbeat 20·heartbeat_e2e 1)
+- ③ 관제 앱(`front/apps/admin/`): `npx vitest run src/__tests__/features/history/replay.test.ts src/__tests__/features/history/Timeline.test.tsx` → 77 passed
 
 참고로 저장소에 이미 이 항목을 부르는 시험이 있다(228 판정 전, 113 은 돌리지 않음): `gateway/site_alert/tests/test_link_status.py`(D-G3-12·17),
 `gateway/site_alert/tests/test_resync.py`(D-G3-16), server `RiskEventJournalIntegrationTest`·`StompRelayIntegrationTest`(D-G3-05).
@@ -51,22 +65,22 @@ G3 는 15.1 세 행이 모두 기준을 만족하고 부록 D.4 의 각 항목�
 | D-G3-02 구역 내 관측 상실 자동 해소(R6) | 0건 | 113 | SC | `cases/r1_observation_loss`(4~7 s 전 카메라 미검출 중 UNVERIFIABLE·해소 없음), `tests/tracking/test_world_track_reconnect.py` | PASS |
 | D-G3-03 PROVISIONAL 시 높이 규칙 확인 필요 | 100% | 113 | RV | 벡터 `r2_r3_podium_provisional_calib`·`r4_fall_floor_provisional_*`, `tests/risk/test_provisional_calib.py`, `cases/r2_r3_podium_edge`(모든 줄 `PROVISIONAL_CALIB`) | PASS |
 | D-G3-04 Tier 0 와 EC2 컨테이너 Risk Engine 동일성 | 불일치 0건 | 113 | RV | 같은 환경: 공통 벡터 57/57(`python -m simai_ai.risk.vectors tests/risk/vectors`), `tests/risk/test_vectors.py`, `tests/deploy/test_risk_plan_roundtrip.py`, `tests/services/risk_engine`. 두 이미지 비교 `deploy/scripts/risk_engine_g304.sh` 는 이미지가 없어 돌리지 않음(CI 단계도 아직 없음, `Jenkinsfile`) | 환경 필요(두 이미지 비교 전까지 G3 통과로 세지 않음. 같은 환경 코드 동일성은 통과) |
-| D-G3-05 재동기화 중 해소 이벤트 재알림·DELAYED_ACTIVE 누락 | 0건 | 113(Tier 0 스냅샷 내용) · 228(EC2 재알림) | FI | Tier 0: `tests/services/tier0/test_event_snapshot.py`, `test_i1_resync_wss.py::test_ec2_outage_keeps_judging_and_site_alerts_then_resyncs_without_gap` | Tier 0 몫 PASS · EC2 몫 곽나혁 제출 대기 |
-| D-G3-06 오프라인 중 구성 묶음 유지·UNVERIFIED, 복구 후 원자적 전환 | 100% | 113(Tier 0 ConfigSync) · 228(표시) | IT | `tests/config/test_sync.py`(부록 D-G3-06 시험 포함) | Tier 0 몫 PASS · 표시 곽나혁 제출 대기 |
+| D-G3-05 재동기화 중 해소 이벤트 재알림·DELAYED_ACTIVE 누락 | 0건 | 113(Tier 0 스냅샷 내용) · 228(EC2 재알림) | FI | Tier 0: `tests/services/tier0/test_event_snapshot.py`, `test_i1_resync_wss.py::test_ec2_outage_keeps_judging_and_site_alerts_then_resyncs_without_gap` | PASS(Tier 0 몫·EC2 몫 모두, 228 칸 참고) |
+| D-G3-06 오프라인 중 구성 묶음 유지·UNVERIFIED, 복구 후 원자적 전환 | 100% | 113(Tier 0 ConfigSync) · 228(표시) | IT | `tests/config/test_sync.py`(부록 D-G3-06 시험 포함) | 미완: Tier 0 몫 PASS · EC2 viewer_health PASS · 관제 앱 화면 표시 근거 없음(228 칸) |
 | D-G3-07 Tier 0 Pod 교체 중 미전송 이벤트 유실 | 0건 | 113 | FI | 같은 상태 디렉터리 재시작 기준: `tests/eventlog/test_crash.py`·`test_outbox.py`(acked_offset 이후 같은 msg_id 재전송). 실제 Pod 교체(다른 인스턴스·디스크 재부착)는 미시험 | GPU 세션 필요(아래 큐 항목안) |
 | D-G3-08 I0 재접속·역순·누락 시 프레임-시각 오결합 | 0건 | 113 | FI(SC 로 재현) | `cases/r7_camera_disconnect`·`r1_late_and_reconnecting_camera`(결합 오류 0), 반례 `test_scenario_golden.py::test_counterexample_misbound_frames_break_the_invariant` | PASS |
 | D-G3-09 재시작: 자동 해소·재관측 전 UNSAFE_UNKNOWN·related_event_id 누락 | 0건 | 113 | FI | `crash_recovery_g3.py` 서비스 시나리오(첫 health·복원 이벤트 해소 검사), `tests/recovery`(health_gate·restore), `tests/services/tier0/test_tier0_restore_link.py`, `test_tier0_judge_r7_restore.py`, 운영자 종료·상향 재시작 시험 | PASS(노트북) · 실제 저장 위치 실측은 GPU 세션 필요 |
 | D-G3-10 ID 교정 후 진행 중 위험 자동 해소 | 0건 | 113 | SC | `tests/tracking/test_world_track_reconnect.py`(D-G3-10 병합), `test_world_track_split.py`(D-G3-10 분할) | PASS |
 | D-G3-11 체크포인트 기록 중·전이 직후 강제 종료 복구 불일치 | 0건 | 113 | FI | `crash_recovery_g3.py`(서비스 체크포인트 중 3회, 결정적 지점 5개 + seed 4), `tests/recovery/test_crash_recovery.py`(운영자 상향 직후 지점 추가, -113) | PASS(노트북) · 실제 저장 위치 실측은 GPU 세션 필요 |
-| D-G3-12 EC2 만 끊겼을 때 관제 중단 오표시·현장 경보 정지 | 0건 | 113(Tier 0 판정·현장 경보 유지) · 228(노트북 표시) | FI | Tier 0: `test_i1_resync_wss.py::test_ec2_outage_keeps_judging_and_site_alerts_then_resyncs_without_gap`(EC2 단절 중 판정·현장 경보 목록 계속) | Tier 0 몫 PASS · 노트북 몫 곽나혁 제출 대기 |
+| D-G3-12 EC2 만 끊겼을 때 관제 중단 오표시·현장 경보 정지 | 0건 | 113(Tier 0 판정·현장 경보 유지) · 228(노트북 표시) | FI | Tier 0: `test_i1_resync_wss.py::test_ec2_outage_keeps_judging_and_site_alerts_then_resyncs_without_gap`(EC2 단절 중 판정·현장 경보 목록 계속) | PASS(Tier 0 몫·노트북 몫 모두, 228 칸 참고) |
 | D-G3-13 ACK 후 outbox 정리 직후 강제 종료 시 해소 이벤트 부활 | 0건 | 113 | FI | `crash_recovery_g3.py` harness_after_compact, `tests/eventlog/test_crash.py`, `tests/recovery/test_compaction.py` | PASS(노트북) |
 | D-G3-14 저널 기록 직후·전송 직전 강제 종료 시 미전달 | 0건 | 113 | FI | `crash_recovery_g3.py`(서비스 시나리오 EC2 전달 확인), `tests/eventlog/test_crash.py`(기록 직후·전송 직전) | PASS(노트북) |
-| D-G3-15 EC2 단절 중 현장 확인 버튼 소리 정지, 복구 후 EC2 반영 | 100% | 113(Tier 0 기록·재전송) · 228(노트북 버튼·EC2 반영 화면) | FI | Tier 0: `test_i1_resync_wss.py`(site_ack 저널 기록 → 복구 후 EC2 수신) | Tier 0 몫 PASS · 나머지 곽나혁 제출 대기 |
-| D-G3-16 노트북 재접속·신호 유실 후 현장 소리·표시가 활성 경보 목록과 일치 | 100% | 113(Tier 0 목록 송신) · 228(노트북 맞춤) | FI | Tier 0: `tests/services/tier0/test_site_alert_sync.py`(재접속 즉시 목록, 1 Hz, 송신 시점 상태) | Tier 0 몫 PASS · 노트북 몫 곽나혁 제출 대기 |
-| D-G3-17 반쯤 열린 TCP·처리 정체 감지(하트비트 3회 누락) | 100% | 228 | FI | — | 곽나혁 제출 대기 |
+| D-G3-15 EC2 단절 중 현장 확인 버튼 소리 정지, 복구 후 EC2 반영 | 100% | 113(Tier 0 기록·재전송) · 228(노트북 버튼·EC2 반영 화면) | FI | Tier 0: `test_i1_resync_wss.py`(site_ack 저널 기록 → 복구 후 EC2 수신) | PASS(Tier 0 몫·노트북·EC2 몫 모두, 228 칸 참고) |
+| D-G3-16 노트북 재접속·신호 유실 후 현장 소리·표시가 활성 경보 목록과 일치 | 100% | 113(Tier 0 목록 송신) · 228(노트북 맞춤) | FI | Tier 0: `tests/services/tier0/test_site_alert_sync.py`(재접속 즉시 목록, 1 Hz, 송신 시점 상태) | PASS(Tier 0 몫·노트북 몫 모두, 228 칸 참고) |
+| D-G3-17 반쯤 열린 TCP·처리 정체 감지(하트비트 3회 누락) | 100% | 228 | FI | `gateway/site_alert/tests/test_link_status.py`, server `HealthIntegrationTest`(228 칸) | PASS |
 | D-G3-18 현장 경보는 fsync 를 기다리지 않고 EC2 전송은 fsync 뒤 | 100% | 113 | UT, FI | `tests/eventlog/test_writer.py`(D-G3-18), `test_outbox.py`(fsync 끝난 기록만), `crash_recovery_g3.py`(EC2 로 나간 전이가 저널에 없음 0건) | PASS |
 | D-G3-19 EC2 단절 중 CRITICAL·HIGH 클립 로컬 저장, 복구 후 업로드 | 100% | 113 | FI | `tests/services/tier0/test_event_clips.py::test_ec2_outage_spools_to_network_volume_and_uploads_after_recovery`·`test_spooled_clips_are_restored_after_restart`·`test_critical_after_restart_holds_the_spooled_high_clip` 외 | PASS(노트북, 가짜 서명·전송) · 실제 EC2 업로드는 서명 API 연결 뒤 |
-| D-G3-20 EC2 단절 구간 리플레이 "데이터 없음" | 100% | 228 | IT | — | 곽나혁 제출 대기 |
+| D-G3-20 EC2 단절 구간 리플레이 "데이터 없음" | 100% | 228 | IT | server `ReplayIntegrationTest`, 관제 앱 `replay.test.ts`·`Timeline.test.tsx`(228 칸) | PASS |
 
 ## 실행 기록 (2026-10-26, Windows 노트북, GPU 없음)
 
@@ -109,7 +123,7 @@ G3 는 15.1 세 행이 모두 기준을 만족하고 부록 D.4 의 각 항목�
 
 ## 남은 일
 
-- 228 항목(05·06·12·15·16 의 노트북·EC2 몫, 17, 20) 결과 합치기.
+- 228 항목은 2026-11-02 에 채웠다(S15P31A101-228). D-G3-06 은 관제 앱이 `viewer_health.config.sync`(UNVERIFIED·STALE 등)를 화면에 보이지 않아 미완이다. 관제 앱이 구성 동기화 상태를 보이면(추창만) 그 시험을 근거로 PASS 로 바꾼다.
 - 위 GPU 세션 항목과 D-G3-04 이미지 비교(CI 단계 추가 제안: `Jenkinsfile` 의 "아직 없는 단계").
 - crash_recovery_g3 서비스 시나리오의 간헐 시간 초과(1/4) 원인 확인: 시동 로그상 구성 묶음 준비 뒤 R1 판정까지 오지 않았다. 부하·경로 길이와의 관계를 몇 번 더 돌려 본다.
-- 15.1 G3 셋째 행(비LIVE 알림 0건)은 부록 D.4 밖이라 서버 시험(DB 제약) 결과를 따로 붙인다.
+- 15.1 G3 셋째 행(비LIVE 알림 0건)은 228 칸에 서버 DB 제약 시험 결과로 붙였다(PASS).
