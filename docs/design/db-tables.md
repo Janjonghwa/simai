@@ -81,11 +81,14 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | F. 알림 | `push_subscription` | M1 | 일반 | Web Push 구독 | 수정 16 추가 | `/api/push/subscribe` |  |
 | F. 알림 | `test_push` | M1 | 일반 | 시험 푸시(RiskEvent 아님, notification 에 넣지 않음) | 수정 16 추가 | `/api/push/test` |  |
 | F. 알림 | `push_receipt` | M1 | 일반 | Service Worker 수신 확인 원본 | 수정 16 추가 | `/api/push/receipts` |  |
-| G. 분석 워커 작업 | `analysis_job` | MVP | 일반 | I5 작업(재할당돼도 같은 job_id) | 수정 16 추가 | `/api/events/{}/summary`, `/api/reports/daily`, `/api/reports/tbm` 외 | 이연주 |
+| G. 분석 워커 작업 | `analysis_job` | MVP | 일반 | I5 작업(재할당돼도 같은 job_id, `tbm_report` 는 폐기 예정·EC2 컨테이너로 이전) | 수정 16 추가 | `/api/events/{}/summary` 외 | 이연주 |
 | G. 분석 워커 작업 | `job_lease` | MVP | 일반 | 작업 대여(한 시점에 유효한 대여 하나) | 수정 16 추가 | `/api/worker/jobs/lease`, `/api/worker/jobs/{}/heartbeat`, `/api/worker/jobs/{}/result` | 이연주 |
 | H. AI 결과·보고서 | `vlm_assessment` | M3 | 일반 | VLM 근거·사고 구간 요약과 관리자 상향 결정 | 있음 | `/api/events/{}`, `/api/events/{}/escalation`, `/api/events/{}/summary` | 이연주 |
-| H. AI 결과·보고서 | `report` | M3 | 일반 | TBM 보고서·일일 일지 | 있음 | `/api/reports/daily`, `/api/reports/tbm`, `/api/reports/tbm/{}` | 이연주 |
-| H. AI 결과·보고서 | `rag_clause` | M3 | 일반 | 안전 수칙 조항과 임베딩 | 수정 16 추가 | `/api/reports/tbm` | 이연주 |
+| H. AI 결과·보고서 | `report` | M3 | 일반 | TBM 보고서·일일 일지(`subgraph`·`steps` 포함, EC2 Python 컨테이너 생성) | 있음 | `/api/reports/daily`, `/api/reports/tbm`, `/api/reports/tbm/{}` | 이연주 |
+| H. AI 결과·보고서 | `rag_clause` | M3 | 일반 | 안전 수칙 조항과 임베딩(후속 구현에서 `rag_node` 로 이관·흡수, S15P31A101-415) | 수정 16 추가 | `/api/reports/tbm` | 이연주 |
+| H. AI 결과·보고서 | `rag_source` | M3 | 일반 | 법령 지식 그래프 원문 출처·버전(MST·시행일·원문 해시) | 수정 49 추가(후속 구현) | `/api/reports/tbm`, `/api/reports/daily` | 이연주 |
+| H. AI 결과·보고서 | `rag_node` | M3 | 일반 | 건설안전 법령 지식 그래프 노드(법령·지침·사례·개념)와 `Qwen3-Embedding-0.6B` 임베딩 | 수정 49 추가(후속 구현) | `/api/reports/tbm`, `/api/reports/daily` | 이연주 |
+| H. AI 결과·보고서 | `rag_edge` | M3 | 일반 | 건설안전 법령 지식 그래프 엣지(상하위·참조·위임·지침·사례·방호조치) | 수정 49 추가(후속 구현) | `/api/reports/tbm`, `/api/reports/daily` | 이연주 |
 | H. AI 결과·보고서 | `rag_query_template` | M3 | 일반 | TBM 질문 템플릿과 질문 임베딩 | S15P31A101-27 추가 | `/api/reports/tbm` | 이연주 |
 | H. AI 결과·보고서 | `work_unit` | M3 | 일반 | TBM 작업(히스토리 작업 다시 보기) | V21 추가 | `/api/work-units`, `/api/work-units/{}` | 곽나혁 |
 | I. 계획·시뮬레이션 (sim 스키마) | `sim.evaluation_run` | M3 | 일반 | EC2 Risk Engine 컨테이너 계산 실행(PLANNED·WHAT_IF) | 있음 | `/api/layouts/{}/evaluate`, `/api/layouts/{}/evaluations/{}`, `/api/reports/tbm` 외 | 이연주 |
@@ -1114,7 +1117,7 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
 | `job_id` | text | PK | `job_request.job_id, job_callback.job_id` |  |
-| `job_type` | text | NN | `job_request.job_type, job_callback.job_type` | vlm_rationale·tbm_report·static_reconstruct·calibration_ba·bev_floorplan·incident_summary·hmr_* |
+| `job_type` | text | NN | `job_request.job_type, job_callback.job_type` | vlm_rationale·static_reconstruct·calibration_ba·bev_floorplan·incident_summary·hmr_* (`tbm_report` 는 폐기 예정, S15P31A101-415) |
 | `priority` | text | NN, CK(VLM_FAST·REPORT·BACKGROUND) | `job_request.priority` |  |
 | `status` | text | NN, CK(QUEUED·LEASED·SUCCEEDED·FAILED·TIMED_OUT·CANCELLED) | `job_callback.status` |  |
 | `attempt` | int | NN | `job_request.attempt` | 반납은 세지 않음 |
@@ -1182,19 +1185,25 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 #### `report` — TBM 보고서·일일 일지
 
 - 단계 **M3** · 일반 · 근거: 11.3 report, 8.3, FR-20·21·122 · 검토: 이연주
+- S15P31A101-415(`docs/design/tbm-legal-graph.md`): TBM·일일 보고서 생성을 RunPod 분석 워커(I5 `tbm_report`, 폐기 예정)에서 EC2 Python 컨테이너로 옮기고, 보고서 단위를 TBM 작업(`work_unit`) 하나당 보고서(재생성 시 덮어쓰지 않고 `report_version` 새 행 추가)로 정하며, 사용한 법령 지식 그래프 서브그래프(`subgraph`)와 4단계 생성·검증 실행 기록(`steps`)을 함께 저장한다(컬럼 추가는 후속 구현에서 마이그레이션)
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
 | `report_id` | bigint identity | PK |  |  |
 | `report_kind` | text | NN, CK(TBM·DAILY) | `job_request.input.report_kind` |  |
+| `work_id` | bigint | FK>work_unit.work_id |  | TBM 대상 작업(`work_unit` 하나에 보고서, 후속 구현에서 추가) |
+| `report_version` | int | NN, CK(>= 1) |  | 같은 `work_id`(또는 `report_date`)의 보고서 버전(덮어쓰지 않고 새 행 추가, 후속 구현에서 추가) |
+| `work_type` | text |  |  | 생성 시점의 공종 코드(비개인정보, 법령 그래프 검색·LLM 작성 입력, 후속 구현에서 추가) |
 | `layout_id` | bigint | FK>layout_plan.layout_id |  | TBM |
 | `layout_revision` | int |  |  | 계산한 레이아웃 revision |
 | `sim_run_id` | bigint | FK>sim.evaluation_run.run_id |  | PLANNED 계산 |
 | `report_date` | date |  |  | DAILY |
-| `job_id` | text | FK>analysis_job.job_id |  | tbm_report |
+| `job_id` | text | FK>analysis_job.job_id |  | 레거시(`tbm_report` I5 폐기 예정, EC2 Python 컨테이너 직접 생성 시 NULL) |
 | `status` | text | NN, CK(REQUESTED·GENERATING·DONE·FAILED) |  |  |
 | `body` | text |  | `job_callback.result` | LLM 초안 |
-| `citations` | text[] |  | `job_callback.result` | 입력에 담긴 조항 ID 만 |
+| `citations` | text[] |  | `job_callback.result` | 허용 목록(`allowed_ids`) 안의 조항·노드 ID 만 |
+| `subgraph` | jsonb |  |  | 보고서에 사용한 법령 지식 그래프 서브그래프(`nodes[]`·`edges[]`, 시연 Scene 6 그래프 패널용, 후속 구현에서 추가) |
+| `steps` | jsonb |  |  | 코드 4단계 생성·검증 파이프라인 실행 기록 배열(`step`·`label`·`status`·`input_count`·`output_count`·`duration_ms`·`detail`, 후속 구현에서 추가) |
 | `llm_model` | text |  |  |  |
 | `requested_by` | bigint | FK>app_user.user_id, NN |  |  |
 | `requested_at` | ts | NN |  |  |
@@ -1204,6 +1213,71 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 
 - 단계 **M3** · 일반 · 근거: 5.4, 3.8 pgvector, FR-20 · 검토: 이연주
 - 마이그레이션 `V3__rag_clause.sql`(pgvector 확장 포함), 행은 ai 가 생성한 반복 마이그레이션 `R__rag_clauses.sql`. 수집·분할·임베딩 규칙은 `docs/design/rag-clause-index.md`(S15P31A101-27)
+- **개편 관계(S15P31A101-415, `docs/design/tbm-legal-graph.md`):** 후속 구현에서 아래 `rag_node`·`rag_edge` 법령 지식 그래프 테이블(`Qwen/Qwen3-Embedding-0.6B` 1024차원, `pg_trgm` + `pgvector`)로 확장·이관한다. 기존 `rag_clause.clause_id`(`산업안전보건기준규칙 제N조[#k]`)는 `rag_node.node_id`(`layer = 'OSH_STANDARD'`)로 그대로 유지해 `rule_version.legal_basis` 와 호환되며, 전환 뒤 `rag_clause` 는 호환 뷰 또는 정리한다.
+
+#### `rag_source` — 법령 지식 그래프 원문 출처·버전
+
+- 단계 **M3** · 일반 · 근거: 3.8, 5.4, 11.3 (`docs/design/tbm-legal-graph.md`, `docs/design/legal-graph-pipeline.md`, S15P31A101-415·416) · 검토: 이연주
+- 후속 구현 마이그레이션에서 생성. 국가법령정보 Open API 로 받은 법령·행정규칙 하나가 한 행이다. 원문은 저장소에 넣지 않고 해시만 둔다.
+
+| 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
+|---|---|---|---|---|
+| `law_key` | text | PK |  | 파이프라인 안정 키(예: `OSHA_STD`) |
+| `law_id` | text | NN |  | 법령 ID |
+| `law_name` | text | NN |  | 정식 명칭 |
+| `layer` | text | NN |  | `rag_node.layer` 와 같은 값 |
+| `mst` | text | NN |  | 법령 일련번호(MST) |
+| `effective_date` | date | NN |  | 시행일 |
+| `promulgation_no` | text |  |  | 공포번호 |
+| `source_url` | text | NN |  | 원문 조회 주소(인증키 없음) |
+| `raw_sha256` | text | NN |  | 받은 원문 해시 |
+| `fetched_at` | ts | NN |  | 수집 시각 |
+
+
+#### `rag_node` — 건설안전 법령 지식 그래프 노드와 임베딩
+
+- 단계 **M3** · 일반 · 근거: 3.8, 5.4, 8.3, 11.3, FR-20·89 (`docs/design/tbm-legal-graph.md`, S15P31A101-415) · 검토: 이연주
+- 후속 구현 마이그레이션에서 생성(`pg_trgm` 확장, `HNSW vector_cosine_ops` 인덱스, `GIN rule_tags`, `GIN (title || ' ' || body) gin_trgm_ops`). 국가법령정보 Open API 법령(법률·시행령·시행규칙·산업안전보건기준에 관한 규칙·중대재해처벌법)과 개념 엔티티를 먼저 적재하고, KOSHA GUIDE·재해사례 요약은 이용 조건 확인 뒤 단계 도입한다. 문서 임베딩 입력 형식은 `"[법령명 조문(제목)] 본문"`.
+
+| 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
+|---|---|---|---|---|
+| `node_id` | text | PK |  | 예: `산업안전보건기준규칙 제43조`, `산업안전보건법 제38조`, `CONCEPT:개구부_방호조치` (`rag_clause.clause_id` 와 같은 형식) |
+| `node_kind` | text | NN |  | `LAW`(법령 묶음)·`ARTICLE`(조)·`PARAGRAPH`(항)·`ITEM`(호)·`SUBITEM`(목)·`ANNEX`(별표)·`EXTERNAL_LAW`(카탈로그 밖 인용 법령)·`CONCEPT`(개념 엔티티: 위험요인·설비·방호조치)·`RISK_RULE`(R1~R7). 후속: `GUIDE_SECTION`(KOSHA GUIDE)·`ACCIDENT_CASE`(재해사례) |
+| `layer` | text | NN |  | `STATUTE`(법률)·`SAPA`(중대재해처벌법·시행령)·`DECREE`(시행령)·`RULE`(시행규칙)·`OSH_STANDARD`(산업안전보건기준에 관한 규칙)·`ADMIN_RULE`(고시·행정규칙)·`EXTERNAL`·`CONCEPT`·`RISK_RULE`. 후속: `KOSHA_GUIDE`·`ACCIDENT_CASE` |
+| `law_key` | text | FK>rag_source.law_key |  | 개념·규칙 노드는 NULL |
+| `parent_id` | text | FK>rag_node.node_id |  | 상위 노드(조→항→호). 최상위는 NULL |
+| `source_name` | text | NN |  | 법령·문서 정식 명칭(예: `산업안전보건기준에 관한 규칙`). 개념·규칙 노드는 종류 이름 |
+| `article_ref` | text |  |  | 조·항·호·별표 표기(예: `제43조`, `제43조 제1항 제2호`, `별표 3`). 법령·개념 노드는 NULL |
+| `title` | text | NN |  | 조문·항목 제목 또는 개념 이름(없으면 `article_ref`) |
+| `chunk_index` | int | NN, 기본 0, CHECK ≥ 0 |  | 같은 조문 안 분할 순서 |
+| `body` | text | NN |  | 정규화된 본문(외부 주소·개인정보 없음) |
+| `rule_tags` | text[] | NN, 기본 '{}' |  | 위험 규칙·용도 태그(`R1`~`R7`, `TBM`). GIN 인덱스 |
+| `attrs` | jsonb | NN, 기본 '{}' |  | 원문 순번·표시 이름·검수 상태 등 보조 값 |
+| `embedding_input` | text |  |  | 임베딩에 넣은 문자열 `"[법령명 조문(제목)] 본문"` |
+| `embedding` | vector(1024) |  |  | `Qwen/Qwen3-Embedding-0.6B` float32, L2 정규화. HNSW `vector_cosine_ops`. 임베딩 대상이 아닌 묶음 노드는 NULL |
+| `embedding_model` | text |  |  | `Qwen/Qwen3-Embedding-0.6B` (임베딩 있는 행은 NN) |
+| `embedding_revision` | text |  |  | 가중치 고정 revision 해시(`rag_query_template` 과 동일 값, 임베딩 있는 행은 NN) |
+| `source_version` | text | NN |  | `시행일 YYYY-MM-DD · 공포번호 · MST` 또는 지침 판. 개념·규칙 노드는 사전 버전 |
+| `loaded_at` | ts | NN |  | 시드 적재 시각 |
+
+#### `rag_edge` — 건설안전 법령 지식 그래프 엣지
+
+- 단계 **M3** · 일반 · 근거: 3.8, 5.4, 8.3, 11.3 (`docs/design/tbm-legal-graph.md`, S15P31A101-415) · 검토: 이연주
+- 후속 구현 마이그레이션에서 생성. 조·항·호 상하위 관계와 `"제N조에 따른"` 참조·위임을 정규식·결정적 파서로 추출해 적재하며, 하이브리드 시드 노드에서 1단계(1-hop) 확장에 쓴다.
+
+| 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
+|---|---|---|---|---|
+| `edge_id` | text | PK |  | `{src_node_id}--{edge_kind}-->{dst_node_id}` |
+| `src_node_id` | text | FK>rag_node.node_id, NN, UQ(rag_edge_triple) |  | 출발 노드 ID |
+| `dst_node_id` | text | FK>rag_node.node_id, NN, UQ(rag_edge_triple) |  | 도착 노드 ID. 인덱스 `(dst_node_id, edge_kind)` |
+| `edge_kind` | text | NN, UQ(rag_edge_triple) |  | `PARENT_CHILD`(상하위)·`REFERENCES`(참조 "제N조에 따른")·`MUTATIS_MUTANDIS`(준용)·`NOTWITHSTANDING`("제N조에도 불구하고")·`CITES_EXTERNAL`(카탈로그 밖 법령 인용)·`DELEGATES`(위임)·`ANNEX_RELATES`(별표 연결)·`HAS_HAZARD`·`INVOLVES_EQUIPMENT`·`REQUIRES_CONTROL`·`MITIGATES`(개념 연결)·`TAGGED_RULE`(위험 규칙 태그). 후속: `GUIDES`(지침 연결)·`ILLUSTRATES`(사례 연결) |
+| `method` | text | NN |  | 추출 방법(구조 분해·정규식·사전·명세) |
+| `review_status` | text | NN |  | `auto`·`candidate`·`spec`, 사람 검수 반영 뒤 `reviewed`·`rejected`. 검색 확장은 `candidate`·`rejected` 를 쓰지 않는다 |
+| `relation_label` | text |  |  | 추출 근거 문구(예: `제13조에 따른 안전난간`) |
+| `attrs` | jsonb | NN, 기본 '{}' |  | 보조 값 |
+| `loaded_at` | ts | NN |  | 시드 적재 시각 |
+
+#### `rag_clause` (기존 단일 조항 테이블 — 후속 구현에서 `rag_node` 로 이관)
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
@@ -1213,7 +1287,7 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `title` | text |  |  |  |
 | `body` | text | NN |  |  |
 | `embedding` | vector(1024) | NN |  | BAAI/bge-m3 dense, float32, L2 정규화. HNSW 인덱스 vector_cosine_ops |
-| `embedding_model` | text | NN |  | BAAI/bge-m3 |
+| `embedding_model` | text | NN |  | `Qwen/Qwen3-Embedding-0.6B` (기존 V3 시드는 `BAAI/bge-m3`, 후속 구현에서 교체) |
 | `embedding_revision` | text | NN |  | 가중치 revision. 문서·질문이 같은 값이어야 한다(운영 색인 생성 전에 고정) |
 | `chunk_index` | int | NN, CHECK ≥ 0 |  | 조항을 나눈 순서(0부터). 조 본문이 1,000자를 넘을 때만 항·호 경계로 나눈다 |
 | `source_version` | text | NN |  | 조문 시행일(YYYY-MM-DD). 판(MST)은 `R__rag_clauses.sql` 머리 주석 |
@@ -1222,7 +1296,7 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 #### `rag_query_template` — TBM 질문 템플릿과 질문 임베딩
 
 - 단계 **M3** · 일반 · 근거: 5.4(문서·질문 같은 모델 revision·설정), FR-20 · 검토: 이연주
-- EC2 Java 는 bge-m3 를 돌리지 않는다. TBM 질의는 PLANNED 결과(규칙 ID·대상 종류)에서 만들므로 템플릿 문장을 문서와 같은 스크립트·revision 으로 미리 임베딩해 두고, EC2(S15P31A101-223)는 키로 벡터를 골라 `rag_clause` 를 검색만 한다(S15P31A101-27 결정 E). 자유 문장 질의(확장 3)는 별도 임베딩 컨테이너로 한다
+- EC2 Java 는 임베딩 모델을 돌리지 않는다. TBM 질의는 규칙·구역 조합별 표준 질의를 문서와 같은 모델·revision 으로 미리 임베딩해 두고(`rag_query_template`), 실시간 질의 임베딩이 필요할 때는 EC2 Python 컨테이너 CPU 에서 수행한다(S15P31A101-415, `docs/design/tbm-legal-graph.md`). 후속 구현에서 임베딩 모델을 `BAAI/bge-m3` 에서 `Qwen/Qwen3-Embedding-0.6B`(1024차원 유지)로 교체한다
 - 마이그레이션 `V3__rag_clause.sql`, 행은 `R__rag_clauses.sql`
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
@@ -1230,7 +1304,7 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `template_key` | text | PK |  | `규칙 ID.대상 종류`, 예: `R3.ELEVATED`, `R1.OPENING`, `TBM.GENERAL` |
 | `text` | text | NN |  | 질문 문장 |
 | `embedding` | vector(1024) | NN |  | `rag_clause.embedding` 과 같은 모델·revision·설정 |
-| `embedding_model` | text | NN |  | BAAI/bge-m3 |
+| `embedding_model` | text | NN |  | `Qwen/Qwen3-Embedding-0.6B` (기존 V3 시드는 `BAAI/bge-m3`, 후속 구현에서 교체) |
 | `embedding_revision` | text | NN |  | `rag_clause` 와 같은 값이어야 한다(`R__rag_clauses.sql` 이 확인) |
 
 #### `work_unit` — TBM 작업(히스토리 작업 다시 보기)
@@ -1249,7 +1323,9 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `zone_id` | text |  |  | null 이면 구역 밖 작업 |
 | `place` | text |  |  | 구역 밖 장소(없으면 응답에 구역 이름) |
 | `planned_people` | int | NN, CK(>= 0) |  | 0~100(API 검사) |
-| `lead_team` | text |  |  | 담당 조 이름 |
+| `lead_team` | text |  |  | 담당 조 이름(LLM 에는 보내지 않고 서버가 보고서 머리말에만 붙임) |
+| `layout_id` | bigint | FK>layout_plan.layout_id |  | 이 작업이 쓰는 가상 레이아웃(`V23 layout_plan` 연결, 후속 구현에서 추가) |
+| `work_type` | text |  |  | 공종 코드(예: `SCAFFOLD_INSTALL`·`OPENING_WORK`·`HIGH_PLACE`·`MATERIAL_HANDLING`·`EQUIPMENT_OP`·`FLOOR_FINISHING`·`GENERAL`, 비개인정보라 LLM·검색 입력 허용, 후속 구현에서 추가) |
 | `created_by` | bigint | FK>app_user.user_id |  |  |
 | `created_at` | ts | NN |  |  |
 | `updated_at` | ts | NN |  |  |

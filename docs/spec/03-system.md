@@ -9,9 +9,9 @@
 | 카메라 4대 | Tapo C110, 교실 Wi-Fi망 | RTSP 영상 송출 |
 | 노트북 | 교실망, Python. 노트북 GPU 는 쓰지 않음(3.12) | RTSP 수신, 촬영 시각 추정(3.9), RunPod로 영상 중계(TLS), 현장 경보 단말(스피커·화면), 이중 하트비트 감시. 교실망 NTP 서버 역할은 보류(3.9) |
 | RunPod Tier 0 서비스 | GPU Pod 하나(관제 중 상시, 실행 사이트·GPU 는 3.12), Python. 분석 워커와 같은 Pod·GPU를 쓰되 별도 프로세스 | YOLO26x-pose 검출·추적·2D keypoint, 카메라 간 연결·시간 보간·삼각측량·World 상태, LIVE Risk Engine·이벤트 저널, 이벤트 클립·CRITICAL 이벤트 프레임 링 버퍼, 사람 지운 정적 배경 누적(5.1, 5.3), 기동 시 엔드포인트 등록(3.12). PPE 검출은 확장(부록 C) |
-| RunPod 분석 워커 | Tier 0와 같은 GPU Pod 안의 별도 프로세스(자원 상한 적용, 3.2), Python. 관제가 없는 개발 시간에는 같은 Pod에서 단독 실행(실행 사이트·GPU 는 3.12) | EC2에서 작업을 가져가(12.5) 실행: VLM 근거·사고 구간 요약(Cosmos3-Nano Reasoner, VLM 입력 얼굴 흐림 포함, 5.4), TBM 보고서·일일 일지(외부 LLM 호출), 정적 3D 배경 복원·텍스처 메시 굽기(MapAnything Native + Open3D TSDF + `texrecon` / EXP-01, `static_reconstruct`, 5.3), BEV 평면도 생성(4.1), YOLO26-seg 마스크, 보정 번들 조정, 비동기 HMR 아바타 포즈 스트림·관측 기반 UV 텍스처 외형 갱신(Fast SAM 3D Body + YOLO26x-seg 마스크 / EXP-02, 시연 범위, 5.6) |
-| 외부 LLM API | 외부 서비스(“GPT 6.1 sol”, SSAFY GMS 를 거쳐 OpenAI, 5.4) | TBM 보고서·일일 일지 문장, RAG 답변 등 텍스트 생성. 텍스트만 보낸다. 분석 워커의 `tbm_report` 작업 안에서만 호출한다(API 키는 Pod `.env`) |
-| EC2 | AWS(EC2 또는 Lightsail 중 지급 서비스로 정함, 확인 필요), Spring Boot 4·Java 21 | RiskEvent 저장·생명주기·알림 라우팅, 규칙·구성 묶음 배포, Risk Engine 컨테이너(계획·리플레이·What-if), Spatial DB, 뷰어 API·실시간 스트림, PWA 알림, Tier 0 엔드포인트 중계, 인증 |
+| RunPod 분석 워커 | Tier 0와 같은 GPU Pod 안의 별도 프로세스(자원 상한 적용, 3.2), Python. 관제가 없는 개발 시간에는 같은 Pod에서 단독 실행(실행 사이트·GPU 는 3.12) | EC2에서 작업을 가져가(12.5) 실행: VLM 근거·사고 구간 요약(Cosmos3-Nano Reasoner, VLM 입력 얼굴 흐림·위험 구역·대상 인물 오버레이 포함, 5.4), 정적 3D 배경 복원·텍스처 메시 굽기(MapAnything Native + Open3D TSDF + `texrecon` / EXP-01, `static_reconstruct`, 5.3), BEV 평면도 생성(4.1), YOLO26-seg 마스크, 보정 번들 조정, 비동기 HMR 아바타 포즈 스트림·관측 기반 UV 텍스처 외형 갱신(Fast SAM 3D Body + YOLO26x-seg 마스크 / EXP-02, 시연 범위, 5.6) |
+| 외부 LLM API | 외부 서비스(“GPT 6.1 sol”, SSAFY GMS 를 거쳐 OpenAI, 5.4) | TBM 보고서·일일 일지 문장 생성. 텍스트만 보낸다. EC2 의 Python 컨테이너(`deploy/risk-engine`) 안에서만 호출한다(API 키는 EC2 `.env`, GPU·Pod 없이 언제든 생성, v1.3 수정 49) |
+| EC2 | AWS(EC2 또는 Lightsail 중 지급 서비스로 정함, 확인 필요), Spring Boot 4·Java 21 | RiskEvent 저장·생명주기·알림 라우팅, 규칙·구성 묶음 배포, Risk Engine·보고서 생성 컨테이너(계획·리플레이·What-if 판정 및 법령 지식 그래프 기반 TBM·일일 보고서 생성), Spatial DB, 뷰어 API·실시간 스트림, PWA 알림, Tier 0 엔드포인트 중계, 인증 |
 | 객체 저장소 | S3 또는 Lightsail 버킷 | 이벤트 클립, 조치 사진, 정적 3D 자산(glTF). 클립은 EC2 삭제 작업이 지운다(보존 표시 확인, 11.5) |
 | 클라이언트 | 브라우저, 휴대폰 | Three.js 뷰어, 반장 PWA. 워치 앱은 확장(부록 C) |
 
@@ -40,7 +40,7 @@
 | Tier 0 | YOLO26x-pose TensorRT 엔진(디코딩은 기본 CPU, NVDEC 을 고르면 하드웨어 디코더 4개 추가) | 초기값 0.20(80GB 에서 16GB, 그중 torch 선확보 8GB). G0 실측으로 고침 |
 | 분석 워커 전체 | 아래 VLM·마스크·HMR 을 합친 워커 프로세스 상한(상시 아바타 루프를 함께 띄울 때는 VLM 0.55 + HMR·아바타 seg 0.10 + I5 워커 0.05 로 분할) | 초기값 0.70. G0 실측으로 고침 |
 | VLM | Cosmos3-Nano(16B) 가중치 + KV 캐시(vLLM `gpu_memory_utilization`) | 초기값 0.55, 동시 요청 4(분석 워커 상한 안). G0 실측으로 고침. 3차 GPU 세션(H100 80GB, 감시 프로세스와 같은 인자) 실측: 가중치 16.79 GiB·KV 캐시 23.99 GiB 가 0.55 안에 들고, G7 빠른 경로 p95 2.1 s, VLM 동시 4 지속 중 Tier 0 `frame_age` p95 60 → 76 ms 라 값은 그대로 둔다(48GB급의 0.55 는 19.1 미결, `docs/design/unified-env.md`) |
-| 임베딩(GPU 에 둘 때만) | BAAI/bge-m3. M3 는 GPU 에 두지 않는다(조항·질문 템플릿을 노트북 CPU 로 미리 임베딩, 11장) | 해당 없음(M3) |
+| 임베딩(GPU 에 둘 때만) | `Qwen/Qwen3-Embedding-0.6B`(1024차원, v1.3 수정 49). GPU 에 두지 않는다(법령 지식 그래프 노드·표준 질의 템플릿은 사전 임베딩해 두고, 실시간 질의는 EC2 Python 컨테이너 CPU 에서 처리, 5.4·11장) | 해당 없음 |
 | 마스크 | YOLO26-seg(아바타 루프 `YOLO26x-seg` 는 아래 HMR 상한 안) | 분석 워커 상한 안. G0 실측 |
 | HMR(EXP-02, 시연 범위) | Fast SAM 3D Body(상시 아바타 스트림 루프 `services/avatar`, `YOLO26x-seg` 마스크·UV 텍스처 누적 포함) | 분석 워커 상한 안(초기값 0.10, `SIMAI_AVATAR_GPU_FRACTION`). G0 실측(상한) |
 | MapAnything | 설치·비관제 시간 실행(일회성 `simai-bootstrap scene` 또는 분석 워커 I5 `static_reconstruct` 자식 프로세스, 관제 중 실행 안 함, 5.3) | — |
@@ -50,7 +50,7 @@
 **Risk Engine 배치.** Risk Engine은 Python 라이브러리 하나로 구현하고 두 곳에 배포한다. 같은 규칙을 Java로 다시 구현하지 않는다.
 
 - RunPod Tier 0 서비스: LIVE 판정. 판정 직후 노트북으로 `local_alert`를 보내 현장 경보를 울리고(EC2를 거치지 않는 가장 짧은 경로), 이벤트는 outbox를 거쳐 EC2로 보낸다. EC2가 끊겨도 RunPod가 살아 있으면 판정과 현장 경보는 계속된다.
-- EC2 옆 Python 컨테이너: PLANNED·REPLAY·WHAT_IF 계산. 같은 코드, 같은 규칙 버전. MVP 의 내부 API 는 PLANNED 만 받고(12.2), 운영 REPLAY·WHAT_IF 재계산은 이 컨테이너가 맡는 확장이다(부록 C). 녹화 영상을 Tier 0 파일 입력으로 다시 돌리는 재생은 이 배치가 아니라 개발·시험용 시나리오 재생 도구다(21.3).
+- EC2 옆 Python 컨테이너: PLANNED·REPLAY·WHAT_IF 계산과 TBM·일일 보고서 생성(PostgreSQL 건설안전 법령 지식 그래프 하이브리드 검색 + 참조 엣지 1단계 확장 + 외부 LLM 호출 + 코드 4단계 검증, 5.4·12.2, v1.3 수정 49). 같은 코드, 같은 규칙 버전. MVP 의 내부 API 는 PLANNED 판정과 보고서 생성을 받고(12.2), 운영 REPLAY·WHAT_IF 재계산은 이 컨테이너가 맡는 확장이다(부록 C). 녹화 영상을 Tier 0 파일 입력으로 다시 돌리는 재생은 이 배치가 아니라 개발·시험용 시나리오 재생 도구다(21.3).
 - Spring Boot: 규칙·구성 묶음 배포, RiskEvent 저장·생명주기, 알림 라우팅, API.
 - 두 배포의 동일성은 같은 규칙 버전과 공통 테스트 벡터(입력과 기대 출력 세트)로 CI에서 검증한다.
 - 규칙 입력은 World 상태 외에 판정 문맥(같은 판정 시각의 감시 상태, 활성 보정 상태 4.4)을 함께 받는다. 판정 문맥은 `world_state` 계약에 싣지 않는다. Tier 0 는 판정마다 health 와 같은 활성 보정 상태를 넘기고, PLANNED 계획 위치에는 보정 상태가 적용되지 않는다(7.1).
@@ -167,7 +167,7 @@ flowchart TB
     AW["분석 워커 (아바타 스트림·작업)<br/>VLM·정적 3D EXP-01·YOLO26-seg<br/>HMR 메시·포즈 스트림 EXP-02(시연 범위)·외형 갱신"]
   end
   subgraph AWS["AWS"]
-    EC2["EC2 (Spring Boot)<br/>RiskEvent 저장·전달, Spatial DB<br/>뷰어 API, 알림, 인증<br/>계획·리플레이용 Risk Engine"]
+    EC2["EC2 (Spring Boot + Python 컨테이너)<br/>RiskEvent 저장·전달, Spatial DB<br/>뷰어 API, 알림, 인증<br/>계획 판정·TBM 보고서 생성(법령 그래프·외부 LLM)"]
   end
   subgraph Clients["클라이언트"]
     V["Three.js 뷰어"]
@@ -243,7 +243,7 @@ flowchart TB
 | RunPod Tier 0 | World 추적 | MV3DT 원칙의 Python Global Tracker, World 칼만 필터, 늦은 재연결·ID 교정 | 기본안 |
 | RunPod Tier 0 | 접지 추정 | ContactEstimator(발뒤꿈치·발끝 keypoint, 발목 높이·정지 여부·다시점 Z·등록 작업면) | 기본안 |
 | RunPod 분석 | VLM | NVIDIA Cosmos3-Nano(16B) Reasoner 모드, vLLM 0.21.0 + `vllm-cosmos3`(커밋 고정), Tier 0 와 같은 가상환경의 별도 프로세스(3.12) | 확정(G7 합격 판정) |
-| 외부 | LLM | 외부 API “GPT 6.1 sol”(SSAFY GMS 를 거쳐 OpenAI, 텍스트만, 5.4. 호출 방식은 19.1) | 확정 |
+| 외부 | LLM | 외부 API “GPT 6.1 sol”(SSAFY GMS 를 거쳐 OpenAI, 텍스트만, EC2 Python 컨테이너에서 호출, 5.4·19.1) | 확정 |
 | RunPod 분석 | 마스크 | YOLO26-seg(정적 3D 사람 제거·아바타 루프 인물 마스크 `yolo26x-seg.pt`), 새 물체·실측 정물은 YOLOE-26 | 기본안 |
 | RunPod 분석 | 정적 3D | MapAnything Native, Open3D TSDF + mvs-texturing(`texrecon`) 텍스처 메시·표면 출처 지도(`SURFACE_SOURCE_MAP`) glTF(미설치 시 정점색 폴백, `static_reconstruct`, 5.3) (EXP-01) | 기본안·선행 실험 |
 | RunPod 분석 | 인체 메시·외형 | Fast SAM 3D Body, MHR 리깅 메시·포즈 스트림, YOLO26x-seg 마스크, 관측 픽셀 UV 텍스처 누적(`torch`/`numpy` z-buffer 래스터화, 품질 가중·카메라 색 맞춤, CUDA 기본 `auto`, EXP-02, 5.6·20.3) | 시연 범위(E-GATE-0\~3 검증, 20.6) |
@@ -253,9 +253,9 @@ flowchart TB
 | EC2 | 실시간·API | Spring WebSocket(STOMP), Spring Web(REST) | 기본안 |
 | EC2 | 인증 | Spring Security + JWT | 기본안 |
 | EC2 | DB | PostgreSQL + TimescaleDB + PostGIS(이미지 `timescale/timescaledb-ha` -all 태그), Spring Data JPA | 확정(DB), 기본안(JPA) |
-| EC2 | RAG 색인 | pgvector(같은 PostgreSQL) | 기본안 |
-| 자체 호스팅 | 임베딩 | BAAI/bge-m3 dense 1024차원, float32, L2 정규화, cosine. 문서·질문에 같은 revision·설정을 쓰고, 가중치 revision `5617a9f…` 고정. M3 는 조항(조 단위, 1,000자 넘으면 항·호 경계)과 질문 템플릿(`rag_query_template`)을 노트북 CPU fp32·배치 1 로 미리 임베딩 | 확정 |
-| EC2 | 계획·리플레이 판정 | Risk Engine Python 컨테이너, FastAPI 내부 API(compose 내부망 HTTP/JSON, 공개 포트 없음, 12.2) | 확정(컨테이너), 기본안(FastAPI) |
+| EC2 | RAG 색인·지식 그래프 | PostgreSQL(`rag_node`·`rag_edge` 건설안전 법령 지식 그래프, `pgvector` 벡터 색인 + `pg_trgm` 키워드 색인, 5.4·11.3, v1.3 수정 49) | 확정 |
+| 자체 호스팅 | 임베딩 | `Qwen/Qwen3-Embedding-0.6B` dense 1024차원, float32, L2 정규화, cosine. 문서·질의에 같은 고정 revision·설정을 쓰고, 문서 임베딩 입력은 `"[법령명 조문(제목)] 본문"` 형식. 법령 그래프 노드(`rag_node`)와 표준 질의 템플릿(`rag_query_template`)은 시드 적재 시 사전 임베딩하고, 비정형 실시간 질의는 EC2 Python 컨테이너 CPU 에서 처리(v1.3 수정 49, 이전 `BAAI/bge-m3` 대체) | 확정 |
+| EC2 | 계획·리플레이 판정·보고서 | Risk Engine Python 컨테이너(`deploy/risk-engine`), FastAPI 내부 API(compose 내부망 HTTP/JSON, 공개 포트 없음, PLANNED 판정 및 TBM·일일 보고서 생성, 5.4·12.2) | 확정(컨테이너), 기본안(FastAPI) |
 | EC2 | 알림 | Web Push(VAPID) | 확정 |
 | EC2 | 배포 | Docker Compose, Nginx + Let’s Encrypt | 기본안 |
 | 저장소 | 객체 저장소 | S3 또는 Lightsail 버킷. 클립 삭제는 EC2 삭제 작업(수명 주기 규칙은 클립에 쓰지 않음, 11.5) | 기본안 |

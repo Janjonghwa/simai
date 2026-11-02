@@ -7,7 +7,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 - 이미지는 `timescale/timescaledb-ha` 의 -all 태그를 쓴다(TimescaleDB·PostGIS 포함).
 - `risk_event`는 일반 테이블로 둔다. `notification`이 `risk_event(event_id, source)`를 복합 FK 로 참조해야 하기 때문이다(11.4).
 - `world_track_state`, `skeleton_3d`, `system_metric`, `system_health`, `device_heartbeat` 는 hypertable 로 만들고 압축과 보관 정책을 건다(확장: `channel_state`, `watch_feature`, `ppe_state`). 다른 테이블은 hypertable 을 외래 키로 참조하지 않고, hypertable 의 버전 ID 는 논리 참조로만 둔다.
-- RAG 색인은 같은 PostgreSQL 의 pgvector 다. 임베딩은 BAAI/bge-m3 dense 1024차원(`float32`, L2 정규화, cosine)이고, 문서와 질문에 같은 모델 revision·설정을 쓴다. revision 은 `5617a9f61b028005a4858fdac845db406aefb181` 로 고정했고(CLS 풀링 + L2 정규화, CPU fp32), 조항과 TBM 질문 템플릿은 미리 임베딩해 시드로 넣는다.
+- 법령 지식 그래프와 RAG 색인은 같은 PostgreSQL 의 `rag_node`·`rag_edge` 와 `pgvector`·`pg_trgm` 이다(v1.3 수정 49). 임베딩은 `Qwen/Qwen3-Embedding-0.6B`(Apache-2.0) dense 1024차원(`float32`, L2 정규화, cosine, 이전 `BAAI/bge-m3` 대체)이고, 문서와 질의에 같은 고정 모델 revision·설정을 쓴다. 문서 임베딩 입력은 `"[법령명 조문(제목)] 본문"` 형식을 쓰며, 법령 조문·지침·사례 노드(`rag_node`)와 TBM 표준 질의 템플릿(`rag_query_template`)은 시드 적재 때 미리 임베딩해 넣고 비정형 실시간 질의는 EC2 Python 컨테이너 CPU 에서 임베딩한다(`docs/design/tbm-legal-graph.md`).
 - 컬럼·키·제약은 ERD(구현 설계 문서)와 Flyway 마이그레이션이 정본이고, 이 장은 테이블과 원칙을 적는다.
 - PostGIS 는 저장·조회에만 쓴다. 구역 판정 계산은 Risk Engine 한 곳에서만 한다(3.2).
 
@@ -58,7 +58,8 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `notification` | 이벤트, 채널, 대상, 발송·수신 확인·ACK 시각 (LIVE 이벤트만 연결 가능. 시험 알림은 이 테이블에 넣지 않음). 발송 대기열을 겸해 발송 워커 임대 기한(`claimed_until`)을 두고, 비었거나 지난 대기 건은 다시 꺼낸다 |
 | `action_ticket` | 조치 상태, 사진 주소(해소 상태와의 불일치 표시는 취소, S15P31A101-411) |
 | `media_clip` | 이벤트 연결 영상 구간의 객체 키, 카메라·구간(촬영 시각)·해시·크기, 얼굴 흐림 여부, 삭제 예정일, 보존 표시. Tier 0 가 I1 `media_clip` 으로 보내고, 보낸 뒤 붙는 CRITICAL 자동 보존은 고치지 않고 `media_clip_retention` 으로 이력을 더한다 |
-| `report` | 보고서 종류(TBM·DAILY), 레이아웃·계산 결과(`sim.*`) 참조, 생성 상태, 본문, 인용 목록 |
+| `report` | 보고서 종류(TBM·DAILY), 대상 작업(`work_unit.work_id`)·보고서 버전(`report_version`, 덮어쓰지 않고 새 행 추가)·공종(`work_type`), 레이아웃·계산 결과(`sim.*`) 참조, 생성 상태, 본문(`sections`), 계산 근거 표, 인용 목록(`citations`), 법령 지식 그래프 서브그래프(`subgraph`: `nodes`·`edges`), 4단계 실행 상태(`steps`), 구역 최근 이벤트 요약(`zone_history`) (EC2 Python 컨테이너 생성, v1.3 수정 49) |
+| `work_unit` | TBM 작업(날짜·작업명·시간 구간·구역/장소·예정 인원·담당 조, 그리고 작업이 쓰는 가상 레이아웃 `layout_id` 및 비개인정보 공종 `work_type`, 8.3·12.6, `docs/design/server-work-units.md`·`docs/design/tbm-legal-graph.md`) |
 | `event_ack` | 운영자 확인: 누가·어디서·확인 대상 `event_sequence`(3.10). 저널의 ACKNOWLEDGED 전이가 가리킨다 |
 | `event_close` | 운영자 종료 명령과 Tier 0 결과(6.4). REST 요청의 멱등 키는 따로 저장하고(유일), `close_id` 는 EC2 가 발급한다. 종료 전이가 가리킨다 |
 | `event_escalation` | 승인한 VLM 상향 의견의 적용 명령과 Tier 0 응답 결과(`result_status`: `PENDING`·`ACCEPTED`·`DUPLICATE`·`REJECTED`, `reject_reason`, `result_received_at`, 5.4). 상향 전이가 가리킨다 |
@@ -75,8 +76,11 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `push_subscription` | Web Push 구독 |
 | `test_push` | 시험 푸시(RiskEvent 아님, `notification` 에 넣지 않음) |
 | `push_receipt` | Service Worker 수신 확인(실제 알림·시험 푸시 중 하나) |
-| `rag_clause` | 안전 수칙 조항 본문·임베딩(bge-m3 1024차원)·모델 revision. 조 단위(1,000자 넘는 조만 항·호 경계로 나눈 청크), ID `산업안전보건기준규칙 제N조[#k]`, 법령 판(MST) |
-| `rag_query_template` | TBM 질문 템플릿과 미리 계산한 임베딩(조항과 같은 모델·revision). M3 는 자유 문장 질의를 임베딩하지 않는다 |
+| `rag_clause` | 초기 안전 수칙 조항 테이블(`V5` 시드 호환 유지). 신규 TBM·일일 보고서 검색 정본은 아래 `rag_node`·`rag_edge` 법령 지식 그래프로 전환한다(v1.3 수정 49, `docs/design/db-tables.md`) |
+| `rag_source` | 법령 지식 그래프 원문 출처·버전: 법령·행정규칙별 법령 ID·MST·시행일·공포번호·원문 해시·수집 시각(원문은 저장소 밖, S15P31A101-416) |
+| `rag_node` | 건설안전 법령 지식 그래프 노드: 종류(`node_kind`: 법령·조·항·호·목·별표·개념·위험 규칙, 후속 지침·재해사례)와 층(`layer`: 법률·중대재해처벌법·시행령·시행규칙·안전보건기준규칙·고시), 출처 법령·문서명, 조문 번호·제목·본문, 규칙 태그(`rule_tags`, `R1`~`R7`), 출처 판 번호(`source_version`), 임베딩(`Qwen/Qwen3-Embedding-0.6B` 1024차원, 입력 `"[법령명 조문(제목)] 본문"`), 모델 revision. 국가법령정보센터 Open API 법령(산안법·시행령·시행규칙, 안전보건기준규칙, 중대재해처벌법·시행령)을 먼저 적재하고, KOSHA GUIDE 와 중대재해 사이버안전박물관 재해사례는 재배포·API 이용 조건을 확인한 뒤 적재한다(`docs/design/tbm-legal-graph.md`) |
+| `rag_edge` | 건설안전 법령 지식 그래프 방향성 엣지(`src_node_id` → `dst_node_id`, 종류 `edge_kind`: 상하위·참조·준용·"불구하고"·위임·별표·외부 법령 인용·개념 연결·규칙 태그, 후속 지침·사례 연결), 추출 방법(`method`)·검수 상태(`review_status`), 근거 문구(`relation_label`). 하이브리드 검색 후 1단계 확장(검수 전 후보 제외)과 관제 웹 `subgraph` 시각화에 쓴다. 칸·값 정본은 `docs/design/db-tables.md` |
+| `rag_query_template` | TBM 표준 질의 템플릿(`R1`~`R7`·구역 유형 조합)과 미리 계산한 임베딩(`rag_node` 와 같은 `Qwen/Qwen3-Embedding-0.6B` 고정 revision). 비정형 실시간 질의는 EC2 Python 컨테이너 CPU 에서 임베딩한다 |
 
 PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evaluation_run`(계산 실행, 기준 구성, Risk Engine 라이브러리 버전, 판정에 쓴 계획 작업 위치 목록과 위치마다 출처 REQUESTED·GENERATED), `sim.risk_result`(위험 항목, 실제 알림 채널로 가지 않음). 위치 목록은 EC2 가 컨테이너 결과(`risk_plan_result.positions`)를 그대로 저장한다. 컨테이너가 만든 위치는 다시 계산하면 달라질 수 있으므로 결과와 함께 둔다. 확장 테이블(`sim.trajectory_plan` 등)은 부록 C 에 있다.
 
@@ -114,7 +118,7 @@ PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evalua
 
 - 자동 삭제는 EC2 클립 삭제 작업, TimescaleDB 보관 정책, Tier 0 저장 위치 정리 작업으로 구현한다. 클립 삭제 작업은 `delete_after` 가 지났고 보존 표시가 없는 클립의 객체를 지우고 `deleted_at` 을 남긴다. 객체 저장소 수명 주기 규칙은 DB 의 보존 표시를 모르므로 클립에 쓰지 않는다.
 - 촬영·외부 클라우드(GPU 실행 사이트·EC2) 전송·이벤트 클립 보관(얼굴 흐림 없이 14일 보관, CRITICAL 이벤트 연결 클립은 보존 표시로 프로젝트 발표 후 30일 안 파기까지 유지, 열람은 권한자로 제한하고 조회 기록 유지)·시연 및 발표 자료 활용은 모두 기관(SSAFY) 허가를 기준으로 하며, 참여자 개별 동의서나 비참여자 동의 제한은 두지 않는다(16장).
-- 외부 LLM 에는 SSAFY GMS 를 거쳐 OpenAI(국외)로 텍스트(규칙 계산 결과·법령 조항·이벤트 요약)만 보내고 영상·이미지·얼굴·실명은 보내지 않는다(5.4). AWS 는 서울 리전이다.
+- 외부 LLM 에는 SSAFY GMS 를 거쳐 OpenAI(국외)로 텍스트(규칙 계산 결과·법령 조항·이벤트 요약·비개인정보 공종 `work_type`)만 보내고 영상·이미지·얼굴·실명이나 작업명·인원·반장/조 이름은 보내지 않는다(5.4, 8.3). AWS 는 서울 리전이다.
 - 전송 구간은 모두 암호화한다(14장).
 
 ## 11.6 계정·기기·분석 작업

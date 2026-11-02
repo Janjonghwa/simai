@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/tbm_report.schema.json",
   "title": "I5 tbm_report 입력·결과",
-  "description": "I5 job_type tbm_report 의 입력(job_request.payload.input, 3.3.0)과 결과(job_callback.payload.result, 2.3.0) (명세 5.4 LLM, 8.3 F-02, 12.5, FR-20·122·142, S15P31A101-225). EC2 가 PLANNED 계산 결과(TBM) 또는 그날 이벤트 요약(DAILY)과 RAG 로 찾은 안전 수칙 조항을 텍스트로 담고, 분석 워커가 외부 LLM 으로 보고서 초안을 만든다. 외부 LLM 에는 텍스트만 보낸다: 입력에 영상·이미지·객체 주소·얼굴·실명·사람 이름 필드는 없다(모든 객체 닫힘, 사람은 World ID 도 싣지 않는다). 인용은 입력 clauses[] 의 조항 ID 만 허용하고(워커가 검사, 어기면 그 초안을 버린다), 위험 등급은 입력값 그대로 결과에 옮기며 LLM 이 바꾸지 못한다. 보고서는 경보가 아니다(알림 채널로 보내지 않는다, AGENTS 규칙 5). 이 파일은 정의만 담고 메시지는 job_request·job_callback 이다.",
+  "description": "【폐기 예정(2026-11-02, S15P31A101-415)】 TBM·일일 보고서 생성과 외부 LLM 호출을 RunPod 분석 워커(I5 tbm_report)에서 빼고 EC2 의 Python 컨테이너(deploy/risk-engine)로 옮긴다(GPU·Pod 를 켜지 않아도 언제든 생성 가능, LLM API 키는 EC2 .env). 삭제는 메이저 변경이라 워커·서버 정리 전까지 스키마에 남겨 두고 폐기 예정으로만 표시한다. EC2 보고서 생성·조회 응답(/api/reports/tbm·/api/reports/daily)과 report 테이블에는 본문·인용·계산 근거 표에 더해 사용한 법령 지식 그래프 서브그래프(subgraph: nodes·edges)와 4단계 코드 파이프라인 실행 기록(steps: 단계명·건수·결과·소요 ms)을 함께 담는다(명세 5.4, 8.3, 11.3, 12.2, 12.5, 12.6, 설계 docs/design/tbm-legal-graph.md). 아래는 기존 I5 job_type tbm_report 의 입력(job_request.payload.input, 3.3.0)과 결과(job_callback.payload.result, 2.3.0) 정의다(S15P31A101-225). 외부 LLM 에는 텍스트만 보낸다: 입력에 영상·이미지·객체 주소·얼굴·실명·사람 이름 필드는 없다(모든 객체 닫힘, 사람은 World ID 도 싣지 않는다). 인용은 허용 목록 안의 조항 ID 만 허용하고(코드가 검사, 어기면 그 초안을 버린다), 위험 등급은 입력값 그대로 결과에 옮기며 LLM 이 바꾸지 못한다. 보고서는 경보가 아니다(알림 채널로 보내지 않는다, AGENTS 규칙 5).",
   "$defs": {
     "clause_id": {
       "type": "string",
