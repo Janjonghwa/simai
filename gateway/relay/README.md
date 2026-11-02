@@ -38,7 +38,7 @@ src/simai_relay/
   bench.py        G0 전송 비교 측정: 카메라별 연결 vs 단일 연결 다중화 (bench-transport)
   config.py       설정(TOML)·카메라 계정(.env) 읽기, 로그의 비밀 값 가리기(RedactSecrets)
   cli.py          simai-relay run
-configs/          example.toml(실제 카메라), dry-run.toml(카메라 없이), file-playback.toml(녹화 파일 재생)
+configs/          example.toml(실제 카메라), lobby.toml(로비 카메라 4대, 게이트웨이 도우미 gateway/ops 기본), dry-run.toml(카메라 없이), file-playback.toml(녹화 파일 재생)
 tests/            시험 (카메라 없이 돈다)
 ```
 
