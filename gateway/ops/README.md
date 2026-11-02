@@ -57,7 +57,7 @@ EC2 sshd 의 GatewayPorts 기본값(no) 때문에 EC2 루프백에만 열리고,
 처음 한 번(순서대로):
 
 1. 개발 노트북: `gateway\ops\simai-gateway.cmd dev-remote`(메뉴 7) — `~/.ssh/id_ed25519.pub` 를 EC2 `~/simai-gateway/dev_keys.pub` 에 올리고 `~/.ssh/config` 에 `simai-gw`(ProxyJump simai-ec2) 를 둔다.
-2. 게이트웨이: 바로가기를 **관리자 권한으로** 열어 `6` — OpenSSH 서버(127.0.0.1·키만), 공개키 등록, 원격 데스크톱 켜기, 로그인 때 뜨는 역터널 예약 작업 `simai-gateway-remote`(끊기면 다시, 로그 `C:\simai-local\gateway-remote-tunnel.log`).
+2. 게이트웨이: 바로가기를 **관리자 권한으로** 열어 `6` — OpenSSH 서버(127.0.0.1·키만. sshd 가 없으면 공식 Win32-OpenSSH MSI 를 버전·SHA-256 고정으로 설치: Windows 기능 설치는 SSAFY 관리 PC 에서 멈춘다, S15P31A101-398), 공개키 등록, 원격 데스크톱 켜기, 로그인 때 뜨는 역터널 예약 작업 `simai-gateway-remote`(끊기면 다시, 로그 `C:\simai-local\gateway-remote-tunnel.log`).
 3. 개발 노트북: 7 을 한 번 더(게이트웨이 사용자 이름을 EC2 에서 받아 `simai-gw` 설정을 만든다) → `ssh simai-gw hostname` 이 되면 끝.
    공개키를 6 뒤에 올렸으면 게이트웨이에서 6 을 다시 한다(공개키를 가져감).
 
