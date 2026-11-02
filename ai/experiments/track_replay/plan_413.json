@@ -1,0 +1,327 @@
+{
+  "_note": "S15P31A101-413 한 변수씩 실험. base 는 운영 기본값(빈 설정)에 지표 구간만 둔다. segments_s 는 [시작 s, 끝 s, 보이는 사람 수], 녹화 첫 촬영 시각 기준. 이 녹화는 1인 구간이 없고 5~415 s 내내 2인(검출 수로 확인), 420~460 s 3인, 485 s 뒤 0인. K* 는 보정 교란(카메라 B·C 를 카메라 y축으로 1·2° 돌린 보정 문서, 저장소 밖) — 실시간 10차의 '쌍 B·C 통과 0' 가설 확인용. X_no* 는 카메라 하나를 400 ms 늦게 도착시켜 늦은 카메라 제외로 빼는 진단(운영 설정 후보 아님). K3·K4 는 같은 녹화 1단계 걷기로 만든 회차 보정(459z·699z, World 축이 266z 와 달라 구역 지표는 무의미). S* 는 실험 전용 코드 변형(replay_tracking.SplitSuppressingManager): 이번 시각 갱신된 Track 가까이의 카메라가 겹치지 않는 나머지 클러스터로 새 ID 를 만들지 않음. R* 는 rotBC_2deg(B·C 보정이 실제와 어긋난 실시간 10차 모사)에서 무엇이 버티는지 본다.",
+  "base": {
+    "segments_s": {
+      "all2": [
+        5,
+        415,
+        2
+      ],
+      "three": [
+        425,
+        460,
+        3
+      ]
+    }
+  },
+  "experiments": {
+    "E0_baseline": {},
+    "C1_marginal12": {
+      "cross_view": {
+        "residual_marginal_px": 12.0
+      }
+    },
+    "C2_residual16_marginal12": {
+      "cross_view": {
+        "residual_gate_px": 16.0,
+        "residual_marginal_px": 12.0
+      }
+    },
+    "C3_epipolar30": {
+      "cross_view": {
+        "epipolar_gate_px": 30.0
+      }
+    },
+    "C4_ambiguity025": {
+      "cross_view": {
+        "ambiguity_margin": 0.25
+      }
+    },
+    "T1_uncert50": {
+      "interpolation": {
+        "max_timestamp_uncertainty_ms": 50.0
+      }
+    },
+    "T2_lag300": {
+      "time": {
+        "fusion_max_lag_ms": 300
+      }
+    },
+    "T3_offsetB_50": {
+      "feed": {
+        "camera_offset_ms": {
+          "cam_B": 50
+        }
+      }
+    },
+    "T4_offsetB_100": {
+      "feed": {
+        "camera_offset_ms": {
+          "cam_B": 100
+        }
+      }
+    },
+    "T5_offsetB_200": {
+      "feed": {
+        "camera_offset_ms": {
+          "cam_B": 200
+        }
+      }
+    },
+    "T6_lateD_200": {
+      "feed": {
+        "extra_arrival_ms": {
+          "cam_D": 200
+        }
+      }
+    },
+    "W1_tentative1000": {
+      "world": {
+        "tentative_max_gap_ms": 1000
+      }
+    },
+    "W2_confirm2": {
+      "world": {
+        "confirm_hits": 2
+      }
+    },
+    "W3_gate_max25": {
+      "world": {
+        "gate_max_m": 2.5
+      }
+    },
+    "L1_newtrack05": {
+      "tracker": {
+        "new_track_thresh": 0.5,
+        "track_high_thresh": 0.5
+      }
+    },
+    "L2_buffer60": {
+      "tracker": {
+        "track_buffer": 60
+      }
+    },
+    "C5_marginal10": {
+      "cross_view": {
+        "residual_marginal_px": 10.0
+      }
+    },
+    "W4_dup_radius06": {
+      "world": {
+        "duplicate_radius_m": 0.6
+      }
+    },
+    "K1_rotBC_1deg": {
+      "calibration_file": "C:/Users/SSAFY/simai-local/track-413/calib/rotBC_1deg.json"
+    },
+    "K2_rotBC_2deg": {
+      "calibration_file": "C:/Users/SSAFY/simai-local/track-413/calib/rotBC_2deg.json"
+    },
+    "X_noA": {
+      "feed": {
+        "extra_arrival_ms": {
+          "cam_A": 400
+        }
+      }
+    },
+    "X_noB": {
+      "feed": {
+        "extra_arrival_ms": {
+          "cam_B": 400
+        }
+      }
+    },
+    "X_noC": {
+      "feed": {
+        "extra_arrival_ms": {
+          "cam_C": 400
+        }
+      }
+    },
+    "X_noD": {
+      "feed": {
+        "extra_arrival_ms": {
+          "cam_D": 400
+        }
+      }
+    },
+    "K3_cal459z": {
+      "calibration_file": "C:/Users/SSAFY/simai-local/calib-session-1029/calibration.json"
+    },
+    "K4_cal699z": {
+      "calibration_file": "C:/Users/SSAFY/simai-local/calib-session-1029-v2/calibration.json"
+    },
+    "M1_lifecycle": {
+      "world": {
+        "tentative_max_gap_ms": 1000,
+        "confirm_hits": 2,
+        "gate_max_m": 2.5
+      }
+    },
+    "M2_epi30_lifecycle": {
+      "cross_view": {
+        "epipolar_gate_px": 30.0
+      },
+      "world": {
+        "tentative_max_gap_ms": 1000,
+        "confirm_hits": 2,
+        "gate_max_m": 2.5
+      }
+    },
+    "S1_split_owner035": {
+      "experimental": {
+        "suppress_split": {
+          "radius_m": 0.35,
+          "require_owner": true
+        }
+      }
+    },
+    "S2_split_owner06": {
+      "experimental": {
+        "suppress_split": {
+          "radius_m": 0.6,
+          "require_owner": true
+        }
+      }
+    },
+    "S3_split_any06": {
+      "experimental": {
+        "suppress_split": {
+          "radius_m": 0.6,
+          "require_owner": false
+        }
+      }
+    },
+    "S4_split_any06_lifecycle": {
+      "experimental": {
+        "suppress_split": {
+          "radius_m": 0.6,
+          "require_owner": false
+        }
+      },
+      "world": {
+        "tentative_max_gap_ms": 1000,
+        "confirm_hits": 2,
+        "gate_max_m": 2.5
+      }
+    },
+    "S5_split_any06_cal699z": {
+      "experimental": {
+        "suppress_split": {
+          "radius_m": 0.6,
+          "require_owner": false
+        }
+      },
+      "calibration_file": "C:/Users/SSAFY/simai-local/calib-session-1029-v2/calibration.json"
+    },
+    "S6_split_any04": {
+      "experimental": {
+        "suppress_split": {
+          "radius_m": 0.4,
+          "require_owner": false
+        }
+      }
+    },
+    "S7_split_any08": {
+      "experimental": {
+        "suppress_split": {
+          "radius_m": 0.8,
+          "require_owner": false
+        }
+      }
+    },
+    "S8_split_any06_epi30": {
+      "experimental": {
+        "suppress_split": {
+          "radius_m": 0.6,
+          "require_owner": false
+        }
+      },
+      "cross_view": {
+        "epipolar_gate_px": 30.0
+      }
+    },
+    "S9_split_any06_marginal12": {
+      "experimental": {
+        "suppress_split": {
+          "radius_m": 0.6,
+          "require_owner": false
+        }
+      },
+      "cross_view": {
+        "residual_marginal_px": 12.0
+      }
+    },
+    "S10_split_any06_rotBC2": {
+      "experimental": {
+        "suppress_split": {
+          "radius_m": 0.6,
+          "require_owner": false
+        }
+      },
+      "calibration_file": "C:/Users/SSAFY/simai-local/track-413/calib/rotBC_2deg.json"
+    },
+    "S11_split_any06_cal459z": {
+      "experimental": {
+        "suppress_split": {
+          "radius_m": 0.6,
+          "require_owner": false
+        }
+      },
+      "calibration_file": "C:/Users/SSAFY/simai-local/calib-session-1029/calibration.json"
+    },
+    "S12_split_any06_offsetB100": {
+      "experimental": {
+        "suppress_split": {
+          "radius_m": 0.6,
+          "require_owner": false
+        }
+      },
+      "feed": {
+        "camera_offset_ms": {
+          "cam_B": 100
+        }
+      }
+    },
+    "R1_rotBC2_lifecycle": {
+      "calibration_file": "C:/Users/SSAFY/simai-local/track-413/calib/rotBC_2deg.json",
+      "world": {
+        "tentative_max_gap_ms": 1000,
+        "confirm_hits": 2,
+        "gate_max_m": 2.5
+      }
+    },
+    "R2_rotBC2_epi30": {
+      "calibration_file": "C:/Users/SSAFY/simai-local/track-413/calib/rotBC_2deg.json",
+      "cross_view": {
+        "epipolar_gate_px": 30.0
+      }
+    },
+    "R3_rotBC2_marginal12": {
+      "calibration_file": "C:/Users/SSAFY/simai-local/track-413/calib/rotBC_2deg.json",
+      "cross_view": {
+        "residual_marginal_px": 12.0
+      }
+    },
+    "R4_rotBC2_split_lifecycle": {
+      "calibration_file": "C:/Users/SSAFY/simai-local/track-413/calib/rotBC_2deg.json",
+      "experimental": {
+        "suppress_split": {
+          "radius_m": 0.6,
+          "require_owner": false
+        }
+      },
+      "world": {
+        "tentative_max_gap_ms": 1000,
+        "confirm_hits": 2,
+        "gate_max_m": 2.5
+      }
+    },
+    "R5_rotBC2_occluded_lost6000": {
+      "calibration_file": "C:/Users/SSAFY/simai-local/track-413/calib/rotBC_2deg.json",
+      "world": {
+        "lost_after_ms": 6000
+      }
+    }
+  }
+}

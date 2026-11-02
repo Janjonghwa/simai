@@ -44,6 +44,7 @@ from simai_ai.geometry.rig import CameraRig
 from simai_ai.io import ResultGate, SimObservationFrameSource
 from simai_ai.providers.base import Frame
 from simai_ai.tracking.cross_view import AssociationFrame, CrossViewAssociator, LocalTrackletBuffer
+from simai_ai.tracking.diagnostics import TrackingDiagnostics, window_log_line
 from simai_ai.tracking.local_tracker import (
     CameraDetections,
     MultiCameraLocalTracker,
@@ -457,6 +458,8 @@ class Perception:
         # 마지막으로 인지 결과를 낸 tick 에서 늦어서 뺀 카메라. 새 tick 이 날 때까지 유지한다(판정의 감시 입력이 읽는다: 수신
         # 중이어도 융합에 쓰지 못한 카메라는 R7 의 정상 관측 카메라로 세지 않는다)
         self.lagging: tuple[str, ...] = ()
+        # 추적 계측(S15P31A101-413): 판정에 쓰지 않는 관찰자. 상태 파일 status.tracking_diagnostics 와 주기 요약 로그(촬영 시각 30 s)
+        self.diagnostics = TrackingDiagnostics()
 
     def replace_rig(self, rig: CameraRig, provenance: Mapping[str, Any]) -> None:
         """판정 lock 안의 tick 경계 전용. World Track·접지·입력 버퍼는 유지한다(-344)."""
@@ -513,6 +516,7 @@ class Perception:
         t_latest = self.t_latest_global()
         last = self.manager.last_t
         if fusion is None or t_latest is None or (last is not None and fusion.t <= last):
+            self._observe(lambda d: d.observe_idle())
             return None
         t = fusion.t
         if fusion.lagging and fusion.lagging != self.lagging:
@@ -521,8 +525,10 @@ class Perception:
         self.lagging = fusion.lagging
         for c in fusion.lagging:
             self.lagging_ticks[c] += 1
-        views, _drops = self.buffer.views_at(t)
+        views, drops = self.buffer.views_at(t)
+        self._observe(lambda d: (d.observe_tick(t, fusion.lagging), d.observe_views(views, drops)))
         assoc = self.associator.associate(t, views, exclude_cameras=tuple(sync_invalid))
+        self._observe(lambda d: d.observe_association(assoc))
         if self.observe_association is not None:
             try:
                 self.observe_association(assoc)
@@ -530,6 +536,8 @@ class Perception:
                 log.exception("보정 감시 표본 공급 실패(판정은 계속한다)")
         self.buffer.prune(t)
         frame = self.manager.update(assoc, self.rig, tuple(sync_invalid))
+        self._observe(lambda d: d.observe_world(frame, self.manager.diag))
+        self._observe(lambda d: d.window_due(t) and log.info("%s", window_log_line(d.take_window(t))))
         contacts = self.contact.update(frame, surfaces)
         payload = world_state_payload(
             frame, t_latest, self.scene_version, contacts=contacts.contacts(), time_config=self.time_config
@@ -540,6 +548,13 @@ class Perception:
             except Exception:  # 보조 출력 실패가 판정 경로에 전파되지 않는다
                 log.warning("아바타 입력 공유 실패", exc_info=False)
         return Perceived(t=t, frame=frame, payload=payload, t_latest_global=t_latest, lagging=fusion.lagging)
+
+    def _observe(self, fn: Callable[[TrackingDiagnostics], Any]) -> None:
+        """계측 실패가 판정 경로에 전파되지 않는다."""
+        try:
+            fn(self.diagnostics)
+        except Exception:  # noqa: BLE001
+            log.warning("추적 계측 실패(판정은 계속한다)", exc_info=True)
 
     def _share_avatar(self, frame, payload, t_latest) -> None:
         period_s = float(getattr(self.avatar_writer, "period_s", DEFAULT_AVATAR_SHARE_PERIOD_S))
