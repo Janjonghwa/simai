@@ -376,7 +376,7 @@ def write_sql(out: Path, *, repo_data: Path | None = None) -> None:
     lines = ["-- 자동 생성(simai_ai.rag.graph sql). 손으로 고치지 않는다.", "BEGIN;", "SET CONSTRAINTS ALL DEFERRED;",
              "DELETE FROM rag_edge;", "DELETE FROM rag_query_template;", "DELETE FROM rag_node;", "DELETE FROM rag_source;"]
     for law in manifest["laws"]:
-        lines.append("INSERT INTO rag_source VALUES (" + ", ".join([
+        lines.append("INSERT INTO rag_source (law_key, law_id, law_name, layer, mst, effective_date, promulgation_no, source_url, raw_sha256, fetched_at) VALUES (" + ", ".join([
             _q(law["law_key"]), _q(law["law_id"]), _q(law["law_name"]), _q(_layer(law)), _q(law["mst"]), _q(_date(law["effective_date"])),
             _q(law["promulgation_no"]), _q(law["source_url"]), _q(law["raw_sha256"]), _q(law["fetched_at"])]) + ");")
     for n in nodes:
@@ -407,7 +407,7 @@ def write_sql(out: Path, *, repo_data: Path | None = None) -> None:
         v = vecs.get(("query", t["key"]))
         if v is None:
             continue
-        lines.append("INSERT INTO rag_query_template VALUES (" + ", ".join([
+        lines.append("INSERT INTO rag_query_template (template_key, rule, target, text, query_input, embedding, embedding_model, embedding_revision) VALUES (" + ", ".join([
             _q(t["key"]), _q(t["rule"]), _q(t["target"]), _q(t["text"]), _q(embed_qwen.query_input(t["text"])), _vec(v), _q(model), _q(rev)]) + ");")
     lines += ["COMMIT;", ""]
     (out / "sql").mkdir(parents=True, exist_ok=True)

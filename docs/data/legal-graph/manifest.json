@@ -254,8 +254,8 @@
    "bytes": 2300
   },
   "sql/legal_graph_seed.sql": {
-   "sha256": "9af9416d87d19812fc8ee23c34dd39d38566ceba4ecc13c77e37bce01061957d",
-   "bytes": 62937192
+   "sha256": "3c822998558b0be9f720f32cecedd815a14fac2388c7a428efaf0e241023921c",
+   "bytes": 62940106
   },
   "crosscheck.json": {
    "sha256": "356fd404af6ebf76802b90bd1eeddb2d0885610dfc97c6f820dc3ce28001d2ff",

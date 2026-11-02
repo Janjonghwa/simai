@@ -38,7 +38,7 @@ public class WorkUnitRepository {
 
     private static final String SELECT = """
             SELECT w.work_id, w.work_date, w.name, w.starts_at, w.ends_at, w.zone_id, w.place, w.planned_people,
-                   w.lead_team,
+                   w.lead_team, w.layout_id, w.work_type,
                    (SELECT z.name FROM zone z WHERE z.zone_id = w.zone_id ORDER BY z.zone_version DESC LIMIT 1) AS zone_name,
                    c.critical, c.high
             FROM work_unit w
@@ -75,9 +75,9 @@ public class WorkUnitRepository {
         MapSqlParameterSource params = params(siteId, request, now).addValue("userId", userId);
         Long id = jdbc.queryForObject("""
                 INSERT INTO work_unit (site_id, work_date, name, starts_at, ends_at, zone_id, place, planned_people, lead_team,
-                    created_by, created_at, updated_at)
+                    layout_id, work_type, created_by, created_at, updated_at)
                 VALUES (:siteId, :date, :name, :startsAt, :endsAt, :zoneId, :place, :people, :lead,
-                    :userId, :now, :now)
+                    :layoutId, :workType, :userId, :now, :now)
                 RETURNING work_id
                 """, params, Long.class);
         return id == null ? 0 : id;
@@ -88,7 +88,7 @@ public class WorkUnitRepository {
         int updated = jdbc.update("""
                 UPDATE work_unit SET work_date = :date, name = :name, starts_at = :startsAt, ends_at = :endsAt,
                     zone_id = :zoneId, place = :place, planned_people = :people, lead_team = :lead,
-                    updated_at = :now
+                    layout_id = :layoutId, work_type = :workType, updated_at = :now
                 WHERE site_id = :siteId AND work_id = :workId
                 """, params(siteId, request, now).addValue("workId", workId));
         if (updated == 0) {
@@ -130,7 +130,17 @@ public class WorkUnitRepository {
                 throw new BusinessException(ErrorCode.Work.UNKNOWN_WORK_ZONE);
             }
         }
+        if (r.workType() != null && !WorkTypes.contains(r.workType())) {
+            throw invalid();
+        }
+        if (r.layoutId() != null && !Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM layout_plan WHERE site_id = :site AND layout_id = :id)",
+                new MapSqlParameterSource("site", siteId).addValue("id", r.layoutId()), Boolean.class))) {
+            throw invalid();
+        }
         return new MapSqlParameterSource()
+                .addValue("layoutId", r.layoutId())
+                .addValue("workType", r.workType())
                 .addValue("siteId", siteId)
                 .addValue("date", date)
                 .addValue("name", name)
@@ -191,6 +201,9 @@ public class WorkUnitRepository {
         putText(w, "place", place != null ? place : rs.getString("zone_name"));
         w.put("planned_people", rs.getInt("planned_people"));
         putText(w, "lead", rs.getString("lead_team"));
+        long layoutId = rs.getLong("layout_id");
+        if (rs.wasNull()) w.putNull("layout_id"); else w.put("layout_id", layoutId);
+        putText(w, "work_type", rs.getString("work_type"));
         ObjectNode counts = w.putObject("event_counts");
         counts.put("CRITICAL", rs.getLong("critical"));
         counts.put("HIGH", rs.getLong("high"));

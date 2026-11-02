@@ -15,5 +15,7 @@ public record WorkUnitRequest(
         @JsonProperty("zone_id") String zoneId,
         @JsonProperty("place") String place,
         @JsonProperty("planned_people") Integer plannedPeople,
-        @JsonProperty("lead") String lead) {
+        @JsonProperty("lead") String lead,
+        @JsonProperty("layout_id") Long layoutId,
+        @JsonProperty("work_type") String workType) {
 }
