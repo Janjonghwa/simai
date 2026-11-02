@@ -15,8 +15,9 @@ avatar 선택 시 GPU 전체 대비 분석 워커 예산 0.70을 vLLM 0.55 + HMR
 음수 잔여 예산은 기동 전에 거부한다. vLLM을 선택하지 않으면 그 몫은 I5에 남는다. CUDA 문맥·외부 할당까지 포함한 실제 VRAM은 GPU에서 검증해야 한다.
 각 프로세스는 기존과 같이 별도 감시·재기동되며 아바타 실패는 Tier 0를 종료하지 않는다.
 
-매 사람·카메라 추론 직전에 `AdmissionGate.check().admit`을 확인한다. 표시 파일 없음·오래됨·모르는 지연·600ms 초과·대기열 버림은
-추론을 멈춘다. 정상 30초 뒤 재개한다. 상시 서비스는 I5 대여를 하지 않으므로 `hmr_*` LIVE 차단 목록을 바꿀 필요가 없다.
+매 사람·카메라 추론 직전에 `AdmissionGate.check().admit`을 확인한다. 표시 파일 없음·오래됨·모르는 지연·600ms 초과는 즉시,
+큐 대기 초과로 버린 프레임은 5초 창당 3건 이상이면 추론을 멈추고(2건 이하는 넘김), 통과 10초 뒤 재개한다(S15P31A101-412,
+`tier0-gpu-priority.md`). 상시 서비스는 I5 대여를 하지 않으므로 `hmr_*` LIVE 차단 목록을 바꿀 필요가 없다.
 I5 배치 HMR은 계속 차단된다. 개발용 표시 파일 없음 허용 설정도 이 서비스에서는 무시한다.
 
 ## Tier 0 공유 통로
@@ -118,7 +119,7 @@ GPU에서는 공식 모델 출력 키·shape/scale 조립·127관절 순서·손
 
 ### 송신 시작 조건과 8차 세션 추정
 
-1. 기동 AdmissionGate가 정상 상태를 30초 유지해야 모델과 송신 스레드를 만든다. 이후 매 회차·카메라 추론 전에도 검사한다.
+1. 기동 AdmissionGate가 통과 상태를 10초(S15P31A101-412 전에는 30초) 유지해야 모델과 송신 스레드를 만든다. 이후 매 회차·카메라 추론 전에도 검사한다.
 2. 공유 NPZ에 새 World 시각이 있어야 한다. 입력은 500ms 이내, per_camera/frame_ref는 실제 영상과 일치하고 카메라 시각 차이는 100ms 이하여야 한다.
 3. ID가 확실한 트랙의 HMR 후보가 집계를 통과해야 체형 샘플이 쌓인다. 같은 ID/revision에 최소 30개 유효 샘플과 안정 프레임이 필요하다.
 4. GLB 생성 → 서명 API → PUT이 성공해야 `avatar_asset`을 등록하고 포즈를 대기열에 넣는다. 최종 포즈도 500ms 이내·gate 허용 조건을 통과해야 한다.
@@ -247,7 +248,8 @@ CUDA 호출은 중간 취소할 수 없으며 seg 도입으로 기존 500ms 신�
    - 기존 `max_age_ms=500`은 Tier 0 지연이 정상 예산(300~550ms ≤ 600ms) 안에 있어도 `clock_ms() - t`가 즉시 500ms를 넘기거나 HMR 추론 직후 500ms를 넘겨 입력·포즈를 전부 버렸다(`s9-j7-avatar.log`: `중복/신선도 초과 입력 people=0 samples_max=0/30`).
    - 따라서 `simai_ai.hmr.stream`에서 분석 워커 접수 문과 같은 Tier 0 지연 예산 상수(`TIER0_LAG_BUDGET_MS = DEFAULT_LAG_BUDGET_MS = 600`, 명세 6.6 `capture_to_risk` p95 600ms)에 아바타 스트림 처리·표시 여유(`HMR_STREAM_SLACK_MS = 500`, 명세 5.6 2~5 Hz 주기 및 명세 13.2/20.4 500ms 여유)를 더한 `DEFAULT_MAX_AGE_MS = TIER0_LAG_BUDGET_MS + HMR_STREAM_SLACK_MS = 1_100`을 기본값으로 두고, `AvatarSender`도 같은 `DEFAULT_MAX_AGE_MS`를 쓰도록 맞췄다.
 
-2. **`AdmissionGate` 30초 안정 대기의 단발 초과 허용(`max_over_budget_samples = 1`)**:
+2. **`AdmissionGate` 30초 안정 대기의 단발 초과 허용(`max_over_budget_samples = 1`)** — S15P31A101-412 에서 없앴다(명세 3.2 창 최댓값 기준과
+   어긋나고, 재개가 10초로 줄어 단발 초과 비용이 작아짐). 지금 규칙은 `tier0-gpu-priority.md` 의 S15P31A101-412 절. 아래는 당시 기록이다:
    - Tier 0는 약 1 Hz로 `T_lag` 표본을 `LoadWindow`에 넣고 5초마다 `$SIMAI_ROOT/state/tier0.live`를 갱신한다. `resume_after_s = 30.0` 창은 5초 표시 파일 6개(약 30개 표본)에 해당한다.
    - 명세 6.6의 목표는 `capture_to_risk` **p95 ≤ 600ms**이므로 30초(30표본) 창에서 단발 표본 1개(`1/30 = 3.3% ≤ 5%`)가 600ms를 넘더라도 p95는 여전히 600ms 이하를 만족한다. 반면 30초 창에서 2개 이상(`2/30 = 6.7% > 5%`) 넘거나 한 5초 창에서 2개 이상 넘거나 두 표시 파일 창 연속으로 넘으면 p95 600ms 위반 또는 지속 과부하다.
    - 기존 `AdmissionGate`는 `lag_ms_max > 600`이 단 1회만 나와도 `_ok_since`를 무조건 `None`으로 리셋해 `안정 대기 26/30s`에서 다시 0초로 돌아갔다(`s9-j4-avatar.log`).

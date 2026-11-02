@@ -335,7 +335,7 @@ class _Health:
 
 
 def test_live_queue_wait_exceeded_feeds_load_window_and_gate(tmp_path, sim_run) -> None:
-    """-182 LIVE 입력의 QUEUE_WAIT_EXCEEDED 누계(카메라 합) 증가분이 지연 표본에 실리고 접수 문이 받지 않는다.
+    """-182 LIVE 입력의 QUEUE_WAIT_EXCEEDED 누계(카메라 합) 증가분이 지연 표본에 실리고, 창당 상한을 넘으면 접수 문이 받지 않는다.
     SUPERSEDED(최신 프레임에 밀림)는 넣지 않는다. 누계를 읽지 못하면 지연을 모름으로 센다."""
     settings = _settings(tmp_path, sim_run)
     service = Tier0Service(settings)
@@ -358,7 +358,9 @@ def test_live_queue_wait_exceeded_feeds_load_window_and_gate(tmp_path, sim_run) 
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps({"gpu_priority": {"phase": "running", "reserve": {"state": "OK"}, "load": load}}),
                       encoding="utf-8")
-    adm = _gate(settings).check()
+    adm = _gate(settings).check()  # 기본: 창당 2건까지 넘긴다(S15P31A101-412)
+    assert adm.admit and "큐 대기 초과 2건은 넘김" in adm.reason
+    adm = _gate(settings, max_queue_wait_exceeded=1).check()
     assert not adm.admit and "버린 프레임 2" in adm.reason
     live.ingest.log.broken = True
     service._sample_load()

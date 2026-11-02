@@ -26,7 +26,8 @@ x-worker-env: &worker-env
   SIMAI_GPU_TIER0_FRACTION: "0.20"
   SIMAI_WORKER_LAG_BUDGET_MS: "600"
   SIMAI_WORKER_MARKER_MAX_AGE_S: "15"
-  SIMAI_WORKER_RESUME_AFTER_S: "30"
+  SIMAI_WORKER_RESUME_AFTER_S: "10"
+  SIMAI_WORKER_MAX_QUEUE_WAIT_EXCEEDED: "2"
   SIMAI_WORKER_LIVE_WAIT_MS: "5000"
   SIMAI_WORKER_HOLD_MAX_S: "60"
   # SIMAI_WORKER_TOKEN 은 여기 두지 않는다: 볼륨 /workspace/.simai-private/worker.env 를 simai-wait-tier0 --env-file 로 읽는다

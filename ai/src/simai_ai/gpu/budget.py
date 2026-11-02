@@ -19,7 +19,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from simai_ai.gpu.admission import DEFAULT_LIVE_BLOCKED, AdmissionPolicy
+from simai_ai.gpu.admission import (
+    DEFAULT_LIVE_BLOCKED,
+    DEFAULT_MAX_QUEUE_WAIT_EXCEEDED,
+    DEFAULT_RESUME_AFTER_S,
+    AdmissionPolicy,
+)
 
 HEADROOM_FRACTION = 0.05
 
@@ -99,7 +104,8 @@ class WorkerGpuSettings:
         SIMAI_TIER0_MARKER                      Tier 0 표시 파일 (기본 $SIMAI_ROOT/state/tier0.live)
         SIMAI_WORKER_LAG_BUDGET_MS              capture_to_risk 예산 (기본 600, 명세 6.6 p95)
         SIMAI_WORKER_MARKER_MAX_AGE_S           표시 파일이 이보다 오래되면 모름 → 받지 않음 (기본 15, 갱신 5초의 3배)
-        SIMAI_WORKER_RESUME_AFTER_S             지연이 예산 안으로 돌아온 뒤 이만큼 이어져야 다시 받음 (기본 30)
+        SIMAI_WORKER_RESUME_AFTER_S             멈춘 뒤 통과 상태가 이만큼 이어져야 다시 받음 (기본 10, 10차 실측 근거)
+        SIMAI_WORKER_MAX_QUEUE_WAIT_EXCEEDED    한 창(5초)에서 넘기는 큐 대기 초과 프레임 수, 넘으면 멈춤 (기본 2)
         SIMAI_WORKER_LIVE_BLOCKED_TYPES         LIVE 중 받지 않는 작업 유형(쉼표) (기본 static_reconstruct,hmr_refine,
                                                 hmr_appearance_update. 빈 값 "-" 는 막지 않음)
         SIMAI_WORKER_LIVE_WAIT_MS               LIVE 중 대여 long-poll 상한 (기본 5000)
@@ -123,7 +129,8 @@ class WorkerGpuSettings:
             policy = AdmissionPolicy(
                 lag_budget_ms=_int(env, "SIMAI_WORKER_LAG_BUDGET_MS", 600),
                 max_marker_age_s=_float(env, "SIMAI_WORKER_MARKER_MAX_AGE_S", 15.0),
-                resume_after_s=_float(env, "SIMAI_WORKER_RESUME_AFTER_S", 30.0),
+                resume_after_s=_float(env, "SIMAI_WORKER_RESUME_AFTER_S", DEFAULT_RESUME_AFTER_S),
+                max_queue_wait_exceeded=_int(env, "SIMAI_WORKER_MAX_QUEUE_WAIT_EXCEEDED", DEFAULT_MAX_QUEUE_WAIT_EXCEEDED),
                 live_blocked_types=blocked,
                 allow_without_marker=_flag(env, "SIMAI_WORKER_DEV_NO_LIVE"),
             )

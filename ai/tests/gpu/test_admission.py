@@ -1,7 +1,8 @@
 """Tier 0 지연 신호(LoadWindow)와 분석 워커 접수 문(AdmissionGate)의 반례 시험 (명세 3.2, 6.6, 20.5).
 
 모르는 상태는 모두 '받지 않음'이어야 한다: 표시 파일 확인 실패·오래됨·깨짐·칸 없음, 기동 중, 선확보 미완, 지연 모름(표본 없음·
-unknown), 예산 초과. 깜빡임은 resume_after_s 로 막고, 표시 파일이 사라진 직후(재시작 틈)는 live_linger_s 동안 LIVE 로 본다.
+unknown), 예산 초과. 큐 대기 초과는 창당 max_queue_wait_exceeded(2)건까지 넘긴다(S15P31A101-412). 깜빡임은 resume_after_s(10초)로
+막고, 표시 파일이 사라진 직후(재시작 틈)는 live_linger_s 동안 LIVE 로 본다.
 """
 
 from __future__ import annotations
@@ -148,7 +149,7 @@ def test_healthy_live_needs_stable_period_then_excludes_exp_types(env):
         ({"lags": ()}, "표본이 없다"),
         ({"unknown": 1}, "모르는 표본"),
         ({"lags": (100.0, 601.0)}, "예산"),
-        ({"qwe": 1}, "버린 프레임"),
+        ({"qwe": 3}, "버린 프레임"),
     ],
 )
 def test_unknown_or_overloaded_states_refuse(env, kw, why):
@@ -239,87 +240,153 @@ def test_flicker_never_admits_until_continuously_ok(env):
     assert gate.check().admit
 
 
-def test_session9_single_672ms_spike_does_not_reset_30s_stabilization_or_close_open_gate(tmp_path):
-    """9차 로그 패턴: 평시 300~550ms 에서 26/30s 지점에 672ms 단발 1회가 나와도 30s 안정 대기가 리셋되지 않고 통과한다."""
+def default_gate(tmp_path):
+    """기본 정책(재개 10초, 큐 대기 초과 창당 2건까지 넘김)과 5초마다 갱신되는 표시 파일."""
     clock = Clock()
     marker = tmp_path / "tier0.live"
     gate = AdmissionGate(marker, AdmissionPolicy(), wall_s=lambda: clock.wall, monotonic=lambda: clock.mono)
+    return clock, marker, gate
 
-    # 0~25s: 5초마다 표시 파일 갱신(평시 300~550ms), 아바타 루프처럼 1초마다 여러 번 check 호출
-    write(marker, clock, lags=(310.0, 380.0, 440.0, 510.0, 545.0))
+
+def open_gate(gate: AdmissionGate, clock: Clock, marker: Path) -> None:
+    """평시(10차 p95 약 300ms) 표시 파일로 기본 10초 안정 대기를 채워 연다."""
+    write(marker, clock, lags=(220.0, 266.0, 301.0))
     assert not gate.check().admit
-    for second in range(1, 26):
-        clock.advance(1.0)
-        if second % 5 == 0:
-            write(marker, clock, lags=(320.0, 390.0, 460.0, 520.0, 550.0))
+    for _ in range(2):
+        clock.advance(5.0)
+        write(marker, clock, lags=(230.0, 270.0, 290.0))
         adm = gate.check()
-        assert not adm.admit and f"안정 대기 {second}/30s" in adm.reason
+    assert adm.admit and adm.code == "ok"
 
-    # 26s: 5개 표본 중 단발 1회만 672ms 초과. 같은 표시 파일을 여러 번 읽어도(0.2s 폴링·카메라별 재확인) 리셋되지 않는다.
-    clock.advance(1.0)
-    write(marker, clock, lags=(340.0, 410.0, 480.0, 530.0, 672.0))
-    for _ in range(5):
-        adm = gate.check()
-        assert not adm.admit and "안정 대기 26/30s" in adm.reason
 
-    # 27~29s: 같은 표시 파일 유지 중에도 안정 대기 시계가 이어진다.
-    for second in (27, 28, 29):
-        clock.advance(1.0)
-        adm = gate.check()
-        assert not adm.admit and f"안정 대기 {second}/30s" in adm.reason
+def test_defaults_are_10s_resume_and_two_queue_wait_frames_per_window():
+    policy = AdmissionPolicy()
+    assert policy.resume_after_s == 10.0 and policy.max_queue_wait_exceeded == 2
+    with pytest.raises(ValueError):
+        AdmissionPolicy(max_queue_wait_exceeded=-1)
 
-    # 30s: 다음 표시 파일이 300~550ms 로 돌아오면 리셋 없이 즉시 열린다.
-    clock.advance(1.0)
-    write(marker, clock, lags=(330.0, 405.0, 470.0, 515.0, 540.0))
+
+@pytest.mark.parametrize("qwe", [1, 2])
+def test_queue_wait_exceeded_one_or_two_per_window_keeps_gate_open(tmp_path, qwe):
+    """10차: 큐 대기 초과 프레임 한두 장으로 30초를 처음부터 세던 것이 아바타·VLM 을 막았다 → 창당 2건까지 넘긴다."""
+    clock, marker, gate = default_gate(tmp_path)
+    open_gate(gate, clock, marker)
+    for _ in range(3):  # 창마다 이어져도 열린 채로 둔다(같은 파일을 여러 번 읽어도 한 창으로 센다)
+        clock.advance(5.0)
+        write(marker, clock, qwe=qwe)
+        for _ in range(4):
+            adm = gate.check()
+            assert adm.admit and "넘김" in adm.reason
+    stats = gate.stats()
+    assert stats["queue_wait_tolerated_windows"] == 3 and stats["queue_wait_tolerated_frames"] == 3 * qwe
+    assert stats["resets"] == {}
+
+
+def test_queue_wait_tolerated_while_stabilizing_does_not_restart_clock(tmp_path):
+    clock, marker, gate = default_gate(tmp_path)
+    write(marker, clock)
+    assert gate.check().code == "stabilizing"
+    clock.advance(5.0)
+    write(marker, clock, qwe=2)
+    adm = gate.check()
+    assert not adm.admit and "안정 대기 5/10s" in adm.reason
+    clock.advance(5.0)
+    write(marker, clock)
     assert gate.check().admit
 
-    # 이미 열린 뒤에도 단발 672ms 1회는 열림 상태를 깨지 않는다.
+
+def test_queue_wait_exceeded_three_in_one_window_closes_and_counts(tmp_path):
+    clock, marker, gate = default_gate(tmp_path)
+    open_gate(gate, clock, marker)
     clock.advance(5.0)
-    write(marker, clock, lags=(350.0, 420.0, 490.0, 525.0, 672.0))
-    for _ in range(4):
-        assert gate.check().admit
-
-
-def test_consecutive_over_budget_or_multi_sample_spike_or_unknown_resets_gate(tmp_path):
-    """연속 초과(예: 9차 678ms → 666ms)·창 내 다수 표본 초과·지연 불명은 즉시 차단하고 30s 안정 대기를 처음부터 다시 센다."""
-    clock = Clock()
-    marker = tmp_path / "tier0.live"
-    gate = AdmissionGate(marker, AdmissionPolicy(), wall_s=lambda: clock.wall, monotonic=lambda: clock.mono)
-
-    write(marker, clock, lags=(320.0, 410.0, 490.0, 530.0, 550.0))
-    assert settle(gate, clock, marker, 30, lags=(320.0, 410.0, 490.0, 530.0, 550.0)).admit
-
-    # 1) 첫 번째 단발 초과(678ms)는 허용되지만, 다음 창에서도 연속 초과(666ms)가 나오면 즉시 닫힌다.
-    clock.advance(5.0)
-    write(marker, clock, lags=(360.0, 420.0, 480.0, 510.0, 678.0))
-    assert gate.check().admit
-    clock.advance(5.0)
-    write(marker, clock, lags=(370.0, 430.0, 495.0, 520.0, 666.0))
+    write(marker, clock, qwe=3)
     adm = gate.check()
-    assert not adm.admit and "666ms > 예산 600ms" in adm.reason
+    assert not adm.admit and adm.code == "queue_wait_exceeded" and "버린 프레임 3개" in adm.reason
+    assert gate.check().code == "queue_wait_exceeded"  # 같은 창을 다시 읽어도 닫힘
+    stats = gate.stats()
+    assert stats["resets"] == {"queue_wait_exceeded": 1}  # 초기화는 열림 → 닫힘 한 번만
+    assert stats["blocked"]["queue_wait_exceeded"] == 2
+    assert stats["last_reset_code"] == "queue_wait_exceeded" and stats["last_reset_ms"] == int(clock.wall * 1000)
 
-    # 닫힌 뒤에는 다시 30초를 채워야 열린다(29초 유지 시점에는 아직 대기, 30초 유지 시점에 열림).
-    clock.advance(1.0)
-    write(marker, clock, lags=(320.0, 400.0, 470.0, 510.0, 540.0))
-    assert not settle(gate, clock, marker, 29, lags=(320.0, 400.0, 470.0, 510.0, 540.0)).admit
-    clock.advance(1.0)
-    write(marker, clock, lags=(320.0, 400.0, 470.0, 510.0, 540.0))
-    assert gate.check().admit
 
-    # 2) 한 표시 파일 창 안에서 2개 이상 표본이 예산을 넘으면 단 한 번의 창이라도 즉시 닫힌다.
+def test_single_over_budget_window_closes_immediately_even_with_one_sample(tmp_path):
+    """진짜 지연 초과는 단 한 표본·한 창이라도 바로 멈춘다(명세 3.2 창 최댓값, 단발 허용 없음)."""
+    clock, marker, gate = default_gate(tmp_path)
+    open_gate(gate, clock, marker)
     clock.advance(5.0)
-    write(marker, clock, lags=(350.0, 410.0, 520.0, 666.0, 678.0))
+    write(marker, clock, lags=(266.0, 301.0, 672.0))
     adm = gate.check()
-    assert not adm.admit and "678ms > 예산 600ms" in adm.reason
+    assert not adm.admit and adm.code == "over_budget" and "672ms > 예산 600ms" in adm.reason
+    assert gate.stats()["resets"] == {"over_budget": 1}
 
-    # 다시 30초 안정화 뒤 열림 확인 후, 지연 불명(unknown=1) 발생 시 즉시 닫히는지 확인한다.
-    clock.advance(1.0)
-    write(marker, clock, lags=(320.0, 400.0, 470.0, 510.0, 540.0))
-    assert settle(gate, clock, marker, 30, lags=(320.0, 400.0, 470.0, 510.0, 540.0)).admit
+
+def test_over_budget_with_tolerable_queue_wait_still_closes(tmp_path):
+    clock, marker, gate = default_gate(tmp_path)
+    open_gate(gate, clock, marker)
     clock.advance(5.0)
-    write(marker, clock, lags=(350.0, 420.0, 480.0, 510.0), unknown=1)
+    write(marker, clock, lags=(300.0, 650.0), qwe=1)
+    assert gate.check().code == "over_budget"
+
+
+@pytest.mark.parametrize("kw, code", [({"unknown": 1}, "lag_unknown"), ({"unknown": 1, "qwe": 1}, "lag_unknown"),
+                                      ({"lags": ()}, "no_samples"), ({"phase": "starting"}, "not_running")])
+def test_unknown_closes_immediately(tmp_path, kw, code):
+    clock, marker, gate = default_gate(tmp_path)
+    open_gate(gate, clock, marker)
+    clock.advance(5.0)
+    write(marker, clock, **kw)
     adm = gate.check()
-    assert not adm.admit and "모르는 표본" in adm.reason
+    assert not adm.admit and adm.code == code
+    assert gate.stats()["resets"] == {code: 1}
+
+
+def test_stale_marker_closes_with_stale_code(tmp_path):
+    clock, marker, gate = default_gate(tmp_path)
+    open_gate(gate, clock, marker)
+    clock.advance(16.0)
+    adm = gate.check()
+    assert not adm.admit and adm.code == "marker_stale"
+
+
+def test_reopens_after_10s_of_passing_after_close(tmp_path):
+    """멈춘 뒤 통과 상태가 10초 이어지면 다시 연다(9.9초에는 아직 대기)."""
+    clock, marker, gate = default_gate(tmp_path)
+    open_gate(gate, clock, marker)
+    clock.advance(5.0)
+    write(marker, clock, lags=(700.0,))
+    assert not gate.check().admit
+    clock.advance(5.0)
+    write(marker, clock)  # 첫 통과 창: 여기서 안정 시계 시작
+    assert gate.check().code == "stabilizing"
+    clock.advance(5.0)
+    write(marker, clock, qwe=1)
+    assert not gate.check().admit
+    clock.advance(4.9)
+    assert not gate.check().admit
+    clock.advance(0.1)
+    adm = gate.check()
+    assert adm.admit
+    stats = gate.stats()
+    assert stats["opened"] == 2 and stats["resets"] == {"over_budget": 1}
+    assert stats["blocked"]["stabilizing"] >= 3 and stats["blocked"]["over_budget"] == 1
+
+
+def test_session10_pattern_mostly_open(tmp_path):
+    """10차 실측 모양: 43분 동안 지연 초과 창 4개·큐 대기 초과 창 18개(대부분 1~2건). 닫힌 시간이 지연 초과 창 주변뿐이어야 한다."""
+    clock, marker, gate = default_gate(tmp_path)
+    open_gate(gate, clock, marker)
+    windows = 43 * 60 // 5
+    over = {100, 200, 300, 400}
+    qwe = {i: (1 if i % 3 else 2) for i in range(50, 50 + 18 * 25, 25)}
+    admitted = 0
+    for i in range(windows):
+        write(marker, clock, lags=(700.0,) if i in over else (250.0, 301.0), qwe=qwe.get(i))
+        for _ in range(5):  # 1초마다 본다
+            admitted += gate.check().admit
+            clock.advance(1.0)
+    ratio = admitted / (windows * 5)
+    assert ratio > 0.97, ratio
+    assert gate.stats()["resets"] == {"over_budget": 4}
 
 
 def test_marker_removed_lingers_as_live_then_admits_all(env):
@@ -350,9 +417,12 @@ def test_budget_defaults_are_consistent_and_env_overrides():
     assert s.policy.lag_budget_ms == 600 and s.policy.live_blocked_types == DEFAULT_LIVE_BLOCKED
     assert s.budget.vllm_gpu_memory_utilization == 0.55
     assert s.policy.allow_without_marker is False  # 기본: 표시 파일 없음 = 모름
+    assert s.policy.resume_after_s == 10.0 and s.policy.max_queue_wait_exceeded == 2
     s = WorkerGpuSettings.from_env({"SIMAI_WORKER_LIVE_BLOCKED_TYPES": "-", "SIMAI_WORKER_LAG_BUDGET_MS": "500",
-                                    "SIMAI_WORKER_DEV_NO_LIVE": "1"})
+                                    "SIMAI_WORKER_DEV_NO_LIVE": "1", "SIMAI_WORKER_RESUME_AFTER_S": "30",
+                                    "SIMAI_WORKER_MAX_QUEUE_WAIT_EXCEEDED": "0"})
     assert s.policy.live_blocked_types == frozenset() and s.policy.lag_budget_ms == 500
+    assert s.policy.resume_after_s == 30.0 and s.policy.max_queue_wait_exceeded == 0
     assert s.policy.allow_without_marker is True
 
 
@@ -365,6 +435,7 @@ def test_budget_defaults_are_consistent_and_env_overrides():
         {"SIMAI_WORKER_LAG_BUDGET_MS": "0"},
         {"SIMAI_WORKER_LIVE_WAIT_MS": "40000"},
         {"SIMAI_WORKER_DEV_NO_LIVE": "maybe"},
+        {"SIMAI_WORKER_MAX_QUEUE_WAIT_EXCEEDED": "-1"},
     ],
 )
 def test_budget_rejects_inconsistent_settings(env):
