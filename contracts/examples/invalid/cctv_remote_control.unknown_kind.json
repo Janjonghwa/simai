@@ -1,0 +1,6 @@
+{
+  "_expect_error": "kind 는 demand 만 허용한다",
+  "kind": "ping",
+  "active": true,
+  "sent_at_ms": 1762056000000
+}

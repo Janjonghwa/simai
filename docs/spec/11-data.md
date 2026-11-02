@@ -69,6 +69,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `clip_access_log` | 이벤트 클립 열람 기록(14장) |
 | `video_segment` | 상시 영상 조각의 객체 키, Tier 0·카메라·구간(촬영 시각)·stream_epoch·해시·크기, 삭제 예정일, 삭제 시각. Tier 0 가 I1 `video_segment` 로 보낸다(5.1, v1.3 수정 36) |
 | `video_access_log` | 상시 영상 열람 기록(14장) |
+| `cctv_remote_egress_log` | 관제 화면 원격 CCTV 송출 바이트의 1분 단위 추가 전용(append-only) 사용량 기록(UTC 달력 월 누적 합산으로 월 80 GB 상한 판정, 영상 바이트 자체는 EC2 에 저장하지 않음, 3.3, v1.3 수정 46) |
 | `upload_grant` | 임시 업로드 주소 발급 기록(올라온 객체 키 검증): 목적(이벤트 프레임·클립, 조치 사진, 아바타 자산, 상시 영상 조각, Scene glTF), 요청 주체(Tier 0·기기·사용자), 서명에 묶은 형식·크기·sha256, 이벤트 프레임·클립이면 이벤트 |
 | `avatar_asset` | 아바타 자산 버전(키 `(world_id, stream_epoch, appearance_version)`, 추가만, 11.5·12.2) |
 | `push_subscription` | Web Push 구독 |

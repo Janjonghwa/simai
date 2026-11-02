@@ -1,0 +1,7 @@
+{
+  "_expect_error": "닫힌 값 객체라 알 수 없는 필드를 실을 수 없다",
+  "kind": "demand",
+  "active": true,
+  "sent_at_ms": 1762056000000,
+  "rtsp_url": "rtsp://admin:secret@192.168.0.10/stream1"
+}

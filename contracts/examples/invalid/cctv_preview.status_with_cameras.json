@@ -1,0 +1,7 @@
+{
+  "_expect_error": "status 에 hello 전용 필드인 cameras 를 함께 실을 수 없다",
+  "kind": "status",
+  "protocol": "simai-cctv-preview/1",
+  "state": "live",
+  "cameras": ["cam1"]
+}

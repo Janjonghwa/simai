@@ -1,0 +1,5 @@
+{
+  "_expect_error": "demand 메시지에 active 불리언이 없다",
+  "kind": "demand",
+  "sent_at_ms": 1762056000000
+}

@@ -1,0 +1,7 @@
+{
+  "kind": "status",
+  "protocol": "simai-cctv-preview/1",
+  "state": "live",
+  "monthly_sent_bytes": 1932735283,
+  "monthly_quota_bytes": 80000000000
+}
