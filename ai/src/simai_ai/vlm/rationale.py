@@ -109,6 +109,8 @@ def build_prompt(inp: Mapping[str, Any], frames: Sequence[Mapping[str, Any]]) ->
     for i, f in enumerate(frames, 1):
         dt = (f["estimated_capture_time_ms"] - obs) / 1000
         lines.append(f"{i}. 카메라 {f['camera_id']}, 이벤트 시점 기준 {dt:+.1f}초")
+    if inp.get("overlay_applied"):
+        lines.append("빨간 영역은 위험 구역, 노란 박스 또는 표시는 대상자다.")
     lines.append("위 이벤트의 근거를 설명하라.")
     return "\n".join(lines)
 
@@ -117,7 +119,7 @@ def build_prompt(inp: Mapping[str, Any], frames: Sequence[Mapping[str, Any]]) ->
 class RationalePrompt:
     """G7 도구의 Prompt 꼴(prompt_id·placeholder·build). 프롬프트·스키마를 바꾸면 prompt_id 를 올린다."""
 
-    prompt_id: str = "vlm-rationale-1"
+    prompt_id: str = "vlm-rationale-2"
     placeholder: bool = False
 
     def build(self, inp: Mapping[str, Any]) -> PromptParts:

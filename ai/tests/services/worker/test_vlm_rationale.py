@@ -559,3 +559,36 @@ def test_local_copy_restart_and_expiry_behaviour(tmp_path):
 
     shutil.rmtree(tmp_path / "event-frames")  # 폴더째 없음(다른 Pod·상태 폴더 초기화)
     assert sorted(run()) == sorted(f["frame_uri"] for f in inp["frames"])
+
+
+def test_overlay_switch_and_dropped_frames(monkeypatch):
+    import services.worker.vlm_rationale as module
+
+    calls = []
+    def draw(frame, meta, state, world_ids, camera):
+        calls.append(frame.source)
+        return frame, True
+
+    monkeypatch.setattr(module, "overlay", draw)
+    inp = _input()
+    class SometimesFails:
+        def __init__(self):
+            self.count = 0
+        def people(self, image):
+            self.count += 1
+            if self.count == 1:
+                raise ValueError("synthetic failure")
+            return []
+
+    vlm = FakeVlm(_answer())
+    handler = VlmRationaleHandler(Store(), SometimesFails(), client_factory=lambda: vlm, decode=_decode,
+                                  monotonic=lambda: 0., env={})
+    handler(_ctx(inp))
+    assert len(calls) == len(vlm.calls[0]["frames"]) == 1
+    assert "빨간 영역" in vlm.calls[0]["prompt"]
+    calls.clear()
+    vlm = FakeVlm(_answer())
+    handler = VlmRationaleHandler(Store(), Provider(), client_factory=lambda: vlm, decode=_decode,
+                                  monotonic=lambda: 0., env={"SIMAI_VLM_OVERLAY": "0"})
+    handler(_ctx(inp))
+    assert not calls and "빨간 영역" not in vlm.calls[0]["prompt"]
