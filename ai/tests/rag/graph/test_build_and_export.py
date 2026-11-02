@@ -139,10 +139,10 @@ def test_export_preserves_human_reviews_and_writes_sql_and_manifest(tmp_path: Pa
         "embeddings/embeddings.jsonl", "sql/legal_graph_schema.sql", "sql/legal_graph_seed.sql",
     }
     seed_sql = (out / "sql" / "legal_graph_seed.sql").read_text(encoding="utf-8")
-    assert "INSERT INTO rag_source VALUES" in seed_sql
+    assert "INSERT INTO rag_source (law_key, " in seed_sql
     assert "INSERT INTO rag_node" in seed_sql
     assert "INSERT INTO rag_edge" in seed_sql
-    assert "INSERT INTO rag_query_template VALUES" in seed_sql
+    assert "INSERT INTO rag_query_template (template_key, rule, target, text, query_input, " in seed_sql
     schema = (out / "sql" / "legal_graph_schema.sql").read_text(encoding="utf-8")
     assert "CREATE EXTENSION IF NOT EXISTS pg_trgm" in schema
     assert "UNIQUE (src_node_id, dst_node_id, edge_kind)" in schema

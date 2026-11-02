@@ -555,4 +555,30 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    /** TBM 보고서(POST·GET /api/reports/tbm, S15P31A101-418) */
+    enum Report implements ErrorCode {
+        REPORT_NOT_FOUND(HttpStatus.NOT_FOUND, "보고서를 찾을 수 없습니다"),
+        INVALID_REPORT_REQUEST(HttpStatus.BAD_REQUEST, "보고서 요청 값이 올바르지 않습니다(work_id 는 양의 정수)"),
+        WORK_HAS_NO_LAYOUT(HttpStatus.CONFLICT, "작업에 연결된 레이아웃이 없습니다. 먼저 작업에 layout_id 를 연결하세요"),
+        REPORT_IN_PROGRESS(HttpStatus.CONFLICT, "이 작업의 보고서를 이미 생성 중입니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Report(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }

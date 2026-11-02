@@ -241,6 +241,35 @@ class WorkUnitIntegrationTest {
                 .andExpect(jsonPath("$.code").value("WORK_UNIT_NOT_FOUND"));
     }
 
+    @Test
+    void 공종과_레이아웃을_작업에_연결한다() throws Exception {
+        String admin = token("admin", Role.ADMIN);
+        String site = jdbc.queryForObject("SELECT site_id FROM site", String.class);
+        Long layout = jdbc.queryForObject("""
+                INSERT INTO layout_plan (site_id, name, items, revision, source, created_at, updated_at)
+                VALUES (?, '시험', '[]'::jsonb, 1, 'PLANNED', now(), now()) RETURNING layout_id
+                """, Long.class, site);
+        try {
+            ObjectNode request = (ObjectNode) MAPPER.readTree(body("2026-11-02", "작업", start, end, zoneId, null, 2, null));
+            request.put("layout_id", layout);
+            request.put("work_type", "OPENING_WORK");
+            mvc.perform(post("/api/work-units").header(HttpHeaders.AUTHORIZATION, admin)
+                            .contentType(MediaType.APPLICATION_JSON).content(MAPPER.writeValueAsString(request)))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.layout_id").value(layout))
+                    .andExpect(jsonPath("$.work_type").value("OPENING_WORK"));
+            mvc.perform(get("/api/work-types").header(HttpHeaders.AUTHORIZATION, admin))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$[1].code").value("OPENING_WORK"));
+            request.put("work_type", "UNKNOWN");
+            mvc.perform(post("/api/work-units").header(HttpHeaders.AUTHORIZATION, admin)
+                            .contentType(MediaType.APPLICATION_JSON).content(MAPPER.writeValueAsString(request)))
+                    .andExpect(status().isBadRequest());
+        } finally {
+            jdbc.update("DELETE FROM work_unit WHERE layout_id = ?", layout);
+            jdbc.update("DELETE FROM layout_plan WHERE layout_id = ?", layout);
+        }
+    }
+
     // ---- 도우미
 
     private static String body(String date, String name, Instant from, Instant to, String zone, String place,
