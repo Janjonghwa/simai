@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import logging
@@ -24,10 +25,12 @@ import os
 import time
 from collections.abc import Callable, Mapping
 from typing import Any
+from pathlib import Path
 
 from simai_ai.providers.contract import schema_errors
 from simai_ai.vlm.client import VlmClient, VlmError, VlmSettings, VlmTimeout
 from simai_ai.vlm.face_blur import KeypointProvider
+from simai_ai.vlm.overlay import overlay
 from simai_ai.vlm.rationale import PROPOSAL_DISCARD_REASON, PROMPT, RETRY_NOTE, check_proposal, parse_answer, upward_only
 
 from .handlers import JobContext, JobFailed
@@ -81,9 +84,12 @@ class VlmRationaleHandler:
         decode: Callable[[bytes], Any] = decode_image,
         max_fetch_workers: int = DEFAULT_FETCH_WORKERS,
         local_frames: LocalFrames | None = None,
+        env: Mapping[str, str] = os.environ,
     ) -> None:
         self._store = store
         self._local_frames = local_frames
+        self._overlay_enabled = env.get("SIMAI_VLM_OVERLAY", "1").strip().lower() not in ("0", "false", "off", "no")
+        self._state_dir = LocalFrames.from_env(env).state_dir
         self._provider = provider
         self._client_factory = client_factory
         self._monotonic = monotonic
@@ -119,7 +125,16 @@ class VlmRationaleHandler:
         if gate.dropped:
             log.warning("이벤트 %s: 얼굴 처리 못 한 프레임 %d개를 뺐다", event_id, len(gate.dropped))
         meta = {f["frame_uri"]: f for f in frames}
-        parts = PROMPT.build({**inp, "frames": [meta[f.source] for f in gate.frames]})
+        vlm_frames = gate.frames
+        applied = False
+        if self._overlay_enabled:
+            cameras = _calibration_cameras(self._state_dir, inp["structured_state"].get("calibration_version"))
+            state = {**inp["structured_state"], "event_zone_id": inp.get("zone_id")}
+            rendered = [overlay(f, meta[f.source], state, inp["world_ids"], cameras.get(meta[f.source]["camera_id"]))
+                        for f in gate.frames]
+            vlm_frames = tuple(f for f, _ in rendered)
+            applied = any(drawn for _, drawn in rendered)
+        parts = PROMPT.build({**inp, "frames": [meta[f.source] for f in gate.frames], "overlay_applied": applied})
         ctx.report_progress(0.3)
 
         for retry in (False, True):
@@ -129,7 +144,7 @@ class VlmRationaleHandler:
                 r = _complete_vlm(
                     client,
                     parts.text + RETRY_NOTE if retry else parts.text,
-                    gate.frames,
+                    vlm_frames,
                     system=parts.system,
                     response_format=parts.response_format,
                     timeout_s=rem_s,
@@ -183,3 +198,20 @@ class VlmRationaleHandler:
 def _check_cancelled(ctx: JobContext) -> None:
     if ctx.cancelled.is_set():
         raise JobFailed("CANCELLED", "작업이 취소됐다")
+
+
+def _calibration_cameras(state_dir: Path, version: Any) -> dict[str, Mapping[str, Any]]:
+    """이벤트가 사용한 버전과 로컬 저장소의 문서 해시가 일치할 때만 읽는다."""
+    if not isinstance(version, str) or not version:
+        return {}
+    try:
+        root = state_dir / "calibrations"
+        head = json.loads((root / "active.json").read_text(encoding="utf-8"))
+        path = root / (hashlib.sha256(version.encode("utf-8")).hexdigest() + ".json")
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        digest = hashlib.sha256(json.dumps(doc, sort_keys=True, allow_nan=False).encode("utf-8")).hexdigest()
+        if version not in head["versions"] or doc["calibration_version"] != version or head["document_hashes"][version] != digest:
+            return {}
+        return {c["camera_id"]: c for c in doc["cameras"]}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}

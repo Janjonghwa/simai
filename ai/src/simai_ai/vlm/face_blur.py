@@ -1,6 +1,6 @@
 """VLM 입력 프레임 얼굴 처리 관문 (명세 5.4 "VLM 입력 프레임", 11.5, FR-89, S15P31A101-270).
 
-VLM 에 들어가는 이미지는 이 모듈의 `VlmFrame` 뿐이고, `VlmFrame` 은 `prepare_vlm_frames` 만 만들 수 있다.
+VLM 에 들어가는 이미지는 이 모듈의 `VlmFrame` 뿐이고, `VlmFrame` 은 `prepare_vlm_frames` 또는 그 프레임의 메모리 내 오버레이 사본으로만 만든다.
 그래서 얼굴 처리를 거치지 않은 원본 프레임은 VLM 입력이 될 수 없다(VLM 클라이언트는 `VlmFrame` 만 받는다).
 
 - 얼굴 영역은 pose keypoint(COCO17 코·눈·귀)로 잡는다. 별도 얼굴 검출 모델은 쓰지 않는다(5.4).
@@ -201,7 +201,7 @@ _GATE = object()
 
 
 class VlmFrame:
-    """얼굴 처리를 거친 VLM 입력 프레임. `prepare_vlm_frames` 만 만들 수 있고 픽셀은 읽기 전용이다."""
+    """얼굴 처리를 거친 VLM 입력 프레임과 그 오버레이 사본. 픽셀은 읽기 전용이다."""
 
     __slots__ = ("source", "face_policy", "record", "_pixels")
 
@@ -213,6 +213,13 @@ class VlmFrame:
         self.face_policy = face_policy
         self.record = record
         self._pixels = pixels
+
+    def with_overlay(self, pixels: np.ndarray) -> VlmFrame:
+        """얼굴 처리된 프레임을 바탕으로 한 메모리 사본을 보존한다."""
+        _check_image(pixels)
+        if pixels.shape != self._pixels.shape:
+            raise ValueError("오버레이 이미지 크기가 다르다")
+        return VlmFrame(_GATE, self.source, self.face_policy, self.record, pixels.copy())
 
     @property
     def pixels(self) -> np.ndarray:

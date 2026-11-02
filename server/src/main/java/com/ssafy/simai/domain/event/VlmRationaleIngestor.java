@@ -61,7 +61,7 @@ public class VlmRationaleIngestor implements I1MessageIngestor {
         List<ObjectNode> found = jdbc.query("""
                 SELECT e.source, e.gateway_id, e.severity, e.delivery, e.event_sequence, e.rule_id, e.rule_version,
                     e.confidence, e.needs_check, to_json(e.world_ids)::text AS world_ids, e.zone_id, e.metrics::text AS metrics,
-                    u.observation_at, u.evidence_ref
+                    u.observation_at, u.evidence_ref, u.calibration_version
                 FROM risk_event e LEFT JOIN risk_event_update u
                     ON u.event_id = e.event_id AND u.event_sequence = e.event_sequence
                 WHERE e.event_id = :id FOR UPDATE OF e
@@ -80,6 +80,7 @@ public class VlmRationaleIngestor implements I1MessageIngestor {
                 input.put("observation_time", rs.getTimestamp("observation_at").getTime());
             }
             input.put("world_state_ref", rs.getString("evidence_ref"));
+            input.put("calibration_version", rs.getString("calibration_version"));
             return input;
         });
         if (found.isEmpty()) {
@@ -106,6 +107,7 @@ public class VlmRationaleIngestor implements I1MessageIngestor {
             frames.add(copy);
         }
         input.set("structured_state", structuredState(input, envelope.sourceId()));
+        input.remove("calibration_version");
         jobs.enqueue(new JobSpec("vlm_rationale", input, 2, 5000, id, null));
         return Outcome.STORED;
     }
@@ -115,11 +117,13 @@ public class VlmRationaleIngestor implements I1MessageIngestor {
                 .addValue("at", I1Json.utc(Instant.ofEpochMilli(input.path("observation_time").longValue())))
                 .addValue("gateway", gateway).addValue("ref", input.path("world_state_ref").asString(null));
         ObjectNode state = mapper.createObjectNode();
+        state.set("calibration_version", input.get("calibration_version"));
         var tracks = state.putArray("tracks");
         for (JsonNode id : input.get("world_ids")) {
             params.addValue("world", id.asString());
             jdbc.query("""
                     SELECT world_id, ST_X(position) AS x, ST_Y(position) AS y, head_z, head_z_validity,
+                        array_to_json(ground_anchor_xyz)::text AS ground_anchor_xyz,
                         observation_state, input_provenance::text AS input_provenance
                     FROM world_track_state WHERE gateway_id = :gateway AND world_id = :world
                       AND observation_at <= :at
@@ -134,6 +138,9 @@ public class VlmRationaleIngestor implements I1MessageIngestor {
                 } else {
                     track.putNull("head_z");
                 }
+                if (rs.getString("ground_anchor_xyz") != null) {
+                    track.set("ground_anchor_xyz", mapper.readTree(rs.getString("ground_anchor_xyz")));
+                }
                 track.put("head_z_validity", rs.getString("head_z_validity"));
                 track.put("observation_state", rs.getString("observation_state"));
                 if (rs.getString("input_provenance") != null) {
@@ -142,11 +149,21 @@ public class VlmRationaleIngestor implements I1MessageIngestor {
             });
         }
         ObjectNode zone = state.putObject("zone").put("zone_id", input.path("zone_id").asString(null));
+        zone.putNull("judge_type");
         params.addValue("zone", input.path("zone_id").asString(null));
-        zone.put("judge_type", jdbc.queryForList("""
-                SELECT eval_type FROM zone WHERE zone_id = :zone AND valid_from <= :at
+        jdbc.query("""
+                SELECT eval_type, ST_AsGeoJSON(polygon)::text AS polygon, z_min_m
+                FROM zone WHERE zone_id = :zone AND valid_from <= :at
                     AND (valid_to IS NULL OR valid_to > :at) ORDER BY zone_version DESC LIMIT 1
-                """, params, String.class).stream().findFirst().orElse(null));
+                """, params, rs -> {
+            zone.put("judge_type", rs.getString("eval_type"));
+            zone.set("polygon_xy", mapper.readTree(rs.getString("polygon")).path("coordinates").get(0));
+            if ("GROUND_FOOTPRINT".equals(rs.getString("eval_type"))) {
+                zone.put("height_m", 0.0);
+            } else if (rs.getObject("z_min_m") != null) {
+                zone.put("height_m", rs.getDouble("z_min_m"));
+            }
+        });
         return state;
     }
 }

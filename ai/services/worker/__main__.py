@@ -82,7 +82,7 @@ def build_handlers(config: Path | None, store: ObjectStore | None = None, *, env
             provider = pose(env["SIMAI_TIER0_WEIGHTS"])
             # 같은 Pod 의 Tier 0 상태 폴더에 있는 이벤트 사진 사본을 먼저 읽는다(-408). 없으면 S3
             handlers["vlm_rationale"] = VlmRationaleHandler(store, provider,  # type: ignore[arg-type]
-                                                            local_frames=LocalFrames.from_env(env))
+                                                            local_frames=LocalFrames.from_env(env), env=env)
             handlers["incident_summary"] = IncidentSummaryHandler(store, provider)  # type: ignore[arg-type]
         except Exception as e:  # ultralytics 없음·가중치 손상: 다른 처리기는 돈다
             why = f"pose 검출기를 열지 못했다: {type(e).__name__}: {e}"
