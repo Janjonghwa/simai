@@ -1,0 +1,337 @@
+{
+ "ticket": "S15P31A101-416",
+ "design": "docs/design/legal-graph-pipeline.md",
+ "laws": [
+  {
+   "law_key": "OSHA",
+   "law_name": "산업안전보건법",
+   "law_id": "001766",
+   "level": "LAW",
+   "law_kind": "법률",
+   "mst": "291447",
+   "effective_date": "20261027",
+   "promulgation_date": "20261027",
+   "promulgation_no": "22122",
+   "source": "api-xml",
+   "source_url": "https://www.law.go.kr/DRF/lawService.do?OC=%2A%2A%2A&target=eflaw&MST=291447&efYd=20261027&type=XML",
+   "fetched_at": "2026-11-02T09:03:42+00:00",
+   "raw_sha256": "1c67b0c76b7363a65bb7128b0a49ac386b3dcc5b39aa5b37f99e90e03a6685c9",
+   "raw_bytes": 450242,
+   "articles": 184,
+   "appendices": 0
+  },
+  {
+   "law_key": "OSHA_DECREE",
+   "law_name": "산업안전보건법 시행령",
+   "law_id": "003786",
+   "level": "DECREE",
+   "law_kind": "대통령령",
+   "mst": "288347",
+   "effective_date": "20260801",
+   "promulgation_date": "20260728",
+   "promulgation_no": "36540",
+   "source": "api-xml",
+   "source_url": "https://www.law.go.kr/DRF/lawService.do?OC=%2A%2A%2A&target=eflaw&MST=288347&efYd=20260801&type=XML",
+   "fetched_at": "2026-11-02T09:03:45+00:00",
+   "raw_sha256": "6f71f7d1e3ee075c35937bad04f6a307493a2be745e754fb8f4a7ea3d319a01f",
+   "raw_bytes": 938581,
+   "articles": 125,
+   "appendices": 35
+  },
+  {
+   "law_key": "OSHA_RULE",
+   "law_name": "산업안전보건법 시행규칙",
+   "law_id": "007364",
+   "level": "MINISTRY_RULE",
+   "law_kind": "고용노동부령",
+   "mst": "288431",
+   "effective_date": "20260801",
+   "promulgation_date": "20260728",
+   "promulgation_no": "00477",
+   "source": "api-xml",
+   "source_url": "https://www.law.go.kr/DRF/lawService.do?OC=%2A%2A%2A&target=eflaw&MST=288431&efYd=20260801&type=XML",
+   "fetched_at": "2026-11-02T09:03:48+00:00",
+   "raw_sha256": "7832deea3f035a67db4d3207c4c2b6c20ce75024a8e18331cb3955894ac18f95",
+   "raw_bytes": 2821078,
+   "articles": 252,
+   "appendices": 27
+  },
+  {
+   "law_key": "OSHA_STD",
+   "law_name": "산업안전보건기준에 관한 규칙",
+   "law_id": "007363",
+   "level": "MINISTRY_RULE",
+   "law_kind": "고용노동부령",
+   "mst": "273603",
+   "effective_date": "20260302",
+   "promulgation_date": "20250901",
+   "promulgation_no": "00450",
+   "source": "api-xml",
+   "source_url": "https://www.law.go.kr/DRF/lawService.do?OC=%2A%2A%2A&target=eflaw&MST=273603&efYd=20260302&type=XML",
+   "fetched_at": "2026-11-02T09:03:51+00:00",
+   "raw_sha256": "7fbf9daee2da73d92af051633283d262994e44b3403947f8a304b7d5e81fe9a0",
+   "raw_bytes": 1325229,
+   "articles": 690,
+   "appendices": 18
+  },
+  {
+   "law_key": "SAPA",
+   "law_name": "중대재해 처벌 등에 관한 법률",
+   "law_id": "013993",
+   "level": "LAW",
+   "law_kind": "법률",
+   "mst": "228817",
+   "effective_date": "20220127",
+   "promulgation_date": "20210126",
+   "promulgation_no": "17907",
+   "source": "api-xml",
+   "source_url": "https://www.law.go.kr/DRF/lawService.do?OC=%2A%2A%2A&target=eflaw&MST=228817&efYd=20220127&type=XML",
+   "fetched_at": "2026-11-02T09:03:54+00:00",
+   "raw_sha256": "8a17c0970dc6ed5c2dc8107c505cc977c335518524a9eaf64b3e27a152398103",
+   "raw_bytes": 41494,
+   "articles": 16,
+   "appendices": 0
+  },
+  {
+   "law_key": "SAPA_DECREE",
+   "law_name": "중대재해 처벌 등에 관한 법률 시행령",
+   "law_id": "014159",
+   "level": "DECREE",
+   "law_kind": "대통령령",
+   "mst": "277417",
+   "effective_date": "20251001",
+   "promulgation_date": "20251001",
+   "promulgation_no": "35805",
+   "source": "api-xml",
+   "source_url": "https://www.law.go.kr/DRF/lawService.do?OC=%2A%2A%2A&target=eflaw&MST=277417&efYd=20251001&type=XML",
+   "fetched_at": "2026-11-02T09:03:56+00:00",
+   "raw_sha256": "63a549d2422babdd0fc6bfc73b6e224165a280fdf2ebfd136470d55927eb94f0",
+   "raw_bytes": 97393,
+   "articles": 13,
+   "appendices": 5
+  },
+  {
+   "law_key": "STD_TEMP_WORKS",
+   "law_name": "가설공사 표준안전 작업지침",
+   "law_id": "22332",
+   "level": "ADMIN_RULE",
+   "law_kind": "고시",
+   "mst": "2100000186031",
+   "effective_date": "20200116",
+   "promulgation_date": "20200107",
+   "promulgation_no": "2020-3",
+   "source": "api-xml",
+   "source_url": "https://www.law.go.kr/DRF/lawService.do?OC=%2A%2A%2A&target=admrul&ID=2100000186031&type=XML",
+   "fetched_at": "2026-11-02T09:03:59+00:00",
+   "raw_sha256": "33f10c1fc13c4f8e1c407f1a49ebf68dbaea9d992ddd84181ae4ba0d6b88d120",
+   "raw_bytes": 27105,
+   "articles": 29,
+   "appendices": 0
+  },
+  {
+   "law_key": "STD_FALL",
+   "law_name": "추락재해방지표준안전작업지침",
+   "law_id": "34901",
+   "level": "ADMIN_RULE",
+   "law_kind": "고시",
+   "mst": "2100000186039",
+   "effective_date": "20200116",
+   "promulgation_date": "20200107",
+   "promulgation_no": "2020-8",
+   "source": "api-xml",
+   "source_url": "https://www.law.go.kr/DRF/lawService.do?OC=%2A%2A%2A&target=admrul&ID=2100000186039&type=XML",
+   "fetched_at": "2026-11-02T09:04:01+00:00",
+   "raw_sha256": "2ce8a9b2b46c2b625da1141f20e8b018436ba170a8085160acde6ea14eeb4b5a",
+   "raw_bytes": 33754,
+   "articles": 36,
+   "appendices": 0
+  },
+  {
+   "law_key": "STD_EXCAVATION",
+   "law_name": "굴착공사 표준안전 작업지침",
+   "law_id": "34921",
+   "level": "ADMIN_RULE",
+   "law_kind": "고시",
+   "mst": "2100000226002",
+   "effective_date": "20230701",
+   "promulgation_date": "20230701",
+   "promulgation_no": "2023-35",
+   "source": "api-xml",
+   "source_url": "https://www.law.go.kr/DRF/lawService.do?OC=%2A%2A%2A&target=admrul&ID=2100000226002&type=XML",
+   "fetched_at": "2026-11-02T09:04:04+00:00",
+   "raw_sha256": "893ff518a323d3a995f340e681975d9d103cb3679ab117d3265567a2d73ab483",
+   "raw_bytes": 44358,
+   "articles": 36,
+   "appendices": 0
+  },
+  {
+   "law_key": "RISK_ASSESSMENT",
+   "law_name": "사업장 위험성평가에 관한 지침",
+   "law_id": "2052906",
+   "level": "ADMIN_RULE",
+   "law_kind": "고시",
+   "mst": "2100000251014",
+   "effective_date": "20250102",
+   "promulgation_date": "20241218",
+   "promulgation_no": "2024-76",
+   "source": "api-xml",
+   "source_url": "https://www.law.go.kr/DRF/lawService.do?OC=%2A%2A%2A&target=admrul&ID=2100000251014&type=XML",
+   "fetched_at": "2026-11-02T09:04:07+00:00",
+   "raw_sha256": "8f4d1c82102b5e812eba02e518dda8e29c968d17501dcdc5b44db3fe57721864",
+   "raw_bytes": 125755,
+   "articles": 29,
+   "appendices": 0
+  }
+ ],
+ "graph": {
+  "nodes": {
+   "APPENDIX": 85,
+   "ARTICLE": 1410,
+   "CONCEPT": 42,
+   "EXTERNAL_LAW": 206,
+   "ITEM": 3552,
+   "LAW": 10,
+   "PARAGRAPH": 2053,
+   "RISK_RULE": 7,
+   "SUBITEM": 598
+  },
+  "edges": {
+   "APPENDIX_RELATES": 99,
+   "CITES_EXTERNAL": 523,
+   "CONTAINS": 7698,
+   "DELEGATES": 391,
+   "HAS_HAZARD": 145,
+   "INVOLVES_EQUIPMENT": 182,
+   "MITIGATES": 19,
+   "MUTATIS_MUTANDIS": 217,
+   "NOTWITHSTANDING": 44,
+   "REFERS_TO": 4718,
+   "REQUIRES_CONTROL": 136,
+   "TAGGED_RULE": 93
+  },
+  "edges_by_status": {
+   "auto": 13690,
+   "candidate": 573,
+   "spec": 2
+  },
+  "nodes_by_law": {
+   "OSHA": 1158,
+   "OSHA_DECREE": 1014,
+   "OSHA_RULE": 1597,
+   "OSHA_STD": 2835,
+   "RISK_ASSESSMENT": 236,
+   "SAPA": 96,
+   "SAPA_DECREE": 136,
+   "STD_EXCAVATION": 275,
+   "STD_FALL": 188,
+   "STD_TEMP_WORKS": 173
+  },
+  "embedded_nodes": 3529,
+  "unresolved_refs": 10,
+  "dropped_refs": {
+   "self_or_ancestor": 155
+  }
+ },
+ "files": {
+  "graph/nodes.jsonl": {
+   "sha256": "2425f7edaf4a34dca3eb62d0b50d2cad6d16349333a8453318b8ae18d2dd0e82",
+   "bytes": 9179425
+  },
+  "graph/edges.jsonl": {
+   "sha256": "4e6dbeaf09daecc6cbfff7e15f6b82fabda09958e447a3775b996980cdbe5c24",
+   "bytes": 3876564
+  },
+  "graph/unresolved.jsonl": {
+   "sha256": "ea8ebba8c195570885874b0283a9a0205a685fa24ae63b7153d67f58b49abd3b",
+   "bytes": 1638
+  },
+  "embeddings/embeddings.jsonl": {
+   "sha256": "c20dcc9bb9496eb964d022f0fc0780f8d2612e3066b7200c22e1caaa21914836",
+   "bytes": 19973884
+  },
+  "sql/legal_graph_schema.sql": {
+   "sha256": "a20197cd2602681aab07471fa3185cc89d70b67bc0add62d60a0bfa535d4c6a2",
+   "bytes": 2300
+  },
+  "sql/legal_graph_seed.sql": {
+   "sha256": "9af9416d87d19812fc8ee23c34dd39d38566ceba4ecc13c77e37bce01061957d",
+   "bytes": 62937192
+  },
+  "crosscheck.json": {
+   "sha256": "356fd404af6ebf76802b90bd1eeddb2d0885610dfc97c6f820dc3ce28001d2ff",
+   "bytes": 13729
+  }
+ },
+ "inputs": {
+  "lexicon_sha256": "4b4fcb0802c0268ac640f1a313a18cbe5791342afc4c96977c935a00d91759a8",
+  "query_templates_sha256": "8361963db2b1b3f1c7d0ad0f45b05a466f840e4fa8c28c62decf351ac08e61f2"
+ },
+ "kosha": {
+  "checked_at": "2026-11-02",
+  "kosha_guide_metadata_api": {
+   "url": "https://www.data.go.kr/data/15144147/openapi.do",
+   "license": "제한 없음",
+   "ingest": "metadata-only, 키 필요"
+  },
+  "kosha_guide_list_file": {
+   "url": "https://www.data.go.kr/data/15116595/fileData.do",
+   "license": "공공누리 제3유형(출처표시, 변경금지)",
+   "ingest": "no"
+  },
+  "kosha_guide_body": {
+   "url": "https://portal.kosha.or.kr",
+   "license": "확인 못 함",
+   "ingest": "no"
+  },
+  "accident_case_api": {
+   "url": "https://www.data.go.kr/data/15121001/openapi.do",
+   "license": "제한 없음",
+   "ingest": "가능(키·개인정보 검수 뒤)"
+  },
+  "accident_case_attachment_api": {
+   "url": "https://www.data.go.kr/data/15121008/openapi.do",
+   "license": "제한 없음",
+   "ingest": "가능(키 필요)"
+  },
+  "sif_archive_file": {
+   "url": "https://www.data.go.kr/data/15140383/fileData.do",
+   "license": "공공누리 제3유형(출처표시, 변경금지)",
+   "ingest": "no"
+  }
+ },
+ "embedding": {
+  "model": "Qwen/Qwen3-Embedding-0.6B",
+  "revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+  "dim": 1024,
+  "settings": {
+   "pooling": "last_token",
+   "padding_side": "left",
+   "normalize": "l2",
+   "dtype": "float32",
+   "max_length": 8192,
+   "document_prefix": "",
+   "query_format": "Instruct: {instruction}\\nQuery:{query}"
+  },
+  "query_instruction": "Given a Korean description of a construction-site safety risk, retrieve the Korean occupational safety law provisions that require the relevant protective measures",
+  "batch_size": 8,
+  "device": "cuda",
+  "runtime": {
+   "torch": "2.11.0+cu130",
+   "transformers": "5.9.0"
+  },
+  "weights_sha256": "0437e45c94563b09e13cb7a64478fc406947a93cb34a7e05870fc8dcd48e23fd",
+  "vectors": 3548,
+  "computed_this_run": 3484,
+  "seconds_this_run": 249.7,
+  "embeddings_sha256": "c20dcc9bb9496eb964d022f0fc0780f8d2612e3066b7200c22e1caaa21914836"
+ },
+ "crosscheck": {
+  "lsRlt_rows": 14,
+  "lsRlt_catalog_pairs": 12,
+  "lsRlt_catalog_pairs_with_graph_edges": 12,
+  "lsRlt_external_rows": 2,
+  "graph_catalog_pairs_not_in_lsRlt": 12,
+  "aiRltLs_catalog_hits": 78,
+  "aiRltLs_hits_linked_in_graph": 41
+ }
+}
