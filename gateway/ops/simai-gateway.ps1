@@ -1,9 +1,10 @@
 ﻿# simai 로비 게이트웨이 노트북 도우미 (Windows PowerShell 5.1 이상, S15P31A101-393). 설명은 같은 폴더 README.md.
-# 더블클릭: simai-gateway.cmd  →  메뉴(1 설치·갱신 · 2 점검 · 3 관제 시작 · 4 관제 끄기)
+# 더블클릭: simai-gateway.cmd  →  메뉴(1 설치·갱신 · 2 점검 · 3 관제 시작 · 4 관제 끄기 · 5 미리보기만 · 6~8 원격)
 # 명령줄: simai-gateway.cmd run -PodIp 1.2.3.4 -ControlPort 40001 -VideoPort 40002
+# 원격(S15P31A101-394): 게이트웨이 remote-setup(관리자 1회) · 개발 노트북 dev-remote(1회)·rdp · ssh simai-gw 로 run-remote/preview-remote/stop/status
 # 비밀 값(.env·토큰·키)은 화면에 찍지 않는다. 키 이름만 확인한다.
 param(
-  [ValidateSet('menu', 'setup', 'check', 'run', 'stop')][string]$Command = 'menu',
+  [ValidateSet('menu', 'setup', 'check', 'run', 'stop', 'preview', 'remote-setup', 'run-remote', 'preview-remote', 'status', 'dev-remote', 'rdp')][string]$Command = 'menu',
   [string]$PodIp = '',
   [int]$ControlPort = 0,
   [int]$VideoPort = 0,
@@ -26,6 +27,7 @@ $RelayCfg = $RelayConfig
 if (-not $RelayCfg) { $RelayCfg = Join-Path $Root 'gateway\relay\configs\lobby.toml' }
 $StateFile = Join-Path $LocalDir 'gateway-pod.json'
 $PidFile = Join-Path $LocalDir 'gateway-pids.json'
+$ModeFile = Join-Path $LocalDir 'gateway-mode.txt'   # 지금 모드(관제·미리보기), 끄면 지운다
 $SshDir = Join-Path $env:USERPROFILE '.ssh'
 $Pem = Join-Path $SshDir 'K15A101T.pem'
 $Utf8 = New-Object System.Text.UTF8Encoding $false
@@ -190,7 +192,8 @@ function Do-Stop([switch]$Quiet) {
     if (Get-Process -Id $p -ErrorAction SilentlyContinue) { taskkill /PID $p /T /F | Out-Null }
   }
   Remove-Item $PidFile -Force
-  if (-not $Quiet) { Say '터널·경보 단말·영상 중계를 껐다' }
+  Remove-Item $ModeFile -Force -ErrorAction SilentlyContinue
+  if (-not $Quiet) { Say '관제·미리보기 창을 껐다' }
 }
 
 function Do-Run {
@@ -224,7 +227,182 @@ function Do-Run {
   Start-Sleep 3
   $p3 = Start-Process powershell -PassThru -WorkingDirectory $RelayDir -ArgumentList '-NoExit', '-Command', "`$Host.UI.RawUI.WindowTitle='simai 영상 중계'; uv run simai-relay run --config '$RelayCfg' --send --preview-port 47032"
   (@($p1.Id, $p2.Id, $p3.Id) | ConvertTo-Json) | Set-Content $PidFile -Encoding ascii
+  "관제 Pod $($s.PodIp) 제어 $($s.ControlPort) 영상 $($s.VideoPort) ($(Get-Date -Format 'MM-dd HH:mm'))" | Set-Content $ModeFile -Encoding utf8
   Say '관제 시작: 창 3개(터널·경보 단말·영상 중계). 끌 때는 메뉴 4'
+}
+
+function Do-Preview {
+  # GPU Pod 없이 카메라 → 관제 앱 CCTV 로컬 미리보기만(Tier 0 로 보내지 않음). 같은 노트북 브라우저의 simai.live 관제 화면에서 본다.
+  Need uv
+  New-Item -ItemType Directory -Force $LocalDir | Out-Null
+  Do-Stop -Quiet
+  $p = Start-Process powershell -PassThru -WorkingDirectory $RelayDir -ArgumentList '-NoExit', '-Command', "`$Host.UI.RawUI.WindowTitle='simai 카메라 미리보기(전송 없음)'; uv run simai-relay run --config '$RelayCfg' --preview-port 47032"
+  (@($p.Id) | ConvertTo-Json) | Set-Content $PidFile -Encoding ascii
+  "미리보기(전송 없음) ($(Get-Date -Format 'MM-dd HH:mm'))" | Set-Content $ModeFile -Encoding utf8
+  Say '미리보기 시작(전송 없음). Pod 가 뜨면 3(관제 시작)으로 바꾼다. 끌 때는 4'
+}
+
+# ---------- 원격 (S15P31A101-394) ----------
+# 게이트웨이가 EC2 로 역터널을 걸어 둔다: EC2 의 127.0.0.1:2222 → 게이트웨이 sshd, 127.0.0.1:13389 → 게이트웨이 원격 데스크톱.
+# EC2 sshd 는 GatewayPorts 기본값(no)이라 EC2 루프백에만 열린다. 개발 노트북은 EC2 를 거쳐(ProxyJump·로컬 포워드) 들어온다.
+$RemoteDir = '~/simai-gateway'           # EC2 ubuntu 홈 아래. 공개키·게이트웨이 사용자 이름·포트 정리 스크립트만 둔다(비밀 아님)
+$TunnelScript = Join-Path $LocalDir 'gateway-remote-tunnel.ps1'
+$TunnelTask = 'simai-gateway-remote'
+$RunTask = 'simai-gateway-run'
+
+function Test-Admin {
+  return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+function To-B64([string]$s) { return [Convert]::ToBase64String($Utf8.GetBytes(($s -replace "`r", ''))) }
+function Ec2([string]$cmd) {
+  $out = ssh -o BatchMode=yes -o ConnectTimeout=10 simai-ec2 $cmd
+  if ($LASTEXITCODE) { Fail "EC2 명령 실패: $cmd" }
+  return $out
+}
+
+function Do-RemoteSetup {
+  if (-not (Test-Admin)) { Fail '관리자 권한으로 연다(simai-gateway.cmd 우클릭 → 관리자 권한으로 실행)' }
+  Need ssh
+  # 1) OpenSSH 서버: 127.0.0.1 에서만 듣고 키 인증만
+  $cap = Get-WindowsCapability -Online -Name 'OpenSSH.Server*' | Select-Object -First 1
+  if ($cap.State -ne 'Installed') { Say 'OpenSSH 서버 설치(몇 분 걸릴 수 있다)'; Add-WindowsCapability -Online -Name $cap.Name | Out-Null }
+  Set-Service sshd -StartupType Automatic
+  Start-Service sshd
+  $cfg = 'C:\ProgramData\ssh\sshd_config'
+  $text = [IO.File]::ReadAllText($cfg)
+  $mark = '# simai-gateway (S15P31A101-394)'
+  if (-not $text.Contains($mark)) {
+    # sshd 는 처음 나온 값을 쓰므로 맨 앞에 둔다(Match 블록·기본 설정은 건드리지 않음)
+    $head = "$mark`r`nListenAddress 127.0.0.1`r`nPasswordAuthentication no`r`nPubkeyAuthentication yes`r`n`r`n"
+    [IO.File]::WriteAllText($cfg, $head + $text, (New-Object System.Text.UTF8Encoding $false))
+  }
+  Restart-Service sshd
+  Say 'OpenSSH 서버: 127.0.0.1 전용, 키 인증만'
+
+  # 2) 개발 노트북 공개키(개발 노트북 dev-remote 가 EC2 에 올려 둔 것)
+  $keys = @(Ec2 "cat $RemoteDir/dev_keys.pub 2>/dev/null; true") | Where-Object { $_ -match '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-\S+) \S+' }
+  $ak = 'C:\ProgramData\ssh\administrators_authorized_keys'    # 관리자 계정은 이 파일만 본다(Windows OpenSSH)
+  if ($keys.Count) {
+    [IO.File]::WriteAllLines($ak, [string[]]$keys, $Utf8)
+    icacls $ak /inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F' | Out-Null
+    Say "개발 노트북 공개키 $($keys.Count)개 등록"
+  } else {
+    Warn '개발 노트북 공개키가 EC2 에 아직 없다. 개발 노트북에서 7(원격 준비)을 한 뒤 6 을 다시 한다.'
+  }
+  Ec2 "mkdir -p $RemoteDir; echo $(To-B64 $env:USERNAME) | base64 -d > $RemoteDir/gateway_user" | Out-Null
+
+  # 3) 원격 데스크톱 켜기(역터널로만 들어오므로 방화벽 규칙은 손대지 않는다)
+  Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+  if ((Get-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server').fDenyTSConnections -ne 0) { Warn '원격 데스크톱이 정책으로 막혀 있다(SSH 는 된다)' } else { Say '원격 데스크톱 켬' }
+
+  # 4) EC2 에 옛 역터널 포트 정리 스크립트(끊긴 세션이 포트를 쥐고 있으면 새 역터널이 실패한다)
+  $free = "#!/bin/sh`n# simai gateway reverse tunnel: kill stale ubuntu sshd holding 127.0.0.1:2222/13389 (S15P31A101-394)`nfor p in 2222 13389; do`n  for pid in `$(ss -ltnpH `"sport = :`$p`" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do kill `"`$pid`" 2>/dev/null; done`ndone`nexit 0`n"
+  Ec2 "echo $(To-B64 $free) | base64 -d > $RemoteDir/free-ports.sh; chmod +x $RemoteDir/free-ports.sh" | Out-Null
+
+  # 5) 역터널: 로그인 때 숨김 창으로 뜨고 끊기면 다시 붙는다
+  $tunnel = @'
+# simai 게이트웨이 원격 역터널 (S15P31A101-394). 예약 작업 simai-gateway-remote 가 로그인 때 띄운다. 도우미 6 이 다시 쓴다.
+$log = Join-Path $PSScriptRoot 'gateway-remote-tunnel.log'
+while ($true) {
+  Add-Content $log ("{0:yyyy-MM-dd HH:mm:ss} 연결" -f (Get-Date))
+  $t0 = Get-Date
+  ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -R 127.0.0.1:2222:127.0.0.1:22 -R 127.0.0.1:13389:127.0.0.1:3389 simai-ec2
+  Add-Content $log ("{0:yyyy-MM-dd HH:mm:ss} 끊김(코드 {1})" -f (Get-Date), $LASTEXITCODE)
+  if (((Get-Date) - $t0).TotalSeconds -lt 20) { ssh -o BatchMode=yes -o ConnectTimeout=10 simai-ec2 '~/simai-gateway/free-ports.sh' }
+  Start-Sleep 5
+}
+'@
+  [IO.File]::WriteAllText($TunnelScript, $tunnel, (New-Object System.Text.UTF8Encoding $true))
+  $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$TunnelScript`""
+  $trg = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+  $pri = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+  $set = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+  Register-ScheduledTask -TaskName $TunnelTask -Action $act -Trigger $trg -Principal $pri -Settings $set -Force | Out-Null
+  Stop-ScheduledTask -TaskName $TunnelTask -ErrorAction SilentlyContinue
+  Start-ScheduledTask -TaskName $TunnelTask
+  Start-Sleep 5
+  $on = Ec2 "ss -ltnH 'sport = :2222' | wc -l"
+  if ([int]($on | Select-Object -Last 1) -ge 1) { Say '역터널 열림(EC2 127.0.0.1:2222·13389). 개발 노트북에서 ssh simai-gw / 8(원격 데스크톱)' }
+  else { Warn "역터널이 아직 안 열렸다. 로그: $(Join-Path $LocalDir 'gateway-remote-tunnel.log')" }
+  Warn '게이트웨이는 전원 연결·절전 해제·Windows 로그인 상태로 둔다(역터널은 로그인 때 뜬다).'
+}
+
+function Start-InSession([string]$modeArgs, [string]$label) {
+  # SSH 세션에서 띄운 창은 게이트웨이 화면에 안 보이고 SSH 를 끊으면 함께 죽는다 → 로그인한 사용자 세션의 예약 작업으로 띄운다.
+  $arg = "-NoProfile -WindowStyle Minimized -ExecutionPolicy Bypass -File `"$PSCommandPath`" $modeArgs"
+  $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
+  $pri = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+  Register-ScheduledTask -TaskName $RunTask -Action $act -Principal $pri -Force | Out-Null
+  $t0 = Get-Date
+  Start-ScheduledTask -TaskName $RunTask
+  $fresh = $false
+  for ($i = 0; $i -lt 40; $i++) {
+    Start-Sleep -Milliseconds 500
+    if ((Test-Path $PidFile) -and (Get-Item $PidFile).LastWriteTime -ge $t0) { $fresh = $true; break }
+  }
+  if ($fresh) { Say "게이트웨이 화면에서 $label 시작. PID $((Get-Content $PidFile -Raw | ConvertFrom-Json) -join ', ')" }
+  else { Warn '20초 안에 시작 기록이 없다. 게이트웨이에 사용자가 로그인돼 있는지, 원격 데스크톱으로 화면을 본다.' }
+}
+
+function Do-RunRemote {
+  if (-not $PodIp -or -not $ControlPort -or -not $VideoPort) { Fail 'run-remote 는 -PodIp -ControlPort -VideoPort 를 모두 준다' }
+  Start-InSession "run -PodIp $PodIp -ControlPort $ControlPort -VideoPort $VideoPort" '관제(창 3개)'
+}
+
+function Do-PreviewRemote { Start-InSession 'preview' '카메라 미리보기' }
+
+function Do-Status {
+  $mode = '꺼짐'
+  if (Test-Path $ModeFile) { $mode = (Get-Content $ModeFile -Raw).Trim() }
+  Say "모드: $mode"
+  if (Test-Path $PidFile) {
+    foreach ($p in (Get-Content $PidFile -Raw | ConvertFrom-Json)) {
+      $alive = [bool](Get-Process -Id $p -ErrorAction SilentlyContinue)
+      Say "  창 PID $p : $(if ($alive) { '살아 있음' } else { '죽음' })"
+    }
+  }
+  $t = Get-ScheduledTask -TaskName $TunnelTask -ErrorAction SilentlyContinue
+  if ($t) { Say "원격 역터널 작업: $($t.State)" } else { Say '원격 역터널 작업: 없음(6 을 안 함)' }
+  if (Test-Path $RelayCfg) {
+    $hosts = Select-String -Path $RelayCfg -Pattern '^\s*host\s*=\s*"([^"]+)"' | ForEach-Object { $_.Matches[0].Groups[1].Value }
+    $up = @($hosts | Where-Object { Test-Tcp $_ 554 800 }).Count
+    Say "카메라 RTSP 응답: $up / $($hosts.Count)"
+  }
+}
+
+function Do-DevRemote {
+  # 개발 노트북에서 1회: 공개키를 EC2 에 올리고(게이트웨이 6 이 가져감) ~/.ssh/config 에 simai-gw 를 둔다.
+  Need ssh
+  $pub = Join-Path $SshDir 'id_ed25519.pub'
+  if (-not (Test-Path $pub)) { Fail "공개키가 없다: $pub (ssh-keygen -t ed25519 로 먼저 만든다)" }
+  $k = ([IO.File]::ReadAllText($pub)).Trim()
+  Ec2 "mkdir -p $RemoteDir; echo $(To-B64 $k) | base64 -d > $RemoteDir/.k; echo >> $RemoteDir/.k; touch $RemoteDir/dev_keys.pub; grep -qxFf $RemoteDir/.k $RemoteDir/dev_keys.pub || cat $RemoteDir/.k >> $RemoteDir/dev_keys.pub; rm -f $RemoteDir/.k" | Out-Null
+  Say '공개키를 EC2 에 올렸다(게이트웨이에서 6 을 하면 등록된다)'
+  $user = (@(Ec2 "cat $RemoteDir/gateway_user 2>/dev/null; true") -join '').Trim()
+  if (-not $user) { Warn '게이트웨이가 아직 6(원격 열기)을 하지 않았다. 게이트웨이에서 6 을 한 뒤 여기서 7 을 한 번 더 한다(SSH 설정 simai-gw 를 그때 만든다).'; return }
+  $cfg = Join-Path $SshDir 'config'
+  $text = ''
+  if (Test-Path $cfg) { $text = [IO.File]::ReadAllText($cfg) }
+  if ($text -match '(?m)^\s*Host\s+simai-gw\s*$') { Say 'SSH 설정 simai-gw 있음' }
+  else {
+    $block = "`r`nHost simai-gw`r`n    HostName 127.0.0.1`r`n    Port 2222`r`n    User $user`r`n    ProxyJump simai-ec2`r`n    HostKeyAlias simai-gw`r`n    StrictHostKeyChecking accept-new`r`n    ServerAliveInterval 15`r`n"
+    [IO.File]::AppendAllText($cfg, $block, $Utf8)
+    Say "SSH 설정 simai-gw 추가(사용자 $user)"
+  }
+  Say '확인: ssh simai-gw hostname  /  원격 데스크톱: 8'
+}
+
+function Do-Rdp {
+  # 개발 노트북: EC2 로컬 포워드(127.0.0.2:13389 → EC2 127.0.0.1:13389 → 게이트웨이 3389) 뒤 mstsc. 127.0.0.1 은 mstsc 가 거절할 수 있어 .2 를 쓴다.
+  Need ssh
+  $p = Start-Process ssh -PassThru -WindowStyle Hidden -ArgumentList '-N', '-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=15', '-L', '127.0.0.2:13389:127.0.0.1:13389', 'simai-ec2'
+  try {
+    $ok = $false
+    for ($i = 0; $i -lt 20; $i++) { Start-Sleep -Milliseconds 500; if (Test-Tcp '127.0.0.2' 13389 300) { $ok = $true; break } }
+    if (-not $ok) { Fail 'EC2 포워드가 열리지 않았다' }
+    Say '원격 데스크톱 연결. 경보 소리가 로비에서 나도록 "로컬 리소스 → 원격 오디오 → 원격 컴퓨터에서 재생" 으로 둔다.'
+    Start-Process mstsc -ArgumentList '/v:127.0.0.2:13389' -Wait
+  } finally { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
 }
 
 # ---------- 메뉴 ----------
@@ -234,16 +412,27 @@ function Show-Menu {
     Write-Host '=== simai 게이트웨이 ===' -ForegroundColor Green
     Write-Host ' 1  설치·갱신 (저장소 pull·의존성·비밀 묶음·SSH·시계)'
     Write-Host ' 2  점검 (EC2·카메라·경보 소리)'
-    Write-Host ' 3  관제 시작 (터널 → 경보 단말 → 영상 중계)'
-    Write-Host ' 4  관제 끄기'
+    Write-Host ' 3  관제 시작 (GPU Pod 가 떠 있을 때: 터널 → 경보 단말 → 영상 중계)'
+    Write-Host ' 4  끄기 (관제·미리보기)'
+    Write-Host ' 5  카메라 미리보기만 (GPU 없이, 전송 없음)'
+    Write-Host ' 6  원격 열기 설정 (게이트웨이, 관리자, 처음 1회)'
+    Write-Host ' 7  [개발 노트북] 원격 준비 (처음 1회)'
+    Write-Host ' 8  [개발 노트북] 게이트웨이 원격 데스크톱'
+    Write-Host ' 9  지금 상태(모드·창·역터널·카메라)'
     Write-Host ' q  나가기'
     $c = Read-Host '선택'
     try {
-      switch ($c) { '1' { Do-Setup } '2' { Do-Check } '3' { Do-Run } '4' { Do-Stop } 'q' { return } default { } }
+      switch ($c) {
+        '1' { Do-Setup } '2' { Do-Check } '3' { Do-Run } '4' { Do-Stop } '5' { Do-Preview }
+        '6' { Do-RemoteSetup } '7' { Do-DevRemote } '8' { Do-Rdp } '9' { Do-Status } 'q' { return } default { }
+      }
     } catch { Write-Host "[gateway] 멈춤: $($_.Exception.Message)" -ForegroundColor Red }
   }
 }
 
 switch ($Command) {
-  'setup' { Do-Setup } 'check' { Do-Check } 'run' { Do-Run } 'stop' { Do-Stop } default { Show-Menu }
+  'setup' { Do-Setup } 'check' { Do-Check } 'run' { Do-Run } 'stop' { Do-Stop } 'preview' { Do-Preview }
+  'remote-setup' { Do-RemoteSetup } 'run-remote' { Do-RunRemote } 'preview-remote' { Do-PreviewRemote } 'status' { Do-Status }
+  'dev-remote' { Do-DevRemote } 'rdp' { Do-Rdp }
+  default { Show-Menu }
 }
