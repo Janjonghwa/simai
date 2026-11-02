@@ -1,3 +1,4 @@
+import { CamSplitPanel } from '@/features/cctv/CamSplitPanel';
 import { PLAN_FALLBACK_MS } from '@/features/layout/spatialHost/constants';
 import { HostEventPanel } from '@/features/layout/spatialHost/HostEventPanel';
 import { PlanOverlay } from '@/features/layout/spatialHost/PlanOverlay';
@@ -227,6 +228,7 @@ export function SpatialViewportHost({
           selectedKey={selectedKey}
           onSelect={selectIncident}
         />
+        {showEventPanel && <CamSplitPanel />}
       </main>
     </SpatialViewportContext>
   );

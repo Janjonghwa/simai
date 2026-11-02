@@ -138,7 +138,7 @@ function LiveClock() {
 }
 
 /** 실시간 배지 글: 멈췄으면 마지막 데이터 시각, 아니면 LIVE 시계. */
-function LiveBadge({ frozen }: { frozen: boolean }) {
+export function LiveBadge({ frozen }: { frozen: boolean }) {
   const last = useRealtimeStore((s) => lastDataClock(s.health));
   if (frozen) return <>정지 · {last ?? '—'}</>;
   return (
@@ -233,6 +233,104 @@ export function CctvMockWall({
 }
 
 const livePeople = (project: CctvProjector) => <LivePeople project={project} />;
+
+/** 사람 박스의 선·글자 배경 색(위험 등급). 등급이 없는 사람은 옅은 회색이다. */
+const TAG_STROKE = {
+  CRITICAL: 'stroke-sev-critical',
+  HIGH: 'stroke-sev-critical',
+  CAUTION: 'stroke-sev-caution',
+} as const;
+const TAG_FILL = {
+  CRITICAL: 'fill-sev-critical',
+  HIGH: 'fill-sev-critical',
+  CAUTION: 'fill-sev-caution',
+} as const;
+/** 박스 글자 크기(SVG viewBox 단위). */
+const TAG_FONT = 3.4;
+
+export type PersonTags = Readonly<Record<string, keyof typeof TAG_STROKE>>;
+
+/** 사람마다 ID 박스를 단다. 위험 등급이 있는 사람은 그 색, focus 는 굵게. world 가 올 때마다 이 층만 다시 그린다. */
+function TaggedPeople({
+  project,
+  tags,
+  focus,
+}: {
+  project: CctvProjector;
+  tags: PersonTags;
+  focus: string | null;
+}) {
+  const tracks = useRealtimeStore((s) => s.world?.payload.tracks) ?? NO_TRACKS;
+  return cctvFigures(project, cctvPeople(tracks)).map(({ id, body, head }) => {
+    const sev = tags[id];
+    const on = focus === id;
+    const top = head.cy - head.r - 1.2;
+    const x = body.x - body.width * 0.45;
+    const width = body.width * 1.9;
+    const height = body.y + body.height + 1.2 - top;
+    const labelWidth = id.length * TAG_FONT * 0.62 + 2;
+    return (
+      <g key={id}>
+        <rect {...body} className="fill-slate-400" />
+        <circle {...head} className="fill-slate-300" />
+        <g opacity={on || sev ? 1 : 0.6}>
+          <rect
+            x={x}
+            y={top}
+            width={width}
+            height={height}
+            rx={0.6}
+            strokeWidth={on ? 0.9 : 0.45}
+            className={cn('fill-none', sev ? TAG_STROKE[sev] : 'stroke-slate-300')}
+          />
+          <rect
+            x={x}
+            y={top - TAG_FONT - 1.2}
+            width={labelWidth}
+            height={TAG_FONT + 1.2}
+            rx={0.6}
+            className={sev ? TAG_FILL[sev] : 'fill-slate-950/85'}
+          />
+          <text
+            x={x + 1}
+            y={top - 1.1}
+            fontSize={TAG_FONT}
+            fontWeight={700}
+            className={cn('font-mono', sev ? 'fill-slate-950' : 'fill-slate-300')}
+          >
+            {id}
+          </text>
+        </g>
+      </g>
+    );
+  });
+}
+
+/** 한 카메라의 모의 화면. 오른쪽 카메라 미리보기가 중계 없이 보일 때 쓴다. tags 는 사람 id → 위험 등급. */
+export function CctvMockFeed({
+  camId,
+  down,
+  frozen,
+  tags,
+  focus,
+}: {
+  camId: string;
+  down: boolean;
+  frozen: boolean;
+  tags: PersonTags;
+  focus: string | null;
+}) {
+  const view = VIEW_BY_ID.get(camId);
+  if (!view) return null;
+  return (
+    <Feed
+      view={view}
+      down={down}
+      frozen={frozen}
+      figures={(project) => <TaggedPeople project={project} tags={tags} focus={focus} />}
+    />
+  );
+}
 
 /** 실시간 CCTV 목 화면. health 카메라 상태가 정상이 아니면 그 칸은 신호 없음, World 가 끊기면 멈춤이다. */
 export function CctvDemo() {

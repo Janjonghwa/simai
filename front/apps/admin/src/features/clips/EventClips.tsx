@@ -12,7 +12,7 @@ import { useEventClips } from '@/features/clips/useEventClips';
 import { formatTime } from '@/features/events/events';
 import type { EventItem } from '@/features/events/types';
 import { Button } from '@simai/ui/components/button';
-import { Play } from 'lucide-react';
+import { Play, X } from 'lucide-react';
 import { useState } from 'react';
 
 // 이벤트 클립(명세 5.1·11.5·14장, FR-59·FR-99). 관리자만 보고, 얼굴을 흐리지 않은 영상이라 내려받기는 두지 않는다.
@@ -85,19 +85,31 @@ function ClipRow({ eventId, clip }: { eventId: string; clip: Clip }) {
           ) : (
             <>
               <RetentionControl clip={clip} retention={retention} />
-              <Button
-                size="xs"
-                variant="secondary"
-                aria-label={`${clip.camera_id} 재생`}
-                disabled={playback.pending}
-                onClick={() => {
-                  setOpen(true);
-                  playback.play();
-                }}
-              >
-                <Play aria-hidden />
-                재생
-              </Button>
+              {open ? (
+                <Button
+                  size="xs"
+                  variant="secondary"
+                  aria-label={`${clip.camera_id} 닫기`}
+                  onClick={() => setOpen(false)}
+                >
+                  <X aria-hidden />
+                  닫기
+                </Button>
+              ) : (
+                <Button
+                  size="xs"
+                  variant="secondary"
+                  aria-label={`${clip.camera_id} 재생`}
+                  disabled={playback.pending}
+                  onClick={() => {
+                    setOpen(true);
+                    playback.play();
+                  }}
+                >
+                  <Play aria-hidden />
+                  재생
+                </Button>
+              )}
             </>
           )}
         </span>
