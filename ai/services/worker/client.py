@@ -73,6 +73,14 @@ class Lease:
     time_left_ms: int  # leased_at + timeout_ms − 응답 sent_at: 받은 순간부터 실행 상한까지 남은 시간
     timeout_ms: int
     max_attempts: int = 1  # 최대 시도 수(job_request 3.0.0). 마지막 시도의 retryable 실패는 최종 FAILED, 반납은 시도를 쓰지 않는다
+    # job_request 3.5.0 deadline_at − 응답 sent_at(-408): 받은 순간부터 이벤트 마감(vlm_rationale 은 관측 + 5 s, EC2 시계)까지
+    # 남은 시간. EC2 가 싣지 않으면(이벤트에 묶이지 않은 작업) None
+    deadline_left_ms: int | None = None
+
+    @property
+    def budget_ms(self) -> int:
+        """받은 순간부터 이 시도에 쓸 수 있는 시간: 실행 상한과 (있으면) 이벤트 마감 중 이른 쪽."""
+        return self.time_left_ms if self.deadline_left_ms is None else min(self.time_left_ms, self.deadline_left_ms)
 
     @classmethod
     def from_message(cls, msg: Mapping[str, Any]) -> Lease:
@@ -98,6 +106,7 @@ class Lease:
                 raise ValueError(f"attempt {attempt} 가 max_attempts {max_attempts} 범위 밖이다")
             if int(p["timeout_ms"]) <= 0:
                 raise ValueError("timeout_ms 가 0 이하다")
+            deadline_left = int(p["deadline_at"]) - sent_at if p.get("deadline_at") is not None else None
             return cls(
                 message=msg,
                 job_id=str(p["job_id"]),
@@ -110,6 +119,7 @@ class Lease:
                 time_left_ms=leased_at + int(p["timeout_ms"]) - sent_at,
                 timeout_ms=int(p["timeout_ms"]),
                 max_attempts=max_attempts,
+                deadline_left_ms=deadline_left,
             )
         except (KeyError, TypeError, ValueError) as e:
             # 어긋난 대여로는 작업을 시작하지 않는다. EC2 는 만료 뒤 다시 내준다

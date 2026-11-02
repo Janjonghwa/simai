@@ -57,6 +57,7 @@ class Job:
     result: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
     final_lease: str | None = None
+    deadline_at: int | None = None  # job_request 3.5.0 이벤트 마감(-408)
 
 
 @dataclass
@@ -92,9 +93,11 @@ class FakeEC2:
     def now_ms(self) -> int:
         return T0 + int(time.monotonic() * 1000)
 
-    def add_job(self, job_type: str, input: dict[str, Any] | None = None, *, priority="BACKGROUND", timeout_ms=5000) -> str:
+    def add_job(self, job_type: str, input: dict[str, Any] | None = None, *, priority="BACKGROUND", timeout_ms=5000,
+                deadline_at: int | None = None) -> str:
         job_id = f"job-{len(self.jobs) + 1:04d}"
-        self.jobs[job_id] = Job(job_id, job_type, priority, dict(input or {}), timeout_ms, next(self._seq))
+        self.jobs[job_id] = Job(job_id, job_type, priority, dict(input or {}), timeout_ms, next(self._seq),
+                                deadline_at=deadline_at)
         return job_id
 
     def force_expire(self, job_id: str) -> None:
@@ -205,6 +208,8 @@ class FakeEC2:
             "heartbeat_interval_ms": self.heartbeat_interval_ms,
             "input": job.input,
         }
+        if job.deadline_at is not None:
+            payload["deadline_at"] = job.deadline_at
         return Response(200, self._envelope("job_request", payload, sent_at=now))
 
     def _find(self, path: str, body: dict[str, Any]) -> LeaseRec | None:

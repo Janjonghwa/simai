@@ -116,6 +116,8 @@ class VlmRationaleIntegrationTest {
         assertThat(schemas.violations("messages/job_request", job.toString())).isEmpty();
         assertThat(job.at("/payload/priority").asString()).isEqualTo("VLM_FAST");
         assertThat(job.at("/payload/timeout_ms").asInt()).isEqualTo(5000);
+        // -408: 워커 남은 예산의 기준인 이벤트 마감(관측 + 5 s)을 싣는다
+        assertThat(job.at("/payload/deadline_at").asLong()).isEqualTo(job.at("/payload/input/observation_time").asLong() + 5000);
         assertThat(job.at("/payload/input/structured_state/tracks/0/position_xy/0").asDouble()).isEqualTo(3.4);
         assertThat(job.at("/payload/input/structured_state/tracks/0/head_z").asDouble()).isCloseTo(1.68, org.assertj.core.data.Offset.offset(0.001));
         assertThat(job.at("/payload/input/frames/0/face_policy").asString()).isEqualTo("BLURRED");
@@ -142,12 +144,28 @@ class VlmRationaleIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT severity FROM risk_event WHERE event_id = ?", String.class, eventId)).isEqualTo("CRITICAL");
         assertThat(jdbc.queryForObject("SELECT event_to_rationale_ms = (extract(epoch FROM created_at) * 1000)::bigint"
                 + " - (extract(epoch FROM event_observed_at) * 1000)::bigint FROM vlm_assessment WHERE event_id = ?", Boolean.class, eventId)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT within_deadline FROM vlm_assessment WHERE event_id = ?", Boolean.class, eventId)).isTrue();
         var payload = ArgumentCaptor.forClass(JsonNode.class);
         verify(publisher, timeout(3000)).publish(eq("/topic/events"), eq("risk_event"), eq("2.1.0"), payload.capture());
         assertThat(payload.getValue().path("rationale").asString()).isEqualTo(callback.at("/result/rationale").asString());
         assertThat(payload.getValue().path("proposed_severity").isNull()).isTrue();
         JsonNode message = I1Envelope.outbound(mapper, observed.toEpochMilli(), "risk_event", "2.1.0", payload.getValue());
         assertThat(schemas.violations("messages/risk_event", message.toString())).isEmpty();
+    }
+
+    /** S15P31A101-408: 관측 + 5 s 를 넘긴 성공도 근거는 저장하되(SUCCEEDED) 마감 판정은 false 로 따로 남는다 */
+    @Test
+    void 마감을_넘긴_성공은_저장하되_within_deadline_false() {
+        var job = lease();
+        // 10차 세션의 7.12 s 건: 대여 뒤 처리가 늦어 관측부터 7.12 s 에 저장된 경우를 관측 시각을 당겨 재현한다
+        jdbc.update("UPDATE analysis_job SET input = jsonb_set(input, '{observation_time}', to_jsonb(?::bigint)) WHERE job_id = ?",
+                observed.toEpochMilli() - 7120, job.jobId());
+        assertThat(leases.submit(worker, job.jobId(), succeeded(job), observed.plusMillis(100)).status())
+                .isEqualTo(LeaseStatus.Status.ACCEPTED);
+        assertThat(jdbc.queryForObject("SELECT status FROM analysis_job WHERE job_id = ?", String.class, job.jobId()))
+                .isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject("SELECT event_to_rationale_ms >= 7120 AND within_deadline = false FROM vlm_assessment"
+                + " WHERE event_id = ?", Boolean.class, eventId)).isTrue();
     }
 
     @Test

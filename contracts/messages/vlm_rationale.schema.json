@@ -41,6 +41,7 @@
               "estimated_capture_time_ms": true,
               "timestamp_source": true,
               "timestamp_uncertainty_ms": true,
+              "local_copy": { "$ref": "../common/defs.schema.json#/$defs/pod_local_frame", "description": "event_frame_ready 의 같은 Pod 로컬 사본(1.1.0, S15P31A101-408). 워커는 상태 폴더 안·크기·sha256 이 맞을 때만 읽고, 아니면 frame_uri 를 쓴다" },
               "face_policy": {
                 "enum": ["BLURRED", "EXCLUDED"],
                 "description": "VLM 입력 프레임은 얼굴 영역을 흐림 처리한 뒤 넣는다 (5.4). 안전모가 보이도록 머리 윗부분은 남긴다. 처리는 분석 워커가 VLM 호출 직전에 이 값대로 한다(올라온 프레임은 흐리지 않은 원본일 수 있다, S15P31A101-206)"

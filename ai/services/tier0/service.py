@@ -486,7 +486,9 @@ class Tier0Service:
                 self.event_frames = EventFrameService(
                     EventFrameBuffer(feed.camera_ids), self.clock,
                     signer=EventFrameSigner(base, s.i1.token, ca_file=s.i1.ca_file),
-                    transport=HttpPutTransport(timeout_s=2.0), send_event=self.link.publisher.send_event,
+                    # S3 PUT 은 판단용 로컬 사본을 알린 뒤 뒤에서 한다(-408). 경보·VLM 경로가 기다리지 않으니 2 s 에서 5 s 로 늘린다
+                    transport=HttpPutTransport(timeout_s=5.0), send_event=self.link.publisher.send_event,
+                    local_root=s.state_dir,
                 )
                 self.event_frames.start()
             except Exception as error:  # noqa: BLE001 - 부가 근거 경로 실패가 관제 기동을 막지 않는다

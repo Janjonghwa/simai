@@ -27,6 +27,7 @@
         "leased_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "대여 시각 (EC2 시계, UTC ms)" },
         "lease_expires_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "하트비트가 없으면 대여가 만료되는 시각 (EC2 시계, UTC ms)" },
         "heartbeat_interval_ms": { "type": "integer", "minimum": 1, "description": "하트비트 주기. 대여 유지 시간(lease_expires_at − leased_at)의 1/3 이하를 권장한다(기본안 10000ms, 유지 30000ms)" },
+        "deadline_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms", "description": "선택(3.5.0, S15P31A101-408). 이벤트 마감 시각(EC2 시계, UTC ms). 이벤트에 묶인 vlm_rationale 은 input.observation_time + 5000(G7, analysis_job.deadline_at). 워커는 실행 상한(leased_at + timeout_ms)과 이 시각 중 이른 쪽까지만 쓰고(남은 시간은 이 값 − sent_at), 없으면 실행 상한만 쓴다. EC2 는 이 시각 뒤에는 새 대여·재시도를 내주지 않는다" },
         "input": { "type": "object", "description": "작업 입력. 대용량 데이터는 주소로만 참조한다" }
       },
       "allOf": [

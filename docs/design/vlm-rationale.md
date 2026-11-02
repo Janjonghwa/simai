@@ -1,4 +1,4 @@
-# 이벤트 근거 설명 빠른 경로 — 분석 워커 `vlm_rationale` 처리기 (S15P31A101-25, S15P31A101-273, S15P31A101-384)
+# 이벤트 근거 설명 빠른 경로 — 분석 워커 `vlm_rationale` 처리기 (S15P31A101-25, S15P31A101-273, S15P31A101-384, S15P31A101-408)
 
 명세 5.4(VLM 빠른 경로·VLM 입력 프레임·권한), 12.5(I5 작업), 15.1 G7(이벤트→근거 p95 5 s, 하향·직접 변경 0건, 사후 클립 대기 0건).
 계약 `contracts/messages/vlm_rationale.schema.json`(input·result), `job_request`(priority `VLM_FAST`, timeout_ms 5000), `job_callback`.
@@ -282,3 +282,91 @@ Tier 0 `capture_to_risk`·`frame_age`와 함께 비교해 CPU 공유 영향이 �
 
 - Python `urllib` 소켓 호출은 시작 시점에 남은 시간(`timeout=min(limit_s, remaining_s)`)으로 타임아웃이 걸리므로, 요청이 이미 시작된 도중에 EC2 가 대여를 취소(`REJECTED`)하면 해당 소켓 읽기 완료(최대 남은 작업 예산, `vlm_rationale` 은 ≤ 5 s) 시점에 스레드가 정리된다. 이는 워커 `abandon_grace_s`(30 s)보다 충분히 짧아 `HandlerStuck` 을 일으키지 않는다.
 - S3 버킷 리전 이전(시드니 → 서울)과 실제 GPU Pod 에서 4장 병렬 다운로드 적용 후 G7 `event_to_rationale_ms` p95 실측은 다음 GPU 세션에서 확인한다.
+
+## S15P31A101-408 — 로컬 사진·즉시 대여
+
+관련 명세: 3.2(Tier 0 우선·분석 워커), 5.4(VLM 빠른 경로·VLM 입력 프레임·얼굴 처리 fail-closed), 12.3(I1 `event_frame_ready`), 12.5(I5 대여 long-poll·`vlm_rationale`), 14(객체 저장소 서명), 15.1 G7(이벤트→근거 p95 5 s).
+계약 v6.12.0: 공통 `pod_local_frame` 신설, I1 `event_frame_ready` 1.1.0·I5 `job_request` 3.5.0(마이너, 프레임 선택 `local_copy`, 이벤트 마감 `deadline_at`). 마이그레이션 V25(`vlm_assessment.within_deadline`).
+
+### 10차 GPU 세션 실측(2026-11-02, 일본 H100 ↔ 시드니 S3, 서울 EC2)
+
+자료: `simai-local/session10/results-20261102/setup/session1/{run-s10.log, worker-manual.log}`.
+
+| 구간 | 값 | 비고 |
+|---|---|---|
+| Tier 0 이벤트 → 사진 4장 서명·S3 업로드 끝(`event_to_upload_ms`) | n 57, p50 2.29 s, p95 7.1 s, 최소 1.8 s, 최대 9.5 s | EC2 는 이 뒤에 오는 `event_frame_ready` 를 받아야 작업을 만든다. 디코딩은 없다(추론 프레임 참조 재사용), 거의 다 서명·시드니 PUT 왕복 |
+| `event_frame_ready_queued` → 워커 `작업 시작`(워커가 놀고 접수 문이 열림) | 49~74 ms(약 30건) | 서버 대여는 이미 long-poll + 같은 프로세스 깨우기(`JobSignal`)라 폴링 지연이 아니다 |
+| 같은 구간, 워커가 앞 작업을 처리 중 | 0.5~6.4 s | 워커는 한 번에 한 작업. 40 초에 CRITICAL 13건 같은 몰림에서 줄을 선다 |
+| 같은 구간, Tier 0 우선 접수 문이 닫힘 | 13.8~134 s(6건, 일부 VLM 마감 초과) | `추론 대기 상한을 넘겨 버린 프레임 1개` 뒤 30 s 안정 대기 동안 vlm_rationale 도 대여하지 않는다(`AdmissionGate`, 이번 범위 밖) |
+| 워커 처리(작업 시작 → 제출 반영, 성공 34건) | p50 2.89 s(2.65~3.21 s) | S3 서명·GET(시드니) + 얼굴 처리 + Cosmos 추론 |
+| 이벤트 → 근거 완료(Lead 집계, 성공 건) | 7.1 s | 기준 5 s 초과. 워커 시작 전 이벤트 7건·접수 문 닫힘 2건은 시작도 못 하고 마감(`VLM_DEADLINE`) |
+
+티켓 설명의 "작업 생성 → 집기 2.15 s"는 폴링 주기가 아니라 위 셋째·넷째 줄(앞 작업 대기·접수 문 닫힘)이다. 놀고 있는 워커는 이미 0.1 s 안에 집는다.
+
+### 바꾼 흐름
+
+```
+이전: 이벤트 → JPEG 4장 → 서명(서울) → PUT(시드니) ×4 병렬 → event_frame_ready → EC2 작업 → 워커 → 서명·GET(시드니) ×4 → 얼굴 처리 → VLM
+이후: 이벤트 → JPEG 4장 → 상태 폴더에 원자적 쓰기 + 서명(서울) → event_frame_ready(객체 주소 + local_copy) → EC2 작업 → 워커 → 로컬 사본 읽기·sha256 확인 → 얼굴 처리 → VLM
+                                     └→ 뒤 업로드 풀: PUT(시드니) ×4 (보관용, 이벤트 근거·이력·클립)
+```
+
+| 위치 | 내용 |
+|---|---|
+| `ai/services/tier0/event_frames.py` | `local_root`(Tier 0 `state_dir`) 가 있으면 `_prepare` 가 JPEG → `<state_dir>/event-frames/<event_id>/<n>-<camera>-<촬영 ms>.jpg` 원자적 쓰기(임시 파일 → `os.replace`) → 서명. 서명이 끝나면 S3 업로드를 기다리지 않고 `event_frame_ready` 1.1.0 에 `frame_uri` 와 `local_copy`(상대 경로·`sha256:`·크기)를 싣는다. PUT 은 상주 뒤 업로드 풀(4 스레드, 대기 사진 상한 `UPLOAD_BACKLOG` 32장)에서 계속하고 이벤트별로 끝나면 `event_frames_uploaded ... background=1`. 사본 쓰기에 실패한 장은 예전처럼 업로드가 끝난 뒤에만 싣는다. 사본 폴더는 1시간 뒤 지운다(`LOCAL_RETENTION_S`). `local_root` 가 없으면 예전 순서(올린 뒤 알림) 그대로 |
+| `ai/services/tier0/service.py` | `local_root=s.state_dir`, 이벤트 사진 PUT 시간 제한 2 s → 5 s(뒤에서 돌므로 경보·VLM 이 기다리지 않음) |
+| `ai/services/tier0/i1_client.py` | `event_frame_ready` 송신 판 1.1.0 |
+| `ai/services/worker/vlm_frames.py` | `LocalFrames`: 상태 폴더(`SIMAI_STATE_DIR`, 없으면 `SIMAI_TIER0_MARKER` 의 폴더, 없으면 `$SIMAI_ROOT/state`) 기준으로 계약 꼴 경로만 받고, `resolve(strict=True)` 로 링크를 따라간 실제 위치가 `<state>/event-frames` 안인지·정규 파일·크기·sha256 을 확인한 뒤에만 쓴다. 아니면 경고(사유 코드만)와 함께 S3. S3 는 아직 없는 객체(403·404)·일시 오류를 0.25 s 간격 최대 4회(남은 시간 안) 다시 받는다. 받은 바이트는 사본이든 S3 든 같은 얼굴 처리 관문을 거친다 |
+| `ai/services/worker/objects.py` | `ObjectStoreError.status`(전송 단계 HTTP 상태) |
+| `ai/services/worker/vlm_rationale.py`, `__main__.py` | 처리기에 `LocalFrames.from_env` 주입, 성공 때 `근거 완료 frames= gate_ms= vlm_ms= total_ms=` 한 줄 |
+| 서버 | 작업 생성 시점이 핵심이다: `VlmRationaleIngestor` 는 Tier 0 의 로컬 준비 알림(업로드 완료 전)으로 바로 작업을 만들고, 원래 프레임을 그대로 복사하므로 `local_copy` 가 작업 입력에 실린다(`frame_uri` 는 s3:// 그대로, 로컬 경로는 별도 필드). `job_request` 3.5.0 에 `deadline_at`(= `analysis_job.deadline_at`, 관측 + 5 s)을 싣는다. 성공 콜백은 늦어도 SUCCEEDED 로 저장하되 마감 판정을 따로 남긴다(`vlm_assessment.within_deadline` 생성 칸 V25, 로그 `within_deadline=true/false`, 초과는 WARN). 대여는 이미 long-poll(`wait_ms` 까지 요청을 붙잡고 `JobSignal` 로 커밋 직후 깨움)이라 바꾸지 않았다 |
+| `ai/services/worker/client.py`, `runner.py` | `Lease.deadline_left_ms = deadline_at − sent_at`(EC2 시계끼리). 처리기 남은 예산(`ctx.deadline`)과 러너 취소·TIMED_OUT 은 `min(leased_at + timeout_ms, deadline_at)` 기준. 10차의 7.12 s 건처럼 이벤트 뒤 늦게 대여된 작업은 관측 + 5 s 에 멈춘다(메시지 "이벤트 관측 + 5000ms 마감 초과"). `deadline_at` 이 없는 관리·시험 작업은 예전처럼 실행 상한만 |
+
+시험: `ai/tests/services/tier0/test_event_frames.py`(PUT 이 막혀 있어도 사본과 함께 먼저 알림·사본 바이트=서명 바이트=업로드 바이트·임시 파일 없음, 사본 쓰기 실패면 업로드 뒤에만 알림, 서명 실패 장만 빠짐·오래된 사본 정리), `ai/tests/services/worker/test_vlm_frames.py`(사본 우선·저장소 미호출, 사본 없으면 S3, 리더 없으면 무시, sha256·크기 불일치 거부, 형식 밖 경로 5종 거부, 링크로 상태 폴더 밖을 가리키면 거부(Windows 는 정션), 환경 변수, S3 403·404 짧은 재시도·상한·서명 거부는 재시도 없음), `test_vlm_rationale.py`(처리기·진입점 배선), 서버 `VlmRationaleTest`(사본 알림으로 작업 생성·입력에 사본 위치, 경로 탈출은 계약 위반), `WorkerJobIntegrationTest`(VLM 작업 등록부터 대여 응답까지 0.3 s 미만, 작업이 없으면 `wait_ms` 를 채우고 204).
+
+### 로컬 입력 동작(누락·재시작·만료)
+
+- **같은 규칙:** 관측 시각 뒤 프레임은 처리기가 관문 전에 빼므로 사본도 읽지 않는다. 사본 바이트도 S3 바이트와 같은 얼굴 처리 관문(BLURRED·EXCLUDED, 처리 못 하면 제외)을 거치고 VLM 에는 `VlmFrame` 만 간다. `VlmFrame.source` 는 `frame_uri` 그대로다.
+- **누락:** 파일이 없거나(다른 Pod, Tier 0 상태 폴더 초기화) 폴더가 없으면 조용히(정보 로그) S3 로 받는다. 형식·경로 탈출·크기·sha256 이 어긋나면 경고(사유 코드) 뒤 S3.
+- **워커 재시작:** 사본 읽기는 메모리 상태 없이 디스크만 본다. 재시작한 워커·재시도 대여도 같은 사본을 쓴다.
+- **만료:** Tier 0 가 이벤트 폴더를 1시간 뒤 지운다. 그 뒤 들어온 재시도(있을 수 없음: 마감 5 s)나 수동 작업은 S3 로 받는다.
+- 시험: `test_vlm_rationale.py` 의 `test_local_input_gets_same_late_frame_exclusion_and_face_processing`·`test_local_copy_restart_and_expiry_behaviour`, `test_runner.py` 의 마감 예산 두 시험, 서버 `VlmRationaleIntegrationTest`(job_request `deadline_at`, 7.12 s 늦은 성공 = SUCCEEDED + `within_deadline=false`).
+
+### 정한 수치와 근거
+
+- **사본 위치 `state_dir/event-frames/<event_id>/`:** Tier 0 와 워커는 기동기(`simai-bootstrap`)가 같은 `SIMAI_TIER0_MARKER = <work>/state/tier0.live` 를 주고, Tier 0 `state_dir` 은 그 폴더다(`settings.marker = state_dir/tier0.live`). 워커는 새 설정 없이 표시 파일 폴더로 상태 폴더를 찾는다(`SIMAI_STATE_DIR` 로 덮을 수 있음).
+- **계약 경로 꼴을 좁게:** `event-frames/<uuid>/<[A-Za-z0-9_-]{1,96}>.jpg` 만 받아 `..`·절대 경로·역슬래시를 스키마에서 막고, 워커가 실제 위치를 한 번 더 본다(링크·정션). 파일을 쓰는 쪽도 같은 정규식으로 확인해 꼴이 어긋나면 사본을 빼고 메시지는 보낸다.
+- **sha256·크기:** 서명에 쓴 값과 같은 바이트다. 사본이 바뀌었거나 덜 써졌으면 쓰지 않는다(원자적 쓰기라 덜 쓴 파일은 원래 보이지 않는다).
+- **S3 재시도 0.25 s × 최대 4회:** 사본이 없을 때(다른 Pod) Tier 0 PUT p50 이 약 2 s 라 첫 GET 이 403·404 일 수 있다. 남은 시간(5 s 예산)을 넘지 않게 매번 확인한다. 403 은 설정 오류일 수도 있어 횟수를 묶었다.
+- **보관 1시간:** 판단용 사본은 VLM 마감(관측 + 5 s)과 재시도 1회 뒤에는 쓰지 않는다. 디스크가 쌓이지 않게 하되 현장 확인 여유를 둔다. 보관용 정본은 S3 다.
+- **PUT 5 s:** 뒤에서 돌므로 2 s 로 끊어 보관본을 잃을 이유가 없다. 종료 때 대기 업로드는 버리고 진행 중인 PUT 은 이 시간 안에 끝난다.
+
+### 버린 대안
+
+- **S3 버킷 서울 이전만:** 일본·인도 등 GPU 지역은 그때그때 바뀌어(AGENTS) 서울도 왕복 수십~백 ms × (TLS + 서명 + PUT/GET) 두 번이 남는다. 같은 Pod 안의 두 프로세스가 원격 저장소를 두 번 왕복할 이유가 없다. 이전은 보관·클립 지연을 줄이는 별도 결정(사용자 연기)으로 둔다.
+- **사진 수·크기 줄이기(2장, JPEG 품질 낮추기):** 명세 5.4 의 2대 × 2시점 근거와 얼굴 처리·VLM 판단 품질을 깎는다. 왕복 횟수는 그대로라 지연이 크게 줄지 않는다.
+- **워커가 Tier 0 에서 직접 받는 소켓·공유 메모리:** Tier 0 에 새 서버·포트를 열고 Tier 0 경로가 워커 수명에 묶인다(명세 3.2 Tier 0 우선, import-linter 의 Tier 0 ↔ 워커 분리). 파일은 원자적 쓰기만으로 충분하고, 실패해도 S3 예비가 있다.
+- **이벤트 전에 서명(객체 키)을 미리 받아 두기:** 키에 `event_id` 가 들어가고(`event-frames/<event_id>/…`) PUT 서명에 크기·sha256 이 묶여(14) 사진 전에 받을 수 없다. 내용과 묶지 않는 서명은 무결성을 약하게 한다. 서명은 4장 병렬 1회 왕복(서울)이라 남겨 두고 다음 세션에서 `event_to_ready_ms` 로 잰다.
+- **대여 폴링 주기 줄이기·새 긴 대기 방식:** 서버는 이미 long-poll + 깨우기다(실측 49~74 ms). 바꾸면 EC2 요청만 는다. 0.3 s 목표는 시험으로 고정했다.
+
+### 잔여 위험
+
+- **명세와 다름:** 명세 5.4·12.3 은 "업로드한 뒤 `event_frame_ready`" 다. 1.1.0 에서는 `local_copy` 가 있는 프레임은 업로드 완료 전에 알린다(없는 프레임은 예전대로). 명세 정리 MR 에 반영이 필요하다.
+- **보관용 업로드 유실:** 알린 뒤 PUT 이 실패하면 S3 에는 객체가 없고 1시간 뒤 사본도 지워진다(이전에도 PUT 재시도는 없었다). 종료 때 대기 업로드는 버린다. 이벤트 근거 보관을 S3 로 보장하려면 업로드 재시도·사본 보존 연장이 따로 필요하다.
+- **다른 Pod 의 워커:** 사본이 없어 S3 예비로 가고, 그때는 업로드 완료 전에 작업이 올 수 있어 재시도 0.75 s 안에 객체가 없으면 `FRAME_FETCH_FAILED` 다(남은 시도 1회).
+- **접수 문(Tier 0 우선)과 직렬 처리:** 집기 지연의 실제 원인은 30 s 안정 대기 동안 VLM 도 막는 접수 문과 워커 한 작업씩 처리다. 이번에는 바꾸지 않았다(Lead 설계). VLM_FAST 만 안정 대기에서 빼거나(지연 초과·모름일 때는 그대로 막음), vLLM 동시 요청을 쓰는 VLM 작업 2개 병렬(pose 검출만 잠금)을 후속으로 검토한다.
+- **디스크:** 이벤트당 약 4 × 0.3~0.6 MB, 1시간 보관. 몰림(분당 20건)이면 1시간에 약 2 GB 다. 실제 크기는 다음 세션에서 본다.
+
+### 다음 GPU 세션에서 잴 것
+
+```text
+event_frames_ready event_id=... frames=4 local=4 event_to_ready_ms=...     # 목표 p95 0.5 s 이하(JPEG + 쓰기 + 서명)
+event_frames_uploaded event_id=... frames=4 event_to_upload_ms=... background=1
+이벤트 사진 4장 중 4장을 같은 Pod 로컬 사본으로 읽었다                      # 0장이면 상태 폴더 설정 확인
+이벤트 ...: 근거 완료 frames=4 gate_ms=... vlm_ms=... total_ms=...
+```
+
+- G7 `event_to_rationale_ms` p95(위 SQL)와 성공·마감 건수. 5초 안 완료율은 `SELECT avg(within_deadline::int) FROM vlm_assessment WHERE job_type = 'vlm_rationale'`(성공 건 기준, 마감 실패 TIMED_OUT 은 `analysis_job` 에서 따로 센다). 이벤트 → 준비 알림, 알림 → 작업 시작(워커 대기·접수 문 닫힘 따로), 처리(얼굴 처리·VLM)로 나눠 본다.
+- `local=` 가 4가 아닌 건, `로컬 사본을 쓰지 않는다(reason=...)` 경고 수(0 이어야 한다).
+- 사본 폴더 크기(`du -sh <state>/event-frames`)와 뒤 업로드 실패(`event_frames_upload_failed`) 수, S3 객체가 정말 생겼는지(이벤트 몇 건).
+- 접수 문 닫힘 때문에 시작 못 한 VLM 작업 수(워커 `Tier 0 우선 접수 문: 받지 않음` 구간과 `job_lease`·`analysis_job` 대조).

@@ -4,7 +4,8 @@
 - 하트비트가 REJECTED 면 처리기에 취소를 알리고 결과를 내지 않는다.
 - 하트비트가 네트워크 오류로 계속 실패해 마지막 ACTIVE 로 계산한 만료 시각이 지나면 대여를 잃은 것으로 보고 버린다.
   (EC2 는 그 사이 만료·재할당하므로 같은 작업은 새 대여로 다시 온다.)
-- 실행 상한(leased_at + timeout_ms)을 넘기면 취소를 알리고 TIMED_OUT 을 제출한다.
+- 실행 상한(leased_at + timeout_ms)을 넘기면 취소를 알리고 TIMED_OUT 을 제출한다. vlm_rationale 은 이벤트 마감(관측 + 5 s,
+  EC2 deadline_at 과 같은 기준)이 더 이르면 그때까지만 쓴다(S15P31A101-408).
 Python 스레드는 강제로 끝낼 수 없으므로 처리기는 ctx.cancelled 를 보고 스스로 멈춰야 한다.
 버린 처리기가 유예 시간 안에 멈추지 않으면 다음 대여를 받지 않고 HandlerStuck 을 던진다
 (GPU 작업이 겹치지 않게. 진입점은 종료하고 프로세스 관리자가 다시 띄운다, 명세 3.2 Tier 0 자원 우선).
@@ -182,7 +183,8 @@ class Worker:
     def process(self, lease: Lease, *, should_stop: Callable[[], bool] = lambda: False) -> Outcome:
         received = self._monotonic()  # 남은 시간은 받은 순간부터 센다
         handler = self.handlers.get(lease.job_type)
-        timeout_deadline = received + lease.time_left_ms / 1000
+        # vlm_rationale 은 실행 상한(대여 + 5 s)보다 이벤트 마감(관측 + 5 s)이 먼저면 그쪽까지만 쓴다(-408)
+        timeout_deadline = received + lease.budget_ms / 1000
         ctx = JobContext(
             lease.job_id,
             lease.lease_id,
@@ -221,7 +223,7 @@ class Worker:
     def _hold(self, lease: Lease, ctx: JobContext, beat: _Beat, received: float,
               should_stop: Callable[[], bool]) -> Outcome | None:
         """받은 작업을 시작해도 되는지 다시 본다. 시작해도 되면 None. 안 되면 대여를 지키며 기다리거나 반납한다."""
-        hold_deadline = received + min(self.hold_max_s, 0.5 * lease.time_left_ms / 1000)
+        hold_deadline = received + min(self.hold_max_s, 0.5 * lease.budget_ms / 1000)
         while True:
             adm = self._admission()
             if adm.blocks(lease.job_type):
@@ -307,8 +309,10 @@ class Worker:
                 now = self._monotonic()
                 if now >= beat.timeout_deadline:
                     ctx.cancelled.set()
-                    log.warning("작업 %s 실행 상한 %dms 초과", lease.job_id, lease.timeout_ms)
-                    error = {"code": "TIMEOUT", "message": f"{lease.timeout_ms}ms 초과"}
+                    event_bound = lease.budget_ms < lease.time_left_ms
+                    what = "이벤트 관측 + 5000ms 마감" if event_bound else f"실행 상한 {lease.timeout_ms}ms"
+                    log.warning("작업 %s %s 초과", lease.job_id, what)
+                    error = {"code": "TIMEOUT", "message": f"{what} 초과"}
                     return self._submit(lease, "TIMED_OUT", started_at, error=error, deadline=beat.lease_deadline)
                 out = self._heartbeat_due(lease, ctx, beat)
                 if out is not None:

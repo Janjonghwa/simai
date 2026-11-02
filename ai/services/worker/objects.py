@@ -25,9 +25,10 @@ from .transport import NoRedirect, Transport, TransportError, is_loopback, objec
 class ObjectStoreError(Exception):
     """서명·전송 실패. retryable 이면 새 대여로 다시 해 볼 만하다(일시 단절, 서명 만료 등)."""
 
-    def __init__(self, message: str, *, retryable: bool = True) -> None:
+    def __init__(self, message: str, *, retryable: bool = True, status: int | None = None) -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.status = status  # 객체 저장소 HTTP 상태(전송 단계). 아직 올라오지 않은 객체(403·404)를 가리는 데 쓴다(-408)
 
 
 class ObjectStore(Protocol):
@@ -113,13 +114,14 @@ class HttpObjectStore:
         except urllib.error.HTTPError as e:
             with e:
                 retryable = e.code in (408, 429) or e.code >= 500 or (e.code == 403 and _expired(e))
-            raise ObjectStoreError(f"{method} 응답 {e.code}", retryable=retryable) from None
+            raise ObjectStoreError(f"{method} 응답 {e.code}", retryable=retryable, status=e.code) from None
         except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
             _stop_if_cancelled(ctx)
             raise ObjectStoreError(f"{method} 연결 실패: {type(e).__name__}", retryable=True) from None
         _stop_if_cancelled(ctx)
         if not 200 <= status < 300:
-            raise ObjectStoreError(f"{method} 응답 {status}", retryable=status in (408, 429) or status >= 500)
+            raise ObjectStoreError(f"{method} 응답 {status}", retryable=status in (408, 429) or status >= 500,
+                                   status=status)
         return data
 
 

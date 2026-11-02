@@ -273,3 +273,155 @@ def test_http_object_store_parallel_fetch_over_loopback_within_budget():
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ---------------------------------------------------------------- S15P31A101-408 같은 Pod 로컬 사본
+
+EVENT = "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f"
+
+
+def _local(state, name: str, content: bytes, *, sha: bytes | None = None) -> dict:
+    import hashlib
+
+    rel = f"event-frames/{EVENT}/{name}.jpg"
+    path = state / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    digest = hashlib.sha256(content if sha is None else sha).hexdigest()
+    return {"path": rel, "sha256": f"sha256:{digest}", "size_bytes": len(content)}
+
+
+class CountingStore(Store):
+    def __init__(self, objects, errors=()):
+        super().__init__(objects)
+        self.calls: list[str] = []
+        self.errors = list(errors)
+
+    def get(self, ctx, uri):
+        self.calls.append(uri)
+        if self.errors:
+            raise self.errors.pop(0)
+        return self.objects[uri]
+
+
+def test_local_copy_is_read_first_and_store_is_not_called(tmp_path):
+    from services.worker.vlm_frames import LocalFrames
+
+    frames = _frames(("s3://a", "BLURRED"), ("s3://b", "BLURRED"))
+    frames[0]["local_copy"] = _local(tmp_path, "0-cam1-1", b"10")
+    frames[1]["local_copy"] = _local(tmp_path, "1-cam1-2", b"20")
+    store = CountingStore({})
+    result = gate_input_frames(_ctx(), store, frames, Provider(), decode=_decode, local=LocalFrames(tmp_path))
+    assert store.calls == []
+    assert [f.source for f in result.frames] == ["s3://a", "s3://b"]  # 얼굴 처리 관문은 그대로(VlmFrame 출처는 frame_uri)
+    assert all(f.face_policy == "BLURRED" for f in result.frames)
+
+
+def test_missing_local_copy_falls_back_to_store(tmp_path):
+    from services.worker.vlm_frames import LocalFrames
+
+    frames = _frames(("s3://a", "BLURRED"), ("s3://b", "BLURRED"))
+    frames[0]["local_copy"] = _local(tmp_path, "0-cam1-1", b"10")
+    frames[1]["local_copy"] = {"path": f"event-frames/{EVENT}/gone.jpg", "sha256": "sha256:" + "0" * 64, "size_bytes": 2}
+    store = CountingStore({"s3://b": b"20"})
+    result = gate_input_frames(_ctx(), store, frames, Provider(), decode=_decode, local=LocalFrames(tmp_path))
+    assert store.calls == ["s3://b"]
+    assert [f.source for f in result.frames] == ["s3://a", "s3://b"]
+
+
+def test_without_local_reader_local_copy_is_ignored(tmp_path):
+    frames = _frames(("s3://a", "BLURRED"))
+    frames[0]["local_copy"] = _local(tmp_path, "0-cam1-1", b"10")
+    store = CountingStore({"s3://a": b"30"})
+    gate_input_frames(_ctx(), store, frames, Provider(), decode=_decode)  # 다른 Pod 의 워커
+    assert store.calls == ["s3://a"]
+
+
+def test_sha256_or_size_mismatch_rejects_local_copy(tmp_path, caplog):
+    from services.worker.vlm_frames import LocalFrames
+
+    local = LocalFrames(tmp_path)
+    assert local.read(_local(tmp_path, "0-cam1-1", b"10", sha=b"other")) is None
+    assert "reason=sha256" in caplog.text
+    copy = _local(tmp_path, "1-cam1-1", b"10")
+    copy["size_bytes"] = 3
+    assert local.read(copy) is None and "reason=size" in caplog.text
+    frames = _frames(("s3://a", "BLURRED"))
+    frames[0]["local_copy"] = _local(tmp_path, "2-cam1-1", b"10", sha=b"other")
+    store = CountingStore({"s3://a": b"40"})
+    result = gate_input_frames(_ctx(), store, frames, Provider(), decode=_decode, local=local)
+    assert store.calls == ["s3://a"] and [f.source for f in result.frames] == ["s3://a"]
+
+
+@pytest.mark.parametrize("path", [
+    f"event-frames/{EVENT}/../../journal/x.jpg",
+    f"/etc/event-frames/{EVENT}/x.jpg",
+    "event-frames\\" + EVENT + "\\x.jpg",
+    "journal/x.jpg",
+    f"event-frames/{EVENT}/x.png",
+])
+def test_path_outside_event_frames_is_rejected_by_form(tmp_path, path, caplog):
+    from services.worker.vlm_frames import LocalFrames
+
+    (tmp_path / "journal").mkdir()
+    (tmp_path / "journal" / "x.jpg").write_bytes(b"10")
+    assert LocalFrames(tmp_path).read({"path": path, "sha256": "sha256:" + "0" * 64, "size_bytes": 2}) is None
+    assert "reason=form" in caplog.text
+
+
+def test_symlink_escaping_state_dir_is_rejected(tmp_path, caplog):
+    import hashlib
+
+    from services.worker.vlm_frames import LocalFrames
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "0-cam1-1.jpg").write_bytes(b"10")
+    state = tmp_path / "state"
+    link = state / "event-frames" / EVENT  # 이벤트 폴더가 상태 폴더 밖을 가리킨다
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        try:  # Windows 일반 권한: 심볼릭 링크 대신 디렉터리 정션(resolve 가 따라간다)
+            import _winapi
+
+            _winapi.CreateJunction(str(outside), str(link))
+        except (ImportError, OSError):
+            pytest.skip("이 환경에서는 링크를 만들 수 없다")
+    copy = {"path": f"event-frames/{EVENT}/0-cam1-1.jpg", "sha256": "sha256:" + hashlib.sha256(b"10").hexdigest(),
+            "size_bytes": 2}
+    assert LocalFrames(state).read(copy) is None
+    assert "reason=escape" in caplog.text
+
+
+def test_local_frames_from_env():
+    from pathlib import Path
+
+    from services.worker.vlm_frames import LocalFrames
+
+    assert LocalFrames.from_env({"SIMAI_STATE_DIR": "/srv/a/state"}).state_dir == Path("/srv/a/state")
+    assert LocalFrames.from_env({"SIMAI_TIER0_MARKER": "/srv/b/state/tier0.live"}).state_dir == Path("/srv/b/state")
+    assert LocalFrames.from_env({"SIMAI_ROOT": "/srv/c"}).state_dir == Path("/srv/c/state")
+
+
+def test_store_not_yet_uploaded_is_retried_briefly():
+    store = CountingStore({"s3://a": b"10"}, errors=[ObjectStoreError("GET 응답 403", retryable=False, status=403),
+                                                     ObjectStoreError("GET 응답 404", retryable=False, status=404)])
+    ctx = JobContext(job_id="j", lease_id="l", job_type="vlm_rationale", attempt=1, input={}, timeout_ms=5000)
+    result = gate_input_frames(ctx, store, _frames(("s3://a", "BLURRED")), Provider(), decode=_decode)
+    assert store.calls == ["s3://a"] * 3 and [f.source for f in result.frames] == ["s3://a"]
+
+
+def test_store_retry_gives_up_after_limit_or_on_config_error():
+    from services.worker.vlm_frames import S3_TRIES
+
+    errors = [ObjectStoreError("GET 응답 404", retryable=False, status=404) for _ in range(S3_TRIES)]
+    store = CountingStore({"s3://a": b"10"}, errors=errors)
+    with pytest.raises(JobFailed) as e:
+        gate_input_frames(_ctx(), store, _frames(("s3://a", "BLURRED")), Provider(), decode=_decode)
+    assert e.value.code == "FRAME_FETCH_FAILED" and len(store.calls) == S3_TRIES
+    store = CountingStore({"s3://a": b"10"}, errors=[ObjectStoreError("서명 거부 409", retryable=False)])
+    with pytest.raises(JobFailed):
+        gate_input_frames(_ctx(), store, _frames(("s3://a", "BLURRED")), Provider(), decode=_decode)
+    assert len(store.calls) == 1  # 대여 상실 같은 서명 거부는 다시 하지 않는다

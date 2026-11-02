@@ -12,7 +12,12 @@
         "frame_uri": "s3://simai-events/0192a6f0/cam1-10324.jpg",
         "estimated_capture_time_ms": 1760342400100,
         "timestamp_source": "RECEIVE_ESTIMATED",
-        "timestamp_uncertainty_ms": 18
+        "timestamp_uncertainty_ms": 18,
+        "local_copy": {
+          "path": "event-frames/0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f/0-cam1-1760342400100.jpg",
+          "sha256": "sha256:d2fb75dc53d05a6ce8cd7ee42f220ae614112f78098e213e8a600c5424d9aa32",
+          "size_bytes": 412337
+        }
       },
       {
         "camera_id": "cam3",

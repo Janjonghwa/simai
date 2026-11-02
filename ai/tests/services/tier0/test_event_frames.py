@@ -137,7 +137,7 @@ def test_critical_event_uploads_four_past_frames_once_to_reliable_i1(ring, caplo
         assert service.stop(5)
     assert len(sent) == 1 and len(transport.puts) == 4
     message = sent[0]
-    assert message["schema_version"] == "1.0.0"
+    assert message["schema_version"] == "1.1.0"
     assert schema_errors(message, "event_frame_ready") == []
     frames = message["payload"]["frames"]
     assert {f["camera_id"] for f in frames} == {"cam_B", "cam_C"}
@@ -435,4 +435,91 @@ def test_event_frames_stop_releases_waiting_images_and_reports_running_put(ring)
         assert not ring.snapshot(ring.camera_ids, ANCHOR, 2)
     finally:
         release.set()
+        assert service.stop(5)
+
+
+# ---------------------------------------------------------------- S15P31A101-408 판단용 로컬 사본
+
+def test_local_copy_is_announced_before_s3_upload_finishes(ring, tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    release = threading.Event()
+    transport = Transport(block=release)
+    service, sent, signer, _ = service_for(ring, transport=transport, local_root=tmp_path)
+    service.start()
+    try:
+        service.on_transitions([raised()])
+        assert wait_until(lambda: len(sent) == 1)  # S3 PUT 이 막혀 있어도 알린다
+        assert transport.entered.is_set() and not transport.puts
+        kind, payload = sent[0]
+        assert kind == "event_frame_ready" and len(payload["frames"]) == 4
+        probe = {"schema_version": "1.1.0", "msg_type": kind, "msg_id": payload["event_id"],
+                 "source_id": "tier0-01", "sent_at": ANCHOR, "payload": payload}
+        assert schema_errors(probe, "event_frame_ready") == []
+        for frame in payload["frames"]:
+            copy = frame["local_copy"]
+            data = (tmp_path / copy["path"]).read_bytes()  # 원자적 쓰기: 알릴 때 이미 완성된 파일
+            assert copy["path"].startswith(f"event-frames/{payload['event_id']}/")
+            assert copy["sha256"] == "sha256:" + hashlib.sha256(data).hexdigest() and copy["size_bytes"] == len(data)
+            # 같은 바이트로 서명했다(같은 객체 주소에 같은 사진)
+            assert any("sha256:" + r.sha256 == copy["sha256"] and r.camera_id == frame["camera_id"] for r in signer.calls)
+            image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+            assert read_index(image) == (frame["estimated_capture_time_ms"] - T0) // 40
+        assert not list(tmp_path.rglob("*.tmp"))
+        assert "local=4" in caplog.text and "event_to_ready_ms=" in caplog.text
+        release.set()
+        assert wait_until(lambda: len(transport.puts) == 4)  # 보관용 업로드는 뒤에서 그대로 끝난다
+        assert wait_until(lambda: "background=1" in caplog.text)
+        uploaded = {p[0].object_uri: p[1] for p in transport.puts}
+        for frame in payload["frames"]:
+            assert uploaded[frame["frame_uri"]] == (tmp_path / frame["local_copy"]["path"]).read_bytes()
+    finally:
+        release.set()
+        assert service.stop(5)
+
+
+def test_local_write_failure_waits_for_upload_like_before(ring, tmp_path):
+    blocked = tmp_path / "state"
+    blocked.write_text("파일이라 폴더를 만들 수 없다")
+    release = threading.Event()
+    transport = Transport(block=release)
+    service, sent, _, _ = service_for(ring, transport=transport, local_root=blocked)
+    service.start()
+    try:
+        service.on_transitions([raised()])
+        assert transport.entered.wait(5)
+        time.sleep(0.1)
+        assert not sent  # 사본이 없는 장은 업로드를 마친 뒤에만 싣는다
+        release.set()
+        assert wait_until(lambda: len(sent) == 1)
+        assert all("local_copy" not in f for f in sent[0][1]["frames"]) and len(transport.puts) == 4
+    finally:
+        release.set()
+        assert service.stop(5)
+
+
+def test_sign_failure_drops_only_that_picture_and_old_local_copies_are_pruned(ring, tmp_path):
+    import os
+
+    old = tmp_path / "event-frames" / "0192a0a0-0000-7000-8000-00000000dead"
+    old.mkdir(parents=True)
+    (old / "0-cam_A-1.jpg").write_bytes(b"x")
+    os.utime(old, (1_000.0, 1_000.0))
+
+    class FlakySigner(Signer):
+        def sign(self, request):
+            if request.camera_id == "cam_C":
+                raise OSError("https://ec2.example/sign?token=hidden")
+            return super().sign(request)
+
+    sent = []
+    service = EventFrameService(ring, FixedClock(ANCHOR + 200), signer=FlakySigner(), transport=Transport(),
+                                send_event=lambda kind, payload: sent.append(payload), local_root=tmp_path,
+                                wall_s=lambda: 1_000.0 + 3_601.0)
+    service.start()
+    try:
+        service.on_transitions([raised()], [SimpleNamespace(world_id="w-1", cameras=("cam_B", "cam_C"))])
+        assert wait_until(lambda: len(sent) == 1)
+        assert {f["camera_id"] for f in sent[0]["frames"]} == {"cam_B"}
+        assert wait_until(lambda: not old.exists())
+    finally:
         assert service.stop(5)

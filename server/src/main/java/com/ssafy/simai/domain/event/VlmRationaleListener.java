@@ -27,6 +27,8 @@ import tools.jackson.databind.ObjectMapper;
 public class VlmRationaleListener {
 
     private static final Logger log = LoggerFactory.getLogger(VlmRationaleListener.class);
+    /** G7 이벤트 → 근거 마감(명세 5.4·15.1). analysis_job.deadline_at = observation_time + 이 값과 같다 */
+    static final long DEADLINE_MS = 5000;
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper mapper;
     private final Clock clock;
@@ -89,7 +91,14 @@ public class VlmRationaleListener {
         }
         // 등급·생명주기·sequence·위치에는 쓰지 않는다. 원본 전이도 그대로 둔다.
         jdbc.update("UPDATE risk_event SET rationale = :text, proposed_severity = NULL WHERE event_id = :id", params);
-        log.info("VLM 근거 저장: event_id={} job_id={} event_to_rationale_ms={}", id, event.jobId(), elapsed);
+        // 성공 여부와 별개로 G7 마감(관측 + 5 s) 판정을 남긴다. DB 는 vlm_assessment.within_deadline(V25 생성 칸)이 같은 식이다
+        boolean withinDeadline = elapsed <= DEADLINE_MS;
+        if (withinDeadline) {
+            log.info("VLM 근거 저장: event_id={} job_id={} event_to_rationale_ms={} within_deadline=true", id, event.jobId(), elapsed);
+        } else {
+            log.warn("VLM 근거 저장(마감 초과): event_id={} job_id={} event_to_rationale_ms={} within_deadline=false", id,
+                    event.jobId(), elapsed);
+        }
         publisher.publishEvent(new RiskEventsDelivered(List.of(id)));
     }
 

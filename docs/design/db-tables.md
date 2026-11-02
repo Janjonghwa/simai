@@ -1174,7 +1174,10 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `decision` | text | NN, CK(NONE·PENDING·APPROVED·REJECTED) |  | 상향 의견이 없으면 NONE |
 | `decided_by` | bigint | FK>app_user.user_id |  |  |
 | `decided_at` | ts |  |  |  |
-| `created_at` | ts | NN |  |  |
+| `event_observed_at` | ts | NN | `job_request.input.observation_time` | G7 기준 관측 시각(V18) |
+| `created_at` | ts | NN |  | EC2 저장 시각 |
+| `event_to_rationale_ms` | bigint | NN |  | G7: 관측 시각 → EC2 저장(V18) |
+| `within_deadline` | boolean | 생성 칸 |  | vlm_rationale 이 관측 + 5000 ms 안에 저장됐는지(`event_to_rationale_ms ≤ 5000`), incident_summary 는 null. 늦은 성공도 SUCCEEDED 로 저장하므로 마감 판정은 이 칸으로 센다(V25, S15P31A101-408) |
 
 #### `report` — TBM 보고서·일일 일지
 

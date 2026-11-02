@@ -335,3 +335,34 @@ def test_worker_process_propagates_timeout_deadline_to_job_context(ec2, make_wor
     timeout_ms, rem_s = observed[0]
     assert timeout_ms == 5000
     assert rem_s is not None and 0.0 < rem_s <= 5.0
+
+
+def test_vlm_budget_ends_at_event_deadline_not_lease_plus_timeout(ec2, make_worker):
+    """S15P31A101-408: 관측 + 5 s(deadline_at)가 대여 + timeout_ms 보다 이르면 처리기 남은 시간·취소는 마감 기준이다."""
+    ec2.heartbeat_interval_ms = 1000
+    job_id = ec2.add_job("vlm_rationale", copy.deepcopy(VLM_INPUT), priority="VLM_FAST", timeout_ms=5000,
+                         deadline_at=ec2.now_ms() + 300)  # 이벤트 뒤 4.7 s 에 대여된 꼴
+    seen: list[float | None] = []
+
+    def slow(ctx: JobContext):
+        seen.append(ctx.remaining_s())
+        return _wait_cancel(ctx)
+
+    started = time.monotonic()
+    assert make_worker({"vlm_rationale": slow}).run_once() is Outcome.ACCEPTED
+    assert time.monotonic() - started < 2.0  # 5 s 실행 상한까지 끌지 않는다
+    assert seen[0] is not None and seen[0] <= 0.3
+    job = ec2.jobs[job_id]
+    assert job.state == "TIMED_OUT" and "마감" in job.error["message"]
+
+
+def test_without_deadline_at_budget_is_timeout_only(ec2, make_worker):
+    ec2.add_job("vlm_rationale", copy.deepcopy(VLM_INPUT), priority="VLM_FAST", timeout_ms=5000)
+    seen: list[float | None] = []
+
+    def quick(ctx: JobContext):
+        seen.append(ctx.remaining_s())
+        return copy.deepcopy(VLM_RESULT)
+
+    assert make_worker({"vlm_rationale": quick}).run_once() is Outcome.ACCEPTED
+    assert seen[0] is not None and 4.0 < seen[0] <= 5.0  # 관리용(이벤트 없는) 작업은 예전처럼 실행 상한만
