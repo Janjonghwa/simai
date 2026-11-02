@@ -11,9 +11,12 @@ Tier 0 쪽(LoadWindow): 정리 주기(약 1초)마다 보정 T_lag(HealthReport.
 접수 쪽(AdmissionGate.check): 분석 워커는 새 작업을 받기 전, 아바타 루프는 추론 전마다 부른다. 판정 순서(앞에서 걸리면 그 이유로
 끝, S15P31A101-412 사유별 규칙):
  1. 표시 파일 없음: 기본은 모름 → LIVE 로 보고 받지 않는다. 파일이 없는 것만으로는 '관제 없음'과 'Tier 0 가 표시 파일을 못 씀
-    (볼륨 오류)·엔진 준비 중(진입점이 Tier 0 를 띄우기 전)'을 구별할 수 없다. 관제가 없는 개발 시간에는 운영자가
-    allow_without_marker(SIMAI_WORKER_DEV_NO_LIVE=1)로 명시한다. 그때만 LIVE 아님 → 모든 유형을 받는다(명세 3.2 '관제가 없는
-    개발 시간에는 단독 실행'). 그 모드에서도 마지막으로 LIVE 를 본 뒤 live_linger_s 안이면 받지 않는다(Tier 0 재시작 틈).
+    (볼륨 오류)·엔진 준비 중(진입점이 Tier 0 를 띄우기 전)'을 구별할 수 없다. 단, Tier 0 가 정상 종료하며 표시 파일 옆에 남긴
+    정상 종료 기록(clean_stop_path, `<표시 파일>.stopped`, S15P31A101-403)이 있으면 '정상 종료로 끝남' → LIVE 아님이다. 이 기록은
+    Tier 0 시작(simai-bootstrap 시작 잠금·Tier0Service.start)이 표시 파일을 쓰기 전에 지우므로 다음 기동·엔진 준비 중에는 남지 않는다.
+    기록을 읽지 못하거나 형식이 틀리면 모름 → LIVE. 관제가 없는 개발 시간에는 운영자가 allow_without_marker
+    (SIMAI_WORKER_DEV_NO_LIVE=1)로 명시할 수도 있다. 그때도 LIVE 아님 → 모든 유형을 받는다(명세 3.2 '관제가 없는 개발 시간에는
+    단독 실행'). 두 경우 모두 마지막으로 LIVE 를 본 뒤 live_linger_s 안이면 받지 않는다(Tier 0 재시작 틈).
  2. 표시 파일을 확인·읽지 못함, max_marker_age_s 보다 오래됨(Tier 0 비정상 종료·멈춤), gpu_priority 칸 없음·형식 틀림 →
     모름 → 즉시 멈춘다.
  3. phase 가 running 이 아님(기동 중), 선확보 상태가 OK·SKIPPED·DISABLED 가 아님 → 즉시 멈춘다.
@@ -52,6 +55,22 @@ DEFAULT_LAG_BUDGET_MS = 600
 DEFAULT_RESUME_AFTER_S = 10.0
 DEFAULT_MAX_QUEUE_WAIT_EXCEEDED = 2
 DEFAULT_LIVE_BLOCKED = frozenset({"static_reconstruct", "hmr_refine", "hmr_appearance_update"})
+CLEAN_STOP_PHASE = "stopped_clean"
+CLEAN_STOP_VERSION = 1
+
+
+def clean_stop_path(marker: Path) -> Path:
+    """Tier 0 정상 종료 기록 경로: 표시 파일 옆 `<표시 파일 이름>.stopped`(S15P31A101-403).
+
+    표시 파일 자체에 남기지 않는 까닭: 표시 파일이 있으면 LIVE 로 보는 소비자(GPU 실험 큐 live_guard, simai-bootstrap 장면 모드,
+    Tier 0 다음 시작의 비정상 종료 판단)가 이미 있다. 따로 두면 그들의 판단은 그대로다.
+    """
+    return Path(marker).with_name(Path(marker).name + ".stopped")
+
+
+def clean_stop_record(*, stopped_at_ms: int, pid: int) -> dict[str, Any]:
+    """Tier 0 가 모든 종료 단계(저널 비우기·마지막 체크포인트 포함)를 마친 뒤 표시 파일을 지우고 남기는 기록."""
+    return {"version": CLEAN_STOP_VERSION, "phase": CLEAN_STOP_PHASE, "stopped_at": int(stopped_at_ms), "pid": int(pid)}
 
 # 판정 사유 코드(계측·로그용)
 OK = "ok"
@@ -67,6 +86,7 @@ NO_SAMPLES = "no_samples"
 LAG_UNKNOWN = "lag_unknown"
 OVER_BUDGET = "over_budget"
 QUEUE_WAIT_EXCEEDED = "queue_wait_exceeded"
+TIER0_STOPPED = "tier0_stopped"  # 정상 종료 기록으로 LIVE 아님(S15P31A101-403)
 
 
 def _percentile(values: list[float], q: float) -> float | None:
@@ -249,9 +269,9 @@ class AdmissionGate:
         blocked = self.policy.live_blocked_types
         if state == "absent" and not self.policy.allow_without_marker:
             self._close(code, reason)
-            return self._refuse(f"{reason} → Tier 0 상태 모름(표시 파일 쓰기 실패·엔진 준비 중일 수 있다). "
+            return self._refuse(f"{reason}·정상 종료 기록 없음 → Tier 0 상태 모름(표시 파일 쓰기 실패·엔진 준비 중일 수 있다). "
                                 "관제가 없는 개발 시간이면 SIMAI_WORKER_DEV_NO_LIVE=1", code)
-        if state == "absent":
+        if state in ("absent", "stopped"):  # stopped: 정상 종료 기록(S15P31A101-403), absent: 개발 모드(allow_without_marker)
             self._close(code, reason)
             if self._live_seen is not None and now - self._live_seen < self.policy.live_linger_s:
                 left = self.policy.live_linger_s - (now - self._live_seen)
@@ -278,12 +298,28 @@ class AdmissionGate:
             self.opened_count += 1
         return Admission(True, True, reason, blocked, OK)
 
+    def _without_marker(self, why: str) -> tuple[str, str, str, None, int]:
+        """표시 파일이 없을 때: 정상 종료 기록이 있으면 stopped, 없으면 absent(기본 모름), 기록을 못 읽거나 틀리면 refuse(모름)."""
+        path = clean_stop_path(self.marker)
+        try:
+            doc = json.loads(path.read_bytes().decode("utf-8"))
+        except FileNotFoundError:
+            return "absent", MARKER_ABSENT, why, None, 0
+        except (OSError, ValueError) as e:
+            return ("refuse", MARKER_UNREADABLE,
+                    f"{why}, 정상 종료 기록 {path.name} 을 읽지 못했다({type(e).__name__}) → 모름", None, 0)
+        if (not isinstance(doc, dict) or doc.get("phase") != CLEAN_STOP_PHASE or not _count(doc.get("stopped_at"))
+                or doc.get("version") != CLEAN_STOP_VERSION):
+            return "refuse", MARKER_UNREADABLE, f"{why}, 정상 종료 기록 {path.name} 형식이 틀렸다 → 모름", None, 0
+        return ("stopped", TIER0_STOPPED,
+                f"Tier 0 가 정상 종료했다({path.name}, stopped_at {doc['stopped_at']}) → LIVE 아님", None, 0)
+
     def _evaluate(self) -> tuple[str, str, str, tuple[int, bytes] | None, int]:
-        """('absent' | 'refuse' | 'ok', 사유 코드, 이유, 표시 파일 식별자, 넘긴 큐 대기 초과 프레임 수)."""
+        """('absent' | 'stopped' | 'refuse' | 'ok', 사유 코드, 이유, 표시 파일 식별자, 넘긴 큐 대기 초과 프레임 수)."""
         try:
             st = os.stat(self.marker)
         except FileNotFoundError:
-            return "absent", MARKER_ABSENT, "표시 파일 없음", None, 0
+            return self._without_marker("표시 파일 없음")
         except OSError as e:
             return "refuse", MARKER_UNREADABLE, f"표시 파일을 확인하지 못했다({type(e).__name__}) → 모름", None, 0
         age = self._wall_s() - st.st_mtime
@@ -294,7 +330,7 @@ class AdmissionGate:
             raw_bytes = self.marker.read_bytes()
             doc = json.loads(raw_bytes.decode("utf-8"))
         except FileNotFoundError:
-            return "absent", MARKER_ABSENT, "Tier 0 LIVE 아님(표시 파일이 방금 지워졌다)", None, 0
+            return self._without_marker("표시 파일이 방금 지워졌다")
         except (OSError, ValueError) as e:
             return "refuse", MARKER_UNREADABLE, f"표시 파일을 읽지 못했다({type(e).__name__}) → 모름", None, 0
         marker_id = (st.st_mtime_ns, raw_bytes)

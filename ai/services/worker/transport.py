@@ -19,6 +19,8 @@ from typing import Any, Protocol
 
 # 경로는 서버 OpenAPI 확정 전 기본안이다 (계약 설명과 같은 값)
 LEASE_PATH = "/api/worker/jobs/lease"
+# 사람 지운 배경 묶음의 static_reconstruct 등록(S15P31A101-403, 계약 static_reconstruct_submit)
+STATIC_SUBMIT_PATH = "/api/worker/scene-jobs/static-reconstruct"
 TOKEN_HEADER = "Authorization"  # 값: "Bearer <워커 토큰>". 토큰은 .env 의 SIMAI_WORKER_TOKEN
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 

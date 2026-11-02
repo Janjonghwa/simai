@@ -45,6 +45,9 @@ Tier 0 와 분석 워커가 GPU Pod 하나를 나눠 쓸 때 Tier 0 를 먼저 �
    (그 모드에서도 LIVE 를 본 뒤 `live_linger_s`(60초) 안이면 재시작 틈으로 보고 받지 않는다). Tier 0 는 표시 파일 쓰기 실패를 판정을 멈추지 않고
    로그(바뀔 때만)와 `status.marker_error` 로 알리고, 같은 상태를 health `tier0_warnings` 의 `LIVE_MARKER_WRITE_FAILED`(계약 health 2.1.0, S15P31A101-197)로
   싣는다(다음 쓰기가 성공하면 빠짐, 정보 경고라 판정·알림은 그대로).
+   S15P31A101-403: Tier 0 가 정상 종료(모든 종료 단계 성공)하면 표시 파일을 지운 뒤 옆에 `tier0.live.stopped`(정상 종료 기록)를 남기고, 접수 문은
+   표시 파일이 없고 이 기록이 읽히면 '정상 종료로 끝남' → LIVE 아님으로 본다(기록 없음·깨짐은 지금처럼 모름). Tier 0 시작 경로가 GPU 를 잡기 전에 지운다.
+   관제 뒤 배경 복원(`simai-bootstrap after-live`)이 이것으로 개발 플래그 없이 돈다(설계 `worker-static-reconstruct.md` -403 절).
 2. 확인·읽기 실패, `max_marker_age_s`(15초, 갱신 주기의 3배)보다 오래됨, `gpu_priority` 없음·형식 틀림 → 모름 → 받지 않는다(LIVE 로 본다).
 3. `phase != running`, 선확보가 OK·SKIPPED·DISABLED 가 아님 → 받지 않는다.
 4. 표본 0, unknown ≥ 1, `lag_ms_max` > 예산(600ms) → 받지 않는다(창 최댓값: p95 보다 엄격, 한 창·한 표본이라도 즉시).

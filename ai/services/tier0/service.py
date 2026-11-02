@@ -72,7 +72,7 @@ from simai_ai.calibration.runtime import RuntimeCalibrationStore
 from simai_ai.config import BundleArchive, BundleRejected, BundleVerifier, ConfigBundle, ConfigSync
 from simai_ai.eventlog import ACKED_NAME, AckedOffsetStore, EventJournal, JournalWriter, Outbox, TransportError
 from simai_ai.geometry.rig import CameraRig
-from simai_ai.gpu.admission import RUNNING, STARTING, LoadWindow, marker_section
+from simai_ai.gpu.admission import RUNNING, STARTING, LoadWindow, clean_stop_path, clean_stop_record, marker_section
 from simai_ai.gpu.reserve import GpuReservation
 from simai_ai.io import DecoderUnavailable, FreshnessConfig, I0Ingest, NvdecDecoder, PyAvDecoder, RecordingReplay
 from simai_ai.io.freshness import SkipReason
@@ -344,6 +344,7 @@ class Tier0Service:
         if s.live_marker.exists():
             self.previous_unclean = True
             log.warning("이전 Tier 0 실행이 정상 종료하지 않았다(%s 가 남아 있다). 저널·체크포인트로 복구한다", s.live_marker)
+        self._clear_clean_stop()
         self._write_phase_marker(STARTING)
         try:
             self.gpu.acquire()  # 실패해도 예외를 내지 않는다(상태로 남김). 판정이 먼저다
@@ -1314,6 +1315,24 @@ class Tier0Service:
             log.info("해소: 표시 파일 쓰기 (%s)", self.settings.live_marker)
         self.marker_error = None
 
+    def _clear_clean_stop(self) -> None:
+        """시작: 이전 정상 종료 기록을 표시 파일보다 먼저 지운다(분석 워커가 기동 중을 '정상 종료로 끝남'으로 보지 않게, S15P31A101-403).
+        지우지 못하면 로그만 남긴다. 표시 파일이 있는 동안은 워커가 표시 파일을 먼저 본다."""
+        try:
+            clean_stop_path(self.settings.live_marker).unlink(missing_ok=True)
+        except OSError:
+            log.exception("이전 정상 종료 기록을 지우지 못했다(표시 파일이 없는 틈에 분석 워커가 LIVE 아님으로 볼 수 있다)")
+
+    def _write_clean_stop(self) -> None:
+        """정상 종료(모든 종료 단계 성공·표시 파일 지움) 뒤에만 남긴다. 분석 워커는 이것을 'LIVE 아님'으로 본다(S15P31A101-403).
+        표시 파일을 먼저 지우므로 그 사이에 꺼지면 기록이 없다(모름 → LIVE, 안전한 쪽)."""
+        path = clean_stop_path(self.settings.live_marker)
+        try:
+            _atomic_write(path, json.dumps(clean_stop_record(stopped_at_ms=self._wall_ms(), pid=os.getpid())).encode("utf-8"))
+            log.info("정상 종료 기록을 남겼다: %s", path)
+        except OSError:
+            log.exception("정상 종료 기록을 쓰지 못했다(분석 워커는 Tier 0 상태를 모름으로 본다)")
+
     def _start_failed_marker(self) -> None:
         """기동 실패: 이번에 만든 표시 파일은 지운다. 이전 실행이 정상 종료하지 않았으면 그 사실을 남긴다(다음 시작이 안다)."""
         if self.previous_unclean:
@@ -1341,7 +1360,7 @@ class Tier0Service:
     # --- 종료 ------------------------------------------------------------------------
 
     def stop(self, timeout_s: float | None = None) -> bool:
-        """종료: 판정 → 정리 주기 → I0 → I1 → 저널 비우기 → 마지막 체크포인트 → 저널 닫기 → 표시 파일 지우기.
+        """종료: 판정 → 정리 주기 → I0 → I1 → 저널 비우기 → 마지막 체크포인트 → 저널 닫기 → 표시 파일 지우기 → 정상 종료 기록.
 
         모든 단계가 공통 deadline(timeout_s, 기본 drain_s) 하나를 나눠 쓴다(리뷰 F3). 디스크가 멈춰 저널 쓰기·체크포인트가
         시간 안에 끝나지 않으면 마지막 체크포인트와 저널 닫기를 동기로 다시 기다리지 않는다(둘 다 같은 쓰기 lock 을 기다리게
@@ -1355,6 +1374,8 @@ class Tier0Service:
                 self.settings.live_marker.unlink(missing_ok=True)
             except OSError:
                 log.exception("표시 파일을 지우지 못했다")
+            else:
+                self._write_clean_stop()
         else:
             log.error("정상 종료하지 못했다: %s", failures)
             # 표시 파일도 같은 볼륨이다. 쓰기가 멈추면 짧게만 기다린다(실패는 로그에 이미 남겼다)

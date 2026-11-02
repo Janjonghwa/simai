@@ -1535,6 +1535,36 @@ class SceneReference(Envelope):
     payload: Payload36
 
 
+class Image(BaseModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    camera_id: DefsCameraId
+    uri: DefsObjectUri
+    kind: Literal['CLEAN_BACKGROUND', 'FRAME']
+
+
+class Payload39(BaseModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    bundle_id: Annotated[StrictStr, Field(pattern='^bundle-[0-9a-f]{32}$')]
+    job_id: Annotated[StrictStr, Field(min_length=1)]
+    created: StrictBool
+    job_status: Literal['QUEUED', 'LEASED', 'SUCCEEDED', 'FAILED', 'TIMED_OUT', 'CANCELLED']
+    job_error_code: StrictStr | None | MISSING = MISSING
+
+
+class StaticReconstructSubmitResult(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[
+        Literal['static_reconstruct_submit_result'], Field(min_length=1)
+    ]
+    payload: Payload39
+
+
 class TbmReport(RootModel[Any]):
     root: Any
 
@@ -1667,7 +1697,7 @@ class Tier0EndpointPortMapping(BaseModel):
     public_port: Annotated[StrictInt, Field(ge=1, le=65535)]
 
 
-class Payload39(BaseModel):
+class Payload41(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
         regex_engine="python-re",
@@ -1705,7 +1735,7 @@ class VideoSegment(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['video_segment'], Field(min_length=1)]
-    payload: Payload39
+    payload: Payload41
 
 
 class Laptop(BaseModel):
@@ -1739,7 +1769,7 @@ class Scene(BaseModel):
     mismatch: StrictBool
 
 
-class Payload40(BaseModel):
+class Payload42(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -1760,7 +1790,7 @@ class ViewerHealth(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['viewer_health'], Field(min_length=1)]
-    payload: Payload40
+    payload: Payload42
 
 
 class VlmRationale(RootModel[Any]):
@@ -1785,7 +1815,7 @@ class VlmRationaleResult(DefsSeverityUpwardOnly):
     latency_ms: DefsDurationMs | MISSING = MISSING
 
 
-class Payload41(BaseModel):
+class Payload43(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -1802,10 +1832,10 @@ class WatchAck(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_ack'], Field(min_length=1)]
-    payload: Payload41
+    payload: Payload43
 
 
-class Payload42(BaseModel):
+class Payload44(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -1828,7 +1858,7 @@ class WatchAlert(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_alert'], Field(min_length=1)]
-    payload: Payload42
+    payload: Payload44
 
 
 class Echo(BaseModel):
@@ -1848,7 +1878,7 @@ class Watch(BaseModel):
     app_version: Annotated[StrictStr | MISSING, Field(min_length=1)] = MISSING
 
 
-class Payload43(BaseModel):
+class Payload45(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -1863,7 +1893,7 @@ class WatchHeartbeat(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_heartbeat'], Field(min_length=1)]
-    payload: Payload43
+    payload: Payload45
 
 
 class WorldStateHeadZUncertain1x(RootModel[Any]):
@@ -2940,7 +2970,37 @@ class SiteAck(Envelope):
     payload: Payload37
 
 
+class Input(BaseModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    calibration_version: DefsVersionId
+    calibration_ref: DefsObjectUri
+    calibration_hash: DefsSha256
+    images: Annotated[list[Image], Field(max_length=16, min_length=2)]
+    input_provenance: DefsInputProvenance
+    clean_background_bundle_id: Annotated[
+        StrictStr | MISSING, Field(pattern='^bundle-[0-9a-f]{32}$')
+    ] = MISSING
+
+
 class Payload38(BaseModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    bundle_id: Annotated[StrictStr, Field(pattern='^bundle-[0-9a-f]{32}$')]
+    input: Input
+
+
+class StaticReconstructSubmit(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['static_reconstruct_submit'], Field(min_length=1)]
+    payload: Payload38
+
+
+class Payload40(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -2963,7 +3023,7 @@ class Tier0Endpoint(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['tier0_endpoint'], Field(min_length=1)]
-    payload: Payload38
+    payload: Payload40
 
 
 class Frame2(DefsCaptureTime):
@@ -2999,7 +3059,7 @@ class VlmRationaleInput(BaseModel):
     world_state_ref: DefsUuid | MISSING = MISSING
 
 
-class Payload44(BaseModel):
+class Payload46(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -3016,7 +3076,7 @@ class WorldState(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['world_state'], Field(min_length=1)]
-    payload: Payload44
+    payload: Payload46
 
 
 class Track(WorldStateWorldTrack):
@@ -3504,6 +3564,8 @@ class Contracts(BaseModel):
     scene_output: SceneOutput | MISSING = MISSING
     scene_reference: SceneReference | MISSING = MISSING
     site_ack: SiteAck | MISSING = MISSING
+    static_reconstruct_submit: StaticReconstructSubmit | MISSING = MISSING
+    static_reconstruct_submit_result: StaticReconstructSubmitResult | MISSING = MISSING
     tbm_report: TbmReport | MISSING = MISSING
     tier0_endpoint: Tier0Endpoint | MISSING = MISSING
     video_segment: VideoSegment | MISSING = MISSING

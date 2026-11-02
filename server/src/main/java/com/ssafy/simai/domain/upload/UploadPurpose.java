@@ -8,6 +8,7 @@ import java.util.Set;
  * 업로드 목적(upload_grant.purpose, 명세 12.6). 목적마다 받는 형식·최대 크기·키 앞부분·요청할 수 있는 주체가 정해져 있다.
  * 이벤트 프레임·클립은 Tier 0 가 올리고(계약 event_frame_ready·media_clip), 조치 사진은 반장이 올리며(FR-41),
  * 아바타 자산(glTF/GLB·텍스처·표면 출처 지도)은 분석 워커가 올린다(I6, S15P31A101-325).
+ * 정적 3D 입력(사람 지운 배경 사진·보정 문서 JSON)은 분석 워커가 static_reconstruct 를 등록하기 전에 올린다(S15P31A101-403).
  */
 public enum UploadPurpose {
     // VLM 근거 입력 프레임 한 장(event_frame_ready.frames[].frame_uri)
@@ -33,6 +34,13 @@ public enum UploadPurpose {
                     "image/png", ".png",
                     "image/jpeg", ".jpg",
                     "image/webp", ".webp"),
+            64L << 20,
+            Set.of(Requester.Kind.WORKER)),
+    // 정적 3D 입력(static_reconstruct images[]·calibration_ref, 워커 토큰, S15P31A101-403). 원본 해상도 JPEG·PNG 한 장과 보정 문서 JSON.
+    // 키는 static-inputs/<bundle_id>/<file_name><확장자>(묶음마다 정해짐, 같은 내용만 다시 받음) 또는 static-inputs/<UUID>/<UUID>.
+    STATIC_RECONSTRUCT_INPUT(
+            "static-inputs",
+            Map.of("image/jpeg", ".jpg", "image/png", ".png", "application/json", ".json"),
             64L << 20,
             Set.of(Requester.Kind.WORKER));
 

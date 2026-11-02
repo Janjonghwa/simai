@@ -14,6 +14,9 @@
     simai-bootstrap run <명령...>               준비 → 그 명령 (실험 이미지: simai-bootstrap run simai-exp02 python ...)
     simai-bootstrap scene [--] <명령...>        장면 준비 모드(일회성, 통합 이미지의 MapAnything): Tier 0·GPU 확인 → static 가중치 → 재확인 → 그 명령을
                                                 자식으로 실행하며 Tier 0 시작을 감시(나타나면 장면 작업을 끝내고 75). 명령의 종료 코드로 끝난다(아래 "장면 준비 모드")
+    simai-bootstrap after-live [--work 로비 작업 폴더] [--worker-token-file F | --env-file F] [--ec2-base-url URL] [-- 워커 인자...]
+                                                관제 뒤 배경 복원(S15P31A101-403): Tier 0 정상 종료 기록을 확인하고 장면 준비 모드로 분석 워커만 띄운다.
+                                                워커는 관제가 빈 뒤 사람 지운 배경 묶음을 올려 static_reconstruct 를 등록·처리하고, 그 작업이 끝나면 0 으로 끝난다
     simai-bootstrap --help                      이 설명 + Tier 0 도움말 (준비 없음)
     simai-bootstrap <다른 명령...>              준비 없이 그대로 실행 (sleep infinity, bash, simai-wait-tier0 등)
 
@@ -66,6 +69,16 @@
     준비의 GPU 단계가 판정). 거부하면 기록($SIMAI_ROOT/runs/bootstrap/)에 exit 75 를 추가한다.
   - 장면 작업 중에 Tier 0 를 띄우면 Tier 0 는 막히지 않고 장면 작업이 멈춘다. 그래도 장면 준비는 관제 시간 밖에서 Tier 0 보다 먼저 끝낸다(deploy/README).
 
+관제 뒤 배경 복원(after-live, S15P31A101-403): 로비 Supervisor 는 Tier 0 가 끝나면 워커도 내리므로, 세션을 끝낸 뒤 이 명령으로 워커만 다시 띄운다.
+  - 로비 작업 폴더(--work, 기본 $SIMAI_ROOT/runs/lobby-live)의 state/ 를 그대로 쓴다: SIMAI_TIER0_MARKER=<work>/state/tier0.live,
+    SIMAI_STATE_DIR=<work>/state(사람 지운 배경 묶음·Tier 0 활성 보정·자동 제출 기록).
+  - Tier 0 정상 종료 기록(<표시 파일>.stopped, Tier 0 가 모든 종료 단계를 마치고 남김)이 없으면 시작하지 않는다(75): 워커의 접수 문은
+    그 기록이 있을 때만 'LIVE 아님'으로 보므로 띄워도 아무것도 하지 않는다. 표시 파일이 남아 있어도(관제 중·비정상 종료) 75.
+  - 나머지는 장면 준비 모드와 같다(Tier 0 시작 잠금·GPU 사용 중 메모리 확인, static 가중치, Tier 0 가 시작하면 워커 그룹을 끝내고 75).
+    워커는 --once 없이 SIMAI_AUTO_STATIC_EXIT_WHEN_DONE=1 로 돈다: 마지막 LIVE 뒤 SIMAI_AUTO_STATIC_QUIET_S(300초)를 기다려 묶음을 올리고,
+    그 작업이 끝나거나 낼 묶음이 없으면 스스로 끝난다(종료 코드 0). torch 상한은 분석 워커 예산 전체(vLLM 이 없으므로).
+  - Tier 0 시작 경로(tier0·lobby·감시 프로세스)는 GPU 를 잡기 전에 정상 종료 기록을 지운다(엔진 준비 중을 'LIVE 아님'으로 보지 않게).
+
 HF 토큰: 시작하자마자 HF_TOKEN 을 환경에서 꺼내 이 프로세스 안에만 들고(가중치 받기에만 쓴다), HUGGING_FACE_HUB_TOKEN 은 읽지 않고 지우기만 한다.
 그래서 nvidia-smi 조회·도움말·그대로 넘기는 명령·Tier 0·vLLM·워커·큐 등 어떤 자식 프로세스에도 토큰이 상속되지 않는다(S15P31A101-205 리뷰 R1).
 
@@ -73,7 +86,8 @@ HF 토큰: 시작하자마자 HF_TOKEN 을 환경에서 꺼내 이 프로세스 
 기동해도 python -m services.* 를 찾는다(cwd 는 바꾸지 않아 상대 경로·저장소 사본이 앞선다). 감시 프로세스는 정한 워커 ID 를 worker·avatar 환경 SIMAI_WORKER_ID 로 넣는다.
 
 종료 코드(simai-tier0·engine_cache 와 같은 규칙): 0 정상, 2 저장 위치·용량·가중치(없음·해시 불일치·받기 실패·목록 오류·묶음 이름 오류),
-3 GPU 없음·최소 사양 미만, 64 사용법 오류(run·scene 뒤에 명령 없음, SIMAI_SERVICES 오류), 75 장면 준비 거부(LIVE 서비스·GPU 사용 중·모름, sysexits EX_TEMPFAIL),
+3 GPU 없음·최소 사양 미만, 64 사용법 오류(run·scene 뒤에 명령 없음, SIMAI_SERVICES 오류), 75 장면 준비·after-live 거부(LIVE 서비스·GPU 사용 중·모름·
+정상 종료 기록 없음, sysexits EX_TEMPFAIL),
 127 Tier 0 명령을 띄우지 못함.
 감시 프로세스 모드는 Tier 0 의 종료 코드를 그대로 돌려준다(신호로 끝났으면 128 + 신호 번호).
 """
@@ -139,6 +153,8 @@ SCENE_PREEMPT_WAIT_S = 20.0  # Tier 0 시작 경로가 장면 잠금 해제를 �
 TIER0_LOCK = ("locks", "tier0.lock")  # Tier 0 시작 의도(공유 잠금, Tier 0 프로세스가 끝날 때까지). flock 은 커널이 프로세스 종료 때 푼다
 SCENE_LOCK = ("locks", "scene.lock")  # 장면 작업 실행 중(배타)
 SCENE_PGID = ("locks", "scene.pgid")  # 실행 중인 장면 그룹(pgid·시작 표지). 감시 부모가 멈추거나 죽어도 Tier 0 가 이것으로 회수한다
+CLEAN_STOP_SUFFIX = ".stopped"  # Tier 0 정상 종료 기록 = <표시 파일>.stopped (simai_ai.gpu.admission.clean_stop_path 와 같은 규칙, S15P31A101-403)
+CLEAN_STOP_PHASE = "stopped_clean"
 SCENE_MAX_GPU_USED_MB = 1024  # 넘으면 다른 프로세스가 GPU 를 쓴다. 빈 GPU 는 0~수 MiB, 다른 프로세스의 빈 CUDA 문맥은 약 0.5 GiB, Tier 0·vLLM 은 수 GiB 이상
 FETCH_ATTEMPTS = 5
 RETRY_HTTP = {408, 425, 429, 500, 502, 503, 504}
@@ -1242,6 +1258,7 @@ class Supervisor:
                 self._stop(self.svc[name])
 
     def start_tier0(self) -> None:
+        clear_clean_stop(self.marker)  # 엔진 준비 중을 정상 종료 뒤로 보지 않게(S15P31A101-403)
         t0 = self.svc["tier0"]
         self.t0_since_ms = self.wall_ms()  # 띄우기 전에 잰다: 이 시각보다 먼저 쓴 표시 파일은 이번 Tier 0 의 것이 아니다
         t0.proc = self.spawn("tier0", t0.argv, t0.env, self.log_dir)
@@ -1337,6 +1354,37 @@ def claim_tier0(root: Path) -> None:
         time.sleep(0.05)
     os.set_inheritable(f.fileno(), True)  # simai-tier0 → python services.tier0 로 exec 해도 그 프로세스가 끝날 때까지 쥔다
     _tier0_claim = f
+
+
+def clean_stop_path(marker: Path) -> Path:
+    """Tier 0 정상 종료 기록 경로(simai_ai.gpu.admission.clean_stop_path 와 같다. 이 스크립트는 ai 패키지 없이도 돈다)."""
+    return marker.with_name(marker.name + CLEAN_STOP_SUFFIX)
+
+
+def clear_clean_stop(marker: Path) -> None:
+    """Tier 0 시작 경로: GPU 를 잡기 전에 지난 정상 종료 기록을 지운다. 남아 있으면 분석 워커가 엔진 준비 중을 'LIVE 아님'으로 본다."""
+    path = clean_stop_path(marker)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as e:
+        log(f"Tier 0 정상 종료 기록 {path} 를 지우지 못함({type(e).__name__}): 표시 파일이 생기기 전까지 분석 워커가 LIVE 아님으로 볼 수 있다")
+
+
+def clean_stop_ok(marker: Path) -> str | None:
+    """after-live 를 띄워도 되면 None, 아니면 거부 이유. 표시 파일이 없고 정상 종료 기록이 읽혀야 한다."""
+    if marker.exists():
+        return f"Tier 0 표시 파일 {marker} 가 있다(관제 중이거나 정상 종료하지 않았다)"
+    path = clean_stop_path(marker)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return (f"Tier 0 정상 종료 기록 {path} 이 없다(정상 종료하지 않았거나 이 작업 폴더의 Tier 0 가 아니다). "
+                "분석 워커가 LIVE 아님으로 볼 근거가 없어 띄우지 않는다")
+    except (OSError, ValueError) as e:
+        return f"Tier 0 정상 종료 기록 {path} 를 읽지 못함({type(e).__name__}) → 모름"
+    if not isinstance(doc, dict) or doc.get("phase") != CLEAN_STOP_PHASE:
+        return f"Tier 0 정상 종료 기록 {path} 형식이 틀렸다 → 모름"
+    return None
 
 
 def wait_scene_released(root: Path) -> None:
@@ -2221,7 +2269,9 @@ def lobby(rest: list[str]) -> int:
         return e.code
     _warn_lobby_services(args.services, os.environ.get(SERVICES_ENV), services)
 
-    claim_tier0(choose_root()[0])
+    claim_root = choose_root()[0]
+    claim_tier0(claim_root)
+    clear_clean_stop((args.work or (claim_root / "runs" / "lobby-live")) / "state" / "tier0.live")
     try:
         rec = prepare("tier0")
     except BootstrapError as e:
@@ -2287,6 +2337,50 @@ def lobby(rest: list[str]) -> int:
     return sup.run()
 
 
+def after_live(rest: list[str]) -> int:
+    """관제 뒤 배경 복원(S15P31A101-403): 로비 작업 폴더의 Tier 0 정상 종료 기록을 확인하고 장면 준비 모드로 분석 워커만 띄운다."""
+    ap = argparse.ArgumentParser(prog="simai-bootstrap after-live",
+                                 description="관제 뒤 사람 지운 배경 묶음 static_reconstruct 자동 제출·처리(분석 워커만)")
+    ap.add_argument("--work", type=Path, default=None, help="로비 작업 폴더(기본 $SIMAI_ROOT/runs/lobby-live)")
+    ap.add_argument("--worker-token-file", default=None)
+    ap.add_argument("--env-file", default=None)
+    ap.add_argument("--ec2-base-url", default=None)
+    if "--" in rest:
+        i = rest.index("--")
+        own, worker_args = rest[:i], rest[i + 1:]
+    else:
+        own, worker_args = rest, []
+    try:
+        args = ap.parse_args(own)
+    except SystemExit as e:
+        return EXIT_USAGE if e.code else EXIT_OK
+    if "--once" in worker_args:
+        log("after-live 의 워커는 --once 없이 돈다(관제 뒤 대기 시간을 채운다) (종료 코드 64)")
+        return EXIT_USAGE
+    root = choose_root()[0]
+    work = args.work or (root / "runs" / "lobby-live")
+    state = work / "state"
+    marker = state / "tier0.live"
+    if why := clean_stop_ok(marker):
+        return _scene_refuse(root, f"after-live: {why}")
+    ec2 = args.ec2_base_url or os.environ.get("SIMAI_EC2_BASE_URL") or ""
+    if not ec2:
+        log("after-live: --ec2-base-url 또는 SIMAI_EC2_BASE_URL 이 필요하다 (종료 코드 64)")
+        return EXIT_USAGE
+    # 장면 모드의 Tier 0 확인(tier0_present)과 자식 환경이 같은 표시 파일·상태 폴더를 보게 한다
+    os.environ.update({"SIMAI_TIER0_MARKER": str(marker), "SIMAI_STATE_DIR": str(state), "SIMAI_EC2_BASE_URL": ec2,
+                       "SIMAI_AUTO_STATIC_RECONSTRUCT": "1", "SIMAI_AUTO_STATIC_EXIT_WHEN_DONE": "1"})
+    os.environ.pop("SIMAI_WORKER_DEV_NO_LIVE", None)  # 개발 플래그가 아니라 정상 종료 기록으로 LIVE 아님을 본다
+    os.environ.pop("SIMAI_WORKER_TORCH_MEMORY_FRACTION", None)  # vLLM 이 없으니 분석 워커 예산 전체(기본 0.70)
+    scene_args: list[str] = []
+    if args.worker_token_file:
+        scene_args += ["--worker-token-file", args.worker_token_file]
+    if args.env_file:
+        scene_args += ["--env-file", args.env_file]
+    log(f"after-live: {work} 의 Tier 0 정상 종료 확인 → 분석 워커만 띄운다(배경 묶음 자동 제출·처리 뒤 끝남)")
+    return scene([*scene_args, "--", sys.executable, "-m", "services.worker", *worker_args])
+
+
 def supervise(rec: dict, services: list[str], rest: list[str]) -> int:
     root = Path(os.environ["SIMAI_ROOT"])
     tier0 = [*shlex.split(os.environ.get("SIMAI_TIER0_CMD") or TIER0_CMD), *rest]
@@ -2323,6 +2417,8 @@ def main(argv: list[str] | None = None) -> int:
         return scene(rest)
     if mode == "lobby":
         return lobby(rest)
+    if mode == "after-live":
+        return after_live(rest)
     if mode == "check":
         return run_check(rest, preflight=False)
     if mode == "preflight":
@@ -2342,7 +2438,9 @@ def main(argv: list[str] | None = None) -> int:
             return e.code
     want_set = "tier0" if mode == "tier0" else (os.environ.get(SET_ENV) or "tier0")
     if mode == "tier0":  # GPU 를 잡기 전에 시작 의도를 남긴다: 장면 준비 작업은 이것을 보고 시작하지 않거나 스스로 멈춘다(Tier 0 우선)
-        claim_tier0(choose_root()[0])
+        claim_root = choose_root()[0]
+        claim_tier0(claim_root)
+        clear_clean_stop(Path(os.environ.get("SIMAI_TIER0_MARKER") or claim_root / "state" / "tier0.live"))
     try:
         rec = prepare(want_set)
     except BootstrapError as e:

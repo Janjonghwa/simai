@@ -250,14 +250,14 @@ class _FakeUploadServer:
                     return
                 purpose = body["purpose"]
                 ext = ".jpg" if body["content_type"] == "image/jpeg" else (
-                    ".png" if body["content_type"] == "image/png" else ".bin"
+                    ".png" if body["content_type"] == "image/png" else (".json" if body["content_type"] == "application/json" else ".bin")
                 )
                 obj_uuid = str(uuid.uuid4())
                 if purpose == "EVENT_FRAME":
                     event_id = body["event_id"]
                     key = f"event-frames/{event_id}/{obj_uuid}{ext}"
-                elif purpose == "AVATAR_ASSET":
-                    key = f"avatars/{obj_uuid}{ext}"
+                elif purpose == "STATIC_RECONSTRUCT_INPUT":
+                    key = f"static-inputs/{body.get('bundle_id') or obj_uuid}/{body.get('file_name') or obj_uuid}{ext}"
                 else:
                     key = f"tickets/{obj_uuid}{ext}"
                 object_uri = parent.bad_object_uri or f"s3://{parent.bucket}/{key}"
@@ -495,13 +495,13 @@ def test_explicit_images_and_upload_calibration_with_upper_bound_provenance(tmp_
         # 보정 1회 + 카메라 4대 = 5회 업로드
         assert len(server.sign_requests) == 5
         assert len(server.put_requests) == 5
-        assert server.sign_requests[0]["body"]["purpose"] == "AVATAR_ASSET"
-        assert server.sign_requests[0]["body"]["content_type"] == "application/octet-stream"
+        assert server.sign_requests[0]["body"]["purpose"] == "STATIC_RECONSTRUCT_INPUT"
+        assert server.sign_requests[0]["body"]["content_type"] == "application/json"
         assert server.put_requests[0]["bytes"] == cal_bytes
 
     job_input = json.loads(out_path.read_text(encoding="utf-8"))
     validate_input(job_input)
-    assert job_input["calibration_ref"].startswith("s3://simai-prod-bucket/avatars/")
+    assert job_input["calibration_ref"].startswith("s3://simai-prod-bucket/static-inputs/")
     assert job_input["input_provenance"]["is_upper_bound"] is True
     assert job_input["input_provenance"]["frames"]["dataset_id"] == "cmu_panoptic/160422_ultimatum1"
 
@@ -721,7 +721,7 @@ def test_purpose_selection_and_token_mismatch_guards(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`UploadPurpose` 규칙: `--upload-calibration` 은 워커 토큰·`AVATAR_ASSET` 기본, 토큰·용도 불일치 시 업로드 전 중단."""
+    """`UploadPurpose` 규칙: `--upload-calibration` 은 워커 토큰·`STATIC_RECONSTRUCT_INPUT` 기본, 토큰·용도 불일치 시 업로드 전 중단."""
     cal = _make_calibration_doc()
     cal_path = tmp_path / "calibration.json"
     cal_path.write_bytes(json.dumps(cal).encode("utf-8"))
@@ -730,7 +730,7 @@ def test_purpose_selection_and_token_mismatch_guards(
     tier0_tok = "tier0-secret-tok-111"
     worker_tok = "worker-secret-tok-222"
 
-    # 1) --upload-calibration 시 SIMAI_TIER0_TOKEN 과 SIMAI_WORKER_TOKEN 이 함께 있어도 워커 토큰·AVATAR_ASSET 하나로 모두 올린다
+    # 1) --upload-calibration 시 SIMAI_TIER0_TOKEN 과 SIMAI_WORKER_TOKEN 이 함께 있어도 워커 토큰·STATIC_RECONSTRUCT_INPUT 하나로 모두 올린다
     out_both = tmp_path / "out_both.json"
     with _FakeUploadServer(expected_token=worker_tok, bucket="simai-prod-bucket") as server:
         rc = run_cli(
@@ -750,8 +750,8 @@ def test_purpose_selection_and_token_mismatch_guards(
         assert rc == 0
         assert out_both.is_file()
         assert len(server.sign_requests) == 5
-        assert all(req["body"]["purpose"] == "AVATAR_ASSET" for req in server.sign_requests)
-        assert server.sign_requests[0]["body"]["content_type"] == "application/octet-stream"
+        assert all(req["body"]["purpose"] == "STATIC_RECONSTRUCT_INPUT" for req in server.sign_requests)
+        assert server.sign_requests[0]["body"]["content_type"] == "application/json"
 
     # 2) --upload-calibration 인데 SIMAI_TIER0_TOKEN 만 있으면 업로드 전에 멈춘다
     out_mismatch_1 = tmp_path / "out_mismatch_1.json"
@@ -774,7 +774,7 @@ def test_purpose_selection_and_token_mismatch_guards(
         assert not out_mismatch_1.exists()
         assert len(server.sign_requests) == 0
     err_1 = capsys.readouterr().err
-    assert "AVATAR_ASSET" in err_1 and "SIMAI_WORKER_TOKEN" in err_1
+    assert "STATIC_RECONSTRUCT_INPUT" in err_1 and "SIMAI_WORKER_TOKEN" in err_1
 
     # 3) --upload-calibration 과 --purpose EVENT_FRAME 충돌 시 업로드 전에 멈춘다
     out_mismatch_2 = tmp_path / "out_mismatch_2.json"
@@ -799,9 +799,9 @@ def test_purpose_selection_and_token_mismatch_guards(
         assert not out_mismatch_2.exists()
         assert len(server.sign_requests) == 0
     err_2 = capsys.readouterr().err
-    assert "AVATAR_ASSET" in err_2
+    assert "STATIC_RECONSTRUCT_INPUT" in err_2
 
-    # 4) --purpose AVATAR_ASSET 인데 SIMAI_TIER0_TOKEN 만 있으면 업로드 전에 멈춘다
+    # 4) --purpose STATIC_RECONSTRUCT_INPUT 인데 SIMAI_TIER0_TOKEN 만 있으면 업로드 전에 멈춘다
     out_mismatch_3 = tmp_path / "out_mismatch_3.json"
     with _FakeUploadServer(expected_token=tier0_tok) as server:
         rc = run_cli(
@@ -813,7 +813,7 @@ def test_purpose_selection_and_token_mismatch_guards(
                 "--calibration-ref",
                 "s3://simai-prod-bucket/calibrations/cal-room-01.json",
                 "--purpose",
-                "AVATAR_ASSET",
+                "STATIC_RECONSTRUCT_INPUT",
                 "--output",
                 str(out_mismatch_3),
                 "--server",
@@ -825,7 +825,7 @@ def test_purpose_selection_and_token_mismatch_guards(
         assert not out_mismatch_3.exists()
         assert len(server.sign_requests) == 0
     err_3 = capsys.readouterr().err
-    assert "AVATAR_ASSET" in err_3
+    assert "STATIC_RECONSTRUCT_INPUT" in err_3
 
     # 5) --purpose EVENT_FRAME 인데 SIMAI_WORKER_TOKEN 만 있으면 업로드 전에 멈춘다
     out_mismatch_4 = tmp_path / "out_mismatch_4.json"

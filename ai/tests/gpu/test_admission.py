@@ -21,6 +21,8 @@ from simai_ai.gpu.admission import (
     AdmissionGate,
     AdmissionPolicy,
     LoadWindow,
+    clean_stop_path,
+    clean_stop_record,
     marker_section,
 )
 from simai_ai.gpu.budget import BudgetError, GpuBudget, WorkerGpuSettings
@@ -405,6 +407,50 @@ def test_marker_removed_lingers_as_live_then_admits_all(env):
     clock.advance(31.0)
     adm = gate.check()
     assert adm.admit and not adm.live and adm.allowed_types(TYPES) == TYPES
+
+
+# ------------------------------------------------------------------ 정상 종료 기록 (S15P31A101-403)
+
+
+def test_clean_stop_record_is_not_live_but_missing_broken_or_dropped_marker_stays_live(env):
+    """운영 모드(개발 플래그 없음): '정상 종료로 끝남'만 LIVE 아님. 표시 파일 없음·끊김(오래됨)·기록 깨짐은 지금처럼 LIVE(모름)."""
+    clock, marker, gate = env
+    stopped = clean_stop_path(marker)
+    assert stopped.name == "tier0.live.stopped"
+    assert settle(gate, clock, marker, 12).live  # 관제 중
+    # Tier 0 가 정상 종료: 표시 파일을 지우고 기록을 남긴다 → LIVE 를 본 직후라 linger 동안은 아직 LIVE
+    marker.unlink()
+    stopped.write_text(json.dumps(clean_stop_record(stopped_at_ms=int(clock.wall * 1000), pid=7)), encoding="utf-8")
+    adm = gate.check()
+    assert adm.live and not adm.admit and "정상 종료" in adm.reason
+    clock.advance(31.0)
+    adm = gate.check()
+    assert not adm.live and adm.admit and adm.allowed_types(TYPES) == TYPES and "정상 종료" in adm.reason
+
+    # 기록 형식이 틀리거나 읽지 못하면 모름 → LIVE
+    for raw in ('{"phase": "running", "version": 1, "stopped_at": 1}', '{"phase": "stopped_clean"}', "{not json"):
+        stopped.write_text(raw, encoding="utf-8")
+        adm = AdmissionGate(marker, gate.policy, wall_s=lambda: clock.wall, monotonic=lambda: clock.mono).check()
+        assert adm.live and not adm.admit and "모름" in adm.reason
+
+    # 기록이 없으면(비정상 종료·기동 중·표시 파일 쓰기 실패) 지금처럼 모름 → LIVE
+    stopped.unlink()
+    adm = gate.check()
+    assert adm.live and not adm.admit and "모름" in adm.reason
+
+
+def test_live_marker_wins_over_clean_stop_record_and_stale_marker_is_unknown(env):
+    """기록이 남아 있어도 표시 파일이 있으면 그것으로 판단한다(새 Tier 0 가 기록을 못 지운 경우). 갱신이 끊긴 표시 파일은 모름 → LIVE."""
+    clock, marker, gate = env
+    clean_stop_path(marker).write_text(json.dumps(clean_stop_record(stopped_at_ms=1, pid=1)), encoding="utf-8")
+    write(marker, clock, phase="starting")
+    adm = gate.check()
+    assert adm.live and not adm.admit
+    adm = settle(gate, clock, marker, 12)
+    assert adm.live and adm.admit and "static_reconstruct" not in adm.allowed_types(TYPES)
+    clock.advance(16.0)  # Tier 0 가 끊겨 표시 파일이 15초 넘게 갱신되지 않음
+    adm = gate.check()
+    assert adm.live and not adm.admit and "모름" in adm.reason
 
 
 # ------------------------------------------------------------------ 예산·설정
