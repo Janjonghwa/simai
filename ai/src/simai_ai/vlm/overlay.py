@@ -4,10 +4,17 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-import cv2
 import numpy as np
 
 from simai_ai.vlm.face_blur import VlmFrame
+
+
+def _cv2():
+    """OpenCV 는 선택 의존성(extra io)이라 쓸 때만 불러온다. 워커 이미지에는 있고, 기본 설치(nightly CI)에는 없다."""
+    import cv2
+
+    return cv2
+
 
 NEAR = 0.01  # 카메라 평면의 특이점과 무한 확대를 피하는 1 cm 근접 평면
 
@@ -31,6 +38,7 @@ def clip_polygon(points: np.ndarray, axis: int, bound: float, greater: bool) -> 
 
 def project(camera: Mapping[str, Any], camera_points: np.ndarray) -> np.ndarray:
     """카메라 좌표를 왜곡 포함 픽셀로 투영한다."""
+    cv2 = _cv2()
     k = np.asarray(camera['K'], dtype=float)
     distortion = camera['distortion']
     coeffs = np.asarray(distortion['coeffs'], dtype=float)
@@ -46,7 +54,11 @@ def project(camera: Mapping[str, Any], camera_points: np.ndarray) -> np.ndarray:
 
 def overlay(frame: VlmFrame, meta: Mapping[str, Any], state: Mapping[str, Any],
             world_ids: Sequence[str], camera: Mapping[str, Any] | None) -> tuple[VlmFrame, bool]:
-    """정확한 보정 및 높이를 모르는 표시는 생략한다."""
+    """정확한 보정 및 높이를 모르는 표시는 생략한다. OpenCV 가 없으면 덧그리지 않고 원본을 돌려준다."""
+    try:
+        cv2 = _cv2()
+    except ImportError:
+        return frame, False
     image = frame.pixels.copy()
     h, w = image.shape[:2]
     drawn = False

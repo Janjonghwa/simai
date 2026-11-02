@@ -1,8 +1,6 @@
 """PostgreSQL 읽기 전용 법령 그래프 검색."""
-import psycopg
 from collections import Counter
 from itertools import zip_longest
-from psycopg.rows import dict_row
 
 COLUMNS = "node_id, node_kind, layer, parent_id, source_name, article_ref, title, body, rule_tags, embedding IS NOT NULL AS embedded, embedding_model, embedding_revision"
 KINDS = ["REFERENCES", "MUTATIS_MUTANDIS", "NOTWITHSTANDING", "DELEGATES", "PARENT_CHILD", "ANNEX_RELATES", "MITIGATES", "REQUIRES_CONTROL"]
@@ -31,6 +29,9 @@ class PgGraphStore:
         self.dsn = dsn
 
     def _query(self, sql, params=()):
+        import psycopg  # 선택 의존성(extra risk_api): 컨테이너에만 있고 기본 설치(nightly CI)에는 없다
+        from psycopg.rows import dict_row
+
         with psycopg.connect(self.dsn, row_factory=dict_row, options="-c default_transaction_read_only=on") as conn:
             return conn.execute(sql, params).fetchall()
 

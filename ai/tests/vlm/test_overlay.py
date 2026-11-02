@@ -1,4 +1,7 @@
 import numpy as np
+import pytest
+
+pytest.importorskip("cv2")  # overlay 는 extra io 의 OpenCV 로 그린다
 
 from simai_ai.vlm.face_blur import prepare_vlm_frames
 from simai_ai.vlm.overlay import clip_polygon, overlay, project
