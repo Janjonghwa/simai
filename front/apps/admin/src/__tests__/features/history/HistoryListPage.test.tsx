@@ -35,7 +35,7 @@ vi.mock('@/lib/api', async () => {
                 ? { ...work, event_counts: counts[state.answer] }
                 : work,
             );
-      return Promise.resolve({ contract: 'DEMO_UNCONFIRMED', works });
+      return Promise.resolve({ works });
     },
   };
 });

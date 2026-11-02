@@ -40,8 +40,7 @@ vi.mock('@/lib/api', async () => {
   return {
     api: (path: string) => {
       const url = new URL(path, 'http://api.test');
-      if (url.pathname === '/api/work-units')
-        return Promise.resolve({ contract: 'DEMO_UNCONFIRMED', works });
+      if (url.pathname === '/api/work-units') return Promise.resolve({ works });
       if (url.pathname === '/api/replay') {
         if (server.replayError !== null) return Promise.reject(server.replayError);
         const q = (key: string) => Number(url.searchParams.get(key));
