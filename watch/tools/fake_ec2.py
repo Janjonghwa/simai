@@ -10,6 +10,7 @@
 - 표준 입력으로 알림을 보낸다:  alert CRITICAL 추락 FRONT   /  alert HIGH 지게차  /  alert CAUTION 접근 - 10000
   (등급, 한 단어, 방향(FRONT·BACK·LEFT·RIGHT, 없으면 -), 확인 기한 ms). resend 는 마지막 알림을 같은 msg_id 로 다시 보낸다
 - watch_ack 가 오면 VIBRATED 까지 걸린 시간(워치 received_at − 보낸 sent_at, 시계 차이 포함)을 찍는다
+- gait_features 는 창마다 걸음 수·RMS·최대 주파수·전환을 찍고, --gait-log <파일> 을 주면 CSV 로도 남긴다(걷기·멈춤 기록, -339)
 
 실행(저장소 루트에서):  uv run watch/tools/fake_ec2.py --token dev-token
 워치 설정(debug 빌드만 http 를 받는다): adb shell "am start -n com.ssafy.simai.watch/.ConfigActivity \
@@ -53,7 +54,7 @@ def now_ms() -> int:
 
 def log(text: str) -> None:
     """시각을 붙여 찍는다(절전 중 하트비트 간격을 재는 데 쓴다)"""
-    log(f"{time.strftime('%H:%M:%S')} {text}")
+    print(f"{time.strftime('%H:%M:%S')} {text}", flush=True)
 
 
 def envelope(msg_type: str, payload: dict) -> dict:
@@ -76,9 +77,12 @@ def event_id() -> str:
 
 
 class FakeEc2:
-    def __init__(self, token: str, interval_ms: int) -> None:
+    def __init__(self, token: str, interval_ms: int, gait_log: Path | None = None) -> None:
         self.token = token
         self.interval_ms = interval_ms
+        self.gait_log = gait_log
+        if gait_log is not None and not gait_log.exists():
+            gait_log.write_text("received_at,device,window_start_ms,window_end_ms,clock_offset_ms,steps,rms,peak_freq_hz,transitions\n", encoding="utf-8")
         self.validators = load_validators()
         self.watches: dict[object, str] = {}
         self.sent_alerts: dict[str, dict] = {}
@@ -125,15 +129,30 @@ class FakeEc2:
         elif msg_type == "watch_ack":
             self.on_ack(doc["source_id"], payload)
         elif msg_type == "gait_features":
-            steps = len(payload["step_times_ms"])
-            log(f"gait_features {doc['source_id']} 걸음 {steps}개 offset {payload['clock_offset_ms']}")
+            self.on_gait(doc["source_id"], payload)
+
+    def on_gait(self, device: str, payload: dict) -> None:
+        steps = len(payload["step_times_ms"])
+        band = payload["band_magnitude"]
+        transitions = ";".join(f"{t['kind']}@{t['at_ms']}" for t in payload.get("motion_transitions", []))
+        peak = band["peak_freq_hz"]
+        log(
+            f"gait {device} [{payload['window_start_ms']}~{payload['window_end_ms']}) 걸음 {steps} rms {band['rms']:.2f} "
+            f"peak {peak if peak is not None else '-'} offset {payload['clock_offset_ms']} 지연 {now_ms() - payload['window_end_ms']}ms {transitions}"
+        )
+        if self.gait_log is not None:
+            with self.gait_log.open("a", encoding="utf-8") as f:
+                f.write(
+                    f"{now_ms()},{device},{payload['window_start_ms']},{payload['window_end_ms']},{payload['clock_offset_ms']},"
+                    f"{steps},{band['rms']},{'' if peak is None else peak},{transitions}\n"
+                )
 
     async def reply_heartbeat(self, connection, doc: dict) -> None:
         payload = doc["payload"]
         received = now_ms()
         watch = payload["watch"]
         log(
-            f"heartbeat {doc['source_id']} seq={payload['heartbeat_seq']} 배터리 {watch['battery_pct']}% {watch['transport']}",
+            f"heartbeat {doc['source_id']} seq={payload['heartbeat_seq']} 배터리 {watch['battery_pct']}% {watch['transport']} 지연 {received - doc['sent_at']}ms",
             )
         reply = envelope(
             "watch_heartbeat",
@@ -220,8 +239,9 @@ async def main() -> None:
     ap.add_argument("--token", required=True, help="워치에 넣은 기기 토큰과 같은 값")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--interval-ms", type=int, default=10000, help="워치에 알려 줄 하트비트 주기")
+    ap.add_argument("--gait-log", type=Path, default=None, help="걸음 특징을 CSV 로 남길 파일")
     args = ap.parse_args()
-    fake = FakeEc2(args.token, args.interval_ms)
+    fake = FakeEc2(args.token, args.interval_ms, args.gait_log)
     # ping 으로 죽은 TCP 연결을 걸러 낸다(워치 쪽 OkHttp 는 pong 을 자동으로 보낸다)
     async with serve(fake.handler, "0.0.0.0", args.port, process_request=fake.process_request, ping_interval=20, ping_timeout=20):
         log(f"가짜 EC2 ws://0.0.0.0:{args.port}{PATH} (토큰 검사, 계약 검사)")

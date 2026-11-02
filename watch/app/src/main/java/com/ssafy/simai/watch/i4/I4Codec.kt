@@ -3,6 +3,8 @@ package com.ssafy.simai.watch.i4
 import com.ssafy.simai.watch.alert.AckRecord
 import com.ssafy.simai.watch.alert.AlertFields
 import com.ssafy.simai.watch.alert.WatchAlert
+import com.ssafy.simai.watch.gait.GaitFeatures
+import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import java.util.UUID
@@ -84,6 +86,30 @@ class I4Codec(private val sourceId: String) {
         record.receivedAtMs?.let { payload.put("received_at", it) }
         return envelope("watch_ack", payload, nowMs).toString()
     }
+
+    /** 워치 → EC2 걸음 특징 한 창(계약 gait_features). 시각은 워치 시계, 시계 차이는 모르면 null 로 싣는다 */
+    fun gaitFeatures(features: GaitFeatures, clockOffsetMs: Long?, nowMs: Long): String {
+        val band = JSONObject()
+            .put("rate_hz", features.bandRateHz)
+            .put("values", JSONArray(features.bandValues.map { round3(it) }))
+            .put("rms", round3(features.rms))
+            .put("peak_freq_hz", features.peakFreqHz?.let { round3(it) } ?: JSONObject.NULL)
+        val payload = JSONObject()
+            .put("clock_basis", "WATCH")
+            .put("clock_offset_ms", clockOffsetMs ?: JSONObject.NULL)
+            .put("window_start_ms", features.windowStartMs)
+            .put("window_end_ms", features.windowEndMs)
+            .put("sample_rate_hz", features.sampleRateHz)
+            .put("step_times_ms", JSONArray(features.stepTimesMs))
+        if (features.transitions.isNotEmpty()) {
+            payload.put("motion_transitions", JSONArray(features.transitions.map { JSONObject().put("at_ms", it.atMs).put("kind", it.kind.name) }))
+        }
+        payload.put("band_magnitude", band)
+        return envelope("gait_features", payload, nowMs).toString()
+    }
+
+    /** 메시지를 작게: 소수 셋째 자리까지 */
+    private fun round3(x: Double): Double = Math.round(x * 1000) / 1000.0
 
     private fun envelope(msgType: String, payload: JSONObject, nowMs: Long): JSONObject =
         JSONObject()
