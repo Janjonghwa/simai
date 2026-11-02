@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "watch_alert",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000401",
+  "sent_at": 1760342401250,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "event_sequence": 2,
+    "severity": "CRITICAL",
+    "vibration_pattern": "DANGER_LONG",
+    "direction": "FRONT",
+    "word": "추락",
+    "ack_within_ms": 10000,
+    "needs_check": false
+  }
+}

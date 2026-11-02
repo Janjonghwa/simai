@@ -1,0 +1,15 @@
+{
+  "_note": "작업자가 화면에서 확인 버튼을 누른 뒤 한 번 더. received_at 은 두 번 보내지 않는다",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_ack",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000412",
+  "sent_at": 1760342404300,
+  "source_id": "watch-01",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "event_sequence": 2,
+    "alert_msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000401",
+    "kind": "CONFIRMED",
+    "acked_at": 1760342404280
+  }
+}

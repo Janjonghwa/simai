@@ -1,0 +1,14 @@
+{
+  "_expect_error": "ACK 종류는 VIBRATED·CONFIRMED 만(운영자 확인 채널 아님)",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_ack",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000411",
+  "sent_at": 1760342401900,
+  "source_id": "watch-01",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "alert_msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000401",
+    "kind": "FOREMAN_PWA",
+    "acked_at": 1760342401880
+  }
+}

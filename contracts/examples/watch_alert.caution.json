@@ -1,0 +1,15 @@
+{
+  "_note": "CAUTION: 패턴·방향을 싣지 않으면 워치가 등급으로 약한 진동을 고르고 방향 없이 보인다. '확인 필요' 표시",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_alert",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000402",
+  "sent_at": 1760342405000,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e90",
+    "severity": "CAUTION",
+    "word": "지게차",
+    "ack_within_ms": 10000,
+    "needs_check": true
+  }
+}

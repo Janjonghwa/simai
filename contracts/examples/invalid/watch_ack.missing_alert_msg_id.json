@@ -1,0 +1,13 @@
+{
+  "_expect_error": "어느 알림의 ACK 인지(alert_msg_id) 없이는 watch_alert 행과 잇지 못한다",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_ack",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000411",
+  "sent_at": 1760342401900,
+  "source_id": "watch-01",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "kind": "VIBRATED",
+    "acked_at": 1760342401880
+  }
+}

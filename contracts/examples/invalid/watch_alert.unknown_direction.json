@@ -1,0 +1,16 @@
+{
+  "_expect_error": "방향은 작업자 기준 앞·뒤·왼·오른쪽만(나침반 방위 불가)",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_alert",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000401",
+  "sent_at": 1760342401250,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "severity": "HIGH",
+    "direction": "NORTH",
+    "word": "접근",
+    "ack_within_ms": 10000,
+    "needs_check": false
+  }
+}

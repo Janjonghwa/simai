@@ -1,0 +1,15 @@
+{
+  "_expect_error": "기한은 길이(ms)지 절대 시각이 아니다: 10분 상한을 넘는다",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_alert",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000401",
+  "sent_at": 1760342401250,
+  "source_id": "ec2",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "severity": "HIGH",
+    "word": "접근",
+    "ack_within_ms": 1760342411250,
+    "needs_check": false
+  }
+}
