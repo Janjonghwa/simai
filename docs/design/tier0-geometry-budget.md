@@ -260,3 +260,10 @@ Tier 0 판정 루프에서 부르지 않는 보정·장면 도구(설치 때 노
 - 보정 도구(번들 조정·내부 파라미터·외부 파라미터 초기값·World 좌표계·재보정)의 `svd`·`lstsq` 는 거르지 않았다. 입력은 왜곡 제거가 성공한 관측이라 inf·NaN 이 들어갈 길은 좁지만, 넣으면 Linux 에서 그 도구가 멈출 수 있다. 판정 루프 밖이라 별도 티켓으로 넘긴다.
 - `_two_view_arrays` 는 유한한 입력의 SVD 미수렴 `LinAlgError` 를 잡지 않는다(이전과 같음, 재현 사례 없음).
 - 멈춤 조건은 OpenBLAS 판에 따라 달라질 수 있다. 시험은 이 노트북 Docker 의 numpy 2.3.5·OpenBLAS 0.3.30 에서 확인했다.
+
+## S15P31A101-391: 관절별 잡음 가중(V1a) 도입 뒤 회귀 비교 기준 정합
+
+- **배경**: S15P31A101-354(`a55362bc`, 명세 §5.2 V1a)가 Cross-view 후보 쌍의 대칭 에피폴라 거리 평균과 2-view 삼각측량 재투영 잔차 중앙값을 관절별 역잡음 가중치(`1 / KEYPOINT_NOISE_SCALE`)로 집계하도록 바꾸면서, 비가중 평균·중앙값을 그대로 쓰던 속도 개선 회귀 시험 2개(`test_batch_undistort_regression.py` 의 Cross-view 비교 7건, `test_geometry_speedup_regression.py` 의 pipeline 비교 16건)가 `epipolar_px`·`residual_px`·클러스터 차이로 실패했다.
+- **고른 방식과 근거**:
+  - 이 회귀 시험들의 목적은 "묶음·벡터화 구현이 기준(쌍별·순차) 구현과 같은 식을 계산해 같은 결과를 내는지" 확인하는 것이다. 따라서 허용 오차(`ATOL`)는 늘리지 않고, 이전 커밋 고정 사본(`legacy_geometry.py`, `legacy_batch_cross_view.py`)도 원본 그대로 보존한다.
+  - 대신 시험 파일의 기준 경로 어댑터(`test_batch_undistort_regression.py` 의 `_legacy_cross_view_pair`·`_legacy_epipolar_px`, `test_geometry_speedup_regression.py` 의 `_make_previous_associator`)에서 쌍별 단일 계산 구조(`legacy.cross_view_two_view_triangulation`, 쌍별 `_evidence`·`_floor_gap`)는 그대로 둔 채 에피폴라 거리 평균과 잔차 중앙값 집계에만 `-354` 와 같은 `1 / KEYPOINT_NOISE_SCALE` 가중을 적용해 두 구현을 동일한 정의로 비교한다.

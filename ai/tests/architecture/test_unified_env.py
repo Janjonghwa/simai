@@ -48,10 +48,21 @@ def test_ultralytics_is_bounded_for_tier0():
     assert str(_reqs("detection")["ultralytics"].specifier) == "<8.5,>=8.4.178"
 
 
+_WINDOWS = {"sys_platform": "win32", "platform_machine": "AMD64"}
+_MAC = {"sys_platform": "darwin", "platform_machine": "arm64"}
+_POD = {"sys_platform": "linux", "platform_machine": "x86_64"}
+
+
+def _linux_only(req: Requirement) -> bool:
+    """Windows·macOS 에서는 빠지고 Pod(Linux x86_64)에서는 깔린다. Linux 안에서 더 좁히는 조건(open3d 0.19.0 은 x86_64 휠만 있음)은 허용한다(-391)."""
+    m = req.marker
+    return m is not None and not m.evaluate(_WINDOWS) and not m.evaluate(_MAC) and m.evaluate(_POD)
+
+
 @pytest.mark.parametrize("extra", ["vlm", "hmr", "scene"])
 def test_linux_only_worker_packages_have_marker(extra):
     """torch·torchvision(모든 플랫폼에 같은 판, Windows 는 CPU 휠)만 marker 없이 둔다. 하나라도 빠지면 Windows uv lock·sync 가 깨진다."""
-    missing = [n for n, r in _reqs(extra).items() if n not in {"torch", "torchvision"} and str(r.marker) != 'sys_platform == "linux"']
+    missing = [n for n, r in _reqs(extra).items() if n not in {"torch", "torchvision"} and not _linux_only(r)]
     assert missing == []
 
 
