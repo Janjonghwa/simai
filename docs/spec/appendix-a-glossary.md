@@ -41,8 +41,8 @@
 | glass-to-alarm | 카메라가 보는 실제 사건(LED)부터 노트북 소리·화면까지를 한 화면 촬영으로 재는 종단 지연(15.1) |
 | 작업면 | 관리자가 OBB 와 상판 높이로 등록한 단상·책상 등. R2·R3 가장자리와 ContactEstimator 의 지지 표면 근거(7.5) |
 | VLM | 비전-언어 모델. NVIDIA Cosmos3-Nano(16B) Reasoner 모드(5.4) |
-| LLM | 텍스트 생성 모델. 외부 API “GPT 6.1 sol”(SSAFY GMS 를 거쳐 OpenAI), 텍스트만 보냄(5.4) |
-| RAG | 안전 수칙 문서를 검색해 인용하게 하는 방식. 임베딩은 BAAI/bge-m3 1024차원, 색인은 pgvector(11장) |
+| LLM | 텍스트 생성 모델. 외부 API “GPT 6.1 sol”(SSAFY GMS 를 거쳐 OpenAI), EC2 의 Python 컨테이너(`deploy/risk-engine`) 안에서 텍스트만 보냄(5.4) |
+| RAG | 건설안전 법령·지침·사례 지식 그래프(`rag_node`·`rag_edge`)를 하이브리드 검색(규칙 태그 + `pg_trgm` 키워드 + `pgvector` cosine)하고 참조 엣지 1단계를 확장해 인용하게 하는 방식. 임베딩은 `Qwen/Qwen3-Embedding-0.6B` 1024차원(5.4, 11장) |
 | TBM | 작업 전 안전점검회의 |
 | MV3DT 방식 | 카메라별 추적을 공유 바닥 평면에서 전역 ID로 융합하는 방식 |
 | TrackTrack | 카메라별 Local Tracker 기본값(CVPR 2025, Ultralytics `tracktrack.yaml`)(5.2) |

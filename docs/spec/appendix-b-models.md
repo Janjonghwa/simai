@@ -22,7 +22,9 @@
 | NVIDIA Cosmos3-Nano(16B) Reasoner | VLM(vLLM 0.21.0 + `vllm-cosmos3` 커밋 고정, Tier 0 와 같은 가상환경의 별도 프로세스, 3.12) | MVP | OpenMDW 1.1 |
 | NVIDIA Cosmos3-Super(64B) | VLM 확장 후보(80GB 에 Tier 0 와 함께 안 올라감) | 확장 후보 | 확인 필요 |
 | Qwen3-VL | VLM 참고(1순위 아님) | 참고 | 확인 필요 |
-| BAAI/bge-m3 | RAG 임베딩(안전 수칙 조항·질문, dense 1024차원, L2 정규화, cosine, 11장). revision `5617a9f61b028005a4858fdac845db406aefb181` 고정 | M3 | MIT(채택 전 모델 저장소 라이선스 파일 확인) |
+| Qwen/Qwen3-Embedding-0.6B | 법령 지식 그래프(RAG) 임베딩(법령 조문·지침·사례 노드 `rag_node` 및 질의, dense 1024차원, L2 정규화, cosine, 문서 입력 `"[법령명 조문(제목)] 본문"`, 5.4·11장, v1.3 수정 49). 문서·질의 동일 고정 revision 사용(이전 `BAAI/bge-m3` 대체) | M3 | Apache-2.0 |
+| BAAI/bge-m3 | 초기 RAG 임베딩(`Qwen/Qwen3-Embedding-0.6B` 로 전환, v1.3 수정 49) | 교체됨 | MIT |
+| graphify-legal-wiki / LegalGraphRAG (arXiv:2605.28120) | 한국 법령 조문 파싱·위계·교차 참조 그래프 및 하이브리드 검색 구조 설계 참고(`docs/design/tbm-legal-graph.md`) | 원리 참고(자체 구현, 5.4·11.3) | `graphify-legal-wiki` MIT, 논문 원리 참고(코드 미사용) |
 | GPT 6.1 sol(외부 API, SSAFY GMS 를 거쳐 OpenAI, 모델 `gpt-6.1-sol`) | LLM 텍스트 생성(TBM 보고서 문장, RAG 답변, 운영자 질의응답) | MVP | OpenAI 이용 약관(SSAFY GMS 이용 안내 따름, 약관 확인 필요) |
 | SAM 3D Body (Fast 변형) | MHR 인체 메시·포즈 스트림과 관측 기반 외형 갱신(EXP-02, 5.6·20.3) | 시연 범위(E-GATE-0\~3 검증) | Fast 구현 코드 MIT(yangtiming/Fast-SAM-3D-Body), 가중치는 원본 `facebook/sam-3d-body-*`의 SAM License(HF 승인 필요) |
 | MHR | SAM 3D Body 바디 표현(5.6, 13.2) | 시연 범위 | Apache 2.0 |
@@ -32,7 +34,7 @@
 | TrackTacular, MVTrajecter | 추적 연구 참고 | 참고 | 확인 필요 |
 | 3DGS-U, GS-Pool, GaussianUpdate, CL-Splats | 정적 공간 갱신 | 확장 후보 | 확인 필요 |
 | Spring Boot | EC2 백엔드(4.x, Java 21) | MVP | Apache 2.0 |
-| FastAPI | EC2 Risk Engine 컨테이너 내부 API(3.8, 12.2) | MVP | MIT |
+| FastAPI | EC2 Risk Engine·보고서 생성 컨테이너 내부 API(3.8, 5.4, 12.2) | MVP | MIT |
 | PostgreSQL, TimescaleDB, PostGIS | Spatial DB(`timescale/timescaledb-ha` -all 이미지) | MVP | PostgreSQL License, Apache 2.0(일부 기능 Timescale License), GPL-2.0 |
 | Three.js | 뷰어 | MVP | MIT |
 | Unreal Engine / Blender | 배경 빌드 / 대안 | 확장 | Unreal EULA / GPL |

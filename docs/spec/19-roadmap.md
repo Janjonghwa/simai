@@ -6,7 +6,8 @@
 - [ ] Tapo C110 RTSP 스트림의 촬영 시각: 1차 측정에서는 RTCP 시각이 불안정해 보였으나 공유기 10분 측정에서 카메라 시각–RTP 대응이 일관돼 `CAMERA_STREAM` 후보(3.3·3.9). 실제 노출 시각과의 차이로 `CAMERA_STREAM` 사용 여부를 G0 LED 시험으로 판단
 - [x] 공유기 환경에서 카메라 1대 10분 RTSP 측정(S15P31A101-9 완료 조건): ipTIME 2.4GHz cam_A 10분 끊김 없음, 도착 간격 p95 78 ms·p99 156 ms·최대 266 ms, 약 1초 주기 멈춤은 카메라 쪽, 카메라당 동시 RTSP 세션 최대 2(3번째 거부, 운영 수집기 1 + 여유 1)(3.3)
 - [ ] 시연 GPU 에서 4대 동시 처리 FPS(G0)와 노트북 → GPU 사이트 업로드 안정성
-- [x] RAG 임베딩 BAAI/bge-m3 의 가중치 revision·실행 위치·조항 청크·배치 크기(S15P31A101-27, 5.4·11장): revision `5617a9f61b028005a4858fdac845db406aefb181`, CLS 풀링 + L2 정규화, 노트북 CPU fp32·배치 1, 조 단위(1,000자 넘는 조만 항·호 경계로 나눈 청크 `#k`), 질문은 TBM 템플릿 사전 임베딩(`rag_query_template`). 자유 문장 질의 임베딩 위치는 확장
+- [x] RAG 임베딩 및 건설안전 법령 지식 그래프 개편(S15P31A101-27·-415, v1.3 수정 49, 5.4·8.3·11장·12장): 임베딩 모델을 `BAAI/bge-m3` 에서 `Qwen/Qwen3-Embedding-0.6B`(1024차원, L2 정규화, cosine, 문서 입력 `"[법령명 조문(제목)] 본문"`)로 전환하고, PostgreSQL `rag_node`·`rag_edge` 법령 지식 그래프 + 하이브리드 검색(규칙 태그 `R1`~`R7` + `pg_trgm` + `pgvector`) + 참조 엣지 1단계 확장 + 코드 4단계 생성·검증 파이프라인을 EC2 Python 컨테이너(`deploy/risk-engine`)에서 실행하도록 확정(I5 `tbm_report` 폐기 예정, 응답·`report` 테이블에 `subgraph`·`steps` 포함, 후속 구현은 S15P31A101-416). 국가법령정보센터 Open API 법령을 우선 적재하고 KOSHA GUIDE·재해사례 이용 조건 확인은 아래 미결
+- [ ] KOSHA GUIDE 및 중대재해 사이버안전박물관 재해사례의 재배포·API 이용 조건 확인 및 2차 코퍼스 적재, G7 보고서 인용 적절성 사람 평가 표본(80% 이상 기준) 채점 실행(`docs/design/tbm-legal-graph.md`, S15P31A101-415·-416)
 - [x] 외부 LLM “GPT 6.1 sol” 의 제공사와 호출 설정(S15P31A101-225, 5.4·11.5·12.5): SSAFY GMS(OpenAI API 중계, 엔드포인트 `https://gms.ssafy.io/gmsapi/` + OpenAI 경로, 형식은 OpenAI 공식 레퍼런스와 같음)를 거쳐 OpenAI 로 보낸다. 모델 `gpt-6.1-sol`, `temperature` 미전송(기본값만 받음), 응답 대기 기본 60초로 작업 시간 제한 안에서 두 번까지(실측 약 19초). 국외 이전은 11.5. 호출 방식은 아래 미결
 - [x] 외부 LLM 호출 방식(S15P31A101-285, 5.4): GMS 공식 방식인 OpenAI Responses API(`store: false`)가 기본, `SIMAI_LLM_API_STYLE=chat` 이면 Chat Completions
 - [ ] 다중 공사·기업 계정(부록 C.9)의 역할 계층·12.6 경로, JWT 현장 클레임·`site_id` 확장 대비 채택 여부(MVP 이후, 팀 회의 뒤)

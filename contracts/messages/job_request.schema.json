@@ -61,7 +61,7 @@
           }
         },
         {
-          "description": "TBM 보고서·일일 일지(3.1.0, FR-20·122): 보고서 종류. 3.3.0(S15P31A101-225): 입력 형식은 tbm_report.schema.json (report_kind 필수, TBM 은 PLANNED 계산 결과 plan, DAILY 는 이벤트 요약 events, 둘 다 조항 clauses[]. 텍스트만, 이미지·사람 이름 없음)",
+          "description": "【폐기 예정(2026-11-02, S15P31A101-415)】 TBM·일일 보고서 생성과 외부 LLM 호출을 RunPod 분석 워커(I5)에서 EC2 Python 컨테이너로 옮겨 워커 작업으로 내주지 않는다(삭제는 메이저 변경이라 enum·분기에 남겨 두고 표시만). TBM 보고서·일일 일지(3.1.0, FR-20·122): 보고서 종류. 3.3.0(S15P31A101-225): 입력 형식은 tbm_report.schema.json (report_kind 필수, TBM 은 PLANNED 계산 결과 plan, DAILY 는 이벤트 요약 events, 둘 다 조항 clauses[]. 텍스트만, 이미지·사람 이름 없음)",
           "if": { "properties": { "job_type": { "const": "tbm_report" } }, "required": ["job_type"] },
           "then": {
             "properties": {
@@ -76,7 +76,7 @@
   "$defs": {
     "job_type": {
       "enum": ["vlm_rationale", "tbm_report", "static_reconstruct", "calibration_ba", "bev_floorplan", "incident_summary", "hmr_refine", "hmr_appearance_update"],
-      "description": "12.5 작업 유형. bev_floorplan·incident_summary 는 3.1.0. hmr_refine·hmr_appearance_update 는 확장·EXP-02"
+      "description": "12.5 작업 유형. bev_floorplan·incident_summary 는 3.1.0. hmr_refine·hmr_appearance_update 는 확장·EXP-02. tbm_report 는 폐기 예정(2026-11-02, S15P31A101-415: 보고서 생성을 EC2 Python 컨테이너로 이전, 메이저 삭제 전까지 값 유지)"
     }
   }
 }

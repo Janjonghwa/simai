@@ -65,6 +65,7 @@
           "then": { "properties": { "result": { "$ref": "bev_floorplan.schema.json#/$defs/result" } } }
         },
         {
+          "description": "【폐기 예정(2026-11-02, S15P31A101-415)】 TBM·일일 보고서 생성을 EC2 Python 컨테이너로 옮겨 I5 워커 작업으로 내주지 않는다(메이저 삭제 전까지 분기 유지)",
           "if": { "properties": { "job_type": { "const": "tbm_report" } }, "required": ["job_type"] },
           "then": { "properties": { "result": { "$ref": "tbm_report.schema.json#/$defs/result" } } }
         },
