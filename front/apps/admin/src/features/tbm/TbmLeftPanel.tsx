@@ -3,6 +3,7 @@ import { interferencesOf, overlapsTime, type Interference } from '@/features/tbm
 import { TbmAssessment } from '@/features/tbm/TbmAssessment';
 import type { TbmTask } from '@/features/tbm/tbmDemo';
 import { TbmPlan } from '@/features/tbm/TbmPlan';
+import type { TbmReport } from '@/features/tbm/types';
 import { Button } from '@simai/ui/components/button';
 import { Card } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
@@ -14,6 +15,7 @@ export function TbmLeftPanel({
   tasks,
   interferences,
   detail,
+  report,
   onSwitch,
 }: {
   task: TbmTask;
@@ -22,6 +24,7 @@ export function TbmLeftPanel({
   interferences: readonly Interference[];
   /** 레이아웃 대신 평가 · 간섭을 보이는지. */
   detail: boolean;
+  report?: TbmReport | null;
   onSwitch: () => void;
 }) {
   const mine = interferencesOf(interferences, task.id);
@@ -41,7 +44,7 @@ export function TbmLeftPanel({
         </Button>
       </div>
       {detail ? (
-        <TbmAssessment task={task} tasks={tasks} mine={mine} />
+        <TbmAssessment task={task} tasks={tasks} mine={mine} report={report} />
       ) : (
         <div className="relative min-h-0 flex-1 rounded-xl bg-background ring-1 ring-faint ring-inset">
           <div className="absolute inset-3.5">

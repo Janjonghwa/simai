@@ -5,9 +5,10 @@ import {
   OUTSIDE_ZONE_TEXT,
 } from '@/features/tbm/constants';
 import { toMin } from '@/features/tbm/tbm';
-import type { TbmTask } from '@/features/tbm/tbmDemo';
+import { TBM_ISO_DATE, type TbmTask } from '@/features/tbm/tbmDemo';
+import { dateHhmmToMs, type WorkUnitWriteBody } from '@/features/tbm/types';
 
-// 작업 등록(수동 입력). 입력값 검사와 새 작업 만들기를 화면 없이 한다.
+// 작업 등록·수정(수동 입력). 입력값 검사와 새 작업 만들기를 화면 없이 한다.
 
 export interface TaskInput {
   name: string;
@@ -17,6 +18,10 @@ export interface TaskInput {
   zone: string;
   people: string;
   lead: string;
+  /** 공종 코드(work_type). 빈 글자면 미지정(null). */
+  workType?: string;
+  /** 연결할 가상 레이아웃 ID(layout_id). 빈 글자면 연결 안 함(null). */
+  layoutId?: string;
 }
 
 /** 등록 창을 열 때 채워 두는 값. */
@@ -27,6 +32,8 @@ export const TASK_INPUT_DEFAULT: TaskInput = {
   zone: 'z-02',
   people: '2',
   lead: 'B조',
+  workType: 'GENERAL',
+  layoutId: '',
 };
 
 /** 이름이 있고 끝 시각이 시작보다 늦어야 등록할 수 있다. */
@@ -43,15 +50,50 @@ export function nextTaskId(tasks: readonly Pick<TbmTask, 'id'>[]): string {
 }
 
 /** 입력한 인원을 정수로 고르고 한도 안으로 맞춘다. 숫자가 아니면 최소 인원이다. */
-function clampPeople(text: string): number {
+export function clampPeople(text: string): number {
   const people = Math.round(Number(text));
   return Number.isFinite(people) && people >= MIN_PEOPLE
     ? Math.min(people, MAX_PEOPLE)
     : MIN_PEOPLE;
 }
 
+/** 기존 작업을 수정 모달 초기값으로 바꾼다. */
+export function taskToInput(task: TbmTask): TaskInput {
+  return {
+    name: task.name,
+    from: task.from,
+    to: task.to,
+    zone: task.zone ?? '',
+    people: String(task.people),
+    lead: task.lead,
+    workType: task.workType ?? '',
+    layoutId: task.layoutId !== null && task.layoutId !== undefined ? String(task.layoutId) : '',
+  };
+}
+
+/** TaskInput 을 POST/PUT /api/work-units 요청 본문으로 바꾼다. */
+export function inputToWorkUnitBody(
+  input: TaskInput,
+  date: string = TBM_ISO_DATE,
+): WorkUnitWriteBody {
+  const layoutNum = input.layoutId && input.layoutId.trim() !== '' ? Number(input.layoutId) : null;
+  return {
+    date,
+    name: input.name.trim(),
+    from_ms: dateHhmmToMs(date, input.from),
+    to_ms: dateHhmmToMs(date, input.to),
+    zone_id: input.zone || null,
+    place: input.zone ? null : OUTSIDE_ZONE_TEXT,
+    planned_people: clampPeople(input.people),
+    lead: input.lead,
+    layout_id: layoutNum !== null && Number.isFinite(layoutNum) ? layoutNum : null,
+    work_type: input.workType && input.workType.trim() !== '' ? input.workType.trim() : null,
+  };
+}
+
 /** 수동 입력으로 작업을 만든다. 배치·평가는 아직 없다. */
 export function createTask(tasks: readonly TbmTask[], input: TaskInput): TbmTask {
+  const layoutNum = input.layoutId && input.layoutId.trim() !== '' ? Number(input.layoutId) : null;
   return {
     id: nextTaskId(tasks),
     name: input.name.trim(),
@@ -62,6 +104,8 @@ export function createTask(tasks: readonly TbmTask[], input: TaskInput): TbmTask
     people: clampPeople(input.people),
     lead: input.lead,
     gear: GEAR_UNSET_TEXT,
+    layoutId: layoutNum !== null && Number.isFinite(layoutNum) ? layoutNum : null,
+    workType: input.workType && input.workType.trim() !== '' ? input.workType.trim() : null,
     items: [],
     evals: [],
     measures: [],
