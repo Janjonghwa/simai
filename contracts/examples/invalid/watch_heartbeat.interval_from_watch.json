@@ -1,0 +1,13 @@
+{
+  "_expect_error": "주기는 EC2 가 정한다: 워치가 interval_ms 를 싣지 못한다",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000421",
+  "sent_at": 1760342410000,
+  "source_id": "watch-01",
+  "payload": {
+    "heartbeat_seq": 42,
+    "interval_ms": 1000,
+    "watch": { "battery_pct": 63, "transport": "WIFI" }
+  }
+}

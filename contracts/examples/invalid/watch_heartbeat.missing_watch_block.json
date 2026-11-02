@@ -1,0 +1,11 @@
+{
+  "_expect_error": "워치 → EC2 하트비트에는 배터리·전송 경로가 필수",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000421",
+  "sent_at": 1760342410000,
+  "source_id": "watch-01",
+  "payload": {
+    "heartbeat_seq": 42
+  }
+}

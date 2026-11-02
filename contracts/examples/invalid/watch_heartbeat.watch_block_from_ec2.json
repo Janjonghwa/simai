@@ -1,0 +1,12 @@
+{
+  "_expect_error": "EC2 → 워치 하트비트에는 워치 상태 블록이 없다",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000422",
+  "sent_at": 1760342410090,
+  "source_id": "ec2",
+  "payload": {
+    "heartbeat_seq": 42,
+    "watch": { "battery_pct": 63, "transport": "WIFI" }
+  }
+}

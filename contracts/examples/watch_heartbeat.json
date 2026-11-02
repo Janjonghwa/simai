@@ -1,0 +1,17 @@
+{
+  "_note": "워치 → EC2. 워치 상태 블록 필수, echo 는 EC2 가 마지막으로 보낸 하트비트",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000421",
+  "sent_at": 1760342410000,
+  "source_id": "watch-01",
+  "payload": {
+    "heartbeat_seq": 42,
+    "echo": { "seq": 41, "received_at": 1760342400120 },
+    "watch": {
+      "battery_pct": 63,
+      "transport": "WIFI",
+      "app_version": "0.2.0"
+    }
+  }
+}

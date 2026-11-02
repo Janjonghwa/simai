@@ -1,0 +1,17 @@
+{
+  "_expect_error": "걸음 시점은 중복 없이",
+  "schema_version": "1.0.0",
+  "msg_type": "gait_features",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000431",
+  "sent_at": 1760342404050,
+  "source_id": "watch-01",
+  "payload": {
+    "clock_basis": "WATCH",
+    "clock_offset_ms": -37,
+    "window_start_ms": 1760342400000,
+    "window_end_ms": 1760342404000,
+    "sample_rate_hz": 50,
+    "step_times_ms": [1760342400420, 1760342400420],
+    "band_magnitude": { "rate_hz": 10, "values": [0.0], "rms": 0.0, "peak_freq_hz": null }
+  }
+}

@@ -1457,7 +1457,7 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 |---|---|---|---|---|
 | `measured_at` | ts | PK(1), NN |  |  |
 | `device_id` | text | PK(2) |  |  |
-| `features` | jsonb | NN |  | 걸음·시작/멈춤 시점, 0.5~3 Hz 크기 신호 |
+| `features` | jsonb | NN | `gait_features` payload 그대로 | 걸음 시점·시작/멈춤 전환·0.5~3 Hz 대역 크기 시계열. 시각은 워치 시계(`clock_basis` WATCH)이고 `clock_offset_ms` 로 환산한다(-334) |
 | `received_at` | ts | NN |  |  |
 
 #### `watch_alert` — 워치 진동 알림 상세(notification 의 WATCH 채널)
@@ -1468,10 +1468,14 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 |---|---|---|---|---|
 | `notification_id` | bigint | PK, FK>notification.notification_id |  |  |
 | `device_id` | text | FK>device.device_id, NN |  |  |
-| `vibration_pattern` | text | NN, CK(CAUTION_DOUBLE·DANGER_LONG) |  | 주의: 짧게 두 번, 위험: 길게 연속 |
-| `direction` | text |  |  | 방향 |
-| `word` | text |  |  | 한 단어 |
-| `acked_at` | ts |  |  | 워치 ACK |
+| `alert_msg_id` | uuid | UQ, NN | `watch_alert` 봉투 `msg_id` | `watch_ack.alert_msg_id` 가 이 값으로 행을 찾는다(-334) |
+| `vibration_pattern` | text | NN, CK(DANGER_LONG·CAUTION_DOUBLE·CAUTION_WEAK) | `watch_alert.vibration_pattern`(없으면 등급으로 정한 값) | 위험: 길게 연속, 경고: 짧게 두 번, 주의: 약하게 한 번(FR-45, -334 에서 CAUTION_WEAK 추가) |
+| `direction` | text | CK(FRONT·BACK·LEFT·RIGHT) | `watch_alert.direction` | 작업자 기준 방향. 모르면 null |
+| `word` | text | NN | `watch_alert.word` | 한 단어(8자 이하) |
+| `ack_within_ms` | integer | NN | `watch_alert.ack_within_ms` | 확인 기한(길이). 격상 판단 = sent_at + 이 값 |
+| `acked_at` | ts |  | `watch_ack.acked_at` (kind VIBRATED) | 워치가 진동을 시작한 시각(워치 시계, 기록용) |
+| `ack_received_at` | ts |  | EC2 가 VIBRATED `watch_ack` 를 받은 EC2 시각 | 격상 판단 기준: 이 값이 없거나 `sent_at + ack_within_ms` 뒤면 격상. 워치 시계를 믿지 않는다 |
+| `confirmed_at` | ts |  | `watch_ack.acked_at` (kind CONFIRMED) | 작업자가 화면에서 확인한 시각. 없을 수 있다 |
 | `escalated_at` | ts |  |  | ACK 대기 초과 → 현장 경보·관리자 알림 |
 
 #### `watch_impact` — 워치 충격 이벤트(낙상 추가 근거)

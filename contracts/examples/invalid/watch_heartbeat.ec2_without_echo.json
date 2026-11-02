@@ -1,0 +1,12 @@
+{
+  "_expect_error": "EC2 → 워치 하트비트는 echo(받은 seq·시각)를 실어야 한다: 워치가 EC2 생존을 echo 로 판단한다",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000422",
+  "sent_at": 1760342410090,
+  "source_id": "ec2",
+  "payload": {
+    "heartbeat_seq": 42,
+    "interval_ms": 10000
+  }
+}

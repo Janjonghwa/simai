@@ -1,0 +1,12 @@
+{
+  "_note": "연결 직후 첫 하트비트: 아직 받은 것이 없어 echo 없음, 전송 경로 모름",
+  "schema_version": "1.0.0",
+  "msg_type": "watch_heartbeat",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000423",
+  "sent_at": 1760342000000,
+  "source_id": "watch-02",
+  "payload": {
+    "heartbeat_seq": 0,
+    "watch": { "battery_pct": 100, "transport": "UNKNOWN" }
+  }
+}

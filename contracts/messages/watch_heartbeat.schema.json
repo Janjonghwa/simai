@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/watch_heartbeat.schema.json",
+  "title": "I4 watch_heartbeat",
+  "description": "워치 ↔ EC2 양방향 하트비트(I4 WebSocket, 명세 부록 C.6). 양쪽이 같은 형식을 보낸다: 워치 → EC2 는 봉투 source_id 가 워치 기기 ID, EC2 → 워치는 'ec2'. 워치는 EC2 가 interval_ms 로 알려 준 주기(기본 10초)로 보내고, EC2 는 받을 때마다 echo 를 실어 바로 답한다(EC2 → 워치에 echo 필수: 워치는 echo 가 실린 답으로 EC2 생존을 판단한다). EC2 는 3회 연속(interval_ms × 3) 빠지면 그 워치를 끊김(LOST)으로 보고 System Health 에 반영한다(S15P31A101-336). 워치는 자기 하트비트 3회에 EC2 답이 없으면 연결을 닫고 다시 잇는다(S15P31A101-337). 시계 차이는 echo 로 잰다: 워치가 seq n 을 t1(sent_at)에 보내고 EC2 가 echo{seq n, received_at t2} 를 t3(sent_at)에 답해 워치가 t4 에 받으면 워치 시계 − EC2 시계 ≈ ((t1 − t2) + (t4 − t3)) / 2 이고(워치가 d 만큼 빠르면 +d), 이 값이 gait_features.clock_offset_ms 다. 워치 → EC2 에는 배터리·전송 경로 watch 블록이 필수이고 EC2 → 워치에는 싣지 않는다(반대로 interval_ms 는 EC2 → 워치에만). I4 확장 계약 1.0.0(S15P31A101-334).",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "watch_heartbeat" },
+    "payload": {
+      "type": "object",
+      "required": ["heartbeat_seq"],
+      "properties": {
+        "heartbeat_seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "보내는 쪽이 연결마다 0 부터 단조 증가. 다시 이으면 0 부터"
+        },
+        "echo": {
+          "type": "object",
+          "description": "상대에게서 마지막으로 받은 하트비트. 받은 적 없으면 싣지 않는다",
+          "required": ["seq", "received_at"],
+          "properties": {
+            "seq": { "type": "integer", "minimum": 0, "description": "받은 heartbeat_seq" },
+            "received_at": {
+              "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+              "description": "그것을 받은 내 시계 시각"
+            }
+          },
+          "additionalProperties": false
+        },
+        "interval_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 60000,
+          "description": "EC2 → 워치만. 워치가 보낼 하트비트 주기. 없으면 10000. 연결 중에 바뀌면 다음 하트비트부터 따른다"
+        },
+        "watch": {
+          "type": "object",
+          "description": "워치 → EC2 만. 워치 상태",
+          "required": ["battery_pct", "transport"],
+          "properties": {
+            "battery_pct": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "transport": {
+              "enum": ["WIFI", "PHONE_BLUETOOTH", "CELLULAR", "UNKNOWN"],
+              "description": "EC2 까지 가는 길. WIFI 워치 Wi-Fi 직접, PHONE_BLUETOOTH 휴대폰 블루투스 경유, CELLULAR 워치 LTE. 지연 차이 기록용(S15P31A101-337)"
+            },
+            "app_version": { "type": "string", "minLength": 1, "description": "워치 앱 versionName" }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "if": { "properties": { "source_id": { "const": "ec2" } }, "required": ["source_id"] },
+  "then": {
+    "description": "EC2 → 워치: echo 필수, watch 블록 없음",
+    "properties": { "payload": { "required": ["echo"], "not": { "required": ["watch"] } } }
+  },
+  "else": {
+    "description": "워치 → EC2: watch 블록 필수, interval_ms 없음",
+    "properties": { "payload": { "required": ["watch"], "not": { "required": ["interval_ms"] } } }
+  }
+}

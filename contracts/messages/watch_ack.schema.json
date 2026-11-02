@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/watch_ack.schema.json",
+  "title": "I4 watch_ack",
+  "description": "워치 → EC2(I4 WebSocket). watch_alert 에 대한 수신 확인(명세 부록 C.6, FR-46). 워치는 진동을 시작하면 바로 kind VIBRATED 를 보내고(격상 판단 기준인 '진동 후 ACK'), 작업자가 화면에서 확인 버튼을 누르면 CONFIRMED 를 한 번 더 보낸다(없을 수 있다). EC2 는 (alert_msg_id, kind) 로 중복을 제거하고 watch_alert 행의 acked_at 에 기록한다. 연결이 끊긴 동안 만든 ACK 는 다시 이어지면 원래 acked_at 그대로 보낸다(EC2 는 격상 뒤 늦게 온 ACK 도 기록은 한다). 운영자 확인(operator_ack·event_ack)이 아니다: 이벤트 상태를 ACKNOWLEDGED 로 바꾸지 않고 현장 경보도 멈추지 않는다. 보내는 워치는 봉투 source_id(기기 ID)다. I4 확장 계약 1.0.0(S15P31A101-334).",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "watch_ack" },
+    "payload": {
+      "type": "object",
+      "required": ["event_id", "alert_msg_id", "kind", "acked_at"],
+      "properties": {
+        "event_id": { "$ref": "../common/defs.schema.json#/$defs/uuid_v7" },
+        "event_sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "받은 watch_alert.event_sequence 그대로. 알림에 없었으면 싣지 않는다"
+        },
+        "alert_msg_id": {
+          "$ref": "../common/defs.schema.json#/$defs/uuid",
+          "description": "확인하는 watch_alert 의 봉투 msg_id"
+        },
+        "kind": {
+          "enum": ["VIBRATED", "CONFIRMED"],
+          "description": "VIBRATED 워치가 알림을 받아 진동을 시작했다(자동, 알림마다 한 번). CONFIRMED 작업자가 화면에서 확인했다(사람 조작, 있을 수도 없을 수도)"
+        },
+        "acked_at": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "진동 시작 또는 확인 조작 시각, 워치 시계. 끊겼다 다시 보내도 바꾸지 않는다"
+        },
+        "received_at": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "watch_alert 를 받은 워치 시계 시각. 전달 지연(received_at − watch_alert.sent_at, 시계 차이 보정은 EC2 가 하트비트 echo 로) 측정용. 모르면 싣지 않는다"
+        }
+      }
+    }
+  }
+}
