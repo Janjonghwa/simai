@@ -1,3 +1,4 @@
+import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { groupIncidents, mergeEvent, type EventEntry } from '@/features/events/events';
 import { IncidentCard } from '@/features/events/IncidentCard';
 import type { EventItem } from '@/features/events/types';
@@ -72,6 +73,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(T + 12_000);
   navigate.mockReset();
+  useCamSplitStore.getState().close();
   useSessionStore.getState().signIn({ accessToken: 't', user: { id: 'u', role: 'ADMIN' } });
 });
 afterEach(() => {
@@ -225,7 +227,7 @@ describe('IncidentCard', () => {
     expect(barOf(info.card)).toContain('bg-faint');
   });
 
-  it('사람을 담은 카메라가 있으면 카메라 버튼이 CCTV 화면을 연다', () => {
+  it('사람을 담은 카메라가 있으면 카메라 버튼이 오른쪽 카메라 미리보기를 연다', () => {
     useRealtimeStore.setState({
       world: {
         receivedAt: T,
@@ -238,7 +240,12 @@ describe('IncidentCard', () => {
 
     const camera = within(card).getByRole('button', { name: /cam2로 확인/ });
     fireEvent.click(camera);
-    expect(navigate).toHaveBeenCalledWith({ to: '/cctv' });
+    // CCTV 화면으로 옮기지 않고 실시간 관제 오른쪽 칸을 연다.
+    expect(navigate).not.toHaveBeenCalled();
+    expect(useCamSplitStore.getState().split).toEqual({
+      cam: 'cam2',
+      target: { type: 'person', id: 'w-0015' },
+    });
   });
 
   it('담은 카메라가 없으면 카메라 버튼이 없다', () => {

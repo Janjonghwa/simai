@@ -1,7 +1,7 @@
+import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { bestCamera, type Incident } from '@/features/events/incidents';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { cn } from '@simai/ui/lib/utils';
-import { useNavigate } from '@tanstack/react-router';
 import { Video } from 'lucide-react';
 
 /** 놓이는 자리별 모양: 배너는 버튼 줄 높이에 맞추고, 카드는 본문 아래 작은 칩으로 둔다. */
@@ -11,7 +11,7 @@ const LOOK = {
 } as const;
 
 /**
- * 카메라 버튼: 이 사람을 지금 담고 있는 카메라로 CCTV 화면을 연다. 담은 카메라가 없으면 없다.
+ * 카메라 버튼: 이 사람을 지금 담고 있는 카메라의 미리보기를 실시간 관제 오른쪽에 연다(관제 데모와 같다). 담은 카메라가 없으면 없다.
  * 카메라 이름만 고르는 셀렉터라 world 가 10Hz 로 와도 바뀔 때만 다시 그린다.
  */
 export function CameraButton({
@@ -22,12 +22,12 @@ export function CameraButton({
   variant: keyof typeof LOOK;
 }) {
   const camId = useRealtimeStore((s) => bestCamera(s.world?.payload.tracks, target));
-  const navigate = useNavigate();
+  const open = useCamSplitStore((s) => s.open);
   if (!camId) return null;
   return (
     <button
       type="button"
-      onClick={() => void navigate({ to: '/cctv' })}
+      onClick={() => open({ cam: camId, target })}
       className={cn('inline-flex items-center gap-1.5 text-sm', LOOK[variant])}
     >
       <Video aria-hidden className="size-[15px]" />

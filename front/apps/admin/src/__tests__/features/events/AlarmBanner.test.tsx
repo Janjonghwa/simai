@@ -1,3 +1,4 @@
+import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { AlarmBanner } from '@/features/events/AlarmBanner';
 import { useEventClearStore } from '@/features/events/eventClear.store';
 import type { EventEntry } from '@/features/events/events';
@@ -57,6 +58,7 @@ beforeEach(() => {
   live.entries = [alarm];
   useEventClearStore.setState({ clearedAt: null, clearedBy: null });
   navigate.mockReset();
+  useCamSplitStore.getState().close();
   useSessionStore.getState().signIn({ accessToken: 't', user: { id: 'u', role: 'ADMIN' } });
 });
 afterEach(() => {
@@ -145,7 +147,8 @@ describe('AlarmBanner', () => {
     });
     const withPanel = renderBanner(true);
     fireEvent.click(within(withPanel).getByRole('button', { name: /cam3로 확인/ }));
-    expect(navigate).toHaveBeenCalledWith({ to: '/cctv' });
+    expect(navigate).not.toHaveBeenCalled();
+    expect(useCamSplitStore.getState().split?.cam).toBe('cam3');
     cleanup();
 
     const without = renderBanner(false);

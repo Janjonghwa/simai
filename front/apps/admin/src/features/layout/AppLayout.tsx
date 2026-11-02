@@ -1,3 +1,4 @@
+import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { AlarmBanner } from '@/features/events/AlarmBanner';
 import { AlarmSoundLoop } from '@/features/events/AlarmSoundLoop';
 import { useEventsStore } from '@/features/events/events.store';
@@ -48,12 +49,20 @@ function Notices({
   eventPanel: boolean;
 }) {
   const span = useEventsStore((s) => (eventPanel ? s.panelSpan : null));
+  // 카메라 미리보기가 오른쪽에 열려 있으면 그 폭(CamSplitPanel)만큼 더 비킨다.
+  const camSplit = useCamSplitStore((s) => eventPanel && s.split !== null);
   return (
     <div
       ref={ref}
       role="region"
       aria-label="알림"
-      style={span ? noticeInset(span) : undefined}
+      style={
+        span
+          ? noticeInset(span)
+          : camSplit
+            ? { right: 'calc(clamp(340px, 34%, 560px) + 30px)' }
+            : undefined
+      }
       className={cn(
         'pointer-events-none absolute inset-x-5 top-[72px] z-[6] flex flex-col items-center gap-2 empty:hidden',
         eventPanel && !span && 'right-[370px]',

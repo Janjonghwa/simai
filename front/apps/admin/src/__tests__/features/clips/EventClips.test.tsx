@@ -161,6 +161,7 @@ function renderClips(item = event()) {
 }
 
 const playButton = (camera: string) => screen.getByRole('button', { name: `${camera} 재생` });
+const closeButton = (camera: string) => screen.getByRole('button', { name: `${camera} 닫기` });
 const video = (camera: string) => screen.getByLabelText(`${camera} 클립`) as HTMLVideoElement;
 
 describe('EventClips', () => {
@@ -180,7 +181,7 @@ describe('EventClips', () => {
     expect(screen.queryByLabelText('cam1 클립')).toBeNull();
   });
 
-  it('재생을 누르면 주소를 받아 영상을 보이고, 주소가 살아 있으면 다시 눌러도 받지 않고 처음부터 다시 튼다', async () => {
+  it('재생을 누르면 주소를 받아 영상을 보이고 버튼이 닫기로 바뀌며, 닫았다 다시 재생해도 살아 있는 주소는 또 받지 않는다', async () => {
     renderClips();
 
     fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
@@ -189,25 +190,28 @@ describe('EventClips', () => {
     // 브라우저 기본 메뉴의 내려받기를 감추고 우클릭 메뉴를 막는다.
     expect(video('cam1').getAttribute('controlslist')).toBe('nodownload');
     expect(fireEvent.contextMenu(video('cam1'))).toBe(false);
+    // 영상이 열려 있는 동안 재생 버튼은 닫기다.
+    expect(screen.queryByRole('button', { name: 'cam1 재생' })).toBeNull();
 
-    const first = video('cam1');
+    fireEvent.click(closeButton('cam1'));
+    expect(screen.queryByLabelText('cam1 클립')).toBeNull();
+    expect(playButton('cam1')).toBeTruthy();
+
+    // 다시 재생하면 영상을 새로 띄워 처음부터 튼다. 요청을 보냈다면 이 사이에 도착한다.
     fireEvent.click(playButton('cam1'));
-    // 요청을 보냈다면 이 사이에 도착한다(만료된 주소는 아래 시험에서 같은 시간 안에 새로 받는다).
     await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
     expect(urlCalls).toBe(1);
     expect(video('cam1').getAttribute('src')).toBe('/clips/c-1-1.mp4');
-    // 영상을 새로 띄워 처음부터 다시 튼다.
-    expect(video('cam1')).not.toBe(first);
   });
 
-  it('주소를 받는 동안에는 재생을 다시 눌러도 주소를 또 받지 않는다', async () => {
+  it('주소를 받는 동안에는 닫기가 보이고, 받은 뒤에도 주소를 또 받지 않는다', async () => {
     const answer = gate();
     urlGate = answer.closed;
     renderClips();
 
     fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
     await waitFor(() => expect(urlCalls).toBe(1));
-    fireEvent.click(playButton('cam1'));
+    expect(closeButton('cam1')).toBeTruthy();
     answer.open();
 
     await waitFor(() => expect(video('cam1').getAttribute('src')).toBe('/clips/c-1-1.mp4'));
@@ -215,12 +219,13 @@ describe('EventClips', () => {
     expect(urlCalls).toBe(1);
   });
 
-  it('주소가 만료됐으면 다시 누를 때 새 주소를 받는다', async () => {
+  it('주소가 만료됐으면 닫았다 다시 재생할 때 새 주소를 받는다', async () => {
     urlExpiresIn = 1_000;
     renderClips();
 
     fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
     await waitFor(() => expect(urlCalls).toBe(1));
+    fireEvent.click(closeButton('cam1'));
     fireEvent.click(playButton('cam1'));
     await waitFor(() => expect(video('cam1').getAttribute('src')).toBe('/clips/c-1-2.mp4'));
   });
@@ -332,13 +337,14 @@ describe('EventClips', () => {
       expect(urlCalls).toBe(1);
     });
 
-    it('감싼 영상은 만료가 없어 다시 눌러도 주소를 또 받지 않고, 화면을 닫으면 blob 을 해제한다', async () => {
+    it('감싼 영상은 만료가 없어 닫았다 다시 재생해도 주소를 또 받지 않고, 화면을 닫으면 blob 을 해제한다', async () => {
       urlExpiresIn = 1_000;
       renderClips();
 
       fireEvent.click(await screen.findByRole('button', { name: 'cam1 재생' }));
       await waitFor(() => expect(video('cam1').getAttribute('src')).toBe('blob:test/1'));
       await act(() => new Promise((resolve) => setTimeout(resolve, 1_200)));
+      fireEvent.click(closeButton('cam1'));
       fireEvent.click(playButton('cam1'));
       await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
       expect(urlCalls).toBe(1);
