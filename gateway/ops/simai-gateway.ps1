@@ -260,15 +260,34 @@ function Ec2([string]$cmd) {
   return $out
 }
 
+$OpenSshMsiUrl = 'https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.0.0.0p2-Preview/OpenSSH-Win64-v10.0.0.0.msi'
+$OpenSshMsiSha256 = 'DDEC9C53864280759CF9F74791CEFD387100E3946AA849A1C138A4ED1B96B7D9'   # GitHub 릴리스 자산 digest
+function Install-OpenSshServer {
+  Say 'OpenSSH 서버 설치(공식 Win32-OpenSSH MSI, 1~2분)'
+  $msi = Join-Path $env:TEMP 'OpenSSH-Win64-v10.0.0.0.msi'
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  $oldPp = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'   # PS 5.1 진행 표시는 내려받기를 크게 늦춘다
+  try { Invoke-WebRequest -UseBasicParsing -Uri $OpenSshMsiUrl -OutFile $msi } finally { $ProgressPreference = $oldPp }
+  $fs = [IO.File]::OpenRead($msi)
+  try { $hash = -join ([Security.Cryptography.SHA256]::Create().ComputeHash($fs) | ForEach-Object { $_.ToString('X2') }) } finally { $fs.Dispose() }
+  if ($hash -ne $OpenSshMsiSha256) { Remove-Item $msi -Force; Fail 'OpenSSH MSI 해시가 다르다(설치하지 않음)' }
+  $p = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn ADDLOCAL=Server" -Wait -PassThru
+  Remove-Item $msi -Force -ErrorAction SilentlyContinue
+  if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { Fail "OpenSSH MSI 설치 실패(msiexec 코드 $($p.ExitCode))" }
+  if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) { Fail 'OpenSSH MSI 설치 뒤에도 sshd 서비스가 없다' }
+}
+
 function Do-RemoteSetup {
   if (-not (Test-Admin)) { Fail '관리자 권한으로 연다(simai-gateway.cmd 우클릭 → 관리자 권한으로 실행)' }
   Need ssh
   # 1) OpenSSH 서버: 127.0.0.1 에서만 듣고 키 인증만
-  $cap = Get-WindowsCapability -Online -Name 'OpenSSH.Server*' | Select-Object -First 1
-  if ($cap.State -ne 'Installed') { Say 'OpenSSH 서버 설치(몇 분 걸릴 수 있다)'; Add-WindowsCapability -Online -Name $cap.Name | Out-Null }
+  #    Windows 기능(Add-WindowsCapability)은 SSAFY 관리 PC 에서 20분 넘게 멈춘다(S15P31A101-398).
+  #    sshd 서비스가 없을 때만 공식 Win32-OpenSSH MSI(버전·해시 고정)의 서버 기능만 설치한다.
+  if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) { Install-OpenSshServer }
   Set-Service sshd -StartupType Automatic
   Start-Service sshd
   $cfg = 'C:\ProgramData\ssh\sshd_config'
+  for ($i = 0; $i -lt 10 -and -not (Test-Path $cfg); $i++) { Start-Sleep -Seconds 1 }   # 첫 시작 때 기본 설정 파일이 생긴다
   $text = [IO.File]::ReadAllText($cfg)
   $mark = '# simai-gateway (S15P31A101-394)'
   if (-not $text.Contains($mark)) {
