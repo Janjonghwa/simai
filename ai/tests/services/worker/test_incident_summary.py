@@ -665,6 +665,7 @@ def test_handler_cancels_or_stops_on_budget_during_clip_decode_before_face_gate(
 
 
 def test_handler_with_real_vlm_client_sends_blurred_jpeg_and_strict_schema():
+    pytest.importorskip("cv2")  # encode_jpeg 는 cv2 를 쓴다. nightly CI 는 extras 없이 돈다(-391)
     captured: dict[str, Any] = {}
 
     def fake_opener(req, timeout):

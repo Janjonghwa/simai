@@ -160,10 +160,95 @@ def _gate_clusters(frame, rig, gates, joint_gate_cls):
     return out
 
 
+def _previous_epipolar_px(self, pa, pb, common) -> float:
+    """S15P31A101-237 이전 단일 쌍 에피폴라 거리에 S15P31A101-354 관절별 잡음 가중(`1/KEYPOINT_NOISE_SCALE`)을 적용한다."""
+    E = self._essential_matrix(pa.camera, pb.camera)
+    xa = np.column_stack([pa.normalized[common], np.ones(int(common.sum()))])
+    xb = np.column_stack([pb.normalized[common], np.ones(int(common.sum()))])
+    lb = xa @ E.T
+    la = xb @ E
+    alg = np.abs(np.sum(xb * lb, axis=1))
+    db = alg / np.maximum(np.hypot(lb[:, 0], lb[:, 1]), 1e-12) * legacy_cv._focal(pb.camera)
+    da = alg / np.maximum(np.hypot(la[:, 0], la[:, 1]), 1e-12) * legacy_cv._focal(pa.camera)
+    e = (da + db) / 2.0
+    w = cross_view_module._joint_noise_weights(self._n_joints)[common]
+    return float(np.sum(w * e) / np.sum(w))
+
+
+def _previous_epipolar_matrix(self, pas, pbs):
+    """S15P31A101-237 이전 에피폴라 거리 행렬에 S15P31A101-354 관절별 잡음 가중(`1/KEYPOINT_NOISE_SCALE`)을 적용한다."""
+    E = self._essential_matrix(pas[0].camera, pbs[0].camera)
+    mask_a = np.stack([p.mask for p in pas])
+    mask_b = np.stack([p.mask for p in pbs])
+    common = mask_a[:, None, :] & mask_b[None, :, :]
+    xa = np.concatenate([np.stack([p.normalized for p in pas]), np.ones((len(pas), self._n_joints, 1))], axis=2)
+    xb = np.concatenate([np.stack([p.normalized for p in pbs]), np.ones((len(pbs), self._n_joints, 1))], axis=2)
+    xa = np.where(mask_a[:, :, None], xa, 0.0)
+    xb = np.where(mask_b[:, :, None], xb, 0.0)
+    lb = xa @ E.T
+    la = xb @ E
+    alg = np.abs(np.einsum("kjc,ijc->ikj", xb, lb))
+    db = alg / np.maximum(np.hypot(lb[..., 0], lb[..., 1]), 1e-12)[:, None, :] * legacy_cv._focal(pbs[0].camera)
+    da = alg / np.maximum(np.hypot(la[..., 0], la[..., 1]), 1e-12)[None, :, :] * legacy_cv._focal(pas[0].camera)
+    n = common.sum(axis=2)
+    joint_weights = cross_view_module._joint_noise_weights(self._n_joints)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        w = np.where(common, joint_weights, 0.0)
+        epi = (w * ((da + db) / 2.0)).sum(axis=2) / w.sum(axis=2)
+    return np.where(n > 0, epi, np.nan), common
+
+
+def _previous_evidence(self, pa, pb, common, epi: float, tri):
+    """S15P31A101-237 이전 쌍별 `_evidence`(쌍 하나씩 바닥 가설·잔차 판정)에 S15P31A101-354 가중 중앙값만 맞춘다."""
+    cfg = self.config
+    a, b = pa.view.key, pb.view.key
+    n_common = int(common.sum())
+    if n_common < cfg.min_common_joints:
+        return legacy_cv.PairEvidence(a, b, n_common, reject=legacy_cv.RejectReason.FEW_COMMON_JOINTS)
+
+    if epi > cfg.epipolar_gate_px:
+        return legacy_cv.PairEvidence(a, b, n_common, epipolar_px=epi, reject=legacy_cv.RejectReason.EPIPOLAR)
+    assert tri is not None
+
+    gap = None
+    if pa.floor_ray is not None and pb.floor_ray is not None:
+        gap = legacy_cv._floor_gap(pa.floor_ray, pb.floor_ray, cfg.floor_hypothesis_max_height_m)
+
+    xyz, err = tri
+    tri_cfg = cfg.triangulation
+    solved = np.isfinite(err) & (err <= tri_cfg.outlier_reprojection_error_px)
+    n_ok = int(solved.sum())
+    base = {"common_joints": n_common, "epipolar_px": epi, "floor_gap_m": gap, "consistent_joints": n_ok}
+    if n_ok < max(cfg.min_common_joints, cfg.min_consistent_joint_ratio * n_common):
+        return legacy_cv.PairEvidence(a, b, **base, reject=legacy_cv.RejectReason.TRIANGULATION)
+    joint_weights = cross_view_module._joint_noise_weights(self._n_joints)
+    residual = cross_view_module._weighted_median(err[solved], joint_weights[common][solved])
+    z_lo, z_hi = cfg.joint_z_range_m
+    z = xyz[solved, 2]
+    outside = int(np.sum((z < z_lo) | (z > z_hi)))
+    if outside > cfg.max_out_of_range_joint_ratio * n_ok:
+        return legacy_cv.PairEvidence(a, b, **base, residual_px=residual, reject=legacy_cv.RejectReason.IMPLAUSIBLE_HEIGHT)
+    if residual > cfg.residual_gate_px:
+        return legacy_cv.PairEvidence(a, b, **base, residual_px=residual, reject=legacy_cv.RejectReason.RESIDUAL)
+    floor_cost = cfg.floor_missing_cost if gap is None else min(gap / cfg.floor_scale_m, cfg.floor_missing_cost)
+    cost = epi / cfg.epipolar_scale_px + residual / cfg.residual_scale_px + floor_cost
+    return legacy_cv.PairEvidence(
+        a, b, **base, residual_px=residual, marginal=residual > cfg.residual_marginal_px, cost=float(cost)
+    )
+
+
+def _make_previous_associator(old_rig, config=None, joint_layout: str = "COCO17"):
+    assoc = legacy_cv.CrossViewAssociator(old_rig, config=config, joint_layout=joint_layout)
+    assoc._epipolar_px = _previous_epipolar_px.__get__(assoc, legacy_cv.CrossViewAssociator)
+    assoc._epipolar_matrix = _previous_epipolar_matrix.__get__(assoc, legacy_cv.CrossViewAssociator)
+    assoc._evidence = _previous_evidence.__get__(assoc, legacy_cv.CrossViewAssociator)
+    return assoc
+
+
 def compare_pipeline(lens: str, seed: int, n_people: int, n_ticks: int, harsh: bool, crowd: bool = False) -> set[str]:
     """World Track 갱신의 기하(연결 → 클러스터별 게이트)를 tick 마다 두 구현으로 돌려 비교한다. 본 사유를 돌려준다."""
     rig, old_rig = _rigs(lens)
-    new_assoc, old_assoc = CrossViewAssociator(rig), legacy_cv.CrossViewAssociator(old_rig)
+    new_assoc, old_assoc = CrossViewAssociator(rig), _make_previous_associator(old_rig)
     new_gates: dict[str, Any] = {}
     old_gates: dict[str, Any] = {}
     seen: set[str] = set()

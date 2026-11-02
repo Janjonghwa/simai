@@ -116,15 +116,33 @@ def test_real_manifest_experiment_entries_are_pinned_and_hashes_match_records():
     assert "placeholders" not in doc
     by = {w["name"]: w for w in doc["weights"]}
     assert set(by["yolo26x-pose"]["sets"]) == {"tier0", "exp02"}
-    exp = [w for w in doc["weights"] if set(w["sets"]) & {"exp02", "static"} and w["name"] != "yolo26x-pose"]
-    assert {w["name"] for w in exp} >= {"sam-3d-body-dinov3", "sam-3d-body-dinov3-mhr", "moge-2-vits-normal",
-                                        "map-anything-apache-model", "map-anything-config"}
+    assert set(by["yolo26x-seg"]["sets"]) == {"avatar", "exp02"}
+    exp = [w for w in doc["weights"] if set(w["sets"]) & {"exp02", "static"}]
+    assert {w["name"] for w in exp} >= {
+        "yolo26x-pose",
+        "yolo26x-seg",
+        "sam-3d-body-dinov3",
+        "sam-3d-body-dinov3-mhr",
+        "moge-2-vits-normal",
+        "map-anything-apache-model",
+        "map-anything-config",
+    }
     for w in exp:
-        hf = w["source"]["hf"]
-        assert re.fullmatch(r"[0-9a-f]{40}", hf["revision"]), w["name"]  # main 이 아니라 커밋 고정
-        assert w["sha256"] == "" or re.fullmatch(r"[0-9a-f]{64}", w["sha256"]), w["name"]
+        src = w["source"]
+        assert set(src) in ({"hf"}, {"url"}), w["name"]
+        if "hf" in src:
+            hf = src["hf"]
+            assert re.fullmatch(r"[0-9a-f]{40}", hf["revision"]), w["name"]  # main 이 아니라 커밋 고정
+            assert w["sha256"] == "" or re.fullmatch(r"[0-9a-f]{64}", w["sha256"]), w["name"]
+        else:
+            url = src["url"]
+            assert url.startswith("https://") and "/releases/download/v" in url, w["name"]  # 릴리스 버전 태그 고정
+            assert re.fullmatch(r"[0-9a-f]{64}", w["sha256"]), w["name"]
         assert w.get("hash_from") and w.get("license"), w["name"]
         assert not Path(w["path"]).is_absolute() and ".." not in Path(w["path"]).parts
+    # docs/data/weights.md 기록과 같은 값
+    assert by["yolo26x-pose"]["sha256"].startswith("08ed9e01d22a")
+    assert by["yolo26x-seg"]["sha256"].startswith("92b3de006576")
     # HF API LFS oid(승인 계정, 2026-10-21, docs/data/weights.md)
     assert by["sam-3d-body-dinov3-mhr"]["sha256"].startswith("352e271a6c42")
     # E-GATE-0 기록과 같은 값
