@@ -1,10 +1,11 @@
+import type { ViewerEditBox } from '@/features/viewer3d';
 import { ARM_MS } from '@/features/zones/useArmedDelete';
 import { ZonesPage } from '@/features/zones/ZonesPage';
 import { createStaticObjectsMock } from '@/mocks/staticObjects';
 import { createZonesMock, type ZonesMock } from '@/mocks/zones';
 import { useBoxEditStore } from '@/store/boxEdit.store';
 import { useSessionStore, type Role } from '@/store/session.store';
-import { useZoneEditStore } from '@/store/zoneEdit.store';
+import { HISTORY_LIMIT, useZoneEditStore } from '@/store/zoneEdit.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw/http';
@@ -124,6 +125,18 @@ const pick = (value: string) => act(() => void fireEvent.change(picker(), { targ
 const button = (name: string | RegExp) => screen.getByRole('button', { name });
 const writes = () => log.filter((entry) => !entry.startsWith('GET'));
 const SHAPE_LOCKED_TEXT = '직사각형이 아니거나 높이가 없는 구역은 형상을 고칠 수 없습니다.';
+const nameInput = () => screen.getByRole('textbox', { name: '이름' }) as HTMLInputElement;
+const severitySelect = () => screen.getByRole('combobox', { name: '심각도' }) as HTMLSelectElement;
+/** Ctrl+Z. 돌려주는 값은 브라우저 기본 동작을 막지 않았는지(막았으면 false). */
+const pressUndo = (target: Window | Element = window, init: KeyboardEventInit = {}) =>
+  fireEvent.keyDown(target, { code: 'KeyZ', key: 'z', ctrlKey: true, ...init });
+const rename = (name: string) => fireEvent.change(nameInput(), { target: { value: name } });
+const dragTo = (box: ViewerEditBox) => act(() => useBoxEditStore.getState().onChange(box));
+const releasePointer = () => act(() => void window.dispatchEvent(new Event('pointerup')));
+/** 3D 위에서 포인터를 누른다(끌기의 시작). 3D 가 아닌 body 에서 올려 캡처 처리기가 받는지도 본다. */
+const pressPointer = () =>
+  act(() => void document.body.dispatchEvent(new Event('pointerdown', { bubbles: true })));
+const Z02_BOX: ViewerEditBox = { min: [1, 6.2, 0], max: [4, 8.4, 0.4] };
 
 describe('구역 편집 화면', () => {
   it('드롭다운은 「새 구역 추가」가 먼저이고 기존 구역은 `ID · 이름`이다. 고르는 칸은 이름과 심각도뿐이다', async () => {
@@ -458,5 +471,293 @@ describe('구역 편집 화면', () => {
     await waitFor(() =>
       expect(screen.getByRole('textbox', { name: '이름' })).toHaveProperty('value', '고치는 중'),
     );
+  });
+  describe('Ctrl+Z 되돌리기', () => {
+    it('이름·심각도를 고친 것을 한 단계씩 되돌린다', async () => {
+      await renderPage();
+      pick('z-04');
+      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      const savedName = nameInput().value;
+      const savedSeverity = severitySelect().value;
+      rename('다른 이름');
+      fireEvent.change(severitySelect(), {
+        target: { value: savedSeverity === 'CAUTION' ? 'INFO' : 'CAUTION' },
+      });
+
+      expect(pressUndo()).toBe(false);
+      expect(severitySelect().value).toBe(savedSeverity);
+      expect(nameInput().value).toBe('다른 이름');
+      expect(optionTexts()).toContain('z-04 · 개구부 구역 · 저장 전');
+
+      pressUndo();
+      expect(nameInput().value).toBe(savedName);
+      expect(optionTexts()).toContain('z-04 · 개구부 구역');
+
+      // 더 되돌릴 것이 없으면 브라우저 기본 동작을 막지 않는다.
+      expect(pressUndo()).toBe(true);
+      expect(nameInput().value).toBe(savedName);
+    });
+
+    it('이름을 연달아 입력한 것은 한 단계이고, 다른 고침이 끼면 새 단계다', async () => {
+      await renderPage();
+      pick('z-04');
+      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      const savedName = nameInput().value;
+      rename('개');
+      rename('개구');
+      rename('개구부 B');
+      fireEvent.change(severitySelect(), { target: { value: 'INFO' } });
+      rename('개구부 C');
+      expect(useZoneEditStore.getState().history['z-04']).toHaveLength(3);
+
+      pressUndo();
+      expect(nameInput().value).toBe('개구부 B');
+      pressUndo();
+      pressUndo();
+      expect(nameInput().value).toBe(savedName);
+    });
+
+    it('3D 손잡이로 끈 것은 포인터를 놓을 때까지 한 단계다', async () => {
+      await renderPage();
+      pick('z-02');
+      await screen.findByLabelText('높이(m)');
+      rename('다른 이름');
+      dragTo({ min: [1.5, 6.2, 0], max: [4.5, 8.4, 0.4] });
+      dragTo({ min: [2, 6.2, 0], max: [5, 8.4, 0.4] });
+      dragTo({ min: [2.5, 6.2, 0], max: [5.5, 8.4, 0.4] });
+      releasePointer();
+      expect(useZoneEditStore.getState().history['z-02']).toHaveLength(2);
+
+      pressUndo();
+      expect(useBoxEditStore.getState().boxEdit?.box).toEqual(Z02_BOX);
+      expect(nameInput().value).toBe('다른 이름');
+      expect(optionTexts()).toContain('z-02 · 단상 구역 · 저장 전');
+
+      pressUndo();
+      expect(nameInput().value).toBe('단상 구역');
+      expect(optionTexts()).toContain('z-02 · 단상 구역');
+    });
+
+    it('끄는 중 Esc 로 시작 상자로 돌아오면 그 끌기는 되돌릴 단계가 아니다', async () => {
+      await renderPage();
+      pick('z-02');
+      await screen.findByLabelText('높이(m)');
+      rename('다른 이름');
+      dragTo({ min: [2, 6.2, 0], max: [5, 8.4, 0.4] });
+      dragTo(Z02_BOX);
+      releasePointer();
+      expect(useZoneEditStore.getState().history['z-02']).toHaveLength(1);
+
+      pressUndo();
+      expect(nameInput().value).toBe('단상 구역');
+      expect(optionTexts()).toContain('z-02 · 단상 구역');
+    });
+
+    it('끄는 중 다른 고침이 단계를 더했으면 시작 상자로 돌아와도 그 단계를 버리지 않는다', async () => {
+      await renderPage();
+      pick('z-02');
+      await screen.findByLabelText('높이(m)');
+      pressPointer();
+      dragTo({ min: [2, 6.2, 0], max: [5, 8.4, 0.4] });
+      rename('다른 이름');
+      dragTo(Z02_BOX);
+      releasePointer();
+      // 끌기 단계(내용 없음)와 이름 단계. 이름 단계가 끌기 것으로 오해돼 사라지면 1 이다.
+      expect(useZoneEditStore.getState().history['z-02']).toHaveLength(2);
+
+      pressUndo();
+      pressUndo();
+      expect(nameInput().value).toBe('단상 구역');
+      expect(pressUndo()).toBe(true);
+    });
+
+    it('상한에 닿은 기록에서도 끄는 중 쌓인 다른 단계를 버리지 않는다', async () => {
+      await renderPage();
+      pick('z-02');
+      await screen.findByLabelText('높이(m)');
+      for (let i = 0; i < HISTORY_LIMIT; i++) {
+        rename(`이름 ${i}`);
+        fireEvent.change(severitySelect(), { target: { value: i % 2 ? 'INFO' : 'CAUTION' } });
+      }
+      pressPointer();
+      dragTo({ min: [2, 6.2, 0], max: [5, 8.4, 0.4] });
+      rename('끄는 중 이름');
+      dragTo(Z02_BOX);
+      releasePointer();
+
+      // 기록이 가득 차 있어도 새 단계는 가장 오래된 것을 밀어낼 뿐이라 개수로는 끌기 뒤에 단계가 더해졌는지 알 수 없다.
+      expect(useZoneEditStore.getState().history['z-02']).toHaveLength(HISTORY_LIMIT);
+      pressUndo();
+      expect(useBoxEditStore.getState().boxEdit?.box).toEqual({
+        min: [2, 6.2, 0],
+        max: [5, 8.4, 0.4],
+      });
+      expect(nameInput().value).toBe(`이름 ${HISTORY_LIMIT - 1}`);
+    });
+
+    it('포인터 놓음을 받지 못한 끌기는 다음 누름에서 닫혀 다음 끌기와 한 단계로 합쳐지지 않는다', async () => {
+      await renderPage();
+      pick('z-02');
+      await screen.findByLabelText('높이(m)');
+      pressPointer();
+      dragTo({ min: [2, 6.2, 0], max: [5, 8.4, 0.4] });
+      // 창 밖에서 놓아 pointerup 이 오지 않았다.
+      pressPointer();
+      dragTo({ min: [3, 6.2, 0], max: [6, 8.4, 0.4] });
+      releasePointer();
+      expect(useZoneEditStore.getState().history['z-02']).toHaveLength(2);
+
+      pressUndo();
+      expect(useBoxEditStore.getState().boxEdit?.box).toEqual({
+        min: [2, 6.2, 0],
+        max: [5, 8.4, 0.4],
+      });
+      pressUndo();
+      expect(useBoxEditStore.getState().boxEdit?.box).toEqual(Z02_BOX);
+    });
+
+    it('끌기를 이어서 두 번 하면 두 단계다', async () => {
+      await renderPage();
+      pick('z-02');
+      await screen.findByLabelText('높이(m)');
+      dragTo({ min: [2, 6.2, 0], max: [5, 8.4, 0.4] });
+      releasePointer();
+      dragTo({ min: [3, 6.2, 0], max: [6, 8.4, 0.4] });
+      releasePointer();
+
+      pressUndo();
+      expect(useBoxEditStore.getState().boxEdit?.box).toEqual({
+        min: [2, 6.2, 0],
+        max: [5, 8.4, 0.4],
+      });
+      pressUndo();
+      expect(useBoxEditStore.getState().boxEdit?.box).toEqual(Z02_BOX);
+      expect(optionTexts()).toContain('z-02 · 단상 구역');
+    });
+
+    it('작업면 높이를 고친 뒤 포커스를 잃어도 같은 값은 단계를 더하지 않는다', async () => {
+      await renderPage();
+      pick('z-02');
+      const height = await screen.findByLabelText('높이(m)');
+      fireEvent.change(height, { target: { value: '0.6' } });
+      fireEvent.keyDown(height, { key: 'Enter' });
+      fireEvent.blur(height);
+      expect(useZoneEditStore.getState().history['z-02']).toHaveLength(1);
+
+      pressUndo();
+      expect(screen.getByLabelText('높이(m)')).toHaveProperty('value', '0.40');
+    });
+
+    it('작업면 추가를 되돌리면 작업면 손잡이 모드도 풀린다', async () => {
+      await renderPage();
+      pick('z-04');
+      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      act(() => button('+ 고소 작업면 추가').click());
+      expect(useBoxEditStore.getState().boxEdit?.kind).toBe('surface');
+
+      pressUndo();
+      expect(screen.queryByLabelText('높이(m)')).toBeNull();
+      expect(button('+ 고소 작업면 추가')).toBeTruthy();
+      expect(useBoxEditStore.getState().boxEdit).toMatchObject({ id: 'z-04', kind: 'zone' });
+      // 작업면 모드가 남아 있지 않아서 다시 추가하면 손잡이가 작업면으로 간다.
+      act(() => button('+ 고소 작업면 추가').click());
+      expect(useBoxEditStore.getState().boxEdit?.kind).toBe('surface');
+    });
+
+    it('이름·심각도·높이 입력칸 안의 Ctrl+Z 는 초안을 건드리지 않고 브라우저 기본 동작에 맡긴다', async () => {
+      await renderPage();
+      pick('z-02');
+      await screen.findByLabelText('높이(m)');
+      rename('다른 이름');
+      fireEvent.change(severitySelect(), { target: { value: 'INFO' } });
+
+      expect(pressUndo(nameInput())).toBe(true);
+      expect(pressUndo(severitySelect())).toBe(true);
+      expect(pressUndo(screen.getByLabelText('높이(m)'))).toBe(true);
+      expect(nameInput().value).toBe('다른 이름');
+      expect(severitySelect().value).toBe('INFO');
+      expect(useZoneEditStore.getState().history['z-02']).toHaveLength(2);
+
+      // 버튼에 포커스가 있을 때는 되돌린다.
+      pressUndo(button('되돌리기'));
+      expect(severitySelect().value).not.toBe('INFO');
+    });
+
+    it('한글 조합 중이거나 시프트·알트와 함께 누른 키는 무시하고, 한글 자판이어도 자판 위치로 되돌린다', async () => {
+      await renderPage();
+      pick('z-04');
+      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      rename('다른 이름');
+
+      pressUndo(window, { isComposing: true });
+      pressUndo(window, { keyCode: 229 });
+      pressUndo(window, { shiftKey: true });
+      pressUndo(window, { altKey: true });
+      pressUndo(window, { ctrlKey: false });
+      expect(nameInput().value).toBe('다른 이름');
+
+      pressUndo(window, { key: 'ㅋ' });
+      expect(nameInput().value).not.toBe('다른 이름');
+    });
+
+    it('저장한 뒤에는 저장 전 값으로 되돌리지 않는다', async () => {
+      await renderPage();
+      pick('z-04');
+      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      rename('개구부 B');
+      act(() => button('저장').click());
+      await waitFor(() => expect(optionTexts()).toContain('z-04 · 개구부 B'));
+      expect(useZoneEditStore.getState().history['z-04']).toBeUndefined();
+
+      expect(pressUndo()).toBe(true);
+      expect(nameInput().value).toBe('개구부 B');
+      expect(optionTexts()).toContain('z-04 · 개구부 B');
+    });
+
+    it('되돌리기 버튼·구역 추가 뒤에는 그 구역의 기록이 없다', async () => {
+      await renderPage();
+      pick('z-02');
+      await screen.findByLabelText('높이(m)');
+      rename('다른 이름');
+      act(() => button('되돌리기').click());
+      expect(useZoneEditStore.getState().history['z-02']).toBeUndefined();
+
+      pick('__new__');
+      rename('새로 만든 구역');
+      act(() => button('구역 추가').click());
+      await waitFor(() => expect(picker().value).toBe('z-00000001'));
+      expect(useZoneEditStore.getState().history['__new__']).toBeUndefined();
+    });
+
+    it('구역을 바꿔도 구역마다 기록이 남아 각자 되돌린다', async () => {
+      await renderPage();
+      pick('z-04');
+      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      rename('개구부 B');
+      pick('z-02');
+      await screen.findByLabelText('높이(m)');
+      rename('단상 B');
+
+      pressUndo();
+      expect(nameInput().value).toBe('단상 구역');
+      pick('z-04');
+      await waitFor(() => expect(nameInput().value).toBe('개구부 B'));
+      pressUndo();
+      expect(nameInput().value).toBe('개구부 구역');
+    });
+
+    it('관리자가 아니면 Ctrl+Z 를 무시한다', async () => {
+      const store = useZoneEditStore.getState();
+      store.record('z-02');
+      store.update('z-02', () => ({ patch: { name: '남긴 초안' }, box: null }));
+      signInAs('VIEWER');
+      await renderPage();
+      pick('z-02');
+      await screen.findByLabelText('높이(m)');
+
+      expect(pressUndo()).toBe(true);
+      expect(useZoneEditStore.getState().drafts['z-02']).toBeDefined();
+      expect(useZoneEditStore.getState().history['z-02']).toHaveLength(1);
+    });
   });
 });

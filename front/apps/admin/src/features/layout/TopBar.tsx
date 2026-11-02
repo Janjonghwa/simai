@@ -8,6 +8,7 @@ import { useThemeStore } from '@/features/layout/theme.store';
 import { useNow } from '@/features/layout/useNow';
 import { ROOM } from '@/features/plan/plan';
 import { useRealtimeStore } from '@/store/realtime.store';
+import { useHasRoomScan } from '@/store/roomBounds.store';
 import { Button } from '@simai/ui/components/button';
 import {
   DropdownMenu,
@@ -70,6 +71,8 @@ function AccountMenu() {
 }
 
 export function TopBar({ floating }: { floating: boolean }) {
+  // 실제 스캔이 보이면 목업 크기(10×10m)는 맞지 않아 이름만 보인다.
+  const hasScan = useHasRoomScan();
   return (
     <header
       className={cn(
@@ -82,7 +85,7 @@ export function TopBar({ floating }: { floating: boolean }) {
         <Wordmark />
       </Link>
       <span className="text-[13px] whitespace-nowrap text-muted-foreground">
-        교실 테스트베드 · {ROOM.width}×{ROOM.depth}m
+        교실 테스트베드{!hasScan && ` · ${ROOM.width}×${ROOM.depth}m`}
       </span>
       <Ec2Clock />
       <SoundButton />

@@ -13,6 +13,7 @@ import {
 import type { ViewerEditBox } from '@/features/viewer3d/editing/editTypes';
 import { createPlaneReader, dragPlane } from '@/features/viewer3d/editing/handleInput';
 import { worldPoint, worldToThree } from '@/features/viewer3d/worldCoordinates';
+import type { RoomLimit } from '@/lib/roomLimit';
 import type { RootState, ThreeEvent } from '@react-three/fiber';
 import { Raycaster, Vector2, Vector3 } from 'three';
 
@@ -100,13 +101,13 @@ function listenWindow({ onMove, onUp, onEscape }: WindowHandlers): () => void {
 
 /**
  * 손잡이 끌기 하나를 맡는다. React 바깥 객체라 매 움직임에 다시 그리지 않는다.
- * sync() 로 호스트가 내려 준 최신 상자·알림 함수를 받고, 끌면 emit(새 상자)를 부른다. end() 는 여러 번 불러도 안전하다.
+ * sync() 로 호스트가 내려 준 최신 상자·알림 함수와 지금 교실 범위를 받고, 끌면 emit(새 상자)를 부른다. end() 는 여러 번 불러도 안전하다.
  */
 export function createBoxEditDrag(
   get: () => RootState,
   setDragging: (handle: BoxEditHandle | null) => void,
 ) {
-  let input: { box: ViewerEditBox; emit: BoxEditEmit | undefined } | null = null;
+  let input: { box: ViewerEditBox; emit: BoxEditEmit | undefined; limit: RoomLimit } | null = null;
   let active: {
     from: ViewerEditBox;
     changed: boolean;
@@ -126,9 +127,9 @@ export function createBoxEditDrag(
     setDragging(null);
   };
 
-  /** 지금 호스트가 그리는 상자와 알림 함수. 렌더마다(커밋 뒤) 부른다. */
-  const sync = (box: ViewerEditBox, emit: BoxEditEmit | undefined) => {
-    input = { box, emit };
+  /** 지금 호스트가 그리는 상자와 알림 함수, 상자를 움직일 수 있는 교실 범위. 렌더마다(커밋 뒤) 부른다. */
+  const sync = (box: ViewerEditBox, emit: BoxEditEmit | undefined, limit: RoomLimit) => {
+    input = { box, emit, limit };
   };
 
   /** Esc. 끄는 중이면 끌기를 끝내고 시작 전 상자로 되돌린다(true). 아니면 아무것도 하지 않는다(false). */
@@ -152,11 +153,12 @@ export function createBoxEditDrag(
     const current = active;
     const now = sample(move.clientX, move.clientY);
     if (!current || !input || !now) return;
-    const next = dragBox(current.from, handle, [
-      now[0] - origin[0],
-      now[1] - origin[1],
-      now[2] - origin[2],
-    ]);
+    const next = dragBox(
+      current.from,
+      handle,
+      [now[0] - origin[0], now[1] - origin[1], now[2] - origin[2]],
+      input.limit,
+    );
     // 맞춘 결과가 지금 상자와 같으면 알리지 않는다.
     if (sameBoxValues(next, input.box)) return;
     current.changed = true;

@@ -22,7 +22,7 @@ front/
           viewer3d/     3D 관제 뷰어 (3D 담당 영역)
         hooks/          두 도메인 이상이 쓰는 훅 (useLinkAlive 등)
         lib/            http, api, queryClient, stomp, realtime, bindSession, env, alarmSound 등 두 도메인 이상이 쓰는 것
-        store/          두 도메인 이상이 쓰는 스토어 (세션, 실시간 연결 상태, 3D 작업면 편집 알림)
+        store/          두 도메인 이상이 쓰는 스토어 (세션, 실시간 연결 상태, 3D 작업면 편집 알림, 호스트가 3D 장면 상태에서 채우는 스캔 범위)
         mocks/          개발 서버·테스트용 REST·STOMP mock (msw 핸들러, STOMP 브로커, mock 계정·실시간 시나리오)
         __tests__/      src 구조를 따름
       .env.example      환경변수 이름과 로컬 예시 값

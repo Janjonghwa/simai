@@ -1,11 +1,12 @@
 import { AlarmBanner } from '@/features/events/AlarmBanner';
+import { useEventClearStore } from '@/features/events/eventClear.store';
 import type { EventEntry } from '@/features/events/events';
 import { useEventsStore } from '@/features/events/events.store';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore } from '@/store/session.store';
 import type { WorldStatePayload } from '@simai/contracts';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const T = 1_760_342_400_000;
@@ -54,6 +55,7 @@ function renderBanner(withPanel: boolean) {
 
 beforeEach(() => {
   live.entries = [alarm];
+  useEventClearStore.setState({ clearedAt: null, clearedBy: null });
   navigate.mockReset();
   useSessionStore.getState().signIn({ accessToken: 't', user: { id: 'u', role: 'ADMIN' } });
 });
@@ -63,6 +65,7 @@ afterEach(() => {
   useRealtimeStore.setState(useRealtimeStore.getInitialState(), true);
   useSessionStore.setState(useSessionStore.getInitialState(), true);
   useEventsStore.setState(useEventsStore.getInitialState(), true);
+  useEventClearStore.setState({ clearedAt: null, clearedBy: null });
 });
 
 describe('AlarmBanner', () => {
@@ -147,5 +150,62 @@ describe('AlarmBanner', () => {
 
     const without = renderBanner(false);
     expect(within(without).queryByRole('button', { name: /로 확인/ })).toBeNull();
+  });
+});
+
+describe('AlarmBanner 모두 지우기', () => {
+  const bannerOrNull = () => screen.queryByRole('group', { name: '확인 대기 경보' });
+  const second: EventEntry = {
+    stageStartedAt: T + 5_000,
+    event: {
+      ...alarm.event,
+      event_id: 'e-2',
+      rule_id: 'R1',
+      severity: 'HIGH',
+      world_ids: ['w-0021'],
+      raised_at: T + 5_000,
+      updated_at: T + 5_000,
+    },
+  };
+
+  it('지우면 배너가 바로 사라진다', () => {
+    renderBanner(true);
+    expect(bannerOrNull()).toBeTruthy();
+
+    act(() => useEventClearStore.getState().clearAll(T));
+    expect(bannerOrNull()).toBeNull();
+  });
+
+  it('이미 지운 경보는 새로 열어도 배너에 없다', () => {
+    useEventClearStore.getState().clearAll(T);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <AlarmBanner withPanel />
+      </QueryClientProvider>,
+    );
+    expect(bannerOrNull()).toBeNull();
+  });
+
+  it('지운 뒤에 생긴 경보는 배너에 뜨고, 지운 경보는 +N 에 세지 않는다', () => {
+    useEventClearStore.getState().clearAll(T);
+    live.entries = [alarm, second];
+    const banner = renderBanner(true);
+
+    expect(within(banner).getByRole('alert').textContent).toContain('w-0021');
+    expect(within(banner).queryByText('+1')).toBeNull();
+  });
+
+  it('다른 사용자가 지운 기록은 적용하지 않아 경보가 그대로 뜬다', () => {
+    useEventClearStore.getState().clearAll(T);
+    useSessionStore.getState().signIn({ accessToken: 't', user: { id: 'other', role: 'ADMIN' } });
+    const banner = renderBanner(true);
+    expect(within(banner).getByRole('alert').textContent).toContain('w-0015');
+  });
+
+  it('지운 뒤에 새 단계가 열린 경보는 다시 뜬다', () => {
+    useEventClearStore.getState().clearAll(T);
+    live.entries = [{ ...alarm, stageStartedAt: T + 5_000 }];
+    const banner = renderBanner(true);
+    expect(within(banner).getByRole('alert').textContent).toContain('w-0015');
   });
 });

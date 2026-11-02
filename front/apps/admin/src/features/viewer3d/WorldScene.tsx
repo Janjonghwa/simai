@@ -1,8 +1,4 @@
-import {
-  createSceneStore,
-  SceneReviewContext,
-  SceneStoreContext,
-} from '@/features/viewer3d/scene/sceneStore';
+import { useBackgroundShown } from '@/features/viewer3d/scene/useBackgroundShown';
 import { useScenePalette } from '@/features/viewer3d/sceneTheme';
 import {
   worldBoxToThree,
@@ -12,8 +8,7 @@ import {
   type ThreePoint,
 } from '@/features/viewer3d/worldCoordinates';
 import { Edges } from '@react-three/drei';
-import { useContext, useMemo } from 'react';
-import { useStore } from 'zustand';
+import { useMemo } from 'react';
 
 /** World 원점 모서리에서 시작하는 교실. 바닥은 World X 0~sizeX, Y 0~sizeY, Z=0 이다. */
 export interface WorldRoom {
@@ -57,22 +52,20 @@ const FLOOR_OPACITY = 0.3;
 
 // 바닥·벽은 선택을 받지 않는다. 사람·구역 클릭과 빈 곳 클릭(선택 해제)을 가리지 않게 한다.
 const noRaycast = () => null;
-// 배경 Scene 이 없는 곳(시험 등)에서 쓰는 빈 상태. 늘 HIDDEN 이라 바닥을 채운다.
-const NO_SCENE = createSceneStore();
 
 interface WorldSceneProps {
   room?: WorldRoom;
 }
 
-/** World 바닥(Z=0)과 벽 경계. 바닥은 격자보다 깊이를 조금 밀어 격자선이 위에 보이게 한다(위치는 Z=0 그대로). */
+/**
+ * World 바닥(Z=0)과 벽 경계. 바닥은 격자보다 깊이를 조금 밀어 격자선이 위에 보이게 한다(위치는 Z=0 그대로).
+ * 둘 다 스캔(정적 배경)이 없을 때의 목업 바탕이라, 스캔이 보이는 동안은 숨긴다.
+ */
 export function WorldScene({ room = DEMO_ROOM }: WorldSceneProps) {
   const layout = useMemo(() => roomLayout(room), [room]);
   const palette = useScenePalette();
-  // 정적 배경(-59)이 보이면 배경 바닥과 겹쳐 깜박이지 않게 기본 바닥 면만 숨긴다. 벽 경계선은 그대로 둔다.
-  const sceneStore = useContext(SceneStoreContext) ?? NO_SCENE;
-  const backgroundShown = useStore(sceneStore, (s) => s.display !== 'HIDDEN');
-  // 개발 검수에서 실제 배경을 보는 동안에는 DEMO 교실 경계선이 실제 벽과 겹쳐 헷갈리지 않게 숨긴다.
-  const review = useContext(SceneReviewContext);
+  // 정적 배경(-59)이 보이면 배경 바닥과 겹쳐 깜박이지 않게, 그리고 실제 벽과 DEMO 경계선이 어긋나 보이지 않게 숨긴다.
+  const backgroundShown = useBackgroundShown();
   if (!layout) return null;
 
   return (
@@ -96,7 +89,7 @@ export function WorldScene({ room = DEMO_ROOM }: WorldSceneProps) {
       </mesh>
       <mesh
         name="world-walls"
-        visible={!(review && backgroundShown)}
+        visible={!backgroundShown}
         position={layout.walls.position}
         raycast={noRaycast}
       >

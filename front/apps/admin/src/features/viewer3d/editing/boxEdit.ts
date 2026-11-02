@@ -1,5 +1,6 @@
 import type { ViewerEditBox } from '@/features/viewer3d/editing/editTypes';
 import type { ViewerBoxEdit } from '@/features/viewer3d/types';
+import type { RoomLimit } from '@/lib/roomLimit';
 
 // 호스트가 상자를 쥐고 있는 제어형 상자 편집 조작기(BoxEditGizmo)의 순수 계산. 관제 데모의 dragBox·snapM 과 같은 규칙이다.
 // 좌표는 모두 World(m, +Z 위)다. 광선을 읽는 closestAxisParam 만 Three 장면 좌표를 받는다(축 방향도 Three 로 넘긴다).
@@ -13,8 +14,6 @@ export type BoxEditArrow = 'x-' | 'x+' | 'y-' | 'y+' | 'z-' | 'z+';
 export type BoxEditHandle = 'move' | BoxEditArrow;
 type BoxEditKind = ViewerBoxEdit['kind'];
 
-/** 교실 범위(m): x 0~10 · y 0~10 · z 0~5. */
-export const ROOM_LIMIT: Vec3 = [10, 10, 5];
 /** 값을 맞추는 단위 0.05 m 의 역수. 곱셈·나눗셈은 20 으로 해야 0.35 가 0.35000000000000003 이 되지 않는다. */
 const SNAP_STEPS_PER_M = 20;
 /** 부동소수 잡음을 지우는 자릿수(소수 여섯째 자리, m 로 1 µm). */
@@ -88,30 +87,41 @@ export const copyBox = (box: ViewerEditBox): ViewerEditBox => ({
 });
 
 /** 가운데 구: 크기를 그대로 두고 X·Y 만 옮긴다(Z 는 그대로). 최소 모서리를 0.05 m 에 맞추고 교실 안으로 가둔다. */
-function moveBox(from: ViewerEditBox, delta: Vec3): ViewerEditBox {
+function moveBox(from: ViewerEditBox, delta: Vec3, limit: RoomLimit): ViewerEditBox {
   const box = copyBox(from);
   for (const i of FLOOR_AXES) {
     const size = from.max[i] - from.min[i];
-    const lo = Math.max(0, Math.min(ROOM_LIMIT[i] - size, snap05(from.min[i] + delta[i])));
+    const lo = Math.max(
+      limit.min[i],
+      Math.min(limit.max[i] - size, snap05(from.min[i] + delta[i])),
+    );
     box.min[i] = q6(lo);
     box.max[i] = q6(lo + size);
   }
   return box;
 }
 
-/** 화살표: 그 면만 움직이고 반대 면은 고정한다. 0.05 m 에 맞추고 최소 크기를 지키며 교실 안(z- 도 0 아래 불가)에 둔다. */
-function dragFace(from: ViewerEditBox, arrow: BoxEditArrow, delta: Vec3): ViewerEditBox {
+/** 화살표: 그 면만 움직이고 반대 면은 고정한다. 0.05 m 에 맞추고 최소 크기를 지키며 교실 안(z- 도 바닥 아래 불가)에 둔다. */
+function dragFace(
+  from: ViewerEditBox,
+  arrow: BoxEditArrow,
+  delta: Vec3,
+  limit: RoomLimit,
+): ViewerEditBox {
   const box = copyBox(from);
   const axis = arrowAxis(arrow);
   const minSize = axis === VERTICAL_AXIS ? MIN_SIZE_VERTICAL_M : MIN_SIZE_HORIZONTAL_M;
   if (arrowSign(arrow) < 0) {
     box.min[axis] = q6(
-      Math.max(0, Math.min(from.max[axis] - minSize, snap05(from.min[axis] + delta[axis]))),
+      Math.max(
+        limit.min[axis],
+        Math.min(from.max[axis] - minSize, snap05(from.min[axis] + delta[axis])),
+      ),
     );
   } else {
     box.max[axis] = q6(
       Math.min(
-        ROOM_LIMIT[axis],
+        limit.max[axis],
         Math.max(from.min[axis] + minSize, snap05(from.max[axis] + delta[axis])),
       ),
     );
@@ -121,13 +131,19 @@ function dragFace(from: ViewerEditBox, arrow: BoxEditArrow, delta: Vec3): Viewer
 
 /**
  * 손잡이를 delta(World m, 끌기 시작점 대비 전체 이동)만큼 끈 상자. 항상 시작 때 상자(from)에서 계산한다.
- * - move: 크기를 그대로 두고 X·Y 만 움직인다(Z 는 그대로). 최소 모서리를 0.05 m 에 맞추고 교실 안(x 0~10 · y 0~10)으로 가둔다.
+ * - move: 크기를 그대로 두고 X·Y 만 움직인다(Z 는 그대로). 최소 모서리를 0.05 m 에 맞추고 교실 안(limit 의 x·y)으로 가둔다.
  * - 화살표: 그 면만 움직이고 반대 면은 고정한다. 0.05 m 에 맞추고, 수평 최소 0.2 m · 높이 최소 0.05 m,
- *   x·y 는 0~10, z 는 0~5 안이다(z- 도 0 아래로 내려가지 않는다).
+ *   limit 안이다(z- 도 바닥 아래로 내려가지 않는다).
  * 교실 경계가 최소 크기보다 우선한다(경계 가까이서 최소 크기를 지키지 못하면 경계 쪽으로 붙는다).
+ * limit 는 호출부가 정한다: 스캔이 보이면 스캔 범위, 아니면 목업 교실(x 0~10 · y 0~10 · z 0~5)이다.
  */
-export function dragBox(from: ViewerEditBox, handle: BoxEditHandle, delta: Vec3): ViewerEditBox {
-  return handle === 'move' ? moveBox(from, delta) : dragFace(from, handle, delta);
+export function dragBox(
+  from: ViewerEditBox,
+  handle: BoxEditHandle,
+  delta: Vec3,
+  limit: RoomLimit,
+): ViewerEditBox {
+  return handle === 'move' ? moveBox(from, delta, limit) : dragFace(from, handle, delta, limit);
 }
 
 const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];

@@ -257,6 +257,40 @@ export function acknowledgedAt(entry: EventEntry): number | null {
   return acks.length ? Math.max(...acks) : null;
 }
 
+/** 지금 경보 단계가 시작된 시각(EC2 ms). 기록이 없으면 마지막 갱신 시각으로 본다. 둘 다 없으면 null. */
+const stageStart = (entry: EventEntry) => entry.stageStartedAt ?? eventTime(entry.event);
+
+/**
+ * 「모두 지우기」가 이 이벤트를 숨길지 가르는 시각. 진행 중이면 지금 경보 단계 시작이다.
+ * 해소된 이벤트는 발생 시각이다: 새로고침으로 REST 에서 다시 받으면 확인·재개 기록 때문에 단계 시작이 마지막 갱신
+ * 시각으로 잡혀(firstStageStart), 지운 뒤에 해소된 이벤트가 되살아나기 때문이다. 알 수 없으면 null.
+ */
+const clearBasis = (entry: EventEntry) =>
+  isActive(entry.event) ? stageStart(entry) : (entry.event.raised_at ?? stageStart(entry));
+
+/**
+ * 목록에서 가장 늦게 시작된 경보 단계의 시작 시각(EC2 ms). 이 시각으로 지우면 지금 목록이 모두 숨는다.
+ * 시각을 알 수 없는 이벤트는 무시하고, 아는 것이 없으면 null.
+ */
+export function latestStageStart(entries: readonly EventEntry[]): number | null {
+  const times = entries.map(clearBasis).filter((t): t is number => t !== null);
+  return times.length ? Math.max(...times) : null;
+}
+
+/**
+ * 「모두 지우기」 기준 시각(clearedAt)까지 시작된 이벤트를 뺀다. 그 뒤에 생기거나, 등급이 오르거나 재개돼
+ * 새 경보 단계가 열린 이벤트는 남는다. 시작 시각을 모르는 이벤트는 숨기지 않는다.
+ * 뺄 것이 없으면 받은 배열을 그대로 돌려준다.
+ */
+export function withoutCleared(entries: EventEntry[], clearedAt: number | null): EventEntry[] {
+  if (clearedAt === null) return entries;
+  const shown = entries.filter((entry) => {
+    const basis = clearBasis(entry);
+    return basis === null || basis > clearedAt;
+  });
+  return shown.length === entries.length ? entries : shown;
+}
+
 /** 관제 화면 소리·점멸 대상(명세 12.4): LIVE·CRITICAL/HIGH·RAISED/UPDATED 이고 지금 단계에서 아직 확인 전. */
 export function isAlarming(entry: EventEntry): boolean {
   const { event } = entry;

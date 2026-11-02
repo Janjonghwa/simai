@@ -11,6 +11,7 @@ import { useAutoFold } from '@/features/events/useAutoFold';
 import { useFloatingBox } from '@/features/events/useFloatingBox';
 import { usePanelDrag } from '@/features/events/usePanelDrag';
 import { useZones } from '@/features/zones/useZones';
+import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useCallback, useEffect, useMemo, useRef, type CSSProperties } from 'react';
 
@@ -46,7 +47,7 @@ function FoldButton({ folded, onToggle }: { folded: boolean; onToggle: () => voi
       aria-expanded={!folded}
       aria-label={folded ? '이벤트 펼치기' : '이벤트 접기'}
       onClick={onToggle}
-      className="ml-auto inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-2 hover:text-foreground"
+      className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-2 hover:text-foreground"
     >
       <span
         aria-hidden
@@ -100,11 +101,14 @@ interface EventPanelProps {
   onSelect: (incident: Incident) => void;
   openEventId: string | null;
   onOpen: (eventId: string | null) => void;
+  /** 「모두 지우기」. 화면에서만 지우고 서버는 건드리지 않는다. */
+  onClearAll: () => void;
 }
 
 /**
  * 실시간 관제 오른쪽 이벤트 패널: 사람별 묶음 목록(명세 13.4, FR-4)과 사건 상세 창.
  * 머리줄을 끌어 옮기고(두 번 누르면 제자리), 가장자리 손잡이로 크기를 바꾸고, ▾ 로 접는다(관제 데모와 같다).
+ * 보이는 묶음이 있으면 머리줄에 「모두 지우기」가 있다.
  */
 export function EventPanel({
   entries,
@@ -114,6 +118,7 @@ export function EventPanel({
   onSelect,
   openEventId,
   onOpen,
+  onClearAll,
 }: EventPanelProps) {
   const incidents = useMemo(() => visibleIncidents(entries), [entries]);
   const activeCount = incidents.filter((i) => i.active).length;
@@ -167,7 +172,14 @@ export function EventPanel({
           <b className="text-[15px]">
             이벤트<span className="ml-1 font-mono">{activeCount}</span>
           </b>
-          <FoldButton folded={folded} onToggle={() => setFolded(!folded)} />
+          <div className="ml-auto flex items-center gap-1">
+            {incidents.length > 0 && (
+              <Button variant="secondary" size="sm" onClick={onClearAll}>
+                모두 지우기
+              </Button>
+            )}
+            <FoldButton folded={folded} onToggle={() => setFolded(!folded)} />
+          </div>
         </div>
         {!folded && (
           <>

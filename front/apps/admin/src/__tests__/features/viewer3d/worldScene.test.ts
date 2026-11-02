@@ -6,6 +6,7 @@ import {
   PEOPLE,
   ZONES,
 } from '@/features/viewer3d/dev-harness/mockUi';
+import { roomViewOf } from '@/features/viewer3d/scene/roomView';
 import {
   threeToWorld,
   toThreePoint,
@@ -14,6 +15,7 @@ import {
 } from '@/features/viewer3d/worldCoordinates';
 import { WORLD_REFERENCE_POINTS } from '@/features/viewer3d/WorldReference';
 import { DEMO_ROOM, FLOOR_ROTATION_X, roomLayout } from '@/features/viewer3d/WorldScene';
+import { DEFAULT_ROOM_LIMIT, roomLimitFrom } from '@/lib/roomLimit';
 import { Mesh, PlaneGeometry, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 
@@ -70,6 +72,36 @@ describe('World 교실 배치', () => {
     ['무한대', { ...DEMO_ROOM, sizeX: Number.POSITIVE_INFINITY }],
   ])('크기가 %s 이면 그리지 않는다', (_, room) => {
     expect(roomLayout(room)).toBeNull();
+  });
+});
+
+describe('처음 시점(roomViewOf)', () => {
+  it('스캔이 없으면 예전 처음 시점과 같다(방 가운데 (5, 5, 0) 을 앞·오른쪽 10m 위에서 본다)', () => {
+    const view = roomViewOf(DEFAULT_ROOM_LIMIT);
+    expect(view.target).toEqual(worldToThree(worldPoint(5, 5, 0)));
+    expect(view.home).toEqual(worldToThree(worldPoint(15, -5, 10)));
+  });
+
+  it('스캔이 있으면 스캔 범위 가운데 바닥을 보고 거리는 긴 변에 비례한다', () => {
+    const scan = { min: [2, 1, -0.1], max: [6, 9, 3] } as const;
+    const view = roomViewOf(roomLimitFrom(scan));
+    // 가운데 (4, 5), 긴 변 8m(y) → 앞·오른쪽·위로 8m.
+    expect(view.target).toEqual(worldToThree(worldPoint(4, 5, 0)));
+    expect(view.home).toEqual(worldToThree(worldPoint(12, -3, 8)));
+  });
+
+  it('쓸 수 없는 스캔(한 변 0.2m·NaN)이면 목업 시점이라 카메라가 가운데에 붙거나 사라지지 않는다', () => {
+    const mock = roomViewOf(DEFAULT_ROOM_LIMIT);
+    expect(roomViewOf(roomLimitFrom({ min: [0, 0, 0], max: [0.2, 0.2, 3] }))).toEqual(mock);
+    expect(roomViewOf(roomLimitFrom({ min: [0, 0, 0], max: [Number.NaN, 5, 3] }))).toEqual(mock);
+  });
+
+  it('범위가 두 배면 카메라가 가운데에서 두 배 멀어진다', () => {
+    const near = roomViewOf(roomLimitFrom({ min: [0, 0, 0], max: [5, 5, 3] }));
+    const far = roomViewOf(roomLimitFrom({ min: [0, 0, 0], max: [10, 10, 3] }));
+    const distance = (v: ReturnType<typeof roomViewOf>) =>
+      new Vector3(...v.home).distanceTo(new Vector3(...v.target));
+    expect(distance(far) / distance(near)).toBeCloseTo(2, 9);
   });
 });
 

@@ -28,6 +28,7 @@ import {
   zoneChanged,
   type TargetDraft,
 } from '@/features/zones/zoneEditModel';
+import { DEFAULT_ROOM_LIMIT, roomLimitFrom } from '@/lib/roomLimit';
 import { describe, expect, it } from 'vitest';
 
 const zone = zoneOf(
@@ -83,15 +84,39 @@ describe('구역 이동에 따라 작업면도 옮기기(floorShift)', () => {
 });
 
 describe('새 구역의 처음 상자', () => {
+  const SCAN_ROOM = roomLimitFrom({ min: [1, 2, 0], max: [7, 12, 3] });
+
   it('구역이 없으면 방 가운데에 2×2×2 m 이다', () => {
-    expect(defaultNewBox([])).toEqual({ min: [4, 4, 0], max: [6, 6, 2] });
+    expect(defaultNewBox([], DEFAULT_ROOM_LIMIT)).toEqual({ min: [4, 4, 0], max: [6, 6, 2] });
+  });
+
+  it('스캔 범위가 주어지면 구역이 없을 때 스캔 가운데에 둔다', () => {
+    expect(defaultNewBox([], SCAN_ROOM)).toEqual({ min: [3, 6, 0], max: [5, 8, 2] });
+  });
+
+  it('스캔 범위가 주어지면 구역 가운데도 스캔 경계 안으로 가둔다', () => {
+    const box = defaultNewBox(
+      [{ zoneId: 'a', name: 'a', min: [9, 9, 0], max: [10, 10, 2] }],
+      SCAN_ROOM,
+    );
+    expect(box).toEqual({ min: [5, 8.5, 0], max: [7, 10.5, 2] });
+  });
+
+  it('넘긴 범위를 그대로 쓴다', () => {
+    expect(defaultNewBox([], { min: [0, 0, 0], max: [4, 6, 5] })).toEqual({
+      min: [1, 2, 0],
+      max: [3, 4, 2],
+    });
   });
 
   it('구역들을 감싼 상자의 가운데이고 교실 안에 가둔다', () => {
-    const box = defaultNewBox([
-      { zoneId: 'a', name: 'a', min: [9, 9, 0], max: [10, 10, 2] },
-      { zoneId: 'b', name: 'b', min: [9.5, 9.5, 0], max: [10, 10, 2] },
-    ]);
+    const box = defaultNewBox(
+      [
+        { zoneId: 'a', name: 'a', min: [9, 9, 0], max: [10, 10, 2] },
+        { zoneId: 'b', name: 'b', min: [9.5, 9.5, 0], max: [10, 10, 2] },
+      ],
+      DEFAULT_ROOM_LIMIT,
+    );
     expect(box).toEqual({ min: [8, 8, 0], max: [10, 10, 2] });
   });
 });

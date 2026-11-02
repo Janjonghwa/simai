@@ -10,6 +10,7 @@ import {
   UNIT_EDGES,
 } from '@/features/viewer3d/editing/boxEditStyle';
 import type { ViewerEditBox } from '@/features/viewer3d/editing/editTypes';
+import { useShownRoomLimit } from '@/features/viewer3d/scene/useShownRoom';
 import { useScenePalette } from '@/features/viewer3d/sceneTheme';
 import type { ViewerBoxEdit, ViewerBoxGhost } from '@/features/viewer3d/types';
 import { toWorldPoint, worldBoxToThree, type ThreeBox } from '@/features/viewer3d/worldCoordinates';
@@ -90,13 +91,14 @@ function GhostBox({ id, box }: { id: string; box: ViewerEditBox }) {
   );
 }
 
-/** 끌기 객체를 하나 만들고 호스트가 내려 준 최신 상자·알림 함수와 맞춘다. 내려가면 끌기를 끝내고 카메라 조작을 되돌린다. */
+/** 끌기 객체를 하나 만들고 호스트가 내려 준 최신 상자·알림 함수, 뷰어의 교실 범위와 맞춘다. 내려가면 끌기를 끝내고 카메라 조작을 되돌린다. */
 function useBoxEditDrag(box: ViewerEditBox, onChange: BoxEditEmit | undefined) {
   const get = useThree((s) => s.get);
+  const limit = useShownRoomLimit();
   const [dragging, setDragging] = useState<BoxEditHandle | null>(null);
   const [drag] = useState(() => createBoxEditDrag(get, setDragging));
   // 끄는 동안 이벤트가 낡은 값을 읽지 않게 커밋 직후에 넘긴다.
-  useLayoutEffect(() => drag.sync(box, onChange));
+  useLayoutEffect(() => drag.sync(box, onChange, limit));
   // 내려가면(ID 바뀜·편집 끝·StrictMode 재마운트) 끝낸다.
   useEffect(() => () => drag.end(), [drag]);
   return { drag, dragging };

@@ -8,6 +8,7 @@ import {
   newZoneErrors,
   type ZoneForm,
 } from '@/features/zones/zoneForm';
+import { DEFAULT_ROOM_LIMIT } from '@/lib/roomLimit';
 import { describe, expect, it } from 'vitest';
 
 /** 유형을 아직 고르지 않은 새 구역 양식. */
@@ -138,7 +139,7 @@ describe('zoneForm', () => {
   it('새 구역은 기존 구역들의 가운데 바닥에 2×2 m, 높이 2 m 로 고른 유형으로 만든다', () => {
     const body = newZoneBodyOf(
       { ...NEW_ZONE_FORM, zoneType: 'LIFTING' },
-      defaultNewBox([ZONE, { ...ZONE, min: [6, 7, 0], max: [8, 9, 1] }]),
+      defaultNewBox([ZONE, { ...ZONE, min: [6, 7, 0], max: [8, 9, 1] }], DEFAULT_ROOM_LIMIT),
     );
     expect(body.polygon_xy).toEqual([
       [3, 3.5],
@@ -161,7 +162,7 @@ describe('새 구역 양식', () => {
 
   it('처음 상자는 기존 구역들 가운데 바닥의 2×2×2m 이고, 본문은 양식 값과 상자를 그대로 싣는다', () => {
     const zones = [ZONE, { ...ZONE, min: [6, 7, 0] as const, max: [8, 9, 1] as const }];
-    const box = defaultNewBox(zones);
+    const box = defaultNewBox(zones, DEFAULT_ROOM_LIMIT);
     expect(box.max[0] - box.min[0]).toBe(2);
     expect(box.max[2]).toBe(2);
     const body = newZoneBodyOf(

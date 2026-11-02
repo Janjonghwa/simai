@@ -2,6 +2,7 @@ import { ROLE_LABEL } from '@/features/auth/roleLabel';
 import { TopBar } from '@/features/layout/TopBar';
 import { viewerHealthAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
+import { useRoomBoundsStore } from '@/store/roomBounds.store';
 import { useSessionStore, type Role } from '@/store/session.store';
 import type { ViewerHealthPayload } from '@simai/contracts';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -40,6 +41,7 @@ afterEach(() => {
   navigate.mockClear();
   useSessionStore.getState().signOut();
   useRealtimeStore.setState(useRealtimeStore.getInitialState(), true);
+  useRoomBoundsStore.setState(useRoomBoundsStore.getInitialState(), true);
 });
 
 describe('TopBar', () => {
@@ -54,6 +56,19 @@ describe('TopBar', () => {
     }
     // 장면 불일치 경고(줄무늬)는 시스템 상태 화면에만 있다.
     expect(container.querySelector('.bg-stripes')).toBeNull();
+  });
+
+  it('스캔이 보이면 목업 크기(10×10m)를 빼고 이름만 보인다', () => {
+    seed();
+    const { container } = render(<TopBar floating={false} />);
+    const name = () => container.querySelector('header > span')!.textContent;
+    expect(name()).toBe('교실 테스트베드 · 10×10m');
+
+    act(() => useRoomBoundsStore.getState().set({ min: [0, 0, 0], max: [7.2, 5.8, 3] }));
+    expect(name()).toBe('교실 테스트베드');
+
+    act(() => useRoomBoundsStore.getState().set(null));
+    expect(name()).toBe('교실 테스트베드 · 10×10m');
   });
 
   it('관리자 메뉴는 설치 · 보정, 화이트·다크 모드, 로그아웃이고 시험 경보는 없다', async () => {

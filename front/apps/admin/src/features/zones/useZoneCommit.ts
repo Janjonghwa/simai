@@ -23,7 +23,7 @@ import {
   type TargetDraft,
 } from '@/features/zones/zoneEditModel';
 import { newZoneBodyOf, type ZoneForm } from '@/features/zones/zoneForm';
-import { removeZoneDraft, updateZoneDraft } from '@/store/zoneEdit.store';
+import { removeZoneDraft, resetZoneHistory, updateZoneDraft } from '@/store/zoneEdit.store';
 import { useRef, useState } from 'react';
 
 /** 저장 단계별 실패 문구. */
@@ -126,6 +126,8 @@ export function useZoneCommit(input: ZoneCommitInput) {
     );
     if (!outcome) return;
     updateZoneDraft(at, (prev) => withoutSaved(prev, outcome.saved));
+    // 저장한 값이 새 기준이라 그 전으로는 되돌리지 않는다(아무것도 저장하지 못했으면 기록을 둔다).
+    if (outcome.saved.zone || outcome.saved.surface) resetZoneHistory(at);
     if (outcome.saved.surface) target.setSurfaceMode(false);
     report(outcome);
   };

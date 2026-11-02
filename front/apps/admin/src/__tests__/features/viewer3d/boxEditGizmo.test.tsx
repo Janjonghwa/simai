@@ -6,8 +6,15 @@ import {
   type BoxEditBinding,
 } from '@/features/viewer3d/editing/BoxEditGizmo';
 import type { ViewerEditBox } from '@/features/viewer3d/editing/editTypes';
+import { IDLE_LOAD, type SceneLoad } from '@/features/viewer3d/scene/sceneContract';
+import {
+  createSceneStore,
+  SceneStoreContext,
+  type SceneStore,
+} from '@/features/viewer3d/scene/sceneStore';
 import { createViewerStore, type ViewerStore } from '@/features/viewer3d/viewer3d.store';
 import { ViewerStoreContext } from '@/features/viewer3d/ViewerStoreContext';
+import { DEFAULT_ROOM_LIMIT as ROOM, roomLimitFrom, type RoomLimit } from '@/lib/roomLimit';
 import {
   createRoot,
   extend,
@@ -45,7 +52,7 @@ function screen(camera: PerspectiveCamera, point: Vector3) {
 
 // ---- 끌기 객체(createBoxEditDrag): 실제 원근 카메라 투영으로 화면 좌표를 만들어 창 포인터 이벤트로 끈다 ----
 
-function rig() {
+function rig(limit: RoomLimit = ROOM) {
   const camera = new PerspectiveCamera(50, RECT.width / RECT.height, 0.1, 500);
   setupCamera(camera);
   const canvas = { getBoundingClientRect: () => RECT } as unknown as HTMLCanvasElement;
@@ -54,7 +61,7 @@ function rig() {
   const setDragging = vi.fn();
   const emit = vi.fn();
   const drag = createBoxEditDrag(() => state, setDragging);
-  drag.sync(BOX, emit);
+  drag.sync(BOX, emit, limit);
   return { camera, controls, drag, setDragging, emit };
 }
 
@@ -113,7 +120,7 @@ describe('끌기 객체', () => {
     press(drag, camera, 'x+', x(1));
     moveTo(camera, x(1.5));
     expect(emit).toHaveBeenLastCalledWith({ min: [2, 3, 0], max: [4.5, 6, 2] });
-    drag.sync({ min: [2, 3, 0], max: [4.5, 6, 2] }, emit);
+    drag.sync({ min: [2, 3, 0], max: [4.5, 6, 2] }, emit, ROOM);
     moveTo(camera, x(1.2));
     // 시작 상자(max 4) + 0.2 이지, 4.5 + 0.2 가 아니다.
     expect(emit).toHaveBeenLastCalledWith({ min: [2, 3, 0], max: [4.2, 6, 2] });
@@ -128,7 +135,7 @@ describe('끌기 객체', () => {
     expect(emit).not.toHaveBeenCalled();
     moveTo(camera, x(1.5));
     expect(emit).toHaveBeenCalledTimes(1);
-    drag.sync({ min: [2, 3, 0], max: [4.5, 6, 2] }, emit);
+    drag.sync({ min: [2, 3, 0], max: [4.5, 6, 2] }, emit, ROOM);
     moveTo(camera, x(1.52));
     expect(emit).toHaveBeenCalledTimes(1);
     release();
@@ -157,6 +164,15 @@ describe('끌기 객체', () => {
     moveTo(camera, three(CENTER[0] - 20, CENTER[1], CENTER[2]));
     const out = emit.mock.lastCall![0] as ViewerEditBox;
     expect([out.min[0], out.max[0]]).toEqual([0, 2]);
+    release();
+  });
+
+  it('넘겨 받은 교실 범위(스캔 경계 x 1~7 · y 2~9)로 가운데 구 이동을 가둔다', () => {
+    const { camera, drag, emit } = rig(roomLimitFrom({ min: [1, 2, 0], max: [7, 9, 3] }));
+    press(drag, camera, 'move', three(...CENTER));
+    moveTo(camera, three(CENTER[0] - 20, CENTER[1], CENTER[2]));
+    const out = emit.mock.lastCall![0] as ViewerEditBox;
+    expect([out.min[0], out.max[0]]).toEqual([1, 3]);
     release();
   });
 
@@ -281,7 +297,11 @@ function Probe() {
 }
 
 let root: ReconcilerRoot<HTMLCanvasElement> | null = null;
-async function mount(binding: BoxEditBinding | null, strict = false) {
+async function mount(
+  binding: BoxEditBinding | null,
+  strict = false,
+  sceneStore: SceneStore | null = null,
+) {
   canvas ??= document.createElement('canvas');
   canvas.getBoundingClientRect = () => ({
     ...RECT,
@@ -299,10 +319,12 @@ async function mount(binding: BoxEditBinding | null, strict = false) {
   });
   const tree = (
     <ViewerStoreContext value={viewer}>
-      <BoxEditContext value={binding}>
-        <Probe />
-        <BoxEditGizmo />
-      </BoxEditContext>
+      <SceneStoreContext value={sceneStore}>
+        <BoxEditContext value={binding}>
+          <Probe />
+          <BoxEditGizmo />
+        </BoxEditContext>
+      </SceneStoreContext>
     </ViewerStoreContext>
   );
   await act(async () => root!.render(strict ? <StrictMode>{tree}</StrictMode> : tree));
@@ -486,6 +508,41 @@ describe('BoxEditGizmo 장면', () => {
     await act(async () => void window.dispatchEvent(new MouseEvent('pointerup')));
     expect(ringOpacity()).toBeCloseTo(0.85, 6);
     expect(canvas!.style.cursor).toBe('');
+  });
+
+  it('뷰어에 스캔이 보이면 끄는 범위를 스캔 경계로 가두고, 숨겨지면 목업 교실 범위로 돌아간다', async () => {
+    const sceneStore = createSceneStore();
+    const boundsWorld: SceneLoad['boundsWorld'] = { min: [1, 2, 0], max: [4.5, 9, 3] };
+    sceneStore
+      .getState()
+      .setLoad({ ...IDLE_LOAD, phase: 'LOADED', sceneVersion: 's', boundsWorld });
+    sceneStore.getState().setDisplay('FULL');
+    const onBoxEditChange = vi.fn();
+    await mount(binding({ onBoxEditChange }), false, sceneStore);
+    const x = (m: number) => three(CENTER[0] + m, CENTER[1], CENTER[2]);
+    const dragFar = async () => {
+      await act(async () =>
+        handlersOf(named('box-edit-pick:x+')[0]!).onPointerDown!({
+          stopPropagation: () => {},
+          button: 0,
+          nativeEvent: screen(sceneCamera!, x(1)),
+          intersections: [],
+        }),
+      );
+      await act(async () =>
+        window.dispatchEvent(
+          new MouseEvent('pointermove', { ...screen(sceneCamera!, x(1 + 6)), buttons: 1 }),
+        ),
+      );
+      await act(async () => void window.dispatchEvent(new MouseEvent('pointerup')));
+    };
+
+    await dragFar();
+    expect(onBoxEditChange).toHaveBeenLastCalledWith({ min: [2, 3, 0], max: [4.5, 6, 2] });
+
+    await act(async () => sceneStore.getState().setDisplay('HIDDEN'));
+    await dragFar();
+    expect(onBoxEditChange).toHaveBeenLastCalledWith({ min: [2, 3, 0], max: [10, 6, 2] });
   });
 
   it('ID 가 바뀌면 끌던 조작이 끝나고 카메라 조작이 돌아오며, 이후 움직임은 알리지 않는다', async () => {
