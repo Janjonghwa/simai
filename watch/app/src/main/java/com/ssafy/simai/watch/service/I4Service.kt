@@ -23,10 +23,13 @@ import com.ssafy.simai.watch.alert.alertFields
 import com.ssafy.simai.watch.alert.putAlertFields
 import com.ssafy.simai.watch.config.WatchConfig
 import com.ssafy.simai.watch.config.WatchConfigStore
+import com.ssafy.simai.watch.gait.GaitFeatures
+import com.ssafy.simai.watch.gait.GaitSampler
 import com.ssafy.simai.watch.i4.Backoff
 import com.ssafy.simai.watch.i4.CLOSE_RECONFIGURED
 import com.ssafy.simai.watch.i4.CLOSE_STOPPING
 import com.ssafy.simai.watch.i4.ConnectionStatus
+import com.ssafy.simai.watch.i4.GaitSummary
 import com.ssafy.simai.watch.i4.HeartbeatState
 import com.ssafy.simai.watch.i4.I4Codec
 import com.ssafy.simai.watch.i4.I4Connection
@@ -67,6 +70,7 @@ private const val RESEND_ACK_WINDOW_MS = 10 * 60 * 1000L
  * - 알림: 받으면 바로 진동하고 VIBRATED 확인을 보낸 뒤 알림 화면을 띄운다. 작업자가 확인하면 CONFIRMED 를 보낸다.
  *   끊긴 동안의 확인은 쌓아 뒀다가 다시 이어지면 보낸다
  * - 알림 보관([AlertBoard])·진동·확인은 모두 여기서 하고, 화면은 [AlertCenter] 를 관찰한다
+ * - 걸음 특징(S15P31A101-339): 연결돼 있는 동안 가속도를 받아 2초마다 gait_features 를 보낸다(끊기면 센서도 멈춘다)
  *
  * 모든 상태는 메인 스레드에서만 만진다(OkHttp 콜백은 [post] 로 옮긴다).
  */
@@ -94,6 +98,7 @@ class I4Service : Service() {
     private lateinit var device: DeviceStatus
     private lateinit var wakeLock: PowerManager.WakeLock
     private lateinit var linkWakeLock: PowerManager.WakeLock
+    private lateinit var gait: GaitSampler
 
     private var board = AlertBoard()
         set(value) {
@@ -115,6 +120,7 @@ class I4Service : Service() {
         notifier = AlertNotifier(this)
         lastAlert = LastAlertStore(this)
         device = DeviceStatus(this)
+        gait = GaitSampler(this, ::sendGait)
         val power = getSystemService(PowerManager::class.java)
         wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "simai:alert")
         linkWakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "simai:link")
@@ -138,6 +144,7 @@ class I4Service : Service() {
 
     override fun onDestroy() {
         scope.cancel()
+        gait.stop()
         socket?.close(CLOSE_STOPPING, "stopping")
         socket = null
         vibrator.stop()
@@ -156,6 +163,7 @@ class I4Service : Service() {
         loaded = true
         connectJob?.cancel()
         heartbeatJob?.cancel()
+        gait.stop()
         // 아직 안 열린 소켓은 close 가 핸드셰이크 뒤에야 나가므로 바로 끊는다
         socket?.let { if (status.state == LinkState.CONNECTED) it.close(CLOSE_RECONFIGURED, "reconfigured") else it.cancel() }
         socket = null
@@ -211,6 +219,7 @@ class I4Service : Service() {
         notifier.updateLink("EC2 연결됨")
         if (!linkWakeLock.isHeld) linkWakeLock.acquire()
         resendAcks(ws)
+        gait.start(scope)
         heartbeatJob?.cancel()
         heartbeatJob = scope.launch {
             while (isActive) {
@@ -228,6 +237,7 @@ class I4Service : Service() {
 
     private fun onDropped(reason: String) {
         heartbeatJob?.cancel()
+        gait.stop()
         releaseLink()
         // 내가 끊은 이유(답 없음)를 적어 뒀으면 그것을 남긴다
         status = status.copy(state = LinkState.DISCONNECTED, lastFailure = status.lastFailure ?: reason)
@@ -263,6 +273,29 @@ class I4Service : Service() {
             }
             is Incoming.Unknown -> Log.i(TAG, "모르는 메시지를 무시한다: ${incoming.msgType}")
         }
+    }
+
+    // ---- 걸음 특징 ----
+
+    /** 2초마다 한 창. 연결이 없으면 버린다(쌓아 두지 않는다: 대조는 지금 움직임이 중요하다). 보낸 창만 상태 화면에 올린다 */
+    private fun sendGait(features: GaitFeatures) {
+        val ws = socket
+        val c = codec
+        if (status.state != LinkState.CONNECTED || ws == null || c == null) return
+        val text = try {
+            c.gaitFeatures(features, heartbeat.clockOffsetMs, System.currentTimeMillis())
+        } catch (e: RuntimeException) {
+            // 값이 수가 아니면(org.json 은 NaN 을 거부) 그 창만 버리고 서비스는 산다
+            Log.w(TAG, "걸음 특징을 만들지 못했다: ${e.javaClass.simpleName}")
+            return
+        }
+        if (!ws.send(text)) {
+            Log.w(TAG, "걸음 특징을 보내지 못했다")
+            return
+        }
+        status = status.copy(
+            lastGait = GaitSummary(features.windowEndMs, features.stepTimesMs.size, features.rms, features.peakFreqHz, features.moving),
+        )
     }
 
     // ---- 알림 ----

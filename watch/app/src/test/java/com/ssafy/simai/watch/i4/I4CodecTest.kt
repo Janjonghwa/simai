@@ -5,6 +5,9 @@ import com.ssafy.simai.watch.alert.AckRecord
 import com.ssafy.simai.watch.alert.AlertDirection
 import com.ssafy.simai.watch.alert.AlertSeverity
 import com.ssafy.simai.watch.alert.VibrationPattern
+import com.ssafy.simai.watch.gait.GaitFeatures
+import com.ssafy.simai.watch.gait.MotionKind
+import com.ssafy.simai.watch.gait.MotionTransition
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -116,6 +119,38 @@ class I4CodecTest {
         assertEquals("CONFIRMED", confirmed.getString("kind"))
         assertFalse(confirmed.has("event_sequence"))
         assertFalse(confirmed.has("received_at"))
+    }
+
+    @Test
+    fun gaitFeaturesFollowTheContractShape() {
+        val features = GaitFeatures(
+            windowStartMs = 1_000, windowEndMs = 5_000, sampleRateHz = 50,
+            stepTimesMs = listOf(1_400L, 1_950L), transitions = listOf(MotionTransition(1_000, MotionKind.START)),
+            bandRateHz = 10, bandValues = List(40) { 0.123456 * it }, rms = 1.23456, peakFreqHz = 1.8, moving = true,
+        )
+        val doc = JSONObject(codec.gaitFeatures(features, clockOffsetMs = -37, nowMs = 5_050))
+        assertEnvelope(doc, "gait_features", 5_050)
+        val payload = doc.getJSONObject("payload")
+        assertEquals("WATCH", payload.getString("clock_basis"))
+        assertEquals(-37, payload.getInt("clock_offset_ms"))
+        assertEquals(1_000, payload.getInt("window_start_ms"))
+        assertEquals(5_000, payload.getInt("window_end_ms"))
+        assertEquals(50, payload.getInt("sample_rate_hz"))
+        assertEquals(2, payload.getJSONArray("step_times_ms").length())
+        assertEquals("START", payload.getJSONArray("motion_transitions").getJSONObject(0).getString("kind"))
+        val band = payload.getJSONObject("band_magnitude")
+        assertEquals(10, band.getInt("rate_hz"))
+        assertEquals(40, band.getJSONArray("values").length())
+        assertEquals(0.123, band.getJSONArray("values").getDouble(1), 1e-9) // 소수 셋째 자리까지
+        assertEquals(1.235, band.getDouble("rms"), 1e-9)
+        assertEquals(1.8, band.getDouble("peak_freq_hz"), 1e-9)
+
+        // 시계 차이 모름·뚜렷한 주파수 없음·전환 없음: null 은 싣고(필수 nullable) 전환 칸은 뺀다
+        val still = JSONObject(codec.gaitFeatures(features.copy(transitions = emptyList(), peakFreqHz = null), null, 5_050)).getJSONObject("payload")
+        assertTrue(still.isNull("clock_offset_ms"))
+        assertTrue(still.has("clock_offset_ms"))
+        assertFalse(still.has("motion_transitions"))
+        assertTrue(still.getJSONObject("band_magnitude").isNull("peak_freq_hz"))
     }
 
     private fun assertEnvelope(doc: JSONObject, msgType: String, sentAt: Long) {

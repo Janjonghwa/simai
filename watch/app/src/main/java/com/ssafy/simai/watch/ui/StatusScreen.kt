@@ -35,8 +35,10 @@ import com.ssafy.simai.watch.BuildConfig
 import com.ssafy.simai.watch.config.WatchConfig
 import com.ssafy.simai.watch.config.WorkerLabel
 import com.ssafy.simai.watch.i4.ConnectionStatus
+import com.ssafy.simai.watch.i4.GaitSummary
 import com.ssafy.simai.watch.i4.LinkState
 import kotlinx.coroutines.delay
+import java.util.Locale
 
 private val NOT_CONFIGURED_COLOR = Color(0xFFFFD600)
 private val CONNECTED_COLOR = Color(0xFF7CD992)
@@ -186,9 +188,17 @@ private fun DevLines(config: WatchConfig?, lastAlertAtMs: Long?, status: Connect
             Line(heartbeatLine(status), DEV_TEXT, DEV_SP)
             Line("배터리 ${status.batteryPct?.let { "$it%" } ?: "-"} · ${status.transport.name}", DEV_TEXT, DEV_SP)
             status.lastFailure?.let { Line(it, DEV_TEXT, DEV_SP) }
+            status.lastGait?.let { Line(gaitLine(it), DEV_TEXT, DEV_SP) }
         }
         Line("v${BuildConfig.VERSION_NAME}", DEV_TEXT, DEV_SP)
     }
+}
+
+/** 마지막 걸음 특징 창: "걸음 7/4초 · 1.8Hz · 걷는 중" */
+private fun gaitLine(gait: GaitSummary): String {
+    // 로케일에 따라 소수점이 쉼표가 되지 않게
+    val peak = gait.peakFreqHz?.let { " · ${String.format(Locale.ROOT, "%.1f", it)}Hz" } ?: ""
+    return "걸음 ${gait.steps}/4초$peak · ${if (gait.moving) "걷는 중" else "멈춤"} · ${clockText(gait.windowEndMs)}"
 }
 
 private fun heartbeatLine(status: ConnectionStatus): String {
