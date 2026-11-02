@@ -11,7 +11,7 @@ S15P31A101-183(GPU 1차 세션 검증 큐)이 S15P31A101-31(RunPod 점검·Volum
   아래 "Network Volume 디렉터리 구조"는 저장 위치(`$SIMAI_ROOT`: 볼륨·블록 스토리지·컨테이너 디스크) 안의 구조로 읽는다. 저장 위치는 `simai-bootstrap` 이 고른다.
 - GPU Pod 는 검증할 때만 켠다. 코드·스크립트·큐는 노트북에서 끝내고(이 문서의 드라이런), Pod 에서는 큐를 돌린 뒤 결과를 가져오고 바로 Stop 한다.
 - LIVE 관제 시간에는 세션 큐를 돌리지 않는다(세션 실행기가 Tier 0 표시 파일·프로세스를 보고 시작을 거부한다). EXP Job 은 LIVE 보호를 켠 별도 큐로 마지막에 돈다.
-- 접속은 Pod 공개 IP:포트 SSH 직접 연결(키 인증만)이 기본, RunPod HTTPS 프록시(443) 위 wstunnel SSH 가 예비다. Tailscale 은 쓰지 않는다.
+- 접속은 Pod 공개 IP:포트 SSH 직접 연결(키 인증만)이 기본이고, SSAFY 망(시연장 포함)에서는 팀 EC2(`simai.live:22`) SSH 경유 + Pod 공개 포트 Direct TCP 를 기본으로 쓰며(S15P31A101-392, `deploy/README.md` "SSAFY 망 기본 경로"), RunPod HTTPS 프록시(443) 위 wstunnel SSH 는 최후 예비다. Tailscale 은 쓰지 않는다.
 - HF 토큰은 환경 변수 `HF_TOKEN` 으로만 받는다(RunPod Secret `{{ RUNPOD_SECRET_hf_token }}`, Vast 계정 환경 변수, 엘리스는 블록 스토리지 `.simai-private/hf.env` chmod 600 을 `docker run --env-file`).
   `simai-bootstrap` 이 가중치를 받을 때만 쓰고 Tier 0·큐를 띄우기 전에 지운다. 다른 비밀은 `.simai-private/` 에만 둔다. 이미지·저장소·로그·결과 묶음에 넣지 않는다.
 
@@ -80,13 +80,13 @@ Host simai-pod
 3. 큐가 돌던 중이었다면: Pod 재시작은 컨테이너 디스크(시험 도구)를 비우지만 볼륨의 큐 상태는 남는다. 같은 `--session` 으로 다시 `run` 하면 끝난 항목은 건너뛰고, `running` 으로 남은 항목은 ABORTED 기록 뒤 다시 돈다(gpu_queue 재시작 복구).
 4. Pod 를 Stop 했다가 다시 켜면 같은 H100 을 다시 못 잡을 수 있다(볼륨은 남는다, 명세 3.12). 세션 도중에는 Stop 하지 않는다.
 
-### 443 예비 경로 (SSH·임의 포트가 막힌 망, S15P31A101-286)
+### 443 최후 예비 경로 (EC2 경유·직접 연결이 모두 막힌 망, S15P31A101-286·-392)
 
-- RunPod HTTPS 프록시 `https://<POD_ID>-<포트>.proxy.runpod.net`(443, Cloudflare)는 HTTP·WebSocket 만 통과한다. 주소가 공개이므로 토큰 인증이 필수이고, 연결은 최대 100초로 끊길 수 있다(명세 3.12). I0·I1 의 예비 경로이기도 하다.
+- SSAFY 망(시연장 포함)에서는 팀 EC2(`simai.live:22`)가 열려(2026-11-02 실측: 노트북→EC2 약 5 ms, EC2→일본 Pod 약 41 ms) EC2 SSH 경유 + Pod 공개 포트 Direct TCP 를 기본으로 쓴다(`deploy/README.md` "SSAFY 망 기본 경로"). RunPod HTTPS 프록시 `https://<POD_ID>-<포트>.proxy.runpod.net`(443, Cloudflare)는 HTTP·WebSocket 만 통과하며 요청당 약 0.58 s 지연이 추가되고(9차 세션) 연결이 최대 100초로 끊길 수 있어, EC2 경유와 LTE 테더링이 모두 안 될 때의 최후 예비로 둔다(명세 3.12).
 - 3차 세션 실측(2026-10-26): SSAFY 노트북 망은 나가는 포트 80·443·8000·8080 만 열려(portquiz.net) Direct TCP SSH(19592·11680 등)가 시간 초과였다.
   Pod 에 HTTP 포트 8080 을 더하고 그 프록시 주소로 WebSocket 을 열어 wstunnel 로 sshd 에 닿았다. SSH·scp 모두 됐다(30 MB 32 s).
 - 이제 공통 이미지에 wstunnel 10.7.1(sha256 고정)이 있고, `simai-start` 가 sshd 를 띄운 경우에만 RunPod Secret `SIMAI_TUNNEL_PREFIX` 를 경로 비밀값으로 써서
-  `wstunnel server --restrict-to 127.0.0.1:22 --restrict-to localhost:22 ws://0.0.0.0:8080` 을 띄운다. 템플릿 값·노트북 클라이언트·`~/.ssh/config` 는 deploy/README "막힌 망 예비 SSH".
+  `wstunnel server --restrict-to 127.0.0.1:22 --restrict-to localhost:22 ws://0.0.0.0:8080` 을 띄운다. 템플릿 값·노트북 클라이언트·`~/.ssh/config` 는 deploy/README "막힌 망 최후 예비 SSH".
 - 경로 비밀값을 토큰처럼 쓰는 이유: `--restrict-to` 만 주면 서버 로그가 `Allow All` 로 떠 제한이 걸리지 않은 것으로 보였고, 공개 주소에 인증 없는 터널을 둘 수 없다.
   비밀값은 wstunnel 에만 환경 변수로 넘기고(명령줄·출력·다른 자식·SSH 세션 환경 파일에 없음), wstunnel 로그는 규칙에 비밀값을 찍으므로 끈다. 비밀값이 없거나 32자 미만·허용 밖 문자면 터널을 띄우지 않는다.
 - 3차 세션에서 겪은 것과 이번 처리: `/tmp` 는 실행이 막혀(noexec) 실행 파일을 `/usr/local/bin` 에 둔다. 이미지에 curl 이 없어 빌드 때 넣는다.
@@ -234,7 +234,7 @@ python deploy/scripts/i0_link_measure.py token-hash     # SIMAI_DEVICE_TOKEN(.en
 ```
 
 - I0 relay 설정(`<T>/i0-relay.toml`, 저장소 밖): 녹화 `ai/experiments/recordings/rec-20261021-031045z-classroom-dev-test/cam_{A,B,C,D}/epoch_0000.h264` 를 Pod 시뮬레이터 카메라 `cam1`~`cam4` 로
-  `[[cameras]]` `camera_id = "cam1"`, `kind = "file"`, `file = "<그 경로>"`, `loop = true`, `fps = 25` 네 벌. wstunnel 클라이언트·비밀값 파일은 deploy/README "막힌 망 예비 SSH".
+  `[[cameras]]` `camera_id = "cam1"`, `kind = "file"`, `file = "<그 경로>"`, `loop = true`, `fps = 25` 네 벌. wstunnel 클라이언트·비밀값 파일은 deploy/README "막힌 망 최후 예비 SSH".
 
 **1) Pod 켜기 (약 10~15분).** RunPod 템플릿(deploy/README "RunPod 템플릿", "통합 이미지"의 Pod형): 이미지 `jonghwa1492/tier0:unified-37c7ae51773d`(다이제스트로 고정하면 `SIMAI_IMAGE_DIGEST` 에 같은 값),
 H100 80GB·CUDA 13.0 이상, Container Disk 150GB 이상, 볼륨 없음, 공개 HTTP 8080, 공개 TCP 22·70000·70001(LTE 비교의 Direct TCP), 시작 명령 `sleep infinity`(감시 프로세스·Tier 0 를 띄우지 않는다).

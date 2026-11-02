@@ -3,7 +3,7 @@
 이 폴더가 기획서의 **정본**이다. Notion 에는 이 폴더로 가는 링크와 발표·제출용으로 내보낸 사본만 둔다.
 요구사항 명세서는 [`../requirements.md`](../requirements.md) 에 있다. 저장소 규칙과 계약은 `AGENTS.md`, `contracts/` 를 본다.
 
-**기준 문서:** simai System Specification v1.2 r4 수정 7 (2026-10-17) · **개정일:** 2026-10-31
+**기준 문서:** simai System Specification v1.2 r4 수정 7 (2026-10-17) · **개정일:** 2026-11-02
 
 2026-10-17 · A101 · **상태: v1.3** · 정본: GitLab `docs/spec/`
 
@@ -59,6 +59,7 @@
 | v1.3 수정 41 | 2026-10-31 | 명세 정리 14차(S15P31A101-379, 사용자 결정 2026-10-31, 9차 GPU 세션 결과). 워커가 만든 Scene(`static_reconstruct`)도 직접 등록과 같이 `PROVISIONAL` 보정에서 관리자 확인으로 활성화(‘임시 보정 기준 배경’ 표시, `UNCALIBRATED`·`DRIFTED` 거부, `GET /api/scenes/current` 에 `calibration_state`)(4.5, 12.6, 13장, S15P31A101-380). Scene–보정 정합을 버전 문자열 비교에서 같은 World 계보·보정 변화 크기 판단으로(작은 변화 유지, 큰 변화 흐림 + 재생성 대상, 다른 World 숨김), Tier 0 `world_state.scene_version` 은 EC2 현재 Scene 을 따름(4.5, 13장, S15P31A101-381). 계약 변경은 구현 티켓에서 |
 | v1.3 수정 42 | 2026-10-31 | CRITICAL 사진의 중복 디코딩 제거(S15P31A101-378): 추론에 사용한 디코딩 프레임의 작은 링에서 최대 2대×2시점을 고정하고 판정 lock 밖 제한 스레드 풀로 JPEG·서명·업로드(5.4). 클립용 60초 압축 링·I1 계약·VLM 얼굴 처리 유지. 구현 수치·메모리 상한·시험은 `docs/design/event-frame-decode.md` |
 | v1.3 수정 43 | 2026-10-31 | 의존성 표기 정합(S15P31A101-389): 3.12 통합 잠금의 `open3d` 를 0.19.0 으로(-374 결정, 0.20.0 은 텍스처 굽기 TSDF 추출이 빈다). 계약 변경 없음 |
+| v1.3 수정 44 | 2026-11-02 | SSAFY 망 기본 경로를 EC2 경유로 전환(S15P31A101-392, 사용자 결정 2026-11-02): SSAFY 망(시연장 포함)에서 `simai.live:22`(EC2)가 열리고(노트북→EC2 약 5 ms, EC2→일본 Pod 약 41 ms) EC2 에서 밖으로 22·17000·30022 가 모두 열림을 실측 확인해, I0(제어 wss·카메라별 영상 TLS)는 노트북 로컬 포워드(`ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 simai-ec2 -L 127.0.0.1:17000:<Pod IP>:<17000 매핑> -L 127.0.0.1:17001:<Pod IP>:<17001 매핑>`, 짧은 구간만 SSH 하나·긴 구간은 연결마다 별도 TCP, TLS Tier 0 종료·기기 토큰·공개키 고정 그대로, 엔드포인트 host `127.0.0.1`), 관리 SSH 는 `ssh -J simai-ec2 -p <22 매핑> root@<Pod IP>`(I0 를 Pod SSH 하나에 묶지 않음)를 기본으로 두고, LTE 테더링은 두 번째 업링크, RunPod 443 프록시 + wstunnel(요청당 약 0.58 s 추가)은 최후 예비로 내림. EC2 호스트 정지 시 현장 경보 중단·CI 와 EC2 CPU 공유(LIVE·GPU 세션 중 CI 회피)·시연장 바깥 IP 의 EC2 보안 그룹 22 확인(NFR-35)을 위험·운영 규칙에 반영(3.12, 16장, 17장, 18.1, 18.3, 19.1, 부록 E.4). 요구사항 NFR-11·NFR-35 반영. 계약 변경 없음 |
 
 v1.0 \~ v1.2 r4 수정 7 의 이력은 [`history.md`](history.md) 에 있다.
 
@@ -166,7 +167,7 @@ v1.0 \~ v1.2 r4 수정 7 의 이력은 [`history.md`](history.md) 에 있다.
 | FR-86·FR-87 | R1\~R4 CRITICAL 근거 설명, 상향 의견 제시 | MVP 는 CRITICAL 만 대상이라 상향 의견은 늘 null(검증·승인은 대상 확대 때), `clause_ids` 는 지금 늘 빈 값 | v1.3 수정 38, 5.4, 12.5 (S15P31A101-25) |
 | FR-142 | 호출 방식은 기획서 19.1 | Responses API(`store: false`) 기본, `SIMAI_LLM_API_STYLE=chat` 이면 Chat Completions | v1.3 수정 38, 5.4 (S15P31A101-285) |
 | NFR-34 | G7 평가자 수·채점 기준 확인 필요 | 평가자 수만 확인 필요(채점 기준표 초안 `docs/design/g7-eval.md`), G7 측정은 제품과 같은 질문, 형식 오류·잘림·얼굴 처리 실패 표본은 분모에서 빼고 따로 셈 | v1.3 수정 38, 15.1 (S15P31A101-35) |
-| NFR-35 | 시연장 망에서 Direct TCP·프록시 각각 10분 시험 | SSAFY 개발 망 실측(나가는 포트 80·443·8000·8080 만, Direct TCP SSH 막힘), 개발 SSH 는 RunPod HTTP 프록시(443) 위 wstunnel(경로 비밀값 필수, sshd 로만), I0 영상 프록시 경로 지연은 4차 GPU 세션 측정 | v1.3 수정 33, 3.12, 18.1 (S15P31A101-286) |
+| NFR-35 | 시연장 망에서 Direct TCP·프록시 각각 10분 시험 | SSAFY 망(시연장 포함) 실측(일반 외부는 80·443·8000·8080 만, `simai.live:22` EC2 는 열림, 노트북→EC2 약 5 ms·EC2→일본 Pod 약 41 ms), 기본 경로를 EC2 SSH 경유 + Pod 공개 포트 Direct TCP(I0 로컬 포워드 17000·17001, 관리 SSH `ssh -J simai-ec2`)로 두고 시연장 망에서 EC2 경유 경로(보안 그룹 22 허용 포함) 10분 시험, LTE 테더링 두 번째 업링크, RunPod 443 프록시 + wstunnel(요청당 약 0.58 s 추가)은 최후 예비, LIVE·GPU 세션 중 EC2 CI 빌드 회피 | v1.3 수정 33·44, 3.12, 17, 18.1, 18.3, 부록 E.4 (S15P31A101-286·-392) |
 | FR-23·FR-25 | 한 명 걷기 번들 조정, 틀어짐 감시·자동 재보정 | 다중인 회차 보정(`session`, 에피폴라 1:1 배정·기준 카메라 World/축척 계승·렌즈 모드 선택), 실행 중 후보 보정(`LiveCandidateCalibrationRunner`)과 자동 교체 안전장치 5종(DRIFTED `change_point_ms` 절단, 일반·복구 15초 단독 잠금, 첫 CALIBRATED 누적 편차 기록·경고, 새 관측 포함 2회 연속 개선 확인, 교체 후 60초 감시 악화 시 직전 자세를 복사한 새 PROVISIONAL 버전 되돌림 + 운영자 확인까지 보류) | v1.3 수정 40, 4.3, 4.4 (S15P31A101-331·-343·-345·-352·-356) |
 | FR-135 | 실측 정물(안전봉·라바콘·바리케이드) | 보조 실측 정물로 노트북 윗판(`0.355 × 0.255 m`)과 로비 스툴 윗면(`lobby_stool_top`, `0.415 × 0.415 m`, 높이 `0.425 m`, `measure-stools`·`static_reconstruct` 점검) 추가 | v1.3 수정 40, 4.3 (S15P31A101-100·-357) |
 | FR-27·FR-90·FR-102·FR-108 | 빈 교실·YOLO26-seg 합성, 점군→단순 메시 glTF(텍스처 확장), Scene 커밋 | Tier 0 비동기 사람 지운 배경 누적(`CLEAN_BACKGROUND`, 시간 중앙값), 분석 워커 I5 `static_reconstruct`(Open3D TSDF + `texrecon` 텍스처 메시 `GLTF_VISUAL` + `SURFACE_SOURCE_MAP`, 도구 부재 시 정점색 폴백), 워커 결과는 `CANDIDATE` 저장 후 관리자 명시적 활성화(`commit`/`admin scene activate`)·`scene_activation` 이력 정본·서버 재기동 없이 `/api/scenes/current`(`surface_source_map_urls`)·`/topic/health` 반영 | v1.3 수정 40, 3.12, 4.5, 5.3, 11.1, 12.5, 12.6, 16장 (S15P31A101-358·-363·-364·-365·-366) |
