@@ -36,7 +36,7 @@ Tier 0 와 분석 워커가 GPU Pod 하나를 나눠 쓸 때 Tier 0 를 먼저 �
   누계를 읽지 못하면 그 표본의 lag 도 unknown 으로 센다. SIM 입력은 대기열이 없어 null 이다. 대기 상한을 넘긴 프레임은 버려지므로 그 정체는
   t_latest_global 정체 → lag 증가로도 보인다.
 
-## 분석 워커 접수 규칙 (AdmissionGate)
+## 분석 워커·아바타 접수 규칙 (AdmissionGate)
 
 앞에서 걸리면 그 이유로 받지 않는다. **모르면 받지 않는다.**
 
@@ -47,8 +47,12 @@ Tier 0 와 분석 워커가 GPU Pod 하나를 나눠 쓸 때 Tier 0 를 먼저 �
   싣는다(다음 쓰기가 성공하면 빠짐, 정보 경고라 판정·알림은 그대로).
 2. 확인·읽기 실패, `max_marker_age_s`(15초, 갱신 주기의 3배)보다 오래됨, `gpu_priority` 없음·형식 틀림 → 모름 → 받지 않는다(LIVE 로 본다).
 3. `phase != running`, 선확보가 OK·SKIPPED·DISABLED 가 아님 → 받지 않는다.
-4. 표본 0, unknown ≥ 1, `lag_ms_max` > 예산(600ms), `queue_wait_exceeded` ≥ 1 → 받지 않는다(창 최댓값: p95 보다 엄격).
-5. 위를 모두 통과한 상태가 `resume_after_s`(30초) 이어져야 받는다(깜빡임 방지).
+4. 표본 0, unknown ≥ 1, `lag_ms_max` > 예산(600ms) → 받지 않는다(창 최댓값: p95 보다 엄격, 한 창·한 표본이라도 즉시).
+5. `queue_wait_exceeded` 가 창당 `max_queue_wait_exceeded`(2) 이하면 통과로 넘기고(안정 시계를 지우지 않음), 넘으면 받지 않는다(S15P31A101-412).
+6. 멈춘 뒤에는 통과 상태가 `resume_after_s`(10초) 이어져야 받는다(깜빡임 방지).
+
+분석 워커와 상시 아바타 루프(`services/avatar`)가 같은 규칙을 쓴다. 판정 사유 코드(`Admission.code`)와 계측(`AdmissionGate.stats()`)은
+아래 S15P31A101-412 절에 있다.
 
 워커 동작(`services/worker/runner.py`):
 
@@ -96,3 +100,76 @@ H100 80GB 기준. 비율은 GPU 전체 메모리 대비.
 
 Pod 측정은 `ai/experiments/gpu_queue/tier0_priority_probe.py`(`load` 더미 부하, `watch` 표시 파일 판정)로 -183 GPU 세션 큐에서 한다.
 명령과 기대 결과는 MR 본문에 있다.
+
+## S15P31A101-412: 사유별 접수 규칙과 차단 사유 계측
+
+관련 명세는 3.2(GPU 공유·Tier 0 우선, v1.3 수정 48), 5.1(`queue_wait_ms` 150ms), 6.6(`capture_to_risk` p95 600ms), 13.2(포즈 0.5 s 없으면 캡슐),
+20.5(안전 경로 격리)다. 변경 위치는 `ai/src/simai_ai/gpu/{admission,budget}.py`, `ai/src/simai_ai/hmr/stream.py`, `ai/services/avatar/transport.py`,
+`deploy/compose.yaml`·`deploy/README.md`(기본값)이고, 시험은 `ai/tests/gpu/test_admission.py`, `ai/tests/hmr/test_avatar_loop.py`,
+`ai/tests/services/tier0/test_tier0_gpu_priority.py`다. 계약 변경은 없다(표시 파일 형식 그대로).
+
+### 10차 GPU 세션(2026-11-02) 근거
+
+- 43분 동안 Tier 0 지연(촬영 → 판정) p95 301 ms. 5초 창 표시 파일 합계로 `over_budget` 4, `unknown` 4, `queue_wait_exceeded` 18 이었다
+  (pod.jsonl 기준 600 ms 초과 4회).
+- 그런데 아바타 루프는 거의 늘 막혔다(`gate_skipped` 6,165, 로그 `AdmissionGate 차단: Tier 0 지연 266ms ≤ 예산 600ms, 안정 대기 15/30s`).
+  -408 조사로 VLM 빠른 경로(`vlm_rationale`)도 같은 게이트 때문에 대여가 13.8~134 s 늦은 건이 6건(일부 마감 초과)이었다. 게이트가 열려 있고
+  워커가 놀면 작업 생성 → 시작은 49~74 ms 였다.
+- 코드 원인: 이전 규칙은 큐 대기 초과 1건·모름·표본 없음·노후를 모두 즉시 닫고 30초(`resume_after_s`)를 처음부터 셌다. 단발 허용
+  (`max_over_budget_samples=1`, -376)은 지연 초과에만 있었다. 추정(Argon): 게이트가 열리면 아바타가 같은 GPU 에서 YOLO26x-seg(1280, 4대)와
+  SAM 3D Body 를 돌려 Tier 0 검출 대기 150 ms 를 몇 프레임 넘기고, 다음 표시 파일의 `queue_wait_exceeded ≥ 1` 로 다시 35초 닫히는 자가 진동.
+  요약 수치만으로 6,165 를 다 설명했다고 보지 않고(Codex), 이번에 사유 계측을 넣어 11차에서 확인한다.
+
+### 정한 수치 (설정값, 명세에 없는 값)
+
+| 설정 | 기본 | 근거 |
+|---|---|---|
+| `max_queue_wait_exceeded` (`SIMAI_WORKER_MAX_QUEUE_WAIT_EXCEEDED`) | 2 | 큐 대기 초과로 버린 프레임은 그 카메라 갱신을 한 번 건너뛴 것이고(latest-frame-wins, 5.1) 판정 지연은 같은 창의 lag 표본 최댓값이 따로 잰다. 10차에서 p95 301 ms 인데도 큐 대기 초과 창이 18개였고 지연 초과 창은 4개뿐이었다. 한 창 3건 이상은 여러 카메라·연속 버림, 곧 정체의 시작으로 보고 멈춘다 |
+| `resume_after_s` (`SIMAI_WORKER_RESUME_AFTER_S`) | 10 | 표시 파일 5초 주기의 통과 창 두 개(표본 약 10개)를 이어서 봐야 연다(깜빡임 방지의 최소). 뷰어는 포즈가 0.5 s 없으면 캡슐이므로 닫힌 시간이 곧 캡슐 시간이다. 30초에서는 사유 하나가 약 35초 캡슐을 만들었다. 10차 모양(43분, 지연 초과 창 4·큐 대기 초과 창 18)을 넣은 시험에서 열림 비율 97% 초과 |
+
+- 이전 구현의 '안정 대기 중 지연 초과 단발 1표본 허용'(`max_over_budget_samples`)은 없앴다. 명세 3.2 의 기준(창 최댓값이 목표를 넘으면 멈춤)과
+  어긋났고(Codex), 재개가 10초로 줄어 단발 초과 한 번의 비용이 약 35초 → 10~15초가 되어 허용할 이유가 없다. 진짜 지연 초과는 한 창·한 표본이라도 즉시 멈춘다.
+- 큐 대기 초과 2건 이하 창은 '통과'로 본다. 안정 대기 중에 와도 시계를 지우지 않고, 열려 있으면 그대로 둔다. 지연 초과·모름과 함께 오면 그쪽 사유로 멈춘다.
+
+### 아바타·분석 워커 정책: 하나로 둔다
+
+결정: 같은 `AdmissionPolicy`(같은 환경 변수)를 분석 워커와 상시 아바타 루프에 모두 적용한다. 정책 객체를 나누지 않는다.
+
+1. LIVE 중 배치 금지는 지연 규칙과 따로 걸린다. `Admission.allowed_types`·`blocks` 는 LIVE 면 `live_blocked_types`
+   (`static_reconstruct`·`hmr_refine`·`hmr_appearance_update`)를 늘 빼고, 도는 배치 작업은 `_watch_live` 가 LIVE 시작 때 선점한다. 표시 파일이 있으면
+   (지연과 무관하게) LIVE 다. 따라서 지연 규칙을 사유별로 나눠도 LIVE 중 배치 EXP 는 돌지 않는다.
+2. VLM 빠른 경로(`vlm_rationale`, `VLM_FAST` 5000 ms)는 같은 게이트의 30초 대기로 막혔다. 우선순위 Tier 0 > VLM 빠른 경로 > 그 밖이 실제로 지켜지려면
+   VLM 도 새 규칙(진짜 지연 초과·모름만 즉시 멈춤, 큐 대기 초과 소수는 넘김, 재개 10초)을 받아야 한다(Lead 지시 2026-11-02).
+3. 지연 초과 때 분석 워커는 새 작업만 멈추고 도는 VLM 은 끝까지 둔다(그대로). 아바타는 추론 전마다 보므로 바로 멈춘다(그대로).
+4. 정책을 나누면 같은 표시 파일을 두 해석으로 읽어 운영 판독(사유 로그)이 갈라진다. 다르게 둘 필요가 생기면 프로세스별 환경 변수로 준다
+   (아바타도 `WorkerGpuSettings.from_env` 로 같은 값을 읽는다).
+
+버린 대안: 아바타 전용 완화 정책(워커는 30초 유지) — VLM 대여 지연이 그대로 남는다. GPU 사용률 기반 게이트 — 표시 파일 계약·측정이 새로 필요하고
+Tier 0 지연(정본 기준)과 직접 맞지 않는다.
+
+### 계측 (판정 결과 불변)
+
+- `Admission.code`: `ok`·`not_live`·`stabilizing`·`live_linger`·`marker_absent`·`marker_stale`·`marker_unreadable`·`not_running`·`reserve_not_ok`·
+  `no_samples`·`lag_unknown`·`over_budget`·`queue_wait_exceeded`.
+- `AdmissionGate.stats()`: `blocked`(받지 않은 check 수, 사유별), `resets`(열림·안정 대기 → 닫힘 전이 수, 사유별), `opened`, `last_reset_ms`·
+  `last_reset_code`·`last_reset_reason`, `queue_wait_tolerated_windows`·`_frames`(넘긴 창·프레임, 같은 표시 파일은 한 창).
+- 아바타 60초 요약(`아바타 입력 상태:`): `gate_skipped` 와 그 사유별 분해 `skip_reasons`, `pose_enqueued`(송신 대기열에 넣은 배치),
+  `pose_sent`(송신기가 실제로 소켓에 쓴 배치 누계), `uploads`(GLB·PNG 업로드 성공), `assets_confirmed`, `gate_resets`, `last_reset`, `queue_wait_tolerated`.
+  송신기 1분 집계(`아바타 1분 송신 집계:`)에 `pose_batches_total`·`asset_msgs_total` 을 더했다. 요약 줄 맨 앞 상태(예: `포즈 대기열 전달`)는
+  그 순간 회차 하나의 상태이고 송신 횟수가 아니다.
+- 상태 파일은 만들지 않았다(로그로 충분, 11차에서 부족하면 후속). 분석 워커 러너 로그는 그대로(받음/받지 않음 전이 때 사유 문자열).
+
+### 남은 위험
+
+- 자가 진동이 남을 수 있다: 아바타가 열린 뒤 분할·HMR 이 한 창에 큐 대기 초과 3건 이상을 만들면 여전히 10초 단위로 닫혔다 열린다.
+  근본 대책(아바타가 Tier 0 검출을 재사용해 자체 분할을 줄임)은 후속 티켓이다. 트랙 ID 안정화는 -413, VLM 은 -408.
+- 창당 2건 허용은 Tier 0 가 그 카메라 프레임을 버리는 것을 받아들이는 것이다. 판정 지연 상한(창 최댓값 600 ms)은 그대로 즉시 멈춤이라
+  Tier 0 우선 원칙은 지킨다. 이 판단은 G0·11차 실측으로 다시 본다.
+- 재개 10초는 열림·닫힘 전이를 늘릴 수 있다(`resets` 로 본다). 분석 워커는 전이가 잦으면 같은 작업 반납이 늘 수 있다(위 '운영 순서와 한계').
+
+### 11차 GPU 세션에서 볼 지표
+
+- 아바타 60초 요약: `skip_reasons` 분포(무엇이 막는지), `gate_resets` 사유·횟수, `last_reset`, `queue_wait_tolerated`, 분당 `pose_sent`, 캡슐로 돌아간 시간.
+- 아바타를 켠 상태의 Tier 0 `capture_to_risk` p95·p99 가 600 ms 안인지(Tier 0 우선 검증).
+- 표시 파일 창별 `queue_wait_exceeded` 분포(1·2 대 3 이상)와 아바타가 열린 직후 늘어나는지(자가 진동 확인).
+- `vlm_rationale` 생성 → 시작 지연과 마감 초과 건수(-408 과 함께).

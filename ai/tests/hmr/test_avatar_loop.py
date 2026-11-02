@@ -122,7 +122,7 @@ def test_freeze_upload_then_schema_valid_poses_without_mutating_tier0(rig):
 
 @pytest.mark.parametrize("load", [None, {"samples": 0, "unknown": 0, "lag_ms_max": None},
     {"samples": 1, "unknown": 0, "lag_ms_max": 601}, {"samples": 1, "unknown": 1, "lag_ms_max": 1},
-    {"samples": 1, "unknown": 0, "lag_ms_max": 1, "queue_wait_exceeded": 1}])
+    {"samples": 1, "unknown": 0, "lag_ms_max": 1, "queue_wait_exceeded": 3}])
 def test_marker_unknown_or_over_budget_never_infers(tmp_path, rig, load):
     clock, source, sock, sender, model, loop, _ = harness(rig)
     marker = tmp_path / "tier0.live"
@@ -132,6 +132,7 @@ def test_marker_unknown_or_over_budget_never_infers(tmp_path, rig, load):
                               monotonic=lambda: 0)
     loop.step()
     assert model.calls == 0 and loop.skipped == 1 and not sock.messages
+    assert sum(loop.skip_reasons.values()) == 1 and "unknown" not in loop.skip_reasons
 
 
 def test_gate_checked_before_each_person_camera_call(rig):
@@ -204,7 +205,9 @@ def test_freshness_max_age_ms_boundaries_and_tier0_lag_budget_alignment(rig, age
         assert model.calls == 0 and not uploads and not sock.messages
 
 
-def test_avatar_loop_with_session9_marker_pattern_infers_and_blocks_on_consecutive_or_unknown(tmp_path, rig):
+def test_avatar_loop_session10_rules_tolerate_queue_wait_close_on_lag_and_resume_after_10s(tmp_path, rig, caplog):
+    """S15P31A101-412: 큐 대기 초과 1~2건 창은 추론을 이어가고, 지연 초과 창은 바로 멈추며, 통과 10초 뒤 다시 추론한다."""
+    caplog.set_level("INFO")
     clock, source, sock, sender, model, loop, uploads = harness(rig, freeze=2)
     marker = tmp_path / "tier0.live"
     loop.gate = AdmissionGate(
@@ -214,58 +217,74 @@ def test_avatar_loop_with_session9_marker_pattern_infers_and_blocks_on_consecuti
         monotonic=lambda: clock[0] / 1000.0,
     )
 
-    def write_marker(lags, *, unknown=0):
+    def write_marker(lags, *, qwe=None):
         w = LoadWindow(DEFAULT_LAG_BUDGET_MS)
         for v in lags:
             w.add(v)
-        for _ in range(unknown):
-            w.add(None)
+        if qwe is not None:
+            w.add(lags[-1], queue_wait_exceeded=qwe)
         doc = {
             "started": True,
-            "gpu_priority": marker_section(
-                phase="running",
-                reserve={"state": "OK"},
-                load=w.take(),
-                written_at_ms=clock[0],
-                pid=1,
-            ),
+            "gpu_priority": marker_section(phase="running", reserve={"state": "OK"}, load=w.take(),
+                                           written_at_ms=clock[0], pid=1),
         }
         marker.write_text(json.dumps(doc), encoding="utf-8")
         ts = clock[0] / 1000.0
         os.utime(marker, (ts, ts))
 
-    # 0~30s 안정 대기 중 26s 에 672ms 1회 단발 초과가 나와도 리셋되지 않고 30s 에 열린다.
-    write_marker((320.0, 410.0, 480.0, 520.0, 540.0))
-    loop.step()
-    assert model.calls == 0
-    for sec in range(1, 31):
-        clock[0] = T0 + sec * 1_000
-        if sec == 26:
-            write_marker((350.0, 420.0, 490.0, 530.0, 672.0))
-        elif sec % 5 == 0:
-            write_marker((330.0, 400.0, 470.0, 515.0, 545.0))
-        # 촬영 시각이 현재 시각보다 520ms 전(9차 평시 지연 300~550ms 범위)인 스냅샷 입력
-        source.item = snapshot(clock[0] - 520)
+    def at(sec, age_ms=300):
+        clock[0] = T0 + int(sec * 1_000)
+        source.item = snapshot(clock[0] - age_ms)
         loop.step()
-        if sec < 30:
-            assert model.calls == 0
 
-    # 30s 시점에 첫 추론이 수행되었고, 31s 에 단발 672ms 표본이 있어도 2번째 추론·자산 업로드·포즈 송신이 완료된다.
-    assert model.calls == 4 and not uploads
-    clock[0] = T0 + 31_000
-    write_marker((360.0, 430.0, 500.0, 535.0, 672.0))
-    source.item = snapshot(clock[0] - 540)
-    loop.step()
+    # 0~10s 안정 대기(10차 평시 266~301ms). 5s 창의 큐 대기 초과 2건은 안정 시계를 지우지 않는다.
+    write_marker((266.0, 301.0))
+    at(0)
+    clock[0] = T0 + 5_000
+    write_marker((270.0, 290.0), qwe=2)
+    at(5)
+    assert model.calls == 0
+    clock[0] = T0 + 10_000
+    write_marker((250.0, 280.0))
+    at(10)
+    assert model.calls == 4
+
+    # 열린 뒤 큐 대기 초과 1건 창: 계속 추론하고 자산·포즈까지 보낸다.
+    clock[0] = T0 + 15_000
+    write_marker((260.0, 300.0), qwe=1)
+    at(15)
     sender.tick()
     assert model.calls == 8 and len(uploads) == 1
     assert any(m["msg_type"] == "avatar_pose_batch" for m in sock.messages)
+    assert loop.pose_enqueued == 1 and loop.uploads == 1 and loop.assets == 1 and sender.sent_batches_total == 1
 
-    # 다음 표시 파일 창에서도 연속으로 666ms 초과가 발생하면 즉시 차단된다.
-    clock[0] = T0 + 36_000
-    write_marker((380.0, 440.0, 510.0, 540.0, 666.0))
-    source.item = snapshot(clock[0] - 400)
-    loop.step()
-    assert model.calls == 8
+    # 지연 초과(단발 672ms) 창은 바로 멈춘다.
+    clock[0] = T0 + 20_000
+    write_marker((300.0, 672.0))
+    at(20)
+    assert model.calls == 8 and loop.skip_reasons["over_budget"] == 1
+
+    # 통과 창이 다시 오면 10초 안정 뒤 추론을 재개한다(9초 시점은 아직 대기).
+    clock[0] = T0 + 25_000
+    write_marker((260.0, 290.0))
+    at(25)
+    at(30)  # 같은 표시 파일이 5초째: 아직 안정 대기
+    clock[0] = T0 + 30_000
+    write_marker((255.0, 285.0))
+    at(34)
+    assert model.calls == 8 and loop.skip_reasons["stabilizing"] >= 3
+    at(35)
+    assert model.calls == 12
+
+    stats = loop.gate.stats()
+    assert stats["resets"] == {"over_budget": 1} and stats["queue_wait_tolerated_windows"] == 2
+    # 60초 요약 로그에 사유별 차단·실제 송신·업로드 수가 들어간다.
+    clock[0] = T0 + 120_000
+    loop._report("요약")
+    line = [r.getMessage() for r in caplog.records if "아바타 입력 상태: 요약" in r.getMessage()][-1]
+    assert "skip_reasons={" in line and "'over_budget': 1" in line and "pose_sent=1" in line and "uploads=1" in line
+    assert "gate_resets={'over_budget': 1}" in line
+
 
 def test_channel_reader_skips_image_loads_on_duplicate_or_stale_snapshots(tmp_path, rig):
     clock, _, sock, sender, model, loop, _ = harness(rig)

@@ -1,5 +1,6 @@
 """상시 EXP-02 루프. 상류·모델·업로드·송신·시계를 주입하며 Tier 0 값은 읽기만 한다."""
 
+from collections import Counter
 from dataclasses import dataclass, field
 import logging
 from typing import Protocol
@@ -53,6 +54,23 @@ class PersonState:
     history: dict = field(default_factory=dict)
 
 
+class _CountedUpload:
+    """루프의 업로드(GLB 호출·PNG `png`)를 그대로 부르고 성공 수만 센다. loop.upload 를 바꿔 끼워도 따라간다."""
+
+    def __init__(self, loop):
+        self._loop = loop
+
+    def __call__(self, *args, **kwargs):
+        uri = self._loop.upload(*args, **kwargs)
+        self._loop.uploads += 1
+        return uri
+
+    def png(self, *args, **kwargs):
+        uri = self._loop.upload.png(*args, **kwargs)
+        self._loop.uploads += 1
+        return uri
+
+
 class AvatarLoop:
     def __init__(self, source, gate, model, upload, sender, *, clock_ms, freeze_frames=30,
                  max_age_ms=DEFAULT_MAX_AGE_MS, appearance=None, segmentation=None):
@@ -63,6 +81,13 @@ class AvatarLoop:
         self.last_t = -1
         self.skipped = 0
         self._report_at = 0
+        # 계측(판정 불변, S15P31A101-412): 게이트 차단 사유 코드별 회차 수, 송신 대기열에 넣은 포즈 배치 수, 업로드·자산 확정 수.
+        # 실제로 소켓에 쓴 배치 수는 송신기(sent_batches_total)가 센다.
+        self.skip_reasons = Counter()
+        self.pose_enqueued = 0
+        self.uploads = 0
+        self.assets = 0
+        self._counted_upload = _CountedUpload(self)
         self.appearance = appearance
         self.segmentation = segmentation
 
@@ -76,21 +101,35 @@ class AvatarLoop:
         if self.appearance is not None:
             self.appearance.pending.pop(world_id, None)
 
+    def _skip(self, admission, status):
+        """게이트가 받지 않은 회차: 대기 포즈를 버리고 사유 코드별로 센다."""
+        self.skipped += 1
+        self.skip_reasons[getattr(admission, "code", "") or "unknown"] += 1
+        self.sender.discard_poses()
+        self._report(f"{status}: " + getattr(admission, "reason", "unknown"))
+
     def _report(self, status):
+        """60초에 한 번 요약한다. status 는 그 순간 회차 하나의 상태이고(송신 횟수가 아니다) 수치는 누계다."""
         now = self.clock_ms()
         if now < self._report_at:
             return
-        log.info("아바타 입력 상태: %s people=%s samples_max=%s/%s assets=%s gate_skipped=%s",
+        stats = getattr(self.gate, "stats", None)
+        gate = stats() if callable(stats) else {}
+        log.info("아바타 입력 상태: %s people=%s samples_max=%s/%s assets=%s gate_skipped=%s skip_reasons=%s "
+                 "pose_enqueued=%s pose_sent=%s uploads=%s assets_confirmed=%s gate_resets=%s last_reset=%s(%s) "
+                 "queue_wait_tolerated=%s/%s",
                  status, len(self.people), max((len(s.samples) for s in self.people.values()), default=0),
-                 self.freeze_frames, sum(s.asset is not None for s in self.people.values()), self.skipped)
+                 self.freeze_frames, sum(s.asset is not None for s in self.people.values()), self.skipped,
+                 dict(self.skip_reasons), self.pose_enqueued, getattr(self.sender, "sent_batches_total", None),
+                 self.uploads, self.assets, gate.get("resets", {}),
+                 gate.get("last_reset_ms"), gate.get("last_reset_code"),
+                 gate.get("queue_wait_tolerated_windows"), gate.get("queue_wait_tolerated_frames"))
         self._report_at = now + 60_000
 
     def step(self):
         admission = self.gate.check()
         if not admission.admit:
-            self.skipped += 1
-            self.sender.discard_poses()
-            self._report("AdmissionGate 차단: " + getattr(admission, "reason", "unknown"))
+            self._skip(admission, "AdmissionGate 차단")
             return
         now_ms = self.clock_ms()
         accept = lambda snapshot: (
@@ -141,19 +180,15 @@ class AvatarLoop:
                 jobs.append((tr, obs))
         prepared, masks = {}, {}
         if self.segmentation is not None and jobs:
-            if not self.gate.check().admit:
-                self.skipped += 1
-                self.sender.discard_poses()
-                self._report("seg 전 AdmissionGate 차단")
+            if not (admission := self.gate.check()).admit:
+                self._skip(admission, "seg 전 AdmissionGate 차단")
                 return
             prepared = self.segmentation.prepare(jobs, images, rig)
         for tr, obs in jobs:
             wid, cid = tr["world_id"], obs["camera_id"]
             # seg 배치 뒤에도 매 사람·카메라 추론 전에 Tier 0 부하를 다시 확인한다.
-            if not self.gate.check().admit:
-                self.skipped += 1
-                self.sender.discard_poses()
-                self._report("추론 중 AdmissionGate 차단")
+            if not (admission := self.gate.check()).admit:
+                self._skip(admission, "추론 중 AdmissionGate 차단")
                 return
             person_input = prepared.get((wid, cid))
             if self.segmentation is not None and not self.segmentation.failed:
@@ -186,7 +221,7 @@ class AvatarLoop:
                         state.rig_source = baked.rig.rig_source
                     glb = state.pending_glb
                     version = max(state.version, state.high_version) + 1
-                    uri = self.upload(person.world_id, self.sender.epoch, version, glb)
+                    uri = self._counted_upload(person.world_id, self.sender.epoch, version, glb)
                     asset = {"world_id": person.world_id, "stream_epoch": self.sender.epoch,
                              "identity_revision": state.revision, "appearance_version": version,
                              "previous_appearance_version": max(state.history) if state.history else None,
@@ -209,6 +244,7 @@ class AvatarLoop:
                     if self.appearance is not None:
                         asset["face_policy"] = self.appearance.config.face_policy
                     self.sender.asset(asset)
+                    self.assets += 1
             if state.asset is None:
                 continue
             poses.append({"world_id": person.world_id, "identity_revision": person.identity_revision,
@@ -216,7 +252,7 @@ class AvatarLoop:
                           "pose": mhr_pose(person.root_rotation, list(person.joint_rotations))})
         if self.appearance is not None:
             try:
-                self.appearance.update(frame, doc, snapshot, images, rig, self.people, self.upload,
+                self.appearance.update(frame, doc, snapshot, images, rig, self.people, self._counted_upload,
                                        self.sender, self.clock_ms, lambda: self.gate.check().admit, masks)
             except Exception as error:
                 # 기존 확정 외형·포즈는 계속 쓴다. 실패한 PNG는 다음 회차에 같은 바이트로 재시도한다.
@@ -226,6 +262,7 @@ class AvatarLoop:
         if poses and 0 <= self.clock_ms() - t <= self.max_age_ms and self.gate.check().admit:
             self.sender.poses(poses, calibration_version=frame.calibration_version,
                               model_version=self.model.model_version, input_provenance=doc["input_provenance"])
+            self.pose_enqueued += 1
             self._report(f"포즈 대기열 전달 poses={len(poses)}")
         else:
             self._report(f"포즈 없음/신선도·gate 차단 candidates={len(candidates)} "

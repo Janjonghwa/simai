@@ -1,29 +1,33 @@
-"""Tier 0 지연 신호와 분석 워커 작업 접수 문 (명세 3.2: Tier 0 지연이 6.6 목표를 넘으면 분석 워커의 새 작업을 멈추고 대기열에
-둔다, EXP-01·02 같은 대형 오프라인 Job 은 LIVE 관제 시간에 실행하지 않는다. 20.5 안전 경로 격리).
+"""Tier 0 지연 신호와 분석 워커·아바타 접수 문 (명세 3.2: Tier 0 지연이 6.6 목표를 넘거나 모르면 분석 워커의 새 작업과
+상시 아바타 추론을 멈춘다, EXP-01·02 같은 대형 오프라인 Job 은 LIVE 관제 시간에 실행하지 않는다. 20.5 안전 경로 격리).
 
-신호 경로: Tier 0 → 표시 파일(state/tier0.live, 5초마다 원자적 교체) → 분석 워커. 같은 Pod·같은 볼륨이라 네트워크가 없고,
+신호 경로: Tier 0 → 표시 파일(state/tier0.live, 5초마다 원자적 교체) → 분석 워커·아바타. 같은 Pod·같은 볼륨이라 네트워크가 없고,
 EC2·I5 계약을 바꾸지 않는다. 표시 파일의 `gpu_priority` 칸(marker_section)이 이 모듈의 형식이다.
 
 Tier 0 쪽(LoadWindow): 정리 주기(약 1초)마다 보정 T_lag(HealthReport.lag_ms, now − t_latest_global: 촬영 → 판정 지연의
 상한 쪽 근사, capture_to_risk 와 같은 구간)를 넣고, 표시 파일을 쓸 때 그 사이 표본을 꺼낸다(take). 시계 차이를 몰라 lag 를
-모르면 unknown 으로 센다. 표본이 하나도 없으면(정리 주기가 멈춤) samples=0 이다.
+모르면 unknown 으로 센다. 표본이 하나도 없으면(정리 주기가 멈춤) samples=0 이다. 표시 파일 하나가 5초 창 하나다.
 
-분석 워커 쪽(AdmissionGate.check): 새 작업을 받기 전에 부른다. 판정 순서(앞에서 걸리면 그 이유로 끝):
+접수 쪽(AdmissionGate.check): 분석 워커는 새 작업을 받기 전, 아바타 루프는 추론 전마다 부른다. 판정 순서(앞에서 걸리면 그 이유로
+끝, S15P31A101-412 사유별 규칙):
  1. 표시 파일 없음: 기본은 모름 → LIVE 로 보고 받지 않는다. 파일이 없는 것만으로는 '관제 없음'과 'Tier 0 가 표시 파일을 못 씀
     (볼륨 오류)·엔진 준비 중(진입점이 Tier 0 를 띄우기 전)'을 구별할 수 없다. 관제가 없는 개발 시간에는 운영자가
     allow_without_marker(SIMAI_WORKER_DEV_NO_LIVE=1)로 명시한다. 그때만 LIVE 아님 → 모든 유형을 받는다(명세 3.2 '관제가 없는
     개발 시간에는 단독 실행'). 그 모드에서도 마지막으로 LIVE 를 본 뒤 live_linger_s 안이면 받지 않는다(Tier 0 재시작 틈).
  2. 표시 파일을 확인·읽지 못함, max_marker_age_s 보다 오래됨(Tier 0 비정상 종료·멈춤), gpu_priority 칸 없음·형식 틀림 →
-    모름 → LIVE 로 보고 받지 않는다.
- 3. phase 가 running 이 아님(기동 중), 선확보 상태가 OK·SKIPPED·DISABLED 가 아님 → 받지 않는다.
- 4. 지연: samples 0, unknown 1 이상, lag_ms_max 가 예산(lag_budget_ms, 6.6 capture_to_risk p95 600ms) 초과, queue_wait_exceeded
-    1 이상 → 받지 않는다. 단, 이미 예산 안에서 돌고 있던 Tier 0 에서 resume_after_s 창 안에 단발 표본(기본
-    max_over_budget_samples=1, 1 Hz × 30s = 30표본 중 1개 = 96.7% ≤ p95 600ms)만 예산을 넘긴 경우에는 안정 대기·열림 상태를
-    유지하고, 연속 초과나 다수 표본 초과·지연 모름이면 즉시 처음부터 다시 센다.
- 5. 위가 모두 통과해도 resume_after_s 동안 이어져야 받는다(깜빡임 방지). 허용 범위를 넘는 초과나 모름 상태가 나오면 처음부터 다시 센다.
- LIVE 중에 받는 유형은 live_blocked_types 를 뺀 것이다(EXP-01 정적 3D, EXP-02 HMR).
+    모름 → 즉시 멈춘다.
+ 3. phase 가 running 이 아님(기동 중), 선확보 상태가 OK·SKIPPED·DISABLED 가 아님 → 즉시 멈춘다.
+ 4. 지연 모름(samples 0, unknown 1 이상, 최댓값 없음) → 즉시 멈춘다. 창 최댓값 lag_ms_max 가 예산(lag_budget_ms, 6.6
+    capture_to_risk p95 600ms)을 넘으면 단 한 창이라도 즉시 멈춘다(허용 표본 없음).
+ 5. 추론 대기 상한 초과로 버린 프레임(queue_wait_exceeded): 한 창에서 max_queue_wait_exceeded(기본 2) 이하면 통과로 넘기고
+    (안정 시계를 지우지 않는다), 넘으면 멈춘다. 지연 초과·모름과 함께 오면 4 에서 이미 멈춘다.
+ 6. 멈춘 뒤에는 통과 상태가 resume_after_s(기본 10초) 이어져야 다시 받는다(깜빡임 방지). 멈춤 사유가 나오면 처음부터 센다.
+ LIVE 중에 받는 유형은 live_blocked_types 를 뺀 것이다(EXP-01 정적 3D, EXP-02 배치 HMR). 이 차단은 지연 규칙과 따로 늘 걸린다.
 
-시계는 주입받는다(wall_s: 표시 파일 수정 시각과 비교, monotonic: 안정 대기·linger).
+계측(판정에 쓰지 않음): 차단 사유별 check 횟수(blocked), 열림·안정 대기가 지워진 횟수(resets), 마지막 초기화 시각·사유,
+넘긴 큐 대기 초과 창·프레임 수. stats() 로 읽는다.
+
+시계는 주입받는다(wall_s: 표시 파일 수정 시각과 비교·계측 시각, monotonic: 안정 대기·linger).
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ import json
 import math
 import os
 import threading
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,7 +49,24 @@ SECTION_VERSION = 1
 RUNNING = "running"
 STARTING = "starting"
 DEFAULT_LAG_BUDGET_MS = 600
+DEFAULT_RESUME_AFTER_S = 10.0
+DEFAULT_MAX_QUEUE_WAIT_EXCEEDED = 2
 DEFAULT_LIVE_BLOCKED = frozenset({"static_reconstruct", "hmr_refine", "hmr_appearance_update"})
+
+# 판정 사유 코드(계측·로그용)
+OK = "ok"
+NOT_LIVE = "not_live"
+STABILIZING = "stabilizing"
+LIVE_LINGER = "live_linger"
+MARKER_ABSENT = "marker_absent"
+MARKER_STALE = "marker_stale"
+MARKER_UNREADABLE = "marker_unreadable"
+NOT_RUNNING = "not_running"
+RESERVE_NOT_OK = "reserve_not_ok"
+NO_SAMPLES = "no_samples"
+LAG_UNKNOWN = "lag_unknown"
+OVER_BUDGET = "over_budget"
+QUEUE_WAIT_EXCEEDED = "queue_wait_exceeded"
 
 
 def _percentile(values: list[float], q: float) -> float | None:
@@ -133,9 +154,10 @@ def _count(v: Any) -> bool:
 class AdmissionPolicy:
     lag_budget_ms: int = DEFAULT_LAG_BUDGET_MS
     max_marker_age_s: float = 15.0
-    resume_after_s: float = 30.0
+    resume_after_s: float = DEFAULT_RESUME_AFTER_S  # 멈춘 뒤 이만큼 통과가 이어져야 다시 받음(근거: 10차 실측, 설계 문서)
     live_linger_s: float = 60.0
-    max_over_budget_samples: int = 1  # resume_after_s(30s) 창 안에서 허용할 단발 초과 표본 수(명세 6.6 p95 600ms)
+    # 한 창(표시 파일 하나, 5초)에서 넘기는 큐 대기 초과 프레임 수. 이보다 많으면 멈춘다
+    max_queue_wait_exceeded: int = DEFAULT_MAX_QUEUE_WAIT_EXCEEDED
     live_blocked_types: frozenset[str] = field(default_factory=lambda: DEFAULT_LIVE_BLOCKED)
     allow_without_marker: bool = False  # 표시 파일이 없으면 관제 없음으로 본다(개발 시간 명시 모드). 기본은 모름 → 받지 않음
 
@@ -144,8 +166,8 @@ class AdmissionPolicy:
             raise ValueError("lag_budget_ms·max_marker_age_s 는 양수다")
         if self.resume_after_s < 0 or self.live_linger_s < 0:
             raise ValueError("resume_after_s·live_linger_s 는 0 이상이다")
-        if not _count(self.max_over_budget_samples):
-            raise ValueError("max_over_budget_samples 는 0 이상의 정수다")
+        if not _count(self.max_queue_wait_exceeded):
+            raise ValueError("max_queue_wait_exceeded 는 0 이상의 정수다")
 
 
 @dataclass(frozen=True)
@@ -154,6 +176,7 @@ class Admission:
     admit: bool  # 새 작업을 받아도 된다(LIVE 면 막힌 유형은 빼고)
     reason: str
     blocked_types: frozenset[str] = frozenset()
+    code: str = ""  # 판정 사유 코드(계측용, 위 상수)
 
     def allowed_types(self, types: Iterable[str]) -> list[str]:
         if not self.admit:
@@ -166,7 +189,7 @@ class Admission:
 
 
 class AdmissionGate:
-    """분석 워커가 대여 요청 전·작업 시작 전에 부르는 접수 문. check 는 한 스레드에서 부른다고 가정한다."""
+    """분석 워커·아바타 루프가 부르는 접수 문. check·stats 는 한 스레드에서 부른다고 가정한다."""
 
     def __init__(
         self,
@@ -183,142 +206,126 @@ class AdmissionGate:
         self._ok_since: float | None = None
         self._live_seen: float | None = None
         self._opened = False
-        self._consecutive_over = 0
-        self._over_history: deque[tuple[float, int]] = deque()
         self._last_marker_id: tuple[int, bytes] | None = None
-        self._last_marker_tolerated = False
+        # 계측(판정에 쓰지 않음)
+        self.blocked: Counter[str] = Counter()  # 받지 않은 check 횟수, 사유 코드별
+        self.resets: Counter[str] = Counter()  # 열림·안정 대기를 지운 횟수, 사유 코드별
+        self.opened_count = 0
+        self.last_reset_wall_ms: int | None = None
+        self.last_reset_code: str | None = None
+        self.last_reset_reason: str | None = None
+        self.queue_wait_tolerated_windows = 0
+        self.queue_wait_tolerated_frames = 0
 
-    def _reset_stability(self, *, clear_history: bool) -> None:
+    def stats(self) -> dict[str, Any]:
+        """계측 요약(로그·상태 표시용). 판정에 쓰지 않는다."""
+        return {
+            "blocked": dict(self.blocked),
+            "resets": dict(self.resets),
+            "opened": self.opened_count,
+            "last_reset_ms": self.last_reset_wall_ms,
+            "last_reset_code": self.last_reset_code,
+            "last_reset_reason": self.last_reset_reason,
+            "queue_wait_tolerated_windows": self.queue_wait_tolerated_windows,
+            "queue_wait_tolerated_frames": self.queue_wait_tolerated_frames,
+        }
+
+    def _close(self, code: str, reason: str) -> None:
+        """멈춤: 안정 시계를 지운다. 열려 있었거나 안정 대기 중이었으면 초기화로 센다."""
+        if self._ok_since is not None or self._opened:
+            self.resets[code] += 1
+            self.last_reset_wall_ms = int(self._wall_s() * 1000)
+            self.last_reset_code, self.last_reset_reason = code, reason
         self._ok_since = None
         self._opened = False
-        if clear_history:
-            self._consecutive_over = 0
-            self._over_history.clear()
-            self._last_marker_id = None
-            self._last_marker_tolerated = False
 
-    def _prune_over_history(self, now: float) -> None:
-        window_s = max(0.0, float(self.policy.resume_after_s))
-        while self._over_history and now - self._over_history[0][0] > window_s:
-            self._over_history.popleft()
+    def _refuse(self, reason: str, code: str) -> Admission:
+        self.blocked[code] += 1
+        return Admission(True, False, reason, self.policy.live_blocked_types, code)
 
     def check(self) -> Admission:
         now = self._monotonic()
-        state, reason, marker_id, over_samples = self._evaluate()
+        state, code, reason, marker_id, qwe = self._evaluate()
         blocked = self.policy.live_blocked_types
         if state == "absent" and not self.policy.allow_without_marker:
-            self._reset_stability(clear_history=True)
-            return Admission(True, False, f"{reason} → Tier 0 상태 모름(표시 파일 쓰기 실패·엔진 준비 중일 수 있다). "
-                                          "관제가 없는 개발 시간이면 SIMAI_WORKER_DEV_NO_LIVE=1", blocked)
+            self._close(code, reason)
+            return self._refuse(f"{reason} → Tier 0 상태 모름(표시 파일 쓰기 실패·엔진 준비 중일 수 있다). "
+                                "관제가 없는 개발 시간이면 SIMAI_WORKER_DEV_NO_LIVE=1", code)
         if state == "absent":
-            self._reset_stability(clear_history=True)
+            self._close(code, reason)
             if self._live_seen is not None and now - self._live_seen < self.policy.live_linger_s:
                 left = self.policy.live_linger_s - (now - self._live_seen)
-                return Admission(True, False, f"{reason}: LIVE 가 끝난 직후라 {left:.0f}s 더 LIVE 로 본다(재시작 틈)", blocked)
+                return self._refuse(f"{reason}: LIVE 가 끝난 직후라 {left:.0f}s 더 LIVE 로 본다(재시작 틈)", LIVE_LINGER)
             self._live_seen = None
-            return Admission(False, True, reason, blocked)
+            return Admission(False, True, reason, blocked, NOT_LIVE)
         self._live_seen = now
         if state == "refuse":
-            self._reset_stability(clear_history=True)
-            return Admission(True, False, reason, blocked)
-        if state == "over_budget":
-            if marker_id is None or marker_id != self._last_marker_id:
-                self._last_marker_id = marker_id
-                self._prune_over_history(now)
-                self._consecutive_over += over_samples
-                self._over_history.append((now, over_samples))
-                window_over = sum(cnt for _, cnt in self._over_history)
-                limit = self.policy.max_over_budget_samples
-                self._last_marker_tolerated = (
-                    self._ok_since is not None
-                    and over_samples <= limit
-                    and self._consecutive_over <= limit
-                    and window_over <= limit
-                )
-            else:
-                self._prune_over_history(now)
-            if not self._last_marker_tolerated or self._ok_since is None:
-                self._reset_stability(clear_history=False)
-                return Admission(True, False, reason, blocked)
-            held = now - self._ok_since
-            if held < self.policy.resume_after_s:
-                return Admission(True, False, f"{reason}, 안정 대기 {held:.0f}/{self.policy.resume_after_s:.0f}s", blocked)
-            self._opened = True
-            return Admission(True, True, reason, blocked)
+            self._close(code, reason)
+            return self._refuse(reason, code)
+        if qwe:
+            if marker_id != self._last_marker_id:  # 같은 표시 파일을 여러 번 읽어도 한 창으로 센다
+                self.queue_wait_tolerated_windows += 1
+                self.queue_wait_tolerated_frames += qwe
+            reason = f"{reason}, 큐 대기 초과 {qwe}건은 넘김(창당 {self.policy.max_queue_wait_exceeded}건까지)"
         self._last_marker_id = marker_id
-        self._last_marker_tolerated = False
-        self._consecutive_over = 0
-        self._prune_over_history(now)
         if self._ok_since is None:
             self._ok_since = now
         held = now - self._ok_since
         if held < self.policy.resume_after_s:
-            return Admission(True, False, f"{reason}, 안정 대기 {held:.0f}/{self.policy.resume_after_s:.0f}s", blocked)
+            return self._refuse(f"{reason}, 안정 대기 {held:.0f}/{self.policy.resume_after_s:.0f}s", STABILIZING)
         if not self._opened:
             self._opened = True
-            self._over_history.clear()
-        return Admission(True, True, reason, blocked)
+            self.opened_count += 1
+        return Admission(True, True, reason, blocked, OK)
 
-    def _over_budget_samples(self, load: Mapping[str, Any]) -> int:
-        over = 0
-        lag_values = load.get("lag_ms")
-        if isinstance(lag_values, list) and lag_values:
-            over = sum(1 for v in lag_values if _number(v) and v > self.policy.lag_budget_ms)
-        over_budget = load.get("over_budget")
-        if _count(over_budget) and load.get("budget_ms") == self.policy.lag_budget_ms:
-            over = max(over, over_budget)
-        return max(1, over)
-
-    def _evaluate(self) -> tuple[str, str, tuple[int, bytes] | None, int]:
-        """('absent' | 'refuse' | 'over_budget' | 'ok', 이유, 표시 파일 식별자, 예산 초과 표본 수)."""
+    def _evaluate(self) -> tuple[str, str, str, tuple[int, bytes] | None, int]:
+        """('absent' | 'refuse' | 'ok', 사유 코드, 이유, 표시 파일 식별자, 넘긴 큐 대기 초과 프레임 수)."""
         try:
             st = os.stat(self.marker)
         except FileNotFoundError:
-            return "absent", "표시 파일 없음", None, 0
+            return "absent", MARKER_ABSENT, "표시 파일 없음", None, 0
         except OSError as e:
-            return "refuse", f"표시 파일을 확인하지 못했다({type(e).__name__}) → 모름", None, 0
+            return "refuse", MARKER_UNREADABLE, f"표시 파일을 확인하지 못했다({type(e).__name__}) → 모름", None, 0
         age = self._wall_s() - st.st_mtime
         if abs(age) > self.policy.max_marker_age_s:
-            return "refuse", f"표시 파일이 {age:.0f}s 전 것이다(상한 {self.policy.max_marker_age_s:.0f}s) → Tier 0 상태 모름", None, 0
+            return ("refuse", MARKER_STALE,
+                    f"표시 파일이 {age:.0f}s 전 것이다(상한 {self.policy.max_marker_age_s:.0f}s) → Tier 0 상태 모름", None, 0)
         try:
             raw_bytes = self.marker.read_bytes()
             doc = json.loads(raw_bytes.decode("utf-8"))
         except FileNotFoundError:
-            return "absent", "Tier 0 LIVE 아님(표시 파일이 방금 지워졌다)", None, 0
+            return "absent", MARKER_ABSENT, "Tier 0 LIVE 아님(표시 파일이 방금 지워졌다)", None, 0
         except (OSError, ValueError) as e:
-            return "refuse", f"표시 파일을 읽지 못했다({type(e).__name__}) → 모름", None, 0
+            return "refuse", MARKER_UNREADABLE, f"표시 파일을 읽지 못했다({type(e).__name__}) → 모름", None, 0
         marker_id = (st.st_mtime_ns, raw_bytes)
         gp = doc.get(MARKER_KEY) if isinstance(doc, dict) else None
         if not isinstance(gp, dict):
-            return "refuse", "표시 파일에 지연 신호(gpu_priority)가 없다 → 모름", marker_id, 0
+            return "refuse", MARKER_UNREADABLE, "표시 파일에 지연 신호(gpu_priority)가 없다 → 모름", marker_id, 0
         if gp.get("phase") != RUNNING:
-            return "refuse", f"Tier 0 가 판정 중이 아니다(phase={gp.get('phase')!r})", marker_id, 0
+            return "refuse", NOT_RUNNING, f"Tier 0 가 판정 중이 아니다(phase={gp.get('phase')!r})", marker_id, 0
         reserve = gp.get("reserve")
         state = reserve.get("state") if isinstance(reserve, dict) else None
         if state not in ADMIT_STATES:
-            return "refuse", f"Tier 0 GPU 선확보 상태 {state!r}", marker_id, 0
+            return "refuse", RESERVE_NOT_OK, f"Tier 0 GPU 선확보 상태 {state!r}", marker_id, 0
         load = gp.get("load")
         if not isinstance(load, dict):
-            return "refuse", "지연 표본 형식이 틀렸다 → 모름", marker_id, 0
+            return "refuse", MARKER_UNREADABLE, "지연 표본 형식이 틀렸다 → 모름", marker_id, 0
         samples, unknown, lag_max = load.get("samples"), load.get("unknown"), load.get("lag_ms_max")
         if not _count(samples) or samples == 0:
-            return "refuse", "지연 표본이 없다 → 모름", marker_id, 0
+            return "refuse", NO_SAMPLES, "지연 표본이 없다 → 모름", marker_id, 0
         if not _count(unknown) or unknown > 0:
-            return "refuse", f"지연을 모르는 표본 {unknown}/{samples} (시계 차이 모름 등) → 모름", marker_id, 0
+            return "refuse", LAG_UNKNOWN, f"지연을 모르는 표본 {unknown}/{samples} (시계 차이 모름 등) → 모름", marker_id, 0
         if not _number(lag_max):
-            return "refuse", "지연 최댓값이 없다 → 모름", marker_id, 0
+            return "refuse", LAG_UNKNOWN, "지연 최댓값이 없다 → 모름", marker_id, 0
         qwe = load.get("queue_wait_exceeded")
-        if qwe is not None:
-            if not _count(qwe):
-                return "refuse", "queue_wait_exceeded 형식이 틀렸다 → 모름", marker_id, 0
-            if qwe > 0:
-                return "refuse", f"추론 대기 상한을 넘겨 버린 프레임 {qwe}개", marker_id, 0
+        if qwe is not None and not _count(qwe):
+            return "refuse", MARKER_UNREADABLE, "queue_wait_exceeded 형식이 틀렸다 → 모름", marker_id, 0
         if lag_max > self.policy.lag_budget_ms:
-            over_samples = self._over_budget_samples(load)
-            return (
-                "over_budget",
-                f"Tier 0 지연 {lag_max:.0f}ms > 예산 {self.policy.lag_budget_ms}ms",
-                marker_id,
-                over_samples,
-            )
-        return "ok", f"Tier 0 지연 {lag_max:.0f}ms ≤ 예산 {self.policy.lag_budget_ms}ms", marker_id, 0
+            return ("refuse", OVER_BUDGET, f"Tier 0 지연 {lag_max:.0f}ms > 예산 {self.policy.lag_budget_ms}ms",
+                    marker_id, 0)
+        qwe = qwe or 0
+        if qwe > self.policy.max_queue_wait_exceeded:
+            return ("refuse", QUEUE_WAIT_EXCEEDED,
+                    f"추론 대기 상한을 넘겨 버린 프레임 {qwe}개(창당 {self.policy.max_queue_wait_exceeded}개 초과)",
+                    marker_id, 0)
+        return "ok", OK, f"Tier 0 지연 {lag_max:.0f}ms ≤ 예산 {self.policy.lag_budget_ms}ms", marker_id, qwe

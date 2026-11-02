@@ -95,6 +95,8 @@ class AvatarSender:
         self._socket = None
         self._retry_at, self._backoff, self._announce_at = 0., 1., 0.
         self._connections = self._sent_batches = 0
+        # 실제로 소켓에 쓴 포즈 배치·자산 알림 누계(계측, S15P31A101-412)
+        self.sent_batches_total = self.sent_assets_total = 0
         self._report_at = monotonic() + 60
         self._log_secrets = log_secrets
 
@@ -140,8 +142,10 @@ class AvatarSender:
     def tick(self):
         now = self.monotonic()
         if now >= self._report_at:
-            log.info("아바타 1분 송신 집계: pose_batches=%s dropped_poses=%s connected=%s",
-                     self._sent_batches, self.dropped, self._socket is not None)
+            log.info("아바타 1분 송신 집계: pose_batches=%s pose_batches_total=%s asset_msgs_total=%s "
+                     "dropped_poses=%s connected=%s",
+                     self._sent_batches, self.sent_batches_total, self.sent_assets_total, self.dropped,
+                     self._socket is not None)
             self._sent_batches = 0
             self._report_at = now + 60
         if now < self._retry_at:
@@ -168,6 +172,7 @@ class AvatarSender:
                 context, dropped = dict(self._context), self.dropped
             for asset in assets:
                 self._send("avatar_asset", asset)
+                self.sent_assets_total += 1
             fresh = [p for p in poses if 0 <= self.clock_ms() - p["capture_time_ms"] <= self.max_age_ms]
             for start in range(0, len(fresh), 64):
                 group = fresh[start:start + 64]
@@ -176,6 +181,7 @@ class AvatarSender:
                 self._send("avatar_pose_batch", {"stream_epoch": self.epoch, "batch_sequence": sequence,
                            "dropped_poses": dropped, **context, "poses": group})
                 self._sent_batches += 1
+                self.sent_batches_total += 1
             self._backoff = 1.
         except Exception as error:
             log.warning("아바타 연결 끊김/접속 실패: %s retry_s=%s",
