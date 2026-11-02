@@ -4,5 +4,6 @@ dist
 coverage
 pnpm-lock.yaml
 apps/admin/src/routeTree.gen.ts
+apps/admin/public/basis
 packages/ui/src/components
 packages/contracts/src/generated

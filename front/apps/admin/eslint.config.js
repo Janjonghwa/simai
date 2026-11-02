@@ -20,7 +20,7 @@ const restrict = (paths, patterns) => ({
 /** @type {import("eslint").Linter.Config[]} */
 export default [
   {
-    ignores: ['dist/**', 'src/routeTree.gen.ts'],
+    ignores: ['dist/**', 'public/basis/**', 'src/routeTree.gen.ts'],
   },
   ...config,
   {
