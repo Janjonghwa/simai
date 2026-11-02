@@ -64,9 +64,12 @@ public class AnalysisJobService {
         }
         String jobId = "job-" + UUID.randomUUID();
         Instant now = clock.instant();
+        // 이벤트 관련 VLM 작업의 마감: 관측 시각 + 5 s(G7). 대여 SELECT·재시도 중단과 job_request deadline_at(-408)이 같은 값을 쓴다
+        Instant deadline = "vlm_rationale".equals(spec.jobType()) && spec.eventId() != null
+                ? Instant.ofEpochMilli(spec.input().path("observation_time").longValue()).plusMillis(5000) : null;
         // 첫 대여 때 나갈 job_request 를 계약으로 검사한다(유형별 입력 형식·우선순위 조건 포함)
         JobMessages.LeasedJob sample = JobMessages.newLease(jobId, 1, spec.maxAttempts(), spec.jobType(), priority,
-                spec.timeoutMs(), now, spec.input());
+                spec.timeoutMs(), now, spec.input(), deadline);
         List<String> violations = schemas.violations("messages/job_request",
                 mapper.writeValueAsString(JobMessages.jobRequest(mapper, now, sample)));
         if (!violations.isEmpty()) {
@@ -82,8 +85,7 @@ public class AnalysisJobService {
                 .addValue("priority", priority).addValue("maxAttempts", spec.maxAttempts()).addValue("timeoutMs", spec.timeoutMs())
                 .addValue("input", mapper.writeValueAsString(spec.input())).addValue("eventId", spec.eventId())
                 .addValue("requestedBy", spec.requestedBy()).addValue("now", I1Json.utc(now))
-                .addValue("deadline", "vlm_rationale".equals(spec.jobType()) && spec.eventId() != null
-                        ? I1Json.utc(Instant.ofEpochMilli(spec.input().path("observation_time").longValue()).plusMillis(5000)) : null));
+                .addValue("deadline", deadline == null ? null : I1Json.utc(deadline)));
         signal.wake();
         return jobId;
     }

@@ -2249,6 +2249,21 @@ class DefsOperatorResolution(BaseModel):
     reason: Annotated[StrictStr, Field(max_length=500, min_length=1)]
 
 
+class DefsPodLocalFrame(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    path: Annotated[
+        StrictStr,
+        Field(
+            max_length=200,
+            pattern='^event-frames/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[A-Za-z0-9_-]{1,96}\\.jpg$',
+        ),
+    ]
+    sha256: DefsSha256
+    size_bytes: Annotated[StrictInt, Field(ge=1, le=16777216)]
+
+
 class DefsReproducibility(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -2308,6 +2323,7 @@ class Frame1(DefsCaptureTime):
     estimated_capture_time_ms: DefsTimestampMs
     timestamp_source: DefsTimestampSource
     timestamp_uncertainty_ms: DefsDurationMs
+    local_copy: DefsPodLocalFrame | MISSING = MISSING
 
 
 class Payload15(BaseModel):
@@ -2476,6 +2492,7 @@ class Payload23(BaseModel):
     leased_at: DefsTimestampMs
     lease_expires_at: DefsTimestampMs
     heartbeat_interval_ms: Annotated[StrictInt, Field(ge=1)]
+    deadline_at: DefsTimestampMs | MISSING = MISSING
     input: dict[str, Any]
 
 
@@ -2958,6 +2975,7 @@ class Frame2(DefsCaptureTime):
     estimated_capture_time_ms: DefsTimestampMs
     timestamp_source: DefsTimestampSource
     timestamp_uncertainty_ms: DefsDurationMs
+    local_copy: DefsPodLocalFrame | MISSING = MISSING
     face_policy: Literal['BLURRED', 'EXCLUDED']
 
 

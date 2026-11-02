@@ -13,8 +13,8 @@ import tools.jackson.databind.node.ObjectNode;
  */
 final class JobMessages {
 
-    /** job_request 3.3.0(tbm_report 입력). 워커 클라이언트는 메이저 3 만 본다 */
-    static final String JOB_REQUEST_VERSION = "3.4.0";
+    /** job_request 3.5.0(vlm_rationale 입력 프레임 local_copy, -408). 워커 클라이언트는 메이저 3 만 본다 */
+    static final String JOB_REQUEST_VERSION = "3.5.0";
     static final String LEASE_STATUS_VERSION = "2.0.0";
     /** 대여 유지 시간과 하트비트 주기(계약 기본안: 유지 30000ms, 주기 10000ms = 유지의 1/3) */
     static final long LEASE_HOLD_MS = 30_000;
@@ -25,9 +25,9 @@ final class JobMessages {
 
     /** 새 대여(새 lease_id, 유지 시간·하트비트 주기). 대여와 등록 때 검사가 같은 모양을 쓴다 */
     static LeasedJob newLease(String jobId, int attempt, int maxAttempts, String jobType, String priority, long timeoutMs,
-            Instant now, JsonNode input) {
+            Instant now, JsonNode input, Instant deadlineAt) {
         return new LeasedJob(jobId, UUID.randomUUID(), attempt, maxAttempts, jobType, priority, timeoutMs, now,
-                now.plusMillis(LEASE_HOLD_MS), HEARTBEAT_INTERVAL_MS, input);
+                now.plusMillis(LEASE_HOLD_MS), HEARTBEAT_INTERVAL_MS, input, deadlineAt);
     }
 
     static ObjectNode jobRequest(ObjectMapper mapper, Instant now, LeasedJob job) {
@@ -42,6 +42,10 @@ final class JobMessages {
         p.put("leased_at", job.leasedAt().toEpochMilli());
         p.put("lease_expires_at", job.leaseExpiresAt().toEpochMilli());
         p.put("heartbeat_interval_ms", job.heartbeatIntervalMs());
+        // 이벤트 마감(analysis_job.deadline_at, vlm_rationale 은 관측 + 5 s). 워커가 남은 예산을 이 시각까지로 묶는다(-408)
+        if (job.deadlineAt() != null) {
+            p.put("deadline_at", job.deadlineAt().toEpochMilli());
+        }
         p.set("input", job.input());
         return I1Envelope.outbound(mapper, now.toEpochMilli(), "job_request", JOB_REQUEST_VERSION, p);
     }
@@ -61,8 +65,9 @@ final class JobMessages {
         return I1Envelope.outbound(mapper, now.toEpochMilli(), "job_lease_status", LEASE_STATUS_VERSION, p);
     }
 
-    /** 대여 하나(job_request 의 값) */
+    /** 대여 하나(job_request 의 값). deadlineAt 은 이벤트 마감이 없으면 null */
     record LeasedJob(String jobId, UUID leaseId, int attempt, int maxAttempts, String jobType, String priority,
-            long timeoutMs, Instant leasedAt, Instant leaseExpiresAt, int heartbeatIntervalMs, JsonNode input) {
+            long timeoutMs, Instant leasedAt, Instant leaseExpiresAt, int heartbeatIntervalMs, JsonNode input,
+            Instant deadlineAt) {
     }
 }

@@ -15,7 +15,8 @@
   simai_ai.report.llm)은 작업마다 읽고, 없으면 그 작업을 재시도 불가 LLM_CONFIG 로 끝낸다(설정 오류를 EC2 에서 보이게).
 - vlm_rationale(S15P31A101-25)·incident_summary(S15P31A101-271): 객체 저장소, VLM 설정(SIMAI_VLLM_*·SIMAI_VLM_*,
   simai_ai.vlm.client), 얼굴 처리용 pose 검출기(SIMAI_TIER0_WEIGHTS 의 YOLO26x-pose .pt, Tier 0 와 같은 가중치)가 다 있을 때만
-  등록한다. 빠지면 시작 로그에 이유 한 줄.
+  등록한다. 빠지면 시작 로그에 이유 한 줄. vlm_rationale 은 같은 Pod 의 Tier 0 상태 폴더(SIMAI_STATE_DIR, 없으면
+  SIMAI_TIER0_MARKER 의 폴더)에 있는 이벤트 사진 사본을 먼저 읽는다(S15P31A101-408).
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ from .runner import HandlerStuck, Worker
 from .static_reconstruct import StaticReconstructHandler
 from .tbm_report import TbmReportHandler
 from .transport import HttpTransport
+from .vlm_frames import LocalFrames
 from .vlm_rationale import VlmRationaleHandler
 
 log = logging.getLogger("services.worker")
@@ -72,7 +74,9 @@ def build_handlers(config: Path | None, store: ObjectStore | None = None, *, env
     if (why := _vlm_rationale_missing(store, env)) is None:
         try:
             provider = pose(env["SIMAI_TIER0_WEIGHTS"])
-            handlers["vlm_rationale"] = VlmRationaleHandler(store, provider)  # type: ignore[arg-type]
+            # 같은 Pod 의 Tier 0 상태 폴더에 있는 이벤트 사진 사본을 먼저 읽는다(-408). 없으면 S3
+            handlers["vlm_rationale"] = VlmRationaleHandler(store, provider,  # type: ignore[arg-type]
+                                                            local_frames=LocalFrames.from_env(env))
             handlers["incident_summary"] = IncidentSummaryHandler(store, provider)  # type: ignore[arg-type]
         except Exception as e:  # ultralytics 없음·가중치 손상: 다른 처리기는 돈다
             why = f"pose 검출기를 열지 못했다: {type(e).__name__}: {e}"

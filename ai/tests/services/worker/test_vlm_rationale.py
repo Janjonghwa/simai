@@ -446,3 +446,116 @@ def test_budget_exhausted_during_gate_skips_vlm_call():
         handler(_ctx(_input()))
     assert e.value.code == "VLM_TIMEOUT" and e.value.retryable
     assert vlm.calls == []
+
+
+def test_same_pod_local_copy_is_used_and_entry_wires_state_dir(tmp_path, caplog):
+    """S15P31A101-408: 계약 예시의 local_copy 를 Tier 0 상태 폴더에서 읽고 그 장은 S3 로 받지 않는다. 결과·얼굴 처리는 같다."""
+    import hashlib
+
+    from services.worker.vlm_frames import LocalFrames
+
+    caplog.set_level(logging.INFO)
+    inp = _input()
+    content = b"local-jpeg"
+    first = inp["frames"][0]
+    first["local_copy"] = {**first["local_copy"], "sha256": "sha256:" + hashlib.sha256(content).hexdigest(),
+                           "size_bytes": len(content)}
+    (tmp_path / first["local_copy"]["path"]).parent.mkdir(parents=True)
+    (tmp_path / first["local_copy"]["path"]).write_bytes(content)
+
+    class RecordingStore(Store):
+        def __init__(self):
+            self.uris = []
+
+        def get(self, ctx, uri):
+            self.uris.append(uri)
+            return super().get(ctx, uri)
+
+    store, vlm, seen = RecordingStore(), FakeVlm(_answer()), []
+    handler = VlmRationaleHandler(store, Provider(), client_factory=lambda: vlm,
+                                  decode=lambda data: (seen.append(data), _decode(data))[1],
+                                  monotonic=lambda: 0.0, local_frames=LocalFrames(tmp_path))
+    result = handler(_ctx(inp))
+    assert schema_errors(result, RESULT_SCHEMA) == [] and result["severity"] == inp["severity"]
+    assert first["frame_uri"] not in store.uris and len(store.uris) == len(inp["frames"]) - 1
+    assert content in seen and all(isinstance(f, VlmFrame) for f in vlm.calls[0]["frames"])
+    assert "gate_ms=" in caplog.text and "vlm_ms=" in caplog.text
+
+    weights = tmp_path / "yolo26x-pose.pt"
+    weights.write_bytes(b"w")
+    env = {"SIMAI_TIER0_WEIGHTS": str(weights), "SIMAI_TIER0_MARKER": str(tmp_path / "tier0.live")}
+    built = entry.build_handlers(None, Store(), env=env, pose=lambda p: Provider())["vlm_rationale"]
+    assert built._local_frames.state_dir == tmp_path
+
+
+def _write_copy(state, frame, content: bytes) -> None:
+    import hashlib
+
+    frame["local_copy"] = {"path": frame["local_copy"]["path"] if "local_copy" in frame
+                           else f"event-frames/{REQUEST['payload']['input']['event_id']}/{frame['estimated_capture_time_ms']}.jpg",
+                           "sha256": "sha256:" + hashlib.sha256(content).hexdigest(), "size_bytes": len(content)}
+    path = state / frame["local_copy"]["path"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+
+
+class _CountingStore(Store):
+    def __init__(self):
+        self.uris: list[str] = []
+
+    def get(self, ctx, uri):
+        self.uris.append(uri)
+        return super().get(ctx, uri)
+
+
+def test_local_input_gets_same_late_frame_exclusion_and_face_processing(tmp_path):
+    """S15P31A101-408: 로컬 사본도 관측 시각 뒤 프레임은 읽지 않고, 얼굴 처리(EXCLUDED 단색 등)를 똑같이 거친다."""
+    from services.worker.vlm_frames import LocalFrames
+
+    inp = _input()
+    late = copy.deepcopy(inp["frames"][0])
+    late["frame_uri"] = "s3://simai-events/0192a6f0/cam1-late.jpg"
+    late["estimated_capture_time_ms"] = inp["observation_time"] + 400
+    late.pop("local_copy", None)
+    inp["frames"].append(late)
+    for frame in inp["frames"]:
+        frame["face_policy"] = "EXCLUDED"
+        _write_copy(tmp_path, frame, f"local-{frame['estimated_capture_time_ms']}".encode())
+    read: list[bytes] = []
+    store, vlm = _CountingStore(), FakeVlm(_answer())
+    handler = VlmRationaleHandler(store, Provider(), client_factory=lambda: vlm,
+                                  decode=lambda data: (read.append(data), _decode(data))[1],
+                                  monotonic=lambda: 0.0, local_frames=LocalFrames(tmp_path))
+    handler(_ctx(inp))
+    assert store.uris == []  # 사후 프레임도 S3 로 찾지 않는다
+    assert f"local-{late['estimated_capture_time_ms']}".encode() not in read  # 사후 사본은 읽지도 않는다
+    frames = vlm.calls[0]["frames"]
+    assert [f.source for f in frames] == sorted((f["frame_uri"] for f in inp["frames"][:-1]),
+                                                key=lambda u: next(f["estimated_capture_time_ms"] for f in inp["frames"]
+                                                                   if f["frame_uri"] == u))
+    for f in frames:  # 얼굴 영역은 EXCLUDED 단색(관문 그대로)
+        assert f.face_policy == "EXCLUDED" and (f.pixels[100:120, 100:120] == 128).all()
+
+
+def test_local_copy_restart_and_expiry_behaviour(tmp_path):
+    """워커 재시작: 사본 읽기는 디스크만 보므로 새 처리기도 같은 사본을 쓴다. 만료(Tier 0 가 1시간 뒤 지움)·누락은 S3 로 받는다."""
+    from services.worker.vlm_frames import LocalFrames
+
+    inp = _input()
+    for frame in inp["frames"]:
+        _write_copy(tmp_path, frame, b"local")
+
+    def run():
+        store = _CountingStore()
+        VlmRationaleHandler(store, Provider(), client_factory=lambda: FakeVlm(_answer()), decode=_decode,
+                            monotonic=lambda: 0.0, local_frames=LocalFrames(tmp_path))(_ctx(copy.deepcopy(inp)))
+        return store.uris
+
+    assert run() == []
+    assert run() == []  # 새 인스턴스(재시작)도 같은 사본
+    (tmp_path / inp["frames"][0]["local_copy"]["path"]).unlink()  # 만료로 지워짐
+    assert run() == [inp["frames"][0]["frame_uri"]]
+    import shutil
+
+    shutil.rmtree(tmp_path / "event-frames")  # 폴더째 없음(다른 Pod·상태 폴더 초기화)
+    assert sorted(run()) == sorted(f["frame_uri"] for f in inp["frames"])

@@ -66,7 +66,8 @@ class JobLeaseService {
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED)
                 UPDATE analysis_job j SET status = 'LEASED' FROM next WHERE j.job_id = next.job_id
-                RETURNING j.job_id, j.job_type, j.priority, j.attempt, j.max_attempts, j.timeout_ms, j.input::text AS input
+                RETURNING j.job_id, j.job_type, j.priority, j.attempt, j.max_attempts, j.timeout_ms, j.input::text AS input,
+                    j.deadline_at
                 """, new MapSqlParameterSource("types", textArray(jobTypes)).addValue("now", I1Json.utc(now)));
         if (rows.isEmpty()) {
             return Optional.empty();
@@ -74,7 +75,8 @@ class JobLeaseService {
         Map<String, Object> row = rows.getFirst();
         LeasedJob job = JobMessages.newLease((String) row.get("job_id"), (Integer) row.get("attempt"),
                 (Integer) row.get("max_attempts"), (String) row.get("job_type"), (String) row.get("priority"),
-                (Integer) row.get("timeout_ms"), now, mapper.readTree((String) row.get("input")));
+                (Integer) row.get("timeout_ms"), now, mapper.readTree((String) row.get("input")),
+                instant(row.get("deadline_at")));
         jdbc.update("""
                 INSERT INTO job_lease (lease_id, job_id, worker_id, attempt, leased_at, lease_expires_at, heartbeat_interval_ms, status)
                 VALUES (:leaseId, :jobId, :workerId, :attempt, :leasedAt, :expiresAt, :interval, 'ACTIVE')
@@ -211,6 +213,14 @@ class JobLeaseService {
     }
 
     // ---- 내부
+
+    /** timestamptz 열 값(드라이버에 따라 Timestamp·OffsetDateTime) → Instant, 없으면 null */
+    private static Instant instant(Object value) {
+        if (value instanceof java.sql.Timestamp timestamp) {
+            return timestamp.toInstant();
+        }
+        return value instanceof OffsetDateTime time ? time.toInstant() : null;
+    }
 
     /** 더 쓸 수 없는 대여면 그 답, 쓸 수 있으면 null. ACTIVE 인데 만료 시각이 지났으면 여기서 만료 처리한다(스케줄러보다 먼저 온 경우) */
     private LeaseStatus closedOrExpire(Lease lease, Job job, Instant now) {

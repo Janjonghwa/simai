@@ -37,6 +37,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
@@ -363,6 +364,38 @@ class WorkerJobIntegrationTest {
             long started = System.nanoTime();
             mvc.perform(lease(tokenA, workerA, ALL_TYPES, 10_000)).andExpect(status().isOk());
             assertThat((System.nanoTime() - started) / 1_000_000).isLessThan(5_000);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    /**
+     * S15P31A101-408: VLM 근거 작업은 대기 중인 대여 요청에 바로 나간다(1초 DB 재조회 주기를 기다리지 않음, 목표 집기 대기 p95 0.3 s).
+     * 작업이 없으면 wait_ms 를 다 채우고 204 로 끝난다(빈 응답을 서둘러 돌려 요청을 늘리지 않는다).
+     */
+    @Test
+    void long_poll_은_VLM_작업이_생기면_바로_돌려주고_시간이_다_되면_204() throws Exception {
+        long started = System.nanoTime();
+        mvc.perform(lease(tokenA, workerA, List.of("vlm_rationale"), 600)).andExpect(status().isNoContent());
+        long emptyMs = (System.nanoTime() - started) / 1_000_000;
+        assertThat(emptyMs).isBetween(550L, 3_000L);
+
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            AtomicLong enqueueStarted = new AtomicLong();
+            Future<String> enqueued = pool.submit(() -> {
+                Thread.sleep(400);
+                enqueueStarted.set(System.nanoTime());
+                return jobs.enqueue(new JobSpec("vlm_rationale", exampleInput("job_request.vlm_rationale.json"), 2, 5000,
+                        null, null));
+            });
+            JsonNode leased = body(mvc.perform(lease(tokenA, workerA, List.of("vlm_rationale"), 10_000))
+                    .andExpect(status().isOk()).andReturn());
+            long answered = System.nanoTime();
+            assertThat(leased.at("/payload/job_id").stringValue()).isEqualTo(enqueued.get());
+            assertThat(leased.at("/payload").has("deadline_at")).isFalse();  // 이벤트에 묶이지 않은 작업은 마감을 싣지 않는다
+            // 등록(계약 검사·INSERT)부터 대여 응답까지. 등록 시간이 들어가도 0.3 s 안이다
+            assertThat((answered - enqueueStarted.get()) / 1_000_000).isLessThan(300);
         } finally {
             pool.shutdownNow();
         }

@@ -92,6 +92,31 @@ class VlmRationaleTest {
         assertThat(generated.at("/structured_state/zone/judge_type").isNull()).isTrue();
     }
 
+    /** S15P31A101-408: S3 업로드 완료 전에 오는 같은 Pod 로컬 사본 알림(1.1.0)으로 바로 작업을 만들고 사본 위치를 입력에 싣는다 */
+    @Test
+    void 로컬_사본_알림으로_작업을_만들고_프레임에_사본_위치를_싣는다() {
+        frameMessage.put("schema_version", "1.1.0");
+        assertThat(ingestor.ingest(I1Envelope.parse(frameMessage), observed.plusMillis(300), null)).isEqualTo(Outcome.STORED);
+        var spec = ArgumentCaptor.forClass(JobSpec.class);
+        verify(jobs).enqueue(spec.capture());
+        JsonNode generated = spec.getValue().input();
+        assertThat(generated.at("/frames/0/local_copy")).isEqualTo(frameMessage.at("/payload/frames/0/local_copy"));
+        assertThat(generated.at("/frames/0/frame_uri")).isEqualTo(frameMessage.at("/payload/frames/0/frame_uri"));
+        assertThat(generated.at("/frames/1").has("local_copy")).isFalse();
+        assertThat(generated.at("/frames/0/face_policy").asString()).isEqualTo("BLURRED");
+        ObjectNode request = example("job_request.vlm_rationale.json");
+        ((ObjectNode) request.get("payload")).set("input", generated);
+        assertThat(schemas.violations("messages/job_request", request.toString())).isEmpty();
+    }
+
+    @Test
+    void 상태_폴더_밖_로컬_사본_경로는_계약_위반으로_거부한다() {
+        ((ObjectNode) frameMessage.at("/payload/frames/0/local_copy"))
+                .put("path", "event-frames/0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f/../../journal/x.jpg");
+        assertThatThrownBy(this::ingest).isInstanceOf(InvalidI1Message.class);
+        verifyNoInteractions(jobs);
+    }
+
     @Test
     void 비CRITICAL_REPLAY_감사전용_5초경계는_작업을_만들지_않는다() throws Exception {
         when(row.getString("severity")).thenReturn("HIGH");

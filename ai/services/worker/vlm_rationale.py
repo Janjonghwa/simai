@@ -11,6 +11,8 @@
 - 상향만(S15P31A101-273): 입력 이벤트의 현재 severity 보다 높은 proposed_severity 만 남기고, 같거나 낮은 의견은 null 로 바꾸며
   버린 사유 코드(NOT_UPWARD)를 로그에 남긴다. 결과의 severity 는 입력 그대로다. clause_ids 는 워커에 조항 검색이 없어 늘 [] 다.
 - 시간 제한은 러너가 timeout_ms(VLM_FAST 5000)로 취소한다. 처리기는 단계 사이마다 ctx.cancelled 를 본다.
+- 같은 Pod 로컬 사본(S15P31A101-408): local_frames 가 있으면 프레임의 local_copy 를 먼저 읽고 못 쓰면 S3(vlm_frames).
+  성공하면 단계 시간(받기·얼굴 처리, VLM)을 한 줄 남긴다(다음 GPU 세션 측정용, 근거 본문·주소 없음).
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ from simai_ai.vlm.rationale import PROPOSAL_DISCARD_REASON, PROMPT, RETRY_NOTE, 
 
 from .handlers import JobContext, JobFailed
 from .objects import ObjectStore
-from .vlm_frames import DEFAULT_FETCH_WORKERS, decode_image, gate_input_frames
+from .vlm_frames import DEFAULT_FETCH_WORKERS, LocalFrames, decode_image, gate_input_frames
 
 INPUT_SCHEMA = {"$ref": "https://simai.dev/contracts/messages/vlm_rationale.schema.json#/$defs/input"}
 RESULT_SCHEMA = {"$ref": "https://simai.dev/contracts/messages/vlm_rationale.schema.json#/$defs/result"}
@@ -78,8 +80,10 @@ class VlmRationaleHandler:
         monotonic: Callable[[], float] = time.monotonic,
         decode: Callable[[bytes], Any] = decode_image,
         max_fetch_workers: int = DEFAULT_FETCH_WORKERS,
+        local_frames: LocalFrames | None = None,
     ) -> None:
         self._store = store
+        self._local_frames = local_frames
         self._provider = provider
         self._client_factory = client_factory
         self._monotonic = monotonic
@@ -106,9 +110,12 @@ class VlmRationaleHandler:
             raise JobFailed(e.code, str(e), retryable=e.retryable) from None
 
         _check_cancelled(ctx)
+        t_gate = ctx.monotonic()
         gate = gate_input_frames(
-            ctx, self._store, frames, self._provider, decode=self._decode, max_workers=self._max_fetch_workers
+            ctx, self._store, frames, self._provider, decode=self._decode, max_workers=self._max_fetch_workers,
+            local=self._local_frames,
         )
+        t_vlm = ctx.monotonic()
         if gate.dropped:
             log.warning("이벤트 %s: 얼굴 처리 못 한 프레임 %d개를 뺐다", event_id, len(gate.dropped))
         meta = {f["frame_uri"]: f for f in frames}
@@ -167,6 +174,8 @@ class VlmRationaleHandler:
         }
         if errors := schema_errors(result, RESULT_SCHEMA):
             raise JobFailed("VLM_RESULT_INVALID", "; ".join(errors))
+        log.info("이벤트 %s: 근거 완료 frames=%d gate_ms=%d vlm_ms=%d total_ms=%d", event_id, len(gate.frames),
+                 round((t_vlm - t_gate) * 1000), round((ctx.monotonic() - t_vlm) * 1000), result["latency_ms"])
         ctx.report_progress(1.0)
         return result
 
