@@ -268,6 +268,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `obb` | jsonb | NN |  | 보수적 OBB(중심·크기·yaw) |
 | `top_height_m` | real |  |  | 상판 높이(작업면) |
 | `name` | text |  |  |  |
+| `zone_id` | text | UQ(지금 버전 중) |  | 작업면이 속한 구역 ID(버전 무관, V22). 한 구역에 지금 작업면 하나, 장애물은 null |
 | `valid_from` | ts | NN |  |  |
 | `valid_to` | ts |  |  |  |
 | `created_by` | bigint | FK>app_user.user_id |  |  |

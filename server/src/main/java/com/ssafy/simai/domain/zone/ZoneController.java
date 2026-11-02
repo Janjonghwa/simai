@@ -32,15 +32,28 @@ import tools.jackson.databind.node.ObjectNode;
 class ZoneController {
 
     private final ZoneRepository zones;
+    private final ZoneCommitService commits;
     private final SiteLookup sites;
     private final TransactionTemplate transaction;
     private final Clock clock;
 
-    ZoneController(ZoneRepository zones, SiteLookup sites, TransactionTemplate transaction, Clock clock) {
+    ZoneController(ZoneRepository zones, ZoneCommitService commits, SiteLookup sites, TransactionTemplate transaction,
+            Clock clock) {
         this.zones = zones;
+        this.commits = commits;
         this.sites = sites;
         this.transaction = transaction;
         this.clock = clock;
+    }
+
+    /**
+     * 구역 편집 한 번 저장(S15P31A101-397): 구역·작업면 바꾸기와 구성 묶음 만들기를 한 트랜잭션으로 한다. 어느 단계든 실패하면
+     * 아무것도 바뀌지 않는다. 본문은 ZoneCommitRequest
+     */
+    @PostMapping("/commit")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode commit(@RequestBody(required = false) ZoneCommitRequest request, @AuthenticationPrincipal Jwt jwt) {
+        return commits.commit(request, Long.parseLong(jwt.getSubject()));
     }
 
     /** 지금 유효한 구역(구역마다 최신 버전) */

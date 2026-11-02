@@ -7,8 +7,10 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -29,7 +31,7 @@ public class StaticObjectRepository {
     static final Set<String> KINDS = Set.of(WORK_SURFACE, "OBSTACLE");
 
     private static final String COLUMNS = """
-            object_id, object_version, kind, name, obb::text AS obb, top_height_m, valid_from, valid_to
+            object_id, object_version, kind, name, obb::text AS obb, top_height_m, zone_id, valid_from, valid_to
             """;
 
     private final NamedParameterJdbcTemplate jdbc;
@@ -55,25 +57,89 @@ public class StaticObjectRepository {
     }
 
     public ObjectNode create(String siteId, StaticObjectRequest request, long userId, OffsetDateTime now) {
+        return create(siteId, request, request == null ? null : request.zoneId(), userId, now);
+    }
+
+    /** zoneId 는 본문의 zone_id 대신 쓸 연결(구역과 함께 만들 때 새 구역 ID). null·빈 글자면 잇지 않는다. 한 트랜잭션 안에서 부른다 */
+    public ObjectNode create(String siteId, StaticObjectRequest request, String zoneId, long userId, OffsetDateTime now) {
         Checked checked = check(request);
         String objectId = Versioned.unusedId(WORK_SURFACE.equals(checked.kind()) ? "ws" : "so", this::exists);
-        insert(objectId, 1, siteId, checked, userId, now);
+        String zone = link(siteId, checked.kind(), zoneId, null);
+        insert(objectId, 1, siteId, checked, zone, userId, now);
         return findVersion(objectId, 1);
     }
 
     public ObjectNode newVersion(String objectId, StaticObjectRequest request, long userId, OffsetDateTime now) {
+        return newVersion(objectId, request, request == null ? null : request.zoneId(), userId, now);
+    }
+
+    /** zoneId 가 null 이면 이전 버전의 연결을 그대로 두고, 빈 글자면 연결을 푼다. 한 트랜잭션 안에서 부른다 */
+    public ObjectNode newVersion(String objectId, StaticObjectRequest request, String zoneId, long userId, OffsetDateTime now) {
         Checked checked = check(request);
         MapSqlParameterSource params = new MapSqlParameterSource("id", objectId).addValue("now", now);
-        List<Integer> current = jdbc.queryForList(
-                "SELECT object_version FROM static_object WHERE object_id = :id AND valid_to IS NULL FOR UPDATE", params, Integer.class);
+        List<Map<String, Object>> current = jdbc.queryForList("""
+                SELECT object_version, site_id, zone_id FROM static_object WHERE object_id = :id AND valid_to IS NULL FOR UPDATE
+                """, params);
         if (current.isEmpty()) {
             throw notCurrent(objectId);
         }
-        String siteId = jdbc.queryForObject("SELECT site_id FROM static_object WHERE object_id = :id LIMIT 1", params, String.class);
+        String siteId = (String) current.getFirst().get("site_id");
+        String previousZone = (String) current.getFirst().get("zone_id");
         jdbc.update("UPDATE static_object SET valid_to = :now WHERE object_id = :id AND valid_to IS NULL", params);
-        int version = current.getFirst() + 1;
-        insert(objectId, version, siteId, checked, userId, now);
+        // 이어받는 연결은 아직 유효할 때만 둔다(구역이 DELETE /api/zones 로 보관됐거나 장애물로 바뀌었으면 조용히 푼다).
+        // zone_id 를 모르는 예전 화면의 수정이 막히지 않게 한다. 직접 준 zone_id 는 link 가 엄격히 검사한다
+        String zone = zoneId != null ? link(siteId, checked.kind(), zoneId, objectId)
+                : WORK_SURFACE.equals(checked.kind()) && isCurrentZone(siteId, previousZone) ? previousZone : null;
+        int version = ((Number) current.getFirst().get("object_version")).intValue() + 1;
+        insert(objectId, version, siteId, checked, zone, userId, now);
         return findVersion(objectId, version);
+    }
+
+    /**
+     * 이을 구역을 검사한다. 빈 값이면 잇지 않는다(null). 작업면만 잇고, 이 현장의 지금 구역이어야 하며, 그 구역에 다른 지금
+     * 작업면이 있으면 안 된다(한 구역에 하나, 관제 앱 zoneSurfaceLink 와 같음). self 는 새 버전을 만드는 자기 자신이다
+     */
+    private String link(String siteId, String kind, String zoneId, String self) {
+        if (zoneId == null || zoneId.isBlank()) {
+            return null;
+        }
+        String zone = zoneId.strip();
+        if (!WORK_SURFACE.equals(kind)) {
+            throw new BusinessException(ErrorCode.Config.INVALID_SURFACE_ZONE);
+        }
+        MapSqlParameterSource params = new MapSqlParameterSource("site", siteId).addValue("zone", zone).addValue("self", self);
+        if (!isCurrentZone(siteId, zone)) {
+            throw new BusinessException(ErrorCode.Config.INVALID_SURFACE_ZONE);
+        }
+        Boolean taken = jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM static_object WHERE zone_id = :zone AND valid_to IS NULL
+                    AND (CAST(:self AS text) IS NULL OR object_id <> :self))
+                """, params, Boolean.class);
+        if (Boolean.TRUE.equals(taken)) {
+            throw new BusinessException(ErrorCode.Config.SURFACE_ZONE_TAKEN);
+        }
+        return zone;
+    }
+
+    /** 이 구역에 이어진 지금 작업면 ID. 없으면 null */
+    public String linkedTo(String zoneId) {
+        return jdbc.queryForList("SELECT object_id FROM static_object WHERE zone_id = :zone AND valid_to IS NULL",
+                new MapSqlParameterSource("zone", zoneId), String.class).stream().findFirst().orElse(null);
+    }
+
+    /** 지금 버전이 이어진 지금 구역. 잇지 않았거나, 이은 구역이 보관됐거나, 지금 버전이 없으면 null */
+    public String zoneOf(String objectId) {
+        return jdbc.queryForList("""
+                SELECT s.zone_id FROM static_object s
+                WHERE s.object_id = :id AND s.valid_to IS NULL
+                  AND EXISTS (SELECT 1 FROM zone z WHERE z.zone_id = s.zone_id AND z.valid_to IS NULL)
+                """, new MapSqlParameterSource("id", objectId), String.class).stream().findFirst().orElse(null);
+    }
+
+    private boolean isCurrentZone(String siteId, String zoneId) {
+        return zoneId != null && Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM zone WHERE site_id = :site AND zone_id = :zone AND valid_to IS NULL)",
+                new MapSqlParameterSource("site", siteId).addValue("zone", zoneId), Boolean.class));
     }
 
     /**
@@ -110,14 +176,23 @@ public class StaticObjectRepository {
                 new MapSqlParameterSource("id", objectId).addValue("v", version), (rs, i) -> view(rs));
     }
 
-    private void insert(String objectId, int version, String siteId, Checked c, long userId, OffsetDateTime now) {
-        jdbc.update("""
-                INSERT INTO static_object (object_id, object_version, site_id, kind, obb, top_height_m, name, valid_from, created_by)
-                VALUES (:id, :version, :siteId, :kind, CAST(:obb AS jsonb), :top, :name, :now, :createdBy)
-                """, new MapSqlParameterSource()
-                .addValue("id", objectId).addValue("version", version).addValue("siteId", siteId)
-                .addValue("kind", c.kind()).addValue("obb", c.obb()).addValue("top", c.topHeight())
-                .addValue("name", c.name()).addValue("now", now).addValue("createdBy", userId));
+    private void insert(String objectId, int version, String siteId, Checked c, String zoneId, long userId, OffsetDateTime now) {
+        try {
+            jdbc.update("""
+                    INSERT INTO static_object (object_id, object_version, site_id, kind, obb, top_height_m, name, zone_id, valid_from,
+                        created_by)
+                    VALUES (:id, :version, :siteId, :kind, CAST(:obb AS jsonb), :top, :name, :zone, :now, :createdBy)
+                    """, new MapSqlParameterSource()
+                    .addValue("id", objectId).addValue("version", version).addValue("siteId", siteId)
+                    .addValue("kind", c.kind()).addValue("obb", c.obb()).addValue("top", c.topHeight())
+                    .addValue("name", c.name()).addValue("zone", zoneId).addValue("now", now).addValue("createdBy", userId));
+        } catch (DuplicateKeyException e) {
+            // link 의 검사와 이 INSERT 사이에 다른 요청이 같은 구역에 작업면을 이었다(V22 부분 유일 인덱스). 500 이 아니라 409
+            if (zoneId == null) {
+                throw e;
+            }
+            throw new BusinessException(ErrorCode.Config.SURFACE_ZONE_TAKEN);
+        }
     }
 
     private record Checked(String kind, String name, String obb, Double topHeight) {
@@ -165,6 +240,7 @@ public class StaticObjectRepository {
         JsonNode sigma = obb.remove("top_height_sigma_m");
         o.set("obb", obb);
         o.put("top_height_m", Versioned.real(rs, "top_height_m"));
+        o.put("zone_id", rs.getString("zone_id"));
         if (sigma != null) {
             o.set("top_height_sigma_m", sigma);
         }

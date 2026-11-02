@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -84,6 +85,34 @@ public class ConfigBundleService {
         String configVersion = transaction.execute(status -> build(siteId, ruleProfile, userId));
         sender.sendToAll(configVersion);
         return views.find(configVersion);
+    }
+
+    /** 바꾼 것과 그 바꾸기로 만든 묶음(만들지 않았으면 null) */
+    public record Published<T>(T changes, ObjectNode bundle) {
+    }
+
+    private record Built<T>(T changes, String configVersion) {
+    }
+
+    /**
+     * 구역·작업면 바꾸기와 묶음 만들기를 한 트랜잭션으로 한다(S15P31A101-397). 바꾸기나 묶음 만들기(보정 없음 등)가 실패하면
+     * 모두 되돌린다. 묶음은 이전 묶음의 규칙 프로필을 이어 쓰고, Tier 0 로 보내는 일은 커밋 뒤에 한다(publish 와 같음).
+     * 바꾸기는 트랜잭션 안에서 부르는 저장소 메서드만 써야 한다
+     */
+    public <T> Published<T> publishWith(Supplier<T> changes, boolean publish, long userId) {
+        if (publish && !signer.configured()) {
+            throw new BusinessException(ErrorCode.Config.PUBLIC_URL_NOT_SET);
+        }
+        String siteId = sites.siteId();
+        Built<T> built = transaction.execute(status -> {
+            T value = changes.get();
+            return new Built<>(value, publish ? build(siteId, null, userId) : null);
+        });
+        if (built.configVersion() == null) {
+            return new Published<>(built.changes(), null);
+        }
+        sender.sendToAll(built.configVersion());
+        return new Published<>(built.changes(), views.find(built.configVersion()));
     }
 
     private String build(String siteId, String requestedProfile, long userId) {
