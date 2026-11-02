@@ -498,4 +498,31 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    /** TBM 작업(GET·POST·PUT·DELETE /api/work-units) */
+    enum Work implements ErrorCode {
+        WORK_UNIT_NOT_FOUND(HttpStatus.NOT_FOUND, "작업을 찾을 수 없습니다"),
+        INVALID_WORK_UNIT(HttpStatus.BAD_REQUEST, "작업 값이 올바르지 않습니다(date YYYY-MM-DD, name 1~100자, from_ms < to_ms 이고 24시간 이내, planned_people 0~100, place 100자·lead 50자 이내)"),
+        // 구역 밖 작업은 zone_id 를 비우고 place 에 장소를 적는다
+        UNKNOWN_WORK_ZONE(HttpStatus.BAD_REQUEST, "없는 구역입니다"),
+        INVALID_WORK_DAYS(HttpStatus.BAD_REQUEST, "days 는 1~90 이어야 합니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Work(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }
