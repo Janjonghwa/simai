@@ -43,7 +43,7 @@ class SiteController {
     private static final int MAX_NAME = 100;
     /** site 를 참조하는 기록(카메라 제외). 하나라도 있으면 site_id 를 바꾸지 않는다 */
     private static final List<String> DEPENDENTS = List.of("zone", "static_object", "config_bundle", "calibration_version",
-            "calibration_run", "scale_reference", "floor_plan", "scene_version", "bev_frame_set");
+            "calibration_run", "scale_reference", "floor_plan", "scene_version", "bev_frame_set", "work_unit", "layout_plan");
 
     private final NamedParameterJdbcTemplate jdbc;
     private final TransactionTemplate transaction;
