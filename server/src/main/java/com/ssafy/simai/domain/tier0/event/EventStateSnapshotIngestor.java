@@ -46,14 +46,16 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
     private final TransactionTemplate transaction;
     private final EventAckForwarder acks;
     private final EventEscalationForwarder escalations;
+    private final EventCloseForwarder closes;
     private final Clock clock;
     private final ApplicationEventPublisher publisher;
 
     EventStateSnapshotIngestor(RiskEventRepository events, JournalCursorRepository cursors, JournalService journal,
             TransactionTemplate transaction, EventAckForwarder acks, EventEscalationForwarder escalations,
-            Clock clock, ApplicationEventPublisher publisher) {
+            EventCloseForwarder closes, Clock clock, ApplicationEventPublisher publisher) {
         this.acks = acks;
         this.escalations = escalations;
+        this.closes = closes;
         this.events = events;
         this.cursors = cursors;
         this.journal = journal;
@@ -106,7 +108,7 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
         tracker.finishSync();
         cursors.saveSyncMode(gatewayId, false, I1Json.utc(clock.instant()));
         journal.send(connection, tracker, null);
-        // 끊긴 동안 저장만 한 운영자 확인·상향을 같은 ID 로 다시 보낸다(S15P31A101-121, S15P31A101-276)
+        // 끊긴 동안 저장만 한 운영자 확인·상향·종료를 같은 ID 로 다시 보낸다(S15P31A101-121, S15P31A101-276, S15P31A101-221)
         try {
             acks.resendPending(connection);
         } catch (RuntimeException e) {
@@ -117,6 +119,11 @@ class EventStateSnapshotIngestor implements I1MessageIngestor {
             escalations.resendPending(connection);
         } catch (RuntimeException e) {
             log.warn("I1 미반영 상향 다시 보내기 실패: gateway={} error={}", gatewayId, e.getClass().getSimpleName());
+        }
+        try {
+            closes.resendPending(connection);
+        } catch (RuntimeException e) {
+            log.warn("I1 결과 없는 종료 다시 보내기 실패: gateway={} error={}", gatewayId, e.getClass().getSimpleName());
         }
         log.info("I1 저널 동기화 끝: gateway={} active={} changed_during_sync={}", gatewayId, active.size(), touched.size());
         return Outcome.STORED;

@@ -83,7 +83,12 @@ public sealed interface ErrorCode {
         INVALID_ESCALATION_DECISION(HttpStatus.BAD_REQUEST, "decision 은 APPROVED 또는 REJECTED 여야 합니다"),
         INVALID_ESCALATION_NOTE(HttpStatus.BAD_REQUEST, "note 는 1~500자여야 합니다"),
         EVENT_NOT_LIVE(HttpStatus.CONFLICT, "LIVE 이벤트만 사고 구간 요약을 요청할 수 있습니다"),
-        CLIP_NOT_READY(HttpStatus.CONFLICT, "이벤트 클립이 아직 준비되지 않았습니다");
+        CLIP_NOT_READY(HttpStatus.CONFLICT, "이벤트 클립이 아직 준비되지 않았습니다"),
+        INVALID_CLOSE_REASON(HttpStatus.BAD_REQUEST, "reason 은 1~500자여야 합니다"),
+        INVALID_IDEMPOTENCY_KEY(HttpStatus.BAD_REQUEST, "idempotency_key 는 1~128자여야 합니다"),
+        // 같은 멱등 키를 다른 이벤트·다른 관리자가 쓰면 처음 결과를 돌려주지 않는다
+        IDEMPOTENCY_KEY_REUSED(HttpStatus.CONFLICT, "이 멱등 키는 다른 종료 요청에 이미 쓰였습니다"),
+        CLOSE_NO_GATEWAY(HttpStatus.CONFLICT, "이 이벤트를 보낸 Tier 0 를 알 수 없어 종료를 요청할 수 없습니다");
 
         private final HttpStatus status;
         private final String message;

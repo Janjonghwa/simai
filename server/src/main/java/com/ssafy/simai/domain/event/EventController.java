@@ -42,13 +42,15 @@ public class EventController {
     private final EventAckService acks;
     private final EventEscalationService escalations;
     private final IncidentSummaryService summaries;
+    private final EventCloseService closes;
 
     EventController(EventQueryRepository events, EventAckService acks, EventEscalationService escalations,
-            IncidentSummaryService summaries) {
+            IncidentSummaryService summaries, EventCloseService closes) {
         this.events = events;
         this.acks = acks;
         this.escalations = escalations;
         this.summaries = summaries;
+        this.closes = closes;
     }
 
     /** Spring Page 와 같은 모양. 관제 앱은 content 만 읽는다 */
@@ -64,6 +66,12 @@ public class EventController {
             @JsonProperty("assessmentId") @JsonAlias({"assessment_id", "assessmentJobId", "assessment_job_id", "jobId", "job_id"}) JsonNode assessmentId,
             @JsonProperty("decision") String decision,
             @JsonProperty("note") String note) {
+    }
+
+    /** 운영자 종료 본문(명세 12.6, S15P31A101-221). reason 1~500자, idempotency_key 1~128자 둘 다 필수 */
+    public record CloseRequest(
+            @JsonProperty("reason") String reason,
+            @JsonProperty("idempotency_key") @JsonAlias("idempotencyKey") String idempotencyKey) {
     }
 
     @GetMapping
@@ -101,6 +109,21 @@ public class EventController {
         String decision = request == null ? null : request.decision();
         String note = request == null ? null : request.note();
         return escalations.decide(eventId, assessmentId, decision, note, Long.parseLong(jwt.getSubject()));
+    }
+
+    /**
+     * 구역 대상 이벤트 운영자 종료(명세 6.4·12.6, S15P31A101-221). 관리자 전용. Tier 0 결과가 오면 200, 아직이면 202(result null 또는 일시 거부 JOURNAL_UNAVAILABLE).
+     * 거부(사람 대상·HIGH·CRITICAL·조건 성립)도 Tier 0 결과라 200 에 result REJECTED·reject_reason 으로 싣는다
+     */
+    @PostMapping("/{eventId}/close")
+    @PreAuthorize("hasRole('ADMIN')")
+    ResponseEntity<ObjectNode> close(@PathVariable UUID eventId, @RequestBody(required = false) CloseRequest request,
+            @AuthenticationPrincipal Jwt jwt) {
+        EventCloseService.CloseResponse res = closes.close(eventId,
+                request == null ? null : request.reason(),
+                request == null ? null : request.idempotencyKey(),
+                Long.parseLong(jwt.getSubject()));
+        return ResponseEntity.status(res.decided() ? HttpStatus.OK : HttpStatus.ACCEPTED).body(res.body());
     }
 
     /** 사고 구간 VLM 사후 요약 요청(명세 5.6·12.6, S15P31A101-369). 관리자 전용, 본문 없음 */
