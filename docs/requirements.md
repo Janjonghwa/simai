@@ -93,7 +93,7 @@ simai는 고정 카메라 4대로 작업 공간의 사람·장비·정적 구조
 | FR-39 |  |  | 경보 확인 | 이벤트 확인(ACK) | [M1] POST /api/events/{id}/ack(반장·관리자). 확인은 해소가 아님. 기획서 6.4. 노트북 반복 소리도 멈춤(FR-9) |
 | FR-40 |  | 조치 | 조치 상태 변경 | 요청 → 확인 → 조치 중 → 완료 | [M2] GET·PATCH /api/tickets, /api/tickets/{id}. CRITICAL·HIGH 이벤트 때 "요청" 자동 생성, 관리자도 조회. 기획서 8.4 |
 | FR-41 |  |  | 조치 사진 업로드 | 완료 시 조치 사진 업로드(임시 서명 주소) | [M2] POST /api/uploads/sign |
-| FR-42 |  |  | 불일치 표시 | 조치 완료인데 관측상 위험이 남아 있으면 관리자에게 불일치 표시 | [M2] 조치 완료 ≠ 이벤트 해소. 관리자 전용 /topic/admin/events 의 action_mismatch. 조치 상태·불일치 표시 100% 정확(부록 D-G8-01). 기획서 8.4, 12.4 |
+| FR-42 |  |  | 불일치 표시 | (취소 2026-11-02) 조치 완료인데 관측상 위험이 남아 있으면 관리자에게 불일치 표시 | [취소] 반장 조치 티켓을 쓰지 않아 조치 불일치 알림(/topic/admin/events 의 action_mismatch)을 두지 않는다(S15P31A101-411). 아래는 취소 전 내용: 조치 완료 ≠ 이벤트 해소. 조치 상태·불일치 표시 100% 정확(부록 D-G8-01). 기획서 8.4, 12.4 |
 | FR-43 | 작업자 (워치) | 연결 | 워치-사람 연결 | 카메라 트랙의 걸음과 워치 가속도를 비교(움직임 대조)해 1:1 연결 | [확장] 올바른 연결 시간 비율 95% 이상, ID 전환 후 연결 회복 10초 이내. 기본층(걸음 시점)과 강화층(3D 손목 가속도), 헝가리안 1:1 배정. 기획서 부록 C.6 |
 | FR-44 |  |  | 채널 상태 | BOUND/UNBOUND/LOST 관리. UNBOUND(워치 없음·연결 미확정·신뢰도 부족·ID 병합/분열 의심)는 구역 경보·반장 PWA·관리자 화면으로 전달, LOST 는 같은 경로 + 끊김 사실을 관리자에게 알림. 워치 연결 상태는 System Health 에 포함 | [확장] 기획서 부록 C.6 |
 | FR-45 |  | 알림 | 진동 알림 | 진입 예측(R5) 시점에 등급별 진동 + 방향·한 단어 표시 | [확장] 진입→진동 p95 1.5초. 진동 패턴은 주의 짧게 두 번, 위험 길게 연속(CAUTION 은 약한 진동). 앱 켠 상태 배터리 8시간 이상. 지급 전에는 PWA 미러링으로 시연(구역 단위 경보 수준이며 개인 알림 아님). 기획서 10.1, 부록 C.6 |
@@ -148,7 +148,7 @@ simai는 고정 카메라 4대로 작업 공간의 사람·장비·정적 구조
 | FR-94 |  |  | Unreal 배경 빌드 | 고정 레시피로 조명을 구운 glTF 생성 | [확장] 렌더러는 Three.js 하나. 기획서 5.8, 부록 C.9 |
 | FR-95 | 시스템 (EC2) | 이벤트 관리 | 이벤트 저장 | Tier 0 전이를 받아 중복 제거·순서 검증 후 영속 저장 | [MVP] 전이를 새로 만들지 않음. (event_id, event_sequence)로 중복을 제거하고, 낮은 sequence 가 늦게 오면 기록만 함. 기획서 3.2 |
 | FR-96 |  |  | 알림 라우팅 | 심각도 × 신뢰도 표에 따라 전달: CRITICAL·HIGH 는 노트북 로컬 경보(Tier 0 직접) + 관제 화면 + 반장 PWA, CAUTION 은 관제 화면 안내, INFO 는 기록만. 신뢰도가 낮으면 같은 채널에 "확인 필요" | [MVP] 신뢰도가 낮아도 등급은 유지. 노트북 로컬 경보는 EC2 를 거치지 않고 Tier 0 가 직접 보냄. 워치는 확장(부록 C.6). 채널 정본은 기획서 7.3 |
-| FR-97 | | | 실시간 발행 | STOMP 토픽 /topic/world, /topic/avatar(avatar_frame), /topic/events, /topic/health, 관리자 전용 /topic/admin/events 발행 | [MVP] 기획서 12.2, 12.4 |
+| FR-97 | | | 실시간 발행 | STOMP 토픽 /topic/world, /topic/avatar(avatar_frame), /topic/events, /topic/health 발행(관리자 전용 /topic/admin/events 는 취소, S15P31A101-411) | [MVP] 기획서 12.2, 12.4 |
 | FR-98 |  | 데이터 | Spatial DB 기록 | 위치·상태·이벤트·조치를 PostgreSQL + TimescaleDB + PostGIS에 저장 | [M1] 추가만, 덮어쓰기 없음. world_track_state·skeleton_3d·system_metric 은 hypertable + 압축 + 보관 정책, risk_event 는 일반 테이블(notification 복합 FK 유지). 시연 범위 아바타 자산(avatar_asset, 키 (world_id, stream_epoch, appearance_version))도 버전마다 추가만 하고 덮어쓰지 않으며, 실시간 포즈(avatar_pose_batch)는 기본 비저장(리플레이용 사람별 1 Hz 다운샘플 저장은 선택). 이미지 timescale/timescaledb-ha -all 태그. PostGIS 는 저장·조회만(구역 판정 계산은 Risk Engine). 2D 관측은 EC2 DB 에 두지 않음(FR-141). ppe_state·channel_state·watch_feature·watch_binding·region_state 는 MVP DB 제외. 기획서 11 |
 | FR-99 |  |  | 자동 삭제 | 이벤트 클립은 14일 후 객체 저장소 수명 주기 규칙으로 자동 삭제, 2D 관측은 7\~14일 후 Network Volume 정리 작업으로 삭제. 프로젝트 발표 후 30일 안에 보존 표시분과 HMR 아바타 자산(DB 기록·스키닝 glTF·UV 텍스처·표면 출처 지도·선택 저장 포즈)을 포함한 모든 데이터 파기 | [MVP] CRITICAL 연결 클립은 자동 보존 표시, 아차사고는 관리자가 보존 표시를 붙이거나 뗌(PUT /api/clips/{id}/retention, 조회는 GET /api/clips/{id}). 보존분은 접근 기록. 클립 얼굴은 흐림 처리하지 않음(사용자 결정, 흐림 단계는 선택 사항으로 남기고 켜면 업로드 전에 반드시 거침), 열람은 권한자로 제한하고 조회 기록. 미업로드 클립은 보존 표시가 없고 삭제 예정일이 지난 것만 올리지 않고 지우며, 보존 표시가 있는 클립은 전체 파기 기한 전까지 복원·업로드. VLM 입력 얼굴 흐림(FR-89)은 별개. 기획서 11.5, 18.4 |
 | FR-100 | | | 업로드 주소 발급 | 사진·프레임·클립용 임시 서명 업로드 주소 발급 | [MVP] POST /api/uploads/sign |

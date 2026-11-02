@@ -24,7 +24,7 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 | ID | 구간 | 방식 | 메시지 |
 |---|---|---|---|
 | I1 | RunPod Tier 0 ↔︎ EC2 | WebSocket + JSON | 위로(Tier 0 → EC2): `world_state`(10 Hz), `health`(1 Hz), `observation_summary`(필요 시 카메라별 요약만. 2D 관측 원본 `observation_batch` 는 RunPod 에 Parquet 로 보관, 11.2), `calibration_update`, `risk_event_transition`, `event_state_snapshot`, `config_ack`, `event_frame_ready`, `media_clip`·`media_clip_retention`(이벤트 클립 기록, 11.3), `video_segment`(상시 영상 조각 기록, 5.1·11.3), `tier0_endpoint`(엔드포인트 등록, 3.12), `event_close_result`(운영자 종료 결과, 6.4), `event_escalate_result`(운영자 상향 결과, 5.4) / 아래로(EC2 → Tier 0): `event_ack`, `event_close`(관리자의 구역 대상 이벤트 종료, 6.4), `event_escalate`(관리자가 승인한 VLM 상향 의견 적용, 5.4), `journal_ack`, `config_bundle` |
-| I2 | EC2 → 뷰어 | WebSocket(STOMP) + REST | 토픽 `/topic/world`(`world_state`), `/topic/avatar`(`avatar_frame`), `/topic/events`(`risk_event`), `/topic/health`(`viewer_health`), 관리자 전용 `/topic/admin/events`(`action_mismatch`)(12.4) / REST: 리플레이, 구역 CRUD, 작업면 등록, 보정·설치, Scene·아바타 자산(`/api/avatars/...`), 레이아웃, 보고서, 이벤트 상세·요약·상향(12.6) |
+| I2 | EC2 → 뷰어 | WebSocket(STOMP) + REST | 토픽 `/topic/world`(`world_state`), `/topic/avatar`(`avatar_frame`), `/topic/events`(`risk_event`), `/topic/health`(`viewer_health`)(12.4) / REST: 리플레이, 구역 CRUD, 작업면 등록, 보정·설치, Scene·아바타 자산(`/api/avatars/...`), 레이아웃, 보고서, 이벤트 상세·요약·상향(12.6) |
 | I3 | EC2 ↔︎ PWA | Web Push + REST | 푸시 `risk_alert`, 시험 푸시 / REST: 티켓 상태 변경, 사진 업로드 주소 발급, 푸시 구독·해지, 수신 확인(12.6) |
 | I4 | EC2 ↔︎ 워치 (확장, 부록 C.6) | WebSocket(wss) + JSON, 기기별 토큰 | 아래로(EC2 → 워치): `watch_alert`(진동 알림), `watch_heartbeat` / 위로(워치 → EC2): `watch_ack`(수신 확인, 운영자 확인이 아님), `gait_features`(걸음 특징), `watch_heartbeat`. 계약 6.10.0(S15P31A101-334), 연결·끊김 판정은 `docs/design/watch-i4-contract.md` |
 | I5 | RunPod 분석 워커 → EC2 | 작업 가져가기(HTTPS long-poll 기본, WebSocket 대안), TLS + 워커 토큰 | 워커가 EC2 에 먼저 접속해 `job_lease_request`로 작업을 대여하고(응답 `job_request`), `job_heartbeat`로 대여를 연장하며, 결과·실패를 `job_callback`으로 제출한다. 하트비트·제출 응답은 `job_lease_status`(12.5) |
@@ -135,7 +135,7 @@ EC2 내부: Spring ↔ Risk Engine 컨테이너는 compose 내부망 HTTP/JSON �
 - 운영자 상향을 거친 등급은 `escalations` 로 표시해 규칙 판정 등급과 구분한다(2.1.0).
 - `/topic/world` 는 I1 `world_state` 를 형식 그대로 다시 싣는다. EC2 는 봉투만 새로 쓰고(`source_id` `ec2`) payload 를 바꾸지 않는다. 뷰어가 밀리면 최신 것만 남긴다.
 - `/topic/health` 는 `viewer_health` 다. EC2 가 Tier 0 `health`(원문은 `tier0_health`), 노트북 하트비트, `config_ack`, COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보낸다. 원격 단절 구분(`remote_state`), 데이터 연령, 구성 묶음 적용 상태, Scene 불일치(Tier 0 가 쓰는 `world_state.scene_version` 과 EC2 의 COMMITTED Scene 버전이 다르면 경고, FR-12)를 싣는다.
-- `/topic/admin/events` 는 관리자만 구독하고 조치 불일치 `action_mismatch`(조치 완료인데 이벤트 활성, 8.4)를 싣는다. 이벤트가 해소되면 `cleared: true` 로 한 번 더 보낸다.
+- 관리자 토픽 `/topic/admin/events` 와 조치 불일치 `action_mismatch` 는 취소했다(8.4, 2026-11-02). EC2 는 이 토픽에 보내지 않는다. 관제 앱이 구독을 걷어 낸 뒤 계약 `action_mismatch` 와 구독 권한을 지운다(S15P31A101-411).
 - `/topic/avatar` 는 `avatar_frame`(1.0.0, 계약 묶음 6.2.0)이다. EC2 는 I6 으로 받은 사람별 최신 포즈에 그 포즈의 아바타 자산 내려받기 경로(`/api/avatars/...`)를 붙여 중계한다. 브로커가 밀리면 오래된 `avatar_frame` 부터 버리고 `/topic/world`·`/topic/events` 전달은 방해하지 않는다. 사람의 존재·위치·접지·관측 상태·ID 신뢰도는 `/topic/world` 가 정본이며, `/topic/world` 에서 빠지거나 오래 갱신되지 않은 사람은 지운다. 중복·역전 거르기, 자산 매칭, 크기·인원 상한 등 세부는 `docs/design/avatar-pose-stream.md` 와 `contracts/` 가 정본이다.
 
 ## 12.5 I5 작업 유형

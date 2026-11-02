@@ -59,7 +59,7 @@ S15P31A101-210. [`db-erd.md`](db-erd.md)·[`db-tables.md`](db-tables.md) 의 테
 | `event_escalation` | M3 | Tier 0: 운영자 상향 적용<br>관리자: 상향 의견 적용 확인 | 0 | 쓰는 주체 2 (기록용: 상향 근거. 이벤트 상세에 함께 보일 수 있다) |
 | `journal_cursor` | MVP | Tier 0: EC2 복구 재동기화, 이벤트 저널·outbox 기록, 이벤트 전이 전송·수신 | 2 | 맞음 |
 | `event_frame` | M3 | Tier 0: 이벤트 프레임 업로드 완료 통지 | 3 | 맞음 |
-| `action_ticket` | M2 | EC2: 조치 불일치 판정, 조치 티켓 자동 생성<br>반장: 조치 티켓 상태 변경 | 5 | 쓰는 주체 2 |
+| `action_ticket` | M2 | EC2: 조치 티켓 자동 생성(조치 불일치 판정은 취소, S15P31A101-411)<br>반장: 조치 티켓 상태 변경 | 5 | 쓰는 주체 2 |
 | `action_ticket_history` | M2 | 반장: 조치 티켓 상태 변경 | 0 | 맞음 (기록용: 티켓 이력. 상세 조회(`GET /api/tickets/{id}`, 12.6)에서 읽는다) |
 | `media_clip` | MVP | EC2: 보관 기간 자동 삭제<br>Tier 0: 이벤트 클립 저장<br>관리자: 클립 보존 표시 변경 | 3 | 쓰는 주체 3 |
 | `media_clip_retention` | MVP | Tier 0: 이벤트 클립 저장<br>관리자: 클립 보존 표시 변경 | 0 | 쓰는 주체 2 (기록용: 보존 표시 이력(11.5)) |
@@ -102,7 +102,7 @@ S15P31A101-210. [`db-erd.md`](db-erd.md)·[`db-tables.md`](db-tables.md) 의 테
 | `analysis_job`·`job_lease` | EC2 가 등록·재할당, 워커가 대여·연장·결과. 상태 전이는 12.5 |
 | `media_clip`·`media_clip_retention` | Tier 0 가 기록·CRITICAL 자동 보존, 관리자가 보존 표시, EC2 가 삭제 확인(`deleted_at`) |
 | `event_escalation`·`event_close` | 관리자가 명령 행, Tier 0 결과(`result`·`event_sequence`·`decided_at`) |
-| `action_ticket` | EC2 가 자동 생성·불일치 표시, 반장이 상태 변경 |
+| `action_ticket` | EC2 가 자동 생성(불일치 표시는 취소, S15P31A101-411), 반장이 상태 변경 |
 | `notification`·`test_push`·`upload_grant`·`watch_alert` | 발송·발급 주체가 행을 만들고 수신 확인·사용 시각만 다른 주체가 채운다 |
 
 ## 3. 쓰는 API 가 없는 테이블 (2026-10-21 결정)
@@ -349,8 +349,8 @@ DB 를 읽거나 쓰는 행만 적는다. "v11" 표시는 4장에서 더한 행�
 | FR-40, FR-41 | 조치 티켓 상태 변경 | `PATCH /api/tickets/{id}` | EC2 | `action_ticket` | `action_ticket`, `action_ticket_history` | 반장 |  |
 | FR-40 | 조치 티켓 조회 | `GET /api/tickets` | EC2 | `action_ticket` | — | — |  |
 | FR-40 | 조치 티켓 자동 생성 | `INTERNAL` | EC2 | `risk_event` | `action_ticket` | EC2 |  |
-| FR-42, FR-97 | 조치 불일치 수신 | `WS /topic/admin/events` | EC2 | `action_ticket`, `risk_event` | — | — |  |
-| FR-42 | 조치 불일치 판정 | `INTERNAL` | EC2 | `action_ticket`, `risk_event` | `action_ticket` | EC2 | mismatch |
+| FR-42(취소), FR-97 | 조치 불일치 수신(취소 2026-11-02, S15P31A101-411) | `WS /topic/admin/events` | EC2 | `action_ticket`, `risk_event` | — | — |  |
+| FR-42(취소) | 조치 불일치 판정(취소 2026-11-02, S15P31A101-411) | `INTERNAL` | EC2 | `action_ticket`, `risk_event` | `action_ticket` | EC2 | mismatch |
 | FR-43 | 워치 가속도 전송 | `WS I4 gait_features` | EC2 | — | `watch_feature` | 워치 |  |
 | FR-44 | 워치 채널 상태 관리 | `INTERNAL` | EC2 | `watch_binding` | `channel_state` | EC2 |  |
 | FR-45 | 워치 진동 알림 발송 | `INTERNAL` | EC2 | `channel_state`, `watch_binding`, `risk_event` | `notification`, `watch_alert` | EC2 |  |
