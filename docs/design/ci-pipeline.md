@@ -30,7 +30,7 @@ GitLab ──Webhook──▶ https://simai.live/jenkins/ (Nginx) ──▶ jenk
 | server | `ci-db` 에 시험 DB `simai_ci` 를 지우고 새로 만든 뒤 `sh gradlew build`. `@SpringBootTest` 가 Flyway 로 V1·V2·R 을 적용한다. JUnit 결과를 Jenkins 에 올린다 | `server/`, `contracts/` |
 | front | `pnpm install --frozen-lockfile` → `format:check` → `lint`(계약 생성물 최신 여부 포함) → `typecheck` → `test` → `build` | `front/`, `contracts/` |
 | gateway | 패키지 4개(recorder, relay, rtsp_probe, site_alert)를 차례로 `uv sync --frozen` → `uv run pytest` | `gateway/`, `contracts/` |
-| watch | 워치 앱 `sh gradlew assembleDebug testDebugUnitTest`(JVM 단위 시험). JUnit 결과를 Jenkins 에 올린다. 실기기 설치는 하지 않는다(S15P31A101-335) | `watch/` |
+| watch | 워치 앱 `sh gradlew assembleDebug testDebugUnitTest`(JVM 단위 시험, I4 계약 예시 `contracts/examples/watch_*` 를 읽는다). JUnit 결과를 Jenkins 에 올린다. 실기기 설치는 하지 않는다(S15P31A101-335·-337) | `watch/`, `contracts/` |
 | ai | `uv sync --frozen` → `uv run lint-imports`(의존 방향). **pytest 는 새벽 작업에서만**: 작업 매개변수 `FULL_AI_TESTS=true` 이면 `pytest -m "not gpu"` 전체, 아니면(MR·dev push) 생략한다. 새벽 작업 `simai-nightly-ai` 가 매일 02:00 KST 에 dev 로 돈다(아래 설정 8). 빌드가 한 줄로 하나씩 돌아 ai 전체 시험(30분대) 하나가 뒤 MR 을 막았기 때문이다(2026-10-26, 빌드 #43·#44, S15P31A101-269). MR 에서 ai 를 바로 확인하려면 로컬에서 `scripts.select_tests` 로 고른 시험을 돌린다(`docs/design/test-selection.md`) | `ai/`, `contracts/`, `deploy/` |
 
 `Jenkinsfile`·`deploy/jenkins/` 가 바뀌면 모든 단계가 돈다. 결과는 GitLab 커밋 상태 `jenkins` 로 MR 에 보인다(running → success·failed·canceled).

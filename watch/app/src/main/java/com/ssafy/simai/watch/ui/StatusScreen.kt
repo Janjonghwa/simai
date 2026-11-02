@@ -34,9 +34,13 @@ import androidx.wear.compose.material3.Text
 import com.ssafy.simai.watch.BuildConfig
 import com.ssafy.simai.watch.config.WatchConfig
 import com.ssafy.simai.watch.config.WorkerLabel
+import com.ssafy.simai.watch.i4.ConnectionStatus
+import com.ssafy.simai.watch.i4.LinkState
 import kotlinx.coroutines.delay
 
 private val NOT_CONFIGURED_COLOR = Color(0xFFFFD600)
+private val CONNECTED_COLOR = Color(0xFF7CD992)
+private val DISCONNECTED_COLOR = Color(0xFFFF6B6B)
 private val SECONDARY_TEXT = Color(0xFFB3B3B3)
 private val DEV_TEXT = Color(0xFF8A8A8A)
 
@@ -57,18 +61,25 @@ private const val LAST_ALERT_SP = 15
 private const val DEV_SP = 12
 
 /**
- * 기본(대기) 화면. 첫 화면은 큰 시계와 착용자 이름·구역이다. 연결 상태와 마지막 알림, 개발용 값(EC2 주소·토큰·버전)은
- * 아래로 스크롤해야 나온다. 연결은 S15P31A101-337 에서 붙이기 전이라 설정이 있어도 늘 "연결 안 됨" 이다.
+ * 기본(대기) 화면. 첫 화면은 큰 시계와 착용자 이름·구역이다. 연결 상태([status], S15P31A101-337)와 마지막 알림, 개발용 값(EC2·기기 ID·하트비트·배터리·버전)은
+ * 아래로 스크롤해야 나온다.
  * 이름·구역은 값이 있을 때만 보인다(값을 줄 계약 -334 가 없어 지금은 debug 입구로만 넣는다).
  *
  * [ambient] 가 있으면 손목을 내려 어둡게 켜져 있는 화면이다: 얇은 회색 큰 시계와 이름·구역만 남기고, 번인 방지로 위치를 조금씩 옮긴다.
  * [tickMs] 는 앰비언트에서 시스템이 분마다 알려 주는 시각이다.
  */
 @Composable
-fun StatusScreen(config: WatchConfig?, lastAlertAtMs: Long?, label: WorkerLabel?, ambient: AmbientState?, tickMs: Long) {
+fun StatusScreen(
+    config: WatchConfig?,
+    lastAlertAtMs: Long?,
+    label: WorkerLabel?,
+    ambient: AmbientState?,
+    tickMs: Long,
+    status: ConnectionStatus = ConnectionStatus(),
+) {
     MaterialTheme {
         if (ambient == null) {
-            InteractiveScreen(config, lastAlertAtMs, label, tickMs)
+            InteractiveScreen(config, lastAlertAtMs, label, tickMs, status)
         } else {
             AmbientScreen(label, ambient, tickMs)
         }
@@ -76,7 +87,7 @@ fun StatusScreen(config: WatchConfig?, lastAlertAtMs: Long?, label: WorkerLabel?
 }
 
 @Composable
-private fun InteractiveScreen(config: WatchConfig?, lastAlertAtMs: Long?, label: WorkerLabel?, tickMs: Long) {
+private fun InteractiveScreen(config: WatchConfig?, lastAlertAtMs: Long?, label: WorkerLabel?, tickMs: Long, status: ConnectionStatus) {
     // 큰 시계가 있어서 위쪽 기본 시계는 끈다
     AppScaffold(timeText = {}) {
         val scroll = rememberScrollState()
@@ -89,7 +100,7 @@ private fun InteractiveScreen(config: WatchConfig?, lastAlertAtMs: Long?, label:
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Face(label, u, Modifier.height(faceHeight), ambient = null, tickMs = tickMs)
-                    DevLines(config, lastAlertAtMs, u)
+                    DevLines(config, lastAlertAtMs, status, u)
                 }
             }
         }
@@ -156,22 +167,34 @@ private fun rememberMinuteClockMs(tickMs: Long): Long {
 }
 
 @Composable
-private fun DevLines(config: WatchConfig?, lastAlertAtMs: Long?, u: Dp) {
+private fun DevLines(config: WatchConfig?, lastAlertAtMs: Long?, status: ConnectionStatus, u: Dp) {
+    val (stateText, stateColor) = when {
+        config == null -> "설정 안 됨" to NOT_CONFIGURED_COLOR
+        status.state == LinkState.CONNECTED -> "연결됨" to CONNECTED_COLOR
+        status.state == LinkState.CONNECTING -> "연결 중" to Color.White
+        else -> "연결 끊김" to DISCONNECTED_COLOR
+    }
     Column(
         modifier = Modifier.fillMaxWidth().padding(horizontal = u * DEV_PAD, vertical = u * DEV_PAD),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Line(
-            if (config == null) "설정 안 됨" else "연결 안 됨",
-            if (config == null) NOT_CONFIGURED_COLOR else Color.White,
-            STATE_SP,
-            FontWeight.Bold,
-        )
+        Line(stateText, stateColor, STATE_SP, FontWeight.Bold)
         Line(if (lastAlertAtMs == null) "알림 없음" else "마지막 알림 ${clockText(lastAlertAtMs)}", SECONDARY_TEXT, LAST_ALERT_SP)
         // 토큰 값은 화면에 보이지 않는다
-        Line(if (config == null) "adb 로 주소·토큰을 넣는다" else "EC2 ${config.ec2Host} · 토큰 설정됨", DEV_TEXT, DEV_SP)
+        Line(if (config == null) "adb 로 주소·ID·토큰을 넣는다" else "EC2 ${config.ec2Host} · ${config.deviceId}", DEV_TEXT, DEV_SP)
+        if (config != null) {
+            Line(heartbeatLine(status), DEV_TEXT, DEV_SP)
+            Line("배터리 ${status.batteryPct?.let { "$it%" } ?: "-"} · ${status.transport.name}", DEV_TEXT, DEV_SP)
+            status.lastFailure?.let { Line(it, DEV_TEXT, DEV_SP) }
+        }
         Line("v${BuildConfig.VERSION_NAME}", DEV_TEXT, DEV_SP)
     }
+}
+
+private fun heartbeatLine(status: ConnectionStatus): String {
+    val last = status.lastEc2AtMs?.let { "EC2 하트비트 ${clockText(it)}" } ?: "EC2 하트비트 없음"
+    val offset = status.clockOffsetMs?.let { " · 시계차 ${if (it >= 0) "+" else ""}${it}ms" } ?: ""
+    return last + offset
 }
 
 @Composable

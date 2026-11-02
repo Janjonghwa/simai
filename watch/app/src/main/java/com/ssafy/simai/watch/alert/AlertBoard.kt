@@ -64,13 +64,15 @@ class AlertBoard private constructor(val items: List<TrackedAlert>) {
      * 알림을 받는다. [nowMs] 는 단조 시계다. 같은 event_id 가 다시 오면:
      * - 확인 대기 중: 내용만 바꾸고 받은 시각(기한의 기준)은 지킨다. 서버가 되풀이해 보내도 기한이 밀리지 않는다
      * - 기한이 지난 뒤: 새로 받은 것으로 센다
-     * - 이미 확인함: 내용만 바꾸고 다시 울리지 않는다
+     * - 이미 확인함: 같은 알림(alert_msg_id)이 되풀이되면 내용만 바꾸고 다시 울리지 않는다. 다른 알림(새 msg_id: 등급 상향·재발송)이면
+     *   새로 받은 것으로 다시 울린다(계약 watch_alert: 확인 뒤 등급이 오른 경보는 그 확인으로 확인된 것이 아니다)
      */
     fun receive(alert: WatchAlert, nowMs: Long): AlertBoard {
         val existing = items.firstOrNull { it.alert.eventId == alert.eventId }
         val tracked = when (existing?.phase) {
             null, AlertPhase.EXPIRED -> TrackedAlert(alert, nowMs)
-            AlertPhase.ACTIVE, AlertPhase.ACKED -> existing.copy(alert = alert)
+            AlertPhase.ACTIVE -> existing.copy(alert = alert)
+            AlertPhase.ACKED -> if (alert.alertMsgId != existing.alert.alertMsgId) TrackedAlert(alert, nowMs) else existing.copy(alert = alert)
         }
         return AlertBoard(trim(items.filterNot { it.alert.eventId == alert.eventId } + tracked))
     }
