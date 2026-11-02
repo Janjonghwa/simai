@@ -34,8 +34,9 @@ Pod 공개 IP 와 17000·17001 의 바깥 매핑 포트를 묻고(`C:\simai-loca
    SSAFY 망은 EC2(simai.live:22)만 열려 있어 EC2 를 거친다. EC2→Pod 는 연결마다 따로 TCP 라 카메라별 독립 연결(명세 12.2)을 지키고,
    TLS 는 Tier 0 가 끝낸다(경로 결정은 S15P31A101-392).
 2. 현장 경보 단말 `uv run simai-site-alert run`
-3. 영상 중계 `uv run simai-relay run --config ../relay/configs/lobby.toml --send --preview-port 47032`
-   (CCTV 미리보기는 게이트웨이 노트북 브라우저에서만 보인다, 127.0.0.1)
+3. 영상 중계 `uv run simai-relay run --config ../relay/configs/lobby.toml --send --preview-port 47032 --remote-cctv`
+   (CCTV 는 게이트웨이 노트북 브라우저는 로컬 127.0.0.1 로, 노트북 밖 관리자는 원격 시청으로 본다. 원격 시청은 EC2 에 늘 붙어 있다가
+   보는 사람이 있을 때만 올린다(S15P31A101-400). 관제 중 Tier 0 지연이 늘면 `-NoRemoteCctv` 로 끈다: `simai-gateway.cmd run -NoRemoteCctv …`)
 
 끄기(`4`)는 세 창의 프로세스 트리를 끝낸다.
 
@@ -45,8 +46,9 @@ Pod 공개 IP 와 17000·17001 의 바깥 매핑 포트를 묻고(`C:\simai-loca
 EC2 하트비트로 원격 화면에도 관제 중단이 보인다(실제 상태라 틀린 표시는 아니다). Pod 주소·포트는 Pod 마다 바뀌므로
 Pod 가 새로 뜨면 3 을 새 값으로 다시 한다(원격이면 `run-remote`).
 
-Pod 없이 카메라만 보려면 `5`(미리보기만): 영상 중계를 전송 없이 띄우고 관제 앱 CCTV 로컬 미리보기(127.0.0.1:47032)만 준다.
-같은 노트북 브라우저의 simai.live 관제 화면에서 본다(원격 데스크톱으로 보면 된다).
+Pod 없이 카메라만 보려면 `5`(미리보기만): 영상 중계를 Tier 0 전송 없이 띄우고 관제 앱 CCTV 로컬 미리보기(127.0.0.1:47032)와
+원격 시청 업로드(`--remote-cctv`)를 준다. 같은 노트북 브라우저나 로그인한 관리자의 다른 PC 의 simai.live CCTV 화면에서 본다
+(원격 시청을 끄려면 `-NoRemoteCctv`).
 
 ## 원격 (S15P31A101-394)
 

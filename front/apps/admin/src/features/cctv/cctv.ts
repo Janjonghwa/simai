@@ -1,4 +1,10 @@
-import type { CameraPhase, PreviewLink } from '@/features/cctv/cctv.store';
+import type {
+  CameraPhase,
+  PauseReason,
+  PreviewLink,
+  RemoteView,
+  ViewMode,
+} from '@/features/cctv/cctv.store';
 import type { HealthCamera } from '@/features/cctv/cctvCameras';
 
 // CCTV 로컬 미리보기 화면 문구와 판단. 화면 컴포넌트 없이 시험한다.
@@ -18,6 +24,7 @@ const LINK_LABEL: Record<Exclude<PreviewLink, 'open'>, string> = {
   connecting: '연결 중',
   unavailable: '중계 끊김',
   unsupported: '중계 끊김',
+  stopped: '원격 시청 멈춤',
 };
 
 /** 카메라 칸 상태 문구. 중계와 끊겼으면 카메라 단계보다 끊김을 먼저 보인다. */
@@ -78,4 +85,53 @@ export function framesArriving(
   ageSec: number | undefined,
 ): boolean {
   return link === 'open' && phase === 'playing' && !isStale(ageSec);
+}
+
+/** 원격 시청 안내 한 줄과 "다시 보기"를 보일지. 로컬이거나 원격이 잘 보이는 중이면 null. */
+export interface RemoteNotice {
+  text: string;
+  resumable: boolean;
+}
+
+const PAUSE_TEXT: Record<Exclude<PauseReason, 'hidden'>, string> = {
+  idle: '10분 동안 입력이 없어 원격 시청을 멈췄습니다',
+  watch_limit: '원격 시청 30분이 지나 멈췄습니다. 계속 보려면 다시 보기를 누르세요',
+};
+
+export function remoteNotice(
+  mode: ViewMode,
+  pause: PauseReason | null,
+  remote: RemoteView | null,
+): RemoteNotice | null {
+  if (mode !== 'remote') return null;
+  if (pause === 'idle' || pause === 'watch_limit')
+    return { text: PAUSE_TEXT[pause], resumable: true };
+  switch (remote?.state) {
+    case 'viewer_limit':
+      return {
+        text: '동시 시청 인원이 다 찼습니다. 잠시 뒤 다시 보기를 누르세요',
+        resumable: true,
+      };
+    case 'monthly_quota':
+      return {
+        text: '이번 달 원격 CCTV 송출 한도에 닿아 원격 시청이 막혔습니다. 현장 노트북에서는 그대로 볼 수 있습니다',
+        resumable: true,
+      };
+    case 'waiting_source':
+      return {
+        text: '현장 노트북 영상 중계가 서버에 연결되지 않았습니다. 연결되면 바로 보입니다',
+        resumable: false,
+      };
+    default:
+      return null;
+  }
+}
+
+const GB = 1_000_000_000;
+
+/** 원격 CCTV 월 송출 표시(10^9 바이트 = 1 GB, 서버 상한과 같은 단위). */
+export function usageText(sentBytes: number, quotaBytes: number, blocked: boolean): string {
+  const sent = (sentBytes / GB).toFixed(sentBytes < 10 * GB ? 1 : 0);
+  const quota = Math.round(quotaBytes / GB);
+  return `원격 CCTV 월 송출 ${sent} / ${quota} GB · ${blocked ? '차단됨' : '정상'}`;
 }

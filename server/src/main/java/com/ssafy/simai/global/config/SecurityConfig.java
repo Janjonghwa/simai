@@ -1,6 +1,7 @@
 package com.ssafy.simai.global.config;
 
 import com.ssafy.simai.domain.avatar.AvatarPaths;
+import com.ssafy.simai.domain.cctv.CctvPaths;
 import com.ssafy.simai.domain.machine.MachineKind;
 import com.ssafy.simai.domain.machine.MachineTokenService;
 import com.ssafy.simai.domain.realtime.RealtimeTopics;
@@ -65,7 +66,7 @@ public class SecurityConfig {
     }
 
     /**
-     * 현장 노트북(하트비트, Tier 0 엔드포인트 조회). 기기 토큰(명세 14·12.6, S15P31A101-222).
+     * 현장 노트북(하트비트, Tier 0 엔드포인트 조회, CCTV 원격 시청 수신 /ws/devices/cctv). 기기 토큰(명세 14·12.6, S15P31A101-222·-400).
      * 사용자 JWT 체인과 나눈다. 같은 체인이면 JWT 리소스 서버가 기기 토큰을 JWT 로 읽다가 거부한다.
      */
     @Bean
@@ -74,7 +75,8 @@ public class SecurityConfig {
         // 엔드포인트는 조회(GET)만 기기 토큰이다. 등록은 Tier 0 가 I1 tier0_endpoint 로 한다(12.6, FR-138)
         return machineChain(http, MachineKind.DEVICE, tokens, matchers -> matchers
                 .requestMatchers("/api/devices/**")
-                .requestMatchers(HttpMethod.GET, "/api/endpoints/tier0"));
+                .requestMatchers(HttpMethod.GET, "/api/endpoints/tier0")
+                .requestMatchers(CctvPaths.SOURCE_WS));
     }
 
     /**
@@ -164,6 +166,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/docs", "/api/docs/**", "/api/swagger-ui/**").permitAll()
                         // 관제 앱 STOMP 업그레이드. 브라우저는 여기에 헤더를 싣지 못해 CONNECT 프레임에서 JWT 를 본다(StompAuthInterceptor)
                         .requestMatchers(HttpMethod.GET, RealtimeTopics.ENDPOINT).permitAll()
+                        // CCTV 원격 시청 업그레이드. 헤더를 싣지 못해 관리자가 받은 일회용 입장권(?ticket=)을 CctvTicketHandshakeInterceptor 가 본다
+                        .requestMatchers(HttpMethod.GET, CctvPaths.VIEW_WS).permitAll()
                         // Tier 0 가 구성 묶음 파일을 헤더 없이 내려받는다. 주소의 서명(sig)을 컨트롤러가 검사한다(BundleUrlSigner)
                         .requestMatchers(HttpMethod.GET, "/api/config-bundles/*/files/*").permitAll()
                         .anyRequest().authenticated())

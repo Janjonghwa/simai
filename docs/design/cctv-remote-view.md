@@ -38,7 +38,7 @@ EC2 로 프레임을 보내 평소 업로드와 EC2 송출 트래픽을 0 으로
 
 ### 1. 게이트웨이 → EC2 수신 (`wss://<EC2>/ws/devices/cctv`)
 
-- **인증:** 기존 `SecurityConfig.deviceFilterChain`(`server/src/main/java/com/ssafy/simai/global/config/SecurityConfig.java`)이 `/api/devices/**` 에 적용하는 기기 토큰 헤더(`X-Device-Token` 등 `MachineKind.DEVICE` 인증)를 `/ws/devices/cctv` 에도 그대로 적용한다.
+- **인증:** 기존 `SecurityConfig.deviceFilterChain`(`server/src/main/java/com/ssafy/simai/global/config/SecurityConfig.java`)이 `/api/devices/**` 에 적용하는 기기 토큰 헤더(`Authorization: Bearer <기기 토큰>`, `MachineKind.DEVICE` 인증, S15P31A101-400 구현 기준)를 `/ws/devices/cctv` 에도 그대로 적용한다.
 - **연결 유지:** 중계는 프로세스가 떠 있는 동안 EC2 수신 WebSocket 연결을 상시 유지한다. 끊기면 지수 백오프(초기 `1 s`, 최대 `30 s`)로 재연결한다.
 - **EC2 → 게이트웨이 제어 메시지(`cctv_remote_control` 1.0.0):**
   - 형식: `{"kind": "demand", "active": true | false, "sent_at_ms": <UTC ms>}` (봉투 없음, 닫힌 객체).

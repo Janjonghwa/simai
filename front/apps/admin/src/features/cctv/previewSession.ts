@@ -1,9 +1,11 @@
 import type { CameraPhase, PreviewLink } from '@/features/cctv/cctv.store';
 import { base64Bytes, parseFrame, parseText, withParameterSets } from '@/features/cctv/protocol';
-import type { CodecMessage } from '@/features/cctv/types';
+import type { CodecMessage, RemoteState, StatusMessage } from '@/features/cctv/types';
 
-// 현장 노트북 중계(gateway/relay --preview-port)의 루프백 WebSocket 에 붙어, 카메라마다 디코더 하나로 H.264 를 푼다.
-// 소켓·디코더·그리기는 주입받아(브라우저: webcodecs.ts) 소켓·WebCodecs 없이 시험한다.
+// 현장 노트북 중계(gateway/relay --preview-port)의 루프백 WebSocket, 또는 EC2 원격 시청 WebSocket(/ws/cctv/view, 같은 형식)에
+// 붙어 카메라마다 디코더 하나로 H.264 를 푼다. 소켓·디코더·그리기는 주입받아(브라우저: webcodecs.ts) 소켓·WebCodecs 없이 시험한다.
+// - 주소는 고정 문자열(로컬) 또는 연결마다 새로 받는 함수(원격: 일회용 입장권을 받아 주소를 만든다)다.
+// - 원격 status 가 viewer_limit·monthly_quota 면 서버가 닫고, 다시 붙지 않는다(link stopped, 사용자가 다시 보기를 누른다).
 // - 카메라별 codec 을 받은 뒤 그 stream_epoch 의 키프레임부터 넣는다(중계도 키프레임부터 보낸다).
 // - 디코더가 밀리면(대기 상한) 다음 키프레임까지 건너뛴다. 지난 프레임을 쌓아 늦게 그리지 않는다.
 // - 끊기면 디코더를 닫고 RECONNECT_MS 뒤 다시 붙는다(중계를 나중에 켜도 이어진다).
@@ -61,6 +63,12 @@ export interface PreviewDeps {
   clearTimer: (id: unknown) => void;
 }
 
+/** 이 상태를 받으면 서버가 연결을 닫는다. 다시 붙지 않는다. */
+const HALT_STATES: ReadonlySet<RemoteState> = new Set(['viewer_limit', 'monthly_quota']);
+
+/** 연결 주소. 함수면 연결(다시 붙기 포함)마다 새로 받는다. */
+export type UrlSource = string | (() => Promise<string>);
+
 /** 화면 상태에 쓰는 동작(cctv.store 의 액션). */
 export interface PreviewSink {
   setLink: (link: PreviewLink) => void;
@@ -69,6 +77,8 @@ export interface PreviewSink {
   waitKeyframe: (cameraId: string) => void;
   played: (cameraId: string, captureMs: number) => void;
   decodeError: (cameraId: string) => void;
+  /** 원격 시청 상태(EC2 가 보낸 status). 로컬 미리보기는 보내지 않는다. */
+  status?: (message: StatusMessage) => void;
 }
 
 interface CameraState {
@@ -86,7 +96,7 @@ export interface PreviewSession {
 }
 
 export function startPreviewSession(
-  url: string,
+  url: UrlSource,
   deps: PreviewDeps,
   sink: PreviewSink,
 ): PreviewSession {
@@ -94,6 +104,8 @@ export function startPreviewSession(
   let socket: SocketLike | null = null;
   let timer: unknown = null;
   let stopped = false;
+  let halted = false;
+  let attempt = 0;
 
   const closeDecoder = (cam: CameraState) => {
     if (cam.decoder && cam.decoder.state !== 'closed') cam.decoder.close();
@@ -145,6 +157,11 @@ export function startPreviewSession(
   const onText = (data: string) => {
     const message = parseText(data);
     if (!message) return;
+    if (message.kind === 'status') {
+      if (HALT_STATES.has(message.state)) halted = true;
+      sink.status?.(message);
+      return;
+    }
     if (message.kind === 'hello') {
       sink.hello(message.cameras);
       return;
@@ -193,16 +210,37 @@ export function startPreviewSession(
     }
   };
 
+  const retry = () => {
+    sink.setLink('unavailable');
+    if (stopped) return; // 알림을 받은 쪽이 멈췄다(로컬 시도에 실패해 원격으로 감)
+    timer = deps.setTimer(connect, RECONNECT_MS);
+  };
+
   const connect = () => {
     timer = null;
     if (stopped) return;
     sink.setLink('connecting');
+    if (typeof url === 'string') {
+      open(url);
+      return;
+    }
+    const mine = ++attempt;
+    url().then(
+      (resolved) => {
+        if (!stopped && mine === attempt) open(resolved);
+      },
+      () => {
+        if (!stopped && mine === attempt) retry();
+      },
+    );
+  };
+
+  const open = (target: string) => {
     let ws: SocketLike;
     try {
-      ws = deps.openSocket(url);
+      ws = deps.openSocket(target);
     } catch {
-      sink.setLink('unavailable');
-      timer = deps.setTimer(connect, RECONNECT_MS);
+      retry();
       return;
     }
     socket = ws;
@@ -222,8 +260,11 @@ export function startPreviewSession(
       for (const cam of cameras.values()) closeDecoder(cam);
       cameras.clear();
       if (stopped) return;
-      sink.setLink('unavailable');
-      timer = deps.setTimer(connect, RECONNECT_MS);
+      if (halted) {
+        sink.setLink('stopped');
+        return;
+      }
+      retry();
     };
   };
 

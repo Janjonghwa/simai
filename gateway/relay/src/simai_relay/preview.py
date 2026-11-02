@@ -1,9 +1,10 @@
 """현장 노트북 CCTV 로컬 미리보기: 중계가 이미 받은 압축 프레임을 루프백 WebSocket 으로 관제 앱에 넘긴다 (S15P31A101-310).
 
-명세 3.3 "RTSP 접속 규칙"·16장 결정: 관제 화면 실시간 영상은 현장 노트북 로컬 미리보기만 허용한다. 그래서
+명세 3.3 "RTSP 접속 규칙"·16장 결정: 관제 화면 실시간 영상은 중계가 이미 받은 스트림만 쓴다. 이 모듈은 같은 노트북의
+로컬 미리보기이고, 노트북 밖 원격 시청은 같은 허브 구조로 EC2 에 올리는 remote.py(S15P31A101-400, 허브를 따로 둔다)다. 그래서
 - 카메라 RTSP 세션을 더 열지 않는다. 수신 루프가 Tier 0 로 넘기는 I0 기록(I0CodecInfo, I0Frame)을 그대로 나눠 받는다
   (PreviewSink 가 원래 CameraSink 를 감싼다). 디코딩·재인코딩하지 않는다(H.264 Annex B 그대로).
-- EC2·다른 기기를 거치지 않는다. 127.0.0.1 에서만 듣는다(PREVIEW_HOST 고정, 바꾸는 인자 없음, 시험으로 고정).
+- 로컬 미리보기는 EC2·다른 기기를 거치지 않는다. 127.0.0.1 에서만 듣는다(PREVIEW_HOST 고정, 바꾸는 인자 없음, 시험으로 고정).
 - 형식은 contracts/messages/cctv_preview.schema.json (simai-cctv-preview/1):
   텍스트 = hello(카메라 목록) 한 번 → 카메라별 마지막 codec(I0 codec_info + WebCodecs codec 문자열),
   이진 = 헤더 길이(u32 BE) | I0 frame_header JSON | 접근 단위. 소비자마다 카메라별 다음 키프레임부터 보낸다.

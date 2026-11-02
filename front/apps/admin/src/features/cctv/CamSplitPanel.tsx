@@ -52,9 +52,10 @@ function AdminFeed({
   tags: PersonTags;
   focus: string | null;
 }) {
-  const attach = useCctvPreview(env.VITE_CCTV_PREVIEW_URL);
+  const { attach } = useCctvPreview(env.VITE_CCTV_PREVIEW_URL, env.VITE_STOMP_URL);
   const link = useCctvStore((s) => s.link);
   const cameras = useCctvStore((s) => s.cameras);
+  const phase = useCctvStore((s) => s.views[camId]?.phase);
   const ref = useCallback(
     (canvas: HTMLCanvasElement | null) => attach(camId, canvas),
     [attach, camId],
@@ -65,7 +66,8 @@ function AdminFeed({
         key={camId}
         ref={ref}
         aria-label={`${camId} 영상`}
-        className={cn('size-full object-contain', (down || frozen) && DIMMED)}
+        // 흐리게는 영상 자체가 멈췄을 때만(CctvPage 와 같은 규칙, S15P31A101-400). Tier 0 정지·끊김은 위쪽 배지로 알린다
+        className={cn('size-full object-contain', phase !== 'playing' && DIMMED)}
       />
     );
   }

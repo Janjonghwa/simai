@@ -1,6 +1,6 @@
 ﻿# simai 로비 게이트웨이 노트북 도우미 (Windows PowerShell 5.1 이상, S15P31A101-393). 설명은 같은 폴더 README.md.
 # 더블클릭: simai-gateway.cmd  →  메뉴(1 설치·갱신 · 2 점검 · 3 관제 시작 · 4 관제 끄기 · 5 미리보기만 · 6~8 원격)
-# 명령줄: simai-gateway.cmd run -PodIp 1.2.3.4 -ControlPort 40001 -VideoPort 40002
+# 명령줄: simai-gateway.cmd run -PodIp 1.2.3.4 -ControlPort 40001 -VideoPort 40002   (CCTV 원격 시청 업로드를 끄려면 -NoRemoteCctv)
 # 원격(S15P31A101-394): 게이트웨이 remote-setup(관리자 1회) · 개발 노트북 dev-remote(1회)·rdp · ssh simai-gw 로 run-remote/preview-remote/stop/status
 # 비밀 값(.env·토큰·키)은 화면에 찍지 않는다. 키 이름만 확인한다.
 param(
@@ -11,9 +11,14 @@ param(
   [string]$Root = '',          # 비우면: 이 스크립트가 저장소 안이면 그 저장소, 아니면 C:\simai\S15P31A101
   [string]$RelayConfig = '',   # 비우면 <저장소>\gateway\relay\configs\lobby.toml
   [string]$Bundle = '',        # 비우면 스크립트 옆 bundle\ 또는 C:\simai-gateway\bundle\
-  [string]$LocalDir = 'C:\simai-local'
+  [string]$LocalDir = 'C:\simai-local',
+  # 관제(run)·미리보기(preview)는 기본으로 CCTV 원격 시청 업로드(중계 --remote-cctv, 보는 사람이 있을 때만 EC2 로)를 켠다.
+  # 관제 중 Tier 0 지연이 늘면 이 스위치로 끈다(S15P31A101-400). 로컬 미리보기(127.0.0.1)는 그대로다
+  [switch]$NoRemoteCctv
 )
 $ErrorActionPreference = 'Stop'
+$RemoteCctvArg = if ($NoRemoteCctv) { '' } else { ' --remote-cctv' }
+$RemoteCctvLabel = if ($NoRemoteCctv) { '원격 시청 끔' } else { '원격 시청 켬' }
 $RepoUrl = 'https://lab.ssafy.com/s15-final/S15P31A101.git'
 $InRepo = Test-Path (Join-Path $PSScriptRoot '..\..\AGENTS.md')
 if (-not $Root) {
@@ -225,21 +230,22 @@ function Do-Run {
 
   $p2 = Start-Process powershell -PassThru -WorkingDirectory $AlertDir -ArgumentList '-NoExit', '-Command', "`$Host.UI.RawUI.WindowTitle='simai 현장 경보 단말'; uv run simai-site-alert run"
   Start-Sleep 3
-  $p3 = Start-Process powershell -PassThru -WorkingDirectory $RelayDir -ArgumentList '-NoExit', '-Command', "`$Host.UI.RawUI.WindowTitle='simai 영상 중계'; uv run simai-relay run --config '$RelayCfg' --send --preview-port 47032"
+  $p3 = Start-Process powershell -PassThru -WorkingDirectory $RelayDir -ArgumentList '-NoExit', '-Command', "`$Host.UI.RawUI.WindowTitle='simai 영상 중계'; uv run simai-relay run --config '$RelayCfg' --send --preview-port 47032$RemoteCctvArg"
   (@($p1.Id, $p2.Id, $p3.Id) | ConvertTo-Json) | Set-Content $PidFile -Encoding ascii
-  "관제 Pod $($s.PodIp) 제어 $($s.ControlPort) 영상 $($s.VideoPort) ($(Get-Date -Format 'MM-dd HH:mm'))" | Set-Content $ModeFile -Encoding utf8
-  Say '관제 시작: 창 3개(터널·경보 단말·영상 중계). 끌 때는 메뉴 4'
+  "관제 Pod $($s.PodIp) 제어 $($s.ControlPort) 영상 $($s.VideoPort), $RemoteCctvLabel ($(Get-Date -Format 'MM-dd HH:mm'))" | Set-Content $ModeFile -Encoding utf8
+  Say "관제 시작: 창 3개(터널·경보 단말·영상 중계), CCTV $RemoteCctvLabel. 끌 때는 메뉴 4"
 }
 
 function Do-Preview {
-  # GPU Pod 없이 카메라 → 관제 앱 CCTV 로컬 미리보기만(Tier 0 로 보내지 않음). 같은 노트북 브라우저의 simai.live 관제 화면에서 본다.
+  # GPU Pod 없이 카메라 → 관제 앱 CCTV 미리보기만(Tier 0 로 보내지 않음). 같은 노트북 브라우저는 로컬(127.0.0.1)로,
+  # 노트북 밖 관리자는 원격 시청(EC2 경유, 보는 사람이 있을 때만 올림)으로 simai.live 관제 화면에서 본다.
   Need uv
   New-Item -ItemType Directory -Force $LocalDir | Out-Null
   Do-Stop -Quiet
-  $p = Start-Process powershell -PassThru -WorkingDirectory $RelayDir -ArgumentList '-NoExit', '-Command', "`$Host.UI.RawUI.WindowTitle='simai 카메라 미리보기(전송 없음)'; uv run simai-relay run --config '$RelayCfg' --preview-port 47032"
+  $p = Start-Process powershell -PassThru -WorkingDirectory $RelayDir -ArgumentList '-NoExit', '-Command', "`$Host.UI.RawUI.WindowTitle='simai 카메라 미리보기(전송 없음)'; uv run simai-relay run --config '$RelayCfg' --preview-port 47032$RemoteCctvArg"
   (@($p.Id) | ConvertTo-Json) | Set-Content $PidFile -Encoding ascii
-  "미리보기(전송 없음) ($(Get-Date -Format 'MM-dd HH:mm'))" | Set-Content $ModeFile -Encoding utf8
-  Say '미리보기 시작(전송 없음). Pod 가 뜨면 3(관제 시작)으로 바꾼다. 끌 때는 4'
+  "미리보기(전송 없음), $RemoteCctvLabel ($(Get-Date -Format 'MM-dd HH:mm'))" | Set-Content $ModeFile -Encoding utf8
+  Say "미리보기 시작(전송 없음, CCTV $RemoteCctvLabel). Pod 가 뜨면 3(관제 시작)으로 바꾼다. 끌 때는 4"
 }
 
 # ---------- 원격 (S15P31A101-394) ----------
@@ -365,10 +371,14 @@ function Start-InSession([string]$modeArgs, [string]$label) {
 
 function Do-RunRemote {
   if (-not $PodIp -or -not $ControlPort -or -not $VideoPort) { Fail 'run-remote 는 -PodIp -ControlPort -VideoPort 를 모두 준다' }
-  Start-InSession "run -PodIp $PodIp -ControlPort $ControlPort -VideoPort $VideoPort" '관제(창 3개)'
+  $extra = if ($NoRemoteCctv) { ' -NoRemoteCctv' } else { '' }
+  Start-InSession "run -PodIp $PodIp -ControlPort $ControlPort -VideoPort $VideoPort$extra" '관제(창 3개)'
 }
 
-function Do-PreviewRemote { Start-InSession 'preview' '카메라 미리보기' }
+function Do-PreviewRemote {
+  $extra = if ($NoRemoteCctv) { ' -NoRemoteCctv' } else { '' }
+  Start-InSession "preview$extra" '카메라 미리보기'
+}
 
 function Do-Status {
   $mode = '꺼짐'
