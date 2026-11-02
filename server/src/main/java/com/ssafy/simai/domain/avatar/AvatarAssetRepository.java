@@ -167,11 +167,41 @@ public class AvatarAssetRepository {
             if (!ownUris.add(uri)) {
                 throw new InvalidI1Message("avatar_asset 안 파일 주소가 서로 겹친다");
             }
+            if (uri.equals(asset.meshUri()) && meshSharedWithinStream(asset)) {
+                continue;
+            }
             Optional<AvatarAssetKey> owner = findOwnerOfUri(uri);
             if (owner.isPresent() && !owner.get().equals(asset.key())) {
                 throw new InvalidI1Message("파일 주소를 다른 자산 버전과 같이 쓴다");
             }
         }
+    }
+
+    /**
+     * 외형 갱신(텍스처·표면 출처 지도만 새로 올림)은 같은 사람·같은 스트림 회차의 이전 버전 메시 객체를 그대로 가리킨다
+     * (워커 appearance_stream, S15P31A101-406). 객체는 바뀌지 않으므로 덮어쓰기가 아니다(AGENTS 규칙 6).
+     * 그 주소를 쓰는 기록이 모두 같은 world_id·stream_epoch 의 메시이고 sha256 이 같을 때만 받는다.
+     * 다른 사람·다른 회차의 메시이거나, 어떤 기록의 텍스처·표면 지도 주소면 받지 않는다(아래 공통 검사로 거부).
+     */
+    private boolean meshSharedWithinStream(AvatarAssetRecord asset) {
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT world_id, stream_epoch, mesh_uri = :uri AS as_mesh, mesh_sha256
+                FROM avatar_asset
+                WHERE mesh_uri = :uri OR texture_uri = :uri OR surface_mask_uri = :uri
+                """,
+                new MapSqlParameterSource("uri", asset.meshUri()));
+        if (rows.isEmpty()) {
+            return false;
+        }
+        for (Map<String, Object> row : rows) {
+            boolean sameStream = asset.key().worldId().equals(row.get("world_id"))
+                    && ((Number) row.get("stream_epoch")).longValue() == asset.key().streamEpoch();
+            if (!Boolean.TRUE.equals(row.get("as_mesh")) || !sameStream
+                    || !Objects.equals(row.get("mesh_sha256"), asset.meshSha256())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private Optional<AvatarAssetKey> findOwnerOfUri(String uri) {

@@ -164,6 +164,20 @@ class AvatarRelayIntegrationTest {
             Thread.sleep(100);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM avatar_asset", Integer.class)).isEqualTo(2);
 
+            // 외형 갱신: 같은 사람·같은 회차의 새 버전은 이전 메시 객체를 그대로 가리키고 텍스처·표면 지도만 새로 올린다(S15P31A101-406)
+            ObjectNode appearanceUpdate = assetTextured.deepCopy();
+            appearanceUpdate.put("msg_id", UUID.randomUUID().toString());
+            ObjectNode up = (ObjectNode) appearanceUpdate.get("payload");
+            up.put("appearance_version", 4);
+            up.put("previous_appearance_version", 3);
+            ((ObjectNode) up.get("texture")).put("object_uri", "s3://simai-avatars/w-0012/e1760342000000/v4/albedo.png");
+            ((ObjectNode) up.get("surface_source")).put("mask_uri", "s3://simai-avatars/w-0012/e1760342000000/v4/surface_source.png");
+            worker.send(appearanceUpdate);
+            awaitAssetRows(3);
+            assertThat(jdbc.queryForObject(
+                    "SELECT mesh_uri FROM avatar_asset WHERE world_id = 'w-0012' AND appearance_version = 4", String.class))
+                    .isEqualTo("s3://simai-avatars/w-0012/e1760342000000/v3/mesh.glb");
+
             ObjectNode batch = example("avatar_pose_batch.json");
             JsonNode frame = viewer.awaitAvatarAfterSending(worker, batch);
 
