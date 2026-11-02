@@ -1263,6 +1263,9 @@ class Tier0Service:
             "marker_error": self.marker_error,
             "avatar_share": None if avatar_writer is None else {
                 "dropped": avatar_writer.dropped, "errors": avatar_writer.errors},
+            # 추적 계측 누계(S15P31A101-413, 판정에 쓰지 않음): 늦은 카메라 시간 비율·보간 탈락·카메라 쌍 거부·World Track 생명주기
+            "tracking_diagnostics": (None if getattr(self, "perception", None) is None
+                                     else self.perception.diagnostics.summary()),
         }
 
     def _sample_load(self) -> None:

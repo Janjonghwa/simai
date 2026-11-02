@@ -809,6 +809,8 @@ class WorldTrackManager:
         self._restored: dict[str, TrackCheckpoint] = {}
         """후보로 남은 복원 Track (S15P31A101-54). 연결·world_state·export_tracks 에 넣지 않는다"""
         self._restore_status = RestoreStatus()
+        self.diag: Counter[str] = Counter()
+        """분기 사유별 누계(계측 전용, S15P31A101-413). 판정에 쓰지 않는다. `tracking.diagnostics` 가 읽는다"""
 
     @property
     def revisions(self) -> tuple[IdentityRevision, ...]:
@@ -938,6 +940,9 @@ class WorldTrackManager:
             return d / cfg.gate_scale_m - cfg.key_bonus * shared / len(keys)
 
         anchored = [c for c in clusters if c.anchor is not None]
+        self.diag["cluster.single_view"] += sum(1 for c in clusters if c.cluster.skeleton is None)
+        self.diag["cluster.no_anchor"] += sum(1 for c in clusters if c.cluster.skeleton is not None and c.anchor is None)
+        self.diag["cluster.no_pelvis"] += sum(1 for c in anchored if not c.has_pelvis)
         costs = {(tr.world_id, id(c)): cost(tr, c) for tr in tracks for c in anchored}
         assigned: dict[str, _Cluster] = {}
         taken: set[int] = set()
@@ -993,6 +998,7 @@ class WorldTrackManager:
                     if owner.get(k) in assigned
                     and np.linalg.norm(c.anchor - predicted[owner[k]]) <= cfg.duplicate_radius_m
                 }
+                self.diag["uncertain.blocked_near_owner" if near_owners else "uncertain.no_track_in_gate"] += 1
                 if near_owners:
                     blocked.add(id(c))
                     # 막을 때도 표시는 남긴다 (명세 5.2: 새 ID 또는 IDENTITY_UNCERTAIN). 옆에 새 사람일 수도 있다
@@ -1006,6 +1012,7 @@ class WorldTrackManager:
                 tr for tr in feasible if tr is not best and costs[(tr.world_id, id(c))] - chosen < cfg.ambiguity_margin
             ]
             foreign = any(owner.get(k) not in (None, best.world_id) for k in c.cluster.keys)
+            self.diag["uncertain.attached" if not rivals and not foreign else "uncertain.ambiguous_not_attached"] += 1
             if not rivals and not foreign:
                 assigned[best.world_id] = c
                 taken.add(id(c))
@@ -1083,6 +1090,7 @@ class WorldTrackManager:
             if target is not None:
                 was_lost = target in self._dormant
                 result = self._reconnect(target, c.cluster, frame, rig, excluded, t)
+                self.diag["reconnect.done" if result is not None else "reconnect.no_measurement"] += 1
                 if result is not None:
                     tr = self._tracks[target]
                     applied[target] = result
@@ -1104,8 +1112,10 @@ class WorldTrackManager:
             gated = self._gate(gate, c.cluster, frame, rig, excluded)
             measurement = self._measurement(gated)
             if measurement is None:
+                self.diag["new_track.no_measurement"] += 1
                 continue
             z, sigma = measurement
+            self.diag["new_track.created"] += 1
             self._order += 1
             tr = _Track(
                 world_id=self.issuer.issue(),
@@ -1148,6 +1158,7 @@ class WorldTrackManager:
                 del self._evidence[wid]  # 이번 시각 따로 갱신됐거나 사라졌다
                 continue
             rec = self._merge(ev.stale, wid, ev, t, applied, flags)
+            self.diag["revision.merge"] += 1
             revisions.append(rec)
             linked.add(rec.world_id)
 
@@ -1156,6 +1167,7 @@ class WorldTrackManager:
 
         # 분할 (ID 교정, S15P31A101-201): 떨어진 근거 시각이 merge_confirm_frames 번 쌓이면 새 ID 를 원래 ID 에서 가른다
         for rec in self._split_step(t, applied, holder, flags):
+            self.diag["revision.split"] += 1
             revisions.append(rec)
             linked.update((rec.world_id, rec.previous_world_id))
 
@@ -1207,12 +1219,15 @@ class WorldTrackManager:
             if tr.lifecycle is TrackLifecycle.TENTATIVE:
                 if gap == 0 and tr.hits >= cfg.confirm_hits:
                     tr.lifecycle = TrackLifecycle.CONFIRMED
+                    self.diag["lifecycle.confirmed"] += 1
                 elif gap > cfg.tentative_max_gap_ms:
                     tr.lifecycle = TrackLifecycle.LOST
+                    self.diag["lifecycle.lost_tentative"] += 1
             elif gap == 0:
                 tr.lifecycle = TrackLifecycle.CONFIRMED
             elif gap > cfg.lost_after_ms:
                 tr.lifecycle = TrackLifecycle.LOST
+                self.diag["lifecycle.lost_confirmed"] += 1
             elif gap > cfg.occluded_after_ms:
                 tr.lifecycle = TrackLifecycle.OCCLUDED
             if tr.lifecycle is TrackLifecycle.LOST:
@@ -1410,19 +1425,24 @@ class WorldTrackManager:
         (대상, 애매해서 잇지 않았는지, 갈 수 없는 거리라 잇지 않은 Track). 마지막 값은 새로 만든 Track 과 병합 금지 쌍이 된다.
         """
         if c.uncertain:
+            self.diag["reconnect_skip.cluster_uncertain"] += 1
             return None, False, None
         holders = {holder[k] for k in c.cluster.keys if k in holder}
         if not holders or holders & set(applied):
             # 로컬 트랙 근거가 없거나, 이번 시각 갱신된 Track 의 로컬 트랙이 섞였다(갈라진 view·ID 전환): 지금 동작대로
+            self.diag["reconnect_skip.no_holder" if not holders else "reconnect_skip.holder_updated_now"] += 1
             return None, False, None
         if len(holders) > 1:
+            self.diag["reconnect_skip.multiple_holders"] += 1
             return None, True, None
         (stale_id,) = holders
         crowd = [w for w in (*self._tracks, *self._dormant) if w != stale_id and w not in applied]
         reason = self._link_check(stale_id, c, held, cluster_of, crowd, t)
         if reason is not None:
+            self.diag[f"reconnect_skip.{reason}"] += 1
             return None, True, (stale_id if reason == "unreachable" else None)
         if _cameras(k for k in c.cluster.keys if holder.get(k) == stale_id) < self.config.reconnect_min_cameras:
+            self.diag["reconnect_skip.single_camera_evidence"] += 1
             return None, True, None  # 카메라 한 대의 로컬 트랙: 로컬 ID 전환일 수 있다
         return stale_id, False, None
 
