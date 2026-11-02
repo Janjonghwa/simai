@@ -40,7 +40,9 @@ from simai_ai.scene.reconstruct import (
 IMAGE_KINDS = ("CLEAN_BACKGROUND", "FRAME")
 OBJECT_URI_RE = re.compile(r"^s3://(?P<bucket>[a-z0-9][a-z0-9.-]{1,61}[a-z0-9])/\S+$")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-UPLOAD_PURPOSES = ("EVENT_FRAME", "AVATAR_ASSET")
+# 워커 토큰은 정적 3D 입력 목적(STATIC_RECONSTRUCT_INPUT, 키 static-inputs/, 사진·보정 JSON, S15P31A101-403)을 쓴다
+UPLOAD_PURPOSES = ("EVENT_FRAME", "STATIC_RECONSTRUCT_INPUT")
+WORKER_PURPOSE = "STATIC_RECONSTRUCT_INPUT"
 TOKEN_ENV_VARS = ("SIMAI_UPLOAD_TOKEN", "SIMAI_TIER0_TOKEN", "SIMAI_DEVICE_TOKEN", "SIMAI_WORKER_TOKEN")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -434,8 +436,12 @@ def sign_and_upload_object(
     event_id: str | None = None,
     timeout_s: float = 30.0,
     label: str = "object",
+    extra: dict[str, Any] | None = None,
 ) -> str:
-    """`POST /api/uploads/sign` 으로 서명 주소를 받고 `PUT upload_url` 로 바이트를 올린 뒤 `s3://...` 주소를 돌려준다."""
+    """`POST /api/uploads/sign` 으로 서명 주소를 받고 `PUT upload_url` 로 바이트를 올린 뒤 `s3://...` 주소를 돌려준다.
+
+    extra 는 서명 요청에 덧붙일 키 식별자(STATIC_RECONSTRUCT_INPUT 의 bundle_id·file_name 등)다.
+    """
     base = _check_transport_url(server_url, label="서버 주소")
     if purpose not in UPLOAD_PURPOSES:
         raise CleanBgJobError(f"지원하지 않는 업로드 purpose 다: {purpose!r}")
@@ -448,6 +454,9 @@ def sign_and_upload_object(
         "size_bytes": len(raw_bytes),
         "sha256": sha256_hex,
     }
+    for key, value in (extra or {}).items():
+        if value is not None:
+            sign_payload[key] = value
     if purpose == "EVENT_FRAME":
         if not event_id or not UUID_RE.match(event_id):
             raise CleanBgJobError("EVENT_FRAME 업로드에는 유효한 UUID event_id 가 필요하다")
@@ -658,12 +667,12 @@ def _resolve_token_and_purpose(
     if purpose_arg is not None and purpose_arg not in UPLOAD_PURPOSES:
         raise CleanBgJobError(
             f"지원하지 않는 업로드 purpose 다: {purpose_arg!r} "
-            "(사진은 EVENT_FRAME[Tier 0·DEVICE 토큰] 또는 AVATAR_ASSET[워커 토큰]만 허용)"
+            "(사진은 EVENT_FRAME[Tier 0·DEVICE 토큰] 또는 STATIC_RECONSTRUCT_INPUT[워커 토큰]만 허용)"
         )
-    if upload_calibration and purpose_arg is not None and purpose_arg != "AVATAR_ASSET":
+    if upload_calibration and purpose_arg is not None and purpose_arg != WORKER_PURPOSE:
         raise CleanBgJobError(
-            "--upload-calibration 은 보정 문서(application/octet-stream)가 AVATAR_ASSET(워커 토큰)만 허용하므로 "
-            f"--purpose {purpose_arg} 와 함께 쓸 수 없다(워커 토큰·AVATAR_ASSET 사용 필요)"
+            "--upload-calibration 은 보정 문서(application/json)가 STATIC_RECONSTRUCT_INPUT(워커 토큰)만 허용하므로 "
+            f"--purpose {purpose_arg} 와 함께 쓸 수 없다(워커 토큰·STATIC_RECONSTRUCT_INPUT 사용 필요)"
         )
 
     if token_file is not None:
@@ -672,22 +681,22 @@ def _resolve_token_and_purpose(
         token = token_file.read_text(encoding="utf-8").strip()
         if not token:
             raise CleanBgJobError(f"토큰 파일이 비어 있다: {token_file}")
-        return token, (purpose_arg or ("AVATAR_ASSET" if upload_calibration else "EVENT_FRAME"))
+        return token, (purpose_arg or (WORKER_PURPOSE if upload_calibration else "EVENT_FRAME"))
 
     upload_tok = (env.get("SIMAI_UPLOAD_TOKEN") or "").strip()
     tier0_tok = (env.get("SIMAI_TIER0_TOKEN") or "").strip()
     device_tok = (env.get("SIMAI_DEVICE_TOKEN") or "").strip()
     worker_tok = (env.get("SIMAI_WORKER_TOKEN") or "").strip()
 
-    if upload_calibration or purpose_arg == "AVATAR_ASSET":
+    if upload_calibration or purpose_arg == WORKER_PURPOSE:
         if worker_tok:
-            return worker_tok, "AVATAR_ASSET"
+            return worker_tok, WORKER_PURPOSE
         if upload_tok:
-            return upload_tok, "AVATAR_ASSET"
+            return upload_tok, WORKER_PURPOSE
         if tier0_tok or device_tok:
             raise CleanBgJobError(
-                "토큰 종류와 업로드 용도(AVATAR_ASSET)가 맞지 않는다: "
-                "보정 문서(application/octet-stream)와 AVATAR_ASSET 사진 업로드는 워커 토큰(SIMAI_WORKER_TOKEN)만 허용하며 "
+                "토큰 종류와 업로드 용도(STATIC_RECONSTRUCT_INPUT)가 맞지 않는다: "
+                "보정 문서(application/json)와 STATIC_RECONSTRUCT_INPUT 사진 업로드는 워커 토큰(SIMAI_WORKER_TOKEN)만 허용하며 "
                 "SIMAI_TIER0_TOKEN·SIMAI_DEVICE_TOKEN 은 EVENT_FRAME(사진 전용)만 허용한다"
             )
     elif purpose_arg == "EVENT_FRAME":
@@ -701,7 +710,7 @@ def _resolve_token_and_purpose(
             raise CleanBgJobError(
                 "토큰 종류와 업로드 용도(EVENT_FRAME)가 맞지 않는다: "
                 "EVENT_FRAME 업로드는 Tier 0·DEVICE 토큰(SIMAI_TIER0_TOKEN / SIMAI_DEVICE_TOKEN)만 허용하며 "
-                "워커 토큰(SIMAI_WORKER_TOKEN)은 AVATAR_ASSET 만 허용한다"
+                "워커 토큰(SIMAI_WORKER_TOKEN)은 STATIC_RECONSTRUCT_INPUT 만 허용한다"
             )
     else:
         if upload_tok:
@@ -711,7 +720,7 @@ def _resolve_token_and_purpose(
         if device_tok:
             return device_tok, "EVENT_FRAME"
         if worker_tok:
-            return worker_tok, "AVATAR_ASSET"
+            return worker_tok, WORKER_PURPOSE
 
     raise CleanBgJobError(
         "업로드 인증 토큰이 없다(--token-file 또는 SIMAI_UPLOAD_TOKEN / SIMAI_TIER0_TOKEN / "
@@ -858,7 +867,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--upload-calibration",
         action="store_true",
-        help="보정 문서도 서명 업로드(AVATAR_ASSET application/octet-stream)로 함께 올리고 그 s3:// 주소를 쓴다",
+        help="보정 문서도 서명 업로드(STATIC_RECONSTRUCT_INPUT application/json)로 함께 올리고 그 s3:// 주소를 쓴다",
     )
     parser.add_argument("--output", type=Path, required=True, help="생성할 static_reconstruct 작업 입력 JSON 경로")
     parser.add_argument(
@@ -876,7 +885,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--purpose",
         choices=UPLOAD_PURPOSES,
         default=None,
-        help="POST /api/uploads/sign 의 purpose (기본: 토큰 종류에 따라 EVENT_FRAME 또는 AVATAR_ASSET)",
+        help="POST /api/uploads/sign 의 purpose (기본: 토큰 종류에 따라 EVENT_FRAME 또는 STATIC_RECONSTRUCT_INPUT)",
     )
     parser.add_argument(
         "--event-id",
@@ -1034,8 +1043,8 @@ def run_cli(argv: list[str] | None = None, *, env: dict[str, str] | None = None)
                 calibration_ref = sign_and_upload_object(
                     server_url=server_url,
                     token=token,
-                    purpose="AVATAR_ASSET",
-                    content_type="application/octet-stream",
+                    purpose=WORKER_PURPOSE,
+                    content_type="application/json",
                     raw_bytes=cal_bytes,
                     sha256_hex=cal_hex,
                     timeout_s=args.timeout,

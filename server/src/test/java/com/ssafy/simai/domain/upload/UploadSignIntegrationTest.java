@@ -242,6 +242,50 @@ class UploadSignIntegrationTest {
     }
 
     @Test
+    void 워커는_정적_3D_입력을_묶음별_키로_받고_다른_내용으로_덮어쓰지_않는다() throws Exception {
+        String workerId = "worker-" + tag;
+        String worker = issued("worker", "register", "--id", workerId, "--job-types", "static_reconstruct");
+        String bundle = "bundle-" + UUID.randomUUID().toString().replace("-", "");
+        Map<String, Object> photoReq = Map.of("purpose", "STATIC_RECONSTRUCT_INPUT", "content_type", "image/jpeg",
+                "size_bytes", 900_000, "sha256", SHA, "bundle_id", bundle, "file_name", "cam_A");
+        JsonNode photo = ok(sign(worker, photoReq));
+        String photoKey = "static-inputs/" + bundle + "/cam_A.jpg";
+        assertThat(photo.get("object_key").stringValue()).isEqualTo(photoKey);
+        assertThat(photo.get("object_uri").stringValue()).isEqualTo("s3://simai-test-bucket/" + photoKey);
+        assertThat(jdbc.queryForMap("SELECT purpose, requester, requested_by_worker FROM upload_grant WHERE object_key = ?", photoKey))
+                .containsEntry("purpose", "STATIC_RECONSTRUCT_INPUT").containsEntry("requester", "WORKER")
+                .containsEntry("requested_by_worker", workerId);
+        // 보정 문서는 JSON 으로 받는다(아바타 .glb 키가 아니다)
+        JsonNode calibration = ok(sign(worker, Map.of("purpose", "STATIC_RECONSTRUCT_INPUT", "content_type", "application/json",
+                "size_bytes", 4096, "sha256", SHA, "bundle_id", bundle, "file_name", "calibration")));
+        assertThat(calibration.get("object_key").stringValue()).isEqualTo("static-inputs/" + bundle + "/calibration.json");
+        // 같은 내용으로 다시 내면 같은 키, 다른 내용이면 만료 뒤에도 409(규칙 6)
+        assertThat(ok(sign(worker, photoReq)).get("object_key").stringValue()).isEqualTo(photoKey);
+        jdbc.update("UPDATE upload_grant SET expires_at = now() - interval '1 second' WHERE object_key = ?", photoKey);
+        Map<String, Object> other = new HashMap<>(photoReq);
+        other.put("sha256", "b".repeat(64));
+        sign(worker, other).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("UPLOAD_KEY_CONFLICT"));
+        // 식별자 없이도 받는다(세션 도구), 한쪽만·형식 틀림·받지 않는 형식은 400
+        assertThat(ok(sign(worker, Map.of("purpose", "STATIC_RECONSTRUCT_INPUT", "content_type", "image/png", "size_bytes", 10,
+                "sha256", SHA))).get("object_key").stringValue()).matches("static-inputs/[0-9a-f-]{36}/[0-9a-f-]{36}\\.png");
+        for (Map<String, Object> bad : List.of(
+                Map.<String, Object>of("purpose", "STATIC_RECONSTRUCT_INPUT", "content_type", "image/jpeg", "size_bytes", 10,
+                        "sha256", SHA, "bundle_id", bundle),
+                Map.<String, Object>of("purpose", "STATIC_RECONSTRUCT_INPUT", "content_type", "image/jpeg", "size_bytes", 10,
+                        "sha256", SHA, "bundle_id", "../x", "file_name", "cam_A"),
+                Map.<String, Object>of("purpose", "STATIC_RECONSTRUCT_INPUT", "content_type", "image/jpeg", "size_bytes", 10,
+                        "sha256", SHA, "bundle_id", bundle, "file_name", "cam_A.jpg"),
+                Map.<String, Object>of("purpose", "STATIC_RECONSTRUCT_INPUT", "content_type", "model/gltf-binary", "size_bytes", 10,
+                        "sha256", SHA))) {
+            sign(worker, bad).andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("INVALID_UPLOAD"));
+        }
+        // 워커만 받는다
+        sign(TIER0_TOKEN, photoReq).andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("UPLOAD_NOT_ALLOWED"));
+        sign(device(), photoReq).andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("UPLOAD_NOT_ALLOWED"));
+        sign(jwt("ADMIN"), photoReq).andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("UPLOAD_NOT_ALLOWED"));
+    }
+
+    @Test
     void 반장이_아닌_사용자와_토큰_없음_틀린_토큰은_거부한다() throws Exception {
         sign(jwt("VIEWER"), photo()).andExpect(status().isForbidden());
         sign(jwt("ADMIN"), photo()).andExpect(status().isForbidden());

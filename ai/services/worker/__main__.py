@@ -18,6 +18,10 @@
   simai_ai.vlm.client), 얼굴 처리용 pose 검출기(SIMAI_TIER0_WEIGHTS 의 YOLO26x-pose .pt, Tier 0 와 같은 가중치)가 다 있을 때만
   등록한다. 빠지면 시작 로그에 이유 한 줄. vlm_rationale 은 같은 Pod 의 Tier 0 상태 폴더(SIMAI_STATE_DIR, 없으면
   SIMAI_TIER0_MARKER 의 폴더)에 있는 이벤트 사진 사본을 먼저 읽는다(S15P31A101-408).
+
+사람 지운 배경 묶음 자동 제출(S15P31A101-403, services.worker.auto_static): --once 가 아니고 SIMAI_AUTO_STATIC_RECONSTRUCT 가 0 이
+아니면 보조 스레드가 LIVE 가 아닐 때 Tier 0 의 완성 묶음(SIMAI_STATE_DIR/clean-background)을 올리고 static_reconstruct 를 등록한다.
+LIVE 판단은 대여와 같은 표시 파일 규칙을 이 스레드 전용 AdmissionGate 로 다시 본다.
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ from simai_ai.gpu.budget import BudgetError, WorkerGpuSettings
 from simai_ai.gpu.reserve import FAILED, cap_process_memory
 from simai_ai.vlm.client import VlmError, VlmSettings
 
+from .auto_static import AutoStaticSettings, AutoStaticSubmitter, clean_bg_uploader
 from .bev_floorplan import BevFloorplanHandler
 from .client import AuthError, LeaseClient, RequestRejected
 from .handlers import JobHandler
@@ -46,7 +51,7 @@ from .objects import HttpObjectStore, ObjectStore
 from .runner import HandlerStuck, Worker
 from .static_reconstruct import StaticReconstructHandler
 from .tbm_report import TbmReportHandler
-from .transport import HttpTransport
+from .transport import HttpTransport, Transport
 from .vlm_frames import LocalFrames
 from .vlm_rationale import VlmRationaleHandler
 
@@ -99,6 +104,21 @@ def _vlm_rationale_missing(store: ObjectStore | None, env: Mapping[str, str]) ->
     return None
 
 
+def start_auto_static(settings: AutoStaticSettings, gpu: WorkerGpuSettings, transport: Transport, worker_id: str,
+                      base_url: str, token: str, stop: threading.Event) -> threading.Thread | None:
+    """배경 묶음 자동 제출 보조 스레드. 꺼져 있으면 None. 대여 루프의 접수 문과 상태를 섞지 않게 문을 따로 만든다."""
+    if not settings.enabled:
+        log.info("배경 묶음 자동 제출 꺼짐 (SIMAI_AUTO_STATIC_RECONSTRUCT=0)")
+        return None
+    submitter = AutoStaticSubmitter(
+        settings, AdmissionGate(gpu.marker, gpu.policy, wall_s=time.time, monotonic=time.monotonic), transport, worker_id,
+        prepare=clean_bg_uploader(base_url, token), clock_ms=lambda: time.time_ns() // 1_000_000, monotonic=time.monotonic,
+    )
+    thread = threading.Thread(target=submitter.run, args=(stop,), name="auto-static-reconstruct", daemon=True)
+    thread.start()
+    return thread
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="services.worker", description="I5 분석 워커 (EC2 에서 작업을 가져간다)")
     parser.add_argument("--config", type=Path, help="분석 워커 설정 파일 경로")
@@ -121,6 +141,11 @@ def main(argv: list[str] | None = None) -> int:
         gpu = WorkerGpuSettings.from_env(os.environ)
     except BudgetError as e:
         print(f"services.worker: GPU 공유 설정 오류: {e}", file=sys.stderr)
+        return 2
+    try:
+        auto_static = AutoStaticSettings.from_env(os.environ)
+    except ValueError as e:
+        print(f"services.worker: 배경 묶음 자동 제출 설정 오류: {e}", file=sys.stderr)
         return 2
     try:
         torch_fraction = float(os.environ.get("SIMAI_WORKER_TORCH_MEMORY_FRACTION") or gpu.budget.worker_fraction)
@@ -157,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
+    if not args.once:  # 한 번만 처리하고 끝나는 실행(simai-bootstrap scene)에서는 관제 뒤 대기 시간을 채울 수 없다
+        start_auto_static(auto_static, gpu, transport, worker_id, base_url, token, stop)
     try:
         if args.once:
             worker.run_once(should_stop=stop.is_set)

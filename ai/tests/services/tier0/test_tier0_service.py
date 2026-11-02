@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -34,6 +35,7 @@ from services.tier0.perception import SimObservationFeed  # noqa: E402
 from services.tier0.site_alert_sync import SiteAlertResync  # noqa: E402
 from services.tier0.settings import load_settings  # noqa: E402
 from simai_ai.eventlog import EventJournal  # noqa: E402
+from simai_ai.gpu.admission import clean_stop_path, clean_stop_record  # noqa: E402
 from simai_ai.providers.contract import schema_errors  # noqa: E402
 from simai_ai.risk import SystemClock  # noqa: E402
 from simai_ai.tracking.system_health import HealthReason  # noqa: E402
@@ -80,9 +82,13 @@ def test_stop_flushes_slow_journal_and_ends_threads(tmp_path, sim_run) -> None:
             time.sleep(1.5)  # Network Volume fsync 지연 흉내: 쓰기 대기열이 밀린다
 
     service = Tier0Service(settings, journal_fsync=fsync)
+    stopped = clean_stop_path(settings.live_marker)
+    stopped.parent.mkdir(parents=True, exist_ok=True)
+    stopped.write_text(json.dumps(clean_stop_record(stopped_at_ms=1, pid=1)), encoding="utf-8")  # 지난 세션의 정상 종료 기록
     service.start()
     try:
         assert settings.live_marker.exists()
+        assert not stopped.exists()  # 기동하면 표시 파일보다 먼저 지운다(S15P31A101-403)
         assert ts.wait_until(lambda: bool(_r1(service)), timeout=20)
         slow.set()
         # 장면에서 다음 전이가 언제 생길지는 CPU·프레임 건너뛰기에 따라 달라진다.
@@ -100,6 +106,8 @@ def test_stop_flushes_slow_journal_and_ends_threads(tmp_path, sim_run) -> None:
     assert len(entries) == len(service.recovery.restore_entries) + produced + 2  # 넣은 단계를 하나도 잃지 않았다
     assert [e.payload["sequence"] for e in entries if e.kind == "shutdown_probe"] == [0, 1]
     assert not settings.live_marker.exists()
+    record = json.loads(stopped.read_text(encoding="utf-8"))  # 정상 종료 기록: 분석 워커는 LIVE 아님으로 본다
+    assert record["phase"] == "stopped_clean" and record["pid"] == os.getpid() and record["stopped_at"] > 1
     assert service.events.index("judge_stopped") < service.events.index("links_closed") < service.events.index(
         "journal_flushed:0") < service.events.index("final_checkpoint") < service.events.index("stopped")
     assert ts.wait_until(lambda: not _tier0_threads(), timeout=5), _tier0_threads()
@@ -357,6 +365,7 @@ def test_stop_returns_within_deadline_when_disk_is_stuck_and_keeps_marker(tmp_pa
         assert result == [False] and time.monotonic() - started < 4.0
         marker = json.loads(settings.live_marker.read_text(encoding="utf-8"))
         assert any(f.startswith("journal_backlog") for f in marker["shutdown_failed"])
+        assert not clean_stop_path(settings.live_marker).exists()  # 정상 종료가 아니면 기록을 남기지 않는다(모름 → LIVE)
         assert "final_checkpoint" not in service.events  # 저널이 다 기록되지 않았으면 마지막 체크포인트를 쓰지 않는다
     finally:
         disk.released.set()  # 디스크 정체 해제: 남은 기록은 늦게라도 끝난다(다음 시작이 저널로 복구)

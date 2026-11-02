@@ -161,3 +161,90 @@ admin job enqueue --type static_reconstruct --input-file static-input.json
      run --rm -T server admin scene activate \
      --site <site_id> --version <scene_version> --actor <관리자> --reason "<사유>"
    ```
+
+## S15P31A101-403: 배경 묶음 static_reconstruct 자동 제출
+
+관련 명세: §3.2(Tier 0 우선·LIVE 중 배치 금지), §5.3(정적 3D), §12.5(I5), AGENTS 규칙 1·5·6. -363 이 모은 완성 묶음을 -372 도구로 사람이 올리고 `admin job enqueue` 하던 일을 분석 워커가 자동으로 한다. 결과 Scene 처리(-365 `SceneJobListener` 의 CANDIDATE 등록, 관리자 활성화)와 CANDIDATE 정책은 그대로다. 배경 사진은 Visual 층 입력일 뿐 Tier 0 위치·위험 판정에 들어가지 않는다.
+
+- 코드: `ai/services/worker/auto_static.py`(조건·기록·제출), `ai/services/worker/__main__.py`(`start_auto_static`, `--once` 가 아닐 때 보조 스레드), 서버 `server/.../domain/scene/StaticReconstructSubmitService.java`·`WorkerSceneJobController.java`.
+- 계약: `contracts/messages/static_reconstruct_submit`·`static_reconstruct_submit_result` 1.0.0 신설(묶음 6.11.0). 기존 I5 메시지는 그대로다.
+- 시험: `ai/tests/services/worker/test_auto_static.py`, `server/src/test/.../domain/scene/WorkerStaticReconstructSubmitIntegrationTest.java`.
+
+### 흐름
+
+1. 분석 워커 보조 스레드 `auto-static-reconstruct` 가 `poll_s` 마다 조건을 본다(아래 표). Tier 0 는 이 일을 하지 않는다.
+2. 조건을 모두 만족하면 -372 의 함수를 그대로 쓴다: `load_calibration` → `prepare_from_bundle(묶음 폴더)`(해시·해상도·`COMPLETE`·`camera_generations` 교차 확인) → 가짜 주소로 `build_job_input` 사전 검사 → `sign_and_upload_object` 로 보정 문서(`application/json`)와 카메라 사진을 정적 3D 입력 목적 `STATIC_RECONSTRUCT_INPUT`(워커 토큰만, 키 `static-inputs/<bundle_id>/<카메라 ID>.jpg`·`calibration.json`) 서명 업로드 → `build_job_input`.
+3. `POST /api/worker/scene-jobs/static-reconstruct`(워커 토큰 체인 `/api/worker/**`, `SecurityConfig` 변경 없음)에 `{bundle_id, input}` 을 보낸다.
+4. EC2 는 묶음 ID 로 advisory 잠금을 잡고, 같은 묶음 작업이 있으면 input 을 보지 않고 그 작업과 지금 상태를 200 으로 돌려준다. 없으면 이 현장의 PROVISIONAL·CALIBRATED 보정인지(Scene 등록 규칙과 같음, 아니면 409 `SCENE_CALIBRATION_INVALID`) 보고, 관리자 등록과 같은 `AnalysisJobService.enqueue`(job_request 계약 검사, BACKGROUND)로 등록해 201 을 돌려준다. 저장하는 input 에는 `clean_background_bundle_id` 를 싣는다(출처·멱등 조회 키).
+5. 워커는 결과를 기록 파일에 추가한다. 작업이 끝날 때까지 같은 요청을 다시 보내 상태만 본다(같은 묶음은 같은 작업이 오므로 새 작업이 생기지 않는다). 끝나면 `FINISHED` 를 남긴다.
+6. 대여·실행은 지금과 같다. LIVE 가 다시 켜지면 기존 AdmissionGate 가 static_reconstruct 를 반납한다(`LIVE_EXP_BLOCKED`·`LIVE_PREEMPTED`).
+
+### 조건·수치와 근거
+
+| 조건 | 판단 | 값·근거 |
+|---|---|---|
+| 1 완성 묶음·활성 보정 | `state_dir/clean-background/status.json` 이 `complete: true` 이고 그 `bundle`(이름 `bundle-<32자리 16진수>`) 폴더에 `COMPLETE` 가 있다. 묶음 보정 버전이 Tier 0 보정 버전 저장소(`state_dir/calibrations/active.json` 의 `active`, `simai_ai.calibration.runtime`)의 활성 버전이고, 상태(문서 값을 전환 이력의 마지막 값이 덮음, 저장소와 같은 규칙)가 PROVISIONAL·CALIBRATED 다 | -363 소비자 규칙(상태 포인터 + `COMPLETE`, 디렉터리 검색으로 고르지 않음). 문서 경로 규칙은 시험이 `RuntimeCalibrationStore.path` 와 맞춰 본다 |
+| 2 LIVE 아님 | 대여와 같은 `AdmissionGate`(Tier 0 표시 파일 신선도)를 이 스레드 전용 인스턴스로 본다. `live` 면(모름 포함) 아무것도 올리지 않는다. 업로드 하나마다 다시 보고, LIVE 가 되면 바로 멈추며 실패로 세지 않는다 | 접수 문은 한 스레드 전제라 대여 루프와 상태를 섞지 않는다. 표시 파일이 없을 때 LIVE 아님으로 보는 것은 Tier 0 정상 종료 기록이 있을 때(아래 '관제 뒤 운영 흐름')와 개발 모드 `SIMAI_WORKER_DEV_NO_LIVE=1` 뿐이다. 기록 없음·끊김(15초 넘게 갱신 없음)·모름은 LIVE |
+| 3 LIVE 뒤 대기 | 마지막으로 LIVE(또는 모름)를 본 뒤 `SIMAI_AUTO_STATIC_QUIET_S`(기본 300초). 프로세스 시작 시각을 마지막 LIVE 로 본다 | Lead 기본값. 접수 문의 `live_linger_s` 60초·`resume_after_s` 30초와 Tier 0 재기동 틈(장면 회수 최악 약 40초 + 엔진 준비)보다 길어, 잠깐 끊긴 관제 사이에 올리지 않는다 |
+| 4 낸 적 없음 | 기록 파일에 그 묶음의 `SUBMITTED` 가 없다 | 재시작 뒤에도 같다. 응답을 잃어 기록 전에 꺼졌으면 다시 내도 EC2 가 같은 작업을 돌려준다(작업은 하나) |
+| 5 한 번에 하나 | `FINISHED` 가 없는 `SUBMITTED` 가 있으면 새 묶음을 내지 않고 그 작업 상태만 본다 | QUEUED·LEASED 는 진행 중, SUCCEEDED·FAILED·TIMED_OUT·CANCELLED 는 끝 |
+| 주기 | `SIMAI_AUTO_STATIC_POLL_S`(기본 30초) | 파일 stat·작은 JSON 읽기뿐이다. 표시 파일 최대 나이 15초의 두 배, 대기 300초 대비 10% 오차 |
+| 실패 재시도 | 검사·업로드·등록 실패는 `SUBMIT_FAILED` 를 남기고 60초에서 2배씩, 상한 3600초 백오프. 백오프는 기록 파일의 이어진 실패 수·마지막 실패 시각(UTC ms)으로 계산해 재시작 뒤에도 잇는다 | EC2 재시작·망 단절은 수 분 안에 풀리고, 계속 실패하는 묶음도 시간당 한 번(사진 4장 약 4MB)이면 부담이 없다 |
+| 끝난 작업 | FAILED·TIMED_OUT·CANCELLED 는 `FINISHED`(작업 실패 코드 포함)만 남기고 자동으로 다시 내지 않는다 | 같은 입력으로 다시 돌려도 같은 실패일 가능성이 크고 GPU 시간이 크다. 운영자는 -372 도구로 손으로 낸다(새 작업). EC2 쪽 시도 2회는 그대로 쓴다 |
+| 작업 상한 | `timeout_ms` 4,200,000·`max_attempts` 2(서버 고정) | -372 안내 명령과 같다. 단계 상한 합 3780초 + 여유 |
+| 끄기 | `SIMAI_AUTO_STATIC_RECONSTRUCT=0`(기본 켬). `--once` 실행(`simai-bootstrap scene`)에서는 띄우지 않는다 | 한 번만 처리하고 끝나는 프로세스는 대기 시간을 채울 수 없다 |
+
+기록 파일은 `state_dir/worker/auto_static_reconstruct.jsonl`(`SIMAI_STATE_DIR`, 기본 `$SIMAI_ROOT/state`)에 줄마다 JSON 을 추가만 하고 fsync 한다. 사건은 `SUBMITTED`(묶음·보정 버전·작업 ID·새로 만듦·상태·상태 조회에 다시 보낼 요청 payload), `SUBMIT_FAILED`(오류 요약 500자), `FINISHED`(작업 ID·끝 상태·실패 코드)다. 끝 줄이 깨졌으면(쓰다가 꺼짐) 그 줄만 건너뛰고, 파일을 읽지 못하면 모름으로 보고 내지 않는다. 토큰·서명 주소는 기록·로그에 남기지 않는다(-372 함수가 이미 가린다).
+
+### 관제 뒤 운영 흐름: Tier 0 정상 종료 기록과 `simai-bootstrap after-live`
+
+운영 흐름은 세션 끝 → 운영자가 Tier 0 를 정상 종료 → Pod 를 몇 분 더 두고 배경 복원 → Terminate 다. 이 흐름에서 개발 플래그 없이 자동 제출이 일어나게 했다.
+
+- **정상 종료 기록**: Tier 0 `stop()` 이 모든 종료 단계(판정·링크 닫기·저널 비우기·마지막 체크포인트·저널 닫기)를 성공하면 표시 파일을 지운 뒤 그 옆에 `tier0.live.stopped`(`{"version":1,"phase":"stopped_clean","stopped_at":<UTC ms>,"pid":...}`, 원자 쓰기)를 남긴다. 종료 단계가 하나라도 실패하면 남기지 않는다(표시 파일에 `shutdown_failed`, 지금과 같음). 표시 파일을 먼저 지우므로 그 사이에 꺼지면 기록이 없다(모름 → LIVE, 안전한 쪽).
+- **접수 문**(`simai_ai.gpu.admission`): 표시 파일이 있으면 지금과 같다(있으면 LIVE, 15초 넘게 갱신 없으면 끊김 → 모름 → LIVE). 표시 파일이 없을 때 기록이 읽히고 형식이 맞으면 '정상 종료로 끝남' → LIVE 아님(마지막 LIVE 뒤 `live_linger_s` 60초는 그대로 기다림), 기록이 없으면 지금처럼 모름 → LIVE, 기록을 못 읽거나 형식이 틀리면 모름 → LIVE. 대여(static_reconstruct 대여 허용)와 자동 제출이 같은 판단을 쓴다.
+- **기동 쪽 지우기**: 엔진 준비(진입점 `engine_cache`) 동안은 표시 파일이 아직 없다. 지난 기록이 남아 있으면 이 틈을 LIVE 아님으로 볼 수 있어, Tier 0 시작 경로가 GPU 를 잡기 전에 기록을 지운다: `simai-bootstrap tier0`(시작 잠금 직후), `lobby`(시작 잠금 직후, 작업 폴더의 표시 파일 기준), 감시 프로세스 `start_tier0`, `Tier0Service.start`(표시 파일을 쓰기 전). 그래도 남는 경우(지우기 실패)는 로그를 남기고, 표시 파일이 생기면 그쪽이 이긴다.
+- **표시 파일 자체에 쓰지 않은 까닭(Lead 지시와 다르게 한 점)**: 표시 파일이 있으면 LIVE 로 보는 소비자가 이미 있다. GPU 실험 큐 `live_guard`(`marker_files`, 있으면 LIVE), `simai-bootstrap scene` 의 30초 신선도, Tier 0 다음 시작의 '이전 실행이 정상 종료하지 않음'(표시 파일이 남아 있으면) 판단이다. 정상 종료를 같은 파일에 쓰면 이들이 모두 바뀌어야 한다. 옆 파일이면 그들의 판단은 그대로다.
+
+**관제 뒤 워커를 어떻게 남기나: `simai-bootstrap after-live`(하위 명령)를 골랐다.** 로비 Supervisor 에 'Tier 0 가 정상 종료하면 워커를 남기는 옵션'을 넣는 안보다 기존 구조에 맞는다.
+1. 로비 워커의 torch 상한은 vLLM·아바타와 나눈 몫(`tier0,vllm,worker` 0.15, 아바타 포함 0.05)이고 static_reconstruct 의 MapAnything·TSDF 자식도 그 값(`SIMAI_WORKER_TORCH_MEMORY_FRACTION`)을 다시 건다. 관제 뒤에는 워커를 분석 워커 예산 전체(0.70)로 다시 띄워야 하므로 남기는 것보다 새로 띄우는 것이 맞다.
+2. 로비는 Tier 0 만 골라 끄는 운영 경로가 없다(SIGTERM·Ctrl+C 는 워커 → vLLM → Tier 0 를 함께 끈다). Supervisor 의 'Tier 0 가 끝나면 나머지를 내리고 Tier 0 종료 코드로 끝난다' 약속도 그대로 둔다.
+3. 관제 밖 GPU 일회성 작업은 이미 장면 준비 모드(`scene`)가 맡는다: Tier 0 시작 잠금·표시 파일·GPU 사용 중 메모리(1 GiB 초과면 vLLM 등이 남은 것) 확인, static 가중치 확인, Tier 0 가 시작하면 그룹 SIGTERM → SIGKILL(Tier 0 우선), 워커 토큰 파일. `after-live` 는 이 위에 로비 작업 폴더(`--work`, 기본 `$SIMAI_ROOT/runs/lobby-live`)의 `state/` 를 `SIMAI_TIER0_MARKER`·`SIMAI_STATE_DIR` 로 넘기고, 정상 종료 기록이 없거나 표시 파일이 남아 있으면 띄우지 않고 75 로 끝낸다(띄워도 워커가 아무것도 하지 않으므로). 워커는 `--once` 없이 `SIMAI_AUTO_STATIC_EXIT_WHEN_DONE=1` 로 돈다. `SIMAI_WORKER_DEV_NO_LIVE`·로비의 좁은 torch 상한은 넘기지 않는다.
+4. 장면 모드 자식 환경에 있던 `SIMAI_ALLOW_WITHOUT_TIER0_MARKER=1` 은 읽는 코드가 없다(워커는 `SIMAI_WORKER_DEV_NO_LIVE` 를 읽는다). 그래서 지금까지 장면 모드로 띄운 워커는 표시 파일이 없으면 static_reconstruct 를 대여하지 않았다. 정상 종료 기록이 생기면서 이 경로도 동작한다(그 변수는 건드리지 않았다).
+
+`SIMAI_AUTO_STATIC_EXIT_WHEN_DONE=1` 이면 대기 시간이 지난 뒤 낼 일이 끝났을 때(자동 제출 작업이 끝남, 이미 낸 묶음, 완성 묶음 없음, 활성 보정과 다름 등) 워커가 스스로 끝난다(종료 코드 0). 실패·백오프·진행 중·LIVE 에는 끝내지 않는다.
+
+**세션 끝 운영 절차**(Pod SSH, `<...>` 는 세션 값):
+
+1. 로비를 끝낸다: `simai-bootstrap lobby` 를 띄운 셸에서 Ctrl+C(또는 그 프로세스에 SIGTERM). 로그에 `정상 종료 기록을 남겼다: <work>/state/tier0.live.stopped` 가 나와야 한다. 나오지 않으면(종료 실패) 배경 복원을 자동으로 하지 않는다. -372 도구로 손으로 낸다.
+2. 완성 묶음이 있는지 본다: `jq '{calibration_version, complete, bundle}' <work>/state/clean-background/status.json`. `complete: true` 가 아니면 낼 묶음이 없다(4대 모두 충분히 모이지 않음). 3으로 가도 바로 끝난다.
+3. 배경 복원을 띄운다:
+   ```sh
+   simai-bootstrap after-live --work /workspace/simai/runs/lobby-live \
+     --worker-token-file /root/.simai_worker_token --ec2-base-url https://<EC2>
+   ```
+   종료 코드 75 는 정상 종료 기록이 없거나 GPU 를 다른 프로세스가 쓰는 것이다(로그의 이유를 본다).
+4. 기다린다: 워커 시작 뒤 300초(`SIMAI_AUTO_STATIC_QUIET_S`) → 업로드·등록(수십 초) → 대여·실행(단계 상한 합 3780초, 4대 기준 실측은 10차 세션에서 잰다). 로그 `배경 묶음 자동 제출: SUBMITTED` → `... 작업 job-... 끝: SUCCEEDED` → `낼 일이 끝났다 ... 워커를 끝낸다` 뒤 명령이 0 으로 끝난다. FAILED 면 `quality.notes`·실패 로그 주소를 본다(자동으로 다시 내지 않는다).
+5. 결과 확인: EC2 에서 `admin scene list --site <site_id>` 의 CANDIDATE, 필요하면 결과 묶음을 노트북으로 가져온 뒤 Pod 를 Terminate 한다. 기다리는 동안 Tier 0 를 다시 띄우면 워커가 멈추고(75) Tier 0 가 먼저다.
+
+### 버린 대안
+
+- **Tier 0 안에서 제출**: 업로드·HTTP 재시도·JPEG 디코드(해상도 확인)가 판정 프로세스의 CPU·GIL·실패 경로를 늘린다. Tier 0 는 import 규칙(`tier0-no-worker-stack`)상 `simai_ai.scene` 을 쓸 수 없어 -372 함수를 재사용하지도 못한다.
+- **EC2 가 묶음을 가져가기**: EC2 는 Pod 파일을 볼 수 없고 Pod 로 들어가는 경로도 없다(I1 은 Tier 0 → EC2). 사진을 올리는 쪽은 Pod 여야 한다.
+- **시간표(cron) 제출**: 관제 끝 시각을 모르고, 정해진 시각에 LIVE 가 다시 켜져 있으면 관제 중에 올린다. 이미 있는 접수 문(표시 파일 신선도)을 다시 보는 쪽이 정확하다.
+- **새 DB 표(제출 기록 표)**: 같은 시기 다른 티켓과 Flyway 번호가 겹칠 수 있고 공용 시험 DB 에 먼저 적용된다. 멱등 키를 작업 input 에 싣고 advisory 잠금으로 줄 세워 표 없이 해결했다.
+- **작업 상태 GET 엔드포인트**: 워커 전송 계층은 POST 뿐이다. 같은 요청 재전송이 상태 조회를 겸한다(같은 묶음은 같은 작업).
+- **로비 Supervisor 에 'Tier 0 정상 종료 뒤 워커 남기기' 옵션**: 위 '관제 뒤 운영 흐름' 1·2·3. 남긴 워커는 좁은 torch 상한을 그대로 가지고, Tier 0 만 끄는 운영 경로도 없다.
+- **표시 파일에 phase=stopped 를 쓰기**: 표시 파일이 있으면 LIVE 로 보는 기존 소비자(GPU 큐·장면 모드·Tier 0 다음 시작)를 모두 바꿔야 한다. 옆 파일로 뒀다.
+- **업로드를 `AVATAR_ASSET` 으로 하기(첫 구현)**: 사진이 `avatars/` 아래, 보정 문서가 `.glb` 키로 들어가 목적·보존 규칙이 섞인다. 서버에 `STATIC_RECONSTRUCT_INPUT`(워커만, JPEG·PNG·JSON, 64 MiB, 키 `static-inputs/`)을 더했다. 묶음 ID·이름을 주면 키가 정해지고 같은 내용만 다시 받으므로(다른 내용은 만료 뒤에도 409, 규칙 6) 응답을 잃고 다시 내도 객체가 늘지 않는다.
+- **EC2 가 가진 보정 주소 쓰기**: 서버 `calibration_version.calibration_ref` 는 `ec2:calibration_document/...` 라 워커 객체 서명(s3 주소만)으로 받을 수 없다. -372 의 `--upload-calibration` 경로처럼 보정 문서를 함께 올린다.
+
+### 잔여 위험과 10차 GPU 세션 확인
+
+- **자동 제출은 관제 뒤 `after-live` 에서만 일어난다**: 로비가 도는 동안은 표시 파일 때문에 LIVE 이고, 로비 워커는 Tier 0 와 함께 내려간다. 운영자가 세션 끝에 `after-live` 를 띄우지 않으면 묶음은 Pod 에 남기만 한다(볼륨이 없으면 Terminate 때 사라진다).
+- **정상 종료 기록의 수명**: 기록은 다음 Tier 0 시작이 지운다. 지우기에 실패하거나(볼륨 오류) Tier 0 를 이 문서의 시작 경로 밖(직접 `python -m services.tier0`)에서 띄우면 엔진 준비 틈에 기록이 남을 수 있다. `Tier0Service.start` 도 지우므로 틈은 진입점의 엔진 준비 시간이다.
+- **업로드 목적 마이그레이션 번호**: `V26__static_reconstruct_input_upload.sql`(V24 -400 `cctv_remote_usage`, V25 -408 `vlm_within_deadline` 다음, 2026-11-02 dev 에 맞춰 옮김).
+- 키 없이 올린 세션 도구(-372, `bundle_id` 없음)는 다시 낼 때마다 새 키다(작업은 하나, 고아 객체는 남는다).
+- EC2 DB 를 초기화(첫 운영 초기화)한 뒤 보정이 다시 등록되지 않으면, 끝나지 않은 `SUBMITTED` 의 상태 조회가 409 로 계속 실패해 새 묶음을 막는다. 이때 운영자가 기록 파일을 다른 이름으로 옮겨 보관한다(지우지 않는다).
+- 서버의 묶음 조회(`input->>'clean_background_bundle_id'`)는 색인이 없다. 작업 수가 적은 MVP 기준이다.
+- Tier 0 보정 저장소 형식(`active.json`, 버전 sha256 파일 이름)에 기댄다. 형식이 바뀌면 `NO_ACTIVE_CALIBRATION` 으로 멈춘다(지어내지 않는다).
+- 10차 세션에서 볼 것: 로비 Ctrl+C 뒤 `tier0.live.stopped` 생김, `after-live` 시작 로그(`정상 종료 확인 → 분석 워커만`)와 워커 접수 문 `Tier 0 가 정상 종료했다`, 업로드 키 `static-inputs/bundle-.../cam*.jpg`·`calibration.json`, 워커 로그 `배경 묶음 자동 제출: QUIET → SUBMITTED`·`배경 묶음 ... → static_reconstruct 작업 job-...`, 기록 파일의 `SUBMITTED`/`FINISHED`, EC2 `analysis_job` 한 행과 `clean_background_bundle_id`, 서버 로그 `배경 묶음 ... 등록했다`, SUCCEEDED 뒤 `admin scene list` 의 CANDIDATE, 도중 Tier 0 를 켜면 업로드 중단(`LIVE`)·실행 중 작업 `LIVE_PREEMPTED` 반납, 워커 재시작 뒤 `ALREADY_SUBMITTED`, 작업이 끝난 뒤 워커가 스스로 끝남(0), MapAnything 단계의 GPU 메모리(분석 워커 예산 0.70)와 전체 소요 시간.

@@ -60,6 +60,7 @@ MapAnything 으로 사람 없는 정적 3D 배경과 초기 카메라 자세를 
 
 - 내내 한자리에 앉아 있거나 서 있는 사람이 카메라 화각의 2% 이상을 차지하면 `never_revealed_ratio >= 0.02` 가 되어 `is_ready()` 가 계속 `False` 로 남는다(의도된 보류). 사람이 자리를 비우거나 `require_ready=False` 강제 내보내기 + `prepare_inputs` 의 세그멘테이션 마스크로 남아 있는 사람 점을 빼는 운영 연결은 호출자(서비스 조립 단계) 몫이다.
 - `services/tier0/` 런타임 연결은 아래 S15P31A101-363 절에서 구현했다.
+- 완성 묶음의 static_reconstruct 자동 제출(관제가 빈 뒤 업로드·작업 등록)은 S15P31A101-403 이 분석 워커에서 한다(`docs/design/worker-static-reconstruct.md` 의 "S15P31A101-403" 절).
 
 ## S15P31A101-363: Tier 0 비동기 수집과 Pod 내보내기
 

@@ -33,7 +33,7 @@ from test_i1_tls import make_cert  # noqa: E402
 import services.tier0.service as service_mod  # noqa: E402
 from services.tier0.service import Tier0Service, Tier0StartError  # noqa: E402
 from services.tier0.settings import load_settings  # noqa: E402
-from simai_ai.gpu.admission import AdmissionGate, AdmissionPolicy  # noqa: E402
+from simai_ai.gpu.admission import AdmissionGate, AdmissionPolicy, clean_stop_path  # noqa: E402
 from simai_ai.gpu.reserve import MB  # noqa: E402
 
 DUMMY = HERE / "dummy_worker.py"
@@ -135,6 +135,9 @@ def test_marker_is_written_before_reservation_and_carries_load_for_gate(tmp_path
     finally:
         assert service.stop(timeout_s=30)
     assert not settings.live_marker.exists()
+    adm = gate.check()
+    assert not adm.live and adm.admit and "정상 종료" in adm.reason  # 정상 종료 기록이 있을 때만 LIVE 아님(S15P31A101-403)
+    clean_stop_path(settings.live_marker).unlink()  # 기록이 없으면(비정상 종료·표시 파일 쓰기 실패와 구별 못 함)
     adm = gate.check()
     assert adm.live and not adm.admit  # 표시 파일이 없으면 기본은 모름(리뷰 R1)
     dev = AdmissionGate(settings.live_marker, AdmissionPolicy(resume_after_s=0.0, live_linger_s=0.0,

@@ -40,6 +40,10 @@ public class UploadSignService {
     private static final Pattern SHA256 = Pattern.compile("^[0-9a-f]{64}$");
     private static final Pattern WORLD_ID = Pattern.compile("^[A-Za-z0-9_~-][A-Za-z0-9._~-]{0,63}$");
     private static final Pattern AVATAR_FILE = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$");
+    /** Tier 0 사람 지운 배경 묶음 폴더 이름(계약 static_reconstruct_submit bundle_id) */
+    private static final Pattern BUNDLE_ID = Pattern.compile("^bundle-[0-9a-f]{32}$");
+    /** 정적 3D 입력 이름(확장자 없음): 카메라 ID(계약 camera_id) 또는 calibration */
+    private static final Pattern STATIC_INPUT_NAME = Pattern.compile("^[A-Za-z0-9_-]{1,64}$");
 
     private final ObjectStorage storage;
     private final NamedParameterJdbcTemplate jdbc;
@@ -75,7 +79,8 @@ public class UploadSignService {
         Instant now = clock.instant().truncatedTo(ChronoUnit.MILLIS);
 
         UUID eventId = (purpose == UploadPurpose.TICKET_PHOTO || purpose == UploadPurpose.AVATAR_ASSET
-                || purpose == UploadPurpose.VIDEO_SEGMENT || purpose == UploadPurpose.SCENE_GLTF)
+                || purpose == UploadPurpose.VIDEO_SEGMENT || purpose == UploadPurpose.SCENE_GLTF
+                || purpose == UploadPurpose.STATIC_RECONSTRUCT_INPUT)
                 ? null
                 : request.eventId();
         MapSqlParameterSource params = new MapSqlParameterSource()
@@ -92,7 +97,7 @@ public class UploadSignService {
                 .addValue("issuedAt", Timestamp.from(now))
                 .addValue("expiresAt", Timestamp.from(now.plus(uploadTtl)));
         // 같은 키(클립·아바타 자산 재시도)는 같은 목적·주체이고 아직 기록되지 않았을 때만 다시 발급한다.
-        // 아바타 자산은 만료 뒤에도 다른 내용으로 덮어쓰지 않는다(규칙 6).
+        // 아바타 자산·정적 3D 입력(묶음별 키)은 만료 뒤에도 다른 내용으로 덮어쓰지 않는다(규칙 6).
         List<Long> granted = jdbc.queryForList("""
                 INSERT INTO upload_grant (object_key, purpose, requester, requested_by_device, requested_by_user,
                     requested_by_worker, content_type, size_bytes, sha256, event_id, issued_at, expires_at)
@@ -108,7 +113,8 @@ public class UploadSignService {
                   AND ((upload_grant.content_type = EXCLUDED.content_type
                         AND upload_grant.size_bytes = EXCLUDED.size_bytes
                         AND upload_grant.sha256 = EXCLUDED.sha256)
-                       OR (upload_grant.purpose <> 'AVATAR_ASSET' AND upload_grant.expires_at <= EXCLUDED.issued_at))
+                       OR (upload_grant.purpose NOT IN ('AVATAR_ASSET', 'STATIC_RECONSTRUCT_INPUT')
+                           AND upload_grant.expires_at <= EXCLUDED.issued_at))
                 RETURNING grant_id
                 """, params, Long.class);
         if (granted.isEmpty()) {
@@ -145,7 +151,20 @@ public class UploadSignService {
             }
             case TICKET_PHOTO, SCENE_GLTF -> purpose.prefix() + "/" + UUID.randomUUID() + extension;
             case AVATAR_ASSET -> avatarKey(purpose, request, extension);
+            case STATIC_RECONSTRUCT_INPUT -> staticInputKey(purpose, request, extension);
         };
+    }
+
+    /** bundle_id·file_name 은 함께 주거나 함께 뺀다. 주면 키가 정해져 같은 묶음을 다시 올려도 객체가 늘지 않는다 */
+    private static String staticInputKey(UploadPurpose purpose, SignRequest request, String extension) {
+        if (request.bundleId() == null && request.fileName() == null) {
+            return purpose.prefix() + "/" + UUID.randomUUID() + "/" + UUID.randomUUID() + extension;
+        }
+        if (request.bundleId() == null || request.fileName() == null || !BUNDLE_ID.matcher(request.bundleId()).matches()
+                || !STATIC_INPUT_NAME.matcher(request.fileName()).matches()) {
+            throw new BusinessException(ErrorCode.Storage.INVALID_UPLOAD);
+        }
+        return purpose.prefix() + "/" + request.bundleId() + "/" + request.fileName() + extension;
     }
 
     private static String avatarKey(UploadPurpose purpose, SignRequest request, String extension) {
@@ -188,6 +207,7 @@ public class UploadSignService {
     /**
      * sha256 은 올릴 내용의 SHA-256 16진수. clip_id 는 EVENT_CLIP, event_id 는 EVENT_*, segment_id 는 VIDEO_SEGMENT 에 필요하고,
      * AVATAR_ASSET 은 선택으로 world_id·stream_epoch·appearance_version·file_name 을 함께 보낼 수 있다.
+     * STATIC_RECONSTRUCT_INPUT 은 선택으로 bundle_id(bundle-<32자리 16진수>)와 file_name(확장자 없는 카메라 ID·calibration)을 함께 보낸다.
      */
     public record SignRequest(
             @JsonProperty("purpose") String purpose,
@@ -200,7 +220,8 @@ public class UploadSignService {
             @JsonProperty("stream_epoch") Long streamEpoch,
             @JsonProperty("appearance_version") Integer appearanceVersion,
             @JsonProperty("file_name") String fileName,
-            @JsonProperty("segment_id") UUID segmentId) {
+            @JsonProperty("segment_id") UUID segmentId,
+            @JsonProperty("bundle_id") String bundleId) {
     }
 
     /**
