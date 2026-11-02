@@ -75,7 +75,7 @@ ENGINE_ERROR 로 바꾸고, 그 ENGINE_ERROR 도 계약 문서로 만들 수 없
   fastapi 0.157.0 은 하루 전·하루 다섯 판이 나와 고르지 않았다). 올릴 때 MR 에 적는다.
 - 크기 225 MB(노트북 빌드). torch·numpy·opencv·websockets·Tier 0 코드 없음(점검이 확인). 비루트(uid 10001), EXPOSE 없음, 헬스체크 `/healthz`, CMD `0.0.0.0:8080`.
   이미지에 계약 스키마(예시 제외)와 공통 벡터(`/opt/simai/vectors`)를 싣는다.
-- compose `risk-engine`: `ports` 없음, 망 `simai-ec2-internal`(internal: 밖으로 못 나감), 읽기 전용 루트, `cap_drop: ALL`, `no-new-privileges`. 볼륨·환경 변수·비밀 없음.
+- compose `risk-engine`: `ports` 없음, 기본 compose는 `simai-ec2-internal`, EC2 compose는 LLM 연결을 위해 `edge`도 사용한다. 읽기 전용 루트, `cap_drop: ALL`, `no-new-privileges`. DB·LLM 설정은 환경 변수로 주입한다.
 - Spring(-101): 같은 망에 붙어 `POST http://risk-engine:8080/v1/plan/evaluate`(본문 `risk_plan_request`, `Content-Type: application/json`). HTTP 상태보다 본문
   `status` 를 따르고 `retryable` true 만 같은 `request_id` 로 다시 보낸다. 연결 실패·시간 초과·비JSON 응답도 다시 보낼 수 있는 실패다(계약).
 
@@ -106,9 +106,9 @@ bash deploy/scripts/risk_engine_g304.sh simai/risk-engine:$TAG simai/tier0:$TAG 
 ## 잔여 위험
 
 - 이미지는 linux/amd64 만(EC2 가 Graviton 이면 bake `platforms` 에 arm64 를 더해야 한다).
-- 인증 없음: 공개 포트가 없고 internal 망이라 Spring 만 닿는다는 전제다. 망 구성을 바꾸면 다시 본다.
+- 인증 없음: 공개 포트는 없으나 EC2 edge 망의 다른 컨테이너도 접근할 수 있다. 망 단위 접근 통제 보강이 필요하다.
 - 통신 금지는 import-linter 계약(지정 모듈·표준 socket·ssl·http·urllib·DB 클라이언트 이름)이 보장하는 범위까지다. 동적 import·새 클라이언트 이름은 잡지 못하고,
-  실행 망 차단(compose internal)이 두 번째 겹이다.
+  EC2 보고서 서비스는 외부 통신이 필요하므로 실행 망 차단에 의존하지 않는다.
 - uvicorn 워커 1개(판정은 스레드 풀). 레이아웃 하나는 ms 단위라 MVP 부하에 충분하다고 보고 재지 않았다.
 - 개구부 바깥 0.2 m 점이 다른 구역·작업면 footprint 안에 떨어질 수 있다(그 판정도 함께 나온다). 오목한 개구부에 맞는 변이 없으면 위치를 만들지 않는다(항목 없음).
 - 계약 스키마 파일이 없는 배포는 기동에서 실패한다(요청을 받지 않음). 노트북에서 이전 Tier 0 이미지(-216 전 contracts/)로 대조하다 찾은 경우다.
@@ -117,3 +117,9 @@ bash deploy/scripts/risk_engine_g304.sh simai/risk-engine:$TAG simai/tier0:$TAG 
 
 - Spring 호출·재시도·`sim.*` 저장(S15P31A101-101).
 - 같은 커밋 두 이미지의 `risk_engine_g304.sh`(다음 Tier 0 이미지 빌드·CI). 레지스트리 푸시·EC2 배포는 사람이 확인한 뒤.
+
+## TBM 보고서 생성 (S15P31A101-417)
+
+`POST /v1/report/generate`는 내부 JSON 요청을 받아 검색·거름·작성·검증을 동기 처리한다. 성공과 생성 실패 모두 HTTP 200이며 `status`, `failure_reason`, `sections`, `citations`, `subgraph`, `steps`, `llm`, `corpus`를 반환한다. 저장은 Spring이 맡는다. DB 연결은 `SIMAI_RAG_PG_DSN`, LLM은 `SIMAI_LLM_*` 환경 변수를 쓴다. 그래프 조회는 읽기 전용 트랜잭션이다. EC2 compose에서 내부망과 외부 접근 가능한 edge 망에 연결하고 호스트 포트는 열지 않는다. 외부 접속을 443으로만 제한하려면 호스트 방화벽 등 별도 설정이 필요하다.
+
+구현과 수치, 운영상 제약은 `docs/design/tbm-report-service.md`를 따른다. 기존 PLANNED 판정은 DB·LLM을 부르지 않는다.
