@@ -293,7 +293,6 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           zoneApplyState={zoneApply}
           scene={sceneInput}
           onSceneStatusChange={setSceneStatus}
-          sceneReview={sceneKey === 'lobby-preview'}
           postProcessing={postProcessing}
         >
           <MockScene colors={colors} selected={selected} legacy={legacy} />

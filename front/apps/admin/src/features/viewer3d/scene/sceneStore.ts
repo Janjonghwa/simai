@@ -191,12 +191,6 @@ export const loadSceneTexture: SceneTextureLoader = (url) => new TextureLoader()
 
 export const SceneTextureLoaderContext = createContext<SceneTextureLoader>(loadSceneTexture);
 
-/**
- * 개발 검수 전용(개발 화면·시험만 켠다). 켜면 정합 근거 없는 배경(DIMMED)도 불투명하게 그려 재구성 형상을 눈으로 확인한다.
- * 판정·상태(verification·display)는 그대로다. 운영 화면은 켜지 않는다.
- */
-export const SceneReviewContext = createContext(false);
-
 /** 정합 판정에 쓰는 지금 버전. World·Health 가 없으면 null. */
 export const sceneVersionsOf = (state: SpatialDataState): SceneVersions => ({
   compatibility: state.health?.scene.compatibility,
