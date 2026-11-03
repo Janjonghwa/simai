@@ -3,7 +3,6 @@ import { ConfirmBadge, DelayedBadge } from '@/features/events/EventBadges';
 import { formatTime } from '@/features/events/format';
 import { firstRaisedAt, type Incident } from '@/features/events/incidents';
 import { resolvedLabel, targetLabel } from '@/features/events/incidentView';
-import { useMismatches } from '@/features/events/mismatch';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { Badge } from '@simai/ui/components/badge';
 import { Button } from '@simai/ui/components/button';
@@ -39,9 +38,6 @@ export function EventDetailHeader({
   onClose: () => void;
 }) {
   const events = incident.entries.map((e) => e.event);
-  // 조치는 완료로 보고됐는데 관측상 아직 활성인 규칙(관리자 전용 토픽). 해소된 규칙은 보이지 않는다.
-  const mismatches = useMismatches();
-  const mismatched = events.some((e) => isActive(e) && mismatches[e.event_id] !== undefined);
   const confirm = events.find((e) => isActive(e) && needsConfirmation(e));
 
   return (
@@ -55,7 +51,6 @@ export function EventDetailHeader({
       <span className="font-mono text-sm text-muted-foreground">
         발생 {formatTime(firstRaisedAt(incident))}
       </span>
-      {mismatched && <Badge variant="outline">불일치 · 조치 완료, 관측상 위험 지속</Badge>}
       {confirm && <ConfirmBadge event={confirm} />}
       {events.some((e) => e.verification === 'UNVERIFIABLE') && (
         <Badge variant="outline">해소 확인 불가</Badge>

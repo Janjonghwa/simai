@@ -300,31 +300,23 @@ describe('카드 표시 계산', () => {
     ).toBeNull();
   });
 
-  it('처리 상태 칩: 불일치 > 조치 단계 > 확인 시각 > 미확인, 해소되면 해소 시각', () => {
+  it('처리 상태 칩: 조치 단계 > 확인 시각 > 미확인, 해소되면 해소 시각', () => {
     const open = incidentOfEntries(entry({ updated_at: T }));
     expect(cardChip(open)).toEqual({ kind: 'unacked', label: '미확인' });
     expect(cardChip(open, { ticketStage: '조치 중' })).toEqual({
       kind: 'ticket',
       label: '조치 중',
     });
-    expect(cardChip(open, { ticketStage: '조치 중', mismatches: { 'e-1': {} } })).toEqual({
-      kind: 'mismatch',
-      label: '불일치',
-    });
 
     const acked = incidentOfEntries(entry({ acks: [ack(T + 3_000)], updated_at: T + 3_000 }));
     expect(cardChip(acked)?.kind).toBe('ack');
     expect(cardChip(acked)?.label).toMatch(HH);
-    // 확인했어도 불일치가 나중에 걸리면 불일치가 앞선다.
-    expect(cardChip(acked, { mismatches: { 'e-1': {} } })?.kind).toBe('mismatch');
 
     const done = incidentOfEntries(
       entry({ lifecycle: 'RESOLVED', resolved_at: T + 9_000, updated_at: T + 9_000 }),
     );
     expect(cardChip(done)?.kind).toBe('resolved');
     expect(cardChip(done)?.label).toMatch(/^해소 \d{2}:\d{2}:\d{2}$/);
-    // 해소된 규칙의 불일치는 보이지 않는다.
-    expect(cardChip(done, { mismatches: { 'e-1': {} } })?.kind).toBe('resolved');
   });
 
   it('주의·안내만 있는 묶음은 처리 상태 칩이 없다', () => {

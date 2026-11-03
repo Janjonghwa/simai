@@ -1,7 +1,6 @@
 import { EventDetail } from '@/features/events/EventDetail';
 import { EventPanel } from '@/features/events/EventPanel';
 import { groupIncidents, mergeEvent, type EventEntry } from '@/features/events/events';
-import { MISMATCH_KEY } from '@/features/events/mismatch';
 import type { EventItem } from '@/features/events/types';
 import { useSessionStore } from '@/store/session.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -191,32 +190,16 @@ describe('EventPanel 모두 지우기', () => {
   });
 });
 
-describe('EventDetail 불일치·확인 필요', () => {
-  function renderDetail(entries: EventEntry[], mismatchOf?: string) {
-    const queryClient = new QueryClient();
-    if (mismatchOf) {
-      queryClient.setQueryData(MISMATCH_KEY, {
-        [mismatchOf]: { ticketId: 't-1', ticketStatus: 'DONE', eventSequence: 1, detectedAt: T },
-      });
-    }
+describe('EventDetail 확인 필요', () => {
+  function renderDetail(entries: EventEntry[]) {
     const incident = groupIncidents(entries)[0]!;
     render(
-      <QueryClientProvider client={queryClient}>
+      <QueryClientProvider client={new QueryClient()}>
         <EventDetail incident={incident} openEventId="e-1" onClose={vi.fn()} />
       </QueryClientProvider>,
     );
     return screen.getByRole('dialog', { name: '사건 상세' });
   }
-
-  it('조치 완료인데 관측상 활성이면 불일치를 머리에 보인다', () => {
-    const dialog = renderDetail([entry()], 'e-1');
-    expect(within(dialog).getByText('불일치 · 조치 완료, 관측상 위험 지속')).toBeTruthy();
-  });
-
-  it('해소된 규칙의 불일치는 보이지 않는다', () => {
-    const dialog = renderDetail([entry({ lifecycle: 'RESOLVED', resolved_at: T + 1_000 })], 'e-1');
-    expect(within(dialog).queryByText(/불일치/)).toBeNull();
-  });
 
   it('복원 이벤트는 확인 필요와 첫 이유를 머리에, 전체 이유를 규칙 줄에 보인다', () => {
     const dialog = renderDetail([

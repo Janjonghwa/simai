@@ -31,7 +31,7 @@ import { createStore, type StoreApi } from 'zustand/vanilla';
 // 10 Hz World 는 여기만 바꾸고 Canvas·장면 트리는 다시 만들지 않는다. 구독하는 렌더러만 갱신한다.
 
 export type IngestOutcome =
-  'world' | 'event' | 'health' | 'avatar' | 'ignored' | 'rejected' | 'duplicate' | 'out_of_order';
+  'world' | 'event' | 'health' | 'avatar' | 'rejected' | 'duplicate' | 'out_of_order';
 
 export interface IngestCounts {
   world: number;
@@ -39,7 +39,6 @@ export interface IngestCounts {
   health: number;
   /** 사람 포즈를 하나 이상 받은 avatar_frame(-65). */
   avatar: number;
-  ignored: number;
   rejected: number;
   /** 같은 msg_id, 또는 같은 event_sequence 를 다시 받았다. */
   duplicate: number;
@@ -94,7 +93,6 @@ const ZERO: IngestCounts = {
   event: 0,
   health: 0,
   avatar: 0,
-  ignored: 0,
   rejected: 0,
   duplicate: 0,
   outOfOrder: 0,
@@ -151,12 +149,7 @@ export function createSpatialDataStore(): SpatialDataStore {
           bump('rejected', { lastRejected: { reason, msgType, detail, at: receivedAt } });
           return 'rejected';
         }
-        const msgId =
-          result.kind === 'ignored'
-            ? result.msgId
-            : result.kind === 'avatar'
-              ? result.frame.msgId
-              : metaId(result);
+        const msgId = result.kind === 'avatar' ? result.frame.msgId : metaId(result);
         if (seen.has(msgId)) {
           bump('duplicate');
           return 'duplicate';
@@ -164,9 +157,6 @@ export function createSpatialDataStore(): SpatialDataStore {
         remember(msgId);
 
         switch (result.kind) {
-          case 'ignored':
-            bump('ignored');
-            return 'ignored';
           case 'avatar': {
             const avatars = new Map(get().avatars);
             let pruned = 0;

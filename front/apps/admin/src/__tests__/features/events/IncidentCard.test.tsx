@@ -127,7 +127,7 @@ describe('IncidentCard', () => {
     expect(card.querySelector('[data-chip]')).toBeNull();
   });
 
-  it('확인하면 확인 시각 칩이고, 불일치가 있으면 불일치가 앞선다', () => {
+  it('확인하면 확인 시각 칩이다', () => {
     const acked = entry({
       acks: [
         {
@@ -144,14 +144,6 @@ describe('IncidentCard', () => {
     expect(screen.getByRole('article').querySelector('[data-chip]')?.textContent).toMatch(
       /^확인 \d{2}:\d{2}:\d{2}$/,
     );
-    cleanup();
-
-    renderCard([acked], {
-      mismatches: {
-        'e-1': { ticketId: 't', ticketStatus: 'DONE', eventSequence: 1, detectedAt: T },
-      },
-    });
-    expect(screen.getByRole('article').querySelector('[data-chip]')?.textContent).toBe('불일치');
   });
 
   it('해소된 묶음은 해소 시각 칩만 있고 경과는 없다', () => {

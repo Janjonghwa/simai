@@ -4,13 +4,12 @@ import type { EventItem } from '@/features/events/types';
 import { Badge } from '@simai/ui/components/badge';
 import { cn } from '@simai/ui/lib/utils';
 
-/** 조용한 칩: 확인됨 · 조치 단계 · 해소. 눈에 띄는 칩(미확인 · 불일치)과 갈린다. */
+/** 조용한 칩: 확인됨 · 조치 단계 · 해소. 눈에 띄는 칩(미확인)과 갈린다. */
 const QUIET_CHIP = 'border-border text-muted-foreground';
 
-/** 처리 상태 칩 모양(알약). 미확인은 굵은 빨강 외곽선(위험 등급 색), 불일치는 주황(지연과 같은 경고 색)이다. */
+/** 처리 상태 칩 모양(알약). 미확인은 굵은 빨강 외곽선(위험 등급 색)이다. */
 const CHIP_CLASS: Record<CardChip['kind'], string> = {
   unacked: 'border-[1.5px] border-sev-critical font-bold text-sev-critical',
-  mismatch: 'border-delay font-semibold text-delay',
   ticket: QUIET_CHIP,
   ack: QUIET_CHIP,
   resolved: QUIET_CHIP,

@@ -201,23 +201,22 @@ describe('bindSession', () => {
     expect(started.map((s) => s.refreshToken)).toEqual([refreshToken, refreshToken]);
   });
 
-  it('실시간 연결이 읽는 역할은 세션의 지금 역할이다(재연결 때 바뀐 역할을 읽는다)', () => {
-    const started: RealtimeSession[] = [];
+  it('같은 사람의 권한만 바뀌면 연결을 다시 열지 않는다', () => {
+    const log: string[] = [];
     const sessionStore = createStore<{ session?: Session }>()(() => ({ session: alice }));
     bindSession({
       sessionStore,
-      realtime: { start: (session) => started.push(session), stop: async () => {} },
+      realtime: {
+        start: () => log.push('start'),
+        stop: async () => {
+          log.push('stop');
+        },
+      },
       router: { invalidate: async () => {}, clearCache: () => {} },
       queryClient: { clear: () => {} },
     });
-    expect(started).toHaveLength(1);
-    expect(started[0]!.getRole?.()).toBe('ADMIN');
 
-    // 같은 사용자의 권한이 바뀌어도 연결은 다시 열지 않는다. 다음 재연결이 새 역할을 읽는다.
     sessionStore.setState({ session: { ...alice, user: { id: 'alice', role: 'FOREMAN' } } });
-    expect(started).toHaveLength(1);
-    expect(started[0]!.getRole?.()).toBe('FOREMAN');
-    sessionStore.setState({ session: undefined });
-    expect(started[0]!.getRole?.()).toBeUndefined();
+    expect(log).toEqual(['start']);
   });
 });

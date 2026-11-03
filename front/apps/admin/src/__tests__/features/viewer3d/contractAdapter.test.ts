@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 
 // 저장소 루트 contracts/ 의 정본 예제. 손으로 옮겨 적지 않고 그대로 읽는다.
 const ALL_VALID = import.meta.glob<{ default: unknown }>(
-  '../../../../../../../contracts/examples/{world_state,risk_event,viewer_health,action_mismatch,avatar_frame}*.json',
+  '../../../../../../../contracts/examples/{world_state,risk_event,viewer_health,avatar_frame}*.json',
   { eager: true },
 );
 const ALL_INVALID = import.meta.glob<{ default: unknown }>(
@@ -18,13 +18,7 @@ const ALL_INVALID = import.meta.glob<{ default: unknown }>(
 );
 const name = (path: string) => path.split('/').pop()!.replace('.json', '');
 // risk_event_transition(I1) 처럼 이름만 앞이 같은 다른 메시지는 뺀다.
-const VIEWER_TYPES = [
-  'world_state',
-  'risk_event',
-  'viewer_health',
-  'action_mismatch',
-  'avatar_frame',
-];
+const VIEWER_TYPES = ['world_state', 'risk_event', 'viewer_health', 'avatar_frame'];
 const onlyViewer = (files: typeof ALL_VALID) =>
   Object.fromEntries(
     Object.entries(files).filter(([path]) => VIEWER_TYPES.includes(name(path).split('.')[0]!)),
@@ -51,7 +45,6 @@ describe('정본 예제', () => {
         world_state: 'world',
         risk_event: 'event',
         viewer_health: 'health',
-        action_mismatch: 'ignored',
         avatar_frame: 'avatar',
       }[type!];
       expect([name(path), result.kind]).toEqual([name(path), expected]);
@@ -238,6 +231,15 @@ describe('거부', () => {
     ['msg_type 없음', { payload: {} }, 'UNKNOWN_MSG_TYPE'],
   ])('%s', (_, raw, reason) => {
     expect(adaptMessage(raw, 0)).toMatchObject({ kind: 'rejected', reason });
+  });
+
+  it('모르는 msg_type 은 종류를 남겨 거부한다', () => {
+    expect(adaptMessage({ msg_type: 'mystery' }, 0)).toEqual({
+      kind: 'rejected',
+      reason: 'UNKNOWN_MSG_TYPE',
+      msgType: 'mystery',
+      detail: '모르는 msg_type: mystery',
+    });
   });
 
   it('NaN·Infinity 좌표는 좌표로 받지 않는다', () => {
