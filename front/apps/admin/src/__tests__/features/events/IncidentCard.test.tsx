@@ -127,6 +127,14 @@ describe('IncidentCard', () => {
     expect(card.querySelector('[data-chip]')).toBeNull();
   });
 
+  it('보호구 미착용(R9)은 주의 배지와 규칙 이름으로 보이고 처리 칩이 없다', () => {
+    const { card } = renderCard([entry({ rule_id: 'R9', severity: 'CAUTION', metrics: {} })]);
+
+    expect(within(card).getByText('주의')).toBeTruthy();
+    expect(within(card).getByText('보호구 미착용')).toBeTruthy();
+    expect(card.querySelector('[data-chip]')).toBeNull();
+  });
+
   it('확인하면 확인 시각 칩이다', () => {
     const acked = entry({
       acks: [
