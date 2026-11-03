@@ -12,7 +12,12 @@ except ImportError:
 
 from simai_camera_helper.judge import CoverageJudge, pair_grade
 from simai_camera_helper.matcher import CameraMatcher, Intrinsics, load_intrinsics, prepare_image, warp_yaw
-from simai_camera_helper.offline import DEFAULT_INTRINSICS, DEFAULT_RECORDING, DEFAULT_WEIGHTS, selected_keyframes
+from simai_camera_helper.offline import (
+    DEFAULT_INTRINSICS,
+    DEFAULT_RECORDING,
+    DEFAULT_WEIGHTS,
+    selected_keyframes,
+)
 
 pytestmark = pytest.mark.weights
 
