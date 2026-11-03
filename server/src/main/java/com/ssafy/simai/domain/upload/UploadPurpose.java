@@ -36,6 +36,7 @@ public enum UploadPurpose {
                     "image/webp", ".webp"),
             64L << 20,
             Set.of(Requester.Kind.WORKER)),
+    REPORT_SIGNATURE("signatures", Map.of("image/png", ".png"), 256L << 10, Set.of(Requester.Kind.ADMIN)),
     // 정적 3D 입력(static_reconstruct images[]·calibration_ref, 워커 토큰, S15P31A101-403). 원본 해상도 JPEG·PNG 한 장과 보정 문서 JSON.
     // 키는 static-inputs/<bundle_id>/<file_name><확장자>(묶음마다 정해짐, 같은 내용만 다시 받음) 또는 static-inputs/<UUID>/<UUID>.
     STATIC_RECONSTRUCT_INPUT(
