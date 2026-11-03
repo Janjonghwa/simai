@@ -3,17 +3,20 @@ package com.ssafy.simai.domain.work;
 import com.ssafy.simai.domain.config.SiteLookup;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
+import com.ssafy.simai.global.exception.GlobalExceptionHandler;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -41,12 +44,15 @@ class WorkUnitController {
     private final SiteLookup sites;
     private final TransactionTemplate transaction;
     private final Clock clock;
+    private final WorkSessionService sessions;
 
-    WorkUnitController(WorkUnitRepository works, SiteLookup sites, TransactionTemplate transaction, Clock clock) {
+    WorkUnitController(WorkUnitRepository works, SiteLookup sites, TransactionTemplate transaction, Clock clock,
+            WorkSessionService sessions) {
         this.works = works;
         this.sites = sites;
         this.transaction = transaction;
         this.clock = clock;
+        this.sessions = sessions;
     }
 
     /** 목록 응답. 관제 앱이 works 를 하나씩 검사한다 */
@@ -60,6 +66,26 @@ class WorkUnitController {
         }
         Instant since = clock.instant().minus(Duration.ofDays(days));
         return new WorkUnitsResponse(works.findRecent(sites.siteId(), since));
+    }
+
+    @PostMapping("/{workId}/start")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode start(@PathVariable long workId) {
+        return sessions.start(workId);
+    }
+
+    @PostMapping("/{workId}/end")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode end(@PathVariable long workId) {
+        return sessions.end(workId);
+    }
+
+    @ExceptionHandler(WorkAlreadyInProgressException.class)
+    ProblemDetail alreadyInProgress(WorkAlreadyInProgressException e) {
+        ProblemDetail problem = GlobalExceptionHandler.problem(e.getErrorCode());
+        problem.setProperty("work_id", String.valueOf(e.workId()));
+        return problem;
     }
 
     @GetMapping("/{workId}")

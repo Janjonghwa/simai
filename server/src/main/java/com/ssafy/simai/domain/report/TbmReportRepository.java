@@ -43,7 +43,8 @@ public class TbmReportRepository {
                    r.risk_items::text AS risk_items, r.zone_history::text AS zone_history,
                    r.sections::text AS sections, r.citations::text AS citations,
                    r.subgraph::text AS subgraph, r.steps::text AS steps,
-                   r.llm_model, r.created_at, r.completed_at,
+                   r.llm_model, r.created_at, r.completed_at, r.wrap_up_summary, r.wrap_up_status,
+                   r.locked_at, r.content_sha256,
                    w.work_date, w.name AS work_name, w.starts_at, w.ends_at,
                    w.zone_id, w.place, w.planned_people, w.lead_team
             FROM report r
@@ -89,7 +90,8 @@ public class TbmReportRepository {
     public int failInterrupted(Instant now) {
         return jdbc.update("""
                 UPDATE report
-                SET status = 'FAILED', failure_reason = 'INTERRUPTED', completed_at = :now
+                SET status = 'FAILED', failure_reason = 'INTERRUPTED', completed_at = :now,
+                    wrap_up_status = CASE WHEN wrap_up_status = 'GENERATING' THEN 'FAILED' ELSE wrap_up_status END
                 WHERE status = 'GENERATING'
                 """, new MapSqlParameterSource("now", utc(now)));
     }
@@ -278,6 +280,7 @@ public class TbmReportRepository {
             v.put("report_id", r.get("report_id").asLong());
             v.put("report_version", r.get("report_version").asInt());
             v.put("status", r.get("status").asString());
+            v.set("wrap_up_status", r.get("wrap_up_status"));
             v.put("created_at_ms", r.get("created_at_ms").asLong());
         }
         return out;
@@ -418,6 +421,18 @@ public class TbmReportRepository {
         o.put("report_version", rs.getInt("report_version"));
         o.put("status", rs.getString("status"));
         putText(o, "failure_reason", rs.getString("failure_reason"));
+        putText(o, "wrap_up_summary", rs.getString("wrap_up_summary"));
+        putText(o, "wrap_up_status", rs.getString("wrap_up_status"));
+        putText(o, "content_sha256", rs.getString("content_sha256"));
+        Timestamp lockedAt = rs.getTimestamp("locked_at");
+        if (lockedAt == null) o.putNull("locked_at"); else o.put("locked_at", lockedAt.getTime());
+        // 서명 표는 -440(V29)가 소유한다. 독립 worktree에는 없으므로 0으로 시작한다.
+        boolean signaturesExist = Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT to_regclass('report_signature') IS NOT NULL", Map.of(), Boolean.class));
+        long signatures = signaturesExist ? jdbc.queryForObject(
+                "SELECT count(*) FROM report_signature WHERE report_id = :id AND report_version = :version",
+                new MapSqlParameterSource("id", rs.getLong("report_id")).addValue("version", rs.getInt("report_version")), Long.class) : 0;
+        o.put("signature_count", signatures);
         long layoutId = rs.getLong("layout_id");
         if (rs.wasNull()) {
             o.putNull("layout_id");
