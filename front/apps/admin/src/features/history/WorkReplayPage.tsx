@@ -5,16 +5,14 @@ import type { WorkUnit } from '@/features/history/types';
 import { useWorkReplay, useWorks } from '@/features/history/useWorkReplay';
 import { formatDate, timeRange, worksLoadingLine } from '@/features/history/works';
 import { PageTitle } from '@/features/layout/PageTitle';
-import type { Viewer3DHandle, ViewerTarget } from '@/features/viewer3d';
-import { useZones } from '@/features/zones/useZones';
 import { Button } from '@simai/ui/components/button';
 import { useNavigate } from '@tanstack/react-router';
 import { ChevronLeft } from 'lucide-react';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 
-// 화면 틀: 가운데 칸(CCTV·작은 창)과 오른쪽 열(작업자·이벤트 로그, 420px).
+// 화면 틀: 가운데 칸(CCTV)과 오른쪽 열(작업자·이벤트 로그, 420px).
 const BODY = 'grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_420px] gap-3.5';
-const STAGE = 'relative flex min-h-[420px] min-w-0 flex-col';
+const STAGE = 'flex min-h-[420px] min-w-0 flex-col';
 
 function BackButton() {
   const navigate = useNavigate();
@@ -41,33 +39,21 @@ function WorkHeader({ work }: { work: WorkUnit }) {
   );
 }
 
-/** 작업 다시 보기: 작업 구간의 CCTV(목 화면)·3D(재생)·타임라인·작업자·이벤트 로그. 작업자는 익명 World ID 다. */
+/** 작업 다시 보기: 작업 구간의 CCTV(목 화면)·타임라인·작업자·이벤트 로그. 작업자는 익명 World ID 다. */
 export function WorkReplayPage({ workId }: { workId: string }) {
   const { works, failed: worksFailed } = useWorks();
   const work = works?.find((w) => w.work_id === workId);
-  const { raw: zonesRaw } = useZones();
-  const session = useWorkReplay(work, zonesRaw);
-  const viewer = useRef<Viewer3DHandle>(null);
+  const session = useWorkReplay(work);
   const [selected, setSelected] = useState<string | null>(null);
   const { replay, index } = session;
 
-  const pickWorker = useCallback((worldId: string) => {
-    const target: ViewerTarget = { type: 'person', id: worldId };
-    setSelected(worldId);
-    viewer.current?.select(target);
-    viewer.current?.focus(target);
-  }, []);
   const pickEvent = useCallback(
     (event: EventRow) => {
       seekTo(replay, event.raisedAt);
       const target = event.worldIds[0];
-      if (target) pickWorker(target);
+      if (target) setSelected(target);
     },
-    [replay, pickWorker],
-  );
-  const select3d = useCallback(
-    (target: ViewerTarget | null) => setSelected(target?.type === 'person' ? target.id : null),
-    [],
+    [replay],
   );
 
   if (!work) {
@@ -98,14 +84,7 @@ export function WorkReplayPage({ workId }: { workId: string }) {
       />
       <div className={BODY}>
         <section aria-label="CCTV 다시 보기" className={STAGE}>
-          <ReplayStage
-            session={session}
-            range={{ from: work.from_ms, to: work.to_ms }}
-            selectedId={selected}
-            viewerRef={viewer}
-            onPickWorker={pickWorker}
-            onSelectionChange={select3d}
-          />
+          <ReplayStage session={session} range={{ from: work.from_ms, to: work.to_ms }} />
         </section>
         <ReplayLists
           replay={replay}
@@ -113,7 +92,7 @@ export function WorkReplayPage({ workId }: { workId: string }) {
           holdMs={session.holdMs}
           planned={work.planned_people}
           selectedId={selected}
-          onPickWorker={pickWorker}
+          onPickWorker={setSelected}
           onPickEvent={pickEvent}
         />
       </div>

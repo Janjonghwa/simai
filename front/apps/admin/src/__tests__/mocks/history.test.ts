@@ -70,15 +70,15 @@ const get = (path: string, account: string | null = 'viewer') =>
 const client = createHttp({ baseUrl: BASE, getToken: () => 'mock-token.viewer' });
 
 describe('히스토리 mock: 작업 목록', () => {
-  it('최근 3일의 TBM 작업 중 시작한 것만 주고, 가장 오래된 날 마지막 작업만 기록이 없다', () => {
-    expect(works.every((w) => w.from_ms <= NOW)).toBe(true);
+  it('최근 3일의 TBM 작업을 서버처럼 시작 전인 것까지 주고, 가장 오래된 날 마지막 작업만 기록이 없다', () => {
+    expect(works.some((w) => w.from_ms > NOW)).toBe(true);
     expect([...new Set(works.map((w) => w.date))]).toEqual([
       '2026-10-29',
       '2026-10-28',
       '2026-10-27',
     ]);
     expect(works.filter((w) => w.date === '2026-10-29').map((w) => w.name)).toEqual(
-      TBM_TASKS.filter((t) => t.from <= '11:00').map((t) => t.name),
+      TBM_TASKS.map((t) => t.name),
     );
     const none = works.filter(hasNoRecord);
     expect(none.map((w) => w.work_id)).toEqual([`2026-10-27-${LAST.id}`]);

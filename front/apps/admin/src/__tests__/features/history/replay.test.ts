@@ -13,13 +13,16 @@ import {
   indexReplay,
   inGap,
   isActiveAt,
-  markableAt,
-  marksOf,
   noDataAt,
-  type EventRow,
 } from '@/features/history/replayIndex';
 import type { ReplayResponse, WorkUnit } from '@/features/history/types';
-import { formatDate, groupByDate, readWorks, timeRange } from '@/features/history/works';
+import {
+  formatDate,
+  groupByDate,
+  readWorks,
+  startedWorks,
+  timeRange,
+} from '@/features/history/works';
 import type { ReplayLog } from '@/features/viewer3d';
 import { ApiError } from '@/lib/http';
 import { describe, expect, it } from 'vitest';
@@ -29,8 +32,6 @@ const T0 = 1_760_342_400_000;
 /** 그 시각에 보이는 사람(화면은 기록 하나를 frameAt 으로 골라 그 ids 를 쓴다). */
 const visibleAt = (index: Parameters<typeof frameAt>[0], t: number, holdMs: number) =>
   new Set(frameAt(index, t, holdMs)?.ids);
-/** 그 시각에 평면에 얹는 표시. */
-const marksAt = (events: readonly EventRow[], t: number) => marksOf(markableAt(events, t));
 
 const work = (overrides: Partial<WorkUnit> = {}): WorkUnit => ({
   work_id: 'w',
@@ -59,6 +60,16 @@ describe('작업 다시 보기 계산', () => {
   it('형식이 틀렸거나 끝이 시작보다 이르지 않은 작업은 뺀다', () => {
     const items = [work(), { ...work(), date: '10/29' }, work({ to_ms: T0 }), 'x'];
     expect(readWorks(items).map((w) => w.work_id)).toEqual(['w']);
+  });
+
+  it('시작한 작업만 남기고(시작 시각이 지금 이전), 작업은 같은 객체로 돌려준다', () => {
+    const early = work({ work_id: 'early', from_ms: T0 - 1 });
+    const exact = work({ work_id: 'exact', from_ms: T0 });
+    const later = work({ work_id: 'later', from_ms: T0 + 1 });
+    const started = startedWorks([later, early, exact], T0);
+    expect(started.map((w) => w.work_id)).toEqual(['early', 'exact']);
+    expect(started[0]).toBe(early);
+    expect(startedWorks([], T0)).toEqual([]);
   });
 
   it('날짜별로 새 날짜부터 묶고, 날짜 안에서는 시작 시각순이다', () => {
@@ -530,84 +541,5 @@ describe('데이터 없음(inGap·noDataAt·allGap)', () => {
     expect(allGap([{ from: T0, to: T0 + 59_999 }], range)).toBe(false);
     expect(allGap([{ from: T0 + 10_000, to: T0 + 20_000 }], range)).toBe(false);
     expect(allGap([], range)).toBe(false);
-  });
-});
-
-describe('2D 평면 표시(marksAt)', () => {
-  const row = (overrides: Partial<EventRow> = {}): EventRow => ({
-    eventId: 'e',
-    ruleId: 'R1',
-    severity: 'HIGH',
-    worldIds: [],
-    zoneId: null,
-    raisedAt: T0,
-    resolvedAt: null,
-    ...overrides,
-  });
-
-  it('그 시각에 활성인 이벤트를 사람·구역에 건다. 확인 대기(alarming)는 없다', () => {
-    const marks = marksAt([row({ worldIds: ['w-1', 'w-2'], zoneId: 'z-02' })], T0 + 1_000);
-    expect([...marks.people]).toEqual([
-      ['w-1', { severity: 'HIGH', alarming: false }],
-      ['w-2', { severity: 'HIGH', alarming: false }],
-    ]);
-    expect([...marks.zones]).toEqual([['z-02', { severity: 'HIGH', alarming: false }]]);
-  });
-
-  it('사람·구역마다 가장 높은 등급이 이긴다(순서와 상관없다)', () => {
-    const events = [
-      row({ eventId: 'a', severity: 'CAUTION', worldIds: ['w-1'], zoneId: 'z-02' }),
-      row({ eventId: 'b', severity: 'CRITICAL', worldIds: ['w-1'], zoneId: 'z-04' }),
-      row({ eventId: 'c', severity: 'HIGH', worldIds: ['w-1', 'w-2'], zoneId: 'z-02' }),
-    ];
-    for (const list of [events, [...events].reverse()]) {
-      const marks = marksAt(list, T0 + 1);
-      expect(marks.people.get('w-1')?.severity).toBe('CRITICAL');
-      expect(marks.people.get('w-2')?.severity).toBe('HIGH');
-      expect(marks.zones.get('z-02')?.severity).toBe('HIGH');
-      expect(marks.zones.get('z-04')?.severity).toBe('CRITICAL');
-    }
-  });
-
-  it('CAUTION 이상만 보이고 INFO 는 뺀다', () => {
-    const marks = marksAt(
-      [
-        row({ eventId: 'a', severity: 'INFO', worldIds: ['w-1'], zoneId: 'z-01' }),
-        row({ eventId: 'b', severity: 'CAUTION', worldIds: ['w-2'] }),
-      ],
-      T0 + 1,
-    );
-    expect([...marks.people.keys()]).toEqual(['w-2']);
-    expect(marks.zones.size).toBe(0);
-  });
-
-  it('발생 전이거나 해소된 뒤에는 보이지 않고, 발생 시각부터 해소 직전까지 보인다', () => {
-    const events = [
-      row({ worldIds: ['w-1'], zoneId: 'z-02', raisedAt: T0 + 1_000, resolvedAt: T0 + 5_000 }),
-    ];
-    const seen = (t: number) => marksAt(events, t).people.has('w-1');
-    expect([T0 + 999, T0 + 1_000, T0 + 4_999, T0 + 5_000].map(seen)).toEqual([
-      false,
-      true,
-      true,
-      false,
-    ]);
-  });
-
-  it('해소된 이벤트의 높은 등급이 다른 활성 이벤트를 가리지 않는다', () => {
-    const events = [
-      row({ eventId: 'a', severity: 'CRITICAL', worldIds: ['w-1'], resolvedAt: T0 + 1_000 }),
-      row({ eventId: 'b', severity: 'HIGH', worldIds: ['w-1'] }),
-    ];
-    expect(marksAt(events, T0 + 500).people.get('w-1')?.severity).toBe('CRITICAL');
-    expect(marksAt(events, T0 + 2_000).people.get('w-1')?.severity).toBe('HIGH');
-  });
-
-  it('구역이 없는 이벤트는 구역에 걸지 않고, 이벤트가 없으면 비어 있다', () => {
-    const marks = marksAt([row({ worldIds: ['w-1'], zoneId: null })], T0);
-    expect(marks.people.size).toBe(1);
-    expect(marks.zones.size).toBe(0);
-    const empty = marksAt([], T0);
-    expect([empty.people.size, empty.zones.size]).toEqual([0, 0]);
   });
 });

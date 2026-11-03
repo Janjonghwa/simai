@@ -45,7 +45,7 @@ function WorkerItem({
   );
 }
 
-/** 구간에 잡힌 작업자(익명 World ID). 누르면 3D 에서 고른다. */
+/** 구간에 잡힌 작업자(익명 World ID). 누르면 고른다. */
 export function WorkerList({
   workers,
   planned,

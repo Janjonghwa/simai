@@ -87,7 +87,10 @@ function countEvents(from: number, to: number): { CRITICAL: number; HIGH: number
   };
 }
 
-/** 최근 DAYS 일의 TBM 작업 중 이미 시작한 것. 가장 오래된 날의 마지막 작업은 기록이 없다(다른 작업과 겹치지 않는다). */
+/**
+ * 최근 DAYS 일의 TBM 작업(서버처럼 아직 시작하지 않은 오늘 작업도 준다). 가장 오래된 날의 마지막 작업은 기록이 없다
+ * (다른 작업과 겹치지 않는다).
+ */
 export function historyWorks(now: number): HistoryMockWork[] {
   const works: HistoryMockWork[] = [];
   for (let d = 0; d < DAYS; d++) {
@@ -95,7 +98,6 @@ export function historyWorks(now: number): HistoryMockWork[] {
     TBM_TASKS.forEach((task, i) => {
       const from = at(day, task.from);
       const to = at(day, task.to);
-      if (from > now) return;
       const noRecord = d === DAYS - 1 && i === TBM_TASKS.length - 1;
       works.push({
         work_id: `${dateOf(day)}-${task.id}`,

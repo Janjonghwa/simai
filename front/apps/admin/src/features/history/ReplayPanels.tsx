@@ -5,7 +5,7 @@ import { EventLog, WorkerList } from '@/features/history/WorkLists';
 import type { ReplaySpatialSource } from '@/features/viewer3d';
 import { useMemo } from 'react';
 
-// 재생 상태는 재생 중 0.1초마다 바뀐다. 그 값을 보이는 타임라인·목록만 구독해 3D 가 있는 화면 전체를 다시 그리지 않는다.
+// 재생 상태는 재생 중 0.1초마다 바뀐다. 그 값을 보이는 타임라인·목록만 구독해 화면 전체를 다시 그리지 않는다.
 
 const NO_EVENTS: readonly EventRow[] = [];
 const NO_GAPS: TimelineProps['gaps'] = [];
