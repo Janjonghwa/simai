@@ -11,7 +11,6 @@ import {
 import {
   configureSceneKtx2Loader,
   SceneLoaderContext,
-  SceneReviewContext,
   SceneStoreContext,
   SceneTextureLoaderContext,
   type SceneStore,
@@ -44,18 +43,11 @@ import { useStore } from 'zustand';
 // - 배경은 클릭을 받지 않는다(사람·구역·작업면 선택과 빈 곳 클릭 해제를 가리지 않는다).
 // - 사진 텍스처(map)가 있는 메시는 이미 카메라 조명이 구워져 있으므로 광원 계산·톤매핑을 거치지 않는 MeshBasicMaterial(SRGBColorSpace, toneMapped: false)로 바꾼다.
 // - 텍스처가 없는 정점색·회색 메시는 기존 조명 재질(MeshStandardMaterial 등)을 유지하고 법선이 없으면 계산해 입체감을 남긴다.
-// - 정합 근거가 없을 때(DIMMED): 무텍스처 메시는 반투명(DIMMED_OPACITY)으로, 사진 텍스처 메시는 깊이 가림이 깨지지 않게 불투명을 유지하되 채도·명도를 낮춘다.
+// - 정합 상태와 관계없이 원래 재질 색과 불투명도를 유지한다.
 // - scene_output 2.1.0 SURFACE_SOURCE_MAP 이 주어지면 최근접 샘플링(NearestFilter, NoColorSpace, mipmap 끔)으로 읽어
 //   2(OBSERVED)는 그대로, 3(ESTIMATED_PLANE)·1(INTERPOLATED)은 약간 낮추고, 0(UNOBSERVED)·기타는 어둡게 흐리고 빗금을 얹는다.
 
 const noRaycast = () => {};
-/** 정합 근거가 없을 때 무텍스처 배경 불투명도. 사람·구역보다 눈에 덜 띄게 한다. */
-export const DIMMED_OPACITY = 0.35;
-/** 정합 근거가 없을 때 사진 텍스처 배경의 명도 배율(불투명 깊이 가림은 유지). */
-export const DIMMED_TEXTURE_BRIGHTNESS = 0.65;
-/** 정합 근거가 없을 때 사진 텍스처 배경의 채도 유지 비율(0 = 무채색, 1 = 원본). */
-export const DIMMED_TEXTURE_SATURATION = 0.25;
-
 export interface SurfaceSourceShade {
   brightness: number;
   saturation: number;
@@ -85,12 +77,11 @@ export function surfaceSourceShade(code: number): SurfaceSourceShade {
 }
 
 /**
- * 셰이더와 동일한 계산으로 사진 텍스처 RGB(0~1)에 SURFACE_SOURCE_MAP 코드와 DIMMED 상태를 적용한 RGB 를 돌려준다.
+ * 셰이더와 동일한 계산으로 사진 텍스처 RGB(0~1)에 SURFACE_SOURCE_MAP 코드를 적용한 RGB 를 돌려준다.
  */
 export function sampleSurfaceSourceColor(
   rgb: readonly [number, number, number],
   code: number | null,
-  dimmed = false,
   hatchStripe = 0,
 ): [number, number, number] {
   let [r, g, b] = rgb;
@@ -101,15 +92,6 @@ export function sampleSurfaceSourceColor(
     r = (luma + (r - luma) * saturation) * factor;
     g = (luma + (g - luma) * saturation) * factor;
     b = (luma + (b - luma) * saturation) * factor;
-  }
-  if (dimmed) {
-    r *= DIMMED_TEXTURE_BRIGHTNESS;
-    g *= DIMMED_TEXTURE_BRIGHTNESS;
-    b *= DIMMED_TEXTURE_BRIGHTNESS;
-    const dimLuma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    r = dimLuma + (r - dimLuma) * DIMMED_TEXTURE_SATURATION;
-    g = dimLuma + (g - dimLuma) * DIMMED_TEXTURE_SATURATION;
-    b = dimLuma + (b - dimLuma) * DIMMED_TEXTURE_SATURATION;
   }
   return [r, g, b];
 }
@@ -140,17 +122,9 @@ const FALLBACK_SOURCE_MAP = (() => {
   return configureSurfaceSourceMap(tex);
 })();
 
-interface SceneMaterialBase {
-  transparent: boolean;
-  opacity: number;
-  textured: boolean;
-  colorHex: number;
-}
-
 interface SceneShaderUniforms {
   uSurfaceSourceMap: { value: Texture };
   uSurfaceSourceEnabled: { value: number };
-  uSceneDimmed: { value: number };
 }
 
 type LoadedSourceMaps =
@@ -184,17 +158,14 @@ function attachPhotoShader(material: MeshBasicMaterial, sourceMap: Texture | nul
   const uniforms: SceneShaderUniforms = {
     uSurfaceSourceMap: { value: sourceMap ?? FALLBACK_SOURCE_MAP },
     uSurfaceSourceEnabled: { value: sourceMap ? 1 : 0 },
-    uSceneDimmed: { value: material.userData.sceneDimmed ? 1 : 0 },
   };
-  material.userData.sceneUniforms = uniforms;
   material.customProgramCacheKey = () =>
     sourceMap ? 'scene-photo-basic-provenance-v1' : 'scene-photo-basic-v1';
   material.onBeforeCompile = (shader: WebGLProgramParametersWithUniforms) => {
     shader.uniforms.uSurfaceSourceMap = uniforms.uSurfaceSourceMap;
     shader.uniforms.uSurfaceSourceEnabled = uniforms.uSurfaceSourceEnabled;
-    shader.uniforms.uSceneDimmed = uniforms.uSceneDimmed;
     shader.fragmentShader =
-      `uniform sampler2D uSurfaceSourceMap;\nuniform float uSurfaceSourceEnabled;\nuniform float uSceneDimmed;\n` +
+      `uniform sampler2D uSurfaceSourceMap;\nuniform float uSurfaceSourceEnabled;\n` +
       shader.fragmentShader.replace(
         '#include <map_fragment>',
         `#include <map_fragment>
@@ -224,10 +195,6 @@ function attachPhotoShader(material: MeshBasicMaterial, sourceMap: Texture | nul
       srcColor *= (1.0 - srcHatch * stripe);
     }
     diffuseColor.rgb = srcColor;
-  }
-  if (uSceneDimmed > 0.5) {
-    float dimLuma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
-    diffuseColor.rgb = mix(vec3(dimLuma), diffuseColor.rgb, ${DIMMED_TEXTURE_SATURATION.toFixed(2)});
   }
 #endif`,
       );
@@ -322,13 +289,6 @@ export function prepareSceneRoot(root: Object3D, loadedMaps: LoadedSourceMaps = 
         basic.userData = {
           ...m.userData,
           surfaceSourceMap: sourceMap,
-          sceneDimmed: false,
-          sceneBase: {
-            transparent: basic.transparent,
-            opacity: basic.opacity,
-            textured: true,
-            colorHex: baseColor.getHex(),
-          } satisfies SceneMaterialBase,
         };
         attachPhotoShader(basic, sourceMap);
         m.dispose();
@@ -339,12 +299,6 @@ export function prepareSceneRoot(root: Object3D, loadedMaps: LoadedSourceMaps = 
         node.geometry.computeVertexNormals();
       }
       const c = m.clone();
-      c.userData.sceneBase = {
-        transparent: c.transparent,
-        opacity: c.opacity,
-        textured: false,
-        colorHex: baseColor.getHex(),
-      } satisfies SceneMaterialBase;
       m.dispose();
       return c;
     };
@@ -356,35 +310,6 @@ export function prepareSceneRoot(root: Object3D, loadedMaps: LoadedSourceMaps = 
 
 function applyDisplay(root: Object3D, display: SceneDisplay) {
   root.visible = display !== 'HIDDEN';
-  root.traverse((node) => {
-    if (!(node instanceof Mesh)) return;
-    const materials: Material[] = Array.isArray(node.material) ? node.material : [node.material];
-    for (const m of materials) {
-      const base = m.userData.sceneBase as SceneMaterialBase | undefined;
-      if (!base) continue;
-      const dim = display === 'DIMMED';
-      if (base.textured) {
-        // 사진 텍스처 메시는 반투명 알파 블렌딩 시 앞뒤 삼각형 정렬 깨짐으로 거칠고 뿌옇게 죽으므로,
-        // 깊이 버퍼 가림(불투명)은 유지하고 명도·채도만 낮춰 미검증(DIMMED) 상태임을 드러낸다.
-        m.transparent = base.transparent;
-        m.opacity = base.opacity;
-        m.userData.sceneDimmed = dim;
-        if ('color' in m && (m as MeshBasicMaterial).color instanceof Color) {
-          (m as MeshBasicMaterial).color
-            .setHex(base.colorHex)
-            .multiplyScalar(dim ? DIMMED_TEXTURE_BRIGHTNESS : 1);
-        }
-        const uniforms = m.userData.sceneUniforms as SceneShaderUniforms | undefined;
-        if (uniforms) {
-          uniforms.uSceneDimmed.value = dim ? 1 : 0;
-        }
-      } else {
-        m.transparent = dim || base.transparent;
-        m.opacity = dim ? Math.min(base.opacity, DIMMED_OPACITY) : base.opacity;
-      }
-      m.needsUpdate = true;
-    }
-  });
 }
 
 async function loadSurfaceSourceMaps(
@@ -424,7 +349,6 @@ function Background({ store }: { store: SceneStore }) {
   const gl = useThree((s) => s.gl);
   const loader = useContext(SceneLoaderContext);
   const textureLoader = useContext(SceneTextureLoaderContext);
-  const review = useContext(SceneReviewContext);
   const input = useStore(store, (s) => s.input);
   const load = useStore(store, (s) => s.load);
   const worldScene = useSpatialData((s) => s.world?.sceneVersion ?? null);
@@ -514,10 +438,9 @@ function Background({ store }: { store: SceneStore }) {
   const shown: SceneDisplay = loaded && loaded.sceneVersion === sceneVersion ? display : 'HIDDEN';
 
   useEffect(() => {
-    // 검수 표시는 흐림만 거둔다. 숨김(HIDDEN)·판정은 그대로다.
-    if (loaded) applyDisplay(loaded.root, review && shown === 'DIMMED' ? 'FULL' : shown);
+    if (loaded) applyDisplay(loaded.root, shown);
     store.getState().setDisplay(shown);
-  }, [store, loaded, shown, review]);
+  }, [store, loaded, shown]);
   useEffect(() => () => store.getState().setDisplay('HIDDEN'), [store]);
 
   if (!loaded) return null;

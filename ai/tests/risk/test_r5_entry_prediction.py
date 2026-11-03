@@ -443,12 +443,12 @@ def test_closing_speed_boundary_is_compared_before_rounding():
 
 def test_closing_speed_boundary_on_consecutive_frames():
     # 0.4 m/s 로 100 ms 마다 0.04 m 씩 다가가는 17프레임: R1 인계 전 16프레임 모두 R5 발생 판정(리뷰 F1 회귀).
-    # 마지막 프레임은 관측 범위가 구역에 걸려 R1 이 맡는다.
+    # 마지막 프레임은 범위만 걸려 R5 는 내지 않고 R1 도 유지 판정만 낸다.
     registry = default_registry()
     clock = FixedClock(T0)
     engine = RiskEngine([registry.create("R1", 1), registry.create("R5", 1)], clock)
     tracker = LifecycleTracker(origin=Origin.LIVE, gateway_id="tier0-01", clock=clock)
-    r5_findings = raised = r1_last = 0
+    r5_findings = raised = r1_last = r1_held = 0
     for i in range(17):
         t = T0 + 100 * i
         clock.set(t + 100)
@@ -456,9 +456,10 @@ def test_closing_speed_boundary_on_consecutive_frames():
         evaluation = engine.evaluate(state, [zone()], Origin.LIVE)
         r5_findings += sum(1 for f in evaluation.findings if f.rule_id == "R5" and not f.holding)
         r1_last = sum(1 for f in evaluation.findings if f.rule_id == "R1" and not f.holding)
+        r1_held = sum(1 for f in evaluation.findings if f.rule_id == "R1" and f.holding)
         step = tracker.apply(evaluation, state, config_version="cfg-12")
         raised += sum(1 for x in step.transitions if x.state.rule_id == "R5" and x.transition is Lifecycle.RAISED)
-    assert r5_findings == 16 and raised == 1 and r1_last == 1
+    assert r5_findings == 16 and raised == 1 and r1_last == 0 and r1_held == 1
 
 
 @pytest.mark.parametrize(

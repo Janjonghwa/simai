@@ -65,24 +65,24 @@ def test_margin_value_and_states():
 @pytest.mark.parametrize(
     ("x", "expected"),
     [
-        (4.35, "raise"),  # CALIBRATED 에서도 발생
-        (4.55, "raise"),  # CALIBRATED 는 유지 띠(0.4~0.7)
-        (4.69, "raise"),
-        (4.70, "raise"),  # 넓힌 범위가 정확히 닿음(허용오차로 걸림)
+        (4.35, "overlap"),  # CALIBRATED 에서도 범위가 걸려 유지
+        (4.55, "overlap"),  # CALIBRATED 는 유지 띠(0.4~0.7)
+        (4.69, "overlap"),
+        (4.70, "overlap"),  # 넓힌 범위가 정확히 닿음(허용오차로 걸림)
         (4.701, "hold"),  # CALIBRATED 는 판정 없음
         (4.99, "hold"),
         (5.01, None),
     ],
 )
 def test_widened_boundary_hysteresis(state, x, expected):
-    """발생은 0.3 m 더 바깥에서, 유지 띠도 0.3 m 더 바깥까지(해소가 더 엄격). 근거 코드·수치로 보정 상태가 드러난다."""
+    """범위와 유지 띠가 0.3 m 더 바깥까지 넓어진다(해소가 더 엄격). 근거 코드·수치로 보정 상태가 드러난다."""
     findings = judge(track((x, 5.0)), state=state)
     if expected is None:
         assert findings == []
         return
     f = only(findings)
-    assert f.holding is (expected == "hold")
-    base = REASON_XY_UNCERTAINTY_OVERLAP if expected == "raise" else REASON_XY_CLEAR_MARGIN
+    assert f.holding
+    base = REASON_XY_UNCERTAINTY_OVERLAP if expected == "overlap" else REASON_XY_CLEAR_MARGIN
     assert f.reasons == (base, f"calibration_{state.lower()}")
     assert dict(f.metrics) == {"zone_distance_m": pytest.approx(x - 4.0), "calibration_margin_m": 0.3}
     # 확인 필요는 붙이지 않는다(PROVISIONAL_CALIB 는 R2·R3·R4 만, 7.1). 등급은 구역 등급 그대로
@@ -147,9 +147,9 @@ def test_volume_bottom_side_widened():
 
 
 def test_z_unknown_keeps_confirmation_and_adds_calibration_reason():
-    """반례(모르는 높이): Z 를 모르면 넓힌 XY 로 발생 + Z_UNKNOWN 은 그대로(보정 여유가 확인 필요를 지우지 않는다)."""
+    """반례(모르는 높이): Z 를 모르면 넓힌 XY 로 유지 + Z_UNKNOWN 은 그대로(보정 여유가 확인 필요를 지우지 않는다)."""
     f = only(judge(track((4.6, 5.0), anchor=None, head=None), state="PROVISIONAL", zones=[ABOVE]))
-    assert not f.holding
+    assert f.holding
     assert f.confidence_reasons == (ConfidenceReason.Z_UNKNOWN,)
     assert f.reasons == (REASON_XY_UNCERTAINTY_OVERLAP, "calibration_provisional")
 
@@ -206,12 +206,12 @@ def test_vector_passes_and_marks_every_finding():
     assert all("PROVISIONAL_CALIB" not in f["confidence_reasons"] for f in findings)
 
 
-def test_provisional_raises_earlier_and_resolves_later():
-    """경계 근처 진입: PROVISIONAL 은 CALIBRATED·None 보다 RAISED 가 이르고(+300 vs +500 ms) RESOLVED 가 늦다(+4900 vs +4800 ms)."""
+def test_provisional_same_entry_and_resolves_later():
+    """경계 근처 진입: 발생은 모두 +1600 ms, PROVISIONAL 은 해소가 +4900 ms 로 늦다(CALIBRATED 는 +4800 ms)."""
     doc = _load()
-    assert _milestones(doc, lambda i: "PROVISIONAL") == [(300, "RAISED"), (4900, "RESOLVED")]
+    assert _milestones(doc, lambda i: "PROVISIONAL") == [(1600, "RAISED"), (4900, "RESOLVED")]
     for state in NOT_WIDENED:
-        assert _milestones(doc, lambda i, s=state: s) == [(500, "RAISED"), (4800, "RESOLVED")]
+        assert _milestones(doc, lambda i, s=state: s) == [(1600, "RAISED"), (4800, "RESOLVED")]
 
 
 @pytest.mark.parametrize("state", ["DRIFTED", "UNCALIBRATED"])
@@ -233,12 +233,12 @@ def test_vector_fails_when_calibrated():
 
 
 def test_switch_to_calibrated_while_in_widened_band_does_not_resolve_at_once():
-    """반례(순서·상태 전환): 나가는 중 0.6 m(넓힌 범위로만 발생, CALIBRATED 로는 유지 띠)에서 CALIBRATED 로 바뀌어도 바로 해소하지
+    """반례(순서·상태 전환): 나가는 중 0.6 m(넓힌 범위에서 유지, CALIBRATED 로도 유지 띠)에서 CALIBRATED 로 바뀌어도 바로 해소하지
     않는다. 0.85 m(CALIBRATED 판정 없음)부터 3초를 세어 +4800 에 해소한다(해소는 언제나 관측된 3초 유지)."""
     doc = _load()
     switch = next(i for i, s in enumerate(doc["steps"]) if s["clock_ms"] - doc["steps"][0]["clock_ms"] == 1700)
     got = _milestones(doc, lambda i: "PROVISIONAL" if i < switch else "CALIBRATED")
-    assert got == [(300, "RAISED"), (4800, "RESOLVED")]
+    assert got == [(1600, "RAISED"), (4800, "RESOLVED")]
 
 
 def test_switch_to_provisional_while_clearing_restarts_clear_wait():
@@ -248,7 +248,7 @@ def test_switch_to_provisional_while_clearing_restarts_clear_wait():
     start = doc["steps"][0]["clock_ms"]
     idx = next(i for i, s in enumerate(doc["steps"]) if s["clock_ms"] - start == 1800)
     got = _milestones(doc, lambda i: "PROVISIONAL" if i == idx else "CALIBRATED")
-    assert got == [(500, "RAISED"), (4900, "RESOLVED")]
+    assert got == [(1600, "RAISED"), (4900, "RESOLVED")]
 
 
 # --- 고정 기대(공통 경로가 함께 바뀌는 회귀) · 규칙 값 카탈로그 ---------------------------------------
@@ -256,8 +256,8 @@ def test_switch_to_provisional_while_clearing_restarts_clear_wait():
 # (입력, 기대) 를 손으로 적었다. 기대 = (holding, reasons, metrics, confidence_reasons). None 은 판정 없음.
 _FIXED = [
     (track((3.5, 5.0)), None, (False, (REASON_XY_INSIDE,), {"zone_distance_m": 0.0}, ())),
-    (track((4.35, 5.0)), None, (False, (REASON_XY_UNCERTAINTY_OVERLAP,), {"zone_distance_m": 0.35}, ())),
-    (track((4.40, 5.0)), None, (False, (REASON_XY_UNCERTAINTY_OVERLAP,), {"zone_distance_m": 0.40}, ())),
+    (track((4.35, 5.0)), None, (True, (REASON_XY_UNCERTAINTY_OVERLAP,), {"zone_distance_m": 0.35}, ())),
+    (track((4.40, 5.0)), None, (True, (REASON_XY_UNCERTAINTY_OVERLAP,), {"zone_distance_m": 0.40}, ())),
     (track((4.401, 5.0)), None, (True, (REASON_XY_CLEAR_MARGIN,), {"zone_distance_m": 0.401}, ())),
     (track((4.69, 5.0)), None, (True, (REASON_XY_CLEAR_MARGIN,), {"zone_distance_m": 0.69}, ())),
     (track((4.71, 5.0)), None, None),
@@ -269,7 +269,7 @@ _FIXED = [
       {"zone_distance_m": 0.0, "occupancy_z_min_m": 0.0, "occupancy_z_max_m": 1.75}, ())),
     (track(skel=skeleton(0.0, 1.60)), ABOVE, None),
     (track(anchor=None, head=None), ABOVE,
-     (False, (REASON_XY_INSIDE,), {"zone_distance_m": 0.0}, (ConfidenceReason.Z_UNKNOWN,))),
+     (True, (REASON_XY_INSIDE,), {"zone_distance_m": 0.0}, (ConfidenceReason.Z_UNKNOWN,))),
 ]
 
 
@@ -307,10 +307,15 @@ def test_constructor_settings_drive_widening():
     base = list(ZoneEntryRule().evaluate(RuleContext(now_ms=T0 + 100, world=world(t), zones=(zone(),))))
     assert list(ZoneEntryRule(calibration_margin_m=0.0).evaluate(ctx)) == base
     assert list(ZoneEntryRule(calibration_widened_states=frozenset()).evaluate(ctx)) == base
-    assert not only(list(ZoneEntryRule().evaluate(ctx))).holding
+    assert only(list(ZoneEntryRule().evaluate(ctx))).holding
     from simai_ai.risk._parse import RiskInputError
 
     with pytest.raises(RiskInputError):
         ZoneEntryRule(calibration_widened_states=frozenset({"provisional"}))
     with pytest.raises(RiskInputError):
         ZoneEntryRule(calibration_margin_m=-0.1)
+
+
+def test_provisional_point_inside_raises():
+    f = only(judge(track((3.9, 5.0)), state="PROVISIONAL"))
+    assert not f.holding and f.reasons == (REASON_XY_INSIDE, "calibration_provisional")

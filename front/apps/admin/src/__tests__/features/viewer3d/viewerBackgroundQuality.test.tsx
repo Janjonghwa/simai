@@ -22,8 +22,6 @@ import {
 } from '@/features/viewer3d/PostProcessingLayer';
 import {
   configureSurfaceSourceMap,
-  DIMMED_OPACITY,
-  DIMMED_TEXTURE_BRIGHTNESS,
   sampleSurfaceSourceColor,
   SceneBackground,
   SURFACE_SOURCE_SHADING,
@@ -42,7 +40,6 @@ import {
   parseGltfScene,
   SCENE_KTX2_TRANSCODER_PATH,
   SceneLoaderContext,
-  SceneReviewContext,
   SceneStoreContext,
   SceneTextureLoaderContext,
   sceneVersionsOf,
@@ -311,7 +308,7 @@ function buildMeshoptCompressedQuadGlb(): ArrayBuffer {
   );
 }
 
-async function mountScene(options: { review?: boolean; post?: ViewerPostProcessingInput } = {}) {
+async function mountScene(options: { post?: ViewerPostProcessingInput } = {}) {
   const canvas = document.createElement('canvas');
   root = createRoot(canvas);
   await root.configure({
@@ -322,7 +319,7 @@ async function mountScene(options: { review?: boolean; post?: ViewerPostProcessi
   await renderScene(options);
 }
 
-async function renderScene(options: { review?: boolean; post?: ViewerPostProcessingInput } = {}) {
+async function renderScene(options: { post?: ViewerPostProcessingInput } = {}) {
   const resolvedPost = resolvePostProcessing(options.post);
   await act(async () =>
     root!.render(
@@ -331,15 +328,13 @@ async function renderScene(options: { review?: boolean; post?: ViewerPostProcess
           <SceneStoreContext value={scene}>
             <SceneLoaderContext value={loader}>
               <SceneTextureLoaderContext value={textureLoader}>
-                <SceneReviewContext value={options.review ?? false}>
-                  <PostProcessingContext value={resolvedPost}>
-                    <Probe />
-                    <WorldScene />
-                    <SceneBackground />
-                    <GroundShadowLayer />
-                    <PostProcessingLayer />
-                  </PostProcessingContext>
-                </SceneReviewContext>
+                <PostProcessingContext value={resolvedPost}>
+                  <Probe />
+                  <WorldScene />
+                  <SceneBackground />
+                  <GroundShadowLayer />
+                  <PostProcessingLayer />
+                </PostProcessingContext>
               </SceneTextureLoaderContext>
             </SceneLoaderContext>
           </SceneStoreContext>
@@ -599,7 +594,7 @@ describe('S15P31A101-360·404 배경 텍스처·출처 맵·접지 그림자·�
     expect(untexturedMesh.geometry.getAttribute('normal')).toBeDefined();
   });
 
-  it('DIMMED 판정 규칙을 유지하되, 사진 텍스처 메시는 불투명 깊이를 유지하고 명도·채도를 낮춘다', async () => {
+  it('DIMMED와 FULL에서 사진과 무텍스처 재질을 동일하게 유지한다', async () => {
     const group = new THREE.Group();
     const albedo = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
     const texturedMesh = new THREE.Mesh(
@@ -613,7 +608,7 @@ describe('S15P31A101-360·404 배경 텍스처·출처 맵·접지 그림자·�
     group.add(texturedMesh, untexturedMesh);
     loadedRoot = group;
 
-    await mountScene({ review: false });
+    await mountScene();
     // World 도착 전 COMMITTED Scene → UNCONFIRMED · DIMMED
     await setInput(committed());
     expect(status()).toMatchObject({ verification: 'UNCONFIRMED', display: 'DIMMED' });
@@ -621,18 +616,16 @@ describe('S15P31A101-360·404 배경 텍스처·출처 맵·접지 그림자·�
     const texMat = texturedMesh.material as unknown as THREE.MeshBasicMaterial;
     const plainMat = untexturedMesh.material as THREE.MeshStandardMaterial;
 
-    // 무텍스처 메시는 기존 반투명(DIMMED_OPACITY = 0.35) 규칙 그대로
-    expect([plainMat.transparent, plainMat.opacity]).toEqual([true, DIMMED_OPACITY]);
-    // 사진 텍스처 메시는 앞뒤 삼각형 알파 섞임을 막기 위해 불투명(transparent=false, opacity=1)을 유지하고 색을 낮춘다
+    // 무텍스처 메시의 원래 재질을 유지한다
+    expect([plainMat.transparent, plainMat.opacity]).toEqual([false, 1]);
+    // 사진 텍스처의 원래 색과 불투명도를 유지한다
     expect([texMat.transparent, texMat.opacity]).toEqual([false, 1]);
-    expect(texMat.userData.sceneDimmed).toBe(true);
-    expect(texMat.color.r).toBeCloseTo(DIMMED_TEXTURE_BRIGHTNESS, 5);
+    expect(texMat.color.r).toBeCloseTo(1, 5);
 
-    // World 가 도착해 VERIFIED · FULL 이 되면 둘 다 원래 상태로 복원된다
+    // World 가 도착해 VERIFIED · FULL 이 되어도 재질은 같다
     await act(async () => ingestWorld());
     expect(status()).toMatchObject({ verification: 'VERIFIED', display: 'FULL' });
     expect([plainMat.transparent, plainMat.opacity]).toEqual([false, 1]);
-    expect(texMat.userData.sceneDimmed).toBe(false);
     expect(texMat.color.r).toBeCloseTo(1, 5);
   });
 
@@ -685,9 +678,9 @@ describe('S15P31A101-360·404 배경 텍스처·출처 맵·접지 그림자·�
     const colObserved = sampleSurfaceSourceColor(baseRgb, 2);
     const colPlane = sampleSurfaceSourceColor(baseRgb, 3);
     const colInterp = sampleSurfaceSourceColor(baseRgb, 1);
-    const colUnobs = sampleSurfaceSourceColor(baseRgb, 0, false, 0);
-    const colUnobsHatched = sampleSurfaceSourceColor(baseRgb, 0, false, 1);
-    const colUnknown = sampleSurfaceSourceColor(baseRgb, 99, false, 0);
+    const colUnobs = sampleSurfaceSourceColor(baseRgb, 0, 0);
+    const colUnobsHatched = sampleSurfaceSourceColor(baseRgb, 0, 1);
+    const colUnknown = sampleSurfaceSourceColor(baseRgb, 99, 0);
 
     // 2(OBSERVED)는 사진 그대로, 3(ESTIMATED_PLANE) > 1(INTERPOLATED) > 0(UNOBSERVED) > 0(빗금) 순으로 어두워진다
     expect(colObserved[0]).toBeCloseTo(0.8, 5);

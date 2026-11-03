@@ -74,7 +74,7 @@ function WorkGroups({ works }: { works: readonly WorkUnit[] }) {
   );
 }
 
-/** 히스토리 목록: 최근 TBM 작업을 날짜별로 보인다. 누르면 그 작업 구간을 다시 본다. */
+/** 히스토리 목록: 시작한 최근 TBM 작업을 날짜별로 보인다. 누르면 그 작업 구간을 다시 본다. */
 export function HistoryListPage() {
   const { works, failed } = useWorks();
 

@@ -40,7 +40,6 @@ import {
   loadGltfScene,
   loadSceneTexture,
   SceneLoaderContext,
-  SceneReviewContext,
   SceneStoreContext,
   SceneTextureLoaderContext,
   sceneVersionsOf,
@@ -89,7 +88,6 @@ export interface ViewerShellProps extends Viewer3DProps {
   /** 배경 보조 텍스처(SURFACE_SOURCE_MAP 등) 읽기 함수. 시험만 바꿔 끼운다. */
   sceneTextureLoader?: SceneTextureLoader;
   /** 개발 검수 전용: 정합 근거 없는 배경도 불투명하게 그린다(판정·상태는 그대로). 운영 화면은 넘기지 않는다. */
-  sceneReview?: boolean;
 }
 
 /** 뷰어 상태·명령·알림과 데이터 입력을 묶는다. 인스턴스가 살아 있는 동안 store 와 Canvas 는 하나다. */
@@ -124,7 +122,6 @@ export function ViewerShell({
   onSceneStatusChange,
   sceneLoader = loadGltfScene,
   sceneTextureLoader = loadSceneTexture,
-  sceneReview = false,
   postProcessing = false,
   topView = false,
   theme = 'dark',
@@ -367,15 +364,13 @@ export function ViewerShell({
                       <SceneStoreContext value={sceneStore}>
                         <SceneLoaderContext value={sceneLoader}>
                           <SceneTextureLoaderContext value={sceneTextureLoader}>
-                            <SceneReviewContext value={sceneReview}>
-                              <PlannedStoreContext value={planned}>
-                                <BoxEditContext value={boxEditBinding}>
-                                  <PostProcessingContext value={resolvedPostProcessing}>
-                                    <ViewerCanvas>{children}</ViewerCanvas>
-                                  </PostProcessingContext>
-                                </BoxEditContext>
-                              </PlannedStoreContext>
-                            </SceneReviewContext>
+                            <PlannedStoreContext value={planned}>
+                              <BoxEditContext value={boxEditBinding}>
+                                <PostProcessingContext value={resolvedPostProcessing}>
+                                  <ViewerCanvas>{children}</ViewerCanvas>
+                                </PostProcessingContext>
+                              </BoxEditContext>
+                            </PlannedStoreContext>
                           </SceneTextureLoaderContext>
                         </SceneLoaderContext>
                       </SceneStoreContext>

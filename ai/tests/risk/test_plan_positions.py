@@ -14,7 +14,6 @@ import pytest
 from simai_ai.providers.testing import load_example
 from simai_ai.risk import plan
 from simai_ai.risk.plan import (
-    OPENING_OFFSET_M,
     PlanLayoutError,
     PlanRuleError,
     evaluate_plan,
@@ -181,17 +180,15 @@ def test_generated_coordinates_are_rounded_and_replayable():
 
 
 @pytest.mark.parametrize("clockwise", [False, True])
-def test_opening_position_outside_and_r1_raises(clockwise):
+def test_opening_position_outside_and_r1_holds(clockwise):
     poly = ((2.0, 1.0), (5.0, 1.0), (5.0, 2.0), (2.0, 2.0))
     poly = poly[::-1] if clockwise else poly
     out = evaluate_plan(_payload(work_surfaces=[], zones=[_opening(poly=poly)]))
     (p,) = out.positions
     assert p.support_surface_id == "floor" and p.generated
     assert not point_in_polygon(p.position_xy, poly)
-    (item,) = _items_for(out, p.position_id)
-    assert item["rule_id"] == "R1" and item["severity"] == "CRITICAL" and item["zone_id"] == "o-1"
-    assert item["metrics"]["zone_distance_m"] == pytest.approx(OPENING_OFFSET_M)
-    assert item["reason_codes"] == ["xy_uncertainty_overlap"]
+    assert not _items_for(out, p.position_id)
+    assert any(f.holding for f in out.evaluation.findings if f.rule_id == "R1")
     # 가장 긴 변(3 m) 쪽이다
     assert p.position_xy[1] in (0.8, 2.2)
 
@@ -209,7 +206,7 @@ def test_concave_opening_skips_edge_whose_outward_point_is_inside():
     (p,) = generate_positions([], [zone])
     assert p.position_xy == (0.55, 2.5)  # 다음으로 긴 변(오른쪽 바깥 아래 5 m)
     assert not point_in_polygon(p.position_xy, zone.polygon_xy)
-    assert evaluate_plan(_payload(work_surfaces=[], zones=[_opening(poly=poly)])).items
+    assert not evaluate_plan(_payload(work_surfaces=[], zones=[_opening(poly=poly)])).items
 
 
 def test_only_active_opening_zones_get_positions():
@@ -221,8 +218,8 @@ def test_only_active_opening_zones_get_positions():
     assert [p.position_id for p in out.positions] == ["gen-now-01"]
 
 
-def test_generated_position_inside_volume_zone_is_check_needed():
-    """머리 높이를 지어내지 않으므로 VOLUME_3D 안 생성 위치는 '진입 없음'이 아니라 확인 필요(Z_UNKNOWN)."""
+def test_generated_position_inside_volume_zone_has_no_entry():
+    """머리 높이를 모르는 VOLUME_3D 안 생성 위치는 발생 항목이 없다."""
     volume = {
         "zone_id": "z-vol",
         "zone_version": "v1",
@@ -234,7 +231,7 @@ def test_generated_position_inside_volume_zone_is_check_needed():
     }
     out = evaluate_plan(_payload(zones=[volume], work_surfaces=[_surface()]))
     r1 = [i for i in _items_for(out, "gen-s-1-01") if i["rule_id"] == "R1"]
-    assert r1 and r1[0]["confidence_reasons"] == ["Z_UNKNOWN"]
+    assert not r1
 
 
 def test_no_surfaces_no_openings_gives_no_positions():

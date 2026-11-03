@@ -2,6 +2,10 @@
 
 공개 입구(`index.ts`)와 그 타입을 바꾸면 여기에 적는다. 깨지는 변경은 FE 리뷰를 받은 뒤에만 한다.
 
+## S15P31A101-435 정합 미확인 배경 흐림 제거
+
+- `DIMMED` 배경도 `FULL`과 같은 색·불투명도로 표시한다. 불일치 숨김, 정합 상태와 표면 출처별 표시는 유지한다.
+
 ## S15P31A101-395 스캔이 보일 때 목업 바탕 숨김·교실 범위
 
 하위 호환이다.
@@ -17,8 +21,8 @@
 
 - 추가: `postProcessing` prop(`ViewerPostProcessingProp`, `ViewerPostProcessingOptions`, `DEFAULT_POST_PROCESSING`, `resolvePostProcessing`), `sceneTextureLoader` prop(`SceneTextureLoader`).
 - 추가: `SURFACE_SOURCE_VALUES`, `SurfaceSourceMapUrls`, `CurrentScene.surfaceSourceMapUrls`(`surface_source_map_urls` 선택 필드), `hasValidGroundShadow`.
-- 바뀜(호환): `SceneBackground` 가 텍스처(`map`) 있는 배경 메시를 `MeshBasicMaterial`(`SRGBColorSpace`, `toneMapped: false`)로 바꾸고, `DIMMED` 상태에서 사진 텍스처 메시의 깊이 가림(불투명)을 유지하면서 채도·명도를 낮춘다. `VALID` 접지 사람 발밑에만 `GroundShadowLayer` 그림자를 그린다.
-- 그대로: `DIMMED` 판정 규칙(`DEFAULT_UNVERIFIED`·`UNCONFIRMED`), 무텍스처 메시의 조명·반투명 흐림(`DIMMED_OPACITY = 0.35`), `people/` 내부 구현.
+- 바뀜(호환): `SceneBackground` 가 텍스처(`map`) 있는 배경 메시를 `MeshBasicMaterial`(`SRGBColorSpace`, `toneMapped: false`)로 바꾸고, 사진 텍스처 메시의 깊이 가림을 유지한다. `VALID` 접지 사람 발밑에만 `GroundShadowLayer` 그림자를 그린다.
+- 그대로: `DIMMED` 판정 규칙(`DEFAULT_UNVERIFIED`·`UNCONFIRMED`), 무텍스처 메시의 조명, `people/` 내부 구현.
 
 ## 제어형 상자 편집 조작기(`boxEdit`)
 

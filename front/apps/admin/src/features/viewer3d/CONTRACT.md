@@ -171,7 +171,7 @@ AI -88 의 사람별 스키닝 glTF 와 `avatar_frame`(/topic/avatar) 관절 회
 - 사진 배경(`SceneBackground`):
   - `map` 텍스처가 있는 배경 메시는 광원·톤매핑을 거치지 않는 `MeshBasicMaterial`(`SRGBColorSpace`, `toneMapped: false`, `DoubleSide`)로 바꾼다. Canvas 출력도 `SRGBColorSpace`·`NoToneMapping`(`flat`)으로 맞춘다.
   - `map` 이 없는 정점색·회색 메시는 기존 조명 재질(`MeshStandardMaterial` 등)을 유지하고, 정점 법선이 없으면 `computeVertexNormals()` 로 계산한다.
-  - 정합 근거가 없을 때(`DIMMED`, 즉 `DEFAULT_UNVERIFIED`·`UNCONFIRMED`): 무텍스처 메시는 반투명(`DIMMED_OPACITY = 0.35`)으로, 사진 텍스처 메시는 앞뒤 삼각형 알파 정렬 깨짐을 막기 위해 불투명(깊이 가림)을 유지하되 명도(`0.65`)·채도(`0.25`)를 낮춘다.
+  - 정합 미확인(`DEFAULT_UNVERIFIED`·`UNCONFIRMED`·서버 `DIMMED`)이어도 사진과 무텍스처 메시를 FULL과 같은 색·불투명도로 표시한다. `MISMATCH`는 숨기며 정합 상태와 재생성 필요 표시는 유지한다.
 - 표면 출처 지도(`SURFACE_SOURCE_MAP`):
   - `scene_output` 2.1.0 규칙에 맞춰 `CurrentScene.surfaceSourceMapUrls`(`surface_source_map_urls` 배열 또는 재질/메시 이름 키 맵) 또는 재질·메시 `userData.surfaceSourceMap` 을 받는다.
   - 보간·색공간 변환으로 값이 섞이지 않게 `NearestFilter`·`generateMipmaps = false`·`NoColorSpace` 로 읽는다.
