@@ -1008,6 +1008,7 @@ class Supervisor:
         self.ready = ready
         self.health = health or (lambda: http_ok(f"http://127.0.0.1:{self.port}/health"))
         base = {k: v for k, v in env.items() if k not in (*SECRET_ENVS, "SIMAI_TIER0_TOKEN_FILE", "SIMAI_WORKER_TOKEN_FILE")}
+        base["SIMAI_ROOT"] = str(root)
         base["SIMAI_TIER0_MARKER"] = str(self.marker)
         with_image_pythonpath(base)  # SSH 셸처럼 WORKDIR 밖에서 띄워도 python -m services.* 를 찾는다(-414)
         # 워커 ID(-414): 워커·아바타 환경에 넣는다. lobby 는 정한 값을 넘기고, tier0 감시 모드는 환경·토큰 파일 이름에서 정한다
@@ -1708,6 +1709,7 @@ def run_scene_child(root: Path, argv: list[str], extra_env: dict[str, str] | Non
     env.setdefault("SIMAI_TIER0_WEIGHTS", str(root / "weights" / "yolo" / "yolo26x-pose.pt"))
     if extra_env:
         env |= extra_env
+    env["SIMAI_ROOT"] = str(root)  # 준비한 가중치 위치는 env 파일보다 우선
     try:
         gated = os.name != "nt"  # Windows(노트북 시험)의 exec 는 pid 를 바꿔 handshake 를 쓰지 않는다(기록을 바로 쓴다)
         try:
@@ -1803,7 +1805,7 @@ def _parse_scene_args(rest: list[str]) -> tuple[dict[str, str], list[str]]:
     return extra_env, cmd
 
 
-def scene(rest: list[str]) -> int:
+def scene(rest: list[str], *, worker_id: str | None = None) -> int:
     """장면 준비 모드: 장면 잠금 → Tier 0·GPU 확인 → static 가중치 → 재확인 → 자식으로 실행하며 Tier 0 시작을 감시한다
     (종료 코드는 자식의 것, 끝나면 VRAM 을 돌려준다, Tier 0 가 시작하면 장면 작업을 끝내고 75)."""
     try:
@@ -1811,6 +1813,8 @@ def scene(rest: list[str]) -> int:
     except BootstrapError as e:
         log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
         return e.code
+    if worker_id:
+        extra_env[WORKER_ID_ENV] = worker_id
     if not cmd:
         log("사용법: simai-bootstrap scene [--worker-token-file <경로>] [--env-file <경로>] [--] <명령...>")
         return EXIT_USAGE
@@ -2343,6 +2347,7 @@ def after_live(rest: list[str]) -> int:
                                  description="관제 뒤 사람 지운 배경 묶음 static_reconstruct 자동 제출·처리(분석 워커만)")
     ap.add_argument("--work", type=Path, default=None, help="로비 작업 폴더(기본 $SIMAI_ROOT/runs/lobby-live)")
     ap.add_argument("--worker-token-file", default=None)
+    ap.add_argument("--worker-id", default=None)
     ap.add_argument("--env-file", default=None)
     ap.add_argument("--ec2-base-url", default=None)
     if "--" in rest:
@@ -2367,6 +2372,19 @@ def after_live(rest: list[str]) -> int:
     if not ec2:
         log("after-live: --ec2-base-url 또는 SIMAI_EC2_BASE_URL 이 필요하다 (종료 코드 64)")
         return EXIT_USAGE
+    token_file = args.worker_token_file or os.environ.get("SIMAI_WORKER_TOKEN_FILE")
+    env_file = args.env_file or os.environ.get("SIMAI_WORKER_ENV_FILE")
+    try:
+        worker_id, source = resolve_worker_id(args.worker_id, dict(os.environ),
+                                              Path(token_file) if token_file else None, Path(env_file) if env_file else None)
+    except BootstrapError as e:
+        log(f"{e} → 시작하지 않는다 (종료 코드 {e.code})")
+        return e.code
+    if worker_id:
+        os.environ[WORKER_ID_ENV] = worker_id
+        log(f"워커 ID {worker_id} ({source}) → worker 환경 {WORKER_ID_ENV}")
+    else:
+        log(f"주의: 워커 ID 를 정하지 못함({source}) → 워커 기본 worker-01, EC2 ID 와 다르면 401")
     # 장면 모드의 Tier 0 확인(tier0_present)과 자식 환경이 같은 표시 파일·상태 폴더를 보게 한다
     os.environ.update({"SIMAI_TIER0_MARKER": str(marker), "SIMAI_STATE_DIR": str(state), "SIMAI_EC2_BASE_URL": ec2,
                        "SIMAI_AUTO_STATIC_RECONSTRUCT": "1", "SIMAI_AUTO_STATIC_EXIT_WHEN_DONE": "1"})
@@ -2378,7 +2396,7 @@ def after_live(rest: list[str]) -> int:
     if args.env_file:
         scene_args += ["--env-file", args.env_file]
     log(f"after-live: {work} 의 Tier 0 정상 종료 확인 → 분석 워커만 띄운다(배경 묶음 자동 제출·처리 뒤 끝남)")
-    return scene([*scene_args, "--", sys.executable, "-m", "services.worker", *worker_args])
+    return scene([*scene_args, "--", sys.executable, "-m", "services.worker", *worker_args], worker_id=worker_id)
 
 
 def supervise(rec: dict, services: list[str], rest: list[str]) -> int:

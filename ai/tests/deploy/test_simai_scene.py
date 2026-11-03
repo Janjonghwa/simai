@@ -651,3 +651,23 @@ def test_proc_permission_error_means_alive_not_gone(bs, monkeypatch):
 
     monkeypatch.setattr(Path, "read_text", read_text)
     assert bs._group_alive(999_999_999) is True
+
+
+def test_scene_child_receives_selected_root_even_with_env_file(bs, tmp_path, monkeypatch):
+    st = _setup(bs, tmp_path, monkeypatch)
+    env_file = tmp_path / "worker.env"
+    env_file.write_text("SIMAI_ROOT=/wrong/root\n", encoding="utf-8")
+    output = tmp_path / "root.txt"
+    code = "import os, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(os.environ['SIMAI_ROOT'])"
+    assert bs.main(["scene", "--env-file", str(env_file), "--", PY, "-c", code, str(output)]) == 0
+    assert output.read_text(encoding="utf-8") == str(st["root"])
+
+
+def test_scene_worker_id_override_reaches_child(bs, tmp_path, monkeypatch):
+    _setup(bs, tmp_path, monkeypatch)
+    env_file = tmp_path / "worker.env"
+    env_file.write_text("SIMAI_WORKER_ID=worker-file\n", encoding="utf-8")
+    output = tmp_path / "worker-id.txt"
+    code = "import os, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(os.environ['SIMAI_WORKER_ID'])"
+    assert bs.scene(["--env-file", str(env_file), "--", PY, "-c", code, str(output)], worker_id="worker-cli") == 0
+    assert output.read_text(encoding="utf-8") == "worker-cli"
