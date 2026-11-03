@@ -266,7 +266,18 @@ describe('createRequestOf(새 구역)', () => {
       name: '작업면 초안이 있으면 구역 CREATE + 작업면 CREATE(이름 없음은 null)',
       request: createRequestOf({ form: newForm, box: newBox, surface: newSurfaceDraft(newBox) }),
       expected: {
-        zone: { op: 'CREATE', body: newBody },
+        zone: {
+          op: 'CREATE',
+          body: {
+            ...newBody,
+            polygon_xy: [
+              [4.2, 4.2],
+              [5.8, 4.2],
+              [5.8, 5.8],
+              [4.2, 5.8],
+            ],
+          },
+        },
         surface: {
           op: 'CREATE',
           body: surfaceBodyOf(null, '', newSurfaceDraft(newBox).geometry),
@@ -277,13 +288,41 @@ describe('createRequestOf(새 구역)', () => {
       name: '이름이 있는 작업면 초안은 그 이름을 보낸다',
       request: createRequestOf({ form: newForm, box: newBox, surface: named }),
       expected: {
-        zone: { op: 'CREATE', body: newBody },
+        zone: {
+          op: 'CREATE',
+          body: {
+            ...newBody,
+            polygon_xy: [
+              [4.2, 4.2],
+              [5.8, 4.2],
+              [5.8, 5.8],
+              [4.2, 5.8],
+            ],
+          },
+        },
         surface: { op: 'CREATE', body: surfaceBodyOf(null, '단상', named.geometry) },
       },
     },
   ];
 
   it.each(cases)('$name', expectRequest);
+
+  it('회전한 작업면과 0.30m 여유 HIGH 구역을 한 발행 요청에 담는다', () => {
+    const surface = { ...named, geometry: { ...named.geometry, yawRad: Math.PI / 2 } };
+    const request = createRequestOf({
+      form: { ...newForm, severity: 'CRITICAL' },
+      box: newBox,
+      surface,
+    });
+    expect(request.surface).toMatchObject({ op: 'CREATE', body: { kind: 'WORK_SURFACE' } });
+    expect(request.zone.op).toBe('CREATE');
+    if (request.zone.op !== 'CREATE') throw new Error('expected CREATE');
+    expect(request.zone.body.severity).toBe('HIGH');
+    const [first] = request.zone.body.polygon_xy;
+    expect(first?.[0]).toBeCloseTo(5.8);
+    expect(first?.[1]).toBeCloseTo(4.2);
+    expect(request.publish).toBeUndefined();
+  });
 
   it('본문은 이름 앞뒤 공백을 뺀 새 구역(v1)과 새 작업면이다', () => {
     const request = createRequestOf({ form: newForm, box: newBox, surface: named });

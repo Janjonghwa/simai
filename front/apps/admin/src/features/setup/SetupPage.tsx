@@ -57,7 +57,7 @@ export function SetupPage() {
     rewalk: () => go(1),
     confirm: () => go(3),
     restart: () => go(0),
-    zones: () => void navigate({ to: '/zones' }),
+    zones: () => void navigate({ to: '/', search: { edit: true } }),
   };
 
   return (
