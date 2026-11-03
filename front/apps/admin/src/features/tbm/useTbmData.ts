@@ -1,5 +1,6 @@
 import {
   requestCreateWorkUnit,
+  requestDeleteWorkUnit,
   requestLayoutDetail,
   requestLayouts,
   requestTbmReportsByWork,
@@ -22,6 +23,7 @@ import {
 import { TBM_TASKS, type TbmTask } from '@/features/tbm/tbmDemo';
 import {
   isFallbackApiError,
+  tbmWorkMutationErrorText,
   WORK_TYPE_OPTIONS,
   workUnitToTbmTask,
   type LayoutDetail,
@@ -41,19 +43,28 @@ export interface UseTbmDataResult {
   workTypes: readonly WorkTypeOption[];
   /** 가상 레이아웃 요약 목록(/api/layouts). */
   layouts: readonly LayoutSummary[];
+  /** 레이아웃 ID 별 상세 데이터(/api/layouts/{id}). */
+  layoutById: ReadonlyMap<number, LayoutDetail>;
   /** API 실패(네트워크 끊김·시간 초과·5xx)로 tbmDemo.ts 폴백 중인지 여부. */
   isFallback: boolean;
   /** 서버 데이터를 처음 불러오는 중인지 여부. */
   isLoading: boolean;
+  /** 작업 등록·수정·삭제 API 실패 안내 문구. */
+  mutationError: string | null;
+  /** 오류 안내 초기화. */
+  clearMutationError: () => void;
   /** 작업 등록(POST /api/work-units 또는 데모 상태 추가). */
   addTask: (input: TaskInput) => Promise<TbmTask>;
   /** 작업 수정(PUT /api/work-units/{id} 또는 데모 상태 수정). */
   editTask: (task: TbmTask, input: TaskInput) => Promise<TbmTask>;
+  /** 작업 삭제(DELETE /api/work-units/{id} 또는 데모 상태 삭제). */
+  deleteTask: (task: TbmTask) => Promise<void>;
 }
 
 export function useTbmData(): UseTbmDataResult {
   const queryClient = useQueryClient();
   const [demoTasks, setDemoTasks] = useState<readonly TbmTask[]>(TBM_TASKS);
+  const [mutationError, setMutationError] = useState<string | null>(null);
 
   const worksQuery = useQuery({
     queryKey: TBM_WORKS_KEY,
@@ -122,8 +133,11 @@ export function useTbmData(): UseTbmDataResult {
   }, [serverWorks, reportByWorkQueries]);
 
   const tasks = useMemo<readonly TbmTask[]>(() => {
-    if (isFallback || !serverWorks || serverWorks.length === 0) {
+    if (isFallback) {
       return demoTasks;
+    }
+    if (!serverWorks) {
+      return [];
     }
     return serverWorks.map((w) =>
       workUnitToTbmTask(
@@ -138,9 +152,14 @@ export function useTbmData(): UseTbmDataResult {
 
   const addTask = useCallback(
     async (input: TaskInput): Promise<TbmTask> => {
-      const localCreated = createTask(tasks, input);
-      setDemoTasks((prev) => [...prev, localCreated]);
+      setMutationError(null);
+      if (isFallback) {
+        const localCreated = createTask(tasks, input);
+        setDemoTasks((prev) => [...prev, localCreated]);
+        return localCreated;
+      }
 
+      const localCreated = createTask(tasks, input);
       const body = inputToWorkUnitBody(input);
       const optimisticWorkId = localCreated.id.replace(/^T/, '');
       const optimisticWork: TbmWorkUnit = {
@@ -149,34 +168,35 @@ export function useTbmData(): UseTbmDataResult {
         event_counts: { CRITICAL: 0, HIGH: 0 },
       };
 
-      if (!isFallback && serverWorks !== undefined) {
+      const previousWorks = queryClient.getQueryData<TbmWorkUnit[]>(TBM_WORKS_KEY);
+      queryClient.setQueryData<TbmWorkUnit[]>(TBM_WORKS_KEY, (prev) =>
+        prev ? [...prev, optimisticWork] : [optimisticWork],
+      );
+      try {
+        const createdWork = await requestCreateWorkUnit(api, body);
         queryClient.setQueryData<TbmWorkUnit[]>(TBM_WORKS_KEY, (prev) =>
-          prev ? [...prev, optimisticWork] : [optimisticWork],
+          prev
+            ? prev.map((w) => (w.work_id === optimisticWorkId ? createdWork : w))
+            : [createdWork],
         );
-        try {
-          const createdWork = await requestCreateWorkUnit(api, body);
-          queryClient.setQueryData<TbmWorkUnit[]>(TBM_WORKS_KEY, (prev) =>
-            prev
-              ? prev.map((w) => (w.work_id === optimisticWorkId ? createdWork : w))
-              : [createdWork],
-          );
-          await queryClient.invalidateQueries({ queryKey: TBM_WORKS_KEY });
-          const layout =
-            createdWork.layout_id !== null && createdWork.layout_id !== undefined
-              ? (layoutById.get(createdWork.layout_id) ?? null)
-              : null;
-          return workUnitToTbmTask(createdWork, layout, null);
-        } catch {
-          return localCreated;
-        }
+        await queryClient.invalidateQueries({ queryKey: TBM_WORKS_KEY });
+        const layout =
+          createdWork.layout_id !== null && createdWork.layout_id !== undefined
+            ? (layoutById.get(createdWork.layout_id) ?? null)
+            : null;
+        return workUnitToTbmTask(createdWork, layout, null);
+      } catch (err) {
+        queryClient.setQueryData(TBM_WORKS_KEY, previousWorks);
+        setMutationError(tbmWorkMutationErrorText(err, 'create'));
+        throw err;
       }
-      return localCreated;
     },
-    [tasks, isFallback, serverWorks, queryClient, layoutById],
+    [tasks, isFallback, queryClient, layoutById],
   );
 
   const editTask = useCallback(
     async (task: TbmTask, input: TaskInput): Promise<TbmTask> => {
+      setMutationError(null);
       const layoutNum =
         input.layoutId && input.layoutId.trim() !== '' ? Number(input.layoutId) : null;
       const updatedLocal: TbmTask = {
@@ -191,38 +211,74 @@ export function useTbmData(): UseTbmDataResult {
         layoutId: layoutNum !== null && Number.isFinite(layoutNum) ? layoutNum : null,
         workType: input.workType && input.workType.trim() !== '' ? input.workType.trim() : null,
       };
-      setDemoTasks((prev) => prev.map((t) => (t.id === task.id ? updatedLocal : t)));
 
-      if (!isFallback && task.workId) {
-        const body = inputToWorkUnitBody(input, task.date);
-        queryClient.setQueryData<TbmWorkUnit[]>(TBM_WORKS_KEY, (prev) =>
-          prev ? prev.map((w) => (w.work_id === task.workId ? { ...w, ...body } : w)) : prev,
-        );
-        try {
-          const updatedWork = await requestUpdateWorkUnit(api, task.workId, body);
-          await queryClient.invalidateQueries({ queryKey: TBM_WORKS_KEY });
-          const layout =
-            updatedWork.layout_id !== null && updatedWork.layout_id !== undefined
-              ? (layoutById.get(updatedWork.layout_id) ?? null)
-              : null;
-          const report = latestReportByWorkId.get(updatedWork.work_id) ?? null;
-          return workUnitToTbmTask(updatedWork, layout, report);
-        } catch {
-          return updatedLocal;
-        }
+      if (isFallback || !task.workId) {
+        setDemoTasks((prev) => prev.map((t) => (t.id === task.id ? updatedLocal : t)));
+        return updatedLocal;
       }
-      return updatedLocal;
+
+      const body = inputToWorkUnitBody(input, task.date);
+      const previousWorks = queryClient.getQueryData<TbmWorkUnit[]>(TBM_WORKS_KEY);
+      queryClient.setQueryData<TbmWorkUnit[]>(TBM_WORKS_KEY, (prev) =>
+        prev ? prev.map((w) => (w.work_id === task.workId ? { ...w, ...body } : w)) : prev,
+      );
+      try {
+        const updatedWork = await requestUpdateWorkUnit(api, task.workId, body);
+        await queryClient.invalidateQueries({ queryKey: TBM_WORKS_KEY });
+        const layout =
+          updatedWork.layout_id !== null && updatedWork.layout_id !== undefined
+            ? (layoutById.get(updatedWork.layout_id) ?? null)
+            : null;
+        const report = latestReportByWorkId.get(updatedWork.work_id) ?? null;
+        return workUnitToTbmTask(updatedWork, layout, report);
+      } catch (err) {
+        queryClient.setQueryData(TBM_WORKS_KEY, previousWorks);
+        setMutationError(tbmWorkMutationErrorText(err, 'update'));
+        throw err;
+      }
     },
     [isFallback, queryClient, layoutById, latestReportByWorkId],
   );
+
+  const deleteTask = useCallback(
+    async (task: TbmTask): Promise<void> => {
+      setMutationError(null);
+      if (isFallback || !task.workId) {
+        setDemoTasks((prev) => prev.filter((t) => t.id !== task.id));
+        return;
+      }
+
+      const previousWorks = queryClient.getQueryData<TbmWorkUnit[]>(TBM_WORKS_KEY);
+      queryClient.setQueryData<TbmWorkUnit[]>(TBM_WORKS_KEY, (prev) =>
+        prev ? prev.filter((w) => w.work_id !== task.workId) : prev,
+      );
+      try {
+        await requestDeleteWorkUnit(api, task.workId);
+        await queryClient.invalidateQueries({ queryKey: TBM_WORKS_KEY });
+      } catch (err) {
+        queryClient.setQueryData(TBM_WORKS_KEY, previousWorks);
+        setMutationError(tbmWorkMutationErrorText(err, 'delete'));
+        throw err;
+      }
+    },
+    [isFallback, queryClient],
+  );
+
+  const clearMutationError = useCallback(() => {
+    setMutationError(null);
+  }, []);
 
   return {
     tasks,
     workTypes: workTypesQuery.data ?? WORK_TYPE_OPTIONS,
     layouts: layoutsQuery.data ?? [],
+    layoutById,
     isFallback,
     isLoading: worksQuery.isLoading,
+    mutationError,
+    clearMutationError,
     addTask,
     editTask,
+    deleteTask,
   };
 }

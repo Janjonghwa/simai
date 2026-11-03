@@ -60,6 +60,8 @@ function TaskForm({
   layouts = [],
   onSubmit,
   onCancel,
+  onDelete,
+  onOpenLayoutEditor,
 }: {
   heading?: string;
   submitLabel?: string;
@@ -68,6 +70,8 @@ function TaskForm({
   layouts?: readonly LayoutSummary[];
   onSubmit: (input: TaskInput) => void;
   onCancel: () => void;
+  onDelete?: () => void;
+  onOpenLayoutEditor?: (currentLayoutId: number | null) => void;
 }) {
   const [input, setInput] = useState<TaskInput>(initial);
   const set = (key: keyof TaskInput) => (e: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -75,6 +79,11 @@ function TaskForm({
     setInput((prev) => ({ ...prev, [key]: value }));
   };
   const ok = taskInputValid(input);
+  const parsedLayoutId =
+    input.layoutId && input.layoutId.trim() !== '' ? Number(input.layoutId) : null;
+  const currentLayoutId =
+    parsedLayoutId !== null && Number.isFinite(parsedLayoutId) ? parsedLayoutId : null;
+
   return (
     <form
       className="flex flex-col gap-3 px-5 py-[18px]"
@@ -140,29 +149,54 @@ function TaskForm({
           ))}
         </SelectField>
       </div>
-      <SelectField
-        label="가상 레이아웃"
-        name="task-layout"
-        value={input.layoutId ?? ''}
-        onChange={set('layoutId')}
-      >
-        <option value="">연결 안 함</option>
-        {layouts.map((layout) => (
-          <option key={layout.layout_id} value={String(layout.layout_id)}>
-            #{layout.layout_id} {layout.name} (rev.{layout.revision})
-          </option>
-        ))}
-      </SelectField>
+      <div className="flex flex-col gap-1.5">
+        <SelectField
+          label="가상 레이아웃"
+          name="task-layout"
+          value={input.layoutId ?? ''}
+          onChange={set('layoutId')}
+        >
+          <option value="">연결 안 함</option>
+          {layouts.map((layout) => (
+            <option key={layout.layout_id} value={String(layout.layout_id)}>
+              #{layout.layout_id} {layout.name} (rev.{layout.revision})
+            </option>
+          ))}
+        </SelectField>
+        {onOpenLayoutEditor && (
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => onOpenLayoutEditor(currentLayoutId)}
+              className="h-8 px-3 text-xs font-semibold"
+            >
+              {currentLayoutId !== null ? '3D 레이아웃 편집' : '3D로 새 레이아웃 만들기'}
+            </Button>
+          </div>
+        )}
+      </div>
       {input.name.trim() && !ok && (
         <p className="text-[13px] text-muted-foreground">끝 시각이 시작보다 늦어야 합니다.</p>
       )}
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button type="submit" disabled={!ok} className={cn(BUTTON, 'font-bold')}>
           {submitLabel}
         </Button>
         <Button type="button" variant="secondary" onClick={onCancel} className={BUTTON}>
           취소
         </Button>
+        {onDelete && (
+          <Button
+            type="button"
+            variant="destructive"
+            onClick={onDelete}
+            className={cn(BUTTON, 'ml-auto')}
+          >
+            작업 삭제
+          </Button>
+        )}
       </div>
     </form>
   );
@@ -174,11 +208,13 @@ export function TaskAddDialog({
   layouts = [],
   onAdd,
   onCancel,
+  onOpenLayoutEditor,
 }: {
   workTypes?: readonly WorkTypeOption[];
   layouts?: readonly LayoutSummary[];
   onAdd: (input: TaskInput) => void;
   onCancel: () => void;
+  onOpenLayoutEditor?: (currentLayoutId: number | null) => void;
 }) {
   return (
     <ModalDialog
@@ -194,6 +230,7 @@ export function TaskAddDialog({
         layouts={layouts}
         onSubmit={onAdd}
         onCancel={onCancel}
+        onOpenLayoutEditor={onOpenLayoutEditor}
       />
     </ModalDialog>
   );
@@ -206,12 +243,16 @@ export function TaskEditDialog({
   layouts = [],
   onSave,
   onCancel,
+  onDelete,
+  onOpenLayoutEditor,
 }: {
   task: TbmTask;
   workTypes?: readonly WorkTypeOption[];
   layouts?: readonly LayoutSummary[];
   onSave: (input: TaskInput) => void;
   onCancel: () => void;
+  onDelete?: () => void;
+  onOpenLayoutEditor?: (currentLayoutId: number | null) => void;
 }) {
   return (
     <ModalDialog
@@ -228,6 +269,8 @@ export function TaskEditDialog({
         layouts={layouts}
         onSubmit={onSave}
         onCancel={onCancel}
+        onDelete={onDelete}
+        onOpenLayoutEditor={onOpenLayoutEditor}
       />
     </ModalDialog>
   );

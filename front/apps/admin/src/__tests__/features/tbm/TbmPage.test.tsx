@@ -1,13 +1,86 @@
 import { TbmPage } from '@/features/tbm/TbmPage';
 import { TBM_FORM_KEY, useTbmFormStore } from '@/features/tbm/tbm.store';
+import { MOCK_STATIC_OBJECTS } from '@/mocks/staticObjects';
 import { createTbmMock } from '@/mocks/tbm';
+import { MOCK_ZONES, SEEDED_VALID_FROM } from '@/mocks/zones';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw/http';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// 이 화면은 폴링·쿼리가 많아 화면을 내릴 때 요청이 중간에 취소된다. 그때 MSW(0.45) 소켓 가로채기 아래에서 undici 가
+// 진짜 서버로 다시 붙어(CI 에서 ERR_TLS_CERT_ALTNAME_INVALID 로 터짐) 시험 밖으로 새어 나갔다. 핸들러는 '*/api/...' 라
+// 주소와 무관하게 맞으므로, 이 파일만 존재하지 않는 도메인(.invalid, RFC 6761)을 써서 새는 연결이 DNS 에서 조용히 끝나게 한다.
+vi.mock('@/lib/env', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/env')>();
+  return {
+    ...actual,
+    env: {
+      ...actual.env,
+      VITE_API_BASE_URL: 'https://tbm-test.invalid',
+      VITE_STOMP_URL: 'wss://tbm-test.invalid/ws',
+    },
+  };
+});
+
+// 3D 뷰어는 jsdom 에서 그릴 수 없다(WebGL·ResizeObserver 없음). 진짜 뷰어를 띄우면 오류 경계로 쓰러지며 MSW 가 못 막는
+// 실제 연결이 나가 CI 에서 TLS 오류(ERR_TLS_CERT_ALTNAME_INVALID)로 깨졌다. /zones·관제 시험처럼 자리표시로 바꾸고,
+// 편집 동작은 대화상자 패널(숫자·추가·삭제·가져오기)과 layoutEditorModel 시험으로 확인한다.
+vi.mock('@/features/viewer3d', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/features/viewer3d')>();
+  const { forwardRef } = await import('react');
+  return {
+    ...actual,
+    Viewer3D: forwardRef<unknown, { initialMode?: string; topView?: boolean }>(
+      function Viewer3DStub(props, ref) {
+        void ref; // forwardRef 는 두 인자를 받아야 경고가 없다
+        // 진짜 ViewerShell 과 같은 data 속성만 남긴다(모드·위에서 보기).
+        return (
+          <div
+            data-testid="viewer3d-stub"
+            data-viewer-mode={props.initialMode ?? 'LIVE'}
+            data-viewer-top-view={props.topView ? 'on' : 'off'}
+          />
+        );
+      },
+    ),
+  };
+});
+
+const TEST_ZONES = [
+  ...MOCK_ZONES,
+  {
+    zone_id: 'z-05',
+    zone_version: 1,
+    name: '높이 없는 바닥 위험구역',
+    zone_kind: 'HAZARD' as const,
+    eval_type: 'GROUND_FOOTPRINT' as const,
+    polygon_xy: [
+      [1.0, 1.0],
+      [3.0, 1.0],
+      [3.0, 2.5],
+      [1.0, 2.5],
+    ] as [number, number][],
+    z_min_m: null,
+    z_max_m: null,
+    severity: 'HIGH' as const,
+    requirements: null,
+    has_guardrail: null,
+    valid_from: SEEDED_VALID_FROM,
+    valid_to: null,
+  },
+];
+
+const geometryHandlers = [
+  http.get('*/api/zones', () => HttpResponse.json(TEST_ZONES)),
+  http.get('*/api/static-objects', () => HttpResponse.json(MOCK_STATIC_OBJECTS)),
+  http.get('*/api/scenes/current', () =>
+    HttpResponse.json({ status: 404, code: 'SCENE_NOT_FOUND', detail: '없음' }, { status: 404 }),
+  ),
+];
+
 let tbmMock = createTbmMock();
-const server = setupServer(...tbmMock.handlers);
+const server = setupServer(...tbmMock.handlers, ...geometryHandlers);
 
 // jsdom 에는 innerText 가 없다. 서식 칸(Fx)이 글자를 넣고 읽는 길을 textContent 로 잇는다.
 beforeAll(() => {
@@ -27,8 +100,9 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   localStorage.removeItem(TBM_FORM_KEY);
   useTbmFormStore.setState({ edits: {} });
+  window.innerWidth = 1280;
   tbmMock = createTbmMock();
-  server.resetHandlers(...tbmMock.handlers);
+  server.resetHandlers(...tbmMock.handlers, ...geometryHandlers);
 });
 
 afterEach(() => {
@@ -47,9 +121,9 @@ const received = () =>
   });
 
 describe('왼쪽 패널', () => {
-  it('처음에는 레이아웃을 크게 보이고 오른쪽 위 단추 하나로 평가 · 간섭 보기와 바꾼다', () => {
+  it('처음에는 레이아웃을 크게 보이고 오른쪽 위 단추 하나로 평가 · 간섭 보기와 바꾼다', async () => {
     render(<TbmPage />);
-    const panel = screen.getByRole('region', { name: 'T1 가상 레이아웃' });
+    const panel = await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
     expect(within(panel).getByRole('img', { name: /평면 도식/ })).toBeTruthy();
     expect(within(panel).queryByRole('table')).toBeNull();
     // 한 화면에 단추는 하나뿐이고 글자가 보기 전환을 알린다.
@@ -67,8 +141,9 @@ describe('왼쪽 패널', () => {
     expect(screen.getByRole('region', { name: 'T1 가상 레이아웃' })).toBeTruthy();
   });
 
-  it('작업을 바꿔도 고른 보기를 유지한다', () => {
+  it('작업을 바꿔도 고른 보기를 유지한다', async () => {
     render(<TbmPage />);
+    await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
     fireEvent.click(screen.getByRole('button', { name: '평가 · 간섭 보기' }));
     fireEvent.click(screen.getByRole('button', { name: /^T2 자재 반입/ }));
     expect(screen.getByRole('region', { name: 'T2 평가 · 간섭' })).toBeTruthy();
@@ -136,8 +211,9 @@ describe('작업 등록 · 수정 모달', () => {
     });
   });
 
-  it('Esc(cancel)와 바깥(backdrop) 누르기, 취소 단추로 닫는다', () => {
+  it('Esc(cancel)와 바깥(backdrop) 누르기, 취소 단추로 닫는다', async () => {
     render(<TbmPage />);
+    await screen.findByRole('button', { name: '+ 작업 등록' });
     const open = () => fireEvent.click(screen.getByRole('button', { name: '+ 작업 등록' }));
 
     open();
@@ -265,7 +341,7 @@ describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 �
   it('409 응답(WORK_HAS_NO_LAYOUT · REPORT_IN_PROGRESS)을 구분해 안내한다', async () => {
     // 1) WORK_HAS_NO_LAYOUT: 레이아웃 미연결 작업 등록 후 보고서 생성 요청
     tbmMock = createTbmMock({ pollsBeforeComplete: 2 });
-    server.resetHandlers(...tbmMock.handlers);
+    server.resetHandlers(...tbmMock.handlers, ...geometryHandlers);
 
     render(<TbmPage />);
     await waitFor(() => {
@@ -306,6 +382,27 @@ describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 �
     });
   });
 
+  it('보고서 생성 요청이 404 WORK_NOT_FOUND 로 실패하면 사용자가 이해할 안내 문구를 표시한다', async () => {
+    server.use(
+      http.post('*/api/reports/tbm', () =>
+        HttpResponse.json(
+          { status: 404, code: 'WORK_NOT_FOUND', detail: '작업을 찾을 수 없습니다.' },
+          { status: 404 },
+        ),
+      ),
+    );
+
+    render(<TbmPage />);
+    const regenBtn = await screen.findByRole('button', { name: '보고서 재생성' });
+    fireEvent.click(regenBtn);
+
+    await waitFor(() => {
+      const alert = screen.getByTestId('tbm-request-error');
+      expect(alert.textContent).toContain('작업을 찾을 수 없습니다');
+      expect(alert.textContent).toContain('WORK_NOT_FOUND');
+    });
+  });
+
   it('API 요청이 5xx 또는 네트워크 오류로 실패하면 tbmDemo.ts 로 대체하고 "데모 데이터"를 표시한다', async () => {
     server.use(
       http.get('*/api/work-units', () =>
@@ -319,11 +416,259 @@ describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 �
     });
     expect(screen.getByRole('region', { name: 'T1 가상 레이아웃' })).toBeTruthy();
   });
+
+  it('서버가 빈 작업 목록(works: [])을 돌려주면 데모 작업을 보이지 않고 빈 상태 화면을 표시한다', async () => {
+    server.use(http.get('*/api/work-units', () => HttpResponse.json({ works: [] })));
+
+    render(<TbmPage />);
+    const emptyState = await screen.findByTestId('tbm-empty-state');
+    await waitFor(() => {
+      expect(emptyState.textContent).toContain('등록된 작업이 없습니다 — 작업 추가');
+    });
+    expect(screen.queryByTestId('tbm-demo-badge')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'T1 가상 레이아웃' })).toBeNull();
+  });
+
+  it('서버 모드에서 작업 등록·수정·삭제 API 가 실패하면 오류 안내를 띄우고 로컬 가짜 작업을 남기지 않는다', async () => {
+    server.use(
+      http.post('*/api/work-units', () =>
+        HttpResponse.json(
+          { status: 500, code: 'INTERNAL_ERROR', detail: '서버 오류' },
+          { status: 500 },
+        ),
+      ),
+      http.put('*/api/work-units/:id', () =>
+        HttpResponse.json(
+          { status: 500, code: 'INTERNAL_ERROR', detail: '서버 오류' },
+          { status: 500 },
+        ),
+      ),
+      http.delete('*/api/work-units/:id', () =>
+        HttpResponse.json(
+          { status: 500, code: 'INTERNAL_ERROR', detail: '서버 오류' },
+          { status: 500 },
+        ),
+      ),
+    );
+
+    render(<TbmPage />);
+    await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
+
+    // 1) 작업 등록 실패 → 롤백 및 오류 안내, 가짜 T4 가 남지 않는다
+    fireEvent.click(screen.getByRole('button', { name: '+ 작업 등록' }));
+    const addDialog = screen.getByRole('dialog', { name: '작업 등록' });
+    fireEvent.change(within(addDialog).getByLabelText('작업명'), {
+      target: { value: '실패할 가짜 작업' },
+    });
+    fireEvent.click(within(addDialog).getByRole('button', { name: '등록' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tbm-mutation-error').textContent).toContain(
+        '작업 등록에 실패했습니다',
+      );
+    });
+    expect(screen.queryByRole('button', { name: /실패할 가짜 작업/ })).toBeNull();
+    expect(screen.getByRole('region', { name: 'T1 가상 레이아웃' })).toBeTruthy();
+
+    // 2) 작업 수정 실패 → 롤백 및 오류 안내
+    fireEvent.click(screen.getByRole('button', { name: '작업 수정' }));
+    const editDialog = screen.getByRole('dialog', { name: '작업 수정' });
+    fireEvent.change(within(editDialog).getByLabelText('작업명'), {
+      target: { value: '수정 실패 이름' },
+    });
+    fireEvent.click(within(editDialog).getByRole('button', { name: '저장' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tbm-mutation-error').textContent).toContain(
+        '작업 수정에 실패했습니다',
+      );
+    });
+    expect(screen.queryByRole('button', { name: /수정 실패 이름/ })).toBeNull();
+
+    // 3) 작업 삭제 실패 → 롤백 및 오류 안내 (T1 이 그대로 남아 있음)
+    fireEvent.click(screen.getByRole('button', { name: '작업 수정' }));
+    const deleteDialog = screen.getByRole('dialog', { name: '작업 수정' });
+    fireEvent.click(within(deleteDialog).getByRole('button', { name: '작업 삭제' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tbm-mutation-error').textContent).toContain(
+        '작업 삭제에 실패했습니다',
+      );
+    });
+    expect(screen.getByRole('button', { name: /^T1 개구부 옆 비계 설치/ })).toBeTruthy();
+  });
+});
+
+describe('3D 가상 레이아웃 편집기', () => {
+  it('3D 뷰어와 위에서 보기를 전환하고, 물체 추가·수치 다듬기·삭제 후 저장하면 새 레이아웃을 만들고 작업에 연결한다', async () => {
+    render(<TbmPage />);
+    await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
+
+    fireEvent.click(screen.getByRole('button', { name: '3D 레이아웃 편집' }));
+    const dialog = await screen.findByRole('dialog', { name: '3D 가상 레이아웃 편집' });
+
+    // 3D 뷰어가 열리고 기본은 top-view off
+    const viewport = within(dialog).getByTestId('layout-editor-viewport');
+    const viewer = viewport.firstElementChild as HTMLElement;
+    expect(viewer.getAttribute('data-viewer-mode')).toBe('PLANNED');
+    expect(viewer.getAttribute('data-viewer-top-view')).toBe('off');
+
+    // "위에서 보기" 토글 확인
+    const topViewBtn = within(dialog).getByRole('button', { name: '위에서 보기' });
+    fireEvent.click(topViewBtn);
+    expect(topViewBtn.getAttribute('aria-pressed')).toBe('true');
+    expect(viewer.getAttribute('data-viewer-top-view')).toBe('on');
+    fireEvent.click(within(dialog).getByRole('button', { name: '입체 시점으로 보기' }));
+    expect(viewer.getAttribute('data-viewer-top-view')).toBe('off');
+
+    // 새 가상 레이아웃 만들기 선택
+    fireEvent.change(within(dialog).getByLabelText('편집할 레이아웃'), {
+      target: { value: 'new' },
+    });
+    fireEvent.change(within(dialog).getByLabelText('레이아웃 이름'), {
+      target: { value: '신규 3D 비계 배치' },
+    });
+
+    // 작업면(단상 작업면 top 0.4m)을 고른 뒤 비계 추가 + 장비 추가 후 장비 삭제
+    await waitFor(() => {
+      const surfaceSelect = within(dialog).getByLabelText('놓을 기준면') as HTMLSelectElement;
+      expect(surfaceSelect.options.length).toBeGreaterThan(1);
+    });
+    fireEvent.change(within(dialog).getByLabelText('놓을 기준면'), {
+      target: { value: 'ws-0a0c0001' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: '+ 비계' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '+ 장비' }));
+
+    expect(within(dialog).getByText('배치 물체 (2)')).toBeTruthy();
+
+    // 현재 선택된 두 번째 물체(장비) 삭제 → 첫 번째 물체(비계)만 남음
+    fireEvent.click(within(dialog).getByRole('button', { name: '물체 삭제' }));
+    expect(within(dialog).getByText('배치 물체 (1)')).toBeTruthy();
+
+    // 남은 비계 항목의 이름·크기·회전 다듬기
+    fireEvent.change(within(dialog).getByLabelText('물체 이름'), {
+      target: { value: '단상 위 이동식 비계' },
+    });
+    fireEvent.change(within(dialog).getByLabelText('폭 X'), {
+      target: { value: '2.4' },
+    });
+    fireEvent.change(within(dialog).getByLabelText('회전 각도'), {
+      target: { value: '45' },
+    });
+
+    // 저장(POST /api/layouts) → 작업(T1)에 새 layout_id(104) 연결(PUT /api/work-units/1)
+    fireEvent.click(within(dialog).getByRole('button', { name: '레이아웃 저장 · 작업 연결' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: '3D 가상 레이아웃 편집' })).toBeNull();
+      expect(tbmMock.layouts[0]).toMatchObject({
+        layout_id: 104,
+        name: '신규 3D 비계 배치',
+        revision: 1,
+      });
+      expect(tbmMock.layouts[0]?.items[0]).toMatchObject({
+        kind: 'SCAFFOLD',
+        label: '단상 위 이동식 비계',
+      });
+      expect(tbmMock.works[0]?.layout_id).toBe(104);
+    });
+  });
+
+  it('구역에서 가져오기: 높이가 없는 구역은 Z 값을 비워 두고 사용자가 입력하기 전까지 저장을 막는다', async () => {
+    render(<TbmPage />);
+    await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
+
+    fireEvent.click(screen.getByRole('button', { name: '3D 레이아웃 편집' }));
+    const dialog = await screen.findByRole('dialog', { name: '3D 가상 레이아웃 편집' });
+
+    fireEvent.change(within(dialog).getByLabelText('편집할 레이아웃'), {
+      target: { value: 'new' },
+    });
+
+    await waitFor(() => {
+      const zoneSelect = within(dialog).getByLabelText('구역에서 가져오기') as HTMLSelectElement;
+      expect(zoneSelect.options.length).toBeGreaterThan(2);
+    });
+
+    // 높이 범위가 없는 구역(z-05) 가져오기
+    fireEvent.change(within(dialog).getByLabelText('구역에서 가져오기'), {
+      target: { value: 'z-05' },
+    });
+
+    const bottomZInput = within(dialog).getByLabelText('바닥 높이 Z') as HTMLInputElement;
+    const heightInput = within(dialog).getByLabelText('높이 Z') as HTMLInputElement;
+    expect(bottomZInput.value).toBe('');
+    expect(heightInput.value).toBe('');
+
+    // Z 미입력 상태에서 저장 시도 → 검증 오류로 차단
+    fireEvent.click(within(dialog).getByRole('button', { name: '레이아웃 저장 · 작업 연결' }));
+    expect(within(dialog).getByTestId('layout-editor-error').textContent).toContain(
+      '바닥 높이(Z)가 비어 있습니다',
+    );
+
+    // 사용자가 직접 바닥 높이와 높이를 입력하면 저장 성공
+    fireEvent.change(bottomZInput, { target: { value: '0' } });
+    fireEvent.change(heightInput, { target: { value: '1.5' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '레이아웃 저장 · 작업 연결' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: '3D 가상 레이아웃 편집' })).toBeNull();
+    });
+  });
+
+  it('기존 레이아웃 수정 시 revision 충돌(409 LAYOUT_REVISION_CONFLICT)이 나면 안내하고 다시 불러올 수 있다', async () => {
+    render(<TbmPage />);
+    await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
+
+    fireEvent.click(screen.getByRole('button', { name: '3D 레이아웃 편집' }));
+    const dialog = await screen.findByRole('dialog', { name: '3D 가상 레이아웃 편집' });
+
+    // 레이아웃 #101 (rev.3) 상세가 불러와질 때까지 대기
+    await waitFor(() => {
+      const nameInput = within(dialog).getByLabelText('레이아웃 이름') as HTMLInputElement;
+      expect(nameInput.value).toContain('개구부 옆 비계 배치');
+    });
+
+    // 서버 쪽에서 다른 사람이 먼저 수정해 revision 이 4 로 올라간 상황 흉내
+    tbmMock.layouts[0]!.revision = 4;
+    tbmMock.layouts[0]!.name = '다른 사람이 고친 레이아웃';
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '레이아웃 저장 · 작업 연결' }));
+
+    await waitFor(() => {
+      expect(within(dialog).getByTestId('layout-editor-error').textContent).toContain(
+        '다른 사람이 먼저 고침 — 다시 불러오기',
+      );
+    });
+
+    // "다시 불러오기" 단추를 누르면 서버의 최신 버전(rev.4)을 불러와 충돌 안내가 사라진다
+    fireEvent.click(within(dialog).getByRole('button', { name: '다시 불러오기' }));
+    await waitFor(() => {
+      expect(within(dialog).queryByTestId('layout-editor-error')).toBeNull();
+      const nameInput = within(dialog).getByLabelText('레이아웃 이름') as HTMLInputElement;
+      expect(nameInput.value).toBe('다른 사람이 고친 레이아웃');
+    });
+  });
+
+  it('휴대폰 폭(좁은 화면)에서는 편집 대신 "PC 에서 편집" 안내와 읽기 전용 미리보기를 보인다', async () => {
+    window.innerWidth = 500;
+    render(<TbmPage />);
+    await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
+
+    fireEvent.click(screen.getByRole('button', { name: '3D 레이아웃 편집' }));
+    const dialog = await screen.findByRole('dialog', { name: '3D 가상 레이아웃 편집' });
+
+    const readonlyNotice = within(dialog).getByTestId('layout-mobile-readonly');
+    expect(readonlyNotice.textContent).toContain('PC 에서 편집');
+    expect(within(dialog).queryByRole('button', { name: '레이아웃 저장 · 작업 연결' })).toBeNull();
+  });
 });
 
 describe('회의록', () => {
-  it('A4 쪽 미리보기를 보이고, 받는 중에는 편집할 수 없다', () => {
+  it('A4 쪽 미리보기를 보이고, 받는 중에는 편집할 수 없다', async () => {
     render(<TbmPage />);
+    await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
     expect(screen.getByRole('button', { name: '편집' }).hasAttribute('disabled')).toBe(true);
     received();
     expect(screen.getByRole('button', { name: '편집' }).hasAttribute('disabled')).toBe(false);
@@ -332,8 +677,9 @@ describe('회의록', () => {
     expect(preview.textContent).toContain('개구부 옆 비계 설치');
   });
 
-  it('편집은 모달 창에서 하고 고친 칸은 저장소에 남는다(자동 저장)', () => {
+  it('편집은 모달 창에서 하고 고친 칸은 저장소에 남는다(자동 저장)', async () => {
     render(<TbmPage />);
+    await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
     received();
     fireEvent.click(screen.getByRole('button', { name: '편집' }));
     const dialog = screen.getByRole('dialog', { name: 'TBM 회의록 편집' });
@@ -354,8 +700,9 @@ describe('회의록', () => {
     );
   });
 
-  it('편집 창의 되돌리기는 고친 칸을 버린다', () => {
+  it('편집 창의 되돌리기는 고친 칸을 버린다', async () => {
     render(<TbmPage />);
+    await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
     received();
     fireEvent.click(screen.getByRole('button', { name: '편집' }));
     const dialog = screen.getByRole('dialog', { name: 'TBM 회의록 편집' });
@@ -369,13 +716,14 @@ describe('회의록', () => {
     expect(useTbmFormStore.getState().edits.T1).toBeUndefined();
   });
 
-  it('출력은 인쇄 창을 여는 동안만 출력용 사본을 그린다', () => {
+  it('출력은 인쇄 창을 여는 동안만 출력용 사본을 그린다', async () => {
     const print = vi.fn(() => {
       // 인쇄 창이 열린 시점에는 출력용 사본(@page A4)이 문서에 있다.
       expect(document.body.textContent).toContain('@page');
     });
     vi.stubGlobal('print', print);
     render(<TbmPage />);
+    await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
     received();
     fireEvent.click(screen.getByRole('button', { name: '출력' }));
     expect(print).toHaveBeenCalledTimes(1);
