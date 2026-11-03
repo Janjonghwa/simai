@@ -476,9 +476,16 @@ export function tbmFailureReasonText(reason: string | null | undefined): string 
   return FAILURE_REASON_TEXT[reason] ?? `보고서 생성에 실패했습니다 (${reason})`;
 }
 
-/** POST /api/reports/tbm 실패(409 등)를 화면 안내 문구로 바꾼다. */
+/** POST /api/reports/tbm 실패(404/409 등)를 화면 안내 문구로 바꾼다. */
 export function tbmReportRequestErrorText(error: unknown): string {
   if (error instanceof ApiError) {
+    if (
+      error.status === 404 ||
+      error.code === 'WORK_NOT_FOUND' ||
+      error.code === 'WORK_UNIT_NOT_FOUND'
+    ) {
+      return '작업을 찾을 수 없습니다. 작업이 서버에 등록되어 있는지 확인해 주세요. (WORK_NOT_FOUND)';
+    }
     if (error.status === 409 && error.code === 'WORK_HAS_NO_LAYOUT') {
       return '작업에 연결된 가상 레이아웃이 없습니다. 가상 레이아웃을 먼저 연결해 주세요. (WORK_HAS_NO_LAYOUT)';
     }
@@ -493,6 +500,39 @@ export function tbmReportRequestErrorText(error: unknown): string {
     }
   }
   return '보고서 생성을 요청하지 못했습니다.';
+}
+
+/** 작업 등록·수정·삭제 API 실패를 화면 안내 문구로 바꾼다. */
+export function tbmWorkMutationErrorText(
+  error: unknown,
+  action: 'create' | 'update' | 'delete',
+): string {
+  const actionLabel = action === 'create' ? '등록' : action === 'update' ? '수정' : '삭제';
+  if (error instanceof ApiError) {
+    if (error.status === NETWORK_ERROR) {
+      return `서버에 연결하지 못해 작업을 ${actionLabel}하지 못했습니다.`;
+    }
+    if (error.serverMessage) {
+      return `작업 ${actionLabel}에 실패했습니다: ${error.serverMessage}`;
+    }
+  }
+  return `작업 ${actionLabel}에 실패했습니다. 잠시 후 다시 시도해 주세요.`;
+}
+
+/** 가상 레이아웃 저장(POST/PUT /api/layouts) 실패를 화면 안내 문구로 바꾼다. */
+export function tbmLayoutSaveErrorText(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 409 || error.code === 'LAYOUT_REVISION_CONFLICT') {
+      return '다른 사람이 먼저 고침 — 다시 불러오기';
+    }
+    if (error.status === NETWORK_ERROR) {
+      return '서버에 연결하지 못해 레이아웃을 저장하지 못했습니다.';
+    }
+    if (error.serverMessage) {
+      return `레이아웃 저장 실패: ${error.serverMessage}`;
+    }
+  }
+  return '레이아웃을 저장하지 못했습니다.';
 }
 
 /** API 실패가 데모 폴백 대상(네트워크 끊김·시간 초과·5xx)인지 판정한다. */

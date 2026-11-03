@@ -48,6 +48,8 @@ export interface ViewerState {
   hovered: string | null;
   /** 처음 시점으로 돌아가기 요청 수. 늘 때마다 카메라를 처음 자리로 옮긴다. */
   viewResets: number;
+  /** 위에서 내려다보는 시점('위에서 보기') 여부. */
+  topView: boolean;
   /** 레이어별 표시·피킹(-234). 기본값은 모두 interactive(기존 동작). */
   layers: ResolvedLayers;
   /** 기다리는 선택 요청(-234). 하나뿐이다. */
@@ -72,6 +74,7 @@ export interface ViewerState {
   setTheme(theme: ViewerTheme): void;
   setHovered(key: string | null): void;
   resetView(): CommandResult;
+  setTopView(enabled: boolean): CommandResult;
 }
 
 export type ViewerStore = StoreApi<ViewerState>;
@@ -155,6 +158,7 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       theme: 'dark',
       hovered: null,
       viewResets: 0,
+      topView: false,
 
       registerTarget: (target) => {
         const key = targetKey(target);
@@ -283,7 +287,13 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
 
       resetView: () => {
         if (get().phase !== 'ready') return { ok: false, reason: 'NOT_READY' };
-        set({ viewResets: get().viewResets + 1 });
+        set({ viewResets: get().viewResets + 1, topView: false });
+        return OK;
+      },
+
+      setTopView: (enabled) => {
+        const next = Boolean(enabled);
+        if (get().topView !== next) set({ topView: next });
         return OK;
       },
     };

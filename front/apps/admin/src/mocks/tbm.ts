@@ -22,8 +22,8 @@ const INITIAL_LAYOUTS: readonly LayoutDetail[] = [
     layout_id: 101,
     name: '개구부 옆 비계 배치 (z-04)',
     revision: 3,
-    layout_version: 'layout-101-r3',
-    source: 'EDITOR',
+    layout_version: 'lv-3',
+    source: 'PLANNED',
     item_count: 1,
     created_at: 1760572800000,
     updated_at: 1760572800000,
@@ -42,8 +42,8 @@ const INITIAL_LAYOUTS: readonly LayoutDetail[] = [
     layout_id: 102,
     name: '자재 반입 동선·주차 배치 (z-02)',
     revision: 1,
-    layout_version: 'layout-102-r1',
-    source: 'EDITOR',
+    layout_version: 'lv-1',
+    source: 'PLANNED',
     item_count: 2,
     created_at: 1760572800000,
     updated_at: 1760572800000,
@@ -70,8 +70,8 @@ const INITIAL_LAYOUTS: readonly LayoutDetail[] = [
     layout_id: 103,
     name: '북서쪽 바닥 마감 배치',
     revision: 1,
-    layout_version: 'layout-103-r1',
-    source: 'EDITOR',
+    layout_version: 'lv-1',
+    source: 'PLANNED',
     item_count: 1,
     created_at: 1760572800000,
     updated_at: 1760572800000,
@@ -87,6 +87,102 @@ const INITIAL_LAYOUTS: readonly LayoutDetail[] = [
     ],
   },
 ];
+
+interface LayoutRevisionRecord {
+  layout_id: number;
+  revision: number;
+  layout_version: string;
+  name: string;
+  items: LayoutDetail['items'];
+  created_at: number;
+}
+
+function validateLayoutPayload(body: Record<string, unknown> | null):
+  | {
+      ok: true;
+      name: string;
+      items: LayoutDetail['items'];
+      revision: number | undefined;
+    }
+  | {
+      ok: false;
+      detail: string;
+    } {
+  if (!body || typeof body.name !== 'string') {
+    return { ok: false, detail: 'name 은 필수입니다.' };
+  }
+  const name = body.name.trim();
+  if (name.length === 0 || name.length > 100) {
+    return { ok: false, detail: 'name 은 1~100 자여야 합니다.' };
+  }
+  if (!Array.isArray(body.items)) {
+    return { ok: false, detail: 'items 배열이 필요합니다.' };
+  }
+  if (body.items.length > 200) {
+    return { ok: false, detail: 'items 는 200 개 이하여야 합니다.' };
+  }
+  const ids = new Set<string>();
+  const items: LayoutDetail['items'] = [];
+  for (const raw of body.items) {
+    if (!raw || typeof raw !== 'object') {
+      return { ok: false, detail: 'item 형식이 올바르지 않습니다.' };
+    }
+    const item = raw as Record<string, unknown>;
+    const itemId = typeof item.item_id === 'string' ? item.item_id.trim() : '';
+    if (!itemId || itemId.length > 64) {
+      return { ok: false, detail: 'item_id 가 필요합니다.' };
+    }
+    if (ids.has(itemId)) {
+      return { ok: false, detail: `중복된 item_id: ${itemId}` };
+    }
+    ids.add(itemId);
+    const kind = item.kind;
+    if (kind !== 'OPENING' && kind !== 'SCAFFOLD' && kind !== 'EQUIPMENT') {
+      return { ok: false, detail: `지원하지 않는 kind: ${String(kind)}` };
+    }
+    const center = item.center;
+    if (
+      !Array.isArray(center) ||
+      center.length !== 3 ||
+      !center.every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 10000)
+    ) {
+      return { ok: false, detail: `center 는 3 개의 유한 숫자여야 합니다: ${itemId}` };
+    }
+    const size = item.size;
+    if (
+      !Array.isArray(size) ||
+      size.length !== 3 ||
+      !size.every((v) => typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= 10000)
+    ) {
+      return { ok: false, detail: `size 는 3 개의 양수여야 합니다: ${itemId}` };
+    }
+    const yawRad = item.yaw_rad === undefined ? 0 : item.yaw_rad;
+    if (typeof yawRad !== 'number' || !Number.isFinite(yawRad) || Math.abs(yawRad) > 3.1415927) {
+      return { ok: false, detail: `yaw_rad 는 [-π, π] 범위여야 합니다: ${itemId}` };
+    }
+    let label: string | null = null;
+    if (item.label !== undefined && item.label !== null) {
+      if (typeof item.label !== 'string') {
+        return { ok: false, detail: `label 형식이 올바르지 않습니다: ${itemId}` };
+      }
+      const trimmed = item.label.trim();
+      if (trimmed.length > 100) {
+        return { ok: false, detail: `label 은 100 자 이하여야 합니다: ${itemId}` };
+      }
+      label = trimmed.length > 0 ? trimmed : null;
+    }
+    items.push({
+      item_id: itemId,
+      kind,
+      center: [center[0] as number, center[1] as number, center[2] as number],
+      size: [size[0] as number, size[1] as number, size[2] as number],
+      yaw_rad: yawRad,
+      label,
+    });
+  }
+  const revision = typeof body.revision === 'number' ? body.revision : undefined;
+  return { ok: true, name, items, revision };
+}
 
 const INITIAL_WORKS: readonly TbmWorkUnit[] = [
   {
@@ -694,8 +790,20 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
     ...l,
     items: l.items.map((i) => ({ ...i })),
   }));
+  const layoutRevisions = new Map<string, LayoutRevisionRecord>();
+  for (const l of layouts) {
+    layoutRevisions.set(`${l.layout_id}:${l.revision}`, {
+      layout_id: l.layout_id,
+      revision: l.revision,
+      layout_version: `lv-${l.revision}`,
+      name: l.name,
+      items: l.items.map((i) => ({ ...i })),
+      created_at: l.updated_at ?? l.created_at ?? 1760572800000,
+    });
+  }
   const works: TbmWorkUnit[] = INITIAL_WORKS.map((w) => ({ ...w }));
 
+  let nextLayoutSeq = 104;
   let nextWorkSeq = 4;
   let nextReportSeq = 300;
   const pollsBeforeComplete = options.pollsBeforeComplete ?? 1;
@@ -729,21 +837,125 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
       HttpResponse.json(
         layouts.map(({ items, ...summary }) => ({
           ...summary,
+          layout_version: summary.layout_version ?? `lv-${summary.revision}`,
+          source: summary.source ?? 'PLANNED',
           item_count: items.length,
         })),
       ),
     ),
+
+    http.get('*/api/layouts/:id/revisions/:revision', ({ params }) => {
+      const id = Number(params.id);
+      const rev = Number(params.revision);
+      const record = layoutRevisions.get(`${id}:${rev}`);
+      if (!record) {
+        return HttpResponse.json(
+          {
+            status: 404,
+            code: 'LAYOUT_NOT_FOUND',
+            detail: `레이아웃 리비전이 없습니다: ${id}#${rev}`,
+          },
+          { status: 404 },
+        );
+      }
+      return HttpResponse.json(record);
+    }),
 
     http.get('*/api/layouts/:id', ({ params }) => {
       const id = Number(params.id);
       const layout = layouts.find((l) => l.layout_id === id);
       if (!layout) {
         return HttpResponse.json(
-          { status: 404, code: 'LAYOUT_NOT_FOUND', detail: '가상 레이아웃을 찾을 수 없습니다.' },
+          { status: 404, code: 'LAYOUT_NOT_FOUND', detail: `레이아웃이 없습니다: ${id}` },
           { status: 404 },
         );
       }
       return HttpResponse.json(layout);
+    }),
+
+    http.post('*/api/layouts', async ({ request }) => {
+      const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+      const validated = validateLayoutPayload(body);
+      if (!validated.ok) {
+        return HttpResponse.json(
+          { status: 400, code: 'INVALID_LAYOUT', detail: validated.detail },
+          { status: 400 },
+        );
+      }
+      const now = Date.now();
+      const created: LayoutDetail = {
+        layout_id: nextLayoutSeq++,
+        name: validated.name,
+        revision: 1,
+        layout_version: 'lv-1',
+        source: 'PLANNED',
+        item_count: validated.items.length,
+        created_at: now,
+        updated_at: now,
+        items: validated.items,
+      };
+      layouts.unshift(created);
+      layoutRevisions.set(`${created.layout_id}:1`, {
+        layout_id: created.layout_id,
+        revision: 1,
+        layout_version: 'lv-1',
+        name: created.name,
+        items: created.items.map((i) => ({ ...i })),
+        created_at: now,
+      });
+      return HttpResponse.json(created, { status: 201 });
+    }),
+
+    http.put('*/api/layouts/:id', async ({ params, request }) => {
+      const id = Number(params.id);
+      const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+      const validated = validateLayoutPayload(body);
+      if (!validated.ok) {
+        return HttpResponse.json(
+          { status: 400, code: 'INVALID_LAYOUT', detail: validated.detail },
+          { status: 400 },
+        );
+      }
+      const idx = layouts.findIndex((l) => l.layout_id === id);
+      if (idx < 0) {
+        return HttpResponse.json(
+          { status: 404, code: 'LAYOUT_NOT_FOUND', detail: `레이아웃이 없습니다: ${id}` },
+          { status: 404 },
+        );
+      }
+      const current = layouts[idx]!;
+      if (validated.revision !== undefined && validated.revision !== current.revision) {
+        return HttpResponse.json(
+          {
+            status: 409,
+            code: 'LAYOUT_REVISION_CONFLICT',
+            detail: `revision 충돌: 요청=${validated.revision}`,
+          },
+          { status: 409 },
+        );
+      }
+      const nextRevision = current.revision + 1;
+      const now = Date.now();
+      const updated: LayoutDetail = {
+        ...current,
+        name: validated.name,
+        revision: nextRevision,
+        layout_version: `lv-${nextRevision}`,
+        source: current.source ?? 'PLANNED',
+        item_count: validated.items.length,
+        updated_at: now,
+        items: validated.items,
+      };
+      layouts[idx] = updated;
+      layoutRevisions.set(`${updated.layout_id}:${nextRevision}`, {
+        layout_id: updated.layout_id,
+        revision: nextRevision,
+        layout_version: `lv-${nextRevision}`,
+        name: updated.name,
+        items: updated.items.map((i) => ({ ...i })),
+        created_at: now,
+      });
+      return HttpResponse.json(updated, { status: 200 });
     }),
 
     http.get('*/api/work-units', ({ request }) => {

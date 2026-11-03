@@ -161,6 +161,11 @@ export interface Viewer3DHandle {
    * 기존 FE 가짜 핸들과 호환되도록 선택 멤버로 둔다. Viewer3D 는 늘 채운다.
    */
   resetView?(): CommandResult;
+  /**
+   * 카메라를 바로 위에서 내려다보는 시점('위에서 보기')으로 바꾸거나 원래 시점으로 돌린다.
+   * 선택 멤버로 둔다. Viewer3D 는 늘 채운다.
+   */
+  setTopView?(enabled: boolean): CommandResult;
 }
 
 /**
@@ -276,5 +281,10 @@ export interface Viewer3DProps {
    * 노트북 부하를 고려해 기본값은 false(끔)다.
    */
   postProcessing?: ViewerPostProcessingInput;
+  /**
+   * 카메라를 바로 위에서 내려다보는 시점('위에서 보기')으로 둘지 여부(선택 사항, 기본 false).
+   * true 로 바뀌면 위에서 내려다보는 시점으로 옮기고, false 로 바뀌면 이전 시점(또는 기본 시점)으로 돌아간다.
+   */
+  topView?: boolean;
   className?: string;
 }

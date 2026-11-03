@@ -13,7 +13,7 @@ import {
 } from '@/features/tbm/types';
 import { api } from '@/lib/api';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useLayoutEffect, useState } from 'react';
 
 export interface UseTbmReportResult {
   /** 현재 화면에 표시 중인 보고서(선택한 버전 또는 최신 버전). */
@@ -123,7 +123,7 @@ export function useTbmReport(
     [queryClient, workId],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!enabled || generatingReportId === null) return;
     const timer = window.setInterval(() => {
       void pollOnce(generatingReportId);

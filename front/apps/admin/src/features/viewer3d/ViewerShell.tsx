@@ -126,6 +126,7 @@ export function ViewerShell({
   sceneTextureLoader = loadSceneTexture,
   sceneReview = false,
   postProcessing = false,
+  topView = false,
   theme = 'dark',
 }: ViewerShellProps) {
   // 호스트가 쥔 상자 편집(controlled). 뷰어 안 편집 세션과 따로이며 Canvas 안 BoxEditGizmo 가 읽는다.
@@ -137,9 +138,13 @@ export function ViewerShell({
     const created = createViewerStore(initialMode);
     // 첫 장면부터 레이어 값을 따른다(기본값으로 한 번 그렸다가 숨기지 않게).
     created.getState().setLayers(layers);
+    created.getState().setTopView(topView);
     return created;
   });
   useEffect(() => store.getState().setTheme(theme), [store, theme]);
+  useEffect(() => {
+    store.getState().setTopView(topView);
+  }, [store, topView]);
   // 처음 받은 dataStore 를 계속 쓴다. 바꿔 넘겨도 장면의 구독을 옮기지 않는다.
   const [data] = useState(() => dataStore ?? createSpatialDataStore());
   const meshConfig = useMemo<AvatarMeshConfig>(
@@ -162,9 +167,11 @@ export function ViewerShell({
   const [sceneStore] = useState(createSceneStore);
   const mode = useStore(store, (s) => s.mode);
   const phase = useStore(store, (s) => s.phase);
+  const isTopView = useStore(store, (s) => s.topView);
 
   useImperativeHandle(ref, () => {
-    const { requestSelect, clearSelection, focusOn, setMode, resetView } = store.getState();
+    const { requestSelect, clearSelection, focusOn, setMode, resetView, setTopView } =
+      store.getState();
     const {
       begin,
       cancel,
@@ -204,6 +211,7 @@ export function ViewerShell({
           ? updateObjectField(change.field, change.value)
           : { ok: false, reason: 'NOT_EDITABLE' },
       resetView,
+      setTopView,
     };
   }, [store, edit]);
 
@@ -344,6 +352,7 @@ export function ViewerShell({
       className={cn('relative size-full', className)}
       data-viewer-mode={mode}
       data-viewer-phase={phase}
+      data-viewer-top-view={isTopView ? 'on' : 'off'}
       data-viewer-post={resolvedPostProcessing.enabled ? 'on' : 'off'}
     >
       {/* 렌더 오류로 Canvas 가 내려가도 데이터 구독은 이어 간다(뷰어는 경보 경로가 아니지만 상태는 잃지 않는다). */}
