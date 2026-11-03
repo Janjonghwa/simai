@@ -67,6 +67,10 @@ simai:
   tier0:
     # Tier 0 토큰(Tier 0 의 SIMAI_TIER0_TOKEN) 원문의 SHA-256 16진수. 비어 있으면 I1(/ws/tier0) 연결을 모두 거부한다
     token-sha256: ${SIMAI_TIER0_TOKEN_SHA256:}
+  watch:
+    # 워치 I4(/ws/watch, 확장 부록 C.6, S15P31A101-336, 설계 docs/design/server-watch-link.md). 워치에 주는 하트비트 주기(interval_ms,
+    # 1~60초). 이 값 × 3 동안 하트비트가 없으면 끊김(LOST). 실기기는 절전 중 하트비트가 최대 27초까지 늘어나 20초(× 3 = 60초)로 둔다
+    heartbeat-interval: 20s
   cctv-remote:
     # 관제 화면 CCTV 원격 시청(S15P31A101-400, 설계 docs/design/cctv-remote-view.md). 게이트웨이 영상 중계가 올린 H.264 를 저장 없이
     # 관리자 브라우저에 나눠 준다. 동시 시청 상한, 월(UTC) 송출 상한(80 GB = 80×10^9 바이트, 넘으면 모두 닫고 막음)

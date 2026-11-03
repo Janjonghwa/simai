@@ -261,7 +261,7 @@ actor_id: string
 acked_at: number
 })
 /**
- * EC2 → 뷰어, STOMP /topic/health (명세 12.2, 12.4, 6.2, 13장). EC2 가 Tier 0 health(I1), 노트북 하트비트, 구성 묶음 적용(config_ack), COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보내는 화면용 상태다. Tier 0 health 원문은 tier0_health 에 그대로 싣는다(없으면 null). EC2 가 Tier 0 나 노트북 하트비트를 잃으면 system_health 는 UNSAFE_UNKNOWN 이다(3.2 이중 감시). Scene 불일치는 Tier 0 가 판정에 쓰는 scene_version(world_state)과 EC2 의 COMMITTED Scene 버전이 다를 때다(FR-12). 1.1.0: scene.compatibility 선택 추가(S15P31A101-381). 1.0.0 신설(S15P31A101-206).
+ * EC2 → 뷰어, STOMP /topic/health (명세 12.2, 12.4, 6.2, 13장). EC2 가 Tier 0 health(I1), 노트북 하트비트, 구성 묶음 적용(config_ack), COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보내는 화면용 상태다. Tier 0 health 원문은 tier0_health 에 그대로 싣는다(없으면 null). EC2 가 Tier 0 나 노트북 하트비트를 잃으면 system_health 는 UNSAFE_UNKNOWN 이다(3.2 이중 감시). Scene 불일치는 Tier 0 가 판정에 쓰는 scene_version(world_state)과 EC2 의 COMMITTED Scene 버전이 다를 때다(FR-12). 1.2.0: watches 선택 추가(워치 연결 상태, 확장 부록 C.6, S15P31A101-336). 1.1.0: scene.compatibility 선택 추가(S15P31A101-381). 1.0.0 신설(S15P31A101-206).
  */
 export type ViewerHealthMessage = (Envelope & {
 msg_type?: "viewer_health"
@@ -336,6 +336,44 @@ mismatch: boolean
 tier0_health: ({
 
 } | null)
+/**
+ * 확장(부록 C.6): 등록된 워치(device.kind WATCH, 폐기 안 됨)의 I4 연결 상태. 워치는 개인 보조 채널이라 system_health·remote_state 에 넣지 않는다. 없으면 워치 확장을 쓰지 않는 EC2 다
+ */
+watches?: {
+/**
+ * 등록된 워치 수
+ */
+registered: number
+/**
+ * items 중 link 가 CONNECTED 인 수(활성 워치 수)
+ */
+connected: number
+/**
+ * device_id 오름차순
+ */
+items: {
+/**
+ * 송신 주체 식별자 (tier0-01, laptop-01, ec2). Tier 0 인스턴스 식별자가 이벤트의 gateway_id 다 (명세 12.1)
+ */
+device_id: string
+/**
+ * CONNECTED: I4 연결이 열려 있고 마지막 watch_heartbeat(연결 직후는 연결 시각)가 EC2 가 준 interval_ms × 3 안. LOST: 그 밖(끊김·한 번도 안 붙음, C.6 LOST)
+ */
+link: ("CONNECTED" | "LOST")
+/**
+ * EC2 가 이 워치의 watch_heartbeat 를 마지막으로 받은 EC2 시각. 받은 적 없으면 null
+ */
+last_heartbeat_at: (number | null)
+/**
+ * CONNECTED 일 때 마지막 하트비트의 watch.battery_pct, 그 밖 null
+ */
+battery_pct: (number | null)
+/**
+ * CONNECTED 일 때 마지막 하트비트의 watch.transport, 그 밖 null
+ */
+transport: ("WIFI" | "PHONE_BLUETOOTH" | "CELLULAR" | "UNKNOWN" | null)
+}[]
+}
 })
 /**
  * EC2(source_id ec2) → 뷰어 STOMP /topic/avatar. EC2 가 아바타 스트림(avatar_pose_batch·avatar_asset)에서 사람별 가장 새 포즈만 남겨 다시 싣는다. 메시지 하나만으로 그릴 수 있게 포즈마다 그 포즈가 가리키는 자산의 내려받기 주소를 함께 싣는다(늦게 구독한 뷰어도 REST 없이 시작). 밀리면 버리고(사람별 최신만), 빠진 사람은 '갱신 없음'이지 '사라짐'이 아니다. 사람의 존재·위치·접지·관측 상태·ID 신뢰도는 /topic/world(world_state)가 정본이고, 이 메시지는 관절 회전과 외형만 더한다(명세 13.1, 20.4). /topic/world·/topic/events 는 바뀌지 않는다. 1.0.0 신설(S15P31A101-249).

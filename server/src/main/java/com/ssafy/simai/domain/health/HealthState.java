@@ -116,6 +116,11 @@ public class HealthState {
         onChange.run();
     }
 
+    /** 워치 I4 연결 상태가 바뀌었다(연결·하트비트·끊김, S15P31A101-336). viewer_health.watches 를 바로 보내게 한다 */
+    public void watchesChanged() {
+        onChange.run();
+    }
+
     /** 받는 쪽 단조 시계(ns) */
     public long nanoTime() {
         return System.nanoTime();
