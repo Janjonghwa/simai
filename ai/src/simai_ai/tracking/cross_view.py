@@ -121,7 +121,7 @@ class CrossViewConfig:
 
     min_keypoint_confidence: float = 0.3
     min_common_joints: int = 4
-    epipolar_gate_px: float = 20.0
+    epipolar_gate_px: float = 30.0
     """대칭 에피폴라 거리 평균의 상한 (근사 픽셀)"""
     epipolar_scale_px: float = 10.0
     floor_hypothesis_max_height_m: float = 1.0

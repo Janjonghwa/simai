@@ -392,7 +392,8 @@ def _split_ticks(m, rig, start, stop, y=3.0):
 
 
 def test_split_person_two_ids_are_flagged_while_close_not_merged(rig):
-    m = _manager()
+    # S3 를 끈 기준선에서 기존 중복 후보·병합 정책을 검증한다.
+    m = _manager(split_suppression_enabled=False)
     frames = _split_ticks(m, rig, 0, 25)  # 2.5 s: 만든 시각의 표시(1 s 유지)가 풀린 뒤에도 계속 붙어야 한다
     a, b = (tr.world_id for tr in frames[-1].tracks)
     for f in frames[12:]:

@@ -156,6 +156,35 @@ def test_two_people_apart(rig):
         assert c.skeleton.to_skeleton()["joint_source"] == ["observed"] * 17
 
 
+def test_epipolar_30_default_keeps_downstream_geometry_gates(rig):
+    """두 합성 카메라의 투영을 옮겨 20~30 px 쌍과 30 px 초과 쌍을 만든다."""
+    default = CrossViewAssociator(rig)
+    old = CrossViewAssociator(rig, CrossViewConfig(epipolar_gate_px=20.0))
+    assert default.config.epipolar_gate_px == 30.0
+    person = skeleton(4.0, 3.0)
+    a = lv("cam1", "a", project(rig, "cam1", person))
+    pa = default._prepare(a)
+    selected = {}
+    for pixels in range(1, 201):
+        b = lv("cam2", "b", project(rig, "cam2", person, shift=(0.0, float(pixels))))
+        pb = default._prepare(b)
+        distance = default._epipolar_px(pa, pb, pa.mask & pb.mask)
+        if 24 <= distance <= 26:
+            selected.setdefault("inside", (b, pb))
+        if 34 <= distance <= 36:
+            selected.setdefault("outside", (b, pb))
+    assert set(selected) == {"inside", "outside"}
+    for name, (b, pb) in selected.items():
+        single = default._pair(pa, pb)
+        batched = default._pairs({a.key: pa, b.key: pb})[(a.key, b.key)]
+        assert single.reject == batched.reject
+        assert single.epipolar_px == pytest.approx(batched.epipolar_px)
+        assert (single.reject is RejectReason.EPIPOLAR) is (name == "outside")
+        assert old._pair(old._prepare(a), old._prepare(b)).reject is RejectReason.EPIPOLAR
+    assert default.config.residual_gate_px == old.config.residual_gate_px
+    assert default.config.residual_marginal_px == old.config.residual_marginal_px
+
+
 def test_close_people_never_share_camera(rig):
     """0.35 m 간격으로 붙어 선 두 사람도 같은 카메라 view 를 한 클러스터에 넣지 않는다."""
     rng = np.random.default_rng(0)
@@ -482,11 +511,11 @@ def test_wrong_person_pair_still_rejected_with_joint_noise_weighting(rig):
         else:
             assert not p.feasible and math.isinf(p.cost)
 
-    # 모든 관절이 고르게 20 px 어긋난 다른 트랙도 정규화 가중 합이 1 이라 문턱이 느슨해지지 않고 기각된다
+    # 전신이 크게 어긋난 다른 트랙은 30 px 문턱에서도 정규화 가중 합이 1 이라 기각된다
     person = skeleton(3.5, 3.0)
     shifted_all = [
         lv("cam1", "cam1-a", project(rig, "cam1", person)),
-        lv("cam2", "cam2-b", project(rig, "cam2", person, shift=(0.0, 28.0))),
+        lv("cam2", "cam2-b", project(rig, "cam2", person, shift=(0.0, 48.0))),
     ]
     (bad_pair,) = CrossViewAssociator(rig).associate(T, shifted_all).pairs
     assert not bad_pair.feasible and math.isinf(bad_pair.cost)
@@ -494,7 +523,7 @@ def test_wrong_person_pair_still_rejected_with_joint_noise_weighting(rig):
 
 def test_joint_noise_weighted_false_matches_unweighted_behavior(rig):
     """설정(`joint_noise_weighted=False`)으로 끄면 예전 비가중 평균·중앙값과 같고 하체 흔들림 쌍을 기각한다 (-354)."""
-    unweighted_cfg = CrossViewConfig(joint_noise_weighted=False)
+    unweighted_cfg = CrossViewConfig(joint_noise_weighted=False, epipolar_gate_px=20.0)
     assoc_off = CrossViewAssociator(rig, unweighted_cfg)
     frame_off = assoc_off.associate(T, _noisy_lower_body_views(rig))
     cam2_pairs = [p for p in frame_off.pairs if "cam2" in (p.a[0], p.b[0])]
