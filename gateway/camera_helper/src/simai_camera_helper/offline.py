@@ -214,7 +214,7 @@ def run(args) -> int:
             summary.update(metrics, pair_grade_counts=grade_counts, status="SUCCEEDED")
         metrics["peak_ram_mib"] = memory.peak / 1024**2
         summary["peak_ram_mib"] = metrics["peak_ram_mib"]
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         summary["failure_reason"] = f"{type(exc).__name__}: {exc}"
         print(summary["failure_reason"], file=sys.stderr, flush=True)
     write_json(args.out / "summary.json", summary)
@@ -246,10 +246,11 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    # CPU is enforced both by hiding CUDA and by explicit .to('cpu') in CameraMatcher.
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    # CPU mode is enforced both by hiding CUDA and by explicit .to('cpu') in CameraMatcher.
     ap = parser()
     args = ap.parse_args()
+    if args.device == "cpu":
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
     if min(args.rounds, args.threads, args.stride, args.width, args.keypoints) < 1:
         ap.error("rounds/threads/stride/width/keypoints must be positive")
     if args.warmup < 0 or args.start < 0:
@@ -268,7 +269,7 @@ def main() -> None:
         cmd = [sys.executable, "-m", "simai_camera_helper.offline", "--out", str(out)]
         values = vars(args) | {"width": width, "keypoints": keypoints}
         for key in ("recording", "intrinsics", "aliked_weights", "lightglue_weights", "source_id",
-                    "width", "keypoints", "rounds", "warmup", "threads", "stride", "start"):
+                    "width", "keypoints", "rounds", "warmup", "threads", "device", "stride", "start"):
             if values[key] is not None:
                 cmd.extend(["--" + key.replace("_", "-"), str(values[key])])
         if args.default_intrinsics:

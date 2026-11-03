@@ -6,24 +6,25 @@ requires-python = ">=3.11,<3.12"
 dependencies = [
   "torch==2.7.1", "torchvision==0.22.1", "numpy>=2.0,<3",
   "opencv-python-headless>=4.11,<5", "av>=14,<17", "lightglue",
-  "psutil>=6,<8",
+  "psutil>=6,<8", "websockets>=14,<16",
 ]
 
 [project.scripts]
 simai-camera-helper = "simai_camera_helper.offline:main"
+simai-camera-helper-service = "simai_camera_helper.service:main"
 
 [tool.uv]
 # LightGlue declares the GUI distribution; only its cv2 API is needed on this worker.
 exclude-dependencies = ["opencv-python"]
 
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
-torchvision = { index = "pytorch-cpu" }
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
 lightglue = { git = "https://github.com/cvg/LightGlue.git", rev = "5a650c444718caffc2669dc0094cde908f42dd73" }
 
 [[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [dependency-groups]

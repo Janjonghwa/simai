@@ -13,9 +13,8 @@ class LoaderTests(unittest.TestCase):
     def test_missing_weights_fail_before_torch_import(self):
         with tempfile.TemporaryDirectory() as folder:
             missing = Path(folder) / "missing.pth"
-            with patch.dict(sys.modules, {"torch": None, "lightglue": None}):
-                with self.assertRaisesRegex(FileNotFoundError, "automatic download is disabled"):
-                    CameraMatcher(missing, missing)
+            with patch.dict(sys.modules, {"torch": None, "lightglue": None}), self.assertRaisesRegex(FileNotFoundError, "automatic download is disabled"):
+                CameraMatcher(missing, missing)
 
     def test_empty_weights_are_rejected(self):
         with tempfile.TemporaryDirectory() as folder:

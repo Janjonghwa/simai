@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
-from .judge import CAMERAS, PAIRS, PairMetrics, Params
+from .judge import CAMERAS, DEFAULT_PARAMS, PAIRS, PairMetrics, Params
 
 LIGHTGLUE_COMMIT = "5a650c444718caffc2669dc0094cde908f42dd73"
 _LOAD_LOCK = threading.Lock()
@@ -106,7 +106,7 @@ def geometric_metrics(a: str, b: str, pa, pb, Ka, Kb, size_a: tuple[int, int],
 class CameraMatcher:
     """GPU when available (device="auto"), else CPU. Reuse one instance between rounds; inference stores only four feature sets."""
 
-    def __init__(self, aliked_weights: Path, lightglue_weights: Path, params: Params = Params(),
+    def __init__(self, aliked_weights: Path, lightglue_weights: Path, params: Params = DEFAULT_PARAMS,
                  intrinsics: dict[str, Intrinsics] | None = None, *, cpu_threads: int = 4,
                  device: str = "auto"):
         paths = {"aliked": Path(aliked_weights), "lightglue": Path(lightglue_weights)}

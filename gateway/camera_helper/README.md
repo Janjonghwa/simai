@@ -1,10 +1,10 @@
 # 카메라 각도 헬퍼 계산 코어 — S15P31A101-445
 
-4대 영상의 현재 겹침을 CPU에서 확인하는 독립 Python 3.11 uv 프로젝트다. 위치·자세 보정·위험 판정·LIVE 시작 허용 여부를 만들지 않는다. relay의 기존 미리보기에 연결하는 작업은 -446 범위다.
+4대 영상의 현재 겹침을 확인하는 독립 Python 3.11 uv 프로젝트다. relay 로컬 미리보기를 사용하며 위치·자세 보정·위험 판정·LIVE 시작 허용 여부를 만들지 않는다.
 
 ## 설치와 시험
 
-이 폴더에서 실행한다. torch·torchvision은 CPU 전용 인덱스, LightGlue는 V0 환경과 같은 `5a650c444718caffc2669dc0094cde908f42dd73` 커밋으로 지정했다. upstream의 `opencv-python` 의존성은 uv에서 제외하고 `opencv-python-headless`로 cv2를 제공한다. 가중치는 내려받지 않는다.
+이 폴더에서 실행한다. torch·torchvision은 CUDA 12.8 인덱스 (CUDA 불가 시 CPU 대체), LightGlue는 V0 환경과 같은 `5a650c444718caffc2669dc0094cde908f42dd73` 커밋으로 지정했다. upstream의 `opencv-python` 의존성은 uv에서 제외하고 `opencv-python-headless`로 cv2를 제공한다. 가중치는 내려받지 않는다.
 
 ```powershell
 uv sync
@@ -14,7 +14,7 @@ uv run pytest -m weights              # 11차 실영상 + 로컬 가중치 수�
 uv run ruff check src tests
 ```
 
-현재 제한 환경에서는 GitHub·PyPI 접속과 기존 V0 환경의 패키지 파일 읽기가 차단되어 `uv sync`·잠금 파일 생성·실측을 완료하지 못했다. `uv.lock`을 임의로 만들지 않았다. Lead가 이 worktree 안에 `uv sync`를 완료한 뒤 시험·측정을 이어가야 한다. 상세 결과는 [MEASURE.md](MEASURE.md).
+CUDA 색인 변경 후 `uv.lock` 재생성과 의존성 설치·실측은 네트워크가 가능한 Lead 환경에서 수행한다. 상세 결과는 [MEASURE.md](MEASURE.md).
 
 의존성을 설치하기 전에도 표준 라이브러리 시험을 실행할 수 있다.
 
@@ -23,7 +23,32 @@ $env:PYTHONPATH='src'
 .venv/Scripts/python.exe -m unittest discover -s tests -v
 ```
 
-## -446에서 사용하는 API
+## 상시 서비스와 서버 연동 (-446)
+
+`simai-camera-helper-service`는 저장소 루트 `.env`와 같은 이름의 `SIMAI_*` 환경 변수(환경 변수가 우선)를 읽는다. 기존 `SIMAI_EC2_BASE_URL`, `SIMAI_DEVICE_TOKEN`, `SIMAI_LAPTOP_ID`를 재사용한다. 아래 설정값은 현장에서 정한다. 가중치는 로컬 파일과 미리 독립적으로 확인한 SHA-256이 모두 필요하며 자동 다운로드하지 않는다.
+
+```dotenv
+SIMAI_CAMERA_HELPER_DEMAND_PATH=/api/devices/coverage-guides
+SIMAI_CAMERA_HELPER_ALIKED_WEIGHTS=C:/경로/aliked-n16.pth
+SIMAI_CAMERA_HELPER_ALIKED_SHA256=검증된64자리해시
+SIMAI_CAMERA_HELPER_LIGHTGLUE_WEIGHTS=C:/경로/aliked_lightglue_v0-1_arxiv.pth
+SIMAI_CAMERA_HELPER_LIGHTGLUE_SHA256=검증된64자리해시
+SIMAI_CAMERA_HELPER_INTRINSICS=C:/경로/calibration.json
+```
+
+내부값을 생략하면 DEFAULT 화각 근사를 명시한다. 서버 -447의 기기 토큰 인증 응답(`GET` 수요 조회 또는 `POST /api/devices/coverage-guides` 응답)의 최상위 boolean `active_demand`를 확인한다(`GET`이 404/405이면 유효한 `NO_VIDEO`/`UNKNOWN` `coverage_guide` `1.0.0` 초기 보고로 수요를 확인한다). 수요를 2초마다 확인하고, 활성일 때만 `ws://127.0.0.1:47032`에 소비자 하나를 열어 키프레임만 디코딩한다(권장 설정 `1024 px`·`2048`점, `device="auto"`). 계산 결과만 기기 토큰 HTTPS로 `POST /api/devices/coverage-guides`에 전송하며 응답 오류는 유한 백오프하고 만료된 결과나 수요 종료 후 결과는 버린다. 수요가 사라지면 연결을 닫고 디코딩·계산을 쉰다. 운영 스크립트(`gateway/ops/simai-gateway.ps1`, `gateway/ops/gw.sh`)의 setup/install·preview/run·stop·status·heal 및 `gw.sh logs helper`로 관리한다.
+
+## relay 영향 비교
+
+동일 카메라·네트워크·관제 조건에서 헬퍼 수요가 꺼진 상태와 화면을 열어 실제 연산하는 상태 각각 충분한 시간(예: 5분) 수집한다. 상태 로그를 각각 별도 파일로 복사한 뒤 실행한다:
+
+```powershell
+python gateway/camera_helper/compare_relay.py before.log after.log
+```
+
+카메라별 수신 프레임 카운터 차이/경과 시간과 각 상태 보고의 `receive_delay_ms.p95` 중앙값을 출력한다. 후자는 롤링 p95의 중앙값이며 전체 프레임 지연의 p95가 아니다. 재시작·카운터 초기화·누락 로그가 있으면 비교를 다시 수집한다. 결과가 비어 있으면 측정 성공이 아니다. 실측 및 허용 기준 판정은 Lead가 수행한다.
+
+## 계산 코어 API
 
 ```python
 from pathlib import Path

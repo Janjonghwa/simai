@@ -1,6 +1,6 @@
-import json
 import contextlib
 import io
+import json
 import sys
 import tempfile
 import types
@@ -28,9 +28,8 @@ class OfflineTests(unittest.TestCase):
             (Path(folder) / "benchmark.json").write_text("original", encoding="utf-8")
             with patch.object(sys, "argv", ["helper", "--out", folder, "--matrix"]), \
                     patch("simai_camera_helper.offline.subprocess.run") as child, \
-                    contextlib.redirect_stderr(io.StringIO()):
-                with self.assertRaises(SystemExit) as exc:
-                    main()
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as exc:
+                main()
             self.assertEqual(exc.exception.code, 2)
             child.assert_not_called()
             self.assertEqual((Path(folder) / "benchmark.json").read_text(encoding="utf-8"), "original")
@@ -108,9 +107,8 @@ class OfflineTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             with patch.object(sys, "argv", ["helper", "--out", folder, "--matrix"]), \
-                    patch("simai_camera_helper.offline.subprocess.run", side_effect=child):
-                with self.assertRaises(SystemExit) as exc:
-                    main()
+                    patch("simai_camera_helper.offline.subprocess.run", side_effect=child), self.assertRaises(SystemExit) as exc:
+                main()
             self.assertEqual(exc.exception.code, 1)
             result = json.loads((Path(folder) / "benchmark.json").read_text(encoding="utf-8"))
         self.assertEqual([(r["image_width_px"], r["max_keypoints"]) for r in result],

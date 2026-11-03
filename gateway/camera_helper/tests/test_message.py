@@ -5,7 +5,6 @@ from pathlib import Path
 from simai_camera_helper.judge import CAMERAS, PAIRS, CoverageJudge, PairMetrics
 from simai_camera_helper.message import CameraFrame, build_message
 
-
 NOW = 1_793_690_000_000
 
 
@@ -80,8 +79,13 @@ class MessageTests(unittest.TestCase):
             import jsonschema
         except ImportError:
             self.skipTest("jsonschema not installed")
+        from referencing import Registry, Resource
+        defs = schema.parent.parent / "common/defs.schema.json"
+        resource = Resource.from_contents(json.loads(defs.read_text(encoding="utf-8")))
+        registry = Registry().with_resource("https://simai.dev/contracts/common/defs.schema.json", resource)
         self.message()
-        jsonschema.Draft202012Validator(json.loads(schema.read_text(encoding="utf-8"))).validate(self.message())
+        jsonschema.Draft202012Validator(json.loads(schema.read_text(encoding="utf-8")),
+                                        registry=registry).validate(self.message())
 
 
 if __name__ == "__main__":

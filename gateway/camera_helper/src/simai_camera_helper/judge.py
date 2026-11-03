@@ -70,7 +70,10 @@ class PairMetrics:
         return self.inliers / self.raw_matches if self.raw_matches else 0.0
 
 
-def pair_grade(pair: PairMetrics, params: Params = Params()) -> str:
+DEFAULT_PARAMS = Params()
+
+
+def pair_grade(pair: PairMetrics, params: Params = DEFAULT_PARAMS) -> str:
     if pair.inliers is None:
         return "UNKNOWN"
     if pair.inlier_ratio >= params.min_inlier_ratio:
@@ -182,7 +185,7 @@ class CoverageJudge:
     immediately; reacquisition must pass the two-round confirmation again.
     """
 
-    def __init__(self, params: Params = Params()):
+    def __init__(self, params: Params = DEFAULT_PARAMS):
         self.params = params
         self._grades = {p: TwoRoundConfirmation("UNKNOWN") for p in PAIRS}
         self._evidence = {p: PairMetrics(*p) for p in PAIRS}
