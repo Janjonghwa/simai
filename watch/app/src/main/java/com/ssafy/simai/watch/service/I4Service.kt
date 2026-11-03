@@ -55,6 +55,9 @@ private const val EXPIRE_TICK_MS = 200L
 /** 알림을 받아 진동·ACK 를 끝낼 때까지 깨어 있는 시간 */
 private const val ALERT_WAKE_MS = 10_000L
 
+/** 받은 글이 알림인지 파싱 전에 어림하는 표시. 파싱은 메인 스레드에서 하므로 그 전에 깨어 있을지만 정한다(잘못 잡아도 10초 뒤 풀린다) */
+private const val ALERT_MARKER = "\"watch_alert\""
+
 /** 보낸 확인을 기억하는 수. 같은 알림이 다시 오면 되돌려 주고, 다시 이어지면 최근 것을 다시 보낸다 */
 private const val REMEMBERED_ACKS = 64
 
@@ -65,7 +68,8 @@ private const val RESEND_ACK_WINDOW_MS = 10 * 60 * 1000L
  * EC2 와의 I4 연결을 화면이 꺼져도 유지하는 포그라운드 서비스(S15P31A101-337, 부록 C.6).
  *
  * - 연결: wss://EC2/ws/watch, 기기 토큰. 끊기면 1·2·4…30초 간격으로 다시 잇는다(첫 echo 를 받아야 대기를 처음으로 되돌린다).
- *   연결돼 있는 동안 부분 wake lock 을 쥔다: 포그라운드 서비스는 CPU 수면을 막지 못해 하트비트가 밀리면 EC2 가 끊김으로 본다
+ *   연결 중 wake lock 은 쥐지 않는다: 실기기에서 CPU 수면(약 20초 주기)을 막지 못하면서 배터리 통계에는 앱 소모의 대부분으로 집계됐다(설계 문서의 측정).
+ *   하트비트가 그만큼 늦어도 EC2 가 견디게 끊김 판정을 넉넉히 둔다(-336). 알림을 받을 때만 진동·확인이 끝나도록 잠깐 쥔다
  * - 하트비트: EC2 가 정한 주기(기본 10초)로 보내고, 내 하트비트 3회에 EC2 답(echo)이 없으면 연결을 끊고 다시 잇는다
  * - 알림: 받으면 바로 진동하고 VIBRATED 확인을 보낸 뒤 알림 화면을 띄운다. 작업자가 확인하면 CONFIRMED 를 보낸다.
  *   끊긴 동안의 확인은 쌓아 뒀다가 다시 이어지면 보낸다
@@ -97,7 +101,6 @@ class I4Service : Service() {
     private lateinit var lastAlert: LastAlertStore
     private lateinit var device: DeviceStatus
     private lateinit var wakeLock: PowerManager.WakeLock
-    private lateinit var linkWakeLock: PowerManager.WakeLock
     private lateinit var gait: GaitSampler
 
     private var board = AlertBoard()
@@ -123,7 +126,6 @@ class I4Service : Service() {
         gait = GaitSampler(this, ::sendGait)
         val power = getSystemService(PowerManager::class.java)
         wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "simai:alert")
-        linkWakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "simai:link")
         startForeground(AlertNotifier.LINK_ID, notifier.link("연결 준비"), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         AlertCenter.attach(this)
         holdNetwork()
@@ -151,7 +153,6 @@ class I4Service : Service() {
         notifier.clearAlert()
         networkCallback?.let { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) }
         if (wakeLock.isHeld) wakeLock.release()
-        releaseLink()
         AlertCenter.detach(this)
         super.onDestroy()
     }
@@ -167,7 +168,6 @@ class I4Service : Service() {
         // 아직 안 열린 소켓은 close 가 핸드셰이크 뒤에야 나가므로 바로 끊는다
         socket?.let { if (status.state == LinkState.CONNECTED) it.close(CLOSE_RECONFIGURED, "reconfigured") else it.cancel() }
         socket = null
-        releaseLink()
         config = WatchConfigStore(this).load()
         codec = config?.let { I4Codec(it.deviceId) }
         if (config == null) {
@@ -188,7 +188,11 @@ class I4Service : Service() {
             lateinit var ws: WebSocket
             val listener = object : I4Connection.Listener {
                 override fun onOpen() = post { if (socket === ws) onOpened(ws) }
-                override fun onText(text: String) = post { if (socket === ws) onTextReceived(text) }
+                override fun onText(text: String) {
+                    // 알림이면 메인 스레드로 넘어가기 전에 잡는다: 절전 중 OkHttp 스레드에서 메인으로 넘어가는 사이에 CPU 가 다시 잠들 수 있다(WakeLock 은 스레드 안전)
+                    if (text.contains(ALERT_MARKER)) wakeLock.acquire(ALERT_WAKE_MS)
+                    post { if (socket === ws) onTextReceived(text) }
+                }
                 override fun onClosed(code: Int, reason: String) = post {
                     if (socket === ws) onDropped("닫힘 $code $reason")
                     closed.complete(Unit)
@@ -217,7 +221,6 @@ class I4Service : Service() {
     private fun onOpened(ws: WebSocket) {
         status = status.copy(state = LinkState.CONNECTED, lastFailure = null)
         notifier.updateLink("EC2 연결됨")
-        if (!linkWakeLock.isHeld) linkWakeLock.acquire()
         resendAcks(ws)
         gait.start(scope)
         heartbeatJob?.cancel()
@@ -238,7 +241,6 @@ class I4Service : Service() {
     private fun onDropped(reason: String) {
         heartbeatJob?.cancel()
         gait.stop()
-        releaseLink()
         // 내가 끊은 이유(답 없음)를 적어 뒀으면 그것을 남긴다
         status = status.copy(state = LinkState.DISCONNECTED, lastFailure = status.lastFailure ?: reason)
         notifier.updateLink("EC2 연결 끊김")
@@ -310,7 +312,7 @@ class I4Service : Service() {
             sendAck(it)
             return
         }
-        wakeLock.acquire(ALERT_WAKE_MS)
+        if (!wakeLock.isHeld) wakeLock.acquire(ALERT_WAKE_MS) // debug 입구는 소켓을 거치지 않아 여기서 잡는다
         val now = System.currentTimeMillis()
         board = board.receive(alert, SystemClock.elapsedRealtime())
         lastAlert.save(now)
@@ -393,10 +395,6 @@ class I4Service : Service() {
 
     private fun post(block: () -> Unit) {
         scope.launch { block() }
-    }
-
-    private fun releaseLink() {
-        if (linkWakeLock.isHeld) linkWakeLock.release()
     }
 
     /** 화면이 꺼져도 망(Wi-Fi 또는 휴대폰 경유)을 붙들어 둔다. 요청이 살아 있는 동안 시스템이 망을 내리지 않는다 */

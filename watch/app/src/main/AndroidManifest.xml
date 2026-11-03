@@ -13,16 +13,13 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
-    <!-- 알림을 받은 직후 진동·ACK 를 끝낼 때까지 잠들지 않게 -->
+    <!-- 알림을 받은 직후 진동·ACK 를 끝낼 때까지 잠들지 않게(10초), 그리고 손목을 내렸을 때 어둡게 켜져 있는 화면(앰비언트 모드). 연결 중에는 쥐지 않는다 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- 연결 상태 알림(포그라운드 서비스)과 화면이 꺼진 채 위험 알림 화면을 띄우는 전체 화면 인텐트 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <!-- 워치가 다시 켜지면 연결을 다시 잇는다 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-
-    <!-- 손목을 내렸을 때 어둡게 켜져 있는 화면(앰비언트 모드)에 필요하다 -->
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- 기기 토큰이 백업으로 워치 밖에 나가지 않게 백업을 끈다 -->
     <application
