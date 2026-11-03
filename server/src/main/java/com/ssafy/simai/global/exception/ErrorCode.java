@@ -505,6 +505,8 @@ public sealed interface ErrorCode {
 
     /** TBM 작업(GET·POST·PUT·DELETE /api/work-units) */
     enum Work implements ErrorCode {
+        WORK_ALREADY_IN_PROGRESS(HttpStatus.CONFLICT, "현장에 이미 진행 중인 작업이 있습니다"),
+        WORK_INVALID_STATE(HttpStatus.CONFLICT, "현재 작업 상태에서는 요청한 전이를 수행할 수 없습니다"),
         WORK_UNIT_NOT_FOUND(HttpStatus.NOT_FOUND, "작업을 찾을 수 없습니다"),
         INVALID_WORK_UNIT(HttpStatus.BAD_REQUEST, "작업 값이 올바르지 않습니다(date YYYY-MM-DD, name 1~100자, from_ms < to_ms 이고 24시간 이내, planned_people 0~100, place 100자·lead 50자 이내)"),
         // 구역 밖 작업은 zone_id 를 비우고 place 에 장소를 적는다

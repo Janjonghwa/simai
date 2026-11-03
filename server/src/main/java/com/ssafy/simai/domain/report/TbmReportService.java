@@ -61,6 +61,7 @@ public class TbmReportService implements DisposableBean {
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
 
     private final TbmReportRepository reports;
+    private final WorkWrapUpRepository wrapUps;
     private final SiteLookup sites;
     private final TransactionTemplate transaction;
     private final ObjectMapper mapper;
@@ -72,12 +73,14 @@ public class TbmReportService implements DisposableBean {
 
     public TbmReportService(
             TbmReportRepository reports,
+            WorkWrapUpRepository wrapUps,
             SiteLookup sites,
             TransactionTemplate transaction,
             ObjectMapper mapper,
             Clock clock,
             RiskEngineProperties properties) {
         this.reports = reports;
+        this.wrapUps = wrapUps;
         this.sites = sites;
         this.transaction = transaction;
         this.mapper = mapper;
@@ -125,6 +128,44 @@ public class TbmReportService implements DisposableBean {
     public ObjectNode getOne(long reportId) {
         return reports.findOne(sites.siteId(), reportId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.Report.REPORT_NOT_FOUND));
+    }
+
+    /** 종료 트랜잭션 커밋 후에만 호출한다. 네트워크 오류도 집계 사실의 결정론 요약으로 마감한다. */
+    public void startWrapUp(long reportId, ObjectNode request) {
+        executor.submit(() -> {
+            String text;
+            String model = "deterministic";
+            boolean fallback = true;
+            try {
+                JsonNode response = postJson("/v1/report/wrap-up", request);
+                if (!response.path("text").isString() || response.path("text").asString().isBlank()
+                        || !response.path("fallback").isBoolean()) {
+                    throw new IllegalArgumentException("Invalid wrap-up response");
+                }
+                text = response.path("text").asString();
+                model = response.path("model").asString("deterministic");
+                fallback = response.path("fallback").asBoolean();
+            } catch (Exception e) {
+                text = wrapUpFallback(request.path("facts"));
+                log.warn("Using deterministic wrap-up for report {}", reportId);
+            }
+            wrapUps.complete(reportId, text, fallback, model, clock.instant());
+        });
+    }
+
+    static String wrapUpFallback(JsonNode facts) {
+        StringBuilder text = new StringBuilder("전체 이벤트 ").append(facts.path("event_count").asLong()).append("건. ");
+        for (String severity : List.of("CRITICAL", "HIGH", "CAUTION", "INFO")) {
+            text.append("등급 ").append(severity).append(' ').append(facts.path("severity_counts").path(severity).asLong()).append("건. ");
+        }
+        for (var entry : facts.path("rule_counts").properties()) {
+            text.append("규칙 ").append(entry.getKey()).append(' ').append(entry.getValue().asLong()).append("건. ");
+        }
+        text.append("최고 등급 ").append(facts.path("max_severity").asString("없음")).append(". ");
+        text.append("운영자 확인 ").append(facts.path("operator_ack_count").asLong()).append("건. ");
+        text.append("운영자 종료 ").append(facts.path("operator_close_count").asLong()).append("건. ");
+        text.append("작업 외 진입 ").append(facts.path("outside_work_entry_count").asLong()).append("건.");
+        return text.toString();
     }
 
     public ObjectNode getByWork(long workId) {
