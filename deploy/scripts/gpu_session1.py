@@ -16,6 +16,8 @@
   u2    -246 통합 이미지 HMR 보정 K 경로(렌더 없음, g4 와 같은 판정)               unified 이미지 Pod, SIMAI_WEIGHTS_SET=exp02 simai-bootstrap queue
   v4    -278 통합 시험 재확인(3차 v-int 재현: Tier 0 LIVE 하네스 + 감시 프로세스 기본 인자 vLLM, G7·CPU 묶기·kill -9)  unified 이미지 Pod,
              deploy/scripts/vlm_int.py (S15P31A101-291. 3차의 v1~v3 사람 항목을 대신한다, vlm 가중치를 먼저 받는다)
+  e25   -25  빠른 경로 종단 확인(이벤트 관측 → EC2 근거 저장). unified 이미지 Pod, lobby LIVE + relay 가 도는 동안 --only e25 --allow-live.
+             deploy/scripts/e25_fast_path.py watch. LIVE 가 아니면 바로 실패한다. 판정은 노트북에서 sql → report
   u3·u4 -250 통합 환경(torch 2.11) MapAnything C1·C2 를 장면 준비 모드로(m1·m2 와 같은 입력·인자)  unified 이미지 Pod. 노트북에서
              ai/experiments/static_scene/compare_envs.py 로 m1·m2(torch 2.7.1 이미지) 결과와 비교
   (--exp-jobs: 추가 EXP Job 파일(예 -87 다시점 집계, 4차 세션 session4_jobs.py)을 LIVE 보호를 켠 별도 큐로 마지막에 돈다)
@@ -212,6 +214,8 @@ PROVENANCE_HMR = {"frames": {"source": "FILE", "dataset_id": "hmr_poc14"}, "is_u
 PROVENANCE_ROOM4 = {"frames": {"source": "FILE", "dataset_id": "room4"}, "is_upper_bound": False}
 # v4: Tier 0 는 무늬 영상(사람 없음), VLM 질문 그림은 교실 사진. 지연·자원 측정이지 성능 지표가 아니다(상한 표시)
 PROVENANCE_VINT = {"frames": {"source": "SIM", "dataset_id": "sim/live-pattern+classroom-stills-20261026"}, "is_upper_bound": True}
+# e25: 10/29 녹화를 노트북 relay 로 재생한다(실시간 카메라로 돌리면 report --input live 로 구분한다)
+PROVENANCE_E25 = {"frames": {"source": "FILE", "dataset_id": "recording-20261029-relay"}, "is_upper_bound": False}
 # g4 입력(S15P31A101-243): 교실 사진(cam_A~D × 5장, 2304×1296)과 교실 보정 기록(AnyCalib, PROVISIONAL). 노트북 원본은 커밋하지 않는 recordings
 G4_STILLS, G4_IMAGES = "classroom-stills-20261021", 20
 G4_CALIB = "intrinsics-20261021-022940z.json"
@@ -354,6 +358,13 @@ def items(lay: Layout) -> list[dict]:
          "image": "unified", "command": [py, "deploy/scripts/vlm_int.py", "--images", str(data / "classroom4-prepared-20261026")],
          "expected_s": 1200, "timeout_s": 3600, "provenance": PROVENANCE_VINT,
          "model_version": "Cosmos3-Nano Reasoner (vLLM 0.21.0 + vllm-cosmos3, 감시 프로세스 기본 인자) + Tier 0 LIVE 하네스"},
+        # e25(S15P31A101-25): 이벤트 관측 → EC2 근거 저장. 스스로 띄우지 않고 lobby LIVE + relay 를 지켜본다(--only e25 --allow-live). 판정은 노트북 report
+        {"key": "e25", "name": "e25_fast_path", "jira": "S15P31A101-25", "title": "빠른 경로 종단 확인(lobby LIVE + EC2 dev, 판정은 DB 시각)",
+         "image": "unified", "run_id": f"e25_{sfx}",
+         "command": [py, "deploy/scripts/e25_fast_path.py", "watch", "--out", str(lay.simai / "runs" / "e25" / f"e25_{sfx}"),
+                     "--logs", str(lay.simai / "logs"), "--marker", str(lay.simai / "runs" / "lobby-live" / "state" / "tier0.live")],
+         "expected_s": 1500, "timeout_s": 2700, "provenance": PROVENANCE_E25,
+         "model_version": "Cosmos3-Nano Reasoner + YOLO26x-pose 얼굴 처리 + Tier 0 lobby LIVE"},
         # u3·u4(S15P31A101-250): 통합 환경 MapAnything 을 장면 준비 모드(simai-bootstrap scene: LIVE·GPU 사용 중이면 75, static 가중치)로.
         # m1·m2 와 같은 입력·가중치·인자(run id 만 _uni_)라 compare_envs.py 가 torch 2.7.1 이미지 결과와 비교한다. 저장소 사본의 simai_bootstrap.py 를 쓴다
         *(exp(key, f"{key}_unified_mapanything_{base[:2].lower()}", f"통합 환경 MapAnything {base} ({model})", "unified", f"{base}_uni_{sfx}",
