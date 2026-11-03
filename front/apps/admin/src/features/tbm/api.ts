@@ -1,6 +1,7 @@
 import {
   layoutDetailSchema,
   layoutsListSchema,
+  signatureSchema,
   tbmReportByWorkResponseSchema,
   tbmReportGenerateResponseSchema,
   tbmReportSchema,
@@ -32,6 +33,15 @@ export const tbmLayoutDetailKey = tbmLayoutKey;
 export const tbmReportsByWorkKey = (workId: string) => ['tbm', 'reports', workId] as const;
 export const tbmReportKey = (reportId: number) => ['tbm', 'report', reportId] as const;
 export const tbmReportDetailKey = tbmReportKey;
+export const signatureKey = (report: TbmReport) =>
+  ['tbm', 'signatures', report.report_id, report.report_version] as const;
+
+export function requestReportSignatures(http: Http, report: TbmReport, signal?: AbortSignal) {
+  return http(`/api/reports/tbm/${report.report_id}/signatures?version=${report.report_version}`, {
+    schema: z.object({ items: z.array(signatureSchema) }),
+    signal,
+  });
+}
 
 /** 받은 작업 배열에서 형식이 맞는 것만 고른다. */
 export function readTbmWorks(items: readonly unknown[]): TbmWorkUnit[] {

@@ -565,6 +565,7 @@ public sealed interface ErrorCode {
         WORK_HAS_NO_LAYOUT(HttpStatus.CONFLICT, "작업에 연결된 레이아웃이 없습니다. 먼저 작업에 layout_id 를 연결하세요"),
         REPORT_IN_PROGRESS(HttpStatus.CONFLICT, "이 작업의 보고서를 이미 생성 중입니다"),
         REPORT_VERSION_STALE(HttpStatus.CONFLICT, "새 보고서 버전이 있습니다"),
+        REPORT_APPROVED(HttpStatus.CONFLICT, "관리자 결재가 완료된 보고서입니다"),
         REPORT_NOT_READY(HttpStatus.CONFLICT, "보고서가 준비되지 않았습니다"),
         SIGNATURE_LIMIT_REACHED(HttpStatus.CONFLICT, "이 보고서 버전의 서명 인원 상한(50명)에 도달했습니다"),
         REPORT_LOCKED(HttpStatus.CONFLICT, "서명된 보고서 버전입니다"),

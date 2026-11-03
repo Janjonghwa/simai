@@ -34,6 +34,9 @@ export function usePrint(
             form: formOf(t, edits, selected),
             people: t.people,
             signatures: signers,
+            approvedAt: selected?.approved_at,
+            approvedByName: selected?.approved_by_name,
+            reportVersion: selected?.report_version,
           };
         }),
       );

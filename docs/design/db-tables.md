@@ -1209,28 +1209,31 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `steps` | jsonb |  |  | 코드 4단계 생성·검증 파이프라인 실행 기록 배열(`step`·`label`·`status`·`input_count`·`output_count`·`duration_ms`·`detail`, 후속 구현에서 추가) |
 | `wrap_up_summary` | jsonb |  |  | 작업 종료(`POST /api/work-units/{id}/end`) 시 실제 LIVE `risk_event` 집계 사실(`wrap_up_facts`: 등급별·규칙별 건수, 확인/종료 건수, 작업 외 진입 건수)과 외부 LLM 이 작성한 "작업 마무리" 문단(`wrap_up_text`), 후속 구현에서 추가 |
 | `content_sha256` | text |  |  | 첫 전자서명 등록 시 고정하는 보고서 본문 정규화 해시(`sha256:<64hex>`), 후속 구현에서 추가 |
-| `locked_at` | ts |  |  | 첫 전자서명 등록으로 이 `report_version` 이 잠긴 시각. 잠긴 버전은 수정 불가하며 변경 시 새 `report_version` 생성, 후속 구현에서 추가 |
+| `locked_at` | ts |  |  | 첫 전자서명 등록으로 이 `report_version` 이 잠긴 시각. 잠긴 버전은 수정 불가하며 변경 시 새 `report_version` 생성, V29 적용, 역할과 무관한 첫 서명에서 잠금 |
 | `llm_model` | text |  |  |  |
 | `requested_by` | bigint | FK>app_user.user_id, NN |  |  |
 | `requested_at` | ts | NN |  |  |
 | `completed_at` | ts |  |  |  |
+| `approved_at` | ts |  |  | 관리자 최종 결재 시각, 미결재는 null. 새 버전은 null로 시작 |
+| `approved_by` | bigint | FK>app_user.user_id |  | 요청 결재 관리자 계정, approved_at과 함께 기록. 응답 approved_by_name은 display_label(없으면 login_id), 서명 실명과 별도 |
 
-#### `report_signature` — TBM 보고서 참석자 전자서명
+#### `report_signature` — TBM 보고서 참석자 전자서명·관리자 결재
 
 - 단계 **M3** · 일반 · 근거: 8.3, 11.3, 11.4-5(NFR-14 서명 실명 예외), 14장 (`docs/design/work-session-flow.md`, S15P31A101-426) · 검토: 곽나혁
-- 후속 구현 마이그레이션에서 생성. TBM 회의록 참석자의 **실명(`signer_name`)** 과 **손글씨 서명 이미지(`signature_image_key`)** 를 서버 전용으로 저장한다. **관리자(`ADMIN`)만 조회 가능하며 외부 LLM API 나 분석 워커에는 절대 보내지 않는다.** 화면·인쇄본에 `"공인 전자서명 아님, 내부 기록용 전자 서명"` 을 표시한다. 보관 주기는 11.5·18.4 에 따라 프로젝트 발표 후 30일 이내 전체 파기 대상에 포함한다(실제 현장 운영 시 보존 기간은 Lead 확인 필요).
+- V29에서 생성하고 V31에서 서명 역할·관리자 최종 결재를 추가한다. TBM 회의록 참석자·승인자의 **실명(`signer_name`)** 과 **손글씨 서명 이미지(`signature_image_key`)** 를 서버 전용으로 저장한다. **관리자(`ADMIN`)만 조회 가능하며 외부 LLM API 나 분석 워커에는 절대 보내지 않는다.** 화면·인쇄본에 `"공인 전자서명 아님, 내부 기록용 전자 서명"` 을 표시한다. 보관 주기는 11.5·18.4 에 따라 프로젝트 발표 후 30일 이내 전체 파기 대상에 포함한다(실제 현장 운영 시 보존 기간은 Lead 확인 필요).
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
 | `signature_id` | bigint identity | PK |  |  |
 | `report_id` | bigint | FK>report.report_id, NN |  | 대상 TBM 보고서 |
 | `report_version` | int | NN, CK(>= 1) |  | 서명한 보고서 버전. 보고서가 수정되거나 작업 마무리가 붙어 새 버전이 생기면 새 버전에 다시 서명 |
-| `signer_name` | text | NN |  | 참석자 실명(1~50자, NFR-14 예외: TBM 전자서명에만 허용, 외부 LLM 미전송) |
+| `signer_role` | text | NN, CK(PARTICIPANT·APPROVER), 기본 PARTICIPANT |  | 기존 행은 PARTICIPANT, APPROVER는 (report_id, report_version) 부분 유일 인덱스로 버전당 1회. 결재 후 두 역할 모두 409 REPORT_APPROVED, 기존 해시 유지 |
+| `signer_name` | text | NN |  | 참석자·승인자 실명(1~40자, NFR-14 예외: TBM 전자서명에만 허용, 외부 LLM 미전송) |
 | `signature_image_key` | text | NN |  | 비공개 객체 저장소 키(또는 서버 전용 저장 경로, PNG 최대 600×240 px · 256 KiB) |
 | `image_sha256` | text | NN |  | 서명 이미지 바이트 해시(`sha256:<64hex>`) |
 | `report_content_sha256` | text | NN |  | 서명 시점의 `report.content_sha256` 사본(감사 추적용) |
 | `legal_notice_ack` | boolean | NN, CK(= true) |  | `"공인 전자서명 아님, 내부 기록용 전자 서명"` 고지 확인 |
-| `recorded_by` | bigint | FK>app_user.user_id, NN |  | 서명을 수집·등록한 관리자 계정 |
+| `recorded_by` | bigint | FK>app_user.user_id, NN |  | 서명을 수집·등록한 요청 관리자 계정. APPROVER는 이 계정 본인의 결재 |
 | `signed_at` | ts | NN |  | 서명 등록 시각 |
 
 #### `rag_clause` — 안전 수칙 조항과 임베딩

@@ -12,6 +12,7 @@ import {
   workTypeLabelOf,
   type WorkTypeOption,
 } from '@/features/tbm/types';
+import { readMockUser } from '@/mocks/mockUser';
 import { http, HttpResponse } from 'msw/http';
 
 // TBM 화면(작업·공종·가상 레이아웃·보고서) MSW 핸들러.
@@ -818,6 +819,7 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
     {
       signature_id: string;
       signer_name: string;
+      signer_role: 'PARTICIPANT' | 'APPROVER';
       signed_at: number;
       report_version: number;
       image_url: string;
@@ -875,18 +877,23 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
     http.post('*/api/reports/tbm/:reportId/signatures', async ({ params, request }) => {
       const report = findReportById(Number(params.reportId));
       if (!report) return HttpResponse.json({ code: 'REPORT_NOT_FOUND' }, { status: 404 });
+      if (report.approved_at != null)
+        return HttpResponse.json({ code: 'REPORT_APPROVED' }, { status: 409 });
       const body = (await request.json()) as {
         report_version: number;
         signer_name: string;
         image_key: string;
         notice_acknowledged: boolean;
+        signer_role?: 'PARTICIPANT' | 'APPROVER';
       };
+      const role = body.signer_role ?? 'PARTICIPANT';
       const latest = reportsByWork.get(report.work_id)?.at(-1);
       if (latest?.report_id !== report.report_id || body.report_version !== report.report_version)
         return HttpResponse.json({ code: 'REPORT_VERSION_STALE' }, { status: 409 });
       if (report.status !== 'SUCCEEDED')
         return HttpResponse.json({ code: 'REPORT_NOT_READY' }, { status: 409 });
       if (
+        !['PARTICIPANT', 'APPROVER'].includes(role) ||
         !body.notice_acknowledged ||
         !body.signer_name?.trim() ||
         body.signer_name.trim().length > 40
@@ -898,6 +905,7 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
       const entry = {
         signature_id: crypto.randomUUID(),
         signer_name: body.signer_name,
+        signer_role: role,
         signed_at: now,
         report_version: report.report_version,
         image_url: new URL(
@@ -912,6 +920,10 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
       entries.push(entry);
       signatures.set(report.report_id, entries);
       report.signature_count = entries.length;
+      if (role === 'APPROVER') {
+        report.approved_at = now;
+        report.approved_by_name = readMockUser(request.headers.get('Authorization'))?.id ?? 'admin';
+      }
       return HttpResponse.json(
         {
           ...entry,
@@ -1086,6 +1098,8 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
         wrap_up_summary: null,
         locked_at: null,
         content_sha256: null,
+        approved_at: null,
+        approved_by_name: null,
         signature_count: 0,
       };
       list.push(report);
