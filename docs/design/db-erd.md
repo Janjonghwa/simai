@@ -4,7 +4,7 @@ S15P31A101-210. 기획서 11장(데이터)·11.4(스키마 원칙)·부록 C(각
 
 ## 범위
 
-- 테이블 76개: MVP 40 · M1 9 · M2 2 · M3 9 · 확장 16(부록 C 의 확장 2~5 포함). 관계(FK) 124개. 개수는 `db-tables.md` 의 테이블 절(`#### `)과 단계 칸을 센 값이다(S15P31A101-284, S15P31A101-318 에서 다시 셈).
+- 테이블 77개: MVP 40 · M1 9 · M2 2 · M3 9 · 확장 17(부록 C 의 확장 2~5 포함, `watch_connection` 은 S15P31A101-336). 관계(FK) 125개. 개수는 `db-tables.md` 의 테이블 절(`#### `)과 단계 칸을 센 값이다(S15P31A101-284, S15P31A101-318 에서 다시 셈).
 - 이 중 V1~V13 으로 실제 만든 테이블은 51개(MVP 40 · M1 9 · M3 `rag_clause`·`rag_query_template`), FK 76개다. V1~V13 을 적용한 임시 DB 와 `db-tables.md` 를 기계로 대조해 맞췄다(2026-10-29, S15P31A101-318).
 - 작성은 곽나혁, Tier 0·분석 워커가 채우는 테이블(`db-tables.md` 의 “검토” 표시)은 이연주가 검토한다.
 - 범위 밖: 기업·공사 계정 계층(부록 C.9, 채택 전), 마이그레이션 SQL. 검증은 [`db-verification.md`](db-verification.md).
@@ -114,7 +114,7 @@ erDiagram
     device ||--o{ device_heartbeat : "device_id"
 ```
 
-다른 묶음에서 이 묶음을 참조하는 테이블: `action_ticket`, `action_ticket_history`, `agentic_report`, `analysis_job`, `calibration_document`, `calibration_run`, `calibration_verification`, `calibration_version`, `clip_access_log`, `config_bundle`, `event_ack`, `event_close`, `event_escalation`, `job_lease`, `layout_plan`, `media_clip_retention`, `notification`, `operator_qa`, `push_subscription`, `report`, `scale_reference`, `scene_version`, `sim.evaluation_run`, `sim.placement_recommendation`, `sim.trajectory_plan`, `sim.what_if_scenario`, `static_object`, `test_push`, `upload_grant`, `vlm_assessment`, `watch_alert`, `watch_binding`, `watch_impact`, `watch_registrant`, `work_schedule`, `zone`.
+다른 묶음에서 이 묶음을 참조하는 테이블: `action_ticket`, `action_ticket_history`, `agentic_report`, `analysis_job`, `calibration_document`, `calibration_run`, `calibration_verification`, `calibration_version`, `clip_access_log`, `config_bundle`, `event_ack`, `event_close`, `event_escalation`, `job_lease`, `layout_plan`, `media_clip_retention`, `notification`, `operator_qa`, `push_subscription`, `report`, `scale_reference`, `scene_version`, `sim.evaluation_run`, `sim.placement_recommendation`, `sim.trajectory_plan`, `sim.what_if_scenario`, `static_object`, `test_push`, `upload_grant`, `vlm_assessment`, `watch_alert`, `watch_binding`, `watch_connection`, `watch_impact`, `watch_registrant`, `work_schedule`, `zone`.
 
 ## 3. B. 구성·기준 데이터
 
@@ -833,6 +833,7 @@ erDiagram
 | `watch_feature` | 확장 | hypertable |
 | `watch_alert` | 확장 | 일반 |
 | `watch_impact` | 확장 | 일반 |
+| `watch_connection` | 확장 | 일반 |
 
 ```mermaid
 erDiagram
@@ -861,6 +862,10 @@ erDiagram
         text device_id FK
         uuid linked_event_id FK
     }
+    watch_connection {
+        bigint_identity connection_id PK
+        text device_id FK
+    }
     device {
         text device_id PK
     }
@@ -876,6 +881,7 @@ erDiagram
     device ||--o{ watch_alert : "device_id"
     device ||--o{ watch_impact : "device_id"
     risk_event |o--o{ watch_impact : "linked_event_id"
+    device ||--o{ watch_connection : "device_id"
 ```
 
 ## 13. L. 확장: PPE·정적 공간 변화

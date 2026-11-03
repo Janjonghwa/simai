@@ -2,6 +2,7 @@ package com.ssafy.simai.global.config;
 
 import com.ssafy.simai.domain.avatar.AvatarPaths;
 import com.ssafy.simai.domain.cctv.CctvPaths;
+import com.ssafy.simai.domain.watch.WatchPaths;
 import com.ssafy.simai.domain.machine.MachineKind;
 import com.ssafy.simai.domain.machine.MachineTokenService;
 import com.ssafy.simai.domain.realtime.RealtimeTopics;
@@ -76,7 +77,8 @@ public class SecurityConfig {
         return machineChain(http, MachineKind.DEVICE, tokens, matchers -> matchers
                 .requestMatchers("/api/devices/**")
                 .requestMatchers(HttpMethod.GET, "/api/endpoints/tier0")
-                .requestMatchers(CctvPaths.SOURCE_WS));
+                .requestMatchers(CctvPaths.SOURCE_WS)
+                .requestMatchers(WatchPaths.WS));
     }
 
     /**

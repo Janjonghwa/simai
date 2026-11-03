@@ -38,9 +38,9 @@
 
 ## 연결·전송 규칙 (스키마 밖)
 
-- 연결은 EC2 의 wss 한 개(경로는 -336 에서 정함, 기본 `/ws/watch`). 워치는 기기별 토큰으로 인증하고, 토큰은 메시지에 싣지 않는다
+- 연결은 EC2 의 wss 한 개 `/ws/watch`(-336, 서버 쪽은 [`server-watch-link.md`](server-watch-link.md)). 워치는 기기별 토큰으로 인증하고, 토큰은 메시지에 싣지 않는다
   (-335 의 adb 설정 입구로 넣은 값). 봉투 `source_id` 는 워치의 `device.device_id`(`watch-01` 꼴, `instance_id` 패턴), EC2 는 `ec2`.
-- 끊김 판정: EC2 는 워치 하트비트가 `interval_ms × 3` 동안 없으면 그 워치를 LOST 로 보고 System Health 에 반영한다(-336).
+- 끊김 판정: EC2 는 워치 하트비트가 `interval_ms × 3` 동안 없으면 그 워치를 LOST 로 보고 연결을 닫으며 `viewer_health.watches` 에 싣는다(-336. 워치는 개인 보조 채널이라 `system_health`·`remote_state` 는 바꾸지 않는다).
   실기기(갤럭시워치6)는 절전 중 CPU 가 약 20초 주기로 잠들어 10초 주기 하트비트가 최대 27초까지 늘어났다(2026-11-03, `watch-app.md`).
   그래서 EC2 는 `interval_ms` 를 **20초**로 주어 3회 = 60초가 되게 한다(워치는 연결 중 wake lock 을 쥐지 않는다).
   워치는 자기 하트비트 3회에 EC2 답(echo)이 없으면 연결을 닫고 지수 백오프(1·2·4…최대 30초)로 다시 잇는다(-337).
@@ -95,5 +95,5 @@
 - Lead 확인(새 구간 계약, MR). 명세 7.3 채널 표에 워치 개인 채널(CAUTION 포함) 예외를 더했다(수정 45).
 - `watch/` 앱이 계약을 읽게 되면(-337) Jenkinsfile 의 WATCH 파트에 `contracts/` 를 더하고, `AlertFields`(`vibration` → `vibration_pattern`,
   `sent_at_ms` → 봉투 `sent_at`)를 계약 이름으로 맞춘다.
-- `watch_alert` 표의 `alert_msg_id`·`ack_within_ms`·`confirmed_at` 열과 CK 변경은 테이블을 만드는 이슈(-336·-338)의 마이그레이션에서.
+- `watch_alert` 표의 `alert_msg_id`·`ack_within_ms`·`confirmed_at` 열과 CK 변경은 테이블을 만드는 이슈(-338)의 마이그레이션에서. -336 은 연결 기록 `watch_connection`(V28)만 만들었다.
 - 워치 ACK 로 현장 경보를 멈출지, 격상 뒤 늦은 ACK 의 처리는 -338.
