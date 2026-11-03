@@ -1,0 +1,119 @@
+{
+  "_note": "S15P31A101-458 사용자 결정 2026-11-04. 운영 WorldTrackManager만 사용. 기준선은 -413 기본값을 명시. confirm_hits=3, tentative_max_gap_ms=300, gate_max_m=1.5 유지. 재연결 창은 기존 lost_after_ms 재사용(기준 3s / 후보 1s·2s). 10s reconnect_window_ms는 2대 옛 로컬 이력에 의한 늦은 재연결로 별도 유지. 6.1 PREDICTED 상한 500ms는 변경하지 않음. swap은 ID 집합 변경 근사, 실제 사람 간 swap·오연결은 association_review.jsonl.gz와 원본 녹화 수동 확인. 미판정은 null. session11은 타임스탬프 sidecar·manifest와 수동 사람 수 구간 확보 전 실행/비교 불가. 결과 뒤 창 선택, 아직 실측 결과 없음. 3차 정의: S3_only 등 기존 조합은 최근 1s 내 근거 Track 소유 키가 하나 이상인 나머지만 억제(split_suppress_ownerless=false). S3_ownerless_included는 같은 설정에서 주인 없음도 포함하는 비교군(true). 반증 예외는 양쪽 유지.",
+  "base": {
+    "world": {
+      "split_suppression_enabled": false,
+      "split_suppression_radius_m": 0.6,
+      "split_suppression_require_owner": false,
+      "lost_after_ms": 3000,
+      "confirm_hits": 3,
+      "tentative_max_gap_ms": 300,
+      "gate_max_m": 1.5,
+      "split_suppress_ownerless": false,
+      "split_suppression_owner_ttl_ms": 1000
+    },
+    "cross_view": {
+      "epipolar_gate_px": 20.0
+    }
+  },
+  "datasets": {
+    "recording1029": {
+      "cache": "C:/Users/SSAFY/simai-local/track-413/cache-s2",
+      "calibration": "C:/Users/SSAFY/simai-local/session9/cal-fastrot-266z.json",
+      "config": {
+        "segments_s": {
+          "all2": [
+            5,
+            415,
+            2
+          ],
+          "three": [
+            425,
+            460,
+            3
+          ]
+        }
+      }
+    },
+    "session11": {
+      "session": "C:/Users/SSAFY/simai-local/session11/rec-calwalk",
+      "cache": "C:/Users/SSAFY/simai-local/track-458/session11-cache-s2",
+      "calibration": "C:/Users/SSAFY/simai-local/session11/lobby-bundle-rotfix/calibration.json",
+      "config": {
+        "segments_s": {},
+        "zone_xy": []
+      },
+      "pending": "rec-calwalk에는 카메라별 H264만 있음. 촬영 시각·codec·offset sidecar와 manifest 복원 필요(명목 fps 시각 생성 금지). segments_s는 실제 녹화 확인 뒤 입력. 10/29 구간과 구역 좌표 재사용 금지."
+    }
+  },
+  "selection": {
+    "required_metrics": [
+      "ids_total",
+      "segments.all2.new_ids_per_person_min",
+      "segments.all2.count_exact",
+      "segments.all2.count_over",
+      "segments.all2.count_under",
+      "segments.all2.id_changes",
+      "association_review.two_view",
+      "association_review.reconnection"
+    ],
+    "rule": "ID 감소만으로 채택하지 않는다. 사람 수 부족 비율·수동 swap·2대/재연결 오연결이 악화되지 않는지 같은 구간에서 비교하고 1s/2s 중 선택한다. 미확인·근사 지표를 제품 성능으로 쓰지 않는다.",
+    "split_policy_comparison": {
+      "S3(나머지만)": "S3_only",
+      "S3(주인 없음 포함)": "S3_ownerless_included",
+      "rule": "같은 입력·반경·재연결 창·에피폴라 문턱·반증 예외에서 소유 이력 조건만 비교한다. 첫 등장 근접 두 사람 누락과 지속 분할의 시간 창 만료 후 새 ID 발급을 함께 검수한다."
+    }
+  },
+  "experiments": {
+    "E0_baseline": {},
+    "S3_only": {
+      "world": {
+        "split_suppression_enabled": true
+      }
+    },
+    "S3_ownerless_included": {
+      "world": {
+        "split_suppression_enabled": true,
+        "split_suppress_ownerless": true
+      }
+    },
+    "S3_reconnect1s": {
+      "world": {
+        "split_suppression_enabled": true,
+        "lost_after_ms": 1000
+      }
+    },
+    "S3_reconnect2s": {
+      "world": {
+        "split_suppression_enabled": true,
+        "lost_after_ms": 2000
+      }
+    },
+    "S3_epipolar30": {
+      "world": {
+        "split_suppression_enabled": true
+      },
+      "cross_view": {
+        "epipolar_gate_px": 30.0
+      }
+    },
+    "ALL_reconnect1s_epipolar30": {
+      "world": {
+        "split_suppression_enabled": true,
+        "lost_after_ms": 1000
+      },
+      "cross_view": {
+        "epipolar_gate_px": 30.0
+      }
+    },
+    "ALL_reconnect2s_epipolar30": {
+      "world": {
+        "split_suppression_enabled": true,
+        "lost_after_ms": 2000
+      },
+      "cross_view": {
+        "epipolar_gate_px": 30.0
+      }
+    }
+  }
+}

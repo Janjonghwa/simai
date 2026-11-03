@@ -30,7 +30,11 @@ ID 를 다시 쓰지 않는다.
    멀면 로컬 트래커가 옛 ID 를 다른 사람에게 넘긴 것일 수 있어 새 ID 를 만든다.
 5. 1대뿐인 클러스터와 붙지 않은 클러스터는 위치를 갱신하지 않는다. 그 로컬 트랙의 주인 Track 이 이번 시각에 갱신되지
    않았으면 연결 이력만 이어 둔다(가림 동안 남은 카메라 한 대의 트랙으로, 가림이 끝났을 때 같은 Track 으로 돌아오게).
-6. 배정되지 않은 클러스터 중 골반이 있는 것만 새 World Track(TENTATIVE)이 된다. 1대 클러스터나 골반 없는 클러스터로는
+6. 배정되지 않은 확실한 클러스터의 로컬 키 중 하나 이상이 최근(초기값 1 s) 이번 시각 갱신된 Track 에 속했고,
+   그 Track 의 골반 0.6 m 안이고 카메라가 겹치지 않으면
+   새 ID 를 억제하고 그 Track 에 CROSS_VIEW_UNCERTAIN 을 붙인다. 위치·관절·로컬 소유권은 합치지 않는다.
+   기존 병합 금지 반증이나 이번 시각 같은 카메라의 별도 검출(1대 클러스터 포함)이 있으면 억제하지 않는다.
+   그 밖의 배정되지 않은 클러스터 중 골반이 있는 것만 새 World Track(TENTATIVE)이 된다. 1대 클러스터나 골반 없는 클러스터로는
    만들지 않는다(2대 미만은 지어내지 않음). 다른 Track 의 예측 위치 가까이(`duplicate_radius_m`)에 생기면 같은 사람의
    두 번째 ID 일 수 있어 그 쌍을 POSSIBLE_DUPLICATE 후보로 둔다.
 7. 같은 사람 두 ID 로 보이는 Track 은 **그 시각에는 합치지 않는다.** 붙인 클러스터에 이번 시각 갱신되지 않은 다른
@@ -336,7 +340,8 @@ class WorldTrackConfig:
     occluded_after_ms: int = 200
     """CONFIRMED 가 이 시간 넘게 측정이 없으면 OCCLUDED (6.1 OBSERVED 상한과 같은 초기값)"""
     lost_after_ms: int = 3000
-    """OCCLUDED 가 마지막 측정 뒤 이 시간을 넘으면 LOST. 그 뒤에는 늦은 재연결 근거가 있을 때만 같은 ID 로 잇는다"""
+    """짧은 재연결 창: 마지막 측정 뒤 이 시간까지 기존 거리 게이트로 같은 ID 를 유지한다.
+    넘으면 LOST 이며 2대 로컬 이력에 의한 늦은 재연결만 허용한다. 관측 상태의 PREDICTED 상한과는 별도다"""
     reconnect_window_ms: int = 10_000
     """LOST 가 된 CONFIRMED Track 을 마지막 측정부터 이 시간 동안 소실 후보로 둔다(로컬 트랙 연결 이력도 이 시간 동안
     남긴다). lost_after_ms 와 같게 두면 늦은 재연결을 끈다. 명세 6.4 재개 시간 초기값(10 s)과 같게 둔 초기값이다"""
@@ -362,6 +367,16 @@ class WorldTrackConfig:
     duplicate_radius_m: float = 0.35
     """같은 사람 두 ID 후보로 보는 두 Track 사이 수평 거리. 같은 사람이 갈라진 두 클러스터의 골반은 거의 같은 곳이고,
     서로 다른 두 사람의 골반은 어깨 폭(약 0.45 m)보다 가깝기 어렵다"""
+    split_suppression_enabled: bool = True
+    """반증이 없으면 같은 시각 갱신된 Track 과 카메라가 겹치지 않는 근처 나머지 클러스터의 새 ID 를 억제한다"""
+    split_suppression_radius_m: float = 0.6
+    """분할 나머지 억제 반경. duplicate_radius_m(병합·분할 판정)은 바꾸지 않는다"""
+    split_suppress_ownerless: bool = False
+    """재생 비교용: True 면 최근 소유 이력이 없는 후보도 억제한다(1차 S3 동작). 반증 예외는 유지한다"""
+    split_suppression_owner_ttl_ms: int = 1000
+    """분할 나머지의 로컬 키 하나 이상이 억제 근거 Track 에 속했던 최근 시간 창(경계 포함)"""
+    split_suppression_require_owner: bool = False
+    """-413 S1·S2 비교용 추가 제약: 모든 로컬 트랙의 옛 주인이 같을 때만 억제한다"""
     uncertain_hold_ms: int = 1000
     """IDENTITY_UNCERTAIN 을 마지막 사유 뒤 이 시간 동안 유지한다 (깜박임 방지, 보수적)"""
     max_speed_mps: float = 2.0
@@ -381,6 +396,9 @@ class WorldTrackConfig:
     joint_gate: JointGateConfig = field(default_factory=JointGateConfig)
 
     def __post_init__(self) -> None:
+        for name in ("split_suppression_enabled", "split_suppress_ownerless", "split_suppression_require_owner"):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} 는 bool 이어야 한다")
         for name in ("confirm_hits", "merge_confirm_frames"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} 는 1 이상이어야 한다")
@@ -390,6 +408,7 @@ class WorldTrackConfig:
             "lost_after_ms",
             "reconnect_window_ms",
             "key_ttl_ms",
+            "split_suppression_owner_ttl_ms",
             "uncertain_hold_ms",
             "max_extrapolation_ms",
             "restore_max_age_ms",
@@ -407,6 +426,7 @@ class WorldTrackConfig:
             "gate_max_m",
             "gate_scale_m",
             "duplicate_radius_m",
+            "split_suppression_radius_m",
             "max_speed_mps",
             "accel_sigma_xy_mps2",
             "accel_sigma_z_mps2",
@@ -706,8 +726,8 @@ class _Track:
     identity_revision: int = 0
     aliases: list[str] = field(default_factory=list)
     keys: dict[TrackKey, int] = field(default_factory=dict)
-    """로컬 트랙 → 마지막으로 이 Track 에 붙은 시각. `reconnect_window_ms` 까지 남기고, 비용 보너스·주인 판단에는
-    `key_ttl_ms` 안의 것만 쓴다"""
+    """로컬 트랙 → 마지막으로 이 Track 에 붙은 시각. 재연결·분할 억제·일반 키 창 중 최댓값까지 남긴다.
+    비용 보너스·일반 주인 판단은 `key_ttl_ms`, 분할 나머지 판단은 `split_suppression_owner_ttl_ms` 창을 쓴다"""
     flags: dict[IdentityFlag, int] = field(default_factory=dict)
     """IDENTITY_UNCERTAIN 사유 → 마지막으로 붙은 시각"""
     reacquired_until: int = -1
@@ -908,7 +928,7 @@ class WorldTrackManager:
         self._last_t = t
         self._restore_step(t)
 
-        keep_ms = max(cfg.key_ttl_ms, cfg.reconnect_window_ms)
+        keep_ms = max(cfg.key_ttl_ms, cfg.reconnect_window_ms, cfg.split_suppression_owner_ttl_ms)
         for tr in self._all():
             tr.keys = {k: kt for k, kt in tr.keys.items() if t - kt <= keep_ms}
             tr.path = [(pt, xy) for pt, xy in tr.path if t - pt <= cfg.reconnect_window_ms]
@@ -920,6 +940,11 @@ class WorldTrackManager:
             k: tr.world_id for tr in self._tracks.values() for k, kt in tr.keys.items() if t - kt <= cfg.key_ttl_ms
         }
         holder = {k: tr.world_id for tr in self._all() for k in tr.keys}
+        # 이번 tick 의 소유권 이동·1대 관측 이력 갱신 전 스냅샷. 새 ID 가 같은 tick 의 주인이 되는 일을 막는다.
+        recent_owner = {
+            k: tr.world_id for tr in self._all() for k, kt in tr.keys.items()
+            if t - kt <= cfg.split_suppression_owner_ttl_ms
+        }
         held: dict[str, set[TrackKey]] = {}
         for k, wid in holder.items():
             held.setdefault(wid, set()).add(k)
@@ -931,6 +956,9 @@ class WorldTrackManager:
         def cost(tr: _Track, c: _Cluster) -> float:
             """게이트 밖이면 inf."""
             assert c.anchor is not None
+            # 중간에 빈 tick 이 없어도 창 만료를 적용한다. 마지막 관측 시각만 근거로 삼는다.
+            if tr.lifecycle is not TrackLifecycle.TENTATIVE and t - tr.t_last_valid > cfg.lost_after_ms:
+                return math.inf
             d = float(np.linalg.norm(c.anchor - predicted[tr.world_id]))
             radius = min(cfg.gate_max_m, cfg.gate_base_m + cfg.max_speed_mps * (t - tr.t_last_valid) / 1000.0)
             if d > radius:
@@ -1115,6 +1143,11 @@ class WorldTrackManager:
                 self.diag["new_track.no_measurement"] += 1
                 continue
             z, sigma = measurement
+            suppressed_by = self._split_remainder_target(c, applied, holder, cluster_of, recent_owner)
+            if suppressed_by is not None:
+                flags.setdefault(suppressed_by, set()).add(IdentityFlag.CROSS_VIEW_UNCERTAIN)
+                self.diag["new_track.split_remainder_suppressed"] += 1
+                continue  # ID·위치·로컬 트랙 소유권은 바꾸지 않는다
             self.diag["new_track.created"] += 1
             self._order += 1
             tr = _Track(
@@ -1249,6 +1282,44 @@ class WorldTrackManager:
         )
 
     # ------------------------------------------------------------------ 늦은 재연결·ID 교정
+
+    def _split_remainder_target(
+        self,
+        c: _Cluster,
+        applied: Mapping[str, _Applied],
+        holder: Mapping[TrackKey, str],
+        cluster_of: Mapping[TrackKey, ViewCluster],
+        recent_owner: Mapping[TrackKey, str],
+    ) -> str | None:
+        """S3: 새 ID 직전에만 검사한다. 예측 위치·옛 위치는 억제 근거로 쓰지 않는다.
+
+        직전까지 근거 Track 에 속했던 키가 하나 이상인 나머지만 억제한다. 소유 이력은 tick 시작 시 고정한다.
+        측정은 합치지 않는다. 기존 병합 금지 쌍과 이번 시각 같은 카메라의 두 검출은 억제의 반증이다.
+        위치 갱신에 쓰이지 않은 1대 클러스터의 검출도 로컬 트랙 주인을 통해 반증으로 쓴다.
+        가까운 후보가 여럿이면 거리·World ID 순으로 하나를 고르고 불확실 표시를 남긴다.
+        """
+        cfg = self.config
+        if not cfg.split_suppression_enabled or c.uncertain or c.anchor is None:
+            return None
+        cameras = set(c.cluster.camera_ids)
+        owners = {holder.get(k) for k in c.cluster.keys}
+        candidates = []
+        for wid, a in applied.items():
+            if a.pelvis is None or cameras.intersection(a.cluster.camera_ids):
+                continue
+            if not cfg.split_suppress_ownerless and not any(recent_owner.get(k) == wid for k in c.cluster.keys):
+                continue
+            if any(old is not None and frozenset((old, wid)) in self._distinct for old in owners):
+                continue  # 병합 때 남는 ID 로 이어진 기존 반증을 그대로 쓴다
+            visible = set(a.cluster.keys) | {k for k in cluster_of if holder.get(k) == wid}
+            if any(k[0] == other[0] and k != other for k in c.cluster.keys for other in visible):
+                continue  # 주인의 다른 검출이 1대 클러스터에만 있어도 두 사람이다
+            if cfg.split_suppression_require_owner and owners != {wid}:
+                continue
+            distance = math.dist(c.anchor, a.pelvis[:2])
+            if distance <= cfg.split_suppression_radius_m:
+                candidates.append((distance, wid))
+        return min(candidates)[1] if candidates else None
 
     def _all(self) -> list[_Track]:
         """살아 있는 Track 과 소실 후보."""

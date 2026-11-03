@@ -150,10 +150,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stride", type=int, default=1, help="frame_sequence 가 이 값의 배수인 프레임만 검출(2 = 12.5 fps)")
     ap.add_argument("--max-frames", type=int, default=None, help="시험용: 카메라당 앞 N 프레임만")
     args = ap.parse_args(argv)
-    from ultralytics import YOLO
-
-    manifest = json.loads((args.session / "manifest.json").read_text(encoding="utf-8"))
+    manifest_path = args.session / "manifest.json"
+    if not manifest_path.is_file():
+        ap.error(f"{manifest_path}: 원본 manifest·codec_info·frames sidecar가 필요하다. H264의 명목 FPS로 촬영 시각을 만들지 않는다")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     cams = args.cameras or [c["camera_id"] for c in manifest["cameras"]]
+    # GPU 가중치를 올리기 전에 원본 시각·오프셋·코덱 메타데이터가 있는지 검사한다.
+    for cam in cams:
+        entry = next(c for c in manifest["cameras"] if c["camera_id"] == cam)
+        for segment in entry["segments"]:
+            for kind in ("video", "frames", "codec_info"):
+                path = args.session / segment[kind]["path"]
+                if not path.is_file():
+                    ap.error(f"원본 녹화 파일이 없다: {path}")
+    from ultralytics import YOLO
     args.out.mkdir(parents=True, exist_ok=True)
     meta = {
         "session_id": manifest["session_id"],
