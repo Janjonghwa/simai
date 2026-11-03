@@ -1,7 +1,7 @@
 {
   "format_version": "1.3.0",
   "vector_id": "r6-observation-lost-in-zone-what-if",
-  "description": "WHAT_IF R6: LIVE 와 같은 관측 상실 시나리오의 전이는 같고 현장 경보 신호는 0건(7.4, G3) 기본 생명주기 정책(3프레임 중 2)이라 첫 관측 프레임을 하나 더 두어 원래 첫 단계에서 발생한다.",
+  "description": "R1 확실한 위치의 점 진입과 불확실한 프레임의 유지를 검증한다: r6_observation_lost_in_zone_what_if",
   "origin": "WHAT_IF",
   "rules": [
     {
@@ -256,7 +256,8 @@
             ],
             "metrics": {
               "zone_distance_m": 0.0
-            }
+            },
+            "holding": true
           }
         ],
         "transitions": [

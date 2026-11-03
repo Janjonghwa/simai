@@ -151,9 +151,9 @@ def test_inside_raises_with_zone_severity():
     ("x", "expected"),
     [
         # σ 0.05 → 반축 0.1, + 점유 0.3 → 범위 반경 0.4. 해소 간격 0.3 → 유지 띠는 경계 0.4~0.7 m
-        (4.39, "raise"),
-        (4.399, "raise"),
-        (4.40, "raise"),  # 정확히 닿음(부동소수점 간격 ~4e-16 도 허용오차로 걸림)
+        (4.39, "overlap"),
+        (4.399, "overlap"),
+        (4.40, "overlap"),  # 정확히 닿음(부동소수점 간격 ~4e-16 도 허용오차로 걸림)
         (4.401, "hold"),
         (4.69, "hold"),
         (4.71, None),
@@ -166,14 +166,14 @@ def test_boundary_hysteresis(x, expected):
         assert findings == []
         return
     f = only(findings)
-    assert f.holding is (expected == "hold")
-    assert f.reasons == ((REASON_XY_UNCERTAINTY_OVERLAP,) if expected == "raise" else (REASON_XY_CLEAR_MARGIN,))
+    assert f.holding
+    assert f.reasons == ((REASON_XY_UNCERTAINTY_OVERLAP,) if expected == "overlap" else (REASON_XY_CLEAR_MARGIN,))
     assert f.metrics["zone_distance_m"] == pytest.approx(x - 4.0)
 
 
 def test_zero_clear_margin_still_raises():
-    rule = ZoneEntryRule(clear_margin_m=0.0)  # 히스테리시스 띠 없음: 걸리면 발생, 아니면 판정 없음
-    assert not only(judge(track((4.39, 5.0)), rule=rule)).holding
+    rule = ZoneEntryRule(clear_margin_m=0.0)  # 히스테리시스 띠 없음: 범위가 걸리면 유지, 아니면 판정 없음
+    assert only(judge(track((4.39, 5.0)), rule=rule)).holding
     assert judge(track((4.41, 5.0)), rule=rule) == []
     assert not only(judge(track(skel=skeleton(0.0, 2.0)), zones=[ABOVE], rule=rule)).holding
 
@@ -188,15 +188,15 @@ def test_zero_clear_margin_still_raises():
         ((4.43, 5.0), (0.065, 0.065)),  # 0.13 + 0.3 = 0.43
     ],
 )
-def test_exact_contact_raises_and_neighbours(xy, sigma):
-    """정확히 닿는 경계는 발생(허용오차 1e-9 m, 안전 쪽). 1 µm 안쪽은 발생, 1 µm 바깥은 유지."""
-    assert not only(judge(track(xy, sigma=sigma))).holding
+def test_uncertainty_contact_holds_and_neighbours(xy, sigma):
+    """불확실성 범위의 경계 접촉과 그 주변은 새 이벤트 없이 유지한다."""
+    assert only(judge(track(xy, sigma=sigma))).holding
     cx, cy = 3.5, 5.0  # 구역 중심 쪽으로 / 반대쪽으로 1 µm
     dx, dy = xy[0] - cx, xy[1] - cy
     norm = (dx * dx + dy * dy) ** 0.5
     inward = (xy[0] - 1e-6 * dx / norm, xy[1] - 1e-6 * dy / norm)
     outward = (xy[0] + 1e-6 * dx / norm, xy[1] + 1e-6 * dy / norm)
-    assert not only(judge(track(inward, sigma=sigma))).holding
+    assert only(judge(track(inward, sigma=sigma))).holding
     assert only(judge(track(outward, sigma=sigma))).holding
 
 
@@ -207,21 +207,21 @@ def test_exact_height_contact_raises():
     assert only(judge(track(head=1.7 - 1e-6, head_sigma=0.15), zones=[ABOVE])).holding
 
 
-def test_exact_contact_held_for_frames_raises_once():
+def test_uncertainty_contact_never_raises():
     transitions, _ = _run([4.4] * 10)
-    assert [t.transition for t in transitions if t.transition is Lifecycle.RAISED] == [Lifecycle.RAISED]
+    assert not [t for t in transitions if t.transition is Lifecycle.RAISED]
 
 
-def test_large_uncertainty_raises_earlier():
-    # 경계 1.0 m 밖: σ 0.05 는 판정 없음, σ 0.4(반축 0.8 + 0.3 = 1.1) 는 범위가 걸려 발생
+def test_large_uncertainty_only_holds():
+    # 경계 1.0 m 밖: σ 0.05 는 판정 없음, σ 0.4(반축 0.8 + 0.3 = 1.1) 는 범위가 걸려 유지
     assert judge(track((5.0, 5.0))) == []
     f = only(judge(track((5.0, 5.0), sigma=(0.4, 0.4))))
-    assert not f.holding and f.reasons == (REASON_XY_UNCERTAINTY_OVERLAP,)
+    assert f.holding and f.reasons == (REASON_XY_UNCERTAINTY_OVERLAP,)
 
 
 def test_anisotropic_uncertainty():
     # x 방향만 불확실: 오른쪽 경계(x)로는 걸리고, 위쪽 경계(y)로는 걸리지 않는다
-    assert not only(judge(track((4.8, 5.0), sigma=(0.3, 0.02)))).holding
+    assert only(judge(track((4.8, 5.0), sigma=(0.3, 0.02)))).holding
     assert judge(track((3.5, 6.3), sigma=(0.3, 0.02))) == []
 
 
@@ -231,15 +231,15 @@ def test_foot_position_preferred_over_pelvis_xy():
     assert f.reasons == (REASON_XY_INSIDE,)
     # 접지점 수평 표준편차가 있으면 그것을 쓴다
     assert judge(track((5.5, 5.0), anchor=(4.8, 5.0, 0.0), anchor_sigma=(0.02, 0.02, 0.02))) == []
-    assert not only(judge(track((5.5, 5.0), anchor=(4.8, 5.0, 0.0), anchor_sigma=(0.3, 0.3, 0.02)))).holding
+    assert only(judge(track((5.5, 5.0), anchor=(4.8, 5.0, 0.0), anchor_sigma=(0.3, 0.3, 0.02)))).holding
 
 
-def test_position_xy_entry_is_not_erased_by_ground_anchor():
-    """명세 8.2: GROUND_FOOTPRINT 는 position_xy + 수평 불확실성. 접지점이 밖이어도 position_xy 가 안이면 발생한다."""
+def test_ground_anchor_takes_precedence_for_entry():
+    """접지점이 밖이면 position_xy 가 안이어도 기존 이벤트만 유지한다."""
     f = only(judge(track((3.9, 5.0), anchor=(4.5, 5.0, 0.0))))
-    assert not f.holding and f.reasons == (REASON_XY_INSIDE,)
+    assert f.holding and f.reasons == (REASON_XY_INSIDE,)
     f = only(judge(track((3.9, 5.0), anchor=(4.5, 5.0, 0.0)), zones=[ABOVE_LOW_FLOOR]))
-    assert not f.holding and f.reasons == (REASON_XY_INSIDE, REASON_Z_OVERLAP)
+    assert f.holding and f.reasons == (REASON_XY_INSIDE, REASON_Z_OVERLAP)
     # 둘 다 밖이면 작은 간격(position_xy 경계 0.5 m → 간격 0.1)으로 유지 띠
     f = only(judge(track((4.5, 5.0), anchor=(5.5, 5.0, 0.0))))
     assert f.holding and f.metrics["zone_distance_m"] == pytest.approx(0.5)
@@ -271,7 +271,7 @@ def test_each_zone_judged_with_its_severity():
 
 def test_predicted_single_view_identity_uncertain():
     f = only(judge(track(state="PREDICTED", cameras=(), identity="IDENTITY_UNCERTAIN", anchor=None)))
-    assert not f.holding
+    assert f.holding
     assert f.needs_check
     assert f.reasons == (REASON_XY_INSIDE,)  # 판정 근거에는 이유를 겹쳐 적지 않는다
     assert f.confidence_reasons == (PREDICTED, SINGLE_VIEW, IDENTITY_UNCERTAIN)  # 명세 7.1 선언 순서
@@ -345,11 +345,11 @@ def test_height_uncertainty_widens_range():
         (4.5, None),  # 위 끝 모름, 서 있는 면이 구역보다 높음
     ],
 )
-def test_partial_height_unknown_raises_with_z_unknown(anchor_z, head):
-    """명세 8.2: XY 는 안인데 서 있는 면 또는 head_z 를 모르면 아는 한쪽 끝과 관계없이 발생 + 확인 필요(Z_UNKNOWN)."""
+def test_partial_height_unknown_holds_with_z_unknown(anchor_z, head):
+    """높이 양 끝 중 하나라도 모르면 기존 이벤트만 유지하고 Z_UNKNOWN 을 기록한다."""
     anchor = None if anchor_z is None else (None, None, anchor_z)
     f = only(judge(track(anchor=anchor, head=head), zones=[ABOVE]))
-    assert not f.holding
+    assert f.holding
     assert f.needs_check and f.reasons == (REASON_XY_INSIDE,) and f.confidence_reasons == (Z_UNKNOWN,)
     # XY 가 유지 띠면 유지 + Z_UNKNOWN(새 이벤트는 만들지 않는다)
     f = only(judge(track((4.5, 5.0), anchor=anchor, head=head), zones=[ABOVE]))
@@ -387,7 +387,7 @@ def _run(xs, *, origin=Origin.LIVE, dt=100):
 
 def test_flicker_at_boundary_makes_one_event():
     """경계에서 0.3 m 안쪽으로 흔들리는 사람(깜빡임)은 이벤트 하나로 유지되고, 띠 밖 3초 뒤에만 해소된다."""
-    wobble = [4.30, 4.45, 4.38, 4.62, 4.41, 4.66, 4.35, 4.55] * 5  # 경계 0.30~0.66 m(발생 0.4, 해소 0.7)
+    wobble = [3.9, 3.9, 4.38, 4.62, 4.41, 4.66, 4.35, 4.55] * 5  # 진입 뒤 경계 밖 유지 띠에서 흔들림
     leave = [5.0] * 31  # 띠 밖 3.0초
     transitions, signals = _run(wobble + leave)
     raised = [t for t in transitions if t.transition is Lifecycle.RAISED]
@@ -399,7 +399,7 @@ def test_flicker_at_boundary_makes_one_event():
 
 @pytest.mark.parametrize("origin", [Origin.WHAT_IF, Origin.REPLAY, Origin.PLANNED])
 def test_non_live_same_transitions_no_site_alert(origin):
-    path = [5.2, 4.6, 4.35, 3.6] + [5.0] * 31
+    path = [5.2, 4.6, 3.6, 3.6] + [5.0] * 31
     live, live_signals = _run(path)
     other, other_signals = _run(path, origin=origin)
     assert [(t.transition, t.changes) for t in live] == [(t.transition, t.changes) for t in other]
@@ -426,13 +426,13 @@ def test_invalid_parameters(name, value):
 @pytest.mark.parametrize("head", [1.5, 1.7])
 def test_uncertain_head_z_value_from_v2_keeps_z_unknown_like_v14(head):
     """회귀: VOLUME_3D 구역(z 2.0~4.0), skeleton 전부 UNCERTAIN, XY 안. 2.0.0 은 UNCERTAIN head_z 값(1.5·1.7)을 싣지만
-    risk.world 가 확정값으로 넘기지 않으므로, 1.4.0(UNCERTAIN + null)·dev 와 같이 위 끝을 모르는 Z_UNKNOWN 발생이다.
-    (값을 확정값으로 쓰면 1.7 은 유지만, 1.5 는 판정 없음이 되어 경보가 빠진다.)"""
+    risk.world 가 확정값으로 넘기지 않으므로, 1.4.0(UNCERTAIN + null)·dev 와 같이 위 끝을 모르는 Z_UNKNOWN 유지다.
+    (값을 확정값으로 쓰면 1.7 은 유지만, 1.5 는 판정 없음이 되어 유지 판정이 바뀐다.)"""
     skel = skeleton(0.0, head - 0.12, validity="UNCERTAIN")
     v2 = dict(track(head=head, head_sigma=0.04, skel=skel), head_z_validity="UNCERTAIN")
     v14 = dict(track(head=None, skel=skel), head_z_validity="UNCERTAIN")
     (f,) = judge(v2, zones=[ABOVE])
-    assert not f.holding and f.reasons == (REASON_XY_INSIDE,) and f.confidence_reasons == (Z_UNKNOWN,)
+    assert f.holding and f.reasons == (REASON_XY_INSIDE,) and f.confidence_reasons == (Z_UNKNOWN,)
     assert judge(v2, zones=[ABOVE]) == judge(v14, zones=[ABOVE])
 
 
@@ -441,3 +441,37 @@ def test_valid_head_z_still_used_as_confirmed_top():
     v2 = dict(track(head=2.1), head_z_validity="VALID")
     f = only(judge(v2, zones=[ABOVE]))
     assert f.reasons == (REASON_XY_INSIDE, REASON_Z_OVERLAP) and not f.needs_check
+
+
+@pytest.mark.parametrize(("state", "cameras", "anchor", "raises"), [
+    ("PREDICTED", ("cam1", "cam2"), (None, None, 0.0), False),
+    ("OBSERVED", ("cam1",), None, False),
+    ("OBSERVED", ("cam1",), (None, None, 0.0), True),
+    ("OBSERVED", ("cam1", "cam2"), None, True),
+])
+def test_entry_requires_observed_confident_position(state, cameras, anchor, raises):
+    f = only(judge(track(state=state, cameras=cameras, anchor=anchor)))
+    assert f.holding is (not raises)
+
+
+def test_open_event_survives_uncertain_frame():
+    clock = FixedClock(T0)
+    engine = RiskEngine([default_registry().create("R1", 1)], clock)
+    tracker = LifecycleTracker(origin=Origin.LIVE, gateway_id="tier0-01", clock=clock)
+    for i, state in enumerate(("OBSERVED", "OBSERVED", "PREDICTED")):
+        t = T0 + i * 100
+        clock.set(t)
+        w = world(track(state=state, t=t), t=t)
+        step = tracker.apply(engine.evaluate(w, [zone()], Origin.LIVE), w, config_version="cfg-1")
+        if i == 1:
+            assert any(x.transition is Lifecycle.RAISED for x in step.transitions)
+        if i == 2:
+            assert not any(x.transition is Lifecycle.RESOLVED for x in step.transitions)
+            assert len(tracker.active()) == 1
+
+
+def test_entry_point_boundary_tolerance():
+    assert not only(judge(track((4.0, 5.0)))).holding
+    boundary = only(judge(track((4.0 + 0.5e-9, 5.0))))
+    assert not boundary.holding and boundary.reasons == (REASON_XY_INSIDE,)
+    assert only(judge(track((4.0 + 2e-9, 5.0)))).holding

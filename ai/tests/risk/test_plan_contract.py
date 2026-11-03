@@ -401,12 +401,12 @@ def test_yaw_must_be_radians(yaw, ok):
     assert (schema_errors(request, "risk_plan_request") == []) is ok
 
 
-def test_unknown_head_height_is_check_needed_not_clear():
-    """머리 높이를 모르는 계획 위치는 VOLUME_3D 구역에서 '진입 없음'이 아니라 확인 필요(Z_UNKNOWN) 항목이 된다."""
+def test_unknown_head_height_has_no_entry():
+    """머리 높이를 모르는 계획 위치는 발생 항목이 없다."""
     request = load_example("risk_plan_request.json")["payload"]
     items = [_item(f) for f in _evaluate(request).findings if not f.holding]
     p03 = [i for i in items if i["position_ids"] == ["p-03"]]
-    assert p03 and p03[0]["confidence_reasons"] == ["Z_UNKNOWN"]
+    assert not p03
 
 
 def test_holding_findings_are_not_items():
@@ -462,7 +462,7 @@ def test_expired_opening_would_generate_when_valid():
     opening.pop("valid_to")
     outcome = evaluate_plan(request)
     assert [p.position_id for p in outcome.positions] == ["gen-z-open-old-01"]
-    assert outcome.items
+    assert not outcome.items
 
 
 @pytest.mark.parametrize(
