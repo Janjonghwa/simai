@@ -4,12 +4,11 @@ import {
 } from '@/features/viewer3d/data/spatialData.store';
 import { SpatialDataContext } from '@/features/viewer3d/data/SpatialDataProvider';
 import { scenarioWorld } from '@/features/viewer3d/dev-harness/scenarios';
-import { DIMMED_OPACITY, SceneBackground } from '@/features/viewer3d/scene/SceneBackground';
+import { SceneBackground } from '@/features/viewer3d/scene/SceneBackground';
 import { sceneStatusOf, type ViewerSceneInput } from '@/features/viewer3d/scene/sceneContract';
 import {
   createSceneStore,
   SceneLoaderContext,
-  SceneReviewContext,
   SceneStoreContext,
   sceneVersionsOf,
   type SceneAssetLoader,
@@ -111,7 +110,7 @@ function fakeRenderer(canvas: HTMLCanvasElement) {
 }
 
 let root: ReconcilerRoot<HTMLCanvasElement> | null = null;
-async function mount(review = false) {
+async function mount() {
   const canvas = document.createElement('canvas');
   root = createRoot(canvas);
   await root.configure({
@@ -126,11 +125,9 @@ async function mount(review = false) {
           <ViewerStoreContext value={createViewerStore()}>
             <SceneStoreContext value={scene}>
               <SceneLoaderContext value={loader}>
-                <SceneReviewContext value={review}>
-                  <Probe />
-                  <SceneBase />
-                  <SceneBackground />
-                </SceneReviewContext>
+                <Probe />
+                <SceneBase />
+                <SceneBackground />
               </SceneLoaderContext>
             </SceneStoreContext>
           </ViewerStoreContext>
@@ -218,7 +215,7 @@ describe('SceneBackground', () => {
     expect(hits).toHaveLength(0);
   });
 
-  it('큰 보정 변화의 서버 판정은 자산 재적재 없이 흐리게 유지한다', async () => {
+  it('큰 보정 변화의 서버 판정은 자산 재적재 없이 원래 재질을 유지한다', async () => {
     world();
     await mount();
     await setInput(committed());
@@ -245,7 +242,7 @@ describe('SceneBackground', () => {
       display: 'DIMMED',
       regenerationRequired: true,
     });
-    expect((a.mesh.material as THREE.Material).opacity).toBe(DIMMED_OPACITY);
+    expect((a.mesh.material as THREE.Material).opacity).toBe(1);
   });
 
   it('World 버전이 바뀌어 어긋나면 배경을 숨기고 기본 바닥을 되돌린다', async () => {
@@ -269,7 +266,7 @@ describe('SceneBackground', () => {
     });
   });
 
-  it('DEFAULT·World 없음은 흐리게 보인다', async () => {
+  it('DEFAULT·World 없음은 원래 재질로 보인다', async () => {
     await mount();
     await setInput(
       committed({
@@ -283,27 +280,27 @@ describe('SceneBackground', () => {
     await settle(calls[0]!, a.root);
     const material = a.mesh.material as THREE.Material;
     expect(a.root.visible).toBe(true);
-    expect([material.transparent, material.opacity]).toEqual([true, DIMMED_OPACITY]);
+    expect([material.transparent, material.opacity]).toEqual([false, 1]);
     expect(status()).toMatchObject({ verification: 'DEFAULT_UNVERIFIED', display: 'DIMMED' });
     expect(floor().visible).toBe(false);
-    // 흐리게 보여도 스캔이 보이는 중이라 목업 바탕은 숨고 스캔 범위를 쓴다.
+    // 원래 재질로 보여도 스캔이 보이는 중이라 목업 바탕은 숨고 스캔 범위를 쓴다.
     expect(mockBackdrop()).toEqual([false, false, false]);
     expect(roomBounds()).toBe(status().boundsWorld);
 
-    // COMMITTED 라도 비교할 World 가 없으면 흐리게, World 가 맞으면 원래 불투명도로 돌아간다.
+    // COMMITTED 라도 비교할 World 가 없으면 원래 재질로 보이고 World 가 맞아도 유지된다.
     await setInput(committed());
     const b = asset();
     await settle(calls[1]!, b.root);
     const bm = b.mesh.material as THREE.Material;
     expect(status().display).toBe('DIMMED');
-    expect(bm.opacity).toBe(DIMMED_OPACITY);
+    expect(bm.opacity).toBe(1);
     await act(async () => world());
     expect(status().display).toBe('FULL');
     expect([bm.transparent, bm.opacity]).toEqual([false, 1]);
   });
 
-  it('개발 검수(review)는 DEFAULT 배경을 불투명하게 그리지만 판정·상태는 그대로다', async () => {
-    await mount(true);
+  it('DEFAULT 배경을 원래 재질로 그리고 판정·상태를 유지한다', async () => {
+    await mount();
     expect(walls().visible).toBe(true);
     await setInput(
       committed({
@@ -327,8 +324,8 @@ describe('SceneBackground', () => {
     expect(walls().visible).toBe(true);
   });
 
-  it('검수가 꺼져 있어도 같은 DEFAULT 배경은 흐리게 보이고 그동안 DEMO 벽 경계선은 숨는다', async () => {
-    await mount(false);
+  it('DEFAULT 배경이 보이는 동안 DEMO 벽 경계선은 숨는다', async () => {
+    await mount();
     await setInput(
       committed({
         scene_version: 'lobby-recon-preview',
@@ -339,7 +336,7 @@ describe('SceneBackground', () => {
     );
     const a = asset();
     await settle(calls[0]!, a.root);
-    expect((a.mesh.material as THREE.Material).opacity).toBe(DIMMED_OPACITY);
+    expect((a.mesh.material as THREE.Material).opacity).toBe(1);
     expect(walls().visible).toBe(false);
   });
 

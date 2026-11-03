@@ -224,7 +224,7 @@ export type SceneStatusPhase =
 export type SceneVerification =
   'VERIFIED' | 'DIMMED' | 'DEFAULT_UNVERIFIED' | 'UNCONFIRMED' | 'MISMATCH';
 
-/** FULL 그대로 · DIMMED 흐리게(정합 근거 없음) · HIDDEN 숨기고 기본 바닥만. */
+/** FULL·DIMMED 원래 재질로 표시 · HIDDEN 숨기고 기본 바닥만. */
 export type SceneDisplay = 'FULL' | 'DIMMED' | 'HIDDEN';
 
 export interface ViewerSceneStatus {
@@ -279,7 +279,7 @@ export function verifyScene(
     return { verification: verdict.verification, mismatches };
   }
   // Scene 을 만든 보정과 같은 보정이면 변화가 0 이라 서버 판정(SAME_CALIBRATION) 없이도 VERIFIED 다.
-  // 서버 판정이 늦거나 배포 전환 중에도 배경을 불필요하게 흐리지 않는다.
+  // 서버 판정이 늦거나 배포 전환 중에도 같은 보정을 확인한다.
   if (v.worldCalibration === scene.calibrationVersion) {
     return { verification: 'VERIFIED', mismatches };
   }
