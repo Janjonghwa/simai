@@ -1,8 +1,8 @@
 import type { WorkSurface } from '@/features/surfaces/types';
 import type { Zone } from '@/features/zones/types';
 
-// 서버 구역에는 작업면을 잇는 칸이 없다. 작업면은 OBB 중심이 구역 바닥 다각형(XY) 안에 있으면 그 구역의 것으로 본다.
-// 서버 목록(GET /api/zones · GET /api/static-objects)만으로 화면이 계산한다.
+// 구역↔작업면 연결은 서버가 작업면에 저장한 zone_id 가 기준이다(GET /api/static-objects). 화면은 그 값을 읽기만 하고 기하로 다시
+// 계산하지 않는다. 작업면을 바꿀 때 중심이 구역 안인지 확인하는 pointInPolygon 만 남아 있다.
 
 type Polygon = readonly (readonly [number, number])[];
 
@@ -31,36 +31,22 @@ export function pointInPolygon(point: readonly [number, number], polygon: Polygo
   return inside;
 }
 
-/** 다각형 넓이(신발끈 공식). */
-function polygonAreaOf(polygon: Polygon): number {
-  let sum = 0;
-  polygon.forEach(([x0, y0], i) => {
-    const [x1, y1] = polygon[(i + 1) % polygon.length]!;
-    sum += x0 * y1 - x1 * y0;
-  });
-  return Math.abs(sum) / 2;
-}
-
-type LinkableSurface = Pick<WorkSurface, 'objectId' | 'geometry'>;
+type LinkableSurface = Pick<WorkSurface, 'objectId' | 'zoneId'>;
 
 /**
- * 구역마다 이은 작업면(하나). 작업면은 중심이 들어 있는 구역의 것이다. 여러 구역이 겹쳐 둘 이상에 들면 바닥 넓이가 가장
- * 작은 구역(같으면 구역 ID 순)이 가진다. 한 구역에 작업면이 둘 이상 들면 작업면 ID 순으로 첫 번째만 잇는다(구역에는 하나).
+ * 구역마다 이은 작업면(하나). 서버가 저장한 작업면의 zone_id 를 읽는다. 지금 구역에 걸린 것만 잇는다(보관한 구역에 걸린 것은
+ * 뺀다). 한 구역에 작업면이 둘 이상이면 작업면 ID 순 첫 번째만 잇는다(서버 V22 가 기존 작업면을 채운 규칙과 같다).
  */
 export function linkSurfaces<S extends LinkableSurface>(
-  zones: readonly Pick<Zone, 'zoneId' | 'polygon'>[],
+  zones: readonly Pick<Zone, 'zoneId'>[],
   surfaces: readonly S[],
 ): Map<string, S> {
-  // 넓이는 구역마다 한 번만 센다(비교 함수 안에서 세면 비교마다 다시 센다).
-  const order = zones
-    .map((zone) => ({ zone, area: polygonAreaOf(zone.polygon) }))
-    .sort((a, b) => a.area - b.area || a.zone.zoneId.localeCompare(b.zone.zoneId))
-    .map(({ zone }) => zone);
+  const current = new Set(zones.map((zone) => zone.zoneId));
   const links = new Map<string, S>();
   const byId = [...surfaces].sort((a, b) => a.objectId.localeCompare(b.objectId));
   for (const surface of byId) {
-    const owner = order.find((zone) => pointInPolygon(surface.geometry.centerXy, zone.polygon));
-    if (owner && !links.has(owner.zoneId)) links.set(owner.zoneId, surface);
+    const { zoneId } = surface;
+    if (zoneId !== null && current.has(zoneId) && !links.has(zoneId)) links.set(zoneId, surface);
   }
   return links;
 }

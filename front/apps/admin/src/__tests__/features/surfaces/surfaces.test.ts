@@ -27,6 +27,7 @@ const desk: WorkSurface = {
   name: '책상',
   geometry: { centerXy: [5, 4.6], sizeXy: [1.2, 0.6], yawRad: -0.26, topHeightM: 0.74 },
   sigma: 0.03,
+  zoneId: null,
   validFrom: 100,
 };
 
@@ -44,8 +45,22 @@ describe('readWorkSurfaces', () => {
           topHeightM: Math.fround(0.74),
         },
         sigma: 0.03,
+        zoneId: null,
         validFrom: 100,
       },
+    ]);
+  });
+
+  it('서버가 이은 구역 ID(zone_id)를 읽고, 없거나 null 이면 이은 구역이 없다(null)', () => {
+    const read = readWorkSurfaces([
+      item('ws-linked', { zone_id: 'z-02' }),
+      item('ws-null', { zone_id: null }),
+      item('ws-absent'),
+    ]);
+    expect(read.map((s) => [s.objectId, s.zoneId])).toEqual([
+      ['ws-linked', 'z-02'],
+      ['ws-null', null],
+      ['ws-absent', null],
     ]);
   });
 

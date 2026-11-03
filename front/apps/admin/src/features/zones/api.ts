@@ -1,14 +1,16 @@
 import {
   bundlesResponseSchema,
   configBundleSchema,
+  zoneCommitResultSchema,
   zoneItemSchema,
   zonesResponseSchema,
   type ZoneBody,
+  type ZoneCommitRequest,
 } from '@/features/zones/types';
 import type { Http } from '@/lib/http';
 import { z } from 'zod';
 
-// 구역 목록 조회 키. 화면(useZones)과 저장(useZoneSave)이 함께 쓴다.
+// 구역 목록 조회 키. 화면(useZones)과 저장(useZoneCommitMutation)이 함께 쓴다.
 export const ZONES_KEY = ['zones'] as const;
 
 // http 를 인자로 받는다. 테스트가 env 없이 createHttp 로 부를 수 있게 한다.
@@ -39,6 +41,18 @@ export function updateZone(http: Http, zoneId: string, body: ZoneBody) {
  */
 export async function deleteZone(http: Http, zoneId: string): Promise<void> {
   await http(`/api/zones/${encodeURIComponent(zoneId)}`, { method: 'DELETE', schema: z.void() });
+}
+
+/**
+ * 구역·작업면 저장과 구성 묶음 발행을 한 번에(관리자, 서버 한 트랜잭션). 어느 단계든 실패하면 서버가 모두 되돌린다.
+ * 본문의 zone.op·surface.op 가 만들기·새 버전·보관을 가르고, publish 를 빼면 서버가 묶음까지 만든다.
+ */
+export function commitZone(http: Http, request: ZoneCommitRequest) {
+  return http('/api/zones/commit', {
+    method: 'POST',
+    body: request,
+    schema: zoneCommitResultSchema,
+  });
 }
 
 // 최근 구성 묶음 조회 키. 첫 항목이 가장 최근에 발행한 묶음이다.

@@ -25,6 +25,7 @@ const SAMPLE_SURFACE: WorkSurface = {
   objectId: 'ws-01',
   version: 1,
   name: '작업대 1',
+  zoneId: null,
   geometry: {
     centerXy: [3.2, 4.5],
     sizeXy: [2.0, 1.5],

@@ -1,260 +1,311 @@
 import { zoneOf } from '@/__tests__/features/zones/zoneFixture';
-import type { StaticObjectItem, WorkSurface } from '@/features/surfaces/types';
-import type { ZoneItem } from '@/features/zones/types';
+import { bodyOf as surfaceBodyOf } from '@/features/surfaces/surfaces';
+import type { WorkSurface } from '@/features/surfaces/types';
+import type { ViewerEditBox } from '@/features/viewer3d';
+import type { ZoneCommitRequest } from '@/features/zones/types';
 import {
-  commitArchive,
-  commitCreate,
-  commitPublish,
-  commitSave,
-  type CommitOps,
+  archiveRequestOf,
+  createRequestOf,
+  saveRequestOf,
+  type SaveRequestInput,
 } from '@/features/zones/zoneCommit';
 import { newSurfaceDraft, surfaceDraftOf } from '@/features/zones/zoneEditModel';
-import { formOf, newZoneBodyOf } from '@/features/zones/zoneForm';
-import { ApiError } from '@/lib/http';
+import { formOf, newZoneBodyOf, bodyOf as zoneBodyOf } from '@/features/zones/zoneForm';
 import { describe, expect, it } from 'vitest';
 
 const zone = zoneOf({ zoneId: 'z-04', name: '개구부', min: [5.8, 1.2, 0], max: [8.6, 3.8, 2.4] });
+const ZONE_BOX: ViewerEditBox = { min: [5.8, 1.2, 0], max: [8.6, 3.8, 2.4] };
+const MOVED_BOX: ViewerEditBox = { min: [6, 1.2, 0], max: [8.8, 3.8, 2.4] };
 const linked: WorkSurface = {
   objectId: 'ws-1',
   version: 3,
   name: '단상',
   geometry: { centerXy: [7, 2.5], sizeXy: [1, 1], yawRad: 0, topHeightM: 0.4 },
   sigma: 0.02,
+  zoneId: 'z-04',
   validFrom: 1,
 };
-const zoneItem = { zone_id: 'z-04', zone_version: 2 } as ZoneItem;
-const surfaceItem = { object_id: 'ws-1', object_version: 4 } as StaticObjectItem;
+const form = { ...formOf(zone), name: '새 이름' };
 
-/** 부른 순서를 적는 가짜 요청. fail 에 적은 이름은 그 요청에서 실패한다. */
-function fakeOps(fail: Partial<Record<keyof CommitOps, unknown>> = {}) {
-  const calls: string[] = [];
-  const bodies: Record<string, unknown> = {};
-  const call =
-    <A extends unknown[], R>(name: keyof CommitOps, result: R) =>
-    (...args: A) => {
-      calls.push(name);
-      bodies[name] = args[0];
-      return name in fail ? Promise.reject(fail[name]) : Promise.resolve(result);
-    };
-  const ops: CommitOps = {
-    saveZone: call('saveZone', zoneItem),
-    createZone: call('createZone', { ...zoneItem, zone_id: 'z-new', zone_version: 1 } as ZoneItem),
-    archiveZone: call('archiveZone', undefined),
-    saveSurface: call('saveSurface', surfaceItem),
-    createSurface: call('createSurface', { ...surfaceItem, object_id: 'ws-new' }),
-    archiveSurface: call('archiveSurface', undefined),
-    publish: call('publish', {}),
-  };
-  return { ops, calls, bodies };
-}
-
-const base = {
+const base: SaveRequestInput = {
   zone,
-  form: { ...formOf(zone), name: '새 이름' },
+  form,
   box: null,
   zoneChanged: true,
   linked,
   surface: undefined,
   surfaceChanged: false,
 };
+/** 이은 작업면을 그대로 두고 상판만 높인 초안. */
 const taller = () => {
   const draft = surfaceDraftOf(linked);
   draft.geometry.topHeightM = 0.9;
   return draft;
 };
+/** 아직 등록하지 않은 새 작업면 초안(id null). */
+const added = () => newSurfaceDraft(ZONE_BOX);
 
-describe('commitSave(기존 구역 저장 순서)', () => {
-  it('구역 새 버전 → 작업면 새 버전 → 발행 순서로 하나씩 보낸다', async () => {
-    const { ops, calls } = fakeOps();
-    const outcome = await commitSave(ops, { ...base, surface: taller(), surfaceChanged: true });
-    expect(calls).toEqual(['saveZone', 'saveSurface', 'publish']);
-    expect(outcome.failed).toBeNull();
-    expect(outcome.saved).toEqual({ zone: true, surface: true });
-    expect(outcome.zone).toBe(zoneItem);
-    expect(outcome.surface).toBe(surfaceItem);
-  });
+const zoneUpdate = { op: 'UPDATE', zone_id: 'z-04', body: zoneBodyOf(zone, form, null) } as const;
+const zoneKeep = { op: 'KEEP', zone_id: 'z-04' } as const;
 
-  it('작업면 본문은 상판 높이로 OBB 를 바닥부터 만들고 받은 표준편차를 다시 보낸다', async () => {
-    const { ops, bodies } = fakeOps();
-    await commitSave(ops, { ...base, surface: taller(), surfaceChanged: true });
-    expect(bodies.saveSurface).toMatchObject({
-      surface: linked,
-      body: {
-        kind: 'WORK_SURFACE',
-        name: '단상',
-        top_height_m: 0.9,
-        top_height_sigma_m: 0.02,
-        obb: { center: [7, 2.5, 0.45], size: [1, 1, 0.9], yaw_rad: 0 },
+interface Case {
+  name: string;
+  request: ZoneCommitRequest | null;
+  expected: ZoneCommitRequest | null;
+}
+
+/** 요청 본문이 기대와 같고, 키 하나도 더 붙지 않았고, publish 는 붙이지 않았다. */
+function expectRequest({ request, expected }: Case) {
+  expect(request).toStrictEqual(expected);
+  if (request) expect('publish' in request).toBe(false);
+}
+
+describe('saveRequestOf(기존 구역 저장)', () => {
+  const raised = taller();
+  const replacing = { ...surfaceDraftOf(linked), id: 'ws-other', name: '다른 단상' };
+  const cases: Case[] = [
+    {
+      name: '구역만 고침: UPDATE, 작업면 키 없음',
+      request: saveRequestOf(base),
+      expected: { zone: zoneUpdate },
+    },
+    {
+      name: '구역만 고침(작업면 초안은 있으나 안 바뀜): UPDATE, 작업면 키 없음',
+      request: saveRequestOf({ ...base, surface: surfaceDraftOf(linked), surfaceChanged: false }),
+      expected: { zone: zoneUpdate },
+    },
+    {
+      name: '구역 상자를 고침: UPDATE 본문이 고친 상자의 바닥·높이다',
+      request: saveRequestOf({ ...base, box: MOVED_BOX }),
+      expected: { zone: { ...zoneUpdate, body: zoneBodyOf(zone, form, MOVED_BOX) } },
+    },
+    {
+      name: '작업면만 고침: 구역 KEEP + 작업면 UPDATE(같은 object_id)',
+      request: saveRequestOf({
+        ...base,
+        zoneChanged: false,
+        surface: raised,
+        surfaceChanged: true,
+      }),
+      expected: {
+        zone: zoneKeep,
+        surface: {
+          op: 'UPDATE',
+          object_id: 'ws-1',
+          body: surfaceBodyOf(linked, '단상', raised.geometry),
+        },
       },
-    });
-  });
+    },
+    {
+      name: '작업면 추가(이은 작업면 없음): 구역 KEEP + 작업면 CREATE',
+      request: saveRequestOf({
+        ...base,
+        zoneChanged: false,
+        linked: null,
+        surface: added(),
+        surfaceChanged: true,
+      }),
+      expected: {
+        zone: zoneKeep,
+        surface: { op: 'CREATE', body: surfaceBodyOf(null, '', added().geometry) },
+      },
+    },
+    {
+      name: '지우고 다시 추가(초안 id 가 null): 구역 KEEP + 작업면 REPLACE(옛 object_id)',
+      request: saveRequestOf({
+        ...base,
+        zoneChanged: false,
+        surface: added(),
+        surfaceChanged: true,
+      }),
+      expected: {
+        zone: zoneKeep,
+        surface: {
+          op: 'REPLACE',
+          object_id: 'ws-1',
+          body: surfaceBodyOf(null, '', added().geometry),
+        },
+      },
+    },
+    {
+      name: '초안 id 가 이은 작업면과 다르면: 구역 KEEP + 작업면 REPLACE(옛 object_id)',
+      request: saveRequestOf({
+        ...base,
+        zoneChanged: false,
+        surface: replacing,
+        surfaceChanged: true,
+      }),
+      expected: {
+        zone: zoneKeep,
+        surface: {
+          op: 'REPLACE',
+          object_id: 'ws-1',
+          body: surfaceBodyOf(null, '다른 단상', replacing.geometry),
+        },
+      },
+    },
+    {
+      name: '작업면 삭제: 구역 KEEP + 작업면 ARCHIVE',
+      request: saveRequestOf({ ...base, zoneChanged: false, surface: null, surfaceChanged: true }),
+      expected: { zone: zoneKeep, surface: { op: 'ARCHIVE', object_id: 'ws-1' } },
+    },
+    {
+      name: '구역과 작업면 둘 다 고침: 구역 UPDATE + 작업면 op 하나',
+      request: saveRequestOf({ ...base, surface: raised, surfaceChanged: true }),
+      expected: {
+        zone: zoneUpdate,
+        surface: {
+          op: 'UPDATE',
+          object_id: 'ws-1',
+          body: surfaceBodyOf(linked, '단상', raised.geometry),
+        },
+      },
+    },
+    {
+      name: '구역 UPDATE + 작업면 삭제',
+      request: saveRequestOf({ ...base, surface: null, surfaceChanged: true }),
+      expected: { zone: zoneUpdate, surface: { op: 'ARCHIVE', object_id: 'ws-1' } },
+    },
+    {
+      name: '바뀐 것 없음(구역·작업면 모두): null',
+      request: saveRequestOf({
+        ...base,
+        zoneChanged: false,
+        surface: surfaceDraftOf(linked),
+        surfaceChanged: false,
+      }),
+      expected: null,
+    },
+    {
+      name: '바뀐 것 없음(작업면 초안이 없고 구역도 그대로): null',
+      request: saveRequestOf({ ...base, zoneChanged: false, surface: undefined }),
+      expected: null,
+    },
+    {
+      name: '작업면 초안이 undefined 이면 surfaceChanged 가 참이어도 작업면 op 가 없다: null',
+      request: saveRequestOf({
+        ...base,
+        zoneChanged: false,
+        surface: undefined,
+        surfaceChanged: true,
+      }),
+      expected: null,
+    },
+    {
+      name: '초안도 이은 작업면도 null 이면 surfaceChanged 가 참이어도 작업면 op 가 없다: null',
+      request: saveRequestOf({
+        ...base,
+        zoneChanged: false,
+        linked: null,
+        surface: null,
+        surfaceChanged: true,
+      }),
+      expected: null,
+    },
+    {
+      name: '초안도 이은 작업면도 null 인데 구역은 고쳤다: UPDATE, 작업면 키 없음',
+      request: saveRequestOf({ ...base, linked: null, surface: null, surfaceChanged: true }),
+      expected: { zone: zoneUpdate },
+    },
+  ];
 
-  it('작업면만 고쳤으면 구역은 새 버전을 만들지 않는다', async () => {
-    const { ops, calls } = fakeOps();
-    await commitSave(ops, {
+  it.each(cases)('$name', expectRequest);
+
+  it('작업면 UPDATE 본문은 상판 높이로 OBB 를 바닥부터 만들고 받은 표준편차를 다시 보낸다', () => {
+    const request = saveRequestOf({
       ...base,
       zoneChanged: false,
       surface: taller(),
       surfaceChanged: true,
     });
-    expect(calls).toEqual(['saveSurface', 'publish']);
+    expect(request?.surface).toMatchObject({
+      op: 'UPDATE',
+      body: {
+        kind: 'WORK_SURFACE',
+        name: '단상',
+        top_height_m: 0.9,
+        top_height_sigma_m: linked.sigma,
+        obb: { center: [7, 2.5, 0.45], size: [1, 1, 0.9], yaw_rad: 0 },
+      },
+    });
   });
 
-  it('구역만 고쳤으면 작업면은 보내지 않는다', async () => {
-    const { ops, calls } = fakeOps();
-    await commitSave(ops, base);
-    expect(calls).toEqual(['saveZone', 'publish']);
-  });
-
-  it('이은 작업면을 지웠으면 작업면을 보관(DELETE)한다', async () => {
-    const { ops, calls, bodies } = fakeOps();
-    await commitSave(ops, { ...base, zoneChanged: false, surface: null, surfaceChanged: true });
-    expect(calls).toEqual(['archiveSurface', 'publish']);
-    expect(bodies.archiveSurface).toBe('ws-1');
-  });
-
-  it('새 작업면은 만들고(POST), 지우고 다시 추가했으면 옛 작업면을 먼저 보관한 뒤 만든다', async () => {
-    const created = fakeOps();
-    await commitSave(created.ops, {
+  it('REPLACE·CREATE 본문은 새 작업면이라 표준편차를 보내지 않는다(null)', () => {
+    const replace = saveRequestOf({
       ...base,
       zoneChanged: false,
-      linked: null,
-      surface: newSurfaceDraft({ min: [5.8, 1.2, 0], max: [8.6, 3.8, 2.4] }),
+      surface: added(),
       surfaceChanged: true,
     });
-    expect(created.calls).toEqual(['createSurface', 'publish']);
-
-    const replaced = fakeOps();
-    await commitSave(replaced.ops, {
-      ...base,
-      zoneChanged: false,
-      surface: newSurfaceDraft({ min: [5.8, 1.2, 0], max: [8.6, 3.8, 2.4] }),
-      surfaceChanged: true,
-    });
-    expect(replaced.calls).toEqual(['archiveSurface', 'createSurface', 'publish']);
-  });
-
-  it('저장할 것이 없으면 아무것도 보내지 않고 발행도 하지 않는다', async () => {
-    const { ops, calls } = fakeOps();
-    const outcome = await commitSave(ops, { ...base, zoneChanged: false });
-    expect(calls).toEqual([]);
-    expect(outcome.saved).toEqual({ zone: false, surface: false });
-    expect(outcome.failed).toBeNull();
-  });
-
-  it('구역 저장이 409(CONCURRENT_EDIT)로 실패하면 거기서 멈춘다: 작업면·발행은 보내지 않는다', async () => {
-    const conflict = new ApiError(409, { code: 'CONCURRENT_EDIT' });
-    const { ops, calls } = fakeOps({ saveZone: conflict });
-    const outcome = await commitSave(ops, { ...base, surface: taller(), surfaceChanged: true });
-    expect(calls).toEqual(['saveZone']);
-    expect(outcome.failed).toEqual({ step: 'zone', error: conflict });
-    expect(outcome.saved).toEqual({ zone: false, surface: false });
-  });
-
-  it('작업면 저장이 실패하면 구역은 저장된 채로 멈추고 발행하지 않는다', async () => {
-    const conflict = new ApiError(409, { code: 'CONCURRENT_EDIT' });
-    const { ops, calls } = fakeOps({ saveSurface: conflict });
-    const outcome = await commitSave(ops, { ...base, surface: taller(), surfaceChanged: true });
-    expect(calls).toEqual(['saveZone', 'saveSurface']);
-    expect(outcome.failed).toEqual({ step: 'surface', error: conflict });
-    expect(outcome.saved).toEqual({ zone: true, surface: false });
-  });
-
-  it('발행이 실패해도 저장은 남고 실패 단계가 publish 다', async () => {
-    const down = new ApiError(503, { code: 'PUBLIC_URL_NOT_SET' });
-    const { ops, calls } = fakeOps({ publish: down });
-    const outcome = await commitSave(ops, base);
-    expect(calls).toEqual(['saveZone', 'publish']);
-    expect(outcome.failed).toEqual({ step: 'publish', error: down });
-    expect(outcome.saved.zone).toBe(true);
+    expect(replace?.surface).toMatchObject({ op: 'REPLACE', body: { top_height_sigma_m: null } });
   });
 });
 
-describe('commitCreate(새 구역)', () => {
-  const body = newZoneBodyOf(
-    { name: '새 구역', judgeType: 'VOLUME_3D', zoneType: 'OPENING', severity: 'HIGH' },
-    { min: [4, 4, 0], max: [6, 6, 2] },
-  );
+describe('createRequestOf(새 구역)', () => {
+  const newForm = {
+    name: ' 새 구역 ',
+    judgeType: 'VOLUME_3D',
+    zoneType: 'OPENING',
+    severity: 'HIGH',
+  } as const;
+  const newBox: ViewerEditBox = { min: [4, 4, 0], max: [6, 6, 2] };
+  const newBody = newZoneBodyOf(newForm, newBox);
+  const named = { ...newSurfaceDraft(newBox), name: '단상' };
+  const cases: Case[] = [
+    {
+      name: '작업면 초안이 undefined: 구역 CREATE 만, 작업면 키 없음',
+      request: createRequestOf({ form: newForm, box: newBox, surface: undefined }),
+      expected: { zone: { op: 'CREATE', body: newBody } },
+    },
+    {
+      name: '작업면 초안이 null: 구역 CREATE 만, 작업면 키 없음',
+      request: createRequestOf({ form: newForm, box: newBox, surface: null }),
+      expected: { zone: { op: 'CREATE', body: newBody } },
+    },
+    {
+      name: '작업면 초안이 있으면 구역 CREATE + 작업면 CREATE(이름 없음은 null)',
+      request: createRequestOf({ form: newForm, box: newBox, surface: newSurfaceDraft(newBox) }),
+      expected: {
+        zone: { op: 'CREATE', body: newBody },
+        surface: {
+          op: 'CREATE',
+          body: surfaceBodyOf(null, '', newSurfaceDraft(newBox).geometry),
+        },
+      },
+    },
+    {
+      name: '이름이 있는 작업면 초안은 그 이름을 보낸다',
+      request: createRequestOf({ form: newForm, box: newBox, surface: named }),
+      expected: {
+        zone: { op: 'CREATE', body: newBody },
+        surface: { op: 'CREATE', body: surfaceBodyOf(null, '단상', named.geometry) },
+      },
+    },
+  ];
 
-  it('구역 만들기 → 작업면 만들기 → 발행', async () => {
-    const { ops, calls } = fakeOps();
-    const outcome = await commitCreate(ops, {
-      body,
-      surface: newSurfaceDraft({ min: [4, 4, 0], max: [6, 6, 2] }),
+  it.each(cases)('$name', expectRequest);
+
+  it('본문은 이름 앞뒤 공백을 뺀 새 구역(v1)과 새 작업면이다', () => {
+    const request = createRequestOf({ form: newForm, box: newBox, surface: named });
+    expect(request.zone).toMatchObject({
+      op: 'CREATE',
+      body: { name: '새 구역', polygon_xy: expect.any(Array), z_min_m: 0, z_max_m: 2 },
     });
-    expect(calls).toEqual(['createZone', 'createSurface', 'publish']);
-    expect(outcome.zone?.zone_id).toBe('z-new');
-    expect(outcome.surface?.object_id).toBe('ws-new');
-  });
-
-  it('작업면이 없으면 구역과 발행만 보낸다', async () => {
-    const { ops, calls } = fakeOps();
-    await commitCreate(ops, { body, surface: undefined });
-    expect(calls).toEqual(['createZone', 'publish']);
-  });
-
-  it('구역을 만든 뒤 작업면이 실패하면 구역은 남고 발행하지 않는다', async () => {
-    const bad = new ApiError(400, { code: 'INVALID_STATIC_OBJECT' });
-    const { ops, calls } = fakeOps({ createSurface: bad });
-    const outcome = await commitCreate(ops, {
-      body,
-      surface: newSurfaceDraft({ min: [4, 4, 0], max: [6, 6, 2] }),
+    expect(request.surface).toMatchObject({
+      op: 'CREATE',
+      body: { name: '단상', top_height_sigma_m: null },
     });
-    expect(calls).toEqual(['createZone', 'createSurface']);
-    expect(outcome.zone?.zone_id).toBe('z-new');
-    expect(outcome.failed).toEqual({ step: 'surface', error: bad });
-  });
-
-  it('구역 만들기가 실패하면 아무것도 더 보내지 않는다', async () => {
-    const bad = new ApiError(400, { code: 'INVALID_POLYGON' });
-    const { ops, calls } = fakeOps({ createZone: bad });
-    const outcome = await commitCreate(ops, {
-      body,
-      surface: newSurfaceDraft({ min: [4, 4, 0], max: [6, 6, 2] }),
-    });
-    expect(calls).toEqual(['createZone']);
-    expect(outcome.failed?.step).toBe('zone');
-    expect(outcome.zone).toBeNull();
   });
 });
 
-describe('commitArchive(구역 삭제 = 보관)', () => {
-  it('구역 보관 → 이은 작업면 보관 → 발행', async () => {
-    const { ops, calls, bodies } = fakeOps();
-    const outcome = await commitArchive(ops, { zoneId: 'z-04', linked });
-    expect(calls).toEqual(['archiveZone', 'archiveSurface', 'publish']);
-    expect(bodies.archiveZone).toBe('z-04');
-    expect(bodies.archiveSurface).toBe('ws-1');
-    expect(outcome.saved).toEqual({ zone: true, surface: true });
-  });
+describe('archiveRequestOf(구역 삭제 = 보관)', () => {
+  const cases: Case[] = [
+    {
+      name: '구역 ARCHIVE 하나만 보내고 작업면 키는 붙이지 않는다(서버가 이은 작업면도 보관한다)',
+      request: archiveRequestOf('z-04'),
+      expected: { zone: { op: 'ARCHIVE', zone_id: 'z-04' } },
+    },
+  ];
 
-  it('이은 작업면이 없으면 구역과 발행만 보낸다', async () => {
-    const { ops, calls } = fakeOps();
-    await commitArchive(ops, { zoneId: 'z-04', linked: null });
-    expect(calls).toEqual(['archiveZone', 'publish']);
-  });
-
-  it('구역 보관이 실패하면 작업면은 건드리지 않는다', async () => {
-    const down = new ApiError(500);
-    const { ops, calls } = fakeOps({ archiveZone: down });
-    const outcome = await commitArchive(ops, { zoneId: 'z-04', linked });
-    expect(calls).toEqual(['archiveZone']);
-    expect(outcome.failed).toEqual({ step: 'zone', error: down });
-  });
-});
-
-describe('commitPublish(발행만 다시 보내기)', () => {
-  it('저장 없이 발행 하나만 보낸다', async () => {
-    const { ops, calls } = fakeOps();
-    const outcome = await commitPublish(ops);
-    expect(calls).toEqual(['publish']);
-    expect(outcome.failed).toBeNull();
-    expect(outcome.saved).toEqual({ zone: false, surface: false });
-  });
-
-  it('발행이 실패하면 실패 단계가 publish 다', async () => {
-    const down = new ApiError(500);
-    const { ops } = fakeOps({ publish: down });
-    expect((await commitPublish(ops)).failed).toEqual({ step: 'publish', error: down });
-  });
+  it.each(cases)('$name', expectRequest);
 });
