@@ -40,7 +40,7 @@ export interface PlanBackdrop {
 
 /** 대상 키(이벤트 패널과 같은 규칙): 구역은 zone:{zoneId}, 사람은 person:{worldId}. */
 export const ZONE_KEY_PREFIX = 'zone:';
-export const PERSON_KEY_PREFIX = 'person:';
+const PERSON_KEY_PREFIX = 'person:';
 export const zoneKey = (zoneId: string) => `${ZONE_KEY_PREFIX}${zoneId}`;
 export const personKey = (worldId: string) => `${PERSON_KEY_PREFIX}${worldId}`;
 

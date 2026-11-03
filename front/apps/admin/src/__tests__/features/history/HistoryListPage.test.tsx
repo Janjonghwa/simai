@@ -1,12 +1,13 @@
+import { STARTED_RECHECK_MS } from '@/features/history/constants';
 import { HistoryListPage } from '@/features/history/HistoryListPage';
 import { historyWorks } from '@/mocks/history';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const navigate = vi.fn();
 const TODAY = '2026-10-29';
-// 오늘 11시. 오늘은 09·10시 작업만 시작했다. answer 로 목록 응답을 바꾼다.
+// 오늘 11시. 서버·mock 은 오늘 13시 작업도 주지만 시작한 것은 09·10시 작업뿐이다. answer 로 목록 응답을 바꾼다.
 // zero: 모든 작업이 위험·경고 0 건, partial: 위험만 2 건(경고 수는 없다).
 const state = vi.hoisted(() => ({
   now: new Date(2026, 9, 29, 11, 0).getTime(),
@@ -49,8 +50,12 @@ function renderPage() {
   );
 }
 
+beforeEach(() => {
+  vi.useFakeTimers({ now: state.now, shouldAdvanceTime: true });
+});
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   navigate.mockClear();
   state.answer = 'ok';
 });
@@ -77,11 +82,27 @@ describe('히스토리 목록', () => {
     });
   });
 
+  it('시작하지 않은 작업은 목록에 없고, 시작 시각이 지나면 1분 안에 나타난다', async () => {
+    renderPage();
+    const today = await screen.findByRole('region', { name: '10월 29일 (목)' });
+    expect(within(today).getAllByRole('button')).toHaveLength(2);
+    expect(within(today).queryByText('13:00–17:00')).toBeNull();
+
+    // 12시 58분: 아직 시작 전이다.
+    act(() => vi.advanceTimersByTime(118 * STARTED_RECHECK_MS));
+    expect(within(today).queryByText('13:00–17:00')).toBeNull();
+
+    // 13시를 지나 한 번 더 거르면 나타난다.
+    act(() => vi.advanceTimersByTime(2 * STARTED_RECHECK_MS));
+    expect(within(today).getByText('13:00–17:00')).toBeTruthy();
+    expect(within(today).getAllByRole('button')).toHaveLength(3);
+  });
+
   it('작업마다 위험·경고 수를 읽기 쉬운 말로 보인다(CRITICAL·HIGH 가 아니다)', async () => {
     renderPage();
     const today = await screen.findByRole('region', { name: '10월 29일 (목)' });
     const expected = historyWorks(state.now)
-      .filter((work) => work.date === TODAY)
+      .filter((work) => work.date === TODAY && work.from_ms <= state.now)
       .sort((a, b) => a.from_ms - b.from_ms);
     const rows = within(today).getAllByRole('button');
     expect(rows).toHaveLength(expected.length);

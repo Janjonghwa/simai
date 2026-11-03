@@ -1,7 +1,5 @@
-import { SEVERITY_RANK } from '@/features/events/events';
 import type { Severity } from '@/features/events/types';
 import type { Span } from '@/features/history/types';
-import type { PlanMark, PlanMarks } from '@/features/plan/plan';
 import type { ReplayLog } from '@/features/viewer3d';
 import type { WorldTrack } from '@simai/contracts';
 
@@ -30,7 +28,7 @@ export interface Frame {
   t: number;
   /** 그때 잡힌 사람. */
   ids: string[];
-  /** 그중 위치가 있는 사람(CCTV 목 화면·2D 평면에 그린다). */
+  /** 그중 위치가 있는 사람(CCTV 목 화면에 그린다). */
   tracks: WorldTrack[];
 }
 
@@ -45,8 +43,6 @@ export interface ReplayIndex {
 }
 
 const SEVERITIES: readonly Severity[] = ['CRITICAL', 'HIGH', 'CAUTION', 'INFO'];
-/** 2D 평면에 표시를 올리는 가장 낮은 등급. */
-const MARK_MIN_SEVERITY: Severity = 'CAUTION';
 /** 규칙 이름을 모르는 이벤트의 표시. */
 const UNKNOWN_RULE = '—';
 
@@ -190,26 +186,3 @@ export const allGap = (gaps: readonly Span[], range: Span) =>
 /** t 에 활성인 이벤트인지(발생했고 아직 해소되지 않았음). */
 export const isActiveAt = (event: EventRow, t: number) =>
   event.raisedAt <= t && (event.resolvedAt === null || event.resolvedAt > t);
-
-/** t 에 2D 평면에 표시할 이벤트: 활성인 CAUTION 이상. */
-export const markableAt = (events: readonly EventRow[], t: number) =>
-  events.filter(
-    (event) =>
-      isActiveAt(event, t) && SEVERITY_RANK[event.severity] >= SEVERITY_RANK[MARK_MIN_SEVERITY],
-  );
-
-/** 표시할 이벤트로 사람·구역마다 가장 높은 등급을 모은다. 확인(ACK)은 없다. */
-export function marksOf(events: readonly EventRow[]): PlanMarks {
-  const people = new Map<string, PlanMark>();
-  const zones = new Map<string, PlanMark>();
-  const put = (marks: Map<string, PlanMark>, id: string, severity: Severity) => {
-    const prev = marks.get(id);
-    if (!prev || SEVERITY_RANK[severity] > SEVERITY_RANK[prev.severity])
-      marks.set(id, { severity, alarming: false });
-  };
-  for (const event of events) {
-    for (const id of event.worldIds) put(people, id, event.severity);
-    if (event.zoneId) put(zones, event.zoneId, event.severity);
-  }
-  return { people, zones };
-}

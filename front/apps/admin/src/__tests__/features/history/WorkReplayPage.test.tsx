@@ -30,9 +30,6 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
   useNavigate: () => navigate,
 }));
-vi.mock('@/features/zones/useZones', () => ({
-  useZones: () => ({ zones: [], raw: undefined, failed: false }),
-}));
 // 작업 목록·구간 기록은 mock 합성 함수가 답한다(서버 실제 응답 모양). 요청은 화면이 창으로 나눠 보내고 합친다.
 vi.mock('@/lib/api', async () => {
   const { historyReplay, historyWorks } = await import('@/mocks/history');
@@ -123,7 +120,6 @@ const findNotice = async (text: string) =>
     undefined,
     LOAD,
   );
-const plan = () => screen.getByRole('region', { name: '2D 평면 다시 보기' });
 const workerList = () => screen.getByRole('list', { name: '작업자 목록' });
 const eventLog = () => screen.getByRole('list', { name: '이벤트 로그' });
 /** 슬라이더로 옮기고 실제로 옮겨진 시각을 돌려준다. */
@@ -136,8 +132,6 @@ const heads = () =>
   within(cctv())
     .getAllByRole('img', { name: /카메라 영상/ })
     .reduce((n, feed) => n + feed.querySelectorAll('circle').length, 0);
-/** 2D 평면에 그린 사람(<g role=button>, 이름은 World ID). */
-const planPeople = () => within(plan()).queryAllByRole('button', { name: /^w-\d{4}/ });
 /** 타임라인의 "데이터 없음 HH:MM–HH:MM" 칸(기록이 끊긴 2분)의 한가운데 시각. 옮겨 갈 자리를 mock 안의 지점에 묶지 않고 화면에서 읽는다. */
 const outageMiddle = (day = 28) => {
   const gap = within(timeline()).getByRole('img', { name: /^데이터 없음 \d\d:\d\d–\d\d:\d\d$/ });
@@ -151,6 +145,7 @@ const pressed = (list: HTMLElement, id: RegExp) =>
 beforeAll(() => import('@/features/viewer3d'), 30_000);
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   engine.replays.forEach((replay) => replay.pause());
   navigate.mockClear();
   engine.replays = [];
@@ -162,7 +157,7 @@ afterEach(() => {
 
 describe('작업 다시 보기', () => {
   it(
-    '작업 구간을 CCTV·작업자·이벤트 로그로 보이고(3D 창은 숨김), 재생·배속·끌기로 시각을 옮긴다',
+    '작업 구간을 CCTV·작업자·이벤트 로그로 보이고(3D·2D 창은 없다), 재생·배속·끌기로 시각을 옮긴다',
     async () => {
       expect(STEP).toBe(1_900);
       renderPage(T2_ID);
@@ -176,6 +171,7 @@ describe('작업 다시 보기', () => {
       ]);
       expect(screen.getByRole('heading', { name: task.name })).toBeTruthy();
       expect(screen.queryByRole('region', { name: '3D 다시 보기' })).toBeNull();
+      expect(screen.queryByRole('region', { name: '2D 평면 다시 보기' })).toBeNull();
 
       const workers = within(workerList()).getAllByRole('button');
       expect(workers.map((w) => w.textContent?.slice(0, 6))).toEqual([
@@ -219,41 +215,7 @@ describe('작업 다시 보기', () => {
   );
 
   it(
-    '오른쪽 아래 작은 창은 2D 평면이고(3D 창은 없다), 크게·작게 보기로 넓히고 줄인다',
-    async () => {
-      renderPage(T2_ID);
-      await ready();
-      expect(screen.queryByRole('region', { name: '3D 다시 보기' })).toBeNull();
-      expect(cctv().contains(plan())).toBe(true);
-      expect(within(plan()).getByRole('group', { name: '2D 평면' })).toBeTruthy();
-
-      const small = within(plan()).getByRole('button', { name: '크게 보기' });
-      expect(small.getAttribute('aria-expanded')).toBe('false');
-      expect(plan().className).toContain('w-[320px]');
-
-      fireEvent.click(small);
-      const big = within(plan()).getByRole('button', { name: '작게 보기' });
-      expect(big.getAttribute('aria-expanded')).toBe('true');
-      expect(within(plan()).queryByRole('button', { name: '크게 보기' })).toBeNull();
-      expect(plan().className).toContain('inset-0');
-
-      fireEvent.click(big);
-      expect(within(plan()).getByRole('button', { name: '크게 보기' })).toBeTruthy();
-      expect(plan().className).toContain('w-[320px]');
-
-      // 평면에는 그 시각에 보이는 사람이 그려진다.
-      seek(at(28, '10:20'));
-      expect(planPeople().map((p) => p.getAttribute('aria-label'))).toEqual([
-        'w-0012',
-        'w-0015',
-        'w-0021',
-      ]);
-    },
-    SLOW_MS,
-  );
-
-  it(
-    '기록이 끊긴 구간으로 옮기면 타임라인·CCTV·평면이 데이터 없음이고, 지나면 돌아온다',
+    '기록이 끊긴 구간으로 옮기면 타임라인·CCTV 가 데이터 없음이고, 지나면 돌아온다',
     async () => {
       renderPage(T1.id);
       await ready();
@@ -261,25 +223,17 @@ describe('작업 다시 보기', () => {
       expect(within(timeline()).getByRole('img', { name: '데이터 없음 10:12–10:14' })).toBeTruthy();
 
       seek(at(28, '10:08'), T1);
-      expect(planPeople()).toHaveLength(3);
-      const group = () => within(plan()).getByRole('group', { name: '2D 평면' });
-      expect(group().classList.contains('opacity-50')).toBe(false);
-
       seek(at(28, '10:13'), T1);
       expect(within(timeline()).getByText('데이터 없음')).toBeTruthy();
       expect(within(cctv()).getAllByText('데이터 없음')).toHaveLength(4);
       expect(screen.queryAllByText('보임')).toHaveLength(0);
       expect(heads()).toBe(0);
-      expect(planPeople()).toHaveLength(0);
-      expect(group().classList.contains('opacity-50')).toBe(true);
 
       // 끊긴 구간이 끝나면 다시 사람이 보인다.
       seek(at(28, '10:15'), T1);
       expect(within(timeline()).queryByText('데이터 없음')).toBeNull();
       expect(within(cctv()).queryAllByText('데이터 없음')).toHaveLength(0);
       expect(screen.getAllByText('보임')).toHaveLength(3);
-      expect(planPeople()).toHaveLength(3);
-      expect(group().classList.contains('opacity-50')).toBe(false);
     },
     SLOW_MS,
   );
@@ -297,10 +251,6 @@ describe('작업 다시 보기', () => {
       expect(within(cctv()).queryAllByText('데이터 없음')).toHaveLength(0);
       expect(within(cctv()).getAllByText('작업자 없음')).toHaveLength(4);
       expect(heads()).toBe(0);
-      expect(planPeople()).toHaveLength(0);
-      expect(within(plan()).getByRole('group', { name: '2D 평면' }).classList).not.toContain(
-        'opacity-50',
-      );
       // 작업자 목록에는 구간에 잡혔던 세 사람이 있지만 지금은 아무도 보임이 아니다.
       expect(within(workerList()).getAllByRole('button')).toHaveLength(3);
       expect(screen.queryAllByText('보임')).toHaveLength(0);
@@ -310,13 +260,12 @@ describe('작업 다시 보기', () => {
       expect(within(cctv()).queryAllByText('작업자 없음')).toHaveLength(0);
       expect(screen.getAllByText('보임')).toHaveLength(3);
       expect(heads()).toBeGreaterThan(0);
-      expect(planPeople()).toHaveLength(3);
     },
     SLOW_MS,
   );
 
   it(
-    '3D 를 띄우지 않아도 재생하면 시각이 흐른다',
+    '재생하면 시각이 흐른다',
     async () => {
       renderPage(T2_ID);
       await ready();
@@ -357,30 +306,6 @@ describe('작업 다시 보기', () => {
       );
       expect(pressed(workerList(), /w-0021/)).toBe('true');
       expect(pressed(workerList(), /w-0015/)).toBe('false');
-    },
-    SLOW_MS,
-  );
-
-  it(
-    '작업자를 고르면 목록과 평면에서 함께 강조하고, 평면의 사람을 눌러도 고른다',
-    async () => {
-      renderPage(T2_ID);
-      await ready();
-      seek(at(28, '10:20'));
-      const person = (id: string) =>
-        within(plan()).getByRole('button', { name: new RegExp(`^${id}`) });
-
-      fireEvent.click(person('w-0021'));
-      expect(pressed(workerList(), /w-0021/)).toBe('true');
-      expect(pressed(workerList(), /w-0015/)).toBe('false');
-      expect(person('w-0021').getAttribute('aria-pressed')).toBe('true');
-      expect(person('w-0015').getAttribute('aria-pressed')).toBe('false');
-
-      fireEvent.click(within(workerList()).getByRole('button', { name: /w-0015/ }));
-      expect(pressed(workerList(), /w-0015/)).toBe('true');
-      expect(pressed(workerList(), /w-0021/)).toBe('false');
-      expect(person('w-0015').getAttribute('aria-pressed')).toBe('true');
-      expect(person('w-0021').getAttribute('aria-pressed')).toBe('false');
     },
     SLOW_MS,
   );
@@ -462,7 +387,6 @@ describe('작업 다시 보기', () => {
       expect(within(timeline()).queryByText('데이터 없음')).toBeNull();
       expect(screen.getAllByText('보임')).toHaveLength(3);
       expect(heads()).toBeGreaterThan(0);
-      expect(planPeople()).toHaveLength(3);
     },
     SLOW_MS,
   );
@@ -494,7 +418,6 @@ describe('작업 다시 보기: 기록이 없을 때', () => {
       expect(screen.getAllByText('데이터 없음')).toHaveLength(1);
       expect(within(cctv()).getByText('데이터 없음')).toBeTruthy();
       expect(screen.queryAllByRole('img', { name: /카메라 영상/ })).toHaveLength(0);
-      expect(screen.queryByRole('region', { name: '2D 평면 다시 보기' })).toBeNull();
       // 작업 전체가 기록 없는 구간 한 칸으로 남는다.
       expect(
         within(timeline()).getByRole('img', {
@@ -535,6 +458,15 @@ describe('작업 다시 보기: 기록이 없을 때', () => {
     SLOW_MS,
   );
 
+  it('아직 시작하지 않은 작업 주소로 들어오면 찾을 수 없다고 한다', async () => {
+    // 지금(오늘 11시)은 오늘 늦은 작업이 시작하기 전이다. 서버·mock 은 그 작업도 준다.
+    vi.useFakeTimers({ now: NOW, toFake: ['Date'] });
+    const later = TBM_TASKS.find((t) => t.from > '11:00')!;
+    renderPage(`2026-10-29-${later.id}`);
+    expect(await screen.findByText('작업을 찾을 수 없습니다.')).toBeTruthy();
+    expect(screen.queryAllByRole('img', { name: /카메라 영상/ })).toHaveLength(0);
+  });
+
   it('없는 작업이면 찾을 수 없다고 하고, 작업 목록으로 돌아간다', async () => {
     renderPage('nope');
     expect(await screen.findByText('작업을 찾을 수 없습니다.')).toBeTruthy();
@@ -570,7 +502,6 @@ describe('작업 다시 보기: 구간 기록을 못 받았을 때', () => {
       renderPage(T2_ID);
       expect(await findNotice(line)).toBeTruthy();
       expect(screen.queryAllByRole('img', { name: /카메라 영상/ })).toHaveLength(0);
-      expect(screen.queryByRole('region', { name: '2D 평면 다시 보기' })).toBeNull();
       expect((screen.getByRole('button', { name: '재생' }) as HTMLButtonElement).disabled).toBe(
         true,
       );

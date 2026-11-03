@@ -21,6 +21,13 @@ export function readWorks(items: readonly unknown[]): WorkUnit[] {
   });
 }
 
+/**
+ * 시작한 작업만 남긴다. 서버에 작업 시작 기록이 아직 없어 계획 시작 시각이 지난 것을 시작한 것으로 본다(임시 기준).
+ * 서버 시작 기록이 생기면 이 판정만 바꾼다. 작업은 같은 객체로 돌려줘 다시 보기가 다시 만들어지지 않는다.
+ */
+export const startedWorks = (works: readonly WorkUnit[], now: number): WorkUnit[] =>
+  works.filter((work) => work.from_ms <= now);
+
 /** 작업 목록을 받기 전의 안내 한 줄. */
 export const worksLoadingLine = (failed: boolean) =>
   failed ? '작업 목록을 불러오지 못했습니다.' : '불러오는 중입니다…';
