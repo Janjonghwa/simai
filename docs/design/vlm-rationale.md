@@ -193,6 +193,38 @@ ORDER BY leased_at DESC LIMIT 30;
 - 이벤트 상태 전이와 프레임 업로드·객체 내려받기·얼굴 관문·GPU 대기·VLM·DB 지연을 합친 G7 실측은 9차 세션 몫이다.
 - STOMP는 기존 비영속 릴레이를 따른다. 브로커 오류 시 DB 근거는 보존되고 REST 재조회로 읽을 수 있으나 실시간 재전송은 보장하지 않는다.
 
+## 종단 확인 (S15P31A101-25)
+
+GPU 없는 가짜 사슬은 `ai/tests/services/worker/test_fast_path_chain.py` 다. Tier 0 프레임 서비스·워커·얼굴 관문·덧그림은 진짜이고, VLM·pose·서명·S3·EC2 가 가짜다. EC2 규칙은 옮겨 적은 것이라 서버 코드는 `VlmRationaleIntegrationTest`(실제 DB)가, 실제 연결은 아래 e25 가 본다. 292(Compose 통합 시험)를 대신하지 않는다.
+
+**재는 칸:** `vlm_assessment.event_observed_at`(Tier 0 관측 시각) → `created_at`(EC2 저장 시계). 차이가 `event_to_rationale_ms`, 5000 ms 이하 판정이 `within_deadline` 이다. 시계가 달라 그 차이가 값에 들어간다. 워커 처리 시간 `latency_ms` 보다 짧게 나오면 `clock_suspect` 로 센다.
+
+**GPU 세션 e25** (`deploy/scripts/e25_fast_path.py`, 큐 항목 `e25`, unified 이미지):
+
+LIVE 하네스는 무늬 영상에 EC2 연결이 없고, file 입력은 이벤트 프레임을 조립하지 않아(`service.py` `input_mode == "live"`) 둘 다 `event_frame_ready` 를 내지 못한다. 그래서 e25 는 lobby LIVE 를 지켜보기만 한다.
+
+```bash
+# Pod: 먼저 simai-bootstrap lobby ... (--ec2-base-url EC2 dev, 기본 서비스 그대로), 노트북: simai-relay run --config <10/29 녹화 file 설정> --send
+simai-bootstrap queue --image unified --only e25 --allow-live --session <이름>   # 이벤트 40건 또는 40분, 예상 25분
+# 노트북: 결과 묶음을 받은 뒤
+python deploy/scripts/e25_fast_path.py sql --summary <묶음>/runs/e25/<run>/pod_summary.json > e25.sql
+ssh simai-ec2 'cd /opt/simai && docker compose --env-file .env -f repo/deploy/ec2/compose.yaml exec -T db psql -U postgres -d simai -v ON_ERROR_STOP=1 --csv' < e25.sql > e25_db.csv
+python deploy/scripts/e25_fast_path.py report --summary <…>/pod_summary.json --db-csv e25_db.csv --input relay --out e25_result.json
+```
+
+| 판정 | 조건 |
+|---|---|
+| PASS(종료 0) | 표본 ≥ 30, 전체 이벤트 p95 ≤ 5000 ms, 아래 위반 모두 0 |
+| FAIL(종료 1) | 위반이 있거나, 표본 ≥ 30 에서 p95 초과 |
+| INSUFFICIENT(종료 3) | 위반은 없고 표본 < 30 |
+
+- **표본:** 창 안에서 RAISED 된 LIVE R1~R4 CRITICAL(AUDIT_ONLY 제외) 전부. 작업 없음·실패·마감 초과는 무한대로 넣는다. 성공 건만 세면 10차처럼 시작도 못 한 이벤트가 빠져 좋아 보이기 때문이다. 성공 건 p95 는 `p95_succeeded_ms` 로 따로 적는다. 30 은 최근접 순위 p95 가 최댓값이 아니게 되는(1건까지 허용) 최소에 가까운 값이고, 10차 실측 57건/43분 기준 약 25분이다.
+- **위반(직접 변경·하향·클립 대기):** 현재 등급 ≠ 마지막 Tier 0 전이 등급, 현재 등급 < 근거의 규칙 등급, `proposed_severity` 있음, `clause_ids` 있음, 관측 뒤 프레임, 입력에 clip 키, 이벤트당 작업 2개 이상.
+- **기록만:** `events_without_job`(프레임 알림이 전이보다 먼저 닿은 경우 등), `jobs_with_empty_tracks`, `frames_not_local`, 구간 p95(`event_to_ready_ms`·`gate_ms`·`vlm_ms`·`total_ms`), 접수 문 닫힘 수.
+- **회수:** 결과 묶음의 `runs/e25/<run>/pod_summary.json`·`metrics.json`, 노트북의 `e25_db.csv`·`e25_result.json`. 지연·개수·이벤트 ID 만 있고 근거 문장·그림·토큰은 없다.
+- **3차 2.12 s 와 비교하지 않는다:** 그것은 그림 1장·VLM 단독이다. e25 는 프레임 4장 + 얼굴 처리 + 덧그림 + 로컬 사본·서명 + 대여 + 저장을 포함한다(`g7-eval.md` "종단 확인").
+- **입력 한계:** relay 녹화 재생은 실시간 카메라의 도착 흔들림이 없고 카메라 간 시각 정렬이 어긋날 수 있다(`tier0-track-id-replay.md`). 결과에 `--input relay` 로 남긴다. 실제 카메라로 돌리면 `--input live` 다.
+
 ## S15P31A101-328 — Tier 0 이벤트 프레임
 
 관련 명세: 3.2(Tier 0 우선), 3.9(촬영 시각), 5.4(R1~R4 CRITICAL·병합 이벤트당 1회·사후 대기 없음), 12.3(I1).
