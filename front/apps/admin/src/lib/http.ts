@@ -18,6 +18,8 @@ export interface ApiErrorOptions {
   serverMessage?: string;
   /** 서버가 정한 오류 이름(ProblemDetail 의 code). 예: REFRESH_TOKEN_ROTATED */
   code?: string;
+  /** ProblemDetail 에 함께 실린 request_id 등 부가 식별자. */
+  requestId?: number;
   cause?: unknown;
 }
 
@@ -26,8 +28,12 @@ export class ApiError extends Error {
   readonly kind: ApiErrorKind;
   readonly serverMessage?: string;
   readonly code?: string;
+  readonly requestId?: number;
 
-  constructor(status: number, { kind, serverMessage, code, cause }: ApiErrorOptions = {}) {
+  constructor(
+    status: number,
+    { kind, serverMessage, code, requestId, cause }: ApiErrorOptions = {},
+  ) {
     const resolved = kind ?? (status === NETWORK_ERROR ? 'NETWORK' : 'HTTP');
     // 서버 문구는 message 에 넣지 않는다. 로그·오류 화면으로 서버 내부 정보가 새지 않게 한다.
     super(`요청이 실패했다 (${resolved === 'HTTP' ? `HTTP ${status}` : resolved})`, { cause });
@@ -36,6 +42,7 @@ export class ApiError extends Error {
     this.kind = resolved;
     this.serverMessage = serverMessage;
     this.code = code;
+    this.requestId = requestId;
   }
 }
 
@@ -165,8 +172,8 @@ function hasUnsafeChar(path: string) {
   });
 }
 
-// Spring 기본 오류 본문(message)과 ProblemDetail(detail·code)을 읽는다.
-function readProblem(text: string): Pick<ApiErrorOptions, 'serverMessage' | 'code'> {
+// Spring 기본 오류 본문(message)과 ProblemDetail(detail·code·request_id)을 읽는다.
+function readProblem(text: string): Pick<ApiErrorOptions, 'serverMessage' | 'code' | 'requestId'> {
   let data: unknown;
   try {
     data = JSON.parse(text);
@@ -179,5 +186,13 @@ function readProblem(text: string): Pick<ApiErrorOptions, 'serverMessage' | 'cod
     const value: unknown = Reflect.get(problem, key);
     return typeof value === 'string' && value ? value : undefined;
   };
-  return { serverMessage: field('message') ?? field('detail'), code: field('code') };
+  const numField = (key: string) => {
+    const value: unknown = Reflect.get(problem, key);
+    return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+  };
+  return {
+    serverMessage: field('message') ?? field('detail'),
+    code: field('code'),
+    requestId: numField('request_id'),
+  };
 }

@@ -47,7 +47,8 @@ final class JobMessages {
             p.put("deadline_at", job.deadlineAt().toEpochMilli());
         }
         p.set("input", job.input());
-        return I1Envelope.outbound(mapper, now.toEpochMilli(), "job_request", JOB_REQUEST_VERSION, p);
+        String version = AnalysisJobService.SCENE_REGENERATE_JOB_TYPE.equals(job.jobType()) ? "3.6.0" : JOB_REQUEST_VERSION;
+        return I1Envelope.outbound(mapper, now.toEpochMilli(), "job_request", version, p);
     }
 
     static ObjectNode leaseStatus(ObjectMapper mapper, Instant now, String jobId, UUID leaseId, LeaseStatus status) {
