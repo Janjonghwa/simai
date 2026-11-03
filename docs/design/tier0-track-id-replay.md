@@ -340,3 +340,69 @@ VAL-01 기록을 만들고 계약 검증 통과를 확인한다. **실험 결과
 - '주인 없음 포함'은 ID 가 더 적지만, 첫 등장부터 붙어 선 두 번째 사람을 지우는 시험 장면이 있어 기본으로 켜지 않는다. S15P31A101-463 Re-ID 외형 거부가 들어오면 다시 비교한다.
 - 사람 수 '적음' 비율은 기준선보다 늘지 않았다(0.152 → 0.136) — 억제로 사람을 놓치는 일이 이 녹화에서는 늘지 않았다.
 - 이 녹화는 보정 품질이 낮은 266z 이다. V2 보정(-449)과 11차 녹화 비교는 -464 에서.
+
+## 11. 그래프 연결 재구성: 공간·시간 그래프 아이디어 이식 (S15P31A101-464)
+
+`-458`은 4대 클러스터가 2+2(또는 3+1)로 갈라진 **결과**(나머지 묶음의 새 ID 발급)를 막아 ID 수를 149 → 53으로 줄였으나,
+4대 동시 관측 비율은 여전히 14.0%에 머물렀고 `MARGINAL_RESIDUAL` 경계 보류가 8,776회 발생했다.
+`-464`는 ReST(Spatio-Temporal Graph) 개념을 참고해(외부 코드 복사 없이 자체 구현) 클러스터 분할의 **원인**인
+그리디 완전 연결(complete-linkage)과 전역 고정 잔차 문턱(8 / 12 px)을 개선한다.
+
+### 관련 명세와 코드·시험 위치
+
+- 관련 명세: `docs/spec/05-processing.md` §5.2 (추적 3계층·계산 순서·카메라 간 묶기), `docs/spec/README.md` (v1.3 수정 58)
+- 코드 위치:
+  - `ai/src/simai_ai/tracking/cross_view.py`: `CrossViewConfig`, `CrossViewAssociator.pair_residual_thresholds`, `record_pair_residual`, `_prior_pair_set`, `_pair_bonus_and_marginal`, `_graph_linkage`, `_preferred_partition_pairs`, `_assign_graph`, `_update_pair_residuals`
+  - `ai/src/simai_ai/tracking/world_track.py`: `TemporalEdgeCost`, `AppearanceCostFn`, `temporal_edge_cost`, `resolve_temporal_graph`, `WorldTrackManager.temporal_prior_groups`
+  - `ai/services/tier0/perception.py`: `Perception.step`에서 `manager.temporal_prior_groups(t, associator.config.temporal_prior_ttl_ms)`를 `associator.associate(..., prior_groups=...)`에 전달
+  - `ai/experiments/track_replay/replay_tracking.py`, `ai/experiments/track_replay/plan_464.json`
+- 시험 위치: `ai/tests/tracking/test_graph_association.py` 및 기존 `ai/tests/tracking/test_cross_view.py`, `test_track_split_suppression.py`
+
+### 설계와 채택 수치·근거
+
+1. **공간 그래프 시간 사전 간선(Temporal Prior Edge)과 제약 그래프 군집화(Constrained Graph Clustering)**
+   - **시간 사전 간선**: 최근 `temporal_prior_ttl_ms = 1000`(ms) 창 안에 같은 World Track 에 속했던 로컬 트랙 쌍 `(cam_a, track_a)`–`(cam_b, track_b)`에 `temporal_prior_bonus = 0.35` 비용 감면을 주고, 해당 쌍의 잔차가 경계 구간(`MARGINAL_RESIDUAL`, 기본 8~12 px)에 있더라도 기하가 성립하면 경계 보류를 해제한다.
+   - **하드 기하 제약**: (a) 같은 카메라의 두 검출은 절대 한 클러스터에 묶지 않는다(`same_camera_exclusive = true`), (b) 에피폴라 게이트·삼각측량 최소 관절·인체 높이 범위에서 기각된 쌍은 사전 간선이 있어도 즉시 차단한다, (c) 클러스터 안 통과 쌍들의 2-view 3D 관절 중점 거리가 `max_pair_3d_disagreement_m = 0.45 m`(4대 중 5쌍 이상이 통과하고 최대 1쌍만 `pairwise_gate_max_px = 16.0 px` 이하 잔차 거부일 때는 `cluster_3d_consistency_m = 0.35 m`)를 넘으면 3D 위치 모순으로 보아 병합을 거부한다.
+   - **경계 잔차 교차 쌍 흡수 및 분기 한정(Branch-and-Bound) 일관성 분할**: 그리디 완전 연결에서는 `{A, B}`와 `{C, D}`를 합칠 때 교차 4쌍 중 **단 한 쌍만** 경계 잔차(8~12 px)여도 병합 전체를 보류해 2+2 분할을 만들었다. 새 `_graph_linkage`는 합쳐지는 두 부분집합 사이에 비경계(strong 또는 temporal prior) 간선이 1개 이상 존재하고 모든 쌍이 기하·3D 일관성을 만족하면 경계 잔차 쌍이 섞여 있어도 병합을 허용한다. 연결 성분 안에 삼각 불일치(`A–B`·`B–C`는 강하지만 `A–C`는 기하 불가)나 같은 카메라 중복이 있을 때는 `_preferred_partition_pairs`가 크기 1~4 유효 연결 부분집합 위에서 분기 한정 탐색으로 상관 클러스터링 총이득 $\sum (c_{\text{new}} - c_{uv})$을 최대화하는 최적 분할을 구한다.
+
+2. **카메라 쌍별 적응 잔차 문턱(`pairwise_threshold_enabled = true`)**
+   - 전역 `8.0 / 12.0 px` 고정 문턱 대신 카메라 쌍 `(cam_a, cam_b)`마다 `(marginal_px, gate_px)`를 계산한다.
+   - 보정 문서 검증 지표(`pair_reprojection_error_px`)가 주어지면 `(err * 2.2, err * 3.2)`를 기본 문턱과 비교해 넓히고, 없으면 실행 중 검증 통과 클러스터(`len >= 2`, `not identity_uncertain`) 내부 쌍과 카메라 쌍별 유일 후보에서 최근 `pairwise_window_size = 200`개(최소 `pairwise_min_samples = 20`개) 잔차 분포의 `0.85` / `0.97` 분위수로 문턱을 적응시키되 상한 `pairwise_marginal_max_px = 12.0 px`, `pairwise_gate_max_px = 16.0 px`을 넘지 않는다.
+
+3. **시간 그래프 비용 인터페이스 분리(`WorldTrackManager`)**
+   - 끊긴/활성 World Track 과 현재 클러스터를 잇는 비용을 `TemporalEdgeCost(position_cost, time_cost, appearance_cost)`와 `temporal_edge_cost`·`resolve_temporal_graph` 함수로 분리했다.
+   - 지금은 `appearance_cost = 0.0`, `temporal_time_weight = 0.0`을 기본으로 두어 기하 게이트와 위치 비용 정본을 그대로 유지하고, `S15P31A101-463` 2단계(COPE Re-ID)가 `appearance_cost_fn`과 `appearance_weight`만 주입해 결합할 수 있게 했다.
+
+### 10/29 녹화 회귀 재생 비교 (`plan_464.json`)
+
+입력: `C:/Users/SSAFY/simai-local/track-413/cache-s2` (`rec-20261029-015512z-lobby-railing-pose`, 5,363 ticks, 8.97분) + 보정 `C:/Users/SSAFY/simai-local/session9/cal-fastrot-266z.json`. 산출물과 `run_record.json`(VAL-01, 스키마 검증 통과)은 `C:/Users/SSAFY/simai-local/track-464/round1/`에 기록.
+
+| 실험 이름 | 설정 요약 | ID 수 (확정) | 분당 ID | cam 2 / 3 / 4 비율 (평균) | `MARGINAL_RESIDUAL` 횟수 | 2인 `=n / >n / <n` | 2인 swap | 2인 new/p·min | 3인 `=n / >n / <n` | 구역 중복 | tick 처리 (ms/tick) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `B0_458_baseline` | `-458` 기본값 (완전 연결, 고정 8/12 px, 억제 ON) | 53 (39) | 5.91 | 0.472 / 0.388 / 0.140 (2.67) | 8,776 | 0.762 / 0.102 / 0.136 | 104 | 3.00 | 0.628 / 0.014 / 0.358 | 8 (17/9) | 41.4 |
+| `G1_graph_prior_only` | 공간 그래프 + 시간 사전 간선 (고정 8/12 px, 억제 ON) | 31 (19) | 3.45 | 0.190 / 0.274 / 0.537 (3.35) | 78 | 0.898 / 0.024 / 0.078 | 33 | 1.61 | 0.742 / 0.000 / 0.258 | 5 (10/5) | 55.8 |
+| `G2_pairwise_only` | 쌍별 적응 문턱만 (완전 연결, 억제 ON) | 52 (34) | 5.79 | 0.411 / 0.363 / 0.226 (2.82) | 7,231 | 0.816 / 0.060 / 0.124 | 67 | 2.93 | 0.628 / 0.014 / 0.358 | 6 (14/8) | 45.7 |
+| **`G3_full_464_supp_on` (기본값)** | **공간 그래프 + 시간 사전 간선 + 쌍별 적응 문턱 + 억제 ON** | **29 (19)** | **3.23** | **0.178 / 0.278 / 0.545 (3.37)** | **48** | **0.905 / 0.017 / 0.078** | **25** | **1.46** | **0.759 / 0.000 / 0.241** | **5 (10/5)** | **58.5** |
+| `G4_full_464_supp_off` | `-464` 전체 + `-458` 분할 나머지 억제 OFF | 116 (79) | 12.93 | 0.224 / 0.257 / 0.519 (3.29) | 56 | 0.811 / 0.112 / 0.077 | 121 | 7.10 | 0.736 / 0.029 / 0.235 | 26 (32/6) | 58.9 |
+
+### 결과 해석
+
+1. **근본 원인(2+2 분할) 해소**: `B0_458_baseline`에서 8,776회 발생하던 `MARGINAL_RESIDUAL` 불확실 보류가 `G3_full_464_supp_on`에서 **48회(-99.5%)**로 줄었고, 4대 카메라가 한 클러스터로 묶이는 비율이 **14.0% → 54.5%**로 약 3.9배 상승했다.
+2. **ID 폭증·전환 추가 감소 및 안전성(`count_under` 비증가) 확인**:
+   - 전체 World ID 수가 **53 → 29(-45.3%)**, 확정 ID 수가 **39 → 19(-51.3%)**, 2인 구간 `id_changes`(swap 근사)가 **104 → 25(-76.0%)**로 줄었다.
+   - 2인 구간 사람 수 일치(`=n`)는 **76.2% → 90.5%(+14.3%p)**, 과다(`>n`)는 **10.2% → 1.7%(-8.5%p)**로 개선되었다.
+   - 안전 핵심 지표인 사람 수 부족(`<n`, 사람 놓침) 비율은 2인 구간 **13.6% → 7.8%(-5.8%p)**, 3인 구간 **35.8% → 24.1%(-11.7%p)**로, 늘지 않고 오히려 크게 줄었다. 4대 융합이 늘어나면서 1대 클러스터로 버려지던(`cluster.single_view`: 8,620 → 4,282) 관측이 정상 삼각측량에 합류했기 때문이다.
+3. **`-458` 분할 나머지 억제 ON 유지 이유 (`G3` vs `G4`)**:
+   - `G4_full_464_supp_off`에서도 4대 클러스터 비율(51.9%)과 사람 수 부족 비율(7.7%)은 그대로 유지되지만, 가림·자세 흔들림으로 순간적으로 하드 게이트(16 px)를 넘긴 나머지 조각이 새 ID 로 즉시 발급되어 단명 ID 가 116개(수명 중앙값 0.89 s)로 늘어난다. 따라서 `-464` 그래프 군집화(원인 제거)와 `-458` 분할 나머지 억제(하드 게이트 밖 잔여 조각 방어)를 함께 기본값(`G3`)으로 둔다.
+4. **지연 예산**: 4대 클러스터가 1,324 → 5,133개로 늘면서 4-view 골격 삼각측량·leave-one-out 검증 호출이 늘어 재생 tick 당 CPU 시간이 41.4 ms → 58.5 ms(2 워커 병렬 실행 기준)가 되었으나, 10 Hz(100 ms) 판정 주기와 기하 단계 예산 안이다.
+
+### 버린 대안
+
+- **단순 전역 잔차 문턱 완화 (`residual_marginal_px = 12`, `residual_gate_px = 16`)**: `-413` 실험 `C1`·`C2`에서 확인했듯 시간 사전 간선과 3D 일관성 제약 없이 전역 문턱만 넓히면 시각마다 다른 조합으로 묶여 ID 가 오히려 149 → 170~180개로 늘어난다.
+- **ReST 신경망 가중치·외부 GNN 추론 도입**: Tier 0 실시간 기하 단계에 별도 GNN 추론을 넣으면 지연·VRAM 부담이 크고, 교실 2~4인 규모에서는 기하 하드 제약 + 분기 한정(branch-and-bound) 정확 탐색으로 최적 분할을 수 ms 안에 결정적으로 구할 수 있어 신경망 그래프 분류기는 기각했다.
+- **`-458` 분할 나머지 억제 제거(`G4`)**: 경계 잔차(8~16 px) 분할은 `-464`가 흡수하지만, 가림 순간 16 px 초과 하드 기각으로 떨어져 나오는 2-view 조각은 여전히 남으므로 억제 규칙을 끄지 않는다.
+
+### 잔여 위험과 넘긴 일
+
+- **잔여 위험**: 두 사람이 심하게 겹쳐 서서 같은 카메라의 두 검출이 교차하고 2-view 3D 중점 거리까지 0.35~0.45 m 안으로 들어오는 극단적 근접 가림에서는 기하만으로 완벽히 분리하거나 잇지 못할 수 있다. 다만 같은 카메라 배타 제약과 삼각 불일치 검사로 두 사람이 한 클러스터로 합쳐지는 일은 막는다.
+- **넘긴 일**: `WorldTrackManager`에 분리해 둔 `temporal_edge_cost` / `resolve_temporal_graph`의 `appearance_cost`(`AppearanceCostFn`) 자리에 `S15P31A101-463` 2단계(COPE Re-ID 전신 임베딩 보조 비용)를 연결하고, 11차 녹화 원본 메타데이터가 복원되면 V2 보정(`-449`)과 함께 재측정한다.

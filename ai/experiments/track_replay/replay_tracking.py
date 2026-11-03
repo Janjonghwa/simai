@@ -231,8 +231,9 @@ def run(cache: Mapping[str, list[tuple[dict, list]]], calibration: Path, cfg: Ma
     metrics["diagnostics"] = perception.diagnostics.summary()
     metrics["local_tracker"] = {c: {"issued_ids": s.issued_ids, "resets": s.resets, "frames": s.frames_processed}
                                 for c, s in tracker.states().items()}
-    metrics["run"] = {"elapsed_s": round(elapsed, 1), "ticks": len(rows), "config": cfg,
-                      "calibration_version": rig.calibration_version}
+    metrics["run"] = {"elapsed_s": round(elapsed, 1), "ticks": len(rows),
+                      "ms_per_tick": round(elapsed * 1000.0 / len(rows), 3) if rows else None,
+                      "config": cfg, "calibration_version": rig.calibration_version}
     if out is not None:
         out.mkdir(parents=True, exist_ok=True)
         (out / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=1), encoding="utf-8")
