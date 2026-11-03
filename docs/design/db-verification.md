@@ -349,7 +349,7 @@ DB 를 읽거나 쓰는 행만 적는다. "v11" 표시는 4장에서 더한 행�
 | FR-40, FR-41 | 조치 티켓 상태 변경 | `PATCH /api/tickets/{id}` | EC2 | `action_ticket` | `action_ticket`, `action_ticket_history` | 반장 |  |
 | FR-40 | 조치 티켓 조회 | `GET /api/tickets` | EC2 | `action_ticket` | — | — |  |
 | FR-40 | 조치 티켓 자동 생성 | `INTERNAL` | EC2 | `risk_event` | `action_ticket` | EC2 |  |
-| FR-42(취소), FR-97 | 조치 불일치 수신(취소 2026-11-02, S15P31A101-411) | `WS /topic/admin/events` | EC2 | `action_ticket`, `risk_event` | — | — |  |
+| FR-42(취소), FR-97 | 조치 불일치 수신(취소 2026-11-02, 토픽·계약 삭제 2026-11-03, S15P31A101-411) | `WS /topic/admin/events`(삭제) | EC2 | `action_ticket`, `risk_event` | — | — |  |
 | FR-42(취소) | 조치 불일치 판정(취소 2026-11-02, S15P31A101-411) | `INTERNAL` | EC2 | `action_ticket`, `risk_event` | `action_ticket` | EC2 | mismatch |
 | FR-43 | 워치 가속도 전송 | `WS I4 gait_features` | EC2 | — | `watch_feature` | 워치 |  |
 | FR-44 | 워치 채널 상태 관리 | `INTERNAL` | EC2 | `watch_binding` | `channel_state` | EC2 |  |

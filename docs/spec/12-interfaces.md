@@ -135,7 +135,7 @@ EC2 내부: Spring ↔ Risk Engine Python 컨테이너(`deploy/risk-engine`)는 
 - 운영자 상향을 거친 등급은 `escalations` 로 표시해 규칙 판정 등급과 구분한다(2.1.0).
 - `/topic/world` 는 I1 `world_state` 를 형식 그대로 다시 싣는다. EC2 는 봉투만 새로 쓰고(`source_id` `ec2`) payload 를 바꾸지 않는다. 뷰어가 밀리면 최신 것만 남긴다.
 - `/topic/health` 는 `viewer_health` 다. EC2 가 Tier 0 `health`(원문은 `tier0_health`), 노트북 하트비트, `config_ack`, COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보낸다. 원격 단절 구분(`remote_state`), 데이터 연령, 구성 묶음 적용 상태, Scene 불일치(Tier 0 가 쓰는 `world_state.scene_version` 과 EC2 의 COMMITTED Scene 버전이 다르면 경고, FR-12)를 싣는다.
-- 관리자 토픽 `/topic/admin/events` 와 조치 불일치 `action_mismatch` 는 취소했다(8.4, 2026-11-02). EC2 는 이 토픽에 보내지 않는다. 관제 앱이 구독을 걷어 낸 뒤 계약 `action_mismatch` 와 구독 권한을 지운다(S15P31A101-411).
+- 관리자 토픽 `/topic/admin/events` 와 조치 불일치 `action_mismatch` 는 취소했다(8.4, 2026-11-02). 관제 앱 구독(S15P31A101-423)과 계약 `action_mismatch`·EC2 구독 권한을 지웠다(계약 묶음 7.0.0, S15P31A101-411). 이 토픽을 구독하면 다른 정해진 토픽 밖 구독처럼 거부한다.
 - `/topic/avatar` 는 `avatar_frame`(1.0.0, 계약 묶음 6.2.0)이다. EC2 는 I6 으로 받은 사람별 최신 포즈에 그 포즈의 아바타 자산 내려받기 경로(`/api/avatars/...`)를 붙여 중계한다. 브로커가 밀리면 오래된 `avatar_frame` 부터 버리고 `/topic/world`·`/topic/events` 전달은 방해하지 않는다. 사람의 존재·위치·접지·관측 상태·ID 신뢰도는 `/topic/world` 가 정본이며, `/topic/world` 에서 빠지거나 오래 갱신되지 않은 사람은 지운다. 중복·역전 거르기, 자산 매칭, 크기·인원 상한 등 세부는 `docs/design/avatar-pose-stream.md` 와 `contracts/` 가 정본이다.
 
 ## 12.5 I5 작업 유형
