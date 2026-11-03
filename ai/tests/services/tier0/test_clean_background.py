@@ -114,7 +114,7 @@ def test_camera_snapshots_and_atomic_complete_bundle(tmp_path, monkeypatch):
         assert np.max(np.abs(cv2.imread(str(bundle / f"{cid}.jpg")).astype(int) - 90)) <= 1
     assert len(seen) == 5 and len(list(w.root.rglob("COMPLETE"))) == 1
     assert not list(w.root.rglob(".pending-*"))
-    assert not w.offer(*pair("cam_A", 1000))  # 완성 뒤 불필요한 중앙값 계산은 생략한다.
+    assert w.offer(*pair("cam_A", 1000))  # 재생성에 최신 표본을 쓴다.
 
 
 def test_interval_boundary_and_persistent_occlusion(tmp_path):
@@ -372,3 +372,23 @@ def test_settings_default_and_relative_output_path(tmp_path, recording):
     settings = load_settings(path, env={})
     assert settings.clean_background.output_dir == tmp_path / "background-output"
     assert settings.clean_background.max_bytes == 10000
+
+
+def test_regenerate_exports_new_bundle_and_not_ready(tmp_path):
+    w = worker(tmp_path)
+    w.control.mkdir(parents=True)
+    request = w.control / "regenerate.request.json"
+    response = w.control / "regenerate.response.json"
+    request.write_text(json.dumps({"request_id": 1, "requested_at_ms": 1}), encoding="utf-8")
+    w.process_one()
+    assert json.loads(response.read_text(encoding="utf-8"))["status"] == "NOT_READY"
+    collect(w)
+    original = w._complete
+    collect(w, start=400)
+    request.write_text(json.dumps({"request_id": 2, "requested_at_ms": 2}), encoding="utf-8")
+    w.process_one()
+    result = json.loads(response.read_text(encoding="utf-8"))
+    assert result["status"] == "READY" and result["request_id"] == 2
+    assert Path(result["bundle_path"]) != original
+    assert (Path(result["bundle_path"]) / "COMPLETE").is_file()
+    assert original.is_dir() and not request.exists()

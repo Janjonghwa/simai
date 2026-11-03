@@ -27,6 +27,7 @@ LIVE 판단은 대여와 같은 표시 파일 규칙을 이 스레드 전용 Adm
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import logging
 import os
 import signal
@@ -49,6 +50,7 @@ from .handlers import JobHandler
 from .incident_summary import IncidentSummaryHandler
 from .objects import HttpObjectStore, ObjectStore
 from .runner import HandlerStuck, Worker
+from .scene_regenerate import SceneRegenerateHandler
 from .static_reconstruct import StaticReconstructHandler
 from .tbm_report import TbmReportHandler
 from .transport import HttpTransport, Transport
@@ -161,8 +163,22 @@ def main(argv: list[str] | None = None) -> int:
     logging.getLogger("services.worker").info("GPU 메모리 상한 %s (%s), Tier 0 표시 파일 %s", cap.state, cap.fraction, gpu.marker)
     log.info("워커 ID %s (%s)", worker_id, "SIMAI_WORKER_ID" if worker_id_env else "SIMAI_WORKER_ID 없음 → 기본값")
 
+    # 맵 재생성의 관제 중 실행(S15P31A101-427). 명세 3.2 는 관제 중 일괄 작업을 막으므로 기본 0 = 관제가 끝난 뒤 처리.
+    # 1 = 배경 묶음 만들기와 재구성(static_reconstruct)을 관제 중에도 받는다(허가 게이트의 지연 규칙은 그대로 걸림).
+    # 11차 GPU 세션에서 1 로 Tier 0 영향을 재고, 명세 예외 채택 여부를 정한다.
+    during_live = os.environ.get("SIMAI_REGENERATE_DURING_LIVE", "0")
+    if during_live not in ("0", "1"):
+        print("services.worker: SIMAI_REGENERATE_DURING_LIVE 는 0 또는 1", file=sys.stderr)
+        return 2
+    blocked = gpu.policy.live_blocked_types
+    blocked = (blocked - {"static_reconstruct"}) if during_live == "1" else (blocked | {"scene_regenerate"})
+    gpu = replace(gpu, policy=replace(gpu.policy, live_blocked_types=frozenset(blocked)))
     transport = HttpTransport(base_url, token)
-    handlers = build_handlers(args.config, HttpObjectStore(transport))
+    handlers = dict(build_handlers(args.config, HttpObjectStore(transport)))
+    submitter = AutoStaticSubmitter(auto_static, AdmissionGate(gpu.marker, gpu.policy, wall_s=time.time, monotonic=time.monotonic),
+        transport, worker_id, prepare=clean_bg_uploader(base_url, token),
+        clock_ms=lambda: time.time_ns() // 1_000_000, monotonic=time.monotonic)
+    handlers["scene_regenerate"] = SceneRegenerateHandler(submitter, gpu.marker)
     if not handlers:
         print("services.worker: 등록된 작업 처리기가 없다 (처리기 조립은 후속 티켓)", file=sys.stderr)
         return 1

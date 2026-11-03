@@ -848,9 +848,9 @@ class JobLeaseStatus(Envelope):
 
 
 class JobRequestJobType(
-    RootModel[Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update']]
+    RootModel[Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update', 'scene_regenerate']]
 ):
-    root: Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update']
+    root: Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update', 'scene_regenerate']
 
 
 class Payload23(BaseModel):
@@ -1533,6 +1533,27 @@ class SceneReference(Envelope):
     )
     msg_type: Annotated[Literal['scene_reference'], Field(min_length=1)]
     payload: Payload35
+
+
+class SceneRegenerate(RootModel[Any]):
+    root: Any
+
+
+class SceneRegenerateInput(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    request_id: Annotated[StrictInt, Field(ge=1)]
+    requested_at_ms: DefsTimestampMs
+    reason: Annotated[StrictStr | MISSING, Field(max_length=120)] = MISSING
+
+
+class SceneRegenerateResult(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    bundle_id: Annotated[StrictStr, Field(pattern='^bundle-[0-9a-f]{32}$')]
+    static_reconstruct_job_id: Annotated[StrictStr, Field(min_length=1)]
 
 
 class Image(BaseModel):
@@ -2993,6 +3014,7 @@ class Payload37(BaseModel):
     )
     bundle_id: Annotated[StrictStr, Field(pattern='^bundle-[0-9a-f]{32}$')]
     input: Input
+    request_id: Annotated[StrictInt | MISSING, Field(ge=1)] = MISSING
 
 
 class StaticReconstructSubmit(Envelope):
@@ -3565,6 +3587,7 @@ class Contracts(BaseModel):
     scene_compatibility: SceneCompatibility | MISSING = MISSING
     scene_output: SceneOutput | MISSING = MISSING
     scene_reference: SceneReference | MISSING = MISSING
+    scene_regenerate: SceneRegenerate | MISSING = MISSING
     site_ack: SiteAck | MISSING = MISSING
     static_reconstruct_submit: StaticReconstructSubmit | MISSING = MISSING
     static_reconstruct_submit_result: StaticReconstructSubmitResult | MISSING = MISSING

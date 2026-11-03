@@ -3,13 +3,22 @@
   "$id": "https://simai.dev/contracts/messages/static_reconstruct_submit.schema.json",
   "title": "I5 static_reconstruct_submit",
   "description": "분석 워커 → EC2 사람 지운 배경 묶음(-363)의 static_reconstruct 작업 등록 요청. POST /api/worker/scene-jobs/static-reconstruct 본문(워커 토큰), 응답은 static_reconstruct_submit_result (명세 3.2, 5.3, 12.5, S15P31A101-403). 1.0.0 신설. 분석 워커가 LIVE 가 아닐 때 Pod 의 완성 묶음 사진과 보정 문서를 서명 업로드(POST /api/uploads/sign, 목적 STATIC_RECONSTRUCT_INPUT, 키 static-inputs/<bundle_id>/<카메라 ID>.jpg·calibration.json)한 뒤 보낸다. 멱등 키는 bundle_id 다: EC2 는 같은 bundle_id 에 작업을 한 번만 만들고, 두 번째부터는 input 을 보지 않고 처음 만든 작업과 그 지금 상태를 돌려준다(응답을 잃은 재전송·상태 조회에 같은 요청을 쓴다). 새 작업을 만들 때 EC2 는 관리자 등록(admin job enqueue)과 같은 job_request 계약 검사에 더해, input.calibration_version 이 이 현장에 등록된 PROVISIONAL·CALIBRATED 보정인지 본다(Scene 등록 규칙과 같음). 등록하는 작업 input 에는 clean_background_bundle_id 로 bundle_id 를 싣는다(출처·멱등 키). 배경 사진은 정적 3D(Visual 층) 입력일 뿐 Tier 0 위치·위험 판정에 들어가지 않는다.",
-  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    }
+  ],
   "type": "object",
   "properties": {
-    "msg_type": { "const": "static_reconstruct_submit" },
+    "msg_type": {
+      "const": "static_reconstruct_submit"
+    },
     "payload": {
       "type": "object",
-      "required": ["bundle_id", "input"],
+      "required": [
+        "bundle_id",
+        "input"
+      ],
       "properties": {
         "bundle_id": {
           "type": "string",
@@ -19,28 +28,64 @@
         "input": {
           "type": "object",
           "description": "static_reconstruct 작업 입력(-364 입력 프로파일, job_request.input 과 같은 자리). 이미지·보정 문서는 s3:// 주소로만 싣는다. clean_background_bundle_id 를 싣는다면 bundle_id 와 같아야 한다",
-          "required": ["calibration_version", "calibration_ref", "calibration_hash", "images", "input_provenance"],
+          "required": [
+            "calibration_version",
+            "calibration_ref",
+            "calibration_hash",
+            "images",
+            "input_provenance"
+          ],
           "properties": {
-            "calibration_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
-            "calibration_ref": { "$ref": "../common/defs.schema.json#/$defs/object_uri", "description": "보정 문서 원본 바이트 객체" },
-            "calibration_hash": { "$ref": "../common/defs.schema.json#/$defs/sha256", "description": "calibration_ref 원본 바이트의 sha256(보정 content_hash 가 아니다)" },
+            "calibration_version": {
+              "$ref": "../common/defs.schema.json#/$defs/version_id"
+            },
+            "calibration_ref": {
+              "$ref": "../common/defs.schema.json#/$defs/object_uri",
+              "description": "보정 문서 원본 바이트 객체"
+            },
+            "calibration_hash": {
+              "$ref": "../common/defs.schema.json#/$defs/sha256",
+              "description": "calibration_ref 원본 바이트의 sha256(보정 content_hash 가 아니다)"
+            },
             "images": {
               "type": "array",
               "minItems": 2,
               "maxItems": 16,
               "items": {
                 "type": "object",
-                "required": ["camera_id", "uri", "kind"],
+                "required": [
+                  "camera_id",
+                  "uri",
+                  "kind"
+                ],
                 "properties": {
-                  "camera_id": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
-                  "uri": { "$ref": "../common/defs.schema.json#/$defs/object_uri" },
-                  "kind": { "enum": ["CLEAN_BACKGROUND", "FRAME"] }
+                  "camera_id": {
+                    "$ref": "../common/defs.schema.json#/$defs/camera_id"
+                  },
+                  "uri": {
+                    "$ref": "../common/defs.schema.json#/$defs/object_uri"
+                  },
+                  "kind": {
+                    "enum": [
+                      "CLEAN_BACKGROUND",
+                      "FRAME"
+                    ]
+                  }
                 }
               }
             },
-            "input_provenance": { "$ref": "../common/defs.schema.json#/$defs/input_provenance" },
-            "clean_background_bundle_id": { "type": "string", "pattern": "^bundle-[0-9a-f]{32}$" }
+            "input_provenance": {
+              "$ref": "../common/defs.schema.json#/$defs/input_provenance"
+            },
+            "clean_background_bundle_id": {
+              "type": "string",
+              "pattern": "^bundle-[0-9a-f]{32}$"
+            }
           }
+        },
+        "request_id": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     }

@@ -248,3 +248,10 @@ admin job enqueue --type static_reconstruct --input-file static-input.json
 - 서버의 묶음 조회(`input->>'clean_background_bundle_id'`)는 색인이 없다. 작업 수가 적은 MVP 기준이다.
 - Tier 0 보정 저장소 형식(`active.json`, 버전 sha256 파일 이름)에 기댄다. 형식이 바뀌면 `NO_ACTIVE_CALIBRATION` 으로 멈춘다(지어내지 않는다).
 - 10차 세션에서 볼 것: 로비 Ctrl+C 뒤 `tier0.live.stopped` 생김, `after-live` 시작 로그(`정상 종료 확인 → 분석 워커만`)와 워커 접수 문 `Tier 0 가 정상 종료했다`, 업로드 키 `static-inputs/bundle-.../cam*.jpg`·`calibration.json`, 워커 로그 `배경 묶음 자동 제출: QUIET → SUBMITTED`·`배경 묶음 ... → static_reconstruct 작업 job-...`, 기록 파일의 `SUBMITTED`/`FINISHED`, EC2 `analysis_job` 한 행과 `clean_background_bundle_id`, 서버 로그 `배경 묶음 ... 등록했다`, SUCCEEDED 뒤 `admin scene list` 의 CANDIDATE, 도중 Tier 0 를 켜면 업로드 중단(`LIVE`)·실행 중 작업 `LIVE_PREEMPTED` 반납, 워커 재시작 뒤 `ALREADY_SUBMITTED`, 작업이 끝난 뒤 워커가 스스로 끝남(0), MapAnything 단계의 GPU 메모리(분석 워커 예산 0.70)와 전체 소요 시간.
+
+
+## 맵 재생성 (S15P31A101-427)
+
+관리자의 `scene_regenerate` 작업은 `request_id`와 요청 시각을 `<state>/clean_background/regenerate.request.json`에 원자적으로 쓴다. Tier 0 전용 배경 스레드는 현재 누적의 모든 카메라가 준비됐으면 기존 COMPLETE 형식으로 새 `bundle-<uuid>`를 만들고, `regenerate.response.json`에 `request_id`, `bundle_path`, `camera_ids`, `calibration_version`, `status`(READY/NOT_READY), `reason`을 원자적으로 쓴다. 이전 묶음은 보존한다. 워커는 최대 120초 기다리고, 기존 자동 제출의 검사·`STATIC_RECONSTRUCT_INPUT` 업로드와 등록 함수를 사용해 `request_id`를 전달한다. 결과 복원은 기존 `static_reconstruct`와 Scene CANDIDATE 경로가 담당한다.
+
+Tier 0 표시 파일이 없으면 마지막 완료 묶음을 사용하고 없으면 `TIER0_NOT_RUNNING`, 누적 부족은 `BACKGROUND_NOT_READY`, 업로드·등록 실패는 `UPLOAD_FAILED`, 응답 지연은 `TIMEOUT`이다. 서버는 복원 실패를 `RECONSTRUCT_FAILED`, 워커 부재를 `NO_WORKER` 또는 제한 시간 경과 시 `TIMEOUT`으로 처리한다. `SIMAI_REGENERATE_DURING_LIVE` 기본값은 **0**(명세 3.2: 관제 중 일괄 작업 금지)이고, 이때는 `scene_regenerate` 와 `static_reconstruct` 모두 LIVE 중 시도 소모 없이 반납돼 관제가 끝난 뒤 처리된다. **1** 이면 두 작업을 LIVE 중에도 받는다(`static_reconstruct` 를 LIVE 차단 목록에서 뺌). 이때도 Tier 0 지연 접수 게이트(-412: lag·모름이면 대기, 10 s 안정 뒤 재개)는 그대로 걸린다. 11차 GPU 세션에서 1 로 Tier 0 지연·허가 게이트 멈춤·아바타 영향·재구성 소요를 재고, 명세 예외(아바타 스트림에 이은 두 번째 관제 중 예외) 채택 여부를 정한다(Lead 결정 2026-11-03).

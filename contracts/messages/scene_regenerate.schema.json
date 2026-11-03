@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/scene_regenerate.schema.json",
+  "title": "맵 재생성 입력과 결과",
+  "$defs": {
+    "input": {
+      "type": "object",
+      "required": [
+        "request_id",
+        "requested_at_ms"
+      ],
+      "properties": {
+        "request_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "requested_at_ms": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 120
+        }
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "bundle_id",
+        "static_reconstruct_job_id"
+      ],
+      "properties": {
+        "bundle_id": {
+          "type": "string",
+          "pattern": "^bundle-[0-9a-f]{32}$"
+        },
+        "static_reconstruct_job_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

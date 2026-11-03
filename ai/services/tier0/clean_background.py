@@ -39,6 +39,7 @@ class BackgroundCleanBackground:
                  state_dir: Path, stop: threading.Event) -> None:
         self.settings = settings
         self.root = settings.output_dir or state_dir / "clean-background"
+        self.control = state_dir / "clean_background"
         self.stop = stop
         self._context = _Context(copy.deepcopy(document), copy.deepcopy(provenance),
                                  {c["camera_id"]: 0 for c in document["cameras"]})
@@ -64,7 +65,7 @@ class BackgroundCleanBackground:
         ctx = self._context
         cid, at = frame.camera_id, frame.estimated_capture_time
         generation = ctx.generations.get(cid)
-        if generation is None or self.stop.is_set() or self._published.get(cid) == (ctx.version, generation):
+        if generation is None or self.stop.is_set():
             return False
         previous = self._last_offer.get(cid)
         if previous is not None and previous[0] == generation and at - previous[1] < self.settings.sample_interval_ms:
@@ -139,11 +140,47 @@ class BackgroundCleanBackground:
             cid = frame.camera_id
             if ctx.generations.get(cid) == generation:
                 changed |= self.accumulator.add_frame(cid, frame.estimated_capture_time, frame.image, detections)
+        self._regenerate(ctx)
         if changed:
             self._export_ready(ctx)
             self.last_error = None
             self._write_status(ctx)
         return item is not None
+
+    def _regenerate(self, ctx: _Context) -> None:
+        request = self.control / "regenerate.request.json"
+        if not request.is_file():
+            return
+        try:
+            doc = json.loads(request.read_text(encoding="utf-8"))
+            request_id = doc["request_id"]
+            if not isinstance(request_id, int) or isinstance(request_id, bool) or request_id < 1:
+                raise ValueError("invalid request_id")
+            if all(self.accumulator.is_camera_ready(cid) for cid in ctx.generations):
+                self._exported = {}
+                self._published = {}
+                self._complete = None
+                self._export_ready(ctx)
+                ready = self._complete is not None
+            else:
+                ready = False
+            response = {"request_id": request_id, "bundle_path": str(self._complete) if ready else None,
+                        "camera_ids": sorted(ctx.generations), "calibration_version": ctx.version,
+                        "status": "READY" if ready else "NOT_READY", "reason": None if ready else "BACKGROUND_NOT_READY"}
+            self.control.mkdir(parents=True, exist_ok=True)
+            tmp = self.control / f".response-{uuid.uuid4().hex}.tmp"
+            try:
+                _json(tmp, response)
+                tmp.replace(self.control / "regenerate.response.json")
+            finally:
+                tmp.unlink(missing_ok=True)
+            # 새 요청이 도착했다면 지우지 않는다.
+            if json.loads(request.read_text(encoding="utf-8")) == doc:
+                request.unlink(missing_ok=True)
+            self._write_status(ctx)
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            log.exception("잘못된 배경 재생성 요청")
+            request.unlink(missing_ok=True)
 
     def _publish(self, staging: Path, target: Path, ctx: _Context) -> bool:
         if self.stop.is_set() or self._context is not ctx:
