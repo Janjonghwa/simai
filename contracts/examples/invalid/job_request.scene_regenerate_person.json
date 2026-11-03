@@ -1,0 +1,25 @@
+{
+  "schema_version": "3.6.0",
+  "msg_type": "job_request",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000119",
+  "sent_at": 1760342400400,
+  "source_id": "ec2",
+  "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "attempt": 1,
+    "max_attempts": 2,
+    "job_type": "scene_regenerate",
+    "priority": "BACKGROUND",
+    "timeout_ms": 1800000,
+    "leased_at": 1760342400400,
+    "lease_expires_at": 1760342430400,
+    "heartbeat_interval_ms": 10000,
+    "input": {
+      "request_id": 12,
+      "requested_at_ms": 1700000000000,
+      "reason": "자재 반입",
+      "person_name": "홍길동"
+    }
+  }
+}

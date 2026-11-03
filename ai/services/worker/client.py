@@ -15,12 +15,12 @@ from typing import Any
 from .transport import LEASE_PATH, Response, Transport, TransportError, heartbeat_path, result_path
 
 SCHEMA_VERSION = "2.0.0"  # I5 대여 방식 (계약 2.0.0)
-CALLBACK_SCHEMA_VERSION = "2.2.0"  # job_callback 2.1.0: 반납 error.consume_attempt (-197), 2.2.0: bev_floorplan 결과 (-239)
+CALLBACK_SCHEMA_VERSION = "2.5.0"  # job_callback 2.1.0: 반납 error.consume_attempt (-197), 2.2.0: bev_floorplan 결과 (-239)
 JOB_REQUEST_MAJOR = "3"  # job_request 3.0.0: attempt = 반납을 세지 않는 시도 번호 (-197). 2.x 는 대여 순번이라 받지 않는다
 # job_request $defs.job_type 와 같은 목록(시험이 계약과 맞춰 본다). 계약 밖 유형으로 대여를 요청하면 EC2 가 400 으로 거부한다
 JOB_TYPES = frozenset({
     "vlm_rationale", "tbm_report", "static_reconstruct", "calibration_ba",
-    "bev_floorplan", "incident_summary", "hmr_refine", "hmr_appearance_update",
+    "bev_floorplan", "incident_summary", "scene_regenerate", "hmr_refine", "hmr_appearance_update",
 })
 log = logging.getLogger("services.worker")
 
