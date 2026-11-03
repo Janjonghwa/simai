@@ -38,7 +38,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 
 | 테이블 | 주요 내용 | 빈도 | 보관 |
 |---|---|---|---|
-| `observation_2d` | 촬영 시각, 카메라, 카메라 내 트랙, bbox, keypoint 배열. **EC2 DB 에 두지 않고** Tier 0 저장 위치(3.12)에 Parquet 로 보관한다(위치는 19.1 저장 위치 구조의 `obs2d`. 컨테이너 디스크면 인스턴스를 지울 때 함께 사라진다). EC2 에는 필요할 때 카메라별 요약(I1 `observation_summary`, 2D 원본 없음)만 보낸다 | 저장 5\~15 Hz(처리는 카메라당 12 FPS 이상, 5.1) | 7\~14일(보정 재계산용) |
+| `observation_2d` | 촬영 시각, 카메라, 카메라 내 트랙, bbox, keypoint 배열. **EC2 DB 에 두지 않고** Tier 0 저장 위치(3.12)에 Parquet 로 보관한다(위치는 19.1 저장 위치 구조의 `obs2d`. 컨테이너 디스크면 인스턴스를 지울 때 함께 사라진다). EC2 에는 필요할 때 카메라별 요약(I1 `observation_summary`, 2D 원본 없음)만 보낸다 | 저장 5\~15 Hz(처리는 카메라당 12 FPS 이상, 5.1) | 7\~14일(추적·관절 게이트 진단 및 오프라인 분석용) |
 | `world_track_state` | World ID, XYZ, 불확실성, 속도, 관측 상태, gap, 기여 카메라, 보정·Scene 버전 | 10 Hz | 11.5 |
 | `skeleton_3d` | World ID, 3D 관절, 관절 가시성, 계산 방식 | 5\~10 Hz | 11.5 |
 | `system_health` | 시스템 상태, 카메라별 상태, lag, 보정 상태, 하트비트 | 1 Hz | 11.5 |
@@ -148,6 +148,6 @@ PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evalua
 | `calibration_verification` | 독립 검증점 결과(4.4) |
 | `scale_reference` | 실측 정물 목록(이름·치수·측정일, 4.3) |
 | `calibration_scale_check` | 보정에서 정물별로 잰 크기·오차·불일치 경고 |
-| `coverage_guide` | 커버리지 계산과 카메라별 설치 안내(4.5) |
+| `coverage_guide` | 세팅 1단계 카메라 각도 헬퍼 최신 결과(`POST /api/devices/coverage-guides` 수신, `contracts/messages/coverage_guide.schema.json` 1.0.0: 4대 수신 상태·6쌍 배경 특징점 매칭 등급·연결 여부 `CONNECTED`/`DISCONNECTED`/`UNKNOWN`·회전 방향 안내 `guides`, 4.3·4.5·12.2) 및 커버리지 설치 안내 |
 | `floor_plan` | BEV 평면도(보정·Scene 버전, 이미지 키, `bev_floorplan` 작업, 4.1) |
 | `bev_frame_set` | BEV 평면도 입력 프레임 묶음(관리 명령으로 등록, 추가만). 같은 보정·묶음의 평면도는 한 번만 만든다 |
