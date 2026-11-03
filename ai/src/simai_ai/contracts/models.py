@@ -847,23 +847,6 @@ class Error(BaseModel):
     consume_attempt: StrictBool | MISSING = MISSING
 
 
-class Payload19(BaseModel):
-    model_config = ConfigDict(
-        extra='allow',
-    )
-    job_id: Annotated[StrictStr, Field(min_length=1)]
-    lease_id: DefsUuid
-    progress: Annotated[StrictFloat | None | MISSING, Field(ge=0.0, le=1.0)] = MISSING
-
-
-class JobHeartbeat(Envelope):
-    model_config = ConfigDict(
-        extra='allow',
-    )
-    msg_type: Annotated[Literal['job_heartbeat'], Field(min_length=1)]
-    payload: Payload19
-
-
 class Payload21(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -887,9 +870,9 @@ class JobLeaseStatus(Envelope):
 
 
 class JobRequestJobType(
-    RootModel[Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update', 'scene_regenerate']]
+    RootModel[Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update', 'scene_regenerate', 'site_setup']]
 ):
-    root: Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update', 'scene_regenerate']
+    root: Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update', 'scene_regenerate', 'site_setup']
 
 
 class Payload23(BaseModel):
@@ -1593,6 +1576,124 @@ class SceneRegenerateResult(BaseModel):
     )
     bundle_id: Annotated[StrictStr, Field(pattern='^bundle-[0-9a-f]{32}$')]
     static_reconstruct_job_id: Annotated[StrictStr, Field(min_length=1)]
+
+
+class SiteSetup(RootModel[Any]):
+    root: Any
+
+
+class SiteSetupHeightChecks1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    input_height_m: Annotated[StrictFloat, Field(gt=0.0)]
+    restored_height_m: Annotated[StrictFloat, Field(gt=0.0)]
+    difference_cm: StrictFloat
+    within_tolerance: StrictBool
+
+
+class SiteSetupHeightChecks(RootModel[dict[str, SiteSetupHeightChecks1]]):
+    root: Annotated[dict[str, SiteSetupHeightChecks1], Field(min_length=1)]
+
+
+CameraHeightsMAdditionalProperty = TypeAliasType(
+    "CameraHeightsMAdditionalProperty", Annotated[StrictFloat, Field(gt=0.0)]
+)
+
+
+class CameraId(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+
+
+class CalibrationTarget(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_ids: Annotated[list[CameraId], Field(min_length=2)]
+    method: Literal['BACKGROUND_JOINT_BA_V2']
+    world_frame: Literal['AUTO_FLOOR_Z_UP_METERS']
+
+
+class SiteSetupInput(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    setup_session_id: DefsUuid
+    work_unit_id: Annotated[StrictInt, Field(ge=1)]
+    site_id: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    camera_heights_m: Annotated[
+        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}$', strict=True), CameraHeightsMAdditionalProperty],
+        Field(min_length=1),
+    ]
+    calibration_target: CalibrationTarget
+    height_tolerance_cm: Annotated[StrictFloat, Field(gt=0.0)]
+
+
+BackgroundCollectionPctAdditionalProperty = TypeAliasType(
+    "BackgroundCollectionPctAdditionalProperty",
+    Annotated[StrictFloat, Field(ge=0.0, le=100.0)],
+)
+
+
+class ObjectCrossCheck(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    kind: Literal['TRAFFIC_CONE', 'OPENING_SIGN']
+    passed: StrictBool
+    message: Annotated[StrictStr | MISSING, Field(max_length=500)] = MISSING
+
+
+class SiteSetupProgress(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    setup_session_id: DefsUuid
+    status: Literal['COLLECTING_BACKGROUND', 'INITIAL_POSE_AND_WORLD', 'JOINT_BA_AND_VERIFY', 'PREVIEW_AND_VLM_DRAFT', 'READY_FOR_ZONES', 'BAKING_TEXTURE', 'COMPLETED']
+    progress_pct: Annotated[StrictFloat, Field(ge=0.0, le=100.0)]
+    background_collection_pct: dict[str, BackgroundCollectionPctAdditionalProperty] | MISSING = (
+        MISSING
+    )
+    calibration_version: Annotated[
+        StrictStr | MISSING, Field(max_length=160, min_length=1)
+    ] = MISSING
+    preview_scene_version: Annotated[
+        StrictStr | MISSING, Field(max_length=160, min_length=1)
+    ] = MISSING
+    scene_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    config_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    zone_drafts_ref: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    height_checks: SiteSetupHeightChecks | MISSING = MISSING
+    object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
+
+
+class SiteSetupResult(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    setup_session_id: DefsUuid
+    status: Literal['COMPLETED']
+    progress_pct: Literal[100]
+    background_collection_pct: dict[str, BackgroundCollectionPctAdditionalProperty] | MISSING = (
+        MISSING
+    )
+    calibration_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    preview_scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    config_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    zone_drafts_ref: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    height_checks: SiteSetupHeightChecks
+    object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
 
 
 class Image(BaseModel):
@@ -2591,6 +2692,24 @@ class JobCallback(Envelope):
     )
     msg_type: Annotated[Literal['job_callback'], Field(min_length=1)]
     payload: Payload18
+
+
+class Payload19(BaseModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    job_id: Annotated[StrictStr, Field(min_length=1)]
+    lease_id: DefsUuid
+    progress: Annotated[StrictFloat | None | MISSING, Field(ge=0.0, le=1.0)] = MISSING
+    site_setup: SiteSetupProgress | MISSING = MISSING
+
+
+class JobHeartbeat(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['job_heartbeat'], Field(min_length=1)]
+    payload: Payload19
 
 
 class Payload20(BaseModel):
@@ -3688,6 +3807,7 @@ class Contracts(BaseModel):
     scene_reference: SceneReference | MISSING = MISSING
     scene_regenerate: SceneRegenerate | MISSING = MISSING
     site_ack: SiteAck | MISSING = MISSING
+    site_setup: SiteSetup | MISSING = MISSING
     static_reconstruct_submit: StaticReconstructSubmit | MISSING = MISSING
     static_reconstruct_submit_result: StaticReconstructSubmitResult | MISSING = MISSING
     tbm_report: TbmReport | MISSING = MISSING

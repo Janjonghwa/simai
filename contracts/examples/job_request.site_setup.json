@@ -1,0 +1,41 @@
+{
+  "schema_version": "3.7.0",
+  "msg_type": "job_request",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000119",
+  "sent_at": 1760342400400,
+  "source_id": "ec2",
+  "payload": {
+    "job_id": "job-20261017-0041",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000001b1",
+    "attempt": 1,
+    "max_attempts": 2,
+    "job_type": "site_setup",
+    "priority": "BACKGROUND",
+    "timeout_ms": 1800000,
+    "leased_at": 1760342400400,
+    "lease_expires_at": 1760342430400,
+    "heartbeat_interval_ms": 10000,
+    "input": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "work_unit_id": 12,
+      "site_id": "classroom-1",
+      "camera_heights_m": {
+        "cam1": 1.5,
+        "cam2": 1.5,
+        "cam3": 1.5,
+        "cam4": 1.5
+      },
+      "calibration_target": {
+        "camera_ids": [
+          "cam1",
+          "cam2",
+          "cam3",
+          "cam4"
+        ],
+        "method": "BACKGROUND_JOINT_BA_V2",
+        "world_frame": "AUTO_FLOOR_Z_UP_METERS"
+      },
+      "height_tolerance_cm": 5
+    }
+  }
+}

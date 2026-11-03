@@ -106,6 +106,11 @@ class JobLeaseService {
 
     @Transactional
     LeaseStatus heartbeat(String workerId, String jobId, UUID leaseId, Double progress, Instant now) {
+        return heartbeat(workerId, jobId, leaseId, progress, null, now);
+    }
+
+    @Transactional
+    LeaseStatus heartbeat(String workerId, String jobId, UUID leaseId, Double progress, JsonNode siteSetup, Instant now) {
         Lease lease = lockLease(leaseId);
         if (lease == null || !lease.owns(workerId, jobId)) {
             return LeaseStatus.rejected(Reason.UNKNOWN_LEASE);
@@ -120,6 +125,12 @@ class JobLeaseService {
             finish(jobId, "TIMED_OUT", null, error("JOB_TIMED_OUT", "실행 시간 상한(timeout_ms)이 지난 뒤의 하트비트"), null,
                     I1Json.utc(now));
             return LeaseStatus.rejected(Reason.JOB_TIMED_OUT);
+        }
+        if (siteSetup != null && !siteSetup.isNull()) {
+            if (!"site_setup".equals(job.jobType())) {
+                throw new BusinessException(ErrorCode.Job.INVALID_WORKER_MESSAGE);
+            }
+            events.publishEvent(new JobProgress(jobId, leaseId, siteSetup));
         }
         Instant expiresAt = now.plusMillis(JobMessages.LEASE_HOLD_MS);
         jdbc.update("""

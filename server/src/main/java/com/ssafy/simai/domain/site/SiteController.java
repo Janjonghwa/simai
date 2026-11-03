@@ -43,7 +43,7 @@ class SiteController {
     private static final int MAX_NAME = 100;
     /** site 를 참조하는 기록(카메라 제외). 하나라도 있으면 site_id 를 바꾸지 않는다 */
     private static final List<String> DEPENDENTS = List.of("zone", "static_object", "config_bundle", "calibration_version",
-            "calibration_run", "scale_reference", "floor_plan", "scene_version", "bev_frame_set", "work_unit", "layout_plan");
+            "calibration_run", "scale_reference", "floor_plan", "scene_version", "bev_frame_set", "work_unit", "layout_plan", "setup_session");
 
     private final NamedParameterJdbcTemplate jdbc;
     private final TransactionTemplate transaction;
@@ -118,8 +118,9 @@ class SiteController {
             // 키를 바꾸면 카메라 FK 가 걸린다. 새 행을 만들고 카메라를 옮긴 뒤 옛 행을 지운다
             jdbc.update("""
                     INSERT INTO site (site_id, name, world_origin, established_calibration_version, current_floor_plan_id,
-                        migrated_from, created_at)
-                    SELECT :newId, name, world_origin, established_calibration_version, current_floor_plan_id, migrated_from, created_at
+                        default_camera_heights_m, migrated_from, created_at)
+                    SELECT :newId, name, world_origin, established_calibration_version, current_floor_plan_id, default_camera_heights_m, migrated_from, created_at
+
                     FROM site WHERE site_id = :id
                     """, params.addValue("newId", newId));
             jdbc.update("UPDATE camera SET site_id = :newId WHERE site_id = :id", params);

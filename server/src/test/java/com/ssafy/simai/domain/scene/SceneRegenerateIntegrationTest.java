@@ -197,7 +197,7 @@ class SceneRegenerateIntegrationTest {
                         .content(leaseRequest(List.of("scene_regenerate")).toString()))
                 .andExpect(status().isOk())
                 .andReturn());
-        assertThat(leasedEnvelope.path("schema_version").asString()).isEqualTo("3.6.0");
+        assertThat(leasedEnvelope.path("schema_version").asString()).isEqualTo("3.7.0");
         assertThat(schemas.violations("messages/job_request", leasedEnvelope.toString())).isEmpty();
         JsonNode exampleRequest = mapper.readTree(Files.readString(EXAMPLES.resolve("job_request.scene_regenerate.json")));
         assertThat(leasedEnvelope.at("/payload/job_type")).isEqualTo(exampleRequest.at("/payload/job_type"));

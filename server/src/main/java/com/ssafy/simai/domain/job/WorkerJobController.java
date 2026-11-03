@@ -123,9 +123,10 @@ class WorkerJobController {
         samePath(p, jobId);
         UUID leaseId = UUID.fromString(p.get("lease_id").stringValue());
         JsonNode progress = p.get("progress");
+        JsonNode siteSetup = p.get("site_setup");
         Instant now = now();
         LeaseStatus status = leases.heartbeat(workerId, jobId, leaseId,
-                progress == null || progress.isNull() ? null : progress.doubleValue(), now);
+                progress == null || progress.isNull() ? null : progress.doubleValue(), siteSetup, now);
         return respond(jobId, leaseId, status, now);
     }
 
