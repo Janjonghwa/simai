@@ -44,7 +44,8 @@ public class TbmReportRepository {
                    r.sections::text AS sections, r.citations::text AS citations,
                    r.subgraph::text AS subgraph, r.steps::text AS steps,
                    r.llm_model, r.created_at, r.completed_at, r.wrap_up_summary, r.wrap_up_status,
-                   r.locked_at, r.content_sha256,
+                   r.locked_at, r.content_sha256, r.approved_at,
+                   (SELECT COALESCE(u.display_label, u.login_id) FROM app_user u WHERE u.user_id=r.approved_by) AS approved_by_name,
                    w.work_date, w.name AS work_name, w.starts_at, w.ends_at,
                    w.zone_id, w.place, w.planned_people, w.lead_team
             FROM report r
@@ -426,6 +427,9 @@ public class TbmReportRepository {
         putText(o, "content_sha256", rs.getString("content_sha256"));
         Timestamp lockedAt = rs.getTimestamp("locked_at");
         if (lockedAt == null) o.putNull("locked_at"); else o.put("locked_at", lockedAt.getTime());
+        Timestamp approvedAt = rs.getTimestamp("approved_at");
+        if (approvedAt == null) o.putNull("approved_at"); else o.put("approved_at", approvedAt.getTime());
+        putText(o, "approved_by_name", rs.getString("approved_by_name"));
         // 서명 표는 -440(V29)가 소유한다. 독립 worktree에는 없으므로 0으로 시작한다.
         boolean signaturesExist = Boolean.TRUE.equals(jdbc.queryForObject(
                 "SELECT to_regclass('report_signature') IS NOT NULL", Map.of(), Boolean.class));

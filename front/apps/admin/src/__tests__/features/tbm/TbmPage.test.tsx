@@ -732,6 +732,33 @@ describe('회의록', () => {
   });
 });
 
+function mockSignatureCanvas() {
+  const context = {
+    beginPath: vi.fn(),
+    moveTo: vi.fn(),
+    lineTo: vi.fn(),
+    stroke: vi.fn(),
+    clearRect: vi.fn(),
+  };
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
+    context as unknown as CanvasRenderingContext2D,
+  );
+  vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback) =>
+    callback(new Blob(['png'], { type: 'image/png' })),
+  );
+  HTMLCanvasElement.prototype.setPointerCapture = vi.fn();
+}
+
+function fillSignature(panel: HTMLElement, name = '홍길동') {
+  fireEvent.change(within(panel).getByLabelText('서명자 실명'), { target: { value: name } });
+  fireEvent.pointerDown(within(panel).getByLabelText('서명 패드'), {
+    clientX: 10,
+    clientY: 10,
+    pointerId: 1,
+  });
+  fireEvent.click(within(panel).getByLabelText('고지를 확인했습니다'));
+}
+
 describe('작업 세션과 서명', () => {
   it('작업을 시작하고 종료하면 새 보고서의 마무리를 표시한다', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -759,20 +786,7 @@ describe('작업 세션과 서명', () => {
   });
 
   it.each([false, true])('서명 등록 및 오래된 버전 안내 (stale=%s)', async (stale) => {
-    const context = {
-      beginPath: vi.fn(),
-      moveTo: vi.fn(),
-      lineTo: vi.fn(),
-      stroke: vi.fn(),
-      clearRect: vi.fn(),
-    };
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
-      context as unknown as CanvasRenderingContext2D,
-    );
-    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback) =>
-      callback(new Blob(['png'], { type: 'image/png' })),
-    );
-    HTMLCanvasElement.prototype.setPointerCapture = vi.fn();
+    mockSignatureCanvas();
     if (stale)
       server.use(
         http.post('*/api/reports/tbm/:reportId/signatures', () =>
@@ -796,5 +810,128 @@ describe('작업 세션과 서명', () => {
     ).toBeTruthy();
     if (!stale) expect(await within(panel).findByText(/홍길동/)).toBeTruthy();
     vi.restoreAllMocks();
+  });
+});
+
+describe('관리자 최종 결재', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    server.events.removeAllListeners('request:start');
+  });
+
+  it.each([0, 1])('참석자 %i명 뒤 확인 대화상자로 결재하고 입력을 닫는다', async (count) => {
+    mockSignatureCanvas();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const bodies: unknown[] = [];
+    server.events.on('request:start', ({ request }) => {
+      if (request.method === 'POST' && request.url.endsWith('/signatures')) {
+        void request
+          .clone()
+          .json()
+          .then((body: unknown) => bodies.push(body));
+      }
+    });
+    render(<TbmPage />);
+    const panel = await screen.findByRole('region', { name: '참석자 서명' });
+    await within(panel).findByText('참석자 서명 0명');
+    if (count) {
+      fillSignature(panel);
+      fireEvent.click(within(panel).getByRole('button', { name: '서명 등록' }));
+      await within(panel).findByText('서명을 등록했습니다.');
+      expect(within(panel).queryByText('참석자 서명 0명')).toBeNull();
+    }
+    fillSignature(panel, '결재 실명');
+    fireEvent.click(within(panel).getByRole('button', { name: '관리자 결재' }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(within(panel).queryByText('결재 완료')).toBeNull();
+    expect(within(panel).getByLabelText('서명 패드')).toBeTruthy();
+    expect(bodies).toHaveLength(count);
+    confirm.mockReturnValue(true);
+    fireEvent.click(within(panel).getByRole('button', { name: '관리자 결재' }));
+    await within(panel).findByText('결재 완료');
+    expect(within(panel).queryByLabelText('서명 패드')).toBeNull();
+    expect(within(panel).queryByRole('button', { name: '서명 등록' })).toBeNull();
+    expect(panel.textContent).toContain('admin');
+    expect(bodies.at(-1)).toMatchObject({ signer_role: 'APPROVER', signer_name: '결재 실명' });
+    if (count) expect(bodies[0]).toMatchObject({ signer_role: 'PARTICIPANT' });
+    else expect(confirm.mock.calls[0]?.[0]).toContain('참석자 서명 0명');
+    const approved = tbmMock.reportsByWork.get('1')?.[0];
+    expect(approved?.approved_at).toEqual(expect.any(Number));
+    expect(approved?.approved_by_name).toBe('admin');
+    for (const signer_role of ['PARTICIPANT', 'APPROVER']) {
+      const response = await fetch(
+        `https://tbm-test.invalid/api/reports/tbm/${approved!.report_id}/signatures`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ report_version: 1, signer_role }),
+        },
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'REPORT_APPROVED' });
+    }
+    server.events.removeAllListeners('request:start');
+  });
+
+  it('결재한 버전은 인쇄본에 결재란을 넣고 종료 새 버전은 다시 결재한다', async () => {
+    mockSignatureCanvas();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const print = vi.spyOn(window, 'print').mockImplementation(() => {
+      const printed = document.querySelector('.print\\:block');
+      expect(printed?.textContent).toContain('관리자 결재');
+      expect(printed?.textContent).toContain('결재 완료 · admin');
+      expect(printed?.querySelector('img[alt="결재 실명 결재 서명"]')).toBeTruthy();
+    });
+    render(<TbmPage />);
+    const firstPanel = await screen.findByRole('region', { name: '참석자 서명' });
+    await within(firstPanel).findByText('참석자 서명 0명');
+    fillSignature(firstPanel, '결재 실명');
+    fireEvent.click(within(firstPanel).getByRole('button', { name: '관리자 결재' }));
+    await within(firstPanel).findByText('결재 완료');
+    const approved = tbmMock.reportsByWork.get('1')?.[0];
+    const firstApprovedAt = approved?.approved_at;
+    received();
+    fireEvent.click(screen.getByRole('button', { name: '출력' }));
+    await waitFor(() => expect(print).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: '작업 시작' }));
+    fireEvent.click(await screen.findByRole('button', { name: '작업 종료' }));
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: '보고서 버전' }).textContent).toContain('v2'),
+    );
+    await act(async () => {
+      vi.advanceTimersByTime(2200);
+    });
+    const secondPanel = screen.getByRole('region', { name: '참석자 서명' });
+    await within(secondPanel).findByText('참석자 서명 0명');
+    expect(within(secondPanel).queryByText('결재 완료')).toBeNull();
+    fillSignature(secondPanel, '두 번째 결재 실명');
+    fireEvent.click(within(secondPanel).getByRole('button', { name: '관리자 결재' }));
+    await within(secondPanel).findByText('결재 완료');
+    expect(approved?.approved_at).toBe(firstApprovedAt);
+    expect(tbmMock.reportsByWork.get('1')?.[1]?.approved_at).toEqual(expect.any(Number));
+  });
+
+  it('다른 화면에서 먼저 결재하면 409 안내와 갱신된 결재 상태를 표시한다', async () => {
+    mockSignatureCanvas();
+    server.use(
+      http.post('*/api/reports/tbm/:reportId/signatures', ({ params }) => {
+        const report = tbmMock.reportsByWork
+          .get('1')
+          ?.find((r) => r.report_id === Number(params.reportId));
+        if (report) {
+          report.approved_at = Date.now();
+          report.approved_by_name = '다른 관리자';
+        }
+        return HttpResponse.json({ code: 'REPORT_APPROVED' }, { status: 409 });
+      }),
+    );
+    render(<TbmPage />);
+    const panel = await screen.findByRole('region', { name: '참석자 서명' });
+    fillSignature(panel);
+    fireEvent.click(within(panel).getByRole('button', { name: '서명 등록' }));
+    await within(panel).findByText('이미 관리자 결재가 완료된 보고서입니다.');
+    await within(panel).findByText('결재 완료');
+    expect(panel.textContent).toContain('다른 관리자');
+    expect(within(panel).queryByLabelText('서명 패드')).toBeNull();
   });
 });

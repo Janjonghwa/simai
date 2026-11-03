@@ -8,6 +8,7 @@ import {
 import { paginateSheet, previewScale } from '@/features/tbm/paginate';
 import type { TbmForm } from '@/features/tbm/tbmForm';
 import { TbmFormSheet } from '@/features/tbm/TbmFormSheet';
+import type { Signature } from '@/features/tbm/types';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useDeferredValue, useLayoutEffect, useRef, useState, type RefObject } from 'react';
@@ -25,12 +26,10 @@ export interface PrintItem {
   id: string;
   form: TbmForm;
   people: number;
-  signatures?: readonly {
-    signature_id: string;
-    signer_name: string;
-    signed_at: number | string;
-    image_url: string;
-  }[];
+  signatures?: readonly Signature[];
+  approvedAt?: number | string | null;
+  approvedByName?: string | null;
+  reportVersion?: number;
 }
 
 /** 서식을 쪽으로 나눈 결과. measure 는 나누는 데 쓰는 보이지 않는 사본이라 화면 어딘가에 그려 둬야 한다. */
@@ -213,14 +212,31 @@ export function TbmPrint({ items }: { items: readonly PrintItem[] }) {
         <div key={item.id}>
           <PrintPages form={item.form} people={item.people} />
           <div className="break-before-page bg-white p-8 text-black">
+            <p>보고서 버전: {item.reportVersion != null ? `v${item.reportVersion}` : '—'}</p>
             <h2>참석자 서명</h2>
             <p>공인 전자서명 아님, 내부 기록용 전자 서명</p>
-            {item.signatures?.map((signature) => (
-              <div key={signature.signature_id}>
-                {signature.signer_name} · {new Date(signature.signed_at).toLocaleString()}{' '}
-                <img src={signature.image_url} alt={`${signature.signer_name} 서명`} />
-              </div>
-            ))}
+            {item.signatures
+              ?.filter((signature) => signature.signer_role === 'PARTICIPANT')
+              .map((signature) => (
+                <div key={signature.signature_id}>
+                  {signature.signer_name} · {new Date(signature.signed_at).toLocaleString()}{' '}
+                  <img src={signature.image_url} alt={`${signature.signer_name} 서명`} />
+                </div>
+              ))}
+            <h2>관리자 결재</h2>
+            <p>
+              {item.approvedAt != null
+                ? `결재 완료 · ${item.approvedByName ?? '관리자'} · ${new Date(item.approvedAt).toLocaleString()}`
+                : '미결재'}
+            </p>
+            {item.signatures
+              ?.filter((signature) => signature.signer_role === 'APPROVER')
+              .map((signature) => (
+                <div key={signature.signature_id}>
+                  {signature.signer_name} · {new Date(signature.signed_at).toLocaleString()}
+                  <img src={signature.image_url} alt={`${signature.signer_name} 결재 서명`} />
+                </div>
+              ))}
           </div>
         </div>
       ))}

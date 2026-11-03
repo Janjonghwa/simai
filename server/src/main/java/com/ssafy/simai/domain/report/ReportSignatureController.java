@@ -44,16 +44,18 @@ class ReportSignatureController {
     }
     record Request(@JsonProperty("report_version") Integer version, @JsonProperty("signer_name") String name,
             @JsonProperty("image_key") String key, @JsonProperty("image_sha256") String sha,
-            @JsonProperty("notice_acknowledged") Boolean notice) {
+            @JsonProperty("notice_acknowledged") Boolean notice, @JsonProperty("signer_role") String role) {
         @Override public String toString() { return "SignatureRequest[redacted]"; }
     }
-    record Version(int number, String status, Timestamp locked, String hash, String sections, String citations, String wrap, int latest) {}
+    record Version(int number, String status, Timestamp locked, String hash, String sections, String citations, String wrap, int latest, Timestamp approved) {}
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Transactional
     ObjectNode sign(@PathVariable long reportId, @RequestBody Request request, Authentication auth) {
+        String role = request.role() == null ? "PARTICIPANT" : request.role();
         if (request.version() == null || request.version() < 1 || request.name() == null || request.name().isBlank()
+                || !(role.equals("PARTICIPANT") || role.equals("APPROVER"))
                 || request.name().codePointCount(0, request.name().length()) > 40 || !Boolean.TRUE.equals(request.notice())
                 || request.key() == null || request.sha() == null || !request.sha().matches("(?:sha256:)?[0-9a-f]{64}")) {
             throw new BusinessException(ErrorCode.Report.INVALID_SIGNATURE);
@@ -68,11 +70,12 @@ class ReportSignatureController {
         if (works.isEmpty()) throw new BusinessException(ErrorCode.Report.REPORT_NOT_FOUND);
         List<Version> rows = jdbc.query("""
                 SELECT r.report_version, r.status, r.locked_at, r.content_sha256, r.sections::text, r.citations::text,
-                    to_jsonb(r)->'wrap_up_summary', (SELECT max(report_version) FROM report WHERE work_id=r.work_id)
+                    to_jsonb(r)->'wrap_up_summary', (SELECT max(report_version) FROM report WHERE work_id=r.work_id), r.approved_at
                 FROM report r WHERE r.report_id=:id FOR UPDATE
                 """, p, (rs, i) -> new Version(rs.getInt(1), rs.getString(2), rs.getTimestamp(3), rs.getString(4),
-                        rs.getString(5), rs.getString(6), rs.getString(7), rs.getInt(8)));
+                        rs.getString(5), rs.getString(6), rs.getString(7), rs.getInt(8), rs.getTimestamp(9)));
         Version v = rows.getFirst();
+        if (v.approved != null) throw new BusinessException(ErrorCode.Report.REPORT_APPROVED);
         if (v.number != request.version() || v.number != v.latest) throw new BusinessException(ErrorCode.Report.REPORT_VERSION_STALE);
         if (!v.status.equals("SUCCEEDED")) throw new BusinessException(ErrorCode.Report.REPORT_NOT_READY);
         String sha = request.sha().replaceFirst("^sha256:", "");
@@ -83,8 +86,8 @@ class ReportSignatureController {
                 """, p, Long.class);
         if (grants.isEmpty()) throw new BusinessException(ErrorCode.Report.INVALID_SIGNATURE);
         // 보고서 버전당 서명 인원 상한(docs/design/work-session-flow.md '전자서명 이미지 규격', 50명)
-        Integer signed = jdbc.queryForObject("SELECT count(*) FROM report_signature WHERE report_id=:id", p, Integer.class);
-        if (signed != null && signed >= MAX_SIGNERS) throw new BusinessException(ErrorCode.Report.SIGNATURE_LIMIT_REACHED);
+        Integer signed = jdbc.queryForObject("SELECT count(*) FROM report_signature WHERE report_id=:id AND signer_role='PARTICIPANT'", p, Integer.class);
+        if (role.equals("PARTICIPANT") && signed != null && signed >= MAX_SIGNERS) throw new BusinessException(ErrorCode.Report.SIGNATURE_LIMIT_REACHED);
         Timestamp now = Timestamp.from(clock.instant()); p.addValue("now", now);
         String hash = v.hash; Timestamp locked = v.locked;
         if (locked == null) {
@@ -94,15 +97,19 @@ class ReportSignatureController {
             hash = digest(mapper.writeValueAsString(sorted(content))); locked = now;
             jdbc.update("UPDATE report SET locked_at=:now, content_sha256=:hash WHERE report_id=:id", p.addValue("hash", hash));
         }
-        p.addValue("hash", hash).addValue("version", v.number).addValue("name", request.name().strip());
+        p.addValue("hash", hash).addValue("version", v.number).addValue("name", request.name().strip()).addValue("role", role);
         Long id = jdbc.queryForObject("""
                 INSERT INTO report_signature(report_id, report_version, signer_name, signature_image_key, image_sha256,
-                    report_content_sha256, legal_notice_ack, recorded_by, signed_at)
-                VALUES (:id, :version, :name, :key, :sha, :hash, true, :user, :now) RETURNING signature_id
+                    report_content_sha256, legal_notice_ack, recorded_by, signed_at, signer_role)
+                VALUES (:id, :version, :name, :key, :sha, :hash, true, :user, :now, :role) RETURNING signature_id
                 """, p, Long.class);
+        if (role.equals("APPROVER")) {
+            // 결재자는 요청 인증 계정으로만 기록한다. 실명 입력은 계정 표시명과 별도다.
+            jdbc.update("UPDATE report SET approved_at=:now, approved_by=:user WHERE report_id=:id", p);
+        }
         jdbc.update("UPDATE upload_grant SET used_at=:now WHERE grant_id=:grant", p.addValue("grant", grants.getFirst()));
         ObjectNode out = mapper.createObjectNode(); out.put("signature_id", id); out.put("report_id", reportId);
-        out.put("report_version", v.number); out.put("signer_name", request.name().strip()); out.put("signed_at", now.getTime());
+        out.put("report_version", v.number); out.put("signer_name", request.name().strip()); out.put("signer_role", role); out.put("signed_at", now.getTime());
         out.put("locked_at", locked.getTime()); out.put("content_sha256", hash); return out;
     }
     @GetMapping
@@ -118,7 +125,7 @@ class ReportSignatureController {
         p.addValue("work", works.getFirst()).addValue("version", version);
         ObjectNode out = mapper.createObjectNode(); ArrayNode items = out.putArray("items");
         jdbc.query("""
-                SELECT s.signature_id, s.signer_name, s.signed_at, s.report_version, s.signature_image_key
+                SELECT s.signature_id, s.signer_name, s.signed_at, s.report_version, s.signature_image_key, s.signer_role
                 FROM report_signature s JOIN report r ON r.report_id=s.report_id
                 WHERE r.work_id=:work AND ((CAST(:version AS integer) IS NULL AND r.report_id=:id) OR r.report_version=:version)
                 ORDER BY s.signature_id
@@ -126,6 +133,7 @@ class ReportSignatureController {
             ObjectNode item = items.addObject(); item.put("signature_id", rs.getLong(1)); item.put("signer_name", rs.getString(2));
             item.put("signed_at", rs.getTimestamp(3).getTime()); item.put("report_version", rs.getInt(4));
             item.put("image_url", storage.signGet(rs.getString(5)).url());
+            item.put("signer_role", rs.getString(6));
         }); return out;
     }
     private JsonNode sorted(JsonNode n) {

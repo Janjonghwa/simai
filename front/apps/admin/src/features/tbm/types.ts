@@ -280,6 +280,8 @@ export const tbmReportSchema = z.object({
   wrap_up_status: z.string().nullish(),
   locked_at: z.union([z.string(), z.number()]).nullish(),
   content_sha256: z.string().nullish(),
+  approved_at: z.union([z.string(), z.number()]).nullish(),
+  approved_by_name: z.string().nullish(),
   signature_count: z.number().int().optional(),
   status: reportStatusSchema,
   failure_reason: z.string().nullish().default(null),
@@ -299,6 +301,23 @@ export const tbmReportSchema = z.object({
   completed_at_ms: z.number().nullish().default(null),
 });
 export type TbmReport = z.infer<typeof tbmReportSchema>;
+
+export const signerRoleSchema = z.enum(['PARTICIPANT', 'APPROVER']);
+export type SignerRole = z.infer<typeof signerRoleSchema>;
+export const signatureSchema = z.object({
+  signature_id: z.union([z.string(), z.number()]).transform(String),
+  signer_name: z.string(),
+  signer_role: signerRoleSchema,
+  signed_at: z.union([z.number(), z.string()]),
+  report_version: z.number(),
+  image_url: z.string(),
+});
+export type Signature = z.infer<typeof signatureSchema>;
+export const signatureResultSchema = signatureSchema.omit({ image_url: true }).extend({
+  report_id: z.number(),
+  locked_at: z.union([z.number(), z.string()]),
+  content_sha256: z.string(),
+});
 
 export const tbmReportVersionSummarySchema = z.object({
   report_id: z.number().int(),

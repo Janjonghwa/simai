@@ -40,6 +40,7 @@ class ReportSignatureIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired JwtEncoder encoder;
     @Autowired ObjectMapper mapper;
+    @Autowired WorkWrapUpRepository wrapUps;
     long adminId, otherId, workId, reportId;
     String admin, other, viewer;
 
@@ -68,6 +69,9 @@ class ReportSignatureIntegrationTest {
         String canonical = "{\"citations\":[{\"c\":5,\"d\":4}],\"sections\":[{\"a\":{\"b\":3,\"y\":2},\"z\":1}],\"wrap_up_summary\":null}";
         String expected = "sha256:" + HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical.getBytes(StandardCharsets.UTF_8)));
         assertThat(first.path("content_sha256").asString()).isEqualTo(expected);
+        assertThat(first.path("signer_role").asString()).isEqualTo("PARTICIPANT");
+        assertThat(jdbc.queryForObject("SELECT signer_role FROM report_signature WHERE signature_id=?", String.class,
+                first.path("signature_id").asLong())).isEqualTo("PARTICIPANT");
         assertThat(jdbc.queryForObject("SELECT content_sha256 FROM report WHERE report_id=?", String.class, reportId)).isEqualTo(expected);
         assertThat(jdbc.queryForObject("SELECT locked_at FROM report WHERE report_id=?", java.sql.Timestamp.class, reportId)).isNotNull();
         JsonNode second = body(sign(admin, reportId, 1, upload(admin), SHA, true).andExpect(status().isCreated()));
@@ -75,7 +79,8 @@ class ReportSignatureIntegrationTest {
         assertThat(second.path("locked_at").asLong()).isEqualTo(first.path("locked_at").asLong());
         mvc.perform(get("/api/reports/tbm/{id}/signatures", reportId).header(HttpHeaders.AUTHORIZATION, admin))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.items.length()").value(2))
-                .andExpect(jsonPath("$.items[0].image_url").exists());
+                .andExpect(jsonPath("$.items[0].image_url").exists())
+                .andExpect(jsonPath("$.items[0].signer_role").value("PARTICIPANT"));
         mvc.perform(get("/api/reports/tbm/{id}/signatures", reportId).header(HttpHeaders.AUTHORIZATION, viewer))
                 .andExpect(status().isForbidden());
     }
@@ -106,6 +111,87 @@ class ReportSignatureIntegrationTest {
         uploadRequest(viewer, "image/png", 100).andExpect(status().isForbidden());
         uploadRequest(admin, "image/jpeg", 100).andExpect(status().isBadRequest());
         uploadRequest(admin, "image/png", (256L << 10) + 1).andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void approvalReusesHashAndRejectsEveryFurtherSignature() throws Exception {
+        JsonNode participant = body(sign(admin, reportId, 1, upload(admin), SHA, true).andExpect(status().isCreated()));
+        jdbc.update("UPDATE app_user SET display_label='결재 계정 표시명' WHERE user_id=?", otherId);
+        JsonNode approval = body(approve(other, reportId, 1, upload(other)).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.signer_role").value("APPROVER")));
+        assertThat(approval.path("content_sha256").asString()).isEqualTo(participant.path("content_sha256").asString());
+        assertThat(approval.path("locked_at").asLong()).isEqualTo(participant.path("locked_at").asLong());
+        assertThat(jdbc.queryForObject("SELECT approved_by FROM report WHERE report_id=?", Long.class, reportId)).isEqualTo(otherId);
+        assertThat(jdbc.queryForObject("SELECT recorded_by FROM report_signature WHERE signature_id=?", Long.class,
+                approval.path("signature_id").asLong())).isEqualTo(otherId);
+        mvc.perform(get("/api/reports/tbm/{id}", reportId).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.approved_at").isNumber())
+                .andExpect(jsonPath("$.approved_by_name").value("결재 계정 표시명"));
+        mvc.perform(get("/api/reports/tbm/{id}/signatures", reportId).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.items[1].signer_role").value("APPROVER"));
+        approve(admin, reportId, 1, upload(admin)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("REPORT_APPROVED"));
+        sign(admin, reportId, 1, upload(admin), SHA, true).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("REPORT_APPROVED"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM report_signature WHERE report_id=? AND signer_role='APPROVER'",
+                Integer.class, reportId)).isEqualTo(1);
+    }
+
+    @Test
+    void approvalWithoutParticipantsLocksContentAndNewVersionRequiresNewApproval() throws Exception {
+        JsonNode first = body(approve(admin, reportId, 1, upload(admin)).andExpect(status().isCreated()));
+        assertThat(first.path("content_sha256").asString()).startsWith("sha256:");
+        assertThat(first.path("locked_at").asLong()).isPositive();
+        Instant endedAt = Instant.now();
+        var work = mapper.createObjectNode();
+        work.put("actual_started_at", endedAt.minusSeconds(60).toEpochMilli());
+        work.put("actual_ended_at", endedAt.toEpochMilli());
+        work.putNull("zone_id");
+        long next = wrapUps.prepare(workId, work, endedAt).path("report_id").asLong();
+        wrapUps.complete(next, "작업 마무리", true, null, endedAt);
+        mvc.perform(get("/api/reports/tbm/{id}", next).header(HttpHeaders.AUTHORIZATION, admin))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.approved_at").isEmpty())
+                .andExpect(jsonPath("$.approved_by_name").isEmpty()).andExpect(jsonPath("$.locked_at").isEmpty());
+        JsonNode second = body(approve(other, next, 2, upload(other)).andExpect(status().isCreated()));
+        assertThat(second.path("content_sha256").asString()).isNotEqualTo(first.path("content_sha256").asString());
+        assertThat(jdbc.queryForObject("SELECT approved_by FROM report WHERE report_id=?", Long.class, reportId)).isEqualTo(adminId);
+        assertThat(jdbc.queryForObject("SELECT approved_by FROM report WHERE report_id=?", Long.class, next)).isEqualTo(otherId);
+        approve(admin, reportId, 1, upload(admin)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("REPORT_APPROVED"));
+    }
+
+    @Test
+    void invalidRoleAndForeignApprovalGrantAreRejected() throws Exception {
+        approve(admin, reportId, 1, upload(other)).andExpect(status().isBadRequest());
+        mvc.perform(post("/api/reports/tbm/{id}/signatures", reportId).header(HttpHeaders.AUTHORIZATION, admin)
+                .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(Map.of("report_version", 1,
+                        "signer_name", "결재 실명", "signer_role", "OWNER", "image_key", upload(admin),
+                        "image_sha256", SHA, "notice_acknowledged", true))))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("INVALID_SIGNATURE"));
+        assertThat(jdbc.queryForObject("SELECT approved_at FROM report WHERE report_id=?", java.sql.Timestamp.class, reportId)).isNull();
+    }
+
+    @Test
+    void participantDefaultAndLimitStillAllowFinalApproval() throws Exception {
+        JsonNode first = body(sign(admin, reportId, 1, upload(admin), SHA, true).andExpect(status().isCreated()));
+        jdbc.update("""
+                INSERT INTO report_signature(report_id, report_version, signer_name, signature_image_key,
+                    image_sha256, report_content_sha256, legal_notice_ack, recorded_by, signed_at)
+                SELECT ?, 1, '참석자', 'fixture-' || ? || '-' || n, ?, ?, true, ?, now()
+                FROM generate_series(1, 49) n
+                """, reportId, reportId, SHA, first.path("content_sha256").asString(), adminId);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM report_signature WHERE report_id=? AND signer_role='PARTICIPANT'",
+                Integer.class, reportId)).isEqualTo(50);
+        sign(admin, reportId, 1, upload(admin), SHA, true).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SIGNATURE_LIMIT_REACHED"));
+        approve(admin, reportId, 1, upload(admin)).andExpect(status().isCreated());
+    }
+
+    private ResultActions approve(String token, long id, int version, String key) throws Exception {
+        return mvc.perform(post("/api/reports/tbm/{id}/signatures", id).header(HttpHeaders.AUTHORIZATION, token)
+                .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(Map.of("report_version", version,
+                        "signer_name", "결재 실명", "signer_role", "APPROVER", "image_key", key,
+                        "image_sha256", SHA, "notice_acknowledged", true))));
     }
 
     private long user(String login, String role) {
