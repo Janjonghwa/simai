@@ -54,7 +54,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 |---|---|
 | `risk_event` | 규칙·버전, World ID·구역, 출처, 생명주기·검증 상태, severity·confidence·confidence_reasons, 발생·해소 시각, 근거 스냅샷, 관련 이벤트(related_event_id), 보존 표시 |
 | `risk_event_update` | RunPod Tier 0 전이의 시간순 기록(event_sequence, config_version, 지연 전달·감사 전용 여부). 저널 위치는 저널 세대(`journal_epoch`)와 offset 으로 가른다(Tier 0 저널이 offset 0 부터 새로 시작하면 EC2 가 세대를 올린다) |
-| `vlm_assessment` | 이벤트, 작업 유형(`vlm_rationale`·`incident_summary`)·job_id, 모델·버전, 입력 참조, 근거·요약 문장, 인용 조항 ID, 상향 의견(proposed_severity), 관리자 결정(승인·거절, 누가·언제, `escalation_id`), G7 종단간 지연(`event_observed_at`, `event_to_rationale_ms`)과 추론 지연 |
+| `vlm_assessment` | 이벤트, 작업 유형(지금 기록하는 것은 `vlm_rationale`, 사고 구간 요약은 `incident_summary` 테이블)·job_id, 모델·버전, 입력 참조, 근거 문장, 인용 조항 ID, 상향 의견(proposed_severity), 관리자 결정(승인·거절, 누가·언제, `escalation_id`), G7 종단간 지연(`event_observed_at`, `event_to_rationale_ms`)과 추론 지연 |
 | `notification` | 이벤트, 채널, 대상, 발송·수신 확인·ACK 시각 (LIVE 이벤트만 연결 가능. 시험 알림은 이 테이블에 넣지 않음). 발송 대기열을 겸해 발송 워커 임대 기한(`claimed_until`)을 두고, 비었거나 지난 대기 건은 다시 꺼낸다. 원격 발송 채널(Web Push)은 폐기했고(10.1), 테이블은 LIVE 전용 알림 기록과 DB 제약(11.4 의 3)을 위해 둔다 |
 | `media_clip` | 이벤트 연결 영상 구간의 객체 키, 카메라·구간(촬영 시각)·해시·크기, 얼굴 흐림 여부, 삭제 예정일, 보존 표시. Tier 0 가 I1 `media_clip` 으로 보내고, 보낸 뒤 붙는 CRITICAL 자동 보존은 고치지 않고 `media_clip_retention` 으로 이력을 더한다 |
 | `report` | 보고서 종류(TBM·DAILY), 대상 작업(`work_unit.work_id`)·보고서 버전(`report_version`, 덮어쓰지 않고 새 행 추가)·공종(`work_type`), 레이아웃·계산 결과(`sim.*`) 참조, 생성 상태, 본문(`sections`), 계산 근거 표, 인용 목록(`citations`), 법령 지식 그래프 서브그래프(`subgraph`: `nodes`·`edges`), 4단계 실행 상태(`steps`), 구역 최근 이벤트 요약(`zone_history`) (EC2 Python 컨테이너 생성, v1.3 수정 49) |
@@ -64,11 +64,12 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `event_escalation` | 승인한 VLM 상향 의견의 적용 명령과 Tier 0 응답 결과(`result_status`: `PENDING`·`ACCEPTED`·`DUPLICATE`·`REJECTED`, `reject_reason`, `result_received_at`, 5.4). 상향 전이가 가리킨다 |
 | `journal_cursor` | Tier 0 인스턴스별 저널 수신 상태: 지금 받는 저널 세대(`journal_epoch`), `acked_offset`, 재동기화 중 여부, 마지막 스냅샷(3.2) |
 | `i1_deferred_message` | 앞선 메시지를 기다리는 I1 메시지(받은 봉투 그대로, 처리되면 지움) |
-| `event_frame` | 이벤트 프레임 주소와 촬영 시각(I1 `event_frame_ready`, VLM 입력) |
+| `incident_summary` | 사고 구간 VLM 사후 요약 요청·결과(추가만): 이벤트·event_sequence·job_id, 상태(QUEUED·RUNNING·SUCCEEDED·FAILED·TIMED_OUT), 요청자·요청·완료 시각, 구간, 요약 문장, 근거 시각, 사용 프레임 수, 모델 버전, 지연, 오류 코드(5.4) |
+| 이벤트 프레임 | 별도 테이블을 두지 않는다. I1 `event_frame_ready` 의 프레임 주소와 촬영 시각은 `vlm_rationale` 작업 입력(`analysis_job.input.frames`)에 넣어 둔다(5.4) |
 | `clip_access_log` | 이벤트 클립 열람 기록(14장) |
 | `video_segment` | 상시 영상 조각의 객체 키, Tier 0·카메라·구간(촬영 시각)·stream_epoch·해시·크기, 삭제 예정일, 삭제 시각. Tier 0 가 I1 `video_segment` 로 보낸다(5.1, v1.3 수정 36) |
 | `video_access_log` | 상시 영상 열람 기록(14장) |
-| `cctv_remote_egress_log` | 관제 화면 원격 CCTV 송출 바이트의 1분 단위 추가 전용(append-only) 사용량 기록(UTC 달력 월 누적 합산으로 월 80 GB 상한 판정, 영상 바이트 자체는 EC2 에 저장하지 않음, 3.3, v1.3 수정 46) |
+| `cctv_remote_usage` | 관제 화면 원격 CCTV 송출 바이트의 1분 단위 추가 전용(append-only) 사용량 기록(UTC 달력 월 누적 합산으로 월 80 GB 상한 판정, 영상 바이트 자체는 EC2 에 저장하지 않음, 3.3, v1.3 수정 46) |
 | `upload_grant` | 임시 업로드 주소 발급 기록(올라온 객체 키 검증): 목적(이벤트 프레임·클립, 아바타 자산, 상시 영상 조각, Scene glTF. 조치 사진 `TICKET_PHOTO` 는 폐기, 10.1), 요청 주체(Tier 0·기기·사용자), 서명에 묶은 형식·크기·sha256, 이벤트 프레임·클립이면 이벤트 |
 | `avatar_asset` | 아바타 자산 버전(키 `(world_id, stream_epoch, appearance_version)`, 추가만, 11.5·12.2) |
 | `push_subscription`·`test_push`·`push_receipt` | 폐기(v1.3, 10.1). DB 에는 남아 있으나 쓰지 않으며, 테이블 정리는 별도 이슈에서 한다 |
@@ -102,7 +103,7 @@ PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evalua
 | 데이터 | 보관 |
 |---|---|
 | 원본 영상 | 관제 중 RunPod로 상시 전송(TLS). Tier 0 가 카메라별 상시 영상 조각으로 객체 저장소에 저장하고 14일 후 EC2 삭제 작업이 자동 삭제(보존 표시 없음, 얼굴 흐림 없음, 열람은 관리자·조회 기록, v1.3 수정 36) |
-| 이벤트 영상 클립 | 14일 후 자동 삭제. CRITICAL 이벤트 연결분은 자동 보존 표시, 아차사고는 관리자가 보존 표시를 붙이거나 뗌. 보존분은 접근 기록을 남기고 프로젝트 종료 시 파기. 얼굴은 흐림 처리하지 않는다(사용자 결정, 16장). 열람은 권한자로 제한하고 조회 기록을 남긴다(14장). 흐림 단계는 선택 사항으로 남기며, 켜면 업로드 전에 반드시 거치고 실패하면 흐리지 않은 클립으로 대신하지 않는다. 생성형 얼굴 복원·표정 추정은 하지 않고, 재식별(Re-ID)은 전신 임베딩을 기하 게이트 뒤 보조 비용으로만 쓰며 Tier 0 위치·ID 정본을 덮지 않는다(도입은 10/30 이후 G2 측정 뒤, 19.1). EC2 단절 중 클립은 Tier 0 저장 위치에 먼저 저장 후 복구 시 업로드(5.1). Tier 0 에 남은 미업로드 클립은 보존 표시가 없고 삭제 예정일이 지난 것만 올리지 않고 지우며, 보존 표시가 있는 클립은 전체 파기 기한 전까지 복원·업로드한다 |
+| 이벤트 영상 클립 | 14일 후 자동 삭제. CRITICAL 이벤트 연결분은 자동 보존 표시, 아차사고는 관리자가 보존 표시를 붙이거나 뗌. 보존분은 접근 기록을 남기고 프로젝트 종료 시 파기. 얼굴은 흐림 처리하지 않는다(사용자 결정, 16장). 열람은 권한자로 제한하고 조회 기록을 남긴다(14장). 흐림 단계는 선택 사항으로 남기며, 켜면 업로드 전에 반드시 거치고 실패하면 흐리지 않은 클립으로 대신하지 않는다. 생성형 얼굴 복원·표정 추정은 하지 않고, 재식별(Re-ID)은 전신 임베딩을 기하 게이트 뒤 보조 비용으로만 쓰며 Tier 0 위치·ID 정본을 덮지 않는다(도입은 G2 측정 뒤, 19.1). EC2 단절 중 클립은 Tier 0 저장 위치에 먼저 저장 후 복구 시 업로드(5.1). Tier 0 에 남은 미업로드 클립은 보존 표시가 없고 삭제 예정일이 지난 것만 올리지 않고 지우며, 보존 표시가 있는 클립은 전체 파기 기한 전까지 복원·업로드한다 |
 | PPE crop(확장) | 판정 직후 삭제, 저장 없음 |
 | 2D 관측 | Tier 0 저장 위치(3.12), 7\~14일 |
 | 좌표·상태·이벤트 로그 | 얼굴 없음. 프로젝트 발표 후 30일 안 파기 |

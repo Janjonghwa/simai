@@ -24,7 +24,7 @@
 - Tier 0와 분석 워커는 **GPU Pod 하나**에서 별도 프로세스로 실행한다(World Track Manager 하나, LIVE Risk Engine 정본 하나). GPU를 나눠 쓰므로 다음 규칙을 둔다.
   - Tier 0 프로세스가 GPU 메모리를 먼저 확보한다. 분석 워커는 남은 메모리 안에서 상한을 두고 실행한다(예: vLLM `gpu_memory_utilization` 제한, 동시 요청 수 제한). 아래 GPU 메모리 예산표를 따른다.
   - Tier 0 지연이 목표를 넘거나 모르면 분석 워커의 새 작업을 멈추고 대기열에 둔다. Tier 0 는 1초 간격으로 지연 표본을 모아 GPU 상태 표시 파일을 쓸 때마다(초기값 5초) 그 사이 창으로 집계한다. 멈춤 기준은 그 창의 최댓값(p95 보다 엄격)이 `capture_to_risk` 목표(6.6, 600ms)를 넘음(한 창·한 표본이라도 즉시), 지연을 모르는 표본이 있음, 표본이 없음, 표시 파일이 오래됨·없음·형식 오류(모름)이다. 창 안에 추론 대기 상한(5.1, `queue_wait_ms` 150ms)을 넘겨 버린 프레임은 한 창에 2건(초기값) 이하면 통과로 넘기고, 그보다 많으면 멈춘다(지연 초과·모름과 함께면 위 기준으로 이미 멈춤). 멈춘 뒤 다시 받으려면 통과 상태가 10초(초기값) 이어져야 한다. 분석 워커(VLM 빠른 경로 포함)와 아래 상시 아바타 루프는 같은 접수 규칙을 쓰고, LIVE 관제 중 오프라인·배치 EXP 차단은 이 규칙과 따로 늘 걸린다. 이 규칙이나 LIVE 관제 시작 때문에 분석 워커가 받은 작업을 시작하지 않았거나 멈췄으면 시도 횟수를 쓰지 않고 반납한다(12.5). 우선순위는 Tier 0 > VLM 빠른 경로 > 보고서·사후 요약 > 그 밖의 작업이다.
-  - EXP-01 등 오프라인·배치 EXP Job(I5 배치 `hmr_*`·`static_reconstruct` 작업 포함)은 LIVE 관제 시간에 실행하지 않는다(AdmissionGate 가 대여에서 빼고, 실행 전 LIVE 진입 시 시도 횟수를 쓰지 않고 반납, 5.3·12.5). 예외로 시연 범위인 EXP-02 아바타 포즈 스트림(상시 HMR 루프 `services/avatar`, 5.6·12.2)은 LIVE 관제 중에도 분석 워커 GPU 상한 안에서 실행하되, Tier 0 가 공유 파일(`$SIMAI_ROOT/state/avatar-input.npz`)로 내보낸 최신 왜곡 보정 영상·트랙을 읽고 추론 전마다 Tier 0 지연 감시 표시 파일(`$SIMAI_ROOT/state/tier0.live`)을 확인해 위 접수 규칙에 걸리면(지연 초과·모름은 즉시) 추론을 멈추며(그때 뷰어는 0.5 s 뒤 캡슐 아바타로 돌아감, 13.2) 통과 상태가 10초(초기값) 이어지면 다시 시작한다(`docs/design/hmr-avatar-loop.md`, `docs/design/tier0-gpu-priority.md`).
+  - EXP-01 등 오프라인·배치 EXP Job(I5 배치 `hmr_*`·`static_reconstruct` 작업 포함)은 LIVE 관제 시간에 실행하지 않는다(AdmissionGate 가 대여에서 빼고, 실행 전 LIVE 진입 시 시도 횟수를 쓰지 않고 반납, 5.3·12.5). 예외로 시연 범위인 EXP-02 아바타 포즈 스트림(상시 HMR 루프 `services/avatar`, 5.6·12.2)은 LIVE 관제 중에도 분석 워커 GPU 상한 안에서 실행하되, Tier 0 가 공유 파일(기본 `/dev/shm/simai-avatar-input.npz`, `/dev/shm` 이 없거나 쓸 수 없으면 `$SIMAI_ROOT/state/avatar-input.npz`, `SIMAI_AVATAR_CHANNEL` 로 지정 가능)로 내보낸 최신 왜곡 보정 영상·트랙을 읽고 추론 전마다 Tier 0 지연 감시 표시 파일(`$SIMAI_ROOT/state/tier0.live`)을 확인해 위 접수 규칙에 걸리면(지연 초과·모름은 즉시) 추론을 멈추며(그때 뷰어는 0.5 s 뒤 캡슐 아바타로 돌아감, 13.2) 통과 상태가 10초(초기값) 이어지면 다시 시작한다(`docs/design/hmr-avatar-loop.md`, `docs/design/tier0-gpu-priority.md`).
   - 분석 워커 프로세스가 죽거나 메모리 부족이 나도 Tier 0 프로세스는 계속 동작해야 한다(프로세스 분리, 6.5).
   - GPU가 부족하면 같은 Pod의 GPU 등급을 올리고, 그다음 VLM 처리 주기와 동시 요청 수를 조정한다(VLM 모델은 5.4 로 고정). GPU Pod를 2개로 늘리는 구성은 쓰지 않는다. Tier 0 분산(샤딩, 중앙 Fusion, 리더 선출, 장애 전환)은 MVP 범위 밖이다.
 - 이중 감시: 노트북은 끊긴 대상에 따라 현장 표시를 달리한다(RunPod Tier 0나 영상이 끊기면 “관제 중단”, EC2만 끊기면 “원격 관제 장애”, 3.10). EC2는 RunPod Tier 0나 노트북 하트비트가 끊기면 System Health를 UNSAFE_UNKNOWN으로 바꾸고 관리자 화면에 알린다. 노트북은 EC2에도 1초마다 HTTPS 하트비트(`laptop_heartbeat`, 기기 토큰)를 보내며 Tier 0 연결 상태를 함께 알린다. 그래서 EC2는 Tier 0 하트비트가 끊겨도 노트북이 Tier 0 정상을 알리면 “원격 전달 단절(현장 경보 동작 중)”, 노트북도 Tier 0 끊김을 알리면 “관제 정지”로 구분해 표시한다. 두 경우 모두 System Health는 UNSAFE_UNKNOWN이다. ‘Tier 0 정상’은 연결(`tier0.control`)과 노트북 현장 표시(`site_display`)를 함께 본다: 노트북은 Tier 0 health 를 받고 있으면 처리 정체·판정 불가·영상 단절이어도 `tier0.control`=CONNECTED 로 두고 그 판단을 `site_display`=CONTROL_HALTED 로 알리므로, CONNECTED 여도 CONTROL_HALTED 이면 “관제 정지”다(3.10).
@@ -42,7 +42,7 @@
 | VLM | Cosmos3-Nano(16B) 가중치 + KV 캐시(vLLM `gpu_memory_utilization`) | 초기값 0.55, 동시 요청 4(분석 워커 상한 안). G0 실측으로 고침. 3차 GPU 세션(H100 80GB, 감시 프로세스와 같은 인자) 실측: 가중치 16.79 GiB·KV 캐시 23.99 GiB 가 0.55 안에 들고, G7 빠른 경로 p95 2.1 s, VLM 동시 4 지속 중 Tier 0 `frame_age` p95 60 → 76 ms 라 값은 그대로 둔다(48GB급의 0.55 는 19.1 미결, `docs/design/unified-env.md`) |
 | 임베딩(GPU 에 둘 때만) | `Qwen/Qwen3-Embedding-0.6B`(1024차원, v1.3 수정 49). GPU 에 두지 않는다(법령 지식 그래프 노드·표준 질의 템플릿은 사전 임베딩해 두고, 실시간 질의는 EC2 Python 컨테이너 CPU 에서 처리, 5.4·11장) | 해당 없음 |
 | 마스크 | YOLO26-seg(아바타 루프 `YOLO26x-seg` 는 아래 HMR 상한 안) | 분석 워커 상한 안. G0 실측 |
-| HMR(EXP-02, 시연 범위) | Fast SAM 3D Body(상시 아바타 스트림 루프 `services/avatar`, `YOLO26x-seg` 마스크·UV 텍스처 누적 포함) | 분석 워커 상한 안(초기값 0.10, `SIMAI_AVATAR_GPU_FRACTION`). G0 실측(상한) |
+| HMR(EXP-02, 시연 범위) | Fast SAM 3D Body(상시 아바타 스트림 루프 `services/avatar`, `YOLO26x-seg` 마스크·UV 텍스처 누적 포함) | 분석 워커 상한 안(초기값 0.10, `SIMAI_AVATAR_GPU_MEMORY_FRACTION`). G0 실측(상한) |
 | MapAnything | 설치·비관제 시간 실행(일회성 `simai-bootstrap scene` 또는 분석 워커 I5 `static_reconstruct` 자식 프로세스, 관제 중 실행 안 함, 5.3) | — |
 
 비율은 GPU 전체 메모리 대비다. 분석 워커는 시작할 때 Tier 0 + 분석 워커 ≤ 0.95, VLM ≤ 분석 워커를 검사하고 틀리면 시작하지 않는다.
@@ -378,7 +378,7 @@ GPU 를 쓰는 곳(실행 사이트)과 지역은 고정하지 않는다(2026-10
 - SSH 는 키 인증만 받는다. 공개키는 세 방식(RunPod 계정 키, Vast 계정 키, 키 파일 지정) 중 하나로 받고, VM 처럼 호스트 SSH 로 들어가는 곳에서는 컨테이너 SSH 를 끈다.
 - HF 토큰은 환경 변수 `HF_TOKEN` 으로만 받는다. 시작 절차가 가중치를 받을 때만 쓰고 Tier 0·워커·장면 명령·큐 어느 자식에도 넘기지 않고 환경에서 지운다. 기록에는 있는지 여부만 남긴다.
 
-**연결.** 노트북(게이트웨이)과 GPU 인스턴스 사이는 Tailscale을 쓰지 않는다. SSAFY망은 SSH·임의 포트·UDP를 막아 Tailscale이 DERP 중계(토론토)를 탔고, 업로드가 약 2.4 Mbps로 막혔다.
+**연결.** 노트북(게이트웨이)과 GPU 인스턴스 사이는 Tailscale을 쓰지 않는다. SSAFY망은 일반 외부 SSH·임의 포트·UDP를 막아(팀 EC2 `simai.live:22` 는 예외, 아래 SSAFY 망 기본 경로) Tailscale이 DERP 중계(토론토)를 탔고, 업로드가 약 2.4 Mbps로 막혔다.
 
 - 영상(I0): 인스턴스 공개 TCP 포트로 Direct TCP. Tier 0가 TLS를 직접 종료하고 노트북 기기 토큰으로 인증하며, 노트북은 Tier 0 공개키를 고정해 서버를 확인한다(12.7). 카메라마다 연결을 따로 연다. 한 연결을 카메라 4대가 공유하면 한 카메라의 지연이 다른 카메라까지 막으므로 Pod 까지 이어지는 단일 SSH 터널로 보내지 않는다.
   - SSAFY 망(시연장 포함) 기본 = EC2(`simai.live:22`) SSH 경유 + Pod 공개 포트 Direct TCP: 노트북에서 `ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 simai-ec2 -L 127.0.0.1:17000:<Pod IP>:<17000 매핑> -L 127.0.0.1:17001:<Pod IP>:<17001 매핑>` 으로 로컬 포워드를 연다. 노트북→EC2 구간(짧음, 약 5 ms)만 SSH 연결 하나를 같이 쓰고 EC2→Pod 구간(약 41 ms)은 포워드된 연결마다 별도 TCP 연결이 열리므로 12.2 “카메라별 독립 연결”의 목적(긴 구간에서 한 카메라 손실이 다른 카메라를 막지 않음)을 지킨다. TLS 는 Tier 0 가 직접 종료하고 기기 토큰·공개키 고정(12.7, 14)도 그대로라 EC2 는 영상 내용을 볼 수 없다. RunPod 템플릿에는 TCP 17000·17001 을 노출하고(매핑된 바깥 포트는 콘솔 또는 Pod 의 `RUNPOD_TCP_PORT_17000`·`RUNPOD_TCP_PORT_17001`), Tier 0 는 기본 `0.0.0.0` 에서 듣는다(`SIMAI_TIER0_CONTROL_LISTEN_HOST`). Tier 0 가 EC2 에 알리는 엔드포인트 host 는 `127.0.0.1`(노트북 로컬 포워드)이고 relay·현장 경보 단말은 그 값을 그대로 쓴다. 집 등 막히지 않은 망은 EC2 를 빼고 Pod 공개 IP·포트로 바로 붙어도 된다.
@@ -410,7 +410,7 @@ GPU 를 쓰는 곳(실행 사이트)과 지역은 고정하지 않는다(2026-10
 
 **저장소 규칙.**
 
-- Tier 0 저장 위치(`$SIMAI_ROOT`)는 시작 절차가 고른다. 이벤트 저널, 체크포인트, `acked_offset`, 구성 묶음 보관본, 2D 관측 Parquet(11.2), 사람 지운 배경 묶음(`state/clean-background/`, 5.3), 아바타 루프 입력 공유 파일(`state/avatar-input.npz`, 5.6), TensorRT 엔진 캐시가 그 아래에 있고, 비공개 폴더 `.simai-private/` 는 그 옆(`$SIMAI_ROOT/../.simai-private/`, 볼륨이면 `/workspace/.simai-private/`)에 둔다(구조는 19.1).
+- Tier 0 저장 위치(`$SIMAI_ROOT`)는 시작 절차가 고른다. 이벤트 저널, 체크포인트, `acked_offset`, 구성 묶음 보관본, 2D 관측 Parquet(11.2), 사람 지운 배경 묶음(`state/clean-background/`, 5.3), 아바타 루프 입력 공유 파일의 폴백 위치(`state/avatar-input.npz`, 기본은 `/dev/shm`, 5.6), TensorRT 엔진 캐시가 그 아래에 있고, 비공개 폴더 `.simai-private/` 는 그 옆(`$SIMAI_ROOT/../.simai-private/`, 볼륨이면 `/workspace/.simai-private/`)에 둔다(구조는 19.1).
 - 재시작 복구(3.2)는 저장 위치가 남아 있는 동안만 성립한다. 컨테이너 디스크는 프로세스 재시작에는 남지만 인스턴스를 멈추거나 지우거나 재설정하면 사라진다. 그래서 LIVE 관제(시연 준비·리허설·시연)는 인스턴스를 다시 켜도 남는 디스크에서 한다. 컨테이너 디스크 위의 저널·2D 관측은 시험 데이터다.
 - 저장 위치는 저널 계약(3.2)이 쓰는 기능(추가 전용 쓰기 + fsync, 원자적 rename, 파일 잠금)을 지켜야 한다. 시연 저장 위치에서 강제 종료 복구 시험(G3)으로 확인한다. RunPod 글로벌 볼륨(베타)은 쓰지 않는다(16장).
 - Python·CUDA·Torch 환경은 모델별 Docker 이미지로 만들고 저장 위치에 설치하지 않는다. 저장 위치에는 가중치, 데이터, 실험 산출물, TensorRT 엔진 캐시만 둔다. E-GATE-0 때 만든 볼륨 환경은 예외였고 새로 만들지 않는다.

@@ -48,7 +48,7 @@ Jira는 **EXP-01 / EXP-02**를 큰 Feature 티켓으로 유지하고, 티켓 하
 1. **Baseline:** 단일 인물 샘플에서 MHR 메시·native_pose·canonical_motion을 출력하고 Three.js 메시 렌더링 재현.
 2. **다인·동작:** 4대 영상의 World ID 및 촬영 시각과 대응, 교차·가림·재등장/포즈 안정성 검증. Local Track ID를 인물 정체성의 단일 정본으로 사용하지 않음.
 3. **좌표 정렬:** §5.2 Tier 0 pelvis_xyz·position_xy·ground_anchor_xyz와 카메라/월드 변환을 계약으로 연결. 지지면 모를 때 Z=0을 가정하지 않음.
-4. **외형 개선:** 인물별로 관측된 표면의 텍스처와 관측되지 않은/보간된 영역을 구분해 누적 갱신한다. 외형 개선과 신원 재식별은 분리하고, 생성형 얼굴 복원·표정 추정·실명 인식은 범위 밖이다(재식별은 전신 임베딩을 기하 게이트 뒤 보조 비용으로만 쓰되 10/30 이후 G2 측정 뒤 검토, 19.1). 두 단계로 점진 도입한다(3DGS 미사용).
+4. **외형 개선:** 인물별로 관측된 표면의 텍스처와 관측되지 않은/보간된 영역을 구분해 누적 갱신한다. 외형 개선과 신원 재식별은 분리하고, 생성형 얼굴 복원·표정 추정·실명 인식은 범위 밖이다(재식별은 전신 임베딩을 기하 게이트 뒤 보조 비용으로만 쓰되 G2 측정 뒤 검토, 19.1). 두 단계로 점진 도입한다(3DGS 미사용).
    - 1단계(E-GATE-2): MHR 리깅 메시(SkinnedMesh) + 포즈 스트림(I6 `avatar_pose_batch` → I2 `avatar_frame`, 12.2)으로 구동하고 기본 재질(상·하의 대표색)로 칠한다.
    - 2단계: 관측 픽셀만 쓰는 다시점 UV 텍스처 누적(`SIMAI_AVATAR_APPEARANCE=auto`, CUDA 기본 켬, 2026-10-30 사용자 결정). 가시성 필터(z-buffer·시선 각도·아바타 루프 `YOLO26x-seg` 전경 마스크 `SIMAI_AVATAR_SEG=auto`·메시 실루엣 침식 및 감쇠) → UV 투영(구현은 새 외부 의존성 없는 `torch`/`numpy` 원근 보정 z-buffer 래스터화, 후보 PyTorch3D·nvdiffrast) → 품질 가중(라플라시안 선명도·Tier 0 대 HMR COCO17 재투영 오차 가중·카메라 간 공통 고품질 텍셀 RGB 채널 이득 EMA 맞춤) 및 신뢰도 가중 누적 `T_new = (W_old·T_old + w·C_obs) / (W_old + w)` → 이상 관측 거절 → 버전 기록(`appearance_version`, 추가만)·되돌리기(`docs/design/hmr-appearance-texture.md`, `docs/design/hmr-avatar-loop.md`). 사람별 canonical 메시(MHR 스키닝으로 기준 자세에 정렬) 위에 쌓는다. 촬영·외형 누적은 기관(SSAFY) 허가 기준이며 별도 참여자 동의 조건은 두지 않는다(11.5). MHR↔SMPL 변환은 https://github.com/facebookresearch/MHR/blob/main/tools/mhr_smpl_conversion/README.md 를 참고한다.
    - 보이지 않는 면·얼굴을 생성하는 방식(SiTH·FISHuman, 30\~50px 물리 한계)과 옷 형상 복원(ReMu, ECON), 3DGS 아바타는 쓰지 않는다(16장).
