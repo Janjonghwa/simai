@@ -318,11 +318,13 @@ stateDiagram-v2
 | --- | --- | --- | --- |
 | `POST` | `/api/devices/coverage-guides` | `DEVICE` | 세팅 1단계 화면이 열려 있는 동안 게이트웨이 별도 CPU 프로세스가 계산한 카메라 각도 헬퍼 결과(`contracts/messages/coverage_guide.schema.json` 1.0.0) 제출 |
 | `GET` | `/api/cameras/coverage-guides` | `ADMIN` | 세팅 1단계 화면에서 최신 카메라 각도 헬퍼 결과(`latest: coverage_guide`) 조회 및 온디맨드 계산 활성화 |
+| `GET` | `/api/setup-sessions/camera-height-defaults` | `ADMIN` | 활성 카메라별 직전 제출 높이 기본값(`camera_heights_m`, 한 번도 제출된 적 없는 카메라는 `null` 로 반환해 임의 기본값을 만들지 않음)과 허용 오차(`height_tolerance_cm: 5.0`), 전체 존재 여부(`all_present`) 조회 (`S15P31A101-452`) |
+| `POST` | `/api/setup-sessions` | `ADMIN` | 선택한 `work_unit_id` 에 대해 새 현장 세팅 세션 시작(`202 Accepted`). 요청 본문에 카메라별 실측 높이 `camera_heights_m`(생략·일부 생략 시 `site.default_camera_heights_m` 폴백, 모두 채워지지 않으면 `400 CAMERA_HEIGHT_REQUIRED`) 전달. 제출된 유효 높이는 세션 생성·작업이 실패해도 다음 기본값으로 즉시 저장되며, 활성 `site_setup` 워커 부재 또는 동일 현장 진행 중 세션 존재 시 `409` 반환 (`S15P31A101-452`) |
 | `POST` | `/api/setup-sessions` | `ADMIN` | 선택한 `work_unit_id` 에 대해 새 현장 세팅 세션 시작. 요청 본문에 카메라별 실측 높이 `camera_heights_m`(생략 시 직전 세팅 값 사용) 전달. 이전 세팅의 카메라 높이를 기본값으로 함께 반환 |
 | `GET` | `/api/setup-sessions/{setupSessionId}` | `ADMIN`, `VIEWER` | 현재 세팅 단계(`COLLECTING_BACKGROUND` → `INITIAL_POSE_AND_WORLD` → `JOINT_BA_AND_VERIFY` → `PREVIEW_AND_VLM_DRAFT` → `READY_FOR_ZONES` / 백그라운드 `BAKING_TEXTURE` → `COMPLETED`, 실패 시 `FAILED`), 진행률(%), 카메라별 배경 수집률, 검증 요약, 생성된 `calibration_version`·`preview_scene_version`·`scene_version`·`zone_drafts`, 실패 사유(`failure_code`, `failure_message`) 조회 |
 | `POST` | `/api/setup-sessions/{setupSessionId}/retry` | `ADMIN` | 실패했거나 관리자가 카메라/물체를 다시 조정한 뒤 현장 세팅을 다시 실행(깨끗한 배경이 이미 유효한 카메라는 재사용 선택 가능) |
 
-- 내부 구간(EC2 ↔ GPU Pod I5/I1)에서는 세팅 요청(`site_setup` 작업 또는 통합 장면·보정 파이프라인)이 단계별 상태를 보고하고, 완료 시 `calibration_update`(I1), 정적 Scene 자산 업로드, `vlm_zone_draft` 결과를 전달한다.
+- 내부 구간(EC2 ↔ GPU Pod I5/I1)에서는 I5 `site_setup` 1.0.0 계약(`contracts/messages/site_setup.schema.json`, `job_request` 3.7.0 · `job_heartbeat` 2.1.0 · `job_callback` 2.6.0, `S15P31A101-452`)으로 세팅 작업을 전달한다. 워커는 유효 대여 하트비트의 선택 `payload.site_setup` 에 단계·진행률·카메라별 배경 수집률·높이 검사(복원 높이 − 입력 높이 cm, 기본 허용치 ±5 cm 초과 시 `"카메라 camX 높이가 Y.Y cm 안 맞음 — 거치대 확인"` 안내)·삼각콘(`TRAFFIC_CONE`)/개구부 표지판(`OPENING_SIGN`) 교차 확인과 먼저 등록된 `calibration_version`·`preview_scene_version`·`scene_version`·선택 `config_version`·`zone_drafts_ref` 참조를 싣는다. 서버는 동일 대여 내 단계·진행률 단조 증가(재할당된 새 대여는 첫 스냅샷부터 재시작)와 버전의 현장·보정 계보를 검증하되, 보정·Scene·구성 묶음을 자동 활성화하지 않는다. `READY_FOR_ZONES` 진입 시점부터 `work_unit.active_setup_session_id` 와 `ready_at` 이 보장된다.
 
 ---
 

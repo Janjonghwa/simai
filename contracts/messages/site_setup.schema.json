@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/site_setup.schema.json",
+  "title": "I5 site_setup 1.0.0 입력·단계·결과",
+  "$defs": {
+    "input": {
+      "type": "object",
+      "required": [
+        "setup_session_id",
+        "work_unit_id",
+        "site_id",
+        "camera_heights_m",
+        "calibration_target",
+        "height_tolerance_cm"
+      ],
+      "properties": {
+        "setup_session_id": {
+          "$ref": "../common/defs.schema.json#/$defs/uuid"
+        },
+        "work_unit_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "site_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "camera_heights_m": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          },
+          "additionalProperties": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        },
+        "calibration_target": {
+          "type": "object",
+          "required": [
+            "camera_ids",
+            "method",
+            "world_frame"
+          ],
+          "properties": {
+            "camera_ids": {
+              "type": "array",
+              "minItems": 2,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              }
+            },
+            "method": {
+              "const": "BACKGROUND_JOINT_BA_V2"
+            },
+            "world_frame": {
+              "const": "AUTO_FLOOR_Z_UP_METERS"
+            }
+          },
+          "additionalProperties": false
+        },
+        "height_tolerance_cm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "progress": {
+      "type": "object",
+      "required": [
+        "setup_session_id",
+        "status",
+        "progress_pct"
+      ],
+      "properties": {
+        "setup_session_id": {
+          "$ref": "../common/defs.schema.json#/$defs/uuid"
+        },
+        "status": {
+          "enum": [
+            "COLLECTING_BACKGROUND",
+            "INITIAL_POSE_AND_WORLD",
+            "JOINT_BA_AND_VERIFY",
+            "PREVIEW_AND_VLM_DRAFT",
+            "READY_FOR_ZONES",
+            "BAKING_TEXTURE",
+            "COMPLETED"
+          ]
+        },
+        "progress_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "background_collection_pct": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          }
+        },
+        "calibration_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "preview_scene_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "scene_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "config_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "zone_drafts_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "height_checks": {
+          "$ref": "#/$defs/height_checks"
+        },
+        "object_cross_checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "kind",
+              "passed"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "TRAFFIC_CONE",
+                  "OPENING_SIGN"
+                ]
+              },
+              "passed": {
+                "type": "boolean"
+              },
+              "message": {
+                "type": "string",
+                "maxLength": 500
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "READY_FOR_ZONES",
+                  "BAKING_TEXTURE",
+                  "COMPLETED"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "calibration_version",
+              "preview_scene_version",
+              "height_checks"
+            ]
+          }
+        }
+      ],
+      "description": "site_setup 1.0.0 상태 스냅샷. 서버는 세션·카메라 집합, 높이 입력·차이(cm, 복원-입력)·허용값, 버전의 현장·보정 계보를 확인한다. 진행 순서·진행률은 동일 대여에서 감소할 수 없다. 자동 재대여 시 새 대여의 첫 스냅샷부터 다시 시작한다. 참조는 먼저 등록된 보정·Scene·구성 묶음만 허용한다. config_version은 구역 발행 후에만 연결하며 세팅 완료 자체가 구역 발행은 아니다."
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "setup_session_id",
+        "status",
+        "progress_pct",
+        "calibration_version",
+        "preview_scene_version",
+        "scene_version",
+        "height_checks"
+      ],
+      "properties": {
+        "setup_session_id": {
+          "$ref": "../common/defs.schema.json#/$defs/uuid"
+        },
+        "status": {
+          "const": "COMPLETED"
+        },
+        "progress_pct": {
+          "const": 100
+        },
+        "background_collection_pct": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          }
+        },
+        "calibration_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "preview_scene_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "scene_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "config_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "zone_drafts_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "height_checks": {
+          "$ref": "#/$defs/height_checks"
+        },
+        "object_cross_checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "kind",
+              "passed"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "TRAFFIC_CONE",
+                  "OPENING_SIGN"
+                ]
+              },
+              "passed": {
+                "type": "boolean"
+              },
+              "message": {
+                "type": "string",
+                "maxLength": 500
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "READY_FOR_ZONES",
+                  "BAKING_TEXTURE",
+                  "COMPLETED"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "calibration_version",
+              "preview_scene_version",
+              "height_checks"
+            ]
+          }
+        }
+      ],
+      "description": "site_setup 1.0.0 상태 스냅샷. 서버는 세션·카메라 집합, 높이 입력·차이(cm, 복원-입력)·허용값, 버전의 현장·보정 계보를 확인한다. 진행 순서·진행률은 동일 대여에서 감소할 수 없다. 자동 재대여 시 새 대여의 첫 스냅샷부터 다시 시작한다. 참조는 먼저 등록된 보정·Scene·구성 묶음만 허용한다. config_version은 구역 발행 후에만 연결하며 세팅 완료 자체가 구역 발행은 아니다."
+    },
+    "height_checks": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "input_height_m",
+          "restored_height_m",
+          "difference_cm",
+          "within_tolerance"
+        ],
+        "properties": {
+          "input_height_m": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "restored_height_m": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "difference_cm": {
+            "type": "number"
+          },
+          "within_tolerance": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

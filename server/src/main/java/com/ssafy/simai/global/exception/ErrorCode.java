@@ -594,6 +594,36 @@ public sealed interface ErrorCode {
         }
     }
 
+    /** 현장 세팅 세션(GET·POST /api/setup-sessions, S15P31A101-452) */
+    enum Setup implements ErrorCode {
+        SETUP_SESSION_NOT_FOUND(HttpStatus.NOT_FOUND, "세팅 세션을 찾을 수 없습니다"),
+        INVALID_SETUP_REQUEST(HttpStatus.BAD_REQUEST, "세팅 요청 값이 올바르지 않습니다"),
+        CAMERA_HEIGHT_REQUIRED(HttpStatus.BAD_REQUEST, "모든 활성 카메라의 높이를 미터 단위로 입력해야 합니다"),
+        SETUP_CAMERAS_INSUFFICIENT(HttpStatus.CONFLICT, "현장에 활성 카메라가 2대 이상 있어야 세팅을 시작할 수 있습니다"),
+        SETUP_ALREADY_IN_PROGRESS(HttpStatus.CONFLICT, "이미 진행 중인 세팅 세션이 있습니다"),
+        SETUP_WORKER_UNAVAILABLE(HttpStatus.CONFLICT, "현장 세팅(site_setup)을 처리할 활성 워커가 없습니다"),
+        SETUP_RETRY_NOT_ALLOWED(HttpStatus.CONFLICT, "실패한 세팅 세션만 재시도할 수 있습니다"),
+        INVALID_SETUP_PROGRESS(HttpStatus.BAD_REQUEST, "세팅 진행률·결과 보고가 계약이나 등록된 버전 계보에 맞지 않습니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Setup(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
     /** 세팅 1단계 카메라 각도 헬퍼 중계(POST /api/devices/coverage-guides, GET /api/cameras/coverage-guides, S15P31A101-447) */
     enum CoverageGuide implements ErrorCode {
         INVALID_COVERAGE_GUIDE(HttpStatus.BAD_REQUEST, "카메라 각도 안내가 계약(messages/coverage_guide 1.x)에 맞지 않습니다"),

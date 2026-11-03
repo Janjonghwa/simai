@@ -38,7 +38,7 @@ public class WorkUnitRepository {
 
     private static final String SELECT = """
             SELECT w.work_id, w.work_date, w.name, w.starts_at, w.ends_at, w.zone_id, w.place, w.planned_people,
-                   w.lead_team, w.layout_id, w.work_type, w.status, w.actual_started_at, w.actual_ended_at,
+                   w.lead_team, w.layout_id, w.work_type, w.status, w.actual_started_at, w.actual_ended_at, w.active_setup_session_id,
                    (SELECT z.name FROM zone z WHERE z.zone_id = w.zone_id ORDER BY z.zone_version DESC LIMIT 1) AS zone_name,
                    c.critical, c.high
             FROM work_unit w
@@ -248,6 +248,7 @@ public class WorkUnitRepository {
         if (rs.wasNull()) w.putNull("layout_id"); else w.put("layout_id", layoutId);
         putText(w, "work_type", rs.getString("work_type"));
         w.put("status", rs.getString("status"));
+        putText(w, "active_setup_session_id", rs.getString("active_setup_session_id"));
         for (String field : List.of("actual_started_at", "actual_ended_at")) {
             var timestamp = rs.getTimestamp(field);
             if (timestamp == null) w.putNull(field); else w.put(field, timestamp.getTime());
