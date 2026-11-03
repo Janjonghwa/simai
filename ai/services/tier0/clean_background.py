@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import math
 import json
 import logging
 import shutil
@@ -12,6 +14,8 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+
+import numpy as np
 
 from services.tier0.settings import CleanBackgroundSettings
 from simai_ai.calibration.world_frame.clean_background import CleanBackgroundAccumulator, CleanBackgroundConfig
@@ -54,7 +58,7 @@ class BackgroundCleanBackground:
         self._pending_bytes = 0
         self._last_offer: dict[str, tuple[int, int]] = {}
         self._exported: dict[str, tuple[Path, dict[str, Any]]] = {}
-        self._published: dict[str, tuple[str, int]] = {}
+        self._reference: dict[str, tuple[Path, dict[str, Any]]] = {}
         self._complete: Path | None = None
         self.dropped = 0
         self.last_error: str | None = None
@@ -119,7 +123,6 @@ class BackgroundCleanBackground:
         self._exported = {cid: value for cid, value in self._exported.items()
                           if previous is not None and previous.version == ctx.version
                           and previous.generations.get(cid) == ctx.generations.get(cid) and cid in ctx.generations}
-        self._published = {cid: (ctx.version, ctx.generations[cid]) for cid in self._exported}
         self._complete = None
         self._active = ctx
         log.info("clean_background context version=%s generations=%s", ctx.version, ctx.generations)
@@ -140,6 +143,7 @@ class BackgroundCleanBackground:
             cid = frame.camera_id
             if ctx.generations.get(cid) == generation:
                 changed |= self.accumulator.add_frame(cid, frame.estimated_capture_time, frame.image, detections)
+                self._expire_samples(cid, frame.estimated_capture_time)
         self._regenerate(ctx)
         if changed:
             self._export_ready(ctx)
@@ -156,14 +160,13 @@ class BackgroundCleanBackground:
             request_id = doc["request_id"]
             if not isinstance(request_id, int) or isinstance(request_id, bool) or request_id < 1:
                 raise ValueError("invalid request_id")
-            if all(self.accumulator.is_camera_ready(cid) for cid in ctx.generations):
-                self._exported = {}
-                self._published = {}
+            requested_at = doc.get("requested_at_ms")
+            if isinstance(requested_at, int) and not isinstance(requested_at, bool):
+                for cid in ctx.generations:
+                    self._expire_samples(cid, requested_at)
+            ready = self._regenerate_bundle(ctx)
+            if not ready:
                 self._complete = None
-                self._export_ready(ctx)
-                ready = self._complete is not None
-            else:
-                ready = False
             response = {"request_id": request_id, "bundle_path": str(self._complete) if ready else None,
                         "camera_ids": sorted(ctx.generations), "calibration_version": ctx.version,
                         "status": "READY" if ready else "NOT_READY", "reason": None if ready else "BACKGROUND_NOT_READY"}
@@ -181,6 +184,100 @@ class BackgroundCleanBackground:
         except (ValueError, KeyError, TypeError, json.JSONDecodeError):
             log.exception("잘못된 배경 재생성 요청")
             request.unlink(missing_ok=True)
+
+    def _expire_samples(self, cid: str, now_ms: int) -> None:
+        # 기존 설정으로 창 길이를 조절한다. 공백이 있으면 오래된 표본을 보관하지 않는다.
+        samples = self.accumulator._samples.get(cid)
+        if samples is not None:
+            horizon = self.settings.sample_interval_ms * self.settings.max_samples_per_camera
+            while samples and samples[0].capture_time_ms < now_ms - horizon:
+                samples.popleft()
+
+    def _mask_unknown(self, folder: Path, cid: str, doc: dict[str, Any]) -> None:
+        """관측 횟수가 부족하거나 시간에 따라 변하는 픽셀은 유효 마스크에서 제외한다."""
+        import cv2
+
+        samples = list(self.accumulator._samples[cid])
+        h, w = samples[0].reveal_mask.shape
+        valid = np.empty((h, w), dtype=np.uint8)
+        minimum = max(2, math.ceil(len(samples) * 0.5))
+        # 행 단위로 임시 메모리를 제한한다. 검출로 가린 픽셀은 분산에서 제외한다.
+        for start in range(0, h, self.accumulator.config.rows_per_chunk):
+            end = min(h, start + self.accumulator.config.rows_per_chunk)
+            masks = np.stack([sample.reveal_mask[start:end] for sample in samples])
+            pixels = np.stack([sample.frame_bgr[start:end] for sample in samples]).astype(np.float32)
+            count = masks.sum(axis=0)
+            weights = masks[..., None]
+            total = (pixels * weights).sum(axis=0)
+            mean = total / np.maximum(count[..., None], 1)
+            variance = (((pixels - mean) ** 2) * weights).sum(axis=0) / np.maximum(count[..., None], 1)
+            valid[start:end] = ((count >= minimum) & (variance.max(axis=2) <= 225)).astype(np.uint8) * 255
+        record = doc["cameras"][cid]
+        image_path = folder / record["image"]
+        image = cv2.imread(str(image_path))
+        if image is None:
+            raise OSError(f"배경 이미지를 읽을 수 없다: {image_path}")
+        image[valid == 0] = 0
+        if not cv2.imwrite(str(image_path), image, [cv2.IMWRITE_JPEG_QUALITY, self.accumulator.config.jpeg_quality]):
+            raise OSError(f"배경 이미지를 쓸 수 없다: {image_path}")
+        mask_name = f"{cid}.valid.png"
+        if not cv2.imwrite(str(folder / mask_name), valid):
+            raise OSError(f"배경 마스크를 쓸 수 없다: {cid}")
+        record.update(valid_mask=mask_name, invalid_ratio=round(float((valid == 0).mean()), 6),
+                      image_sha256="sha256:" + hashlib.sha256(image_path.read_bytes()).hexdigest())
+
+    def _regenerate_bundle(self, ctx: _Context) -> bool:
+        """가득 찬 최근 창을 쓰고, 부족한 카메라는 세팅 기준을 명시적으로 대체한다."""
+        if not all(cid in self._reference for cid in ctx.generations):
+            return False
+        # 다른 자세/해상도의 기준 이미지를 현재 보정에 맞는 것처럼 내보내지 않는다.
+        for cid in ctx.generations:
+            reference_doc = self._reference[cid][1]
+            reference_generation = reference_doc["camera_generations"].get(cid)
+            status = self.accumulator.camera_status(cid)
+            full = status.ready and status.sample_count >= self.settings.max_samples_per_camera
+            if not full and reference_generation != ctx.generations[cid]:
+                return False
+        version_dir = self.root / ctx.version
+        staging = version_dir / f".pending-{uuid.uuid4().hex}"
+        target = version_dir / f"bundle-{uuid.uuid4().hex}"
+        try:
+            staging.mkdir(parents=True)
+            cameras = {}
+            for cid in sorted(ctx.generations):
+                status = self.accumulator.camera_status(cid)
+                full = status.ready and status.sample_count >= self.settings.max_samples_per_camera
+                if full:
+                    temp = staging / f"camera-{uuid.uuid4().hex}"
+                    result = self.accumulator.export(temp, calibration_version=ctx.version, camera_ids=[cid])
+                    self._mask_unknown(temp, cid, result.metadata)
+                    record = result.metadata["cameras"][cid]
+                    record["background_source"] = "RECENT"
+                    folder = temp
+                else:
+                    folder, ref_doc = self._reference[cid]
+                    record = copy.deepcopy(ref_doc["cameras"][cid])
+                    record["background_source"] = "REFERENCE_FALLBACK"
+                    record["reference_calibration_version"] = record["calibration_version"]
+                    record["calibration_version"] = ctx.version
+                for name in (record["image"], record["valid_mask"]):
+                    shutil.copyfile(folder / name, staging / name)
+                if full:
+                    shutil.rmtree(folder)
+                cameras[cid] = record
+            meta = {**copy.deepcopy(next(iter(self._reference.values()))[1]), "cameras": cameras,
+                    "calibration_version": ctx.version, "input_provenance": ctx.provenance,
+                    "camera_generations": dict(ctx.generations), "complete": True, "ready": True}
+            _json(staging / "clean_backgrounds.json", meta)
+            _json(staging / "COMPLETE", {"calibration_version": ctx.version, "metadata": "clean_backgrounds.json",
+                                        "camera_ids": sorted(cameras)})
+            if not self._publish(staging, target, ctx):
+                return False
+            self._complete = target
+            return True
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
 
     def _publish(self, staging: Path, target: Path, ctx: _Context) -> bool:
         if self.stop.is_set() or self._context is not ctx:
@@ -202,12 +299,14 @@ class BackgroundCleanBackground:
             try:
                 exported = self.accumulator.export(staging, calibration_version=ctx.version, camera_ids=[cid])
                 doc = exported.metadata
+                self._mask_unknown(staging, cid, doc)
+                doc["cameras"][cid]["background_source"] = "REFERENCE"
                 doc.update(input_provenance=ctx.provenance, camera_generations=dict(ctx.generations), complete=False)
                 _json(exported.meta_path, doc)
                 if not self._publish(staging, target, ctx):
                     return
                 self._exported[cid] = target, doc
-                self._published = {**self._published, cid: (ctx.version, ctx.generations[cid])}
+                self._reference.setdefault(cid, (target, copy.deepcopy(doc)))
                 log.info("clean_background camera_ready camera=%s version=%s path=%s", cid, ctx.version, target)
             finally:
                 if staging.exists():
@@ -222,6 +321,7 @@ class BackgroundCleanBackground:
             for cid, (folder, doc) in self._exported.items():
                 record = doc["cameras"][cid]
                 shutil.copyfile(folder / record["image"], staging / record["image"])
+                shutil.copyfile(folder / record["valid_mask"], staging / record["valid_mask"])
                 cameras[cid] = record
             meta = {**next(iter(self._exported.values()))[1], "cameras": cameras, "complete": True,
                     "input_provenance": ctx.provenance, "camera_generations": dict(ctx.generations)}
@@ -238,6 +338,7 @@ class BackgroundCleanBackground:
     def _write_status(self, ctx: _Context) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         cameras = {cid: {**self.accumulator.camera_status(cid).to_record(),
+                         "reference_path": str(self._reference[cid][0]) if cid in self._reference else None,
                          "exported": cid in self._exported,
                          "export_path": str(self._exported[cid][0]) if cid in self._exported else None}
                    for cid in ctx.generations}
