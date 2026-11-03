@@ -23,7 +23,7 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 
 | ID | 구간 | 방식 | 메시지 |
 |---|---|---|---|
-| I1 | RunPod Tier 0 ↔︎ EC2 | WebSocket + JSON | 위로(Tier 0 → EC2): `world_state`(10 Hz), `health`(1 Hz), `observation_summary`(필요 시 카메라별 요약만. 2D 관측 원본 `observation_batch` 는 RunPod 에 Parquet 로 보관, 11.2), `calibration_update`, `risk_event_transition`, `event_state_snapshot`, `config_ack`, `event_frame_ready`, `media_clip`·`media_clip_retention`(이벤트 클립 기록, 11.3), `video_segment`(상시 영상 조각 기록, 5.1·11.3), `tier0_endpoint`(엔드포인트 등록, 3.12), `event_close_result`(운영자 종료 결과, 6.4), `event_escalate_result`(운영자 상향 결과, 5.4) / 아래로(EC2 → Tier 0): `event_ack`, `event_close`(관리자의 구역 대상 이벤트 종료, 6.4), `event_escalate`(관리자가 승인한 VLM 상향 의견 적용, 5.4), `journal_ack`, `config_bundle` |
+| I1 | RunPod Tier 0 ↔︎ EC2 | WebSocket + JSON | 위로(Tier 0 → EC2): `world_state`(10 Hz), `health`(1 Hz), `observation_summary`(필요 시 카메라별 요약만. 2D 관측 원본 `observation_batch` 는 RunPod 에 Parquet 로 보관, 11.2), `calibration_update`, `risk_event_transition`, `event_state_snapshot`, `config_ack`, `event_frame_ready`, `media_clip`·`media_clip_retention`(이벤트 클립 기록, 11.3), `video_segment`(상시 영상 조각 기록, 5.1·11.3), `tier0_endpoint`(엔드포인트 등록, 3.12), `event_close_result`(운영자 종료 결과, 6.4), `event_escalate_result`(운영자 상향 결과, 5.4) / 아래로(EC2 → Tier 0): `event_ack`, `event_close`(관리자의 구역 대상 이벤트 종료, 6.4), `event_escalate`(관리자가 승인한 VLM 상향 의견 적용, 5.4), `journal_ack`, `config_bundle`, `scene_reference`(1초마다 현재 Scene 참조, 시각화 전용이라 판정·보정을 바꾸지 않음, 4.5) |
 | I2 | EC2 → 뷰어 | WebSocket(STOMP) + REST | 토픽 `/topic/world`(`world_state`), `/topic/avatar`(`avatar_frame`), `/topic/events`(`risk_event`), `/topic/health`(`viewer_health`)(12.4) / REST: 리플레이, 구역 CRUD, 작업면 등록, 보정·설치, Scene·아바타 자산(`/api/avatars/...`), 레이아웃, 보고서, 이벤트 상세·요약·상향(12.6) |
 | I3 | EC2 ↔︎ PWA | 폐기(v1.3) | 반장 PWA·Web Push 를 두지 않는다(10.1). 계약 `risk_alert` 는 남아 있으나 쓰지 않으며 정리는 별도 이슈에서 한다 |
 | I4 | EC2 ↔︎ 워치 (확장, 부록 C.6) | WebSocket(wss) + JSON, 기기별 토큰 | 아래로(EC2 → 워치): `watch_alert`(진동 알림), `watch_heartbeat` / 위로(워치 → EC2): `watch_ack`(수신 확인, 운영자 확인이 아님), `gait_features`(걸음 특징), `watch_heartbeat`. 계약 6.10.0(S15P31A101-334), 연결·끊김 판정은 `docs/design/watch-i4-contract.md` |
@@ -83,7 +83,9 @@ EC2 내부: Spring ↔ Risk Engine Python 컨테이너(`deploy/risk-engine`)는 
 
 `health`는 활성 현장 경보 목록(`active_site_alerts`, 3.10)과 노트북–Pod 시계 차이·불확실성(`laptop_clock_offset`, 3.9. 모르면 null)도 싣는다. `pipeline_lag_ms` 는 시계 차이를 보정한 T_lag 이고, 모르면 null(그때 UNSAFE_UNKNOWN, 아는 하한은 `pipeline_lag_lower_bound_ms`)이다(6.1). 카메라별 `sync_valid` 는 동기화 근거(true/false, 근거 없으면 null)다(6.1). Tier 0 운영 경고(체크포인트·저널·EC2 전송 보류·재동기화 스냅샷)는 `tier0_warnings` 에 code 와 처음 확인한 시각으로 싣고, 빈 배열은 경고 없음, 필드가 없으면 모름이다(6.5). 카메라별 프레임 집계(`cameras[].frames`)에는 손실 3종과 따로 노트북 송신 큐 버림(`laptop_skipped`)과 구분 불가 빈칸(`unattributed_gap`)을 싣는다(12.7).
 
-`event_frame_ready`는 LIVE R1\~R4 CRITICAL 이벤트가 처음 발생할 때(병합 이벤트당 1회) Tier 0 가 60초 압축 링 버퍼에서 대상 관측 카메라 우선 최대 2대 × 2시점(이벤트 0\~500 ms 전, 3\~5초 전, 사후 프레임 제외)을 디코딩·JPEG 인코딩해 EC2 가 발급한 임시 업로드 주소(`EVENT_FRAME`)로 올린 뒤 그 객체 키와 촬영 시각 세 값(3.9)·카메라만 보낸다(5.4, `docs/design/vlm-rationale.md`).
+`event_frame_ready`는 LIVE R1\~R4 CRITICAL 이벤트가 처음 발생할 때(병합 이벤트당 1회) Tier 0 가 60초 압축 링 버퍼에서 대상 관측 카메라 우선 최대 2대 × 2시점(이벤트 0\~500 ms 전, 3\~5초 전, 사후 프레임 제외)을 디코딩·JPEG 인코딩해 EC2 가 발급한 임시 업로드 주소(`EVENT_FRAME`)로 올린 뒤 그 객체 키와 촬영 시각 세 값(3.9)·카메라만 보낸다(5.4, `docs/design/vlm-rationale.md`). 1.1.0 부터 프레임마다 같은 GPU 인스턴스 안의 로컬 사본(`local_copy`: 공통 `pod_local_frame`, Tier 0 상태 폴더 기준 `event-frames/<event_id>/<파일>.jpg`·sha256·크기)을 선택으로 싣는다. 로컬 사본이 있으면 Tier 0 는 업로드를 기다리지 않고 알리며, 업로드는 보관용으로 뒤에서 계속한다(계약 묶음 6.12.0, Lead 승인 기록 확인은 19.1).
+
+`calibration_update` 2.1.0 은 Scene 정합 비교용으로 World 를 고정한 bootstrap 보정 ID(`world_frame_id`, 실행 중 후보·되돌림·재시작에서 계승)와 카메라별 World→camera 자세(`camera_poses`, R·t)를 선택으로 싣는다. K·왜곡은 보정 문서로만 참조한다. EC2 는 이 값으로 같은 World 계보인지와 보정 변화 크기를 판단하고(4.5), 1초마다 I1 아래로 `scene_reference`(현장·현재 Scene 버전, 없으면 null)를 보낸다. 판정·위치에는 쓰지 않는다(계약 묶음 6.9.0, `docs/design/scene-calibration-lineage.md`, Lead 승인 기록 확인은 19.1).
 
 `media_clip` 은 이벤트 클립(카메라 하나 × 위험 구간 하나)을 임시 업로드 주소로 올린 뒤 객체 키, 촬영 시각 구간, 해시·크기, 얼굴 흐림 여부(`face_redaction`, 기본 NONE), 구간 안 빈칸(`has_gaps`), 삭제 예정일, 보존 표시를 보낸다. 영상은 싣지 않는다. 보낸 뒤 이벤트가 CRITICAL 로 오르면 기록을 고치지 않고 `media_clip_retention` 으로 보존 표시를 더한다(11.5).
 
@@ -150,11 +152,11 @@ EC2 내부: Spring ↔ Risk Engine Python 컨테이너(`deploy/risk-engine`)는 
 
 | `job_type` | 입력 | 출력 |
 |---|---|---|
-| `vlm_rationale` | 이벤트 프레임 주소(프레임마다 카메라·촬영 시각 세 값(3.9)·`face_policy`, 워커는 `observation_time` 뒤 프레임을 쓰지 않음), 구조화 상태 `structured_state`(계약은 객체만 정한다. 워커는 `tracks[]` 의 `world_id`·`position_xy`·`head_z` 와 `zone` 의 `zone_id`·`judge_type` 을 읽고 없는 키는 건너뛴다). 우선순위 `VLM_FAST`(`timeout_ms=5000`, `max_attempts=2`, `deadline_at = observation_time + 5000 ms`) | 근거 문장(한국어 1\~3문장), 상향 의견(입력 등급보다 높을 때만 남기고 같거나 낮으면 `null` + `NOT_UPWARD` 로그, MVP 는 CRITICAL 만 대상이라 늘 null, 5.4), `clause_ids`(지금 늘 `[]`: 입력에 조항이 없고 워커는 조항을 검색하지 않는다, 19.1). 성공 시 EC2 가 `vlm_assessment`(G7 지연 포함)와 `risk_event` 투영을 갱신하고 `/topic/events` 로 발행(`docs/design/vlm-rationale.md`) |
+| `vlm_rationale` | 이벤트 프레임 주소(프레임마다 카메라·촬영 시각 세 값(3.9)·`face_policy`, 워커는 `observation_time` 뒤 프레임을 쓰지 않음), 구조화 상태 `structured_state`(계약은 객체만 정한다. 워커는 `tracks[]` 의 `world_id`·`position_xy`·`head_z` 와 `zone` 의 `zone_id`·`judge_type` 을 읽고 없는 키는 건너뛴다). 우선순위 `VLM_FAST`(`timeout_ms=5000`, `max_attempts=2`, `deadline_at = observation_time + 5000 ms`). `job_request` 3.5.0 부터 프레임마다 선택 `local_copy` 를 싣고, 워커는 상태 폴더 안이고 크기·해시가 맞을 때만 로컬 사본을 읽고 아니면 `frame_uri` 를 받는다 | 근거 문장(한국어 1\~3문장), 상향 의견(입력 등급보다 높을 때만 남기고 같거나 낮으면 `null` + `NOT_UPWARD` 로그, MVP 는 CRITICAL 만 대상이라 늘 null, 5.4), `clause_ids`(지금 늘 `[]`: 입력에 조항이 없고 워커는 조항을 검색하지 않는다, 19.1). 성공 시 EC2 가 `vlm_assessment`(G7 지연 포함)와 `risk_event` 투영을 갱신하고 `/topic/events` 로 발행(`docs/design/vlm-rationale.md`) |
 | `tbm_report` (**폐기 예정**, 2026-11-02, S15P31A101-415) | **폐기 예정(EC2 Python 컨테이너로 이전, 5.4·8.3·12.2):** TBM·일일 보고서 생성은 GPU 가 필요 없으므로 EC2 의 Python 컨테이너(`deploy/risk-engine`)에서 PostgreSQL 법령 지식 그래프(`rag_node`·`rag_edge`) 하이브리드 검색과 외부 LLM 호출·4단계 코드 검증으로 직접 실행한다. 호환을 위해 `contracts/` 스키마(`tbm_report.schema.json`, `job_request` 3.3.0, `job_callback` 2.3.0)는 남겨 두되 신규 보고서 생성 경로에서는 I5 `tbm_report` 작업을 등록하지 않는다 | 결과(`job_callback` 2.3.0 호환 유지): 신규 경로(`POST /api/reports/tbm`·`GET /api/reports/tbm/{reportId}`·`POST /api/reports/daily`)는 EC2 Python 컨테이너 결과를 받아 `subgraph`(`nodes`·`edges`)와 `steps`(4단계 실행 상태)를 함께 저장·반환한다(`docs/design/tbm-legal-graph.md`) |
 | `incident_summary` | 이벤트, 이벤트 전후 20초 클립 객체 키(`media_clip`), 얼굴 처리 `face_policy`, 구조화 상태 | 요약 문장(상향 의견 없음, 분석 워커 처리기는 진행 중 S15P31A101-271). 우선순위 REPORT |
 | `bev_floorplan` | `bev_floorplan.schema.json` 입력(`job_request` 3.2.0): 보정 버전·보정 문서 주소와 해시, 프레임 출처, 카메라마다 사람 없는 프레임 한 장(주소·촬영 시각), 선택 Scene 버전 | BEV 평면도 이미지·메타데이터 주소, 픽셀 ↔ World 대응, 방 외곽, `input_provenance`(보조 화면, 안전 판단에 쓰지 않음, 4.1, `job_callback` 2.2.0). 우선순위 BACKGROUND |
-| `static_reconstruct` | `static_reconstruct.schema.json` 입력(`job_request` 3.2.0): 보정 버전·보정 문서 주소와 해시(`PROVISIONAL`·`CALIBRATED`), 카메라 4대의 프레임(`FRAME`) 또는 Tier 0 사람 지운 배경(`CLEAN_BACKGROUND`) 주소·해시·촬영 시각, 옵션(`resolution_tier`, `use_person_mask`). LIVE 관제 중에는 대여에서 제외하고 LIVE 진입 시 반납(3.2, 5.3) | `scene_output` 2.1.0(`CANDIDATE`, `VISUAL`): Open3D TSDF + `texrecon` 으로 구운 텍스처 메시(`GLTF_VISUAL`, 도구 부재 시 정점색 glTF 폴백)와 표면 출처 지도(`SURFACE_SOURCE_MAP`), `metrics.json`(스툴 축척 점검 포함), `run_record.json` 을 `static-3d/{job_id}/{lease_id}/...` 에 올리고 반환. EC2 `SceneJobListener` 는 `CANDIDATE` 로만 저장하고 자동 활성화하지 않음(`docs/design/worker-static-reconstruct.md`, `docs/design/scene-version-from-job.md`). 우선순위 BACKGROUND |
+| `static_reconstruct` | `static_reconstruct.schema.json` 입력(`job_request` 3.2.0): 보정 버전·보정 문서 주소와 해시(`PROVISIONAL`·`CALIBRATED`), 카메라 4대의 프레임(`FRAME`) 또는 Tier 0 사람 지운 배경(`CLEAN_BACKGROUND`) 주소·해시·촬영 시각, 옵션(`resolution_tier`, `use_person_mask`). LIVE 관제 중에는 대여에서 제외하고 LIVE 진입 시 반납(3.2, 5.3). 관리자 등록(`admin job enqueue`) 말고도, 관제가 끝난 뒤 분석 워커가 Tier 0 의 완성 배경 묶음을 올리고 `POST /api/worker/scene-jobs/static-reconstruct`(`static_reconstruct_submit` → `static_reconstruct_submit_result`, 멱등 키 `bundle_id`, 이 현장의 PROVISIONAL·CALIBRATED 보정만, 계약 묶음 6.13.0, Lead 확인은 19.1)로 등록한다(5.3) | `scene_output` 2.1.0(`CANDIDATE`, `VISUAL`): Open3D TSDF + `texrecon` 으로 구운 텍스처 메시(`GLTF_VISUAL`, 도구 부재 시 정점색 glTF 폴백)와 표면 출처 지도(`SURFACE_SOURCE_MAP`), `metrics.json`(스툴 축척 점검 포함), `run_record.json` 을 `static-3d/{job_id}/{lease_id}/...` 에 올리고 반환. EC2 `SceneJobListener` 는 `CANDIDATE` 로만 저장하고 자동 활성화하지 않음(`docs/design/worker-static-reconstruct.md`, `docs/design/scene-version-from-job.md`). 우선순위 BACKGROUND |
 | `calibration_ba` | 2D 관측 묶음(Tier 0 저장 위치), 초기 보정 | 보정 후보 |
 | `hmr_refine` (시연 범위·EXP-02) | LIVE 관제 중에는 I5 대여 작업이 아니라 분석 워커의 상시 스트림 루프(Tier 0 공유 메모리 입력, 3.2 지연 감시 적용)로 돌며, 출력을 I5 콜백이 아닌 I6 아바타 스트림(`avatar_pose_batch`·`avatar_asset`)으로 보낸다. I5 배치 대여는 관제 외 오프라인 재처리·실험에만 쓰며 LIVE 중에는 받지 않는다(오프라인 산출물은 `experiments/human_mesh_output`) | I6 `avatar_pose_batch`·`avatar_asset` (오프라인 배치는 MHR 메시·포즈, 관절 출처, 품질 메타데이터) |
 | `hmr_appearance_update` (시연 범위·EXP-02 2단계) | 동일 World ID의 연속 관측 샘플, 이전 시각 자산(I5 배치 작업은 LIVE 중 받지 않으며, 상시 아바타 루프 `services/avatar` 에서는 `SIMAI_AVATAR_APPEARANCE=auto` 로 CUDA 에서 기본 실행돼 갱신된 `1024×1024` `albedo.png`·`surface_source.png` 를 `AVATAR_ASSET` 업로드 후 I6 `avatar_asset` 으로 알림, 5.6) | 신규 텍스처/외형 버전(`appearance_version`), 표면 출처 지도·비율(`surface_source`·`face_ratios`), 아티팩트 참조 |
@@ -165,7 +167,7 @@ VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커�
 
 ## 12.6 REST API (I2·I3)
 
-경로는 기본안이며, 확정본은 Spring Boot에서 생성하는 OpenAPI 문서로 관리한다.
+경로는 기본안이며, 확정본은 Spring Boot에서 생성하는 OpenAPI 문서(`/api/docs/openapi.json`, 화면 `/api/docs`)로 관리한다. 아래 표는 기능을 대표하는 경로만 싣고, 토큰 갱신·로그아웃·버전 조회·워커 하트비트처럼 기능을 보조하는 경로는 OpenAPI 문서를 본다.
 
 | 메서드 | 경로 | 용도 | 권한 |
 |---|---|---|---|
@@ -175,9 +177,10 @@ VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커�
 | GET | /api/replay?from=\{t1\}&amp;to=\{t2\} | 구간 궤적·이벤트(최소 리플레이, 골격·버전은 확장) | 열람 |
 | GET · POST · PUT | /api/zones | 구역 조회·생성·새 버전 | 쓰기는 관리자 |
 | GET | /api/zones/\{zoneId\}/versions | 구역 버전 이력(리플레이는 그 시각 유효 버전) | 열람 |
+| POST | /api/zones/commit | 구역 편집 한 번 저장: 구역 새 버전·연결 작업면(`static_object.zone_id`)·구성 묶음 발행을 한 트랜잭션으로(송신은 커밋 뒤, `docs/design/server-zone-commit.md`) | 관리자 |
 | GET · POST · PUT | /api/static-objects | 정적 객체·작업면(OBB, 상판 높이) 조회·등록·새 버전(7.5) | 쓰기는 관리자 |
 | GET | /api/rules | 규칙 버전 조회 | 열람 |
-| POST | /api/calibrations | 자동 보정 시작(걷기 보정, 4.3) | 관리자 |
+| POST | /api/calibrations | 보정 문서 올리기: Tier 0 가 만든 보정 문서(`contracts/providers/calibration`)를 구성 묶음용으로 등록(같은 버전은 같은 문서만, 현장 일치, CLI `simai_ai.calibration.publish`). 걷기 보정 시작 API 는 아직 없다(19.1) | 관리자 |
 | GET | /api/calibrations/current | 보정 상태(UNCALIBRATED·PROVISIONAL·CALIBRATED·DRIFTED) | 열람 |
 | POST | /api/calibrations/\{id\}/verifications | 독립 검증점 결과 제출(4.4) | 관리자 |
 | POST | /api/calibrations/\{id\}/confirmation | 보정 결과를 새 버전으로 확정 | 관리자 |
@@ -204,7 +207,7 @@ VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`)은 분석 워커�
 | POST | /api/reports/tbm | TBM 보고서 생성 요청(본문 작업 ID `workId`, 하위 호환 `layoutId`). EC2 가 그 작업의 레이아웃으로 Python 컨테이너(`deploy/risk-engine`)에 PLANNED 계산(`sim.*`) + 구역 최근 `risk_event` 이력 요약 + 비개인정보 공종(`work_type`) + 법령 지식 그래프(`rag_node`·`rag_edge`) 하이브리드 검색·1단계 확장 + 외부 LLM 4단계 생성·검증을 요청해 `report`(작업별 새 `report_version` 추가, 머리말은 서버가 부착, `subgraph`·`steps` 포함)에 저장·반환한다(GPU·Pod 불필요, 5.4·8.3, v1.3 수정 49) | 관리자 |
 | GET | /api/reports/tbm, /api/reports/tbm/\{reportId\} | 작업별 최신 보고서·버전 이력(`?workId=`) 및 단건 조회: 생성 상태·머리말·본문(`sections`)·계산 근거 표·인용 목록(`citations`)·법령 지식 그래프 서브그래프(`subgraph`: `nodes`·`edges`)·4단계 실행 상태(`steps`)·구역 최근 이벤트 요약(`zone_history`) 조회(PDF 는 브라우저 인쇄, 별도 내보내기 API 없음) | 열람 |
 | POST | /api/reports/daily | 일일 일지 생성 요청(EC2 Python 컨테이너 보고서 생성, `report_kind` DAILY, `subgraph`·`steps` 포함) | 관리자 |
-| POST | /api/uploads/sign | 프레임·클립 임시 업로드 주소 | 기기·반장 |
+| POST | /api/uploads/sign | 임시 업로드 주소. 목적별로 요청 주체가 정해짐: 이벤트 프레임·클립(`EVENT_FRAME`·`EVENT_CLIP`), 상시 영상 조각(`VIDEO_SEGMENT`), Scene glTF(`SCENE_GLTF`), 아바타 자산(`AVATAR_ASSET`), 정적 3D 입력(`STATIC_RECONSTRUCT_INPUT`: 사람 지운 배경 사진·보정 문서, 5.3) | Tier 0·기기(프레임·클립), Tier 0(영상 조각), 관리자(Scene), 분석 워커(아바타·정적 3D 입력) |
 | GET | /api/events/\{id\}/clips | 이벤트의 클립 목록(위험 구간·카메라 순, 보존 표시, 지운 클립은 삭제 시각과 함께, 주소 없음) | 관리자 |
 | GET | /api/clips/\{id\} | 이벤트 클립 조회(임시 서명 주소) | 관리자 |
 | PUT | /api/clips/\{id\}/retention | 클립 보존 표시 붙이기·떼기 | 관리자 |

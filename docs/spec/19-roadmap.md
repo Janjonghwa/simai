@@ -47,6 +47,9 @@
 - [x] VLM 빠른 경로 입력과 작업 생성(5.4, 12.5): Tier 0 의 CRITICAL 이벤트 프레임 업로드·`event_frame_ready`(S15P31A101-328), EC2 의 `vlm_rationale` 작업 생성·결과 저장·G7 지연 기록(S15P31A101-329), 워커 상향 제안 방향 검증(S15P31A101-273), 운영자 상향 승인·거절 API·UI(S15P31A101-276·-367). 사고 구간 요약(`incident_summary`)의 분석 워커 처리기는 진행 중이다(S15P31A101-271)
 - [ ] `vlm_rationale` 결과의 `clause_ids`(12.5): 워커에는 조항 검색이 없고 입력에 조항이 없어 지금 늘 `[]` 다. 규칙 근거 조항(`rule_version.legal_basis`)이나 검색한 조항을 붙이려면 EC2 가 입력에 조항을 넣는 계약 변경이 필요하다
 - [ ] 워치 지급 시점과 모델(확장, 부록 C)
+- [ ] 계약 묶음 6.9.0(I1 `calibration_update` 2.1.0 `world_frame_id`·`camera_poses`, `scene_reference`, S15P31A101-381)·6.12.0(I1 `event_frame_ready` 1.1.0 `local_copy`, S15P31A101-408)·6.13.0(`static_reconstruct_submit`, S15P31A101-403)의 Lead 승인 기록 확인. 계약 README 와 설계 문서는 ‘Lead 승인 필요·확인 필요’로 남아 있고 저장소·Jira 에 승인 기록이 없다. 셋 다 `dev` 에 들어가 동작 중이라 명세(4.5·5.3·5.4·12.2·12.3·12.5)에는 반영했다. 승인되면 날짜를 적고, 거절되면 되돌림을 정한다
+- [ ] Tier 0 상시 영상 조각 생산(5.1, 11.3, I1 `video_segment`): EC2 수신·목록·재생과 계약은 있으나 Tier 0(ai)·노트북에 조각을 만들어 올리는 코드가 없다(`docs/design/server-video-segments.md` “AI 파트 후속”)
+- [ ] 걷기 보정 시작 API(4.3): `POST /api/calibrations` 는 보정 문서 올리기이고(12.6) 걷기 보정은 GPU 인스턴스의 보정 도구로 돌린다. 관제 화면에서 시작할 API 를 둘지 정한다
 
 ## 19.2 로드맵
 

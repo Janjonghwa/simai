@@ -26,6 +26,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `rule_version` | 규칙 ID, 임계값 세트, 적용 기간(시험 프로파일 포함, 7.4). 값은 AI 규칙 등록부에서 뽑으며 같은 버전의 값은 바꾸지 않는다(첫 운영 배포 전 예외, 11.4-1). 근거 조항(`legal_basis`)은 비어 있으면 시드가 채우고, 다른 값이 있으면 첫 운영 배포 전에는 갱신하고 뒤에는 마이그레이션이 멈춘다(7.1) |
 | `equipment_asset` | GLB 주소, 반경·형상 파라미터(확장, 부록 C) |
 | `layout_plan` | 가상 레이아웃(개구부·장비 주차 구역은 구역, 가설 비계는 작업면)·계획 궤적(F-02·F-01), 출처 PLANNED. 계획 작업 위치는 선택이다: 관리자가 주면 그 위치만 쓰고, 없으면(빈 목록 포함) Risk Engine 컨테이너가 작업면·구역에서 만든다(8.3) |
+| `layout_plan_revision` | 가상 레이아웃 revision 이력(추가만): 그때의 이름·항목. TBM 보고서가 계산한 `lv-{revision}` 배치를 나중에도 다시 본다. `layout_plan` 은 지금 revision 의 사본이다 |
 | `config_bundle` | 구역·규칙·보정·형상(등록 정적 객체·작업면 OBB) 버전 묶음, 해시, 발행 시각, 현장 적용 시각(RunPod Tier 0 ACK), 묶음에 넣은 규칙 프로필(`rule_profile`: 운영·교실 시험, 7.4. 다음 발행의 기본값) |
 | `config_bundle_item` | 묶음에 들어간 구역·규칙·형상의 ID 와 버전 |
 | `config_bundle_file` | 묶음이 가리키는 파일 바이트(매니페스트·구성 요소). Tier 0 가 서명 주소로 내려받는다 |
@@ -70,7 +71,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `video_segment` | 상시 영상 조각의 객체 키, Tier 0·카메라·구간(촬영 시각)·stream_epoch·해시·크기, 삭제 예정일, 삭제 시각. Tier 0 가 I1 `video_segment` 로 보낸다(5.1, v1.3 수정 36) |
 | `video_access_log` | 상시 영상 열람 기록(14장) |
 | `cctv_remote_usage` | 관제 화면 원격 CCTV 송출 바이트의 1분 단위 추가 전용(append-only) 사용량 기록(UTC 달력 월 누적 합산으로 월 80 GB 상한 판정, 영상 바이트 자체는 EC2 에 저장하지 않음, 3.3, v1.3 수정 46) |
-| `upload_grant` | 임시 업로드 주소 발급 기록(올라온 객체 키 검증): 목적(이벤트 프레임·클립, 아바타 자산, 상시 영상 조각, Scene glTF. 조치 사진 `TICKET_PHOTO` 는 폐기, 10.1), 요청 주체(Tier 0·기기·사용자), 서명에 묶은 형식·크기·sha256, 이벤트 프레임·클립이면 이벤트 |
+| `upload_grant` | 임시 업로드 주소 발급 기록(올라온 객체 키 검증): 목적(이벤트 프레임·클립, 아바타 자산, 상시 영상 조각, Scene glTF, 정적 3D 입력 `STATIC_RECONSTRUCT_INPUT`. 조치 사진 `TICKET_PHOTO` 는 폐기, 10.1), 요청 주체(Tier 0·기기·관리자·분석 워커, 12.6), 서명에 묶은 형식·크기·sha256, 이벤트 프레임·클립이면 이벤트 |
 | `avatar_asset` | 아바타 자산 버전(키 `(world_id, stream_epoch, appearance_version)`, 추가만, 11.5·12.2) |
 | `push_subscription`·`test_push`·`push_receipt` | 폐기(v1.3, 10.1). DB 에는 남아 있으나 쓰지 않으며, 테이블 정리는 별도 이슈에서 한다 |
 | `rag_clause` | 초기 안전 수칙 조항 테이블(`V5` 시드 호환 유지). 신규 TBM·일일 보고서 검색 정본은 아래 `rag_node`·`rag_edge` 법령 지식 그래프로 전환한다(v1.3 수정 49, `docs/design/db-tables.md`) |
