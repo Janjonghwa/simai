@@ -8,11 +8,32 @@ import {
 } from '@/features/tbm/taskInput';
 import { TBM_LEADS, TBM_ZONES, type TbmTask } from '@/features/tbm/tbmDemo';
 import { WORK_TYPE_OPTIONS, type LayoutSummary, type WorkTypeOption } from '@/features/tbm/types';
+import { useZones } from '@/features/zones/useZones';
 import { Button } from '@simai/ui/components/button';
 import { Input } from '@simai/ui/components/input';
 import { Label } from '@simai/ui/components/label';
 import { cn } from '@simai/ui/lib/utils';
-import { useState, type ChangeEvent, type ComponentProps, type ReactNode } from 'react';
+import { useMemo, useState, type ChangeEvent, type ComponentProps, type ReactNode } from 'react';
+
+/** 고르기 칸에 보일 구역(id·이름). 서버 모드는 /api/zones, 데모 폴백은 tbmDemo 구역. */
+export interface TaskZoneOption {
+  id: string;
+  name: string;
+}
+
+const DEMO_ZONE_OPTIONS: readonly TaskZoneOption[] = TBM_ZONES.map((z) => ({
+  id: z.id,
+  name: z.name,
+}));
+
+/** 서버 모드면 /api/zones 의 구역(데모 구역으로 등록하면 서버가 "없는 구역"으로 거부한다), 폴백이면 데모 구역. */
+function useTaskZoneOptions(server: boolean): readonly TaskZoneOption[] {
+  const { zones } = useZones();
+  return useMemo(
+    () => (server ? zones.map((z) => ({ id: z.zoneId, name: z.name })) : DEMO_ZONE_OPTIONS),
+    [server, zones],
+  );
+}
 
 // 작업 등록·수정(수동 입력): 작업명 · 시작·끝 · 구역 · 인원 · 반장 · 공종(work_type) · 가상 레이아웃(layout_id).
 // 모달 창(Esc · 바깥 누르기로 닫힘)에 띄운다.
@@ -58,6 +79,7 @@ function TaskForm({
   initial = TASK_INPUT_DEFAULT,
   workTypes = WORK_TYPE_OPTIONS,
   layouts = [],
+  zones = DEMO_ZONE_OPTIONS,
   onSubmit,
   onCancel,
   onDelete,
@@ -68,12 +90,18 @@ function TaskForm({
   initial?: TaskInput;
   workTypes?: readonly WorkTypeOption[];
   layouts?: readonly LayoutSummary[];
+  zones?: readonly TaskZoneOption[];
   onSubmit: (input: TaskInput) => void;
   onCancel: () => void;
   onDelete?: () => void;
   onOpenLayoutEditor?: (currentLayoutId: number | null) => void;
 }) {
-  const [input, setInput] = useState<TaskInput>(initial);
+  // 처음 값의 구역이 목록에 없으면(예: 데모 기본값) 첫 구역, 구역이 없으면 구역 밖으로 둔다.
+  const [input, setInput] = useState<TaskInput>(() =>
+    initial.zone === '' || zones.some((z) => z.id === initial.zone)
+      ? initial
+      : { ...initial, zone: zones[0]?.id ?? '' },
+  );
   const set = (key: keyof TaskInput) => (e: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { value } = e.target;
     setInput((prev) => ({ ...prev, [key]: value }));
@@ -112,7 +140,7 @@ function TaskForm({
       </div>
       <div className="grid grid-cols-2 gap-2.5">
         <SelectField label="구역" name="task-zone" value={input.zone} onChange={set('zone')}>
-          {TBM_ZONES.map((zone) => (
+          {zones.map((zone) => (
             <option key={zone.id} value={zone.id}>
               {zone.id} {zone.name}
             </option>
@@ -206,16 +234,19 @@ function TaskForm({
 export function TaskAddDialog({
   workTypes = WORK_TYPE_OPTIONS,
   layouts = [],
+  serverZones = false,
   onAdd,
   onCancel,
   onOpenLayoutEditor,
 }: {
   workTypes?: readonly WorkTypeOption[];
   layouts?: readonly LayoutSummary[];
+  serverZones?: boolean;
   onAdd: (input: TaskInput) => void;
   onCancel: () => void;
   onOpenLayoutEditor?: (currentLayoutId: number | null) => void;
 }) {
+  const zoneOptions = useTaskZoneOptions(serverZones);
   return (
     <ModalDialog
       label="작업 등록"
@@ -228,6 +259,7 @@ export function TaskAddDialog({
         submitLabel="등록"
         workTypes={workTypes}
         layouts={layouts}
+        zones={zoneOptions}
         onSubmit={onAdd}
         onCancel={onCancel}
         onOpenLayoutEditor={onOpenLayoutEditor}
@@ -241,6 +273,7 @@ export function TaskEditDialog({
   task,
   workTypes = WORK_TYPE_OPTIONS,
   layouts = [],
+  serverZones = false,
   onSave,
   onCancel,
   onDelete,
@@ -249,11 +282,13 @@ export function TaskEditDialog({
   task: TbmTask;
   workTypes?: readonly WorkTypeOption[];
   layouts?: readonly LayoutSummary[];
+  serverZones?: boolean;
   onSave: (input: TaskInput) => void;
   onCancel: () => void;
   onDelete?: () => void;
   onOpenLayoutEditor?: (currentLayoutId: number | null) => void;
 }) {
+  const zoneOptions = useTaskZoneOptions(serverZones);
   return (
     <ModalDialog
       label="작업 수정"
@@ -267,6 +302,7 @@ export function TaskEditDialog({
         initial={taskToInput(task)}
         workTypes={workTypes}
         layouts={layouts}
+        zones={zoneOptions}
         onSubmit={onSave}
         onCancel={onCancel}
         onDelete={onDelete}

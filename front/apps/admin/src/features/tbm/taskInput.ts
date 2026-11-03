@@ -5,7 +5,7 @@ import {
   OUTSIDE_ZONE_TEXT,
 } from '@/features/tbm/constants';
 import { toMin } from '@/features/tbm/tbm';
-import { TBM_ISO_DATE, type TbmTask } from '@/features/tbm/tbmDemo';
+import { type TbmTask } from '@/features/tbm/tbmDemo';
 import { dateHhmmToMs, type WorkUnitWriteBody } from '@/features/tbm/types';
 
 // 작업 등록·수정(수동 입력). 입력값 검사와 새 작업 만들기를 화면 없이 한다.
@@ -71,10 +71,16 @@ export function taskToInput(task: TbmTask): TaskInput {
   };
 }
 
+/** 이 브라우저(현장) 시각의 오늘 날짜 YYYY-MM-DD. 서버 작업 날짜 기본값(데모 날짜 TBM_ISO_DATE 를 쓰지 않는다). */
+export function todayIsoDate(now: Date = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`;
+}
+
 /** TaskInput 을 POST/PUT /api/work-units 요청 본문으로 바꾼다. */
 export function inputToWorkUnitBody(
   input: TaskInput,
-  date: string = TBM_ISO_DATE,
+  date: string = todayIsoDate(),
 ): WorkUnitWriteBody {
   const layoutNum = input.layoutId && input.layoutId.trim() !== '' ? Number(input.layoutId) : null;
   return {
