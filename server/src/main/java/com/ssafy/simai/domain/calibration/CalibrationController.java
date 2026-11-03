@@ -15,7 +15,8 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * 보정 문서 올리기(관리자). 구성 묶음이 가장 최근에 올린 보정 문서를 싣는다(CalibrationService 설명).
- * 보정 상태(열람)와 설치 안내(관리자)는 Tier 0 가 알린 보정 기준으로 읽는다(CalibrationViews).
+ * 보정 상태(열람)는 Tier 0 가 알린 보정 기준으로 읽고(CalibrationViews),
+ * 카메라 각도·설치 안내(GET /api/cameras/coverage-guides)는 CoverageGuideController 에서 함께 준다(S15P31A101-447).
  */
 @RestController
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -41,11 +42,5 @@ class CalibrationController {
     @GetMapping("/api/calibrations/current")
     ObjectNode current() {
         return views.current();
-    }
-
-    @GetMapping("/api/cameras/coverage-guides")
-    @PreAuthorize("hasRole('ADMIN')")
-    ObjectNode coverageGuides() {
-        return views.coverageGuides();
     }
 }

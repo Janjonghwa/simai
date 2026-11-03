@@ -45,3 +45,6 @@ simai:
     max-viewers: 2
     demand-linger: 400ms
     usage-flush-interval: 1h
+  coverage-guide:
+    stale-after: 10s
+    demand-ttl: 15s
