@@ -22,7 +22,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `calibration_version` | 카메라별 K·왜곡·R·t·높이, 재투영 오차, 스케일 근거, 상태 |
 | `scene_version` | 정적 3D 자산 주소(`GLTF_VISUAL`, `SURFACE_SOURCE_MAP`), 사용한 보정 버전, 작업·생성 기록(`job_id`, `run_id`), 상태(`CANDIDATE`·`COMMITTED`·`REJECTED`) |
 | `scene_activation` | Scene 버전 활성화·되돌리기 이력(누가·언제·이유, 추가만). 가장 최근 이력이 가리키는 버전이 현재 활성(`COMMITTED`) Scene 정본이다(12.6, `docs/design/scene-version-from-job.md`) |
-| `zone` | 다각형 + 높이 범위, 판정 유형(GROUND_FOOTPRINT/VOLUME_3D), 유형, 심각도, 요구 조건, 유효 시작·종료 |
+| `zone` | 다각형 + 높이 범위, 판정 유형(GROUND_FOOTPRINT/VOLUME_3D), 유형(개구부·고소 작업면 둘레·장비 주차·양중 하부 등, 단순 표시용 "작업구역" 없음), 심각도(화면·신규 생성 선택지는 `CRITICAL` 빨강·`HIGH` 주황 2종, 기존 행·스키마 호환은 유지, 이벤트 심각도 `CAUTION`·`INFO` 와 별개, 7.2·8.2), 요구 조건, 유효 시작·종료 |
 | `rule_version` | 규칙 ID, 임계값 세트, 적용 기간(시험 프로파일 포함, 7.4). 값은 AI 규칙 등록부에서 뽑으며 같은 버전의 값은 바꾸지 않는다(첫 운영 배포 전 예외, 11.4-1). 근거 조항(`legal_basis`)은 비어 있으면 시드가 채우고, 다른 값이 있으면 첫 운영 배포 전에는 갱신하고 뒤에는 마이그레이션이 멈춘다(7.1) |
 | `equipment_asset` | GLB 주소, 반경·형상 파라미터(확장, 부록 C) |
 | `layout_plan` | 가상 레이아웃(개구부·장비 주차 구역은 구역, 가설 비계는 작업면)·계획 궤적(F-02·F-01), 출처 PLANNED. 계획 작업 위치는 선택이다: 관리자가 주면 그 위치만 쓰고, 없으면(빈 목록 포함) Risk Engine 컨테이너가 작업면·구역에서 만든다(8.3) |
@@ -30,7 +30,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `config_bundle_item` | 묶음에 들어간 구역·규칙·형상의 ID 와 버전 |
 | `config_bundle_file` | 묶음이 가리키는 파일 바이트(매니페스트·구성 요소). Tier 0 가 서명 주소로 내려받는다 |
 | `config_ack` | Tier 0 의 묶음 적용·거부 응답(I1 `config_ack`) |
-| `static_object` | 등록 작업면·정적 객체: 보수적 OBB, 상판 높이(7.5). 수정은 새 버전 |
+| `static_object` | 등록 작업면·정적 객체: 보수적 OBB, 상판 높이, 연결 구역 ID(`zone_id`, 고소 작업면은 둘레 `HIGH` 구역과 한 쌍으로 생성·연결, 7.5·8.2, `docs/design/server-zone-commit.md`). 수정은 새 버전 |
 | `tier0_endpoint` | Tier 0 Pod 공개 IP·포트·공개키 지문 등록 이력(3.12) |
 
 ## 11.2 시계열 관측
@@ -58,8 +58,9 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `notification` | 이벤트, 채널, 대상, 발송·수신 확인·ACK 시각 (LIVE 이벤트만 연결 가능. 시험 알림은 이 테이블에 넣지 않음). 발송 대기열을 겸해 발송 워커 임대 기한(`claimed_until`)을 두고, 비었거나 지난 대기 건은 다시 꺼낸다 |
 | `action_ticket` | 조치 상태, 사진 주소(해소 상태와의 불일치 표시는 취소, S15P31A101-411) |
 | `media_clip` | 이벤트 연결 영상 구간의 객체 키, 카메라·구간(촬영 시각)·해시·크기, 얼굴 흐림 여부, 삭제 예정일, 보존 표시. Tier 0 가 I1 `media_clip` 으로 보내고, 보낸 뒤 붙는 CRITICAL 자동 보존은 고치지 않고 `media_clip_retention` 으로 이력을 더한다 |
-| `report` | 보고서 종류(TBM·DAILY), 대상 작업(`work_unit.work_id`)·보고서 버전(`report_version`, 덮어쓰지 않고 새 행 추가)·공종(`work_type`), 레이아웃·계산 결과(`sim.*`) 참조, 생성 상태, 본문(`sections`), 계산 근거 표, 인용 목록(`citations`), 법령 지식 그래프 서브그래프(`subgraph`: `nodes`·`edges`), 4단계 실행 상태(`steps`), 구역 최근 이벤트 요약(`zone_history`) (EC2 Python 컨테이너 생성, v1.3 수정 49) |
-| `work_unit` | TBM 작업(날짜·작업명·시간 구간·구역/장소·예정 인원·담당 조, 그리고 작업이 쓰는 가상 레이아웃 `layout_id` 및 비개인정보 공종 `work_type`, 8.3·12.6, `docs/design/server-work-units.md`·`docs/design/tbm-legal-graph.md`) |
+| `report` | 보고서 종류(TBM·DAILY), 대상 작업(`work_unit.work_id`)·보고서 버전(`report_version`, 덮어쓰지 않고 새 행 추가)·공종(`work_type`), 레이아웃·계산 결과(`sim.*`) 참조, 생성 상태, 본문(`sections`), 계산 근거 표, 인용 목록(`citations`), 법령 지식 그래프 서브그래프(`subgraph`: `nodes`·`edges`), 4단계 실행 상태(`steps`), 구역 최근 이벤트 요약(`zone_history`), 작업 종료 시 실제 LIVE 이벤트 집계 사실 및 외부 LLM 작성 “작업 마무리” 요약(`wrap_up_summary`), 첫 전자서명 등록 시 고정하는 본문 정규화 해시(`content_sha256`)와 버전 잠금 시각(`locked_at`) (EC2 Python 컨테이너 생성, v1.3 수정 49·50, `docs/design/work-session-flow.md`) |
+| `report_signature` | TBM 보고서 참석자 전자서명: 대상 보고서(`report_id`, `report_version`), 참석자 실명(`signer_name`, NFR-14 예외: TBM 전자서명에만 허용), 손글씨 서명 이미지 객체 키(`signature_image_key`)·해시(`image_sha256`), 서명 시점 보고서 본문 해시(`report_content_sha256`), `"공인 전자서명 아님, 내부 기록용 전자 서명"` 고지 확인, 등록 관리자·시각. 서버 전용 저장·관리자(`ADMIN`)만 조회·외부 LLM 절대 미전송(8.3, 14장, v1.3 수정 52) |
+| `work_unit` | 작업 관리(구 TBM 작업): 날짜·작업명·예정 시간 구간(`starts_at`·`ends_at`)·구역/장소·예정 인원·담당 조(`lead_team`), 작업 상태(`status`: `PLANNED` → `IN_PROGRESS` → `DONE`), 실제 시작·종료 시각(`actual_started_at`·`actual_ended_at`), 작업이 쓰는 가상 레이아웃(`layout_id`) 및 비개인정보 공종(`work_type`)(8.3·12.6, v1.3 수정 52, `docs/design/server-work-units.md`·`docs/design/work-session-flow.md`) |
 | `event_ack` | 운영자 확인: 누가·어디서·확인 대상 `event_sequence`(3.10). 저널의 ACKNOWLEDGED 전이가 가리킨다 |
 | `event_close` | 운영자 종료 명령과 Tier 0 결과(6.4). REST 요청의 멱등 키는 따로 저장하고(유일), `close_id` 는 EC2 가 발급한다. 종료 전이가 가리킨다 |
 | `event_escalation` | 승인한 VLM 상향 의견의 적용 명령과 Tier 0 응답 결과(`result_status`: `PENDING`·`ACCEPTED`·`DUPLICATE`·`REJECTED`, `reject_reason`, `result_received_at`, 5.4). 상향 전이가 가리킨다 |
@@ -93,7 +94,7 @@ PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evalua
 2. 모든 계산 결과는 출처를 안다: 위치(보정·Scene 버전), 이벤트(규칙 버전), 근거(모델 버전).
 3. `notification`은 출처가 LIVE인 `risk_event`만 참조할 수 있게 한다. 구현: notification에 source 컬럼을 두고 risk_event(event_id, source)를 복합 FK로 참조하며 source = ‘LIVE’ 체크를 건다(일반 CHECK는 다른 테이블을 볼 수 없으므로). 발송 워커도 LIVE만 소비하고, DB 기록 차단과 실제 발송 차단을 각각 테스트한다.
 4. 촬영·수신·판정 시각을 모두 UTC로 저장한다.
-5. 위치 기록에는 이름이 없다.
+5. 위치·이벤트·작업명·담당 조 기록에는 사람 이름이 없다(계정은 `user_id`, 기기는 `device_id`, 작업 담당은 조 이름). 예외는 관리자(`ADMIN`)만 조회하고 외부 LLM 에 절대 보내지 않는 **TBM 보고서 참석자 전자서명(`report_signature.signer_name`, 8.3·14장, NFR-14 개정, v1.3 수정 52)** 과 확장 워치 등록자(`watch_registrant`, 부록 C.6)뿐이다.
 
 **용량.** 10명 기준 `world_track_state`는 하루 8시간에 약 300만 행(압축 전 수백 MB). 가장 무거운 `observation_2d`는 하루 수 GB까지 가능하므로 EC2 가 아니라 Tier 0 저장 위치에 두고 보관을 짧게 하며, 필요하면 5 Hz로 낮춘다. 지급 EC2 디스크는 320 GB 다. hypertable 전체가 압축 전 운영일 하루 약 2 GB(10명·8시간, 골격 포함 추정)라 60 운영일이어도 약 120 GB 이고 압축하면 그보다 훨씬 작으므로, 좌표·골격·이벤트는 상시 삭제 없이 발표 후 일괄 파기까지 둔다(11.5). 추정은 운영 초기에 청크 크기로 다시 잰다.
 
@@ -114,11 +115,12 @@ PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evalua
 | 시나리오 데이터셋 | 기관(SSAFY) 허가 기준, 보관 기간 명시(프로젝트 발표 후 30일 안 파기) |
 | 내부 테스트·녹화 영상 | 기관(SSAFY) 허가 기준으로 촬영·활용한다(참여자 별도 동의나 시연·공개 자료의 '사람 없음 또는 동의자만' 제한 없음). 보관 기한 필수, 커밋 안 함, 노트북과 프로젝트 녹화 보관 위치(15.3, 19.1)에만 두고 프로젝트 발표 후 30일 안 삭제 |
 | HMR 아바타 자산·외형/텍스처·포즈(시연 범위·EXP-02) | 기관(SSAFY) 허가 기준(별도 참여자 동의 조건 없음). EC2 는 아바타 자산 버전(`avatar_asset`, 키 `(world_id, stream_epoch, appearance_version)`)마다 DB 에 한 줄씩 추가만 하고 덮어쓰지 않으며, 객체 저장소의 자산 파일(스키닝 glTF·UV 텍스처·표면 출처 지도 PNG)과 함께 프로젝트 발표 후 30일 안에 파기한다. 실시간 포즈(`avatar_pose_batch`)는 저장하지 않는 것이 기본이고, 리플레이용 사람별 1 Hz 다운샘플 저장은 선택이다(저장 시 발표 후 30일 안 파기). 외형 텍스처에는 관측된 얼굴 픽셀을 그대로 쓸 수 있고(`face_policy` 기본 OBSERVED, BLURRED·EXCLUDED 선택), 얼굴 영역도 관측·미관측을 구분한다(`face_ratios`, 보간 없음). 안 보이는 얼굴을 지어내는 생성형 얼굴 복원·표정 추정은 하지 않는다 |
+| TBM 참석자 전자서명(`report_signature`·서명 이미지) | 내부 안전 교육 참석 기록용 실명(`signer_name`)과 손글씨 서명 이미지(비공개 객체 저장소). 관리자(`ADMIN`)만 조회하고 외부 LLM 에는 절대 보내지 않음(`"공인 전자서명 아님, 내부 기록용 전자 서명"` 명시, 8.3·14장, v1.3 수정 52). 프로젝트 발표 후 30일 안에 파기(실제 현장 운영 시 보존 기간은 Lead 확인 필요) |
 | 전체 | 프로젝트 발표 후 30일 안에 모든 데이터를 파기한다(보존 표시분 포함) |
 
 - 자동 삭제는 EC2 클립 삭제 작업, TimescaleDB 보관 정책, Tier 0 저장 위치 정리 작업으로 구현한다. 클립 삭제 작업은 `delete_after` 가 지났고 보존 표시가 없는 클립의 객체를 지우고 `deleted_at` 을 남긴다. 객체 저장소 수명 주기 규칙은 DB 의 보존 표시를 모르므로 클립에 쓰지 않는다.
 - 촬영·외부 클라우드(GPU 실행 사이트·EC2) 전송·이벤트 클립 보관(얼굴 흐림 없이 14일 보관, CRITICAL 이벤트 연결 클립은 보존 표시로 프로젝트 발표 후 30일 안 파기까지 유지, 열람은 권한자로 제한하고 조회 기록 유지)·시연 및 발표 자료 활용은 모두 기관(SSAFY) 허가를 기준으로 하며, 참여자 개별 동의서나 비참여자 동의 제한은 두지 않는다(16장).
-- 외부 LLM 에는 SSAFY GMS 를 거쳐 OpenAI(국외)로 텍스트(규칙 계산 결과·법령 조항·이벤트 요약·비개인정보 공종 `work_type`)만 보내고 영상·이미지·얼굴·실명이나 작업명·인원·반장/조 이름은 보내지 않는다(5.4, 8.3). AWS 는 서울 리전이다.
+- 외부 LLM 에는 SSAFY GMS 를 거쳐 OpenAI(국외)로 텍스트(규칙 계산 결과·법령 조항·이벤트 요약·비개인정보 공종 `work_type`)만 보내고 영상·이미지·얼굴·실명(TBM 참석자 전자서명 `signer_name` 및 서명 이미지 포함)이나 작업명·인원·반장/조 이름은 보내지 않는다(5.4, 8.3, 14장). AWS 는 서울 리전이다.
 - 전송 구간은 모두 암호화한다(14장).
 
 ## 11.6 계정·기기·분석 작업

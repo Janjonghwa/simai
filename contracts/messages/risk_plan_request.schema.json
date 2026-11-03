@@ -148,7 +148,7 @@
     },
     "zone": {
       "type": "object",
-      "description": "구역 하나(명세 8.2, 11.1 zone). Risk Engine Zone.from_json 형식 그대로다(모르는 키는 거부). polygon_xy 는 World XY(m), z_range 는 [최저, 최고] World Z(m, VOLUME_3D 는 필수, GROUND_FOOTPRINT 는 보통 null). 유효 구간은 [valid_from, valid_to)",
+      "description": "구역 하나(명세 8.2, 11.1 zone). Risk Engine Zone.from_json 형식 그대로다(모르는 키는 거부). polygon_xy 는 World XY(m), z_range 는 [최저, 최고] World Z(m, VOLUME_3D 는 필수, GROUND_FOOTPRINT 는 보통 null). 유효 구간은 [valid_from, valid_to). UI·신규 구역 등록 시 severity 선택지는 CRITICAL(진입 금지)·HIGH(주의 작업구역, 고소 작업면 둘레 구역 포함) 2종으로 제한하며(2026-11-03, S15P31A101-426, 명세 8.2), 기존 데이터·스키마 하위 호환을 위해 $ref 는 defs.schema.json#/$defs/severity 를 유지한다",
       "required": [
         "zone_id",
         "zone_version",

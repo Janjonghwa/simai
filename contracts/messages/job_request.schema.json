@@ -76,7 +76,7 @@
   "$defs": {
     "job_type": {
       "enum": ["vlm_rationale", "tbm_report", "static_reconstruct", "calibration_ba", "bev_floorplan", "incident_summary", "hmr_refine", "hmr_appearance_update"],
-      "description": "12.5 작업 유형. bev_floorplan·incident_summary 는 3.1.0. hmr_refine·hmr_appearance_update 는 확장·EXP-02. tbm_report 는 폐기 예정(2026-11-02, S15P31A101-415: 보고서 생성을 EC2 Python 컨테이너로 이전, 메이저 삭제 전까지 값 유지)"
+      "description": "12.5 작업 유형. bev_floorplan·incident_summary 는 3.1.0. hmr_refine·hmr_appearance_update 는 확장·EXP-02. tbm_report 는 폐기 예정(2026-11-02, S15P31A101-415: 보고서 생성을 EC2 Python 컨테이너로 이전, 메이저 삭제 전까지 값 유지). 초기 세팅 시 정적 3D GLB·빈 교실 프레임·BEV 로 위험구역·고소 작업면 다각형 초안을 제안하는 vlm_zone_draft 및 수동 맵 재생성 요청용 scene_regenerate(초안, docs/design/work-session-flow.md, S15P31A101-426·-427·-428)는 워커 구현 티켓에서 마이너 추가 예정"
     }
   }
 }
