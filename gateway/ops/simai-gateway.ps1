@@ -1,10 +1,15 @@
-﻿# simai 로비 게이트웨이 노트북 도우미 (Windows PowerShell 5.1 이상, S15P31A101-393). 설명은 같은 폴더 README.md.
-# 더블클릭: simai-gateway.cmd  →  메뉴(1 설치·갱신 · 2 점검 · 3 관제 시작 · 4 관제 끄기 · 5 미리보기만 · 6~8 원격)
+﻿# simai 로비 게이트웨이 노트북 도우미 (Windows PowerShell 5.1 이상, S15P31A101-393 / S15P31A101-424). 설명은 같은 폴더 README.md.
+# 더블클릭: simai-gateway.cmd  →  메뉴(1 설치·갱신 · 2 점검 · 3 관제 시작 · 4 관제 끄기 · 5 미리보기만 · 6~8 원격 · 9 상태 · h 자가 복구)
 # 명령줄: simai-gateway.cmd run -PodIp 1.2.3.4 -ControlPort 40001 -VideoPort 40002   (CCTV 원격 시청 업로드를 끄려면 -NoRemoteCctv)
-# 원격(S15P31A101-394): 게이트웨이 remote-setup(관리자 1회) · 개발 노트북 dev-remote(1회)·rdp · ssh simai-gw 로 run-remote/preview-remote/update-remote/stop/status
+# 원격(S15P31A101-394·424): 게이트웨이 remote-setup(관리자 1회) · 개발 노트북 gw.sh (status/live/preview/stop/update/heal/logs/restart-tunnel/ssh)
 # 비밀 값(.env·토큰·키)은 화면에 찍지 않는다. 키 이름만 확인한다.
 param(
-  [ValidateSet('menu', 'setup', 'check', 'run', 'stop', 'preview', 'remote-setup', 'run-remote', 'preview-remote', 'update', 'update-remote', 'status', 'dev-remote', 'rdp')][string]$Command = 'menu',
+  [Parameter(Position = 0)]
+  [ValidateSet('menu', 'setup', 'check', 'run', 'stop', 'preview', 'remote-setup', 'run-remote', 'preview-remote', 'update', 'update-remote', 'status', 'dev-remote', 'rdp', 'heal', 'logs', 'restart-tunnel')][string]$Command = 'menu',
+  [Parameter(Position = 1)]
+  [string]$LogKind = '',       # logs 대상: relay | tunnel | update | heal
+  [Parameter(Position = 2)]
+  [int]$Lines = 40,            # logs 출력 줄 수(기본 40)
   [string]$PodIp = '',
   [int]$ControlPort = 0,
   [int]$VideoPort = 0,
@@ -17,6 +22,9 @@ param(
   [switch]$NoRemoteCctv
 )
 $ErrorActionPreference = 'Stop'
+$Utf8 = New-Object System.Text.UTF8Encoding $false
+try { [Console]::OutputEncoding = $Utf8; $OutputEncoding = $Utf8 } catch { }
+
 $RemoteCctvArg = if ($NoRemoteCctv) { '' } else { ' --remote-cctv' }
 $RemoteCctvLabel = if ($NoRemoteCctv) { '원격 시청 끔' } else { '원격 시청 켬' }
 $RepoUrl = 'https://lab.ssafy.com/s15-final/S15P31A101.git'
@@ -33,9 +41,13 @@ if (-not $RelayCfg) { $RelayCfg = Join-Path $Root 'gateway\relay\configs\lobby.t
 $StateFile = Join-Path $LocalDir 'gateway-pod.json'
 $PidFile = Join-Path $LocalDir 'gateway-pids.json'
 $ModeFile = Join-Path $LocalDir 'gateway-mode.txt'   # 지금 모드(관제·미리보기), 끄면 지운다
+$GatewayUserFile = Join-Path $LocalDir 'gateway-user.txt'
+$RelayLog = Join-Path $LocalDir 'gateway-relay.log'
+$TunnelLog = Join-Path $LocalDir 'gateway-remote-tunnel.log'
+$UpdateLog = Join-Path $LocalDir 'gateway-update.log'
+$HealLog = Join-Path $LocalDir 'gateway-heal.log'
 $SshDir = Join-Path $env:USERPROFILE '.ssh'
 $Pem = Join-Path $SshDir 'K15A101T.pem'
-$Utf8 = New-Object System.Text.UTF8Encoding $false
 $RelayDir = Join-Path $Root 'gateway\relay'
 $AlertDir = Join-Path $Root 'gateway\site_alert'
 
@@ -56,6 +68,11 @@ function Get-EnvKeys {
   $keys = @()
   foreach ($line in [IO.File]::ReadAllLines($p)) { if ($line -match '^\s*([A-Za-z0-9_]+)\s*=\s*\S') { $keys += $Matches[1] } }
   return $keys
+}
+function Rotate-LogIfNeeded([string]$path, [long]$maxBytes = 1048576) {
+  if ((Test-Path $path) -and ((Get-Item $path).Length -gt $maxBytes)) {
+    Move-Item -LiteralPath $path -Destination "$path.old" -Force
+  }
 }
 
 # ---------- 설치·갱신 ----------
@@ -108,8 +125,7 @@ function Check-Env {
 }
 
 function Sync-Clock {
-  $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-  if (-not $admin) { Warn '관리자 권한이 아니라 시계 동기화를 건너뛴다. 관리자 PowerShell 에서: w32tm /resync'; return }
+  if (-not (Test-Admin)) { Warn '관리자 권한이 아니라 시계 동기화를 건너뛴다. 관리자 PowerShell 에서: w32tm /resync'; return }
   w32tm /resync | Out-Null
   if ($LASTEXITCODE) {
     w32tm /config /manualpeerlist:time.windows.com /syncfromflags:manual /update | Out-Null
@@ -131,6 +147,7 @@ function Do-Setup {
   Need git; Need uv; Need ssh
   if (Test-Path $PidFile) { Fail '관제가 켜져 있다. 4(관제 끄기) 뒤에 갱신한다(Windows 는 실행 중 파일이 잠겨 설치가 실패한다).' }
   New-Item -ItemType Directory -Force (Split-Path $Root), $LocalDir, $SshDir | Out-Null
+  Save-GatewayUser
   $selfBefore = $null
   if ($InRepo) { $selfBefore = (Get-FileHash $PSCommandPath).Hash }
   if (-not (Test-Path (Join-Path $Root '.git'))) {
@@ -155,6 +172,7 @@ function Do-Setup {
   Ensure-SshConfig
   Check-Env
   Sync-Clock
+  Register-HealTask
   Ensure-Shortcut
   Say '설치·갱신 끝. 처음이면 다음은 2(점검).'
   if ($InRepo -and ((Get-FileHash $PSCommandPath).Hash -ne $selfBefore)) {
@@ -192,13 +210,23 @@ function Load-State {
 }
 
 function Do-Stop([switch]$Quiet) {
-  if (-not (Test-Path $PidFile)) { if (-not $Quiet) { Say '켜 둔 관제 창이 없다' }; return }
+  if (-not (Test-Path $PidFile)) {
+    Remove-Item $ModeFile -Force -ErrorAction SilentlyContinue
+    if (-not $Quiet) { Say '켜 둔 관제 창이 없다' }
+    return
+  }
   foreach ($p in (Get-Content $PidFile -Raw | ConvertFrom-Json)) {
     if (Get-Process -Id $p -ErrorAction SilentlyContinue) { taskkill /PID $p /T /F | Out-Null }
   }
   Remove-Item $PidFile -Force
   Remove-Item $ModeFile -Force -ErrorAction SilentlyContinue
   if (-not $Quiet) { Say '관제·미리보기 창을 껐다' }
+}
+
+function Build-RelayCommand([string]$title, [string]$sendArg) {
+  Rotate-LogIfNeeded $RelayLog
+  [IO.File]::AppendAllText($RelayLog, ("=== {0:yyyy-MM-dd HH:mm:ss} $title ===`r`n" -f (Get-Date)), $Utf8)
+  return "`$Host.UI.RawUI.WindowTitle='$title'; `$ErrorActionPreference='Continue'; `$env:PYTHONUTF8='1'; uv run simai-relay run --config '$RelayCfg'$sendArg --preview-port 47032$RemoteCctvArg 2>&1 | ForEach-Object { `$l = `"`$_`"; Write-Host `$l; Add-Content -LiteralPath '$RelayLog' -Value `$l -Encoding UTF8 }"
 }
 
 function Do-Run {
@@ -230,7 +258,8 @@ function Do-Run {
 
   $p2 = Start-Process powershell -PassThru -WorkingDirectory $AlertDir -ArgumentList '-NoExit', '-Command', "`$Host.UI.RawUI.WindowTitle='simai 현장 경보 단말'; uv run simai-site-alert run"
   Start-Sleep 3
-  $p3 = Start-Process powershell -PassThru -WorkingDirectory $RelayDir -ArgumentList '-NoExit', '-Command', "`$Host.UI.RawUI.WindowTitle='simai 영상 중계'; uv run simai-relay run --config '$RelayCfg' --send --preview-port 47032$RemoteCctvArg"
+  $relayCmd = Build-RelayCommand 'simai 영상 중계' ' --send'
+  $p3 = Start-Process powershell -PassThru -WorkingDirectory $RelayDir -ArgumentList '-NoExit', '-Command', $relayCmd
   (@($p1.Id, $p2.Id, $p3.Id) | ConvertTo-Json) | Set-Content $PidFile -Encoding ascii
   "관제 Pod $($s.PodIp) 제어 $($s.ControlPort) 영상 $($s.VideoPort), $RemoteCctvLabel ($(Get-Date -Format 'MM-dd HH:mm'))" | Set-Content $ModeFile -Encoding utf8
   Say "관제 시작: 창 3개(터널·경보 단말·영상 중계), CCTV $RemoteCctvLabel. 끌 때는 메뉴 4"
@@ -242,22 +271,45 @@ function Do-Preview {
   Need uv
   New-Item -ItemType Directory -Force $LocalDir | Out-Null
   Do-Stop -Quiet
-  $p = Start-Process powershell -PassThru -WorkingDirectory $RelayDir -ArgumentList '-NoExit', '-Command', "`$Host.UI.RawUI.WindowTitle='simai 카메라 미리보기(전송 없음)'; uv run simai-relay run --config '$RelayCfg' --preview-port 47032$RemoteCctvArg"
+  $relayCmd = Build-RelayCommand 'simai 카메라 미리보기(전송 없음)' ''
+  $p = Start-Process powershell -PassThru -WorkingDirectory $RelayDir -ArgumentList '-NoExit', '-Command', $relayCmd
   (@($p.Id) | ConvertTo-Json) | Set-Content $PidFile -Encoding ascii
   "미리보기(전송 없음), $RemoteCctvLabel ($(Get-Date -Format 'MM-dd HH:mm'))" | Set-Content $ModeFile -Encoding utf8
   Say "미리보기 시작(전송 없음, CCTV $RemoteCctvLabel). Pod 가 뜨면 3(관제 시작)으로 바꾼다. 끌 때는 4"
 }
 
-# ---------- 원격 (S15P31A101-394) ----------
+# ---------- 원격·자가 복구 (S15P31A101-394 / S15P31A101-424) ----------
 # 게이트웨이가 EC2 로 역터널을 걸어 둔다: EC2 의 127.0.0.1:2222 → 게이트웨이 sshd, 127.0.0.1:13389 → 게이트웨이 원격 데스크톱.
 # EC2 sshd 는 GatewayPorts 기본값(no)이라 EC2 루프백에만 열린다. 개발 노트북은 EC2 를 거쳐(ProxyJump·로컬 포워드) 들어온다.
 $RemoteDir = '~/simai-gateway'           # EC2 ubuntu 홈 아래. 공개키·게이트웨이 사용자 이름·포트 정리 스크립트만 둔다(비밀 아님)
 $TunnelScript = Join-Path $LocalDir 'gateway-remote-tunnel.ps1'
 $TunnelTask = 'simai-gateway-remote'
 $RunTask = 'simai-gateway-run'
+$HealTask = 'simai-gateway-heal'
 
 function Test-Admin {
   return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+function Save-GatewayUser {
+  if ($env:USERNAME -and ($env:USERNAME -ne 'SYSTEM') -and ($env:USERNAME -notlike '*$')) {
+    New-Item -ItemType Directory -Force $LocalDir | Out-Null
+    [IO.File]::WriteAllText($GatewayUserFile, $env:USERNAME.Trim(), $Utf8)
+  }
+}
+function Get-GatewayUser {
+  if (Test-Path $GatewayUserFile) {
+    $u = ([IO.File]::ReadAllText($GatewayUserFile, $Utf8)).Trim()
+    if ($u -and ($u -ne 'SYSTEM')) { return $u }
+  }
+  $t = Get-ScheduledTask -TaskName $TunnelTask -ErrorAction SilentlyContinue
+  if ($t -and $t.Principal.UserId) {
+    $tu = ($t.Principal.UserId -split '\\')[-1].Trim()
+    if ($tu -and ($tu -ne 'SYSTEM')) { return $tu }
+  }
+  if ($env:USERNAME -and ($env:USERNAME -ne 'SYSTEM') -and ($env:USERNAME -notlike '*$')) {
+    return $env:USERNAME
+  }
+  return 'SSAFY'
 }
 function To-B64([string]$s) { return [Convert]::ToBase64String($Utf8.GetBytes(($s -replace "`r", ''))) }
 function Ec2([string]$cmd) {
@@ -283,14 +335,70 @@ function Install-OpenSshServer {
   if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) { Fail 'OpenSSH MSI 설치 뒤에도 sshd 서비스가 없다' }
 }
 
+function Test-SshdFailureConfigured([string]$qfText = '') {
+  if (-not $qfText) {
+    $qfText = (@(sc.exe qfailure sshd 2>$null) -join "`n")
+  }
+  return (($qfText -match '(?i)86400') -and (([regex]::Matches($qfText, '(?i)RESTART')).Count -ge 3))
+}
+
+function Set-SshdFailureOptions {
+  sc.exe failure sshd reset= 86400 actions= restart/5000/restart/5000/restart/60000 | Out-Null
+}
+
+function Get-PowerCfgAcIndex([string]$sub, [string]$setting) {
+  $out = @(powercfg /qh SCHEME_CURRENT $sub $setting 2>$null)
+  foreach ($line in $out) {
+    if ($line -match 'AC[^:]*:\s*0x([0-9a-fA-F]+)') { return [int]"0x$($Matches[1])" }
+  }
+  return -1
+}
+
+function Get-PowerCfgStatus {
+  $mon = Get-PowerCfgAcIndex 'SUB_VIDEO' 'VIDEOIDLE'
+  $slp = Get-PowerCfgAcIndex 'SUB_SLEEP' 'STANDBYIDLE'
+  $lid = Get-PowerCfgAcIndex 'SUB_BUTTONS' 'LIDACTION'
+  $ok = ($mon -eq 0) -and ($slp -eq 0) -and ($lid -eq 0)
+  return @{ Ok = $ok; MonitorAc = $mon; StandbyAc = $slp; LidAc = $lid }
+}
+
+function Set-GatewayPowerCfg {
+  powercfg /change monitor-timeout-ac 0 | Out-Null
+  powercfg /change standby-timeout-ac 0 | Out-Null
+  powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0 | Out-Null
+  powercfg /setactive SCHEME_CURRENT | Out-Null
+}
+
+function Register-HealTask {
+  Save-GatewayUser
+  if (-not (Test-Admin)) {
+    Warn "관리자 권한이 아니라 자가 복구 예약 작업($HealTask) 등록을 건너뛴다(관리자 권한으로 1 또는 6 실행)."
+    return
+  }
+  $scriptPath = Join-Path $Root 'gateway\ops\simai-gateway.ps1'
+  if (-not (Test-Path $scriptPath)) { $scriptPath = $PSCommandPath }
+  $arg = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" heal"
+  $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
+  $tBoot = New-ScheduledTaskTrigger -AtStartup
+  $tLogon = New-ScheduledTaskTrigger -AtLogOn
+  $tRep = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
+  $pri = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+  $set = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 4) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+  Register-ScheduledTask -TaskName $HealTask -Action $act -Trigger @($tBoot, $tLogon, $tRep) -Principal $pri -Settings $set -Force | Out-Null
+  Say "자가 복구 예약 작업 등록·갱신: $HealTask (부팅·로그온·5분마다, SYSTEM)"
+}
+
 function Do-RemoteSetup {
   if (-not (Test-Admin)) { Fail '관리자 권한으로 연다(simai-gateway.cmd 우클릭 → 관리자 권한으로 실행)' }
   Need ssh
-  # 1) OpenSSH 서버: 127.0.0.1 에서만 듣고 키 인증만
+  New-Item -ItemType Directory -Force $LocalDir | Out-Null
+  Save-GatewayUser
+  # 1) OpenSSH 서버: 127.0.0.1 에서만 듣고 키 인증만, 실패 시 자동 재시작 설정
   #    Windows 기능(Add-WindowsCapability)은 SSAFY 관리 PC 에서 20분 넘게 멈춘다(S15P31A101-398).
   #    sshd 서비스가 없을 때만 공식 Win32-OpenSSH MSI(버전·해시 고정)의 서버 기능만 설치한다.
   if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) { Install-OpenSshServer }
   Set-Service sshd -StartupType Automatic
+  Set-SshdFailureOptions
   Start-Service sshd
   $cfg = 'C:\ProgramData\ssh\sshd_config'
   for ($i = 0; $i -lt 10 -and -not (Test-Path $cfg); $i++) { Start-Sleep -Seconds 1 }   # 첫 시작 때 기본 설정 파일이 생긴다
@@ -302,7 +410,7 @@ function Do-RemoteSetup {
     [IO.File]::WriteAllText($cfg, $head + $text, (New-Object System.Text.UTF8Encoding $false))
   }
   Restart-Service sshd
-  Say 'OpenSSH 서버: 127.0.0.1 전용, 키 인증만'
+  Say 'OpenSSH 서버: 127.0.0.1 전용, 키 인증만, 실패 시 자동 재시작(5s/5s/60s)'
 
   # 2) 개발 노트북 공개키(개발 노트북 dev-remote 가 EC2 에 올려 둔 것)
   $keys = @(Ec2 "cat $RemoteDir/dev_keys.pub 2>/dev/null; true") | Where-Object { $_ -match '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-\S+) \S+' }
@@ -314,11 +422,14 @@ function Do-RemoteSetup {
   } else {
     Warn '개발 노트북 공개키가 EC2 에 아직 없다. 개발 노트북에서 7(원격 준비)을 한 뒤 6 을 다시 한다.'
   }
-  Ec2 "mkdir -p $RemoteDir; echo $(To-B64 $env:USERNAME) | base64 -d > $RemoteDir/gateway_user" | Out-Null
+  $gwUser = Get-GatewayUser
+  Ec2 "mkdir -p $RemoteDir; echo $(To-B64 $gwUser) | base64 -d > $RemoteDir/gateway_user" | Out-Null
 
-  # 3) 원격 데스크톱 켜기(역터널로만 들어오므로 방화벽 규칙은 손대지 않는다)
+  # 3) 원격 데스크톱 켜기 + 절전 해제(AC 화면·절전·덮개 동작 0)
   Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
   if ((Get-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server').fDenyTSConnections -ne 0) { Warn '원격 데스크톱이 정책으로 막혀 있다(SSH 는 된다)' } else { Say '원격 데스크톱 켬' }
+  Set-GatewayPowerCfg
+  Say '절전 설정 해제(AC 화면 끄기 0, 절전 0, 덮개 닫기: 아무 것도 안 함)'
 
   # 4) EC2 에 옛 역터널 포트 정리 스크립트(끊긴 세션이 포트를 쥐고 있으면 새 역터널이 실패한다)
   #    다른 sshd 세션(같은 ubuntu 라도 privsep 자식)의 PID 는 sudo 없이 ss -p 에 안 보여 옛 세션이 2222 를 쥔 채 남았다(10차 세션) → sudo -n(EC2 ubuntu 는 비밀번호 없는 sudo, S15P31A101-414)
@@ -330,34 +441,40 @@ function Do-RemoteSetup {
 # simai 게이트웨이 원격 역터널 (S15P31A101-394). 예약 작업 simai-gateway-remote 가 로그인 때 띄운다. 도우미 6 이 다시 쓴다.
 $log = Join-Path $PSScriptRoot 'gateway-remote-tunnel.log'
 while ($true) {
-  Add-Content $log ("{0:yyyy-MM-dd HH:mm:ss} 연결" -f (Get-Date))
+  if ((Test-Path $log) -and ((Get-Item $log).Length -gt 1048576)) { Move-Item -LiteralPath $log -Destination "$log.old" -Force }
+  Add-Content $log ("{0:yyyy-MM-dd HH:mm:ss} 연결" -f (Get-Date)) -Encoding UTF8
   $t0 = Get-Date
   ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -R 127.0.0.1:2222:127.0.0.1:22 -R 127.0.0.1:13389:127.0.0.1:3389 simai-ec2
-  Add-Content $log ("{0:yyyy-MM-dd HH:mm:ss} 끊김(코드 {1})" -f (Get-Date), $LASTEXITCODE)
+  Add-Content $log ("{0:yyyy-MM-dd HH:mm:ss} 끊김(코드 {1})" -f (Get-Date), $LASTEXITCODE) -Encoding UTF8
   if (((Get-Date) - $t0).TotalSeconds -lt 20) { ssh -o BatchMode=yes -o ConnectTimeout=10 simai-ec2 '~/simai-gateway/free-ports.sh' }
   Start-Sleep 5
 }
 '@
   [IO.File]::WriteAllText($TunnelScript, $tunnel, (New-Object System.Text.UTF8Encoding $true))
   $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$TunnelScript`""
-  $trg = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-  $pri = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+  $trg = New-ScheduledTaskTrigger -AtLogOn -User $gwUser
+  $pri = New-ScheduledTaskPrincipal -UserId $gwUser -LogonType Interactive -RunLevel Limited
   $set = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
   Register-ScheduledTask -TaskName $TunnelTask -Action $act -Trigger $trg -Principal $pri -Settings $set -Force | Out-Null
   Stop-ScheduledTask -TaskName $TunnelTask -ErrorAction SilentlyContinue
   Start-ScheduledTask -TaskName $TunnelTask
+  # 6) 자가 복구 감시 예약 작업(부팅·로그온·5분마다)
+  Register-HealTask
   Start-Sleep 5
   $on = Ec2 "ss -ltnH 'sport = :2222' | wc -l"
-  if ([int]($on | Select-Object -Last 1) -ge 1) { Say '역터널 열림(EC2 127.0.0.1:2222·13389). 개발 노트북에서 ssh simai-gw / 8(원격 데스크톱)' }
-  else { Warn "역터널이 아직 안 열렸다. 로그: $(Join-Path $LocalDir 'gateway-remote-tunnel.log')" }
+  if ([int]($on | Select-Object -Last 1) -ge 1) { Say '역터널 열림(EC2 127.0.0.1:2222·13389). 개발 노트북에서 gw.sh status / ssh simai-gw / 8(원격 데스크톱)' }
+  else { Warn "역터널이 아직 안 열렸다. 로그: $TunnelLog" }
   Warn '게이트웨이는 전원 연결·절전 해제·Windows 로그인 상태로 둔다(역터널은 로그인 때 뜬다).'
 }
 
 function Start-InSession([string]$modeArgs, [string]$label) {
-  # SSH 세션에서 띄운 창은 게이트웨이 화면에 안 보이고 SSH 를 끊으면 함께 죽는다 → 로그인한 사용자 세션의 예약 작업으로 띄운다.
-  $arg = "-NoProfile -WindowStyle Minimized -ExecutionPolicy Bypass -File `"$PSCommandPath`" $modeArgs"
+  # SSH 세션이나 SYSTEM 예약 작업에서 띄운 창은 게이트웨이 화면에 안 보이거나 세션 종료 시 죽는다 → 로그인한 사용자 세션의 예약 작업으로 띄운다.
+  $gwUser = Get-GatewayUser
+  $scriptPath = Join-Path $Root 'gateway\ops\simai-gateway.ps1'
+  if (-not (Test-Path $scriptPath)) { $scriptPath = $PSCommandPath }
+  $arg = "-NoProfile -WindowStyle Minimized -ExecutionPolicy Bypass -File `"$scriptPath`" $modeArgs"
   $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
-  $pri = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+  $pri = New-ScheduledTaskPrincipal -UserId $gwUser -LogonType Interactive -RunLevel Limited
   Register-ScheduledTask -TaskName $RunTask -Action $act -Principal $pri -Force | Out-Null
   $t0 = Get-Date
   Start-ScheduledTask -TaskName $RunTask
@@ -385,7 +502,6 @@ function Do-PreviewRemote {
 # ssh simai-gw 세션은 Windows 자격 증명 관리자(wincredman)를 못 써 setup 의 git pull 이 "could not read Username" 으로 실패한다(10차 세션).
 # update-remote 는 지금 모드를 멈추고, 로그인 세션 예약 작업으로 update(git pull --ff-only + uv sync)를 돌려 로그 파일의 exit 코드를 기다린 뒤 이전 모드로 되돌린다.
 $UpdateTask = 'simai-gateway-update'
-$UpdateLog = Join-Path $LocalDir 'gateway-update.log'
 
 function Log-Update([string]$m) { [IO.File]::AppendAllText($UpdateLog, ("{0:yyyy-MM-dd HH:mm:ss} {1}`r`n" -f (Get-Date), $m), $Utf8) }
 
@@ -429,11 +545,11 @@ function Get-ResumeMode {
   if ($m.StartsWith('관제')) {
     $s = Load-State
     if ($s.PodIp -and $s.ControlPort -and $s.VideoPort) {
-      return @{ Args = "run -PodIp $($s.PodIp) -ControlPort $($s.ControlPort) -VideoPort $($s.VideoPort)$extra"; Label = '관제(창 3개)' }
+      return @{ Mode = 'run'; Args = "run -PodIp $($s.PodIp) -ControlPort $($s.ControlPort) -VideoPort $($s.VideoPort)$extra"; Label = '관제(창 3개)' }
     }
-    return $null
+    return @{ Mode = 'run'; Args = ''; Label = '관제(창 3개)' }
   }
-  if ($m.StartsWith('미리보기')) { return @{ Args = "preview$extra"; Label = '카메라 미리보기' } }
+  if ($m.StartsWith('미리보기')) { return @{ Mode = 'preview'; Args = "preview$extra"; Label = '카메라 미리보기' } }
   return $null
 }
 
@@ -443,9 +559,10 @@ function Do-UpdateRemote {
   New-Item -ItemType Directory -Force $LocalDir | Out-Null
   Remove-Item $UpdateLog -Force -ErrorAction SilentlyContinue
   if (Test-Path $UpdateLog) { Fail "지난 갱신 로그를 지우지 못했다(다른 갱신이 도는 중일 수 있다): $UpdateLog" }
+  $gwUser = Get-GatewayUser
   $arg = "-NoProfile -WindowStyle Minimized -ExecutionPolicy Bypass -File `"$PSCommandPath`" update"
   $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
-  $pri = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+  $pri = New-ScheduledTaskPrincipal -UserId $gwUser -LogonType Interactive -RunLevel Limited
   Register-ScheduledTask -TaskName $UpdateTask -Action $act -Principal $pri -Force | Out-Null
   Start-ScheduledTask -TaskName $UpdateTask
   Say "로그인 세션에서 갱신 중(git pull --ff-only + uv sync, 로그 $UpdateLog)"
@@ -461,26 +578,368 @@ function Do-UpdateRemote {
     return
   }
   if ($code) { Warn "갱신 실패(exit=$code). 이전 코드 그대로 둔다." } else { Say '갱신 끝' }
-  if ($resume) { Start-InSession $resume.Args $resume.Label } else { Say '갱신 전 꺼져 있어 그대로 둔다(평상시는 preview-remote)' }
+  if ($resume -and $resume.Args) { Start-InSession $resume.Args $resume.Label } else { Say '갱신 전 꺼져 있어 그대로 둔다(평상시는 preview-remote)' }
+}
+
+# ---------- 자가 복구(heal)·역터널 재시작·상태·로그 (S15P31A101-424) ----------
+function Get-TunnelLogInfo {
+  # 순수 함수: 역터널 로그 줄 목록과 ssh 프로세스 생존 여부에서 마지막 연결/끊김/성공 시각을 계산한다.
+  param(
+    [string[]]$Lines = @(),
+    [bool]$ProcessAlive = $false,
+    [datetime]$Now = (Get-Date)
+  )
+  $lastConn = $null
+  $lastDisc = $null
+  $lastSuccess = $null
+  $firstTs = $null
+  $lastKind = ''
+  foreach ($line in $Lines) {
+    if ($line -match '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(.+)$') {
+      $ts = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
+      $msg = $Matches[2]
+      if ($null -eq $firstTs) { $firstTs = $ts }
+      if ($msg -match '^연결') {
+        $lastConn = $ts
+        $lastKind = 'connect'
+      } elseif ($msg -match '^끊김') {
+        if (($null -ne $lastConn) -and ((($ts - $lastConn).TotalSeconds) -ge 20)) {
+          $lastSuccess = $ts
+        }
+        $lastDisc = $ts
+        $lastKind = 'disconnect'
+      }
+    }
+  }
+  if (($lastKind -eq 'connect') -and $ProcessAlive -and ($null -ne $lastConn)) {
+    $lastSuccess = $Now
+  } elseif (($null -eq $lastSuccess) -and ($null -ne $firstTs)) {
+    $lastSuccess = $firstTs
+  }
+  return @{
+    LastConnectAt    = $lastConn
+    LastDisconnectAt = $lastDisc
+    LastSuccessAt    = $lastSuccess
+    LastEvent        = $lastKind
+  }
+}
+
+function Get-HealPlan {
+  # 순수 함수: 현재 게이트웨이 상태(서비스·예약 작업·터널 로그 시각·절전·모드)를 받아 수행할 복구 조치 목록을 돌려준다.
+  param(
+    [string]$SshdStatus = 'Running',
+    [string]$SshdStartType = 'Automatic',
+    [bool]$SshdFailureConfigured = $true,
+    [string]$TunnelTaskState = 'Running',
+    [bool]$TunnelProcessAlive = $true,
+    [nullable[datetime]]$TunnelLastSuccessAt = $null,
+    [datetime]$Now = (Get-Date),
+    [int]$TunnelStaleSeconds = 300,
+    [bool]$PowerCfgOk = $true,
+    [string]$SavedMode = '',
+    [bool]$RelayAlive = $true
+  )
+  $actions = @()
+  if ($SshdStatus -ne 'Missing') {
+    if ($SshdStartType -ne 'Automatic') { $actions += 'set-sshd-automatic' }
+    if ($SshdStatus -ne 'Running') { $actions += 'start-sshd' }
+    if (-not $SshdFailureConfigured) { $actions += 'set-sshd-failure' }
+  }
+  if ($TunnelTaskState -ne 'Missing') {
+    $stale = ($null -ne $TunnelLastSuccessAt) -and ((($Now - $TunnelLastSuccessAt).TotalSeconds) -gt $TunnelStaleSeconds)
+    if ($TunnelTaskState -ne 'Running') {
+      $actions += 'start-tunnel-task'
+    }
+    if ((-not $TunnelProcessAlive) -or $stale) {
+      $actions += 'restart-tunnel'
+    }
+  }
+  if (-not $PowerCfgOk) {
+    $actions += 'fix-powercfg'
+  }
+  if (($SavedMode -eq 'preview') -and (-not $RelayAlive)) {
+    $actions += 'restart-preview'
+  } elseif (($SavedMode -eq 'run') -and (-not $RelayAlive)) {
+    $actions += 'notify-run-dead'
+  }
+  return ,$actions
+}
+
+function Write-HealLog([string]$m) {
+  New-Item -ItemType Directory -Force $LocalDir | Out-Null
+  Rotate-LogIfNeeded $HealLog
+  $line = "{0:yyyy-MM-dd HH:mm:ss} {1}" -f (Get-Date), ($m -replace '[\r\n]+', ' ')
+  [IO.File]::AppendAllText($HealLog, "$line`r`n", $Utf8)
+}
+
+function Test-TunnelSshAlive {
+  $procs = @(Get-CimInstance Win32_Process -Filter "Name = 'ssh.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*127.0.0.1:2222:127.0.0.1:22*' })
+  return ($procs.Count -gt 0)
+}
+
+function Stop-TunnelProcesses {
+  $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    ($_.Name -eq 'ssh.exe' -and $_.CommandLine -like '*127.0.0.1:2222:127.0.0.1:22*') -or
+    ($_.Name -match '^(powershell|pwsh)\.exe$' -and $_.CommandLine -like '*gateway-remote-tunnel.ps1*')
+  })
+  foreach ($p in $procs) {
+    Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Invoke-FreePortsOnEc2 {
+  $gwUser = Get-GatewayUser
+  $uSshCfg = Join-Path "C:\Users\$gwUser\.ssh" 'config'
+  $uPem = Join-Path "C:\Users\$gwUser\.ssh" 'K15A101T.pem'
+  $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try {
+    if ((Test-Path $uSshCfg) -and (Test-Path $uPem)) {
+      ssh -F $uSshCfg -i $uPem -o BatchMode=yes -o ConnectTimeout=10 simai-ec2 '~/simai-gateway/free-ports.sh' 2>$null | Out-Null
+    } else {
+      ssh -o BatchMode=yes -o ConnectTimeout=10 simai-ec2 '~/simai-gateway/free-ports.sh' 2>$null | Out-Null
+    }
+  } catch { } finally { $ErrorActionPreference = $old }
+}
+
+function Get-TunnelState {
+  $now = Get-Date
+  $t = Get-ScheduledTask -TaskName $TunnelTask -ErrorAction SilentlyContinue
+  $tState = if ($t) { [string]$t.State } else { 'Missing' }
+  $sshAlive = Test-TunnelSshAlive
+  $lines = if (Test-Path $TunnelLog) { @(Get-Content -LiteralPath $TunnelLog -Encoding UTF8 -Tail 200) } else { @() }
+  $info = Get-TunnelLogInfo -Lines $lines -ProcessAlive $sshAlive -Now $now
+  $lastConnLabel = if ($null -ne $info.LastConnectAt) {
+    $s = $info.LastConnectAt.ToString('yyyy-MM-dd HH:mm:ss')
+    if ($sshAlive -and ($info.LastEvent -eq 'connect')) { "$s (연결 유지 중)" }
+    elseif ($null -ne $info.LastDisconnectAt) { "$s (마지막 끊김 $($info.LastDisconnectAt.ToString('HH:mm:ss')))" }
+    else { $s }
+  } else { '기록 없음' }
+  $lastSucc = if ($null -ne $info.LastSuccessAt) { $info.LastSuccessAt } else { [datetime]::MinValue }
+  return @{
+    TaskState        = $tState
+    ProcessAlive     = $sshAlive
+    LastConnectAt    = $info.LastConnectAt
+    LastDisconnectAt = $info.LastDisconnectAt
+    LastSuccessAt    = $lastSucc
+    LastConnectLabel = $lastConnLabel
+  }
+}
+
+function Test-ModeProcessesAlive {
+  if (-not (Test-Path $PidFile)) { return $false }
+  $pids = @(Get-Content $PidFile -Raw | ConvertFrom-Json)
+  if ($pids.Count -eq 0) { return $false }
+  foreach ($p in $pids) {
+    $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+    if ((-not $proc) -or ($proc.ProcessName -notmatch '^(powershell|pwsh)$')) { return $false }
+  }
+  return $true
+}
+
+function Do-RestartTunnel([switch]$Quiet) {
+  $t = Get-ScheduledTask -TaskName $TunnelTask -ErrorAction SilentlyContinue
+  if (-not $t) {
+    if (-not $Quiet) { Warn "원격 역터널 예약 작업($TunnelTask)이 없다. 6(원격 열기 설정)을 먼저 실행한다." }
+    return
+  }
+  if (-not $Quiet) { Say '역터널 재시작: 예약 작업 중지 → 옛 프로세스·EC2 포트 정리(free-ports.sh) → 다시 시작' }
+  Stop-ScheduledTask -TaskName $TunnelTask -ErrorAction SilentlyContinue
+  Stop-TunnelProcesses
+  Invoke-FreePortsOnEc2
+  Start-ScheduledTask -TaskName $TunnelTask
+  if (-not $Quiet) {
+    Start-Sleep -Seconds 3
+    $ts = Get-TunnelState
+    Say "역터널 상태: 작업=$($ts.TaskState), 프로세스=$(if ($ts.ProcessAlive) { '살아 있음' } else { '대기 중' }), 마지막 연결=$($ts.LastConnectLabel)"
+  }
+}
+
+function Do-Heal {
+  $now = Get-Date
+  if ((Test-Admin) -and (-not (Get-ScheduledTask -TaskName $HealTask -ErrorAction SilentlyContinue))) {
+    Register-HealTask
+  }
+  $svc = Get-Service sshd -ErrorAction SilentlyContinue
+  $sshdStatus = if ($svc) { [string]$svc.Status } else { 'Missing' }
+  $sshdStart = if ($svc) { [string]$svc.StartType } else { 'Missing' }
+  $sshdFailOk = if ($svc) { Test-SshdFailureConfigured } else { $false }
+  $tState = Get-TunnelState
+  $pcfg = Get-PowerCfgStatus
+  $resume = Get-ResumeMode
+  $savedMode = if ($resume) { $resume.Mode } else { '' }
+  $relayAlive = if ($savedMode) { Test-ModeProcessesAlive } else { $true }
+
+  $plan = Get-HealPlan `
+    -SshdStatus $sshdStatus `
+    -SshdStartType $sshdStart `
+    -SshdFailureConfigured $sshdFailOk `
+    -TunnelTaskState $tState.TaskState `
+    -TunnelProcessAlive $tState.ProcessAlive `
+    -TunnelLastSuccessAt $tState.LastSuccessAt `
+    -Now $now `
+    -PowerCfgOk $pcfg.Ok `
+    -SavedMode $savedMode `
+    -RelayAlive $relayAlive
+
+  if ($plan.Count -eq 0) {
+    Say '자가 복구(heal): 이상 없음'
+    return
+  }
+
+  $needAdmin = ($plan -contains 'set-sshd-automatic') -or ($plan -contains 'start-sshd') -or ($plan -contains 'set-sshd-failure') -or ($plan -contains 'fix-powercfg')
+  if ($needAdmin -and (-not (Test-Admin))) {
+    $ht = Get-ScheduledTask -TaskName $HealTask -ErrorAction SilentlyContinue
+    if ($ht) {
+      Say "관리자 권한 조치를 SYSTEM 예약 작업($HealTask)으로 실행한다"
+      Start-ScheduledTask -TaskName $HealTask -ErrorAction SilentlyContinue
+      Start-Sleep -Seconds 3
+    } else {
+      Warn 'sshd·절전 복구는 관리자 권한이 필요하다(관리자 권한으로 실행하거나 6 으로 예약 작업 등록).'
+    }
+  }
+
+  if (Test-Admin) {
+    if ($plan -contains 'set-sshd-automatic') {
+      Set-Service sshd -StartupType Automatic
+      Write-HealLog "sshd 시작 유형을 Automatic 으로 복구(이전: $sshdStart)"
+      Say '복구: sshd 시작 유형 Automatic'
+    }
+    if ($plan -contains 'start-sshd') {
+      Start-Service sshd
+      Write-HealLog "sshd 서비스 시작(이전 상태: $sshdStatus)"
+      Say '복구: sshd 서비스 시작'
+    }
+    if ($plan -contains 'set-sshd-failure') {
+      Set-SshdFailureOptions
+      Write-HealLog 'sshd 서비스 실패 시 재시작 옵션 설정(5s/5s/60s, reset 86400)'
+      Say '복구: sshd 실패 시 재시작 옵션 설정'
+    }
+    if ($plan -contains 'fix-powercfg') {
+      Set-GatewayPowerCfg
+      Write-HealLog "절전 설정(AC) 복구(이전: 화면=$($pcfg.MonitorAc)초, 절전=$($pcfg.StandbyAc)초, 덮개=$($pcfg.LidAc))"
+      Say '복구: 절전 설정(AC 화면·절전·덮개 동작 0)'
+    }
+  }
+
+  if ($plan -contains 'restart-tunnel') {
+    $reason = if ($tState.TaskState -ne 'Running') { "작업 상태=$($tState.TaskState)" } elseif (-not $tState.ProcessAlive) { 'ssh 프로세스 없음' } else { "마지막 성공 오래됨($($tState.LastConnectLabel))" }
+    Do-RestartTunnel -Quiet
+    Write-HealLog "역터널 재시작($reason)"
+    Say "복구: 역터널 재시작($reason)"
+  } elseif ($plan -contains 'start-tunnel-task') {
+    Start-ScheduledTask -TaskName $TunnelTask
+    Write-HealLog "역터널 예약 작업 시작(이전 상태: $($tState.TaskState))"
+    Say '복구: 역터널 예약 작업 시작'
+  }
+
+  if ($plan -contains 'restart-preview') {
+    if ($resume -and $resume.Args) {
+      Start-InSession $resume.Args $resume.Label
+      Write-HealLog "미리보기 창이 죽어 다시 시작($($resume.Args))"
+      Say '복구: 미리보기 창 다시 시작'
+    }
+  } elseif ($plan -contains 'notify-run-dead') {
+    $lastHealLine = if (Test-Path $HealLog) { [string](Get-Content -LiteralPath $HealLog -Encoding UTF8 -Tail 1) } else { '' }
+    if ($lastHealLine -notmatch '관제가 꺼짐') {
+      Write-HealLog '관제가 꺼짐(창 죽음 — Pod 주소가 바뀌었을 수 있어 자동 복구 안 함)'
+    }
+    Warn '관제가 꺼짐: 관제(run) 창이 죽어 있다(자동 재시작 안 함). Pod 주소를 확인하고 run-remote(gw.sh live)로 다시 시작한다.'
+  }
 }
 
 function Do-Status {
-  $mode = '꺼짐'
-  if (Test-Path $ModeFile) { $mode = (Get-Content $ModeFile -Raw).Trim() }
-  Say "모드: $mode"
-  if (Test-Path $PidFile) {
-    foreach ($p in (Get-Content $PidFile -Raw | ConvertFrom-Json)) {
-      $alive = [bool](Get-Process -Id $p -ErrorAction SilentlyContinue)
-      Say "  창 PID $p : $(if ($alive) { '살아 있음' } else { '죽음' })"
-    }
+  $rawMode = '꺼짐'
+  if (Test-Path $ModeFile) { $rawMode = (Get-Content $ModeFile -Raw).Trim() }
+  $pids = @()
+  if (Test-Path $PidFile) { $pids = @(Get-Content $PidFile -Raw | ConvertFrom-Json) }
+  $modeAlive = if ($rawMode -ne '꺼짐') { Test-ModeProcessesAlive } else { $true }
+  if ($rawMode.StartsWith('관제') -and (-not $modeAlive)) {
+    Warn "모드: 관제가 꺼짐 (마지막 설정: $rawMode)"
+  } elseif ($rawMode.StartsWith('미리보기') -and (-not $modeAlive)) {
+    Warn "모드: 미리보기 창 죽음 ($rawMode)"
+  } else {
+    Say "모드: $rawMode"
   }
-  $t = Get-ScheduledTask -TaskName $TunnelTask -ErrorAction SilentlyContinue
-  if ($t) { Say "원격 역터널 작업: $($t.State)" } else { Say '원격 역터널 작업: 없음(6 을 안 함)' }
+  foreach ($p in $pids) {
+    $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
+    $alive = [bool]($proc -and ($proc.ProcessName -match '^(powershell|pwsh)$'))
+    Say "  창 PID $p : $(if ($alive) { '살아 있음' } else { '죽음' })"
+  }
+
+  $sshd = Get-Service sshd -ErrorAction SilentlyContinue
+  if ($sshd) {
+    $failOk = Test-SshdFailureConfigured
+    Say "sshd 서비스: $($sshd.Status), 시작 유형=$($sshd.StartType), 실패 시 재시작=$(if ($failOk) { '설정됨' } else { '미설정' })"
+  } else {
+    Warn 'sshd 서비스: 없음(6 원격 열기 설정 필요)'
+  }
+
+  $ts = Get-TunnelState
+  $ht = Get-ScheduledTask -TaskName $HealTask -ErrorAction SilentlyContinue
+  $htLabel = if ($ht) { [string]$ht.State } else { '없음' }
+  Say "원격 역터널: 작업=$($ts.TaskState), ssh=$(if ($ts.ProcessAlive) { '살아 있음' } else { '없음' }), 마지막 연결=$($ts.LastConnectLabel), heal작업=$htLabel"
+
   if (Test-Path $RelayCfg) {
-    $hosts = Select-String -Path $RelayCfg -Pattern '^\s*host\s*=\s*"([^"]+)"' | ForEach-Object { $_.Matches[0].Groups[1].Value }
+    $hosts = @(Select-String -Path $RelayCfg -Pattern '^\s*host\s*=\s*"([^"]+)"' | ForEach-Object { $_.Matches[0].Groups[1].Value })
     $up = @($hosts | Where-Object { Test-Tcp $_ 554 800 }).Count
     Say "카메라 RTSP 응답: $up / $($hosts.Count)"
   }
+
+  if (Test-Path (Join-Path $Root '.git')) {
+    $commit = (git -C $Root log --oneline -1 2>$null)
+    Say "저장소 커밋: $commit"
+  } else {
+    Warn "저장소: 없음($Root)"
+  }
+
+  $driveName = (Split-Path $Root -Qualifier).TrimEnd(':')
+  if (-not $driveName) { $driveName = 'C' }
+  $drv = Get-PSDrive -Name $driveName -ErrorAction SilentlyContinue
+  if ($drv) {
+    $freeGb = [math]::Round($drv.Free / 1GB, 1)
+    $totalGb = [math]::Round(($drv.Free + $drv.Used) / 1GB, 1)
+    Say "디스크 여유($($driveName):): ${freeGb} GB / ${totalGb} GB"
+  }
+
+  $pcfg = Get-PowerCfgStatus
+  if ($pcfg.Ok) {
+    Say '절전 설정(AC): 정상 (화면 0, 절전 0, 덮개 0)'
+  } else {
+    Warn "절전 설정(AC): 이상 (화면=$($pcfg.MonitorAc)초, 절전=$($pcfg.StandbyAc)초, 덮개=$($pcfg.LidAc))"
+  }
+
+  if (Test-Path $HealLog) {
+    $tail = @(Get-Content -LiteralPath $HealLog -Encoding UTF8 -Tail 3)
+    if ($tail.Count -gt 0) {
+      Say "heal 로그(마지막 $($tail.Count)줄):"
+      foreach ($l in $tail) { Write-Host "  $l" }
+    } else {
+      Say 'heal 로그: 기록 없음(이상 없었음)'
+    }
+  } else {
+    Say 'heal 로그: 기록 없음(이상 없었음)'
+  }
+}
+
+function Do-Logs {
+  $map = @{
+    'relay'  = $RelayLog
+    'tunnel' = $TunnelLog
+    'update' = $UpdateLog
+    'heal'   = $HealLog
+  }
+  $k = if ($LogKind) { $LogKind.Trim().ToLower() } else { '' }
+  if (-not $map.ContainsKey($k)) {
+    Fail "logs 종류는 relay | tunnel | update | heal 중 하나여야 한다(사용: simai-gateway.ps1 logs <relay|tunnel|update|heal> [-Lines 40])"
+  }
+  $path = $map[$k]
+  if (-not (Test-Path $path)) {
+    Say "로그 파일이 아직 없다: $path"
+    return
+  }
+  $n = if ($Lines -gt 0) { $Lines } else { 40 }
+  Say "=== $k 로그 ($path, 마지막 ${n}줄) ==="
+  Get-Content -LiteralPath $path -Encoding UTF8 -Tail $n | ForEach-Object { Write-Host $_ }
 }
 
 function Do-DevRemote {
@@ -502,7 +961,7 @@ function Do-DevRemote {
     [IO.File]::AppendAllText($cfg, $block, $Utf8)
     Say "SSH 설정 simai-gw 추가(사용자 $user)"
   }
-  Say '확인: ssh simai-gw hostname  /  원격 데스크톱: 8'
+  Say '확인: gateway/ops/gw.sh status  /  ssh simai-gw hostname  /  원격 데스크톱: 8'
 }
 
 function Do-Rdp {
@@ -523,7 +982,7 @@ function Show-Menu {
   while ($true) {
     Write-Host ''
     Write-Host '=== simai 게이트웨이 ===' -ForegroundColor Green
-    Write-Host ' 1  설치·갱신 (저장소 pull·의존성·비밀 묶음·SSH·시계)'
+    Write-Host ' 1  설치·갱신 (저장소 pull·의존성·비밀 묶음·SSH·시계·heal 예약)'
     Write-Host ' 2  점검 (EC2·카메라·경보 소리)'
     Write-Host ' 3  관제 시작 (GPU Pod 가 떠 있을 때: 터널 → 경보 단말 → 영상 중계)'
     Write-Host ' 4  끄기 (관제·미리보기)'
@@ -531,22 +990,27 @@ function Show-Menu {
     Write-Host ' 6  원격 열기 설정 (게이트웨이, 관리자, 처음 1회)'
     Write-Host ' 7  [개발 노트북] 원격 준비 (처음 1회)'
     Write-Host ' 8  [개발 노트북] 게이트웨이 원격 데스크톱'
-    Write-Host ' 9  지금 상태(모드·창·역터널·카메라)'
+    Write-Host ' 9  지금 상태(모드·창·sshd·역터널·카메라·디스크·절전·heal)'
+    Write-Host ' h  heal (지금 점검·복구: sshd·역터널·절전·미리보기)'
     Write-Host ' q  나가기'
     $c = Read-Host '선택'
     try {
       switch ($c) {
         '1' { Do-Setup } '2' { Do-Check } '3' { Do-Run } '4' { Do-Stop } '5' { Do-Preview }
-        '6' { Do-RemoteSetup } '7' { Do-DevRemote } '8' { Do-Rdp } '9' { Do-Status } 'q' { return } default { }
+        '6' { Do-RemoteSetup } '7' { Do-DevRemote } '8' { Do-Rdp } '9' { Do-Status }
+        'h' { Do-Heal } 'heal' { Do-Heal } 'q' { return } default { }
       }
     } catch { Write-Host "[gateway] 멈춤: $($_.Exception.Message)" -ForegroundColor Red }
   }
 }
 
-switch ($Command) {
-  'setup' { Do-Setup } 'check' { Do-Check } 'run' { Do-Run } 'stop' { Do-Stop } 'preview' { Do-Preview }
-  'remote-setup' { Do-RemoteSetup } 'run-remote' { Do-RunRemote } 'preview-remote' { Do-PreviewRemote } 'status' { Do-Status }
-  'update' { Do-Update } 'update-remote' { Do-UpdateRemote }
-  'dev-remote' { Do-DevRemote } 'rdp' { Do-Rdp }
-  default { Show-Menu }
+if ($MyInvocation.InvocationName -ne '.') {
+  switch ($Command) {
+    'setup' { Do-Setup } 'check' { Do-Check } 'run' { Do-Run } 'stop' { Do-Stop } 'preview' { Do-Preview }
+    'remote-setup' { Do-RemoteSetup } 'run-remote' { Do-RunRemote } 'preview-remote' { Do-PreviewRemote } 'status' { Do-Status }
+    'update' { Do-Update } 'update-remote' { Do-UpdateRemote }
+    'heal' { Do-Heal } 'logs' { Do-Logs } 'restart-tunnel' { Do-RestartTunnel }
+    'dev-remote' { Do-DevRemote } 'rdp' { Do-Rdp }
+    default { Show-Menu }
+  }
 }
