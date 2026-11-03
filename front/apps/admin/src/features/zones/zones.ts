@@ -96,12 +96,13 @@ export function boxToPolygon(box: Pick<ZoneBox, 'min' | 'max'>): [number, number
 }
 
 /** 3D 뷰어 Source 에 넘길 상자 형식. 뷰어는 서버 형식이 아니라 이 형식을 검사한다. */
-export function toViewerZones(zones: readonly ZoneBox[]): ViewerZones {
+export function toViewerZones(zones: readonly Zone[]): ViewerZones {
   return {
     contract: 'DEMO_UNCONFIRMED',
     zones: zones.map((zone) => ({
       zone_id: zone.zoneId,
       name: zone.name,
+      severity: zone.severity,
       aabb: { min_xyz: zone.min, max_xyz: zone.max },
     })),
   };

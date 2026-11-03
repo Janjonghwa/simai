@@ -1,5 +1,5 @@
 import { CameraButton } from '@/features/events/CameraButton';
-import { isActive, isAlarmSeverity, needsConfirmation } from '@/features/events/entries';
+import { isActive, needsConfirmation } from '@/features/events/entries';
 import { ConfirmBadge, DelayedBadge, StateChip } from '@/features/events/EventBadges';
 import { entryEtaLine, ruleName } from '@/features/events/format';
 import { firstActiveRaisedAt, topEntry, type Incident } from '@/features/events/incidents';
@@ -18,19 +18,12 @@ interface IncidentCardProps {
   onOpen: (eventId: string) => void;
 }
 
-type Tier = 'alarm' | 'caution' | 'info';
-
-const tierOf = (severity: Severity): Tier => {
-  if (isAlarmSeverity(severity)) return 'alarm';
-  if (severity === 'CAUTION') return 'caution';
-  return 'info';
-};
-
-/** 등급 색: 경고 이상은 빨강, 주의는 노랑, 안내는 회색. 띠는 늘 있고, 테두리는 진행 중인 묶음에만 있다. */
-const TIER_CLASS: Record<Tier, { bar: string; ring?: string }> = {
-  alarm: { bar: 'bg-sev-critical', ring: 'ring-1 ring-sev-critical ring-inset' },
-  caution: { bar: 'bg-sev-caution', ring: 'ring-1 ring-sev-caution ring-inset' },
-  info: { bar: 'bg-faint' },
+/** 등급 색: 위험 빨강, 경고 주황, 주의 노랑, 안내 회색. 띠는 늘 있고, 테두리는 진행 중인 묶음에만 있다. */
+const SEVERITY_LOOK: Record<Severity, { bar: string; ring?: string }> = {
+  CRITICAL: { bar: 'bg-sev-critical', ring: 'ring-1 ring-sev-critical ring-inset' },
+  HIGH: { bar: 'bg-sev-high', ring: 'ring-1 ring-sev-high ring-inset' },
+  CAUTION: { bar: 'bg-sev-caution', ring: 'ring-1 ring-sev-caution ring-inset' },
+  INFO: { bar: 'bg-faint' },
 };
 
 /**
@@ -49,7 +42,7 @@ export function IncidentCard({
   onOpen,
 }: IncidentCardProps) {
   const top = topEntry(incident);
-  const tier = TIER_CLASS[tierOf(incident.severity)];
+  const look = SEVERITY_LOOK[incident.severity];
   const chip = cardChip(incident);
   const live = incident.entries.filter((e) => isActive(e.event));
   const check = live.find((e) => needsConfirmation(e.event));
@@ -71,7 +64,7 @@ export function IncidentCard({
         className={cn(
           'relative flex flex-col gap-1 overflow-hidden rounded-[10px] bg-surface-2 py-3 pr-3.5 pl-[18px]',
           'hover:ring-1 hover:ring-point-soft hover:ring-inset',
-          incident.active && tier.ring,
+          incident.active && look.ring,
           !incident.active && 'opacity-55',
           selected && 'outline-2 outline-offset-1 outline-primary',
         )}
@@ -80,7 +73,7 @@ export function IncidentCard({
           aria-hidden
           className={cn(
             'absolute inset-y-0 left-0 w-1',
-            tier.bar,
+            look.bar,
             incident.alarming && 'motion-safe:animate-alarm-blink',
           )}
         />
@@ -94,7 +87,7 @@ export function IncidentCard({
             <SeverityBadge severity={top.event.severity} />
             <b className="truncate">{ruleName(top.event.rule_id)}</b>
           </span>
-          {chip && <StateChip chip={chip} />}
+          {chip && <StateChip chip={chip} severity={incident.severity} />}
         </button>
         {(check || delayed) && (
           <div className="flex flex-wrap gap-1.5">

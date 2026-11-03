@@ -59,6 +59,45 @@ describe('2D 평면 방 범위', () => {
   });
 });
 
+describe('2D 평면 구역 색', () => {
+  const zoneRect = (zoneProps: Partial<PlanZone>, selectedKey: string | null = null) => {
+    const { container } = plan({ zones: [{ ...zone, ...zoneProps }], selectedKey });
+    const element = container.querySelector('rect[data-zone="z-1"]')!;
+    return {
+      className: element.getAttribute('class') ?? '',
+      dash: element.getAttribute('stroke-dasharray'),
+      fillOpacity: Number(element.getAttribute('fill-opacity')),
+    };
+  };
+
+  it.each([
+    ['CRITICAL', 'stroke-sev-critical'],
+    ['HIGH', 'stroke-sev-high'],
+    ['CAUTION', 'stroke-sev-caution'],
+  ] as const)('구역 윤곽선은 심각도 %s 의 색(%s)이다', (severity, stroke) => {
+    expect(zoneRect({ severity }).className).toContain(stroke);
+  });
+
+  it.each([undefined, 'INFO' as const])('심각도가 %s 인 구역은 중립색이다', (severity) => {
+    const { className } = zoneRect({ severity });
+    expect(className).toContain('stroke-muted-foreground');
+    expect(className).not.toMatch(/stroke-sev-/);
+  });
+
+  it('입체 판정은 점선, 바닥 판정은 실선이다', () => {
+    expect(zoneRect({ severity: 'HIGH', judgeType: 'VOLUME_3D' }).dash).not.toBeNull();
+    expect(zoneRect({ severity: 'HIGH', judgeType: 'GROUND_FOOTPRINT' }).dash).toBeNull();
+  });
+
+  it('고른 구역도 심각도 색 그대로이고 채움만 짙어진다', () => {
+    const idle = zoneRect({ severity: 'HIGH' });
+    const selected = zoneRect({ severity: 'HIGH' }, 'zone:z-1');
+    expect(selected.className).toContain('stroke-sev-high');
+    expect(selected.className).toBe(idle.className);
+    expect(selected.fillOpacity).toBeGreaterThan(idle.fillOpacity);
+  });
+});
+
 describe('평면도 바탕', () => {
   const bounds = { minX: -0.5, minY: -0.5, maxX: 10.5, maxY: 10.5 };
 

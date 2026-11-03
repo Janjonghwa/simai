@@ -12,10 +12,10 @@ import { memo, type ChangeEvent } from 'react';
 /** 배속(재생 엔진 REPLAY_SPEEDS 와 같다). 값을 쓰려고 three.js 를 끄는 입구를 정적으로 부르지 않는다. */
 export const SPEEDS = [0.5, 1, 2, 4] as const;
 
-// 이벤트 표시는 위험 등급색이다(빨강·노랑은 위험에만, CONVENTION). 데이터 없음은 줄무늬다.
+// 이벤트 표시는 위험 등급색이다(빨강·주황·노랑은 위험 등급에만, CONVENTION). 데이터 없음은 줄무늬다.
 const MARK: Record<Severity, string> = {
   CRITICAL: 'bg-sev-critical',
-  HIGH: 'bg-sev-critical/60',
+  HIGH: 'bg-sev-high',
   CAUTION: 'bg-sev-caution',
   INFO: 'bg-muted-foreground',
 };

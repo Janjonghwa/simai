@@ -2,9 +2,10 @@ import type { PointerEvent } from 'react';
 
 // 2D 평면 층이 함께 쓰는 그리기 값. 단위는 m(SVG 사용자 단위)이고 색은 토큰 클래스만 쓴다.
 
-/** 등급 색 고리·채움(빨강은 HIGH 이상, 노랑은 CAUTION). */
+/** 등급 색 고리·채움(위험 빨강, 경고 주황, 주의 노랑). */
 export const RING_TONE = {
   critical: 'fill-sev-critical/15 stroke-sev-critical',
+  high: 'fill-sev-high/15 stroke-sev-high',
   caution: 'fill-sev-caution/15 stroke-sev-caution',
 } as const;
 

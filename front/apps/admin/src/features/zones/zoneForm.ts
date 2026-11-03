@@ -1,5 +1,12 @@
 import type { ViewerEditBox } from '@/features/viewer3d';
-import type { JudgeType, Severity, Zone, ZoneBody } from '@/features/zones/types';
+import {
+  SEVERITY_CHOICES,
+  type JudgeType,
+  type Severity,
+  type Zone,
+  type ZoneBody,
+} from '@/features/zones/types';
+import { SEVERITY_LABEL } from '@/features/zones/zoneEditModel';
 import { boxToPolygon } from '@/features/zones/zones';
 
 /**
@@ -33,10 +40,17 @@ export function formOf(zone: Zone): ZoneForm {
   };
 }
 
+/** 구역에 고를 수 있는 심각도인지. 이미 저장된 주의·안내 구역은 아니다. */
+export const isSeverityChoice = (severity: Severity) =>
+  SEVERITY_CHOICES.some((choice) => choice === severity);
+
+const SEVERITY_CHOICE_ERROR = `${SEVERITY_CHOICES.map((choice) => SEVERITY_LABEL[choice]).join('·')} 중에서 고르세요.`;
+
 export interface ZoneFormErrors {
   name?: string;
   judgeType?: string;
   zoneType?: string;
+  severity?: string;
 }
 
 /** saved 는 받은 구역의 값, hasHeight 는 높이(z_min_m·z_max_m)가 있는지다. */
@@ -53,6 +67,8 @@ export function formErrors(
   // 서버(INVALID_Z_RANGE)·계약: VOLUME_3D 는 높이가 있어야 한다.
   if (form.judgeType === 'VOLUME_3D' && !hasHeight)
     errors.judgeType = '높이가 없는 구역은 입체로 판정할 수 없습니다.';
+  // 이미 저장된 주의·안내 구역은 위험이나 경고로 다시 골라야 저장할 수 있다.
+  if (!isSeverityChoice(form.severity)) errors.severity = SEVERITY_CHOICE_ERROR;
   return errors;
 }
 

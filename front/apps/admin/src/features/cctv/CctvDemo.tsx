@@ -237,12 +237,12 @@ const livePeople = (project: CctvProjector) => <LivePeople project={project} />;
 /** 사람 박스의 선·글자 배경 색(위험 등급). 등급이 없는 사람은 옅은 회색이다. */
 const TAG_STROKE = {
   CRITICAL: 'stroke-sev-critical',
-  HIGH: 'stroke-sev-critical',
+  HIGH: 'stroke-sev-high',
   CAUTION: 'stroke-sev-caution',
 } as const;
 const TAG_FILL = {
   CRITICAL: 'fill-sev-critical',
-  HIGH: 'fill-sev-critical',
+  HIGH: 'fill-sev-high',
   CAUTION: 'fill-sev-caution',
 } as const;
 /** 박스 글자 크기(SVG viewBox 단위). */

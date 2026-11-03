@@ -227,6 +227,18 @@ describe('IncidentCard', () => {
     expect(barOf(info.card)).toContain('bg-faint');
   });
 
+  it('경고는 주황이고, 미확인 칩도 그 묶음의 등급 색을 따른다', () => {
+    const { card } = renderCard([entry({ severity: 'HIGH' })]);
+    const bar = card.querySelector<HTMLElement>('[aria-hidden="true"].w-1')!.className;
+    expect(bar).toContain('bg-sev-high');
+    expect(bar).not.toContain('bg-sev-critical');
+    expect(card.className).toContain('ring-sev-high');
+    const chip = card.querySelector('[data-chip="unacked"]');
+    expect(chip?.className).toContain('border-sev-high');
+    expect(chip?.className).toContain('text-sev-high');
+    expect(chip?.className).not.toContain('sev-critical');
+  });
+
   it('사람을 담은 카메라가 있으면 카메라 버튼이 오른쪽 카메라 미리보기를 연다', () => {
     useRealtimeStore.setState({
       world: {

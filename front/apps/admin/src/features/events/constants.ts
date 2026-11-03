@@ -10,7 +10,7 @@ export const SEVERITY_RANK: Record<Severity, number> = {
   INFO: 0,
 };
 
-/** 등급 이름(배지 글자). 빨강·노랑 없이도 읽히도록 기호와 함께 쓴다(SeverityBadge). */
+/** 등급 이름(배지 글자). 색 없이도 읽히도록 기호와 함께 쓴다(SeverityBadge). */
 export const SEVERITY_LABEL: Record<Severity, string> = {
   CRITICAL: '위험',
   HIGH: '경고',
