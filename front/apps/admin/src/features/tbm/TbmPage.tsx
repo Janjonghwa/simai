@@ -1,4 +1,5 @@
 import { PageTitle } from '@/features/layout/PageTitle';
+import { SignaturePanel, useSignatures } from '@/features/tbm/SignaturePanel';
 import { PILL, SWITCH } from '@/features/tbm/styles';
 import { TaskAddDialog, TaskEditDialog } from '@/features/tbm/TaskForm';
 import { createTask, taskToInput, type TaskInput } from '@/features/tbm/taskInput';
@@ -17,6 +18,7 @@ import { usePrint } from '@/features/tbm/usePrint';
 import { useReceiving } from '@/features/tbm/useReceiving';
 import { useTbmData } from '@/features/tbm/useTbmData';
 import { useTbmReport } from '@/features/tbm/useTbmReport';
+import { useWorkSession } from '@/features/tbm/useWorkSession';
 import { createQueryClient } from '@/lib/queryClient';
 import { Button } from '@simai/ui/components/button';
 import { Card } from '@simai/ui/components/card';
@@ -68,10 +70,13 @@ function TbmPageContent() {
     clearError,
   } = useTbmReport(workId, !isFallback && Boolean(currentTask));
 
+  const session = useWorkSession(workId, selectVersion);
+
   const interferences = useMemo(() => tbmInterferences(tasks), [tasks]);
   const { receiving, restart } = useReceiving(task.id);
   const { edits, filled, canUndo, save, undo } = useMinutesForm(task, report);
-  const { printing, items, print } = usePrint(tasks, task, edits, report);
+  const signatures = useSignatures(report);
+  const { printing, items, print, error: printError } = usePrint(tasks, task, edits, report);
 
   const select = (id: string) => {
     if (id !== task.id) {
@@ -285,9 +290,47 @@ function TbmPageContent() {
               </Button>
             </TaskList>
           </div>
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <span>
+              상태:{' '}
+              {task.status === 'IN_PROGRESS'
+                ? '진행'
+                : task.status === 'DONE'
+                  ? '종료'
+                  : task.status === 'PLANNED'
+                    ? '계획'
+                    : '알 수 없음'}
+            </span>
+            <span>
+              실제 시작:{' '}
+              {task.actualStartedAt ? new Date(task.actualStartedAt).toLocaleString() : '—'}
+            </span>
+            <span>
+              실제 종료: {task.actualEndedAt ? new Date(task.actualEndedAt).toLocaleString() : '—'}
+            </span>
+            {!isFallback && task.status === 'PLANNED' && (
+              <Button disabled={session.pending} onClick={() => void session.run('start')}>
+                작업 시작
+              </Button>
+            )}
+            {!isFallback && task.status === 'IN_PROGRESS' && (
+              <Button
+                disabled={session.pending}
+                onClick={() => {
+                  if (window.confirm('작업을 종료하시겠습니까?')) void session.run('end');
+                }}
+              >
+                작업 종료
+              </Button>
+            )}
+          </div>
+          <p role="status">
+            {report?.wrap_up_summary ? `작업 마무리: ${report.wrap_up_summary}` : session.message}
+          </p>
           <p role="status" className="text-[13px] text-point-soft empty:hidden">
             {message}
           </p>
+          {printError && <p role="alert">{printError}</p>}
           {mutationError && (
             <div
               role="alert"
@@ -314,6 +357,13 @@ function TbmPageContent() {
             >
               {tbmFailureReasonText(report.failure_reason)}
             </div>
+          )}
+          {report && !isFallback && (
+            <SignaturePanel
+              key={`${report.report_id}-${report.report_version}`}
+              report={report}
+              signatures={signatures}
+            />
           )}
           <div className="[container-type:size] flex min-h-[560px] flex-1 gap-3.5">
             <TbmLeftPanel

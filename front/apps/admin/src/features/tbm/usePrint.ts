@@ -1,37 +1,51 @@
+import { requestTbmReportsByWork } from '@/features/tbm/api';
+import { requestSignatures } from '@/features/tbm/SignaturePanel';
 import type { TbmTask } from '@/features/tbm/tbmDemo';
 import type { PrintItem } from '@/features/tbm/TbmDocument';
 import { formOf, type TbmEditsByTask } from '@/features/tbm/tbmForm';
 import type { TbmReport } from '@/features/tbm/types';
-import { useMemo, useState } from 'react';
+import { api } from '@/lib/api';
+import { useState } from 'react';
 import { flushSync } from 'react-dom';
 
-/** 인쇄 창을 여는 동안만 출력용 사본을 그린다: 지금 작업 하나 또는 하루치 전부. */
 export function usePrint(
   tasks: readonly TbmTask[],
   task: TbmTask,
   edits: TbmEditsByTask,
   report?: TbmReport | null,
 ) {
-  const [scope, setScope] = useState<'one' | 'all' | null>(null);
-  const items = useMemo<PrintItem[]>(() => {
-    if (scope === null) return [];
-    const targets = scope === 'all' ? tasks : [task];
-    return targets.map((t) => ({
-      id: t.id,
-      form: formOf(t, edits, t.id === task.id ? report : null),
-      people: t.people,
-    }));
-  }, [scope, tasks, task, edits, report]);
-
-  /** 출력용 사본(하루치면 작업마다 쪽을 나눠 이어서)을 먼저 그린 뒤 인쇄 창을 연다. */
-  const print = (whole: boolean, beforePrint: () => void) => {
-    flushSync(() => {
-      setScope(whole ? 'all' : 'one');
-      beforePrint();
-    });
-    window.print();
-    setScope(null);
+  const [items, setItems] = useState<PrintItem[] | null>(null);
+  const [error, setError] = useState('');
+  const print = async (whole: boolean, beforePrint: () => void) => {
+    setError('');
+    try {
+      const targets = whole ? tasks : [task];
+      const prepared = await Promise.all(
+        targets.map(async (t) => {
+          const selected =
+            t.id === task.id
+              ? report
+              : t.workId
+                ? (await requestTbmReportsByWork(api, t.workId)).latest
+                : null;
+          const signers = selected ? (await requestSignatures(selected)).items : [];
+          return {
+            id: t.id,
+            form: formOf(t, edits, selected),
+            people: t.people,
+            signatures: signers,
+          };
+        }),
+      );
+      flushSync(() => {
+        setItems(prepared);
+        beforePrint();
+      });
+      window.print();
+      setItems(null);
+    } catch {
+      setError('인쇄할 보고서와 서명자 목록을 불러오지 못했습니다.');
+    }
   };
-
-  return { printing: scope !== null, items, print };
+  return { printing: items !== null, items: items ?? [], print, error };
 }

@@ -84,7 +84,9 @@ export function useTbmReport(
   });
 
   const activeReport: TbmReport | null =
-    pollingReport && pollingReport.work_id === workId
+    pollingReport &&
+    pollingReport.work_id === workId &&
+    (!latest || pollingReport.report_version >= latest.report_version)
       ? pollingReport
       : targetVersionId !== null
         ? (versionDetailQuery.data ?? latest)
@@ -110,7 +112,7 @@ export function useTbmReport(
               : prev.workId === workId
                 ? prev.selectedReportId
                 : null,
-          pollingReport: polled,
+          pollingReport: polled.status === 'GENERATING' ? polled : null,
           requestError: prev.workId === workId ? prev.requestError : null,
         }));
         if (polled.status !== 'GENERATING' && workId) {

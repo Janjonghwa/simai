@@ -726,8 +726,75 @@ describe('회의록', () => {
     await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
     received();
     fireEvent.click(screen.getByRole('button', { name: '출력' }));
-    expect(print).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(print).toHaveBeenCalledTimes(1));
     expect(document.body.textContent).not.toContain('@page');
     vi.unstubAllGlobals();
+  });
+});
+
+describe('작업 세션과 서명', () => {
+  it('작업을 시작하고 종료하면 새 보고서의 마무리를 표시한다', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<TbmPage />);
+    fireEvent.click(await screen.findByRole('button', { name: '작업 시작' }));
+    fireEvent.click(await screen.findByRole('button', { name: '작업 종료' }));
+    expect(await screen.findByText('작업 마무리 작성 중')).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: '보고서 버전' }).textContent).toContain('v2'),
+    );
+    await act(async () => {
+      vi.advanceTimersByTime(2200);
+    });
+    expect(await screen.findByText(/작업 마무리: 작업 구간의 위험 이벤트 집계/)).toBeTruthy();
+    vi.restoreAllMocks();
+  });
+
+  it('다른 작업이 진행 중이면 409 안내를 표시한다', async () => {
+    render(<TbmPage />);
+    fireEvent.click(await screen.findByRole('button', { name: '작업 시작' }));
+    await screen.findByRole('button', { name: '작업 종료' });
+    fireEvent.click(screen.getByRole('button', { name: /^T2 자재 반입/ }));
+    fireEvent.click(await screen.findByRole('button', { name: '작업 시작' }));
+    expect(await screen.findByText(/진행 중인 작업이 있습니다:/)).toBeTruthy();
+  });
+
+  it.each([false, true])('서명 등록 및 오래된 버전 안내 (stale=%s)', async (stale) => {
+    const context = {
+      beginPath: vi.fn(),
+      moveTo: vi.fn(),
+      lineTo: vi.fn(),
+      stroke: vi.fn(),
+      clearRect: vi.fn(),
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
+      context as unknown as CanvasRenderingContext2D,
+    );
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback) =>
+      callback(new Blob(['png'], { type: 'image/png' })),
+    );
+    HTMLCanvasElement.prototype.setPointerCapture = vi.fn();
+    if (stale)
+      server.use(
+        http.post('*/api/reports/tbm/:reportId/signatures', () =>
+          HttpResponse.json({ code: 'REPORT_VERSION_STALE' }, { status: 409 }),
+        ),
+      );
+    render(<TbmPage />);
+    const panel = await screen.findByRole('region', { name: '참석자 서명' });
+    fireEvent.change(within(panel).getByLabelText('서명자 실명'), { target: { value: '홍길동' } });
+    fireEvent.pointerDown(within(panel).getByLabelText('서명 패드'), {
+      clientX: 10,
+      clientY: 10,
+      pointerId: 1,
+    });
+    fireEvent.click(within(panel).getByLabelText('고지를 확인했습니다'));
+    fireEvent.click(within(panel).getByRole('button', { name: '서명 등록' }));
+    expect(
+      await within(panel).findByText(
+        stale ? '새 버전이 있어 다시 서명해야 합니다' : '서명을 등록했습니다.',
+      ),
+    ).toBeTruthy();
+    if (!stale) expect(await within(panel).findByText(/홍길동/)).toBeTruthy();
+    vi.restoreAllMocks();
   });
 });

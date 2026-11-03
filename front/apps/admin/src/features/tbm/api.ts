@@ -173,3 +173,24 @@ export function generateTbmReport(http: Http, workId: string): Promise<TbmReport
   });
 }
 export const requestGenerateTbmReport = generateTbmReport;
+
+export function startTbmWork(http: Http, id: string) {
+  return http(`/api/work-units/${encodeURIComponent(id)}/start`, {
+    method: 'POST',
+    schema: tbmWorkUnitSchema,
+  });
+}
+
+export function endTbmWork(http: Http, id: string) {
+  return http(`/api/work-units/${encodeURIComponent(id)}/end`, {
+    method: 'POST',
+    schema: z.object({
+      work_unit: tbmWorkUnitSchema,
+      wrap_up: z.object({
+        status: z.enum(['GENERATING', 'SKIPPED']),
+        report_id: z.number().nullable(),
+        reason: z.string().nullable(),
+      }),
+    }),
+  });
+}

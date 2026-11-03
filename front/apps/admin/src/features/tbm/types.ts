@@ -86,6 +86,9 @@ const workTypeCodeField = z
 
 export const tbmWorkUnitSchema = z.object({
   work_id: idString,
+  status: z.enum(['PLANNED', 'IN_PROGRESS', 'DONE']).optional(),
+  actual_started_at: z.union([z.string(), z.number()]).nullish(),
+  actual_ended_at: z.union([z.string(), z.number()]).nullish(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   name: z.string(),
   from_ms: intOrNumber,
@@ -273,6 +276,11 @@ export const tbmReportSchema = z.object({
   report_id: z.number().int(),
   work_id: idString,
   report_version: z.number().int(),
+  wrap_up_summary: z.string().nullish(),
+  wrap_up_status: z.string().nullish(),
+  locked_at: z.union([z.string(), z.number()]).nullish(),
+  content_sha256: z.string().nullish(),
+  signature_count: z.number().int().optional(),
   status: reportStatusSchema,
   failure_reason: z.string().nullish().default(null),
   layout_id: z.number().int().nullish().default(null),
@@ -443,6 +451,9 @@ export function workUnitToTbmTask(
   return {
     id: displayTaskId(work.work_id),
     workId: work.work_id,
+    status: work.status,
+    actualStartedAt: work.actual_started_at,
+    actualEndedAt: work.actual_ended_at,
     date: work.date,
     name: work.name,
     from: msToHhmm(work.from_ms),
