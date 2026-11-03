@@ -1,5 +1,7 @@
 # 녹화 세션으로 외부 파라미터 보정 실행 설계
 
+> **상태 안내 (기획서 v1.3 수정 54·56, S15P31A101-438·-443):** 이 문서는 초기 걷기/사람 관절 기반 외부 파라미터 보정(`-214`·`-331`·`-352`)과 관제 중 사람 관절 후보 보정(`-356`, `LiveCandidateCalibrationRunner`)의 당시 설계·실험 기록이다. 현행 정본 보정 파이프라인은 **걷기·사람 관절 보정을 폐지**하고 **사람을 지운 정적 배경 특징점 V2 공동 번들 조정**과 **작업 중 배경 비교 중심 고정 회전 자동 복구(`rotfix`) 단일 경로**를 쓰는 [`docs/design/site-setup-pipeline.md`](site-setup-pipeline.md) 이다(이 문서의 구성 요소 중 **2회 연속 개선 확인(`CandidateConfirmation`)과 교체 후 60초 감시·자동 롤백(`SwapProbation`) 안전 게이트만 배경 기반 `rotfix` 에 재사용**하며, 사람 관절 기반 `drift_watch`·`monitor` 사람 LOO·`live_candidate`·`live_calibration`·`LiveCandidateCalibrationRunner` 경로는 명세에서 제거됨).
+
 S15P31A101-214. 기획서 §4.2(경계별 변환), §4.3(자동 캘리브레이션 1~3단계, 번들 조정 구현 범위, 게이지 고정), §4.4(판정), §11.5(영상 비저장), §20.4(출처·상한), 요구사항 FR-23 기준이다.
 코드는 `ai/src/simai_ai/calibration/extrinsics/`(+ `calibration/intrinsics/record.py` 의 `bundle_init_from_record`), 시험은 `ai/tests/calibration/extrinsics/`·`ai/tests/calibration/bundle/test_extrinsics_cli.py` 에 있다.
 번들 조정·판정은 새로 만들지 않고 `calibration.bundle.adjust_human_bundle`(-104)·`CalibrationVersionStore.propose`(criteria)를 그대로 부른다.

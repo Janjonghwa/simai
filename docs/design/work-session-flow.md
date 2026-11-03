@@ -3,7 +3,7 @@
 - **관련 명세**: `docs/spec/04-coordinates.md`(4.1, 4.3, 4.4, 4.5), `docs/spec/08-features.md`(8.1, 8.2, 8.3), `docs/spec/11-data.md`(11.1, 11.3, 11.5, 11.7), `docs/spec/12-interfaces.md`(12.6), `docs/spec/13-viewer.md`(13.1, 13.4), `docs/spec/14-security.md`, `docs/spec/appendix-e-demo.md`
 - **관련 요구사항**: FR-3, FR-14, FR-18, FR-20, FR-21, FR-23~27, FR-40, FR-41, FR-42, FR-112, FR-132, FR-142, NFR-12, NFR-14, NFR-16, NFR-33
 - **연관 설계 문서**: `docs/design/site-setup-pipeline.md`(작업별 현장 세팅·보정·World 자동 정의 및 운영 중 회전 복구 파이프라인)
-- **티켓**: `S15P31A101-426` (명세 v1.3 수정 52) → `S15P31A101-438` (명세 v1.3 수정 54: 현장 세팅 선행 및 7단계 통합)
+- **티켓**: `S15P31A101-426` (명세 v1.3 수정 52) → `S15P31A101-438` (명세 v1.3 수정 54: 현장 세팅 선행 및 7단계 통합) → `S15P31A101-443` (명세 v1.3 수정 56: 세팅 1단계 카메라 각도 헬퍼 및 관제 중 사람 관절 보정 경로 제거)
 
 ---
 
@@ -89,7 +89,7 @@ sequenceDiagram
 
 - **현장 세팅 대기 및 전환 (`setup_session`)**:
   - 관리자가 작업 단위를 선택하고 세팅을 시작하면(`POST /api/setup-sessions`), 화면에 단계별 진행 상태(`배경 수집 중` → `3D 공간·좌표계 계산 중` → `카메라 정밀 보정 중` → `미리보기 맵·위험 구역 초안 생성 중`)와 진행률, 실패 시 원인·재시도 버튼(`POST /api/setup-sessions/{id}/retry`)을 표시한다.
-  - 카메라 실측 높이 입력란은 직전 세팅의 카메라별 높이 값을 기본으로 채워 두어, 높이가 그대로이면 바로 시작할 수 있게 한다.
+  - 세팅 시작을 누르기 전 **세팅 1단계(카메라 연결·각도 확인)** 화면에서는 4대 실시간 미리보기와 함께 게이트웨이 별도 CPU 프로세스가 계산해 올린 **카메라 각도 헬퍼(`GET /api/cameras/coverage-guides`, `coverage_guide` 1.0.0)** — 4대 시야 연결 여부(`CONNECTED`·`DISCONNECTED`·`UNKNOWN`), 6쌍 매칭 등급(`ENOUGH`·`WEAK`·`LACK`·`UNKNOWN`), 카메라별 회전 방향 안내(`LEFT`·`RIGHT`·`UP`·`DOWN`·`NONE`, `SMALL`·`MORE`·`NONE`) — 를 표시한다(화면이 열려 있을 때만 계산, 진행을 막지 않고 **“그대로 진행”** 가능, 헬퍼의 `"CONNECTED"` 는 `CALIBRATED` 가 아님). 카메라 실측 높이 입력란은 직전 세팅의 카메라별 높이 값을 자동으로 채워 두어(처음이면 빈칸·입력 필수), 높이가 그대로이면 바로 시작할 수 있게 한다.
   - 목표 **약 1분 30초**(확인 필요) 안에 빠른 3D 미리보기 맵과 VLM 위험 구역 초안(`vlm_zone_draft`)이 준비되면 곧바로 구역 편집 모드로 전환된다(세부 알고리즘은 `docs/design/site-setup-pipeline.md` 참조).
 - **관제 화면(3D 뷰어 + BEV 보조 평면도) 안에서의 편집 모드**:
   - 별도의 분리된 구역 관리 페이지로 이동하지 않고, 메인 관제 화면 안에서 `구역·작업면 편집 모드` 토글을 제공한다(관리자 `ADMIN` 전용).
@@ -188,6 +188,7 @@ stateDiagram-v2
 
 | 단계 | 메서드 | 경로 | 권한 | 설명 |
 | --- | --- | --- | --- | --- |
+| 1. 세팅 | `GET` | `/api/cameras/coverage-guides` | `ADMIN` | 세팅 1단계 카메라 각도 헬퍼 최신 결과(`latest: coverage_guide` 1.0.0) 조회 및 온디맨드 계산 활성화(게이트웨이 제출은 `POST /api/devices/coverage-guides`, `DEVICE`) |
 | 1. 세팅 | `POST` | `/api/setup-sessions` | `ADMIN` | 선택한 `work_unit_id` 의 현장 세팅 시작(카메라 높이 입력, 직전 값 기본 채움) |
 | 1. 세팅 | `GET` | `/api/setup-sessions/{setupSessionId}` | `ADMIN`, `VIEWER` | 세팅 단계·진행률·검증 요약·미리보기/정식 Scene·구역 초안·실패 사유 조회 |
 | 1. 세팅 | `POST` | `/api/setup-sessions/{setupSessionId}/retry` | `ADMIN` | 실패 또는 현장 조정 후 세팅 재시도 |

@@ -3,7 +3,7 @@
 - **관련 명세**: `docs/spec/03-system.md`(3.1, 3.2, 3.7, 3.8, 3.12), `docs/spec/04-coordinates.md`(4.1, 4.3, 4.4, 4.5), `docs/spec/05-processing.md`(5.1, 5.3, 5.4), `docs/spec/08-features.md`(8.1, 8.2, 8.3), `docs/spec/11-data.md`(11.1, 11.3, 11.7), `docs/spec/12-interfaces.md`(12.2, 12.5, 12.6), `docs/spec/13-viewer.md`(13.1, 13.2, 13.4), `docs/spec/15-gates.md`(15.1, 15.3), `docs/spec/16-decisions.md`, `docs/spec/17-risks.md`, `docs/spec/19-roadmap.md`, `docs/spec/appendix-e-demo.md`
 - **관련 요구사항**: FR-3, FR-14, FR-18, FR-20, FR-22, FR-23, FR-24, FR-25, FR-26, FR-27, FR-90, FR-101, FR-102, FR-108, FR-135, NFR-6, NFR-7, NFR-19, NFR-22, NFR-31, NFR-35
 - **연관 설계 문서**: `docs/design/work-session-flow.md`(단일 작업 생명주기), `docs/design/world-frame-from-mapanything.md`(MapAnything 점군 기반 바닥·벽 추출 수학 규약)
-- **티켓**: `S15P31A101-438` (명세 v1.3 수정 54)
+- **티켓**: `S15P31A101-438` (명세 v1.3 수정 54) → `S15P31A101-443` (명세 v1.3 수정 56: 세팅 1단계 카메라 각도 헬퍼 및 관제 중 사람 관절 보정 경로 제거)
 
 ---
 
@@ -89,7 +89,7 @@ flowchart LR
 
 | 단계 | 작업 내용 | 실행 주체 | 목표 소요 시간 (확인 필요) | 비고 |
 | --- | --- | --- | --- | --- |
-| **Step 0. 입력 확인** | 카메라 4대 스트림 연결 확인, 카메라별 실측 높이(`camera_heights_m`) 입력 확인(이전 세팅 값 기본 채움) | 뷰어 → EC2 → GPU Pod | 즉시 (사용자 입력 완료 후 시작) | 줄자·레이저 거리계 높이 기본 유지, 바뀐 카메라만 수정 |
+| **Step 0. 세팅 1단계 각도 헬퍼 & 입력 확인** | 카메라 4대 실시간 미리보기 + **카메라 각도 헬퍼(`coverage_guide` 1.0.0: 4대 시야 연결 `CONNECTED`·6쌍 등급·회전 방향 안내, 막지 않음·"그대로 진행" 가능)** 확인, 카메라별 실측 높이(`camera_heights_m`, 직전 세팅 값 자동 채움·처음이면 입력 필수) 확인 | 게이트웨이 별도 CPU 프로세스 → EC2 → 뷰어 | 세팅 1단계 화면이 열려 있는 동안 상시(비차단) | `gateway/relay` 로컬 미리보기 키프레임 소비(추가 RTSP 세션 0), 헬퍼 `CONNECTED` ≠ `CALIBRATED` |
 | **Step 1. 깨끗한 배경 누적** | 4대 카메라에서 사람 영역(YOLO 세그멘테이션 마스크 + 팽창)을 뺀 깨끗한 배경(`background.png`) 누적 및 렌즈 왜곡 보정 | GPU Pod (`CleanBackgroundAccumulator`) | **20 ~ 30초** | 방이 비어 있으면 즉시 조기 수렴 가능, 사람이 지나다녀도 중앙값 누적으로 제거 |
 | **Step 2. 무마커 내부 파라미터 & MapAnything 초기 복원** | (필요 시) AnyCalib 무마커 내부 파라미터 확인(동일 렌즈 4대 중앙값 공유) + **상주(warm) MapAnything 모델**로 초기 외부 파라미터·밀집 점군 추론 | GPU Pod (장면·세팅 워커) | **수 초 (5 ~ 10초)** | 모델 가중치를 미리 메모리에 올려 두어 로드 시간(기존 ~25초) 제거 |
 | **Step 3. World 자동 정의 & 배경 특징점 공동 BA (V2)** | 점군 바닥 RANSAC($Z=0$)·경계 벽($+X$)·모서리 원점·카메라 높이 스케일로 초기 World 정의 → 인접 쌍(`A–B–C–D–A`) ALIKED+LightGlue 매칭 → V2 공동 BA + 실측 정물 검증 | GPU Pod | **10 ~ 20초** | 걷기 보정 없음. 공간 분할 홀드아웃(80/20) 검증 통과 시 새 `calibration_version` 확정 |
@@ -135,6 +135,25 @@ sequenceDiagram
 2. **MapAnything 가중치 상주(Warm Model)**: 세팅할 때마다 프로세스를 새로 띄워 가중치를 디스크에서 읽는 시간(~25초)을 없애기 위해, 세팅 워커(또는 장면 서비스)가 MapAnything 가중치를 메모리에 올린 채 대기하다가 세팅 요청 즉시 추론하고, LIVE 관제가 시작될 때 VRAM 예산이 필요하면 가중치를 내리거나 유휴 상태로 전환한다(구체적인 VRAM 상주·언로드 전환 시간은 확인 필요).
 3. **LIVE 전환 보장**: 관리자가 구역 발행과 TBM 을 마치고 **작업 시작(LIVE)**을 누를 때 아직 백그라운드 `texrecon` 이 끝나지 않았다면, Tier 0 실시간 관제 가용성이 최우선이므로 백그라운드 후처리 스레드를 즉시 줄이거나 중단하고 빠른 미리보기 맵(`preview_scene`)으로 먼저 관제를 시작할 수 있게 한다.
 
+### 3.3 세팅 1단계 카메라 각도 헬퍼 (`coverage_guide`, `S15P31A101-443`·`-445`·`-446`·`-447`·`-448`)
+
+관리자가 **"현장 세팅 시작"**(`POST /api/setup-sessions`)을 누르기 전인 **세팅 1단계 화면**에서, 지금 카메라 4대가 겹치는 시야를 통해 하나의 연결된 공간(`CONNECTED`)을 보고 있는지 즉시 확인하고 각도가 틀어진 카메라를 어느 쪽으로 돌릴지 안내하는 경량 헬퍼를 둔다.
+
+1. **설계 원칙 (사용자 결정, 2026-11-03)**:
+   - **지금 화면만 사용**: 이전 작업의 외부 파라미터 보정을 쓰지 않고 현재 들어오는 프레임만으로 판단한다. 내부 파라미터(`intrinsics_source`)는 카메라별 저장된 렌즈 고유 내부값(`"STORED"`, 렌즈 고유값이라 이전 세팅 자세가 아님)을 쓰고, 없으면 공칭 화각 기본값(`"DEFAULT"`, RANSAC 문턱 완화)을 쓴다.
+   - **최소·비차단(Non-blocking)**: 목적은 오직 **"4대 카메라가 1개 연결 성분을 이루는지"** 확인하는 것이다. YOLO 사람 검출이나 VLM 은 호출하지 않으며, 세팅 1단계 화면이 열려 있는 동안에만 계산한다. 결과가 `DISCONNECTED` 이거나 `UNKNOWN` 이어도 관리자가 **"그대로 진행"**을 눌러 세팅을 시작하는 것을 막지 않는다.
+   - **헬퍼 `"CONNECTED"` ≠ `CALIBRATED`**: 헬퍼의 `"CONNECTED"` 는 2D 특징점 매칭 그래프가 이어졌다는 안내일 뿐이며, 보정 성공(`CALIBRATED`) 판정은 여전히 Step 3~4의 홀드아웃·바닥·실측 정물 검증(명세 4.4)이 맡는다.
+2. **실행 위치와 전송 경로 (추가 RTSP 세션 0)**:
+   - Tapo C110 은 카메라당 동시 RTSP 2세션 한도(명세 3.3)가 있으므로 헬퍼가 카메라에 RTSP 로 직접 붙지 않는다. 또한 `gateway/relay` 프로세스 안에 `torch` 를 넣으면 크래시·메모리 문제 시 Tier 0 영상 중계가 멈추므로, 게이트웨이의 **별도 CPU 프로세스**가 `gateway/relay` 의 로컬 미리보기 WebSocket(`127.0.0.1:47032`, `simai-cctv-preview/1`)에서 카메라별 최신 키프레임만 받아 계산한다(추가 RTSP 세션 0).
+   - 계산 결과(`contracts/messages/coverage_guide.schema.json` 1.0.0, 계약 v7.3.0)는 **게이트웨이 → EC2 `POST /api/devices/coverage-guides`(기기 토큰) → 브라우저 `GET /api/cameras/coverage-guides`(응답의 `latest`)** 로 전달한다. 영상·특징점 배열·사람 정보는 싣지 않는다(닫힌 값 객체 `additionalProperties: false`).
+3. **판정 규칙과 회전 방향 안내**:
+   - **입력 및 특징점**: 가로 `image_width_px = 1024` 리사이즈, 카메라당 ALIKED 최대 `max_keypoints = 1024`개 추출 후 6쌍(`4C2`) 모두에 LightGlue 매칭 + OpenCV Essential RANSAC(`ransac_threshold_px = 2.0`, `DEFAULT` 내부값일 때 완화) + `recoverPose` 양의 깊이를 통과한 인라이어 수(`inliers`)와 비율(`inlier_ratio = inliers / raw_matches`)을 계산한다.
+   - **카메라 상태 (`cameras[].status`)**: `OK` | `NO_VIDEO` | `STALE`(영상이 2초 넘게 갱신되지 않음). `NO_VIDEO`·`STALE` 카메라가 낀 쌍은 `grade: "UNKNOWN"` 으로 두고 수치·무게중심을 모두 `null` 로 비운다.
+   - **쌍 등급 (`pairs[].grade`)**: `ENOUGH`(`inliers >= 30` 그리고 `inlier_ratio >= 0.10`) | `WEAK`(`15 <= inliers < 30` 그리고 `inlier_ratio >= 0.10`) | `LACK`(그 밖) | `UNKNOWN`. `centroid_a`·`centroid_b` 는 인라이어 점들의 정규화 `[0, 1]` 무게중심이며 `inliers < 5` 또는 `UNKNOWN` 이면 `null` 이다.
+   - **연결성 (`connectivity`)**: `ENOUGH`·`WEAK` 쌍을 간선으로 union-find 하여 연결 성분이 1개(4대 모두 연결)면 `"CONNECTED"`, 카메라 중 하나라도 `UNKNOWN` 이고 나머지로 판정할 수 없으면 `"UNKNOWN"`, 그 밖은 `"DISCONNECTED"` 로 판정한다.
+   - **방향 안내 (`guides[]`)**: 약한·부족 쌍(`5 <= inliers < 30`)에서 한쪽 카메라의 인라이어 무게중심 `x > 0.65` → `RIGHT`, `x < 0.35` → `LEFT`, `y > 0.68` → `DOWN`, `y < 0.32` → `UP`(가로 우선)으로 돌릴 방향을 내고, 크기는 `WEAK` → `SMALL`, `LACK` → `MORE`, 사유는 `"WEAK_PAIR_EDGE_CLUSTER"`(이미 `CONNECTED` 면 선택 보강 `"OPTIONAL_IMPROVE"`)로 낸다. `inliers < 5` 면 `direction: "NONE"`, `magnitude: "NONE"`, `reason_code: "NO_OVERLAP_VISIBLE"` 을 낸다.
+   - **흔들림 방지(히스테리시스)**: 쌍 등급과 `connectivity` 는 **2회 연속 같을 때만** 바꾼다(표시 화면이 아니라 헬퍼 프로세스가 적용).
+
 ---
 
 ## 4. 세팅별 World 좌표계 자동 정의
@@ -169,7 +188,7 @@ sequenceDiagram
    - **입력 UX**: 현장 세팅 화면의 카메라 높이 입력 칸에는 **직전 세팅에서 입력했던 카메라별 높이 값이 기본으로 채워져(pre-filled) 표시**된다. 삼각대 높이를 바꾸지 않고 위치·각도만 조정한 경우에는 관리자가 숫자를 다시 칠 필요 없이 확인만 누르면 된다.
 2. **`KNOWN_OBJECT_SIZE` (보조·검증)**:
    - 현장에 치수를 아는 정물(실측 스툴 `measure-stools`, 안전봉·라바콘 등, FR-135)이 있으면 2대 이상 삼각측량 치수로 스케일을 교차 검증하거나 카메라 높이 미입력 시 대안으로 사용한다.
-3. **`HUMAN_HEIGHT_PRIOR` / `MAPANYTHING_METRIC` (최후 대안)**:
+3. **`MAPANYTHING_METRIC` (최후 대안, 과거 호환 스키마 값 `HUMAN_HEIGHT_PRIOR` 는 미사용)**:
    - 실측 높이와 정물이 모두 없을 때만 사용하며, 정확도 저하 경고를 표시한다.
 
 ### 4.5 작업 간 좌표계 독립성과 과거 기록 조회
@@ -195,7 +214,7 @@ flowchart TD
 ```
 
 - **무마커 내부 파라미터(1단계) 유지**: 체커보드 없이 AnyCalib(1순위) → GeoCalib(2순위) → 고전 직선/소실점(3순위) + 직선 왜곡 검증(`undistort_check`)으로 초점거리·왜곡 계수를 구하고, 같은 기종 카메라 4대의 중앙값을 공유하는 기존 무마커 파이프라인을 그대로 유지한다.
-- **사람 관절(걷기 보정)은 필수 경로에서 제거**: 사람이 방을 걸어 다니는 절차를 없앤다. 만약 세팅 중이나 직후에 사람이 찍힌 관절 관측이 있더라도 이는 선택적 보조 제약으로만 쓸 수 있을 뿐, 기본 세팅은 100% 배경 특징점과 정적 기하 제약만으로 완결된다.
+- **사람 관절(걷기·관제 보정) 완전 제거**: 사람이 방을 걸어 다니는 절차와 사람 2D 관절 보조 제약을 모두 없앤다(`YOLO26x-pose` 는 LIVE 사람 추적·위험 판정과 아바타 구동에만 사용). 현장 세팅은 100% 배경 특징점과 정적 기하 제약만으로 완결된다.
 
 ### 5.2 인접 쌍 특징점 추출·매칭 규약
 1. **대상 카메라 쌍**: 코너 4대 배치에서 시야가 겹치는 **인접 4쌍(`A–B`, `B–C`, `C–D`, `D–A`)**만 사용한다. 대각 쌍(`A–C`, `B–D`)은 V0 실측에서 입증되었듯 시점 차이가 약 170°로 가짜 매칭만 유발하므로 제외한다.
@@ -276,7 +295,7 @@ stateDiagram-v2
 
 1. **상시 배경 비교 (Drift Watch)**:
    - 관제 중 `CleanBackgroundAccumulator` 가 사람을 지운 최근 깨끗한 배경($I_i^{\text{roll}}$)을 주기적으로 갱신한다.
-   - 세팅 완료 시점의 기준 배경($I_i^{\text{ref}}$)과 $I_i^{\text{roll}}$ 사이에서 특징점(SIFT 또는 ALIKED+LightGlue)을 매칭하고, 인접 카메라 쌍의 배경 에피폴라 잔차 및 사람 발점/관절 다중 시점 재투영 오차를 함께 감시한다.
+   - 세팅 완료 시점의 기준 배경($I_i^{\text{ref}}$)과 $I_i^{\text{roll}}$ 사이에서 특징점(SIFT 또는 ALIKED+LightGlue)을 매칭하고, 인접 카메라 쌍의 배경 에피폴라 잔차만을 상시 감시한다(관제 중 사람 관절 기반 `drift_watch`·사람 LOO `monitor`·`live_candidate`·`live_calibration`·`LiveCandidateCalibrationRunner` 경로는 명세 v1.3 수정 56에서 제거).
 2. **순수 회전 판별 및 중심 고정 회전 추정 (`rotfix`)**:
    - 특정 카메라 $i$ 에서 틀어짐이 감지되면 왜곡 보정 좌표계에서 순수 회전 $\Delta R_i = \arg\min_{R \in SO(3)} \sum_m \rho(\|\mathbf{x}'_m - \pi(K_i R K_i^{-1} \tilde{\mathbf{x}}_m)\|^2)$ 를 추정하고, 카메라 중심 $\mathbf{C}_i$ 를 고정한 채 인접 쌍(`(i-1, i)`, `(i, i+1)`) 배경 특징점으로 $R_i^{\text{new}} = \Delta R_i R_i^{\text{old}}$ 를 미세 조정한다.
    - **판별 게이트**(구체적 문턱값은 통제된 회전 시험 후 확정, **확인 필요**):
@@ -284,7 +303,7 @@ stateDiagram-v2
      - 회전 보정 후 인접 쌍 2-view 재투영 오차(중앙값·p90)가 보정 전보다 유의미하게 감소할 때만 `ROTATION_CANDIDATE` 로 인정한다.
 3. **2회 연속 확인 및 60초 감시(`SwapProbation`)**:
    - 일시적인 가림이나 조명 변화를 걸러내기 위해 **연속 2회 주기(`CandidateConfirmation`)**에서 일관된 회전 후보가 나오면 새 `calibration_version` 으로 교체하고 60초 감시(`SwapProbation`)에 들어간다.
-   - 60초 동안 사람 관절/발점 재투영 오차나 트랙 끊김이 교체 전보다 나빠지면 즉시 직전 `calibration_version` 으로 자동 롤백한다.
+   - 60초 동안 배경 호모그래피·인접 쌍 배경 에피폴라 잔차가 교체 전보다 나빠지면 즉시 직전 `calibration_version` 으로 자동 롤백한다.
 4. **시야 이탈 위험 구역의 감시 저하 표시 (R7 연계)**:
    - 회전 복구가 적용되었더라도 카메라가 돌아간 결과 기존에 발행된 위험 구역(`zone`)의 일부 또는 전부가 2대 이상 카메라 시야(FOV)에서 벗어났다면, 그 구역의 관측 가능 카메라 수를 즉시 재계산하여 **R7 감시 저하(`CAUTION`, 구역 빗금 표시)**를 발생시킨다.
    - 위치 이동이나 큰 회전으로 `RE_SETUP_REQUIRED`("현장 세팅 다시 하기")가 뜬 경우에도 해당 카메라를 신뢰할 수 없으므로 영향받는 구역을 즉시 R7 감시 저하로 표시한다.
@@ -297,6 +316,8 @@ stateDiagram-v2
 
 | 메서드 | 경로 | 권한 | 설명 |
 | --- | --- | --- | --- |
+| `POST` | `/api/devices/coverage-guides` | `DEVICE` | 세팅 1단계 화면이 열려 있는 동안 게이트웨이 별도 CPU 프로세스가 계산한 카메라 각도 헬퍼 결과(`contracts/messages/coverage_guide.schema.json` 1.0.0) 제출 |
+| `GET` | `/api/cameras/coverage-guides` | `ADMIN` | 세팅 1단계 화면에서 최신 카메라 각도 헬퍼 결과(`latest: coverage_guide`) 조회 및 온디맨드 계산 활성화 |
 | `POST` | `/api/setup-sessions` | `ADMIN` | 선택한 `work_unit_id` 에 대해 새 현장 세팅 세션 시작. 요청 본문에 카메라별 실측 높이 `camera_heights_m`(생략 시 직전 세팅 값 사용) 전달. 이전 세팅의 카메라 높이를 기본값으로 함께 반환 |
 | `GET` | `/api/setup-sessions/{setupSessionId}` | `ADMIN`, `VIEWER` | 현재 세팅 단계(`COLLECTING_BACKGROUND` → `INITIAL_POSE_AND_WORLD` → `JOINT_BA_AND_VERIFY` → `PREVIEW_AND_VLM_DRAFT` → `READY_FOR_ZONES` / 백그라운드 `BAKING_TEXTURE` → `COMPLETED`, 실패 시 `FAILED`), 진행률(%), 카메라별 배경 수집률, 검증 요약, 생성된 `calibration_version`·`preview_scene_version`·`scene_version`·`zone_drafts`, 실패 사유(`failure_code`, `failure_message`) 조회 |
 | `POST` | `/api/setup-sessions/{setupSessionId}/retry` | `ADMIN` | 실패했거나 관리자가 카메라/물체를 다시 조정한 뒤 현장 세팅을 다시 실행(깨끗한 배경이 이미 유효한 카메라는 재사용 선택 가능) |
@@ -318,7 +339,7 @@ stateDiagram-v2
 | **실측 정물(스툴 등) 검증** | `ai/scripts/calibration/measure_stools_3d.py`, `ai/gpu_tier0/scale_reference.py` | **그대로 재사용**. 보정 완료 후 실측 정물 치수·삼각측량 일관성 자동 점검 |
 | **교차 시점 에피폴라 진단** | `ai/gpu_tier0/cross_view_consistency.py` | **재사용**. 인접 카메라 쌍 에피폴라 거리 및 관제 중 틀어짐 감시 신호로 활용 |
 | **보정 후보 확인·60초 감시·자동 롤백** | `ai/gpu_tier0/calibration_safety.py` (`CandidateConfirmation`, `SwapProbation`) | **그대로 재사용**. 관제 중 미세 회전 자동 복구(`rotfix`) 적용 시 2회 연속 확인 및 60초 감시 후 이상 시 자동 롤백 게이트로 사용 |
-| **사람 관절 BA (걷기 보정)** | `ai/gpu_tier0/calibration_ba.py` (`run_bundle_adjustment`) | **필수 경로에서 제외(보조로만 보존)**. 3-view 이상 사람 관절 트랙을 요구하던 기존 BA 대신, 2-view 인접 쌍 배경 특징점 기반 **V2 공동 BA 모듈**을 새로 구현 |
+| **사람 관절 BA 및 관제 중 사람 관절 감시·후보 보정** | `ai/gpu_tier0/calibration_ba.py`, `drift_watch.py`, `live_candidate.py`, `live_calibration.py` | **명세에서 제거(v1.3 수정 54·56)**. 초기 세팅은 2-view 인접 쌍 배경 특징점 기반 **V2 공동 BA**로, 관제 중 보정 갱신은 배경 기반 **`rotfix` 단일 경로**로 일원화(코드 정리는 후속 티켓) |
 
 ---
 
@@ -333,6 +354,8 @@ stateDiagram-v2
 | **대각 카메라 쌍(`A–C`, `B–D`) 특징점 매칭을 BA 에 포함** | V0 실측에서 시점 차이가 약 170°에 달해 인라이어가 7~12개뿐이고 회전 오차가 ~170°인 가짜 대응점만 생성됨이 확인되었다. 인접 4쌍(`A–B–C–D–A`) 고리만 사용한다. |
 | **세팅 전에 위험 구역과 TBM 보고서를 미리 작성** | 작업마다 카메라와 현장 물건 배치가 달라지므로 세팅(3D 복원·World 확정) 전에 그린 구역은 실제 작업 공간과 맞지 않는다. 반드시 **세팅 → 구역 → TBM → 시작** 순서를 따른다. |
 | **관제 중 카메라 위치 이동이나 큰 회전까지 자동으로 보정 반영** | 위치가 바뀌면 카메라 중심이 달라져 정적 3D 배경(Scene)과 위험 구역의 정합이 깨지며, 큰 회전은 배경 겹침 부족으로 잘못된 해에 수렴할 위험이 크다. 중심 고정 미세 회전만 자동 복구하고 나머지는 "현장 세팅 다시 하기"로 안내한다. |
+| **관제 중 사람 관절 보조 감시·후보 보정 유지 (`drift_watch`·사람 LOO·`live_candidate`)** | (1) 현장에서 한 사람이 3대 이상 카메라에 동시에 안정적으로 관측되는 구간이 드물어 사람 LOO 재투영·관절 BA 가 자주 성립하지 않고, (2) 11차 GPU 세션에서 사람 관절 기반 `DRIFTED` 오판이 발생해 관제 종료 뒤 자동 정적 3D 재구성(`static_reconstruct`)이 막혔으며, (3) Tier 0 실시간 프로세스의 자원 소모와 복잡도를 줄이기 위해 기각하고 배경 기반 `rotfix` 단일 경로로 일원화했다(명세 v1.3 수정 56). |
+| **세팅 1단계 헬퍼의 RTSP 직접 연결 / `relay` 내부 `torch` 실행 / VLM·YOLO 호출 / 세팅 차단 / `"CONNECTED"` 를 `CALIBRATED` 로 간주** | Tapo C110 의 동시 RTSP 2세션 한도 때문에 RTSP 직접 연결은 불가하며(추가 RTSP 세션 0), `relay` 안에서 `torch` 를 돌리면 OOM·크래시 시 Tier 0 영상 중계가 멈춘다. 1단계 목적(4대 시야 연결 확인)에 VLM·YOLO 는 과하고 느리며, 헬퍼 결과로 진행을 막거나 `"CONNECTED"` 를 `CALIBRATED` 로 간주하면 현장 진행 방해와 4.4 독립 검증 우회 위험이 생긴다(명세 v1.3 수정 56). |
 
 ---
 

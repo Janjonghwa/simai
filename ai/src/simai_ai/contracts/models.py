@@ -152,6 +152,45 @@ class RuleVersion(BaseModel):
     rule_version: Annotated[StrictInt, Field(ge=1)]
 
 
+class CaptureSkewMs(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=0)]
+
+
+class CoverageGuideCoverageParams(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    image_width_px: Annotated[StrictInt, Field(ge=160, le=4096)]
+    max_keypoints: Annotated[StrictInt, Field(ge=64, le=8192)]
+    ransac_threshold_px: Annotated[StrictFloat, Field(gt=0.0, le=50.0)]
+    enough_min_inliers: Annotated[StrictInt, Field(ge=1)]
+    weak_min_inliers: Annotated[StrictInt, Field(ge=1)]
+    min_inlier_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+    intrinsics_source: Literal['STORED', 'DEFAULT']
+
+
+class CoverageGuideNormalizedPointItem(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+
+
+class CoverageGuideNormalizedPoint(RootModel[list[CoverageGuideNormalizedPointItem]]):
+    root: Annotated[
+        list[CoverageGuideNormalizedPointItem], Field(max_length=2, min_length=2)
+    ]
+
+
+class RawMatches(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=0)]
+
+
+class Inliers(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=0)]
+
+
+class InlierRatio(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+
+
 class DefsAckChannel(RootModel[Literal['CONTROL_ROOM', 'FOREMAN_PWA', 'SITE_BUTTON']]):
     root: Literal['CONTROL_ROOM', 'FOREMAN_PWA', 'SITE_BUTTON']
 
@@ -2215,6 +2254,44 @@ class ConfigBundleComponent(BaseModel):
     uri: DefsUri
 
 
+class Component(RootModel[list[DefsCameraId]]):
+    root: Annotated[list[DefsCameraId], Field(max_length=4, min_length=1)]
+
+
+class CoverageGuideCameraGuideItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    pair: Annotated[list[DefsCameraId], Field(max_length=2, min_length=2)]
+    direction: Literal['LEFT', 'RIGHT', 'UP', 'DOWN', 'NONE']
+    magnitude: Literal['SMALL', 'MORE', 'NONE']
+    reason_code: Literal['WEAK_PAIR_EDGE_CLUSTER', 'NO_OVERLAP_VISIBLE', 'OPTIONAL_IMPROVE']
+
+
+class CoverageGuideCameraStatusItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    status: Literal['OK', 'NO_VIDEO', 'STALE']
+    frame_ts_ms: DefsTimestampMs | None
+
+
+class CoverageGuidePairMatchItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    a: DefsCameraId
+    b: DefsCameraId
+    raw_matches: RawMatches | None
+    inliers: Inliers | None
+    inlier_ratio: InlierRatio | None
+    grade: Literal['ENOUGH', 'WEAK', 'LACK', 'UNKNOWN']
+    centroid_a: CoverageGuideNormalizedPoint | None
+    centroid_b: CoverageGuideNormalizedPoint | None
+
+
 class DefsCaptureTime(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -3372,6 +3449,27 @@ class ConfigBundle(Envelope):
     payload: Payload8
 
 
+class CoverageGuide(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    schema_version: Literal['1.0.0']
+    source_id: DefsInstanceId
+    computed_at_ms: DefsTimestampMs
+    valid_until_ms: DefsTimestampMs
+    capture_skew_ms: CaptureSkewMs | None
+    params: CoverageGuideCoverageParams
+    cameras: Annotated[
+        list[CoverageGuideCameraStatusItem], Field(max_length=4, min_length=4)
+    ]
+    pairs: Annotated[
+        list[CoverageGuidePairMatchItem], Field(max_length=6, min_length=6)
+    ]
+    connectivity: Literal['CONNECTED', 'DISCONNECTED', 'UNKNOWN']
+    components: Annotated[list[Component], Field(max_length=4, min_length=1)]
+    guides: Annotated[list[CoverageGuideCameraGuideItem], Field(max_length=12)]
+
+
 class HumanMeshOutput2(HumanMeshOutputPoseFrame):
     model_config = ConfigDict(
         extra='allow',
@@ -3552,6 +3650,7 @@ class Contracts(BaseModel):
     codec_info: CodecInfo | MISSING = MISSING
     config_ack: ConfigAck | MISSING = MISSING
     config_bundle: ConfigBundle | MISSING = MISSING
+    coverage_guide: CoverageGuide | MISSING = MISSING
     envelope: Envelope | MISSING = MISSING
     event_ack: EventAck | MISSING = MISSING
     event_close: EventClose | MISSING = MISSING
