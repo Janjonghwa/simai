@@ -305,9 +305,9 @@ class MediaClipIntegrationTest {
         assertThat(deferred(clip) + deferred(retention)).isZero();
         JsonNode item = call("GET", "/api/events/" + event + "/clips", admin(), null, 200).get("clips").get(0);
         assertThat(item.get("retention_hold").asBoolean()).isTrue();
-        // 저장 때 받은 시각은 처음 받은 시각이다(이벤트를 넣기 전)
+        // 저장 때 받은 시각은 처음 받은 시각이다(이벤트를 넣기 전). 같은 밀리초일 수 있어 <= 로 본다(Jenkins #425 불안정)
         assertThat(jdbc.queryForObject("""
-                SELECT c.received_at < e.raised_at FROM media_clip c JOIN risk_event e ON e.event_id = c.event_id
+                SELECT c.received_at <= e.raised_at FROM media_clip c JOIN risk_event e ON e.event_id = c.event_id
                 WHERE c.clip_id = ?::uuid
                 """, Boolean.class, clipId)).isTrue();
     }
