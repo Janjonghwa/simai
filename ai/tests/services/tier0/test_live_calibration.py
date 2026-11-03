@@ -18,7 +18,8 @@ for path in (HERE, HERE.parents[2], HERE.parents[1] / "calibration"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from test_calibration_swap import candidate, recording, site  # noqa: E402, F401
+from test_calibration_swap import candidate, recording, site as calibration_site  # noqa: E402, F401
+import test_calibration_swap  # noqa: E402
 from test_drift_watch import drive, field_calibration  # noqa: E402
 from test_live_candidate import synthetic_rig_and_frames, _perturb_camera_rotation  # noqa: E402, F401
 from test_tier0_service import _settings  # noqa: E402
@@ -26,6 +27,14 @@ from services.tier0.service import Tier0Service  # noqa: E402
 from services.tier0.settings import LiveCalibrationSettings, Tier0ConfigError, load_settings  # noqa: E402
 from simai_ai.calibration.live_candidate import LiveCandidateConfig  # noqa: E402
 from simai_ai.calibration.document import content_hash  # noqa: E402
+
+
+@pytest.fixture
+def site(tmp_path, recording, monkeypatch):
+    original = test_calibration_swap._settings
+    monkeypatch.setattr(test_calibration_swap, "_settings",
+                        lambda *args, **kwargs: replace(original(*args, **kwargs), human_calibration_enabled=True))
+    yield from calibration_site.__wrapped__(tmp_path, recording, monkeypatch)
 
 
 def test_common_reprojection_matches_time_camera_local_track_and_joint(monkeypatch, synthetic_rig_and_frames):
@@ -115,7 +124,7 @@ def test_synthetic_perception_candidate_switch_and_next_world_version(tmp_path, 
     cal_file.write_text(json.dumps(initial), encoding="utf-8")
     now = [frames[0].estimated_capture_time_ms]
     settings = replace(_settings(tmp_path, recording, anchor_ms=now[0], bootstrap=False),
-                       calibration_file=cal_file, drift_watch_enabled=False,
+                       calibration_file=cal_file, human_calibration_enabled=True, drift_watch_enabled=False,
                        live_calibration=LiveCalibrationSettings(measured_camera_heights=heights if with_heights else {}))
     monkeypatch.setattr(Tier0Service, "_run_judge", lambda self: None)
     monkeypatch.setattr(Tier0Service, "_run_housekeeping", lambda self: None)
@@ -333,7 +342,7 @@ def test_setting_disables_collection_and_worker(tmp_path, recording, monkeypatch
     doc = json.loads(config.read_text(encoding="utf-8"))
     doc["live_calibration"] = {"enabled": False}
     config.write_text(json.dumps(doc), encoding="utf-8")
-    service = Tier0Service(load_settings(config, env={}))
+    service = Tier0Service(load_settings(config, env={"SIMAI_TIER0_HUMAN_CALIBRATION": "1"}))
     service.start()
     try:
         assert service.live_calibration is None

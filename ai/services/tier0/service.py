@@ -527,10 +527,12 @@ class Tier0Service:
             new_msg_id=self._new_msg_id,
             begin_tick=self._begin_calibration_tick,
         )
-        if s.drift_watch_enabled and self._drift_watch_factory is not None:
+        if not s.human_calibration_enabled:
+            log.info("사람 관절 보정 꺼짐")
+        if s.human_calibration_enabled and s.drift_watch_enabled and self._drift_watch_factory is not None:
             # 보정 감시(-117): 저장한 기준선을 검증 여부 그대로 돌려주고(CalibrationDriftWatch(baselines=...)), 정리 주기마다 저장한다
             self.drift_watch = self._drift_watch_factory(load_baselines(s.baselines_file))
-        elif s.drift_watch_enabled:
+        elif s.human_calibration_enabled and s.drift_watch_enabled:
             self.drift_watch = BackgroundDriftWatch(self._apply_drift_report,
                                                    baselines=load_baselines(s.baselines_file))
             self._drift_document = self.calibration.current()
@@ -538,7 +540,7 @@ class Tier0Service:
                 self._drift_document, assoc, tuple(getattr(self.perception.feed, "camera_streams", {}).values()))
 
         # 6) 시작
-        if s.live_calibration.enabled:
+        if s.human_calibration_enabled and s.live_calibration.enabled:
             try:
                 from services.tier0.live_calibration import BackgroundLiveCalibration
 
@@ -1231,7 +1233,8 @@ class Tier0Service:
             "restore_link": dict(self.restore_link.status()) if getattr(self, "restore_link", None) is not None else None,
             "config_check": self.config_check,
             "calibration": {**self.calibration_status, "active_version": self.rig.calibration_version,
-                            "live_candidate": ({"enabled": self.settings.live_calibration.enabled,
+                            "live_candidate": ({"enabled": (self.settings.human_calibration_enabled and
+                                                            self.settings.live_calibration.enabled),
                                                 "last_error": self._live_calibration_error}
                                                if self.live_calibration is None else self.live_calibration.status()),
                             "state": self._calibration_state(),
