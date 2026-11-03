@@ -23,7 +23,7 @@ I0의 영상 프레임(바이너리, 12.7)을 제외한 모든 구간은 공통 
 
 | ID | 구간 | 방식 | 메시지 |
 |---|---|---|---|
-| I1 | RunPod Tier 0 ↔︎ EC2 | WebSocket + JSON | 위로(Tier 0 → EC2): `world_state`(10 Hz), `health`(1 Hz), `observation_summary`(필요 시 카메라별 요약만. 2D 관측 원본 `observation_batch` 는 RunPod 에 Parquet 로 보관, 11.2), `calibration_update`, `risk_event_transition`, `event_state_snapshot`, `config_ack`, `event_frame_ready`, `media_clip`·`media_clip_retention`(이벤트 클립 기록, 11.3), `video_segment`(상시 영상 조각 기록, 5.1·11.3), `tier0_endpoint`(엔드포인트 등록, 3.12), `event_close_result`(운영자 종료 결과, 6.4), `event_escalate_result`(운영자 상향 결과, 5.4) / 아래로(EC2 → Tier 0): `event_ack`, `event_close`(관리자의 구역 대상 이벤트 종료, 6.4), `event_escalate`(관리자가 승인한 VLM 상향 의견 적용, 5.4), `journal_ack`, `config_bundle`, `scene_reference`(1초마다 현재 Scene 참조, 시각화 전용이라 판정·보정을 바꾸지 않음, 4.5) |
+| I1 | RunPod Tier 0 ↔︎ EC2 | WebSocket + JSON | 위로(Tier 0 → EC2): `world_state`(10 Hz), `health`(1 Hz), `observation_summary`(필요 시 카메라별 요약만. 2D 관측 원본 `observation_batch` 는 RunPod 에 Parquet 로 보관, 11.2), `calibration_update`, `risk_event_transition`, `event_state_snapshot`, `config_ack`, `event_frame_ready`, `media_clip`·`media_clip_retention`(이벤트 클립 기록, 11.3), `video_segment`(상시 영상 조각 기록, 5.1·11.3), `tier0_endpoint`(엔드포인트 등록, 3.12), `event_close_result`(운영자 종료 결과, 6.4), `event_escalate_result`(운영자 상향 결과, 5.4), `ppe_state`(PPE 상태, 1\~2 Hz, 5.5. 계약은 Lead 승인 뒤 추가, 19.1) / 아래로(EC2 → Tier 0): `event_ack`, `event_close`(관리자의 구역 대상 이벤트 종료, 6.4), `event_escalate`(관리자가 승인한 VLM 상향 의견 적용, 5.4), `journal_ack`, `config_bundle`, `scene_reference`(1초마다 현재 Scene 참조, 시각화 전용이라 판정·보정을 바꾸지 않음, 4.5) |
 | I2 | EC2 → 뷰어 | WebSocket(STOMP) + REST | 토픽 `/topic/world`(`world_state`), `/topic/avatar`(`avatar_frame`), `/topic/events`(`risk_event`), `/topic/health`(`viewer_health`)(12.4) / REST: 리플레이, 구역 CRUD, 작업면 등록, 보정·설치, Scene·아바타 자산(`/api/avatars/...`), 레이아웃, 보고서, 이벤트 상세·요약·상향(12.6) |
 | I3 | EC2 ↔︎ PWA | 폐기(v1.3) | 반장 PWA·Web Push 를 두지 않는다(10.1). 계약 `risk_alert` 는 남아 있으나 쓰지 않으며 정리는 별도 이슈에서 한다 |
 | I4 | EC2 ↔︎ 워치 (확장, 부록 C.6) | WebSocket(wss) + JSON, 기기별 토큰 | 아래로(EC2 → 워치): `watch_alert`(진동 알림), `watch_heartbeat` / 위로(워치 → EC2): `watch_ack`(수신 확인, 운영자 확인이 아님), `gait_features`(걸음 특징), `watch_heartbeat`. 계약 6.10.0(S15P31A101-334), 연결·끊김 판정은 `docs/design/watch-i4-contract.md` |
@@ -90,6 +90,8 @@ EC2 내부: Spring ↔ Risk Engine Python 컨테이너(`deploy/risk-engine`)는 
 `media_clip` 은 이벤트 클립(카메라 하나 × 위험 구간 하나)을 임시 업로드 주소로 올린 뒤 객체 키, 촬영 시각 구간, 해시·크기, 얼굴 흐림 여부(`face_redaction`, 기본 NONE), 구간 안 빈칸(`has_gaps`), 삭제 예정일, 보존 표시를 보낸다. 영상은 싣지 않는다. 보낸 뒤 이벤트가 CRITICAL 로 오르면 기록을 고치지 않고 `media_clip_retention` 으로 보존 표시를 더한다(11.5).
 
 `video_segment` 는 상시 영상 조각(카메라 하나 × 일정 길이)을 임시 업로드 주소(목적 `VIDEO_SEGMENT`, `segment_id`)로 올린 뒤 객체 키, 촬영 시각 구간, stream_epoch, 해시·크기, 구간 안 빈칸, 삭제 예정일을 보낸다. 영상은 싣지 않는다. 이벤트와 묶이지 않고 보존 표시가 없다(5.1, 11.5, v1.3 수정 36).
+
+`ppe_state`(제안, 계약은 Lead 승인 뒤 `contracts/messages/` 에 먼저 추가한다, 19.1)는 PPE 프로세스의 사람별 판정 결과를 `world_state` 와 따로 보낸다. `world_state` 의 좌표·ID 의미는 바꾸지 않는다. 제안 필드는 정체성(`session_id`, `world_id`, `identity_revision`, 순번·멱등 키), 재현(스키마·모델·체크포인트 sha256·정책 버전, 입력 방식 `input_mode`, `input_provenance`), 시각(`capture_time`, `last_evidence_at`, `expires_at`, UTC ms), 결과(안전모·조끼 각각 상태·사유·유효 칸 수·지원 비율), 근거(카메라·프레임·local ID·영역 품질·검출 confidence)다. 이미지·crop 은 싣지 않고, 검출 없음은 NOT_WORN 이 아니다. EC2 는 버전·멱등·시각·만료·`identity_revision` 을 검사해 추가 전용으로 저장하고 화면용 현재 상태를 따로 둔다. 과거·만료된 메시지는 현재 상태를 덮지 않는다. 관제 화면 전달 채널(I2 토픽)은 계약과 함께 정한다.
 
 `risk_event_transition`은 RunPod Tier 0 서비스가 전이를 확정할 때마다 저널·outbox를 거쳐 보낸다(3.2).
 

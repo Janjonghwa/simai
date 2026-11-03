@@ -39,9 +39,9 @@
 | Three.js | 뷰어 | MVP | MIT |
 | Unreal Engine / Blender | 배경 빌드 / 대안 | 확장 | Unreal EULA / GPL |
 | Tapo C110 | 카메라 | MVP | 제조사 약관 |
-| YOLO26 분류·검출(미세조정) | PPE·신호수 표식 | 확장 | AGPL-3.0 |
-| Ultralytics Construction-PPE | PPE 공개 데이터 | 확장 | AGPL-3.0 |
-| SH17 | PPE 공개 데이터 | 확장 | 확인 필요 |
+| YOLO26x 검출(미세조정, 4클래스) | PPE 판정(5.5). 신호수 표식 클래스는 확장 | MVP(M3) | AGPL-3.0 |
+| Ultralytics Construction-PPE | PPE 공개 데이터(비교군·보완 후보) | MVP(M3) | AGPL-3.0 |
+| SH17 | PPE 공개 데이터 | 라이선스 확인 전 미사용 | 확인 필요 |
 | YOLO26-seg / YOLOE-26 | 마스크(정적 3D 사람 지우기, 상시 아바타 루프 `services/avatar` 의 Tier 1 HMR 프롬프트·UV 텍스처 가림 마스크 `yolo26x-seg.pt`), 새 물체 분할, 실측 정물 검출, PPE 무학습 기준선 | MVP·시연 범위·확장 | AGPL-3.0 |
 | ViTPose | 오프라인 자동 주석(학습 데이터 준비) | 보조 | 확인 필요 |
 | Sapiens / Sapiens2 | 오프라인 자동 주석(학습 데이터 준비) | 보조 | Sapiens(1) CC BY-NC 4.0 / Sapiens2 는 ‘Sapiens2 License’(조문 확인 못 함) |

@@ -6,7 +6,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 
 - 이미지는 `timescale/timescaledb-ha` 의 -all 태그를 쓴다(TimescaleDB·PostGIS 포함).
 - `risk_event`는 일반 테이블로 둔다. `notification`이 `risk_event(event_id, source)`를 복합 FK 로 참조해야 하기 때문이다(11.4).
-- `world_track_state`, `skeleton_3d`, `system_metric`, `system_health`, `device_heartbeat` 는 hypertable 로 만들고 압축과 보관 정책을 건다(확장: `channel_state`, `watch_feature`, `ppe_state`). 다른 테이블은 hypertable 을 외래 키로 참조하지 않고, hypertable 의 버전 ID 는 논리 참조로만 둔다.
+- `world_track_state`, `skeleton_3d`, `system_metric`, `system_health`, `device_heartbeat`, `ppe_state` 는 hypertable 로 만들고 압축과 보관 정책을 건다(확장: `channel_state`, `watch_feature`). 다른 테이블은 hypertable 을 외래 키로 참조하지 않고, hypertable 의 버전 ID 는 논리 참조로만 둔다.
 - 법령 지식 그래프와 RAG 색인은 같은 PostgreSQL 의 `rag_node`·`rag_edge` 와 `pgvector`·`pg_trgm` 이다(v1.3 수정 49). 임베딩은 `Qwen/Qwen3-Embedding-0.6B`(Apache-2.0) dense 1024차원(`float32`, L2 정규화, cosine, 이전 `BAAI/bge-m3` 대체)이고, 문서와 질의에 같은 고정 모델 revision·설정을 쓴다. 문서 임베딩 입력은 `"[법령명 조문(제목)] 본문"` 형식을 쓰며, 법령 조문·지침·사례 노드(`rag_node`)와 TBM 표준 질의 템플릿(`rag_query_template`)은 시드 적재 때 미리 임베딩해 넣고 비정형 실시간 질의는 EC2 Python 컨테이너 CPU 에서 임베딩한다(`docs/design/tbm-legal-graph.md`).
 - 컬럼·키·제약은 ERD(구현 설계 문서)와 Flyway 마이그레이션이 정본이고, 이 장은 테이블과 원칙을 적는다.
 - PostGIS 는 저장·조회에만 쓴다. 구역 판정 계산은 Risk Engine 한 곳에서만 한다(3.2).
@@ -22,7 +22,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `calibration_version` | 카메라별 K·왜곡·R·t·높이, 재투영 오차, 스케일 근거, 상태 |
 | `scene_version` | 정적 3D 자산 주소(`GLTF_VISUAL`, `SURFACE_SOURCE_MAP`), 사용한 보정 버전, 작업·생성 기록(`job_id`, `run_id`), 상태(`CANDIDATE`·`COMMITTED`·`REJECTED`) |
 | `scene_activation` | Scene 버전 활성화·되돌리기 이력(누가·언제·이유, 추가만). 가장 최근 이력이 가리키는 버전이 현재 활성(`COMMITTED`) Scene 정본이다(12.6, `docs/design/scene-version-from-job.md`) |
-| `zone` | 다각형 + 높이 범위, 판정 유형(GROUND_FOOTPRINT/VOLUME_3D), 유형, 심각도, 요구 조건, 유효 시작·종료 |
+| `zone` | 다각형 + 높이 범위, 판정 유형(GROUND_FOOTPRINT/VOLUME_3D), 유형, 심각도, 요구 조건(`requirements`: 안전모·조끼 요구. 형식은 구성 묶음 계약과 함께 정한다, 19.1), 유효 시작·종료 |
 | `rule_version` | 규칙 ID, 임계값 세트, 적용 기간(시험 프로파일 포함, 7.4). 값은 AI 규칙 등록부에서 뽑으며 같은 버전의 값은 바꾸지 않는다(첫 운영 배포 전 예외, 11.4-1). 근거 조항(`legal_basis`)은 비어 있으면 시드가 채우고, 다른 값이 있으면 첫 운영 배포 전에는 갱신하고 뒤에는 마이그레이션이 멈춘다(7.1) |
 | `equipment_asset` | GLB 주소, 반경·형상 파라미터(확장, 부록 C) |
 | `layout_plan` | 가상 레이아웃(개구부·장비 주차 구역은 구역, 가설 비계는 작업면)·계획 궤적(F-02·F-01), 출처 PLANNED. 계획 작업 위치는 선택이다: 관리자가 주면 그 위치만 쓰고, 없으면(빈 목록 포함) Risk Engine 컨테이너가 작업면·구역에서 만든다(8.3) |
@@ -44,10 +44,11 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `system_health` | 시스템 상태, 카메라별 상태, lag, 보정 상태, 하트비트 | 1 Hz | 11.5 |
 | `system_metric` | 구간별 지연, FPS, 큐 길이, GPU 사용률, 프레임 손실 | 1\~5 Hz | 11.5 |
 | `device_heartbeat` | 노트북 하트비트(Tier 0 연결, 현장 표시, 카메라 수신 상태). 원격 단절 구분(3.2) 근거 | 1 Hz | 11.5 |
+| `ppe_state` | World ID·`identity_revision` 별 안전모·조끼 상태(WORN·NOT_WORN·UNKNOWN), 사유, 유효 칸 수·지원 비율, 마지막 근거 시각·만료 시각, 근거 카메라·프레임, 모델·체크포인트 해시·정책 버전·입력 방식(`input_provenance`). 추가만 하고 화면용 현재 상태는 따로 둔다(5.5, 12.3) | 1\~2 Hz | 11.5 |
 | `observation_summary` | 2D 관측 카메라별 요약(I1 `observation_summary`, 원본 위치 `archive_uri`) | 필요 시 | 11.5 |
 | `system_outage` | 장애 기록(관제 정지·현장 장비 응답 없음·원격 전달 단절, 6.5): 마지막 정상 근거, EC2 판정 시각, 끝 시각과 끝난 이유(복구·종류 바뀜·EC2 재시작). 열린 장애는 하나다(G3 근거) | 장애 시작·끝마다 | 11.5 |
 
-`ppe_state`, `channel_state`, `watch_feature`, `region_state`(와 11.3 의 `watch_binding`) 등 확장 테이블은 MVP DB 에 두지 않는다. 목록은 부록 C 각 절의 “확장 DB 테이블”에 있다.
+`channel_state`, `watch_feature`, `region_state`(와 11.3 의 `watch_binding`) 등 확장 테이블은 MVP DB 에 두지 않는다. 목록은 부록 C 각 절의 “확장 DB 테이블”에 있다.
 
 ## 11.3 이벤트·조치
 
@@ -105,7 +106,8 @@ PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evalua
 |---|---|
 | 원본 영상 | 관제 중 RunPod로 상시 전송(TLS). Tier 0 가 카메라별 상시 영상 조각으로 객체 저장소에 저장하고 14일 후 EC2 삭제 작업이 자동 삭제(보존 표시 없음, 얼굴 흐림 없음, 열람은 관리자·조회 기록, v1.3 수정 36) |
 | 이벤트 영상 클립 | 14일 후 자동 삭제. CRITICAL 이벤트 연결분은 자동 보존 표시, 아차사고는 관리자가 보존 표시를 붙이거나 뗌. 보존분은 접근 기록을 남기고 프로젝트 종료 시 파기. 얼굴은 흐림 처리하지 않는다(사용자 결정, 16장). 열람은 권한자로 제한하고 조회 기록을 남긴다(14장). 흐림 단계는 선택 사항으로 남기며, 켜면 업로드 전에 반드시 거치고 실패하면 흐리지 않은 클립으로 대신하지 않는다. 생성형 얼굴 복원·표정 추정은 하지 않고, 재식별(Re-ID)은 전신 임베딩을 기하 게이트 뒤 보조 비용으로만 쓰며 Tier 0 위치·ID 정본을 덮지 않는다(도입은 G2 측정 뒤, 19.1). EC2 단절 중 클립은 Tier 0 저장 위치에 먼저 저장 후 복구 시 업로드(5.1). Tier 0 에 남은 미업로드 클립은 보존 표시가 없고 삭제 예정일이 지난 것만 올리지 않고 지우며, 보존 표시가 있는 클립은 전체 파기 기한 전까지 복원·업로드한다 |
-| PPE crop(확장) | 판정 직후 삭제, 저장 없음 |
+| PPE 입력 원본·crop | 메모리에서만 쓰고 판정 직후 반환, 저장 없음(파일·로그·미리보기 포함) |
+| `ppe_state` | `world_track_state` 와 같은 압축·보관 정책(얼굴·영상 없음) |
 | 2D 관측 | Tier 0 저장 위치(3.12), 7\~14일 |
 | 좌표·상태·이벤트 로그 | 얼굴 없음. 프로젝트 발표 후 30일 안 파기 |
 | 시계열(hypertable) | `world_track_state`·`skeleton_3d`·`system_health` 는 상시 삭제 없음(리플레이용, 발표 후 일괄 파기), 7일 지난 청크는 압축. 운영 지표 `system_metric`·`device_heartbeat` 는 30일 보관 정책. EC2 디스크 사용률이 70% 를 넘으면 `skeleton_3d` 에도 30일 보관 정책을 건다. 확장 hypertable 은 확장 착수 때 정한다 |
