@@ -1,3 +1,4 @@
+import type { PlanTone } from '@/features/plan/plan';
 import { cn } from '@simai/ui/lib/utils';
 import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'react';
 import { createPortal } from 'react-dom';
@@ -63,9 +64,13 @@ export function useDwell(ms = DWELL_MS) {
   return { tip, on };
 }
 
-export type TipTone = 'critical' | 'caution';
+export type TipTone = PlanTone;
 
-const TONE = { critical: 'text-sev-critical', caution: 'text-sev-caution' } as const;
+const TONE = {
+  critical: 'text-sev-critical',
+  high: 'text-sev-high',
+  caution: 'text-sev-caution',
+} as const satisfies Record<TipTone, string>;
 
 /** 포인터 곁 자리. 오른쪽 가장자리에서는 왼쪽으로, 아래 가장자리에서는 위로 비킨다. */
 function tipPosition({ x, y }: Dwell) {

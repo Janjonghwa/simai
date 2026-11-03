@@ -11,8 +11,12 @@ export type ZonesResponse = z.infer<typeof zonesResponseSchema>;
 const JUDGE_TYPES = ['GROUND_FOOTPRINT', 'VOLUME_3D'] as const;
 export type JudgeType = (typeof JUDGE_TYPES)[number];
 
-export const SEVERITIES = ['CRITICAL', 'HIGH', 'CAUTION', 'INFO'] as const;
+/** 서버가 받는 구역 심각도. 이미 저장된 주의·안내 구역도 읽어야 해서 응답 검사는 네 값 모두 받는다. */
+const SEVERITIES = ['CRITICAL', 'HIGH', 'CAUTION', 'INFO'] as const;
 export type Severity = (typeof SEVERITIES)[number];
+
+/** 화면에서 구역에 고르는 심각도: 위험·경고. 주의·안내는 이벤트 등급이다. */
+export const SEVERITY_CHOICES = ['CRITICAL', 'HIGH'] as const satisfies readonly Severity[];
 
 const vec2 = z.tuple([z.number(), z.number()]);
 const requirements = z.record(z.string(), z.unknown());
@@ -153,5 +157,10 @@ export interface Zone extends ZoneBox {
 /** 3D 뷰어 Source 가 받는 구역 형식(뷰어 contractAdapter 의 DEMO 상자). 서버 형식을 바꿔 넘긴다. */
 export interface ViewerZones {
   contract: 'DEMO_UNCONFIRMED';
-  zones: { zone_id: string; name: string; aabb: { min_xyz: Point; max_xyz: Point } }[];
+  zones: {
+    zone_id: string;
+    name: string;
+    severity: Severity;
+    aabb: { min_xyz: Point; max_xyz: Point };
+  }[];
 }

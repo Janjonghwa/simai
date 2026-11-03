@@ -21,12 +21,10 @@
   --color-faint: var(--faint);
   --color-point-soft: var(--point-soft);
   --color-sev-critical: var(--sev-critical);
+  --color-sev-high: var(--sev-high);
   --color-sev-caution: var(--sev-caution);
   --color-delay: var(--delay);
-  --color-delay-soft: var(--delay-soft);
   --color-ok: var(--ok);
-  --color-zone-volume: var(--zone-volume);
-  --color-zone-floor: var(--zone-floor);
   --color-stripe-a: var(--stripe-a);
   --color-stripe-b: var(--stripe-b);
   --color-brand-hat: var(--brand-hat);
@@ -116,14 +114,12 @@
   --surface-3: #dce5f0;
   --faint: #5f7596;
   --point-soft: #1d4f9e;
+  /* 심각도: 위험 빨강·경고 주황·주의 노랑. 지연은 경고와 가르려고 채도를 낮춘 주황이다. */
   --sev-critical: #c21d1d;
-  --sev-caution: #835600;
-  --delay: #c2500c;
-  --delay-soft: #a3400a;
+  --sev-high: #b54f00;
+  --sev-caution: #7a6000;
+  --delay: #8c5a3c;
   --ok: #137a3e;
-  /* 구역 판정 유형(2D·3D): 입체는 빨강 점선, 바닥은 청록(관제 데모와 같다). */
-  --zone-volume: #c21d1d;
-  --zone-floor: #0f766e;
   --stripe-a: #dce5f0;
   --stripe-b: #c3d2e5;
   --brand-hat: #16467f;
@@ -170,14 +166,11 @@
   --surface-3: #1b3b6b;
   --faint: #6b7797;
   --point-soft: #b4c4ee;
-  /* 빨강·노랑은 위험 등급, 주황은 지연에만 쓴다. */
   --sev-critical: #ff6b74;
-  --sev-caution: #f4b95f;
-  --delay: #ff9447;
-  --delay-soft: #ffb380;
+  --sev-high: #ff8f3f;
+  --sev-caution: #ffd23f;
+  --delay: #d4a27f;
   --ok: #4fc98a;
-  --zone-volume: #ff6b74;
-  --zone-floor: #5fb3a8;
   --stripe-a: #173560;
   --stripe-b: #234a7c;
   --brand-hat: #c3cfee;

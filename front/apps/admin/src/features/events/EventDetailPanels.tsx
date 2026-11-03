@@ -2,6 +2,7 @@ import { useCurrentRole } from '@/features/auth/useCurrentRole';
 import { hasClips } from '@/features/clips/clips';
 import { EventClips } from '@/features/clips/EventClips';
 import { AckButton } from '@/features/events/AckButton';
+import { ALARM_TEXT } from '@/features/events/alarmTone';
 import { CONFIDENCE_REASON } from '@/features/events/constants';
 import { entryStatus, needsConfirmation, type EventEntry } from '@/features/events/entries';
 import { escalationStatusLabel, mergedEscalations } from '@/features/events/escalation';
@@ -202,7 +203,7 @@ export function ProcessPanel({ entries }: EntriesProps) {
                 <span
                   className={
                     status.kind === 'alarm'
-                      ? 'font-bold text-sev-critical'
+                      ? cn('font-bold', ALARM_TEXT[entry.event.severity])
                       : 'text-muted-foreground'
                   }
                 >

@@ -1,33 +1,32 @@
+import { ALARM_BORDER, ALARM_TEXT } from '@/features/events/alarmTone';
 import { confirmationText } from '@/features/events/format';
 import type { CardChip } from '@/features/events/incidentView';
-import type { EventItem } from '@/features/events/types';
+import type { EventItem, Severity } from '@/features/events/types';
 import { Badge } from '@simai/ui/components/badge';
 import { cn } from '@simai/ui/lib/utils';
 
 /** 조용한 칩: 확인됨 · 조치 단계 · 해소. 눈에 띄는 칩(미확인)과 갈린다. */
 const QUIET_CHIP = 'border-border text-muted-foreground';
 
-/** 처리 상태 칩 모양(알약). 미확인은 굵은 빨강 외곽선(위험 등급 색)이다. */
-const CHIP_CLASS: Record<CardChip['kind'], string> = {
-  unacked: 'border-[1.5px] border-sev-critical font-bold text-sev-critical',
-  ticket: QUIET_CHIP,
-  ack: QUIET_CHIP,
-  resolved: QUIET_CHIP,
-};
+/** 처리 상태 칩 색. 미확인은 굵은 외곽선이고 그 묶음의 등급 색이며, 나머지는 조용한 칩이다. */
+const chipClass = (kind: CardChip['kind'], severity: Severity) =>
+  kind === 'unacked'
+    ? cn('border-[1.5px] font-bold', ALARM_BORDER[severity], ALARM_TEXT[severity])
+    : QUIET_CHIP;
 
-/** 카드 꼬리표(작은 네모). 확인 필요는 회색 바탕, 지연은 주황 외곽선이다. */
+/** 카드 꼬리표(작은 네모). 확인 필요는 회색 바탕, 지연은 채도를 낮춘 주황 외곽선이다. */
 const TAG = 'rounded-[4px] px-[7px] py-px text-xs whitespace-nowrap';
 const TAG_CONFIRM = `${TAG} bg-surface-3 text-muted-foreground`;
 const TAG_DELAYED = `${TAG} text-delay ring-1 ring-delay ring-inset`;
 
 /** 카드 머리줄 오른쪽의 처리 상태 칩. */
-export function StateChip({ chip }: { chip: CardChip }) {
+export function StateChip({ chip, severity }: { chip: CardChip; severity: Severity }) {
   return (
     <span
       data-chip={chip.kind}
       className={cn(
         'shrink-0 rounded-full border px-2 py-px text-xs leading-[18px] whitespace-nowrap tabular-nums',
-        CHIP_CLASS[chip.kind],
+        chipClass(chip.kind, severity),
       )}
     >
       {chip.label}
@@ -49,7 +48,7 @@ export function ConfirmBadge({ event, compact }: { event: EventItem; compact?: b
   );
 }
 
-/** 지연 알림 꼬리표(심각도와 함께 보여야 하는 것, 명세 7.3). 색은 지연(주황) 몫이다. */
+/** 지연 알림 꼬리표(심각도와 함께 보여야 하는 것, 명세 7.3). 색은 지연(채도를 낮춘 주황) 몫이다. */
 export function DelayedBadge({ compact }: { compact?: boolean }) {
   if (compact) return <span className={TAG_DELAYED}>지연 알림</span>;
   return (

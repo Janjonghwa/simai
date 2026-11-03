@@ -1,8 +1,8 @@
 import type { TipTone } from '@/features/plan/HoverTip';
 import {
   markFor,
-  markTone,
   personKey,
+  severityTone,
   trackIds,
   trackLook,
   ZONE_KEY_PREFIX,
@@ -53,5 +53,5 @@ export function planTip(
   const track = tracks.find((t) => personKey(t.world_id) === key);
   if (!track) return undefined;
   const mark = markFor(marks.people, trackIds(track));
-  return { text: personTip(track, mark), tone: mark && markTone(mark) };
+  return { text: personTip(track, mark), tone: mark && severityTone(mark.severity) };
 }

@@ -4,6 +4,7 @@ import {
 } from '@/features/viewer3d/data/spatialData.store';
 import { SpatialDataContext } from '@/features/viewer3d/data/SpatialDataProvider';
 import { DEMO_ZONES_RESPONSE, scenarioTick } from '@/features/viewer3d/dev-harness/scenarios';
+import { PALETTE } from '@/features/viewer3d/palette';
 import { createViewerStore, type ViewerStore } from '@/features/viewer3d/viewer3d.store';
 import { ViewerStoreContext } from '@/features/viewer3d/ViewerStoreContext';
 import { ZoneLayer } from '@/features/viewer3d/zones/ZoneLayer';
@@ -263,6 +264,49 @@ describe('ZoneLayer', () => {
 
     await mount('DEMO_PREVIEW');
     expect([lineOf('z-01'), fillOf('z-01')]).toEqual([true, 0.05]);
+  });
+
+  it('윤곽선은 구역 심각도 색이고, 배경에 가려진 부분을 덧그리는 흐린 선이 하나 더 있다', async () => {
+    type EdgeMaterial = {
+      isLineMaterial?: boolean;
+      color: { getHex(): number };
+      opacity: number;
+      depthTest: boolean;
+    };
+    const edgesOf = (id: string) => {
+      const found: EdgeMaterial[] = [];
+      named(`zone:${id}`)!.traverse((node) => {
+        const material = (node as Mesh).material as unknown as EdgeMaterial | undefined;
+        if (material?.isLineMaterial) found.push(material);
+      });
+      return {
+        all: found,
+        visible: found.find((m) => m.depthTest)!,
+        hidden: found.find((m) => !m.depthTest)!,
+      };
+    };
+    const zone = (zone_id: string, x: number, severity?: string) => ({
+      zone_id,
+      name: zone_id,
+      ...(severity && { severity }),
+      aabb: { min_xyz: [x, 0, 0], max_xyz: [x + 1, 1, 1] },
+    });
+
+    await mount();
+    await ingest({
+      contract: 'DEMO_UNCONFIRMED',
+      zones: [zone('danger', 0, 'CRITICAL'), zone('warn', 2, 'HIGH'), zone('unknown', 4)],
+    });
+
+    const danger = edgesOf('danger');
+    expect(danger.all).toHaveLength(2);
+    expect(danger.visible.color.getHex()).toBe(PALETTE.dark.risk.CRITICAL.color);
+    expect(danger.hidden.color.getHex()).toBe(PALETTE.dark.risk.CRITICAL.color);
+    expect(danger.hidden.opacity).toBeGreaterThan(0);
+    expect(danger.hidden.opacity).toBeLessThan(danger.visible.opacity);
+    expect(edgesOf('warn').visible.color.getHex()).toBe(PALETTE.dark.risk.HIGH.color);
+    // 심각도를 모르는 구역은 위험 색으로 지어내지 않고 기본 청록이다.
+    expect(edgesOf('unknown').visible.color.getHex()).toBe(PALETTE.dark.zone.color);
   });
 
   it('StrictMode 이중 마운트 뒤에도 구역 등록은 하나씩이고, 내리면 모두 풀린다', async () => {

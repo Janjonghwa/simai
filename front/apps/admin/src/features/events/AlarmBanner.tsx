@@ -1,4 +1,5 @@
 import { AckButton } from '@/features/events/AckButton';
+import { ALARM_RING } from '@/features/events/alarmTone';
 import { CameraButton } from '@/features/events/CameraButton';
 import { SEVERITY_RANK } from '@/features/events/constants';
 import { isAlarming, type EventEntry } from '@/features/events/entries';
@@ -10,6 +11,7 @@ import { Since } from '@/features/events/Since';
 import type { EventItem } from '@/features/events/types';
 import { useVisibleLiveEvents } from '@/features/events/useVisibleLiveEvents';
 import { Button } from '@simai/ui/components/button';
+import { cn } from '@simai/ui/lib/utils';
 import { useNavigate } from '@tanstack/react-router';
 import { useMemo } from 'react';
 
@@ -84,7 +86,10 @@ export function AlarmBanner({ withPanel }: { withPanel: boolean }) {
       {/* 깜빡이는 테두리는 배너 전체를 덮으므로 클릭을 통과시킨다(막으면 아래 버튼이 눌리지 않는다). */}
       <span
         aria-hidden
-        className="pointer-events-none absolute inset-0 rounded-[12px] ring-2 ring-sev-critical ring-inset motion-safe:animate-alarm-blink"
+        className={cn(
+          'pointer-events-none absolute inset-0 rounded-[12px] ring-2 ring-inset motion-safe:animate-alarm-blink',
+          ALARM_RING[event.severity],
+        )}
       />
       <SeverityBadge severity={event.severity} />
       <span className="flex min-w-0 flex-col">

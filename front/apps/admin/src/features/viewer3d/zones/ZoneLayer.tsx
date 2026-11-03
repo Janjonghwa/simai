@@ -2,7 +2,7 @@ import { useSpatialData } from '@/features/viewer3d/data/SpatialDataProvider';
 import type { ZoneView } from '@/features/viewer3d/data/spatialFrame';
 import { LabelSprite } from '@/features/viewer3d/LabelSprite';
 import { ZoneRiskMark } from '@/features/viewer3d/risk/RiskMarks';
-import { riskLabel, riskStyle } from '@/features/viewer3d/risk/riskPresentation';
+import { riskLabel, riskStyle, type RiskStyle } from '@/features/viewer3d/risk/riskPresentation';
 import { useRiskHighlight } from '@/features/viewer3d/risk/RiskScope';
 import { useIsHovered, useScenePalette } from '@/features/viewer3d/sceneTheme';
 import { Selectable } from '@/features/viewer3d/Selectable';
@@ -27,12 +27,13 @@ import {
   personOnRay,
   ZoneApplyContext,
   zoneLabel,
+  zoneSeverity,
   zoneStateLabel,
   zoneStyle,
 } from '@/features/viewer3d/zones/zonePresentation';
 import { Line } from '@react-three/drei';
 import type { ThreeEvent } from '@react-three/fiber';
-import { useContext, useEffect, useMemo } from 'react';
+import { memo, useContext, useEffect, useMemo, type ComponentProps } from 'react';
 import { BufferAttribute, BufferGeometry, DoubleSide } from 'three';
 import { useStore } from 'zustand';
 
@@ -44,7 +45,56 @@ import { useStore } from 'zustand';
 const noRaycast = () => null;
 /** 구역 이름표를 상자 하단에서 띄우는 높이(m). 바닥 격자·안내선과 겹치지 않게 조금만 띄운다. */
 const ZONE_LABEL_LIFT = 0.18;
+/** 가려진 부분을 덧그리는 선의 그리기 순서. 구역 채움(0) 뒤, 이름표(10) 앞이다. */
+const HIDDEN_EDGE_ORDER = 2;
+/** 윤곽선 굵기. 선택하면 굵고, 위험이 걸린 다각형 구역은 위험 모양(이중선이면 더 굵게)을 따른다. */
+const EDGE_WIDTH = { normal: 1.5, selected: 2.5, risk: 2.5, riskDouble: 3.5 } as const;
+/** 적용 상태는 실선인데 위험이 점선으로 걸릴 때 쓰는 점선 크기(m). */
+const RISK_DASH = { dashSize: 0.2, gapSize: 0.12 } as const;
 const pickPerson = (event: ThreeEvent<MouseEvent>) => personOnRay(event.intersections);
+
+const edgeWidth = (selected: boolean, riskLook: RiskStyle | null) => {
+  if (riskLook) return riskLook.double ? EDGE_WIDTH.riskDouble : EDGE_WIDTH.risk;
+  return selected ? EDGE_WIDTH.selected : EDGE_WIDTH.normal;
+};
+
+interface ZoneEdgesProps {
+  name?: string;
+  points: ComponentProps<typeof Line>['points'];
+  color: number;
+  lineWidth: number;
+  dashed: boolean;
+  dashSize: number;
+  gapSize: number;
+  opacity: number;
+  /** 배경에 가려진 부분을 덧그리는 선의 불투명도. */
+  hiddenOpacity: number;
+}
+
+/**
+ * 구역 윤곽선. 깊이 검사를 하는 선은 스캔 배경(바닥·책상·벽)에 가려지는 부분이 숨는다. 그 위에 깊이 검사 없이 흐리게
+ * 한 겹을 더 그려, 가려진 부분도 윤곽이 이어져 늘 보이게 한다.
+ */
+const ZoneEdges = memo(function ZoneEdges({
+  name,
+  hiddenOpacity,
+  opacity,
+  ...look
+}: ZoneEdgesProps) {
+  const line = { segments: true, transparent: true, raycast: noRaycast, ...look };
+  return (
+    <>
+      <Line name={name} {...line} opacity={opacity} />
+      <Line
+        {...line}
+        opacity={hiddenOpacity}
+        depthTest={false}
+        depthWrite={false}
+        renderOrder={HIDDEN_EDGE_ORDER}
+      />
+    </>
+  );
+});
 
 export function ZoneLayer() {
   const zones = useSpatialData((s) => s.zones.zones);
@@ -86,7 +136,7 @@ function ZoneVolume({ zone, interactive }: ZoneEntryProps) {
   const edges = useMemo(() => boxEdges([sx, sy, sz]), [sx, sy, sz]);
   const guides = useMemo(() => aerialGuides([sx, sy, sz], py), [sx, sy, sz, py]);
   if (!box) return null;
-  const style = zoneStyle(applyState, selected, palette);
+  const style = zoneStyle(applyState, selected, palette, zoneSeverity(zone));
 
   return (
     <group name={`zone-entry:${zone.zoneId}`}>
@@ -106,17 +156,15 @@ function ZoneVolume({ zone, interactive }: ZoneEntryProps) {
               depthWrite={false}
             />
           </mesh>
-          <Line
+          <ZoneEdges
             points={edges}
-            segments
             color={style.color}
-            lineWidth={selected ? 2.5 : 1.5}
+            lineWidth={edgeWidth(selected, null)}
             dashed={style.dashed}
             dashSize={style.dashSize}
             gapSize={style.gapSize}
-            transparent
             opacity={style.edgeOpacity}
-            raycast={noRaycast}
+            hiddenOpacity={style.hiddenEdgeOpacity}
           />
         </group>
       </Selectable>
@@ -186,6 +234,7 @@ function ZonePolygon({ zone, interactive }: ZoneEntryProps) {
     useViewerStore(),
     (s) => s.selected?.type === 'zone' && s.selected.id === zone.zoneId,
   );
+  const palette = useScenePalette();
   const risk = useRiskHighlight('zone', zone.zoneId);
   const points = zone.official!.polygonXy;
   const footprint = zone.shape === 'FOOTPRINT';
@@ -199,7 +248,8 @@ function ZonePolygon({ zone, interactive }: ZoneEntryProps) {
     () => (footprint ? ringEdges(points, FLOOR_GUIDE_LIFT) : prismEdges(points, zMin, zMax)),
     [footprint, points, zMin, zMax],
   );
-  const style = zoneStyle(applyState, selected);
+  const style = zoneStyle(applyState, selected, palette, zoneSeverity(zone));
+  const riskLook = risk && riskStyle(risk, palette);
   const [lx, ly] = labelVertex(points);
   const labelAt = worldToThree(worldPoint(lx, ly, footprint ? 0 : zMin));
   const label = polygonZoneLabel(zone, applyState);
@@ -221,25 +271,23 @@ function ZonePolygon({ zone, interactive }: ZoneEntryProps) {
           />
         </mesh>
       </Selectable>
-      <Line
+      <ZoneEdges
         name={`zone-polygon-edges:${zone.zoneId}`}
         points={edges}
-        segments
-        color={risk ? riskStyle(risk).color : style.color}
-        lineWidth={risk ? (riskStyle(risk).double ? 3.5 : 2.5) : selected ? 2.5 : 1.5}
-        dashed={risk ? riskStyle(risk).dashed : style.dashed}
-        dashSize={style.dashed ? style.dashSize : 0.2}
-        gapSize={style.dashed ? style.gapSize : 0.12}
-        transparent
+        color={riskLook ? riskLook.color : style.color}
+        lineWidth={edgeWidth(selected, riskLook)}
+        dashed={riskLook ? riskLook.dashed : style.dashed}
+        dashSize={style.dashed ? style.dashSize : RISK_DASH.dashSize}
+        gapSize={style.dashed ? style.gapSize : RISK_DASH.gapSize}
         opacity={style.edgeOpacity}
-        raycast={noRaycast}
+        hiddenOpacity={style.hiddenEdgeOpacity}
       />
       <group position={labelAt}>
         <LabelSprite
           text={risk ? `${riskLabel(risk)} · ${label}` : label}
           y={ZONE_LABEL_LIFT}
           height={0.22}
-          color={risk ? riskStyle(risk).labelColor : undefined}
+          color={riskLook?.labelColor}
         />
       </group>
     </group>

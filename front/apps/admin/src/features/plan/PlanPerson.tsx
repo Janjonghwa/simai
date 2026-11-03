@@ -1,6 +1,6 @@
 import {
-  markTone,
   personKey,
+  severityTone,
   sigmaRadius,
   toPlan,
   trackLook,
@@ -131,7 +131,7 @@ function PersonHalo({
   selected: boolean;
 } & Point) {
   const sigma = sigmaRadius(track);
-  const tone = mark && markTone(mark);
+  const tone = mark && severityTone(mark.severity);
   const ahead = aheadPoint(track, look, bounds);
   return (
     <g className="pointer-events-none">

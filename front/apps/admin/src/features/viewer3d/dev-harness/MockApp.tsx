@@ -86,7 +86,7 @@ function readColors(): SceneColors {
     person: token('--muted-foreground', '#9ba7c5'),
     personSelected: token('--primary', '#6886d5'),
     critical: token('--sev-critical', '#ff6b74'),
-    caution: token('--sev-caution', '#f4b95f'),
+    caution: token('--sev-caution', '#ffd23f'),
     object: token('--point-soft', '#495e95'),
     camera: token('--faint', '#6b7797'),
   };

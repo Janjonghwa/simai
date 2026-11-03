@@ -132,6 +132,15 @@ export function planMarks(entries: readonly EventEntry[]) {
 
 export type PlanMarks = ReturnType<typeof planMarks>;
 
-/** 등급 색: 빨강은 HIGH 이상, 노랑은 CAUTION(CONVENTION: 빨강·노랑은 위험 등급에만). */
-export const markTone = (mark: PlanMark): 'critical' | 'caution' =>
-  SEVERITY_RANK[mark.severity] >= SEVERITY_RANK.HIGH ? 'critical' : 'caution';
+/** 2D 표시 색 이름: 위험 빨강·경고 주황·주의 노랑(CONVENTION: 빨강·주황·노랑은 위험 등급에만). */
+export type PlanTone = 'critical' | 'high' | 'caution';
+
+const SEVERITY_TONE: Record<Severity, PlanTone | undefined> = {
+  CRITICAL: 'critical',
+  HIGH: 'high',
+  CAUTION: 'caution',
+  INFO: undefined,
+};
+
+/** 등급의 표시 색. 안내는 색이 없다(undefined). */
+export const severityTone = (severity: Severity): PlanTone | undefined => SEVERITY_TONE[severity];

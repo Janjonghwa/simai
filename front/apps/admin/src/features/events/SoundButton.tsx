@@ -1,4 +1,5 @@
 import { useCanAck } from '@/features/events/ack';
+import { ALARM_TEXT } from '@/features/events/alarmTone';
 import { useAlarmSoundState } from '@/features/events/useAlarmSound';
 import { alarmSound } from '@/lib/alarmSound';
 import { Button } from '@simai/ui/components/button';
@@ -15,7 +16,7 @@ export function soundLabel(muted: boolean, blocked: boolean) {
  * 상단 바 경보 소리 버튼(관제 데모 c-sound). 끄고 켠다(시간 제한 없음, 브라우저에 저장).
  * 확인 권한이 없는 열람 계정은 소리를 내지 않으므로 버튼도 없다.
  * 브라우저가 소리를 막고 있으면(첫 입력 전·절전 복귀 뒤) 모서리에 「!」가 붙는다.
- * 색은 위험 등급(빨강·노랑)·지연(주황) 몫이라 꺼짐·차단은 모양(BellOff, 속이 빈 테두리, 반전 배지)으로만 가른다.
+ * 색은 위험 등급(빨강·주황·노랑)·지연 몫이라 꺼짐·차단은 모양(BellOff, 속이 빈 테두리, 반전 배지)으로만 가른다.
  */
 export function SoundButton() {
   const canAck = useCanAck();
@@ -23,8 +24,8 @@ export function SoundButton() {
   if (!canAck) return null;
 
   const blocked = !ready;
-  // 울릴 경보가 있고 켜져 있을 때만 종이 흔들린다(차단 중이어도 있는 경보는 알린다).
-  const ringing = want !== null && !muted;
+  // 울릴 경보가 있고 켜져 있을 때만 종이 흔들린다(차단 중이어도 있는 경보는 알린다). 값은 울리는 등급이다.
+  const ringingSeverity = muted ? null : want;
   const label = soundLabel(muted, blocked);
   const Icon = muted ? BellOff : Bell;
 
@@ -40,12 +41,15 @@ export function SoundButton() {
         'relative overflow-visible',
         muted &&
           'border-muted-foreground bg-transparent text-muted-foreground hover:bg-surface-3 hover:text-foreground',
-        ringing && 'text-sev-critical',
+        ringingSeverity && ALARM_TEXT[ringingSeverity],
       )}
     >
       <span
         aria-hidden
-        className={cn('inline-flex origin-[50%_10%]', ringing && 'motion-safe:animate-bell-ring')}
+        className={cn(
+          'inline-flex origin-[50%_10%]',
+          ringingSeverity && 'motion-safe:animate-bell-ring',
+        )}
       >
         <Icon className="size-[18px]" />
       </span>
@@ -55,7 +59,7 @@ export function SoundButton() {
           // 막힌 채 경보가 있으면 느리게(2초 주기) 깜박여 눌러 달라고 알린다.
           className={cn(
             'absolute -top-[5px] -right-[5px] grid size-4 place-items-center rounded-full bg-foreground font-mono text-[11px] leading-none font-bold text-background ring-2 ring-card',
-            ringing && 'motion-safe:animate-pulse',
+            ringingSeverity && 'motion-safe:animate-pulse',
           )}
         >
           !

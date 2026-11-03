@@ -133,7 +133,11 @@ export interface HealthView {
 
 /** 구역 판정 유형(명세 8.2). GROUND_FOOTPRINT 는 바닥 위치만, VOLUME_3D 는 높이 범위까지 본다. */
 export type ZoneEvalType = 'GROUND_FOOTPRINT' | 'VOLUME_3D';
-export type ZoneSeverity = 'CRITICAL' | 'HIGH' | 'CAUTION' | 'INFO';
+const ZONE_SEVERITIES = ['CRITICAL', 'HIGH', 'CAUTION', 'INFO'] as const;
+export type ZoneSeverity = (typeof ZONE_SEVERITIES)[number];
+
+export const isZoneSeverity = (value: unknown): value is ZoneSeverity =>
+  ZONE_SEVERITIES.some((severity) => severity === value);
 
 /**
  * 구역을 어떤 모양으로 그리는지.
@@ -167,6 +171,8 @@ export interface ZoneView {
   max: WorldPoint;
   /** 없으면 BOX. */
   shape?: ZoneShape;
+  /** DEMO 구역이 알려 준 심각도. 모르면 없다. 정식 구역은 official.severity 다(zoneSeverity). */
+  severity?: ZoneSeverity;
   /** BE 정식 구역 정보. DEMO 구역은 없다. */
   official?: OfficialZoneInfo;
 }

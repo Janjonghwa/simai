@@ -5,7 +5,7 @@ import {
   type RiskEventView,
   type TrackView,
 } from '@/features/viewer3d/data/spatialFrame';
-import { PALETTE, type ScenePalette } from '@/features/viewer3d/palette';
+import { cssHex, PALETTE, type ScenePalette } from '@/features/viewer3d/palette';
 import type { ViewerMode } from '@/features/viewer3d/types';
 
 // -185 위험 강조 계산. 렌더러와 떨어진 순수 함수라 시험할 수 있다.
@@ -197,7 +197,7 @@ export function riskLabel(risk: RiskHighlight): string {
   return parts.join(' · ');
 }
 
-/** 표시 모양. CRITICAL 진한 빨강 이중선·HIGH 옅은 빨강, 실시간 관측이 아니면(계획·재생·마지막 수신) 점선. */
+/** 표시 모양. CRITICAL 빨강 이중선·HIGH 주황, 실시간 관측이 아니면(계획·재생·마지막 수신) 점선. */
 export interface RiskStyle {
   color: number;
   labelColor: string;
@@ -205,13 +205,13 @@ export interface RiskStyle {
   dashed: boolean;
 }
 
-// 색은 장면 색표(palette)를 따른다. 구역 색(청록·보라)·선택 색(파랑)과 겹치지 않는 경보색이다. 이벤트 패널처럼
-// HIGH 도 빨강 계열이고(주황은 지연 전용, CONVENTION) CRITICAL 보다 옅게 해 등급을 가른다.
+// 색은 장면 색표(palette)를 따른다. 구역 윤곽선과 같은 등급 색이라, 위험이 걸린 구역은 이중선·바깥 상자·이름표로
+// 윤곽선보다 두드러지게 한다. 미리보기 보라와는 겹치지 않는다.
 export function riskStyle(risk: RiskHighlight, palette: ScenePalette = PALETTE.dark): RiskStyle {
-  const { color, label } = palette.risk[risk.level];
+  const { color } = palette.risk[risk.level];
   return {
     color,
-    labelColor: label,
+    labelColor: cssHex(color),
     double: risk.level === 'CRITICAL',
     dashed: risk.source !== 'LIVE' || risk.lastReceived,
   };

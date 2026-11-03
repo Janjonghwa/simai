@@ -207,7 +207,7 @@ describe('타임라인: 이벤트 표시', () => {
 
   it.each([
     ['CRITICAL', 'bg-sev-critical'],
-    ['HIGH', 'bg-sev-critical/60'],
+    ['HIGH', 'bg-sev-high'],
     ['CAUTION', 'bg-sev-caution'],
     ['INFO', 'bg-muted-foreground'],
   ] as const)('%s 이벤트 표시는 등급색(%s)이다', (severity, tone) => {

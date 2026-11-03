@@ -1,12 +1,13 @@
-import type {
-  HealthView,
-  MessageMeta,
-  RiskEventView,
-  SkeletonView,
-  TrackView,
-  WorldFrame,
-  ZoneSnapshot,
-  ZoneView,
+import {
+  isZoneSeverity,
+  type HealthView,
+  type MessageMeta,
+  type RiskEventView,
+  type SkeletonView,
+  type TrackView,
+  type WorldFrame,
+  type ZoneSnapshot,
+  type ZoneView,
 } from '@/features/viewer3d/data/spatialFrame';
 import { avatarFrameOf, type AvatarFrameView } from '@/features/viewer3d/people/avatarFrame';
 import { toWorldPoint, type WorldPoint } from '@/features/viewer3d/worldCoordinates';
@@ -250,10 +251,15 @@ const AXES = ['X', 'Y', 'Z'] as const;
 const field = (value: unknown, key: string): unknown =>
   typeof value === 'object' && value !== null ? Reflect.get(value, key) : undefined;
 
-/** 구역 하나를 검사한다. 0폭·0높이·뒤집힌 범위·미상 높이는 넓히거나 0 으로 채우지 않고 이유와 함께 뺀다. */
+/**
+ * 구역 하나를 검사한다. 0폭·0높이·뒤집힌 범위·미상 높이는 넓히거나 0 으로 채우지 않고 이유와 함께 뺀다.
+ * 심각도(색)는 없거나 모르는 값이면 비워 둔다. 구역을 빼지 않고 지어내지도 않는다.
+ */
 function readDemoZone(item: unknown): { zone: ZoneView } | { reason: string } {
   const zoneId = field(item, 'zone_id');
   const name = field(item, 'name');
+  const severityField = field(item, 'severity');
+  const severity = isZoneSeverity(severityField) ? severityField : undefined;
   const aabb = field(item, 'aabb');
   const rawMin = field(aabb, 'min_xyz');
   const rawMax = field(aabb, 'max_xyz');
@@ -273,7 +279,7 @@ function readDemoZone(item: unknown): { zone: ZoneView } | { reason: string } {
   if (!min || !max) return { reason: '좌표가 유한한 숫자가 아니다' };
   const axis = AXES.find((_, i) => !(max[i]! > min[i]!));
   if (axis) return { reason: `${axis} 범위 오류(min ≥ max)` };
-  return { zone: { zoneId, name, min, max } };
+  return { zone: { zoneId, name, min, max, ...(severity && { severity }) } };
 }
 
 export const NO_ZONES: ZoneSnapshot = {
