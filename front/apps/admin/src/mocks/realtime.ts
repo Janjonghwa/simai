@@ -1,16 +1,11 @@
-import { ADMIN_EVENTS_TOPIC, EVENTS_TOPIC, HEALTH_TOPIC, WORLD_TOPIC } from '@/lib/stomp';
+import { EVENTS_TOPIC, HEALTH_TOPIC, WORLD_TOPIC } from '@/lib/stomp';
 import type { EventsMock } from '@/mocks/events';
 import { readLiveUser, unauthorized } from '@/mocks/problem';
 import {
-  actionMismatchesBetween,
-  actionMismatchMessage,
-  EVENT_CYCLE_MS,
   MOCK_CONFIG,
-  mockEventId,
   riskEventsBetween,
   viewerHealthAt,
   worldStateAt,
-  type MismatchEventState,
   type MockConfig,
   type MockOutage,
 } from '@/mocks/realtimeScenario';
@@ -21,13 +16,6 @@ import { http, HttpResponse } from 'msw/http';
 const WORLD_MS = 100;
 const HEALTH_MS = 1000;
 const EVENTS_MS = 250;
-
-/** actionMismatch 에 이벤트 id 만 준 채 저장소에 그 이벤트가 없을 때 쓰는 상태: 순번 1 의 활성. */
-const UNSTORED_EVENT_STATE: MismatchEventState = {
-  event_sequence: 1,
-  lifecycle: 'UPDATED',
-  zone_id: null,
-};
 
 export interface RealtimeMock {
   /**
@@ -47,11 +35,6 @@ export interface RealtimeMock {
   /** Tier 0 가 이전 Scene 으로 판정하는 상태(명세 FR-12)를 켜고 끈다. */
   sceneMismatch(on: boolean): void;
   /**
-   * 조치 불일치(action_mismatch)를 /topic/admin/events 로 바로 보낸다(관리자 연결만 받는다). eventId 를 안 주면 이번 바퀴의
-   * zone 이벤트(w-0015 R1)다. cleared 를 true 로 주면 불일치가 풀린 것이다. 저장소에 없는 이벤트는 순번 1 의 활성으로 본다.
-   */
-  actionMismatch(eventId?: string, cleared?: boolean): void;
-  /**
    * 토큰 만료를 흉내 낸다: 다음 STOMP 연결(CONNECT)을 ERROR 로 거절하고 지금 연결을 끊는다. 클라이언트가 토큰을 갱신해
    * 다시 붙는지 본다(실서버는 만료된 토큰의 CONNECT 를 ERROR 프레임으로 거절한다).
    */
@@ -61,10 +44,7 @@ export interface RealtimeMock {
 
 export function startRealtimeMock(
   broker: StompBroker,
-  // find 는 조치 불일치가 저장소의 지금 순번·단계를 따르게 한다(없으면 시나리오의 순번).
-  events: Pick<EventsMock, 'record'> & {
-    find?: (eventId: string) => MismatchEventState | undefined;
-  },
+  events: Pick<EventsMock, 'record'>,
   now: () => number = Date.now,
   // 구성 묶음 상태(발행·ACK). 구역 mock 이 정한다(mocks/zones).
   config: () => MockConfig = () => MOCK_CONFIG,
@@ -97,10 +77,6 @@ export function startRealtimeMock(
       const stored = events.record(message);
       if (connected) broker.publish(EVENTS_TOPIC, stored);
     }
-    // 같은 구간의 조치 불일치는 이벤트 전이를 저장한 뒤 보낸다(해소와 같은 시각이면 해소된 순번으로 푼다).
-    for (const message of actionMismatchesBetween(lastEventCheck, t, (id) => events.find?.(id))) {
-      if (connected) broker.publish(ADMIN_EVENTS_TOPIC, message);
-    }
     lastEventCheck = t;
   }
 
@@ -127,12 +103,6 @@ export function startRealtimeMock(
     },
     sceneMismatch: (on) => {
       staleScene = on;
-    },
-    actionMismatch: (eventId, cleared = false) => {
-      const t = now();
-      const id = eventId ?? mockEventId(Math.floor(t / EVENT_CYCLE_MS), 'zone');
-      const state = events.find?.(id) ?? UNSTORED_EVENT_STATE;
-      broker.publish(ADMIN_EVENTS_TOPIC, actionMismatchMessage(id, state, t, { cleared }));
     },
     expireStomp: () => {
       broker.rejectNextConnects();

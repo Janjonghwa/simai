@@ -1,7 +1,7 @@
 import { startRealtimeMock, type RealtimeMock } from '@/mocks/realtime';
-import { EVENT_CYCLE_MS, mockEventId } from '@/mocks/realtimeScenario';
+import { EVENT_CYCLE_MS } from '@/mocks/realtimeScenario';
 import type { StompBroker } from '@/mocks/stompBroker';
-import { validateMessage, type ViewerHealthPayload } from '@simai/contracts';
+import type { ViewerHealthPayload } from '@simai/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const T0 = 1_760_342_400_000;
@@ -85,39 +85,14 @@ describe('실시간 mock 장애 흉내', () => {
   });
 });
 
-describe('실시간 mock 조치 불일치(관리자 전용 토픽)', () => {
-  const ADMIN = '/topic/admin/events';
-  const mismatches = () =>
-    sent
-      .filter((m) => m.topic === ADMIN)
-      .map((m) => m.body as { payload: Record<string, unknown> });
-
-  it('한 바퀴에 18초에 불일치를, 이벤트가 해소되는 22초에 풀림을 /topic/admin/events 로 보낸다', () => {
+describe('실시간 mock 송출', () => {
+  it('한 바퀴 동안 world·health·events 토픽으로만 보낸다', () => {
     run(EVENT_CYCLE_MS);
-    const messages = mismatches();
-    expect(messages.map((m) => [m.payload.detected_at, m.payload.cleared])).toEqual([
-      [T0 + 18_000, false],
-      [T0 + 22_000, true],
+    expect([...new Set(sent.map((m) => m.topic))].sort()).toEqual([
+      '/topic/events',
+      '/topic/health',
+      '/topic/world',
     ]);
-    // 이벤트 전이를 보낸 뒤에 푼다(같은 시각이어도 해소가 먼저다).
-    const zoneId = mockEventId(T0 / EVENT_CYCLE_MS, 'zone');
-    const resolved = sent.findIndex((m) => {
-      const payload = (m.body as { payload: { event_id?: string; lifecycle?: string } }).payload;
-      return (
-        m.topic === '/topic/events' &&
-        payload.event_id === zoneId &&
-        payload.lifecycle === 'RESOLVED'
-      );
-    });
-    expect(resolved).toBeGreaterThan(-1);
-    const clearedAt = sent.findIndex(
-      (m) => m.topic === ADMIN && (m.body as { payload: { cleared: boolean } }).payload.cleared,
-    );
-    expect(clearedAt).toBeGreaterThan(resolved);
-    for (const message of messages) {
-      const checked = validateMessage('action_mismatch', message);
-      expect(checked.ok ? [] : checked.errors).toEqual([]);
-    }
   });
 
   it('연결이 없으면 보내지 않는다', () => {
@@ -134,46 +109,6 @@ describe('실시간 mock 조치 불일치(관리자 전용 토픽)', () => {
       expect(topics).toEqual([]);
     } finally {
       other.stop();
-    }
-  });
-
-  it('actionMismatch(): 이번 바퀴 zone 이벤트의 불일치를 바로 보내고, cleared 를 주면 풀린 것으로 보낸다', () => {
-    sent = [];
-    mock.actionMismatch();
-    mock.actionMismatch(undefined, true);
-    const [raised, cleared] = mismatches();
-    expect(raised!.payload).toMatchObject({
-      event_id: mockEventId(T0 / EVENT_CYCLE_MS, 'zone'),
-      event_lifecycle: 'UPDATED',
-      cleared: false,
-    });
-    expect(cleared!.payload.cleared).toBe(true);
-    for (const message of mismatches()) {
-      expect(validateMessage('action_mismatch', message).ok).toBe(true);
-    }
-  });
-
-  it('저장소가 아는 이벤트면 그 순번·단계를 따르고, 해소됐으면 풀린 것으로 보낸다', () => {
-    const known = startRealtimeMock(
-      broker,
-      {
-        record: (message) => message,
-        find: () => ({ event_sequence: 4, lifecycle: 'RESOLVED', zone_id: 'z-09' }),
-      },
-      () => t,
-    );
-    try {
-      sent = [];
-      known.actionMismatch('0192a6f0-7c1e-7b3a-9f2d-00000000abcd');
-      expect(mismatches()[0]!.payload).toMatchObject({
-        event_id: '0192a6f0-7c1e-7b3a-9f2d-00000000abcd',
-        event_sequence: 4,
-        event_lifecycle: 'RESOLVED',
-        zone_id: 'z-09',
-        cleared: true,
-      });
-    } finally {
-      known.stop();
     }
   });
 

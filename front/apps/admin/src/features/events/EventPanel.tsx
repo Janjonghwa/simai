@@ -3,7 +3,6 @@ import type { EventEntry } from '@/features/events/entries';
 import { EventDetail } from '@/features/events/EventDetail';
 import { IncidentCard } from '@/features/events/IncidentCard';
 import { groupIncidents, incidentOf, type Incident } from '@/features/events/incidents';
-import { useMismatches } from '@/features/events/mismatch';
 import { movePanel, PANEL_GAP, PANEL_TOP, type PanelBox } from '@/features/events/panelBox';
 import { PanelGrip } from '@/features/events/PanelGrip';
 import { measure, type Measured } from '@/features/events/panelMeasure';
@@ -71,7 +70,6 @@ interface EventListProps {
 
 /** 묶음 카드 목록. 비었으면 상태(없음·받는 중)를 한 줄로 보인다. 받지 못했으면 패널 위의 실패 문구가 대신한다. */
 function EventList({ incidents, loaded, failed, selectedKey, ...card }: EventListProps) {
-  const mismatches = useMismatches();
   if (incidents.length > 0) {
     return (
       <ul className="flex flex-col gap-2 p-0.5">
@@ -80,7 +78,6 @@ function EventList({ incidents, loaded, failed, selectedKey, ...card }: EventLis
             key={incident.key}
             incident={incident}
             selected={incident.key === selectedKey}
-            mismatches={mismatches}
             {...card}
           />
         ))}

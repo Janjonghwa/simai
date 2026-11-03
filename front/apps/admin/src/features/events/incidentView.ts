@@ -53,24 +53,21 @@ export function resolvedLabel(incident: Incident): string {
 
 /** 카드 머리줄 오른쪽의 처리 상태 칩 하나. */
 export interface CardChip {
-  kind: 'mismatch' | 'ticket' | 'ack' | 'unacked' | 'resolved';
+  kind: 'ticket' | 'ack' | 'unacked' | 'resolved';
   label: string;
 }
 
 /**
- * 처리 상태는 가장 최근 단계 하나만 보인다: 불일치 > 조치 단계 > 확인 시각 > 미확인. 모두 해소되면 해소 시각.
+ * 처리 상태는 가장 최근 단계 하나만 보인다: 조치 단계 > 확인 시각 > 미확인. 모두 해소되면 해소 시각.
  * 조치 단계(요청됨·반장 확인·조치 중·완료 보고)는 조치 티켓 API(M2)가 생기면 ticketStage 로 넘긴다.
  * 안내·주의만 있는 묶음은 확인할 경보가 없어 칩이 없다.
  */
 export function cardChip(
   incident: Incident,
-  options: { mismatches?: Readonly<Record<string, unknown>>; ticketStage?: string } = {},
+  options: { ticketStage?: string } = {},
 ): CardChip | null {
   if (!incident.active) return { kind: 'resolved', label: resolvedLabel(incident) };
   const live = incident.entries.filter((e) => isActive(e.event));
-  if (live.some((e) => options.mismatches?.[e.event.event_id] !== undefined)) {
-    return { kind: 'mismatch', label: '불일치' };
-  }
   if (options.ticketStage) return { kind: 'ticket', label: options.ticketStage };
   const alarmLevel = live.filter((e) => isAlarmSeverity(e.event.severity));
   if (alarmLevel.length === 0) return null;

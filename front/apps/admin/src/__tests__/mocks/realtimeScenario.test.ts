@@ -1,8 +1,5 @@
 import {
-  actionMismatchesBetween,
-  actionMismatchMessage,
   EVENT_CYCLE_MS,
-  mockEventId,
   riskEventsBetween,
   viewerHealthAt,
   worldStateAt,
@@ -187,73 +184,6 @@ describe('실시간 mock 시나리오', () => {
     const second = riskEventsBetween(EVENT_CYCLE_MS, 2 * EVENT_CYCLE_MS)[0]?.payload.event_id;
     expect(first).toBeDefined();
     expect(first).not.toBe(second);
-  });
-});
-
-describe('조치 불일치(action_mismatch) 흉내', () => {
-  const start = Math.floor(T0 / EVENT_CYCLE_MS) * EVENT_CYCLE_MS;
-  const cycle = Math.floor(T0 / EVENT_CYCLE_MS);
-
-  it('한 바퀴에 zone 이벤트(w-0015 R1)의 불일치가 18초에 생기고 해소되는 22초에 풀린다. 모두 계약을 통과한다', () => {
-    const messages = [];
-    // 1초 간격으로 겹치지 않게 훑는다(mock 송출과 같은 방식).
-    for (let t = start; t < start + EVENT_CYCLE_MS; t += 1000) {
-      messages.push(...actionMismatchesBetween(t, t + 1000));
-    }
-    expect(messages.map((m) => [m.payload.detected_at - start, m.payload.cleared])).toEqual([
-      [18_000, false],
-      [22_000, true],
-    ]);
-
-    const zoneId = mockEventId(cycle, 'zone');
-    // 같은 바퀴의 zone 이벤트(R1 HIGH, 12초 발생 → 22초 해소)에 붙는다.
-    const zone = riskEventsBetween(start, start + EVENT_CYCLE_MS).filter(
-      (e) => e.payload.event_id === zoneId,
-    );
-    expect(zone.map((e) => [e.payload.lifecycle, e.payload.event_sequence])).toEqual([
-      ['RAISED', 1],
-      ['RESOLVED', 2],
-    ]);
-    expect(messages.map((m) => m.payload)).toMatchObject([
-      { event_id: zoneId, event_sequence: 1, event_lifecycle: 'RAISED', zone_id: 'z-02' },
-      { event_id: zoneId, event_sequence: 2, event_lifecycle: 'RESOLVED', zone_id: 'z-02' },
-    ]);
-    expect(messages[0]!.payload.ticket_id).toBe(messages[1]!.payload.ticket_id);
-    for (const message of messages) {
-      const checked = validateMessage('action_mismatch', message);
-      expect(checked.ok ? [] : checked.errors).toEqual([]);
-      expect(message.payload.ticket_status).toBe('DONE');
-    }
-  });
-
-  it('같은 구간을 두 번 넘기지 않으면 한 번씩만 나오고, 구간 밖은 비어 있다', () => {
-    expect(actionMismatchesBetween(start, start + 17_999)).toEqual([]);
-    expect(actionMismatchesBetween(start + 18_000, start + 21_999)).toEqual([]);
-    expect(actionMismatchesBetween(start + 22_000, start + EVENT_CYCLE_MS)).toEqual([]);
-  });
-
-  it('이벤트 저장소가 매긴 순번·단계를 주면 그것을 따른다(확인으로 순번이 올라간 경우)', () => {
-    const [raised] = actionMismatchesBetween(start + 17_000, start + 19_000, () => ({
-      event_sequence: 3,
-      lifecycle: 'UPDATED',
-      zone_id: 'z-02',
-    }));
-    expect(raised?.payload).toMatchObject({
-      event_sequence: 3,
-      event_lifecycle: 'UPDATED',
-      cleared: false,
-    });
-    expect(validateMessage('action_mismatch', raised).ok).toBe(true);
-  });
-
-  it('해소된 이벤트에는 불일치를 새로 내지 않고 풀린 것으로 보낸다(계약: 해소 단계의 cleared 거짓은 위반)', () => {
-    const message = actionMismatchMessage(
-      mockEventId(cycle, 'zone'),
-      { event_sequence: 2, lifecycle: 'RESOLVED', zone_id: null },
-      T0,
-    );
-    expect(message.payload.cleared).toBe(true);
-    expect(validateMessage('action_mismatch', message).ok).toBe(true);
   });
 });
 

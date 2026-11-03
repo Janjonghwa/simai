@@ -28,12 +28,11 @@ export async function startMockBackend() {
   ]);
   // 토큰 모양만 본다: mock 로그인 토큰이나 sub·role 이 있는 JWT(혼합 모드, 서명은 보지 않는다).
   // 로그아웃 뒤 토큰 없이 붙지 않는지, 만료된 실서버 토큰이 서버처럼 ERROR 로 거절되는지 볼 수 있다.
-  // 역할도 넘겨 관리자 전용 토픽(/topic/admin/events)을 다른 계정이 구독하면 서버처럼 ERROR 로 끊는다.
   const broker = createStompBroker({
     url: env.VITE_STOMP_URL,
     authorize: (authorization) => {
       const user = readMockUser(authorization);
-      return user && (user.expiresAt === undefined || user.expiresAt > Date.now()) ? user : false;
+      return user !== undefined && (user.expiresAt === undefined || user.expiresAt > Date.now());
     },
   });
   const events = createEventsMock({ broker, summaryCompleteDelayMs: 1_500 });
@@ -73,8 +72,7 @@ export async function startMockBackend() {
   // simaiMock.rejectNextBundle()(다음 구성 묶음을 Tier 0 가 거부해 STALE),
   // simaiMock.failNextPublish('CALIBRATION_MISSING' | 'CURRENT_CALIBRATION_MISSING' | 'RULES_MISSING' |
   // 'SITE_NOT_SINGLE' | 'PUBLIC_URL_NOT_SET')(다음 발행 요청을 서버 오류 409·503 으로 거절, 기본 CALIBRATION_MISSING)
-  // simaiMock.expireStomp()(STOMP 토큰 만료: 다음 연결을 ERROR 로 거절 → 갱신 뒤 다시 붙기),
-  // simaiMock.actionMismatch(eventId?, cleared?)(관리자에게 조치 불일치를 보낸다)
+  // simaiMock.expireStomp()(STOMP 토큰 만료: 다음 연결을 ERROR 로 거절 → 갱신 뒤 다시 붙기)
   Object.assign(globalThis, {
     simaiMock: {
       ...realtimeMock,

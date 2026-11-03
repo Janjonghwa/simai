@@ -1,16 +1,11 @@
 import { createExternalSource, type SourceConnectionChange } from '@/features/viewer3d';
 import { bindSession } from '@/lib/bindSession';
-import { createRealtime, type Realtime, type RealtimeSession } from '@/lib/stomp';
-import {
-  actionMismatchesBetween,
-  riskEventsBetween,
-  viewerHealthAt,
-  worldStateAt,
-} from '@/mocks/realtimeScenario';
-import { createStompBroker } from '@/mocks/stompBroker';
+import { createRealtime, type Realtime } from '@/lib/stomp';
+import { riskEventsBetween, viewerHealthAt, worldStateAt } from '@/mocks/realtimeScenario';
+import { createStompBroker, parseFrame, serializeFrame } from '@/mocks/stompBroker';
 import { useRealtimeStore } from '@/store/realtime.store';
 import type { Session } from '@/store/session.store';
-import { validateMessage } from '@simai/contracts';
+import { ws } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStore } from 'zustand/vanilla';
@@ -28,9 +23,8 @@ const broker = createStompBroker({
   url: URL,
   authorize: (a) => {
     authorizations.push(a);
-    // t-expired* 는 만료된 토큰이다(서버는 CONNECT 를 ERROR 로 거절한다). t-admin* 만 관리자다.
-    if (!a?.startsWith('Bearer t-') || a.startsWith('Bearer t-expired')) return false;
-    return { role: a.startsWith('Bearer t-admin') ? 'ADMIN' : 'VIEWER' };
+    // t-expired* 는 만료된 토큰이다(서버는 CONNECT 를 ERROR 로 거절한다).
+    return !!a?.startsWith('Bearer t-') && !a.startsWith('Bearer t-expired');
   },
 });
 const server = setupServer(broker.handler);
@@ -48,7 +42,10 @@ beforeEach(() => {
     watchIntervalMs: 20,
   });
 });
-afterEach(() => realtime.stop());
+afterEach(async () => {
+  await realtime.stop();
+  server.resetHandlers();
+});
 
 /** 재연결을 기다리는 시험의 상한(ms). 조건이 맞으면 바로 넘어가므로 평소 시간은 늘지 않는다 */
 const RECONNECT_WAIT_MS = 10_000;
@@ -616,143 +613,38 @@ describe('STOMP ERROR 프레임', () => {
     expect(authorizations).toEqual(['Bearer t-expired']);
     expect(useRealtimeStore.getState().phase).toBe('IDLE');
   });
-});
 
-describe('/topic/admin/events (조치 불일치)', () => {
-  const [raised, cleared] = actionMismatchesBetween(0, 40_000);
-
-  /** 구독이 브로커에 닿을 때까지 보낸다. */
-  async function untilMismatch(received: unknown[], message: unknown = raised) {
-    await until(() => {
-      broker.publish('/topic/admin/events', message);
-      return received.length > 0;
-    });
-  }
-
-  /** 같은 연결로 뒤에 보낸 health 를 받을 때까지 기다린다. 그 앞에 보낸 메시지는 이미 처리됐다(한 연결의 순서). */
-  async function flush() {
-    const before = useRealtimeStore.getState().health;
-    await until(() => {
-      broker.publish('/topic/health', viewerHealthAt(Date.now(), { faults: false }));
-      return useRealtimeStore.getState().health !== before;
-    });
-  }
-
-  it('관리자만 구독해 계약을 통과한 action_mismatch 를 알린다', async () => {
-    const received: { id: string; cleared: boolean; at: number }[] = [];
-    const off = realtime.on('actionMismatch', (payload, at) =>
-      received.push({ id: payload.event_id, cleared: payload.cleared, at }),
+  it('연결이 열린 직후 ERROR 로 거절돼도 단계가 멈추지 않고 간격을 늘려 다시 붙는다', async () => {
+    // 서버가 CONNECTED 를 보낸 뒤 첫 구독을 ERROR 로 거절하고 닫는 흉내.
+    const deniedUrl = 'ws://stomp-denied.test/ws';
+    let connects = 0;
+    const denying = ws.link(deniedUrl);
+    server.use(
+      denying.addEventListener('connection', ({ client }) => {
+        client.addEventListener('message', (event) => {
+          const frame = typeof event.data === 'string' ? parseFrame(event.data) : null;
+          if (frame?.command === 'CONNECT') {
+            connects += 1;
+            client.send(serializeFrame('CONNECTED', { version: '1.2', 'heart-beat': '0,0' }));
+          }
+          if (frame?.command === 'SUBSCRIBE') {
+            client.send(serializeFrame('ERROR', { message: 'Access is denied' }));
+            setTimeout(() => client.close(1008, 'Access is denied'), 0);
+          }
+        });
+      }),
     );
-    realtime.start({ userId: 'u-1', getToken: () => 't-admin', getRole: () => 'ADMIN' });
-    await until(() => useRealtimeStore.getState().phase === 'OPEN');
-    await untilMismatch(received);
-    broker.publish('/topic/admin/events', cleared);
-    await until(() => received.some((r) => r.cleared));
-    off();
-
-    expect(received[0]).toMatchObject({ id: raised!.payload.event_id, cleared: false });
-    expect(received.at(-1)).toMatchObject({ id: raised!.payload.event_id, cleared: true });
-    expect(received[0]!.at).toBeGreaterThan(0);
-    expect(useRealtimeStore.getState().rejected).toBe(0);
-  });
-
-  it('관리자가 아니면 구독하지 않는다(서버가 ERROR 로 끊지 않게). 연결은 그대로 열려 있다', async () => {
-    const received: unknown[] = [];
-    const off = realtime.on('actionMismatch', (payload) => received.push(payload));
-    const roles: (RealtimeSession['getRole'] | undefined)[] = [
-      () => 'FOREMAN',
-      () => 'VIEWER',
-      () => undefined,
-      undefined,
-    ];
-    for (const getRole of roles) {
-      // 토큰은 관리자 것이라 구독하면 서버도 받아 준다. 앱이 역할을 보고 구독하지 않는 것을 본다.
-      realtime.start({ userId: 'u-1', getToken: () => 't-admin', getRole });
-      await until(() => useRealtimeStore.getState().phase === 'OPEN' && broker.connections === 1);
-      broker.publish('/topic/admin/events', raised);
-      await flush();
-      expect(received).toEqual([]);
-      expect(useRealtimeStore.getState().phase).toBe('OPEN');
-    }
-    off();
-  });
-
-  it('재연결할 때마다 역할을 다시 읽는다', async () => {
-    const received: unknown[] = [];
-    const off = realtime.on('actionMismatch', (payload) => received.push(payload));
-    let role: 'ADMIN' | 'VIEWER' = 'VIEWER';
-    realtime.start({ userId: 'u-1', getToken: () => 't-admin', getRole: () => role });
-    await until(() => useRealtimeStore.getState().phase === 'OPEN');
-    broker.publish('/topic/admin/events', raised);
-    await flush();
-    expect(received).toEqual([]);
-
-    role = 'ADMIN';
-    broker.dropAll();
-    await until(() => useRealtimeStore.getState().phase !== 'OPEN', RECONNECT_WAIT_MS);
-    await until(
-      () => useRealtimeStore.getState().phase === 'OPEN' && broker.connections === 1,
-      RECONNECT_WAIT_MS,
-    );
-    await untilMismatch(received);
-    off();
-  });
-
-  it('관리자 메시지는 3D 뷰어 입력으로 넘기지 않는다', async () => {
-    const received: unknown[] = [];
-    const off = realtime.on('actionMismatch', (payload) => received.push(payload));
-    realtime.start({ userId: 'u-1', getToken: () => 't-admin', getRole: () => 'ADMIN' });
-    const viewer = await watchSource();
-    await until(() => useRealtimeStore.getState().phase === 'OPEN');
-    await untilMismatch(received);
-    // 뒤따르는 world 를 뷰어가 받았으면 앞선 admin 메시지는 이미 처리된 뒤다.
-    await until(() => {
-      broker.publish('/topic/world', worldStateAt(Date.now()));
-      return viewer.messages.some((m) => (m as { msg_type?: string }).msg_type === 'world_state');
-    });
-    off();
-    expect(viewer.messages.map((m) => (m as { msg_type?: string }).msg_type)).not.toContain(
-      'action_mismatch',
-    );
-  });
-
-  it('계약에 맞지 않는 action_mismatch 는 버리고 개수만 센다', async () => {
-    const received: unknown[] = [];
-    const off = realtime.on('actionMismatch', (payload) => received.push(payload));
-    realtime.start({ userId: 'u-1', getToken: () => 't-admin', getRole: () => 'ADMIN' });
-    await until(() => useRealtimeStore.getState().phase === 'OPEN');
-    await untilMismatch(received);
-    const before = useRealtimeStore.getState().rejected;
-    const count = received.length;
-    // 해소된 이벤트(RESOLVED)에 불일치가 생겼다고 알리는 것은 계약 위반이다(cleared 가 거짓이면 활성이어야 한다).
-    const resolvedButNotCleared = {
-      ...raised,
-      payload: { ...raised!.payload, event_lifecycle: 'RESOLVED', cleared: false },
-    };
-    expect(validateMessage('action_mismatch', resolvedButNotCleared).ok).toBe(false);
-    broker.publish('/topic/admin/events', resolvedButNotCleared);
-    broker.publish('/topic/admin/events', { msg_type: 'action_mismatch', payload: {} });
-    broker.publishText('/topic/admin/events', '<html>');
-    await until(() => useRealtimeStore.getState().rejected === before + 3);
-    off();
-    expect(received).toHaveLength(count);
-  });
-
-  it('관리자가 아닌 토큰으로 관리자 토픽을 구독하면 ERROR 로 끊긴다. 단계가 멈추지 않고 간격을 늘려 다시 붙는다', async () => {
-    authorizations.length = 0;
-    const phases: string[] = [];
-    const unsubscribe = useRealtimeStore.subscribe((state) => {
-      if (phases.at(-1) !== state.phase) phases.push(state.phase);
-    });
-    // 앱이 역할을 잘못 알고 있다(토큰은 열람 계정).
-    realtime.start({ userId: 'u-1', getToken: () => 't-1', getRole: () => 'ADMIN' });
-    await until(() => authorizations.length >= 3, RECONNECT_WAIT_MS);
+    await realtime.stop();
+    realtime = createRealtime({ url: deniedUrl, store: useRealtimeStore, reconnectDelayMs: 20 });
+    const { phases, unsubscribe } = watchPhases();
+    realtime.start({ userId: 'u-1', getToken: () => 't-1' });
+    await until(() => connects >= 3, RECONNECT_WAIT_MS);
     await sleep(400);
     unsubscribe();
 
     expect(phases).toContain('CLOSED');
     expect(phases.filter((phase) => phase === 'OPEN').length).toBeGreaterThanOrEqual(2);
     // 연결이 열린 직후 거절돼도 stompjs 의 간격(20ms)으로 계속 붙지 않는다(그러면 0.4초에 20번 넘게 붙는다).
-    expect(authorizations.length).toBeLessThan(12);
+    expect(connects).toBeLessThan(12);
   });
 });

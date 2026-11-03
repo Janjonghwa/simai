@@ -1,4 +1,3 @@
-import { ADMIN_EVENTS_TOPIC } from '@/lib/stomp';
 import { ws } from 'msw';
 
 // 개발 서버와 시험에서 서버 STOMP 대신 쓰는 작은 브로커(msw WebSocket 가로채기).
@@ -66,24 +65,13 @@ interface Connection {
   /** 구독 id → 경로 */
   subscriptions: Map<string, string>;
   connected: boolean;
-  /** 관리자 전용 토픽을 구독할 수 있는지(authorize 가 알려 준다). */
-  admin: boolean;
 }
-
-/** 관리자만 구독하는 토픽(서버 RealtimeTopics.ADMIN_EVENTS). 다른 계정이 구독하면 서버처럼 ERROR 를 보내고 닫는다. */
-const ADMIN_TOPICS: readonly string[] = [ADMIN_EVENTS_TOPIC];
-
-/**
- * authorize 의 답. false·undefined 는 거절, true 는 모든 토픽을 구독할 수 있는 계정이다(역할을 따지지 않는 시험용).
- * { role } 이면 역할을 따진다: ADMIN 만 관리자 전용 토픽을 구독할 수 있다(readMockUser 의 결과를 그대로 넘길 수 있다).
- */
-export type BrokerAuth = boolean | undefined | { role?: string };
 
 export interface StompBrokerOptions {
   /** 가로챌 STOMP 주소(VITE_STOMP_URL). */
   url: string;
-  /** CONNECT 의 Authorization 헤더를 받는다. 거절(false·undefined)이면 ERROR 를 보내고 닫는다. */
-  authorize?: (authorization: string | undefined) => BrokerAuth;
+  /** CONNECT 의 Authorization 헤더를 받는다. false 면 ERROR 를 보내고 닫는다. */
+  authorize?: (authorization: string | undefined) => boolean;
 }
 
 export interface StompBroker {
@@ -120,12 +108,11 @@ export function createStompBroker({
   };
 
   function onConnect(connection: Connection, frame: StompFrame) {
-    const auth = authorize(frame.headers.Authorization ?? frame.headers.authorization);
-    if (rejectConnects > 0 || !auth) {
+    const authorized = authorize(frame.headers.Authorization ?? frame.headers.authorization);
+    if (rejectConnects > 0 || !authorized) {
       if (rejectConnects > 0) rejectConnects -= 1;
       return reject(connection, 'Unauthorized');
     }
-    connection.admin = auth === true || auth.role === 'ADMIN';
     connection.connected = true;
     connection.send(
       serializeFrame('CONNECTED', { version: STOMP_VERSION, 'heart-beat': NO_HEART_BEAT }),
@@ -135,11 +122,6 @@ export function createStompBroker({
   function onSubscribe(connection: Connection, { headers }: StompFrame) {
     const { id, destination } = headers;
     if (!id || !destination) return;
-    // 관리자 전용 토픽은 관리자만 구독한다. 아니면 서버처럼 ERROR 로 연결을 닫는다.
-    if (ADMIN_TOPICS.includes(destination) && !connection.admin) {
-      connection.connected = false;
-      return reject(connection, 'Access is denied');
-    }
     connection.subscriptions.set(id, destination);
   }
 
@@ -171,7 +153,6 @@ export function createStompBroker({
       close: (code, reason) => client.close(code, reason),
       subscriptions: new Map(),
       connected: false,
-      admin: false,
     };
     connections.add(connection);
     client.addEventListener('close', () => connections.delete(connection));

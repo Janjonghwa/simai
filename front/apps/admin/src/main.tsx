@@ -5,7 +5,6 @@ import '@/features/layout/theme.store';
 import { requestAck } from '@/features/events/api';
 import { resetEventClear } from '@/features/events/eventClear.store';
 import { bindEventsCache } from '@/features/events/eventsCache';
-import { bindMismatchCache } from '@/features/events/mismatch';
 import { installAudioUnlock } from '@/lib/alarmSound';
 import { api, authSession } from '@/lib/api';
 import { bindSession } from '@/lib/bindSession';
@@ -81,8 +80,6 @@ bindSession({
 bindEventsCache(realtime, queryClient, (eventId, eventSequence) =>
   requestAck(api, eventId, eventSequence),
 );
-// /topic/admin/events(관리자 전용)의 조치 불일치를 캐시에 반영한다.
-bindMismatchCache(realtime, queryClient);
 // 브라우저는 사용자가 누르기 전에는 소리를 막는다. 첫 클릭·키 입력(로그인 포함)에서 경보음을 깨운다.
 installAudioUnlock();
 

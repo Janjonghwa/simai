@@ -12,7 +12,7 @@ export type ReplayIssueReason =
   | 'EMPTY_FILE'
   /** JSON 으로 읽지 못한 줄. */
   | 'NOT_JSON'
-  /** viewer_health·action_mismatch·avatar_frame. 재생 장면에 쓰지 않는다. */
+  /** viewer_health·avatar_frame. 재생 장면에 쓰지 않는다. */
   | 'NOT_REPLAYABLE'
   /** source 가 REPLAY 가 아닌 risk_event. LIVE 등 다른 출처 이벤트를 재생으로 섞지 않는다. */
   | 'NOT_REPLAY_SOURCE'
@@ -144,13 +144,8 @@ export function parseReplayLog(files: readonly ReplayFile[]): ReplayLog {
         issues.push({ ...at, reason: result.reason, detail: label + ': ' + result.detail });
         return;
       }
-      if (result.kind === 'ignored' || result.kind === 'health' || result.kind === 'avatar') {
-        const type =
-          result.kind === 'health'
-            ? 'viewer_health'
-            : result.kind === 'avatar'
-              ? 'avatar_frame'
-              : result.msgType;
+      if (result.kind === 'health' || result.kind === 'avatar') {
+        const type = result.kind === 'health' ? 'viewer_health' : 'avatar_frame';
         issues.push({
           ...at,
           reason: 'NOT_REPLAYABLE',

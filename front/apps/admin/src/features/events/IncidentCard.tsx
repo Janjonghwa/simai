@@ -4,7 +4,6 @@ import { ConfirmBadge, DelayedBadge, StateChip } from '@/features/events/EventBa
 import { entryEtaLine, ruleName } from '@/features/events/format';
 import { firstActiveRaisedAt, topEntry, type Incident } from '@/features/events/incidents';
 import { cardChip, placeLine, targetLabel } from '@/features/events/incidentView';
-import type { Mismatches } from '@/features/events/mismatch';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { Since } from '@/features/events/Since';
 import type { Severity } from '@/features/events/types';
@@ -15,8 +14,6 @@ interface IncidentCardProps {
   incident: Incident;
   selected: boolean;
   zoneName?: (zoneId: string) => string | undefined;
-  /** 조치 불일치(관리자 전용 /topic/admin/events). */
-  mismatches?: Mismatches;
   onSelect: (incident: Incident) => void;
   onOpen: (eventId: string) => void;
 }
@@ -48,13 +45,12 @@ export function IncidentCard({
   incident,
   selected,
   zoneName,
-  mismatches,
   onSelect,
   onOpen,
 }: IncidentCardProps) {
   const top = topEntry(incident);
   const tier = TIER_CLASS[tierOf(incident.severity)];
-  const chip = cardChip(incident, { mismatches });
+  const chip = cardChip(incident);
   const live = incident.entries.filter((e) => isActive(e.event));
   const check = live.find((e) => needsConfirmation(e.event));
   const delayed = live.some((e) => e.event.delivery === 'DELAYED_ACTIVE');

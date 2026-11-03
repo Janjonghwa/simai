@@ -368,7 +368,7 @@ export function DataPanel({
           W{state.counts.world} E{state.counts.event} H{state.counts.health} A{state.counts.avatar}{' '}
           중복
           {state.counts.duplicate} 역전
-          {state.counts.outOfOrder} 거부{state.counts.rejected} 무시{state.counts.ignored}
+          {state.counts.outOfOrder} 거부{state.counts.rejected}
         </dd>
         {state.lastRejected && (
           <>

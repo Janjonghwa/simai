@@ -9,12 +9,7 @@ import {
   type RealtimeState,
   type RealtimeStore,
 } from '@/store/realtime.store';
-import type { Role } from '@/store/session.store';
-import {
-  validateMessage,
-  type ActionMismatchPayload,
-  type RiskEventPayload,
-} from '@simai/contracts';
+import { validateMessage, type RiskEventPayload } from '@simai/contracts';
 import { Client, ReconnectionTimeMode, type IMessage } from '@stomp/stompjs';
 
 /** 토픽 이름(명세 12.4, 14장). mock 도 같은 값을 쓴다. */
@@ -24,21 +19,11 @@ export const EVENTS_TOPIC = '/topic/events';
 export const AVATAR_TOPIC = '/topic/avatar';
 /** 로그인한 계정이면 누구나 구독하는 토픽. */
 export const TOPICS = [WORLD_TOPIC, HEALTH_TOPIC, EVENTS_TOPIC, AVATAR_TOPIC] as const;
-/**
- * 관리자만 구독하는 토픽: 조치 불일치(action_mismatch). 다른 역할이 구독하면 서버가 ERROR 프레임을 보내고 연결을
- * 닫는다(StompAuthInterceptor). 그래서 관리자일 때만 구독한다(RealtimeSession.getRole).
- */
-export const ADMIN_EVENTS_TOPIC = '/topic/admin/events';
 
 /** 연결에서 화면 쪽으로 알리는 일. 화면 데이터(Query 캐시 등)는 받는 쪽이 정한다. */
 export interface RealtimeListeners {
   /** /topic/events 로 받아 계약 검사를 통과한 risk_event. */
   riskEvent: (event: RiskEventPayload, receivedAt: number) => void;
-  /**
-   * /topic/admin/events 로 받아 계약 검사를 통과한 action_mismatch(관리자 연결만 받는다). 3D 뷰어 입력으로는 넘기지 않는다.
-   * cleared 가 true 면 이벤트가 해소돼 불일치가 풀린 것이다.
-   */
-  actionMismatch: (payload: ActionMismatchPayload, receivedAt: number) => void;
   /** 연결이 열릴 때마다(처음·재연결). 끊긴 사이 놓친 상태를 다시 받는 데 쓴다. */
   open: () => void;
 }
@@ -69,11 +54,6 @@ export interface RealtimeSession {
    * 없으면 갱신하지 않는다(다음 재연결이 getToken 이 주는 토큰으로 붙는다).
    */
   refreshToken?: (rejectedToken: string) => Promise<string | undefined>;
-  /**
-   * 연결·재연결할 때마다 읽는다. 관리자일 때만 /topic/admin/events 를 구독한다(다른 역할의 구독은 서버가 ERROR 로 끊는다).
-   * 모르면(undefined) 관리자 토픽은 구독하지 않는다.
-   */
-  getRole?: () => Role | undefined;
 }
 
 export interface Realtime {
@@ -211,7 +191,6 @@ function viewerLink(state: RealtimeState, now: number, timeoutMs: number): Viewe
 function createListenerRegistry() {
   const listeners: { [K in keyof RealtimeListeners]: Set<RealtimeListeners[K]> } = {
     riskEvent: new Set(),
-    actionMismatch: new Set(),
     open: new Set(),
   };
 
@@ -270,14 +249,6 @@ const TOPIC_HANDLERS = new Map<string, TopicHandler>([
       if (!event.ok) return store.getState().reject();
       rememberEvent(replay.events, event.message.payload, received);
       emit('riskEvent', event.message.payload, received.receivedAt);
-    },
-  ],
-  [
-    ADMIN_EVENTS_TOPIC,
-    (received, { store, emit }) => {
-      const mismatch = validateMessage('action_mismatch', received.raw);
-      if (!mismatch.ok) return store.getState().reject();
-      emit('actionMismatch', mismatch.message.payload, received.receivedAt);
     },
   ],
   [
@@ -465,13 +436,11 @@ export function createRealtime({
     store.getState().setSource(withReplay(connection, source));
   }
 
-  function connect({ getToken, refreshToken, getRole }: RealtimeSession): Connection {
+  function connect({ getToken, refreshToken }: RealtimeSession): Connection {
     // 끊은 뒤 늦게 도착한 콜백은 버린다.
     const isCurrent = () => current === connection;
     const tokens = createTokenFeed(getToken, refreshToken);
     const backoff = createReconnectBackoff(reconnectDelayMs, now);
-    // 이번 시도에 구독할 토픽. 연결 시도마다 beforeConnect 가 다시 정한다.
-    let topics: readonly string[] = TOPICS;
     const replay: Replay = { world: null, health: null, events: new Map() };
     const route: RouteContext = { store, replay, emit };
 
@@ -490,9 +459,8 @@ export function createRealtime({
       } finally {
         // 3D 뷰어는 받은 본문을 직접 계약으로 검사하고 순서를 정리한다(viewer3d 의 Source 입력).
         // 앱 처리 뒤에 넘기고 실패를 가둔다. 3D 가 고장 나도 2D 평면·경보는 계속 받는다.
-        // 관리자 토픽(조치 불일치)은 화면이 따로 쓰는 값이라 뷰어에 넘기지 않는다.
         const { source } = connection;
-        if (source && topic !== ADMIN_EVENTS_TOPIC) safely(() => source.push(raw, receivedAt));
+        if (source) safely(() => source.push(raw, receivedAt));
       }
     };
 
@@ -508,15 +476,13 @@ export function createRealtime({
         if (isCurrent()) store.getState().setPhase('CONNECTING');
         const token = await tokens.next();
         backoff.attempt();
-        // 갱신으로 역할이 바뀔 수 있어 갱신 뒤에 읽는다.
-        topics = getRole?.() === 'ADMIN' ? [...TOPICS, ADMIN_EVENTS_TOPIC] : TOPICS;
         self.connectHeaders = token ? { Authorization: `Bearer ${token}` } : {};
       },
       onConnect: () => {
         if (!isCurrent()) return;
         backoff.connected();
         store.getState().opened(now());
-        for (const topic of topics) client.subscribe(topic, receive(topic));
+        for (const topic of TOPICS) client.subscribe(topic, receive(topic));
         emit('open');
       },
       // 서버는 인증 실패·권한 없는 구독에 ERROR 프레임을 보내고 소켓을 닫는다. 닫히지 않아도 단계가 멈추지 않게

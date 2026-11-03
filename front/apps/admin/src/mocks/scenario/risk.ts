@@ -1,7 +1,7 @@
 import { EVENT_CYCLE_MS, nextMsgId, SOURCE_ID, uuidTail } from '@/mocks/scenario/shared';
-import type { ActionMismatchMessage, RiskEventMessage } from '@simai/contracts';
+import type { RiskEventMessage } from '@simai/contracts';
 
-// /topic/events·/topic/admin/events 시나리오: 한 바퀴(EVENT_CYCLE_MS)마다 같은 위험 이벤트 전이와 조치 불일치가 일어난다.
+// /topic/events 시나리오: 한 바퀴(EVENT_CYCLE_MS)마다 같은 위험 이벤트 전이가 일어난다.
 // 계약 예제(contracts/examples)를 바탕으로 시각과 위치만 바꾼다.
 
 type Payload = RiskEventMessage['payload'];
@@ -110,16 +110,12 @@ const EVENT_ID_PREFIX = '0192a6f0-7c1e-7b3a-9f2d-';
 export const mockEventId = (cycle: number, key: EventKey) =>
   `${EVENT_ID_PREFIX}${uuidTail(cycle * KEYS.length + KEYS.indexOf(key) + 1)}`;
 
-/** (from, to] 에 드는 시나리오 시각. 바퀴 순서로, 바퀴 안에서는 steps 순서로 나온다. */
-function occurrencesBetween<T extends { at: number }>(
-  steps: readonly T[],
-  from: number,
-  to: number,
-) {
-  const out: { cycle: number; step: T; at: number }[] = [];
+/** (from, to] 에 드는 시나리오 시각. 바퀴 순서로, 바퀴 안에서는 STEPS 순서로 나온다. */
+function occurrencesBetween(from: number, to: number) {
+  const out: { cycle: number; step: Step; at: number }[] = [];
   const lastCycle = Math.floor(to / EVENT_CYCLE_MS);
   for (let cycle = Math.floor(from / EVENT_CYCLE_MS); cycle <= lastCycle; cycle++) {
-    for (const step of steps) {
+    for (const step of STEPS) {
       const at = cycle * EVENT_CYCLE_MS + step.at;
       if (at > from && at <= to) out.push({ cycle, step, at });
     }
@@ -159,82 +155,5 @@ function riskEvent(cycle: number, step: Step, t: number): RiskEventMessage {
 
 /** /topic/events: (from, to] 사이에 일어난 이벤트 전이. 같은 구간을 두 번 넘기지 않으면 전이마다 한 번씩 나온다. */
 export function riskEventsBetween(from: number, to: number): RiskEventMessage[] {
-  return occurrencesBetween(STEPS, from, to).map(({ cycle, step, at }) =>
-    riskEvent(cycle, step, at),
-  );
-}
-
-/**
- * 조치 불일치(명세 8.4, /topic/admin/events, 관리자 전용): 반장이 조치 티켓을 완료했는데 이벤트가 관측상 아직 활성이다.
- * 한 바퀴에 zone 이벤트(w-0015 R1 HIGH, 12초 발생 → 22초 해소) 하나에 낸다: 18초에 불일치가 생기고, 이벤트가 해소되는 22초에 풀린다.
- */
-const MISMATCH_STEPS: readonly { at: number; key: EventKey; cleared: boolean }[] = [
-  { at: 18_000, key: 'zone', cleared: false },
-  { at: 22_000, key: 'zone', cleared: true },
-];
-
-const DEFAULT_TICKET_ID = 'tkt-mock';
-/** 바퀴마다 다른 티켓 번호의 자릿수. */
-const TICKET_DIGITS = 4;
-
-/** 불일치를 판단한 이벤트의 상태(순번·단계·구역). */
-export type MismatchEventState = Pick<Payload, 'event_sequence' | 'lifecycle' | 'zone_id'>;
-
-/**
- * action_mismatch 한 건(계약 예제 contracts/examples/action_mismatch.json 모양).
- * cleared 가 거짓이면 이벤트는 활성(RAISED·UPDATED)이어야 한다(계약). 해소된 상태면 풀린 것으로 보낸다.
- */
-export function actionMismatchMessage(
-  eventId: string,
-  state: MismatchEventState,
-  t: number,
-  { ticketId = DEFAULT_TICKET_ID, cleared = false }: { ticketId?: string; cleared?: boolean } = {},
-): ActionMismatchMessage {
-  return {
-    schema_version: '1.0.0',
-    msg_type: 'action_mismatch',
-    msg_id: nextMsgId(),
-    sent_at: t,
-    source_id: SOURCE_ID,
-    payload: {
-      ticket_id: ticketId,
-      event_id: eventId,
-      event_sequence: state.event_sequence ?? 1,
-      ticket_status: 'DONE',
-      event_lifecycle: state.lifecycle,
-      zone_id: state.zone_id,
-      detected_at: t,
-      cleared: cleared || state.lifecycle === 'RESOLVED',
-    },
-  };
-}
-
-/** 시나리오에서 바퀴 안 at 시각에 그 이벤트가 있던 상태: 그 시각까지의 마지막 전이. */
-function scenarioStateAt(key: EventKey, at: number): MismatchEventState {
-  const same = STEPS_BY_KEY[key];
-  const last = same.filter((step) => step.at <= at).at(-1)!;
-  return {
-    event_sequence: same.indexOf(last) + 1,
-    lifecycle: last.lifecycle,
-    zone_id: EVENTS[key].zone_id,
-  };
-}
-
-/**
- * /topic/admin/events: (from, to] 사이의 조치 불일치. riskEventsBetween 과 같은 구간으로 부르면 그 이벤트 전이 뒤의 상태가 맞는다.
- * find 는 저장소(이벤트 mock)가 매긴 지금 순번·단계를 준다(확인(ACK)도 순번을 올린다). 없으면 시나리오의 순번을 쓴다.
- */
-export function actionMismatchesBetween(
-  from: number,
-  to: number,
-  find?: (eventId: string) => MismatchEventState | undefined,
-): ActionMismatchMessage[] {
-  return occurrencesBetween(MISMATCH_STEPS, from, to).map(({ cycle, step, at }) => {
-    const eventId = mockEventId(cycle, step.key);
-    const state = find?.(eventId) ?? scenarioStateAt(step.key, step.at);
-    return actionMismatchMessage(eventId, state, at, {
-      ticketId: `tkt-${String(cycle).padStart(TICKET_DIGITS, '0')}`,
-      cleared: step.cleared,
-    });
-  });
+  return occurrencesBetween(from, to).map(({ cycle, step, at }) => riskEvent(cycle, step, at));
 }

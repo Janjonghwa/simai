@@ -36,8 +36,6 @@ export type AdaptResult =
   | { kind: 'health'; health: HealthView }
   /** avatar_frame(/topic/avatar, EXP-02, -65). 사람별 관절 회전과 자산만 싣는다(위치는 world_state). */
   | { kind: 'avatar'; frame: AvatarFrameView }
-  /** action_mismatch 는 관리자 토픽의 조치 불일치다. 3D 렌더 대상이 아니라 검사만 하고 버린다. */
-  | { kind: 'ignored'; msgType: 'action_mismatch'; msgId: string }
   | { kind: 'rejected'; reason: RejectReason; msgType: string | null; detail: string };
 
 class NonFinite extends Error {}
@@ -187,6 +185,14 @@ const describe = (errors: ValidationError[]) => {
   return `${first.instancePath || '/'} ${first.message ?? first.keyword}`.trim();
 };
 
+/** 계약에 없거나 뷰어가 옮기지 않는 msg_type 은 모르는 종류로 거부한다. */
+const unknownMsgType = (msgType: unknown): AdaptResult => ({
+  kind: 'rejected',
+  reason: 'UNKNOWN_MSG_TYPE',
+  msgType: typeof msgType === 'string' ? msgType : null,
+  detail: `모르는 msg_type: ${String(msgType)}`,
+});
+
 /** 메시지 하나를 검사·변환한다. 예외를 던지지 않는다. */
 export function adaptMessage(raw: unknown, receivedAt: number): AdaptResult {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
@@ -198,15 +204,7 @@ export function adaptMessage(raw: unknown, receivedAt: number): AdaptResult {
     };
   }
   const msgType = (raw as { msg_type?: unknown }).msg_type;
-  if (!isMessageType(msgType)) {
-    const shown = typeof msgType === 'string' ? msgType : null;
-    return {
-      kind: 'rejected',
-      reason: 'UNKNOWN_MSG_TYPE',
-      msgType: shown,
-      detail: `모르는 msg_type: ${String(msgType)}`,
-    };
-  }
+  if (!isMessageType(msgType)) return unknownMsgType(msgType);
   const checked = validateMessage(msgType, raw);
   if (!checked.ok) {
     return { kind: 'rejected', reason: 'SCHEMA', msgType, detail: describe(checked.errors) };
@@ -227,8 +225,8 @@ export function adaptMessage(raw: unknown, receivedAt: number): AdaptResult {
           kind: 'avatar',
           frame: avatarFrameOf(checked.message as AvatarFrameMessage, receivedAt),
         };
-      case 'action_mismatch':
-        return { kind: 'ignored', msgType, msgId: (checked.message as Envelope).msg_id };
+      default:
+        return unknownMsgType(msgType);
     }
   } catch (error) {
     if (error instanceof NonFinite) {

@@ -2,12 +2,6 @@
 // 시험(__tests__/mocks/realtimeScenario.test.ts)이 만든 메시지를 모두 계약 검증기로 검사한다.
 
 export { viewerHealthAt, type MockOutage } from '@/mocks/scenario/health';
-export {
-  actionMismatchMessage,
-  actionMismatchesBetween,
-  mockEventId,
-  riskEventsBetween,
-  type MismatchEventState,
-} from '@/mocks/scenario/risk';
+export { mockEventId, riskEventsBetween } from '@/mocks/scenario/risk';
 export { EVENT_CYCLE_MS, MOCK_CONFIG, nextMsgId, type MockConfig } from '@/mocks/scenario/shared';
 export { worldStateAt } from '@/mocks/scenario/world';
