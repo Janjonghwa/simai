@@ -32,7 +32,7 @@ def lobby(bs, tmp_path, monkeypatch):
         monkeypatch.delenv(key, raising=False)
     calls: list[dict] = []
 
-    def fake_scene(rest):
+    def fake_scene(rest, **_kwargs):
         calls.append({"rest": list(rest), "env": dict(os.environ)})
         return 0
 
@@ -92,3 +92,25 @@ def test_supervisor_start_tier0_clears_previous_clean_stop(bs, tmp_path, monkeyp
     record = _stopped(sup.marker)
     sup.start_tier0()
     assert not record.exists() and world.spawned == ["tier0"]
+
+
+def test_after_live_resolves_worker_id_from_token_name(bs, lobby, monkeypatch, tmp_path):
+    _stopped(lobby["marker"])
+    monkeypatch.delenv("SIMAI_WORKER_ID", raising=False)
+    token = tmp_path / "worker-s11.token"
+    token.write_text("token", encoding="utf-8")
+    assert bs.main(["after-live", "--worker-token-file", str(token)]) == 0
+    assert lobby["calls"][0]["env"]["SIMAI_WORKER_ID"] == "worker-s11"
+
+
+def test_after_live_worker_id_priority_and_validation(bs, lobby, monkeypatch, tmp_path):
+    _stopped(lobby["marker"])
+    token = tmp_path / "worker-file.token"
+    token.write_text("SIMAI_WORKER_ID=worker-token\nSIMAI_WORKER_TOKEN=secret\n", encoding="utf-8")
+    env_file = tmp_path / "worker.env"
+    env_file.write_text("SIMAI_WORKER_ID=worker-file\n", encoding="utf-8")
+    monkeypatch.setenv("SIMAI_WORKER_ID", "worker-env")
+    assert bs.main(["after-live", "--worker-id", "worker-cli", "--worker-token-file", str(token), "--env-file", str(env_file)]) == 0
+    assert lobby["calls"][-1]["env"]["SIMAI_WORKER_ID"] == "worker-cli"
+    assert bs.main(["after-live", "--worker-id", "Invalid ID"]) == bs.EXIT_USAGE
+    assert len(lobby["calls"]) == 1
