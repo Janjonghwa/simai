@@ -142,6 +142,21 @@ class CleanBackgroundSettings:
 
 
 @dataclass(frozen=True)
+class RotationRecoverySettings:
+    enabled: bool = True
+    safety_enabled: bool = True
+    interval_ms: int = 15_000
+    cpu_budget_ms: int = 500
+    thresholds: Mapping[str, float | int] = field(default_factory=dict)
+
+    @property
+    def config(self):
+        from simai_ai.calibration.rotation_recovery import RotationConfig
+
+        return RotationConfig(**self.thresholds)
+
+
+@dataclass(frozen=True)
 class Tier0Settings:
     gateway_id: str
     state_dir: Path
@@ -174,6 +189,7 @@ class Tier0Settings:
     event_frames_enabled: bool = True
     live_calibration: LiveCalibrationSettings = field(default_factory=LiveCalibrationSettings)
     clean_background: CleanBackgroundSettings = field(default_factory=CleanBackgroundSettings)
+    rotation_recovery: RotationRecoverySettings = field(default_factory=RotationRecoverySettings)
 
     @property
     def journal_dir(self) -> Path:
@@ -270,6 +286,38 @@ def _clean_background(doc: Any, base: Path) -> CleanBackgroundSettings:
         raise Tier0ConfigError("clean_background 최소 표본 수가 최대 표본 수보다 크다")
     output = _path(base, doc["output_dir"], "clean_background.output_dir") if "output_dir" in doc else None
     return CleanBackgroundSettings(enabled=enabled, output_dir=output, **values)
+
+
+def _rotation_recovery(doc: Any) -> RotationRecoverySettings:
+    from simai_ai.calibration.rotation_recovery import RotationConfig
+
+    if not isinstance(doc, dict):
+        raise Tier0ConfigError("rotation_recovery 는 객체다")
+    enabled = doc.get("enabled", True)
+    safety_enabled = doc.get("safety_enabled", True)
+    if not isinstance(enabled, bool) or not isinstance(safety_enabled, bool):
+        raise Tier0ConfigError("rotation_recovery.enabled/safety_enabled 는 bool이다")
+    nested = doc.get("thresholds", {})
+    if not isinstance(nested, dict):
+        raise Tier0ConfigError("rotation_recovery.thresholds 는 객체다")
+    fields = set(RotationConfig.__dataclass_fields__)
+    unknown = (set(doc) - {"enabled", "safety_enabled", "interval_ms", "cpu_budget_ms", "thresholds"} - fields) | (
+        set(nested) - fields
+    )
+    if unknown:
+        raise Tier0ConfigError(f"rotation_recovery 알 수 없는 설정: {sorted(unknown)}")
+    thresholds = {k: doc[k] for k in fields if k in doc} | dict(nested)
+    try:
+        RotationConfig(**thresholds)
+    except (TypeError, ValueError) as e:
+        raise Tier0ConfigError(f"rotation_recovery: {e}") from None
+    return RotationRecoverySettings(
+        enabled=enabled,
+        safety_enabled=safety_enabled,
+        interval_ms=_int(doc, "interval_ms", 15_000, minimum=1),
+        cpu_budget_ms=_int(doc, "cpu_budget_ms", 500, minimum=1),
+        thresholds=thresholds,
+    )
 
 
 def _control(env: Mapping[str, str]) -> ControlSettings | None:
@@ -447,6 +495,7 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         event_frames_enabled=event_frames_enabled,
         live_calibration=_live_calibration(doc.get("live_calibration", {})),
         clean_background=_clean_background(doc.get("clean_background", {}), base),
+        rotation_recovery=_rotation_recovery(doc.get("rotation_recovery", {})),
         sim=sim,
         camera_ids=camera_ids,
         bootstrap_archive=archive,
