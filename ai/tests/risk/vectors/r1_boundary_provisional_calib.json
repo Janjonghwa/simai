@@ -1,7 +1,7 @@
 {
   "format_version": "1.5.0",
   "vector_id": "r1-boundary-provisional-calib",
-  "description": "명세 4.4 '넓은 불확실성'(S15P31A101-233): 보정 PROVISIONAL 이면 R1 불확실성 범위를 보정 여유 0.3 m 만큼 넓힌다(σ 0.05 → 범위 반경 0.1 + 0.3 + 0.3 = 0.7 m, 유지 띠 0.7~1.0 m). 경계 0.9 m 는 유지, 0.65·0.55 m 에서 발생 판정이라 CALIBRATED(범위 0.4 m, 경계 0.35 m 에서야 발생)보다 두 프레임 이르게 RAISED(+300 ms, CALIBRATED 는 +500 ms). 나갈 때 0.6 m 는 발생, 0.85 m 는 유지라 해소 확인이 0.1 s 늦게 시작해 RESOLVED +4900 ms(CALIBRATED 는 +4800 ms). 넓힌 판정마다 근거 코드 calibration_provisional·수치 calibration_margin_m 0.3, 확인 필요(PROVISIONAL_CALIB)는 붙지 않는다(R2·R3·R4 만, 7.1)",
+  "description": "R1 확실한 위치의 점 진입과 불확실한 프레임의 유지를 검증한다: r1_boundary_provisional_calib",
   "origin": "LIVE",
   "calibration_state": "PROVISIONAL",
   "rules": [
@@ -229,7 +229,8 @@
             "metrics": {
               "calibration_margin_m": 0.3,
               "zone_distance_m": 0.6500000000000004
-            }
+            },
+            "holding": true
           }
         ],
         "transitions": [],
@@ -299,37 +300,12 @@
             "metrics": {
               "calibration_margin_m": 0.3,
               "zone_distance_m": 0.5499999999999998
-            }
+            },
+            "holding": true
           }
         ],
-        "transitions": [
-          {
-            "event": "e1",
-            "event_sequence": 1,
-            "transition": "RAISED",
-            "changes": [
-              "RAISED"
-            ],
-            "rule_id": "R1",
-            "severity": "HIGH",
-            "needs_check": false,
-            "verification": "VERIFIED",
-            "world_ids": [
-              "w-0012"
-            ],
-            "zone_id": "z-04",
-            "acknowledged": false,
-            "confidence_reasons": []
-          }
-        ],
-        "local_signals": [
-          {
-            "kind": "LOCAL_ALERT",
-            "event": "e1",
-            "severity": "HIGH",
-            "needs_check": false
-          }
-        ]
+        "transitions": [],
+        "local_signals": []
       }
     },
     {
@@ -395,7 +371,8 @@
             "metrics": {
               "calibration_margin_m": 0.3,
               "zone_distance_m": 0.34999999999999964
-            }
+            },
+            "holding": true
           }
         ],
         "transitions": [],
@@ -541,10 +518,10 @@
         "transitions": [
           {
             "event": "e1",
-            "event_sequence": 2,
-            "transition": "UPDATED",
+            "event_sequence": 1,
+            "transition": "RAISED",
             "changes": [
-              "METRICS"
+              "RAISED"
             ],
             "rule_id": "R1",
             "severity": "HIGH",
@@ -558,7 +535,14 @@
             "confidence_reasons": []
           }
         ],
-        "local_signals": []
+        "local_signals": [
+          {
+            "kind": "LOCAL_ALERT",
+            "event": "e1",
+            "severity": "HIGH",
+            "needs_check": false
+          }
+        ]
       }
     },
     {
@@ -624,7 +608,8 @@
             "metrics": {
               "calibration_margin_m": 0.3,
               "zone_distance_m": 0.5999999999999996
-            }
+            },
+            "holding": true
           }
         ],
         "transitions": [],
@@ -851,7 +836,7 @@
         "transitions": [
           {
             "event": "e1",
-            "event_sequence": 3,
+            "event_sequence": 2,
             "transition": "RESOLVED",
             "changes": [
               "CLEARED"

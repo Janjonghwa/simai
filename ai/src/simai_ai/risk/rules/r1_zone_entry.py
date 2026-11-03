@@ -1,61 +1,23 @@
-"""R1 위험 구역 진입 (명세 7.2 R1, 8.2 구역 판정 유형, 7.1 불확실성 범위·확인 필요, 6.4, 15.1 G6-R1).
+"""R1 위험 구역 진입 (명세 7.2, 8.2; 수정 52).
 
-사람(OBSERVED·PREDICTED 트랙) × 판정 시각에 유효한 구역마다 판정한다. UNKNOWN 트랙은 위치를 쓰지 않으므로(6.1)
-판정하지 않고, 구역 안에서 관측을 잃은 사람은 R6(ObservationLossHold)이 원래 이벤트를 유지한다. 배포 등록부에는
-`ObservationLossHold(ZoneEntryRule())` 로 등록한다(registry.default_registry).
+발생은 OBSERVED 이고 기여 카메라가 2대 이상이거나 접지점이 있는 위치만 판정한다.
+접지점이 있으면 그 XY, 없으면 position_xy 점이 다각형 안이나 경계에 있어야 한다.
+VOLUME_3D 는 점유 높이 양 끝을 알아야 하며 높이 범위가 구역과 겹쳐야 한다.
+수평 불확실성 타원, 점유 반경, 보정 여유만으로 걸린 경우에는 발생하지 않는다.
+높이의 불확실성과 보정 여유는 기존처럼 높이 겹침 판정에 적용한다.
 
-**수평(XY).** 명세 8.2 대로 position_xy + 수평 불확실성(position_xy_sigma)으로 판정한다. 불확실성 범위는 수평 공분산
-k=2 타원 + 점유 반경 0.3 m 다(7.1, zone_geometry.HorizontalRange). 접지점(ground_anchor_xyz, 지지 표면 위 발 위치)이
-있으면 그 XY(σ 는 ground_anchor_sigma 의 XY, 없으면 position_xy_sigma)도 같은 방식으로 보고, 둘 중 하나라도 걸리면
-걸린 것으로 본다(보수적 결합: 접지점이 position_xy 기준 진입을 지우지 않는다). 간격은 둘 중 작은 쪽을 쓴다.
-경계에서 BOUNDARY_TOLERANCE_M(1e-9 m) 이하는 닿은 것으로 본다(부동소수점 오차로 발생을 놓치지 않게).
+유지는 기존과 같이 position_xy 또는 접지점의 불확실성 범위, 해소 간격 0.3 m,
+보정 여유를 사용한다. 불확실한 프레임의 판정은 holding 으로 활성 이벤트만 유지한다.
+UNKNOWN 관측 상실은 R6 이 담당하고, 발생 지속 3프레임 중 2 및 해소 3초는 lifecycle 이 담당한다.
+심각도는 구역 severity 를 쓴다. rule_version 1 유지는 첫 운영 배포 전 보완 예외다
+(명세 11.4, Lead 승인 2026-11-03).
 
-**높이(Z, VOLUME_3D 만).** 사람이 차지하는 높이 범위 = 서 있는 면 Z(접지점 Z) ~ VALID 관측 관절 중 가장 높은 Z
-(없으면 head_z)다(8.2). 추정(inferred, HMR) 관절은 쓰지 않는다(규칙 1). 3D 불확실성으로 아래 끝은
-k·ground_anchor_sigma.z, head_z 를 쓴 위 끝은 k·head_z_sigma 만큼 넓힌다.
-- 두 끝을 모두 알면 구역 높이 범위와의 겹침으로 판정한다(겹침 = 발생, 간격 0.3 m 미만 = 유지, 그 밖 = 판정 없음).
-- 서 있는 면 Z 나 위 끝 중 하나라도 모르면 높이로 판정하지 않는다. XY 가 걸리면 발생하되 확인 필요(`Z_UNKNOWN`),
-  XY 가 유지 띠면 유지 + `Z_UNKNOWN` 이다. 아는 한쪽 끝만으로 '진입 없음'을 확정하지 않고 Z=0 으로 채우지 않는다
-  (8.2 'XY는 다각형 안인데 Z(서 있는 면 또는 head_z)를 모르면', 규칙 2).
-GROUND_FOOTPRINT 는 높이를 보지 않는다(8.2 표).
-
-**발생·해소(히스테리시스, 7.1·7.2).**
-- 발생: 불확실성 범위가 구역에 걸리고(VOLUME_3D 는 높이도 겹치거나 모름) → holding=False.
-- 유지: 걸리지는 않지만 범위가 구역에서 해소 간격(0.3 m) 안쪽이면 holding=True(활성 이벤트만 유지, 새 이벤트 없음).
-  VOLUME_3D 높이도 같은 간격으로 본다.
-- 해소: 위 둘 다 아니면 판정을 내지 않는다. 판정 없이 유효 관측이 3초 이어지면 lifecycle 이 해소한다
-  (LifecyclePolicy.clear_hold_ms 기본 3000 ms = 명세 R1 '0.3m 바깥에서 3초 유지').
-발생 지속 조건(3프레임 중 2)과 10초 안 재개는 lifecycle 이 한다(S15P31A101-156). 규칙은 프레임마다 판정만 낸다.
-
-**심각도.** 구역 유형별 = 구역의 severity(8.2 구역 속성). 확인 필요여도 내리지 않는다(7.3).
-
-**확인 필요 이유(7.1).** 판정마다 아래 이유를 Finding.confidence_reasons(common.ConfidenceReason)로 낸다. 확인 필요
-(needs_check)는 이유 목록이 비어 있지 않은 상태라 Finding 이 이유에서 맞춘다(규칙은 needs_check 를 따로 정하지 않는다).
-판정 근거 코드(reasons)에는 이유를 겹쳐 적지 않는다.
-- Z_UNKNOWN: VOLUME_3D 에서 서 있는 면 Z 나 점유 높이 위 끝을 모름(위).
-- PREDICTED: 위치가 관측이 아니라 예측값.
-- SINGLE_VIEW: 이 상태에 기여한 카메라가 2대 미만.
-- JOINT_UNCERTAIN: VOLUME_3D 위 끝을 VALID 관절 없이 head_z 로 정했는데 skeleton 에 VALID 관절이 없다(head_z 가
-  UNCERTAIN 관절에서 왔다, geometry.joint_gate.HeadZ).
-- IDENTITY_UNCERTAIN: 카메라 간 연결이 애매함.
-- PROVISIONAL_CALIB: R1 은 내지 않는다(명세 4.4·7.1, 계약 confidence_reason 'R2·R3·R4 에만'). R1 은 아래 넓은 불확실성으로
-  보정 상태를 판정에 넣는다.
-
-**보정이 CALIBRATED 가 아닐 때(명세 4.4 '넓은 불확실성', 7.1).** RuleContext.calibration_state 가 PROVISIONAL·DRIFTED·
-UNCALIBRATED(방어적으로) 이면 불확실성 범위를 보정 여유 R1_CALIBRATION_MARGIN_M(0.3 m)만큼 넓힌다: 수평은 점유 반경에 더하고
-(범위 둘레를 0.3 m 바깥으로), VOLUME_3D 높이는 아래·위 끝을 0.3 m 씩 넓힌다. 발생·유지·해소 기준(겹침·해소 간격 0.3 m·3초)은
-그대로라 발생은 0.3 m 더 일찍, 해소는 0.3 m 더 벗어나야 한다(안전 쪽). 0.3 m = CALIBRATED 기준의 위치 불일치·머리 높이 오차 한도
-15 cm(4.4)를 보정 오차 σ 로 가정하고 7.1 과 같은 k=2 를 곱한 초기 안전 여유다(측정된 σ 가 아님, G1·G2 실측 뒤 재검토,
-docs/design/risk-r1-calibration-margin.md). 넓힌 판정에는 근거 코드 calibration_<상태 소문자>(reasons 끝)와 수치 calibration_margin_m
-을 붙인다. CALIBRATED 와 보정 상태 없음(None, PLANNED 계획 위치)은 넓히지 않고 결과가 전과 같다. 보정 여유·넓힘 상태는 규칙 값
-(rule_version 시드의 calibration_margin·calibration_widened_states)이고, R1 v1 을 같은 버전에서 보완한 것은 첫 운영 배포 전 예외다
-(명세 11.4, Lead 승인 2026-10-22).
-
-판정 근거 코드(reasons 앞쪽): xy_inside_polygon(위치가 다각형 안), xy_uncertainty_overlap(위치는 밖이지만 범위가 걸림),
-xy_within_clear_margin(유지 띠), VOLUME_3D 는 z_overlap / z_within_clear_margin 이 뒤따른다. 보정 여유로 넓혔으면 맨 끝에
-calibration_provisional / calibration_drifted / calibration_uncalibrated.
-수치(metrics): zone_distance_m(position_xy·접지점 중 가까운 쪽에서 다각형까지 수평 거리, 안이면 0),
-VOLUME_3D 는 아는 끝만 occupancy_z_min_m·occupancy_z_max_m(불확실성 넓힘 전 값), 넓혔으면 calibration_margin_m.
+근거 코드는 xy_inside_polygon, xy_uncertainty_overlap, xy_within_clear_margin 및
+VOLUME_3D 의 z_overlap, z_within_clear_margin 이다. 보정 여유를 사용하면
+calibration_<상태>와 calibration_margin_m 을 기록한다. 발생에는 PREDICTED 와
+Z_UNKNOWN 이 붙지 않으며 유지에는 붙을 수 있다. SINGLE_VIEW, JOINT_UNCERTAIN,
+IDENTITY_UNCERTAIN 은 해당 조건에 따라 기록한다. PROVISIONAL_CALIB 는 R1 에 쓰지 않는다.
+zone_distance_m 은 position_xy 와 접지점 중 다각형에 가까운 거리이며, 점유 높이 수치는 넓히기 전 값이다.
 """
 
 import math
@@ -216,13 +178,21 @@ class ZoneEntryRule:
             reasons = [REASON_XY_INSIDE if center_distance == 0.0 else REASON_XY_UNCERTAINTY_OVERLAP]
         else:
             reasons = [REASON_XY_CLEAR_MARGIN]
-        raising = touching
+        point = track.ground_anchor_xyz[:2] if track.ground_anchor_xyz is not None else track.position_xy
+        raising = (
+            track.observation_state is ObservationState.OBSERVED
+            and (len(set(track.cameras)) >= _MIN_VIEWS or track.ground_anchor_xyz is not None)
+            and distance_outside_polygon(point, zone.polygon_xy) <= self._tol
+        )
+        if raising:
+            reasons[0] = REASON_XY_INSIDE  # 점이 경계 허용오차 안에 있으면 안쪽으로 기록한다
         metrics = {"zone_distance_m": center_distance}
         confidence: set[ConfidenceReason] = set()
 
         if zone.judge_type is ZoneJudgeType.VOLUME_3D and zone.z_range is not None:  # Zone 이 z_range 를 보장한다
             if height.bottom is None or height.top is None:
-                # 서 있는 면이나 위 끝을 모르면 높이로 판정하지 않는다(8.2). XY 판정 그대로 + 확인 필요.
+                # 높이를 모르면 발생하지 않고 기존 이벤트만 유지한다.
+                raising = False
                 confidence.add(ConfidenceReason.Z_UNKNOWN)
             else:
                 z_gap = self._height_gap(height.bottom, height.top, height, zone.z_range, margin)
