@@ -338,43 +338,6 @@ tier0_health: ({
 } | null)
 })
 /**
- * EC2 → 관리자 뷰어, STOMP /topic/admin/events (명세 8.4, 12.2, FR-42). 반장이 조치 티켓을 완료했는데 연결된 LIVE 이벤트가 관측상 아직 활성이면 보내는 불일치 표시다. 조치 완료는 사람의 보고이고 이벤트 해소가 아니다. 이벤트가 해소되면 cleared true 로 한 번 더 보낸다. 이 토픽은 관리자 권한만 구독한다. 1.0.0 신설(S15P31A101-206).
- */
-export type ActionMismatchMessage = (Envelope & {
-msg_type?: "action_mismatch"
-payload: ActionMismatchPayload
-})
-export type ActionMismatchPayload = ({
-[k: string]: unknown
-} & {
-ticket_id: string
-/**
- * UUIDv7 (시간 순서, 재시작·여러 현장에서도 충돌 없음). event_id 에 쓴다 (명세 3.2 식별자 규칙)
- */
-event_id: string
-/**
- * 불일치를 판단한 이벤트 상태
- */
-event_sequence: number
-/**
- * 조치 완료
- */
-ticket_status: "DONE"
-/**
- * 명세 6.2, 6.4
- */
-event_lifecycle: ("RAISED" | "UPDATED" | "RESOLVED")
-zone_id?: (string | null)
-/**
- * UTC epoch 밀리초
- */
-detected_at: number
-/**
- * false: 불일치 발생. true: 이벤트 해소로 불일치가 풀림
- */
-cleared: boolean
-})
-/**
  * EC2(source_id ec2) → 뷰어 STOMP /topic/avatar. EC2 가 아바타 스트림(avatar_pose_batch·avatar_asset)에서 사람별 가장 새 포즈만 남겨 다시 싣는다. 메시지 하나만으로 그릴 수 있게 포즈마다 그 포즈가 가리키는 자산의 내려받기 주소를 함께 싣는다(늦게 구독한 뷰어도 REST 없이 시작). 밀리면 버리고(사람별 최신만), 빠진 사람은 '갱신 없음'이지 '사라짐'이 아니다. 사람의 존재·위치·접지·관측 상태·ID 신뢰도는 /topic/world(world_state)가 정본이고, 이 메시지는 관절 회전과 외형만 더한다(명세 13.1, 20.4). /topic/world·/topic/events 는 바뀌지 않는다. 1.0.0 신설(S15P31A101-249).
  */
 export type AvatarFrameMessage = (Envelope & {
@@ -458,7 +421,6 @@ export interface FrontContracts {
 world_state?: WorldStateMessage
 risk_event?: RiskEventMessage
 viewer_health?: ViewerHealthMessage
-action_mismatch?: ActionMismatchMessage
 avatar_frame?: AvatarFrameMessage
 }
 /**

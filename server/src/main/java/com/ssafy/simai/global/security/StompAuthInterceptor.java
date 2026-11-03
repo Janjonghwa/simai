@@ -20,7 +20,7 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtAut
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 
 /**
- * 관제 앱 STOMP(I2) 인증·권한(명세 14장: STOMP 토픽 조회는 열람 이상, /topic/admin/events 는 관리자).
+ * 관제 앱 STOMP(I2) 인증·권한(명세 14장: STOMP 토픽 조회는 열람 이상. 관리자 전용 토픽은 없다: 조치 불일치 /topic/admin/events 는 S15P31A101-411 로 지웠다).
  * 브라우저 WebSocket 은 업그레이드 요청에 Authorization 을 실을 수 없어 CONNECT 프레임의 Authorization 헤더(Bearer JWT)로 인증한다.
  * 토큰이 없거나 틀리면 예외를 던지고, Spring 이 ERROR 프레임을 보낸 뒤 연결을 닫는다(관제 앱은 새 토큰으로 다시 붙는다).
  * 구독(SUBSCRIBE)마다 CONNECT 때 받은 토큰의 만료를 다시 본다. 이미 구독한 토픽은 만료돼도 끊지 않는다
@@ -30,7 +30,6 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtAut
 public class StompAuthInterceptor implements ChannelInterceptor {
 
     private static final String BEARER = "Bearer ";
-    private static final String ADMIN = "ROLE_ADMIN";
 
     private final JwtDecoder decoder;
     private final JwtAuthenticationConverter converter;
@@ -81,10 +80,6 @@ public class StompAuthInterceptor implements ChannelInterceptor {
             throw new AccessDeniedException("토큰이 만료된 연결의 구독");
         }
         if (destination != null && RealtimeTopics.VIEWER.contains(destination)) {
-            return;
-        }
-        if (RealtimeTopics.ADMIN_EVENTS.equals(destination)
-                && authentication.getAuthorities().stream().anyMatch(a -> ADMIN.equals(a.getAuthority()))) {
             return;
         }
         throw new AccessDeniedException("구독할 수 없는 토픽: " + destination);

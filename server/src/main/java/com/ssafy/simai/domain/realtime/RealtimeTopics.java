@@ -13,9 +13,8 @@ public final class RealtimeTopics {
     public static final String EVENTS = "/topic/events";
     public static final String HEALTH = "/topic/health";
     public static final String AVATAR = "/topic/avatar";
-    public static final String ADMIN_EVENTS = "/topic/admin/events";
 
-    /** 열람 이상(로그인한 계정 모두)이 구독할 수 있는 토픽(명세 14장). 관리자 토픽은 따로 본다. */
+    /** 열람 이상(로그인한 계정 모두)이 구독할 수 있는 토픽(명세 14장). 이 밖의 토픽은 누구도 구독하지 못한다. */
     public static final Set<String> VIEWER = Set.of(WORLD, EVENTS, HEALTH, AVATAR);
 
     private RealtimeTopics() {

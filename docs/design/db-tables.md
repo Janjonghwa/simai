@@ -918,17 +918,17 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
-| `ticket_id` | bigint identity | PK | `action_mismatch.ticket_id` |  |
-| `event_id` | uuid | FK>risk_event.event_id, NN | `action_mismatch.event_id` | CRITICAL·HIGH 에서 자동 생성 |
+| `ticket_id` | bigint identity | PK |  |  |
+| `event_id` | uuid | FK>risk_event.event_id, NN |  | CRITICAL·HIGH 에서 자동 생성 |
 | `status` | text | NN, CK(REQUESTED·CONFIRMED·IN_PROGRESS·DONE) |  | 요청→확인→조치 중→완료 |
 | `assignee_user_id` | bigint | FK>app_user.user_id |  | 반장 |
 | `photo_key` | text |  |  | 완료 사진 객체 키(11.3 사진 주소) |
 | `created_at` | ts | NN |  |  |
 | `updated_at` | ts | NN |  |  |
 | `completed_at` | ts |  |  |  |
-| `mismatch` | boolean | NN | `action_mismatch.cleared` | 완료인데 이벤트 활성 |
-| `mismatch_detected_at` | ts |  | `action_mismatch.detected_at` |  |
-| `mismatch_cleared_at` | ts |  |  |  |
+| `mismatch` | boolean | NN |  | 미사용: 조치 불일치 알림 취소·계약 `action_mismatch` 삭제(S15P31A101-411), 티켓 정리 때 함께 제거 |
+| `mismatch_detected_at` | ts |  |  | 미사용(위와 같음) |
+| `mismatch_cleared_at` | ts |  |  | 미사용(위와 같음) |
 
 #### `action_ticket_history` — 티켓 상태 변경 이력
 

@@ -178,16 +178,11 @@ class StompRelayIntegrationTest {
     }
 
     @Test
-    void 관리자_토픽은_관리자만_구독한다() throws Exception {
-        try (Viewer viewer = stomp(token("VIEWER"))) {
-            viewer.subscribe(RealtimeTopics.ADMIN_EVENTS);
-            viewer.awaitDisconnected();
-        }
-        try (Viewer admin = stomp(token("ADMIN")); Tier0 tier0 = tier0()) {
-            admin.subscribe(RealtimeTopics.ADMIN_EVENTS);
-            admin.subscribe(RealtimeTopics.WORLD);
-            admin.awaitWorld(tier0, worldState(baseMs));
-            assertThat(admin.session().isConnected()).isTrue();
+    void 지운_관리자_토픽은_관리자도_구독하지_못한다() throws Exception {
+        // 조치 불일치 /topic/admin/events 는 S15P31A101-411 로 지웠다. 관리자 권한도 정해진 토픽 밖과 같게 끊는다
+        try (Viewer admin = stomp(token("ADMIN"))) {
+            admin.subscribe("/topic/admin/events");
+            admin.awaitDisconnected();
         }
     }
 

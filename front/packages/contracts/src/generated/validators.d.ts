@@ -1,6 +1,6 @@
 // contracts/ 에서 생성한 파일이다. 손으로 고치지 않는다.
 // 다시 만들기: pnpm --filter @simai/contracts generate
-import type { WorldStateMessage, RiskEventMessage, ViewerHealthMessage, ActionMismatchMessage, AvatarFrameMessage } from './types';
+import type { WorldStateMessage, RiskEventMessage, ViewerHealthMessage, AvatarFrameMessage } from './types';
 
 export interface ValidationError {
   instancePath: string;
@@ -18,5 +18,4 @@ export interface ValidateFunction<T> {
 export declare const world_state: ValidateFunction<WorldStateMessage>;
 export declare const risk_event: ValidateFunction<RiskEventMessage>;
 export declare const viewer_health: ValidateFunction<ViewerHealthMessage>;
-export declare const action_mismatch: ValidateFunction<ActionMismatchMessage>;
 export declare const avatar_frame: ValidateFunction<AvatarFrameMessage>;
