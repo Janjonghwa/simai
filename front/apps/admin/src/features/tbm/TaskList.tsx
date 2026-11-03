@@ -46,7 +46,14 @@ function TaskChip({
         'bg-card ring-border hover:bg-surface-2 aria-pressed:bg-surface-3 aria-pressed:ring-2 aria-pressed:ring-primary',
       )}
     >
-      {task.id} · {task.name}
+      {task.id} · {task.name} ·{' '}
+      {task.status === 'IN_PROGRESS'
+        ? '진행'
+        : task.status === 'DONE'
+          ? '종료'
+          : task.status === 'PLANNED'
+            ? '계획'
+            : '상태 미확인'}
       {peak && <SeverityBadge severity={peak} />}
     </button>
   );

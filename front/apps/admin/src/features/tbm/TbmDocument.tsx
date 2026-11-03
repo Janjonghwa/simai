@@ -25,6 +25,12 @@ export interface PrintItem {
   id: string;
   form: TbmForm;
   people: number;
+  signatures?: readonly {
+    signature_id: string;
+    signer_name: string;
+    signed_at: number | string;
+    image_url: string;
+  }[];
 }
 
 /** 서식을 쪽으로 나눈 결과. measure 는 나누는 데 쓰는 보이지 않는 사본이라 화면 어딘가에 그려 둬야 한다. */
@@ -204,7 +210,19 @@ export function TbmPrint({ items }: { items: readonly PrintItem[] }) {
     <div className="hidden print:block print:[body:has(>&)]:bg-white print:[body:has(>&)>*:not(&)]:hidden!">
       <style>{'@page { size: A4; margin: 0 }'}</style>
       {items.map((item) => (
-        <PrintPages key={item.id} form={item.form} people={item.people} />
+        <div key={item.id}>
+          <PrintPages form={item.form} people={item.people} />
+          <div className="break-before-page bg-white p-8 text-black">
+            <h2>참석자 서명</h2>
+            <p>공인 전자서명 아님, 내부 기록용 전자 서명</p>
+            {item.signatures?.map((signature) => (
+              <div key={signature.signature_id}>
+                {signature.signer_name} · {new Date(signature.signed_at).toLocaleString()}{' '}
+                <img src={signature.image_url} alt={`${signature.signer_name} 서명`} />
+              </div>
+            ))}
+          </div>
+        </div>
       ))}
     </div>,
     document.body,

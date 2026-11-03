@@ -29,6 +29,9 @@ export interface TbmTask {
   id: string;
   /** 서버 work_unit.work_id (데모 대체 화면에서는 없다). */
   workId?: string;
+  status?: 'PLANNED' | 'IN_PROGRESS' | 'DONE';
+  actualStartedAt?: string | number | null;
+  actualEndedAt?: string | number | null;
   /** 작업 날짜(YYYY-MM-DD). */
   date?: string;
   name: string;
