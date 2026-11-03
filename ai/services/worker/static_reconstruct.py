@@ -15,10 +15,12 @@ from .objects import ObjectStore, ObjectStoreError
 
 class StaticReconstructHandler:
     def __init__(self, store: ObjectStore, *, clock_ms: Callable[[], int], stages: Stages | None = None,
-                 env: Mapping[str, str] | None = None, workspace: Path | None = None) -> None:
+                 env: Mapping[str, str] | None = None, workspace: Path | None = None,
+                 on_preview: Callable[[dict[str, Any]], None] | None = None) -> None:
         self.store = store
         self.pipeline = StaticReconstructor(stages or ProcessStages(env), clock_ms=clock_ms)
         self.workspace = workspace
+        self.on_preview = on_preview
 
     def __call__(self, ctx: JobContext) -> Mapping[str, Any]:
         try:
@@ -28,7 +30,8 @@ class StaticReconstructHandler:
                     return self.pipeline.run(ctx.input, Path(tmp), run_id=f"{ctx.job_id}-{ctx.lease_id}",
                         cancelled=ctx.cancelled, progress=ctx.report_progress,
                         get=lambda uri: self.store.get(ctx, uri),
-                        put=lambda name, raw, content_type: self.store.put(ctx, name, raw, content_type))
+                        put=lambda name, raw, content_type: self.store.put(ctx, name, raw, content_type),
+                        on_preview=self.on_preview)
                 except ReconstructionError as e:
                     # 실패한 외부 도구 로그도 임시 폴더 정리 전에 남긴다. 취소·대여 상실 뒤에는 저장소를 쓰지 않는다.
                     refs = []
