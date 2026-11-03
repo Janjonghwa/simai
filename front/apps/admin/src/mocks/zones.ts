@@ -6,13 +6,22 @@ import {
   type ZoneBody,
   type ZoneItem,
 } from '@/features/zones/types';
+import { hexId } from '@/mocks/hexId';
 import { readLiveUser } from '@/mocks/problem';
 import type { MockConfig } from '@/mocks/realtimeScenario';
+import {
+  createStaticObjectStore,
+  readStaticObjectFields,
+  WORK_SURFACE_KIND,
+  type StaticObjectStore,
+} from '@/mocks/staticObjectStore';
 import { http, HttpResponse } from 'msw/http';
+import { z } from 'zod';
 
 // 서버 구역·구성 묶음 API(BE -120) 대신 쓰는 mock. 서버 형식과 검사 규칙(docs/design/server-config-bundle.md)을 따른다.
 // 이벤트 시나리오(realtimeScenario)의 z-04·z-02 와 맞춘다. 위치는 디자인 데모의 기본 구역을 따른다.
-// 작업면 mock(mocks/staticObjects)도 이 파일의 오류 응답·인증 검사·ID 도우미를 함께 쓴다.
+// 작업면 mock(mocks/staticObjects)도 이 파일의 오류 응답·인증 검사를 함께 쓴다. 구역 한 번 저장(POST /api/zones/commit)은
+// 구역과 작업면(mocks/staticObjectStore)을 함께 바꾼다.
 
 /** 처음 구성 묶음(cfg-12)을 발행한 시각(ms). 처음 구역·작업면들은 그 전에 저장했다. */
 export const SEEDED_AT = 1_760_342_400_000;
@@ -34,9 +43,6 @@ const ACK_DELAY_MS = 3_000;
 /** 구역 다각형 꼭짓점 수의 범위(서버 검사). */
 const MIN_VERTICES = 3;
 const MAX_VERTICES = 256;
-/** 서버가 고르는 ID 는 접두 뒤에 8자리 hex 다. */
-const ID_HEX_LENGTH = 8;
-const HEX_RADIX = 16;
 
 interface ErrorSpec {
   status: number;
@@ -64,7 +70,12 @@ const ERRORS = {
   INVALID_Z_RANGE: { status: 400, detail: '높이 범위가 올바르지 않습니다' },
   INVALID_POLYGON: { status: 400, detail: '다각형이 올바르지 않습니다' },
   INVALID_RULE_PROFILE: { status: 400, detail: 'rule_profile 이 올바르지 않습니다' },
+  INVALID_ZONE_COMMIT: { status: 400, detail: '구역 저장 요청이 올바르지 않습니다' },
+  INVALID_STATIC_OBJECT: { status: 400, detail: '작업면·정적 객체 값이 올바르지 않습니다' },
+  INVALID_SURFACE_ZONE: { status: 400, detail: '작업면만 구역에 이을 수 있습니다' },
   ZONE_NOT_FOUND: { status: 404, detail: '구역을 찾을 수 없습니다' },
+  STATIC_OBJECT_NOT_FOUND: { status: 404, detail: '작업면·정적 객체를 찾을 수 없습니다' },
+  SURFACE_ZONE_TAKEN: { status: 409, detail: '구역에 이미 다른 작업면이 이어져 있습니다' },
   CONFIG_BUNDLE_NOT_FOUND: { status: 404, detail: '구성 묶음을 찾을 수 없습니다' },
   ...PUBLISH_FAILURES,
 };
@@ -82,10 +93,6 @@ const fail = errorsOf(ERRORS);
 export const created = (body: Parameters<typeof HttpResponse.json>[0]) =>
   HttpResponse.json(body, { status: 201 });
 export const noContent = () => new HttpResponse(null, { status: 204 });
-
-/** 서버가 고르는 `<접두>-<8 hex>` ID. */
-export const hexId = (prefix: string, serial: number) =>
-  `${prefix}-${serial.toString(HEX_RADIX).padStart(ID_HEX_LENGTH, '0')}`;
 
 /** 로그인하지 않았거나 토큰이 만료면 401, 쓰기(write)인데 관리자가 아니면 403 응답을 주고 통과하면 undefined 를 주는 검사. */
 export function createDeny(now: () => number) {
@@ -205,8 +212,8 @@ function isValidZRange({ z_min_m: min, z_max_m: max, eval_type }: ZoneBody): boo
 }
 
 /** 서버(ZoneRepository.check)와 같은 검사. 통과하면 저장할 칸, 아니면 오류 응답. */
-async function checkZoneBody(request: Request) {
-  const body = zoneBodySchema.safeParse(await request.json().catch(() => undefined));
+function checkZoneBody(value: unknown) {
+  const body = zoneBodySchema.safeParse(value);
   if (!body.success || !body.data.name.trim() || !body.data.zone_kind.trim())
     return fail('INVALID_ZONE');
   if (!isValidZRange(body.data)) return fail('INVALID_Z_RANGE');
@@ -220,6 +227,8 @@ async function checkZoneBody(request: Request) {
   };
 }
 
+type ZoneFields = Exclude<ReturnType<typeof checkZoneBody>, Response>;
+
 /** 요청 본문의 rule_profile. 본문이 객체가 아니면 없는 것으로 본다. */
 function profileOf(body: unknown): unknown {
   return typeof body === 'object' && body !== null ? Reflect.get(body, 'rule_profile') : undefined;
@@ -228,6 +237,98 @@ function profileOf(body: unknown): unknown {
 /** 없거나 null 이면 기본 프로필을 쓰므로 통과다. */
 const isValidProfile = (profile: unknown) =>
   profile === undefined || profile === null || RULE_PROFILES.some((p) => p === profile);
+
+/** 한 번 저장 요청의 모양(서버 ZoneCommitRequest). 본문(body)의 값 검사는 저장할 때 구역·작업면 규칙으로 한다. */
+const commitRequestSchema = z.object({
+  zone: z.object({
+    op: z.enum(['CREATE', 'UPDATE', 'ARCHIVE', 'KEEP']),
+    zone_id: z.string().nullish(),
+    body: z.unknown().optional(),
+  }),
+  surface: z
+    .object({
+      op: z.enum(['CREATE', 'UPDATE', 'REPLACE', 'ARCHIVE']),
+      object_id: z.string().nullish(),
+      body: z.unknown().optional(),
+    })
+    .nullish(),
+  publish: z.boolean().nullish(),
+});
+
+/** 한 번 저장 요청에서 모양 검사를 통과한 구역·작업면 변경. op 별로 필요한 칸만 남는다. */
+type ZonePlan =
+  | { op: 'CREATE'; body: unknown }
+  | { op: 'UPDATE'; id: string; body: unknown }
+  | { op: 'ARCHIVE' | 'KEEP'; id: string };
+type SurfacePlan =
+  | { op: 'CREATE'; body: unknown }
+  | { op: 'UPDATE' | 'REPLACE'; id: string; body: unknown }
+  | { op: 'ARCHIVE'; id: string };
+interface CommitPlan {
+  zone: ZonePlan;
+  surface: SurfacePlan | null;
+  publish: boolean;
+}
+
+const isPresent = (value: unknown) => value !== undefined && value !== null;
+/** 앞뒤 공백을 뺀 ID. 비었으면 null. */
+const idOrNull = (id: string | null | undefined) => id?.trim() || null;
+
+type CommitRequest = z.infer<typeof commitRequestSchema>;
+
+/** 구역 op 는 CREATE(body, ID 없음)·UPDATE(ID+body)·ARCHIVE·KEEP(ID, body 없음). 틀리면 undefined. */
+function zonePlanOf({ op, zone_id, body }: CommitRequest['zone']): ZonePlan | undefined {
+  const id = idOrNull(zone_id);
+  switch (op) {
+    case 'CREATE':
+      return id === null && isPresent(body) ? { op, body } : undefined;
+    case 'UPDATE':
+      return id !== null && isPresent(body) ? { op, id, body } : undefined;
+    default:
+      return id !== null && !isPresent(body) ? { op, id } : undefined;
+  }
+}
+
+/** 작업면 op 는 CREATE(body, ID 없음)·UPDATE·REPLACE(ID+body)·ARCHIVE(ID, body 없음). 틀리면 undefined. */
+function surfacePlanOf({
+  op,
+  object_id,
+  body,
+}: NonNullable<CommitRequest['surface']>): SurfacePlan | undefined {
+  const id = idOrNull(object_id);
+  switch (op) {
+    case 'CREATE':
+      return id === null && isPresent(body) ? { op, body } : undefined;
+    case 'ARCHIVE':
+      return id !== null && !isPresent(body) ? { op, id } : undefined;
+    default:
+      return id !== null && isPresent(body) ? { op, id, body } : undefined;
+  }
+}
+
+/**
+ * 서버 ZoneCommitService.plan 과 같은 모양 검사. 구역 ARCHIVE 에는 작업면을 붙이지 않고(이은 작업면도 함께 보관), 작업면 없는
+ * KEEP 은 바꾸는 것이 없어 거절한다. 틀리면 undefined.
+ */
+function planOf(value: unknown): CommitPlan | undefined {
+  const parsed = commitRequestSchema.safeParse(value);
+  if (!parsed.success) return undefined;
+  const request = parsed.data;
+  const zone = zonePlanOf(request.zone);
+  if (!zone) return undefined;
+  const publish = request.publish !== false;
+  if (!request.surface) return zone.op === 'KEEP' ? undefined : { zone, surface: null, publish };
+  const surface = surfacePlanOf(request.surface);
+  return surface && zone.op !== 'ARCHIVE' ? { zone, surface, publish } : undefined;
+}
+
+/** 한 번 저장이 바꾼 것(응답의 zone·surface·archived_surface_id 가 된다). */
+interface CommitChanges {
+  zoneId: string;
+  zone: ZoneItem | null;
+  surface: StaticObjectItem | null;
+  archivedSurfaceId: string | null;
+}
 
 interface MockBundle {
   config_version: string;
@@ -251,20 +352,22 @@ export interface ZonesMock {
 }
 
 /**
- * 구역 조회·만들기·새 버전·보관(삭제)과 구성 묶음 발행·조회. 로그인하지 않았거나 실서버 토큰이 만료면 401, 쓰기는 관리자만(아니면 403)이다.
+ * 구역 조회·만들기·새 버전·보관(삭제)과 구성 묶음 발행·조회, 구역·작업면 한 번 저장(POST /api/zones/commit). 로그인하지 않았거나
+ * 실서버 토큰이 만료면 401, 쓰기는 관리자만(아니면 403)이다.
  * 새 버전은 지금 버전을 닫고 다음 버전을 더한다(서버처럼 고치기 시작한 버전은 보지 않는다). 보관은 지금 버전의 valid_to 만 닫는다
  * (이력은 남고, 다시 보관해도 204, 보관한 구역을 고치면 404). 상태는 이 mock 이 살아 있는 동안만 둔다.
- * 처음에는 두 구역 v1·규칙·작업면 둘을 담은 cfg-12 가 현장에 적용되어 있다. 발행하는 묶음은 그때 유효한 구역과 staticObjects()
- * 가 주는 지금 작업면·정적 객체(구역 mock 은 작업면을 들고 있지 않아 밖에서 받는다)와 규칙을 싣는다.
+ * 처음에는 두 구역 v1·규칙·작업면 둘을 담은 cfg-12 가 현장에 적용되어 있다. 발행하는 묶음은 그때 유효한 구역과 staticObjects 가
+ * 가진 지금 작업면·정적 객체(구역 mock 은 작업면 저장소를 들고 있지 않아 밖에서 받는다)와 규칙을 싣는다. 한 번 저장은 구역·
+ * 작업면을 바꾸고 묶음까지 만들다가 어디서든 실패하면 둘 다 요청 전 상태로 되돌린다(서버 한 트랜잭션).
  */
 export function createZonesMock({
   now = Date.now,
   ackDelayMs = ACK_DELAY_MS,
-  staticObjects = () => [],
+  staticObjects = createStaticObjectStore([]),
 }: {
   now?: () => number;
   ackDelayMs?: number;
-  staticObjects?: () => readonly StaticObjectItem[];
+  staticObjects?: StaticObjectStore;
 } = {}): ZonesMock {
   // 지금 버전과 닫힌 버전. 지금 버전은 valid_to 가 null 이다.
   let versions: ZoneItem[] = structuredClone(MOCK_ZONES);
@@ -289,6 +392,39 @@ export function createZonesMock({
   /** target 의 valid_to 를 t 로 닫은 전체 버전 목록. */
   const closed = (target: ZoneItem, t: number) =>
     versions.map((z) => (z === target ? { ...z, valid_to: t } : z));
+  const findCurrent = (zoneId: string) => current().find((z) => z.zone_id === zoneId);
+
+  /** 새 구역(v1)을 더한다. */
+  const addZone = (fields: ZoneFields, t: number): ZoneItem => {
+    const zone: ZoneItem = {
+      ...fields,
+      zone_id: hexId('z', ++issued),
+      zone_version: 1,
+      valid_from: t,
+      valid_to: null,
+    };
+    versions = [...versions, zone];
+    return zone;
+  };
+  /** before 의 지금 버전을 닫고 다음 버전을 더한다. */
+  const addVersion = (before: ZoneItem, fields: ZoneFields, t: number): ZoneItem => {
+    const zone: ZoneItem = {
+      ...fields,
+      zone_id: before.zone_id,
+      zone_version: before.zone_version + 1,
+      valid_from: t,
+      valid_to: null,
+    };
+    versions = [...closed(before, t), zone];
+    return zone;
+  };
+  /** 구역을 보관한다. 이미 보관했으면(두 번 누름·재시도) 그대로 성공이고, 처음부터 없는 ID 면 false 다. */
+  const archiveZone = (zoneId: string, t: number): boolean => {
+    if (!versions.some((z) => z.zone_id === zoneId)) return false;
+    const before = findCurrent(zoneId);
+    if (before) versions = closed(before, t);
+    return true;
+  };
 
   const statusAt = (bundle: MockBundle, t: number): AckStatus => {
     if (t < bundle.ack_at) return 'PENDING';
@@ -325,7 +461,7 @@ export function createZonesMock({
   const bundleItems = (): BundleItem[] => [
     ...current().map(zoneItem),
     RULE_ITEM,
-    ...staticObjects().map(staticObjectItem),
+    ...staticObjects.current().map(staticObjectItem),
   ];
   /** 다음 번호의 묶음을 t 에 발행해 맨 앞에 더한다. */
   const publish = (t: number) => {
@@ -342,6 +478,116 @@ export function createZonesMock({
     return bundle;
   };
 
+  /** 구역을 이은 지금 작업면 ID. 이은 구역이 보관됐으면 이은 것으로 보지 않는다(서버 StaticObjectRepository.zoneOf). */
+  const currentZoneOf = (objectId: string) => {
+    const zoneId = staticObjects.find(objectId)?.zone_id;
+    return zoneId && findCurrent(zoneId) ? zoneId : null;
+  };
+  /** 작업면을 이을 수 있는지 검사한다(서버 link). 작업면만 잇고, 구역에는 다른 지금 작업면이 없어야 한다. self 는 새 버전을 만드는 자기 자신. */
+  const linkFailure = (kind: string, zoneId: string, self: string | null) => {
+    if (kind !== WORK_SURFACE_KIND) return fail('INVALID_SURFACE_ZONE');
+    const taken = staticObjects.current().some((o) => o.zone_id === zoneId && o.object_id !== self);
+    return taken ? fail('SURFACE_ZONE_TAKEN') : undefined;
+  };
+  const createSurface = (body: unknown, zoneId: string, t: number) => {
+    const fields = readStaticObjectFields(body);
+    if (!fields) return fail('INVALID_STATIC_OBJECT');
+    return linkFailure(fields.kind, zoneId, null) ?? staticObjects.create(fields, zoneId, t);
+  };
+
+  /** 한 번 저장의 구역 단계. ARCHIVE 는 이은 작업면도 함께 보관한다. */
+  const applyZone = (zone: ZonePlan, t: number): CommitChanges | Response => {
+    const unchanged = (zoneId: string): CommitChanges => ({
+      zoneId,
+      zone: null,
+      surface: null,
+      archivedSurfaceId: null,
+    });
+    if (zone.op === 'CREATE') {
+      const fields = checkZoneBody(zone.body);
+      if (fields instanceof Response) return fields;
+      const added = addZone(fields, t);
+      return { ...unchanged(added.zone_id), zone: added };
+    }
+    if (zone.op === 'UPDATE') {
+      const before = findCurrent(zone.id);
+      if (!before) return fail('ZONE_NOT_FOUND');
+      const fields = checkZoneBody(zone.body);
+      if (fields instanceof Response) return fields;
+      return { ...unchanged(zone.id), zone: addVersion(before, fields, t) };
+    }
+    if (zone.op === 'ARCHIVE') {
+      if (!archiveZone(zone.id, t)) return fail('ZONE_NOT_FOUND');
+      const linked = staticObjects.linkedTo(zone.id);
+      if (linked) staticObjects.archive(linked.object_id, t);
+      return { ...unchanged(zone.id), archivedSurfaceId: linked?.object_id ?? null };
+    }
+    return findCurrent(zone.id) ? unchanged(zone.id) : fail('ZONE_NOT_FOUND');
+  };
+
+  /** 한 번 저장의 작업면 단계. 이 구역에 잇는다. */
+  const applySurface = (
+    surface: SurfacePlan,
+    changes: CommitChanges,
+    t: number,
+  ): CommitChanges | Response => {
+    const { zoneId } = changes;
+    // 다른 구역에 이어진 작업면은 이 구역 저장으로 바꾸거나 가져오지 않는다(보관한 구역에 걸린 것은 가져올 수 있다).
+    const owner = surface.op === 'CREATE' ? null : currentZoneOf(surface.id);
+    if (owner !== null && owner !== zoneId) return fail('SURFACE_ZONE_TAKEN');
+    if (surface.op === 'CREATE') {
+      const added = createSurface(surface.body, zoneId, t);
+      return added instanceof Response ? added : { ...changes, surface: added };
+    }
+    if (surface.op === 'ARCHIVE') {
+      if (!staticObjects.archive(surface.id, t)) return fail('STATIC_OBJECT_NOT_FOUND');
+      return { ...changes, archivedSurfaceId: surface.id };
+    }
+    if (surface.op === 'REPLACE') {
+      if (!staticObjects.archive(surface.id, t)) return fail('STATIC_OBJECT_NOT_FOUND');
+      const added = createSurface(surface.body, zoneId, t);
+      return added instanceof Response
+        ? added
+        : { ...changes, surface: added, archivedSurfaceId: surface.id };
+    }
+    const fields = readStaticObjectFields(surface.body);
+    if (!fields) return fail('INVALID_STATIC_OBJECT');
+    if (!staticObjects.find(surface.id)) return fail('STATIC_OBJECT_NOT_FOUND');
+    const failure = linkFailure(fields.kind, zoneId, surface.id);
+    if (failure) return failure;
+    return { ...changes, surface: staticObjects.update(surface.id, fields, zoneId, t) ?? null };
+  };
+
+  /**
+   * 한 번 저장: 구역 → 작업면 → (publish 면) 묶음. 어느 단계든 실패하면 구역·작업면을 요청 전 상태로 되돌리고 오류를 준다
+   * (서버 한 트랜잭션). failNextPublish 로 정한 오류는 묶음을 만들 때 난다(publish 가 false 면 묶음을 만들지 않아 나지 않는다).
+   */
+  const commit = (plan: CommitPlan, t: number): Response => {
+    const backup = { versions, issued, surfaces: staticObjects.snapshot() };
+    const rollback = (failure: Response) => {
+      ({ versions, issued } = backup);
+      staticObjects.restore(backup.surfaces);
+      return failure;
+    };
+    let changes = applyZone(plan.zone, t);
+    if (changes instanceof Response) return rollback(changes);
+    if (plan.surface) changes = applySurface(plan.surface, changes, t);
+    if (changes instanceof Response) return rollback(changes);
+    if (plan.publish && failNext !== null) {
+      const code = failNext;
+      failNext = null;
+      return rollback(fail(code));
+    }
+    const bundle = plan.publish ? view(publish(t)) : null;
+    return HttpResponse.json({
+      zone_id: changes.zoneId,
+      zone: changes.zone,
+      surface: changes.surface,
+      archived_surface_id: changes.archivedSurfaceId,
+      bundle,
+    });
+  };
+
   const handlers = [
     http.get('*/api/zones', ({ request }) => deny(request, false) ?? HttpResponse.json(current())),
     http.get('*/api/zones/:zoneId/versions', ({ request, params }) => {
@@ -353,44 +599,30 @@ export function createZonesMock({
     http.post('*/api/zones', async ({ request }) => {
       const denied = deny(request, true);
       if (denied) return denied;
-      const fields = await checkZoneBody(request);
+      const fields = checkZoneBody(await request.json().catch(() => undefined));
       if (fields instanceof Response) return fields;
-      const zone: ZoneItem = {
-        ...fields,
-        zone_id: hexId('z', ++issued),
-        zone_version: 1,
-        valid_from: now(),
-        valid_to: null,
-      };
-      versions = [...versions, zone];
-      return created(zone);
+      return created(addZone(fields, now()));
     }),
     http.put('*/api/zones/:zoneId', async ({ request, params }) => {
       const denied = deny(request, true);
       if (denied) return denied;
-      const before = current().find((z) => z.zone_id === params.zoneId);
+      const before = findCurrent(String(params.zoneId));
       if (!before) return fail('ZONE_NOT_FOUND');
-      const fields = await checkZoneBody(request);
+      const fields = checkZoneBody(await request.json().catch(() => undefined));
       if (fields instanceof Response) return fields;
-      const t = now();
-      const zone: ZoneItem = {
-        ...fields,
-        zone_id: before.zone_id,
-        zone_version: before.zone_version + 1,
-        valid_from: t,
-        valid_to: null,
-      };
-      versions = [...closed(before, t), zone];
-      return HttpResponse.json(zone);
+      return HttpResponse.json(addVersion(before, fields, now()));
     }),
     http.delete('*/api/zones/:zoneId', ({ request, params }) => {
       const denied = deny(request, true);
       if (denied) return denied;
-      if (!versions.some((z) => z.zone_id === params.zoneId)) return fail('ZONE_NOT_FOUND');
-      const before = current().find((z) => z.zone_id === params.zoneId);
-      // 이미 보관했으면(두 번 누름·재시도) 그대로 204 다.
-      if (before) versions = closed(before, now());
-      return noContent();
+      return archiveZone(String(params.zoneId), now()) ? noContent() : fail('ZONE_NOT_FOUND');
+    }),
+    http.post('*/api/zones/commit', async ({ request }) => {
+      const denied = deny(request, true);
+      if (denied) return denied;
+      const plan = planOf(await request.json().catch(() => undefined));
+      if (!plan) return fail('INVALID_ZONE_COMMIT');
+      return commit(plan, now());
     }),
     http.post('*/api/config-bundles', async ({ request }) => {
       const denied = deny(request, true);

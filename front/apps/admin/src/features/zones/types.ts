@@ -1,3 +1,4 @@
+import { staticObjectItemSchema, type StaticObjectBody } from '@/features/surfaces/types';
 import { z } from 'zod';
 
 // 구역 REST(GET·POST·PUT /api/zones)와 구성 묶음(POST·GET /api/config-bundles). 서버(BE -120, docs/design/server-config-bundle.md)
@@ -89,6 +90,36 @@ export type ConfigBundle = z.infer<typeof configBundleSchema>;
 
 /** 최근 묶음(새것부터). 항목은 하나씩 검사한다. */
 export const bundlesResponseSchema = z.array(z.unknown());
+
+/** 한 번 저장(POST /api/zones/commit)의 구역 부분. KEEP 은 구역을 그대로 두고 작업면만 바꾼다. */
+type ZoneCommitZone =
+  | { op: 'CREATE'; body: ZoneBody }
+  | { op: 'UPDATE'; zone_id: string; body: ZoneBody }
+  | { op: 'ARCHIVE'; zone_id: string }
+  | { op: 'KEEP'; zone_id: string };
+
+/** 한 번 저장의 작업면 부분. REPLACE 는 옛 작업면을 보관한 뒤 새 작업면을 잇는다. */
+export type ZoneCommitSurface =
+  | { op: 'CREATE'; body: StaticObjectBody }
+  | { op: 'UPDATE' | 'REPLACE'; object_id: string; body: StaticObjectBody }
+  | { op: 'ARCHIVE'; object_id: string };
+
+/** 한 번 저장 본문. ARCHIVE 는 작업면을 붙이지 않는다(서버가 이은 작업면도 보관한다). publish 를 빼면 서버는 true 다. */
+export interface ZoneCommitRequest {
+  zone: ZoneCommitZone;
+  surface?: ZoneCommitSurface;
+  publish?: boolean;
+}
+
+/** 한 번 저장 응답. 저장하지 않은 부분은 null 이고, bundle 은 publish 가 true 일 때만 있다. */
+export const zoneCommitResultSchema = z.object({
+  zone_id: z.string(),
+  zone: zoneItemSchema.nullable(),
+  surface: staticObjectItemSchema.nullable(),
+  archived_surface_id: z.string().nullable(),
+  bundle: configBundleSchema.nullable(),
+});
+export type ZoneCommitResult = z.infer<typeof zoneCommitResultSchema>;
 
 type Point = readonly [number, number, number];
 

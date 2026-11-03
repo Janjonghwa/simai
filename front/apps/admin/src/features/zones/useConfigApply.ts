@@ -1,5 +1,6 @@
 import type { WorkSurface } from '@/features/surfaces/types';
 import { BUNDLES_KEY, publishBundle, requestBundles, ZONES_KEY } from '@/features/zones/api';
+import { putBundle } from '@/features/zones/commitCache';
 import {
   configBundleSchema,
   type BundleItem,
@@ -115,9 +116,6 @@ export function removedItemCount(
   }).length;
 }
 
-const versionOf = (item: unknown) =>
-  typeof item === 'object' && item !== null ? Reflect.get(item, 'config_version') : undefined;
-
 /**
  * 현장 적용 상태와 발행. 상태는 최근 묶음 목록(GET /api/config-bundles)의 첫 묶음으로 보이고, 적용 대기 동안 다시 받는다.
  * 발행 응답(새 묶음, 적용 대기)은 목록 맨 앞에 넣는다(응답 뒤에 그린다, 낙관적 갱신 아님).
@@ -143,14 +141,7 @@ export function useConfigApply(zones: readonly Zone[], surfaces?: readonly Publi
   const publish = useMutation({
     mutationKey: PUBLISH_MUTATION_KEY,
     mutationFn: () => publishBundle(api),
-    onSuccess: async (bundle) => {
-      // 발행 전에 시작한 목록 받기는 새 묶음이 없는 옛 목록을 줄 수 있어 취소한다(적용 대기라 곧 다시 받는다).
-      await queryClient.cancelQueries({ queryKey: BUNDLES_KEY });
-      queryClient.setQueryData<unknown[]>(BUNDLES_KEY, (prev) => [
-        bundle,
-        ...(prev ?? []).filter((item) => versionOf(item) !== bundle.config_version),
-      ]);
-    },
+    onSuccess: (bundle) => putBundle(queryClient, bundle),
   });
   const unpublished = useMemo(() => unpublishedZoneIds(zones, latest), [zones, latest]);
   const unpublishedSurfaces = useMemo(

@@ -32,7 +32,7 @@ const SAME_EPS = 1e-6;
 /** 좌표를 맞추는 배율(0.001 m 단위). */
 const ROUND_SCALE = 1000;
 
-/** 작업면 중심이 구역 밖이면 이은 구역이 없어져 저장하지 않는다. */
+/** 작업면을 새로 만들거나 바꿀 때 중심이 구역 밖이면 그 구역의 작업면이 아니라 저장하지 않는다. */
 export const SURFACE_OUTSIDE_TEXT = '작업면 중심이 구역 안에 있어야 합니다.';
 
 const r3 = (v: number) => Math.round(v * ROUND_SCALE) / ROUND_SCALE;
@@ -301,18 +301,6 @@ export function withZoneBox(
     patch: prev?.patch ?? {},
     box: zone && sameEditBox(box, boxOfZone(zone)) ? null : box,
     ...(surface && shift ? { surface: shiftedSurface(surface, shift) } : keepSurface(prev)),
-  };
-}
-
-/** 서버에 저장한 부분만 초안에서 뺀 초안. 실패한 부분은 남겨 다시 저장할 수 있게 한다. */
-export function withoutSaved(
-  prev: TargetDraft | undefined,
-  saved: { zone: boolean; surface: boolean },
-): TargetDraft {
-  return {
-    patch: saved.zone ? {} : (prev?.patch ?? {}),
-    box: saved.zone ? null : (prev?.box ?? null),
-    ...(saved.surface ? {} : keepSurface(prev)),
   };
 }
 

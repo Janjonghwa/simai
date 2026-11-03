@@ -20,7 +20,6 @@ import {
   surfaceDraftOf,
   surfaceOfBox,
   targetChanged,
-  withoutSaved,
   withPatch,
   withSurface,
   withSurfaceBox,
@@ -41,6 +40,7 @@ const linked: WorkSurface = {
   name: '단상',
   geometry: { centerXy: [7, 2.5], sizeXy: [1, 1], yawRad: 0, topHeightM: 0.4 },
   sigma: null,
+  zoneId: null,
   validFrom: 1,
 };
 
@@ -215,22 +215,13 @@ describe('초안 갱신', () => {
     expect(kept.surface).toBeNull();
   });
 
-  it('저장한 부분만 초안에서 빼고, 비면 빈 초안이다', () => {
-    const draft: TargetDraft = {
-      patch: { name: 'x' },
-      box: MOVED,
-      surface: surfaceDraftOf(linked),
-    };
-    expect(withoutSaved(draft, { zone: true, surface: false })).toMatchObject({
-      patch: {},
-      box: null,
-      surface: draft.surface,
-    });
-    const surfaceOnly = withoutSaved(draft, { zone: false, surface: true });
-    expect(surfaceOnly).toMatchObject({ patch: { name: 'x' }, box: MOVED });
-    expect(surfaceOnly.surface).toBeUndefined();
-    expect(isEmptyDraft(withoutSaved(draft, { zone: true, surface: true }))).toBe(true);
-    expect(isEmptyDraft(draft)).toBe(false);
+  it('고친 칸·상자·작업면이 하나도 없으면 빈 초안이다', () => {
+    expect(isEmptyDraft({ patch: {}, box: null })).toBe(true);
+    expect(isEmptyDraft({ patch: { name: 'x' }, box: null })).toBe(false);
+    expect(isEmptyDraft({ patch: {}, box: MOVED })).toBe(false);
+    // 작업면 칸이 null 이면 저장된 작업면을 지우겠다는 초안이라 비지 않았다
+    expect(isEmptyDraft({ patch: {}, box: null, surface: null })).toBe(false);
+    expect(isEmptyDraft({ patch: {}, box: null, surface: surfaceDraftOf(linked) })).toBe(false);
   });
 
   it('원본과 다르게 고친 상자만 저장할 상자다', () => {

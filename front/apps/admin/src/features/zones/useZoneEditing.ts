@@ -68,7 +68,7 @@ function usePendingPublish(
 
 /**
  * 구역 편집 화면의 상태와 동작. 구역(또는 새 구역) 하나를 고르면 이름·심각도·구역 상자·작업면(하나)을 고치고, 저장하면
- * 구역 → 작업면 → 구성 묶음 발행 순서로 보낸다(useZoneCommit). 고친 것은 구역마다 초안으로 남아 다른 구역으로 옮겨도
+ * 구역·작업면·구성 묶음 발행을 요청 하나로 보낸다(useZoneCommit). 고친 것은 구역마다 초안으로 남아 다른 구역으로 옮겨도
  * 잃지 않는다. 3D 손잡이는 편집 상자를 boxEdit 저장소로 내려 SpatialViewportHost 가 뷰어에 넘긴다.
  */
 export function useZoneEditing({
@@ -104,15 +104,18 @@ export function useZoneEditing({
     : newZoneErrors(form);
   const surfaceErrors = surface ? geometryErrors(surface.geometry) : null;
   const surfaceValid = surfaceErrors === null;
-  // 작업면 중심이 구역 바닥 안에 있어야 그 구역의 작업면이다(서버에는 잇는 칸이 없어 위치로 잇는다).
-  const polygon = zone && !draft?.box ? zone.polygon : boxToPolygon(zoneBox);
-  const surfaceOutside = surface !== null && !pointInPolygon(surface.geometry.centerXy, polygon);
 
   // ---- 저장 조건 ----------------------------------------------------------------------------
   const zoneDirty = zone ? zoneChanged(zone, draft) : false;
   const surfaceDirty = zone ? surfaceChanged(draft?.surface, linked) : false;
   const dirty = zoneDirty || surfaceDirty;
   const ready = Boolean(zonesRaw) && surfaceList.loaded;
+  // 작업면을 새로 만들거나 바꿀 때만 중심이 구역 바닥 안에 있는지 본다. 구역만 고칠 때는 서버가 저장한 연결을 그대로 둔다.
+  const polygon = zone && !draft?.box ? zone.polygon : boxToPolygon(zoneBox);
+  const surfaceOutside =
+    (zone === null || surfaceDirty) &&
+    surface !== null &&
+    !pointInPolygon(surface.geometry.centerXy, polygon);
   const valid = Object.keys(errors).length === 0 && surfaceValid && !surfaceOutside;
   const { pendingIds, pendingCount } = usePendingPublish(apply, links, ready);
   // 이 구역이 저장 전(고침)인지 가르는 ID 모음. 드롭다운에 `저장 전`을 붙인다.
@@ -158,7 +161,7 @@ export function useZoneEditing({
     linked,
     zoneDirty,
     surfaceDirty,
-    saveReady: canEdit && zone !== null && dirty && valid,
+    saveReady: canEdit && zone !== null && ready && dirty && valid,
     addReady: canEdit && zone === null && ready && valid,
     pendingCount,
     publish: () => apply.publish.mutateAsync(),

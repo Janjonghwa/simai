@@ -1,4 +1,4 @@
-import { BUNDLES_KEY, ZONES_KEY } from '@/features/zones/api';
+import { BUNDLES_KEY, commitZone, ZONES_KEY } from '@/features/zones/api';
 import type { BundleItem, Zone } from '@/features/zones/types';
 import {
   publishErrorText,
@@ -10,8 +10,8 @@ import {
   type PublishableSurface,
 } from '@/features/zones/useConfigApply';
 import { useZones } from '@/features/zones/useZones';
-import { useZoneSave } from '@/features/zones/useZoneSave';
 import { bodyOf, formOf } from '@/features/zones/zoneForm';
+import { api } from '@/lib/api';
 import { ApiError } from '@/lib/http';
 import { createStaticObjectsMock } from '@/mocks/staticObjects';
 import { createZonesMock, type ZonesMock } from '@/mocks/zones';
@@ -54,7 +54,7 @@ async function run() {
   const view = renderHook(
     () => {
       const list = useZones();
-      return { list, writes: useZoneSave(), apply: useConfigApply(list.zones) };
+      return { list, apply: useConfigApply(list.zones) };
     },
     { wrapper },
   );
@@ -63,11 +63,16 @@ async function run() {
   return view;
 }
 type View = Awaited<ReturnType<typeof run>>;
+/** 첫 구역의 새 버전을 구성 묶음 없이(publish: false) 저장하고 구역 목록을 다시 받는다(묶음에는 아직 실리지 않은 저장). */
 const saveFirstZone = async (view: View) => {
   const zone = view.result.current.list.zones[0]!;
-  await act(() =>
-    view.result.current.writes.save.mutateAsync({ zone, form: formOf(zone), box: null }),
-  );
+  await act(async () => {
+    await commitZone(api, {
+      zone: { op: 'UPDATE', zone_id: zone.zoneId, body: bodyOf(zone, formOf(zone), null) },
+      publish: false,
+    });
+    await client.invalidateQueries({ queryKey: ZONES_KEY });
+  });
 };
 const callApi = (method: string, path: string, body?: unknown) =>
   fetch(`http://api.test${path}`, {
@@ -456,7 +461,7 @@ describe('useConfigApply', () => {
 
   it('작업면을 새 버전으로 저장하거나 보관하면 발행 전·보관으로 세고, 발행하면 묶음에 지금 작업면이 실린다', async () => {
     const surfacesMock = createStaticObjectsMock();
-    mock = createZonesMock({ ackDelayMs: 200, staticObjects: surfacesMock.current });
+    mock = createZonesMock({ ackDelayMs: 200, staticObjects: surfacesMock.store });
     server.resetHandlers(...mock.handlers, ...surfacesMock.handlers);
     const toSurfaces = () =>
       surfacesMock.current().map((o) => ({ objectId: o.object_id, version: o.object_version }));

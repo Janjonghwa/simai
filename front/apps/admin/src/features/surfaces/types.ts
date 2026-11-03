@@ -25,6 +25,8 @@ export const staticObjectItemSchema = z.object({
   top_height_m: z.number().nullable(),
   // 상판 높이 표준편차(m). 화면에서 고치지 않고 받은 값을 그대로 다시 보낸다(없으면 Tier 0 가 0.02 로 읽는다).
   top_height_sigma_m: z.number().nullish(),
+  // 이은 구역(서버가 정한다). 보관한 구역 ID 일 수 있다. 구역이 없는 작업면·장애물은 null 이다.
+  zone_id: z.string().nullish(),
   // 이 버전이 유효해진 시각(epoch ms, 서버가 저장할 때 정한다). 지금 버전은 valid_to 가 없다.
   valid_from: z.number(),
   valid_to: z.number().nullable(),
@@ -57,6 +59,8 @@ export interface WorkSurface {
   geometry: SurfaceGeometry;
   /** 받은 상판 높이 표준편차. 없으면 null. */
   sigma: number | null;
+  /** 서버가 이은 구역 ID. 없으면 null. 보관한 구역일 수 있어 지금 구역과 맞춰 읽는다. */
+  zoneId: string | null;
   /** 이 버전이 유효해진 시각(ms). 마지막 묶음보다 늦으면 아직 발행하지 않은 것이다. */
   validFrom: number;
 }
