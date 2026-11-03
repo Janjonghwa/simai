@@ -140,7 +140,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -393,6 +393,10 @@ class WorldTrackConfig:
     """재시작 뒤 첫 프레임 시각 − 체크포인트 Track 시각(tracks_t)이 이보다 크면 복원 Track 을 받지 않는다. 받은 복원 Track 도
     마지막 관측부터 이 시간이 지나면 후보에서 뺀다. 이전 이벤트 연결(recovery.relink)은 첫 프레임부터 이 시간까지만 한다.
     명세 부록 C 의 기준 시간 초기값(30초)"""
+    temporal_time_weight: float = 0.0
+    """시간 간선 비용에서 공백 시간(`dt_ms / reconnect_window_ms`) 가중치 (S15P31A101-464)"""
+    appearance_weight: float = 1.0
+    """시간 간선 비용에서 외형 비용(`appearance_cost`, S15P31A101-463 2단계 COPE Re-ID 자리) 가중치"""
     joint_gate: JointGateConfig = field(default_factory=JointGateConfig)
 
     def __post_init__(self) -> None:
@@ -412,6 +416,8 @@ class WorldTrackConfig:
             "uncertain_hold_ms",
             "max_extrapolation_ms",
             "restore_max_age_ms",
+            "temporal_time_weight",
+            "appearance_weight",
         ):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} 는 0 이상이어야 한다")
@@ -799,6 +805,114 @@ class _Applied:
     pelvis: tuple[float, float, float] | None
 
 
+AppearanceCostFn = Callable[[str, ViewCluster, int], float]
+"""시간 그래프 연결에서 (world_id, cluster, t) 의 외형 비용(코사인 거리 등)을 돌려주는 콜백 타입.
+기본은 0.0 이고 S15P31A101-463 2단계(COPE Re-ID)가 꽂는다 (S15P31A101-464)."""
+
+
+@dataclass(frozen=True)
+class TemporalEdgeCost:
+    """끊긴/활성 World Track 과 새 클러스터 사이의 시간 그래프 간선 비용 ( 위치 + 시간 + 외형, S15P31A101-464)."""
+
+    track_id: str
+    association_id: str
+    dt_ms: int
+    distance_m: float
+    gate_radius_m: float
+    position_cost: float
+    time_cost: float
+    key_bonus: float
+    appearance_cost: float = 0.0
+    feasible: bool = True
+    reject_reason: str | None = None
+
+    @property
+    def total_cost(self) -> float:
+        if not self.feasible:
+            return math.inf
+        return float(self.position_cost + self.time_cost + self.appearance_cost - self.key_bonus)
+
+
+def temporal_edge_cost(
+    track_id: str,
+    track_xy: np.ndarray | Sequence[float],
+    t_last_valid: int,
+    cluster: ViewCluster,
+    cluster_xy: np.ndarray | Sequence[float],
+    t: int,
+    config: WorldTrackConfig,
+    *,
+    shared_keys: int = 0,
+    appearance_cost: float = 0.0,
+    clamp_gate: bool = True,
+    reject_reason: str | None = None,
+) -> TemporalEdgeCost:
+    """World Track 과 클러스터 사이의 시간 그래프 간선 비용(위치 + 시간 + 외형 − 키 이력 보너스)을 계산한다 (S15P31A101-464).
+
+    이번 티켓에서는 `appearance_cost = 0.0` 이 기본이며, S15P31A101-463 2단계(COPE Re-ID)가 기하 게이트 통과 후보에
+    코사인 거리를 넣을 수 있도록 인터페이스를 분리한다.
+    """
+    dt_ms = int(t - t_last_valid)
+    tx, ty = float(track_xy[0]), float(track_xy[1])
+    cx, cy = float(cluster_xy[0]), float(cluster_xy[1])
+    d = float(math.hypot(cx - tx, cy - ty))
+    reach = config.gate_base_m + config.max_speed_mps * max(dt_ms, 0) / 1000.0
+    radius = min(config.gate_max_m, reach) if clamp_gate else reach
+    reason = reject_reason
+    if reason is None and d > radius:
+        reason = "unreachable"
+    feasible = reason is None
+    pos_cost = d / config.gate_scale_m
+    time_cost = (max(dt_ms, 0) / max(config.reconnect_window_ms, 1)) * config.temporal_time_weight
+    app_cost = float(appearance_cost) * config.appearance_weight
+    total_keys = max(len(cluster.keys), 1)
+    bonus = config.key_bonus * (shared_keys / total_keys)
+    return TemporalEdgeCost(
+        track_id=track_id,
+        association_id=cluster.association_id,
+        dt_ms=dt_ms,
+        distance_m=d,
+        gate_radius_m=float(radius),
+        position_cost=float(pos_cost),
+        time_cost=float(time_cost),
+        key_bonus=float(bonus),
+        appearance_cost=float(app_cost),
+        feasible=feasible,
+        reject_reason=reason,
+    )
+
+
+def resolve_temporal_graph(
+    edges: Sequence[TemporalEdgeCost],
+    *,
+    ambiguity_margin: float = 0.3,
+    max_cost: float = _FORBIDDEN,
+) -> tuple[dict[str, str], set[str]]:
+    """시간 그래프 간선 후보들을 헝가리안 1:1 배정으로 풀어 `(track_id -> association_id, 애매한 track_id 집합)` 을 돌려준다."""
+    feasible_edges = [e for e in edges if e.feasible and math.isfinite(e.total_cost) and e.total_cost < max_cost]
+    if not feasible_edges:
+        return {}, set()
+    track_ids = sorted({e.track_id for e in feasible_edges})
+    assoc_ids = sorted({e.association_id for e in feasible_edges})
+    by_pair = {(e.track_id, e.association_id): e.total_cost for e in feasible_edges}
+    matrix = [[by_pair.get((tid, aid), _FORBIDDEN) for aid in assoc_ids] for tid in track_ids]
+    matched: dict[str, str] = {}
+    for r, c in linear_sum_assignment(matrix):
+        tid, aid = track_ids[r], assoc_ids[c]
+        val = by_pair.get((tid, aid), math.inf)
+        if math.isfinite(val) and val < max_cost:
+            matched[tid] = aid
+    ambiguous: set[str] = set()
+    for tid, aid in matched.items():
+        chosen = by_pair[(tid, aid)]
+        rival_t = [o for o in track_ids if o != tid and by_pair.get((o, aid), math.inf) - chosen < ambiguity_margin]
+        rival_a = [o for o in assoc_ids if o != aid and by_pair.get((tid, o), math.inf) - chosen < ambiguity_margin]
+        if rival_t or rival_a:
+            ambiguous.add(tid)
+            ambiguous.update(rival_t)
+    return matched, ambiguous
+
+
 class WorldTrackManager:
     """공통 시각마다 Cross-view 결과로 World Track 을 갱신한다. 시각은 늘어나는 순서로만 넣는다."""
 
@@ -807,10 +921,12 @@ class WorldTrackManager:
         issuer: WorldIdIssuer,
         config: WorldTrackConfig | None = None,
         input_provenance: Mapping[str, Any] | None = None,
+        appearance_cost_fn: AppearanceCostFn | None = None,
     ) -> None:
         self.issuer = issuer
         self.config = config if config is not None else WorldTrackConfig()
         self.input_provenance = dict(input_provenance) if input_provenance is not None else None
+        self.appearance_cost_fn = appearance_cost_fn
         self._tracks: dict[str, _Track] = {}
         self._dormant: dict[str, _Track] = {}
         """소실 후보: LOST 를 한 번 낸 CONFIRMED Track (늦은 재연결용. world_state 에는 내지 않는다)"""
@@ -882,6 +998,26 @@ class WorldTrackManager:
     def last_t(self) -> int | None:
         """마지막으로 넣은 공통 시각. 아직 없으면 None."""
         return self._last_t
+
+    def temporal_prior_groups(
+        self, t: int | None = None, ttl_ms: int | None = None
+    ) -> tuple[frozenset[TrackKey], ...]:
+        """최근 창(`ttl_ms`) 안에 같은 활성 World Track 에 속했던 카메라별 최신 로컬 트랙 묶음 (S15P31A101-464)."""
+        ref_t = self._last_t if t is None else require_ms("t", t)
+        if ref_t is None:
+            return ()
+        window = self.config.split_suppression_owner_ttl_ms if ttl_ms is None else int(ttl_ms)
+        groups: list[frozenset[TrackKey]] = []
+        for tr in sorted(self._tracks.values(), key=lambda item: item.order):
+            by_cam: dict[str, tuple[int, TrackKey]] = {}
+            for k, kt in tr.keys.items():
+                if ref_t - kt <= window:
+                    prev = by_cam.get(k[0])
+                    if prev is None or (kt, k) > prev:
+                        by_cam[k[0]] = (kt, k)
+            if len(by_cam) >= 2:
+                groups.append(frozenset(k for _, k in by_cam.values()))
+        return tuple(groups)
 
     def export_tracks(self) -> tuple[TrackCheckpoint, ...]:
         """체크포인트용 Track 상태(명세 3.2 재시작 복구, S15P31A101-51). 살아 있는 Track 만(소실 후보 제외), world_id 순서.
@@ -959,13 +1095,26 @@ class WorldTrackManager:
             # 중간에 빈 tick 이 없어도 창 만료를 적용한다. 마지막 관측 시각만 근거로 삼는다.
             if tr.lifecycle is not TrackLifecycle.TENTATIVE and t - tr.t_last_valid > cfg.lost_after_ms:
                 return math.inf
-            d = float(np.linalg.norm(c.anchor - predicted[tr.world_id]))
-            radius = min(cfg.gate_max_m, cfg.gate_base_m + cfg.max_speed_mps * (t - tr.t_last_valid) / 1000.0)
-            if d > radius:
-                return math.inf
             keys = c.cluster.keys
             shared = sum(1 for k in keys if owner.get(k) == tr.world_id)
-            return d / cfg.gate_scale_m - cfg.key_bonus * shared / len(keys)
+            app_cost = (
+                float(self.appearance_cost_fn(tr.world_id, c.cluster, t))
+                if self.appearance_cost_fn is not None
+                else 0.0
+            )
+            edge = temporal_edge_cost(
+                tr.world_id,
+                predicted[tr.world_id],
+                tr.t_last_valid,
+                c.cluster,
+                c.anchor,
+                t,
+                cfg,
+                shared_keys=shared,
+                appearance_cost=app_cost,
+                clamp_gate=True,
+            )
+            return edge.total_cost
 
         anchored = [c for c in clusters if c.anchor is not None]
         self.diag["cluster.single_view"] += sum(1 for c in clusters if c.cluster.skeleton is None)

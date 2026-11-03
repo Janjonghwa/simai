@@ -527,7 +527,12 @@ class Perception:
             self.lagging_ticks[c] += 1
         views, drops = self.buffer.views_at(t)
         self._observe(lambda d: (d.observe_tick(t, fusion.lagging), d.observe_views(views, drops)))
-        assoc = self.associator.associate(t, views, exclude_cameras=tuple(sync_invalid))
+        assoc = self.associator.associate(
+            t,
+            views,
+            exclude_cameras=tuple(sync_invalid),
+            prior_groups=self.manager.temporal_prior_groups(t, self.associator.config.temporal_prior_ttl_ms),
+        )
         self._observe(lambda d: d.observe_association(assoc))
         if self.observe_association is not None:
             try:
