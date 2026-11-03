@@ -26,7 +26,7 @@
 | VERIFIED / UNVERIFIABLE | 해소 여부를 관측으로 확인할 수 있는지 |
 | ACKNOWLEDGED | 운영자(관리자·반장·현장 확인 버튼)가 경보를 확인했다는 속성(해소 아님) |
 | severity / confidence | 위험 정도 / 증거 신뢰도. 서로 독립 |
-| “확인 필요” | 신뢰도가 낮은 경보에 붙는 표시. `confidence_reasons[]`가 비어 있지 않은 상태. 등급은 유지(7.1) |
+| “확인 필요” | 신뢰도가 낮은 경보에 붙는 표시. `confidence_reasons[]`가 비어 있지 않은 상태. 등급은 유지(7.1). R1 신규 발생은 위치가 확실할 때만 내므로 붙지 않고 이미 열린 R1 이벤트의 유지 판정과 R2\~R5 에만 붙는다 |
 | confidence_reasons | “확인 필요”의 이유 목록: Z_UNKNOWN, PREDICTED, PROVISIONAL_CALIB, SINGLE_VIEW, JOINT_UNCERTAIN, IDENTITY_UNCERTAIN(7.1) |
 | 발생 지속 조건 | 이벤트 발생 전 조건이 짧게 이어져야 하는 규칙. 초기값 10Hz 3프레임 중 2프레임(6.4) |
 | 이벤트 재개 | 같은 사람·같은 구역이 해소 후 10초 안에 다시 걸리면 새 이벤트 대신 기존 이벤트를 다시 활성으로 돌리는 것(6.4) |

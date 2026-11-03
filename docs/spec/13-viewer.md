@@ -15,7 +15,7 @@ Three.js가 유일한 렌더러다. 배경·사람·구역·경보(확장 시 �
 
 ## 13.2 상태 표시 규칙
 
-- 관측 상태: OBSERVED 실선 / PREDICTED 반투명 + 예측 궤적 / UNKNOWN 마지막 위치에 물음표 표식(아바타 제거하지 않음).
+- 관측 상태: OBSERVED 실선 / PREDICTED 반투명 + 예측 궤적 / UNKNOWN 마지막 위치에 물음표 표식(아바타 제거하지 않음). 위치가 확실하지 않은 트랙(`PREDICTED`, 카메라 1대이고 접지점 미확인, `IDENTITY_UNCERTAIN` 등 R1 확실한 위치 조건 미충족, 7.1·8.2)은 이벤트·경보를 만드는 대신 3D 관제 화면의 사람 표시에만 “위치 불확실”을 흐리게 표시한다(뷰어 후속).
 - 관절 가시성이 거짓인 관절은 흐리게 처리한다. 아바타는 접지가 확인되면 발을 ground_anchor_xyz에 맞추고 발아래 지지면(`ground_anchor_xyz`)에 방사형 접지 그림자(`GroundShadowLayer`)를 그리며, 접지가 미확인이면 그림자를 숨기고 pelvis_xyz 기준으로 배치하며 “접지 미확인”을 표시한다(5.2, `docs/design/viewer-background-quality.md`).
 - MHR 메시 아바타 구동(`/topic/avatar`): 사람의 존재·위치·접지·관측 상태·ID 신뢰도는 `/topic/world` 만 따른다. root 위치는 지연 없이 `/topic/world` 최신 위치(접지 VALID 면 발을 `ground_anchor_xyz` 에 맞춤)를 쓰고, 관절 회전(축각 라디안, null 은 bind 회전)만 재생 지연 버퍼 D = 250 ms 로 두 표본 사이를 slerp 한다(외삽 금지, Three.js 좌표 변환은 어댑터 한 곳에서만 수행). 외형은 텍스처가 없으면 기본 재질(상·하의 대표색)과 아바타 전용 소형 PMREM 환경맵으로 그리고, `albedo.png`(`SRGBColorSpace`, `LinearFilter`)와 `surface_source.png`(`NoColorSpace`, `NearestFilter`, 밉맵 없음)가 있으면 사람·버전별로 두 장이 모두 준비될 때 깜빡임 없이 교체해 부호별로 표시한다: `2`(관측) 원본 색, `1`(보간) 채도 0.45·명도 0.85 감쇠, `0`·`128`(미관측) 기본 재질, `130`(얼굴 관측)은 `face_policy` 에 따라 `OBSERVED` 원본·`BLURRED` 얼굴 관측 텍셀 한정 3×3 가우시안+채도 완화·`EXCLUDED` 기본 재질로 그린다(20.3, `docs/design/avatar-pose-stream.md`). 아래 5조건 중 하나라도 해당하면 그 사람은 즉시 캡슐 아바타로 되돌아가고, 해소되면 다음 포즈부터 다시 메시로 그린다(세부는 `docs/design/avatar-pose-stream.md`·`contracts/`).
   1. 새 포즈 수신이 0.5 s 넘게 끊김
