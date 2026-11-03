@@ -68,6 +68,7 @@ function EditTargetToggle({ edit }: { edit: ZoneEditing }) {
       <Button
         variant="secondary"
         aria-pressed={!surfMode}
+        disabled={!edit.zone && edit.surface !== null}
         onClick={() => edit.chooseSurfaceMode(false)}
         className={BUTTON_CLASS}
       >

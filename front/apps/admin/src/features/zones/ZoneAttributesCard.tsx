@@ -39,6 +39,7 @@ export function ZoneAttributesCard({ edit }: { edit: ZoneEditing }) {
         <span className={FIELD_LABEL_CLASS}>심각도</span>
         <select
           aria-label="심각도"
+          disabled={!edit.zone && edit.surface !== null}
           value={form.severity}
           onChange={(event) => edit.setSeverity(event.target.value as Severity)}
           className={SELECT_CLASS}
