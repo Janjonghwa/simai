@@ -87,7 +87,8 @@ class SwapProbation:
         if not bad:
             self.bad_since_ms = self.last_bad_ms = None
             return False
-        if self.last_bad_ms is None or report.t_ms - self.last_bad_ms > 5_000:
+        gap = 5_000 if report.max_sample_age_ms is None else max(5_000, report.max_sample_age_ms)
+        if self.last_bad_ms is None or report.t_ms - self.last_bad_ms > gap:
             self.bad_since_ms = report.t_ms
         self.last_bad_ms = report.t_ms
         return self.bad_since_ms is not None and report.t_ms - self.bad_since_ms >= self.sustain_ms

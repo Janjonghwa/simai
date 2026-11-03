@@ -193,6 +193,64 @@ class BackgroundCleanBackground:
             while samples and samples[0].capture_time_ms < now_ms - horizon:
                 samples.popleft()
 
+    def recent_signature(self, cid: str) -> tuple[int, int, int] | None:
+        ctx = self._active
+        q = self.accumulator._samples.get(cid)
+        n = self.settings.min_samples_per_camera
+        if ctx is None or self._context is not ctx or not q or len(q) < n:
+            return None
+        samples = list(q)[-n:]
+        revealed = np.logical_or.reduce([s.reveal_mask for s in samples])
+        if 1.0 - float(revealed.mean()) >= self.accumulator.config.max_unrevealed_ratio:
+            return None
+        return ctx.generations[cid], samples[0].capture_time_ms, samples[-1].capture_time_ms
+
+    def synthesize_recent(self, cid: str) -> tuple[np.ndarray, np.ndarray, int] | None:
+        import cv2
+        from simai_ai.calibration.world_frame.clean_background import compute_masked_median_background
+
+        if self.recent_signature(cid) is None:
+            return None
+        samples = list(self.accumulator._samples[cid])[-self.settings.min_samples_per_camera:]
+        grays = [cv2.cvtColor(s.frame_bgr, cv2.COLOR_BGR2GRAY) if s.frame_bgr.ndim == 3 else s.frame_bgr for s in samples]
+        h, w = samples[0].reveal_mask.shape
+        bg = np.empty((h, w), dtype=np.uint8)
+        valid = np.empty((h, w), dtype=np.uint8)
+        n = len(samples)
+        minimum = max(2, math.ceil(n * 0.5))
+        step = max(self.accumulator.config.rows_per_chunk, 256)
+        for start in range(0, h, step):
+            end = min(h, start + step)
+            masks = np.stack([s.reveal_mask[start:end] for s in samples], axis=0)
+            pixels = np.stack([g[start:end] for g in grays], axis=0)
+            if masks.all():
+                k = n // 2
+                if n % 2 == 1:
+                    bg[start:end] = np.partition(pixels, k, axis=0)[k]
+                else:
+                    part = np.partition(pixels, (k - 1, k), axis=0)
+                    bg[start:end] = ((part[k - 1].astype(np.uint16) + part[k].astype(np.uint16) + 1) >> 1).astype(np.uint8)
+                f32 = pixels.astype(np.float32)
+                mean = f32.mean(axis=0)
+                variance = (f32 * f32).mean(axis=0) - mean * mean
+                valid[start:end] = (variance <= 225.0).astype(np.uint8) * 255
+            else:
+                chunk_bg, _ = compute_masked_median_background(
+                    [g[start:end] for g in grays],
+                    [s.reveal_mask[start:end] for s in samples],
+                    rows_per_chunk=end - start,
+                )
+                bg[start:end] = chunk_bg
+                f32 = pixels.astype(np.float32)
+                count = masks.sum(axis=0)
+                weights = masks.astype(np.float32)
+                denom = np.maximum(count, 1).astype(np.float32)
+                mean = (f32 * weights).sum(axis=0) / denom
+                variance = (((f32 - mean) ** 2) * weights).sum(axis=0) / denom
+                valid[start:end] = ((count >= minimum) & (variance <= 225.0)).astype(np.uint8) * 255
+        bg[valid == 0] = 0
+        return bg, valid, samples[-1].capture_time_ms
+
     def _mask_unknown(self, folder: Path, cid: str, doc: dict[str, Any]) -> None:
         """관측 횟수가 부족하거나 시간에 따라 변하는 픽셀은 유효 마스크에서 제외한다."""
         import cv2
