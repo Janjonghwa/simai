@@ -373,6 +373,7 @@ function TbmPageContent() {
         <TaskAddDialog
           workTypes={workTypes}
           layouts={layouts}
+          serverZones={!isFallback}
           onAdd={add}
           onCancel={() => setAdding(false)}
           onOpenLayoutEditor={(layoutId) => openLayoutEditor(layoutId)}
@@ -383,6 +384,7 @@ function TbmPageContent() {
           task={currentTask}
           workTypes={workTypes}
           layouts={layouts}
+          serverZones={!isFallback}
           onSave={saveTaskEdit}
           onCancel={() => setEditingTask(false)}
           onDelete={handleDeleteTask}
