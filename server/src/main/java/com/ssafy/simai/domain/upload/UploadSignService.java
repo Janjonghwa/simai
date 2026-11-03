@@ -80,7 +80,7 @@ public class UploadSignService {
 
         UUID eventId = (purpose == UploadPurpose.TICKET_PHOTO || purpose == UploadPurpose.AVATAR_ASSET
                 || purpose == UploadPurpose.VIDEO_SEGMENT || purpose == UploadPurpose.SCENE_GLTF
-                || purpose == UploadPurpose.STATIC_RECONSTRUCT_INPUT)
+                || purpose == UploadPurpose.STATIC_RECONSTRUCT_INPUT || purpose == UploadPurpose.REPORT_SIGNATURE)
                 ? null
                 : request.eventId();
         MapSqlParameterSource params = new MapSqlParameterSource()
@@ -149,7 +149,7 @@ public class UploadSignService {
                 }
                 yield purpose.prefix() + "/" + request.segmentId() + extension;
             }
-            case TICKET_PHOTO, SCENE_GLTF -> purpose.prefix() + "/" + UUID.randomUUID() + extension;
+            case TICKET_PHOTO, SCENE_GLTF, REPORT_SIGNATURE -> purpose.prefix() + "/" + UUID.randomUUID() + extension;
             case AVATAR_ASSET -> avatarKey(purpose, request, extension);
             case STATIC_RECONSTRUCT_INPUT -> staticInputKey(purpose, request, extension);
         };
@@ -238,7 +238,7 @@ public class UploadSignService {
 
         @Override
         public String toString() {
-            return "SignedUpload[objectKey=" + objectKey + ", expiresAtMs=" + expiresAtMs + "]";
+            return "SignedUpload[expiresAtMs=" + expiresAtMs + "]";
         }
     }
 }

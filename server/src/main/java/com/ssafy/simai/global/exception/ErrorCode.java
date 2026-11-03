@@ -561,7 +561,12 @@ public sealed interface ErrorCode {
         REPORT_NOT_FOUND(HttpStatus.NOT_FOUND, "보고서를 찾을 수 없습니다"),
         INVALID_REPORT_REQUEST(HttpStatus.BAD_REQUEST, "보고서 요청 값이 올바르지 않습니다(work_id 는 양의 정수)"),
         WORK_HAS_NO_LAYOUT(HttpStatus.CONFLICT, "작업에 연결된 레이아웃이 없습니다. 먼저 작업에 layout_id 를 연결하세요"),
-        REPORT_IN_PROGRESS(HttpStatus.CONFLICT, "이 작업의 보고서를 이미 생성 중입니다");
+        REPORT_IN_PROGRESS(HttpStatus.CONFLICT, "이 작업의 보고서를 이미 생성 중입니다"),
+        REPORT_VERSION_STALE(HttpStatus.CONFLICT, "새 보고서 버전이 있습니다"),
+        REPORT_NOT_READY(HttpStatus.CONFLICT, "보고서가 준비되지 않았습니다"),
+        SIGNATURE_LIMIT_REACHED(HttpStatus.CONFLICT, "이 보고서 버전의 서명 인원 상한(50명)에 도달했습니다"),
+        REPORT_LOCKED(HttpStatus.CONFLICT, "서명된 보고서 버전입니다"),
+        INVALID_SIGNATURE(HttpStatus.BAD_REQUEST, "서명 요청이 올바르지 않습니다");
 
         private final HttpStatus status;
         private final String message;
