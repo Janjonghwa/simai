@@ -593,4 +593,29 @@ public sealed interface ErrorCode {
             return message;
         }
     }
+
+    /** 세팅 1단계 카메라 각도 헬퍼 중계(POST /api/devices/coverage-guides, GET /api/cameras/coverage-guides, S15P31A101-447) */
+    enum CoverageGuide implements ErrorCode {
+        INVALID_COVERAGE_GUIDE(HttpStatus.BAD_REQUEST, "카메라 각도 안내가 계약(messages/coverage_guide 1.x)에 맞지 않습니다"),
+        COVERAGE_GUIDE_SOURCE_MISMATCH(HttpStatus.BAD_REQUEST, "coverage_guide source_id 가 기기 토큰의 기기 ID 와 다릅니다"),
+        NOT_A_LAPTOP(HttpStatus.FORBIDDEN, "현장 노트북(LAPTOP)으로 등록된 기기만 카메라 각도 안내를 올릴 수 있습니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        CoverageGuide(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }

@@ -66,7 +66,7 @@ public class CalibrationViews {
         return node;
     }
 
-    ObjectNode coverageGuides() {
+    public ObjectNode coverageGuides() {
         String version = currentVersion().orElse(null);
         ObjectNode node = mapper.createObjectNode();
         node.put("calibration_version", version);

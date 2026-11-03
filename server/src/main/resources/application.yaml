@@ -94,3 +94,7 @@ simai:
     # EC2 옆 Python Risk Engine 컨테이너(PLANNED 판정 /v1/plan/evaluate, TBM 보고서 /v1/report/generate, S15P31A101-418)
     base-url: ${SIMAI_RISK_ENGINE_URL:http://risk-engine:8080}
     timeout: 90s
+  coverage-guide:
+    # 세팅 1단계 카메라 각도 헬퍼 중계(S15P31A101-447, 설계 docs/design/coverage-guide-relay.md). 수신 후 10 s 넘으면 STALE, 관리자 조회 후 15 s 동안 active_demand=true
+    stale-after: ${SIMAI_COVERAGE_GUIDE_STALE_AFTER:10s}
+    demand-ttl: ${SIMAI_COVERAGE_GUIDE_DEMAND_TTL:15s}
