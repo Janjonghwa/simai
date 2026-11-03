@@ -1769,6 +1769,30 @@ class Scene(BaseModel):
     mismatch: StrictBool
 
 
+class BatteryPct(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=0, le=100)]
+
+
+class Item(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    device_id: DefsInstanceId
+    link: Literal['CONNECTED', 'LOST']
+    last_heartbeat_at: DefsTimestampMs | None
+    battery_pct: BatteryPct | None
+    transport: Literal['WIFI', 'PHONE_BLUETOOTH', 'CELLULAR', 'UNKNOWN'] | None
+
+
+class Watches(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    registered: Annotated[StrictInt, Field(ge=0)]
+    connected: Annotated[StrictInt, Field(ge=0)]
+    items: list[Item]
+
+
 class Payload41(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -1783,6 +1807,7 @@ class Payload41(BaseModel):
     config: Config1
     scene: Scene
     tier0_health: dict[str, Any] | None
+    watches: Watches | MISSING = MISSING
 
 
 class ViewerHealth(Envelope):

@@ -3,6 +3,7 @@ package com.ssafy.simai.domain.health;
 import com.ssafy.simai.domain.scene.SceneService;
 import com.ssafy.simai.domain.scene.SceneCompatibility;
 import com.ssafy.simai.domain.tier0.i1.I1Envelope;
+import com.ssafy.simai.domain.watch.WatchHub;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
@@ -33,28 +34,32 @@ import tools.jackson.databind.node.ObjectNode;
  *   <li>config: 발행한 최근 묶음, 적용 확인(config_bundle.applied_at)된 최근 묶음, sync 는 Tier 0 가 연결돼 있으면 Tier 0 health 의
  *       config_sync, 끊겼으면 UNVERIFIED
  *   <li>scene: COMMITTED Scene 의 최근 버전과 마지막 world_state.scene_version, 둘 다 있고 다르면 mismatch
+ *   <li>watches(1.2.0, 확장 C.6, S15P31A101-336): 등록된 워치마다 I4 연결 상태(WatchHub). 워치는 개인 보조 채널이라 system_health·
+ *       remote_state 에 넣지 않는다
  * </ul>
  */
 @Service
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class ViewerHealthService {
 
-    public static final String SCHEMA_VERSION = "1.1.0";
+    public static final String SCHEMA_VERSION = "1.2.0";
     static final String CONNECTED = "CONNECTED";
     static final String DISCONNECTED = "DISCONNECTED";
     static final String UNSAFE_UNKNOWN = "UNSAFE_UNKNOWN";
 
     private final HealthState state;
     private final SceneCompatibility compatibility;
+    private final WatchHub watches;
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper mapper;
     private final Clock clock;
     private final long linkTimeoutMs;
 
     public ViewerHealthService(HealthState state, NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, Clock clock, SceneCompatibility compatibility,
-            @Value("${simai.health.link-timeout-ms:3000}") long linkTimeoutMs) {
+            WatchHub watches, @Value("${simai.health.link-timeout-ms:3000}") long linkTimeoutMs) {
         this.state = state;
         this.compatibility = compatibility;
+        this.watches = watches;
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.clock = clock;
@@ -103,7 +108,27 @@ public class ViewerHealthService {
         p.set("config", config(tier0Up, health));
         p.set("scene", scene(world));
         p.set("tier0_health", health == null ? null : health.deepCopy());
+        p.set("watches", watches());
         return p;
+    }
+
+    private ObjectNode watches() {
+        ObjectNode w = mapper.createObjectNode();
+        var items = w.putArray("items");
+        int connected = 0;
+        List<WatchHub.WatchStatus> statuses = watches.statuses();
+        for (WatchHub.WatchStatus s : statuses) {
+            ObjectNode item = items.addObject();
+            item.put("device_id", s.deviceId());
+            item.put("link", s.connected() ? CONNECTED : "LOST");
+            item.put("last_heartbeat_at", s.lastHeartbeatAt() == null ? null : s.lastHeartbeatAt().toEpochMilli());
+            item.put("battery_pct", s.batteryPct());
+            item.put("transport", s.transport());
+            connected += s.connected() ? 1 : 0;
+        }
+        w.put("registered", statuses.size());
+        w.put("connected", connected);
+        return w;
     }
 
     private boolean fresh(long receivedNanos, long nowNanos) {

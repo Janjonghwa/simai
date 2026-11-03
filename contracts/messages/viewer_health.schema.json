@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/viewer_health.schema.json",
   "title": "I2 viewer_health",
-  "description": "EC2 → 뷰어, STOMP /topic/health (명세 12.2, 12.4, 6.2, 13장). EC2 가 Tier 0 health(I1), 노트북 하트비트, 구성 묶음 적용(config_ack), COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보내는 화면용 상태다. Tier 0 health 원문은 tier0_health 에 그대로 싣는다(없으면 null). EC2 가 Tier 0 나 노트북 하트비트를 잃으면 system_health 는 UNSAFE_UNKNOWN 이다(3.2 이중 감시). Scene 불일치는 Tier 0 가 판정에 쓰는 scene_version(world_state)과 EC2 의 COMMITTED Scene 버전이 다를 때다(FR-12). 1.1.0: scene.compatibility 선택 추가(S15P31A101-381). 1.0.0 신설(S15P31A101-206).",
+  "description": "EC2 → 뷰어, STOMP /topic/health (명세 12.2, 12.4, 6.2, 13장). EC2 가 Tier 0 health(I1), 노트북 하트비트, 구성 묶음 적용(config_ack), COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보내는 화면용 상태다. Tier 0 health 원문은 tier0_health 에 그대로 싣는다(없으면 null). EC2 가 Tier 0 나 노트북 하트비트를 잃으면 system_health 는 UNSAFE_UNKNOWN 이다(3.2 이중 감시). Scene 불일치는 Tier 0 가 판정에 쓰는 scene_version(world_state)과 EC2 의 COMMITTED Scene 버전이 다를 때다(FR-12). 1.2.0: watches 선택 추가(워치 연결 상태, 확장 부록 C.6, S15P31A101-336). 1.1.0: scene.compatibility 선택 추가(S15P31A101-381). 1.0.0 신설(S15P31A101-206).",
   "allOf": [{ "$ref": "envelope.schema.json" }],
   "type": "object",
   "properties": {
@@ -50,7 +50,36 @@
           },
           "additionalProperties": false
         },
-        "tier0_health": { "oneOf": [{ "type": "object" }, { "type": "null" }], "description": "마지막으로 받은 I1 health 의 payload 그대로(health.schema.json). 받은 적 없으면 null" }
+        "tier0_health": { "oneOf": [{ "type": "object" }, { "type": "null" }], "description": "마지막으로 받은 I1 health 의 payload 그대로(health.schema.json). 받은 적 없으면 null" },
+        "watches": {
+          "type": "object",
+          "description": "확장(부록 C.6): 등록된 워치(device.kind WATCH, 폐기 안 됨)의 I4 연결 상태. 워치는 개인 보조 채널이라 system_health·remote_state 에 넣지 않는다. 없으면 워치 확장을 쓰지 않는 EC2 다",
+          "required": ["registered", "connected", "items"],
+          "properties": {
+            "registered": { "type": "integer", "minimum": 0, "description": "등록된 워치 수" },
+            "connected": { "type": "integer", "minimum": 0, "description": "items 중 link 가 CONNECTED 인 수(활성 워치 수)" },
+            "items": {
+              "type": "array",
+              "description": "device_id 오름차순",
+              "items": {
+                "type": "object",
+                "required": ["device_id", "link", "last_heartbeat_at", "battery_pct", "transport"],
+                "properties": {
+                  "device_id": { "$ref": "../common/defs.schema.json#/$defs/instance_id" },
+                  "link": {
+                    "enum": ["CONNECTED", "LOST"],
+                    "description": "CONNECTED: I4 연결이 열려 있고 마지막 watch_heartbeat(연결 직후는 연결 시각)가 EC2 가 준 interval_ms × 3 안. LOST: 그 밖(끊김·한 번도 안 붙음, C.6 LOST)"
+                  },
+                  "last_heartbeat_at": { "oneOf": [{ "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" }, { "type": "null" }], "description": "EC2 가 이 워치의 watch_heartbeat 를 마지막으로 받은 EC2 시각. 받은 적 없으면 null" },
+                  "battery_pct": { "oneOf": [{ "type": "integer", "minimum": 0, "maximum": 100 }, { "type": "null" }], "description": "CONNECTED 일 때 마지막 하트비트의 watch.battery_pct, 그 밖 null" },
+                  "transport": { "enum": ["WIFI", "PHONE_BLUETOOTH", "CELLULAR", "UNKNOWN", null], "description": "CONNECTED 일 때 마지막 하트비트의 watch.transport, 그 밖 null" }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        }
       },
       "allOf": [
         {

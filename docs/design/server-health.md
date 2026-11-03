@@ -43,6 +43,12 @@ remote_state·laptop.link 로 "관제 정지"·"현장 장비 응답 없음"·"�
 | 장애 기록 | V7 `system_outage`: 종류가 바뀔 때 한 행(`last_seen_at` 실패한 쪽의 마지막 정상 근거 — 노트북 끊김은 마지막 하트비트, Tier 0 끊김은 마지막 health, 처리 정체는 마지막 진행, 노트북이 알린 관제 정지는 노트북이 마지막으로 정상을 알린 때 / `detected_at` EC2 판정 / `ended_at`·`end_reason`). 열린 장애는 하나(부분 유일 색인). 화면 알림을 먼저 보내고 기록하며, 기록이 실패하면 다음 주기에 다시 시도한다 | G3 단절 감지 시간(10초 안)을 나중에 잰다 |
 | 재시작 | ApplicationReady 뒤 Tier 0·노트북을 둘 다 한 번씩 받거나 30초(`simai.health.outage-startup-grace-ms`)가 지나야 기록한다. 닫히지 않은 기록은 뜰 때 EC2_RESTART 로 닫는다 | EC2 재시작·재배포를 현장 장애로 남기지 않는다 |
 
+## 워치 연결 상태 (S15P31A101-336)
+
+`viewer_health` 1.2.0 의 선택 `watches` 에 등록된 워치마다 I4 연결 상태(CONNECTED·LOST)·마지막 하트비트·배터리·전송 경로와 등록·활성 수를 싣는다
+(`WatchHub.statuses()`). 워치는 개인 보조 채널이라 `system_health`·`remote_state`·장애 기록에는 넣지 않는다. 워치별 link 가 바뀌면 즉시 보낸다.
+자세한 것은 [`server-watch-link.md`](server-watch-link.md).
+
 ## 시험
 
 `HealthIntegrationTest`(끊김 기준 1.5초): 하트비트 인증·source_id·형식·기록, 노트북이 끊기면 GET 과 `/topic/health` 가 같은 단절(CONTROL_HALTED·UNSAFE_UNKNOWN)·Scene 불일치,

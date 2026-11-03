@@ -17,7 +17,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * /topic/health(viewer_health)를 1초마다 보낸다(명세 12.4). 받은 값(Tier 0 health·하트비트·Scene 버전)이 바뀌어 화면이 다르게 보일
- * 상태(System Health·원격 단절·연결·보정·구성·Scene)가 바뀌면 다음 주기를 기다리지 않고 보낸다. 끊김과 DB 쪽 변경(새 COMMITTED Scene,
+ * 상태(System Health·원격 단절·연결·보정·구성·Scene·워치 연결)가 바뀌면 다음 주기를 기다리지 않고 보낸다. 끊김과 DB 쪽 변경(새 COMMITTED Scene,
  * 구성 적용)은 1초 주기가 잡는다.
  * 만든 상태마다 장애 기록(OutageRecorder)도 맞춘다.
  * <p>모든 발행은 이 전용 스레드 하나에서 한다. I1 수신·하트비트 요청 스레드를 붙잡지 않고(DB·브로커가 느려도), 공유 스케줄러의 다른 일
@@ -82,7 +82,17 @@ class HealthPublisher implements AutoCloseable {
     private static String shape(JsonNode p) {
         return String.join("|", p.path("system_health").asString(""), p.path("remote_state").asString(""),
                 p.path("tier0_link").asString(""), p.path("laptop").path("link").asString(""),
-                p.path("calibration_state").asString(""), p.path("config").toString(), p.path("scene").toString());
+                p.path("calibration_state").asString(""), p.path("config").toString(), p.path("scene").toString(),
+                watchLinks(p.path("watches")));
+    }
+
+    /** 워치마다 연결 상태만(배터리·마지막 수신 시각은 1초 주기로 충분하다) */
+    private static String watchLinks(JsonNode watches) {
+        StringBuilder s = new StringBuilder();
+        for (JsonNode item : watches.path("items")) {
+            s.append(item.path("device_id").asString("")).append('=').append(item.path("link").asString("")).append(',');
+        }
+        return s.toString();
     }
 
     @Override
