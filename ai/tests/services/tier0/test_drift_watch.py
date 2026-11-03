@@ -16,7 +16,8 @@ for path in (HERE, HERE.parents[2]):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from test_calibration_swap import candidate, recording, site  # noqa: E402, F401
+from test_calibration_swap import candidate, recording, site as calibration_site  # noqa: E402, F401
+import test_calibration_swap  # noqa: E402
 from test_tier0_service import _settings  # noqa: E402
 
 from services.tier0.drift_watch import BackgroundDriftWatch, person_observations  # noqa: E402
@@ -34,6 +35,14 @@ from simai_ai.tracking.cross_view import AssociationFrame, LocalView, UncertainR
 
 FAST = MonitorConfig(window_ms=5000, min_window_samples=3, baseline_min_samples=3,
                      baseline_min_span_ms=1000, sustain_ms=2000)
+
+
+@pytest.fixture
+def site(tmp_path, recording, monkeypatch):
+    original = test_calibration_swap._settings
+    monkeypatch.setattr(test_calibration_swap, "_settings",
+                        lambda *args, **kwargs: replace(original(*args, **kwargs), human_calibration_enabled=True))
+    yield from calibration_site.__wrapped__(tmp_path, recording, monkeypatch)
 
 
 def field_calibration(site):
@@ -203,7 +212,7 @@ def test_monitor_disabled(tmp_path, recording, monkeypatch):
     value = json.loads(config.read_text(encoding="utf-8"))
     value["drift_watch_enabled"] = False
     config.write_text(json.dumps(value), encoding="utf-8")
-    settings = load_settings(config, env={})
+    settings = load_settings(config, env={"SIMAI_TIER0_HUMAN_CALIBRATION": "1"})
     service = Tier0Service(settings)
     service.start()
     try:
@@ -269,3 +278,25 @@ def test_slow_monitor_does_not_block_ticks_and_queue_is_bounded(site, monkeypatc
         print(f"blocked_monitor_ticks=12 elapsed_ms={elapsed * 1000:.3f} offer_n=1000 offer_p95_ms={p95:.6f}")
     finally:
         release.set()
+
+
+def test_human_calibration_master_switch(tmp_path, recording, caplog):
+    settings = _settings(tmp_path, recording, anchor_ms=1760342400000)
+    assert not settings.human_calibration_enabled
+    service = Tier0Service(settings)
+    with caplog.at_level("INFO", logger="services.tier0"):
+        service.start()
+    try:
+        assert service.drift_watch is None
+        assert service.live_calibration is None
+        assert service.perception.observe_association is None
+        assert service.perception.observe_frame is None
+        assert not any(t.name in {"tier0-drift-watch", "tier0-live-calibration"} for t in service._threads)
+        assert not service.status()["calibration"]["live_candidate"]["enabled"]
+        assert "사람 관절 보정 꺼짐" in caplog.text
+    finally:
+        assert service.stop()
+    config = tmp_path / "tier0.json"
+    assert load_settings(config, env={"SIMAI_TIER0_HUMAN_CALIBRATION": "1"}).human_calibration_enabled
+    with pytest.raises(Tier0ConfigError, match="SIMAI_TIER0_HUMAN_CALIBRATION"):
+        load_settings(config, env={"SIMAI_TIER0_HUMAN_CALIBRATION": "yes"})

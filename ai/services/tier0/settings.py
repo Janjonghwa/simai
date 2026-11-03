@@ -24,7 +24,7 @@
       "tick_ms": 100,                          판정 주기 (10 Hz, 명세 12.2 world_state)
       "detect_tick_ms": 50,                    LIVE 검출·Local Tracker 루프 목표 주기 (20 Hz, 명세 5.1 카메라당 12 FPS 이상, -383)
       "detect_queue_depth": 8,                 검출 루프 → 판정 루프 사이 카메라별 최대 관측 대기 수 (초과 시 오래된 관측 버림, -383)
-      "drift_watch_enabled": true,             운영 중 보정 틀어짐 감시(별도 스레드, 기본 켜짐)
+      "drift_watch_enabled": true,             사람 관절 보정 활성 시 틀어짐 감시(기본 true)
       "event_frames_enabled": true,            CRITICAL R1~R4 발생 프레임 비동기 업로드(기본 켜짐, LIVE 입력·I1 필요)
       "checkpoint_interval_s": 1.0,            체크포인트 주기 (명세 3.2 초기값 1초)
       "drain_s": 5.0,                          종료 때 저널 쓰기·스레드 정리를 기다리는 상한
@@ -36,6 +36,7 @@
 환경 변수:
 
     SIMAI_ROOT                       Network Volume 루트 (기본 /workspace/simai). state_dir 기본값의 부모
+    SIMAI_TIER0_HUMAN_CALIBRATION    사람 관절 보정 감시·후보 경로 (기본 0, 1이면 켬)
     SIMAI_TIER0_ID                   Tier 0 인스턴스 ID (기본 tier0-01)
     SIMAI_TIER0_ENGINE               YOLO26x-pose TensorRT 엔진 경로 (deploy/tier0/entrypoint.sh 가 넣는다, LIVE 입력)
     SIMAI_TIER0_WEIGHTS              엔진이 없을 때 ultralytics 로 여는 가중치(.pt) 경로 (느리다, 경고를 남긴다)
@@ -168,6 +169,7 @@ class Tier0Settings:
     i1: I1Settings | None = None
     control: ControlSettings | None = None
     env: Mapping[str, str] = field(default_factory=dict, repr=False)
+    human_calibration_enabled: bool = False
     drift_watch_enabled: bool = True
     event_frames_enabled: bool = True
     live_calibration: LiveCalibrationSettings = field(default_factory=LiveCalibrationSettings)
@@ -425,6 +427,9 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         if not reserve_env.isdigit():
             raise Tier0ConfigError("SIMAI_TIER0_GPU_RESERVE_MB 는 0 이상 정수다")
         gpu = {**gpu, "reserve_mb": int(reserve_env)}
+    human_calibration = (env.get("SIMAI_TIER0_HUMAN_CALIBRATION") or "0").strip()
+    if human_calibration not in ("0", "1"):
+        raise Tier0ConfigError("SIMAI_TIER0_HUMAN_CALIBRATION 은 0 또는 1이다")
     drift_watch_enabled = doc.get("drift_watch_enabled", True)
     if not isinstance(drift_watch_enabled, bool):
         raise Tier0ConfigError("drift_watch_enabled 는 bool이다")
@@ -437,6 +442,7 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         scene_version=scene_version,
         input_mode=mode,
         calibration_file=calibration_file,
+        human_calibration_enabled=human_calibration == "1",
         drift_watch_enabled=drift_watch_enabled,
         event_frames_enabled=event_frames_enabled,
         live_calibration=_live_calibration(doc.get("live_calibration", {})),
