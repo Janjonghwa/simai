@@ -55,8 +55,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `risk_event` | 규칙·버전, World ID·구역, 출처, 생명주기·검증 상태, severity·confidence·confidence_reasons, 발생·해소 시각, 근거 스냅샷, 관련 이벤트(related_event_id), 보존 표시 |
 | `risk_event_update` | RunPod Tier 0 전이의 시간순 기록(event_sequence, config_version, 지연 전달·감사 전용 여부). 저널 위치는 저널 세대(`journal_epoch`)와 offset 으로 가른다(Tier 0 저널이 offset 0 부터 새로 시작하면 EC2 가 세대를 올린다) |
 | `vlm_assessment` | 이벤트, 작업 유형(`vlm_rationale`·`incident_summary`)·job_id, 모델·버전, 입력 참조, 근거·요약 문장, 인용 조항 ID, 상향 의견(proposed_severity), 관리자 결정(승인·거절, 누가·언제, `escalation_id`), G7 종단간 지연(`event_observed_at`, `event_to_rationale_ms`)과 추론 지연 |
-| `notification` | 이벤트, 채널, 대상, 발송·수신 확인·ACK 시각 (LIVE 이벤트만 연결 가능. 시험 알림은 이 테이블에 넣지 않음). 발송 대기열을 겸해 발송 워커 임대 기한(`claimed_until`)을 두고, 비었거나 지난 대기 건은 다시 꺼낸다 |
-| `action_ticket` | 조치 상태, 사진 주소(해소 상태와의 불일치 표시는 취소, S15P31A101-411) |
+| `notification` | 이벤트, 채널, 대상, 발송·수신 확인·ACK 시각 (LIVE 이벤트만 연결 가능. 시험 알림은 이 테이블에 넣지 않음). 발송 대기열을 겸해 발송 워커 임대 기한(`claimed_until`)을 두고, 비었거나 지난 대기 건은 다시 꺼낸다. 원격 발송 채널(Web Push)은 폐기했고(10.1), 테이블은 LIVE 전용 알림 기록과 DB 제약(11.4 의 3)을 위해 둔다 |
 | `media_clip` | 이벤트 연결 영상 구간의 객체 키, 카메라·구간(촬영 시각)·해시·크기, 얼굴 흐림 여부, 삭제 예정일, 보존 표시. Tier 0 가 I1 `media_clip` 으로 보내고, 보낸 뒤 붙는 CRITICAL 자동 보존은 고치지 않고 `media_clip_retention` 으로 이력을 더한다 |
 | `report` | 보고서 종류(TBM·DAILY), 대상 작업(`work_unit.work_id`)·보고서 버전(`report_version`, 덮어쓰지 않고 새 행 추가)·공종(`work_type`), 레이아웃·계산 결과(`sim.*`) 참조, 생성 상태, 본문(`sections`), 계산 근거 표, 인용 목록(`citations`), 법령 지식 그래프 서브그래프(`subgraph`: `nodes`·`edges`), 4단계 실행 상태(`steps`), 구역 최근 이벤트 요약(`zone_history`) (EC2 Python 컨테이너 생성, v1.3 수정 49) |
 | `work_unit` | TBM 작업(날짜·작업명·시간 구간·구역/장소·예정 인원·담당 조, 그리고 작업이 쓰는 가상 레이아웃 `layout_id` 및 비개인정보 공종 `work_type`, 8.3·12.6, `docs/design/server-work-units.md`·`docs/design/tbm-legal-graph.md`) |
@@ -66,16 +65,13 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `journal_cursor` | Tier 0 인스턴스별 저널 수신 상태: 지금 받는 저널 세대(`journal_epoch`), `acked_offset`, 재동기화 중 여부, 마지막 스냅샷(3.2) |
 | `i1_deferred_message` | 앞선 메시지를 기다리는 I1 메시지(받은 봉투 그대로, 처리되면 지움) |
 | `event_frame` | 이벤트 프레임 주소와 촬영 시각(I1 `event_frame_ready`, VLM 입력) |
-| `action_ticket_history` | 조치 티켓 상태 변경 이력(추가만) |
 | `clip_access_log` | 이벤트 클립 열람 기록(14장) |
 | `video_segment` | 상시 영상 조각의 객체 키, Tier 0·카메라·구간(촬영 시각)·stream_epoch·해시·크기, 삭제 예정일, 삭제 시각. Tier 0 가 I1 `video_segment` 로 보낸다(5.1, v1.3 수정 36) |
 | `video_access_log` | 상시 영상 열람 기록(14장) |
 | `cctv_remote_egress_log` | 관제 화면 원격 CCTV 송출 바이트의 1분 단위 추가 전용(append-only) 사용량 기록(UTC 달력 월 누적 합산으로 월 80 GB 상한 판정, 영상 바이트 자체는 EC2 에 저장하지 않음, 3.3, v1.3 수정 46) |
-| `upload_grant` | 임시 업로드 주소 발급 기록(올라온 객체 키 검증): 목적(이벤트 프레임·클립, 조치 사진, 아바타 자산, 상시 영상 조각, Scene glTF), 요청 주체(Tier 0·기기·사용자), 서명에 묶은 형식·크기·sha256, 이벤트 프레임·클립이면 이벤트 |
+| `upload_grant` | 임시 업로드 주소 발급 기록(올라온 객체 키 검증): 목적(이벤트 프레임·클립, 아바타 자산, 상시 영상 조각, Scene glTF. 조치 사진 `TICKET_PHOTO` 는 폐기, 10.1), 요청 주체(Tier 0·기기·사용자), 서명에 묶은 형식·크기·sha256, 이벤트 프레임·클립이면 이벤트 |
 | `avatar_asset` | 아바타 자산 버전(키 `(world_id, stream_epoch, appearance_version)`, 추가만, 11.5·12.2) |
-| `push_subscription` | Web Push 구독 |
-| `test_push` | 시험 푸시(RiskEvent 아님, `notification` 에 넣지 않음) |
-| `push_receipt` | Service Worker 수신 확인(실제 알림·시험 푸시 중 하나) |
+| `push_subscription`·`test_push`·`push_receipt` | 폐기(v1.3, 10.1). DB 에는 남아 있으나 쓰지 않으며, 테이블 정리는 별도 이슈에서 한다 |
 | `rag_clause` | 초기 안전 수칙 조항 테이블(`V5` 시드 호환 유지). 신규 TBM·일일 보고서 검색 정본은 아래 `rag_node`·`rag_edge` 법령 지식 그래프로 전환한다(v1.3 수정 49, `docs/design/db-tables.md`) |
 | `rag_source` | 법령 지식 그래프 원문 출처·버전: 법령·행정규칙별 법령 ID·MST·시행일·공포번호·원문 해시·수집 시각(원문은 저장소 밖, S15P31A101-416) |
 | `rag_node` | 건설안전 법령 지식 그래프 노드: 종류(`node_kind`: 법령·조·항·호·목·별표·개념·위험 규칙, 후속 지침·재해사례)와 층(`layer`: 법률·중대재해처벌법·시행령·시행규칙·안전보건기준규칙·고시), 출처 법령·문서명, 조문 번호·제목·본문, 규칙 태그(`rule_tags`, `R1`~`R7`), 출처 판 번호(`source_version`), 임베딩(`Qwen/Qwen3-Embedding-0.6B` 1024차원, 입력 `"[법령명 조문(제목)] 본문"`), 모델 revision. 국가법령정보센터 Open API 법령(산안법·시행령·시행규칙, 안전보건기준규칙, 중대재해처벌법·시행령)을 먼저 적재하고, KOSHA GUIDE 와 중대재해 사이버안전박물관 재해사례는 재배포·API 이용 조건을 확인한 뒤 적재한다(`docs/design/tbm-legal-graph.md`) |
@@ -91,7 +87,7 @@ PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evalua
 1. 시계열·이벤트는 추가만 한다. 구역·규칙·보정·Scene은 유효 기간이 있는 새 버전을 추가한다.
    - **첫 운영 배포 전 규칙 보완 예외(Lead 승인 2026-10-22).** 첫 실제 운영 배포 전에는 규칙의 판정 동작·값을 같은 `rule_version` 안에서 고칠 수 있다. 근거: 그 버전으로 남은 운영 판정 기록(운영 DB·배포 데이터)이 없어 지킬 과거 판정이 없다. 고친 값은 등록부에서 시드를 다시 만들어 같은 버전 행에 반영한다. 첫 운영 배포 시점부터는 동작이나 값이 바뀌면 반드시 새 버전을 추가하고 이 예외는 끝난다. 첫 운영 배포 시점은 그 배포 MR 이 개정 이력(README)에 날짜와 함께 기록하고, 그 뒤 시드의 같은 버전 값 변경은 마이그레이션 검사가 막는다.
 2. 모든 계산 결과는 출처를 안다: 위치(보정·Scene 버전), 이벤트(규칙 버전), 근거(모델 버전).
-3. `notification`은 출처가 LIVE인 `risk_event`만 참조할 수 있게 한다. 구현: notification에 source 컬럼을 두고 risk_event(event_id, source)를 복합 FK로 참조하며 source = ‘LIVE’ 체크를 건다(일반 CHECK는 다른 테이블을 볼 수 없으므로). 발송 워커도 LIVE만 소비하고, DB 기록 차단과 실제 발송 차단을 각각 테스트한다.
+3. `notification`은 출처가 LIVE인 `risk_event`만 참조할 수 있게 한다. 구현: notification에 source 컬럼을 두고 risk_event(event_id, source)를 복합 FK로 참조하며 source = ‘LIVE’ 체크를 건다(일반 CHECK는 다른 테이블을 볼 수 없으므로). 발송 워커를 둘 때도 LIVE만 소비하고, DB 기록 차단과 실제 발송 차단을 각각 테스트한다.
 4. 촬영·수신·판정 시각을 모두 UTC로 저장한다.
 5. 위치 기록에는 이름이 없다.
 

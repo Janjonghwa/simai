@@ -39,7 +39,7 @@ ai/
   tests/                   # src 구조를 따름. tests/risk/vectors/에 Risk Engine 공통 테스트 벡터
 gateway/                   # 노트북 중계·현장 경보 앱 (Python)
 server/                    # EC2 Spring Boot
-front/                     # Three.js 뷰어, 반장 PWA
+front/                     # Three.js 뷰어(관제 앱)
 deploy/                    # Docker 이미지 (모델별), Docker Compose, RunPod 템플릿
 docs/                      # 팀 규칙(git-convention·jira-convention)
   spec/                    # 기획서 정본(장별), requirements.md 는 요구사항 명세서 정본
