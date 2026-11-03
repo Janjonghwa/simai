@@ -17,12 +17,13 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 
 | 테이블 | 주요 내용 |
 |---|---|
-| `site` | World 좌표계 정의(원점·축·스케일 근거), BEV 평면도 참조, 좌표계 이전 이력 |
+| `site` | 기본 현장 식별자, 최근 카메라별 실측 높이 기본값(`default_camera_heights_m`, 다음 현장 세팅 입력칸 자동 채움 원본, 4.3), BEV 평면도 참조 |
+| `setup_session` | 작업별 현장 세팅 세션(`setup_session_id`, 대상 `work_unit_id`, 단계별 상태 `COLLECTING_BACKGROUND` → `INITIAL_POSE_AND_WORLD` → `JOINT_BA_AND_VERIFY` → `PREVIEW_AND_VLM_DRAFT` → `READY_FOR_ZONES` / 백그라운드 `BAKING_TEXTURE` → `COMPLETED` / 실패 `FAILED`, 카메라별 실측 높이 `camera_heights_m`, 생성된 `calibration_version`·`preview_scene_version`·`scene_version`, VLM 위험구역 초안 참조, 실패 코드·사유 `failure_code`·`failure_message`, 시작·구역편집가능·완료 시각, 4.3·8.1·12.6, `docs/design/site-setup-pipeline.md`) |
 | `camera` | 카메라 ID, 모델, 하드웨어·펌웨어 버전, 해상도·fps |
-| `calibration_version` | 카메라별 K·왜곡·R·t·높이, 재투영 오차, 스케일 근거, 상태 |
-| `scene_version` | 정적 3D 자산 주소(`GLTF_VISUAL`, `SURFACE_SOURCE_MAP`), 사용한 보정 버전, 작업·생성 기록(`job_id`, `run_id`), 상태(`CANDIDATE`·`COMMITTED`·`REJECTED`) |
+| `calibration_version` | 카메라별 K·왜곡·R·t·높이, 세팅별 World 좌표계 정의(바닥 Z=0·축 출처 `WALL_AND_FLOOR`/`WALLS`/`CAMERA_LAYOUT`·모서리 원점·스케일 근거 `MEASURED_CAMERA_HEIGHT` 등, 4.1·4.3), 홀드아웃 재투영 오차, 소속 `setup_session_id`(또는 관제 중 회전 복구 `rotfix` 부모 버전), 상태 |
+| `scene_version` | 정적 3D 자산 주소(빠른 미리보기 맵 `PREVIEW_GLTF` 및 정밀 텍스처 메시 `GLTF_VISUAL`, `SURFACE_SOURCE_MAP`), 사용한 보정 버전(`calibration_version`)·현장 세팅 세션(`setup_session_id`), 작업·생성 기록(`job_id`, `run_id`), 상태(`PREVIEW`·`CANDIDATE`·`COMMITTED`·`REJECTED`) |
 | `scene_activation` | Scene 버전 활성화·되돌리기 이력(누가·언제·이유, 추가만). 가장 최근 이력이 가리키는 버전이 현재 활성(`COMMITTED`) Scene 정본이다(12.6, `docs/design/scene-version-from-job.md`) |
-| `zone` | 다각형 + 높이 범위, 판정 유형(GROUND_FOOTPRINT/VOLUME_3D), 유형(개구부·고소 작업면 둘레·장비 주차·양중 하부 등, 단순 표시용 "작업구역" 없음), 심각도(화면·신규 생성 선택지는 `CRITICAL` 빨강·`HIGH` 주황 2종, 기존 행·스키마 호환은 유지, 이벤트 심각도 `CAUTION`·`INFO` 와 별개, 7.2·8.2), 요구 조건, 유효 시작·종료 |
+| `zone` | 다각형 + 높이 범위, 판정 유형(GROUND_FOOTPRINT/VOLUME_3D), 유형(개구부·고소 작업면 둘레·장비 주차·양중 하부 등, 단순 표시용 "작업구역" 없음), 심각도(화면·신규 생성 선택지는 `CRITICAL` 빨강·`HIGH` 주황 2종, 기존 행·스키마 호환은 유지, 이벤트 심각도 `CAUTION`·`INFO` 와 별개, 7.2·8.2), 귀속 작업/현장 세팅 참조(`work_unit_id`·`setup_session_id`), 요구 조건, 유효 시작·종료 |
 | `rule_version` | 규칙 ID, 임계값 세트, 적용 기간(시험 프로파일 포함, 7.4). 값은 AI 규칙 등록부에서 뽑으며 같은 버전의 값은 바꾸지 않는다(첫 운영 배포 전 예외, 11.4-1). 근거 조항(`legal_basis`)은 비어 있으면 시드가 채우고, 다른 값이 있으면 첫 운영 배포 전에는 갱신하고 뒤에는 마이그레이션이 멈춘다(7.1) |
 | `equipment_asset` | GLB 주소, 반경·형상 파라미터(확장, 부록 C) |
 | `layout_plan` | 가상 레이아웃(개구부·장비 주차 구역은 구역, 가설 비계는 작업면)·계획 궤적(F-02·F-01), 출처 PLANNED. 계획 작업 위치는 선택이다: 관리자가 주면 그 위치만 쓰고, 없으면(빈 목록 포함) Risk Engine 컨테이너가 작업면·구역에서 만든다(8.3) |
@@ -60,7 +61,7 @@ Spatial DB는 EC2의 PostgreSQL + TimescaleDB(시계열) + PostGIS(공간)로 �
 | `media_clip` | 이벤트 연결 영상 구간의 객체 키, 카메라·구간(촬영 시각)·해시·크기, 얼굴 흐림 여부, 삭제 예정일, 보존 표시. Tier 0 가 I1 `media_clip` 으로 보내고, 보낸 뒤 붙는 CRITICAL 자동 보존은 고치지 않고 `media_clip_retention` 으로 이력을 더한다 |
 | `report` | 보고서 종류(TBM·DAILY), 대상 작업(`work_unit.work_id`)·보고서 버전(`report_version`, 덮어쓰지 않고 새 행 추가)·공종(`work_type`), 레이아웃·계산 결과(`sim.*`) 참조, 생성 상태, 본문(`sections`), 계산 근거 표, 인용 목록(`citations`), 법령 지식 그래프 서브그래프(`subgraph`: `nodes`·`edges`), 4단계 실행 상태(`steps`), 구역 최근 이벤트 요약(`zone_history`), 작업 종료 시 실제 LIVE 이벤트 집계 사실 및 외부 LLM 작성 “작업 마무리” 요약(`wrap_up_summary`), 첫 전자서명 등록 시 고정하는 본문 정규화 해시(`content_sha256`)와 버전 잠금 시각(`locked_at`) (EC2 Python 컨테이너 생성, v1.3 수정 49·50, `docs/design/work-session-flow.md`) |
 | `report_signature` | TBM 보고서 참석자 전자서명: 대상 보고서(`report_id`, `report_version`), 참석자 실명(`signer_name`, NFR-14 예외: TBM 전자서명에만 허용), 손글씨 서명 이미지 객체 키(`signature_image_key`)·해시(`image_sha256`), 서명 시점 보고서 본문 해시(`report_content_sha256`), `"공인 전자서명 아님, 내부 기록용 전자 서명"` 고지 확인, 등록 관리자·시각. 서버 전용 저장·관리자(`ADMIN`)만 조회·외부 LLM 절대 미전송(8.3, 14장, v1.3 수정 52) |
-| `work_unit` | 작업 관리(구 TBM 작업): 날짜·작업명·예정 시간 구간(`starts_at`·`ends_at`)·구역/장소·예정 인원·담당 조(`lead_team`), 작업 상태(`status`: `PLANNED` → `IN_PROGRESS` → `DONE`), 실제 시작·종료 시각(`actual_started_at`·`actual_ended_at`), 작업이 쓰는 가상 레이아웃(`layout_id`) 및 비개인정보 공종(`work_type`)(8.3·12.6, v1.3 수정 52, `docs/design/server-work-units.md`·`docs/design/work-session-flow.md`) |
+| `work_unit` | 작업 관리(구 TBM 작업): 날짜·작업명·예정 시간 구간(`starts_at`·`ends_at`)·구역/장소·예정 인원·담당 조(`lead_team`), 작업 상태(`status`: `PLANNED` → `IN_PROGRESS` → `DONE`), 활성 현장 세팅 세션(`active_setup_session_id`), 실제 시작·종료 시각(`actual_started_at`·`actual_ended_at`), 세팅·구역 발행 뒤 연결한 가상 레이아웃(`layout_id`) 및 비개인정보 공종(`work_type`)(8.3·12.6, `docs/design/server-work-units.md`·`docs/design/work-session-flow.md`·`docs/design/site-setup-pipeline.md`) |
 | `event_ack` | 운영자 확인: 누가·어디서·확인 대상 `event_sequence`(3.10). 저널의 ACKNOWLEDGED 전이가 가리킨다 |
 | `event_close` | 운영자 종료 명령과 Tier 0 결과(6.4). REST 요청의 멱등 키는 따로 저장하고(유일), `close_id` 는 EC2 가 발급한다. 종료 전이가 가리킨다 |
 | `event_escalation` | 승인한 VLM 상향 의견의 적용 명령과 Tier 0 응답 결과(`result_status`: `PENDING`·`ACCEPTED`·`DUPLICATE`·`REJECTED`, `reject_reason`, `result_received_at`, 5.4). 상향 전이가 가리킨다 |
@@ -143,7 +144,7 @@ PLANNED·WHAT_IF 결과는 별도 스키마 `sim.*`에 저장한다: `sim.evalua
 | `calibration_camera` | 보정 버전의 카메라별 K·왜곡·R·t·재투영 오차 |
 | `calibration_document` | 보정 문서 원문. 구성 묶음의 calibration 구성 요소로 그대로 내려준다 |
 | `calibration_update_message` | I1 `calibration_update` 수신 기록(추가만, `msg_id` 로 재전송 제거). 현재 보정 상태는 보낸·받은 시각 중 이른 쪽이 가장 늦은 기록이고, 같으면 늦게 받은 것이다 |
-| `calibration_run` | 자동 보정 실행(걷기 시간, 2D 관측 위치, `calibration_ba` 작업, 결과 후보) |
+| `calibration_run` | 현장 세팅 보정 및 관제 중 회전 자동 복구(`rotfix`) 실행(깨끗한 배경 묶음 참조, 인접 쌍 ALIKED+LightGlue 매칭 수·홀드아웃 오차, V2 공동 BA 또는 중심 고정 회전 복구 결과 후보, 4.3·4.4) |
 | `calibration_verification` | 독립 검증점 결과(4.4) |
 | `scale_reference` | 실측 정물 목록(이름·치수·측정일, 4.3) |
 | `calibration_scale_check` | 보정에서 정물별로 잰 크기·오차·불일치 경고 |
