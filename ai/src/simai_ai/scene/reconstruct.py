@@ -15,7 +15,7 @@ from simai_ai.providers.contract import schema_errors
 
 SCENE_SCHEMA = "scene_output"
 SURFACE_VALUES = {"0": "UNOBSERVED", "1": "INTERPOLATED", "2": "OBSERVED", "3": "ESTIMATED_PLANE", "4": "GENERATED"}
-TIMEOUTS = {"download": 120, "prepare": 180, "mapanything": 1200, "bake": 1800,
+TIMEOUTS = {"download": 120, "prepare": 180, "mapanything": 1200, "preview": 60, "bake": 1800,
             "fallback": 120, "measure": 180, "upload": 180}
 
 
@@ -73,12 +73,40 @@ def validate_input(inp: Mapping[str, Any]) -> None:
         opts = inp.get("options", {})
         if not isinstance(opts, Mapping):
             raise ValueError("options 는 객체여야 한다")
-        if set(opts) - {"align_views", "plane_cleanup"}:
+        allowed_opts = {
+            "align_views",
+            "plane_cleanup",
+            "mode",
+            "preview_only",
+            "emit_preview",
+            "preview_stride",
+            "target_faces",
+            "num_threads",
+        }
+        if set(opts) - allowed_opts:
             raise ValueError("모르는 복원 옵션")
         if opts.get("align_views", "off") not in ("off", "sim3", "scale"):
             raise ValueError("align_views 형식 오류")
         if not isinstance(opts.get("plane_cleanup", False), bool):
             raise ValueError("plane_cleanup 은 bool")
+        if opts.get("mode", "full") not in ("full", "preview", "two_stage"):
+            raise ValueError("mode 형식 오류")
+        if not isinstance(opts.get("preview_only", False), bool):
+            raise ValueError("preview_only 는 bool")
+        if not isinstance(opts.get("emit_preview", False), bool):
+            raise ValueError("emit_preview 는 bool")
+        if "preview_stride" in opts:
+            ps = opts["preview_stride"]
+            if isinstance(ps, bool) or not isinstance(ps, int) or ps < 1:
+                raise ValueError("preview_stride 는 1 이상 정수")
+        if "target_faces" in opts:
+            tf = opts["target_faces"]
+            if isinstance(tf, bool) or not isinstance(tf, int) or tf < 100:
+                raise ValueError("target_faces 는 100 이상 정수")
+        if "num_threads" in opts:
+            nt = opts["num_threads"]
+            if isinstance(nt, bool) or not isinstance(nt, int) or nt < 0:
+                raise ValueError("num_threads 는 0 이상 정수")
     except (TypeError, KeyError, ValueError) as e:
         raise ReconstructionError("STATIC_INPUT_INVALID", str(e)) from e
 
@@ -96,7 +124,8 @@ class StaticReconstructor:
 
     def run(self, inp: Mapping[str, Any], root: Path, *, run_id: str, cancelled: threading.Event,
             progress: Callable[[float], None], get: Callable[[str], bytes],
-            put: Callable[[str, bytes, str], str]) -> dict[str, Any]:
+            put: Callable[[str, bytes, str], str],
+            on_preview: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
         validate_input(inp)
         started_at = self.clock_ms()
         metrics: dict[str, Any] = {"stage_seconds": {}, "texture": None, "scale_check": None,
@@ -166,9 +195,79 @@ class StaticReconstructor:
         model = output(root / "mapanything" / "metrics.json", "mapanything")
         if model.get("result") != "SUCCESS":
             raise ReconstructionError("STATIC_MAPANYTHING_EMPTY", "MapAnything 결과 없음")
-        tool("bake", .8)  # 도구 부재 시 bake 가 fallback 을 선언한다
-        bake = output(root / "bake.json", "bake")
-        if bake.get("fallback_reason"):
+        opts = inp.get("options", {})
+        mode = "preview" if opts.get("preview_only") else opts.get("mode", "full")
+        want_two_stage = (mode == "two_stage") or bool(opts.get("emit_preview")) or (on_preview is not None)
+        image_hashes = read_json(root / "job.json")["image_hashes"]
+        input_hash = sha256(json.dumps({"input": inp, "image_hashes": image_hashes}, sort_keys=True).encode())
+        preview_emitted: dict[str, Any] | None = None
+        if mode == "preview":
+            tool("preview", .75)
+            bake = output(root / "preview.json", "preview")
+        else:
+            if want_two_stage:
+                tool("preview", .62)
+                prev_doc = output(root / "preview.json", "preview")
+                prev_assets = []
+                for pspec in prev_doc["assets"]:
+                    ppath = (root / pspec["path"]).resolve()
+                    if not ppath.is_relative_to(root.resolve()) or not ppath.is_file() or ppath.stat().st_size == 0:
+                        raise ReconstructionError("STATIC_OUTPUT_EMPTY", f"미리보기 산출물 경로·내용 오류: {pspec['path']}")
+                    pcontent = ppath.read_bytes()
+                    passet: dict[str, Any] = {
+                        "kind": pspec["kind"],
+                        "uri": put(ppath.name, pcontent, pspec["content_type"]),
+                        "sha256": sha256(pcontent),
+                        "bytes": len(pcontent),
+                        "axis_convention": "GLTF_Y_UP",
+                    }
+                    if pspec.get("triangle_count") is not None:
+                        passet["triangle_count"] = int(pspec["triangle_count"])
+                    prev_assets.append(passet)
+                preview_emitted = {
+                    "schema_version": "2.1.0",
+                    "scene_version": f"scene-preview-{run_id}",
+                    "state": "CANDIDATE",
+                    "geometry_role": "VISUAL",
+                    "created_at": self.clock_ms(),
+                    "calibration_version": inp["calibration_version"],
+                    "coordinate_frame": cal["coordinate_frame"],
+                    "input_provenance": inp["input_provenance"],
+                    "reproducibility": {
+                        "run_id": run_id,
+                        "model_version": model["model_version"],
+                        "input_hash": input_hash,
+                        **({"weights_hash": model["weights_hash"]} if model.get("weights_hash") else {}),
+                    },
+                    "method": {
+                        "reconstructor": "MAPANYTHING_NATIVE",
+                        "reconstructor_detail": "preview_scene",
+                        "uses_known_pose": False,
+                        "human_removal": "MASK_COMPOSITE",
+                        "postprocess": prev_doc["postprocess"],
+                    },
+                    "assets": prev_assets,
+                    "quality": {
+                        "wall_deviation_m": None,
+                        "observed_surface_ratio": prev_doc["observed_surface_ratio"],
+                        "notes": "벽 GT 미측정. scene_tier=PREVIEW; preview_scene=true; texture=null: PREVIEW_FAST_PATH",
+                    },
+                }
+                if perrors := schema_errors(preview_emitted, SCENE_SCHEMA):
+                    raise ReconstructionError("STATIC_OUTPUT_INVALID", "; ".join(perrors))
+                write_json(root / "preview_scene_output.json", preview_emitted)
+                prev_out_uri = put("preview_scene_output.json", (root / "preview_scene_output.json").read_bytes(), "application/json")
+                metrics["preview_scene"] = {
+                    "scene_version": preview_emitted["scene_version"],
+                    "glb_uri": prev_assets[0]["uri"],
+                    "output_uri": prev_out_uri,
+                    "metrics": prev_doc.get("metrics"),
+                }
+                if on_preview is not None:
+                    on_preview(preview_emitted)
+            tool("bake", .8)  # 도구 부재 시 bake 가 fallback 을 선언한다
+            bake = output(root / "bake.json", "bake")
+        if mode != "preview" and bake.get("fallback_reason"):
             tool("fallback", .85)
             bake = output(root / "bake.json", "fallback")
         tool("measure", .9)
@@ -176,15 +275,18 @@ class StaticReconstructor:
                        scale_check=output(root / "scale_check.json", "measure"), reconstruction=model,
                        bake=bake.get("metrics"), image_hashes=read_json(root / "job.json")["image_hashes"])
         result = {
-            "schema_version": "2.1.0", "scene_version": f"scene-{run_id}", "state": "CANDIDATE",
+            "schema_version": "2.1.0", "scene_version": f"scene-preview-{run_id}" if mode == "preview" else f"scene-{run_id}", "state": "CANDIDATE",
             "geometry_role": "VISUAL", "created_at": self.clock_ms(), "calibration_version": inp["calibration_version"],
             "coordinate_frame": cal["coordinate_frame"], "input_provenance": inp["input_provenance"],
             "reproducibility": {"run_id": run_id, "model_version": model["model_version"],
                 "input_hash": sha256(json.dumps({"input": inp, "image_hashes": metrics["image_hashes"]}, sort_keys=True).encode())},
             "method": {"reconstructor": "MAPANYTHING_NATIVE", "uses_known_pose": False,
+                       **({"reconstructor_detail": "preview_scene"} if mode == "preview" else {}),
                        "human_removal": "MASK_COMPOSITE", "postprocess": bake["postprocess"]},
             "assets": [], "quality": {"wall_deviation_m": None, "observed_surface_ratio": bake["observed_surface_ratio"],
-                "notes": "벽 GT 미측정. 출처·축척 점검·지표: metrics.json; texture=" + ("null: " + bake["fallback_reason"] if bake.get("fallback_reason") else "texrecon")},
+                "notes": "벽 GT 미측정. 출처·축척 점검·지표: metrics.json"
+                + ("; scene_tier=PREVIEW; preview_scene=true" if mode == "preview" else (f"; scene_tier=FULL; replaces_preview_scene={preview_emitted['scene_version']}" if preview_emitted is not None else ""))
+                + "; texture=" + ("null: " + bake["fallback_reason"] if bake.get("fallback_reason") else "texrecon")},
         }
         if model.get("weights_hash"):
             result["reproducibility"]["weights_hash"] = model["weights_hash"]
@@ -201,6 +303,8 @@ class StaticReconstructor:
                          "sha256": sha256(content), "bytes": len(content)}
                 if spec["kind"] == "GLTF_VISUAL":
                     asset["axis_convention"] = "GLTF_Y_UP"
+                    if spec.get("triangle_count") is not None:
+                        asset["triangle_count"] = int(spec["triangle_count"])
                 elif spec["kind"] == "SURFACE_SOURCE_MAP":
                     asset["surface_values"] = SURFACE_VALUES
                     if spec.get("ratios"):
@@ -250,5 +354,7 @@ class StaticReconstructor:
         timed("upload", upload, .99)
         if errors := schema_errors(result, SCENE_SCHEMA):
             raise ReconstructionError("STATIC_OUTPUT_INVALID", "; ".join(errors))
+        if mode == "preview" and on_preview is not None:
+            on_preview(result)
         progress(1)
         return result

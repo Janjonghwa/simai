@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import struct
 import subprocess
@@ -64,10 +65,26 @@ VOXEL_M = 0.02  # TSDF 칸. MapAnything 모델 해상도 픽셀이 3 m 에서 �
 TRUNC_VOXELS = 8  # TSDF 절단 거리 = 8 칸(16 cm). 시점 간 깊이 차 |Δd|/d p50 1~2%(5 m 에서 5~10 cm)가 서로 깎지 않게
 MAX_DEPTH_M = 15.0  # 교실 대각선(약 14 m) 밖 깊이는 통합하지 않는다
 MIN_CLUSTER_FACES = 200  # 이보다 작은 떨어진 조각은 지운다(떠 있는 점 잔여)
-TARGET_FACES = 400_000  # 단순화 목표 면 수(texrecon 시간·아틀라스 크기와 형상 오차의 절충)
+DEFAULT_BAKE_TARGET_FACES = 150_000  # 세팅 굽기 가속 기본 목표 면 수(40만 → 15만, S15P31A101-451)
+HIGH_QUALITY_TARGET_FACES = 400_000  # 11차 기준 고밀도 비교용 목표 면 수
+TARGET_FACES = DEFAULT_BAKE_TARGET_FACES  # 단순화 목표 면 수(texrecon 시간·아틀라스 크기와 형상 오차의 절충)
 EDGE_BAND_PX = 5  # 깊이 경계 띠 반폭(원본 픽셀, 깊이 격자로 올림). MapAnything 모델 해상도에서는 2 px(원본 약 9 px)
 BLUR_SIGMA_PX = 8.0  # 빼고 굽기 보조 지표: 두 그림을 비교 영역 안에서만 σ 8 px 정규화 흐림한 뒤 PSNR(수 px~수십 px 어긋남과 색 차이를 가르는 용도)
 OCCLUSION_TOL = 0.05  # 텍스처 가림: 이 카메라 깊이가 면보다 5% 넘게 앞이면 메시에 없는 가림체로 본다(run_hybrid_depth 충돌 기준과 같다)
+
+
+def resolve_num_threads(num_threads: int) -> int:
+    """0 이하이면 가용 CPU 코어 전체(`os.cpu_count() or 1`)로 풀고, 양수면 그대로 돌려준다."""
+    if int(num_threads) <= 0:
+        return max(1, os.cpu_count() or 1)
+    return int(num_threads)
+
+
+def configure_cpu_threads(num_threads: int) -> int:
+    """TSDF·단순화(Open3D/OpenMP)와 texrecon 이 쓸 CPU 스레드 수를 맞추고 유효 스레드 수를 돌려준다."""
+    effective = resolve_num_threads(num_threads)
+    os.environ["OMP_NUM_THREADS"] = str(effective)
+    return effective
 
 
 # --------------------------------------------------------------------------- 공통
@@ -255,8 +272,17 @@ def fuse_mesh(views: list[DepthView], cfg: Config) -> tuple[np.ndarray, np.ndarr
     if o3d.__version__.startswith("0.20."):
         # shortcut: open3d 0.20.0(Windows 휠에서 확인) 의 ScalableTSDFVolume 이 평면 하나도 면 0 개를 낸다. 고쳐진 판이 나오면 푼다
         raise ValueError(f"open3d {o3d.__version__} 의 TSDF 추출이 비어 있다(0.19.0 을 쓴다: --with open3d==0.19.0)")
+    effective_threads = configure_cpu_threads(cfg.num_threads)
+    t_conflict = time.perf_counter()
     keep = conflict_keep(views)
-    rec: dict[str, Any] = {"views": {}, "open3d": o3d.__version__}
+    conflict_s = round(time.perf_counter() - t_conflict, 3)
+    rec: dict[str, Any] = {
+        "views": {},
+        "open3d": o3d.__version__,
+        "num_threads": effective_threads,
+        "requested_threads": int(cfg.num_threads),
+    }
+    t_tsdf = time.perf_counter()
     integ = o3d.pipelines.integration
     vol = integ.ScalableTSDFVolume(voxel_length=cfg.voxel_m, sdf_trunc=cfg.voxel_m * cfg.trunc_voxels,
                                    color_type=integ.TSDFVolumeColorType.NoColor)
@@ -275,6 +301,8 @@ def fuse_mesh(views: list[DepthView], cfg: Config) -> tuple[np.ndarray, np.ndarr
         intr = o3d.camera.PinholeCameraIntrinsic(w, h, K[0, 0], K[1, 1], K[0, 2], K[1, 2])
         vol.integrate(rgbd, intr, np.linalg.inv(v.cam2world))
     mesh = vol.extract_triangle_mesh()
+    tsdf_s = round(time.perf_counter() - t_tsdf, 3)
+    t_clean = time.perf_counter()
     rec["tsdf_faces"] = len(mesh.triangles)
 
     def clean(m):
@@ -294,8 +322,22 @@ def fuse_mesh(views: list[DepthView], cfg: Config) -> tuple[np.ndarray, np.ndarr
     rec["removed_small_cluster_faces"] = int(small.sum())
     mesh.remove_triangles_by_mask(small)
     mesh = clean(mesh)
-    if len(mesh.triangles) > cfg.target_faces:
+    clean_s = round(time.perf_counter() - t_clean, 3)
+    faces_before_decimation = int(len(mesh.triangles))
+    t_dec = time.perf_counter()
+    decimated = faces_before_decimation > cfg.target_faces
+    if decimated:
         mesh = clean(mesh.simplify_quadric_decimation(cfg.target_faces))
+    decimate_s = round(time.perf_counter() - t_dec, 3)
+    rec.update({
+        "faces_before_decimation": faces_before_decimation,
+        "target_faces": int(cfg.target_faces),
+        "decimated": bool(decimated),
+        "conflict_s": conflict_s,
+        "tsdf_s": tsdf_s,
+        "clean_s": clean_s,
+        "decimate_s": decimate_s,
+    })
     V = np.asarray(mesh.vertices, float)
     F = np.asarray(mesh.triangles, np.int64)
     _, first = np.unique(tp.face_keys(F), return_index=True)  # 같은 정점 세 개의 면은 하나만(texrecon 이 지우면 면 번호가 어긋난다)
@@ -372,7 +414,9 @@ class Texrecon:
     경로는 모두 root(결과 폴더) 아래여야 한다. opts 안의 Path 는 입력 파일로 보고 넣는다."""
 
     def __init__(self, spec: str, root: Path, num_threads: int = 0) -> None:
-        self.spec, self.root, self.num_threads = spec, root.resolve(), num_threads
+        self.spec, self.root = spec, root.resolve()
+        self.requested_threads = int(num_threads)
+        self.num_threads = resolve_num_threads(num_threads)
         self.image = spec.split(":", 1)[1] if spec.startswith("docker:") else None
         self.cid: str | None = None
         self.pushed: dict[str, tuple[int, int]] = {}
@@ -383,10 +427,13 @@ class Texrecon:
             r = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", self.image], capture_output=True, text=True)
             if r.returncode != 0:
                 raise ValueError(f"texrecon 이미지 {self.image} 가 없다(docker build -f deploy/texrecon/Dockerfile -t {self.image} .)")
-            return {"runner": "docker", "image": self.image, "image_id": r.stdout.strip(), "mvs_texturing": MVS_TEXTURING}
+            return {"runner": "docker", "image": self.image, "image_id": r.stdout.strip(), "mvs_texturing": MVS_TEXTURING,
+                    "num_threads": self.num_threads, "requested_threads": self.requested_threads}
         if not Path(self.spec).is_file():
             raise ValueError(f"texrecon 실행 파일 {self.spec} 이 없다")
-        return {"runner": "native", "path": self.spec, "sha256": sha256_file(Path(self.spec)), "mvs_texturing": "unknown(직접 빌드)"}
+        return {"runner": "native", "path": self.spec, "sha256": sha256_file(Path(self.spec)),
+                "mvs_texturing": "unknown(직접 빌드)", "num_threads": self.num_threads,
+                "requested_threads": self.requested_threads}
 
     def __enter__(self) -> "Texrecon":
         if self.image:
@@ -768,16 +815,23 @@ def _run(a: argparse.Namespace, cfg: Config, out: Path, tr: Texrecon, tr_rec: di
 
     # 0층: 형상
     t0 = time.perf_counter()
+    t_ld = time.perf_counter()
     dviews, depth_rec = load_depth_views(a.ma_run, prepared, cams, a.depth, cameras_sha, cfg.align)
+    times["load_depth_s"] = round(time.perf_counter() - t_ld, 3)
     if not dviews:
         raise RuntimeError("형상에 쓸 카메라 깊이가 없다")
     dviews, poses, V, F, plane_faces, cleanup_rec = geometry(dviews, cams, M, cfg, warnings)
     geo_rec = cleanup_rec.pop("fuse")
+    for k_time in ("conflict_s", "tsdf_s", "clean_s", "decimate_s"):
+        if k_time in geo_rec:
+            times[k_time] = geo_rec[k_time]
     (out / "mesh").mkdir()
     write_ply(out / "mesh" / "mesh.ply", V, F)
     pairs = tp.face_pairs(F)
     rend = Renderer(V, F)
+    t_dc = time.perf_counter()
     geo_rec["depth_coverage"] = depth_coverage(rend, V, F, dviews)
+    times["depth_coverage_s"] = round(time.perf_counter() - t_dc, 3)
     times["geometry_s"] = round(time.perf_counter() - t0, 1)
 
     # 텍스처 소스(사람 마스크·깊이 경계 띠·가림 검사)
@@ -814,16 +868,22 @@ def _run(a: argparse.Namespace, cfg: Config, out: Path, tr: Texrecon, tr_rec: di
     for term in sorted(set(cfg.terms) | set(cfg.loo_terms)):
         t0 = time.perf_counter()
         bdir = out / f"bake-{term}"
+        t_dcost = time.perf_counter()
         tr.run(out / "scene", out / "mesh" / "mesh.ply", bdir / "costs" / "tex", ["-d", term, *SKIP_LEVELING])
         costs = tp.read_spt(bdir / "costs" / "tex_data_costs.spt")
         entries, frec = tp.filter_costs(costs, V, F, views, cfg.occlusion_tol)
         costs_by_term[term], filtered[term] = costs, entries
+        data_costs_s = round(time.perf_counter() - t_dcost, 3)
+        times[f"data_costs_{term}_s"] = data_costs_s
         report["bakes"][term] = {"filter": frec, "cost_entries": int(len(costs.entries)), "kept_entries": int(len(entries))}
         if term in cfg.terms:
             b = bake(tr, bdir / "all", out / "scene", out / "mesh" / "mesh.ply", V, F, costs, entries, views, cfg, pairs, term, scale,
                      plane_faces)
             bakes[term] = b
+            times[f"texrecon_{term}_s"] = round(float(b.seconds), 3)
+            t_prov = time.perf_counter()
             files, maps, covered = write_provenance(b, bdir / "all")
+            times[f"provenance_{term}_s"] = round(time.perf_counter() - t_prov, 3)
             for k, f_ in enumerate(files):
                 shutil.copyfile(bdir / "all" / "final" / b.obj["textures"][b.obj["materials"][k]], bdir / "all" / f_["albedo"])
             ratios = tp.area_ratios(V, F, b.cls)
@@ -847,7 +907,9 @@ def _run(a: argparse.Namespace, cfg: Config, out: Path, tr: Texrecon, tr_rec: di
                 "geometry_cleanup": {"align_views": cfg.align_views, "plane_cleanup": plane_faces is not None,
                                      "estimated_plane_note": "ESTIMATED_PLANE 면은 색이 관측 픽셀이나 정점을 맞춘 수평 평면에 올렸다(관측 형상 그대로가 아니다)"},
             }
+            t_exp = time.perf_counter()
             tris = export_glb(bdir / "all" / "textured.glb", V, F, b, M, extras)
+            times[f"export_glb_{term}_s"] = round(time.perf_counter() - t_exp, 3)
             report["bakes"][term].update({"ratios_area": ratios, "ratios_texel": texel, "observed_area_by_camera": per_cam,
                                           "holes": b.holes, "atlases": len(files), "glb_triangles": tris,
                                           "glb_bytes": (bdir / "all" / "textured.glb").stat().st_size,
@@ -938,6 +1000,7 @@ def _run(a: argparse.Namespace, cfg: Config, out: Path, tr: Texrecon, tr_rec: di
                                                   "World 고정 결과가 없거나 FAILED 라 MapAnything world(cam_A 기준, OpenCV 축) 그대로다. World·Scene 으로 쓰지 않는다")},
         "config": {**{k: v for k, v in asdict(cfg).items() if k != "hole"}, "hole": asdict(cfg.hole)},
         "texrecon": {**tr_rec, "calls": tr.calls},
+        "threading": {"requested_num_threads": int(cfg.num_threads), "effective_num_threads": tr.num_threads},
         "geometry": geo_rec, "cleanup": cleanup_rec, **report, "times": times, "warnings": warnings,
         "metrics_note": "개발 교실 관측 기반 지표(DATASET_GT 아님). 한 카메라 빼고 굽기는 텍스처만 뺐고 형상(TSDF)은 네 카메라로 만들었다",
     }
@@ -950,7 +1013,11 @@ def flat_metrics(rec: dict[str, Any]) -> dict[str, Any]:
     """run_record.metrics(평면 숫자·문자). 이름은 설계 문서 "Run 기록 지표"에 정의한 것만."""
     m: dict[str, Any] = {"mesh_faces": rec["geometry"]["faces"], "mesh_vertices": rec["geometry"]["vertices"],
                          "mesh_area_m2": rec["geometry"]["area_m2"], "output_frame": rec["output_frame"]["frame"],
-                         "glb_axis_convention": rec["output_frame"]["glb_axis_convention"]}
+                         "glb_axis_convention": rec["output_frame"]["glb_axis_convention"],
+                         "mesh_faces_before_decimation": rec["geometry"].get("faces_before_decimation"),
+                         "mesh_target_faces": rec["geometry"].get("target_faces"),
+                         "mesh_decimated": rec["geometry"].get("decimated"),
+                         "num_threads": (rec.get("threading") or {}).get("effective_num_threads")}
     for term, b in rec["bakes"].items():
         if "ratios_area" not in b:
             continue
