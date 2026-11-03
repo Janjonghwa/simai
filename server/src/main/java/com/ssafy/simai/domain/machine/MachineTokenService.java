@@ -28,7 +28,10 @@ import org.springframework.stereotype.Service;
 public class MachineTokenService {
 
     /** I5 작업 유형. 계약 job_request $defs.job_type 에서 만든 enum 을 그대로 쓴다(계약이 바뀌면 따라간다) */
-    static final Set<String> JOB_TYPES = Arrays.stream(JobType.values()).map(JobType::value).collect(Collectors.toUnmodifiableSet());
+    static final Set<String> JOB_TYPES = java.util.stream.Stream.concat(
+            Arrays.stream(JobType.values()).map(JobType::value),
+            java.util.stream.Stream.of(com.ssafy.simai.domain.job.AnalysisJobService.SCENE_REGENERATE_JOB_TYPE))
+            .collect(Collectors.toUnmodifiableSet());
     private static final Pattern ID = Pattern.compile("^[a-z0-9][a-z0-9-]{0,62}$");
 
     private final NamedParameterJdbcTemplate jdbc;

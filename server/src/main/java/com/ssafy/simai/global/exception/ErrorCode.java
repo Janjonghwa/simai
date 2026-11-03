@@ -381,7 +381,11 @@ public sealed interface ErrorCode {
         SCENE_GLTF_NOT_UPLOADED(HttpStatus.BAD_REQUEST, "gltf_key 가 SCENE_GLTF 로 발급받아 아직 쓰이지 않은 업로드가 아닙니다(POST /api/uploads/sign)"),
         SCENE_STATE_CONFLICT(HttpStatus.CONFLICT, "확정·거절할 수 있는 상태(CANDIDATE)가 아닙니다"),
         // 서명 주소만 받고 올리지 않았거나 다른 크기다. 확정하면 화면 배경이 깨지므로 막는다
-        SCENE_GLTF_MISSING(HttpStatus.CONFLICT, "glb 가 저장소에 없거나 발급한 크기와 다릅니다. 서명 주소로 올린 뒤 확정하세요");
+        SCENE_GLTF_MISSING(HttpStatus.CONFLICT, "glb 가 저장소에 없거나 발급한 크기와 다릅니다. 서명 주소로 올린 뒤 확정하세요"),
+        // 3D 배경 재생성(S15P31A101-428)
+        REGENERATE_IN_PROGRESS(HttpStatus.CONFLICT, "이미 진행 중인 3D 배경 재생성 요청이 있습니다"),
+        REGENERATE_NOT_FOUND(HttpStatus.NOT_FOUND, "3D 배경 재생성 요청을 찾을 수 없습니다"),
+        INVALID_REGENERATE_REQUEST(HttpStatus.BAD_REQUEST, "재생성 요청 값이 올바르지 않습니다(reason 은 문자열 120자 이하)");
 
         private final HttpStatus status;
         private final String message;

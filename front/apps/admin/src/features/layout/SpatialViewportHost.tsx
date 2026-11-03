@@ -2,6 +2,7 @@ import { CamSplitPanel } from '@/features/cctv/CamSplitPanel';
 import { PLAN_FALLBACK_MS } from '@/features/layout/spatialHost/constants';
 import { HostEventPanel } from '@/features/layout/spatialHost/HostEventPanel';
 import { PlanOverlay } from '@/features/layout/spatialHost/PlanOverlay';
+import { SceneRegeneratePanel } from '@/features/layout/spatialHost/SceneRegeneratePanel';
 import { useBoxEditProps } from '@/features/layout/spatialHost/useBoxEditProps';
 import { useSpatialSnapshots } from '@/features/layout/spatialHost/useSpatialSnapshots';
 import {
@@ -58,6 +59,12 @@ export interface SpatialViewportValue {
 const SpatialViewportContext = createContext<SpatialViewportValue | null>(null);
 
 export const useSpatialViewport = () => useContext(SpatialViewportContext);
+
+function readSceneVersion(scene: unknown): string | null {
+  if (typeof scene !== 'object' || scene === null) return null;
+  const val: unknown = Reflect.get(scene, 'scene_version');
+  return typeof val === 'string' ? val : null;
+}
 
 /**
  * 뷰어가 알린 장면 상태에서 보이는 스캔의 경계를 꺼내 호스트 저장소에 올린다(새 구역 자리·머리글이 읽는다).
@@ -219,6 +226,7 @@ export function SpatialViewportHost({
           onResetView={() => viewer.current?.resetView?.()}
           onRetry3d={show3d}
         />
+        {showEventPanel && <SceneRegeneratePanel currentSceneVersion={readSceneVersion(scene)} />}
         {children}
         {showEventPanel && view === '3d' && (
           <PlanMinimap selectedKey={selectedKey} onSelect={setSelectedKey} />
