@@ -82,8 +82,32 @@ public class CoverageGuideService {
         }
 
         Instant now = clock.instant();
-        latest.set(new StoredGuide(((ObjectNode) body).deepCopy(), deviceId, siteId, now));
+        // 영상 없음·쌍 결과 없음(UNKNOWN)뿐인 빈 보고는 이미 실제 쌍 결과가 있으면 최신본을 덮지 않는다(화면이 실제 결과와 "영상 없음" 사이를
+        // 깜박이는 것을 막는다). 실제 결과는 staleAfter 가 지나면 STALE 로 표시된다.
+        StoredGuide previous = latest.get();
+        if (!(previous != null && !hasRealPairResult(body) && hasRealPairResult(previous.payload()))) {
+            latest.set(new StoredGuide(((ObjectNode) body).deepCopy(), deviceId, siteId, now));
+        }
         return buildPostResponse(siteId, deviceId, now);
+    }
+
+    /** 기기가 수요만 묻는다(GET /api/devices/coverage-guides). 최신 결과를 건드리거나 보관하지 않는다. */
+    public ObjectNode demandFor(String deviceId) {
+        if (!"LAPTOP".equals(deviceKindOf(deviceId))) {
+            throw new BusinessException(ErrorCode.CoverageGuide.NOT_A_LAPTOP);
+        }
+        ObjectNode res = buildPostResponse(sites.siteId(), deviceId, clock.instant());
+        res.remove("received_at_ms");
+        return res;
+    }
+
+    private static boolean hasRealPairResult(JsonNode payload) {
+        for (JsonNode pair : payload.path("pairs")) {
+            if (!"UNKNOWN".equals(pair.path("grade").asString(""))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 관리자가 최신 카메라 각도 안내를 조회한다. 마지막 관리자 조회 시각을 갱신해 수요 신호를 켠다. */

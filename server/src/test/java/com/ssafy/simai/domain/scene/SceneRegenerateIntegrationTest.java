@@ -168,6 +168,27 @@ class SceneRegenerateIntegrationTest {
     }
 
     @Test
+    void 진행_중_작업_LIVE_이면_재생성을_409_로_거부한다() throws Exception {
+        String site = jdbc.queryForObject("SELECT site_id FROM site LIMIT 1", String.class);
+        jdbc.update("""
+                INSERT INTO work_unit (site_id, work_date, name, starts_at, ends_at, planned_people, status, actual_started_at, created_by, created_at, updated_at)
+                VALUES (?, current_date, 'regen-live-474', now(), now() + interval '4 hours', 4, 'IN_PROGRESS', now(), ?, now(), now())
+                """, site, adminId);
+        try {
+            mvc.perform(post("/api/scenes/regenerate")
+                            .header(HttpHeaders.AUTHORIZATION, "Bearer " + userToken("ADMIN"))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{}"))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.code").value("REGENERATE_WORK_IN_PROGRESS"));
+            Integer requests = jdbc.queryForObject("SELECT count(*) FROM scene_regenerate_request", Integer.class);
+            assertThat(requests).isZero();
+        } finally {
+            jdbc.update("DELETE FROM work_unit WHERE name = 'regen-live-474'");
+        }
+    }
+
+    @Test
     void 전체_상태_전이_REQUESTED_CAPTURING_RECONSTRUCTING_CANDIDATE_READY_및_활성화() throws Exception {
         // 1. 관리자 재생성 요청 -> 202 REQUESTED
         ObjectNode reqBody = mapper.createObjectNode().put("reason", "자재 반입");

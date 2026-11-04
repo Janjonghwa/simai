@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import inspect
 import json
 import logging
@@ -17,6 +16,7 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from simai_ai.calibration.document import content_hash
 from simai_ai.providers.contract import schema_errors
 from simai_ai.vlm.client import VlmClient, VlmError, VlmSettings
 from simai_ai.vlm.face_blur import Decoder, KeypointProvider
@@ -126,18 +126,19 @@ class VlmZoneDraftHandler:
         if not cal_ref or self._store is None:
             return {}
         raw = self._get(ctx, str(cal_ref))
-        expected_hash = inp.get("calibration_hash")
-        if expected_hash and _sha256(raw) != expected_hash:
-            raise JobFailed(
-                "CALIBRATION_HASH_MISMATCH",
-                f"{cal_ref} 의 sha256 이 calibration_hash 와 다르다",
-            )
         try:
             doc = json.loads(raw)
         except ValueError as e:
             raise JobFailed("CALIBRATION_INVALID", f"JSON 이 아니다: {e}") from e
         if not isinstance(doc, Mapping):
             raise JobFailed("CALIBRATION_INVALID", "보정 문서가 객체가 아니다")
+        expected_hash = inp.get("calibration_hash")
+        # 서버가 싣는 calibration_hash 는 보정 content_hash(원본 바이트 해시가 아님)다
+        if expected_hash and content_hash(doc) != expected_hash:
+            raise JobFailed(
+                "CALIBRATION_HASH_MISMATCH",
+                f"{cal_ref} 의 content_hash 가 calibration_hash 와 다르다",
+            )
         return cameras_from_calibration(doc)
 
     def _resolve_frames(self, ctx: JobContext, inp: Mapping[str, Any]) -> dict[str, Any]:
@@ -199,7 +200,3 @@ class VlmZoneDraftHandler:
 def _check_cancelled(ctx: JobContext) -> None:
     if ctx.cancelled.is_set():
         raise JobFailed("CANCELLED", "작업이 취소됐다")
-
-
-def _sha256(content: bytes) -> str:
-    return "sha256:" + hashlib.sha256(content).hexdigest()

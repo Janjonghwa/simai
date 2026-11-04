@@ -36,6 +36,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
@@ -273,6 +274,48 @@ class CoverageGuideIntegrationTest {
         clock.set(t0.plusSeconds(1).plusMillis(15_001));
         JsonNode expiredDemand = postCoverageGuide(payload);
         assertThat(expiredDemand.path("active_demand").asBoolean()).isFalse();
+    }
+
+    @Test
+    void 기기_GET_수요_조회는_active_demand_만_돌려주고_빈_보고는_실제_결과를_덮지_않는다() throws Exception {
+        Instant t0 = clock.instant();
+        ObjectNode real = validGuidePayload(laptopId, t0.toEpochMilli());
+        postCoverageGuide(real);
+        getCoverageGuides();
+
+        MvcResult demand = mockMvc.perform(get("/api/devices/coverage-guides")
+                        .header("Authorization", "Bearer " + laptopToken))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode demandBody = mapper.readTree(demand.getResponse().getContentAsString());
+        assertThat(demandBody.path("active_demand").asBoolean()).isTrue();
+        assertThat(demandBody.has("latest")).isFalse();
+        mockMvc.perform(get("/api/devices/coverage-guides").header("Authorization", "Bearer " + watchToken))
+                .andExpect(status().is4xxClientError());
+
+        // 쌍 결과가 모두 UNKNOWN 인 빈 보고(영상 없음)는 이미 있는 실제 결과를 덮어쓰지 않는다
+        ObjectNode empty = validGuidePayload(laptopId, t0.plusSeconds(2).toEpochMilli());
+        empty.put("connectivity", "UNKNOWN");
+        for (JsonNode cam : empty.withArray("cameras")) {
+            ((ObjectNode) cam).put("status", "NO_VIDEO");
+            ((ObjectNode) cam).putNull("frame_ts_ms");
+        }
+        for (JsonNode pair : empty.withArray("pairs")) {
+            ObjectNode p = (ObjectNode) pair;
+            p.putNull("raw_matches");
+            p.putNull("inliers");
+            p.putNull("inlier_ratio");
+            p.put("grade", "UNKNOWN");
+            p.putNull("centroid_a");
+            p.putNull("centroid_b");
+        }
+        empty.putNull("capture_skew_ms");
+        ArrayNode singles = empty.putArray("components");
+        for (JsonNode cam : empty.withArray("cameras")) {
+            singles.addArray().add(cam.path("camera_id").asString());
+        }
+        empty.putArray("guides");
+        postCoverageGuide(empty);
+        assertThat(getCoverageGuides().at("/latest/computed_at_ms").asLong()).isEqualTo(t0.toEpochMilli());
     }
 
     private ObjectNode validGuidePayload(String sourceId, long computedAtMs) throws Exception {

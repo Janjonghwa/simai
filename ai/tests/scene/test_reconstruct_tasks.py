@@ -416,3 +416,14 @@ def test_bake_passes_threads_and_target_faces_to_texture_mesh(tmp_path, monkeypa
     # num_threads=0 기본값이면 모든 CPU 코어 수(>=1)로 풀린다
     tr = tm.Texrecon("fake-texrecon", tmp_path, num_threads=0)
     assert tr.requested_threads == 0 and tr.num_threads >= 1
+
+
+def test_regenerate_quality_fields_maps_camera_key_to_scene_quality_name():
+    from simai_ai.scene.reconstruct import regenerate_quality_fields
+
+    out = regenerate_quality_fields({"regenerate_quality": {
+        "previous_fill_ratio": 0.1, "unrevealed_ratio": 0.0,
+        "cameras": {"cam1": {"previous_fill_ratio": 0.2, "unrevealed_ratio": 0.0}}}})
+    assert out == {"previous_fill_ratio": 0.1, "unrevealed_ratio": 0.0,
+                   "camera_background_quality": {"cam1": {"previous_fill_ratio": 0.2, "unrevealed_ratio": 0.0}}}
+    assert regenerate_quality_fields({}) == {}

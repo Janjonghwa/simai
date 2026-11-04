@@ -11,6 +11,7 @@ import {
   type SetupZoneDraftsResponse,
 } from '@/features/setup/types';
 import type { Http } from '@/lib/http';
+import { z } from 'zod';
 
 // 세팅 1단계 및 2단계 이후 REST 요청(http 주입, S15P31A101-448·-453).
 
@@ -23,6 +24,8 @@ export const SETUP_SESSION_POLL_MS = 2_000;
 export const SETUP_COVERAGE_GUIDES_KEY = ['setup', 'coverage-guides'] as const;
 export const SETUP_HEIGHT_DEFAULTS_KEY = ['setup', 'camera-height-defaults'] as const;
 export const setupSessionKey = (id: string) => ['setup', 'session', id] as const;
+export const setupWorkUnitSessionKey = (workUnitId: number) =>
+  ['setup', 'work-unit-session', workUnitId] as const;
 export const setupZoneDraftsKey = (id: string) => ['setup', 'session', id, 'zone-drafts'] as const;
 
 export function requestCoverageGuides(
@@ -87,5 +90,32 @@ export function requestSetupZoneDrafts(
   return http(`/api/setup-sessions/${encodeURIComponent(setupSessionId)}/zone-drafts`, {
     schema: setupZoneDraftsResponseSchema,
     signal,
+  });
+}
+
+const workUnitSessionSchema = z.object({ active_setup_session_id: z.string().nullish() }).loose();
+
+/** 작업의 진행 중 세팅 세션 ID(GET /api/work-units/{id} 의 active_setup_session_id, 없으면 null). */
+export async function requestWorkUnitSetupSessionId(
+  http: Http,
+  workUnitId: number,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const work = await http(`/api/work-units/${encodeURIComponent(String(workUnitId))}`, {
+    schema: workUnitSessionSchema,
+    signal,
+  });
+  return work.active_setup_session_id ?? null;
+}
+
+/** 진행 중인 세팅 세션을 취소한다(ADMIN). 세션은 FAILED + CANCELLED_BY_ADMIN 이 된다. */
+export function cancelSetupSession(
+  http: Http,
+  setupSessionId: string,
+): Promise<SetupSessionResponse> {
+  return http(`/api/setup-sessions/${encodeURIComponent(setupSessionId)}/cancel`, {
+    method: 'POST',
+    body: {},
+    schema: setupSessionResponseSchema,
   });
 }

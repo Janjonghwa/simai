@@ -81,6 +81,12 @@ public class SceneRegenerateService {
             throw new SceneRegenerateInProgressException(active.getFirst());
         }
 
+        Boolean liveWork = jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM work_unit WHERE status = 'IN_PROGRESS')", Map.of(), Boolean.class);
+        if (Boolean.TRUE.equals(liveWork)) {
+            throw new BusinessException(ErrorCode.Scene.REGENERATE_WORK_IN_PROGRESS);
+        }
+
         OffsetDateTime now = OffsetDateTime.now(clock);
         long requestId;
         try {

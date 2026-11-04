@@ -410,6 +410,8 @@ public sealed interface ErrorCode {
         SCENE_GLTF_MISSING(HttpStatus.CONFLICT, "glb 가 저장소에 없거나 발급한 크기와 다릅니다. 서명 주소로 올린 뒤 확정하세요"),
         // 3D 배경 재생성(S15P31A101-428)
         REGENERATE_IN_PROGRESS(HttpStatus.CONFLICT, "이미 진행 중인 3D 배경 재생성 요청이 있습니다"),
+        // LIVE 관제(작업 IN_PROGRESS) 중에는 GPU 를 Tier 0 가 쓰므로 워커가 재생성을 대여하지 않아 10분 뒤 TIMEOUT 이 된다
+        REGENERATE_WORK_IN_PROGRESS(HttpStatus.CONFLICT, "작업이 진행 중(LIVE 관제)일 때는 3D 배경을 다시 만들 수 없습니다. 작업을 끝낸 뒤 요청하세요"),
         REGENERATE_NOT_FOUND(HttpStatus.NOT_FOUND, "3D 배경 재생성 요청을 찾을 수 없습니다"),
         INVALID_REGENERATE_REQUEST(HttpStatus.BAD_REQUEST, "재생성 요청 값이 올바르지 않습니다(reason 은 문자열 120자 이하)");
 
@@ -630,6 +632,7 @@ public sealed interface ErrorCode {
         SETUP_CAMERAS_INSUFFICIENT(HttpStatus.CONFLICT, "현장에 활성 카메라가 2대 이상 있어야 세팅을 시작할 수 있습니다"),
         SETUP_ALREADY_IN_PROGRESS(HttpStatus.CONFLICT, "이미 진행 중인 세팅 세션이 있습니다"),
         SETUP_WORKER_UNAVAILABLE(HttpStatus.CONFLICT, "현장 세팅(site_setup)을 처리할 활성 워커가 없습니다"),
+        SETUP_CANCEL_NOT_ALLOWED(HttpStatus.CONFLICT, "이미 끝난 세팅 세션은 취소할 수 없습니다"),
         SETUP_RETRY_NOT_ALLOWED(HttpStatus.CONFLICT, "실패한 세팅 세션만 재시도할 수 있습니다"),
         SETUP_BLOCKED_BY_LIVE_WORK(HttpStatus.CONFLICT, "같은 현장에 진행 중(IN_PROGRESS)인 작업이 있어 현장 세팅을 시작할 수 없습니다"),
         INVALID_SETUP_PROGRESS(HttpStatus.BAD_REQUEST, "세팅 진행률·결과 보고가 계약이나 등록된 버전 계보에 맞지 않습니다");

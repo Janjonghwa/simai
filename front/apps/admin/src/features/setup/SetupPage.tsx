@@ -6,6 +6,12 @@ import {
 } from '@/features/layout/SpatialViewportHost';
 import { RulesPanel } from '@/features/rules/RulesPanel';
 import {
+  cancelSetupSession,
+  requestWorkUnitSetupSessionId,
+  setupSessionKey,
+  setupWorkUnitSessionKey,
+} from '@/features/setup/api';
+import {
   ACTION_LABEL,
   deriveHeightFields,
   deriveStep1Coverage,
@@ -23,6 +29,7 @@ import {
 import {
   acceptSetupZoneDraft,
   discardSetupZoneDraft,
+  setActiveSetupSessionId,
   setSetupWorkUnitId,
   useSetupFlowStore,
 } from '@/features/setup/setup.store';
@@ -46,11 +53,13 @@ import {
 import type { CommandResult, ViewerTarget } from '@/features/viewer3d';
 import { useZones } from '@/features/zones/useZones';
 import { ZonesPage } from '@/features/zones/ZonesPage';
+import { api } from '@/lib/api';
 import { Alert } from '@simai/ui/components/alert';
 import { Badge } from '@simai/ui/components/badge';
 import { Button } from '@simai/ui/components/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { Check } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -80,9 +89,9 @@ const TONE_BADGE: Record<SetupTone, string> = {
 
 const STAGE_CALIBRATION: readonly { state: CalibrationState; version: string }[] = [
   { state: 'UNCALIBRATED', version: '세팅 1단계 · 카메라 확인' },
-  { state: 'PROVISIONAL', version: '후보 cal-8' },
-  { state: 'CALIBRATED', version: 'cal-8' },
-  { state: 'CALIBRATED', version: 'cal-8' },
+  { state: 'PROVISIONAL', version: '' },
+  { state: 'CALIBRATED', version: '' },
+  { state: 'CALIBRATED', version: '' },
 ];
 
 function SetupZoneEditorHost({ children }: { children: ReactNode }) {
@@ -157,6 +166,24 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
   const discardedDraftIds = useSetupFlowStore((s) => s.discardedDraftIds);
   const zonesCommitted = useSetupFlowStore((s) => s.zonesCommitted);
 
+  // 새로고침·다른 화면에서 돌아왔을 때: 이 작업에 진행 중인(또는 끝난) 세션이 있으면 이어받아 대기 화면·구역 단계로 연다.
+  // 세션 ID 를 메모리에만 두면 다시 시작하다 409 가 나므로 서버의 work_unit.active_setup_session_id 를 정본으로 본다.
+  const workUnitSessionQuery = useQuery({
+    queryKey: setupWorkUnitSessionKey(workUnitId),
+    queryFn: ({ signal }) => requestWorkUnitSetupSessionId(api, workUnitId, signal),
+    enabled: activeSessionId === null,
+    retry: false,
+    staleTime: 0,
+  });
+  const resumedRef = useRef(false);
+  useEffect(() => {
+    const resumeId = workUnitSessionQuery.data;
+    if (resumedRef.current || activeSessionId !== null || !resumeId) return;
+    resumedRef.current = true;
+    setActiveSetupSessionId(resumeId);
+    setStage(1);
+  }, [workUnitSessionQuery.data, activeSessionId]);
+
   const step1Active = stage === 0;
   const coverageQuery = useCoverageGuides(step1Active);
   const heightDefaultsQuery = useCameraHeightDefaults();
@@ -188,6 +215,25 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
   const currentSession = sessionQuery.data ?? retrySession.session ?? createSession.session ?? null;
 
   const waiting = useMemo(() => deriveWaitingView(currentSession), [currentSession]);
+
+  // 워커가 죽거나 작업이 멈춰 같은 현장의 새 세팅이 409 로 막힐 때 관리자가 진행 중 세션을 취소한다.
+  const queryClient = useQueryClient();
+  const cancelMutation = useMutation({
+    mutationFn: (id: string) => cancelSetupSession(api, id),
+    onSuccess: (session) => {
+      queryClient.setQueryData(setupSessionKey(session.setup_session_id), session);
+    },
+  });
+  const sessionRunning =
+    currentSession !== null &&
+    currentSession.status !== 'COMPLETED' &&
+    currentSession.status !== 'FAILED';
+  const handleCancelSession = useCallback(() => {
+    if (!sessionId || cancelMutation.isPending) return;
+    if (!window.confirm('진행 중인 세팅을 취소할까요? 취소하면 처음부터 다시 시작해야 합니다.'))
+      return;
+    cancelMutation.mutate(sessionId);
+  }, [sessionId, cancelMutation]);
 
   const autoMovedSessionRef = useRef<string | null>(null);
   useEffect(() => {
@@ -359,7 +405,9 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
         )}
         <span className="font-mono text-muted-foreground">
           {currentSession?.setup_session_id
-            ? `세션 ${currentSession.setup_session_id}`
+            ? `세션 ${currentSession.setup_session_id}${
+                currentSession.calibration_version ? ` · ${currentSession.calibration_version}` : ''
+              }`
             : stageMeta.version}
         </span>
         <div className="ml-auto flex flex-wrap gap-2">
@@ -388,6 +436,17 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
                   </Button>
                 );
               })}
+              {stage === 1 && sessionRunning && (
+                <Button
+                  size="lg"
+                  variant="secondary"
+                  className="bg-surface-3 px-4 hover:bg-surface-3/70"
+                  disabled={cancelMutation.isPending}
+                  onClick={handleCancelSession}
+                >
+                  세팅 취소
+                </Button>
+              )}
               {zonesCommitted && (
                 <Button size="lg" className="px-4" onClick={handleNavigateTbm}>
                   작업 관리(TBM)로 이동

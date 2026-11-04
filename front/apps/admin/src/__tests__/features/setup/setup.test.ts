@@ -296,6 +296,7 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
     preview_scene_version: null,
     scene_version: null,
     config_version: null,
+    zones_committed_at: null,
     zone_drafts_ref: null,
     failure_code: null,
     failure_message: null,

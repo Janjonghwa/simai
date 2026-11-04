@@ -29,6 +29,7 @@ import org.springframework.context.event.EventListener;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -380,6 +381,40 @@ public class SetupService {
             throw new BusinessException(ErrorCode.Setup.SETUP_RETRY_NOT_ALLOWED);
         }
         return create(existing.workUnitId(), cameraHeightsM, userId, setupSessionId);
+    }
+
+    /**
+     * 진행 중인 세팅 세션을 관리자가 취소한다(워커가 죽거나 작업이 멈춰 같은 현장의 새 세팅이 막힐 때).
+     * 세션은 FAILED + {@code CANCELLED_BY_ADMIN} 이 되고(DB 에 CANCELLED 상태 값이 없다) 연결된 site_setup·미완료 vlm_zone_draft 작업은
+     * 기존 작업 취소 경로로 끝낸다(워커의 다음 하트비트는 REJECTED/JOB_CANCELLED). 이미 끝난 세션은 409.
+     */
+    @Transactional
+    public ObjectNode cancel(UUID setupSessionId) {
+        String siteId = sites.siteId();
+        SessionRow session = findForUpdateOrView(siteId, setupSessionId, true);
+        if ("COMPLETED".equals(session.status()) || "FAILED".equals(session.status())) {
+            throw new BusinessException(ErrorCode.Setup.SETUP_CANCEL_NOT_ALLOWED);
+        }
+        OffsetDateTime now = utc(clock.instant());
+        // 먼저 세션을 FAILED 로 닫아 둔다. 작업 취소 알림(JobFinished)이 와도 닫힌 세션은 그대로 둔다
+        jdbc.update("""
+                UPDATE setup_session
+                SET status = 'FAILED', failure_code = 'CANCELLED_BY_ADMIN', failure_message = :msg,
+                    completed_at = :now, updated_at = :now
+                WHERE setup_session_id = :id
+                """, new MapSqlParameterSource().addValue("id", setupSessionId)
+                .addValue("msg", "관리자가 세팅을 취소했습니다").addValue("now", now));
+        List<String> draftJobs = jdbc.queryForList("""
+                SELECT job_id FROM setup_zone_draft_run WHERE setup_session_id = :id AND status = 'QUEUED'
+                """, new MapSqlParameterSource("id", setupSessionId), String.class);
+        jobs.cancel(jobIdOf(setupSessionId));
+        draftJobs.forEach(jobs::cancel);
+        return getInSite(siteId, setupSessionId);
+    }
+
+    private String jobIdOf(UUID setupSessionId) {
+        return jdbc.queryForObject("SELECT job_id FROM setup_session WHERE setup_session_id = :id",
+                new MapSqlParameterSource("id", setupSessionId), String.class);
     }
 
     /** 유효 대여의 하트비트에 실린 {@code site_setup} 진행 스냅샷을 검증·반영한다. */
@@ -737,6 +772,19 @@ public class SetupService {
             }
             if (hash != null && SHA256_PATTERN.matcher(hash).matches()) {
                 input.put("calibration_hash", hash);
+            }
+        });
+
+        // 세팅 세션이 등록한 미리보기 Scene(GLB) 주소. 없으면 워커가 후보 0개를 낸다(카메라 배경 프레임 주소는 서버가 보관하지 않아 싣지 않는다)
+        jdbc.query("""
+                SELECT object_uri FROM setup_session_artifact
+                WHERE setup_session_id = :sessionId AND kind = 'PREVIEW_SCENE' AND version = :previewScene
+                """, new MapSqlParameterSource()
+                .addValue("sessionId", setupSessionId)
+                .addValue("previewScene", previewSceneVersion), rs -> {
+            String uri = rs.getString("object_uri");
+            if (uri != null && S3_URI_PATTERN.matcher(uri).matches() && !input.has("preview_scene_uri")) {
+                input.put("preview_scene_uri", uri);
             }
         });
 
@@ -1154,7 +1202,16 @@ public class SetupService {
                        height_checks::text AS height_checks,
                        object_cross_checks::text AS object_cross_checks,
                        calibration_version, preview_scene_version, scene_version, config_version, zone_drafts_ref,
-                       failure_code, failure_message, requested_by, started_at, ready_at, completed_at, updated_at
+                       failure_code, failure_message, requested_by, started_at, ready_at, completed_at, updated_at,
+                       (SELECT min(t) FROM (
+                            SELECT z.valid_from AS t FROM zone z WHERE z.site_id = setup_session.site_id
+                            UNION ALL
+                            SELECT z.valid_to FROM zone z WHERE z.site_id = setup_session.site_id
+                            UNION ALL
+                            SELECT o.valid_from FROM static_object o WHERE o.site_id = setup_session.site_id
+                            UNION ALL
+                            SELECT o.valid_to FROM static_object o WHERE o.site_id = setup_session.site_id
+                        ) changes WHERE t >= setup_session.started_at) AS zones_committed_at
                 FROM setup_session
                 WHERE site_id = :site AND setup_session_id = :id
                 """, new MapSqlParameterSource().addValue("site", siteId).addValue("id", setupSessionId),
@@ -1297,6 +1354,13 @@ public class SetupService {
             out.put("completed_at_ms", completedAt.getTime());
         }
         out.put("updated_at_ms", rs.getTimestamp("updated_at").getTime());
+        // 그 세션 시작 뒤 그 현장의 첫 구역·작업면 변경(POST /api/zones/commit 이 만드는 행) 시각. 세팅 보정 묶음 발행(config_version)과 무관
+        var zonesCommittedAt = rs.getTimestamp("zones_committed_at");
+        if (zonesCommittedAt == null) {
+            out.putNull("zones_committed_at");
+        } else {
+            out.put("zones_committed_at", zonesCommittedAt.getTime());
+        }
         return out;
     }
 

@@ -51,6 +51,7 @@ const SESSION = (patch: Partial<SetupSessionResponse>): SetupSessionResponse => 
   preview_scene_version: null,
   scene_version: null,
   config_version: null,
+  zones_committed_at: null,
   zone_drafts_ref: null,
   failure_code: null,
   failure_message: null,
@@ -104,20 +105,23 @@ describe('단계 판정', () => {
     expect(done.stages[0]!.state).toBe('done');
   });
 
-  it('세팅이 끝났는데 구역 발행 근거가 없으면 확인 불가로 두고 지어내지 않는다', () => {
+  it('세팅이 끝났는데 구역 발행(zones_committed_at)이 없으면 아직으로 본다(세션 config_version 은 근거가 아니다)', () => {
     const result = deriveWorkStages({
       ...BASE,
-      setup: { kind: 'ready', session: SESSION({ status: 'COMPLETED' }) },
+      setup: {
+        kind: 'ready',
+        session: SESSION({ status: 'COMPLETED', config_version: 'cfg-setup' }),
+      },
     });
-    expect(result.stages[1]).toMatchObject({ key: 'zones', state: 'unknown' });
-    expect(result.stages[1]!.detail).toContain('확인 불가');
+    expect(result.stages[1]).toMatchObject({ key: 'zones', state: 'todo' });
+    expect(result.stages[1]!.detail).toContain('구역 발행 전');
     expect(result.current).toBe('zones');
   });
 
-  it('세션의 config_version 이나 이 브라우저의 발행 기록이 있으면 구역을 끝남으로 본다', () => {
+  it('세션의 zones_committed_at 이나 이 브라우저의 발행 기록이 있으면 구역을 끝남으로 본다', () => {
     const withConfig = states({
       ...BASE,
-      setup: { kind: 'ready', session: SESSION({ config_version: 'cfg-3' }) },
+      setup: { kind: 'ready', session: SESSION({ zones_committed_at: 1_000 }) },
     });
     expect(withConfig.zones).toBe('done');
     const here = states({
@@ -136,7 +140,7 @@ describe('단계 판정', () => {
   it('보고서가 있으면 TBM 이 끝남이고 지금 단계는 시작이다', () => {
     const result = deriveWorkStages({
       ...BASE,
-      setup: { kind: 'ready', session: SESSION({ config_version: 'cfg-3' }) },
+      setup: { kind: 'ready', session: SESSION({ zones_committed_at: 1_000 }) },
       report: { status: 'SUCCEEDED', approved_at: null, signature_count: 0 },
     });
     expect(result.current).toBe('start');
@@ -146,7 +150,7 @@ describe('단계 판정', () => {
   it('보고서 생성 중·실패·조회 전을 가른다', () => {
     const base = {
       ...BASE,
-      setup: { kind: 'ready', session: SESSION({ config_version: 'c' }) } as const,
+      setup: { kind: 'ready', session: SESSION({ zones_committed_at: 1_000 }) } as const,
     };
     expect(states({ ...base, report: { status: 'GENERATING' } }).tbm).toBe('running');
     expect(states({ ...base, report: { status: 'FAILED' } }).tbm).toBe('failed');
@@ -266,7 +270,7 @@ describe('작업 관리 화면', () => {
     expect(onOpenSetup).toHaveBeenCalledWith(77);
   });
 
-  it('세팅이 끝난 작업은 구역 단계가 확인 불가로 강조되고 구역 설정이 다음 행동이다', async () => {
+  it('세팅이 끝난 작업은 구역 단계가 아직으로 강조되고 구역 설정이 다음 행동이다', async () => {
     serveWork({
       sessionId: 'ss-77',
       session: SESSION({ setup_session_id: 'ss-77', work_unit_id: 77, status: 'READY_FOR_ZONES' }),
@@ -277,20 +281,20 @@ describe('작업 관리 화면', () => {
       expect((await stageOf('setup')).getAttribute('data-state')).toBe('done'),
     );
     const zones = await stageOf('zones');
-    expect(zones.getAttribute('data-state')).toBe('unknown');
+    expect(zones.getAttribute('data-state')).toBe('todo');
     expect(zones.getAttribute('aria-current')).toBe('step');
     fireEvent.click(screen.getByRole('button', { name: '구역 설정' }));
     expect(onOpenZones).toHaveBeenCalledTimes(1);
   });
 
-  it('세션의 config_version 이 있으면 구역이 끝남이고 지금 단계는 TBM 보고서다', async () => {
+  it('세션의 zones_committed_at 이 있으면 구역이 끝남이고 지금 단계는 TBM 보고서다', async () => {
     serveWork({
       sessionId: 'ss-77',
       session: SESSION({
         setup_session_id: 'ss-77',
         work_unit_id: 77,
         status: 'COMPLETED',
-        config_version: 'cfg-9',
+        zones_committed_at: 1_000,
       }),
     });
     render(<TbmPage />);
@@ -340,7 +344,7 @@ describe('작업 관리 화면', () => {
         setup_session_id: 'ss-77',
         work_unit_id: 77,
         status: 'COMPLETED',
-        config_version: 'cfg-9',
+        zones_committed_at: 1_000,
       }),
     });
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
