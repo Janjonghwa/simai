@@ -261,7 +261,7 @@ actor_id: string
 acked_at: number
 })
 /**
- * EC2 → 뷰어, STOMP /topic/health (명세 12.2, 12.4, 6.2, 13장). EC2 가 Tier 0 health(I1), 노트북 하트비트, 구성 묶음 적용(config_ack), COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보내는 화면용 상태다. Tier 0 health 원문은 tier0_health 에 그대로 싣는다(없으면 null). EC2 가 Tier 0 나 노트북 하트비트를 잃으면 system_health 는 UNSAFE_UNKNOWN 이다(3.2 이중 감시). Scene 불일치는 Tier 0 가 판정에 쓰는 scene_version(world_state)과 EC2 의 COMMITTED Scene 버전이 다를 때다(FR-12). 1.2.0: watches 선택 추가(워치 연결 상태, 확장 부록 C.6, S15P31A101-336). 1.1.0: scene.compatibility 선택 추가(S15P31A101-381). 1.0.0 신설(S15P31A101-206).
+ * EC2 → 뷰어, STOMP /topic/health (명세 12.2, 12.4, 6.2, 13장). EC2 가 Tier 0 health(I1), 노트북 하트비트, 구성 묶음 적용(config_ack), COMMITTED Scene 을 모아 1초마다(바뀌면 즉시) 보내는 화면용 상태다. Tier 0 health 원문은 tier0_health 에 그대로 싣는다(없으면 null). EC2 가 Tier 0 나 노트북 하트비트를 잃으면 system_health 는 UNSAFE_UNKNOWN 이다(3.2 이중 감시). Scene 불일치는 Tier 0 가 판정에 쓰는 scene_version(world_state)과 EC2 의 COMMITTED Scene 버전이 다를 때다(FR-12). 1.3.0: re_setup 선택 추가(회전 자동 복구가 '현장 세팅 다시 하기'를 요구한 카메라, 관리자 상단 배너용, S15P31A101-480). 1.2.0: watches 선택 추가(워치 연결 상태, 확장 부록 C.6, S15P31A101-336). 1.1.0: scene.compatibility 선택 추가(S15P31A101-381). 1.0.0 신설(S15P31A101-206).
  */
 export type ViewerHealthMessage = (Envelope & {
 msg_type?: "viewer_health"
@@ -336,6 +336,20 @@ mismatch: boolean
 tier0_health: ({
 
 } | null)
+/**
+ * '현장 세팅 다시 하기'가 필요한 카메라 (1.3.0, 명세 4.4, 설계 auto-rotation-recovery). Tier 0 가 연결돼 있고 마지막 health(2.2.0 이상)의 re_setup 이 있을 때 그 값을 camera_id 오름차순으로 싣는다(빈 배열 = 필요한 카메라 없음). Tier 0 연결이 끊겼거나 health 를 받은 적 없거나 health 에 re_setup 이 없으면 싣지 않는다(모름, 재세팅 없음으로 읽지 않는다). 관리자 화면 상단 배너용 안내이며 system_health·경보는 바꾸지 않는다
+ */
+re_setup?: {
+camera_id: string
+/**
+ * 사람이 읽는 사유 한 줄 (health.re_setup[].reason 그대로)
+ */
+reason: string
+/**
+ * UTC epoch 밀리초
+ */
+detected_at: number
+}[]
 /**
  * 확장(부록 C.6): 등록된 워치(device.kind WATCH, 폐기 안 됨)의 I4 연결 상태. 워치는 개인 보조 채널이라 system_health·remote_state 에 넣지 않는다. 없으면 워치 확장을 쓰지 않는 EC2 다
  */

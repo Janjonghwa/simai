@@ -311,6 +311,13 @@ def test_translation_and_large_rotation_require_setup_without_auto_overwrite(sit
     assert "현장 세팅 다시 하기" in service.calibration_status["re_setup_reason"]
     assert service.health.payload()["calibration_state"] == "DRIFTED"
 
+    # 보고 필드(health.re_setup, 계약 2.2.0): 틀어진 카메라만, 사유·감지 시각과 함께 싣는다
+    health = service.health.payload()
+    [item] = health["re_setup"]
+    assert item["camera_id"] == target_cid and item["reason"] == res["reason"]
+    assert 0 < item["detected_at"] <= service.clock.now_ms()
+    assert schema_errors(Envelope(service.settings.gateway_id, service.clock).make("health", health), "health") == []
+
     # I1 calibration_update 전환 기록 검증
     last_transition = service.calibration.transitions[-1]["payload"]
     assert last_transition["calibration_state"] == "DRIFTED"
@@ -482,3 +489,28 @@ def test_rotation_recovery_settings_validation(tmp_path, recording, bad_cfg):
     assert math.isclose(loaded.rotation_recovery.config.min_angle_rad, math.radians(0.8))
     assert math.isclose(loaded.rotation_recovery.config.max_residual_px, 2.5)
     assert math.isclose(loaded.rotation_recovery.config.min_singular_ratio, 0.985)
+
+
+def test_re_setup_field_keeps_first_detection_and_clears_when_new_calibration_activates(site):
+    """health.re_setup(-480): 같은 카메라가 다시 감지돼도 처음 감지 시각을 지키고 사유만 갱신한다.
+    새 보정이 활성화되면 비워 '해소'를 알린다(빈 배열). 판정(system_health 의 DEGRADED 하한 등)은 이 필드와 무관하다."""
+    service, doc, cb, rot = _setup_service_with_rotation_worker(site)
+    assert service.re_setup_field() == [] and service.health.payload()["re_setup"] == []
+
+    service._record_requires_setup("cam3", "매칭 부족")
+    [first] = service.re_setup_field()
+    site.elapsed[0] += 1_000
+    service._record_requires_setup("cam3", "시차 잔차 초과")
+    service._record_requires_setup("cam1", "매칭 부족")
+    items = service.re_setup_field()
+    assert [i["camera_id"] for i in items] == ["cam1", "cam3"]  # camera_id 오름차순
+    cam3 = next(i for i in items if i["camera_id"] == "cam3")
+    assert cam3["detected_at"] == first["detected_at"] and cam3["reason"] == "시차 잔차 초과"
+    assert next(i for i in items if i["camera_id"] == "cam1")["detected_at"] > first["detected_at"]
+
+    new_doc, new_report = candidate(service, version="cal-after-resetup")
+    assert service.propose_calibration(new_doc, new_report)
+    site.tick()
+    assert service.rig.calibration_version == "cal-after-resetup"
+    assert service.re_setup_field() == [] and service.health.payload()["re_setup"] == []
+    assert service.calibration_status["re_setup_required"] is False

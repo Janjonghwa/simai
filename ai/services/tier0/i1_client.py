@@ -87,7 +87,7 @@ CONTRACTS_VERSION = "2.0.0"
 MESSAGE_SCHEMA_VERSIONS: Mapping[str, str] = {
     "event_frame_ready": "1.1.0",  # 1.1.0: 프레임 선택 local_copy (-408)
     "world_state": WORLD_STATE_SCHEMA_VERSION,  # 2.1.0: 분할 출처 split_from (-201). 만드는 모듈(tracking.world_state)이 정한다
-    "health": HEALTH_SCHEMA_VERSION,  # 2.1.0: 2.0.0(-179) + tier0_warnings LIVE_MARKER_WRITE_FAILED(-197). health.py 가 정한다
+    "health": HEALTH_SCHEMA_VERSION,  # 2.2.0: 2.1.0(-197) + 선택 re_setup(-480). health.py 가 정한다
     "observation_summary": "1.3.0",  # -155
     "calibration_update": "2.1.0",  # World 계보·카메라 자세 추가 (-381, Lead 승인 필요)
     "event_close_result": "1.1.0",  # 운영자 종료 결과, 1.1.0 JOURNAL_UNAVAILABLE (-200)

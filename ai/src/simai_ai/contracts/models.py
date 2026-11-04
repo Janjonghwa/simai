@@ -662,6 +662,15 @@ class HealthClockOffsetEstimate(BaseModel):
     estimated_at: DefsTimestampMs
 
 
+class HealthReSetupCamera(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    reason: Annotated[StrictStr, Field(min_length=1)]
+    detected_at: DefsTimestampMs
+
+
 class HealthTier0Warning(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1939,6 +1948,15 @@ class Scene(BaseModel):
     mismatch: StrictBool
 
 
+class ReSetupItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    reason: Annotated[StrictStr, Field(min_length=1)]
+    detected_at: DefsTimestampMs
+
+
 class BatteryPct(RootModel[StrictInt]):
     root: Annotated[StrictInt, Field(ge=0, le=100)]
 
@@ -1977,6 +1995,7 @@ class Payload41(BaseModel):
     config: Config1
     scene: Scene
     tier0_health: dict[str, Any] | None
+    re_setup: list[ReSetupItem] | MISSING = MISSING
     watches: Watches | MISSING = MISSING
 
 
@@ -2701,6 +2720,7 @@ class Payload17(BaseModel):
     gateway_link: DefsLinkState | MISSING = MISSING
     ec2_world_state_drops: HealthWorldStateDrops | MISSING = MISSING
     tier0_warnings: list[HealthTier0Warning] | MISSING = MISSING
+    re_setup: list[HealthReSetupCamera] | MISSING = MISSING
     gpu_util: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=1.0)] = MISSING
     gpu_memory_used_ratio: Annotated[StrictFloat | MISSING, Field(ge=0.0, le=1.0)] = (
         MISSING

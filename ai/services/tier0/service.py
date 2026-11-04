@@ -330,6 +330,8 @@ class Tier0Service:
         self._warned: dict[str, Any] = {}
         self._pending_calibration: tuple[dict[str, Any], CameraRig] | None = None
         self.calibration_status: dict[str, Any] = {"last_rejection": None, "effective_at": None}
+        self._re_setup_cameras: dict[str, dict[str, Any]] = {}
+        """재세팅이 필요한 카메라(camera_id → reason·detected_at, judge_lock 안에서만 바꾼다). health.re_setup 이 싣는다(-480)"""
         self._calibration_message_cursor = 0
 
     def _event(self, name: str) -> None:
@@ -478,6 +480,7 @@ class Tier0Service:
             calibration_issue=lambda: (self.calibration_status["last_rejection"] is not None
                                        or bool(self.calibration_status.get("cumulative_warning"))
                                        or bool(self.calibration_status.get("re_setup_required"))),
+            re_setup=self.re_setup_field,
             lock=self.judge_lock,
         )
         self.resync = SiteAlertResync(
@@ -873,6 +876,18 @@ class Tier0Service:
             self.calibration_status["re_setup_required"] = True
             self.calibration_status["re_setup_reason"] = f"현장 세팅 다시 하기: {camera_id} ({reason})"
             self.calibration_status["re_setup_camera_id"] = camera_id
+            # 처음 감지한 시각은 해소되기 전에는 바뀌지 않는다(계약 re_setup_camera.detected_at). 사유만 최신으로 고친다
+            known = self._re_setup_cameras.get(camera_id)
+            self._re_setup_cameras[camera_id] = {
+                "reason": reason or "사유 미상",
+                "detected_at": self.clock.now_ms() if known is None else known["detected_at"],
+            }
+
+    def re_setup_field(self) -> list[dict[str, Any]]:
+        """health.re_setup 값(계약 2.2.0): 재세팅이 필요한 카메라 목록(camera_id 오름차순), 없으면 빈 배열. 판정은 건드리지 않는다."""
+        with self.judge_lock:
+            return [{"camera_id": cid, "reason": item["reason"], "detected_at": item["detected_at"]}
+                    for cid, item in sorted(self._re_setup_cameras.items())]
 
     def _propose_rotation_calibration(self, document, report, generation: int) -> bool:
         with self.judge_lock:
@@ -974,6 +989,7 @@ class Tier0Service:
         self.calibration_status.update(pending_version=None, last_rejection=None, effective_at=at_ms, probation=None,
                                        re_setup_required=False, re_setup_reason=None, re_setup_camera_id=None,
                                        setup_adoption=adoption)
+        self._re_setup_cameras.clear()  # 재세팅이 끝났다: health.re_setup 을 비운다(-480)
         log.info("세팅 보정 채택: %s → %s (세션 %s, 묶음 %s, 새 World 기준)", previous_version, version,
                  doc.get("setup_session_id"), bundle.config_version)
         self._event(f"calibration_switched:{version}:{at_ms}")
@@ -1028,6 +1044,7 @@ class Tier0Service:
         self._pending_calibration = None
         self.calibration_status.update(pending_version=None, last_rejection=None, effective_at=at_ms,
                                        re_setup_required=False, re_setup_reason=None, re_setup_camera_id=None)
+        self._re_setup_cameras.clear()  # 새 보정이 활성화됐다: health.re_setup 을 비운다(-480)
         self._event(f"calibration_switched:{rig.calibration_version}:{at_ms}")
 
     def _apply_drift_report(self, report: MonitorReport, changed_streams: tuple[str, ...]) -> None:

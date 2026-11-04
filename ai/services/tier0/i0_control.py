@@ -47,7 +47,7 @@ log = logging.getLogger("services.tier0.i0_control")
 DOWNSTREAM_VERSIONS: Mapping[str, str] = {
     "local_alert": "1.2.0",
     "alarm_stop": "2.1.0",
-    "health": HEALTH_SCHEMA_VERSION,  # I1 과 같은 형식(health.py 가 정한다, 2.1.0 -197)
+    "health": HEALTH_SCHEMA_VERSION,  # I1 과 같은 형식(health.py 가 정한다, 2.2.0 -480)
     "clock_sync_request": "1.3.0",
 }
 UPSTREAM_TYPES = frozenset({"site_ack", "laptop_heartbeat", "clock_sync_response"})
