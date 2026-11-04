@@ -1,15 +1,17 @@
-"""Pod 의 사람 지운 배경 묶음(-363)을 객체 저장소에 올리고 `static_reconstruct`(-364) 작업 입력을 만드는 세션 도구(S15P31A101-372).
+"""Pod 의 사람 지운 배경 묶음(-363)을 객체 저장소에 올리고 `static_reconstruct`(-364) 작업 입력을 만드는 세션 도구(S15P31A101-372, -461).
 
 Tier 0 가 모은 `clean-background/` 묶음 폴더(또는 4대 카메라 배경 이미지)와 활성 보정 문서를 받아,
 1) 로컬에서 묶음 무결성(`status.json`·`COMPLETE`·`clean_backgrounds.json`·이미지 해시·해상도)과 보정 문서를 먼저 검사하고,
-2) 서명 업로드(`POST /api/uploads/sign` + `PUT upload_url`)로 각 카메라 이미지를 객체 저장소(`s3://...`)에 올린 뒤,
-3) `-364` `static_reconstruct` 핸들러가 그대로 받는 작업 입력 JSON 을 만들고 스키마·계약 검사를 거쳐 저장하며,
-4) EC2 에서 실행할 `admin job enqueue`, `admin scene list`, `admin scene activate` 명령과 LIVE 감시 중 거절 안내를 출력한다.
+2) 최근 구간 배경 중앙값 합성·이전 배경/텍스처 채움·경계 이음새 블렌딩 및 품질 비율(`previous_fill_ratio`, `unrevealed_ratio`) 기록(-461)을 수행하며,
+3) 서명 업로드(`POST /api/uploads/sign` + `PUT upload_url`)로 각 카메라 이미지를 객체 저장소(`s3://...`)에 올린 뒤,
+4) `-364` `static_reconstruct` 핸들러가 그대로 받는 작업 입력 JSON 을 만들고 스키마·계약 검사를 거쳐 저장하며,
+5) EC2 에서 실행할 `admin job enqueue`, `admin scene list`, `admin scene activate` 명령과 LIVE 감시 중 거절 안내를 출력한다.
 """
 
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import json
@@ -22,8 +24,12 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
+import warnings
 
-import cv2
+try:
+    import cv2
+except ImportError:  # pragma: no cover - cv2 없는 최소 CI 환경 대비
+    cv2 = None  # type: ignore[assignment]
 import numpy as np
 
 from simai_ai.providers.contract import schema_errors
@@ -49,6 +55,9 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 DEFAULT_DRY_RUN_BUCKET = "simai-dry-run"
 DEFAULT_TIMEOUT_MS = 4_200_000
 DEFAULT_MAX_ATTEMPTS = 2
+DEFAULT_RECENT_WINDOW_FRAMES = 30
+DEFAULT_SEAM_BLEND_RADIUS_PX = 8
+DEFAULT_BBOX_PAD_PX = 12
 
 
 class CleanBgJobError(RuntimeError):
@@ -60,6 +69,49 @@ class _NoRedirect(HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, D401
         raise HTTPError(req.full_url, code, "리다이렉트는 허용하지 않는다", headers, fp)
+
+
+@dataclass(frozen=True)
+class CameraRegenerateQuality:
+    """단일 카메라의 재생성 배경 합성 품질 비율(S15P31A101-461)."""
+
+    previous_fill_ratio: float
+    unrevealed_ratio: float
+
+    def to_dict(self) -> dict[str, float]:
+        return {
+            "previous_fill_ratio": round(float(np.clip(self.previous_fill_ratio, 0.0, 1.0)), 6),
+            "unrevealed_ratio": round(float(np.clip(self.unrevealed_ratio, 0.0, 1.0)), 6),
+        }
+
+
+@dataclass(frozen=True)
+class RegenerateQuality:
+    """묶음 전체 및 카메라별 재생성 배경 합성 품질 요약(S15P31A101-461)."""
+
+    previous_fill_ratio: float
+    unrevealed_ratio: float
+    cameras: dict[str, CameraRegenerateQuality]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "previous_fill_ratio": round(float(np.clip(self.previous_fill_ratio, 0.0, 1.0)), 6),
+            "unrevealed_ratio": round(float(np.clip(self.unrevealed_ratio, 0.0, 1.0)), 6),
+            "cameras": {cid: cam_q.to_dict() for cid, cam_q in self.cameras.items()},
+        }
+
+
+@dataclass(frozen=True)
+class SynthesizedBackground:
+    """최근 구간 중앙값 + 이전 배경 채움 + 이음새 블렌딩 결과(S15P31A101-461)."""
+
+    image_bgr: np.ndarray
+    valid_mask: np.ndarray
+    recent_revealed_mask: np.ndarray
+    previous_filled_mask: np.ndarray
+    unrevealed_mask: np.ndarray
+    quality: CameraRegenerateQuality
+    frames_used: int
 
 
 @dataclass(frozen=True)
@@ -85,6 +137,550 @@ class PreparedBundle:
     images: tuple[PreparedImage, ...]
     frames_provenance: dict[str, Any]
     preserve_upper_bound: bool = False
+    regenerate_quality: dict[str, Any] | None = None
+
+
+def _person_mask_for_frame(
+    spec: Any,
+    height: int,
+    width: int,
+    *,
+    bbox_pad_px: int = DEFAULT_BBOX_PAD_PX,
+) -> np.ndarray:
+    """프레임 하나에 대한 사람 가림 마스크(`True`=사람에 가려진 픽셀)를 만든다."""
+    if spec is None:
+        return np.zeros((height, width), dtype=bool)
+    if isinstance(spec, np.ndarray):
+        if spec.shape != (height, width):
+            raise CleanBgJobError(
+                f"사람 마스크 해상도({spec.shape})가 프레임 해상도({(height, width)})와 다르다"
+            )
+        return spec > 0
+    mask = np.zeros((height, width), dtype=bool)
+    pad = max(0, int(bbox_pad_px))
+    for item in spec:
+        if isinstance(item, Mapping):
+            coords = item.get("bbox_xyxy") or item.get("bbox")
+        else:
+            coords = item
+        if coords is None or len(coords) != 4:
+            raise CleanBgJobError(f"유효하지 않은 사람 bbox 형식이다: {item!r}")
+        x1, y1, x2, y2 = (float(coords[0]), float(coords[1]), float(coords[2]), float(coords[3]))
+        ix1 = max(0, min(width, int(np.floor(min(x1, x2))) - pad))
+        iy1 = max(0, min(height, int(np.floor(min(y1, y2))) - pad))
+        ix2 = max(0, min(width, int(np.ceil(max(x1, x2))) + pad))
+        iy2 = max(0, min(height, int(np.ceil(max(y1, y2))) + pad))
+        if ix2 > ix1 and iy2 > iy1:
+            mask[iy1:iy2, ix1:ix2] = True
+    return mask
+
+
+def compute_recent_window_median(
+    frames: Sequence[np.ndarray],
+    person_masks: Sequence[Any] | None = None,
+    *,
+    window_frames: int = DEFAULT_RECENT_WINDOW_FRAMES,
+    bbox_pad_px: int = DEFAULT_BBOX_PAD_PX,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """최근 창(`window_frames`) 안에서 사람 마스크를 제외한 픽셀들의 중앙값 배경을 계산한다(S15P31A101-461).
+
+    사람이 계속 앉아 있어 최근 창 내내 가려진 픽셀은 절대 가려진 프레임들의 중앙값으로 채우지 않고,
+    `recent_revealed=False` 및 픽셀 값 `0` 으로 남겨 다음 단계(이전 배경 채움 또는 비움 기록)로 넘긴다.
+    """
+    if window_frames < 1:
+        raise CleanBgJobError(f"window_frames 는 1 이상이어야 한다: {window_frames}")
+    if not frames:
+        raise CleanBgJobError("배경 합성에 필요한 프레임이 비어 있다")
+    if person_masks is not None and len(person_masks) != len(frames):
+        raise CleanBgJobError(
+            f"frames 길이({len(frames)})와 person_masks 길이({len(person_masks)})가 다르다"
+        )
+
+    recent_frames = list(frames[-window_frames:])
+    recent_specs = list(person_masks[-window_frames:]) if person_masks is not None else [None] * len(recent_frames)
+
+    first = np.asarray(recent_frames[0])
+    if first.ndim != 3 or first.shape[2] != 3:
+        raise CleanBgJobError(f"프레임은 (H, W, 3) BGR 배열이어야 한다: {first.shape}")
+    height, width = int(first.shape[0]), int(first.shape[1])
+
+    frame_stack = np.empty((len(recent_frames), height, width, 3), dtype=np.float32)
+    person_stack = np.zeros((len(recent_frames), height, width), dtype=bool)
+    for idx, (frm, spec) in enumerate(zip(recent_frames, recent_specs)):
+        arr = np.asarray(frm)
+        if arr.shape != (height, width, 3):
+            raise CleanBgJobError(
+                f"{idx}번째 프레임 해상도({arr.shape})가 첫 프레임({(height, width, 3)})과 다르다"
+            )
+        p_mask = _person_mask_for_frame(spec, height, width, bbox_pad_px=bbox_pad_px)
+        person_stack[idx] = p_mask
+        frame_f32 = arr.astype(np.float32)
+        frame_f32[p_mask] = np.nan
+        frame_stack[idx] = frame_f32
+
+    recent_revealed = np.any(~person_stack, axis=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        median_f32 = np.nanmedian(frame_stack, axis=0)
+
+    median_f32 = np.nan_to_num(median_f32, nan=0.0)
+    median_f32[~recent_revealed] = 0.0
+    recent_bg = np.clip(np.rint(median_f32), 0, 255).astype(np.uint8)
+    return recent_bg, recent_revealed, len(recent_frames)
+
+
+def _distance_to_mask(target_mask: np.ndarray) -> np.ndarray:
+    """`target_mask`(`True` 영역)까지의 픽셀 유클리드 거리(`float32`)를 계산한다."""
+    non_target = (~target_mask).astype(np.uint8)
+    if cv2 is not None:
+        return cv2.distanceTransform(non_target, cv2.DIST_L2, 3).astype(np.float32)
+    from scipy.ndimage import distance_transform_edt  # pragma: no cover
+
+    return distance_transform_edt(non_target).astype(np.float32)
+
+
+def _normalized_gaussian_extend(
+    image_bgr: np.ndarray,
+    valid_mask: np.ndarray,
+    radius_px: int,
+) -> np.ndarray:
+    """유효 마스크 안의 픽셀만 가우시안 정규화 합성곱으로 경계 바깥으로 부드럽게 확장한다."""
+    ksize = max(3, int(radius_px) * 2 + 1)
+    if ksize % 2 == 0:
+        ksize += 1
+    sigma = max(1.0, float(radius_px) * 0.6)
+    mask_f = valid_mask.astype(np.float32)
+    weighted = image_bgr.astype(np.float32) * mask_f[..., None]
+    if cv2 is not None:
+        num = cv2.GaussianBlur(weighted, (ksize, ksize), sigmaX=sigma, sigmaY=sigma)
+        den = cv2.GaussianBlur(mask_f, (ksize, ksize), sigmaX=sigma, sigmaY=sigma)[..., None]
+    else:  # pragma: no cover
+        from scipy.ndimage import gaussian_filter
+
+        num = gaussian_filter(weighted, sigma=(sigma, sigma, 0.0))
+        den = gaussian_filter(mask_f, sigma=(sigma, sigma))[..., None]
+    extended = np.where(den > 1e-5, num / np.maximum(den, 1e-5), image_bgr.astype(np.float32))
+    # 원래 유효 영역 내부는 원본 색을 중심으로 유지하고 경계 바깥만 확장값을 제공한다
+    return np.where(valid_mask[..., None], image_bgr.astype(np.float32), extended)
+
+
+def blend_seam_feather(
+    recent_bg: np.ndarray,
+    recent_revealed: np.ndarray,
+    previous_bg: np.ndarray,
+    prev_filled_mask: np.ndarray,
+    *,
+    prev_available_mask: np.ndarray | None = None,
+    blend_radius_px: int = DEFAULT_SEAM_BLEND_RADIUS_PX,
+) -> np.ndarray:
+    """최근 중앙값 배경(`recent_revealed`)과 이전 배경으로 채운 영역(`prev_filled_mask`)의 경계를 거리 가중으로 섞는다(S15P31A101-461)."""
+    composite = np.zeros_like(recent_bg, dtype=np.uint8)
+    composite[recent_revealed] = recent_bg[recent_revealed]
+    composite[prev_filled_mask] = previous_bg[prev_filled_mask]
+
+    if blend_radius_px <= 0 or not np.any(recent_revealed) or not np.any(prev_filled_mask):
+        return composite
+
+    radius = float(blend_radius_px)
+    dist_to_prev = _distance_to_mask(prev_filled_mask)
+    dist_to_recent = _distance_to_mask(recent_revealed)
+
+    on_recent_seam = recent_revealed & (dist_to_prev <= radius)
+    on_prev_seam = prev_filled_mask & (dist_to_recent <= radius)
+    seam_band = on_recent_seam | on_prev_seam
+    if not np.any(seam_band):
+        return composite
+
+    prev_avail = prev_filled_mask if prev_available_mask is None else prev_available_mask.astype(bool)
+    recent_ext = _normalized_gaussian_extend(recent_bg, recent_revealed, blend_radius_px)
+    prev_ext = _normalized_gaussian_extend(previous_bg, prev_avail, blend_radius_px)
+
+    signed_dist = np.where(recent_revealed, dist_to_prev, -dist_to_recent)
+    alpha = np.clip(0.5 + 0.5 * (signed_dist / radius), 0.0, 1.0)[..., None]
+
+    blended = alpha * recent_ext + (1.0 - alpha) * prev_ext
+    composite[seam_band] = np.clip(np.rint(blended[seam_band]), 0, 255).astype(np.uint8)
+    # 관측되지도 않고 이전 배경으로도 채우지 못한 영역은 절대 건드리지 않고 0(비움)으로 유지한다
+    unrevealed = ~(recent_revealed | prev_filled_mask)
+    composite[unrevealed] = 0
+    return composite
+
+
+def compose_with_previous_background(
+    recent_bg: np.ndarray,
+    recent_revealed: np.ndarray,
+    *,
+    previous_background: np.ndarray | None = None,
+    previous_valid_mask: np.ndarray | None = None,
+    blend_radius_px: int = DEFAULT_SEAM_BLEND_RADIUS_PX,
+    frames_used: int = 0,
+) -> SynthesizedBackground:
+    """최근 구간 중앙값 배경의 미관측 픽셀을 이전 배경으로 채우고 이음새를 섞어 품질 비율을 계산한다(S15P31A101-461)."""
+    if recent_bg.ndim != 3 or recent_bg.shape[2] != 3:
+        raise CleanBgJobError(f"recent_bg 는 (H, W, 3) 배열이어야 한다: {recent_bg.shape}")
+    height, width = int(recent_bg.shape[0]), int(recent_bg.shape[1])
+    rev_mask = np.asarray(recent_revealed, dtype=bool)
+    if rev_mask.shape != (height, width):
+        raise CleanBgJobError(
+            f"recent_revealed 해상도({rev_mask.shape})가 이미지 해상도({(height, width)})와 다르다"
+        )
+
+    if previous_background is not None:
+        prev_arr = np.asarray(previous_background, dtype=np.uint8)
+        if prev_arr.shape != (height, width, 3):
+            raise CleanBgJobError(
+                f"previous_background 해상도({prev_arr.shape})가 현재 배경({(height, width, 3)})과 다르다"
+            )
+        if previous_valid_mask is not None:
+            prev_valid = np.asarray(previous_valid_mask) > 0
+            if prev_valid.shape != (height, width):
+                raise CleanBgJobError(
+                    f"previous_valid_mask 해상도({prev_valid.shape})가 현재 배경({(height, width)})과 다르다"
+                )
+        else:
+            prev_valid = np.ones((height, width), dtype=bool)
+
+        prev_filled_mask = (~rev_mask) & prev_valid
+        unrevealed_mask = (~rev_mask) & (~prev_valid)
+        image_bgr = blend_seam_feather(
+            recent_bg,
+            rev_mask,
+            prev_arr,
+            prev_filled_mask,
+            prev_available_mask=prev_valid,
+            blend_radius_px=blend_radius_px,
+        )
+    else:
+        prev_filled_mask = np.zeros((height, width), dtype=bool)
+        unrevealed_mask = ~rev_mask
+        image_bgr = recent_bg.copy()
+        image_bgr[unrevealed_mask] = 0
+
+    valid_mask = np.where(rev_mask | prev_filled_mask, 255, 0).astype(np.uint8)
+    quality = CameraRegenerateQuality(
+        previous_fill_ratio=float(np.mean(prev_filled_mask)),
+        unrevealed_ratio=float(np.mean(unrevealed_mask)),
+    )
+    return SynthesizedBackground(
+        image_bgr=image_bgr,
+        valid_mask=valid_mask,
+        recent_revealed_mask=rev_mask,
+        previous_filled_mask=prev_filled_mask,
+        unrevealed_mask=unrevealed_mask,
+        quality=quality,
+        frames_used=int(frames_used),
+    )
+
+
+def synthesize_regenerated_background(
+    frames: Sequence[np.ndarray],
+    person_masks: Sequence[Any] | None = None,
+    *,
+    window_frames: int = DEFAULT_RECENT_WINDOW_FRAMES,
+    previous_background: np.ndarray | None = None,
+    previous_valid_mask: np.ndarray | None = None,
+    blend_radius_px: int = DEFAULT_SEAM_BLEND_RADIUS_PX,
+    bbox_pad_px: int = DEFAULT_BBOX_PAD_PX,
+) -> SynthesizedBackground:
+    """최근 구간 중앙값 계산 → 못 본 곳 이전 배경 채움 → 이음새 블렌딩 → 품질 기록을 한 번에 수행한다(S15P31A101-461)."""
+    recent_bg, recent_revealed, frames_used = compute_recent_window_median(
+        frames,
+        person_masks,
+        window_frames=window_frames,
+        bbox_pad_px=bbox_pad_px,
+    )
+    return compose_with_previous_background(
+        recent_bg,
+        recent_revealed,
+        previous_background=previous_background,
+        previous_valid_mask=previous_valid_mask,
+        blend_radius_px=blend_radius_px,
+        frames_used=frames_used,
+    )
+
+
+def _load_bgr_image(path: Path) -> np.ndarray:
+    if cv2 is None:  # pragma: no cover
+        raise CleanBgJobError("OpenCV(cv2)가 설치되어 있지 않아 이미지를 읽을 수 없다")
+    raw = path.read_bytes()
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None or img.ndim != 3:
+        raise CleanBgJobError(f"배경 이미지를 디코딩할 수 없다: {path}")
+    return img
+
+
+def _load_gray_mask(path: Path) -> np.ndarray:
+    if cv2 is None:  # pragma: no cover
+        raise CleanBgJobError("OpenCV(cv2)가 설치되어 있지 않아 마스크를 읽을 수 없다")
+    raw = path.read_bytes()
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    mask = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+    if mask is None or mask.ndim != 2:
+        raise CleanBgJobError(f"유효 마스크를 디코딩할 수 없다: {path}")
+    return mask
+
+
+def _write_bgr_image(path: Path, image_bgr: np.ndarray, *, jpeg_quality: int = 95) -> None:
+    if cv2 is None:  # pragma: no cover
+        raise CleanBgJobError("OpenCV(cv2)가 설치되어 있지 않아 이미지를 쓸 수 없다")
+    ext = path.suffix.lower()
+    params = [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)] if ext in {".jpg", ".jpeg"} else []
+    ok, buf = cv2.imencode(ext if ext in {".jpg", ".jpeg", ".png"} else ".jpg", image_bgr, params)
+    if not ok:
+        raise CleanBgJobError(f"배경 이미지를 인코딩할 수 없다: {path}")
+    path.write_bytes(buf.tobytes())
+
+
+def _write_gray_mask(path: Path, mask: np.ndarray) -> None:
+    if cv2 is None:  # pragma: no cover
+        raise CleanBgJobError("OpenCV(cv2)가 설치되어 있지 않아 마스크를 쓸 수 없다")
+    ok, buf = cv2.imencode(".png", mask)
+    if not ok:
+        raise CleanBgJobError(f"유효 마스크를 인코딩할 수 없다: {path}")
+    path.write_bytes(buf.tobytes())
+
+
+def _discover_previous_camera_background(
+    bundle_dir: Path,
+    cid: str,
+    cal_version: str,
+    generation: Any,
+    *,
+    previous_bundle_dir: Path | None = None,
+    previous_backgrounds: Mapping[str, np.ndarray | Path] | None = None,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """카메라 `cid` 의 이전 배경 이미지와 유효 마스크를 찾는다."""
+    if previous_backgrounds and cid in previous_backgrounds:
+        item = previous_backgrounds[cid]
+        if isinstance(item, np.ndarray):
+            return item, None
+        p = Path(item)
+        if p.is_file():
+            mask_p = p.with_name(f"{cid}.valid.png")
+            return _load_bgr_image(p), (_load_gray_mask(mask_p) if mask_p.is_file() else None)
+
+    candidate_dirs: list[Path] = []
+    if previous_bundle_dir is not None and previous_bundle_dir.is_dir():
+        candidate_dirs.append(previous_bundle_dir)
+
+    version_dir = bundle_dir.parent
+    if version_dir.is_dir():
+        siblings: list[tuple[float, Path]] = []
+        for child in version_dir.iterdir():
+            if not child.is_dir() or child.resolve() == bundle_dir.resolve():
+                continue
+            if not (child.name.startswith("bundle-") or child.name.startswith("camera-")):
+                continue
+            meta_p = child / "clean_backgrounds.json"
+            if not meta_p.is_file():
+                continue
+            try:
+                mtime = meta_p.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            siblings.append((mtime, child))
+        # 최신 완료 묶음 또는 초기 REFERENCE 카메라 폴더 순으로 탐색한다
+        siblings.sort(key=lambda pair: pair[0], reverse=True)
+        candidate_dirs.extend(folder for _, folder in siblings)
+
+    for folder in candidate_dirs:
+        meta_p = folder / "clean_backgrounds.json"
+        if not meta_p.is_file():
+            img_candidates = [folder / f"{cid}{ext}" for ext in (".png", ".jpg", ".jpeg") if (folder / f"{cid}{ext}").is_file()]
+            if img_candidates:
+                mask_p = folder / f"{cid}.valid.png"
+                return _load_bgr_image(img_candidates[0]), (_load_gray_mask(mask_p) if mask_p.is_file() else None)
+            continue
+        try:
+            doc = read_json(meta_p)
+        except Exception:
+            continue
+        if doc.get("calibration_version") != cal_version:
+            continue
+        doc_gens = doc.get("camera_generations")
+        if generation is not None and isinstance(doc_gens, Mapping) and doc_gens.get(cid) not in (None, generation):
+            continue
+        cam_entry = (doc.get("cameras") or {}).get(cid)
+        if not isinstance(cam_entry, Mapping) or not cam_entry.get("ready"):
+            continue
+        rel_img = cam_entry.get("image")
+        if not isinstance(rel_img, str) or not (folder / rel_img).is_file():
+            continue
+        img_bgr = _load_bgr_image(folder / rel_img)
+        rel_mask = cam_entry.get("valid_mask")
+        mask_arr = (
+            _load_gray_mask(folder / rel_mask)
+            if isinstance(rel_mask, str) and (folder / rel_mask).is_file()
+            else None
+        )
+        return img_bgr, mask_arr
+    return None, None
+
+
+def refine_bundle_backgrounds(
+    bundle_dir: Path,
+    *,
+    previous_bundle_dir: Path | None = None,
+    previous_backgrounds: Mapping[str, np.ndarray | Path] | None = None,
+    window_frames: int = DEFAULT_RECENT_WINDOW_FRAMES,
+    blend_radius_px: int = DEFAULT_SEAM_BLEND_RADIUS_PX,
+) -> RegenerateQuality | None:
+    """묶음 폴더의 각 카메라 배경에 대해 못 본 곳을 이전 배경으로 채우고 이음새를 섞은 뒤 품질 지표를 기록한다(S15P31A101-461)."""
+    meta_path = bundle_dir / "clean_backgrounds.json"
+    if not meta_path.is_file():
+        return None
+    try:
+        meta_doc = read_json(meta_path)
+    except Exception as exc:
+        raise CleanBgJobError(f"clean_backgrounds.json 읽기 실패 ({meta_path}): {exc}") from exc
+
+    cameras_meta = meta_doc.get("cameras")
+    if not isinstance(cameras_meta, dict) or not cameras_meta:
+        return None
+
+    cal_version = str(meta_doc.get("calibration_version") or "")
+    generations = meta_doc.get("camera_generations") if isinstance(meta_doc.get("camera_generations"), Mapping) else {}
+    cam_qualities: dict[str, CameraRegenerateQuality] = {}
+    modified = False
+
+    for cid, entry in cameras_meta.items():
+        if not isinstance(entry, dict):
+            continue
+        rel_img = entry.get("image")
+        if not isinstance(rel_img, str) or not (bundle_dir / rel_img).is_file():
+            continue
+        img_path = bundle_dir / rel_img
+        bg_source = entry.get("background_source")
+
+        # 1) 카메라 전체가 세팅 기준(REFERENCE_FALLBACK)으로 대체된 경우
+        if bg_source == "REFERENCE_FALLBACK":
+            rel_mask = entry.get("valid_mask")
+            if isinstance(rel_mask, str) and (bundle_dir / rel_mask).is_file():
+                valid_arr = _load_gray_mask(bundle_dir / rel_mask)
+                unrev_ratio = float(np.mean(valid_arr == 0))
+                prev_ratio = float(np.mean(valid_arr > 0))
+            else:
+                unrev_ratio = float(entry.get("unrevealed_ratio", entry.get("invalid_ratio", 0.0)))
+                prev_ratio = max(0.0, 1.0 - unrev_ratio)
+            q = CameraRegenerateQuality(previous_fill_ratio=prev_ratio, unrevealed_ratio=unrev_ratio)
+            entry["previous_fill_ratio"] = q.to_dict()["previous_fill_ratio"]
+            entry["unrevealed_ratio"] = q.to_dict()["unrevealed_ratio"]
+            cam_qualities[cid] = q
+            modified = True
+            continue
+
+        # 2) 묶음 내 최근 창 표본(samples/<cid>/samples.json)이 있으면 최근 창 중앙값부터 합성한다
+        samples_manifest = bundle_dir / "samples" / cid / "samples.json"
+        recent_bg: np.ndarray | None = None
+        recent_revealed: np.ndarray | None = None
+        if samples_manifest.is_file():
+            s_doc = read_json(samples_manifest)
+            s_items = s_doc.get("samples") or []
+            s_frames: list[np.ndarray] = []
+            s_masks: list[Any] = []
+            for item in s_items:
+                f_path = samples_manifest.parent / str(item["frame"])
+                s_frames.append(_load_bgr_image(f_path))
+                if "mask" in item and item["mask"] is not None:
+                    s_masks.append(_load_gray_mask(samples_manifest.parent / str(item["mask"])))
+                else:
+                    s_masks.append(item.get("bboxes") or [])
+            recent_bg, recent_revealed, _ = compute_recent_window_median(
+                s_frames,
+                s_masks,
+                window_frames=window_frames,
+            )
+
+        # 3) 아니면 Tier 0 가 내보낸 현재 배경 이미지 + 유효 마스크(<cid>.valid.png)를 읽는다
+        if recent_bg is None or recent_revealed is None:
+            rel_mask = entry.get("valid_mask")
+            mask_path = bundle_dir / rel_mask if isinstance(rel_mask, str) else bundle_dir / f"{cid}.valid.png"
+            if mask_path.is_file():
+                # 이미 이전 실행에서 채움이 끝난 묶음이고 original_valid_mask 가 따로 없다면 기록된 값을 유지한다
+                if "previous_fill_ratio" in entry and "unrevealed_ratio" in entry and previous_backgrounds is None and previous_bundle_dir is None:
+                    q = CameraRegenerateQuality(
+                        previous_fill_ratio=float(entry["previous_fill_ratio"]),
+                        unrevealed_ratio=float(entry["unrevealed_ratio"]),
+                    )
+                    cam_qualities[cid] = q
+                    continue
+                recent_bg = _load_bgr_image(img_path)
+                valid_arr = _load_gray_mask(mask_path)
+                recent_revealed = valid_arr > 0
+            else:
+                prev_ratio = float(entry.get("previous_fill_ratio", 0.0))
+                unrev_ratio = float(
+                    entry.get(
+                        "unrevealed_ratio",
+                        entry.get("invalid_ratio", entry.get("never_revealed_ratio", 0.0)),
+                    )
+                )
+                q = CameraRegenerateQuality(previous_fill_ratio=prev_ratio, unrevealed_ratio=unrev_ratio)
+                entry["previous_fill_ratio"] = q.to_dict()["previous_fill_ratio"]
+                entry["unrevealed_ratio"] = q.to_dict()["unrevealed_ratio"]
+                cam_qualities[cid] = q
+                modified = True
+                continue
+
+        # 4) 못 본 곳(~recent_revealed)이 있으면 이전 배경을 찾아 채우고 이음새를 섞는다
+        prev_img: np.ndarray | None = None
+        prev_mask: np.ndarray | None = None
+        if not np.all(recent_revealed):
+            prev_img, prev_mask = _discover_previous_camera_background(
+                bundle_dir,
+                cid,
+                cal_version,
+                generations.get(cid) if isinstance(generations, Mapping) else None,
+                previous_bundle_dir=previous_bundle_dir,
+                previous_backgrounds=previous_backgrounds,
+            )
+            if prev_img is not None and prev_img.shape != recent_bg.shape:
+                prev_img, prev_mask = None, None
+
+        synth = compose_with_previous_background(
+            recent_bg,
+            recent_revealed,
+            previous_background=prev_img,
+            previous_valid_mask=prev_mask,
+            blend_radius_px=blend_radius_px,
+        )
+        _write_bgr_image(img_path, synth.image_bgr)
+        mask_name = entry.get("valid_mask") if isinstance(entry.get("valid_mask"), str) else f"{cid}.valid.png"
+        _write_gray_mask(bundle_dir / mask_name, synth.valid_mask)
+
+        entry["valid_mask"] = mask_name
+        entry["image_sha256"] = sha256(img_path.read_bytes())
+        entry["invalid_ratio"] = synth.quality.to_dict()["unrevealed_ratio"]
+        entry["previous_fill_ratio"] = synth.quality.to_dict()["previous_fill_ratio"]
+        entry["unrevealed_ratio"] = synth.quality.to_dict()["unrevealed_ratio"]
+        cam_qualities[cid] = synth.quality
+        modified = True
+
+    if not cam_qualities:
+        return None
+
+    overall_prev = float(np.mean([q.previous_fill_ratio for q in cam_qualities.values()]))
+    overall_unrev = float(np.mean([q.unrevealed_ratio for q in cam_qualities.values()]))
+    regen_quality = RegenerateQuality(
+        previous_fill_ratio=overall_prev,
+        unrevealed_ratio=overall_unrev,
+        cameras=cam_qualities,
+    )
+    if modified or "regenerate_quality" not in meta_doc:
+        meta_doc["regenerate_quality"] = regen_quality.to_dict()
+        write_json(meta_path, meta_doc)
+        parent_status = bundle_dir.parent.parent / "status.json"
+        if parent_status.is_file():
+            try:
+                status_doc = read_json(parent_status)
+                if isinstance(status_doc.get("bundle"), str) and Path(status_doc["bundle"]).name == bundle_dir.name:
+                    status_doc["cameras"] = cameras_meta
+                    status_doc["regenerate_quality"] = regen_quality.to_dict()
+                    write_json(parent_status, status_doc)
+            except Exception:
+                pass
+    return regen_quality
 
 
 def _sanitize_url(url: str) -> str:
@@ -119,6 +715,8 @@ def _detect_content_type(path: Path) -> str:
 
 
 def _decode_image_size(raw_bytes: bytes, *, label: str) -> tuple[int, int]:
+    if cv2 is None:  # pragma: no cover
+        raise CleanBgJobError("OpenCV(cv2)가 설치되어 있지 않아 이미지 해상도를 확인할 수 없다")
     arr = np.frombuffer(raw_bytes, dtype=np.uint8)
     if arr.size == 0:
         raise CleanBgJobError(f"이미지 파일이 비어 있다: {label}")
@@ -279,6 +877,8 @@ def prepare_from_bundle(
 
     bundle_root = bundle_dir.resolve()
     prepared: list[PreparedImage] = []
+    cam_qualities: dict[str, dict[str, float]] = {}
+    has_quality_fields = False
     for cid, entry in cameras_meta.items():
         if cid not in cal_cameras:
             raise CleanBgJobError(f"배경 묶음 카메라 {cid!r} 가 보정 문서에 없다")
@@ -312,6 +912,11 @@ def prepare_from_bundle(
             raise CleanBgJobError(
                 f"카메라 {cid!r} 의 해상도({[width, height]})가 보정 문서({expected_size})와 다르다"
             )
+        if "previous_fill_ratio" in entry or "unrevealed_ratio" in entry or "invalid_ratio" in entry:
+            has_quality_fields = True
+            prev_r = float(entry.get("previous_fill_ratio", 0.0))
+            unrev_r = float(entry.get("unrevealed_ratio", entry.get("invalid_ratio", 0.0)))
+            cam_qualities[cid] = CameraRegenerateQuality(prev_r, unrev_r).to_dict()
         prepared.append(
             PreparedImage(
                 camera_id=cid,
@@ -332,11 +937,29 @@ def prepare_from_bundle(
     frames_prov = dict(raw_prov["frames"])
     frames_prov["camera_ids"] = [img.camera_id for img in prepared]
     preserve_ub = bool(raw_prov.get("is_upper_bound", False))
+
+    regen_quality_doc: dict[str, Any] | None = None
+    if isinstance(meta_doc.get("regenerate_quality"), dict):
+        regen_quality_doc = dict(meta_doc["regenerate_quality"])
+    elif has_quality_fields and cam_qualities:
+        regen_quality_doc = {
+            "previous_fill_ratio": round(
+                float(np.mean([c["previous_fill_ratio"] for c in cam_qualities.values()])),
+                6,
+            ),
+            "unrevealed_ratio": round(
+                float(np.mean([c["unrevealed_ratio"] for c in cam_qualities.values()])),
+                6,
+            ),
+            "cameras": cam_qualities,
+        }
+
     return PreparedBundle(
         calibration_version=cal_version,
         images=tuple(prepared),
         frames_provenance=frames_prov,
         preserve_upper_bound=preserve_ub,
+        regenerate_quality=regen_quality_doc,
     )
 
 
@@ -582,6 +1205,8 @@ def build_job_input(
             "plane_cleanup": bool(plane_cleanup),
         },
     }
+    if prepared.regenerate_quality is not None:
+        job_input["regenerate_quality"] = prepared.regenerate_quality
 
     try:
         validate_input(job_input)

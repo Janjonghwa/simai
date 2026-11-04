@@ -13,7 +13,15 @@
     "finished_at": 1760342460050,
     "result": {
       "bundle_id": "bundle-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "static_reconstruct_job_id": "job-123"
+      "static_reconstruct_job_id": "job-123",
+      "quality": {
+        "previous_fill_ratio": 0.125,
+        "unrevealed_ratio": 0.0,
+        "cameras": {
+          "cam_1": { "previous_fill_ratio": 0.25, "unrevealed_ratio": 0.0 },
+          "cam_2": { "previous_fill_ratio": 0.0, "unrevealed_ratio": 0.0 }
+        }
+      }
     }
   }
 }

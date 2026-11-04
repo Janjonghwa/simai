@@ -3,6 +3,57 @@
   "$id": "https://simai.dev/contracts/messages/scene_regenerate.schema.json",
   "title": "맵 재생성 입력과 결과",
   "$defs": {
+    "camera_regenerate_quality": {
+      "type": "object",
+      "required": [
+        "previous_fill_ratio",
+        "unrevealed_ratio"
+      ],
+      "properties": {
+        "previous_fill_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "최근 창에서 가려져 이전 모습(배경/텍스처)으로 채운 픽셀 비율"
+        },
+        "unrevealed_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "최근 창과 이전 모습 모두에서 관측되지 않아 비운 픽셀 비율"
+        }
+      },
+      "additionalProperties": false
+    },
+    "regenerate_quality": {
+      "type": "object",
+      "required": [
+        "previous_fill_ratio",
+        "unrevealed_ratio"
+      ],
+      "properties": {
+        "previous_fill_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "전체 카메라 평균 이전 모습으로 채운 비율"
+        },
+        "unrevealed_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "전체 카메라 평균 비운 비율"
+        },
+        "cameras": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/camera_regenerate_quality"
+          },
+          "description": "카메라 ID → 카메라별 배경 합성 품질 비율"
+        }
+      },
+      "additionalProperties": false
+    },
     "input": {
       "type": "object",
       "required": [
@@ -38,6 +89,9 @@
         "static_reconstruct_job_id": {
           "type": "string",
           "minLength": 1
+        },
+        "quality": {
+          "$ref": "#/$defs/regenerate_quality"
         }
       },
       "additionalProperties": false

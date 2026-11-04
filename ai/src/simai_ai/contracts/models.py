@@ -1518,20 +1518,6 @@ class WallDeviationM(BaseModel):
     max: Annotated[StrictFloat, Field(ge=0.0)]
 
 
-class Quality1(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    wall_deviation_m: WallDeviationM | None
-    desk_top_height_error_m: StrictFloat | None | MISSING = MISSING
-    desk_position_error_m: StrictFloat | None | MISSING = MISSING
-    coobserved_point_disagreement_median_m: StrictFloat | None | MISSING = MISSING
-    scale_factor_vs_floor_plan: StrictFloat | None | MISSING = MISSING
-    observed_surface_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
-    failure_cases: list[StrictStr] | MISSING = MISSING
-    notes: StrictStr | MISSING = MISSING
-
-
 class Performance1(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1561,6 +1547,14 @@ class SceneRegenerate(RootModel[Any]):
     root: Any
 
 
+class SceneRegenerateCameraRegenerateQuality(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    previous_fill_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+    unrevealed_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+
+
 class SceneRegenerateInput(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1570,12 +1564,22 @@ class SceneRegenerateInput(BaseModel):
     reason: Annotated[StrictStr | MISSING, Field(max_length=120)] = MISSING
 
 
+class SceneRegenerateRegenerateQuality(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    previous_fill_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+    unrevealed_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+    cameras: dict[str, SceneRegenerateCameraRegenerateQuality] | MISSING = MISSING
+
+
 class SceneRegenerateResult(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
     bundle_id: Annotated[StrictStr, Field(pattern='^bundle-[0-9a-f]{32}$')]
     static_reconstruct_job_id: Annotated[StrictStr, Field(min_length=1)]
+    quality: SceneRegenerateRegenerateQuality | MISSING = MISSING
 
 
 class SiteSetup(RootModel[Any]):
@@ -3145,6 +3149,29 @@ class RunRecord(BaseModel):
     notes: StrictStr | MISSING = MISSING
 
 
+class Quality1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    wall_deviation_m: WallDeviationM | None
+    desk_top_height_error_m: StrictFloat | None | MISSING = MISSING
+    desk_position_error_m: StrictFloat | None | MISSING = MISSING
+    coobserved_point_disagreement_median_m: StrictFloat | None | MISSING = MISSING
+    scale_factor_vs_floor_plan: StrictFloat | None | MISSING = MISSING
+    observed_surface_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+    previous_fill_ratio: Annotated[StrictFloat | None | MISSING, Field(ge=0.0, le=1.0)] = (
+        MISSING
+    )
+    unrevealed_ratio: Annotated[StrictFloat | None | MISSING, Field(ge=0.0, le=1.0)] = (
+        MISSING
+    )
+    camera_background_quality: dict[str, SceneRegenerateCameraRegenerateQuality] | MISSING = (
+        MISSING
+    )
+    failure_cases: list[StrictStr] | MISSING = MISSING
+    notes: StrictStr | MISSING = MISSING
+
+
 class SceneOutput(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -3202,6 +3229,7 @@ class Input(BaseModel):
     clean_background_bundle_id: Annotated[
         StrictStr | MISSING, Field(pattern='^bundle-[0-9a-f]{32}$')
     ] = MISSING
+    regenerate_quality: SceneRegenerateRegenerateQuality | MISSING = MISSING
 
 
 class Payload37(BaseModel):

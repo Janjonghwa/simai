@@ -952,3 +952,203 @@ def test_ec2_calibration_version_registration_check(
         assert len(server.sign_requests) == 5
     err_401 = capsys.readouterr().err
     assert "경고" in err_401
+
+
+
+def test_recent_window_median_and_stationary_person_fill_and_no_previous_path() -> None:
+    """S15P31A101-461: 합성 영상(앉아 있는 사람 마스크)으로 최근 창 중앙값, 이전 배경 채움, 비움(이전 맵 없음) 경로를 검증한다."""
+    from simai_ai.scene.clean_bg_job import synthesize_regenerated_background
+
+    h, w = 48, 64
+    frames: list[np.ndarray] = []
+    masks: list[np.ndarray] = []
+
+    # 1) 오래된 구간(0~4 프레임): 배경 밝기 40 -> 최근 창(window_frames=10) 밖이므로 결과에 섞이면 안 된다
+    for _ in range(5):
+        frames.append(np.full((h, w, 3), 40, dtype=np.uint8))
+        masks.append(np.zeros((h, w), dtype=np.uint8))
+
+    # 2) 최근 창(5~14 프레임, 10장): 실제 최근 배경 밝기 180
+    #    - 앉아 있는 사람: [16:32, 20:44] 영역(16x24 = 384 픽셀, 전체 3072 픽셀의 12.5%)에 내내 머무름(픽셀 값 250)
+    #    - 지나가는 사람: 매 프레임 다른 세로 줄을 가림(픽셀 값 10) -> 중앙값에서 제외되어 180 으로 복원되어야 함
+    sitting_slice = (slice(16, 32), slice(20, 44))
+    expected_sitting_ratio = (16 * 24) / float(h * w)  # 0.125
+
+    for idx in range(10):
+        frm = np.full((h, w, 3), 180, dtype=np.uint8)
+        msk = np.zeros((h, w), dtype=np.uint8)
+
+        # 앉아 있는 사람(최근 창 내내 고정)
+        frm[sitting_slice[0], sitting_slice[1]] = 250
+        msk[sitting_slice[0], sitting_slice[1]] = 255
+
+        # 지나가는 사람(프레임마다 이동, 한 픽셀을 최대 1번만 가림)
+        walk_x = (idx * 6) % (w - 4)
+        frm[2:12, walk_x : walk_x + 4] = 10
+        msk[2:12, walk_x : walk_x + 4] = 255
+
+        frames.append(frm)
+        masks.append(msk)
+
+    # A. 이전 배경/맵이 없는 경우: 못 본 곳(앉아 있는 사람 영역)은 만들어내지 않고 0 으로 비우며 unrevealed_ratio 에 기록
+    no_prev = synthesize_regenerated_background(
+        frames,
+        masks,
+        window_frames=10,
+        previous_background=None,
+        blend_radius_px=4,
+    )
+    assert no_prev.frames_used == 10
+    assert no_prev.quality.previous_fill_ratio == pytest.approx(0.0)
+    assert no_prev.quality.unrevealed_ratio == pytest.approx(expected_sitting_ratio)
+    # 지나간 사람 자리와 일반 배경은 최근 창 중앙값(180)으로 복원(오래된 프레임 값 40 이나 사람 값 10·250 이 아님)
+    assert np.all(no_prev.image_bgr[2:12, :16] == 180)
+    # 앉아 있던 사람 자리는 비움(0) 및 valid_mask == 0
+    assert np.all(no_prev.image_bgr[sitting_slice[0], sitting_slice[1]] == 0)
+    assert np.all(no_prev.valid_mask[sitting_slice[0], sitting_slice[1]] == 0)
+    assert np.all(no_prev.valid_mask[:14, :] == 255)
+
+    # B. 이전 배경/맵이 있는 경우: 못 본 곳을 이전 배경(밝기 110)으로 채우고 경계를 섞으며 previous_fill_ratio 기록
+    prev_bg = np.full((h, w, 3), 110, dtype=np.uint8)
+    with_prev = synthesize_regenerated_background(
+        frames,
+        masks,
+        window_frames=10,
+        previous_background=prev_bg,
+        blend_radius_px=4,
+    )
+    assert with_prev.quality.previous_fill_ratio == pytest.approx(expected_sitting_ratio)
+    assert with_prev.quality.unrevealed_ratio == pytest.approx(0.0)
+    assert np.all(with_prev.valid_mask == 255)
+    # 앉아 있는 영역 중심부(경계 반경 4px 안쪽)는 이전 배경 값(110)으로 채워진다(사람 픽셀 250 이 절대 남지 않음)
+    interior = with_prev.image_bgr[21:27, 25:39]
+    assert np.all(interior == 110)
+    # 경계에서 충분히 떨어진 최근 관측 영역은 최근 중앙값(180)을 유지한다
+    assert np.all(with_prev.image_bgr[0:10, 0:14] == 180)
+
+
+def test_seam_blending_smooths_boundary_jump() -> None:
+    """S15P31A101-461: 이음새 섞기(blend_seam_feather)가 채운 영역 경계의 급격한 단차를 완화하는지 검증한다."""
+    from simai_ai.scene.clean_bg_job import compose_with_previous_background
+
+    h, w = 48, 64
+    recent_bg = np.full((h, w, 3), 200, dtype=np.uint8)
+    prev_bg = np.full((h, w, 3), 80, dtype=np.uint8)
+    recent_revealed = np.ones((h, w), dtype=bool)
+    recent_revealed[14:34, 18:46] = False
+    recent_bg[~recent_revealed] = 0
+
+    unblended = compose_with_previous_background(
+        recent_bg,
+        recent_revealed,
+        previous_background=prev_bg,
+        blend_radius_px=0,
+    )
+    blended = compose_with_previous_background(
+        recent_bg,
+        recent_revealed,
+        previous_background=prev_bg,
+        blend_radius_px=6,
+    )
+
+    # 가로 중심선(y=24)을 따라 경계(x=18 부근)의 인접 픽셀 최대 점프를 비교한다
+    line_unblended = unblended.image_bgr[24, :, 0].astype(np.int32)
+    line_blended = blended.image_bgr[24, :, 0].astype(np.int32)
+    max_step_unblended = int(np.max(np.abs(np.diff(line_unblended))))
+    max_step_blended = int(np.max(np.abs(np.diff(line_blended))))
+
+    assert max_step_unblended == 120
+    assert max_step_blended < 40  # 거리 가중 블렌딩으로 경계 인접 픽셀 차가 크게 줄어든다
+    # 경계 부근 픽셀(x=17, x=18)은 80 과 200 사이의 중간 밝기를 가진다
+    assert 80 < int(blended.image_bgr[24, 17, 0]) < 200
+    assert 80 < int(blended.image_bgr[24, 18, 0]) < 200
+    # 채운 영역 깊은 내부(x=32, y=24)는 이전 배경(80), 먼 바깥(x=4, y=24)은 최근 배경(200) 그대로다
+    assert int(blended.image_bgr[24, 32, 0]) == 80
+    assert int(blended.image_bgr[24, 4, 0]) == 200
+
+
+def test_refine_bundle_backgrounds_and_job_input_quality(tmp_path: Path) -> None:
+    """S15P31A101-461: 묶음 정제(이전 배경 있음/없음)와 static_reconstruct_submit 계약 호환을 검증한다."""
+    from simai_ai.scene.clean_bg_job import (
+        build_job_input,
+        prepare_from_bundle,
+        refine_bundle_backgrounds,
+    )
+
+    cal = _make_calibration_doc(image_size=(32, 24))
+    cal_bytes = json.dumps(cal).encode("utf-8")
+    cal_hash = sha256(cal_bytes)
+    _, bundle_dir, _ = _write_clean_bg_bundle(tmp_path / "clean-background", cal)
+
+    # cam-1 에 앉아 있는 사람으로 인한 미관측 구멍(8x8 = 64 픽셀 / 768 = 1/12)을 만든다
+    mask_cam1 = np.full((24, 32), 255, dtype=np.uint8)
+    mask_cam1[8:16, 12:20] = 0
+    ok, mask_buf = cv2.imencode(".png", mask_cam1)
+    assert ok
+    (bundle_dir / "cam-1.valid.png").write_bytes(mask_buf.tobytes())
+
+    meta = json.loads((bundle_dir / "clean_backgrounds.json").read_text(encoding="utf-8"))
+    for cid in meta["cameras"]:
+        if cid == "cam-1":
+            meta["cameras"][cid]["valid_mask"] = "cam-1.valid.png"
+            meta["cameras"][cid]["invalid_ratio"] = round(64.0 / (24 * 32), 6)
+        else:
+            full_mask = np.full((24, 32), 255, dtype=np.uint8)
+            _, m_buf = cv2.imencode(".png", full_mask)
+            (bundle_dir / f"{cid}.valid.png").write_bytes(m_buf.tobytes())
+            meta["cameras"][cid]["valid_mask"] = f"{cid}.valid.png"
+            meta["cameras"][cid]["invalid_ratio"] = 0.0
+    (bundle_dir / "clean_backgrounds.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    # 1) 이전 배경이 없을 때: cam-1 의 미관측 구멍은 비움(0) 처리되고 unrevealed_ratio 가 기록된다
+    q_no_prev = refine_bundle_backgrounds(bundle_dir, blend_radius_px=3)
+    assert q_no_prev is not None
+    assert q_no_prev.cameras["cam-1"].previous_fill_ratio == pytest.approx(0.0)
+    assert q_no_prev.cameras["cam-1"].unrevealed_ratio == pytest.approx(64.0 / 768.0, abs=1e-5)
+    assert q_no_prev.previous_fill_ratio == pytest.approx(0.0)
+    assert q_no_prev.unrevealed_ratio == pytest.approx((64.0 / 768.0) / 4.0, abs=1e-5)
+
+    # 2) 이전 배경 이미지를 제공해 다시 정제하면 cam-1 구멍이 이전 배경으로 채워지고 previous_fill_ratio 가 기록된다
+    #    cam-1.valid.png 를 다시 최근 창 유효 마스크(구멍 있음)로 돌려놓고 이전 배경을 넘긴다
+    (bundle_dir / "cam-1.valid.png").write_bytes(mask_buf.tobytes())
+    prev_cam1 = np.full((24, 32, 3), 140, dtype=np.uint8)
+    q_with_prev = refine_bundle_backgrounds(
+        bundle_dir,
+        previous_backgrounds={"cam-1": prev_cam1},
+        blend_radius_px=3,
+    )
+    assert q_with_prev is not None
+    assert q_with_prev.cameras["cam-1"].previous_fill_ratio == pytest.approx(64.0 / 768.0, abs=1e-5)
+    assert q_with_prev.cameras["cam-1"].unrevealed_ratio == pytest.approx(0.0)
+    assert q_with_prev.previous_fill_ratio == pytest.approx((64.0 / 768.0) / 4.0, abs=1e-5)
+    assert q_with_prev.unrevealed_ratio == pytest.approx(0.0)
+
+    prepared = prepare_from_bundle(bundle_dir, cal)
+    assert prepared.regenerate_quality is not None
+    assert prepared.regenerate_quality["previous_fill_ratio"] == pytest.approx((64.0 / 768.0) / 4.0, abs=1e-5)
+    assert prepared.regenerate_quality["unrevealed_ratio"] == pytest.approx(0.0)
+
+    job_input = build_job_input(
+        prepared=prepared,
+        cal=cal,
+        calibration_ref="s3://simai-prod-bucket/calibrations/cal-room-01/calibration.json",
+        calibration_hash=cal_hash,
+        image_uris={
+            cid: f"s3://simai-prod-bucket/static-inputs/{bundle_dir.name}/{cid}.jpg"
+            for cid in ("cam-1", "cam-2", "cam-3", "cam-4")
+        },
+    )
+    assert "regenerate_quality" in job_input
+    submit_envelope = {
+        "schema_version": "1.2.0",
+        "msg_type": "static_reconstruct_submit",
+        "msg_id": str(uuid.uuid4()),
+        "sent_at": 1_760_000_000_000,
+        "source_id": "worker-01",
+        "payload": {
+            "bundle_id": "bundle-" + "a" * 32,
+            "input": job_input,
+            "request_id": 1,
+        },
+    }
+    assert schema_errors(submit_envelope, "static_reconstruct_submit") == []

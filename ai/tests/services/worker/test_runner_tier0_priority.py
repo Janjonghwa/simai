@@ -20,6 +20,7 @@ import time
 
 import pytest
 
+from services.worker.client import CALLBACK_SCHEMA_VERSION
 from services.worker.handlers import JobContext
 from services.worker.runner import Outcome, Worker
 from simai_ai.gpu.admission import DEFAULT_LIVE_BLOCKED, Admission, AdmissionPolicy
@@ -136,7 +137,7 @@ def test_overload_that_does_not_clear_defers_job_back_to_queue(ec2, make):
                          "consume_attempt": False}
     (cb,) = ec2.bodies("result")
     assert cb["payload"]["started_at"] is None  # 시작하지 않았다
-    assert cb["schema_version"] == "2.2.0"
+    assert cb["schema_version"] == CALLBACK_SCHEMA_VERSION  # 판을 박지 않는다(계약 마이너마다 깨지지 않게)
 
 
 def test_hold_is_bounded_by_half_of_execution_limit(ec2, make):
@@ -344,7 +345,6 @@ def test_slow_heartbeat_does_not_delay_live_preemption(ec2):
             timing["live"] = time.monotonic()
             live.set()
             time.sleep(3.0)
-        return None
 
     def heavy(ctx: JobContext):
         assert ctx.cancelled.wait(10)
