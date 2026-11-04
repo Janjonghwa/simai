@@ -19,7 +19,9 @@ import tools.jackson.databind.JsonNode;
  */
 final class CalibrationContentHash {
 
-    private static final Set<String> UNHASHED = Set.of("content_hash", "calibration_version", "created_at", "state", "schema_version");
+    /** 보정 내용이 아닌 키. 계보·출처(previous_calibration_version·setup_session_id, 계약 2.2.0)도 뺀다(ai calibration/document.py 와 같게) */
+    private static final Set<String> UNHASHED = Set.of("content_hash", "calibration_version", "created_at", "state", "schema_version",
+            "previous_calibration_version", "setup_session_id");
 
     private CalibrationContentHash() {
     }

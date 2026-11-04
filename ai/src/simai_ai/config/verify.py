@@ -15,7 +15,9 @@
 - 매니페스트의 config_version·components 가 알림과 같다(알림이 가리키는 묶음이 실제로 그 묶음이다).
 - 각 구성 요소 내용의 version(보정은 calibration_version)이 참조한 version 과 같다.
 - 규칙: (rule_id, rule_version) 이 규칙 등록부에 있고, 규칙 ID 당 한 버전이며, rules 내용과 알림의 rule_versions 가 같다.
-- 보정: calibration_version 이 Tier 0 보정 저장소에 있다(`calibration_known`).
+- 보정: calibration_version 이 Tier 0 보정 저장소에 있다(`calibration_known`). 없으면 세팅 보정 채택 조건(`setup_calibration`,
+  -467: 세팅 출처·계보가 지금 활성 보정·content_hash·계약)을 통과한 경우에만 받고 `ConfigBundle.setup_calibration` 을 켠다.
+  채택(저장소 추가·전환)은 검증이 아니라 적용 경계에서 한다(ConfigSync before_apply).
 - 구역: 같은 구역 ID 의 유효 구간이 겹치지 않는다(겹치면 판정 중 엔진이 멈춘다. 반쪽 실패를 검증에서 막는다).
 - 작업면·정적 객체: ID 가 비지 않고 겹치지 않는다.
 
@@ -84,6 +86,10 @@ class Fetcher(Protocol):
 
 CalibrationKnown = Callable[[str], bool]
 """calibration_version 이 Tier 0 보정 저장소에 있는지"""
+
+SetupCalibrationGate = Callable[[Mapping[str, Any]], "str | None"]
+"""저장소에 없는 보정 문서를 세팅 보정으로 받아들일 수 있는지. None 이면 통과, 아니면 거부 사유(-467).
+Tier 0 는 `RuntimeCalibrationStore.setup_candidate_problem` 을 넘긴다."""
 
 
 def calibration_known_from(store: Any) -> CalibrationKnown:
@@ -169,6 +175,7 @@ class BundleVerifier:
     - registry: 규칙 등록부(두 배포가 같은 등록부를 쓴다).
     - calibration_known: 보정 버전 참조 검사(`calibration_known_from(store)`).
     - clock: verified_at 기록용 주입 시계.
+    - setup_calibration: 저장소에 없는 보정 버전을 세팅 보정으로 받을지 묻는 검사(-467). 없으면 지금처럼 거부한다.
     """
 
     def __init__(
@@ -177,11 +184,14 @@ class BundleVerifier:
         registry: RuleRegistry,
         calibration_known: CalibrationKnown,
         clock: Clock,
+        *,
+        setup_calibration: SetupCalibrationGate | None = None,
     ) -> None:
         self._fetcher = fetcher
         self._registry = registry
         self._calibration_known = calibration_known
         self._clock = clock
+        self._setup_calibration = setup_calibration
 
     def check_message(self, message: Any) -> BundleNotice:
         """알림 메시지 스키마 검사. 통과하면 BundleNotice."""
@@ -219,7 +229,9 @@ class BundleVerifier:
 
         zones_version, zones = self._zones(notice.components["zones"], docs["zones"], computed)
         rules_version, rules = self._rules(notice, docs["rules"], computed)
-        calibration_version = self._calibration(notice.components["calibration"], docs["calibration"], computed)
+        calibration_version, setup_calibration = self._calibration(
+            notice.components["calibration"], docs["calibration"], computed
+        )
         geometry_version = self._geometry(
             notice.components["operational_geometry"], docs["operational_geometry"], computed
         )
@@ -235,6 +247,7 @@ class BundleVerifier:
             operational_geometry=freeze_json(docs["operational_geometry"]),
             verified_at=self._clock.now_ms(),
             blobs=freeze_json(blobs),
+            setup_calibration=setup_calibration,
         )
 
     # --- 단계 -----------------------------------------------------------------------
@@ -305,16 +318,21 @@ class BundleVerifier:
             raise BundleRejected(RejectReason.REFERENCE_INVALID, f"rules: {e}", digest) from None
         return version, tuple(sorted(rules, key=lambda r: r.spec.key))
 
-    def _calibration(self, ref: ComponentRef, doc: Mapping[str, Any], digest: str) -> str:
+    def _calibration(self, ref: ComponentRef, doc: Mapping[str, Any], digest: str) -> tuple[str, bool]:
         problems = schema_violations(dict(doc), "calibration", check_formats=False)
         if problems:
             raise BundleRejected(RejectReason.SCHEMA_INVALID, "calibration: " + "; ".join(problems), digest)
         version = _version_of(doc, "calibration_version", ref, digest)
-        if not self._calibration_known(version):
+        if self._calibration_known(version):
+            return version, False
+        problem = "세팅 보정 채택 경로 없음" if self._setup_calibration is None else self._setup_calibration(thaw_json(doc))
+        if problem is not None:
             raise BundleRejected(
-                RejectReason.REFERENCE_INVALID, f"Tier 0 보정 저장소에 없는 보정 버전 {version}", digest
+                RejectReason.REFERENCE_INVALID,
+                f"Tier 0 보정 저장소에 없는 보정 버전 {version} (세팅 보정으로도 받지 않음: {problem})",
+                digest,
             )
-        return version
+        return version, True
 
     def _geometry(self, ref: ComponentRef, doc: Mapping[str, Any], digest: str) -> str:
         version = _version_of(doc, "version", ref, digest)

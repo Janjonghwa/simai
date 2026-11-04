@@ -324,7 +324,7 @@ stateDiagram-v2
 | `GET` | `/api/setup-sessions/{setupSessionId}` | `ADMIN`, `VIEWER` | 현재 세팅 단계(`COLLECTING_BACKGROUND` → `INITIAL_POSE_AND_WORLD` → `JOINT_BA_AND_VERIFY` → `PREVIEW_AND_VLM_DRAFT` → `READY_FOR_ZONES` / 백그라운드 `BAKING_TEXTURE` → `COMPLETED`, 실패 시 `FAILED`), 진행률(%), 카메라별 배경 수집률, 검증 요약, 생성된 `calibration_version`·`preview_scene_version`·`scene_version`·`zone_drafts`, 실패 사유(`failure_code`, `failure_message`) 조회 |
 | `POST` | `/api/setup-sessions/{setupSessionId}/retry` | `ADMIN` | 실패했거나 관리자가 카메라/물체를 다시 조정한 뒤 현장 세팅을 다시 실행(깨끗한 배경이 이미 유효한 카메라는 재사용 선택 가능) |
 
-- 내부 구간(EC2 ↔ GPU Pod I5/I1)에서는 I5 `site_setup` 1.0.0 계약(`contracts/messages/site_setup.schema.json`, `job_request` 3.7.0 · `job_heartbeat` 2.1.0 · `job_callback` 2.6.0, `S15P31A101-452`)으로 세팅 작업을 전달한다. 워커는 유효 대여 하트비트의 선택 `payload.site_setup` 에 단계·진행률·카메라별 배경 수집률·높이 검사(복원 높이 − 입력 높이 cm, 기본 허용치 ±5 cm 초과 시 `"카메라 camX 높이가 Y.Y cm 안 맞음 — 거치대 확인"` 안내)·삼각콘(`TRAFFIC_CONE`)/개구부 표지판(`OPENING_SIGN`) 교차 확인과 먼저 등록된 `calibration_version`·`preview_scene_version`·`scene_version`·선택 `config_version`·`zone_drafts_ref` 참조를 싣는다. 서버는 동일 대여 내 단계·진행률 단조 증가(재할당된 새 대여는 첫 스냅샷부터 재시작)와 버전의 현장·보정 계보를 검증하되, 보정·Scene·구성 묶음을 자동 활성화하지 않는다. `READY_FOR_ZONES` 진입 시점부터 `work_unit.active_setup_session_id` 와 `ready_at` 이 보장된다.
+- 내부 구간(EC2 ↔ GPU Pod I5/I1)에서는 I5 `site_setup` 1.0.0 계약(`contracts/messages/site_setup.schema.json`, `job_request` 3.7.0 · `job_heartbeat` 2.1.0 · `job_callback` 2.6.0, `S15P31A101-452`)으로 세팅 작업을 전달한다. 워커는 유효 대여 하트비트의 선택 `payload.site_setup` 에 단계·진행률·카메라별 배경 수집률·높이 검사(복원 높이 − 입력 높이 cm, 기본 허용치 ±5 cm 초과 시 `"카메라 camX 높이가 Y.Y cm 안 맞음 — 거치대 확인"` 안내)·삼각콘(`TRAFFIC_CONE`)/개구부 표지판(`OPENING_SIGN`) 교차 확인과 먼저 등록된 `calibration_version`·`preview_scene_version`·`scene_version`·선택 `config_version`·`zone_drafts_ref` 참조를 싣는다. 서버는 동일 대여 내 단계·진행률 단조 증가(재할당된 새 대여는 첫 스냅샷부터 재시작)와 버전의 현장·보정 계보를 검증하되, 보정·Scene·구성 묶음을 자동 활성화하지 않는다. site_setup 1.2.0(`S15P31A101-467`)부터는 선택 `artifacts`(새 보정 문서·미리보기/정식 GLB 객체 참조)로 EC2 가 그 버전을 이 세션 귀속으로 등록하고, 세팅 성공 시 새 보정을 실은 구성 묶음을 발행한다(13절). `READY_FOR_ZONES` 진입 시점부터 `work_unit.active_setup_session_id` 와 `ready_at` 이 보장된다.
 
 ---
 
@@ -443,9 +443,94 @@ C–D 쌍은 여전히 4 px 이다(트랙이 적은 쌍, 11.2 와 같은 위험)
 
 ### 12.6 잔여 위험과 넘긴 일
 
-1. **EC2 에 새 보정·미리보기 Scene 후보를 등록할 워커 경로가 없다(Lead 결정 필요).** `SetupService.validateVersionLineage` 는 하트비트·결과의 `calibration_version`·`preview_scene_version`·`scene_version` 이 DB(`calibration_version`·`scene_version` 표)에 이미 있어야 통과시키는데, 등록 경로는 `POST /api/calibrations`·`POST /api/scenes`(ADMIN JWT)와 I1 `calibration_update`(게이트웨이)뿐이다. 워커는 문서·GLB 를 객체 저장소에 올리고(`site_setup_stages.publish/preview`) 버전 문자열만 알린다. 서버가 워커 토큰으로 등록하거나, 결과의 문서 참조로 서버가 등록하는 방식이 필요하다.
+1. ~~EC2 에 새 보정·미리보기 Scene 후보를 등록할 워커 경로가 없다.~~ → `S15P31A101-467` 에서 해결(13절). 워커가 하트비트·결과의 `artifacts`(site_setup 1.2.0)로 객체 참조를 알리고, EC2 가 그 참조로 문서·GLB 를 확인해 새 `calibration_version`·`scene_version` 을 등록한다. 남은 것은 Tier 0 가 새 보정을 받아들이는 경로(13.6 1번).
 2. 무마커 내부 파라미터 추정 경로 미연결: 활성 보정이 없는 현장은 `INTRINSICS_UNAVAILABLE`.
 3. MapAnything 상주(warm) 모델은 이 티켓에서 만들지 않았다. 현재는 `ProcessStages` 가 단계마다 프로세스를 띄워 로드 ~25 s 가 단계 시간에 들어간다(12차 세션에서 `INITIAL_POSE_AND_WORLD` 초를 확인).
 4. C–D 같은 약한 쌍의 홀드아웃(4 px). 11.2 와 같은 위험이며 12차 세션에서 현장 배치로 재확인한다.
 5. `zone_drafts_ref`(-455 `vlm_zone_draft`)와 정물 교차 확인(-462)은 넘겼다. 처리기는 두 값을 선택 필드로 이미 실을 수 있다.
 6. `ai/tests/services/worker/test_runner.py::test_vlm_budget_ends_at_event_deadline_not_lease_plus_timeout` 는 파일 전체를 돌릴 때 `0.30000000000291 <= 0.3` 로 실패한다(단독 실행은 통과). 변경을 모두 되돌린 기준선(`git stash`)에서도 같은 실패라 이 티켓과 무관한 기존 부동소수 비교다.
+
+---
+
+## 13. 서버 등록 (`S15P31A101-467`, 세팅 결과 → 보정·Scene 버전·구성 묶음)
+
+관련 명세: `docs/spec/04-coordinates.md` 4.5(보정 버전 덮어쓰지 않음), `05-processing.md` 5.3(미리보기 → 정식 Scene 교체), `11` 11.1·11.4(버전 추가만), `12-interfaces.md` 12.5(I5)·12.6(세팅 REST). 계약: `site_setup` 1.2.0, `job_heartbeat` 2.2.0, `job_callback` 2.9.0, `providers/calibration` 2.2.0(선택 `setup_session_id`·`previous_calibration_version`, content_hash 제외 키)(README v7.9.0). Flyway `V37__setup_session_artifact.sql`. Lead 결정(2026-11-04)으로 Tier 0 수용 경로까지 이 티켓에서 끝낸다(13.7).
+
+### 13.1 흐름
+
+| 시점 | 워커가 싣는 것 | EC2 가 하는 일 |
+| --- | --- | --- |
+| `JOINT_BA_AND_VERIFY` 하트비트 | `calibration_version` + `artifacts.calibration_document`{`uri`,`sha256`,`size_bytes`} | 키 확인 → 문서를 내려받아(4 MiB 상한) 크기·sha256 대조 → 문서의 버전·카메라 집합이 스냅샷·세션과 같은지 → `CalibrationService.registerFromSetup`(계약 `providers/calibration`·현장·content_hash 다시 재기·같은 버전 잠금) → 새 `calibration_version`(`previous` = Tier 0 가 알린 지금 활성 보정, `calibration_ref` = 그 s3 주소, `source_job_id` = 세팅 작업) + `calibration_document` 추가 → `setup_session_artifact` 에 세션 귀속 |
+| `PREVIEW_AND_VLM_DRAFT`·`READY_FOR_ZONES` 하트비트 | `preview_scene_version` + `artifacts.preview_scene` | 키 확인 → HEAD 로 있는지·크기·저장소 체크섬 대조 → `scene_version` 후보(`CANDIDATE`, `quality.notes` 에 `scene_tier=PREVIEW; safety_use=false`) 추가 → 귀속. 같은 스냅샷에 보정·미리보기가 모두 있으니 기존 -455 `vlm_zone_draft` 자동 등록이 그대로 이어진다(입력 `calibration_ref` 가 이제 워커가 올린 s3 문서라 VLM 워커도 읽을 수 있다). **`READY_FOR_ZONES` 이후 하트비트이고 이 세션이 등록한 보정이면** 커밋 뒤 별도 트랜잭션에서 그 보정 문서를 실은 구성 묶음(`config_version`)을 발행해 연결된 Tier 0 에 보낸다(`ConfigBundleService.publishForSetupAfterCommit`, 묶음 생성 SQL 이 세션의 `config_version` 을 채운다) |
+| 결과 `SUCCEEDED`(`COMPLETED`) | `scene_version` + `artifacts.scene` | 정식 GLB 를 같은 방식으로 후보 등록(`scene_tier=FULL; replaces_preview_scene=…`). 세션 `COMPLETED`. 그 보정의 묶음이 이미 있으면(READY 에서 발행) 다시 만들지 않는다 |
+| 결과 `FAILED`·`TIMED_OUT`·`CANCELLED` | — | 세션 `FAILED`. 이미 등록한 보정·Scene 행은 추가만 한 기록으로 남지만(덮어쓰지 않음) 구성 묶음을 만들지 않아 Tier 0 는 이전 보정·묶음 그대로다 |
+
+**세팅 Scene 자동 현재화**(Lead 결정 2026-11-04): 세팅 보정 채택 뒤 이전 World 의 Scene 은 정합 판정에서 숨으므로(MISMATCH), 세팅 화면·관제 뷰어가 빈 배경이 되지 않게 서버가 기존 활성화 경로(`SceneActivationService`, `scene_activation` 이력 추가·덮어쓰지 않음, actor `setup:<세션>`)로 현재 Scene 을 바꾼다.
+- `READY_FOR_ZONES` 이후 하트비트(묶음 발행과 같은 시점, 커밋 뒤 별도 트랜잭션): 이 세션이 등록한 보정·미리보기면 미리보기를 현재 Scene 으로 올린다. 세션당 한 번이다(같은 actor 로 그 미리보기를 이미 올렸으면 다시 올리지 않아, 이어지는 하트비트가 관리자 선택을 되돌리지 않는다). 미리보기는 `quality.notes` 의 `scene_tier=PREVIEW; safety_use=false` 를 그대로 둔다(표시용, 위험 판정 미사용).
+- 결과 `SUCCEEDED`: 정식 Scene 을 등록하고, 그때 현재 Scene 이 **이 세션의 미리보기**일 때만 정식으로 교체한다(`SceneActivationService.activateIfCurrent`). 관리자가 그 사이 다른 Scene 을 골랐으면 건드리지 않는다.
+- 같은 현장에 `IN_PROGRESS` 작업이 있으면 자동 현재화도 하지 않는다. 실패해도 세팅은 되돌리지 않고 경고만 남긴다.
+- 활성화 때 자산 확인: 세팅 GLB 는 업로드 허가(`upload_grant`)가 없으므로 `setup_session_artifact` 의 크기로 객체 HEAD 를 다시 본다.
+
+보정은 Tier 0 가 묶음 적용 경계에서 채택한다(13.7). 구성 묶음 자체는 Tier 0 가 검증·적용한다.
+
+### 13.2 검사 규칙
+
+- **키 = 이 작업·이 대여 경로만**: `s3://<우리 버킷>/job-objects/site_setup/{job_id}/{lease_id}/{한 단계 이름}`(`JobObjectSignService` 의 PUT 키). 하트비트는 그 하트비트의 대여, 결과는 `SUBMITTED` 대여 기준이다. 다른 작업·다른 대여·다른 버킷 경로는 400.
+- **해시**: 보정 문서는 EC2 가 바이트를 받아 SHA-256 을 다시 잰다. GLB 는 크게는 수십 MB 라 내려받지 않고 HEAD(`ChecksumMode.ENABLED`)로 크기와 저장소가 기록한 SHA-256(올릴 때 서명에 묶은 `x-amz-checksum-sha256`)을 대조한다. 저장소가 체크섬을 돌려주지 않으면(여러 조각 업로드 등) 크기만 대조하고 경고를 남긴다.
+- **같은 세션의 반복 알림**: 이어지는 하트비트가 같은 `artifacts` 를 다시 실으면 귀속 기록의 sha256 이 같을 때 다시 읽지 않는다. 같은 버전에 다른 sha256 은 400.
+- **버전 계보(`validateVersionLineage`)**: 버전은 같은 현장에 있어야 하고(기존), 보정은 `PROVISIONAL`·`CALIBRATED`(기존), Scene 은 그 보정을 참조해야 한다(기존). 추가로 **세팅 세션에 귀속된 버전이면 이 세션 귀속이어야 한다**. 귀속 기록이 없는 버전(관리자 업로드·Tier 0 알림·기존 시험 데이터)은 이전처럼 받는다. 다른 세션 귀속 버전을 `artifacts` 없이 참조하거나 다른 세션 경로 객체로 알리면 400.
+- **재시도 세션**: 같은 입력이면 Stage A 가 같은 보정 버전·같은 문서를 낸다(12.2 결정론). 재시도 세션이 자기 작업 경로에 같은 바이트를 올려 알리면, 문서는 이미 있으니(같은 sha256) 그대로 두고 이 세션에도 귀속을 추가한다. 다른 바이트면 `CALIBRATION_VERSION_CONFLICT` → 400.
+- 실패는 모두 `INVALID_SETUP_PROGRESS`(400)로 하트비트·제출 트랜잭션 전체를 되돌린다(세션 단계도 바뀌지 않음). 저장소에 닿지 못하면 `STORAGE_UNAVAILABLE`(503) 그대로.
+
+### 13.3 코드·시험 위치
+
+| 구분 | 위치 |
+| --- | --- |
+| 계약 | `contracts/messages/site_setup.schema.json`(`$defs.object_ref`·`$defs.artifacts`), 예시 `job_heartbeat.site_setup`·`job_callback.site_setup`, 반례 `invalid/job_heartbeat.site_setup_bad_artifact_sha`, `ai/src/simai_ai/contracts/models.py` 재생성 |
+| 등록 | `server/.../domain/setup/SetupArtifactRegistrar.java`(신규), `SetupService`(등록 → 계보 검사, 성공 시 묶음 발행 연결) |
+| 보정 | `CalibrationService.registerFromSetup`(관리자 업로드와 같은 검사, 호출자 트랜잭션) |
+| 구성 묶음 | `ConfigBundleService.publishForSetupAfterCommit`(지정 보정 문서를 싣는 `build`, 커밋 뒤 REQUIRES_NEW) |
+| 저장소 | `ObjectStorage.head`(크기+체크섬)·`read`(Range 로 상한까지만) |
+| DB | `V37__setup_session_artifact.sql`(세션·종류·버전·작업·대여·주소·sha256·크기, 추가만, 세션 삭제 시 함께) |
+| 워커 | `ai/services/worker/site_setup.py`(`ObjectRef`·`PublishedCalibration`·`BakedScene`, 스냅샷·결과 `artifacts`), `site_setup_stages.py`(올린 주소·sha256·크기 반환, 정식 GLB 하나만) |
+| 시험 | `server/.../setup/SetupResultRegisterIntegrationTest`(하트비트 보정 등록 → 미리보기 등록 → 초안 enqueue → 성공 → 정식 Scene·config_version / 해시 불일치·다른 작업 경로·문서 버전 불일치 거부 / 실패 시 묶음 없음·활성 보정 유지·다른 세션 버전 거부·재시도 세션의 같은 문서 귀속), 기존 `SetupSessionIntegrationTest`·`SetupZoneDraftIntegrationTest`; `ai/tests/services/worker/test_site_setup.py`(artifacts 단계별 누적)·`test_site_setup_stages.py` |
+
+### 13.4 명세에 없어 정한 수치와 근거
+
+| 값 | 근거 |
+| --- | --- |
+| 보정 문서 상한 4 MiB | 카메라 4대 문서는 수 KB. 카메라 수십 대도 수십 KB 라 넉넉하고, EC2 가 하트비트 트랜잭션 안에서 받는 양을 묶는다 |
+| 묶음 발행 조건 = `READY_FOR_ZONES` 이후 하트비트(또는 결과 성공), 이 세션이 `artifacts` 로 등록한 보정, 그 보정을 실은 묶음이 아직 없음, 같은 현장에 `IN_PROGRESS` 작업 없음 | 미리보기까지 끝나야 구역 편집이 시작되므로 그 시점에 새 보정을 Tier 0 에 걸어 굽기 도중 구역 발행이 같은 World 를 쓰게 한다. 이미 있던 보정을 참조만 한 세션은 묶음을 만들지 않는다. 관제 중에는 보정·World 를 바꾸지 않는다(세팅은 작업 시작 전 절차, 세팅 시작도 `409 SETUP_BLOCKED_BY_LIVE_WORK`) |
+| 구역 발행의 보정 = 가장 최근 세팅 보정 묶음의 보정이 Tier 0 의 지금 보정에서 출발했고 Tier 0 가 아직 그 보정을 알리지 않았으면 그 세팅 보정, 아니면 기존대로 Tier 0 의 지금 보정 | 세팅 묶음 발행 뒤 Tier 0 채택 알림(calibration_update) 전에 관리자가 구역을 발행해도 새 World 구역과 새 보정이 한 묶음에 들어가게 한다 |
+| 묶음 발행은 커밋 뒤 별도 트랜잭션 | 서버의 트랜잭션 관리자(JpaTransactionManager)가 저장점(NESTED)을 허용하지 않는다. 규칙 없음·서명 주소 미설정 등으로 묶음을 못 만들어도 세팅 완료가 되돌아가지 않게 한다 |
+| Scene `quality.notes` 에 `scene_tier=PREVIEW` 또는 `FULL`, `safety_use=false` | `reconstruct.py` 가 쓰는 표기와 같게. 미리보기는 표시용이며 위험 판정에 쓰지 않는다(AGENTS 1) |
+
+### 13.5 버린 대안
+
+- **워커 토큰으로 `POST /api/calibrations`·`POST /api/scenes` 를 열기**: 워커가 임의 버전을 등록할 수 있게 되고, 세션·대여와 묶이지 않는다. 결과 경로 키·해시로 EC2 가 직접 확인하는 쪽이 세션 귀속을 보장한다.
+- **`scene_version.job_id` 로 세션 귀속**: 부분 유일 색인(작업당 하나) 때문에 같은 작업의 미리보기·정식 둘을 못 넣는다. 별도 귀속 표를 둔다.
+- **GLB 도 내려받아 SHA-256 재계산**: 정식 GLB 는 수십 MB 라 하트비트·제출 트랜잭션을 길게 잡는다. 서명에 묶은 저장소 체크섬 대조로 대신한다.
+- **세팅 결과 처리 트랜잭션 안에서 묶음 생성(저장점)**: 위 13.4 의 이유로 쓸 수 없다.
+
+### 13.6 잔여 위험과 넘긴 일
+
+1. ~~Tier 0 가 새 보정을 받아들이는 경로가 없다.~~ → 13.7 로 해결.
+2. ~~세팅 중 구역 발행의 보정~~ → 묶음 발행을 `READY_FOR_ZONES` 로 당기고 `latestCalibration` 이 채택 전 세팅 보정을 우선한다(13.4). 남은 틈: Tier 0 가 세팅 묶음을 거부(계보 어긋남 등)했는데 그 뒤 구역을 발행하면 그 묶음도 같은 세팅 보정을 실어 다시 거부된다. 이때는 세팅을 다시 해야 한다(Tier 0 는 이전 보정·묶음으로 판정을 계속하고 health `config_sync` 가 STALE 로 보인다).
+3. 객체 읽기·HEAD 가 하트비트·제출 트랜잭션 안에서 일어난다(문서 수 KB·HEAD 1회라 짧지만, 저장소가 느리면 대여 갱신이 그만큼 늦다).
+4. 저장소가 체크섬을 기록하지 않으면 GLB 해시는 대조하지 못하고 크기만 본다(경고 로그).
+5. 12차 GPU 세션에서 실제 S3·Tier 0 로 종단 확인: 하트비트 → 보정 행·문서, 미리보기 후보, `vlm_zone_draft` 입력의 `calibration_ref` 서명 GET, READY 에서 `config_version` 발행 → Tier 0 `config_ack` APPLIED·`calibration_update`(RECALIBRATED, `world_frame_id` = 세팅 보정) → `GET /api/calibrations/current` 가 세팅 보정.
+6. 세팅 보정 채택은 새 World 계보의 시작이라, 그 전 World 의 Scene 은 서버 Scene–보정 정합 판정에서 `MISMATCH`(숨김)가 된다(의도). 세팅 미리보기·정식 Scene 은 자동 현재화로 바로 보인다(13.1). 단, 미리보기 자동 현재화(READY 커밋 뒤)와 Tier 0 채택(다음 묶음 적용 경계) 사이 잠깐은 현재 Scene 이 새 World, Tier 0 보정이 이전 World 라 배경이 흐리게(DIMMED/MISMATCH) 보일 수 있다.
+
+### 13.7 Tier 0 수용 규칙 (세팅 보정 채택)
+
+| 단계 | 위치 | 규칙 |
+| --- | --- | --- |
+| 검증(I1 수신 스레드) | `simai_ai.config.verify.BundleVerifier._calibration`, 주입 `setup_calibration=RuntimeCalibrationStore.setup_candidate_problem` | 묶음의 보정 버전이 저장소에 있으면 지금처럼 통과. 없으면 (a) 묶음에 실린 보정 문서가 계약 `providers/calibration`·구조·**content_hash** 를 통과하고 (b) **세팅 출처**(`setup_session_id`)이며 (c) `previous_calibration_version` 이 **지금 활성 보정**이고 (d) 현장·카메라 집합이 지금 활성 보정과 같고 (e) 처음 보는 버전일 때만 받아 `ConfigBundle.setup_calibration=True` 로 표시한다. 하나라도 어긋나면 지금처럼 `REFERENCE_INVALID`(사유 문구에 어긋난 조건) 거부, 이전 묶음 유지. 구성 요소 해시가 틀리면 `HASH_MISMATCH`, 문서를 못 받으면 `DOWNLOAD_FAILED`(기존) |
+| 적용(판정 경계, 판정 lock 안) | `ConfigSync(before_apply=Tier0Service._adopt_setup_calibration)` | 대기 묶음을 활성으로 바꾸기 직전에 같은 조건을 다시 본다(검증과 경계 사이에 운영 중 회전 복구가 활성 보정을 바꿨을 수 있다). 통과하면 `RuntimeCalibrationStore.prepare_setup`(문서·출처 기록 `*.report.json` `source=SITE_SETUP` 추가만) → `CameraRig` → `activate(new_world=True)`(이 버전이 새 World 계보 시작 `bootstrap`, 첫 시작 문서는 `initial` 로 남김) → 인지 rig 교체 → 묶음 적용(APPLIED). 실패하면 저장·전환 없이 그 묶음을 `REFERENCE_INVALID` 로 거부하고 이전 묶음·보정으로 판정을 계속한다 |
+| 안전장치와의 관계 | `Tier0Service._adopt_setup_calibration` | 세팅 보정은 운영 중 후보(`propose_calibration` → `validate_candidate`, 같은 World 계승)가 아니다. 2회 연속 확인·교체 뒤 감시(`SwapProbation`)·되돌림 대상이 아니고 바로 기준이 된다: 대기 중 회전 후보·감시·드리프트 근거를 버리고 `live_calibration`·`rotation_recovery`·`clean_background` 를 새 문서로 다시 시작한다. `safety_reference` 는 지금 World 계보의 시작부터 본다(이전 World 의 CALIBRATED 문서를 기준으로 쓰지 않음) |
+| 기록 | 저장소 전환 이력·health | `calibration_update`(reason `RECALIBRATED`, `previous_calibration_version` = 이전 활성, `world_frame_id` = 세팅 보정, `camera_poses`)를 기존 신뢰 대기열로 EC2 에 보낸다. `calibration_status.setup_adoption`{version, previous_version, setup_session_id, config_version, at_ms}, 로그 `세팅 보정 채택`, 이벤트 `calibration_switched:…` |
+
+- 워커(`site_setup_stages.publish`)는 문서에 `schema_version` 2.2.0, `setup_session_id`, 읽은 Tier 0 활성 보정을 `previous_calibration_version` 으로 싣는다(활성 보정을 못 읽었으면 지어내지 않는다 → Tier 0 가 채택하지 않음). 두 키는 content_hash 에서 빠진다(ai `calibration/document.py`·EC2 `CalibrationContentHash` 같게).
+- EC2 등록은 문서의 `setup_session_id` 가 이 세션이어야 받는다. 재시도 세션이 같은 보정 내용(같은 content_hash)에 출처만 다른 문서를 올리면 같은 보정으로 보고 원문은 처음 것을 둔다.
+- 재시작: 채택 뒤에는 저장소가 그 버전을 알므로 보관소 복구가 그대로 된다. 채택 전에 꺼지면 대기 묶음은 적용되지 않았으므로 EC2 재연결 알림으로 다시 검증한다.
+- 시험: `ai/tests/services/tier0/test_setup_calibration_adoption.py`(정상 채택·재시작 뒤 새 World 기준, content_hash 불일치·계보 불일치·세팅 출처 없음·문서 없음 거부, 검증 뒤 활성 보정이 바뀌면 경계에서 거부), 기존 `test_calibration_swap`·`test_live_calibration_safety`·`test_rotation_recovery`·`tests/config`.

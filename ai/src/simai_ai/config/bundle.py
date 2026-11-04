@@ -110,6 +110,8 @@ class ConfigBundle:
     - calibration_version: 이 묶음이 기준으로 삼는 보정 버전(Tier 0 보정 저장소에 있는 것만 통과).
     - operational_geometry: 작업면·정적 객체(읽기 전용 JSON). R2·R3·ContactEstimator 가 쓸 형식은 후속 이슈에서 정한다.
     - blobs: 내려받은 원본 바이트(해시 → 바이트). 보관소(archive)가 그대로 저장해 재시작 때 다시 검증한다.
+    - setup_calibration: 보정 버전이 Tier 0 저장소에 없지만 세팅 보정 채택 조건(verify.SetupCalibrationGate)을 통과했다(-467).
+      Tier 0 는 이 묶음을 적용하는 판정 경계에서 그 보정 문서(blobs)를 새 World 기준으로 채택한다. 채택에 실패하면 묶음을 거부한다.
     """
 
     notice: BundleNotice
@@ -123,6 +125,7 @@ class ConfigBundle:
     operational_geometry: Mapping[str, Any] = field(hash=False)
     verified_at: int = 0
     blobs: Mapping[str, bytes] = field(default_factory=lambda: MappingProxyType({}), hash=False, repr=False)
+    setup_calibration: bool = False
 
     @property
     def config_version(self) -> str:

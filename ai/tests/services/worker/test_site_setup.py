@@ -21,10 +21,13 @@ from services.worker.client import LeaseClient
 from services.worker.handlers import SITE_SETUP_STAGES, JobContext, JobFailed
 from services.worker.runner import Outcome, Worker
 from services.worker.site_setup import (
+    BakedScene,
     CameraPose,
     CleanBackgroundBundle,
     InitialWorldReconstruction,
+    ObjectRef,
     PreviewDraftResult,
+    PublishedCalibration,
     SiteSetupHandler,
     build_world_from_pointcloud_and_poses,
 )
@@ -214,9 +217,14 @@ def test_site_setup_worker_e2e_stage_heartbeats_and_callback_contract() -> None:
             calibration_version="cal-setup-12-init",
         )
 
-    def _publish_cal(doc: dict[str, Any]) -> str:
+    prefix = "s3://bucket/job-objects/site_setup/job-x/lease-x/"
+    preview_ref = ObjectRef(prefix + "preview_scene.glb", "a" * 64, 10)
+    scene_ref = ObjectRef(prefix + "scene.glb", "b" * 64, 20)
+
+    def _publish_cal(doc: dict[str, Any]) -> PublishedCalibration:
         published_docs.append(copy.deepcopy(doc))
-        return str(doc["calibration_version"])
+        version = str(doc["calibration_version"])
+        return PublishedCalibration(version, ObjectRef(prefix + f"calibration-{version}.json", "c" * 64, 30))
 
     handler = SiteSetupHandler(
         background_collector=_collect_bg,
@@ -225,8 +233,9 @@ def test_site_setup_worker_e2e_stage_heartbeats_and_callback_contract() -> None:
         preview_builder=lambda **kw: PreviewDraftResult(
             preview_scene_version="scene-setup-12-preview",
             zone_drafts_ref="draft-setup-12",
+            scene_asset=preview_ref,
         ),
-        texture_baker=lambda **kw: "scene-setup-12",
+        texture_baker=lambda **kw: BakedScene("scene-setup-12", scene_ref),
         clock_ms=lambda: 1760342410000,
     )
 
@@ -298,6 +307,15 @@ def test_site_setup_worker_e2e_stage_heartbeats_and_callback_contract() -> None:
     assert res["metrics"]["joint_ba"]["converged"] is True
     assert len(published_docs) == 1
     assert schema_errors(published_docs[0], "calibration") == []
+
+    # 3. 산출물 객체 참조(artifacts, site_setup 1.2.0): 보정 등록 단계부터 싣고, 미리보기·정식 GLB 를 차례로 더한다
+    by_stage = {hb["payload"]["site_setup"]["status"]: hb["payload"]["site_setup"] for hb in transport.heartbeats}
+    cal_ref = {"uri": prefix + f"calibration-{res['calibration_version']}.json", "sha256": "c" * 64, "size_bytes": 30}
+    assert "artifacts" not in by_stage["INITIAL_POSE_AND_WORLD"]
+    assert by_stage["JOINT_BA_AND_VERIFY"]["artifacts"] == {"calibration_document": cal_ref}
+    assert by_stage["READY_FOR_ZONES"]["artifacts"] == {"calibration_document": cal_ref, "preview_scene": preview_ref.to_json()}
+    assert res["artifacts"] == {"calibration_document": cal_ref, "preview_scene": preview_ref.to_json(),
+                                "scene": scene_ref.to_json()}
 
 
 def test_site_setup_height_mismatch_marks_camera_out_of_tolerance() -> None:

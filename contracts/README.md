@@ -1,6 +1,8 @@
 # contracts
 
-구간 계약의 정본(JSON Schema, draft 2020-12). 명세 12장, 20.4, 21.2 기준. **v7.8.0** — S15P31A101-465(마이너, v7.5.0 -461 · v7.6.0 -455 · v7.7.0 -338 선점): I5 `site_setup` 1.1.0(`job_callback` 2.8.0 · `job_heartbeat` 2.1.0) 선택 `metrics`(`stage_seconds` 단계별 소요 시간, `total_seconds`, `joint_ba` Stage A 회전 BA 수렴·홀드아웃 중앙 재투영 오차 요약) 추가.
+구간 계약의 정본(JSON Schema, draft 2020-12). 명세 12장, 20.4, 21.2 기준. **v7.9.0** — S15P31A101-467(마이너, v7.8.0 -465 선점): I5 `site_setup` 1.2.0(`job_callback` 2.9.0 · `job_heartbeat` 2.2.0) progress·result 선택 `artifacts`(`calibration_document`·`preview_scene`·`scene` = 이 작업·이 대여의 결과 객체 `uri`(s3://)·`sha256`(16진수)·선택 `size_bytes`) 추가. EC2 가 이 참조로 새 보정 문서를 내려받아 해시·계약·현장을 검사한 뒤 새 `calibration_version` 으로, 미리보기·정식 GLB 를 `scene_version`(CANDIDATE)으로 등록해 세션에 귀속시키고, 세팅 성공 시 새 보정을 실은 구성 묶음을 발행한다. 예시 `job_heartbeat.site_setup`·`job_callback.site_setup`, 반례 `job_heartbeat.site_setup_bad_artifact_sha`. `providers/calibration` 2.2.0: 선택 `setup_session_id`(세팅 출처)·`previous_calibration_version`(계보) 추가(content_hash 제외 키). Tier 0 는 저장소에 없는 보정이라도 세팅 출처이고 previous 가 자기 활성 보정이며 content_hash·계약이 맞으면 구성 묶음 적용 경계에서 새 World 기준으로 채택한다. 예시 `calibration.site_setup`.
+
+이전 판 v7.8.0 — S15P31A101-465(마이너, v7.5.0 -461 · v7.6.0 -455 · v7.7.0 -338 선점): I5 `site_setup` 1.1.0(`job_callback` 2.8.0 · `job_heartbeat` 2.1.0) 선택 `metrics`(`stage_seconds` 단계별 소요 시간, `total_seconds`, `joint_ba` Stage A 회전 BA 수렴·홀드아웃 중앙 재투영 오차 요약) 추가.
 
 이전 판 v7.7.0 (7.7.0(마이너, S15P31A101-338): I2 `messages/watch_escalation` 1.0.0 신설 — EC2 → 관제 화면 STOMP `/topic/watch`. BOUND 워치에 보낸 `watch_alert` 에 VIBRATED `watch_ack` 가 `ack_within_ms` 안에 EC2 에 닿지 않았거나(NO_ACK) 보내지 못했을 때(SEND_FAILED) 한 알림에 한 번 관리자에게 알린다(`event_id`·`event_sequence`·`alert_msg_id`·`device_id`·익명 `world_id`·`severity`·`reason`·`sent_at`·`escalated_at`). 운영자 확인이 아니고 이벤트 상태를 바꾸지 않는다. 예시 `watch_escalation`, 반례 `watch_escalation.unknown_reason`. TS 생성 목록에 더함. 다른 계약 변경 없음. 설계 `docs/design/server-watch-alert.md`)
 

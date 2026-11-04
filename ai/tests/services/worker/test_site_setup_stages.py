@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from pathlib import Path
@@ -12,7 +13,7 @@ import pytest
 from services.worker.auto_static import AutoStaticSettings, calibration_document_path
 from services.worker.handlers import JobContext, JobFailed
 from services.worker.objects import ObjectStoreError
-from services.worker.site_setup import CleanBackgroundBundle
+from services.worker.site_setup import CleanBackgroundBundle, ObjectRef
 from services.worker.site_setup_stages import (
     ProductionSiteSetupHandler,
     ProductionSiteSetupStages,
@@ -121,10 +122,19 @@ def test_publish_keeps_prior_document_and_uploads_new_version(tmp_path: Path) ->
     store = _Store()
     s = _stages(tmp_path, _Stages(), store)
     (s.root / "calibration.json").write_text('{"calibration_version": "cal-old"}', encoding="utf-8")
-    assert s.publish({"calibration_version": "cal-new", "cameras": []}) == "cal-new"
-    assert json.loads((s.root / "calibration.json").read_text(encoding="utf-8"))["calibration_version"] == "cal-new"
+    published = s.publish({"calibration_version": "cal-new", "cameras": []})
+    assert published.calibration_version == "cal-new"
+    raw = store.puts[0][1]
+    assert published.document == ObjectRef("s3://bucket/calibration-cal-new.json", hashlib.sha256(raw).hexdigest(), len(raw))
+    written = json.loads((s.root / "calibration.json").read_text(encoding="utf-8"))
+    assert written["calibration_version"] == "cal-new"
+    # 세팅 출처(Tier 0 채택 조건). 활성 보정을 읽기 전이라 previous 는 지어내지 않는다
+    assert written["setup_session_id"] == _ctx().input["setup_session_id"] and "previous_calibration_version" not in written
     assert json.loads((s.root / "calibration.prior.json").read_text(encoding="utf-8"))["calibration_version"] == "cal-old"
-    assert [p[0] for p in store.puts] == ["calibration-cal-new.json"]
+    s._prior = {"calibration_version": "cal-old"}
+    assert s.publish({"calibration_version": "cal-new2", "cameras": []}).calibration_version == "cal-new2"
+    assert json.loads(store.puts[-1][1])["previous_calibration_version"] == "cal-old"
+    assert [p[0] for p in store.puts] == ["calibration-cal-new.json", "calibration-cal-new2.json"]
 
 
 def test_publish_maps_object_store_failure_to_retryable_job_failure(tmp_path: Path) -> None:
@@ -146,6 +156,7 @@ def test_preview_runs_stage_uploads_glb_and_names_scene_by_run(tmp_path: Path) -
     s = _stages(tmp_path, _Stages({"preview": _preview_files()}), store)
     got = s.preview(setup_session_id="s", site_id="site", calibration_doc={}, backgrounds=CleanBackgroundBundle(BUNDLE, {}))
     assert got.preview_scene_version == "scene-preview-job-1-lease-1"
+    assert got.scene_asset == ObjectRef("s3://bucket/preview_scene.glb", hashlib.sha256(b"glb").hexdigest(), 3)
     assert store.puts == [("preview_scene.glb", b"glb", "model/gltf-binary")]
 
 
@@ -157,9 +168,10 @@ def test_bake_falls_back_when_texrecon_missing(tmp_path: Path) -> None:
         "fallback": {"scene.glb": b"glb", "bake.json": json.dumps({"assets": [asset]}).encode()},
     })
     s = _stages(tmp_path, stages, store)
-    version = s.bake(setup_session_id="s", site_id="site", calibration_doc={}, backgrounds=CleanBackgroundBundle(BUNDLE, {}),
-                     preview_scene_version="scene-preview-x")
-    assert version == "scene-job-1-lease-1" and stages.ran == ["bake", "fallback"]
+    baked = s.bake(setup_session_id="s", site_id="site", calibration_doc={}, backgrounds=CleanBackgroundBundle(BUNDLE, {}),
+                   preview_scene_version="scene-preview-x")
+    assert baked.scene_version == "scene-job-1-lease-1" and stages.ran == ["bake", "fallback"]
+    assert baked.scene_asset is not None and baked.scene_asset.uri == "s3://bucket/scene.glb"
     assert store.puts == [("scene.glb", b"glb", "model/gltf-binary")]
 
 

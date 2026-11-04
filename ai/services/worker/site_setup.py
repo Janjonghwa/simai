@@ -11,6 +11,10 @@
 (f) JOINT_BA_AND_VERIFY: 새 `calibration_version` 보정 문서 등록(덮어쓰지 않음)
 (g) PREVIEW_AND_VLM_DRAFT → READY_FOR_ZONES: 미리보기 맵(`preview_scene_version`) 생성·등록
 (h) BAKING_TEXTURE → COMPLETED: 고화질 정적 3D 굽기(`scene_version`, LIVE 중 굽기 금지 게이트 유지)
+
+산출물을 객체 저장소에 올린 주입점은 그 객체 참조(`ObjectRef`)를 함께 돌려주고, 처리기는 그 뒤 스냅샷·결과의 선택 `artifacts`
+(site_setup 1.2.0, S15P31A101-467)에 싣는다. EC2 는 이 참조로 문서·GLB 를 확인해 새 보정·Scene 버전을 등록한다(서버 등록 경로).
+버전 문자열만 돌려주는 주입점(시험·기본값)은 그대로 받고 `artifacts` 를 싣지 않는다.
 """
 
 from __future__ import annotations
@@ -88,11 +92,44 @@ class InitialWorldReconstruction:
 
 
 @dataclass(frozen=True, slots=True)
+class ObjectRef:
+    """이 작업·이 대여의 서명 PUT 으로 올린 객체(계약 site_setup#/$defs/object_ref)."""
+
+    uri: str
+    sha256: str  # 올린 바이트의 SHA-256 16진수(서명에 묶은 값)
+    size_bytes: int
+
+    @classmethod
+    def of(cls, uri: str, content: bytes) -> ObjectRef:
+        return cls(uri, hashlib.sha256(content).hexdigest(), len(content))
+
+    def to_json(self) -> dict[str, Any]:
+        return {"uri": self.uri, "sha256": self.sha256, "size_bytes": self.size_bytes}
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedCalibration:
+    """(f) 올린 새 보정 문서의 버전과 객체 참조."""
+
+    calibration_version: str
+    document: ObjectRef | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BakedScene:
+    """(h) 굽기로 만든 정식 Scene 버전과 GLB 객체 참조."""
+
+    scene_version: str
+    scene_asset: ObjectRef | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PreviewDraftResult:
     """(g) 미리보기 맵(`preview` 모드) 및 선택 VLM 구역 초안 참조."""
 
     preview_scene_version: str
     zone_drafts_ref: str | None = None
+    scene_asset: ObjectRef | None = None
 
 
 class BackgroundCollector(Protocol):
@@ -120,7 +157,7 @@ class WorldInitializer(Protocol):
 
 
 class CalibrationPublisher(Protocol):
-    def __call__(self, calibration_doc: Mapping[str, Any]) -> str: ...
+    def __call__(self, calibration_doc: Mapping[str, Any]) -> str | PublishedCalibration: ...
 
 
 class PreviewSceneBuilder(Protocol):
@@ -143,7 +180,7 @@ class TextureSceneBaker(Protocol):
         calibration_doc: Mapping[str, Any],
         backgrounds: CleanBackgroundBundle,
         preview_scene_version: str,
-    ) -> str: ...
+    ) -> str | BakedScene: ...
 
 
 def _opt_float(value: Any) -> float | None:
@@ -489,9 +526,14 @@ class SiteSetupHandler:
         except StageAError as exc:
             raise JobFailed(exc.code, exc.message, retryable=exc.retryable) from exc
 
-        calibration_version = str(
-            self._publish_calibration(copy.deepcopy(stage_a.calibration_doc))
-        )
+        published = self._publish_calibration(copy.deepcopy(stage_a.calibration_doc))
+        artifacts: dict[str, Any] = {}
+        if isinstance(published, PublishedCalibration):
+            calibration_version = published.calibration_version
+            if published.document is not None:
+                artifacts["calibration_document"] = published.document.to_json()
+        else:
+            calibration_version = str(published)
         stage_seconds["JOINT_BA_AND_VERIFY"] = round(
             max(0.0, self._perf() - t0), 4
         )
@@ -509,6 +551,8 @@ class SiteSetupHandler:
         }
         if stage_a.object_cross_checks:
             joint_ba_snapshot["object_cross_checks"] = stage_a.object_cross_checks
+        if artifacts:
+            joint_ba_snapshot["artifacts"] = dict(artifacts)
         self._emit_progress(ctx, joint_ba_snapshot)
 
         # ------------------------------------------------------------------
@@ -542,6 +586,10 @@ class SiteSetupHandler:
             preview_snapshot["zone_drafts_ref"] = preview.zone_drafts_ref
         if stage_a.object_cross_checks:
             preview_snapshot["object_cross_checks"] = stage_a.object_cross_checks
+        if preview.scene_asset is not None:
+            artifacts["preview_scene"] = preview.scene_asset.to_json()
+        if artifacts:
+            preview_snapshot["artifacts"] = dict(artifacts)
         self._emit_progress(ctx, preview_snapshot)
 
         t0_ready = self._perf()
@@ -577,15 +625,19 @@ class SiteSetupHandler:
         }
         self._emit_progress(ctx, baking_snapshot)
 
-        scene_version = str(
-            self._bake_texture(
-                setup_session_id=setup_session_id,
-                site_id=site_id,
-                calibration_doc=stage_a.calibration_doc,
-                backgrounds=bg_bundle,
-                preview_scene_version=preview.preview_scene_version,
-            )
+        baked = self._bake_texture(
+            setup_session_id=setup_session_id,
+            site_id=site_id,
+            calibration_doc=stage_a.calibration_doc,
+            backgrounds=bg_bundle,
+            preview_scene_version=preview.preview_scene_version,
         )
+        if isinstance(baked, BakedScene):
+            scene_version = baked.scene_version
+            if baked.scene_asset is not None:
+                artifacts["scene"] = baked.scene_asset.to_json()
+        else:
+            scene_version = str(baked)
         stage_seconds["BAKING_TEXTURE"] = round(
             max(0.0, self._perf() - t0), 4
         )
@@ -610,6 +662,8 @@ class SiteSetupHandler:
             result["zone_drafts_ref"] = preview.zone_drafts_ref
         if stage_a.object_cross_checks:
             result["object_cross_checks"] = stage_a.object_cross_checks
+        if artifacts:
+            result["artifacts"] = dict(artifacts)
 
         errs = schema_errors(result, SITE_SETUP_RESULT_SCHEMA)
         if errs:

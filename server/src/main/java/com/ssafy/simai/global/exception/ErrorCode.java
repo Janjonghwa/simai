@@ -631,6 +631,7 @@ public sealed interface ErrorCode {
         SETUP_ALREADY_IN_PROGRESS(HttpStatus.CONFLICT, "이미 진행 중인 세팅 세션이 있습니다"),
         SETUP_WORKER_UNAVAILABLE(HttpStatus.CONFLICT, "현장 세팅(site_setup)을 처리할 활성 워커가 없습니다"),
         SETUP_RETRY_NOT_ALLOWED(HttpStatus.CONFLICT, "실패한 세팅 세션만 재시도할 수 있습니다"),
+        SETUP_BLOCKED_BY_LIVE_WORK(HttpStatus.CONFLICT, "같은 현장에 진행 중(IN_PROGRESS)인 작업이 있어 현장 세팅을 시작할 수 없습니다"),
         INVALID_SETUP_PROGRESS(HttpStatus.BAD_REQUEST, "세팅 진행률·결과 보고가 계약이나 등록된 버전 계보에 맞지 않습니다");
 
         private final HttpStatus status;

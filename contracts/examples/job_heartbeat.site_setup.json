@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.1.0",
+  "schema_version": "2.2.0",
   "msg_type": "job_heartbeat",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000202",
   "sent_at": 1760342410500,
@@ -11,12 +11,20 @@
     "site_setup": {
       "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
       "status": "JOINT_BA_AND_VERIFY",
-      "progress_pct": 45,
+      "progress_pct": 65,
       "background_collection_pct": {
         "cam1": 100,
         "cam2": 100,
         "cam3": 100,
         "cam4": 100
+      },
+      "calibration_version": "cal-setup-12-jba2-3f9c2a10",
+      "artifacts": {
+        "calibration_document": {
+          "uri": "s3://simai-objects/job-objects/site_setup/job-20261017-0041/0192a6f0-7c1e-7b3a-9f2d-0000000001b1/calibration-cal-setup-12-jba2-3f9c2a10.json",
+          "sha256": "9b1f0c3e5a7d2b4c6e8f0a1b3c5d7e9f1a2b3c4d5e6f708192a3b4c5d6e7f809",
+          "size_bytes": 6214
+        }
       }
     }
   }
