@@ -15,6 +15,7 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppCctvRouteImport } from './routes/_app/cctv'
 import { Route as AppSetupRouteImport } from './routes/_app/setup'
 import { Route as AppTbmRouteImport } from './routes/_app/tbm'
+import { Route as AppWorkRouteImport } from './routes/_app/work'
 import { Route as AppHistoryIndexRouteImport } from './routes/_app/history.index'
 import { Route as AppHistoryWorkIdRouteImport } from './routes/_app/history.$workId'
 
@@ -47,6 +48,11 @@ const AppTbmRoute = AppTbmRouteImport.update({
   path: '/tbm',
   getParentRoute: () => AppRoute,
 } as any)
+const AppWorkRoute = AppWorkRouteImport.update({
+  id: '/work',
+  path: '/work',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppHistoryIndexRoute = AppHistoryIndexRouteImport.update({
   id: '/history/',
   path: '/history/',
@@ -64,6 +70,7 @@ export interface FileRoutesByFullPath {
   '/cctv': typeof AppCctvRoute
   '/setup': typeof AppSetupRoute
   '/tbm': typeof AppTbmRoute
+  '/work': typeof AppWorkRoute
   '/history/$workId': typeof AppHistoryWorkIdRoute
   '/history/': typeof AppHistoryIndexRoute
 }
@@ -72,6 +79,7 @@ export interface FileRoutesByTo {
   '/cctv': typeof AppCctvRoute
   '/setup': typeof AppSetupRoute
   '/tbm': typeof AppTbmRoute
+  '/work': typeof AppWorkRoute
   '/': typeof AppIndexRoute
   '/history/$workId': typeof AppHistoryWorkIdRoute
   '/history': typeof AppHistoryIndexRoute
@@ -83,6 +91,7 @@ export interface FileRoutesById {
   '/_app/cctv': typeof AppCctvRoute
   '/_app/setup': typeof AppSetupRoute
   '/_app/tbm': typeof AppTbmRoute
+  '/_app/work': typeof AppWorkRoute
   '/_app/': typeof AppIndexRoute
   '/_app/history/$workId': typeof AppHistoryWorkIdRoute
   '/_app/history/': typeof AppHistoryIndexRoute
@@ -95,6 +104,7 @@ export interface FileRouteTypes {
     | '/cctv'
     | '/setup'
     | '/tbm'
+    | '/work'
     | '/history/$workId'
     | '/history/'
   fileRoutesByTo: FileRoutesByTo
@@ -103,6 +113,7 @@ export interface FileRouteTypes {
     | '/cctv'
     | '/setup'
     | '/tbm'
+    | '/work'
     | '/'
     | '/history/$workId'
     | '/history'
@@ -113,6 +124,7 @@ export interface FileRouteTypes {
     | '/_app/cctv'
     | '/_app/setup'
     | '/_app/tbm'
+    | '/_app/work'
     | '/_app/'
     | '/_app/history/$workId'
     | '/_app/history/'
@@ -167,6 +179,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppTbmRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/work': {
+      id: '/_app/work'
+      path: '/work'
+      fullPath: '/work'
+      preLoaderRoute: typeof AppWorkRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/history/': {
       id: '/_app/history/'
       path: '/history'
@@ -188,6 +207,7 @@ interface AppRouteChildren {
   AppCctvRoute: typeof AppCctvRoute
   AppSetupRoute: typeof AppSetupRoute
   AppTbmRoute: typeof AppTbmRoute
+  AppWorkRoute: typeof AppWorkRoute
   AppIndexRoute: typeof AppIndexRoute
   AppHistoryWorkIdRoute: typeof AppHistoryWorkIdRoute
   AppHistoryIndexRoute: typeof AppHistoryIndexRoute
@@ -197,6 +217,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppCctvRoute: AppCctvRoute,
   AppSetupRoute: AppSetupRoute,
   AppTbmRoute: AppTbmRoute,
+  AppWorkRoute: AppWorkRoute,
   AppIndexRoute: AppIndexRoute,
   AppHistoryWorkIdRoute: AppHistoryWorkIdRoute,
   AppHistoryIndexRoute: AppHistoryIndexRoute,

@@ -7,6 +7,7 @@ import { clockLabel } from '@/features/layout/status';
 import { useThemeStore } from '@/features/layout/theme.store';
 import { useNow } from '@/features/layout/useNow';
 import { ROOM } from '@/features/plan/plan';
+import { useSetupFlowStore } from '@/features/setup/setup.store';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useHasRoomScan } from '@/store/roomBounds.store';
 import { Button } from '@simai/ui/components/button';
@@ -42,6 +43,8 @@ function AccountMenu() {
   const role = useCurrentRole();
   const logout = useLogout();
   const navigate = useNavigate();
+  // 세팅은 작업마다 한다. 선택된 작업이 없으면 작업 관리로 안내한다.
+  const workUnitId = useSetupFlowStore((s) => s.workUnitId);
 
   return (
     <DropdownMenu>
@@ -52,7 +55,13 @@ function AccountMenu() {
         <ChevronDown aria-hidden />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-[220px]">
-        <DropdownMenuItem onClick={() => void navigate({ to: '/setup' })}>
+        <DropdownMenuItem
+          onClick={() =>
+            void navigate(
+              workUnitId === null ? { to: '/work' } : { to: '/setup', search: { workUnitId } },
+            )
+          }
+        >
           <Ruler />
           설치 · 보정
         </DropdownMenuItem>

@@ -777,6 +777,8 @@ describe('작업 세션과 서명', () => {
   });
 
   it('다른 작업이 진행 중이면 409 안내를 표시한다', async () => {
+    // 세팅·구역 전 시작 경고(확인)는 계속 진행으로 답한다.
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<TbmPage />);
     fireEvent.click(await screen.findByRole('button', { name: '작업 시작' }));
     await screen.findByRole('button', { name: '작업 종료' });

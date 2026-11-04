@@ -1,5 +1,6 @@
 import { ROLE_LABEL } from '@/features/auth/roleLabel';
 import { TopBar } from '@/features/layout/TopBar';
+import { setSetupWorkUnitId } from '@/features/setup/setup.store';
 import { viewerHealthAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useRoomBoundsStore } from '@/store/roomBounds.store';
@@ -39,6 +40,7 @@ function signInAs(role: Role) {
 afterEach(() => {
   cleanup();
   navigate.mockClear();
+  setSetupWorkUnitId(null);
   useSessionStore.getState().signOut();
   useRealtimeStore.setState(useRealtimeStore.getInitialState(), true);
   useRoomBoundsStore.setState(useRoomBoundsStore.getInitialState(), true);
@@ -80,7 +82,18 @@ describe('TopBar', () => {
     expect(items).toEqual(['설치 · 보정', '화이트 모드', '로그아웃']);
 
     act(() => fireEvent.click(screen.getByRole('menuitem', { name: '설치 · 보정' })));
-    expect(navigate).toHaveBeenCalledWith({ to: '/setup' });
+    // 선택된 작업이 없으면 세팅 화면 대신 작업 관리로 안내한다.
+    expect(navigate).toHaveBeenCalledWith({ to: '/work' });
+  });
+
+  it('작업이 선택돼 있으면 설치 · 보정이 그 작업의 세팅(/setup?workUnitId=)으로 간다', async () => {
+    seed();
+    act(() => setSetupWorkUnitId(7));
+    render(<TopBar floating={false} />);
+
+    act(() => fireEvent.click(screen.getByRole('button', { name: /—/ })));
+    act(() => fireEvent.click(screen.getByRole('menuitem', { name: '설치 · 보정' })));
+    expect(navigate).toHaveBeenCalledWith({ to: '/setup', search: { workUnitId: 7 } });
   });
 
   it.each(['ADMIN', 'FOREMAN'] as const)(

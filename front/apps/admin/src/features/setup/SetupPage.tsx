@@ -23,6 +23,7 @@ import {
 import {
   acceptSetupZoneDraft,
   discardSetupZoneDraft,
+  setSetupWorkUnitId,
   useSetupFlowStore,
 } from '@/features/setup/setup.store';
 import { SetupMap } from '@/features/setup/SetupMap';
@@ -61,7 +62,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 // 실패 시 사유 + 다시 시도(POST /api/setup-sessions/{id}/retry), 높이 불일치 경고 시 1단계 높이 칸 복귀 후 재시도.
 // 3단계(미리보기 맵 도착 → 구역 편집): 미리보기 Scene 준비 시 구역 편집 도구(ZonesPage, -456 재사용) 및
 // AI 위험 구역 초안(GET /api/setup-sessions/{id}/zone-drafts, 점선 다각형, 수락·버리기, AI 의견 없음 회색 표시),
-// 고화질 정식 Scene 도착 시 자동 교체(편집 초안 유지), 구역 발행(POST /api/zones/commit) 뒤 작업 관리(/tbm) 이동.
+// 고화질 정식 Scene 도착 시 자동 교체(편집 초안 유지), 구역 발행(POST /api/zones/commit) 뒤 작업 관리(/work?workUnitId=) 복귀.
 
 const STATE_TONE: Record<CalibrationState, string> = {
   UNCALIBRATED: 'bg-surface-3 text-muted-foreground',
@@ -117,7 +118,35 @@ function SetupZoneEditorHost({ children }: { children: ReactNode }) {
   return <SpatialViewportContext value={fallbackValue}>{children}</SpatialViewportContext>;
 }
 
-export function SetupPage({ workUnitId = 1 }: { workUnitId?: number } = {}) {
+/** 작업 없이 세팅 화면을 열면 어느 작업의 세팅인지 모르므로 작업 관리로 돌려보낸다(작업 id 를 지어내지 않는다). */
+function SetupNeedsWork() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <PageTitle>설치 · 보정</PageTitle>
+      <Alert role="status" data-testid="setup-needs-work" className="flex flex-col gap-2">
+        <p className="text-sm font-semibold">어느 작업의 세팅인지 알 수 없습니다.</p>
+        <p className="text-xs text-muted-foreground">
+          현장 세팅은 작업마다 합니다. 작업 관리에서 작업을 고르고 &quot;세팅 시작&quot;을 눌러
+          들어오세요.
+        </p>
+        <div>
+          <Button size="sm" onClick={() => void navigate({ to: '/work' })}>
+            작업 관리로 이동
+          </Button>
+        </div>
+      </Alert>
+    </>
+  );
+}
+
+export function SetupPage({ workUnitId }: { workUnitId?: number } = {}) {
+  if (workUnitId === undefined) return <SetupNeedsWork />;
+  return <SetupWorkPage workUnitId={workUnitId} />;
+}
+
+function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
+  useEffect(() => setSetupWorkUnitId(workUnitId), [workUnitId]);
   const [stage, setStage] = useState<Stage>(0);
   const [heightEdits, setHeightEdits] = useState<Record<string, string>>({});
   const [returnForHeightRetry, setReturnForHeightRetry] = useState(false);
@@ -254,8 +283,8 @@ export function SetupPage({ workUnitId = 1 }: { workUnitId?: number } = {}) {
   }, [currentSession]);
 
   const handleNavigateTbm = useCallback(() => {
-    void navigate({ to: '/tbm' });
-  }, [navigate]);
+    void navigate({ to: '/work', search: { workUnitId: String(workUnitId) } });
+  }, [navigate, workUnitId]);
 
   const stageActions: ActionKey[] =
     stage === 0 ? [] : stage === 1 ? ['confirm'] : ['restart', 'zones'];

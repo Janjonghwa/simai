@@ -18,6 +18,10 @@ import { useCallback, useLayoutEffect, useState } from 'react';
 export interface UseTbmReportResult {
   /** 현재 화면에 표시 중인 보고서(선택한 버전 또는 최신 버전). */
   report: TbmReport | null;
+  /** 작업의 최신 버전 보고서(버전을 골라 봐도 최신 기준). 단계 판정에 쓴다. */
+  latest: TbmReport | null;
+  /** 보고서 목록 조회가 끝났는지. */
+  isLoaded: boolean;
   /** 작업에 속한 보고서 버전 목록(최신순). */
   versions: readonly TbmReportVersionSummary[];
   /** 선택된 보고서 ID. */
@@ -208,6 +212,13 @@ export function useTbmReport(
 
   return {
     report: activeReport,
+    latest:
+      pollingReport &&
+      pollingReport.work_id === workId &&
+      (!latest || pollingReport.report_version >= latest.report_version)
+        ? pollingReport
+        : latest,
+    isLoaded: byWorkQuery.isSuccess,
     versions,
     selectedReportId: activeReport?.report_id ?? selectedReportId,
     isGenerating,

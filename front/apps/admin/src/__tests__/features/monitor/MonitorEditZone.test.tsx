@@ -264,14 +264,14 @@ describe('관제 관리자 편집 모드', () => {
     const hrefs = within(nav)
       .getAllByRole('link')
       .map((a) => a.getAttribute('href'));
-    expect(hrefs).toEqual(['/', '/cctv', '/tbm', '/history']);
+    expect(hrefs).toEqual(['/', '/cctv', '/work', '/history']);
     expect(hrefs).not.toContain('/zones');
     cleanup();
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={qc}>
-        <SetupPage />
+        <SetupPage workUnitId={1} />
       </QueryClientProvider>,
     );
     act(() => screen.getByRole('button', { name: /3완료/ }).click());
