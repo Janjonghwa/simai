@@ -3,6 +3,8 @@ import { formatTime, ruleName } from '@/features/events/events';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { isActiveAt, type EventRow, type WorkerRow } from '@/features/history/replayIndex';
 import { formatClock } from '@/features/history/works';
+import { useZoneName } from '@/features/zones/useZoneName';
+import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
 import { cn } from '@simai/ui/lib/utils';
 import { ListOrdered, Users } from 'lucide-react';
 
@@ -80,14 +82,21 @@ export function WorkerList({
 function EventItem({
   event,
   playhead,
+  zoneName,
   onPick,
 }: {
   event: EventRow;
   playhead: number | null;
+  zoneName: ZoneNameOf;
   onPick: (event: EventRow) => void;
 }) {
   const active = playhead !== null && isActiveAt(event, playhead);
   const later = playhead !== null && event.raisedAt > playhead;
+  const workers = event.worldIds.join(' · ');
+  // 작업자가 없으면 구역이 대상이라 이름을 모르면 `구역` 이고, 작업자 뒤에 붙을 때는 모르면 뺀다.
+  const zone = workers
+    ? zoneName(event.zoneId)
+    : event.zoneId && zoneNameOrDefault(event.zoneId, zoneName);
   return (
     <li>
       <button
@@ -104,8 +113,10 @@ function EventItem({
         <span className="font-mono text-sm">{formatTime(event.raisedAt)}</span>
         <SeverityBadge severity={event.severity} />
         <span className="min-w-0 flex-1 truncate">{ruleName(event.ruleId)}</span>
-        <span className="font-mono text-sm text-muted-foreground">
-          {[...event.worldIds, event.zoneId].filter(Boolean).join(' · ')}
+        <span className="text-sm text-muted-foreground">
+          <span className="font-mono">{workers}</span>
+          {workers && zone && ' · '}
+          {zone}
         </span>
       </button>
     </li>
@@ -122,12 +133,19 @@ export function EventLog({
   playhead: number | null;
   onPick: (event: EventRow) => void;
 }) {
+  const zoneName = useZoneName();
   return (
     <DashPanel icon={ListOrdered} title="이벤트 로그" count={events.length}>
       <ol aria-label="이벤트 로그" className={LIST}>
         {events.length === 0 && <li className={EMPTY_ROW}>위험·경고 없음</li>}
         {events.map((e) => (
-          <EventItem key={e.eventId} event={e} playhead={playhead} onPick={onPick} />
+          <EventItem
+            key={e.eventId}
+            event={e}
+            playhead={playhead}
+            zoneName={zoneName}
+            onPick={onPick}
+          />
         ))}
       </ol>
     </DashPanel>

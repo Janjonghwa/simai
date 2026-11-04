@@ -2,9 +2,10 @@ import type { ZoneSeverity, ZoneView } from '@/features/viewer3d/data/spatialFra
 import { PALETTE, type ScenePalette } from '@/features/viewer3d/palette';
 import { targetKey } from '@/features/viewer3d/target';
 import type { ViewerTarget } from '@/features/viewer3d/types';
+import { zoneDisplayName } from '@/lib/zoneName';
 import { createContext } from 'react';
 
-// 구역 표시 규칙. 색·투명도·선 모양·이름표를 한 곳에서 정한다. -185 위험 강조는 이 값을 바꾸지 않고 따로 얹는다.
+// 구역 표시 규칙. 색·투명도·선 모양·이름표 문구를 한 곳에서 정한다. -185 위험 강조는 이 값을 바꾸지 않고 따로 얹는다.
 
 /**
  * 구역을 어떤 적용 상태로 보일지.
@@ -108,10 +109,8 @@ export const zoneStateLabel = (state: ZoneApplyState) => STYLES[state].stateLabe
 export const zoneHeightText = (zone: Pick<ZoneView, 'min' | 'max'>) =>
   `Z ${meters(zone.min[2])}–${meters(zone.max[2])}m`;
 
-/** 장면 이름표. ID·높이 범위(World Z)·적용 상태를 함께 적는다. */
-export function zoneLabel(zone: Pick<ZoneView, 'zoneId' | 'min' | 'max'>, state: ZoneApplyState) {
-  return [zone.zoneId, zoneHeightText(zone), STYLES[state].stateLabel].join(' · ');
-}
+/** 장면 이름표. 구역 이름만 적고, 위험은 색으로만 보인다. */
+export const zoneLabel = (zone: Pick<ZoneView, 'name'>) => zoneDisplayName(zone.name);
 
 const PERSON_PREFIX = targetKey({ type: 'person', id: '' });
 
@@ -126,3 +125,6 @@ export function personOnRay(
   const hit = intersections.find((h) => h.eventObject.name.startsWith(PERSON_PREFIX));
   return hit ? { type: 'person', id: hit.eventObject.name.slice(PERSON_PREFIX.length) } : null;
 }
+
+/** 편집 미리보기 이름표. 구역 이름에 저장되지 않은 미리보기임을 함께 적는다. */
+export const previewLabel = (zone: Pick<ZoneView, 'name'>) => `${zoneLabel(zone)} · 미저장`;

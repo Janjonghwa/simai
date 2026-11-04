@@ -3,9 +3,10 @@ import { isActive, needsConfirmation } from '@/features/events/entries';
 import { ConfirmBadge, DelayedBadge } from '@/features/events/EventBadges';
 import { formatTime } from '@/features/events/format';
 import { firstRaisedAt, type Incident } from '@/features/events/incidents';
-import { resolvedLabel, targetLabel } from '@/features/events/incidentView';
+import { resolvedLabel, targetFont, targetLabel } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import type { Severity } from '@/features/events/types';
+import { useZoneName } from '@/features/zones/useZoneName';
 import { Badge } from '@simai/ui/components/badge';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
@@ -43,13 +44,17 @@ export function EventDetailHeader({
   closeRef: Ref<HTMLButtonElement>;
   onClose: () => void;
 }) {
+  const zoneName = useZoneName();
   const events = incident.entries.map((e) => e.event);
   const confirm = events.find((e) => isActive(e) && needsConfirmation(e));
 
   return (
     <header className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5">
       <h2 className="text-[22px] leading-[30px] font-bold">
-        <span className="font-mono">{targetLabel(incident.target)}</span> 사건
+        <span className={targetFont(incident.target)}>
+          {targetLabel(incident.target, zoneName)}
+        </span>{' '}
+        사건
       </h2>
       <SeverityBadge severity={incident.severity} />
       <Badge variant="secondary">{stateLabel(incident)}</Badge>

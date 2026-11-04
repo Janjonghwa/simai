@@ -1,3 +1,4 @@
+import { useSpatialData } from '@/features/viewer3d/data/SpatialDataProvider';
 import type { WorldBox } from '@/features/viewer3d/editing/editGeometry';
 import type { EditHandle, EditStore } from '@/features/viewer3d/editing/editSession.store';
 import { useEditStore } from '@/features/viewer3d/editing/EditStoreContext';
@@ -18,6 +19,7 @@ import {
   type WorldPoint,
 } from '@/features/viewer3d/worldCoordinates';
 import { boxEdges } from '@/features/viewer3d/zones/zoneGeometry';
+import { previewLabel } from '@/features/viewer3d/zones/zonePresentation';
 import { Line } from '@react-three/drei';
 import { useThree, type RootState, type ThreeEvent } from '@react-three/fiber';
 import { useEffect, useState } from 'react';
@@ -228,6 +230,9 @@ function AabbGizmo({ store }: { store: EditStore }) {
   const dragging = useStore(store, (s) => s.session?.dragging ?? null);
   const refused = useStore(store, (s) => s.session?.refused ?? null);
   const zoneId = useStore(store, (s) => s.session?.target.id ?? '');
+  const zone = useSpatialData((s) =>
+    s.zones.zones.find((candidate) => candidate.zoneId === zoneId),
+  );
   const [handleRaycast] = useState(() => createHandleRaycast(get));
 
   // 내려가면(선택 변경·취소·완료·오류·StrictMode 재마운트) 끌기를 끝내고 카메라 조작을 되돌린다.
@@ -244,7 +249,7 @@ function AabbGizmo({ store }: { store: EditStore }) {
   useEditKeys(drag.escape, drag.enter);
 
   const box = draft && worldBoxToThree(draft.min, draft.max);
-  if (!draft || !settled || !box) return null;
+  if (!draft || !settled || !box || !zone) return null;
   const [sx, sy, sz] = box.size;
   const hint = dragging ?? hovered;
   return (
@@ -272,9 +277,7 @@ function AabbGizmo({ store }: { store: EditStore }) {
         {/* 좌표는 편집 패널에서 읽는다. 끄는 동안 텍스처를 새로 만들지 않는다. */}
         <LabelSprite
           text={
-            refused
-              ? `${previewLabel(zoneId)} · 편집 거부 · ${refused.detail}`
-              : previewLabel(zoneId)
+            refused ? `${previewLabel(zone)} · 편집 거부 · ${refused.detail}` : previewLabel(zone)
           }
           y={sy / 2 + Z_HANDLE_GAP + 0.3}
           height={0.22}
@@ -321,9 +324,4 @@ function AabbGizmo({ store }: { store: EditStore }) {
 function geometryOf(handle: EditHandle): BufferGeometry {
   if (handle === 'move') return MOVE_GEOMETRY;
   return handle[0] === 'z' ? Z_GEOMETRY : FACE_GEOMETRY;
-}
-
-/** 초안 이름표. 저장되지 않은 미리보기임을 함께 적는다. */
-export function previewLabel(zoneId: string) {
-  return `${zoneId} · 미저장`;
 }

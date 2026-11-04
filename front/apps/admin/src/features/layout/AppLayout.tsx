@@ -2,7 +2,6 @@ import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { AlarmBanner } from '@/features/events/AlarmBanner';
 import { AlarmSoundLoop } from '@/features/events/AlarmSoundLoop';
 import { useEventsStore } from '@/features/events/events.store';
-import { noticeInset } from '@/features/events/panelBox';
 import { Dock } from '@/features/layout/Dock';
 import { FailureBand } from '@/features/layout/FailureBand';
 import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
@@ -37,9 +36,17 @@ function useNoticesHeight(
 }
 
 /**
+ * 알림이 양쪽에서 비키는 간격(클래스). 실시간 관제는 오른쪽 이벤트 패널 자리만큼, 사건 분할 창이 열리면 그 창 자리만큼
+ * 양쪽을 같은 크기로 비워 가운데에 서게 한다(왼쪽은 도구 모음 자리다). 간격 값은 index.css 의 변수다.
+ */
+const noticeInset = (eventPanel: boolean, camSplitOpen: boolean) => {
+  if (!eventPanel) return 'inset-x-5';
+  return camSplitOpen ? 'inset-x-(--cam-split-inset)' : 'inset-x-(--event-panel-inset)';
+};
+
+/**
  * 상단 바 아래 알림: 장애 띠, 그 아래 경보 배너. 모든 화면에서 내용 위에 띄우고 본문을 밀거나 줄이지 않는다
- * (관제 데모와 같다). 실시간 관제는 이벤트 패널 자리를 비킨다(옮기면 패널 양옆 가운데 넓은 쪽). 알릴 것이 없으면 숨는다.
- * 패널을 끄는 동안 이 부분만 다시 그린다.
+ * (관제 데모와 같다). 알릴 것이 없으면 숨는다.
  */
 function Notices({
   ref,
@@ -48,24 +55,15 @@ function Notices({
   ref: RefObject<HTMLDivElement | null>;
   eventPanel: boolean;
 }) {
-  const span = useEventsStore((s) => (eventPanel ? s.panelSpan : null));
-  // 카메라 미리보기가 오른쪽에 열려 있으면 그 폭(CamSplitPanel)만큼 더 비킨다.
-  const camSplit = useCamSplitStore((s) => eventPanel && s.split !== null);
+  const camSplitOpen = useCamSplitStore((s) => s.split !== null);
   return (
     <div
       ref={ref}
       role="region"
       aria-label="알림"
-      style={
-        span
-          ? noticeInset(span)
-          : camSplit
-            ? { right: 'calc(clamp(340px, 34%, 560px) + 30px)' }
-            : undefined
-      }
       className={cn(
-        'pointer-events-none absolute inset-x-5 top-[72px] z-[6] flex flex-col items-center gap-2 empty:hidden',
-        eventPanel && !span && 'right-[370px]',
+        'pointer-events-none absolute top-[72px] z-[6] flex flex-col items-center gap-2 empty:hidden',
+        noticeInset(eventPanel, camSplitOpen),
       )}
     >
       <FailureBand />
@@ -80,9 +78,6 @@ export function AppLayout() {
   });
   const eventPanel = useMatches({
     select: (matches) => matches.some((m) => m.staticData.eventPanel),
-  });
-  const zoneEditor = useMatches({
-    select: (matches) => matches.some((m) => m.staticData.zoneEditor),
   });
   const openEvent = useEventsStore((s) => s.openEvent);
   const root = useRef<HTMLDivElement>(null);
@@ -104,7 +99,7 @@ export function AppLayout() {
       </div>
       <div className={cn('relative flex min-h-0 flex-1', fullBleed && 'absolute inset-0')}>
         {fullBleed ? (
-          <SpatialViewportHost zoneEditor={zoneEditor} eventPanel={eventPanel}>
+          <SpatialViewportHost eventPanel={eventPanel}>
             <Outlet />
           </SpatialViewportHost>
         ) : (

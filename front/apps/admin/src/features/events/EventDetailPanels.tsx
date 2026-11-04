@@ -16,6 +16,8 @@ import { canRequestSummary, latestSummary } from '@/features/events/summary';
 import type { EventEscalation } from '@/features/events/types';
 import { useEscalationHistory } from '@/features/events/useEscalateEvent';
 import { useSummaryState } from '@/features/events/useIncidentSummary';
+import { useZoneName } from '@/features/zones/useZoneName';
+import type { ZoneNameOf } from '@/features/zones/zoneName';
 import { cn } from '@simai/ui/lib/utils';
 import type { ReactNode } from 'react';
 
@@ -32,9 +34,22 @@ function DetailPanel({ title, children }: { title: string; children: ReactNode }
 
 const None = () => <p className="text-sm text-muted-foreground">—</p>;
 
+/** 구역이 없는 이벤트의 구역 칸 문구. */
+const NO_ZONE_TEXT = '구역 없음';
+
 /** 규칙 하나의 근거 줄: 등급 · 규칙 · 구역 · 발생 · 상태, 지표, 확인 필요 이유. */
-function RuleRow({ entry, current }: { entry: EventEntry; current: boolean }) {
+function RuleRow({
+  entry,
+  current,
+  zoneName,
+}: {
+  entry: EventEntry;
+  current: boolean;
+  zoneName: ZoneNameOf;
+}) {
   const { event } = entry;
+  // 구역이 있는데 이름을 모르면 칸을 뺀다(구역 번호를 보이지 않는다).
+  const zone = event.zone_id ? zoneName(event.zone_id) : NO_ZONE_TEXT;
   const reasons = event.confidence_reasons ?? [];
   const metrics = metricLabels(event.metrics);
   return (
@@ -51,7 +66,7 @@ function RuleRow({ entry, current }: { entry: EventEntry; current: boolean }) {
           {event.rule_id} {ruleName(event.rule_id)}
         </b>
         <span className="text-[13px] text-muted-foreground">
-          {event.zone_id ?? '구역 없음'} ·{' '}
+          {zone && `${zone} · `}
           <span className="font-mono">{formatTime(event.raised_at)}</span> 발생 ·{' '}
           {statusText(entryStatus(entry))}
         </span>
@@ -84,6 +99,7 @@ export function RulesPanel({
   /** 눌러서 연 규칙. */
   openEventId: string;
 }) {
+  const zoneName = useZoneName();
   return (
     <DetailPanel title="규칙과 근거">
       <ul className="flex flex-col">
@@ -92,6 +108,7 @@ export function RulesPanel({
             key={entry.event.event_id}
             entry={entry}
             current={entry.event.event_id === openEventId}
+            zoneName={zoneName}
           />
         ))}
       </ul>
@@ -188,6 +205,7 @@ export function ClipsPanel({ entries }: EntriesProps) {
 }
 
 export function ProcessPanel({ entries }: EntriesProps) {
+  const zoneName = useZoneName();
   return (
     <DetailPanel title="처리">
       <ul className="flex flex-col gap-2">
@@ -210,7 +228,7 @@ export function ProcessPanel({ entries }: EntriesProps) {
                   {statusText(status)}
                 </span>
               </span>
-              <AckButton entry={entry} label="경보 확인(ACK)" />
+              <AckButton entry={entry} label="경보 확인(ACK)" zoneName={zoneName} />
             </li>
           );
         })}

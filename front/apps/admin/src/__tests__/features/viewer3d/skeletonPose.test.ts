@@ -7,7 +7,7 @@ import {
   crowdTrackId,
   scenarioWorld,
 } from '@/features/viewer3d/dev-harness/scenarios';
-import { personLabel, personPose } from '@/features/viewer3d/people/personMotion';
+import { personPose } from '@/features/viewer3d/people/personMotion';
 import {
   COCO,
   drawableBoneCount,
@@ -122,13 +122,12 @@ describe('접지와 원본 보존(명세 13.2, 5.2)', () => {
     expect(track).toEqual(before);
   });
 
-  it('골반만 있으면 골격은 그리되 루트는 골반 기준이고 이름표에 접지 미확인을 적는다. 관절 높이는 바꾸지 않는다', () => {
+  it('골반만 있으면 골격은 그리되 루트는 골반 기준이다. 관절 높이는 바꾸지 않는다', () => {
     const track = trackOf(CROWD_PELVIS_ID);
     expect(track.groundAnchor).toBeNull();
     expect(skeletonUsable(track)).toBe(true);
     const pose = personPose(track, null);
     expect(pose).toMatchObject({ basis: 'PELVIS', groundConfirmed: false });
-    expect(personLabel(track, pose, true)).toContain('접지 미확인');
     const figure = skeletonFigure(track.skeleton!, pose.feet!)!;
     const heights = figure.balls.map((b) => close([b.at[1] + pose.feet![1]])[0]);
     // 무릎 0.5, 발목 0.08 등 World Z 그대로(골반 0.95 기준 루트에서 다시 더하면 원래 값).

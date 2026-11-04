@@ -2,7 +2,7 @@ import { CamSplitPanel } from '@/features/cctv/CamSplitPanel';
 import { PLAN_FALLBACK_MS } from '@/features/layout/spatialHost/constants';
 import { HostEventPanel } from '@/features/layout/spatialHost/HostEventPanel';
 import { PlanOverlay } from '@/features/layout/spatialHost/PlanOverlay';
-import { SceneRegeneratePanel } from '@/features/layout/spatialHost/SceneRegeneratePanel';
+import { ToolPalette } from '@/features/layout/spatialHost/ToolPalette';
 import { useBoxEditProps } from '@/features/layout/spatialHost/useBoxEditProps';
 import { useSpatialSnapshots } from '@/features/layout/spatialHost/useSpatialSnapshots';
 import {
@@ -12,10 +12,10 @@ import {
   type ViewerModule,
 } from '@/features/layout/spatialHost/useViewerMode';
 import { useViewerSelection } from '@/features/layout/spatialHost/useViewerSelection';
-import { ViewControls } from '@/features/layout/spatialHost/ViewControls';
 import { ZoneEditFade } from '@/features/layout/spatialHost/ZoneEditFade';
 import { useThemeStore } from '@/features/layout/theme.store';
 import { useCurrentScene } from '@/features/layout/useCurrentScene';
+import { useZoneEditActive } from '@/features/monitor/useZoneEditActive';
 import { ViewerLoadBoundary } from '@/features/monitor/ViewerLoadBoundary';
 import { PlanMinimap } from '@/features/plan/PlanMinimap';
 import type {
@@ -82,20 +82,19 @@ function usePublishRoomBounds(view: SpatialViewMode, sceneStatus: ViewerSceneSta
 }
 
 /**
- * 관제(/)와 구역 편집(/zones)이 공유하는 단일 3D World · 2D 비상 평면 · 우측 이벤트 패널 호스트.
- * AppLayout 의 fullBleed 영역에 하나만 마운트되어 라우트 전환 시에도 Canvas·Renderer·Camera·선택을 유지한다.
+ * 실시간 관제(/)의 3D World · 2D 비상 평면 · 도구 모음 · 우측 이벤트 패널 호스트. 관리자 편집 모드(구역 편집)도
+ * 이 화면 위에서 한다. AppLayout 이 fullBleed 인 화면(관제 하나뿐)에서만 마운트하므로 다른 화면으로 가면 내려가고,
+ * 돌아오면 3D 를 새로 띄운다.
  */
 export function SpatialViewportHost({
   loadViewer = importViewer,
   planFallbackMs = PLAN_FALLBACK_MS,
-  zoneEditor = false,
   eventPanel = true,
   children,
 }: {
   loadViewer?: () => Promise<ViewerModule>;
   /** 3D 가 준비되지 않았을 때 2D 를 띄우기까지 기다리는 시간(ms). 시험에서 줄인다. */
   planFallbackMs?: number;
-  zoneEditor?: boolean;
   /** 오른쪽 이벤트 패널과 왼쪽 아래 2D 미니맵을 두는 화면인지(라우트 staticData.eventPanel, 실시간 관제). */
   eventPanel?: boolean;
   children?: ReactNode;
@@ -106,6 +105,7 @@ export function SpatialViewportHost({
   const { zones, raw: zonesRaw, failed: zonesFailed } = useZones();
   const { scene, sceneStatus, onSceneStatusChange } = useCurrentScene();
   const boxEditProps = useBoxEditProps();
+  const editing = useZoneEditActive();
   const {
     view,
     viewerReady,
@@ -166,23 +166,21 @@ export function SpatialViewportHost({
     ],
   );
 
-  const showEventPanel = eventPanel && !zoneEditor;
-  // 작업면은 등록 화면(이벤트 패널도 구역 편집도 아닌 화면)에서만 고르고 고친다. 관제·구역 편집에서는 보이기만 해
-  // 사람·구역 선택을 가로막지 않는다. 장애물은 고치는 화면이 없어 어디서도 고르지 않는다.
+  // 편집 모드에서는 이벤트 패널·카메라 분할 창·2D 미니맵을 두지 않고 구역 편집에 화면을 준다(맵 재생성은 도구 모음이 숨긴다).
+  const showEventPanel = eventPanel && !editing;
+  // 작업면은 관리자 편집 모드(이벤트 패널이 없는 호스트도 같다)에서 고르고 고친다(구역 없는 작업면을 지우려면 골라야 한다).
+  // 관제에서는 보이기만 해 사람·구역 선택을 가로막지 않는다. 장애물은 고치는 화면이 없어 어디서도 고르지 않는다.
   const layers = useMemo<ViewerLayers>(
     () => ({
-      workSurfaces: eventPanel || zoneEditor ? 'visible' : 'interactive',
+      workSurfaces: editing || !eventPanel ? 'interactive' : 'visible',
       obstacles: 'visible',
     }),
-    [eventPanel, zoneEditor],
+    [eventPanel, editing],
   );
 
   return (
     <SpatialViewportContext value={viewportValue}>
-      <main
-        aria-label={zoneEditor ? '구역 편집' : '실시간 관제'}
-        className="relative flex-1 bg-background"
-      >
+      <main aria-label="실시간 관제" className="relative flex-1 bg-background">
         {view === '3d' &&
           (sceneStatus?.provisionalBackground || sceneStatus?.regenerationRequired) && (
             <div
@@ -220,18 +218,14 @@ export function SpatialViewportHost({
             onSelect={setSelectedKey}
           />
         )}
-        {zoneEditor && <ZoneEditFade />}
-        <ViewControls
+        {editing && <ZoneEditFade />}
+        <ToolPalette
           view={view}
           onResetView={() => viewer.current?.resetView?.()}
           onRetry3d={show3d}
+          currentSceneVersion={readSceneVersion(scene)}
+          currentScene={scene?.ok ? scene.raw : undefined}
         />
-        {showEventPanel && (
-          <SceneRegeneratePanel
-            currentSceneVersion={readSceneVersion(scene)}
-            currentScene={scene?.ok ? scene.raw : undefined}
-          />
-        )}
         {children}
         {showEventPanel && view === '3d' && (
           <PlanMinimap selectedKey={selectedKey} onSelect={setSelectedKey} />

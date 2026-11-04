@@ -11,13 +11,13 @@ import {
   EDIT_HANDLES,
   GizmoController,
   handleWorld,
-  previewLabel,
 } from '@/features/viewer3d/editing/GizmoController';
 import { Selectable } from '@/features/viewer3d/Selectable';
 import { createViewerStore, type ViewerStore } from '@/features/viewer3d/viewer3d.store';
 import { ViewerStoreContext } from '@/features/viewer3d/ViewerStoreContext';
 import { worldPoint, worldToThree, type WorldPoint } from '@/features/viewer3d/worldCoordinates';
 import { ZoneLayer } from '@/features/viewer3d/zones/ZoneLayer';
+import { previewLabel } from '@/features/viewer3d/zones/zonePresentation';
 import {
   createRoot,
   extend,
@@ -500,8 +500,9 @@ describe('GizmoController 장면', () => {
     expect(edit.store.getState().lastResult).toMatchObject({ status: 'CANCELLED', reason: 'USER' });
   });
 
-  it('활성 이름표는 구역 ID와 미저장만 표시하고 거부 안내는 유지한다', async () => {
-    expect(previewLabel(Z1.id)).toBe('z-01 · 미저장');
+  it('활성 이름표는 구역 이름과 미저장만 표시하고 거부 안내는 유지한다', async () => {
+    expect(previewLabel({ name: '예시 구역 A' })).toBe('예시 구역 A · 미저장');
+    expect(previewLabel({ name: '' })).toBe('구역 · 미저장');
     const fillText = vi.fn();
     vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue({
       measureText: (text: string) => ({ width: text.length * 12 }),
@@ -512,10 +513,14 @@ describe('GizmoController 장면', () => {
     } as unknown as CanvasRenderingContext2D);
     await mount();
     await act(async () => void edit.store.getState().begin(Z1));
-    expect(fillText).toHaveBeenCalledWith('z-01 · 미저장', expect.any(Number), expect.any(Number));
+    expect(fillText).toHaveBeenCalledWith(
+      '예시 구역 A · 미저장',
+      expect.any(Number),
+      expect.any(Number),
+    );
     await act(async () => void edit.store.getState().updateField('width', -10));
     expect(fillText).toHaveBeenCalledWith(
-      `z-01 · 미저장 · 편집 거부 · ${edit.store.getState().session!.refused!.detail}`,
+      `예시 구역 A · 미저장 · 편집 거부 · ${edit.store.getState().session!.refused!.detail}`,
       expect.any(Number),
       expect.any(Number),
     );

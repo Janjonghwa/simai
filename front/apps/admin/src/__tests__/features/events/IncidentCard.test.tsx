@@ -2,6 +2,8 @@ import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { groupIncidents, mergeEvent, type EventEntry } from '@/features/events/events';
 import { IncidentCard } from '@/features/events/IncidentCard';
 import type { EventItem } from '@/features/events/types';
+import { ZONES_KEY } from '@/features/zones/api';
+import { MOCK_ZONES } from '@/mocks/zones';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore } from '@/store/session.store';
 import type { WorldStatePayload } from '@simai/contracts';
@@ -49,8 +51,10 @@ function renderCard(
   const incident = groupIncidents(entries)[0]!;
   const onSelect = vi.fn();
   const onOpen = vi.fn();
+  const client = new QueryClient();
+  client.setQueryData(ZONES_KEY, MOCK_ZONES);
   render(
-    <QueryClientProvider client={new QueryClient()}>
+    <QueryClientProvider client={client}>
       <ul>
         <IncidentCard
           incident={incident}
@@ -87,7 +91,8 @@ describe('IncidentCard', () => {
     // 진행 중 작업자 칩은 등급색으로 채운다.
     expect(within(card).getByText('w-0015').className).toContain('bg-sev-critical');
     expect(within(card).getByText('위험')).toBeTruthy();
-    expect(within(card).getByText('개구부·가장자리 근접 · z-04')).toBeTruthy();
+    expect(within(card).getByText('개구부·가장자리 근접 · 개구부 구역')).toBeTruthy();
+    expect(card.textContent).not.toMatch(/z-\d/);
     const chip = card.querySelector('[data-chip]');
     expect(chip?.getAttribute('data-chip')).toBe('unacked');
     expect(chip?.textContent).toBe('미확인');
@@ -106,8 +111,23 @@ describe('IncidentCard', () => {
     expect(card.textContent).not.toContain('높이 차');
     // 대표 규칙(가장 높은 등급)과 그 구역만 보이고 나머지 규칙 이름·구역은 없다.
     expect(within(card).queryByText('위험 구역 진입')).toBeNull();
-    expect(card.textContent).not.toContain('z-02');
+    expect(card.textContent).not.toContain('단상 구역');
+    expect(card.textContent).not.toMatch(/z-\d/);
     expect(card.querySelectorAll('li')).toHaveLength(0);
+  });
+
+  it('구역이 대상인 카드는 칩이 구역 이름이고 제목에서 되풀이하지 않는다. 이름을 모르면 `구역`이다', () => {
+    const { card } = renderCard([entry({ world_ids: [], zone_id: 'z-04' })]);
+    const chip = within(card).getByText('개구부 구역');
+    expect(chip.className).toContain('bg-sev-critical');
+    expect(chip.className).not.toContain('font-mono');
+    expect(within(card).getByText('개구부·가장자리 근접')).toBeTruthy();
+    expect(card.textContent).not.toMatch(/z-\d/);
+    cleanup();
+
+    const unknown = renderCard([entry({ world_ids: [], zone_id: 'z-99' })]).card;
+    expect(within(unknown).getByText('구역')).toBeTruthy();
+    expect(unknown.textContent).not.toContain('z-99');
   });
 
   it('진입 예측만 셋째 줄에 N초 뒤 진입 예상을 보인다', () => {
@@ -129,7 +149,7 @@ describe('IncidentCard', () => {
     const { card } = renderCard([entry({ rule_id: 'R9', severity: 'CAUTION', metrics: {} })]);
 
     expect(within(card).getByText('주의')).toBeTruthy();
-    expect(within(card).getByText('보호구 미착용 · z-04')).toBeTruthy();
+    expect(within(card).getByText('보호구 미착용 · 개구부 구역')).toBeTruthy();
     expect(card.querySelector('[data-chip]')).toBeNull();
   });
 

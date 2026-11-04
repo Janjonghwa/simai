@@ -2,6 +2,8 @@ import { EventDetail } from '@/features/events/EventDetail';
 import { EventPanel } from '@/features/events/EventPanel';
 import { groupIncidents, mergeEvent, type EventEntry } from '@/features/events/events';
 import type { EventItem } from '@/features/events/types';
+import { ZONES_KEY } from '@/features/zones/api';
+import { MOCK_ZONES } from '@/mocks/zones';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore } from '@/store/session.store';
 import type { WorldStatePayload } from '@simai/contracts';
@@ -64,6 +66,7 @@ function renderPanel(
   props: Partial<ComponentProps<typeof EventPanel>> = {},
 ) {
   const queryClient = new QueryClient();
+  queryClient.setQueryData(ZONES_KEY, MOCK_ZONES);
   const tree = (next: ComponentProps<typeof EventPanel>) => (
     <QueryClientProvider client={queryClient}>
       <EventPanel {...next} />
@@ -155,7 +158,7 @@ describe('EventPanel 접기', () => {
   it('카드에 규칙·구역과 경과를 넘긴다', () => {
     renderPanel([entry()]);
     const card = screen.getByRole('article', { name: 'w-0015 이벤트' });
-    expect(within(card).getByText('개구부·가장자리 근접 · z-04')).toBeTruthy();
+    expect(within(card).getByText('개구부·가장자리 근접 · 개구부 구역')).toBeTruthy();
     expect(card.textContent).toMatch(/초 전|분/);
   });
 });
@@ -280,13 +283,45 @@ describe('EventPanel 모두 지우기', () => {
 describe('EventDetail 확인 필요', () => {
   function renderDetail(entries: EventEntry[]) {
     const incident = groupIncidents(entries)[0]!;
+    const client = new QueryClient();
+    client.setQueryData(ZONES_KEY, MOCK_ZONES);
     render(
-      <QueryClientProvider client={new QueryClient()}>
+      <QueryClientProvider client={client}>
         <EventDetail incident={incident} openEventId="e-1" onClose={vi.fn()} />
       </QueryClientProvider>,
     );
     return screen.getByRole('dialog', { name: '사건 상세' });
   }
+
+  it('구역은 이름으로만 보이고(대상이 구역이면 제목도), 모르는 구역은 `구역`이다', () => {
+    const dialog = renderDetail([entry()]);
+    expect(within(dialog).getByText(/개구부 구역 ·/)).toBeTruthy();
+    expect(dialog.textContent).not.toMatch(/z-\d/);
+    cleanup();
+
+    const zoneDialog = renderDetail([entry({ world_ids: [], zone_id: 'z-04' })]);
+    expect(within(zoneDialog).getByRole('heading', { name: '개구부 구역 사건' })).toBeTruthy();
+    expect(zoneDialog.textContent).not.toMatch(/z-\d/);
+    cleanup();
+
+    const unknown = renderDetail([entry({ world_ids: [], zone_id: 'z-99' })]);
+    expect(within(unknown).getByRole('heading', { name: '구역 사건' })).toBeTruthy();
+    expect(unknown.textContent).not.toContain('z-99');
+  });
+
+  it('규칙 줄은 구역 이름을 앞에 두고, 이름을 모르면 칸을 빼며, 구역이 없으면 `구역 없음` 이다', () => {
+    const row = (change: Partial<EventItem>) => {
+      const dialog = renderDetail([entry(change)]);
+      const text = within(within(dialog).getByRole('region', { name: '규칙과 근거' })).getByRole(
+        'listitem',
+      ).textContent!;
+      cleanup();
+      return text;
+    };
+    expect(row({ zone_id: 'z-04' })).toContain('개구부 구역 · ');
+    expect(row({ zone_id: 'z-99' })).not.toMatch(/구역|z-99/);
+    expect(row({ zone_id: undefined })).toContain('구역 없음 · ');
+  });
 
   it('복원 이벤트는 확인 필요와 첫 이유를 머리에, 전체 이유를 규칙 줄에 보인다', () => {
     const dialog = renderDetail([

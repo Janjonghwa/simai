@@ -73,6 +73,18 @@
   --tool-field: var(--card);
 }
 
+/*
+ * 실시간 관제 오른쪽 패널이 차지하는 자리. 상단 알림·2D 창은 패널 폭에 오른쪽 틈(14px)과 패널 옆 간격(16px)을 더한 만큼 비킨다.
+ * 사건 분할 창(CamSplit)도 이 폭(--cam-split-width)을 그대로 쓴다.
+ */
+:root {
+  --panel-clearance: 30px;
+  --event-panel-width: 340px;
+  --event-panel-inset: calc(var(--event-panel-width) + var(--panel-clearance));
+  --cam-split-width: clamp(340px, 34%, 560px);
+  --cam-split-inset: calc(var(--cam-split-width) + var(--panel-clearance));
+}
+
 @theme inline {
   --color-surface-4: var(--surface-4);
   --color-primary-hover: var(--primary-hover);

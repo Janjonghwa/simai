@@ -10,22 +10,31 @@ import {
 import { formatTime, ruleName } from '@/features/events/format';
 import { topEntry, type Incident } from '@/features/events/incidents';
 import type { EventItem } from '@/features/events/types';
+import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
 
 // 묶음(Incident)을 카드·상세에 보이는 값으로 바꾸는 계산. 화면 없이 시험한다.
 
-/** 대상 문구: 사람 ID, 구역이면 "구역 Z-05". */
-export const targetLabel = (target: Incident['target']) =>
-  !target ? '대상 없음' : target.type === 'person' ? target.id : `구역 ${target.id}`;
+/** 대상 문구: 사람 ID, 구역이면 구역 이름(모르면 `구역`). */
+export const targetLabel = (target: Incident['target'], zoneName: ZoneNameOf) =>
+  !target
+    ? '대상 없음'
+    : target.type === 'person'
+      ? target.id
+      : zoneNameOrDefault(target.id, zoneName);
+
+/** 대상 글꼴: 사람 ID 만 고정폭이고 구역 이름은 본문 글꼴이다. */
+export const targetFont = (target: Incident['target']) =>
+  target?.type === 'person' ? 'font-mono' : undefined;
 
 /**
- * 카드 제목: 대표 규칙 이름 · 구역 번호. 대상이 구역이면 칩에 그 구역이 있어 제목에서는 되풀이하지 않는다.
- * 구역 이름과 다른 구역은 사건 상세에서 본다.
+ * 카드 제목: 대표 규칙 이름 · 구역 이름. 대상이 구역이면 칩에 그 구역이 있어 제목에서는 되풀이하지 않는다.
+ * 이름을 모르는 구역은 뺀다.
  */
-export function cardTitle(incident: Incident): string {
+export function cardTitle(incident: Incident, zoneName: ZoneNameOf): string {
   const { rule_id, zone_id } = topEntry(incident).event;
   const own = incident.target?.type === 'zone' ? incident.target.id : null;
-  const zone = zone_id && zone_id !== own ? ` · ${zone_id}` : '';
-  return `${ruleName(rule_id)}${zone}`;
+  const name = zone_id === own ? null : zoneName(zone_id);
+  return `${ruleName(rule_id)}${name ? ` · ${name}` : ''}`;
 }
 
 /** 모두 해소된 묶음의 마지막 해소 시각 문구: "해소 12:03:41". */

@@ -161,7 +161,7 @@ AI -88 의 사람별 스키닝 glTF 와 `avatar_frame`(/topic/avatar) 관절 회
   3. 트랙 `IDENTITY_UNCERTAIN` 이거나 `identity_revision` 이 트랙과 다름
   4. 포즈 `calibration_version` 이 world_state 와 다름
   5. 자산 없음·내려받기/sha256/리그 확인 실패·`joint_count` ≠ 관절 회전 길이, 그리고 Tier 0 pelvis 없음
-- 표시: 메시로 그리면 이름표에 `메시(추정) 0.3s`(HMR 지연, 0.1 s 단위)를, 되돌아가면 `메시 지연`·`메시 없음`·`메시 보류` 를 붙인다. 상태 표시줄의 수치 표시는 FE 몫이다.
+- 표시: 사람 이름표에는 메시 상태를 적지 않는다(사람 ID 만 적는다). 메시 사용 여부와 HMR 지연 수치는 상태 표시줄의 FE 몫이다.
 - `avatarMesh="off"` 면 포즈가 와도 늘 기존 경로다. 메시는 위험 판정·이벤트·선택 규칙을 바꾸지 않는다(같은 사람 대상 `{ type: 'person', id }`).
 
 ## 배경 사진 화질·출처 지도·접지 그림자·후처리(-360)

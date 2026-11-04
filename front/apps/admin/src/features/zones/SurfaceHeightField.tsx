@@ -15,7 +15,8 @@ const HEIGHT_PATTERN = /^\d+(\.\d+)?$/;
 const HEIGHT_ROUND_SCALE = 1000;
 const HEIGHT_DIGITS = 2;
 
-const formatMeters = (value: number) =>
+/** 높이(m) 글자: 소수 둘째 자리까지. 작업면 카드가 같은 모양으로 보인다. */
+export const formatMeters = (value: number) =>
   (Math.round(value * HEIGHT_ROUND_SCALE) / HEIGHT_ROUND_SCALE).toFixed(HEIGHT_DIGITS);
 
 /** 작업면 상판 높이 칸. 크기·위치는 3D 손잡이로 고치고, 높이만 숫자로 고친다. */

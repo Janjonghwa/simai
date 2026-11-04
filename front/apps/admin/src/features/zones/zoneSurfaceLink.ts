@@ -50,3 +50,20 @@ export function linkSurfaces<S extends LinkableSurface>(
   }
   return links;
 }
+
+/**
+ * 3D 에서 고른 작업면(objectId)이 이어진 구역이면 그 구역 ID(zoneId), 화면에서 닿을 수 없는 작업면이면 그 작업면(orphan)이다.
+ * 닿을 수 없는 작업면은 구역에 이어지지 않았거나 보관한 구역에 걸린 것, 한 구역에 걸린 둘째 이후 작업면이다(구역에는 첫째만
+ * 이어진다). 작업면이 아닌 대상(장애물)이거나 고른 것이 없으면(null) 둘 다 비어 있다.
+ */
+export function pickedSurface<S extends LinkableSurface>(
+  objectId: string | null,
+  surfaces: readonly S[],
+  links: ReadonlyMap<string, LinkableSurface>,
+): { zoneId: string | null; orphan: S | null } {
+  const surface = objectId === null ? undefined : surfaces.find((s) => s.objectId === objectId);
+  if (!surface) return { zoneId: null, orphan: null };
+  const { zoneId } = surface;
+  const linkedHere = zoneId !== null && links.get(zoneId)?.objectId === surface.objectId;
+  return linkedHere ? { zoneId, orphan: null } : { zoneId: null, orphan: surface };
+}

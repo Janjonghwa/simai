@@ -6,6 +6,7 @@ import { LabelSprite } from '@/features/viewer3d/LabelSprite';
 import { sameTarget } from '@/features/viewer3d/target';
 import { toWorldPoint, worldBoxToThree } from '@/features/viewer3d/worldCoordinates';
 import { boxEdges } from '@/features/viewer3d/zones/zoneGeometry';
+import { previewLabel } from '@/features/viewer3d/zones/zonePresentation';
 import { Line } from '@react-three/drei';
 import { useContext } from 'react';
 import { useStore } from 'zustand';
@@ -44,7 +45,8 @@ function Overlay({ overlay, store }: { overlay: ViewerEditOverlay; store: EditSt
   // 같은 구역을 다시 편집하는 동안에는 편집 미리보기가 대신한다.
   if (sameTarget(editing, overlay.target)) return null;
   // 원본 구역이 장면에 없으면(다른 Source·삭제) 그리지 않는다.
-  if (!zones.some((zone) => zone.zoneId === overlay.target.id)) return null;
+  const zone = zones.find((candidate) => candidate.zoneId === overlay.target.id);
+  if (!zone) return null;
   const min = toWorldPoint(overlay.box.min);
   const max = toWorldPoint(overlay.box.max);
   const box = min && max ? worldBoxToThree(min, max) : null;
@@ -64,12 +66,7 @@ function Overlay({ overlay, store }: { overlay: ViewerEditOverlay; store: EditSt
           raycast={noRaycast}
         />
       </group>
-      <LabelSprite
-        text={`${overlay.target.id} · 미저장`}
-        y={sy / 2 + 0.25}
-        height={0.2}
-        color={OVERLAY_COLOR}
-      />
+      <LabelSprite text={previewLabel(zone)} y={sy / 2 + 0.25} height={0.2} color={OVERLAY_COLOR} />
     </group>
   );
 }

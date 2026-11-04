@@ -42,15 +42,13 @@ interface LabelSpriteProps {
   /** 글자 높이(m). */
   height?: number;
   color?: string;
-  /** 거짓이면 그리지 않는다. 숨겨도 장면에 남겨 대상의 초점 중심(경계 상자)이 바뀌지 않게 한다. */
-  visible?: boolean;
 }
 
 /**
  * 늘 카메라를 보는 이름표. 선택을 받지 않고 깊이와 상관없이 위에 그린다. 글자·색·테마가 바뀔 때만 텍스처를 새로 만든다.
  * 색을 주지 않으면 테마의 기본 글자색이다.
  */
-export function LabelSprite({ text, y, height = 0.3, color, visible = true }: LabelSpriteProps) {
+export function LabelSprite({ text, y, height = 0.3, color }: LabelSpriteProps) {
   const { label } = useScenePalette();
   const ink = color ?? label.observed;
   const { texture, aspect } = useMemo(
@@ -60,7 +58,6 @@ export function LabelSprite({ text, y, height = 0.3, color, visible = true }: La
   useEffect(() => () => texture.dispose(), [texture]);
   return (
     <sprite
-      visible={visible}
       position-y={y}
       scale={[height * aspect, height, 1]}
       renderOrder={10}

@@ -356,10 +356,11 @@ describe('구역 표시 규칙', () => {
     expect(zoneSeverity(base)).toBeUndefined();
   });
 
-  it('이름표는 ID·World 높이 범위·적용 상태를 적는다', () => {
-    const z3 = zonesById().get('z-03')!;
-    expect(zoneLabel(z3, 'UNVERIFIED')).toBe('z-03 · Z 1.2–2.4m · 적용 미확인');
-    expect(zoneLabel(z3, 'DEMO_PREVIEW')).toBe('z-03 · Z 1.2–2.4m · 미리보기(DEMO)');
+  it('이름표는 구역 이름만 적고, 이름이 비면 `구역`이다', () => {
+    expect(zoneLabel(zonesById().get('z-03')!)).toBe('예시 구역 C(공중)');
+    expect(zoneLabel({ name: '  단상  ' })).toBe('단상');
+    expect(zoneLabel({ name: '   ' })).toBe('구역');
+    expect(zoneLabel({ name: '' })).toBe('구역');
   });
 
   it('광선에 사람이 있으면 가장 가까운 사람을 고르고, 없으면 null 이다', () => {

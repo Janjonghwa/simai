@@ -12,8 +12,9 @@ export const NEW_KEY = '__new__';
 /** 화면에서 고르지 않는 칸의 기본값. 새 구역은 이 값으로 만들고, 기존 구역은 받은 값을 그대로 둔다. */
 export const NEW_ZONE_KIND = 'OPENING';
 export const NEW_EVAL_TYPE = 'VOLUME_3D';
-export const NEW_ZONE_NAME = '새 구역';
 export const NEW_ZONE_SEVERITY: Severity = 'HIGH';
+/** 이름을 정하지 않은 새 구역의 기본 이름 앞부분(`구역 1`, `구역 2`…). */
+const NEW_ZONE_NAME_PREFIX = '구역';
 
 export const SEVERITY_LABEL: Record<Severity, string> = {
   CRITICAL: '위험',
@@ -24,6 +25,8 @@ export const SEVERITY_LABEL: Record<Severity, string> = {
 
 const NEW_ZONE_SIZE_M = 2;
 const NEW_ZONE_HEIGHT_M = 2;
+/** 작업면을 붙인 새 구역이 작업면 둘레에 남기는 여유(m). */
+const SURFACE_ZONE_MARGIN_M = 0.3;
 /** 새 작업면의 크기·상판 높이(m, 관제 데모와 같다). */
 const NEW_SURFACE_SIZE_M = 1;
 const NEW_SURFACE_TOP_M = 0.4;
@@ -92,6 +95,28 @@ export function defaultNewBox(zones: readonly ZoneBox[], limit: RoomLimit): View
   const cx = clamp(r3(mid(0)), limit.min[0] + half, limit.max[0] - half);
   const cy = clamp(r3(mid(1)), limit.min[1] + half, limit.max[1] - half);
   return { min: [cx - half, cy - half, 0], max: [cx + half, cy + half, NEW_ZONE_HEIGHT_M] };
+}
+
+/**
+ * 작업면을 붙인 새 구역의 처음 상자: 회전한 작업면 발자국을 감싼 축 정렬 상자에 여유(SURFACE_ZONE_MARGIN_M)를 더하고, 바닥에서
+ * 새 구역 높이와 상판 중 큰 값까지. 구역 상자는 직사각형이라 회전한 발자국은 감싸는 상자로 잡는다. 3D 손잡이의 범위 밖에서
+ * 시작하지 않게 defaultNewBox 처럼 교실 범위(limit) 안으로 자른다.
+ */
+export function surfaceZoneBox(g: SurfaceGeometry, limit: RoomLimit): ViewerEditBox {
+  const [cx, cy] = g.centerXy;
+  const [width, depth] = g.sizeXy;
+  const cos = Math.abs(Math.cos(g.yawRad));
+  const sin = Math.abs(Math.sin(g.yawRad));
+  const halfX = (width * cos + depth * sin) / 2 + SURFACE_ZONE_MARGIN_M;
+  const halfY = (width * sin + depth * cos) / 2 + SURFACE_ZONE_MARGIN_M;
+  return {
+    min: [r3(Math.max(cx - halfX, limit.min[0])), r3(Math.max(cy - halfY, limit.min[1])), 0],
+    max: [
+      r3(Math.min(cx + halfX, limit.max[0])),
+      r3(Math.min(cy + halfY, limit.max[1])),
+      r3(Math.min(Math.max(NEW_ZONE_HEIGHT_M, g.topHeightM), limit.max[2])),
+    ],
+  };
 }
 
 /** 작업면 형상 → 3D 편집 상자(바닥 0 ~ 상판). 회전은 상자에 나타나지 않는다. */
@@ -201,10 +226,21 @@ export function formWithPatch(zone: Zone, patch: ZonePatch): ZoneForm {
   };
 }
 
-/** 새 구역의 양식. 화면에서 고르지 않는 칸은 기본값이다. */
-export function newZoneForm(patch: ZonePatch): ZoneForm {
+/**
+ * 이름을 정하지 않은 새 구역의 기본 이름: 겹치지 않는 가장 작은 번호를 붙인다(`구역 1`, `구역 2`…).
+ * 이미 같은 이름이 있으면 번호를 건너뛰어, 드롭다운에서 구역을 이름만으로 가릴 수 있게 한다.
+ */
+export function nextZoneName(zones: readonly Pick<ZoneBox, 'name'>[]): string {
+  const taken = new Set(zones.map((zone) => zone.name.trim()));
+  let number = 1;
+  while (taken.has(`${NEW_ZONE_NAME_PREFIX} ${number}`)) number += 1;
+  return `${NEW_ZONE_NAME_PREFIX} ${number}`;
+}
+
+/** 새 구역의 양식. 이름을 고치지 않았으면 defaultName 이고, 화면에서 고르지 않는 칸은 기본값이다. */
+export function newZoneForm(patch: ZonePatch, defaultName: string): ZoneForm {
   return {
-    name: patch.name ?? NEW_ZONE_NAME,
+    name: patch.name ?? defaultName,
     judgeType: NEW_EVAL_TYPE,
     zoneType: NEW_ZONE_KIND,
     severity: patch.severity ?? NEW_ZONE_SEVERITY,
@@ -304,14 +340,25 @@ export function withZoneBox(
   };
 }
 
+/**
+ * 이은 작업면(linked)과 값이 같아진 작업면 초안을 뺀다. 높이를 바꿨다가 되돌린 것처럼 실제로 바뀐 것이 없는 초안이
+ * 남으면, 초안이 있다는 이유로 편집을 끌 때 버릴 것이 있는지 묻게 된다(바뀐 것만 초안이다).
+ */
+export function withoutUnchangedSurface(
+  draft: TargetDraft,
+  linked: LinkedSurface | null,
+): TargetDraft {
+  if (draft.surface === undefined || surfaceChanged(draft.surface, linked)) return draft;
+  return { patch: draft.patch, box: draft.box };
+}
+
 // ---- 3D 로 내려 줄 값 ---------------------------------------------------------------------------
 
 /**
  * 3D 손잡이가 고칠 상자. 작업면을 고르는 중이면 작업면 상자(회전한 작업면·형상 오류가 있으면 없음), 아니면 구역 상자다.
- * 형상을 못 고치는 구역이거나 관리자가 아니면 null 이다.
+ * 형상을 못 고치는 구역이면 null 이다.
  */
 export function boxEditOf(input: {
-  canEdit: boolean;
   surfMode: boolean;
   key: string;
   zone: Zone | null;
@@ -319,8 +366,7 @@ export function boxEditOf(input: {
   surface: SurfaceDraft | null;
   surfaceValid: boolean;
 }): ViewerBoxEdit | null {
-  const { canEdit, surfMode, key, zone, zoneBox, surface, surfaceValid } = input;
-  if (!canEdit) return null;
+  const { surfMode, key, zone, zoneBox, surface, surfaceValid } = input;
   if (surfMode) {
     return surface && surfaceBoxEditable(surface.geometry) && surfaceValid
       ? { id: `surface:${key}`, kind: 'surface', box: surfaceBox(surface.geometry) }

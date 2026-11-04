@@ -2,6 +2,8 @@ import { SpatialViewportHost, useSpatialViewport } from '@/features/layout/Spati
 import { targetOfKey } from '@/features/layout/spatialHost/selectionKey';
 import type { Viewer3DHandle, Viewer3DProps, ViewerStatus } from '@/features/viewer3d';
 import { useRealtimeStore } from '@/store/realtime.store';
+import { useSessionStore } from '@/store/session.store';
+import { startZoneEdit, stopZoneEdit } from '@/store/zoneEditMode.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { useImperativeHandle, useLayoutEffect, useRef, type ReactNode } from 'react';
@@ -67,7 +69,7 @@ function Probe() {
   );
 }
 
-function HostWith(props: { eventPanel?: boolean; zoneEditor?: boolean }) {
+function HostWith(props: { eventPanel?: boolean }) {
   return (
     <SpatialViewportHost loadViewer={loadFake} {...props}>
       <Probe />
@@ -99,7 +101,11 @@ beforeEach(() => {
   fake.props = null;
   fake.select.mockReset().mockImplementation(() => ({ ok: true }));
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  stopZoneEdit();
+  useSessionStore.setState({ session: undefined });
+});
 
 describe('틀의 작업면 연결', () => {
   it('3D 에 앱의 인증된 아바타 fetch 를 넘긴다', async () => {
@@ -120,7 +126,10 @@ describe('틀의 작업면 연결', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('관제에서는 작업면·장애물을 보이기만 하고(고르지 않고), 작업면 등록 화면에서만 작업면을 고른다', async () => {
+  it('관제에서는 작업면·장애물을 보이기만 하고(고르지 않고), 이벤트 패널이 없는 화면과 관리자 편집 모드에서 작업면을 고른다', async () => {
+    useSessionStore.setState({
+      session: { accessToken: 't', user: { id: 'admin', role: 'ADMIN' } },
+    });
     const { rerender } = renderHost();
     await screen.findByTestId('viewer3d');
     expect(fake.props?.layers).toEqual({ workSurfaces: 'visible', obstacles: 'visible' });
@@ -128,8 +137,21 @@ describe('틀의 작업면 연결', () => {
     rerender(<HostWith eventPanel={false} />);
     expect(fake.props?.layers).toEqual({ workSurfaces: 'interactive', obstacles: 'visible' });
 
-    rerender(<HostWith eventPanel={false} zoneEditor />);
+    rerender(<HostWith />);
     expect(fake.props?.layers).toEqual({ workSurfaces: 'visible', obstacles: 'visible' });
+    act(() => startZoneEdit());
+    expect(fake.props?.layers).toEqual({ workSurfaces: 'interactive', obstacles: 'visible' });
+  });
+
+  it('편집 모드는 관리자에게만 켜진다', async () => {
+    useSessionStore.setState({
+      session: { accessToken: 't', user: { id: 'viewer', role: 'VIEWER' } },
+    });
+    renderHost();
+    await screen.findByTestId('viewer3d');
+    act(() => startZoneEdit());
+    expect(fake.props?.layers).toEqual({ workSurfaces: 'visible', obstacles: 'visible' });
+    expect(screen.queryByTestId('zone-edit-fade')).toBeNull();
   });
 
   it('3D 에서 고른 작업면은 object 키가 되고, 화면은 작업면을 대상으로 고를 수 있다', async () => {

@@ -15,7 +15,7 @@ export function PlanOverlay({
     <div
       className={cn(
         'absolute top-[72px] bottom-[96px]',
-        withEventPanel ? 'right-[370px] left-5' : 'right-5 left-[384px]',
+        withEventPanel ? 'right-(--event-panel-inset) left-5' : 'right-5 left-[384px]',
       )}
     >
       <LivePlan selectedKey={selectedKey} onSelect={onSelect} className="size-full" />

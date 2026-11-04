@@ -14,7 +14,6 @@ import {
 import {
   membershipKey,
   parseMembership,
-  riskLabel,
   riskPresentation,
   riskStyle,
   type RiskInput,
@@ -340,7 +339,7 @@ describe('Store 를 거친 재개·하향', () => {
   });
 });
 
-describe('표시 문구·모양', () => {
+describe('표시 모양', () => {
   const h = (patch: object = {}) => ({
     level: 'HIGH' as const,
     eventIds: ['a'],
@@ -349,18 +348,6 @@ describe('표시 문구·모양', () => {
     lastReceived: false,
     sceneUnknown: false,
     ...patch,
-  });
-
-  it('등급·묶음 수·출처·확인 필요·마지막 수신·Scene 미상을 적는다', () => {
-    expect(riskLabel(h())).toBe('위험 HIGH');
-    expect(
-      riskLabel(
-        h({ level: 'CRITICAL', eventIds: ['a', 'b'], source: 'PLANNED', needsCheck: true }),
-      ),
-    ).toBe('위험 CRITICAL ×2 · 계획(가상) · 확인 필요');
-    expect(riskLabel(h({ lastReceived: true, sceneUnknown: true }))).toBe(
-      '위험 HIGH · 마지막 수신 · Scene 미상',
-    );
   });
 
   it('CRITICAL 은 이중선, 실시간 관측이 아니면 점선, 색은 등급별로 다르다', () => {

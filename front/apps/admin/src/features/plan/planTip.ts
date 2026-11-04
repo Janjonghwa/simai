@@ -1,3 +1,4 @@
+import { SEVERITY_LABEL } from '@/features/events/constants';
 import type { TipTone } from '@/features/plan/HoverTip';
 import {
   markFor,
@@ -13,6 +14,7 @@ import {
   type TrackLook,
 } from '@/features/plan/plan';
 import { ZONE_TYPE_LABEL } from '@/features/zones/zoneForm';
+import { zoneDisplayName } from '@/lib/zoneName';
 import type { WorldTrack } from '@simai/contracts';
 
 // 2D 평면 말풍선 글자. 화면 컴포넌트 없이 만든다.
@@ -23,9 +25,9 @@ const GLYPH = { CRITICAL: '▲▲', HIGH: '▲', CAUTION: '!', INFO: 'i' } as co
 export const LOOK_LABEL = { observed: '', predicted: ' · 예측', unknown: ' · 확인 불가' } as const;
 
 function zoneTip(zone: PlanZone): string {
-  const parts = [`${zone.zoneId} ${zone.name}`];
+  const parts = [zoneDisplayName(zone.name)];
   if (zone.zoneType) parts.push(ZONE_TYPE_LABEL[zone.zoneType] ?? zone.zoneType);
-  if (zone.severity) parts.push(`${GLYPH[zone.severity]} ${zone.severity}`);
+  if (zone.severity) parts.push(`${GLYPH[zone.severity]} ${SEVERITY_LABEL[zone.severity]}`);
   return parts.join(' · ');
 }
 

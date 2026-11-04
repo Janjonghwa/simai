@@ -5,6 +5,7 @@ import {
   requestLatestSceneRegenerate,
   requestSceneRegenerateById,
   SCENE_REGENERATE_LATEST_KEY,
+  SCENE_REGENERATE_MAX_REASON_LENGTH,
   SCENE_REGENERATE_POLL_INTERVAL_MS,
   type SceneRegenerateView,
 } from '@/features/layout/api';
@@ -31,7 +32,8 @@ export interface UseSceneRegenerateResult {
   clearError: () => void;
 }
 
-export function useSceneRegenerate(enabled: boolean = true): UseSceneRegenerateResult {
+/** 맵 재생성 요청·진행 상태·후보 활성화. 관리자 도구에서만 쓰므로 역할 확인은 부르는 쪽이 한다. */
+export function useSceneRegenerate(): UseSceneRegenerateResult {
   const queryClient = useQueryClient();
   const [polledView, setPolledView] = useState<SceneRegenerateView | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -42,7 +44,6 @@ export function useSceneRegenerate(enabled: boolean = true): UseSceneRegenerateR
   const latestQuery = useQuery({
     queryKey: SCENE_REGENERATE_LATEST_KEY,
     queryFn: ({ signal }) => requestLatestSceneRegenerate(api, signal),
-    enabled,
     retry: false,
   });
 
@@ -50,7 +51,6 @@ export function useSceneRegenerate(enabled: boolean = true): UseSceneRegenerateR
   const worksQuery = useQuery({
     queryKey: TBM_WORKS_KEY,
     queryFn: ({ signal }) => requestTbmWorks(api, signal),
-    enabled,
     retry: false,
   });
   const liveWorkInProgress = (worksQuery.data ?? []).some((w) => w.status === 'IN_PROGRESS');
@@ -75,16 +75,16 @@ export function useSceneRegenerate(enabled: boolean = true): UseSceneRegenerateR
   );
 
   useEffect(() => {
-    if (!enabled || activeRequestId === null) return;
+    if (activeRequestId === null) return;
     const timer = window.setInterval(() => {
       void pollOnce(activeRequestId);
     }, SCENE_REGENERATE_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [enabled, activeRequestId, pollOnce]);
+  }, [activeRequestId, pollOnce]);
 
   const regenerate = useCallback(
     async (reason?: string) => {
-      if (!enabled || isSubmitting) return;
+      if (isSubmitting) return;
       setIsSubmitting(true);
       setRequestError(null);
       try {
@@ -112,7 +112,9 @@ export function useSceneRegenerate(enabled: boolean = true): UseSceneRegenerateR
           setRequestError(LIVE_WORK_NOTICE);
           void queryClient.invalidateQueries({ queryKey: TBM_WORKS_KEY });
         } else if (err instanceof ApiError && err.code === 'INVALID_REGENERATE_REQUEST') {
-          setRequestError('재생성 사유는 120자 이하로 입력해 주세요.');
+          setRequestError(
+            `재생성 사유는 ${SCENE_REGENERATE_MAX_REASON_LENGTH}자 이하로 입력해 주세요.`,
+          );
         } else {
           setRequestError('맵 재생성 요청에 실패했습니다. 잠시 후 다시 시도해 주세요.');
         }
@@ -120,14 +122,12 @@ export function useSceneRegenerate(enabled: boolean = true): UseSceneRegenerateR
         setIsSubmitting(false);
       }
     },
-    [enabled, isSubmitting, pollOnce, queryClient],
+    [isSubmitting, pollOnce, queryClient],
   );
 
   const activateCandidate = useCallback(async () => {
     const candidateVersion = current?.scene_version;
-    if (!enabled || !candidateVersion || current?.status !== 'CANDIDATE_READY' || isActivating) {
-      return;
-    }
+    if (!candidateVersion || current?.status !== 'CANDIDATE_READY' || isActivating) return;
     setIsActivating(true);
     setRequestError(null);
     try {
@@ -139,7 +139,7 @@ export function useSceneRegenerate(enabled: boolean = true): UseSceneRegenerateR
     } finally {
       setIsActivating(false);
     }
-  }, [current?.scene_version, current?.status, enabled, isActivating, queryClient]);
+  }, [current?.scene_version, current?.status, isActivating, queryClient]);
 
   const clearError = useCallback(() => {
     setRequestError(null);

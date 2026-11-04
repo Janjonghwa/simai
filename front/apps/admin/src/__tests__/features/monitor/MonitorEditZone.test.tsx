@@ -21,6 +21,7 @@ import { useBoxEditStore } from '@/store/boxEdit.store';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore, type Role } from '@/store/session.store';
 import { useZoneEditStore } from '@/store/zoneEdit.store';
+import { startZoneEdit, stopZoneEdit, useZoneEditModeStore } from '@/store/zoneEditMode.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { http } from 'msw/http';
@@ -116,12 +117,13 @@ function signInAs(role: Role) {
   });
 }
 
-function renderMonitor(initialEdit = false) {
+function renderMonitor(editing = false) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (editing) startZoneEdit();
   return render(
     <QueryClientProvider client={qc}>
       <SpatialViewportHost loadViewer={loadFake}>
-        <MonitorPage initialEdit={initialEdit} />
+        <MonitorPage />
       </SpatialViewportHost>
     </QueryClientProvider>,
   );
@@ -153,17 +155,18 @@ describe('관제 관리자 편집 모드', () => {
       true,
     );
   });
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    stopZoneEdit();
+  });
 
-  it('관리자(ADMIN)만 편집 모드를 열고 취소할 수 있으며, 편집 중 표시와 기즈모·초안 정리가 동작한다', async () => {
+  it('관리자(ADMIN)만 편집 모드를 열고 끌 수 있으며, 기즈모·초안 정리가 동작한다', async () => {
     renderMonitor();
     await screen.findByTestId('viewer3d');
     expect(screen.queryByRole('region', { name: '구역 편집 도구' })).toBeNull();
-    expect(screen.queryByRole('status')).toBeNull();
 
     act(() => screen.getByRole('button', { name: '관리자 편집 모드' }).click());
     expect(screen.getByRole('region', { name: '구역 편집 도구' })).toBeTruthy();
-    expect(screen.getByRole('status').textContent).toBe('편집 중');
     await waitFor(() => expect(useBoxEditStore.getState().boxEdit?.kind).toBe('zone'));
 
     fireEvent.change(screen.getByRole('textbox', { name: '이름' }), {
@@ -171,9 +174,15 @@ describe('관제 관리자 편집 모드', () => {
     });
     expect(Object.keys(useZoneEditStore.getState().drafts).length).toBeGreaterThan(0);
 
-    act(() => screen.getByRole('button', { name: '편집 취소' }).click());
+    // 고치던 초안이 있으면 끄기 전에 묻는다: 계속 편집이면 그대로 둔다.
+    fireEvent.click(screen.getByRole('button', { name: '관리자 편집 모드' }));
+    fireEvent.click(await screen.findByRole('button', { name: '계속 편집' }));
+    expect(screen.getByRole('region', { name: '구역 편집 도구' })).toBeTruthy();
+    expect(Object.keys(useZoneEditStore.getState().drafts).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: '관리자 편집 모드' }));
+    fireEvent.click(await screen.findByRole('button', { name: '수정 버리고 끄기' }));
     expect(screen.queryByRole('region', { name: '구역 편집 도구' })).toBeNull();
-    expect(screen.queryByRole('status')).toBeNull();
     expect(useZoneEditStore.getState().drafts).toEqual({});
     expect(useBoxEditStore.getState().boxEdit).toBeNull();
 
@@ -182,6 +191,34 @@ describe('관제 관리자 편집 모드', () => {
       expect(screen.queryByRole('button', { name: '관리자 편집 모드' })).toBeNull();
       expect(screen.queryByRole('region', { name: '구역 편집 도구' })).toBeNull();
     }
+  });
+
+  it('편집 모드에서는 이벤트 패널·2D 지도·맵 재생성을 숨기고 가장자리 번짐을 보인다', async () => {
+    renderMonitor();
+    await screen.findByTestId('viewer3d');
+    expect(screen.getByRole('complementary', { name: '이벤트' })).toBeTruthy();
+    expect(screen.getByTestId('plan-minimap')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '맵 재생성' })).toBeTruthy();
+    expect(screen.queryByTestId('zone-edit-fade')).toBeNull();
+
+    act(() => startZoneEdit());
+    expect(screen.queryByRole('complementary', { name: '이벤트' })).toBeNull();
+    expect(screen.queryByTestId('plan-minimap')).toBeNull();
+    expect(screen.queryByRole('button', { name: '맵 재생성' })).toBeNull();
+    expect(screen.getByTestId('zone-edit-fade')).toBeTruthy();
+  });
+
+  it('관제 화면을 떠나면 편집 모드만 끄고 고치던 초안은 남긴다', async () => {
+    const view = renderMonitor(true);
+    await screen.findByTestId('viewer3d');
+    await waitFor(() => expect(useBoxEditStore.getState().boxEdit?.kind).toBe('zone'));
+    fireEvent.change(screen.getByRole('textbox', { name: '이름' }), {
+      target: { value: '임시 초안' },
+    });
+
+    view.unmount();
+    expect(useZoneEditModeStore.getState().editing).toBe(false);
+    expect(Object.keys(useZoneEditStore.getState().drafts).length).toBeGreaterThan(0);
   });
 
   it('구역 등급 선택지는 CRITICAL(빨강)·HIGH(주황) 2종뿐이고 이벤트 CAUTION 표시는 유지된다', async () => {
@@ -204,15 +241,15 @@ describe('관제 관리자 편집 모드', () => {
     expect(severityTone('CAUTION')).toBe('caution');
   });
 
-  it('고소 작업면을 그리면 작업면 OBB 와 둘레 0.30 m HIGH 구역을 함께 만들어 POST /api/zones/commit 한 번으로 발행한다', async () => {
+  it('고소 작업면을 그리면 작업면 OBB 와 둘레 0.30 m 구역(기본 HIGH, 바꿀 수 있음)을 함께 만들어 POST /api/zones/commit 한 번으로 발행한다', async () => {
     renderMonitor(true);
     await screen.findByTestId('viewer3d');
-    await screen.findByRole('option', { name: /z-04/ });
+    await screen.findByRole('option', { name: /개구부 구역/ });
 
     act(() => screen.getByRole('button', { name: '+ 고소 작업면 추가' }).click());
     const severity = screen.getByRole('combobox', { name: '심각도' }) as HTMLSelectElement;
     expect(severity.value).toBe('HIGH');
-    expect(severity.disabled).toBe(true);
+    expect(severity.disabled).toBe(false);
     expect(useBoxEditStore.getState().boxEdit?.kind).toBe('surface');
 
     act(() =>

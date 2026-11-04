@@ -3,8 +3,13 @@ import {
   type SpatialDataStore,
 } from '@/features/viewer3d/data/spatialData.store';
 import { SpatialDataContext } from '@/features/viewer3d/data/SpatialDataProvider';
-import { DEMO_ZONES_RESPONSE, scenarioTick } from '@/features/viewer3d/dev-harness/scenarios';
-import { PALETTE } from '@/features/viewer3d/palette';
+import {
+  DEMO_ZONES_RESPONSE,
+  scenarioTick,
+  TICK_MS,
+} from '@/features/viewer3d/dev-harness/scenarios';
+import { cssHex, PALETTE } from '@/features/viewer3d/palette';
+import { RiskScope } from '@/features/viewer3d/risk/RiskScope';
 import { createViewerStore, type ViewerStore } from '@/features/viewer3d/viewer3d.store';
 import { ViewerStoreContext } from '@/features/viewer3d/ViewerStoreContext';
 import { ZoneLayer } from '@/features/viewer3d/zones/ZoneLayer';
@@ -70,7 +75,9 @@ async function mount(applyState: ZoneApplyState = 'UNVERIFIED', strict = false) 
       <SpatialDataContext value={data}>
         <ZoneApplyContext value={applyState}>
           <SceneProbe />
-          <ZoneLayer />
+          <RiskScope>
+            <ZoneLayer />
+          </RiskScope>
         </ZoneApplyContext>
       </SpatialDataContext>
     </ViewerStoreContext>
@@ -131,6 +138,76 @@ describe('ZoneLayer', () => {
     expect([width, height, depth]).toEqual([2, 1.2, 1.5]);
     // 공중 구역 하단은 World Z 1.2m 그대로다.
     expect(Math.round((center[1]! - height / 2) * 1e6) / 1e6).toBe(1.2);
+  });
+
+  it('이름표는 구역 이름만 적는다(구역 번호·높이·적용 상태가 없다)', async () => {
+    const fillText = vi.fn();
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 12 }),
+      beginPath: () => {},
+      roundRect: () => {},
+      fill: () => {},
+      fillText,
+    } as unknown as CanvasRenderingContext2D);
+    await mount();
+    await ingest(DEMO_ZONES_RESPONSE);
+
+    const labels = [...new Set(fillText.mock.calls.map(([text]) => text as string))].sort();
+    expect(labels).toEqual(['예시 구역 A', '예시 구역 B', '예시 구역 C(공중)']);
+  });
+
+  it('상자 구역 이름표는 포인터를 올리거나 선택하지 않아도 모두 보인다', async () => {
+    await mount();
+    await ingest(DEMO_ZONES_RESPONSE);
+
+    const sprites: THREE.Sprite[] = [];
+    scene!.traverse((node) => {
+      if (node instanceof THREE.Sprite) sprites.push(node);
+    });
+    expect(viewer.getState().selected).toBeNull();
+    expect(sprites).toHaveLength(3);
+    expect(sprites.every((sprite) => sprite.visible)).toBe(true);
+  });
+
+  it('위험 강조가 걸린 구역도 이름만 적고, 글자 색만 위험 색이다', async () => {
+    const t0 = 1_760_342_400_000;
+    const drawn: { text: string; color: string }[] = [];
+    const context = {
+      fillStyle: '',
+      measureText: (text: string) => ({ width: text.length * 12 }),
+      beginPath: () => {},
+      roundRect: () => {},
+      fill: () => {},
+      fillText(text: string) {
+        drawn.push({ text, color: this.fillStyle });
+      },
+    };
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue(
+      context as unknown as CanvasRenderingContext2D,
+    );
+    data.getState().setConnection({ state: 'OPEN', at: t0 });
+    await mount();
+    await ingest(DEMO_ZONES_RESPONSE);
+    // z-01 에 위험이 걸리는 시나리오 앞부분(tick 0~10)을 재생한다.
+    await act(async () => {
+      for (let tick = 0; tick < 11; tick++) {
+        for (const out of scenarioTick('risk-lifecycle', tick, t0)) {
+          if (out.type === 'message') data.getState().ingest(out.raw, t0 + tick * TICK_MS + 50);
+        }
+      }
+    });
+
+    const { level } = named('risk-zone:z-01')!.userData as {
+      level: keyof typeof PALETTE.dark.risk;
+    };
+    const colorOf = (text: string) => drawn.filter((d) => d.text === text).at(-1)?.color;
+    expect([...new Set(drawn.map((d) => d.text))].sort()).toEqual([
+      '예시 구역 A',
+      '예시 구역 B',
+      '예시 구역 C(공중)',
+    ]);
+    expect(colorOf('예시 구역 A')).toBe(cssHex(PALETTE.dark.risk[level].color));
+    expect(colorOf('예시 구역 B')).not.toBe(colorOf('예시 구역 A'));
   });
 
   it('zone_id 로 선택·초점하고, 없는 구역은 NOT_FOUND 다', async () => {

@@ -1,14 +1,16 @@
 import { LivePlan } from '@/features/plan/LivePlan';
+import { useFloatSpot } from '@/hooks/useFloatSpot';
+import { clamp, FLOAT_MARGIN } from '@/lib/floatSpot';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
 
-// 3D 관제 왼쪽 아래 2D 미니맵(관제 데모와 같다). 누르면 큰 2D 창이 뜨고 그 창에서는 사람·구역을 고를 수 있다.
+// 3D 관제 왼쪽 아래 2D 미니맵(관제 데모와 같다). 몸통을 끌어 옮기고, 누르면 큰 2D 창이 뜨고 그 창에서는 사람·구역을 고를 수 있다.
 // 2D 는 3D 와 따로 그리므로(명세 13.6) 3D 가 멈춰도 같은 평면을 볼 수 있다.
 
-const MIN_WIDTH = 180;
+const MIN_WIDTH = 160;
 const MAX_WIDTH = 480;
-const DEFAULT_WIDTH = 248;
+const DEFAULT_WIDTH = 200;
 
 export function PlanMinimap({
   selectedKey,
@@ -19,8 +21,10 @@ export function PlanMinimap({
 }) {
   const [open, setOpen] = useState(false);
   const [width, setWidth] = useState(DEFAULT_WIDTH);
-  const drag = useRef<{ x: number; width: number } | null>(null);
-  const [dragging, setDragging] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  const { style, handlers, reset, refit } = useFloatSpot(box, 'bottom', FLOAT_MARGIN);
+  const resize = useRef<{ x: number; width: number } | null>(null);
+  const [resizing, setResizing] = useState(false);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -31,35 +35,41 @@ export function PlanMinimap({
     return () => window.removeEventListener('keydown', onKey);
   }, [open]);
 
-  // 놓거나 브라우저가 끌기를 거두면(pointercancel·캡처 잃음) 끝낸다. 남으면 누르지 않고 움직여도 폭이 바뀐다.
-  const end = () => {
-    drag.current = null;
-    setDragging(false);
+  // 놓거나 브라우저가 크기 조절을 거두면(pointercancel·캡처 잃음) 끝낸다. 남으면 누르지 않고 움직여도 폭이 바뀐다.
+  // 옮긴 자리에서 넓어져 화면 밖으로 넘치면 안으로 다시 맞춘다.
+  const endResize = () => {
+    resize.current = null;
+    setResizing(false);
+    refit();
   };
-  const grip = {
+  const resizeGrip = {
     onPointerDown: (e: PointerEvent<HTMLDivElement>) => {
       if (e.button !== 0) return;
       e.preventDefault();
+      // 몸통 끌기(위치 옮기기)가 이 눌림을 이어받지 않게 한다.
+      e.stopPropagation();
       e.currentTarget.setPointerCapture?.(e.pointerId);
-      drag.current = { x: e.clientX, width };
-      setDragging(true);
+      resize.current = { x: e.clientX, width };
+      setResizing(true);
     },
     onPointerMove: (e: PointerEvent<HTMLDivElement>) => {
-      const d = drag.current;
-      if (!d) return;
-      setWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, d.width + e.clientX - d.x)));
+      const start = resize.current;
+      if (!start) return;
+      setWidth(clamp(start.width + e.clientX - start.x, MIN_WIDTH, MAX_WIDTH));
     },
-    onPointerUp: end,
-    onPointerCancel: end,
-    onLostPointerCapture: end,
+    onPointerUp: endResize,
+    onPointerCancel: endResize,
+    onLostPointerCapture: endResize,
   };
 
   return (
     <>
       <div
+        ref={box}
         data-testid="plan-minimap"
-        style={{ width }}
-        className="absolute bottom-24 left-4 z-[3] rounded-[14px] bg-card/82 shadow-float ring-1 ring-border backdrop-blur-[8px] ring-inset hover:ring-point-soft"
+        style={{ width, ...style }}
+        {...handlers}
+        className="absolute bottom-3.5 left-3.5 z-[3] touch-none rounded-[14px] bg-card/82 shadow-float ring-1 ring-border backdrop-blur-[8px] select-none ring-inset hover:ring-point-soft"
       >
         <button
           type="button"
@@ -72,15 +82,18 @@ export function PlanMinimap({
             <LivePlan selectedKey={selectedKey} className="aspect-square h-auto w-full" />
           </div>
         </button>
-        {/* 오른쪽 위 모서리를 끌어 크기를 바꾼다. 두 번 누르면 처음 크기로 돌아간다. */}
+        {/* 오른쪽 위 모서리를 끌어 크기를 바꾼다. 두 번 누르면 처음 크기와 처음 자리로 돌아간다. */}
         <div
           aria-hidden
-          {...grip}
-          onDoubleClick={() => setWidth(DEFAULT_WIDTH)}
+          {...resizeGrip}
+          onDoubleClick={() => {
+            setWidth(DEFAULT_WIDTH);
+            reset();
+          }}
           className={cn(
             'absolute -top-1.5 -right-1.5 z-[2] size-[18px] cursor-nesw-resize touch-none rounded-[6px] hover:bg-primary/35',
             'after:absolute after:inset-[5px] after:rounded-tr-[4px] after:border-t-2 after:border-r-2 after:border-faint',
-            dragging && 'bg-primary/35',
+            resizing && 'bg-primary/35',
           )}
         />
       </div>

@@ -10,6 +10,7 @@ import {
 import { useSessionStore } from '@/store/session.store';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { useLayoutEffect } from 'react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -94,6 +95,9 @@ function renderMonitorHost() {
   );
 }
 
+/** 도구 모음의 「맵 재생성」 아이콘 버튼을 눌러 팝오버를 연다. */
+const openTool = () => fireEvent.click(screen.getByRole('button', { name: '맵 재생성' }));
+
 describe('실시간 모니터링 화면의 맵 재생성 관리자 도구 (S15P31A101-428)', () => {
   it('VIEWER 역할에게는 맵 재생성 도구를 노출하지 않는다', async () => {
     currentMockToken = 'mock-token.viewer';
@@ -106,7 +110,87 @@ describe('실시간 모니터링 화면의 맵 재생성 관리자 도구 (S15P3
     });
     renderMonitorHost();
     await screen.findByTestId('viewer3d');
-    expect(screen.queryByTestId('scene-regenerate-panel')).toBeNull();
+    // 숨긴 요소까지 보려고 이름(aria-label)으로 직접 찾는다.
+    expect(screen.queryByLabelText('맵 재생성')).toBeNull();
+  });
+
+  it('도구 모음을 접으면 맵 재생성 버튼도 함께 접히지만 떼지는 않는다', async () => {
+    renderMonitorHost();
+    await screen.findByTestId('viewer3d');
+    expect(screen.getByRole('button', { name: '맵 재생성' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '도구 접기' }));
+    expect(screen.queryByRole('button', { name: '맵 재생성' })).toBeNull();
+    expect(screen.getByLabelText('맵 재생성').hidden).toBe(true);
+  });
+
+  describe('진행 중인 요청은 눈에 안 보여도 계속 받는다', () => {
+    const IN_PROGRESS_ID = 7;
+    const requested: string[] = [];
+    const pollCount = () =>
+      requested.filter((path) => path === `/api/scenes/regenerate/${IN_PROGRESS_ID}`).length;
+
+    beforeAll(() => {
+      server.events.on('request:start', ({ request }) => {
+        requested.push(new URL(request.url).pathname);
+      });
+    });
+    beforeEach(() => {
+      requested.length = 0;
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      resetMockSceneState({ autoAdvanceOnPoll: true });
+      setMockSceneRegenerateView({
+        request_id: IN_PROGRESS_ID,
+        status: 'CAPTURING',
+        failure_reason: null,
+        scene_version: null,
+        reason: null,
+        requested_at_ms: Date.now() - 5000,
+        updated_at_ms: Date.now(),
+      });
+    });
+
+    /** 2초 주기 폴링이 count 번 갈 때까지 시간을 보낸다. */
+    async function pollUntil(count: number) {
+      for (let i = 0; i < 10 && pollCount() < count; i += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2000);
+        });
+      }
+      await waitFor(() => expect(pollCount()).toBeGreaterThanOrEqual(count));
+    }
+
+    it('팝오버를 한 번도 열지 않아도 단계가 따라가 열어 보면 후보가 준비되어 있다', async () => {
+      renderMonitorHost();
+      await waitFor(() => expect(viewer.props?.scene?.ok).toBe(true));
+
+      // 수집 중 → 재구성 중 → 후보 준비됨: 폴링 두 번. 팝오버는 닫혀 있어 상태 표시가 아직 없다.
+      await pollUntil(2);
+      expect(screen.queryByTestId('scene-regenerate-status')).toBeNull();
+
+      openTool();
+      await waitFor(() =>
+        expect(screen.getByTestId('scene-regenerate-status').textContent).toContain(
+          '새 3D 배경 후보 준비됨',
+        ),
+      );
+    });
+
+    it('도구 모음을 접어 둔 동안에도 계속 받는다', async () => {
+      renderMonitorHost();
+      await waitFor(() => expect(viewer.props?.scene?.ok).toBe(true));
+
+      fireEvent.click(await screen.findByRole('button', { name: '도구 접기' }));
+      expect(screen.queryByRole('button', { name: '맵 재생성' })).toBeNull();
+      await pollUntil(2);
+
+      fireEvent.click(screen.getByRole('button', { name: '도구 펼치기' }));
+      openTool();
+      await waitFor(() =>
+        expect(screen.getByTestId('scene-regenerate-status').textContent).toContain(
+          '새 3D 배경 후보 준비됨',
+        ),
+      );
+    });
   });
 
   it('ADMIN 역할이 사유와 함께 맵 재생성을 요청하면 2초 폴링으로 단계가 전이되고 후보를 활성화할 수 있다', async () => {
@@ -116,9 +200,10 @@ describe('실시간 모니터링 화면의 맵 재생성 관리자 도구 (S15P3
     renderMonitorHost();
     await waitFor(() => expect(viewer.props?.scene?.ok).toBe(true));
 
-    const input = screen.getByLabelText('재생성 사유');
+    openTool();
+    const input = await screen.findByLabelText('재생성 사유');
     fireEvent.change(input, { target: { value: '자재 반입' } });
-    fireEvent.click(screen.getByRole('button', { name: '맵 재생성' }));
+    fireEvent.click(screen.getByRole('button', { name: '재생성 요청' }));
 
     // 1. 요청 직후: REQUESTED ('요청 대기 중')
     await waitFor(() =>
@@ -182,7 +267,8 @@ describe('실시간 모니터링 화면의 맵 재생성 관리자 도구 (S15P3
       updated_at_ms: Date.now(),
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '맵 재생성' }));
+    openTool();
+    fireEvent.click(await screen.findByRole('button', { name: '재생성 요청' }));
 
     await waitFor(() =>
       expect(screen.getByRole('alert').textContent).toContain(
@@ -192,6 +278,68 @@ describe('실시간 모니터링 화면의 맵 재생성 관리자 도구 (S15P3
     await waitFor(() =>
       expect(screen.getByTestId('scene-regenerate-status').textContent).toContain('배경 수집 중'),
     );
+  });
+
+  describe('LIVE 관제 중에는 재생성하지 못한다 (S15P31A101-474)', () => {
+    const work = (status: 'PLANNED' | 'IN_PROGRESS') => ({
+      work_id: '1',
+      status,
+      date: '2026-11-04',
+      name: '비계 설치',
+      from_ms: Date.now() - 3_600_000,
+      to_ms: Date.now() + 3_600_000,
+      zone_id: null,
+      planned_people: 3,
+    });
+    const mockWorks = (...statuses: ('PLANNED' | 'IN_PROGRESS')[]) =>
+      server.use(
+        http.get('*/api/work-units', () =>
+          HttpResponse.json({ works: statuses.map((status) => work(status)) }),
+        ),
+      );
+
+    it('진행 중인 작업이 있으면 요청 단추를 막고 이유를 보여 준다', async () => {
+      mockWorks('IN_PROGRESS');
+      renderMonitorHost();
+      await screen.findByRole('button', { name: '맵 재생성' });
+      openTool();
+
+      const notice = await screen.findByTestId('scene-regenerate-live-notice');
+      expect(notice.textContent).toContain('작업이 진행 중');
+      expect(screen.getByRole('button', { name: '재생성 요청' })).toHaveProperty('disabled', true);
+    });
+
+    it('진행 중인 작업이 없으면 막지 않는다', async () => {
+      mockWorks('PLANNED');
+      renderMonitorHost();
+      await screen.findByRole('button', { name: '맵 재생성' });
+      openTool();
+
+      await screen.findByRole('button', { name: '재생성 요청' });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.queryByTestId('scene-regenerate-live-notice')).toBeNull();
+      expect(screen.getByRole('button', { name: '재생성 요청' })).toHaveProperty('disabled', false);
+    });
+
+    it('작업 목록을 받지 못하면 막지 않고 서버(409)에 맡겨, 거부되면 같은 안내를 보인다', async () => {
+      server.use(
+        http.get('*/api/work-units', () => new HttpResponse(null, { status: 500 })),
+        http.post('*/api/scenes/regenerate', () =>
+          HttpResponse.json(
+            { status: 409, detail: 'x', code: 'REGENERATE_WORK_IN_PROGRESS' },
+            { status: 409 },
+          ),
+        ),
+      );
+      renderMonitorHost();
+      await screen.findByRole('button', { name: '맵 재생성' });
+      openTool();
+      fireEvent.click(await screen.findByRole('button', { name: '재생성 요청' }));
+
+      await waitFor(() =>
+        expect(screen.getByRole('alert').textContent).toContain('작업이 진행 중'),
+      );
+    });
   });
 
   it('재생성 실패 시 한국어 실패 사유를 표시한다', async () => {
@@ -206,6 +354,9 @@ describe('실시간 모니터링 화면의 맵 재생성 관리자 도구 (S15P3
     });
 
     renderMonitorHost();
+    // 팝오버를 닫아 둬도 상태는 계속 받는다. 열어 보면 실패가 나와 있다.
+    await screen.findByRole('button', { name: '맵 재생성' });
+    openTool();
     await waitFor(() =>
       expect(screen.getByTestId('scene-regenerate-status').textContent).toContain('재생성 실패'),
     );
@@ -215,9 +366,16 @@ describe('실시간 모니터링 화면의 맵 재생성 관리자 도구 (S15P3
   });
 
   describe('재생성 품질 표시 (S15P31A101-469)', () => {
+    /** 품질은 맵 재생성 팝오버 안에 있다. */
+    const openToolWhenReady = async () => {
+      await screen.findByRole('button', { name: '맵 재생성' });
+      openTool();
+      await screen.findByTestId('scene-regenerate-tool');
+    };
+
     it('quality 가 없으면 아무것도 표시하지 않는다', async () => {
       renderMonitorHost();
-      await screen.findByTestId('scene-regenerate-panel');
+      await openToolWhenReady();
       await new Promise((r) => setTimeout(r, 50));
       expect(screen.queryByTestId('scene-regenerate-quality')).toBeNull();
     });
@@ -231,6 +389,7 @@ describe('실시간 모니터링 화면의 맵 재생성 관리자 도구 (S15P3
         },
       });
       renderMonitorHost();
+      await openToolWhenReady();
       const q = await screen.findByTestId('scene-regenerate-quality');
       expect(q.textContent).toContain('이전 모습으로 채움 12% · 비움 5%');
       expect(screen.getByTestId('scene-regenerate-quality-cameras').textContent).toContain(
@@ -242,6 +401,7 @@ describe('실시간 모니터링 화면의 맵 재생성 관리자 도구 (S15P3
     it('채움이 30% 이상이면 일부는 이전 모습이라는 안내를 보여 준다', async () => {
       setMockSceneQuality({ previous_fill_ratio: 0.3, unrevealed_ratio: 0.1 });
       renderMonitorHost();
+      await openToolWhenReady();
       const notice = await screen.findByTestId('scene-regenerate-quality-notice');
       expect(notice.textContent).toContain('일부는 이전 모습입니다');
     });

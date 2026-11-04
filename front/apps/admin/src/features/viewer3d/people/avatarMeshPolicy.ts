@@ -102,30 +102,3 @@ export function avatarMeshStatus({
   if (asset.status !== 'READY') return fallback('ASSET_LOADING');
   return { ...base, use: true, fallback: null };
 }
-
-/**
- * 이름표에 붙일 짧은 표시. 메시로 그리면 HMR 지연(0.1 s 단위, staleness)을 함께 적는다.
- * 포즈 스트림이 없는 사람(OFF·NO_POSE)은 붙이지 않는다.
- */
-export function avatarMeshTag(status: AvatarMeshStatus): string | null {
-  if (status.use) {
-    const lag = Math.max(0, status.hmrLagMs ?? 0);
-    return `메시(추정) ${(Math.round(lag / 100) / 10).toFixed(1)}s`;
-  }
-  switch (status.fallback) {
-    case 'OFF':
-    case 'NO_POSE':
-      return null;
-    case 'STALLED':
-    case 'HMR_LATE':
-      return '메시 지연';
-    case 'ASSET_LOADING':
-      return '메시 읽는 중';
-    case 'ASSET_ERROR':
-    case 'NO_ASSET':
-    case 'JOINT_MISMATCH':
-      return '메시 없음';
-    default:
-      return '메시 보류';
-  }
-}

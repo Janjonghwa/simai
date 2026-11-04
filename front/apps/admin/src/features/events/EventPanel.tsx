@@ -7,27 +7,27 @@ import {
   type EventSections,
   type Incident,
 } from '@/features/events/incidents';
-import { movePanel, PANEL_GAP, PANEL_TOP, type PanelBox } from '@/features/events/panelBox';
+import { movePanel, PANEL_GAP, PANEL_TOP } from '@/features/events/panelBox';
 import { PanelGrip } from '@/features/events/PanelGrip';
-import { measure, type Measured } from '@/features/events/panelMeasure';
 import { useAutoFold } from '@/features/events/useAutoFold';
 import { useFloatingBox } from '@/features/events/useFloatingBox';
 import { usePanelDrag } from '@/features/events/usePanelDrag';
+import { measure, type FloatBox, type Measured } from '@/lib/floatSpot';
 import { selectTrackedCount, useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
 
-/** 기본 자리: 오른쪽 위(PANEL_TOP·PANEL_GAP 과 같다), 폭 340px. 상단 알림이 비키는 간격(panelBox)도 이 폭을 전제한다. */
+/** 기본 자리: 오른쪽 위(PANEL_TOP·PANEL_GAP 과 같다). 폭은 --event-panel-width 이고, 상단 알림·2D 창이 오른쪽에서 비키는 간격(--event-panel-inset)이 이 폭에 맞춰 정해진다(index.css). */
 const PANEL_CLASS =
-  'absolute top-[72px] right-3.5 bottom-3.5 z-[5] flex w-[340px] flex-col gap-2 rounded-[16px] bg-card/82 p-2.5 shadow-float ring-1 ring-border backdrop-blur-[8px] ring-inset';
+  'absolute top-[72px] right-3.5 bottom-3.5 z-[5] flex w-(--event-panel-width) flex-col gap-2 rounded-[16px] bg-card/82 p-2.5 shadow-float ring-1 ring-border backdrop-blur-[8px] ring-inset';
 
 const NOTE_CLASS = 'mx-2 my-4 text-sm text-faint';
 
 const hasCards = ({ active, resolved }: EventSections) => active.length + resolved.length > 0;
 
 /** 옮긴 자리의 인라인 스타일. 접으면 높이는 머리줄만큼이다. */
-const boxStyle = (box: PanelBox, folded: boolean): CSSProperties => ({
+const boxStyle = (box: FloatBox, folded: boolean): CSSProperties => ({
   left: box.left,
   top: box.top,
   width: box.width,

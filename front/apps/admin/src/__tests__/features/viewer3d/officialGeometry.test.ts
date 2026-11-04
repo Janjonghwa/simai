@@ -213,8 +213,8 @@ describe('readOfficialZone', () => {
     expect(reasonOf(row(patch))).toBe(reason);
   });
 
-  it('이름이 없으면 zone_id 로 보이고 형상은 그대로 받는다', () => {
-    expect(readOfficialZone(row({ name: null }))).toMatchObject({ zone: { name: 'z-1' } });
+  it('이름이 없으면 이름을 비워 두고(구역 ID 로 채우지 않는다) 형상은 그대로 받는다', () => {
+    expect(readOfficialZone(row({ name: null }))).toMatchObject({ zone: { name: '' } });
   });
 });
 

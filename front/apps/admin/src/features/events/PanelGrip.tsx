@@ -1,6 +1,6 @@
-import { resizePanel, type PanelBox, type PanelEdge } from '@/features/events/panelBox';
-import type { Measured } from '@/features/events/panelMeasure';
+import { resizePanel, type PanelEdge } from '@/features/events/panelBox';
 import { usePanelDrag } from '@/features/events/usePanelDrag';
+import type { FloatBox, Measured } from '@/lib/floatSpot';
 import { cn } from '@simai/ui/lib/utils';
 
 /** 손잡이 자리: 왼쪽 가장자리·아래 가장자리·왼쪽 아래 모서리. */
@@ -19,7 +19,7 @@ export function PanelGrip({
 }: {
   edge: PanelEdge;
   startOf: () => Measured;
-  onResize: (box: PanelBox) => void;
+  onResize: (box: FloatBox) => void;
   onReset: () => void;
 }) {
   const { active, handlers } = usePanelDrag(startOf, (start, dx, dy, bounds) =>

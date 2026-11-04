@@ -3,7 +3,9 @@ import { chooseStep, holdFor } from '@/features/history/replay';
 import { WorkReplayPage } from '@/features/history/WorkReplayPage';
 import { TBM_TASKS } from '@/features/tbm/tbmDemo';
 import type { ReplaySpatialSource } from '@/features/viewer3d';
+import { ZONES_KEY } from '@/features/zones/api';
 import { ApiError } from '@/lib/http';
+import { MOCK_ZONES } from '@/mocks/zones';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -66,8 +68,10 @@ const at = (day: number, hhmm: string, s = 0) => {
   return new Date(2026, 9, day, h, m, s).getTime();
 };
 
-function renderPage(workId: string) {
+/** zones: false 면 구역 목록을 받지 못한 화면이다. */
+function renderPage(workId: string, { zones = true } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (zones) client.setQueryData(ZONES_KEY, MOCK_ZONES);
   render(
     <QueryClientProvider client={client}>
       <WorkReplayPage workId={workId} />
@@ -280,6 +284,27 @@ describe('작업 다시 보기', () => {
         timeout: 3_000,
       });
       act(() => screen.getByRole('button', { name: '일시정지' }).click());
+    },
+    SLOW_MS,
+  );
+
+  it(
+    '이벤트 로그는 구역을 이름으로 보이고 구역 번호는 보이지 않는다. 구역을 모르면 사람만 보인다',
+    async () => {
+      renderPage(T2_ID);
+      await ready();
+      const opening = (list: HTMLElement) =>
+        within(list)
+          .getAllByRole('button')
+          .find((b) => b.textContent?.includes('개구부·가장자리 근접'))!;
+      expect(opening(eventLog()).textContent).toContain('w-0015 · 개구부 구역');
+      expect(eventLog().textContent).not.toMatch(/z-\d/);
+      cleanup();
+
+      renderPage(T2_ID, { zones: false });
+      await ready();
+      expect(opening(eventLog()).textContent).toMatch(/w-0015$/);
+      expect(eventLog().textContent).not.toMatch(/z-\d/);
     },
     SLOW_MS,
   );

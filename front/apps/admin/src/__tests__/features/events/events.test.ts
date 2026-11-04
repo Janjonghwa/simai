@@ -8,6 +8,7 @@ import {
   elapsedLabel,
   entryEtaLine,
   eventSections,
+  eventSubject,
   firstActiveRaisedAt,
   firstRaisedAt,
   groupIncidents,
@@ -17,13 +18,22 @@ import {
   mergeEvent,
   metricLabels,
   needsConfirmation,
+  targetFont,
+  targetLabel,
   upsertEvents,
   type EventEntry,
 } from '@/features/events/events';
 import type { EventItem } from '@/features/events/types';
+import { zoneNameOf } from '@/features/zones/zoneName';
 import { describe, expect, it } from 'vitest';
 
 const T = 1_760_342_400_000;
+
+const zoneName = zoneNameOf([
+  { zoneId: 'z-04', name: '개구부 구역' },
+  { zoneId: 'z-02', name: '단상 구역' },
+  { zoneId: 'z-05', name: '  ' },
+]);
 
 function item(change: Partial<EventItem> = {}): EventItem {
   return {
@@ -406,21 +416,50 @@ describe('카드 표시 계산', () => {
     expect(cardChip(incidentOfEntries(entry({ severity: 'INFO' })))).toBeNull();
   });
 
-  it('카드 제목: 대표 규칙(가장 높은 등급)의 이름 · 구역 번호', () => {
+  it('카드 제목: 대표 규칙(가장 높은 등급)의 이름 · 구역 이름', () => {
     const incident = incidentOfEntries(
       entry({ event_id: 'a', zone_id: 'z-04' }),
       entry({ event_id: 'b', rule_id: 'R1', severity: 'HIGH', zone_id: 'z-02' }),
     );
-    expect(cardTitle(incident)).toBe('개구부·가장자리 근접 · z-04');
+    expect(cardTitle(incident, zoneName)).toBe('개구부·가장자리 근접 · 개구부 구역');
   });
 
-  it('구역이 대상인 묶음은 제목에서 구역을 되풀이하지 않고, 구역이 없으면 규칙 이름만이다', () => {
-    expect(cardTitle(incidentOfEntries(entry({ world_ids: [], zone_id: 'z-04' })))).toBe(
-      '개구부·가장자리 근접',
-    );
-    expect(cardTitle(incidentOfEntries(entry({ zone_id: undefined })))).toBe(
-      '개구부·가장자리 근접',
-    );
+  it('구역이 대상인 묶음은 제목에서 구역을 되풀이하지 않고, 구역이 없거나 이름을 모르면 규칙 이름만이다', () => {
+    const title = (change: Partial<EventItem>) =>
+      cardTitle(incidentOfEntries(entry(change)), zoneName);
+    expect(title({ world_ids: [], zone_id: 'z-04' })).toBe('개구부·가장자리 근접');
+    expect(title({ zone_id: undefined })).toBe('개구부·가장자리 근접');
+    expect(title({ zone_id: 'z-99' })).toBe('개구부·가장자리 근접');
+  });
+
+  it('이름이 빈 구역은 제목에서 빼고, 구역이 대상이거나 주어이면 `구역` 이다', () => {
+    const incident = (change: Partial<EventItem>) => incidentOfEntries(entry(change));
+    expect(cardTitle(incident({ zone_id: 'z-05' }), zoneName)).toBe('개구부·가장자리 근접');
+    expect(targetLabel(incident({ world_ids: [], zone_id: 'z-05' }).target, zoneName)).toBe('구역');
+    expect(eventSubject(item({ world_ids: [], zone_id: 'z-05' }), zoneName)).toBe('구역');
+  });
+
+  it('대상 글꼴: 사람 ID 만 고정폭이다', () => {
+    expect(targetFont({ type: 'person', id: 'w-0015' })).toBe('font-mono');
+    expect(targetFont({ type: 'zone', id: 'z-04' })).toBeUndefined();
+    expect(targetFont(null)).toBeUndefined();
+  });
+
+  it('대상 문구: 사람은 ID, 구역은 이름이고 모르는 구역은 `구역`이다(구역 번호는 보이지 않는다)', () => {
+    const label = (change: Partial<EventItem>) =>
+      targetLabel(incidentOfEntries(entry(change)).target, zoneName);
+    expect(label({ world_ids: ['w-0015'] })).toBe('w-0015');
+    expect(label({ world_ids: [], zone_id: 'z-04' })).toBe('개구부 구역');
+    expect(label({ world_ids: [], zone_id: 'z-99' })).toBe('구역');
+    expect(targetLabel(null, zoneName)).toBe('대상 없음');
+  });
+
+  it('이벤트 대상 문구: 사람이 있으면 사람 ID, 없으면 구역 이름(모르면 `구역`), 둘 다 없으면 비어 있다', () => {
+    const subject = (change: Partial<EventItem>) => eventSubject(item(change), zoneName);
+    expect(subject({ world_ids: ['w-1'], zone_id: 'z-04' })).toBe('w-1');
+    expect(subject({ world_ids: [], zone_id: 'z-02' })).toBe('단상 구역');
+    expect(subject({ world_ids: [], zone_id: 'z-99' })).toBe('구역');
+    expect(subject({ world_ids: [], zone_id: undefined })).toBe('');
   });
 
   it('카메라는 사람이 지금 담긴 카메라 중 첫 번째이고, 사람이 아니거나 없으면 없다', () => {

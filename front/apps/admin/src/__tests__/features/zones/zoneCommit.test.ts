@@ -9,8 +9,9 @@ import {
   saveRequestOf,
   type SaveRequestInput,
 } from '@/features/zones/zoneCommit';
-import { newSurfaceDraft, surfaceDraftOf } from '@/features/zones/zoneEditModel';
+import { newSurfaceDraft, surfaceDraftOf, surfaceZoneBox } from '@/features/zones/zoneEditModel';
 import { formOf, newZoneBodyOf, bodyOf as zoneBodyOf } from '@/features/zones/zoneForm';
+import { DEFAULT_ROOM_LIMIT } from '@/lib/roomLimit';
 import { describe, expect, it } from 'vitest';
 
 const zone = zoneOf({ zoneId: 'z-04', name: '개구부', min: [5.8, 1.2, 0], max: [8.6, 3.8, 2.4] });
@@ -265,19 +266,9 @@ describe('createRequestOf(새 구역)', () => {
     {
       name: '작업면 초안이 있으면 구역 CREATE + 작업면 CREATE(이름 없음은 null)',
       request: createRequestOf({ form: newForm, box: newBox, surface: newSurfaceDraft(newBox) }),
+      // 구역 몸체는 작업면이 있어도 상자·양식 그대로다(다각형·심각도·높이를 덮어쓰지 않는다).
       expected: {
-        zone: {
-          op: 'CREATE',
-          body: {
-            ...newBody,
-            polygon_xy: [
-              [4.2, 4.2],
-              [5.8, 4.2],
-              [5.8, 5.8],
-              [4.2, 5.8],
-            ],
-          },
-        },
+        zone: { op: 'CREATE', body: newBody },
         surface: {
           op: 'CREATE',
           body: surfaceBodyOf(null, '', newSurfaceDraft(newBox).geometry),
@@ -288,18 +279,7 @@ describe('createRequestOf(새 구역)', () => {
       name: '이름이 있는 작업면 초안은 그 이름을 보낸다',
       request: createRequestOf({ form: newForm, box: newBox, surface: named }),
       expected: {
-        zone: {
-          op: 'CREATE',
-          body: {
-            ...newBody,
-            polygon_xy: [
-              [4.2, 4.2],
-              [5.8, 4.2],
-              [5.8, 5.8],
-              [4.2, 5.8],
-            ],
-          },
-        },
+        zone: { op: 'CREATE', body: newBody },
         surface: { op: 'CREATE', body: surfaceBodyOf(null, '단상', named.geometry) },
       },
     },
@@ -307,20 +287,14 @@ describe('createRequestOf(새 구역)', () => {
 
   it.each(cases)('$name', expectRequest);
 
-  it('회전한 작업면과 0.30m 여유 HIGH 구역을 한 발행 요청에 담는다', () => {
+  it('작업면이 회전해 있어도 고른 심각도와 상자 그대로 보낸다(경고로 바꾸지 않는다)', () => {
     const surface = { ...named, geometry: { ...named.geometry, yawRad: Math.PI / 2 } };
-    const request = createRequestOf({
-      form: { ...newForm, severity: 'CRITICAL' },
-      box: newBox,
-      surface,
-    });
+    const box = surfaceZoneBox(surface.geometry, DEFAULT_ROOM_LIMIT);
+    const request = createRequestOf({ form: { ...newForm, severity: 'CRITICAL' }, box, surface });
     expect(request.surface).toMatchObject({ op: 'CREATE', body: { kind: 'WORK_SURFACE' } });
-    expect(request.zone.op).toBe('CREATE');
     if (request.zone.op !== 'CREATE') throw new Error('expected CREATE');
-    expect(request.zone.body.severity).toBe('HIGH');
-    const [first] = request.zone.body.polygon_xy;
-    expect(first?.[0]).toBeCloseTo(5.8);
-    expect(first?.[1]).toBeCloseTo(4.2);
+    expect(request.zone.body).toEqual(newZoneBodyOf({ ...newForm, severity: 'CRITICAL' }, box));
+    expect(request.zone.body.severity).toBe('CRITICAL');
     expect(request.publish).toBeUndefined();
   });
 

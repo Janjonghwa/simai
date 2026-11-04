@@ -94,6 +94,8 @@ const UNIT_EDGES = boxEdges([1, 1, 1]);
 const topOf = (obb: WorldObb) => obb.center[2] + obb.size[2] / 2;
 const bottomOf = (obb: WorldObb) => obb.center[2] - obb.size[2] / 2;
 const degrees = (radians: number) => (radians * 180) / Math.PI;
+const zRangeText = (obb: WorldObb) => `Z ${bottomOf(obb).toFixed(2)}~${topOf(obb).toFixed(2)}m`;
+const yawText = (obb: WorldObb) => `${degrees(obb.yaw).toFixed(1)}°`;
 
 /** 작업면 축(yaw 회전)의 지역 좌표 (u, v) 를 World 점으로 옮긴다. */
 function localToWorld(obb: WorldObb, u: number, v: number, z: number): WorldPoint {
@@ -251,7 +253,10 @@ function ObbGizmoForStore({ store }: { store: EditStore }) {
   return <ObbGizmo store={store} />;
 }
 
-/** 초안 이름표. 저장되지 않은 미리보기임을 함께 적는다. 정적 객체는 아랫면~윗면 높이를 적는다. */
+/**
+ * 초안 이름표. 저장되지 않은 미리보기임을 함께 적는다. 정적 객체는 아랫면~윗면 높이를 적는다.
+ * 작업면·정적 객체는 ID 를 적지 않고, 계획(PLANNED) 가상 객체만 ID 를 적는다.
+ */
 export function objectPreviewLabel(
   id: string,
   obb: WorldObb,
@@ -259,13 +264,13 @@ export function objectPreviewLabel(
   kind: EditObjectKind = 'WORK_SURFACE',
 ) {
   if (kind === 'PLANNED') {
-    return `${id} · 계획(PLANNED) 가상 객체 · 미저장 · Z ${bottomOf(obb).toFixed(2)}~${topOf(obb).toFixed(2)}m · ${degrees(obb.yaw).toFixed(1)}°`;
+    return `${id} · 계획(PLANNED) 가상 객체 · 미저장 · ${zRangeText(obb)} · ${yawText(obb)}`;
   }
   if (kind === 'OBSTACLE') {
-    return `${id} · 정적 객체 · 미저장 · Z ${bottomOf(obb).toFixed(2)}~${topOf(obb).toFixed(2)}m · ${degrees(obb.yaw).toFixed(1)}°`;
+    return `정적 객체 · 미저장 · ${zRangeText(obb)} · ${yawText(obb)}`;
   }
   const state = created ? '새 작업면 · 미등록' : '미저장';
-  return `${id} · ${state} · 상판 ${topOf(obb).toFixed(2)}m · ${degrees(obb.yaw).toFixed(1)}°`;
+  return `${state} · 상판 ${topOf(obb).toFixed(2)}m · ${yawText(obb)}`;
 }
 
 function ObbGizmo({ store }: { store: EditStore }) {

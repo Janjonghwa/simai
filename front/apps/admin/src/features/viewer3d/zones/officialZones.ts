@@ -163,7 +163,7 @@ export function readOfficialZone(item: unknown): { zone: ZoneView } | { reason: 
     hasGuardrail: typeof item.has_guardrail === 'boolean' ? item.has_guardrail : null,
     validFrom: isFiniteNumber(item.valid_from) ? item.valid_from : null,
   };
-  const name = isText(item.name) ? item.name : zoneId;
+  const name = isText(item.name) ? item.name : '';
   const xs = polygon.points.map(([x]) => x);
   const ys = polygon.points.map(([, y]) => y);
   const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];

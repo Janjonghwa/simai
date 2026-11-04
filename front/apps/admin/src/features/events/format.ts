@@ -1,6 +1,7 @@
 import { CONFIDENCE_REASON, METRIC_LABEL, RULE_NAME } from '@/features/events/constants';
 import { isActive, type EntryStatus } from '@/features/events/entries';
 import type { EventItem } from '@/features/events/types';
+import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
 
 // 이벤트 값을 화면 문구로 바꾸는 계산. 화면 없이 시험한다.
 
@@ -17,9 +18,9 @@ export const formatTime = (ms: number | null | undefined) =>
 
 export const ruleName = (ruleId: string) => RULE_NAME[ruleId] ?? ruleId;
 
-/** 이벤트 대상 문구: 사람 ID, 사람이 없으면 구역. */
-export const eventSubject = (event: EventItem) =>
-  event.world_ids[0] ?? (event.zone_id ? `구역 ${event.zone_id}` : '');
+/** 이벤트 대상 문구: 사람 ID, 사람이 없으면 구역 이름(모르면 `구역`). */
+export const eventSubject = (event: EventItem, zoneName: ZoneNameOf) =>
+  event.world_ids[0] ?? (event.zone_id ? zoneNameOrDefault(event.zone_id, zoneName) : '');
 
 /** 규칙 하나의 처리 상태 문구. */
 export function statusText(status: EntryStatus) {

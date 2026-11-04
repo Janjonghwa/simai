@@ -14,7 +14,7 @@ import {
   REPLAY_GAP_REASON,
   type ReplaySpatialSource,
 } from '@/features/viewer3d/replay/replaySource';
-import { riskLabel, riskPresentation, riskStyle } from '@/features/viewer3d/risk/riskPresentation';
+import { riskPresentation, riskStyle } from '@/features/viewer3d/risk/riskPresentation';
 import type { ViewerMode } from '@/features/viewer3d/types';
 import { ViewerShell } from '@/features/viewer3d/ViewerShell';
 import { act, cleanup, render } from '@testing-library/react';
@@ -113,7 +113,6 @@ describe('녹화 재생 Source', () => {
     // 활성 이벤트는 해소로 보지 않고 마지막 수신 상태로 남긴다.
     const people = risk(store, 'REPLAY').people;
     expect(people.get('w-0012')).toMatchObject({ level: 'CRITICAL', lastReceived: true });
-    expect(riskLabel(people.get('w-0012')!)).toContain('마지막 수신');
 
     // 빈 구간 안이라도 기준(500ms) 안이면 기록이 덮는 것으로 본다.
     source.seek(T0 + 3300);
@@ -159,7 +158,6 @@ describe('녹화 재생 Source', () => {
     expect(risk(store, 'LIVE').people.size).toBe(0);
     const replay = risk(store, 'REPLAY').people.get('w-0012')!;
     expect(replay).toMatchObject({ level: 'CRITICAL', source: 'REPLAY', lastReceived: false });
-    expect(riskLabel(replay)).toContain('재생');
     // 실시간 관측이 아니라 점선이다.
     expect(riskStyle(replay).dashed).toBe(true);
     // 기록에 없는 구역(z-04)은 상자를 지어내지 않고 미연결로 둔다.

@@ -32,7 +32,6 @@ import {
   AVATAR_LATE_MS,
   AVATAR_STALL_MS,
   avatarMeshStatus,
-  avatarMeshTag,
   type AvatarAssetState,
 } from '@/features/viewer3d/people/avatarMeshPolicy';
 import { applyPose, axisAngleQuaternion, PosePlayer } from '@/features/viewer3d/people/avatarPose';
@@ -178,10 +177,8 @@ describe('되돌아가기 판정', () => {
       now: over.now ?? now,
     });
 
-  it('조건이 모두 맞으면 메시로 그리고 HMR 지연을 함께 보인다', () => {
-    const s = status({});
-    expect(s).toMatchObject({ use: true, fallback: null, hmrLagMs: 300, poseAgeMs: 100 });
-    expect(avatarMeshTag(s)).toBe('메시(추정) 0.3s');
+  it('조건이 모두 맞으면 메시로 그리고 HMR 지연을 상태에 담는다', () => {
+    expect(status({})).toMatchObject({ use: true, fallback: null, hmrLagMs: 300, poseAgeMs: 100 });
   });
 
   it.each([

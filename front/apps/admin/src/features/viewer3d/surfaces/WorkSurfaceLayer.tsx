@@ -1,5 +1,4 @@
 import { useSpatialData } from '@/features/viewer3d/data/SpatialDataProvider';
-import { LabelSprite } from '@/features/viewer3d/LabelSprite';
 import { useScenePalette } from '@/features/viewer3d/sceneTheme';
 import { Selectable } from '@/features/viewer3d/Selectable';
 import { ObstacleLayer } from '@/features/viewer3d/surfaces/ObstacleLayer';
@@ -25,14 +24,6 @@ import { useStore } from 'zustand';
 
 const noRaycast = () => null;
 const pickPerson = (event: ThreeEvent<MouseEvent>) => personOnRay(event.intersections);
-// WebGL 재질은 CSS 토큰을 바로 읽지 못해 장면 전용 값을 여기에만 둔다.
-/** 이름표를 윗면에서 띄우는 높이(m). */
-const LABEL_LIFT = 0.22;
-
-/** 이름표 글. 상판 높이와 운영 형상(등록 OBB)임을 적는다. */
-export function surfaceLabel(surface: Pick<WorkSurfaceView, 'surfaceId' | 'topHeightM'>) {
-  return `${surface.surfaceId} · 상판 ${surface.topHeightM.toFixed(2)}m · 등록 OBB`;
-}
 
 /** 선분 목록(두 점씩): 윗면 둘레 4변은 따로, 세로 모서리 4개와 바닥 둘레 4변은 옅게 그린다. */
 export function surfaceOutline(surface: WorkSurfaceView): {
@@ -122,9 +113,6 @@ function WorkSurfaceVolume({
         opacity={0.55}
         raycast={noRaycast}
       />
-      <group position={worldToThree(obb.center)}>
-        <LabelSprite text={surfaceLabel(surface)} y={h / 2 + LABEL_LIFT} height={0.2} />
-      </group>
     </group>
   );
 }

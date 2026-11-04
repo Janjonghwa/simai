@@ -8,8 +8,6 @@ import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 const DOUBLE_CLICK_MS = 400;
 /** 끌기와 클릭을 가르는 이동 거리(px). R3F 가 빈 곳 클릭(onPointerMissed)에 쓰는 기준과 같다. */
 const CLICK_MAX_DRAG_PX = 2;
-/** 포인터가 이만큼(ms) 머물면 그 대상의 이름표를 보인다(관제 데모와 같다). */
-export const HOVER_LABEL_MS = 300;
 
 interface SelectableProps {
   target: ViewerTarget;
@@ -47,8 +45,6 @@ export function Selectable({ target, children, pickInstead, interactive = true }
   const store = useViewerStore();
   const { type, id } = target;
   const lastClickRef = useRef<LastClick | null>(null);
-  const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const hoverKey = useRef<string | null>(null);
 
   useEffect(() => {
     const registered = { type, id };
@@ -81,34 +77,8 @@ export function Selectable({ target, children, pickInstead, interactive = true }
     [store, pickTarget],
   );
 
-  // 투명 구역 안·뒤의 사람은 클릭처럼 사람을 먼저 잡는다. 가장 앞의 대상만 머무름을 잰다.
-  const handlePointerOver = useCallback(
-    (event: ThreeEvent<PointerEvent>) => {
-      event.stopPropagation();
-      const key = targetKey(pickTarget(event));
-      clearTimeout(hoverTimer.current);
-      hoverKey.current = key;
-      hoverTimer.current = setTimeout(() => store.getState().setHovered(key), HOVER_LABEL_MS);
-    },
-    [store, pickTarget],
-  );
-
-  const handlePointerOut = useCallback(() => {
-    clearTimeout(hoverTimer.current);
-    const key = hoverKey.current;
-    hoverKey.current = null;
-    if (key !== null && store.getState().hovered === key) store.getState().setHovered(null);
-  }, [store]);
-
-  useEffect(() => () => clearTimeout(hoverTimer.current), []);
-
   return (
-    <group
-      name={targetKey({ type, id })}
-      onClick={interactive ? handleClick : undefined}
-      onPointerOver={interactive ? handlePointerOver : undefined}
-      onPointerOut={interactive ? handlePointerOut : undefined}
-    >
+    <group name={targetKey({ type, id })} onClick={interactive ? handleClick : undefined}>
       {children}
     </group>
   );
