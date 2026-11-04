@@ -181,6 +181,7 @@ def build_replay_cache(
             clip_path=clip_weights_path,
             device=device,
             batch_size=batch_size,
+            input_format="rgb",  # crop 은 RGB 로 만든다(_crop_person_rgb). 기본 bgr 이면 채널이 뒤집힌다(S15P31A101-477)
         )
     )
     cache = LocalTrackFeatureCache()

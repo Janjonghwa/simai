@@ -1,0 +1,68 @@
+{
+  "description": "S15P31A101-463 2단계: -464(G3_full_464_supp_on) 기준선 위 COPE Re-ID 보조 연결(분할 판정·교차 swap 복원·DORMANT 재입장) 회귀 비교",
+  "base": {
+    "world": {
+      "split_suppression_enabled": true,
+      "split_suppression_radius_m": 0.6,
+      "split_suppression_require_owner": false,
+      "split_suppress_ownerless": false,
+      "split_suppression_owner_ttl_ms": 1000,
+      "lost_after_ms": 3000,
+      "confirm_hits": 3,
+      "tentative_max_gap_ms": 300,
+      "gate_max_m": 1.5,
+      "reid_enabled": false
+    },
+    "cross_view": {
+      "epipolar_gate_px": 30.0,
+      "graph_clustering_enabled": true,
+      "temporal_prior_enabled": true,
+      "pairwise_threshold_enabled": true
+    }
+  },
+  "datasets": {
+    "recording1029": {
+      "dataset_id": "recording-dev_test/rec-20261029-015512z-lobby-railing-pose",
+      "calibration_source": "G1_AUTO",
+      "is_upper_bound": false,
+      "config": {
+        "segments_s": {
+          "all2": [5, 415, 2],
+          "three": [425, 460, 3]
+        }
+      }
+    }
+  },
+  "experiments": {
+    "G3_464_reid_off": {
+      "world": {
+        "reid_enabled": false
+      }
+    },
+    "R1_463_split_only": {
+      "reid_cache": "C:/Users/SSAFY/simai-local/reid-eval/recording1029_reid_cache_rgb.npz",
+      "world": {
+        "reid_enabled": true,
+        "reid_swap_correction_enabled": false,
+        "reid_dormant_enabled": false
+      }
+    },
+    "R2_463_split_swap": {
+      "reid_cache": "C:/Users/SSAFY/simai-local/reid-eval/recording1029_reid_cache_rgb.npz",
+      "world": {
+        "reid_enabled": true,
+        "reid_swap_correction_enabled": true,
+        "reid_dormant_enabled": false
+      }
+    },
+    "R3_463_full_reid": {
+      "reid_cache": "C:/Users/SSAFY/simai-local/reid-eval/recording1029_reid_cache_rgb.npz",
+      "world": {
+        "reid_enabled": true,
+        "reid_swap_correction_enabled": true,
+        "reid_dormant_enabled": true,
+        "reid_dormant_ttl_ms": 1800000
+      }
+    }
+  }
+}
