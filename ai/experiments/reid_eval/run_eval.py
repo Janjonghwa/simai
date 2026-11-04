@@ -987,7 +987,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     print("[3/5] 10/29 녹화 키프레임 디코딩 및 COPE 특징·가시성·얼굴 게이트 평가 중...", flush=True)
-    cope_cfg = COPEConfig.from_env(device=args.device, batch_size=16)
+    cope_cfg = COPEConfig.from_env(device=args.device, batch_size=16, input_format="rgb")  # crop 은 RGB(S15P31A101-477)
     embedder = COPEEmbedder(cope_cfg)
     face_embedder = create_face_embedder(FaceConfig.from_env(min_face_size_px=40))
 
