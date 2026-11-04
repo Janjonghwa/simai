@@ -324,3 +324,20 @@ def test_temporal_edge_cost_and_resolve_temporal_graph_interface(rig: CameraRig)
     matched, ambiguous = resolve_temporal_graph([edge_with_reid, edge_far], ambiguity_margin=cfg.ambiguity_margin)
     assert matched == {"w-test-0001": cluster.association_id}
     assert ambiguous == set()
+
+
+def test_pair_threshold_snapshot_reports_source_and_samples(rig):
+    """계측: 표본이 모이기 전엔 default, 모이면 runtime, 보정 기준 오차가 있으면 calibration (S15P31A101-476)."""
+    from dataclasses import replace
+
+    assoc = CrossViewAssociator(rig)
+    snap = assoc.pair_threshold_snapshot()
+    assert snap and all(v["source"] == "default" and v["samples"] == 0 for v in snap.values())
+    key = next(iter(snap))
+    ca, cb = key.split("-", 1)
+    for r in [3.0] * assoc.config.pairwise_min_samples:
+        assoc.record_pair_residual(ca, cb, r)
+    after = assoc.pair_threshold_snapshot()[key]
+    assert after["source"] == "runtime" and after["samples"] == assoc.config.pairwise_min_samples
+    assoc.config = replace(assoc.config, pair_reprojection_error_px={key: 2.0})
+    assert assoc.pair_threshold_snapshot()[key]["source"] in ("calibration", "runtime")
