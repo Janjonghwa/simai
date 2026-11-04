@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
-import time
 
 import numpy as np
 import pytest
@@ -222,3 +222,43 @@ def test_face_aux_without_weights_keeps_body_reid(tmp_path, monkeypatch):
     assert col.state == "active"
     assert isinstance(col._face_embedder, NoOpFaceEmbedder)
     assert not col._face_embedder.available
+
+
+def test_cope_config_from_collector_config_is_valid(tmp_path):
+    """주입 없이 COPE 를 여는 실제 경로: 수집기 설정이 COPEConfig 로 오류 없이 바뀌고 RGB 입력으로 맞춰진다 (S15P31A101-472)."""
+    from simai_ai.reid.embedder import COPEConfig
+
+    col = AsyncReidCollector(ReidCollectorConfig(enabled=False))
+    col.config = ReidCollectorConfig(
+        enabled=True,
+        device="cpu",
+        cope_root=tmp_path / "cope",
+        weights_path=tmp_path / "w.pth",
+        clip_model_path=tmp_path / "clip.pt",
+    )
+    cfg = col._cope_config()
+    assert isinstance(cfg, COPEConfig)
+    assert cfg.clip_path == tmp_path / "clip.pt"
+    assert cfg.weights_path == tmp_path / "w.pth"
+    assert cfg.input_format == "rgb"
+
+
+def test_collector_opens_cope_without_injection(monkeypatch, tmp_path):
+    """COPEEmbedder 생성까지 실제 경로로 가서 active 가 된다(예전엔 TypeError 를 삼키고 disabled)."""
+    import simai_ai.reid.collector as collector_mod
+
+    seen = {}
+
+    class _Cope:
+        def __init__(self, config):
+            seen["config"] = config
+
+        def load(self):
+            seen["loaded"] = True
+
+    monkeypatch.setattr(collector_mod, "COPEEmbedder", _Cope)
+    col = AsyncReidCollector(
+        ReidCollectorConfig(enabled=True, device="cpu", clip_model_path=tmp_path / "clip.pt"), start_worker=False
+    )
+    assert col.state == "active", col.reason
+    assert seen["loaded"] and seen["config"].clip_path == tmp_path / "clip.pt"

@@ -461,7 +461,9 @@ class Perception:
         lookup = feature_lookup
         if lookup is None:
             collector = getattr(feed, "reid_collector", None)
-            if collector is not None:
+            # Re-ID 가 실제로 켜졌을 때만 특징을 넘긴다. 꺼졌는데 넘기면 world_track 이 Re-ID 켜짐처럼 분할을 억제해
+            # 꺼짐/켬 비교의 기하 기준선이 달라진다(S15P31A101-472)
+            if collector is not None and getattr(collector, "active", False):
                 lookup = getattr(collector, "lookup", None)
         self.manager = WorldTrackManager(
             WorldIdIssuer(session),
