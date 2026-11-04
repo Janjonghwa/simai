@@ -1,10 +1,8 @@
 import { useCurrentRole } from '@/features/auth/useCurrentRole';
 import { useCamSplitStore, type CamSplit } from '@/features/cctv/camSplit.store';
-import { stateText, type CameraState } from '@/features/cctv/cctv';
 import { useCctvStore } from '@/features/cctv/cctv.store';
-import { CctvMockFeed, LiveBadge, type PersonTags } from '@/features/cctv/CctvDemo';
-import { CCTV_CAMS } from '@/features/cctv/cctvMockView';
-import { DIMMED } from '@/features/cctv/tileStyle';
+import { LiveBadge } from '@/features/cctv/CctvDemo';
+import { CameraTile, StateTile } from '@/features/cctv/CctvPage';
 import { useCameraStates } from '@/features/cctv/useCameraStates';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import { AckButton } from '@/features/events/AckButton';
@@ -19,85 +17,13 @@ import { useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { Video, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 
-// 실시간 관제 오른쪽 카메라 미리보기(관제 데모의 3D | CCTV 칸). 이벤트 카드·경보 배너의 「camN로 확인」이 연다.
-// 카메라 탭, 영상(사람 ID 박스), 이 사람의 사건 요약과 경보 확인·사건 상세를 한 칸에 둔다. 영상은 관리자만 본다
-// (명세 3.3). 다른 역할은 카메라 상태만 본다. 영상은 알림·판정에 쓰지 않는다.
+// 실시간 관제 오른쪽 카메라 미리보기. 이벤트 카드·경보 배너의 「camN로 확인」이 연다.
+// 카메라 탭, CCTV 관제 화면과 같은 영상 칸, 이 사람의 사건 요약과 경보 확인·사건 상세를 한 칸에 둔다.
+// 영상은 관리자만 본다(명세 3.3). 다른 역할은 카메라 상태만 본다. 영상은 알림·판정에 쓰지 않는다.
 
-/** 위험 등급이 있는 사람만 박스 색을 입힌다(진행 중 규칙 중 가장 높은 등급). */
-function personTags(incidents: readonly Incident[]): PersonTags {
-  const tags: Record<string, PersonTags[string]> = {};
-  for (const incident of incidents) {
-    if (!incident.active || incident.target?.type !== 'person') continue;
-    const { severity } = incident;
-    if (severity === 'CRITICAL' || severity === 'HIGH' || severity === 'CAUTION') {
-      tags[incident.target.id] = severity;
-    }
-  }
-  return tags;
-}
-
-/** 관리자: 중계가 이어져 이 카메라 영상이 오면 그 영상을, 아니면 모의 화면을 그린다. */
-function AdminFeed({
-  camId,
-  down,
-  frozen,
-  tags,
-  focus,
-}: {
-  camId: string;
-  down: boolean;
-  frozen: boolean;
-  tags: PersonTags;
-  focus: string | null;
-}) {
-  const { attach } = useCctvPreview(env.VITE_CCTV_PREVIEW_URL, env.VITE_STOMP_URL);
-  const link = useCctvStore((s) => s.link);
-  const cameras = useCctvStore((s) => s.cameras);
-  const phase = useCctvStore((s) => s.views[camId]?.phase);
-  const ref = useCallback(
-    (canvas: HTMLCanvasElement | null) => attach(camId, canvas),
-    [attach, camId],
-  );
-  if (link === 'open' && cameras.includes(camId)) {
-    return (
-      <canvas
-        key={camId}
-        ref={ref}
-        aria-label={`${camId} 영상`}
-        // 흐리게는 영상 자체가 멈췄을 때만(CctvPage 와 같은 규칙, S15P31A101-400). Tier 0 정지·끊김은 위쪽 배지로 알린다
-        className={cn('size-full object-contain', phase !== 'playing' && DIMMED)}
-      />
-    );
-  }
-  return <CctvMockFeed camId={camId} down={down} frozen={frozen} tags={tags} focus={focus} />;
-}
-
-/** 관리자가 아닐 때: 영상 없이 카메라 상태만. */
-function StateFeed({
-  camId,
-  state,
-  lastClock,
-}: {
-  camId: string;
-  state: CameraState;
-  lastClock?: string;
-}) {
-  return (
-    <div
-      role="group"
-      aria-label={`${camId} 상태`}
-      className="flex size-full items-center justify-center"
-    >
-      <span
-        className={cn('text-lg', state === 'live' ? 'font-medium' : 'font-semibold text-delay')}
-      >
-        {stateText(state, lastClock)}
-      </span>
-    </div>
-  );
-}
+type Attach = ReturnType<typeof useCctvPreview>['attach'];
 
 function IncidentSummary({
   incident,
@@ -140,25 +66,36 @@ function IncidentSummary({
   );
 }
 
-function Panel({ split }: { split: CamSplit }) {
+/**
+ * 탭에 올리는 카메라: 중계가 이어졌으면 중계가 알린 카메라, 아니면 Tier 0 health 의 카메라.
+ * 이름은 이 둘이 같다(예: cam_A). 이벤트의 카메라(world 트랙)도 같은 이름이라 「cam_A로 확인」이 맞는 탭을 연다.
+ */
+function useCameraIds(relayed: boolean, healthIds: readonly string[]): readonly string[] {
+  const link = useCctvStore((s) => s.link);
+  const relayCameras = useCctvStore((s) => s.cameras);
+  return relayed && link === 'open' && relayCameras.length > 0 ? relayCameras : healthIds;
+}
+
+/** attach 가 없으면(관리자가 아님) 영상 없이 카메라 상태만 보인다. */
+function Panel({ split, attach }: { split: CamSplit; attach?: Attach }) {
   const setCam = useCamSplitStore((s) => s.setCam);
   const close = useCamSplitStore((s) => s.close);
-  const isAdmin = useCurrentRole() === 'ADMIN';
   const { entries } = useLiveEvents();
-  const { fresh, lastClock, stateOf } = useCameraStates();
+  const { cameras, fresh, lastClock, stateOf } = useCameraStates();
   const best = useRealtimeStore((s) => bestCamera(s.world?.payload.tracks, split.target));
+  const healthIds = useMemo(() => cameras.map((camera) => camera.id), [cameras]);
+  const ids = useCameraIds(attach !== undefined, healthIds);
 
   const incidents = useMemo(() => groupIncidents(entries), [entries]);
   const { target } = split;
   const incident = target
     ? incidents.find((i) => i.target?.type === target.type && i.target.id === target.id)
     : undefined;
-  const tags = useMemo(() => personTags(incidents), [incidents]);
 
-  const cam = CCTV_CAMS.find((c) => c.id === split.cam) ?? CCTV_CAMS[0]!;
-  const state = stateOf(cam.id);
+  // 요청한 카메라가 목록에 없으면 첫 카메라를 보인다.
+  const camId = ids.includes(split.cam) ? split.cam : ids[0];
+  const state = camId === undefined ? undefined : stateOf(camId);
   const down = state === 'down';
-  const focus = split.target?.type === 'person' ? split.target.id : null;
 
   // Esc 로 닫는다(입력 칸에 있을 때는 제외).
   useEffect(() => {
@@ -178,9 +115,7 @@ function Panel({ split }: { split: CamSplit }) {
     >
       <div className="flex items-center gap-2">
         <Video aria-hidden className="size-[18px]" />
-        <b>
-          <span className="font-mono">{cam.id}</span> {cam.dir} 모서리
-        </b>
+        {camId && <b className="font-mono">{camId}</b>}
         <span className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-surface-2 px-2 py-0.5 font-mono text-xs">
           {down ? '끊김' : fresh ? <LiveBadge frozen={false} /> : <LiveBadge frozen />}
         </span>
@@ -197,18 +132,18 @@ function Panel({ split }: { split: CamSplit }) {
       <div
         role="tablist"
         aria-label="카메라"
-        className="grid grid-cols-4 gap-1 rounded-lg bg-surface-2 p-1"
+        className="grid auto-cols-fr grid-flow-col gap-1 rounded-lg bg-surface-2 p-1"
       >
-        {CCTV_CAMS.map((c) => {
-          const dn = stateOf(c.id) === 'down';
-          const selected = c.id === cam.id;
+        {ids.map((id) => {
+          const dn = stateOf(id) === 'down';
+          const selected = id === camId;
           return (
             <button
-              key={c.id}
+              key={id}
               type="button"
               role="tab"
               aria-selected={selected}
-              onClick={() => setCam(c.id)}
+              onClick={() => setCam(id)}
               className={cn(
                 'inline-flex items-center justify-center gap-1.5 rounded-md py-1.5 text-sm',
                 selected
@@ -217,10 +152,10 @@ function Panel({ split }: { split: CamSplit }) {
                 dn && 'text-delay',
               )}
             >
-              <span className="font-mono">{c.id}</span>
+              <span className="font-mono">{id}</span>
               {dn ? (
                 <em className="text-xs not-italic">끊김</em>
-              ) : c.id === best ? (
+              ) : id === best ? (
                 <em className="rounded bg-primary/15 px-1 text-xs font-semibold text-primary not-italic">
                   추천
                 </em>
@@ -229,21 +164,27 @@ function Panel({ split }: { split: CamSplit }) {
           );
         })}
       </div>
-      <div className="aspect-video w-full overflow-hidden rounded-lg bg-slate-900">
-        {isAdmin ? (
-          <AdminFeed
-            key={cam.id}
-            camId={cam.id}
-            down={down}
-            frozen={!fresh}
-            tags={tags}
-            focus={focus}
+      <div className="aspect-video w-full overflow-hidden rounded-lg">
+        {camId === undefined || state === undefined ? (
+          <p
+            role="status"
+            className="flex size-full items-center justify-center bg-surface-2 text-sm text-muted-foreground"
+          >
+            카메라 상태를 받지 못했습니다
+          </p>
+        ) : attach ? (
+          <CameraTile
+            key={camId}
+            cameraId={camId}
+            attach={attach}
+            state={state}
+            lastClock={lastClock}
           />
         ) : (
-          <StateFeed camId={cam.id} state={state} lastClock={lastClock} />
+          <StateTile cameraId={camId} state={state} lastClock={lastClock} />
         )}
       </div>
-      {down && best && best !== cam.id && (
+      {down && best && best !== camId && ids.includes(best) && (
         <Button size="sm" onClick={() => setCam(best)}>
           {best}로 보기
         </Button>
@@ -260,8 +201,16 @@ function Panel({ split }: { split: CamSplit }) {
   );
 }
 
+/** 관리자: 영상 중계에 한 번만 붙고, 카메라 탭을 바꿔도 같은 연결을 쓴다. 패널을 닫으면 끊는다. */
+function AdminPanel({ split }: { split: CamSplit }) {
+  const { attach } = useCctvPreview(env.VITE_CCTV_PREVIEW_URL, env.VITE_STOMP_URL);
+  return <Panel split={split} attach={attach} />;
+}
+
 /** 열려 있을 때만 그린다. 실시간 관제(이벤트 패널이 있는 화면)에서만 둔다. */
 export function CamSplitPanel() {
   const split = useCamSplitStore((s) => s.split);
-  return split ? <Panel split={split} /> : null;
+  const isAdmin = useCurrentRole() === 'ADMIN';
+  if (!split) return null;
+  return isAdmin ? <AdminPanel split={split} /> : <Panel split={split} />;
 }

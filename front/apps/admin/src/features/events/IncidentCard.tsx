@@ -1,9 +1,9 @@
 import { CameraButton } from '@/features/events/CameraButton';
 import { isActive, needsConfirmation } from '@/features/events/entries';
 import { ConfirmBadge, DelayedBadge, StateChip } from '@/features/events/EventBadges';
-import { entryEtaLine, ruleName } from '@/features/events/format';
+import { entryEtaLine } from '@/features/events/format';
 import { firstActiveRaisedAt, topEntry, type Incident } from '@/features/events/incidents';
-import { cardChip, placeLine, targetLabel } from '@/features/events/incidentView';
+import { cardChip, cardTitle, targetLabel } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { Since } from '@/features/events/Since';
 import type { Severity } from '@/features/events/types';
@@ -12,32 +12,59 @@ import { useEffect, useRef } from 'react';
 
 interface IncidentCardProps {
   incident: Incident;
+  /** 최근 해소 칸 카드에서만: 같은 대상·규칙·구역에서 발생한 횟수. 2 이상이면 「N회 발생」을 보인다. */
+  occurrences?: number;
   selected: boolean;
-  zoneName?: (zoneId: string) => string | undefined;
   onSelect: (incident: Incident) => void;
   onOpen: (eventId: string) => void;
 }
 
-/** 등급 색: 위험 빨강, 경고 주황, 주의 노랑, 안내 회색. 띠는 늘 있고, 테두리는 진행 중인 묶음에만 있다. */
-const SEVERITY_LOOK: Record<Severity, { bar: string; ring?: string }> = {
-  CRITICAL: { bar: 'bg-sev-critical', ring: 'ring-1 ring-sev-critical ring-inset' },
-  HIGH: { bar: 'bg-sev-high', ring: 'ring-1 ring-sev-high ring-inset' },
-  CAUTION: { bar: 'bg-sev-caution', ring: 'ring-1 ring-sev-caution ring-inset' },
-  INFO: { bar: 'bg-faint' },
+/**
+ * 등급 색: 위험 빨강, 경고 주황, 주의 노랑, 안내 회색. 띠는 늘 있고, 테두리는 진행 중인 묶음에만 있다.
+ * 작업자 칩은 진행 중이면 채우고(chip) 해소되면 테두리만 남긴다(chipDone).
+ */
+const SEVERITY_LOOK: Record<
+  Severity,
+  { bar: string; ring?: string; chip: string; chipDone: string }
+> = {
+  CRITICAL: {
+    bar: 'bg-sev-critical',
+    ring: 'ring-1 ring-sev-critical ring-inset',
+    chip: 'bg-sev-critical text-background',
+    chipDone: 'border-sev-critical text-sev-critical',
+  },
+  HIGH: {
+    bar: 'bg-sev-high',
+    ring: 'ring-1 ring-sev-high ring-inset',
+    chip: 'bg-sev-high text-background',
+    chipDone: 'border-sev-high text-sev-high',
+  },
+  CAUTION: {
+    bar: 'bg-sev-caution',
+    ring: 'ring-1 ring-sev-caution ring-inset',
+    chip: 'bg-sev-caution text-background',
+    chipDone: 'border-sev-caution text-sev-caution',
+  },
+  INFO: {
+    bar: 'bg-faint',
+    chip: 'bg-faint text-background',
+    chipDone: 'border-faint text-muted-foreground',
+  },
 };
 
 /**
  * 한 사람(또는 구역)에 걸린 규칙 묶음 카드(명세 7.4, 관제 데모의 IncCard).
- * - 머리줄: 등급 배지 · 대표 규칙(가장 높은 등급) 이름, 오른쪽에 처리 상태 칩 하나.
- * - 확인 필요 · 지연 알림 꼬리표(심각도와 함께 보여야 하는 것만, 명세 7.3).
- * - 둘째 줄: 대상 · 구역 · 경과(N초 전). 셋째 줄은 진입 예측일 때만. 카메라가 있으면 카메라 버튼.
- * 나머지 규칙 · 개구부 수치 · 처리는 사건 상세에서 본다. 머리줄은 처음 누르면 선택(3D 초점),
+ * - 첫 줄: 작업자 칩(해소 카드는 「N회 발생」도), 오른쪽에 처리 상태 칩 하나.
+ * - 둘째 줄: 등급 배지 · 대표 규칙(가장 높은 등급) 이름 · 구역.
+ * - 확인 필요 · 지연 알림 꼬리표(심각도와 함께 보여야 하는 것만, 명세 7.3). 셋째 줄은 진입 예측일 때만.
+ * - 진행 중이면 경과(N초 전)와 카메라 버튼.
+ * 나머지 규칙 · 개구부 수치 · 처리는 사건 상세에서 본다. 머리는 처음 누르면 선택(3D 초점),
  * 이미 선택된 카드를 다시 누르면 사건 상세를 연다.
  */
 export function IncidentCard({
   incident,
+  occurrences = 1,
   selected,
-  zoneName,
   onSelect,
   onOpen,
 }: IncidentCardProps) {
@@ -81,13 +108,30 @@ export function IncidentCard({
           type="button"
           aria-pressed={selected}
           onClick={() => (selected ? onOpen(top.event.event_id) : onSelect(incident))}
-          className="-mx-1 flex items-center justify-between gap-2 rounded-md px-1 text-left hover:bg-surface-3"
+          className="-mx-1 flex flex-col gap-1.5 rounded-md px-1 py-0.5 text-left hover:bg-surface-3"
         >
+          <span className="flex items-center justify-between gap-2">
+            <span className="flex min-w-0 items-center gap-2">
+              <span
+                className={cn(
+                  'rounded-md border-2 border-transparent px-2 py-px font-mono text-sm font-bold',
+                  incident.active ? look.chip : look.chipDone,
+                )}
+              >
+                {targetLabel(incident.target)}
+              </span>
+              {occurrences > 1 && (
+                <span className="text-sm whitespace-nowrap text-muted-foreground">
+                  {occurrences}회 발생
+                </span>
+              )}
+            </span>
+            {chip && <StateChip chip={chip} severity={incident.severity} />}
+          </span>
           <span className="flex min-w-0 items-center gap-2">
             <SeverityBadge severity={top.event.severity} />
-            <b className="truncate">{ruleName(top.event.rule_id)}</b>
+            <b className="truncate">{cardTitle(incident)}</b>
           </span>
-          {chip && <StateChip chip={chip} severity={incident.severity} />}
         </button>
         {(check || delayed) && (
           <div className="flex flex-wrap gap-1.5">
@@ -95,11 +139,10 @@ export function IncidentCard({
             {delayed && <DelayedBadge compact />}
           </div>
         )}
-        <p className="flex items-baseline justify-between gap-2 text-sm text-muted-foreground">
-          <span className="min-w-0 truncate">{placeLine(incident, zoneName)}</span>
-          {raisedAt !== null && <Since raisedAt={raisedAt} className="shrink-0 text-xs" />}
-        </p>
         {eta && <p className="text-sm">{eta}</p>}
+        {raisedAt !== null && (
+          <Since raisedAt={raisedAt} className="self-end text-xs text-muted-foreground" />
+        )}
         <CameraButton target={incident.active ? incident.target : null} variant="card" />
       </article>
     </li>

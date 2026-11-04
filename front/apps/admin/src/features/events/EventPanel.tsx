@@ -1,18 +1,22 @@
-import { RECENT_RESOLVED_INCIDENTS } from '@/features/events/constants';
 import type { EventEntry } from '@/features/events/entries';
 import { EventDetail } from '@/features/events/EventDetail';
 import { IncidentCard } from '@/features/events/IncidentCard';
-import { groupIncidents, incidentOf, type Incident } from '@/features/events/incidents';
+import {
+  eventSections,
+  incidentOf,
+  type EventSections,
+  type Incident,
+} from '@/features/events/incidents';
 import { movePanel, PANEL_GAP, PANEL_TOP, type PanelBox } from '@/features/events/panelBox';
 import { PanelGrip } from '@/features/events/PanelGrip';
 import { measure, type Measured } from '@/features/events/panelMeasure';
 import { useAutoFold } from '@/features/events/useAutoFold';
 import { useFloatingBox } from '@/features/events/useFloatingBox';
 import { usePanelDrag } from '@/features/events/usePanelDrag';
-import { useZones } from '@/features/zones/useZones';
+import { selectTrackedCount, useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
-import { useCallback, useEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
 
 /** 기본 자리: 오른쪽 위(PANEL_TOP·PANEL_GAP 과 같다), 폭 340px. 상단 알림이 비키는 간격(panelBox)도 이 폭을 전제한다. */
 const PANEL_CLASS =
@@ -20,14 +24,7 @@ const PANEL_CLASS =
 
 const NOTE_CLASS = 'mx-2 my-4 text-sm text-faint';
 
-/** 진행 중 묶음 전부와 최근 해소된 묶음 몇 건(진행 중이 앞선다). */
-function visibleIncidents(entries: readonly EventEntry[]): Incident[] {
-  const all = groupIncidents(entries);
-  return [
-    ...all.filter((i) => i.active),
-    ...all.filter((i) => !i.active).slice(0, RECENT_RESOLVED_INCIDENTS),
-  ];
-}
+const hasCards = ({ active, resolved }: EventSections) => active.length + resolved.length > 0;
 
 /** 옮긴 자리의 인라인 스타일. 접으면 높이는 머리줄만큼이다. */
 const boxStyle = (box: PanelBox, folded: boolean): CSSProperties => ({
@@ -58,34 +55,63 @@ function FoldButton({ folded, onToggle }: { folded: boolean; onToggle: () => voi
   );
 }
 
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section aria-label={title} className="flex flex-col gap-2">
+      <h3 className="px-1 text-[15px] font-bold">{title}</h3>
+      <ul className="flex flex-col gap-2 p-0.5">{children}</ul>
+    </section>
+  );
+}
+
 interface EventListProps {
-  incidents: Incident[];
+  sections: EventSections;
   loaded: boolean;
   failed: boolean;
   selectedKey: string | null;
-  zoneName: (zoneId: string) => string | undefined;
   onSelect: (incident: Incident) => void;
   onOpen: (eventId: string) => void;
 }
 
-/** 묶음 카드 목록. 비었으면 상태(없음·받는 중)를 한 줄로 보인다. 받지 못했으면 패널 위의 실패 문구가 대신한다. */
-function EventList({ incidents, loaded, failed, selectedKey, ...card }: EventListProps) {
-  if (incidents.length > 0) {
-    return (
-      <ul className="flex flex-col gap-2 p-0.5">
-        {incidents.map((incident) => (
-          <IncidentCard
-            key={incident.key}
-            incident={incident}
-            selected={incident.key === selectedKey}
-            {...card}
-          />
-        ))}
-      </ul>
-    );
+/**
+ * 「진행 중」과 「최근 해소」 두 칸의 카드 목록(빈 칸은 그리지 않는다). 둘 다 비었으면 상태(없음·받는 중)를 한 줄로 보인다.
+ * 받지 못했으면 패널 위의 실패 문구가 대신한다.
+ */
+function EventList({ sections, loaded, failed, selectedKey, ...card }: EventListProps) {
+  const { active, resolved } = sections;
+  if (!hasCards(sections)) {
+    if (loaded) return <p className={NOTE_CLASS}>활성 이벤트 없음</p>;
+    return failed ? null : <p className={NOTE_CLASS}>불러오는 중…</p>;
   }
-  if (loaded) return <p className={NOTE_CLASS}>활성 이벤트 없음</p>;
-  return failed ? null : <p className={NOTE_CLASS}>불러오는 중…</p>;
+  return (
+    <div className="flex flex-col gap-3 p-0.5">
+      {active.length > 0 && (
+        <Section title="진행 중">
+          {active.map((incident) => (
+            <IncidentCard
+              key={incident.key}
+              incident={incident}
+              selected={incident.key === selectedKey}
+              {...card}
+            />
+          ))}
+        </Section>
+      )}
+      {resolved.length > 0 && (
+        <Section title="최근 해소">
+          {resolved.map(({ id, incident, occurrences }) => (
+            <IncidentCard
+              key={id}
+              incident={incident}
+              occurrences={occurrences}
+              selected={incident.key === selectedKey}
+              {...card}
+            />
+          ))}
+        </Section>
+      )}
+    </div>
+  );
 }
 
 interface EventPanelProps {
@@ -103,9 +129,9 @@ interface EventPanelProps {
 }
 
 /**
- * 실시간 관제 오른쪽 이벤트 패널: 사람별 묶음 목록(명세 13.4, FR-4)과 사건 상세 창.
+ * 실시간 관제 오른쪽 이벤트 패널: 머리줄의 작업자·사건 수, 「진행 중」·「최근 해소」 카드 목록(명세 13.4, FR-4)과 사건 상세 창.
  * 머리줄을 끌어 옮기고(두 번 누르면 제자리), 가장자리 손잡이로 크기를 바꾸고, ▾ 로 접는다(관제 데모와 같다).
- * 보이는 묶음이 있으면 머리줄에 「모두 지우기」가 있다.
+ * 보이는 카드가 있으면 머리줄에 「모두 지우기」가 있다.
  */
 export function EventPanel({
   entries,
@@ -117,10 +143,8 @@ export function EventPanel({
   onOpen,
   onClearAll,
 }: EventPanelProps) {
-  const incidents = useMemo(() => visibleIncidents(entries), [entries]);
-  const activeCount = incidents.filter((i) => i.active).length;
-  const { zones } = useZones();
-  const zoneName = useCallback((id: string) => zones.find((z) => z.zoneId === id)?.name, [zones]);
+  const sections = useMemo(() => eventSections(entries), [entries]);
+  const trackedCount = useRealtimeStore(selectTrackedCount);
   const opened = useMemo(
     () => (openEventId ? incidentOf(entries, openEventId) : undefined),
     [entries, openEventId],
@@ -135,7 +159,7 @@ export function EventPanel({
   const panel = useRef<HTMLElement>(null);
   const { box, setBox, reset } = useFloatingBox(panel);
   // 목록을 받았는데 진행·최근 해소가 모두 0이면 접는다. 목록을 못 받았거나 받는 중이면 접지 않는다(실패 문구를 가리지 않는다).
-  const { folded, setFolded } = useAutoFold(loaded && incidents.length === 0);
+  const { folded, setFolded } = useAutoFold(loaded && !hasCards(sections));
   // 끌기 시작 자리. 접힌 패널은 머리줄 높이로 재지므로 펼친 높이(옮긴 높이, 없으면 기본 자리 높이)로 바꾼다.
   const startOf = (): Measured => {
     const now = measure(panel.current);
@@ -167,10 +191,10 @@ export function EventPanel({
           )}
         >
           <b className="text-[15px]">
-            이벤트<span className="ml-1 font-mono">{activeCount}</span>
+            작업자 {trackedCount}명 · 사건 {sections.active.length}건
           </b>
           <div className="ml-auto flex items-center gap-1">
-            {incidents.length > 0 && (
+            {hasCards(sections) && (
               <Button variant="secondary" size="sm" onClick={onClearAll}>
                 모두 지우기
               </Button>
@@ -187,11 +211,10 @@ export function EventPanel({
             )}
             <div className="min-h-0 flex-1 overflow-y-auto">
               <EventList
-                incidents={incidents}
+                sections={sections}
                 loaded={loaded}
                 failed={failed}
                 selectedKey={selectedKey}
-                zoneName={zoneName}
                 onSelect={onSelect}
                 onOpen={onOpen}
               />

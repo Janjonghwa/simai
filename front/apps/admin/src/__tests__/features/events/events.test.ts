@@ -2,10 +2,12 @@ import {
   acknowledgedAt,
   bestCamera,
   cardChip,
+  cardTitle,
   confirmationText,
   ec2Now,
   elapsedLabel,
   entryEtaLine,
+  eventSections,
   firstActiveRaisedAt,
   firstRaisedAt,
   groupIncidents,
@@ -15,7 +17,6 @@ import {
   mergeEvent,
   metricLabels,
   needsConfirmation,
-  placeLine,
   upsertEvents,
   type EventEntry,
 } from '@/features/events/events';
@@ -206,6 +207,70 @@ describe('groupIncidents', () => {
   });
 });
 
+describe('eventSections', () => {
+  const done = (change: Partial<EventItem>) =>
+    entry({ lifecycle: 'RESOLVED', resolved_at: T + 1_000, updated_at: T + 1_000, ...change });
+
+  it('진행 중 사건과 해소된 묶음을 두 칸으로 나눈다', () => {
+    const { active, resolved } = eventSections([
+      entry({ event_id: 'live', world_ids: ['w-1'] }),
+      done({ event_id: 'old', world_ids: ['w-2'] }),
+    ]);
+    expect(active.map((i) => i.key)).toEqual(['person:w-1']);
+    expect(resolved.map((g) => g.incident.key)).toEqual(['person:w-2']);
+  });
+
+  it('같은 사람이 진행 중이면서 지난 해소도 있으면 두 칸에 모두 나온다', () => {
+    const { active, resolved } = eventSections([
+      entry({ event_id: 'live', world_ids: ['w-1'] }),
+      done({ event_id: 'old', rule_id: 'R1', severity: 'HIGH', world_ids: ['w-1'] }),
+    ]);
+    expect(active.map((i) => i.key)).toEqual(['person:w-1']);
+    expect(resolved.map((g) => g.incident.key)).toEqual(['person:w-1']);
+    expect(resolved[0]?.incident.active).toBe(false);
+  });
+
+  it('해소 묶음은 같은 사람의 같은 규칙·구역만 한 카드이고, 발생 횟수를 센다', () => {
+    const { resolved } = eventSections([
+      done({ event_id: 'a', updated_at: T + 100, resolved_at: T + 100 }),
+      done({ event_id: 'b', updated_at: T + 200, resolved_at: T + 200 }),
+      done({ event_id: 'c', rule_id: 'R1', severity: 'HIGH', zone_id: 'z-02' }),
+      done({ event_id: 'd', zone_id: 'z-05', updated_at: T + 50, resolved_at: T + 50 }),
+    ]);
+    // 규칙이 다르거나 구역이 다르면 같은 사람이어도 다른 카드다.
+    expect(resolved).toHaveLength(3);
+    expect(new Set(resolved.map((g) => g.id)).size).toBe(3);
+    expect(resolved.map((g) => g.occurrences).sort()).toEqual([1, 1, 2]);
+  });
+
+  it('발생 횟수는 해소 뒤 곧바로 다시 열린(resume) 횟수를 더한다', () => {
+    const { resolved } = eventSections([
+      done({ event_id: 'a', resume_count: 2, updated_at: T + 100, resolved_at: T + 100 }),
+      done({ event_id: 'b', updated_at: T + 200, resolved_at: T + 200 }),
+    ]);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]?.occurrences).toBe(4);
+  });
+
+  it('해소 칸은 최근에 해소된 묶음부터 네 건만 보인다', () => {
+    const entries = [1, 2, 3, 4, 5, 6].map((n) =>
+      done({
+        event_id: `r${n}`,
+        world_ids: [`w-${n}`],
+        updated_at: T + n * 100,
+        resolved_at: T + n * 100,
+      }),
+    );
+    const { resolved } = eventSections(entries);
+    expect(resolved.map((g) => g.incident.key)).toEqual([
+      'person:w-6',
+      'person:w-5',
+      'person:w-4',
+      'person:w-3',
+    ]);
+  });
+});
+
 describe('표시 값', () => {
   it('지표는 단위를 붙여 보인다', () => {
     expect(metricLabels({ edge_distance_m: 0.823, height_diff_m: 2.1, dwell_s: 1.44 })).toEqual([
@@ -237,6 +302,23 @@ describe('사건 상세', () => {
   it('누른 이벤트가 든 묶음을 찾고, 목록에 없으면 없다', () => {
     expect(incidentOf([r2, r1], 'r1')?.key).toBe('person:w-1');
     expect(incidentOf([r2, r1], 'missing')).toBeUndefined();
+  });
+
+  it('사람별 묶음에서 잘린 해소 이벤트도 해소 묶음으로 찾는다', () => {
+    const resolved = [1, 2, 3].map((n) =>
+      entry({
+        event_id: `d${n}`,
+        rule_id: `R${n}`,
+        lifecycle: 'RESOLVED',
+        resolved_at: T + n * 100,
+        updated_at: T + n * 100,
+      }),
+    );
+    // 사람별 묶음은 최근 해소 두 건(d3·d2)만 담지만, 가장 오래된 d1 카드도 상세를 연다.
+    expect(groupIncidents(resolved)[0]?.entries.map((e) => e.event.event_id)).toEqual(['d3', 'd2']);
+    const found = incidentOf(resolved, 'd1');
+    expect(found?.key).toBe('person:w-1');
+    expect(found?.entries.map((e) => e.event.event_id)).toEqual(['d1']);
   });
 
   it('타임라인은 규칙마다 발생·확인·해소를 시각 순으로 늘어놓는다', () => {
@@ -324,21 +406,21 @@ describe('카드 표시 계산', () => {
     expect(cardChip(incidentOfEntries(entry({ severity: 'INFO' })))).toBeNull();
   });
 
-  it('장소 줄: 대상 · 첫 구역은 번호와 이름, 나머지 구역은 번호만', () => {
-    const names: Record<string, string> = { 'z-04': '개구부', 'z-02': '단상' };
-    const name = (id: string) => names[id];
+  it('카드 제목: 대표 규칙(가장 높은 등급)의 이름 · 구역 번호', () => {
     const incident = incidentOfEntries(
       entry({ event_id: 'a', zone_id: 'z-04' }),
       entry({ event_id: 'b', rule_id: 'R1', severity: 'HIGH', zone_id: 'z-02' }),
-      entry({ event_id: 'c', rule_id: 'R3', severity: 'HIGH', zone_id: 'z-04' }),
     );
-    expect(placeLine(incident, name)).toBe('w-1 · z-04 개구부 · z-02');
-    expect(placeLine(incident)).toBe('w-1 · z-04 · z-02');
+    expect(cardTitle(incident)).toBe('개구부·가장자리 근접 · z-04');
   });
 
-  it('구역이 대상인 묶음은 그 구역을 먼저 적고 되풀이하지 않는다', () => {
-    const incident = incidentOfEntries(entry({ world_ids: [], zone_id: 'z-04' }));
-    expect(placeLine(incident, () => '개구부')).toBe('z-04 개구부');
+  it('구역이 대상인 묶음은 제목에서 구역을 되풀이하지 않고, 구역이 없으면 규칙 이름만이다', () => {
+    expect(cardTitle(incidentOfEntries(entry({ world_ids: [], zone_id: 'z-04' })))).toBe(
+      '개구부·가장자리 근접',
+    );
+    expect(cardTitle(incidentOfEntries(entry({ zone_id: undefined })))).toBe(
+      '개구부·가장자리 근접',
+    );
   });
 
   it('카메라는 사람이 지금 담긴 카메라 중 첫 번째이고, 사람이 아니거나 없으면 없다', () => {

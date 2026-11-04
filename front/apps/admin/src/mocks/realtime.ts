@@ -1,9 +1,7 @@
-import { EVENTS_TOPIC, HEALTH_TOPIC, WORLD_TOPIC } from '@/lib/stomp';
-import type { EventsMock } from '@/mocks/events';
+import { HEALTH_TOPIC, WORLD_TOPIC } from '@/lib/stomp';
 import { readLiveUser, unauthorized } from '@/mocks/problem';
 import {
   MOCK_CONFIG,
-  riskEventsBetween,
   viewerHealthAt,
   worldStateAt,
   type MockConfig,
@@ -12,10 +10,9 @@ import {
 import type { StompBroker } from '@/mocks/stompBroker';
 import { http, HttpResponse } from 'msw/http';
 
-// 개발 서버 mock 송출: world 10Hz, health 1Hz, 위험 이벤트는 40초 주기 시나리오(realtimeScenario).
+// 개발 서버 mock 송출: world 10Hz, health 1Hz. 위험 이벤트는 저절로 만들지 않는다.
 const WORLD_MS = 100;
 const HEALTH_MS = 1000;
-const EVENTS_MS = 250;
 
 export interface RealtimeMock {
   /**
@@ -29,7 +26,6 @@ export interface RealtimeMock {
   drop(): void;
   /**
    * 장애를 흉내 낸다(명세 FR-11). 그때부터 world 가 오지 않고, 3초 뒤 EC2 가 health 로 알린다. null 이면 복구한다.
-   * 위험 이벤트는 그대로 흘린다(흉내를 단순하게 둔다).
    */
   outage(kind: MockOutage | null): void;
   /** Tier 0 가 이전 Scene 으로 판정하는 상태(명세 FR-12)를 켜고 끈다. */
@@ -44,13 +40,11 @@ export interface RealtimeMock {
 
 export function startRealtimeMock(
   broker: StompBroker,
-  events: Pick<EventsMock, 'record'>,
   now: () => number = Date.now,
   // 구성 묶음 상태(발행·ACK). 구역 mock 이 정한다(mocks/zones).
   config: () => MockConfig = () => MOCK_CONFIG,
 ): RealtimeMock {
   let healthPausedUntil = 0;
-  let lastEventCheck = now();
   let fault: { kind: MockOutage; since: number } | undefined;
   let staleScene = false;
   // 연결이 없으면(로그인 전·로그아웃 뒤) 메시지를 만들지 않는다.
@@ -69,22 +63,7 @@ export function startRealtimeMock(
     if (live() && t >= healthPausedUntil) broker.publish(HEALTH_TOPIC, healthAt(t));
   }
 
-  function publishEvents() {
-    const t = now();
-    const connected = live();
-    // 저장소에는 늘 반영한다. 로그인하면 목록(GET /api/events)으로 지금 상태를 받는다.
-    for (const message of riskEventsBetween(lastEventCheck, t)) {
-      const stored = events.record(message);
-      if (connected) broker.publish(EVENTS_TOPIC, stored);
-    }
-    lastEventCheck = t;
-  }
-
-  const timers = [
-    setInterval(publishWorld, WORLD_MS),
-    setInterval(publishHealth, HEALTH_MS),
-    setInterval(publishEvents, EVENTS_MS),
-  ];
+  const timers = [setInterval(publishWorld, WORLD_MS), setInterval(publishHealth, HEALTH_MS)];
 
   return {
     handlers: [

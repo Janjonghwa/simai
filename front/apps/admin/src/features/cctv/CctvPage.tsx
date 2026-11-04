@@ -86,7 +86,8 @@ function StateBadge({
   );
 }
 
-function CameraTile({
+/** 카메라 영상 칸. 이 화면의 4분할과 실시간 관제의 「cam 으로 확인」 패널이 함께 쓴다. */
+export function CameraTile({
   cameraId,
   attach,
   state,
@@ -97,7 +98,8 @@ function CameraTile({
   attach: Attach;
   state: CameraState;
   lastClock?: string;
-  wall: WallTile;
+  /** 크게 보기 배치(CctvWall)에서만. 없으면 누르는 칸이 아니라 영상만 보인다. */
+  wall?: WallTile;
 }) {
   const phase = useCctvStore((s) => s.views[cameraId]?.phase);
   const link = useCctvStore((s) => s.link);
@@ -106,13 +108,8 @@ function CameraTile({
     (canvas: HTMLCanvasElement | null) => attach(cameraId, canvas),
     [attach, cameraId],
   );
-  return (
-    <button
-      type="button"
-      onClick={wall.toggle}
-      aria-label={`${cameraId} ${wall.focused ? '작게 보기' : '크게 보기'}`}
-      className={cn(TILE_FRAME, 'bg-surface-2', tileZoom(wall.focused))}
-    >
+  const content = (
+    <>
       <canvas
         ref={ref}
         aria-label={`${cameraId} 영상`}
@@ -126,12 +123,23 @@ function CameraTile({
         <FrameAge cameraId={cameraId} />
       </span>
       <StateBadge cameraId={cameraId} state={state} lastClock={lastClock} />
+    </>
+  );
+  if (!wall) return <div className={cn(TILE_FRAME, 'bg-surface-2')}>{content}</div>;
+  return (
+    <button
+      type="button"
+      onClick={wall.toggle}
+      aria-label={`${cameraId} ${wall.focused ? '작게 보기' : '크게 보기'}`}
+      className={cn(TILE_FRAME, 'bg-surface-2', tileZoom(wall.focused))}
+    >
+      {content}
     </button>
   );
 }
 
 /** 관리자가 아닐 때: 영상 없이 카메라 상태만 보인다. */
-function StateTile({
+export function StateTile({
   cameraId,
   state,
   lastClock,
