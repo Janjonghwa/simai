@@ -349,7 +349,7 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
   const draftsList = zoneDraftsQuery.data?.drafts ?? [];
 
   return (
-    <>
+    <div className="flex shrink-0 flex-col gap-3 pb-[90px]">
       <PageTitle>설치 · 보정</PageTitle>
       <div className="flex flex-wrap items-center gap-3">
         {stage === 0 ? (
@@ -621,6 +621,6 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
       )}
 
       <RulesPanel />
-    </>
+    </div>
   );
 }

@@ -113,6 +113,14 @@ describe('세팅 화면 재진입', () => {
 });
 
 describe('설치 · 보정 1단계 화면', () => {
+  it('본문은 줄어들지 않는 한 덩어리로 묶고 하단 주 메뉴 여백을 둔다', () => {
+    const { container } = renderSetupPage();
+    const page = container.firstElementChild!;
+    expect(page.classList.contains('shrink-0')).toBe(true);
+    expect(page.className).toContain('pb-[90px]');
+    expect(page.contains(screen.getByLabelText('cam1 높이 (m)'))).toBe(true);
+  });
+
   it('보정 단계 아래에 규칙 현황과 실시간 CCTV 4칸을 보인다(관리자가 아닌 역할도)', async () => {
     renderSetupPage();
     expect(await screen.findByRole('table')).toBeTruthy();

@@ -121,6 +121,7 @@ export interface CoverageCameraView {
   status: CameraReceptionStatus;
   statusLabel: string;
   guideText: string | null;
+  angleLabel: string;
   tone: SetupTone;
 }
 
@@ -194,6 +195,12 @@ export function deriveStep1Coverage(
 
   const noVideoCameras: string[] = [];
   const staleCameras: string[] = [];
+  const resultFresh =
+    response?.status === 'OK' &&
+    !response.stale &&
+    !fetchError &&
+    latest !== null &&
+    latest.connectivity !== 'UNKNOWN';
 
   const guideByCam = new Map<string, string>();
   for (const g of latest?.guides ?? []) {
@@ -213,6 +220,7 @@ export function deriveStep1Coverage(
       status,
       statusLabel: latest ? CAMERA_STATUS_LABEL[status] : '확인 중',
       guideText: guideByCam.get(id) ?? null,
+      angleLabel: guideByCam.get(id) ?? (resultFresh && item?.status === 'OK' ? '각도 양호' : '—'),
       tone: latest ? cameraStatusTone(status) : 'idle',
     };
   });
