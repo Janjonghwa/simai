@@ -92,6 +92,7 @@ bash deploy/scripts/check_image.sh simai/risk-engine:$TAG         # 벡터·비�
 ```
 
 - Tier 0 이미지는 풀면 약 18.7GB, 통합 이미지는 약 24.3GB 다(2026-10-23 노트북 빌드, S15P31A101-246: torch 2.11.0·onnxruntime-gpu·cupy 제외. 층별 크기는 `docs/design/unified-env.md` "빌드 결과"). 이전 Tier 0 는 압축 약 7.9GB·풀면 약 21GB 였다. 처음 빌드는 받기가 대부분(3MB/s 망에서 약 90분), 이후에는 uv 캐시 마운트로 바뀐 층만 다시 만든다.
+- **Re-ID(S15P31A101-471).** Tier 0·통합 이미지는 `--extra reid`(timm·yacs·ftfy·einops 등, torch 는 tier0 와 같은 판)를 함께 설치한다. COPE 저장소는 LICENSE 가 없어 이미지에 넣지 않는다 — 세션 준비 때 Pod `/srv/simai/reid/{cope,weights/cope_msmt17.pth,clip-cache/ViT-B-16.pt}` 로 올리고 `SIMAI_COPE_ROOT`·`SIMAI_COPE_WEIGHTS`·`SIMAI_COPE_CLIP_PATH` 를 Pod 환경에 넣는다(Tier 0 설정 파일에 경로가 없으면 이 환경변수를 읽는다). 없으면 Re-ID 만 꺼지고(`reid: disabled`) 나머지는 그대로 돈다.
 - **층 분할(S15P31A101-207).** 큰 휠은 잠금에서 뽑은 묶음별 층(CUDA 13 휠·torch·TensorRT libs·큰 일반 휠)이고, 작은 패키지는 그 위 한 층, simai_ai 코드는 맨 위다. 로컬 재빌드에서 작은 패키지 하나가 바뀌면 다시 만든 층이 풀린 크기로 약 0.6GB, 코드 한 줄이면 약 9MB 다(push 전송량은 압축 크기라 더 작다. 같은 빌드 기계의 BuildKit 캐시가 남아 있을 때. 실측은 `docs/design/exp-images.md`).
   묶음 이름이 잠금에 없으면 빌드가 멈춘다. 묶음을 바꿀 때는 `deploy/tier0/Dockerfile` 의 `pick` 줄을 고친다.
 - Docker Hub 받기가 `httpReadSeeker ... EOF` 로 끊기면(SSAFY 망에서 자주 봤다) 같은 명령을 다시 실행한다. 받은 층은 남는다.

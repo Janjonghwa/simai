@@ -26,8 +26,8 @@ FROM ${BASE_IMAGE} AS layer-lists
 WORKDIR /src
 COPY ai/pyproject.toml ai/uv.lock ./
 RUN set -eu; \
-    uv export -q --locked --no-dev --extra tier0 --no-emit-project --format requirements-txt -o all.txt; \
-    uv export -q --locked --no-dev --extra tier0 --extra worker --no-emit-project --format requirements-txt -o all-worker.txt; \
+    uv export -q --locked --no-dev --extra tier0 --extra reid --no-emit-project --format requirements-txt -o all.txt; \
+    uv export -q --locked --no-dev --extra tier0 --extra reid --extra worker --no-emit-project --format requirements-txt -o all-worker.txt; \
     pick(){ src=$1; out=$2; shift 2; : > "$out"; \
       for n in "$@"; do \
         awk -v n="$n" '/^[^ #]/ { x = $1; sub(/[ =;].*/, "", x); keep = (x == n) } keep && !/^ *#/' "$src" > one.txt; \
@@ -71,7 +71,7 @@ RUN --mount=type=cache,target=/root/.cache/uv uv pip install -q --no-deps --requ
 # 4) 나머지 의존성(잠금이 바뀌면 이 층부터 다시). --locked: 잠금이 pyproject 와 다르면 실패. 위 층의 패키지는 같은 판이라 건너뛴다.
 COPY ai/pyproject.toml ai/uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --extra tier0 --no-install-project
+    uv sync --locked --no-dev --extra tier0 --extra reid --no-install-project
 
 # ---------------------------------------------------------------- tier0 타깃
 FROM tier0-deps AS tier0
@@ -81,7 +81,7 @@ COPY ai/src ./src
 COPY ai/services ./services
 COPY contracts /opt/simai/contracts
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --extra tier0 --no-editable \
+    uv sync --locked --no-dev --extra tier0 --extra reid --no-editable \
  && rm -rf ./src
 
 COPY --chmod=0755 deploy/tier0/entrypoint.sh /usr/local/bin/simai-tier0
@@ -126,7 +126,7 @@ RUN --mount=type=cache,target=/root/.cache/uv uv pip install -q --no-config --no
 # 워커 묶음 전체(Tier 0 층의 패키지는 같은 판이라 건너뛴다. tier0 ⊂ tier0+worker 라 지우는 것도 없다)
 # hadolint ignore=DL3059
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --extra tier0 --extra worker --no-install-project
+    uv sync --locked --no-dev --extra tier0 --extra reid --extra worker --no-install-project
 
 # ---------------------------------------------------------------- HMR 코드 사본 (이미지에는 결과만 옮긴다)
 # 잠금 밖 휠(chumpy·Detectron2·MoGe)은 통합 이미지에 넣지 않는다(S15P31A101-246, docs/design/unified-env.md "2단계"):
@@ -209,7 +209,7 @@ COPY ai/src ./src
 COPY ai/services ./services
 COPY contracts /opt/simai/contracts
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --extra tier0 --extra worker --no-editable \
+    uv sync --locked --no-dev --extra tier0 --extra reid --extra worker --no-editable \
  && rm -rf ./src
 # map-anything 휠(잠금 밖)은 정확 sync 뒤에 --no-deps 로 둔다(정확 sync 는 잠금에 없는 패키지를 지운다, docs/design/unified-env.md "설치 순서" 3).
 # 휠(약 2MB)은 단계에서 bind 로 읽어 층에 남기지 않는다. 코드가 바뀌면 이 층도 다시 만든다(몇 초)

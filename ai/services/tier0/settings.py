@@ -58,14 +58,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
 import json
 import os
-from pathlib import Path
 import time
-from typing import Any
 import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from services.tier0.endpoint_registration import DEFAULT_TIER0_ID, public_port_env
 from services.tier0.i1_client import I1ConfigError, I1Settings
@@ -167,6 +167,8 @@ class ReidSettings:
     cope_root: Path | None = None
     weights_path: Path | None = None
     clip_model_path: Path | None = None
+    use_face_aux: bool = False
+    """얼굴 보조 점수(buffalo_l, SIMAI_FACE_WEIGHTS_DIR). 기본 끔 — 12차 켬/끔 비교 뒤 결정(S15P31A101-471)"""
 
 
 @dataclass(frozen=True)
@@ -348,9 +350,24 @@ def _reid(doc: Any, base: Path, env: Mapping[str, str]) -> ReidSettings:
     batch_size = _int(doc, "batch_size", 8, minimum=1)
     update_interval_ms = _int(doc, "update_interval_ms", 750, minimum=0)
     max_queue_size = _int(doc, "max_queue_size", 32, minimum=1)
-    cope_root = _path(base, doc["cope_root"], "reid.cope_root") if "cope_root" in doc else None
-    weights_path = _path(base, doc["weights_path"], "reid.weights_path") if "weights_path" in doc else None
-    clip_model_path = _path(base, doc["clip_model_path"], "reid.clip_model_path") if "clip_model_path" in doc else None
+    # 설정 파일에 없으면 환경변수(Pod 템플릿·세션 준비 스크립트가 넣는다). 둘 다 없으면 None(임베더 기본값, S15P31A101-471)
+    def _reid_path(key: str, env_key: str) -> Path | None:
+        if key in doc:
+            return _path(base, doc[key], f"reid.{key}")
+        raw = (env.get(env_key) or "").strip()
+        return _path(base, raw, env_key) if raw else None
+
+    use_face_aux = doc.get("use_face_aux", False)
+    if not isinstance(use_face_aux, bool):
+        raise Tier0ConfigError("reid.use_face_aux 는 bool이다")
+    env_face = (env.get("SIMAI_TIER0_REID_FACE") or "").strip()
+    if env_face:
+        if env_face not in ("0", "1"):
+            raise Tier0ConfigError("SIMAI_TIER0_REID_FACE 은 0 또는 1이다")
+        use_face_aux = env_face == "1"
+    cope_root = _reid_path("cope_root", "SIMAI_COPE_ROOT")
+    weights_path = _reid_path("weights_path", "SIMAI_COPE_WEIGHTS")
+    clip_model_path = _reid_path("clip_model_path", "SIMAI_COPE_CLIP_PATH")
     return ReidSettings(
         enabled=enabled,
         batch_size=batch_size,
@@ -359,6 +376,7 @@ def _reid(doc: Any, base: Path, env: Mapping[str, str]) -> ReidSettings:
         cope_root=cope_root,
         weights_path=weights_path,
         clip_model_path=clip_model_path,
+        use_face_aux=use_face_aux,
     )
 
 
