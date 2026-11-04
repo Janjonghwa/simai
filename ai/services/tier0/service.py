@@ -305,6 +305,7 @@ class Tier0Service:
         self.clean_background: Any | None = None
         self.rotation_recovery: Any | None = None
         self._rotation_recovery_error: str | None = None
+        self.reid_collector: Any | None = None
         self.event_frames: EventFrameService | None = None
         self._live_calibration_error: str | None = None
         self._on_camera_drifted = on_camera_drifted
@@ -751,9 +752,11 @@ class Tier0Service:
             tracker_kwargs["backend_factory"] = self._tracker_backend_factory
         tracker = MultiCameraLocalTracker(**tracker_kwargs)
         self.live_input = live
+        self.reid_collector = self._build_reid_collector()
         return DetectorFeed(camera_ids=s.camera_ids, tickets=ingest.next_batch, detector=detector, tracker=tracker,
                             connected=live.connected, source="LIVE", on_close=live.stop,
-                            max_queued_per_camera=s.detect_queue_depth, async_mode=True)
+                            max_queued_per_camera=s.detect_queue_depth, async_mode=True,
+                            reid_collector=self.reid_collector)
 
     def _build_file_feed(self) -> FrameFeed:
         """file: 녹화 I0 메시지 → I0Ingest(LIVE 와 같은 디코딩·최신성 대기열) → YOLO → Local Tracker (file_input.py)."""
@@ -774,10 +777,27 @@ class Tier0Service:
         if self._tracker_backend_factory is not None:
             tracker_kwargs["backend_factory"] = self._tracker_backend_factory
         self.file_input = FileInput(replay, ingest, self.replay_clock)
+        self.reid_collector = self._build_reid_collector()
         return DetectorFeed(camera_ids=replay.camera_ids, tickets=ingest.next_batch, detector=detector,
                             tracker=MultiCameraLocalTracker(**tracker_kwargs), connected=self.file_input.connected,
                             source="FILE", on_close=self.file_input.close, provenance=replay.provenance(),
-                            max_queued_per_camera=s.detect_queue_depth)
+                            max_queued_per_camera=s.detect_queue_depth,
+                            reid_collector=self.reid_collector)
+
+    def _build_reid_collector(self) -> Any:
+        from simai_ai.reid.collector import AsyncReidCollector, ReidCollectorConfig
+
+        r = self.settings.reid
+        cfg = ReidCollectorConfig(
+            enabled=r.enabled,
+            batch_size=r.batch_size,
+            update_interval_ms=r.update_interval_ms,
+            max_queue_size=r.max_queue_size,
+            cope_root=r.cope_root,
+            weights_path=r.weights_path,
+            clip_model_path=r.clip_model_path,
+        )
+        return AsyncReidCollector(cfg, start_worker=True)
 
     def _build_detector(self) -> PoseDetector:
         """TensorRT 엔진(SIMAI_TIER0_ENGINE) → 없으면 .pt 가중치(SIMAI_TIER0_WEIGHTS, 경고) → 둘 다 없으면 종료 코드 4."""
@@ -1333,6 +1353,7 @@ class Tier0Service:
             "marker_error": self.marker_error,
             "avatar_share": None if avatar_writer is None else {
                 "dropped": avatar_writer.dropped, "errors": avatar_writer.errors},
+            "reid": None if self.reid_collector is None else self.reid_collector.status(),
             # 추적 계측 누계(S15P31A101-413, 판정에 쓰지 않음): 늦은 카메라 시간 비율·보간 탈락·카메라 쌍 거부·World Track 생명주기
             "tracking_diagnostics": (None if getattr(self, "perception", None) is None
                                      else self.perception.diagnostics.summary()),

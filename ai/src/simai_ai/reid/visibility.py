@@ -119,6 +119,9 @@ class PartVisibility:
             score += w["legs"]
         return round(float(score), 6)
 
+    def visible_ratio(self, weights: PartWeights | None = None) -> float:
+        return self.visibility_ratio(weights)
+
 
 def _joint_is_valid(
     kp: Any,

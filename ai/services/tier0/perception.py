@@ -230,6 +230,7 @@ class DetectorFeed:
         provenance: Mapping[str, Any] | None = None,
         max_queued_per_camera: int = DEFAULT_MAX_QUEUED_OBSERVATIONS_PER_CAMERA,
         async_mode: bool = False,
+        reid_collector: Any = None,
     ) -> None:
         if max_queued_per_camera < 1:
             raise ValueError("max_queued_per_camera 는 1 이상이다")
@@ -245,6 +246,7 @@ class DetectorFeed:
         self._gate = ResultGate()
         self._max_queued_per_camera = max_queued_per_camera
         self.async_mode = async_mode
+        self.reid_collector = reid_collector
         self._lock = threading.Lock()
         self._detect_lock = threading.Lock()
         self._queued_observations: dict[str, deque[Observation2DFrame]] = {
@@ -336,13 +338,23 @@ class DetectorFeed:
                 observations = self._tracker.update_batch(accepted) if accepted else []
                 avatar_f: dict[str, Frame] = {}
                 avatar_o: dict[str, Observation2DFrame] = {}
+                need_images = (self.avatar_enabled or self.reid_collector is not None) and bool(observations)
+                images = {_ids(f): f for f in batch} if need_images else {}
                 if self.avatar_enabled and observations:
-                    images = {_ids(f): f for f in batch}
                     for obs in observations:
                         key = (obs.camera_id, obs.stream_epoch, obs.frame_sequence, obs.estimated_capture_time_ms)
                         if key in images:
                             avatar_f[obs.camera_id] = images[key]
                             avatar_o[obs.camera_id] = obs
+                if self.reid_collector is not None and observations:
+                    for obs in observations:
+                        key = (obs.camera_id, obs.stream_epoch, obs.frame_sequence, obs.estimated_capture_time_ms)
+                        frame_obj = images.get(key)
+                        if frame_obj is not None:
+                            try:
+                                self.reid_collector.submit_observation(frame_obj, obs)
+                            except Exception:
+                                log.debug("Re-ID 특징 수집 요청 실패(판정은 계속한다)", exc_info=True)
                 with self._lock:
                     self.stats.mismatched += mismatched
                     self.stats.stale_results += stale
@@ -390,6 +402,11 @@ class DetectorFeed:
         return {"source": self._source, "camera_ids": list(self._camera_ids)}
 
     def close(self) -> None:
+        if self.reid_collector is not None:
+            try:
+                self.reid_collector.close()
+            except Exception:  # noqa: BLE001
+                pass
         if self._on_close is not None:
             self._on_close()
 
@@ -430,6 +447,7 @@ class Perception:
         avatar_writer: Any = None,
         observe_association: Callable[[AssociationFrame], None] | None = None,
         observe_frame: Callable[[Observation2DFrame], None] | None = None,
+        feature_lookup: Any = None,
     ) -> None:
         missing = [c for c in feed.camera_ids if c not in rig.cameras]
         if missing:
@@ -440,7 +458,17 @@ class Perception:
         self.time_config = time_config
         self.buffer = LocalTrackletBuffer()
         self.associator = CrossViewAssociator(rig)
-        self.manager = WorldTrackManager(WorldIdIssuer(session), world_config, input_provenance=input_provenance)
+        lookup = feature_lookup
+        if lookup is None:
+            collector = getattr(feed, "reid_collector", None)
+            if collector is not None:
+                lookup = getattr(collector, "lookup", None)
+        self.manager = WorldTrackManager(
+            WorldIdIssuer(session),
+            world_config,
+            input_provenance=input_provenance,
+            feature_lookup=lookup,
+        )
         self.contact = contact or ContactEstimator()
         self.avatar_writer = avatar_writer
         self._last_avatar_t: int | None = None
@@ -583,7 +611,16 @@ class Perception:
                                            "bbox": list(d.bbox), "keypoints_2d": list(d.keypoints_2d),
                                            "joint_layout": "COCO17", "estimated_capture_time": obs.estimated_capture_time_ms,
                                            "frame_ref": dict(image.frame_ref)})
-            tracks.append({**track, "per_camera": per_camera})
+            avatar_hold = bool(
+                getattr(snapshot, "avatar_update_hold", False)
+                or track.get("identity_confidence") == "IDENTITY_UNCERTAIN"
+            )
+            tracks.append({
+                **track,
+                "per_camera": per_camera,
+                "avatar_update_hold": avatar_hold,
+                "hold_appearance_update": avatar_hold,
+            })
         rig = self.rig
         calibration = getattr(self, "_avatar_calibration_doc", None)
         if calibration is None or getattr(self, "_avatar_calibration_rig", None) is not rig:

@@ -117,10 +117,15 @@ class AppearancePipeline:
         wid = track["world_id"]
         acc = self.people.get(wid)
         if acc is not None:
-            uncertain = track["identity_confidence"] == "IDENTITY_UNCERTAIN"
+            hold = bool(
+                track.get("avatar_update_hold", False)
+                or track.get("hold_appearance_update", False)
+            )
+            uncertain = track["identity_confidence"] == "IDENTITY_UNCERTAIN" or hold
             if uncertain or acc.revision != track["identity_revision"]:
                 self.pending.pop(wid, None)
-            acc.track(track["identity_revision"], track["identity_confidence"], t)
+            confidence = "IDENTITY_UNCERTAIN" if uncertain else track["identity_confidence"]
+            acc.track(track["identity_revision"], confidence, t)
 
     def register(self, wid, state, t):
         rig = state.baked.rig
