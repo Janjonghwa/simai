@@ -72,3 +72,36 @@ export const replayResponseSchema = z.object({
 });
 /** 요청 하나의 응답이거나, 나눠 받은 응답을 하나로 합친 것(같은 모양이다). */
 export type ReplayResponse = z.infer<typeof replayResponseSchema>;
+
+/**
+ * 상시 영상 조각(GET /api/videos, 관리자, docs/design/server-video-segments.md). 카메라 하나의 촬영 구간 하나이고
+ * 주소는 싣지 않는다. 화면이 쓰는 칸만 검사하고 형식이 틀린 조각 하나는 빼고 나머지를 보인다.
+ */
+const videoSegmentSchema = z.object({
+  segment_id: z.string().min(1),
+  camera_id: z.string().min(1),
+  segment_start_capture_ms: z.number(),
+  segment_end_capture_ms: z.number(),
+  /** 보관 기간이 끝나 EC2 가 객체를 지운 시각. 지운 조각은 목록에 남지만 재생할 수 없다. */
+  deleted_at_ms: z.number().nullish(),
+});
+export type VideoSegment = z.infer<typeof videoSegmentSchema>;
+
+export const videoSegmentsSchema = z.object({
+  segments: z.array(z.unknown()).transform((items) =>
+    items.flatMap((item) => {
+      const segment = videoSegmentSchema.safeParse(item);
+      return segment.success ? [segment.data] : [];
+    }),
+  ),
+});
+
+/** GET /api/videos/{segmentId}: 조각을 잠깐(5분) 받을 수 있는 서명 GET 주소. 받는 순간 서버가 조회 기록을 남긴다. */
+export const videoUrlSchema = z.object({
+  segment_id: z.string(),
+  url: z.string().min(1),
+  expires_at_ms: z.number(),
+  content_type: z.string().min(1),
+  container: z.string().min(1),
+});
+export type VideoUrl = z.infer<typeof videoUrlSchema>;

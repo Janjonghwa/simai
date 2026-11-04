@@ -4,13 +4,15 @@
 # 세 질의 모두 gateway 로 거르지 않으므로, 실제 기록과 시간이 겹치는 칸은 넣지 않고 목 행에는 전용 gateway_id 를 붙인다.
 # 목 행의 표시: gateway_id = tier0-mock-history(world·health·event·update), work_unit.created_by IS NULL(API 로 만든 작업은 로그인 사용자가 찬다).
 # 이벤트는 모두 RESOLVED 로 끝나 활성 경보로 남지 않고, DB 직접 INSERT 라 알림·워치로 나가지 않는다.
+# 작업마다 카메라별 목 영상 조각(video_segment, 작업 시작부터 MOCK_VIDEO_SECONDS 초)을 넣어 다시 보기 CCTV 칸이 그 영상을 튼다.
+# 원본 영상 객체는 이 스크립트가 올리지 않는다. seed 가 조각마다 S3 안에서 복사하고, cleanup 이 복사본을 지운다(원본은 두고 지우려면 따로 지운다).
 #
 # 사용:
 #   deploy/ec2/seed-mock-history.sh seed [--end-date YYYY-MM-DD(KST, 기본 오늘)] [--days N(기본 6)] [--dry-run]
 #   deploy/ec2/seed-mock-history.sh status
 #   deploy/ec2/seed-mock-history.sh cleanup [--dry-run]
 # --dry-run 은 한 트랜잭션으로 다 돌려 보고 되돌린다(표별 행 수만 본다).
-# 필요: docker, flock, /opt/simai/.env. 배포(deploy.sh)와 같은 잠금을 잡아 DB 재시작과 겹치지 않게 한다.
+# 필요: docker(aws cli 는 amazon/aws-cli 이미지로 돌린다), flock, /opt/simai/.env(저장소 키). 배포(deploy.sh)와 같은 잠금을 잡아 DB 재시작과 겹치지 않게 한다.
 set -euo pipefail
 
 # ── 상수 ──────────────────────────────────────────────────────────────────
@@ -25,6 +27,12 @@ WORLD_HZ=2
 HEALTH_HZ=1
 EVENT_SOURCE=LIVE
 DEFAULT_DAYS=6
+# 다시 보기 CCTV 칸에서 틀 목 영상. 원본 S3 객체(이 객체를 가리키는 클립 행에서 크기·해시를 읽는다, seed-mock-clips.sh 방식)와 길이(초)
+MOCK_VIDEO_KEY=event-clips/mock-demo/walk-calibration-cam_C.mp4
+MOCK_VIDEO_SECONDS=179
+# 목 조각 객체는 조각마다 달라야 해서(video_segment.object_key 가 UNIQUE) 원본을 이 접두어 아래로 복사한다
+MOCK_SEGMENT_PREFIX=video-segments/mock-demo
+AWS_IMAGE=amazon/aws-cli:2.22.35
 
 die() { echo "$*" >&2; exit 2; }
 
@@ -53,7 +61,7 @@ parse_args() {
 run_sql() {
     "${COMPOSE[@]}" exec -T db psql -U postgres -d simai -X -q -v ON_ERROR_STOP=1 \
         -v gateway="$GATEWAY_ID" -v site_tz="$SITE_TZ" -v world_hz="$WORLD_HZ" -v health_hz="$HEALTH_HZ" \
-        -v event_source="$EVENT_SOURCE" -v end_date="$END_DATE" -v days="$DAYS" -v dry_run="$DRY_RUN" "$@" -f -
+        -v event_source="$EVENT_SOURCE" -v video_key="$MOCK_VIDEO_KEY" -v video_s="$MOCK_VIDEO_SECONDS" -v segment_prefix="$MOCK_SEGMENT_PREFIX" -v end_date="$END_DATE" -v days="$DAYS" -v dry_run="$DRY_RUN" "$@" -f -
 }
 
 # pg_temp 도우미: 세션이 끝나면 사라져 운영 DB 에 객체를 남기지 않는다.
@@ -240,6 +248,25 @@ FROM ev_updates u JOIN evs e ON e.en = u.en CROSS JOIN ctx c;
 SQL
 }
 
+# 작업마다 카메라별 목 영상 조각을 넣는다. 조각 행만 넣고 S3 복사는 seed 가 끝난 뒤 한다(copy_segment_objects).
+# 원본 객체를 가리키는 클립 행이 없으면 크기·해시를 읽을 수 없어 조각을 넣지 않는다.
+segments_sql() {
+    cat <<'SQL'
+INSERT INTO video_segment (segment_id, gateway_id, camera_id, stream_epochs, segment_start_capture_at, segment_end_capture_at,
+                           frame_count, starts_with_keyframe, has_gaps, content_type, container, size_bytes, sha256, face_redaction,
+                           segment_created_at, delete_after, object_key, uploaded_at, upload_attempts, received_at)
+SELECT pg_temp.uuid7(w.starts_at, 'mock-vs-' || w.n || '-' || cam.camera_id), :'gateway', cam.camera_id, ARRAY[0],
+       w.starts_at, w.starts_at + make_interval(secs => :video_s),
+       4490, true, false, v.content_type, v.container, v.size_bytes, v.sha256, 'NONE',
+       w.starts_at + make_interval(secs => :video_s), now() + interval '14 days',
+       :'segment_prefix' || '/' || cam.camera_id || '/' || to_char(w.starts_at AT TIME ZONE 'UTC', 'YYYYMMDD"T"HH24MISS') || '.mp4',
+       now(), 1, now()
+FROM works w
+CROSS JOIN (SELECT camera_id FROM camera WHERE removed_at IS NULL) cam
+CROSS JOIN (SELECT content_type, container, size_bytes, sha256 FROM media_clip WHERE object_key = :'video_key' LIMIT 1) v;
+SQL
+}
+
 # 위치(2 Hz): 작업 장소 둘레를 타원으로 걷는다(약 0.6 m/s). 구역 진입 이벤트 동안 중심으로 들어가고, 낙상 동안 head_z 가 0.35 로 떨어진다.
 tracks_sql() {
     cat <<'SQL'
@@ -324,7 +351,8 @@ SELECT 'work_unit' AS "표", count(*) AS "행" FROM mock_work
 UNION ALL SELECT 'world_track_state', count(*) FROM world_track_state WHERE gateway_id = :'gateway'
 UNION ALL SELECT 'system_health', count(*) FROM system_health WHERE gateway_id = :'gateway'
 UNION ALL SELECT 'risk_event', count(*) FROM risk_event WHERE gateway_id = :'gateway'
-UNION ALL SELECT 'risk_event_update', count(*) FROM risk_event_update WHERE gateway_id = :'gateway';
+UNION ALL SELECT 'risk_event_update', count(*) FROM risk_event_update WHERE gateway_id = :'gateway'
+UNION ALL SELECT 'video_segment', count(*) FROM video_segment WHERE gateway_id = :'gateway';
 
 SELECT to_char(w.starts_at AT TIME ZONE :'site_tz', 'MM-DD HH24:MI') AS "시작(KST)", w.name AS "작업", w.planned_people AS "계획",
        count(*) FILTER (WHERE e.severity = 'CRITICAL') AS "위험", count(*) FILTER (WHERE e.severity = 'HIGH') AS "경고"
@@ -348,7 +376,7 @@ SQL
 
 seed_sql() {
     echo 'BEGIN;'
-    helpers_sql; guard_sql; context_sql; slots_sql; works_sql; people_sql; events_sql; tracks_sql; health_sql; report_sql
+    helpers_sql; guard_sql; context_sql; slots_sql; works_sql; people_sql; events_sql; segments_sql; tracks_sql; health_sql; report_sql
     finish_sql
 }
 
@@ -375,6 +403,9 @@ SELECT (SELECT count(*) FROM event_ack WHERE event_id IN (SELECT event_id FROM r
     DO $$ BEGIN RAISE EXCEPTION '목 이벤트·목 작업을 가리키는 다른 표 행이 있다(클립·확인·보고서·세팅 등). 그쪽을 먼저 정리한다(예: seed-mock-clips.sh cleanup)'; END $$;
 \endif
 DELETE FROM work_unit WHERE work_id IN (SELECT work_id FROM mock_work);
+-- 목 영상 조각 행. 영상(S3 객체)은 DB 밖이라 cleanup 이 끝난 뒤 따로 지운다
+DELETE FROM video_access_log WHERE segment_id IN (SELECT segment_id FROM video_segment WHERE gateway_id = :'gateway');
+DELETE FROM video_segment WHERE gateway_id = :'gateway';
 DELETE FROM risk_event_update WHERE gateway_id = :'gateway';
 DELETE FROM risk_event WHERE gateway_id = :'gateway';
 DELETE FROM world_track_state WHERE gateway_id = :'gateway';
@@ -382,6 +413,43 @@ DELETE FROM system_health WHERE gateway_id = :'gateway';
 SQL
     report_sql
     finish_sql
+}
+
+# 목 조각 행의 객체 키(줄마다 하나).
+mock_segment_keys() {
+    echo "SELECT object_key FROM video_segment WHERE gateway_id = :'gateway' ORDER BY object_key;" | run_sql -At
+}
+
+# 저장소 키를 읽어 S3 안에서 명령 하나를 키마다 돌린다: s3_each <복사|삭제> <키...>
+# 복사는 --copy-props none 이다: 저장소 계정에 s3:GetObjectTagging 이 없어 기본 복사(태그까지 읽음)는 AccessDenied 가 난다.
+s3_each() {
+    local action=$1; shift
+    [ $# -gt 0 ] || return 0
+    (
+        set -a; . "$ENV_FILE"; set +a
+        : "${SIMAI_STORAGE_BUCKET:?SIMAI_STORAGE_BUCKET 이 비었다}" "${SIMAI_STORAGE_ACCESS_KEY:?}" "${SIMAI_STORAGE_SECRET_KEY:?}"
+        for key in "$@"; do
+            case $action in
+                복사) cmd="s3 cp s3://$SIMAI_STORAGE_BUCKET/$MOCK_VIDEO_KEY s3://$SIMAI_STORAGE_BUCKET/$key --copy-props none --content-type video/mp4 --no-progress" ;;
+                삭제) cmd="s3 rm s3://$SIMAI_STORAGE_BUCKET/$key" ;;
+            esac
+            # shellcheck disable=SC2086
+            docker run --rm -e AWS_ACCESS_KEY_ID="$SIMAI_STORAGE_ACCESS_KEY" -e AWS_SECRET_ACCESS_KEY="$SIMAI_STORAGE_SECRET_KEY"                 -e AWS_DEFAULT_REGION="${SIMAI_STORAGE_REGION:-ap-northeast-2}" "$AWS_IMAGE" $cmd </dev/null >/dev/null                 || echo "객체 $action 실패(계속): $key" >&2
+        done
+    )
+}
+
+# seed 가 커밋한 뒤 조각마다 원본을 S3 안에서 복사한다. 복사가 실패한 조각은 영상을 받지 못했다고 보인다.
+copy_segment_objects() {
+    local keys; keys=$(mock_segment_keys)
+    # shellcheck disable=SC2086 # 키에는 공백이 없다
+    s3_each 복사 $keys
+}
+
+# cleanup 이 행을 지우기 전에 읽어 둔 키(인자)의 복사본을 지운다. 원본 객체는 두고 지우려면 따로 지운다.
+delete_segment_objects() {
+    # shellcheck disable=SC2086
+    s3_each 삭제 $1
 }
 
 main() {
@@ -397,8 +465,15 @@ main() {
         flock -w "$LOCK_WAIT_S" 9 || die "배포가 ${LOCK_WAIT_S}초 넘게 끝나지 않는다"
     fi
     case $COMMAND in
-        seed) seed_sql | run_sql ;;
-        cleanup) cleanup_sql | run_sql ;;
+        seed)
+            seed_sql | run_sql
+            if [ "$DRY_RUN" -eq 0 ]; then copy_segment_objects; fi
+            ;;
+        cleanup)
+            keys=$(mock_segment_keys)
+            cleanup_sql | run_sql
+            if [ "$DRY_RUN" -eq 0 ]; then delete_segment_objects "$keys"; fi
+            ;;
         status) status_sql | run_sql ;;
     esac
 }

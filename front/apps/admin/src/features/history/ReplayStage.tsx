@@ -3,7 +3,9 @@ import { cctvPeople, type CctvProjector } from '@/features/cctv/cctvMockView';
 import { formatTime } from '@/features/events/events';
 import { replayErrorLine } from '@/features/history/replay';
 import { allGap, isEmptyReplay, type ReplayIndex } from '@/features/history/replayIndex';
+import { ReplayVideoWall } from '@/features/history/ReplayVideoWall';
 import type { Span } from '@/features/history/types';
+import { useActiveSegments, useReplaySegments } from '@/features/history/useReplaySegments';
 import { useReplayFrame, useReplayNoData, type WorkReplay } from '@/features/history/useWorkReplay';
 import type { ReplaySpatialSource } from '@/features/viewer3d';
 import { useCallback, useMemo, type ReactNode } from 'react';
@@ -17,7 +19,8 @@ function Notice({ children }: { children: ReactNode }) {
 }
 
 /**
- * CCTV 4화면(목 화면). 재생 시각에 보이는 World 기록의 사람을 그리고, 기록이 바뀔 때만 다시 그린다.
+ * CCTV 4화면. 재생 시각을 덮는 상시 영상 조각이 있으면 그 영상을 카메라 칸마다 틀고, 없으면 목 화면이다.
+ * 목 화면은 재생 시각에 보이는 World 기록의 사람을 그리고, 기록이 바뀔 때만 다시 그린다.
  * 데이터 없음이면 사람을 그리지 않고 흐리게 둔다(마지막 기록을 이어 그리지 않는다, FR-28). 기록이 없어도 기록 없는 구간
  * 밖이면 그 시각에 아무도 없던 것이라 빈 화면을 그대로 보인다.
  */
@@ -25,18 +28,22 @@ function ReplayCctv({
   replay,
   index,
   holdMs,
+  range,
 }: {
   replay: ReplaySpatialSource | null;
   index: ReplayIndex | null;
   holdMs: number;
+  range: Span;
 }) {
   const frame = useReplayFrame(replay, index, holdMs);
   const noData = useReplayNoData(replay, index, holdMs);
+  const segments = useActiveSegments(replay, useReplaySegments(range));
   const people = useMemo(() => (frame ? cctvPeople(frame.tracks) : []), [frame]);
   const figures = useCallback(
     (project: CctvProjector) => <CctvFigures project={project} people={people} />,
     [people],
   );
+  if (segments.length > 0) return <ReplayVideoWall segments={segments} replay={replay} />;
   return (
     <CctvMockWall
       figures={figures}
@@ -65,5 +72,5 @@ export function ReplayStage({ session, range }: ReplayStageProps) {
   const { replay, index, holdMs } = session;
   const notice = stageNotice(session, range);
   if (notice !== null) return <Notice>{notice}</Notice>;
-  return <ReplayCctv replay={replay} index={index} holdMs={holdMs} />;
+  return <ReplayCctv replay={replay} index={index} holdMs={holdMs} range={range} />;
 }
