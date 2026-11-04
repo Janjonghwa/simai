@@ -45,6 +45,7 @@ def row(name: str, m: dict[str, Any], segments: list[str]) -> dict[str, Any]:
     d = m["diagnostics"]
     w = d["world"]
     cams = m["updated_cameras_ratio"]
+    re_m = m.get("reentry") or {}
     r = {
         "name": name,
         "ids": m["ids_total"],
@@ -60,6 +61,12 @@ def row(name: str, m: dict[str, Any], segments: list[str]) -> dict[str, Any]:
         "bad bone": m["bones"]["tracks_with_bad_bone_ratio"],
         "split suppressed": w["manager"].get("new_track.split_remainder_suppressed", 0),
         "zone dup": f"{m['zone_proxy']['duplicates']} ({m['zone_proxy']['id_entries']}/{m['zone_proxy']['occupancy_episodes']})",
+        "reentry": (
+            None
+            if re_m.get("continuation_rate") is None
+            else f"{re_m['continuation_rate']} ({re_m.get('resumed_after_lost', 0)}/{re_m.get('resumed_after_lost', 0) + re_m.get('unresumed_confirmed_losses', 0)})"
+        ),
+        "ms/tick": (m.get("run") or {}).get("ms_per_tick"),
     }
     for kind, review in m.get("association_review", {}).items():
         r[f"{kind} false/reviewed/candidates"] = (

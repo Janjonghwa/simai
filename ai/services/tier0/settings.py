@@ -157,6 +157,19 @@ class RotationRecoverySettings:
 
 
 @dataclass(frozen=True)
+class ReidSettings:
+    """Tier 0 비동기 Re-ID 보조 경로 설정 (S15P31A101-463)."""
+
+    enabled: bool = True
+    batch_size: int = 8
+    update_interval_ms: int = 750
+    max_queue_size: int = 32
+    cope_root: Path | None = None
+    weights_path: Path | None = None
+    clip_model_path: Path | None = None
+
+
+@dataclass(frozen=True)
 class Tier0Settings:
     gateway_id: str
     state_dir: Path
@@ -190,6 +203,7 @@ class Tier0Settings:
     live_calibration: LiveCalibrationSettings = field(default_factory=LiveCalibrationSettings)
     clean_background: CleanBackgroundSettings = field(default_factory=CleanBackgroundSettings)
     rotation_recovery: RotationRecoverySettings = field(default_factory=RotationRecoverySettings)
+    reid: ReidSettings = field(default_factory=ReidSettings)
 
     @property
     def journal_dir(self) -> Path:
@@ -317,6 +331,34 @@ def _rotation_recovery(doc: Any) -> RotationRecoverySettings:
         interval_ms=_int(doc, "interval_ms", 15_000, minimum=1),
         cpu_budget_ms=_int(doc, "cpu_budget_ms", 500, minimum=1),
         thresholds=thresholds,
+    )
+
+
+def _reid(doc: Any, base: Path, env: Mapping[str, str]) -> ReidSettings:
+    if not isinstance(doc, dict):
+        raise Tier0ConfigError("reid 는 객체다")
+    enabled = doc.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise Tier0ConfigError("reid.enabled 는 bool이다")
+    env_enabled = (env.get("SIMAI_TIER0_REID_ENABLED") or "").strip()
+    if env_enabled:
+        if env_enabled not in ("0", "1"):
+            raise Tier0ConfigError("SIMAI_TIER0_REID_ENABLED 은 0 또는 1이다")
+        enabled = env_enabled == "1"
+    batch_size = _int(doc, "batch_size", 8, minimum=1)
+    update_interval_ms = _int(doc, "update_interval_ms", 750, minimum=0)
+    max_queue_size = _int(doc, "max_queue_size", 32, minimum=1)
+    cope_root = _path(base, doc["cope_root"], "reid.cope_root") if "cope_root" in doc else None
+    weights_path = _path(base, doc["weights_path"], "reid.weights_path") if "weights_path" in doc else None
+    clip_model_path = _path(base, doc["clip_model_path"], "reid.clip_model_path") if "clip_model_path" in doc else None
+    return ReidSettings(
+        enabled=enabled,
+        batch_size=batch_size,
+        update_interval_ms=update_interval_ms,
+        max_queue_size=max_queue_size,
+        cope_root=cope_root,
+        weights_path=weights_path,
+        clip_model_path=clip_model_path,
     )
 
 
@@ -496,6 +538,7 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         live_calibration=_live_calibration(doc.get("live_calibration", {})),
         clean_background=_clean_background(doc.get("clean_background", {}), base),
         rotation_recovery=_rotation_recovery(doc.get("rotation_recovery", {})),
+        reid=_reid(doc.get("reid", {}), base, env),
         sim=sim,
         camera_ids=camera_ids,
         bootstrap_archive=archive,

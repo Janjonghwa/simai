@@ -36,6 +36,7 @@ from simai_ai.contact import SurfaceSet
 from simai_ai.geometry.interpolation import InterpolationConfig
 from simai_ai.geometry.rig import CameraRig
 from simai_ai.providers.files import FileCalibrationProvider
+from simai_ai.reid.collector import LocalTrackFeatureCache
 from simai_ai.tracking.cross_view import CrossViewAssociator, CrossViewConfig, LocalTrackletBuffer
 from simai_ai.tracking.local_config import tracker_config
 from simai_ai.tracking.local_tracker import CameraDetections, MultiCameraLocalTracker, Observation2DFrame, PoseDetection
@@ -180,9 +181,12 @@ def run(cache: Mapping[str, list[tuple[dict, list]]], calibration: Path, cfg: Ma
     feed = CachedFeed(cache, tracker, cfg.get("feed") or {})
     time_cfg = TimeModelConfig(**_only(TimeModelConfig, cfg.get("time")))
     world_cfg = WorldTrackConfig.from_time_model(time_cfg, **_only(WorldTrackConfig, cfg.get("world")))
+    reid_cache_path = cfg.get("reid_cache")
+    reid_cache = LocalTrackFeatureCache.load_npz(Path(reid_cache_path)) if reid_cache_path else None
     perception = Perception(
         rig, feed, session="replay413", scene_version="replay", input_provenance=feed.provenance(),
         time_config=time_cfg, world_config=world_cfg,
+        feature_lookup=reid_cache.lookup if reid_cache is not None else None,
     )
     perception.associator = CrossViewAssociator(rig, CrossViewConfig(**_only(CrossViewConfig, cfg.get("cross_view"))))
     perception.buffer = LocalTrackletBuffer(InterpolationConfig(**_only(InterpolationConfig, cfg.get("interpolation"))))
@@ -334,6 +338,7 @@ def segment_metrics(rows: Sequence[Mapping[str, Any]], t0: int, t1: int, people:
 def compute_metrics(rows: Sequence[Mapping[str, Any]], cfg: Mapping[str, Any], capture_start: int) -> dict[str, Any]:
     first: dict[str, int] = {}
     last: dict[str, int] = {}
+    upd_times: dict[str, list[int]] = defaultdict(list)
     confirmed: set[str] = set()
     cams = Counter()
     bones_measured = bones_bad = tracks_bad = tracks_measured = 0
@@ -348,6 +353,7 @@ def compute_metrics(rows: Sequence[Mapping[str, Any]], cfg: Mapping[str, Any], c
             if lc in ("C", "O"):
                 confirmed.add(wid)
             if upd:
+                upd_times[wid].append(r["t"])
                 cams[ncam] += 1
                 if m:
                     tracks_measured += 1
@@ -361,6 +367,28 @@ def compute_metrics(rows: Sequence[Mapping[str, Any]], cfg: Mapping[str, Any], c
     span_min = (rows[-1]["t"] - rows[0]["t"]) / 60000 if len(rows) > 1 else 0.0
     life = [(last[w] - first[w]) / 1000 for w in first]
     tick_ms = int(cfg.get("tick_ms", 100))
+    lost_after_ms = int((cfg.get("world") or {}).get("lost_after_ms", 3000))
+    reconnect_window_ms = int((cfg.get("time") or {}).get("reconnect_window_ms", 10000))
+    session_end_t = rows[-1]["t"] if rows else 0
+    resumed_after_lost = 0
+    resumed_after_dormant = 0
+    unresumed_confirmed_losses = 0
+    for wid in sorted(confirmed):
+        ts_list = upd_times.get(wid, [])
+        for i in range(1, len(ts_list)):
+            gap_t = ts_list[i] - ts_list[i - 1]
+            if gap_t > lost_after_ms:
+                resumed_after_lost += 1
+            if gap_t > reconnect_window_ms:
+                resumed_after_dormant += 1
+        if ts_list and ts_list[-1] < session_end_t - lost_after_ms:
+            unresumed_confirmed_losses += 1
+    reentry_total = resumed_after_lost + unresumed_confirmed_losses
+    reentry_continuation_rate = (
+        round(resumed_after_lost / reentry_total, 3)
+        if reentry_total > 0
+        else (1.0 if confirmed else None)
+    )
     dwell = int(cfg.get("zone_dwell_ms", 500)) // tick_ms
     entries = sum(1 for n in inside_ticks.values() if n >= dwell)
     episodes, run_in, gap = 0, 0, 10**9
@@ -394,6 +422,12 @@ def compute_metrics(rows: Sequence[Mapping[str, Any]], cfg: Mapping[str, Any], c
                   "bad_bone_ratio": round(bones_bad / bones_measured, 4) if bones_measured else None},
         "zone_proxy": {"id_entries": entries if zone else None, "occupancy_episodes": episodes if zone else None,
                        "duplicates": entries - episodes if zone else None},
+        "reentry": {
+            "resumed_after_lost": resumed_after_lost,
+            "resumed_after_dormant": resumed_after_dormant,
+            "unresumed_confirmed_losses": unresumed_confirmed_losses,
+            "continuation_rate": reentry_continuation_rate,
+        },
         "segments": segments,
     }
 

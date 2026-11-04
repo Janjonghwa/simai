@@ -355,6 +355,54 @@ class TrackGallery:
             matched_entries=len(sims),
         )
 
+    def similarity(
+        self,
+        query_embedding: Any,
+        *,
+        camera_id: str | None = None,
+        query_visibility: PartVisibility | None = None,
+        face_embedding: Any | None = None,
+        mode: str | None = None,
+    ) -> float | None:
+        """질의 임베딩과의 대표 유사도(점수). 매칭되는 항목이 없으면 None."""
+        res = self.compute_similarity(
+            query_embedding,
+            query_visibility=query_visibility,
+            query_camera_id=camera_id,
+            query_face_embedding=face_embedding,
+            mode=mode,
+        )
+        if res.matched_entries == 0:
+            return None
+        return float(res.score)
+
+    def update(
+        self,
+        *,
+        embedding: Any,
+        camera_id: str,
+        t_ms: int,
+        quality: float = 1.0,
+        visibility: float | PartVisibility = 1.0,
+        orientation_bin: int | None = None,
+        face_embedding: Any | None = None,
+    ) -> bool:
+        """`add_observation` 의 간편 별칭 (스칼라 가시성 또는 PartVisibility 모두 허용)."""
+        vis_obj = (
+            visibility
+            if isinstance(visibility, PartVisibility)
+            else PartVisibility.all_visible()
+        )
+        return self.add_observation(
+            embedding,
+            timestamp_ms=int(t_ms),
+            camera_id=str(camera_id),
+            orientation_bin=orientation_bin,
+            visibility=vis_obj,
+            quality_score=float(quality),
+            face_embedding=face_embedding,
+        )
+
 
 class ReidGalleryStore:
     """작업 세션 동안 여러 트랙의 외형 갤러리와 DORMANT 수명을 메모리에서 관리한다."""
@@ -369,6 +417,21 @@ class ReidGalleryStore:
 
     def get(self, track_id: str) -> TrackGallery | None:
         return self._galleries.get(track_id)
+
+    def get_or_create(self, track_id: str, now_ms: int | None = None) -> TrackGallery:
+        gallery = self._galleries.get(track_id)
+        if gallery is None:
+            gallery = TrackGallery(track_id, self.config)
+            if now_ms is not None:
+                gallery.mark_active(now_ms)
+            self._galleries[track_id] = gallery
+        return gallery
+
+    def remove(self, track_id: str) -> None:
+        self._galleries.pop(track_id, None)
+
+    def merge(self, keep_track_id: str, drop_track_id: str, now_ms: int) -> None:
+        self.merge_tracks(keep_track_id, drop_track_id, now_ms)
 
     def observe(
         self,

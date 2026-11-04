@@ -1,7 +1,22 @@
-"""Re-ID 1단계: COPE 외형·얼굴 특징 추출 모듈과 트랙 갤러리 (S15P31A101-463)."""
+"""Re-ID: COPE 외형·얼굴 특징 추출 모듈, 트랙 갤러리 및 Tier 0 비동기 수집기 (S15P31A101-463)."""
 
 from __future__ import annotations
 
+from .collector import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_FEATURE_TTL_MS,
+    DEFAULT_MAX_QUEUE_SIZE,
+    DEFAULT_MIN_BBOX_HEIGHT_PX,
+    DEFAULT_MIN_BBOX_WIDTH_PX,
+    DEFAULT_MIN_DET_SCORE,
+    DEFAULT_MIN_VISIBILITY_RATIO,
+    DEFAULT_UPDATE_INTERVAL_MS,
+    AsyncReidCollector,
+    LocalTrackFeature,
+    LocalTrackFeatureCache,
+    ReidCollectorConfig,
+    estimate_orientation_bin_2d,
+)
 from .embedder import (
     COPE_EMBEDDING_DIM,
     COPEConfig,
@@ -56,9 +71,11 @@ from .visibility import (
 
 __all__ = [
     "AppearanceMatchScore",
+    "AsyncReidCollector",
     "COPE_EMBEDDING_DIM",
     "COPEConfig",
     "COPEEmbedder",
+    "DEFAULT_BATCH_SIZE",
     "DEFAULT_CLIP_PATH",
     "DEFAULT_CLIP_VIT_B_16_SHA256",
     "DEFAULT_COPE_CONFIG_REL",
@@ -66,7 +83,14 @@ __all__ = [
     "DEFAULT_COPE_WEIGHTS",
     "DEFAULT_COPE_WEIGHTS_SHA256",
     "DEFAULT_FACE_EMBEDDING_DIM",
+    "DEFAULT_FEATURE_TTL_MS",
+    "DEFAULT_MAX_QUEUE_SIZE",
+    "DEFAULT_MIN_BBOX_HEIGHT_PX",
+    "DEFAULT_MIN_BBOX_WIDTH_PX",
+    "DEFAULT_MIN_DET_SCORE",
     "DEFAULT_MIN_FACE_SIZE_PX",
+    "DEFAULT_MIN_VISIBILITY_RATIO",
+    "DEFAULT_UPDATE_INTERVAL_MS",
     "Embedder",
     "FaceConfig",
     "FaceEmbedder",
@@ -78,9 +102,12 @@ __all__ = [
     "HEAD_JOINT_INDICES",
     "InsightFaceOnnxEmbedder",
     "LEG_JOINT_INDICES",
+    "LocalTrackFeature",
+    "LocalTrackFeatureCache",
     "NoOpFaceEmbedder",
     "PartVisibility",
     "PartWeights",
+    "ReidCollectorConfig",
     "ReidGalleryStore",
     "TORSO_JOINT_INDICES",
     "TrackGallery",
@@ -91,6 +118,7 @@ __all__ = [
     "compute_file_sha256",
     "create_face_embedder",
     "estimate_face_region_from_pose",
+    "estimate_orientation_bin_2d",
     "estimate_part_visibility",
     "l2_normalize_rows",
     "preprocess_person_crop",

@@ -72,6 +72,22 @@ def _flat(m: dict[str, Any]) -> dict[str, Any]:
             if key in seg:
                 out[f"{name}_{key}"] = seg[key]
     out["split_remainder_suppressed"] = d["manager"].get("new_track.split_remainder_suppressed", 0)
+    re_m = m.get("reentry") or {}
+    if "continuation_rate" in re_m:
+        out["reentry_continuation_rate"] = re_m["continuation_rate"]
+        out["reentry_resumed_after_lost"] = re_m.get("resumed_after_lost", 0)
+        out["reentry_resumed_after_dormant"] = re_m.get("resumed_after_dormant", 0)
+    if (m.get("run") or {}).get("ms_per_tick") is not None:
+        out["ms_per_tick"] = m["run"]["ms_per_tick"]
+    for reid_key in (
+        "reid.split_suppressed_same",
+        "reid.split_preserved_different",
+        "reid.swap_reverted",
+        "reid.reentry_reconnected",
+        "reid.reentry_merged",
+    ):
+        if reid_key in d["manager"]:
+            out[reid_key.replace(".", "_")] = d["manager"][reid_key]
     for kind, review in m.get("association_review", {}).items():
         for key, value in review.items():
             out[f"{kind}_{key}"] = value
