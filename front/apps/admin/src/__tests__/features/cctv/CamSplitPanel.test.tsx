@@ -1,4 +1,4 @@
-import { useCamSplitStore } from '@/features/cctv/camSplit.store';
+import { ANY_CAMERA, useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { CamSplitPanel } from '@/features/cctv/CamSplitPanel';
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
@@ -119,6 +119,14 @@ describe('CamSplitPanel 관리자', () => {
 
   it('목록에 없는 카메라를 요청하면 첫 카메라를 보인다', () => {
     openSplit('cam2');
+    renderPanel();
+
+    expect(screen.getByRole('tab', { selected: true }).textContent).toBe('cam_A');
+    expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
+  });
+
+  it('어느 카메라인지 모르면(ANY_CAMERA) 첫 카메라를 보인다', () => {
+    openSplit(ANY_CAMERA);
     renderPanel();
 
     expect(screen.getByRole('tab', { selected: true }).textContent).toBe('cam_A');

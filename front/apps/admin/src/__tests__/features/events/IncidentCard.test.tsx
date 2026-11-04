@@ -1,4 +1,4 @@
-import { useCamSplitStore } from '@/features/cctv/camSplit.store';
+import { ANY_CAMERA, useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { groupIncidents, mergeEvent, type EventEntry } from '@/features/events/events';
 import { IncidentCard } from '@/features/events/IncidentCard';
 import type { EventItem } from '@/features/events/types';
@@ -221,8 +221,9 @@ describe('IncidentCard', () => {
 
   it('미확인 경보는 왼쪽 가장자리만 깜빡이고, 움직임 줄이기 설정이면 멈춘다', () => {
     const { card } = renderCard([entry()]);
+    // 카메라 버튼의 아이콘(svg)도 aria-hidden 이라 className 문자열이 아닌 class 속성으로 가린다.
     const blink = [...card.querySelectorAll<HTMLElement>('[aria-hidden="true"]')].filter((el) =>
-      el.className.includes('animate-alarm-blink'),
+      el.getAttribute('class')?.includes('animate-alarm-blink'),
     );
     expect(blink).toHaveLength(1);
     expect(blink[0]!.className).toContain('motion-safe:animate-alarm-blink');
@@ -275,7 +276,7 @@ describe('IncidentCard', () => {
     });
   });
 
-  it('담은 카메라가 없으면 카메라 버튼이 없다', () => {
+  it('담은 카메라가 없으면 카메라 이름 없이 CCTV 버튼이 첫 카메라 미리보기를 연다', () => {
     useRealtimeStore.setState({
       world: {
         receivedAt: T,
@@ -285,6 +286,16 @@ describe('IncidentCard', () => {
       },
     });
     const { card } = renderCard([entry()]);
+
+    fireEvent.click(within(card).getByRole('button', { name: 'CCTV로 확인' }));
+    expect(useCamSplitStore.getState().split).toEqual({
+      cam: ANY_CAMERA,
+      target: { type: 'person', id: 'w-0015' },
+    });
+  });
+
+  it('해소된 묶음에는 카메라 버튼이 없다', () => {
+    const { card } = renderCard([entry({ lifecycle: 'RESOLVED', resolved_at: T })]);
     expect(within(card).queryByRole('button', { name: /로 확인/ })).toBeNull();
   });
 });

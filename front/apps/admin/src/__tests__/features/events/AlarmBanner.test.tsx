@@ -1,4 +1,4 @@
-import { useCamSplitStore } from '@/features/cctv/camSplit.store';
+import { ANY_CAMERA, useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { AlarmBanner } from '@/features/events/AlarmBanner';
 import { useEventClearStore } from '@/features/events/eventClear.store';
 import type { EventEntry } from '@/features/events/events';
@@ -145,11 +145,13 @@ describe('AlarmBanner', () => {
 
   it('확인 버튼은 확인 대기 경보에만 있고, 확인을 누를 수 있다', () => {
     const banner = renderBanner(true);
-    expect(within(banner).getByRole('button', { name: /확인$/ })).toBeTruthy();
+    // 확인 버튼의 이름은 「규칙 대상 확인」이다. 같은 낱말로 끝나는 카메라 버튼은 거른다.
+    const isAck = (name: string) => name.endsWith(' 확인') && !name.startsWith('CCTV');
+    expect(within(banner).getByRole('button', { name: isAck })).toBeTruthy();
     expect(within(banner).queryByRole('button', { name: '소리 켜기' })).toBeNull();
   });
 
-  it('카메라 버튼은 이벤트 패널이 있는 화면에서 사람을 담은 카메라가 있을 때만 있다', () => {
+  it('카메라 버튼은 이벤트 패널이 있는 화면에만 있고, 사람을 담은 카메라가 없으면 이름 없이 CCTV 로 연다', () => {
     useRealtimeStore.setState({
       world: {
         receivedAt: T,
@@ -162,6 +164,12 @@ describe('AlarmBanner', () => {
     fireEvent.click(within(withPanel).getByRole('button', { name: /cam3로 확인/ }));
     expect(navigate).not.toHaveBeenCalled();
     expect(useCamSplitStore.getState().split?.cam).toBe('cam3');
+    cleanup();
+
+    useRealtimeStore.setState({ world: null });
+    const untracked = renderBanner(true);
+    fireEvent.click(within(untracked).getByRole('button', { name: 'CCTV로 확인' }));
+    expect(useCamSplitStore.getState().split?.cam).toBe(ANY_CAMERA);
     cleanup();
 
     const without = renderBanner(false);
