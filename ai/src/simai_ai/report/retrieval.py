@@ -9,7 +9,9 @@ class GraphStore(Protocol):
     def corpus_empty(self): ...
 
 def retrieve(store: GraphStore, request):
-    rules = sorted({i.get("rule_id") for i in request.get("risk_items", []) if isinstance(i, dict) and i.get("rule_id") in {f"R{x}" for x in range(1, 8)}})
+    # TBM 은 PLANNED 위험 항목, 일일 일지(DAILY)는 그날 LIVE 이벤트의 규칙으로 찾는다
+    facts = [*(request.get("risk_items") or []), *(request.get("events") or [])]
+    rules = sorted({i.get("rule_id") for i in facts if isinstance(i, dict) and i.get("rule_id") in {f"R{x}" for x in range(1, 8)}})
     zones = sorted({z.get("zone_kind") for z in request.get("zones", []) if isinstance(z, dict) and isinstance(z.get("zone_kind"), str)})
     work = request.get("work_type") or {}
     keywords = [v for v in (work.get("code"), work.get("label"), *zones) if isinstance(v, str) and v]

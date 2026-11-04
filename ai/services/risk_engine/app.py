@@ -91,7 +91,7 @@ def create_app(now_ms: Callable[[], int] | None = None) -> FastAPI:
             data = json.loads(body)
         except (ValueError, UnicodeDecodeError):
             raise HTTPException(400) from None
-        if not isinstance(data, dict) or data.get("report_kind") != "TBM":
+        if not isinstance(data, dict) or data.get("report_kind") not in ("TBM", "DAILY"):
             raise HTTPException(400)
         return await run_in_threadpool(generate, data, PgGraphStore(os.environ.get("SIMAI_RAG_PG_DSN", "")),
                                        lambda: make_client(LlmSettings.from_env(os.environ)))

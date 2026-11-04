@@ -1188,6 +1188,7 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 
 - 단계 **M3** · 일반 · 근거: 11.3 report, 8.3, FR-20·21·122 · 검토: 이연주
 - S15P31A101-415(`docs/design/tbm-legal-graph.md`): TBM·일일 보고서 생성을 RunPod 분석 워커(I5 `tbm_report`, 폐기 예정)에서 EC2 Python 컨테이너로 옮기고, 보고서 단위를 TBM 작업(`work_unit`) 하나당 보고서(재생성 시 덮어쓰지 않고 `report_version` 새 행 추가)로 정하며, 사용한 법령 지식 그래프 서브그래프(`subgraph`)와 4단계 생성·검증 실행 기록(`steps`)을 함께 저장한다(컬럼 추가는 후속 구현에서 마이그레이션)
+- S15P31A101-33(`docs/design/daily-report.md`, V36): 일일 일지(DAILY)는 작업 없이 현장·날짜(`site_id`·`report_date`)에 묶는다. CK `report_kind_target_ck`(TBM 은 `work_id` 필수·`report_date` NULL, DAILY 는 `work_id` NULL·`site_id`·`report_date` 필수), 부분 UQ `(site_id, report_date, report_version)`·생성 중 하나 `(site_id, report_date) WHERE status = 'GENERATING'`
 - S15P31A101-426(`docs/design/work-session-flow.md`): 작업 종료(`POST /api/work-units/{id}/end`) 시 해당 작업 진행 구간·구역의 실제 LIVE `risk_event` 집계 사실과 외부 LLM 이 작성한 "작업 마무리" 문단(`wrap_up_summary`)을 채워 새 `report_version` 으로 저장한다. 참석자 첫 전자서명 등록 시 해당 버전 본문의 정규화 해시(`content_sha256`)와 잠금 시각(`locked_at`)을 고정하며, 잠긴 뒤 수정·마무리 추가는 새 버전(`report_version + 1`)으로 저장해 재서명받는다(컬럼 추가는 후속 구현에서 마이그레이션)
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
@@ -1200,7 +1201,10 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `layout_id` | bigint | FK>layout_plan.layout_id |  | TBM |
 | `layout_revision` | int |  |  | 계산한 레이아웃 revision |
 | `sim_run_id` | bigint | FK>sim.evaluation_run.run_id |  | PLANNED 계산 |
-| `report_date` | date |  |  | DAILY |
+| `report_date` | date | CK(DAILY 면 NN, TBM 이면 NULL) |  | 일일 일지(DAILY)의 날짜, Asia/Seoul 하루(V36, S15P31A101-33) |
+| `site_id` | text | FK>site.site_id, CK(DAILY 면 NN) |  | 일일 일지의 현장. TBM 은 `work_unit` 을 거쳐 현장을 찾아 비워 둔다(V36) |
+| `events` | jsonb | NN, 기본 `[]` |  | 일일 일지 생성에 넘긴 그날 LIVE `risk_event` 사실(`rule_id`·`severity`·`zone_id`·`raised_at_ms`·`resolved`·`needs_check`, 최대 100건(넘으면 높은 등급부터, 발생 순으로 저장), 사람 ID·근거 문장 없음, V36) |
+| `event_summary` | jsonb | NN, 기본 `{}` |  | 일일 일지의 그날 LIVE 이벤트 집계(`event_count`·`resolved_count`·`needs_check_count`·`events_truncated`·`severity_counts`·`rule_counts`, 100건 상한 없이 전부, V36) |
 | `job_id` | text | FK>analysis_job.job_id |  | 레거시(`tbm_report` I5 폐기 예정, EC2 Python 컨테이너 직접 생성 시 NULL) |
 | `status` | text | NN, CK(REQUESTED·GENERATING·DONE·FAILED) |  |  |
 | `body` | text |  | `job_callback.result` | LLM 초안 |

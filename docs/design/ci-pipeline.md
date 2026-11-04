@@ -24,7 +24,7 @@ GitLab ──Webhook──▶ https://simai.live/jenkins/ (Nginx) ──▶ jenk
 
 | 단계 | 하는 일 | 도는 조건(MR 에서 바뀐 경로) |
 |---|---|---|
-| 변경 경로 | MR 이면 대상 브랜치와의 merge-base 이후 바뀐 파일로 아래 단계를 고른다. MR 이 아닌 빌드(dev·master push, 수동)는 모두 돈다 | 항상 |
+| 변경 경로 | MR 이면 대상 브랜치와의 merge-base 이후 바뀐 파일로 아래 단계를 고른다. MR 이 아닌 빌드(dev·master push, 수동)는 모두 돈다. **대상 브랜치를 합친 커밋**(충돌 해결)이 HEAD 이고 두 부모가 모두 이 작업에서 통과한 커밋(`${WORKSPACE}@tmp/verified/<sha>`, 성공한 빌드가 남긴다)이면 두 부모 모두와 다른 파일(충돌을 푼 파일·양쪽이 같이 고친 파일)만으로 고른다. 명세 개정 이력(`docs/spec/README.md`) 충돌만 풀었으면 아래 단계가 하나도 돌지 않고 끝난다. 부모 중 하나라도 통과 표시가 없으면(먼저 올린 커밋의 빌드가 취소됐거나 실패) 평소처럼 MR 전체로 고른다(S15P31A101-33) | 항상 |
 | 판 점검 | `deploy/scripts/check_versions.sh`: `front/.node-version`·`build.gradle` toolchain·`requires-python` 이 이미지 판(`docker-bake.hcl`)과 같은지 | 항상 |
 | contracts | `uv run contracts/scripts/validate_examples.py`: `examples/` 통과, `examples/invalid/` 실패 확인 | `contracts/` |
 | server | `ci-db` 에 작업별 시험 DB `simai_ci_<작업 이름>`(simai·simai-nightly-ai 가 동시에 돌아도 서로 지우지 않게) 를 지우고 새로 만든 뒤 `sh gradlew build`. `@SpringBootTest` 가 Flyway 로 V1·V2·R 을 적용한다. JUnit 결과를 Jenkins 에 올린다 | `server/`, `contracts/` |

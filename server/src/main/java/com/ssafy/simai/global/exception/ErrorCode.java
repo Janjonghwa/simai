@@ -599,7 +599,9 @@ public sealed interface ErrorCode {
         REPORT_NOT_READY(HttpStatus.CONFLICT, "보고서가 준비되지 않았습니다"),
         SIGNATURE_LIMIT_REACHED(HttpStatus.CONFLICT, "이 보고서 버전의 서명 인원 상한(50명)에 도달했습니다"),
         REPORT_LOCKED(HttpStatus.CONFLICT, "서명된 보고서 버전입니다"),
-        INVALID_SIGNATURE(HttpStatus.BAD_REQUEST, "서명 요청이 올바르지 않습니다");
+        INVALID_SIGNATURE(HttpStatus.BAD_REQUEST, "서명 요청이 올바르지 않습니다"),
+        INVALID_DAILY_DATE(HttpStatus.BAD_REQUEST, "report_date 는 YYYY-MM-DD 이고 오늘(Asia/Seoul)보다 뒤일 수 없습니다"),
+        DAILY_REPORT_IN_PROGRESS(HttpStatus.CONFLICT, "이 날짜의 일일 일지를 이미 생성 중입니다");
 
         private final HttpStatus status;
         private final String message;
