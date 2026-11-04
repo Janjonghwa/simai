@@ -153,3 +153,40 @@ Tier 0 설정 파일(`tier0.json`)의 `rotation_recovery` 객체로 노출되며
 
 - 카메라 시야 전체가 질감이 거의 없는 흰 벽·유리창으로만 채워져 SIFT 매칭 수가 `min_matches`(`40`) 미만이면 자동 복구 대신 `REQUIRES_SETUP`("매칭 부족")으로 운영자에게 재세팅을 요청한다(안전 측 실패).
 - 삼각대가 이동했지만 시야 내 모든 배경 특징점이 카메라로부터 매우 먼 단일 평면(실효 무한원점)에만 몰려 있고 인접 카메라 공통 시야에서도 시차가 검출 임계값 이하인 특수 구도에서는 소각 회전으로 근사될 수 있다. 세션 12 실측에서 실내 로비·교실 거리(2~9m) 기준으로 `max_residual_px`와 `min_singular_ratio`의 분리 여유를 최종 점검한다.
+
+## 관리자 화면 "현장 세팅 다시 하기" 알림 (S15P31A101-480)
+
+관련 명세: `docs/spec/04-coordinates.md` §4.4, `docs/spec/12-interfaces.md`(I1 health, I2 viewer_health), 계약 `contracts/messages/health.schema.json` 2.2.0 · `viewer_health.schema.json` 1.3.0(README v7.11.0).
+코드: `ai/services/tier0/service.py`(`_record_requires_setup`·`re_setup_field`), `ai/services/tier0/health.py`, `server/.../domain/health/ViewerHealthService.java`, `front/apps/admin/src/features/layout/ReSetupBanner.tsx`·`status.ts`.
+시험: `ai/tests/services/tier0/test_rotation_recovery.py`·`test_tier0_health.py`, `server/.../health/HealthIntegrationTest`, `front/apps/admin/src/__tests__/features/layout/ReSetupBanner.test.tsx`·`AppLayout.test.tsx`.
+
+### 배경
+
+위 §4의 `REQUIRES_SETUP`(위치 이동·허용 각도 초과·스트림 변경·매칭 부족)은 Tier 0 안의 `calibration_status["re_setup_*"]`와 health `DEGRADED`로만 남아 관리자 화면까지 오지 않았다. "카메라가 옮겨지면 시스템이 알려 준다"를 시연하려면 같은 신호가 화면의 상단 알림 자리에 떠야 한다. 이번 일은 **알림 전달만** 한다. 판정(회전 복구 가부)·경보 등급·`system_health`는 바꾸지 않는다.
+
+### 선택과 이유
+
+1. **새 메시지가 아니라 기존 health에 선택 필드로 싣는다.** `health` 2.2.0 `re_setup`(마이너, 선택): `[{camera_id, reason, detected_at}]`. 이미 1 Hz로 EC2에 가는 메시지라 별도 전송 경로·재전송·순서 문제가 없고, 이전 Tier 0는 필드가 없으니 "모름"이다.
+   - 빈 배열 = "재세팅이 필요한 카메라 없음"(해소), 필드 없음 = 모름. `tier0_warnings`와 같은 규칙이라 수신 측이 이미 익숙하다.
+   - 카메라마다 사유가 다를 수 있어 객체 하나(`camera_ids`+`reason`)가 아니라 카메라별 항목으로 했다. `detected_at`은 같은 카메라가 다시 감지돼도 해소되기 전에는 바뀌지 않는다(처음 감지 시각, 사유만 최신).
+2. **Tier 0: 해소 시점 = 기존 상태가 풀리는 두 자리.** `_begin_calibration_tick`의 새 보정 활성화와 `_adopt_setup_calibration`의 세팅 보정 채택에서 이미 `re_setup_required=False`로 풀던 곳에 `_re_setup_cameras.clear()`를 더했다. 회전 복구 판정·스레드는 건드리지 않고(`on_requires_setup` 콜백이 이미 카메라 ID와 사유를 넘긴다) 보고 필드만 더했다. 읽기는 판정 lock(`judge_lock`, RLock) 안에서 복사만 한다.
+3. **서버: 새 표·Flyway 없이 메모리 최신 상태.** health 원문은 이미 `system_health` 표에 저장되고(`HealthIngestor`), 화면이 쓰는 "현재 상태"는 `HealthState`의 마지막 Tier 0 health다. 덮어쓰는 현재 상태라 이력 표(V39)가 필요 없어 만들지 않았다. `ViewerHealthService`가 `viewer_health` 1.3.0 `re_setup`으로 내준다(GET `/api/health`와 `/topic/health`가 같은 값).
+   - Tier 0 연결이 살아 있고 마지막 health가 `re_setup` 배열을 실었을 때만 싣는다. 끊겼거나 필드가 없으면 싣지 않는다(오래된 값을 "재세팅 필요"로 내지 않고, 모름을 "없음"으로도 내지 않는다).
+   - Tier 0 payload는 서버가 항목 단위로 검증하지 않으므로 세 필드만 옮기고 형식이 맞지 않는 항목은 버린다(화면 계약을 깨지 않게). `camera_id` 오름차순.
+   - `tier0_health` 원문에도 같은 값이 그대로 남는다. 별도 최상위 필드를 둔 이유는 화면이 원문 구조(`tier0_health`는 열린 객체)에 기대지 않고 연결 상태 판단까지 서버가 한 번에 하게 하려는 것이다.
+4. **화면: 장애 띠와 따로, 같은 알림 자리에.** `AppLayout`의 `Notices`에서 장애 띠(`FailureBand`) 아래·경보 배너 위에 `ReSetupBanner`를 둔다. 알림 자리는 모든 화면 공통이라 관제(`/`)뿐 아니라 어느 화면에서도 보인다.
+   - 문구 "카메라 cam_X 위치가 바뀌었습니다 — 현장 세팅을 다시 하세요" + 카메라별 사유 + "작업 관리로"(`/work`로 이동, 세팅은 작업 관리에서 시작한다). 카메라가 여럿이면 ID를 쉼표로 모은다.
+   - 색: 장애 띠의 줄무늬도 위험 등급색(`sev-*`)·지연색도 아닌 주 색(파랑 `bg-primary`). 경보와 섞여 보이지 않게 한다. 시험이 클래스에 `sev-`·`delay`·`stripes`가 없음을 확인한다.
+   - EC2와 끊기면(`useLinkAlive`) 마지막으로 받은 안내를 그대로 보이지 않는다(장애 띠가 "현장 연결 끊김"을 알린다). 해소(빈 배열)되면 사라지고, 다시 감지되면 다시 뜬다.
+
+### 버린 대안
+
+- **관리자 토픽을 새로 만든다**: 이미 1초마다 `/topic/health`가 화면으로 가고 접속 때 GET `/api/health`로 채우므로(`useHealthSnapshot`) 같은 길을 쓰는 편이 재접속·초기 표시 문제가 없다.
+- **Tier 0 `calibration_update`(DRIFT_DETECTED)로 알린다**: 상태 전이 이벤트라 "지금 재세팅이 필요한 카메라 목록"과 해소를 한 번에 알리기 어렵고, 카메라 ID·사유가 계약에 없다. 이력이 필요하면 이 계약을 쓰고, 이 일은 현재 상태만 다룬다.
+- **`re_setup` 상태를 서버 DB에 이력으로 남긴다(Flyway V39)**: 시연에 필요한 것은 "지금"이다. 이력은 health 원문(`system_health` 표)으로 사후에 재구성할 수 있어 새 표를 만들지 않았다.
+
+### 잔여 위험·넘긴 일
+
+- `re_setup`은 새 보정이 활성화되거나 세팅 보정이 채택될 때만 풀린다. 카메라를 원위치로 되돌려 배경이 다시 기준과 맞아도(`STABLE`) 자동으로 풀리지 않는다 — 회전 복구 판정 로직을 건드리지 않는다는 이번 범위 때문이다(기존 `re_setup_required`와 같은 동작). 필요하면 별도 티켓에서 `STABLE` 연속 확인 뒤 해소를 설계한다.
+- Tier 0가 재시작하면 메모리의 재세팅 필요 목록이 비어 배너가 사라진다(재시작 뒤 첫 판정 주기에 다시 `REQUIRES_SETUP`이 나오면 다시 뜬다). 체크포인트에 싣지 않았다.
+- 사유(`reason`)는 회전 복구가 낸 문장 그대로라 `STREAM_CHANGED: …` 같은 내부 표기가 보일 수 있다. 화면 문구 정리는 후속이다.

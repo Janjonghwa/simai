@@ -6,6 +6,8 @@ import com.ssafy.simai.domain.tier0.i1.I1Envelope;
 import com.ssafy.simai.domain.watch.WatchHub;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
@@ -14,6 +16,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
@@ -34,6 +37,8 @@ import tools.jackson.databind.node.ObjectNode;
  *   <li>config: 발행한 최근 묶음, 적용 확인(config_bundle.applied_at)된 최근 묶음, sync 는 Tier 0 가 연결돼 있으면 Tier 0 health 의
  *       config_sync, 끊겼으면 UNVERIFIED
  *   <li>scene: COMMITTED Scene 의 최근 버전과 마지막 world_state.scene_version, 둘 다 있고 다르면 mismatch
+ *   <li>re_setup(1.3.0, S15P31A101-480): 회전 자동 복구가 '현장 세팅 다시 하기'를 요구한 카메라. Tier 0 가 연결 중이고 마지막 health 가 싣고 있을 때만 그 값(빈 배열 = 없음),
+ *       그 밖은 싣지 않는다(모름). 관리자 상단 배너용 안내이며 system_health 를 바꾸지 않는다
  *   <li>watches(1.2.0, 확장 C.6, S15P31A101-336): 등록된 워치마다 I4 연결 상태(WatchHub). 워치는 개인 보조 채널이라 system_health·
  *       remote_state 에 넣지 않는다
  * </ul>
@@ -42,7 +47,7 @@ import tools.jackson.databind.node.ObjectNode;
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class ViewerHealthService {
 
-    public static final String SCHEMA_VERSION = "1.2.0";
+    public static final String SCHEMA_VERSION = "1.3.0";
     static final String CONNECTED = "CONNECTED";
     static final String DISCONNECTED = "DISCONNECTED";
     static final String UNSAFE_UNKNOWN = "UNSAFE_UNKNOWN";
@@ -108,8 +113,43 @@ public class ViewerHealthService {
         p.set("config", config(tier0Up, health));
         p.set("scene", scene(world));
         p.set("tier0_health", health == null ? null : health.deepCopy());
+        ArrayNode reSetup = tier0Up ? reSetup(health) : null;
+        if (reSetup != null) {
+            p.set("re_setup", reSetup);
+        }
         p.set("watches", watches());
         return p;
+    }
+
+    /**
+     * 재세팅이 필요한 카메라(viewer_health 1.3.0 re_setup, S15P31A101-480). Tier 0 가 연결돼 있고 마지막 health 가 re_setup 배열을 실었을 때만 그 값을
+     * camera_id 오름차순으로 옮긴다(빈 배열 = 필요한 카메라 없음). health 가 없거나 필드가 없으면(이전 버전 Tier 0) null: 모름이라 싣지 않는다.
+     * 항목은 계약의 세 필드만 옮기고, 형식이 맞지 않는 항목은 버린다(화면 계약을 깨지 않게). 경보·system_health 는 바꾸지 않는다.
+     */
+    private ArrayNode reSetup(JsonNode health) {
+        JsonNode reported = health == null ? null : health.get("re_setup");
+        if (reported == null || !reported.isArray()) {
+            return null;
+        }
+        List<ObjectNode> items = new ArrayList<>();
+        for (JsonNode item : reported) {
+            JsonNode camera = item.get("camera_id");
+            JsonNode reason = item.get("reason");
+            JsonNode detectedAt = item.get("detected_at");
+            if (camera == null || !camera.isString() || reason == null || !reason.isString() || reason.stringValue().isEmpty()
+                    || detectedAt == null || !detectedAt.isIntegralNumber()) {
+                continue;
+            }
+            ObjectNode copy = mapper.createObjectNode();
+            copy.put("camera_id", camera.stringValue());
+            copy.put("reason", reason.stringValue());
+            copy.put("detected_at", detectedAt.longValue());
+            items.add(copy);
+        }
+        items.sort(Comparator.comparing(n -> n.get("camera_id").stringValue()));
+        ArrayNode array = mapper.createArrayNode();
+        items.forEach(array::add);
+        return array;
     }
 
     private ObjectNode watches() {

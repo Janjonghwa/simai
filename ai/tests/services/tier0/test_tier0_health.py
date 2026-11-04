@@ -73,7 +73,7 @@ class _Clock:
         self.mono += ms * MS
 
 
-def _reporter(clock: _Clock, *, capture_clock=SAME_CLOCK, clocks=None, gate=None, watchdog=None) -> HealthReporter:
+def _reporter(clock: _Clock, *, capture_clock=SAME_CLOCK, clocks=None, gate=None, watchdog=None, re_setup=None) -> HealthReporter:
     clocks = clocks if clocks is not None else [CameraClock(c, T0 - 100, True) for c in ("cam1", "cam2", "cam3", "cam4")]
     return HealthReporter(
         perception=_Perception(clocks),
@@ -89,6 +89,7 @@ def _reporter(clock: _Clock, *, capture_clock=SAME_CLOCK, clocks=None, gate=None
         config_active=lambda: True,
         calibration_state=lambda: "CALIBRATED",
         calibration_version=lambda: "cal-1",
+        re_setup=re_setup,
     )
 
 
@@ -332,13 +333,13 @@ def test_warning_codes_match_contract_enum() -> None:
 
 
 def test_envelope_versions_follow_contract_modules() -> None:
-    """반례 8: 송신 봉투가 내용과 다른 버전을 달지 않는다. I1·I0 health 는 HEALTH_SCHEMA_VERSION(2.1.0), I1 world_state 는
+    """반례 8: 송신 봉투가 내용과 다른 버전을 달지 않는다. I1·I0 health 는 HEALTH_SCHEMA_VERSION(2.2.0), I1 world_state 는
     tracking.world_state 의 2.1.0 이다. 2.0.0 내용(null lag)을 단 health 와 UNCERTAIN 값을 단 world_state 가 그 봉투로 검증된다."""
     from services.tier0.i0_control import DOWNSTREAM_VERSIONS
     from services.tier0.i1_client import MESSAGE_SCHEMA_VERSIONS, Envelope
     from simai_ai.tracking.world_state import WORLD_STATE_SCHEMA_VERSION
 
-    assert MESSAGE_SCHEMA_VERSIONS["health"] == DOWNSTREAM_VERSIONS["health"] == HEALTH_SCHEMA_VERSION == "2.1.0"
+    assert MESSAGE_SCHEMA_VERSIONS["health"] == DOWNSTREAM_VERSIONS["health"] == HEALTH_SCHEMA_VERSION == "2.2.0"
     assert MESSAGE_SCHEMA_VERSIONS["world_state"] == WORLD_STATE_SCHEMA_VERSION == "2.1.0"
 
     class _FixedClock:
@@ -348,5 +349,36 @@ def test_envelope_versions_follow_contract_modules() -> None:
     env = Envelope("tier0-01", _FixedClock(), new_msg_id=lambda: "0192a6f0-7c1e-7b3a-9f2d-000000000001")
     payload = _reporter(_Clock(), capture_clock=None).payload()
     msg = env.make("health", payload)
-    assert msg["schema_version"] == "2.1.0" and payload["pipeline_lag_ms"] is None
+    assert msg["schema_version"] == "2.2.0" and payload["pipeline_lag_ms"] is None
     assert schema_errors(msg, "health") == []
+
+
+# --- re_setup (계약 2.2.0, S15P31A101-480) ------------------------------------------------------
+
+
+def test_re_setup_is_reported_without_changing_judgement() -> None:
+    """재세팅이 필요한 카메라는 그대로 싣고 system_health·pipeline_lag_ms 는 바꾸지 않는다(경보·판정 불변)."""
+    items = [{"camera_id": "cam3", "reason": "매칭 부족", "detected_at": T0 - 5_000}]
+    with_items = _reporter(_Clock(), re_setup=lambda: items).payload()
+    plain = _reporter(_Clock()).payload()
+    assert with_items["re_setup"] == items
+    assert {k: v for k, v in with_items.items() if k != "re_setup"} == plain
+    assert schema_errors(_msg(with_items), "health") == []
+
+
+def test_re_setup_empty_means_none_and_missing_means_unknown() -> None:
+    """빈 배열 = 재세팅이 필요한 카메라 없음(해소). 출처가 없는 조립은 필드를 싣지 않는다(모름)."""
+    empty = _reporter(_Clock(), re_setup=lambda: []).payload()
+    assert empty["re_setup"] == [] and schema_errors(_msg(empty), "health") == []
+    assert "re_setup" not in _reporter(_Clock()).payload()
+
+
+def test_re_setup_item_is_a_closed_value_object() -> None:
+    """음성 대조: 사유·감지 시각이 빠졌거나 모르는 필드가 있으면 스키마가 막는다."""
+    payload = _reporter(_Clock(), re_setup=lambda: [{"camera_id": "cam3", "reason": "x", "detected_at": T0}]).payload()
+    assert schema_errors(_msg(payload), "health") == []
+    no_reason = dict(payload, re_setup=[{"camera_id": "cam3", "detected_at": T0}])
+    extra = dict(payload, re_setup=[{"camera_id": "cam3", "reason": "x", "detected_at": T0, "severity": "HIGH"}])
+    bad_camera = dict(payload, re_setup=[{"camera_id": "cam 3", "reason": "x", "detected_at": T0}])
+    for bad in (no_reason, extra, bad_camera):
+        assert schema_errors(_msg(bad), "health")

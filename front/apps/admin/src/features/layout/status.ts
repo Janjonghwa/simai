@@ -63,6 +63,29 @@ export function bandFailure(
   return failureOf(state.health, alive);
 }
 
+/** 현장 세팅을 다시 해야 하는 카메라 한 대(viewer_health 1.3.0 re_setup, S15P31A101-480). */
+export type ReSetupCamera = NonNullable<ViewerHealthPayload['re_setup']>[number];
+
+const NO_RE_SETUP: readonly ReSetupCamera[] = [];
+
+/**
+ * 현장 세팅을 다시 해야 하는 카메라(회전 자동 복구가 보정을 덮지 않고 알린 것). 새 보정이 활성화되면 EC2 가 빈 배열을 알려 사라진다.
+ * EC2 와 끊겼거나(지금 상태를 모른다) 필드가 없으면(Tier 0 가 몰라서 싣지 않음) 없다: 모름을 '다시 세팅할 카메라 있음'으로 읽지 않는다.
+ * 경보·System Health 와 무관한 안내라 장애 띠(failureOf)와 따로 센다.
+ */
+export function reSetupCameras(
+  health: HealthSnapshot | null,
+  alive: boolean,
+): readonly ReSetupCamera[] {
+  if (!alive || !health) return NO_RE_SETUP;
+  return health.payload.re_setup ?? NO_RE_SETUP;
+}
+
+/** 재세팅 안내 문구. 카메라가 여럿이면 ID 를 쉼표로 이어 한 줄로 알린다. */
+export function reSetupTitle(cameras: readonly ReSetupCamera[]): string {
+  return `카메라 ${cameras.map((c) => c.camera_id).join(', ')} 위치가 바뀌었습니다 — 현장 세팅을 다시 하세요`;
+}
+
 /** 데이터 연령(초). EC2 가 잰 값에 받은 뒤 흐른 시간을 더한다. 끊겨도 계속 늘어난다. */
 export function dataAgeSec(health: HealthSnapshot | null, now: number): number | undefined {
   if (!health || health.payload.data_age_ms === null) return undefined;

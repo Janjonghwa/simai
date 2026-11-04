@@ -10,6 +10,7 @@ const route = vi.hoisted(() => ({
   staticData: {} as { fullBleed?: boolean; eventPanel?: boolean },
   failure: true,
   alarm: true,
+  reSetup: false,
 }));
 
 vi.mock('@tanstack/react-router', () => ({
@@ -30,6 +31,9 @@ vi.mock('@/features/layout/useHealthSnapshot', () => ({ useHealthSnapshot: vi.fn
 vi.mock('@/features/layout/FailureBand', () => ({
   FailureBand: () => (route.failure ? <div data-testid="failure" /> : null),
 }));
+vi.mock('@/features/layout/ReSetupBanner', () => ({
+  ReSetupBanner: () => (route.reSetup ? <div data-testid="resetup" /> : null),
+}));
 vi.mock('@/features/events/AlarmBanner', () => ({
   AlarmBanner: ({ withPanel }: { withPanel: boolean }) =>
     route.alarm ? <div data-testid="alarm" data-with-panel={String(withPanel)} /> : null,
@@ -42,6 +46,7 @@ beforeEach(() => {
   route.staticData = {};
   route.failure = true;
   route.alarm = true;
+  route.reSetup = false;
 });
 afterEach(() => {
   cleanup();
@@ -115,5 +120,18 @@ describe('AppLayout 연결 상태', () => {
   it('연결이 열릴 때 지금 상태를 먼저 받는 훅(GET /api/health)을 부른다', () => {
     render(<AppLayout />);
     expect(vi.mocked(useHealthSnapshot)).toHaveBeenCalled();
+  });
+});
+
+describe('AppLayout 현장 세팅 다시 하기 배너 자리', () => {
+  it('장애 띠 아래, 경보 배너 위에 둔다(알릴 것이 없으면 자리를 차지하지 않는다)', () => {
+    route.reSetup = true;
+    render(<AppLayout />);
+    expect(ids(notices())).toEqual(['failure', 'resetup', 'alarm']);
+
+    cleanup();
+    route.reSetup = false;
+    render(<AppLayout />);
+    expect(ids(notices())).toEqual(['failure', 'alarm']);
   });
 });

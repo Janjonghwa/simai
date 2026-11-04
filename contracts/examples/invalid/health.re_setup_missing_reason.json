@@ -1,0 +1,21 @@
+{
+  "_expect_error": "re_setup 항목은 camera_id·reason·detected_at 이 모두 있어야 한다(값 객체)",
+  "schema_version": "2.2.0",
+  "msg_type": "health",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000481",
+  "sent_at": 1760342400400,
+  "source_id": "tier0-01",
+  "payload": {
+    "system_health": "DEGRADED",
+    "t_latest_global": 1760342400100,
+    "cameras": [],
+    "pipeline_lag_ms": 130,
+    "calibration_state": "DRIFTED",
+    "re_setup": [
+      {
+        "camera_id": "cam_C",
+        "detected_at": 1760342385000
+      }
+    ]
+  }
+}

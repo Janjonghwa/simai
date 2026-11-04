@@ -213,6 +213,71 @@ class HealthIntegrationTest {
     }
 
     @Test
+    void 재세팅이_필요한_카메라는_Tier0_health_값을_그대로_내주고_해소되면_빈_배열이_되며_모르면_싣지_않는다() throws Exception {
+        try (Tier0 tier0 = tier0(); Viewer viewer = viewer()) {
+            // 이전 버전 Tier 0(re_setup 없음): 모름 — 재세팅 없음으로 보이게 하지 않는다
+            tier0.send(tier0Health());
+            Thread.sleep(200);
+            JsonNode unknown = getHealth();
+            assertValid(unknown);
+            assertThat(unknown.get("schema_version").asString()).isEqualTo("1.3.0");
+            assertThat(unknown.at("/payload").has("re_setup")).isFalse();
+
+            // 두 카메라가 재세팅을 요구한다(순서는 camera_id 오름차순으로 내준다)
+            long detected = Instant.now().toEpochMilli() - 5_000;
+            tier0.send(tier0HealthWithReSetup(reSetupItem("cam_C", "매칭 부족", detected), reSetupItem("cam_A", "위치 이동 의심", detected + 1)));
+            Thread.sleep(200);
+            JsonNode needed = getHealth();
+            assertValid(needed);
+            JsonNode items = needed.at("/payload/re_setup");
+            assertThat(items.size()).isEqualTo(2);
+            assertThat(items.get(0).get("camera_id").asString()).isEqualTo("cam_A");
+            assertThat(items.get(0).get("reason").asString()).isEqualTo("위치 이동 의심");
+            assertThat(items.get(0).get("detected_at").longValue()).isEqualTo(detected + 1);
+            assertThat(items.get(1).get("camera_id").asString()).isEqualTo("cam_C");
+            // 경보·판정은 바꾸지 않는다: system_health 는 Tier 0 가 보고한 값 그대로다
+            assertThat(needed.at("/payload/system_health").asString()).isEqualTo(unknown.at("/payload/system_health").asString());
+            assertThat(needed.at("/payload/tier0_health/re_setup").size()).isEqualTo(2);
+            JsonNode topic = viewer.await(m -> m.at("/payload/re_setup").size() == 2);
+            assertValid(topic);
+
+            // 해소: 빈 배열은 '필요한 카메라 없음'이다
+            tier0.send(tier0HealthWithReSetup());
+            Thread.sleep(200);
+            JsonNode resolved = getHealth();
+            assertValid(resolved);
+            assertThat(resolved.at("/payload").has("re_setup")).isTrue();
+            assertThat(resolved.at("/payload/re_setup").size()).isZero();
+            assertValid(viewer.await(m -> m.at("/payload").has("re_setup") && m.at("/payload/re_setup").size() == 0));
+
+            // 형식이 맞지 않는 항목은 화면 계약을 깨지 않게 버린다
+            ObjectNode broken = tier0HealthWithReSetup(reSetupItem("cam_A", "사유", detected), reSetupItem("cam_B", "사유", detected));
+            ((ObjectNode) broken.at("/payload/re_setup").get(0)).put("detected_at", "yesterday");
+            tier0.send(broken);
+            Thread.sleep(200);
+            JsonNode filtered = getHealth();
+            assertValid(filtered);
+            assertThat(filtered.at("/payload/re_setup").size()).isEqualTo(1);
+            assertThat(filtered.at("/payload/re_setup/0/camera_id").asString()).isEqualTo("cam_B");
+        }
+    }
+
+    @Test
+    void Tier0_연결이_끊기면_재세팅_필요를_싣지_않는다() throws Exception {
+        try (Tier0 tier0 = tier0()) {
+            tier0.send(tier0HealthWithReSetup(reSetupItem("cam_C", "매칭 부족", Instant.now().toEpochMilli() - 5_000)));
+            Thread.sleep(200);
+            assertThat(getHealth().at("/payload/re_setup").size()).isEqualTo(1);
+        }
+        Thread.sleep(LINK_TIMEOUT_MS + 700);
+        JsonNode lost = getHealth();
+        assertValid(lost);
+        assertThat(lost.at("/payload/tier0_link").asString()).isEqualTo("DISCONNECTED");
+        assertThat(lost.at("/payload").has("re_setup")).isFalse();
+        assertThat(lost.at("/payload/system_health").asString()).isEqualTo("UNSAFE_UNKNOWN");
+    }
+
+    @Test
     void 선택_항목_형식이_틀리면_500_이_아니라_400_이고_카메라_ID_는_그대로_남긴다() throws Exception {
         ObjectNode badEc2 = heartbeat("CONNECTED", "NORMAL");
         ((ObjectNode) badEc2.get("payload")).putObject("ec2").put("state", 1);
@@ -350,6 +415,21 @@ class HealthIntegrationTest {
         root.put("source_id", gatewayId);
         ((ObjectNode) root.get("payload")).put("t_latest_global", Instant.now().toEpochMilli() - 100);
         return root;
+    }
+
+    /** 처리가 나아가는 Tier 0 health(2.2.0) + 재세팅 필요 카메라 목록(빈 목록이면 '없음') */
+    private ObjectNode tier0HealthWithReSetup(ObjectNode... items) throws Exception {
+        ObjectNode root = tier0Health();
+        root.put("schema_version", "2.2.0");
+        var array = ((ObjectNode) root.get("payload")).putArray("re_setup");
+        for (ObjectNode item : items) {
+            array.add(item);
+        }
+        return root;
+    }
+
+    private ObjectNode reSetupItem(String cameraId, String reason, long detectedAt) {
+        return MAPPER.createObjectNode().put("camera_id", cameraId).put("reason", reason).put("detected_at", detectedAt);
     }
 
     /** 처리가 멈춘(t_latest_global 이 그대로인) Tier 0 health */

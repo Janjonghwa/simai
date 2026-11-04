@@ -1,4 +1,4 @@
-"""health payload 조립 (계약 messages/health.schema.json 2.1.0, 명세 12.3, 6.1, 6.2, 6.5, 3.2, 3.9, 3.10).
+"""health payload 조립 (계약 messages/health.schema.json 2.2.0, 명세 12.3, 6.1, 6.2, 6.5, 3.2, 3.9, 3.10).
 
 System Health 값은 tracking.system_health.evaluate_health 가 정하고, 재시작 하한은 recovery.RecoveryHealthGate 가 덧씌운다.
 여기서는 그 입력을 모으고 계약 필드로 옮기기만 한다(판정 로직 없음, ai/CONVENTION.md).
@@ -30,6 +30,8 @@ System Health 값은 tracking.system_health.evaluate_health 가 정하고, 재�
   읽지 않는다. 한 번도 읽지 못했거나, 마지막 읽기가 실패했거나, 마지막 읽기가 WARNINGS_STALE_MS 보다 오래됐으면 필드를
   싣지 않는다(모름. 빈 배열 = 경고 없음과 구분). 원인 상태가 풀리면 다음 읽기에서 빠지고, 다시 켜지면 since_ms 가 새 시각이다.
 - gateway_link·laptop_clock_offset(끊기면 null)·config_version·config_sync·calibration_state·calibration_version.
+- re_setup(2.2.0, -480): 회전 자동 복구가 '현장 세팅 다시 하기'를 요구한 카메라(camera_id·reason·detected_at, 해소되면 빈 배열).
+  출처(Tier0Service.re_setup_field)가 정한 값을 그대로 싣기만 한다(판정·system_health 는 바꾸지 않음). 출처를 주지 않는 조립은 필드를 싣지 않는다(모름).
 - active_site_alerts·as_of 와 ec2_world_state_drops 는 이 함수가 아니라 각 출처(SiteAlertResync.fields, I1Publisher)가 합친다.
 """
 
@@ -49,9 +51,9 @@ from simai_ai.tracking.time_model import SAME_CLOCK, CaptureClock, TimeModelConf
 
 log = logging.getLogger("services.tier0.health")
 
-HEALTH_SCHEMA_VERSION = "2.1.0"
+HEALTH_SCHEMA_VERSION = "2.2.0"
 """health 계약이 마지막으로 바뀐 버전 (2.0.0: pipeline_lag_ms null·하한, tier0_warnings, cameras[].sync_valid, -179.
-2.1.0: tier0_warnings code LIVE_MARKER_WRITE_FAILED, -197).
+2.1.0: tier0_warnings code LIVE_MARKER_WRITE_FAILED, -197. 2.2.0: re_setup 재세팅 필요 카메라, -480).
 봉투에 이 값을 쓰는 것은 송신 모듈(i1_client.MESSAGE_SCHEMA_VERSIONS, i0_control.DOWNSTREAM_VERSIONS)이다"""
 
 WARNINGS_STALE_MS = 5_000
@@ -126,6 +128,7 @@ class HealthReporter:
         calibration_state: Callable[[], str],
         calibration_version: Callable[[], str | None],
         calibration_issue: Callable[[], bool] | None = None,
+        re_setup: Callable[[], list[dict[str, Any]]] | None = None,
         lock: Any = None,
         time_config: TimeModelConfig = TimeModelConfig(),
     ) -> None:
@@ -143,6 +146,7 @@ class HealthReporter:
         self._calibration_state = calibration_state
         self._calibration_version = calibration_version
         self._calibration_issue = calibration_issue
+        self._re_setup = re_setup
         self._lock = lock if lock is not None else threading.RLock()
         self._time_config = time_config
         self._fps_lock = threading.Lock()
@@ -269,6 +273,8 @@ class HealthReporter:
         version = self._calibration_version()
         if version:
             payload["calibration_version"] = version
+        if self._re_setup is not None:
+            payload["re_setup"] = self._re_setup()
         payload.update(self._config_fields())
         if self._laptop_clock_offset is not None:
             payload["laptop_clock_offset"] = self._laptop_clock_offset(snap.gateway_ok)

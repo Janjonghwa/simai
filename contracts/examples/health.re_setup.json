@@ -1,0 +1,43 @@
+{
+  "schema_version": "2.2.0",
+  "msg_type": "health",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000480",
+  "sent_at": 1760342400400,
+  "source_id": "tier0-01",
+  "payload": {
+    "system_health": "DEGRADED",
+    "t_latest_global": 1760342400100,
+    "cameras": [
+      {
+        "id": "cam_A",
+        "fps": 14.8,
+        "last_capture": 1760342400100,
+        "sync_offset_ms": null,
+        "sync_valid": null,
+        "status": "OK"
+      },
+      {
+        "id": "cam_C",
+        "fps": 14.6,
+        "last_capture": 1760342400090,
+        "sync_offset_ms": null,
+        "sync_valid": null,
+        "status": "OK"
+      }
+    ],
+    "pipeline_lag_ms": 130,
+    "calibration_state": "DRIFTED",
+    "calibration_version": "cal-rot-1760342100000-4-1a2b3c4d",
+    "config_version": "cfg-12",
+    "config_sync": "CURRENT",
+    "gateway_link": "CONNECTED",
+    "tier0_warnings": [],
+    "re_setup": [
+      {
+        "camera_id": "cam_C",
+        "reason": "매칭 부족",
+        "detected_at": 1760342385000
+      }
+    ]
+  }
+}
