@@ -41,6 +41,15 @@ export const setupMock = createSetupMock();
 
 // 경로 앞의 * 는 VITE_API_BASE_URL 이 무엇이든 맞추려는 것이다.
 export const handlers = [
+  http.get('*/api/sites/current', () =>
+    HttpResponse.json({
+      site_id: 'classroom-1',
+      name: '교실 테스트베드',
+      world_origin: null,
+      established_calibration_version: 'cal-8',
+      created_at_ms: 1_793_690_000_000,
+    }),
+  ),
   http.post('*/api/auth/login', async ({ request }) => {
     const credentials = readCredentials(await request.json().catch(() => undefined));
     const account =

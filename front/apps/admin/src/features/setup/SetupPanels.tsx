@@ -157,14 +157,14 @@ export function SetupCctvPanel() {
 
   return (
     <Panel title="실시간 CCTV 4칸">
-      <div className="min-h-[260px]">
+      <div className="flex h-[clamp(260px,40vh,520px)] flex-col">
         {link === 'open' && cameras.length > 0 ? (
           <CctvWall
             ids={cameras}
             tile={(id, wall) => <LiveSetupTile cameraId={id} attach={attach} wall={wall} />}
           />
         ) : (
-          <div className="flex flex-col gap-2">
+          <div className="flex min-h-0 flex-1 flex-col gap-2">
             <p className="text-xs text-muted-foreground">{tileLabel(undefined, link)}</p>
             <CctvDemo />
           </div>
@@ -192,7 +192,7 @@ export function CameraPanel({ coverage }: { coverage: Step1CoverageView }) {
               {cam.statusLabel}
             </Badge>
             <span className="ml-auto text-right text-xs text-muted-foreground">
-              {cam.guideText ?? '각도 양호'}
+              {cam.angleLabel}
             </span>
           </Row>
         ))}

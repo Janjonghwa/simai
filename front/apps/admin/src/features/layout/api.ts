@@ -4,6 +4,16 @@ import { z } from 'zod';
 
 // http 를 인자로 받는다. 테스트가 env 없이 createHttp 로 부를 수 있게 한다.
 
+const currentSiteSchema = z.object({
+  site_id: z.string().min(1),
+  name: z.string().trim().min(1),
+});
+
+/** SiteController.view 의 현장 식별자·이름만 사용한다. */
+export function requestCurrentSite(http: Http, signal?: AbortSignal) {
+  return http('/api/sites/current', { schema: currentSiteSchema, signal });
+}
+
 /** viewer_health 메시지(봉투 포함). /topic/health 와 같은 계약 검사를 통과한 것만 받는다. */
 const viewerHealthMessage = z.unknown().transform((raw, ctx) => {
   const checked = validateMessage('viewer_health', raw);
