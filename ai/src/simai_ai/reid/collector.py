@@ -403,7 +403,7 @@ class _CropTask:
     det_score: float
     orientation_bin: int | None
     bbox_xyxy: tuple[float, float, float, float]
-    face_crop_rgb: np.ndarray | None = None
+    face_crop_bgr: np.ndarray | None = None
 
 
 def _bbox_iou(box_a: Sequence[float], box_b: Sequence[float]) -> float:
@@ -461,6 +461,19 @@ class AsyncReidCollector:
             self._worker = threading.Thread(target=self._worker_loop, name="tier0-reid", daemon=True)
             self._worker.start()
 
+    def _cope_config(self) -> COPEConfig:
+        """수집기 설정 → COPE 설정. 이름이 다른 필드(clip_model_path → clip_path)를 맞추고, 수집기가 넘기는 crop 은
+        RGB 라 input_format="rgb" 로 둔다(기본 bgr 이면 채널이 한 번 더 뒤집힌다). fp16 은 COPE 설정에 없다(S15P31A101-472)."""
+        cfg = self.config
+        kwargs: dict[str, Any] = {"device": cfg.device, "batch_size": cfg.batch_size, "input_format": "rgb"}
+        if cfg.cope_root is not None:
+            kwargs["cope_root"] = Path(cfg.cope_root)
+        if cfg.weights_path is not None:
+            kwargs["weights_path"] = Path(cfg.weights_path)
+        if cfg.clip_model_path is not None:
+            kwargs["clip_path"] = Path(cfg.clip_model_path)
+        return COPEConfig(**kwargs)
+
     def _init_face_backend(self) -> None:
         """얼굴 보조 점수(선택). 실패해도 전신 Re-ID 는 그대로 두고 얼굴만 뺀다(S15P31A101-471)."""
         if not self.config.use_face_aux or self._face_embedder is not None:
@@ -500,19 +513,7 @@ class AsyncReidCollector:
                 return
 
         try:
-            cope_kwargs: dict[str, Any] = {
-                "device": cfg.device,
-                "fp16": cfg.fp16,
-                "batch_size": cfg.batch_size,
-            }
-            if cfg.cope_root is not None:
-                cope_kwargs["cope_root"] = cfg.cope_root
-            if cfg.weights_path is not None:
-                cope_kwargs["weights_path"] = cfg.weights_path
-            if cfg.clip_model_path is not None:
-                cope_kwargs["clip_model_path"] = cfg.clip_model_path
-            cope_cfg = COPEConfig(**cope_kwargs)
-            cope = COPEEmbedder(cope_cfg)
+            cope = COPEEmbedder(self._cope_config())
             if hasattr(cope, "load"):
                 cope.load()
             self._embedder = cope
@@ -588,7 +589,7 @@ class AsyncReidCollector:
 
                 crop_bgr = image[y1:y2, x1:x2]
                 crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-                face_crop_rgb: np.ndarray | None = None
+                face_crop_bgr: np.ndarray | None = None
                 if self._face_embedder is not None and kps is not None:
                     face_cand = estimate_face_region_from_pose(
                         kps,
@@ -601,7 +602,8 @@ class AsyncReidCollector:
                         fx1, fy1 = max(0, fx1), max(0, fy1)
                         fx2, fy2 = min(w_img, max(fx1 + 1, fx2)), min(h_img, max(fy1 + 1, fy2))
                         if (fx2 - fx1) >= 16 and (fy2 - fy1) >= 16:
-                            face_crop_rgb = cv2.cvtColor(image[fy1:fy2, fx1:fx2], cv2.COLOR_BGR2RGB)
+                            # 얼굴 백엔드(face.py)는 BGR 을 받아 스스로 RGB 로 바꾼다(S15P31A101-472)
+                            face_crop_bgr = np.ascontiguousarray(image[fy1:fy2, fx1:fx2])
 
                 orient_bin = estimate_orientation_bin_2d(kps, bbox, image_width_px=float(w_img))
                 tasks_to_add.append(
@@ -615,7 +617,7 @@ class AsyncReidCollector:
                         det_score=score,
                         orientation_bin=orient_bin,
                         bbox_xyxy=(float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])),
-                        face_crop_rgb=face_crop_rgb,
+                        face_crop_bgr=face_crop_bgr,
                     )
                 )
                 self._last_queued_ms[key] = cap_ms
@@ -682,11 +684,11 @@ class AsyncReidCollector:
             vis_ratio = task.visibility.visible_ratio(self.config.part_weights)
             q_score = float(np.clip(0.5 * float(p_scores[i]) + 0.3 * vis_ratio + 0.2 * task.det_score, 0.0, 1.0))
             face_emb: np.ndarray | None = None
-            if task.face_crop_rgb is not None and self._face_embedder is not None:
+            if task.face_crop_bgr is not None and self._face_embedder is not None:
                 try:
-                    face_emb = self._face_embedder.embed_single(task.face_crop_rgb)
+                    face_emb = self._face_embedder.embed_single(task.face_crop_bgr)
                 except AttributeError:
-                    res = self._face_embedder.embed([task.face_crop_rgb])
+                    res = self._face_embedder.embed([task.face_crop_bgr])
                     if res is not None and len(res) > 0:
                         face_emb = res[0]
                 except Exception:  # noqa: BLE001
