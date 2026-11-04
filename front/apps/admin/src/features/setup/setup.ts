@@ -8,7 +8,12 @@ import type {
   GuideDirection,
   GuideMagnitude,
   PairGrade,
+  SetupSessionResponse,
+  SetupSessionStage,
+  ZoneDraftCandidateKind,
+  ZoneDraftItem,
 } from '@/features/setup/types';
+import type { ViewerEditBox } from '@/features/viewer3d';
 import type { ViewerHealthPayload } from '@simai/contracts';
 
 // 설치 · 보정 1단계(카메라 연결·각도·높이 확인, S15P31A101-448) 및 단계 상태 순수 계산.
@@ -428,3 +433,325 @@ export const ACTION_LABEL: Record<ActionKey, string> = {
 };
 
 export const SECONDARY_ACTIONS: ReadonlySet<ActionKey> = new Set(['restart']);
+
+// ---- 2단계 이후: 대기 화면 · 미리보기 맵 전환 · AI 구역 초안(S15P31A101-453) ----
+
+/** 대기 화면 목표 시간(약 1분 30초 = 90초, 명세 8.1). */
+export const SETUP_TARGET_DURATION_SEC = 90;
+
+export interface WaitingStageDef {
+  stage: SetupSessionStage;
+  label: string;
+  description: string;
+}
+
+/** 세팅 대기 화면 4단계 표시 정의. */
+export const WAITING_STAGES: readonly WaitingStageDef[] = [
+  {
+    stage: 'COLLECTING_BACKGROUND',
+    label: '배경 수집',
+    description: '4대 카메라에서 사람 없는 배경 프레임을 모읍니다',
+  },
+  {
+    stage: 'INITIAL_POSE_AND_WORLD',
+    label: '3D 공간·좌표계',
+    description: '초기 카메라 포즈와 바닥(Z=0)·실측 스케일을 복원합니다',
+  },
+  {
+    stage: 'JOINT_BA_AND_VERIFY',
+    label: '카메라 정밀 보정',
+    description: '공동 번들 조정과 카메라 높이·교차 검증을 수행합니다',
+  },
+  {
+    stage: 'PREVIEW_AND_VLM_DRAFT',
+    label: '미리보기 맵·구역 초안',
+    description: '미리보기 3D 맵을 만들고 AI 위험 구역 초안을 준비합니다',
+  },
+] as const;
+
+export type WaitingStepStatus = 'done' | 'current' | 'upcoming' | 'failed';
+
+export interface WaitingStageStepView extends WaitingStageDef {
+  index: number;
+  status: WaitingStepStatus;
+}
+
+export interface HeightWarningItem {
+  cameraId: string;
+  inputHeightM: number | null;
+  restoredHeightM: number | null;
+  differenceCm: number | null;
+  message: string;
+}
+
+export type SceneTier = 'NONE' | 'PREVIEW' | 'FINAL';
+
+export interface SceneTierStatusView {
+  tier: SceneTier;
+  previewSceneVersion: string | null;
+  finalSceneVersion: string | null;
+  bakingTexture: boolean;
+  label: string;
+  description: string;
+}
+
+export interface SetupWaitingView {
+  sessionId: string | null;
+  stage: SetupSessionStage;
+  stageLabel: string;
+  progressPct: number;
+  remainingSec: number;
+  remainingClock: string;
+  remainingLabel: string;
+  steps: WaitingStageStepView[];
+  backgroundCollection: { cameraId: string; pct: number }[];
+  failed: boolean;
+  failureCode: string | null;
+  failureMessage: string | null;
+  heightWarnings: HeightWarningItem[];
+  hasHeightWarning: boolean;
+  previewReady: boolean;
+  sceneTier: SceneTierStatusView;
+}
+
+const STAGE_ORDER: Record<SetupSessionStage, number> = {
+  COLLECTING_BACKGROUND: 0,
+  INITIAL_POSE_AND_WORLD: 1,
+  JOINT_BA_AND_VERIFY: 2,
+  PREVIEW_AND_VLM_DRAFT: 3,
+  READY_FOR_ZONES: 4,
+  BAKING_TEXTURE: 4,
+  COMPLETED: 4,
+  FAILED: -1,
+};
+
+export const CANDIDATE_KIND_LABEL: Record<ZoneDraftCandidateKind, string> = {
+  ELEVATED_WORK_SURFACE: '고소 작업면',
+  OPENING: '개구부',
+  FLOOR_EDGE: '바닥 단차·가장자리',
+};
+
+/** 진행률(0~100)에서 목표 1분 30초(90초) 기준 남은 초를 추정한다. */
+export function estimateRemainingSeconds(progressPct: number): number {
+  const clamped = Math.max(0, Math.min(100, progressPct));
+  return Math.max(0, Math.round(((100 - clamped) / 100) * SETUP_TARGET_DURATION_SEC));
+}
+
+/** 남은 초를 한국어 안내 문자열(예: "약 1분 30초", "약 45초")로 바꾼다. */
+export function formatRemainingKorean(secs: number): string {
+  const safe = Math.max(0, Math.round(secs));
+  if (safe <= 0) return '곧 완료';
+  const mins = Math.floor(safe / 60);
+  const rem = safe % 60;
+  if (mins > 0 && rem > 0) return `약 ${mins}분 ${rem}초`;
+  if (mins > 0) return `약 ${mins}분`;
+  return `약 ${rem}초`;
+}
+
+/** 세션 응답에서 높이 불일치 경고가 있는 카메라 목록을 추출한다. */
+export function deriveHeightWarnings(
+  session: SetupSessionResponse | null | undefined,
+): HeightWarningItem[] {
+  if (!session) return [];
+  const out: HeightWarningItem[] = [];
+  const seen = new Set<string>();
+
+  if (session.height_checks) {
+    for (const [cameraId, check] of Object.entries(session.height_checks)) {
+      if (!check.within_tolerance) {
+        seen.add(cameraId);
+        const diffPart =
+          check.difference_cm !== null && check.difference_cm !== undefined
+            ? ` (차이 ${check.difference_cm.toFixed(1)}cm)`
+            : '';
+        const msg =
+          check.guidance ??
+          `${cameraId} 입력 높이(${check.input_height_m.toFixed(2)}m)와 복원 높이(${
+            check.restored_height_m !== null ? `${check.restored_height_m.toFixed(2)}m` : '미확인'
+          })가 불일치합니다${diffPart}`;
+        out.push({
+          cameraId,
+          inputHeightM: check.input_height_m,
+          restoredHeightM: check.restored_height_m,
+          differenceCm: check.difference_cm,
+          message: msg,
+        });
+      }
+    }
+  }
+
+  for (const warn of session.height_warnings ?? []) {
+    const matchedCam = Object.keys(session.camera_heights_m).find((camId) => warn.includes(camId));
+    const camId = matchedCam ?? 'cam1';
+    if (!seen.has(camId)) {
+      seen.add(camId);
+      out.push({
+        cameraId: camId,
+        inputHeightM: session.camera_heights_m[camId] ?? null,
+        restoredHeightM: null,
+        differenceCm: null,
+        message: warn,
+      });
+    }
+  }
+
+  return out;
+}
+
+/** 미리보기 Scene 이 준비되어 구역 편집으로 넘어갈 수 있는지 판정한다. */
+export function isPreviewSceneReady(session: SetupSessionResponse | null | undefined): boolean {
+  if (!session || session.status === 'FAILED') return false;
+  if (session.preview_scene_version || session.scene_version) return true;
+  const currentStage = session.stage ?? session.status;
+  return (
+    currentStage === 'READY_FOR_ZONES' ||
+    currentStage === 'BAKING_TEXTURE' ||
+    currentStage === 'COMPLETED'
+  );
+}
+
+/** 현재 세션의 Scene 단계(미리보기 맵 vs 고화질 정식 Scene 자동 교체)를 계산한다. */
+export function deriveSceneTierStatus(
+  session: SetupSessionResponse | null | undefined,
+): SceneTierStatusView {
+  const previewSceneVersion = session?.preview_scene_version ?? null;
+  const finalSceneVersion = session?.scene_version ?? null;
+  const currentStage = session?.stage ?? session?.status;
+  const bakingTexture = currentStage === 'BAKING_TEXTURE';
+
+  if (finalSceneVersion || currentStage === 'COMPLETED') {
+    return {
+      tier: 'FINAL',
+      previewSceneVersion,
+      finalSceneVersion: finalSceneVersion ?? previewSceneVersion,
+      bakingTexture: false,
+      label: '정밀 3D 맵',
+      description: '고화질 정식 Scene으로 자동 교체됨 · 편집 중인 구역 초안 유지',
+    };
+  }
+
+  if (isPreviewSceneReady(session)) {
+    return {
+      tier: 'PREVIEW',
+      previewSceneVersion,
+      finalSceneVersion: null,
+      bakingTexture,
+      label: '미리보기 맵',
+      description: bakingTexture
+        ? '미리보기 맵 표시 중 · 뒤에서 정밀 텍스처 Scene 생성 중(완성 시 자동 교체)'
+        : '미리보기 맵 표시 중 · 정식 Scene 준비 시 자동 교체됩니다',
+    };
+  }
+
+  return {
+    tier: 'NONE',
+    previewSceneVersion: null,
+    finalSceneVersion: null,
+    bakingTexture: false,
+    label: '맵 생성 대기',
+    description: '3D 미리보기 맵을 생성하고 있습니다',
+  };
+}
+
+/** 진행률로 실패 시점 단계 인덱스를 추정한다. */
+function inferStageIndexFromProgress(progressPct: number): number {
+  if (progressPct < 25) return 0;
+  if (progressPct < 55) return 1;
+  if (progressPct < 80) return 2;
+  return 3;
+}
+
+/** GET /api/setup-sessions/{id} 응답에서 대기 화면 표시 모델을 계산한다. */
+export function deriveWaitingView(
+  session: SetupSessionResponse | null | undefined,
+): SetupWaitingView {
+  const rawStage: SetupSessionStage = session?.stage ?? session?.status ?? 'COLLECTING_BACKGROUND';
+  const failed = session?.status === 'FAILED' || rawStage === 'FAILED';
+  const progressPct = session?.progress_pct ?? 0;
+  const remainingSec = estimateRemainingSeconds(progressPct);
+
+  const activeIndex = failed
+    ? session?.stage && session.stage !== 'FAILED'
+      ? Math.min(3, Math.max(0, STAGE_ORDER[session.stage]))
+      : inferStageIndexFromProgress(progressPct)
+    : STAGE_ORDER[rawStage] >= 0
+      ? STAGE_ORDER[rawStage]
+      : inferStageIndexFromProgress(progressPct);
+
+  const steps: WaitingStageStepView[] = WAITING_STAGES.map((def, idx) => {
+    let status: WaitingStepStatus;
+    if (failed) {
+      status = idx < activeIndex ? 'done' : idx === activeIndex ? 'failed' : 'upcoming';
+    } else if (idx < activeIndex) {
+      status = 'done';
+    } else if (idx === activeIndex) {
+      status = 'current';
+    } else {
+      status = 'upcoming';
+    }
+    return {
+      ...def,
+      index: idx,
+      status,
+    };
+  });
+
+  const currentDef = WAITING_STAGES[Math.min(3, Math.max(0, activeIndex))] ?? WAITING_STAGES[0]!;
+  const stageLabel = failed
+    ? `${currentDef.label} 실패`
+    : activeIndex >= 4
+      ? '미리보기 맵 준비 완료'
+      : currentDef.label;
+
+  const backgroundCollection = Object.entries(session?.background_collection_pct ?? {}).map(
+    ([cameraId, pct]) => ({
+      cameraId,
+      pct: Math.round(pct),
+    }),
+  );
+
+  const heightWarnings = deriveHeightWarnings(session);
+
+  return {
+    sessionId: session?.setup_session_id ?? null,
+    stage: rawStage,
+    stageLabel,
+    progressPct,
+    remainingSec,
+    remainingClock: formatClock(remainingSec),
+    remainingLabel: formatRemainingKorean(remainingSec),
+    steps,
+    backgroundCollection,
+    failed,
+    failureCode: session?.failure_code ?? null,
+    failureMessage: session?.failure_message ?? null,
+    heightWarnings,
+    hasHeightWarning: heightWarnings.length > 0,
+    previewReady: isPreviewSceneReady(session),
+    sceneTier: deriveSceneTierStatus(session),
+  };
+}
+
+/** VLM 구역 초안 다각형과 Z 범위를 구역 편집기(`useZoneEditStore`)의 ViewerEditBox 로 변환한다. */
+export function boxOfDraftItem(item: ZoneDraftItem): ViewerEditBox {
+  const xs = item.polygon_xy.map((p) => p[0]);
+  const ys = item.polygon_xy.map((p) => p[1]);
+  const rawMinX = Math.min(...xs);
+  const rawMaxX = Math.max(...xs);
+  const rawMinY = Math.min(...ys);
+  const rawMaxY = Math.max(...ys);
+
+  const minX = Number.isFinite(rawMinX) ? rawMinX : 1;
+  const maxX = Number.isFinite(rawMaxX) && rawMaxX - minX >= 0.5 ? rawMaxX : minX + 1.2;
+  const minY = Number.isFinite(rawMinY) ? rawMinY : 1;
+  const maxY = Number.isFinite(rawMaxY) && rawMaxY - minY >= 0.5 ? rawMaxY : minY + 1.2;
+
+  const minZ = Math.max(0, Number.isFinite(item.z_min_m) ? item.z_min_m : 0);
+  const rawMaxZ = Number.isFinite(item.z_max_m) ? item.z_max_m : minZ + 2;
+  const maxZ = rawMaxZ - minZ >= 0.5 ? rawMaxZ : minZ + 2;
+
+  return {
+    min: [minX, minY, minZ],
+    max: [maxX, maxY, maxZ],
+  };
+}

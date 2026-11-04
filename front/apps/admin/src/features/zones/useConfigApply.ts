@@ -1,3 +1,4 @@
+import { markSetupZonesCommitted } from '@/features/setup/setup.store';
 import type { WorkSurface } from '@/features/surfaces/types';
 import { BUNDLES_KEY, publishBundle, requestBundles, ZONES_KEY } from '@/features/zones/api';
 import { putBundle } from '@/features/zones/commitCache';
@@ -141,7 +142,10 @@ export function useConfigApply(zones: readonly Zone[], surfaces?: readonly Publi
   const publish = useMutation({
     mutationKey: PUBLISH_MUTATION_KEY,
     mutationFn: () => publishBundle(api),
-    onSuccess: (bundle) => putBundle(queryClient, bundle),
+    onSuccess: (bundle) => {
+      putBundle(queryClient, bundle);
+      markSetupZonesCommitted();
+    },
   });
   const unpublished = useMemo(() => unpublishedZoneIds(zones, latest), [zones, latest]);
   const unpublishedSurfaces = useMemo(

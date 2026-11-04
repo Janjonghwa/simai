@@ -1,3 +1,4 @@
+import { markSetupZonesCommitted } from '@/features/setup/setup.store';
 import { requestStaticObjects, STATIC_OBJECTS_KEY } from '@/features/surfaces/api';
 import type { WorkSurface } from '@/features/surfaces/types';
 import { commitZone, requestZones, ZONES_KEY } from '@/features/zones/api';
@@ -135,7 +136,10 @@ export function useZoneCommitMutation() {
       await assertUnchanged(queryClient, input);
       return send(input.request);
     },
-    onSuccess: ({ result }, { request }) => applyCommitted(queryClient, request, result),
+    onSuccess: ({ result }, { request }) => {
+      applyCommitted(queryClient, request, result);
+      markSetupZonesCommitted();
+    },
     onError: (error) => {
       if (needsRefetch(error)) invalidateCommitted(queryClient);
     },

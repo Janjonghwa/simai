@@ -1,16 +1,15 @@
 import { PageTitle } from '@/features/layout/PageTitle';
-import { RulesPanel } from '@/features/rules/RulesPanel';
-import { SetupMap } from '@/features/setup/SetupMap';
 import {
-  CameraHeightPanel,
-  CameraPanel,
-  SetupCctvPanel,
-  StagePanel,
-} from '@/features/setup/SetupPanels';
+  SpatialViewportContext,
+  useSpatialViewport,
+  type SpatialViewportValue,
+} from '@/features/layout/SpatialViewportHost';
+import { RulesPanel } from '@/features/rules/RulesPanel';
 import {
   ACTION_LABEL,
   deriveHeightFields,
   deriveStep1Coverage,
+  deriveWaitingView,
   MAP_TITLE,
   resolveHeightCameraIds,
   SECONDARY_ACTIONS,
@@ -22,10 +21,30 @@ import {
   type Stage,
 } from '@/features/setup/setup';
 import {
+  acceptSetupZoneDraft,
+  discardSetupZoneDraft,
+  useSetupFlowStore,
+} from '@/features/setup/setup.store';
+import { SetupMap } from '@/features/setup/SetupMap';
+import {
+  AiZoneDraftsPanel,
+  CameraHeightPanel,
+  CameraPanel,
+  SetupCctvPanel,
+  StagePanel,
+  WaitingPanel,
+} from '@/features/setup/SetupPanels';
+import {
   useCameraHeightDefaults,
   useCoverageGuides,
   useCreateSetupSession,
+  useRetrySetupSession,
+  useSetupSession,
+  useSetupZoneDrafts,
 } from '@/features/setup/useSetupStep1';
+import type { CommandResult, ViewerTarget } from '@/features/viewer3d';
+import { useZones } from '@/features/zones/useZones';
+import { ZonesPage } from '@/features/zones/ZonesPage';
 import { Alert } from '@simai/ui/components/alert';
 import { Badge } from '@simai/ui/components/badge';
 import { Button } from '@simai/ui/components/button';
@@ -33,13 +52,16 @@ import { Card, CardContent, CardHeader, CardTitle } from '@simai/ui/components/c
 import { cn } from '@simai/ui/lib/utils';
 import { useNavigate } from '@tanstack/react-router';
 import { Check } from 'lucide-react';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
-// 설치 · 보정(명세 8.1·13.4·18.1, S15P31A101-448):
-// 1단계는 CCTV 4칸 실시간 미리보기, 카메라 각도 헬퍼(GET /api/cameras/coverage-guides 2~3초 폴링:
-// 연결 상태 3종·6쌍 충분/약함/부족·회전 방향 안내 한 줄·영상 없음/계산 실패/STALE 표시, 막지 않음),
-// 카메라별 실측 높이 입력(GET /api/setup-sessions/camera-height-defaults 기본 채움, 빈칸만 입력 필수,
-// POST /api/setup-sessions 제출값이 다음 기본값)으로 구성한다. 걷기 보정과 정물 배치는 없다.
+// 설치 · 보정(명세 8.1·13.4·18.1, S15P31A101-448·-453):
+// 1단계: CCTV 4칸 실시간 미리보기, 카메라 각도 헬퍼(2~3초 폴링), 카메라별 실측 높이 입력.
+// 2단계(대기 화면): POST /api/setup-sessions 후 GET /api/setup-sessions/{id} 2초 주기 조회,
+// 단계(배경 수집 → 3D 공간·좌표계 → 카메라 정밀 보정 → 미리보기 맵·구역 초안)·진행률·남은 시간(목표 약 1분 30초),
+// 실패 시 사유 + 다시 시도(POST /api/setup-sessions/{id}/retry), 높이 불일치 경고 시 1단계 높이 칸 복귀 후 재시도.
+// 3단계(미리보기 맵 도착 → 구역 편집): 미리보기 Scene 준비 시 구역 편집 도구(ZonesPage, -456 재사용) 및
+// AI 위험 구역 초안(GET /api/setup-sessions/{id}/zone-drafts, 점선 다각형, 수락·버리기, AI 의견 없음 회색 표시),
+// 고화질 정식 Scene 도착 시 자동 교체(편집 초안 유지), 구역 발행(POST /api/zones/commit) 뒤 작업 관리(/tbm) 이동.
 
 const STATE_TONE: Record<CalibrationState, string> = {
   UNCALIBRATED: 'bg-surface-3 text-muted-foreground',
@@ -62,10 +84,49 @@ const STAGE_CALIBRATION: readonly { state: CalibrationState; version: string }[]
   { state: 'CALIBRATED', version: 'cal-8' },
 ];
 
+function SetupZoneEditorHost({ children }: { children: ReactNode }) {
+  const existing = useSpatialViewport();
+  const { zones, raw: zonesRaw, failed: zonesFailed } = useZones();
+  const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
+
+  const selectTarget = useCallback((target: ViewerTarget): CommandResult => {
+    if (target.type === 'zone') setSelectedZoneId(target.id);
+    return { ok: true };
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedZoneId(null);
+  }, []);
+
+  const fallbackValue = useMemo<SpatialViewportValue>(
+    () => ({
+      view: '2d',
+      viewerReady: false,
+      selectedKey: selectedZoneId ? `zone:${selectedZoneId}` : null,
+      selectedZoneId,
+      zones,
+      zonesRaw,
+      zonesFailed,
+      selectTarget,
+      clearSelection,
+    }),
+    [selectedZoneId, zones, zonesRaw, zonesFailed, selectTarget, clearSelection],
+  );
+
+  if (existing) return <>{children}</>;
+  return <SpatialViewportContext value={fallbackValue}>{children}</SpatialViewportContext>;
+}
+
 export function SetupPage({ workUnitId = 1 }: { workUnitId?: number } = {}) {
   const [stage, setStage] = useState<Stage>(0);
   const [heightEdits, setHeightEdits] = useState<Record<string, string>>({});
+  const [returnForHeightRetry, setReturnForHeightRetry] = useState(false);
   const navigate = useNavigate();
+
+  const activeSessionId = useSetupFlowStore((s) => s.activeSessionId);
+  const acceptedDraftIds = useSetupFlowStore((s) => s.acceptedDraftIds);
+  const discardedDraftIds = useSetupFlowStore((s) => s.discardedDraftIds);
+  const zonesCommitted = useSetupFlowStore((s) => s.zonesCommitted);
 
   const step1Active = stage === 0;
   const coverageQuery = useCoverageGuides(step1Active);
@@ -78,17 +139,57 @@ export function SetupPage({ workUnitId = 1 }: { workUnitId?: number } = {}) {
 
   const createSession = useCreateSetupSession(() => {
     setHeightEdits({});
+    setReturnForHeightRetry(false);
     go(1);
   });
+
+  const retrySession = useRetrySetupSession(() => {
+    setHeightEdits({});
+    setReturnForHeightRetry(false);
+    go(1);
+  });
+
+  const sessionId =
+    activeSessionId ??
+    retrySession.session?.setup_session_id ??
+    createSession.session?.setup_session_id ??
+    null;
+
+  const sessionQuery = useSetupSession(sessionId, Boolean(sessionId));
+  const currentSession = sessionQuery.data ?? retrySession.session ?? createSession.session ?? null;
+
+  const waiting = useMemo(() => deriveWaitingView(currentSession), [currentSession]);
+
+  const autoMovedSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      stage === 1 &&
+      waiting.previewReady &&
+      !waiting.hasHeightWarning &&
+      currentSession?.setup_session_id &&
+      autoMovedSessionRef.current !== currentSession.setup_session_id
+    ) {
+      autoMovedSessionRef.current = currentSession.setup_session_id;
+      go(2);
+    }
+  }, [stage, waiting.previewReady, waiting.hasHeightWarning, currentSession?.setup_session_id, go]);
+
+  const draftsEnabled = Boolean(sessionId) && (waiting.previewReady || stage >= 2);
+  const zoneDraftsQuery = useSetupZoneDrafts(sessionId, draftsEnabled);
 
   const cameraIds = useMemo(
     () => resolveHeightCameraIds(heightDefaultsQuery.data, coverageQuery.data),
     [heightDefaultsQuery.data, coverageQuery.data],
   );
 
+  const effectiveHeightDefaults =
+    returnForHeightRetry && currentSession?.camera_heights_m
+      ? currentSession.camera_heights_m
+      : heightDefaultsQuery.data?.camera_heights_m;
+
   const heightFields = useMemo(
-    () => deriveHeightFields(cameraIds, heightDefaultsQuery.data?.camera_heights_m, heightEdits),
-    [cameraIds, heightDefaultsQuery.data?.camera_heights_m, heightEdits],
+    () => deriveHeightFields(cameraIds, effectiveHeightDefaults, heightEdits),
+    [cameraIds, effectiveHeightDefaults, heightEdits],
   );
 
   const heightValidation = useMemo(() => validateHeightFields(heightFields), [heightFields]);
@@ -102,13 +203,59 @@ export function SetupPage({ workUnitId = 1 }: { workUnitId?: number } = {}) {
     setHeightEdits((prev) => ({ ...prev, [cameraId]: value }));
   }, []);
 
+  const submitRetryWithHeights = useCallback(() => {
+    if (!sessionId || !heightValidation.valid || retrySession.pending) return;
+    retrySession.retry({
+      setupSessionId: sessionId,
+      body: { camera_heights_m: heightValidation.cameraHeightsM },
+    });
+  }, [sessionId, heightValidation, retrySession]);
+
   const submitStep1 = useCallback(() => {
-    if (!heightValidation.valid || createSession.pending) return;
+    if (!heightValidation.valid) return;
+    if (returnForHeightRetry && sessionId) {
+      submitRetryWithHeights();
+      return;
+    }
+    if (createSession.pending) return;
     createSession.submit({
       work_unit_id: workUnitId,
       camera_heights_m: heightValidation.cameraHeightsM,
     });
-  }, [heightValidation, createSession, workUnitId]);
+  }, [
+    heightValidation,
+    returnForHeightRetry,
+    sessionId,
+    submitRetryWithHeights,
+    createSession,
+    workUnitId,
+  ]);
+
+  const handleRetryFailedSession = useCallback(() => {
+    if (!sessionId || retrySession.pending) return;
+    retrySession.retry({
+      setupSessionId: sessionId,
+      body: currentSession?.camera_heights_m
+        ? { camera_heights_m: currentSession.camera_heights_m }
+        : {},
+    });
+  }, [sessionId, retrySession, currentSession]);
+
+  const handleReturnToStep1ForHeight = useCallback(() => {
+    if (currentSession?.camera_heights_m) {
+      const initialEdits: Record<string, string> = {};
+      for (const [camId, val] of Object.entries(currentSession.camera_heights_m)) {
+        initialEdits[camId] = String(val);
+      }
+      setHeightEdits(initialEdits);
+    }
+    setReturnForHeightRetry(true);
+    setStage(0);
+  }, [currentSession]);
+
+  const handleNavigateTbm = useCallback(() => {
+    void navigate({ to: '/tbm' });
+  }, [navigate]);
 
   const stageActions: ActionKey[] =
     stage === 0 ? [] : stage === 1 ? ['confirm'] : ['restart', 'zones'];
@@ -121,6 +268,10 @@ export function SetupPage({ workUnitId = 1 }: { workUnitId?: number } = {}) {
     restart: () => go(0),
     zones: () => void navigate({ to: '/', search: { edit: true } }),
   };
+
+  const step1Pending = createSession.pending || retrySession.pending;
+  const step1Error = retrySession.error ?? createSession.error;
+  const draftsList = zoneDraftsQuery.data?.drafts ?? [];
 
   return (
     <>
@@ -155,18 +306,31 @@ export function SetupPage({ workUnitId = 1 }: { workUnitId?: number } = {}) {
             )}
           </>
         ) : (
-          <Badge
-            className={cn(
-              'h-auto rounded-md px-2.5 py-0.5 font-mono text-[13px] font-semibold',
-              STATE_TONE[stageMeta.state],
+          <>
+            <Badge
+              className={cn(
+                'h-auto rounded-md px-2.5 py-0.5 font-mono text-[13px] font-semibold',
+                STATE_TONE[stageMeta.state],
+              )}
+            >
+              {stageMeta.state}
+            </Badge>
+            {waiting.sceneTier.tier !== 'NONE' && (
+              <Badge
+                aria-label={`맵 단계 ${waiting.sceneTier.label}`}
+                className={cn(
+                  'h-auto rounded-md px-2.5 py-0.5 font-mono text-[13px] font-semibold',
+                  waiting.sceneTier.tier === 'FINAL' ? TONE_BADGE.ok : TONE_BADGE.active,
+                )}
+              >
+                {waiting.sceneTier.label}
+              </Badge>
             )}
-          >
-            {stageMeta.state}
-          </Badge>
+          </>
         )}
         <span className="font-mono text-muted-foreground">
-          {createSession.session?.setup_session_id
-            ? `세션 ${createSession.session.setup_session_id}`
+          {currentSession?.setup_session_id
+            ? `세션 ${currentSession.setup_session_id}`
             : stageMeta.version}
         </span>
         <div className="ml-auto flex flex-wrap gap-2">
@@ -174,26 +338,33 @@ export function SetupPage({ workUnitId = 1 }: { workUnitId?: number } = {}) {
             <Button
               size="lg"
               className="px-4"
-              disabled={!heightValidation.valid || createSession.pending}
+              disabled={!heightValidation.valid || step1Pending}
               onClick={run.start}
             >
               {coverage.submitLabel}
             </Button>
           ) : (
-            stageActions.map((key) => {
-              const secondary = SECONDARY_ACTIONS.has(key);
-              return (
-                <Button
-                  key={key}
-                  size="lg"
-                  variant={secondary ? 'secondary' : 'default'}
-                  className={cn('px-4', secondary && 'bg-surface-3 hover:bg-surface-3/70')}
-                  onClick={run[key]}
-                >
-                  {ACTION_LABEL[key]}
+            <>
+              {stageActions.map((key) => {
+                const secondary = SECONDARY_ACTIONS.has(key);
+                return (
+                  <Button
+                    key={key}
+                    size="lg"
+                    variant={secondary ? 'secondary' : 'default'}
+                    className={cn('px-4', secondary && 'bg-surface-3 hover:bg-surface-3/70')}
+                    onClick={run[key]}
+                  >
+                    {ACTION_LABEL[key]}
+                  </Button>
+                );
+              })}
+              {zonesCommitted && (
+                <Button size="lg" className="px-4" onClick={handleNavigateTbm}>
+                  작업 관리(TBM)로 이동
                 </Button>
-              );
-            })
+              )}
+            </>
           )}
         </div>
       </div>
@@ -268,11 +439,16 @@ export function SetupPage({ workUnitId = 1 }: { workUnitId?: number } = {}) {
             <CameraHeightPanel
               fields={heightFields}
               onChange={onChangeHeight}
-              submitError={createSession.error}
+              submitError={step1Error}
+              heightWarnings={waiting.heightWarnings}
+              retrySessionId={returnForHeightRetry ? sessionId : null}
+              onRetryWithHeights={submitRetryWithHeights}
+              retryPending={retrySession.pending}
+              canSubmitHeights={heightValidation.valid}
             />
           </div>
         </div>
-      ) : (
+      ) : stage === 1 ? (
         <div className="grid grid-cols-[minmax(0,1.25fr)_minmax(320px,1fr)] items-start gap-3">
           <Card size="sm">
             <CardHeader>
@@ -281,11 +457,76 @@ export function SetupPage({ workUnitId = 1 }: { workUnitId?: number } = {}) {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <SetupMap stage={stage} coverage={coverage} />
+              <SetupMap
+                stage={stage}
+                coverage={coverage}
+                drafts={draftsList}
+                acceptedDraftIds={acceptedDraftIds}
+                discardedDraftIds={discardedDraftIds}
+              />
             </CardContent>
           </Card>
           <div className="flex flex-col gap-3">
-            <CameraPanel coverage={coverage} />
+            {currentSession ? (
+              <WaitingPanel
+                waiting={waiting}
+                onRetry={handleRetryFailedSession}
+                retryPending={retrySession.pending}
+                retryError={retrySession.error}
+                onReturnToStep1={handleReturnToStep1ForHeight}
+              />
+            ) : (
+              <>
+                <CameraPanel coverage={coverage} />
+                <StagePanel stage={stage} cameraCount={cameraIds.length} />
+              </>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-[minmax(0,1.25fr)_minmax(320px,1fr)] items-start gap-3">
+          <div className="flex flex-col gap-3">
+            <Card size="sm">
+              <CardHeader>
+                <CardTitle>
+                  <h2>
+                    {waiting.sceneTier.tier === 'FINAL'
+                      ? `정밀 3D 맵 · ${waiting.sceneTier.finalSceneVersion ?? 'cal-8'}`
+                      : waiting.sceneTier.tier === 'PREVIEW'
+                        ? `미리보기 맵 · ${waiting.sceneTier.previewSceneVersion ?? 'cal-8'}`
+                        : MAP_TITLE[stage]}
+                  </h2>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <SetupMap
+                  stage={stage}
+                  coverage={coverage}
+                  drafts={draftsList}
+                  acceptedDraftIds={acceptedDraftIds}
+                  discardedDraftIds={discardedDraftIds}
+                />
+              </CardContent>
+            </Card>
+            <AiZoneDraftsPanel
+              sceneTier={waiting.sceneTier}
+              draftsResponse={zoneDraftsQuery.data}
+              acceptedDraftIds={acceptedDraftIds}
+              discardedDraftIds={discardedDraftIds}
+              zonesCommitted={zonesCommitted}
+              onAcceptDraft={acceptSetupZoneDraft}
+              onDiscardDraft={discardSetupZoneDraft}
+              onNavigateTbm={handleNavigateTbm}
+            />
+          </div>
+          <div className="flex flex-col gap-3">
+            {currentSession && (
+              <SetupZoneEditorHost>
+                <div className="relative min-h-[420px]">
+                  <ZonesPage />
+                </div>
+              </SetupZoneEditorHost>
+            )}
             <StagePanel stage={stage} cameraCount={cameraIds.length} />
           </div>
         </div>

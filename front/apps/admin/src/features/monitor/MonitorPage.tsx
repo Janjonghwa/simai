@@ -1,11 +1,23 @@
 import { useCurrentRole } from '@/features/auth/useCurrentRole';
+import { useSetupFlowStore } from '@/features/setup/setup.store';
 import { ZonesPage } from '@/features/zones/ZonesPage';
 import { clearZoneDrafts } from '@/store/zoneEdit.store';
 import { Button } from '@simai/ui/components/button';
+import { useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
+
+function MonitorTbmNavigateButton() {
+  const navigate = useNavigate();
+  return (
+    <Button size="sm" variant="secondary" onClick={() => void navigate({ to: '/tbm' })}>
+      작업 관리(TBM)로 이동
+    </Button>
+  );
+}
 
 export function MonitorPage({ initialEdit = false }: { initialEdit?: boolean } = {}) {
   const role = useCurrentRole();
+  const zonesCommitted = useSetupFlowStore((s) => s.zonesCommitted);
   const [editing, setEditing] = useState(initialEdit);
   const [prevInitial, setPrevInitial] = useState(initialEdit);
   if (prevInitial !== initialEdit) {
@@ -37,6 +49,7 @@ export function MonitorPage({ initialEdit = false }: { initialEdit?: boolean } =
               편집 중
             </span>
           )}
+          {active && zonesCommitted && <MonitorTbmNavigateButton />}
         </div>
       )}
       {active && <ZonesPage />}

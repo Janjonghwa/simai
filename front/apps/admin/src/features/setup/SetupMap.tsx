@@ -12,6 +12,7 @@ import {
   type Stage,
   type Step1CoverageView,
 } from '@/features/setup/setup';
+import type { ZoneDraftItem } from '@/features/setup/types';
 import { cn } from '@simai/ui/lib/utils';
 import { memo } from 'react';
 
@@ -251,7 +252,85 @@ function Cameras({ cameras }: { cameras: readonly CoverageCameraView[] }) {
   );
 }
 
-export function SetupMap({ stage, coverage }: { stage: Stage; coverage: Step1CoverageView }) {
+function DraftPolygons({
+  drafts,
+  acceptedDraftIds,
+  discardedDraftIds,
+}: {
+  drafts: readonly ZoneDraftItem[];
+  acceptedDraftIds: readonly string[];
+  discardedDraftIds: readonly string[];
+}) {
+  const visibleDrafts = drafts.filter((d) => !discardedDraftIds.includes(d.candidate_id));
+  if (visibleDrafts.length === 0) return null;
+
+  return (
+    <g aria-label="AI 구역 초안 다각형">
+      {visibleDrafts.map((draft) => {
+        const planPts = draft.polygon_xy.map(([wx, wy]) => toPlan(wx, wy));
+        const pointsAttr = planPts.map(([px, py]) => `${px},${py}`).join(' ');
+        const cx = planPts.reduce((acc, [px]) => acc + px, 0) / planPts.length;
+        const cy = planPts.reduce((acc, [, py]) => acc + py, 0) / planPts.length;
+        const accepted = acceptedDraftIds.includes(draft.candidate_id);
+        const noOpinion = draft.no_opinion;
+
+        const polygonTone = noOpinion
+          ? 'fill-muted-foreground/15 stroke-muted-foreground'
+          : draft.recommended_severity === 'CRITICAL'
+            ? 'fill-sev-critical/15 stroke-sev-critical'
+            : 'fill-sev-high/15 stroke-sev-high';
+
+        const labelTone = noOpinion
+          ? 'fill-muted-foreground'
+          : draft.recommended_severity === 'CRITICAL'
+            ? 'fill-sev-critical'
+            : 'fill-sev-high';
+
+        return (
+          <g
+            key={draft.candidate_id}
+            aria-label={`AI 초안 ${draft.recommended_name}${noOpinion ? ' (AI 의견 없음)' : ''}`}
+            data-candidate-id={draft.candidate_id}
+            data-no-opinion={noOpinion ? 'true' : 'false'}
+            data-accepted={accepted ? 'true' : 'false'}
+          >
+            <polygon
+              points={pointsAttr}
+              strokeWidth={accepted ? 0.08 : 0.06}
+              strokeDasharray="0.22 0.14"
+              className={polygonTone}
+            />
+            <text
+              x={cx}
+              y={cy + 0.08}
+              fontSize={0.24}
+              fontWeight={600}
+              textAnchor="middle"
+              {...HALO}
+              className={cn(HALO_CLASS, 'font-mono', labelTone)}
+            >
+              {noOpinion ? `${draft.recommended_name} (AI 의견 없음)` : draft.recommended_name}
+            </text>
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+export function SetupMap({
+  stage,
+  coverage,
+  drafts = [],
+  acceptedDraftIds = [],
+  discardedDraftIds = [],
+}: {
+  stage: Stage;
+  coverage: Step1CoverageView;
+  drafts?: readonly ZoneDraftItem[];
+  acceptedDraftIds?: readonly string[];
+  discardedDraftIds?: readonly string[];
+}) {
   const size = (n: number) => n + PLAN_MARGIN * 2;
   return (
     <svg
@@ -266,6 +345,13 @@ export function SetupMap({ stage, coverage }: { stage: Stage; coverage: Step1Cov
       <Walls />
       {stage === 0 && <PairEdges pairs={coverage.pairs} />}
       {stage === 1 && <Checks checked={CHECKS.length} />}
+      {drafts.length > 0 && (
+        <DraftPolygons
+          drafts={drafts}
+          acceptedDraftIds={acceptedDraftIds}
+          discardedDraftIds={discardedDraftIds}
+        />
+      )}
       <Cameras cameras={coverage.cameras} />
     </svg>
   );
