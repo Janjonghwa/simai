@@ -4,7 +4,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 
 - **기준:** 기획서 v1.3 수정 19 11장(데이터)·부록 C, 계약 v5.3.0, API 명세 표 v11(노션, 166행)
 - **범위:** 테이블 77개, 컬럼 807개. 확장 테이블도 컬럼까지 썼다. 이 중 V1~V13 으로 만든 테이블은 51개(MVP 40 · M1 9 · M3 `rag_clause`·`rag_query_template`), 컬럼 575개, FK 76개
-- **단계별:** MVP 40 · M1 9 · M2 2 · M3 9 · 확장 17 (확장 `watch_connection` 은 V28, S15P31A101-336. M3 `rag_query_template` 은 S15P31A101-27, MVP `config_bundle_file`·`calibration_document`·`system_outage`·`calibration_update_message`·`i1_deferred_message`·`bev_frame_set` 은 V6·V7·V10·V11·V12 에서 추가)
+- **단계별:** MVP 40 · M1 9 · M2 2 · M3 9 · 확장 17 (확장 `watch_connection` 은 V28(S15P31A101-336), `watch_binding`·`watch_alert` 는 V35(S15P31A101-338). M3 `rag_query_template` 은 S15P31A101-27, MVP `config_bundle_file`·`calibration_document`·`system_outage`·`calibration_update_message`·`i1_deferred_message`·`bev_frame_set` 은 V6·V7·V10·V11·V12 에서 추가)
 - **작성·검토:** DB 는 EC2 에 있으므로 곽나혁이 작성한다. Tier 0·분석 워커가 채우는 테이블은 이연주가 검토한다("검토" 표시)
 - **마이그레이션:** `server/src/main/resources/db/migration/` 의 V1(MVP·M1 테이블 43개), V2(현장·카메라 시드), V3(`rag_clause`·`rag_query_template`, pgvector), V4(저널 세대 `journal_epoch`), V5(`token_hash` 유일, `worker.rotated_at`), V6(`config_bundle_file`·`calibration_document`, `config_bundle.rule_profile`), V7(`system_outage`), V8(`tier0_endpoint` 봉투 칸), V9(`upload_grant` 요청 주체·내용 칸), V10(`calibration_update_message`), V11(`media_clip_retention.msg_id`, `i1_deferred_message`), V12(`bev_frame_set`, `floor_plan` 작업 칸), V13(`notification` 유일 키·`claimed_until`), V14(`avatar_asset`, `upload_grant` 목적 `AVATAR_ASSET`·워커 요청, -325), V15(`video_segment`·`video_access_log`, `upload_grant` 목적 `VIDEO_SEGMENT`), V16(`upload_grant` 목적 `SCENE_GLTF`), `R__rule_versions.sql`(ai 규칙 등록부에서 자동 생성), `R__rag_clauses.sql`(ai RAG 조항·임베딩에서 자동 생성)
 
@@ -102,11 +102,11 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | J. 확장: 에이전틱·공정 | `operator_qa` | 확장 3 | 일반 | LLM 이 로그 조회 도구로 답한 질의응답 | 수정 16 추가 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
 | J. 확장: 에이전틱·공정 | `work_schedule` | 확장 5 | 일반 | 오늘의 작업·공정을 구역에 연결 | 수정 16 추가 | `/api/work-schedules` |  |
 | K. 확장: 워치 | `watch_registrant` | 확장 | 일반 | 워치 등록자(관리자만 조회) | 수정 16 추가 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) |  |
-| K. 확장: 워치 | `watch_binding` | 확장 | 일반 | 익명 World ID ↔ 워치 배정 이력 | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 곽나혁 |
+| K. 확장: 워치 | `watch_binding` | 확장 | 일반 | 익명 World ID ↔ 워치 배정 이력(V35, 지금은 관리자 임시 수동 배정) | 있음 | `/api/watch-bindings` | 곽나혁 |
 | K. 확장: 워치 | `channel_state` | 확장 | hypertable | World ID 별 개인 채널 상태 | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 곽나혁 |
 | K. 확장: 워치 | `watch_feature` | 확장 | hypertable | 워치 가속도 특징 | 있음 | `I4 gait_features` | 곽나혁 |
 | K. 확장: 워치 | `watch_connection` | 확장 | 일반 | 워치 I4 연결 기록(연결·끊김 경계, 끝 사유). 열린 연결은 워치마다 하나(V28, S15P31A101-336) | V28 추가 | `I4 /ws/watch`, `/topic/health`(watches) | 곽나혁 |
-| K. 확장: 워치 | `watch_alert` | 확장 | 일반 | 워치 진동 알림 상세(notification 의 WATCH 채널) | 수정 16 추가 | `/api/watch-alerts/{}/acks`, `I4 ack` |  |
+| K. 확장: 워치 | `watch_alert` | 확장 | 일반 | 워치 진동 알림과 ACK·격상(V35, LIVE 만) | 수정 16 추가 | `I4 watch_alert`·`watch_ack`, `/topic/watch`(watch_escalation) | 곽나혁 |
 | K. 확장: 워치 | `watch_impact` | 확장 | 일반 | 워치 충격 이벤트(낙상 추가 근거) | 수정 16 추가 | `I4 impact` |  |
 | L. 확장: PPE·정적 공간 변화 | `ppe_state` | 확장 | hypertable | World ID 별 PPE 판정 | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
 | L. 확장: PPE·정적 공간 변화 | `region_state` | 확장 | 일반 | 정적 공간 변화 영역(임시 형상·불확실 점유) | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
@@ -1535,17 +1535,20 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 
 #### `watch_binding` — 익명 World ID ↔ 워치 배정 이력
 
-- 단계 **확장** · 일반 · 근거: 11.3 watch_binding, 부록 C.6 1:1 배정 · 검토: 곽나혁(워치 트랙 전담, S15P31A101-336)
+- 단계 **확장** · 일반 · 근거: 11.3 watch_binding, 부록 C.6 1:1 배정 (V35, S15P31A101-338) · 검토: 곽나혁(워치 트랙 전담)
+- 지금은 관리자 임시 수동 배정(`MANUAL`, `/api/watch-bindings`)만 쓴다. 움직임 대조 배정(`MOTION_MATCH`)은 -340.
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
 | `binding_id` | bigint identity | PK |  |  |
-| `device_id` | text | FK>device.device_id, NN |  |  |
-| `world_id` | text | NN |  |  |
-| `score` | real | NN |  | 움직임 대조 점수 |
+| `device_id` | text | FK>device.device_id, NN |  | 지금 배정은 워치마다 하나(`unbound_at IS NULL` 부분 유일 인덱스) |
+| `world_id` | text | NN |  | 익명 World ID. 지금 배정은 World ID 마다 하나(부분 유일 인덱스) |
+| `method` | text | NN, CK(MANUAL·MOTION_MATCH) |  | 배정 방식 |
+| `score` | real | NN |  | 움직임 대조 점수. MANUAL 은 1 |
+| `bound_by_user_id` | bigint | FK>app_user.user_id, CHECK(manual) |  | 수동 배정한 관리자. MANUAL 이면 필수 |
 | `bound_at` | ts | NN |  |  |
-| `unbound_at` | ts |  |  |  |
-| `unbind_reason` | text |  |  | ID 병합·분열 의심, 끊김 등 |
+| `unbound_at` | ts | CHECK(end) |  |  |
+| `unbind_reason` | text | CK(RELEASED·REPLACED), CHECK(end) |  | 관리자가 풂, 같은 워치·World ID 의 새 배정. end: unbound_at 과 함께 채우거나 함께 비운다 |
 
 #### `channel_state` — World ID 별 개인 채널 상태
 
@@ -1570,40 +1573,35 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `features` | jsonb | NN | `gait_features` payload 그대로 | 걸음 시점·시작/멈춤 전환·0.5~3 Hz 대역 크기 시계열. 시각은 워치 시계(`clock_basis` WATCH)이고 `clock_offset_ms` 로 환산한다(-334) |
 | `received_at` | ts | NN |  |  |
 
-#### `watch_alert` — 워치 진동 알림 상세(notification 의 WATCH 채널)
+#### `watch_alert` — 워치 진동 알림과 ACK·격상
 
-- 단계 **확장** · 일반 · 근거: 부록 C.6 I4 watch_alert·ack, 격상
+- 단계 **확장** · 일반 · 근거: 부록 C.6 I4 watch_alert·watch_ack, FR-45·46, 격상 (V35, S15P31A101-338) · 검토: 곽나혁
+- 처음 설계는 `notification`(WATCH 채널)의 상세 표였으나, `notification` 은 구독·사용자 대상이고 CRITICAL·HIGH 만 받아(CAUTION 불가) 워치 알림은 따로 둔다.
+  LIVE 만 받는 두 겹 차단은 같은 방식(source CK + `risk_event(event_id, source)` 복합 FK)으로 건다.
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
-| `notification_id` | bigint | PK, FK>notification.notification_id |  |  |
-| `device_id` | text | FK>device.device_id, NN |  |  |
+| `alert_id` | bigint identity | PK |  |  |
 | `alert_msg_id` | uuid | UQ, NN | `watch_alert` 봉투 `msg_id` | `watch_ack.alert_msg_id` 가 이 값으로 행을 찾는다(-334) |
-| `vibration_pattern` | text | NN, CK(DANGER_LONG·CAUTION_DOUBLE·CAUTION_WEAK) | `watch_alert.vibration_pattern`(없으면 등급으로 정한 값) | 위험: 길게 연속, 경고: 짧게 두 번, 주의: 약하게 한 번(FR-45, -334 에서 CAUTION_WEAK 추가) |
-| `direction` | text | CK(FRONT·BACK·LEFT·RIGHT) | `watch_alert.direction` | 작업자 기준 방향. 모르면 null |
-| `word` | text | NN | `watch_alert.word` | 한 단어(8자 이하) |
-| `ack_within_ms` | integer | NN | `watch_alert.ack_within_ms` | 확인 기한(길이). 격상 판단 = sent_at + 이 값 |
+| `event_id` | uuid | NN, FK(event_id, source)>risk_event | `watch_alert.event_id` | 같은 이벤트(재개마다)·워치·등급에 한 번(부분 UQ `event_id, resume_count, device_id, severity`, SEND_FAILED 제외) |
+| `source` | text | NN, CK(LIVE) |  | 11.4-3 |
+| `event_sequence` | int | NN, CK(≥ 1) | `watch_alert.event_sequence` | 알린 이벤트 상태 |
+| `resume_count` | int | NN | `risk_event.resume_count` | 알린 때의 재개 횟수. 해소 뒤 다시 활성(resumed)이면 새로 알린다 |
+| `device_id` | text | FK>device.device_id, NN |  |  |
+| `world_id` | text | NN |  | 보낼 때 그 워치에 배정된 익명 World ID |
+| `severity` | text | NN, CK(CRITICAL·HIGH·CAUTION) | `watch_alert.severity` | 7.3 워치 개인 채널 |
+| `vibration_pattern` | text | NN, CK(DANGER_LONG·CAUTION_DOUBLE·CAUTION_WEAK) | `watch_alert.vibration_pattern` | 위험: 길게 연속, 경고: 짧게 두 번, 주의: 약하게 한 번(FR-45) |
+| `direction` | text | CK(FRONT·BACK·LEFT·RIGHT) | `watch_alert.direction` | 작업자 기준 방향. 지금은 싣지 않아 null(남은 일) |
+| `word` | text | NN | `watch_alert.word` | 한 단어(8자 이하, 규칙별) |
+| `needs_check` | boolean | NN | `watch_alert.needs_check` |  |
+| `ack_within_ms` | integer | NN, CK(1~600000) | `watch_alert.ack_within_ms` | 확인 기한(길이). 격상 판단 = sent_at + 이 값 |
+| `sent_at` | ts | NN | `watch_alert` 봉투 `sent_at` | EC2 가 보낸(보내려 한) 시각 |
 | `acked_at` | ts |  | `watch_ack.acked_at` (kind VIBRATED) | 워치가 진동을 시작한 시각(워치 시계, 기록용) |
 | `ack_received_at` | ts |  | EC2 가 VIBRATED `watch_ack` 를 받은 EC2 시각 | 격상 판단 기준: 이 값이 없거나 `sent_at + ack_within_ms` 뒤면 격상. 워치 시계를 믿지 않는다 |
-| `confirmed_at` | ts |  | `watch_ack.acked_at` (kind CONFIRMED) | 작업자가 화면에서 확인한 시각. 없을 수 있다 |
-| `escalated_at` | ts |  |  | ACK 대기 초과 → 현장 경보·관리자 알림 |
-
-#### `watch_connection` — 워치 I4 연결 기록
-
-- 단계 **확장** · 일반 · 근거: 부록 C.6 LOST(끊김을 관리자에게 알림), FR-44, -341 연결 비율 (V28, S15P31A101-336) · 검토: 곽나혁
-- 지금 연결 상태의 정본은 EC2 메모리(`WatchHub`)이고 화면에는 `viewer_health.watches` 로 나간다. 이 표는 연결·끊김 경계만 남긴다(하트비트마다 쓰지 않는다. 하트비트 수신은 `device.last_heartbeat_at`).
-
-| 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
-|---|---|---|---|---|
-| `connection_id` | bigint identity | PK |  |  |
-| `device_id` | text | FK>device.device_id, NN | 업그레이드 기기 토큰의 기기 | kind = WATCH. 열린 연결은 워치마다 하나(`ended_at IS NULL` 부분 유일 인덱스) |
-| `connected_at` | ts | NN |  | EC2 가 업그레이드를 받은 시각 |
-| `first_heartbeat_at` | ts |  |  | 이 연결의 첫 `watch_heartbeat` EC2 수신 시각. 없으면 붙기만 하고 하트비트 없음 |
-| `last_heartbeat_at` | ts |  |  | 끝날 때 적는 마지막 하트비트 EC2 수신 시각 |
-| `transport` | text | CK(WIFI·PHONE_BLUETOOTH·CELLULAR·UNKNOWN) | `watch_heartbeat.watch.transport` | 바뀌면 고친다(마지막 값) |
-| `app_version` | text |  | `watch_heartbeat.watch.app_version` |  |
-| `ended_at` | ts | CHECK(end) |  |  |
-| `end_reason` | text | CK(CLOSED·HEARTBEAT_TIMEOUT·TOKEN_INVALID·REPLACED·SEND_FAILED·EC2_RESTART), CHECK(end) |  | 워치·네트워크가 닫음, interval_ms×3 누락(LOST), 연결 중 토큰 폐기·회전, 같은 워치의 새 연결, EC2 송신이 밀려 닫음, EC2 종료·재시작(끝 시각은 마지막 하트비트, 없으면 연결 시각). end: ended_at 과 함께 채우거나 함께 비운다 |
+| `confirmed_at` | ts |  | `watch_ack.acked_at` (kind CONFIRMED) | 작업자가 화면에서 확인한 시각(워치 시계). 없을 수 있다 |
+| `confirm_received_at` | ts |  | EC2 가 CONFIRMED 를 받은 EC2 시각 |  |
+| `escalated_at` | ts | CHECK(escalation) | `watch_escalation.escalated_at` | 관리자 화면 알림(/topic/watch) |
+| `escalation_reason` | text | CK(NO_ACK·SEND_FAILED), CHECK(escalation) | `watch_escalation.reason` | 기한 안에 ACK 없음, 워치로 보내지 못함 |
 
 #### `watch_impact` — 워치 충격 이벤트(낙상 추가 근거)
 

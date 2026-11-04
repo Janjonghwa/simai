@@ -13,9 +13,11 @@ public final class RealtimeTopics {
     public static final String EVENTS = "/topic/events";
     public static final String HEALTH = "/topic/health";
     public static final String AVATAR = "/topic/avatar";
+    /** 워치 알림 격상(watch_escalation, 확장 C.6, S15P31A101-338) */
+    public static final String WATCH = "/topic/watch";
 
     /** 열람 이상(로그인한 계정 모두)이 구독할 수 있는 토픽(명세 14장). 이 밖의 토픽은 누구도 구독하지 못한다. */
-    public static final Set<String> VIEWER = Set.of(WORLD, EVENTS, HEALTH, AVATAR);
+    public static final Set<String> VIEWER = Set.of(WORLD, EVENTS, HEALTH, AVATAR, WATCH);
 
     private RealtimeTopics() {
     }

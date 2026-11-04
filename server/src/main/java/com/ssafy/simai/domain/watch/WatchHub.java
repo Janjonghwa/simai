@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
@@ -43,7 +44,8 @@ import tools.jackson.databind.node.ObjectNode;
  * </ul>
  * 메시지 하나가 틀리면 버리고 연결은 둔다(Tier 0 I1 과 같은 까닭: 끊으면 다시 붙어 같은 것을 되풀이한다). 계속 틀리면 하트비트가 없으니
  * 끊김 판정이 닫는다. 로그에는 기기 ID·msg_type 만 남기고 payload·토큰은 남기지 않는다.
- * watch_ack·gait_features 는 받기만 한다(격상은 -338, 걸음 특징 저장·배정은 -340).
+ * watch_ack 는 계약 검사 뒤 WatchAckReceived 로 넘긴다(WatchAlertService, -338). gait_features 는 받기만 한다(저장·배정은 -340).
+ * 워치로 보내기(send)는 다른 스레드(WatchAlertService)에서도 부른다. 세션마다 ConcurrentWebSocketSessionDecorator 가 보내기를 줄 세운다.
  */
 @Component
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -96,6 +98,7 @@ public class WatchHub implements AutoCloseable {
     private final ContractSchemas schemas;
     private final ObjectMapper mapper;
     private final Clock clock;
+    private final ApplicationEventPublisher events;
     private final Map<String, Link> byDevice = new ConcurrentHashMap<>();
     private final Map<String, Link> bySession = new ConcurrentHashMap<>();
     /** 워치별 연결 잠금. 같은 워치가 겹쳐 붙어도 DB 의 열린 행과 byDevice 가 같은 연결을 가리키게 open 과 교체를 함께 한다 */
@@ -105,7 +108,8 @@ public class WatchHub implements AutoCloseable {
             Thread.ofPlatform().name("watch-sweeper").daemon().factory());
 
     WatchHub(WatchRepository repository, WatchProperties properties, HealthState health, ContractSchemas schemas,
-            ObjectMapper mapper, Clock clock) {
+            ObjectMapper mapper, Clock clock, ApplicationEventPublisher events) {
+        this.events = events;
         this.repository = repository;
         this.properties = properties;
         this.health = health;
@@ -178,8 +182,16 @@ public class WatchHub implements AutoCloseable {
                 }
                 heartbeat(link, envelope);
             }
-            // 받기만 한다: 격상(-338)·걸음 특징 저장과 배정(-340)
-            case "watch_ack", "gait_features" -> log.debug("워치 메시지 받음: device={} msg_type={}", link.deviceId, envelope.msgType());
+            case "watch_ack" -> {
+                List<String> violations = schemas.violations("messages/watch_ack", text);
+                if (!violations.isEmpty()) {
+                    log.warn("watch_ack 계약 위반이라 버림: device={} violations={}", link.deviceId, violations.size());
+                    return;
+                }
+                events.publishEvent(new WatchAckReceived(link.deviceId, envelope, clock.instant()));
+            }
+            // 받기만 한다: 걸음 특징 저장과 배정(-340)
+            case "gait_features" -> log.debug("워치 메시지 받음: device={} msg_type={}", link.deviceId, envelope.msgType());
             default -> log.warn("모르는 워치 메시지를 버림: device={} msg_type={}", link.deviceId, envelope.msgType());
         }
     }
@@ -288,6 +300,32 @@ public class WatchHub implements AutoCloseable {
             closeQuietly(link.session, closeStatus);
         }
         health.watchesChanged();
+    }
+
+    /** 그 워치가 지금 CONNECTED 인가(연결이 열려 있고 하트비트 기한 안). viewer_health 의 link 와 같은 기준 */
+    public boolean isConnected(String deviceId) {
+        Link link = byDevice.get(deviceId);
+        return link != null && link.session.isOpen() && System.nanoTime() - link.lastSeenNanos <= properties.timeoutNanos();
+    }
+
+    /**
+     * 그 워치의 지금 연결로 메시지 하나를 보낸다(봉투까지 만든 것).
+     *
+     * @return 보냈으면 true. 연결이 없거나(LOST) 보내다 실패하면 false
+     */
+    public boolean send(String deviceId, ObjectNode message) {
+        Link link = byDevice.get(deviceId);
+        if (link == null || !link.session.isOpen()) {
+            return false;
+        }
+        try {
+            link.session.sendMessage(new TextMessage(mapper.writeValueAsString(message)));
+            return true;
+        } catch (IOException | RuntimeException e) {
+            log.warn("워치로 보내지 못함: device={} msg_type={} error={}", deviceId, message.path("msg_type").asString(""),
+                    e.getClass().getSimpleName());
+            return false;
+        }
     }
 
     /** 등록된 워치(폐기 안 됨)마다 지금 상태, device_id 오름차순. viewer_health 가 1초마다 부른다 */
