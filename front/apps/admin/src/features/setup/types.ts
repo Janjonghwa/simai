@@ -1,7 +1,9 @@
 import { z } from 'zod';
 
-// 세팅 1단계 카메라 각도 헬퍼(GET /api/cameras/coverage-guides, S15P31A101-447, contracts/messages/coverage_guide.schema.json 1.0.0)
-// 및 현장 세팅 세션·카메라 높이 기본값(GET /api/setup-sessions/camera-height-defaults, POST /api/setup-sessions, S15P31A101-452) 스키마.
+// 세팅 1단계 카메라 각도 헬퍼(GET /api/cameras/coverage-guides, S15P31A101-447, contracts/messages/coverage_guide.schema.json 1.0.0),
+// 현장 세팅 세션·카메라 높이 기본값·재시도(GET /api/setup-sessions/camera-height-defaults, POST /api/setup-sessions,
+// GET /api/setup-sessions/{id}, POST /api/setup-sessions/{id}/retry, S15P31A101-452),
+// 및 VLM 구역 초안(GET /api/setup-sessions/{id}/zone-drafts, S15P31A101-455, contracts/messages/vlm_zone_draft.schema.json 1.0.0) 스키마.
 
 export const cameraReceptionStatusSchema = z.enum(['OK', 'NO_VIDEO', 'STALE']);
 export type CameraReceptionStatus = z.infer<typeof cameraReceptionStatusSchema>;
@@ -132,6 +134,18 @@ export const setupSessionStageSchema = z.enum([
 ]);
 export type SetupSessionStage = z.infer<typeof setupSessionStageSchema>;
 
+export const heightCheckItemSchema = z.object({
+  input_height_m: z.number(),
+  restored_height_m: z.number().nullable().optional().default(null),
+  difference_cm: z.number().nullable().optional().default(null),
+  within_tolerance: z.boolean(),
+  guidance: z.string().nullable().optional().default(null),
+});
+export type HeightCheckItem = z.infer<typeof heightCheckItemSchema>;
+
+export const heightChecksSchema = z.record(z.string(), heightCheckItemSchema);
+export type HeightChecksMap = z.infer<typeof heightChecksSchema>;
+
 export const setupSessionResponseSchema = z.object({
   setup_session_id: z.string().min(1),
   site_id: z.string().min(1),
@@ -144,7 +158,7 @@ export const setupSessionResponseSchema = z.object({
   camera_heights_m: z.record(z.string(), z.number().positive()),
   height_tolerance_cm: z.number().positive().optional(),
   background_collection_pct: z.record(z.string(), z.number()).optional(),
-  height_checks: z.unknown().nullable().optional(),
+  height_checks: heightChecksSchema.nullable().optional().default(null),
   height_warnings: z.array(z.string()).optional().default([]),
   object_cross_checks: z.unknown().nullable().optional(),
   calibration_version: z.string().nullable().optional().default(null),
@@ -166,3 +180,91 @@ export interface CreateSetupSessionBody {
   work_unit_id: number;
   camera_heights_m: Record<string, number>;
 }
+
+export interface RetrySetupSessionBody {
+  camera_heights_m?: Record<string, number>;
+}
+
+// ---- VLM 구역 초안(GET /api/setup-sessions/{id}/zone-drafts, S15P31A101-455) ----
+
+export const zoneDraftCandidateKindSchema = z.enum([
+  'ELEVATED_WORK_SURFACE',
+  'OPENING',
+  'FLOOR_EDGE',
+]);
+export type ZoneDraftCandidateKind = z.infer<typeof zoneDraftCandidateKindSchema>;
+
+export const zoneDraftEvalTypeSchema = z.enum(['GROUND_FOOTPRINT', 'VOLUME_3D']);
+export type ZoneDraftEvalType = z.infer<typeof zoneDraftEvalTypeSchema>;
+
+export const zoneDraftSeveritySchema = z.enum(['CRITICAL', 'HIGH']);
+export type ZoneDraftSeverity = z.infer<typeof zoneDraftSeveritySchema>;
+
+export const vlmOpinionStatusSchema = z.enum(['VLM', 'NO_OPINION']);
+export type VlmOpinionStatus = z.infer<typeof vlmOpinionStatusSchema>;
+
+export const zoneDraftObbSchema = z.object({
+  center: z.tuple([z.number(), z.number(), z.number()]),
+  size: z.tuple([z.number(), z.number(), z.number()]),
+  yaw_rad: z.number(),
+});
+export type ZoneDraftObb = z.infer<typeof zoneDraftObbSchema>;
+
+export const zoneDraftPolygonPointSchema = z.tuple([z.number(), z.number()]);
+
+export const zoneDraftItemSchema = z
+  .object({
+    draft_id: z.string().optional(),
+    draft_index: z.number().int().nonnegative().optional(),
+    candidate_id: z.string().min(1),
+    candidate_kind: zoneDraftCandidateKindSchema,
+    zone_kind: z.string().min(1).optional().default('HAZARD_AREA'),
+    eval_type: zoneDraftEvalTypeSchema.optional().default('GROUND_FOOTPRINT'),
+    polygon_xy: z.array(zoneDraftPolygonPointSchema).min(3),
+    z_min_m: z.number(),
+    z_max_m: z.number(),
+    top_height_m: z.number().nullable().optional().default(null),
+    obb: zoneDraftObbSchema.nullable().optional().default(null),
+    recommended_name: z.string().min(1),
+    recommended_severity: zoneDraftSeveritySchema,
+    rationale: z.string(),
+    vlm_status: vlmOpinionStatusSchema.optional().default('VLM'),
+    evidence_cameras: z.array(z.string()).optional().default([]),
+    confidence: z.number().min(0).max(1).nullable().optional().default(null),
+  })
+  .transform((item) => ({
+    ...item,
+    no_opinion: item.vlm_status === 'NO_OPINION',
+  }));
+export type ZoneDraftItem = z.infer<typeof zoneDraftItemSchema>;
+export type ZoneDraftItemInput = z.input<typeof zoneDraftItemSchema>;
+
+export const zoneDraftRunStatusSchema = z.enum([
+  'NOT_REQUESTED',
+  'QUEUED',
+  'SUCCEEDED',
+  'NO_OPINION',
+  'FAILED',
+]);
+export type ZoneDraftRunStatus = z.infer<typeof zoneDraftRunStatusSchema>;
+
+export const setupZoneDraftsResponseSchema = z.object({
+  draft_run_id: z.string().nullable().optional().default(null),
+  setup_session_id: z.string().min(1),
+  site_id: z.string().min(1),
+  calibration_version: z.string().nullable().optional().default(null),
+  preview_scene_version: z.string().nullable().optional().default(null),
+  safety_use: z.literal(false).optional().default(false),
+  job_id: z.string().nullable().optional().default(null),
+  status: zoneDraftRunStatusSchema,
+  model_version: z.string().nullable().optional().default(null),
+  prompt_version: z.string().nullable().optional().default(null),
+  latency_ms: z.number().nullable().optional().default(null),
+  error_code: z.string().nullable().optional().default(null),
+  error_message: z.string().nullable().optional().default(null),
+  created_at_ms: z.number().nullable().optional().default(null),
+  completed_at_ms: z.number().nullable().optional().default(null),
+  drafts: z.array(zoneDraftItemSchema).optional().default([]),
+});
+export type SetupZoneDraftsResponse = z.infer<typeof setupZoneDraftsResponseSchema>;
+export type SetupZoneDraftsResponseInput = z.input<typeof setupZoneDraftsResponseSchema>;

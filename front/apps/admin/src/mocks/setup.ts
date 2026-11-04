@@ -1,18 +1,24 @@
-import type {
-  CameraReceptionStatus,
-  Connectivity,
-  CoverageGuideItem,
-  CoverageGuidePayload,
-  CoveragePairItem,
-  CoverageRelayStatus,
-  CreateSetupSessionBody,
-  SetupSessionResponse,
+import {
+  setupZoneDraftsResponseSchema,
+  type CameraReceptionStatus,
+  type Connectivity,
+  type CoverageGuideItem,
+  type CoverageGuidePayload,
+  type CoveragePairItem,
+  type CoverageRelayStatus,
+  type CreateSetupSessionBody,
+  type RetrySetupSessionBody,
+  type SetupSessionResponse,
+  type SetupZoneDraftsResponse,
+  type SetupZoneDraftsResponseInput,
+  type ZoneDraftItemInput,
 } from '@/features/setup/types';
 import { problem, readLiveUser, unauthorized } from '@/mocks/problem';
 import { http, HttpResponse } from 'msw/http';
 
-// 현장 세팅 1단계(GET /api/cameras/coverage-guides, GET /api/setup-sessions/camera-height-defaults,
-// POST /api/setup-sessions, GET /api/setup-sessions/:id) MSW 핸들러(S15P31A101-447·-452·-448).
+// 현장 세팅 1단계 및 2단계 이후(GET /api/cameras/coverage-guides, GET /api/setup-sessions/camera-height-defaults,
+// POST /api/setup-sessions, GET /api/setup-sessions/:id, POST /api/setup-sessions/:id/retry,
+// GET /api/setup-sessions/:id/zone-drafts) MSW 핸들러(S15P31A101-447·-452·-448·-455·-453).
 
 const DEFAULT_SITE_ID = 'classroom-1';
 const DEFAULT_TOLERANCE_CM = 5.0;
@@ -143,6 +149,88 @@ export function buildCoverageGuidePayload(
   };
 }
 
+export function buildDefaultZoneDraftItems(): ZoneDraftItemInput[] {
+  return [
+    {
+      draft_id: '019a0000-0000-7000-9000-000000000001',
+      draft_index: 0,
+      candidate_id: 'cand-opening-1',
+      candidate_kind: 'OPENING',
+      zone_kind: 'OPENING',
+      eval_type: 'GROUND_FOOTPRINT',
+      polygon_xy: [
+        [7.0, 8.0],
+        [8.6, 8.0],
+        [8.6, 8.8],
+        [7.0, 8.8],
+      ],
+      z_min_m: 0,
+      z_max_m: 2.0,
+      top_height_m: null,
+      obb: null,
+      recommended_name: '창가 개구부 추락 주의',
+      recommended_severity: 'CRITICAL',
+      rationale: '바닥 개구부 경계가 검출되어 추락 위험 구역으로 제안합니다.',
+      vlm_status: 'VLM',
+      evidence_cameras: ['cam1', 'cam2'],
+      confidence: 0.86,
+    },
+    {
+      draft_id: '019a0000-0000-7000-9000-000000000002',
+      draft_index: 1,
+      candidate_id: 'cand-surface-2',
+      candidate_kind: 'ELEVATED_WORK_SURFACE',
+      zone_kind: 'ELEVATED_WORK_SURFACE',
+      eval_type: 'VOLUME_3D',
+      polygon_xy: [
+        [3.2, 0.3],
+        [6.8, 0.3],
+        [6.8, 1.3],
+        [3.2, 1.3],
+      ],
+      z_min_m: 0,
+      z_max_m: 2.2,
+      top_height_m: 0.9,
+      obb: {
+        center: [5.0, 0.8, 0.45],
+        size: [3.0, 0.6, 0.9],
+        yaw_rad: 0,
+      },
+      recommended_name: '전면 단상 작업면 후보',
+      recommended_severity: 'HIGH',
+      rationale: '기하 단차 후보만 검출되었으며 AI 의견 없음(기본값)으로 표시합니다.',
+      vlm_status: 'NO_OPINION',
+      evidence_cameras: ['cam3', 'cam4'],
+      confidence: null,
+    },
+  ];
+}
+
+export function buildSetupZoneDraftsResponse(
+  setupSessionId: string,
+  overrides: Partial<SetupZoneDraftsResponseInput> = {},
+): SetupZoneDraftsResponse {
+  return setupZoneDraftsResponseSchema.parse({
+    draft_run_id: `draft-run-${setupSessionId}`,
+    setup_session_id: setupSessionId,
+    site_id: DEFAULT_SITE_ID,
+    calibration_version: 'cal-8',
+    preview_scene_version: 'scene-preview-1',
+    safety_use: false,
+    job_id: `job-vlm-${setupSessionId}`,
+    status: 'SUCCEEDED',
+    model_version: 'qwen2.5-vl-7b',
+    prompt_version: 'zone-draft-v1',
+    latency_ms: 1_840,
+    error_code: null,
+    error_message: null,
+    created_at_ms: 1_793_690_010_000,
+    completed_at_ms: 1_793_690_011_840,
+    drafts: buildDefaultZoneDraftItems(),
+    ...overrides,
+  });
+}
+
 export interface SetupMockState {
   siteId: string;
   heightToleranceCm: number;
@@ -162,6 +250,12 @@ export interface SetupMockOptions {
   latestGuide?: CoverageGuidePayload | null;
 }
 
+export interface RetrySetupRecord {
+  sessionId: string;
+  retriedSessionId: string;
+  body: RetrySetupSessionBody;
+}
+
 export function createSetupMock(options: SetupMockOptions = {}) {
   const { now = Date.now } = options;
   const state: SetupMockState = {
@@ -178,8 +272,36 @@ export function createSetupMock(options: SetupMockOptions = {}) {
   };
 
   const submittedBodies: CreateSetupSessionBody[] = [];
+  const retryRequests: RetrySetupRecord[] = [];
   const sessions = new Map<string, SetupSessionResponse>();
+  const zoneDraftsBySession = new Map<string, SetupZoneDraftsResponse>();
   let seq = 0;
+
+  function updateSession(
+    sessionId: string,
+    patch: Partial<SetupSessionResponse>,
+  ): SetupSessionResponse {
+    const current = sessions.get(sessionId);
+    if (!current) {
+      throw new Error(`Setup session not found in mock: ${sessionId}`);
+    }
+    const updated: SetupSessionResponse = {
+      ...current,
+      ...patch,
+      updated_at_ms: now(),
+    };
+    sessions.set(sessionId, updated);
+    return updated;
+  }
+
+  function setZoneDrafts(
+    sessionId: string,
+    overrides: Partial<SetupZoneDraftsResponseInput>,
+  ): SetupZoneDraftsResponse {
+    const built = buildSetupZoneDraftsResponse(sessionId, overrides);
+    zoneDraftsBySession.set(sessionId, built);
+    return built;
+  }
 
   const handlers = [
     http.get('*/api/cameras/coverage-guides', ({ request }) => {
@@ -321,12 +443,115 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       }
       return HttpResponse.json(found);
     }),
+
+    http.post('*/api/setup-sessions/:id/retry', async ({ request, params }) => {
+      const t = now();
+      if (!readLiveUser(request, t)) return unauthorized();
+      const prevId = String(params.id ?? '');
+      const prevSession = sessions.get(prevId);
+      if (!prevSession) {
+        return problem(404, 'SETUP_SESSION_NOT_FOUND', '세팅 세션을 찾을 수 없습니다');
+      }
+
+      const raw: unknown = await request.json().catch(() => ({}));
+      const rawHeights =
+        typeof raw === 'object' && raw !== null ? Reflect.get(raw, 'camera_heights_m') : undefined;
+
+      const submittedHeights: Record<string, number> = {};
+      if (typeof rawHeights === 'object' && rawHeights !== null) {
+        for (const [camId, val] of Object.entries(rawHeights)) {
+          if (typeof val !== 'number' || !Number.isFinite(val) || val <= 0 || val > 20) {
+            return problem(
+              400,
+              'INVALID_SETUP_REQUEST',
+              `카메라 ${camId} 높이 값이 유효하지 않습니다`,
+            );
+          }
+          submittedHeights[camId] = val;
+          state.cameraHeightsM[camId] = val;
+        }
+      }
+
+      const effectiveHeights: Record<string, number> = {
+        ...prevSession.camera_heights_m,
+        ...submittedHeights,
+      };
+
+      const retriedSessionId = `019a0000-0000-7000-8000-${String(++seq).padStart(12, '0')}`;
+      const collectionPct = Object.fromEntries(
+        Object.keys(effectiveHeights).map((camId) => [camId, 0]),
+      );
+      const retried: SetupSessionResponse = {
+        setup_session_id: retriedSessionId,
+        site_id: prevSession.site_id,
+        work_unit_id: prevSession.work_unit_id,
+        retry_of: prevId,
+        job_id: `job-setup-${seq}`,
+        status: 'COLLECTING_BACKGROUND',
+        stage: 'COLLECTING_BACKGROUND',
+        progress_pct: 0,
+        camera_heights_m: effectiveHeights,
+        height_tolerance_cm: state.heightToleranceCm,
+        background_collection_pct: collectionPct,
+        height_checks: null,
+        height_warnings: [],
+        object_cross_checks: null,
+        calibration_version: null,
+        preview_scene_version: null,
+        scene_version: null,
+        config_version: null,
+        zone_drafts_ref: null,
+        failure_code: null,
+        failure_message: null,
+        requested_by: 1,
+        started_at_ms: t,
+        ready_at_ms: null,
+        completed_at_ms: null,
+        updated_at_ms: t,
+      };
+      sessions.set(retriedSessionId, retried);
+      retryRequests.push({
+        sessionId: prevId,
+        retriedSessionId,
+        body:
+          Object.keys(submittedHeights).length > 0 ? { camera_heights_m: submittedHeights } : {},
+      });
+
+      return HttpResponse.json(retried, { status: 202 });
+    }),
+
+    http.get('*/api/setup-sessions/:id/zone-drafts', ({ request, params }) => {
+      const t = now();
+      if (!readLiveUser(request, t)) return unauthorized();
+      const id = String(params.id ?? '');
+      const session = sessions.get(id);
+      if (!session) {
+        return problem(404, 'SETUP_SESSION_NOT_FOUND', '세팅 세션을 찾을 수 없습니다');
+      }
+
+      const existing = zoneDraftsBySession.get(id);
+      if (existing) {
+        return HttpResponse.json(existing);
+      }
+
+      const built = buildSetupZoneDraftsResponse(id, {
+        site_id: session.site_id,
+        calibration_version: session.calibration_version ?? 'cal-8',
+        preview_scene_version: session.preview_scene_version ?? 'scene-preview-1',
+      });
+      zoneDraftsBySession.set(id, built);
+      return HttpResponse.json(built);
+    }),
   ];
 
   return {
     handlers,
     state,
     submittedBodies,
+    retryRequests,
     sessions,
+    zoneDraftsBySession,
+    updateSession,
+    setZoneDrafts,
   };
 }

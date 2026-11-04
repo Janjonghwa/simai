@@ -56,7 +56,7 @@ export interface SpatialViewportValue {
   clearSelection: () => void;
 }
 
-const SpatialViewportContext = createContext<SpatialViewportValue | null>(null);
+export const SpatialViewportContext = createContext<SpatialViewportValue | null>(null);
 
 export const useSpatialViewport = () => useContext(SpatialViewportContext);
 
