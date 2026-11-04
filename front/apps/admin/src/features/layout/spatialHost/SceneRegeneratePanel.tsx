@@ -7,7 +7,7 @@ import {
   sceneRegenerateFailureText,
   type SceneRegenerateStatus,
 } from '@/features/layout/api';
-import { useSceneRegenerate } from '@/features/layout/useSceneRegenerate';
+import { LIVE_WORK_NOTICE, useSceneRegenerate } from '@/features/layout/useSceneRegenerate';
 import { CheckCircle2, Loader2, RefreshCw, Sparkles, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 
@@ -42,6 +42,7 @@ export function SceneRegeneratePanel({
   const {
     current,
     isInProgress,
+    liveWorkInProgress,
     isSubmitting,
     isActivating,
     activatedSceneVersion,
@@ -87,7 +88,8 @@ export function SceneRegeneratePanel({
         />
         <button
           type="submit"
-          disabled={isInProgress || isSubmitting}
+          disabled={isInProgress || isSubmitting || liveWorkInProgress}
+          title={liveWorkInProgress ? LIVE_WORK_NOTICE : undefined}
           className="inline-flex h-7 items-center gap-1 rounded border border-border bg-secondary px-2.5 text-xs font-medium text-secondary-foreground transition hover:bg-secondary/80 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {isInProgress || isSubmitting ? (
@@ -98,6 +100,12 @@ export function SceneRegeneratePanel({
           <span>맵 재생성</span>
         </button>
       </form>
+
+      {liveWorkInProgress && (
+        <p data-testid="scene-regenerate-live-notice" className="text-[11px] text-amber-400">
+          {LIVE_WORK_NOTICE}
+        </p>
+      )}
 
       {current && (
         <div className="flex flex-wrap items-center gap-1.5" role="status" aria-live="polite">

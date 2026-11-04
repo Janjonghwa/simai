@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 from pathlib import Path
 
@@ -13,6 +12,7 @@ import pytest
 import services.worker.__main__ as entry
 from services.worker.handlers import JobContext, JobFailed
 from services.worker.vlm_zone_draft import RESULT_SCHEMA, VlmZoneDraftHandler
+from simai_ai.calibration.document import content_hash
 from simai_ai.providers.contract import schema_errors
 from simai_ai.vlm.client import VlmResult, VlmUnavailable
 from simai_ai.vlm.face_blur import Person, VlmFrame
@@ -53,7 +53,7 @@ CAL_DOC = {
     ],
 }
 CAL_BYTES = json.dumps(CAL_DOC).encode("utf-8")
-CAL_HASH = "sha256:" + hashlib.sha256(CAL_BYTES).hexdigest()
+CAL_HASH = content_hash(CAL_DOC)  # 서버가 싣는 값은 보정 content_hash
 
 
 class _FakeStore:

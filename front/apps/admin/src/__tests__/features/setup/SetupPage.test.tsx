@@ -100,6 +100,18 @@ describe('설치 · 보정 작업 연결', () => {
   });
 });
 
+describe('세팅 화면 재진입', () => {
+  it('작업에 진행 중 세션이 있으면 새로 시작하지 않고 이어받아 그 세션 대기 화면을 연다', async () => {
+    const resumeId = '019a0000-0000-7000-8000-0000000000aa';
+    const resumeMock = createSetupMock({ workUnitSessionId: resumeId });
+    server.resetHandlers(...rulesMock.handlers, ...zonesMock.handlers, ...resumeMock.handlers);
+    renderSetupPage(5);
+    await waitFor(() => expect(useSetupFlowStore.getState().activeSessionId).toBe(resumeId));
+    expect(resumeMock.submittedBodies).toHaveLength(0);
+    expect(screen.queryByText(/cal-8/)).toBeNull();
+  });
+});
+
 describe('설치 · 보정 1단계 화면', () => {
   it('보정 단계 아래에 규칙 현황과 실시간 CCTV 4칸을 보인다(관리자가 아닌 역할도)', async () => {
     renderSetupPage();
@@ -299,6 +311,19 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     expect(steps[0]!.textContent).toContain('완료');
     expect(steps[1]!.textContent).toContain('진행 중');
     expect(steps[3]!.textContent).toContain('대기');
+  }, 20_000);
+
+  it('대기 화면의 세팅 취소는 확인 창 뒤 세션을 취소하고 실패 안내로 바뀐다', async () => {
+    const { sessionId } = await startSetupSession();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fireEvent.click(await screen.findByRole('button', { name: '세팅 취소' }));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    await screen.findByRole('alert', { name: '세팅 실패 안내' }, POLL_WAIT);
+    expect(screen.getByRole('alert', { name: '세팅 실패 안내' }).textContent).toContain(
+      'CANCELLED_BY_ADMIN',
+    );
+    expect(sessionId).toBeTruthy();
+    confirmSpy.mockRestore();
   }, 20_000);
 
   it('실패하면 사유와 다시 시도를 보이고, 다시 시도하면 retry 요청 뒤 새 세션을 추적한다', async () => {

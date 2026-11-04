@@ -165,6 +165,8 @@ export const setupSessionResponseSchema = z.object({
   preview_scene_version: z.string().nullable().optional().default(null),
   scene_version: z.string().nullable().optional().default(null),
   config_version: z.string().nullable().optional().default(null),
+  /** 그 세션 시작 뒤 그 현장의 첫 구역 발행(POST /api/zones/commit) 시각(ms). 없으면 null. */
+  zones_committed_at: z.number().nullable().optional().default(null),
   zone_drafts_ref: z.string().nullable().optional().default(null),
   failure_code: z.string().nullable().optional().default(null),
   failure_message: z.string().nullable().optional().default(null),

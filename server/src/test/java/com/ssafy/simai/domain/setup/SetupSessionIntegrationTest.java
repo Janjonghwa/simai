@@ -198,6 +198,43 @@ class SetupSessionIntegrationTest {
     }
 
     @Test
+    void 관리자_취소는_세션을_FAILED_로_닫고_워커_하트비트는_JOB_CANCELLED_를_받고_새_세팅이_가능하다() throws Exception {
+        registerWorkers();
+        JsonNode created = body(mvc.perform(post("/api/setup-sessions").with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest(2.42, 2.48, 2.45, 2.51).toString()))
+                .andExpect(status().isAccepted()).andReturn());
+        String sessionId = created.get("setup_session_id").asString();
+        String jobId = created.get("job_id").asString();
+        String lease = body(mvc.perform(leaseRequest(tokenA, workerA)).andExpect(status().isOk()).andReturn())
+                .at("/payload/lease_id").asString();
+
+        // 관리자만 취소할 수 있다
+        mvc.perform(post("/api/setup-sessions/{id}/cancel", sessionId).with(viewerJwt())).andExpect(status().isForbidden());
+        mvc.perform(post("/api/setup-sessions/{id}/cancel", sessionId).with(adminJwt()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("FAILED"))
+                .andExpect(jsonPath("$.failure_code").value("CANCELLED_BY_ADMIN"));
+        assertThat(jdbc.queryForObject("SELECT status FROM analysis_job WHERE job_id = ?", String.class, jobId))
+                .isEqualTo("CANCELLED");
+
+        // 워커의 다음 하트비트는 취소를 받는다
+        ObjectNode snap = progressSnapshot(sessionId, "COLLECTING_BACKGROUND", 25.0);
+        String hb = mvc.perform(heartbeatWithSetup(tokenA, workerA, jobId, lease, 0.25, snap))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(hb).contains("JOB_CANCELLED");
+
+        // 끝난 세션은 다시 취소할 수 없고, 같은 현장에 새 세팅을 시작할 수 있다
+        mvc.perform(post("/api/setup-sessions/{id}/cancel", sessionId).with(adminJwt()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SETUP_CANCEL_NOT_ALLOWED"));
+        mvc.perform(post("/api/setup-sessions").with(adminJwt())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest(2.42, 2.48, 2.45, 2.51).toString()))
+                .andExpect(status().isAccepted());
+    }
+
+    @Test
     void 워커_하트비트_진행률과_높이검사_재할당_실패후_재시도_및_완료까지_계약에_맞게_전이한다() throws Exception {
         registerWorkers();
         JsonNode created = body(mvc.perform(post("/api/setup-sessions").with(adminJwt())
@@ -360,6 +397,21 @@ class SetupSessionIntegrationTest {
                 .andExpect(jsonPath("$.config_version").value(configVer))
                 .andReturn());
         assertThat(finalView.get("completed_at_ms").isNumber()).isTrue();
+        // 세션 config_version 이 있어도 구역 발행(zones_committed_at)은 아니다. 세션 시작 뒤 구역 행이 생기면 그 시각이 된다
+        assertThat(finalView.get("zones_committed_at").isNull()).isTrue();
+        String zoneId = "zone-474-" + suffix;
+        jdbc.update("""
+                INSERT INTO zone (zone_id, zone_version, site_id, name, zone_kind, eval_type, polygon, severity, valid_from)
+                VALUES (?, 1, ?, '발행구역', 'RESTRICTED', 'GROUND_FOOTPRINT',
+                        ST_GeomFromText('POLYGON((0 0,1 0,1 1,0 0))', 0), 'HIGH', now())
+                """, zoneId, site);
+        try {
+            mvc.perform(get("/api/setup-sessions/{id}", retrySessionId).with(viewerJwt()))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.zones_committed_at").isNumber());
+        } finally {
+            jdbc.update("DELETE FROM zone WHERE zone_id = ?", zoneId);
+        }
 
         // 자동 활성화 금지 확인: site.established_calibration_version 과 scene_activation 은 바뀌지 않는다
         assertThat(jdbc.queryForObject("SELECT established_calibration_version FROM site WHERE site_id = ?", String.class, site))

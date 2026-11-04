@@ -41,6 +41,21 @@ def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def regenerate_quality_fields(inp: Mapping[str, Any]) -> dict[str, Any]:
+    """재생성 작업 입력의 regenerate_quality 를 scene_output.quality 이름으로 옮긴다(없으면 빈 dict).
+
+    regenerate_quality 의 카메라별 키 `cameras` 는 Scene quality 에서 `camera_background_quality` 다(scene_output 2.2.0 이름).
+    """
+    rq = inp.get("regenerate_quality")
+    if not isinstance(rq, Mapping):
+        return {}
+    out: dict[str, Any] = {k: rq[k] for k in ("previous_fill_ratio", "unrevealed_ratio") if k in rq}
+    cameras = rq.get("cameras")
+    if isinstance(cameras, Mapping) and cameras:
+        out["camera_background_quality"] = {str(k): dict(v) for k, v in cameras.items() if isinstance(v, Mapping)}
+    return out
+
+
 def validate_input(inp: Mapping[str, Any]) -> None:
     """job_request.input 은 자유 객체다. 티켓의 입력 프로파일만 검사하고 계약은 바꾸지 않는다."""
     try:
@@ -251,6 +266,7 @@ class StaticReconstructor:
                         "wall_deviation_m": None,
                         "observed_surface_ratio": prev_doc["observed_surface_ratio"],
                         "notes": "벽 GT 미측정. scene_tier=PREVIEW; preview_scene=true; texture=null: PREVIEW_FAST_PATH",
+                        **regenerate_quality_fields(inp),
                     },
                 }
                 if perrors := schema_errors(preview_emitted, SCENE_SCHEMA):
@@ -286,7 +302,8 @@ class StaticReconstructor:
             "assets": [], "quality": {"wall_deviation_m": None, "observed_surface_ratio": bake["observed_surface_ratio"],
                 "notes": "벽 GT 미측정. 출처·축척 점검·지표: metrics.json"
                 + ("; scene_tier=PREVIEW; preview_scene=true" if mode == "preview" else (f"; scene_tier=FULL; replaces_preview_scene={preview_emitted['scene_version']}" if preview_emitted is not None else ""))
-                + "; texture=" + ("null: " + bake["fallback_reason"] if bake.get("fallback_reason") else "texrecon")},
+                + "; texture=" + ("null: " + bake["fallback_reason"] if bake.get("fallback_reason") else "texrecon"),
+                **regenerate_quality_fields(inp)},
         }
         if model.get("weights_hash"):
             result["reproducibility"]["weights_hash"] = model["weights_hash"]

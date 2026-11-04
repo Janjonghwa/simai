@@ -152,6 +152,12 @@ class SetupZoneDraftIntegrationTest {
                 .andExpect(status().isOk()).andReturn())
                 .at("/payload/lease_id").asString();
 
+        // 세팅 세션이 등록한 미리보기 Scene 주소가 vlm_zone_draft 입력에 실린다
+        jdbc.update("""
+                INSERT INTO setup_session_artifact (setup_session_id, kind, version, job_id, lease_id, object_uri, sha256, registered_at)
+                VALUES (?::uuid, 'PREVIEW_SCENE', ?, ?, ?::uuid, 's3://test/preview-474.glb', ?, now())
+                """, sessionId, previewScene, setupJobId, setupLease, "d".repeat(64));
+
         // 2) READY_FOR_ZONES 스냅샷에 calibration_version 과 preview_scene_version 보고 시 vlm_zone_draft 자동 발행
         ObjectNode readySnap = progressSnapshot(sessionId, "READY_FOR_ZONES", 75.0)
                 .put("calibration_version", calibration)
@@ -194,6 +200,7 @@ class SetupZoneDraftIntegrationTest {
         assertThat(draftLeasePayload.at("/input/preview_scene_version").asString()).isEqualTo(previewScene);
         assertThat(draftLeasePayload.at("/input/calibration_version").asString()).isEqualTo(calibration);
         assertThat(draftLeasePayload.at("/input/calibration_ref").asString()).isEqualTo("s3://test/cal.json");
+        assertThat(draftLeasePayload.at("/input/preview_scene_uri").asString()).isEqualTo("s3://test/preview-474.glb");
         String draftLeaseId = draftLeasePayload.get("lease_id").asString();
 
         // 5) VLM 워커가 기하 후보 2건(ELEVATED_WORK_SURFACE, OPENING) + Cosmos3-Nano 추천 결과를 콜백 제출

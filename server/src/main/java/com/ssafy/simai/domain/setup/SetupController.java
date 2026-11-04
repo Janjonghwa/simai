@@ -47,6 +47,10 @@ class SetupController {
     @GetMapping("/{id}/zone-drafts")
     ObjectNode zoneDrafts(@PathVariable UUID id) { return setups.getZoneDrafts(id); }
 
+    @PostMapping("/{id}/cancel")
+    @PreAuthorize("hasRole('ADMIN')")
+    ObjectNode cancel(@PathVariable UUID id) { return setups.cancel(id); }
+
     @PostMapping("/{id}/retry")
     @ResponseStatus(HttpStatus.ACCEPTED)
     @PreAuthorize("hasRole('ADMIN')")

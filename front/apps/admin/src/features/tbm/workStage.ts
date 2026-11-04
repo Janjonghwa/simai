@@ -6,8 +6,8 @@ import type { TbmReport } from '@/features/tbm/types';
 //
 // 단계: 세팅 → 구역 → TBM 보고서 → 시작 → 종료 → 마무리·서명
 // - 세팅: work_unit.active_setup_session_id 와 그 세션(GET /api/setup-sessions/{id})의 status
-// - 구역: 그 세션의 config_version(세팅에서 등록된 구성 묶음) 또는 이 브라우저에서 방금 발행한 기록. 서버가 "구역 발행 여부"를
-//   따로 주지 않으므로, 세팅이 준비됐는데 근거가 없으면 'unknown' 이다.
+// - 구역: 그 세션의 zones_committed_at(세션 시작 뒤 그 현장의 첫 구역 발행 시각) 또는 이 브라우저에서 방금 발행한 기록.
+//   세션 config_version 은 세팅 보정 묶음 발행으로도 채워져 구역 발행의 근거가 아니다.
 // - TBM 보고서: GET /api/reports/tbm?work_id= 의 latest(status)
 // - 시작·종료: work_unit.status, actual_started_at, actual_ended_at
 // - 마무리·서명: 최신 보고서의 approved_at(관리자 결재). signature_count 는 안내용.
@@ -71,17 +71,21 @@ function setupStage(input: WorkStageInput): WorkStage {
 function zonesStage(input: WorkStageInput, setupDone: boolean): WorkStage {
   const label = STAGE_LABEL.zones;
   const { setup } = input;
-  if (setup.kind === 'ready' && (setup.session.config_version || input.zonesCommittedHere)) {
+  if (
+    setup.kind === 'ready' &&
+    (setup.session.zones_committed_at !== null || input.zonesCommittedHere)
+  ) {
     return { key: 'zones', label, state: 'done', detail: '구역 발행됨' };
   }
   if (setup.kind === 'none') return { key: 'zones', label, state: 'todo', detail: '세팅 먼저' };
   if (setup.kind === 'ready' && !setupDone)
     return { key: 'zones', label, state: 'todo', detail: '세팅 먼저' };
+  if (setup.kind === 'ready') return { key: 'zones', label, state: 'todo', detail: '구역 발행 전' };
   return {
     key: 'zones',
     label,
     state: 'unknown',
-    detail: '확인 불가(서버가 구역 발행 여부를 주지 않음)',
+    detail: '확인 불가(세팅 조회 실패)',
   };
 }
 

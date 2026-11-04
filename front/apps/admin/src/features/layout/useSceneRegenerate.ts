@@ -8,14 +8,20 @@ import {
   SCENE_REGENERATE_POLL_INTERVAL_MS,
   type SceneRegenerateView,
 } from '@/features/layout/api';
+import { requestTbmWorks, TBM_WORKS_KEY } from '@/features/tbm/api';
 import { api } from '@/lib/api';
 import { ApiError } from '@/lib/http';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useState } from 'react';
 
+export const LIVE_WORK_NOTICE =
+  '작업이 진행 중(LIVE 관제)이라 맵을 다시 만들 수 없습니다. 작업을 끝낸 뒤 눌러 주세요.';
+
 export interface UseSceneRegenerateResult {
   current: SceneRegenerateView | null;
   isInProgress: boolean;
+  /** 진행 중(LIVE 관제)인 작업이 있다. 서버가 재생성을 거부하므로 버튼을 막는다. */
+  liveWorkInProgress: boolean;
   isSubmitting: boolean;
   isActivating: boolean;
   activatedSceneVersion: string | null;
@@ -39,6 +45,15 @@ export function useSceneRegenerate(enabled: boolean = true): UseSceneRegenerateR
     enabled,
     retry: false,
   });
+
+  // LIVE 관제(작업 IN_PROGRESS) 중에는 GPU 를 Tier 0 가 써서 재생성이 대여되지 않는다. 작업 목록을 못 읽으면 막지 않고 서버(409)에 맡긴다.
+  const worksQuery = useQuery({
+    queryKey: TBM_WORKS_KEY,
+    queryFn: ({ signal }) => requestTbmWorks(api, signal),
+    enabled,
+    retry: false,
+  });
+  const liveWorkInProgress = (worksQuery.data ?? []).some((w) => w.status === 'IN_PROGRESS');
 
   const current: SceneRegenerateView | null = polledView ?? latestQuery.data ?? null;
   const activeRequestId =
@@ -93,6 +108,9 @@ export function useSceneRegenerate(enabled: boolean = true): UseSceneRegenerateR
           } else {
             await queryClient.invalidateQueries({ queryKey: SCENE_REGENERATE_LATEST_KEY });
           }
+        } else if (err instanceof ApiError && err.code === 'REGENERATE_WORK_IN_PROGRESS') {
+          setRequestError(LIVE_WORK_NOTICE);
+          void queryClient.invalidateQueries({ queryKey: TBM_WORKS_KEY });
         } else if (err instanceof ApiError && err.code === 'INVALID_REGENERATE_REQUEST') {
           setRequestError('재생성 사유는 120자 이하로 입력해 주세요.');
         } else {
@@ -130,6 +148,7 @@ export function useSceneRegenerate(enabled: boolean = true): UseSceneRegenerateR
   return {
     current,
     isInProgress: isSceneRegenerateInProgress(current?.status),
+    liveWorkInProgress,
     isSubmitting,
     isActivating,
     activatedSceneVersion,

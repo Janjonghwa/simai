@@ -248,6 +248,8 @@ export interface SetupMockOptions {
   guideStale?: boolean;
   guideError?: boolean;
   latestGuide?: CoverageGuidePayload | null;
+  /** GET /api/work-units/{id} 가 돌려줄 진행 중 세팅 세션 ID(새로고침 뒤 이어받기 시험). */
+  workUnitSessionId?: string | null;
 }
 
 export interface RetrySetupRecord {
@@ -420,6 +422,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         preview_scene_version: null,
         scene_version: null,
         config_version: null,
+        zones_committed_at: null,
         zone_drafts_ref: null,
         failure_code: null,
         failure_message: null,
@@ -433,6 +436,14 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       return HttpResponse.json(session, { status: 202 });
     }),
 
+    http.get('*/api/work-units/:id', ({ request, params }) => {
+      if (!readLiveUser(request, now())) return unauthorized();
+      return HttpResponse.json({
+        work_id: String(params.id ?? ''),
+        active_setup_session_id: options.workUnitSessionId ?? null,
+      });
+    }),
+
     http.get('*/api/setup-sessions/:id', ({ request, params }) => {
       const t = now();
       if (!readLiveUser(request, t)) return unauthorized();
@@ -442,6 +453,23 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         return problem(404, 'SETUP_SESSION_NOT_FOUND', '세팅 세션을 찾을 수 없습니다');
       }
       return HttpResponse.json(found);
+    }),
+
+    http.post('*/api/setup-sessions/:id/cancel', ({ request, params }) => {
+      if (!readLiveUser(request, now())) return unauthorized();
+      const id = String(params.id ?? '');
+      const found = sessions.get(id);
+      if (!found) return problem(404, 'SETUP_SESSION_NOT_FOUND', '세팅 세션을 찾을 수 없습니다');
+      if (found.status === 'COMPLETED' || found.status === 'FAILED') {
+        return problem(409, 'SETUP_CANCEL_NOT_ALLOWED', '이미 끝난 세팅 세션은 취소할 수 없습니다');
+      }
+      const cancelled = updateSession(id, {
+        status: 'FAILED',
+        stage: 'FAILED',
+        failure_code: 'CANCELLED_BY_ADMIN',
+        failure_message: '관리자가 세팅을 취소했습니다',
+      });
+      return HttpResponse.json(cancelled);
     }),
 
     http.post('*/api/setup-sessions/:id/retry', async ({ request, params }) => {
@@ -500,6 +528,7 @@ export function createSetupMock(options: SetupMockOptions = {}) {
         preview_scene_version: null,
         scene_version: null,
         config_version: null,
+        zones_committed_at: null,
         zone_drafts_ref: null,
         failure_code: null,
         failure_message: null,
