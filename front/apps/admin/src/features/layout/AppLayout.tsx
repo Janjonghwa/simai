@@ -7,6 +7,7 @@ import { FailureBand } from '@/features/layout/FailureBand';
 import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
 import { TopBar } from '@/features/layout/TopBar';
 import { useHealthSnapshot } from '@/features/layout/useHealthSnapshot';
+import { WorkSessionBar } from '@/features/monitor/WorkSessionBar';
 import { cn } from '@simai/ui/lib/utils';
 import { Outlet, useMatches } from '@tanstack/react-router';
 import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
@@ -45,7 +46,7 @@ const noticeInset = (eventPanel: boolean, camSplitOpen: boolean) => {
 };
 
 /**
- * 상단 바 아래 알림: 장애 띠, 그 아래 경보 배너. 모든 화면에서 내용 위에 띄우고 본문을 밀거나 줄이지 않는다
+ * 상단 바 아래 알림: 장애 띠, 그 아래 경보 배너(실시간 관제는 그 아래에 작업 세션 바). 모든 화면에서 내용 위에 띄우고 본문을 밀거나 줄이지 않는다
  * (관제 데모와 같다). 알릴 것이 없으면 숨는다.
  */
 function Notices({
@@ -68,6 +69,7 @@ function Notices({
     >
       <FailureBand />
       <AlarmBanner withPanel={eventPanel} />
+      {eventPanel && <WorkSessionBar />}
     </div>
   );
 }

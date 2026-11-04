@@ -1,6 +1,11 @@
 import { CameraButton } from '@/features/events/CameraButton';
 import { isActive, needsConfirmation } from '@/features/events/entries';
-import { ConfirmBadge, DelayedBadge, StateChip } from '@/features/events/EventBadges';
+import {
+  ConfirmBadge,
+  DelayedBadge,
+  OutsideWorkBadge,
+  StateChip,
+} from '@/features/events/EventBadges';
 import { entryEtaLine } from '@/features/events/format';
 import { firstActiveRaisedAt, topEntry, type Incident } from '@/features/events/incidents';
 import { cardChip, cardTitle, targetFont, targetLabel } from '@/features/events/incidentView';
@@ -16,6 +21,8 @@ interface IncidentCardProps {
   /** 최근 해소 칸 카드에서만: 같은 대상·규칙·구역에서 발생한 횟수. 2 이상이면 「N회 발생」을 보인다. */
   occurrences?: number;
   selected: boolean;
+  /** 작업 외 진입 꼬리표를 붙일지(작업 구역 밖이거나 진행 중인 작업이 없을 때 난 이벤트). 등급·소리·표시는 그대로다. */
+  outsideWork?: boolean;
   onSelect: (incident: Incident) => void;
   onOpen: (eventId: string) => void;
 }
@@ -66,6 +73,7 @@ export function IncidentCard({
   incident,
   occurrences = 1,
   selected,
+  outsideWork = false,
   onSelect,
   onOpen,
 }: IncidentCardProps) {
@@ -136,10 +144,11 @@ export function IncidentCard({
             <b className="truncate">{cardTitle(incident, zoneName)}</b>
           </span>
         </button>
-        {(check || delayed) && (
+        {(check || delayed || outsideWork) && (
           <div className="flex flex-wrap gap-1.5">
             {check && <ConfirmBadge event={check.event} compact />}
             {delayed && <DelayedBadge compact />}
+            {outsideWork && <OutsideWorkBadge />}
           </div>
         )}
         {eta && <p className="text-sm">{eta}</p>}
