@@ -91,7 +91,6 @@ pipeline {
                 PGHOST = 'ci-db'
                 PGUSER = 'postgres'
                 PGPASSWORD = 'simai-ci'
-                SPRING_DATASOURCE_URL = 'jdbc:postgresql://ci-db:5432/simai_ci'
                 SPRING_DATASOURCE_USERNAME = 'postgres'
                 SPRING_DATASOURCE_PASSWORD = 'simai-ci'
                 // 시험 컨텍스트마다 풀을 따로 잡는다(Spring 시험 컨텍스트 캐시). 기본 10 이면 ci-db 연결 상한을 넘을 수 있다
@@ -99,7 +98,14 @@ pipeline {
             }
             steps {
                 // 빌드마다 빈 DB 에서 Flyway 가 V1 부터 적용하게 지우고 새로 만든다
-                sh 'psql -v ON_ERROR_STOP=1 -d postgres -c "DROP DATABASE IF EXISTS simai_ci WITH (FORCE)" -c "CREATE DATABASE simai_ci"'
+                script {
+                    // 작업마다 시험 DB 를 따로 쓴다. simai(MR·dev)와 simai-nightly-ai 는 서로 다른 작업이라
+                    // disableConcurrentBuilds 로 막히지 않고 동시에 돌 수 있는데, 같은 DB 를 FORCE 로 지우면
+                    // 다른 쪽 시험이 무더기로 깨진다(S15P31A101-466). 환경 블록에 두면 이 값보다 우선하므로 여기서만 정한다
+                    env.CI_DB = 'simai_ci_' + env.JOB_NAME.replaceAll('[^A-Za-z0-9]', '_')
+                    env.SPRING_DATASOURCE_URL = "jdbc:postgresql://ci-db:5432/${env.CI_DB}"
+                }
+                sh 'psql -v ON_ERROR_STOP=1 -d postgres -c "DROP DATABASE IF EXISTS $CI_DB WITH (FORCE)" -c "CREATE DATABASE $CI_DB"'
                 dir('server') {
                     // gradlew 는 실행 권한 없이 커밋돼 있다
                     sh 'sh gradlew build --no-daemon'
