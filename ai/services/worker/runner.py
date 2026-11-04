@@ -29,12 +29,19 @@ import logging
 import math
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from simai_ai.gpu.admission import Admission, AdmissionGate
 
-from .client import JOB_TYPES, GaveUp, Lease, LeaseClient, RequestRejected, RetryableError
+from .client import (
+    JOB_TYPES,
+    GaveUp,
+    Lease,
+    LeaseClient,
+    RequestRejected,
+    RetryableError,
+)
 
 PAUSE_REPORT_S = 300.0  # 접수 중지가 이어지면 이 주기로 경고를 다시 남긴다(운영 감시)
 from .handlers import JobContext, JobFailed, JobHandler
@@ -68,6 +75,8 @@ class _Beat:
     interval: float
     next_heartbeat: float
     failures: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    terminal_outcome: Outcome | None = None
 
 
 class Worker:
@@ -200,6 +209,7 @@ class Worker:
             return self._submit_failure(lease, self._clock_ms(), "NO_HANDLER", f"처리기 없음: {lease.job_type}", deadline)
         interval = lease.heartbeat_interval_ms / 1000
         beat = _Beat(received + lease.ttl_ms / 1000, timeout_deadline, interval, received + interval)
+        ctx._on_site_setup = lambda snap: self._send_site_setup_heartbeat(lease, ctx, beat, snap)
         if self.admission is not None:
             held = self._hold(lease, ctx, beat, received, should_stop)
             if held is not None:
@@ -219,6 +229,45 @@ class Worker:
             if not done.is_set():  # 거부·대여 상실·시간 초과·예외(AuthError 등)로 처리기를 버린다
                 ctx.cancelled.set()
                 self._abandoned = thread
+
+    def _send_site_setup_heartbeat(
+        self,
+        lease: Lease,
+        ctx: JobContext,
+        beat: _Beat,
+        snapshot: Mapping[str, Any],
+    ) -> None:
+        """site_setup 단계 전환마다 즉시 하트비트를 보내 EC2 에 중간 진행 스냅샷을 반영한다."""
+        with beat.lock:
+            if beat.terminal_outcome is not None or ctx.cancelled.is_set():
+                return
+            now = self._monotonic()
+            try:
+                status = self.client.heartbeat(
+                    lease,
+                    ctx.progress,
+                    site_setup=snapshot,
+                )
+            except RetryableError as e:
+                beat.failures += 1
+                beat.next_heartbeat = now + min(beat.interval, self.client.backoff.delay(beat.failures))
+                log.warning("site_setup 단계 하트비트 실패 %d회: %s", beat.failures, e)
+                return
+            except RequestRejected as e:
+                log.error("site_setup 단계 하트비트 거부(형식·경로): %s. 작업을 버린다", e)
+                beat.terminal_outcome = Outcome.REJECTED
+                ctx.cancelled.set()
+                return
+            beat.failures = 0
+            if status.status != "ACTIVE":
+                log.warning("작업 %s 하트비트 거부: %s %s. 작업을 멈춘다", lease.job_id, status.status, status.reason)
+                beat.terminal_outcome = Outcome.REJECTED
+                ctx.cancelled.set()
+                return
+            beat.lease_deadline = now + (status.ttl_ms or 0) / 1000
+            if status.heartbeat_interval_ms:
+                beat.interval = status.heartbeat_interval_ms / 1000
+            beat.next_heartbeat = now + beat.interval
 
     def _hold(self, lease: Lease, ctx: JobContext, beat: _Beat, received: float,
               should_stop: Callable[[], bool]) -> Outcome | None:
@@ -259,31 +308,40 @@ class Worker:
 
     def _heartbeat_due(self, lease: Lease, ctx: JobContext, beat: _Beat) -> Outcome | None:
         """대여를 잃었거나 거부되면 그 결과, 아니면(하트비트 때가 아님·보냄·일시 실패) None."""
-        now = self._monotonic()
-        if now >= beat.lease_deadline:
-            log.warning("작업 %s 대여를 잃었다(하트비트 %d회 실패). 작업을 버린다", lease.job_id, beat.failures)
-            return Outcome.LEASE_LOST
-        if now < beat.next_heartbeat:
+        with beat.lock:
+            if beat.terminal_outcome is not None:
+                return beat.terminal_outcome
+            now = self._monotonic()
+            if now >= beat.lease_deadline:
+                log.warning("작업 %s 대여를 잃었다(하트비트 %d회 실패). 작업을 버린다", lease.job_id, beat.failures)
+                return Outcome.LEASE_LOST
+            if now < beat.next_heartbeat:
+                return None
+            try:
+                status = self.client.heartbeat(
+                    lease,
+                    ctx.progress,
+                    site_setup=ctx.site_setup,
+                )
+            except RetryableError as e:
+                beat.failures += 1
+                beat.next_heartbeat = now + min(beat.interval, self.client.backoff.delay(beat.failures))
+                log.warning("하트비트 실패 %d회: %s", beat.failures, e)
+                return None
+            except RequestRejected as e:
+                log.error("하트비트 거부(형식·경로): %s. 작업을 버린다", e)
+                beat.terminal_outcome = Outcome.REJECTED
+                return Outcome.REJECTED
+            beat.failures = 0
+            if status.status != "ACTIVE":
+                log.warning("작업 %s 하트비트 거부: %s %s. 작업을 멈춘다", lease.job_id, status.status, status.reason)
+                beat.terminal_outcome = Outcome.REJECTED
+                return Outcome.REJECTED
+            beat.lease_deadline = now + (status.ttl_ms or 0) / 1000
+            if status.heartbeat_interval_ms:
+                beat.interval = status.heartbeat_interval_ms / 1000
+            beat.next_heartbeat = now + beat.interval
             return None
-        try:
-            status = self.client.heartbeat(lease, ctx.progress)
-        except RetryableError as e:
-            beat.failures += 1
-            beat.next_heartbeat = now + min(beat.interval, self.client.backoff.delay(beat.failures))
-            log.warning("하트비트 실패 %d회: %s", beat.failures, e)
-            return None
-        except RequestRejected as e:
-            log.error("하트비트 거부(형식·경로): %s. 작업을 버린다", e)
-            return Outcome.REJECTED
-        beat.failures = 0
-        if status.status != "ACTIVE":
-            log.warning("작업 %s 하트비트 거부: %s %s. 작업을 멈춘다", lease.job_id, status.status, status.reason)
-            return Outcome.REJECTED
-        beat.lease_deadline = now + (status.ttl_ms or 0) / 1000
-        if status.heartbeat_interval_ms:
-            beat.interval = status.heartbeat_interval_ms / 1000
-        beat.next_heartbeat = now + beat.interval
-        return None
 
     def _supervise(
         self, lease: Lease, ctx: JobContext, box: dict[str, Any], done: threading.Event, started_at: int, beat: _Beat
@@ -299,10 +357,16 @@ class Worker:
             watcher.start()
         try:
             while True:
+                if beat.terminal_outcome is not None:
+                    ctx.cancelled.set()
+                    return beat.terminal_outcome
                 limit = self._monotonic() + self.live_poll_s if watch_live else math.inf
                 wait = min(beat.next_heartbeat, beat.lease_deadline, beat.timeout_deadline, limit) - self._monotonic()
                 if done.wait(max(0.0, wait)) and not preempted:
                     break
+                if beat.terminal_outcome is not None:
+                    ctx.cancelled.set()
+                    return beat.terminal_outcome
                 if preempted:
                     return self._defer(lease, beat, "LIVE_PREEMPTED", f"LIVE 관제 시작으로 멈췄다: {preempted['reason']}",
                                        started_at)
@@ -321,6 +385,8 @@ class Worker:
         finally:
             watch_stop.set()
 
+        if beat.terminal_outcome is not None:
+            return beat.terminal_outcome
         finished_at = self._clock_ms()
         if "result" in box:
             return self._submit(lease, "SUCCEEDED", started_at, finished_at, result=box["result"],

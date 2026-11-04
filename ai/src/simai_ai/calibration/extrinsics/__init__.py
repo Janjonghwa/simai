@@ -5,6 +5,7 @@
 - `sync`: 촬영 시각 바로잡기(깨진 PTS 시각선을 frame_sequence 시계로 다시 매김, 카메라별 시각 보정값 추정, -313)
 - `initial`: MapAnything cameras.json → World 기준 초기 외부 파라미터(-102 정렬 또는 사람 세로축 임시 정렬)
 - `cli`: `extract`·`adjust` 실행 도구. 번들 조정·판정은 `calibration.bundle`·`criteria` 그대로 쓴다
+- `joint_ba_v2`: 현장 세팅의 배경 특징점 V2 Stage A 회전 번들 조정(카메라 중심 고정, S15P31A101-465). scipy 를 쓰므로 패키지에서 미리 import 하지 않는다
 
 설계 근거는 docs/design/extrinsics-from-recording.md.
 """

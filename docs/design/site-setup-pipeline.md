@@ -371,3 +371,81 @@ stateDiagram-v2
    - 몇 도까지의 회전을 자동 복구(`rotfix`)로 받아들이고 몇 도/몇 cm 이상의 변화부터 "현장 세팅 다시 하기"로 보낼지(호모그래피 인라이어 비율·잔차 문턱, 최소 매칭 수, 재투영 개선율 등)는 실제 카메라를 조금씩 돌려가며 찍는 **통제된 회전 실험(Controlled Rotation Test)** 뒤에 수치를 확정한다.
 4. **카메라 실측 높이 입력 오차의 영향**:
    - 관리자가 카메라 높이를 줄자로 재거나 이전 값을 그대로 쓸 때 실제 높이와 차이가 나면 전체 World 스케일에 비례 오차가 생긴다. 4대 카메라 높이 비율의 상호 일관성 검사와 실측 정물(`measure-stools` 등) 교차 검증으로 오입력 경고를 띄운다.
+
+---
+
+## 12. 워커 처리기 구현 (`S15P31A101-465`, I5 `site_setup`)
+
+관련 명세: `docs/spec/04-coordinates.md`(4.3 보정·축척), `05-processing.md` 5.3(현장 세팅), `18-operations.md` 18.1. 계약: `contracts/messages/site_setup.schema.json` 1.1.0(`metrics` 추가, README 판 v7.7.0), `job_heartbeat` 2.1.0, `job_callback` 2.7.0.
+
+### 12.1 코드·시험 위치
+
+| 구분 | 위치 | 역할 |
+| --- | --- | --- |
+| Stage A 이식 | `ai/src/simai_ai/calibration/extrinsics/joint_ba_v2.py` | `calib_v2_joint_ba` 의 projected 회전 BA 만 운영 모듈로 정리(실험 폴더 import 없음). `run_stage_a_rotation_ba`(회전만 갱신, 중심 이동량 0 이 아니면 거절), `extract_tracks_from_backgrounds`, `compute_height_checks`, `ObjectScaleCrossChecker`(-462 확장 지점) |
+| 처리기 | `ai/services/worker/site_setup.py` | `SiteSetupHandler`(단계·하트비트·결과), `build_world_from_pointcloud_and_poses`(바닥 Z=0·경계 벽 +X·모서리 원점·카메라 높이 축척) |
+| 운영 단계 어댑터 | `ai/services/worker/site_setup_stages.py` | Tier 0 배경 묶음 수집, MapAnything(`prepare`→`mapanything`), 새 보정 등록, `preview`·`bake`(`fallback`)를 기존 `reconstruct_tasks` 단계 도구로 실행. `__main__` 이 `site_setup` 으로 등록 |
+| 하트비트 | `ai/services/worker/{handlers,runner,client}.py` | `JobContext.report_site_setup`(단계·진행률 단조 검사), 단계 전환 즉시 하트비트 전송, 하트비트 `payload.site_setup` |
+| 시험 | `ai/tests/calibration/test_joint_ba_v2.py`, `ai/tests/services/worker/test_site_setup.py`, `…/test_site_setup_stages.py` | 합성 방·실제 val01 캐시 트랙·실패·재시도·단계 어댑터 |
+
+### 12.2 단계별 입력·출력·시간 목표·실패 사유
+
+진행률은 단계 전환 때 보내는 값이다(서버가 같은 대여에서 감소를 거절한다). 시간 목표는 3.1 표를 따른다. `stage_seconds` 는 결과 `metrics` 에 그대로 남는다.
+
+| 단계(`status`, 진행률) | 입력 → 출력 | 목표 | 실패 사유(`error.code`, 재시도) |
+| --- | --- | --- | --- |
+| (a) `COLLECTING_BACKGROUND` 15 | Tier 0 가 내보낸 사람 지운 배경 묶음(`SIMAI_STATE_DIR/clean-background`, `status.json` complete + `COMPLETE`) → 카메라별 수집률·배경 이미지. 묶음이 없거나 활성 보정 버전과 다르면 수집률 0 | 20~30 s(수집 자체는 Tier 0) | `BACKGROUND_INCOMPLETE`(재시도 가능) |
+| (b)(c)(d) `INITIAL_POSE_AND_WORLD` 40 | Tier 0 활성 보정의 K·왜곡 재사용 → `prepare`·`mapanything` → 점구름·카메라 자세 → World 자동 정의 → **카메라 실측 높이**로 축척 → `height_checks`(복원 높이 − 입력 높이 cm, ±`height_tolerance_cm` 초과는 `within_tolerance=false` 로 표시만, 세팅을 멈추지 않음) | 5~10 s(MapAnything 상주 시) | `INTRINSICS_UNAVAILABLE`(활성 보정 없음, 재시도 불가), `FLOOR_FIT_FAILED`(바닥·축 정의 실패, 재시도 불가), `STATIC_*_TIMEOUT`·`*_TOOL_FAILED`(재시도 가능) |
+| (e)(f) `JOINT_BA_AND_VERIFY` 65 | 배경 특징점 트랙(사전 추출 또는 `extract_tracks_from_backgrounds`) + 초기 보정 → **Stage A 회전 BA**(projected 솔버, 카메라 중심 고정) → 쌍별 홀드아웃 재투영 지표 → **새 `calibration_version`**(`<이전>-jba2-<해시>`, 덮어쓰지 않음) 등록 | Stage A 10 s 이내(상한, 넘으면 거절) | `INSUFFICIENT_FEATURES`(인접 쌍 트랙 부족, 재시도 불가), `VALIDATION_REJECTED`(미수렴·홀드아웃 악화·중심 이동·시간 초과·스키마 위반, 재시도 불가), `SETUP_OBJECT_FAILED`(객체 저장소, 오류가 알려주는 대로) |
+| (g) `PREVIEW_AND_VLM_DRAFT` 80 → `READY_FOR_ZONES` 85 | 새 보정으로 `preview` 단계(-451 미리보기 맵) → GLB 업로드 → `preview_scene_version` = `scene-preview-<job>-<lease>`. `zone_drafts_ref` 는 -455 가 채움(지금 없음) | ~10 s | `STATIC_PREVIEW_*`·`STATIC_OUTPUT_*` |
+| (h) `BAKING_TEXTURE` 95 → `COMPLETED` 100 | `bake`(도구가 없으면 `fallback`) → GLB 업로드 → `scene_version` = `scene-<job>-<lease>` | 구역 편집 중 | `LIVE_EXP_BLOCKED`(LIVE 중 굽기 금지 게이트, 재시도 가능), `STATIC_BAKE_*` |
+
+모든 단계에서 취소·대여 상실은 `CANCELLED`(재시도 가능), 실행 상한 초과는 `TIMEOUT`. 같은 입력(같은 묶음·같은 높이·같은 시드)이면 Stage A 결과가 같다(분할 시드 449 고정). 재시도는 새 대여라 첫 스냅샷부터 다시 시작한다.
+
+### 12.3 명세에 없어 정한 수치와 근거
+
+| 값 | 근거 |
+| --- | --- |
+| 카메라 높이 허용 ±5 cm(입력 `height_tolerance_cm`) | 서버가 입력에 넣는 값. 서버가 하트비트에서 차이(cm)·`within_tolerance` 를 다시 계산해 0.15 cm 넘게 다르면 거절하므로 반올림은 0.01 cm |
+| 높이 축척 퍼짐 한도 0.5 (`camera_height_max_spread`) | 기본 0.03 이면 높이 하나가 틀린 카메라 때문에 세팅이 실패한다. 이 티켓은 틀린 카메라를 **표시**하는 것이 목표라 축척은 카메라 배율 중앙값으로 정하고 차이는 `height_checks` 로 드러낸다 |
+| Stage A 시간 상한 10 s | 지시서·3.1 표(V2 10~20 s 중 Stage A 만). 실측 0.34~1.0 s(12.5) |
+| 재투영 오차를 모르면 비움 | 초기 보정 문서에 지어낸 오차(3.5/9.0 px)를 넣지 않는다. Stage A 가 홀드아웃 값으로 채운다 |
+| `INTRINSICS_UNAVAILABLE` 신설 | 활성 보정이 없을 때 K 를 지어내지 않는다. 무마커 추정(AnyCalib) 경로는 이 처리기에 아직 연결하지 않았다 |
+
+### 12.4 버린 대안
+
+- **카메라 중심 이동(Stage B/C)**: V2 실험(-449 `RESULTS.md`)에서 바닥·벽·높이 제약 없는 배경 특징점만으로는 카메라 Z 가 약 28 cm 흐르는 약한 모드가 남았다. Stage A 회전만 쓰고 중심은 MapAnything+바닥+높이로 정한 값을 그대로 둔다(5.3 의 Stage B/C 는 쓰지 않는다).
+- **정물(스툴·라바콘·안내판) 축척 단계**: 지금은 높이만. `ObjectScaleCrossChecker`(`object_cross_checker` 주입)가 확장 지점이고 결과는 `object_cross_checks` 로 나간다(-462).
+- **`static_reconstruct` 작업을 세팅 안에서 다시 등록**: 입력의 `s3://` 주소를 작업 입력에서만 서명해 주는 서버 규칙(`JobObjectSignService`) 때문에 세팅 작업이 새 보정 문서 주소를 읽을 수 없다. 같은 Pod 의 작업 폴더에서 `reconstruct_tasks` 단계 도구를 직접 돌린다(MapAnything 한 번 실행을 초기 복원·미리보기·굽기가 공유).
+
+### 12.5 로컬 측정과 12차 GPU 세션 종단 측정 절차
+
+로컬(2026-11-04, 노트북 CPU, GPU·MapAnything 없음): 실제 val01 녹화 캐시 트랙(`codex-tmp/449/val01-calib-v2-20261103T153758154194Z/tracks.json`, 318 트랙)과 11차 세션 초기 보정으로 Stage A 를 3회 돌렸다(결과 `simai-local/site-setup-465/stage_a_val01.json`).
+
+| 항목 | 값 |
+| --- | --- |
+| Stage A 시간 | 0.34 s(첫 실행 포함 벽시계 1.0 s, 이후 0.37~0.38 s), 수렴 true |
+| 홀드아웃 중앙 재투영(전 → 후, px) | A–B 1.47 → 0.33, B–C 7.37 → 0.20, **C–D 5.82 → 4.09**, D–A 1.92 → 0.24 |
+| 최대 회전 변화 / 중심 이동 | 1.65° / 0 cm |
+| 높이 검사(입력 − 복원) | −1.41 / 0 / +1.39 / −0.07 cm, 모두 ±5 cm 안 |
+
+C–D 쌍은 여전히 4 px 이다(트랙이 적은 쌍, 11.2 와 같은 위험). 합성 방·실패·재시도는 `test_site_setup.py` 가 본다.
+
+12차 GPU 세션 종단 측정 절차(세팅 시작 → 미리보기 맵·초안까지):
+
+1. Pod 에서 `python -m services.worker`(대여 루프)와 Tier 0 를 띄우고, 방 전체가 보이는 4대로 Tier 0 사람 지운 배경 묶음을 완성한다(`clean-background/status.json` complete).
+2. 관리자 화면(또는 `POST /api/setup-sessions`)에서 카메라 높이를 넣고 세팅을 시작한다. 시작 시각 `T0` 를 기록한다.
+3. 하트비트로 서버에 쌓이는 단계 전환 시각(`GET /api/setup-sessions/{id}` 의 단계 변화)과 결과 `metrics.stage_seconds`(a~h 단계별 초)·`metrics.total_seconds` 를 읽는다. 목표: `READY_FOR_ZONES` 도달까지 `T0` 기준 약 90 s.
+4. 합격 기준: `joint_ba.converged=true`, `stage_seconds.JOINT_BA_AND_VERIFY ≤ 10`, 쌍별 `pair_holdout_median_px` 가 전보다 줄었는지, `height_checks` 불일치 카메라가 실제 줄자 값과 맞는지.
+5. 같은 입력으로 한 번 더(재시도) 실행해 `calibration_version` 의 해시 접미사가 같은지 확인한다(결정론).
+6. 실패 사유 시험: 묶음 없이 시작(`BACKGROUND_INCOMPLETE`), 높이 하나를 일부러 10 cm 틀리게 입력(해당 카메라만 `within_tolerance=false`).
+7. 끝나면 결과 묶음을 노트북으로 가져온 뒤 Pod 를 Stop 한다.
+
+### 12.6 잔여 위험과 넘긴 일
+
+1. **EC2 에 새 보정·미리보기 Scene 후보를 등록할 워커 경로가 없다(Lead 결정 필요).** `SetupService.validateVersionLineage` 는 하트비트·결과의 `calibration_version`·`preview_scene_version`·`scene_version` 이 DB(`calibration_version`·`scene_version` 표)에 이미 있어야 통과시키는데, 등록 경로는 `POST /api/calibrations`·`POST /api/scenes`(ADMIN JWT)와 I1 `calibration_update`(게이트웨이)뿐이다. 워커는 문서·GLB 를 객체 저장소에 올리고(`site_setup_stages.publish/preview`) 버전 문자열만 알린다. 서버가 워커 토큰으로 등록하거나, 결과의 문서 참조로 서버가 등록하는 방식이 필요하다.
+2. 무마커 내부 파라미터 추정 경로 미연결: 활성 보정이 없는 현장은 `INTRINSICS_UNAVAILABLE`.
+3. MapAnything 상주(warm) 모델은 이 티켓에서 만들지 않았다. 현재는 `ProcessStages` 가 단계마다 프로세스를 띄워 로드 ~25 s 가 단계 시간에 들어간다(12차 세션에서 `INITIAL_POSE_AND_WORLD` 초를 확인).
+4. C–D 같은 약한 쌍의 홀드아웃(4 px). 11.2 와 같은 위험이며 12차 세션에서 현장 배치로 재확인한다.
+5. `zone_drafts_ref`(-455 `vlm_zone_draft`)와 정물 교차 확인(-462)은 넘겼다. 처리기는 두 값을 선택 필드로 이미 실을 수 있다.
+6. `ai/tests/services/worker/test_runner.py::test_vlm_budget_ends_at_event_deadline_not_lease_plus_timeout` 는 파일 전체를 돌릴 때 `0.30000000000291 <= 0.3` 로 실패한다(단독 실행은 통과). 변경을 모두 되돌린 기준선(`git stash`)에서도 같은 실패라 이 티켓과 무관한 기존 부동소수 비교다.

@@ -12,6 +12,16 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+SITE_SETUP_STAGES: tuple[str, ...] = (
+    "COLLECTING_BACKGROUND",
+    "INITIAL_POSE_AND_WORLD",
+    "JOINT_BA_AND_VERIFY",
+    "PREVIEW_AND_VLM_DRAFT",
+    "READY_FOR_ZONES",
+    "BAKING_TEXTURE",
+    "COMPLETED",
+)
+
 
 def safe_monotonic(clock: Callable[[], float]) -> Callable[[], float]:
     """시험용 시계(반복자 등)도 병렬 스레드에서 안전하게 읽고, 원소가 다하면 마지막 시각을 유지한다."""
@@ -59,6 +69,9 @@ class JobContext:
     input: Mapping[str, Any]
     cancelled: threading.Event = field(default_factory=threading.Event)
     _progress: float | None = None
+    _site_setup: dict[str, Any] | None = None
+    _site_setup_history: list[dict[str, Any]] = field(default_factory=list)
+    _on_site_setup: Callable[[dict[str, Any]], None] | None = None
     timeout_ms: int | None = None
     deadline: float | None = None
     monotonic: Callable[[], float] = time.monotonic
@@ -103,6 +116,41 @@ class JobContext:
     @property
     def progress(self) -> float | None:
         return self._progress
+
+    def report_site_setup(self, snapshot: Mapping[str, Any]) -> dict[str, Any]:
+        """site_setup 단계 스냅샷을 갱신하고(단조 증가 검사) 하트비트 콜백이 있으면 즉시 알린다."""
+        snap = dict(snapshot)
+        status = str(snap.get("status", ""))
+        if status not in SITE_SETUP_STAGES:
+            raise ValueError(f"알 수 없는 site_setup 단계: {status!r}")
+        pct = float(snap.get("progress_pct", -1.0))
+        if not 0.0 <= pct <= 100.0:
+            raise ValueError(f"site_setup progress_pct 는 0~100 범위여야 한다: {pct}")
+        if self._site_setup is not None:
+            prev_status = str(self._site_setup["status"])
+            prev_pct = float(self._site_setup["progress_pct"])
+            if SITE_SETUP_STAGES.index(status) < SITE_SETUP_STAGES.index(prev_status):
+                raise ValueError(
+                    f"site_setup 단계는 되돌아갈 수 없다: {prev_status} -> {status}"
+                )
+            if pct < prev_pct - 1e-9:
+                raise ValueError(
+                    f"site_setup progress_pct 는 감소할 수 없다: {prev_pct} -> {pct}"
+                )
+        self._site_setup = snap
+        self._site_setup_history.append(dict(snap))
+        self.report_progress(pct / 100.0)
+        if self._on_site_setup is not None:
+            self._on_site_setup(dict(snap))
+        return snap
+
+    @property
+    def site_setup(self) -> dict[str, Any] | None:
+        return None if self._site_setup is None else dict(self._site_setup)
+
+    @property
+    def site_setup_history(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self._site_setup_history]
 
 
 class JobHandler(Protocol):
