@@ -195,7 +195,8 @@ def test_stage_output_must_stay_inside_work_folder(tmp_path: Path) -> None:
 def test_handler_without_bundle_fails_retryably_and_cleans_work_folder(tmp_path: Path) -> None:
     work = tmp_path / "work"
     work.mkdir()
-    handler = ProductionSiteSetupHandler(_Store(), _settings(tmp_path), _Stages(), clock_ms=lambda: 1, workspace=work)
+    handler = ProductionSiteSetupHandler(_Store(), _settings(tmp_path), _Stages(), clock_ms=lambda: 1, workspace=work,
+                                         background_wait_s=0)
     with pytest.raises(JobFailed) as exc:
         handler(_ctx())
     assert exc.value.code == "BACKGROUND_INCOMPLETE" and exc.value.retryable is True
@@ -211,3 +212,101 @@ def test_load_active_calibration_reads_tier0_store_and_ignores_unreadable(tmp_pa
     assert load_active_calibration(settings) is None
     calibration_document_path(cal_dir, VERSION).write_text(json.dumps({"calibration_version": VERSION}), encoding="utf-8")
     assert load_active_calibration(settings) == {"calibration_version": VERSION}
+
+
+# ---------------------------------------------------------------------------- S15P31A101-473
+def _status(settings: AutoStaticSettings, cameras: dict[str, dict[str, Any]], *, version: str = VERSION) -> None:
+    root = settings.clean_background_dir
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "status.json").write_text(json.dumps({"calibration_version": version, "cameras": cameras, "complete": False,
+                                                  "bundle": None}), encoding="utf-8")
+
+
+def test_collect_reports_partial_collection_from_tier0_status(tmp_path: Path) -> None:
+    """묶음 완성 전에는 Tier 0 status.json 의 표본 수로 수집률(최대 99)을 알린다. 다른 보정의 수집은 0."""
+    settings = _settings(tmp_path)
+    _status(settings, {"cam_A": {"sample_count": 5}, "cam_B": {"sample_count": 40, "ready": True},
+                       "cam_C": {"sample_count": 19}, "cam_D": {"sample_count": 0, "exported": True}})
+    s = _stages(tmp_path, _Stages(), prior={"calibration_version": VERSION})
+    got = s.collect(setup_session_id="s", site_id="site", camera_ids=CAMS)
+    assert got.collection_pct_by_cam == {"cam_A": 25.0, "cam_B": 99.0, "cam_C": 95.0, "cam_D": 99.0}
+    assert got.missing_cameras(CAMS) == list(CAMS)
+    other = _stages(tmp_path, _Stages(), prior={"calibration_version": "cal-other"})
+    assert set(other.collect(setup_session_id="s", site_id="site", camera_ids=CAMS).collection_pct_by_cam.values()) == {0.0}
+
+
+def test_collect_sets_observed_until_from_bundle_time_ranges(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    path = _bundle(settings)
+    meta = json.loads((path / "clean_backgrounds.json").read_text(encoding="utf-8"))
+    for i, cid in enumerate(CAMS):
+        meta["cameras"][cid]["time_range_ms"] = [1_000, 2_000 + i]
+    (path / "clean_backgrounds.json").write_text(json.dumps(meta), encoding="utf-8")
+    got = _stages(tmp_path, _Stages(), prior={"calibration_version": VERSION}).collect(
+        setup_session_id="s", site_id="site", camera_ids=CAMS)
+    assert got.observed_until_ms == 2_003 and got.missing_cameras(CAMS) == []
+
+
+def test_production_handler_waits_for_bundle_with_heartbeats(tmp_path: Path) -> None:
+    """운영 처리기: 묶음이 없으면 설정한 시간까지 다시 보며 COLLECTING_BACKGROUND 수집률을 보낸 뒤 재시도 가능하게 끝난다."""
+    settings = _settings(tmp_path)
+    cams = _ctx().input["calibration_target"]["camera_ids"]
+    _status(settings, {cid: {"sample_count": 10} for cid in cams})
+    now = {"t": 0.0}
+
+    def sleep(event: Any, seconds: float) -> None:
+        now["t"] += seconds
+
+    handler = ProductionSiteSetupHandler(_Store(), settings, _Stages(), clock_ms=lambda: 1, workspace=tmp_path,
+                                         background_wait_s=6.0, background_poll_s=2.0, monotonic=lambda: now["t"], sleep=sleep)
+    ctx = _ctx()
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    assert exc.value.code == "BACKGROUND_INCOMPLETE" and exc.value.retryable is True and now["t"] == 6.0
+    assert ctx.site_setup_history[0]["background_collection_pct"] == dict.fromkeys(cams, 50.0)
+
+
+def test_background_wait_settings_from_env() -> None:
+    from services.worker.site_setup_stages import background_wait_from_env
+
+    assert background_wait_from_env({}) == (240.0, 2.0)
+    assert background_wait_from_env({"SIMAI_SETUP_BACKGROUND_WAIT_S": "0", "SIMAI_SETUP_BACKGROUND_POLL_S": "0.5"}) == (0.0, 0.5)
+    for bad in ({"SIMAI_SETUP_BACKGROUND_WAIT_S": "-1"}, {"SIMAI_SETUP_BACKGROUND_POLL_S": "0"}, {"SIMAI_SETUP_BACKGROUND_WAIT_S": "x"}):
+        with pytest.raises(ValueError):
+            background_wait_from_env(bad)
+
+
+def test_stage_failure_keeps_log_tail_in_message_and_copies_logs(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """작업 폴더는 끝나면 지워지므로 실패 단계 로그 끝을 메시지·워커 로그에 남기고 상태 폴더에 복사한다."""
+    s = _stages(tmp_path, _Stages(errors={"preview": ReconstructionError("STATIC_PREVIEW_TOOL_FAILED", "종료 코드 1")}))
+    (s.root / "preview.log").write_text("\n".join(f"line {i}" for i in range(50)) + "\nCUDA out of memory\n", encoding="utf-8")
+    with caplog.at_level("WARNING", logger="services.worker"), pytest.raises(JobFailed) as exc:
+        s.preview(setup_session_id="s", site_id="site", calibration_doc={}, backgrounds=CleanBackgroundBundle(BUNDLE, {}))
+    assert exc.value.code == "STATIC_PREVIEW_TOOL_FAILED" and exc.value.message.startswith("종료 코드 1 | preview.log 끝:")
+    assert exc.value.message.endswith("line 48 / line 49 / CUDA out of memory") and len(exc.value.message) < 500
+    assert "line 31" in caplog.text and "line 30" not in caplog.text  # 워커 로그는 끝 20줄
+    kept = s.keep_failure_logs()
+    assert kept == _settings(tmp_path).state_dir / "worker" / "site-setup-failed" / "job-1-lease-1"
+    assert (kept / "preview.log").read_text(encoding="utf-8").endswith("CUDA out of memory\n")
+
+
+def test_production_handler_keeps_failed_stage_logs(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    work = tmp_path / "work"
+    work.mkdir()
+
+    class _LoggingStages(_Stages):
+        def run(self, stage: str, root: Path, *, timeout_s: float, cancelled: threading.Event) -> None:
+            (root / f"{stage}.log").write_text("boom\n", encoding="utf-8")
+            raise ReconstructionError("STATIC_PREPARE_TOOL_FAILED", "종료 코드 2")
+
+    handler = ProductionSiteSetupHandler(_Store(), settings, _LoggingStages(), clock_ms=lambda: 1, workspace=work,
+                                         background_wait_s=0)
+    s = ProductionSiteSetupStages(_ctx(), _Store(), settings, _LoggingStages(), work, clock_ms=lambda: 1)
+    with pytest.raises(JobFailed):
+        s._run_stage("prepare")
+    assert s.keep_failure_logs() is not None
+    with pytest.raises(JobFailed) as exc:
+        handler(_ctx())  # 묶음이 없어 단계 전에 끝난다: 남길 로그가 없으면 아무것도 만들지 않는다
+    assert exc.value.code == "BACKGROUND_INCOMPLETE"
+    assert [p.name for p in (settings.state_dir / "worker" / "site-setup-failed").iterdir()] == ["job-1-lease-1"]

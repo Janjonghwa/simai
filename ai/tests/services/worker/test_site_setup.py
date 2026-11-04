@@ -32,7 +32,12 @@ from services.worker.site_setup import (
     build_world_from_pointcloud_and_poses,
 )
 from services.worker.transport import Response
-from simai_ai.calibration.extrinsics.joint_ba_v2 import CAMS, PAIRS, project
+from simai_ai.calibration.extrinsics.joint_ba_v2 import (
+    CAMS,
+    PAIRS,
+    _derive_new_calibration_version,
+    project,
+)
 from simai_ai.providers.contract import schema_errors
 from simai_ai.providers.testing import load_example
 
@@ -582,3 +587,128 @@ def test_site_setup_worker_with_real_val01_cached_tracks() -> None:
     assert res["metrics"]["joint_ba"]["converged"] is True
     assert res["metrics"]["joint_ba"]["stage_seconds"] < 10.0
     assert res["metrics"]["joint_ba"]["valid_points"] == 318
+
+
+# ---------------------------------------------------------------------------- S15P31A101-473
+def _room_handler(collector: Any, **kw: Any) -> tuple[SiteSetupHandler, dict[str, Any], list[dict[str, Any]]]:
+    """합성 방으로 끝까지 도는 처리기. 올린 보정 문서를 모은다."""
+    inp = load_example("job_request.site_setup.json")["payload"]["input"]
+    camera_ids = tuple(inp["calibration_target"]["camera_ids"])
+    points_m, unscaled_poses, intrinsics_by_cam, tracks_doc = _make_synthetic_room_and_tracks(camera_ids=camera_ids)
+    published: list[dict[str, Any]] = []
+
+    def _publish(doc: dict[str, Any]) -> str:
+        published.append(copy.deepcopy(doc))
+        return str(doc["calibration_version"])
+
+    handler = SiteSetupHandler(
+        background_collector=lambda **c: collector(tracks_doc, camera_ids),
+        world_initializer=lambda **w: build_world_from_pointcloud_and_poses(
+            site_id=w["site_id"], camera_ids=w["camera_ids"], camera_heights_m=w["camera_heights_m"],
+            height_tolerance_cm=w["height_tolerance_cm"], points_m=points_m, unscaled_poses=unscaled_poses,
+            intrinsics_by_cam=intrinsics_by_cam, created_at_ms=w["created_at_ms"],
+        ),
+        calibration_publisher=_publish,
+        **kw,
+    )
+    return handler, inp, published
+
+
+class _FakeTime:
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, event: Any, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def test_background_wait_reports_collection_and_continues_when_bundle_completes() -> None:
+    """묶음이 완성될 때까지 기다리며 카메라별 수집률을 COLLECTING_BACKGROUND 로 보내고, 완성되면 그대로 진행한다."""
+    calls = {"n": 0}
+
+    def collector(tracks_doc: Any, cams: tuple[str, ...]) -> CleanBackgroundBundle:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return CleanBackgroundBundle("", {c: 25.0 for c in cams})
+        if calls["n"] == 2:  # 활성 보정이 바뀌어 수집을 새로 시작하면 수집률은 내려갈 수 있다(진행률은 단조)
+            return CleanBackgroundBundle("", dict.fromkeys(cams, 10.0))
+        if calls["n"] == 3:
+            return CleanBackgroundBundle("", dict.fromkeys(cams, 99.0))
+        return CleanBackgroundBundle("bundle-x", dict.fromkeys(cams, 100.0), tracks_doc=tracks_doc,
+                                     observed_until_ms=1760342400123)
+
+    t = _FakeTime()
+    handler, inp, _ = _room_handler(collector, background_wait_s=240.0, background_poll_s=2.0,
+                                    monotonic=t.monotonic, sleep=t.sleep, clock_ms=lambda: 1760342410000)
+    ctx = JobContext("job-wait", "0192a6f0-7c1e-7b3a-9f2d-000000000321", "site_setup", 1, inp)
+    result = handler(ctx)
+    assert result["status"] == "COMPLETED" and t.sleeps == [2.0, 2.0, 2.0]
+    collecting = [s for s in ctx.site_setup_history if s["status"] == "COLLECTING_BACKGROUND"]
+    assert [s["progress_pct"] for s in collecting] == [3.5, 3.5, 13.9, 15]
+    assert [set(s["background_collection_pct"].values()) for s in collecting] == [{25.0}, {10.0}, {99.0}, {100.0}]
+    for snap in collecting:
+        assert schema_errors(snap, {"$ref": "https://simai.dev/contracts/messages/site_setup.schema.json#/$defs/progress"}) == []
+
+
+def test_background_wait_times_out_retryably_and_honours_cancel() -> None:
+    t = _FakeTime()
+    handler, inp, _ = _room_handler(lambda td, cams: CleanBackgroundBundle("", dict.fromkeys(cams, 50.0)),
+                                    background_wait_s=10.0, background_poll_s=4.0, monotonic=t.monotonic, sleep=t.sleep)
+    ctx = JobContext("job-wait", "0192a6f0-7c1e-7b3a-9f2d-000000000322", "site_setup", 1, inp)
+    with pytest.raises(JobFailed) as exc:
+        handler(ctx)
+    assert exc.value.code == "BACKGROUND_INCOMPLETE" and exc.value.retryable is True
+    assert sum(t.sleeps) == pytest.approx(10.0)  # 마지막 대기는 남은 시간만큼
+    assert ctx.site_setup_history[-1]["status"] == "COLLECTING_BACKGROUND"
+
+    def cancel_on_sleep(event: Any, seconds: float) -> None:
+        cancelled_ctx.cancelled.set()
+
+    handler2, _, _ = _room_handler(lambda td, cams: CleanBackgroundBundle("", dict.fromkeys(cams, 50.0)),
+                                   background_wait_s=240.0, sleep=cancel_on_sleep)
+    cancelled_ctx = JobContext("job-wait", "0192a6f0-7c1e-7b3a-9f2d-000000000323", "site_setup", 1, inp)
+    with pytest.raises(JobFailed) as exc2:
+        handler2(cancelled_ctx)
+    assert exc2.value.code == "CANCELLED"
+
+
+def test_bake_runs_while_tier0_marker_is_live_and_logs(caplog: pytest.LogCaptureFixture) -> None:
+    """세팅은 진행 중 작업이 없을 때만 시작하므로 Tier 0 표시 파일(live_notice)이 있어도 굽는다(재시도 → 서버 400 방지)."""
+    handler, inp, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+        live_notice=lambda: True,
+    )
+    ctx = JobContext("job-live", "0192a6f0-7c1e-7b3a-9f2d-000000000324", "site_setup", 1, inp)
+    with caplog.at_level("WARNING", logger="services.worker"):
+        result = handler(ctx)
+    assert result["status"] == "COMPLETED" and "BAKING_TEXTURE" in [s["status"] for s in ctx.site_setup_history]
+    assert "Tier 0 가 떠 있지만 세팅 굽기를 진행" in caplog.text
+
+
+def test_retry_with_same_bundle_publishes_identical_calibration_document() -> None:
+    """재시도(새 대여·다른 시계)여도 같은 묶음이면 같은 버전·같은 문서 바이트 → 서버가 같은 sha256 으로 받는다."""
+    import json
+
+    clock = iter(range(1760342410000, 1760342410000 + 10_000_000, 7919))
+    handler, inp, published = _room_handler(
+        lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td, observed_until_ms=1760342399000),
+        clock_ms=lambda: next(clock),
+    )
+    for lease in ("0192a6f0-7c1e-7b3a-9f2d-000000000325", "0192a6f0-7c1e-7b3a-9f2d-000000000326"):
+        handler(JobContext("job-retry", lease, "site_setup", 1, inp))
+    first, second = (json.dumps(d, sort_keys=True) for d in published)
+    assert first == second and published[0]["created_at"] == 1760342399000
+
+
+def test_stage_a_version_changes_when_content_changes() -> None:
+    """같은 버전이면 같은 내용: 회전이 같아도 내용(content_hash)이 다르면 다른 버전이 된다."""
+    R = np.stack([np.eye(3)] * 2)
+    base = _derive_new_calibration_version("cal-x", R, ["a", "b"], "sha-1")
+    assert base == _derive_new_calibration_version("cal-x", R, ["a", "b"], "sha-1")
+    assert base != _derive_new_calibration_version("cal-x", R, ["a", "b"], "sha-2")
+    assert base.startswith("cal-x-jba2-")

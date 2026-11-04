@@ -10,7 +10,13 @@
 (e) JOINT_BA_AND_VERIFY: V2 Stage A 회전 BA (`INSUFFICIENT_FEATURES`, `VALIDATION_REJECTED`)
 (f) JOINT_BA_AND_VERIFY: 새 `calibration_version` 보정 문서 등록(덮어쓰지 않음)
 (g) PREVIEW_AND_VLM_DRAFT → READY_FOR_ZONES: 미리보기 맵(`preview_scene_version`) 생성·등록
-(h) BAKING_TEXTURE → COMPLETED: 고화질 정적 3D 굽기(`scene_version`, LIVE 중 굽기 금지 게이트 유지)
+(h) BAKING_TEXTURE → COMPLETED: 고화질 정적 3D 굽기(`scene_version`). 세팅은 서버가 진행 중 작업(IN_PROGRESS)이 없을 때만
+    시작시키므로(-467, 409) Tier 0 표시 파일이 있어도 굽는다(`live_notice` 는 로그만). `live_gate` 는 "LIVE 작업 중" 신호를
+    받을 자리로 남긴다(지금 서버가 워커에 주는 그런 신호는 없다, S15P31A101-473)
+
+(a) 는 Tier 0 묶음이 완성될 때까지 `background_wait_s` 동안 `background_poll_s` 마다 다시 보고, 그동안 카메라별 수집률을
+COLLECTING_BACKGROUND 하트비트로 보낸다. 보정 문서의 생성 시각(`created_at`)은 배경 묶음의 마지막 관측 시각
+(`CleanBackgroundBundle.observed_until_ms`)으로 정해 재시도해도 같은 입력이면 같은 문서(sha256)가 나온다(S15P31A101-473).
 
 산출물을 객체 저장소에 올린 주입점은 그 객체 참조(`ObjectRef`)를 함께 돌려주고, 처리기는 그 뒤 스냅샷·결과의 선택 `artifacts`
 (site_setup 1.2.0, S15P31A101-467)에 싣는다. EC2 는 이 참조로 문서·GLB 를 확인해 새 보정·Scene 버전을 등록한다(서버 등록 경로).
@@ -21,6 +27,8 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import logging
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -52,6 +60,8 @@ from simai_ai.tracking.system_health import CalibrationState
 
 from .handlers import JobContext, JobFailed
 
+log = logging.getLogger("services.worker")
+
 SITE_SETUP_INPUT_SCHEMA = {
     "$ref": "https://simai.dev/contracts/messages/site_setup.schema.json#/$defs/input"
 }
@@ -80,6 +90,17 @@ class CleanBackgroundBundle:
     collection_pct_by_cam: Mapping[str, float]
     frames_by_cam: Mapping[str, Sequence[Any]] = field(default_factory=dict)
     tracks_doc: Mapping[str, Any] | None = None
+    # 묶음의 마지막 관측 시각(UTC ms). 있으면 보정 문서 created_at 으로 쓴다(재시도 결정론). 모르면 None → 처리기 시계
+    observed_until_ms: int | None = None
+
+    def missing_cameras(self, camera_ids: Sequence[str]) -> list[str]:
+        """아직 쓸 수 없는 카메라(수집률 100 미만, 또는 트랙 문서가 없는데 배경 이미지가 비었음)."""
+        out = []
+        for cid in camera_ids:
+            pct = float(self.collection_pct_by_cam.get(cid, 0.0))
+            if pct < 100.0 - 1e-6 or (self.tracks_doc is None and not self.frames_by_cam.get(cid)):
+                out.append(cid)
+        return out
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,10 +334,20 @@ class SiteSetupHandler:
         object_cross_checker: ObjectScaleCrossChecker | None = None,
         feature_matcher: Callable[[np.ndarray, np.ndarray], Sequence[Mapping[str, Any]]] | None = None,
         live_gate: Callable[[], bool] | None = None,
+        live_notice: Callable[[], bool] | None = None,
         clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
         perf_counter: Callable[[], float] = time.perf_counter,
         stage_a_target_seconds: float = 10.0,
+        background_wait_s: float = 0.0,
+        background_poll_s: float = 2.0,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[threading.Event, float], Any] | None = None,
     ) -> None:
+        """live_gate: True 면 굽기를 `LIVE_EXP_BLOCKED`(재시도 가능)로 미룬다 — "LIVE 작업 중" 신호 자리(운영 조립은 넘기지 않는다).
+        live_notice: True 면 Tier 0 가 떠 있다는 로그만 남기고 굽는다(Tier 0 지연이 잠깐 늘 수 있음).
+        background_wait_s: 배경 묶음이 완성되기를 기다리는 최대 초(0 이면 한 번만 본다). sleep(취소 신호, 초)의 기본은 신호 대기."""
+        if background_wait_s < 0 or background_poll_s <= 0:
+            raise ValueError("background_wait_s 는 0 이상, background_poll_s 는 양수다")
         self._collect_bg = background_collector
         self._init_world = world_initializer
         self._publish_calibration = calibration_publisher or (
@@ -327,6 +358,11 @@ class SiteSetupHandler:
         self._object_cross_checker = object_cross_checker
         self._feature_matcher = feature_matcher
         self._live_gate = live_gate or (lambda: False)
+        self._live_notice = live_notice or (lambda: False)
+        self._bg_wait_s = float(background_wait_s)
+        self._bg_poll_s = float(background_poll_s)
+        self._monotonic = monotonic
+        self._sleep = sleep or (lambda event, seconds: event.wait(seconds))
         self._clock_ms = clock_ms
         self._perf = perf_counter
         self._stage_a_target_s = float(stage_a_target_seconds)
@@ -403,6 +439,52 @@ class SiteSetupHandler:
             )
         ctx.report_site_setup(payload)
 
+    def _wait_for_backgrounds(
+        self, ctx: JobContext, setup_session_id: str, site_id: str, camera_ids: tuple[str, ...],
+    ) -> tuple[CleanBackgroundBundle, dict[str, float]]:
+        """(a) 묶음이 완성될 때까지 최대 background_wait_s 동안 다시 본다. 수집률이 바뀌면 COLLECTING_BACKGROUND 하트비트.
+
+        진행률은 0~14 구간에서 단조 증가(서버가 같은 대여의 감소를 거절)하고, 카메라별 수집률은 실제 값을 그대로 싣는다
+        (활성 보정이 바뀌어 묶음을 새로 모으면 내려갈 수 있다). 시간이 다하면 재시도 가능한 BACKGROUND_INCOMPLETE."""
+        deadline = self._monotonic() + self._bg_wait_s
+        best_pct = 0.0
+        last_sent: tuple[float, tuple[float, ...]] | None = None
+        while True:
+            self._check_cancelled(ctx)
+            bundle = self._collect_bg(setup_session_id=setup_session_id, site_id=site_id, camera_ids=camera_ids)
+            pct = {cid: round(min(100.0, max(0.0, float(bundle.collection_pct_by_cam.get(cid, 0.0)))), 2)
+                   for cid in camera_ids}
+            missing = bundle.missing_cameras(camera_ids)
+            if not missing:
+                return bundle, pct
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise JobFailed(
+                    "BACKGROUND_INCOMPLETE",
+                    f"사람 지운 배경 수집 미완료 카메라: {missing} ({pct}), {self._bg_wait_s:g}s 대기",
+                    retryable=True,
+                )
+            best_pct = max(best_pct, round(14.0 * sum(pct.values()) / (100.0 * len(pct)), 1))
+            key = (best_pct, tuple(pct[c] for c in camera_ids))
+            if key != last_sent:
+                self._emit_progress(ctx, {
+                    "setup_session_id": setup_session_id,
+                    "status": "COLLECTING_BACKGROUND",
+                    "progress_pct": best_pct,
+                    "background_collection_pct": pct,
+                })
+                last_sent = key
+            self._sleep(ctx.cancelled, min(self._bg_poll_s, remaining))
+
+    def _created_at_ms(self, bundle: CleanBackgroundBundle) -> int:
+        """보정 문서 생성 시각: 묶음의 마지막 관측 시각(같은 묶음 → 같은 값). 모르면 처리기 시계(재시도 결정론 없음, 로그)."""
+        observed = bundle.observed_until_ms
+        if isinstance(observed, int) and not isinstance(observed, bool) and observed > 0:
+            return observed
+        log.info("배경 묶음 %s 의 관측 시각을 몰라 보정 생성 시각에 지금 시각을 쓴다(재시도하면 다른 문서가 될 수 있다)",
+                 bundle.bundle_id or "?")
+        return int(self._clock_ms())
+
     def __call__(self, ctx: JobContext) -> Mapping[str, Any]:
         t_start = self._perf()
         setup_session_id, site_id, camera_ids, camera_heights_m, height_tolerance_cm = (
@@ -415,32 +497,8 @@ class SiteSetupHandler:
         # ------------------------------------------------------------------
         self._check_cancelled(ctx)
         t0 = self._perf()
-        bg_bundle = self._collect_bg(
-            setup_session_id=setup_session_id,
-            site_id=site_id,
-            camera_ids=camera_ids,
-        )
-        bg_pct: dict[str, float] = {
-            cid: round(float(bg_bundle.collection_pct_by_cam.get(cid, 0.0)), 2)
-            for cid in camera_ids
-        }
-        incomplete = [cid for cid, pct in bg_pct.items() if pct < 100.0 - 1e-6]
-        if incomplete:
-            raise JobFailed(
-                "BACKGROUND_INCOMPLETE",
-                f"사람 지운 배경 수집 미완료 카메라: {incomplete} ({bg_pct})",
-                retryable=True,
-            )
-        if bg_bundle.tracks_doc is None:
-            missing_frames = [
-                cid for cid in camera_ids if not bg_bundle.frames_by_cam.get(cid)
-            ]
-            if missing_frames:
-                raise JobFailed(
-                    "BACKGROUND_INCOMPLETE",
-                    f"배경 이미지가 비어 있는 카메라: {missing_frames}",
-                    retryable=True,
-                )
+        bg_bundle, bg_pct = self._wait_for_backgrounds(ctx, setup_session_id, site_id, camera_ids)
+        created_at_ms = self._created_at_ms(bg_bundle)
         stage_seconds["COLLECTING_BACKGROUND"] = round(
             max(0.0, self._perf() - t0), 4
         )
@@ -468,7 +526,7 @@ class SiteSetupHandler:
                 camera_heights_m=camera_heights_m,
                 height_tolerance_cm=height_tolerance_cm,
                 backgrounds=bg_bundle,
-                created_at_ms=int(self._clock_ms()),
+                created_at_ms=created_at_ms,
             )
         except JobFailed:
             raise
@@ -519,7 +577,7 @@ class SiteSetupHandler:
                 tracks_source,
                 camera_heights_m=camera_heights_m,
                 height_tolerance_cm=height_tolerance_cm,
-                created_at_ms=int(self._clock_ms()),
+                created_at_ms=created_at_ms,
                 stage_target_seconds=self._stage_a_target_s,
                 object_cross_checker=self._object_cross_checker,
             )
@@ -617,6 +675,9 @@ class SiteSetupHandler:
                 "LIVE 관제 중에는 고화질 텍스처 굽기(BAKING_TEXTURE)를 실행하지 않는다",
                 retryable=True,
             )
+        if self._live_notice():
+            # 세팅은 진행 중 작업이 없을 때만 시작한다(서버 409). Tier 0 는 대기 관제로 떠 있을 뿐이라 굽기를 미루지 않는다
+            log.warning("작업 %s: Tier 0 가 떠 있지만 세팅 굽기를 진행한다(굽는 동안 Tier 0 지연이 잠깐 늘 수 있다)", ctx.job_id)
         t0 = self._perf()
         baking_snapshot = {
             **ready_snapshot,

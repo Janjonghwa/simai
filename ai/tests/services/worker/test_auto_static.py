@@ -176,6 +176,10 @@ def test_settings_from_env_default_on_and_off(tmp_path: Path) -> None:
                                        "SIMAI_AUTO_STATIC_QUIET_S": "60"})
     assert not off.enabled and off.state_dir == tmp_path / "x" and off.quiet_after_live_s == 60.0
     assert not s.exit_when_done and AutoStaticSettings.from_env({"SIMAI_AUTO_STATIC_EXIT_WHEN_DONE": "1"}).exit_when_done
+    # lobby 처럼 표시 파일만 넘긴 기동: Tier 0 상태 폴더(표시 파일의 폴더)를 본다. SIMAI_STATE_DIR 가 있으면 그것이 먼저(-473)
+    marker = tmp_path / "runs" / "lobby-live" / "state" / "tier0.live"
+    assert AutoStaticSettings.from_env({"SIMAI_ROOT": str(tmp_path), "SIMAI_TIER0_MARKER": str(marker)}).state_dir == marker.parent
+    assert AutoStaticSettings.from_env({"SIMAI_TIER0_MARKER": str(marker), "SIMAI_STATE_DIR": str(tmp_path / "x")}).state_dir == tmp_path / "x"
     for bad in ({"SIMAI_AUTO_STATIC_RECONSTRUCT": "yes"}, {"SIMAI_AUTO_STATIC_QUIET_S": "-1"},
                 {"SIMAI_AUTO_STATIC_POLL_S": "abc"}):
         with pytest.raises(ValueError):

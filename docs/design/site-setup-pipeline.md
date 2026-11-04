@@ -394,11 +394,11 @@ stateDiagram-v2
 
 | 단계(`status`, 진행률) | 입력 → 출력 | 목표 | 실패 사유(`error.code`, 재시도) |
 | --- | --- | --- | --- |
-| (a) `COLLECTING_BACKGROUND` 15 | Tier 0 가 내보낸 사람 지운 배경 묶음(`SIMAI_STATE_DIR/clean-background`, `status.json` complete + `COMPLETE`) → 카메라별 수집률·배경 이미지. 묶음이 없거나 활성 보정 버전과 다르면 수집률 0 | 20~30 s(수집 자체는 Tier 0) | `BACKGROUND_INCOMPLETE`(재시도 가능) |
+| (a) `COLLECTING_BACKGROUND` 0~14 → 15 | Tier 0 가 내보낸 사람 지운 배경 묶음(`SIMAI_STATE_DIR/clean-background`, `status.json` complete + `COMPLETE`) → 카메라별 수집률·배경 이미지. 묶음이 덜 됐으면 `status.json` 표본 수로 수집률(최대 99)을 하트비트로 보내며 최대 `SIMAI_SETUP_BACKGROUND_WAIT_S`(기본 240 s) 기다린다(13.8). 활성 보정 버전과 다른 수집은 0 | 묶음이 이미 있으면 즉시, 새로 모으면 약 100 s(Tier 0 수집) | `BACKGROUND_INCOMPLETE`(대기 초과, 재시도 가능) |
 | (b)(c)(d) `INITIAL_POSE_AND_WORLD` 40 | Tier 0 활성 보정의 K·왜곡 재사용 → `prepare`·`mapanything` → 점구름·카메라 자세 → World 자동 정의 → **카메라 실측 높이**로 축척 → `height_checks`(복원 높이 − 입력 높이 cm, ±`height_tolerance_cm` 초과는 `within_tolerance=false` 로 표시만, 세팅을 멈추지 않음) | 5~10 s(MapAnything 상주 시) | `INTRINSICS_UNAVAILABLE`(활성 보정 없음, 재시도 불가), `FLOOR_FIT_FAILED`(바닥·축 정의 실패, 재시도 불가), `STATIC_*_TIMEOUT`·`*_TOOL_FAILED`(재시도 가능) |
 | (e)(f) `JOINT_BA_AND_VERIFY` 65 | 배경 특징점 트랙(사전 추출 또는 `extract_tracks_from_backgrounds`) + 초기 보정 → **Stage A 회전 BA**(projected 솔버, 카메라 중심 고정) → 쌍별 홀드아웃 재투영 지표 → **새 `calibration_version`**(`<이전>-jba2-<해시>`, 덮어쓰지 않음) 등록 | Stage A 10 s 이내(상한, 넘으면 거절) | `INSUFFICIENT_FEATURES`(인접 쌍 트랙 부족, 재시도 불가), `VALIDATION_REJECTED`(미수렴·홀드아웃 악화·중심 이동·시간 초과·스키마 위반, 재시도 불가), `SETUP_OBJECT_FAILED`(객체 저장소, 오류가 알려주는 대로) |
 | (g) `PREVIEW_AND_VLM_DRAFT` 80 → `READY_FOR_ZONES` 85 | 새 보정으로 `preview` 단계(-451 미리보기 맵) → GLB 업로드 → `preview_scene_version` = `scene-preview-<job>-<lease>`. `zone_drafts_ref` 는 -455 가 채움(지금 없음) | ~10 s | `STATIC_PREVIEW_*`·`STATIC_OUTPUT_*` |
-| (h) `BAKING_TEXTURE` 95 → `COMPLETED` 100 | `bake`(도구가 없으면 `fallback`) → GLB 업로드 → `scene_version` = `scene-<job>-<lease>` | 구역 편집 중 | `LIVE_EXP_BLOCKED`(LIVE 중 굽기 금지 게이트, 재시도 가능), `STATIC_BAKE_*` |
+| (h) `BAKING_TEXTURE` 95 → `COMPLETED` 100 | `bake`(도구가 없으면 `fallback`) → GLB 업로드 → `scene_version` = `scene-<job>-<lease>` | 구역 편집 중 | `STATIC_BAKE_*`. Tier 0 표시 파일만으로는 미루지 않는다(13.8, `LIVE_EXP_BLOCKED` 는 "LIVE 작업 중" 신호 자리로만 남음) |
 
 모든 단계에서 취소·대여 상실은 `CANCELLED`(재시도 가능), 실행 상한 초과는 `TIMEOUT`. 같은 입력(같은 묶음·같은 높이·같은 시드)이면 Stage A 결과가 같다(분할 시드 449 고정). 재시도는 새 대여라 첫 스냅샷부터 다시 시작한다.
 
@@ -534,3 +534,34 @@ C–D 쌍은 여전히 4 px 이다(트랙이 적은 쌍, 11.2 와 같은 위험)
 - EC2 등록은 문서의 `setup_session_id` 가 이 세션이어야 받는다. 재시도 세션이 같은 보정 내용(같은 content_hash)에 출처만 다른 문서를 올리면 같은 보정으로 보고 원문은 처음 것을 둔다.
 - 재시작: 채택 뒤에는 저장소가 그 버전을 알므로 보관소 복구가 그대로 된다. 채택 전에 꺼지면 대기 묶음은 적용되지 않았으므로 EC2 재연결 알림으로 다시 검증한다.
 - 시험: `ai/tests/services/tier0/test_setup_calibration_adoption.py`(정상 채택·재시작 뒤 새 World 기준, content_hash 불일치·계보 불일치·세팅 출처 없음·문서 없음 거부, 검증 뒤 활성 보정이 바뀌면 경계에서 거부), 기존 `test_calibration_swap`·`test_live_calibration_safety`·`test_rotation_recovery`·`tests/config`.
+
+### 13.8 워커 세팅 차단 결함 수정 (`S15P31A101-473`, 12차 GPU 세션 전)
+
+12차 세션(시연 흐름 첫 종단 실행) 전 Lead 점검에서 나온, `simai-bootstrap lobby` 로 띄운 워커가 세팅을 끝내지 못하는 결함 다섯 가지다.
+
+| 결함 | 원인 | 고친 것 | 위치 |
+| --- | --- | --- | --- |
+| 1. 상태 폴더 어긋남 | lobby 가 워커에 `SIMAI_TIER0_MARKER=<work>/state/tier0.live` 만 넘기고 `SIMAI_STATE_DIR` 를 안 넘겨 워커가 `$SIMAI_ROOT/state` 를 봤다(배경 묶음·활성 보정·scene_regenerate 요청이 Tier 0 의 `<work>/state` 와 다름) | lobby 환경에 `SIMAI_STATE_DIR=<work>/state`(after-live 와 같은 규칙). 워커 `AutoStaticSettings` 도 `SIMAI_STATE_DIR` 가 없으면 표시 파일의 폴더를 본다(`vlm_frames.LocalFrames` 와 같은 규칙, 감시 모드 등 다른 진입점 대비) | `deploy/scripts/simai_bootstrap.py` `prepare_lobby_work`, `ai/services/worker/auto_static.py` |
+| 2. 배경을 한 번만 봄 | 묶음이 없으면 바로 `BACKGROUND_INCOMPLETE`. 묶음은 카메라마다 최소 20장 × 5 s ≈ 100 s 걸린다 | `SiteSetupHandler` 가 최대 `background_wait_s` 동안 `background_poll_s` 마다 다시 보고, 수집률이 바뀔 때마다 `COLLECTING_BACKGROUND` 하트비트(`progress_pct` 0~14 단조, `background_collection_pct` 는 `status.json` 의 카메라별 `sample_count/20`·`ready`/`exported` → 99, 완성 묶음 → 100). 취소·대여 상실은 신호 대기에서 바로 깨어 `CANCELLED`, 실행 상한은 `TIMEOUT` | `site_setup.py` `_wait_for_backgrounds`, `site_setup_stages.py` `_partial_collection_pct` |
+| 3. 굽기 게이트 → 재시도 → 서버 400 | 워커 굽기 게이트가 Tier 0 표시 파일만 있으면 LIVE 로 보고 `LIVE_EXP_BLOCKED`(재시도 가능) → 시도 소모 → 재시도가 처음부터 다시 돌며 `created_at`(지금 시각)이 달라 같은 버전·다른 sha256 → `INVALID_SETUP_PROGRESS`(400) → FAILED | (a) 운영 조립은 표시 파일을 `live_notice`(로그 "Tier 0 가 떠 있지만 세팅 굽기를 진행")로만 쓰고 굽는다. 세팅은 서버가 같은 현장에 `IN_PROGRESS` 작업이 없을 때만 시작시킨다(-467 409). `live_gate`(차단)는 서버가 "LIVE 작업 중"을 알려 줄 때 쓸 자리로 남겼다 — 지금 그런 신호는 없다(대여 하트비트 응답은 ACTIVE·REJECTED 뿐이고, 서버 취소 `JOB_CANCELLED` 는 이미 존중). (b) 보정 `created_at` = 배경 묶음의 마지막 관측 시각(`clean_backgrounds.json` 카메라별 `time_range_ms` 끝의 최댓값, 없으면 `COMPLETE` 수정 시각). 초기·Stage A 문서 모두 같은 값. (c) Stage A 새 버전 해시에 문서 `content_hash` 를 넣어 **같은 버전이면 같은 내용**이 되게 했다(GPU 비결정성으로 중심·지표가 조금 달라지면 다른 버전으로 새로 등록, 400 이 아님) | `site_setup.py` `_created_at_ms`, `__main__.py`, `joint_ba_v2.py` `_derive_new_calibration_version` |
+| 4. MapAnything 가중치 없음 | `reconstruct_tasks.mapanything` 은 `SIMAI_MAPANYTHING_MODEL` 또는 `$SIMAI_ROOT/weights/map-anything` 을 기대하는데 lobby 는 tier0·vlm·avatar 묶음만 받았다(static 은 scene·preflight 에서만) | 감시 프로세스가 run 단계(워커 가중치 다음)에 들어서면 뒤 스레드로 `static` 묶음 중 그 모델 폴더 항목만 받는다(이미 있으면 건너뜀, apache 사본은 안 받음). 워커 시작을 막지 않고, 실패하면 경고 "STATIC_MODEL_MISSING … preflight 로 확인"과 기록(`runs/bootstrap`, stage `setup-weights`). `SIMAI_WORKER_SETUP_WEIGHTS=0` 으로 끔. 경고만 내는 안을 버린 이유: 볼륨이 없어 Pod 마다 새로 받아야 하고, 경고를 놓치면 세팅이 재시도 불가로 끝난다 | `simai_bootstrap.py` `Supervisor._prepare_setup_weights` |
+| 5. 실패 로그 소실 | 단계 로그(`<단계>.log`)가 임시 작업 폴더째 지워졌다 | 단계 실패 시 로그 끝 20줄을 워커 로그에, 끝 3줄(240자)을 실패 메시지(계약 500자)에 붙이고, 폴더를 지우기 전에 `*.log`·`*.error.json`(8 MiB 이하)을 `SIMAI_STATE_DIR/worker/site-setup-failed/<작업>-<대여>/` 에 복사한다 | `site_setup_stages.py` `_with_log_tail`·`keep_failure_logs` |
+
+명세에 없어 정한 수치:
+
+| 값 | 근거 |
+| --- | --- |
+| 배경 대기 240 s, 주기 2 s | Tier 0 묶음 최소 100 s(20장 × 5 s)의 두 배 남짓 + 묶음 조립·사람이 오래 가린 카메라 여유. 서버 실행 상한 900 s 안에서 복원·굽기 시간을 남긴다. 2 s 는 Tier 0 `status.json` 갱신(표본 5 s 마다)보다 촘촘하고, 하트비트는 값이 바뀔 때만 보낸다 |
+| 수집률 = `sample_count / 20`, 완성 전 최대 99 | 20 은 Tier 0 기본 `min_samples_per_camera`(설정을 바꾸면 표시만 어긋나고 완성 판정은 Tier 0 `ready`·묶음 `COMPLETE` 가 한다). 100 은 처리기가 "쓸 수 있음"으로 보는 값이라 묶음이 생기기 전에는 쓰지 않는다 |
+| 대기 중 `progress_pct` = 14 × 평균 수집률(지금까지 최댓값) | 서버가 같은 대여의 감소를 거절한다. 활성 보정이 바뀌어 수집이 새로 시작되면 카메라별 값은 내려가도 진행률은 유지한다 |
+
+잔여 위험:
+
+1. 첫 시도가 `READY_FOR_ZONES` 를 지나 Tier 0 가 세팅 보정을 채택한 뒤 굽기(`STATIC_BAKE_TIMEOUT` 등)로 재시도되면, 재시도는 새 활성 보정 기준으로 배경을 다시 모아(약 100 s) 처음부터 돈다 → 또 하나의 새 보정·World. 서버 400 은 아니지만 느리다. 굽기 실패만 굽기부터 다시 하는 단계 재개는 넘긴다.
+2. 굽는 동안 관리자가 작업을 시작(IN_PROGRESS)해도 워커는 알 길이 없어 굽기를 계속한다(GPU 상한·Tier 0 우선 접수 문은 그대로). 서버가 하트비트 응답 등으로 "LIVE 작업 중"을 알려 주면 `live_gate` 에 잇는다(계약 변경 필요, 이 티켓 범위 밖).
+3. MapAnything 가중치는 run 단계 뒤에 받으므로 Pod 를 띄우자마자 세팅을 시작하면 받기가 끝나기 전에 `mapanything` 단계에 닿을 수 있다(배경 대기 ~100 s 가 대개 가린다). 감시 로그의 "현장 세팅 MapAnything 가중치 준비" 줄을 본 뒤 세팅을 시작한다.
+4. 활성 보정이 없으면(`INTRINSICS_UNAVAILABLE`) 배경 대기를 다 채운 뒤에야 실패한다. lobby 는 번들 `calibration.json` 으로 늘 활성 보정을 갖고 시작하므로 운영 경로에서는 생기지 않는다.
+
+12차 세션 절차 반영: lobby 명령은 그대로(`simai-bootstrap lobby --bundle-dir … --work …`). 워커 환경의 `SIMAI_STATE_DIR` 가 `<work>/state` 인지 워커 시작 로그("현장 세팅 상태 폴더 …")로 확인하고, 감시 로그의 MapAnything 가중치 준비 줄을 본 뒤 세팅을 시작한다. 세팅 시작부터 `COLLECTING_BACKGROUND` 수집률이 오르는지(약 100 s 안에 100) 보고, 실패하면 `<work>/state/worker/site-setup-failed/` 의 로그를 가져온다. 대기를 바꾸려면 `SIMAI_SETUP_BACKGROUND_WAIT_S`(lobby 를 띄우는 셸 환경, 감시 프로세스가 워커에 그대로 넘긴다).
+
+시험: `ai/tests/services/worker/test_site_setup.py`(대기 중 수집률 하트비트·단조 진행률·완성 뒤 진행, 대기 초과·취소, Tier 0 떠 있어도 굽기, 같은 묶음 재시도 → 같은 문서, 내용이 다르면 다른 버전), `test_site_setup_stages.py`(status.json 부분 수집률·다른 보정 0, 관측 시각, 운영 처리기 대기, 환경 설정, 실패 로그 끝·복사), `test_auto_static.py`(표시 파일 폴더 기본값), `ai/tests/deploy/test_simai_supervisor.py`(lobby 모든 프로세스의 `SIMAI_STATE_DIR`, 세팅 가중치를 VLM 다음에 모델 폴더 항목만·실패 경고·끄기·워커 없으면 안 받음).
