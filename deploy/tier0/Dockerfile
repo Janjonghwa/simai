@@ -26,8 +26,8 @@ FROM ${BASE_IMAGE} AS layer-lists
 WORKDIR /src
 COPY ai/pyproject.toml ai/uv.lock ./
 RUN set -eu; \
-    uv export -q --locked --no-dev --extra tier0 --no-emit-project --format requirements-txt -o all.txt; \
-    uv export -q --locked --no-dev --extra tier0 --extra worker --no-emit-project --format requirements-txt -o all-worker.txt; \
+    uv export -q --locked --no-dev --extra tier0 --extra reid --no-emit-project --format requirements-txt -o all.txt; \
+    uv export -q --locked --no-dev --extra tier0 --extra reid --extra worker --no-emit-project --format requirements-txt -o all-worker.txt; \
     pick(){ src=$1; out=$2; shift 2; : > "$out"; \
       for n in "$@"; do \
         awk -v n="$n" '/^[^ #]/ { x = $1; sub(/[ =;].*/, "", x); keep = (x == n) } keep && !/^ *#/' "$src" > one.txt; \
@@ -71,7 +71,7 @@ RUN --mount=type=cache,target=/root/.cache/uv uv pip install -q --no-deps --requ
 # 4) 나머지 의존성(잠금이 바뀌면 이 층부터 다시). --locked: 잠금이 pyproject 와 다르면 실패. 위 층의 패키지는 같은 판이라 건너뛴다.
 COPY ai/pyproject.toml ai/uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --extra tier0 --no-install-project
+    uv sync --locked --no-dev --extra tier0 --extra reid --no-install-project
 
 # ---------------------------------------------------------------- tier0 타깃
 FROM tier0-deps AS tier0
@@ -81,7 +81,7 @@ COPY ai/src ./src
 COPY ai/services ./services
 COPY contracts /opt/simai/contracts
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --extra tier0 --no-editable \
+    uv sync --locked --no-dev --extra tier0 --extra reid --no-editable \
  && rm -rf ./src
 
 COPY --chmod=0755 deploy/tier0/entrypoint.sh /usr/local/bin/simai-tier0
@@ -91,6 +91,7 @@ COPY --chmod=0755 deploy/scripts/wait_tier0_ready.py /usr/local/bin/simai-wait-t
 COPY --chmod=0755 deploy/scripts/simai_bootstrap.py /usr/local/bin/simai-bootstrap
 # 윈도 체크아웃의 CRLF 가 shebang 을 깨뜨리지 않게 빌드에서 CR 을 뺀다(check_image.sh 는 결과를 다시 검사한다)
 RUN sed -i 's/\r$//' /usr/local/bin/simai-tier0 /usr/local/bin/simai-wait-tier0 /usr/local/bin/simai-bootstrap
+RUN sed -i '1c#!/opt/simai/ai/.venv/bin/python' /usr/local/bin/simai-bootstrap
 COPY deploy/weights.json /opt/simai/deploy/weights.json
 
 # 실행 중에 패키지를 설치하지 않는다(ultralytics 자동 설치 끔). 없는 의존성은 실패로 드러나야 한다.
@@ -125,7 +126,7 @@ RUN --mount=type=cache,target=/root/.cache/uv uv pip install -q --no-config --no
 # 워커 묶음 전체(Tier 0 층의 패키지는 같은 판이라 건너뛴다. tier0 ⊂ tier0+worker 라 지우는 것도 없다)
 # hadolint ignore=DL3059
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --extra tier0 --extra worker --no-install-project
+    uv sync --locked --no-dev --extra tier0 --extra reid --extra worker --no-install-project
 
 # ---------------------------------------------------------------- HMR 코드 사본 (이미지에는 결과만 옮긴다)
 # 잠금 밖 휠(chumpy·Detectron2·MoGe)은 통합 이미지에 넣지 않는다(S15P31A101-246, docs/design/unified-env.md "2단계"):
@@ -208,7 +209,7 @@ COPY ai/src ./src
 COPY ai/services ./services
 COPY contracts /opt/simai/contracts
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --extra tier0 --extra worker --no-editable \
+    uv sync --locked --no-dev --extra tier0 --extra reid --extra worker --no-editable \
  && rm -rf ./src
 # map-anything 휠(잠금 밖)은 정확 sync 뒤에 --no-deps 로 둔다(정확 sync 는 잠금에 없는 패키지를 지운다, docs/design/unified-env.md "설치 순서" 3).
 # 휠(약 2MB)은 단계에서 bind 로 읽어 층에 남기지 않는다. 코드가 바뀌면 이 층도 다시 만든다(몇 초)
@@ -222,6 +223,7 @@ COPY --chmod=0755 deploy/scripts/simai_bootstrap.py /usr/local/bin/simai-bootstr
 #   SIMAI_WEIGHTS_SET=exp02 simai-bootstrap run simai-exp02 python .../run_image.py --calibration ... --no-render   (세션 큐 u2 도 SIMAI_WEIGHTS_SET=exp02 simai-bootstrap queue)
 COPY --chmod=0755 deploy/exp02/entrypoint.sh /usr/local/bin/simai-exp02
 RUN sed -i 's/\r$//' /usr/local/bin/simai-tier0 /usr/local/bin/simai-wait-tier0 /usr/local/bin/simai-bootstrap /usr/local/bin/simai-exp02
+RUN sed -i '1c#!/opt/simai/ai/.venv/bin/python' /usr/local/bin/simai-bootstrap
 COPY deploy/weights.json /opt/simai/deploy/weights.json
 
 # SIMAI_SERVICES: simai-bootstrap tier0 가 띄울 프로세스(Tier 0 → vLLM 서버 → 분석 워커). 'tier0' 로 주면 Tier 0 단독(tier0 이미지와 같은 동작).

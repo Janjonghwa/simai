@@ -21,16 +21,26 @@ public class SceneJobListener {
     private final NamedParameterJdbcTemplate jdbc;
     private final ContractSchemas schemas;
     private final ObjectStorage storage;
+    private final SceneRegenerateService regenerateService;
 
-    public SceneJobListener(NamedParameterJdbcTemplate jdbc, ContractSchemas schemas, ObjectStorage storage) {
+    public SceneJobListener(
+            NamedParameterJdbcTemplate jdbc,
+            ContractSchemas schemas,
+            ObjectStorage storage,
+            SceneRegenerateService regenerateService) {
         this.jdbc = jdbc;
         this.schemas = schemas;
         this.storage = storage;
+        this.regenerateService = regenerateService;
     }
 
     @EventListener
     public void finished(JobFinished event) {
-        if (!"static_reconstruct".equals(event.jobType()) || !"SUCCEEDED".equals(event.status())) {
+        if (!"static_reconstruct".equals(event.jobType())) {
+            return;
+        }
+        if (!"SUCCEEDED".equals(event.status())) {
+            regenerateService.onStaticReconstructFailed(event.jobId(), event.status(), event.error());
             return;
         }
         // 대여 재전송은 JobLeaseService 에서 걸러진다. 이벤트 재호출에도 처음 결과를 유지한다.
@@ -104,6 +114,7 @@ public class SceneJobListener {
             // 다른 작업이 같은 Scene ID 를 주장하면 덮어쓰지 않고 제출 전체를 되돌린다.
             throw new BusinessException(ErrorCode.Scene.SCENE_EXISTS);
         }
+        regenerateService.onStaticReconstructCandidateReady(event.jobId(), version);
     }
 
     private static void invalid() {

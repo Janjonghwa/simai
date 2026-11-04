@@ -152,6 +152,45 @@ class RuleVersion(BaseModel):
     rule_version: Annotated[StrictInt, Field(ge=1)]
 
 
+class CaptureSkewMs(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=0)]
+
+
+class CoverageGuideCoverageParams(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    image_width_px: Annotated[StrictInt, Field(ge=160, le=4096)]
+    max_keypoints: Annotated[StrictInt, Field(ge=64, le=8192)]
+    ransac_threshold_px: Annotated[StrictFloat, Field(gt=0.0, le=50.0)]
+    enough_min_inliers: Annotated[StrictInt, Field(ge=1)]
+    weak_min_inliers: Annotated[StrictInt, Field(ge=1)]
+    min_inlier_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+    intrinsics_source: Literal['STORED', 'DEFAULT']
+
+
+class CoverageGuideNormalizedPointItem(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+
+
+class CoverageGuideNormalizedPoint(RootModel[list[CoverageGuideNormalizedPointItem]]):
+    root: Annotated[
+        list[CoverageGuideNormalizedPointItem], Field(max_length=2, min_length=2)
+    ]
+
+
+class RawMatches(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=0)]
+
+
+class Inliers(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=0)]
+
+
+class InlierRatio(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+
+
 class DefsAckChannel(RootModel[Literal['CONTROL_ROOM', 'FOREMAN_PWA', 'SITE_BUTTON']]):
     root: Literal['CONTROL_ROOM', 'FOREMAN_PWA', 'SITE_BUTTON']
 
@@ -808,23 +847,6 @@ class Error(BaseModel):
     consume_attempt: StrictBool | MISSING = MISSING
 
 
-class Payload19(BaseModel):
-    model_config = ConfigDict(
-        extra='allow',
-    )
-    job_id: Annotated[StrictStr, Field(min_length=1)]
-    lease_id: DefsUuid
-    progress: Annotated[StrictFloat | None | MISSING, Field(ge=0.0, le=1.0)] = MISSING
-
-
-class JobHeartbeat(Envelope):
-    model_config = ConfigDict(
-        extra='allow',
-    )
-    msg_type: Annotated[Literal['job_heartbeat'], Field(min_length=1)]
-    payload: Payload19
-
-
 class Payload21(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -848,9 +870,9 @@ class JobLeaseStatus(Envelope):
 
 
 class JobRequestJobType(
-    RootModel[Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update']]
+    RootModel[Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update', 'scene_regenerate', 'site_setup', 'vlm_zone_draft']]
 ):
-    root: Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update']
+    root: Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update', 'scene_regenerate', 'site_setup', 'vlm_zone_draft']
 
 
 class Payload23(BaseModel):
@@ -1496,20 +1518,6 @@ class WallDeviationM(BaseModel):
     max: Annotated[StrictFloat, Field(ge=0.0)]
 
 
-class Quality1(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    wall_deviation_m: WallDeviationM | None
-    desk_top_height_error_m: StrictFloat | None | MISSING = MISSING
-    desk_position_error_m: StrictFloat | None | MISSING = MISSING
-    coobserved_point_disagreement_median_m: StrictFloat | None | MISSING = MISSING
-    scale_factor_vs_floor_plan: StrictFloat | None | MISSING = MISSING
-    observed_surface_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
-    failure_cases: list[StrictStr] | MISSING = MISSING
-    notes: StrictStr | MISSING = MISSING
-
-
 class Performance1(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1533,6 +1541,202 @@ class SceneReference(Envelope):
     )
     msg_type: Annotated[Literal['scene_reference'], Field(min_length=1)]
     payload: Payload35
+
+
+class SceneRegenerate(RootModel[Any]):
+    root: Any
+
+
+class SceneRegenerateCameraRegenerateQuality(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    previous_fill_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+    unrevealed_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+
+
+class SceneRegenerateInput(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    request_id: Annotated[StrictInt, Field(ge=1)]
+    requested_at_ms: DefsTimestampMs
+    reason: Annotated[StrictStr | MISSING, Field(max_length=120)] = MISSING
+
+
+class SceneRegenerateRegenerateQuality(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    previous_fill_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+    unrevealed_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+    cameras: dict[str, SceneRegenerateCameraRegenerateQuality] | MISSING = MISSING
+
+
+class SceneRegenerateResult(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    bundle_id: Annotated[StrictStr, Field(pattern='^bundle-[0-9a-f]{32}$')]
+    static_reconstruct_job_id: Annotated[StrictStr, Field(min_length=1)]
+    quality: SceneRegenerateRegenerateQuality | MISSING = MISSING
+
+
+class SiteSetup(RootModel[Any]):
+    root: Any
+
+
+class SiteSetupHeightChecks1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    input_height_m: Annotated[StrictFloat, Field(gt=0.0)]
+    restored_height_m: Annotated[StrictFloat, Field(gt=0.0)]
+    difference_cm: StrictFloat
+    within_tolerance: StrictBool
+
+
+class SiteSetupHeightChecks(RootModel[dict[str, SiteSetupHeightChecks1]]):
+    root: Annotated[dict[str, SiteSetupHeightChecks1], Field(min_length=1)]
+
+
+CameraHeightsMAdditionalProperty = TypeAliasType(
+    "CameraHeightsMAdditionalProperty", Annotated[StrictFloat, Field(gt=0.0)]
+)
+
+
+class CameraId(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+
+
+class CalibrationTarget(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_ids: Annotated[list[CameraId], Field(min_length=2)]
+    method: Literal['BACKGROUND_JOINT_BA_V2']
+    world_frame: Literal['AUTO_FLOOR_Z_UP_METERS']
+
+
+class SiteSetupInput(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    setup_session_id: DefsUuid
+    work_unit_id: Annotated[StrictInt, Field(ge=1)]
+    site_id: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    camera_heights_m: Annotated[
+        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}$', strict=True), CameraHeightsMAdditionalProperty],
+        Field(min_length=1),
+    ]
+    calibration_target: CalibrationTarget
+    height_tolerance_cm: Annotated[StrictFloat, Field(gt=0.0)]
+
+
+StageSecondsAdditionalProperty = TypeAliasType(
+    "StageSecondsAdditionalProperty", Annotated[StrictFloat, Field(ge=0.0)]
+)
+
+
+PairHoldoutMedianPxAdditionalProperty = TypeAliasType(
+    "PairHoldoutMedianPxAdditionalProperty",
+    Annotated[
+        StrictFloat | None, Field(ge=0.0)
+    ],
+)
+
+
+class JointBa(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    anchor_camera_id: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    converged: StrictBool
+    stage_seconds: Annotated[StrictFloat, Field(ge=0.0)]
+    valid_points: Annotated[StrictInt, Field(ge=0)]
+    pair_holdout_median_px: (
+        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}-[A-Za-z0-9_-]{1,64}$', strict=True), PairHoldoutMedianPxAdditionalProperty] | MISSING
+    ) = MISSING
+
+
+class SiteSetupMetrics(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    stage_seconds: dict[Literal['COLLECTING_BACKGROUND', 'INITIAL_POSE_AND_WORLD', 'JOINT_BA_AND_VERIFY', 'PREVIEW_AND_VLM_DRAFT', 'READY_FOR_ZONES', 'BAKING_TEXTURE'], StageSecondsAdditionalProperty] | MISSING = (
+        MISSING
+    )
+    total_seconds: Annotated[StrictFloat | MISSING, Field(ge=0.0)] = MISSING
+    joint_ba: JointBa | MISSING = MISSING
+
+
+BackgroundCollectionPctAdditionalProperty = TypeAliasType(
+    "BackgroundCollectionPctAdditionalProperty",
+    Annotated[StrictFloat, Field(ge=0.0, le=100.0)],
+)
+
+
+class ObjectCrossCheck(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    kind: Literal['TRAFFIC_CONE', 'OPENING_SIGN']
+    passed: StrictBool
+    message: Annotated[StrictStr | MISSING, Field(max_length=500)] = MISSING
+
+
+class SiteSetupProgress(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    setup_session_id: DefsUuid
+    status: Literal['COLLECTING_BACKGROUND', 'INITIAL_POSE_AND_WORLD', 'JOINT_BA_AND_VERIFY', 'PREVIEW_AND_VLM_DRAFT', 'READY_FOR_ZONES', 'BAKING_TEXTURE', 'COMPLETED']
+    progress_pct: Annotated[StrictFloat, Field(ge=0.0, le=100.0)]
+    background_collection_pct: dict[str, BackgroundCollectionPctAdditionalProperty] | MISSING = (
+        MISSING
+    )
+    calibration_version: Annotated[
+        StrictStr | MISSING, Field(max_length=160, min_length=1)
+    ] = MISSING
+    preview_scene_version: Annotated[
+        StrictStr | MISSING, Field(max_length=160, min_length=1)
+    ] = MISSING
+    scene_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    config_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    zone_drafts_ref: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    height_checks: SiteSetupHeightChecks | MISSING = MISSING
+    object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
+    metrics: SiteSetupMetrics | MISSING = MISSING
+
+
+class SiteSetupResult(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    setup_session_id: DefsUuid
+    status: Literal['COMPLETED']
+    progress_pct: Literal[100]
+    background_collection_pct: dict[str, BackgroundCollectionPctAdditionalProperty] | MISSING = (
+        MISSING
+    )
+    calibration_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    preview_scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    config_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    zone_drafts_ref: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    height_checks: SiteSetupHeightChecks
+    object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
+    metrics: SiteSetupMetrics | MISSING = MISSING
 
 
 class Image(BaseModel):
@@ -1840,6 +2044,49 @@ class VlmRationaleResult(DefsSeverityUpwardOnly):
     latency_ms: DefsDurationMs | MISSING = MISSING
 
 
+class VlmZoneDraft(RootModel[Any]):
+    root: Any
+
+
+class VlmZoneDraftCandidateKind(
+    RootModel[Literal['ELEVATED_WORK_SURFACE', 'OPENING', 'FLOOR_EDGE']]
+):
+    root: Literal['ELEVATED_WORK_SURFACE', 'OPENING', 'FLOOR_EDGE']
+
+
+class TopHeightM(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(gt=0.0)]
+
+
+class Confidence(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+
+
+class VlmZoneDraftDraftSeverity(RootModel[Literal['CRITICAL', 'HIGH']]):
+    root: Literal['CRITICAL', 'HIGH']
+
+
+class VlmZoneDraftEvalType(RootModel[Literal['GROUND_FOOTPRINT', 'VOLUME_3D']]):
+    root: Literal['GROUND_FOOTPRINT', 'VOLUME_3D']
+
+
+class VlmZoneDraftObb3d(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    center: DefsVec3
+    size: DefsVec3
+    yaw_rad: StrictFloat
+
+
+class ModelVersion(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(min_length=1)]
+
+
+class VlmZoneDraftVlmOpinionStatus(RootModel[Literal['VLM', 'NO_OPINION']]):
+    root: Literal['VLM', 'NO_OPINION']
+
+
 class Payload42(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -1886,6 +2133,29 @@ class WatchAlert(Envelope):
     payload: Payload43
 
 
+class Payload44(BaseModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    event_id: DefsUuidV7
+    event_sequence: Annotated[StrictInt, Field(ge=1)]
+    alert_msg_id: DefsUuid
+    device_id: DefsInstanceId
+    world_id: Annotated[StrictStr, Field(min_length=1)]
+    severity: Literal['CRITICAL', 'HIGH', 'CAUTION']
+    reason: Literal['NO_ACK', 'SEND_FAILED']
+    sent_at: DefsTimestampMs
+    escalated_at: DefsTimestampMs
+
+
+class WatchEscalation(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['watch_escalation'], Field(min_length=1)]
+    payload: Payload44
+
+
 class Echo(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1903,7 +2173,7 @@ class Watch(BaseModel):
     app_version: Annotated[StrictStr | MISSING, Field(min_length=1)] = MISSING
 
 
-class Payload44(BaseModel):
+class Payload45(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -1918,7 +2188,7 @@ class WatchHeartbeat(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_heartbeat'], Field(min_length=1)]
-    payload: Payload44
+    payload: Payload45
 
 
 class WorldStateHeadZUncertain1x(RootModel[Any]):
@@ -2192,6 +2462,44 @@ class ConfigBundleComponent(BaseModel):
     version: DefsVersionId
     sha256: DefsSha256
     uri: DefsUri
+
+
+class Component(RootModel[list[DefsCameraId]]):
+    root: Annotated[list[DefsCameraId], Field(max_length=4, min_length=1)]
+
+
+class CoverageGuideCameraGuideItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    pair: Annotated[list[DefsCameraId], Field(max_length=2, min_length=2)]
+    direction: Literal['LEFT', 'RIGHT', 'UP', 'DOWN', 'NONE']
+    magnitude: Literal['SMALL', 'MORE', 'NONE']
+    reason_code: Literal['WEAK_PAIR_EDGE_CLUSTER', 'NO_OVERLAP_VISIBLE', 'OPTIONAL_IMPROVE']
+
+
+class CoverageGuideCameraStatusItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    status: Literal['OK', 'NO_VIDEO', 'STALE']
+    frame_ts_ms: DefsTimestampMs | None
+
+
+class CoverageGuidePairMatchItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    a: DefsCameraId
+    b: DefsCameraId
+    raw_matches: RawMatches | None
+    inliers: Inliers | None
+    inlier_ratio: InlierRatio | None
+    grade: Literal['ENOUGH', 'WEAK', 'LACK', 'UNKNOWN']
+    centroid_a: CoverageGuideNormalizedPoint | None
+    centroid_b: CoverageGuideNormalizedPoint | None
 
 
 class DefsCaptureTime(BaseModel):
@@ -2493,6 +2801,24 @@ class JobCallback(Envelope):
     )
     msg_type: Annotated[Literal['job_callback'], Field(min_length=1)]
     payload: Payload18
+
+
+class Payload19(BaseModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    job_id: Annotated[StrictStr, Field(min_length=1)]
+    lease_id: DefsUuid
+    progress: Annotated[StrictFloat | None | MISSING, Field(ge=0.0, le=1.0)] = MISSING
+    site_setup: SiteSetupProgress | MISSING = MISSING
+
+
+class JobHeartbeat(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['job_heartbeat'], Field(min_length=1)]
+    payload: Payload19
 
 
 class Payload20(BaseModel):
@@ -2928,6 +3254,29 @@ class RunRecord(BaseModel):
     notes: StrictStr | MISSING = MISSING
 
 
+class Quality1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    wall_deviation_m: WallDeviationM | None
+    desk_top_height_error_m: StrictFloat | None | MISSING = MISSING
+    desk_position_error_m: StrictFloat | None | MISSING = MISSING
+    coobserved_point_disagreement_median_m: StrictFloat | None | MISSING = MISSING
+    scale_factor_vs_floor_plan: StrictFloat | None | MISSING = MISSING
+    observed_surface_ratio: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+    previous_fill_ratio: Annotated[StrictFloat | None | MISSING, Field(ge=0.0, le=1.0)] = (
+        MISSING
+    )
+    unrevealed_ratio: Annotated[StrictFloat | None | MISSING, Field(ge=0.0, le=1.0)] = (
+        MISSING
+    )
+    camera_background_quality: dict[str, SceneRegenerateCameraRegenerateQuality] | MISSING = (
+        MISSING
+    )
+    failure_cases: list[StrictStr] | MISSING = MISSING
+    notes: StrictStr | MISSING = MISSING
+
+
 class SceneOutput(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -2985,6 +3334,7 @@ class Input(BaseModel):
     clean_background_bundle_id: Annotated[
         StrictStr | MISSING, Field(pattern='^bundle-[0-9a-f]{32}$')
     ] = MISSING
+    regenerate_quality: SceneRegenerateRegenerateQuality | MISSING = MISSING
 
 
 class Payload37(BaseModel):
@@ -2993,6 +3343,7 @@ class Payload37(BaseModel):
     )
     bundle_id: Annotated[StrictStr, Field(pattern='^bundle-[0-9a-f]{32}$')]
     input: Input
+    request_id: Annotated[StrictInt | MISSING, Field(ge=1)] = MISSING
 
 
 class StaticReconstructSubmit(Envelope):
@@ -3062,7 +3413,92 @@ class VlmRationaleInput(BaseModel):
     world_state_ref: DefsUuid | MISSING = MISSING
 
 
-class Payload45(BaseModel):
+class VlmZoneDraftDraftItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    candidate_id: Annotated[StrictStr, Field(max_length=128, min_length=1)]
+    candidate_kind: VlmZoneDraftCandidateKind
+    zone_kind: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    eval_type: VlmZoneDraftEvalType
+    polygon_xy: Annotated[list[DefsVec2], Field(max_length=256, min_length=3)]
+    z_min_m: StrictFloat
+    z_max_m: StrictFloat
+    top_height_m: TopHeightM | None | MISSING = MISSING
+    obb: VlmZoneDraftObb3d | None | MISSING = MISSING
+    recommended_name: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    recommended_severity: VlmZoneDraftDraftSeverity
+    rationale: Annotated[StrictStr, Field(max_length=500, min_length=1)]
+    vlm_status: VlmZoneDraftVlmOpinionStatus
+    evidence_cameras: list[DefsCameraId]
+    confidence: Confidence | None | MISSING = MISSING
+
+
+class VlmZoneDraftFrameInput(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    frame_uri: DefsObjectUri
+    local_copy: DefsPodLocalFrame | MISSING = MISSING
+    face_policy: Literal['BLURRED', 'EXCLUDED']
+    estimated_capture_time_ms: DefsTimestampMs | MISSING = MISSING
+    timestamp_source: DefsTimestampSource | MISSING = MISSING
+    timestamp_uncertainty_ms: DefsDurationMs | MISSING = MISSING
+
+
+class VlmZoneDraftGeometryCandidate(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    candidate_id: Annotated[StrictStr, Field(max_length=128, min_length=1)]
+    candidate_kind: VlmZoneDraftCandidateKind
+    polygon_xy: Annotated[list[DefsVec2], Field(max_length=256, min_length=3)]
+    z_min_m: StrictFloat
+    z_max_m: StrictFloat
+    top_height_m: TopHeightM | None | MISSING = MISSING
+    obb: VlmZoneDraftObb3d | None | MISSING = MISSING
+    area_m2: Annotated[StrictFloat | MISSING, Field(ge=0.0)] = MISSING
+    point_count: Annotated[StrictInt | MISSING, Field(ge=0)] = MISSING
+
+
+class VlmZoneDraftInput(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    site_id: DefsVersionId
+    setup_session_id: DefsUuid
+    calibration_version: DefsVersionId
+    calibration_ref: DefsObjectUri | MISSING = MISSING
+    calibration_hash: DefsSha256 | MISSING = MISSING
+    preview_scene_version: DefsVersionId
+    preview_scene_uri: DefsObjectUri | MISSING = MISSING
+    pointcloud_uri: DefsObjectUri | MISSING = MISSING
+    geometry_candidates: Annotated[
+        list[VlmZoneDraftGeometryCandidate] | MISSING, Field(max_length=64)
+    ] = MISSING
+    frames: Annotated[list[VlmZoneDraftFrameInput] | MISSING, Field(max_length=8)] = (
+        MISSING
+    )
+
+
+class VlmZoneDraftResult(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    setup_session_id: DefsUuid
+    site_id: DefsVersionId
+    calibration_version: DefsVersionId
+    preview_scene_version: DefsVersionId
+    safety_use: Literal[False]
+    status: Literal['SUCCEEDED', 'NO_OPINION']
+    model_version: ModelVersion | None
+    prompt_version: DefsVersionId
+    latency_ms: DefsDurationMs
+    drafts: Annotated[list[VlmZoneDraftDraftItem], Field(max_length=64)]
+
+
+class Payload46(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -3079,7 +3515,7 @@ class WorldState(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['world_state'], Field(min_length=1)]
-    payload: Payload45
+    payload: Payload46
 
 
 class Track(WorldStateWorldTrack):
@@ -3350,6 +3786,27 @@ class ConfigBundle(Envelope):
     payload: Payload8
 
 
+class CoverageGuide(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    schema_version: Literal['1.0.0']
+    source_id: DefsInstanceId
+    computed_at_ms: DefsTimestampMs
+    valid_until_ms: DefsTimestampMs
+    capture_skew_ms: CaptureSkewMs | None
+    params: CoverageGuideCoverageParams
+    cameras: Annotated[
+        list[CoverageGuideCameraStatusItem], Field(max_length=4, min_length=4)
+    ]
+    pairs: Annotated[
+        list[CoverageGuidePairMatchItem], Field(max_length=6, min_length=6)
+    ]
+    connectivity: Literal['CONNECTED', 'DISCONNECTED', 'UNKNOWN']
+    components: Annotated[list[Component], Field(max_length=4, min_length=1)]
+    guides: Annotated[list[CoverageGuideCameraGuideItem], Field(max_length=12)]
+
+
 class HumanMeshOutput2(HumanMeshOutputPoseFrame):
     model_config = ConfigDict(
         extra='allow',
@@ -3530,6 +3987,7 @@ class Contracts(BaseModel):
     codec_info: CodecInfo | MISSING = MISSING
     config_ack: ConfigAck | MISSING = MISSING
     config_bundle: ConfigBundle | MISSING = MISSING
+    coverage_guide: CoverageGuide | MISSING = MISSING
     envelope: Envelope | MISSING = MISSING
     event_ack: EventAck | MISSING = MISSING
     event_close: EventClose | MISSING = MISSING
@@ -3565,7 +4023,9 @@ class Contracts(BaseModel):
     scene_compatibility: SceneCompatibility | MISSING = MISSING
     scene_output: SceneOutput | MISSING = MISSING
     scene_reference: SceneReference | MISSING = MISSING
+    scene_regenerate: SceneRegenerate | MISSING = MISSING
     site_ack: SiteAck | MISSING = MISSING
+    site_setup: SiteSetup | MISSING = MISSING
     static_reconstruct_submit: StaticReconstructSubmit | MISSING = MISSING
     static_reconstruct_submit_result: StaticReconstructSubmitResult | MISSING = MISSING
     tbm_report: TbmReport | MISSING = MISSING
@@ -3573,8 +4033,10 @@ class Contracts(BaseModel):
     video_segment: VideoSegment | MISSING = MISSING
     viewer_health: ViewerHealth | MISSING = MISSING
     vlm_rationale: VlmRationale | MISSING = MISSING
+    vlm_zone_draft: VlmZoneDraft | MISSING = MISSING
     watch_ack: WatchAck | MISSING = MISSING
     watch_alert: WatchAlert | MISSING = MISSING
+    watch_escalation: WatchEscalation | MISSING = MISSING
     watch_heartbeat: WatchHeartbeat | MISSING = MISSING
     world_state: WorldState | MISSING = MISSING
     world_tracks: WorldTracks | MISSING = MISSING

@@ -12,15 +12,23 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .transport import LEASE_PATH, Response, Transport, TransportError, heartbeat_path, result_path
+from .transport import (
+    LEASE_PATH,
+    Response,
+    Transport,
+    TransportError,
+    heartbeat_path,
+    result_path,
+)
 
-SCHEMA_VERSION = "2.0.0"  # I5 대여 방식 (계약 2.0.0)
-CALLBACK_SCHEMA_VERSION = "2.2.0"  # job_callback 2.1.0: 반납 error.consume_attempt (-197), 2.2.0: bev_floorplan 결과 (-239)
+SCHEMA_VERSION = "2.1.0"  # I5 대여 방식 (계약 2.0.0, job_heartbeat 2.1.0 site_setup 스냅샷 -452/-465)
+CALLBACK_SCHEMA_VERSION = "2.7.0"  # job_callback 2.1.0: 반납(-197), 2.2.0: bev(-239), 2.5.0: scene_regenerate(-427), 2.6.0/2.7.0: site_setup(-452/-465)
 JOB_REQUEST_MAJOR = "3"  # job_request 3.0.0: attempt = 반납을 세지 않는 시도 번호 (-197). 2.x 는 대여 순번이라 받지 않는다
 # job_request $defs.job_type 와 같은 목록(시험이 계약과 맞춰 본다). 계약 밖 유형으로 대여를 요청하면 EC2 가 400 으로 거부한다
 JOB_TYPES = frozenset({
     "vlm_rationale", "tbm_report", "static_reconstruct", "calibration_ba",
-    "bev_floorplan", "incident_summary", "hmr_refine", "hmr_appearance_update",
+    "bev_floorplan", "incident_summary", "scene_regenerate", "site_setup", "vlm_zone_draft",
+    "hmr_refine", "hmr_appearance_update",
 })
 log = logging.getLogger("services.worker")
 
@@ -233,9 +241,22 @@ class LeaseClient:
 
     # ------------------------------------------------------------------ 하트비트
 
-    def heartbeat(self, lease: Lease, progress: float | None = None) -> LeaseStatus:
+    def heartbeat(
+        self,
+        lease: Lease,
+        progress: float | None = None,
+        *,
+        site_setup: Mapping[str, Any] | None = None,
+    ) -> LeaseStatus:
         """하트비트 한 번. 응답을 못 받으면 RetryableError (다시 보낼지는 호출 측이 대여 남은 시간으로 정한다)."""
-        body = self.envelope("job_heartbeat", {"job_id": lease.job_id, "lease_id": lease.lease_id, "progress": progress})
+        payload: dict[str, Any] = {
+            "job_id": lease.job_id,
+            "lease_id": lease.lease_id,
+            "progress": progress,
+        }
+        if site_setup is not None:
+            payload["site_setup"] = dict(site_setup)
+        body = self.envelope("job_heartbeat", payload)
         resp = self._post(heartbeat_path(lease.job_id), body, self._timeout_s, "하트비트")
         if resp.body is None:
             raise RetryableError(f"하트비트: 본문 없는 응답 {resp.status}")

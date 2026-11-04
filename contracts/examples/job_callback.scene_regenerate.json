@@ -1,0 +1,27 @@
+{
+  "schema_version": "2.5.0",
+  "msg_type": "job_callback",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000031a",
+  "sent_at": 1760342460100,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261020-0001",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-000000000311",
+    "job_type": "scene_regenerate",
+    "status": "SUCCEEDED",
+    "started_at": 1760342400500,
+    "finished_at": 1760342460050,
+    "result": {
+      "bundle_id": "bundle-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "static_reconstruct_job_id": "job-123",
+      "quality": {
+        "previous_fill_ratio": 0.125,
+        "unrevealed_ratio": 0.0,
+        "cameras": {
+          "cam_1": { "previous_fill_ratio": 0.25, "unrevealed_ratio": 0.0 },
+          "cam_2": { "previous_fill_ratio": 0.0, "unrevealed_ratio": 0.0 }
+        }
+      }
+    }
+  }
+}

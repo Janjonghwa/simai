@@ -24,7 +24,7 @@
       "tick_ms": 100,                          판정 주기 (10 Hz, 명세 12.2 world_state)
       "detect_tick_ms": 50,                    LIVE 검출·Local Tracker 루프 목표 주기 (20 Hz, 명세 5.1 카메라당 12 FPS 이상, -383)
       "detect_queue_depth": 8,                 검출 루프 → 판정 루프 사이 카메라별 최대 관측 대기 수 (초과 시 오래된 관측 버림, -383)
-      "drift_watch_enabled": true,             운영 중 보정 틀어짐 감시(별도 스레드, 기본 켜짐)
+      "drift_watch_enabled": true,             사람 관절 보정 활성 시 틀어짐 감시(기본 true)
       "event_frames_enabled": true,            CRITICAL R1~R4 발생 프레임 비동기 업로드(기본 켜짐, LIVE 입력·I1 필요)
       "checkpoint_interval_s": 1.0,            체크포인트 주기 (명세 3.2 초기값 1초)
       "drain_s": 5.0,                          종료 때 저널 쓰기·스레드 정리를 기다리는 상한
@@ -36,6 +36,7 @@
 환경 변수:
 
     SIMAI_ROOT                       Network Volume 루트 (기본 /workspace/simai). state_dir 기본값의 부모
+    SIMAI_TIER0_HUMAN_CALIBRATION    사람 관절 보정 감시·후보 경로 (기본 0, 1이면 켬)
     SIMAI_TIER0_ID                   Tier 0 인스턴스 ID (기본 tier0-01)
     SIMAI_TIER0_ENGINE               YOLO26x-pose TensorRT 엔진 경로 (deploy/tier0/entrypoint.sh 가 넣는다, LIVE 입력)
     SIMAI_TIER0_WEIGHTS              엔진이 없을 때 ultralytics 로 여는 가중치(.pt) 경로 (느리다, 경고를 남긴다)
@@ -57,14 +58,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
 import json
 import os
-from pathlib import Path
 import time
-from typing import Any
 import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from services.tier0.endpoint_registration import DEFAULT_TIER0_ID, public_port_env
 from services.tier0.i1_client import I1ConfigError, I1Settings
@@ -141,6 +142,36 @@ class CleanBackgroundSettings:
 
 
 @dataclass(frozen=True)
+class RotationRecoverySettings:
+    enabled: bool = True
+    safety_enabled: bool = True
+    interval_ms: int = 15_000
+    cpu_budget_ms: int = 500
+    thresholds: Mapping[str, float | int] = field(default_factory=dict)
+
+    @property
+    def config(self):
+        from simai_ai.calibration.rotation_recovery import RotationConfig
+
+        return RotationConfig(**self.thresholds)
+
+
+@dataclass(frozen=True)
+class ReidSettings:
+    """Tier 0 비동기 Re-ID 보조 경로 설정 (S15P31A101-463)."""
+
+    enabled: bool = True
+    batch_size: int = 8
+    update_interval_ms: int = 750
+    max_queue_size: int = 32
+    cope_root: Path | None = None
+    weights_path: Path | None = None
+    clip_model_path: Path | None = None
+    use_face_aux: bool = False
+    """얼굴 보조 점수(buffalo_l, SIMAI_FACE_WEIGHTS_DIR). 기본 끔 — 12차 켬/끔 비교 뒤 결정(S15P31A101-471)"""
+
+
+@dataclass(frozen=True)
 class Tier0Settings:
     gateway_id: str
     state_dir: Path
@@ -168,10 +199,13 @@ class Tier0Settings:
     i1: I1Settings | None = None
     control: ControlSettings | None = None
     env: Mapping[str, str] = field(default_factory=dict, repr=False)
+    human_calibration_enabled: bool = False
     drift_watch_enabled: bool = True
     event_frames_enabled: bool = True
     live_calibration: LiveCalibrationSettings = field(default_factory=LiveCalibrationSettings)
     clean_background: CleanBackgroundSettings = field(default_factory=CleanBackgroundSettings)
+    rotation_recovery: RotationRecoverySettings = field(default_factory=RotationRecoverySettings)
+    reid: ReidSettings = field(default_factory=ReidSettings)
 
     @property
     def journal_dir(self) -> Path:
@@ -268,6 +302,82 @@ def _clean_background(doc: Any, base: Path) -> CleanBackgroundSettings:
         raise Tier0ConfigError("clean_background 최소 표본 수가 최대 표본 수보다 크다")
     output = _path(base, doc["output_dir"], "clean_background.output_dir") if "output_dir" in doc else None
     return CleanBackgroundSettings(enabled=enabled, output_dir=output, **values)
+
+
+def _rotation_recovery(doc: Any) -> RotationRecoverySettings:
+    from simai_ai.calibration.rotation_recovery import RotationConfig
+
+    if not isinstance(doc, dict):
+        raise Tier0ConfigError("rotation_recovery 는 객체다")
+    enabled = doc.get("enabled", True)
+    safety_enabled = doc.get("safety_enabled", True)
+    if not isinstance(enabled, bool) or not isinstance(safety_enabled, bool):
+        raise Tier0ConfigError("rotation_recovery.enabled/safety_enabled 는 bool이다")
+    nested = doc.get("thresholds", {})
+    if not isinstance(nested, dict):
+        raise Tier0ConfigError("rotation_recovery.thresholds 는 객체다")
+    fields = set(RotationConfig.__dataclass_fields__)
+    unknown = (set(doc) - {"enabled", "safety_enabled", "interval_ms", "cpu_budget_ms", "thresholds"} - fields) | (
+        set(nested) - fields
+    )
+    if unknown:
+        raise Tier0ConfigError(f"rotation_recovery 알 수 없는 설정: {sorted(unknown)}")
+    thresholds = {k: doc[k] for k in fields if k in doc} | dict(nested)
+    try:
+        RotationConfig(**thresholds)
+    except (TypeError, ValueError) as e:
+        raise Tier0ConfigError(f"rotation_recovery: {e}") from None
+    return RotationRecoverySettings(
+        enabled=enabled,
+        safety_enabled=safety_enabled,
+        interval_ms=_int(doc, "interval_ms", 15_000, minimum=1),
+        cpu_budget_ms=_int(doc, "cpu_budget_ms", 500, minimum=1),
+        thresholds=thresholds,
+    )
+
+
+def _reid(doc: Any, base: Path, env: Mapping[str, str]) -> ReidSettings:
+    if not isinstance(doc, dict):
+        raise Tier0ConfigError("reid 는 객체다")
+    enabled = doc.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise Tier0ConfigError("reid.enabled 는 bool이다")
+    env_enabled = (env.get("SIMAI_TIER0_REID_ENABLED") or "").strip()
+    if env_enabled:
+        if env_enabled not in ("0", "1"):
+            raise Tier0ConfigError("SIMAI_TIER0_REID_ENABLED 은 0 또는 1이다")
+        enabled = env_enabled == "1"
+    batch_size = _int(doc, "batch_size", 8, minimum=1)
+    update_interval_ms = _int(doc, "update_interval_ms", 750, minimum=0)
+    max_queue_size = _int(doc, "max_queue_size", 32, minimum=1)
+    # 설정 파일에 없으면 환경변수(Pod 템플릿·세션 준비 스크립트가 넣는다). 둘 다 없으면 None(임베더 기본값, S15P31A101-471)
+    def _reid_path(key: str, env_key: str) -> Path | None:
+        if key in doc:
+            return _path(base, doc[key], f"reid.{key}")
+        raw = (env.get(env_key) or "").strip()
+        return _path(base, raw, env_key) if raw else None
+
+    use_face_aux = doc.get("use_face_aux", False)
+    if not isinstance(use_face_aux, bool):
+        raise Tier0ConfigError("reid.use_face_aux 는 bool이다")
+    env_face = (env.get("SIMAI_TIER0_REID_FACE") or "").strip()
+    if env_face:
+        if env_face not in ("0", "1"):
+            raise Tier0ConfigError("SIMAI_TIER0_REID_FACE 은 0 또는 1이다")
+        use_face_aux = env_face == "1"
+    cope_root = _reid_path("cope_root", "SIMAI_COPE_ROOT")
+    weights_path = _reid_path("weights_path", "SIMAI_COPE_WEIGHTS")
+    clip_model_path = _reid_path("clip_model_path", "SIMAI_COPE_CLIP_PATH")
+    return ReidSettings(
+        enabled=enabled,
+        batch_size=batch_size,
+        update_interval_ms=update_interval_ms,
+        max_queue_size=max_queue_size,
+        cope_root=cope_root,
+        weights_path=weights_path,
+        clip_model_path=clip_model_path,
+        use_face_aux=use_face_aux,
+    )
 
 
 def _control(env: Mapping[str, str]) -> ControlSettings | None:
@@ -425,6 +535,9 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         if not reserve_env.isdigit():
             raise Tier0ConfigError("SIMAI_TIER0_GPU_RESERVE_MB 는 0 이상 정수다")
         gpu = {**gpu, "reserve_mb": int(reserve_env)}
+    human_calibration = (env.get("SIMAI_TIER0_HUMAN_CALIBRATION") or "0").strip()
+    if human_calibration not in ("0", "1"):
+        raise Tier0ConfigError("SIMAI_TIER0_HUMAN_CALIBRATION 은 0 또는 1이다")
     drift_watch_enabled = doc.get("drift_watch_enabled", True)
     if not isinstance(drift_watch_enabled, bool):
         raise Tier0ConfigError("drift_watch_enabled 는 bool이다")
@@ -437,10 +550,13 @@ def load_settings(config_path: Path | None, env: Mapping[str, str] | None = None
         scene_version=scene_version,
         input_mode=mode,
         calibration_file=calibration_file,
+        human_calibration_enabled=human_calibration == "1",
         drift_watch_enabled=drift_watch_enabled,
         event_frames_enabled=event_frames_enabled,
         live_calibration=_live_calibration(doc.get("live_calibration", {})),
         clean_background=_clean_background(doc.get("clean_background", {}), base),
+        rotation_recovery=_rotation_recovery(doc.get("rotation_recovery", {})),
+        reid=_reid(doc.get("reid", {}), base, env),
         sim=sim,
         camera_ids=camera_ids,
         bootstrap_archive=archive,

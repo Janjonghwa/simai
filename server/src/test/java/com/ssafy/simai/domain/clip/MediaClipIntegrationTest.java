@@ -302,12 +302,13 @@ class MediaClipIntegrationTest {
         awaitCount(() -> clips(event), 1, Duration.ofSeconds(20));
         awaitCount(() -> jdbc.queryForObject("SELECT count(*) FROM media_clip_retention WHERE clip_id = ?::uuid", Integer.class,
                 clipId), 1, Duration.ofSeconds(20));
-        assertThat(deferred(clip) + deferred(retention)).isZero();
+        // 재시도는 저장을 커밋한 뒤 보관 행을 따로 지운다. 저장이 보여도 삭제 전일 수 있어 기다린다
+        awaitZero(() -> deferred(clip) + deferred(retention), Duration.ofSeconds(10));
         JsonNode item = call("GET", "/api/events/" + event + "/clips", admin(), null, 200).get("clips").get(0);
         assertThat(item.get("retention_hold").asBoolean()).isTrue();
-        // 저장 때 받은 시각은 처음 받은 시각이다(이벤트를 넣기 전)
+        // 저장 때 받은 시각은 처음 받은 시각이다(이벤트를 넣기 전). 같은 밀리초일 수 있어 <= 로 본다(Jenkins #425 불안정)
         assertThat(jdbc.queryForObject("""
-                SELECT c.received_at < e.raised_at FROM media_clip c JOIN risk_event e ON e.event_id = c.event_id
+                SELECT c.received_at <= e.raised_at FROM media_clip c JOIN risk_event e ON e.event_id = c.event_id
                 WHERE c.clip_id = ?::uuid
                 """, Boolean.class, clipId)).isTrue();
     }
@@ -455,6 +456,14 @@ class MediaClipIntegrationTest {
 
     private static void awaitCount(Supplier<Integer> actual, int expected) throws InterruptedException {
         awaitCount(actual, expected, Duration.ofSeconds(10));
+    }
+
+    private static void awaitZero(Supplier<Integer> actual, Duration timeout) throws InterruptedException {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (actual.get() > 0 && System.nanoTime() < deadline) {
+            Thread.sleep(50);
+        }
+        assertThat(actual.get()).isZero();
     }
 
     private static void awaitCount(Supplier<Integer> actual, int expected, Duration timeout) throws InterruptedException {

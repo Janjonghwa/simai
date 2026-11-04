@@ -2,7 +2,9 @@ import { EventDetail } from '@/features/events/EventDetail';
 import { EventPanel } from '@/features/events/EventPanel';
 import { groupIncidents, mergeEvent, type EventEntry } from '@/features/events/events';
 import type { EventItem } from '@/features/events/types';
+import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore } from '@/store/session.store';
+import type { WorldStatePayload } from '@simai/contracts';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { ComponentProps } from 'react';
@@ -15,13 +17,6 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
   useNavigate: () => vi.fn(),
 }));
 vi.mock('@/lib/api', () => ({ api: () => Promise.reject(new Error('no api in test')) }));
-vi.mock('@/features/zones/useZones', () => ({
-  useZones: () => ({
-    zones: [{ zoneId: 'z-04', name: '개구부' }],
-    raw: undefined,
-    failed: false,
-  }),
-}));
 
 function item(change: Partial<EventItem> = {}): EventItem {
   return {
@@ -91,7 +86,26 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   useSessionStore.setState(useSessionStore.getInitialState(), true);
+  useRealtimeStore.setState(useRealtimeStore.getInitialState(), true);
 });
+
+const resolved = (change: Partial<EventItem> = {}) =>
+  entry({ lifecycle: 'RESOLVED', resolved_at: T + 1_000, updated_at: T + 1_000, ...change });
+
+/** 사람 트랙만 담은 world(추적 중 수 시험용). */
+const setTracks = (lifecycles: string[]) =>
+  useRealtimeStore.setState({
+    world: {
+      receivedAt: T,
+      payload: {
+        tracks: lifecycles.map((track_lifecycle, i) => ({
+          world_id: `w-${i}`,
+          track_lifecycle,
+          cameras: [],
+        })),
+      } as unknown as WorldStatePayload,
+    },
+  });
 
 describe('EventPanel 접기', () => {
   it('이벤트가 하나도 없으면 저절로 접히고, 이벤트가 생기면 펼쳐진다', () => {
@@ -138,11 +152,84 @@ describe('EventPanel 접기', () => {
     expect(screen.getByText('활성 이벤트 없음')).toBeTruthy();
   });
 
-  it('카드에 구역 이름과 경과를 넘긴다', () => {
+  it('카드에 규칙·구역과 경과를 넘긴다', () => {
     renderPanel([entry()]);
     const card = screen.getByRole('article', { name: 'w-0015 이벤트' });
-    expect(within(card).getByText('w-0015 · z-04 개구부')).toBeTruthy();
+    expect(within(card).getByText('개구부·가장자리 근접 · z-04')).toBeTruthy();
     expect(card.textContent).toMatch(/초 전|분/);
+  });
+});
+
+describe('EventPanel 머리줄과 두 칸', () => {
+  const head = () => screen.getByTestId('event-panel-head').textContent;
+  const section = (name: string) => screen.getByRole('region', { name });
+
+  it('머리줄에 지금 추적 중인 작업자 수(놓친 트랙 제외)와 진행 중 사건 수를 보인다', () => {
+    setTracks(['CONFIRMED', 'OCCLUDED', 'LOST']);
+    renderPanel([
+      entry({ event_id: 'a', world_ids: ['w-0'] }),
+      entry({ event_id: 'b', world_ids: ['w-1'] }),
+      resolved({ event_id: 'c', world_ids: ['w-2'] }),
+    ]);
+    // 사건은 진행 중인 사람 묶음만 센다(해소는 세지 않는다).
+    expect(head()).toContain('작업자 2명 · 사건 2건');
+  });
+
+  it('world 를 아직 받지 못했으면 작업자 0명이다', () => {
+    renderPanel([entry()]);
+    expect(head()).toContain('작업자 0명 · 사건 1건');
+  });
+
+  it('진행 중 칸과 최근 해소 칸으로 나뉘고, 카드는 각자 자기 칸에만 있다', () => {
+    renderPanel([
+      entry({ world_ids: ['w-0015'] }),
+      resolved({ event_id: 'r', world_ids: ['w-0021'] }),
+    ]);
+    expect(
+      within(section('진행 중'))
+        .getAllByRole('article')
+        .map((a) => a.getAttribute('aria-label')),
+    ).toEqual(['w-0015 이벤트']);
+    expect(
+      within(section('최근 해소'))
+        .getAllByRole('article')
+        .map((a) => a.getAttribute('aria-label')),
+    ).toEqual(['w-0021 이벤트']);
+  });
+
+  it('비어 있는 칸은 그리지 않는다', () => {
+    renderPanel([resolved()]);
+    expect(screen.queryByRole('region', { name: '진행 중' })).toBeNull();
+    expect(section('최근 해소')).toBeTruthy();
+  });
+
+  it('같은 사람·규칙·구역이 되풀이된 해소는 한 카드에 N회 발생으로 보인다', () => {
+    renderPanel([
+      resolved({ event_id: 'a', updated_at: T + 100, resolved_at: T + 100 }),
+      resolved({ event_id: 'b', updated_at: T + 200, resolved_at: T + 200 }),
+    ]);
+    const cards = within(section('최근 해소')).getAllByRole('article');
+    expect(cards).toHaveLength(1);
+    expect(within(cards[0]!).getByText('2회 발생')).toBeTruthy();
+  });
+
+  it('선택한 사람의 카드는 두 칸 모두 눌린 상태이고, 해소 카드를 누르면 그 이벤트의 상세를 연다', () => {
+    const onOpen = vi.fn();
+    renderPanel(
+      [
+        entry({ event_id: 'live', world_ids: ['w-0015'] }),
+        resolved({ event_id: 'old', rule_id: 'R1', severity: 'HIGH', world_ids: ['w-0015'] }),
+      ],
+      { selectedKey: 'person:w-0015', onOpen },
+    );
+    const old = within(section('최근 해소')).getByRole('article');
+    fireEvent.click(within(old).getByRole('button', { pressed: true }));
+    expect(onOpen).toHaveBeenCalledWith('old');
+    expect(
+      within(within(section('진행 중')).getByRole('article')).getByRole('button', {
+        pressed: true,
+      }),
+    ).toBeTruthy();
   });
 });
 

@@ -7,7 +7,7 @@ param(
   [Parameter(Position = 0)]
   [ValidateSet('menu', 'setup', 'check', 'run', 'stop', 'preview', 'remote-setup', 'run-remote', 'preview-remote', 'update', 'update-remote', 'status', 'dev-remote', 'rdp', 'heal', 'logs', 'restart-tunnel')][string]$Command = 'menu',
   [Parameter(Position = 1)]
-  [string]$LogKind = '',       # logs 대상: relay | tunnel | update | heal
+  [string]$LogKind = '',       # logs 대상: relay | helper | tunnel | update | heal
   [Parameter(Position = 2)]
   [int]$Lines = 40,            # logs 출력 줄 수(기본 40)
   [string]$PodIp = '',
@@ -50,6 +50,9 @@ $SshDir = Join-Path $env:USERPROFILE '.ssh'
 $Pem = Join-Path $SshDir 'K15A101T.pem'
 $RelayDir = Join-Path $Root 'gateway\relay'
 $AlertDir = Join-Path $Root 'gateway\site_alert'
+$HelperDir = Join-Path $Root 'gateway\camera_helper'
+$HelperPidFile = Join-Path $LocalDir 'gateway-helper.pid'
+$HelperLog = Join-Path $LocalDir 'gateway-helper.log'
 
 function Say($m) { Write-Host "[gateway] $m" -ForegroundColor Cyan }
 function Warn($m) { Write-Host "[gateway] 주의: $m" -ForegroundColor Yellow }
@@ -163,7 +166,7 @@ function Do-Setup {
       Say "저장소 갱신: $(git -C $Root log --oneline -1)"
     }
   }
-  foreach ($d in $RelayDir, $AlertDir) {
+  foreach ($d in $RelayDir, $AlertDir, $HelperDir) {
     Say "의존성 설치: $d"
     Push-Location $d
     try { uv sync; if ($LASTEXITCODE) { Fail "uv sync ($d)" } } finally { Pop-Location }
@@ -209,7 +212,27 @@ function Load-State {
   return $s
 }
 
+function Start-CameraHelper {
+  if (Test-CameraHelper) { return }
+  Rotate-LogIfNeeded $HelperLog
+  $cmd = "`$env:PYTHONUTF8='1'; uv run simai-camera-helper-service *>> '$HelperLog'"
+  $proc = Start-Process powershell -PassThru -WindowStyle Hidden -WorkingDirectory $HelperDir -ArgumentList '-NoProfile', '-Command', $cmd
+  Set-Content -LiteralPath $HelperPidFile -Value $proc.Id -Encoding ascii
+}
+function Test-CameraHelper {
+  if (-not (Test-Path $HelperPidFile)) { return $false }
+  $helperId = 0
+  if (-not [int]::TryParse((Get-Content $HelperPidFile -Raw).Trim(), [ref]$helperId)) { return $false }
+  $proc = Get-Process -Id $helperId -ErrorAction SilentlyContinue
+  return [bool]($proc -and $proc.ProcessName -match '^(powershell|pwsh)$')
+}
+function Stop-CameraHelper {
+  if (Test-CameraHelper) { taskkill /PID ([int](Get-Content $HelperPidFile -Raw)) /T /F | Out-Null }
+  Remove-Item $HelperPidFile -Force -ErrorAction SilentlyContinue
+}
+
 function Do-Stop([switch]$Quiet) {
+  Stop-CameraHelper
   if (-not (Test-Path $PidFile)) {
     Remove-Item $ModeFile -Force -ErrorAction SilentlyContinue
     if (-not $Quiet) { Say '켜 둔 관제 창이 없다' }
@@ -260,6 +283,7 @@ function Do-Run {
   Start-Sleep 3
   $relayCmd = Build-RelayCommand 'simai 영상 중계' ' --send'
   $p3 = Start-Process powershell -PassThru -WorkingDirectory $RelayDir -ArgumentList '-NoExit', '-Command', $relayCmd
+  Start-CameraHelper
   (@($p1.Id, $p2.Id, $p3.Id) | ConvertTo-Json) | Set-Content $PidFile -Encoding ascii
   "관제 Pod $($s.PodIp) 제어 $($s.ControlPort) 영상 $($s.VideoPort), $RemoteCctvLabel ($(Get-Date -Format 'MM-dd HH:mm'))" | Set-Content $ModeFile -Encoding utf8
   Say "관제 시작: 창 3개(터널·경보 단말·영상 중계), CCTV $RemoteCctvLabel. 끌 때는 메뉴 4"
@@ -273,6 +297,7 @@ function Do-Preview {
   Do-Stop -Quiet
   $relayCmd = Build-RelayCommand 'simai 카메라 미리보기(전송 없음)' ''
   $p = Start-Process powershell -PassThru -WorkingDirectory $RelayDir -ArgumentList '-NoExit', '-Command', $relayCmd
+  Start-CameraHelper
   (@($p.Id) | ConvertTo-Json) | Set-Content $PidFile -Encoding ascii
   "미리보기(전송 없음), $RemoteCctvLabel ($(Get-Date -Format 'MM-dd HH:mm'))" | Set-Content $ModeFile -Encoding utf8
   Say "미리보기 시작(전송 없음, CCTV $RemoteCctvLabel). Pod 가 뜨면 3(관제 시작)으로 바꾼다. 끌 때는 4"
@@ -528,7 +553,8 @@ function Do-Update {
         @('git checkout dev', { git -C $Root checkout dev }),
         @('git pull --ff-only', { git -C $Root pull --ff-only origin dev }),
         @("uv sync ($RelayDir)", { Push-Location $RelayDir; try { uv sync } finally { Pop-Location } }),
-        @("uv sync ($AlertDir)", { Push-Location $AlertDir; try { uv sync } finally { Pop-Location } }))
+        @("uv sync ($AlertDir)", { Push-Location $AlertDir; try { uv sync } finally { Pop-Location } }),
+        @("uv sync ($HelperDir)", { Push-Location $HelperDir; try { uv sync } finally { Pop-Location } }))
       foreach ($s in $steps) { $code = Invoke-Logged $s[0] $s[1]; if ($code) { break } }
       if (-not $code) { Log-Update "저장소: $(git -C $Root log --oneline -1)" }
     }
@@ -767,6 +793,10 @@ function Do-Heal {
   $pcfg = Get-PowerCfgStatus
   $resume = Get-ResumeMode
   $savedMode = if ($resume) { $resume.Mode } else { '' }
+  if ($savedMode -and -not (Test-CameraHelper)) {
+    Start-CameraHelper
+    Write-HealLog '카메라 헬퍼 재시작'
+  }
   $relayAlive = if ($savedMode) { Test-ModeProcessesAlive } else { $true }
 
   $plan = Get-HealPlan `
@@ -848,6 +878,7 @@ function Do-Heal {
 }
 
 function Do-Status {
+  Say "카메라 헬퍼: $(if (Test-CameraHelper) { '실행 중' } else { '꺼짐' }) (로그 $HelperLog)"
   $rawMode = '꺼짐'
   if (Test-Path $ModeFile) { $rawMode = (Get-Content $ModeFile -Raw).Trim() }
   $pids = @()
@@ -923,6 +954,7 @@ function Do-Status {
 
 function Do-Logs {
   $map = @{
+    'helper' = $HelperLog
     'relay'  = $RelayLog
     'tunnel' = $TunnelLog
     'update' = $UpdateLog
@@ -930,7 +962,7 @@ function Do-Logs {
   }
   $k = if ($LogKind) { $LogKind.Trim().ToLower() } else { '' }
   if (-not $map.ContainsKey($k)) {
-    Fail "logs 종류는 relay | tunnel | update | heal 중 하나여야 한다(사용: simai-gateway.ps1 logs <relay|tunnel|update|heal> [-Lines 40])"
+    Fail "logs 종류는 relay | helper | tunnel | update | heal 중 하나여야 한다(사용: simai-gateway.ps1 logs <relay|helper|tunnel|update|heal> [-Lines 40])"
   }
   $path = $map[$k]
   if (-not (Test-Path $path)) {

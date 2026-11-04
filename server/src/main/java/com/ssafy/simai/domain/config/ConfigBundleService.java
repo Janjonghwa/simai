@@ -187,6 +187,13 @@ public class ConfigBundleService {
                 """, items.stream().map(item -> new MapSqlParameterSource().addValue("v", configVersion)
                 .addValue("type", item.type()).addValue("id", item.id()).addValue("version", item.version()))
                 .toArray(MapSqlParameterSource[]::new));
+        jdbc.update("""
+                UPDATE setup_session SET config_version = :v, updated_at = :issuedAt
+                WHERE site_id = :site AND calibration_version = :calibration
+                  AND status IN ('READY_FOR_ZONES', 'BAKING_TEXTURE', 'COMPLETED')
+                """, new MapSqlParameterSource().addValue("v", configVersion).addValue("site", siteId)
+                .addValue("calibration", calibration.version())
+                .addValue("issuedAt", OffsetDateTime.ofInstant(issuedAt, ZoneOffset.UTC)));
         return configVersion;
     }
 

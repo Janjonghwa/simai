@@ -24,6 +24,8 @@ import tools.jackson.databind.node.ObjectNode;
  * <li>새 작업은 관리자 등록(admin job enqueue)과 같은 job_request 계약 검사(AnalysisJobService)에 더해 Scene 등록 규칙과 같은 보정 검사
  * (이 현장의 PROVISIONAL·CALIBRATED 보정)를 거친다. 결과 Scene 은 지금처럼 SceneJobListener 가 CANDIDATE 로 붙인다.</li>
  * <li>등록하는 input 에 clean_background_bundle_id 로 묶음 ID 를 싣는다(출처·멱등 조회). 새 표를 만들지 않는다.</li>
+ * <li>선택 request_id 가 있으면 해당 {@code scene_regenerate_request} 의 {@code static_reconstruct_job_id} 를 연결하고
+ * {@code RECONSTRUCTING} 으로 전이한다(S15P31A101-428).</li>
  * </ul>
  * 배경 사진은 정적 3D(Visual 층) 입력이고 Tier 0 위치·위험 판정에 들어가지 않는다(규칙 1).
  */
@@ -43,24 +45,31 @@ public class StaticReconstructSubmitService {
     private final TransactionTemplate transaction;
     private final AnalysisJobService jobs;
     private final SiteLookup sites;
+    private final SceneRegenerateService regenerateService;
 
     public StaticReconstructSubmitService(NamedParameterJdbcTemplate jdbc, TransactionTemplate transaction, AnalysisJobService jobs,
-            SiteLookup sites) {
+            SiteLookup sites, SceneRegenerateService regenerateService) {
         this.jdbc = jdbc;
         this.transaction = transaction;
         this.jobs = jobs;
         this.sites = sites;
+        this.regenerateService = regenerateService;
     }
 
     /** @param created 이 요청으로 작업을 만들었으면 true. errorCode 는 FAILED·TIMED_OUT 의 error.code, 없으면 null */
     public record Submitted(String bundleId, String jobId, boolean created, String jobStatus, String errorCode) {
     }
 
+    public Submitted submit(String workerId, String bundleId, JsonNode input) {
+        return submit(workerId, bundleId, input, null);
+    }
+
     /**
      * @param input 계약 검사를 통과한 static_reconstruct_submit payload.input
+     * @param requestId 선택 재생성 요청 ID(S15P31A101-428), 없으면 null
      * @throws BusinessException INVALID_WORKER_MESSAGE(input 의 묶음 ID 불일치), SCENE_CALIBRATION_INVALID, INVALID_JOB
      */
-    public Submitted submit(String workerId, String bundleId, JsonNode input) {
+    public Submitted submit(String workerId, String bundleId, JsonNode input, Long requestId) {
         if (input == null || !input.isObject()) {
             throw new BusinessException(ErrorCode.Job.INVALID_WORKER_MESSAGE);
         }
@@ -77,7 +86,11 @@ public class StaticReconstructSubmitService {
                     ORDER BY created_at, job_id LIMIT 1
                     """, params, String.class);
             if (!existing.isEmpty()) {
-                return current(bundleId, existing.getFirst(), false);
+                String existingJobId = existing.getFirst();
+                if (requestId != null) {
+                    regenerateService.onStaticReconstructSubmitted(requestId, existingJobId);
+                }
+                return current(bundleId, existingJobId, false);
             }
             String calibration = input.path("calibration_version").asString(null);
             List<String> state = jdbc.queryForList(
@@ -89,6 +102,9 @@ public class StaticReconstructSubmitService {
             ObjectNode stored = ((ObjectNode) input).deepCopy();
             stored.put(BUNDLE_KEY, bundleId);
             String jobId = jobs.enqueue(new JobSpec("static_reconstruct", stored, MAX_ATTEMPTS, TIMEOUT_MS, null, null));
+            if (requestId != null) {
+                regenerateService.onStaticReconstructSubmitted(requestId, jobId);
+            }
             log.info("배경 묶음 {} 의 static_reconstruct 작업 {} 를 등록했다(워커 {}, 보정 {})", bundleId, jobId, workerId, calibration);
             return current(bundleId, jobId, true);
         });

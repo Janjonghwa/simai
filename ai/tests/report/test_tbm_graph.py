@@ -180,3 +180,57 @@ def test_round_robin_skips_repeated_titles_to_fill_slots():
     repeated = [dict(NODE, node_id=str(i), title="출입 의 금지") for i in range(5)]
     distinct = dict(NODE, node_id="distinct", title="안전난간")
     assert [n["node_id"] for n in _round_robin([repeated + [distinct]])] == ["0", "1", "distinct"]
+
+
+DAILY = {"report_kind": "DAILY", "report_date": "2026-11-03", "rule_version": 3,
+         "events": [{"rule_id": "R2", "severity": "CRITICAL", "zone_id": "z-1", "raised_at_ms": 1, "resolved": True,
+                     "needs_check": False, "world_ids": ["w-비밀"], "rationale": "비밀메모"}],
+         "event_summary": {"event_count": 1, "resolved_count": 1, "severity_counts": {"CRITICAL": 1}, "rule_counts": {"R2": 1}, "note": "비밀"},
+         "zones": [{"zone_id": "z-1", "zone_kind": "OPENING", "place": "비밀장소"}]}
+
+
+def daily_draft(keys=("summary", "events", "measures", "legal"), ref="법령 제43조"):
+    return json.dumps({"sections": [{"key": k, "title": k, "body": "제43조 준수", "citations": [ref]} for k in keys]}, ensure_ascii=False)
+
+
+def test_daily_success_uses_daily_sections_and_drops_private_fields():
+    client = Client([daily_draft()])
+    out = generate(DAILY, Store(), lambda: client)
+    assert out["status"] == "SUCCEEDED" and [s["key"] for s in out["sections"]] == ["summary", "events", "measures", "legal"]
+    sent = str(client.sent)
+    assert "w-비밀" not in sent and "비밀메모" not in sent and "비밀장소" not in sent and "'note'" not in sent
+    facts = json.loads(client.sent[0][1]["content"])
+    assert facts["report_kind"] == "DAILY" and facts["report_date"] == "2026-11-03"
+    assert facts["events"] == [{"rule_id": "R2", "severity": "CRITICAL", "zone_id": "z-1", "raised_at_ms": 1, "resolved": True, "needs_check": False}]
+    assert facts["event_summary"] == {"event_count": 1, "resolved_count": 1, "severity_counts": {"CRITICAL": 1}, "rule_counts": {"R2": 1}}
+    assert out["steps"][0]["input_count"] == 1
+
+
+def test_daily_rejects_tbm_section_keys():
+    out = generate(DAILY, Store(), lambda: Client([draft(), draft()]))
+    assert out["failure_reason"] == "CITATION_VIOLATION" and not out["sections"]
+
+
+def test_daily_retrieval_uses_event_rules_and_caps_events():
+    from simai_ai.report.retrieval import retrieve
+    class Graph(Store):
+        def seeds(self, basis, rules, keywords, zones):
+            self.rules, self.zones = rules, zones
+            return super().seeds()
+    store = Graph()
+    retrieve(store, DAILY)
+    assert store.rules == ["R2"] and store.zones == ["OPENING"]
+    many = dict(DAILY, events=[dict(DAILY["events"][0], raised_at_ms=i) for i in range(150)])
+    client = Client([daily_draft()])
+    generate(many, Store(), lambda: client)
+    assert len(json.loads(client.sent[0][1]["content"])["events"]) == 100
+
+
+def test_daily_passes_truncation_flag_and_tolerates_null_lists():
+    from simai_ai.report.retrieval import retrieve
+    client = Client([daily_draft()])
+    generate(dict(DAILY, event_summary=dict(DAILY["event_summary"], events_truncated=True)), Store(), lambda: client)
+    assert json.loads(client.sent[0][1]["content"])["event_summary"]["events_truncated"] is True
+    retrieve(Store(), dict(DAILY, events=None, risk_items=None))
+    out = generate(dict(DAILY, events=None), Store(), lambda: Client([daily_draft()]))
+    assert out["status"] == "SUCCEEDED" and out["steps"][0]["input_count"] == 0

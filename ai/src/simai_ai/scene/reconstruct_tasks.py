@@ -115,7 +115,8 @@ def align_to_calibration(root: Path) -> np.ndarray:
 
 
 def bake(root: Path) -> None:
-    align_to_calibration(root)
+    if not (root / "world_alignment.json").is_file():
+        align_to_calibration(root)
     spec = os.environ.get("SIMAI_TEXRECON", "").strip()
     texrecon = shutil.which(spec or "texrecon")
     if not texrecon:
@@ -128,9 +129,20 @@ def bake(root: Path) -> None:
         return
     from . import texture_mesh as tm
     opts = read_json(root / "job.json")["input"].get("options", {})
+    raw_threads = opts.get("num_threads")
+    if raw_threads is None:
+        env_threads = os.environ.get("SIMAI_BAKE_NUM_THREADS", "").strip()
+        raw_threads = int(env_threads) if env_threads else 0
+    num_threads = int(raw_threads)
+    raw_faces = opts.get("target_faces")
+    if raw_faces is None:
+        env_faces = os.environ.get("SIMAI_BAKE_TARGET_FACES", "").strip()
+        raw_faces = int(env_faces) if env_faces else tm.DEFAULT_BAKE_TARGET_FACES
+    target_faces = int(raw_faces)
     args = ["--ma-run", str(root / "mapanything"), "--prepared", str(root / "prepared"),
             "--out", str(root / "textured"), "--world-alignment", str(root / "world_alignment.json"),
-            "--texrecon", texrecon, "--terms", "area", "--loo-terms", "", "--num-threads", "1",
+            "--texrecon", texrecon, "--terms", "area", "--loo-terms", "",
+            "--num-threads", str(num_threads), "--target-faces", str(target_faces),
             "--align-views", opts.get("align_views", "off"), "--run-id", read_json(root / "job.json")["run_id"],
             "--jira-key", "S15P31A101-364"]
     if opts.get("plane_cleanup", False):
@@ -147,16 +159,113 @@ def bake(root: Path) -> None:
     maps = sorted(glb.parent.glob("surface_source_*.png"))
     if not maps:
         raise ReconstructionError("STATIC_BAKE_EMPTY", "출처 지도 없음")
-    assets = [{"kind": "GLTF_VISUAL", "path": glb.relative_to(root).as_posix(), "content_type": "model/gltf-binary"}]
+    geo = rec.get("geometry") or {}
+    tri_count = b.get("glb_triangles") if "glb_triangles" in b else geo.get("faces")
+    gltf_asset: dict[str, object] = {"kind": "GLTF_VISUAL", "path": glb.relative_to(root).as_posix(), "content_type": "model/gltf-binary"}
+    if tri_count is not None:
+        gltf_asset["triangle_count"] = int(tri_count)
+    assets = [gltf_asset]
     assets += [{"kind": "SURFACE_SOURCE_MAP", "path": p.relative_to(root).as_posix(), "content_type": "image/png", "ratios": ratios} for p in maps]
     post = ["OUTLIER_REMOVAL", "TSDF_FUSION"]
     if opts.get("align_views", "off") != "off":
         post.insert(0, "CROSS_VIEW_ALIGNMENT")
     if opts.get("plane_cleanup"):
         post.append("PLANE_CLEANUP")
+    if geo.get("decimated", True):
+        post.append("DECIMATION")
     write_json(root / "bake.json", {"texture": "texrecon", "fallback_reason": None, "assets": assets,
         "observed_surface_ratio": ratios["OBSERVED"], "postprocess": [*post, "TEXTURE", "WORLD_ALIGNMENT"], "metrics": rec,
+        "target_faces": target_faces, "num_threads": tm.resolve_num_threads(num_threads),
+        "stage_times": rec.get("times"),
         "auxiliary": [p.relative_to(root).as_posix() for p in sorted(glb.parent.glob("observed_camera_*.png"))]})
+
+
+def _load_colored_fuse_views(root: Path) -> list:
+    import cv2
+    from simai_ai.calibration.world_frame.inputs import load_mapanything_run
+    from . import run_hybrid_depth as hd
+
+    prepared = hd.load_prepared(root / "prepared")
+    run = load_mapanything_run(root / "mapanything", prepared=prepared)
+    source = {v["name"]: v for v in prepared["views"]}
+    views = []
+    for v in run.views:
+        p = source[v.name]
+        image = cv2.cvtColor(cv2.imread(str(root / "prepared" / p["image"])), cv2.COLOR_BGR2RGB)
+        h, w = v.depth.shape
+        yy, xx = np.mgrid[:h, :w]
+        rays = np.linalg.inv(v.K) @ np.stack([xx.ravel(), yy.ravel(), np.ones(h * w)])
+        uv = np.asarray(p["K_undistorted"]) @ rays
+        rgb = cv2.remap(
+            image,
+            uv[0].reshape(h, w).astype(np.float32),
+            uv[1].reshape(h, w).astype(np.float32),
+            cv2.INTER_LINEAR,
+        )
+        views.append(hd.FuseView(v.name, v.depth, v.valid, v.K, v.cam2world, rgb))
+    return views
+
+
+def preview(root: Path) -> None:
+    """빠른 미리보기 3D 맵(`preview_scene.glb`)과 `preview.json`을 만든다(명세 5.3, S15P31A101-451)."""
+    from .preview_scene import (
+        DEFAULT_PREVIEW_STRIDE,
+        build_preview_from_pointcloud,
+        build_preview_from_views,
+    )
+
+    if not (root / "world_alignment.json").is_file():
+        align_to_calibration(root)
+    M = np.asarray(read_json(root / "world_alignment.json")["mapanything_to_world"], float)
+    opts = read_json(root / "job.json")["input"].get("options", {})
+    raw_stride = opts.get("preview_stride")
+    if raw_stride is None:
+        env_stride = os.environ.get("SIMAI_PREVIEW_STRIDE", "").strip()
+        raw_stride = int(env_stride) if env_stride else DEFAULT_PREVIEW_STRIDE
+    stride = max(1, int(raw_stride))
+
+    pc_path = root / "mapanything" / "pointcloud.npz"
+    if pc_path.is_file():
+        with np.load(pc_path) as pc:
+            pts = np.asarray(pc["points_xyz"], float)
+            cols = np.asarray(pc["colors_rgb"])
+            faces = np.asarray(pc["faces"], np.int64) if "faces" in pc.files else None
+        if len(pts) == 0:
+            raise ReconstructionError("STATIC_MAPANYTHING_EMPTY", "미리보기 점구름 정점 없음")
+        glb_bytes, meta = build_preview_from_pointcloud(
+            pts, cols, M=M, faces=faces, stride=max(1, int(opts.get("preview_stride", 1)))
+        )
+    else:
+        views = _load_colored_fuse_views(root)
+        try:
+            glb_bytes, meta = build_preview_from_views(views, M=M, stride=stride)
+        except ValueError as exc:
+            raise ReconstructionError("STATIC_MAPANYTHING_EMPTY", str(exc)) from exc
+
+    if meta["vertex_count"] == 0:
+        raise ReconstructionError("STATIC_MAPANYTHING_EMPTY", "미리보기 메시 정점 없음")
+
+    (root / "preview_scene.glb").write_bytes(glb_bytes)
+    write_json(
+        root / "preview.json",
+        {
+            "scene_tier": "PREVIEW",
+            "preview_scene": True,
+            "texture": None,
+            "fallback_reason": "PREVIEW_FAST_PATH",
+            "assets": [
+                {
+                    "kind": "GLTF_VISUAL",
+                    "path": "preview_scene.glb",
+                    "content_type": "model/gltf-binary",
+                    "triangle_count": int(meta["triangle_count"]),
+                }
+            ],
+            "observed_surface_ratio": 1.0,
+            "postprocess": ["OUTLIER_REMOVAL", "WORLD_ALIGNMENT"],
+            "metrics": meta,
+        },
+    )
 
 
 def fallback(root: Path) -> None:
@@ -245,7 +354,7 @@ def main() -> int:
             fraction = float(os.environ.get("SIMAI_WORKER_TORCH_MEMORY_FRACTION") or settings.budget.worker_fraction)
             if not 0 < fraction <= settings.budget.worker_fraction or cap_process_memory(fraction).state == FAILED:
                 raise ReconstructionError("STATIC_GPU_BUDGET_FAILED", "자식 프로세스 GPU 상한 설정 실패")
-        {"prepare": prepare, "mapanything": mapanything, "bake": bake, "fallback": fallback, "measure": measure}[stage](root)
+        {"prepare": prepare, "mapanything": mapanything, "preview": preview, "bake": bake, "fallback": fallback, "measure": measure}[stage](root)
         return 0
     except ReconstructionError as e:
         write_json(root / f"{stage}.error.json", {"code": e.code, "message": str(e)})

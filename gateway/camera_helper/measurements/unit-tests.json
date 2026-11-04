@@ -1,0 +1,56 @@
+{
+  "recorded_at_ms": 1793714928659,
+  "tests_run": 49,
+  "passed": 41,
+  "skipped": [
+    {
+      "test": "test_below_eight_matches_cannot_make_an_essential_edge (test_geometry.GeometryTests.test_below_eight_matches_cannot_make_an_essential_edge)",
+      "reason": "numpy and opencv-python-headless are not installed"
+    },
+    {
+      "test": "test_default_intrinsics_are_explicit (test_geometry.GeometryTests.test_default_intrinsics_are_explicit)",
+      "reason": "numpy and opencv-python-headless are not installed"
+    },
+    {
+      "test": "test_identity_warp (test_geometry.GeometryTests.test_identity_warp)",
+      "reason": "numpy and opencv-python-headless are not installed"
+    },
+    {
+      "test": "test_lens_loader_ignores_extrinsic_values (test_geometry.GeometryTests.test_lens_loader_ignores_extrinsic_values)",
+      "reason": "numpy and opencv-python-headless are not installed"
+    },
+    {
+      "test": "test_positive_depth_geometry_rejects_outliers (test_geometry.GeometryTests.test_positive_depth_geometry_rejects_outliers)",
+      "reason": "numpy and opencv-python-headless are not installed"
+    },
+    {
+      "test": "test_positive_yaw_warp_direction_at_ten_and_twenty_degrees (test_geometry.GeometryTests.test_positive_yaw_warp_direction_at_ten_and_twenty_degrees)",
+      "reason": "numpy and opencv-python-headless are not installed"
+    },
+    {
+      "test": "test_matches_external_schema_when_available (test_message.MessageTests.test_matches_external_schema_when_available)",
+      "reason": "coverage_guide schema is owned by -443 and not present in this worktree"
+    },
+    {
+      "test": "test_weights (unittest.loader.ModuleSkipped.test_weights)",
+      "reason": "pytest and local model dependencies are not installed"
+    }
+  ],
+  "errors": 0,
+  "failures": 0,
+  "python_version": "3.11.15 (main, Jun 23 2026, 15:20:37) [MSC v.1944 64 bit (AMD64)]",
+  "file_sha256": {
+    "src\\simai_camera_helper\\__init__.py": "67a07dbb9ace0a5f8a52c308f6c81f1f7579c606783fa0a2026d347ce73fae25",
+    "src\\simai_camera_helper\\judge.py": "f1b9796e717373bc657ee498ea06b88d65ea958bf869df82d4c5aedd6bd54c44",
+    "src\\simai_camera_helper\\matcher.py": "d3bc8b2fb5c04c917255464dd0ad7a747ba019cd69cd3d68231510694eaf7a81",
+    "src\\simai_camera_helper\\message.py": "9568012e8fc2ac3cc0876fcece9910f3dd02524bfc78881ef2af05f52c4157fd",
+    "src\\simai_camera_helper\\offline.py": "48ac65a5fa12e009bbf081f67fc3d04445d6b7b42e193db7a29091a2fc344786",
+    "tests\\test_geometry.py": "96357ba74d2ac4c10176071cf5a9fdc70cc00e0917f7339aff419ae18108be4e",
+    "tests\\test_judge.py": "3b7c3aa6dc092d82b12a7514cbba7567913528eeec1699b69178b67ac72cee4b",
+    "tests\\test_loader.py": "2f4f969dcc9f75eb2300268400cb0b20365a7d82a3300809ffa9870fa4cf81f8",
+    "tests\\test_message.py": "ff0486e514d2ba30e181c5c63dc7b6465722e5ae3ebe27eb8b1c72d869601ddc",
+    "tests\\test_offline.py": "a444a08ab1b19000c41d51c0ac24710f80624892315132c97fe9d01e7e89cca7",
+    "tests\\test_weights.py": "352d64057ef36c6f65d4e774408e00c657e44d9e02a3f73ea091a7e4b4442df0",
+    "pyproject.toml": "46569277ee04e5d2d803877ea4e9a28e797fbd691b5862bd47c54b3482317d02"
+  }
+}

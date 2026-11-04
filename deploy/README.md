@@ -92,6 +92,7 @@ bash deploy/scripts/check_image.sh simai/risk-engine:$TAG         # 벡터·비�
 ```
 
 - Tier 0 이미지는 풀면 약 18.7GB, 통합 이미지는 약 24.3GB 다(2026-10-23 노트북 빌드, S15P31A101-246: torch 2.11.0·onnxruntime-gpu·cupy 제외. 층별 크기는 `docs/design/unified-env.md` "빌드 결과"). 이전 Tier 0 는 압축 약 7.9GB·풀면 약 21GB 였다. 처음 빌드는 받기가 대부분(3MB/s 망에서 약 90분), 이후에는 uv 캐시 마운트로 바뀐 층만 다시 만든다.
+- **Re-ID(S15P31A101-471).** Tier 0·통합 이미지는 `--extra reid`(timm·yacs·ftfy·einops 등, torch 는 tier0 와 같은 판)를 함께 설치한다. COPE 저장소는 LICENSE 가 없어 이미지에 넣지 않는다 — 세션 준비 때 Pod `/srv/simai/reid/{cope,weights/cope_msmt17.pth,clip-cache/ViT-B-16.pt}` 로 올리고 `SIMAI_COPE_ROOT`·`SIMAI_COPE_WEIGHTS`·`SIMAI_COPE_CLIP_PATH` 를 Pod 환경에 넣는다(Tier 0 설정 파일에 경로가 없으면 이 환경변수를 읽는다). 없으면 Re-ID 만 꺼지고(`reid: disabled`) 나머지는 그대로 돈다.
 - **층 분할(S15P31A101-207).** 큰 휠은 잠금에서 뽑은 묶음별 층(CUDA 13 휠·torch·TensorRT libs·큰 일반 휠)이고, 작은 패키지는 그 위 한 층, simai_ai 코드는 맨 위다. 로컬 재빌드에서 작은 패키지 하나가 바뀌면 다시 만든 층이 풀린 크기로 약 0.6GB, 코드 한 줄이면 약 9MB 다(push 전송량은 압축 크기라 더 작다. 같은 빌드 기계의 BuildKit 캐시가 남아 있을 때. 실측은 `docs/design/exp-images.md`).
   묶음 이름이 잠금에 없으면 빌드가 멈춘다. 묶음을 바꿀 때는 `deploy/tier0/Dockerfile` 의 `pick` 줄을 고친다.
 - Docker Hub 받기가 `httpReadSeeker ... EOF` 로 끊기면(SSAFY 망에서 자주 봤다) 같은 명령을 다시 실행한다. 받은 층은 남는다.
@@ -170,7 +171,7 @@ HMR 이미지 `exp02`, MapAnything 이미지 `static`)의 묶음을 준비한다
 | 시작 명령 | 비움(이미지 기본: `simai-bootstrap tier0`). 검증 세션은 `sleep infinity` 로 띄우고 SSH 로 `simai-bootstrap queue` |
 | GPU 기능 | 이미지 `NVIDIA_DRIVER_CAPABILITIES=compute,utility,video`(video 는 선택 디코더 NVDEC 용, -182. Tier 0 기본 디코더는 CPU 라 없어도 기본 경로는 선다, -236). 템플릿에서 덮어쓰지 않는다 |
 | 환경 변수 | `HF_TOKEN={{ RUNPOD_SECRET_hf_token }}`(RunPod Secret, 값은 템플릿에 쓰지 않음), `SIMAI_TIER0_GPU_RESERVE_MB=8192`(Tier 0 GPU 선확보, -60, G0 실측 전 초기값), `SIMAI_IMAGE_DIGEST=sha256:...`(이미지 다이제스트와 같은 값), `PUBLIC_KEY=<계정 SSH 공개키>`(비밀 아님), `SIMAI_TUNNEL_PREFIX={{ RUNPOD_SECRET_simai_tunnel_prefix }}`(RunPod Secret, 막힌 망 최후 예비 SSH), 최후 예비로 I0 를 443 터널로 보낼 때만 `SIMAI_TUNNEL_ALLOW=17000,17001`(비밀 아님, 아래 "I0 터널"). `SIMAI_ROOT`·가중치 경로·해시·엔진 캐시는 부트스트랩이 정한다(`SIMAI_ENGINE_CACHE` 기본 `$SIMAI_ROOT/engines`, `SIMAI_OBS2D_ROOT` 는 필요하면 `$SIMAI_ROOT/obs2d`). 선택: `SIMAI_TIER0_MODE`(e2e), `SIMAI_TIER0_IMGSZ`(1280), `SIMAI_TIER0_MAX_BATCH`(4), `SIMAI_TIER0_CAMERA`(2304x1296) |
-| 분석 워커 환경 변수 | 같은 Pod 에서 워커를 띄울 때(아래 "분석 워커"): `SIMAI_EC2_BASE_URL`, `SIMAI_WORKER_ID`(EC2 에 등록한 ID. 토큰과 짝이 다르면 대여가 401. `simai-bootstrap` 감시 모드·lobby 는 비어 있으면 토큰 파일 이름 `<워커 ID>.token` 에서 정한다, S15P31A101-414), `SIMAI_WORKER_GPU_MEMORY_FRACTION=0.70`, `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION=0.55`, `SIMAI_WORKER_VLLM_MAX_NUM_SEQS=4`, `SIMAI_GPU_TIER0_FRACTION=0.20`, `SIMAI_WORKER_LAG_BUDGET_MS=600`. 선택(기본값): `SIMAI_WORKER_MARKER_MAX_AGE_S`(15), `SIMAI_WORKER_RESUME_AFTER_S`(10), `SIMAI_WORKER_MAX_QUEUE_WAIT_EXCEEDED`(2), `SIMAI_WORKER_LIVE_BLOCKED_TYPES`(static_reconstruct,hmr_refine,hmr_appearance_update), `SIMAI_WORKER_LIVE_WAIT_MS`(5000), `SIMAI_WORKER_HOLD_MAX_S`(60), `SIMAI_TIER0_MARKER`. 값의 뜻은 docs/design/tier0-gpu-priority.md |
+| 분석 워커 환경 변수 | 같은 Pod 에서 워커를 띄울 때(아래 "분석 워커"): `SIMAI_EC2_BASE_URL`, `SIMAI_WORKER_ID`(EC2 에 등록한 ID. 토큰과 짝이 다르면 대여가 401. `simai-bootstrap` 감시 모드·lobby·after-live 는 비어 있으면 토큰 파일 이름 `<워커 ID>.token` 에서 정한다, S15P31A101-414), `SIMAI_WORKER_GPU_MEMORY_FRACTION=0.70`, `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION=0.55`, `SIMAI_WORKER_VLLM_MAX_NUM_SEQS=4`, `SIMAI_GPU_TIER0_FRACTION=0.20`, `SIMAI_WORKER_LAG_BUDGET_MS=600`. 선택(기본값): `SIMAI_WORKER_MARKER_MAX_AGE_S`(15), `SIMAI_WORKER_RESUME_AFTER_S`(10), `SIMAI_WORKER_MAX_QUEUE_WAIT_EXCEEDED`(2), `SIMAI_WORKER_LIVE_BLOCKED_TYPES`(static_reconstruct,hmr_refine,hmr_appearance_update), `SIMAI_WORKER_LIVE_WAIT_MS`(5000), `SIMAI_WORKER_HOLD_MAX_S`(60), `SIMAI_TIER0_MARKER`. 값의 뜻은 docs/design/tier0-gpu-priority.md |
 | 비밀 | 템플릿에 값으로 넣지 않는다(HF 토큰·터널 비밀값만 Secret 참조). 워커 토큰은 `.simai-private/worker.env` 의 `SIMAI_WORKER_TOKEN=` |
 | 공개키 | RunPod 은 계정 SSH 키를 `PUBLIC_KEY` 로 넣지만, 템플릿에 `PUBLIC_KEY` 를 빈 값으로 두면 그 값이 덮어써 공개키가 하나도 없게 되고 sshd 가 뜨지 않는다(3차 세션 2026-10-26: 빈 `PUBLIC_KEY` + 이름 칸에 이미지 다이제스트가 들어간 `SSH_PUBLIC_KEY`). 그래서 템플릿에 계정 공개키 값을 그대로 넣는다(공개키는 비밀이 아니다). Pod 를 켠 직후 RunPod Logs 에서 `simai-start: sshd 시작 (키 인증만, 키 N개)` 와 `wstunnel 시작` 줄을 먼저 보고, `공개키 형식이 아닌 줄 … 버렸다` / `sshd 를 띄우지 않아 443 예비 터널도 띄우지 않는다` 가 보이면 템플릿 `PUBLIC_KEY` 값(한 줄, `ssh-ed25519 …`)을 고친다(4차 세션: 이 때문에 약 45분 접속 불가) |
 
@@ -282,7 +283,7 @@ wstunnel client --log-lvl OFF --tls-verify-certificate -L tcp://127.0.0.1:17000:
   모든 카메라·제어가 SSH 연결 하나(TCP 하나)에 묶여 한 카메라의 지연·끊김이 다른 카메라에 번지고, 그 연결이 끊기면 다 같이 끊긴다. 측정 결과를 wstunnel 직접 전달과 섞지 않는다.
 
 **SSH 세션의 환경 변수.** sshd 가 띄운 셸에는 컨테이너 ENV 가 없다. `simai-start` 가 sshd 를 띄울 때 비밀이 아닌 이름(`SIMAI_*`·`CUDA_*`·`NVIDIA_*`·`UV_*`·`RUNPOD_*`·`PYTHON*`·`PATH`·`LD_LIBRARY_PATH`, 이름에 TOKEN·SECRET·PASSW·API_KEY·PRIVATE·CREDENTIAL 이 든 것 제외)만
-`/etc/profile.d/simai-env.sh` 에 적는다. 로그인 셸(`ssh simai-pod`)은 자동으로 읽고, 명령 한 줄은 `ssh simai-pod 'bash -lc "simai-bootstrap queue ..."'` 처럼 로그인 셸로 돌린다(비로그인 셸은 PATH 에 `python3`·`simai-bootstrap` 이 없다). 백그라운드 스크립트도 `SIMAI_ROOT=/srv/simai` 를 명시한다(이 티켓 수정 뒤에도 습관으로).
+`/etc/profile.d/simai-env.sh` 에 적는다. 로그인 셸(`ssh simai-pod`)은 자동으로 읽는다. 비로그인 셸에서도 `/usr/local/bin` 의 `python3`·`simai-bootstrap` 을 찾지만 컨테이너 환경 변수는 없으므로 명령 한 줄은 `ssh simai-pod 'bash -lc "simai-bootstrap queue ..."'` 처럼 로그인 셸로 돌린다. 백그라운드 스크립트도 `SIMAI_ROOT=/srv/simai` 를 명시한다(이 티켓 수정 뒤에도 습관으로).
 이미 연 비로그인 셸(`ssh -J … 'cmd'`, tmux, `sh -c`)에서 `python3: not found` 가 나면(10차 세션) `. /etc/profile.d/simai-env.sh` 를 먼저 한다. 그 파일이 없으면(sshd 를 `simai-start` 가 띄우지 않은 컨테이너) 컨테이너 PID 1 환경에서 비밀 아닌 이름만 싣는다:
 
 ```sh
@@ -299,7 +300,7 @@ HF 토큰·터널 비밀값은 이 파일에 없다. SSH 에서 가중치를 받
 **GPU 세션 공통 주의 (4차 세션 교훈, S15P31A101-311, 4차 결과 요약은 Jira S15P31A101-293 2026-10-28 댓글).**
 
 - Pod 를 켠 직후 RunPod Logs 에서 `simai-start: sshd 시작 (키 인증만, 키 N개)` 와 `wstunnel 시작` 줄을 먼저 본다. `공개키 형식이 아닌 줄 … 버렸다` / `sshd 를 띄우지 않아 443 예비 터널도 띄우지 않는다` 가 보이면 템플릿 `PUBLIC_KEY` 값(한 줄, `ssh-ed25519 …`)을 고친다(4차: 이 때문에 약 45분 접속 불가).
-- Pod 셸 명령은 `bash -lc '…'` 로 부른다(비로그인 셸은 PATH 에 `python3`·`simai-bootstrap` 이 없다). 백그라운드 스크립트도 `SIMAI_ROOT=/srv/simai` 를 명시한다(이 티켓 수정 뒤에도 습관으로).
+- Pod 셸 명령은 컨테이너 환경 변수를 불러오도록 `bash -lc '…'` 로 부른다. 백그라운드 스크립트도 `SIMAI_ROOT=/srv/simai` 를 명시한다(이 티켓 수정 뒤에도 습관으로).
 - 노트북(Windows)에서 만든 tar 는 Pod 에서 `tar --no-same-owner -xf` 로 푼다(소유자 uid 변경 실패로 tar 가 실패 종료).
 - 저장소 사본 코드를 이미지에 깔린 패키지보다 먼저 쓰려면 Job `env` 에 `PYTHONPATH=<repo>/ai/src:<repo>/ai`(4차: 이미지 37c7ae5 에 없는 `simai_ai.hmr.prompt` 로 HMR 실패).
 - `gpu_queue` 는 실패한 Job 도 끝난 것으로 기억하고, `exp_job` 은 결과 폴더(metrics.json)가 있으면 덮어쓰지 않는다(종료 4) → 다시 돌릴 때는 큐 이름과 Run 이름을 새로 준다.

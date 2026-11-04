@@ -6,6 +6,7 @@ import json
 import pytest
 
 from services.worker.client import (
+    CALLBACK_SCHEMA_VERSION,
     JOB_TYPES,
     SCHEMA_VERSION,
     AuthError,
@@ -16,7 +17,12 @@ from services.worker.client import (
     RequestRejected,
     RetryableError,
 )
-from services.worker.transport import Response, TransportError, heartbeat_path, result_path
+from services.worker.transport import (
+    Response,
+    TransportError,
+    heartbeat_path,
+    result_path,
+)
 from simai_ai.providers.contract import contracts_dir, schema_errors
 from simai_ai.providers.testing import load_example
 
@@ -152,7 +158,7 @@ def test_heartbeat_and_submit_messages_are_valid():
     assert schema_errors(res, "job_callback") == []
     failed = client.callback_message(lease, "FAILED", started_at=None, finished_at=2, error={"code": "X", "message": ""})
     assert schema_errors(failed, "job_callback") == []
-    assert res["schema_version"] == failed["schema_version"] == "2.2.0" and hb["schema_version"] == SCHEMA_VERSION
+    assert res["schema_version"] == failed["schema_version"] == CALLBACK_SCHEMA_VERSION and hb["schema_version"] == SCHEMA_VERSION
     released = client.callback_message(lease, "FAILED", started_at=None, finished_at=2, error={
         "code": "TIER0_PRIORITY", "message": "", "retryable": True, "consume_attempt": False})
     assert schema_errors(released, "job_callback") == []

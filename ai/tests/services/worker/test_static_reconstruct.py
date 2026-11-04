@@ -61,6 +61,28 @@ class FakeStages:
         if stage == "mapanything":
             (root / "mapanything").mkdir()
             write_json(root / "mapanything" / "metrics.json", {"result": "SUCCESS", "model_version": "fake-mapanything"})
+        if stage == "preview":
+            (root / "preview_scene.glb").write_bytes(b"synthetic-preview-glb")
+            write_json(
+                root / "preview.json",
+                {
+                    "scene_tier": "PREVIEW",
+                    "preview_scene": True,
+                    "texture": None,
+                    "fallback_reason": "PREVIEW_FAST_PATH",
+                    "assets": [
+                        {
+                            "path": "preview_scene.glb",
+                            "kind": "GLTF_VISUAL",
+                            "content_type": "model/gltf-binary",
+                            "triangle_count": 1200,
+                        }
+                    ],
+                    "postprocess": ["OUTLIER_REMOVAL", "WORLD_ALIGNMENT"],
+                    "observed_surface_ratio": 1.0,
+                    "metrics": {"vertex_count": 650, "triangle_count": 1200, "build_s": 0.05},
+                },
+            )
         if stage == "bake" and self.fallback:
             write_json(root / "bake.json", {"texture": None, "fallback_reason": "TEXRECON_NOT_FOUND"})
         if (stage == "bake" and not self.fallback) or stage == "fallback":
@@ -240,3 +262,80 @@ def test_upload_skips_empty_logs_and_includes_filename_on_empty_asset_or_auxilia
         handler(Store(), EmptyAuxStages(), tmp_path)(context(store))
     assert aux_err.value.code == "STATIC_OUTPUT_EMPTY"
     assert "observed_camera_0000.png" in aux_err.value.message
+
+
+def test_preview_only_mode_emits_preview_candidate_without_bake(ec2, make_worker, tmp_path):
+    """-451: mode='preview' 요청은 texrecon/TSDF 굽기를 건너뛰고 preview_scene CANDIDATE 를 바로 낸다."""
+    store, stages = Store(), FakeStages()
+    h = handler(store, stages, tmp_path)
+    inp = input_for(store)
+    inp["options"] = {"mode": "preview", "preview_stride": 2}
+    job_id = ec2.add_job("static_reconstruct", inp, timeout_ms=60000)
+    assert make_worker({"static_reconstruct": h}).run_once() is Outcome.ACCEPTED
+    job = ec2.jobs[job_id]
+    assert job.state == "SUCCEEDED", job.error
+    assert schema_errors(job.result, "scene_output") == []
+    assert stages.calls == ["prepare", "mapanything", "preview", "measure"]
+    assert job.result["scene_version"].startswith("scene-preview-")
+    assert job.result["state"] == "CANDIDATE"
+    assert job.result["geometry_role"] == "VISUAL"
+    assert job.result["method"]["reconstructor_detail"] == "preview_scene"
+    assert job.result["assets"][0]["triangle_count"] == 1200
+    assert "scene_tier=PREVIEW; preview_scene=true; texture=null: PREVIEW_FAST_PATH" in job.result["quality"]["notes"]
+
+
+def test_two_stage_mode_emits_preview_candidate_then_full_scene_for_seamless_swap(tmp_path):
+    """-451: 2단계 모드에서 preview 후보가 먼저 콜백·저장소로 나가고, 이어 구운 고화질 후보가 같은 보정 버전으로 등록된다."""
+    store, stages = Store(), FakeStages()
+    preview_events = []
+
+    def on_preview(preview_doc):
+        # preview 콜백 시점에는 아직 bake 가 실행되기 전이어야 한다
+        assert "bake" not in stages.calls
+        assert schema_errors(preview_doc, "scene_output") == []
+        preview_events.append(preview_doc)
+
+    h = StaticReconstructHandler(
+        store,
+        clock_ms=lambda: 1_800_000_000_000,
+        stages=stages,
+        workspace=tmp_path,
+        on_preview=on_preview,
+    )
+    ctx = context(store)
+    ctx.input["options"] = {"mode": "two_stage", "target_faces": 150_000, "num_threads": 0}
+    full_result = h(ctx)
+
+    assert len(preview_events) == 1
+    prev = preview_events[0]
+    assert prev["scene_version"] == "scene-preview-job-364-lease-1"
+    assert prev["state"] == "CANDIDATE" and prev["geometry_role"] == "VISUAL"
+    assert prev["calibration_version"] == full_result["calibration_version"]
+    assert "scene_tier=PREVIEW; preview_scene=true" in prev["quality"]["notes"]
+
+    assert stages.calls == ["prepare", "mapanything", "preview", "bake", "measure"]
+    assert schema_errors(full_result, "scene_output") == []
+    assert full_result["scene_version"] == "scene-job-364-lease-1"
+    assert full_result["state"] == "CANDIDATE"
+    assert "scene_tier=FULL; replaces_preview_scene=scene-preview-job-364-lease-1" in full_result["quality"]["notes"]
+
+    metrics = json.loads(store.puts["metrics.json"])
+    assert metrics["preview_scene"]["scene_version"] == "scene-preview-job-364-lease-1"
+    assert "preview_scene_output.json" in store.puts
+
+
+def test_live_admission_gate_still_blocks_static_reconstruct(tmp_path):
+    """-451: LIVE 관제 중에는 Tier 0 간섭 방지를 위해 static_reconstruct 가 계속 차단된다."""
+    from simai_ai.gpu.admission import DEFAULT_LIVE_BLOCKED, AdmissionGate, AdmissionPolicy
+
+    assert "static_reconstruct" in DEFAULT_LIVE_BLOCKED
+    marker = tmp_path / "tier0.live"
+    live_gate = AdmissionGate(marker, AdmissionPolicy(allow_without_marker=False), wall_s=lambda: 100.0, monotonic=lambda: 100.0)
+    decision_live = live_gate.check()
+    assert decision_live.live and decision_live.blocks("static_reconstruct")
+    assert "static_reconstruct" not in decision_live.allowed_types(["static_reconstruct", "vlm_explain"])
+
+    setup_gate = AdmissionGate(marker, AdmissionPolicy(allow_without_marker=True), wall_s=lambda: 100.0, monotonic=lambda: 100.0)
+    decision_setup = setup_gate.check()
+    assert not decision_setup.live and decision_setup.admit and not decision_setup.blocks("static_reconstruct")
+    assert "static_reconstruct" in decision_setup.allowed_types(["static_reconstruct", "vlm_explain"])

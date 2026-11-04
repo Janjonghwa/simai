@@ -42,7 +42,7 @@ from .transport import STATIC_SUBMIT_PATH, Transport, TransportError
 log = logging.getLogger("services.worker.auto_static")
 
 ENV_ENABLED = "SIMAI_AUTO_STATIC_RECONSTRUCT"
-SUBMIT_SCHEMA_VERSION = "1.0.0"  # 계약 static_reconstruct_submit
+SUBMIT_SCHEMA_VERSION = "1.1.0"  # 계약 static_reconstruct_submit
 RESULT_MAJOR = "1"
 BUNDLE_RE = re.compile(r"^bundle-[0-9a-f]{32}$")
 PENDING_STATUSES = frozenset({"QUEUED", "LEASED"})

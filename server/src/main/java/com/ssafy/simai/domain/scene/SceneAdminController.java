@@ -206,7 +206,7 @@ class SceneAdminController {
     }
 
     private static String version(String value) {
-        if (value == null || !VERSION.matcher(value).matches() || value.equals("current")) {
+        if (value == null || !VERSION.matcher(value).matches() || value.equals("current") || value.equals("regenerate")) {
             throw new BusinessException(ErrorCode.Scene.INVALID_SCENE);
         }
         return value;

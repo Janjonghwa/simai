@@ -1,5 +1,6 @@
 package com.ssafy.simai.global.exception;
 
+import com.ssafy.simai.domain.scene.SceneRegenerateInProgressException;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -7,6 +8,13 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 /** 오류 본문은 ProblemDetail 이다. 관제 앱 http.ts 가 detail 을 읽고, code 로 오류 종류를 가른다. */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(SceneRegenerateInProgressException.class)
+    ProblemDetail handleSceneRegenerateInProgress(SceneRegenerateInProgressException e) {
+        ProblemDetail problem = problem(e.getErrorCode());
+        problem.setProperty("request_id", e.requestId());
+        return problem;
+    }
 
     @ExceptionHandler(BusinessException.class)
     ProblemDetail handleBusiness(BusinessException e) {

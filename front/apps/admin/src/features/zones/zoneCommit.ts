@@ -63,7 +63,29 @@ export function createRequestOf(input: {
   box: ViewerEditBox;
   surface: SurfaceDraft | null | undefined;
 }): ZoneCommitRequest {
-  const zone = { op: 'CREATE', body: newZoneBodyOf(input.form, input.box) } as const;
+  const body = newZoneBodyOf(input.form, input.box);
+  if (input.surface) {
+    const {
+      centerXy: [cx, cy],
+      sizeXy: [width, depth],
+      yawRad,
+      topHeightM,
+    } = input.surface.geometry;
+    const c = Math.cos(yawRad);
+    const s = Math.sin(yawRad);
+    const x = width / 2 + 0.3;
+    const y = depth / 2 + 0.3;
+    body.polygon_xy = [
+      [-x, -y],
+      [x, -y],
+      [x, y],
+      [-x, y],
+    ].map(([dx, dy]) => [cx + dx! * c - dy! * s, cy + dx! * s + dy! * c] as [number, number]);
+    body.severity = 'HIGH';
+    body.z_min_m = 0;
+    body.z_max_m = Math.max(input.box.max[2], topHeightM);
+  }
+  const zone = { op: 'CREATE', body } as const;
   const surfacePart = surfacePartOf(null, input.surface, true);
   return surfacePart ? { zone, surface: surfacePart } : { zone };
 }

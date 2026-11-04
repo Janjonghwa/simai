@@ -45,6 +45,7 @@ def row(name: str, m: dict[str, Any], segments: list[str]) -> dict[str, Any]:
     d = m["diagnostics"]
     w = d["world"]
     cams = m["updated_cameras_ratio"]
+    re_m = m.get("reentry") or {}
     r = {
         "name": name,
         "ids": m["ids_total"],
@@ -58,8 +59,19 @@ def row(name: str, m: dict[str, Any], segments: list[str]) -> dict[str, Any]:
         "cam 2/3/4": "/".join(str(cams.get(k, 0)) for k in ("2", "3", "4")),
         "cam mean": m["updated_cameras_mean"],
         "bad bone": m["bones"]["tracks_with_bad_bone_ratio"],
+        "split suppressed": w["manager"].get("new_track.split_remainder_suppressed", 0),
         "zone dup": f"{m['zone_proxy']['duplicates']} ({m['zone_proxy']['id_entries']}/{m['zone_proxy']['occupancy_episodes']})",
+        "reentry": (
+            None
+            if re_m.get("continuation_rate") is None
+            else f"{re_m['continuation_rate']} ({re_m.get('resumed_after_lost', 0)}/{re_m.get('resumed_after_lost', 0) + re_m.get('unresumed_confirmed_losses', 0)})"
+        ),
+        "ms/tick": (m.get("run") or {}).get("ms_per_tick"),
     }
+    for kind, review in m.get("association_review", {}).items():
+        r[f"{kind} false/reviewed/candidates"] = (
+            f"{review['false_connections']}/{review['reviewed']}/{review['candidates']}"
+        )
     for s in segments:
         seg = m["segments"].get(s) or {}
         r[f"{s} new/p·min"] = seg.get("new_ids_per_person_min")
@@ -84,9 +96,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--only", nargs="*")
+    ap.add_argument("--dataset", help="계획 datasets 의 입력·구간 설정 선택. 없으면 기존 base 사용")
     args = ap.parse_args(argv)
     plan = json.loads(args.plan.read_text(encoding="utf-8"))
     base = plan.get("base") or {}
+    if args.dataset:
+        base = _merge(base, plan["datasets"][args.dataset]["config"])
     exps = plan["experiments"]
     names = [n for n in exps if not args.only or n in args.only]
     jobs = [(n, args.cache, args.calibration, _merge(base, exps[n]), str(args.out)) for n in names]

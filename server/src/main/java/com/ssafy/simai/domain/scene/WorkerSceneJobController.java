@@ -66,7 +66,8 @@ class WorkerSceneJobController {
             throw new BusinessException(ErrorCode.Job.WORKER_SOURCE_MISMATCH);
         }
         JsonNode p = envelope.payload();
-        Submitted done = submits.submit(workerId, p.get("bundle_id").stringValue(), p.get("input"));
+        Long requestId = parseRequestId(p.get("request_id"));
+        Submitted done = submits.submit(workerId, p.get("bundle_id").stringValue(), p.get("input"), requestId);
         ObjectNode out = mapper.createObjectNode();
         out.put("bundle_id", done.bundleId());
         out.put("job_id", done.jobId());
@@ -78,5 +79,15 @@ class WorkerSceneJobController {
         }
         ObjectNode message = I1Envelope.outbound(mapper, clock.millis(), "static_reconstruct_submit_result", RESULT_VERSION, out);
         return ResponseEntity.status(done.created() ? HttpStatus.CREATED : HttpStatus.OK).body(message);
+    }
+
+    private static Long parseRequestId(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        if (!node.isIntegralNumber() || !node.canConvertToLong() || node.longValue() < 1) {
+            throw new BusinessException(ErrorCode.Job.INVALID_WORKER_MESSAGE);
+        }
+        return node.longValue();
     }
 }

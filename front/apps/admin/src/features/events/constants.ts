@@ -10,7 +10,7 @@ export const SEVERITY_RANK: Record<Severity, number> = {
   INFO: 0,
 };
 
-/** 등급 이름(배지 글자). 빨강·노랑 없이도 읽히도록 기호와 함께 쓴다(SeverityBadge). */
+/** 등급 이름(배지 글자). 색 없이도 읽히도록 기호와 함께 쓴다(SeverityBadge). */
 export const SEVERITY_LABEL: Record<Severity, string> = {
   CRITICAL: '위험',
   HIGH: '경고',
@@ -24,7 +24,7 @@ export const MAX_RESOLVED = 50;
 /** 한 묶음(사람)에 보이는 해소된 규칙 수. 같은 규칙에 되풀이해 걸려도 카드가 길어지지 않게. */
 export const RESOLVED_PER_INCIDENT = 2;
 
-/** 이벤트 패널 목록 아래에 남기는 해소된 묶음 수. */
+/** 이벤트 패널의 「최근 해소」 칸에 남기는 해소된 묶음(사람·규칙·구역별) 수. */
 export const RECENT_RESOLVED_INCIDENTS = 4;
 
 /** 관제 화면이 ACK 를 보낼 때 쓰는 확인 경로(계약 event_ack 의 channel). */

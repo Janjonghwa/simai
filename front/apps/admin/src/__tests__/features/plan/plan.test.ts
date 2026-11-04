@@ -2,9 +2,9 @@ import { mergeEvent, type EventEntry } from '@/features/events/events';
 import type { EventItem } from '@/features/events/types';
 import {
   markFor,
-  markTone,
   planMarks,
   ROOM,
+  severityTone,
   sigmaRadius,
   toPlan,
   trackIds,
@@ -109,8 +109,10 @@ describe('planMarks', () => {
     expect(markFor(marks.people, trackIds({ world_id: 'w-none' }))).toBeUndefined();
   });
 
-  it('색은 HIGH 이상 빨강, CAUTION 노랑이다', () => {
-    expect(markTone({ severity: 'HIGH', alarming: false })).toBe('critical');
-    expect(markTone({ severity: 'CAUTION', alarming: false })).toBe('caution');
+  it('색은 위험 빨강, 경고 주황, 주의 노랑이고 안내는 색이 없다', () => {
+    expect(severityTone('CRITICAL')).toBe('critical');
+    expect(severityTone('HIGH')).toBe('high');
+    expect(severityTone('CAUTION')).toBe('caution');
+    expect(severityTone('INFO')).toBeUndefined();
   });
 });

@@ -166,7 +166,7 @@ public class ObjectStorage implements AutoCloseable {
             signed = presign.get();
         } catch (SdkException e) {
             // 자격 증명을 찾지 못함 등. 메시지에 서명 값은 없다
-            log.warn("객체 저장소 서명 주소를 만들지 못했다: {}", e.getMessage());
+            log.warn("객체 저장소 서명 주소를 만들지 못했다: {}", e.getClass().getSimpleName());
             throw new BusinessException(ErrorCode.Storage.STORAGE_UNAVAILABLE);
         }
         // 클라이언트가 그대로 실어야 하는 서명된 헤더. host 는 주소에 들어 있다

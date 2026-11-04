@@ -34,6 +34,8 @@ pipeline {
         GRADLE_USER_HOME = "${env.WORKSPACE}@tmp/cache/gradle"
         // pnpm install 의 prepare 가 git 훅을 연결하지 않게 한다
         HUSKY = '0'
+        // 이 작업에서 검사를 통과한 커밋의 표시(빈 파일, 이름 = sha). 대상 브랜치를 합친 커밋의 지름길(변경 경로 단계)이 본다
+        VERIFIED = "${env.WORKSPACE}@tmp/verified"
     }
 
     stages {
@@ -48,6 +50,21 @@ pipeline {
                     if (env.gitlabActionType == 'MERGE' && env.gitlabTargetBranch) {
                         def base = sh(script: "git merge-base origin/${env.gitlabTargetBranch} HEAD", returnStdout: true).trim()
                         files = sh(script: "git diff --name-only ${base} HEAD", returnStdout: true).trim().readLines()
+                        // 충돌을 풀려고 대상 브랜치를 합친 커밋만 새로 왔으면(두 부모가 모두 이 Jenkins 를 통과한 것, 아래 VERIFIED)
+                        // MR 전체를 다시 돌리지 않고 두 부모 모두와 다른 파일(합친 자리: 충돌 해결·양쪽이 같이 고친 파일)만 본다.
+                        // 명세 개정 이력(docs/spec/README.md) 충돌 때문에 서버 빌드를 통째로 다시 기다리는 일을 줄인다(S15P31A101-33).
+                        // 코드 파일이 양쪽에서 함께 바뀌었으면 그 파트는 그대로 돈다
+                        def parents = sh(script: 'git rev-list --parents -n 1 HEAD', returnStdout: true).trim().split(' ')
+                        if (parents.size() == 3
+                                && sh(script: "git merge-base --is-ancestor ${parents[2]} origin/${env.gitlabTargetBranch}", returnStatus: true) == 0
+                                && fileExists("${env.VERIFIED}/${parents[1]}") && fileExists("${env.VERIFIED}/${parents[2]}")) {
+                            files = sh(script: """
+                                git diff --name-only ${parents[1]} HEAD | sort > "\$WORKSPACE@tmp/merged-a"
+                                git diff --name-only ${parents[2]} HEAD | sort > "\$WORKSPACE@tmp/merged-b"
+                                comm -12 "\$WORKSPACE@tmp/merged-a" "\$WORKSPACE@tmp/merged-b"
+                            """, returnStdout: true).trim().readLines()
+                            echo "대상 브랜치를 합친 커밋: 두 부모가 이미 통과했으므로 합친 자리만 본다 ${files}"
+                        }
                     }
                     def always = ['Jenkinsfile', 'deploy/jenkins/']
                     // contracts/ 가 바뀌면 계약을 읽는 파트도 돈다: ai·gateway 시험, front 생성 타입, server 계약 클래스(contracts.gradle)
@@ -91,7 +108,6 @@ pipeline {
                 PGHOST = 'ci-db'
                 PGUSER = 'postgres'
                 PGPASSWORD = 'simai-ci'
-                SPRING_DATASOURCE_URL = 'jdbc:postgresql://ci-db:5432/simai_ci'
                 SPRING_DATASOURCE_USERNAME = 'postgres'
                 SPRING_DATASOURCE_PASSWORD = 'simai-ci'
                 // 시험 컨텍스트마다 풀을 따로 잡는다(Spring 시험 컨텍스트 캐시). 기본 10 이면 ci-db 연결 상한을 넘을 수 있다
@@ -99,7 +115,14 @@ pipeline {
             }
             steps {
                 // 빌드마다 빈 DB 에서 Flyway 가 V1 부터 적용하게 지우고 새로 만든다
-                sh 'psql -v ON_ERROR_STOP=1 -d postgres -c "DROP DATABASE IF EXISTS simai_ci WITH (FORCE)" -c "CREATE DATABASE simai_ci"'
+                script {
+                    // 작업마다 시험 DB 를 따로 쓴다. simai(MR·dev)와 simai-nightly-ai 는 서로 다른 작업이라
+                    // disableConcurrentBuilds 로 막히지 않고 동시에 돌 수 있는데, 같은 DB 를 FORCE 로 지우면
+                    // 다른 쪽 시험이 무더기로 깨진다(S15P31A101-466). 환경 블록에 두면 이 값보다 우선하므로 여기서만 정한다
+                    env.CI_DB = 'simai_ci_' + env.JOB_NAME.replaceAll('[^A-Za-z0-9]', '_')
+                    env.SPRING_DATASOURCE_URL = "jdbc:postgresql://ci-db:5432/${env.CI_DB}"
+                }
+                sh 'psql -v ON_ERROR_STOP=1 -d postgres -c "DROP DATABASE IF EXISTS $CI_DB WITH (FORCE)" -c "CREATE DATABASE $CI_DB"'
                 dir('server') {
                     // gradlew 는 실행 권한 없이 커밋돼 있다
                     sh 'sh gradlew build --no-daemon'
@@ -212,7 +235,10 @@ pipeline {
     }
 
     post {
-        success { updateGitlabCommitStatus name: 'jenkins', state: 'success' }
+        success {
+            sh 'mkdir -p "$VERIFIED" && : > "$VERIFIED/$(git rev-parse HEAD)"'
+            updateGitlabCommitStatus name: 'jenkins', state: 'success'
+        }
         unstable { updateGitlabCommitStatus name: 'jenkins', state: 'failed' }
         failure { updateGitlabCommitStatus name: 'jenkins', state: 'failed' }
         aborted { updateGitlabCommitStatus name: 'jenkins', state: 'canceled' }

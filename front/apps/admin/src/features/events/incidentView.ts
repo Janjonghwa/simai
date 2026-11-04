@@ -8,7 +8,7 @@ import {
   isAlarming,
 } from '@/features/events/entries';
 import { formatTime, ruleName } from '@/features/events/format';
-import type { Incident } from '@/features/events/incidents';
+import { topEntry, type Incident } from '@/features/events/incidents';
 import type { EventItem } from '@/features/events/types';
 
 // 묶음(Incident)을 카드·상세에 보이는 값으로 바꾸는 계산. 화면 없이 시험한다.
@@ -17,29 +17,15 @@ import type { EventItem } from '@/features/events/types';
 export const targetLabel = (target: Incident['target']) =>
   !target ? '대상 없음' : target.type === 'person' ? target.id : `구역 ${target.id}`;
 
-/** 구역 표시: "Z-05 새 구역". 이름을 모르면 번호만. */
-export const zoneLabel = (zoneId: string, zoneName?: (zoneId: string) => string | undefined) => {
-  const name = zoneName?.(zoneId);
-  return name ? `${zoneId} ${name}` : zoneId;
-};
-
 /**
- * 카드 둘째 줄의 장소: 대상 · 첫 구역(번호와 이름) · 나머지 구역(번호만).
- * 대상이 구역이면(사람 없는 이벤트) 그 구역을 먼저 적고 같은 구역을 되풀이하지 않는다.
+ * 카드 제목: 대표 규칙 이름 · 구역 번호. 대상이 구역이면 칩에 그 구역이 있어 제목에서는 되풀이하지 않는다.
+ * 구역 이름과 다른 구역은 사건 상세에서 본다.
  */
-export function placeLine(
-  incident: Incident,
-  zoneName?: (zoneId: string) => string | undefined,
-): string {
+export function cardTitle(incident: Incident): string {
+  const { rule_id, zone_id } = topEntry(incident).event;
   const own = incident.target?.type === 'zone' ? incident.target.id : null;
-  const zones = [
-    ...new Set(
-      incident.entries.map((e) => e.event.zone_id).filter((z): z is string => !!z && z !== own),
-    ),
-  ];
-  const head = own ? [zoneLabel(own, zoneName)] : incident.target ? [incident.target.id] : [];
-  const rest = zones.map((z, n) => (n === 0 && !own ? zoneLabel(z, zoneName) : z));
-  return [...head, ...rest].join(' · ');
+  const zone = zone_id && zone_id !== own ? ` · ${zone_id}` : '';
+  return `${ruleName(rule_id)}${zone}`;
 }
 
 /** 모두 해소된 묶음의 마지막 해소 시각 문구: "해소 12:03:41". */

@@ -38,7 +38,7 @@ public class WorkUnitRepository {
 
     private static final String SELECT = """
             SELECT w.work_id, w.work_date, w.name, w.starts_at, w.ends_at, w.zone_id, w.place, w.planned_people,
-                   w.lead_team, w.layout_id, w.work_type,
+                   w.lead_team, w.layout_id, w.work_type, w.status, w.actual_started_at, w.actual_ended_at, w.active_setup_session_id,
                    (SELECT z.name FROM zone z WHERE z.zone_id = w.zone_id ORDER BY z.zone_version DESC LIMIT 1) AS zone_name,
                    c.critical, c.high
             FROM work_unit w
@@ -46,7 +46,8 @@ public class WorkUnitRepository {
                 SELECT count(*) FILTER (WHERE e.severity = 'CRITICAL') AS critical,
                        count(*) FILTER (WHERE e.severity = 'HIGH') AS high
                 FROM risk_event e
-                WHERE e.source = 'LIVE' AND e.raised_at BETWEEN w.starts_at AND w.ends_at
+                WHERE e.source = 'LIVE' AND e.raised_at BETWEEN COALESCE(w.actual_started_at, w.starts_at)
+                    AND COALESCE(w.actual_ended_at, CASE WHEN w.status = 'IN_PROGRESS' THEN CURRENT_TIMESTAMP ELSE w.ends_at END)
                   AND (w.zone_id IS NULL OR e.zone_id = w.zone_id)
             ) c ON true
             """;
@@ -61,7 +62,10 @@ public class WorkUnitRepository {
 
     /** 끝난 지 days 일이 안 된 작업(아직 안 끝난 작업 포함), 늦게 시작한 것부터 */
     public List<ObjectNode> findRecent(String siteId, Instant since) {
-        return jdbc.query(SELECT + " WHERE w.site_id = :siteId AND w.ends_at >= :since ORDER BY w.starts_at DESC, w.work_id DESC",
+        return jdbc.query(SELECT + """
+                 WHERE w.site_id = :siteId AND (w.status = 'IN_PROGRESS' OR COALESCE(w.actual_ended_at, w.ends_at) >= :since)
+                 ORDER BY COALESCE(w.actual_started_at, w.starts_at) DESC, w.work_id DESC
+                """,
                 new MapSqlParameterSource().addValue("siteId", siteId).addValue("since", utc(since)), (rs, i) -> view(rs));
     }
 
@@ -81,6 +85,45 @@ public class WorkUnitRepository {
                 RETURNING work_id
                 """, params, Long.class);
         return id == null ? 0 : id;
+    }
+
+    /** 사이트 행은 서로 다른 작업의 동시 시작도 직렬화한다. 보고서 생성과 같은 작업 행 잠금 순서를 유지한다. */
+    public ObjectNode lockSession(String siteId, long workId) {
+        jdbc.queryForList("SELECT site_id FROM site WHERE site_id = :site FOR UPDATE",
+                new MapSqlParameterSource("site", siteId), String.class);
+        List<Long> ids = jdbc.queryForList(
+                "SELECT work_id FROM work_unit WHERE site_id = :site AND work_id = :id FOR UPDATE",
+                new MapSqlParameterSource("site", siteId).addValue("id", workId), Long.class);
+        if (ids.isEmpty()) throw new BusinessException(ErrorCode.Work.WORK_UNIT_NOT_FOUND);
+        return findOne(siteId, workId).orElseThrow();
+    }
+
+    public ObjectNode startSession(String siteId, long workId, Instant now) {
+        ObjectNode work = lockSession(siteId, workId);
+        if (!"PLANNED".equals(work.path("status").asString())) {
+            throw new BusinessException(ErrorCode.Work.WORK_INVALID_STATE);
+        }
+        List<Long> active = jdbc.queryForList(
+                "SELECT work_id FROM work_unit WHERE site_id = :site AND status = 'IN_PROGRESS'",
+                new MapSqlParameterSource("site", siteId), Long.class);
+        if (!active.isEmpty()) throw new WorkAlreadyInProgressException(active.getFirst());
+        jdbc.update("""
+                UPDATE work_unit SET status = 'IN_PROGRESS', actual_started_at = :now, updated_at = :now
+                WHERE site_id = :site AND work_id = :id
+                """, new MapSqlParameterSource("site", siteId).addValue("id", workId).addValue("now", utc(now)));
+        return findOne(siteId, workId).orElseThrow();
+    }
+
+    public ObjectNode endSession(String siteId, long workId, Instant now) {
+        ObjectNode work = lockSession(siteId, workId);
+        if (!"IN_PROGRESS".equals(work.path("status").asString())) {
+            throw new BusinessException(ErrorCode.Work.WORK_INVALID_STATE);
+        }
+        jdbc.update("""
+                UPDATE work_unit SET status = 'DONE', actual_ended_at = GREATEST(:now, actual_started_at), updated_at = :now
+                WHERE site_id = :site AND work_id = :id
+                """, new MapSqlParameterSource("site", siteId).addValue("id", workId).addValue("now", utc(now)));
+        return findOne(siteId, workId).orElseThrow();
     }
 
     /** 전체를 바꾼다. 없으면 WORK_UNIT_NOT_FOUND */
@@ -204,6 +247,12 @@ public class WorkUnitRepository {
         long layoutId = rs.getLong("layout_id");
         if (rs.wasNull()) w.putNull("layout_id"); else w.put("layout_id", layoutId);
         putText(w, "work_type", rs.getString("work_type"));
+        w.put("status", rs.getString("status"));
+        putText(w, "active_setup_session_id", rs.getString("active_setup_session_id"));
+        for (String field : List.of("actual_started_at", "actual_ended_at")) {
+            var timestamp = rs.getTimestamp(field);
+            if (timestamp == null) w.putNull(field); else w.put(field, timestamp.getTime());
+        }
         ObjectNode counts = w.putObject("event_counts");
         counts.put("CRITICAL", rs.getLong("critical"));
         counts.put("HIGH", rs.getLong("high"));

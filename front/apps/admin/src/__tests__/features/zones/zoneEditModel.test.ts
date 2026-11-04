@@ -237,9 +237,9 @@ describe('초안 갱신', () => {
       zoneType: 'OPENING',
       severity: 'HIGH',
     });
-    expect(newZoneForm({ name: 'A', severity: 'INFO' })).toMatchObject({
+    expect(newZoneForm({ name: 'A', severity: 'CRITICAL' })).toMatchObject({
       name: 'A',
-      severity: 'INFO',
+      severity: 'CRITICAL',
     });
   });
 });

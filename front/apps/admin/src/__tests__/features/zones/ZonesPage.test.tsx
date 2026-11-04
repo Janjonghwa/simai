@@ -4,7 +4,7 @@ import { ARM_MS } from '@/features/zones/useArmedDelete';
 import { NEW_KEY } from '@/features/zones/zoneEditModel';
 import { ZonesPage } from '@/features/zones/ZonesPage';
 import { createStaticObjectsMock } from '@/mocks/staticObjects';
-import { createZonesMock, type ZonesMock } from '@/mocks/zones';
+import { createZonesMock, MOCK_ZONES, type ZonesMock } from '@/mocks/zones';
 import { useBoxEditStore } from '@/store/boxEdit.store';
 import { useSessionStore, type Role } from '@/store/session.store';
 import { HISTORY_LIMIT, useZoneEditStore } from '@/store/zoneEdit.store';
@@ -195,12 +195,40 @@ describe('구역 편집 화면', () => {
       within(severity)
         .getAllByRole('option')
         .map((o) => o.textContent),
-    ).toEqual(['위험', '경고', '주의', '안내']);
+    ).toEqual(['위험', '경고']);
     // 구역 종류·판정 유형은 화면에 없다.
     expect(screen.queryByLabelText('판정 유형')).toBeNull();
     expect(screen.queryByLabelText('유형')).toBeNull();
     expect(button('구역 추가')).toBeTruthy();
     expect(button('+ 고소 작업면 추가')).toBeTruthy();
+  });
+
+  it('이미 저장된 주의 구역은 지금 값을 비활성 선택지로 보이고, 위험이나 경고를 다시 골라야 저장한다', async () => {
+    server.use(
+      http.get('*/api/zones', () =>
+        HttpResponse.json(
+          MOCK_ZONES.map((zone) =>
+            zone.zone_id === 'z-04' ? { ...zone, severity: 'CAUTION' } : zone,
+          ),
+        ),
+      ),
+    );
+    await renderPage();
+    pick('z-04');
+    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+    const options = within(severitySelect()).getAllByRole('option') as HTMLOptionElement[];
+    expect(options.map((o) => [o.textContent, o.disabled])).toEqual([
+      ['주의', true],
+      ['위험', false],
+      ['경고', false],
+    ]);
+    expect(severitySelect().value).toBe('CAUTION');
+    expect(screen.getByText('위험·경고 중에서 고르세요.')).toBeTruthy();
+    rename('다른 이름');
+    expect((button('저장') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(severitySelect(), { target: { value: 'HIGH' } });
+    expect(screen.queryByText('위험·경고 중에서 고르세요.')).toBeNull();
+    expect((button('저장') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('새 구역은 OPENING·VOLUME_3D 로 만들고 저장과 발행을 /commit 한 번(CREATE, publish)으로 보낸다', async () => {
@@ -209,7 +237,7 @@ describe('구역 편집 화면', () => {
       target: { value: '새로 만든 구역' },
     });
     fireEvent.change(screen.getByRole('combobox', { name: '심각도' }), {
-      target: { value: 'CAUTION' },
+      target: { value: 'CRITICAL' },
     });
     act(() => button('구역 추가').click());
     await waitFor(() => expect(picker().value).toBe('z-00000001'));
@@ -222,7 +250,7 @@ describe('구역 편집 화면', () => {
           name: '새로 만든 구역',
           zone_kind: 'OPENING',
           eval_type: 'VOLUME_3D',
-          severity: 'CAUTION',
+          severity: 'CRITICAL',
           z_min_m: 0,
           z_max_m: 2,
         },
@@ -862,7 +890,7 @@ describe('구역 편집 화면', () => {
       const savedSeverity = severitySelect().value;
       rename('다른 이름');
       fireEvent.change(severitySelect(), {
-        target: { value: savedSeverity === 'CAUTION' ? 'INFO' : 'CAUTION' },
+        target: { value: savedSeverity === 'CRITICAL' ? 'HIGH' : 'CRITICAL' },
       });
 
       expect(pressUndo()).toBe(false);
@@ -887,7 +915,7 @@ describe('구역 편집 화면', () => {
       rename('개');
       rename('개구');
       rename('개구부 B');
-      fireEvent.change(severitySelect(), { target: { value: 'INFO' } });
+      fireEvent.change(severitySelect(), { target: { value: 'HIGH' } });
       rename('개구부 C');
       expect(useZoneEditStore.getState().history['z-04']).toHaveLength(3);
 
@@ -958,7 +986,7 @@ describe('구역 편집 화면', () => {
       await screen.findByLabelText('높이(m)');
       for (let i = 0; i < HISTORY_LIMIT; i++) {
         rename(`이름 ${i}`);
-        fireEvent.change(severitySelect(), { target: { value: i % 2 ? 'INFO' : 'CAUTION' } });
+        fireEvent.change(severitySelect(), { target: { value: i % 2 ? 'HIGH' : 'CRITICAL' } });
       }
       pressPointer();
       dragTo({ min: [2, 6.2, 0], max: [5, 8.4, 0.4] });
@@ -1050,18 +1078,18 @@ describe('구역 편집 화면', () => {
       pick('z-02');
       await screen.findByLabelText('높이(m)');
       rename('다른 이름');
-      fireEvent.change(severitySelect(), { target: { value: 'INFO' } });
+      fireEvent.change(severitySelect(), { target: { value: 'CRITICAL' } });
 
       expect(pressUndo(nameInput())).toBe(true);
       expect(pressUndo(severitySelect())).toBe(true);
       expect(pressUndo(screen.getByLabelText('높이(m)'))).toBe(true);
       expect(nameInput().value).toBe('다른 이름');
-      expect(severitySelect().value).toBe('INFO');
+      expect(severitySelect().value).toBe('CRITICAL');
       expect(useZoneEditStore.getState().history['z-02']).toHaveLength(2);
 
       // 버튼에 포커스가 있을 때는 되돌린다.
       pressUndo(button('되돌리기'));
-      expect(severitySelect().value).not.toBe('INFO');
+      expect(severitySelect().value).not.toBe('CRITICAL');
     });
 
     it('한글 조합 중이거나 시프트·알트와 함께 누른 키는 무시하고, 한글 자판이어도 자판 위치로 되돌린다', async () => {

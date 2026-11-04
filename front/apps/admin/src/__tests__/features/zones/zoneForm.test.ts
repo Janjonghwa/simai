@@ -54,7 +54,7 @@ describe('zoneForm', () => {
 
   it('받은 이름이 이미 길면 그 이름을 그대로 둔 채 다른 칸을 저장할 수 있다(길이는 고친 이름만 본다)', () => {
     const saved = { ...formOf(ZONE), name: 'ㄱ'.repeat(50) };
-    expect(formErrors({ ...saved, severity: 'INFO' }, { saved, hasHeight: true })).toEqual({});
+    expect(formErrors({ ...saved, severity: 'HIGH' }, { saved, hasHeight: true })).toEqual({});
     expect(
       formErrors({ ...saved, name: 'ㄴ'.repeat(41) }, { saved, hasHeight: true }).name,
     ).toBeDefined();
@@ -66,6 +66,17 @@ describe('zoneForm', () => {
     expect(formErrors(volume, { saved, hasHeight: false }).judgeType).toBeDefined();
     expect(formErrors(volume, { saved, hasHeight: true }).judgeType).toBeUndefined();
     expect(formErrors(saved, { saved, hasHeight: false })).toEqual({});
+  });
+
+  it('심각도는 위험·경고만 고를 수 있고, 이미 저장된 주의·안내는 다시 골라야 저장한다', () => {
+    const saved = formOf(ZONE);
+    const check = (severity: ZoneForm['severity']) =>
+      formErrors({ ...saved, severity }, { saved, hasHeight: true }).severity;
+    expect(check('CRITICAL')).toBeUndefined();
+    expect(check('HIGH')).toBeUndefined();
+    expect(check('CAUTION')).toBeDefined();
+    expect(check('INFO')).toBeDefined();
+    expect(newZoneErrors(NEW_ZONE_FORM).severity).toBeUndefined();
   });
 
   it('형상을 고쳤으면 그 상자를 서버 형식(eval_type·zone_kind·z_min_m·z_max_m)으로 보내고, 고치지 않는 칸은 받은 값을 그대로 보낸다', () => {
@@ -90,7 +101,7 @@ describe('zoneForm', () => {
 
   it('이름을 고치지 않았으면 받은 이름(공백 포함)을 그대로 보낸다', () => {
     const zone = { ...ZONE, name: '개구부 위 ' };
-    expect(bodyOf(zone, { ...formOf(zone), severity: 'INFO' }, null).name).toBe('개구부 위 ');
+    expect(bodyOf(zone, { ...formOf(zone), severity: 'HIGH' }, null).name).toBe('개구부 위 ');
   });
 
   it('직사각형이 아니거나 높이가 없는 구역은 속성만 저장해도 받은 다각형과 빈 높이를 그대로 보낸다', () => {
@@ -130,7 +141,7 @@ describe('zoneForm', () => {
       zRange: null,
       shapeEditable: false,
     };
-    expect(bodyOf(half, { ...formOf(half), severity: 'INFO' }, null)).toMatchObject({
+    expect(bodyOf(half, { ...formOf(half), severity: 'HIGH' }, null)).toMatchObject({
       z_min_m: 0.5,
       z_max_m: null,
     });

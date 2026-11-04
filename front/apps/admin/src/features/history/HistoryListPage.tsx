@@ -24,9 +24,7 @@ function EventCounts({ counts }: { counts: WorkUnit['event_counts'] }) {
       >
         위험 {critical}
       </span>
-      <span className={cn(high > 0 ? 'text-sev-critical' : 'text-muted-foreground')}>
-        경고 {high}
-      </span>
+      <span className={cn(high > 0 ? 'text-sev-high' : 'text-muted-foreground')}>경고 {high}</span>
     </span>
   );
 }

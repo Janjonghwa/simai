@@ -71,6 +71,26 @@ def _flat(m: dict[str, Any]) -> dict[str, Any]:
         for key in ("new_ids", "new_ids_per_person_min", "count_exact", "count_over", "count_under", "id_changes"):
             if key in seg:
                 out[f"{name}_{key}"] = seg[key]
+    out["split_remainder_suppressed"] = d["manager"].get("new_track.split_remainder_suppressed", 0)
+    re_m = m.get("reentry") or {}
+    if "continuation_rate" in re_m:
+        out["reentry_continuation_rate"] = re_m["continuation_rate"]
+        out["reentry_resumed_after_lost"] = re_m.get("resumed_after_lost", 0)
+        out["reentry_resumed_after_dormant"] = re_m.get("resumed_after_dormant", 0)
+    if (m.get("run") or {}).get("ms_per_tick") is not None:
+        out["ms_per_tick"] = m["run"]["ms_per_tick"]
+    for reid_key in (
+        "reid.split_suppressed_same",
+        "reid.split_preserved_different",
+        "reid.swap_reverted",
+        "reid.reentry_reconnected",
+        "reid.reentry_merged",
+    ):
+        if reid_key in d["manager"]:
+            out[reid_key.replace(".", "_")] = d["manager"][reid_key]
+    for kind, review in m.get("association_review", {}).items():
+        for key, value in review.items():
+            out[f"{kind}_{key}"] = value
     return out
 
 
@@ -80,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cache", required=True, type=Path)
     ap.add_argument("--weights", required=True, type=Path)
     ap.add_argument("--owner", default="Jonghwa Park")
+    ap.add_argument("--jira-key", default="S15P31A101-413")
     ap.add_argument("results", nargs="+", type=Path)
     args = ap.parse_args(argv)
     meta = json.loads((args.cache / "meta.json").read_text(encoding="utf-8"))
@@ -113,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:  # noqa: BLE001 - 검사 도구가 없으면 기록만 남긴다
         validator = None
     plan_rel = args.plan.resolve().relative_to(REPO).as_posix()
+    failed = False
     for res in args.results:
         m = json.loads((res / "metrics.json").read_text(encoding="utf-8"))
         name = res.name
@@ -120,9 +142,9 @@ def main(argv: list[str] | None = None) -> int:
         cfg = m["run"]["config"]
         rec = {
             "schema_version": SCHEMA_VERSION,
-            "run_id": f"track413-{name}-{commit[:8]}",
+            "run_id": f"track{args.jira_key.rsplit('-', 1)[-1]}-{name}-{commit[:8]}-{finished}",
             "experiment_id": "VAL-01",
-            "jira_key": "S15P31A101-413",
+            "jira_key": args.jira_key,
             "owner": args.owner,
             "git_commit": commit,
             "branch": branch,
@@ -151,9 +173,10 @@ def main(argv: list[str] | None = None) -> int:
         errors = []
         if validator is not None:
             errors = [e.message for e in validator.iter_errors(rec)]
+        failed |= validator is None or bool(errors)
         (res / "run_record.json").write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
         print(f"{name}: run_record.json ({'검사 생략' if validator is None else ('통과' if not errors else errors[:3])})")
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

@@ -80,6 +80,19 @@ describe('AlarmBanner', () => {
     expect(blink?.className).toContain('pointer-events-none');
   });
 
+  it.each([
+    ['CRITICAL', 'ring-sev-critical', 'ring-sev-high'],
+    ['HIGH', 'ring-sev-high', 'ring-sev-critical'],
+  ] as const)('깜빡이는 테두리는 경보 등급 %s 의 색(%s)이다', (severity, ring, other) => {
+    live.entries = [{ ...alarm, event: { ...alarm.event, severity } }];
+    const banner = renderBanner(true);
+    const blink = [...banner.querySelectorAll<HTMLElement>('[aria-hidden="true"]')].find((el) =>
+      el.className.includes('animate-alarm-blink'),
+    );
+    expect(blink?.className).toContain(ring);
+    expect(blink?.className).not.toContain(other);
+  });
+
   it('상세를 누르면 그 이벤트를 열고, 이벤트 패널이 없는 화면이면 실시간 관제로 간다', () => {
     const banner = renderBanner(false);
     fireEvent.click(within(banner).getByRole('button', { name: '상세' }));

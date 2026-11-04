@@ -86,6 +86,13 @@ export const useRealtimeStore = create<RealtimeState>()((set) => ({
 
 export type RealtimeStore = typeof useRealtimeStore;
 
+/**
+ * 지금 추적 중인 사람 수. 놓친(LOST) 트랙은 세지 않는다.
+ * 숫자를 돌려주므로 world 가 10Hz 로 와도 수가 바뀔 때만 구독한 화면을 다시 그린다.
+ */
+export const selectTrackedCount = (state: Pick<RealtimeState, 'world'>): number =>
+  state.world?.payload.tracks.filter((track) => track.track_lifecycle !== 'LOST').length ?? 0;
+
 /** /topic/health 는 1초마다 온다. 3번 연속 빠지면 끊긴 것으로 본다(명세 3장 하트비트, 13.2). */
 export const HEALTH_TIMEOUT_MS = 3000;
 

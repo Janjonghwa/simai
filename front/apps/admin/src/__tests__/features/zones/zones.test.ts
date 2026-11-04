@@ -153,7 +153,14 @@ describe('상자 ↔ 다각형', () => {
   it('3D 뷰어에는 상자 형식(DEMO)으로 넘긴다', () => {
     expect(toViewerZones(read(zone('z', rect(1, 2, 3, 4))))).toEqual({
       contract: 'DEMO_UNCONFIRMED',
-      zones: [{ zone_id: 'z', name: 'z', aabb: { min_xyz: [1, 2, 0], max_xyz: [3, 4, 2] } }],
+      zones: [
+        {
+          zone_id: 'z',
+          name: 'z',
+          severity: 'HIGH',
+          aabb: { min_xyz: [1, 2, 0], max_xyz: [3, 4, 2] },
+        },
+      ],
     });
   });
 });

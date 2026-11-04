@@ -319,6 +319,22 @@ describe('DEMO 구역', () => {
     ]);
   });
 
+  it.each(['CRITICAL', 'HIGH', 'CAUTION', 'INFO'])('심각도 %s 는 구역에 싣는다', (severity) => {
+    const [zone] = adaptDemoZones(demo({ ...box('z', [0, 0, 0], [1, 1, 1]), severity }), 0).zones;
+    expect(zone?.severity).toBe(severity);
+  });
+
+  it.each([
+    ['없음', undefined],
+    ['모르는 값', 'WARN'],
+    ['글자가 아님', 3],
+  ])('심각도가 %s 이면 구역은 받고 심각도만 비운다', (_, severity) => {
+    const snapshot = adaptDemoZones(demo({ ...box('z', [0, 0, 0], [1, 1, 1]), severity }), 0);
+    expect(snapshot.zones).toHaveLength(1);
+    expect(snapshot.zones[0]).not.toHaveProperty('severity');
+    expect(snapshot.invalid).toEqual([]);
+  });
+
   it('객체가 아닌 항목은 ID 없이 형식 오류로 뺀다', () => {
     expect(adaptDemoZones(demo(null, 3), 0).invalid).toEqual([
       { zoneId: null, reason: '형식 오류' },

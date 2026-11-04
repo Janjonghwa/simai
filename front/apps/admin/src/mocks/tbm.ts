@@ -12,6 +12,7 @@ import {
   workTypeLabelOf,
   type WorkTypeOption,
 } from '@/features/tbm/types';
+import { readMockUser } from '@/mocks/mockUser';
 import { http, HttpResponse } from 'msw/http';
 
 // TBM 화면(작업·공종·가상 레이아웃·보고서) MSW 핸들러.
@@ -801,7 +802,7 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
       created_at: l.updated_at ?? l.created_at ?? 1760572800000,
     });
   }
-  const works: TbmWorkUnit[] = INITIAL_WORKS.map((w) => ({ ...w }));
+  const works: TbmWorkUnit[] = INITIAL_WORKS.map((w) => ({ ...w, status: 'PLANNED' }));
 
   let nextLayoutSeq = 104;
   let nextWorkSeq = 4;
@@ -812,6 +813,18 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
   // work_id 별 보고서 버전 목록(오래된 순 → 최신 순)
   const reportsByWork = new Map<string, TbmReport[]>();
   const pollCounts = new Map<number, number>();
+  const uploadedSignatures = new Map<string, Uint8Array>();
+  const signatures = new Map<
+    number,
+    {
+      signature_id: string;
+      signer_name: string;
+      signer_role: 'PARTICIPANT' | 'APPROVER';
+      signed_at: number;
+      report_version: number;
+      image_url: string;
+    }[]
+  >();
   const pendingOutcomeByReport = new Map<
     number,
     { status: 'SUCCEEDED' | 'FAILED'; failureReason?: string }
@@ -831,6 +844,96 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
   };
 
   const handlers = [
+    http.post('*/api/uploads/sign', async ({ request }) => {
+      const body = (await request.json()) as { purpose?: string };
+      if (body.purpose !== 'REPORT_SIGNATURE') return undefined;
+      const key = crypto.randomUUID();
+      return HttpResponse.json({
+        object_key: `signatures/${key}.png`,
+        upload_url: new URL(`/mock-signature-upload/${key}`, request.url).toString(),
+        headers: { 'Content-Type': 'image/png' },
+      });
+    }),
+    http.put('*/mock-signature-upload/:key', async ({ request, params }) => {
+      uploadedSignatures.set(String(params.key), new Uint8Array(await request.arrayBuffer()));
+      return new HttpResponse(null, { status: 200 });
+    }),
+    http.get(
+      '*/mock-signature-image/:key',
+      ({ params }) =>
+        new HttpResponse(uploadedSignatures.get(String(params.key)) ?? null, {
+          headers: { 'Content-Type': 'image/png' },
+        }),
+    ),
+    http.get('*/api/reports/tbm/:reportId/signatures', ({ params, request }) => {
+      const report = findReportById(Number(params.reportId));
+      if (
+        !report ||
+        Number(new URL(request.url).searchParams.get('version')) !== report.report_version
+      )
+        return HttpResponse.json({ items: [] });
+      return HttpResponse.json({ items: signatures.get(report.report_id) ?? [] });
+    }),
+    http.post('*/api/reports/tbm/:reportId/signatures', async ({ params, request }) => {
+      const report = findReportById(Number(params.reportId));
+      if (!report) return HttpResponse.json({ code: 'REPORT_NOT_FOUND' }, { status: 404 });
+      if (report.approved_at != null)
+        return HttpResponse.json({ code: 'REPORT_APPROVED' }, { status: 409 });
+      const body = (await request.json()) as {
+        report_version: number;
+        signer_name: string;
+        image_key: string;
+        notice_acknowledged: boolean;
+        signer_role?: 'PARTICIPANT' | 'APPROVER';
+      };
+      const role = body.signer_role ?? 'PARTICIPANT';
+      const latest = reportsByWork.get(report.work_id)?.at(-1);
+      if (latest?.report_id !== report.report_id || body.report_version !== report.report_version)
+        return HttpResponse.json({ code: 'REPORT_VERSION_STALE' }, { status: 409 });
+      if (report.status !== 'SUCCEEDED')
+        return HttpResponse.json({ code: 'REPORT_NOT_READY' }, { status: 409 });
+      if (
+        !['PARTICIPANT', 'APPROVER'].includes(role) ||
+        !body.notice_acknowledged ||
+        !body.signer_name?.trim() ||
+        body.signer_name.trim().length > 40
+      )
+        return HttpResponse.json({ code: 'INVALID_REQUEST' }, { status: 400 });
+      const now = Date.now();
+      report.locked_at ??= now;
+      report.content_sha256 ??= 'a'.repeat(64);
+      const entry = {
+        signature_id: crypto.randomUUID(),
+        signer_name: body.signer_name,
+        signer_role: role,
+        signed_at: now,
+        report_version: report.report_version,
+        image_url: new URL(
+          `/mock-signature-image/${body.image_key
+            .split('/')
+            .at(-1)
+            ?.replace(/\.png$/, '')}`,
+          request.url,
+        ).toString(),
+      };
+      const entries = signatures.get(report.report_id) ?? [];
+      entries.push(entry);
+      signatures.set(report.report_id, entries);
+      report.signature_count = entries.length;
+      if (role === 'APPROVER') {
+        report.approved_at = now;
+        report.approved_by_name = readMockUser(request.headers.get('Authorization'))?.id ?? 'admin';
+      }
+      return HttpResponse.json(
+        {
+          ...entry,
+          report_id: report.report_id,
+          locked_at: report.locked_at,
+          content_sha256: report.content_sha256,
+        },
+        { status: 201 },
+      );
+    }),
     http.get('*/api/work-types', () => HttpResponse.json({ work_types: workTypes })),
 
     http.get('*/api/layouts', () =>
@@ -958,6 +1061,58 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
       return HttpResponse.json(updated, { status: 200 });
     }),
 
+    http.post('*/api/work-units/:id/start', ({ params }) => {
+      const work = works.find((w) => w.work_id === String(params.id));
+      if (!work) return HttpResponse.json({ code: 'WORK_NOT_FOUND' }, { status: 404 });
+      const active = works.find((w) => w.status === 'IN_PROGRESS');
+      if (active)
+        return HttpResponse.json(
+          { code: 'WORK_ALREADY_IN_PROGRESS', detail: active.name },
+          { status: 409 },
+        );
+      if (work.status !== 'PLANNED')
+        return HttpResponse.json({ code: 'WORK_INVALID_STATE' }, { status: 409 });
+      work.status = 'IN_PROGRESS';
+      work.actual_started_at = Date.now();
+      return HttpResponse.json(work);
+    }),
+    http.post('*/api/work-units/:id/end', ({ params }) => {
+      const work = works.find((w) => w.work_id === String(params.id));
+      if (!work || work.status !== 'IN_PROGRESS')
+        return HttpResponse.json({ code: 'WORK_INVALID_STATE' }, { status: 409 });
+      work.status = 'DONE';
+      work.actual_ended_at = Date.now();
+      const list = reportsByWork.get(work.work_id) ?? [];
+      const previous = list.at(-1);
+      if (!previous)
+        return HttpResponse.json(
+          { work_unit: work, wrap_up: { status: 'SKIPPED', report_id: null, reason: 'NO_REPORT' } },
+          { status: 202 },
+        );
+      const report = {
+        ...previous,
+        report_id: ++nextReportSeq,
+        report_version: previous.report_version + 1,
+        status: 'GENERATING' as const,
+        wrap_up_status: 'GENERATING',
+        wrap_up_summary: null,
+        locked_at: null,
+        content_sha256: null,
+        approved_at: null,
+        approved_by_name: null,
+        signature_count: 0,
+      };
+      list.push(report);
+      reportsByWork.set(work.work_id, list);
+      return HttpResponse.json(
+        {
+          work_unit: work,
+          wrap_up: { status: 'GENERATING', report_id: report.report_id, reason: null },
+        },
+        { status: 202 },
+      );
+    }),
+
     http.get('*/api/work-units', ({ request }) => {
       const url = new URL(request.url);
       if (options.deferDaysToHistory && url.searchParams.has('days')) {
@@ -976,6 +1131,7 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
       }
       const created: TbmWorkUnit = {
         work_id: String(nextWorkSeq++),
+        status: 'PLANNED',
         date: typeof body.date === 'string' ? body.date : TBM_ISO_DATE,
         name: body.name,
         from_ms:
@@ -1085,7 +1241,16 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
               outcome.status,
               outcome.failureReason ?? null,
             );
-            Object.assign(report, completed);
+            Object.assign(
+              report,
+              completed,
+              report.wrap_up_status === 'GENERATING'
+                ? {
+                    wrap_up_status: 'SUCCEEDED',
+                    wrap_up_summary: '작업 구간의 위험 이벤트 집계를 확인했습니다.',
+                  }
+                : {},
+            );
           }
         }
       }

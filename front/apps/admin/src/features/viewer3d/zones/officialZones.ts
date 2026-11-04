@@ -1,9 +1,9 @@
-import type {
-  OfficialZoneInfo,
-  ZoneEvalType,
-  ZoneSeverity,
-  ZoneSnapshot,
-  ZoneView,
+import {
+  isZoneSeverity,
+  type OfficialZoneInfo,
+  type ZoneEvalType,
+  type ZoneSnapshot,
+  type ZoneView,
 } from '@/features/viewer3d/data/spatialFrame';
 import { worldPoint } from '@/features/viewer3d/worldCoordinates';
 import { rectangleToAabb } from '@/features/viewer3d/zones/demoRectangle';
@@ -29,7 +29,6 @@ import { rectangleToAabb } from '@/features/viewer3d/zones/demoRectangle';
 export const OFFICIAL_ZONE_CONTRACT = 'BE_ZONES_V1' as const;
 
 const EVAL_TYPES: readonly ZoneEvalType[] = ['GROUND_FOOTPRINT', 'VOLUME_3D'];
-const SEVERITIES: readonly ZoneSeverity[] = ['CRITICAL', 'HIGH', 'CAUTION', 'INFO'];
 /** BE 저장 상한(ZoneRepository.MAX_VERTICES). */
 export const MAX_ZONE_VERTICES = 256;
 
@@ -142,7 +141,7 @@ export function readOfficialZone(item: unknown): { zone: ZoneView } | { reason: 
     return { reason: 'eval_type 은 GROUND_FOOTPRINT 또는 VOLUME_3D 여야 한다' };
   }
   const severity = item.severity;
-  if (!SEVERITIES.some((s) => s === severity)) {
+  if (!isZoneSeverity(severity)) {
     return { reason: 'severity 는 CRITICAL·HIGH·CAUTION·INFO 중 하나여야 한다' };
   }
   if (item.valid_to != null) return { reason: '지금 유효한 버전이 아니다(valid_to 있음)' };
@@ -157,7 +156,7 @@ export function readOfficialZone(item: unknown): { zone: ZoneView } | { reason: 
   const official: OfficialZoneInfo = {
     zoneVersion: version as number,
     evalType: evalType as ZoneEvalType,
-    severity: severity as ZoneSeverity,
+    severity,
     zoneKind: isText(item.zone_kind) ? item.zone_kind : null,
     polygonXy: polygon.points,
     zRange: height.zRange,

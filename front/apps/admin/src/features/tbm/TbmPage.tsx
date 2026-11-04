@@ -1,4 +1,7 @@
 import { PageTitle } from '@/features/layout/PageTitle';
+import { requestSetupSession, setupSessionKey } from '@/features/setup/api';
+import { setSetupWorkUnitId, useSetupFlowStore } from '@/features/setup/setup.store';
+import { SignaturePanel, useSignatures } from '@/features/tbm/SignaturePanel';
 import { PILL, SWITCH } from '@/features/tbm/styles';
 import { TaskAddDialog, TaskEditDialog } from '@/features/tbm/TaskForm';
 import { createTask, taskToInput, type TaskInput } from '@/features/tbm/taskInput';
@@ -11,25 +14,48 @@ import { TbmFormSheet } from '@/features/tbm/TbmFormSheet';
 import { TbmLayoutEditorDialog } from '@/features/tbm/TbmLayoutEditorDialog';
 import { TbmLeftPanel } from '@/features/tbm/TbmLeftPanel';
 import { TbmMinutesPanel } from '@/features/tbm/TbmMinutesPanel';
-import { tbmFailureReasonText, workTypeLabelOf, type LayoutDetail } from '@/features/tbm/types';
+import {
+  displayTaskId,
+  tbmFailureReasonText,
+  workTypeLabelOf,
+  type LayoutDetail,
+} from '@/features/tbm/types';
 import { useMinutesForm } from '@/features/tbm/useMinutesForm';
 import { usePrint } from '@/features/tbm/usePrint';
 import { useReceiving } from '@/features/tbm/useReceiving';
 import { useTbmData } from '@/features/tbm/useTbmData';
 import { useTbmReport } from '@/features/tbm/useTbmReport';
+import { useWorkSession } from '@/features/tbm/useWorkSession';
+import {
+  deriveWorkStages,
+  unfinishedBeforeStart,
+  type SetupSessionLookup,
+} from '@/features/tbm/workStage';
+import { WorkStageBar } from '@/features/tbm/WorkStageBar';
+import { api } from '@/lib/api';
 import { createQueryClient } from '@/lib/queryClient';
 import { Button } from '@simai/ui/components/button';
 import { Card } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
-import { QueryClientContext, QueryClientProvider } from '@tanstack/react-query';
-import { useContext, useMemo, useState } from 'react';
+import { QueryClientContext, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 const EMPTY_PLACEHOLDER_TASK: TbmTask = TBM_TASKS[0]!;
 
-// 레이아웃 · TBM 보고서(계획 모드). 작업마다 가상 레이아웃 · 위험성 평가 · 법령 지식 그래프 · 동시 작업 간섭을 보이고
+// 작업 관리(/work). 작업마다 단계(세팅 → 구역 → TBM 보고서 → 시작 → 종료 → 마무리·서명)를 보이고, 가상 레이아웃 · 위험성 평가 ·
+// 법령 지식 그래프 · 동시 작업 간섭을 보이며 TBM 회의록을 채워 반장에게 보낸다. 예전 이름은 레이아웃 · TBM 보고서(계획 모드). 작업마다 가상 레이아웃 · 위험성 평가 · 법령 지식 그래프 · 동시 작업 간섭을 보이고
 // TBM 회의록을 채워 반장에게 보낸다. 서버 API 실패(네트워크 끊김·5xx) 때만 tbmDemo 로 대체 화면을 그린다.
 
-function TbmPageContent() {
+export interface TbmPageProps {
+  /** 처음 선택할 작업 id(세팅 화면에서 돌아올 때 /work?workUnitId=). */
+  initialWorkId?: string;
+  /** 이 작업의 현장 세팅 화면으로 간다(/setup?workUnitId=). */
+  onOpenSetup?: (workUnitId: number) => void;
+  /** 구역 설정(관제 화면 구역 편집)으로 간다. */
+  onOpenZones?: () => void;
+}
+
+function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProps) {
   const {
     tasks,
     workTypes,
@@ -42,7 +68,9 @@ function TbmPageContent() {
     editTask,
     deleteTask,
   } = useTbmData();
-  const [selected, setSelected] = useState(tasks[0]?.id ?? 'T1');
+  const [selected, setSelected] = useState(
+    initialWorkId ? displayTaskId(initialWorkId) : (tasks[0]?.id ?? 'T1'),
+  );
   const [adding, setAdding] = useState(false);
   const [editingTask, setEditingTask] = useState(false);
   const [editingLayout, setEditingLayout] = useState(false);
@@ -59,6 +87,8 @@ function TbmPageContent() {
   const workId = currentTask ? (currentTask.workId ?? currentTask.id.replace(/^T/, '')) : undefined;
   const {
     report,
+    latest: latestReport,
+    isLoaded: reportLoaded,
     versions,
     selectedReportId,
     isGenerating,
@@ -68,10 +98,72 @@ function TbmPageContent() {
     clearError,
   } = useTbmReport(workId, !isFallback && Boolean(currentTask));
 
+  const session = useWorkSession(workId, selectVersion);
+
+  // 세팅 화면·구역 편집에서 어느 작업인지 알 수 있게 선택한 작업을 남긴다(숫자 id 만).
+  const numericWorkId = workId !== undefined && /^\d+$/.test(workId) ? Number(workId) : null;
+  useEffect(() => {
+    if (!isFallback && numericWorkId !== null && numericWorkId > 0) {
+      setSetupWorkUnitId(numericWorkId);
+    }
+  }, [isFallback, numericWorkId]);
+
+  // 단계 판정은 서버 값으로만: 작업(active_setup_session_id·status·actual_*), 세팅 세션, 최신 보고서.
+  const setupSessionId = currentTask?.activeSetupSessionId ?? null;
+  const setupQuery = useQuery({
+    queryKey: setupSessionKey(setupSessionId ?? ''),
+    queryFn: ({ signal }) => requestSetupSession(api, setupSessionId!, signal),
+    enabled: !isFallback && setupSessionId !== null,
+    retry: false,
+  });
+  const zonesCommittedHere = useSetupFlowStore(
+    (s) => s.zonesCommitted && s.activeSessionId !== null && s.activeSessionId === setupSessionId,
+  );
+  const setupLookup: SetupSessionLookup =
+    setupSessionId === null
+      ? { kind: 'none' }
+      : setupQuery.data
+        ? { kind: 'ready', session: setupQuery.data }
+        : setupQuery.isError
+          ? { kind: 'error' }
+          : { kind: 'loading' };
+  const stageResult = deriveWorkStages({
+    task: {
+      status: currentTask?.status,
+      actualStartedAt: currentTask?.actualStartedAt,
+      actualEndedAt: currentTask?.actualEndedAt,
+    },
+    setup: setupLookup,
+    zonesCommittedHere,
+    report: latestReport,
+    reportKnown: reportLoaded,
+  });
+  const signRef = useRef<HTMLDivElement>(null);
+
+  const startWork = () => {
+    // 세팅·구역이 끝나지 않았어도 막지 않고 확인만 한다.
+    const unfinished = unfinishedBeforeStart(stageResult.stages);
+    if (unfinished.length > 0) {
+      const names = unfinished.map((s) => `${s.label}(${s.detail})`).join(', ');
+      if (
+        !window.confirm(
+          `아직 끝나지 않은 단계가 있습니다: ${names}\n그래도 작업을 시작하시겠습니까?`,
+        )
+      ) {
+        return;
+      }
+    }
+    void session.run('start');
+  };
+  const endWork = () => {
+    if (window.confirm('작업을 종료하시겠습니까?')) void session.run('end');
+  };
+
   const interferences = useMemo(() => tbmInterferences(tasks), [tasks]);
   const { receiving, restart } = useReceiving(task.id);
   const { edits, filled, canUndo, save, undo } = useMinutesForm(task, report);
-  const { printing, items, print } = usePrint(tasks, task, edits, report);
+  const signatures = useSignatures(report);
+  const { printing, items, print, error: printError } = usePrint(tasks, task, edits, report);
 
   const select = (id: string) => {
     if (id !== task.id) {
@@ -205,7 +297,7 @@ function TbmPageContent() {
 
   return (
     <>
-      <PageTitle>레이아웃 · TBM 보고서</PageTitle>
+      <PageTitle>작업 관리</PageTitle>
       {currentTask ? (
         <>
           <div className="flex flex-none flex-wrap items-center gap-2.5">
@@ -285,9 +377,50 @@ function TbmPageContent() {
               </Button>
             </TaskList>
           </div>
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <span>
+              상태:{' '}
+              {task.status === 'IN_PROGRESS'
+                ? '진행'
+                : task.status === 'DONE'
+                  ? '종료'
+                  : task.status === 'PLANNED'
+                    ? '계획'
+                    : '알 수 없음'}
+            </span>
+            <span>
+              실제 시작:{' '}
+              {task.actualStartedAt ? new Date(task.actualStartedAt).toLocaleString() : '—'}
+            </span>
+            <span>
+              실제 종료: {task.actualEndedAt ? new Date(task.actualEndedAt).toLocaleString() : '—'}
+            </span>
+          </div>
+          {!isFallback && (
+            <WorkStageBar
+              result={stageResult}
+              status={task.status}
+              hasSetupSession={setupSessionId !== null}
+              canOpenSetup={numericWorkId !== null && numericWorkId > 0}
+              generating={isGenerating}
+              pending={session.pending}
+              onOpenSetup={() => {
+                if (numericWorkId !== null) onOpenSetup?.(numericWorkId);
+              }}
+              onOpenZones={() => onOpenZones?.()}
+              onGenerate={handleGenerate}
+              onStart={startWork}
+              onEnd={endWork}
+              onSign={() => signRef.current?.scrollIntoView?.({ block: 'start' })}
+            />
+          )}
+          <p role="status">
+            {report?.wrap_up_summary ? `작업 마무리: ${report.wrap_up_summary}` : session.message}
+          </p>
           <p role="status" className="text-[13px] text-point-soft empty:hidden">
             {message}
           </p>
+          {printError && <p role="alert">{printError}</p>}
           {mutationError && (
             <div
               role="alert"
@@ -313,6 +446,15 @@ function TbmPageContent() {
               className="rounded-lg bg-destructive/15 px-3.5 py-2 text-[13px] text-destructive ring-1 ring-destructive/40 ring-inset"
             >
               {tbmFailureReasonText(report.failure_reason)}
+            </div>
+          )}
+          {report && !isFallback && (
+            <div ref={signRef}>
+              <SignaturePanel
+                key={`${report.report_id}-${report.report_version}`}
+                report={report}
+                signatures={signatures}
+              />
             </div>
           )}
           <div className="[container-type:size] flex min-h-[560px] flex-1 gap-3.5">
@@ -410,15 +552,15 @@ function TbmPageContent() {
   );
 }
 
-export function TbmPage() {
+export function TbmPage(props: TbmPageProps = {}) {
   const existingClient = useContext(QueryClientContext);
   const [fallbackClient] = useState(() => createQueryClient());
   if (existingClient) {
-    return <TbmPageContent />;
+    return <TbmPageContent {...props} />;
   }
   return (
     <QueryClientProvider client={fallbackClient}>
-      <TbmPageContent />
+      <TbmPageContent {...props} />
     </QueryClientProvider>
   );
 }

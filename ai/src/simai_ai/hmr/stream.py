@@ -166,7 +166,11 @@ class AvatarLoop:
             if state.revision != rev:
                 state.revision, state.stable, state.samples = rev, 0, []
                 state.pending_glb = None
-            if tr["identity_confidence"] == "IDENTITY_UNCERTAIN":
+            if (
+                tr["identity_confidence"] == "IDENTITY_UNCERTAIN"
+                or tr.get("avatar_update_hold", False)
+                or tr.get("hold_appearance_update", False)
+            ):
                 state.stable, state.samples = 0, []
                 state.pending_glb = None
                 continue

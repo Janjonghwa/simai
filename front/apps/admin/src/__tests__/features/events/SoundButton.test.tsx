@@ -121,6 +121,11 @@ describe('SoundButton', () => {
     expect(icon().className).not.toMatch(/(^|\s)animate-bell-ring/);
     expect(button().className).toContain('text-sev-critical');
 
+    // 울리는 등급이 경고면 종도 경고 색이다.
+    act(() => fake.set({ want: 'HIGH' }));
+    expect(button().className).toContain('text-sev-high');
+    expect(button().className).not.toContain('text-sev-critical');
+
     act(() => fake.set({ muted: true }));
     expect(icon().className).not.toContain('animate-bell-ring');
     expect(button().className).not.toContain('text-sev-critical');
@@ -136,7 +141,7 @@ describe('SoundButton', () => {
     expect(badge()!.className).not.toMatch(/(^|\s)animate-pulse/);
   });
 
-  it('위험 등급(빨강·노랑)·지연(주황) 색을 꺼짐·차단 표시에 쓰지 않는다', () => {
+  it('위험 등급(빨강·주황·노랑)·지연 색을 꺼짐·차단 표시에 쓰지 않는다', () => {
     fake.set({ muted: true, ready: false });
     render(<SoundButton />);
     expect(button().className).not.toMatch(/sev-|delay/);

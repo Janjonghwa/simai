@@ -358,8 +358,13 @@ class CctvRemoteIntegrationTest {
         Client client = new Client();
         StandardWebSocketClient ws = new StandardWebSocketClient();
         client.session = ws.execute(client.handler, headers, uri).get(5, TimeUnit.SECONDS);
-        client.session.setBinaryMessageSizeLimit(1024 * 1024);
-        client.session.setTextMessageSizeLimit(1024 * 1024);
+        try {
+            client.session.setBinaryMessageSizeLimit(1024 * 1024);
+            client.session.setTextMessageSizeLimit(1024 * 1024);
+        } catch (IllegalStateException alreadyClosed) {
+            // 서버가 상태 한 줄만 보내고 바로 닫는 경우(월 송출 상한 등) 연결 직후 이미 닫혀 있을 수 있다.
+            // 받은 메시지와 닫힘은 handler 큐에 그대로 남으므로 시험은 그것을 본다(S15P31A101-466)
+        }
         clients.add(client);
         return client;
     }

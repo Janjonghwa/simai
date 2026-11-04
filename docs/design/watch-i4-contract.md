@@ -96,4 +96,4 @@
 - `watch/` 앱이 계약을 읽게 되면(-337) Jenkinsfile 의 WATCH 파트에 `contracts/` 를 더하고, `AlertFields`(`vibration` → `vibration_pattern`,
   `sent_at_ms` → 봉투 `sent_at`)를 계약 이름으로 맞춘다.
 - `watch_alert` 표의 `alert_msg_id`·`ack_within_ms`·`confirmed_at` 열과 CK 변경은 테이블을 만드는 이슈(-338)의 마이그레이션에서. -336 은 연결 기록 `watch_connection`(V28)만 만들었다.
-- 워치 ACK 로 현장 경보를 멈출지, 격상 뒤 늦은 ACK 의 처리는 -338.
+- 워치 ACK 로 현장 경보를 멈출지, 격상 뒤 늦은 ACK 의 처리는 -338: 멈추지 않는다(운영자 확인이 아님), 늦은 ACK 는 기록만 하고 격상은 그대로([`server-watch-alert.md`](server-watch-alert.md)).

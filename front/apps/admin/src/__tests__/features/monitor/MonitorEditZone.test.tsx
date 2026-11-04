@@ -1,57 +1,71 @@
+import { ALARM_TEXT } from '@/features/events/alarmTone';
+import { Dock } from '@/features/layout/Dock';
 import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
 import { MonitorPage } from '@/features/monitor/MonitorPage';
+import { severityTone } from '@/features/plan/plan';
+import { SetupPage } from '@/features/setup/SetupPage';
 import type {
   Viewer3DHandle,
   Viewer3DProps,
   ViewerStatus,
   ViewerTarget,
 } from '@/features/viewer3d';
-import { ZonesPage } from '@/features/zones/ZonesPage';
+import { PALETTE } from '@/features/viewer3d/palette';
+import { zoneStyle } from '@/features/viewer3d/zones/zonePresentation';
+import { SEVERITY_CHOICES, type ZoneCommitRequest } from '@/features/zones/types';
+import { handlers } from '@/mocks/handlers';
+import { createStaticObjectsMock } from '@/mocks/staticObjects';
+import { createZonesMock } from '@/mocks/zones';
+import { Route as IndexRoute } from '@/routes/_app/index';
 import { useBoxEditStore } from '@/store/boxEdit.store';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore, type Role } from '@/store/session.store';
 import { useZoneEditStore } from '@/store/zoneEdit.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
-import { useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { http } from 'msw/http';
+import { setupServer } from 'msw/node';
+import { useEffect, useImperativeHandle, useRef, type ReactNode } from 'react';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const ZONES_RAW = {
-  contract: 'DEMO_UNCONFIRMED' as const,
-  zones: [
-    {
-      zone_id: 'z-04',
-      name: '북동 위험 구역',
-      aabb: { min_xyz: [5.8, 1.2, 0], max_xyz: [8.6, 3.8, 2.4] },
-    },
-  ],
-};
+const navigateMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@/features/events/useLiveEvents', () => ({
   useLiveEvents: () => ({ entries: [], loaded: true, failed: false }),
 }));
-vi.mock('@/features/zones/useZones', async () => {
-  const { zoneOf } = await import('@/__tests__/features/zones/zoneFixture');
+vi.mock('@/lib/api', async () => {
+  const { createHttp } = await import('@/lib/http');
   return {
-    useZones: () => ({
-      zones: [
-        zoneOf({
-          zoneId: 'z-04',
-          name: '북동 위험 구역',
-          min: [5.8, 1.2, 0],
-          max: [8.6, 3.8, 2.4],
-        }),
-      ],
-      raw: ZONES_RAW,
-      failed: false,
+    api: createHttp({
+      baseUrl: 'https://monitor-edit.invalid',
+      getToken: () => 'mock-token.admin',
     }),
   };
 });
-vi.mock('@/lib/api', () => ({ api: () => Promise.reject(new Error('no api in test')) }));
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>();
+  return {
+    ...actual,
+    useNavigate: () => navigateMock,
+    Link: ({
+      to,
+      children,
+      className,
+      'aria-label': ariaLabel,
+    }: {
+      to: string;
+      children?: ReactNode;
+      className?: string;
+      'aria-label'?: string;
+    }) => (
+      <a href={to} className={className} aria-label={ariaLabel}>
+        {children}
+      </a>
+    ),
+  };
+});
 
 const fake = vi.hoisted(() => ({
-  mounts: 0,
-  unmounts: 0,
   onSelect: null as ((target: ViewerTarget | null) => void) | null,
 }));
 
@@ -79,14 +93,10 @@ function FakeViewer({ ref, onSelectionChange, onStatusChange }: Viewer3DProps) {
 
   const reported = useRef(false);
   useEffect(() => {
-    fake.mounts += 1;
     if (!reported.current) {
       reported.current = true;
       onStatusChange?.({ phase: 'ready', mode: 'LIVE', error: null } as ViewerStatus);
     }
-    return () => {
-      fake.unmounts += 1;
-    };
   }, [onStatusChange]);
 
   return <div data-testid="viewer3d" />;
@@ -94,14 +104,44 @@ function FakeViewer({ ref, onSelectionChange, onStatusChange }: Viewer3DProps) {
 
 const loadFake = () => Promise.resolve({ default: FakeViewer });
 
+const server = setupServer();
+const commits: ZoneCommitRequest[] = [];
+
+beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
+afterAll(() => server.close());
+
 function signInAs(role: Role) {
   useSessionStore.setState({
-    session: { accessToken: `token-${role}`, user: { id: role.toLowerCase(), role } },
+    session: { accessToken: 'mock-token.admin', user: { id: role.toLowerCase(), role } },
   });
 }
 
-describe('MonitorPage 구역 선택 수정 동작 및 단일 Canvas 공유', () => {
+function renderMonitor(initialEdit = false) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <SpatialViewportHost loadViewer={loadFake}>
+        <MonitorPage initialEdit={initialEdit} />
+      </SpatialViewportHost>
+    </QueryClientProvider>,
+  );
+}
+
+describe('관제 관리자 편집 모드', () => {
   beforeEach(() => {
+    const staticObjects = createStaticObjectsMock();
+    const zonesMock = createZonesMock({ staticObjects: staticObjects.store });
+    commits.splice(0, commits.length);
+    navigateMock.mockReset();
+    server.resetHandlers(
+      http.post('*/api/zones/commit', async ({ request }) => {
+        commits.push((await request.clone().json()) as ZoneCommitRequest);
+        return undefined;
+      }),
+      ...zonesMock.handlers,
+      ...staticObjects.handlers,
+      ...handlers,
+    );
     signInAs('ADMIN');
     useZoneEditStore.getState().clear();
     useBoxEditStore.getState().clear();
@@ -112,96 +152,138 @@ describe('MonitorPage 구역 선택 수정 동작 및 단일 Canvas 공유', () 
       },
       true,
     );
-    fake.mounts = 0;
-    fake.unmounts = 0;
-    fake.onSelect = null;
   });
   afterEach(cleanup);
 
-  it('관리자(ADMIN)가 구역을 고르면 구역 수정 버튼이 뜨고, 사람 선택·미선택·비관리자(FOREMAN/VIEWER)에서는 뜨지 않는다(R05)', async () => {
-    const onEditZone = vi.fn();
-    const qc = new QueryClient();
-    render(
-      <QueryClientProvider client={qc}>
-        <SpatialViewportHost loadViewer={loadFake}>
-          <MonitorPage onEditZone={onEditZone} />
-        </SpatialViewportHost>
-      </QueryClientProvider>,
-    );
+  it('관리자(ADMIN)만 편집 모드를 열고 취소할 수 있으며, 편집 중 표시와 기즈모·초안 정리가 동작한다', async () => {
+    renderMonitor();
     await screen.findByTestId('viewer3d');
-    expect(screen.queryByRole('button', { name: /구역 수정/ })).toBeNull();
+    expect(screen.queryByRole('region', { name: '구역 편집 도구' })).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
 
-    act(() => fake.onSelect?.({ type: 'person', id: 'w-0012' }));
-    expect(screen.queryByRole('button', { name: /구역 수정/ })).toBeNull();
+    act(() => screen.getByRole('button', { name: '관리자 편집 모드' }).click());
+    expect(screen.getByRole('region', { name: '구역 편집 도구' })).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toBe('편집 중');
+    await waitFor(() => expect(useBoxEditStore.getState().boxEdit?.kind).toBe('zone'));
 
-    act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
-    const btn = screen.getByRole('button', { name: '구역 수정 z-04' });
-    act(() => btn.click());
-    expect(onEditZone).toHaveBeenCalledWith('z-04');
+    fireEvent.change(screen.getByRole('textbox', { name: '이름' }), {
+      target: { value: '임시 초안' },
+    });
+    expect(Object.keys(useZoneEditStore.getState().drafts).length).toBeGreaterThan(0);
 
-    act(() => signInAs('VIEWER'));
-    expect(screen.queryByRole('button', { name: /구역 수정/ })).toBeNull();
-    act(() => signInAs('FOREMAN'));
-    expect(screen.queryByRole('button', { name: /구역 수정/ })).toBeNull();
-  });
-
-  it('관제(/)와 구역 편집(/zones)을 10회 왕복해도 단일 Viewer3D 를 재사용하고, 관제(/)에서는 Ghost 와 Fade 를 숨긴다(R04, U03, U11)', async () => {
-    const qc = new QueryClient();
-    function Harness() {
-      const [route, setRoute] = useState<'monitor' | 'zones'>('monitor');
-      return (
-        <QueryClientProvider client={qc}>
-          <button type="button" onClick={() => setRoute('monitor')}>
-            go-monitor
-          </button>
-          <button type="button" onClick={() => setRoute('zones')}>
-            go-zones
-          </button>
-          <SpatialViewportHost loadViewer={loadFake} zoneEditor={route === 'zones'}>
-            {route === 'monitor' ? (
-              <MonitorPage onEditZone={() => setRoute('zones')} />
-            ) : (
-              <ZonesPage />
-            )}
-          </SpatialViewportHost>
-        </QueryClientProvider>
-      );
-    }
-
-    render(<Harness />);
-    await screen.findByTestId('viewer3d');
-    expect(fake.mounts).toBe(1);
-    expect(screen.queryByTestId('zone-edit-fade')).toBeNull();
-
-    act(() => fake.onSelect?.({ type: 'zone', id: 'z-04' }));
-    for (let i = 0; i < 10; i += 1) {
-      act(() => screen.getByRole('button', { name: 'go-zones' }).click());
-      expect(screen.getByTestId('zone-edit-fade')).toBeTruthy();
-      act(() => screen.getByRole('button', { name: 'go-monitor' }).click());
-      expect(screen.queryByTestId('zone-edit-fade')).toBeNull();
-    }
-    expect(fake.mounts).toBe(1);
-    expect(fake.unmounts).toBe(0);
-    // 왕복 후에도 z-04 선택이 그대로 유지된다.
-    expect(screen.getByRole('button', { name: '구역 수정 z-04' })).toBeTruthy();
-
-    // /zones 에서 3D 손잡이로 구역 상자를 고친 뒤 관제(/)로 이동하면 손잡이는 내려가고, 돌아오면 고친 초안이 그대로다.
-    act(() => screen.getByRole('button', { name: 'go-zones' }).click());
-    await waitFor(() => expect(useBoxEditStore.getState().boxEdit?.id).toBe('z-04'));
-    act(() => useBoxEditStore.getState().onChange({ min: [6.5, 1.2, 0], max: [9.3, 3.8, 2.4] }));
-
-    act(() => screen.getByRole('button', { name: 'go-monitor' }).click());
+    act(() => screen.getByRole('button', { name: '편집 취소' }).click());
+    expect(screen.queryByRole('region', { name: '구역 편집 도구' })).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(useZoneEditStore.getState().drafts).toEqual({});
     expect(useBoxEditStore.getState().boxEdit).toBeNull();
 
-    act(() => screen.getByRole('button', { name: 'go-zones' }).click());
-    await waitFor(() =>
-      expect(useBoxEditStore.getState().boxEdit).toMatchObject({
-        id: 'z-04',
-        kind: 'zone',
-        box: { min: [6.5, 1.2, 0], max: [9.3, 3.8, 2.4] },
+    for (const role of ['VIEWER', 'FOREMAN'] as const) {
+      act(() => signInAs(role));
+      expect(screen.queryByRole('button', { name: '관리자 편집 모드' })).toBeNull();
+      expect(screen.queryByRole('region', { name: '구역 편집 도구' })).toBeNull();
+    }
+  });
+
+  it('구역 등급 선택지는 CRITICAL(빨강)·HIGH(주황) 2종뿐이고 이벤트 CAUTION 표시는 유지된다', async () => {
+    renderMonitor(true);
+    await screen.findByTestId('viewer3d');
+    const severity = screen.getByRole('combobox', { name: '심각도' });
+    const options = within(severity).getAllByRole('option') as HTMLOptionElement[];
+    expect(SEVERITY_CHOICES).toEqual(['CRITICAL', 'HIGH']);
+    expect(options.map((o) => [o.value, o.textContent])).toEqual([
+      ['CRITICAL', '위험'],
+      ['HIGH', '경고'],
+    ]);
+    expect(zoneStyle('UNVERIFIED', false, PALETTE.dark, 'CRITICAL').color).toBe(
+      PALETTE.dark.risk.CRITICAL.color,
+    );
+    expect(zoneStyle('UNVERIFIED', false, PALETTE.dark, 'HIGH').color).toBe(
+      PALETTE.dark.risk.HIGH.color,
+    );
+    expect(ALARM_TEXT.CAUTION).toBe('text-sev-caution');
+    expect(severityTone('CAUTION')).toBe('caution');
+  });
+
+  it('고소 작업면을 그리면 작업면 OBB 와 둘레 0.30 m HIGH 구역을 함께 만들어 POST /api/zones/commit 한 번으로 발행한다', async () => {
+    renderMonitor(true);
+    await screen.findByTestId('viewer3d');
+    await screen.findByRole('option', { name: /z-04/ });
+
+    act(() => screen.getByRole('button', { name: '+ 고소 작업면 추가' }).click());
+    const severity = screen.getByRole('combobox', { name: '심각도' }) as HTMLSelectElement;
+    expect(severity.value).toBe('HIGH');
+    expect(severity.disabled).toBe(true);
+    expect(useBoxEditStore.getState().boxEdit?.kind).toBe('surface');
+
+    act(() =>
+      useBoxEditStore.getState().onChange({
+        min: [4.0, 3.0, 0],
+        max: [6.0, 5.0, 1.2],
       }),
     );
-    expect(screen.getByRole('option', { name: 'z-04 · 북동 위험 구역 · 저장 전' })).toBeTruthy();
-    // 구역 편집 화면을 10번 다시 그리는 시험이라, 전체 시험을 함께 돌리는 부하에서는 기본 5초가 빠듯하다.
-  }, 15_000);
+
+    const addBtn = screen.getByRole('button', { name: '구역 추가' }) as HTMLButtonElement;
+    await waitFor(() => expect(addBtn.disabled).toBe(false));
+    act(() => addBtn.click());
+
+    await waitFor(() => expect(commits).toHaveLength(1));
+    expect(commits[0]).toMatchObject({
+      zone: {
+        op: 'CREATE',
+        body: {
+          severity: 'HIGH',
+          polygon_xy: [
+            [3.7, 2.7],
+            [6.3, 2.7],
+            [6.3, 5.3],
+            [3.7, 5.3],
+          ],
+          z_min_m: 0,
+          z_max_m: 2,
+        },
+      },
+      surface: {
+        op: 'CREATE',
+        body: {
+          kind: 'WORK_SURFACE',
+          top_height_m: 1.2,
+          obb: {
+            center: [5.0, 4.0, 0.6],
+            size: [2.0, 2.0, 1.2],
+            yaw_rad: 0,
+          },
+        },
+      },
+      publish: true,
+    });
+  });
+
+  it('/zones 라우트 제거 뒤에도 도크 링크·세팅 구역 편집 이동·검색 파라미터가 깨지지 않는다', () => {
+    render(<Dock />);
+    const nav = screen.getByRole('navigation', { name: '주 메뉴' });
+    const hrefs = within(nav)
+      .getAllByRole('link')
+      .map((a) => a.getAttribute('href'));
+    expect(hrefs).toEqual(['/', '/cctv', '/work', '/history']);
+    expect(hrefs).not.toContain('/zones');
+    cleanup();
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <SetupPage workUnitId={1} />
+      </QueryClientProvider>,
+    );
+    act(() => screen.getByRole('button', { name: /3완료/ }).click());
+    act(() => screen.getByRole('button', { name: '구역 편집' }).click());
+    expect(navigateMock).toHaveBeenCalledWith({ to: '/', search: { edit: true } });
+
+    const validateSearch = IndexRoute.options.validateSearch;
+    if (typeof validateSearch !== 'function') throw new Error('expected validateSearch function');
+    expect(validateSearch({ edit: true })).toEqual({ edit: true });
+    expect(validateSearch({ edit: 'true' })).toEqual({ edit: true });
+    expect(validateSearch({ edit: '0' })).toEqual({
+      edit: undefined,
+    });
+  });
 });

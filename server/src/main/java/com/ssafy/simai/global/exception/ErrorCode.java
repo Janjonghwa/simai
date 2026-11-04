@@ -209,6 +209,32 @@ public sealed interface ErrorCode {
         }
     }
 
+    /** 워치 임시 수동 배정(확장 C.6, S15P31A101-338) */
+    enum Watch implements ErrorCode {
+        WATCH_NOT_FOUND(HttpStatus.NOT_FOUND, "등록된(폐기되지 않은) 워치가 아닙니다"),
+        INVALID_WORLD_ID(HttpStatus.BAD_REQUEST, "world_id 는 1~64자여야 합니다"),
+        BINDING_NOT_FOUND(HttpStatus.NOT_FOUND, "이 워치의 배정이 없습니다"),
+        BINDING_CONFLICT(HttpStatus.CONFLICT, "같은 워치나 World ID 를 동시에 배정하고 있습니다. 다시 시도하세요");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Watch(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
     /** 시스템 지표 조회(S15P31A101-70) */
     enum Metric implements ErrorCode {
         INVALID_METRIC_QUERY(HttpStatus.BAD_REQUEST, "지표 조회 기간이 맞지 않습니다(from·to 는 UTC 밀리초, from ≤ to, 24시간 이내)");
@@ -381,7 +407,11 @@ public sealed interface ErrorCode {
         SCENE_GLTF_NOT_UPLOADED(HttpStatus.BAD_REQUEST, "gltf_key 가 SCENE_GLTF 로 발급받아 아직 쓰이지 않은 업로드가 아닙니다(POST /api/uploads/sign)"),
         SCENE_STATE_CONFLICT(HttpStatus.CONFLICT, "확정·거절할 수 있는 상태(CANDIDATE)가 아닙니다"),
         // 서명 주소만 받고 올리지 않았거나 다른 크기다. 확정하면 화면 배경이 깨지므로 막는다
-        SCENE_GLTF_MISSING(HttpStatus.CONFLICT, "glb 가 저장소에 없거나 발급한 크기와 다릅니다. 서명 주소로 올린 뒤 확정하세요");
+        SCENE_GLTF_MISSING(HttpStatus.CONFLICT, "glb 가 저장소에 없거나 발급한 크기와 다릅니다. 서명 주소로 올린 뒤 확정하세요"),
+        // 3D 배경 재생성(S15P31A101-428)
+        REGENERATE_IN_PROGRESS(HttpStatus.CONFLICT, "이미 진행 중인 3D 배경 재생성 요청이 있습니다"),
+        REGENERATE_NOT_FOUND(HttpStatus.NOT_FOUND, "3D 배경 재생성 요청을 찾을 수 없습니다"),
+        INVALID_REGENERATE_REQUEST(HttpStatus.BAD_REQUEST, "재생성 요청 값이 올바르지 않습니다(reason 은 문자열 120자 이하)");
 
         private final HttpStatus status;
         private final String message;
@@ -505,6 +535,8 @@ public sealed interface ErrorCode {
 
     /** TBM 작업(GET·POST·PUT·DELETE /api/work-units) */
     enum Work implements ErrorCode {
+        WORK_ALREADY_IN_PROGRESS(HttpStatus.CONFLICT, "현장에 이미 진행 중인 작업이 있습니다"),
+        WORK_INVALID_STATE(HttpStatus.CONFLICT, "현재 작업 상태에서는 요청한 전이를 수행할 수 없습니다"),
         WORK_UNIT_NOT_FOUND(HttpStatus.NOT_FOUND, "작업을 찾을 수 없습니다"),
         INVALID_WORK_UNIT(HttpStatus.BAD_REQUEST, "작업 값이 올바르지 않습니다(date YYYY-MM-DD, name 1~100자, from_ms < to_ms 이고 24시간 이내, planned_people 0~100, place 100자·lead 50자 이내)"),
         // 구역 밖 작업은 zone_id 를 비우고 place 에 장소를 적는다
@@ -561,12 +593,75 @@ public sealed interface ErrorCode {
         REPORT_NOT_FOUND(HttpStatus.NOT_FOUND, "보고서를 찾을 수 없습니다"),
         INVALID_REPORT_REQUEST(HttpStatus.BAD_REQUEST, "보고서 요청 값이 올바르지 않습니다(work_id 는 양의 정수)"),
         WORK_HAS_NO_LAYOUT(HttpStatus.CONFLICT, "작업에 연결된 레이아웃이 없습니다. 먼저 작업에 layout_id 를 연결하세요"),
-        REPORT_IN_PROGRESS(HttpStatus.CONFLICT, "이 작업의 보고서를 이미 생성 중입니다");
+        REPORT_IN_PROGRESS(HttpStatus.CONFLICT, "이 작업의 보고서를 이미 생성 중입니다"),
+        REPORT_VERSION_STALE(HttpStatus.CONFLICT, "새 보고서 버전이 있습니다"),
+        REPORT_APPROVED(HttpStatus.CONFLICT, "관리자 결재가 완료된 보고서입니다"),
+        REPORT_NOT_READY(HttpStatus.CONFLICT, "보고서가 준비되지 않았습니다"),
+        SIGNATURE_LIMIT_REACHED(HttpStatus.CONFLICT, "이 보고서 버전의 서명 인원 상한(50명)에 도달했습니다"),
+        REPORT_LOCKED(HttpStatus.CONFLICT, "서명된 보고서 버전입니다"),
+        INVALID_SIGNATURE(HttpStatus.BAD_REQUEST, "서명 요청이 올바르지 않습니다"),
+        INVALID_DAILY_DATE(HttpStatus.BAD_REQUEST, "report_date 는 YYYY-MM-DD 이고 오늘(Asia/Seoul)보다 뒤일 수 없습니다"),
+        DAILY_REPORT_IN_PROGRESS(HttpStatus.CONFLICT, "이 날짜의 일일 일지를 이미 생성 중입니다");
 
         private final HttpStatus status;
         private final String message;
 
         Report(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
+    /** 현장 세팅 세션(GET·POST /api/setup-sessions, S15P31A101-452) */
+    enum Setup implements ErrorCode {
+        SETUP_SESSION_NOT_FOUND(HttpStatus.NOT_FOUND, "세팅 세션을 찾을 수 없습니다"),
+        INVALID_SETUP_REQUEST(HttpStatus.BAD_REQUEST, "세팅 요청 값이 올바르지 않습니다"),
+        CAMERA_HEIGHT_REQUIRED(HttpStatus.BAD_REQUEST, "모든 활성 카메라의 높이를 미터 단위로 입력해야 합니다"),
+        SETUP_CAMERAS_INSUFFICIENT(HttpStatus.CONFLICT, "현장에 활성 카메라가 2대 이상 있어야 세팅을 시작할 수 있습니다"),
+        SETUP_ALREADY_IN_PROGRESS(HttpStatus.CONFLICT, "이미 진행 중인 세팅 세션이 있습니다"),
+        SETUP_WORKER_UNAVAILABLE(HttpStatus.CONFLICT, "현장 세팅(site_setup)을 처리할 활성 워커가 없습니다"),
+        SETUP_RETRY_NOT_ALLOWED(HttpStatus.CONFLICT, "실패한 세팅 세션만 재시도할 수 있습니다"),
+        INVALID_SETUP_PROGRESS(HttpStatus.BAD_REQUEST, "세팅 진행률·결과 보고가 계약이나 등록된 버전 계보에 맞지 않습니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Setup(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
+    /** 세팅 1단계 카메라 각도 헬퍼 중계(POST /api/devices/coverage-guides, GET /api/cameras/coverage-guides, S15P31A101-447) */
+    enum CoverageGuide implements ErrorCode {
+        INVALID_COVERAGE_GUIDE(HttpStatus.BAD_REQUEST, "카메라 각도 안내가 계약(messages/coverage_guide 1.x)에 맞지 않습니다"),
+        COVERAGE_GUIDE_SOURCE_MISMATCH(HttpStatus.BAD_REQUEST, "coverage_guide source_id 가 기기 토큰의 기기 ID 와 다릅니다"),
+        NOT_A_LAPTOP(HttpStatus.FORBIDDEN, "현장 노트북(LAPTOP)으로 등록된 기기만 카메라 각도 안내를 올릴 수 있습니다");
+
+        private final HttpStatus status;
+        private final String message;
+
+        CoverageGuide(HttpStatus status, String message) {
             this.status = status;
             this.message = message;
         }

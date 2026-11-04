@@ -303,6 +303,9 @@ class Tier0Service:
         self.drift_watch: Any | None = None
         self.live_calibration: Any | None = None
         self.clean_background: Any | None = None
+        self.rotation_recovery: Any | None = None
+        self._rotation_recovery_error: str | None = None
+        self.reid_collector: Any | None = None
         self.event_frames: EventFrameService | None = None
         self._live_calibration_error: str | None = None
         self._on_camera_drifted = on_camera_drifted
@@ -472,7 +475,8 @@ class Tier0Service:
             config_fields=self._config_health_fields, config_active=lambda: self.config_sync.active is not None,
             calibration_state=self._calibration_state, calibration_version=lambda: self.rig.calibration_version,
             calibration_issue=lambda: (self.calibration_status["last_rejection"] is not None
-                                       or bool(self.calibration_status.get("cumulative_warning"))),
+                                       or bool(self.calibration_status.get("cumulative_warning"))
+                                       or bool(self.calibration_status.get("re_setup_required"))),
             lock=self.judge_lock,
         )
         self.resync = SiteAlertResync(
@@ -527,10 +531,12 @@ class Tier0Service:
             new_msg_id=self._new_msg_id,
             begin_tick=self._begin_calibration_tick,
         )
-        if s.drift_watch_enabled and self._drift_watch_factory is not None:
+        if not s.human_calibration_enabled:
+            log.info("사람 관절 보정 꺼짐")
+        if s.human_calibration_enabled and s.drift_watch_enabled and self._drift_watch_factory is not None:
             # 보정 감시(-117): 저장한 기준선을 검증 여부 그대로 돌려주고(CalibrationDriftWatch(baselines=...)), 정리 주기마다 저장한다
             self.drift_watch = self._drift_watch_factory(load_baselines(s.baselines_file))
-        elif s.drift_watch_enabled:
+        elif s.human_calibration_enabled and s.drift_watch_enabled:
             self.drift_watch = BackgroundDriftWatch(self._apply_drift_report,
                                                    baselines=load_baselines(s.baselines_file))
             self._drift_document = self.calibration.current()
@@ -538,7 +544,7 @@ class Tier0Service:
                 self._drift_document, assoc, tuple(getattr(self.perception.feed, "camera_streams", {}).values()))
 
         # 6) 시작
-        if s.live_calibration.enabled:
+        if s.human_calibration_enabled and s.live_calibration.enabled:
             try:
                 from services.tier0.live_calibration import BackgroundLiveCalibration
 
@@ -580,6 +586,34 @@ class Tier0Service:
                 self._spawn("tier0-clean-background", self.clean_background.run)
             except Exception:
                 log.exception("배경 수집 기동 실패(판정은 계속한다)")
+        if self.clean_background is not None and s.rotation_recovery.enabled:
+            try:
+                from services.tier0.rotation_recovery import BackgroundRotationRecovery
+
+                self.rotation_recovery = BackgroundRotationRecovery(
+                    self.calibration.current(), provenance, self.clean_background,
+                    settings=s.rotation_recovery, now_ms=self.clock.now_ms, stop=self._stop,
+                    propose=self._propose_rotation_calibration,
+                    on_drift_report=self._apply_drift_report,
+                    on_requires_setup=self._record_requires_setup,
+                    in_probation=lambda: self._swap_probation is not None,
+                    reference_document=lambda: self.calibration.safety_reference()[0],
+                )
+                active_report = self.calibration.current_report() or {}
+                if s.rotation_recovery.safety_enabled and active_report.get("rollback_of"):
+                    self.rotation_recovery.block("되돌림 뒤 자동 보정 보류: 운영자 확인 필요")
+                elif (s.rotation_recovery.safety_enabled and active_report.get("consecutive_confirmation")
+                      and self._swap_probation is None):
+                    last = next((r["payload"] for r in reversed(self.calibration.transitions)
+                                 if r["payload"]["reason"] == "RECALIBRATED"
+                                 and r["payload"]["calibration_version"] == self.rig.calibration_version), None)
+                    if last is not None and self.clock.now_ms() <= last["effective_at"] + 60_000:
+                        self._swap_probation = SwapProbation(last["previous_calibration_version"],
+                                                             last["calibration_version"], last["effective_at"])
+                self._spawn("tier0-rotation-recovery", self.rotation_recovery.run)
+            except Exception as exc:
+                self._rotation_recovery_error = str(exc)
+                log.exception("회전 복구 기동 실패(판정은 계속한다)")
         if self.event_frames is not None and isinstance(feed, DetectorFeed):
             self.event_frames.attach(feed)
         if isinstance(self.drift_watch, BackgroundDriftWatch):
@@ -718,9 +752,11 @@ class Tier0Service:
             tracker_kwargs["backend_factory"] = self._tracker_backend_factory
         tracker = MultiCameraLocalTracker(**tracker_kwargs)
         self.live_input = live
+        self.reid_collector = self._build_reid_collector()
         return DetectorFeed(camera_ids=s.camera_ids, tickets=ingest.next_batch, detector=detector, tracker=tracker,
                             connected=live.connected, source="LIVE", on_close=live.stop,
-                            max_queued_per_camera=s.detect_queue_depth, async_mode=True)
+                            max_queued_per_camera=s.detect_queue_depth, async_mode=True,
+                            reid_collector=self.reid_collector)
 
     def _build_file_feed(self) -> FrameFeed:
         """file: 녹화 I0 메시지 → I0Ingest(LIVE 와 같은 디코딩·최신성 대기열) → YOLO → Local Tracker (file_input.py)."""
@@ -741,10 +777,28 @@ class Tier0Service:
         if self._tracker_backend_factory is not None:
             tracker_kwargs["backend_factory"] = self._tracker_backend_factory
         self.file_input = FileInput(replay, ingest, self.replay_clock)
+        self.reid_collector = self._build_reid_collector()
         return DetectorFeed(camera_ids=replay.camera_ids, tickets=ingest.next_batch, detector=detector,
                             tracker=MultiCameraLocalTracker(**tracker_kwargs), connected=self.file_input.connected,
                             source="FILE", on_close=self.file_input.close, provenance=replay.provenance(),
-                            max_queued_per_camera=s.detect_queue_depth)
+                            max_queued_per_camera=s.detect_queue_depth,
+                            reid_collector=self.reid_collector)
+
+    def _build_reid_collector(self) -> Any:
+        from simai_ai.reid.collector import AsyncReidCollector, ReidCollectorConfig
+
+        r = self.settings.reid
+        cfg = ReidCollectorConfig(
+            enabled=r.enabled,
+            batch_size=r.batch_size,
+            update_interval_ms=r.update_interval_ms,
+            max_queue_size=r.max_queue_size,
+            cope_root=r.cope_root,
+            weights_path=r.weights_path,
+            clip_model_path=r.clip_model_path,
+            use_face_aux=r.use_face_aux,
+        )
+        return AsyncReidCollector(cfg, start_worker=True)
 
     def _build_detector(self) -> PoseDetector:
         """TensorRT 엔진(SIMAI_TIER0_ENGINE) → 없으면 .pt 가중치(SIMAI_TIER0_WEIGHTS, 경고) → 둘 다 없으면 종료 코드 4."""
@@ -813,6 +867,24 @@ class Tier0Service:
 
     # --- 검증된 보정 후보(-344). 후보 계산은 -345의 백그라운드 실행기가 한다. ----------------
 
+    def _record_requires_setup(self, camera_id: str, reason: str) -> None:
+        with self.judge_lock:
+            self.calibration_status["re_setup_required"] = True
+            self.calibration_status["re_setup_reason"] = f"현장 세팅 다시 하기: {camera_id} ({reason})"
+            self.calibration_status["re_setup_camera_id"] = camera_id
+
+    def _propose_rotation_calibration(self, document, report, generation: int) -> bool:
+        with self.judge_lock:
+            rot = self.rotation_recovery
+            if rot is None or generation != rot.generation or rot.blocked_reason is not None:
+                return False
+            if rot.safety_enabled and self._swap_probation is not None:
+                return False
+            accepted = self.propose_calibration(document, report)
+            if accepted:
+                self._live_pending_version = document["calibration_version"]
+            return accepted
+
     def _propose_live_calibration(self, document, report, generation: int) -> bool:
         with self.judge_lock:
             live = self.live_calibration
@@ -876,7 +948,8 @@ class Tier0Service:
             return  # 같은 후보를 다음 tick에 다시 저장하며 직전 rig로 판정을 계속한다
         self.perception.replace_rig(rig, provenance)
         self.rig = rig
-        if (self.live_calibration is not None and self.live_calibration.safety_enabled
+        if (((self.live_calibration is not None and self.live_calibration.safety_enabled)
+                or (self.rotation_recovery is not None and self.rotation_recovery.safety_enabled))
                 and getattr(self, "_live_pending_version", None) == doc["calibration_version"]):
             report = self.calibration.current_report() or {}
             self._swap_probation = SwapProbation(previous_version, rig.calibration_version, at_ms,
@@ -894,12 +967,17 @@ class Tier0Service:
             self.live_calibration.activate(doc, provenance)
             if self.live_calibration.safety_enabled and (self.calibration.current_report() or {}).get("rollback_of"):
                 self.live_calibration.block("되돌림 뒤 자동 보정 보류: 운영자 확인 필요")
+        if self.rotation_recovery is not None:
+            self.rotation_recovery.activate(doc, provenance)
+            if self.rotation_recovery.safety_enabled and (self.calibration.current_report() or {}).get("rollback_of"):
+                self.rotation_recovery.block("되돌림 뒤 자동 보정 보류: 운영자 확인 필요")
         self._drift_document = doc
         if self.clean_background is not None:
             self.clean_background.activate(doc, provenance)
         self._drift_report = self._pending_drift_report = None
         self._pending_calibration = None
-        self.calibration_status.update(pending_version=None, last_rejection=None, effective_at=at_ms)
+        self.calibration_status.update(pending_version=None, last_rejection=None, effective_at=at_ms,
+                                       re_setup_required=False, re_setup_reason=None, re_setup_camera_id=None)
         self._event(f"calibration_switched:{rig.calibration_version}:{at_ms}")
 
     def _apply_drift_report(self, report: MonitorReport, changed_streams: tuple[str, ...]) -> None:
@@ -924,6 +1002,8 @@ class Tier0Service:
                     self._swap_probation = None
                     if self.live_calibration is not None:
                         self.live_calibration.block("교체 뒤 악화: 되돌림 대기")
+                    if self.rotation_recovery is not None:
+                        self.rotation_recovery.block("교체 뒤 악화: 되돌림 대기")
                     log.warning("보정 교체 뒤 악화 지속: 새 버전 %s로 되돌림 대기", rig.calibration_version)
                     return
                 except (OSError, ValueError) as exc:
@@ -962,6 +1042,11 @@ class Tier0Service:
                     if self.calibration_status.get("pending_version") == self._live_pending_version:
                         self._pending_calibration = None
                         self.calibration_status["pending_version"] = None
+            if self.rotation_recovery is not None:
+                if changed_streams:
+                    self.rotation_recovery.block("스트림 변경: 내부 파라미터 재추정 필요")
+                for cid in notify:
+                    self.rotation_recovery.reset_camera(cid)
             if self.clean_background is not None:
                 for cid in set(notify) | set(changed_streams):
                     self.clean_background.reset_camera(cid)
@@ -1231,9 +1316,14 @@ class Tier0Service:
             "restore_link": dict(self.restore_link.status()) if getattr(self, "restore_link", None) is not None else None,
             "config_check": self.config_check,
             "calibration": {**self.calibration_status, "active_version": self.rig.calibration_version,
-                            "live_candidate": ({"enabled": self.settings.live_calibration.enabled,
+                            "live_candidate": ({"enabled": (self.settings.human_calibration_enabled and
+                                                            self.settings.live_calibration.enabled),
                                                 "last_error": self._live_calibration_error}
                                                if self.live_calibration is None else self.live_calibration.status()),
+                            "rotation_recovery": ({"enabled": (self.settings.clean_background.enabled and
+                                                               self.settings.rotation_recovery.enabled),
+                                                   "last_error": self._rotation_recovery_error}
+                                                  if self.rotation_recovery is None else self.rotation_recovery.status()),
                             "state": self._calibration_state(),
                             "drift_watch": None if drift_report is None else {
                                 "t_ms": drift_report.t_ms, "evidence": str(drift_report.evidence),
@@ -1264,6 +1354,7 @@ class Tier0Service:
             "marker_error": self.marker_error,
             "avatar_share": None if avatar_writer is None else {
                 "dropped": avatar_writer.dropped, "errors": avatar_writer.errors},
+            "reid": None if self.reid_collector is None else self.reid_collector.status(),
             # 추적 계측 누계(S15P31A101-413, 판정에 쓰지 않음): 늦은 카메라 시간 비율·보간 탈락·카메라 쌍 거부·World Track 생명주기
             "tracking_diagnostics": (None if getattr(self, "perception", None) is None
                                      else self.perception.diagnostics.summary()),

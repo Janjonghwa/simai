@@ -1,7 +1,7 @@
-import { SEVERITIES, type Severity } from '@/features/zones/types';
+import { SEVERITY_CHOICES, type Severity } from '@/features/zones/types';
 import type { ZoneEditing } from '@/features/zones/useZoneEditing';
 import { SEVERITY_LABEL } from '@/features/zones/zoneEditModel';
-import { NAME_MAX } from '@/features/zones/zoneForm';
+import { isSeverityChoice, NAME_MAX } from '@/features/zones/zoneForm';
 import {
   CARD_CLASS,
   FIELD_CLASS,
@@ -39,16 +39,28 @@ export function ZoneAttributesCard({ edit }: { edit: ZoneEditing }) {
         <span className={FIELD_LABEL_CLASS}>심각도</span>
         <select
           aria-label="심각도"
+          disabled={!edit.zone && edit.surface !== null}
           value={form.severity}
           onChange={(event) => edit.setSeverity(event.target.value as Severity)}
           className={SELECT_CLASS}
         >
-          {SEVERITIES.map((severity) => (
+          {/* 이미 저장된 주의·안내는 고를 수 없지만, 지금 값이 보이게 비활성 선택지로 둔다. */}
+          {!isSeverityChoice(form.severity) && (
+            <option value={form.severity} disabled>
+              {SEVERITY_LABEL[form.severity]}
+            </option>
+          )}
+          {SEVERITY_CHOICES.map((severity) => (
             <option key={severity} value={severity}>
               {SEVERITY_LABEL[severity]}
             </option>
           ))}
         </select>
+        {errors.severity && (
+          <span role="alert" className={FIELD_NOTE_CLASS}>
+            {errors.severity}
+          </span>
+        )}
       </label>
       {errors.judgeType && (
         <span role="alert" className={FIELD_NOTE_CLASS}>

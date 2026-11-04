@@ -30,7 +30,11 @@ ID 를 다시 쓰지 않는다.
    멀면 로컬 트래커가 옛 ID 를 다른 사람에게 넘긴 것일 수 있어 새 ID 를 만든다.
 5. 1대뿐인 클러스터와 붙지 않은 클러스터는 위치를 갱신하지 않는다. 그 로컬 트랙의 주인 Track 이 이번 시각에 갱신되지
    않았으면 연결 이력만 이어 둔다(가림 동안 남은 카메라 한 대의 트랙으로, 가림이 끝났을 때 같은 Track 으로 돌아오게).
-6. 배정되지 않은 클러스터 중 골반이 있는 것만 새 World Track(TENTATIVE)이 된다. 1대 클러스터나 골반 없는 클러스터로는
+6. 배정되지 않은 확실한 클러스터의 로컬 키 중 하나 이상이 최근(초기값 1 s) 이번 시각 갱신된 Track 에 속했고,
+   그 Track 의 골반 0.6 m 안이고 카메라가 겹치지 않으면
+   새 ID 를 억제하고 그 Track 에 CROSS_VIEW_UNCERTAIN 을 붙인다. 위치·관절·로컬 소유권은 합치지 않는다.
+   기존 병합 금지 반증이나 이번 시각 같은 카메라의 별도 검출(1대 클러스터 포함)이 있으면 억제하지 않는다.
+   그 밖의 배정되지 않은 클러스터 중 골반이 있는 것만 새 World Track(TENTATIVE)이 된다. 1대 클러스터나 골반 없는 클러스터로는
    만들지 않는다(2대 미만은 지어내지 않음). 다른 Track 의 예측 위치 가까이(`duplicate_radius_m`)에 생기면 같은 사람의
    두 번째 ID 일 수 있어 그 쌍을 POSSIBLE_DUPLICATE 후보로 둔다.
 7. 같은 사람 두 ID 로 보이는 Track 은 **그 시각에는 합치지 않는다.** 붙인 클러스터에 이번 시각 갱신되지 않은 다른
@@ -136,7 +140,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -146,10 +150,16 @@ import numpy as np
 from simai_ai.geometry.joint_gate import GatedSkeleton, GateIssue, HeadZ, JointGate, JointGateConfig
 from simai_ai.geometry.rig import CameraRig, UndistortedKeypoints
 from simai_ai.geometry.triangulation import COCO17_L_HIP, COCO17_R_HIP, JointValidity, SkeletonEstimate
+from simai_ai.reid.collector import LocalTrackFeature
+from simai_ai.reid.gallery import GalleryConfig, ReidGalleryStore, quantize_orientation_bin
 from simai_ai.risk.lifecycle import IdentityCorrection, IdentitySplit
 from simai_ai.tracking.assignment import linear_sum_assignment
 from simai_ai.tracking.cross_view import AssociationFrame, TrackKey, ViewCluster
 from simai_ai.tracking.time_model import ObservationState, TimeModelConfig, TrackTimeInput, require_ms
+
+COCO17_L_SHOULDER = 5
+COCO17_R_SHOULDER = 6
+ReidFeatureLookup = Callable[[str, str, int], LocalTrackFeature | None]
 
 JOINT_LAYOUT = "COCO17"
 """골반·head_z 정의가 있는 관절 배치만 받는다 (joint_gate 와 같음)"""
@@ -336,7 +346,8 @@ class WorldTrackConfig:
     occluded_after_ms: int = 200
     """CONFIRMED 가 이 시간 넘게 측정이 없으면 OCCLUDED (6.1 OBSERVED 상한과 같은 초기값)"""
     lost_after_ms: int = 3000
-    """OCCLUDED 가 마지막 측정 뒤 이 시간을 넘으면 LOST. 그 뒤에는 늦은 재연결 근거가 있을 때만 같은 ID 로 잇는다"""
+    """짧은 재연결 창: 마지막 측정 뒤 이 시간까지 기존 거리 게이트로 같은 ID 를 유지한다.
+    넘으면 LOST 이며 2대 로컬 이력에 의한 늦은 재연결만 허용한다. 관측 상태의 PREDICTED 상한과는 별도다"""
     reconnect_window_ms: int = 10_000
     """LOST 가 된 CONFIRMED Track 을 마지막 측정부터 이 시간 동안 소실 후보로 둔다(로컬 트랙 연결 이력도 이 시간 동안
     남긴다). lost_after_ms 와 같게 두면 늦은 재연결을 끈다. 명세 6.4 재개 시간 초기값(10 s)과 같게 둔 초기값이다"""
@@ -362,6 +373,16 @@ class WorldTrackConfig:
     duplicate_radius_m: float = 0.35
     """같은 사람 두 ID 후보로 보는 두 Track 사이 수평 거리. 같은 사람이 갈라진 두 클러스터의 골반은 거의 같은 곳이고,
     서로 다른 두 사람의 골반은 어깨 폭(약 0.45 m)보다 가깝기 어렵다"""
+    split_suppression_enabled: bool = True
+    """반증이 없으면 같은 시각 갱신된 Track 과 카메라가 겹치지 않는 근처 나머지 클러스터의 새 ID 를 억제한다"""
+    split_suppression_radius_m: float = 0.6
+    """분할 나머지 억제 반경. duplicate_radius_m(병합·분할 판정)은 바꾸지 않는다"""
+    split_suppress_ownerless: bool = False
+    """재생 비교용: True 면 최근 소유 이력이 없는 후보도 억제한다(1차 S3 동작). 반증 예외는 유지한다"""
+    split_suppression_owner_ttl_ms: int = 1000
+    """분할 나머지의 로컬 키 하나 이상이 억제 근거 Track 에 속했던 최근 시간 창(경계 포함)"""
+    split_suppression_require_owner: bool = False
+    """-413 S1·S2 비교용 추가 제약: 모든 로컬 트랙의 옛 주인이 같을 때만 억제한다"""
     uncertain_hold_ms: int = 1000
     """IDENTITY_UNCERTAIN 을 마지막 사유 뒤 이 시간 동안 유지한다 (깜박임 방지, 보수적)"""
     max_speed_mps: float = 2.0
@@ -378,10 +399,61 @@ class WorldTrackConfig:
     """재시작 뒤 첫 프레임 시각 − 체크포인트 Track 시각(tracks_t)이 이보다 크면 복원 Track 을 받지 않는다. 받은 복원 Track 도
     마지막 관측부터 이 시간이 지나면 후보에서 뺀다. 이전 이벤트 연결(recovery.relink)은 첫 프레임부터 이 시간까지만 한다.
     명세 부록 C 의 기준 시간 초기값(30초)"""
+    temporal_time_weight: float = 0.0
+    """시간 간선 비용에서 공백 시간(`dt_ms / reconnect_window_ms`) 가중치 (S15P31A101-464)"""
+    appearance_weight: float = 1.0
+    """시간 간선 비용에서 외형 비용(`appearance_cost`, S15P31A101-463 2단계 COPE Re-ID 자리) 가중치"""
+    reid_enabled: bool = True
+    """Re-ID 외형 갤러리·분할 판정·swap 교정·DORMANT 재입장 사용 여부 (S15P31A101-463)"""
+    reid_dormant_ttl_ms: int = 1_800_000
+    """CONFIRMED 트랙이 reconnect_window_ms(10 s)를 넘긴 뒤 DORMANT 로 보관하는 시간 (기본 30분 = 1,800,000 ms)"""
+    reid_split_same_min_sim: float = 0.60
+    """분할 나머지 클러스터가 활성 트랙 갤러리와 같은 사람으로 판정되기 위한 최소 유사도 (주인 없는 나머지·확장 반경 포함)"""
+    reid_split_different_max_sim: float = 0.42
+    """분할 나머지 억제 후보라도 외형 유사도가 이 값 미만이면 다른 사람으로 판단해 억제를 풀고 새 ID 를 허용한다"""
+    reid_split_margin: float = 0.10
+    """분할 나머지 외형 병합·억제 시 동시 활성 다른 트랙 대비 필요한 최소 유사도 마진"""
+    reid_split_max_radius_m: float = 1.2
+    """외형이 일치하는 같은 사람 분할 나머지를 억제할 수 있는 최대 수평 거리 (단일 tick 도달 게이트 안)"""
+    reid_reentry_min_sim: float = 0.65
+    """DORMANT·LOST 트랙 재입장(Re-entry) 시 기존 World ID 를 이어받기 위한 보수적 최소 외형 유사도"""
+    reid_reentry_margin: float = 0.10
+    """DORMANT·LOST 트랙 재입장 시 2위 후보(활성·소실·휴면 포함) 대비 최소 유사도 마진"""
+    reid_swap_min_sim: float = 0.58
+    """근접 교차 후 두 트랙의 교차 외형 유사도가 swap 교정을 발동하기 위한 최소 유사도"""
+    reid_swap_margin: float = 0.10
+    """근접 교차 후 각 트랙의 교차 유사도가 자기 유사도보다 높아야 하는 최소 마진"""
+    reid_swap_proximity_m: float = 1.5
+    """두 트랙이 근접 교차했다고 기록하는 수평 거리 (1.0 m 이내에서는 갤러리 갱신을 멈춰 오염을 막는다)"""
+    reid_swap_window_ms: int = 10_000
+    """근접 교차 뒤 swap 교정을 감시하는 시간 창"""
+    reid_swap_confirm_frames: int = 1
+    """교차 유사도 우위가 연속 관측되어 swap 되돌리기를 확정하는 횟수"""
+    reid_swap_correction_enabled: bool = True
+    """근접 교차 뒤 ID swap 복원 사용 여부"""
+    reid_dormant_enabled: bool = True
+    """CONFIRMED 트랙 소실 뒤 DORMANT 보존 및 재입장 연결 사용 여부"""
+    reid_gallery_freeze_distance_m: float = 1.0
+    """두 활성 트랙 간 수평 거리가 이 값 이하일 때 갤러리 오염 방지를 위해 갤러리 갱신을 동결한다"""
+    reid_gallery_min_visibility: float = 0.25
+    reid_gallery_min_quality: float = 0.25
+    reid_gallery_max_entries: int = 16
+    reid_gallery_max_per_slot: int = 2
+    reid_min_co_visibility: float = 0.35
     joint_gate: JointGateConfig = field(default_factory=JointGateConfig)
 
     def __post_init__(self) -> None:
-        for name in ("confirm_hits", "merge_confirm_frames"):
+        for name in (
+            "split_suppression_enabled",
+            "split_suppress_ownerless",
+            "split_suppression_require_owner",
+            "reid_enabled",
+            "reid_swap_correction_enabled",
+            "reid_dormant_enabled",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} 는 bool 이어야 한다")
+        for name in ("confirm_hits", "merge_confirm_frames", "reid_swap_confirm_frames"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} 는 1 이상이어야 한다")
         for name in (
@@ -390,9 +462,14 @@ class WorldTrackConfig:
             "lost_after_ms",
             "reconnect_window_ms",
             "key_ttl_ms",
+            "split_suppression_owner_ttl_ms",
             "uncertain_hold_ms",
             "max_extrapolation_ms",
             "restore_max_age_ms",
+            "temporal_time_weight",
+            "appearance_weight",
+            "reid_dormant_ttl_ms",
+            "reid_swap_window_ms",
         ):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} 는 0 이상이어야 한다")
@@ -407,6 +484,7 @@ class WorldTrackConfig:
             "gate_max_m",
             "gate_scale_m",
             "duplicate_radius_m",
+            "split_suppression_radius_m",
             "max_speed_mps",
             "accel_sigma_xy_mps2",
             "accel_sigma_z_mps2",
@@ -526,6 +604,25 @@ class WorldTrackSnapshot:
     """첫 관측 때 남아 있던 복원 Track 중 갈 수 없는 거리여서 이 사람이 아닌 것"""
     split_from: str | None = None
     """분할로 이 ID 가 갈라져 나온 원래 World ID (분할 확정 시각부터 살아 있는 동안 같은 값, S15P31A101-201)"""
+    avatar_update_hold: bool = False
+    """ID 신뢰도가 낮을 때(IDENTITY_UNCERTAIN, 분할 판정 대기, swap 의심) 아바타 외형 갱신을 보류하는 플래그 (S15P31A101-463)"""
+    reid_similarity: float | None = None
+    """이번 시각 클러스터와 자기 갤러리의 외형 유사도 (관측 특징이 있을 때만)"""
+    reid_margin: float | None = None
+    """이번 시각 동시 활성 다른 트랙 갤러리 대비 외형 유사도 마진"""
+
+    def __post_init__(self) -> None:
+        if (
+            self.identity_confidence is IdentityConfidence.IDENTITY_UNCERTAIN
+            or IdentityFlag.IDENTITY_SPLIT in self.identity_flags
+            or IdentityFlag.CROSS_VIEW_UNCERTAIN in self.identity_flags
+        ):
+            object.__setattr__(self, "avatar_update_hold", True)
+
+    @property
+    def hold_appearance_update(self) -> bool:
+        """`avatar_update_hold` 의 별칭."""
+        return self.avatar_update_hold
 
     @property
     def updated(self) -> bool:
@@ -706,8 +803,8 @@ class _Track:
     identity_revision: int = 0
     aliases: list[str] = field(default_factory=list)
     keys: dict[TrackKey, int] = field(default_factory=dict)
-    """로컬 트랙 → 마지막으로 이 Track 에 붙은 시각. `reconnect_window_ms` 까지 남기고, 비용 보너스·주인 판단에는
-    `key_ttl_ms` 안의 것만 쓴다"""
+    """로컬 트랙 → 마지막으로 이 Track 에 붙은 시각. 재연결·분할 억제·일반 키 창 중 최댓값까지 남긴다.
+    비용 보너스·일반 주인 판단은 `key_ttl_ms`, 분할 나머지 판단은 `split_suppression_owner_ttl_ms` 창을 쓴다"""
     flags: dict[IdentityFlag, int] = field(default_factory=dict)
     """IDENTITY_UNCERTAIN 사유 → 마지막으로 붙은 시각"""
     reacquired_until: int = -1
@@ -730,6 +827,11 @@ class _Track:
     """분할 뒤 일관성 확인이 남은 시각 수. 0 이 될 때까지 IDENTITY_UNCERTAIN(IDENTITY_SPLIT)을 매 시각 다시 붙인다"""
     split_from: str | None = None
     """분할로 이 ID 가 갈라져 나온 원래 World ID. 한 번 정하면 바꾸지 않는다(world_state 2.1.0 split_from)"""
+    swap_suspected_until: int = -1
+    """근접 교차·외형 마진 부족으로 swap 이 의심되어 아바타 외형 갱신과 갤러리 갱신을 보류하는 시각"""
+    last_reid_similarity: float | None = None
+    last_reid_margin: float | None = None
+    reid_checked_reentry: bool = False
 
     @property
     def last_xy(self) -> np.ndarray:
@@ -779,6 +881,114 @@ class _Applied:
     pelvis: tuple[float, float, float] | None
 
 
+AppearanceCostFn = Callable[[str, ViewCluster, int], float]
+"""시간 그래프 연결에서 (world_id, cluster, t) 의 외형 비용(코사인 거리 등)을 돌려주는 콜백 타입.
+기본은 0.0 이고 S15P31A101-463 2단계(COPE Re-ID)가 꽂는다 (S15P31A101-464)."""
+
+
+@dataclass(frozen=True)
+class TemporalEdgeCost:
+    """끊긴/활성 World Track 과 새 클러스터 사이의 시간 그래프 간선 비용 ( 위치 + 시간 + 외형, S15P31A101-464)."""
+
+    track_id: str
+    association_id: str
+    dt_ms: int
+    distance_m: float
+    gate_radius_m: float
+    position_cost: float
+    time_cost: float
+    key_bonus: float
+    appearance_cost: float = 0.0
+    feasible: bool = True
+    reject_reason: str | None = None
+
+    @property
+    def total_cost(self) -> float:
+        if not self.feasible:
+            return math.inf
+        return float(self.position_cost + self.time_cost + self.appearance_cost - self.key_bonus)
+
+
+def temporal_edge_cost(
+    track_id: str,
+    track_xy: np.ndarray | Sequence[float],
+    t_last_valid: int,
+    cluster: ViewCluster,
+    cluster_xy: np.ndarray | Sequence[float],
+    t: int,
+    config: WorldTrackConfig,
+    *,
+    shared_keys: int = 0,
+    appearance_cost: float = 0.0,
+    clamp_gate: bool = True,
+    reject_reason: str | None = None,
+) -> TemporalEdgeCost:
+    """World Track 과 클러스터 사이의 시간 그래프 간선 비용(위치 + 시간 + 외형 − 키 이력 보너스)을 계산한다 (S15P31A101-464).
+
+    이번 티켓에서는 `appearance_cost = 0.0` 이 기본이며, S15P31A101-463 2단계(COPE Re-ID)가 기하 게이트 통과 후보에
+    코사인 거리를 넣을 수 있도록 인터페이스를 분리한다.
+    """
+    dt_ms = int(t - t_last_valid)
+    tx, ty = float(track_xy[0]), float(track_xy[1])
+    cx, cy = float(cluster_xy[0]), float(cluster_xy[1])
+    d = float(math.hypot(cx - tx, cy - ty))
+    reach = config.gate_base_m + config.max_speed_mps * max(dt_ms, 0) / 1000.0
+    radius = min(config.gate_max_m, reach) if clamp_gate else reach
+    reason = reject_reason
+    if reason is None and d > radius:
+        reason = "unreachable"
+    feasible = reason is None
+    pos_cost = d / config.gate_scale_m
+    time_cost = (max(dt_ms, 0) / max(config.reconnect_window_ms, 1)) * config.temporal_time_weight
+    app_cost = float(appearance_cost) * config.appearance_weight
+    total_keys = max(len(cluster.keys), 1)
+    bonus = config.key_bonus * (shared_keys / total_keys)
+    return TemporalEdgeCost(
+        track_id=track_id,
+        association_id=cluster.association_id,
+        dt_ms=dt_ms,
+        distance_m=d,
+        gate_radius_m=float(radius),
+        position_cost=float(pos_cost),
+        time_cost=float(time_cost),
+        key_bonus=float(bonus),
+        appearance_cost=float(app_cost),
+        feasible=feasible,
+        reject_reason=reason,
+    )
+
+
+def resolve_temporal_graph(
+    edges: Sequence[TemporalEdgeCost],
+    *,
+    ambiguity_margin: float = 0.3,
+    max_cost: float = _FORBIDDEN,
+) -> tuple[dict[str, str], set[str]]:
+    """시간 그래프 간선 후보들을 헝가리안 1:1 배정으로 풀어 `(track_id -> association_id, 애매한 track_id 집합)` 을 돌려준다."""
+    feasible_edges = [e for e in edges if e.feasible and math.isfinite(e.total_cost) and e.total_cost < max_cost]
+    if not feasible_edges:
+        return {}, set()
+    track_ids = sorted({e.track_id for e in feasible_edges})
+    assoc_ids = sorted({e.association_id for e in feasible_edges})
+    by_pair = {(e.track_id, e.association_id): e.total_cost for e in feasible_edges}
+    matrix = [[by_pair.get((tid, aid), _FORBIDDEN) for aid in assoc_ids] for tid in track_ids]
+    matched: dict[str, str] = {}
+    for r, c in linear_sum_assignment(matrix):
+        tid, aid = track_ids[r], assoc_ids[c]
+        val = by_pair.get((tid, aid), math.inf)
+        if math.isfinite(val) and val < max_cost:
+            matched[tid] = aid
+    ambiguous: set[str] = set()
+    for tid, aid in matched.items():
+        chosen = by_pair[(tid, aid)]
+        rival_t = [o for o in track_ids if o != tid and by_pair.get((o, aid), math.inf) - chosen < ambiguity_margin]
+        rival_a = [o for o in assoc_ids if o != aid and by_pair.get((tid, o), math.inf) - chosen < ambiguity_margin]
+        if rival_t or rival_a:
+            ambiguous.add(tid)
+            ambiguous.update(rival_t)
+    return matched, ambiguous
+
+
 class WorldTrackManager:
     """공통 시각마다 Cross-view 결과로 World Track 을 갱신한다. 시각은 늘어나는 순서로만 넣는다."""
 
@@ -787,13 +997,26 @@ class WorldTrackManager:
         issuer: WorldIdIssuer,
         config: WorldTrackConfig | None = None,
         input_provenance: Mapping[str, Any] | None = None,
+        appearance_cost_fn: AppearanceCostFn | None = None,
+        feature_lookup: ReidFeatureLookup | None = None,
     ) -> None:
         self.issuer = issuer
         self.config = config if config is not None else WorldTrackConfig()
         self.input_provenance = dict(input_provenance) if input_provenance is not None else None
+        self.appearance_cost_fn = appearance_cost_fn
+        self.feature_lookup = feature_lookup
+        self.galleries = ReidGalleryStore(
+            GalleryConfig(dormant_ttl_ms=max(1, self.config.reid_dormant_ttl_ms))
+        )
         self._tracks: dict[str, _Track] = {}
         self._dormant: dict[str, _Track] = {}
         """소실 후보: LOST 를 한 번 낸 CONFIRMED Track (늦은 재연결용. world_state 에는 내지 않는다)"""
+        self._reid_dormant: dict[str, _Track] = {}
+        """장기 보류(DORMANT) Track: reconnect_window_ms 뒤에도 reid_dormant_ttl_ms 동안 재입장 후보로 유지한다(world_state 미노출)"""
+        self._recent_proximity: dict[frozenset[str], int] = {}
+        """최근 교차·근접한 Track 쌍 → 마지막 근접 시각(ms)"""
+        self._swap_counts: dict[tuple[str, str], int] = {}
+        """연속 교차 유사도 우위 횟수 (wid_a, wid_b) -> count"""
         self._revisions: list[IdentityRevision] = []
         self._duplicates: set[frozenset[str]] = set()
         """같은 사람 두 ID 로 보이는 World ID 쌍 (POSSIBLE_DUPLICATE 를 다시 붙인다)"""
@@ -821,6 +1044,11 @@ class WorldTrackManager:
     def lost_candidates(self) -> tuple[str, ...]:
         """늦은 재연결을 기다리는 소실 후보 World ID."""
         return tuple(sorted(self._dormant))
+
+    @property
+    def dormant_candidates(self) -> tuple[str, ...]:
+        """장기 보류(DORMANT) 재입장 후보 World ID (world_state 에는 내보내지 않는다)."""
+        return tuple(sorted(self._reid_dormant))
 
     @property
     def restore_status(self) -> RestoreStatus:
@@ -862,6 +1090,26 @@ class WorldTrackManager:
     def last_t(self) -> int | None:
         """마지막으로 넣은 공통 시각. 아직 없으면 None."""
         return self._last_t
+
+    def temporal_prior_groups(
+        self, t: int | None = None, ttl_ms: int | None = None
+    ) -> tuple[frozenset[TrackKey], ...]:
+        """최근 창(`ttl_ms`) 안에 같은 활성 World Track 에 속했던 카메라별 최신 로컬 트랙 묶음 (S15P31A101-464)."""
+        ref_t = self._last_t if t is None else require_ms("t", t)
+        if ref_t is None:
+            return ()
+        window = self.config.split_suppression_owner_ttl_ms if ttl_ms is None else int(ttl_ms)
+        groups: list[frozenset[TrackKey]] = []
+        for tr in sorted(self._tracks.values(), key=lambda item: item.order):
+            by_cam: dict[str, tuple[int, TrackKey]] = {}
+            for k, kt in tr.keys.items():
+                if ref_t - kt <= window:
+                    prev = by_cam.get(k[0])
+                    if prev is None or (kt, k) > prev:
+                        by_cam[k[0]] = (kt, k)
+            if len(by_cam) >= 2:
+                groups.append(frozenset(k for _, k in by_cam.values()))
+        return tuple(groups)
 
     def export_tracks(self) -> tuple[TrackCheckpoint, ...]:
         """체크포인트용 Track 상태(명세 3.2 재시작 복구, S15P31A101-51). 살아 있는 Track 만(소실 후보 제외), world_id 순서.
@@ -908,18 +1156,39 @@ class WorldTrackManager:
         self._last_t = t
         self._restore_step(t)
 
-        keep_ms = max(cfg.key_ttl_ms, cfg.reconnect_window_ms)
+        keep_ms = max(cfg.key_ttl_ms, cfg.reconnect_window_ms, cfg.split_suppression_owner_ttl_ms)
         for tr in self._all():
             tr.keys = {k: kt for k, kt in tr.keys.items() if t - kt <= keep_ms}
             tr.path = [(pt, xy) for pt, xy in tr.path if t - pt <= cfg.reconnect_window_ms]
         for wid in [w for w, tr in self._dormant.items() if t - tr.t_last_valid > cfg.reconnect_window_ms]:
-            del self._dormant[wid]
+            expired = self._dormant.pop(wid)
+            if (
+                cfg.reid_enabled
+                and cfg.reid_dormant_enabled
+                and cfg.reid_dormant_ttl_ms > cfg.reconnect_window_ms
+                and t - expired.t_last_valid <= cfg.reid_dormant_ttl_ms
+            ):
+                self._reid_dormant[wid] = expired
+                self.galleries.mark_dormant(wid, expired.t_last_valid)
+                self.diag["lifecycle.dormant"] += 1
+            else:
+                self.galleries.remove(wid)
+        for wid in [w for w, tr in self._reid_dormant.items() if t - tr.t_last_valid > cfg.reid_dormant_ttl_ms]:
+            del self._reid_dormant[wid]
+            self.galleries.remove(wid)
+            self.diag["lifecycle.dormant_expired"] += 1
+        self.galleries.prune_expired(t)
         self._forget_gone()
         # 비용 보너스·주인 판단은 key_ttl_ms 안의 연결 이력만, 늦은 재연결 근거는 소실 후보까지 남긴 이력 전부
         owner = {
             k: tr.world_id for tr in self._tracks.values() for k, kt in tr.keys.items() if t - kt <= cfg.key_ttl_ms
         }
         holder = {k: tr.world_id for tr in self._all() for k in tr.keys}
+        # 이번 tick 의 소유권 이동·1대 관측 이력 갱신 전 스냅샷. 새 ID 가 같은 tick 의 주인이 되는 일을 막는다.
+        recent_owner = {
+            k: tr.world_id for tr in self._all() for k, kt in tr.keys.items()
+            if t - kt <= cfg.split_suppression_owner_ttl_ms
+        }
         held: dict[str, set[TrackKey]] = {}
         for k, wid in holder.items():
             held.setdefault(wid, set()).add(k)
@@ -931,13 +1200,31 @@ class WorldTrackManager:
         def cost(tr: _Track, c: _Cluster) -> float:
             """게이트 밖이면 inf."""
             assert c.anchor is not None
-            d = float(np.linalg.norm(c.anchor - predicted[tr.world_id]))
-            radius = min(cfg.gate_max_m, cfg.gate_base_m + cfg.max_speed_mps * (t - tr.t_last_valid) / 1000.0)
-            if d > radius:
+            # 중간에 빈 tick 이 없어도 창 만료를 적용한다. 마지막 관측 시각만 근거로 삼는다.
+            if tr.lifecycle is not TrackLifecycle.TENTATIVE and t - tr.t_last_valid > cfg.lost_after_ms:
                 return math.inf
             keys = c.cluster.keys
             shared = sum(1 for k in keys if owner.get(k) == tr.world_id)
-            return d / cfg.gate_scale_m - cfg.key_bonus * shared / len(keys)
+            if self.appearance_cost_fn is not None:
+                app_cost = float(self.appearance_cost_fn(tr.world_id, c.cluster, t))
+            elif self.feature_lookup is not None and cfg.reid_enabled:
+                sim = self._cluster_gallery_sim(tr.world_id, c.cluster, t)
+                app_cost = (1.0 - sim) * 0.35 if sim is not None else 0.0
+            else:
+                app_cost = 0.0
+            edge = temporal_edge_cost(
+                tr.world_id,
+                predicted[tr.world_id],
+                tr.t_last_valid,
+                c.cluster,
+                c.anchor,
+                t,
+                cfg,
+                shared_keys=shared,
+                appearance_cost=app_cost,
+                clamp_gate=True,
+            )
+            return edge.total_cost
 
         anchored = [c for c in clusters if c.anchor is not None]
         self.diag["cluster.single_view"] += sum(1 for c in clusters if c.cluster.skeleton is None)
@@ -998,6 +1285,15 @@ class WorldTrackManager:
                     if owner.get(k) in assigned
                     and np.linalg.norm(c.anchor - predicted[owner[k]]) <= cfg.duplicate_radius_m
                 }
+                if near_owners and self.feature_lookup is not None and cfg.reid_enabled:
+                    filtered_owners: set[str] = set()
+                    for wid in near_owners:
+                        sim = self._cluster_track_sim(wid, c.cluster, assigned[wid].cluster, t)
+                        if sim is not None and sim < cfg.reid_split_different_max_sim:
+                            self.diag["reid.split_preserved_different"] += 1
+                            continue
+                        filtered_owners.add(wid)
+                    near_owners = filtered_owners
                 self.diag["uncertain.blocked_near_owner" if near_owners else "uncertain.no_track_in_gate"] += 1
                 if near_owners:
                     blocked.add(id(c))
@@ -1020,6 +1316,9 @@ class WorldTrackManager:
             else:
                 for tr in feasible:
                     flags[tr.world_id].add(IdentityFlag.CROSS_VIEW_UNCERTAIN)
+
+        # 교차·근접 뒤 swap 판정·복구 (S15P31A101-463)
+        self._check_and_revert_swaps(assigned, predicted, flags, t)
 
         # 7단계: 같은 사람 두 ID 로 보이는 Track 은 이 시각에는 합치지 않고 둘 다 남긴 채 표시한다.
         # 로컬 트랙 ID 하나가 옆 사람에게 넘어간 경우(로컬 트래커 ID 전환)와 한 시각만으로는 구별할 근거가 없기 때문이다.
@@ -1087,10 +1386,23 @@ class WorldTrackManager:
             if id(c) in taken or id(c) in blocked or not c.has_pelvis:
                 continue
             target, ambiguous, unreachable = self._reconnect_target(c, holder, held, cluster_of, applied, t)
+            reid_reconnected = False
+            if target is None and self.feature_lookup is not None and cfg.reid_enabled:
+                reid_target, reid_ambig = self._reid_reconnect_target(
+                    c, holder, held, cluster_of, applied, t
+                )
+                if reid_target is not None:
+                    target = reid_target
+                    ambiguous = False
+                    reid_reconnected = True
+                elif reid_ambig:
+                    ambiguous = True
             if target is not None:
-                was_lost = target in self._dormant
+                was_lost = target in self._dormant or target in self._reid_dormant
                 result = self._reconnect(target, c.cluster, frame, rig, excluded, t)
                 self.diag["reconnect.done" if result is not None else "reconnect.no_measurement"] += 1
+                if reid_reconnected and result is not None:
+                    self.diag["reid.reentry_reconnected"] += 1
                 if result is not None:
                     tr = self._tracks[target]
                     applied[target] = result
@@ -1115,6 +1427,11 @@ class WorldTrackManager:
                 self.diag["new_track.no_measurement"] += 1
                 continue
             z, sigma = measurement
+            suppressed_by = self._split_remainder_target(c, applied, holder, cluster_of, recent_owner, t)
+            if suppressed_by is not None:
+                flags.setdefault(suppressed_by, set()).add(IdentityFlag.CROSS_VIEW_UNCERTAIN)
+                self.diag["new_track.split_remainder_suppressed"] += 1
+                continue  # ID·위치·로컬 트랙 소유권은 바꾸지 않는다
             self.diag["new_track.created"] += 1
             self._order += 1
             tr = _Track(
@@ -1161,6 +1478,16 @@ class WorldTrackManager:
             self.diag["revision.merge"] += 1
             revisions.append(rec)
             linked.add(rec.world_id)
+
+        # 비동기 Re-ID 지연 도착 재입장 병합 (S15P31A101-463): 첫 프레임에 특징이 아직 없던 새 Track 이 직후 특징을 얻었을 때
+        if self.feature_lookup is not None and cfg.reid_enabled:
+            for rec, was_lost in self._reid_late_reentry_merge(applied, held, cluster_of, flags, t):
+                self.diag["revision.merge"] += 1
+                self.diag["reid.reentry_merged"] += 1
+                revisions.append(rec)
+                linked.add(rec.world_id)
+                if was_lost and rec.world_id not in reassociated:
+                    reassociated.append(rec.world_id)
 
         # 병합 금지 쌍: 이번 시각 새로 생기거나 다시 이은 Track 까지 (다음 시각 근거에 쓴다)
         self._mark_distinct(frame, holder, {wid: a.cluster for wid, a in applied.items()})
@@ -1233,11 +1560,27 @@ class WorldTrackManager:
             if tr.lifecycle is TrackLifecycle.LOST:
                 newly_lost.append((tr, was_confirmed))
 
+        # World Track 갤러리 갱신 및 경쟁 유사도 margin 계산 (S15P31A101-463)
+        self._update_galleries(applied, t)
+
         snapshots = [self._snapshot(tr, t, applied.get(tr.world_id)) for tr in self._tracks.values()]
         for tr, was_confirmed in newly_lost:
             self._tracks.pop(tr.world_id, None)
-            if was_confirmed and cfg.reconnect_window_ms > cfg.lost_after_ms:
+            gap_lost = t - tr.t_last_valid
+            if was_confirmed and cfg.reconnect_window_ms > cfg.lost_after_ms and gap_lost <= cfg.reconnect_window_ms:
                 self._dormant[tr.world_id] = tr  # LOST 는 한 번만 내고 소실 후보로 둔다
+            elif (
+                was_confirmed
+                and cfg.reid_enabled
+                and cfg.reid_dormant_enabled
+                and cfg.reid_dormant_ttl_ms > cfg.lost_after_ms
+                and gap_lost <= cfg.reid_dormant_ttl_ms
+            ):
+                self._reid_dormant[tr.world_id] = tr
+                self.galleries.mark_dormant(tr.world_id, tr.t_last_valid)
+                self.diag["lifecycle.dormant"] += 1
+            else:
+                self.galleries.remove(tr.world_id)
         self._forget_gone()
         return WorldTrackFrame(
             t=t,
@@ -1250,6 +1593,80 @@ class WorldTrackManager:
 
     # ------------------------------------------------------------------ 늦은 재연결·ID 교정
 
+    def _split_remainder_target(
+        self,
+        c: _Cluster,
+        applied: Mapping[str, _Applied],
+        holder: Mapping[TrackKey, str],
+        cluster_of: Mapping[TrackKey, ViewCluster],
+        recent_owner: Mapping[TrackKey, str],
+        t: int = 0,
+    ) -> str | None:
+        """S3: 새 ID 직전에만 검사한다. 예측 위치·옛 위치는 억제 근거로 쓰지 않는다.
+
+        직전까지 근거 Track 에 속했던 키가 하나 이상인 나머지만 억제한다. 소유 이력은 tick 시작 시 고정한다.
+        측정은 합치지 않는다. 기존 병합 금지 쌍과 이번 시각 같은 카메라의 두 검출은 억제의 반증이다.
+        위치 갱신에 쓰이지 않은 1대 클러스터의 검출도 로컬 트랙 주인을 통해 반증으로 쓴다.
+        가까운 후보가 여럿이면 거리·World ID 순으로 하나를 고르고 불확실 표시를 남긴다.
+        Re-ID 특징이 있으면:
+        - 외형이 명확히 다른 경우(`sim < reid_split_different_max_sim`) 억제를 막아 근접 두 사람(`<n`)을 보호한다.
+        - 외형이 같은 사람으로 확인되면(`sim >= reid_split_same_min_sim`, margin 충족) 소유 이력이 끊겼거나
+          `c.uncertain` 이거나 반경 `reid_split_max_radius_m` 안인 분리 나머지도 억제한다.
+        """
+        cfg = self.config
+        reid_on = self.feature_lookup is not None and cfg.reid_enabled
+        if not cfg.split_suppression_enabled or c.anchor is None:
+            return None
+        if c.uncertain and not reid_on:
+            return None
+        cameras = set(c.cluster.camera_ids)
+        owners = {holder.get(k) for k in c.cluster.keys}
+        candidates: list[tuple[float, str]] = []
+        reid_scores: dict[str, float] = {}
+        if reid_on:
+            for wid, a in applied.items():
+                sim = self._cluster_track_sim(wid, c.cluster, a.cluster, t)
+                if sim is not None:
+                    reid_scores[wid] = sim
+
+        for wid, a in applied.items():
+            if a.pelvis is None or cameras.intersection(a.cluster.camera_ids):
+                continue
+            visible = set(a.cluster.keys) | {k for k in cluster_of if holder.get(k) == wid}
+            if any(k[0] == other[0] and k != other for k in c.cluster.keys for other in visible):
+                continue  # 주인의 다른 검출이 1대 클러스터에만 있어도 두 사람이다
+            distance = math.dist(c.anchor, a.pelvis[:2])
+            has_recent_owner = any(recent_owner.get(k) == wid for k in c.cluster.keys)
+            is_distinct = any(old is not None and frozenset((old, wid)) in self._distinct for old in owners)
+            sim = reid_scores.get(wid)
+
+            # 1) 외형이 명확히 다르면(< reid_split_different_max_sim) 억제를 취소하여 두 사람(<n)을 보호한다
+            if reid_on and sim is not None and sim < cfg.reid_split_different_max_sim:
+                if has_recent_owner and distance <= cfg.split_suppression_radius_m:
+                    self.diag["reid.split_preserved_different"] += 1
+                continue
+
+            # 2) 기본 기하·소유자 조건 충족 시 (또는 c.uncertain 인데 최근 소유자 + 외형 모순 없음)
+            if (
+                (cfg.split_suppress_ownerless or has_recent_owner)
+                and not is_distinct
+                and (not cfg.split_suppression_require_owner or owners == {wid})
+                and distance <= cfg.split_suppression_radius_m
+            ):
+                if not c.uncertain or (reid_on and has_recent_owner):
+                    candidates.append((distance, wid))
+                    continue
+
+            # 3) Re-ID 외형 일치로 확인된 분리 나머지 억제 (소유 이력 만료 또는 최대 반경 reid_split_max_radius_m 내)
+            if reid_on and sim is not None and distance <= cfg.reid_split_max_radius_m:
+                best_other = max((s for other_w, s in reid_scores.items() if other_w != wid), default=-1.0)
+                margin = sim - best_other if best_other >= 0.0 else sim
+                min_sim = cfg.reid_split_same_min_sim if not has_recent_owner else (cfg.reid_split_same_min_sim - 0.05)
+                if sim >= min_sim and margin >= cfg.reid_split_margin:
+                    self.diag["reid.split_suppressed_same"] += 1
+                    candidates.append((distance, wid))
+        return min(candidates)[1] if candidates else None
+
     def _all(self) -> list[_Track]:
         """살아 있는 Track 과 소실 후보."""
         return [*self._tracks.values(), *self._dormant.values()]
@@ -1257,11 +1674,17 @@ class WorldTrackManager:
     def _find(self, world_id: str) -> _Track | None:
         return self._tracks.get(world_id) or self._dormant.get(world_id)
 
+    def _find_with_dormant(self, world_id: str) -> _Track | None:
+        return self._tracks.get(world_id) or self._dormant.get(world_id) or self._reid_dormant.get(world_id)
+
     def _forget_gone(self) -> None:
         """사라진 ID 가 든 병합 금지 쌍·병합 근거를 지운다."""
         alive = set(self._tracks) | set(self._dormant)
-        self._distinct = {p for p in self._distinct if p <= alive}
+        alive_reid = alive | set(self._reid_dormant)
+        self._distinct = {p for p in self._distinct if p <= alive_reid}
         self._evidence = {w: ev for w, ev in self._evidence.items() if w in alive and ev.stale in alive}
+        self._recent_proximity = {p: pt for p, pt in self._recent_proximity.items() if p <= alive}
+        self._swap_counts = {k: v for k, v in self._swap_counts.items() if k[0] in alive and k[1] in alive}
 
     def _take_key(self, key: TrackKey, tr: _Track, t: int, fresh: Collection[str]) -> None:
         """로컬 트랙을 이 Track 으로 옮긴다. 한 로컬 트랙은 Track 하나(소실 후보 포함)에만 있다.
@@ -1455,15 +1878,19 @@ class WorldTrackManager:
         excluded: frozenset[str],
         t: int,
     ) -> _Applied | None:
-        """클러스터를 Track 에 잇는다. 소실 후보는 위치 측정이 있을 때만 살리고 게이트 이력을 새로 시작한다."""
+        """클러스터를 Track 에 잇는다. 소실·장기 보류 후보는 위치 측정이 있을 때만 살리고 게이트 이력을 새로 시작한다."""
         if world_id in self._tracks:
             return self._apply(self._tracks[world_id], cluster, frame, rig, excluded, t)
-        tr = self._dormant[world_id]
+        tr = self._dormant.get(world_id) or self._reid_dormant.get(world_id)
+        if tr is None:
+            return None
         gate = JointGate(self.config.joint_gate)
         gated = self._gate(gate, cluster, frame, rig, excluded)
         if self._measurement(gated) is None:
             return None  # 위치 없이 살리면 다음 생명주기에서 다시 LOST 가 된다
-        del self._dormant[world_id]
+        self._dormant.pop(world_id, None)
+        self._reid_dormant.pop(world_id, None)
+        self.galleries.mark_active(world_id, t)
         self._tracks[world_id] = tr
         tr.gate = gate
         return self._apply(tr, cluster, frame, rig, excluded, t, gated)
@@ -1478,10 +1905,10 @@ class WorldTrackManager:
         flags: dict[str, set[IdentityFlag]],
     ) -> IdentityRevision:
         """두 ID 를 먼저 만든 ID 로 합치고 교정 기록을 남긴다. 위치·필터는 이번 시각 측정을 받은 live 의 것을 잇는다."""
-        stale = self._find(stale_id)
+        stale = self._find_with_dormant(stale_id)
         live = self._tracks[live_id]
         assert stale is not None
-        was_lost = stale_id in self._dormant
+        was_lost = stale_id in self._dormant or stale_id in self._reid_dormant
         survivor, retired = (stale, live) if stale.order < live.order else (live, stale)
         revision = max(stale.identity_revision, live.identity_revision) + 1
         confirmed = not (stale.lifecycle is TrackLifecycle.TENTATIVE and live.lifecycle is TrackLifecycle.TENTATIVE)
@@ -1514,8 +1941,11 @@ class WorldTrackManager:
         self._tracks.pop(retired.world_id, None)
         self._dormant.pop(retired.world_id, None)
         self._dormant.pop(survivor.world_id, None)
+        self._reid_dormant.pop(retired.world_id, None)
+        self._reid_dormant.pop(survivor.world_id, None)
         self._tracks[survivor.world_id] = survivor
         old, new = retired.world_id, survivor.world_id
+        self.galleries.merge(new, old, t)
         self._duplicates = {p for p in (_rename(p, old, new) for p in self._duplicates) if len(p) == 2}
         self._distinct = {p for p in (_rename(p, old, new) for p in self._distinct) if len(p) == 2}
         self._evidence = {w: e for w, e in self._evidence.items() if {w, e.stale}.isdisjoint({old, new})}
@@ -1582,6 +2012,10 @@ class WorldTrackManager:
                 # 둘 다 위치 측정을 받은 시각만 본다(가려진 시각은 세지도 버리지도 않는다)
                 certain = not (a.cluster.identity_uncertain or b.cluster.identity_uncertain)
                 apart = certain and _horizontal(a.pelvis, b.pelvis) > cfg.duplicate_radius_m
+                if self.feature_lookup is not None and cfg.reid_enabled:
+                    sim = self._cluster_track_sim(sp.source, b.cluster, a.cluster, t)
+                    if sim is not None and sim >= cfg.reid_split_same_min_sim:
+                        apart = False
                 if _split_cameras(a.cluster, b.cluster, sp.keys, holder, sp.source, child) >= cfg.reconnect_min_cameras:
                     sp.count = sp.count + 1 if apart else 0
                     sp.last_t = t
@@ -1667,6 +2101,403 @@ class WorldTrackManager:
         tr.restored_candidates = tuple(wid for _, wid in sorted(near))
         tr.restored_excluded = frozenset(far)
 
+    # ------------------------------------------------------------------ Re-ID 외형 보조 판정 (S15P31A101-463)
+
+    def _cluster_features(self, cluster: ViewCluster, t: int) -> list[LocalTrackFeature]:
+        if self.feature_lookup is None or not self.config.reid_enabled:
+            return []
+        out: list[LocalTrackFeature] = []
+        for k in cluster.keys:
+            feat = self.feature_lookup(k[0], k[1], t)
+            if feat is not None:
+                out.append(feat)
+        return out
+
+    def _cluster_gallery_sim(self, world_id: str, cluster: ViewCluster, t: int) -> float | None:
+        gallery = self.galleries.get(world_id)
+        if gallery is None or len(gallery) == 0:
+            return None
+        feats = self._cluster_features(cluster, t)
+        if not feats:
+            return None
+        best = -1.0
+        for f in feats:
+            sim = gallery.similarity(f.embedding, camera_id=f.camera_id, face_embedding=getattr(f, "face_embedding", None))
+            if sim is not None and sim > best:
+                best = sim
+        return best if best >= 0.0 else None
+
+    def _cluster_track_sim(
+        self,
+        world_id: str,
+        cluster: ViewCluster,
+        other_cluster: ViewCluster | None,
+        t: int,
+    ) -> float | None:
+        """클러스터와 대상 Track(갤러리 + 같은 시각 다른 클러스터 특징) 간 최대 코사인 유사도."""
+        feats = self._cluster_features(cluster, t)
+        if not feats:
+            return None
+        best = self._cluster_gallery_sim(world_id, cluster, t)
+        if other_cluster is not None:
+            other_feats = self._cluster_features(other_cluster, t)
+            for fa in feats:
+                for fb in other_feats:
+                    sim = float(np.dot(fa.embedding, fb.embedding))
+                    if best is None or sim > best:
+                        best = sim
+        return best
+
+    def _reid_reconnect_target(
+        self,
+        c: _Cluster,
+        holder: Mapping[TrackKey, str],
+        held: Mapping[str, Collection[TrackKey]],
+        cluster_of: Mapping[TrackKey, ViewCluster],
+        applied: Mapping[str, _Applied],
+        t: int,
+    ) -> tuple[str | None, bool]:
+        """기하 재연결이 로컬 트랙 ID 소실로 불발됐을 때, 기하 도달 가능 + 외형 유사도로 DORMANT/LOST/미배정 Track 에 잇는다."""
+        cfg = self.config
+        if not cfg.reid_dormant_enabled or c.anchor is None:
+            return None, False
+        feats = self._cluster_features(c.cluster, t)
+        if not feats:
+            return None, False
+
+        # 현재 활성 배정된 Track 들과의 유사도 (이미 화면에 있는 사람의 분리 나머지를 DORMANT 에 잘못 붙이는 것을 방지)
+        active_max_sim = -1.0
+        for wid, a in applied.items():
+            sim = self._cluster_track_sim(wid, c.cluster, a.cluster, t)
+            if sim is not None and sim > active_max_sim:
+                active_max_sim = sim
+
+        holders = {holder[k] for k in c.cluster.keys if k in holder}
+        candidates: list[tuple[float, str]] = []
+        for cand_id, cand in [
+            *self._reid_dormant.items(),
+            *self._dormant.items(),
+            *((w, tr) for w, tr in self._tracks.items() if w not in applied),
+        ]:
+            if cand_id in applied:
+                continue
+            if cand.lifecycle is TrackLifecycle.TENTATIVE and cand.hits < cfg.confirm_hits:
+                continue
+            # 그 후보의 다른 로컬 트랙이 이번 시각 다른 클러스터에 있으면 다른 곳에 있는 사람이다
+            if any(
+                (other := cluster_of.get(k)) is not None and other is not c.cluster
+                for k in held.get(cand_id, ())
+            ):
+                continue
+            if holders and all(frozenset((h, cand_id)) in self._distinct for h in holders):
+                continue
+            dt_ms = t - cand.t_last_valid
+            if dt_ms <= 0 or dt_ms > cfg.reid_dormant_ttl_ms:
+                continue
+            reach = cfg.gate_base_m + cfg.max_speed_mps * (dt_ms / 1000.0)
+            if float(np.linalg.norm(c.anchor - cand.last_xy)) > reach:
+                continue
+            sim = self._cluster_gallery_sim(cand_id, c.cluster, t)
+            if sim is not None:
+                candidates.append((sim, cand_id))
+
+        if not candidates:
+            return None, False
+        candidates.sort(reverse=True)
+        best_sim, best_id = candidates[0]
+        second_sim = candidates[1][0] if len(candidates) > 1 else -1.0
+        rival_sim = max(second_sim, active_max_sim)
+        margin = best_sim - rival_sim if rival_sim >= 0.0 else best_sim
+
+        # 1대 로컬 트랙이 유지된 경우(single_camera_evidence)는 재입장 임계값을 소폭 완화
+        has_single_cam_holder = holders == {best_id}
+        min_sim = (cfg.reid_reentry_min_sim - 0.04) if has_single_cam_holder else cfg.reid_reentry_min_sim
+        if best_sim >= min_sim and margin >= cfg.reid_reentry_margin:
+            return best_id, False
+        if best_sim >= cfg.reid_split_same_min_sim and margin < cfg.reid_reentry_margin:
+            self.diag["reid.reentry_ambiguous"] += 1
+            return None, True
+        return None, False
+
+    def _reid_late_reentry_merge(
+        self,
+        applied: dict[str, _Applied],
+        held: Mapping[str, Collection[TrackKey]],
+        cluster_of: Mapping[TrackKey, ViewCluster],
+        flags: dict[str, set[IdentityFlag]],
+        t: int,
+    ) -> list[tuple[IdentityRevision, bool]]:
+        """새로 생성된 Track 의 첫 프레임 이후 비동기 Re-ID 특징이 도착했을 때 DORMANT/LOST 후보와 병합한다."""
+        cfg = self.config
+        out: list[tuple[IdentityRevision, bool]] = []
+        if not cfg.reid_dormant_enabled:
+            return out
+        for wid, a in list(applied.items()):
+            tr = self._tracks.get(wid)
+            if tr is None or tr.reid_checked_reentry:
+                continue
+            if t - tr.created_t > max(cfg.key_ttl_ms * 3, 2500):
+                tr.reid_checked_reentry = True
+                continue
+            feats = self._cluster_features(a.cluster, t)
+            if not feats:
+                continue
+            tr.reid_checked_reentry = True
+            if not tr.path:
+                continue
+            first_t, first_xy = tr.path[0]
+
+            # 다른 활성 Track 과의 최대 유사도
+            active_max_sim = -1.0
+            for other_wid, other_a in applied.items():
+                if other_wid == wid:
+                    continue
+                sim = self._cluster_track_sim(other_wid, a.cluster, other_a.cluster, t)
+                if sim is not None and sim > active_max_sim:
+                    active_max_sim = sim
+
+            candidates: list[tuple[float, str]] = []
+            for cand_id, cand in [
+                *self._reid_dormant.items(),
+                *self._dormant.items(),
+                *((w, st) for w, st in self._tracks.items() if w not in applied and st.order < tr.order),
+            ]:
+                if cand.order >= tr.order:
+                    continue
+                if cand.lifecycle is TrackLifecycle.TENTATIVE and cand.hits < cfg.confirm_hits:
+                    continue
+                if frozenset((cand_id, wid)) in self._distinct:
+                    continue
+                if any(
+                    (other := cluster_of.get(k)) is not None and other is not a.cluster
+                    for k in held.get(cand_id, ())
+                ):
+                    continue
+                dt_ms = first_t - cand.t_last_valid
+                if dt_ms < 0 or dt_ms > cfg.reid_dormant_ttl_ms:
+                    continue
+                reach = cfg.gate_base_m + cfg.max_speed_mps * (dt_ms / 1000.0)
+                if float(np.linalg.norm(first_xy - cand.last_xy)) > reach:
+                    continue
+                sim = self._cluster_gallery_sim(cand_id, a.cluster, t)
+                if sim is not None:
+                    candidates.append((sim, cand_id))
+
+            if not candidates:
+                continue
+            candidates.sort(reverse=True)
+            best_sim, best_id = candidates[0]
+            second_sim = candidates[1][0] if len(candidates) > 1 else -1.0
+            rival_sim = max(second_sim, active_max_sim)
+            margin = best_sim - rival_sim if rival_sim >= 0.0 else best_sim
+            if best_sim >= cfg.reid_reentry_min_sim and margin >= cfg.reid_reentry_margin:
+                was_lost = best_id in self._dormant or best_id in self._reid_dormant
+                ev = _Evidence(best_id, frozenset(a.cluster.keys), cfg.merge_confirm_frames, t)
+                rec = self._merge(best_id, wid, ev, t, applied, flags)
+                out.append((rec, was_lost))
+        return out
+
+    def _check_and_revert_swaps(
+        self,
+        assigned: dict[str, _Cluster],
+        predicted: Mapping[str, np.ndarray],
+        flags: dict[str, set[IdentityFlag]],
+        t: int,
+    ) -> None:
+        """교차·근접 직후 두 활성 Track 의 갤러리 대비 교차 유사도가 자기 유사도보다 일관되게 높으면 배정을 되돌린다."""
+        cfg = self.config
+        active_ids = sorted(assigned)
+        for i, wid_a in enumerate(active_ids):
+            ca = assigned[wid_a]
+            if ca.anchor is None:
+                continue
+            for wid_b in active_ids[i + 1 :]:
+                cb = assigned[wid_b]
+                if cb.anchor is None:
+                    continue
+                dist = float(np.linalg.norm(ca.anchor - cb.anchor))
+                pred_dist = float(np.linalg.norm(predicted[wid_a] - predicted[wid_b]))
+                if min(dist, pred_dist) <= cfg.reid_swap_proximity_m:
+                    self._recent_proximity[frozenset((wid_a, wid_b))] = t
+
+        self._recent_proximity = {
+            p: pt for p, pt in self._recent_proximity.items() if t - pt <= cfg.reid_swap_window_ms
+        }
+        if self.feature_lookup is None or not cfg.reid_enabled or not cfg.reid_swap_correction_enabled:
+            return
+
+        for pair, prox_t in list(self._recent_proximity.items()):
+            if len(pair) != 2:
+                continue
+            wid_a, wid_b = sorted(pair)
+            if wid_a not in assigned or wid_b not in assigned:
+                continue
+            ca, cb = assigned[wid_a], assigned[wid_b]
+            if ca.anchor is None or cb.anchor is None:
+                continue
+            sim_aa = self._cluster_gallery_sim(wid_a, ca.cluster, t)
+            sim_ab = self._cluster_gallery_sim(wid_a, cb.cluster, t)
+            sim_bb = self._cluster_gallery_sim(wid_b, cb.cluster, t)
+            sim_ba = self._cluster_gallery_sim(wid_b, ca.cluster, t)
+            if sim_aa is None or sim_ab is None or sim_bb is None or sim_ba is None:
+                continue
+
+            adv_a = sim_ab - sim_aa
+            adv_b = sim_ba - sim_bb
+            key = (wid_a, wid_b)
+            ta, tb = self._tracks[wid_a], self._tracks[wid_b]
+            if (
+                sim_ab >= cfg.reid_swap_min_sim
+                and sim_ba >= cfg.reid_swap_min_sim
+                and adv_a >= cfg.reid_swap_margin
+                and adv_b >= cfg.reid_swap_margin
+            ):
+                # 기하 도달 가능성 확인 (교차 시각 또는 직전 관측 시각 기준)
+                dt_a = max(t - ta.t_last_valid, t - prox_t, 100)
+                dt_b = max(t - tb.t_last_valid, t - prox_t, 100)
+                reach_a = max(cfg.reid_swap_proximity_m * 1.5, cfg.gate_base_m + cfg.max_speed_mps * (dt_a / 1000.0))
+                reach_b = max(cfg.reid_swap_proximity_m * 1.5, cfg.gate_base_m + cfg.max_speed_mps * (dt_b / 1000.0))
+                if (
+                    float(np.linalg.norm(cb.anchor - ta.last_xy)) > reach_a
+                    or float(np.linalg.norm(ca.anchor - tb.last_xy)) > reach_b
+                ):
+                    continue
+
+                count = self._swap_counts.get(key, 0) + 1
+                self._swap_counts[key] = count
+                ta.swap_suspected_until = max(ta.swap_suspected_until, t + cfg.uncertain_hold_ms)
+                tb.swap_suspected_until = max(tb.swap_suspected_until, t + cfg.uncertain_hold_ms)
+                if count >= cfg.reid_swap_confirm_frames:
+                    # 만약 이전 프레임에 이미 스왑된 궤적을 따라가고 있었다면 칼만 상태도 함께 교환한다
+                    cur_err = math.dist(ca.anchor, predicted[wid_a]) + math.dist(cb.anchor, predicted[wid_b])
+                    swap_err = math.dist(cb.anchor, predicted[wid_a]) + math.dist(ca.anchor, predicted[wid_b])
+                    if swap_err > cur_err:
+                        ta.kf, tb.kf = tb.kf, ta.kf
+                        ta.t_last_valid, tb.t_last_valid = tb.t_last_valid, ta.t_last_valid
+                    ta.gate.reset()
+                    tb.gate.reset()
+                    ta.identity_revision += 1
+                    tb.identity_revision += 1
+                    assigned[wid_a], assigned[wid_b] = cb, ca
+                    self._swap_counts.pop(key, None)
+                    self._recent_proximity.pop(pair, None)
+                    self.diag["reid.swap_reverted"] += 1
+                else:
+                    flags[wid_a].add(IdentityFlag.AMBIGUOUS_TRACK_MATCH)
+                    flags[wid_b].add(IdentityFlag.AMBIGUOUS_TRACK_MATCH)
+            else:
+                if adv_a > 0.0 and adv_b > 0.0:
+                    flags[wid_a].add(IdentityFlag.AMBIGUOUS_TRACK_MATCH)
+                    flags[wid_b].add(IdentityFlag.AMBIGUOUS_TRACK_MATCH)
+                    ta.swap_suspected_until = max(ta.swap_suspected_until, t + cfg.uncertain_hold_ms)
+                    tb.swap_suspected_until = max(tb.swap_suspected_until, t + cfg.uncertain_hold_ms)
+                self._swap_counts.pop(key, None)
+
+    def _update_galleries(self, applied: Mapping[str, _Applied], t: int) -> None:
+        """활성 Track 의 갤러리를 갱신하고 Track 별 유사도·경쟁 margin 을 기록한다.
+
+        두 활성 Track 간 거리가 1.0 m 이하이거나 신원이 불확실(IDENTITY_UNCERTAIN / 분할 대기 / swap 의심)한 동안에는
+        갤러리 오염을 막기 위해 갤러리 갱신을 동결한다.
+        """
+        if self.feature_lookup is None or not self.config.reid_enabled:
+            return
+        cfg = self.config
+        active_positions = {
+            wid: np.array([float(tr.kf.x[0]), float(tr.kf.x[1])], dtype=float)
+            for wid, tr in self._tracks.items()
+        }
+        close_freeze: set[str] = set()
+        wids = sorted(active_positions)
+        for i, wa in enumerate(wids):
+            for wb in wids[i + 1 :]:
+                if float(np.linalg.norm(active_positions[wa] - active_positions[wb])) <= cfg.reid_gallery_freeze_distance_m:
+                    close_freeze.add(wa)
+                    close_freeze.add(wb)
+
+        split_involved = {sp.source for sp in self._splits.values()} | set(self._splits.keys())
+
+        for wid, tr in self._tracks.items():
+            a = applied.get(wid)
+            if a is None:
+                continue
+            feats = self._cluster_features(a.cluster, t)
+            if not feats:
+                continue
+
+            # 현재 갤러리와의 유사도 및 다른 활성 Track 대비 margin 기록
+            own_sim = self._cluster_gallery_sim(wid, a.cluster, t)
+            rival_sim = -1.0
+            for other_wid in self._tracks:
+                if other_wid == wid:
+                    continue
+                s = self._cluster_gallery_sim(other_wid, a.cluster, t)
+                if s is not None and s > rival_sim:
+                    rival_sim = s
+            tr.last_reid_similarity = own_sim
+            if own_sim is not None:
+                tr.last_reid_margin = own_sim - rival_sim if rival_sim >= 0.0 else own_sim
+
+            held_flags = {f for f, ft in tr.flags.items() if t - ft <= cfg.uncertain_hold_ms}
+            freeze = (
+                wid in close_freeze
+                or wid in split_involved
+                or bool(held_flags)
+                or a.cluster.identity_uncertain
+                or t <= tr.swap_suspected_until
+            )
+            if freeze:
+                self.diag["reid.gallery_frozen"] += 1
+                continue
+
+            orient_bin = self._estimate_orientation_bin(a.gated)
+            gallery = self.galleries.get_or_create(wid, t)
+            for f in feats:
+                vis_ratio = (
+                    f.visibility.visibility_ratio()
+                    if hasattr(f.visibility, "visibility_ratio")
+                    else float(f.visibility)
+                )
+                qual = float(getattr(f, "quality_score", getattr(f, "quality", 1.0)))
+                if vis_ratio < cfg.reid_gallery_min_visibility or qual < cfg.reid_gallery_min_quality:
+                    continue
+                gallery.update(
+                    embedding=f.embedding,
+                    camera_id=f.camera_id,
+                    t_ms=t,
+                    quality=qual,
+                    visibility=f.visibility,
+                    orientation_bin=orient_bin if orient_bin != 0 else f.orientation_bin,
+                    face_embedding=getattr(f, "face_embedding", None),
+                )
+            if tr.last_reid_similarity is None:
+                own_sim = self._cluster_gallery_sim(wid, a.cluster, t)
+                rival_sim = -1.0
+                for other_wid in self._tracks:
+                    if other_wid == wid:
+                        continue
+                    s = self._cluster_gallery_sim(other_wid, a.cluster, t)
+                    if s is not None and s > rival_sim:
+                        rival_sim = s
+                tr.last_reid_similarity = own_sim
+                if own_sim is not None:
+                    tr.last_reid_margin = own_sim - rival_sim if rival_sim >= 0.0 else own_sim
+
+    @staticmethod
+    def _estimate_orientation_bin(gated: GatedSkeleton | None) -> int:
+        if gated is None or len(gated.joints) <= max(COCO17_L_SHOULDER, COCO17_R_SHOULDER):
+            return 0
+        ls = gated.joints[COCO17_L_SHOULDER].xyz
+        rs = gated.joints[COCO17_R_SHOULDER].xyz
+        if ls is None or rs is None:
+            return 0
+        dx = float(rs[0] - ls[0])
+        dy = float(rs[1] - ls[1])
+        if abs(dx) < 1e-4 and abs(dy) < 1e-4:
+            return 0
+        # 어깨 벡터에 수직인 몸통 정면 방위각
+        yaw = math.atan2(dx, -dy)
+        return quantize_orientation_bin(yaw, num_bins=4)
+
     # ------------------------------------------------------------------ 내부
 
     def _measurement(self, gated: GatedSkeleton) -> tuple[np.ndarray, np.ndarray] | None:
@@ -1747,6 +2578,14 @@ class WorldTrackManager:
         filt = tr.kf.sigma_xyz
         grow = cfg.max_speed_mps * (t - tr.t_last_valid) / 1000.0
         head = applied.gated.head_z(cfg.joint_gate.head_top_offset_m) if applied is not None else None
+        split_pending = any(
+            sp.source == tr.world_id or sp.child == tr.world_id for sp in self._splits.values()
+        )
+        avatar_hold = (
+            confidence is IdentityConfidence.IDENTITY_UNCERTAIN
+            or split_pending
+            or t <= tr.swap_suspected_until
+        )
         return WorldTrackSnapshot(
             world_id=tr.world_id,
             t=t,
@@ -1769,6 +2608,9 @@ class WorldTrackManager:
             restored_candidates=tr.restored_candidates,
             restored_excluded=tuple(sorted(tr.restored_excluded)),
             split_from=tr.split_from,
+            avatar_update_hold=avatar_hold,
+            reid_similarity=tr.last_reid_similarity,
+            reid_margin=tr.last_reid_margin,
         )
 
 

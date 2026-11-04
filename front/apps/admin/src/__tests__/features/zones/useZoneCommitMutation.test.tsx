@@ -657,7 +657,10 @@ describe('useZoneCommitMutation: 저장 실패', () => {
 
 describe('useZoneCommitMutation: 보내기 직전 버전 확인', () => {
   it.each([
-    ['UPDATE', (zone: Zone): ZoneCommitRequest => zoneUpdateRequest(zone, { severity: 'INFO' })],
+    [
+      'UPDATE',
+      (zone: Zone): ZoneCommitRequest => zoneUpdateRequest(zone, { severity: 'CRITICAL' }),
+    ],
     [
       'ARCHIVE',
       (zone: Zone): ZoneCommitRequest => ({ zone: { op: 'ARCHIVE', zone_id: zone.zoneId } }),

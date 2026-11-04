@@ -1,0 +1,104 @@
+{
+  "_note": "S15P31A101-464 Tier 0 그래프 연결 재구성(ReST 방식 아이디어 이식) 회귀 재생 계획. 10/29 녹화 캐시(cache-s2) + cal-fastrot-266z.json 에서 -458 기본값(S3_epipolar30) 대비 공간 그래프 제약 분할, 직전 World Track 시간 연결 간선, 카메라 쌍별 적응 잔차 문턱, 그리고 분할 나머지 억제(split_suppression_enabled) ON/OFF 를 비교한다.",
+  "base": {
+    "world": {
+      "split_suppression_enabled": true,
+      "split_suppression_radius_m": 0.6,
+      "split_suppression_require_owner": false,
+      "lost_after_ms": 3000,
+      "confirm_hits": 3,
+      "tentative_max_gap_ms": 300,
+      "gate_max_m": 1.5,
+      "split_suppress_ownerless": false,
+      "split_suppression_owner_ttl_ms": 1000
+    },
+    "cross_view": {
+      "epipolar_gate_px": 30.0
+    }
+  },
+  "datasets": {
+    "recording1029": {
+      "cache": "C:/Users/SSAFY/simai-local/track-413/cache-s2",
+      "calibration": "C:/Users/SSAFY/simai-local/session9/cal-fastrot-266z.json",
+      "config": {
+        "segments_s": {
+          "all2": [
+            5,
+            415,
+            2
+          ],
+          "three": [
+            425,
+            460,
+            3
+          ]
+        }
+      }
+    }
+  },
+  "selection": {
+    "required_metrics": [
+      "ids_total",
+      "segments.all2.new_ids_per_person_min",
+      "segments.all2.count_exact",
+      "segments.all2.count_over",
+      "segments.all2.count_under",
+      "segments.all2.id_changes",
+      "association_review.two_view",
+      "association_review.reconnection"
+    ],
+    "rule": "-458 기본값(S3_epipolar30: ids_total=53, all2 count_exact=0.762, count_under=0.136, swap=104) 대비 count_under(<n, 사람 놓침)가 절대 늘지 않으면서 ID 분절·교체·4대 클러스터 비율이 개선되는지 확인한다."
+  },
+  "experiments": {
+    "B0_458_baseline": {
+      "cross_view": {
+        "graph_clustering_enabled": false,
+        "temporal_prior_enabled": false,
+        "pairwise_threshold_enabled": false
+      },
+      "world": {
+        "split_suppression_enabled": true
+      }
+    },
+    "G1_graph_prior_only": {
+      "cross_view": {
+        "graph_clustering_enabled": true,
+        "temporal_prior_enabled": true,
+        "pairwise_threshold_enabled": false
+      },
+      "world": {
+        "split_suppression_enabled": true
+      }
+    },
+    "G2_pairwise_only": {
+      "cross_view": {
+        "graph_clustering_enabled": false,
+        "temporal_prior_enabled": false,
+        "pairwise_threshold_enabled": true
+      },
+      "world": {
+        "split_suppression_enabled": true
+      }
+    },
+    "G3_full_464_supp_on": {
+      "cross_view": {
+        "graph_clustering_enabled": true,
+        "temporal_prior_enabled": true,
+        "pairwise_threshold_enabled": true
+      },
+      "world": {
+        "split_suppression_enabled": true
+      }
+    },
+    "G4_full_464_supp_off": {
+      "cross_view": {
+        "graph_clustering_enabled": true,
+        "temporal_prior_enabled": true,
+        "pairwise_threshold_enabled": true
+      },
+      "world": {
+        "split_suppression_enabled": false
+      }
+    }
+  }
+}

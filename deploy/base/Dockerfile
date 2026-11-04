@@ -41,7 +41,8 @@ ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 # SIMAI_ROOT 는 고정하지 않는다: Tier 0 는 simai-bootstrap 이 저장 위치를 고르고(S15P31A101-205), EXP-02 는 자기 Dockerfile 에서 정한다.
-RUN uv python install ${PYTHON_VERSION}
+RUN uv python install ${PYTHON_VERSION} \
+ && ln -s "$(uv python find ${PYTHON_VERSION})" /usr/local/bin/python3
 
 COPY --chmod=0755 deploy/base/simai-start.sh /usr/local/bin/simai-start
 # 윈도 체크아웃의 CRLF 가 shebang 을 깨뜨리지 않게 빌드에서 CR 을 뺀다(check_image.sh 는 결과를 다시 검사한다)

@@ -12,13 +12,14 @@
 | 고전 기준(plumb-line + 소실점, 저장소 코드) | 학습 모델이 모두 없을 때의 예비 경로와 학습 결과의 직선성 확인(4.3) | 예비·확인 | 저장소 코드(numpy, 가중치 없음) |
 | Perspective Fields (CVPR 2023) | 내부 파라미터 추정 후보 | 제외 | Adobe Research License(비상업 전용, 재배포 금지). 렌즈 왜곡도 내지 않음 |
 | WildCamera (NeurIPS 2023) | 내부 파라미터 추정 후보 | 제외 | 코드 Apache-2.0, 가중치 라이선스 표기 없음. 렌즈 왜곡을 내지 않음 |
-| HumanCalib | 사람 기반 자동 보정(번들 조정) | 원리 참고(자체 구현, 4.3) | 코드 MIT. 코드·3D lifter 를 쓰지 않는다(기본 3D lifter MeTRAbs 는 비상업, VideoPose3D 는 CC BY-NC) |
+| HumanCalib | 사람 기반 자동 보정(번들 조정) | 제외(무보행 배경 특징점 V2 공동 BA 로 대체, 4.3·16장) | 코드 MIT. 코드·3D lifter 를 쓰지 않는다(기본 3D lifter MeTRAbs 는 비상업, VideoPose3D 는 CC BY-NC) |
+| ALIKED + LightGlue (`kornia` / `lightglue`) | 세팅 1단계 게이트웨이 CPU 카메라 각도 헬퍼(6쌍 매칭) 및 현장 세팅 인접 카메라 쌍 배경 특징점 V2 공동 번들 조정(4.3, 4.5) | MVP | Apache-2.0 |
 | MapAnything / Open3D / mvs-texturing(`texrecon`) | 초기 보정 추정, 정적 3D 배경 복원·텍스처 메시 굽기(통합 이미지의 같은 가상환경 torch 2.11.0, `simai-bootstrap scene` 일회성 모드와 분석 워커 I5 `static_reconstruct` 자식 프로세스, 3.12·5.3. 2.7.1 `mapanything` 이미지는 동등성 비교까지만 유지) | MVP | MapAnything 코드 Apache 2.0(가중치 `facebook/map-anything`은 CC-BY-NC 4.0, `facebook/map-anything-apache`는 Apache 2.0), Open3D MIT, mvs-texturing BSD-3-Clause |
 | Depth Anything 3 | 정적 3D 비교군 두 경로(MapAnything 자세 고정 + 공식 `inference` 자세 조건 깊이, 자세 없이 DA3NESTED 단독 미터 추정, 5.3). 실험 단계에서는 통합 잠금에 넣지 않고 별도 가상환경에서 깊이만 낸다(`docs/design/exp01-hybrid-depth.md`) | 비교 | 코드 Apache-2.0. DA3NESTED-GIANT-LARGE-1.1 가중치는 CC BY-NC-4.0 이고 MapAnything 기본 가중치와 같은 판단(교육 시연 사용, 공개 산출물 출처 표기). Apache-2.0 대안은 DA3-BASE·DA3-SMALL·DA3METRIC-LARGE |
 | MoGe-3 | 정적 3D 단안 대체였으나 EXP-01 비교 큐와 G4 미달 대체에서 모두 뺌(Lead 결정 2026-10-26, 5.3) | 제외 | 코드 MIT, 체크포인트 확인 필요 |
-| CCVS | 카메라별 높이 검산 | 보조 진단·재보정 후보 거름(자체 구현, 4.3) | 방법만 참고(코드 미사용) |
+| CCVS | 카메라별 높이 검산 | 제외(카메라 실측 높이·바닥 평면·실측 정물 교차 검증으로 대체, 4.3·16장) | 방법만 참고(코드 미사용) |
 | DMMR | 사람 기반 내부 파라미터 추정 | 참고 | 확인 필요 |
-| ExtrCamCalib_PersonKeypoints | 운영 중 보정 감시 | 참고 | 확인 필요 |
+| ExtrCamCalib_PersonKeypoints | 운영 중 보정 감시 | 제외(깨끗한 배경 비교 기반 `rotfix` 로 대체, 4.4·16장) | 확인 필요 |
 | NVIDIA Cosmos3-Nano(16B) Reasoner | VLM(vLLM 0.21.0 + `vllm-cosmos3` 커밋 고정, Tier 0 와 같은 가상환경의 별도 프로세스, 3.12) | MVP | OpenMDW 1.1 |
 | NVIDIA Cosmos3-Super(64B) | VLM 확장 후보(80GB 에 Tier 0 와 함께 안 올라감) | 확장 후보 | 확인 필요 |
 | Qwen3-VL | VLM 참고(1순위 아님) | 참고 | 확인 필요 |

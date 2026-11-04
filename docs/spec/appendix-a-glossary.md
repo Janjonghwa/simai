@@ -26,7 +26,7 @@
 | VERIFIED / UNVERIFIABLE | 해소 여부를 관측으로 확인할 수 있는지 |
 | ACKNOWLEDGED | 운영자(관리자·현장 확인 버튼)가 경보를 확인했다는 속성(해소 아님) |
 | severity / confidence | 위험 정도 / 증거 신뢰도. 서로 독립 |
-| “확인 필요” | 신뢰도가 낮은 경보에 붙는 표시. `confidence_reasons[]`가 비어 있지 않은 상태. 등급은 유지(7.1) |
+| “확인 필요” | 신뢰도가 낮은 경보에 붙는 표시. `confidence_reasons[]`가 비어 있지 않은 상태. 등급은 유지(7.1). R1 신규 발생은 위치가 확실할 때만 내므로 붙지 않고 이미 열린 R1 이벤트의 유지 판정과 R2\~R5 에만 붙는다 |
 | confidence_reasons | “확인 필요”의 이유 목록: Z_UNKNOWN, PREDICTED, PROVISIONAL_CALIB, SINGLE_VIEW, JOINT_UNCERTAIN, IDENTITY_UNCERTAIN(7.1) |
 | 발생 지속 조건 | 이벤트 발생 전 조건이 짧게 이어져야 하는 규칙. 초기값 10Hz 3프레임 중 2프레임(6.4) |
 | 이벤트 재개 | 같은 사람·같은 구역이 해소 후 10초 안에 다시 걸리면 새 이벤트 대신 기존 이벤트를 다시 활성으로 돌리는 것(6.4) |
@@ -39,11 +39,11 @@
 | 엔드포인트 등록 | Tier 0 가 기동 시 공개 IP·포트를 EC2 에 등록하고, 노트북이 EC2 에서 받아 접속하는 절차(3.12) |
 | 공개키 고정 | 노트북이 Tier 0 TLS 공개키 지문만 신뢰하는 서버 확인 방식(12.7) |
 | glass-to-alarm | 카메라가 보는 실제 사건(LED)부터 노트북 소리·화면까지를 한 화면 촬영으로 재는 종단 지연(15.1) |
-| 작업면 | 관리자가 OBB 와 상판 높이로 등록한 단상·책상 등. R2·R3 가장자리와 ContactEstimator 의 지지 표면 근거(7.5) |
+| 작업면 | 관리자가 실시간 관제 화면 편집 모드에서 OBB 와 상판 높이로 등록한 단상·책상 등. 화면에서는 `HIGH` 위험구역과 같은 스타일로 그리고 둘레 `HIGH` 구역과 함께 생성되며, 내부 OBB·상판 높이로 R2·R3 가장자리와 ContactEstimator 의 지지 표면 근거를 제공한다(7.5, 8.2) |
 | VLM | 비전-언어 모델. NVIDIA Cosmos3-Nano(16B) Reasoner 모드(5.4) |
 | LLM | 텍스트 생성 모델. 외부 API “GPT 6.1 sol”(SSAFY GMS 를 거쳐 OpenAI), EC2 의 Python 컨테이너(`deploy/risk-engine`) 안에서 텍스트만 보냄(5.4) |
 | RAG | 건설안전 법령·지침·사례 지식 그래프(`rag_node`·`rag_edge`)를 하이브리드 검색(규칙 태그 + `pg_trgm` 키워드 + `pgvector` cosine)하고 참조 엣지 1단계를 확장해 인용하게 하는 방식. 임베딩은 `Qwen/Qwen3-Embedding-0.6B` 1024차원(5.4, 11장) |
-| TBM | 작업 전 안전점검회의 |
+| TBM | 작업 전 안전점검회의. 작업 관리 페이지(`work_unit`: `PLANNED` → `IN_PROGRESS` → `DONE`) 안의 문서로 사전 위험성 평가·대책, 참석자 전자서명(`report_signature`, 버전 잠금·`content_sha256`), 작업 종료 시 LIVE 이벤트 집계 기반 “작업 마무리”를 포함한다(8.3) |
 | MV3DT 방식 | 카메라별 추적을 공유 바닥 평면에서 전역 ID로 융합하는 방식 |
 | TrackTrack | 카메라별 Local Tracker 기본값(CVPR 2025, Ultralytics `tracktrack.yaml`)(5.2) |
 | E2E(NMS-free) | YOLO26 의 NMS 후처리 없는 출력 경로. Tier 0 기본(5.1) |

@@ -86,6 +86,10 @@ const workTypeCodeField = z
 
 export const tbmWorkUnitSchema = z.object({
   work_id: idString,
+  status: z.enum(['PLANNED', 'IN_PROGRESS', 'DONE']).optional(),
+  actual_started_at: z.union([z.string(), z.number()]).nullish(),
+  actual_ended_at: z.union([z.string(), z.number()]).nullish(),
+  active_setup_session_id: z.string().nullish(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   name: z.string(),
   from_ms: intOrNumber,
@@ -273,6 +277,13 @@ export const tbmReportSchema = z.object({
   report_id: z.number().int(),
   work_id: idString,
   report_version: z.number().int(),
+  wrap_up_summary: z.string().nullish(),
+  wrap_up_status: z.string().nullish(),
+  locked_at: z.union([z.string(), z.number()]).nullish(),
+  content_sha256: z.string().nullish(),
+  approved_at: z.union([z.string(), z.number()]).nullish(),
+  approved_by_name: z.string().nullish(),
+  signature_count: z.number().int().optional(),
   status: reportStatusSchema,
   failure_reason: z.string().nullish().default(null),
   layout_id: z.number().int().nullish().default(null),
@@ -291,6 +302,23 @@ export const tbmReportSchema = z.object({
   completed_at_ms: z.number().nullish().default(null),
 });
 export type TbmReport = z.infer<typeof tbmReportSchema>;
+
+export const signerRoleSchema = z.enum(['PARTICIPANT', 'APPROVER']);
+export type SignerRole = z.infer<typeof signerRoleSchema>;
+export const signatureSchema = z.object({
+  signature_id: z.union([z.string(), z.number()]).transform(String),
+  signer_name: z.string(),
+  signer_role: signerRoleSchema,
+  signed_at: z.union([z.number(), z.string()]),
+  report_version: z.number(),
+  image_url: z.string(),
+});
+export type Signature = z.infer<typeof signatureSchema>;
+export const signatureResultSchema = signatureSchema.omit({ image_url: true }).extend({
+  report_id: z.number(),
+  locked_at: z.union([z.number(), z.string()]),
+  content_sha256: z.string(),
+});
 
 export const tbmReportVersionSummarySchema = z.object({
   report_id: z.number().int(),
@@ -443,6 +471,10 @@ export function workUnitToTbmTask(
   return {
     id: displayTaskId(work.work_id),
     workId: work.work_id,
+    status: work.status,
+    actualStartedAt: work.actual_started_at,
+    actualEndedAt: work.actual_ended_at,
+    activeSetupSessionId: work.active_setup_session_id ?? null,
     date: work.date,
     name: work.name,
     from: msToHhmm(work.from_ms),

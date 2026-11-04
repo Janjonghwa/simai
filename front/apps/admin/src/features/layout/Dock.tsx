@@ -1,13 +1,12 @@
 import { buttonVariants } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { Link } from '@tanstack/react-router';
-import { FileText, History, LayoutGrid, Monitor, Video } from 'lucide-react';
+import { FileText, History, Monitor, Video } from 'lucide-react';
 
 const ITEMS = [
   { to: '/', label: '실시간 관제', short: '실시간 관제', icon: Monitor },
   { to: '/cctv', label: 'CCTV 관제', short: 'CCTV 관제', icon: Video },
-  { to: '/zones', label: '구역 편집', short: '구역 편집', icon: LayoutGrid },
-  { to: '/tbm', label: '레이아웃 · TBM 보고서', short: 'TBM 보고서', icon: FileText },
+  { to: '/work', label: '작업 관리', short: '작업 관리', icon: FileText },
   { to: '/history', label: '히스토리', short: '히스토리', icon: History },
 ] as const;
 

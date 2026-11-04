@@ -52,6 +52,10 @@ class CandidateValidationError(ValueError):
 
 def validate_candidate(document: Mapping[str, Any], report: Mapping[str, Any], previous: Mapping[str, Any]) -> dict:
     """운영 후보 보고서를 문서/기준 버전에 결속하고 부족·미상 근거는 거부한다."""
+    if report.get("method") == "BACKGROUND_FIXED_CENTER_ROTATION":
+        from simai_ai.calibration.rotation_recovery import validate_rotation_candidate
+
+        return validate_rotation_candidate(document, report, previous)
     # 이전 보정으로 시작할 때 후보 계산 스택(cv2 등)을 미리 불러오지 않는다.
     from simai_ai.calibration.extrinsics.session import DEFAULT_DATA_CRITERIA
     from simai_ai.calibration.live_candidate import evaluate_improvement, summarize_holdout_metrics
@@ -241,6 +245,7 @@ class RuntimeCalibrationStore(CalibrationProvider):
                 moved.update(wa.get("excluded_cameras") or ())
                 moved.update(wa.get("fixed_center_rotation_cameras") or ())
                 moved.update(report.get("moved_camera_ids") or ())
+                moved.update(report.get("changed_camera_ids") or ())
         for record in self._head["transitions"]:
             if record["payload"]["calibration_version"] in versions[start:]:
                 moved.update(f["camera_id"] for f in record.get("findings", ()))

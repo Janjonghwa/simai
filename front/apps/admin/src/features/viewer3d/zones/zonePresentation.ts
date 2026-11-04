@@ -1,4 +1,4 @@
-import type { ZoneView } from '@/features/viewer3d/data/spatialFrame';
+import type { ZoneSeverity, ZoneView } from '@/features/viewer3d/data/spatialFrame';
 import { PALETTE, type ScenePalette } from '@/features/viewer3d/palette';
 import { targetKey } from '@/features/viewer3d/target';
 import type { ViewerTarget } from '@/features/viewer3d/types';
@@ -22,6 +22,8 @@ export interface ZoneStyle {
   color: number;
   fillOpacity: number;
   edgeOpacity: number;
+  /** 배경(스캔 바닥·책상·벽)에 가려진 윤곽선 부분을 덧그리는 불투명도. 가려져도 윤곽이 이어지게 흐리게 보인다. */
+  hiddenEdgeOpacity: number;
   /** 점선이면 적용이 확인되지 않은 구역이다. */
   dashed: boolean;
   dashSize: number;
@@ -29,11 +31,15 @@ export interface ZoneStyle {
   stateLabel: string;
 }
 
-// 구역 색은 경보색(빨강·주황)과 겹치지 않는 청록, 미리보기는 보라다(장면 색표 palette). 구역 유형별 색은 유형 계약이
-// 생기면 정한다. 아래 표의 color 는 다크 값이고, 화면은 zoneStyle 에 넘긴 색표 값으로 바꿔 그린다.
-const STYLES: Record<ZoneApplyState, ZoneStyle> = {
+/** 선택하면 채움이 이만큼 짙어진다. */
+const SELECTED_FILL_BOOST = 0.1;
+/** 가려진 부분의 선 불투명도는 보이는 선의 이 비율이다. */
+const HIDDEN_EDGE_RATIO = 0.35;
+
+// 구역 색은 그 구역의 심각도 색(위험 빨강·경고 주황·주의 노랑)이다. 심각도를 모르거나 안내면 청록, 미리보기는 보라다
+// (장면 색표 palette). 아래 표는 적용 상태로 정하는 투명도·선 모양이고, 색은 zoneStyle 이 색표에서 고른다.
+const STYLES: Record<ZoneApplyState, Omit<ZoneStyle, 'color' | 'hiddenEdgeOpacity'>> = {
   UNVERIFIED: {
-    color: PALETTE.dark.zone.color,
     fillOpacity: 0.08,
     edgeOpacity: 0.85,
     dashed: true,
@@ -42,7 +48,6 @@ const STYLES: Record<ZoneApplyState, ZoneStyle> = {
     stateLabel: '적용 미확인',
   },
   DEMO_PREVIEW: {
-    color: PALETTE.dark.zone.preview,
     fillOpacity: 0.05,
     edgeOpacity: 0.9,
     dashed: true,
@@ -51,7 +56,6 @@ const STYLES: Record<ZoneApplyState, ZoneStyle> = {
     stateLabel: '미리보기(DEMO)',
   },
   DEMO_ASSUMED_APPLIED: {
-    color: PALETTE.dark.zone.color,
     fillOpacity: 0.16,
     edgeOpacity: 1,
     dashed: false,
@@ -61,25 +65,38 @@ const STYLES: Record<ZoneApplyState, ZoneStyle> = {
   },
 };
 
-/** 적용 상태와 선택 여부에 따른 모양. 선택은 색만 바꾸고 선 모양(적용 상태)은 그대로 둔다. */
+/** 구역 심각도. 정식 구역은 official 이, DEMO 구역은 알려 준 값이다. 모르면 없다. */
+export const zoneSeverity = (zone: Pick<ZoneView, 'official' | 'severity'>) =>
+  zone.official?.severity ?? zone.severity;
+
+function zoneColor(
+  state: ZoneApplyState,
+  palette: ScenePalette,
+  severity: ZoneSeverity | undefined,
+): number {
+  if (state === 'DEMO_PREVIEW') return palette.zone.preview;
+  return severity && severity !== 'INFO' ? palette.risk[severity].color : palette.zone.color;
+}
+
+/**
+ * 적용 상태·선택 여부·심각도에 따른 모양. 색은 심각도가 정하고, 선택은 색을 바꾸지 않고 채움과 선을 짙게 한다.
+ * 선 모양(점선)은 적용 상태가 정한다.
+ */
 export function zoneStyle(
   state: ZoneApplyState,
   selected: boolean,
   palette: ScenePalette = PALETTE.dark,
+  severity?: ZoneSeverity,
 ): ZoneStyle {
   const base = STYLES[state];
-  const style = {
+  const edgeOpacity = selected ? 1 : base.edgeOpacity;
+  return {
     ...base,
-    color: state === 'DEMO_PREVIEW' ? palette.zone.preview : palette.zone.color,
+    color: zoneColor(state, palette, severity),
+    fillOpacity: selected ? base.fillOpacity + SELECTED_FILL_BOOST : base.fillOpacity,
+    edgeOpacity,
+    hiddenEdgeOpacity: edgeOpacity * HIDDEN_EDGE_RATIO,
   };
-  return selected
-    ? {
-        ...style,
-        color: palette.zone.selected,
-        fillOpacity: style.fillOpacity + 0.1,
-        edgeOpacity: 1,
-      }
-    : style;
 }
 
 const meters = (value: number) => `${Math.round(value * 100) / 100}`;

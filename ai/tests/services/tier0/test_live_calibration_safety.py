@@ -16,7 +16,8 @@ for path in (HERE, HERE.parents[2], HERE.parents[1] / "calibration"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from test_calibration_swap import candidate, recording, site  # noqa: E402, F401
+from test_calibration_swap import candidate, recording, site as calibration_site  # noqa: E402, F401
+import test_calibration_swap  # noqa: E402
 from test_drift_watch import FAST, field_calibration  # noqa: E402
 from test_live_candidate import synthetic_rig_and_frames  # noqa: E402, F401
 from simai_ai.calibration import live_candidate as lc  # noqa: E402
@@ -26,6 +27,14 @@ from simai_ai.calibration.monitor import BaselineRecord, MonitorReport, MonitorS
 from simai_ai.calibration.runtime import RuntimeCalibrationStore  # noqa: E402
 from simai_ai.providers.contract import schema_errors  # noqa: E402
 from services.tier0.i1_client import Envelope  # noqa: E402
+
+
+@pytest.fixture
+def site(tmp_path, recording, monkeypatch):
+    original = test_calibration_swap._settings
+    monkeypatch.setattr(test_calibration_swap, "_settings",
+                        lambda *args, **kwargs: replace(original(*args, **kwargs), human_calibration_enabled=True))
+    yield from calibration_site.__wrapped__(tmp_path, recording, monkeypatch)
 
 
 def changed_report(doc, moved, *, start=0, end=65_000):

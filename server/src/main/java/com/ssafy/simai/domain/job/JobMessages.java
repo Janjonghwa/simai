@@ -13,8 +13,8 @@ import tools.jackson.databind.node.ObjectNode;
  */
 final class JobMessages {
 
-    /** job_request 3.5.0(vlm_rationale 입력 프레임 local_copy, -408). 워커 클라이언트는 메이저 3 만 본다 */
-    static final String JOB_REQUEST_VERSION = "3.5.0";
+    /** job_request 3.7.0(site_setup 입력, -452). 워커 클라이언트는 메이저 3 만 본다 */
+    static final String JOB_REQUEST_VERSION = "3.8.0";
     static final String LEASE_STATUS_VERSION = "2.0.0";
     /** 대여 유지 시간과 하트비트 주기(계약 기본안: 유지 30000ms, 주기 10000ms = 유지의 1/3) */
     static final long LEASE_HOLD_MS = 30_000;

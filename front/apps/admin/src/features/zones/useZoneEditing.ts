@@ -7,11 +7,7 @@ import { useConfigApply } from '@/features/zones/useConfigApply';
 import { useZoneCommit } from '@/features/zones/useZoneCommit';
 import { useZoneTarget } from '@/features/zones/useZoneTarget';
 import { useZoneUndoKey } from '@/features/zones/useZoneUndoKey';
-import {
-  useBoxChange,
-  useBoxEditBridge,
-  useWorkSurfaceFeed,
-} from '@/features/zones/useZoneViewerBridge';
+import { useBoxChange, useBoxEditBridge } from '@/features/zones/useZoneViewerBridge';
 import {
   boxEditOf,
   boxOfZone,
@@ -21,6 +17,7 @@ import {
   ghostsOf,
   newSurfaceDraft,
   newZoneForm,
+  surfaceBox,
   surfaceChanged,
   targetChanged,
   withPatch,
@@ -79,7 +76,7 @@ export function useZoneEditing({
   onSearchConsumed?: () => void;
 } = {}) {
   const viewport = useSpatialViewport()!;
-  const { zones, zonesRaw, zonesFailed, view, viewerReady } = viewport;
+  const { zones, zonesRaw, zonesFailed } = viewport;
   const canEdit = useCurrentRole() === 'ADMIN';
   const surfaceList = useWorkSurfaces();
   const { surfaces } = surfaceList;
@@ -94,11 +91,19 @@ export function useZoneEditing({
   const draft: TargetDraft | undefined = drafts[key];
   const surface = useMemo(() => currentSurface(draft, linked), [draft, linked]);
   const roomLimit = useRoomLimit();
-  const zoneBox = useMemo(
-    () => draft?.box ?? (zone ? boxOfZone(zone) : defaultNewBox(zones, roomLimit)),
-    [draft?.box, zone, zones, roomLimit],
-  );
-  const form = zone ? formWithPatch(zone, draft?.patch ?? {}) : newZoneForm(draft?.patch ?? {});
+  const zoneBox = useMemo(() => {
+    const base = draft?.box ?? (zone ? boxOfZone(zone) : defaultNewBox(zones, roomLimit));
+    if (zone || !surface) return base;
+    const box = surfaceBox(surface.geometry);
+    return {
+      min: [box.min[0] - 0.3, box.min[1] - 0.3, 0],
+      max: [box.max[0] + 0.3, box.max[1] + 0.3, Math.max(base.max[2], box.max[2])],
+    } as typeof base;
+  }, [draft?.box, zone, zones, roomLimit, surface]);
+  const originalForm = zone
+    ? formWithPatch(zone, draft?.patch ?? {})
+    : newZoneForm(draft?.patch ?? {});
+  const form = !zone && surface ? { ...originalForm, severity: 'HIGH' as const } : originalForm;
   const errors = zone
     ? formErrors(form, { saved: formOf(zone), hasHeight: zone.zRange !== null })
     : newZoneErrors(form);
@@ -149,7 +154,6 @@ export function useZoneEditing({
   );
   const onBoxChange = useBoxChange({ key, zone, surface, surfMode, zoneBox });
   useBoxEditBridge({ boxEdit, ghosts, onChange: onBoxChange });
-  useWorkSurfaceFeed({ active: view === '3d' && viewerReady, raw: surfaceList.raw });
 
   // ---- 저장·추가·삭제 -----------------------------------------------------------------------
   const commit = useZoneCommit({

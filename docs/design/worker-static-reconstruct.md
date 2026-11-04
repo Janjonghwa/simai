@@ -248,3 +248,88 @@ admin job enqueue --type static_reconstruct --input-file static-input.json
 - 서버의 묶음 조회(`input->>'clean_background_bundle_id'`)는 색인이 없다. 작업 수가 적은 MVP 기준이다.
 - Tier 0 보정 저장소 형식(`active.json`, 버전 sha256 파일 이름)에 기댄다. 형식이 바뀌면 `NO_ACTIVE_CALIBRATION` 으로 멈춘다(지어내지 않는다).
 - 10차 세션에서 볼 것: 로비 Ctrl+C 뒤 `tier0.live.stopped` 생김, `after-live` 시작 로그(`정상 종료 확인 → 분석 워커만`)와 워커 접수 문 `Tier 0 가 정상 종료했다`, 업로드 키 `static-inputs/bundle-.../cam*.jpg`·`calibration.json`, 워커 로그 `배경 묶음 자동 제출: QUIET → SUBMITTED`·`배경 묶음 ... → static_reconstruct 작업 job-...`, 기록 파일의 `SUBMITTED`/`FINISHED`, EC2 `analysis_job` 한 행과 `clean_background_bundle_id`, 서버 로그 `배경 묶음 ... 등록했다`, SUCCEEDED 뒤 `admin scene list` 의 CANDIDATE, 도중 Tier 0 를 켜면 업로드 중단(`LIVE`)·실행 중 작업 `LIVE_PREEMPTED` 반납, 워커 재시작 뒤 `ALREADY_SUBMITTED`, 작업이 끝난 뒤 워커가 스스로 끝남(0), MapAnything 단계의 GPU 메모리(분석 워커 예산 0.70)와 전체 소요 시간.
+
+
+## 맵 재생성 (S15P31A101-427)
+
+관리자의 `scene_regenerate` 작업은 `request_id`와 요청 시각을 `<state>/clean_background/regenerate.request.json`에 원자적으로 쓴다. Tier 0 전용 배경 스레드는 현재 누적의 모든 카메라가 준비됐으면 기존 COMPLETE 형식으로 새 `bundle-<uuid>`를 만들고, `regenerate.response.json`에 `request_id`, `bundle_path`, `camera_ids`, `calibration_version`, `status`(READY/NOT_READY), `reason`을 원자적으로 쓴다. 이전 묶음은 보존한다. 워커는 최대 120초 기다리고, 기존 자동 제출의 검사·`STATIC_RECONSTRUCT_INPUT` 업로드와 등록 함수를 사용해 `request_id`를 전달한다. 결과 복원은 기존 `static_reconstruct`와 Scene CANDIDATE 경로가 담당한다.
+
+Tier 0 표시 파일이 없으면 마지막 완료 묶음을 사용하고 없으면 `TIER0_NOT_RUNNING`, 누적 부족은 `BACKGROUND_NOT_READY`, 업로드·등록 실패는 `UPLOAD_FAILED`, 응답 지연은 `TIMEOUT`이다. 서버는 복원 실패를 `RECONSTRUCT_FAILED`, 워커 부재를 `NO_WORKER` 또는 제한 시간 경과 시 `TIMEOUT`으로 처리한다. `SIMAI_REGENERATE_DURING_LIVE` 기본값은 **0**(명세 3.2: 관제 중 일괄 작업 금지)이고, 이때는 `scene_regenerate` 와 `static_reconstruct` 모두 LIVE 중 시도 소모 없이 반납돼 관제가 끝난 뒤 처리된다. **1** 이면 두 작업을 LIVE 중에도 받는다(`static_reconstruct` 를 LIVE 차단 목록에서 뺌). 이때도 Tier 0 지연 접수 게이트(-412: lag·모름이면 대기, 10 s 안정 뒤 재개)는 그대로 걸린다. 11차 GPU 세션에서 1 로 Tier 0 지연·허가 게이트 멈춤·아바타 영향·재구성 소요를 재고, 명세 예외(아바타 스트림에 이은 두 번째 관제 중 예외) 채택 여부를 정한다(Lead 결정 2026-11-03).
+
+
+## 빠른 미리보기 맵(`preview_scene`)과 텍스처 굽기 가속 (S15P31A101-451)
+
+관련 명세: §5.3(정적 3D 배경 메시 복원·후처리·시각 자산), §3.2(Tier 0 우선·LIVE 중 일괄 배치 금지), AGENTS 규칙 1·3·6·7.
+
+### 1. 배경 및 11차 GPU 세션 병목 분석
+
+- 11차 GPU 세션(`session11/RESULTS.md`)에서 `static_reconstruct` 전체 시간은 219.1 s ~ 245.5 s 였으며, MapAnything 추론은 28.4 s ~ 32.0 s 인 반면 CPU `bake`(`texrecon` + Open3D TSDF)가 177.9 s ~ 202.0 s 를 차지했다.
+- 병목 원인 두 가지:
+  1. `reconstruct_tasks.py` 의 `bake()` 가 `texture_mesh.main` 호출 시 `--num-threads 1` 을 하드코딩해 세팅 중(LIVE 시작 전)에도 멀티코어 CPU 를 쓰지 못했다.
+  2. `texture_mesh.py` 의 기본 목표 면 수(`TARGET_FACES`)가 `400,000`(실측 399,792 면)으로 고정돼 `texrecon` 데이터 비용 계산·시점 선택·UV 패킹 시간이 길어졌다.
+- 또한 LIVE 관제 중 `SIMAI_REGENERATE_DURING_LIVE=1` 로 `texrecon` 을 돌렸을 때 CPU 부하(load average 9.2 → 23.6)로 Tier 0 `lag_ms_max` 가 최대 17.5 s 까지 튀었으므로, **LIVE 중 `static_reconstruct` 차단은 그대로 유지**(`AdmissionGate` 의 `DEFAULT_LIVE_BLOCKED` 및 `SIMAI_REGENERATE_DURING_LIVE=0` 기본값)하고 **세팅 단계(LIVE 전)** 에서 관리자가 구역을 즉시 그릴 수 있는 빠른 미리보기 맵과 굽기 가속을 도입한다.
+
+### 2. 설계 및 구현
+
+- **빠른 미리보기 3D 맵(`simai_ai.scene.preview_scene`, `reconstruct_tasks.preview`)**:
+  - MapAnything 깊이·색(`raw.npz` + `prepared`) 또는 점구름(`pointcloud.npz`)과 확정 보정·World 정렬 행렬(`world_alignment.json`) 위에서 `texrecon`/TSDF 를 기다리지 않고 정점색(`COLOR_0`) 단순 격자 메시(또는 Delaunay/점군 폴백) glTF 2.0 이진(`preview_scene.glb`)을 약 10 s 목표(MapAnything 추론 뒤 CPU 생성 0.1~0.5 s)로 만든다.
+  - World → glTF `(+X, +Z, -Y)` 변환은 규칙 3 에 따라 `texture_mesh.to_glb_points` 한 곳에서만 수행한다.
+  - 기존 `scene_output` 2.1.0 계약을 바꾸지 않고 구별한다:
+    - `scene_version`: `scene-preview-<run_id>`, `state`: `"CANDIDATE"`, `geometry_role`: `"VISUAL"`
+    - `method.reconstructor_detail`: `"preview_scene"`, `assets[0].triangle_count`: 삼각형 수
+    - `quality.notes`: `scene_tier=PREVIEW; preview_scene=true; texture=null: PREVIEW_FAST_PATH`
+    - GLB `extras.simai`: `{"scene_tier": "PREVIEW", "preview_scene": true, "geometry_role": "VISUAL", "safety_use": false, "axis_convention": "GLTF_Y_UP", ...}`
+- **2단계 무중단 교체 흐름(`mode="preview"` / `mode="two_stage"`)**:
+  - `options.mode == "preview"`(또는 `preview_only=true`): `prepare → mapanything → preview → measure → upload` 만 실행해 미리보기 `CANDIDATE` Scene 을 즉시 등록한다.
+  - `options.mode == "two_stage"`(또는 `emit_preview=true` / `on_preview` 콜백): `mapanything` 직후 `preview` 를 먼저 만들어 `preview_scene.glb`·`preview_scene_output.json` 을 업로드하고 `on_preview` 콜백으로 미리보기 `CANDIDATE` 를 먼저 내보낸 뒤, 뒤에서 `bake` 를 이어 돌려 고화질 `CANDIDATE`(`scene-<run_id>`, `quality.notes` 에 `scene_tier=FULL; replaces_preview_scene=scene-preview-<run_id>`)를 같은 `calibration_version` 으로 등록해 관리자가 그린 구역을 잃지 않고 무중단 교체(`activate`)할 수 있게 한다.
+- **텍스처 굽기(`texrecon`·TSDF) 가속 및 단계별 시간 기록**:
+  - **CPU 스레드 전체 사용**: 세팅 중(LIVE 전) `bake` 의 기본 스레드 수를 `0`(`resolve_num_threads(0)` → `os.cpu_count() or 1`)으로 바꿨다(`options.num_threads` 또는 `SIMAI_BAKE_NUM_THREADS` 로 재정의 가능). `configure_cpu_threads` 가 `OMP_NUM_THREADS` 를 맞추고 `Texrecon` 이 `--num_threads=<effective>` 를 전달하며 `metrics.json` 의 `threading` 에 요청·유효 스레드 수를 기록한다.
+  - **메시 단순화(Decimation) 40만 → 15만 면**: `DEFAULT_BAKE_TARGET_FACES = 150_000`(기존 `HIGH_QUALITY_TARGET_FACES = 400_000` 은 비교·고밀도 옵션으로 유지, `options.target_faces` 또는 `SIMAI_BAKE_TARGET_FACES` 로 설정). `fuse_mesh` 가 `tsdf_faces`, `faces_before_decimation`, `target_faces`, `decimated`, `faces` 를 기록하고 `postprocess` 에 `"DECIMATION"` 과 `assets[0].triangle_count` 를 남긴다.
+  - **단계별 시간(`metrics.json` `times`)**: `load_depth_s`, `conflict_s`, `tsdf_s`, `clean_s`, `decimate_s`, `depth_coverage_s`, `geometry_s`, `data_costs_area_s`, `texrecon_area_s`, `provenance_area_s`, `export_glb_area_s`, `bake_area_s`, `total_s` 를 세분화해 기록한다.
+
+### 3. 정한 수치와 근거
+
+| 항목 | 값 | 근거 |
+|---|---|---|
+| `DEFAULT_PREVIEW_STRIDE` | `2` (`options.preview_stride` / `SIMAI_PREVIEW_STRIDE`) | 4대 카메라 깊이 격자에서 정점·면 수를 1/4(약 4만~8만 삼각형)로 줄여 CPU 생성·직렬화를 0.5 s 안에 끝내고 구역 그리기에 충분한 바닥·벽·가구 윤곽을 유지한다 |
+| `DEFAULT_BAKE_TARGET_FACES` | `150,000` (`options.target_faces` / `SIMAI_BAKE_TARGET_FACES`) | 11차 40만 면에서 180~202 s 걸리던 `texrecon` 데이터 비용·시점 선택·구멍 채우기 계산량이 면 수에 비례하므로 약 37.5% 면 수(15만 면)로 줄여 교실 평면·가구 모서리 형상을 유지하면서 굽기 시간을 단축한다 |
+| `num_threads` 기본값 | `0` (가용 CPU 코어 전체) | LIVE 중에는 `AdmissionGate` 가 `static_reconstruct` 를 차단하므로, 세팅 중(LIVE 전)에는 유휴 CPU 코어를 모두 써 TSDF·quadric decimation·`texrecon` 을 가속한다 |
+
+### 4. 12차 GPU 세션 측정 절차 (미리보기·굽기 시간 및 40만 vs 15만 면 화질 비교)
+
+1. **사전 확인(LIVE 아님)**:
+   - Tier 0 가 떠 있지 않거나 정상 종료 기록(`tier0.live.stopped`)이 있는 세팅 상태에서 실행한다(`SIMAI_REGENERATE_DURING_LIVE` 는 기본값 `0` 유지).
+2. **빠른 미리보기(`mode="preview"`) 단독 소요 시간 측정**:
+   ```sh
+   # options: {"mode": "preview", "preview_stride": 2}
+   ```
+   - `metrics.json` 의 `stage_seconds.prepare`, `stage_seconds.mapanything`, `stage_seconds.preview`, `stage_seconds.measure`, `stage_seconds.upload` 와 `bake.build_s`, `assets[0].triangle_count` 를 기록한다.
+   - 목표: `preview` CPU 단계 1 s 이하, 캐시된 MapAnything 출력 기준 10 s 이내(냉간 추론 포함 시 MapAnything ~28 s + preview < 1 s).
+3. **굽기 가속(15만 면 + 전체 코어) vs 기준선(40만 면) 시간·화질 비교**:
+   - 같은 `mapanything`·`prepared`·`world_alignment.json` 입력 위에서 두 설정으로 `texture_mesh` 를 실행한다(한 카메라 빼고 굽기 `--loo-terms area` 포함):
+     ```sh
+     # (A) 40만 면 기준선 (멀티스레드)
+     uv run --directory ai python -m simai_ai.scene.texture_mesh \
+       --ma-run <work>/mapanything --prepared <work>/prepared \
+       --world-alignment <work>/world_alignment.json \
+       --out <work>/bench-400k --terms area --loo-terms area \
+       --target-faces 400000 --num-threads 0 --run-id exp01-s12-400k
+
+     # (B) 15만 면 가속 기본값 (멀티스레드)
+     uv run --directory ai python -m simai_ai.scene.texture_mesh \
+       --ma-run <work>/mapanything --prepared <work>/prepared \
+       --world-alignment <work>/world_alignment.json \
+       --out <work>/bench-150k --terms area --loo-terms area \
+       --target-faces 150000 --num-threads 0 --run-id exp01-s12-150k
+     ```
+   - 두 실행의 `metrics.json` 에서 다음 지표를 나란히 비교표로 수집한다:
+     - **소요 시간(`times`)**: `tsdf_s`, `decimate_s`, `geometry_s`, `data_costs_area_s`, `texrecon_area_s`, `provenance_area_s`, `export_glb_area_s`, `bake_area_s`, `total_s` 및 `threading.effective_num_threads` (11차 단일 스레드 178~202 s 대비 단축 배율 확인).
+     - **면 수·용량(`geometry`, `bakes.area`)**: `tsdf_faces`, `faces_before_decimation`, `faces`, `glb_triangles`, `glb_bytes`.
+     - **화질(`self_view.area`, `loo.area`, `bakes.area.ratios_area`)**:
+       - 자기 시점 재현 `self_view.area.psnr_db_mean` / `ssim_mean`
+       - 한 카메라 빼고 굽기 `loo.area.psnr_db_mean` / `psnr_db_blur8_mean` / `ssim_mean` / `coverage_mean`
+       - 출처 면적 비율 `OBSERVED` / `INTERPOLATED` / `UNOBSERVED`
+4. **2단계 무중단 교체(`mode="two_stage"`) 왕복 확인**:
+   - `scene-preview-<run_id>`(`CANDIDATE`)가 먼저 올라와 뷰어에서 구역 그리기가 되는지 확인하고, 이어 `scene-<run_id>`(`CANDIDATE`, `replaces_preview_scene` 표시)가 완료되면 `admin scene activate` 로 구역 손실 없이 교체되는지 확인한다.
+   - 측정이 끝나면 `bench-400k/metrics.json`, `bench-150k/metrics.json`, `run_record.json`, 비교 렌더(`compare/*.jpg`)를 노트북으로 회수하고 GPU Pod 를 즉시 Stop 한다.
+

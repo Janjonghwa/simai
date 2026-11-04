@@ -52,22 +52,6 @@
     ],
     "items": [
       {
-        "rule_id": "R1",
-        "rule_version": 1,
-        "severity": "CRITICAL",
-        "position_ids": [
-          "gen-z-open-1-01"
-        ],
-        "zone_id": "z-open-1",
-        "metrics": {
-          "zone_distance_m": 0.2
-        },
-        "reason_codes": [
-          "xy_uncertainty_overlap"
-        ],
-        "confidence_reasons": []
-      },
-      {
         "rule_id": "R2",
         "rule_version": 1,
         "severity": "CRITICAL",

@@ -20,7 +20,6 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import gzip
 import json
 import math
@@ -35,14 +34,14 @@ from typing import Any
 from services.tier0.perception import Perception
 from simai_ai.contact import SurfaceSet
 from simai_ai.geometry.interpolation import InterpolationConfig
-from simai_ai.geometry.joint_gate import GatedJoint, JointValidity
 from simai_ai.geometry.rig import CameraRig
 from simai_ai.providers.files import FileCalibrationProvider
+from simai_ai.reid.collector import LocalTrackFeatureCache
 from simai_ai.tracking.cross_view import CrossViewAssociator, CrossViewConfig, LocalTrackletBuffer
 from simai_ai.tracking.local_config import tracker_config
 from simai_ai.tracking.local_tracker import CameraDetections, MultiCameraLocalTracker, Observation2DFrame, PoseDetection
 from simai_ai.tracking.time_model import TimeModelConfig
-from simai_ai.tracking.world_track import WorldIdIssuer, WorldTrackConfig, WorldTrackManager
+from simai_ai.tracking.world_track import WorldTrackConfig
 
 DEFAULT_ZONE = [[2.55, 0.4], [4.9, 0.4], [4.9, 2.95], [2.55, 2.95]]  # 10차 구성 묶음 cfg-7·8 z-94ffd421 (266z World)
 
@@ -151,46 +150,6 @@ def _only(cls: Any, values: Mapping[str, Any] | None) -> dict[str, Any]:
 # ----------------------------------------------------------------------------- 실행
 
 
-class SplitSuppressingManager(WorldTrackManager):
-    """실험 전용(운영 코드 아님): 한 사람이 2+2 로 갈라진 '나머지' 클러스터로 새 ID 를 만들지 않는다.
-
-    새 Track 이 될 클러스터(6단계)가, 이번 시각 위치를 갱신한 Track W 의 갱신 위치(골반) radius_m 안이고 W 가 이번 시각
-    받은 클러스터와 카메라가 겹치지 않으면(같은 카메라의 두 검출은 서로 다른 사람이라 겹치면 막지 않는다) 새 ID 대신 버린다.
-    require_owner 면 클러스터 로컬 트랙의 주인이 모두 W 일 때만 막는다(운영의 4단계 near_owners 규칙을 확실한 클러스터로 넓힌 것).
-    """
-
-    def __init__(self, *args: Any, radius_m: float = 0.5, require_owner: bool = True, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.radius_m = radius_m
-        self.require_owner = require_owner
-        self._suppress: int | None = None
-
-    def _reconnect_target(self, c, holder, held, cluster_of, applied, t):  # type: ignore[override]
-        out = super()._reconnect_target(c, holder, held, cluster_of, applied, t)
-        if out[0] is None and c.anchor is not None:
-            cams = set(c.cluster.camera_ids)
-            owners = {holder.get(k) for k in c.cluster.keys}
-            for wid, a in applied.items():
-                if a.pelvis is None or cams & set(a.cluster.camera_ids):
-                    continue
-                if self.require_owner and owners != {wid}:
-                    continue
-                if math.dist(c.anchor, a.pelvis[:2]) <= self.radius_m:
-                    self._suppress = id(c.cluster)
-                    self.diag["experiment.split_remainder_suppressed"] += 1
-                    break
-        return out
-
-    def _gate(self, gate, cluster, frame, rig, excluded):  # type: ignore[override]
-        gated = super()._gate(gate, cluster, frame, rig, excluded)
-        if self._suppress is not None and self._suppress == id(cluster):
-            self._suppress = None
-            empty = tuple(GatedJoint(None, JointValidity.UNAVAILABLE) for _ in gated.joints)
-            return dataclasses.replace(gated, joints=empty)  # 골반이 없으면 새 Track 을 만들지 않는다
-        return gated
-
-
-
 BONES = {  # COCO17 관절 쌍과 성인 길이 범위(m). 사람 둘이 한 클러스터로 묶이면 크게 벗어난다(부작용 지표, 근사)
     "shoulder": ((5, 6), (0.20, 0.60)),
     "hip": ((11, 12), (0.12, 0.50)),
@@ -215,20 +174,20 @@ def _bone_flags(skeleton: Any) -> tuple[int, int]:
 
 
 def run(cache: Mapping[str, list[tuple[dict, list]]], calibration: Path, cfg: Mapping[str, Any], out: Path | None) -> dict:
+    if cfg.get("experimental"):
+        raise ValueError("experimental 설정은 폐기했다. world.split_suppression_* 운영 설정을 쓴다")
     rig = CameraRig.from_provider(FileCalibrationProvider(calibration))
     tracker = MultiCameraLocalTracker(tracker_config(**(cfg.get("tracker") or {})), camera_ids=sorted(cache))
     feed = CachedFeed(cache, tracker, cfg.get("feed") or {})
     time_cfg = TimeModelConfig(**_only(TimeModelConfig, cfg.get("time")))
     world_cfg = WorldTrackConfig.from_time_model(time_cfg, **_only(WorldTrackConfig, cfg.get("world")))
+    reid_cache_path = cfg.get("reid_cache")
+    reid_cache = LocalTrackFeatureCache.load_npz(Path(reid_cache_path)) if reid_cache_path else None
     perception = Perception(
         rig, feed, session="replay413", scene_version="replay", input_provenance=feed.provenance(),
         time_config=time_cfg, world_config=world_cfg,
+        feature_lookup=reid_cache.lookup if reid_cache is not None else None,
     )
-    split = (cfg.get("experimental") or {}).get("suppress_split")
-    if split:
-        perception.manager = SplitSuppressingManager(
-            WorldIdIssuer("replay413"), world_cfg, input_provenance=feed.provenance(),
-            radius_m=float(split.get("radius_m", 0.5)), require_owner=bool(split.get("require_owner", True)))
     perception.associator = CrossViewAssociator(rig, CrossViewConfig(**_only(CrossViewConfig, cfg.get("cross_view"))))
     perception.buffer = LocalTrackletBuffer(InterpolationConfig(**_only(InterpolationConfig, cfg.get("interpolation"))))
     tick = int(cfg.get("tick_ms", 100))
@@ -236,6 +195,8 @@ def run(cache: Mapping[str, list[tuple[dict, list]]], calibration: Path, cfg: Ma
     now = feed.first_arrival
     end = feed.last_arrival + 1000
     rows = []
+    review_events = []
+    last_seen: dict[str, tuple[int, tuple]] = {}
     wall = time.monotonic()
     while now <= end:
         p = perception.step(now, surfaces)
@@ -245,6 +206,23 @@ def run(cache: Mapping[str, list[tuple[dict, list]]], calibration: Path, cfg: Ma
                 m = b = 0
                 if s.updated and s.skeleton is not None:
                     m, b = _bone_flags(s.skeleton)
+                if s.updated:
+                    previous = last_seen.get(s.world_id)
+                    kinds = []
+                    if len(s.cameras) == 2:
+                        kinds.append("two_view")
+                    if previous and s.t_last_valid - previous[0] > world_cfg.occluded_after_ms:
+                        kinds.append("reconnection")
+                    for kind in kinds:
+                        review_events.append({
+                            "event_id": f"{kind}:{p.t}:{s.world_id}", "kind": kind, "t": p.t,
+                            "world_id": s.world_id, "position_xy": list(s.position_xy),
+                            "local_keys": [list(k) for k in s.local_keys],
+                            "previous_local_keys": [list(k) for k in previous[1]] if previous else [],
+                            "gap_ms": s.t_last_valid - previous[0] if previous else None,
+                            "false_connection": None,
+                        })
+                    last_seen[s.world_id] = (s.t_last_valid, s.local_keys)
                 tr.append([s.world_id, str(s.lifecycle)[0], int(s.updated), len(s.cameras),
                            round(s.position_xy[0], 3), round(s.position_xy[1], 3), str(s.identity_confidence)[0], m, b,
                            "".join(c[-1] for c in s.cameras)])
@@ -252,21 +230,47 @@ def run(cache: Mapping[str, list[tuple[dict, list]]], calibration: Path, cfg: Ma
         now += tick
     elapsed = time.monotonic() - wall
     metrics = compute_metrics(rows, cfg, feed.capture_start)
+    labels = json.loads(Path(cfg["review_file"]).read_text(encoding="utf-8")) if cfg.get("review_file") else []
+    metrics["association_review"] = review_metrics(review_events, labels)
     metrics["diagnostics"] = perception.diagnostics.summary()
     metrics["local_tracker"] = {c: {"issued_ids": s.issued_ids, "resets": s.resets, "frames": s.frames_processed}
                                 for c, s in tracker.states().items()}
-    metrics["run"] = {"elapsed_s": round(elapsed, 1), "ticks": len(rows), "config": cfg,
-                      "calibration_version": rig.calibration_version}
+    metrics["run"] = {"elapsed_s": round(elapsed, 1), "ticks": len(rows),
+                      "ms_per_tick": round(elapsed * 1000.0 / len(rows), 3) if rows else None,
+                      "config": cfg, "calibration_version": rig.calibration_version}
     if out is not None:
         out.mkdir(parents=True, exist_ok=True)
         (out / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=1), encoding="utf-8")
         with gzip.open(out / "tracks.jsonl.gz", "wt", encoding="utf-8") as fh:
             for r in rows:
                 fh.write(json.dumps(r, separators=(",", ":")) + "\n")
+        with gzip.open(out / "association_review.jsonl.gz", "wt", encoding="utf-8") as fh:
+            for event in review_events:
+                fh.write(json.dumps(event, ensure_ascii=False) + "\n")
     return metrics
 
 
 # ----------------------------------------------------------------------------- 지표
+
+
+def review_metrics(events: Sequence[Mapping[str, Any]], labels: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """수동 확인한 오연결만 센다. 미확인은 0건으로 보고하지 않는다. labels 는 실험별 JSON 배열이다."""
+    by_id = {e["event_id"]: e for e in events}
+    reviewed = {}
+    for label in labels:
+        key = label["event_id"]
+        if key not in by_id or key in reviewed or not isinstance(label["false_connection"], bool):
+            raise ValueError(f"알 수 없거나 중복된 event_id, 또는 bool 이 아닌 판정: {key}")
+        reviewed[key] = label["false_connection"]
+    result = {}
+    for kind in ("two_view", "reconnection"):
+        ids = [key for key, event in by_id.items() if event["kind"] == kind]
+        values = [reviewed[key] for key in ids if key in reviewed]
+        result[kind] = {"candidates": len(ids), "reviewed": len(values),
+                        "false_connections": sum(values) if values else None,
+                        "reviewed_false_ratio": sum(values) / len(values) if values else None,
+                        "coverage": len(values) / len(ids) if ids else None}
+    return result
 
 
 def _inside(x: float, y: float, poly: Sequence[Sequence[float]]) -> bool:
@@ -334,10 +338,11 @@ def segment_metrics(rows: Sequence[Mapping[str, Any]], t0: int, t1: int, people:
 def compute_metrics(rows: Sequence[Mapping[str, Any]], cfg: Mapping[str, Any], capture_start: int) -> dict[str, Any]:
     first: dict[str, int] = {}
     last: dict[str, int] = {}
+    upd_times: dict[str, list[int]] = defaultdict(list)
     confirmed: set[str] = set()
     cams = Counter()
     bones_measured = bones_bad = tracks_bad = tracks_measured = 0
-    zone = cfg.get("zone_xy") or DEFAULT_ZONE
+    zone = cfg.get("zone_xy", DEFAULT_ZONE)  # 다른 World 좌표계에서는 [] 로 구역 근사를 끈다
     inside_ticks: dict[str, int] = defaultdict(int)
     occupied = []
     for r in rows:
@@ -348,6 +353,7 @@ def compute_metrics(rows: Sequence[Mapping[str, Any]], cfg: Mapping[str, Any], c
             if lc in ("C", "O"):
                 confirmed.add(wid)
             if upd:
+                upd_times[wid].append(r["t"])
                 cams[ncam] += 1
                 if m:
                     tracks_measured += 1
@@ -361,6 +367,28 @@ def compute_metrics(rows: Sequence[Mapping[str, Any]], cfg: Mapping[str, Any], c
     span_min = (rows[-1]["t"] - rows[0]["t"]) / 60000 if len(rows) > 1 else 0.0
     life = [(last[w] - first[w]) / 1000 for w in first]
     tick_ms = int(cfg.get("tick_ms", 100))
+    lost_after_ms = int((cfg.get("world") or {}).get("lost_after_ms", 3000))
+    reconnect_window_ms = int((cfg.get("time") or {}).get("reconnect_window_ms", 10000))
+    session_end_t = rows[-1]["t"] if rows else 0
+    resumed_after_lost = 0
+    resumed_after_dormant = 0
+    unresumed_confirmed_losses = 0
+    for wid in sorted(confirmed):
+        ts_list = upd_times.get(wid, [])
+        for i in range(1, len(ts_list)):
+            gap_t = ts_list[i] - ts_list[i - 1]
+            if gap_t > lost_after_ms:
+                resumed_after_lost += 1
+            if gap_t > reconnect_window_ms:
+                resumed_after_dormant += 1
+        if ts_list and ts_list[-1] < session_end_t - lost_after_ms:
+            unresumed_confirmed_losses += 1
+    reentry_total = resumed_after_lost + unresumed_confirmed_losses
+    reentry_continuation_rate = (
+        round(resumed_after_lost / reentry_total, 3)
+        if reentry_total > 0
+        else (1.0 if confirmed else None)
+    )
     dwell = int(cfg.get("zone_dwell_ms", 500)) // tick_ms
     entries = sum(1 for n in inside_ticks.values() if n >= dwell)
     episodes, run_in, gap = 0, 0, 10**9
@@ -392,7 +420,14 @@ def compute_metrics(rows: Sequence[Mapping[str, Any]], cfg: Mapping[str, Any], c
         "bones": {"tracks_measured": tracks_measured, "tracks_with_bad_bone_ratio":
                   round(tracks_bad / tracks_measured, 4) if tracks_measured else None,
                   "bad_bone_ratio": round(bones_bad / bones_measured, 4) if bones_measured else None},
-        "zone_proxy": {"id_entries": entries, "occupancy_episodes": episodes, "duplicates": entries - episodes},
+        "zone_proxy": {"id_entries": entries if zone else None, "occupancy_episodes": episodes if zone else None,
+                       "duplicates": entries - episodes if zone else None},
+        "reentry": {
+            "resumed_after_lost": resumed_after_lost,
+            "resumed_after_dormant": resumed_after_dormant,
+            "unresumed_confirmed_losses": unresumed_confirmed_losses,
+            "continuation_rate": reentry_continuation_rate,
+        },
         "segments": segments,
     }
 

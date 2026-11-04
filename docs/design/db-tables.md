@@ -4,7 +4,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 
 - **기준:** 기획서 v1.3 수정 19 11장(데이터)·부록 C, 계약 v5.3.0, API 명세 표 v11(노션, 166행)
 - **범위:** 테이블 77개, 컬럼 807개. 확장 테이블도 컬럼까지 썼다. 이 중 V1~V13 으로 만든 테이블은 51개(MVP 40 · M1 9 · M3 `rag_clause`·`rag_query_template`), 컬럼 575개, FK 76개
-- **단계별:** MVP 40 · M1 9 · M2 2 · M3 9 · 확장 17 (확장 `watch_connection` 은 V28, S15P31A101-336. M3 `rag_query_template` 은 S15P31A101-27, MVP `config_bundle_file`·`calibration_document`·`system_outage`·`calibration_update_message`·`i1_deferred_message`·`bev_frame_set` 은 V6·V7·V10·V11·V12 에서 추가)
+- **단계별:** MVP 40 · M1 9 · M2 2 · M3 9 · 확장 17 (확장 `watch_connection` 은 V28(S15P31A101-336), `watch_binding`·`watch_alert` 는 V35(S15P31A101-338). M3 `rag_query_template` 은 S15P31A101-27, MVP `config_bundle_file`·`calibration_document`·`system_outage`·`calibration_update_message`·`i1_deferred_message`·`bev_frame_set` 은 V6·V7·V10·V11·V12 에서 추가)
 - **작성·검토:** DB 는 EC2 에 있으므로 곽나혁이 작성한다. Tier 0·분석 워커가 채우는 테이블은 이연주가 검토한다("검토" 표시)
 - **마이그레이션:** `server/src/main/resources/db/migration/` 의 V1(MVP·M1 테이블 43개), V2(현장·카메라 시드), V3(`rag_clause`·`rag_query_template`, pgvector), V4(저널 세대 `journal_epoch`), V5(`token_hash` 유일, `worker.rotated_at`), V6(`config_bundle_file`·`calibration_document`, `config_bundle.rule_profile`), V7(`system_outage`), V8(`tier0_endpoint` 봉투 칸), V9(`upload_grant` 요청 주체·내용 칸), V10(`calibration_update_message`), V11(`media_clip_retention.msg_id`, `i1_deferred_message`), V12(`bev_frame_set`, `floor_plan` 작업 칸), V13(`notification` 유일 키·`claimed_until`), V14(`avatar_asset`, `upload_grant` 목적 `AVATAR_ASSET`·워커 요청, -325), V15(`video_segment`·`video_access_log`, `upload_grant` 목적 `VIDEO_SEGMENT`), V16(`upload_grant` 목적 `SCENE_GLTF`), `R__rule_versions.sql`(ai 규칙 등록부에서 자동 생성), `R__rag_clauses.sql`(ai RAG 조항·임베딩에서 자동 생성)
 
@@ -19,7 +19,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | hypertable | `world_track_state`·`skeleton_3d`·`system_health`·`system_metric`·`device_heartbeat`(확장: `channel_state`·`watch_feature`·`ppe_state`). 다른 테이블이 hypertable 을 FK 로 참조하지 않는다. 버전 ID 는 논리 참조만 둔다 |
 | 공간 | PostGIS `geometry(…, 0)`: World 로컬 미터 좌표라 SRID 0. 타입의 SRID 0 은 PostGIS 에서 "제한 없음"이라 컬럼마다 `CHECK (ST_SRID(컬럼) = 0)` 을 함께 건다(V1 점검에서 SRID 4326 이 들어가는 것을 확인). 저장·조회만 하고 판정은 Risk Engine(11장) |
 | 묶음 값 | 계약에서 구조가 자주 바뀌는 값(`metrics`, 카메라별 health, `components`)은 `jsonb` |
-| 이름 | 사람 이름은 위치·이벤트 기록에 넣지 않는다. 계정은 `user_id`, 기기는 `device_id`(11.4-5). 예외는 접근 제한된 `watch_registrant` 뿐(C.6) |
+| 이름 | 사람 이름은 위치·이벤트·작업명·담당 조 기록에 넣지 않는다. 계정은 `user_id`, 기기는 `device_id`(11.4-5, NFR-14). 예외는 관리자만 조회하고 외부 LLM 에 절대 보내지 않는 `report_signature`(TBM 보고서 참석자 전자서명 실명, 8.3·14장, S15P31A101-426)와 확장 `watch_registrant`(C.6)뿐 |
 | 키·제약 표기 | `PK`, `PK(n)` 복합 키 순서, `FK>표.컬럼`, `UQ`, `UQ(이름)` 묶음 유일, `NN` not null, `CK(…)` 허용값 |
 
 ## 2. 테이블 목록
@@ -33,8 +33,8 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | A. 계정·기기·인증 | `worker` | MVP | 일반 | 분석 워커와 토큰 | 수정 16 추가 | `/api/worker/jobs/lease` | 이연주 |
 | B. 구성·기준 데이터 | `site` | MVP | 일반 | 현장과 World 좌표계 정의 | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) |  |
 | B. 구성·기준 데이터 | `camera` | MVP | 일반 | 카메라 장비 정보 | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) |  |
-| B. 구성·기준 데이터 | `zone` | MVP | 버전 | 위험 구역. 수정은 새 버전 | 있음 | `/api/zones`, `/api/zones/{}/versions` |  |
-| B. 구성·기준 데이터 | `static_object` | MVP | 버전 | 등록 작업면·정적 객체(Operational Geometry) | 수정 16 추가 | `/api/static-objects` |  |
+| B. 구성·기준 데이터 | `zone` | MVP | 버전 | 위험 구역(CRITICAL·HIGH 2종). 수정은 새 버전 | 있음 | `/api/zones`, `/api/zones/commit`, `/api/zones/{}/versions` |  |
+| B. 구성·기준 데이터 | `static_object` | MVP | 버전 | 등록 작업면·정적 객체(Operational Geometry, 고소 작업면은 둘레 HIGH 구역과 `zone_id` 연결) | 수정 16 추가 | `/api/static-objects`, `/api/zones/commit` |  |
 | B. 구성·기준 데이터 | `rule_version` | MVP | 버전 | Risk Engine 규칙 임계값 세트. 규칙 등록부에서 자동 생성한 Flyway 시드로 채운다 | 있음 | `/api/rules` | 이연주 |
 | B. 구성·기준 데이터 | `config_bundle` | MVP | 버전 | 구성 묶음 발행과 현장 적용 | 있음 | `/api/config-bundles`, `/api/config-bundles/{}` | 이연주 |
 | B. 구성·기준 데이터 | `config_bundle_item` | MVP | 일반 | 묶음에 들어간 구역·규칙·형상 버전 목록 | 수정 16 추가 | `/api/config-bundles` |  |
@@ -84,13 +84,14 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | G. 분석 워커 작업 | `analysis_job` | MVP | 일반 | I5 작업(재할당돼도 같은 job_id, `tbm_report` 는 폐기 예정·EC2 컨테이너로 이전) | 수정 16 추가 | `/api/events/{}/summary` 외 | 이연주 |
 | G. 분석 워커 작업 | `job_lease` | MVP | 일반 | 작업 대여(한 시점에 유효한 대여 하나) | 수정 16 추가 | `/api/worker/jobs/lease`, `/api/worker/jobs/{}/heartbeat`, `/api/worker/jobs/{}/result` | 이연주 |
 | H. AI 결과·보고서 | `vlm_assessment` | M3 | 일반 | VLM 근거·사고 구간 요약과 관리자 상향 결정 | 있음 | `/api/events/{}`, `/api/events/{}/escalation`, `/api/events/{}/summary` | 이연주 |
-| H. AI 결과·보고서 | `report` | M3 | 일반 | TBM 보고서·일일 일지(`subgraph`·`steps` 포함, EC2 Python 컨테이너 생성) | 있음 | `/api/reports/daily`, `/api/reports/tbm`, `/api/reports/tbm/{}` | 이연주 |
+| H. AI 결과·보고서 | `report` | M3 | 일반 | TBM 보고서·일일 일지(`subgraph`·`steps`·작업 마무리 `wrap_up_summary`·잠금 `locked_at`·내용 해시 `content_sha256` 포함, EC2 Python 컨테이너 생성) | 있음 | `/api/reports/daily`, `/api/reports/tbm`, `/api/reports/tbm/{}` | 이연주 |
+| H. AI 결과·보고서 | `report_signature` | M3 | 일반 | TBM 보고서 참석자 전자서명(실명·손글씨 이미지·버전 잠금 해시, 관리자 전용·외부 LLM 미전송, NFR-14 예외) | 수정 52 추가(후속 구현) | `/api/reports/tbm/{}/signatures` | 곽나혁 |
 | H. AI 결과·보고서 | `rag_clause` | M3 | 일반 | 안전 수칙 조항과 임베딩(후속 구현에서 `rag_node` 로 이관·흡수, S15P31A101-415) | 수정 16 추가 | `/api/reports/tbm` | 이연주 |
 | H. AI 결과·보고서 | `rag_source` | M3 | 일반 | 법령 지식 그래프 원문 출처·버전(MST·시행일·원문 해시) | 수정 49 추가(후속 구현) | `/api/reports/tbm`, `/api/reports/daily` | 이연주 |
 | H. AI 결과·보고서 | `rag_node` | M3 | 일반 | 건설안전 법령 지식 그래프 노드(법령·지침·사례·개념)와 `Qwen3-Embedding-0.6B` 임베딩 | 수정 49 추가(후속 구현) | `/api/reports/tbm`, `/api/reports/daily` | 이연주 |
 | H. AI 결과·보고서 | `rag_edge` | M3 | 일반 | 건설안전 법령 지식 그래프 엣지(상하위·참조·위임·지침·사례·방호조치) | 수정 49 추가(후속 구현) | `/api/reports/tbm`, `/api/reports/daily` | 이연주 |
 | H. AI 결과·보고서 | `rag_query_template` | M3 | 일반 | TBM 질문 템플릿과 질문 임베딩 | S15P31A101-27 추가 | `/api/reports/tbm` | 이연주 |
-| H. AI 결과·보고서 | `work_unit` | M3 | 일반 | TBM 작업(히스토리 작업 다시 보기) | V21 추가 | `/api/work-units`, `/api/work-units/{}` | 곽나혁 |
+| H. AI 결과·보고서 | `work_unit` | M3 | 일반 | 작업 관리(`PLANNED`→`IN_PROGRESS`→`DONE`, 실제 시작/종료 시각, 히스토리 다시 보기) | V21 추가, 수정 52 확장 | `/api/work-units`, `/api/work-units/{}`, `/api/work-units/{}/start`, `/api/work-units/{}/end` | 곽나혁 |
 | I. 계획·시뮬레이션 (sim 스키마) | `sim.evaluation_run` | M3 | 일반 | EC2 Risk Engine 컨테이너 계산 실행(PLANNED·WHAT_IF) | 있음 | `/api/layouts/{}/evaluate`, `/api/layouts/{}/evaluations/{}`, `/api/reports/tbm` 외 | 이연주 |
 | I. 계획·시뮬레이션 (sim 스키마) | `sim.risk_result` | M3 | 일반 | 계산된 위험 항목(실제 알림 채널로 가지 않음) | 있음 | `/api/layouts/{}/evaluate`, `/api/layouts/{}/evaluations/{}`, `/api/simulations/{}` 외 | 이연주 |
 | I. 계획·시뮬레이션 (sim 스키마) | `sim.trajectory_plan` | 확장 2 | 일반 | 시간 구간이 있는 계획 궤적 | 있음 | `/api/simulations` | 이연주 |
@@ -101,11 +102,11 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | J. 확장: 에이전틱·공정 | `operator_qa` | 확장 3 | 일반 | LLM 이 로그 조회 도구로 답한 질의응답 | 수정 16 추가 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
 | J. 확장: 에이전틱·공정 | `work_schedule` | 확장 5 | 일반 | 오늘의 작업·공정을 구역에 연결 | 수정 16 추가 | `/api/work-schedules` |  |
 | K. 확장: 워치 | `watch_registrant` | 확장 | 일반 | 워치 등록자(관리자만 조회) | 수정 16 추가 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) |  |
-| K. 확장: 워치 | `watch_binding` | 확장 | 일반 | 익명 World ID ↔ 워치 배정 이력 | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 곽나혁 |
+| K. 확장: 워치 | `watch_binding` | 확장 | 일반 | 익명 World ID ↔ 워치 배정 이력(V35, 지금은 관리자 임시 수동 배정) | 있음 | `/api/watch-bindings` | 곽나혁 |
 | K. 확장: 워치 | `channel_state` | 확장 | hypertable | World ID 별 개인 채널 상태 | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 곽나혁 |
 | K. 확장: 워치 | `watch_feature` | 확장 | hypertable | 워치 가속도 특징 | 있음 | `I4 gait_features` | 곽나혁 |
 | K. 확장: 워치 | `watch_connection` | 확장 | 일반 | 워치 I4 연결 기록(연결·끊김 경계, 끝 사유). 열린 연결은 워치마다 하나(V28, S15P31A101-336) | V28 추가 | `I4 /ws/watch`, `/topic/health`(watches) | 곽나혁 |
-| K. 확장: 워치 | `watch_alert` | 확장 | 일반 | 워치 진동 알림 상세(notification 의 WATCH 채널) | 수정 16 추가 | `/api/watch-alerts/{}/acks`, `I4 ack` |  |
+| K. 확장: 워치 | `watch_alert` | 확장 | 일반 | 워치 진동 알림과 ACK·격상(V35, LIVE 만) | 수정 16 추가 | `I4 watch_alert`·`watch_ack`, `/topic/watch`(watch_escalation) | 곽나혁 |
 | K. 확장: 워치 | `watch_impact` | 확장 | 일반 | 워치 충격 이벤트(낙상 추가 근거) | 수정 16 추가 | `I4 impact` |  |
 | L. 확장: PPE·정적 공간 변화 | `ppe_state` | 확장 | hypertable | World ID 별 PPE 판정 | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
 | L. 확장: PPE·정적 공간 변화 | `region_state` | 확장 | 일반 | 정적 공간 변화 영역(임시 형상·불확실 점유) | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
@@ -247,12 +248,12 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | `zone_version` | int | PK(2) |  |  |
 | `site_id` | text | FK>site.site_id, NN |  |  |
 | `name` | text | NN | `risk_alert.zone_name` |  |
-| `zone_kind` | text | NN |  | 유형(개구부·출입 통제·장비 주차 등) |
+| `zone_kind` | text | NN |  | 유형(개구부·고소 작업면 둘레·장비 주차·양중 하부 등. 단순 표시용 "작업구역"은 두지 않음, S15P31A101-426) |
 | `eval_type` | text | NN, CK(GROUND_FOOTPRINT·VOLUME_3D) |  | 8.2 |
 | `polygon` | geometry(Polygon,0) | NN |  | World XY(m), SRID 0 로컬 좌표. 저장·조회만(판정은 Risk Engine) |
 | `z_min_m` | real |  |  | VOLUME_3D 높이 범위 |
 | `z_max_m` | real |  |  |  |
-| `severity` | text | NN, CK(CRITICAL·HIGH·CAUTION·INFO) |  |  |
+| `severity` | text | NN, CK(CRITICAL·HIGH·CAUTION·INFO) |  | 신규 생성·편집 선택지는 `CRITICAL`(빨강)·`HIGH`(주황) 2종(S15P31A101-426, 기존 행·스키마 호환을 위해 DB CK 허용값은 유지하되 API 쓰기에서 `CRITICAL`·`HIGH` 만 허용. 이벤트 등급 `CAUTION`·`INFO` 와 별개) |
 | `requirements` | jsonb |  |  | 요구 조건(안전모 요구 등, R9 확장) |
 | `has_guardrail` | boolean |  |  | R3 난간 유무 |
 | `valid_from` | ts | NN |  |  |
@@ -1118,7 +1119,7 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
 | `job_id` | text | PK | `job_request.job_id, job_callback.job_id` |  |
-| `job_type` | text | NN | `job_request.job_type, job_callback.job_type` | vlm_rationale·static_reconstruct·calibration_ba·bev_floorplan·incident_summary·hmr_* (`tbm_report` 는 폐기 예정, S15P31A101-415) |
+| `job_type` | text | NN | `job_request.job_type, job_callback.job_type` | vlm_rationale·vlm_zone_draft(초기 세팅 VLM 위험구역 초안, S15P31A101-426)·static_reconstruct·scene_regenerate(수동 맵 재생성, S15P31A101-427·-428)·calibration_ba·bev_floorplan·incident_summary·hmr_* (`tbm_report` 는 폐기 예정, S15P31A101-415) |
 | `priority` | text | NN, CK(VLM_FAST·REPORT·BACKGROUND) | `job_request.priority` |  |
 | `status` | text | NN, CK(QUEUED·LEASED·SUCCEEDED·FAILED·TIMED_OUT·CANCELLED) | `job_callback.status` |  |
 | `attempt` | int | NN | `job_request.attempt` | 반납은 세지 않음 |
@@ -1187,6 +1188,8 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 
 - 단계 **M3** · 일반 · 근거: 11.3 report, 8.3, FR-20·21·122 · 검토: 이연주
 - S15P31A101-415(`docs/design/tbm-legal-graph.md`): TBM·일일 보고서 생성을 RunPod 분석 워커(I5 `tbm_report`, 폐기 예정)에서 EC2 Python 컨테이너로 옮기고, 보고서 단위를 TBM 작업(`work_unit`) 하나당 보고서(재생성 시 덮어쓰지 않고 `report_version` 새 행 추가)로 정하며, 사용한 법령 지식 그래프 서브그래프(`subgraph`)와 4단계 생성·검증 실행 기록(`steps`)을 함께 저장한다(컬럼 추가는 후속 구현에서 마이그레이션)
+- S15P31A101-33(`docs/design/daily-report.md`, V36): 일일 일지(DAILY)는 작업 없이 현장·날짜(`site_id`·`report_date`)에 묶는다. CK `report_kind_target_ck`(TBM 은 `work_id` 필수·`report_date` NULL, DAILY 는 `work_id` NULL·`site_id`·`report_date` 필수), 부분 UQ `(site_id, report_date, report_version)`·생성 중 하나 `(site_id, report_date) WHERE status = 'GENERATING'`
+- S15P31A101-426(`docs/design/work-session-flow.md`): 작업 종료(`POST /api/work-units/{id}/end`) 시 해당 작업 진행 구간·구역의 실제 LIVE `risk_event` 집계 사실과 외부 LLM 이 작성한 "작업 마무리" 문단(`wrap_up_summary`)을 채워 새 `report_version` 으로 저장한다. 참석자 첫 전자서명 등록 시 해당 버전 본문의 정규화 해시(`content_sha256`)와 잠금 시각(`locked_at`)을 고정하며, 잠긴 뒤 수정·마무리 추가는 새 버전(`report_version + 1`)으로 저장해 재서명받는다(컬럼 추가는 후속 구현에서 마이그레이션)
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
@@ -1198,17 +1201,44 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `layout_id` | bigint | FK>layout_plan.layout_id |  | TBM |
 | `layout_revision` | int |  |  | 계산한 레이아웃 revision |
 | `sim_run_id` | bigint | FK>sim.evaluation_run.run_id |  | PLANNED 계산 |
-| `report_date` | date |  |  | DAILY |
+| `report_date` | date | CK(DAILY 면 NN, TBM 이면 NULL) |  | 일일 일지(DAILY)의 날짜, Asia/Seoul 하루(V36, S15P31A101-33) |
+| `site_id` | text | FK>site.site_id, CK(DAILY 면 NN) |  | 일일 일지의 현장. TBM 은 `work_unit` 을 거쳐 현장을 찾아 비워 둔다(V36) |
+| `events` | jsonb | NN, 기본 `[]` |  | 일일 일지 생성에 넘긴 그날 LIVE `risk_event` 사실(`rule_id`·`severity`·`zone_id`·`raised_at_ms`·`resolved`·`needs_check`, 최대 100건(넘으면 높은 등급부터, 발생 순으로 저장), 사람 ID·근거 문장 없음, V36) |
+| `event_summary` | jsonb | NN, 기본 `{}` |  | 일일 일지의 그날 LIVE 이벤트 집계(`event_count`·`resolved_count`·`needs_check_count`·`events_truncated`·`severity_counts`·`rule_counts`, 100건 상한 없이 전부, V36) |
 | `job_id` | text | FK>analysis_job.job_id |  | 레거시(`tbm_report` I5 폐기 예정, EC2 Python 컨테이너 직접 생성 시 NULL) |
 | `status` | text | NN, CK(REQUESTED·GENERATING·DONE·FAILED) |  |  |
 | `body` | text |  | `job_callback.result` | LLM 초안 |
 | `citations` | text[] |  | `job_callback.result` | 허용 목록(`allowed_ids`) 안의 조항·노드 ID 만 |
 | `subgraph` | jsonb |  |  | 보고서에 사용한 법령 지식 그래프 서브그래프(`nodes[]`·`edges[]`, 시연 Scene 6 그래프 패널용, 후속 구현에서 추가) |
 | `steps` | jsonb |  |  | 코드 4단계 생성·검증 파이프라인 실행 기록 배열(`step`·`label`·`status`·`input_count`·`output_count`·`duration_ms`·`detail`, 후속 구현에서 추가) |
+| `wrap_up_summary` | jsonb |  |  | 작업 종료(`POST /api/work-units/{id}/end`) 시 실제 LIVE `risk_event` 집계 사실(`wrap_up_facts`: 등급별·규칙별 건수, 확인/종료 건수, 작업 외 진입 건수)과 외부 LLM 이 작성한 "작업 마무리" 문단(`wrap_up_text`), 후속 구현에서 추가 |
+| `content_sha256` | text |  |  | 첫 전자서명 등록 시 고정하는 보고서 본문 정규화 해시(`sha256:<64hex>`), 후속 구현에서 추가 |
+| `locked_at` | ts |  |  | 첫 전자서명 등록으로 이 `report_version` 이 잠긴 시각. 잠긴 버전은 수정 불가하며 변경 시 새 `report_version` 생성, V29 적용, 역할과 무관한 첫 서명에서 잠금 |
 | `llm_model` | text |  |  |  |
 | `requested_by` | bigint | FK>app_user.user_id, NN |  |  |
 | `requested_at` | ts | NN |  |  |
 | `completed_at` | ts |  |  |  |
+| `approved_at` | ts |  |  | 관리자 최종 결재 시각, 미결재는 null. 새 버전은 null로 시작 |
+| `approved_by` | bigint | FK>app_user.user_id |  | 요청 결재 관리자 계정, approved_at과 함께 기록. 응답 approved_by_name은 display_label(없으면 login_id), 서명 실명과 별도 |
+
+#### `report_signature` — TBM 보고서 참석자 전자서명·관리자 결재
+
+- 단계 **M3** · 일반 · 근거: 8.3, 11.3, 11.4-5(NFR-14 서명 실명 예외), 14장 (`docs/design/work-session-flow.md`, S15P31A101-426) · 검토: 곽나혁
+- V29에서 생성하고 V31에서 서명 역할·관리자 최종 결재를 추가한다. TBM 회의록 참석자·승인자의 **실명(`signer_name`)** 과 **손글씨 서명 이미지(`signature_image_key`)** 를 서버 전용으로 저장한다. **관리자(`ADMIN`)만 조회 가능하며 외부 LLM API 나 분석 워커에는 절대 보내지 않는다.** 화면·인쇄본에 `"공인 전자서명 아님, 내부 기록용 전자 서명"` 을 표시한다. 보관 주기는 11.5·18.4 에 따라 프로젝트 발표 후 30일 이내 전체 파기 대상에 포함한다(실제 현장 운영 시 보존 기간은 Lead 확인 필요).
+
+| 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
+|---|---|---|---|---|
+| `signature_id` | bigint identity | PK |  |  |
+| `report_id` | bigint | FK>report.report_id, NN |  | 대상 TBM 보고서 |
+| `report_version` | int | NN, CK(>= 1) |  | 서명한 보고서 버전. 보고서가 수정되거나 작업 마무리가 붙어 새 버전이 생기면 새 버전에 다시 서명 |
+| `signer_role` | text | NN, CK(PARTICIPANT·APPROVER), 기본 PARTICIPANT |  | 기존 행은 PARTICIPANT, APPROVER는 (report_id, report_version) 부분 유일 인덱스로 버전당 1회. 결재 후 두 역할 모두 409 REPORT_APPROVED, 기존 해시 유지 |
+| `signer_name` | text | NN |  | 참석자·승인자 실명(1~40자, NFR-14 예외: TBM 전자서명에만 허용, 외부 LLM 미전송) |
+| `signature_image_key` | text | NN |  | 비공개 객체 저장소 키(또는 서버 전용 저장 경로, PNG 최대 600×240 px · 256 KiB) |
+| `image_sha256` | text | NN |  | 서명 이미지 바이트 해시(`sha256:<64hex>`) |
+| `report_content_sha256` | text | NN |  | 서명 시점의 `report.content_sha256` 사본(감사 추적용) |
+| `legal_notice_ack` | boolean | NN, CK(= true) |  | `"공인 전자서명 아님, 내부 기록용 전자 서명"` 고지 확인 |
+| `recorded_by` | bigint | FK>app_user.user_id, NN |  | 서명을 수집·등록한 요청 관리자 계정. APPROVER는 이 계정 본인의 결재 |
+| `signed_at` | ts | NN |  | 서명 등록 시각 |
 
 #### `rag_clause` — 안전 수칙 조항과 임베딩
 
@@ -1308,10 +1338,10 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `embedding_model` | text | NN |  | `Qwen/Qwen3-Embedding-0.6B` (기존 V3 시드는 `BAAI/bge-m3`, 후속 구현에서 교체) |
 | `embedding_revision` | text | NN |  | `rag_clause` 와 같은 값이어야 한다(`R__rag_clauses.sql` 이 확인) |
 
-#### `work_unit` — TBM 작업(히스토리 작업 다시 보기)
+#### `work_unit` — 작업 관리(TBM 계획·진행·종료 및 히스토리 다시 보기)
 
 - 단계 **M3** · 일반 · 근거: 히스토리 작업 다시 보기, `docs/design/server-work-units.md` · V21
-- 작업자 이름은 두지 않는다(NFR-14). `zone_id` 는 구역 ID(버전 무관)라 FK 없이 쓰기 때 존재를 검사한다
+- 작업명·담당 조에는 작업자 개인 이름을 두지 않는다(NFR-14, 참석자 실명은 `report_signature` 에만 허용). `zone_id` 는 구역 ID(버전 무관)라 FK 없이 쓰기 때 존재를 검사한다. 상태는 `PLANNED` → `IN_PROGRESS`(`POST /api/work-units/{id}/start`) → `DONE`(`POST /api/work-units/{id}/end`)으로 전이한다(`docs/design/work-session-flow.md`, S15P31A101-426)
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
@@ -1327,6 +1357,9 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `lead_team` | text |  |  | 담당 조 이름(LLM 에는 보내지 않고 서버가 보고서 머리말에만 붙임) |
 | `layout_id` | bigint | FK>layout_plan.layout_id |  | 이 작업이 쓰는 가상 레이아웃(`V23 layout_plan` 연결, 후속 구현에서 추가) |
 | `work_type` | text |  |  | 공종 코드(예: `SCAFFOLD_INSTALL`·`OPENING_WORK`·`HIGH_PLACE`·`MATERIAL_HANDLING`·`EQUIPMENT_OP`·`FLOOR_FINISHING`·`GENERAL`, 비개인정보라 LLM·검색 입력 허용, 후속 구현에서 추가) |
+| `status` | text | NN, CK(PLANNED·IN_PROGRESS·DONE), 기본 'PLANNED' |  | 작업 상태: `PLANNED`(계획) → `IN_PROGRESS`(진행, 작업 시작) → `DONE`(종료, 작업 종료). 한 시점에 현장당 `IN_PROGRESS` 는 최대 1개(후속 구현에서 추가, S15P31A101-426) |
+| `actual_started_at` | ts |  |  | `POST /api/work-units/{id}/start` 실제 작업 시작 시각(예정 `starts_at` 과 별도 기록, 후속 구현에서 추가) |
+| `actual_ended_at` | ts | CK(>= actual_started_at) |  | `POST /api/work-units/{id}/end` 실제 작업 종료 시각(예정 `ends_at` 과 별도 기록, 후속 구현에서 추가) |
 | `created_by` | bigint | FK>app_user.user_id |  |  |
 | `created_at` | ts | NN |  |  |
 | `updated_at` | ts | NN |  |  |
@@ -1506,17 +1539,20 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 
 #### `watch_binding` — 익명 World ID ↔ 워치 배정 이력
 
-- 단계 **확장** · 일반 · 근거: 11.3 watch_binding, 부록 C.6 1:1 배정 · 검토: 곽나혁(워치 트랙 전담, S15P31A101-336)
+- 단계 **확장** · 일반 · 근거: 11.3 watch_binding, 부록 C.6 1:1 배정 (V35, S15P31A101-338) · 검토: 곽나혁(워치 트랙 전담)
+- 지금은 관리자 임시 수동 배정(`MANUAL`, `/api/watch-bindings`)만 쓴다. 움직임 대조 배정(`MOTION_MATCH`)은 -340.
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
 | `binding_id` | bigint identity | PK |  |  |
-| `device_id` | text | FK>device.device_id, NN |  |  |
-| `world_id` | text | NN |  |  |
-| `score` | real | NN |  | 움직임 대조 점수 |
+| `device_id` | text | FK>device.device_id, NN |  | 지금 배정은 워치마다 하나(`unbound_at IS NULL` 부분 유일 인덱스) |
+| `world_id` | text | NN |  | 익명 World ID. 지금 배정은 World ID 마다 하나(부분 유일 인덱스) |
+| `method` | text | NN, CK(MANUAL·MOTION_MATCH) |  | 배정 방식 |
+| `score` | real | NN |  | 움직임 대조 점수. MANUAL 은 1 |
+| `bound_by_user_id` | bigint | FK>app_user.user_id, CHECK(manual) |  | 수동 배정한 관리자. MANUAL 이면 필수 |
 | `bound_at` | ts | NN |  |  |
-| `unbound_at` | ts |  |  |  |
-| `unbind_reason` | text |  |  | ID 병합·분열 의심, 끊김 등 |
+| `unbound_at` | ts | CHECK(end) |  |  |
+| `unbind_reason` | text | CK(RELEASED·REPLACED), CHECK(end) |  | 관리자가 풂, 같은 워치·World ID 의 새 배정. end: unbound_at 과 함께 채우거나 함께 비운다 |
 
 #### `channel_state` — World ID 별 개인 채널 상태
 
@@ -1541,40 +1577,35 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `features` | jsonb | NN | `gait_features` payload 그대로 | 걸음 시점·시작/멈춤 전환·0.5~3 Hz 대역 크기 시계열. 시각은 워치 시계(`clock_basis` WATCH)이고 `clock_offset_ms` 로 환산한다(-334) |
 | `received_at` | ts | NN |  |  |
 
-#### `watch_alert` — 워치 진동 알림 상세(notification 의 WATCH 채널)
+#### `watch_alert` — 워치 진동 알림과 ACK·격상
 
-- 단계 **확장** · 일반 · 근거: 부록 C.6 I4 watch_alert·ack, 격상
+- 단계 **확장** · 일반 · 근거: 부록 C.6 I4 watch_alert·watch_ack, FR-45·46, 격상 (V35, S15P31A101-338) · 검토: 곽나혁
+- 처음 설계는 `notification`(WATCH 채널)의 상세 표였으나, `notification` 은 구독·사용자 대상이고 CRITICAL·HIGH 만 받아(CAUTION 불가) 워치 알림은 따로 둔다.
+  LIVE 만 받는 두 겹 차단은 같은 방식(source CK + `risk_event(event_id, source)` 복합 FK)으로 건다.
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
-| `notification_id` | bigint | PK, FK>notification.notification_id |  |  |
-| `device_id` | text | FK>device.device_id, NN |  |  |
+| `alert_id` | bigint identity | PK |  |  |
 | `alert_msg_id` | uuid | UQ, NN | `watch_alert` 봉투 `msg_id` | `watch_ack.alert_msg_id` 가 이 값으로 행을 찾는다(-334) |
-| `vibration_pattern` | text | NN, CK(DANGER_LONG·CAUTION_DOUBLE·CAUTION_WEAK) | `watch_alert.vibration_pattern`(없으면 등급으로 정한 값) | 위험: 길게 연속, 경고: 짧게 두 번, 주의: 약하게 한 번(FR-45, -334 에서 CAUTION_WEAK 추가) |
-| `direction` | text | CK(FRONT·BACK·LEFT·RIGHT) | `watch_alert.direction` | 작업자 기준 방향. 모르면 null |
-| `word` | text | NN | `watch_alert.word` | 한 단어(8자 이하) |
-| `ack_within_ms` | integer | NN | `watch_alert.ack_within_ms` | 확인 기한(길이). 격상 판단 = sent_at + 이 값 |
+| `event_id` | uuid | NN, FK(event_id, source)>risk_event | `watch_alert.event_id` | 같은 이벤트(재개마다)·워치·등급에 한 번(부분 UQ `event_id, resume_count, device_id, severity`, SEND_FAILED 제외) |
+| `source` | text | NN, CK(LIVE) |  | 11.4-3 |
+| `event_sequence` | int | NN, CK(≥ 1) | `watch_alert.event_sequence` | 알린 이벤트 상태 |
+| `resume_count` | int | NN | `risk_event.resume_count` | 알린 때의 재개 횟수. 해소 뒤 다시 활성(resumed)이면 새로 알린다 |
+| `device_id` | text | FK>device.device_id, NN |  |  |
+| `world_id` | text | NN |  | 보낼 때 그 워치에 배정된 익명 World ID |
+| `severity` | text | NN, CK(CRITICAL·HIGH·CAUTION) | `watch_alert.severity` | 7.3 워치 개인 채널 |
+| `vibration_pattern` | text | NN, CK(DANGER_LONG·CAUTION_DOUBLE·CAUTION_WEAK) | `watch_alert.vibration_pattern` | 위험: 길게 연속, 경고: 짧게 두 번, 주의: 약하게 한 번(FR-45) |
+| `direction` | text | CK(FRONT·BACK·LEFT·RIGHT) | `watch_alert.direction` | 작업자 기준 방향. 지금은 싣지 않아 null(남은 일) |
+| `word` | text | NN | `watch_alert.word` | 한 단어(8자 이하, 규칙별) |
+| `needs_check` | boolean | NN | `watch_alert.needs_check` |  |
+| `ack_within_ms` | integer | NN, CK(1~600000) | `watch_alert.ack_within_ms` | 확인 기한(길이). 격상 판단 = sent_at + 이 값 |
+| `sent_at` | ts | NN | `watch_alert` 봉투 `sent_at` | EC2 가 보낸(보내려 한) 시각 |
 | `acked_at` | ts |  | `watch_ack.acked_at` (kind VIBRATED) | 워치가 진동을 시작한 시각(워치 시계, 기록용) |
 | `ack_received_at` | ts |  | EC2 가 VIBRATED `watch_ack` 를 받은 EC2 시각 | 격상 판단 기준: 이 값이 없거나 `sent_at + ack_within_ms` 뒤면 격상. 워치 시계를 믿지 않는다 |
-| `confirmed_at` | ts |  | `watch_ack.acked_at` (kind CONFIRMED) | 작업자가 화면에서 확인한 시각. 없을 수 있다 |
-| `escalated_at` | ts |  |  | ACK 대기 초과 → 현장 경보·관리자 알림 |
-
-#### `watch_connection` — 워치 I4 연결 기록
-
-- 단계 **확장** · 일반 · 근거: 부록 C.6 LOST(끊김을 관리자에게 알림), FR-44, -341 연결 비율 (V28, S15P31A101-336) · 검토: 곽나혁
-- 지금 연결 상태의 정본은 EC2 메모리(`WatchHub`)이고 화면에는 `viewer_health.watches` 로 나간다. 이 표는 연결·끊김 경계만 남긴다(하트비트마다 쓰지 않는다. 하트비트 수신은 `device.last_heartbeat_at`).
-
-| 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
-|---|---|---|---|---|
-| `connection_id` | bigint identity | PK |  |  |
-| `device_id` | text | FK>device.device_id, NN | 업그레이드 기기 토큰의 기기 | kind = WATCH. 열린 연결은 워치마다 하나(`ended_at IS NULL` 부분 유일 인덱스) |
-| `connected_at` | ts | NN |  | EC2 가 업그레이드를 받은 시각 |
-| `first_heartbeat_at` | ts |  |  | 이 연결의 첫 `watch_heartbeat` EC2 수신 시각. 없으면 붙기만 하고 하트비트 없음 |
-| `last_heartbeat_at` | ts |  |  | 끝날 때 적는 마지막 하트비트 EC2 수신 시각 |
-| `transport` | text | CK(WIFI·PHONE_BLUETOOTH·CELLULAR·UNKNOWN) | `watch_heartbeat.watch.transport` | 바뀌면 고친다(마지막 값) |
-| `app_version` | text |  | `watch_heartbeat.watch.app_version` |  |
-| `ended_at` | ts | CHECK(end) |  |  |
-| `end_reason` | text | CK(CLOSED·HEARTBEAT_TIMEOUT·TOKEN_INVALID·REPLACED·SEND_FAILED·EC2_RESTART), CHECK(end) |  | 워치·네트워크가 닫음, interval_ms×3 누락(LOST), 연결 중 토큰 폐기·회전, 같은 워치의 새 연결, EC2 송신이 밀려 닫음, EC2 종료·재시작(끝 시각은 마지막 하트비트, 없으면 연결 시각). end: ended_at 과 함께 채우거나 함께 비운다 |
+| `confirmed_at` | ts |  | `watch_ack.acked_at` (kind CONFIRMED) | 작업자가 화면에서 확인한 시각(워치 시계). 없을 수 있다 |
+| `confirm_received_at` | ts |  | EC2 가 CONFIRMED 를 받은 EC2 시각 |  |
+| `escalated_at` | ts | CHECK(escalation) | `watch_escalation.escalated_at` | 관리자 화면 알림(/topic/watch) |
+| `escalation_reason` | text | CK(NO_ACK·SEND_FAILED), CHECK(escalation) | `watch_escalation.reason` | 기한 안에 ACK 없음, 워치로 보내지 못함 |
 
 #### `watch_impact` — 워치 충격 이벤트(낙상 추가 근거)
 

@@ -44,7 +44,7 @@ beforeEach(() => {
   dropAll.mockClear();
   rejectNextConnects.mockClear();
   t = T0;
-  mock = startRealtimeMock(broker, { record: (message) => message }, () => t);
+  mock = startRealtimeMock(broker, () => t);
 });
 afterEach(() => {
   mock.stop();
@@ -86,10 +86,9 @@ describe('실시간 mock 장애 흉내', () => {
 });
 
 describe('실시간 mock 송출', () => {
-  it('한 바퀴 동안 world·health·events 토픽으로만 보낸다', () => {
+  it('한 바퀴 동안 world·health 토픽으로만 보내고 위험 이벤트는 만들지 않는다', () => {
     run(EVENT_CYCLE_MS);
     expect([...new Set(sent.map((m) => m.topic))].sort()).toEqual([
-      '/topic/events',
       '/topic/health',
       '/topic/world',
     ]);
@@ -103,7 +102,7 @@ describe('실시간 mock 송출', () => {
       dropAll,
       rejectNextConnects,
     } as unknown as StompBroker;
-    const other = startRealtimeMock(idle, { record: (message) => message }, () => t);
+    const other = startRealtimeMock(idle, () => t);
     try {
       run(EVENT_CYCLE_MS);
       expect(topics).toEqual([]);

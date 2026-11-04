@@ -1,0 +1,27 @@
+{
+  "schema_version": "2.7.0",
+  "msg_type": "job_callback",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000459",
+  "sent_at": 1760342422500,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261104-0455",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000004b5",
+    "job_type": "vlm_zone_draft",
+    "status": "SUCCEEDED",
+    "started_at": 1760342415100,
+    "finished_at": 1760342422400,
+    "result": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "site_id": "classroom-1",
+      "calibration_version": "cal-setup-12",
+      "preview_scene_version": "scene-setup-12-preview",
+      "safety_use": true,
+      "status": "SUCCEEDED",
+      "model_version": "nvidia/Cosmos-Reason2-2B",
+      "prompt_version": "vlm-zone-draft-1.0",
+      "latency_ms": 1000,
+      "drafts": []
+    }
+  }
+}

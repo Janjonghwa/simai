@@ -154,7 +154,7 @@ class IncidentSummaryIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM analysis_job WHERE event_id = ?", Integer.class, liveEventId))
                 .isOne();
 
-        // 3. 워커 대여 -> job_request 3.5.0 계약 통과, 상태 RUNNING 전환 및 STOMP 발행
+        // 3. 워커 대여 -> job_request 3.7.0 계약 통과, 상태 RUNNING 전환 및 STOMP 발행
         JsonNode leaseEnvelope = body(mvc.perform(post("/api/worker/jobs/lease")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + workerToken)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -164,7 +164,7 @@ class IncidentSummaryIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn());
         assertThat(schemas.violations("messages/job_request", leaseEnvelope.toString())).isEmpty();
-        assertThat(leaseEnvelope.get("schema_version").asString()).isEqualTo("3.5.0");
+        assertThat(leaseEnvelope.get("schema_version").asString()).isEqualTo("3.8.0");
         JsonNode leasePayload = leaseEnvelope.get("payload");
         assertThat(leasePayload.get("job_id").asString()).isEqualTo(jobId);
         assertThat(leasePayload.get("priority").asString()).isEqualTo("REPORT");

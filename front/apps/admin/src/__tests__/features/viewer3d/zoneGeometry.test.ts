@@ -1,5 +1,7 @@
 import { adaptDemoZones } from '@/features/viewer3d/data/contractAdapter';
+import type { ZoneSeverity, ZoneView } from '@/features/viewer3d/data/spatialFrame';
 import { DEMO_ZONES_RESPONSE } from '@/features/viewer3d/dev-harness/scenarios';
+import { PALETTE } from '@/features/viewer3d/palette';
 import { worldPoint } from '@/features/viewer3d/worldCoordinates';
 import { rectangleToAabb } from '@/features/viewer3d/zones/demoRectangle';
 import {
@@ -13,6 +15,7 @@ import {
   personOnRay,
   ZONE_APPLY_STATES,
   zoneLabel,
+  zoneSeverity,
   zoneStyle,
 } from '@/features/viewer3d/zones/zonePresentation';
 import { describe, expect, it } from 'vitest';
@@ -290,16 +293,67 @@ describe('구역 표시 규칙', () => {
     }
   });
 
-  it('선택은 색만 바꾸고 선 모양(적용 상태)은 유지한다', () => {
+  it('선택은 색과 선 모양(적용 상태)을 바꾸지 않고 채움과 선을 짙게 한다', () => {
     for (const state of ZONE_APPLY_STATES) {
       const [off, on] = [zoneStyle(state, false), zoneStyle(state, true)];
-      expect(on.color).not.toBe(off.color);
-      expect([on.dashed, on.dashSize, on.stateLabel]).toEqual([
+      expect([on.color, on.dashed, on.dashSize, on.stateLabel]).toEqual([
+        off.color,
         off.dashed,
         off.dashSize,
         off.stateLabel,
       ]);
+      expect(on.fillOpacity).toBeGreaterThan(off.fillOpacity);
+      expect(on.edgeOpacity).toBe(1);
     }
+  });
+
+  it.each(['dark', 'light'] as const)(
+    '%s: 구역 색은 심각도 색이고, 안내이거나 모르면 청록, 미리보기는 보라다',
+    (theme) => {
+      const palette = PALETTE[theme];
+      const color = (severity?: ZoneSeverity) =>
+        zoneStyle('UNVERIFIED', false, palette, severity).color;
+      expect(color('CRITICAL')).toBe(palette.risk.CRITICAL.color);
+      expect(color('HIGH')).toBe(palette.risk.HIGH.color);
+      expect(color('CAUTION')).toBe(palette.risk.CAUTION.color);
+      expect(color('INFO')).toBe(palette.zone.color);
+      expect(color()).toBe(palette.zone.color);
+      expect(zoneStyle('DEMO_PREVIEW', false, palette, 'CRITICAL').color).toBe(
+        palette.zone.preview,
+      );
+    },
+  );
+
+  it('가려진 부분의 선은 보이는 선보다 흐리지만 보인다', () => {
+    for (const state of ZONE_APPLY_STATES) {
+      for (const selected of [false, true]) {
+        const style = zoneStyle(state, selected);
+        expect(style.hiddenEdgeOpacity).toBeGreaterThan(0);
+        expect(style.hiddenEdgeOpacity).toBeLessThan(style.edgeOpacity);
+      }
+    }
+  });
+
+  it('구역 심각도는 정식 구역은 official, DEMO 구역은 알려 준 값이고 모르면 없다', () => {
+    const base: ZoneView = {
+      zoneId: 'z',
+      name: 'z',
+      min: worldPoint(0, 0, 0),
+      max: worldPoint(1, 1, 1),
+    };
+    const official = {
+      zoneVersion: 1,
+      evalType: 'VOLUME_3D' as const,
+      severity: 'HIGH' as const,
+      zoneKind: null,
+      polygonXy: [],
+      zRange: null,
+      hasGuardrail: null,
+      validFrom: null,
+    };
+    expect(zoneSeverity({ ...base, official })).toBe('HIGH');
+    expect(zoneSeverity({ ...base, severity: 'CRITICAL' })).toBe('CRITICAL');
+    expect(zoneSeverity(base)).toBeUndefined();
   });
 
   it('이름표는 ID·World 높이 범위·적용 상태를 적는다', () => {

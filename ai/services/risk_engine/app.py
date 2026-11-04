@@ -21,7 +21,14 @@ from fastapi.concurrency import run_in_threadpool
 from simai_ai.risk.plan import POSITION_RULE
 from simai_ai.risk.rule_catalog import catalog
 
-from .handler import MAX_BODY_BYTES, PLAN_PATH, engine_version, handle, schema_errors, too_large
+from .handler import (
+    MAX_BODY_BYTES,
+    PLAN_PATH,
+    engine_version,
+    handle,
+    schema_errors,
+    too_large,
+)
 
 
 def health() -> dict[str, Any]:
@@ -67,9 +74,12 @@ def create_app(now_ms: Callable[[], int] | None = None) -> FastAPI:
     async def report(request: Request):
         # 보고서 의존성은 해당 경로에서만 불러온다.
         import os
+
         from fastapi import HTTPException
+
         from simai_ai.report.llm import LlmSettings, make_client
         from simai_ai.report.tbm_graph import generate
+
         from .graph_store import PgGraphStore
 
         if int(request.headers.get("content-length", "0") or 0) > MAX_BODY_BYTES:
@@ -81,7 +91,7 @@ def create_app(now_ms: Callable[[], int] | None = None) -> FastAPI:
             data = json.loads(body)
         except (ValueError, UnicodeDecodeError):
             raise HTTPException(400) from None
-        if not isinstance(data, dict) or data.get("report_kind") != "TBM":
+        if not isinstance(data, dict) or data.get("report_kind") not in ("TBM", "DAILY"):
             raise HTTPException(400)
         return await run_in_threadpool(generate, data, PgGraphStore(os.environ.get("SIMAI_RAG_PG_DSN", "")),
                                        lambda: make_client(LlmSettings.from_env(os.environ)))
@@ -89,5 +99,30 @@ def create_app(now_ms: Callable[[], int] | None = None) -> FastAPI:
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
         return status
+
+    @app.post("/v1/report/wrap-up")
+    async def wrap_up(request: Request):
+        import os
+
+        from fastapi import HTTPException
+
+        from simai_ai.report.llm import LlmSettings, make_client
+        from simai_ai.report.wrap_up import generate, validate_request
+
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+            raise HTTPException(413)
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > MAX_BODY_BYTES:
+                raise HTTPException(413)
+            chunks.append(chunk)
+        try:
+            data = validate_request(json.loads(b"".join(chunks)))
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(400) from None
+        return await run_in_threadpool(generate, data, lambda: make_client(LlmSettings.from_env(os.environ)))
 
     return app

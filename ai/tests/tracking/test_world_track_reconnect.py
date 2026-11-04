@@ -376,7 +376,7 @@ def test_merge_evidence_tolerates_short_gap_but_resets_on_counter_evidence(rig):
 def test_split_person_rejoined_merges_into_first_id(rig):
     """Cross-view 가 한 사람을 두 클러스터로 갈라 두 ID 가 생겼다가(POSSIBLE_DUPLICATE) 다시 한 클러스터로 묶이면,
     근거 3시각 뒤 먼저 만든 ID 로 합친다(두 클러스터가 같은 카메라를 쓴 적이 없다)."""
-    m = _manager()
+    m = _manager(split_suppression_enabled=False)  # 기존 중복 ID 병합 경로의 기준선
     frames = wt._split_ticks(m, rig, 0, 15)
     a, b = sorted(tr.world_id for tr in frames[-1].tracks)
     rejoined = [_tick(m, rig, k, [lambda t: wt._cluster(rig, "xv-3", t, 3.0, 3.0)]) for k in range(15, 20)]

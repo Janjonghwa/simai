@@ -34,12 +34,14 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from simai_ai.gpu.admission import AdmissionGate
 from simai_ai.gpu.budget import BudgetError, WorkerGpuSettings
 from simai_ai.gpu.reserve import FAILED, cap_process_memory
+from simai_ai.scene.reconstruct_process import ProcessStages
 from simai_ai.vlm.client import VlmError, VlmSettings
 
 from .auto_static import AutoStaticSettings, AutoStaticSubmitter, clean_bg_uploader
@@ -49,11 +51,14 @@ from .handlers import JobHandler
 from .incident_summary import IncidentSummaryHandler
 from .objects import HttpObjectStore, ObjectStore
 from .runner import HandlerStuck, Worker
+from .scene_regenerate import SceneRegenerateHandler
+from .site_setup_stages import ProductionSiteSetupHandler
 from .static_reconstruct import StaticReconstructHandler
 from .tbm_report import TbmReportHandler
 from .transport import HttpTransport, Transport
 from .vlm_frames import LocalFrames
 from .vlm_rationale import VlmRationaleHandler
+from .vlm_zone_draft import VlmZoneDraftHandler
 
 log = logging.getLogger("services.worker")
 
@@ -67,7 +72,7 @@ def open_pose(weights: str) -> Any:
 
 
 def build_handlers(config: Path | None, store: ObjectStore | None = None, *, env: Mapping[str, str] = os.environ,
-                   pose: Callable[[str], Any] = open_pose) -> Mapping[str, JobHandler]:
+                   pose: Callable[[str], Any] = open_pose, site_setup: JobHandler | None = None) -> Mapping[str, JobHandler]:
     """작업 유형 → 처리기. VLM·정적 3D·HMR 처리기는 각 작업 티켓에서 기능 패키지를 조립해 넣는다.
 
     VLM 처리기는 vLLM 을 WorkerGpuSettings.budget 의 vllm_gpu_memory_utilization·vllm_max_num_seqs 로 띄운다(명세 3.2 상한).
@@ -77,6 +82,9 @@ def build_handlers(config: Path | None, store: ObjectStore | None = None, *, env
     if store is not None:
         handlers["bev_floorplan"] = BevFloorplanHandler(store, clock_ms=lambda: time.time_ns() // 1_000_000)
         handlers["static_reconstruct"] = StaticReconstructHandler(store, clock_ms=lambda: time.time_ns() // 1_000_000, env=env)
+        handlers["vlm_zone_draft"] = VlmZoneDraftHandler(store, None, client_factory=None, env=env)
+    if site_setup is not None:
+        handlers["site_setup"] = site_setup
     if (why := _vlm_rationale_missing(store, env)) is None:
         try:
             provider = pose(env["SIMAI_TIER0_WEIGHTS"])
@@ -84,6 +92,8 @@ def build_handlers(config: Path | None, store: ObjectStore | None = None, *, env
             handlers["vlm_rationale"] = VlmRationaleHandler(store, provider,  # type: ignore[arg-type]
                                                             local_frames=LocalFrames.from_env(env), env=env)
             handlers["incident_summary"] = IncidentSummaryHandler(store, provider)  # type: ignore[arg-type]
+            handlers["vlm_zone_draft"] = VlmZoneDraftHandler(store, provider,
+                                                             local_frames=LocalFrames.from_env(env), env=env)
         except Exception as e:  # ultralytics 없음·가중치 손상: 다른 처리기는 돈다
             why = f"pose 검출기를 열지 못했다: {type(e).__name__}: {e}"
     if why:
@@ -161,8 +171,30 @@ def main(argv: list[str] | None = None) -> int:
     logging.getLogger("services.worker").info("GPU 메모리 상한 %s (%s), Tier 0 표시 파일 %s", cap.state, cap.fraction, gpu.marker)
     log.info("워커 ID %s (%s)", worker_id, "SIMAI_WORKER_ID" if worker_id_env else "SIMAI_WORKER_ID 없음 → 기본값")
 
+    # 맵 재생성의 관제 중 실행(S15P31A101-427). 명세 3.2 는 관제 중 일괄 작업을 막으므로 기본 0 = 관제가 끝난 뒤 처리.
+    # 1 = 배경 묶음 만들기와 재구성(static_reconstruct)을 관제 중에도 받는다(허가 게이트의 지연 규칙은 그대로 걸림).
+    # 11차 GPU 세션에서 1 로 Tier 0 영향을 재고, 명세 예외 채택 여부를 정한다.
+    during_live = os.environ.get("SIMAI_REGENERATE_DURING_LIVE", "0")
+    if during_live not in ("0", "1"):
+        print("services.worker: SIMAI_REGENERATE_DURING_LIVE 는 0 또는 1", file=sys.stderr)
+        return 2
+    blocked = gpu.policy.live_blocked_types
+    blocked = (blocked - {"static_reconstruct"}) if during_live == "1" else (blocked | {"scene_regenerate"})
+    gpu = replace(gpu, policy=replace(gpu.policy, live_blocked_types=frozenset(blocked)))
     transport = HttpTransport(base_url, token)
-    handlers = build_handlers(args.config, HttpObjectStore(transport))
+    store = HttpObjectStore(transport)
+    live_gate_probe = AdmissionGate(gpu.marker, gpu.policy, wall_s=time.time, monotonic=time.monotonic)
+    # 현장 세팅(site_setup, S15P31A101-465): MapAnything·미리보기는 LIVE 전 세팅 단계라 받되, 고화질 굽기는 LIVE 면 처리기가 미룬다(재시도 가능)
+    site_setup = ProductionSiteSetupHandler(
+        store, auto_static, ProcessStages(os.environ), clock_ms=lambda: time.time_ns() // 1_000_000,
+        live_gate=lambda: bool(live_gate_probe.check().live),
+    )
+    handlers = dict(build_handlers(args.config, store))
+    handlers["site_setup"] = site_setup
+    submitter = AutoStaticSubmitter(auto_static, AdmissionGate(gpu.marker, gpu.policy, wall_s=time.time, monotonic=time.monotonic),
+        transport, worker_id, prepare=clean_bg_uploader(base_url, token),
+        clock_ms=lambda: time.time_ns() // 1_000_000, monotonic=time.monotonic)
+    handlers["scene_regenerate"] = SceneRegenerateHandler(submitter, gpu.marker)
     if not handlers:
         print("services.worker: 등록된 작업 처리기가 없다 (처리기 조립은 후속 티켓)", file=sys.stderr)
         return 1

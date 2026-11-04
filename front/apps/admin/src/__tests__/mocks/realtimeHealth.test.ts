@@ -14,7 +14,7 @@ const broker = {
   publish: () => undefined,
   dropAll: () => undefined,
 } as unknown as StompBroker;
-const mock = startRealtimeMock(broker, { record: (message) => message }, () => t);
+const mock = startRealtimeMock(broker, () => t);
 const server = setupServer(...mock.handlers);
 
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
@@ -74,7 +74,6 @@ describe('구성 묶음 상태', () => {
     let config = states[0]!;
     const configured = startRealtimeMock(
       broker,
-      { record: (m) => m },
       () => t,
       () => config,
     );

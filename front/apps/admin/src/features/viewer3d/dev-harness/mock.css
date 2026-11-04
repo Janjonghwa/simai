@@ -222,11 +222,11 @@
   color: var(--sev-critical);
   box-shadow: inset 0 0 0 1px var(--sev-critical);
 }
-/* HIGH 는 CRITICAL 과 CAUTION 사이 색에 점선 테두리로, 색만으로 구분하지 않는다. */
+/* HIGH 는 주황에 점선 테두리로, 색만으로 구분하지 않는다. */
 .smk-sev[data-sev='HIGH'] {
-  color: color-mix(in srgb, var(--sev-critical) 45%, var(--sev-caution));
+  color: var(--sev-high);
   box-shadow: none;
-  outline: 1px dashed color-mix(in srgb, var(--sev-critical) 45%, var(--sev-caution));
+  outline: 1px dashed var(--sev-high);
   outline-offset: -1px;
 }
 .smk-sev[data-sev='INFO'] {
