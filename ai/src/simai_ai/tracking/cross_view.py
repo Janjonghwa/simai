@@ -59,6 +59,7 @@ import statistics
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 import numpy as np
 
@@ -420,6 +421,29 @@ class CrossViewAssociator:
             g_px = min(max(q_g, cfg.residual_gate_px, m_px), cfg.pairwise_gate_max_px)
             return float(m_px), float(g_px)
         return cfg.residual_marginal_px, cfg.residual_gate_px
+
+    def pair_threshold_snapshot(self) -> dict[str, dict[str, Any]]:
+        """계측용(판정에 쓰지 않음): 카메라 쌍별 지금 문턱·표본 수·출처 (S15P31A101-476).
+
+        출처: `calibration`(보정 기준 오차), `runtime`(실행 중 잔차 분위수), `default`(전역 기본값 — 표본 부족·쌍별 꺼짐)."""
+        cfg = self.config
+        cams = sorted({c for pair in self._pair_residuals for c in pair} | set(getattr(self.rig, "cameras", {}) or {}))
+        out: dict[str, dict[str, Any]] = {}
+        for i, ca in enumerate(cams):
+            for cb in cams[i + 1:]:
+                samples = len(self._pair_residuals.get((ca, cb), ()))
+                if not cfg.pairwise_threshold_enabled:
+                    source = "default"
+                elif _lookup_pair_error(cfg.pair_reprojection_error_px, ca, cb) is not None:
+                    source = "calibration"
+                elif samples >= cfg.pairwise_min_samples:
+                    source = "runtime"
+                else:
+                    source = "default"
+                m_px, g_px = self.pair_residual_thresholds(ca, cb)
+                out[f"{ca}-{cb}"] = {"marginal_px": round(m_px, 2), "gate_px": round(g_px, 2),
+                                     "samples": samples, "source": source}
+        return out
 
     def record_pair_residual(self, cam_a: str, cam_b: str, residual_px: float) -> None:
         """카메라 쌍 `(cam_a, cam_b)` 의 유효 재투영 잔차 표본 하나를 실행 중 분포 창에 기록한다."""

@@ -1408,6 +1408,9 @@ class Tier0Service:
             # 추적 계측 누계(S15P31A101-413, 판정에 쓰지 않음): 늦은 카메라 시간 비율·보간 탈락·카메라 쌍 거부·World Track 생명주기
             "tracking_diagnostics": (None if getattr(self, "perception", None) is None
                                      else self.perception.diagnostics.summary()),
+            # 카메라 쌍별 지금 재투영 문턱·표본 수·출처(S15P31A101-476, 판정에 쓰지 않음)
+            "pair_thresholds": (None if getattr(self, "perception", None) is None
+                                else self.perception.associator.pair_threshold_snapshot()),
         }
 
     def _sample_load(self) -> None:
