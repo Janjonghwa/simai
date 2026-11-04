@@ -8,12 +8,12 @@
 |---|---|---|
 | 카메라 4대 | Tapo C110, 교실 Wi-Fi망 | RTSP 영상 송출 |
 | 노트북 | 교실망, Python. 노트북 GPU 는 쓰지 않음(3.12) | RTSP 수신, 촬영 시각 추정(3.9), RunPod로 영상 중계(TLS), 세팅 1단계 카메라 각도 헬퍼(별도 CPU 프로세스, 로컬 미리보기 키프레임으로 4대 연결·회전 방향 안내 계산 후 EC2 전송, 4.3·4.5), 현장 경보 단말(스피커·화면), 이중 하트비트 감시. 교실망 NTP 서버 역할은 보류(3.9) |
-| RunPod Tier 0 서비스 | GPU Pod 하나(관제 중 상시, 실행 사이트·GPU 는 3.12), Python. 분석 워커와 같은 Pod·GPU를 쓰되 별도 프로세스 | YOLO26x-pose 검출·추적·2D keypoint, 카메라 간 연결·시간 보간·삼각측량·World 상태, LIVE Risk Engine·이벤트 저널, 이벤트 클립·CRITICAL 이벤트 프레임 링 버퍼, 사람 지운 정적 배경 누적(현장 세팅 및 관제 중 회전 감시용, 4.3·4.4·5.1·5.3), 관제 중 미세 회전 자동 복구(`rotfix`, 4.4), 기동 시 엔드포인트 등록(3.12). PPE 검출은 확장(부록 C) |
+| RunPod Tier 0 서비스 | GPU Pod 하나(관제 중 상시, 실행 사이트·GPU 는 3.12), Python. 분석 워커와 같은 Pod·GPU를 쓰되 별도 프로세스 | YOLO26x-pose 검출·추적·2D keypoint, 카메라 간 연결·시간 보간·삼각측량·World 상태, LIVE Risk Engine·이벤트 저널, 이벤트 클립·CRITICAL 이벤트 프레임 링 버퍼, 사람 지운 정적 배경 누적(현장 세팅 및 관제 중 회전 감시용, 4.3·4.4·5.1·5.3), 관제 중 미세 회전 자동 복구(`rotfix`, 4.4), 기동 시 엔드포인트 등록(3.12). PPE 검출(5.5)은 같은 GPU 인스턴스의 별도 PPE 프로세스가 1\~2 Hz 로 하고, R9 판정은 Tier 0 Risk Engine 이 한다 |
 | RunPod 분석 워커 | Tier 0와 같은 GPU Pod 안의 별도 프로세스(자원 상한 적용, 3.2), Python. 작업 시작(LIVE) 전 현장 세팅 시간이나 관제가 없는 개발 시간에는 GPU·CPU 자원을 전력으로 사용(실행 사이트·GPU 는 3.12) | EC2에서 작업을 가져가(12.5) 실행: 작업 시작 전 **현장 세팅 파이프라인**(`site_setup`: 무마커 내부 파라미터·상주 MapAnything 초기 자세·점구름·World 자동 정의·인접 쌍 ALIKED+LightGlue 배경 특징점 공동 BA(V2)·빠른 3D 미리보기 맵 생성, 4.3·5.3), 초기 세팅 VLM 위험구역·고소 작업면 초안 제안(`vlm_zone_draft`, 빠른 미리보기 맵과 병렬 생성, 제안만·발행 전 판정 미사용, 5.4·8.2), 정적 3D 배경 복원·텍스처 메시 굽기(MapAnything Native + Open3D TSDF + `texrecon` / EXP-01, 구역을 그리는 동안 백그라운드 완료 포함, `static_reconstruct` 및 수동 맵 재생성 `scene_regenerate`, 5.3·12.5, S15P31A101-427·-428), VLM 근거·사고 구간 요약(Cosmos3-Nano Reasoner, VLM 입력 얼굴 흐림·위험 구역·대상 인물 오버레이 포함, 5.4), BEV 평면도 생성(4.1), YOLO26-seg 마스크, 비동기 HMR 아바타 포즈 스트림·관측 기반 UV 텍스처 외형 갱신(Fast SAM 3D Body + YOLO26x-seg 마스크 / EXP-02, 시연 범위, 5.6) |
 | 외부 LLM API | 외부 서비스(“GPT 6.1 sol”, SSAFY GMS 를 거쳐 OpenAI, 5.4) | TBM 보고서(사전 위험성 평가·대책 및 작업 종료 시 실제 LIVE 이벤트 집계 사실 기반 “작업 마무리” 문단)·일일 일지 문장 생성(8.3). 텍스트만 보낸다(영상·이미지·얼굴·참석자 전자서명 실명/이미지는 절대 보내지 않음). EC2 의 Python 컨테이너(`deploy/risk-engine`) 안에서만 호출한다(API 키는 EC2 `.env`, GPU·Pod 없이 언제든 생성, v1.3 수정 49·50) |
-| EC2 | AWS(EC2 또는 Lightsail 중 지급 서비스로 정함, 확인 필요), Spring Boot 4·Java 21 | RiskEvent 저장·생명주기·알림 라우팅, 규칙·구성 묶음 배포, 작업별 **현장 세팅 세션(`setup_session`)** 및 작업 세션(`PLANNED`→`IN_PROGRESS`→`DONE`) 관리(세팅 → 구역 → TBM → 시작 → 종료 → 마무리 → 서명, 8.1·8.3), TBM 참석자 전자서명·버전 잠금(`content_sha256`) 저장(8.3), Risk Engine·보고서 생성 컨테이너(계획·리플레이·What-if 판정 및 법령 지식 그래프 기반 TBM·일일 보고서·작업 마무리 생성), Spatial DB, 뷰어 API·실시간 스트림, PWA 알림, Tier 0 엔드포인트 중계, 인증 |
-| 객체 저장소 | S3 또는 Lightsail 버킷 | 이벤트 클립, 조치 사진, 정적 3D 자산(glTF), TBM 참석자 손글씨 전자서명 이미지(비공개, 관리자 전용, 8.3·14장). 클립·서명 등은 EC2 삭제 작업이 지운다(보존 표시 확인, 11.5) |
-| 클라이언트 | 브라우저, 휴대폰 | Three.js 뷰어, 반장 PWA. 워치 앱은 확장(부록 C) |
+| EC2 | AWS(EC2 또는 Lightsail 중 지급 서비스로 정함, 확인 필요), Spring Boot 4·Java 21 | RiskEvent 저장·생명주기·알림 라우팅, 규칙·구성 묶음 배포, 작업별 **현장 세팅 세션(`setup_session`)** 및 작업 세션(`PLANNED`→`IN_PROGRESS`→`DONE`) 관리(세팅 → 구역 → TBM → 시작 → 종료 → 마무리 → 서명, 8.1·8.3), TBM 참석자 전자서명·버전 잠금(`content_sha256`) 저장(8.3), Risk Engine·보고서 생성 컨테이너(계획·리플레이·What-if 판정 및 법령 지식 그래프 기반 TBM·일일 보고서·작업 마무리 생성), Spatial DB, 뷰어 API·실시간 스트림, Tier 0 엔드포인트 중계, 인증 |
+| 객체 저장소 | S3 또는 Lightsail 버킷 | 이벤트 클립, 정적 3D 자산(glTF), TBM 참석자 손글씨 전자서명 이미지(비공개, 관리자 전용, 8.3·14장). 클립·서명 등은 EC2 삭제 작업이 지운다(보존 표시 확인, 11.5) |
+| 클라이언트 | 브라우저 | Three.js 뷰어(관제 화면). 워치 앱은 확장(부록 C) |
 
 데이터 흐름의 원칙: 카메라 영상은 관제 중 RunPod Tier 0 서비스로 상시 전송되고, Tier 0 가 카메라별 상시 영상 조각으로 잘라 객체 저장소에 올린다(14일 보관, 5.1·11.5, v1.3 수정 36). 상시 영상 조각 바이트는 EC2를 거치지 않고(EC2 는 조각 기록 `video_segment` 만 받는다), EC2에는 World 상태·이벤트 같은 결과만 간다. 다만 관제 화면 CCTV 원격 시청(v1.3 수정 46)을 위해 로그인한 관리자가 보고 있는 동안에만 노트북 중계가 같은 압축 영상을 EC2 수신 WebSocket 으로 보내고, EC2 는 저장 없이 메모리에서 시청 브라우저로만 넘긴다(3.3, 이전의 ‘관제 미리보기 영상은 EC2 를 거치지 않음’은 대체됨). 2D 관측 원본도 Tier 0 저장 위치(3.12)에 두고 EC2 로 보내지 않는다(11.2).
 
@@ -23,11 +23,11 @@
 - 노트북은 GPU 작업을 하지 않는다. 영상 중계, 촬영 시각 추정, 현장 경보, 감시와 세팅 1단계 화면이 열려 있을 때만 도는 별도 CPU 프로세스 기반 카메라 각도 헬퍼(4.3·4.5)만 맡는다.
 - Tier 0와 분석 워커는 **GPU Pod 하나**에서 별도 프로세스로 실행한다(World Track Manager 하나, LIVE Risk Engine 정본 하나). GPU를 나눠 쓰므로 다음 규칙을 둔다.
   - Tier 0 프로세스가 GPU 메모리를 먼저 확보한다. 분석 워커는 남은 메모리 안에서 상한을 두고 실행한다(예: vLLM `gpu_memory_utilization` 제한, 동시 요청 수 제한). 아래 GPU 메모리 예산표를 따른다.
-  - Tier 0 지연이 목표를 넘거나 모르면 분석 워커의 새 작업을 멈추고 대기열에 둔다. Tier 0 는 1초 간격으로 지연 표본을 모아 GPU 상태 표시 파일을 쓸 때마다(초기값 5초) 그 사이 창으로 집계한다. 멈춤 기준은 그 창의 최댓값(p95 보다 엄격)이 `capture_to_risk` 목표(6.6, 600ms)를 넘음(한 창·한 표본이라도 즉시), 지연을 모르는 표본이 있음, 표본이 없음, 표시 파일이 오래됨·없음·형식 오류(모름)이다. 창 안에 추론 대기 상한(5.1, `queue_wait_ms` 150ms)을 넘겨 버린 프레임은 한 창에 2건(초기값) 이하면 통과로 넘기고, 그보다 많으면 멈춘다(지연 초과·모름과 함께면 위 기준으로 이미 멈춤). 멈춘 뒤 다시 받으려면 통과 상태가 10초(초기값) 이어져야 한다. 분석 워커(VLM 빠른 경로 포함)와 아래 상시 아바타 루프는 같은 접수 규칙을 쓰고, LIVE 관제 중 오프라인·배치 EXP 차단은 이 규칙과 따로 늘 걸린다. 이 규칙이나 LIVE 관제 시작 때문에 분석 워커가 받은 작업을 시작하지 않았거나 멈췄으면 시도 횟수를 쓰지 않고 반납한다(12.5). 우선순위는 Tier 0 > VLM 빠른 경로 > 보고서·사후 요약 > 그 밖의 작업이다.
-  - EXP-01 등 오프라인·배치 EXP Job(I5 배치 `hmr_*`·`static_reconstruct` 작업 포함)은 LIVE 관제 시간에 실행하지 않는다(AdmissionGate 가 대여에서 빼고, 실행 전 LIVE 진입 시 시도 횟수를 쓰지 않고 반납, 5.3·12.5). 예외로 시연 범위인 EXP-02 아바타 포즈 스트림(상시 HMR 루프 `services/avatar`, 5.6·12.2)은 LIVE 관제 중에도 분석 워커 GPU 상한 안에서 실행하되, Tier 0 가 공유 파일(`$SIMAI_ROOT/state/avatar-input.npz`)로 내보낸 최신 왜곡 보정 영상·트랙을 읽고 추론 전마다 Tier 0 지연 감시 표시 파일(`$SIMAI_ROOT/state/tier0.live`)을 확인해 위 접수 규칙에 걸리면(지연 초과·모름은 즉시) 추론을 멈추며(그때 뷰어는 0.5 s 뒤 캡슐 아바타로 돌아감, 13.2) 통과 상태가 10초(초기값) 이어지면 다시 시작한다(`docs/design/hmr-avatar-loop.md`, `docs/design/tier0-gpu-priority.md`). 관리자가 수동으로 요청하는 맵 재생성(`POST /api/scenes/regenerate` → I5 `scene_regenerate`, S15P31A101-427·-428)을 위 접수 게이트(`-412`) 아래 LIVE 중 두 번째 예외로 둘지 여부는 11차 GPU 세션 측정(관제 중 재생성 시 Tier 0 지연·재구성 소요 시간 실측) 뒤 결정한다(19.1 미결, v1.3 수정 52).
+  - Tier 0 지연이 목표를 넘거나 모르면 분석 워커의 새 작업을 멈추고 대기열에 둔다. Tier 0 는 1초 간격으로 지연 표본을 모아 GPU 상태 표시 파일을 쓸 때마다(초기값 5초) 그 사이 창으로 집계한다. 멈춤 기준은 그 창의 최댓값(p95 보다 엄격)이 `capture_to_risk` 목표(6.6, 600ms)를 넘음(한 창·한 표본이라도 즉시), 지연을 모르는 표본이 있음, 표본이 없음, 표시 파일이 오래됨(초기값 15초, 갱신 주기의 3배)·없음·형식 오류(모름)이다. 표시 파일이 없을 때 관제 없음으로 보는 것은 Tier 0 가 남긴 정상 종료 기록(`<표시 파일>.stopped`)이 있을 때와 개발 명시 모드(`SIMAI_WORKER_DEV_NO_LIVE=1`)뿐이고, 마지막으로 LIVE 를 본 뒤 60초(초기값, Tier 0 재시작 틈) 안에는 받지 않는다. 대여한 뒤 지연 때문에 시작하지 못한 작업은 하트비트로 대여를 지키며 최대 60초(초기값, 실행 상한의 절반 이하) 기다리다가 그래도 받을 수 없으면 반납한다. 창 안에 추론 대기 상한(5.1, `queue_wait_ms` 150ms)을 넘겨 버린 프레임은 한 창에 2건(초기값) 이하면 통과로 넘기고, 그보다 많으면 멈춘다(지연 초과·모름과 함께면 위 기준으로 이미 멈춤). 멈춘 뒤 다시 받으려면 통과 상태가 10초(초기값) 이어져야 한다. 분석 워커(VLM 빠른 경로 포함)와 아래 상시 아바타 루프는 같은 접수 규칙을 쓰고, LIVE 관제 중 오프라인·배치 EXP 차단은 이 규칙과 따로 늘 걸린다. 이 규칙이나 LIVE 관제 시작 때문에 분석 워커가 받은 작업을 시작하지 않았거나 멈췄으면 시도 횟수를 쓰지 않고 반납한다(12.5). 우선순위는 Tier 0 > VLM 빠른 경로 > PPE > 보고서·사후 요약 > 그 밖의 작업이다. PPE 프로세스도 같은 접수 규칙으로 새 추론을 멈추고 재개하며, 멈춘 동안 PPE 상태는 근거가 오래돼 UNKNOWN 이 된다(5.5).
+  - EXP-01 등 오프라인·배치 EXP Job(I5 배치 `hmr_*`·`static_reconstruct` 작업 포함)은 LIVE 관제 시간에 실행하지 않는다(AdmissionGate 가 대여에서 빼고, 실행 전 LIVE 진입 시 시도 횟수를 쓰지 않고 반납, 5.3·12.5). 예외로 시연 범위인 EXP-02 아바타 포즈 스트림(상시 HMR 루프 `services/avatar`, 5.6·12.2)은 LIVE 관제 중에도 분석 워커 GPU 상한 안에서 실행하되, Tier 0 가 공유 파일(기본 `/dev/shm/simai-avatar-input.npz`, `/dev/shm` 이 없거나 쓸 수 없으면 `$SIMAI_ROOT/state/avatar-input.npz`, `SIMAI_AVATAR_CHANNEL` 로 지정 가능)로 내보낸 최신 왜곡 보정 영상·트랙을 읽고 추론 전마다 Tier 0 지연 감시 표시 파일(`$SIMAI_ROOT/state/tier0.live`)을 확인해 위 접수 규칙에 걸리면(지연 초과·모름은 즉시) 추론을 멈추며(그때 뷰어는 0.5 s 뒤 캡슐 아바타로 돌아감, 13.2) 통과 상태가 10초(초기값) 이어지면 다시 시작한다(`docs/design/hmr-avatar-loop.md`, `docs/design/tier0-gpu-priority.md`). 관리자가 수동으로 요청하는 맵 재생성(`POST /api/scenes/regenerate` → I5 `scene_regenerate`, S15P31A101-427·-428)을 위 접수 게이트(`-412`) 아래 LIVE 중 두 번째 예외로 둘지 여부는 11차 GPU 세션 측정(관제 중 재생성 시 Tier 0 지연·재구성 소요 시간 실측) 뒤 결정한다(19.1 미결, v1.3 수정 52).
   - 분석 워커 프로세스가 죽거나 메모리 부족이 나도 Tier 0 프로세스는 계속 동작해야 한다(프로세스 분리, 6.5).
   - GPU가 부족하면 같은 Pod의 GPU 등급을 올리고, 그다음 VLM 처리 주기와 동시 요청 수를 조정한다(VLM 모델은 5.4 로 고정). GPU Pod를 2개로 늘리는 구성은 쓰지 않는다. Tier 0 분산(샤딩, 중앙 Fusion, 리더 선출, 장애 전환)은 MVP 범위 밖이다.
-- 이중 감시: 노트북은 끊긴 대상에 따라 현장 표시를 달리한다(RunPod Tier 0나 영상이 끊기면 “관제 중단”, EC2만 끊기면 “원격 관제 장애”, 3.10). EC2는 RunPod Tier 0나 노트북 하트비트가 끊기면 System Health를 UNSAFE_UNKNOWN으로 바꾸고 PWA·관리자 화면에 알린다. 노트북은 EC2에도 1초마다 HTTPS 하트비트(`laptop_heartbeat`, 기기 토큰)를 보내며 Tier 0 연결 상태를 함께 알린다. 그래서 EC2는 Tier 0 하트비트가 끊겨도 노트북이 Tier 0 정상을 알리면 “원격 전달 단절(현장 경보 동작 중)”, 노트북도 Tier 0 끊김을 알리면 “관제 정지”로 구분해 표시한다. 두 경우 모두 System Health는 UNSAFE_UNKNOWN이다. ‘Tier 0 정상’은 연결(`tier0.control`)과 노트북 현장 표시(`site_display`)를 함께 본다: 노트북은 Tier 0 health 를 받고 있으면 처리 정체·판정 불가·영상 단절이어도 `tier0.control`=CONNECTED 로 두고 그 판단을 `site_display`=CONTROL_HALTED 로 알리므로, CONNECTED 여도 CONTROL_HALTED 이면 “관제 정지”다(3.10).
+- 이중 감시: 노트북은 끊긴 대상에 따라 현장 표시를 달리한다(RunPod Tier 0나 영상이 끊기면 “관제 중단”, EC2만 끊기면 “원격 관제 장애”, 3.10). EC2는 RunPod Tier 0나 노트북 하트비트가 끊기면 System Health를 UNSAFE_UNKNOWN으로 바꾸고 관리자 화면에 알린다. 노트북은 EC2에도 1초마다 HTTPS 하트비트(`laptop_heartbeat`, 기기 토큰)를 보내며 Tier 0 연결 상태를 함께 알린다. 그래서 EC2는 Tier 0 하트비트가 끊겨도 노트북이 Tier 0 정상을 알리면 “원격 전달 단절(현장 경보 동작 중)”, 노트북도 Tier 0 끊김을 알리면 “관제 정지”로 구분해 표시한다. 두 경우 모두 System Health는 UNSAFE_UNKNOWN이다. ‘Tier 0 정상’은 연결(`tier0.control`)과 노트북 현장 표시(`site_display`)를 함께 본다: 노트북은 Tier 0 health 를 받고 있으면 처리 정체·판정 불가·영상 단절이어도 `tier0.control`=CONNECTED 로 두고 그 판단을 `site_display`=CONTROL_HALTED 로 알리므로, CONNECTED 여도 CONTROL_HALTED 이면 “관제 정지”다(3.10).
 - **하트비트 장애 판정.** 받는 쪽의 단조 시계로 재고, 1초 주기 하트비트가 3회 연속 오지 않으면 장애로 본다. Tier 0 정상 여부는 소켓이 살아 있는지가 아니라 처리가 진행되는지(`t_latest_global`이 증가하는지)로 판정한다. 반쯤 열린 TCP 연결은 운영체제가 알려주지 않으므로 애플리케이션 하트비트로 끊는다(6.5).
 - 이 구성은 DeploymentProfile의 “클라우드” 프로파일이다. 인터넷이나 RunPod가 멈추면 위치 추적과 판정이 함께 멈춘다(17장). 엣지에서 독립 동작하는 “현장” 프로파일(현장 GPU에서 Tier 0 실행)은 같은 코드로 전환할 수 있게 유지한다. 노트북 GPU 로 Tier 0 를 돌리는 대체 경로는 만들지 않는다(3.12).
 
@@ -42,10 +42,11 @@
 | VLM | Cosmos3-Nano(16B) 가중치 + KV 캐시(vLLM `gpu_memory_utilization`) | 초기값 0.55, 동시 요청 4(분석 워커 상한 안). G0 실측으로 고침. 3차 GPU 세션(H100 80GB, 감시 프로세스와 같은 인자) 실측: 가중치 16.79 GiB·KV 캐시 23.99 GiB 가 0.55 안에 들고, G7 빠른 경로 p95 2.1 s, VLM 동시 4 지속 중 Tier 0 `frame_age` p95 60 → 76 ms 라 값은 그대로 둔다(48GB급의 0.55 는 19.1 미결, `docs/design/unified-env.md`) |
 | 임베딩(GPU 에 둘 때만) | `Qwen/Qwen3-Embedding-0.6B`(1024차원, v1.3 수정 49). GPU 에 두지 않는다(법령 지식 그래프 노드·표준 질의 템플릿은 사전 임베딩해 두고, 실시간 질의는 EC2 Python 컨테이너 CPU 에서 처리, 5.4·11장) | 해당 없음 |
 | 마스크 | YOLO26-seg(아바타 루프 `YOLO26x-seg` 는 아래 HMR 상한 안) | 분석 워커 상한 안. G0 실측 |
-| HMR(EXP-02, 시연 범위) | Fast SAM 3D Body(상시 아바타 스트림 루프 `services/avatar`, `YOLO26x-seg` 마스크·UV 텍스처 누적 포함) | 분석 워커 상한 안(초기값 0.10, `SIMAI_AVATAR_GPU_FRACTION`). G0 실측(상한) |
+| HMR(EXP-02, 시연 범위) | Fast SAM 3D Body(상시 아바타 스트림 루프 `services/avatar`, `YOLO26x-seg` 마스크·UV 텍스처 누적 포함) | 분석 워커 상한 안(초기값 0.10, `SIMAI_AVATAR_GPU_MEMORY_FRACTION`). G0 실측(상한) |
+| PPE(5.5) | YOLO26x 검출 4클래스 체크포인트 하나(batch 1, 동시 추론 1), 관제 중 상시. 분석 워커 밖의 별도 프로세스 | 초기값 0.05(80GB 에서 4GB, 남는 몫을 PPE 전용으로 둠). G0 실측(가중치·활성값·작업 공간·CUDA 문맥 포함)으로 고침 |
 | MapAnything | 작업 시작(LIVE) 전 현장 세팅 시간 실행(메모리 상주 `warm` 모델로 세팅 요청 즉시 초기 자세·점구름 추론 후 빠른 미리보기 맵 선출력 + 구역을 그리는 동안 전체 CPU 코어로 `texrecon` 백그라운드 완료, 일회성 `simai-bootstrap scene` 또는 분석 워커 `site_setup`·`static_reconstruct`, 4.3·5.3) | — |
 
-비율은 GPU 전체 메모리 대비다. 분석 워커는 시작할 때 Tier 0 + 분석 워커 ≤ 0.95, VLM ≤ 분석 워커를 검사하고 틀리면 시작하지 않는다.
+비율은 GPU 전체 메모리 대비다. 분석 워커는 시작할 때 Tier 0 + 분석 워커 ≤ 0.95, VLM ≤ 분석 워커를 검사하고 틀리면 시작하지 않는다. PPE 프로세스를 함께 띄우면 검사식은 Tier 0 + 분석 워커 + PPE ≤ 0.95 이고, 초기값(0.20 + 0.70 + 0.05)이 상한과 같아 여유가 없으므로 G0 실측으로 몫을 다시 정한다(17장).
 
 **Risk Engine 배치.** Risk Engine은 Python 라이브러리 하나로 구현하고 두 곳에 배포한다. 같은 규칙을 Java로 다시 구현하지 않는다.
 
@@ -58,8 +59,8 @@
 **이벤트 소유권과 outbox.** LIVE RiskEvent의 생명주기 정본은 RunPod Tier 0 서비스다.
 
 - Tier 0 서비스: RAISED → UPDATED → RESOLVED 전이를 확정한다. 전이마다 `risk_event_transition`(I1)을 이벤트 저널(Tier 0 저장 위치(3.12)에 추가만 하는 내구성 로그)에 기록하고 EC2로 보낸다. outbox는 별도 저장소가 아니라 저널에서 acked_offset 이후 구간이다(아래 저널 계약).
-- EC2: 영속 저장, 조회, 알림 전달, 운영자 조치(ACK·티켓), 화면용 projection을 맡고 전이를 새로 만들지 않는다. `(event_id, event_sequence)`로 중복을 제거하고 순서를 검증하며, 낮은 sequence가 늦게 오면 기록만 한다.
-- 운영자 ACK는 EC2 → Tier 0 서비스 → 노트북으로 전달해 현장 경보의 반복 소리를 멈춘다. 관리자(관제 화면)·반장(PWA)·현장 확인 버튼 중 누가 확인해도 소리를 멈추고, 점멸 표시는 해소까지 유지한다. 누가 확인했는지와 확인한 사람이 본 이벤트 상태(`event_sequence`, 확인 대상)는 저널에 남긴다. 확인 대상보다 뒤에 등급이 오른 경보는 그 확인으로 멈추지 않는다(3.10).
+- EC2: 영속 저장, 조회, 알림 전달, 운영자 조치(ACK), 화면용 projection을 맡고 전이를 새로 만들지 않는다. `(event_id, event_sequence)`로 중복을 제거하고 순서를 검증하며, 낮은 sequence가 늦게 오면 기록만 한다.
+- 운영자 ACK는 EC2 → Tier 0 서비스 → 노트북으로 전달해 현장 경보의 반복 소리를 멈춘다. 관리자(관제 화면)·현장 확인 버튼 중 누가 확인해도 소리를 멈추고, 점멸 표시는 해소까지 유지한다. 누가 확인했는지와 확인한 사람이 본 이벤트 상태(`event_sequence`, 확인 대상)는 저널에 남긴다. 확인 대상보다 뒤에 등급이 오른 경보는 그 확인으로 멈추지 않는다(3.10).
 - **재동기화 알림 규칙:** 원칙은 최종 상태를 확인한 뒤에만 알린다는 것이다. EC2 연결이 복구되면 EC2는 동기화 모드로 들어가 outbox 전이를 sequence 순서대로 받아 기록만 하고 실시간 알림은 보류한다. 빈 구간은 다시 요청한다(`journal_ack`). 재전송이 끝나면 Tier 0 서비스가 `event_state_snapshot`을 보내고, EC2는 이를 받은 뒤에만 동기화 완료로 전환한다. 그 시점에 여전히 활성이고 최근 유효 관측 근거가 있는 이벤트만 DELAYED_ACTIVE로 알리고, 해소된 이벤트는 감사 기록으로만 복원한다. 경과 시간만으로 알림을 억제하지 않는다.
 - **스냅샷 만들기.** 스냅샷은 연결마다 한 번, 그 연결에서 outbox 재전송을 마친 직후 같은 연결로 보낸다. 활성 목록은 추적기의 지금 상태가 아니라 이미 보낸 전이를 저널 순서로 접은 결과이고, `journal_offset` 은 그 연결에서 보낸 마지막 offset 이다. 만드는 사이 새 전이가 붙으면 싣지 않고 스냅샷 뒤에 실시간 전이로 보낸다. 재요청(`journal_ack`)으로 재전송 구간이 물러나면 만든 스냅샷을 버리고 재전송을 마친 뒤 다시 보낸다. 저널에 기록이 한 번도 없으면 `journal_offset` 을 null(‘아직 저널 기록이 없음’, offset 0 기록 하나를 반영한 0 과 다름)로, 활성 이벤트 없이 보낸다. 그래서 EC2 는 첫 위험 전에도 연결마다 동기화를 마친다. 저널에 보내지 않은 기록이 있으면 그 기록을 보낸 뒤 offset 이 있는 스냅샷을 만든다. 근거를 모르는 값(구성 버전, 활성 이벤트의 발생 시각)이 있으면 지어내지 않고 스냅샷을 미룬다(EC2 는 동기화 모드로 남는다).
 - 노트북 쪽 현장 경보의 재동기화는 3.10 을 따른다.
@@ -151,7 +152,7 @@ Tapo C110 4대, 동일 하드웨어 버전. 해상도·fps 는 2026-10-16 실측
 2. 실패 시 소형 공유기(권장): 카메라 4대를 공유기 Wi-Fi 에 붙이고, 노트북은 공유기에 유선 LAN 또는 USB 로 연결한다. 인터넷은 노트북의 싸피 Wi-Fi 로만 나간다(공유기 DHCP 는 기본 게이트웨이를 주지 않음, 18.1).
 3. 공유기가 어려우면 노트북 핫스팟 + USB Wi-Fi 동글.
 
-외부 연결은 노트북 → RunPod Tier 0(프레임 헤더를 붙인 압축 영상을 카메라별 TLS 연결로, 제어는 WebSocket. 12.7), 노트북 → EC2(하트비트·엔드포인트 조회·세팅 1단계 카메라 각도 헬퍼 `POST /api/devices/coverage-guides` HTTPS, 관제 화면 원격 CCTV 송출 WebSocket `wss://<EC2>/ws/devices/cctv` — 보는 관리자가 있을 때만 프레임 전송, v1.3 수정 46), RunPod Tier 0 → EC2(WebSocket), RunPod 분석 워커 → EC2(작업 가져가기, 12.5), EC2 → 클라이언트(HTTPS·WebSocket·Web Push)다. RunPod Pod는 UDP를 지원하지 않으므로 영상은 TCP로 보낸다. 모든 연결은 노트북·RunPod·EC2가 먼저 거는 방향이라 교실망으로 들어오는 연결은 없고, RunPod 로 들어오는 연결은 Tier 0 영상·제어 포트뿐이다. 업로드는 카메라 4대 고화질 Tier 0 상시 전송이 약 4.5 Mbps(실측 stream1 0.86\~1.1 Mbps/대)이고, LIVE 관제 중 원격 CCTV 시청(약 4 Mbps)을 동시에 켜면 합산 약 9 Mbps가 되므로 10 Mbps 이상을 확보하며 원격 송출 큐는 Tier 0 전송과 분리한다(3.3, 3.12).
+외부 연결은 노트북 → RunPod Tier 0(프레임 헤더를 붙인 압축 영상을 카메라별 TLS 연결로, 제어는 WebSocket. 12.7), 노트북 → EC2(하트비트·엔드포인트 조회·세팅 1단계 카메라 각도 헬퍼 `POST /api/devices/coverage-guides` HTTPS, 관제 화면 원격 CCTV 송출 WebSocket `wss://<EC2>/ws/devices/cctv` — 보는 관리자가 있을 때만 프레임 전송, v1.3 수정 46), RunPod Tier 0 → EC2(WebSocket), RunPod 분석 워커 → EC2(작업 가져가기, 12.5), EC2 → 클라이언트(HTTPS·WebSocket)다. RunPod Pod는 UDP를 지원하지 않으므로 영상은 TCP로 보낸다. 모든 연결은 노트북·RunPod·EC2가 먼저 거는 방향이라 교실망으로 들어오는 연결은 없고, RunPod 로 들어오는 연결은 Tier 0 영상·제어 포트뿐이다. 업로드는 카메라 4대 고화질 Tier 0 상시 전송이 약 4.5 Mbps(실측 stream1 0.86\~1.1 Mbps/대)이고, LIVE 관제 중 원격 CCTV 시청(약 4 Mbps)을 동시에 켜면 합산 약 9 Mbps가 되므로 10 Mbps 이상을 확보하며 원격 송출 큐는 Tier 0 전송과 분리한다(3.3, 3.12).
 
 ## 3.6 구성도
 
@@ -171,7 +172,6 @@ flowchart TB
   end
   subgraph Clients["클라이언트"]
     V["Three.js 뷰어"]
-    P["반장 PWA"]
   end
   GW -->|"I0 영상 (TCP, TLS)"| T0
   T0 -->|"I0 local_alert"| GW
@@ -180,10 +180,9 @@ flowchart TB
   AW -->|"I5 작업 가져가기·결과"| EC2
   AW -->|"I6 아바타 스트림 (wss)"| EC2
   EC2 -->|I2 STOMP| V
-  EC2 -->|I3 Web Push| P
 ```
 
-노트북은 영상을 중계하고 현장 경보를 울리며, RunPod Tier 0 서비스가 관측부터 판정까지 처리해 결과만 EC2로 보낸다. 분석 워커는 EC2에서 무거운 분석 작업을 가져가 처리하고(I5) 아바타 포즈·자산 스트림을 별도 연결로 보내며(I6), EC2는 결과를 뷰어·PWA로 전달한다. 워치(I4)는 확장이다(부록 C).
+노트북은 영상을 중계하고 현장 경보를 울리며, RunPod Tier 0 서비스가 관측부터 판정까지 처리해 결과만 EC2로 보낸다. 분석 워커는 EC2에서 무거운 분석 작업을 가져가 처리하고(I5) 아바타 포즈·자산 스트림을 별도 연결로 보내며(I6), EC2는 결과를 뷰어로 전달한다. 워치(I4)는 확장이다(부록 C).
 
 ## 3.7 데이터 흐름: 카메라에서 Three.js까지
 
@@ -222,7 +221,7 @@ flowchart TB
 1. 노트북은 RTSP 프레임에 추정 촬영 시각(3.9)을 붙여 RunPod Tier 0 서비스로 중계한다. 노트북은 GPU 작업을 하지 않는다.
 2. Tier 0 서비스는 YOLO26x-pose로 사람과 2D keypoint를 찾고, 카메라별 트랙을 World ID로 묶은 뒤 시간 보간과 삼각측량으로 World XYZ와 3D 골격을 만든다. 이 값이 위험 판단의 위치 정본이다.
 3. 같은 서비스의 LIVE Risk Engine이 규칙을 판정하고, 현장 경보는 `local_alert`로 노트북에 바로 보낸다. 이벤트 전이는 저널·outbox를 거쳐 EC2로 간다.
-4. EC2는 `world_state`와 이벤트 전이를 받아 생명주기를 갱신하고 Spatial DB에 기록한 뒤 STOMP 토픽 `/topic/world`, `/topic/events`, `/topic/health`(12.4)로 발행한다. PWA 알림도 이때 나간다.
+4. EC2는 `world_state`와 이벤트 전이를 받아 생명주기를 갱신하고 Spatial DB에 기록한 뒤 STOMP 토픽 `/topic/world`, `/topic/events`, `/topic/health`(12.4)로 발행한다.
 5. 브라우저는 토픽을 구독해 World 좌표를 Three.js 좌표 (x, z, −y)로 바꾼 뒤 아바타·구역·경보를 갱신해 렌더링한다. 변환은 뷰어 어댑터 한 곳에서만 한다.
 6. 정적 배경과 현장 세팅은 작업 시작 전 현장 세팅 화면에서 시작한다: 깨끗한 배경을 모은 뒤 상주 MapAnything 과 인접 쌍 배경 특징점 공동 번들 조정(V2)으로 보정·World 를 확정하고, 빠른 3D 미리보기 맵과 VLM 위험 구역 초안을 먼저 내보내 관리자가 곧바로 구역을 그리게 한다(목표 약 1분 30초, 확인 필요). 관리자가 구역을 편집·발행하는 동안 백그라운드에서 `texrecon` 정밀 텍스처 입히기를 마쳐 glTF 를 객체 저장소에 올리고 뷰어 Scene 을 교체한다(LIVE 관제 시작 전이므로 Pod 의 전체 CPU 코어를 사용). 이 경로의 모델·후처리·품질은 EXP-01에서 선행 검증한다.
 7. 인체 메시/외형은 EXP-02에서 Fast SAM 3D Body 기반 비동기 파이프라인으로 검증한다. World ID·timestamp·calibration_version·scene_version을 기준으로 Tier 0 상태에 맞춰 렌더링만 보강하며, 안전 판정 좌표·이벤트를 수정하지 않는다.
@@ -257,11 +256,9 @@ flowchart TB
 | EC2 | RAG 색인·지식 그래프 | PostgreSQL(`rag_node`·`rag_edge` 건설안전 법령 지식 그래프, `pgvector` 벡터 색인 + `pg_trgm` 키워드 색인, 5.4·11.3, v1.3 수정 49) | 확정 |
 | 자체 호스팅 | 임베딩 | `Qwen/Qwen3-Embedding-0.6B` dense 1024차원, float32, L2 정규화, cosine. 문서·질의에 같은 고정 revision·설정을 쓰고, 문서 임베딩 입력은 `"[법령명 조문(제목)] 본문"` 형식. 법령 그래프 노드(`rag_node`)와 표준 질의 템플릿(`rag_query_template`)은 시드 적재 시 사전 임베딩하고, 비정형 실시간 질의는 EC2 Python 컨테이너 CPU 에서 처리(v1.3 수정 49, 이전 `BAAI/bge-m3` 대체) | 확정 |
 | EC2 | 계획·리플레이 판정·보고서 | Risk Engine Python 컨테이너(`deploy/risk-engine`), FastAPI 내부 API(compose 내부망 HTTP/JSON, 공개 포트 없음, PLANNED 판정 및 TBM·일일 보고서 생성, 5.4·12.2) | 확정(컨테이너), 기본안(FastAPI) |
-| EC2 | 알림 | Web Push(VAPID) | 확정 |
 | EC2 | 배포 | Docker Compose, Nginx + Let’s Encrypt | 기본안 |
 | 저장소 | 객체 저장소 | S3 또는 Lightsail 버킷. 클립 삭제는 EC2 삭제 작업(수명 주기 규칙은 클립에 쓰지 않음, 11.5) | 기본안 |
 | 브라우저 | 뷰어 | React + Three.js(React Three Fiber), STOMP 클라이언트 | 기본안 |
-| 휴대폰 | 반장 PWA | React PWA, Service Worker, Web Push | 기본안 |
 
 ## 3.9 시계 동기화
 
@@ -270,7 +267,7 @@ flowchart TB
 - 노트북과 EC2는 인터넷 NTP로 UTC에 맞춘다.
 - 노트북을 교실망의 NTP 서버로 두어 카메라 4대가 노트북을 시각 기준으로 쓰게 하는 구성은, G0 에서 `CAMERA_STREAM`을 쓰기로 정할 때까지 보류한다. 기본값 `RECEIVE_ESTIMATED`는 카메라 자체 시계를 쓰지 않기 때문이다.
 - 촬영 시각은 카메라 스트림의 시각이 신뢰할 만하면 그것을, 아니면 노트북 수신 시각에서 추정한 값을 쓴다. C110은 공유기 10분 측정에서 RTCP Sender Report 의 카메라 시각과 RTP 시계의 대응이 일관돼 `CAMERA_STREAM` 후보지만(3.3), 실제 노출 시각과의 차이를 확인하기 전까지 기본값은 `RECEIVE_ESTIMATED`다. `CAMERA_STREAM`으로 쓸 수 있는지는 G0 LED 시험으로 판단한다. 카메라 간 오프셋은 `health`의 `sync_offset_ms`로 계속 측정한다.
-- PWA·뷰어의 시각은 EC2 기준으로 표시한다.
+- 뷰어의 시각은 EC2 기준으로 표시한다.
 
 **촬영 시각 추정(RECEIVE_ESTIMATED).** 수신 시각을 그대로 쓰면 Wi-Fi 도착 흔들림이 그대로 들어가므로 다음처럼 추정한다.
 
@@ -316,13 +313,13 @@ MVP의 현장 경보는 노트북 로컬 경보(1차)와 관제 화면 경보(2�
 - Tier 0 가 재시작하면 활성 이벤트를 복원하기 전에는 목록을 보내지 않는다. 복원 전 빈 목록은 실제 경보를 모두 내리기 때문이다.
 - 계약: `health.active_site_alerts`(항목은 `event_id`, `event_sequence`, `source`=LIVE, `acknowledged`, `severity`=CRITICAL·HIGH, `summary`)와 목록을 만든 시각 `active_site_alerts_as_of`. 노트북 제어 채널이 (재)접속되면 Tier 0 는 1Hz 주기를 기다리지 않고 바로 `health` 를 보낸다. 빈 배열은 ‘활성 현장 경보 없음’이고, 이 필드가 없는 `health`(이전 버전 송신 측)로는 경보를 끄지 않는다. 노트북은 자기 소리·표시 상태를 `laptop_heartbeat.alarm` 으로 다시 알린다.
 
-**시험 알림.** 시작 절차의 소리·푸시 확인(18.1·18.2)은 RiskEvent 를 만들지 않는 별도 경로로 한다. 노트북은 로컬 시험음을 재생하고, 반장 PWA 는 `POST /api/push/test`로 시험 푸시를 받는다. 모든 시험 알림에는 “시험”을 표시한다. LIVE 출처만 실제 알림으로 나간다는 규칙(2장 원칙 10)을 지키기 위해서다.
+**시험 알림.** 시작 절차의 소리 확인(18.1·18.2)은 RiskEvent 를 만들지 않는 별도 경로로 한다. 노트북은 로컬 시험음을 재생한다. 모든 시험 알림에는 “시험”을 표시한다. LIVE 출처만 실제 알림으로 나간다는 규칙(2장 원칙 10)을 지키기 위해서다.
 
-**점검·리허설.** 위험 이벤트를 만드는 점검·리허설 동작(구역 진입·단상 등 장면 연습)은 녹화한 뒤 REPLAY 로 돌리고, LIVE 판정은 실제 관제와 라이브 시연(시험 프로파일, 부록 E.1)에만 쓴다. 망·접속·경보 재동기화 같은 연결 점검과 현장 세팅 촬영은 LIVE 연결로 하되 소리·푸시 확인은 위 시험 알림 경로로 한다. 운영 규칙으로 LIVE 를 돌리며 장면을 연습하면 점검 이벤트가 진짜 이벤트와 구별되지 않고 실제 알림 채널(노트북 로컬 경보·반장 PWA 푸시)로도 나가기 때문이다(2장 원칙 10, 11.4). 시연 높이 규칙은 시험 프로파일(규칙 버전 +1000, 7.4)을 쓴다(시연·리허설 시나리오는 부록 E.1·E.4).
+**점검·리허설.** 위험 이벤트를 만드는 점검·리허설 동작(구역 진입·단상 등 장면 연습)은 녹화한 뒤 REPLAY 로 돌리고, LIVE 판정은 실제 관제와 라이브 시연(시험 프로파일, 부록 E.1)에만 쓴다. 망·접속·경보 재동기화 같은 연결 점검과 현장 세팅 촬영은 LIVE 연결로 하되 소리 확인은 위 시험 알림 경로로 한다. 운영 규칙으로 LIVE 를 돌리며 장면을 연습하면 점검 이벤트가 진짜 이벤트와 구별되지 않고 실제 알림 채널(노트북 로컬 경보)로도 나가기 때문이다(2장 원칙 10, 11.4). 시연 높이 규칙은 시험 프로파일(규칙 버전 +1000, 7.4)을 쓴다(시연·리허설 시나리오는 부록 E.1·E.4).
 
 | 상황 | LIVE 판정 | 현장 경보 | 노트북 표시 |
 |---|---|---|---|
-| EC2만 단절 | 계속 | 정상 | “원격 관제 장애” (PWA·관제 화면 전달 지연) |
+| EC2만 단절 | 계속 | 정상 | “원격 관제 장애” (관제 화면 전달 지연) |
 | RunPod Tier 0 중단 | 중단 | 불가 | “관제 중단” (위험 감시 중단) |
 | 노트북 → RunPod 영상 단절 | 유효 관측 중단 | 불가 | “관제 중단” (위험 감시 불가) |
 | 분석 워커 중단 | 계속 | 정상 | “AI 분석 지연” (작게 표시) |
@@ -344,7 +341,7 @@ MVP의 현장 경보는 노트북 로컬 경보(1차)와 관제 화면 경보(2�
 **확인 대상과 경보 단계.** 확인은 확인한 사람이 그때 본 이벤트 상태에 대한 것이다. 등급이 오른 뒤 늦게 도착한 옛 확인이 올라간 경보를 끄지 않게 다음을 규칙으로 둔다.
 
 - 경보 단계는 그 이벤트의 마지막 발생·등급 상향·해소 후 재개가 연다. 현장 경보의 반복 소리는 지금 경보 단계를 연 상태 이후를 대상으로 한 확인으로만 멈춘다.
-- `site_ack`·`event_ack` 는 누를 때 화면·푸시에 보이던 이벤트의 `event_sequence`(확인 대상)를 싣는다. EC2 는 관리자·반장 확인을 Tier 0 로 보낼 때 그 사람이 본 sequence(EC2 가 받은 마지막 전이 또는 푸시의 sequence)를 채운다. 확인 대상이 없는 `event_ack`(이전 EC2)는 받되 기록하는 시점의 상태를 대상으로 보고 경고를 남긴다. 노트북이 보낸 대상이 지금 sequence 보다 크면 Tier 0 는 지금 값으로 줄인다.
+- `site_ack`·`event_ack` 는 누를 때 화면에 보이던 이벤트의 `event_sequence`(확인 대상)를 싣는다. EC2 는 관리자 확인을 Tier 0 로 보낼 때 그 사람이 본 sequence(EC2 가 받은 마지막 전이의 sequence)를 채운다. 확인 대상이 없는 `event_ack`(이전 EC2)는 받되 기록하는 시점의 상태를 대상으로 보고 경고를 남긴다. 노트북이 보낸 대상이 지금 sequence 보다 크면 Tier 0 는 지금 값으로 줄인다.
 - Tier 0 는 확인을 대상과 함께 저널에 남기고, `alarm_stop.event_sequence` 에 확인 전이 자신의 sequence 가 아니라 확인 대상을 돌려준다. 노트북은 경보마다 지금 경보 단계를 연 sequence 를 기억하고, 대상이 그보다 앞인 `alarm_stop` 으로는 소리를 멈추지 않는다.
 - `local_alert.acknowledged` 와 `health.active_site_alerts[].acknowledged` 도 같은 기준이다: 지금 경보 단계 이후 상태를 대상으로 한 확인만 센다. 상향 전 상태에 대한 확인은 저널에 남지만 이 값은 false 다.
 - 등급이 오르거나 해소 후 재개되면 이전 확인과 상관없이 다시 울린다(재경보). 재동기화 목록으로 확인을 풀 때 노트북은 경보 단계 시작을 그 목록의 sequence 로 올린다(애매하면 소리를 내는 쪽).
@@ -376,14 +373,15 @@ GPU 를 쓰는 곳(실행 사이트)과 지역은 고정하지 않는다(2026-10
 
 1. GPU 감지: 세대(`sm_XX`)·메모리·드라이버를 기록하고, 최소 사양 미만이면 멈춘다.
 2. 저장 위치 선택: 지정값(`SIMAI_ROOT`) → 볼륨·블록 스토리지 → 컨테이너 디스크. 남은 용량 하한을 확인한다.
-3. 가중치: 저장소의 가중치 목록(`deploy/weights.json`, 원본·sha256)에서 실행 모드·이미지가 정한 묶음(Tier 0 `tier0`, VLM `vlm`, 아바타 루프 `avatar`, HMR 실험 `exp02`, MapAnything·사람 분할 `static`)대로 받고 sha256 이 맞을 때만 제자리에 둔다(대형 파일은 이어받기와 항목별 잠금을 쓰고, `tier0` 밖 묶음은 검증 스탬프로 재시작 때 재해시를 건너뛴다). 목록에 해시가 없거나 받은 파일·있던 파일의 해시가 다르면 시작하지 않는다(있던 파일은 지우거나 덮어쓰지 않는다). 묶음에 해시가 빈 항목이 하나라도 있으면 아무것도 받기 전에 멈춘다.
+3. 가중치: 저장소의 가중치 목록(`deploy/weights.json`, 원본·sha256)에서 실행 모드·이미지가 정한 묶음(Tier 0 `tier0`, VLM `vlm`, 아바타 루프 `avatar`, HMR 실험 `exp02`, MapAnything·사람 분할 `static`, PPE `ppe`. `ppe` 묶음은 채택한 체크포인트의 원본·sha256 이 정해지면 더한다, 19.1)대로 받고 sha256 이 맞을 때만 제자리에 둔다(대형 파일은 이어받기와 항목별 잠금을 쓰고, `tier0` 밖 묶음은 검증 스탬프로 재시작 때 재해시를 건너뛴다). 목록에 해시가 없거나 받은 파일·있던 파일의 해시가 다르면 시작하지 않는다(있던 파일은 지우거나 덮어쓰지 않는다). 묶음에 해시가 빈 항목이 하나라도 있으면 아무것도 받기 전에 멈춘다.
 4. Tier 0 실행과 감시: Tier 0 시작 경로는 시작 잠금을 쥐고, 실행 중인 장면 준비 작업이 있으면 멈추기를 기다려 남은 장면 프로세스 그룹을 직접 회수(최악 약 40초)한 뒤 TensorRT 엔진 준비(아래 GPU별 엔진) → Tier 0 로 넘어간다. 회수하지 못하거나 신원을 확인하지 못한 장면 작업이 남아도 Tier 0 가용성을 우선해 막지 않고 경고 로그와 부트스트랩 기록(종료 코드 75)을 남긴 뒤 시작한다(의도된 정책). 통합 이미지의 기본 감시 모드(`SIMAI_SERVICES=tier0,vllm,worker`, 아바타 루프를 함께 띄울 때는 `tier0,vllm,worker,avatar`)는 `tier0` 가중치만 먼저 확인해 Tier 0 를 띄우고, 이번에 띄운 Tier 0 의 표시 파일(`phase=running`·`reserve.state=OK`)이 확인된 뒤에 워커 가중치(`vlm`, `avatar` 선택 시 `avatar`) → vLLM 서버(`/health` 200) → 분석 워커 → (선택 시) 상시 아바타 루프(`services/avatar`) 순서로 각각 새 프로세스 그룹으로 띄워 감시한다(GPU 가 48GB급 미만이면 Tier 0 단독, 죽은 vLLM·워커·아바타는 그룹 SIGKILL 정리 후 백오프 재기동하며 Tier 0 는 감시자가 재기동하지 않음, 종료는 아바타 → 워커 → vLLM → Tier 0 순서). 감시 프로세스가 띄우는 vLLM 의 기본값은 `--max-model-len 32768`(`SIMAI_WORKER_VLLM_MAX_MODEL_LEN`. 모델 기본 262,144 토큰은 한 요청에 KV 36 GiB 가 필요해 0.55 에서 남는 KV 23.99 GiB 를 넘어 기동하지 못한다)과 `VLLM_USE_FLASHINFER_SAMPLER=0`(runtime 이미지에 nvcc 가 없어 FlashInfer 샘플러 JIT 컴파일이 실패한다, 샘플러만 PyTorch 구현으로 바뀜)이다. vLLM·워커·아바타의 CPU 묶기(`SIMAI_SIDECAR_CPUS=auto`)는 쓸 수 있는 vCPU 수 n = min(affinity 개수, cgroup CPU 할당량의 올림)을 기준으로, n 이 8 이상이면 affinity 목록의 뒤쪽 n//2 개에 묶고 8 미만이면 묶지 않는다(3차 GPU 세션 Pod 는 affinity 224개·cgroup 상한 23.8 vCPU 였고, affinity 개수만 보고 뒤쪽 112개에 묶었을 때 제한 효과가 없었다). Tier 0 는 묶지 않는다(`docs/design/unified-env.md`, `docs/design/hmr-avatar-loop.md`, `deploy/README.md`). 검증 큐 실행은 엔진을 미리 만들지 않고 바로 큐로 넘긴다(큐의 엔진 항목이 첫 빌드 시간을 재기 때문이다. 미리 만들면 캐시 재사용 측정이 된다).
 5. 장면 준비 모드(`simai-bootstrap scene <명령...>`)와 현장 세팅·배경 복원(`site_setup`·`static_reconstruct`): 일회성 초기 추정(`simai-bootstrap scene`)은 상시 서비스(`SIMAI_SERVICES`)와 섞지 않고 이 모드로 실행하며(`SIMAI_SERVICES` 에 `scene` 을 섞으면 사용법 오류 종료 코드 64), `static` 가중치를 받기 전과 명령 실행 직전에 Tier 0 LIVE 표시 파일(30초 안에 갱신 또는 확인 불가)이나 GPU 사용 중 메모리(1024 MiB 초과 또는 실행 직전 조회 실패)가 있으면 종료 코드 75 로 거부하고, 통과하면 새 프로세스 그룹 자식으로 실행하며 실행 중 Tier 0 가 시작하면 장면 프로세스 그룹을 종료(SIGTERM → 10초 → SIGKILL, 종료 코드 75)한다. 작업 시작 전 현장 세팅(`site_setup`, 4.3)과 정적 3D 배경 복원·텍스처 메시 굽기(`static_reconstruct`, 5.3)에서는 세팅 대기 시간을 약 1분 30초 안쪽(확인 필요)으로 줄이기 위해 MapAnything 모델을 메모리에 상주(warm)시켜 가중치 재로드 지연을 없애고, 빠른 미리보기 맵과 VLM 구역 초안을 먼저 내보낸 뒤 관리자가 구역을 그리는 동안(아직 LIVE 관제 시작 전이므로) Pod 의 전체 CPU 코어를 사용하여 `texrecon` 정밀 텍스처 굽기를 백그라운드에서 마친다. 만약 백그라운드 텍스처 굽기가 끝나기 전에 관리자가 작업 시작(LIVE)을 누르면 Tier 0 실시간 관제 가용성을 우선해 백그라운드 후처리 자원을 즉시 회수하고 빠른 미리보기 맵으로 먼저 관제를 시작한다(`docs/design/site-setup-pipeline.md`, `docs/design/unified-env.md`, `docs/design/worker-static-reconstruct.md`, `deploy/README.md`).
+6. 로비 통합 기동·기동 전 점검·관제 뒤 배경 복원: `simai-bootstrap lobby` 는 엔드포인트·Tier 0 설정을 구성한 뒤 하나의 감시 프로세스로 `tier0,vllm,worker,avatar`(아바타 루프 기본 포함)를 띄우고 Tier 0 종료 코드로 끝난다. 이 모드는 `--services` 만 따르고 `SIMAI_SERVICES` 는 보지 않으며, 워커 ID 는 `--worker-id` → `SIMAI_WORKER_ID` → 토큰 파일 이름 순서로 정한다. `simai-bootstrap preflight` 는 `tier0,avatar,static,vlm` 가중치·GPU 예산·`texrecon`·`open3d`·`ultralytics` 를 한 번에 점검하고 하나라도 실패하면 비-0 으로 끝난다. `simai-bootstrap after-live` 는 로비 세션이 끝난 뒤 같은 작업 폴더의 상태로 분석 워커만 다시 띄워 사람 지운 배경 묶음을 자동 제출한다(5.3). Tier 0 정상 종료 기록(`<표시 파일>.stopped`)이 없거나 표시 파일이 남아 있으면 종료 코드 75 로 거부한다(`deploy/README.md`, `deploy/scripts/simai_bootstrap.py`).
 
 - SSH 는 키 인증만 받는다. 공개키는 세 방식(RunPod 계정 키, Vast 계정 키, 키 파일 지정) 중 하나로 받고, VM 처럼 호스트 SSH 로 들어가는 곳에서는 컨테이너 SSH 를 끈다.
 - HF 토큰은 환경 변수 `HF_TOKEN` 으로만 받는다. 시작 절차가 가중치를 받을 때만 쓰고 Tier 0·워커·장면 명령·큐 어느 자식에도 넘기지 않고 환경에서 지운다. 기록에는 있는지 여부만 남긴다.
 
-**연결.** 노트북(게이트웨이)과 GPU 인스턴스 사이는 Tailscale을 쓰지 않는다. SSAFY망은 SSH·임의 포트·UDP를 막아 Tailscale이 DERP 중계(토론토)를 탔고, 업로드가 약 2.4 Mbps로 막혔다.
+**연결.** 노트북(게이트웨이)과 GPU 인스턴스 사이는 Tailscale을 쓰지 않는다. SSAFY망은 일반 외부 SSH·임의 포트·UDP를 막아(팀 EC2 `simai.live:22` 는 예외, 아래 SSAFY 망 기본 경로) Tailscale이 DERP 중계(토론토)를 탔고, 업로드가 약 2.4 Mbps로 막혔다.
 
 - 영상(I0): 인스턴스 공개 TCP 포트로 Direct TCP. Tier 0가 TLS를 직접 종료하고 노트북 기기 토큰으로 인증하며, 노트북은 Tier 0 공개키를 고정해 서버를 확인한다(12.7). 카메라마다 연결을 따로 연다. 한 연결을 카메라 4대가 공유하면 한 카메라의 지연이 다른 카메라까지 막으므로 Pod 까지 이어지는 단일 SSH 터널로 보내지 않는다.
   - SSAFY 망(시연장 포함) 기본 = EC2(`simai.live:22`) SSH 경유 + Pod 공개 포트 Direct TCP: 노트북에서 `ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 simai-ec2 -L 127.0.0.1:17000:<Pod IP>:<17000 매핑> -L 127.0.0.1:17001:<Pod IP>:<17001 매핑>` 으로 로컬 포워드를 연다. 노트북→EC2 구간(짧음, 약 5 ms)만 SSH 연결 하나를 같이 쓰고 EC2→Pod 구간(약 41 ms)은 포워드된 연결마다 별도 TCP 연결이 열리므로 12.2 “카메라별 독립 연결”의 목적(긴 구간에서 한 카메라 손실이 다른 카메라를 막지 않음)을 지킨다. TLS 는 Tier 0 가 직접 종료하고 기기 토큰·공개키 고정(12.7, 14)도 그대로라 EC2 는 영상 내용을 볼 수 없다. RunPod 템플릿에는 TCP 17000·17001 을 노출하고(매핑된 바깥 포트는 콘솔 또는 Pod 의 `RUNPOD_TCP_PORT_17000`·`RUNPOD_TCP_PORT_17001`), Tier 0 는 기본 `0.0.0.0` 에서 듣는다(`SIMAI_TIER0_CONTROL_LISTEN_HOST`). Tier 0 가 EC2 에 알리는 엔드포인트 host 는 `127.0.0.1`(노트북 로컬 포워드)이고 relay·현장 경보 단말은 그 값을 그대로 쓴다. 집 등 막히지 않은 망은 EC2 를 빼고 Pod 공개 IP·포트로 바로 붙어도 된다.
@@ -415,7 +413,7 @@ GPU 를 쓰는 곳(실행 사이트)과 지역은 고정하지 않는다(2026-10
 
 **저장소 규칙.**
 
-- Tier 0 저장 위치(`$SIMAI_ROOT`)는 시작 절차가 고른다. 이벤트 저널, 체크포인트, `acked_offset`, 구성 묶음 보관본, 2D 관측 Parquet(11.2), 사람 지운 배경 묶음(`state/clean-background/`, 5.3), 아바타 루프 입력 공유 파일(`state/avatar-input.npz`, 5.6), TensorRT 엔진 캐시가 그 아래에 있고, 비공개 폴더 `.simai-private/` 는 그 옆(`$SIMAI_ROOT/../.simai-private/`, 볼륨이면 `/workspace/.simai-private/`)에 둔다(구조는 19.1).
+- Tier 0 저장 위치(`$SIMAI_ROOT`)는 시작 절차가 고른다. 이벤트 저널, 체크포인트, `acked_offset`, 구성 묶음 보관본, 2D 관측 Parquet(11.2), 사람 지운 배경 묶음(`state/clean-background/`, 5.3), 아바타 루프 입력 공유 파일의 폴백 위치(`state/avatar-input.npz`, 기본은 `/dev/shm`, 5.6), TensorRT 엔진 캐시가 그 아래에 있고, 비공개 폴더 `.simai-private/` 는 그 옆(`$SIMAI_ROOT/../.simai-private/`, 볼륨이면 `/workspace/.simai-private/`)에 둔다(구조는 19.1).
 - 재시작 복구(3.2)는 저장 위치가 남아 있는 동안만 성립한다. 컨테이너 디스크는 프로세스 재시작에는 남지만 인스턴스를 멈추거나 지우거나 재설정하면 사라진다. 그래서 LIVE 관제(시연 준비·리허설·시연)는 인스턴스를 다시 켜도 남는 디스크에서 한다. 컨테이너 디스크 위의 저널·2D 관측은 시험 데이터다.
 - 저장 위치는 저널 계약(3.2)이 쓰는 기능(추가 전용 쓰기 + fsync, 원자적 rename, 파일 잠금)을 지켜야 한다. 시연 저장 위치에서 강제 종료 복구 시험(G3)으로 확인한다. RunPod 글로벌 볼륨(베타)은 쓰지 않는다(16장).
 - Python·CUDA·Torch 환경은 모델별 Docker 이미지로 만들고 저장 위치에 설치하지 않는다. 저장 위치에는 가중치, 데이터, 실험 산출물, TensorRT 엔진 캐시만 둔다. E-GATE-0 때 만든 볼륨 환경은 예외였고 새로 만들지 않는다.

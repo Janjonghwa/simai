@@ -24,14 +24,14 @@
 | UNCALIBRATED / PROVISIONAL / CALIBRATED / DRIFTED | 보정 상태(4.4) |
 | RAISED / UPDATED / RESOLVED | RiskEvent 생명주기 |
 | VERIFIED / UNVERIFIABLE | 해소 여부를 관측으로 확인할 수 있는지 |
-| ACKNOWLEDGED | 운영자(관리자·반장·현장 확인 버튼)가 경보를 확인했다는 속성(해소 아님) |
+| ACKNOWLEDGED | 운영자(관리자·현장 확인 버튼)가 경보를 확인했다는 속성(해소 아님) |
 | severity / confidence | 위험 정도 / 증거 신뢰도. 서로 독립 |
 | “확인 필요” | 신뢰도가 낮은 경보에 붙는 표시. `confidence_reasons[]`가 비어 있지 않은 상태. 등급은 유지(7.1). R1 신규 발생은 위치가 확실할 때만 내므로 붙지 않고 이미 열린 R1 이벤트의 유지 판정과 R2\~R5 에만 붙는다 |
 | confidence_reasons | “확인 필요”의 이유 목록: Z_UNKNOWN, PREDICTED, PROVISIONAL_CALIB, SINGLE_VIEW, JOINT_UNCERTAIN, IDENTITY_UNCERTAIN(7.1) |
 | 발생 지속 조건 | 이벤트 발생 전 조건이 짧게 이어져야 하는 규칙. 초기값 10Hz 3프레임 중 2프레임(6.4) |
 | 이벤트 재개 | 같은 사람·같은 구역이 해소 후 10초 안에 다시 걸리면 새 이벤트 대신 기존 이벤트를 다시 활성으로 돌리는 것(6.4) |
 | LIVE / PLANNED / REPLAY / WHAT_IF | Risk Engine 입력 출처. LIVE만 실제 알림 가능 |
-| 시험 알림 | 노트북 로컬 시험음과 시험 푸시(`POST /api/push/test`). RiskEvent 가 아니며 “시험”을 표시(3.10) |
+| 시험 알림 | 노트북 로컬 시험음. RiskEvent 가 아니며 “시험”을 표시(3.10) |
 | local_alert | Tier 0 가 CRITICAL·HIGH 판정 직후 노트북으로 바로 보내는 현장 경보 메시지(I0) |
 | 노트북 로컬 경보 | MVP 현장 경보의 1차 채널. Tier 0 의 `local_alert`로 노트북 스피커·화면이 울림(3.10) |
 | 관제 화면 경보 | MVP 현장 경보의 2차 채널. EC2 를 거쳐 관제 화면에서 소리·점멸(3.10) |
@@ -80,7 +80,7 @@
 | Tier 0 저장 위치 | Tier 0 저널·체크포인트·구성 묶음 보관본·2D 관측·엔진 캐시를 두는 디렉터리(`$SIMAI_ROOT`, 비공개 폴더는 그 옆 `../.simai-private/`). 시작 절차가 볼륨·블록 스토리지·컨테이너 디스크 중에서 고른다. 재시작 복구는 이 위치가 남아 있는 동안만 성립한다(3.12, 19.1) |
 | 시작 절차(`simai-bootstrap`) | GPU 이미지의 기본 진입점. 실행 사이트와 상관없이 GPU 감지 → 저장 위치 선택 → 가중치 받기·sha256 확인 → (Tier 0 실행이면) 엔진 준비 → Tier 0 순서로 준비하고(검증 큐 실행은 엔진을 미리 만들지 않고 큐가 첫 빌드를 잰다), 하나라도 모르면 시작하지 않는다(3.12) |
 | queue_wait_ms / frame_age_ms | 추론 대기열에서 기다린 시간 / 촬영부터 추론 시점까지 전체 경과 시간 |
-| 원격 관제 장애 | EC2만 끊긴 상태의 노트북 표시. 판정과 현장 경보는 정상이고 PWA·관제 화면 전달만 지연 |
+| 원격 관제 장애 | EC2만 끊긴 상태의 노트북 표시. 판정과 현장 경보는 정상이고 관제 화면 전달만 지연 |
 | GROUND_FOOTPRINT / VOLUME_3D | 구역 판정 유형. 바닥 다각형만 보는 구역 / 높이 범위까지 보는 입체 구역(8.2) |
 | 이벤트 저널 | 모든 이벤트 전이를 추가만 하는 내구성 로그. 재시작 복구의 정본이며 min(acked_offset, last_applied_journal_offset) 이전만 정리. outbox는 acked_offset 이후 구간 |
 | journal_offset / acked_offset | 저널 전체의 전역 단조 증가 위치 / EC2가 받았다고 확인한 마지막 저널 위치. 이벤트별 event_sequence와 다름 |
