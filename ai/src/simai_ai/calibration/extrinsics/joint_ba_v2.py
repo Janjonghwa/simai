@@ -1484,12 +1484,18 @@ def _derive_new_calibration_version(
     base_version: str,
     R: np.ndarray,
     cameras: Sequence[str],
+    content_digest: str | None = None,
 ) -> str:
+    """새 보정 버전 = 이전 버전 + 회전 + (있으면) 문서 내용 해시(content_hash). 내용을 넣으면 같은 버전이 곧 같은 보정 내용이다.
+
+    재시도 세션이 같은 버전에 다른 내용(중심·재투영 지표 등)을 올려 서버가 거절하는 일을 막는다(S15P31A101-473)."""
     digest = hashlib.sha256()
     digest.update(base_version.encode("utf-8"))
     for idx, cid in enumerate(cameras):
         digest.update(cid.encode("utf-8"))
         digest.update(np.asarray(R[idx], dtype=np.float64).round(8).tobytes())
+    if content_digest is not None:
+        digest.update(content_digest.encode("utf-8"))
     short_hash = digest.hexdigest()[:8]
     return f"{base_version}-jba2-{short_hash}"[:160]
 
@@ -1681,14 +1687,8 @@ def run_stage_a_rotation_ba(
     # Construct immutable new CalibrationProvider document (never overwriting input).
     new_doc = copy.deepcopy(doc_in)
     base_version = str(doc_in["calibration_version"])
-    resolved_version = (
-        new_calibration_version
-        if new_calibration_version is not None
-        else _derive_new_calibration_version(base_version, R_a, cam_ids)
-    )
-    if resolved_version == base_version:
-        resolved_version = _derive_new_calibration_version(base_version, R_a, cam_ids)
-    new_doc["calibration_version"] = resolved_version
+    # 버전은 내용(content_hash, 버전·생성 시각 제외)을 채운 뒤 정한다. 아래 자리값은 content_hash 에 들어가지 않는다
+    new_doc["calibration_version"] = base_version
     if created_at_ms is not None:
         new_doc["created_at"] = int(created_at_ms)
 
@@ -1711,6 +1711,12 @@ def run_stage_a_rotation_ba(
             }
 
     new_doc["content_hash"] = content_hash(new_doc)
+    resolved_version = (
+        new_calibration_version
+        if new_calibration_version is not None and new_calibration_version != base_version
+        else _derive_new_calibration_version(base_version, R_a, cam_ids, new_doc["content_hash"])
+    )
+    new_doc["calibration_version"] = resolved_version
     errs = schema_errors(new_doc, "calibration")
     if errs:
         raise StageAError(

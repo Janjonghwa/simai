@@ -7,6 +7,8 @@
     simai-bootstrap lobby [로비 인자...]        로비 LIVE 통합 기동: endpoint.json·tier0-live.json·pod.jsonl 준비 → 단일 Supervisor 로
                                                 Tier 0·vLLM·worker·avatar 를 한 번에 띄우고 Tier 0 종료 코드 그대로 끝난다. 프로세스는 --services(기본 넷 다)만 따르고
                                                 SIMAI_SERVICES 는 보지 않는다. 워커 ID 는 --worker-id → SIMAI_WORKER_ID → 토큰 파일 이름(worker-s10.token → worker-s10)
+                                                모든 프로세스 환경에 SIMAI_TIER0_MARKER=<work>/state/tier0.live·SIMAI_STATE_DIR=<work>/state 를 넣는다
+                                                (워커의 site_setup 배경 묶음·활성 보정·scene_regenerate 가 Tier 0 와 같은 상태 폴더를 본다, S15P31A101-473)
     simai-bootstrap queue [gpu_session1 run 인자...]   준비 → GPU 1차 세션 큐 (저장소 사본 $SIMAI_SESSION_REPO, 기본 $SIMAI_ROOT/setup/session1/repo)
     simai-bootstrap check [--preflight|--sets ...]     준비만 하고 결과 JSON 을 출력한다 (--preflight / preflight 는 가중치 묶음·GPU 예산·런타임 일괄 점검)
     simai-bootstrap preflight [check 인자...]   tier0,avatar,static,vlm 가중치·GPU 예산(lobby 기본 넷)·texrecon·open3d·ultralytics 일괄 점검(하나라도 실패하면 비-0 종료).
@@ -39,6 +41,9 @@
   - Tier 0 가중치만 확인한 뒤 simai-tier0 을 새 프로세스 그룹으로 띄운다. Tier 0 표시 파일(state/tier0.live)이 phase=running·
     reserve.state=OK(simai-wait-tier0 와 같은 판정)이고 이번에 띄운 Tier 0 가 기동 뒤에 쓴 것(gpu_priority.written_at ≥ 기동 시각, pid 같음)이면 워커 가중치 묶음(SIMAI_WORKER_WEIGHTS_SET, 기본 vlm)을 받고(실패해도 Tier 0 는 계속),
     vLLM 서버(127.0.0.1:SIMAI_VLLM_PORT, /health 확인) → 분석 워커 순서로 띄운다. GPU VRAM 이 48GB급 미만이면 워커 쪽을 띄우지 않는다(명세 3.12).
+  - 분석 워커를 띄우면(run 단계에 들어서면) 뒤에서 현장 세팅(site_setup)의 MapAnything 가중치를 받는다: static 묶음 중 워커가 쓰는 모델 폴더
+    (SIMAI_MAPANYTHING_MODEL, 기본 $SIMAI_ROOT/weights/map-anything) 항목만, 이미 있으면 건너뛴다(S15P31A101-473). 워커 시작을 막지 않고, 실패하면
+    경고만 남긴다(그 상태로 세팅하면 STATIC_MODEL_MISSING. 'simai-bootstrap preflight' 로 확인). 끄려면 SIMAI_WORKER_SETUP_WEIGHTS=0.
   - vLLM·워커가 죽으면 그 프로세스 그룹을 SIGKILL 로 정리하고(vLLM EngineCore 같은 손자 포함), 지수 백오프 뒤 Tier 0 가 준비 상태일 때만
     다시 띄운다. 빨리 죽는 일이 연달아 SIMAI_SUPERVISE_MAX_FAST_FAILURES(기본 5)번이면 그 프로세스는 포기한다. Tier 0 는 건드리지 않는다.
   - Tier 0 가 끝나면 워커 → vLLM 을 내리고 Tier 0 종료 코드 그대로 끝낸다. SIGTERM·SIGINT 를 받으면 워커 → vLLM → Tier 0 순서로
@@ -1001,6 +1006,11 @@ class Supervisor:
         self.tick_s = _env_float(env, "SIMAI_SUPERVISE_TICK_S", 0.5)
         self.worker_set = env.get(WORKER_SET_ENV) or "vlm"
         self.avatar_set = env.get("SIMAI_AVATAR_WEIGHTS_SET") or "avatar"
+        # 현장 세팅(site_setup) MapAnything 모델 폴더(reconstruct_tasks.mapanything 과 같은 규칙). 워커를 띄울 때만 뒤에서 받는다(-473)
+        self.setup_model_dir = Path(env.get("SIMAI_MAPANYTHING_MODEL") or root / "weights" / "map-anything")
+        self.setup_weights = (env.get("SIMAI_WORKER_SETUP_WEIGHTS") or "1").strip() not in ("0", "false", "no", "off")
+        self._setup_weights_thread: threading.Thread | None = None
+        self.setup_weights_error: str | None = None
         self.manifest = Path(env.get("SIMAI_WEIGHTS_MANIFEST") or DEFAULT_MANIFEST)
         if ready is None:
             waiter = _load_waiter()
@@ -1157,6 +1167,34 @@ class Supervisor:
             rec["finished_at"] = time.time_ns() // 1_000_000
             _write_record(self.root, rec)
 
+    def _prepare_setup_weights(self) -> None:
+        """site_setup 의 MapAnything 가중치(static 묶음 중 setup_model_dir 항목). 실패해도 워커·Tier 0 는 계속(경고만)."""
+        rec: dict = {"bootstrap": "S15P31A101-473", "stage": "setup-weights", "set": SCENE_SET, "model_dir": str(self.setup_model_dir),
+                     "started_at": time.time_ns() // 1_000_000, "hf_token": "present" if _hf_token else "absent"}
+        try:
+            want = self.setup_model_dir.resolve()
+            entries = [w for w in load_manifest(self.manifest, SCENE_SET) if (self.root / w["path"]).parent.resolve() == want]
+            if not entries:
+                raise BootstrapError(EXIT_STORAGE, f"가중치 목록에 {self.setup_model_dir} 의 {SCENE_SET} 항목이 없다")
+            rec["weights"] = ensure_weights(self.root, entries)
+            rec["exit"] = EXIT_OK
+            log(f"현장 세팅 MapAnything 가중치 준비({self.setup_model_dir}): "
+                + ", ".join(f"{w['name']} {w['status']}" for w in rec["weights"]))
+        except Exception as e:  # noqa: BLE001 - 세팅 가중치 실패는 Tier 0·워커를 멈추지 않는다
+            self.setup_weights_error = _redact(f"{type(e).__name__}: {e}")
+            rec |= {"exit": getattr(e, "code", EXIT_STORAGE), "error": self.setup_weights_error}
+            log(f"주의: 현장 세팅 MapAnything 가중치({self.setup_model_dir}) 준비 실패 → 이대로 세팅하면 STATIC_MODEL_MISSING 로 실패한다. "
+                f"'simai-bootstrap preflight' 로 확인: {self.setup_weights_error}")
+        finally:
+            rec["finished_at"] = time.time_ns() // 1_000_000
+            _write_record(self.root, rec)
+
+    def _start_setup_weights(self) -> None:
+        if self._setup_weights_thread is not None or "worker" not in self.svc or not self.setup_weights:
+            return
+        self._setup_weights_thread = threading.Thread(target=self._prepare_setup_weights, name="setup-weights", daemon=True)
+        self._setup_weights_thread.start()
+
     def step(self) -> None:
         now = self.clock()
         self._record_pod_marker()
@@ -1175,6 +1213,7 @@ class Supervisor:
             else:
                 self.phase = "run"
         if self.phase == "run":
+            self._start_setup_weights()  # 워커 가중치(VLM) 다음에 받아 대역을 다투지 않는다. 워커 시작은 막지 않는다
             for name in ("vllm", "worker", "avatar"):
                 if name in self.svc:
                     self._tend(self.svc[name], now)
@@ -2180,6 +2219,9 @@ def prepare_lobby_work(
     env["SIMAI_ROOT"] = str(root)
     env["SIMAI_TIER0_ID"] = gateway_id
     env["SIMAI_TIER0_MARKER"] = str(work / "state" / "tier0.live")
+    # Tier 0 상태 폴더(tier0-live.json state_dir 와 같다). 워커가 이 값이 없으면 $SIMAI_ROOT/state 를 봐서 site_setup 배경 묶음·
+    # 활성 보정·scene_regenerate 요청이 Tier 0 와 어긋났다(after-live 는 이미 넣는다, S15P31A101-473)
+    env["SIMAI_STATE_DIR"] = str(work / "state")
     env["SIMAI_TIER0_TLS_CERT_FILE"] = str(cert)
     env["SIMAI_TIER0_TLS_KEY_FILE"] = str(key)
     env["SIMAI_LAPTOP_TOKEN_SHA256"] = laptop_hash

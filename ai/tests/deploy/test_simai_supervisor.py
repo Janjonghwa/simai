@@ -483,6 +483,71 @@ def test_worker_weights_failure_keeps_tier0_and_starts_nothing(bs, tmp_path, mon
     assert rec[0]["stage"] == "worker-weights" and rec[0]["exit"] == 2 and TOKEN not in json.dumps(rec)
 
 
+def _setup_manifest(tmp_path: Path) -> Path:
+    def entry(name, sets, path):
+        return {"name": name, "sets": sets, "path": path, "source": {"url": "x"}, "sha256": "0" * 64}
+
+    manifest = tmp_path / "weights-setup.json"
+    manifest.write_text(json.dumps({"weights": [
+        entry("m", ["vlm"], "weights/m.bin"),
+        entry("ma-model", ["static"], "weights/map-anything/model.safetensors"),
+        entry("ma-config", ["static"], "weights/map-anything/config.json"),
+        entry("ma-apache-model", ["static"], "weights/map-anything-apache/model.safetensors"),
+    ]}), encoding="utf-8")
+    return manifest
+
+
+def _join_setup(sup) -> None:
+    if sup._setup_weights_thread is not None:
+        sup._setup_weights_thread.join(5)
+
+
+def test_worker_start_prepares_setup_mapanything_weights_after_vlm(bs, tmp_path, monkeypatch):
+    """lobby 워커가 site_setup 을 처리하므로 워커 모델 폴더(weights/map-anything)의 static 항목만 VLM 다음에 받는다(-473)."""
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w, env={"SIMAI_WEIGHTS_MANIFEST": str(_setup_manifest(tmp_path))})
+    _start(sup, w)
+    w.ready = True
+    _settle(sup, w, 3)
+    _join_setup(sup)
+    assert sup.weight_calls == [["m"], ["ma-model", "ma-config"]]  # apache 사본은 워커가 쓰지 않는다
+    assert sup.setup_weights_error is None and w.spawned == ["tier0", "vllm"]
+    rec = [json.loads(p.read_text(encoding="utf-8")) for p in sorted((tmp_path / "simai" / "runs" / "bootstrap").glob("*.json"))]
+    assert sorted(r["stage"] for r in rec) == ["setup-weights", "worker-weights"]
+    assert next(r for r in rec if r["stage"] == "setup-weights")["exit"] == 0
+
+
+def test_setup_weights_failure_warns_but_keeps_worker(bs, tmp_path, monkeypatch, capsys):
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "worker"),
+               env={"SIMAI_WEIGHTS_MANIFEST": str(_setup_manifest(tmp_path)),
+                    "SIMAI_MAPANYTHING_MODEL": str(tmp_path / "elsewhere")})
+    _start(sup, w)
+    w.ready = w.healthy = True
+    _settle(sup, w, 4)
+    _join_setup(sup)
+    assert "worker" in w.spawned and sup.setup_weights_error and sup.weight_calls == []
+    assert "STATIC_MODEL_MISSING" in capsys.readouterr().err
+
+
+def test_setup_weights_can_be_turned_off_and_skipped_without_worker(bs, tmp_path, monkeypatch):
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w, env={"SIMAI_WEIGHTS_MANIFEST": str(_setup_manifest(tmp_path)),
+                                                 "SIMAI_WORKER_SETUP_WEIGHTS": "0"})
+    _start(sup, w)
+    w.ready = True
+    _settle(sup, w, 3)
+    assert sup._setup_weights_thread is None and sup.weight_calls == [["m"]]
+    w2 = World()
+    (tmp_path / "b").mkdir()
+    sup2 = _sup(bs, tmp_path / "b", monkeypatch, w2, services=("tier0", "vllm"),
+                env={"SIMAI_WEIGHTS_MANIFEST": str(_setup_manifest(tmp_path))})
+    _start(sup2, w2)
+    w2.ready = True
+    _settle(sup2, w2, 3)
+    assert sup2._setup_weights_thread is None
+
+
 @pytest.mark.parametrize("rc, want", [(0, 0), (5, 5), (-9, 137)])
 def test_tier0_exit_stops_worker_then_vllm_and_returns_same_code(bs, tmp_path, monkeypatch, rc, want):
     w = World()
@@ -1173,6 +1238,8 @@ def test_lobby_mode_prepares_work_runs_supervisor_and_propagates_nonzero_exit_co
     assert w.envs["avatar"]["SIMAI_AVATAR_CHANNEL"] == "wss://127.0.0.1:19446"
     for svc_name in ("tier0", "vllm", "worker", "avatar"):
         assert w.envs[svc_name]["SIMAI_TIER0_MARKER"] == str(work / "state" / "tier0.live")
+        # 워커의 site_setup·scene_regenerate 가 Tier 0 와 같은 상태 폴더를 본다(after-live 와 같은 규칙, -473)
+        assert w.envs[svc_name]["SIMAI_STATE_DIR"] == str(work / "state") == cfg["state_dir"]
 
     # 토큰 격리 및 로그 비노출 검증
     assert w.envs["tier0"]["SIMAI_TIER0_TOKEN"] == tier0_tok

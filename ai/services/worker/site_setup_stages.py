@@ -4,8 +4,9 @@
 prepare·mapanything·preview·bake·fallback)를 `Stages`(기본 `ProcessStages`, 취소·시간 제한 지킴)로 돌린다. 그 폴더 레이아웃은
 `static_reconstruct` 와 같다(images/·calibration.json·job.json). 그래서 -451 미리보기 맵·굽기 코드를 그대로 쓴다.
 
-- (a) `collect`: Tier 0 가 내보낸 사람 지운 배경 묶음(SIMAI_STATE_DIR/clean-background)을 읽는다. 없거나 덜 됐으면 수집률 0 으로
-  돌려 처리기가 재시도 가능한 `BACKGROUND_INCOMPLETE` 로 끝낸다.
+- (a) `collect`: Tier 0 가 내보낸 사람 지운 배경 묶음(SIMAI_STATE_DIR/clean-background)을 읽는다. 아직 덜 됐으면 `status.json` 의
+  카메라별 표본 수로 수집률(완성 전 최대 99)을 돌려주고, 처리기가 `SIMAI_SETUP_BACKGROUND_WAIT_S`(기본 240 s)까지 다시 본다
+  (그래도 안 되면 재시도 가능한 `BACKGROUND_INCOMPLETE`). 묶음의 마지막 관측 시각이 보정 문서 created_at 이 된다(S15P31A101-473).
 - (b) 내부 파라미터: Tier 0 활성 보정 문서의 K·왜곡을 재사용한다. 없으면 `INTRINSICS_UNAVAILABLE` 로 끝낸다(무마커 추정 경로는 이 처리기에 아직
   연결하지 않았다, 지어내지 않는다).
 - (c)(d) `initialize`: prepare → mapanything 단계 → `build_world_from_pointcloud_and_poses`(바닥 Z=0, 벽 +X, 모서리 원점, 카메라 높이 축척).
@@ -13,12 +14,19 @@ prepare·mapanything·preview·bake·fallback)를 `Stages`(기본 `ProcessStages
   `artifacts.calibration_document` 로 알리고, EC2 가 그 문서를 읽어 새 calibration_version 으로 등록한다(S15P31A101-467).
 - (g) `preview`: reconstruct_tasks `preview` 단계 → GLB 업로드 → `scene-preview-<run>`(+ `artifacts.preview_scene`).
 - (h) `bake`: reconstruct_tasks `bake`(도구 부재 시 `fallback`) → GLB 업로드 → `scene-<run>`(+ `artifacts.scene`).
+
+단계가 실패하면 그 단계 로그(`<단계>.log`)의 끝 줄을 워커 로그와 실패 메시지에 남기고, 작업 폴더를 지우기 전에 로그·오류 문서를
+`SIMAI_STATE_DIR/worker/site-setup-failed/<작업>-<대여>/` 에 복사한다(S15P31A101-473).
 """
 
 from __future__ import annotations
 
 import copy
 import json
+import logging
+import math
+import os
+import shutil
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -51,6 +59,17 @@ from .site_setup import (
 
 PREFLIGHT_BUCKET = "preflight"
 STAGE_TIMEOUTS_S = {"prepare": 180.0, "mapanything": 1200.0, "preview": 60.0, "bake": 1800.0, "fallback": 120.0}
+# Tier 0 묶음은 카메라마다 최소 20장 × 5 s ≈ 100 s 걸린다(services/tier0/settings.py CleanBackgroundSettings).
+# 기다림 기본 240 s = 그 두 배 남짓 + 묶음 조립·사람이 오래 가린 카메라 여유. 실행 상한(서버 900 s) 안에서 복원·굽기 시간을 남긴다
+DEFAULT_BACKGROUND_WAIT_S = 240.0
+DEFAULT_BACKGROUND_POLL_S = 2.0
+TIER0_MIN_SAMPLES_PER_CAMERA = 20  # Tier 0 기본값. 수집률 표시에만 쓴다(완성 판정은 Tier 0 의 ready·묶음 COMPLETE)
+LOG_TAIL_LINES = 20  # 실패 단계 로그를 워커 로그에 남길 줄 수
+_MESSAGE_TAIL_CHARS = 240  # 실패 메시지(계약 500자)에 붙일 로그 끝 길이
+_KEEP_LOG_MAX_BYTES = 8 * 1024 * 1024
+FAILED_LOGS_DIR = "site-setup-failed"
+
+log = logging.getLogger("services.worker")
 
 
 def load_active_calibration(settings: AutoStaticSettings) -> dict[str, Any] | None:
@@ -63,6 +82,77 @@ def load_active_calibration(settings: AutoStaticSettings) -> dict[str, Any] | No
     except (OSError, ValueError, KeyError, TypeError):
         return None
     return doc if isinstance(doc, dict) and doc.get("calibration_version") == version else None
+
+
+def background_wait_from_env(env: Mapping[str, str]) -> tuple[float, float]:
+    """SIMAI_SETUP_BACKGROUND_WAIT_S(0 이상, 기본 240)·SIMAI_SETUP_BACKGROUND_POLL_S(양수, 기본 2). 형식 오류는 ValueError."""
+    out = []
+    for key, default, allow_zero in (("SIMAI_SETUP_BACKGROUND_WAIT_S", DEFAULT_BACKGROUND_WAIT_S, True),
+                                     ("SIMAI_SETUP_BACKGROUND_POLL_S", DEFAULT_BACKGROUND_POLL_S, False)):
+        raw = (env.get(key) or "").strip()
+        try:
+            value = float(raw) if raw else default
+        except ValueError:
+            raise ValueError(f"{key} 는 초(숫자)다") from None
+        if not math.isfinite(value) or value < 0 or (value == 0 and not allow_zero):
+            raise ValueError(f"{key} 는 {'0 이상' if allow_zero else '양수'}(초)다")
+        out.append(value)
+    return out[0], out[1]
+
+
+def _partial_collection_pct(settings: AutoStaticSettings, camera_ids: Sequence[str], prior_version: str | None) -> dict[str, float]:
+    """묶음이 완성되기 전 카메라별 수집률(Tier 0 status.json 의 표본 수). 완성 전이라 최대 99. 다른 보정의 수집이면 0."""
+    zeros = {cid: 0.0 for cid in camera_ids}
+    try:
+        status = json.loads((settings.clean_background_dir / "status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return zeros
+    if not isinstance(status, dict) or not isinstance(status.get("cameras"), dict):
+        return zeros
+    if prior_version is not None and status.get("calibration_version") != prior_version:
+        return zeros
+    out = {}
+    for cid in camera_ids:
+        cam = status["cameras"].get(cid)
+        if not isinstance(cam, dict):
+            out[cid] = 0.0
+            continue
+        if cam.get("ready") is True or cam.get("exported") is True:
+            out[cid] = 99.0  # 카메라는 됐고 묶음 조립을 기다린다
+            continue
+        n = cam.get("sample_count")
+        ok = isinstance(n, int) and not isinstance(n, bool) and n > 0
+        out[cid] = round(min(99.0, 100.0 * n / TIER0_MIN_SAMPLES_PER_CAMERA), 2) if ok else 0.0
+    return out
+
+
+def _observed_until_ms(path: Path, meta: Mapping[str, Any]) -> int | None:
+    """묶음의 마지막 관측 시각(카메라별 time_range_ms 끝의 최댓값). 없으면 COMPLETE 파일 수정 시각(같은 묶음이면 같다)."""
+    ends = []
+    cameras = meta.get("cameras")
+    if isinstance(cameras, Mapping):
+        for entry in cameras.values():
+            tr = entry.get("time_range_ms") if isinstance(entry, Mapping) else None
+            if isinstance(tr, list) and len(tr) == 2 and isinstance(tr[1], int) and not isinstance(tr[1], bool) and tr[1] > 0:
+                ends.append(tr[1])
+    if ends:
+        return max(ends)
+    try:
+        return int((path / "COMPLETE").stat().st_mtime * 1000)
+    except OSError:
+        return None
+
+
+def _log_tail(path: Path, lines: int) -> list[str]:
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 64 * 1024))
+            text = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    return [ln.rstrip() for ln in text.splitlines() if ln.strip()][-lines:]
 
 
 def _bundle_dir(settings: AutoStaticSettings) -> tuple[Path, str] | None:
@@ -106,7 +196,9 @@ class ProductionSiteSetupStages:
     def collect(self, *, setup_session_id: str, site_id: str, camera_ids: Sequence[str]) -> CleanBackgroundBundle:
         found = _bundle_dir(self.settings)
         if found is None:
-            return CleanBackgroundBundle("", {cid: 0.0 for cid in camera_ids})
+            prior = self._load_calibration(self.settings)
+            prior_version = None if prior is None else str(prior.get("calibration_version"))
+            return CleanBackgroundBundle("", _partial_collection_pct(self.settings, camera_ids, prior_version))
         path, version = found
         try:
             meta = read_json(path / "clean_backgrounds.json")
@@ -128,7 +220,7 @@ class ProductionSiteSetupStages:
             # 묶음과 활성 보정이 다르면 그 묶음의 내부 파라미터·해상도를 믿을 수 없다. 새 묶음을 기다린다.
             return CleanBackgroundBundle(path.name, {cid: 0.0 for cid in camera_ids})
         self._prior = prior
-        return CleanBackgroundBundle(path.name, pct, frames)
+        return CleanBackgroundBundle(path.name, pct, frames, observed_until_ms=_observed_until_ms(path, meta))
 
     # ------------------------------------------------------------------ (b)~(d)
     def initialize(
@@ -258,7 +350,33 @@ class ProductionSiteSetupStages:
             if exc.code == "CANCELLED":
                 raise JobFailed("CANCELLED", "대여 취소 또는 시간 초과로 중단됨", retryable=True) from exc
             retry = exc.code.endswith("_TIMEOUT") or exc.code.endswith("_TOOL_FAILED")
-            raise JobFailed(exc.code, str(exc), retryable=retry) from exc
+            raise JobFailed(exc.code, self._with_log_tail(stage, str(exc)), retryable=retry) from exc
+
+    def _with_log_tail(self, stage: str, message: str) -> str:
+        """실패 단계 로그 끝을 워커 로그(LOG_TAIL_LINES 줄)와 실패 메시지(끝 몇 줄)에 남긴다. 작업 폴더는 곧 지워진다."""
+        tail = _log_tail(self.root / f"{stage}.log", LOG_TAIL_LINES)
+        if not tail:
+            return message
+        log.warning("작업 %s site_setup %s 단계 실패, 로그 끝 %d줄:\n%s", self.ctx.job_id, stage, len(tail), "\n".join(tail))
+        short = " / ".join(tail[-3:])[-_MESSAGE_TAIL_CHARS:]
+        return f"{message[:_MESSAGE_TAIL_CHARS]} | {stage}.log 끝: {short}"
+
+    def keep_failure_logs(self) -> Path | None:
+        """실패한 작업의 단계 로그·오류 문서를 상태 폴더로 복사한다(작업 폴더는 지워진다). 실패해도 작업 결과에는 영향 없음."""
+        files = [p for pat in ("*.log", "*.error.json") for p in sorted(self.root.glob(pat))
+                 if p.is_file() and p.stat().st_size <= _KEEP_LOG_MAX_BYTES]
+        if not files:
+            return None
+        dest = self.settings.state_dir / "worker" / FAILED_LOGS_DIR / self._run_id
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+            for f in files:
+                shutil.copyfile(f, dest / f.name)
+        except OSError as exc:
+            log.warning("작업 %s site_setup 실패 로그를 남기지 못함: %s", self.ctx.job_id, type(exc).__name__)
+            return None
+        log.warning("작업 %s site_setup 실패 로그를 %s 에 남겼다", self.ctx.job_id, dest)
+        return dest
 
     def _read_stage_doc(self, name: str, stage: str) -> dict[str, Any]:
         path = self.root / name
@@ -288,12 +406,20 @@ class ProductionSiteSetupHandler:
         *,
         clock_ms: Callable[[], int],
         live_gate: Callable[[], bool] | None = None,
+        live_notice: Callable[[], bool] | None = None,
         workspace: Path | None = None,
         object_cross_checker: Any = None,
+        background_wait_s: float = DEFAULT_BACKGROUND_WAIT_S,
+        background_poll_s: float = DEFAULT_BACKGROUND_POLL_S,
+        monotonic: Callable[[], float] | None = None,
+        sleep: Callable[[Any, float], Any] | None = None,
     ) -> None:
         self.store, self.settings, self.stages = store, settings, stages
-        self._clock_ms, self._live_gate = clock_ms, live_gate
+        self._clock_ms, self._live_gate, self._live_notice = clock_ms, live_gate, live_notice
         self._workspace, self._cross = workspace, object_cross_checker
+        self._wait = {"background_wait_s": background_wait_s, "background_poll_s": background_poll_s, "sleep": sleep}
+        if monotonic is not None:
+            self._wait["monotonic"] = monotonic
 
     def __call__(self, ctx: JobContext) -> Mapping[str, Any]:
         try:
@@ -304,8 +430,12 @@ class ProductionSiteSetupHandler:
                 handler = SiteSetupHandler(
                     background_collector=s.collect, world_initializer=s.initialize, calibration_publisher=s.publish,
                     preview_builder=s.preview, texture_baker=s.bake, object_cross_checker=self._cross,
-                    live_gate=self._live_gate, clock_ms=self._clock_ms,
+                    live_gate=self._live_gate, live_notice=self._live_notice, clock_ms=self._clock_ms, **self._wait,
                 )
-                return handler(ctx)
+                try:
+                    return handler(ctx)
+                except Exception:
+                    s.keep_failure_logs()
+                    raise
         except OSError as exc:
             raise JobFailed("SETUP_IO_FAILED", type(exc).__name__, retryable=True) from exc

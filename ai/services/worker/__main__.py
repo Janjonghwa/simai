@@ -22,6 +22,10 @@
 사람 지운 배경 묶음 자동 제출(S15P31A101-403, services.worker.auto_static): --once 가 아니고 SIMAI_AUTO_STATIC_RECONSTRUCT 가 0 이
 아니면 보조 스레드가 LIVE 가 아닐 때 Tier 0 의 완성 묶음(SIMAI_STATE_DIR/clean-background)을 올리고 static_reconstruct 를 등록한다.
 LIVE 판단은 대여와 같은 표시 파일 규칙을 이 스레드 전용 AdmissionGate 로 다시 본다.
+
+현장 세팅(site_setup, S15P31A101-465·-473): 늘 등록한다. 상태 폴더는 SIMAI_STATE_DIR(없으면 SIMAI_TIER0_MARKER 의 폴더, 없으면
+$SIMAI_ROOT/state). Tier 0 배경 묶음을 SIMAI_SETUP_BACKGROUND_WAIT_S(기본 240)초까지 SIMAI_SETUP_BACKGROUND_POLL_S(기본 2)초마다
+기다린다. 세팅은 서버가 진행 중 작업이 없을 때만 시작시키므로 Tier 0 가 떠 있어도 굽기를 미루지 않는다(로그만).
 """
 
 from __future__ import annotations
@@ -52,7 +56,7 @@ from .incident_summary import IncidentSummaryHandler
 from .objects import HttpObjectStore, ObjectStore
 from .runner import HandlerStuck, Worker
 from .scene_regenerate import SceneRegenerateHandler
-from .site_setup_stages import ProductionSiteSetupHandler
+from .site_setup_stages import ProductionSiteSetupHandler, background_wait_from_env
 from .static_reconstruct import StaticReconstructHandler
 from .tbm_report import TbmReportHandler
 from .transport import HttpTransport, Transport
@@ -158,6 +162,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"services.worker: 배경 묶음 자동 제출 설정 오류: {e}", file=sys.stderr)
         return 2
     try:
+        setup_wait_s, setup_poll_s = background_wait_from_env(os.environ)
+    except ValueError as e:
+        print(f"services.worker: 현장 세팅 설정 오류: {e}", file=sys.stderr)
+        return 2
+    try:
         torch_fraction = float(os.environ.get("SIMAI_WORKER_TORCH_MEMORY_FRACTION") or gpu.budget.worker_fraction)
         if not 0 < torch_fraction <= gpu.budget.worker_fraction:
             raise ValueError("torch 상한은 분석 워커 예산 이하여야 한다")
@@ -184,10 +193,14 @@ def main(argv: list[str] | None = None) -> int:
     transport = HttpTransport(base_url, token)
     store = HttpObjectStore(transport)
     live_gate_probe = AdmissionGate(gpu.marker, gpu.policy, wall_s=time.time, monotonic=time.monotonic)
-    # 현장 세팅(site_setup, S15P31A101-465): MapAnything·미리보기는 LIVE 전 세팅 단계라 받되, 고화질 굽기는 LIVE 면 처리기가 미룬다(재시도 가능)
+    # 현장 세팅(site_setup, S15P31A101-465·-473): 서버는 진행 중 작업(IN_PROGRESS)이 없을 때만 세팅을 시작시킨다(-467 409).
+    # 그래서 Tier 0 표시 파일(대기 관제)이 있어도 굽기를 미루지 않는다. 미루면 재시도가 처음부터 다시 돌아 서버 등록이 어긋났다.
+    # 표시 파일은 로그(Tier 0 지연이 잠깐 늘 수 있음)에만 쓴다. 서버가 워커에 "LIVE 작업 중"을 알려 주는 신호는 아직 없다
+    log.info("현장 세팅 상태 폴더 %s, 배경 묶음 대기 최대 %gs", auto_static.state_dir, setup_wait_s)
     site_setup = ProductionSiteSetupHandler(
         store, auto_static, ProcessStages(os.environ), clock_ms=lambda: time.time_ns() // 1_000_000,
-        live_gate=lambda: bool(live_gate_probe.check().live),
+        live_notice=lambda: bool(live_gate_probe.check().live),
+        background_wait_s=setup_wait_s, background_poll_s=setup_poll_s,
     )
     handlers = dict(build_handlers(args.config, store))
     handlers["site_setup"] = site_setup

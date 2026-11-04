@@ -98,7 +98,9 @@ class AutoStaticSettings:
     """환경 변수:
 
     SIMAI_AUTO_STATIC_RECONSTRUCT   1(기본) 켬, 0 끔
-    SIMAI_STATE_DIR                 Tier 0 상태 루트(기본 $SIMAI_ROOT/state). 묶음은 clean-background/, 활성 보정은 calibrations/
+    SIMAI_STATE_DIR                 Tier 0 상태 루트. 없으면 Tier 0 표시 파일(SIMAI_TIER0_MARKER = <상태 루트>/tier0.live)의 폴더,
+                                    그것도 없으면 $SIMAI_ROOT/state(vlm_frames.LocalFrames 와 같은 규칙, S15P31A101-473).
+                                    묶음은 clean-background/, 활성 보정은 calibrations/
     SIMAI_AUTO_STATIC_QUIET_S       LIVE 를 마지막으로 본 뒤 기다리는 초(기본 300)
     SIMAI_AUTO_STATIC_POLL_S        조건을 다시 보는 주기 초(기본 30)
     SIMAI_AUTO_STATIC_EXIT_WHEN_DONE 1 이면 낼 일이 끝나면(자동 제출 작업이 끝났거나 낼 묶음이 없음) 워커 프로세스를 끝낸다(기본 0).
@@ -115,7 +117,10 @@ class AutoStaticSettings:
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> AutoStaticSettings:
         root = Path(env.get("SIMAI_ROOT") or "/workspace/simai")
-        state_dir = Path((env.get("SIMAI_STATE_DIR") or "").strip() or root / "state")
+        explicit = (env.get("SIMAI_STATE_DIR") or "").strip()
+        marker = (env.get("SIMAI_TIER0_MARKER") or "").strip()
+        # 상태 폴더를 Tier 0 가 쓰는 곳과 맞춘다: lobby 처럼 표시 파일만 넘긴 기동에서 $SIMAI_ROOT/state 로 어긋나지 않게
+        state_dir = Path(explicit) if explicit else (Path(marker).parent if marker else root / "state")
         return cls(
             state_dir=state_dir,
             enabled=_flag(env, ENV_ENABLED, True),
