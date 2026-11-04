@@ -114,6 +114,45 @@ def align_to_calibration(root: Path) -> np.ndarray:
     return M
 
 
+def enhance_visual_glb(root: Path, glb: Path, options: dict | None = None) -> dict:
+    """결과 GLB 에 시각 보강(바닥 평면·미관측 색, S15P31A101-481)을 제자리 적용하고 report 를 돌려준다.
+
+    실패·불채택이면 원본을 그대로 두고 이유만 남긴다(단계를 실패시키지 않는다). 시각용이며 위험 판정에 쓰지 않는다.
+    """
+    from . import glb_enhance as ge
+
+    cfg = ge.EnhanceConfig.from_env(options=options)
+    if not cfg.enabled:
+        return {"applied": False, "reason": "DISABLED", "purpose": "VISUAL_ONLY", "safety_use": False}
+    cameras = None
+    try:
+        if (root / "calibration.json").is_file() and (root / "prepared" / "prepared.json").is_file():
+            cameras = ge.cameras_from_prepared(root) or None
+    except Exception:  # noqa: BLE001 - 검사 입력 읽기 실패는 메시 지표 검사로 대체한다
+        cameras = None
+    try:
+        return ge.enhance_file(glb, config=cfg, cameras=cameras)
+    except Exception as exc:  # noqa: BLE001
+        return {"applied": False, "reason": f"ENHANCE_ERROR:{type(exc).__name__}", "purpose": "VISUAL_ONLY", "safety_use": False}
+
+
+def _enhance_summary(rep: dict) -> dict:
+    """metrics 에 싣는 요약: 적용 여부·검사 점수 전후·채운 면적."""
+    chk = rep.get("check") or {}
+    fl = rep.get("floor") or {}
+    rc = rep.get("recolor") or {}
+    out = {"applied": bool(rep.get("applied")), "reason": rep.get("reason"), "purpose": "VISUAL_ONLY", "safety_use": False,
+           "check_mode": chk.get("mode"), "check_accepted": chk.get("accepted"),
+           "check_mae_before": chk.get("mae_mean_before"), "check_mae_after": chk.get("mae_mean_after"),
+           "floor_filled_area_m2": fl.get("filled_area_m2") if fl.get("applied") else None,
+           "floor_empty_ratio_before": fl.get("empty_ratio_before"), "floor_empty_ratio_after": fl.get("empty_ratio_after"),
+           "neutral_recolored_area_m2": rc.get("recolored_area_m2") if rc.get("applied") else None,
+           "neutral_gray_area_m2_before": rc.get("unobserved_area_m2_before"),
+           "neutral_gray_area_m2_after": rc.get("unobserved_gray_area_m2_after"),
+           "seconds": rep.get("seconds"), "detail": rep}
+    return out
+
+
 def bake(root: Path) -> None:
     if not (root / "world_alignment.json").is_file():
         align_to_calibration(root)
@@ -161,6 +200,9 @@ def bake(root: Path) -> None:
         raise ReconstructionError("STATIC_BAKE_EMPTY", "출처 지도 없음")
     geo = rec.get("geometry") or {}
     tri_count = b.get("glb_triangles") if "glb_triangles" in b else geo.get("faces")
+    enhance = _enhance_summary(enhance_visual_glb(root, glb, opts))
+    if enhance["applied"] and tri_count is not None and (enhance["detail"].get("floor") or {}).get("applied"):
+        tri_count = int(tri_count) + 2
     gltf_asset: dict[str, object] = {"kind": "GLTF_VISUAL", "path": glb.relative_to(root).as_posix(), "content_type": "model/gltf-binary"}
     if tri_count is not None:
         gltf_asset["triangle_count"] = int(tri_count)
@@ -174,7 +216,7 @@ def bake(root: Path) -> None:
     if geo.get("decimated", True):
         post.append("DECIMATION")
     write_json(root / "bake.json", {"texture": "texrecon", "fallback_reason": None, "assets": assets,
-        "observed_surface_ratio": ratios["OBSERVED"], "postprocess": [*post, "TEXTURE", "WORLD_ALIGNMENT"], "metrics": rec,
+        "observed_surface_ratio": ratios["OBSERVED"], "postprocess": [*post, "TEXTURE", "WORLD_ALIGNMENT"], "metrics": rec, "enhance": enhance,
         "target_faces": target_faces, "num_threads": tm.resolve_num_threads(num_threads),
         "stage_times": rec.get("times"),
         "auxiliary": [p.relative_to(root).as_posix() for p in sorted(glb.parent.glob("observed_camera_*.png"))]})
@@ -246,6 +288,9 @@ def preview(root: Path) -> None:
         raise ReconstructionError("STATIC_MAPANYTHING_EMPTY", "미리보기 메시 정점 없음")
 
     (root / "preview_scene.glb").write_bytes(glb_bytes)
+    enhance = _enhance_summary(enhance_visual_glb(root, root / "preview_scene.glb", opts))
+    if enhance["applied"] and (enhance["detail"].get("floor") or {}).get("applied"):
+        meta["triangle_count"] = int(meta["triangle_count"]) + 2
     write_json(
         root / "preview.json",
         {
@@ -264,6 +309,7 @@ def preview(root: Path) -> None:
             "observed_surface_ratio": 1.0,
             "postprocess": ["OUTLIER_REMOVAL", "WORLD_ALIGNMENT"],
             "metrics": meta,
+            "enhance": enhance,
         },
     )
 
@@ -299,8 +345,11 @@ def fallback(root: Path) -> None:
     scene.metadata["simai"] = {"geometry_role": "VISUAL", "safety_use": False, "texture": None,
                                "surface_source": "OBSERVED_DEPTH_VERTEX_COLOR", "axis_convention": "GLTF_Y_UP"}
     (root / "scene.glb").write_bytes(scene.export(file_type="glb"))
+    enhance = _enhance_summary(enhance_visual_glb(root, root / "scene.glb", read_json(root / "job.json")["input"].get("options", {})))
+    if enhance["applied"] and (enhance["detail"].get("floor") or {}).get("applied"):
+        count += 2
     rec = read_json(root / "bake.json")
-    rec.update(assets=[{"kind": "GLTF_VISUAL", "path": "scene.glb", "content_type": "model/gltf-binary"}],
+    rec.update(enhance=enhance, assets=[{"kind": "GLTF_VISUAL", "path": "scene.glb", "content_type": "model/gltf-binary"}],
                observed_surface_ratio=1.0, postprocess=["OUTLIER_REMOVAL", "WORLD_ALIGNMENT"],
                metrics={"triangle_count": count, "surface_source_map": None,
                         "observed_ratio_basis": "내보낸 관측 깊이 면만 분모. 방 전체 커버리지 아님"})
