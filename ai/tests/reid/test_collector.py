@@ -209,3 +209,16 @@ def test_estimate_orientation_bin_2d() -> None:
     b7 = estimate_orientation_bin_2d(None, (700.0, 50.0, 780.0, 250.0), image_width_px=800, num_bins=8)
     assert b0 == 0
     assert b7 == 7
+
+
+def test_face_aux_without_weights_keeps_body_reid(tmp_path, monkeypatch):
+    """얼굴 보조를 켜도 가중치가 없으면 얼굴만 빠지고 전신 Re-ID 는 active (S15P31A101-471)."""
+    from simai_ai.reid.face import NoOpFaceEmbedder
+
+    monkeypatch.setenv("SIMAI_FACE_WEIGHTS_DIR", str(tmp_path / "missing"))
+    col = AsyncReidCollector(
+        ReidCollectorConfig(enabled=True, use_face_aux=True), embedder=_FakeEmbedder(), start_worker=False
+    )
+    assert col.state == "active"
+    assert isinstance(col._face_embedder, NoOpFaceEmbedder)
+    assert not col._face_embedder.available

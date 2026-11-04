@@ -461,6 +461,16 @@ class AsyncReidCollector:
             self._worker = threading.Thread(target=self._worker_loop, name="tier0-reid", daemon=True)
             self._worker.start()
 
+    def _init_face_backend(self) -> None:
+        """얼굴 보조 점수(선택). 실패해도 전신 Re-ID 는 그대로 두고 얼굴만 뺀다(S15P31A101-471)."""
+        if not self.config.use_face_aux or self._face_embedder is not None:
+            return
+        try:
+            self._face_embedder = create_face_embedder(FaceConfig.from_env())  # SIMAI_FACE_WEIGHTS_DIR(buffalo_l), 없으면 NoOp
+        except Exception as exc:  # noqa: BLE001 - 얼굴 가중치·onnxruntime 부재
+            log.warning("얼굴 보조 점수 비활성화: %s", exc)
+            self._face_embedder = None
+
     def _init_backend(self, injected_embedder: Embedder | None) -> None:
         cfg = self.config
         if not cfg.enabled:
@@ -472,6 +482,7 @@ class AsyncReidCollector:
             self._embedder = injected_embedder
             self.state = "active"
             self.reason = None
+            self._init_face_backend()
             return
 
         if cfg.device.startswith("cuda"):
@@ -505,8 +516,7 @@ class AsyncReidCollector:
             if hasattr(cope, "load"):
                 cope.load()
             self._embedder = cope
-            if cfg.use_face_aux and self._face_embedder is None:
-                self._face_embedder = create_face_embedder(FaceConfig(enabled=True))
+            self._init_face_backend()
             self.state = "active"
             self.reason = None
         except Exception as exc:  # noqa: BLE001 - 가중치·저장소 부재 시 조용히 비활성화

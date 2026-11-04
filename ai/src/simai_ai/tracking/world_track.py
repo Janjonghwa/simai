@@ -2122,7 +2122,7 @@ class WorldTrackManager:
             return None
         best = -1.0
         for f in feats:
-            sim = gallery.similarity(f.embedding, camera_id=f.camera_id)
+            sim = gallery.similarity(f.embedding, camera_id=f.camera_id, face_embedding=getattr(f, "face_embedding", None))
             if sim is not None and sim > best:
                 best = sim
         return best if best >= 0.0 else None
@@ -2467,6 +2467,7 @@ class WorldTrackManager:
                     quality=qual,
                     visibility=f.visibility,
                     orientation_bin=orient_bin if orient_bin != 0 else f.orientation_bin,
+                    face_embedding=getattr(f, "face_embedding", None),
                 )
             if tr.last_reid_similarity is None:
                 own_sim = self._cluster_gallery_sim(wid, a.cluster, t)

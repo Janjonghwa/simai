@@ -796,6 +796,7 @@ class Tier0Service:
             cope_root=r.cope_root,
             weights_path=r.weights_path,
             clip_model_path=r.clip_model_path,
+            use_face_aux=r.use_face_aux,
         )
         return AsyncReidCollector(cfg, start_worker=True)
 

@@ -155,9 +155,10 @@ if [ "$T0LIKE" = 1 ]; then
 if OUT=$(docker run --rm --entrypoint python "$IMG" -c '
 import importlib.metadata as m, sys
 import simai_ai, services.tier0, simai_ai.detection.engine_cache, cv2, ultralytics, tensorrt, onnx, modelopt
+import simai_ai.reid.collector, timm, yacs, ftfy, einops  # Re-ID(reid extra, S15P31A101-471). COPE 코드·가중치는 이미지 밖(Pod 에 올림)
 print(sys.version.split()[0], "ultralytics", m.version("ultralytics"), "torch", m.version("torch"), "tensorrt", m.version("tensorrt-cu13"),
       "modelopt", m.version("nvidia-modelopt"), "onnx", m.version("onnx"))' 2>&1); then
-  pass "import simai_ai·services.tier0·engine_cache·cv2·ultralytics·tensorrt·onnx·modelopt ($OUT)"
+  pass "import simai_ai·services.tier0·engine_cache·cv2·ultralytics·tensorrt·onnx·modelopt·reid ($OUT)"
 else
   fail "import 실패: $OUT"
 fi
