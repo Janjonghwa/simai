@@ -54,6 +54,8 @@ import tools.jackson.databind.node.ObjectNode;
  * 세팅 결과 서버 등록(S15P31A101-467): site_setup 하트비트·결과의 artifacts 로 새 보정 문서를 calibration_version 으로, 미리보기·정식 GLB 를
  * scene_version 후보로 등록하고, 세팅 성공 때 새 보정을 실은 구성 묶음(config_version)을 발행한다. 해시 불일치·다른 작업 경로·다른 세션 버전은
  * 거부하고, 실패한 세팅은 구성 묶음을 만들지 않는다. 객체 저장소는 가짜(키 → 바이트)다.
+ * S15P31A101-479: 미리보기 스냅샷의 artifacts.camera_frames(카메라별 JPEG)를 세션 귀속(CAMERA_FRAME)으로 등록하고, AI 구역 초안
+ * 입력 frames 에 카메라·주소·얼굴 정책으로 싣는다. 해시·JPEG·경로·카메라 집합이 어긋나면 거부한다.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -451,6 +453,141 @@ class SetupResultRegisterIntegrationTest {
                 .isEqualTo("CANDIDATE");
     }
 
+    @Test
+    void 미리보기_스냅샷의_카메라_프레임을_세션에_등록하고_구역_초안_입력_frames_에_싣는다() throws Exception {
+        Session s = startSession();
+        String prefix = "job-objects/site_setup/" + s.jobId() + "/" + s.leaseId() + "/";
+        ObjectNode calRef = put(prefix + "calibration-" + newCalibration + ".json", calibrationDocument(newCalibration, s.sessionId()));
+        ObjectNode previewRef = put(prefix + "preview_scene.glb", "glb-preview".getBytes(StandardCharsets.UTF_8));
+        ArrayNode frames = mapper.createArrayNode();
+        for (String cam : List.of("cam1", "cam2", "cam3", "cam4")) {
+            frames.add(frameRef(cam, put(prefix + "frame-" + cam + ".jpg", jpeg(cam)), "BLURRED"));
+        }
+        // 이 세션의 예전 시도(다른 대여)가 남긴 더 최근 프레임: 미리보기를 등록한 그 시도의 프레임만 입력에 싣는다
+        jdbc.update("""
+                INSERT INTO setup_session_artifact (setup_session_id, kind, version, job_id, lease_id, object_uri, sha256, size_bytes,
+                    registered_at, camera_id, face_policy)
+                VALUES (?::uuid, 'CAMERA_FRAME', 'cam1@eeeeeeeeeeee', 'job-old', ?::uuid, ?, ?, 10, now() + interval '1 hour', 'cam1',
+                    'EXCLUDED')
+                """, s.sessionId(), UUID.randomUUID().toString(), BUCKET + "job-objects/site_setup/job-old/lease-old/frame-cam1.jpg",
+                "e".repeat(64));
+
+        String preview = "scene-preview-" + s.jobId() + "-" + s.leaseId();
+        ObjectNode readySnap = withChecks(snapshot(s.sessionId(), "PREVIEW_AND_VLM_DRAFT", 80.0))
+                .put("calibration_version", newCalibration).put("preview_scene_version", preview);
+        ObjectNode artifacts = readySnap.putObject("artifacts");
+        artifacts.set("calibration_document", calRef);
+        artifacts.set("preview_scene", previewRef);
+        artifacts.set("camera_frames", frames);
+        mvc.perform(heartbeat(s, 0.8, readySnap)).andExpect(status().isOk());
+
+        assertThat(jdbc.queryForList("""
+                SELECT camera_id || ':' || face_policy || ':' || version FROM setup_session_artifact
+                WHERE setup_session_id = ?::uuid AND kind = 'CAMERA_FRAME' AND job_id = ? ORDER BY camera_id
+                """, String.class, s.sessionId(), s.jobId()))
+                .containsExactly("cam1:BLURRED:cam1@" + sha256Hex(jpeg("cam1")).substring(0, 12),
+                        "cam2:BLURRED:cam2@" + sha256Hex(jpeg("cam2")).substring(0, 12),
+                        "cam3:BLURRED:cam3@" + sha256Hex(jpeg("cam3")).substring(0, 12),
+                        "cam4:BLURRED:cam4@" + sha256Hex(jpeg("cam4")).substring(0, 12));
+
+        JsonNode draftInput = mapper.readTree(jdbc.queryForObject(
+                "SELECT input::text FROM analysis_job WHERE job_type = 'vlm_zone_draft'", String.class));
+        JsonNode inputFrames = draftInput.get("frames");
+        assertThat(inputFrames).isNotNull();
+        assertThat(inputFrames.size()).isEqualTo(4);
+        for (int i = 0; i < 4; i++) {
+            String cam = "cam" + (i + 1);
+            assertThat(inputFrames.get(i).get("camera_id").asString()).isEqualTo(cam);
+            assertThat(inputFrames.get(i).get("frame_uri").asString()).isEqualTo(BUCKET + prefix + "frame-" + cam + ".jpg");
+            assertThat(inputFrames.get(i).get("face_policy").asString()).isEqualTo("BLURRED");
+            assertThat(inputFrames.get(i).size()).isEqualTo(3);  // 계약 frame_input: 이 세 필드만 싣는다
+        }
+        assertThat(draftInput.get("preview_scene_uri").asString()).isEqualTo(BUCKET + prefix + "preview_scene.glb");
+
+        // 이어지는 하트비트가 같은 프레임을 다시 알려도 다시 읽지 않고 중복 등록하지 않는다
+        long before = jdbc.queryForObject("SELECT count(*) FROM setup_session_artifact WHERE kind = 'CAMERA_FRAME'", Long.class);
+        ObjectNode again = readySnap.deepCopy().put("status", "READY_FOR_ZONES").put("progress_pct", 85.0);
+        mvc.perform(heartbeat(s, 0.85, again)).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM setup_session_artifact WHERE kind = 'CAMERA_FRAME'", Long.class))
+                .isEqualTo(before);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM analysis_job WHERE job_type = 'vlm_zone_draft'", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void 프레임이_없으면_초안_입력에_frames_를_싣지_않는다() throws Exception {
+        Session s = startSession();
+        String prefix = "job-objects/site_setup/" + s.jobId() + "/" + s.leaseId() + "/";
+        ObjectNode calRef = put(prefix + "calibration-" + newCalibration + ".json", calibrationDocument(newCalibration, s.sessionId()));
+        ObjectNode previewRef = put(prefix + "preview_scene.glb", "glb-preview".getBytes(StandardCharsets.UTF_8));
+        ObjectNode readySnap = withChecks(snapshot(s.sessionId(), "READY_FOR_ZONES", 85.0))
+                .put("calibration_version", newCalibration).put("preview_scene_version", "scene-preview-nf-" + suffix);
+        ObjectNode artifacts = readySnap.putObject("artifacts");
+        artifacts.set("calibration_document", calRef);
+        artifacts.set("preview_scene", previewRef);
+        mvc.perform(heartbeat(s, 0.85, readySnap)).andExpect(status().isOk());
+        JsonNode draftInput = mapper.readTree(jdbc.queryForObject(
+                "SELECT input::text FROM analysis_job WHERE job_type = 'vlm_zone_draft'", String.class));
+        assertThat(draftInput.has("frames")).isFalse();
+    }
+
+    @Test
+    void 해시_JPEG_경로_카메라_집합이_어긋난_프레임은_거부하고_등록하지_않는다() throws Exception {
+        Session s = startSession();
+        String prefix = "job-objects/site_setup/" + s.jobId() + "/" + s.leaseId() + "/";
+        byte[] ok = jpeg("cam1");
+
+        // 알린 sha256 이 올린 바이트와 다름
+        assertFrameRejected(s, frameRef("cam1", put(prefix + "frame-a.jpg", ok).put("sha256", "0".repeat(64)), "BLURRED"));
+        // JPEG 가 아님(PNG 바이트)
+        assertFrameRejected(s, frameRef("cam1", put(prefix + "frame-b.jpg", new byte[] {(byte) 0x89, 'P', 'N', 'G', 1, 2}), "BLURRED"));
+        // 이 작업이 아닌 다른 작업의 결과 경로
+        assertFrameRejected(s, frameRef("cam1", put("job-objects/site_setup/job-other/" + s.leaseId() + "/frame-c.jpg", ok), "BLURRED"));
+        // 세션에 없는 카메라
+        assertFrameRejected(s, frameRef("camX", put(prefix + "frame-d.jpg", ok), "BLURRED"));
+        // 올리지 않은 객체
+        assertFrameRejected(s, frameRef("cam1", mapper.createObjectNode().put("uri", BUCKET + prefix + "frame-missing.jpg")
+                .put("sha256", sha256Hex(ok)).put("size_bytes", ok.length), "BLURRED"));
+        // 같은 스냅샷에 카메라 중복
+        ObjectNode dup = put(prefix + "frame-e.jpg", ok);
+        ObjectNode dupSnap = snapshot(s.sessionId(), "JOINT_BA_AND_VERIFY", 65.0);
+        dupSnap.putObject("artifacts").putArray("camera_frames").add(frameRef("cam1", dup, "BLURRED")).add(frameRef("cam1", dup, "EXCLUDED"));
+        mvc.perform(heartbeat(s, 0.65, dupSnap)).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_SETUP_PROGRESS"));
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM setup_session_artifact", Integer.class)).isZero();
+        // 올바른 프레임은 받는다(거부가 세션을 망가뜨리지 않았다)
+        ObjectNode fine = snapshot(s.sessionId(), "JOINT_BA_AND_VERIFY", 65.0);
+        fine.putObject("artifacts").putArray("camera_frames").add(frameRef("cam2", put(prefix + "frame-ok.jpg", jpeg("cam2")), "EXCLUDED"));
+        mvc.perform(heartbeat(s, 0.65, fine)).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT face_policy FROM setup_session_artifact WHERE kind = 'CAMERA_FRAME'", String.class))
+                .isEqualTo("EXCLUDED");
+    }
+
+    private void assertFrameRejected(Session s, ObjectNode frame) throws Exception {
+        ObjectNode snap = snapshot(s.sessionId(), "JOINT_BA_AND_VERIFY", 65.0);
+        snap.putObject("artifacts").putArray("camera_frames").add(frame);
+        mvc.perform(heartbeat(s, 0.65, snap)).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_SETUP_PROGRESS"));
+    }
+
+    private ObjectNode frameRef(String cameraId, ObjectNode ref, String facePolicy) {
+        ObjectNode out = mapper.createObjectNode().put("camera_id", cameraId);
+        out.setAll(ref);
+        return out.put("face_policy", facePolicy);
+    }
+
+    /** JPEG 시그니처(FF D8 FF)로 시작하는 카메라별로 다른 바이트 */
+    private static byte[] jpeg(String tag) {
+        byte[] body = ("jpeg-frame-" + tag).getBytes(StandardCharsets.UTF_8);
+        byte[] out = new byte[body.length + 4];
+        out[0] = (byte) 0xFF;
+        out[1] = (byte) 0xD8;
+        out[2] = (byte) 0xFF;
+        out[3] = (byte) 0xE0;
+        System.arraycopy(body, 0, out, 4, body.length);
+        return out;
+    }
+
     private String currentScene() {
         return jdbc.queryForList("SELECT scene_version FROM (" + SceneService.CURRENT_COMMITTED + ") s WHERE site_id = ?",
                 String.class, site).stream().findFirst().orElse(null);
@@ -525,7 +662,7 @@ class SetupResultRegisterIntegrationTest {
     private RequestBuilder heartbeat(Session s, double progress, ObjectNode siteSetup) {
         ObjectNode p = mapper.createObjectNode().put("job_id", s.jobId()).put("lease_id", s.leaseId()).put("progress", progress);
         p.set("site_setup", siteSetup);
-        ObjectNode env = envelope("job_heartbeat", "2.2.0", p);
+        ObjectNode env = envelope("job_heartbeat", "2.3.0", p);
         assertThat(schemas.violations("messages/job_heartbeat", env.toString())).isEmpty();
         return post("/api/worker/jobs/" + s.jobId() + "/heartbeat")
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
@@ -550,7 +687,7 @@ class SetupResultRegisterIntegrationTest {
     }
 
     private RequestBuilder callback(Session s, ObjectNode payload) {
-        ObjectNode env = envelope("job_callback", "2.9.0", payload);
+        ObjectNode env = envelope("job_callback", "2.10.0", payload);
         assertThat(schemas.violations("messages/job_callback", env.toString())).isEmpty();
         return post("/api/worker/jobs/" + s.jobId() + "/result")
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)

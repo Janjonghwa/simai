@@ -74,6 +74,11 @@
 - `setup_zone_draft_run` 테이블의 `UNIQUE (setup_session_id, preview_scene_version)` 제약으로 동일 프리뷰 맵 버전에 대해 중복 발행되지 않는다.
 - `vlm_zone_draft` 워커 부재나 작업 실패(`FAILED`/`TIMED_OUT`)는 `setup_zone_draft_run.status`에만 기록되며 `setup_session`의 진행·완료를 절대 실패시키지 않는다.
 
+### 3.4 카메라 프레임 입력 (`S15P31A101-479`)
+
+- `frames[]`(계약 `frame_input`: `camera_id`·`frame_uri`·`face_policy`)는 세팅 워커가 올려 서버가 세션에 등록한 카메라별 대표 프레임(사람 지운 배경, 긴 변 1280 px 이하 JPEG)이다. 서버는 미리보기를 등록한 그 시도의 프레임을 카메라당 하나, 최대 8개 싣고, 없으면 `frames` 를 싣지 않는다(후보 + "AI 의견 없음"). 등록·검사 규칙과 설계는 `site-setup-pipeline.md` 13.9.
+- 워커는 프레임 크기가 보정 `image_size` 와 다르면 그 카메라의 `K` 를 비례 축소해(`_fit_cameras_to_frames`) 후보를 투영하고 크롭한다. `decode` 를 주입받지 못하면 기본 `decode_image`(OpenCV)를 쓴다(운영 조립이 주입하지 않아 모든 프레임이 버려지던 결함 수정).
+
 ---
 
 ## 4. 버린 대안

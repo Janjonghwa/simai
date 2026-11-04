@@ -565,3 +565,49 @@ C–D 쌍은 여전히 4 px 이다(트랙이 적은 쌍, 11.2 와 같은 위험)
 12차 세션 절차 반영: lobby 명령은 그대로(`simai-bootstrap lobby --bundle-dir … --work …`). 워커 환경의 `SIMAI_STATE_DIR` 가 `<work>/state` 인지 워커 시작 로그("현장 세팅 상태 폴더 …")로 확인하고, 감시 로그의 MapAnything 가중치 준비 줄을 본 뒤 세팅을 시작한다. 세팅 시작부터 `COLLECTING_BACKGROUND` 수집률이 오르는지(약 100 s 안에 100) 보고, 실패하면 `<work>/state/worker/site-setup-failed/` 의 로그를 가져온다. 대기를 바꾸려면 `SIMAI_SETUP_BACKGROUND_WAIT_S`(lobby 를 띄우는 셸 환경, 감시 프로세스가 워커에 그대로 넘긴다).
 
 시험: `ai/tests/services/worker/test_site_setup.py`(대기 중 수집률 하트비트·단조 진행률·완성 뒤 진행, 대기 초과·취소, Tier 0 떠 있어도 굽기, 같은 묶음 재시도 → 같은 문서, 내용이 다르면 다른 버전), `test_site_setup_stages.py`(status.json 부분 수집률·다른 보정 0, 관측 시각, 운영 처리기 대기, 환경 설정, 실패 로그 끝·복사), `test_auto_static.py`(표시 파일 폴더 기본값), `ai/tests/deploy/test_simai_supervisor.py`(lobby 모든 프로세스의 `SIMAI_STATE_DIR`, 세팅 가중치를 VLM 다음에 모델 폴더 항목만·실패 경고·끄기·워커 없으면 안 받음).
+
+### 13.9 AI 구역 초안에 카메라 프레임 전달 (`S15P31A101-479`)
+
+-474 로 초안 입력에 미리보기 맵 주소는 실리지만 카메라 프레임이 없어 VLM 크롭 없이 기하 후보 + "AI 의견 없음"만 나왔다. 시연의 "AI 가 위험구역 이름·등급·이유를 제안"이 실제로 나오도록, 세팅 워커가 이미 가진 사람 지운 배경에서 카메라별 대표 프레임 1장을 올려 EC2 가 초안 입력 `frames` 에 싣는다.
+
+관련 명세: `docs/spec/05-processing.md` 5.3·5.4(VLM 입력 프레임·얼굴 정책), 15.1(얼굴), `12-interfaces.md` 12.5(I5). AGENTS 규칙 4(AI 는 제안만)·8(얼굴). 계약: `site_setup` 1.3.0, `job_heartbeat` 2.3.0, `job_callback` 2.10.0(README v7.10.0). `vlm_zone_draft` 1.0.0 은 바꾸지 않는다(`frames[]` 가 이미 있다). Flyway `V38__setup_session_artifact_camera_frame.sql`.
+
+흐름:
+
+1. 워커(g) 단계: `ProductionSiteSetupStages.publish_frames` 가 카메라마다 배경 묶음의 대표 배경(`clean_backgrounds.json` 의 `image`)을 디코드해 긴 변 1280 px 이하(`INTER_AREA`)·JPEG 품질 90 으로 줄여 `job-objects/site_setup/{job}/{lease}/frame-{camera_id}.jpg` 로 올린다(서명 PUT, 기존 산출물 경로). `SiteSetupHandler` 는 이를 미리보기 스냅샷(`PREVIEW_AND_VLM_DRAFT`)의 `artifacts.camera_frames[] = {camera_id, uri, sha256, size_bytes, face_policy}` 로 싣고 이후 스냅샷·결과에 이어 싣는다. 서버가 `calibration_version`·`preview_scene_version` 이 처음 함께 보이는 그 스냅샷에서 초안 작업을 한 번만 만들기 때문에(`UNIQUE (session, preview)`) 프레임은 반드시 그 스냅샷에 있어야 한다.
+2. 서버 `SetupArtifactRegistrar.registerFrames`: 키가 이 작업·이 대여 경로인지, 카메라가 세션 카메라인지(스냅샷 안 중복 불가, 최대 8), `face_policy` 가 BLURRED·EXCLUDED 인지 보고, 객체를 내려받아(상한 8 MiB) 크기·sha256·JPEG 시그니처(`FF D8 FF`)를 확인한 뒤 `setup_session_artifact`(kind `CAMERA_FRAME`, `version = <camera_id>@<sha256 앞 12자>`, `camera_id`·`face_policy` 열)에 이 세션 귀속으로 남긴다. 같은 내용을 다시 알리면(이어지는 하트비트) 다시 읽지 않고, 같은 버전에 다른 해시는 거부한다. 어긋나면 `INVALID_SETUP_PROGRESS`(400)로 그 하트비트 전체를 되돌린다.
+3. 서버 `SetupService.enqueueZoneDraftIfReady`: 미리보기를 등록한 그 시도(대여)의 프레임을 카메라당 하나, 최대 8개 `input.frames[] = {camera_id, frame_uri, face_policy}` 로 싣는다(재시도가 다른 배경 묶음을 썼을 수 있어 최근 등록분이 아니라 같은 대여 기준; 미리보기 행이 없으면 가장 최근 등록분). 프레임이 없으면 `frames` 를 싣지 않는다(기존 동작, "AI 의견 없음"). 워커 GET 서명은 input 에 적힌 주소만 허용하므로(`JobObjectSignService`) 다른 변경은 필요 없다.
+4. 초안 워커: `gate_input_frames` 로 얼굴 흐림 관문을 거친 `VlmFrame` 에서 후보별 크롭을 만들어 VLM 에 넣는다. 사람 지운 배경이라 얼굴이 원칙상 없어도 `face_policy` 대로 관문을 거치게 해 정책을 하나로 둔다.
+
+초안 워커 점검에서 찾아 고친 결함(이 티켓 범위: 워커 `vlm_zone_draft.py`):
+
+| 결함 | 원인 | 고친 것 |
+| --- | --- | --- |
+| 프레임이 항상 버려짐 | 운영 조립(`__main__.build_handlers`)이 `VlmZoneDraftHandler` 에 `decode` 를 넘기지 않아 `decode=None` 으로 관문에 들어가 모든 프레임이 `decode` 실패로 빠졌고, 그 결과 `NO_FACE_SAFE_FRAMES` 를 경고만 남기고 삼켜 늘 "AI 의견 없음"이었다(가짜 디코더를 주입한 기존 시험은 못 잡았다) | `decode` 가 없으면 `vlm_frames.decode_image`(OpenCV)를 쓴다(`vlm_rationale` 과 같은 기본값). 실패 로그에 사유를 붙였다 |
+| 줄인 프레임에서 크롭이 어긋남 | 보정 문서의 `K` 는 원본 해상도(`image_size`, 예 2304×1296) 기준인데 프레임은 긴 변 1280 으로 줄어 후보 투영 좌표가 프레임 밖/엉뚱한 곳이 된다 | `_fit_cameras_to_frames`: 프레임 크기가 `image_size` 와 다르면 그 카메라의 `K` 를 가로·세로 비율로 비례 축소한 사본을 쓴다(원본 보정은 건드리지 않음) |
+
+명세에 없어 정한 수치:
+
+| 값 | 근거 |
+| --- | --- |
+| 긴 변 1280 px, JPEG 품질 90 | 후보 크롭(후보 영역 + 25% 여백, 최소 64 px)을 VLM 에 넣기에 충분하고 1장 약 0.2~0.5 MB 라 카메라 4대를 하트비트 도중 올려도 부담이 작다. 계약 `vlm_zone_draft` 의 프레임 수 상한(8)을 그대로 따라 `camera_frames` 도 최대 8 |
+| 프레임 객체 상한 8 MiB(서버) | 1280 px JPEG 의 수십 배 여유. 큰 파일로 서버 메모리를 쓰게 하는 것을 막는다 |
+| 프레임 업로드 실패는 세팅을 실패시키지 않음 | 프레임은 AI 의견용 보조 산출물이다. 올리지 못하면 경고만 남기고 프레임 없이 이어가(초안은 기하 후보 + "AI 의견 없음"), 취소·시간 초과만 그대로 낸다. 서버가 거부(400)하는 잘못된 프레임은 워커가 만들지 않으므로 정상 경로에는 없다 |
+| `face_policy` 는 늘 `BLURRED` | 사람 지운 배경에서 온 프레임이라 원본 얼굴 픽셀은 원칙상 없지만, `OBSERVED` 는 계약상 금지이고 VLM 워커가 어차피 얼굴 흐림 관문을 거치게 한다 |
+
+버린 대안:
+
+1. **서버가 Tier 0 의 배경 묶음 주소를 직접 보관**: 배경 묶음은 Pod 로컬 파일이고 EC2 는 알 방법이 없다. 워커가 올리는 기존 산출물 경로를 재사용하는 편이 서명·해시·대여 검사를 그대로 쓴다.
+2. **원본 해상도 그대로 올리기**: 카메라당 수 MB 가 하트비트 도중 올라가고 VLM 입력에도 과하다. 대신 `K` 를 비례 축소한다.
+3. **프레임을 `vlm_zone_draft` 작업 입력에 base64 로 넣기**: 계약이 data URI·Base64 본문을 받지 않는다(`object_uri` 정의).
+4. **`version` 을 `camera_id` 로만 두기**: 재시도가 다른 배경 묶음을 쓰면 같은 키에 다른 해시가 되어 `INVALID_SETUP_PROGRESS` 로 세팅이 죽는다. 내용 해시 앞자리를 붙여 시도별로 다른 행이 되게 했다.
+
+잔여 위험과 넘긴 일:
+
+1. 후보 투영은 핀홀(왜곡 계수 미사용, 기존 동작)이다. 실제 카메라는 왜곡이 커서(예: k1≈-0.29) 화면 가장자리 후보의 크롭이 조금 어긋날 수 있다. 25% 여백이 일부 흡수한다. 왜곡 보정 투영은 넘긴다(후보가 가장자리에 걸리는지는 12차 GPU 세션에서 본다).
+2. 초안 워커가 프레임을 쓰려면 같은 Pod 에 pose 가중치(`SIMAI_TIER0_WEIGHTS`, 얼굴 처리용)와 VLM 서버가 있어야 한다. 없으면 `provider is None` 이라 프레임을 무시하고 "AI 의견 없음"이다(기존 동작). 실제 Cosmos 응답 품질·후보당 지연은 12차 GPU 세션에서 `vlm-zone-draft.md` 5절 절차로 잰다.
+3. 프레임은 사람 지운 배경 1장이라 사람·가림이 없는 정적 장면만 본다. 그래서 VLM 의견은 "무엇이 있는 구역인가"(작업대·개구부 등)에 한정되고 위험 판정에는 쓰이지 않는다(`safety_use: false`, 규칙 4).
+4. 프레임 객체의 보존 기간은 저장소 수명 규칙을 따른다(스틸 카메라당 1장).
+
+시험: `ai/tests/services/worker/test_site_setup.py`(프레임이 미리보기 스냅샷부터 `camera_frames` 로 실림·계약 적합, 못 올려도 세팅 유지·취소는 전파, 세션 밖 카메라·중복 제거), `test_site_setup_stages.py`(카메라별 JPEG·긴 변 1280·sha256·같은 배경 → 같은 바이트, 못 쓰는 배경 건너뜀, 저장소 실패 매핑), `test_vlm_zone_draft.py`(워커가 올린 프레임 → 입력 `frames` → 기본 디코더로 후보별 크롭이 VLM 에 들어감, 줄인 프레임에 맞춘 `K` 축소), 서버 `SetupResultRegisterIntegrationTest`(프레임 등록·`frames` 입력·같은 대여 프레임 선택·멱등, 프레임 없으면 `frames` 없음, 해시·JPEG·경로·카메라 집합·중복 거부). 계약 `job_heartbeat.site_setup_preview_frames`·`job_callback.site_setup`, 반례 `job_heartbeat.site_setup_bad_frame_policy`.
+

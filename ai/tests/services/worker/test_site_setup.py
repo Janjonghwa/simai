@@ -22,6 +22,7 @@ from services.worker.handlers import SITE_SETUP_STAGES, JobContext, JobFailed
 from services.worker.runner import Outcome, Worker
 from services.worker.site_setup import (
     BakedScene,
+    CameraFrameRef,
     CameraPose,
     CleanBackgroundBundle,
     InitialWorldReconstruction,
@@ -712,3 +713,75 @@ def test_stage_a_version_changes_when_content_changes() -> None:
     assert base == _derive_new_calibration_version("cal-x", R, ["a", "b"], "sha-1")
     assert base != _derive_new_calibration_version("cal-x", R, ["a", "b"], "sha-2")
     assert base.startswith("cal-x-jba2-")
+
+
+# ---------------------------------------------------------------------------- S15P31A101-479
+def _frame_publisher(prefix: str = "s3://bucket/job-objects/site_setup/job-f/lease-f/") -> Any:
+    def publish(*, setup_session_id: str, camera_ids: tuple[str, ...], backgrounds: CleanBackgroundBundle) -> list[CameraFrameRef]:
+        return [CameraFrameRef(cid, ObjectRef(f"{prefix}frame-{cid}.jpg", f"{idx + 1:x}" * 64, 1000 + idx))
+                for idx, cid in enumerate(camera_ids)]
+    return publish
+
+
+def test_camera_frames_ride_the_preview_snapshot_so_the_server_can_queue_the_draft() -> None:
+    """프레임은 미리보기 스냅샷(서버가 구역 초안 작업을 만드는 그 스냅샷)부터 artifacts.camera_frames 로 실리고 결과까지 이어진다."""
+    handler, inp, _ = _room_handler(
+        lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+        frame_publisher=_frame_publisher(),
+        preview_builder=lambda **kw: PreviewDraftResult("scene-p", scene_asset=ObjectRef("s3://bucket/job-objects/site_setup/job-f/lease-f/p.glb", "a" * 64, 5)),
+    )
+    ctx = JobContext("job-f", "0192a6f0-7c1e-7b3a-9f2d-000000000479", "site_setup", 1, inp)
+    result = handler(ctx)
+    by_stage = {s["status"]: s for s in ctx.site_setup_history}
+    camera_ids = inp["calibration_target"]["camera_ids"]
+    assert "camera_frames" not in by_stage["JOINT_BA_AND_VERIFY"].get("artifacts", {})
+    frames = by_stage["PREVIEW_AND_VLM_DRAFT"]["artifacts"]["camera_frames"]
+    assert [f["camera_id"] for f in frames] == camera_ids
+    assert all(f["face_policy"] == "BLURRED" and f["uri"].endswith(f"frame-{f['camera_id']}.jpg") for f in frames)
+    assert by_stage["READY_FOR_ZONES"]["artifacts"]["camera_frames"] == frames
+    assert result["artifacts"]["camera_frames"] == frames and "preview_scene" in result["artifacts"]
+    for snap in ctx.site_setup_history:
+        assert schema_errors(snap, {"$ref": "https://simai.dev/contracts/messages/site_setup.schema.json#/$defs/progress"}) == []
+    assert schema_errors(result, {"$ref": "https://simai.dev/contracts/messages/site_setup.schema.json#/$defs/result"}) == []
+
+
+def test_without_frame_publisher_artifacts_have_no_camera_frames() -> None:
+    handler, inp, _ = _room_handler(lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td))
+    result = handler(JobContext("job-f", "0192a6f0-7c1e-7b3a-9f2d-000000000480", "site_setup", 1, inp))
+    assert "artifacts" not in result
+
+
+def test_frame_upload_failure_does_not_fail_setup_but_cancel_still_does(caplog: pytest.LogCaptureFixture) -> None:
+    """프레임은 AI 의견용 보조 산출물: 올리지 못하면 프레임 없이 끝낸다(경고). 취소는 그대로 취소한다."""
+    def failing(**kw: Any) -> list[CameraFrameRef]:
+        raise JobFailed("SETUP_OBJECT_FAILED", "5xx", retryable=True)
+
+    handler, inp, _ = _room_handler(lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+                                    frame_publisher=failing)
+    ctx = JobContext("job-f", "0192a6f0-7c1e-7b3a-9f2d-000000000481", "site_setup", 1, inp)
+    with caplog.at_level("WARNING", logger="services.worker"):
+        result = handler(ctx)
+    assert result["status"] == "COMPLETED" and "artifacts" not in result
+    assert "프레임 없이 진행" in caplog.text
+
+    def cancel_then_fail(**kw: Any) -> list[CameraFrameRef]:
+        ctx2.cancelled.set()
+        raise JobFailed("SETUP_OBJECT_FAILED", "5xx", retryable=True)
+
+    handler2, _, _ = _room_handler(lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+                                   frame_publisher=cancel_then_fail)
+    ctx2 = JobContext("job-f", "0192a6f0-7c1e-7b3a-9f2d-000000000482", "site_setup", 1, inp)
+    with pytest.raises(JobFailed) as exc:
+        handler2(ctx2)
+    assert exc.value.code == "CANCELLED"
+
+
+def test_frame_refs_outside_the_session_cameras_are_dropped_and_capped() -> None:
+    def odd(*, setup_session_id: str, camera_ids: tuple[str, ...], backgrounds: CleanBackgroundBundle) -> list[CameraFrameRef]:
+        ref = ObjectRef("s3://bucket/job-objects/site_setup/j/l/f.jpg", "a" * 64, 1)
+        return [CameraFrameRef("camX", ref), CameraFrameRef(camera_ids[0], ref), CameraFrameRef(camera_ids[0], ref)]
+
+    handler, inp, _ = _room_handler(lambda td, cams: CleanBackgroundBundle("b", dict.fromkeys(cams, 100.0), tracks_doc=td),
+                                    frame_publisher=odd)
+    result = handler(JobContext("job-f", "0192a6f0-7c1e-7b3a-9f2d-000000000483", "site_setup", 1, inp))
+    assert [f["camera_id"] for f in result["artifacts"]["camera_frames"]] == [inp["calibration_target"]["camera_ids"][0]]

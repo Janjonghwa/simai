@@ -8,6 +8,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 import pytest
 
 from services.worker.auto_static import AutoStaticSettings, calibration_document_path
@@ -310,3 +312,56 @@ def test_production_handler_keeps_failed_stage_logs(tmp_path: Path) -> None:
         handler(_ctx())  # 묶음이 없어 단계 전에 끝난다: 남길 로그가 없으면 아무것도 만들지 않는다
     assert exc.value.code == "BACKGROUND_INCOMPLETE"
     assert [p.name for p in (settings.state_dir / "worker" / "site-setup-failed").iterdir()] == ["job-1-lease-1"]
+
+
+# ---------------------------------------------------------------------------- S15P31A101-479
+def _png(width: int, height: int, seed: int = 0) -> bytes:
+    image = np.random.default_rng(seed).integers(0, 255, size=(height, width, 3), dtype=np.uint8)
+    ok, raw = cv2.imencode(".png", image)
+    assert ok
+    return bytes(raw.tobytes())
+
+
+def _frames_bundle(tmp_path: Path, sizes: dict[str, tuple[int, int]]) -> CleanBackgroundBundle:
+    frames = {}
+    for idx, (cid, (w, h)) in enumerate(sizes.items()):
+        path = tmp_path / f"{cid}.png"
+        path.write_bytes(_png(w, h, idx))
+        frames[cid] = [path]
+    return CleanBackgroundBundle(BUNDLE, dict.fromkeys(sizes, 100.0), frames)
+
+
+def test_publish_frames_uploads_one_small_jpeg_per_camera_with_sha(tmp_path: Path) -> None:
+    store = _Store()
+    s = _stages(tmp_path, _Stages(), store)
+    bundle = _frames_bundle(tmp_path, {"cam_A": (2304, 1296), "cam_B": (640, 360)})
+    got = s.publish_frames(setup_session_id="s", camera_ids=("cam_A", "cam_B"), backgrounds=bundle)
+    assert [g.camera_id for g in got] == ["cam_A", "cam_B"] and {g.face_policy for g in got} == {"BLURRED"}
+    assert [(n, ct) for n, _, ct in store.puts] == [("frame-cam_A.jpg", "image/jpeg"), ("frame-cam_B.jpg", "image/jpeg")]
+    for ref, (_, raw, _) in zip(got, store.puts, strict=True):
+        assert ref.ref == ObjectRef(f"s3://bucket/frame-{ref.camera_id}.jpg", hashlib.sha256(raw).hexdigest(), len(raw))
+        assert raw[:3] == b"\xff\xd8\xff"
+    sizes = [cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR).shape[:2] for _, raw, _ in store.puts]
+    assert sizes == [(720, 1280), (360, 640)]  # 긴 변 1280 이하로만 줄이고 작은 것은 그대로
+    # 같은 배경이면 같은 JPEG(재시도해도 같은 sha256)
+    again = _Store()
+    _stages(tmp_path, _Stages(), again).publish_frames(setup_session_id="s", camera_ids=("cam_A", "cam_B"), backgrounds=bundle)
+    assert [r[1] for r in again.puts] == [r[1] for r in store.puts]
+
+
+def test_publish_frames_skips_cameras_without_usable_background(tmp_path: Path) -> None:
+    store = _Store()
+    s = _stages(tmp_path, _Stages(), store)
+    bundle = _frames_bundle(tmp_path, {"cam_A": (320, 240)})
+    (tmp_path / "bad.png").write_bytes(b"not an image")
+    bundle = CleanBackgroundBundle(BUNDLE, dict.fromkeys(("cam_A", "cam_B", "cam_C"), 100.0),
+                                   {**bundle.frames_by_cam, "cam_B": [tmp_path / "bad.png"]})
+    got = s.publish_frames(setup_session_id="s", camera_ids=("cam_A", "cam_B", "cam_C"), backgrounds=bundle)
+    assert [g.camera_id for g in got] == ["cam_A"] and len(store.puts) == 1  # 못 만든 프레임은 지어내지 않고 건너뛴다
+
+
+def test_publish_frames_maps_object_store_failure_to_job_failure(tmp_path: Path) -> None:
+    s = _stages(tmp_path, _Stages(), _Store(ObjectStoreError("5xx", retryable=True)))
+    with pytest.raises(JobFailed) as exc:
+        s.publish_frames(setup_session_id="s", camera_ids=("cam_A",), backgrounds=_frames_bundle(tmp_path, {"cam_A": (64, 64)}))
+    assert exc.value.code == "SETUP_OBJECT_FAILED" and exc.value.retryable is True

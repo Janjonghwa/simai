@@ -37,6 +37,9 @@ import tools.jackson.databind.ObjectMapper;
  *       {@link CalibrationService} 검사(계약·현장·content_hash·같은 버전 잠금)를 거쳐 새 calibration_version 으로 추가한다(덮어쓰지 않음).
  *   <li>GLB 는 크기가 커서 내려받지 않는다. HEAD 로 있는지·크기·저장소가 기록한 SHA-256(올릴 때 서명에 묶은 값)을 대조한 뒤
  *       scene_version 후보(CANDIDATE)로 추가한다. 활성화는 관리자가 한다(자동 활성화 없음).
+ *   <li>카메라 프레임({@code camera_frames}, site_setup 1.3.0, S15P31A101-479)은 AI 구역 초안의 VLM 입력이라 작은 JPEG 이다. 내려받아
+ *       크기·sha256·JPEG 시그니처를 확인하고, 카메라가 이 세션의 것이며 한 스냅샷에 카메라당 하나인지 본 뒤 CAMERA_FRAME 으로 보관한다
+ *       (얼굴 정책 BLURRED·EXCLUDED 만. {@code SetupService} 가 vlm_zone_draft 입력 frames 에 싣는다).
  *   <li>등록한 버전은 {@code setup_session_artifact} 에 이 세션 귀속으로 남긴다(추가만). 버전 계보 검사가 이 귀속을 본다:
  *       다른 세팅 세션에 귀속된 버전은 그 세션 것이다.
  * </ul>
@@ -59,6 +62,13 @@ class SetupArtifactRegistrar {
     static final String CALIBRATION = "CALIBRATION";
     static final String PREVIEW_SCENE = "PREVIEW_SCENE";
     static final String SCENE = "SCENE";
+    static final String CAMERA_FRAME = "CAMERA_FRAME";
+    /** 카메라 프레임 상한: 계약은 긴 변 1280 px JPEG(수백 KB). VLM 입력이라 크게 받지 않는다 */
+    static final int MAX_FRAME_BYTES = 8 << 20;
+    /** 계약 artifacts.camera_frames maxItems = vlm_zone_draft frames maxItems */
+    static final int MAX_FRAMES = 8;
+    private static final Set<String> FACE_POLICIES = Set.of("BLURRED", "EXCLUDED");
+    private static final Pattern CAMERA_ID = Pattern.compile("^[A-Za-z0-9_-]+$");
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectStorage storage;
@@ -106,6 +116,10 @@ class SetupArtifactRegistrar {
                     + (previewSceneVersion == null ? "" : "; replaces_preview_scene=" + previewSceneVersion);
             registerScene(target, ObjectRef.of(scene), SCENE, required(sceneVersion), required(calibrationVersion), notes);
         }
+        JsonNode frames = artifacts.get("camera_frames");
+        if (frames != null && !frames.isNull()) {
+            registerFrames(target, frames);
+        }
     }
 
     /** 이 세션이 artifacts 로 등록한 보정인지 */
@@ -115,6 +129,48 @@ class SetupArtifactRegistrar {
                                WHERE setup_session_id = :id AND kind = :kind AND version = :v)
                 """, new MapSqlParameterSource("id", setupSessionId).addValue("kind", kind).addValue("v", version),
                 Boolean.class));
+    }
+
+    private void registerFrames(Target target, JsonNode frames) {
+        if (!frames.isArray() || frames.size() > MAX_FRAMES) {
+            throw invalid();
+        }
+        Set<String> seen = new TreeSet<>();
+        for (JsonNode frame : frames.values()) {
+            if (!frame.isObject()) {
+                throw invalid();
+            }
+            String cameraId = frame.path("camera_id").asString(null);
+            String facePolicy = frame.path("face_policy").asString(null);
+            if (cameraId == null || !CAMERA_ID.matcher(cameraId).matches() || !target.cameraIds().contains(cameraId)
+                    || !seen.add(cameraId) || facePolicy == null || !FACE_POLICIES.contains(facePolicy)) {
+                throw invalid();
+            }
+            registerFrame(target, ObjectRef.of(frame), cameraId, facePolicy);
+        }
+    }
+
+    private void registerFrame(Target target, ObjectRef ref, String cameraId, String facePolicy) {
+        // 내용이 다르면 다른 행(재시도가 다른 배경 묶음을 쓸 수 있다). 같은 내용을 다시 알리면(이어지는 하트비트) 다시 읽지 않는다
+        String version = cameraId + "@" + ref.sha256().substring(0, 12);
+        if (alreadyLinked(target, CAMERA_FRAME, version, ref)) {
+            return;
+        }
+        String key = keyOf(target, ref.uri());
+        byte[] content = storage.read(key, MAX_FRAME_BYTES).orElseThrow(SetupArtifactRegistrar::invalid);
+        if ((ref.sizeBytes() != null && ref.sizeBytes() != content.length) || !ref.sha256().equals(sha256Hex(content))) {
+            log.info("세팅 카메라 프레임 거부: 크기·해시가 알린 값과 다르다(세션 {}, 카메라 {})", target.setupSessionId(), cameraId);
+            throw invalid();
+        }
+        if (!isJpeg(content)) {
+            log.info("세팅 카메라 프레임 거부: JPEG 가 아니다(세션 {}, 카메라 {})", target.setupSessionId(), cameraId);
+            throw invalid();
+        }
+        link(target, CAMERA_FRAME, version, ref, cameraId, facePolicy);
+    }
+
+    private static boolean isJpeg(byte[] content) {
+        return content.length > 3 && (content[0] & 0xFF) == 0xFF && (content[1] & 0xFF) == 0xD8 && (content[2] & 0xFF) == 0xFF;
     }
 
     private void registerCalibration(Target target, ObjectRef ref, String version) {
@@ -224,15 +280,20 @@ class SetupArtifactRegistrar {
     }
 
     private void link(Target target, String kind, String version, ObjectRef ref) {
+        link(target, kind, version, ref, null, null);
+    }
+
+    private void link(Target target, String kind, String version, ObjectRef ref, String cameraId, String facePolicy) {
         jdbc.update("""
                 INSERT INTO setup_session_artifact (setup_session_id, kind, version, job_id, lease_id, object_uri, sha256,
-                    size_bytes, registered_at)
-                VALUES (:id, :kind, :v, :job, :lease, :uri, :sha, :size, :now)
+                    size_bytes, registered_at, camera_id, face_policy)
+                VALUES (:id, :kind, :v, :job, :lease, :uri, :sha, :size, :now, :camera, :face)
                 ON CONFLICT (setup_session_id, kind, version) DO NOTHING
                 """, new MapSqlParameterSource()
                 .addValue("id", target.setupSessionId()).addValue("kind", kind).addValue("v", version)
                 .addValue("job", target.jobId()).addValue("lease", target.leaseId()).addValue("uri", ref.uri())
                 .addValue("sha", ref.sha256()).addValue("size", ref.sizeBytes())
+                .addValue("camera", cameraId).addValue("face", facePolicy)
                 .addValue("now", OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC)));
     }
 

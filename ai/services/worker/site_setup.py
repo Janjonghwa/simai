@@ -9,7 +9,8 @@
     (-462 정물 교차 확인은 `object_cross_checker` 확장 지점만 둔다)
 (e) JOINT_BA_AND_VERIFY: V2 Stage A 회전 BA (`INSUFFICIENT_FEATURES`, `VALIDATION_REJECTED`)
 (f) JOINT_BA_AND_VERIFY: 새 `calibration_version` 보정 문서 등록(덮어쓰지 않음)
-(g) PREVIEW_AND_VLM_DRAFT → READY_FOR_ZONES: 미리보기 맵(`preview_scene_version`) 생성·등록
+(g) PREVIEW_AND_VLM_DRAFT → READY_FOR_ZONES: 미리보기 맵(`preview_scene_version`) 생성·등록 + 카메라별 대표 프레임 업로드·등록
+    (`artifacts.camera_frames`, S15P31A101-479: 서버가 이 스냅샷으로 AI 구역 초안 작업을 만들 때 VLM 크롭 입력으로 싣는다)
 (h) BAKING_TEXTURE → COMPLETED: 고화질 정적 3D 굽기(`scene_version`). 세팅은 서버가 진행 중 작업(IN_PROGRESS)이 없을 때만
     시작시키므로(-467, 409) Tier 0 표시 파일이 있어도 굽는다(`live_notice` 는 로그만). `live_gate` 는 "LIVE 작업 중" 신호를
     받을 자리로 남긴다(지금 서버가 워커에 주는 그런 신호는 없다, S15P31A101-473)
@@ -21,6 +22,10 @@ COLLECTING_BACKGROUND 하트비트로 보낸다. 보정 문서의 생성 시각(
 산출물을 객체 저장소에 올린 주입점은 그 객체 참조(`ObjectRef`)를 함께 돌려주고, 처리기는 그 뒤 스냅샷·결과의 선택 `artifacts`
 (site_setup 1.2.0, S15P31A101-467)에 싣는다. EC2 는 이 참조로 문서·GLB 를 확인해 새 보정·Scene 버전을 등록한다(서버 등록 경로).
 버전 문자열만 돌려주는 주입점(시험·기본값)은 그대로 받고 `artifacts` 를 싣지 않는다.
+
+카메라 프레임(`frame_publisher`)은 AI 의견을 위한 보조 산출물이다. 올리지 못해도(저장소 오류 등) 세팅을 실패시키지 않고 프레임 없이
+이어가며(초안은 \"AI 의견 없음\"), 취소·시간 초과만 그대로 낸다. 프레임은 사람 지운 배경이라 얼굴이 원칙상 없지만 계약의 얼굴 정책
+(`face_policy`, BLURRED)을 함께 싣고, VLM 워커가 그 정책대로 얼굴 흐림 관문을 거친다.
 """
 
 from __future__ import annotations
@@ -61,6 +66,8 @@ from simai_ai.tracking.system_health import CalibrationState
 from .handlers import JobContext, JobFailed
 
 log = logging.getLogger("services.worker")
+
+MAX_CAMERA_FRAMES = 8  # site_setup#/$defs/artifacts/camera_frames maxItems = vlm_zone_draft frames maxItems
 
 SITE_SETUP_INPUT_SCHEMA = {
     "$ref": "https://simai.dev/contracts/messages/site_setup.schema.json#/$defs/input"
@@ -129,6 +136,18 @@ class ObjectRef:
 
 
 @dataclass(frozen=True, slots=True)
+class CameraFrameRef:
+    """(g) 카메라 하나의 대표 프레임(JPEG)과 올린 객체 참조(계약 site_setup#/$defs/camera_frame_ref)."""
+
+    camera_id: str
+    ref: ObjectRef
+    face_policy: str = "BLURRED"  # VLM 입력 얼굴 정책(OBSERVED 금지)
+
+    def to_json(self) -> dict[str, Any]:
+        return {"camera_id": self.camera_id, **self.ref.to_json(), "face_policy": self.face_policy}
+
+
+@dataclass(frozen=True, slots=True)
 class PublishedCalibration:
     """(f) 올린 새 보정 문서의 버전과 객체 참조."""
 
@@ -190,6 +209,16 @@ class PreviewSceneBuilder(Protocol):
         calibration_doc: Mapping[str, Any],
         backgrounds: CleanBackgroundBundle,
     ) -> PreviewDraftResult: ...
+
+
+class CameraFramePublisher(Protocol):
+    def __call__(
+        self,
+        *,
+        setup_session_id: str,
+        camera_ids: Sequence[str],
+        backgrounds: CleanBackgroundBundle,
+    ) -> Sequence[CameraFrameRef]: ...
 
 
 class TextureSceneBaker(Protocol):
@@ -331,6 +360,7 @@ class SiteSetupHandler:
         calibration_publisher: CalibrationPublisher | None = None,
         preview_builder: PreviewSceneBuilder | None = None,
         texture_baker: TextureSceneBaker | None = None,
+        frame_publisher: CameraFramePublisher | None = None,
         object_cross_checker: ObjectScaleCrossChecker | None = None,
         feature_matcher: Callable[[np.ndarray, np.ndarray], Sequence[Mapping[str, Any]]] | None = None,
         live_gate: Callable[[], bool] | None = None,
@@ -355,6 +385,7 @@ class SiteSetupHandler:
         )
         self._build_preview = preview_builder or self._default_preview_builder
         self._bake_texture = texture_baker or self._default_texture_baker
+        self._publish_frames = frame_publisher
         self._object_cross_checker = object_cross_checker
         self._feature_matcher = feature_matcher
         self._live_gate = live_gate or (lambda: False)
@@ -475,6 +506,30 @@ class SiteSetupHandler:
                 })
                 last_sent = key
             self._sleep(ctx.cancelled, min(self._bg_poll_s, remaining))
+
+    def _publish_camera_frames(
+        self, ctx: JobContext, setup_session_id: str, camera_ids: tuple[str, ...], bundle: CleanBackgroundBundle,
+    ) -> list[CameraFrameRef]:
+        """(g) 카메라별 대표 프레임을 올려 `artifacts.camera_frames` 로 알린다. 못 올리면 프레임 없이 이어간다(AI 의견 없음).
+
+        취소·시간 초과는 그대로 낸다. 그 밖의 실패는 로그만 남긴다(구역 초안은 프레임 없이도 기하 후보를 낸다).
+        """
+        if self._publish_frames is None:
+            return []
+        try:
+            frames = list(self._publish_frames(setup_session_id=setup_session_id, camera_ids=camera_ids, backgrounds=bundle))
+        except JobFailed as exc:
+            self._check_cancelled(ctx)
+            log.warning("작업 %s: 카메라 프레임을 올리지 못해 AI 구역 초안은 프레임 없이 진행한다(%s)", ctx.job_id, exc)
+            return []
+        known = set(camera_ids)
+        seen: set[str] = set()
+        out: list[CameraFrameRef] = []
+        for frame in frames:
+            if frame.camera_id in known and frame.camera_id not in seen:
+                seen.add(frame.camera_id)
+                out.append(frame)
+        return out[:MAX_CAMERA_FRAMES]  # 계약 camera_frames maxItems
 
     def _created_at_ms(self, bundle: CleanBackgroundBundle) -> int:
         """보정 문서 생성 시각: 묶음의 마지막 관측 시각(같은 묶음 → 같은 값). 모르면 처리기 시계(재시도 결정론 없음, 로그)."""
@@ -624,6 +679,7 @@ class SiteSetupHandler:
             calibration_doc=stage_a.calibration_doc,
             backgrounds=bg_bundle,
         )
+        camera_frames = self._publish_camera_frames(ctx, setup_session_id, camera_ids, bg_bundle)
         stage_seconds["PREVIEW_AND_VLM_DRAFT"] = round(
             max(0.0, self._perf() - t0), 4
         )
@@ -646,6 +702,8 @@ class SiteSetupHandler:
             preview_snapshot["object_cross_checks"] = stage_a.object_cross_checks
         if preview.scene_asset is not None:
             artifacts["preview_scene"] = preview.scene_asset.to_json()
+        if camera_frames:
+            artifacts["camera_frames"] = [frame.to_json() for frame in camera_frames]
         if artifacts:
             preview_snapshot["artifacts"] = dict(artifacts)
         self._emit_progress(ctx, preview_snapshot)
