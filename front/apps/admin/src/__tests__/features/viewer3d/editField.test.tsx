@@ -330,4 +330,18 @@ describe('연속 7핸들 세션·호버 강조·미저장 미리보기 겹침(�
     await mount({ target: { type: 'zone', id: 'missing' }, box: overlay.box });
     expect(named('edit-draft-overlay:')).toHaveLength(0);
   });
+
+  it('미저장 미리보기 Ghost 이름표는 구역 이름과 미저장만 적는다(구역 번호 없음)', async () => {
+    const fillText = vi.fn();
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 12 }),
+      beginPath: () => {},
+      roundRect: () => {},
+      fill: () => {},
+      fillText,
+    } as unknown as CanvasRenderingContext2D);
+    await mount({ target: Z1, box: { min: [2, 5, 0], max: [5, 8, 2] } });
+    const texts = fillText.mock.calls.map(([text]) => text as string);
+    expect(texts).toEqual(['예시 구역 A · 미저장']);
+  });
 });

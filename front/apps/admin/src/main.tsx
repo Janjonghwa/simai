@@ -15,6 +15,7 @@ import { realtime } from '@/lib/realtime';
 import { routeTree } from '@/routeTree.gen';
 import { useSessionStore } from '@/store/session.store';
 import { clearZoneDrafts } from '@/store/zoneEdit.store';
+import { stopZoneEdit } from '@/store/zoneEditMode.store';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createRouter, RouterProvider } from '@tanstack/react-router';
 import { StrictMode } from 'react';
@@ -23,9 +24,10 @@ import { createRoot } from 'react-dom/client';
 /** 앱을 켤 때 세션 복구를 기다리는 시간(ms). 넘으면 로그인 화면부터 그린다. */
 const RESTORE_WAIT_MS = 3000;
 
-/** 사용자가 끝나면(로그아웃·다른 계정·권한 변경) 그 사용자의 화면 상태를 비운다: 구역 초안, 지운 이벤트 기준 시각. */
+/** 사용자가 끝나면(로그아웃·다른 계정·권한 변경) 그 사용자의 화면 상태를 비운다: 구역 초안, 편집 모드, 지운 이벤트 기준 시각. */
 const clearUserScreenState = () => {
   clearZoneDrafts();
+  stopZoneEdit();
   resetEventClear();
 };
 
@@ -43,8 +45,6 @@ declare module '@tanstack/react-router' {
     fullBleed?: boolean;
     /** 오른쪽에 이벤트 패널이 있다(실시간 관제). 경보 배너가 그 자리를 비키고 「상세」를 이 화면에서 연다. */
     eventPanel?: boolean;
-    /** 구역 편집 화면(/zones). 같은 3D World 위에 편집 오버레이·가장자리 음영·미저장 Ghost 를 켠다. */
-    zoneEditor?: boolean;
   }
 }
 

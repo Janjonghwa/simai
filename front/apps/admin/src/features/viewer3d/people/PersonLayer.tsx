@@ -30,7 +30,6 @@ import {
 import {
   AVATAR_PLAYBACK_DELAY_MS,
   avatarMeshStatus,
-  avatarMeshTag,
 } from '@/features/viewer3d/people/avatarMeshPolicy';
 import {
   instantiateAvatar,
@@ -45,7 +44,6 @@ import {
   headingFromSamples,
   isWalking,
   needsSnap,
-  personLabel,
   personPose,
   personTone,
   POSITION_RATE,
@@ -61,9 +59,9 @@ import {
   type SkeletonFigure,
 } from '@/features/viewer3d/people/skeletonPose';
 import { PersonRiskMark } from '@/features/viewer3d/risk/RiskMarks';
-import { riskLabel, riskStyle } from '@/features/viewer3d/risk/riskPresentation';
+import { riskStyle } from '@/features/viewer3d/risk/riskPresentation';
 import { useRiskHighlight } from '@/features/viewer3d/risk/RiskScope';
-import { useIsHovered, useScenePalette } from '@/features/viewer3d/sceneTheme';
+import { useScenePalette } from '@/features/viewer3d/sceneTheme';
 import { Selectable } from '@/features/viewer3d/Selectable';
 import { useViewerStore } from '@/features/viewer3d/ViewerStoreContext';
 import { worldToThree, type ThreePoint } from '@/features/viewer3d/worldCoordinates';
@@ -106,7 +104,7 @@ const trackOf = (world: WorldFrame | null, worldId: string): TrackView | undefin
 const selectIds = (state: SpatialDataState) =>
   (state.world?.tracks ?? []).map((track) => track.worldId).join('\n');
 
-/** 이 사람의 표시가 바뀌는 상태만 묶는다(관측 상태·위치 근거·골격 사용 여부·연결·ID 교정). 좌표는 넣지 않는다. */
+/** 이 사람의 표시가 바뀌는 상태만 묶는다(관측 상태·위치 근거·골격 사용 여부·ID 교정). 좌표는 넣지 않는다. */
 function statusKey(state: SpatialDataState, worldId: string) {
   const track = trackOf(state.world, worldId);
   if (!track) return '';
@@ -114,7 +112,6 @@ function statusKey(state: SpatialDataState, worldId: string) {
     track.observationState,
     trackPlacement(track).basis,
     skeletonUsable(track) ? 'SKELETON' : 'BODY',
-    state.connection?.state ?? 'NONE',
     track.identityRevision,
   ].join('|');
 }
@@ -157,17 +154,6 @@ interface Motion {
   pelvis: ThreePoint | null;
 }
 
-interface MeshView {
-  use: boolean;
-  tag: string | null;
-}
-
-/**
- * 이름표에 적는 HMR 지연이 이만큼(ms) 바뀔 때만 고친다. World 10 Hz·포즈 5 Hz 라 지연이 100 ms 씩 오르내려,
- * 그대로 적으면 이름표 텍스처를 초당 여러 번 다시 만든다.
- */
-const LAG_LABEL_STEP_MS = 150;
-
 function PersonAvatar({
   worldId,
   model,
@@ -187,7 +173,6 @@ function PersonAvatar({
   // 위험 강조는 이벤트가 바뀔 때만 달라진다. 위치·동작 기록(motion)은 그대로 둔다.
   const risk = useRiskHighlight('person', worldId);
   const palette = useScenePalette();
-  const hovered = useIsHovered(`person:${worldId}`);
   const [hasLastValid, setHasLastValid] = useState(false);
   // EXP-02 메시(-65). 자산 key 가 바뀔 때만 다시 그린다(포즈는 5 Hz 로 오지만 useFrame 에서만 읽는다).
   const meshConfig = useContext(AvatarMeshContext);
@@ -214,9 +199,8 @@ function PersonAvatar({
     meshConfig.fetch,
   );
   const [player] = useState(() => new PosePlayer());
-  const [meshView, setMeshView] = useState<MeshView>({ use: false, tag: null });
-  const meshViewRef = useRef(meshView);
-  const lagShown = useRef<number | null>(null);
+  const [meshUse, setMeshUse] = useState(false);
+  const meshUseRef = useRef(meshUse);
   const root = useRef<Group>(null);
   // 위험 표식 자리. 선택 그룹 밖에 두어 초점 중심·클릭 경계에 끼지 않게 하고, 위치만 아바타를 따라간다.
   const riskRoot = useRef<Group>(null);
@@ -339,21 +323,14 @@ function PersonAvatar({
         asset: avatarAssetState(avatar?.asset ?? null),
         now: Date.now(),
       });
-      const lag = status.hmrLagMs;
-      if (lag === null) lagShown.current = null;
-      else if (lagShown.current === null || Math.abs(lag - lagShown.current) >= LAG_LABEL_STEP_MS) {
-        lagShown.current = lag;
-      }
-      const tag = avatarMeshTag({ ...status, hmrLagMs: lagShown.current });
-      const shown = meshViewRef.current;
-      if (status.use !== shown.use || tag !== shown.tag) {
-        meshViewRef.current = { use: status.use, tag };
-        setMeshView(meshViewRef.current);
+      if (status.use !== meshUseRef.current) {
+        meshUseRef.current = status.use;
+        setMeshUse(status.use);
       }
     }
   });
 
-  const { world, connection } = store.getState();
+  const { world } = store.getState();
   const track = trackOf(world, worldId);
   if (!track) return null;
   // 표시 종류·이름표만 정한다. 좌표는 useFrame 이 마지막 유효 위치로 채운다.
@@ -362,11 +339,7 @@ function PersonAvatar({
   // Tier 0 골격을 쓸 수 있으면 관절 사이 막대 아바타로, 아니면 -44 의 기본 캡슐(또는 개발용 모델)로 그린다.
   const skeleton = pose.kind === 'BODY' && skeletonUsable(track);
   const placement = trackPlacement(track).basis;
-  const base = personLabel(track, pose, connection?.state === 'OPEN');
-  const meshOn = meshView.use && mesh !== null && pose.kind === 'BODY';
-  const tagged = meshView.tag ? `${base} · ${meshView.tag}` : base;
-  // 이름표 하나에 위험 > 대상 ID·관측 상태 순서로 적어 겹치지 않게 한다.
-  const label = risk ? `${riskLabel(risk)} · ${tagged}` : tagged;
+  const meshOn = meshUse && mesh !== null && pose.kind === 'BODY';
 
   return (
     <>
@@ -421,13 +394,12 @@ function PersonAvatar({
           ) : (
             <HeightUnknownColumn color={palette.person} selected={selected} />
           )}
-          {/* 이름표는 잠깐(HOVER_LABEL_MS) 머물 때·선택·위험일 때만 보인다(관제 데모와 같다). */}
+          {/* 이름표는 사람 ID 만 늘 보인다. 위험이면 글자 색만 위험 색이고, 예측·확인 불가는 몸 색·투명도로 보인다. */}
           <LabelSprite
-            text={label}
+            text={track.worldId}
             y={pose.kind === 'BODY' ? LABEL_Y : COLUMN_TOP + 0.2}
             height={0.24}
             color={risk ? riskStyle(risk, palette).labelColor : palette.label[tone]}
-            visible={hovered || selected || risk !== null}
           />
         </group>
       </Selectable>

@@ -1,6 +1,7 @@
+import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { AppLayout } from '@/features/layout/AppLayout';
 import { useHealthSnapshot } from '@/features/layout/useHealthSnapshot';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -39,23 +40,48 @@ beforeEach(() => {
   route.failure = true;
   route.alarm = true;
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  useCamSplitStore.getState().close();
+});
 
 describe('AppLayout 알림 자리', () => {
-  it('실시간 관제(화면을 채움)에서는 장면 위에 띄우고, 장애 띠 아래 경보 배너를 두며 이벤트 패널 자리를 비킨다', () => {
+  it('실시간 관제(화면을 채움)에서는 장면 위에 띄우고, 장애 띠 아래 경보 배너를 두며 양쪽 370px 을 비워 가운데에 선다', () => {
     route.staticData = { fullBleed: true, eventPanel: true };
     render(<AppLayout />);
 
     const box = notices();
     expect(ids(box)).toEqual(['failure', 'alarm']);
     expect(box.className).toContain('absolute');
-    expect(box.className).toContain('right-[370px]');
+    expect(box.className).toContain('inset-x-(--event-panel-inset)');
+    expect(box.className).not.toContain('inset-x-5');
     // 띄운 자리는 클릭을 통과시키고, 띠와 배너만 받는다(각자 pointer-events-auto).
     expect(box.className).toContain('pointer-events-none');
     expect(screen.getByTestId('alarm').dataset.withPanel).toBe('true');
   });
 
-  it('다른 화면에서도 본문 위에 띄워 본문 높이를 차지하지 않는다(이벤트 패널이 없어 오른쪽은 비키지 않는다)', () => {
+  it('사건 분할 창이 열리면 양쪽을 그 창 자리만큼 같은 크기로 비워 가운데를 지키고, 닫으면 되돌린다', () => {
+    route.staticData = { fullBleed: true, eventPanel: true };
+    render(<AppLayout />);
+    expect(notices().className).toContain('inset-x-(--event-panel-inset)');
+
+    act(() => useCamSplitStore.getState().open({ cam: 'cam_A', target: null }));
+    // 왼쪽·오른쪽을 따로 정하지 않고 inset-x 하나로 같은 값을 준다.
+    expect(notices().className).toContain('inset-x-(--cam-split-inset)');
+    expect(notices().className).not.toContain('inset-x-(--event-panel-inset)');
+
+    act(() => useCamSplitStore.getState().close());
+    expect(notices().className).toContain('inset-x-(--event-panel-inset)');
+  });
+
+  it('이벤트 패널이 없는 화면은 사건 분할 창이 열려 있어도 양옆을 비키지 않는다', () => {
+    route.staticData = {};
+    render(<AppLayout />);
+    act(() => useCamSplitStore.getState().open({ cam: 'cam_A', target: null }));
+    expect(notices().className).toContain('inset-x-5');
+  });
+
+  it('다른 화면에서도 본문 위에 띄워 본문 높이를 차지하지 않는다(이벤트 패널이 없어 양옆을 비키지 않는다)', () => {
     route.staticData = {};
     render(<AppLayout />);
 
@@ -63,7 +89,8 @@ describe('AppLayout 알림 자리', () => {
     expect(ids(box)).toEqual(['failure', 'alarm']);
     expect(box.className).toContain('absolute');
     expect(box.className).toContain('pointer-events-none');
-    expect(box.className).not.toContain('right-[370px]');
+    expect(box.className).toContain('inset-x-5');
+    expect(box.className).not.toContain('inset-x-(--event-panel-inset)');
     // 본문(main) 흐름 밖, 본문 뒤에 둔다.
     const page = screen.getByRole('main');
     expect(page.contains(box)).toBe(false);

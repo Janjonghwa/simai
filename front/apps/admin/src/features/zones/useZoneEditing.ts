@@ -1,13 +1,18 @@
-import { useCurrentRole } from '@/features/auth/useCurrentRole';
+import { targetOfKey } from '@/features/layout/spatialHost/selectionKey';
 import { useSpatialViewport } from '@/features/layout/SpatialViewportHost';
 import { geometryErrors, sameGeometry } from '@/features/surfaces/surfaces';
 import { useWorkSurfaces } from '@/features/surfaces/useWorkSurfaces';
 import type { Severity } from '@/features/zones/types';
 import { useConfigApply } from '@/features/zones/useConfigApply';
+import { useRefreshSurfacesOnOpen } from '@/features/zones/useRefreshSurfacesOnOpen';
 import { useZoneCommit } from '@/features/zones/useZoneCommit';
 import { useZoneTarget } from '@/features/zones/useZoneTarget';
 import { useZoneUndoKey } from '@/features/zones/useZoneUndoKey';
-import { useBoxChange, useBoxEditBridge } from '@/features/zones/useZoneViewerBridge';
+import {
+  useBoxChange,
+  useBoxEditBridge,
+  useClearObjectPickOnClose,
+} from '@/features/zones/useZoneViewerBridge';
 import {
   boxEditOf,
   boxOfZone,
@@ -17,9 +22,11 @@ import {
   ghostsOf,
   newSurfaceDraft,
   newZoneForm,
-  surfaceBox,
+  nextZoneName,
   surfaceChanged,
+  surfaceZoneBox,
   targetChanged,
+  withoutUnchangedSurface,
   withPatch,
   withSurface,
   zoneChanged,
@@ -28,7 +35,7 @@ import {
 } from '@/features/zones/zoneEditModel';
 import { formErrors, formOf, newZoneErrors } from '@/features/zones/zoneForm';
 import { boxToPolygon } from '@/features/zones/zones';
-import { linkSurfaces, pointInPolygon } from '@/features/zones/zoneSurfaceLink';
+import { linkSurfaces, pickedSurface, pointInPolygon } from '@/features/zones/zoneSurfaceLink';
 import { useRoomLimit } from '@/store/roomBounds.store';
 import {
   recordZoneDraft,
@@ -66,44 +73,43 @@ function usePendingPublish(
 /**
  * 구역 편집 화면의 상태와 동작. 구역(또는 새 구역) 하나를 고르면 이름·심각도·구역 상자·작업면(하나)을 고치고, 저장하면
  * 구역·작업면·구성 묶음 발행을 요청 하나로 보낸다(useZoneCommit). 고친 것은 구역마다 초안으로 남아 다른 구역으로 옮겨도
- * 잃지 않는다. 3D 손잡이는 편집 상자를 boxEdit 저장소로 내려 SpatialViewportHost 가 뷰어에 넘긴다.
+ * 잃지 않는다. 3D 손잡이는 편집 상자를 boxEdit 저장소로 내려 SpatialViewportHost 가 뷰어에 넘긴다. 3D 에서 작업면을 누르면
+ * 이은 구역의 작업면 모드로 열고, 어느 구역에도 이어지지 않은 작업면이면 삭제할 수 있게 orphan 으로 알린다.
  */
-export function useZoneEditing({
-  initialZoneId = null,
-  onSearchConsumed,
-}: {
-  initialZoneId?: string | null;
-  onSearchConsumed?: () => void;
-} = {}) {
+export function useZoneEditing() {
   const viewport = useSpatialViewport()!;
   const { zones, zonesRaw, zonesFailed } = viewport;
-  const canEdit = useCurrentRole() === 'ADMIN';
   const surfaceList = useWorkSurfaces();
   const { surfaces } = surfaceList;
   const apply = useConfigApply(zones, surfaceList.loaded ? surfaces : undefined);
   const drafts = useZoneEditStore((s) => s.drafts);
-  const target = useZoneTarget(viewport, { initialZoneId, onSearchConsumed });
-  const { zone, key, surfMode } = target;
+  const links = useMemo(() => linkSurfaces(zones, surfaces), [zones, surfaces]);
+  const pickedTarget = targetOfKey(viewport.selectedKey);
+  const pickedObjectId = pickedTarget?.type === 'object' ? pickedTarget.id : null;
+  const picked = pickedSurface(pickedObjectId, surfaces, links);
+  const target = useZoneTarget(viewport, picked.zoneId);
+  const { zone, key } = target;
+  const { orphan } = picked;
+  useRefreshSurfacesOnOpen();
+  useClearObjectPickOnClose(pickedObjectId !== null, viewport.clearSelection);
 
   // ---- 고르고 있는 대상의 값 ----------------------------------------------------------------
-  const links = useMemo(() => linkSurfaces(zones, surfaces), [zones, surfaces]);
   const linked = zone ? (links.get(zone.zoneId) ?? null) : null;
   const draft: TargetDraft | undefined = drafts[key];
   const surface = useMemo(() => currentSurface(draft, linked), [draft, linked]);
+  // 작업면이 없는 구역(초안에서 지운 경우 포함)은 3D 손잡이가 작업면을 고칠 수 없어 구역 모드로 둔다.
+  const surfMode = target.surfMode && surface !== null;
   const roomLimit = useRoomLimit();
+  // 새 구역은 작업면이 있으면 작업면을 감싸는 상자에서, 없으면 방 가운데에서 시작한다. 손잡이로 고치면 그 상자가 남는다.
+  const draftBox = draft?.box ?? null;
   const zoneBox = useMemo(() => {
-    const base = draft?.box ?? (zone ? boxOfZone(zone) : defaultNewBox(zones, roomLimit));
-    if (zone || !surface) return base;
-    const box = surfaceBox(surface.geometry);
-    return {
-      min: [box.min[0] - 0.3, box.min[1] - 0.3, 0],
-      max: [box.max[0] + 0.3, box.max[1] + 0.3, Math.max(base.max[2], box.max[2])],
-    } as typeof base;
-  }, [draft?.box, zone, zones, roomLimit, surface]);
-  const originalForm = zone
+    if (draftBox) return draftBox;
+    if (zone) return boxOfZone(zone);
+    return surface ? surfaceZoneBox(surface.geometry, roomLimit) : defaultNewBox(zones, roomLimit);
+  }, [draftBox, zone, zones, roomLimit, surface]);
+  const form = zone
     ? formWithPatch(zone, draft?.patch ?? {})
-    : newZoneForm(draft?.patch ?? {});
-  const form = !zone && surface ? { ...originalForm, severity: 'HIGH' as const } : originalForm;
+    : newZoneForm(draft?.patch ?? {}, nextZoneName(zones));
   const errors = zone
     ? formErrors(form, { saved: formOf(zone), hasHeight: zone.zRange !== null })
     : newZoneErrors(form);
@@ -135,48 +141,41 @@ export function useZoneEditing({
   );
 
   // ---- 3D 와 주고받기 -----------------------------------------------------------------------
+  // 구역 없는 작업면을 골랐을 때는 고치는 상자가 없다(삭제만 한다).
   const boxEdit = useMemo(
-    () =>
-      boxEditOf({
-        canEdit,
-        surfMode,
-        key,
-        zone,
-        zoneBox,
-        surface,
-        surfaceValid,
-      }),
-    [canEdit, surfMode, key, zone, zoneBox, surface, surfaceValid],
+    () => (orphan ? null : boxEditOf({ surfMode, key, zone, zoneBox, surface, surfaceValid })),
+    [orphan, surfMode, key, zone, zoneBox, surface, surfaceValid],
   );
   const ghosts = useMemo(
     () => ghostsOf(drafts, key, surfMode, zones),
     [drafts, key, surfMode, zones],
   );
-  const onBoxChange = useBoxChange({ key, zone, surface, surfMode, zoneBox });
+  const onBoxChange = useBoxChange({ key, zone, linked, surface, surfMode, zoneBox });
   useBoxEditBridge({ boxEdit, ghosts, onChange: onBoxChange });
 
   // ---- 저장·추가·삭제 -----------------------------------------------------------------------
   const commit = useZoneCommit({
-    canEdit,
     zone,
     zoneBox,
     form,
     draft,
     linked,
+    orphan,
     zoneDirty,
     surfaceDirty,
-    saveReady: canEdit && zone !== null && ready && dirty && valid,
-    addReady: canEdit && zone === null && ready && valid,
+    saveReady: zone !== null && ready && dirty && valid,
+    addReady: zone === null && ready && valid,
     pendingCount,
     publish: () => apply.publish.mutateAsync(),
     target,
   });
 
   // ---- 고치기 -------------------------------------------------------------------------------
-  // 고칠 때마다 되돌릴 단계를 남긴다. group 이 같은 연속 고침(이름 글자 입력)은 한 단계로 묶는다.
+  // 고칠 때마다 되돌릴 단계를 남긴다. group 이 같은 연속 고침(이름 글자 입력)은 한 단계로 묶는다. 이은 작업면과 같아진
+  // 작업면 초안은 남기지 않는다(바뀐 것만 초안이다).
   const edit = (next: (prev: TargetDraft | undefined) => TargetDraft, group?: string) => {
     recordZoneDraft(key, group);
-    updateZoneDraft(key, next);
+    updateZoneDraft(key, (prev) => withoutUnchangedSurface(next(prev), linked));
   };
   const setPatch = (patch: ZonePatch, group?: string) =>
     edit((prev) => withPatch(prev, zone, patch), group);
@@ -215,10 +214,10 @@ export function useZoneEditing({
     if (surfMode && !currentSurface(restored, linked)) target.setSurfaceMode(false);
     return true;
   };
-  useZoneUndoKey(canEdit && !commit.busy, undo);
+  // 구역 없는 작업면 카드가 양식을 가린 동안에는 숨은 초안을 되돌리지 않는다.
+  useZoneUndoKey(!commit.busy && orphan === null, undo);
 
   return {
-    canEdit,
     zones,
     zone,
     zoneKey: key,
@@ -229,10 +228,12 @@ export function useZoneEditing({
     surfaceErrors,
     surfaceOutside,
     surfMode,
+    orphan,
     dirty,
     changedIds,
     pendingIds,
     armed: commit.armed,
+    orphanArmed: commit.orphanArmed,
     busy: commit.busy,
     canSave: commit.canSave,
     canAdd: commit.canAdd,
@@ -249,6 +250,7 @@ export function useZoneEditing({
     add: commit.add,
     restore,
     remove: commit.remove,
+    removeOrphan: commit.removeOrphan,
     republish: commit.republish,
   };
 }

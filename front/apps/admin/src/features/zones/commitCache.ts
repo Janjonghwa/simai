@@ -80,6 +80,12 @@ export async function applyCommitted(
   await Promise.all(writes);
 }
 
+/** 보관(삭제)한 작업면을 작업면 목록에서 뺀다. */
+export const removeSurfaceCached = (queryClient: QueryClient, objectId: string) =>
+  writeList(queryClient, STATIC_OBJECTS_KEY, (list) =>
+    removeItem(list, SURFACE_ID_FIELD, objectId),
+  );
+
 /** 서버가 저장했는지 알 수 없는 실패 뒤: 세 목록을 모두 다시 받는다(저장했다면 구역·작업면·묶음이 모두 바뀌었다). */
 export function invalidateCommitted(queryClient: QueryClient) {
   for (const queryKey of [ZONES_KEY, STATIC_OBJECTS_KEY, BUNDLES_KEY]) {

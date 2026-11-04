@@ -8,10 +8,12 @@ import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import { AckButton } from '@/features/events/AckButton';
 import { entryStatus, isActive } from '@/features/events/entries';
 import { useEventsStore } from '@/features/events/events.store';
-import { ruleName, statusText } from '@/features/events/format';
+import { statusText } from '@/features/events/format';
 import { bestCamera, groupIncidents, topEntry, type Incident } from '@/features/events/incidents';
+import { cardTitle, targetFont, targetLabel } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { useLiveEvents } from '@/features/events/useLiveEvents';
+import { useZoneName } from '@/features/zones/useZoneName';
 import { env } from '@/lib/env';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { Button } from '@simai/ui/components/button';
@@ -33,6 +35,7 @@ function IncidentSummary({
   onClose: () => void;
 }) {
   const openEvent = useEventsStore((s) => s.openEvent);
+  const zoneName = useZoneName();
   if (!incident) {
     return <p className="text-sm text-muted-foreground">활성 사건이 없습니다</p>;
   }
@@ -41,16 +44,15 @@ function IncidentSummary({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex min-w-0 items-center gap-2">
-        {incident.target && <b className="font-mono">{incident.target.id}</b>}
+        {incident.target && (
+          <b className={targetFont(incident.target)}>{targetLabel(incident.target, zoneName)}</b>
+        )}
         <SeverityBadge severity={top.event.severity} />
         <span className="ml-auto text-xs text-muted-foreground">{statusText(status)}</span>
       </div>
-      <p className="text-sm">
-        {ruleName(top.event.rule_id)}
-        {top.event.zone_id && <> · {top.event.zone_id}</>}
-      </p>
+      <p className="text-sm">{cardTitle(incident, zoneName)}</p>
       <div className="flex items-center justify-end gap-2">
-        <AckButton entry={top} label="경보 확인(ACK)" />
+        <AckButton entry={top} label="경보 확인(ACK)" zoneName={zoneName} />
         <Button
           size="sm"
           variant="secondary"
@@ -111,7 +113,7 @@ function Panel({ split, attach }: { split: CamSplit; attach?: Attach }) {
   return (
     <section
       aria-label="CCTV 확인"
-      className="absolute top-[72px] right-3.5 bottom-3.5 z-[6] flex w-[clamp(340px,34%,560px)] flex-col gap-2.5 overflow-y-auto rounded-[16px] bg-card/94 p-3 shadow-float ring-1 ring-border backdrop-blur-[8px] ring-inset motion-safe:animate-in motion-safe:duration-200 motion-safe:fade-in motion-safe:slide-in-from-right-8"
+      className="absolute top-[72px] right-3.5 bottom-3.5 z-[6] flex w-(--cam-split-width) flex-col gap-2.5 overflow-y-auto rounded-[16px] bg-card/94 p-3 shadow-float ring-1 ring-border backdrop-blur-[8px] ring-inset motion-safe:animate-in motion-safe:duration-200 motion-safe:fade-in motion-safe:slide-in-from-right-8"
     >
       <div className="flex items-center gap-2">
         <Video aria-hidden className="size-[18px]" />

@@ -57,35 +57,13 @@ export function saveRequestOf(input: SaveRequestInput): ZoneCommitRequest | null
   return surfacePart ? { zone: zonePart, surface: surfacePart } : { zone: zonePart };
 }
 
-/** 새 구역 만들기. 작업면 초안이 있으면 새 작업면도 함께 만든다. */
+/** 새 구역 만들기. 구역 몸체는 상자·양식 그대로다. 작업면 초안이 있으면 새 작업면도 함께 만든다. */
 export function createRequestOf(input: {
   form: ZoneForm;
   box: ViewerEditBox;
   surface: SurfaceDraft | null | undefined;
 }): ZoneCommitRequest {
-  const body = newZoneBodyOf(input.form, input.box);
-  if (input.surface) {
-    const {
-      centerXy: [cx, cy],
-      sizeXy: [width, depth],
-      yawRad,
-      topHeightM,
-    } = input.surface.geometry;
-    const c = Math.cos(yawRad);
-    const s = Math.sin(yawRad);
-    const x = width / 2 + 0.3;
-    const y = depth / 2 + 0.3;
-    body.polygon_xy = [
-      [-x, -y],
-      [x, -y],
-      [x, y],
-      [-x, y],
-    ].map(([dx, dy]) => [cx + dx! * c - dy! * s, cy + dx! * s + dy! * c] as [number, number]);
-    body.severity = 'HIGH';
-    body.z_min_m = 0;
-    body.z_max_m = Math.max(input.box.max[2], topHeightM);
-  }
-  const zone = { op: 'CREATE', body } as const;
+  const zone = { op: 'CREATE', body: newZoneBodyOf(input.form, input.box) } as const;
   const surfacePart = surfacePartOf(null, input.surface, true);
   return surfacePart ? { zone, surface: surfacePart } : { zone };
 }

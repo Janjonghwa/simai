@@ -2,7 +2,12 @@ import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { CamSplitPanel } from '@/features/cctv/CamSplitPanel';
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
+import { mergeEvent } from '@/features/events/entries';
+import { LIVE_EVENTS_KEY } from '@/features/events/eventsCache';
+import type { EventItem } from '@/features/events/types';
+import { ZONES_KEY } from '@/features/zones/api';
 import { viewerHealthAt } from '@/mocks/realtimeScenario';
+import { MOCK_ZONES } from '@/mocks/zones';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore, type Role } from '@/store/session.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -60,12 +65,43 @@ function openRelay(ids: string[] = CAMS) {
   store.hello(ids);
 }
 
-function renderPanel() {
+/** 지금 들어와 있는 이벤트(사건 요약이 읽는다). 구역은 늘 받아 둔 상태다. */
+function renderPanel(events: EventItem[] = []) {
+  const client = new QueryClient();
+  client.setQueryData(ZONES_KEY, MOCK_ZONES);
+  if (events.length > 0) {
+    client.setQueryData(LIVE_EVENTS_KEY, {
+      entries: events.map((item) => mergeEvent(undefined, item)),
+      loaded: true,
+    });
+  }
   return render(
-    <QueryClientProvider client={new QueryClient()}>
+    <QueryClientProvider client={client}>
       <CamSplitPanel />
     </QueryClientProvider>,
   );
+}
+
+function raised(change: Partial<EventItem> = {}): EventItem {
+  return {
+    event_id: 'e-1',
+    event_sequence: 1,
+    rule_id: 'R2',
+    source: 'LIVE',
+    lifecycle: 'RAISED',
+    verification: 'VERIFIED',
+    severity: 'CRITICAL',
+    confidence: 'HIGH',
+    needs_check: false,
+    world_ids: ['w-0012'],
+    zone_id: 'z-04',
+    metrics: {},
+    rationale: null,
+    proposed_severity: null,
+    raised_at: T,
+    updated_at: T,
+    ...change,
+  };
 }
 
 const openSplit = (cam: string) =>
@@ -115,6 +151,26 @@ describe('CamSplitPanel 관리자', () => {
     expect(attach).toHaveBeenCalledWith('cam_B', canvas);
     // 모의 그림은 없다.
     expect(screen.queryByRole('img')).toBeNull();
+  });
+
+  it('사건 요약은 사람은 ID, 구역은 이름으로 보이고 구역 번호는 보이지 않는다', () => {
+    openSplit('cam_A');
+    renderPanel([raised()]);
+
+    expect(screen.getByText('w-0012').className).toContain('font-mono');
+    expect(screen.getByText('개구부·가장자리 근접 · 개구부 구역')).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/z-\d/);
+  });
+
+  it('구역이 대상인 사건 요약은 구역 이름이 제목이고 규칙 줄에서 되풀이하지 않는다', () => {
+    act(() =>
+      useCamSplitStore.getState().open({ cam: 'cam_A', target: { type: 'zone', id: 'z-04' } }),
+    );
+    renderPanel([raised({ world_ids: [] })]);
+
+    expect(screen.getByText('개구부 구역').className).not.toContain('font-mono');
+    expect(screen.getByText('개구부·가장자리 근접')).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/z-\d/);
   });
 
   it('목록에 없는 카메라를 요청하면 첫 카메라를 보인다', () => {

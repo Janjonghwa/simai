@@ -8,7 +8,6 @@ import {
   headingFromSamples,
   isWalking,
   needsSnap,
-  personLabel,
   personPose,
   personTone,
   WALK_FRESH_MS,
@@ -65,9 +64,6 @@ describe('personPose 배치', () => {
     expect(close(pose.feet!)).toEqual(
       close([pelvis[0], pelvis[1] - AVATAR_PELVIS_HEIGHT_M, pelvis[2]]),
     );
-    expect(personLabel({ ...base, contactValidity: 'UNCERTAIN' }, pose, true)).toBe(
-      'w-0001 · 접지 미확인',
-    );
   });
 
   it('예측 중에는 걷기 방향·속력을 쓰지 않는다', () => {
@@ -80,7 +76,6 @@ describe('personPose 배치', () => {
       groundConfirmed: false,
     });
     expect(personTone(t)).toBe('predicted');
-    expect(personLabel(t, pose, true)).toBe('w-0002 · 예측 · 접지 불확실');
   });
 
   it('높이를 모르면 마지막 유효 3D 위치에 두고, 그것도 없으면 높이 없는 세로 표식만 둔다', () => {
@@ -104,10 +99,6 @@ describe('personPose 배치', () => {
     // 3D 좌표가 실린 UNKNOWN 이라도 마지막 유효 위치를 쓴다.
     const withPelvis = { ...track('normal', 5, 'w-0001'), observationState: 'UNKNOWN' as const };
     expect(personPose(withPelvis, last)).toMatchObject({ basis: 'LAST_VALID', feet: last });
-    expect(personLabel(t, personPose(t, last), true)).toBe('? w-0002 · 확인 불가 · 마지막 3D 위치');
-    expect(personLabel(t, personPose(t, null), false)).toBe(
-      '? w-0002 · 확인 불가 · 높이 미상 · 수신 끊김',
-    );
   });
 
   it('관측 손실 시나리오 전체: 마지막 유효 위치를 이어받고 높이를 지어내지 않는다', () => {

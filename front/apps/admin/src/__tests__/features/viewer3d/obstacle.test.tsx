@@ -533,6 +533,15 @@ describe('정적 객체 레이어·조작기 장면', () => {
     expect(named('surface-box:so-')).toHaveLength(0);
   });
 
+  it('정적 객체에는 이름표(Sprite)를 달지 않는다', async () => {
+    await mount();
+    let sprites = 0;
+    scene!.traverse((o) => {
+      if (o instanceof THREE.Sprite) sprites += 1;
+    });
+    expect(sprites).toBe(0);
+  });
+
   it('클릭하면 그 정적 객체를 선택하고, 편집하면 손잡이 9개(아랫면·Z 이동 포함)를 붙이고 상판 선은 그리지 않는다', async () => {
     await mount();
     await act(async () =>

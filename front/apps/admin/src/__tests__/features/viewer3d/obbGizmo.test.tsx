@@ -15,6 +15,7 @@ import {
   createObjectHandleDrag,
   ObbGizmoController,
   objectHandleWorld,
+  objectPreviewLabel,
 } from '@/features/viewer3d/editing/ObbGizmo';
 import { obbWorkSurface, surfaceTopEdge } from '@/features/viewer3d/surfaces/workSurfaceGeometry';
 import { WorkSurfaceLayer } from '@/features/viewer3d/surfaces/WorkSurfaceLayer';
@@ -281,6 +282,21 @@ type Handler = (event: unknown) => void;
 const onClickOf = (object: Object3D) =>
   (object as unknown as { __r3f: { handlers: { onClick: Handler } } }).__r3f.handlers.onClick;
 
+describe('초안 이름표', () => {
+  const obb: WorldObb = { center: worldPoint(1, 2, 0.5), size: [1, 2, 1], yaw: 0 };
+
+  it('작업면·정적 객체는 ID 를 적지 않고, 계획 가상 객체만 ID 를 적는다', () => {
+    expect(objectPreviewLabel('desk-1', obb)).toBe('미저장 · 상판 1.00m · 0.0°');
+    expect(objectPreviewLabel('desk-1', obb, true)).toBe('새 작업면 · 미등록 · 상판 1.00m · 0.0°');
+    expect(objectPreviewLabel('so-1', obb, false, 'OBSTACLE')).toBe(
+      '정적 객체 · 미저장 · Z 0.00~1.00m · 0.0°',
+    );
+    expect(objectPreviewLabel('pl-1', obb, false, 'PLANNED')).toBe(
+      'pl-1 · 계획(PLANNED) 가상 객체 · 미저장 · Z 0.00~1.00m · 0.0°',
+    );
+  });
+});
+
 describe('WorkSurfaceLayer·ObbGizmo 장면', () => {
   afterEach(async () => {
     await act(async () => root?.unmount());
@@ -305,6 +321,15 @@ describe('WorkSurfaceLayer·ObbGizmo 장면', () => {
     worldToThree(worldPoint(2.4, 3.6, 0.37)).forEach((v, i) => expect(center[i]).toBeCloseTo(v, 9));
     expect(box.parent!.rotation.y).toBe(0.5236);
     expect(named('surface-top-edge:')).toHaveLength(3);
+  });
+
+  it('작업면에는 이름표(Sprite)를 달지 않는다', async () => {
+    await mount();
+    let sprites = 0;
+    scene!.traverse((o) => {
+      if (o instanceof THREE.Sprite) sprites += 1;
+    });
+    expect(sprites).toBe(0);
   });
 
   it('작업면 클릭은 그 object 를 선택한다. 거부된 묶음이면 아무것도 그리지 않는다', async () => {

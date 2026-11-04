@@ -43,7 +43,8 @@ const omit = <T>(record: Readonly<Record<string, T>>, key: string) =>
 const withSteps = (history: Histories, key: string, steps: readonly HistoryStep[]): Histories =>
   steps.length > 0 ? { ...history, [key]: steps } : omit(history, key);
 
-// 구역 편집(/zones)은 /cctv·/tbm 으로 나갔다 와도 고치던 초안이 남아야 해서 앱 세션 동안 여기에 둔다(메모리에만 둔다).
+// 편집 모드를 끌 때는 고치던 초안을 확인한 뒤 버린다. 초안이 남는 경우는 관제 화면을 떠났다 올 때뿐이다(떠날 때는 편집 모드만
+// 끄고 초안은 남겨, 돌아와 이어 고친다). 그래서 앱 세션 동안 여기에 둔다(메모리에만 둔다).
 // 되돌리기 기록도 초안과 같이 둔다. 로그아웃·다른 계정·권한 변경은 bindSession 이 clearZoneDrafts 로 비운다.
 export const useZoneEditStore = create<ZoneEditState>()((set, get) => ({
   drafts: {},
@@ -85,6 +86,10 @@ export const useZoneEditStore = create<ZoneEditState>()((set, get) => ({
     set((state) => (key in state.history ? { history: omit(state.history, key) } : state)),
   clear: () => set({ drafts: {}, history: {} }),
 }));
+
+/** 저장하지 않은 초안이 하나라도 있는지. 편집 모드를 끌 때 버릴 것이 있는지 묻는 데 쓴다. */
+export const useHasZoneDrafts = () =>
+  useZoneEditStore((state) => Object.keys(state.drafts).length > 0);
 
 /** 사용자가 끝나거나 바뀌면(bindSession onUserChange) 보관한 초안과 되돌리기 기록을 모두 지운다. */
 export const clearZoneDrafts = () => useZoneEditStore.getState().clear();

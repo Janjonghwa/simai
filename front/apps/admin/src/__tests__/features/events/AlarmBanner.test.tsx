@@ -3,6 +3,8 @@ import { AlarmBanner } from '@/features/events/AlarmBanner';
 import { useEventClearStore } from '@/features/events/eventClear.store';
 import type { EventEntry } from '@/features/events/events';
 import { useEventsStore } from '@/features/events/events.store';
+import { ZONES_KEY } from '@/features/zones/api';
+import { MOCK_ZONES } from '@/mocks/zones';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore } from '@/store/session.store';
 import type { WorldStatePayload } from '@simai/contracts';
@@ -46,8 +48,10 @@ const alarm: EventEntry = {
 };
 
 function renderBanner(withPanel: boolean) {
+  const client = new QueryClient();
+  client.setQueryData(ZONES_KEY, MOCK_ZONES);
   render(
-    <QueryClientProvider client={new QueryClient()}>
+    <QueryClientProvider client={client}>
       <AlarmBanner withPanel={withPanel} />
     </QueryClientProvider>,
   );
@@ -116,12 +120,31 @@ describe('AlarmBanner', () => {
 
     expect(within(banner).getByText('위험')).toBeTruthy();
     expect(within(banner).getByRole('alert').textContent).toBe(
-      '개구부·가장자리 근접 · w-0015 · z-04',
+      '개구부·가장자리 근접 · w-0015 · 개구부 구역',
     );
     // 경과는 낭독 영역(role=alert) 밖에 둔다.
     expect(within(banner).getByText('12초 전').closest('[role="alert"]')).toBeNull();
     // 개구부 수치 같은 근거 줄은 배너에 없다.
     expect(banner.textContent).not.toContain('가장자리 0');
+  });
+
+  it('사람이 없는 경보는 구역 이름이 대상이고, 이름을 모르는 구역은 `구역`이며 구역 번호는 보이지 않는다', () => {
+    live.entries = [{ ...alarm, event: { ...alarm.event, world_ids: [] } }];
+    const named = renderBanner(true);
+    expect(within(named).getByRole('alert').textContent).toBe('개구부·가장자리 근접 · 개구부 구역');
+    expect(within(named).getByRole('button', { name: /개구부 구역 확인/ })).toBeTruthy();
+    cleanup();
+
+    live.entries = [{ ...alarm, event: { ...alarm.event, world_ids: [], zone_id: 'z-99' } }];
+    expect(within(renderBanner(true)).getByRole('alert').textContent).toBe(
+      '개구부·가장자리 근접 · 구역',
+    );
+    cleanup();
+
+    live.entries = [{ ...alarm, event: { ...alarm.event, zone_id: 'z-99' } }];
+    const person = renderBanner(true);
+    expect(within(person).getByRole('alert').textContent).toBe('개구부·가장자리 근접 · w-0015');
+    expect(person.textContent).not.toMatch(/z-\d/);
   });
 
   it('확인 대기 경보가 더 있으면 +N 을 보이고 가장 높은 등급이 먼저다', () => {

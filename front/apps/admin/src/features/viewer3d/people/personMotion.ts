@@ -176,22 +176,3 @@ export function personTone(track: TrackView): PersonTone {
   if (track.observationState === 'UNKNOWN') return 'unknown';
   return track.observationState === 'PREDICTED' ? 'predicted' : 'observed';
 }
-
-const BASIS_NOTE: Partial<Record<PoseBasis, string>> = {
-  PELVIS: '접지 미확인',
-  GROUND_ANCHOR_UNCERTAIN: '접지 불확실',
-  LAST_VALID: '마지막 3D 위치',
-  XY_ONLY: '높이 미상',
-};
-
-/** 사람 이름표. 관측 상태와 위치 근거, 연결 끊김을 함께 적는다. */
-export function personLabel(track: TrackView, pose: PersonPose, connectionOpen: boolean): string {
-  const tone = personTone(track);
-  const parts = [tone === 'unknown' ? `? ${track.worldId}` : track.worldId];
-  if (tone === 'predicted') parts.push('예측');
-  if (tone === 'unknown') parts.push('확인 불가');
-  const note = BASIS_NOTE[pose.basis];
-  if (note) parts.push(note);
-  if (!connectionOpen) parts.push('수신 끊김');
-  return parts.join(' · ');
-}

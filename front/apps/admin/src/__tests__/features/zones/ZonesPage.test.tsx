@@ -1,3 +1,4 @@
+import { STATIC_OBJECTS_KEY } from '@/features/surfaces/api';
 import type { ViewerEditBox } from '@/features/viewer3d';
 import type { ZoneCommitRequest } from '@/features/zones/types';
 import { ARM_MS } from '@/features/zones/useArmedDelete';
@@ -6,7 +7,7 @@ import { ZonesPage } from '@/features/zones/ZonesPage';
 import { createStaticObjectsMock } from '@/mocks/staticObjects';
 import { createZonesMock, MOCK_ZONES, type ZonesMock } from '@/mocks/zones';
 import { useBoxEditStore } from '@/store/boxEdit.store';
-import { useSessionStore, type Role } from '@/store/session.store';
+import { useSessionStore } from '@/store/session.store';
 import { HISTORY_LIMIT, useZoneEditStore } from '@/store/zoneEdit.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -24,11 +25,11 @@ vi.mock('@/lib/api', async () => {
   };
 });
 
-// 3D 뷰어 호스트 대신 선택만 들고 있는 작은 대역을 쓴다. 구역 목록은 실제 useZones 가 받는다.
+// 3D 뷰어 호스트 대신 선택(zone:… · object:…)만 들고 있는 작은 대역을 쓴다. 구역 목록은 실제 useZones 가 받는다.
 const viewport = vi.hoisted(() => {
   const listeners = new Set<() => void>();
   return {
-    selected: null as string | null,
+    selectedKey: null as string | null,
     listeners,
     emit: () => listeners.forEach((fn) => fn()),
   };
@@ -40,27 +41,28 @@ vi.mock('@/features/layout/SpatialViewportHost', async () => {
   );
   return {
     useSpatialViewport: () => {
-      const selected = useSyncExternalStore(
+      const selectedKey = useSyncExternalStore(
         (fn) => {
           viewport.listeners.add(fn);
           return () => viewport.listeners.delete(fn);
         },
-        () => viewport.selected,
+        () => viewport.selectedKey,
       );
       const { zones, raw, failed } = useZones();
       return {
         zones,
         zonesRaw: raw,
         zonesFailed: failed,
-        selectedZoneId: selected,
+        selectedKey,
+        selectedZoneId: selectedKey?.startsWith('zone:') ? selectedKey.slice('zone:'.length) : null,
         view: '2d',
         viewerReady: false,
-        selectTarget: (target: { id: string }) => {
-          viewport.selected = target.id;
+        selectTarget: (target: { type: string; id: string }) => {
+          viewport.selectedKey = `${target.type}:${target.id}`;
           viewport.emit();
         },
         clearSelection: () => {
-          viewport.selected = null;
+          viewport.selectedKey = null;
           viewport.emit();
         },
       };
@@ -70,6 +72,8 @@ vi.mock('@/features/layout/SpatialViewportHost', async () => {
 
 const server = setupServer();
 const log: string[] = [];
+/** 서버가 받은 GET /api/static-objects 횟수(작업면 목록 받기). */
+let objectListGets = 0;
 /** 서버가 받은 POST /api/zones/commit 본문(받은 순서). */
 const commits: ZoneCommitRequest[] = [];
 let zonesMock: ZonesMock;
@@ -85,13 +89,14 @@ beforeAll(() => {
     const path = new URL(request.url).pathname;
     if (request.method !== 'GET') log.push(`${request.method} ${path}`);
     else if (path === '/api/zones') log.push('GET /api/zones');
+    else if (path === '/api/static-objects') objectListGets += 1;
   });
 });
 afterAll(() => server.close());
 
-function signInAs(role: Role) {
+function signInAsAdmin() {
   useSessionStore.setState({
-    session: { accessToken: 'mock-token.admin', user: { id: 'admin', role } },
+    session: { accessToken: 'mock-token.admin', user: { id: 'admin', role: 'ADMIN' } },
   });
 }
 
@@ -104,12 +109,13 @@ beforeEach(() => {
     ...staticObjects.handlers,
   );
   log.splice(0, log.length);
+  objectListGets = 0;
   commits.splice(0, commits.length);
-  viewport.selected = null;
+  viewport.selectedKey = null;
   viewport.listeners.clear();
   useZoneEditStore.getState().clear();
   useBoxEditStore.getState().clear();
-  signInAs('ADMIN');
+  signInAsAdmin();
 });
 afterEach(() => {
   cleanup();
@@ -123,11 +129,11 @@ async function renderPage({ surfaces = true }: { surfaces?: boolean } = {}) {
       <ZonesPage />
     </QueryClientProvider>,
   );
-  await screen.findByRole('option', { name: /z-04/ });
+  await screen.findByRole('option', { name: /개구부 구역/ });
   // 작업면 목록과 구성 묶음 목록이 도착해야 이은 작업면·발행 전이 맞다.
   if (surfaces) await waitFor(() => expect(client.getQueryData(['static-objects'])).toBeDefined());
   await waitFor(() => expect(client.getQueryData(['config-bundles'])).toBeDefined());
-  return view;
+  return { ...view, client };
 }
 
 const picker = () => screen.getByRole('combobox', { name: '구역 선택' }) as HTMLSelectElement;
@@ -160,6 +166,29 @@ const surfaceBodyOf = (item: Json) => ({
 });
 const deskOf = async () =>
   (await fetchList('/api/static-objects')).find((o) => o.object_id === 'ws-0a0c0002')!;
+/** 시험 준비로 서버(mock)에 정적 객체를 더하고 만들어진 항목을 돌려받는다. 준비로 보낸 요청은 쓰기 기록에서 뺀다. */
+const addStaticObject = async (body: Json) => {
+  const item = (await (await sendJson('POST', '/api/static-objects', body)).json()) as Json;
+  log.splice(0, log.length);
+  return item;
+};
+/** 직사각형이 아니라 형상을 고칠 수 없는 구역(삼각형)을 서버(mock)에 더한다. 만들어진 ID 는 z-00000001 이다. */
+const addTriangleZone = () =>
+  sendJson('POST', '/api/zones', {
+    name: '삼각형 구역',
+    zone_kind: 'OPENING',
+    eval_type: 'VOLUME_3D',
+    polygon_xy: [
+      [1, 1],
+      [3, 1],
+      [2, 3],
+    ],
+    z_min_m: 0,
+    z_max_m: 2,
+    severity: 'HIGH',
+    has_guardrail: null,
+    requirements: null,
+  });
 /** 다음 /commit 요청을 기록하고 이 상태·오류 이름으로 거절한다. */
 const failCommit = (status: number, code: string) =>
   server.use(
@@ -183,13 +212,40 @@ const releasePointer = () => act(() => void window.dispatchEvent(new Event('poin
 const pressPointer = () =>
   act(() => void document.body.dispatchEvent(new Event('pointerdown', { bubbles: true })));
 const Z02_BOX: ViewerEditBox = { min: [1, 6.2, 0], max: [4, 8.4, 0.4] };
+/** 3D 에서 대상을 눌러 선택이 바뀐 것처럼(zone:… · object:…) 호스트 선택을 바꾼다. */
+const selectInViewer = (key: string | null) =>
+  act(() => {
+    viewport.selectedKey = key;
+    viewport.emit();
+  });
+/** 구역 화면에서 닿을 수 없는 작업면의 카드. 책상(ws-0a0c0002)은 어느 구역에도 이어져 있지 않다. */
+const orphanCard = () => screen.queryByRole('region', { name: '작업면' });
+const RETRY_TEXT = '반영했지만 현장 판정으로 보내지 못했습니다.';
 
 describe('구역 편집 화면', () => {
-  it('드롭다운은 「새 구역 추가」가 먼저이고 기존 구역은 `ID · 이름`이다. 고르는 칸은 이름과 심각도뿐이다', async () => {
+  it('관리자가 아니면 아무것도 그리지 않고 구역·작업면 목록도 받지 않는다', () => {
+    useSessionStore.setState({
+      session: { accessToken: 'mock-token.admin', user: { id: 'viewer', role: 'VIEWER' } },
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={client}>
+        <ZonesPage />
+      </QueryClientProvider>,
+    );
+    expect(container.innerHTML).toBe('');
+    expect(objectListGets).toBe(0);
+    expect(log).toEqual([]);
+  });
+
+  it('드롭다운은 「새 구역 추가」가 먼저이고 기존 구역은 이름만(구역 번호 없음)이다. 고르는 칸은 이름과 심각도뿐이다', async () => {
     await renderPage();
-    expect(optionTexts()).toEqual(['새 구역 추가', 'z-04 · 개구부 구역', 'z-02 · 단상 구역']);
+    expect(optionTexts()).toEqual(['새 구역 추가', '개구부 구역', '단상 구역']);
+    expect(screen.queryByText(/z-0\d/)).toBeNull();
     expect(picker().value).toBe('__new__');
-    expect(screen.getByRole('textbox', { name: '이름' })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: '이름' })).toHaveProperty('value', '구역 1');
+    // 편집 도구에 제목(h1)은 없다. 화면 제목은 실시간 관제 화면이 가진다.
+    expect(screen.queryByRole('heading')).toBeNull();
     const severity = screen.getByRole('combobox', { name: '심각도' });
     expect(
       within(severity)
@@ -264,7 +320,7 @@ describe('구역 편집 화면', () => {
       expect.objectContaining({ zone_id: 'z-00000001', name: '새로 만든 구역' }),
     );
     // 만든 구역은 바로 고를 수 있고, 새 구역 초안은 비었으며, 발행 전이 아니다(응답의 묶음이 목록에 들어갔다).
-    expect(optionTexts()).toContain('z-00000001 · 새로 만든 구역');
+    expect(optionTexts()).toContain('새로 만든 구역');
     expect(useZoneEditStore.getState().drafts[NEW_KEY]).toBeUndefined();
     expect(screen.queryByRole('button', { name: '다시 보내기' })).toBeNull();
   });
@@ -290,7 +346,7 @@ describe('구역 편집 화면', () => {
     // 초안은 모두 지웠고, 작업면 카드는 서버가 이은 작업면으로 그려진다.
     expect(useZoneEditStore.getState().drafts).toEqual({});
     await waitFor(() => expect(screen.getByLabelText('높이(m)')).toHaveProperty('value', '0.40'));
-    expect(optionTexts()).toContain('z-00000001 · 새 구역');
+    expect(optionTexts()).toContain('구역 1');
   });
 
   it('이은 작업면(서버 zone_id)이 카드에 보이고, 3D 손잡이는 구역·작업면을 전환해 고친다', async () => {
@@ -329,7 +385,7 @@ describe('구역 편집 화면', () => {
       kind: 'surface',
       box: { min: [6.7, 2, 0], max: [7.7, 3, 0.4] },
     });
-    expect(optionTexts()).toContain('z-04 · 개구부 구역 · 저장 전');
+    expect(optionTexts()).toContain('개구부 구역 · 저장 전');
   });
 
   it('구역과 작업면은 서버가 저장한 zone_id 로만 이어진다: 위치가 구역 안이어도 zone_id 가 없으면 잇지 않는다', async () => {
@@ -367,10 +423,10 @@ describe('구역 편집 화면', () => {
     await renderPage();
     pick('z-02');
     await screen.findByLabelText('높이(m)');
-    expect(optionTexts()).toContain('z-02 · 단상 구역');
+    expect(optionTexts()).toContain('단상 구역');
     // 구역을 +1m(X) 옮긴다(손잡이를 끌어 놓은 결과를 뷰어가 올린 것처럼).
     act(() => useBoxEditStore.getState().onChange({ min: [2, 6.2, 0], max: [5, 8.4, 0.4] }));
-    expect(optionTexts()).toContain('z-02 · 단상 구역 · 저장 전');
+    expect(optionTexts()).toContain('단상 구역 · 저장 전');
     expect(screen.queryByText('작업면 중심이 구역 안에 있어야 합니다.')).toBeNull();
     expect((button('저장') as HTMLButtonElement).disabled).toBe(false);
     // 작업면 쪽 상자는 같이 옮겨졌다.
@@ -387,7 +443,7 @@ describe('구역 편집 화면', () => {
     await screen.findByLabelText('높이(m)');
     act(() => useBoxEditStore.getState().onChange({ min: [2, 6.2, 0], max: [5, 8.4, 0.4] }));
     act(() => button('저장').click());
-    await waitFor(() => expect(optionTexts()).toContain('z-02 · 단상 구역'));
+    await waitFor(() => expect(optionTexts()).toContain('단상 구역'));
     expect(writes()).toEqual([COMMIT]);
     expect(commits).toHaveLength(1);
     expect(commits[0]).toMatchObject({
@@ -433,7 +489,7 @@ describe('구역 편집 화면', () => {
     expect(screen.queryByText('작업면 중심이 구역 안에 있어야 합니다.')).toBeNull();
     expect((button('저장') as HTMLButtonElement).disabled).toBe(false);
     act(() => button('저장').click());
-    await waitFor(() => expect(optionTexts()).toContain('z-02 · 단상 구역'));
+    await waitFor(() => expect(optionTexts()).toContain('단상 구역'));
     expect(writes()).toEqual([COMMIT]);
     expect(commits[0]).toMatchObject({
       zone: { op: 'UPDATE', zone_id: 'z-02' },
@@ -458,7 +514,7 @@ describe('구역 편집 화면', () => {
     expect((button('되돌리기') as HTMLButtonElement).disabled).toBe(false);
     act(() => button('되돌리기').click());
     expect(screen.getByRole('textbox', { name: '이름' })).toHaveProperty('value', '단상 구역');
-    expect(optionTexts()).toContain('z-02 · 단상 구역');
+    expect(optionTexts()).toContain('단상 구역');
     expect(useBoxEditStore.getState().boxEdit?.box.min).toEqual([1, 6.2, 0]);
   });
 
@@ -487,11 +543,11 @@ describe('구역 편집 화면', () => {
     pick('z-04');
     await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
     rename('개구부 B');
-    expect(optionTexts()).toContain('z-04 · 개구부 구역 · 저장 전');
+    expect(optionTexts()).toContain('개구부 구역 · 저장 전');
     log.splice(0, log.length);
     act(() => button('저장').click());
     // 저장 전 · 발행 전 표시가 모두 사라진다.
-    await waitFor(() => expect(optionTexts()).toContain('z-04 · 개구부 B'));
+    await waitFor(() => expect(optionTexts()).toContain('개구부 B'));
     expect(log).toEqual(['GET /api/zones', COMMIT]);
     expect(commits).toHaveLength(1);
     expect(commits[0]).toMatchObject({
@@ -515,7 +571,7 @@ describe('구역 편집 화면', () => {
     fireEvent.keyDown(height, { key: 'Enter' });
     log.splice(0, log.length);
     act(() => button('저장').click());
-    await waitFor(() => expect(optionTexts()).toContain('z-02 · 단상 B'));
+    await waitFor(() => expect(optionTexts()).toContain('단상 B'));
     // 저장 전 확인(구역·작업면 GET) 뒤 요청 하나다.
     expect(writes()).toEqual([COMMIT]);
     expect(log.filter((entry) => entry === 'GET /api/zones')).toHaveLength(1);
@@ -544,7 +600,7 @@ describe('구역 편집 화면', () => {
     fireEvent.change(height, { target: { value: '0.5' } });
     fireEvent.keyDown(height, { key: 'Enter' });
     act(() => button('저장').click());
-    await waitFor(() => expect(optionTexts()).toContain('z-02 · 단상 구역'));
+    await waitFor(() => expect(optionTexts()).toContain('단상 구역'));
     expect(writes()).toEqual([COMMIT]);
     expect(commits).toHaveLength(1);
     expect(commits[0]).toMatchObject({
@@ -568,7 +624,7 @@ describe('구역 편집 화면', () => {
     await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
     act(() => button('+ 고소 작업면 추가').click());
     act(() => button('저장').click());
-    await waitFor(() => expect(optionTexts()).toContain('z-04 · 개구부 구역'));
+    await waitFor(() => expect(optionTexts()).toContain('개구부 구역'));
     expect(writes()).toEqual([COMMIT]);
     expect(commits).toHaveLength(1);
     expect(commits[0]).toMatchObject({
@@ -594,9 +650,9 @@ describe('구역 편집 화면', () => {
     await screen.findByLabelText('높이(m)');
     act(() => surfaceDeleteButton().click());
     expect(screen.queryByLabelText('높이(m)')).toBeNull();
-    expect(optionTexts()).toContain('z-02 · 단상 구역 · 저장 전');
+    expect(optionTexts()).toContain('단상 구역 · 저장 전');
     act(() => button('저장').click());
-    await waitFor(() => expect(optionTexts()).toContain('z-02 · 단상 구역'));
+    await waitFor(() => expect(optionTexts()).toContain('단상 구역'));
     expect(writes()).toEqual([COMMIT]);
     expect(commits).toEqual([
       {
@@ -619,9 +675,9 @@ describe('구역 편집 화면', () => {
     await screen.findByLabelText('높이(m)');
     act(() => surfaceDeleteButton().click());
     act(() => button('+ 고소 작업면 추가').click());
-    expect(optionTexts()).toContain('z-02 · 단상 구역 · 저장 전');
+    expect(optionTexts()).toContain('단상 구역 · 저장 전');
     act(() => button('저장').click());
-    await waitFor(() => expect(optionTexts()).toContain('z-02 · 단상 구역'));
+    await waitFor(() => expect(optionTexts()).toContain('단상 구역'));
     expect(writes()).toEqual([COMMIT]);
     expect(commits).toHaveLength(1);
     expect(commits[0]).toMatchObject({
@@ -664,7 +720,7 @@ describe('구역 편집 화면', () => {
     expect(commits).toHaveLength(1);
     expect(commits[0]).toMatchObject({ zone: { op: 'UPDATE', zone_id: 'z-04' }, publish: true });
     expect(log).not.toContain('POST /api/config-bundles');
-    expect(optionTexts()).toContain('z-04 · 개구부 구역 · 저장 전');
+    expect(optionTexts()).toContain('개구부 구역 · 저장 전');
     expect(screen.getByRole('textbox', { name: '이름' })).toHaveProperty('value', '내 이름');
     expect(useZoneEditStore.getState().drafts['z-04']).toBeDefined();
   });
@@ -697,7 +753,7 @@ describe('구역 편집 화면', () => {
     // 지금 버전을 확인하는 GET 만 보내고 /commit 은 보내지 않았다. 확인에서 받은 최신 구역이 화면에 들어갔다.
     expect(log).toEqual(['GET /api/zones']);
     expect(commits).toEqual([]);
-    await waitFor(() => expect(optionTexts()).toContain('z-04 · 다른 사람 · 저장 전'));
+    await waitFor(() => expect(optionTexts()).toContain('다른 사람 · 저장 전'));
     expect(nameInput().value).toBe('내 이름');
   });
 
@@ -708,7 +764,7 @@ describe('구역 편집 화면', () => {
     zonesMock.failNextPublish('CALIBRATION_MISSING');
     rename('개구부 B');
     act(() => button('저장').click());
-    const alert = await screen.findByText('저장했지만 현장 판정으로 보내지 못했습니다.');
+    const alert = await screen.findByText(RETRY_TEXT);
     expect(alert).toBeTruthy();
     expect(screen.getByText('보정 문서가 없어 현장에 반영할 수 없습니다.')).toBeTruthy();
     // publish:true 가 409 로 되돌려져, 같은 본문을 묶음 없이(publish:false) 다시 보냈다.
@@ -717,7 +773,7 @@ describe('구역 편집 화면', () => {
     expect(commits[1]).toEqual({ ...commits[0]!, publish: false });
     // 저장은 됐으니 초안은 지워졌고, 새 버전(v2)은 마지막 묶음(cfg-12)의 items 에 없어 발행 전이다.
     expect(useZoneEditStore.getState().drafts['z-04']).toBeUndefined();
-    await waitFor(() => expect(optionTexts()).toContain('z-04 · 개구부 B · 발행 전'));
+    await waitFor(() => expect(optionTexts()).toContain('개구부 B · 발행 전'));
     expect(await fetchList('/api/zones')).toContainEqual(
       expect.objectContaining({ zone_id: 'z-04', zone_version: 2 }),
     );
@@ -729,8 +785,8 @@ describe('구역 편집 화면', () => {
     await waitFor(() =>
       expect(screen.queryByText('보정 문서가 없어 현장에 반영할 수 없습니다.')).toBeNull(),
     );
-    expect(screen.queryByText('저장했지만 현장 판정으로 보내지 못했습니다.')).toBeNull();
-    await waitFor(() => expect(optionTexts()).toContain('z-04 · 개구부 B'));
+    expect(screen.queryByText(RETRY_TEXT)).toBeNull();
+    await waitFor(() => expect(optionTexts()).toContain('개구부 B'));
     expect(commits).toHaveLength(2);
   });
 
@@ -747,10 +803,10 @@ describe('구역 편집 화면', () => {
       zonesMock.failNextPublish(code);
       rename('개구부 B');
       act(() => button('저장').click());
-      expect(await screen.findByText('저장했지만 현장 판정으로 보내지 못했습니다.')).toBeTruthy();
+      expect(await screen.findByText(RETRY_TEXT)).toBeTruthy();
       expect(screen.getByText(reason)).toBeTruthy();
       expect(commits.map((c) => c.publish)).toEqual([true, false]);
-      await waitFor(() => expect(optionTexts()).toContain('z-04 · 개구부 B · 발행 전'));
+      await waitFor(() => expect(optionTexts()).toContain('개구부 B · 발행 전'));
       expect(button('다시 보내기')).toBeTruthy();
     },
   );
@@ -764,12 +820,12 @@ describe('구역 편집 화면', () => {
     act(() => button('저장').click());
     expect(await screen.findByText('현장이 하나로 정해지지 않아 저장할 수 없습니다.')).toBeTruthy();
     expect(commits.map((c) => c.publish)).toEqual([true]);
-    expect(screen.queryByText('저장했지만 현장 판정으로 보내지 못했습니다.')).toBeNull();
+    expect(screen.queryByText(RETRY_TEXT)).toBeNull();
     // 서버가 구역 저장까지 되돌렸다(v1 그대로). 초안은 그대로 남는다.
     expect(await fetchList('/api/zones')).toContainEqual(
       expect.objectContaining({ zone_id: 'z-04', zone_version: 1, name: '개구부 구역' }),
     );
-    await waitFor(() => expect(optionTexts()).toContain('z-04 · 개구부 구역 · 저장 전'));
+    await waitFor(() => expect(optionTexts()).toContain('개구부 구역 · 저장 전'));
     expect(nameInput().value).toBe('개구부 B');
   });
 
@@ -790,7 +846,7 @@ describe('구역 편집 화면', () => {
 
       act(() => deleteButton().click());
       act(() => deleteButton().click());
-      await waitFor(() => expect(optionTexts()).toEqual(['새 구역 추가', 'z-04 · 개구부 구역']));
+      await waitFor(() => expect(optionTexts()).toEqual(['새 구역 추가', '개구부 구역']));
       expect(writes()).toEqual([COMMIT]);
       // 작업면 op 는 붙이지 않는다.
       expect(commits).toEqual([{ zone: { op: 'ARCHIVE', zone_id: 'z-02' }, publish: true }]);
@@ -813,31 +869,13 @@ describe('구역 편집 화면', () => {
     const deleteButton = () => button(/^삭제( 확인)?$/);
     act(() => deleteButton().click());
     act(() => deleteButton().click());
-    await waitFor(() => expect(optionTexts()).toEqual(['새 구역 추가', 'z-02 · 단상 구역']));
+    await waitFor(() => expect(optionTexts()).toEqual(['새 구역 추가', '단상 구역']));
     expect(writes()).toEqual([COMMIT]);
     expect(commits).toEqual([{ zone: { op: 'ARCHIVE', zone_id: 'z-04' }, publish: true }]);
   });
 
   it('직사각형이 아닌 구역은 형상을 고칠 수 없다는 알림이 뜨고 3D 손잡이를 띄우지 않는다. 속성은 고칠 수 있다', async () => {
-    await fetch('http://api.test/api/zones', {
-      method: 'POST',
-      headers: { Authorization: 'Bearer mock-token.admin', 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: '삼각형 구역',
-        zone_kind: 'OPENING',
-        eval_type: 'VOLUME_3D',
-        polygon_xy: [
-          [1, 1],
-          [3, 1],
-          [2, 3],
-        ],
-        z_min_m: 0,
-        z_max_m: 2,
-        severity: 'HIGH',
-        has_guardrail: null,
-        requirements: null,
-      }),
-    });
+    await addTriangleZone();
     await renderPage();
     pick('z-00000001');
     expect(await screen.findByText(SHAPE_LOCKED_TEXT)).toBeTruthy();
@@ -852,18 +890,299 @@ describe('구역 편집 화면', () => {
     expect(useBoxEditStore.getState().boxEdit?.kind).toBe('zone');
   });
 
-  it('관리자가 아니면 값만 보이고 저장·삭제·추가 버튼과 3D 손잡이가 없다', async () => {
-    signInAs('VIEWER');
-    await renderPage();
-    expect(screen.queryByRole('button', { name: '구역 추가' })).toBeNull();
-    pick('z-02');
-    await screen.findByLabelText('높이(m)');
-    expect(screen.queryByRole('button', { name: '저장' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '삭제' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '작업면' })).toBeNull();
-    // 이름 칸은 칸 묶음(fieldset)이 잠근다.
-    expect(screen.getByRole('textbox', { name: '이름' }).matches(':disabled')).toBe(true);
-    expect(useBoxEditStore.getState().boxEdit).toBeNull();
+  describe('새 구역 이름·작업면 붙인 새 구역', () => {
+    it('이름을 정하지 않은 새 구역은 겹치지 않는 가장 작은 번호의 `구역 N` 이다', async () => {
+      await fetch('http://api.test/api/zones', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer mock-token.admin', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: '구역 1',
+          zone_kind: 'OPENING',
+          eval_type: 'VOLUME_3D',
+          polygon_xy: [
+            [1, 1],
+            [3, 1],
+            [3, 3],
+            [1, 3],
+          ],
+          z_min_m: 0,
+          z_max_m: 2,
+          severity: 'HIGH',
+          has_guardrail: null,
+          requirements: null,
+        }),
+      });
+      await renderPage();
+      expect(nameInput().value).toBe('구역 2');
+    });
+
+    it('AI 초안처럼 이름을 먼저 넣은 새 구역 초안은 기본 이름을 이긴다', async () => {
+      useZoneEditStore
+        .getState()
+        .update(NEW_KEY, () => ({ patch: { name: '개구부 초안' }, box: null }));
+      await renderPage();
+      expect(nameInput().value).toBe('개구부 초안');
+    });
+
+    it('작업면을 붙여도 등급 선택과 `구역` 손잡이는 잠기지 않고, 고른 등급과 손잡이로 고친 상자 그대로 만든다', async () => {
+      await renderPage();
+      act(() => button('+ 고소 작업면 추가').click());
+      expect(severitySelect().disabled).toBe(false);
+      expect((button('구역') as HTMLButtonElement).disabled).toBe(false);
+
+      // 구역 상자는 작업면(1×1 m)을 0.30 m 여유로 감싼 2 m 높이 상자에서 시작한다.
+      act(() => button('구역').click());
+      const start = useBoxEditStore.getState().boxEdit!;
+      expect(start.kind).toBe('zone');
+      expect(start.box.max[0] - start.box.min[0]).toBeCloseTo(1.6, 5);
+      expect(start.box.max[1] - start.box.min[1]).toBeCloseTo(1.6, 5);
+      expect([start.box.min[2], start.box.max[2]]).toEqual([0, 2]);
+
+      // 손잡이로 상자를 키우면 그 상자가 남고, 등급도 바꿀 수 있다.
+      const wider: ViewerEditBox = {
+        min: [start.box.min[0] - 0.5, start.box.min[1], 0],
+        max: [start.box.max[0] + 0.5, start.box.max[1], 2],
+      };
+      dragTo(wider);
+      expect(useBoxEditStore.getState().boxEdit?.box).toEqual(wider);
+      fireEvent.change(severitySelect(), { target: { value: 'CRITICAL' } });
+      act(() => button('구역 추가').click());
+      await waitFor(() => expect(commits).toHaveLength(1));
+      const request = commits[0]!;
+      if (request.zone.op !== 'CREATE') throw new Error('expected CREATE');
+      expect(request.zone.body.severity).toBe('CRITICAL');
+      expect(request.zone.body.polygon_xy).toEqual([
+        [wider.min[0], wider.min[1]],
+        [wider.max[0], wider.min[1]],
+        [wider.max[0], wider.max[1]],
+        [wider.min[0], wider.max[1]],
+      ]);
+      expect(request.surface).toMatchObject({ op: 'CREATE' });
+    });
+  });
+
+  describe('3D 에서 고른 작업면', () => {
+    const OBSTACLE = {
+      kind: 'OBSTACLE',
+      name: '기둥',
+      obb: { center: [8, 8, 1], size: [0.4, 0.4, 2], yaw_rad: 0 },
+      top_height_m: null,
+      top_height_sigma_m: null,
+    };
+
+    it('구역에 이어진 작업면을 누르면 그 구역을 작업면 모드로 연다', async () => {
+      await renderPage();
+      selectInViewer('object:ws-0a0c0001');
+      await waitFor(() => expect(picker().value).toBe('z-02'));
+      expect(orphanCard()).toBeNull();
+      expect(button('작업면').getAttribute('aria-pressed')).toBe('true');
+      expect(useBoxEditStore.getState().boxEdit).toMatchObject({
+        id: 'surface:z-02',
+        kind: 'surface',
+      });
+    });
+
+    it('작업면 모드에서 그 작업면이 목록에서 사라지면 3D 손잡이는 구역 상자로 돌아간다', async () => {
+      const { client } = await renderPage();
+      selectInViewer('object:ws-0a0c0001');
+      await waitFor(() => expect(useBoxEditStore.getState().boxEdit?.kind).toBe('surface'));
+      act(() =>
+        client.setQueryData<Json[]>(STATIC_OBJECTS_KEY, (list) =>
+          list?.filter((item) => item.object_id !== 'ws-0a0c0001'),
+        ),
+      );
+      await waitFor(() =>
+        expect(useBoxEditStore.getState().boxEdit).toMatchObject({ id: 'z-02', kind: 'zone' }),
+      );
+    });
+
+    it('구역에 이어지지 않은 작업면을 누르면 구역 대신 작업면 카드(상판 높이·삭제)를 보이고 3D 손잡이는 내린다', async () => {
+      await renderPage();
+      selectInViewer('object:ws-0a0c0002');
+      expect(await screen.findByRole('region', { name: '작업면' })).toBeTruthy();
+      expect(screen.getByText('상판 0.74m')).toBeTruthy();
+      expect(screen.queryByRole('textbox', { name: '이름' })).toBeNull();
+      expect(screen.queryByRole('button', { name: '구역 추가' })).toBeNull();
+      expect(useBoxEditStore.getState().boxEdit).toBeNull();
+      // 드롭다운은 어느 구역도 고르지 않은 빈 칸을 보인다(구역을 골라 카드에서 빠져나온다).
+      const [blank] = picker().options;
+      expect([picker().value, blank!.value, blank!.disabled, blank!.hidden]).toEqual([
+        '',
+        '',
+        true,
+        true,
+      ]);
+      pick('z-04');
+      await waitFor(() => expect(orphanCard()).toBeNull());
+      expect(picker().value).toBe('z-04');
+      expect([...picker().options].some((option) => option.value === '')).toBe(false);
+      expect(nameInput().value).toBe('개구부 구역');
+    });
+
+    it('한 구역의 둘째 작업면도 구역 화면에서 닿을 수 없어 작업면 카드로 지운다', async () => {
+      // 책상을 단상 구역(z-02)에도 잇는다. 한 구역에는 작업면 ID 순으로 앞선 단상 작업면만 이어진다.
+      await sendJson('PUT', '/api/static-objects/ws-0a0c0002', {
+        ...surfaceBodyOf(await deskOf()),
+        zone_id: 'z-02',
+      });
+      log.splice(0, log.length);
+      await renderPage();
+      selectInViewer('object:ws-0a0c0002');
+      expect(await screen.findByText('상판 0.74m')).toBeTruthy();
+      expect(orphanCard()).toBeTruthy();
+
+      act(() => button('삭제').click());
+      act(() => button('삭제 확인').click());
+      await waitFor(() => expect(orphanCard()).toBeNull());
+      // 발행은 삭제가 끝난 뒤에 나간다. 끝나기 전에 시험이 끝나면 그 요청이 다음 시험의 기록에 섞인다.
+      await waitFor(() =>
+        expect(writes()).toEqual([
+          'DELETE /api/static-objects/ws-0a0c0002',
+          'POST /api/config-bundles',
+        ]),
+      );
+      // 단상 구역에 이어진 첫 작업면은 그대로다.
+      pick('z-02');
+      expect(await screen.findByLabelText('높이(m)')).toHaveProperty('value', '0.40');
+    });
+
+    it('작업면 삭제는 두 번 눌러야 하고, DELETE 한 뒤 선택을 풀고 구성 묶음을 발행한다', async () => {
+      await renderPage();
+      selectInViewer('object:ws-0a0c0002');
+      await screen.findByRole('region', { name: '작업면' });
+      const deleteButton = () => button(/^삭제( 확인)?$/);
+
+      act(() => deleteButton().click());
+      expect(deleteButton().textContent).toBe('삭제 확인');
+      expect(writes()).toEqual([]);
+
+      act(() => deleteButton().click());
+      await waitFor(() => expect(orphanCard()).toBeNull());
+      await waitFor(() =>
+        expect(writes()).toEqual([
+          'DELETE /api/static-objects/ws-0a0c0002',
+          'POST /api/config-bundles',
+        ]),
+      );
+      // 작업면은 목록에서 빠졌고 선택이 풀렸으며 새 구역 양식으로 돌아갔다.
+      expect((await fetchList('/api/static-objects')).map((o) => o.object_id)).toEqual([
+        'ws-0a0c0001',
+      ]);
+      expect(viewport.selectedKey).toBeNull();
+      expect(picker().value).toBe('__new__');
+      expect(screen.queryByRole('button', { name: '다시 보내기' })).toBeNull();
+    });
+
+    it('삭제는 됐는데 발행을 못 하면 다시 보내기가 뜨고, 다시 보내면 사라진다', async () => {
+      await renderPage();
+      selectInViewer('object:ws-0a0c0002');
+      await screen.findByRole('region', { name: '작업면' });
+      zonesMock.failNextPublish('CURRENT_CALIBRATION_MISSING');
+      act(() => button('삭제').click());
+      act(() => button('삭제 확인').click());
+
+      expect(await screen.findByText(RETRY_TEXT)).toBeTruthy();
+      expect(writes()).toEqual([
+        'DELETE /api/static-objects/ws-0a0c0002',
+        'POST /api/config-bundles',
+      ]);
+      act(() => button('다시 보내기').click());
+      // 보내는 동안에도 다시 보내기가 숨으므로, 요청이 실제로 나간 것을 먼저 보고 끝낸다(안 그러면 다음 시험의 기록에 섞인다).
+      await waitFor(() =>
+        expect(writes()).toEqual([
+          'DELETE /api/static-objects/ws-0a0c0002',
+          'POST /api/config-bundles',
+          'POST /api/config-bundles',
+        ]),
+      );
+      await waitFor(() => expect(screen.queryByRole('button', { name: '다시 보내기' })).toBeNull());
+    });
+
+    it('삭제가 실패하면 알리고 발행하지 않으며, 목록을 다시 받은 뒤에도 작업면 카드는 그대로다', async () => {
+      server.use(
+        http.delete('*/api/static-objects/:objectId', () =>
+          HttpResponse.json(
+            { status: 404, detail: 'x', code: 'STATIC_OBJECT_NOT_FOUND' },
+            { status: 404 },
+          ),
+        ),
+      );
+      await renderPage();
+      selectInViewer('object:ws-0a0c0002');
+      await screen.findByRole('region', { name: '작업면' });
+      const listGetsBefore = objectListGets;
+      act(() => button('삭제').click());
+      act(() => button('삭제 확인').click());
+
+      expect(
+        await screen.findByText('이미 없거나 보관된 작업면입니다. 목록을 다시 받았습니다.'),
+      ).toBeTruthy();
+      await waitFor(() => expect(objectListGets).toBeGreaterThan(listGetsBefore));
+      expect(orphanCard()).toBeTruthy();
+      expect(writes()).toEqual(['DELETE /api/static-objects/ws-0a0c0002']);
+      expect(screen.queryByRole('button', { name: '다시 보내기' })).toBeNull();
+    });
+
+    it('작업면이 아닌 정적 객체(장애물)를 누르면 카드를 띄우지 않는다', async () => {
+      const obstacle = await addStaticObject(OBSTACLE);
+      expect(obstacle.kind).toBe('OBSTACLE');
+      await renderPage();
+      selectInViewer(`object:${String(obstacle.object_id)}`);
+      expect(orphanCard()).toBeNull();
+      expect(nameInput()).toBeTruthy();
+    });
+
+    it('형상을 고칠 수 없는 구역을 보던 중이어도 작업면 카드에는 그 경고를 띄우지 않는다', async () => {
+      await addTriangleZone();
+      await renderPage();
+      pick('z-00000001');
+      expect(await screen.findByText(SHAPE_LOCKED_TEXT)).toBeTruthy();
+
+      selectInViewer('object:ws-0a0c0002');
+      expect(await screen.findByRole('region', { name: '작업면' })).toBeTruthy();
+      expect(screen.queryByText(SHAPE_LOCKED_TEXT)).toBeNull();
+    });
+
+    it('작업면 카드가 구역 양식을 가린 동안 Ctrl+Z 는 가려진 구역의 초안을 되돌리지 않는다', async () => {
+      await renderPage();
+      pick('z-04');
+      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      rename('고치는 중');
+      selectInViewer('object:ws-0a0c0002');
+      await screen.findByRole('region', { name: '작업면' });
+
+      expect(pressUndo()).toBe(true);
+      expect(useZoneEditStore.getState().drafts['z-04']?.patch.name).toBe('고치는 중');
+      pick('z-04');
+      await waitFor(() => expect(nameInput().value).toBe('고치는 중'));
+    });
+  });
+
+  describe('편집 모드 드나들기', () => {
+    it('편집이 시작되면 다른 관리자가 저장한 변경이 보이게 작업면 목록을 다시 받는다', async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      client.setQueryData(STATIC_OBJECTS_KEY, []);
+      render(
+        <QueryClientProvider client={client}>
+          <ZonesPage />
+        </QueryClientProvider>,
+      );
+      // 목록이 이미 있어도(무한 신선) 편집이 시작될 때 한 번 다시 받는다.
+      await waitFor(() => expect(objectListGets).toBe(1));
+    });
+
+    it('편집이 끝나면(화면이 내려가면) 3D 에서 고른 작업면 선택은 풀고 구역 선택은 그대로 둔다', async () => {
+      const first = await renderPage();
+      selectInViewer('object:ws-0a0c0002');
+      await screen.findByRole('region', { name: '작업면' });
+      first.unmount();
+      expect(viewport.selectedKey).toBeNull();
+
+      viewport.selectedKey = 'zone:z-02';
+      const second = await renderPage();
+      second.unmount();
+      expect(viewport.selectedKey).toBe('zone:z-02');
+    });
   });
 
   it('구역을 바꿔도 고치던 초안은 남는다', async () => {
@@ -875,7 +1194,7 @@ describe('구역 편집 화면', () => {
     });
     pick('z-02');
     await screen.findByLabelText('높이(m)');
-    expect(optionTexts()).toContain('z-04 · 개구부 구역 · 저장 전');
+    expect(optionTexts()).toContain('개구부 구역 · 저장 전');
     pick('z-04');
     await waitFor(() =>
       expect(screen.getByRole('textbox', { name: '이름' })).toHaveProperty('value', '고치는 중'),
@@ -896,11 +1215,11 @@ describe('구역 편집 화면', () => {
       expect(pressUndo()).toBe(false);
       expect(severitySelect().value).toBe(savedSeverity);
       expect(nameInput().value).toBe('다른 이름');
-      expect(optionTexts()).toContain('z-04 · 개구부 구역 · 저장 전');
+      expect(optionTexts()).toContain('개구부 구역 · 저장 전');
 
       pressUndo();
       expect(nameInput().value).toBe(savedName);
-      expect(optionTexts()).toContain('z-04 · 개구부 구역');
+      expect(optionTexts()).toContain('개구부 구역');
 
       // 더 되돌릴 것이 없으면 브라우저 기본 동작을 막지 않는다.
       expect(pressUndo()).toBe(true);
@@ -940,11 +1259,11 @@ describe('구역 편집 화면', () => {
       pressUndo();
       expect(useBoxEditStore.getState().boxEdit?.box).toEqual(Z02_BOX);
       expect(nameInput().value).toBe('다른 이름');
-      expect(optionTexts()).toContain('z-02 · 단상 구역 · 저장 전');
+      expect(optionTexts()).toContain('단상 구역 · 저장 전');
 
       pressUndo();
       expect(nameInput().value).toBe('단상 구역');
-      expect(optionTexts()).toContain('z-02 · 단상 구역');
+      expect(optionTexts()).toContain('단상 구역');
     });
 
     it('끄는 중 Esc 로 시작 상자로 돌아오면 그 끌기는 되돌릴 단계가 아니다', async () => {
@@ -959,7 +1278,7 @@ describe('구역 편집 화면', () => {
 
       pressUndo();
       expect(nameInput().value).toBe('단상 구역');
-      expect(optionTexts()).toContain('z-02 · 단상 구역');
+      expect(optionTexts()).toContain('단상 구역');
     });
 
     it('끄는 중 다른 고침이 단계를 더했으면 시작 상자로 돌아와도 그 단계를 버리지 않는다', async () => {
@@ -1041,7 +1360,7 @@ describe('구역 편집 화면', () => {
       });
       pressUndo();
       expect(useBoxEditStore.getState().boxEdit?.box).toEqual(Z02_BOX);
-      expect(optionTexts()).toContain('z-02 · 단상 구역');
+      expect(optionTexts()).toContain('단상 구역');
     });
 
     it('작업면 높이를 고친 뒤 포커스를 잃어도 같은 값은 단계를 더하지 않는다', async () => {
@@ -1116,7 +1435,7 @@ describe('구역 편집 화면', () => {
       rename('개구부 B');
       expect(useZoneEditStore.getState().history['z-04']).toHaveLength(1);
       act(() => button('저장').click());
-      await waitFor(() => expect(optionTexts()).toContain('z-04 · 개구부 B'));
+      await waitFor(() => expect(optionTexts()).toContain('개구부 B'));
       expect(writes()).toEqual([COMMIT]);
       // 저장한 값이 새 기준이라 초안과 되돌리기 기록이 모두 사라졌다.
       expect(useZoneEditStore.getState().drafts['z-04']).toBeUndefined();
@@ -1124,7 +1443,7 @@ describe('구역 편집 화면', () => {
 
       expect(pressUndo()).toBe(true);
       expect(nameInput().value).toBe('개구부 B');
-      expect(optionTexts()).toContain('z-04 · 개구부 B');
+      expect(optionTexts()).toContain('개구부 B');
     });
 
     it('되돌리기 버튼·구역 추가 뒤에는 그 구역의 기록이 없다', async () => {
@@ -1159,20 +1478,6 @@ describe('구역 편집 화면', () => {
       await waitFor(() => expect(nameInput().value).toBe('개구부 B'));
       pressUndo();
       expect(nameInput().value).toBe('개구부 구역');
-    });
-
-    it('관리자가 아니면 Ctrl+Z 를 무시한다', async () => {
-      const store = useZoneEditStore.getState();
-      store.record('z-02');
-      store.update('z-02', () => ({ patch: { name: '남긴 초안' }, box: null }));
-      signInAs('VIEWER');
-      await renderPage();
-      pick('z-02');
-      await screen.findByLabelText('높이(m)');
-
-      expect(pressUndo()).toBe(true);
-      expect(useZoneEditStore.getState().drafts['z-02']).toBeDefined();
-      expect(useZoneEditStore.getState().history['z-02']).toHaveLength(1);
     });
   });
 });

@@ -1,8 +1,29 @@
-import type { TargetDraft } from '@/features/zones/zoneEditModel';
-import { HISTORY_LIMIT, lastZoneRecord, useZoneEditStore } from '@/store/zoneEdit.store';
+import type { WorkSurface } from '@/features/surfaces/types';
+import {
+  surfaceDraftOf,
+  withoutUnchangedSurface,
+  type TargetDraft,
+} from '@/features/zones/zoneEditModel';
+import {
+  HISTORY_LIMIT,
+  lastZoneRecord,
+  useHasZoneDrafts,
+  useZoneEditStore,
+} from '@/store/zoneEdit.store';
+import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 const named = (name: string): TargetDraft => ({ patch: { name }, box: null });
+const EMPTY: TargetDraft = { patch: {}, box: null };
+const SAVED_SURFACE: WorkSurface = {
+  objectId: 'ws-1',
+  version: 1,
+  name: '단상',
+  geometry: { centerXy: [7, 2.5], sizeXy: [1, 1], yawRad: 0, topHeightM: 0.4 },
+  sigma: null,
+  zoneId: 'z-1',
+  validFrom: 1,
+};
 
 /** 화면이 고칠 때와 같은 순서: 단계를 남기고 초안을 고친다. */
 function edit(key: string, name: string, group?: string) {
@@ -129,5 +150,45 @@ describe('zoneEdit.store 되돌리기', () => {
     useZoneEditStore.getState().clear();
     expect(drafts()).toEqual({});
     expect(useZoneEditStore.getState().history).toEqual({});
+  });
+});
+
+describe('useHasZoneDrafts', () => {
+  beforeEach(() => useZoneEditStore.setState(useZoneEditStore.getInitialState(), true));
+
+  it('초안이 하나라도 있으면 true 이고, 모두 지우면 false 이다', () => {
+    const { result } = renderHook(() => useHasZoneDrafts());
+    expect(result.current).toBe(false);
+
+    act(() => edit('z-1', 'a'));
+    expect(result.current).toBe(true);
+
+    act(() => useZoneEditStore.getState().remove('z-1'));
+    expect(result.current).toBe(false);
+
+    act(() => edit('__new__', 'b'));
+    expect(result.current).toBe(true);
+    act(() => useZoneEditStore.getState().clear());
+    expect(result.current).toBe(false);
+  });
+
+  it('고친 것이 하나도 없는 초안으로 고치면 그 초안은 지워진다', () => {
+    const { result } = renderHook(() => useHasZoneDrafts());
+    act(() => edit('z-1', 'a'));
+    act(() => void useZoneEditStore.getState().update('z-1', () => ({ patch: {}, box: null })));
+    expect(result.current).toBe(false);
+  });
+
+  it('작업면만 원래대로 돌려놓은 초안도 지워져 편집 모드를 끌 때 묻지 않는다', () => {
+    const { result } = renderHook(() => useHasZoneDrafts());
+    const surface = surfaceDraftOf(SAVED_SURFACE);
+    act(() => useZoneEditStore.getState().update('z-1', () => ({ patch: {}, box: null, surface })));
+    expect(result.current).toBe(true);
+    act(() =>
+      useZoneEditStore
+        .getState()
+        .update('z-1', (prev) => withoutUnchangedSurface(prev ?? EMPTY, SAVED_SURFACE)),
+    );
+    expect(result.current).toBe(false);
   });
 });

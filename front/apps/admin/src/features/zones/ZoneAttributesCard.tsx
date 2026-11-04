@@ -15,11 +15,11 @@ import { Input } from '@simai/ui/components/input';
 /** 입력 칸은 검사 한도보다 이만큼 더 받는다(넘으면 검사 문구가 알려 준다). */
 const NAME_INPUT_SLACK = 10;
 
-/** 이름·심각도. 보내는 중이거나 관리자가 아니면 잠근다. */
+/** 이름·심각도. 보내는 중이면 잠근다. */
 export function ZoneAttributesCard({ edit }: { edit: ZoneEditing }) {
   const { form, errors } = edit;
   return (
-    <fieldset disabled={!edit.canEdit || edit.busy} className={CARD_CLASS}>
+    <fieldset disabled={edit.busy} className={CARD_CLASS}>
       <label className={FIELD_CLASS}>
         <span className={FIELD_LABEL_CLASS}>이름</span>
         <Input
@@ -39,7 +39,6 @@ export function ZoneAttributesCard({ edit }: { edit: ZoneEditing }) {
         <span className={FIELD_LABEL_CLASS}>심각도</span>
         <select
           aria-label="심각도"
-          disabled={!edit.zone && edit.surface !== null}
           value={form.severity}
           onChange={(event) => edit.setSeverity(event.target.value as Severity)}
           className={SELECT_CLASS}

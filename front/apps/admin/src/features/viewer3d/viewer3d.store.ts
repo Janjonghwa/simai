@@ -44,8 +44,6 @@ export interface ViewerState {
   targets: ReadonlyMap<string, number>;
   /** 장면 색표(화면 테마와 같다). */
   theme: ViewerTheme;
-  /** 포인터가 HOVER_LABEL_MS 넘게 머문 대상 키. 그 대상의 이름표를 보인다(관제 데모와 같다). */
-  hovered: string | null;
   /** 처음 시점으로 돌아가기 요청 수. 늘 때마다 카메라를 처음 자리로 옮긴다. */
   viewResets: number;
   /** 위에서 내려다보는 시점('위에서 보기') 여부. */
@@ -72,7 +70,6 @@ export interface ViewerState {
   /** 뷰어가 내려갈 때 기다리던 선택을 UNMOUNTED 로 끝내고 타이머를 푼다. */
   dispose(): void;
   setTheme(theme: ViewerTheme): void;
-  setHovered(key: string | null): void;
   resetView(): CommandResult;
   setTopView(enabled: boolean): CommandResult;
 }
@@ -156,7 +153,6 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       pendingSelect: null,
       selectRequest: null,
       theme: 'dark',
-      hovered: null,
       viewResets: 0,
       topView: false,
 
@@ -279,10 +275,6 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
 
       setTheme: (theme) => {
         if (get().theme !== theme) set({ theme });
-      },
-
-      setHovered: (key) => {
-        if (get().hovered !== key) set({ hovered: key });
       },
 
       resetView: () => {

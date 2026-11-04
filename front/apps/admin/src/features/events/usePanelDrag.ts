@@ -1,18 +1,17 @@
-import type { Bounds, PanelBox } from '@/features/events/panelBox';
-import type { Measured } from '@/features/events/panelMeasure';
+import type { FloatBounds, FloatBox, Measured } from '@/lib/floatSpot';
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 
 interface Drag {
   x: number;
   y: number;
-  start: PanelBox;
-  bounds: Bounds;
+  start: FloatBox;
+  bounds: FloatBounds;
 }
 
 /** 누른 채 끄는 동안 시작 자리에서 움직인 만큼 onMove 를 부른다. 안의 버튼(접기)은 끌기로 잡지 않는다. */
 export function usePanelDrag(
   startOf: () => Measured,
-  onMove: (start: PanelBox, dx: number, dy: number, bounds: Bounds) => void,
+  onMove: (start: FloatBox, dx: number, dy: number, bounds: FloatBounds) => void,
 ) {
   const drag = useRef<Drag | null>(null);
   const [active, setActive] = useState(false);

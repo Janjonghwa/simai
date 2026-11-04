@@ -3,10 +3,11 @@ import { isActive, needsConfirmation } from '@/features/events/entries';
 import { ConfirmBadge, DelayedBadge, StateChip } from '@/features/events/EventBadges';
 import { entryEtaLine } from '@/features/events/format';
 import { firstActiveRaisedAt, topEntry, type Incident } from '@/features/events/incidents';
-import { cardChip, cardTitle, targetLabel } from '@/features/events/incidentView';
+import { cardChip, cardTitle, targetFont, targetLabel } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { Since } from '@/features/events/Since';
 import type { Severity } from '@/features/events/types';
+import { useZoneName } from '@/features/zones/useZoneName';
 import { cn } from '@simai/ui/lib/utils';
 import { useEffect, useRef } from 'react';
 
@@ -68,6 +69,7 @@ export function IncidentCard({
   onSelect,
   onOpen,
 }: IncidentCardProps) {
+  const zoneName = useZoneName();
   const top = topEntry(incident);
   const look = SEVERITY_LOOK[incident.severity];
   const chip = cardChip(incident);
@@ -87,7 +89,7 @@ export function IncidentCard({
     <li>
       <article
         ref={card}
-        aria-label={`${targetLabel(incident.target)} 이벤트`}
+        aria-label={`${targetLabel(incident.target, zoneName)} 이벤트`}
         className={cn(
           'relative flex flex-col gap-1 overflow-hidden rounded-[10px] bg-surface-2 py-3 pr-3.5 pl-[18px]',
           'hover:ring-1 hover:ring-point-soft hover:ring-inset',
@@ -114,11 +116,12 @@ export function IncidentCard({
             <span className="flex min-w-0 items-center gap-2">
               <span
                 className={cn(
-                  'rounded-md border-2 border-transparent px-2 py-px font-mono text-sm font-bold',
+                  'rounded-md border-2 border-transparent px-2 py-px text-sm font-bold',
+                  targetFont(incident.target),
                   incident.active ? look.chip : look.chipDone,
                 )}
               >
-                {targetLabel(incident.target)}
+                {targetLabel(incident.target, zoneName)}
               </span>
               {occurrences > 1 && (
                 <span className="text-sm whitespace-nowrap text-muted-foreground">
@@ -130,7 +133,7 @@ export function IncidentCard({
           </span>
           <span className="flex min-w-0 items-center gap-2">
             <SeverityBadge severity={top.event.severity} />
-            <b className="truncate">{cardTitle(incident)}</b>
+            <b className="truncate">{cardTitle(incident, zoneName)}</b>
           </span>
         </button>
         {(check || delayed) && (

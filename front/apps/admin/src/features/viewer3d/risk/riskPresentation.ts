@@ -183,20 +183,6 @@ export function riskPresentation(input: RiskInput): RiskPresentation {
   return { source, people, zones, unlinked, skipped };
 }
 
-const SOURCE_NOTE: Partial<Record<EventSource, string>> = { PLANNED: '계획(가상)', REPLAY: '재생' };
-
-/** 장면 이름표. 등급·묶음 수·출처·확인 필요·마지막 수신·Scene 미상을 함께 적는다. */
-export function riskLabel(risk: RiskHighlight): string {
-  const count = risk.eventIds.length;
-  const parts = [`위험 ${risk.level}${count > 1 ? ` ×${count}` : ''}`];
-  const note = SOURCE_NOTE[risk.source];
-  if (note) parts.push(note);
-  if (risk.needsCheck) parts.push('확인 필요');
-  if (risk.lastReceived) parts.push('마지막 수신');
-  if (risk.sceneUnknown) parts.push('Scene 미상');
-  return parts.join(' · ');
-}
-
 /** 표시 모양. CRITICAL 빨강 이중선·HIGH 주황, 실시간 관측이 아니면(계획·재생·마지막 수신) 점선. */
 export interface RiskStyle {
   color: number;

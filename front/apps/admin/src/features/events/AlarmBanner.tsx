@@ -6,10 +6,13 @@ import { isAlarming, type EventEntry } from '@/features/events/entries';
 import { useEventsStore } from '@/features/events/events.store';
 import { entryEtaLine, eventSubject, ruleName } from '@/features/events/format';
 import { incidentTarget } from '@/features/events/incidents';
+import { targetFont } from '@/features/events/incidentView';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { Since } from '@/features/events/Since';
 import type { EventItem } from '@/features/events/types';
 import { useVisibleLiveEvents } from '@/features/events/useVisibleLiveEvents';
+import { useZoneName } from '@/features/zones/useZoneName';
+import type { ZoneNameOf } from '@/features/zones/zoneName';
 import { Button } from '@simai/ui/components/button';
 import { cn } from '@simai/ui/lib/utils';
 import { useNavigate } from '@tanstack/react-router';
@@ -21,18 +24,20 @@ const byAlarmPriority = (a: EventEntry, b: EventEntry) =>
   (b.event.updated_at ?? 0) - (a.event.updated_at ?? 0);
 
 /**
- * 규칙 · 대상 · 구역. 가장 위 경보가 바뀔 때만 읽는다(role=alert). 경과·버튼·건수는 읽지 않는다.
- * 칸 사이 공백은 화면 낭독기가 낱말을 붙여 읽지 않게 둔다.
+ * 규칙 · 대상 · 구역 이름. 가장 위 경보가 바뀔 때만 읽는다(role=alert). 경과·버튼·건수는 읽지 않는다.
+ * 칸 사이 공백은 화면 낭독기가 낱말을 붙여 읽지 않게 둔다. 이름을 모르는 구역은 뺀다.
  */
-function AlarmHeadline({ event }: { event: EventItem }) {
+function AlarmHeadline({ event, zoneName }: { event: EventItem; zoneName: ZoneNameOf }) {
+  const target = incidentTarget(event);
+  const zone = zoneName(event.zone_id);
   return (
     <span role="alert" className="min-w-0 truncate font-medium">
       <span>{ruleName(event.rule_id)}</span> ·{' '}
-      <span className="font-mono">{eventSubject(event)}</span>
-      {event.zone_id && event.world_ids[0] && (
+      <span className={targetFont(target)}>{eventSubject(event, zoneName)}</span>
+      {target?.type === 'person' && zone && (
         <>
           {' '}
-          · <span>{event.zone_id}</span>
+          · <span>{zone}</span>
         </>
       )}
     </span>
@@ -67,6 +72,7 @@ export function AlarmBanner({ withPanel }: { withPanel: boolean }) {
   const alarms = useMemo(() => entries.filter(isAlarming).sort(byAlarmPriority), [entries]);
   const openEvent = useEventsStore((s) => s.openEvent);
   const navigate = useNavigate();
+  const zoneName = useZoneName();
   const top = alarms[0];
   if (!top) return null;
   const { event } = top;
@@ -94,7 +100,7 @@ export function AlarmBanner({ withPanel }: { withPanel: boolean }) {
       <SeverityBadge severity={event.severity} />
       <span className="flex min-w-0 flex-col">
         <span className="flex min-w-0 items-center gap-2">
-          <AlarmHeadline event={event} />
+          <AlarmHeadline event={event} zoneName={zoneName} />
           {more > 0 && (
             <span className="text-sm whitespace-nowrap text-muted-foreground">
               <span aria-hidden>+{more}</span>
@@ -109,7 +115,7 @@ export function AlarmBanner({ withPanel }: { withPanel: boolean }) {
           상세
         </Button>
         {withPanel && <CameraButton target={incidentTarget(event)} variant="banner" />}
-        <AckButton entry={top} label="확인" />
+        <AckButton entry={top} label="확인" zoneName={zoneName} />
       </span>
     </div>
   );

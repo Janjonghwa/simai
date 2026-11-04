@@ -1,7 +1,6 @@
 import {
   fitPanel,
   movePanel,
-  noticeInset,
   PANEL_GAP,
   PANEL_MAX_WIDTH,
   PANEL_MIN_HEIGHT,
@@ -43,14 +42,6 @@ describe('movePanel', () => {
     expect(down.top).toBe(372);
     expect(down.top + down.height).toBe(bounds.height - PANEL_GAP);
     expect(movePanel(start, 0, 0, bounds).height).toBe(start.height);
-  });
-});
-
-describe('noticeInset', () => {
-  it('알림은 옮긴 패널 양옆 가운데 넓은 쪽에 둔다', () => {
-    // 오른쪽 기본 자리와 같으면 알림 오른쪽 370px(기본 자리와 같다).
-    expect(noticeInset({ left: 926, width: 340, right: 14 })).toEqual({ right: 370 });
-    expect(noticeInset({ left: 14, width: 340, right: 926 })).toEqual({ left: 370 });
   });
 });
 

@@ -11,6 +11,7 @@ import {
   scenarioWorld,
   TICK_MS,
 } from '@/features/viewer3d/dev-harness/scenarios';
+import { cssHex, PALETTE } from '@/features/viewer3d/palette';
 import { PersonLayer } from '@/features/viewer3d/people/PersonLayer';
 import type { RiskHighlight } from '@/features/viewer3d/risk/riskPresentation';
 import { RiskScope, useRiskHighlight } from '@/features/viewer3d/risk/RiskScope';
@@ -333,5 +334,47 @@ describe('위험 표식(같은 장면)', () => {
     await act(async () => root!.unmount());
     root = null;
     expect([...viewer.getState().targets.keys()]).toEqual([]);
+  });
+});
+
+describe('이름표(같은 장면)', () => {
+  it('사람 이름표는 위험일 때도 ID 만 적고, 모든 이름표가 포인터 없이 보이며, 위험이면 글자 색만 바뀐다', async () => {
+    const drawn: { text: string; color: string }[] = [];
+    const context = {
+      fillStyle: '',
+      measureText: (text: string) => ({ width: text.length * 12 }),
+      beginPath: () => {},
+      roundRect: () => {},
+      fill: () => {},
+      fillText(text: string) {
+        drawn.push({ text, color: this.fillStyle });
+      },
+    };
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue(
+      context as unknown as CanvasRenderingContext2D,
+    );
+    await mount();
+    await playUntil(11);
+
+    const texts = [...new Set(drawn.map((d) => d.text))];
+    const people = texts.filter((text) => text.includes('w-'));
+    expect(people.length).toBeGreaterThan(1);
+    expect(people.every((text) => /^w-\d{4}$/.test(text))).toBe(true);
+
+    const colorOf = (text: string) => drawn.filter((d) => d.text === text).at(-1)?.color;
+    const { level } = named('risk-person:w-0001')!.userData as {
+      level: keyof typeof PALETTE.dark.risk;
+    };
+    expect(colorOf('w-0001')).toBe(cssHex(PALETTE.dark.risk[level].color));
+    const calm = people.find((text) => text !== 'w-0001')!;
+    expect(colorOf(calm)).not.toBe(colorOf('w-0001'));
+
+    const sprites: THREE.Sprite[] = [];
+    scene!.traverse((node) => {
+      if (node instanceof THREE.Sprite) sprites.push(node);
+    });
+    expect(viewer.getState().selected).toBeNull();
+    expect(sprites).toHaveLength(texts.length);
+    expect(sprites.every((sprite) => sprite.visible)).toBe(true);
   });
 });

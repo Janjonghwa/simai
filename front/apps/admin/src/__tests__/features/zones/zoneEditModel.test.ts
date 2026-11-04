@@ -1,5 +1,5 @@
 import { zoneOf } from '@/__tests__/features/zones/zoneFixture';
-import type { WorkSurface } from '@/features/surfaces/types';
+import type { SurfaceGeometry, WorkSurface } from '@/features/surfaces/types';
 import type { ViewerEditBox } from '@/features/viewer3d';
 import {
   boxEditOf,
@@ -14,12 +14,15 @@ import {
   NEW_KEY,
   newSurfaceDraft,
   newZoneForm,
+  nextZoneName,
   surfaceBox,
   surfaceBoxEditable,
   surfaceChanged,
   surfaceDraftOf,
   surfaceOfBox,
+  surfaceZoneBox,
   targetChanged,
+  withoutUnchangedSurface,
   withPatch,
   withSurface,
   withSurfaceBox,
@@ -231,16 +234,118 @@ describe('초안 갱신', () => {
   });
 
   it('새 구역 양식은 고르지 않는 칸을 기본값으로 채우고 고친 칸만 덮는다', () => {
-    expect(newZoneForm({})).toEqual({
-      name: '새 구역',
+    expect(newZoneForm({}, '구역 1')).toEqual({
+      name: '구역 1',
       judgeType: 'VOLUME_3D',
       zoneType: 'OPENING',
       severity: 'HIGH',
     });
-    expect(newZoneForm({ name: 'A', severity: 'CRITICAL' })).toMatchObject({
+    expect(newZoneForm({ name: 'A', severity: 'CRITICAL' }, '구역 1')).toMatchObject({
       name: 'A',
       severity: 'CRITICAL',
     });
+  });
+
+  it('고친 이름은 기본 이름보다 우선한다(AI 구역 초안 이름이 `구역 N` 을 이긴다)', () => {
+    expect(newZoneForm({ name: '개구부 구역' }, nextZoneName([])).name).toBe('개구부 구역');
+  });
+});
+
+describe('nextZoneName', () => {
+  const named = (...names: string[]) => names.map((name) => ({ name }));
+
+  it('구역이 없으면 `구역 1` 이다', () => {
+    expect(nextZoneName([])).toBe('구역 1');
+  });
+
+  it('겹치지 않는 가장 작은 번호를 붙인다(빈 번호도 채운다)', () => {
+    expect(nextZoneName(named('구역 1'))).toBe('구역 2');
+    expect(nextZoneName(named('구역 1', '구역 3'))).toBe('구역 2');
+    expect(nextZoneName(named('구역 2'))).toBe('구역 1');
+  });
+
+  it('다른 이름의 구역이나 번호 없는 `구역` 은 번호를 차지하지 않고, 앞뒤 공백은 같은 이름으로 본다', () => {
+    expect(nextZoneName(named('개구부 구역', '단상 구역', '구역', '새 구역'))).toBe('구역 1');
+    expect(nextZoneName(named(' 구역 1 '))).toBe('구역 2');
+  });
+});
+
+describe('surfaceZoneBox', () => {
+  const geometry = (over: Partial<SurfaceGeometry> = {}): SurfaceGeometry => ({
+    centerXy: [5, 4],
+    sizeXy: [2, 1],
+    yawRad: 0,
+    topHeightM: 1.2,
+    ...over,
+  });
+
+  const boxOf = (over: Partial<SurfaceGeometry> = {}) =>
+    surfaceZoneBox(geometry(over), DEFAULT_ROOM_LIMIT);
+
+  it('작업면 발자국에 0.30 m 여유를 더한 상자이고, 바닥에서 구역 높이(2 m)까지다', () => {
+    expect(boxOf()).toEqual({ min: [3.7, 3.2, 0], max: [6.3, 4.8, 2] });
+  });
+
+  it('상판이 구역 높이보다 높으면 상판까지 올린다', () => {
+    expect(boxOf({ topHeightM: 2.6 }).max[2]).toBe(2.6);
+  });
+
+  it('회전한 작업면은 발자국을 감싸는 축 정렬 상자로 잡는다(90° 면 가로·세로가 바뀐다)', () => {
+    expect(boxOf({ yawRad: Math.PI / 2 })).toEqual({
+      min: [4.2, 2.7, 0],
+      max: [5.8, 5.3, 2],
+    });
+    const turned = boxOf({ yawRad: Math.PI / 4 });
+    // 45° 면 두 변이 같은 길이로 감싼다: (2 + 1) / √2 / 2 + 0.3 ≈ 1.361
+    expect(turned.max[0] - turned.min[0]).toBeCloseTo(2 * (1.5 / Math.SQRT2 + 0.3), 2);
+    expect(turned.max[1] - turned.min[1]).toBeCloseTo(turned.max[0] - turned.min[0], 5);
+  });
+
+  it('작업면 중심은 늘 구역 상자 가운데다(중심 검사를 통과한다)', () => {
+    const box = boxOf({ yawRad: 0.7, centerXy: [4.5, 8.25] });
+    expect((box.min[0] + box.max[0]) / 2).toBeCloseTo(4.5, 2);
+    expect((box.min[1] + box.max[1]) / 2).toBeCloseTo(8.25, 2);
+  });
+
+  it('교실 범위(3D 손잡이 범위) 밖으로 나가지 않게 자른다', () => {
+    // 벽(x 0, y 10)에 붙은 작업면: 여유가 벽 밖으로 나가지 않는다.
+    expect(boxOf({ centerXy: [0.5, 9.8] })).toEqual({ min: [0, 9, 0], max: [1.8, 10, 2] });
+    // 상판이 교실 높이(5 m)를 넘어도 높이는 그 범위 안이다.
+    expect(boxOf({ topHeightM: 9 }).max[2]).toBe(DEFAULT_ROOM_LIMIT.max[2]);
+    // 스캔 범위처럼 다른 범위도 그대로 따른다.
+    const limit = roomLimitFrom({ min: [2, 2, 0], max: [6, 6, 3] });
+    expect(surfaceZoneBox(geometry(), limit)).toEqual({ min: [3.7, 3.2, 0], max: [6, 4.8, 2] });
+  });
+});
+
+describe('withoutUnchangedSurface(바뀐 것만 초안)', () => {
+  const same = surfaceDraftOf(linked);
+  const raised = { ...same, geometry: { ...same.geometry, topHeightM: 0.9 } };
+  const added = newSurfaceDraft({ min: [2, 2, 0], max: [4, 6, 2] });
+
+  it('이은 작업면과 값이 같아진 작업면 초안은 뺀다', () => {
+    const draft: TargetDraft = { patch: { name: 'x' }, box: null, surface: same };
+    expect(withoutUnchangedSurface(draft, linked)).toEqual({ patch: { name: 'x' }, box: null });
+  });
+
+  it('고친 작업면·지운 작업면·새 작업면 초안은 그대로 둔다', () => {
+    const edited: TargetDraft = { patch: {}, box: null, surface: raised };
+    expect(withoutUnchangedSurface(edited, linked)).toBe(edited);
+    const removed: TargetDraft = { patch: {}, box: null, surface: null };
+    expect(withoutUnchangedSurface(removed, linked)).toBe(removed);
+    const created: TargetDraft = { patch: {}, box: null, surface: added };
+    expect(withoutUnchangedSurface(created, null)).toBe(created);
+    expect(withoutUnchangedSurface(created, linked)).toBe(created);
+  });
+
+  it('작업면을 건드리지 않은 초안은 그대로다', () => {
+    const draft: TargetDraft = { patch: { name: 'x' }, box: null };
+    expect(withoutUnchangedSurface(draft, linked)).toBe(draft);
+  });
+
+  it('작업면만 원래대로 돌려놓으면 초안이 비어 저장소에서 지워진다', () => {
+    const reverted = withoutUnchangedSurface({ patch: {}, box: null, surface: same }, linked);
+    expect(isEmptyDraft(reverted)).toBe(true);
   });
 });
 
@@ -248,7 +353,6 @@ describe('3D 로 내려 줄 값', () => {
   const ZONES = [zone];
   const BOX: ViewerEditBox = { min: [5.8, 1.2, 0], max: [8.6, 3.8, 2.4] };
   const base = {
-    canEdit: true,
     surfMode: false,
     key: 'z-04',
     zone,
@@ -265,8 +369,7 @@ describe('3D 로 내려 줄 값', () => {
     });
   });
 
-  it('관리자가 아니거나, 형상을 못 고치는 구역이거나, 작업면이 틀렸으면 손잡이가 없다', () => {
-    expect(boxEditOf({ ...base, canEdit: false })).toBeNull();
+  it('형상을 못 고치는 구역이거나, 작업면이 틀렸으면 손잡이가 없다', () => {
     expect(boxEditOf({ ...base, zone: { ...zone, shapeEditable: false } })).toBeNull();
     expect(boxEditOf({ ...base, surfMode: true, surfaceValid: false })).toBeNull();
     expect(boxEditOf({ ...base, surfMode: true, surface: null })).toBeNull();

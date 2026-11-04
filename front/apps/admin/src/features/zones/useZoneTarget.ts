@@ -1,7 +1,7 @@
 import type { SpatialViewportValue } from '@/features/layout/SpatialViewportHost';
 import type { Zone } from '@/features/zones/types';
 import { NEW_KEY } from '@/features/zones/zoneEditModel';
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 
 export interface ZoneTarget {
   /** 고른 구역. 새 구역 양식이면 null. */
@@ -21,27 +21,32 @@ const findZone = (zones: readonly Zone[], id: string): Zone | null =>
   zones.find((z) => z.zoneId === id) ?? null;
 
 /**
- * 고른 대상: 구역 ID 나 새 구역(NEW_KEY). 3D 에서 구역을 누르면 호스트의 선택이 바뀌어 따라간다. 빈 곳을 눌러 선택이
- * 풀려도 대상은 그대로다(드롭다운과 3D 구역 선택만 대상을 바꾼다). ?zone=z-xx 로 들어오면 구역 데이터가 도착한 뒤
- * 그 구역을 고르고 초점을 맞춘다.
+ * 고른 대상: 구역 ID 나 새 구역(NEW_KEY). 3D 에서 구역을 누르면 호스트의 선택이 바뀌어 따라간다. 3D 에서 구역에 이어진 작업면을
+ * 누르면(pickedSurfaceZone) 그 구역을 작업면 모드로 연다. 시작할 때 이미 구역이나 이어진 작업면이 선택돼 있으면 처음부터 그
+ * 구역을 연다. 빈 곳을 눌러 선택이 풀려도 대상은 그대로다(드롭다운과 3D 선택만 대상을 바꾼다).
  */
 export function useZoneTarget(
   viewport: SpatialViewportValue,
-  {
-    initialZoneId,
-    onSearchConsumed,
-  }: { initialZoneId: string | null; onSearchConsumed?: () => void },
+  pickedSurfaceZone: string | null,
 ): ZoneTarget {
   const { zones, selectedZoneId, selectTarget, clearSelection } = viewport;
-  const [target, setTarget] = useState<string>(selectedZoneId ?? NEW_KEY);
+  const [target, setTarget] = useState<string>(selectedZoneId ?? pickedSurfaceZone ?? NEW_KEY);
+  const [surfModeKey, setSurfModeKey] = useState<string | null>(pickedSurfaceZone);
   const [seenSelected, setSeenSelected] = useState(selectedZoneId);
   if (seenSelected !== selectedZoneId) {
     setSeenSelected(selectedZoneId);
     if (selectedZoneId) setTarget(selectedZoneId);
   }
+  const [seenPicked, setSeenPicked] = useState(pickedSurfaceZone);
+  if (seenPicked !== pickedSurfaceZone) {
+    setSeenPicked(pickedSurfaceZone);
+    if (pickedSurfaceZone) {
+      setTarget(pickedSurfaceZone);
+      setSurfModeKey(pickedSurfaceZone);
+    }
+  }
   const zone = findZone(zones, target);
   const key = zone ? zone.zoneId : NEW_KEY;
-  const [surfModeKey, setSurfModeKey] = useState<string | null>(null);
 
   const openZone = (zoneId: string) => {
     setTarget(zoneId);
@@ -55,15 +60,6 @@ export function useZoneTarget(
     if (value === NEW_KEY || !findZone(zones, value)) openNew();
     else openZone(value);
   };
-
-  const consumed = useRef<string | null>(null);
-  useEffect(() => {
-    if (!initialZoneId || consumed.current === initialZoneId) return;
-    if (zones.length > 0 && !findZone(zones, initialZoneId)) return;
-    consumed.current = initialZoneId;
-    selectTarget({ type: 'zone', id: initialZoneId }, { focus: selectedZoneId !== initialZoneId });
-    onSearchConsumed?.();
-  }, [initialZoneId, zones, selectedZoneId, selectTarget, onSearchConsumed]);
 
   return {
     zone,

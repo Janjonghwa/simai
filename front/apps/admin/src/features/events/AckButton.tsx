@@ -3,10 +3,19 @@ import { entryStatus, type EventEntry } from '@/features/events/entries';
 import { eventSubject, ruleName } from '@/features/events/format';
 import type { EventItem } from '@/features/events/types';
 import { useAckEvent } from '@/features/events/useAckEvent';
+import type { ZoneNameOf } from '@/features/zones/zoneName';
 import { Button } from '@simai/ui/components/button';
 
 /** 보내는 중에도 포커스를 잃지 않게 막기만 한다. 실패하면 문구를 보인다. */
-function AckControl({ event, label }: { event: EventItem; label: string }) {
+function AckControl({
+  event,
+  label,
+  zoneName,
+}: {
+  event: EventItem;
+  label: string;
+  zoneName: ZoneNameOf;
+}) {
   const { ack, pending, error } = useAckEvent(event.event_id);
   const text = pending ? '확인 중…' : label;
   return (
@@ -16,7 +25,7 @@ function AckControl({ event, label }: { event: EventItem; label: string }) {
         disabled={pending}
         focusableWhenDisabled
         // 목록에 「확인」이 여러 개라 어느 경보인지 함께 읽힌다.
-        aria-label={`${ruleName(event.rule_id)} ${eventSubject(event)} ${text}`}
+        aria-label={`${ruleName(event.rule_id)} ${eventSubject(event, zoneName)} ${text}`}
         onClick={() => ack(event.event_sequence)}
       >
         {text}
@@ -34,8 +43,17 @@ function AckControl({ event, label }: { event: EventItem; label: string }) {
  * 경보 확인 버튼. 확인 대기 경보이고 권한(반장·관리자)이 있을 때만 보인다.
  * 연결이 끊겨 화면이 마지막으로 받은 상태로 멈춰 있어도 누를 수 있다(useAckEvent 가 멈춘 화면에 확인을 쓴다).
  */
-export function AckButton({ entry, label = '확인' }: { entry: EventEntry; label?: string }) {
+export function AckButton({
+  entry,
+  label = '확인',
+  zoneName,
+}: {
+  entry: EventEntry;
+  label?: string;
+  /** 읽는 이름(aria-label)에 넣을 구역 이름 조회. 목록은 한 번 구해 내려준다. */
+  zoneName: ZoneNameOf;
+}) {
   const canAck = useCanAck();
   if (!canAck || entryStatus(entry).kind !== 'alarm') return null;
-  return <AckControl event={entry.event} label={label} />;
+  return <AckControl event={entry.event} label={label} zoneName={zoneName} />;
 }

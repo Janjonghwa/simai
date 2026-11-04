@@ -65,7 +65,7 @@ export const WARNING_CLASS = cn(
   NOTICE_BASE,
   'bg-surface-3 font-medium text-foreground ring-1 ring-border ring-inset',
 );
-/** 저장했지만 현장으로 보내지 못했을 때 문구와 다시 보내기 버튼. */
+/** 반영했지만 현장으로 보내지 못했을 때 문구와 다시 보내기 버튼. */
 export const RETRY_CLASS = cn(
   NOTICE_BASE,
   'flex items-center justify-between gap-2 font-medium ring-1 ring-border ring-inset',

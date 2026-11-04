@@ -1,5 +1,4 @@
-import { STATIC_OBJECTS_KEY } from '@/features/surfaces/api';
-import type { ViewerWorkSurfaces } from '@/features/surfaces/types';
+import type { WorkSurface } from '@/features/surfaces/types';
 import type { ViewerBoxEdit, ViewerBoxGhost, ViewerEditBox } from '@/features/viewer3d';
 import type { Zone } from '@/features/zones/types';
 import {
@@ -7,12 +6,12 @@ import {
   sameBoxEdit,
   sameGhosts,
   surfaceBox,
+  withoutUnchangedSurface,
   withSurfaceBox,
   withZoneBox,
   type SurfaceDraft,
 } from '@/features/zones/zoneEditModel';
 import { useBoxEditStore } from '@/store/boxEdit.store';
-import { useRealtimeStore } from '@/store/realtime.store';
 import {
   discardZoneRecord,
   lastZoneRecord,
@@ -20,41 +19,33 @@ import {
   updateZoneDraft,
   type HistoryStep,
 } from '@/store/zoneEdit.store';
-import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef } from 'react';
 
-// 구역 편집 화면과 3D 뷰어 사이의 다리: 작업면을 3D 에 넣고, 3D 손잡이가 올린 상자를 초안에 넣고, 편집 상자를 3D 로 내린다.
-
-/** 구역 편집 화면이 떠 있지 않을 때 3D 에 남기는 작업면(없음). */
-const NO_SURFACES = { work_surfaces: [] };
+// 구역 편집 화면과 3D 뷰어 사이의 다리: 3D 손잡이가 올린 상자를 초안에 넣고, 편집 상자를 3D 로 내리고, 편집이 끝나면 3D 선택을
+// 푼다. 작업면은 3D 틀(SpatialViewportHost)이 목록 응답을 그대로 뷰어에 넣는다.
 
 /**
- * 작업면은 이 화면에서 3D 에 넣는다. 3D 가 새로 뜨면 다시 넣고, 화면을 떠나면 지운다. 들어오면 다른 관리자가 저장한
- * 새 버전도 보이게 다시 받는다(이미 받는 중이면 그 응답을 쓴다).
+ * 구역 편집이 끝날 때(화면이 내려갈 때) 3D 에서 고른 정적 객체(object:…) 선택을 푼다. 편집 모드 밖에 작업면 선택이 남지
+ * 않게 한다. objectPicked 는 지금 정적 객체를 골랐는지다(내려가는 순간의 값을 읽는다).
  */
-export function useWorkSurfaceFeed(input: {
-  active: boolean;
-  raw: ViewerWorkSurfaces | undefined;
-}) {
-  const { active, raw } = input;
-  const queryClient = useQueryClient();
-  const source = useRealtimeStore((s) => s.source);
+export function useClearObjectPickOnClose(objectPicked: boolean, clearSelection: () => void) {
+  const latest = useRef({ objectPicked, clearSelection });
   useEffect(() => {
-    if (!active || !source || !raw) return;
-    source.pushWorkSurfaces({ ok: true, raw });
-  }, [active, source, raw]);
-  useEffect(() => {
-    void queryClient.invalidateQueries({ queryKey: STATIC_OBJECTS_KEY }, { cancelRefetch: false });
-    return () => {
-      useRealtimeStore.getState().source?.pushWorkSurfaces({ ok: true, raw: NO_SURFACES });
-    };
-  }, [queryClient]);
+    latest.current = { objectPicked, clearSelection };
+  });
+  useEffect(
+    () => () => {
+      if (latest.current.objectPicked) latest.current.clearSelection();
+    },
+    [],
+  );
 }
 
 /** 고르고 있는 대상. 3D 에서 끌 때마다 이 값으로 초안을 만든다. */
 interface BoxTarget {
   key: string;
   zone: Zone | null;
+  linked: WorkSurface | null;
   surface: SurfaceDraft | null;
   surfMode: boolean;
   zoneBox: ViewerEditBox;
@@ -117,15 +108,19 @@ export function useBoxChange(target: BoxTarget) {
   const trackDrag = useDragRecord();
   return useCallback(
     (box: ViewerEditBox) => {
-      const { key, zone, surface, surfMode, zoneBox } = latest.current;
+      const { key, zone, linked, surface, surfMode, zoneBox } = latest.current;
       if (!surfMode) {
         trackDrag(key, zoneBox, box);
-        updateZoneDraft(key, (prev) => withZoneBox(prev, zone, surface, zoneBox, box));
+        updateZoneDraft(key, (prev) =>
+          withoutUnchangedSurface(withZoneBox(prev, zone, surface, zoneBox, box), linked),
+        );
         return;
       }
       if (!surface) return;
       trackDrag(key, surfaceBox(surface.geometry), box);
-      updateZoneDraft(key, (prev) => withSurfaceBox(prev, surface, box));
+      updateZoneDraft(key, (prev) =>
+        withoutUnchangedSurface(withSurfaceBox(prev, surface, box), linked),
+      );
     },
     [trackDrag],
   );
