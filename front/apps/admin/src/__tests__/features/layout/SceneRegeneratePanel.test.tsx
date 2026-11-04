@@ -2,7 +2,11 @@ import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
 import type { Viewer3DProps } from '@/features/viewer3d';
 import { createQueryClient } from '@/lib/queryClient';
 import { handlers } from '@/mocks/handlers';
-import { resetMockSceneState, setMockSceneRegenerateView } from '@/mocks/scenes';
+import {
+  resetMockSceneState,
+  setMockSceneQuality,
+  setMockSceneRegenerateView,
+} from '@/mocks/scenes';
 import { useSessionStore } from '@/store/session.store';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -208,5 +212,38 @@ describe('실시간 모니터링 화면의 맵 재생성 관리자 도구 (S15P3
     expect(screen.getByTestId('scene-regenerate-failure-reason').textContent).toContain(
       '사람 없는 배경 프레임이 아직 준비되지 않았습니다.',
     );
+  });
+
+  describe('재생성 품질 표시 (S15P31A101-469)', () => {
+    it('quality 가 없으면 아무것도 표시하지 않는다', async () => {
+      renderMonitorHost();
+      await screen.findByTestId('scene-regenerate-panel');
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.queryByTestId('scene-regenerate-quality')).toBeNull();
+    });
+
+    it('채움·비움 비율과 카메라별 값을 보여 주고 30% 미만이면 안내하지 않는다', async () => {
+      setMockSceneQuality({
+        previous_fill_ratio: 0.12,
+        unrevealed_ratio: 0.05,
+        camera_background_quality: {
+          'cam-a': { previous_fill_ratio: 0.1, unrevealed_ratio: 0.02 },
+        },
+      });
+      renderMonitorHost();
+      const q = await screen.findByTestId('scene-regenerate-quality');
+      expect(q.textContent).toContain('이전 모습으로 채움 12% · 비움 5%');
+      expect(screen.getByTestId('scene-regenerate-quality-cameras').textContent).toContain(
+        'cam-a 채움 10%/비움 2%',
+      );
+      expect(screen.queryByTestId('scene-regenerate-quality-notice')).toBeNull();
+    });
+
+    it('채움이 30% 이상이면 일부는 이전 모습이라는 안내를 보여 준다', async () => {
+      setMockSceneQuality({ previous_fill_ratio: 0.3, unrevealed_ratio: 0.1 });
+      renderMonitorHost();
+      const notice = await screen.findByTestId('scene-regenerate-quality-notice');
+      expect(notice.textContent).toContain('일부는 이전 모습입니다');
+    });
   });
 });

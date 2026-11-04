@@ -226,7 +226,12 @@ export function SpatialViewportHost({
           onResetView={() => viewer.current?.resetView?.()}
           onRetry3d={show3d}
         />
-        {showEventPanel && <SceneRegeneratePanel currentSceneVersion={readSceneVersion(scene)} />}
+        {showEventPanel && (
+          <SceneRegeneratePanel
+            currentSceneVersion={readSceneVersion(scene)}
+            currentScene={scene?.ok ? scene.raw : undefined}
+          />
+        )}
         {children}
         {showEventPanel && view === '3d' && (
           <PlanMinimap selectedKey={selectedKey} onSelect={setSelectedKey} />

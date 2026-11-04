@@ -60,6 +60,34 @@ export const sceneRegenerateViewSchema = z.object({
 
 export type SceneRegenerateView = z.infer<typeof sceneRegenerateViewSchema>;
 
+/** 맵 재생성 품질(-461). 값이 없거나 형식이 다르면 null — 지어내지 않는다. */
+const ratioSchema = z.number().min(0).max(1);
+const regenerateQualitySchema = z
+  .object({
+    previous_fill_ratio: ratioSchema,
+    unrevealed_ratio: ratioSchema,
+    camera_background_quality: z
+      .record(
+        z.string(),
+        z.object({ previous_fill_ratio: ratioSchema, unrevealed_ratio: ratioSchema }),
+      )
+      .optional()
+      .catch(undefined),
+  })
+  .passthrough();
+
+export type SceneRegenerateQuality = z.infer<typeof regenerateQualitySchema>;
+
+/** 현재 Scene 응답(`quality`)에서 재생성 품질만 꺼낸다. */
+export function parseSceneRegenerateQuality(scene: unknown): SceneRegenerateQuality | null {
+  if (typeof scene !== 'object' || scene === null) return null;
+  const parsed = regenerateQualitySchema.safeParse(Reflect.get(scene, 'quality'));
+  return parsed.success ? parsed.data : null;
+}
+
+/** 채움 비율이 이 값 이상이면 "일부는 이전 모습" 안내를 띄운다. */
+export const SCENE_REGENERATE_PREVIOUS_FILL_NOTICE_RATIO = 0.3;
+
 export const sceneCommitResponseSchema = z
   .object({
     scene_version: z.string(),

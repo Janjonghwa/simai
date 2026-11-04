@@ -1,6 +1,8 @@
 import { useCurrentRole } from '@/features/auth/useCurrentRole';
 import {
+  parseSceneRegenerateQuality,
   SCENE_REGENERATE_MAX_REASON_LENGTH,
+  SCENE_REGENERATE_PREVIOUS_FILL_NOTICE_RATIO,
   SCENE_REGENERATE_STEP_LABELS,
   sceneRegenerateFailureText,
   type SceneRegenerateStatus,
@@ -12,7 +14,11 @@ import { useState } from 'react';
 export interface SceneRegeneratePanelProps {
   /** 현재 활성화된 Scene 버전(이미 후보가 활성화된 경우 버튼 상태 구분용). */
   currentSceneVersion?: string | null;
+  /** 현재 Scene 조회 응답 본문. `quality` 의 재생성 품질을 읽는다(-469). */
+  currentScene?: unknown;
 }
+
+const pct = (r: number) => `${Math.round(r * 100)}%`;
 
 const STATUS_BADGE_CLASS: Record<SceneRegenerateStatus, string> = {
   REQUESTED: 'border-sky-500/40 bg-sky-950/80 text-sky-200',
@@ -26,7 +32,10 @@ const STATUS_BADGE_CLASS: Record<SceneRegenerateStatus, string> = {
  * 실시간 모니터링 화면의 관리자용 3D 배경(맵) 재생성 도구(S15P31A101-428).
  * 관리자(ADMIN)에게만 보이며 모바일 폭에서는 숨긴다(hidden sm:flex).
  */
-export function SceneRegeneratePanel({ currentSceneVersion }: SceneRegeneratePanelProps) {
+export function SceneRegeneratePanel({
+  currentSceneVersion,
+  currentScene,
+}: SceneRegeneratePanelProps) {
   const role = useCurrentRole();
   const isAdmin = role === 'ADMIN';
   const [reason, setReason] = useState('');
@@ -47,6 +56,11 @@ export function SceneRegeneratePanel({ currentSceneVersion }: SceneRegeneratePan
     e.preventDefault();
     await regenerate(reason);
   };
+
+  const quality = parseSceneRegenerateQuality(currentScene);
+  const cameras = quality?.camera_background_quality
+    ? Object.entries(quality.camera_background_quality)
+    : [];
 
   const candidateVersion =
     current?.status === 'CANDIDATE_READY' ? (current.scene_version ?? null) : null;
@@ -121,6 +135,30 @@ export function SceneRegeneratePanel({ currentSceneVersion }: SceneRegeneratePan
             <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400">
               <CheckCircle2 className="h-3 w-3" aria-hidden="true" />새 3D 배경 활성화됨 (
               {candidateVersion})
+            </span>
+          )}
+        </div>
+      )}
+
+      {quality && (
+        <div data-testid="scene-regenerate-quality" className="flex flex-col gap-0.5 text-[11px]">
+          <span className="text-muted-foreground">
+            이전 모습으로 채움 {pct(quality.previous_fill_ratio)} · 비움{' '}
+            {pct(quality.unrevealed_ratio)}
+          </span>
+          {cameras.length > 0 && (
+            <span data-testid="scene-regenerate-quality-cameras" className="text-muted-foreground">
+              {cameras
+                .map(
+                  ([id, q]) =>
+                    `${id} 채움 ${pct(q.previous_fill_ratio)}/비움 ${pct(q.unrevealed_ratio)}`,
+                )
+                .join(' · ')}
+            </span>
+          )}
+          {quality.previous_fill_ratio >= SCENE_REGENERATE_PREVIOUS_FILL_NOTICE_RATIO && (
+            <span data-testid="scene-regenerate-quality-notice" className="text-violet-300">
+              일부는 이전 모습입니다
             </span>
           )}
         </div>
