@@ -27,7 +27,6 @@ LIVE 판단은 대여와 같은 표시 파일 규칙을 이 스레드 전용 Adm
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import logging
 import os
 import signal
@@ -35,12 +34,14 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from simai_ai.gpu.admission import AdmissionGate
 from simai_ai.gpu.budget import BudgetError, WorkerGpuSettings
 from simai_ai.gpu.reserve import FAILED, cap_process_memory
+from simai_ai.scene.reconstruct_process import ProcessStages
 from simai_ai.vlm.client import VlmError, VlmSettings
 
 from .auto_static import AutoStaticSettings, AutoStaticSubmitter, clean_bg_uploader
@@ -51,6 +52,7 @@ from .incident_summary import IncidentSummaryHandler
 from .objects import HttpObjectStore, ObjectStore
 from .runner import HandlerStuck, Worker
 from .scene_regenerate import SceneRegenerateHandler
+from .site_setup_stages import ProductionSiteSetupHandler
 from .static_reconstruct import StaticReconstructHandler
 from .tbm_report import TbmReportHandler
 from .transport import HttpTransport, Transport
@@ -70,7 +72,7 @@ def open_pose(weights: str) -> Any:
 
 
 def build_handlers(config: Path | None, store: ObjectStore | None = None, *, env: Mapping[str, str] = os.environ,
-                   pose: Callable[[str], Any] = open_pose) -> Mapping[str, JobHandler]:
+                   pose: Callable[[str], Any] = open_pose, site_setup: JobHandler | None = None) -> Mapping[str, JobHandler]:
     """작업 유형 → 처리기. VLM·정적 3D·HMR 처리기는 각 작업 티켓에서 기능 패키지를 조립해 넣는다.
 
     VLM 처리기는 vLLM 을 WorkerGpuSettings.budget 의 vllm_gpu_memory_utilization·vllm_max_num_seqs 로 띄운다(명세 3.2 상한).
@@ -81,6 +83,8 @@ def build_handlers(config: Path | None, store: ObjectStore | None = None, *, env
         handlers["bev_floorplan"] = BevFloorplanHandler(store, clock_ms=lambda: time.time_ns() // 1_000_000)
         handlers["static_reconstruct"] = StaticReconstructHandler(store, clock_ms=lambda: time.time_ns() // 1_000_000, env=env)
         handlers["vlm_zone_draft"] = VlmZoneDraftHandler(store, None, client_factory=None, env=env)
+    if site_setup is not None:
+        handlers["site_setup"] = site_setup
     if (why := _vlm_rationale_missing(store, env)) is None:
         try:
             provider = pose(env["SIMAI_TIER0_WEIGHTS"])
@@ -178,7 +182,15 @@ def main(argv: list[str] | None = None) -> int:
     blocked = (blocked - {"static_reconstruct"}) if during_live == "1" else (blocked | {"scene_regenerate"})
     gpu = replace(gpu, policy=replace(gpu.policy, live_blocked_types=frozenset(blocked)))
     transport = HttpTransport(base_url, token)
-    handlers = dict(build_handlers(args.config, HttpObjectStore(transport)))
+    store = HttpObjectStore(transport)
+    live_gate_probe = AdmissionGate(gpu.marker, gpu.policy, wall_s=time.time, monotonic=time.monotonic)
+    # 현장 세팅(site_setup, S15P31A101-465): MapAnything·미리보기는 LIVE 전 세팅 단계라 받되, 고화질 굽기는 LIVE 면 처리기가 미룬다(재시도 가능)
+    site_setup = ProductionSiteSetupHandler(
+        store, auto_static, ProcessStages(os.environ), clock_ms=lambda: time.time_ns() // 1_000_000,
+        live_gate=lambda: bool(live_gate_probe.check().live),
+    )
+    handlers = dict(build_handlers(args.config, store))
+    handlers["site_setup"] = site_setup
     submitter = AutoStaticSubmitter(auto_static, AdmissionGate(gpu.marker, gpu.policy, wall_s=time.time, monotonic=time.monotonic),
         transport, worker_id, prepare=clean_bg_uploader(base_url, token),
         clock_ms=lambda: time.time_ns() // 1_000_000, monotonic=time.monotonic)

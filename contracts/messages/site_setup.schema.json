@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/site_setup.schema.json",
-  "title": "I5 site_setup 1.0.0 입력·단계·결과",
+  "title": "I5 site_setup 1.1.0 입력·단계·결과",
   "$defs": {
     "input": {
       "type": "object",
@@ -159,6 +159,9 @@
             },
             "additionalProperties": false
           }
+        },
+        "metrics": {
+          "$ref": "#/$defs/metrics"
         }
       },
       "additionalProperties": false,
@@ -184,7 +187,7 @@
           }
         }
       ],
-      "description": "site_setup 1.0.0 상태 스냅샷. 서버는 세션·카메라 집합, 높이 입력·차이(cm, 복원-입력)·허용값, 버전의 현장·보정 계보를 확인한다. 진행 순서·진행률은 동일 대여에서 감소할 수 없다. 자동 재대여 시 새 대여의 첫 스냅샷부터 다시 시작한다. 참조는 먼저 등록된 보정·Scene·구성 묶음만 허용한다. config_version은 구역 발행 후에만 연결하며 세팅 완료 자체가 구역 발행은 아니다."
+      "description": "site_setup 1.1.0 상태 스냅샷. 서버는 세션·카메라 집합, 높이 입력·차이(cm, 복원-입력)·허용값, 버전의 현장·보정 계보를 확인한다. 진행 순서·진행률은 동일 대여에서 감소할 수 없다. 자동 재대여 시 새 대여의 첫 스냅샷부터 다시 시작한다. 참조는 먼저 등록된 보정·Scene·구성 묶음만 허용한다. config_version은 구역 발행 후에만 연결하며 세팅 완료 자체가 구역 발행은 아니다. 선택 metrics(1.1.0, S15P31A101-465)는 단계별 소요 시간(stage_seconds)·총 시간·Stage A 회전 BA 지표를 기록한다."
     },
     "result": {
       "type": "object",
@@ -268,6 +271,9 @@
             },
             "additionalProperties": false
           }
+        },
+        "metrics": {
+          "$ref": "#/$defs/metrics"
         }
       },
       "additionalProperties": false,
@@ -293,7 +299,7 @@
           }
         }
       ],
-      "description": "site_setup 1.0.0 상태 스냅샷. 서버는 세션·카메라 집합, 높이 입력·차이(cm, 복원-입력)·허용값, 버전의 현장·보정 계보를 확인한다. 진행 순서·진행률은 동일 대여에서 감소할 수 없다. 자동 재대여 시 새 대여의 첫 스냅샷부터 다시 시작한다. 참조는 먼저 등록된 보정·Scene·구성 묶음만 허용한다. config_version은 구역 발행 후에만 연결하며 세팅 완료 자체가 구역 발행은 아니다."
+      "description": "site_setup 1.1.0 상태 스냅샷. 서버는 세션·카메라 집합, 높이 입력·차이(cm, 복원-입력)·허용값, 버전의 현장·보정 계보를 확인한다. 진행 순서·진행률은 동일 대여에서 감소할 수 없다. 자동 재대여 시 새 대여의 첫 스냅샷부터 다시 시작한다. 참조는 먼저 등록된 보정·Scene·구성 묶음만 허용한다. config_version은 구역 발행 후에만 연결하며 세팅 완료 자체가 구역 발행은 아니다. 선택 metrics(1.1.0, S15P31A101-465)는 단계별 소요 시간(stage_seconds)·총 시간·Stage A 회전 BA 지표를 기록한다."
     },
     "height_checks": {
       "type": "object",
@@ -324,6 +330,74 @@
         },
         "additionalProperties": false
       }
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "stage_seconds": {
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "COLLECTING_BACKGROUND",
+              "INITIAL_POSE_AND_WORLD",
+              "JOINT_BA_AND_VERIFY",
+              "PREVIEW_AND_VLM_DRAFT",
+              "READY_FOR_ZONES",
+              "BAKING_TEXTURE"
+            ]
+          },
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "total_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "joint_ba": {
+          "type": "object",
+          "required": [
+            "anchor_camera_id",
+            "converged",
+            "stage_seconds",
+            "valid_points"
+          ],
+          "properties": {
+            "anchor_camera_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "converged": {
+              "type": "boolean"
+            },
+            "stage_seconds": {
+              "type": "number",
+              "minimum": 0
+            },
+            "valid_points": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "pair_holdout_median_px": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^[A-Za-z0-9_-]{1,64}-[A-Za-z0-9_-]{1,64}$"
+              },
+              "additionalProperties": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

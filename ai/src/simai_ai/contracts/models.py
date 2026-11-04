@@ -1633,6 +1633,43 @@ class SiteSetupInput(BaseModel):
     height_tolerance_cm: Annotated[StrictFloat, Field(gt=0.0)]
 
 
+StageSecondsAdditionalProperty = TypeAliasType(
+    "StageSecondsAdditionalProperty", Annotated[StrictFloat, Field(ge=0.0)]
+)
+
+
+PairHoldoutMedianPxAdditionalProperty = TypeAliasType(
+    "PairHoldoutMedianPxAdditionalProperty",
+    Annotated[
+        StrictFloat | None, Field(ge=0.0)
+    ],
+)
+
+
+class JointBa(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    anchor_camera_id: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    converged: StrictBool
+    stage_seconds: Annotated[StrictFloat, Field(ge=0.0)]
+    valid_points: Annotated[StrictInt, Field(ge=0)]
+    pair_holdout_median_px: (
+        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}-[A-Za-z0-9_-]{1,64}$', strict=True), PairHoldoutMedianPxAdditionalProperty] | MISSING
+    ) = MISSING
+
+
+class SiteSetupMetrics(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    stage_seconds: dict[Literal['COLLECTING_BACKGROUND', 'INITIAL_POSE_AND_WORLD', 'JOINT_BA_AND_VERIFY', 'PREVIEW_AND_VLM_DRAFT', 'READY_FOR_ZONES', 'BAKING_TEXTURE'], StageSecondsAdditionalProperty] | MISSING = (
+        MISSING
+    )
+    total_seconds: Annotated[StrictFloat | MISSING, Field(ge=0.0)] = MISSING
+    joint_ba: JointBa | MISSING = MISSING
+
+
 BackgroundCollectionPctAdditionalProperty = TypeAliasType(
     "BackgroundCollectionPctAdditionalProperty",
     Annotated[StrictFloat, Field(ge=0.0, le=100.0)],
@@ -1675,6 +1712,7 @@ class SiteSetupProgress(BaseModel):
     )
     height_checks: SiteSetupHeightChecks | MISSING = MISSING
     object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
+    metrics: SiteSetupMetrics | MISSING = MISSING
 
 
 class SiteSetupResult(BaseModel):
@@ -1698,6 +1736,7 @@ class SiteSetupResult(BaseModel):
     )
     height_checks: SiteSetupHeightChecks
     object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
+    metrics: SiteSetupMetrics | MISSING = MISSING
 
 
 class Image(BaseModel):
