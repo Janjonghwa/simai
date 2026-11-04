@@ -1,0 +1,235 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/vlm_zone_draft.schema.json",
+  "title": "I5 vlm_zone_draft 1.0.0 입력·결과",
+  "description": "현장 세팅(site_setup) 미리보기 맵이 준비된 뒤 3D 점군·메시에서 기하 후보(단상·작업대 OBB, 바닥 개구부, 바닥 단부)를 뽑고 Cosmos-Reason2-2B(Cosmos3-Nano)가 구역 이름·종류·등급(CRITICAL/HIGH)·이유를 제안하는 초안 작업(명세 5.3·8.2, AGENTS 규칙 4·8). 초안은 관리자가 수락해 구성 묶음으로 발행하기 전까지 Tier 0 판정에 절대 쓰이지 않는다(safety_use=false).",
+  "schema_version": "1.0.0",
+  "$defs": {
+    "candidate_kind": {
+      "type": "string",
+      "enum": ["ELEVATED_WORK_SURFACE", "OPENING", "FLOOR_EDGE"]
+    },
+    "eval_type": {
+      "type": "string",
+      "enum": ["GROUND_FOOTPRINT", "VOLUME_3D"]
+    },
+    "draft_severity": {
+      "type": "string",
+      "enum": ["CRITICAL", "HIGH"]
+    },
+    "vlm_opinion_status": {
+      "type": "string",
+      "enum": ["VLM", "NO_OPINION"]
+    },
+    "obb_3d": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["center", "size", "yaw_rad"],
+      "properties": {
+        "center": { "$ref": "../common/defs.schema.json#/$defs/vec3" },
+        "size": { "$ref": "../common/defs.schema.json#/$defs/vec3" },
+        "yaw_rad": { "type": "number" }
+      }
+    },
+    "geometry_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "candidate_kind", "polygon_xy", "z_min_m", "z_max_m"],
+      "properties": {
+        "candidate_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "candidate_kind": { "$ref": "#/$defs/candidate_kind" },
+        "polygon_xy": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 256,
+          "items": { "$ref": "../common/defs.schema.json#/$defs/vec2" }
+        },
+        "z_min_m": { "type": "number" },
+        "z_max_m": { "type": "number" },
+        "top_height_m": {
+          "oneOf": [
+            { "type": "number", "exclusiveMinimum": 0 },
+            { "type": "null" }
+          ]
+        },
+        "obb": {
+          "oneOf": [
+            { "$ref": "#/$defs/obb_3d" },
+            { "type": "null" }
+          ]
+        },
+        "area_m2": { "type": "number", "minimum": 0 },
+        "point_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "frame_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["camera_id", "frame_uri", "face_policy"],
+      "properties": {
+        "camera_id": { "$ref": "../common/defs.schema.json#/$defs/camera_id" },
+        "frame_uri": { "$ref": "../common/defs.schema.json#/$defs/object_uri" },
+        "local_copy": {
+          "$ref": "../common/defs.schema.json#/$defs/pod_local_frame"
+        },
+        "face_policy": {
+          "type": "string",
+          "enum": ["BLURRED", "EXCLUDED"],
+          "description": "VLM 입력 얼굴 정책(명세 15.1, AGENTS 규칙 8). OBSERVED 금지."
+        },
+        "estimated_capture_time_ms": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "timestamp_source": { "$ref": "../common/defs.schema.json#/$defs/timestamp_source" },
+        "timestamp_uncertainty_ms": { "$ref": "../common/defs.schema.json#/$defs/duration_ms" }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "사람 이름·원본 얼굴 픽셀 필드는 없다(AGENTS 규칙 8).",
+      "required": ["site_id", "setup_session_id", "calibration_version", "preview_scene_version"],
+      "properties": {
+        "site_id": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "setup_session_id": { "$ref": "../common/defs.schema.json#/$defs/uuid" },
+        "calibration_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "calibration_ref": { "$ref": "../common/defs.schema.json#/$defs/object_uri" },
+        "calibration_hash": { "$ref": "../common/defs.schema.json#/$defs/sha256" },
+        "preview_scene_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "preview_scene_uri": { "$ref": "../common/defs.schema.json#/$defs/object_uri" },
+        "pointcloud_uri": { "$ref": "../common/defs.schema.json#/$defs/object_uri" },
+        "geometry_candidates": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/geometry_candidate" }
+        },
+        "frames": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/frame_input" }
+        }
+      }
+    },
+    "draft_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "candidate_kind",
+        "zone_kind",
+        "eval_type",
+        "polygon_xy",
+        "z_min_m",
+        "z_max_m",
+        "recommended_name",
+        "recommended_severity",
+        "rationale",
+        "vlm_status",
+        "evidence_cameras"
+      ],
+      "properties": {
+        "candidate_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "candidate_kind": { "$ref": "#/$defs/candidate_kind" },
+        "zone_kind": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "eval_type": { "$ref": "#/$defs/eval_type" },
+        "polygon_xy": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 256,
+          "items": { "$ref": "../common/defs.schema.json#/$defs/vec2" }
+        },
+        "z_min_m": { "type": "number" },
+        "z_max_m": { "type": "number" },
+        "top_height_m": {
+          "oneOf": [
+            { "type": "number", "exclusiveMinimum": 0 },
+            { "type": "null" }
+          ]
+        },
+        "obb": {
+          "oneOf": [
+            { "$ref": "#/$defs/obb_3d" },
+            { "type": "null" }
+          ]
+        },
+        "recommended_name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "recommended_severity": { "$ref": "#/$defs/draft_severity" },
+        "rationale": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "vlm_status": { "$ref": "#/$defs/vlm_opinion_status" },
+        "evidence_cameras": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "../common/defs.schema.json#/$defs/camera_id" }
+        },
+        "confidence": {
+          "oneOf": [
+            { "type": "number", "minimum": 0, "maximum": 1 },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "setup_session_id",
+        "site_id",
+        "calibration_version",
+        "preview_scene_version",
+        "safety_use",
+        "status",
+        "model_version",
+        "prompt_version",
+        "latency_ms",
+        "drafts"
+      ],
+      "properties": {
+        "setup_session_id": { "$ref": "../common/defs.schema.json#/$defs/uuid" },
+        "site_id": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "calibration_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "preview_scene_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "safety_use": { "const": false },
+        "status": {
+          "type": "string",
+          "enum": ["SUCCEEDED", "NO_OPINION"]
+        },
+        "model_version": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "null" }
+          ]
+        },
+        "prompt_version": { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        "latency_ms": { "$ref": "../common/defs.schema.json#/$defs/duration_ms" },
+        "drafts": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/draft_item" }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "SUCCEEDED" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "model_version": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "NO_OPINION" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "model_version": { "type": "null" }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

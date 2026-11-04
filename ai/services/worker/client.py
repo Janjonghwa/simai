@@ -20,7 +20,7 @@ JOB_REQUEST_MAJOR = "3"  # job_request 3.0.0: attempt = 반납을 세지 않는 
 # job_request $defs.job_type 와 같은 목록(시험이 계약과 맞춰 본다). 계약 밖 유형으로 대여를 요청하면 EC2 가 400 으로 거부한다
 JOB_TYPES = frozenset({
     "vlm_rationale", "tbm_report", "static_reconstruct", "calibration_ba",
-    "bev_floorplan", "incident_summary", "scene_regenerate", "hmr_refine", "hmr_appearance_update",
+    "bev_floorplan", "incident_summary", "scene_regenerate", "site_setup", "vlm_zone_draft", "hmr_refine", "hmr_appearance_update",
 })
 log = logging.getLogger("services.worker")
 

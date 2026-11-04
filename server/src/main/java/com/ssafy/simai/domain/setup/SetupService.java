@@ -19,6 +19,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.context.event.EventListener;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
@@ -47,7 +49,14 @@ import tools.jackson.databind.node.ObjectNode;
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class SetupService {
 
+    private static final Logger log = LoggerFactory.getLogger(SetupService.class);
     static final double DEFAULT_HEIGHT_TOLERANCE_CM = 5.0;
+    private static final int DRAFT_MAX_ATTEMPTS = 2;
+    private static final int DRAFT_TIMEOUT_MS = 60_000;
+    private static final java.util.regex.Pattern S3_URI_PATTERN =
+            java.util.regex.Pattern.compile("^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/\\S+$");
+    private static final java.util.regex.Pattern SHA256_PATTERN =
+            java.util.regex.Pattern.compile("^sha256:[0-9a-f]{64}$");
     private static final double MAX_CAMERA_HEIGHT_M = 20.0;
     private static final int SETUP_MAX_ATTEMPTS = 2;
     private static final int SETUP_TIMEOUT_MS = 900_000;
@@ -73,6 +82,7 @@ public class SetupService {
     private final NamedParameterJdbcTemplate jdbc;
     private final TransactionTemplate transaction;
     private final TransactionTemplate requiresNew;
+    private final TransactionTemplate nested;
     private final ObjectMapper mapper;
     private final SiteLookup sites;
     private final AnalysisJobService jobs;
@@ -84,6 +94,8 @@ public class SetupService {
         this.transaction = new TransactionTemplate(transactionManager);
         this.requiresNew = new TransactionTemplate(transactionManager);
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        this.nested = new TransactionTemplate(transactionManager);
+        this.nested.setPropagationBehavior(TransactionDefinition.PROPAGATION_NESTED);
         this.mapper = mapper;
         this.sites = sites;
         this.jobs = jobs;
@@ -227,6 +239,115 @@ public class SetupService {
         return getInSite(sites.siteId(), setupSessionId);
     }
 
+    /** 세팅 세션에 귀속된 VLM 위험구역 초안 목록 조회(GET /api/setup-sessions/{id}/zone-drafts, S15P31A101-455). */
+    public ObjectNode getZoneDrafts(UUID setupSessionId) {
+        String siteId = sites.siteId();
+        SessionRow session = findForUpdateOrView(siteId, setupSessionId, false);
+        List<ObjectNode> runs = jdbc.query("""
+                SELECT draft_run_id, job_id, calibration_version, preview_scene_version, status,
+                       model_version, prompt_version, latency_ms, error_code, error_message,
+                       created_at, completed_at
+                FROM setup_zone_draft_run
+                WHERE setup_session_id = :id
+                ORDER BY created_at DESC
+                LIMIT 1
+                """, new MapSqlParameterSource("id", setupSessionId), (rs, i) -> {
+            ObjectNode run = mapper.createObjectNode();
+            UUID runId = rs.getObject("draft_run_id", UUID.class);
+            run.put("draft_run_id", runId.toString());
+            run.put("setup_session_id", setupSessionId.toString());
+            run.put("site_id", siteId);
+            run.put("calibration_version", rs.getString("calibration_version"));
+            run.put("preview_scene_version", rs.getString("preview_scene_version"));
+            run.put("safety_use", false);
+            run.put("job_id", rs.getString("job_id"));
+            run.put("status", rs.getString("status"));
+            putText(run, "model_version", rs.getString("model_version"));
+            putText(run, "prompt_version", rs.getString("prompt_version"));
+            double latency = rs.getDouble("latency_ms");
+            if (rs.wasNull()) {
+                run.putNull("latency_ms");
+            } else {
+                run.put("latency_ms", latency);
+            }
+            putText(run, "error_code", rs.getString("error_code"));
+            putText(run, "error_message", rs.getString("error_message"));
+            run.put("created_at_ms", rs.getTimestamp("created_at").getTime());
+            var completed = rs.getTimestamp("completed_at");
+            if (completed == null) {
+                run.putNull("completed_at_ms");
+            } else {
+                run.put("completed_at_ms", completed.getTime());
+            }
+            ArrayNode draftsNode = run.putArray("drafts");
+            jdbc.query("""
+                    SELECT draft_id, draft_index, candidate_id, candidate_kind, zone_kind, eval_type,
+                           polygon_xy::text AS polygon_xy, z_min_m, z_max_m, top_height_m, obb::text AS obb,
+                           recommended_name, recommended_severity, rationale, vlm_status,
+                           evidence_cameras::text AS evidence_cameras, confidence
+                    FROM setup_zone_draft
+                    WHERE draft_run_id = :runId
+                    ORDER BY draft_index ASC
+                    """, new MapSqlParameterSource("runId", runId), dRs -> {
+                ObjectNode d = draftsNode.addObject();
+                d.put("draft_id", dRs.getObject("draft_id", UUID.class).toString());
+                d.put("draft_index", dRs.getInt("draft_index"));
+                d.put("candidate_id", dRs.getString("candidate_id"));
+                d.put("candidate_kind", dRs.getString("candidate_kind"));
+                d.put("zone_kind", dRs.getString("zone_kind"));
+                d.put("eval_type", dRs.getString("eval_type"));
+                d.set("polygon_xy", mapper.readTree(dRs.getString("polygon_xy")));
+                d.put("z_min_m", (double) dRs.getFloat("z_min_m"));
+                d.put("z_max_m", (double) dRs.getFloat("z_max_m"));
+                float topH = dRs.getFloat("top_height_m");
+                if (dRs.wasNull()) {
+                    d.putNull("top_height_m");
+                } else {
+                    d.put("top_height_m", (double) topH);
+                }
+                String obbRaw = dRs.getString("obb");
+                if (obbRaw == null) {
+                    d.putNull("obb");
+                } else {
+                    d.set("obb", mapper.readTree(obbRaw));
+                }
+                d.put("recommended_name", dRs.getString("recommended_name"));
+                d.put("recommended_severity", dRs.getString("recommended_severity"));
+                d.put("rationale", dRs.getString("rationale"));
+                d.put("vlm_status", dRs.getString("vlm_status"));
+                d.set("evidence_cameras", mapper.readTree(dRs.getString("evidence_cameras")));
+                float conf = dRs.getFloat("confidence");
+                if (dRs.wasNull()) {
+                    d.putNull("confidence");
+                } else {
+                    d.put("confidence", (double) conf);
+                }
+            });
+            return run;
+        });
+        if (!runs.isEmpty()) {
+            return runs.getFirst();
+        }
+        ObjectNode empty = mapper.createObjectNode();
+        empty.putNull("draft_run_id");
+        empty.put("setup_session_id", setupSessionId.toString());
+        empty.put("site_id", siteId);
+        putText(empty, "calibration_version", session.calibrationVersion());
+        putText(empty, "preview_scene_version", session.previewSceneVersion());
+        empty.put("safety_use", false);
+        empty.putNull("job_id");
+        empty.put("status", "NOT_REQUESTED");
+        empty.putNull("model_version");
+        empty.putNull("prompt_version");
+        empty.putNull("latency_ms");
+        empty.putNull("error_code");
+        empty.putNull("error_message");
+        empty.putNull("created_at_ms");
+        empty.putNull("completed_at_ms");
+        empty.putArray("drafts");
+        return empty;
+    }
+
     /** 실패한 세팅 세션을 재시도해 새 세션을 만든다(새 카메라 높이가 있으면 기본값과 함께 갱신). */
     public ObjectNode retry(UUID setupSessionId, Map<String, Double> cameraHeightsM, long userId) {
         String siteId = sites.siteId();
@@ -250,6 +371,10 @@ public class SetupService {
     /** {@code site_setup} 작업 종료 콜백을 반영한다. */
     @EventListener
     public void onFinished(JobFinished event) {
+        if ("vlm_zone_draft".equals(event.jobType())) {
+            handleZoneDraftFinishedSafe(event);
+            return;
+        }
         if (!"site_setup".equals(event.jobType())) {
             return;
         }
@@ -288,6 +413,15 @@ public class SetupService {
     }
 
     private void applySnapshot(SessionRow session, UUID leaseId, JsonNode snapshot, boolean terminalResult) {
+        applySnapshotCore(session, leaseId, snapshot, terminalResult);
+        String cal = optionalText(snapshot, "calibration_version", session.calibrationVersion());
+        String preview = optionalText(snapshot, "preview_scene_version", session.previewSceneVersion());
+        if (cal != null && preview != null) {
+            enqueueZoneDraftIfReadySafe(session.setupSessionId(), session.siteId(), cal, preview);
+        }
+    }
+
+    private void applySnapshotCore(SessionRow session, UUID leaseId, JsonNode snapshot, boolean terminalResult) {
         if (snapshot == null || !snapshot.isObject()) {
             throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
         }
@@ -432,6 +566,208 @@ public class SetupService {
                     .addValue("workId", session.workUnitId())
                     .addValue("now", now));
         }
+    }
+
+    private void enqueueZoneDraftIfReadySafe(UUID setupSessionId, String siteId, String calibrationVersion,
+            String previewSceneVersion) {
+        try {
+            enqueueZoneDraftIfReady(setupSessionId, siteId, calibrationVersion, previewSceneVersion);
+        } catch (RuntimeException e) {
+            log.warn("세팅 세션 {} 의 vlm_zone_draft 작업 등록 실패(세팅 진행에는 영향 없음): {}", setupSessionId, e.getMessage());
+        }
+    }
+
+    private void enqueueZoneDraftIfReady(UUID setupSessionId, String siteId, String calibrationVersion,
+            String previewSceneVersion) {
+        Boolean exists = jdbc.queryForObject("""
+                SELECT EXISTS (
+                    SELECT 1 FROM setup_zone_draft_run
+                    WHERE setup_session_id = :sessionId AND preview_scene_version = :previewScene
+                )
+                """, new MapSqlParameterSource()
+                .addValue("sessionId", setupSessionId)
+                .addValue("previewScene", previewSceneVersion), Boolean.class);
+        if (Boolean.TRUE.equals(exists)) {
+            return;
+        }
+
+        ObjectNode input = mapper.createObjectNode();
+        input.put("site_id", siteId);
+        input.put("setup_session_id", setupSessionId.toString());
+        input.put("calibration_version", calibrationVersion);
+        input.put("preview_scene_version", previewSceneVersion);
+
+        jdbc.query("""
+                SELECT calibration_ref, calibration_hash
+                FROM calibration_version
+                WHERE calibration_version = :cal AND site_id = :site
+                """, new MapSqlParameterSource().addValue("cal", calibrationVersion).addValue("site", siteId), rs -> {
+            String ref = rs.getString("calibration_ref");
+            String hash = rs.getString("calibration_hash");
+            if (ref != null && S3_URI_PATTERN.matcher(ref).matches()) {
+                input.put("calibration_ref", ref);
+            }
+            if (hash != null && SHA256_PATTERN.matcher(hash).matches()) {
+                input.put("calibration_hash", hash);
+            }
+        });
+
+        String jobId = jobs.enqueue(new JobSpec("vlm_zone_draft", input, DRAFT_MAX_ATTEMPTS, DRAFT_TIMEOUT_MS, null, null));
+        UUID runId = UUID.randomUUID();
+        OffsetDateTime now = utc(clock.instant());
+        jdbc.update("""
+                INSERT INTO setup_zone_draft_run (
+                    draft_run_id, setup_session_id, job_id, site_id, calibration_version, preview_scene_version,
+                    status, created_at
+                ) VALUES (
+                    :runId, :sessionId, :jobId, :site, :cal, :previewScene, 'QUEUED', :now
+                )
+                ON CONFLICT (setup_session_id, preview_scene_version) DO NOTHING
+                """, new MapSqlParameterSource()
+                .addValue("runId", runId)
+                .addValue("sessionId", setupSessionId)
+                .addValue("jobId", jobId)
+                .addValue("site", siteId)
+                .addValue("cal", calibrationVersion)
+                .addValue("previewScene", previewSceneVersion)
+                .addValue("now", now));
+    }
+
+    private void handleZoneDraftFinishedSafe(JobFinished event) {
+        try {
+            handleZoneDraftFinished(event);
+        } catch (RuntimeException e) {
+            log.warn("vlm_zone_draft 작업 {} 결과 저장 실패(세팅 세션에는 영향 없음): {}", event.jobId(), e.getMessage());
+        }
+    }
+
+    private void handleZoneDraftFinished(JobFinished event) {
+        List<DraftRunRow> runs = jdbc.query("""
+                SELECT draft_run_id, setup_session_id, status
+                FROM setup_zone_draft_run
+                WHERE job_id = :jobId
+                FOR UPDATE
+                """, new MapSqlParameterSource("jobId", event.jobId()),
+                (rs, i) -> new DraftRunRow(
+                        rs.getObject("draft_run_id", UUID.class),
+                        rs.getObject("setup_session_id", UUID.class),
+                        rs.getString("status")));
+        if (runs.isEmpty() || !"QUEUED".equals(runs.getFirst().status())) {
+            return;
+        }
+        DraftRunRow run = runs.getFirst();
+        OffsetDateTime now = utc(clock.instant());
+
+        if ("SUCCEEDED".equals(event.status()) && event.result() != null && event.result().isObject()) {
+            JsonNode res = event.result();
+            String resStatus = "NO_OPINION".equals(res.path("status").asString(null)) ? "NO_OPINION" : "SUCCEEDED";
+            String modelVer = res.path("model_version").isString() ? res.get("model_version").asString() : null;
+            String promptVer = res.path("prompt_version").isString() ? res.get("prompt_version").asString() : null;
+            Double latencyMs = res.path("latency_ms").isNumber() ? res.get("latency_ms").doubleValue() : null;
+
+            jdbc.update("""
+                    UPDATE setup_zone_draft_run
+                    SET status = :status, model_version = :model, prompt_version = :prompt,
+                        latency_ms = :latency, completed_at = :now
+                    WHERE draft_run_id = :runId
+                    """, new MapSqlParameterSource()
+                    .addValue("runId", run.draftRunId())
+                    .addValue("status", resStatus)
+                    .addValue("model", modelVer)
+                    .addValue("prompt", promptVer)
+                    .addValue("latency", latencyMs)
+                    .addValue("now", now));
+
+            JsonNode drafts = res.get("drafts");
+            if (drafts != null && drafts.isArray()) {
+                for (int i = 0; i < drafts.size(); i++) {
+                    JsonNode d = drafts.get(i);
+                    JsonNode topHNode = d.get("top_height_m");
+                    Float topH = (topHNode != null && topHNode.isNumber()) ? (float) topHNode.doubleValue() : null;
+                    JsonNode obbNode = d.get("obb");
+                    String obbJson = (obbNode != null && !obbNode.isNull()) ? mapper.writeValueAsString(obbNode) : null;
+                    JsonNode confNode = d.get("confidence");
+                    Float conf = (confNode != null && confNode.isNumber()) ? (float) confNode.doubleValue() : null;
+                    JsonNode camsNode = d.get("evidence_cameras");
+                    String camsJson = (camsNode != null && camsNode.isArray())
+                            ? mapper.writeValueAsString(camsNode) : "[]";
+
+                    jdbc.update("""
+                            INSERT INTO setup_zone_draft (
+                                draft_id, draft_run_id, setup_session_id, job_id, draft_index,
+                                candidate_id, candidate_kind, zone_kind, eval_type, polygon_xy,
+                                z_min_m, z_max_m, top_height_m, obb, recommended_name,
+                                recommended_severity, rationale, vlm_status, evidence_cameras,
+                                confidence, created_at
+                            ) VALUES (
+                                :id, :runId, :sessionId, :jobId, :idx,
+                                :candId, :candKind, :zoneKind, :evalType, CAST(:poly AS jsonb),
+                                :zMin, :zMax, :topH, CAST(:obb AS jsonb), :name,
+                                :severity, :rationale, :vlmStatus, CAST(:cams AS jsonb),
+                                :conf, :now
+                            )
+                            ON CONFLICT (draft_run_id, draft_index) DO NOTHING
+                            """, new MapSqlParameterSource()
+                            .addValue("id", UUID.randomUUID())
+                            .addValue("runId", run.draftRunId())
+                            .addValue("sessionId", run.setupSessionId())
+                            .addValue("jobId", event.jobId())
+                            .addValue("idx", i)
+                            .addValue("candId", d.path("candidate_id").asString())
+                            .addValue("candKind", d.path("candidate_kind").asString())
+                            .addValue("zoneKind", d.path("zone_kind").asString())
+                            .addValue("evalType", d.path("eval_type").asString())
+                            .addValue("poly", mapper.writeValueAsString(d.get("polygon_xy")))
+                            .addValue("zMin", (float) d.path("z_min_m").doubleValue())
+                            .addValue("zMax", (float) d.path("z_max_m").doubleValue())
+                            .addValue("topH", topH)
+                            .addValue("obb", obbJson)
+                            .addValue("name", d.path("recommended_name").asString())
+                            .addValue("severity", d.path("recommended_severity").asString())
+                            .addValue("rationale", d.path("rationale").asString())
+                            .addValue("vlmStatus", d.path("vlm_status").asString())
+                            .addValue("cams", camsJson)
+                            .addValue("conf", conf)
+                            .addValue("now", now));
+                }
+            }
+
+            jdbc.update("""
+                    UPDATE setup_session
+                    SET zone_drafts_ref = COALESCE(zone_drafts_ref, :ref), updated_at = :now
+                    WHERE setup_session_id = :sessionId
+                    """, new MapSqlParameterSource()
+                    .addValue("sessionId", run.setupSessionId())
+                    .addValue("ref", "zone-draft-run:" + run.draftRunId())
+                    .addValue("now", now));
+            return;
+        }
+
+        String code = event.status();
+        String message = "VLM 위험구역 초안 생성이 실패했습니다";
+        JsonNode err = event.error();
+        if (err != null && err.isObject()) {
+            String errCode = err.path("code").asString(null);
+            String errMsg = err.path("message").asString(null);
+            if (errCode != null && !errCode.isBlank()) {
+                code = errCode;
+            }
+            if (errMsg != null && !errMsg.isBlank()) {
+                message = errMsg;
+            }
+        }
+        jdbc.update("""
+                UPDATE setup_zone_draft_run
+                SET status = 'FAILED', error_code = :code, error_message = :msg, completed_at = :now
+                WHERE draft_run_id = :runId
+                """, new MapSqlParameterSource()
+                .addValue("runId", run.draftRunId())
+                .addValue("code", code)
+                .addValue("msg", message)
+                .addValue("now", now));
+    }
+
+    private record DraftRunRow(UUID draftRunId, UUID setupSessionId, String status) {
     }
 
     private String validateAndEnrichHeightChecks(JsonNode node, Map<String, Double> expectedHeights, double toleranceCm) {

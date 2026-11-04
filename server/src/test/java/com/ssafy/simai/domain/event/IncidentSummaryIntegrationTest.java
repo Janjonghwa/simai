@@ -164,7 +164,7 @@ class IncidentSummaryIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn());
         assertThat(schemas.violations("messages/job_request", leaseEnvelope.toString())).isEmpty();
-        assertThat(leaseEnvelope.get("schema_version").asString()).isEqualTo("3.7.0");
+        assertThat(leaseEnvelope.get("schema_version").asString()).isEqualTo("3.8.0");
         JsonNode leasePayload = leaseEnvelope.get("payload");
         assertThat(leasePayload.get("job_id").asString()).isEqualTo(jobId);
         assertThat(leasePayload.get("priority").asString()).isEqualTo("REPORT");

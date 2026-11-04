@@ -870,9 +870,9 @@ class JobLeaseStatus(Envelope):
 
 
 class JobRequestJobType(
-    RootModel[Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update', 'scene_regenerate', 'site_setup']]
+    RootModel[Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update', 'scene_regenerate', 'site_setup', 'vlm_zone_draft']]
 ):
-    root: Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update', 'scene_regenerate', 'site_setup']
+    root: Literal['vlm_rationale', 'tbm_report', 'static_reconstruct', 'calibration_ba', 'bev_floorplan', 'incident_summary', 'hmr_refine', 'hmr_appearance_update', 'scene_regenerate', 'site_setup', 'vlm_zone_draft']
 
 
 class Payload23(BaseModel):
@@ -2003,6 +2003,49 @@ class VlmRationaleResult(DefsSeverityUpwardOnly):
     clause_ids: list[ClauseId] | MISSING = MISSING
     model_version: Annotated[StrictStr, Field(min_length=1)]
     latency_ms: DefsDurationMs | MISSING = MISSING
+
+
+class VlmZoneDraft(RootModel[Any]):
+    root: Any
+
+
+class VlmZoneDraftCandidateKind(
+    RootModel[Literal['ELEVATED_WORK_SURFACE', 'OPENING', 'FLOOR_EDGE']]
+):
+    root: Literal['ELEVATED_WORK_SURFACE', 'OPENING', 'FLOOR_EDGE']
+
+
+class TopHeightM(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(gt=0.0)]
+
+
+class Confidence(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
+
+
+class VlmZoneDraftDraftSeverity(RootModel[Literal['CRITICAL', 'HIGH']]):
+    root: Literal['CRITICAL', 'HIGH']
+
+
+class VlmZoneDraftEvalType(RootModel[Literal['GROUND_FOOTPRINT', 'VOLUME_3D']]):
+    root: Literal['GROUND_FOOTPRINT', 'VOLUME_3D']
+
+
+class VlmZoneDraftObb3d(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    center: DefsVec3
+    size: DefsVec3
+    yaw_rad: StrictFloat
+
+
+class ModelVersion(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(min_length=1)]
+
+
+class VlmZoneDraftVlmOpinionStatus(RootModel[Literal['VLM', 'NO_OPINION']]):
+    root: Literal['VLM', 'NO_OPINION']
 
 
 class Payload42(BaseModel):
@@ -3308,6 +3351,91 @@ class VlmRationaleInput(BaseModel):
     world_state_ref: DefsUuid | MISSING = MISSING
 
 
+class VlmZoneDraftDraftItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    candidate_id: Annotated[StrictStr, Field(max_length=128, min_length=1)]
+    candidate_kind: VlmZoneDraftCandidateKind
+    zone_kind: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    eval_type: VlmZoneDraftEvalType
+    polygon_xy: Annotated[list[DefsVec2], Field(max_length=256, min_length=3)]
+    z_min_m: StrictFloat
+    z_max_m: StrictFloat
+    top_height_m: TopHeightM | None | MISSING = MISSING
+    obb: VlmZoneDraftObb3d | None | MISSING = MISSING
+    recommended_name: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    recommended_severity: VlmZoneDraftDraftSeverity
+    rationale: Annotated[StrictStr, Field(max_length=500, min_length=1)]
+    vlm_status: VlmZoneDraftVlmOpinionStatus
+    evidence_cameras: list[DefsCameraId]
+    confidence: Confidence | None | MISSING = MISSING
+
+
+class VlmZoneDraftFrameInput(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    frame_uri: DefsObjectUri
+    local_copy: DefsPodLocalFrame | MISSING = MISSING
+    face_policy: Literal['BLURRED', 'EXCLUDED']
+    estimated_capture_time_ms: DefsTimestampMs | MISSING = MISSING
+    timestamp_source: DefsTimestampSource | MISSING = MISSING
+    timestamp_uncertainty_ms: DefsDurationMs | MISSING = MISSING
+
+
+class VlmZoneDraftGeometryCandidate(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    candidate_id: Annotated[StrictStr, Field(max_length=128, min_length=1)]
+    candidate_kind: VlmZoneDraftCandidateKind
+    polygon_xy: Annotated[list[DefsVec2], Field(max_length=256, min_length=3)]
+    z_min_m: StrictFloat
+    z_max_m: StrictFloat
+    top_height_m: TopHeightM | None | MISSING = MISSING
+    obb: VlmZoneDraftObb3d | None | MISSING = MISSING
+    area_m2: Annotated[StrictFloat | MISSING, Field(ge=0.0)] = MISSING
+    point_count: Annotated[StrictInt | MISSING, Field(ge=0)] = MISSING
+
+
+class VlmZoneDraftInput(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    site_id: DefsVersionId
+    setup_session_id: DefsUuid
+    calibration_version: DefsVersionId
+    calibration_ref: DefsObjectUri | MISSING = MISSING
+    calibration_hash: DefsSha256 | MISSING = MISSING
+    preview_scene_version: DefsVersionId
+    preview_scene_uri: DefsObjectUri | MISSING = MISSING
+    pointcloud_uri: DefsObjectUri | MISSING = MISSING
+    geometry_candidates: Annotated[
+        list[VlmZoneDraftGeometryCandidate] | MISSING, Field(max_length=64)
+    ] = MISSING
+    frames: Annotated[list[VlmZoneDraftFrameInput] | MISSING, Field(max_length=8)] = (
+        MISSING
+    )
+
+
+class VlmZoneDraftResult(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    setup_session_id: DefsUuid
+    site_id: DefsVersionId
+    calibration_version: DefsVersionId
+    preview_scene_version: DefsVersionId
+    safety_use: Literal[False]
+    status: Literal['SUCCEEDED', 'NO_OPINION']
+    model_version: ModelVersion | None
+    prompt_version: DefsVersionId
+    latency_ms: DefsDurationMs
+    drafts: Annotated[list[VlmZoneDraftDraftItem], Field(max_length=64)]
+
+
 class Payload45(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -3843,6 +3971,7 @@ class Contracts(BaseModel):
     video_segment: VideoSegment | MISSING = MISSING
     viewer_health: ViewerHealth | MISSING = MISSING
     vlm_rationale: VlmRationale | MISSING = MISSING
+    vlm_zone_draft: VlmZoneDraft | MISSING = MISSING
     watch_ack: WatchAck | MISSING = MISSING
     watch_alert: WatchAlert | MISSING = MISSING
     watch_heartbeat: WatchHeartbeat | MISSING = MISSING

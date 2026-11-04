@@ -1,0 +1,42 @@
+{
+  "schema_version": "2.7.0",
+  "msg_type": "job_callback",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000045a",
+  "sent_at": 1760342422500,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261104-0455",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000004b5",
+    "job_type": "vlm_zone_draft",
+    "status": "SUCCEEDED",
+    "started_at": 1760342415100,
+    "finished_at": 1760342422400,
+    "result": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "site_id": "classroom-1",
+      "calibration_version": "cal-setup-12",
+      "preview_scene_version": "scene-setup-12-preview",
+      "safety_use": false,
+      "status": "SUCCEEDED",
+      "model_version": "nvidia/Cosmos-Reason2-2B",
+      "prompt_version": "vlm-zone-draft-1.0",
+      "latency_ms": 1000,
+      "drafts": [
+        {
+          "candidate_id": "cand-01",
+          "candidate_kind": "OPENING",
+          "zone_kind": "OPENING",
+          "eval_type": "GROUND_FOOTPRINT",
+          "polygon_xy": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+          "z_min_m": -0.5,
+          "z_max_m": 0.1,
+          "recommended_name": "개구부",
+          "recommended_severity": "CAUTION",
+          "rationale": "낮은 등급(CAUTION)은 위험구역 초안에서 허용하지 않는다.",
+          "vlm_status": "VLM",
+          "evidence_cameras": ["cam1"]
+        }
+      ]
+    }
+  }
+}

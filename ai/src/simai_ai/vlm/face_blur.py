@@ -221,6 +221,15 @@ class VlmFrame:
             raise ValueError("오버레이 이미지 크기가 다르다")
         return VlmFrame(_GATE, self.source, self.face_policy, self.record, pixels.copy())
 
+    def with_crop(self, x1: int, y1: int, x2: int, y2: int) -> VlmFrame:
+        """얼굴 처리된 프레임에서 영역(x1, y1, x2, y2)만 잘라 새 VlmFrame 으로 돌려준다."""
+        h, w = self._pixels.shape[:2]
+        cx1, cy1 = max(0, int(x1)), max(0, int(y1))
+        cx2, cy2 = min(w, int(x2)), min(h, int(y2))
+        if cx1 >= cx2 or cy1 >= cy2:
+            raise ValueError(f"유효하지 않은 crop 영역: ({x1}, {y1}, {x2}, {y2}) in ({w}, {h})")
+        return VlmFrame(_GATE, self.source, self.face_policy, self.record, self._pixels[cy1:cy2, cx1:cx2].copy())
+
     @property
     def pixels(self) -> np.ndarray:
         """처리된 BGR 이미지(읽기 전용). 메모리에서만 쓰고 저장소에 올리지 않는다."""
