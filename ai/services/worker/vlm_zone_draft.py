@@ -3,6 +3,8 @@
 - 입력은 `contracts/messages/vlm_zone_draft.schema.json#/$defs/input`, 결과는 `#/$defs/result` 로 검증한다.
 - 초안은 관리자가 수락해 구성 묶음으로 발행하기 전까지 Tier 0 판정에 절대 들어가지 않는다(`safety_use: False`).
 - VLM 프레임은 `gate_input_frames`(`prepare_vlm_frames`)를 거쳐 얼굴을 비식별 처리한 `VlmFrame` 만 VLM 에 넘긴다.
+- 프레임(S15P31A101-479): 세팅 워커가 올린 카메라별 대표 프레임(긴 변 1280 px 이하로 줄인 JPEG)이 `frames` 로 들어온다. 보정 문서의 `K` 는
+  원본 해상도(`image_size`) 기준이라, 후보를 투영해 크롭하기 전에 프레임 크기에 맞춰 `K` 를 비례 축소한다(`_fit_cameras_to_frames`).
 - VLM 서버 비가용·시간 초과·응답 형식 오류 시에도 전체 초안 생성을 실패시키지 않고 결정적 기하 후보를 `"AI 의견 없음"`(`status="NO_OPINION"`)으로 돌려준다.
 """
 
@@ -14,7 +16,10 @@ import logging
 import os
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from typing import Any
+
+import numpy as np
 
 from simai_ai.calibration.document import content_hash
 from simai_ai.providers.contract import schema_errors
@@ -33,7 +38,7 @@ from simai_ai.vlm.zone_draft import (
 
 from .handlers import JobContext, JobFailed
 from .objects import ObjectStore, ObjectStoreError
-from .vlm_frames import LocalFrames, gate_input_frames
+from .vlm_frames import LocalFrames, decode_image, gate_input_frames
 
 log = logging.getLogger("services.worker.vlm_zone_draft")
 
@@ -57,7 +62,8 @@ class VlmZoneDraftHandler:
         self._store = store
         self._provider = provider
         self._client_factory = client_factory
-        self._decode = decode
+        # 운영 조립(__main__)은 decode 를 넘기지 않는다. 없으면 모든 프레임이 decode 실패로 빠져 VLM 크롭이 영영 없었다(S15P31A101-479)
+        self._decode: Decoder = decode if decode is not None else decode_image
         self._monotonic = monotonic
         self._local_frames = local_frames
         self._geometry_config = geometry_config
@@ -76,6 +82,7 @@ class VlmZoneDraftHandler:
         _check_cancelled(ctx)
         cameras_by_id = self._resolve_cameras(ctx, inp)
         frames_by_camera = self._resolve_frames(ctx, inp)
+        cameras_by_id = _fit_cameras_to_frames(cameras_by_id, frames_by_camera)
         ctx.report_progress(0.6)
 
         _check_cancelled(ctx)
@@ -155,9 +162,9 @@ class VlmZoneDraftHandler:
                 decode=self._decode,
                 local=self._local_frames,
             )
-        except JobFailed:
+        except JobFailed as exc:
             # 프레임 다운로드/얼굴 검출 실패 시 VLM 만 건너뛰고 기하 후보는 살린다
-            log.warning("job=%s 프레임 준비 실패로 VLM 없이 기하 후보만 반환한다", ctx.job_id)
+            log.warning("job=%s 프레임 준비 실패로 VLM 없이 기하 후보만 반환한다: %s", ctx.job_id, exc)
             return {}
         if gate.dropped:
             log.info(
@@ -195,6 +202,29 @@ class VlmZoneDraftHandler:
             return self._store.get(ctx, uri)
         except ObjectStoreError as e:
             raise JobFailed("OBJECT_GET_FAILED", str(e), retryable=e.retryable) from e
+
+
+def _fit_cameras_to_frames(cameras: Mapping[str, CameraPose], frames: Mapping[str, Any]) -> dict[str, CameraPose]:
+    """프레임이 보정 해상도(`image_size`)와 다르면 그 카메라의 `K` 를 프레임 크기에 맞춰 비례 축소한다(크롭 좌표 정합).
+
+    프레임은 업로드 때 긴 변 1280 px 이하로 줄어 있을 수 있는데, 투영은 원본 해상도 기준 `K` 라서 그대로 쓰면 후보가 엉뚱한 곳(또는 화면 밖)으로
+    투영된다. 크기를 모르거나 같으면 그대로 둔다. 왜곡 계수는 쓰지 않는다(핀홀 투영, 기존 동작).
+    """
+    out = dict(cameras)
+    for cam_id, frame in frames.items():
+        pose = cameras.get(cam_id)
+        pixels = getattr(frame, "pixels", None)
+        if pose is None or pixels is None or getattr(pixels, "ndim", 0) < 2:
+            continue
+        frame_h, frame_w = pixels.shape[:2]
+        src_w, src_h = pose.image_size
+        if src_w <= 0 or src_h <= 0 or (frame_w, frame_h) == (src_w, src_h):
+            continue
+        k = np.array(pose.K, dtype=np.float64).reshape(3, 3)
+        k[0, :] *= frame_w / src_w
+        k[1, :] *= frame_h / src_h
+        out[cam_id] = replace(pose, K=k, image_size=(int(frame_w), int(frame_h)))
+    return out
 
 
 def _check_cancelled(ctx: JobContext) -> None:

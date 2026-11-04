@@ -1586,6 +1586,17 @@ class SiteSetup(RootModel[Any]):
     root: Any
 
 
+class SiteSetupCameraFrameRef(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    uri: Annotated[StrictStr, Field(max_length=1024, pattern='^s3://[^\\s]+$')]
+    sha256: Annotated[StrictStr, Field(pattern='^[0-9a-f]{64}$')]
+    size_bytes: Annotated[StrictInt | MISSING, Field(ge=1)] = MISSING
+    face_policy: Literal['BLURRED', 'EXCLUDED']
+
+
 class SiteSetupHeightChecks1(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -3266,6 +3277,9 @@ class SiteSetupArtifacts(BaseModel):
     calibration_document: SiteSetupObjectRef | MISSING = MISSING
     preview_scene: SiteSetupObjectRef | MISSING = MISSING
     scene: SiteSetupObjectRef | MISSING = MISSING
+    camera_frames: Annotated[
+        list[SiteSetupCameraFrameRef] | MISSING, Field(max_length=8)
+    ] = MISSING
 
 
 class SiteSetupProgress(BaseModel):

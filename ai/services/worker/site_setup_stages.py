@@ -13,6 +13,8 @@ prepare·mapanything·preview·bake·fallback)를 `Stages`(기본 `ProcessStages
 - (f) `publish`: 새 보정 문서를 작업 폴더에 두고 객체 저장소에 올린다. 올린 객체 참조(주소·sha256·크기)를 함께 돌려주면 처리기가
   `artifacts.calibration_document` 로 알리고, EC2 가 그 문서를 읽어 새 calibration_version 으로 등록한다(S15P31A101-467).
 - (g) `preview`: reconstruct_tasks `preview` 단계 → GLB 업로드 → `scene-preview-<run>`(+ `artifacts.preview_scene`).
+- (g) `publish_frames`: 사람 지운 배경에서 카메라별 대표 프레임 1장(JPEG, 긴 변 1280 px 이하)을 같은 산출물 경로로 올리고 카메라 ID·sha256 과
+  함께 `artifacts.camera_frames` 로 알린다. EC2 가 이를 AI 구역 초안(`vlm_zone_draft`) 입력 `frames` 에 싣는다(S15P31A101-479).
 - (h) `bake`: reconstruct_tasks `bake`(도구 부재 시 `fallback`) → GLB 업로드 → `scene-<run>`(+ `artifacts.scene`).
 
 단계가 실패하면 그 단계 로그(`<단계>.log`)의 끝 줄을 워커 로그와 실패 메시지에 남기고, 작업 폴더를 지우기 전에 로그·오류 문서를
@@ -46,7 +48,9 @@ from .auto_static import AutoStaticSettings, calibration_document_path
 from .handlers import JobContext, JobFailed
 from .objects import ObjectStore, ObjectStoreError
 from .site_setup import (
+    MAX_CAMERA_FRAMES,
     BakedScene,
+    CameraFrameRef,
     CameraPose,
     CleanBackgroundBundle,
     InitialWorldReconstruction,
@@ -64,6 +68,8 @@ STAGE_TIMEOUTS_S = {"prepare": 180.0, "mapanything": 1200.0, "preview": 60.0, "b
 DEFAULT_BACKGROUND_WAIT_S = 240.0
 DEFAULT_BACKGROUND_POLL_S = 2.0
 TIER0_MIN_SAMPLES_PER_CAMERA = 20  # Tier 0 기본값. 수집률 표시에만 쓴다(완성 판정은 Tier 0 의 ready·묶음 COMPLETE)
+FRAME_MAX_LONG_SIDE_PX = 1280  # 구역 초안용 프레임 긴 변 상한(VLM 크롭에 충분, 업로드는 작게)
+FRAME_JPEG_QUALITY = 90
 LOG_TAIL_LINES = 20  # 실패 단계 로그를 워커 로그에 남길 줄 수
 _MESSAGE_TAIL_CHARS = 240  # 실패 메시지(계약 500자)에 붙일 로그 끝 길이
 _KEEP_LOG_MAX_BYTES = 8 * 1024 * 1024
@@ -153,6 +159,29 @@ def _log_tail(path: Path, lines: int) -> list[str]:
     except OSError:
         return []
     return [ln.rstrip() for ln in text.splitlines() if ln.strip()][-lines:]
+
+
+def _frame_jpeg(source: Any) -> bytes | None:
+    """배경 이미지(경로·바이트·BGR 배열) → 긴 변 FRAME_MAX_LONG_SIDE_PX 이하 JPEG 바이트. 읽지·디코드하지 못하면 None."""
+    import cv2
+
+    try:
+        if isinstance(source, np.ndarray):
+            image = source
+        else:
+            raw = bytes(source) if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
+            image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    except (OSError, TypeError, ValueError):
+        return None
+    if image is None or image.ndim < 2 or image.shape[0] < 1 or image.shape[1] < 1:
+        return None
+    height, width = image.shape[:2]
+    long_side = max(height, width)
+    if long_side > FRAME_MAX_LONG_SIDE_PX:
+        scale = FRAME_MAX_LONG_SIDE_PX / long_side
+        image = cv2.resize(image, (max(1, round(width * scale)), max(1, round(height * scale))), interpolation=cv2.INTER_AREA)
+    ok, encoded = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), FRAME_JPEG_QUALITY])
+    return bytes(encoded.tobytes()) if ok else None
 
 
 def _bundle_dir(settings: AutoStaticSettings) -> tuple[Path, str] | None:
@@ -327,6 +356,30 @@ class ProductionSiteSetupStages:
         ref = self._upload_asset(glb)
         return PreviewDraftResult(preview_scene_version=f"scene-preview-{self._run_id}"[:160], scene_asset=ref)
 
+    # ------------------------------------------------------------------ (g) 카메라 프레임
+    def publish_frames(self, *, setup_session_id: str, camera_ids: Sequence[str],
+                       backgrounds: CleanBackgroundBundle) -> list[CameraFrameRef]:
+        """카메라별 사람 지운 배경 한 장을 JPEG(긴 변 1280 px 이하)로 올린다. 배경이 없는 카메라는 건너뛴다(모르면 비운다).
+
+        같은 배경이면 같은 JPEG(sha256)가 나와 재시도해도 같은 객체다. 얼굴은 원칙상 없지만 `face_policy` 는 BLURRED 로 알려
+        VLM 워커가 기존 얼굴 흐림 관문을 거치게 한다.
+        """
+        out: list[CameraFrameRef] = []
+        for cid in list(camera_ids)[:MAX_CAMERA_FRAMES]:
+            sources = backgrounds.frames_by_cam.get(cid) or []
+            if not sources:
+                continue
+            jpeg = _frame_jpeg(sources[0])
+            if jpeg is None:
+                log.warning("작업 %s: 카메라 %s 의 배경을 JPEG 프레임으로 만들지 못해 건너뛴다", self.ctx.job_id, cid)
+                continue
+            try:
+                uri = self.store.put(self.ctx, f"frame-{cid}.jpg", jpeg, "image/jpeg")
+            except ObjectStoreError as exc:
+                raise JobFailed("SETUP_OBJECT_FAILED", str(exc), retryable=exc.retryable) from exc
+            out.append(CameraFrameRef(cid, ObjectRef.of(uri, jpeg)))
+        return out
+
     # ------------------------------------------------------------------ (h)
     def bake(self, *, setup_session_id: str, site_id: str, calibration_doc: Mapping[str, Any],
              backgrounds: CleanBackgroundBundle, preview_scene_version: str) -> BakedScene:
@@ -429,7 +482,8 @@ class ProductionSiteSetupHandler:
                 )
                 handler = SiteSetupHandler(
                     background_collector=s.collect, world_initializer=s.initialize, calibration_publisher=s.publish,
-                    preview_builder=s.preview, texture_baker=s.bake, object_cross_checker=self._cross,
+                    preview_builder=s.preview, texture_baker=s.bake, frame_publisher=s.publish_frames,
+                    object_cross_checker=self._cross,
                     live_gate=self._live_gate, live_notice=self._live_notice, clock_ms=self._clock_ms, **self._wait,
                 )
                 try:

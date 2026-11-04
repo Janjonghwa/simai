@@ -15,6 +15,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -50,6 +51,8 @@ import tools.jackson.databind.node.ObjectNode;
  *   <li>스냅샷의 {@code artifacts}(site_setup 1.2.0)로 알린 새 보정 문서·미리보기/정식 GLB 는 {@link SetupArtifactRegistrar} 가
  *       새 calibration_version·scene_version(CANDIDATE)으로 등록해 이 세션에 귀속시킨다. 버전 참조는 이미 있던 버전이거나 이 세션이
  *       등록한 버전만 받고, 다른 세팅 세션에 귀속된 버전은 거부한다(S15P31A101-467).
+ *   <li>같은 스냅샷의 {@code artifacts.camera_frames}(1.3.0)로 알린 카메라별 대표 프레임도 이 세션 귀속으로 보관하고(CAMERA_FRAME),
+ *       AI 구역 초안({@code vlm_zone_draft}) 입력 {@code frames} 에 카메라·주소·얼굴 정책으로 싣는다(S15P31A101-479).
  *   <li>{@code READY_FOR_ZONES} 이후 하트비트(새 보정·미리보기 등록 완료)에서 이 세션이 등록한 새 보정이면 그 보정을 실은 구성 묶음
  *       (config_version)을 커밋 뒤 발행해 Tier 0 로 보낸다. 결과 성공(SUCCEEDED) 때는 이미 발행했으면 다시 만들지 않는다. 같은 현장에
  *       관제 중(IN_PROGRESS) 작업이 있으면 발행하지 않고 경고만 남기며, 세팅 시작 자체도 409 로 막는다. 묶음을 만들지 못해도 세팅은
@@ -63,6 +66,8 @@ public class SetupService {
     private static final Logger log = LoggerFactory.getLogger(SetupService.class);
     static final double DEFAULT_HEIGHT_TOLERANCE_CM = 5.0;
     private static final int DRAFT_MAX_ATTEMPTS = 2;
+    /** vlm_zone_draft 입력 frames maxItems(계약) */
+    private static final int MAX_DRAFT_FRAMES = 8;
     private static final int DRAFT_TIMEOUT_MS = 60_000;
     private static final java.util.regex.Pattern S3_URI_PATTERN =
             java.util.regex.Pattern.compile("^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/\\S+$");
@@ -775,7 +780,7 @@ public class SetupService {
             }
         });
 
-        // 세팅 세션이 등록한 미리보기 Scene(GLB) 주소. 없으면 워커가 후보 0개를 낸다(카메라 배경 프레임 주소는 서버가 보관하지 않아 싣지 않는다)
+        // 세팅 세션이 등록한 미리보기 Scene(GLB) 주소. 없으면 워커가 후보 0개를 낸다
         jdbc.query("""
                 SELECT object_uri FROM setup_session_artifact
                 WHERE setup_session_id = :sessionId AND kind = 'PREVIEW_SCENE' AND version = :previewScene
@@ -787,6 +792,36 @@ public class SetupService {
                 input.put("preview_scene_uri", uri);
             }
         });
+
+        // 세팅 워커가 올려 이 세션에 등록한 카메라별 대표 프레임(S15P31A101-479). 워커가 후보별 크롭을 만들어 VLM 에 넣는다.
+        // 미리보기를 등록한 그 시도(대여)의 프레임을 쓰고(재시도가 다른 배경을 썼을 수 있다), 없으면 가장 최근 등록분. 카메라당 하나
+        List<Map<String, Object>> frameRows = jdbc.queryForList("""
+                SELECT f.camera_id, f.object_uri, f.face_policy
+                FROM setup_session_artifact f
+                WHERE f.setup_session_id = :sessionId AND f.kind = 'CAMERA_FRAME'
+                  AND f.lease_id = COALESCE((SELECT p.lease_id FROM setup_session_artifact p
+                                             WHERE p.setup_session_id = f.setup_session_id AND p.kind = 'PREVIEW_SCENE'
+                                               AND p.version = :previewScene), f.lease_id)
+                ORDER BY f.camera_id, f.registered_at DESC
+                """, new MapSqlParameterSource().addValue("sessionId", setupSessionId).addValue("previewScene", previewSceneVersion));
+        ArrayNode frames = mapper.createArrayNode();
+        Set<String> framedCameras = new HashSet<>();
+        for (Map<String, Object> row : frameRows) {
+            String cameraId = (String) row.get("camera_id");
+            String uri = (String) row.get("object_uri");
+            String facePolicy = (String) row.get("face_policy");
+            if (frames.size() >= MAX_DRAFT_FRAMES || cameraId == null || uri == null || !S3_URI_PATTERN.matcher(uri).matches()
+                    || facePolicy == null || !framedCameras.add(cameraId)) {
+                continue;
+            }
+            ObjectNode frame = frames.addObject();
+            frame.put("camera_id", cameraId);
+            frame.put("frame_uri", uri);
+            frame.put("face_policy", facePolicy);
+        }
+        if (!frames.isEmpty()) {
+            input.set("frames", frames);
+        }
 
         String jobId = jobs.enqueue(new JobSpec("vlm_zone_draft", input, DRAFT_MAX_ATTEMPTS, DRAFT_TIMEOUT_MS, null, null));
         UUID runId = UUID.randomUUID();

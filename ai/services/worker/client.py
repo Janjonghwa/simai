@@ -21,8 +21,8 @@ from .transport import (
     result_path,
 )
 
-SCHEMA_VERSION = "2.1.0"  # I5 대여 방식 (계약 2.0.0, job_heartbeat 2.1.0 site_setup 스냅샷 -452/-465)
-CALLBACK_SCHEMA_VERSION = "2.7.0"  # job_callback 2.1.0: 반납(-197), 2.2.0: bev(-239), 2.5.0: scene_regenerate(-427), 2.6.0/2.7.0: site_setup(-452/-465)
+SCHEMA_VERSION = "2.3.0"  # I5 대여 방식 (계약 2.0.0, job_heartbeat 2.1.0 site_setup 스냅샷 -452/-465, 2.2.0/2.3.0 artifacts·camera_frames -467/-479)
+CALLBACK_SCHEMA_VERSION = "2.10.0"  # job_callback 2.1.0: 반납(-197), 2.2.0: bev(-239), 2.5.0: scene_regenerate(-427), 2.6.0/2.7.0: site_setup(-452/-465), 2.9.0/2.10.0: artifacts·camera_frames(-467/-479)
 JOB_REQUEST_MAJOR = "3"  # job_request 3.0.0: attempt = 반납을 세지 않는 시도 번호 (-197). 2.x 는 대여 순번이라 받지 않는다
 # job_request $defs.job_type 와 같은 목록(시험이 계약과 맞춰 본다). 계약 밖 유형으로 대여를 요청하면 EC2 가 400 으로 거부한다
 JOB_TYPES = frozenset({
