@@ -18,6 +18,7 @@ const chipClass = (kind: CardChip['kind'], severity: Severity) =>
 const TAG = 'rounded-[4px] px-[7px] py-px text-xs whitespace-nowrap';
 const TAG_CONFIRM = `${TAG} bg-surface-3 text-muted-foreground`;
 const TAG_DELAYED = `${TAG} text-delay ring-1 ring-delay ring-inset`;
+const TAG_OUTSIDE = `${TAG} text-muted-foreground ring-1 ring-border ring-inset`;
 
 /** 카드 머리줄 오른쪽의 처리 상태 칩. */
 export function StateChip({ chip, severity }: { chip: CardChip; severity: Severity }) {
@@ -46,6 +47,11 @@ export function ConfirmBadge({ event, compact }: { event: EventItem; compact?: b
       확인 필요
     </span>
   );
+}
+
+/** 작업 외 진입 꼬리표(S15P31A101-457): 작업 구역 밖이거나 진행 중인 작업이 없을 때 난 이벤트. 등급·소리·표시는 그대로이고 꼬리표만 붙는다. */
+export function OutsideWorkBadge() {
+  return <span className={TAG_OUTSIDE}>작업 외 진입</span>;
 }
 
 /** 지연 알림 꼬리표(심각도와 함께 보여야 하는 것, 명세 7.3). 색은 지연(채도를 낮춘 주황) 몫이다. */

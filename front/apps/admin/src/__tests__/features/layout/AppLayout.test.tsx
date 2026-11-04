@@ -23,6 +23,9 @@ vi.mock('@/features/layout/SpatialViewportHost', () => ({
   SpatialViewportHost: ({ children }: { children?: ReactNode }) => children,
 }));
 vi.mock('@/features/events/AlarmSoundLoop', () => ({ AlarmSoundLoop: () => null }));
+vi.mock('@/features/monitor/WorkSessionBar', () => ({
+  WorkSessionBar: () => <div data-testid="session" />,
+}));
 vi.mock('@/features/layout/useHealthSnapshot', () => ({ useHealthSnapshot: vi.fn() }));
 vi.mock('@/features/layout/FailureBand', () => ({
   FailureBand: () => (route.failure ? <div data-testid="failure" /> : null),
@@ -46,12 +49,12 @@ afterEach(() => {
 });
 
 describe('AppLayout 알림 자리', () => {
-  it('실시간 관제(화면을 채움)에서는 장면 위에 띄우고, 장애 띠 아래 경보 배너를 두며 양쪽 370px 을 비워 가운데에 선다', () => {
+  it('실시간 관제(화면을 채움)에서는 장면 위에 띄우고, 장애 띠 아래 경보 배너, 그 아래 작업 세션 바를 두며 양쪽 370px 을 비워 가운데에 선다', () => {
     route.staticData = { fullBleed: true, eventPanel: true };
     render(<AppLayout />);
 
     const box = notices();
-    expect(ids(box)).toEqual(['failure', 'alarm']);
+    expect(ids(box)).toEqual(['failure', 'alarm', 'session']);
     expect(box.className).toContain('absolute');
     expect(box.className).toContain('inset-x-(--event-panel-inset)');
     expect(box.className).not.toContain('inset-x-5');

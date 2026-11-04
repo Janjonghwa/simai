@@ -9,6 +9,7 @@ import {
 } from '@/features/events/incidents';
 import { movePanel, PANEL_GAP, PANEL_TOP } from '@/features/events/panelBox';
 import { PanelGrip } from '@/features/events/PanelGrip';
+import type { EventItem } from '@/features/events/types';
 import { useAutoFold } from '@/features/events/useAutoFold';
 import { useFloatingBox } from '@/features/events/useFloatingBox';
 import { usePanelDrag } from '@/features/events/usePanelDrag';
@@ -68,6 +69,7 @@ interface EventListProps {
   sections: EventSections;
   loaded: boolean;
   failed: boolean;
+  isOutsideWork?: (event: EventItem) => boolean;
   selectedKey: string | null;
   onSelect: (incident: Incident) => void;
   onOpen: (eventId: string) => void;
@@ -77,8 +79,17 @@ interface EventListProps {
  * 「진행 중」과 「최근 해소」 두 칸의 카드 목록(빈 칸은 그리지 않는다). 둘 다 비었으면 상태(없음·받는 중)를 한 줄로 보인다.
  * 받지 못했으면 패널 위의 실패 문구가 대신한다.
  */
-function EventList({ sections, loaded, failed, selectedKey, ...card }: EventListProps) {
+function EventList({
+  sections,
+  loaded,
+  failed,
+  isOutsideWork,
+  selectedKey,
+  ...card
+}: EventListProps) {
   const { active, resolved } = sections;
+  const outside = (incident: Incident) =>
+    isOutsideWork !== undefined && incident.entries.some((e) => isOutsideWork(e.event));
   if (!hasCards(sections)) {
     if (loaded) return <p className={NOTE_CLASS}>활성 이벤트 없음</p>;
     return failed ? null : <p className={NOTE_CLASS}>불러오는 중…</p>;
@@ -92,6 +103,7 @@ function EventList({ sections, loaded, failed, selectedKey, ...card }: EventList
               key={incident.key}
               incident={incident}
               selected={incident.key === selectedKey}
+              outsideWork={outside(incident)}
               {...card}
             />
           ))}
@@ -105,6 +117,7 @@ function EventList({ sections, loaded, failed, selectedKey, ...card }: EventList
               incident={incident}
               occurrences={occurrences}
               selected={incident.key === selectedKey}
+              outsideWork={outside(incident)}
               {...card}
             />
           ))}
@@ -126,6 +139,10 @@ interface EventPanelProps {
   onOpen: (eventId: string | null) => void;
   /** 「모두 지우기」. 화면에서만 지우고 서버는 건드리지 않는다. */
   onClearAll: () => void;
+  /** 이 이벤트가 작업 외 진입인지(카드에 꼬리표). 없으면 꼬리표를 달지 않는다. */
+  isOutsideWork?: (event: EventItem) => boolean;
+  /** 목록 아래에 붙는 것(작업 시작 전 이벤트의 히스토리 링크). 접으면 함께 접힌다. */
+  footer?: ReactNode;
 }
 
 /**
@@ -142,6 +159,8 @@ export function EventPanel({
   openEventId,
   onOpen,
   onClearAll,
+  isOutsideWork,
+  footer,
 }: EventPanelProps) {
   const sections = useMemo(() => eventSections(entries), [entries]);
   const trackedCount = useRealtimeStore(selectTrackedCount);
@@ -214,11 +233,13 @@ export function EventPanel({
                 sections={sections}
                 loaded={loaded}
                 failed={failed}
+                isOutsideWork={isOutsideWork}
                 selectedKey={selectedKey}
                 onSelect={onSelect}
                 onOpen={onOpen}
               />
             </div>
+            {footer}
             <PanelGrip edge="y" startOf={startOf} onResize={setBox} onReset={reset} />
             <PanelGrip edge="xy" startOf={startOf} onResize={setBox} onReset={reset} />
           </>
