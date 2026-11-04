@@ -5,12 +5,13 @@
 ## 관련
 
 - 히스토리 질의: `docs/design/db-verification.md` 5장 Q1~Q3 (`GET /api/work-units`, `GET /api/replay`)
-- 이벤트 클립: `deploy/ec2/seed-mock-clips.sh` (S15P31A101-261)
+- 이벤트 클립: `deploy/ec2/seed-mock-clips.sh` (S15P31A101-261). 상시 영상 조각: `docs/design/server-video-segments.md` (S15P31A101-330)
 - 진행 중 이벤트의 카메라 버튼: `front/apps/admin/src/features/events/CameraButton.tsx`
 
 ## 코드 위치
 
-- `deploy/ec2/seed-mock-history.sh`: 히스토리 목 작업·위치·시스템 상태·이벤트 적재(`seed`), 확인(`status`), 정리(`cleanup`). `--dry-run` 은 한 트랜잭션으로 돌려 보고 되돌린다.
+- `deploy/ec2/seed-mock-history.sh`: 히스토리 목 작업·위치·시스템 상태·이벤트·영상 조각 적재(`seed`), 확인(`status`), 정리(`cleanup`). `--dry-run` 은 한 트랜잭션으로 돌려 보고 되돌린다(S3 복사·삭제는 하지 않는다).
+- `front/apps/admin/src/features/history/`: 다시 보기의 CCTV 4칸이 재생 시각을 덮는 상시 영상 조각(`GET /api/videos`)을 영상으로 튼다(`replaySegments.ts`, `useReplaySegments.ts`, `ReplayVideoWall.tsx`). 덮는 조각이 없는 시각은 목 화면 그림이다. 이벤트 클립은 쓰지 않는다(실제 CCTV 증거라 히스토리 목 영상과 섞지 않는다).
 - 이벤트 패널 확인용 목 이벤트·클립은 스크립트 없이 SQL 로 직접 넣었다(아래 "이벤트·클립 목").
 
 ## 동작
@@ -19,6 +20,8 @@
 
 - 넣기 전에 칸마다 `[시작-5초, 끝+5초]` 에 목이 아닌 기록이 있는지 보고, 있거나 아직 끝나지 않은 칸은 뺀다(뺀 칸과 이유를 보여 준다).
 - 목 행에 표시를 붙인다. world·health·event·update 는 `gateway_id = tier0-mock-history`, `work_unit` 은 `created_by IS NULL` 이다(API 로 만든 작업은 로그인 사용자가 찬다).
+
+작업마다 활성 카메라별 목 영상 조각(`video_segment`)을 작업 시작부터 `MOCK_VIDEO_SECONDS` 초 넣는다. 조각 행은 객체 키가 달라야 해서(`object_key` UNIQUE) `seed` 가 끝난 뒤 원본 S3 객체(`MOCK_VIDEO_KEY`)를 `MOCK_SEGMENT_PREFIX` 아래로 조각마다 복사하고, `cleanup` 이 복사본을 지운다. 원본 객체는 이 스크립트가 올리지 않고, 그 객체를 가리키는 클립 행에서 크기·해시를 읽는다(없으면 조각을 넣지 않는다). 복사본이 없으면 영상 칸은 "영상을 받지 못했습니다"로 보인다.
 
 `seed` 는 목 행이 이미 있으면 멈춘다. `cleanup` 은 목 이벤트를 가리키는 다른 표 행(클립·확인 등)이 있으면 멈추고, 없으면 `work_unit` → `risk_event_update` → `risk_event` → `world_track_state` → `system_health` 순으로 지운다.
 
@@ -33,6 +36,7 @@
 | 위치 | 2 Hz, 작업 장소 둘레를 타원으로 약 0.6 m/s | 90분 작업의 화면 step 이 1.8 s 라 2 Hz 면 충분하다 |
 | 이벤트 | R5→R1(+10분, 구역 작업), R1(+40분, 90분 작업), R7(+25분), R4 낙상 1건. 전부 RESOLVED | 활성 경보로 남지 않고, DB 직접 INSERT 라 알림·워치로 나가지 않는다 |
 | 데이터 없음 | 오전 작업 앞의 둘에 +30분부터 45초(world·health 모두 없음) | 타임라인의 "데이터 없음" 줄무늬를 보인다 |
+| 영상 | 작업 × 활성 카메라, 작업 시작부터 179초, 조각마다 S3 복사본 | 다시 보기가 상시 영상 조각을 튼다. `video_segment.object_key` 가 UNIQUE 라 파일 하나를 같이 쓸 수 없다. `cleanup` 이 행과 복사본을 지운다 |
 | 입력 출처 | `input_provenance` frames·tracks `SIM`, `is_upper_bound = true` | 규칙 7 의 관측·추정 구분. 목은 제품 성능으로 쓰지 않는다 |
 | system_health | 가장 새 실제 행을 본떠 상태만 `OK` | 목 행이 가장 새 행이 되어도 계약 모양을 지킨다 |
 | 이벤트 출처 | `LIVE` | 목록의 "위험 N 경고 N" 이 보인다. `risk_event_update` 가 LIVE 만 받는다 |
@@ -55,6 +59,8 @@
 
 - LIVE 목 이벤트는 이벤트 목록과 일일·TBM·마무리 보고서 집계에 섞인다. `risk_event` 에 출처 칸이 없어 표시는 `gateway_id` 뿐이다.
 - 목 `system_health` 가 실제 기록이 없는 동안 가장 새 시스템 상태 행이 될 수 있다(시각이 오래돼 화면은 끊김으로 본다).
+- 다시 보기가 조각을 틀 때마다 서버가 조회 기록(`video_access_log`)을 남긴다. 칸이 나타날 때마다 주소를 새로 받으므로 구간을 앞뒤로 오가면 기록이 늘어난다.
+- 영상은 작업 시작 3분만 있고 나머지 시각은 그림이다. 작업 4건이면 복사본 16개(약 400MB)가 생긴다. 저장소 계정에 `s3:GetObjectTagging` 이 없어 복사는 `--copy-props none` 이다.
 - `world_track_state`·`system_health` 는 7일 뒤 압축된다. 그 뒤 `cleanup` 은 느려진다.
 - 첫 운영 배포의 DB 초기화 절차(`ec2-deploy.md`)에서 목 데이터도 함께 지워진다.
 - 화면은 계약에 맞지 않는 줄을 알리지 않고 버린다. 넣은 뒤 로그인한 화면에서 `/api/replay` 응답을 받아 `contracts/messages` 스키마로 검사한다.

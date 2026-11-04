@@ -9,6 +9,8 @@ import {
 } from '@/features/history/constants';
 import {
   replayResponseSchema,
+  videoSegmentsSchema,
+  videoUrlSchema,
   workUnitsResponseSchema,
   type EventEnvelope,
   type ReplayGap,
@@ -194,4 +196,19 @@ export async function requestReplay(
   );
   // 요청한 구간 그대로 돌려준다(창이 나뉘어도 from·to 는 처음과 끝이다).
   return { ...mergeReplay(responses), from: range.from, to: range.to };
+}
+
+// ── GET /api/videos ───────────────────────────────────────────────────────────
+
+/** 구간과 겹치는 상시 영상 조각(관리자). 모든 카메라의 조각이 카메라·시작 시각 순으로 온다. */
+export function requestVideoSegments(http: Http, range: Span, signal?: AbortSignal) {
+  return http(`/api/videos?from=${range.from}&to=${range.to}`, {
+    schema: videoSegmentsSchema,
+    signal,
+  });
+}
+
+/** 조각 재생 주소. EC2 가 이 요청마다 조회 기록을 남긴다(명세 14장). 지운 조각은 410 SEGMENT_DELETED. */
+export function requestVideoUrl(http: Http, segmentId: string, signal?: AbortSignal) {
+  return http(`/api/videos/${encodeURIComponent(segmentId)}`, { schema: videoUrlSchema, signal });
 }
