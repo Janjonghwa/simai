@@ -18,6 +18,7 @@ interface MockSceneState {
   nextRequestId: number;
   requests: Map<number, SceneRegenerateView>;
   autoAdvanceOnPoll: boolean;
+  quality: unknown;
 }
 
 const state: MockSceneState = {
@@ -27,6 +28,7 @@ const state: MockSceneState = {
   nextRequestId: 1,
   requests: new Map(),
   autoAdvanceOnPoll: false,
+  quality: null,
 };
 
 export function resetMockSceneState(options?: { autoAdvanceOnPoll?: boolean }): void {
@@ -36,6 +38,12 @@ export function resetMockSceneState(options?: { autoAdvanceOnPoll?: boolean }): 
   state.nextRequestId = 1;
   state.requests.clear();
   state.autoAdvanceOnPoll = options?.autoAdvanceOnPoll ?? false;
+  state.quality = null;
+}
+
+/** 현재 Scene 응답의 `quality`(맵 재생성 품질, -469)를 시험에서 지정한다. */
+export function setMockSceneQuality(quality: unknown): void {
+  state.quality = quality;
 }
 
 export function setMockSceneRegenerateView(view: SceneRegenerateView): void {
@@ -79,7 +87,7 @@ export const sceneHandlers = [
       default: state.isDefault,
       calibration_version: state.isDefault ? null : 'cal-mock-1',
       committed_at_ms: state.committedAtMs,
-      quality: null,
+      quality: state.quality,
       gltf_url: demoSceneUrl,
       gltf_expires_at_ms: now + SIGNED_URL_TTL_MS,
     });
