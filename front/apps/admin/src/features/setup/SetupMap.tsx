@@ -1,30 +1,47 @@
 import { PLAN_MARGIN, ROOM, toPlan } from '@/features/plan/plan';
-import type { Point } from '@/features/setup/setup';
 import {
-  CAMERAS,
   CHECKS,
   DESKS,
   DOOR,
-  EXTRA_WALK,
   OPENING,
   PODIUM,
-  PROPS,
+  type CoverageCameraView,
+  type CoveragePairView,
   type PlanRect,
-  type SetupView,
-} from '@/features/setup/setupDemo';
+  type SetupTone,
+  type Stage,
+  type Step1CoverageView,
+} from '@/features/setup/setup';
 import { cn } from '@simai/ui/lib/utils';
 import { memo } from 'react';
 
-// 위에서 내려다본 교실에 단계마다 정물, 걸은 경로와 덮은 칸, 검증 지점, 보정 뒤 평면도를 그린다.
-// 단위는 m 이고 색은 토큰만 쓴다.
+// 위에서 내려다본 교실(m)에 1단계는 4대 카메라와 6쌍 연결 상태(충분·약함·부족·미확인)를,
+// 이후 단계는 검증 지점·평면도를 그린다. 색은 위험 등급색(sev-*)과 겹치지 않는 토큰만 쓴다.
 
-/** 글자가 선·칸 위에서도 읽히게 바닥색 테두리를 두른다. */
 const HALO = { paintOrder: 'stroke', strokeWidth: 0.09, strokeLinejoin: 'round' } as const;
 const HALO_CLASS = 'stroke-surface-2';
 
-const points = (path: readonly Point[]) => path.map((p) => toPlan(...p).join(',')).join(' ');
+const PAIR_STROKE: Record<SetupTone, string> = {
+  ok: 'stroke-ok',
+  active: 'stroke-primary',
+  delay: 'stroke-delay',
+  idle: 'stroke-faint',
+};
 
-/** World 사각형(왼쪽 아래 모서리·크기) → 평면 SVG 사각형. */
+const PAIR_TEXT: Record<SetupTone, string> = {
+  ok: 'fill-ok',
+  active: 'fill-point-soft',
+  delay: 'fill-delay',
+  idle: 'fill-muted-foreground',
+};
+
+const CAM_FILL: Record<SetupTone, string> = {
+  ok: 'fill-ok',
+  active: 'fill-primary',
+  delay: 'fill-delay',
+  idle: 'fill-faint',
+};
+
 function planRect(r: PlanRect) {
   const [x, y] = toPlan(r.x, r.y + r.depth);
   return { x, y, width: r.width, height: r.depth };
@@ -74,7 +91,6 @@ const Walls = memo(function Walls() {
   );
 });
 
-/** 보정 뒤 BEV 평면도의 책상·단상·개구부. */
 const Furniture = memo(function Furniture() {
   const podium = planRect(PODIUM);
   return (
@@ -107,77 +123,44 @@ const Furniture = memo(function Furniture() {
   );
 });
 
-function Props({ view }: { view: SetupView }) {
-  const dim = view.stage > 0;
+function PairEdges({ pairs }: { pairs: readonly CoveragePairView[] }) {
+  let diagIdx = 0;
   return (
-    <g>
-      {PROPS.map((prop, n) => {
-        const [x, y] = toPlan(...prop.at);
-        const seen = view.propsSeen[n];
+    <g aria-label="카메라 쌍 연결 선">
+      {pairs.map((pair) => {
+        const [x1, y1] = toPlan(...pair.from);
+        const [x2, y2] = toPlan(...pair.to);
+        const mx = (x1 + x2) / 2;
+        const my = (y1 + y2) / 2;
+        const diagOffset = pair.isDiagonal ? (diagIdx++ % 2 === 0 ? -0.55 : 0.65) : 0;
+        const dash =
+          pair.grade === 'ENOUGH' ? undefined : pair.grade === 'WEAK' ? '0.24 0.14' : '0.1 0.12';
+        const width = pair.grade === 'ENOUGH' ? 0.09 : pair.grade === 'WEAK' ? 0.075 : 0.05;
         return (
-          <g key={prop.name} opacity={dim ? 0.45 : 1}>
-            <polygon
-              points={`${x},${y - 0.32} ${x + 0.26},${y + 0.2} ${x - 0.26},${y + 0.2}`}
-              strokeWidth={0.05}
-              strokeDasharray={seen ? undefined : '0.1 0.07'}
-              className={seen ? 'fill-sev-caution stroke-sev-caution' : 'fill-none stroke-faint'}
+          <g key={pair.key} aria-label={`${pair.key} ${pair.gradeLabel}`}>
+            <line
+              x1={x1}
+              y1={y1}
+              x2={x2}
+              y2={y2}
+              strokeWidth={width}
+              strokeDasharray={dash}
+              className={PAIR_STROKE[pair.tone]}
             />
-            {!dim && (
-              <text
-                x={x + 0.38}
-                y={y + 0.12}
-                fontSize={0.26}
-                fontWeight={600}
-                {...HALO}
-                className={cn(HALO_CLASS, seen ? 'fill-sev-caution' : 'fill-muted-foreground')}
-              >
-                {seen ? prop.name : `${prop.name} · 미감지`}
-              </text>
-            )}
+            <text
+              x={mx}
+              y={my + diagOffset}
+              fontSize={0.25}
+              fontWeight={600}
+              textAnchor="middle"
+              {...HALO}
+              className={cn(HALO_CLASS, 'font-mono', PAIR_TEXT[pair.tone])}
+            >
+              {`${pair.key} ${pair.gradeLabel}`}
+            </text>
           </g>
         );
       })}
-    </g>
-  );
-}
-
-function Walk({ view }: { view: SetupView }) {
-  const { mainPath, extraPath } = view;
-  const walker = (extraPath.length > 1 ? extraPath : mainPath).at(-1);
-  const [wx, wy] = walker ? toPlan(...walker) : [0, 0];
-  return (
-    <g>
-      {view.gap && (
-        <polyline
-          points={points(EXTRA_WALK)}
-          fill="none"
-          strokeWidth={0.07}
-          strokeDasharray="0.2 0.14"
-          className="stroke-point-soft"
-        />
-      )}
-      <polyline
-        points={points(mainPath)}
-        fill="none"
-        strokeWidth={0.08}
-        strokeLinejoin="round"
-        className="stroke-primary"
-      />
-      {extraPath.length > 1 && (
-        <polyline
-          points={points(extraPath)}
-          fill="none"
-          strokeWidth={0.08}
-          strokeLinejoin="round"
-          className="stroke-primary"
-        />
-      )}
-      {walker && (
-        <>
-          <circle cx={wx} cy={wy} r={0.24} className="fill-foreground" />
-          <circle cx={wx} cy={wy} r={0.09} className="fill-surface-2" />
-        </>
-      )}
     </g>
   );
 }
@@ -240,28 +223,26 @@ function Checks({ checked }: { checked: number }) {
   );
 }
 
-function Cameras({ view }: { view: SetupView }) {
+function Cameras({ cameras }: { cameras: readonly CoverageCameraView[] }) {
   return (
     <g>
-      {CAMERAS.map((cam, k) => {
+      {cameras.map((cam) => {
         const [px, py] = toPlan(...cam.corner);
-        // 모서리 바깥쪽 방향.
         const sx = px <= 0 ? -1 : 1;
         const sy = py <= 0 ? -1 : 1;
-        const warn = view.cameras[k]?.tone === 'warn';
         return (
           <g key={cam.id}>
             <polygon
               points={`${px + 0.4 * sx},${py + 0.4 * sy} ${px - 0.2 * sx},${py + 0.4 * sy} ${px + 0.4 * sx},${py - 0.2 * sy}`}
-              className={warn ? 'fill-sev-caution' : 'fill-faint'}
+              className={CAM_FILL[cam.tone]}
             />
             <text
               x={sx < 0 ? px - 0.78 : px - 0.18}
               y={sy < 0 ? py - 0.52 : py + 0.78}
               fontSize={0.22}
-              className={cn('font-mono', warn ? 'fill-sev-caution' : 'fill-muted-foreground')}
+              className={cn('font-mono', PAIR_TEXT[cam.tone])}
             >
-              {warn ? `${cam.id} ${cam.tilt}°` : cam.id}
+              {cam.status === 'OK' ? cam.id : `${cam.id} (${cam.statusLabel})`}
             </text>
           </g>
         );
@@ -270,41 +251,22 @@ function Cameras({ view }: { view: SetupView }) {
   );
 }
 
-export function SetupMap({ view }: { view: SetupView }) {
+export function SetupMap({ stage, coverage }: { stage: Stage; coverage: Step1CoverageView }) {
   const size = (n: number) => n + PLAN_MARGIN * 2;
-  const { stage } = view;
   return (
     <svg
       viewBox={`${-PLAN_MARGIN} ${-PLAN_MARGIN} ${size(ROOM.width)} ${size(ROOM.depth)}`}
       preserveAspectRatio="xMidYMid meet"
       role="img"
       aria-label={`교실 ${ROOM.width}×${ROOM.depth}m 위에서 본 보정 화면`}
-      className="block max-h-[400px] w-full"
+      className="block max-h-[340px] w-full"
     >
-      <Room grid={stage < 3} />
-      {(stage === 1 || stage === 2) && (
-        <g>
-          {view.cells.map(([i, j]) => {
-            const [x, y] = toPlan(i, j + 1);
-            return (
-              <rect
-                key={`${i}-${j}`}
-                x={x + 0.03}
-                y={y + 0.03}
-                width={0.94}
-                height={0.94}
-                className="fill-primary/15"
-              />
-            );
-          })}
-        </g>
-      )}
-      {stage === 3 && <Furniture />}
+      <Room grid={stage < 2} />
+      {stage >= 2 && <Furniture />}
       <Walls />
-      {stage < 3 && <Props view={view} />}
-      {stage === 1 && <Walk view={view} />}
-      {stage === 2 && <Checks checked={view.checked} />}
-      <Cameras view={view} />
+      {stage === 0 && <PairEdges pairs={coverage.pairs} />}
+      {stage === 1 && <Checks checked={CHECKS.length} />}
+      <Cameras cameras={coverage.cameras} />
     </svg>
   );
 }

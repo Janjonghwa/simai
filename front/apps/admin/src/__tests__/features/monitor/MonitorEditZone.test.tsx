@@ -274,7 +274,7 @@ describe('관제 관리자 편집 모드', () => {
         <SetupPage />
       </QueryClientProvider>,
     );
-    act(() => screen.getByRole('button', { name: /4완료/ }).click());
+    act(() => screen.getByRole('button', { name: /3완료/ }).click());
     act(() => screen.getByRole('button', { name: '구역 편집' }).click());
     expect(navigateMock).toHaveBeenCalledWith({ to: '/', search: { edit: true } });
 
