@@ -16,10 +16,15 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -48,6 +53,7 @@ public class ConfigBundleService {
     public static final String CLASSROOM_TEST = "CLASSROOM_TEST";
     static final Set<String> RULE_PROFILES = Set.of(OPERATION, CLASSROOM_TEST);
     private static final String VERSION_PREFIX = "cfg-";
+    private static final Logger log = LoggerFactory.getLogger(ConfigBundleService.class);
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper mapper;
@@ -58,6 +64,8 @@ public class ConfigBundleService {
     private final ConfigBundleViews views;
     private final CalibrationViews calibrations;
     private final Clock clock;
+    /** 커밋 뒤 발행(세팅 결과)은 끝난 트랜잭션에 끼지 않게 새 트랜잭션으로 한다 */
+    private final TransactionTemplate requiresNew;
 
     public ConfigBundleService(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, TransactionTemplate transaction,
             BundleUrlSigner signer, SiteLookup sites, ConfigBundleSender sender, ConfigBundleViews views, CalibrationViews calibrations,
@@ -71,6 +79,8 @@ public class ConfigBundleService {
         this.views = views;
         this.calibrations = calibrations;
         this.clock = clock;
+        this.requiresNew = new TransactionTemplate(transaction.getTransactionManager());
+        this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     /** @param ruleProfile 없으면 이전 묶음의 프로필, 그것도 없으면 OPERATION */
@@ -82,7 +92,7 @@ public class ConfigBundleService {
             throw new BusinessException(ErrorCode.Config.PUBLIC_URL_NOT_SET);
         }
         String siteId = sites.siteId();
-        String configVersion = transaction.execute(status -> build(siteId, ruleProfile, userId));
+        String configVersion = transaction.execute(status -> build(siteId, ruleProfile, userId, null));
         sender.sendToAll(configVersion);
         return views.find(configVersion);
     }
@@ -106,7 +116,7 @@ public class ConfigBundleService {
         String siteId = sites.siteId();
         Built<T> built = transaction.execute(status -> {
             T value = changes.get();
-            return new Built<>(value, publish ? build(siteId, null, userId) : null);
+            return new Built<>(value, publish ? build(siteId, null, userId, null) : null);
         });
         if (built.configVersion() == null) {
             return new Published<>(built.changes(), null);
@@ -115,7 +125,60 @@ public class ConfigBundleService {
         return new Published<>(built.changes(), views.find(built.configVersion()));
     }
 
-    private String build(String siteId, String requestedProfile, long userId) {
+    /**
+     * 현장 세팅 성공(I5 site_setup 결과) 때 세팅이 등록한 새 보정을 실은 묶음을 발행한다(S15P31A101-467). Tier 0 가 알린 현재 보정 대신
+     * 그 보정 문서를 싣고, 구역·규칙·작업면은 발행과 같이 지금 유효한 것을 싣는다. 이전 묶음의 규칙 프로필을 잇는다.
+     * 호출자 트랜잭션(결과 제출)이 커밋된 뒤 별도 트랜잭션에서 만들고 연결된 Tier 0 에 보낸다(트랜잭션 밖이면 바로). 그래서 묶음을
+     * 만들지 못해도(규칙 없음·서명 주소 미설정·보정 문서 없음) 세팅 완료는 되돌아가지 않고, 경고만 남기며 Tier 0 는 이전 묶음 그대로다.
+     * 그 보정을 실은 묶음이 이미 있으면 새로 만들지 않는다.
+     */
+    public void publishForSetupAfterCommit(String calibrationVersion, long userId) {
+        Runnable task = () -> {
+            try {
+                if (!signer.configured()) {
+                    throw new BusinessException(ErrorCode.Config.PUBLIC_URL_NOT_SET);
+                }
+                String siteId = sites.siteId();
+                String configVersion = requiresNew.execute(status -> {
+                    jdbc.queryForList("SELECT pg_advisory_xact_lock(hashtext('simai.config_bundle'))", Map.of());
+                    boolean exists = !jdbc.queryForList("""
+                            SELECT 1 FROM config_bundle WHERE site_id = :site AND calibration_version = :cal LIMIT 1
+                            """, new MapSqlParameterSource("site", siteId).addValue("cal", calibrationVersion)).isEmpty();
+                    if (exists) {
+                        return null;
+                    }
+                    // 관제 중(IN_PROGRESS) 작업이 있으면 보정·World 를 바꾸지 않는다(세팅은 작업 시작 전 절차)
+                    boolean live = !jdbc.queryForList("""
+                            SELECT 1 FROM work_unit WHERE site_id = :site AND status = 'IN_PROGRESS' LIMIT 1
+                            """, new MapSqlParameterSource("site", siteId)).isEmpty();
+                    if (live) {
+                        log.warn("세팅 보정 {} 구성 묶음을 발행하지 않는다: 같은 현장에 진행 중(IN_PROGRESS) 작업이 있다", calibrationVersion);
+                        return null;
+                    }
+                    return build(siteId, null, userId, calibrationVersion);
+                });
+                if (configVersion != null) {
+                    log.info("세팅 보정 {} 으로 구성 묶음 {} 발행", calibrationVersion, configVersion);
+                    sender.sendToAll(configVersion);
+                }
+            } catch (RuntimeException e) {
+                log.warn("세팅 보정 {} 의 구성 묶음 발행 실패(세팅 완료는 유지, Tier 0 는 이전 묶음 그대로): {}", calibrationVersion,
+                        e.getMessage());
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    task.run();
+                }
+            });
+            return;
+        }
+        task.run();
+    }
+
+    private String build(String siteId, String requestedProfile, long userId, String explicitCalibration) {
         // 발행을 한 줄로 세운다(버전 번호·이전 버전이 겹치지 않게)
         jdbc.queryForList("SELECT pg_advisory_xact_lock(hashtext('simai.config_bundle'))", Map.of());
         Map<String, Object> previous = jdbc.queryForList("""
@@ -131,7 +194,7 @@ public class ConfigBundleService {
         // 매니페스트와 알림(DB 에서 다시 읽음)의 issued_at 이 같아야 Tier 0 가 받는다. DB 가 µs 로 반올림하므로 ms 로 자른다
         Instant issuedAt = clock.instant().truncatedTo(ChronoUnit.MILLIS);
 
-        Calibration calibration = latestCalibration(siteId);
+        Calibration calibration = explicitCalibration == null ? latestCalibration(siteId) : documentOf(siteId, explicitCalibration);
         List<Item> items = new ArrayList<>();
         ObjectNode zonesDoc = zones(siteId, configVersion + "-zones", items);
         ObjectNode rulesDoc = rules(profile, configVersion + "-rules", items);
@@ -206,9 +269,15 @@ public class ConfigBundleService {
     /**
      * Tier 0 가 알린 현재 보정 버전의 문서를 싣는다(S15P31A101-263). 그 문서를 아직 올리지 않았으면 묶음을 만들지 않는다
      * (화면의 현재 보정과 묶음의 보정이 갈리지 않게). 알림을 받은 적이 없으면(Tier 0 연결 전) 가장 최근에 올린 문서를 싣는다.
+     * 단, 세팅 보정 묶음을 발행했는데 Tier 0 가 아직 그 보정을 알리지 않았으면(지금 보정이 그 세팅 보정의 이전 버전) 세팅 보정을
+     * 싣는다(S15P31A101-467). 굽기 도중 구역을 발행해도 새 World 의 구역과 새 보정이 한 묶음에 들어가게 한다.
      */
     private Calibration latestCalibration(String siteId) {
         Optional<String> current = calibrations.currentVersion();
+        Optional<Calibration> setup = pendingSetupCalibration(siteId, current);
+        if (setup.isPresent()) {
+            return setup.get();
+        }
         if (current.isPresent()) {
             return jdbc.query("""
                     SELECT calibration_version, content FROM calibration_document WHERE calibration_version = :v
@@ -221,6 +290,38 @@ public class ConfigBundleService {
                 JOIN calibration_version v ON v.calibration_version = d.calibration_version
                 WHERE v.site_id = :site ORDER BY d.uploaded_at DESC LIMIT 1
                 """, new MapSqlParameterSource("site", siteId),
+                (rs, i) -> new Calibration(rs.getString("calibration_version"), rs.getBytes("content")))
+                .stream().findFirst().orElseThrow(() -> new BusinessException(ErrorCode.Config.CALIBRATION_MISSING));
+    }
+
+    /** 가장 최근 세팅 보정 묶음의 보정이 Tier 0 의 지금 보정에서 출발했고 아직 적용 알림이 없으면 그 보정 문서 */
+    private Optional<Calibration> pendingSetupCalibration(String siteId, Optional<String> current) {
+        if (current.isEmpty()) {
+            return Optional.empty();
+        }
+        return jdbc.query("""
+                SELECT b.calibration_version, v.previous_calibration_version, d.content
+                FROM config_bundle b
+                JOIN calibration_version v ON v.calibration_version = b.calibration_version
+                JOIN calibration_document d ON d.calibration_version = b.calibration_version
+                WHERE b.site_id = :site
+                  AND EXISTS (SELECT 1 FROM setup_session_artifact a
+                              WHERE a.kind = 'CALIBRATION' AND a.version = b.calibration_version)
+                ORDER BY b.issued_at DESC LIMIT 1
+                """, new MapSqlParameterSource("site", siteId), (rs, i) -> new Object[] {
+                        rs.getString("calibration_version"), rs.getString("previous_calibration_version"), rs.getBytes("content")})
+                .stream().findFirst()
+                .filter(row -> current.get().equals(row[1]))
+                .map(row -> new Calibration((String) row[0], (byte[]) row[2]));
+    }
+
+    /** 지정한 보정 버전의 문서(같은 현장). 문서가 없으면 묶음을 만들지 않는다 */
+    private Calibration documentOf(String siteId, String version) {
+        return jdbc.query("""
+                SELECT d.calibration_version, d.content FROM calibration_document d
+                JOIN calibration_version v ON v.calibration_version = d.calibration_version
+                WHERE d.calibration_version = :v AND v.site_id = :site
+                """, new MapSqlParameterSource("v", version).addValue("site", siteId),
                 (rs, i) -> new Calibration(rs.getString("calibration_version"), rs.getBytes("content")))
                 .stream().findFirst().orElseThrow(() -> new BusinessException(ErrorCode.Config.CALIBRATION_MISSING));
     }

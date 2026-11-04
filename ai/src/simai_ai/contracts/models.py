@@ -1670,6 +1670,15 @@ class SiteSetupMetrics(BaseModel):
     joint_ba: JointBa | MISSING = MISSING
 
 
+class SiteSetupObjectRef(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    uri: Annotated[StrictStr, Field(max_length=1024, pattern='^s3://[^\\s]+$')]
+    sha256: Annotated[StrictStr, Field(pattern='^[0-9a-f]{64}$')]
+    size_bytes: Annotated[StrictInt | MISSING, Field(ge=1)] = MISSING
+
+
 BackgroundCollectionPctAdditionalProperty = TypeAliasType(
     "BackgroundCollectionPctAdditionalProperty",
     Annotated[StrictFloat, Field(ge=0.0, le=100.0)],
@@ -1683,60 +1692,6 @@ class ObjectCrossCheck(BaseModel):
     kind: Literal['TRAFFIC_CONE', 'OPENING_SIGN']
     passed: StrictBool
     message: Annotated[StrictStr | MISSING, Field(max_length=500)] = MISSING
-
-
-class SiteSetupProgress(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    setup_session_id: DefsUuid
-    status: Literal['COLLECTING_BACKGROUND', 'INITIAL_POSE_AND_WORLD', 'JOINT_BA_AND_VERIFY', 'PREVIEW_AND_VLM_DRAFT', 'READY_FOR_ZONES', 'BAKING_TEXTURE', 'COMPLETED']
-    progress_pct: Annotated[StrictFloat, Field(ge=0.0, le=100.0)]
-    background_collection_pct: dict[str, BackgroundCollectionPctAdditionalProperty] | MISSING = (
-        MISSING
-    )
-    calibration_version: Annotated[
-        StrictStr | MISSING, Field(max_length=160, min_length=1)
-    ] = MISSING
-    preview_scene_version: Annotated[
-        StrictStr | MISSING, Field(max_length=160, min_length=1)
-    ] = MISSING
-    scene_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
-        MISSING
-    )
-    config_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
-        MISSING
-    )
-    zone_drafts_ref: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
-        MISSING
-    )
-    height_checks: SiteSetupHeightChecks | MISSING = MISSING
-    object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
-    metrics: SiteSetupMetrics | MISSING = MISSING
-
-
-class SiteSetupResult(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    setup_session_id: DefsUuid
-    status: Literal['COMPLETED']
-    progress_pct: Literal[100]
-    background_collection_pct: dict[str, BackgroundCollectionPctAdditionalProperty] | MISSING = (
-        MISSING
-    )
-    calibration_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
-    preview_scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
-    scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
-    config_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
-        MISSING
-    )
-    zone_drafts_ref: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
-        MISSING
-    )
-    height_checks: SiteSetupHeightChecks
-    object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
-    metrics: SiteSetupMetrics | MISSING = MISSING
 
 
 class Image(BaseModel):
@@ -2803,24 +2758,6 @@ class JobCallback(Envelope):
     payload: Payload18
 
 
-class Payload19(BaseModel):
-    model_config = ConfigDict(
-        extra='allow',
-    )
-    job_id: Annotated[StrictStr, Field(min_length=1)]
-    lease_id: DefsUuid
-    progress: Annotated[StrictFloat | None | MISSING, Field(ge=0.0, le=1.0)] = MISSING
-    site_setup: SiteSetupProgress | MISSING = MISSING
-
-
-class JobHeartbeat(Envelope):
-    model_config = ConfigDict(
-        extra='allow',
-    )
-    msg_type: Annotated[Literal['job_heartbeat'], Field(min_length=1)]
-    payload: Payload19
-
-
 class Payload20(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -3320,6 +3257,71 @@ class SiteAck(Envelope):
     )
     msg_type: Annotated[Literal['site_ack'], Field(min_length=1)]
     payload: Payload36
+
+
+class SiteSetupArtifacts(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    calibration_document: SiteSetupObjectRef | MISSING = MISSING
+    preview_scene: SiteSetupObjectRef | MISSING = MISSING
+    scene: SiteSetupObjectRef | MISSING = MISSING
+
+
+class SiteSetupProgress(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    setup_session_id: DefsUuid
+    status: Literal['COLLECTING_BACKGROUND', 'INITIAL_POSE_AND_WORLD', 'JOINT_BA_AND_VERIFY', 'PREVIEW_AND_VLM_DRAFT', 'READY_FOR_ZONES', 'BAKING_TEXTURE', 'COMPLETED']
+    progress_pct: Annotated[StrictFloat, Field(ge=0.0, le=100.0)]
+    background_collection_pct: dict[str, BackgroundCollectionPctAdditionalProperty] | MISSING = (
+        MISSING
+    )
+    calibration_version: Annotated[
+        StrictStr | MISSING, Field(max_length=160, min_length=1)
+    ] = MISSING
+    preview_scene_version: Annotated[
+        StrictStr | MISSING, Field(max_length=160, min_length=1)
+    ] = MISSING
+    scene_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    config_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    zone_drafts_ref: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    height_checks: SiteSetupHeightChecks | MISSING = MISSING
+    object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
+    metrics: SiteSetupMetrics | MISSING = MISSING
+    artifacts: SiteSetupArtifacts | MISSING = MISSING
+
+
+class SiteSetupResult(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    setup_session_id: DefsUuid
+    status: Literal['COMPLETED']
+    progress_pct: Literal[100]
+    background_collection_pct: dict[str, BackgroundCollectionPctAdditionalProperty] | MISSING = (
+        MISSING
+    )
+    calibration_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    preview_scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    config_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    zone_drafts_ref: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    height_checks: SiteSetupHeightChecks
+    object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
+    metrics: SiteSetupMetrics | MISSING = MISSING
+    artifacts: SiteSetupArtifacts | MISSING = MISSING
 
 
 class Input(BaseModel):
@@ -3832,6 +3834,24 @@ class HumanMeshOutputAvatarAsset(HumanMeshOutputCommonFields):
     consent_ref: StrictStr | MISSING = MISSING
 
 
+class Payload19(BaseModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    job_id: Annotated[StrictStr, Field(min_length=1)]
+    lease_id: DefsUuid
+    progress: Annotated[StrictFloat | None | MISSING, Field(ge=0.0, le=1.0)] = MISSING
+    site_setup: SiteSetupProgress | MISSING = MISSING
+
+
+class JobHeartbeat(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['job_heartbeat'], Field(min_length=1)]
+    payload: Payload19
+
+
 class Payload28(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -3927,6 +3947,8 @@ class Calibration(BaseModel):
     cameras: Annotated[list[CalibrationCameraCalibration], Field(min_length=1)]
     validation: Validation | MISSING = MISSING
     content_hash: DefsSha256 | MISSING = MISSING
+    previous_calibration_version: DefsVersionId | MISSING = MISSING
+    setup_session_id: DefsUuid | MISSING = MISSING
 
 
 class HumanMeshOutput1(HumanMeshOutputAvatarAsset):

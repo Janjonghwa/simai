@@ -27,8 +27,12 @@ from simai_ai.tracking.time_model import require_ms
 # 1.2.0: scale_basis 값 MEASURED_OBJECT·KNOWN_PERSON_HEIGHT 와
 # scale_cross_check_basis·validation.max_pairwise_position_disagreement_m 추가).
 
-# content_hash 에 넣지 않는 키
-_UNHASHED_KEYS = frozenset({"content_hash", "calibration_version", "created_at", "state", "schema_version"})
+# content_hash 에 넣지 않는 키. 계보·출처(previous_calibration_version·setup_session_id, 계약 2.2.0)는 보정 내용이 아니다
+# (EC2 CalibrationContentHash.UNHASHED 와 같아야 한다)
+_UNHASHED_KEYS = frozenset({
+    "content_hash", "calibration_version", "created_at", "state", "schema_version",
+    "previous_calibration_version", "setup_session_id",
+})
 
 
 @dataclass(frozen=True)

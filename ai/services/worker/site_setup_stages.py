@@ -9,10 +9,10 @@ prepare·mapanything·preview·bake·fallback)를 `Stages`(기본 `ProcessStages
 - (b) 내부 파라미터: Tier 0 활성 보정 문서의 K·왜곡을 재사용한다. 없으면 `INTRINSICS_UNAVAILABLE` 로 끝낸다(무마커 추정 경로는 이 처리기에 아직
   연결하지 않았다, 지어내지 않는다).
 - (c)(d) `initialize`: prepare → mapanything 단계 → `build_world_from_pointcloud_and_poses`(바닥 Z=0, 벽 +X, 모서리 원점, 카메라 높이 축척).
-- (f) `publish`: 새 보정 문서를 작업 폴더에 두고 객체 저장소에 올린다. **EC2 의 calibration_version 등록은 워커 토큰 경로가 아직 없다**
-  (설계 문서 7.x 잔여 위험): 서버가 같은 버전을 DB 에서 찾아야 하트비트를 받는다.
-- (g) `preview`: reconstruct_tasks `preview` 단계 → GLB 업로드 → `scene-preview-<run>`.
-- (h) `bake`: reconstruct_tasks `bake`(도구 부재 시 `fallback`) → GLB 업로드 → `scene-<run>`.
+- (f) `publish`: 새 보정 문서를 작업 폴더에 두고 객체 저장소에 올린다. 올린 객체 참조(주소·sha256·크기)를 함께 돌려주면 처리기가
+  `artifacts.calibration_document` 로 알리고, EC2 가 그 문서를 읽어 새 calibration_version 으로 등록한다(S15P31A101-467).
+- (g) `preview`: reconstruct_tasks `preview` 단계 → GLB 업로드 → `scene-preview-<run>`(+ `artifacts.preview_scene`).
+- (h) `bake`: reconstruct_tasks `bake`(도구 부재 시 `fallback`) → GLB 업로드 → `scene-<run>`(+ `artifacts.scene`).
 """
 
 from __future__ import annotations
@@ -38,10 +38,13 @@ from .auto_static import AutoStaticSettings, calibration_document_path
 from .handlers import JobContext, JobFailed
 from .objects import ObjectStore, ObjectStoreError
 from .site_setup import (
+    BakedScene,
     CameraPose,
     CleanBackgroundBundle,
     InitialWorldReconstruction,
+    ObjectRef,
     PreviewDraftResult,
+    PublishedCalibration,
     SiteSetupHandler,
     build_world_from_pointcloud_and_poses,
 )
@@ -202,19 +205,24 @@ class ProductionSiteSetupStages:
         )
 
     # ------------------------------------------------------------------ (f)
-    def publish(self, calibration_doc: Mapping[str, Any]) -> str:
+    def publish(self, calibration_doc: Mapping[str, Any]) -> PublishedCalibration:
         """새 보정 문서를 작업 폴더에 두고(이후 preview·bake 의 World 정렬 기준) 객체 저장소에 올린다. 버전은 덮어쓰지 않는다."""
         doc = copy.deepcopy(dict(calibration_doc))
         version = str(doc["calibration_version"])
+        # 세팅 출처·계보(계약 2.2.0, content_hash 제외 키). Tier 0 는 previous 가 자기 활성 보정일 때만 이 문서를 새 기준으로 채택한다
+        doc["schema_version"] = "2.2.0"
+        doc["setup_session_id"] = str(self.ctx.input["setup_session_id"])
+        if self._prior is not None:
+            doc["previous_calibration_version"] = str(self._prior["calibration_version"])
         if (self.root / "calibration.json").is_file():
             (self.root / "calibration.prior.json").write_bytes((self.root / "calibration.json").read_bytes())
         write_json(self.root / "calibration.json", doc)
         raw = json.dumps(doc, ensure_ascii=False, sort_keys=True).encode("utf-8")
         try:
-            self.store.put(self.ctx, f"calibration-{version}.json", raw, "application/json")
+            uri = self.store.put(self.ctx, f"calibration-{version}.json", raw, "application/json")
         except ObjectStoreError as exc:
             raise JobFailed("SETUP_OBJECT_FAILED", str(exc), retryable=exc.retryable) from exc
-        return version
+        return PublishedCalibration(version, ObjectRef.of(uri, raw))
 
     # ------------------------------------------------------------------ (g)
     def preview(self, *, setup_session_id: str, site_id: str, calibration_doc: Mapping[str, Any],
@@ -224,21 +232,23 @@ class ProductionSiteSetupStages:
         glb = next((a for a in doc["assets"] if a["kind"] == "GLTF_VISUAL"), None)
         if glb is None:
             raise JobFailed("STATIC_OUTPUT_INVALID", "미리보기 산출물에 GLB 가 없다", retryable=False)
-        self._upload_asset(glb)
-        return PreviewDraftResult(preview_scene_version=f"scene-preview-{self._run_id}"[:160])
+        ref = self._upload_asset(glb)
+        return PreviewDraftResult(preview_scene_version=f"scene-preview-{self._run_id}"[:160], scene_asset=ref)
 
     # ------------------------------------------------------------------ (h)
     def bake(self, *, setup_session_id: str, site_id: str, calibration_doc: Mapping[str, Any],
-             backgrounds: CleanBackgroundBundle, preview_scene_version: str) -> str:
+             backgrounds: CleanBackgroundBundle, preview_scene_version: str) -> BakedScene:
         self._run_stage("bake")
         doc = self._read_stage_doc("bake.json", "bake")
         if doc.get("fallback_reason"):
             self._run_stage("fallback")
             doc = self._read_stage_doc("bake.json", "fallback")
-        for asset in doc["assets"]:
-            if asset["kind"] == "GLTF_VISUAL":
-                self._upload_asset(asset)
-        return f"scene-{self._run_id}"[:160]
+        glbs = [a for a in doc["assets"] if a["kind"] == "GLTF_VISUAL"]
+        if len(glbs) != 1:
+            # 정식 Scene 은 GLB 하나다(EC2 가 scene_version 의 gltf_key 하나로 등록)
+            raise JobFailed("STATIC_OUTPUT_INVALID", f"굽기 산출물의 GLB 가 하나가 아니다({len(glbs)})", retryable=False)
+        ref = self._upload_asset(glbs[0])
+        return BakedScene(f"scene-{self._run_id}"[:160], ref)
 
     # ------------------------------------------------------------------ 공통
     def _run_stage(self, stage: str) -> None:
@@ -256,12 +266,13 @@ class ProductionSiteSetupStages:
             raise JobFailed(f"STATIC_{stage.upper()}_EMPTY", "단계 결과 문서 없음", retryable=False)
         return read_json(path)
 
-    def _upload_asset(self, spec: Mapping[str, Any]) -> str:
+    def _upload_asset(self, spec: Mapping[str, Any]) -> ObjectRef:
         path = (self.root / spec["path"]).resolve()
         if not path.is_relative_to(self.root.resolve()) or not path.is_file() or path.stat().st_size == 0:
             raise JobFailed("STATIC_OUTPUT_EMPTY", f"산출물 경로·내용 오류: {spec['path']}", retryable=False)
+        content = path.read_bytes()
         try:
-            return self.store.put(self.ctx, path.name, path.read_bytes(), str(spec["content_type"]))
+            return ObjectRef.of(self.store.put(self.ctx, path.name, content, str(spec["content_type"])), content)
         except ObjectStoreError as exc:
             raise JobFailed("SETUP_OBJECT_FAILED", str(exc), retryable=exc.retryable) from exc
 

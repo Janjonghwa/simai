@@ -38,7 +38,7 @@ from __future__ import annotations
 import bisect
 import logging
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
@@ -179,9 +179,13 @@ class ConfigSync:
         id_factory: EventIdFactory | None = None,
         restored: ConfigBundle | None = None,
         restored_applied_at: int | None = None,
+        before_apply: Callable[[ConfigBundle], str | None] | None = None,
     ) -> None:
+        """before_apply: 대기 묶음을 활성으로 바꾸기 직전(판정 경계, 잠금 안)에 부른다. None 이면 적용, 문자열이면 그 사유로
+        REFERENCE_INVALID 거부 ACK 를 내고 이전 묶음을 유지한다(-467 세팅 보정 채택)."""
         if not source_id:
             raise ValueError("ConfigSync: source_id 가 비었다")
+        self._before_apply = before_apply
         self._verifier = verifier
         self._clock = clock
         self._source_id = source_id
@@ -279,6 +283,21 @@ class ConfigSync:
         """판정 한 번을 시작한다. 대기 묶음이 있으면 여기서만 전환하고, 이 tick 에 쓸 묶음을 돌려준다."""
         with self._lock:
             staged = self._staged
+            if staged is not None and self._before_apply is not None:
+                try:
+                    problem = self._before_apply(staged.bundle)
+                except Exception as e:  # 판정 스레드를 죽이지 않는다. 적용하지 않고 거부한다
+                    log.exception("구성 묶음 %s 적용 직전 검사 중 예상 밖 오류", staged.config_version)
+                    problem = f"적용 직전 검사 오류 ({type(e).__name__})"
+                if problem is not None:
+                    self._staged = None
+                    self._reject(
+                        staged.config_version,
+                        staged.bundle.bundle_hash,
+                        BundleRejected(RejectReason.REFERENCE_INVALID, problem, staged.bundle.bundle_hash),
+                    )
+                    self._update_state(f"{staged.config_version} 적용 직전 거부")
+                    staged = None
             if staged is not None:
                 applied_at = self._clock.now_ms()
                 active = ActiveConfig(staged.bundle, staged.engine, applied_at)

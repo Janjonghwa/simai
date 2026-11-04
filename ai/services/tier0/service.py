@@ -438,9 +438,10 @@ class Tier0Service:
         self.archive = BundleArchive(s.archive_dir)
         restored = self._restore_config(r, registry, known)
         verifier = BundleVerifier(HttpsFetcher(ca_file=(s.env.get("SIMAI_EC2_CA_FILE") or None)), registry, known,
-                                  self.clock)
+                                  self.clock, setup_calibration=self.calibration.setup_candidate_problem)
         self.config_sync = ConfigSync(verifier, self.clock, source_id=s.gateway_id, store=self.archive,
-                                      restored=restored, restored_applied_at=None if restored is None else now)
+                                      restored=restored, restored_applied_at=None if restored is None else now,
+                                      before_apply=self._adopt_setup_calibration)
 
         # 5) 인지·판정
         feed = self._feed_override or self._build_feed(now)
@@ -928,6 +929,55 @@ class Tier0Service:
                     "accepted": False, "reason": str(exc), "comparison": getattr(exc, "comparison", None)}
                 log.warning("보정 후보 거부: %s, 비교=%s", exc, getattr(exc, "comparison", None))
                 return False
+
+    def _adopt_setup_calibration(self, bundle) -> str | None:
+        """구성 묶음 적용 직전(판정 경계, 판정 lock 안)에 세팅 보정을 채택한다(-467). None 이면 묶음 적용, 문자열이면 거부 사유.
+
+        세팅 보정은 운영 중 후보와 달리 2회 연속 확인·교체 뒤 감시(SwapProbation)를 거치지 않고 새 World 계보의 시작으로 바로
+        기준이 된다. 채택 조건(계보·content_hash·계약·현장·카메라)을 다시 보고, 하나라도 어긋나면 저장·전환하지 않고 묶음을
+        거부해 이전 보정·묶음으로 판정을 계속한다. 전환은 calibration_status.setup_adoption·로그·calibration_update 로 남긴다.
+        """
+        if not getattr(bundle, "setup_calibration", False):
+            return None
+        ref = bundle.notice.components["calibration"]
+        at_ms = self.clock.now_ms()
+        try:
+            doc = json.loads(bundle.blobs[ref.sha256])
+            version = doc["calibration_version"]
+            if self.calibration.known(version) and self.rig.calibration_version == version:
+                return None  # 이미 채택했다(같은 묶음을 다시 적용하는 경우)
+            self.calibration.prepare_setup(doc, received_at=at_ms, config_version=bundle.config_version)
+            rig = CameraRig.from_provider(FileCalibrationProvider(self.calibration.path(version)))
+            previous_version = self.rig.calibration_version
+            self.calibration.activate(doc, effective_at=at_ms, msg_id=self._new_msg_id(), new_world=True)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self.calibration_status["last_rejection"] = {"at_ms": at_ms, "reason": f"세팅 보정 채택 거부: {exc}"}
+            log.error("세팅 보정 채택 거부(묶음 %s, 이전 보정 유지): %s", bundle.config_version, exc)
+            return f"세팅 보정 채택 거부: {exc}"
+        provenance = build_input_provenance(self.perception.feed.provenance(), calibration=rig.calibration_provenance)
+        self.perception.replace_rig(rig, provenance)
+        self.rig = rig
+        # 세팅 보정은 감시·되돌림 대상이 아니다. 이전 World 기준의 대기 후보·감시·근거는 버린다
+        self._swap_probation = None
+        self._live_pending_version = None
+        self._pending_calibration = None
+        if self.live_calibration is not None:
+            self.live_calibration.activate(doc, provenance)
+        if self.rotation_recovery is not None:
+            self.rotation_recovery.activate(doc, provenance)
+        self._drift_document = doc
+        if self.clean_background is not None:
+            self.clean_background.activate(doc, provenance)
+        self._drift_report = self._pending_drift_report = None
+        adoption = {"version": version, "previous_version": previous_version, "setup_session_id": doc.get("setup_session_id"),
+                    "config_version": bundle.config_version, "at_ms": at_ms}
+        self.calibration_status.update(pending_version=None, last_rejection=None, effective_at=at_ms, probation=None,
+                                       re_setup_required=False, re_setup_reason=None, re_setup_camera_id=None,
+                                       setup_adoption=adoption)
+        log.info("세팅 보정 채택: %s → %s (세션 %s, 묶음 %s, 새 World 기준)", previous_version, version,
+                 doc.get("setup_session_id"), bundle.config_version)
+        self._event(f"calibration_switched:{version}:{at_ms}")
+        return None
 
     def _begin_calibration_tick(self) -> None:
         if self._swap_probation is not None and self.clock.now_ms() > self._swap_probation.started_ms + self._swap_probation.window_ms:

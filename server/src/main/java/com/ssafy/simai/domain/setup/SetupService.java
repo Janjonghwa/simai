@@ -1,10 +1,12 @@
 package com.ssafy.simai.domain.setup;
 
+import com.ssafy.simai.domain.config.ConfigBundleService;
 import com.ssafy.simai.domain.config.SiteLookup;
 import com.ssafy.simai.domain.job.AnalysisJobService;
 import com.ssafy.simai.domain.job.AnalysisJobService.JobSpec;
 import com.ssafy.simai.domain.job.JobFinished;
 import com.ssafy.simai.domain.job.JobProgress;
+import com.ssafy.simai.domain.scene.SceneActivationService;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
 import java.sql.ResultSet;
@@ -18,6 +20,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,7 +45,14 @@ import tools.jackson.databind.node.ObjectNode;
  *   <li>I5 {@code site_setup} 작업을 대기열에 넣고, 유효 대여 하트비트({@link JobProgress})와 완료 콜백({@link JobFinished})으로
  *       단계·진행률·카메라별 배경 수집률·높이 검사(±5 cm)·교차 확인·등록된 버전 참조를 갱신한다.
  *   <li>{@code READY_FOR_ZONES} 단계부터 {@code work_unit.active_setup_session_id} 와 {@code ready_at} 을 보장하며,
- *       보정·Scene·구성 묶음 참조는 먼저 등록된 버전의 현장·보정 계보를 검증하되 자동 활성화하지 않는다.
+ *       보정·Scene·구성 묶음 참조는 현장·보정 계보를 검증하되 자동 활성화하지 않는다.
+ *   <li>스냅샷의 {@code artifacts}(site_setup 1.2.0)로 알린 새 보정 문서·미리보기/정식 GLB 는 {@link SetupArtifactRegistrar} 가
+ *       새 calibration_version·scene_version(CANDIDATE)으로 등록해 이 세션에 귀속시킨다. 버전 참조는 이미 있던 버전이거나 이 세션이
+ *       등록한 버전만 받고, 다른 세팅 세션에 귀속된 버전은 거부한다(S15P31A101-467).
+ *   <li>{@code READY_FOR_ZONES} 이후 하트비트(새 보정·미리보기 등록 완료)에서 이 세션이 등록한 새 보정이면 그 보정을 실은 구성 묶음
+ *       (config_version)을 커밋 뒤 발행해 Tier 0 로 보낸다. 결과 성공(SUCCEEDED) 때는 이미 발행했으면 다시 만들지 않는다. 같은 현장에
+ *       관제 중(IN_PROGRESS) 작업이 있으면 발행하지 않고 경고만 남기며, 세팅 시작 자체도 409 로 막는다. 묶음을 만들지 못해도 세팅은
+ *       되돌리지 않는다. 그 전에 실패하면 묶음을 만들지 않아 이전 보정이 그대로다.
  * </ul>
  */
 @Service
@@ -87,9 +97,13 @@ public class SetupService {
     private final SiteLookup sites;
     private final AnalysisJobService jobs;
     private final Clock clock;
+    private final SetupArtifactRegistrar artifacts;
+    private final ConfigBundleService configs;
+    private final SceneActivationService scenes;
 
     public SetupService(NamedParameterJdbcTemplate jdbc, PlatformTransactionManager transactionManager,
-            ObjectMapper mapper, SiteLookup sites, AnalysisJobService jobs, Clock clock) {
+            ObjectMapper mapper, SiteLookup sites, AnalysisJobService jobs, Clock clock, SetupArtifactRegistrar artifacts,
+            ConfigBundleService configs, SceneActivationService scenes) {
         this.jdbc = jdbc;
         this.transaction = new TransactionTemplate(transactionManager);
         this.requiresNew = new TransactionTemplate(transactionManager);
@@ -100,6 +114,9 @@ public class SetupService {
         this.sites = sites;
         this.jobs = jobs;
         this.clock = clock;
+        this.artifacts = artifacts;
+        this.configs = configs;
+        this.scenes = scenes;
     }
 
     /** 현재 현장의 활성 카메라별 저장된 높이 기본값. 한 번도 제출된 적 없는 카메라는 null 로 내려준다. */
@@ -163,6 +180,13 @@ public class SetupService {
                 effectiveHeights.put(cam, height);
             }
 
+            // 세팅은 작업 시작 전 절차다. 관제 중(IN_PROGRESS) 작업이 있으면 보정·World 를 바꾸는 세팅을 시작하지 않는다(S15P31A101-467)
+            Boolean live = jdbc.queryForObject("""
+                    SELECT EXISTS (SELECT 1 FROM work_unit WHERE site_id = :site AND status = 'IN_PROGRESS')
+                    """, new MapSqlParameterSource("site", siteId), Boolean.class);
+            if (Boolean.TRUE.equals(live)) {
+                throw new BusinessException(ErrorCode.Setup.SETUP_BLOCKED_BY_LIVE_WORK);
+            }
             List<UUID> running = jdbc.queryForList("""
                     SELECT setup_session_id FROM setup_session
                     WHERE site_id = :site AND status NOT IN ('COMPLETED', 'FAILED')
@@ -365,7 +389,16 @@ public class SetupService {
         if (session == null || "COMPLETED".equals(session.status()) || "FAILED".equals(session.status())) {
             throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
         }
-        applySnapshot(session, event.leaseId(), event.setup(), false);
+        applySnapshot(session, event.jobId(), event.leaseId(), event.leaseId(), event.setup(), false);
+        // 새 보정·미리보기 등록이 끝난 READY_FOR_ZONES 부터 새 보정 구성 묶음을 발행한다. 그래야 굽기 도중 구역을 발행해도 새 보정을 싣는다
+        if (READY_OR_LATER_STAGES.contains(event.setup().path("status").asString(""))) {
+            String calibration = optionalText(event.setup(), "calibration_version", session.calibrationVersion());
+            publishSetupConfig(session.setupSessionId(), calibration, session.requestedBy());
+            // 세팅 화면·관제 뷰어가 보는 현재 Scene 을 이 세션의 미리보기로 올린다(세션당 한 번)
+            promoteSetupSceneAfterCommit(session.setupSessionId(), session.siteId(), calibration,
+                    optionalText(event.setup(), "preview_scene_version", session.previewSceneVersion()),
+                    SetupArtifactRegistrar.PREVIEW_SCENE, null);
+        }
     }
 
     /** {@code site_setup} 작업 종료 콜백을 반영한다. */
@@ -383,7 +416,18 @@ public class SetupService {
             return;
         }
         if ("SUCCEEDED".equals(event.status())) {
-            applySnapshot(session, session.progressLeaseId(), event.result(), true);
+            // 결과 산출물 키는 결과를 낸 대여(SUBMITTED)의 경로다. 단계·진행률 기준선은 기존대로 마지막 하트비트 대여
+            UUID submittedLease = jdbc.queryForList("""
+                    SELECT l.lease_id FROM job_lease l JOIN analysis_job j ON j.job_id = l.job_id AND j.attempt = l.attempt
+                    WHERE l.job_id = :job AND l.status = 'SUBMITTED'
+                    """, new MapSqlParameterSource("job", event.jobId()), UUID.class).stream().findFirst().orElse(null);
+            applySnapshot(session, event.jobId(), session.progressLeaseId(), submittedLease, event.result(), true);
+            String calibration = optionalText(event.result(), "calibration_version", session.calibrationVersion());
+            publishSetupConfig(session.setupSessionId(), calibration, session.requestedBy());
+            // 정식 Scene 은 지금 현재 Scene 이 이 세션의 미리보기일 때만 교체한다(관리자가 고른 다른 Scene 은 건드리지 않음)
+            promoteSetupSceneAfterCommit(session.setupSessionId(), session.siteId(), calibration,
+                    optionalText(event.result(), "scene_version", session.sceneVersion()), SetupArtifactRegistrar.SCENE,
+                    optionalText(event.result(), "preview_scene_version", session.previewSceneVersion()));
             return;
         }
         String code = event.status();
@@ -412,8 +456,9 @@ public class SetupService {
                 .addValue("now", now));
     }
 
-    private void applySnapshot(SessionRow session, UUID leaseId, JsonNode snapshot, boolean terminalResult) {
-        applySnapshotCore(session, leaseId, snapshot, terminalResult);
+    private void applySnapshot(SessionRow session, String jobId, UUID leaseId, UUID artifactLeaseId, JsonNode snapshot,
+            boolean terminalResult) {
+        applySnapshotCore(session, jobId, leaseId, artifactLeaseId, snapshot, terminalResult);
         String cal = optionalText(snapshot, "calibration_version", session.calibrationVersion());
         String preview = optionalText(snapshot, "preview_scene_version", session.previewSceneVersion());
         if (cal != null && preview != null) {
@@ -421,7 +466,8 @@ public class SetupService {
         }
     }
 
-    private void applySnapshotCore(SessionRow session, UUID leaseId, JsonNode snapshot, boolean terminalResult) {
+    private void applySnapshotCore(SessionRow session, String jobId, UUID leaseId, UUID artifactLeaseId, JsonNode snapshot,
+            boolean terminalResult) {
         if (snapshot == null || !snapshot.isObject()) {
             throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
         }
@@ -509,7 +555,12 @@ public class SetupService {
             throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
         }
 
-        validateVersionLineage(session.siteId(), calibrationVersion, previewSceneVersion, sceneVersion, configVersion);
+        // 이 스냅샷이 알린 새 산출물을 먼저 등록한다(이 작업·이 대여 경로, 해시 대조). 등록 뒤 계보 검사가 이 세션 귀속을 본다
+        artifacts.register(new SetupArtifactRegistrar.Target(session.setupSessionId(), session.siteId(), jobId, artifactLeaseId,
+                        new TreeSet<>(expectedHeights.keySet()), session.requestedBy()),
+                snapshot, calibrationVersion, previewSceneVersion, sceneVersion);
+        validateVersionLineage(session.setupSessionId(), session.siteId(), calibrationVersion, previewSceneVersion, sceneVersion,
+                configVersion);
 
         String objectCrossChecksJson = session.objectCrossChecksJson();
         JsonNode crossNode = snapshot.get("object_cross_checks");
@@ -566,6 +617,83 @@ public class SetupService {
                     .addValue("workId", session.workUnitId())
                     .addValue("now", now));
         }
+    }
+
+    /**
+     * READY_FOR_ZONES 이후(그리고 결과 성공 때) 이 세션이 등록한 새 보정을 Tier 0 에 적용하는 기존 경로(구성 묶음 발행)를 잇는다
+     * (S15P31A101-467). 묶음은 하트비트·제출이 커밋된 뒤 별도 트랜잭션에서 만들고, 그 보정의 묶음이 이미 있으면 만들지 않는다
+     * (ConfigBundleService.publishForSetupAfterCommit). 이 세션이 artifacts 로 등록한 보정이 아니면(이미 있던 보정을 참조만 함)
+     * 새 묶음을 만들지 않는다.
+     */
+    private void publishSetupConfig(UUID setupSessionId, String calibrationVersion, Long requestedBy) {
+        if (calibrationVersion == null || requestedBy == null
+                || !artifacts.registeredBySession(setupSessionId, SetupArtifactRegistrar.CALIBRATION, calibrationVersion)) {
+            return;
+        }
+        configs.publishForSetupAfterCommit(calibrationVersion, requestedBy);
+    }
+
+    /**
+     * 세팅 Scene 자동 현재화(S15P31A101-467). 하트비트·제출이 커밋된 뒤 별도 트랜잭션에서 기존 활성화 경로
+     * (SceneActivationService, 이력 추가·덮어쓰지 않음)로 이 세션이 등록한 Scene 을 현재 Scene 으로 올린다. Scene 은 표시용이고
+     * 미리보기는 quality.notes 의 scene_tier=PREVIEW·safety_use=false 를 그대로 둔다(위험 판정 미사용).
+     * <ul>
+     *   <li>이 세션이 artifacts 로 등록한 보정·Scene 일 때만. 같은 현장에 관제 중(IN_PROGRESS) 작업이 있으면 하지 않는다.
+     *   <li>미리보기(expectedCurrent=null): 이 세션 이름으로 그 미리보기를 이미 한 번 올렸으면 다시 올리지 않는다(이어지는 하트비트가
+     *       관리자 선택을 되돌리지 않게).
+     *   <li>정식(expectedCurrent=미리보기): 지금 현재 Scene 이 이 세션의 미리보기일 때만 교체한다.
+     * </ul>
+     * 실패해도 세팅은 되돌리지 않고 경고만 남긴다.
+     */
+    private void promoteSetupSceneAfterCommit(UUID setupSessionId, String siteId, String calibrationVersion, String sceneVersion,
+            String kind, String expectedCurrent) {
+        if (sceneVersion == null || calibrationVersion == null
+                || !artifacts.registeredBySession(setupSessionId, SetupArtifactRegistrar.CALIBRATION, calibrationVersion)
+                || !artifacts.registeredBySession(setupSessionId, kind, sceneVersion)) {
+            return;
+        }
+        String actor = "setup:" + setupSessionId;
+        Runnable task = () -> {
+            try {
+                requiresNew.executeWithoutResult(status -> {
+                    MapSqlParameterSource params = new MapSqlParameterSource("site", siteId).addValue("v", sceneVersion)
+                            .addValue("actor", actor);
+                    if (Boolean.TRUE.equals(jdbc.queryForObject("""
+                            SELECT EXISTS (SELECT 1 FROM work_unit WHERE site_id = :site AND status = 'IN_PROGRESS')
+                            """, params, Boolean.class))) {
+                        log.warn("세팅 세션 {} 의 Scene {} 을 현재로 올리지 않는다: 같은 현장에 진행 중(IN_PROGRESS) 작업이 있다",
+                                setupSessionId, sceneVersion);
+                        return;
+                    }
+                    if (Boolean.TRUE.equals(jdbc.queryForObject("""
+                            SELECT EXISTS (SELECT 1 FROM scene_activation
+                                           WHERE site_id = :site AND scene_version = :v AND actor = :actor)
+                            """, params, Boolean.class))) {
+                        return;  // 이 세션이 이미 한 번 올렸다
+                    }
+                    String reason = SetupArtifactRegistrar.PREVIEW_SCENE.equals(kind)
+                            ? "현장 세팅 미리보기 자동 현재화(PREVIEW, 위험 판정 미사용)"
+                            : "현장 세팅 정식 Scene 이 미리보기를 교체";
+                    boolean done = scenes.activateIfCurrent(siteId, sceneVersion, expectedCurrent, actor, reason);
+                    if (done) {
+                        log.info("세팅 세션 {} 의 Scene {} 을 현재 Scene 으로 올림", setupSessionId, sceneVersion);
+                    }
+                });
+            } catch (RuntimeException e) {
+                log.warn("세팅 세션 {} 의 Scene {} 자동 현재화 실패(세팅은 유지): {}", setupSessionId, sceneVersion, e.getMessage());
+            }
+        };
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            task.run();
+                        }
+                    });
+            return;
+        }
+        task.run();
     }
 
     private void enqueueZoneDraftIfReadySafe(UUID setupSessionId, String siteId, String calibrationVersion,
@@ -842,7 +970,11 @@ public class SetupService {
         return mapper.writeValueAsString(crossNode);
     }
 
-    private void validateVersionLineage(String siteId, String calibrationVersion, String previewSceneVersion,
+    /**
+     * 버전 참조의 현장·보정 계보. 버전은 같은 현장에 있어야 하고, 세팅 세션에 귀속된 버전(setup_session_artifact)이면 이 세션 귀속이어야
+     * 한다(다른 세팅 세션이 만든 보정·Scene 을 이 세션 결과로 쓰지 못하게). 귀속이 없는 버전은 관리자·Tier 0 가 등록한 기존 버전이다.
+     */
+    private void validateVersionLineage(UUID setupSessionId, String siteId, String calibrationVersion, String previewSceneVersion,
             String sceneVersion, String configVersion) {
         if (calibrationVersion != null) {
             Boolean validCal = jdbc.queryForObject("""
@@ -850,15 +982,23 @@ public class SetupService {
                         SELECT 1 FROM calibration_version
                         WHERE calibration_version = :cal AND site_id = :site
                           AND state IN ('PROVISIONAL', 'CALIBRATED')
+                    ) AND (
+                        NOT EXISTS (SELECT 1 FROM setup_session_artifact a
+                                    WHERE a.kind = 'CALIBRATION' AND a.version = :cal)
+                        OR EXISTS (SELECT 1 FROM setup_session_artifact a
+                                   WHERE a.kind = 'CALIBRATION' AND a.version = :cal AND a.setup_session_id = :session)
                     )
-                    """, new MapSqlParameterSource().addValue("cal", calibrationVersion).addValue("site", siteId),
-                    Boolean.class);
+                    """, new MapSqlParameterSource().addValue("cal", calibrationVersion).addValue("site", siteId)
+                    .addValue("session", setupSessionId), Boolean.class);
             if (!Boolean.TRUE.equals(validCal)) {
                 throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
             }
         }
-        for (String sv : List.of(previewSceneVersion != null ? previewSceneVersion : "",
-                sceneVersion != null ? sceneVersion : "")) {
+        List<String[]> scenes = List.of(
+                new String[] {previewSceneVersion != null ? previewSceneVersion : "", SetupArtifactRegistrar.PREVIEW_SCENE},
+                new String[] {sceneVersion != null ? sceneVersion : "", SetupArtifactRegistrar.SCENE});
+        for (String[] pair : scenes) {
+            String sv = pair[0];
             if (sv.isEmpty()) {
                 continue;
             }
@@ -869,9 +1009,15 @@ public class SetupService {
                     SELECT EXISTS (
                         SELECT 1 FROM scene_version
                         WHERE scene_version = :scene AND site_id = :site AND calibration_version = :cal
+                    ) AND (
+                        NOT EXISTS (SELECT 1 FROM setup_session_artifact a
+                                    WHERE a.kind IN ('PREVIEW_SCENE', 'SCENE') AND a.version = :scene)
+                        OR EXISTS (SELECT 1 FROM setup_session_artifact a
+                                   WHERE a.kind = :kind AND a.version = :scene AND a.setup_session_id = :session)
                     )
                     """, new MapSqlParameterSource().addValue("scene", sv).addValue("site", siteId)
-                    .addValue("cal", calibrationVersion), Boolean.class);
+                    .addValue("cal", calibrationVersion).addValue("kind", pair[1]).addValue("session", setupSessionId),
+                    Boolean.class);
             if (!Boolean.TRUE.equals(validScene)) {
                 throw new BusinessException(ErrorCode.Setup.INVALID_SETUP_PROGRESS);
             }
@@ -1027,7 +1173,7 @@ public class SetupService {
                        height_checks::text AS height_checks,
                        object_cross_checks::text AS object_cross_checks,
                        calibration_version, preview_scene_version, scene_version, config_version, zone_drafts_ref,
-                       ready_at
+                       ready_at, requested_by
                 FROM setup_session
                 WHERE site_id = :site AND setup_session_id = :id
                 """ + (forUpdate ? " FOR UPDATE" : "");
@@ -1048,7 +1194,7 @@ public class SetupService {
                        height_checks::text AS height_checks,
                        object_cross_checks::text AS object_cross_checks,
                        calibration_version, preview_scene_version, scene_version, config_version, zone_drafts_ref,
-                       ready_at
+                       ready_at, requested_by
                 FROM setup_session
                 WHERE job_id = :jobId
                 FOR UPDATE
@@ -1074,7 +1220,8 @@ public class SetupService {
                 rs.getString("scene_version"),
                 rs.getString("config_version"),
                 rs.getString("zone_drafts_ref"),
-                rs.getObject("ready_at", OffsetDateTime.class));
+                rs.getObject("ready_at", OffsetDateTime.class),
+                rs.getObject("requested_by", Long.class));
     }
 
     private ObjectNode view(ResultSet rs) throws SQLException {
@@ -1182,6 +1329,7 @@ public class SetupService {
             String sceneVersion,
             String configVersion,
             String zoneDraftsRef,
-            OffsetDateTime readyAt) {
+            OffsetDateTime readyAt,
+            Long requestedBy) {
     }
 }

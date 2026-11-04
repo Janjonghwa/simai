@@ -2,6 +2,11 @@
 
 호출자는 판정 lock으로 prepare/activate를 직렬화한다. 문서는 추가만 하며
 head와 전환 이력은 한 파일을 fsync 후 원자적으로 교체한다. 실패하면 메모리 head도 유지한다.
+
+현장 세팅 보정(-467)은 운영 중 후보(prepare·validate_candidate, 같은 World 계승)와 다른 길이다. 구성 묶음으로 받은 세팅 출처
+문서(`setup_session_id`)가 지금 활성 보정에서 출발했고(`previous_calibration_version`) 계약·content_hash·현장·카메라 집합이
+맞으면(`setup_candidate_problem`) `prepare_setup` 으로 보관하고 `activate(..., new_world=True)` 로 새 World 계보의 시작
+(bootstrap)이 되게 전환한다. 2회 연속 확인·교체 뒤 감시 대상이 아니라 바로 기준이 된다(safety_reference 는 계보 시작부터 본다).
 """
 
 from __future__ import annotations
@@ -169,7 +174,8 @@ class RuntimeCalibrationStore(CalibrationProvider):
                 doc = self.document(version)
                 if doc["calibration_version"] != version or self._digest(doc) != self._head["document_hashes"][version]:
                     raise ValueError("보관 보정 문서 식별자 또는 파일 해시 불일치")
-                _validate(doc, verify_content_hash=version != self._head["bootstrap"])
+                # 최초 시작 문서만 구형 해시 규칙을 허용한다(세팅 채택으로 bootstrap 이 바뀌어도 처음 문서는 initial 로 남긴다)
+                _validate(doc, verify_content_hash=version != self._head.get("initial", self._head["bootstrap"]))
             self.current()  # 활성 문서 누락도 기동 거부
         else:
             doc = _copy(bootstrap())
@@ -228,7 +234,8 @@ class RuntimeCalibrationStore(CalibrationProvider):
 
     def safety_reference(self):
         """최초 확정 보정과 이후 이동/기준 제외 이력을 재시작 후에도 계승한다."""
-        versions = self._head["versions"]
+        # 지금 World 계보의 시작(bootstrap, 세팅 채택이면 그 버전)부터 본다. 이전 World 의 문서는 기준이 아니다
+        versions = self._head["versions"][self._head["versions"].index(self._head["bootstrap"]):]
         reference = self.document(self._head["bootstrap"])
         for version in versions:
             doc = self.document(version)
@@ -331,16 +338,61 @@ class RuntimeCalibrationStore(CalibrationProvider):
         self._write_once(audit_path, audit)
         return doc
 
-    def activate(self, doc, *, effective_at: int, msg_id: str):
+    def setup_candidate_problem(self, document) -> str | None:
+        """구성 묶음으로 받은 저장소에 없는 보정을 세팅 보정으로 채택할 수 있는지(-467). None 이면 통과, 아니면 사유.
+
+        (a) 계약·구조·content_hash 가 맞다 (b) 세팅 출처(setup_session_id)다 (c) previous_calibration_version 이 지금 활성 보정이다
+        (d) 현장·카메라 집합이 지금 활성 보정과 같다 (e) 처음 보는 버전이다. 검증 스레드에서도 부르며, 채택 때 판정 lock 안에서 다시 본다.
+        """
+        try:
+            doc = _copy(document)
+            _validate(doc)
+        except (ValueError, TypeError, KeyError) as exc:
+            return f"계약·content_hash 검사 실패: {exc}"
+        if not doc.get("setup_session_id"):
+            return "세팅 출처(setup_session_id)가 없다"
         version = doc["calibration_version"]
+        if self.known(version):
+            return "이미 저장한 보정 버전"
+        active = self._head["active"]
+        if doc.get("previous_calibration_version") != active:
+            return f"계보 불일치: previous_calibration_version {doc.get('previous_calibration_version')} != 활성 {active}"
+        current = self.current()
+        site = current["coordinate_frame"].get("site_id")
+        if site and doc["coordinate_frame"].get("site_id") != site:
+            return "site_id 불일치"
+        if {c["camera_id"] for c in doc["cameras"]} != {c["camera_id"] for c in current["cameras"]}:
+            return "카메라 집합 불일치"
+        return None
+
+    def prepare_setup(self, document, *, received_at: int, config_version: str | None = None):
+        """판정 lock 안에서. 채택 조건을 다시 보고 문서와 출처 기록을 추가만 한다(활성화는 activate(new_world=True))."""
+        problem = self.setup_candidate_problem(document)
+        if problem is not None:
+            raise ValueError(problem)
+        doc = _copy(document)
+        self._write_document(doc)
+        report = {"source": "SITE_SETUP", "setup_session_id": doc["setup_session_id"],
+                  "previous_version": doc["previous_calibration_version"], "config_version": config_version,
+                  "received_at": received_at}
+        self._write_once(self.path(doc["calibration_version"]).with_suffix(".report.json"), report)
+        return doc
+
+    def activate(self, doc, *, effective_at: int, msg_id: str, new_world: bool = False):
+        """new_world: 세팅 보정 채택(-467). 이 버전이 새 World 계보의 시작(bootstrap, 알림 world_frame_id)이 된다."""
+        version = doc["calibration_version"]
+        head = _copy(self._head)
+        if new_world:
+            head.setdefault("initial", head["bootstrap"])
+            head["bootstrap"] = version
         payload = {
             "calibration_version": version, "previous_calibration_version": self._head["active"],
             "calibration_state": doc["state"], "provider_source": doc["provider_source"],
             "reason": "RECALIBRATED", "effective_at": effective_at,
             "calibration_ref": self.path(version).resolve().as_uri(), "calibration_hash": doc["content_hash"],
-            **self.scene_metadata(version),
+            "world_frame_id": head["bootstrap"],
+            "camera_poses": [{k: c[k] for k in ("camera_id", "R", "t")} for c in doc["cameras"]],
         }
-        head = _copy(self._head)
         head["active"] = version
         head["versions"].append(version)
         head["document_hashes"][version] = self._digest(doc)
