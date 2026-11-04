@@ -3,6 +3,7 @@ import { createFloorPlanMock } from '@/mocks/floorPlan';
 import { createHistoryMock } from '@/mocks/history';
 import { createRulesMock } from '@/mocks/rules';
 import { sceneHandlers } from '@/mocks/scenes';
+import { createSetupMock } from '@/mocks/setup';
 import { createStaticObjectsMock } from '@/mocks/staticObjects';
 import { createTbmMock } from '@/mocks/tbm';
 import { http, HttpResponse } from 'msw/http';
@@ -36,6 +37,7 @@ const signedIn = (account: MockAccount) =>
 // 작업면은 앱이 살아 있는 동안 상태를 둔다. 구성 묶음 mock(startBackend 의 createZonesMock)이 발행 때 지금 작업면을 싣도록 같은 인스턴스를 나눈다.
 export const staticObjectsMock = createStaticObjectsMock();
 export const tbmMock = createTbmMock({ deferDaysToHistory: true });
+export const setupMock = createSetupMock();
 
 // 경로 앞의 * 는 VITE_API_BASE_URL 이 무엇이든 맞추려는 것이다.
 export const handlers = [
@@ -74,6 +76,7 @@ export const handlers = [
   ...createRulesMock().handlers,
   ...createFloorPlanMock().handlers,
   ...tbmMock.handlers,
+  ...setupMock.handlers,
   // 히스토리 작업 목록·구간 기록(그때그때 합성한다).
   ...createHistoryMock().handlers,
 ];
