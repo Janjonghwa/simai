@@ -532,7 +532,7 @@ erDiagram
     app_user |o--o{ upload_grant : "requested_by_user"
 ```
 
-다른 묶음에서 이 묶음을 참조하는 테이블: `agentic_report`, `analysis_job`, `notification`, `vlm_assessment`, `watch_impact`.
+다른 묶음에서 이 묶음을 참조하는 테이블: `agentic_report`, `analysis_job`, `notification`, `vlm_assessment`, `watch_alert`, `watch_impact`.
 
 ## 7. F. 알림
 
@@ -588,8 +588,6 @@ erDiagram
     test_push |o--o{ push_receipt : "test_push_id"
     push_subscription |o--o{ push_receipt : "subscription_id"
 ```
-
-다른 묶음에서 이 묶음을 참조하는 테이블: `watch_alert`.
 
 ## 8. G. 분석 워커 작업
 
@@ -844,6 +842,7 @@ erDiagram
     watch_binding {
         bigint_identity binding_id PK
         text device_id FK
+        bigint bound_by_user_id FK
     }
     channel_state {
         timestamptz observed_at PK
@@ -854,7 +853,8 @@ erDiagram
         text device_id PK
     }
     watch_alert {
-        bigint notification_id PK,FK
+        bigint_identity alert_id PK
+        uuid event_id FK
         text device_id FK
     }
     watch_impact {
@@ -869,15 +869,16 @@ erDiagram
     device {
         text device_id PK
     }
-    notification {
-        bigint_identity notification_id PK
+    app_user {
+        bigint_identity user_id PK
     }
     risk_event {
         uuid event_id PK
     }
     device ||--o| watch_registrant : "device_id"
     device ||--o{ watch_binding : "device_id"
-    notification ||--o| watch_alert : "notification_id"
+    risk_event ||--o{ watch_alert : "event_id, source"
+    app_user |o--o{ watch_binding : "bound_by_user_id"
     device ||--o{ watch_alert : "device_id"
     device ||--o{ watch_impact : "device_id"
     risk_event |o--o{ watch_impact : "linked_event_id"

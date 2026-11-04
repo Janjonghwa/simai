@@ -209,6 +209,32 @@ public sealed interface ErrorCode {
         }
     }
 
+    /** 워치 임시 수동 배정(확장 C.6, S15P31A101-338) */
+    enum Watch implements ErrorCode {
+        WATCH_NOT_FOUND(HttpStatus.NOT_FOUND, "등록된(폐기되지 않은) 워치가 아닙니다"),
+        INVALID_WORLD_ID(HttpStatus.BAD_REQUEST, "world_id 는 1~64자여야 합니다"),
+        BINDING_NOT_FOUND(HttpStatus.NOT_FOUND, "이 워치의 배정이 없습니다"),
+        BINDING_CONFLICT(HttpStatus.CONFLICT, "같은 워치나 World ID 를 동시에 배정하고 있습니다. 다시 시도하세요");
+
+        private final HttpStatus status;
+        private final String message;
+
+        Watch(HttpStatus status, String message) {
+            this.status = status;
+            this.message = message;
+        }
+
+        @Override
+        public HttpStatus status() {
+            return status;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
     /** 시스템 지표 조회(S15P31A101-70) */
     enum Metric implements ErrorCode {
         INVALID_METRIC_QUERY(HttpStatus.BAD_REQUEST, "지표 조회 기간이 맞지 않습니다(from·to 는 UTC 밀리초, from ≤ to, 24시간 이내)");

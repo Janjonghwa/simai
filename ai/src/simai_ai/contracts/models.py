@@ -2094,6 +2094,29 @@ class WatchAlert(Envelope):
     payload: Payload43
 
 
+class Payload44(BaseModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    event_id: DefsUuidV7
+    event_sequence: Annotated[StrictInt, Field(ge=1)]
+    alert_msg_id: DefsUuid
+    device_id: DefsInstanceId
+    world_id: Annotated[StrictStr, Field(min_length=1)]
+    severity: Literal['CRITICAL', 'HIGH', 'CAUTION']
+    reason: Literal['NO_ACK', 'SEND_FAILED']
+    sent_at: DefsTimestampMs
+    escalated_at: DefsTimestampMs
+
+
+class WatchEscalation(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['watch_escalation'], Field(min_length=1)]
+    payload: Payload44
+
+
 class Echo(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -2111,7 +2134,7 @@ class Watch(BaseModel):
     app_version: Annotated[StrictStr | MISSING, Field(min_length=1)] = MISSING
 
 
-class Payload44(BaseModel):
+class Payload45(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -2126,7 +2149,7 @@ class WatchHeartbeat(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_heartbeat'], Field(min_length=1)]
-    payload: Payload44
+    payload: Payload45
 
 
 class WorldStateHeadZUncertain1x(RootModel[Any]):
@@ -3436,7 +3459,7 @@ class VlmZoneDraftResult(BaseModel):
     drafts: Annotated[list[VlmZoneDraftDraftItem], Field(max_length=64)]
 
 
-class Payload45(BaseModel):
+class Payload46(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -3453,7 +3476,7 @@ class WorldState(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['world_state'], Field(min_length=1)]
-    payload: Payload45
+    payload: Payload46
 
 
 class Track(WorldStateWorldTrack):
@@ -3974,6 +3997,7 @@ class Contracts(BaseModel):
     vlm_zone_draft: VlmZoneDraft | MISSING = MISSING
     watch_ack: WatchAck | MISSING = MISSING
     watch_alert: WatchAlert | MISSING = MISSING
+    watch_escalation: WatchEscalation | MISSING = MISSING
     watch_heartbeat: WatchHeartbeat | MISSING = MISSING
     world_state: WorldState | MISSING = MISSING
     world_tracks: WorldTracks | MISSING = MISSING

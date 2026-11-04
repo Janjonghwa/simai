@@ -454,12 +454,20 @@ UNOBSERVED: number
  */
 face_policy: ("OBSERVED" | "BLURRED" | "EXCLUDED")
 })
+/**
+ * EC2 → 관제 화면, STOMP /topic/watch (확장 부록 C.6, FR-46, 12.4). EC2 가 BOUND 워치에 보낸 watch_alert 에 VIBRATED watch_ack 가 ack_within_ms 안에 오지 않았거나(NO_ACK) 보내지 못했을 때(SEND_FAILED) 관리자에게 알리는 격상이다. 한 알림에 한 번만 보낸다. 워치 ACK·격상은 운영자 확인(3.2)이 아니며 이벤트 상태를 바꾸지 않는다. CRITICAL·HIGH 이벤트의 현장 경보는 Tier 0·노트북이 이미 울리고, EC2 가 CAUTION 을 현장 경보로 올리는 경로는 없다(S15P31A101-338 설계 server-watch-alert.md 남은 일). 사람 이름을 싣지 않는다(익명 World ID·기기 ID, 11.4-5). 1.0.0 신설(S15P31A101-338).
+ */
+export type WatchEscalationMessage = (Envelope & {
+msg_type?: "watch_escalation"
+payload: WatchEscalationPayload
+})
 
 export interface FrontContracts {
 world_state?: WorldStateMessage
 risk_event?: RiskEventMessage
 viewer_health?: ViewerHealthMessage
 avatar_frame?: AvatarFrameMessage
+watch_escalation?: WatchEscalationMessage
 }
 /**
  * I0의 영상 프레임(바이너리)을 제외한 모든 구간 메시지의 봉투 (명세 12.1). 수신 측은 모르는 필드를 무시한다.
@@ -740,4 +748,39 @@ root_rotation: AxisAngle
  * @maxItems 1024
  */
 joint_rotations: [(AxisAngle1 | null), ...((AxisAngle1 | null))[]]
+}
+export interface WatchEscalationPayload {
+/**
+ * UUIDv7 (시간 순서, 재시작·여러 현장에서도 충돌 없음). event_id 에 쓴다 (명세 3.2 식별자 규칙)
+ */
+event_id: string
+/**
+ * 워치에 알린 이벤트 상태
+ */
+event_sequence: number
+/**
+ * 격상한 watch_alert 의 봉투 msg_id
+ */
+alert_msg_id: string
+/**
+ * 송신 주체 식별자 (tier0-01, laptop-01, ec2). Tier 0 인스턴스 식별자가 이벤트의 gateway_id 다 (명세 12.1)
+ */
+device_id: string
+/**
+ * 그 워치에 배정된 익명 World ID
+ */
+world_id: string
+severity: ("CRITICAL" | "HIGH" | "CAUTION")
+/**
+ * NO_ACK: 기한(ack_within_ms) 안에 VIBRATED ACK 가 EC2 에 닿지 않음. SEND_FAILED: 워치로 보내지 못함(연결이 그 사이 끊김 등)
+ */
+reason: ("NO_ACK" | "SEND_FAILED")
+/**
+ * UTC epoch 밀리초
+ */
+sent_at: number
+/**
+ * UTC epoch 밀리초
+ */
+escalated_at: number
 }
