@@ -43,7 +43,7 @@
 
 - `risk_event` 3건: event_id `0de00000-0000-7000-8000-00000000000{1,2,3}`, `scene_version = MOCK-DEMO`. 둘은 RESOLVED(위험·경고), 하나는 진행 중(UPDATED).
 - 해소 이벤트마다 카메라 4대 `media_clip` 행(`redactor_version = MOCK-SEED`)을 넣고, 8행이 S3 객체 하나(`event-clips/mock-demo/walk-calibration-cam_C.mp4`)를 같이 가리킨다.
-- 정리: 위 event_id 의 `clip_access_log`·`media_clip_retention`·`media_clip` 과 `risk_event` 를 지우고 S3 객체를 지운다. 저장소 계정에 `s3:ListBucket` 이 없어 `s3 ls` 는 안 되고 `s3api head-object` 로 본다.
+- 정리: 위 event_id 의 `clip_access_log`·`media_clip_retention`·`media_clip`, 누가 확인을 눌렀으면 `event_ack`, 마지막으로 `risk_event` 를 지우고 S3 객체를 지운다. 저장소 계정에 `s3:ListBucket` 이 없어 `s3 ls` 는 안 되고 `s3api head-object` 로 본다.
 
 ## 버린 대안
 
