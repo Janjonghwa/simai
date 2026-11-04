@@ -1,0 +1,33 @@
+{
+  "schema_version": "3.8.0",
+  "msg_type": "job_request",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000458",
+  "sent_at": 1760342415000,
+  "source_id": "ec2",
+  "payload": {
+    "job_id": "job-20261104-0455",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000004b5",
+    "attempt": 1,
+    "max_attempts": 2,
+    "job_type": "vlm_zone_draft",
+    "priority": "BACKGROUND",
+    "timeout_ms": 60000,
+    "leased_at": 1760342415000,
+    "lease_expires_at": 1760342445000,
+    "heartbeat_interval_ms": 10000,
+    "input": {
+      "site_id": "classroom-1",
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "calibration_version": "cal-setup-12",
+      "preview_scene_version": "scene-setup-12-preview",
+      "person_name": "홍길동",
+      "frames": [
+        {
+          "camera_id": "cam1",
+          "frame_uri": "s3://simai-bucket/setup-frames/0192a6f0-7c1e-7b3a-9f2d-000000000452/cam1.jpg",
+          "face_policy": "OBSERVED"
+        }
+      ]
+    }
+  }
+}

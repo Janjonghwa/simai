@@ -1,0 +1,76 @@
+{
+  "schema_version": "2.7.0",
+  "msg_type": "job_callback",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000456",
+  "sent_at": 1760342422500,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261104-0455",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000004b5",
+    "job_type": "vlm_zone_draft",
+    "status": "SUCCEEDED",
+    "started_at": 1760342415100,
+    "finished_at": 1760342422400,
+    "result": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "site_id": "classroom-1",
+      "calibration_version": "cal-setup-12",
+      "preview_scene_version": "scene-setup-12-preview",
+      "safety_use": false,
+      "status": "SUCCEEDED",
+      "model_version": "nvidia/Cosmos-Reason2-2B",
+      "prompt_version": "vlm-zone-draft-1.0",
+      "latency_ms": 3820,
+      "drafts": [
+        {
+          "candidate_id": "cand-elevated-01",
+          "candidate_kind": "ELEVATED_WORK_SURFACE",
+          "zone_kind": "WORK_SURFACE",
+          "eval_type": "VOLUME_3D",
+          "polygon_xy": [
+            [0.8, 0.5],
+            [2.0, 0.5],
+            [2.0, 1.3],
+            [0.8, 1.3]
+          ],
+          "z_min_m": 0.0,
+          "z_max_m": 2.5,
+          "top_height_m": 0.75,
+          "obb": {
+            "center": [1.4, 0.9, 0.375],
+            "size": [1.2, 0.8, 0.75],
+            "yaw_rad": 0.0
+          },
+          "recommended_name": "중앙 고소 작업대 구역",
+          "recommended_severity": "HIGH",
+          "rationale": "바닥(Z=0) 대비 약 0.75m 높이의 수평 상판이 관측되어 작업대 추락 주의 구역으로 제안합니다.",
+          "vlm_status": "VLM",
+          "evidence_cameras": ["cam1", "cam2"],
+          "confidence": 0.86
+        },
+        {
+          "candidate_id": "cand-opening-01",
+          "candidate_kind": "OPENING",
+          "zone_kind": "OPENING",
+          "eval_type": "GROUND_FOOTPRINT",
+          "polygon_xy": [
+            [-1.2, -0.8],
+            [-0.4, -0.8],
+            [-0.4, -0.1],
+            [-1.2, -0.1]
+          ],
+          "z_min_m": -0.6,
+          "z_max_m": 0.2,
+          "top_height_m": null,
+          "obb": null,
+          "recommended_name": "서쪽 바닥 개구부 위험구역",
+          "recommended_severity": "CRITICAL",
+          "rationale": "바닥면 내부에 주변 Z=0 평면보다 낮은 빈 영역이 검출되어 개구부 추락 위험(CRITICAL) 구역으로 제안합니다.",
+          "vlm_status": "VLM",
+          "evidence_cameras": ["cam1"],
+          "confidence": 0.91
+        }
+      ]
+    }
+  }
+}

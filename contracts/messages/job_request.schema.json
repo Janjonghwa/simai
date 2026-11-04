@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/job_request.schema.json",
   "title": "I5 job_request",
-  "description": "EC2 → 분석 워커 작업 대여 응답. POST /api/worker/jobs/lease(long-poll, job_lease_request 참조)의 200 본문 (명세 12.2 I5, 12.5, FR-101). 2.0.0 의미 변경(메이저): EC2 가 워커에 POST /jobs 로 밀어 넣던 요청과 callback_url 을 없애고, 워커가 가져간 작업 하나와 그 대여(lease) 정보를 담는다. 3.0.0 의미 변경(메이저, S15P31A101-197): attempt 는 몇 번째 대여가 아니라 반납(job_callback 2.1.0 error.consume_attempt false)을 세지 않는 시도 번호이고, max_attempts 는 최대 대여 횟수가 아니라 최대 시도 수다. 반납하면 같은 attempt 로 새 대여가 나가므로 같은 attempt 가 여러 대여(lease_id)에 되풀이될 수 있고, 한 작업의 대여 수는 max_attempts 보다 많을 수 있다. 2.x 문서의 attempt 는 대여 순번이다. 워커는 3.x 가 아닌 job_request 를 받지 않는다(대여 요청 오류로 멈춘다). 3.1.0 필드 추가(마이너, S15P31A101-206): 작업 유형 bev_floorplan(BEV 평면도 생성, BACKGROUND)·incident_summary(사고 구간 요약, REPORT, 얼굴 흐림 필수), tbm_report 입력의 보고서 종류 report_kind(TBM·DAILY, 없으면 TBM). 3.2.0 필드 추가(마이너, S15P31A101-239): bev_floorplan 입력 형식(bev_floorplan.schema.json — 보정 문서 calibration_ref·calibration_hash, frame_source, 카메라별 frames[]). 3.1.0 의 bev_floorplan 은 calibration_version 만 정했으므로 3.1.0 EC2 가 낸 bev_floorplan 작업은 워커가 입력 오류로 실패 처리한다. 3.3.0 필드 추가(마이너, S15P31A101-225): tbm_report 입력 형식(tbm_report.schema.json — report_kind·report_id·site_id·report_date·조항 clauses[] 필수, TBM 은 PLANNED 계산 결과 plan, DAILY 는 이벤트 요약 events, 선택 생성 옵션 options). 3.1.0 의 tbm_report 는 report_kind 만 정했으므로 3.1.0 EC2 가 낸 tbm_report 작업은 워커가 입력 오류로 실패 처리한다. 3.4.0 필드 추가(마이너, S15P31A101-271): incident_summary 입력 형식(incident_summary.schema.json — clips[] 에 서명 조회용 clip_uri·촬영 구간 clip_start_capture_ms·clip_end_capture_ms 필수, 선택 구간 window_start_ms·window_end_ms·anchor_capture_ms). 3.1.0 의 incident_summary 는 object_key 만 정했으므로 3.1.0 EC2 가 낸 incident_summary 작업은 워커가 입력 오류로 실패 처리한다. 【대여 규칙】 한 작업(job_id)에는 한 시점에 유효한 대여(lease_id)가 하나뿐이다. 워커는 heartbeat_interval_ms 마다 job_heartbeat 로 대여를 연장한다. EC2 는 하트비트마다 lease_expires_at 을 하트비트 받은 시각 + 대여 유지 시간으로 늘린다. 워커는 lease_expires_at 을 자기 시계와 직접 비교하지 않는다(시계 차이). 남은 시간은 lease_expires_at − 봉투 sent_at(둘 다 EC2 시계)으로 계산한다. 【시간 초과·재할당】 lease_expires_at 까지 하트비트도 결과도 없으면 대여는 만료된다. EC2 는 attempt < max_attempts 이면 같은 job_id 를 새 lease_id, attempt + 1 로 대기열에 되돌려 다시 내주고(우선순위 유지), 아니면 작업을 TIMED_OUT 으로 끝낸다. 실행 시간 상한은 leased_at + timeout_ms 다. 워커는 이 시각이 지나면 스스로 작업을 멈추고 TIMED_OUT 을 제출한다. EC2 는 이 시각이 지난 뒤 온 하트비트를 REJECTED(JOB_TIMED_OUT)로 답하고 작업을 TIMED_OUT 으로 끝낸다(다시 내주지 않음). 대여가 유효한 동안 도착한 제출은 받는다. 만료·재할당된 대여의 하트비트·제출은 거부된다(job_lease_status REJECTED). 분석 워커 실패는 VLM·정적 3D·보고서에만 영향을 주고 위치·경보에는 영향이 없다. 우선순위는 Tier 0 > VLM 빠른 경로 > 보고서·사후 요약 > 그 밖의 작업 (3.2). vlm_rationale 외 작업 유형의 input 형식은 각 작업 티켓에서 정한다. 입력의 이미지·점군 등은 본문에 넣지 않고 객체 저장소·Network Volume 주소로만 참조한다. tbm_report 처럼 외부 LLM API 를 부르는 작업은 텍스트(규칙 계산 결과·법령 조항·이벤트 요약)만 보내고 영상·이미지·얼굴·실명은 보내지 않는다(명세 5.4, 14). lease_expires_at > leased_at, attempt ≤ max_attempts, heartbeat_interval_ms < 대여 유지 시간 같은 값 사이 관계는 받는 쪽(워커 클라이언트)이 확인하고, 어긋난 대여로는 작업을 시작하지 않는다. 3.7.0 마이너(S15P31A101-452): site_setup 입력·결과 추가(site_setup 1.0.0).",
+  "description": "EC2 → 분석 워커 작업 대여 응답. POST /api/worker/jobs/lease(long-poll, job_lease_request 참조)의 200 본문 (명세 12.2 I5, 12.5, FR-101). 2.0.0 의미 변경(메이저): EC2 가 워커에 POST /jobs 로 밀어 넣던 요청과 callback_url 을 없애고, 워커가 가져간 작업 하나와 그 대여(lease) 정보를 담는다. 3.0.0 의미 변경(메이저, S15P31A101-197): attempt 는 몇 번째 대여가 아니라 반납(job_callback 2.1.0 error.consume_attempt false)을 세지 않는 시도 번호이고, max_attempts 는 최대 대여 횟수가 아니라 최대 시도 수다. 반납하면 같은 attempt 로 새 대여가 나가므로 같은 attempt 가 여러 대여(lease_id)에 되풀이될 수 있고, 한 작업의 대여 수는 max_attempts 보다 많을 수 있다. 2.x 문서의 attempt 는 대여 순번이다. 워커는 3.x 가 아닌 job_request 를 받지 않는다(대여 요청 오류로 멈춘다). 3.1.0 필드 추가(마이너, S15P31A101-206): 작업 유형 bev_floorplan(BEV 평면도 생성, BACKGROUND)·incident_summary(사고 구간 요약, REPORT, 얼굴 흐림 필수), tbm_report 입력의 보고서 종류 report_kind(TBM·DAILY, 없으면 TBM). 3.2.0 필드 추가(마이너, S15P31A101-239): bev_floorplan 입력 형식(bev_floorplan.schema.json — 보정 문서 calibration_ref·calibration_hash, frame_source, 카메라별 frames[]). 3.1.0 의 bev_floorplan 은 calibration_version 만 정했으므로 3.1.0 EC2 가 낸 bev_floorplan 작업은 워커가 입력 오류로 실패 처리한다. 3.3.0 필드 추가(마이너, S15P31A101-225): tbm_report 입력 형식(tbm_report.schema.json — report_kind·report_id·site_id·report_date·조항 clauses[] 필수, TBM 은 PLANNED 계산 결과 plan, DAILY 는 이벤트 요약 events, 선택 생성 옵션 options). 3.1.0 의 tbm_report 는 report_kind 만 정했으므로 3.1.0 EC2 가 낸 tbm_report 작업은 워커가 입력 오류로 실패 처리한다. 3.4.0 필드 추가(마이너, S15P31A101-271): incident_summary 입력 형식(incident_summary.schema.json — clips[] 에 서명 조회용 clip_uri·촬영 구간 clip_start_capture_ms·clip_end_capture_ms 필수, 선택 구간 window_start_ms·window_end_ms·anchor_capture_ms). 3.1.0 의 incident_summary 는 object_key 만 정했으므로 3.1.0 EC2 가 낸 incident_summary 작업은 워커가 입력 오류로 실패 처리한다. 【대여 규칙】 한 작업(job_id)에는 한 시점에 유효한 대여(lease_id)가 하나뿐이다. 워커는 heartbeat_interval_ms 마다 job_heartbeat 로 대여를 연장한다. EC2 는 하트비트마다 lease_expires_at 을 하트비트 받은 시각 + 대여 유지 시간으로 늘린다. 워커는 lease_expires_at 을 자기 시계와 직접 비교하지 않는다(시계 차이). 남은 시간은 lease_expires_at − 봉투 sent_at(둘 다 EC2 시계)으로 계산한다. 【시간 초과·재할당】 lease_expires_at 까지 하트비트도 결과도 없으면 대여는 만료된다. EC2 는 attempt < max_attempts 이면 같은 job_id 를 새 lease_id, attempt + 1 로 대기열에 되돌려 다시 내주고(우선순위 유지), 아니면 작업을 TIMED_OUT 으로 끝낸다. 실행 시간 상한은 leased_at + timeout_ms 다. 워커는 이 시각이 지나면 스스로 작업을 멈추고 TIMED_OUT 을 제출한다. EC2 는 이 시각이 지난 뒤 온 하트비트를 REJECTED(JOB_TIMED_OUT)로 답하고 작업을 TIMED_OUT 으로 끝낸다(다시 내주지 않음). 대여가 유효한 동안 도착한 제출은 받는다. 만료·재할당된 대여의 하트비트·제출은 거부된다(job_lease_status REJECTED). 분석 워커 실패는 VLM·정적 3D·보고서에만 영향을 주고 위치·경보에는 영향이 없다. 우선순위는 Tier 0 > VLM 빠른 경로 > 보고서·사후 요약 > 그 밖의 작업 (3.2). vlm_rationale 외 작업 유형의 input 형식은 각 작업 티켓에서 정한다. 입력의 이미지·점군 등은 본문에 넣지 않고 객체 저장소·Network Volume 주소로만 참조한다. tbm_report 처럼 외부 LLM API 를 부르는 작업은 텍스트(규칙 계산 결과·법령 조항·이벤트 요약)만 보내고 영상·이미지·얼굴·실명은 보내지 않는다(명세 5.4, 14). lease_expires_at > leased_at, attempt ≤ max_attempts, heartbeat_interval_ms < 대여 유지 시간 같은 값 사이 관계는 받는 쪽(워커 클라이언트)이 확인하고, 어긋난 대여로는 작업을 시작하지 않는다. 3.7.0 마이너(S15P31A101-452): site_setup 입력·결과 추가(site_setup 1.0.0). 3.8.0 마이너(S15P31A101-455): vlm_zone_draft 입력·결과 추가(vlm_zone_draft 1.0.0).",
   "allOf": [
     {
       "$ref": "envelope.schema.json"
@@ -218,6 +218,28 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "job_type": {
+                "const": "vlm_zone_draft"
+              }
+            },
+            "required": [
+              "job_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "priority": {
+                "const": "BACKGROUND"
+              },
+              "input": {
+                "$ref": "vlm_zone_draft.schema.json#/$defs/input"
+              }
+            }
+          }
         }
       ]
     }
@@ -234,9 +256,10 @@
         "hmr_refine",
         "hmr_appearance_update",
         "scene_regenerate",
-        "site_setup"
+        "site_setup",
+        "vlm_zone_draft"
       ],
-      "description": "12.5 작업 유형. bev_floorplan·incident_summary 는 3.1.0. hmr_refine·hmr_appearance_update 는 확장·EXP-02. tbm_report 는 폐기 예정(2026-11-02, S15P31A101-415: 보고서 생성을 EC2 Python 컨테이너로 이전, 메이저 삭제 전까지 값 유지). 초기 세팅 시 정적 3D GLB·빈 교실 프레임·BEV 로 위험구역·고소 작업면 다각형 초안을 제안하는 vlm_zone_draft 및 수동 맵 재생성 요청용 scene_regenerate(초안, docs/design/work-session-flow.md, S15P31A101-426·-427·-428)는 워커 구현 티켓에서 마이너 추가 예정"
+      "description": "12.5 작업 유형. bev_floorplan·incident_summary 는 3.1.0. hmr_refine·hmr_appearance_update 는 확장·EXP-02. tbm_report 는 폐기 예정(2026-11-02, S15P31A101-415: 보고서 생성을 EC2 Python 컨테이너로 이전, 메이저 삭제 전까지 값 유지). 초기 세팅 시 정적 3D GLB·빈 교실 프레임·BEV 로 위험구역·고소 작업면 다각형 초안을 제안하는 vlm_zone_draft(3.8.0, S15P31A101-455) 및 수동 맵 재생성 요청용 scene_regenerate(3.6.0, S15P31A101-428)"
     }
   }
 }

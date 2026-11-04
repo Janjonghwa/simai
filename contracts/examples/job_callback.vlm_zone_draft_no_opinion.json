@@ -1,0 +1,54 @@
+{
+  "schema_version": "2.7.0",
+  "msg_type": "job_callback",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000457",
+  "sent_at": 1760342423500,
+  "source_id": "worker-01",
+  "payload": {
+    "job_id": "job-20261104-0456",
+    "lease_id": "0192a6f0-7c1e-7b3a-9f2d-0000000004b6",
+    "job_type": "vlm_zone_draft",
+    "status": "SUCCEEDED",
+    "started_at": 1760342423000,
+    "finished_at": 1760342423450,
+    "result": {
+      "setup_session_id": "0192a6f0-7c1e-7b3a-9f2d-000000000452",
+      "site_id": "classroom-1",
+      "calibration_version": "cal-setup-12",
+      "preview_scene_version": "scene-setup-12-preview",
+      "safety_use": false,
+      "status": "NO_OPINION",
+      "model_version": null,
+      "prompt_version": "vlm-zone-draft-1.0",
+      "latency_ms": 420,
+      "drafts": [
+        {
+          "candidate_id": "cand-elevated-01",
+          "candidate_kind": "ELEVATED_WORK_SURFACE",
+          "zone_kind": "WORK_SURFACE",
+          "eval_type": "VOLUME_3D",
+          "polygon_xy": [
+            [0.8, 0.5],
+            [2.0, 0.5],
+            [2.0, 1.3],
+            [0.8, 1.3]
+          ],
+          "z_min_m": 0.0,
+          "z_max_m": 2.5,
+          "top_height_m": 0.75,
+          "obb": {
+            "center": [1.4, 0.9, 0.375],
+            "size": [1.2, 0.8, 0.75],
+            "yaw_rad": 0.0
+          },
+          "recommended_name": "고소 작업면 후보 1",
+          "recommended_severity": "HIGH",
+          "rationale": "AI 의견 없음",
+          "vlm_status": "NO_OPINION",
+          "evidence_cameras": ["cam1", "cam2"],
+          "confidence": null
+        }
+      ]
+    }
+  }
+}

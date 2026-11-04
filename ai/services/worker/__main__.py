@@ -56,6 +56,7 @@ from .tbm_report import TbmReportHandler
 from .transport import HttpTransport, Transport
 from .vlm_frames import LocalFrames
 from .vlm_rationale import VlmRationaleHandler
+from .vlm_zone_draft import VlmZoneDraftHandler
 
 log = logging.getLogger("services.worker")
 
@@ -79,6 +80,7 @@ def build_handlers(config: Path | None, store: ObjectStore | None = None, *, env
     if store is not None:
         handlers["bev_floorplan"] = BevFloorplanHandler(store, clock_ms=lambda: time.time_ns() // 1_000_000)
         handlers["static_reconstruct"] = StaticReconstructHandler(store, clock_ms=lambda: time.time_ns() // 1_000_000, env=env)
+        handlers["vlm_zone_draft"] = VlmZoneDraftHandler(store, None, client_factory=None, env=env)
     if (why := _vlm_rationale_missing(store, env)) is None:
         try:
             provider = pose(env["SIMAI_TIER0_WEIGHTS"])
@@ -86,6 +88,8 @@ def build_handlers(config: Path | None, store: ObjectStore | None = None, *, env
             handlers["vlm_rationale"] = VlmRationaleHandler(store, provider,  # type: ignore[arg-type]
                                                             local_frames=LocalFrames.from_env(env), env=env)
             handlers["incident_summary"] = IncidentSummaryHandler(store, provider)  # type: ignore[arg-type]
+            handlers["vlm_zone_draft"] = VlmZoneDraftHandler(store, provider,
+                                                             local_frames=LocalFrames.from_env(env), env=env)
         except Exception as e:  # ultralytics 없음·가중치 손상: 다른 처리기는 돈다
             why = f"pose 검출기를 열지 못했다: {type(e).__name__}: {e}"
     if why:
