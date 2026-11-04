@@ -19,6 +19,15 @@ TIMEOUTS = {"download": 120, "prepare": 180, "mapanything": 1200, "preview": 60,
             "fallback": 120, "measure": 180, "upload": 180}
 
 
+def _enhance_note(enh: dict | None) -> str:
+    """quality.notes 에 붙이는 시각 보강 표시(구조화 필드는 scene_output 계약에 아직 없다, S15P31A101-481)."""
+    if not enh:
+        return ""
+    if enh.get("applied"):
+        return f"; glb_enhance=applied({enh.get('check_mode')})"
+    return f"; glb_enhance=skipped:{enh.get('reason')}"
+
+
 class ReconstructionError(Exception):
     def __init__(self, code: str, message: str = "") -> None:
         super().__init__(message)
@@ -265,7 +274,7 @@ class StaticReconstructor:
                     "quality": {
                         "wall_deviation_m": None,
                         "observed_surface_ratio": prev_doc["observed_surface_ratio"],
-                        "notes": "벽 GT 미측정. scene_tier=PREVIEW; preview_scene=true; texture=null: PREVIEW_FAST_PATH",
+                        "notes": "벽 GT 미측정. scene_tier=PREVIEW; preview_scene=true; texture=null: PREVIEW_FAST_PATH" + _enhance_note(prev_doc.get("enhance")),
                         **regenerate_quality_fields(inp),
                     },
                 }
@@ -278,6 +287,7 @@ class StaticReconstructor:
                     "glb_uri": prev_assets[0]["uri"],
                     "output_uri": prev_out_uri,
                     "metrics": prev_doc.get("metrics"),
+                    "enhance": prev_doc.get("enhance"),
                 }
                 if on_preview is not None:
                     on_preview(preview_emitted)
@@ -289,7 +299,7 @@ class StaticReconstructor:
         tool("measure", .9)
         metrics.update(texture=bake.get("texture"), texture_fallback_reason=bake.get("fallback_reason"),
                        scale_check=output(root / "scale_check.json", "measure"), reconstruction=model,
-                       bake=bake.get("metrics"), image_hashes=read_json(root / "job.json")["image_hashes"])
+                       bake=bake.get("metrics"), enhance=bake.get("enhance"), image_hashes=read_json(root / "job.json")["image_hashes"])
         result = {
             "schema_version": "2.1.0", "scene_version": f"scene-preview-{run_id}" if mode == "preview" else f"scene-{run_id}", "state": "CANDIDATE",
             "geometry_role": "VISUAL", "created_at": self.clock_ms(), "calibration_version": inp["calibration_version"],
@@ -302,7 +312,8 @@ class StaticReconstructor:
             "assets": [], "quality": {"wall_deviation_m": None, "observed_surface_ratio": bake["observed_surface_ratio"],
                 "notes": "벽 GT 미측정. 출처·축척 점검·지표: metrics.json"
                 + ("; scene_tier=PREVIEW; preview_scene=true" if mode == "preview" else (f"; scene_tier=FULL; replaces_preview_scene={preview_emitted['scene_version']}" if preview_emitted is not None else ""))
-                + "; texture=" + ("null: " + bake["fallback_reason"] if bake.get("fallback_reason") else "texrecon"),
+                + "; texture=" + ("null: " + bake["fallback_reason"] if bake.get("fallback_reason") else "texrecon")
+                + _enhance_note(bake.get("enhance")),
                 **regenerate_quality_fields(inp)},
         }
         if model.get("weights_hash"):
