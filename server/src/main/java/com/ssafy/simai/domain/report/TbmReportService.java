@@ -1,6 +1,7 @@
 package com.ssafy.simai.domain.report;
 
 import com.ssafy.simai.domain.config.SiteLookup;
+import com.ssafy.simai.domain.report.RiskEngineReportClient.EngineCallException;
 import com.ssafy.simai.domain.report.TbmReportRepository.ActiveRules;
 import com.ssafy.simai.domain.report.TbmReportRepository.GeneratingStart;
 import com.ssafy.simai.domain.report.TbmReportRepository.RuleRow;
@@ -8,12 +9,6 @@ import com.ssafy.simai.domain.report.TbmReportRepository.ZoneMeta;
 import com.ssafy.simai.domain.work.WorkTypes;
 import com.ssafy.simai.global.exception.BusinessException;
 import com.ssafy.simai.global.exception.ErrorCode;
-import com.ssafy.simai.global.properties.RiskEngineProperties;
-import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.time.Clock;
 import java.time.Duration;
@@ -58,18 +53,14 @@ import tools.jackson.databind.node.ObjectNode;
 public class TbmReportService implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(TbmReportService.class);
-    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
-
     private final TbmReportRepository reports;
     private final WorkWrapUpRepository wrapUps;
     private final SiteLookup sites;
     private final TransactionTemplate transaction;
     private final ObjectMapper mapper;
     private final Clock clock;
-    private final HttpClient httpClient;
+    private final RiskEngineReportClient engine;
     private final ExecutorService executor;
-    private volatile String baseUrl;
-    private volatile Duration timeout;
 
     public TbmReportService(
             TbmReportRepository reports,
@@ -78,18 +69,14 @@ public class TbmReportService implements DisposableBean {
             TransactionTemplate transaction,
             ObjectMapper mapper,
             Clock clock,
-            RiskEngineProperties properties) {
+            RiskEngineReportClient engine) {
         this.reports = reports;
         this.wrapUps = wrapUps;
         this.sites = sites;
         this.transaction = transaction;
         this.mapper = mapper;
         this.clock = clock;
-        this.baseUrl = properties.baseUrl();
-        this.timeout = properties.timeout();
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(CONNECT_TIMEOUT)
-                .build();
+        this.engine = engine;
         this.executor = Executors.newVirtualThreadPerTaskExecutor();
     }
 
@@ -103,10 +90,9 @@ public class TbmReportService implements DisposableBean {
         return count;
     }
 
-    /** 시험에서 가짜 Risk Engine 주소·타임아웃을 바꿀 때 쓴다. */
+    /** 시험에서 가짜 Risk Engine 주소·타임아웃을 바꿀 때 쓴다(일일 일지와 같은 호출부를 쓴다). */
     public void configureRiskEngine(String baseUrl, Duration timeout) {
-        this.baseUrl = baseUrl.strip().replaceAll("/+$", "");
-        this.timeout = timeout;
+        engine.configure(baseUrl, timeout);
     }
 
     public ObjectNode start(TbmReportRequest request) {
@@ -137,7 +123,7 @@ public class TbmReportService implements DisposableBean {
             String model = "deterministic";
             boolean fallback = true;
             try {
-                JsonNode response = postJson("/v1/report/wrap-up", request);
+                JsonNode response = engine.postJson("/v1/report/wrap-up", request);
                 if (!response.path("text").isString() || response.path("text").asString().isBlank()
                         || !response.path("fallback").isBoolean()) {
                     throw new IllegalArgumentException("Invalid wrap-up response");
@@ -186,7 +172,7 @@ public class TbmReportService implements DisposableBean {
 
             JsonNode planRes;
             try {
-                planRes = postJson("/v1/plan/evaluate", planReq);
+                planRes = engine.postJson("/v1/plan/evaluate", planReq);
             } catch (HttpTimeoutException e) {
                 fail(start.reportId(), "ENGINE_TIMEOUT", activeRules.representativeRuleVersion(), riskItems, zoneHistory);
                 return;
@@ -215,7 +201,7 @@ public class TbmReportService implements DisposableBean {
 
             JsonNode genRes;
             try {
-                genRes = postJson("/v1/report/generate", generateReq);
+                genRes = engine.postJson("/v1/report/generate", generateReq);
             } catch (HttpTimeoutException e) {
                 fail(start.reportId(), "ENGINE_TIMEOUT", activeRules.representativeRuleVersion(), riskItems, zoneHistory);
                 return;
@@ -481,7 +467,8 @@ public class TbmReportService implements DisposableBean {
         return out;
     }
 
-    private static void addSplitBasis(Set<String> target, String raw) {
+    /** rule_version.legal_basis 의 ";" 로 나뉜 조문들을 더한다(일일 일지도 쓴다). */
+    static void addSplitBasis(Set<String> target, String raw) {
         if (raw == null || raw.isBlank()) {
             return;
         }
@@ -518,33 +505,6 @@ public class TbmReportService implements DisposableBean {
         return s.isEmpty() ? null : s;
     }
 
-    private JsonNode postJson(String path, ObjectNode body) throws HttpTimeoutException, EngineCallException {
-        HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(baseUrl + path))
-                .timeout(timeout)
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
-                .build();
-        try {
-            HttpResponse<String> res = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
-            if (res.statusCode() < 200 || res.statusCode() >= 300) {
-                throw new EngineCallException("HTTP " + res.statusCode());
-            }
-            JsonNode parsed = mapper.readTree(res.body());
-            if (parsed == null || !parsed.isObject()) {
-                throw new EngineCallException("Non-object JSON response");
-            }
-            return parsed;
-        } catch (HttpTimeoutException e) {
-            throw e;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new EngineCallException("Interrupted", e);
-        } catch (IOException | RuntimeException e) {
-            throw new EngineCallException("Engine request failed", e);
-        }
-    }
-
     @Override
     public void destroy() {
         executor.shutdown();
@@ -552,16 +512,6 @@ public class TbmReportService implements DisposableBean {
             executor.awaitTermination(5, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-        }
-    }
-
-    private static final class EngineCallException extends Exception {
-        EngineCallException(String message) {
-            super(message);
-        }
-
-        EngineCallException(String message, Throwable cause) {
-            super(message, cause);
         }
     }
 }
