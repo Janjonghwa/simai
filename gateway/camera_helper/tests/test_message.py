@@ -52,9 +52,26 @@ class MessageTests(unittest.TestCase):
                                                           "centroid_a", "centroid_b")))
 
     def test_stale_boundary(self):
-        self.assertEqual(CameraFrame("cam_A", NOW - 2000).status(NOW), "OK")
-        self.assertEqual(CameraFrame("cam_A", NOW - 2001).status(NOW), "STALE")
+        self.assertEqual(CameraFrame("cam_A", NOW - 5000).status(NOW), "OK")
+        self.assertEqual(CameraFrame("cam_A", NOW - 5001).status(NOW), "STALE")
         self.assertEqual(CameraFrame("cam_A", NOW, False).status(NOW), "NO_VIDEO")
+
+    def test_lobby_keyframe_ages_remain_usable(self):
+        cameras = [CameraFrame(cid, NOW - age) for cid, age in zip(CAMERAS, (400, 1400, 2800, 4200))]
+        self.message(cameras)  # Existing two-round grade hysteresis.
+        message = self.message(cameras)
+        self.assertTrue(all(c["status"] == "OK" for c in message["cameras"]))
+        self.assertTrue(all(p["grade"] != "UNKNOWN" for p in message["pairs"]))
+
+    def test_configured_stale_boundary_masks_pairs_and_skew(self):
+        cameras = [CameraFrame(cid, NOW - age) for cid, age in zip(CAMERAS, (0, 6000, 6001, 7000))]
+        message = build_message("gw-lobby", NOW, cameras, pairs(), self.judge, stale_ms=6000)
+        self.assertEqual([c["status"] for c in message["cameras"]], ["OK", "OK", "STALE", "STALE"])
+        self.assertEqual(message["capture_skew_ms"], 6000)
+        for pair in message["pairs"]:
+            if "cam_C" in (pair["a"], pair["b"]) or "cam_D" in (pair["a"], pair["b"]):
+                self.assertEqual(pair["grade"], "UNKNOWN")
+                self.assertIsNone(pair["inliers"])
 
     def test_all_missing_has_unknown_skew(self):
         message = self.message([CameraFrame(cid, None) for cid in CAMERAS])
@@ -62,7 +79,7 @@ class MessageTests(unittest.TestCase):
         self.assertEqual(message["connectivity"], "UNKNOWN")
 
     def test_fewer_than_two_usable_timestamps_has_unknown_skew(self):
-        message = self.message([CameraFrame(cid, NOW if cid == "cam_A" else NOW - 3000) for cid in CAMERAS])
+        message = self.message([CameraFrame(cid, NOW if cid == "cam_A" else NOW - 6000) for cid in CAMERAS])
         self.assertIsNone(message["capture_skew_ms"])
 
     def test_camera_coverage_validation(self):
