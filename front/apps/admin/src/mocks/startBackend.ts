@@ -42,7 +42,6 @@ export async function startMockBackend() {
   // GET /api/health 가 STOMP 흉내와 같은 상태를 주도록 실시간 mock 을 먼저 만든다.
   const { handlers: realtimeHandlers, ...realtimeMock } = startRealtimeMock(
     broker,
-    events,
     Date.now,
     zones.config,
   );

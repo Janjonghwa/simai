@@ -1,4 +1,8 @@
-import { RESOLVED_PER_INCIDENT, SEVERITY_RANK } from '@/features/events/constants';
+import {
+  RECENT_RESOLVED_INCIDENTS,
+  RESOLVED_PER_INCIDENT,
+  SEVERITY_RANK,
+} from '@/features/events/constants';
 import {
   byRecent,
   eventTime,
@@ -36,12 +40,20 @@ const bySeverity = (a: EventEntry, b: EventEntry) =>
   SEVERITY_RANK[b.event.severity] - SEVERITY_RANK[a.event.severity] ||
   a.event.rule_id.localeCompare(b.event.rule_id);
 
-/** 같은 대상의 이벤트끼리 모은다. 대상이 없는 이벤트는 각자 한 묶음이다. */
-function groupByTarget(entries: readonly EventEntry[]): Map<string, EventEntry[]> {
+/** 묶음 키: 같은 대상의 이벤트가 한 묶음이고, 대상이 없는 이벤트는 각자 한 묶음이다. */
+const targetKey = (event: EventItem): string => {
+  const target = incidentTarget(event);
+  return target ? `${target.type}:${target.id}` : `event:${event.event_id}`;
+};
+
+/** 같은 키의 이벤트끼리 모은다. */
+function groupBy(
+  entries: readonly EventEntry[],
+  keyOf: (event: EventItem) => string,
+): Map<string, EventEntry[]> {
   const groups = new Map<string, EventEntry[]>();
   for (const entry of entries) {
-    const target = incidentTarget(entry.event);
-    const key = target ? `${target.type}:${target.id}` : `event:${entry.event.event_id}`;
+    const key = keyOf(entry.event);
     const group = groups.get(key);
     if (group) group.push(entry);
     else groups.set(key, [entry]);
@@ -69,13 +81,60 @@ function buildIncident(key: string, group: EventEntry[]): Incident {
 }
 
 export function groupIncidents(entries: readonly EventEntry[]): Incident[] {
-  const incidents = [...groupByTarget(entries)].map(([key, group]) => buildIncident(key, group));
+  const incidents = [...groupBy(entries, targetKey)].map(([key, group]) =>
+    buildIncident(key, group),
+  );
   return incidents.sort(
     (a, b) =>
       Number(b.active) - Number(a.active) ||
       SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] ||
       b.latestAt - a.latestAt,
   );
+}
+
+/** 해소된 이벤트를 묶는 키: 같은 대상·규칙·구역에서 되풀이된 발생이 한 카드가 된다. */
+const resolvedKey = (event: EventItem): string =>
+  `${targetKey(event)}|${event.rule_id}|${event.zone_id ?? ''}`;
+
+/** 이 이벤트가 발생한 횟수: 처음 한 번에, 해소 뒤 곧바로 다시 열린(resume) 횟수를 더한다. */
+const occurrencesOf = (event: EventItem): number => 1 + (event.resume_count ?? 0);
+
+/** 최근 해소 칸의 카드 하나(명세 7.4 의 사람별 묶음과 달리, 해소된 발생만 규칙·구역별로 묶는다). */
+export interface ResolvedGroup {
+  /** 목록 key. 같은 사람의 다른 규칙·구역과 갈린다(incident.key 는 대상만 가리킨다). */
+  id: string;
+  /** 해소된 이벤트만 담은 묶음. 선택·상세는 진행 중 묶음과 같이 대상으로 다룬다. */
+  incident: Incident;
+  /** 같은 대상·규칙·구역에서 발생한 횟수. 새 event_id 로 다시 생긴 것도 센다. */
+  occurrences: number;
+}
+
+/** 해소된 이벤트를 (대상, 규칙, 구역)별로 묶는다. 최근에 해소된 묶음이 앞선다. */
+export function resolvedGroups(entries: readonly EventEntry[]): ResolvedGroup[] {
+  const groups = groupBy(
+    entries.filter((e) => !isActive(e.event)),
+    resolvedKey,
+  );
+  return [...groups]
+    .map(([id, group]) => ({
+      id,
+      incident: buildIncident(targetKey(group[0]!.event), group),
+      occurrences: group.reduce((sum, e) => sum + occurrencesOf(e.event), 0),
+    }))
+    .sort((a, b) => b.incident.latestAt - a.incident.latestAt);
+}
+
+/** 이벤트 패널의 두 칸: 진행 중인 사건 전부와, 최근에 해소된 묶음 몇 건. */
+export interface EventSections {
+  active: Incident[];
+  resolved: ResolvedGroup[];
+}
+
+export function eventSections(entries: readonly EventEntry[]): EventSections {
+  return {
+    active: groupIncidents(entries).filter((i) => i.active),
+    resolved: resolvedGroups(entries).slice(0, RECENT_RESOLVED_INCIDENTS),
+  };
 }
 
 /** 묶음에서 가장 먼저 발생한 시각(카드 머리줄). 발생 시각을 모르면 null. */
@@ -95,9 +154,15 @@ export function firstActiveRaisedAt(incident: Incident): number | null {
   return times.length > 0 ? Math.min(...times) : null;
 }
 
-/** 이 이벤트가 든 묶음. 목록에서 빠졌으면 없다. */
+/** 이 이벤트가 든 묶음. 사람별 묶음에 없는 해소 이벤트는 해소 묶음이다. 목록에서 빠졌으면 없다. */
 export function incidentOf(entries: readonly EventEntry[], eventId: string): Incident | undefined {
-  return groupIncidents(entries).find((i) => i.entries.some((e) => e.event.event_id === eventId));
+  const holds = (i: Incident) => i.entries.some((e) => e.event.event_id === eventId);
+  return (
+    groupIncidents(entries).find(holds) ??
+    resolvedGroups(entries)
+      .map((g) => g.incident)
+      .find(holds)
+  );
 }
 
 /** 카드 머리줄이 보이는 대표 규칙: 묶음에서 가장 높은 등급(진행 중 먼저). */

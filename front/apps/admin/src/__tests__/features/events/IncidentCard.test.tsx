@@ -42,8 +42,6 @@ function item(change: Partial<EventItem> = {}): EventItem {
 
 const entry = (change: Partial<EventItem> = {}): EventEntry => mergeEvent(undefined, item(change));
 
-const names: Record<string, string> = { 'z-04': '개구부', 'z-02': '단상' };
-
 function renderCard(
   entries: EventEntry[],
   props: Partial<React.ComponentProps<typeof IncidentCard>> = {},
@@ -57,7 +55,6 @@ function renderCard(
         <IncidentCard
           incident={incident}
           selected={false}
-          zoneName={(id) => names[id]}
           onSelect={onSelect}
           onOpen={onOpen}
           {...props}
@@ -84,20 +81,22 @@ afterEach(() => {
 });
 
 describe('IncidentCard', () => {
-  it('머리줄은 등급 배지·대표 규칙 이름·미확인 칩이고, 둘째 줄은 대상·구역·경과다', () => {
+  it('첫 줄은 작업자 칩·미확인 칩이고, 둘째 줄은 등급 배지·규칙 이름·구역이며, 오른쪽 아래에 경과다', () => {
     const { card } = renderCard([entry()]);
 
+    // 진행 중 작업자 칩은 등급색으로 채운다.
+    expect(within(card).getByText('w-0015').className).toContain('bg-sev-critical');
     expect(within(card).getByText('위험')).toBeTruthy();
-    expect(within(card).getByText('개구부·가장자리 근접')).toBeTruthy();
+    expect(within(card).getByText('개구부·가장자리 근접 · z-04')).toBeTruthy();
     const chip = card.querySelector('[data-chip]');
     expect(chip?.getAttribute('data-chip')).toBe('unacked');
     expect(chip?.textContent).toBe('미확인');
     expect(chip?.className).toContain('border-sev-critical');
-    expect(within(card).getByText('w-0015 · z-04 개구부')).toBeTruthy();
     expect(within(card).getByText('12초 전')).toBeTruthy();
+    expect(within(card).queryByText(/회 발생/)).toBeNull();
   });
 
-  it('개구부 수치와 나머지 규칙 줄은 카드에 없다(상세에만 있다)', () => {
+  it('개구부 수치와 나머지 규칙·구역은 카드에 없다(상세에만 있다)', () => {
     const { card } = renderCard([
       entry(),
       entry({ event_id: 'e-2', rule_id: 'R1', severity: 'HIGH', zone_id: 'z-02' }),
@@ -105,10 +104,9 @@ describe('IncidentCard', () => {
 
     expect(card.textContent).not.toContain('0.82');
     expect(card.textContent).not.toContain('높이 차');
-    // 대표 규칙(가장 높은 등급)만 이름으로 보이고 나머지 규칙 이름은 없다.
+    // 대표 규칙(가장 높은 등급)과 그 구역만 보이고 나머지 규칙 이름·구역은 없다.
     expect(within(card).queryByText('위험 구역 진입')).toBeNull();
-    // 구역은 첫 구역만 이름까지, 나머지는 번호만.
-    expect(within(card).getByText('w-0015 · z-04 개구부 · z-02')).toBeTruthy();
+    expect(card.textContent).not.toContain('z-02');
     expect(card.querySelectorAll('li')).toHaveLength(0);
   });
 
@@ -131,7 +129,7 @@ describe('IncidentCard', () => {
     const { card } = renderCard([entry({ rule_id: 'R9', severity: 'CAUTION', metrics: {} })]);
 
     expect(within(card).getByText('주의')).toBeTruthy();
-    expect(within(card).getByText('보호구 미착용')).toBeTruthy();
+    expect(within(card).getByText('보호구 미착용 · z-04')).toBeTruthy();
     expect(card.querySelector('[data-chip]')).toBeNull();
   });
 
@@ -154,13 +152,30 @@ describe('IncidentCard', () => {
     );
   });
 
-  it('해소된 묶음은 해소 시각 칩만 있고 경과는 없다', () => {
+  it('해소된 묶음은 해소 시각 칩만 있고 경과는 없으며, 작업자 칩은 테두리만 남는다', () => {
     const { card } = renderCard([
       entry({ lifecycle: 'RESOLVED', resolved_at: T + 5_000, updated_at: T + 5_000 }),
     ]);
 
     expect(card.querySelector('[data-chip]')?.textContent).toMatch(/^해소 \d{2}:\d{2}:\d{2}$/);
     expect(card.textContent).not.toContain('초 전');
+    const worker = within(card).getByText('w-0015').className;
+    expect(worker).toContain('border-sev-critical');
+    expect(worker).not.toContain('bg-sev-critical');
+  });
+
+  it('해소 카드는 두 번 이상 발생했을 때만 N회 발생을 보인다', () => {
+    const resolved = entry({
+      lifecycle: 'RESOLVED',
+      resolved_at: T + 5_000,
+      updated_at: T + 5_000,
+    });
+    const twice = renderCard([resolved], { occurrences: 2 });
+    expect(within(twice.card).getByText('2회 발생')).toBeTruthy();
+    cleanup();
+
+    const once = renderCard([resolved], { occurrences: 1 });
+    expect(within(once.card).queryByText(/회 발생/)).toBeNull();
   });
 
   it('복원 이벤트는 확인 필요와 첫 이유를 꼬리표로 보인다', () => {
