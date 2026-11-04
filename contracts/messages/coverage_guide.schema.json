@@ -167,7 +167,7 @@
         },
         "status": {
           "enum": ["OK", "NO_VIDEO", "STALE"],
-          "description": "OK: 정상, NO_VIDEO: 영상 미수신, STALE: 영상이 2초 넘게 갱신되지 않음"
+          "description": "OK: 정상, NO_VIDEO: 영상 미수신, STALE: computed_at_ms 기준 프레임 나이가 헬퍼의 신선도 설정(SIMAI_CAMERA_HELPER_STALE_MS, 기본 5000 ms)을 초과함"
         },
         "frame_ts_ms": {
           "oneOf": [

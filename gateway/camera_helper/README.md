@@ -34,7 +34,15 @@ SIMAI_CAMERA_HELPER_ALIKED_SHA256=검증된64자리해시
 SIMAI_CAMERA_HELPER_LIGHTGLUE_WEIGHTS=C:/경로/aliked_lightglue_v0-1_arxiv.pth
 SIMAI_CAMERA_HELPER_LIGHTGLUE_SHA256=검증된64자리해시
 SIMAI_CAMERA_HELPER_INTRINSICS=C:/경로/calibration.json
+SIMAI_CAMERA_HELPER_STALE_MS=5000
+SIMAI_CAMERA_HELPER_STALL_SECONDS=30
 ```
+
+프레임 나이가 `SIMAI_CAMERA_HELPER_STALE_MS`를 초과하면 STALE이다(경계값은 OK). 기본 5000 ms는 실측 키프레임 간격 3초와 도착 지연 최대 1.2초에 여유를 둔 값이다. 정수 1000~10000 ms를 허용하며, 잘못된 값은 경고 후 기본값을 쓴다. 신선도 판단 시점은 기존처럼 매칭 시작 시각이다.
+
+매칭 한 번마다 INFO `guide round` 한 줄에 `round_ts_ms`, `match_ms`, 카메라 순서 A/B/C/D의 `frame_age_ms`, 기존 쌍 순서 AB/AC/AD/BC/BD/CD의 `grades`(E/W/L/U), `send=ok|expired|failed`를 남긴다. 수요 종료로 버린 라운드와 매칭 예외는 failed로 기록한다. 토큰·영상·서버 응답 본문은 기록하지 않는다.
+
+활성 수요에서 새 계산 결과 전송이 `SIMAI_CAMERA_HELPER_STALL_SECONDS` 동안 없으면 독립 감시 스레드가 WARNING `guide stalled`를 남긴다(기본 30초, 정수 5~300초, 잘못된 값은 기본값). 원인은 `missing_frames`(없는 카메라 ID), `unchanged_timestamps`, `matching`(시작 후 ms), `posting`(전송 중), `send_failed`이며 첫 모델 적재 중에는 `loading`으로 표시한다. 0.5초마다 확인하되 경고는 설정한 간격마다 최대 한 번이고, 비활성 시간은 제외한다. 전송 성공만 감시 기한을 새로 시작하며 재시작·자동 복구는 하지 않는다.
 
 내부값을 생략하면 DEFAULT 화각 근사를 명시한다. 서버 -447의 기기 토큰 인증 응답(`GET` 수요 조회 또는 `POST /api/devices/coverage-guides` 응답)의 최상위 boolean `active_demand`를 확인한다(`GET`이 404/405이면 유효한 `NO_VIDEO`/`UNKNOWN` `coverage_guide` `1.0.0` 초기 보고로 수요를 확인한다). 수요를 2초마다 확인하고, 활성일 때만 `ws://127.0.0.1:47032`에 소비자 하나를 열어 키프레임만 디코딩한다(권장 설정 `1024 px`·`2048`점, `device="auto"`). 계산 결과만 기기 토큰 HTTPS로 `POST /api/devices/coverage-guides`에 전송하며 응답 오류는 유한 백오프하고 만료된 결과나 수요 종료 후 결과는 버린다. 수요가 사라지면 연결을 닫고 디코딩·계산을 쉰다. 운영 스크립트(`gateway/ops/simai-gateway.ps1`, `gateway/ops/gw.sh`)의 setup/install·preview/run·stop·status·heal 및 `gw.sh logs helper`로 관리한다.
 

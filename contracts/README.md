@@ -1,5 +1,7 @@
 # contracts
 
+S15P31A101-483 설명 정리: `coverage_guide`의 STALE 설명을 헬퍼 신선도 설정(`SIMAI_CAMERA_HELPER_STALE_MS`, 기본 5000 ms)에 맞췄다. 프레임 신선도 초과라는 상태 의미·필드·enum·검증 제약은 그대로이고 운영 임계값만 조정하므로 메시지 1.0.0·계약 묶음 7.11.0을 유지한다. 예시·생성 타입 변경 없음. 명세 §4.3의 2초 표기는 후속 정리 대상이다.
+
 구간 계약의 정본(JSON Schema, draft 2020-12). 명세 12장, 20.4, 21.2 기준. **v7.11.0** — S15P31A101-480(마이너, v7.10.0 -479 선점): I1 `health` 2.2.0 선택 `re_setup`(회전 자동 복구가 '현장 세팅 다시 하기'를 요구한 카메라마다 `camera_id`·사유 `reason`·감지 시각 `detected_at`, 해소되면 빈 배열, 없으면 모름) 추가, I2 `viewer_health` 1.3.0 선택 `re_setup`(Tier 0 연결 중 마지막 health 의 값, 관리자 상단 배너용) 추가. 경보·`system_health` 판정은 바꾸지 않는다. 예시 `health.re_setup`·`viewer_health.re_setup`, 반례 `health.re_setup_missing_reason`·`viewer_health.re_setup_extra_field`.
 
 이전 판 v7.10.0 — S15P31A101-479(마이너, v7.9.0 다음): I5 `site_setup` 1.3.0(`job_callback` 2.10.0 · `job_heartbeat` 2.3.0) progress·result 의 선택 `artifacts.camera_frames`(최대 8, 카메라별 대표 프레임 = `camera_id`·`uri`(s3://, 이 작업·이 대여 경로의 JPEG, 긴 변 1280 px 이하)·`sha256`(16진수)·선택 `size_bytes`·`face_policy`(BLURRED·EXCLUDED, OBSERVED 금지)) 추가. EC2 가 이 참조를 세션 귀속으로 보관하고 `vlm_zone_draft` 1.0.0 입력 `frames[]`(`camera_id`·`frame_uri`·`face_policy`)에 그대로 실어, 초안 워커가 후보별 크롭을 VLM 에 넣게 한다(-474 로 미리보기 맵 주소만 실리고 프레임이 없어 AI 의견이 비던 문제). `vlm_zone_draft` 계약은 바꾸지 않는다. 예시 `job_heartbeat.site_setup_preview_frames`·`job_callback.site_setup`, 반례 `job_heartbeat.site_setup_bad_frame_policy`.

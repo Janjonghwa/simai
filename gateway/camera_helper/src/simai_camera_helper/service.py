@@ -16,8 +16,9 @@ import urllib.request
 from pathlib import Path
 
 from .judge import CAMERAS, PAIRS, CoverageJudge, PairMetrics, Params
-from .message import CameraFrame, build_message
+from .message import DEFAULT_STALE_MS, CameraFrame, build_message
 from .offline import DEFAULT_WEIGHTS
+from .progress import DEFAULT_STALL_SECONDS, Progress, bounded_setting, log_round, watchdog_loop
 
 LOG = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[4]
@@ -307,6 +308,8 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
     token = env.get("SIMAI_DEVICE_TOKEN", "").strip()
     if token:
         LOG.addFilter(RedactFilter(token))
+    stale_ms = bounded_setting(env, "SIMAI_CAMERA_HELPER_STALE_MS", DEFAULT_STALE_MS, 1000, 10_000)
+    stall_seconds = bounded_setting(env, "SIMAI_CAMERA_HELPER_STALL_SECONDS", DEFAULT_STALL_SECONDS, 5, 300)
     source_id = env.get("SIMAI_LAPTOP_ID", "laptop-01").strip() or "laptop-01"
     demand_path = env.get("SIMAI_CAMERA_HELPER_DEMAND_PATH", "").strip() or DEFAULT_DEMAND_PATH
     ws_url = env.get("SIMAI_CAMERA_HELPER_PREVIEW_WS_URL", "").strip() or PREVIEW_WS_URL
@@ -314,6 +317,7 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
     frames = Frames()
     active = threading.Event()
     stop_event = stop if stop is not None else threading.Event()
+    progress = Progress(stall_seconds)
 
     def apply_demand(flag: bool) -> None:
         if flag:
@@ -325,6 +329,7 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
     for target, args in (
         (demand_loop, (client, active, stop_event)),
         (preview_loop, (frames, active, stop_event, ws_url)),
+        (watchdog_loop, (progress, frames, active, stop_event)),
     ):
         threading.Thread(target=target, args=args, daemon=True).start()
 
@@ -341,6 +346,7 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
             if set(snapshot) != set(CAMERAS):
                 continue
             if matcher is None:
+                progress.phase("loading")
                 from .matcher import CameraMatcher, load_intrinsics
 
                 lens_path = env.get("SIMAI_CAMERA_HELPER_INTRINSICS", "").strip()
@@ -353,6 +359,7 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
                 )
                 aliked, lightglue = resolve_weights(env)
                 matcher = CameraMatcher(aliked, lightglue, params, intrinsics, device="auto")
+                progress.phase("waiting")
                 # Refresh snapshot after one-time model loading so frame timestamps are current.
                 snapshot = frames.snapshot()
                 if set(snapshot) != set(CAMERAS):
@@ -364,20 +371,39 @@ def run(env: dict[str, str], *, stop: threading.Event | None = None) -> None:
                 continue
             if not active.is_set():
                 continue
-            round_ts_ms = max( time.time_ns() // 1_000_000, max(timestamps.values()) )
-            pairs = matcher.match({cid: snapshot[cid][1] for cid in CAMERAS})
-            if not active.is_set():
-                continue
-            last_timestamps = timestamps
-            message = build_message(
-                source_id,
-                round_ts_ms,
-                [CameraFrame(cid, timestamps[cid]) for cid in CAMERAS],
-                pairs,
-                judge,
-            )
-            if not retry_post(client, message, active.is_set, sleep=stop_event.wait, on_demand=apply_demand):
-                LOG.warning("guide post failed or expired")
+            round_ts_ms = max(time.time_ns() // 1_000_000, max(timestamps.values()))
+            outcome = "failed"
+            grades = ["UNKNOWN"] * len(PAIRS)
+            progress.phase("matching")
+            match_started = time.monotonic()
+            match_ms = None
+            try:
+                pairs = matcher.match({cid: snapshot[cid][1] for cid in CAMERAS})
+                match_ms = int((time.monotonic() - match_started) * 1000)
+                if not active.is_set():
+                    continue
+                last_timestamps = timestamps
+                message = build_message(
+                    source_id,
+                    round_ts_ms,
+                    [CameraFrame(cid, timestamps[cid]) for cid in CAMERAS],
+                    pairs,
+                    judge,
+                    stale_ms=stale_ms,
+                )
+                grades = [p["grade"] for p in message["pairs"]]
+                progress.phase("posting")
+                sent = retry_post(client, message, active.is_set, sleep=stop_event.wait,
+                                  on_demand=apply_demand)
+                if sent:
+                    outcome = "ok"
+                elif time.time_ns() // 1_000_000 >= message["valid_until_ms"]:
+                    outcome = "expired"
+            finally:
+                if match_ms is None:
+                    match_ms = int((time.monotonic() - match_started) * 1000)
+                progress.finished(outcome)
+                log_round(round_ts_ms, match_ms, timestamps, grades, outcome)
     finally:
         stop_event.set()
 
