@@ -351,7 +351,7 @@ def test_vlm_budget_ends_at_event_deadline_not_lease_plus_timeout(ec2, make_work
     started = time.monotonic()
     assert make_worker({"vlm_rationale": slow}).run_once() is Outcome.ACCEPTED
     assert time.monotonic() - started < 2.0  # 5 s 실행 상한까지 끌지 않는다
-    assert seen[0] is not None and seen[0] <= 0.3
+    assert seen[0] is not None and seen[0] <= 0.3 + 1e-6  # ms→s 부동소수 오차 허용
     job = ec2.jobs[job_id]
     assert job.state == "TIMED_OUT" and "마감" in job.error["message"]
 
