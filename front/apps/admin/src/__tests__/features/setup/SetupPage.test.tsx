@@ -1,6 +1,10 @@
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { requestCameraHeightDefaults } from '@/features/setup/api';
-import { markSetupZonesCommitted, resetSetupFlowStore } from '@/features/setup/setup.store';
+import {
+  markSetupZonesCommitted,
+  resetSetupFlowStore,
+  useSetupFlowStore,
+} from '@/features/setup/setup.store';
 import { SetupPage } from '@/features/setup/SetupPage';
 import { api } from '@/lib/api';
 import { createRulesMock } from '@/mocks/rules';
@@ -63,17 +67,38 @@ beforeEach(() => {
 afterEach(cleanup);
 afterAll(() => server.close());
 
-function renderSetupPage() {
+function renderSetupPage(workUnitId: number | null = 1) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return {
     client,
     ...render(
       <QueryClientProvider client={client}>
-        <SetupPage />
+        <SetupPage workUnitId={workUnitId ?? undefined} />
       </QueryClientProvider>,
     ),
   };
 }
+
+describe('설치 · 보정 작업 연결', () => {
+  it('작업 id 없이 열면 세팅을 시작하지 않고 작업 관리로 돌려보내는 안내를 보인다', () => {
+    renderSetupPage(null);
+    expect(screen.getByTestId('setup-needs-work')).toBeTruthy();
+    expect(screen.queryByLabelText('cam1 높이 (m)')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '작업 관리로 이동' }));
+    expect(navigateMock).toHaveBeenCalledWith({ to: '/work' });
+    expect(setupMock.submittedBodies).toHaveLength(0);
+  });
+
+  it('검색 값의 workUnitId 로 세팅을 시작하고 발행 뒤에는 그 작업의 작업 관리로 돌아간다', async () => {
+    renderSetupPage(5);
+    const cam4 = (await screen.findByLabelText('cam4 높이 (m)')) as HTMLInputElement;
+    fireEvent.change(cam4, { target: { value: '2.35' } });
+    fireEvent.click(screen.getByRole('button', { name: '그대로 진행' }));
+    await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(1));
+    expect(setupMock.submittedBodies[0]).toMatchObject({ work_unit_id: 5 });
+    expect(useSetupFlowStore.getState().workUnitId).toBe(5);
+  });
+});
 
 describe('설치 · 보정 1단계 화면', () => {
   it('보정 단계 아래에 규칙 현황과 실시간 CCTV 4칸을 보인다(관리자가 아닌 역할도)', async () => {
@@ -435,6 +460,6 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     const buttons = screen.getAllByRole('button', { name: '작업 관리(TBM)로 이동' });
     expect(buttons.length).toBeGreaterThan(0);
     fireEvent.click(buttons[0]!);
-    expect(navigateMock).toHaveBeenCalledWith({ to: '/tbm' });
+    expect(navigateMock).toHaveBeenCalledWith({ to: '/work', search: { workUnitId: '1' } });
   }, 20_000);
 });

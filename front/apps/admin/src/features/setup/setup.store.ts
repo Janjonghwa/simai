@@ -10,6 +10,8 @@ import { create } from 'zustand';
 
 interface SetupFlowState {
   activeSessionId: string | null;
+  /** 세팅 화면이 열려 있는 작업(구역 편집 화면의 '작업 관리로 이동'이 그 작업을 고르게 한다). */
+  workUnitId: number | null;
   acceptedDraftIds: string[];
   discardedDraftIds: string[];
   lastAcceptedCandidateId: string | null;
@@ -18,6 +20,7 @@ interface SetupFlowState {
 
 const INITIAL_STATE: SetupFlowState = {
   activeSessionId: null,
+  workUnitId: null,
   acceptedDraftIds: [],
   discardedDraftIds: [],
   lastAcceptedCandidateId: null,
@@ -83,4 +86,9 @@ export function markSetupZonesCommitted() {
 /** 세팅 흐름 스토어를 초기화한다(시험·세션 초기화용). */
 export function resetSetupFlowStore() {
   useSetupFlowStore.setState({ ...INITIAL_STATE });
+}
+
+/** 세팅 중인 작업을 기록한다. */
+export function setSetupWorkUnitId(workUnitId: number | null) {
+  useSetupFlowStore.setState({ workUnitId });
 }

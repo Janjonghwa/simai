@@ -8,8 +8,18 @@ import { useState } from 'react';
 
 function MonitorTbmNavigateButton() {
   const navigate = useNavigate();
+  const workUnitId = useSetupFlowStore((s) => s.workUnitId);
   return (
-    <Button size="sm" variant="secondary" onClick={() => void navigate({ to: '/tbm' })}>
+    <Button
+      size="sm"
+      variant="secondary"
+      onClick={() =>
+        void navigate({
+          to: '/work',
+          search: workUnitId === null ? {} : { workUnitId: String(workUnitId) },
+        })
+      }
+    >
       작업 관리(TBM)로 이동
     </Button>
   );

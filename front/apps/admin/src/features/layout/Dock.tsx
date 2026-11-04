@@ -6,7 +6,7 @@ import { FileText, History, Monitor, Video } from 'lucide-react';
 const ITEMS = [
   { to: '/', label: '실시간 관제', short: '실시간 관제', icon: Monitor },
   { to: '/cctv', label: 'CCTV 관제', short: 'CCTV 관제', icon: Video },
-  { to: '/tbm', label: '레이아웃 · TBM 보고서', short: 'TBM 보고서', icon: FileText },
+  { to: '/work', label: '작업 관리', short: '작업 관리', icon: FileText },
   { to: '/history', label: '히스토리', short: '히스토리', icon: History },
 ] as const;
 
