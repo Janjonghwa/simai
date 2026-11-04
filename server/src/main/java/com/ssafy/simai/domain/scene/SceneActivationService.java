@@ -81,6 +81,24 @@ public class SceneActivationService {
                 """, params);
     }
 
+    /**
+     * 지금 현재 Scene 이 expectedCurrent 일 때만(null 이면 조건 없이) 활성화한다(S15P31A101-467 세팅 Scene 자동 현재화).
+     * 관리자가 그 사이 다른 Scene 을 골랐으면 건드리지 않고 false. 활성화 자체는 {@link #activate} 와 같다(이력 추가, 덮어쓰지 않음).
+     */
+    @Transactional
+    public boolean activateIfCurrent(String siteId, String version, String expectedCurrent, String actor, String reason) {
+        lock();
+        if (expectedCurrent != null) {
+            List<String> current = jdbc.queryForList("SELECT scene_version FROM (" + SceneService.CURRENT_COMMITTED
+                    + ") s WHERE site_id = :site", new MapSqlParameterSource("site", siteId), String.class);
+            if (current.isEmpty() || !expectedCurrent.equals(current.getFirst())) {
+                return false;
+            }
+        }
+        activate(siteId, version, actor, reason);
+        return true;
+    }
+
     /** 기존 API 와 CLI 의 전환을 직렬화한다. 빈 현재 Scene 에서의 동시 확정도 하나씩 처리한다. */
     void lock() {
         jdbc.queryForList("SELECT pg_advisory_xact_lock(hashtext('simai.scene.commit'))", Map.of());
@@ -103,6 +121,16 @@ public class SceneActivationService {
                     requireSize(uri.substring(prefix.length()), asset.has("bytes") ? asset.path("bytes").asLong() : null);
                 }
             }
+        } else if (Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM setup_session_artifact
+                               WHERE kind IN ('PREVIEW_SCENE', 'SCENE') AND version = :v)
+                """, params, Boolean.class))) {
+            // 현장 세팅이 등록한 GLB(S15P31A101-467): 등록 때 알린 크기로 객체가 있는지 다시 본다
+            List<Long> sizes = jdbc.queryForList("""
+                    SELECT size_bytes FROM setup_session_artifact WHERE kind IN ('PREVIEW_SCENE', 'SCENE') AND version = :v
+                    ORDER BY registered_at LIMIT 1
+                    """, params, Long.class);
+            requireSize((String) row.get("gltf_key"), sizes.isEmpty() ? null : sizes.getFirst());
         } else {
             List<Long> sizes = jdbc.queryForList("SELECT size_bytes FROM upload_grant WHERE object_key = :key AND purpose = 'SCENE_GLTF'",
                     params.addValue("key", row.get("gltf_key")), Long.class);

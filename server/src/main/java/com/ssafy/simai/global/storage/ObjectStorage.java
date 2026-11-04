@@ -12,6 +12,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
@@ -23,14 +24,18 @@ import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.awscore.exception.AwsServiceException;
 import software.amazon.awssdk.awscore.presigner.PresignedRequest;
+import software.amazon.awssdk.core.ResponseBytes;
 import software.amazon.awssdk.core.exception.SdkException;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.s3.model.ChecksumMode;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
@@ -154,6 +159,64 @@ public class ObjectStorage implements AutoCloseable {
         }
     }
 
+    /**
+     * 객체 크기와 저장소가 기록한 SHA-256(올릴 때 x-amz-checksum-sha256 을 서명에 묶은 객체만, 16진수)(HEAD). 없으면 빈 값.
+     * 체크섬을 기록하지 않은 저장소·객체는 sha256Hex 가 null 이다(모름). 세팅 결과 GLB 를 Scene 후보로 등록하기 전에 본다(S15P31A101-467).
+     */
+    public Optional<ObjectHead> head(String key) {
+        requireConfigured();
+        try {
+            HeadObjectResponse head = client.headObject(HeadObjectRequest.builder().bucket(properties.bucket()).key(key)
+                    .checksumMode(ChecksumMode.ENABLED).build());
+            String checksum = head.checksumSHA256();
+            String hex = null;
+            // 여러 조각으로 올린 객체의 체크섬은 "값-조각수" 꼴(조각 체크섬의 체크섬)이라 내용 해시와 비교할 수 없다
+            if (checksum != null && !checksum.contains("-")) {
+                try {
+                    hex = HexFormat.of().formatHex(Base64.getDecoder().decode(checksum));
+                } catch (IllegalArgumentException e) {
+                    hex = null;
+                }
+            }
+            return Optional.of(new ObjectHead(head.contentLength(), hex));
+        } catch (AwsServiceException e) {
+            if (e.statusCode() == 404) {
+                return Optional.empty();
+            }
+            log.warn("객체 저장소에서 객체 정보를 읽지 못했다: status={} code={}", e.statusCode(),
+                    e.awsErrorDetails() == null ? null : e.awsErrorDetails().errorCode());
+            throw new BusinessException(ErrorCode.Storage.STORAGE_UNAVAILABLE);
+        } catch (SdkException e) {
+            log.warn("객체 저장소에 닿지 못해 객체 정보를 읽지 못했다: {}", e.getClass().getSimpleName());
+            throw new BusinessException(ErrorCode.Storage.STORAGE_UNAVAILABLE);
+        }
+    }
+
+    /**
+     * 작은 객체(보정 문서 등)의 바이트를 EC2 가 직접 읽는다(S15P31A101-467). 없거나 maxBytes 를 넘으면 빈 값.
+     * 앞 maxBytes+1 바이트만 받아(Range) 큰 객체를 통째로 받지 않는다. 로그에는 키를 남기지 않는다.
+     */
+    public Optional<byte[]> read(String key, int maxBytes) {
+        requireConfigured();
+        try {
+            ResponseBytes<GetObjectResponse> bytes = client.getObjectAsBytes(GetObjectRequest.builder()
+                    .bucket(properties.bucket()).key(key).range("bytes=0-" + maxBytes).build());
+            byte[] content = bytes.asByteArray();
+            return content.length > maxBytes ? Optional.empty() : Optional.of(content);
+        } catch (AwsServiceException e) {
+            // 404 없음, 416 빈 객체(범위 밖)
+            if (e.statusCode() == 404 || e.statusCode() == 416) {
+                return Optional.empty();
+            }
+            log.warn("객체 저장소에서 객체를 읽지 못했다: status={} code={}", e.statusCode(),
+                    e.awsErrorDetails() == null ? null : e.awsErrorDetails().errorCode());
+            throw new BusinessException(ErrorCode.Storage.STORAGE_UNAVAILABLE);
+        } catch (SdkException e) {
+            log.warn("객체 저장소에 닿지 못해 객체를 읽지 못했다: {}", e.getClass().getSimpleName());
+            throw new BusinessException(ErrorCode.Storage.STORAGE_UNAVAILABLE);
+        }
+    }
+
     private void requireConfigured() {
         if (presigner == null) {
             throw new BusinessException(ErrorCode.Storage.STORAGE_NOT_CONFIGURED);
@@ -188,6 +251,10 @@ public class ObjectStorage implements AutoCloseable {
                 client.close();
             }
         }
+    }
+
+    /** HEAD 결과. sha256Hex 는 저장소가 기록한 내용 SHA-256(16진수), 모르면 null */
+    public record ObjectHead(long sizeBytes, String sha256Hex) {
     }
 
     /** url·headers 는 비밀 값처럼 다룬다(로그 금지) */
