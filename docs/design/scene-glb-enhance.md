@@ -93,3 +93,27 @@ bash ai/experiments/object_completion/gpu/run_3dfixer_s12.sh /workspace/s12_3dfi
 ## Pixal3D를 뒤로 미룬 까닭
 - `Pixal3D`(`LookUpJh/Pixal3D`, 물리 제약 아모달 3D 복원)는 논문만 공개된 상태이며 모델 가중치와 추론 코드가 아직 공개되지 않았다(저장소에 Coming Soon 안내만 존재).
 - 따라서 공개 가중치(`HorizonRobotics/3D-Fixer`)와 추론 파이프라인(`ThreeDFixerPipeline`)이 즉시 사용 가능한 `3D-Fixer`를 1순위 GPU 백엔드로 채택하고, `CompletionBackend` 프로토콜을 통해 추후 `Pixal3D` 코드·가중치 공개 시 어댑터만 추가해 교체할 수 있도록 인터페이스를 분리했다.
+
+## S15P31A101-511: 늘어난 면 제거 + 바닥·벽 평면 채우기 (`glb_fill.py`, enhance 1.1.0)
+관련 명세 5.3. 코드: `ai/src/simai_ai/scene/glb_fill.py`(진입 `run_fill`), 연결 `glb_enhance.enhance_glb`·`enhance_file`, 시험 `ai/tests/scene/test_glb_fill.py`, 근거·실측 `ai/experiments/texrecon_opt/REPORT.md`(-505 PoC 를 운영화).
+**범위 결정(Lead 11-05)**: 맵은 평면 사진 투영 + AI 인페인팅 + 물체 AI 3D 로 가고 texrecon 은 뺀다. texrecon 설정 비교·관제 중 부하 제한(B)은 중단했고 `texture_mesh`/`bake` 기본값은 그대로다.
+
+### 하는 일(보정 카메라·사진이 있을 때만, 기본 켬, `SIMAI_GLB_FILL=off` / `options.fill=false` / `EnhanceConfig.fill_enabled`)
+1. 늘어난 면 제거: 보이는 면 중 보이는 모든 카메라에서 |cos(법선, 시선)| < `fill_cos_slant`(0.15)인 면을 지운다(색인만 새로 씀, 정점·텍스처 바이트 불변). 안 보인 면은 지우지 않는다. 긴 변 기준은 기본 끔(`fill_long_edge_m`=0; 단순화된 평평한 큰 면과 구분 안 됨).
+2. 바닥: World Z=0(바닥 중앙값이 ±8 cm 안일 때, 밖이면 중앙값). 영역 = 메시 바닥 칸 닫힘(0.6 m) ∪ (카메라 광선이 가림 없이 Z=0 에 닿는 칸 ∩ 메시 바닥에서 2.5 m 안) → 구멍 메움 → 채택된 벽 평면 안쪽으로 자름. 메시가 이미 있는 칸은 건드리지 않고 구멍에만 5 cm 격자 면.
+3. 벽: 수직 면 순차 RANSAC. 통과 조건(전부): 길이≥1.5 m·넓이≥3 m², 지배 방향 직교(±8°, 방향은 ±2° 안 면의 넓이 가중으로 다듬음), 높이 구간 5/8 이상 점유·높이 1.5 m 이상, 방 경계(바닥이 평면 반대쪽에 8 % 초과면 방 안 구조물 → 기각), 중복 병합. 평면의 u 범위(지지 정점 0.5~99.5 분위)·높이 안의 구멍만 채우고 평면이 없는 방향은 만들지 않는다. 구멍 비율 85 % 초과(지지 부족)면 건너뜀.
+4. 채택 검사·실패: 기존 `run_check`(카메라 MAE) 그대로. 채움 단계의 `EnhanceSkip` 은 채움만 건너뛰고 나머지 보강을 계속, 그 밖의 예외·불채택은 원본 GLB 유지(`enhance_file` 은 파일을 안 바꾼다). 채움이 바닥을 대신하면 옛 바닥 사각형(A)은 `REPLACED_BY_FILL` 로 건너뛴다. 카메라가 없으면 채움 없이 옛 동작(`NO_CAMERAS`).
+
+### 색·출처(규칙 2·7)
+칸 중심(1 cm 텍셀)을 보정 카메라에 투영. 보임 = 영상 안·사람 마스크 밖·|cos|≥0.15·그 점 앞에 메시 없음(깊이 버퍼). `consistent`(기본): 메시가 깊이로 확인되는 시선이 있거나 보이는 카메라 둘 이상이고 색 최대 채널 차이 ≤55 → 사진 색 + 출처 `ESTIMATED_PLANE`(3); 그 밖은 회색(128) `UNOBSERVED`(0). `strict`(확인된 시선만), `lenient`(하나만 보여도, 가구 번짐 위험)은 `fill_color_mode`. 색을 지어내거나 번지게 하지 않는다. 시각용(`safety_use:false`), 위험 판정·`observed_surface_ratio`·SURFACE_SOURCE_MAP 에 쓰지 않는다. 축 변환은 `to_glb_points` 한 곳.
+GLB: 채움 노드 `estimated_{floor|wall_k}_fill`(텍스처 재질, doubleSided) + extras.simai(`surface_source`, `source_map_image`, `texel_ratios`). `extras.simai.enhanced.fill` 에 단계·삭제 면·비율. report/`bake.json enhance` 에 `fill_ratio`(ESTIMATED_PLANE/UNOBSERVED 면적 비율), `fill_area_m2`, `fill_share_of_surface`, `stretched_removed_*`, `triangles_delta`(assets.triangle_count 보정).
+
+### 다음 티켓(AI 인페인팅) 인터페이스: 평면별 이미지 사이드카
+`enhance_file` 이 GLB 옆 `<이름>_fill/` 에 저장(`bake.json auxiliary` 에도 등록): 평면마다 `<role>_albedo.png`(사진 투영 + 회색 자리표시, RGB), `<role>_inpaint_mask.png`(255 = 채울 곳: 채움 칸 안이면서 사진 근거 없음, 0 = 건드리지 말 것), `<role>_surface_source.png`(0/3), 그리고 `fill_atlas.json`(`format simai.fill_atlas`). role = `floor`, `wall_<k>`. 한 변 4096 px 상한, 텍셀 ≈ 1 cm(상한 넘으면 굵어짐).
+- 텍셀 (px, py) → World: `origin + (px+0.5)·texel_m·u_axis + (py+0.5)·texel_m·v_axis`(`frame`: origin, u_axis, v_axis, texel_m, size_px; World m, +Z 상방). 행 0 = 위(glTF UV 원점 왼쪽 위). 바닥 u=+X, v=+Y; 벽 u=수평 접선, v=+Z.
+- 인페인팅은 mask 밖 픽셀을 바꾸면 안 된다(관측 보존). 채운 결과는 출처를 `GENERATED`(4, 값 자리만 예약)로 구분해야 하고 이 단계는 그 값을 내지 않는다. GLB 에 되돌려 쓰는 것은 다음 티켓이 정한다(여기선 GLB 의 알베도 이미지를 사이드카와 같은 UV 로 교체하면 된다).
+
+### 정한 수치와 근거
+cos 0.15(-505 + 스윕: 0.25 는 먼 바닥이 지워짐, 0.15 는 0.6 %), 닫힘 0.6 m·벽 허용 6 cm·직교 8°(-505 한 방 값), 광선 도달 2.5 m(명세에 없어 정함: -505 에서 닫힘 밖 가장자리가 남던 문제를 벽 클립과 함께 풀기 위한 값, 눈 확인 필요), 색 일치 55/255(카메라 노출 이득 ±20 % 흡수), 가시성 렌더 긴 변 1152(4대 9 s). 버린 대안: 긴 변 기준 기본 삭제(평평한 큰 면 오삭제), lenient 기본(가구 번짐), 벽 범위 ±10 cm 여유(끝에 가짜 띠).
+### 잔여 위험·넘긴 일
+벽 없는 방향의 바닥 과대, 개구부(문·유리창) 메움, Z=0 대 메시 바닥 계단, 카메라가 적으면 늘어난 면 오삭제(한 대 빼기 22~25 %), 인페인팅 결과 되돌려 쓰기와 `GENERATED` 출처는 다음 티켓.
