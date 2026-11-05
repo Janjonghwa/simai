@@ -7,18 +7,27 @@ import { ZoneActions } from '@/features/zones/ZoneActions';
 import { ZoneAttributesCard } from '@/features/zones/ZoneAttributesCard';
 import { NOTE_CLASS, PANEL_CLASS, WARNING_CLASS } from '@/features/zones/zonePanelStyle';
 import { ZoneSelect } from '@/features/zones/ZoneSelect';
+import type { ReactNode } from 'react';
 
 /** 직사각형이 아니거나 높이가 없거나 바닥 판정이라 3D 손잡이로 고칠 수 없는 구역을 골랐을 때 알림. */
 const SHAPE_LOCKED_TEXT =
   '직사각형이 아니거나 높이가 없거나 바닥 판정인 구역은 형상을 고칠 수 없습니다.';
 
+interface ZonesPageProps {
+  /** 구역 고르기 줄 오른쪽에 붙는 버튼. */
+  headerAction?: ReactNode;
+  /** 저장·추가가 발행까지 끝났을 때 부른다. */
+  onCommitted?: () => void;
+}
+
 /**
  * 구역 편집 도구(명세 FR-15·FR-16): 3D 위 왼쪽 패널. 관리자가 아니면 아무것도 그리지 않는다(실시간 관제의 편집 모드는
- * 관리자에게만 열리지만 세팅 화면은 역할을 확인하지 않아 여기서 막는다).
+ * 관리자에게만 열리지만 세팅 화면은 역할을 확인하지 않아 여기서 막는다). 관제는 편집 끝내기 버튼(headerAction)과 저장 뒤
+ * 편집 모드를 끝내는 함수(onCommitted)를 넘기고, 세팅 화면은 아무것도 넘기지 않는다.
  */
-export function ZonesPage() {
+export function ZonesPage(props: ZonesPageProps) {
   const isAdmin = useCurrentRole() === 'ADMIN';
-  return isAdmin ? <ZoneEditPanel /> : null;
+  return isAdmin ? <ZoneEditPanel {...props} /> : null;
 }
 
 /**
@@ -26,15 +35,18 @@ export function ZonesPage() {
  * 작업면)의 상자를 고친다. 저장하면 구역·작업면·현장 판정 발행을 요청 하나로 보낸다. 3D 에서 화면에서 닿을 수 없는 작업면을
  * 누르면 구역 대신 그 작업면을 삭제하는 카드를 보인다.
  */
-function ZoneEditPanel() {
-  const edit = useZoneEditing();
+function ZoneEditPanel({ headerAction, onCommitted }: ZonesPageProps) {
+  const edit = useZoneEditing(onCommitted);
   // 작업면 카드가 구역 양식을 가린 동안에는 가려진 구역의 형상 경고를 띄우지 않는다.
   const shapeLocked = edit.orphan === null && edit.shapeLocked;
   const warning = edit.notice ?? (shapeLocked ? SHAPE_LOCKED_TEXT : null);
 
   return (
     <section aria-label="구역 편집 도구" className={PANEL_CLASS}>
-      <ZoneSelect edit={edit} />
+      <div className="flex items-center gap-2">
+        <ZoneSelect edit={edit} />
+        {headerAction}
+      </div>
 
       {edit.zonesFailed && (
         <p role="alert" className={NOTE_CLASS}>

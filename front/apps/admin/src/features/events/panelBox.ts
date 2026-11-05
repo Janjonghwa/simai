@@ -1,7 +1,7 @@
 import { clamp, FLOAT_MARGIN, type FloatBounds, type FloatBox } from '@/lib/floatSpot';
 
 // 떠 있는 이벤트 패널을 끌어 옮기고 크기를 바꾸는 계산(관제 데모와 같다). 화면 컴포넌트 없이 시험한다.
-// 패널 자리와 부모 크기는 도구 모음·2D 지도와 같은 타입(FloatBox·FloatBounds)이고, 가장자리 틈도 같이 쓴다.
+// 패널 자리와 부모 크기는 CCTV 창과 같은 타입(FloatBox·FloatBounds)이고, 가장자리 틈도 같이 쓴다.
 
 export const PANEL_MIN_WIDTH = 280;
 export const PANEL_MAX_WIDTH = 720;

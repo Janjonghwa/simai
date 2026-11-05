@@ -1,6 +1,5 @@
 import type { WatchBinding } from '@/features/watch/api';
 import {
-  channelOf,
   linkKeyOf,
   watchBadges,
   watchesOfLinkKey,
@@ -45,15 +44,11 @@ describe('워치 상태(-342)', () => {
       ]),
       [binding('watch-01', 'w-17'), binding('watch-09', 'w-3', 'LOST')],
     );
-    expect(rows.map((r) => [r.deviceId, r.connected, r.worldId, r.batteryPct])).toEqual([
-      ['watch-01', true, 'w-17', 80],
-      ['watch-02', false, null, null],
-      ['watch-09', false, 'w-3', null],
+    expect(rows.map((r) => [r.deviceId, r.connected, r.worldId])).toEqual([
+      ['watch-01', true, 'w-17'],
+      ['watch-02', false, null],
+      ['watch-09', false, 'w-3'],
     ]);
-    expect(channelOf(rows[0])).toBe('BOUND');
-    expect(channelOf(rows[1])).toBe('UNBOUND');
-    expect(channelOf(rows[2])).toBe('LOST');
-    expect(channelOf(undefined)).toBe('UNBOUND');
   });
 
   it('연결 문자열은 배터리·시각이 바뀌어도 같고 되돌려 이름표를 만들 수 있다', () => {

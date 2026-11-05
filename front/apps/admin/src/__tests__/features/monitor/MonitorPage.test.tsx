@@ -121,6 +121,14 @@ describe('MonitorPage 3D·2D 전환', () => {
     expect(screen.queryByRole('dialog', { name: '2D 평면' })).toBeNull();
   });
 
+  it('왼쪽에는 도구 아이콘 줄과 2D 미니맵이 있고 워치 패널은 없다', async () => {
+    renderPage();
+    await screen.findByTestId('viewer3d');
+    expect(screen.getByRole('group', { name: '도구' })).toBeTruthy();
+    expect(screen.getByTestId('plan-minimap')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: '워치' })).toBeNull();
+  });
+
   it('시점 초기화는 3D 에 처음 시점을 요청하고 2D 로 덮지 않는다', async () => {
     renderPage();
     await screen.findByTestId('viewer3d');

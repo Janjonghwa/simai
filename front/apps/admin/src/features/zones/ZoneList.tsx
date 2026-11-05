@@ -10,6 +10,8 @@ import { zonesForList } from '@/features/zones/zoneListOrder';
 import { ZoneListRow } from '@/features/zones/ZoneListRow';
 import { NOTE_CLASS, WARNING_CLASS } from '@/features/zones/zonePanelStyle';
 import { startZoneEdit } from '@/store/zoneEditMode.store';
+import { Button } from '@simai/ui/components/button';
+import { Plus } from 'lucide-react';
 import { useMemo } from 'react';
 
 /**
@@ -43,10 +45,24 @@ function ZoneListPanel({ viewport }: { viewport: SpatialViewportValue }) {
     }
   };
 
-  if (rows.length === 0 && !zonesFailed) return null;
+  // 구역이 하나도 없어도 관리자는 여기서 편집 모드에 들어가 첫 구역을 만든다(도구 모음에는 편집 버튼이 없다).
+  // 방금 만들거나 고른 구역이 선택돼 있으면 편집 패널이 그 구역으로 열리므로, 선택을 풀어 새 구역 양식으로 연다.
+  const openNew = () => {
+    clearSelection();
+    startZoneEdit();
+  };
+
+  if (rows.length === 0 && !zonesFailed && !isAdmin) return null;
   return (
     <section aria-label="위험 구역" className={SIDE_PANEL_CLASS}>
-      <h2 className={SIDE_PANEL_TITLE_CLASS}>위험 구역</h2>
+      <div className="flex items-center justify-between">
+        <h2 className={SIDE_PANEL_TITLE_CLASS}>위험 구역</h2>
+        {isAdmin && (
+          <Button variant="ghost" size="icon-sm" aria-label="새 구역 추가" onClick={openNew}>
+            <Plus />
+          </Button>
+        )}
+      </div>
 
       {zonesFailed && (
         <p role="alert" className={NOTE_CLASS}>

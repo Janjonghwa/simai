@@ -8,6 +8,7 @@ import {
   setMockSceneRegenerateView,
 } from '@/mocks/scenes';
 import { useSessionStore } from '@/store/session.store';
+import { startZoneEdit, stopZoneEdit } from '@/store/zoneEditMode.store';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
@@ -77,6 +78,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  stopZoneEdit();
   clients.splice(0).forEach((client) => client.clear());
   server.resetHandlers();
   resetMockSceneState();
@@ -114,11 +116,11 @@ describe('실시간 모니터링 화면의 맵 재생성 관리자 도구 (S15P3
     expect(screen.queryByLabelText('맵 재생성')).toBeNull();
   });
 
-  it('도구 모음을 접으면 맵 재생성 버튼도 함께 접히지만 떼지는 않는다', async () => {
+  it('구역 편집 중에는 맵 재생성 버튼을 숨기지만 떼지는 않는다', async () => {
     renderMonitorHost();
     await screen.findByTestId('viewer3d');
     expect(screen.getByRole('button', { name: '맵 재생성' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '도구 접기' }));
+    act(() => startZoneEdit());
     expect(screen.queryByRole('button', { name: '맵 재생성' })).toBeNull();
     expect(screen.getByLabelText('맵 재생성').hidden).toBe(true);
   });
@@ -175,15 +177,15 @@ describe('실시간 모니터링 화면의 맵 재생성 관리자 도구 (S15P3
       );
     });
 
-    it('도구 모음을 접어 둔 동안에도 계속 받는다', async () => {
+    it('구역 편집으로 버튼을 숨겨 둔 동안에도 계속 받는다', async () => {
       renderMonitorHost();
       await waitFor(() => expect(viewer.props?.scene?.ok).toBe(true));
 
-      fireEvent.click(await screen.findByRole('button', { name: '도구 접기' }));
+      act(() => startZoneEdit());
       expect(screen.queryByRole('button', { name: '맵 재생성' })).toBeNull();
       await pollUntil(2);
 
-      fireEvent.click(screen.getByRole('button', { name: '도구 펼치기' }));
+      act(() => stopZoneEdit());
       openTool();
       await waitFor(() =>
         expect(screen.getByTestId('scene-regenerate-status').textContent).toContain(

@@ -1,13 +1,10 @@
-import { Focus, Loader2, RefreshCw, RotateCcw, SquarePen, Wrench, X } from 'lucide-react';
+import { Focus, Loader2, RefreshCw, RotateCcw, Video } from 'lucide-react';
 
 /** 관제 화면 도구 모음의 아이콘. 아이콘을 바꿀 때는 이 파일만 고친다. */
 export const TOOL_ICON = {
-  tool: Wrench,
   resetView: Focus,
   retry3d: RotateCcw,
-  zoneEdit: SquarePen,
-  /** 편집 모드가 켜져 있을 때의 편집 버튼: 누르면 끈다. */
-  zoneEditOff: X,
+  cctv: Video,
   regenerate: RefreshCw,
   busy: Loader2,
 } as const;
