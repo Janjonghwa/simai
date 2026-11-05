@@ -19,6 +19,9 @@ vi.mock('@/features/events/useLiveEvents', () => ({
 vi.mock('@/features/zones/useZones', () => ({
   useZones: () => ({ zones: [], raw: ZONES_RAW, failed: false }),
 }));
+vi.mock('@/features/cctv/useCctvPreview', () => ({
+  useCctvPreview: () => ({ attach: vi.fn(), resume: vi.fn() }),
+}));
 const api = vi.hoisted(() =>
   vi.fn<(path: string) => Promise<never>>(() => Promise.reject(new Error('no api in test'))),
 );
@@ -108,6 +111,22 @@ afterEach(() => {
 });
 
 describe('틀의 작업면 연결', () => {
+  it('도구로 CCTV 창을 열고 닫으며 편집 중에는 숨긴다', async () => {
+    useSessionStore.setState({
+      session: { accessToken: 't', user: { id: 'admin', role: 'ADMIN' } },
+    });
+    renderHost();
+    await screen.findByTestId('viewer3d');
+    act(() => screen.getByRole('button', { name: 'CCTV 창' }).click());
+    expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
+    act(() => startZoneEdit());
+    expect(screen.queryByLabelText('떠 있는 CCTV')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'CCTV 창' })).toBeNull();
+    act(() => stopZoneEdit());
+    expect(screen.getByLabelText('떠 있는 CCTV')).toBeTruthy();
+    act(() => screen.getByRole('button', { name: 'CCTV 창' }).click());
+    expect(screen.queryByLabelText('떠 있는 CCTV')).toBeNull();
+  });
   it('3D 에 앱의 인증된 아바타 fetch 를 넘긴다', async () => {
     renderHost();
     await screen.findByTestId('viewer3d');

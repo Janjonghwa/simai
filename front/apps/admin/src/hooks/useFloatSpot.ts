@@ -40,8 +40,10 @@ export function useFloatSpot(
   target: RefObject<HTMLElement | null>,
   anchor: FloatAnchor,
   margin: FloatMargin,
+  initialSpot: FloatSpot | null = null,
+  onSpotChange?: (spot: FloatSpot) => void,
 ) {
-  const [spot, setSpot] = useState<FloatSpot | null>(null);
+  const [spot, setSpot] = useState<FloatSpot | null>(initialSpot);
   const [dragging, setDragging] = useState(false);
   const press = useRef<Press | null>(null);
   const drag = useRef<Drag | null>(null);
@@ -82,6 +84,9 @@ export function useFloatSpot(
   }, [target, margin, anchor]);
 
   const placed = spot !== null;
+  useEffect(() => {
+    if (spot) onSpotChange?.(spot);
+  }, [spot, onSpotChange]);
   useEffect(() => {
     if (!placed) return undefined;
     window.addEventListener('resize', refit);
