@@ -94,6 +94,7 @@ def _write_clean_bg_bundle(
     frame_source: str = "LIVE",
     complete: bool = True,
     pod_style_status_path: bool = False,
+    cameras_order: tuple[str, ...] | None = None,
 ) -> tuple[Path, Path, dict[str, bytes]]:
     """`-363` `BackgroundCleanBackground` 출력 구조와 똑같은 묶음 디렉터리를 만든다."""
     cal_ver = cal["calibration_version"]
@@ -139,7 +140,7 @@ def _write_clean_bg_bundle(
         "complete": complete,
         "input_provenance": input_prov,
         "camera_generations": camera_generations,
-        "cameras": cameras_meta,
+        "cameras": {cid: cameras_meta[cid] for cid in (cameras_order or tuple(camera_Ids))},
     }
     (bundle_dir / "clean_backgrounds.json").write_text(json.dumps(meta_doc, indent=2), encoding="utf-8")
     if complete:
@@ -1152,3 +1153,19 @@ def test_refine_bundle_backgrounds_and_job_input_quality(tmp_path: Path) -> None
         },
     }
     assert schema_errors(submit_envelope, "static_reconstruct_submit") == []
+
+
+def test_bundle_camera_order_and_invalid_complete(tmp_path):
+    from simai_ai.scene.clean_bg_job import CleanBgJobError, prepare_from_bundle
+
+    cal = _make_calibration_doc()
+    _, bundle, _ = _write_clean_bg_bundle(tmp_path, cal, cameras_order=("cam-2", "cam-1", "cam-4", "cam-3"))
+    prepared = prepare_from_bundle(bundle, cal)
+    assert [image.camera_id for image in prepared.images] == ["cam-1", "cam-2", "cam-3", "cam-4"]
+    complete_path = bundle / "COMPLETE"
+    complete = json.loads(complete_path.read_text(encoding="utf-8"))
+    for ids in (["cam-1", "cam-1", "cam-3", "cam-4"], ["cam-1", "cam-2", "cam-3", "other"], [[], "cam-2"]):
+        complete["camera_ids"] = ids
+        complete_path.write_text(json.dumps(complete), encoding="utf-8")
+        with pytest.raises(CleanBgJobError, match="camera_ids"):
+            prepare_from_bundle(bundle, cal)

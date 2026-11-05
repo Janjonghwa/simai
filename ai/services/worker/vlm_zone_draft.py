@@ -183,14 +183,7 @@ class VlmZoneDraftHandler:
                 return self._client_factory()
             settings = VlmSettings.from_env(self._env)
             if remaining_s is not None and remaining_s > 0:
-                settings = VlmSettings(
-                    base_url=settings.base_url,
-                    model=settings.model,
-                    timeout_s=min(settings.timeout_s, remaining_s),
-                    max_tokens=settings.max_tokens,
-                    temperature=settings.temperature,
-                    api_key=settings.api_key,
-                )
+                settings = replace(settings, timeout_s=min(settings.timeout_s, remaining_s))
             return self._client_factory(settings)
         except (VlmError, ValueError, TypeError) as e:
             log.warning("VLM 클라이언트를 열지 못해 기하 후보만 반환한다: %s", e)

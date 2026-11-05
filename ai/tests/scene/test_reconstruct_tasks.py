@@ -427,3 +427,25 @@ def test_regenerate_quality_fields_maps_camera_key_to_scene_quality_name():
     assert out == {"previous_fill_ratio": 0.1, "unrevealed_ratio": 0.0,
                    "camera_background_quality": {"cam1": {"previous_fill_ratio": 0.2, "unrevealed_ratio": 0.0}}}
     assert regenerate_quality_fields({}) == {}
+
+
+def test_alignment_failure_reports_camera_residuals_and_scale(tmp_path, caplog):
+    synthetic(tmp_path)
+    cameras = read_json(tmp_path / "mapanything" / "cameras.json")
+    cameras["views"][1]["cam2world"][1][3] = 5.0
+    write_json(tmp_path / "mapanything" / "cameras.json", cameras)
+    with pytest.raises(ReconstructionError) as err:
+        tasks.align_to_calibration(tmp_path)
+    message = str(err.value)
+    assert all(part in message for part in ("scale=", "cam_A: center=", "cam_B: center=", "rotation="))
+    assert message in caplog.text
+
+
+def test_texrecon_timing_records_stages_and_total():
+    from simai_ai.scene.texture_mesh import record_texrecon_times
+    times = {}
+    seconds = {"label": 1.2345, "texture": 2.3456}
+    record_texrecon_times(times, "area", seconds)
+    assert times["texrecon_area_s"] == 3.58
+    assert times["texrecon_area_label_s"] == seconds["label"]
+    assert times["texrecon_area_texture_s"] == seconds["texture"]
