@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import sys
+import threading
 from dataclasses import replace
 from pathlib import Path
 from contextlib import nullcontext
@@ -19,8 +20,6 @@ from simai_ai.gpu.admission import DEFAULT_LAG_BUDGET_MS, AdmissionGate, Admissi
 from simai_ai.hmr.rig import bake_person_rig_from_model_params
 from simai_ai.hmr.stream import (
     DEFAULT_MAX_AGE_MS,
-    HMR_STREAM_SLACK_MS,
-    TIER0_LAG_BUDGET_MS,
     AvatarLoop,
 )
 from simai_ai.hmr.runtime import FastBodyModel
@@ -60,7 +59,8 @@ def snapshot(t=T0, revision=0, uncertain=False):
                         "image_size": list(c.image_size), "distortion": {"model": c.distortion_model, "coeffs": list(c.distortion_coeffs)}}
                        for cid, c in rig.cameras.items()]}
     refs = {cid: {"frame_ref": {"stream_epoch": 0, "frame_sequence": 1}, "capture_time_ms": t} for cid in rig.cameras}
-    return {"world": doc, "calibration": cal, "frames": refs}, {cid: np.zeros((2, 2, 3), np.uint8) for cid in rig.cameras}
+    return {"world": doc, "calibration": cal, "frames": refs, "produced_at_ms": t}, {
+        cid: np.zeros((2, 2, 3), np.uint8) for cid in rig.cameras}
 
 
 class Model:
@@ -160,6 +160,21 @@ def test_identity_change_freezes_again_and_does_not_inherit_other_id(rig):
     assert len(uploads) == 2 and loop.people["w-1"].version == 1
 
 
+def test_uncertain_frame_preserves_samples_but_revision_clears_them(rig):
+    clock, source, _, _, _, loop, _ = harness(rig, freeze=3)
+    loop.step()
+    state = loop.people["w-1"]
+    assert len(state.samples) == 1
+    clock[0] += 200
+    source.item = snapshot(clock[0], uncertain=True)
+    loop.step()
+    assert len(state.samples) == 1 and state.stable == 0
+    clock[0] += 200
+    source.item = snapshot(clock[0], revision=1, uncertain=True)
+    loop.step()
+    assert state.samples == [] and state.stable == 0
+
+
 def test_stale_frame_and_mismatched_frame_reference_are_not_inferred(rig):
     clock, source, sock, sender, model, loop, _ = harness(rig)
     clock[0] += DEFAULT_MAX_AGE_MS + 1
@@ -178,16 +193,13 @@ def test_stale_frame_and_mismatched_frame_reference_are_not_inferred(rig):
         (-1, False),
         (0, True),
         (500, True),
-        (550, True),
-        (TIER0_LAG_BUDGET_MS, True),
+        (550, False),
         (DEFAULT_MAX_AGE_MS, True),
         (DEFAULT_MAX_AGE_MS + 1, False),
     ],
 )
-def test_freshness_max_age_ms_boundaries_and_tier0_lag_budget_alignment(rig, age_ms, expected_admitted):
-    assert TIER0_LAG_BUDGET_MS == DEFAULT_LAG_BUDGET_MS == 600
-    assert HMR_STREAM_SLACK_MS == 500
-    assert DEFAULT_MAX_AGE_MS == 1100
+def test_freshness_since_tier0_produced_boundaries(rig, age_ms, expected_admitted):
+    assert DEFAULT_MAX_AGE_MS == 500
     clock, source, sock, sender, model, loop, uploads = harness(rig, freeze=1)
     assert loop.max_age_ms == DEFAULT_MAX_AGE_MS
     assert sender.max_age_ms == DEFAULT_MAX_AGE_MS
@@ -203,6 +215,35 @@ def test_freshness_max_age_ms_boundaries_and_tier0_lag_budget_alignment(rig, age
         assert batches[0]["payload"]["poses"][0]["capture_time_ms"] == capture_t
     else:
         assert model.calls == 0 and not uploads and not sock.messages
+
+
+def test_old_capture_fresh_tier0_output_is_sent_with_original_capture_time(rig):
+    clock, source, sock, sender, model, loop, _ = harness(rig, freeze=1)
+    source.item[0]["produced_at_ms"] = clock[0] + 5000
+    clock[0] += 5000
+    loop.step()
+    sender.tick()
+    assert model.calls == 4 and sender.sent_batches_total == 1
+    assert sock.messages[-1]["payload"]["poses"][0]["capture_time_ms"] == T0
+
+
+@pytest.mark.parametrize("produced", [None, True, "now"])
+def test_unknown_production_time_is_rejected(rig, produced):
+    _, source, _, _, model, loop, _ = harness(rig)
+    source.item[0]["produced_at_ms"] = produced
+    loop.step()
+    assert model.calls == 0
+
+
+def test_sender_rejects_pose_when_tier0_output_ages_in_send_queue():
+    clock = [T0]
+    sock = Socket()
+    sender = AvatarSender(lambda: sock, clock_ms=lambda: clock[0], monotonic=lambda: 0)
+    sender.tick()
+    sender.poses([{"world_id": "w-1", "capture_time_ms": T0 - 5000}], produced_at_ms=T0)
+    clock[0] += 501
+    sender.tick()
+    assert sender.sent_batches_total == 0
 
 
 def test_avatar_loop_session10_rules_tolerate_queue_wait_close_on_lag_and_resume_after_10s(tmp_path, rig, caplog):
@@ -289,14 +330,14 @@ def test_avatar_loop_session10_rules_tolerate_queue_wait_close_on_lag_and_resume
 def test_channel_reader_skips_image_loads_on_duplicate_or_stale_snapshots(tmp_path, rig):
     clock, _, sock, sender, model, loop, _ = harness(rig)
     path = tmp_path / "avatar-input.npz"
-    writer = LatestChannelWriter(path)
+    writer = LatestChannelWriter(path, clock_ms=lambda: clock[0])
     reader = LatestChannelReader(path)
     loop.source = reader
     meta, imgs = snapshot(clock[0])
     frames = {cid: Frame(cid, clock[0], "FILE", meta["frames"][cid]["frame_ref"], image=img)
               for cid, img in imgs.items()}
     try:
-        writer._write({"world": meta["world"], "calibration": meta["calibration"]}, frames)
+        writer._write({"world": meta["world"], "calibration": meta["calibration"], "produced_at_ms": clock[0]}, frames)
         loop.step()
         assert model.calls == 4
         # 중복 시각(t == last_t)과 신선도 초과(clock - t > DEFAULT_MAX_AGE_MS)에서는 predicate 가 거짓이라 영상을 읽지 않는다.
@@ -314,7 +355,8 @@ def test_channel_reader_skips_image_loads_on_duplicate_or_stale_snapshots(tmp_pa
         meta2, imgs2 = snapshot(clock[0] - stale)
         frames2 = {cid: Frame(cid, clock[0] - stale, "FILE", meta2["frames"][cid]["frame_ref"], image=img)
                    for cid, img in imgs2.items()}
-        writer._write({"world": meta2["world"], "calibration": meta2["calibration"]}, frames2)
+        writer._write({"world": meta2["world"], "calibration": meta2["calibration"],
+                       "produced_at_ms": clock[0] - stale}, frames2)
         loop.step()
         assert calls[-1] == {} and model.calls == 4
     finally:
@@ -343,24 +385,31 @@ def test_upload_retry_reuses_identical_bytes_for_same_asset_version(rig):
 def test_optional_appearance_is_gate_controlled_and_failure_keeps_confirmed_poses(rig, caplog):
     clock, source, sock, sender, model, loop, uploads = harness(rig, freeze=1)
     calls = []
-    def update(*args):
+    updated = threading.Event()
+    def update(*args, **kwargs):
         calls.append("update")
+        updated.set()
         raise OSError("temporary upload error")
     loop.appearance = SimpleNamespace(retain=lambda *args: calls.append("retain"),
         track=lambda *args: calls.append("track"), register=lambda *args: calls.append("register"),
         update=update, config=SimpleNamespace(face_policy="EXCLUDED"))
-    loop.step()
-    sender.tick()
-    assert calls == ["retain", "track", "register", "update"]
-    assert loop.people["w-1"].asset["face_policy"] == "EXCLUDED"
-    assert any(message["msg_type"] == "avatar_pose_batch" for message in sock.messages)
-    assert "마지막 확정 외형 유지" in caplog.text
-    calls.clear()
-    loop.gate = SimpleNamespace(check=lambda: SimpleNamespace(admit=False))
-    clock[0] += 200
-    source.item = snapshot(clock[0])
-    loop.step()
-    assert not calls
+    try:
+        loop.step()
+        assert updated.wait(1)
+        loop.close()  # 진행 중 예외 처리까지 회수한다.
+        sender.tick()
+        assert calls == ["retain", "track", "register", "update"]
+        assert loop.people["w-1"].asset["face_policy"] == "EXCLUDED"
+        assert any(message["msg_type"] == "avatar_pose_batch" for message in sock.messages)
+        assert "마지막 확정 외형 유지" in caplog.text
+        calls.clear()
+        loop.gate = SimpleNamespace(check=lambda: SimpleNamespace(admit=False))
+        clock[0] += 200
+        source.item = snapshot(clock[0])
+        loop.step()
+        assert not calls
+    finally:
+        loop.close()
 
 
 def test_rollback_reannounces_previous_asset_and_keeps_allocated_version(rig):

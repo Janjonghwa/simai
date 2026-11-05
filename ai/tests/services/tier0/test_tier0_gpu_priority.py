@@ -33,7 +33,7 @@ from test_i1_tls import make_cert  # noqa: E402
 import services.tier0.service as service_mod  # noqa: E402
 from services.tier0.service import Tier0Service, Tier0StartError  # noqa: E402
 from services.tier0.settings import load_settings  # noqa: E402
-from simai_ai.gpu.admission import AdmissionGate, AdmissionPolicy, clean_stop_path  # noqa: E402
+from simai_ai.gpu.admission import AdmissionGate, AdmissionPolicy, AvatarAdmissionGate, clean_stop_path  # noqa: E402
 from simai_ai.gpu.reserve import MB  # noqa: E402
 
 DUMMY = HERE / "dummy_worker.py"
@@ -126,12 +126,18 @@ def test_marker_is_written_before_reservation_and_carries_load_for_gate(tmp_path
         assert ts.wait_until(lambda: (_gp(settings).get("load") or {}).get("samples", 0) > 0, timeout=10)
         gp = _gp(settings)
         assert gp["phase"] == "running"
+        assert gp["processing"]["judge"]["samples"] > 0
+        assert gp["processing"]["judge"]["unknown"] == 0
+        assert gp["processing"]["detect_required"] is False  # SIM 입력은 별도 검출기 없음
         assert gp["reserve"]["state"] == "OK" and gp["reserve"]["reserved_mb"] == pytest.approx(1024)
         assert torch.cached == 1024 * MB
         gate = _gate(settings, lag_budget_ms=5000)
         assert ts.wait_until(lambda: gate.check().admit, timeout=10), gate.check()
         adm = gate.check()
         assert adm.live and adm.allowed_types(["static_reconstruct", "vlm_rationale"]) == ["vlm_rationale"]
+        avatar_gate = AvatarAdmissionGate(settings.live_marker, AdmissionPolicy(resume_after_s=0),
+                                          wall_s=time.time, monotonic=time.monotonic)
+        assert avatar_gate.check().admit
     finally:
         assert service.stop(timeout_s=30)
     assert not settings.live_marker.exists()

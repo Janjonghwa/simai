@@ -8,7 +8,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from simai_ai.gpu.admission import AdmissionGate
+from simai_ai.gpu.admission import AvatarAdmissionGate
 from simai_ai.gpu.budget import WorkerGpuSettings
 from simai_ai.gpu.reserve import FAILED, cap_process_memory
 from simai_ai.hmr.runtime import FastBodyModel
@@ -37,7 +37,7 @@ def main():
         settings = WorkerGpuSettings.from_env(env)
         # I5 hmr_* 차단은 그대로. 이 서비스는 I5 작업을 대여하지 않는다.
         policy = replace(settings.policy, allow_without_marker=False)
-        gate = AdmissionGate(settings.marker, policy, wall_s=time.time, monotonic=time.monotonic)
+        gate = AvatarAdmissionGate(settings.marker, policy, wall_s=time.time, monotonic=time.monotonic)
         # vLLM 몫을 제외한 분석 워커 잔여 예산. 프로세스별 0.70을 중복 허용하지 않는다.
         fraction = float(env.get("SIMAI_AVATAR_GPU_MEMORY_FRACTION") or "0.10")
         if not 0 < fraction <= settings.budget.worker_fraction:
@@ -81,14 +81,19 @@ def main():
             sender.close()
         thread = threading.Thread(target=send_loop, name="avatar-send", daemon=True)
         thread.start()
-        while not stop.is_set():
-            try:
-                loop.step()
-            except Exception as error:
-                logging.warning("아바타 회차 실패: %s; 다음 최신 입력으로 재시도",
-                                exception_summary(error, secrets=(token,)))
-            stop.wait(0.2)
-        thread.join(timeout=2)
+        try:
+            while not stop.is_set():
+                started = time.monotonic()
+                try:
+                    loop.step()
+                except Exception as error:
+                    logging.warning("아바타 회차 실패: %s; 다음 최신 입력으로 재시도",
+                                    exception_summary(error, secrets=(token,)))
+                stop.wait(max(0., .2 - (time.monotonic() - started)))
+        finally:
+            stop.set()
+            loop.close()
+            thread.join(timeout=2)
         return 0
     except Exception as error:
         logging.error("아바타 서비스 시작 실패: %s", exception_summary(error, secrets=(env.get("SIMAI_WORKER_TOKEN", ""),)))

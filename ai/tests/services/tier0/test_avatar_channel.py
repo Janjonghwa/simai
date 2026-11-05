@@ -34,7 +34,8 @@ def test_blocked_disk_keeps_only_latest_and_offer_does_not_wait(tmp_path):
         for t in range(2, 1002):
             writer.offer({"t": t}, {})
         assert time.monotonic() - start < .5
-        assert writer._pending[0] == {"t": 1001}
+        assert writer._pending[0]["t"] == 1001
+        assert isinstance(writer._pending[0]["produced_at_ms"], int)
         assert writer.dropped == 999
         writer._lock.acquire()
         try:
