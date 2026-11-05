@@ -1422,6 +1422,8 @@ class Tier0Service:
             "avatar_share": None if avatar_writer is None else {
                 "dropped": avatar_writer.dropped, "errors": avatar_writer.errors},
             "reid": None if self.reid_collector is None else self.reid_collector.status(),
+            "reid_submission": (self.perception.feed.reid_submission_status()
+                                if isinstance(getattr(self.perception, "feed", None), DetectorFeed) else None),
             # 추적 계측 누계(S15P31A101-413, 판정에 쓰지 않음): 늦은 카메라 시간 비율·보간 탈락·카메라 쌍 거부·World Track 생명주기
             "tracking_diagnostics": (None if getattr(self, "perception", None) is None
                                      else self.perception.diagnostics.summary()),

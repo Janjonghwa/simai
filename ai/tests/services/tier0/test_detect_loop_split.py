@@ -472,6 +472,41 @@ def test_bounded_observation_queue_evicts_oldest_when_judge_is_stalled(sim_scene
         assert cam_seqs == [7, 8, 9]
 
 
+def test_observations_available_while_reid_submission_is_blocked(sim_scene) -> None:
+    """보조 크롭 제출이 멈춰도 이미 검출된 관측은 판정 스레드에서 소비할 수 있다."""
+    _, by_cam = sim_scene
+    cam = next(iter(by_cam))
+    frame = Frame(cam, 1000, "CAMERA_STREAM", {"stream_epoch": 1, "frame_sequence": 0},
+                  image=np.zeros((16, 16, 3), dtype=np.uint8))
+    entered, release = threading.Event(), threading.Event()
+
+    class BlockedCollector:
+        def submit_observation(self, frame, obs):
+            entered.set()
+            assert release.wait(5)
+
+    feed = DetectorFeed(
+        camera_ids=(cam,), tickets=lambda: [frame], detector=_SimIndexDetector(by_cam, 0),
+        tracker=MultiCameraLocalTracker(camera_ids=(cam,), backend_factory=OneTrackBackend),
+        reid_collector=BlockedCollector(), async_mode=True,
+    )
+    worker = threading.Thread(target=feed.detect_once)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        assert len(feed.poll(1000)) == 1
+        # 크롭 제출이 계속 막혀 있어도 다음 검출 호출은 끝나야 한다.
+        next_detect = threading.Thread(target=feed.detect_once)
+        next_detect.start()
+        next_detect.join(2)
+        assert not next_detect.is_alive()
+    finally:
+        release.set()
+        worker.join(5)
+        feed.close()
+    assert not worker.is_alive()
+
+
 def test_settings_parse_and_validate_detect_loop_options(tmp_path, sim_scene) -> None:
     run, _ = sim_scene
     default_settings = _settings(tmp_path, run, anchor_ms=1000)
