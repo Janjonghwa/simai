@@ -7,7 +7,7 @@ BOUND 작업자에게 CRITICAL·HIGH·CAUTION), 7.4·11.4-3(LIVE 만), 12.4(`/to
 
 - 코드: `server/.../domain/watch/` — `WatchAlertService`(보내기·ACK·격상·수동 발송·조회), `WatchBindings`·`WatchBindingController`(임시 수동 배정),
   `WatchAlertController`(수동 알림·조회, -475), `WatchHub.send`·`isConnected`, `WatchAckReceived`
-- 표: V35 `watch_binding`·`watch_alert`, V39 `watch_alert.origin`·`requested_by_user_id`(-475)
+- 표: V35 `watch_binding`·`watch_alert`, V40 `watch_alert.origin`·`requested_by_user_id`(-475)
 - 시험: `server/src/test/.../domain/watch/WatchAlertIntegrationTest.java`
 
 ## 흐름

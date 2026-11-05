@@ -1,4 +1,4 @@
--- simAI V39: 수동 워치 알림 (S15P31A101-475, 확장 부록 C.6, FR-45·46)
+-- simAI V40: 수동 워치 알림 (S15P31A101-475, 확장 부록 C.6, FR-45·46)
 -- 관리자·반장이 POST /api/watch-alerts 로 워치에 직접 보낸 알림(origin MANUAL)도 같은 watch_alert 표에 남긴다.
 -- MANUAL 은 위험 이벤트가 없다: event_id 는 그 알림만의 UUIDv7(계약 watch_alert.event_id 필수), source 는 NULL 이라 복합 FK(MATCH SIMPLE)가
 -- 검사하지 않는다. EVENT 는 전과 같이 source LIVE + risk_event FK. 보낸 사람은 requested_by_user_id(사람 이름은 두지 않는다, 11.4-5).
