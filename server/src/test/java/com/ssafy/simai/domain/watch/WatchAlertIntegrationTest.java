@@ -334,6 +334,134 @@ class WatchAlertIntegrationTest {
                 .isZero();
     }
 
+    // ------------------------------------------------------------------ 수동 알림 API (S15P31A101-475)
+
+    @Test
+    void 수동_알림은_관리자_반장이_보내고_워치가_받아_ACK_가_조회에_보인다() throws Exception {
+        Watch watch = watch(watchId, watchToken);
+        Map<String, Object> body = Map.of("device_id", watchId, "severity", "CRITICAL", "word", " 안전모 ", "direction", "LEFT");
+        assertThat(postAlert(body, jwt("VIEWER")).statusCode()).isEqualTo(403);
+        assertThat(postAlert(body, null).statusCode()).isEqualTo(401);
+
+        HttpResponse<String> sent = postAlert(body, jwt("FOREMAN"));
+        assertThat(sent.statusCode()).as(sent.body()).isEqualTo(200);
+        JsonNode row = mapper.readTree(sent.body());
+        assertThat(row.path("origin").asString()).isEqualTo("MANUAL");
+        assertThat(row.path("word").asString()).as("앞뒤 공백은 지운다").isEqualTo("안전모");
+        assertThat(row.path("world_id").isNull()).as("배정이 없어도 보낸다").isTrue();
+        assertThat(row.path("requested_by_user_id").asLong()).isEqualTo(adminId);
+        assertThat(row.path("ack_within_ms").asInt()).isEqualTo(1_000);
+
+        JsonNode alert = watch.next("watch_alert");
+        assertThat(schemas.violations("messages/watch_alert", alert.toString())).isEmpty();
+        assertThat(alert.path("msg_id").asString()).isEqualTo(row.path("alert_msg_id").asString());
+        assertThat(alert.path("payload").path("event_id").asString()).isEqualTo(row.path("event_id").asString());
+        assertThat(alert.path("payload").path("event_sequence").asInt()).isEqualTo(1);
+        assertThat(alert.path("payload").path("vibration_pattern").asString()).isEqualTo("DANGER_LONG");
+        assertThat(alert.path("payload").path("direction").asString()).isEqualTo("LEFT");
+        assertThat(alert.path("payload").path("word").asString()).isEqualTo("안전모");
+
+        UUID event = UUID.fromString(row.path("event_id").asString());
+        watch.send(ack(watchId, event, alert.path("msg_id").asString(), "VIBRATED"));
+        watch.send(ack(watchId, event, alert.path("msg_id").asString(), "CONFIRMED"));
+        waitUntil(() -> count("SELECT count(*) FROM watch_alert WHERE alert_id = ? AND confirm_received_at IS NOT NULL",
+                row.path("alert_id").asLong()) == 1, 3_000);
+
+        HttpResponse<String> listed = getAlerts("?device_id=" + watchId + "&limit=5", jwt("VIEWER"));
+        assertThat(listed.statusCode()).isEqualTo(200);
+        JsonNode first = mapper.readTree(listed.body()).get(0);
+        assertThat(first.path("alert_id").asLong()).isEqualTo(row.path("alert_id").asLong());
+        assertThat(first.path("acked_at").isNumber()).isTrue();
+        assertThat(first.path("ack_received_at").isNumber()).isTrue();
+        assertThat(first.path("confirmed_at").isNumber()).isTrue();
+        assertThat(first.path("escalated_at").isNull()).isTrue();
+
+        Thread.sleep(1_300);
+        alerts.escalateOverdue();
+        assertThat(jdbc.queryForObject("SELECT escalated_at FROM watch_alert WHERE alert_id = ?", Timestamp.class,
+                row.path("alert_id").asLong())).as("ACK 를 받았으면 격상하지 않는다").isNull();
+    }
+
+    @Test
+    void 수동_알림은_연결_없는_워치와_틀린_값을_거부한다() throws Exception {
+        String token = jwt("ADMIN");
+        Map<String, Object> ok = Map.of("device_id", watchId, "severity", "HIGH", "word", "호출");
+        HttpResponse<String> notConnected = postAlert(ok, token);
+        assertThat(notConnected.statusCode()).as("붙어 있지 않은 워치").isEqualTo(409);
+        assertThat(notConnected.body()).contains("WATCH_NOT_CONNECTED");
+        assertThat(count("SELECT count(*) FROM watch_alert WHERE device_id = ?", watchId)).as("행을 남기지 않는다").isZero();
+        assertThat(postAlert(Map.of("device_id", "watch-nope-" + tag, "severity", "HIGH", "word", "호출"), token).statusCode()).isEqualTo(404);
+        assertThat(postAlert(Map.of("device_id", watchId, "severity", "INFO", "word", "호출"), token).statusCode()).isEqualTo(400);
+        assertThat(postAlert(Map.of("device_id", watchId, "severity", "HIGH", "word", "아홉글자가넘는단어"), token).statusCode()).isEqualTo(400);
+        assertThat(postAlert(Map.of("device_id", watchId, "severity", "HIGH", "word", "호\n출"), token).statusCode()).as("가운데 줄바꿈")
+                .isEqualTo(400);
+        assertThat(postAlert(Map.of("device_id", watchId, "severity", "HIGH", "word", "호출", "direction", "UP"), token).statusCode())
+                .isEqualTo(400);
+        assertThat(postAlert(Map.of("device_id", watchId, "severity", "HIGH", "word", "호출", "ack_within_ms", 999), token).statusCode())
+                .as("1초 미만").isEqualTo(400);
+    }
+
+    @Test
+    void 수동_알림도_ACK_가_없으면_기한_뒤_격상하고_배정된_World_ID_를_싣는다() throws Exception {
+        bindings.bindManually(watchId, worldId, adminId);
+        Watch watch = watch(watchId, watchToken);
+        BlockingQueue<JsonNode> screen = subscribe(RealtimeTopics.WATCH);
+
+        HttpResponse<String> sent = postAlert(Map.of("device_id", watchId, "severity", "CAUTION", "word", "호출"), jwt("ADMIN"));
+        assertThat(sent.statusCode()).as(sent.body()).isEqualTo(200);
+        JsonNode row = mapper.readTree(sent.body());
+        assertThat(row.path("world_id").asString()).isEqualTo(worldId);
+        JsonNode alert = watch.next("watch_alert");
+        assertThat(alert.path("payload").has("direction")).as("방향을 안 주면 싣지 않는다").isFalse();
+
+        Thread.sleep(1_300);
+        alerts.escalateOverdue();
+        JsonNode escalation = screen.poll(5, TimeUnit.SECONDS);
+        assertThat(escalation).isNotNull();
+        assertThat(schemas.violations("messages/watch_escalation", escalation.toString())).isEmpty();
+        JsonNode p = escalation.path("payload");
+        assertThat(p.path("origin").asString()).isEqualTo("MANUAL");
+        assertThat(p.path("reason").asString()).isEqualTo("NO_ACK");
+        assertThat(p.path("alert_msg_id").asString()).isEqualTo(row.path("alert_msg_id").asString());
+        assertThat(p.path("world_id").asString()).isEqualTo(worldId);
+        assertThat(p.path("event_sequence").asInt()).isEqualTo(1);
+
+        JsonNode listed = mapper.readTree(getAlerts("?device_id=" + watchId, jwt("FOREMAN")).body()).get(0);
+        assertThat(listed.path("escalation_reason").asString()).isEqualTo("NO_ACK");
+        assertThat(listed.path("escalated_at").isNumber()).isTrue();
+
+        // 배정 없는 워치의 수동 알림 격상: world_id null 이 계약 1.1.0 을 통과한다. 기한 10분(상한)도 격상 창 안이다
+        Watch other = watch(otherId, otherToken);
+        HttpResponse<String> unbound = postAlert(Map.of("device_id", otherId, "severity", "HIGH", "word", "호출", "ack_within_ms", 600_000),
+                jwt("ADMIN"));
+        assertThat(unbound.statusCode()).as(unbound.body()).isEqualTo(200);
+        other.next("watch_alert");
+        jdbc.update("UPDATE watch_alert SET sent_at = sent_at - interval '601 seconds' WHERE alert_id = ?",
+                mapper.readTree(unbound.body()).path("alert_id").asLong());
+        alerts.escalateOverdue();
+        JsonNode unboundEscalation = screen.poll(5, TimeUnit.SECONDS);
+        assertThat(unboundEscalation).isNotNull();
+        assertThat(schemas.violations("messages/watch_escalation", unboundEscalation.toString())).isEmpty();
+        assertThat(unboundEscalation.path("payload").path("device_id").asString()).isEqualTo(otherId);
+        assertThat(unboundEscalation.path("payload").path("world_id").isNull()).isTrue();
+        JsonNode all = mapper.readTree(getAlerts("", jwt("VIEWER")).body());
+        assertThat(all.isArray() && all.size() >= 2).as("기기 없이 조회하면 전체").isTrue();
+    }
+
+    private HttpResponse<String> postAlert(Map<String, Object> body, String token) throws Exception {
+        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create("http://localhost:" + port + WatchAlertController.API))
+                .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)));
+        if (token != null) {
+            b.header(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+        }
+        return send(b);
+    }
+
+    private HttpResponse<String> getAlerts(String query, String token) throws Exception {
+        return send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + WatchAlertController.API + query))
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token).GET());
+    }
+
     // ------------------------------------------------------------------ 도우미
 
     private UUID liveEvent(String ruleId, String severity, String lifecycle, String source, String world) {

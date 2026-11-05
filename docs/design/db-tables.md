@@ -1579,23 +1579,26 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 
 #### `watch_alert` — 워치 진동 알림과 ACK·격상
 
-- 단계 **확장** · 일반 · 근거: 부록 C.6 I4 watch_alert·watch_ack, FR-45·46, 격상 (V35, S15P31A101-338) · 검토: 곽나혁
+- 단계 **확장** · 일반 · 근거: 부록 C.6 I4 watch_alert·watch_ack, FR-45·46, 격상 (V35, S15P31A101-338; V39 수동 알림 `origin`·`requested_by_user_id`, S15P31A101-475) · 검토: 곽나혁
 - 처음 설계는 `notification`(WATCH 채널)의 상세 표였으나, `notification` 은 구독·사용자 대상이고 CRITICAL·HIGH 만 받아(CAUTION 불가) 워치 알림은 따로 둔다.
+- V39(-475): 관리자·반장이 `POST /api/watch-alerts` 로 직접 보낸 알림(`origin` MANUAL)도 같은 표에 남긴다. MANUAL 은 위험 이벤트가 없어 `source` NULL(복합 FK 는 MATCH SIMPLE 이라 검사하지 않음), `event_id` 는 그 알림만의 UUIDv7, `world_id` 는 배정이 없으면 NULL. CHECK `watch_alert_origin_columns_check` 가 EVENT(`source`·`world_id` 있음, `requested_by_user_id` 없음)와 MANUAL(`source` 없음, `requested_by_user_id` 있음)을 가른다.
   LIVE 만 받는 두 겹 차단은 같은 방식(source CK + `risk_event(event_id, source)` 복합 FK)으로 건다.
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
 | `alert_id` | bigint identity | PK |  |  |
 | `alert_msg_id` | uuid | UQ, NN | `watch_alert` 봉투 `msg_id` | `watch_ack.alert_msg_id` 가 이 값으로 행을 찾는다(-334) |
-| `event_id` | uuid | NN, FK(event_id, source)>risk_event | `watch_alert.event_id` | 같은 이벤트(재개마다)·워치·등급에 한 번(부분 UQ `event_id, resume_count, device_id, severity`, SEND_FAILED 제외) |
-| `source` | text | NN, CK(LIVE) |  | 11.4-3 |
+| `origin` | text | NN, CK(EVENT·MANUAL), CHECK(origin) |  | EVENT 위험 이벤트로 보냄(-338), MANUAL 관리자·반장이 직접 보냄(V39, -475) |
+| `event_id` | uuid | NN, FK(event_id, source)>risk_event | `watch_alert.event_id` | 같은 이벤트(재개마다)·워치·등급에 한 번(부분 UQ `event_id, resume_count, device_id, severity`, SEND_FAILED 제외). MANUAL 은 그 알림만의 UUIDv7(FK 는 source 가 NULL 이라 검사하지 않음) |
+| `source` | text | CK(LIVE), CHECK(origin) |  | 11.4-3. EVENT 는 LIVE, MANUAL 은 NULL |
+| `requested_by_user_id` | bigint | FK>app_user, CHECK(origin) |  | MANUAL 을 보낸 사용자. EVENT 는 NULL |
 | `event_sequence` | int | NN, CK(≥ 1) | `watch_alert.event_sequence` | 알린 이벤트 상태 |
 | `resume_count` | int | NN | `risk_event.resume_count` | 알린 때의 재개 횟수. 해소 뒤 다시 활성(resumed)이면 새로 알린다 |
 | `device_id` | text | FK>device.device_id, NN |  |  |
-| `world_id` | text | NN |  | 보낼 때 그 워치에 배정된 익명 World ID |
+| `world_id` | text | CHECK(origin) |  | 보낼 때 그 워치에 배정된 익명 World ID. MANUAL 은 배정이 없으면 NULL |
 | `severity` | text | NN, CK(CRITICAL·HIGH·CAUTION) | `watch_alert.severity` | 7.3 워치 개인 채널 |
 | `vibration_pattern` | text | NN, CK(DANGER_LONG·CAUTION_DOUBLE·CAUTION_WEAK) | `watch_alert.vibration_pattern` | 위험: 길게 연속, 경고: 짧게 두 번, 주의: 약하게 한 번(FR-45) |
-| `direction` | text | CK(FRONT·BACK·LEFT·RIGHT) | `watch_alert.direction` | 작업자 기준 방향. 지금은 싣지 않아 null(남은 일) |
+| `direction` | text | CK(FRONT·BACK·LEFT·RIGHT) | `watch_alert.direction` | 작업자 기준 방향. EVENT 는 아직 싣지 않아 null(남은 일), MANUAL 은 보낸 사람이 준 값 |
 | `word` | text | NN | `watch_alert.word` | 한 단어(8자 이하, 규칙별) |
 | `needs_check` | boolean | NN | `watch_alert.needs_check` |  |
 | `ack_within_ms` | integer | NN, CK(1~600000) | `watch_alert.ack_within_ms` | 확인 기한(길이). 격상 판단 = sent_at + 이 값 |

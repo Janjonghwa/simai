@@ -469,7 +469,7 @@ UNOBSERVED: number
 face_policy: ("OBSERVED" | "BLURRED" | "EXCLUDED")
 })
 /**
- * EC2 → 관제 화면, STOMP /topic/watch (확장 부록 C.6, FR-46, 12.4). EC2 가 BOUND 워치에 보낸 watch_alert 에 VIBRATED watch_ack 가 ack_within_ms 안에 오지 않았거나(NO_ACK) 보내지 못했을 때(SEND_FAILED) 관리자에게 알리는 격상이다. 한 알림에 한 번만 보낸다. 워치 ACK·격상은 운영자 확인(3.2)이 아니며 이벤트 상태를 바꾸지 않는다. CRITICAL·HIGH 이벤트의 현장 경보는 Tier 0·노트북이 이미 울리고, EC2 가 CAUTION 을 현장 경보로 올리는 경로는 없다(S15P31A101-338 설계 server-watch-alert.md 남은 일). 사람 이름을 싣지 않는다(익명 World ID·기기 ID, 11.4-5). 1.0.0 신설(S15P31A101-338).
+ * EC2 → 관제 화면, STOMP /topic/watch (확장 부록 C.6, FR-46, 12.4). EC2 가 BOUND 워치에 보낸 watch_alert 에 VIBRATED watch_ack 가 ack_within_ms 안에 오지 않았거나(NO_ACK) 보내지 못했을 때(SEND_FAILED) 관리자에게 알리는 격상이다. 한 알림에 한 번만 보낸다. 워치 ACK·격상은 운영자 확인(3.2)이 아니며 이벤트 상태를 바꾸지 않는다. CRITICAL·HIGH 이벤트의 현장 경보는 Tier 0·노트북이 이미 울리고, EC2 가 CAUTION 을 현장 경보로 올리는 경로는 없다(S15P31A101-338 설계 server-watch-alert.md 남은 일). 사람 이름을 싣지 않는다(익명 World ID·기기 ID, 11.4-5). 1.0.0 신설(S15P31A101-338). 1.1.0(마이너, S15P31A101-475): 관리자·반장이 직접 보낸 수동 알림(POST /api/watch-alerts)의 격상도 같은 메시지로 온다 — origin(EVENT·MANUAL, 없으면 EVENT)을 더하고, MANUAL 은 위험 이벤트가 없어 event_id 가 그 알림만의 ID 이고 event_sequence 1, world_id 는 배정이 없으면 null 이다. EVENT 는 전과 같이 world_id 가 있어야 한다.
  */
 export type WatchEscalationMessage = (Envelope & {
 msg_type?: "watch_escalation"
@@ -765,11 +765,15 @@ joint_rotations: [(AxisAngle1 | null), ...((AxisAngle1 | null))[]]
 }
 export interface WatchEscalationPayload {
 /**
+ * EVENT: 위험 이벤트로 보낸 알림(-338). MANUAL: 관리자·반장이 POST /api/watch-alerts 로 직접 보낸 알림(-475). 없으면 EVENT 로 읽는다(1.0.0 수신 호환. 스키마 default 는 두지 않는다: 생성 Java 모델이 없는 필드를 채워 넣는다)
+ */
+origin?: ("EVENT" | "MANUAL")
+/**
  * UUIDv7 (시간 순서, 재시작·여러 현장에서도 충돌 없음). event_id 에 쓴다 (명세 3.2 식별자 규칙)
  */
 event_id: string
 /**
- * 워치에 알린 이벤트 상태
+ * 워치에 알린 이벤트 상태. MANUAL 은 1
  */
 event_sequence: number
 /**
@@ -781,9 +785,9 @@ alert_msg_id: string
  */
 device_id: string
 /**
- * 그 워치에 배정된 익명 World ID
+ * 그 워치에 배정된 익명 World ID. MANUAL 은 배정이 없으면 null(EVENT 는 늘 있다, 아래 if/else)
  */
-world_id: string
+world_id: (string | null)
 severity: ("CRITICAL" | "HIGH" | "CAUTION")
 /**
  * NO_ACK: 기한(ack_within_ms) 안에 VIBRATED ACK 가 EC2 에 닿지 않음. SEND_FAILED: 워치로 보내지 못함(연결이 그 사이 끊김 등)

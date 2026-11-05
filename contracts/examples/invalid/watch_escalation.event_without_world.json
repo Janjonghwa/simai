@@ -1,0 +1,20 @@
+{
+  "_expect_error": "이벤트 알림(origin EVENT 또는 생략)의 격상은 그 워치에 배정된 world_id 가 있어야 한다. null 은 MANUAL 에서만",
+  "schema_version": "1.1.0",
+  "msg_type": "watch_escalation",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000476",
+  "sent_at": 1760342411200,
+  "source_id": "ec2",
+  "payload": {
+    "origin": "EVENT",
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-00000000e338",
+    "event_sequence": 2,
+    "alert_msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000a338",
+    "device_id": "watch-01",
+    "world_id": null,
+    "severity": "HIGH",
+    "reason": "NO_ACK",
+    "sent_at": 1760342401100,
+    "escalated_at": 1760342411150
+  }
+}
