@@ -8,7 +8,7 @@ import { WorkStageBar } from '@/features/tbm/WorkStageBar';
 import { MOCK_STATIC_OBJECTS } from '@/mocks/staticObjects';
 import { createTbmMock } from '@/mocks/tbm';
 import { MOCK_ZONES } from '@/mocks/zones';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw/http';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -440,5 +440,112 @@ describe('작업 관리 화면', () => {
     await waitFor(async () =>
       expect((await stageOf('zones')).getAttribute('data-state')).toBe('done'),
     );
+  });
+});
+
+// ── 기본 선택·빈 상태·칩 정렬(S15P31A101-506) ────────────────────────────────
+
+const serverWork = (id: string, status: string, name: string) => ({
+  work_id: id,
+  status,
+  date: '2026-10-16',
+  name,
+  from_ms: 1_760_572_800_000,
+  to_ms: 1_760_583_600_000,
+  zone_id: null,
+  place: '교실',
+  planned_people: 3,
+  lead: 'A조',
+  layout_id: null,
+  work_type: null,
+  active_setup_session_id: null,
+});
+
+function serveWorks(works: ReturnType<typeof serverWork>[]) {
+  server.use(
+    http.get('*/api/work-units', () => HttpResponse.json({ works })),
+    http.post('*/api/work-units', async ({ request }) => {
+      const body = (await request.json()) as { name: string };
+      const created = serverWork(String(works.length + 1), 'PLANNED', body.name);
+      works.push(created);
+      return HttpResponse.json(created, { status: 201 });
+    }),
+  );
+}
+
+const chipNames = () =>
+  screen
+    .getAllByRole('button', { name: /^T\d+ / })
+    .map((b) => (b.getAttribute('aria-label') ?? '').split(' ')[0]);
+
+describe('작업 칩 정렬', () => {
+  afterEach(cleanup);
+  it('진행 중 → 예정 → 끝난 작업 순으로 늘어놓는다', () => {
+    const [a, b, c] = TBM_TASKS;
+    render(
+      <TaskList
+        tasks={[
+          { ...a!, id: 'T1', status: 'DONE' },
+          { ...b!, id: 'T2', status: 'PLANNED' },
+          { ...c!, id: 'T3', status: 'IN_PROGRESS' },
+        ]}
+        selectedId=""
+        sentAt={{}}
+        onSelect={() => {}}
+        onAdd={() => {}}
+      />,
+    );
+    expect(chipNames()).toEqual(['T3', 'T2', 'T1']);
+  });
+});
+
+describe('작업 관리 기본 선택과 빈 상태', () => {
+  it('진행 중 작업이 있으면 예정보다 먼저 선택한다', async () => {
+    serveWorks([
+      serverWork('1', 'DONE', '끝난 작업'),
+      serverWork('2', 'PLANNED', '예정 작업'),
+      serverWork('3', 'IN_PROGRESS', '진행 작업'),
+    ]);
+    render(<TbmPage />);
+    expect(await screen.findByRole('region', { name: 'T3 가상 레이아웃' })).toBeTruthy();
+    expect(screen.queryByTestId('tbm-empty-state')).toBeNull();
+  });
+
+  it('진행 중이 없으면 예정 작업을 선택한다(끝난 작업이 앞에 있어도)', async () => {
+    serveWorks([serverWork('1', 'DONE', '끝난 작업'), serverWork('2', 'PLANNED', '예정 작업')]);
+    render(<TbmPage />);
+    expect(await screen.findByRole('region', { name: 'T2 가상 레이아웃' })).toBeTruthy();
+  });
+
+  it('끝난 작업만 있으면 상세 대신 빈 상태를 보이고, 새 작업 등록이 등록 대화상자를 연다', async () => {
+    serveWorks([serverWork('1', 'DONE', '끝난 작업')]);
+    render(<TbmPage />);
+    await screen.findByText('진행 중인 작업이 없습니다');
+    const empty = screen.getByTestId('tbm-empty-state');
+    expect(empty.textContent).toContain('등록하면 1. 세팅부터 시작합니다');
+    expect(screen.queryByTestId('work-stage-bar')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '새 작업 등록' }));
+    expect(screen.getByRole('dialog', { name: '작업 등록' })).toBeTruthy();
+  });
+
+  it('빈 상태에서 끝난 작업 칩을 누르면 그 작업 상세가 열린다', async () => {
+    serveWorks([serverWork('1', 'DONE', '끝난 작업')]);
+    render(<TbmPage />);
+    await screen.findByText('진행 중인 작업이 없습니다');
+    fireEvent.click(screen.getByRole('button', { name: /^T1 끝난 작업/ }));
+    expect(await screen.findByRole('region', { name: 'T1 가상 레이아웃' })).toBeTruthy();
+    expect(screen.queryByTestId('tbm-empty-state')).toBeNull();
+  });
+
+  it('빈 상태에서 작업을 등록하면 새 작업이 선택되고 세팅 시작이 보인다', async () => {
+    serveWorks([serverWork('1', 'DONE', '끝난 작업')]);
+    render(<TbmPage />);
+    await screen.findByText('진행 중인 작업이 없습니다');
+    fireEvent.click(screen.getByRole('button', { name: '새 작업 등록' }));
+    const dialog = screen.getByRole('dialog', { name: '작업 등록' });
+    fireEvent.change(within(dialog).getByLabelText('작업명'), { target: { value: '새 작업' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '등록' }));
+    expect(await screen.findByRole('button', { name: '세팅 시작' })).toBeTruthy();
+    expect(screen.queryByTestId('tbm-empty-state')).toBeNull();
   });
 });

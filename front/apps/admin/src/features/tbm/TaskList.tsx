@@ -60,12 +60,18 @@ function TaskChip({
   );
 }
 
+/** 진행 중 → 예정(상태 미확인 포함) → 끝난 작업 순. 같은 묶음 안에서는 원래 순서. */
+const STATUS_RANK = (t: TbmTask) => (t.status === 'IN_PROGRESS' ? 0 : t.status === 'DONE' ? 2 : 1);
+export const sortTasksForChips = (tasks: readonly TbmTask[]): TbmTask[] =>
+  [...tasks].sort((a, b) => STATUS_RANK(a) - STATUS_RANK(b));
+
 export function TaskList({
   tasks,
   selectedId,
   sentAt,
   onSelect,
   onAdd,
+  hideAdd = false,
   children,
 }: {
   tasks: readonly TbmTask[];
@@ -74,6 +80,8 @@ export function TaskList({
   sentAt: Record<string, string>;
   onSelect: (id: string) => void;
   onAdd: () => void;
+  /** + 작업 등록 알약을 숨긴다(빈 상태에 따로 단추가 있을 때). */
+  hideAdd?: boolean;
   /** 알약 뒤에 이어 붙는 단추들. */
   children?: ReactNode;
 }) {
@@ -84,7 +92,7 @@ export function TaskList({
         aria-label={`내일 작업 ${TBM_DAY} · ${tasks.length}건`}
         className="contents"
       >
-        {tasks.map((t) => (
+        {sortTasksForChips(tasks).map((t) => (
           <TaskChip
             key={t.id}
             task={t}
@@ -94,14 +102,16 @@ export function TaskList({
           />
         ))}
       </div>
-      <button
-        type="button"
-        aria-haspopup="dialog"
-        onClick={onAdd}
-        className={cn(CHIP, 'text-point-soft ring-faint hover:bg-surface-2')}
-      >
-        + 작업 등록
-      </button>
+      {!hideAdd && (
+        <button
+          type="button"
+          aria-haspopup="dialog"
+          onClick={onAdd}
+          className={cn(CHIP, 'text-point-soft ring-faint hover:bg-surface-2')}
+        >
+          + 작업 등록
+        </button>
+      )}
       {children}
     </>
   );

@@ -39,6 +39,15 @@ import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 const EMPTY_PLACEHOLDER_TASK: TbmTask = TBM_TASKS[0]!;
 
+/** 기본 선택: 진행 중 → 예정 → 상태 값이 없는 작업(데모·폴백). 끝난 작업만 있으면 선택 없음. */
+function defaultSelectedTask(tasks: readonly TbmTask[]): TbmTask | undefined {
+  return (
+    tasks.find((t) => t.status === 'IN_PROGRESS') ??
+    tasks.find((t) => t.status === 'PLANNED') ??
+    tasks.find((t) => t.status === undefined)
+  );
+}
+
 // 작업 관리(/work). 작업마다 단계(세팅 → 구역 → TBM 보고서 → 시작 → 종료 → 마무리·서명)를 보이고, 가상 레이아웃 · 위험성 평가 ·
 // 법령 지식 그래프 · 동시 작업 간섭을 보이며 TBM 회의록을 채워 반장에게 보낸다. 예전 이름은 레이아웃 · TBM 보고서(계획 모드). 작업마다 가상 레이아웃 · 위험성 평가 · 법령 지식 그래프 · 동시 작업 간섭을 보이고
 // TBM 회의록을 채워 반장에게 보낸다. 서버 API 실패(네트워크 끊김·5xx) 때만 tbmDemo 로 대체 화면을 그린다.
@@ -65,8 +74,9 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
     editTask,
     deleteTask,
   } = useTbmData();
-  const [selected, setSelected] = useState(
-    initialWorkId ? displayTaskId(initialWorkId) : (tasks[0]?.id ?? 'T1'),
+  // 선택 없음(null)이면 기본 선택(진행 중 → 예정)을 쓰고, 목록이 뜬 뒤 한 번 굳힌다. 사용자가 고른 선택은 덮지 않는다.
+  const [selected, setSelected] = useState<string | null>(
+    initialWorkId ? displayTaskId(initialWorkId) : null,
   );
   const [adding, setAdding] = useState(false);
   const [editingTask, setEditingTask] = useState(false);
@@ -79,7 +89,11 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
   const [sentAt, setSentAt] = useState<Record<string, string>>({});
   const [message, setMessage] = useState('');
 
-  const currentTask = tasks.find((t) => t.id === selected) ?? tasks[0] ?? null;
+  const defaultTask = defaultSelectedTask(tasks);
+  const currentTask =
+    (selected !== null ? tasks.find((t) => t.id === selected) : undefined) ?? defaultTask ?? null;
+  // 목록이 뜬 첫 순간의 기본 선택을 굳힌다(렌더 중 갱신). 그 뒤 작업 상태가 바뀌어도 선택이 옮겨 가지 않는다.
+  if (selected === null && defaultTask) setSelected(defaultTask.id);
   const task = currentTask ?? EMPTY_PLACEHOLDER_TASK;
   const workId = currentTask ? (currentTask.workId ?? currentTask.id.replace(/^T/, '')) : undefined;
   const {
@@ -136,7 +150,7 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
   const { printing, items, print, error: printError } = usePrint(tasks, task, edits, report);
 
   const select = (id: string) => {
-    if (id !== task.id) {
+    if (id !== currentTask?.id) {
       setSelected(id);
       restart();
     }
@@ -168,7 +182,7 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
   };
 
   const add = (input: TaskInput) => {
-    const previousSelected = currentTask?.id ?? 'T1';
+    const previousSelected = currentTask?.id ?? null;
     const optimistic = createTask(tasks, input);
     setAdding(false);
     setSelected(optimistic.id);
@@ -469,6 +483,24 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
           >
             {isLoading ? (
               <p className="text-sm text-muted-foreground">작업 목록을 불러오는 중입니다…</p>
+            ) : tasks.length > 0 ? (
+              <>
+                <p className="text-base font-semibold text-foreground">진행 중인 작업이 없습니다</p>
+                <p className="text-xs text-muted-foreground">등록하면 1. 세팅부터 시작합니다</p>
+                <Button type="button" onClick={openAdd} className="font-bold">
+                  새 작업 등록
+                </Button>
+                <div className="flex flex-wrap items-center justify-center gap-2.5">
+                  <TaskList
+                    tasks={tasks}
+                    selectedId=""
+                    sentAt={sentAt}
+                    onSelect={select}
+                    onAdd={openAdd}
+                    hideAdd
+                  />
+                </div>
+              </>
             ) : (
               <>
                 <p className="text-base font-semibold text-foreground">
