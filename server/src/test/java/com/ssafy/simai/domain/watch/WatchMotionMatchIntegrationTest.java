@@ -362,7 +362,11 @@ class WatchMotionMatchIntegrationTest {
         final TextWebSocketHandler handler = new TextWebSocketHandler() {
             @Override
             protected void handleTextMessage(WebSocketSession s, TextMessage message) {
-                received.add(mapper.readTree(message.getPayload()));
+                JsonNode m = mapper.readTree(message.getPayload());
+                // 연결 때 붙는 배정 알림(-510)은 이 시험의 관심사가 아니다
+                if (!"watch_binding_notice".equals(m.path("msg_type").asString())) {
+                    received.add(m);
+                }
             }
         };
 

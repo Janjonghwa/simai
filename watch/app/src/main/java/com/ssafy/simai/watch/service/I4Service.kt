@@ -21,6 +21,10 @@ import com.ssafy.simai.watch.alert.VibrationPattern
 import com.ssafy.simai.watch.alert.WatchAlert
 import com.ssafy.simai.watch.alert.alertFields
 import com.ssafy.simai.watch.alert.putAlertFields
+import com.ssafy.simai.watch.binding.BindingNotice
+import com.ssafy.simai.watch.binding.BindingPhase
+import com.ssafy.simai.watch.binding.BindingTracker
+import com.ssafy.simai.watch.binding.BindingView
 import com.ssafy.simai.watch.config.WatchConfig
 import com.ssafy.simai.watch.config.WatchConfigStore
 import com.ssafy.simai.watch.gait.GaitFeatures
@@ -93,6 +97,7 @@ class I4Service : Service() {
     private var connectJob: Job? = null
     private var heartbeatJob: Job? = null
     private var expireJob: Job? = null
+    private var confirmJob: Job? = null
     private var vibrationKey: Pair<String, VibrationPattern>? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
@@ -113,6 +118,12 @@ class I4Service : Service() {
         set(value) {
             field = value
             AlertCenter.publishStatus(value)
+        }
+
+    private var bindingView = BindingView()
+        set(value) {
+            field = value
+            AlertCenter.publishBinding(value)
         }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -266,6 +277,7 @@ class I4Service : Service() {
         }
         when (incoming) {
             is Incoming.Alert -> receive(incoming.alert)
+            is Incoming.Binding -> onBinding(incoming.notice)
             is Incoming.Heartbeat -> {
                 val now = System.currentTimeMillis()
                 heartbeat.onEc2Heartbeat(incoming, now)
@@ -274,6 +286,31 @@ class I4Service : Service() {
                 status = status.copy(lastEc2AtMs = now, clockOffsetMs = heartbeat.clockOffsetMs)
             }
             is Incoming.Unknown -> Log.i(TAG, "모르는 메시지를 무시한다: ${incoming.msgType}")
+        }
+    }
+
+    // ---- 배정 알림 ----
+
+    /**
+     * EC2 가 이 워치의 배정 상태를 알렸다(S15P31A101-510). 배정 없음은 손 흔들기 안내(화면은 [AlertCenter.binding] 을 본다),
+     * 배정이 생기면 [VibrationPattern.BOUND_CONFIRM] 한 번과 잠깐의 "연결됨". 확인 대기 알림이 있으면 진동도 표시도 하지 않는다(경보 우선)
+     */
+    private fun onBinding(notice: BindingNotice) {
+        val before = bindingView
+        val step = BindingTracker.apply(before, notice, alertPending = board.pending.isNotEmpty())
+        Log.i(TAG, "배정 알림 ${notice.state} method=${notice.method} 진동=${step.vibrate}")
+        // 같은 상태가 다시 와도(재연결 동기화) 상태 알림 문장은 맞춘다
+        if (step.view.phase == BindingPhase.UNBOUND) notifier.updateLink(BIND_GUIDE_TEXT)
+        else if (status.state == LinkState.CONNECTED) notifier.updateLink("EC2 연결됨")
+        if (step.view == before) return
+        bindingView = step.view
+        if (step.vibrate) vibrator.play(VibrationPattern.BOUND_CONFIRM)
+        confirmJob?.cancel()
+        if (step.view.confirming) {
+            confirmJob = scope.launch {
+                delay(BindingTracker.CONFIRM_SHOW_MS)
+                bindingView = BindingTracker.endConfirm(bindingView)
+            }
         }
     }
 
@@ -410,6 +447,9 @@ class I4Service : Service() {
     }
 
     companion object {
+        /** 배정이 없을 때 상태 알림과 기본 화면에 보이는 안내 문장(S15P31A101-510) */
+        const val BIND_GUIDE_TEXT = "워치 찬 손을 3초 흔들어 주세요"
+
         private const val ACTION_RELOAD = "com.ssafy.simai.watch.RELOAD"
         private const val ACTION_DELIVER_ALERT = "com.ssafy.simai.watch.DELIVER_ALERT"
 

@@ -68,7 +68,9 @@ class MainActivity : ComponentActivity() {
         lifecycle.addObserver(AmbientLifecycleObserver(this, ambientCallback))
         setContent {
             val status by AlertCenter.status.collectAsState()
-            StatusScreen(config, lastAlertAtMs, label, ambient, tickMs, status)
+            val binding by AlertCenter.binding.collectAsState()
+            val board by AlertCenter.board.collectAsState()
+            StatusScreen(config, lastAlertAtMs, label, ambient, tickMs, status, binding, alertPending = board.pending.isNotEmpty())
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED

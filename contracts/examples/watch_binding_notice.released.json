@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "watch_binding_notice",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000512",
+  "sent_at": 1760342441300,
+  "source_id": "ec2",
+  "payload": {
+    "state": "UNBOUND",
+    "method": null,
+    "world_id": null,
+    "unbind_reason": "RELEASED",
+    "sent_at": 1760342441250
+  }
+}

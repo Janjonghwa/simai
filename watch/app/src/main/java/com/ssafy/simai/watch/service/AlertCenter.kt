@@ -1,6 +1,7 @@
 package com.ssafy.simai.watch.service
 
 import com.ssafy.simai.watch.alert.AlertBoard
+import com.ssafy.simai.watch.binding.BindingView
 import com.ssafy.simai.watch.i4.ConnectionStatus
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -13,10 +14,14 @@ import kotlinx.coroutines.flow.asStateFlow
 object AlertCenter {
     private val _board = MutableStateFlow(AlertBoard())
     private val _status = MutableStateFlow(ConnectionStatus())
+    private val _binding = MutableStateFlow(BindingView())
     private var service: I4Service? = null
 
     val board: StateFlow<AlertBoard> = _board.asStateFlow()
     val status: StateFlow<ConnectionStatus> = _status.asStateFlow()
+
+    /** 배정 안내 상태(S15P31A101-510). EC2 의 watch_binding_notice 로 바뀐다 */
+    val binding: StateFlow<BindingView> = _binding.asStateFlow()
     val isRunning: Boolean get() = service != null
 
     /** 작업자가 확인 단추를 눌렀다. 서비스가 없으면 아무 일도 없다 */
@@ -33,6 +38,7 @@ object AlertCenter {
         service = null
         _board.value = AlertBoard()
         _status.value = ConnectionStatus()
+        _binding.value = BindingView()
     }
 
     internal fun publishBoard(board: AlertBoard) {
@@ -41,5 +47,9 @@ object AlertCenter {
 
     internal fun publishStatus(status: ConnectionStatus) {
         _status.value = status
+    }
+
+    internal fun publishBinding(binding: BindingView) {
+        _binding.value = binding
     }
 }

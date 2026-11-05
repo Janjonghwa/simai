@@ -3,6 +3,9 @@ package com.ssafy.simai.watch.i4
 import com.ssafy.simai.watch.alert.AckRecord
 import com.ssafy.simai.watch.alert.AlertFields
 import com.ssafy.simai.watch.alert.WatchAlert
+import com.ssafy.simai.watch.binding.BindingMethod
+import com.ssafy.simai.watch.binding.BindingNotice
+import com.ssafy.simai.watch.binding.BindingState
 import com.ssafy.simai.watch.gait.GaitFeatures
 import org.json.JSONArray
 import org.json.JSONException
@@ -26,6 +29,9 @@ sealed interface Incoming {
      * @property echoReceivedAtMs EC2 가 워치의 [echoSeq] 를 받은 EC2 시각 — t2
      */
     data class Heartbeat(val seq: Long, val sentAtMs: Long, val echoSeq: Long, val echoReceivedAtMs: Long, val intervalMs: Long?) : Incoming
+
+    /** watch_binding_notice(S15P31A101-510): 이 워치에 사람 배정이 생겼거나 풀렸다 */
+    data class Binding(val notice: BindingNotice) : Incoming
 
     /** 모르는 msg_type. 수신 측은 모르는 것을 무시한다(명세 12.1) */
     data class Unknown(val msgType: String) : Incoming
@@ -60,6 +66,7 @@ class I4Codec(private val sourceId: String) {
         return when (msgType) {
             "watch_alert" -> Incoming.Alert(alertOf(doc, payload))
             "watch_heartbeat" -> heartbeatOf(doc, payload)
+            "watch_binding_notice" -> Incoming.Binding(bindingOf(payload))
             else -> Incoming.Unknown(msgType)
         }
     }
@@ -131,6 +138,24 @@ class I4Codec(private val sourceId: String) {
         return WatchAlert.fromFields(fields)
     }
 
+    /** 계약 watch_binding_notice. state 가 틀리거나 BOUND 인데 world_id 가 없으면 잘못된 메시지다. 모르는 method 는 null */
+    private fun bindingOf(payload: JSONObject): BindingNotice {
+        val state = when (requiredString(payload, "state")) {
+            "BOUND" -> BindingState.BOUND
+            "UNBOUND" -> BindingState.UNBOUND
+            else -> throw IllegalArgumentException("state 값이 잘못됐다")
+        }
+        val worldId = optionalString(payload, "world_id")
+        require(state == BindingState.UNBOUND || worldId != null) { "BOUND 에 world_id 가 없다" }
+        return BindingNotice(
+            state = state,
+            method = optionalString(payload, "method")?.let(BindingMethod::parse),
+            worldId = if (state == BindingState.BOUND) worldId else null,
+            unbindReason = optionalString(payload, "unbind_reason"),
+            sentAtMs = requiredLong(payload, "sent_at"),
+        )
+    }
+
     private fun heartbeatOf(doc: JSONObject, payload: JSONObject): Incoming.Heartbeat {
         val echo = payload.optJSONObject("echo") ?: throw IllegalArgumentException("EC2 하트비트에 echo 가 없다")
         return Incoming.Heartbeat(
@@ -147,6 +172,14 @@ class I4Codec(private val sourceId: String) {
         val value = obj.get(name)
         require(value is String || value is Number || value is Boolean) { "$name 값이 잘못됐다" }
         return value.toString()
+    }
+
+    /** 없거나 null 이면 null. 있는데 문자열이 아니거나 비어 있으면 잘못된 값이다 */
+    private fun optionalString(obj: JSONObject, name: String): String? {
+        if (!obj.has(name) || obj.isNull(name)) return null
+        val value = obj.opt(name)
+        require(value is String && value.isNotEmpty()) { "$name 값이 잘못됐다" }
+        return value
     }
 
     private fun requiredString(obj: JSONObject, name: String): String {

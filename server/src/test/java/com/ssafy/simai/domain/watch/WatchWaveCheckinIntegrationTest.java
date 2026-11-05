@@ -424,7 +424,11 @@ class WatchWaveCheckinIntegrationTest {
         final TextWebSocketHandler handler = new TextWebSocketHandler() {
             @Override
             protected void handleTextMessage(WebSocketSession s, TextMessage message) {
-                received.add(mapper.readTree(message.getPayload()));
+                JsonNode m = mapper.readTree(message.getPayload());
+                // 배정 알림(S15P31A101-510)은 이 시험의 대상이 아니다
+                if (!"watch_binding_notice".equals(m.path("msg_type").asString())) {
+                    received.add(m);
+                }
             }
         };
 

@@ -9,6 +9,8 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
@@ -32,10 +34,26 @@ public class WatchBindings {
 
     private final NamedParameterJdbcTemplate jdbc;
     private final Clock clock;
+    private final ApplicationEventPublisher events;
 
-    WatchBindings(NamedParameterJdbcTemplate jdbc, Clock clock) {
+    WatchBindings(NamedParameterJdbcTemplate jdbc, Clock clock, ApplicationEventPublisher events) {
         this.jdbc = jdbc;
         this.clock = clock;
+        this.events = events;
+    }
+
+    /** 배정이 바뀐 워치를 알린다(S15P31A101-510 WatchBindingNotifier). 사유가 있으면 풀린 쪽이다 */
+    private void changed(String deviceId, String unbindReason) {
+        events.publishEvent(new WatchBindingChanged(deviceId, unbindReason));
+    }
+
+    /** 방금 끝낸 행들의 워치를 알린다. 새 배정을 받는 워치(keep)는 호출부가 따로 알리니 건너뛴다 */
+    private void changedEnded(List<String> endedDevices, String keep, String reason) {
+        for (String device : endedDevices) {
+            if (!device.equals(keep)) {
+                changed(device, reason);
+            }
+        }
     }
 
     /**
@@ -57,10 +75,10 @@ public class WatchBindings {
         OffsetDateTime now = OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("device", deviceId).addValue("world", worldId)
                 .addValue("actor", actorUserId).addValue("now", now);
-        jdbc.update("""
+        List<String> ended = jdbc.queryForList("""
                 UPDATE watch_binding SET unbound_at = :now, unbind_reason = 'REPLACED'
-                WHERE unbound_at IS NULL AND (device_id = :device OR world_id = :world)
-                """, params);
+                WHERE unbound_at IS NULL AND (device_id = :device OR world_id = :world) RETURNING device_id
+                """, params, String.class);
         Long id;
         try {
             id = jdbc.queryForObject("""
@@ -71,6 +89,8 @@ public class WatchBindings {
             // 같은 워치·World ID 를 동시에 이으려 했다(부분 유일 색인). 먼저 끝난 쪽이 이긴다
             throw new BusinessException(ErrorCode.Watch.BINDING_CONFLICT);
         }
+        changedEnded(ended, deviceId, "REPLACED");
+        changed(deviceId, null);
         return new Binding(id == null ? -1 : id, deviceId, worldId, "MANUAL", 1, now.toInstant());
     }
 
@@ -93,26 +113,34 @@ public class WatchBindings {
         if (manual != null && manual > 0) {
             return false;
         }
-        jdbc.update("""
+        List<String> ended = jdbc.queryForList("""
                 UPDATE watch_binding SET unbound_at = :now, unbind_reason = 'REPLACED'
-                WHERE unbound_at IS NULL AND method = 'MOTION_MATCH' AND (device_id = :device OR world_id = :world)
-                """, params);
+                WHERE unbound_at IS NULL AND method = 'MOTION_MATCH' AND (device_id = :device OR world_id = :world) RETURNING device_id
+                """, params, String.class);
         // 예외로 받으면 트랜잭션이 깨지니 부분 유일 색인 충돌은 행 없이 돌아오게 한다
-        return !jdbc.queryForList("""
+        boolean bound = !jdbc.queryForList("""
                 INSERT INTO watch_binding (device_id, world_id, method, score, bound_at)
                 VALUES (:device, :world, 'MOTION_MATCH', :score, :now)
                 ON CONFLICT DO NOTHING RETURNING binding_id
                 """, params, Long.class).isEmpty();
+        changedEnded(ended, bound ? deviceId : null, "REPLACED");
+        if (bound) {
+            changed(deviceId, null);
+        }
+        return bound;
     }
 
     /** 대조 배정만 끝낸다(MATCH_LOST·IDENTITY_CHANGED). 수동 배정은 남는다. 끝낸 행 수 */
     public int unbindMotion(String deviceId, String worldId, String reason) {
-        return jdbc.update("""
+        List<String> ended = jdbc.queryForList("""
                 UPDATE watch_binding SET unbound_at = :now, unbind_reason = :reason
                 WHERE unbound_at IS NULL AND method = 'MOTION_MATCH'
-                  AND (device_id = :device OR world_id = :world)
+                  AND (device_id = :device OR world_id = :world) RETURNING device_id
                 """, new MapSqlParameterSource().addValue("device", deviceId).addValue("world", worldId)
-                .addValue("reason", reason).addValue("now", OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC)));
+                .addValue("reason", reason).addValue("now", OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC)),
+                String.class);
+        changedEnded(ended, null, reason);
+        return ended.size();
     }
 
     /**
@@ -144,20 +172,20 @@ public class WatchBindings {
         if (survivor != null) {
             if ("MANUAL".equals(survivor.method())) {
                 if (oldManual) {
-                    jdbc.update("""
+                    changedEnded(jdbc.queryForList("""
                             UPDATE watch_binding SET unbound_at = :now, unbind_reason = 'ID_MERGED'
-                            WHERE unbound_at IS NULL AND world_id = :old
-                            """, params);
+                            WHERE unbound_at IS NULL AND world_id = :old RETURNING device_id
+                            """, params, String.class), null, "ID_MERGED");
                 }
                 return null;
             }
             if (!oldManual) {
                 return null;
             }
-            jdbc.update("""
+            changedEnded(jdbc.queryForList("""
                     UPDATE watch_binding SET unbound_at = :now, unbind_reason = 'REPLACED'
-                    WHERE unbound_at IS NULL AND world_id = :survivor
-                    """, params);
+                    WHERE unbound_at IS NULL AND world_id = :survivor RETURNING device_id
+                    """, params, String.class), old.deviceId(), "REPLACED");
         }
         jdbc.update("""
                 UPDATE watch_binding SET unbound_at = :now, unbind_reason = 'ID_MERGED'
@@ -171,6 +199,8 @@ public class WatchBindings {
                 SELECT :device, :survivor, :method, :score, bound_by_user_id, :now FROM watch_binding WHERE binding_id = :oldId
                 ON CONFLICT DO NOTHING RETURNING binding_id
                 """, params, Long.class).isEmpty();
+        // 옮겼으면 같은 워치가 새 World ID 로 BOUND, 못 옮겼으면(동시 배정 충돌) 그 워치는 풀렸다(S15P31A101-510)
+        changed(old.deviceId(), inserted ? null : "ID_MERGED");
         return inserted ? new Binding(-1, old.deviceId(), survivorId, old.method(), old.score(), now.toInstant()) : null;
     }
 
@@ -194,6 +224,18 @@ public class WatchBindings {
         if (rows == 0) {
             throw new BusinessException(ErrorCode.Watch.BINDING_NOT_FOUND);
         }
+        changed(deviceId, "RELEASED");
+    }
+
+    /** 그 워치의 지금 배정(폐기된 워치면 없음) */
+    public Optional<Binding> activeForDevice(String deviceId) {
+        return jdbc.query("""
+                SELECT b.binding_id, b.device_id, b.world_id, b.method, b.score, b.bound_at
+                FROM watch_binding b JOIN device d ON d.device_id = b.device_id
+                WHERE b.device_id = :device AND b.unbound_at IS NULL AND d.revoked_at IS NULL
+                """, new MapSqlParameterSource("device", deviceId), (rs, i) -> new Binding(rs.getLong("binding_id"),
+                rs.getString("device_id"), rs.getString("world_id"), rs.getString("method"), rs.getDouble("score"),
+                rs.getTimestamp("bound_at").toInstant())).stream().findFirst();
     }
 
     /** 지금 배정 전부, device_id 오름차순. 폐기된 워치의 배정은 뺀다(보낼 수 없다) */

@@ -16,6 +16,7 @@
 | 메시지 | 방향 | 언제 | 핵심 필드 |
 |---|---|---|---|
 | `watch_alert` | EC2 → 워치 | 진입 예측(R5) 판정이 BOUND 워치에 닿을 때 | `event_id`·`event_sequence`, `severity`(CRITICAL·HIGH·CAUTION), 선택 `vibration_pattern`·`direction`, `word`, `ack_within_ms`, `needs_check`. 알림 ID 는 봉투 `msg_id` |
+| `watch_binding_notice` | EC2 → 워치 | 배정이 생기거나 풀릴 때(연결된 워치에 1회), 워치가 (재)연결될 때 지금 상태 1회(S15P31A101-510) | `state`(BOUND·UNBOUND), `method`(MOTION_MATCH·WAVE·MANUAL, UNBOUND 면 null), `world_id`(익명, UNBOUND 면 null), 선택 `unbind_reason`, `sent_at`. 같은 상태 반복·끊긴 워치 송신 없음 |
 | `watch_ack` | 워치 → EC2 | 진동 시작 즉시(VIBRATED), 작업자가 확인 버튼을 누르면(CONFIRMED) | `alert_msg_id`, `kind`, `acked_at`(워치 시계), 선택 `received_at` |
 | `watch_heartbeat` | 양방향 | 워치가 `interval_ms`(기본 10초)마다, EC2 는 받을 때마다 바로 답 | `heartbeat_seq`, `echo{seq, received_at}`, EC2 → 워치만 `interval_ms`, 워치 → EC2 만 `watch{battery_pct, transport, app_version}` |
 | `gait_features` | 워치 → EC2 | 4초 창을 2초마다(절반 겹침) | `clock_basis` WATCH, `clock_offset_ms`(null 허용), 창 시작·끝, `sample_rate_hz`, `step_times_ms`, `motion_transitions`, `band_magnitude{rate_hz, values, rms, peak_freq_hz}` |

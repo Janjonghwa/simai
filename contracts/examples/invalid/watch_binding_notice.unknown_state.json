@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "watch_binding_notice",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000510",
+  "sent_at": 1760342431300,
+  "source_id": "ec2",
+  "payload": {
+    "state": "PENDING",
+    "method": "WAVE",
+    "world_id": "w-17",
+    "sent_at": 1760342431250
+  }
+}

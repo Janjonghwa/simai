@@ -1,5 +1,7 @@
 # contracts
 
+S15P31A101-510: **v7.15.0**(마이너, v7.14.0 -497 다음). I4 `messages/watch_binding_notice` 1.0.0 신설 — EC2 → 워치, 그 워치에 사람(익명 World ID) 배정이 생겼는지(BOUND) 풀렸는지(UNBOUND)를 알린다. 배정이 생기거나 풀릴 때 연결된 그 워치에 한 번, 워치가 (재)연결되면 지금 상태를 한 번 보내고 같은 상태는 반복하지 않는다. 워치는 UNBOUND 에 '워치 찬 손을 3초 흔들어 주세요' 안내를, BOUND 에 짧은 진동과 '연결됨' 을 보이며 경보가 떠 있으면 가리지 않는다. 필드: `state`·`method`(MOTION_MATCH·WAVE·MANUAL, UNBOUND 면 null; WAVE 는 -508 손 흔들기 체크인용으로 미리 둠)·`world_id`(UNBOUND 면 null)·선택 `unbind_reason`(UNBOUND 만)·`sent_at`. 닫힌 객체라 사람 이름 같은 키를 싣지 못한다. 예시 `watch_binding_notice`·`.unbound`·`.released`, 반례 `.person_name`·`.bound_without_world`·`.unbound_with_world`·`.unknown_state`·`.unknown_method`·`.bound_with_reason`. Python 생성 모델 갱신. 다른 계약 변경 없음. 설계 `docs/design/server-watch-alert.md` 배정 알림 절.
+
 S15P31A101-497: **v7.14.0**(마이너, v7.13.0 -492 다음). Lead 2차 지시에 따라 I0 `local_alert` 1.3.0 및 재동기화용 `health.active_site_alerts`(health 2.3.0)에 선택 `sound_mode`(REPEAT/ONCE/SILENT)를 추가한다. 필드가 없거나 모르는 값이면 기존 반복. I1 위험 이벤트·World 계약은 변경하지 않는다. ONCE 는 경보 단계별 한 묶음, SILENT 는 표시만이며 ACK 의미는 그대로다.
 
 이전 판 v7.13.0 — S15P31A101-492: `site_setup` 1.4.0 (`job_callback` 2.11.0, `job_heartbeat` 2.4.0) 선택 홀드아웃 전후 통계와 허용 오차를 추가한다.
