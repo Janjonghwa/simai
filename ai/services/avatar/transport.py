@@ -90,6 +90,7 @@ class AvatarSender:
         self.sequence = self.dropped = 0
         self._lock = threading.Lock()
         self._poses, self._assets = {}, {}
+        self._pose_times = {}
         self._seen = {}
         self._context = {}
         self._socket = None
@@ -106,21 +107,24 @@ class AvatarSender:
             self._seen[payload["world_id"]] = self.clock_ms()
             self._announce_at = 0.
 
-    def poses(self, poses, **context):
+    def poses(self, poses, *, produced_at_ms=None, **context):
         with self._lock:
             if self._context != context:
                 self.dropped += len(self._poses)
                 self._poses.clear()
+                self._pose_times.clear()
             self._context = context
             for pose in poses:
                 wid = pose["world_id"]
                 self.dropped += int(wid in self._poses)
                 self._poses[wid] = pose
+                self._pose_times[wid] = self.clock_ms() if produced_at_ms is None else produced_at_ms
 
     def discard_poses(self):
         with self._lock:
             self.dropped += len(self._poses)
             self._poses.clear()
+            self._pose_times.clear()
 
     def retain(self, active):
         with self._lock:
@@ -129,6 +133,7 @@ class AvatarSender:
             gone = set(self._poses) - active
             for wid in gone:
                 del self._poses[wid]
+                self._pose_times.pop(wid, None)
             self.dropped += len(gone)
 
     def _send(self, kind, payload):
@@ -169,11 +174,12 @@ class AvatarSender:
                 assets = list(self._assets.values()) if now >= self._announce_at else []
                 self._announce_at = now + 10 if assets else self._announce_at
                 poses, self._poses = list(self._poses.values()), {}
+                pose_times, self._pose_times = self._pose_times, {}
                 context, dropped = dict(self._context), self.dropped
             for asset in assets:
                 self._send("avatar_asset", asset)
                 self.sent_assets_total += 1
-            fresh = [p for p in poses if 0 <= self.clock_ms() - p["capture_time_ms"] <= self.max_age_ms]
+            fresh = [p for p in poses if 0 <= self.clock_ms() - pose_times[p["world_id"]] <= self.max_age_ms]
             for start in range(0, len(fresh), 64):
                 group = fresh[start:start + 64]
                 sequence = self.sequence

@@ -31,6 +31,9 @@ Tier 0 쪽(LoadWindow): 정리 주기(약 1초)마다 보정 T_lag(HealthReport.
 넘긴 큐 대기 초과 창·프레임 수. stats() 로 읽는다.
 
 시계는 주입받는다(wall_s: 표시 파일 수정 시각과 비교·계측 시각, monotonic: 안정 대기·linger).
+
+S15P31A101-498: 상시 아바타는 AvatarAdmissionGate로 처리 부하(processing)를 읽는다. 위 끝단 지연·큐 대기 규칙은
+분석 워커 AdmissionGate에 유지한다. 파일·예약·안정 재개·LIVE 유형 제한은 공통이다.
 """
 
 from __future__ import annotations
@@ -209,7 +212,7 @@ class Admission:
 
 
 class AdmissionGate:
-    """분석 워커·아바타 루프가 부르는 접수 문. check·stats 는 한 스레드에서 부른다고 가정한다."""
+    """접수 문. 포즈·외형 스레드가 함께 호출할 수 있어 check·stats를 직렬화한다."""
 
     def __init__(
         self,
@@ -221,6 +224,7 @@ class AdmissionGate:
     ) -> None:
         self.marker = Path(marker)
         self.policy = policy
+        self._lock = threading.RLock()
         self._wall_s = wall_s
         self._monotonic = monotonic
         self._ok_since: float | None = None
@@ -239,6 +243,10 @@ class AdmissionGate:
 
     def stats(self) -> dict[str, Any]:
         """계측 요약(로그·상태 표시용). 판정에 쓰지 않는다."""
+        with self._lock:
+            return self._stats()
+
+    def _stats(self) -> dict[str, Any]:
         return {
             "blocked": dict(self.blocked),
             "resets": dict(self.resets),
@@ -264,6 +272,10 @@ class AdmissionGate:
         return Admission(True, False, reason, self.policy.live_blocked_types, code)
 
     def check(self) -> Admission:
+        with self._lock:
+            return self._check()
+
+    def _check(self) -> Admission:
         now = self._monotonic()
         state, code, reason, marker_id, qwe = self._evaluate()
         blocked = self.policy.live_blocked_types
@@ -343,6 +355,9 @@ class AdmissionGate:
         state = reserve.get("state") if isinstance(reserve, dict) else None
         if state not in ADMIT_STATES:
             return "refuse", RESERVE_NOT_OK, f"Tier 0 GPU 선확보 상태 {state!r}", marker_id, 0
+        return self._evaluate_load(gp, marker_id)
+
+    def _evaluate_load(self, gp, marker_id):
         load = gp.get("load")
         if not isinstance(load, dict):
             return "refuse", MARKER_UNREADABLE, "지연 표본 형식이 틀렸다 → 모름", marker_id, 0
@@ -365,3 +380,29 @@ class AdmissionGate:
                     f"추론 대기 상한을 넘겨 버린 프레임 {qwe}개(창당 {self.policy.max_queue_wait_exceeded}개 초과)",
                     marker_id, 0)
         return "ok", OK, f"Tier 0 지연 {lag_max:.0f}ms ≤ 예산 {self.policy.lag_budget_ms}ms", marker_id, qwe
+
+
+AVATAR_JUDGE_BUDGET_MS = 100
+AVATAR_DETECT_BUDGET_MS = 150
+
+
+class AvatarAdmissionGate(AdmissionGate):
+    """아바타 전용 처리 부하 기준. 파일·GPU 예약·안정 대기 규칙은 기존 문과 같다."""
+
+    def _evaluate_load(self, gp, marker_id):
+        processing = gp.get("processing")
+        if not isinstance(processing, dict) or not isinstance(processing.get("detect_required"), bool):
+            return "refuse", LAG_UNKNOWN, "Tier 0 처리 부하 신호 없음 → 모름", marker_id, 0
+        stages = [("judge", AVATAR_JUDGE_BUDGET_MS)]
+        if processing["detect_required"]:
+            stages.append(("detect", AVATAR_DETECT_BUDGET_MS))
+        for stage, budget in stages:
+            load = processing.get(stage)
+            if (not isinstance(load, dict) or not _count(load.get("samples")) or load["samples"] == 0
+                    or not _count(load.get("unknown")) or load["unknown"] > 0
+                    or not _number(load.get("lag_ms_max")) or load["lag_ms_max"] < 0):
+                return "refuse", LAG_UNKNOWN, f"Tier 0 {stage} 처리 시간 모름", marker_id, 0
+            if load["lag_ms_max"] > budget:
+                return ("refuse", OVER_BUDGET, f"Tier 0 {stage} 처리 {load['lag_ms_max']:.1f}ms > {budget}ms",
+                        marker_id, 0)
+        return "ok", OK, "Tier 0 판정·검출 처리 부하 정상", marker_id, 0

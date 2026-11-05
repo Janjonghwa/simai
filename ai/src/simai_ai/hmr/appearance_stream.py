@@ -142,7 +142,8 @@ class AppearancePipeline:
         self.people[wid] = acc
         self.pending.pop(wid, None)
 
-    def update(self, frame, doc, snapshot, images, rig, states, upload, sender, clock_ms, admit, masks=None):
+    def update(self, frame, doc, snapshot, images, rig, states, upload, sender, clock_ms, admit, masks=None,
+               *, reserve_version=None):
         if self.calibration_version != frame.calibration_version:
             self.camera_colors.gains.clear()
             for acc in self.people.values():
@@ -203,7 +204,8 @@ class AppearancePipeline:
                 if not acc.due(t) or not admit():
                     continue
                 result = acc.result()
-                version = max(state.version, state.high_version) + 1
+                version = (reserve_version(wid) if reserve_version is not None
+                           else max(state.version, state.high_version) + 1)
                 state.high_version = version
                 asset = copy.deepcopy(state.asset)
                 asset.update(appearance_version=version, previous_appearance_version=max(state.history),

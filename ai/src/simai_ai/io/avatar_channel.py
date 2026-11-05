@@ -42,13 +42,14 @@ def avatar_channel_path(
 
 
 class LatestChannelWriter:
-    def __init__(self, path: Path, *, period_s: float = DEFAULT_PERIOD_S) -> None:
+    def __init__(self, path: Path, *, period_s: float = DEFAULT_PERIOD_S, clock_ms=None) -> None:
         self.path = path
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._pending = None
         self.period_s = period_s
+        self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
         self.dropped = self.errors = 0
         self._thread = threading.Thread(target=self._run, name="avatar-ipc", daemon=True)
         self._thread.start()
@@ -59,7 +60,7 @@ class LatestChannelWriter:
             return False
         try:
             self.dropped += int(self._pending is not None)
-            self._pending = (metadata, frames)
+            self._pending = ({**metadata, "produced_at_ms": self._clock_ms()}, frames)
         finally:
             self._lock.release()
         self._wake.set()

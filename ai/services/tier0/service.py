@@ -73,6 +73,8 @@ from simai_ai.config import BundleArchive, BundleRejected, BundleVerifier, Confi
 from simai_ai.eventlog import ACKED_NAME, AckedOffsetStore, EventJournal, JournalWriter, Outbox, TransportError
 from simai_ai.geometry.rig import CameraRig
 from simai_ai.gpu.admission import RUNNING, STARTING, LoadWindow, clean_stop_path, clean_stop_record, marker_section
+from simai_ai.gpu.admission import AVATAR_DETECT_BUDGET_MS, AVATAR_JUDGE_BUDGET_MS
+from simai_ai.gpu.processing import ProcessingWindow
 from simai_ai.gpu.reserve import GpuReservation
 from simai_ai.io import DecoderUnavailable, FreshnessConfig, I0Ingest, NvdecDecoder, PyAvDecoder, RecordingReplay
 from simai_ai.io.freshness import SkipReason
@@ -293,6 +295,9 @@ class Tier0Service:
         # GPU 공유(명세 3.2, simai_ai.gpu): 선확보와 분석 워커 접수 문에 싣는 지연 표본. gpu_torch 는 시험용 가짜 torch
         self.gpu = GpuReservation(settings.gpu_reserve_mb, device=settings.gpu_device, torch_module=gpu_torch)
         self.load = LoadWindow(settings.lag_budget_ms)
+        processing_clock = lambda: mono_ns() / 1_000_000_000
+        self.judge_processing = ProcessingWindow(AVATAR_JUDGE_BUDGET_MS, monotonic=processing_clock)
+        self.detect_processing = ProcessingWindow(AVATAR_DETECT_BUDGET_MS, monotonic=processing_clock)
         self._qwe_total = 0  # LIVE 입력의 QUEUE_WAIT_EXCEEDED 누계(직전 지연 표본 때)
         self.marker_error: str | None = None  # 표시 파일 쓰기 실패(분석 워커·GPU 큐는 표시 파일이 없으면 모름으로 본다)
         self._journal_fsync = journal_fsync
@@ -452,7 +457,7 @@ class Tier0Service:
         if s.env.get("SIMAI_AVATAR_SHARE") == "1":
             from simai_ai.io.avatar_channel import LatestChannelWriter, avatar_channel_path
             root = Path(s.env.get("SIMAI_ROOT") or "/workspace/simai")
-            avatar_writer = LatestChannelWriter(avatar_channel_path(s.env, root))
+            avatar_writer = LatestChannelWriter(avatar_channel_path(s.env, root), clock_ms=self._wall_ms)
         self.perception = Perception(self.rig, feed, session=session_prefix_from_ms(now), scene_version=s.scene_version,
                                      input_provenance=provenance, avatar_writer=avatar_writer)
         # 복원 Track 후보·이전 이벤트 연결: 첫 World Track update 전(판정 스레드 시작 전, -178)
@@ -1257,7 +1262,7 @@ class Tier0Service:
         next_at = time.monotonic()
         while not self._stop.is_set():
             try:
-                processed = feed.detect_once()
+                processed = self.detect_processing.run(feed.detect_once)
             except Exception:  # noqa: BLE001 - 한 묶음 실패로 검출 루프를 멈추지 않는다
                 log.exception("검출 루프 단계 실패")
                 processed = 0
@@ -1285,7 +1290,7 @@ class Tier0Service:
                 except Exception as e:  # noqa: BLE001 - 재생 입력 실패는 재생 실패로 남기고 끝낸다(LIVE 와 다름)
                     replay.fail(f"재생 입력 실패 ({type(e).__name__}: {e})")
             try:
-                self.judge.tick()
+                self.judge_processing.run(self.judge.tick)
             except Exception:  # noqa: BLE001 - 한 tick 실패로 판정 루프를 멈추지 않는다(로그·통계)
                 self.judge.stats.errors += 1
                 log.exception("판정 tick 실패")
@@ -1458,8 +1463,12 @@ class Tier0Service:
 
     def _gpu_section(self, phase: str) -> dict[str, Any]:
         load = self.load.take() if phase == RUNNING else None
-        return marker_section(phase=phase, reserve=self.gpu.status(), load=load, written_at_ms=self._wall_ms(),
-                              pid=os.getpid())
+        section = marker_section(phase=phase, reserve=self.gpu.status(), load=load, written_at_ms=self._wall_ms(),
+                                 pid=os.getpid())
+        section["processing"] = {"judge": self.judge_processing.take(), "detect": self.detect_processing.take(),
+                                 "detect_required": isinstance(getattr(getattr(self, "perception", None), "feed", None),
+                                                               DetectorFeed)}
+        return section
 
     def _write_phase_marker(self, phase: str) -> None:
         """기동 중·기동 실패 표시 파일(status 없이). 쓰지 못하면 로그만 남긴다."""
