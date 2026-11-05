@@ -66,4 +66,25 @@ class MotionMatchTest {
         assertThat(a[7]).isCloseTo(2, within(1e-9));
         assertThat(MotionMatch.coverage(a)).isCloseTo(5 / 10.0, within(1e-9));
     }
+
+    @Test
+    void 가속도_크기는_멈춘_손목이면_중력이고_NaN_이웃은_NaN() {
+        double[] x = new double[8];
+        double[] y = new double[8];
+        double[] z = {1, 1, 1, Double.NaN, 1, 1, 1, 1};
+        double[] m = MotionMatch.specificForceMagnitude(x, y, z);
+        assertThat(m[1]).isCloseTo(MotionMatch.GRAVITY, within(1e-9));
+        assertThat(m[3]).isNaN();
+        assertThat(m[2]).isNaN();
+        // 수평으로 등가속(x = t², a = 2): |g + a| = sqrt(2² + g²)
+        double[] xs = new double[8];
+        for (int i = 0; i < xs.length; i++) {
+            xs[i] = (i / MotionMatch.RATE_HZ) * (i / MotionMatch.RATE_HZ);
+        }
+        double[] flat = {1, 1, 1, 1, 1, 1, 1, 1};
+        assertThat(MotionMatch.specificForceMagnitude(xs, new double[8], flat)[3])
+                .isCloseTo(Math.sqrt(4 + MotionMatch.GRAVITY * MotionMatch.GRAVITY), within(1e-6));
+        assertThat(MotionMatch.rms(new double[] {3, Double.NaN, 4})).isCloseTo(Math.sqrt(12.5), within(1e-9));
+        assertThat(MotionMatch.rms(new double[] {Double.NaN})).isNaN();
+    }
 }

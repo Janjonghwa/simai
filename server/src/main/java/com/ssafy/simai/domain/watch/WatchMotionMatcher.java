@@ -60,6 +60,19 @@ public class WatchMotionMatcher implements DisposableBean {
     static final double WALK_RMS = 0.8;
     /** 트랙이 걷는 중인 수평 속력(m/s) */
     static final double WALK_SPEED = 0.3;
+    /**
+     * 손 흔들기 체크인(S15P31A101-508). 워치 창 RMS 가 이 이상이면 크게 흔드는 창으로 본다(걷는 창 0.8 보다 훨씬 큼: 손목을
+     * 0.1 m 이상 2 Hz 안팎으로 흔들면 |g + a| 가 수 m/s² 로 변한다). 워치 앱은 서 있어도 걸음 시점을 세므로(대역 봉우리 0.5 이상)
+     * 걸음 시점 유무로는 흔들기와 걷기를 가를 수 없다. 가르는 것은 같은 창에서 몸통이 멈춰 있는 트랙인가이다
+     */
+    static final double WAVE_RMS = 2.0;
+    /** 몸통이 멈춰 있다고 보는 기준: 평균 수평 속력(m/s)과 골반 높이 표준편차(m, 삼각측량 잡음 1~2 cm 보다 큼) */
+    static final double STILL_SPEED = 0.2;
+    static final double STILL_PELVIS_STD = 0.03;
+    /** 손목이 크게 움직인다고 보는 기준: 대역 통과한 3D 위치의 RMS(m). 잡음 1~2 cm 보다 크고 손 흔들기(진폭 10 cm 이상, RMS 7 cm)보다 작게 */
+    static final double WAVE_MOVE_M = 0.04;
+    /** 몸통이 멈춰 있고 손목도 관측되는데 손목이 움직이지 않으면, 크게 흔드는 워치의 주인이 아니라는 반대 근거 */
+    static final double WAVE_REJECT = -0.3;
     static final long SUSPECT_MS = 3_000;
     static final long TRACK_STALE_MS = 3_000;
     static final long TRACK_GONE_MS = 10_000;
@@ -74,6 +87,7 @@ public class WatchMotionMatcher implements DisposableBean {
     static final long MAX_WINDOW_MS = 10_000;
     /** 대조 스레드에 쌓아 둘 world_state 상한(10 Hz 로 5초) */
     static final int MAX_PENDING_WORLD = 50;
+    static final int MAX_MERGE_HANDLED = 2_000;
     /** 트랙 표본을 비교 시각에 맞출 때 허용하는 차이 */
     static final long SAMPLE_TOLERANCE_MS = 60;
     private static final Set<String> WRIST_LAYOUTS = Set.of("COCO17", "HALPE26");
@@ -81,8 +95,18 @@ public class WatchMotionMatcher implements DisposableBean {
     private static final int R_WRIST = 10;
     private static final Logger log = LoggerFactory.getLogger(WatchMotionMatcher.class);
 
-    private record Sample(double leftZ, double rightZ, double pelvisZ, double speed) {
+    /** 손목은 3D(x, y, z), 관측 없음·추정(inferred)은 NaN */
+    private record Sample(double[] left, double[] right, double pelvisZ, double speed) {
+        double leftZ() {
+            return left[2];
+        }
+
+        double rightZ() {
+            return right[2];
+        }
     }
+
+    private static final double[] NO_JOINT = {Double.NaN, Double.NaN, Double.NaN};
 
     private static final class Track {
         final TreeMap<Long, Sample> samples = new TreeMap<>();
@@ -98,6 +122,7 @@ public class WatchMotionMatcher implements DisposableBean {
         final double rate;
         final boolean walking;
         final boolean still;
+        final double rms;
         boolean scored;
 
         Window(long start, long end, double[] values, double rate, double rms, boolean hasPeak) {
@@ -105,6 +130,7 @@ public class WatchMotionMatcher implements DisposableBean {
             this.end = end;
             this.values = values;
             this.rate = rate;
+            this.rms = rms;
             this.walking = hasPeak && rms >= WALK_RMS;
             this.still = !hasPeak;
         }
@@ -117,6 +143,8 @@ public class WatchMotionMatcher implements DisposableBean {
     private final Clock clock;
     private final ScheduledExecutorService executor;
 
+    /** 이미 처리한 병합("옛>새"). aliases 는 한동안 계속 실려 오므로 한 번만 처리하려고 기억한다(오래된 것부터 버림) */
+    private final LinkedHashSet<String> mergeHandled = new LinkedHashSet<>();
     private final Map<String, Track> tracks = new HashMap<>();
     private final Map<String, Deque<Window>> windows = new HashMap<>();
     private final Map<String, Map<String, Double>> scores = new HashMap<>();
@@ -212,9 +240,22 @@ public class WatchMotionMatcher implements DisposableBean {
             }
             buf.revision = revision;
             // 병합: 합쳐진 옛 ID 의 배정은 끝낸다. 분할: 원래 ID 와 새 ID 모두 잠시 잇지 않는다
+            // 병합(S15P31A101-508): 옛 ID 에 걸린 배정(MOTION_MATCH·MANUAL)은 살아남은 ID 로 옮긴다. 같은 사람의 트랙 조각이 합쳐진 것이고
+            // 12차에서 ID 가 자주 바뀌어 매번 풀리면 워치가 쓸모없어서다. 옮긴 배정은 의심 구간 없이 이어 가고 옛 점수를 같이 옮긴다.
+            // 옮기지 못하면(둘 다 대조 배정·수동 충돌) 예전처럼 둘 다 풀고 3초 잇지 않는다
             for (JsonNode alias : track.path("aliases")) {
                 String old = alias.asString("");
-                if (!old.isEmpty() && tracks.containsKey(old)) {
+                if (old.isEmpty() || old.equals(id) || !mergeHandled.add(old + ">" + id)) {
+                    continue; // 같은 병합은 aliases 에 계속 실려도 한 번만 처리한다
+                }
+                while (mergeHandled.size() > MAX_MERGE_HANDLED) {
+                    mergeHandled.remove(mergeHandled.iterator().next());
+                }
+                Binding moved = bindings.followMerge(old, id);
+                if (moved != null) {
+                    carryScores(old, id, moved.deviceId());
+                    tracks.remove(old);
+                } else if (tracks.containsKey(old)) {
                     identityChanged(old);
                     tracks.remove(old);
                     identityChanged(id);
@@ -233,23 +274,34 @@ public class WatchMotionMatcher implements DisposableBean {
             double pelvisZ = pelvis.isArray() && pelvis.size() >= 3 ? pelvis.get(2).asDouble() : Double.NaN;
             JsonNode skeleton = track.path("skeleton");
             boolean wrists = WRIST_LAYOUTS.contains(skeleton.path("joint_layout").asString(""));
-            buf.samples.put(t, new Sample(wrists ? jointZ(skeleton, L_WRIST) : Double.NaN,
-                    wrists ? jointZ(skeleton, R_WRIST) : Double.NaN, pelvisZ, speed));
+            buf.samples.put(t, new Sample(wrists ? joint(skeleton, L_WRIST) : NO_JOINT,
+                    wrists ? joint(skeleton, R_WRIST) : NO_JOINT, pelvisZ, speed));
             buf.lastSeen = t;
             buf.samples.headMap(t - BUFFER_MS).clear();
         }
     }
 
-    /** 관측(삼각측량)한 VALID·UNCERTAIN 관절의 Z. HMR 추정(inferred)·없음은 NaN(꾸민 움직임과 대조하지 않는다) */
-    private static double jointZ(JsonNode skeleton, int index) {
+    /** 관측(삼각측량)한 VALID·UNCERTAIN 관절의 XYZ. HMR 추정(inferred)·없음은 NaN(꾸민 움직임과 대조하지 않는다) */
+    private static double[] joint(JsonNode skeleton, int index) {
         JsonNode joint = skeleton.path("joints").path(index);
         String validity = skeleton.path("validity").path(index).asString("");
         String source = skeleton.path("joint_source").path(index).asString("");
         if (!joint.isArray() || joint.size() < 3 || "UNAVAILABLE".equals(validity) || validity.isEmpty()
                 || !"observed".equals(source)) {
-            return Double.NaN;
+            return NO_JOINT;
         }
-        return joint.get(2).asDouble();
+        return new double[] {joint.get(0).asDouble(), joint.get(1).asDouble(), joint.get(2).asDouble()};
+    }
+
+    /** 병합으로 옮긴 배정의 점수만 살아남은 ID 로 옮기고, 그 밖의 칸은 지운다(합쳐진 트랙의 움직임이 달라졌다) */
+    private void carryScores(String old, String survivor, String device) {
+        scores.forEach((d, row) -> {
+            Double carried = row.remove(old);
+            row.remove(survivor);
+            if (d.equals(device) && carried != null) {
+                row.put(survivor, carried);
+            }
+        });
     }
 
     private void identityChanged(String worldId) {
@@ -407,6 +459,12 @@ public class WatchMotionMatcher implements DisposableBean {
             speed[k] = s == null ? Double.NaN : s.speed();
         }
         Boolean trackWalking = MotionMatch.coverage(speed) >= 0.5 ? mean(speed) >= WALK_SPEED : null;
+        if (w.rms >= WAVE_RMS) {
+            double wave = waveScore(w, t, watch, speed, pelvis);
+            if (!Double.isNaN(wave)) {
+                return wave;
+            }
+        }
         if (!w.walking) {
             if (trackWalking == null || !w.still) {
                 return Double.NaN; // 손에 들고 만지는 창 등: 근거로 쓰지 않는다
@@ -425,6 +483,68 @@ public class WatchMotionMatcher implements DisposableBean {
             return Double.NaN;
         }
         return trackWalking ? 0.2 : -0.5;
+    }
+
+    /**
+     * 손 흔들기 체크인(S15P31A101-508): 워치가 크게 흔들리는 창에서 몸통이 멈춰 있는(수평 속력·골반 높이 변화 작음) 트랙의 관측 손목이
+     * 크게 움직였으면, 워치 신호와 손목 3D 가속도 크기 |g + a| 를 대역 통과해 밀어 본 상관을 낸다(손목 둘 중 높은 값).
+     * 몸통이 멈췄고 손목이 관측되는데 둘 다 안 움직이면 {@link #WAVE_REJECT}. 몸통이 걷거나 관절·골반을 모르면 NaN(걸음 대조가 맡는다).
+     */
+    private static double waveScore(Window w, Track t, double[] watch, double[] speed, double[] pelvis) {
+        if (MotionMatch.coverage(speed) < 0.5 || mean(speed) >= STILL_SPEED || MotionMatch.coverage(pelvis) < 0.6
+                || std(pelvis) >= STILL_PELVIS_STD) {
+            return Double.NaN;
+        }
+        int n = watch.length;
+        double best = Double.NaN;
+        boolean observed = false;
+        for (boolean leftHand : new boolean[] {true, false}) {
+            double[] x = new double[n];
+            double[] y = new double[n];
+            double[] z = new double[n];
+            for (int k = 0; k < n; k++) {
+                Sample s = nearest(t, w.start + Math.round(k * 1000 / MotionMatch.RATE_HZ));
+                double[] j = s == null ? NO_JOINT : leftHand ? s.left() : s.right();
+                x[k] = j[0];
+                y[k] = j[1];
+                z[k] = j[2];
+            }
+            if (MotionMatch.coverage(z) < 0.6) {
+                continue;
+            }
+            observed = true;
+            double move = Math.sqrt(sq(MotionMatch.rms(MotionMatch.bandpass(x))) + sq(MotionMatch.rms(MotionMatch.bandpass(y)))
+                    + sq(MotionMatch.rms(MotionMatch.bandpass(z))));
+            if (Double.isNaN(move) || move < WAVE_MOVE_M) {
+                continue;
+            }
+            double[] accel = MotionMatch.bandpass(MotionMatch.specificForceMagnitude(x, y, z));
+            if (MotionMatch.coverage(accel) < 0.6) {
+                continue;
+            }
+            best = max(best, MotionMatch.bestLaggedCorrelation(watch, accel, MAX_LAG));
+        }
+        if (!Double.isNaN(best)) {
+            return best;
+        }
+        return observed ? WAVE_REJECT : Double.NaN;
+    }
+
+    private static double sq(double v) {
+        return v * v;
+    }
+
+    private static double std(double[] x) {
+        double m = mean(x);
+        double sum = 0;
+        int n = 0;
+        for (double v : x) {
+            if (!Double.isNaN(v)) {
+                sum += (v - m) * (v - m);
+                n++;
+            }
+        }
+        return n == 0 ? Double.NaN : Math.sqrt(sum / n);
     }
 
     private static double correlate(double[] watch, double[] z, double weight) {

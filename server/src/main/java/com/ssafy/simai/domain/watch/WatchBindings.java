@@ -115,6 +115,76 @@ public class WatchBindings {
                 .addValue("reason", reason).addValue("now", OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC)));
     }
 
+    /**
+     * World ID 병합(world_state aliases): 사라진 {@code oldWorldId} 에 걸린 배정을 살아남은 {@code survivorId} 로 옮긴다
+     * (S15P31A101-508). 새 행을 같은 워치·방식·점수로 더하고 옛 행은 ID_MERGED 로 닫는다(덮어쓰지 않는다).
+     * <ul>
+     *   <li>살아남은 ID 에 배정이 없으면 옮긴다(MOTION_MATCH·MANUAL 모두)</li>
+     *   <li>옛 것이 MANUAL, 살아남은 것이 MOTION_MATCH 면 대조 배정을 REPLACED 로 닫고 수동을 옮긴다(관리자 선택이 이긴다)</li>
+     *   <li>살아남은 ID 가 이미 MANUAL 이면 그대로 두고 옛 MANUAL 은 ID_MERGED 로 닫는다(옛 MOTION_MATCH 는 호출자가 푼다)</li>
+     *   <li>둘 다 MOTION_MATCH 면 어느 쪽이 맞는지 모르니 옮기지 않는다(호출자가 둘 다 푼다)</li>
+     * </ul>
+     *
+     * @return 옮겼으면 옮긴 새 배정, 아니면 null
+     */
+    @Transactional
+    public Binding followMerge(String oldWorldId, String survivorId) {
+        if (oldWorldId.equals(survivorId)) {
+            return null;
+        }
+        Binding old = activeFor(oldWorldId);
+        if (old == null) {
+            return null;
+        }
+        Binding survivor = activeFor(survivorId);
+        OffsetDateTime now = OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
+        MapSqlParameterSource params = new MapSqlParameterSource().addValue("now", now).addValue("old", oldWorldId)
+                .addValue("survivor", survivorId);
+        boolean oldManual = "MANUAL".equals(old.method());
+        if (survivor != null) {
+            if ("MANUAL".equals(survivor.method())) {
+                if (oldManual) {
+                    jdbc.update("""
+                            UPDATE watch_binding SET unbound_at = :now, unbind_reason = 'ID_MERGED'
+                            WHERE unbound_at IS NULL AND world_id = :old
+                            """, params);
+                }
+                return null;
+            }
+            if (!oldManual) {
+                return null;
+            }
+            jdbc.update("""
+                    UPDATE watch_binding SET unbound_at = :now, unbind_reason = 'REPLACED'
+                    WHERE unbound_at IS NULL AND world_id = :survivor
+                    """, params);
+        }
+        jdbc.update("""
+                UPDATE watch_binding SET unbound_at = :now, unbind_reason = 'ID_MERGED'
+                WHERE unbound_at IS NULL AND world_id = :old
+                """, params);
+        params.addValue("device", old.deviceId()).addValue("method", old.method()).addValue("score", old.score());
+        // 수동 배정의 배정자는 그대로 이어받는다(watch_binding_manual_actor_check)
+        params.addValue("oldId", old.bindingId());
+        boolean inserted = !jdbc.queryForList("""
+                INSERT INTO watch_binding (device_id, world_id, method, score, bound_by_user_id, bound_at)
+                SELECT :device, :survivor, :method, :score, bound_by_user_id, :now FROM watch_binding WHERE binding_id = :oldId
+                ON CONFLICT DO NOTHING RETURNING binding_id
+                """, params, Long.class).isEmpty();
+        return inserted ? new Binding(-1, old.deviceId(), survivorId, old.method(), old.score(), now.toInstant()) : null;
+    }
+
+    private Binding activeFor(String worldId) {
+        List<Binding> rows = jdbc.query("""
+                SELECT b.binding_id, b.device_id, b.world_id, b.method, b.score, b.bound_at
+                FROM watch_binding b JOIN device d ON d.device_id = b.device_id
+                WHERE b.unbound_at IS NULL AND d.revoked_at IS NULL AND b.world_id = :world
+                """, new MapSqlParameterSource("world", worldId),
+                (rs, i) -> new Binding(rs.getLong("binding_id"), rs.getString("device_id"), rs.getString("world_id"),
+                        rs.getString("method"), rs.getDouble("score"), rs.getTimestamp("bound_at").toInstant()));
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     /** 그 워치의 지금 배정을 RELEASED 로 끝낸다. 없으면 BINDING_NOT_FOUND */
     public void release(String deviceId) {
         int rows = jdbc.update("""
