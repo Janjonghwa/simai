@@ -339,7 +339,7 @@ def test_envelope_versions_follow_contract_modules() -> None:
     from services.tier0.i1_client import MESSAGE_SCHEMA_VERSIONS, Envelope
     from simai_ai.tracking.world_state import WORLD_STATE_SCHEMA_VERSION
 
-    assert MESSAGE_SCHEMA_VERSIONS["health"] == DOWNSTREAM_VERSIONS["health"] == HEALTH_SCHEMA_VERSION == "2.2.0"
+    assert MESSAGE_SCHEMA_VERSIONS["health"] == DOWNSTREAM_VERSIONS["health"] == HEALTH_SCHEMA_VERSION == "2.3.0"
     assert MESSAGE_SCHEMA_VERSIONS["world_state"] == WORLD_STATE_SCHEMA_VERSION == "2.1.0"
 
     class _FixedClock:
@@ -349,7 +349,7 @@ def test_envelope_versions_follow_contract_modules() -> None:
     env = Envelope("tier0-01", _FixedClock(), new_msg_id=lambda: "0192a6f0-7c1e-7b3a-9f2d-000000000001")
     payload = _reporter(_Clock(), capture_clock=None).payload()
     msg = env.make("health", payload)
-    assert msg["schema_version"] == "2.2.0" and payload["pipeline_lag_ms"] is None
+    assert msg["schema_version"] == "2.3.0" and payload["pipeline_lag_ms"] is None
     assert schema_errors(msg, "health") == []
 
 

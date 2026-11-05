@@ -617,6 +617,7 @@ class HealthActiveSiteAlert(BaseModel):
     summary: Annotated[StrictStr, Field(min_length=1)]
     rule_id: Annotated[StrictStr | MISSING, Field(min_length=1)] = MISSING
     zone_id: Annotated[StrictStr | None | MISSING, Field(min_length=1)] = MISSING
+    sound_mode: Literal['REPEAT', 'ONCE', 'SILENT'] | MISSING = MISSING
 
 
 class Frames1(BaseModel):
@@ -975,6 +976,7 @@ class Payload25(BaseModel):
     summary: Annotated[StrictStr, Field(min_length=1)]
     observation_time: DefsTimestampMs
     evaluated_at: DefsTimestampMs
+    sound_mode: Literal['REPEAT', 'ONCE', 'SILENT'] | MISSING = MISSING
     acknowledged: StrictBool
 
 
@@ -2183,7 +2185,7 @@ class WorldId(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(min_length=1)]
 
 
-class Payload45(BaseModel):
+class Payload44(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )

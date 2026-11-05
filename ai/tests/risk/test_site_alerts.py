@@ -102,6 +102,7 @@ def test_raised_high_is_listed_with_contract_fields(h):
             "source": "LIVE",
             "acknowledged": False,
             "severity": "HIGH",
+            "sound_mode": "REPEAT",
             "summary": "R1 z-04: dwell_s 1.40",
             "rule_id": "R1",
             "zone_id": "z-04",

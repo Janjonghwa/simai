@@ -56,7 +56,10 @@ export interface AlarmSound {
   /** 누르는 순간(pointerdown·keydown)에 막혀 있었는지 적어 둔다. 그 입력이 막힘을 푼 것인지 toggle 이 알아야 한다. */
   notePress(): void;
   /** 울릴 등급을 정한다. 바뀌면 바로 그 소리로 갈아타고, null 이면 멈춘다. 같은 등급이면 아무것도 하지 않는다. */
-  ring(severity: RingSeverity | null): void;
+  ring(
+    severity: RingSeverity | null,
+    options?: { once: boolean; key: string; keys?: readonly string[] },
+  ): void;
   /** 소리를 끄거나 켠다. 저장소에 남긴다(저장할 수 없어도 이 화면에서는 반영한다). */
   setMuted(muted: boolean): void;
   /**
@@ -121,6 +124,11 @@ export function createAlarmSound(
   let pressBlocked = false;
   let muted = readMuted(getStorage);
   let want: RingSeverity | null = null;
+  let onceKey: string | null = null;
+  const playedKeys = new Set<string>();
+  let onceKeys: readonly string[] | null = null;
+  const onceConsumed = () => onceKeys !== null && onceKeys.every((key) => playedKeys.has(key));
+  let playingKey: string | null = null;
   /** 지금 되풀이하고 있는 등급. */
   let playing: RingSeverity | null = null;
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -156,7 +164,7 @@ export function createAlarmSound(
   const burst = () => {
     const ctx = context;
     const pattern = playing ? SOUND_PATTERN[playing] : null;
-    if (!ctx || !pattern) return;
+    if (!ctx || !pattern || onceConsumed()) return;
     if (ctx.state !== 'running') {
       // 절전 복귀·오디오 장치 변경 등으로 멈췄다. 이미 사용자가 누른 페이지라 대개 입력 없이 다시 깨워진다.
       if (wasRunning && ctx.state !== 'closed') ctx.resume().catch(() => undefined);
@@ -164,19 +172,21 @@ export function createAlarmSound(
     }
     cut();
     oscillator = scheduleBurst(ctx, pattern);
+    onceKeys?.forEach((key) => playedKeys.add(key));
   };
 
   /** 울릴 등급·끔·막힘에 맞춰 반복을 시작·교체·멈춘다. 겹치지 않게 늘 한 가지만. */
   const sync = (restart = false) => {
     const next = muted ? null : want;
-    if (next !== playing || restart) {
+    if (next !== playing || playingKey !== onceKey || (restart && !onceConsumed())) {
       if (timer !== null) clearInterval(timer);
       timer = null;
       cut();
       playing = next;
+      playingKey = onceKey;
       if (next) {
         burst();
-        timer = setInterval(burst, SOUND_PATTERN[next].everyMs);
+        if (onceKey === null) timer = setInterval(burst, SOUND_PATTERN[next].everyMs);
       }
     }
     commit();
@@ -230,7 +240,9 @@ export function createAlarmSound(
     notePress() {
       pressBlocked = !isRunning();
     },
-    ring(severity) {
+    ring(severity, options) {
+      onceKey = options?.once ? options.key : null;
+      onceKeys = options?.once ? (options.keys?.length ? options.keys : [options.key]) : null;
       want = severity;
       sync();
     },

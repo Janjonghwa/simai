@@ -45,7 +45,7 @@ log = logging.getLogger("services.tier0.i0_control")
 
 # I0 아래로(Tier 0 → 노트북) 메시지와 봉투 schema_version (그 메시지 계약이 마지막으로 바뀐 버전, contracts/examples)
 DOWNSTREAM_VERSIONS: Mapping[str, str] = {
-    "local_alert": "1.2.0",
+    "local_alert": "1.3.0",
     "alarm_stop": "2.1.0",
     "health": HEALTH_SCHEMA_VERSION,  # I1 과 같은 형식(health.py 가 정한다, 2.2.0 -480)
     "clock_sync_request": "1.3.0",

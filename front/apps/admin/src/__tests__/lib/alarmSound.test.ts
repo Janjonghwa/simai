@@ -512,3 +512,42 @@ describe('installAudioUnlock', () => {
     expect(sound.getSnapshot().muted).toBe(true);
   });
 });
+
+describe('1회 경보', () => {
+  it('한 묶음만 울리며 갱신·mute·절전 복귀에 반복하지 않는다', async () => {
+    const { sound, ctx } = await unlocked();
+    sound.ring('HIGH', { once: true, key: 'r3:1' });
+    expect(ctx.oscillators).toHaveLength(1);
+    vi.advanceTimersByTime(60_000);
+    sound.ring('HIGH', { once: true, key: 'r3:1' });
+    sound.setMuted(true);
+    sound.setMuted(false);
+    ctx.interrupt();
+    ctx.run();
+    expect(ctx.oscillators).toHaveLength(1);
+    sound.ring('HIGH', { once: true, key: 'r3:2' });
+    expect(ctx.oscillators).toHaveLength(2);
+  });
+
+  it('잠겨서 못 울린 1회는 잠금 해제 뒤 한 번 울린다', async () => {
+    const { sound, contexts } = setup({ blocked: true });
+    sound.prepare();
+    sound.ring('HIGH', { once: true, key: 'r3:1' });
+    expect(contexts[0]!.oscillators).toHaveLength(0);
+    contexts[0]!.blocked = false;
+    await sound.unlock();
+    expect(contexts[0]!.oscillators).toHaveLength(1);
+    vi.advanceTimersByTime(60_000);
+    expect(contexts[0]!.oscillators).toHaveLength(1);
+  });
+});
+
+it('다른 사람의 새 1회 경보는 울리고, 같이 알린 이전 경보가 남아도 반복하지 않는다', async () => {
+  const { sound, ctx } = await unlocked();
+  sound.ring('HIGH', { once: true, key: 'a', keys: ['a'] });
+  sound.ring('HIGH', { once: true, key: 'a|b', keys: ['a', 'b'] });
+  expect(ctx.oscillators).toHaveLength(2);
+  sound.ring('HIGH', { once: true, key: 'b', keys: ['b'] });
+  sound.ring('HIGH', { once: true, key: 'a', keys: ['a'] });
+  expect(ctx.oscillators).toHaveLength(2);
+});
