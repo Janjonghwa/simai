@@ -1,7 +1,16 @@
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { CctvPage } from '@/features/cctv/CctvPage';
+import {
+  IDENTITY_VIEW,
+  panBy,
+  panZoomTransform,
+  visibleRect,
+  wheelFactor,
+  zoomAt,
+} from '@/features/cctv/panZoom';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
 import { useRemoteStatus } from '@/features/cctv/useRemoteStatus';
+import { DRAG_THRESHOLD_PX } from '@/hooks/useFloatSpot';
 import { viewerHealthAt } from '@/mocks/realtimeScenario';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore, type Role } from '@/store/session.store';
@@ -145,6 +154,126 @@ describe('CctvPage 관리자 · 중계가 이어졌을 때', () => {
     act(() => useCctvStore.setState({ cameras: [], views: {} }));
     render(<CctvPage />);
     expect(screen.queryAllByRole('button', { name: /크게 보기$/ })).toHaveLength(0);
+  });
+});
+
+// jsdom 은 칸 크기를 계산하지 않아 800×450 으로 흉내 낸다. 칸 가운데는 (400, 225) 다.
+const TILE_BOX = { left: 0, top: 0, width: 800, height: 450 };
+const CENTER = { x: 0.5, y: 0.5 };
+const at = (x: number, y: number) => ({ clientX: x, clientY: y, button: 0, buttons: 1 });
+
+describe('CctvPage 관리자 · 확대·이동', () => {
+  beforeEach(() => {
+    seedRealtime();
+    openRelay();
+  });
+
+  function sizedTile(id: string) {
+    const tile = screen.getByRole('button', { name: new RegExp(`^${id} (크게|작게) 보기$`) });
+    vi.spyOn(tile, 'getBoundingClientRect').mockReturnValue(TILE_BOX as DOMRect);
+    return tile;
+  }
+  const canvasOf = (id: string) => screen.getByLabelText<HTMLCanvasElement>(`${id} 영상`);
+  const wheelUp = (tile: HTMLElement, deltaY = -500) =>
+    fireEvent.wheel(tile, { deltaY, clientX: 400, clientY: 225 });
+  const dragTo = (tile: HTMLElement, x: number, y: number) => {
+    fireEvent.pointerDown(tile, at(400, 225));
+    fireEvent.pointerMove(tile, at(x, y));
+    fireEvent.pointerUp(tile, at(x, y));
+  };
+  const zoomedView = zoomAt(IDENTITY_VIEW, CENTER, wheelFactor(-500, 0));
+
+  it('휠을 위로 굴리면 영상이 포인터 밑을 기준으로 확대되고 작은 지도가 뜬다', () => {
+    render(<CctvPage />);
+    const tile = sizedTile('cam2');
+    expect(canvasOf('cam2').style.transform).toBe('');
+    expect(screen.queryByRole('img', { name: '확대한 자리' })).toBeNull();
+
+    wheelUp(tile);
+
+    expect(canvasOf('cam2').style.transform).toBe(panZoomTransform(zoomedView));
+    const area = screen.getByRole('img', { name: '확대한 자리' }).firstElementChild as HTMLElement;
+    const rect = visibleRect(zoomedView);
+    expect(parseFloat(area.style.left)).toBeCloseTo(rect.left * 100, 3);
+    expect(parseFloat(area.style.width)).toBeCloseTo(rect.width * 100, 3);
+    // 다른 칸은 그대로다.
+    expect(canvasOf('cam1').style.transform).toBe('');
+  });
+
+  it('휠은 페이지 스크롤을 막고, 아래로 굴려 1배까지 줄이면 확대가 풀린다', () => {
+    render(<CctvPage />);
+    const tile = sizedTile('cam2');
+    expect(wheelUp(tile)).toBe(false);
+    fireEvent.wheel(tile, { deltaY: 5000, clientX: 400, clientY: 225 });
+    expect(canvasOf('cam2').style.transform).toBe('');
+    expect(screen.queryByRole('img', { name: '확대한 자리' })).toBeNull();
+  });
+
+  it('확대하기 전에는 끌어도 옮겨지지 않고 누르면 그대로 크게 보기로 바뀐다', () => {
+    render(<CctvPage />);
+    const tile = sizedTile('cam2');
+    dragTo(tile, 700, 225);
+    expect(canvasOf('cam2').style.transform).toBe('');
+    fireEvent.click(tile, { detail: 1 });
+    expect(screen.getByRole('button', { name: 'cam2 작게 보기' })).toBeTruthy();
+  });
+
+  it(`확대 중 ${DRAG_THRESHOLD_PX}px 넘게 끌면 옮겨지고, 놓은 뒤 이어지는 클릭은 크게 보기를 바꾸지 않는다`, () => {
+    render(<CctvPage />);
+    const tile = sizedTile('cam2');
+    wheelUp(tile);
+
+    dragTo(tile, 500, 225);
+
+    // 오른쪽으로 100px(칸 폭의 1/8) 끌면 그림이 그만큼 따라온다.
+    expect(canvasOf('cam2').style.transform).toBe(panZoomTransform(panBy(zoomedView, 0.125, 0)));
+    fireEvent.click(tile, { detail: 1 });
+    expect(screen.getByRole('button', { name: 'cam2 크게 보기' })).toBe(tile);
+    // 삼킨 것은 그 한 번뿐이라 다음 클릭은 크게 보기로 바뀐다.
+    fireEvent.click(tile, { detail: 1 });
+    expect(screen.getByRole('button', { name: 'cam2 작게 보기' })).toBe(tile);
+  });
+
+  it(`확대 중 ${DRAG_THRESHOLD_PX}px 이하로 움직인 누르기는 클릭이라 옮겨지지 않는다`, () => {
+    render(<CctvPage />);
+    const tile = sizedTile('cam2');
+    wheelUp(tile);
+    const before = canvasOf('cam2').style.transform;
+
+    dragTo(tile, 400 + DRAG_THRESHOLD_PX, 225);
+    fireEvent.click(tile, { detail: 1 });
+
+    expect(canvasOf('cam2').style.transform).toBe(before);
+    expect(screen.getByRole('button', { name: 'cam2 작게 보기' })).toBe(tile);
+  });
+
+  it('확대한 채 크게 보기와 4분할을 오가도 같은 캔버스에 같은 자리가 남는다', () => {
+    render(<CctvPage />);
+    const tile = sizedTile('cam2');
+    const canvas = canvasOf('cam2');
+    wheelUp(tile);
+    const zoomed = canvas.style.transform;
+
+    fireEvent.click(tile);
+    expect(screen.getByRole('button', { name: 'cam2 작게 보기' })).toBe(tile);
+    expect(canvasOf('cam2')).toBe(canvas);
+    expect(canvas.style.transform).toBe(zoomed);
+
+    fireEvent.click(tile);
+    expect(canvas.style.transform).toBe(zoomed);
+  });
+
+  it('+ 는 확대하고 0 은 1배로 되돌린다. 브라우저 확대 키(Ctrl)는 건드리지 않는다', () => {
+    render(<CctvPage />);
+    const tile = sizedTile('cam2');
+    fireEvent.keyDown(tile, { key: '+' });
+    expect(canvasOf('cam2').style.transform).not.toBe('');
+
+    expect(fireEvent.keyDown(tile, { key: '0', ctrlKey: true })).toBe(true);
+    expect(canvasOf('cam2').style.transform).not.toBe('');
+
+    expect(fireEvent.keyDown(tile, { key: '0' })).toBe(false);
+    expect(canvasOf('cam2').style.transform).toBe('');
   });
 });
 

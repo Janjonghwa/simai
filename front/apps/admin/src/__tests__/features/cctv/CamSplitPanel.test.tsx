@@ -153,6 +153,25 @@ describe('CamSplitPanel 관리자', () => {
     expect(screen.queryByRole('img')).toBeNull();
   });
 
+  it('영상 칸에서 휠을 굴리면 영상이 확대되고 작은 지도가 뜬다', () => {
+    openSplit('cam_B');
+    renderPanel();
+    const canvas = screen.getByLabelText('cam_B 영상');
+    expect(canvas.style.transform).toBe('');
+
+    // 패널 칸(영상의 부모)도 jsdom 에는 크기가 없어 800×450 으로 흉내 낸다.
+    vi.spyOn(canvas.parentElement!, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 800,
+      height: 450,
+    } as DOMRect);
+    fireEvent.wheel(canvas.parentElement!, { deltaY: -500, clientX: 400, clientY: 225 });
+
+    expect(canvas.style.transform).toMatch(/^translate\(.+\) scale\(.+\)$/);
+    expect(screen.getByRole('img', { name: '확대한 자리' })).toBeTruthy();
+  });
+
   it('사건 요약은 사람은 ID, 구역은 이름으로 보이고 구역 번호는 보이지 않는다', () => {
     openSplit('cam_A');
     renderPanel([raised()]);
