@@ -6,6 +6,7 @@ import {
   lastDataClock,
 } from '@/features/layout/status';
 import { useNow } from '@/features/layout/useNow';
+import { useMonitorWorks } from '@/features/monitor/useMonitorWorks';
 import { useLinkAlive } from '@/hooks/useLinkAlive';
 import { useRealtimeStore } from '@/store/realtime.store';
 
@@ -30,7 +31,9 @@ function LastReceived() {
 export function FailureBand() {
   const alive = useLinkAlive();
   const failure = useRealtimeStore((s) => bandFailure(s, alive));
-  if (!failure) return null;
+  const works = useMonitorWorks();
+  if (!failure || (failure === 'DEVICE_DOWN' && works.state === 'ready' && !works.active))
+    return null;
   const detail = FAILURE_DETAIL[failure];
   return (
     <div

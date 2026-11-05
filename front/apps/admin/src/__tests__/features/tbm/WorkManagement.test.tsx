@@ -1,7 +1,10 @@
 import { resetSetupFlowStore, useSetupFlowStore } from '@/features/setup/setup.store';
 import type { SetupSessionResponse } from '@/features/setup/types';
+import { TaskList } from '@/features/tbm/TaskList';
+import { TBM_TASKS } from '@/features/tbm/tbmDemo';
 import { TbmPage } from '@/features/tbm/TbmPage';
 import { deriveWorkStages, type WorkStageInput } from '@/features/tbm/workStage';
+import { WorkStageBar } from '@/features/tbm/WorkStageBar';
 import { MOCK_STATIC_OBJECTS } from '@/mocks/staticObjects';
 import { createTbmMock } from '@/mocks/tbm';
 import { MOCK_ZONES } from '@/mocks/zones';
@@ -187,6 +190,61 @@ describe('단계 판정', () => {
   it('작업 상태 값이 없으면 시작·종료는 확인 불가다', () => {
     const s = states({ ...BASE, task: { status: undefined } });
     expect(s).toMatchObject({ start: 'unknown', end: 'unknown' });
+  });
+});
+
+describe('작업 종료 안내', () => {
+  afterEach(cleanup);
+
+  it('종료 작업은 최고 위험 배지 대신 종료 상태를 보이고 진행 작업은 등급을 유지한다', () => {
+    const task = TBM_TASKS[0]!;
+    const { rerender } = render(
+      <TaskList
+        tasks={[{ ...task, status: 'DONE' }]}
+        selectedId=""
+        sentAt={{}}
+        onSelect={() => {}}
+        onAdd={() => {}}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /작업 종료/ }).textContent).not.toContain('위험');
+    expect(screen.getByRole('button', { name: /작업 종료/ }).textContent).not.toContain('▲');
+    rerender(
+      <TaskList
+        tasks={[{ ...task, status: 'IN_PROGRESS' }]}
+        selectedId=""
+        sentAt={{}}
+        onSelect={() => {}}
+        onAdd={() => {}}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /CRITICAL/ }).textContent).toContain('▲');
+  });
+
+  it('종료 후 결재 전 단계에 서명과 결재 순서를 안내한다', () => {
+    const result = deriveWorkStages({
+      ...BASE,
+      task: { status: 'DONE' },
+      report: { status: 'SUCCEEDED', approved_at: null },
+    });
+    const noop = () => {};
+    render(
+      <WorkStageBar
+        result={result}
+        status="DONE"
+        hasSetupSession={false}
+        canOpenSetup
+        generating={false}
+        pending={false}
+        onOpenSetup={noop}
+        onOpenZones={noop}
+        onGenerate={noop}
+        onStart={noop}
+        onEnd={noop}
+        onSign={noop}
+      />,
+    );
+    expect(screen.getByText(/참석자 서명을 확인한 뒤 관리자 결재까지/)).toBeTruthy();
   });
 });
 

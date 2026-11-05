@@ -787,6 +787,28 @@ describe('작업 세션과 서명', () => {
     expect(await screen.findByText(/진행 중인 작업이 있습니다:/)).toBeTruthy();
   });
 
+  it('서명 등록에 빠진 실명·서명·고지를 각각 안내한다', async () => {
+    mockSignatureCanvas();
+    render(<TbmPage />);
+    const panel = await screen.findByRole('region', { name: '참석자 서명' });
+    const notice = () => within(panel).queryByText(/서명 등록을 위해 필요:/);
+    expect(notice()?.textContent).toContain('실명 · 서명 · 고지 확인');
+    fireEvent.change(within(panel).getByLabelText('서명자 실명'), { target: { value: '홍길동' } });
+    expect(notice()?.textContent).toContain('서명 · 고지 확인');
+    fireEvent.pointerDown(within(panel).getByLabelText('서명 패드'), {
+      clientX: 10,
+      clientY: 10,
+      pointerId: 1,
+    });
+    expect(notice()?.textContent).toContain('고지 확인');
+    fireEvent.click(within(panel).getByLabelText('고지를 확인했습니다'));
+    expect(notice()).toBeNull();
+    expect(
+      (within(panel).getByRole('button', { name: '서명 등록' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    vi.restoreAllMocks();
+  });
+
   it.each([false, true])('서명 등록 및 오래된 버전 안내 (stale=%s)', async (stale) => {
     mockSignatureCanvas();
     if (stale)

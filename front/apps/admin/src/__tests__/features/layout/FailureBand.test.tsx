@@ -5,6 +5,11 @@ import type { ViewerHealthPayload } from '@simai/contracts';
 import { act, cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('@/features/monitor/useMonitorWorks', () => ({ useMonitorWorks: () => workState }));
+let workState: { state: 'loading' | 'error' } | { state: 'ready'; active: object | null } = {
+  state: 'loading',
+};
+
 /** 브라우저 시각과 EC2 시각(as_of)을 같게 둔다. 마지막 world_state 는 12.4초 전인 14:29:52 다. */
 const NOW = new Date(2026, 9, 23, 14, 30, 5).getTime();
 
@@ -27,6 +32,7 @@ const band = () => screen.queryByRole('group', { name: '장애' });
 const title = () => within(band()!).getByRole('alert').textContent;
 
 beforeEach(() => {
+  workState = { state: 'loading' };
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
 });
@@ -58,6 +64,22 @@ describe('FailureBand', () => {
       expect(band()!.textContent).toContain('화면은 마지막으로 받은 상태');
     },
   );
+
+  it('진행 중 작업이 없다고 확인되면 장비 장애만 숨기고, 작업 중이거나 확인 불가면 표시한다', () => {
+    seed({ remote_state: 'CONTROL_HALTED', laptop: laptop('DISCONNECTED') });
+    workState = { state: 'ready', active: null };
+    const view = render(<FailureBand />);
+    expect(band()).toBeNull();
+    workState = { state: 'ready', active: {} };
+    view.rerender(<FailureBand />);
+    expect(title()).toBe('현장 장비 응답 없음');
+    workState = { state: 'error' };
+    view.rerender(<FailureBand />);
+    expect(title()).toBe('현장 장비 응답 없음');
+    workState = { state: 'ready', active: null };
+    act(() => seed(halted));
+    expect(title()).toBe('관제 정지');
+  });
 
   it('경과 시간은 시간이 지나면 늘어나고, 장애 종류가 바뀌면 문구도 바뀐다', () => {
     seed(halted);

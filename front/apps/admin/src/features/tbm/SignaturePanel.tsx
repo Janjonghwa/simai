@@ -36,6 +36,7 @@ export function SignaturePanel({
   const approver = signatures.items.find((item) => item.signer_role === 'APPROVER');
   const approved = report.approved_at != null || !!approver;
   const disabled = pending || !hasInk || !ack || !name.trim() || report.status !== 'SUCCEEDED';
+  const missing = [!name.trim() && '실명', !hasInk && '서명', !ack && '고지 확인'].filter(Boolean);
   const point = (event: PointerEvent<HTMLCanvasElement>) => {
     const el = event.currentTarget;
     const rect = el.getBoundingClientRect();
@@ -162,6 +163,8 @@ export function SignaturePanel({
               />{' '}
               고지를 확인했습니다
             </label>
+            {report.status !== 'SUCCEEDED' && <p>보고서 생성 완료 후 서명할 수 있습니다.</p>}
+            {missing.length > 0 && <p>서명 등록을 위해 필요: {missing.join(' · ')}</p>}
             <Button type="button" disabled={disabled} onClick={() => void register('PARTICIPANT')}>
               서명 등록
             </Button>{' '}
