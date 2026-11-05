@@ -146,7 +146,7 @@ def enhance_visual_glb(root: Path, glb: Path, options: dict | None = None) -> di
     except Exception:  # noqa: BLE001 - 검사 입력 읽기 실패는 메시 지표 검사로 대체한다
         cameras = None
     try:
-        return ge.enhance_file(glb, config=cfg, cameras=cameras)
+        return ge.enhance_file(glb, config=cfg, cameras=cameras, options=options)
     except Exception as exc:  # noqa: BLE001
         return {"applied": False, "reason": f"ENHANCE_ERROR:{type(exc).__name__}", "purpose": "VISUAL_ONLY", "safety_use": False}
 
@@ -158,7 +158,10 @@ def _enhance_summary(rep: dict) -> dict:
     rc = rep.get("recolor") or {}
     fi = rep.get("fill") or {}
     ss = fi.get("surface_source") or {}
+    inp = rep.get("inpaint") or {}
     out = {"fill_applied": bool(fi.get("applied")) and bool(rep.get("applied")), "fill_reason": fi.get("reason"),
+           "inpaint_applied": bool(inp.get("applied")) and bool(rep.get("applied")), "inpaint_mode": inp.get("mode"),
+           "inpaint_backend": inp.get("backend_used"), "inpaint_reason": inp.get("reason"),
            "stretched_removed_faces": (fi.get("stretched") or {}).get("removed_faces"),
            "stretched_removed_area_ratio": (fi.get("stretched") or {}).get("removed_area_ratio"),
            "fill_added_triangles": fi.get("added_triangles"),
@@ -178,9 +181,60 @@ def _enhance_summary(rep: dict) -> dict:
     return out
 
 
+def _bake_vertex_color(root: Path, opts: dict) -> None:
+    """texrecon 없이 MapAnything 깊이·정점색 메시를 만들고 -511 평면 채우기 + -514 인페인팅을 적용한다."""
+    from .preview_scene import build_preview_from_pointcloud, build_preview_from_views
+
+    M = np.asarray(read_json(root / "world_alignment.json")["mapanything_to_world"], float)
+    stride = max(1, int(opts.get("preview_stride", 1)))
+    pc_path = root / "mapanything" / "pointcloud.npz"
+    if pc_path.is_file():
+        with np.load(pc_path) as pc:
+            pts = np.asarray(pc["points_xyz"], float)
+            cols = np.asarray(pc["colors_rgb"])
+            faces = np.asarray(pc["faces"], np.int64) if "faces" in pc.files else None
+        if len(pts) == 0:
+            raise ReconstructionError("STATIC_MAPANYTHING_EMPTY", "점구름 정점 없음")
+        glb_bytes, meta = build_preview_from_pointcloud(pts, cols, M=M, faces=faces, stride=stride)
+    else:
+        views = _load_colored_fuse_views(root)
+        try:
+            glb_bytes, meta = build_preview_from_views(views, M=M, stride=stride)
+        except ValueError as exc:
+            raise ReconstructionError("STATIC_MAPANYTHING_EMPTY", str(exc)) from exc
+    if meta["vertex_count"] == 0:
+        raise ReconstructionError("STATIC_MAPANYTHING_EMPTY", "정점색 메시 정점 없음")
+    glb = root / "textured" / "scene.glb"
+    glb.parent.mkdir(parents=True, exist_ok=True)
+    glb.write_bytes(glb_bytes)
+    enhance = _enhance_summary(enhance_visual_glb(root, glb, opts))
+    tri_count = int(meta["triangle_count"])
+    if enhance["applied"]:
+        tri_count += int(enhance["detail"].get("triangles_delta") or 0)
+    meta["triangle_count"] = tri_count
+    write_json(root / "bake.json", {
+        "texture": "none",
+        "fallback_reason": None,
+        "assets": [{"kind": "GLTF_VISUAL", "path": glb.relative_to(root).as_posix(),
+                    "content_type": "model/gltf-binary", "triangle_count": tri_count}],
+        "observed_surface_ratio": 1.0,
+        "postprocess": ["OUTLIER_REMOVAL", "WORLD_ALIGNMENT"],
+        "metrics": meta,
+        "enhance": enhance,
+        "auxiliary": [p.relative_to(root).as_posix()
+                      for p in sorted((glb.parent / ((enhance["detail"].get("fill_atlas") or {}).get("dir") or "-")).glob("*"))
+                      if p.is_file()],
+    })
+
+
 def bake(root: Path) -> None:
     if not (root / "world_alignment.json").is_file():
         align_to_calibration(root)
+    opts = read_json(root / "job.json")["input"].get("options", {})
+    texture_mode = str(opts.get("texture") or os.environ.get("SIMAI_BAKE_TEXTURE", "") or "texrecon").strip()
+    if texture_mode == "none":
+        _bake_vertex_color(root, opts)
+        return
     spec = os.environ.get("SIMAI_TEXRECON", "").strip()
     texrecon = shutil.which(spec or "texrecon")
     if not texrecon:

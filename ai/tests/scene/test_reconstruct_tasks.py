@@ -449,3 +449,55 @@ def test_texrecon_timing_records_stages_and_total():
     assert times["texrecon_area_s"] == 3.58
     assert times["texrecon_area_label_s"] == seconds["label"]
     assert times["texrecon_area_texture_s"] == seconds["texture"]
+
+
+
+def test_bake_texture_none_skips_texrecon_and_runs_enhance_and_inpaint(tmp_path, monkeypatch):
+    """-514: texture=none 옵션은 texrecon 없이 정점색 메시 + -511 평면 채우기 + -514 인페인팅 경로로 굽고 texrecon 경로와 나란히 비교할 수 있다."""
+    from simai_ai.scene.reconstruct import validate_input
+
+    synthetic(tmp_path)
+    tasks.prepare(tmp_path)
+    tasks.align_to_calibration(tmp_path)
+
+    # 모델 좌표 z=0(바닥 World Z=0) 위에 구멍 있는 격자 점구름을 넣어 -511 채우기 + -514 인페인팅이 돌게 한다
+    gx, gy = np.meshgrid(np.linspace(-1.0, 1.0, 16), np.linspace(-1.0, 1.0, 16))
+    keep = ~((gx > -0.3) & (gx < 0.3) & (gy > -0.3) & (gy < 0.3))
+    pts = np.column_stack([gx[keep], gy[keep], np.zeros(int(keep.sum()), dtype=float)])
+    cols = np.full((len(pts), 3), [30, 90, 150], dtype=np.uint8)
+    np.savez(tmp_path / "mapanything" / "pointcloud.npz", points_xyz=pts, colors_rgb=cols)
+
+    # texrecon 이 없어도 texture=none 은 폴백 없이 정상 완주해야 한다
+    monkeypatch.setattr(tasks.shutil, "which", lambda name: None)
+    job = read_json(tmp_path / "job.json")
+    job["input"]["options"] = {"texture": "none", "inpaint": "classic"}
+    write_json(tmp_path / "job.json", job)
+
+    tasks.bake(tmp_path)
+    bake_none = read_json(tmp_path / "bake.json")
+    assert bake_none["texture"] == "none"
+    assert bake_none["fallback_reason"] is None
+    assert bake_none["assets"][0]["path"] == "textured/scene.glb"
+    assert bake_none["assets"][0]["triangle_count"] > 0
+    assert (tmp_path / "textured" / "scene.glb").is_file()
+    assert bake_none["enhance"]["safety_use"] is False
+
+    # validate_input 도 texture=none / texrecon 및 inpaint 옵션을 허용해야 한다
+    base_inp = {
+        "calibration_version": "cal-1",
+        "calibration_ref": "s3://bucket/cal.json",
+        "calibration_hash": "sha256:" + "0" * 64,
+        "input_provenance": {
+            "calibration": {"source": "SIM", "calibration_version": "cal-1"},
+            "frames": {"source": "SIM", "camera_ids": ["cam_A", "cam_B"]},
+            "is_upper_bound": True,
+        },
+        "images": [
+            {"camera_id": "cam_A", "uri": "s3://bucket/a.jpg", "kind": "CLEAN_BACKGROUND"},
+            {"camera_id": "cam_B", "uri": "s3://bucket/b.jpg", "kind": "CLEAN_BACKGROUND"},
+        ],
+        "options": {"texture": "none", "inpaint": "classic", "fill": True, "enhance": True},
+    }
+    validate_input(base_inp)
+    with pytest.raises(ReconstructionError):
+        validate_input({**base_inp, "options": {"texture": "invalid"}})
