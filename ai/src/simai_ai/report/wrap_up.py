@@ -63,12 +63,44 @@ def fact_clauses(facts: dict[str, Any]) -> list[str]:
     ]
 
 
+_FENCE = re.compile(r"^```[A-Za-z]*\s*\n?(.*?)\n?```$", re.S)
+
+
+def unwrap_paragraph(text: Any) -> str | None:
+    """모델 응답에서 문단만 꺼낸다(S15P31A101-512). 지시를 어기고 감싼 껍데기만 벗긴다.
+
+    - 코드 블록(```)이면 안쪽.
+    - JSON 문자열(`"..."`)이면 그 글, 값이 글 하나뿐인 JSON 객체(`{"message": "..."}`)면 그 글.
+    - 그 밖의 JSON(값이 여럿·배열·숫자 등)이나 깨진 JSON 은 문단이 아니므로 None(거절).
+    """
+    if not isinstance(text, str):
+        return None
+    body = text.strip()
+    fenced = _FENCE.match(body)
+    if fenced:
+        body = fenced.group(1).strip()
+    if body[:1] in "{[\"":
+        try:
+            value = json.loads(body)
+        except ValueError:
+            return None
+        if isinstance(value, dict) and len(value) == 1:
+            value = next(iter(value.values()))
+        if not isinstance(value, str):
+            return None
+        body = value.strip()
+    return body or None
+
+
 def numbers_match(text: str, facts: dict[str, Any]) -> bool:
     """수치 집합만 비교하면 등급별 숫자를 서로 바꾼 오류를 놓친다. 필수 항목·숫자 쌍을 대조한다.
 
     정확한 사실 절을 한 번씩 제거한 뒤 남은 숫자(규칙 ID 포함)·추가 건수·확률을 거절한다.
     """
     if not isinstance(text, str) or not text.strip() or len(text) > 8_000:
+        return False
+    # 꺼내고도 남은 JSON·코드 블록 흔적은 문단이 아니다(S15P31A101-512).
+    if re.search(r"[{}]|```", text):
         return False
     rest = text
     for clause in fact_clauses(facts):
@@ -104,11 +136,13 @@ def generate(data: dict[str, Any], client_factory: Callable[[], ChatClient]) -> 
         client = client_factory()
         for attempt in range(2):
             result = client.complete(messages)
-            if numbers_match(result.content, facts):
-                return {"text": result.content.strip(), "fallback": False, "model": result.model or client.model}
+            paragraph = unwrap_paragraph(result.content)
+            if paragraph is not None and numbers_match(paragraph, facts):
+                return {"text": paragraph, "fallback": False, "model": result.model or client.model}
             if attempt == 0:
                 # 거절된 초안을 다시 보내지 않는다(지어낸 내용이 다음 입력의 사실로 섞이지 않게).
-                messages.append({"role": "user", "content": "항목별 숫자 검사 실패. 필수 사실 절만 정확히 써서 한 번 재작성한다."})
+                reason = "형식 검사 실패(JSON·코드 블록 금지, 문단 글만)." if paragraph is None else "항목별 숫자 검사 실패."
+                messages.append({"role": "user", "content": f"{reason} 필수 사실 절만 정확히 써서 문단 글로만 한 번 재작성한다."})
     except (LlmError, TimeoutError, OSError, ValueError):
         pass
     return {"text": required, "fallback": True, "model": "deterministic"}

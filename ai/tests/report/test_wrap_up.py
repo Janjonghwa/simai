@@ -10,6 +10,7 @@ from simai_ai.report.wrap_up import (
     deterministic,
     generate,
     numbers_match,
+    unwrap_paragraph,
     validate_request,
 )
 
@@ -141,3 +142,46 @@ def test_invalid_or_personal_input_is_rejected(edit):
     edit(request)
     with pytest.raises(ValueError):
         validate_request(request)
+
+
+@pytest.mark.parametrize("wrap", [
+    lambda s: json.dumps({"message": s}, ensure_ascii=False),
+    lambda s: json.dumps({"text": s}),
+    lambda s: json.dumps(s, ensure_ascii=False),
+    lambda s: "```json\n" + json.dumps({"message": s}, ensure_ascii=False) + "\n```",
+    lambda s: "```\n" + s + "\n```",
+])
+def test_wrapped_paragraph_is_unwrapped_and_stored_plain(wrap):
+    text = deterministic(REQUEST["facts"])
+    client = Client([wrap(text)])
+    assert generate(REQUEST, lambda: client) == {"text": text, "fallback": False, "model": "fake-llm"}
+
+
+@pytest.mark.parametrize("bad", [
+    lambda s: json.dumps({"message": s, "note": "x"}, ensure_ascii=False),
+    lambda s: json.dumps([s], ensure_ascii=False),
+    lambda s: '{"message": "' + s,
+    lambda s: s + " {추가}",
+])
+def test_other_json_is_rejected_then_rewritten(bad):
+    text = deterministic(REQUEST["facts"])
+    client = Client([bad(text), text])
+    assert generate(REQUEST, lambda: client) == {"text": text, "fallback": False, "model": "fake-llm"}
+    assert "형식 검사 실패" in client.messages[1][-1]["content"] or "숫자 검사 실패" in client.messages[1][-1]["content"]
+
+
+def test_wrapped_twice_falls_back_to_deterministic():
+    text = deterministic(REQUEST["facts"])
+    bad = json.dumps({"message": text, "extra": 1}, ensure_ascii=False)
+    client = Client([bad, bad])
+    out = generate(REQUEST, lambda: client)
+    assert out == {"text": text, "fallback": True, "model": "deterministic"}
+
+
+def test_unwrap_paragraph_cases():
+    assert unwrap_paragraph("  문단.  ") == "문단."
+    assert unwrap_paragraph('{"message": "문단."}') == "문단."
+    assert unwrap_paragraph('{"a": 1}') is None
+    assert unwrap_paragraph("{깨짐") is None
+    assert unwrap_paragraph('{"message": ""}') is None
+    assert unwrap_paragraph(None) is None
