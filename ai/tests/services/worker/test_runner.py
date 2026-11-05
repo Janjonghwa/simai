@@ -366,3 +366,18 @@ def test_without_deadline_at_budget_is_timeout_only(ec2, make_worker):
 
     assert make_worker({"vlm_rationale": quick}).run_once() is Outcome.ACCEPTED
     assert seen[0] is not None and 4.0 < seen[0] <= 5.0  # 관리용(이벤트 없는) 작업은 예전처럼 실행 상한만
+
+
+def test_failure_warning_masks_secrets_and_limits_message(ec2, make_worker, caplog, monkeypatch):
+    monkeypatch.setenv("SIMAI_TEST_TOKEN", "test-secret-123")
+    job_id = ec2.add_job("static_reconstruct")
+
+    def fail(ctx):
+        raise JobFailed("INPUT_FETCH_FAILED", "문제 test-secret-123 https://example.com/?signature=abc\n" + "x" * 450)
+
+    assert make_worker({"static_reconstruct": fail}).run_once() is Outcome.ACCEPTED
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING" and "code=INPUT_FETCH_FAILED" in r.getMessage()]
+    assert len(warnings) == 1 and job_id in warnings[0]
+    assert "test-secret-123" not in warnings[0] and "signature=abc" not in warnings[0]
+    assert "<REDACTED>" in warnings[0] and "<URL>" in warnings[0] and "\n" not in warnings[0]
+    assert len(warnings[0].split("message=", 1)[1]) == 400

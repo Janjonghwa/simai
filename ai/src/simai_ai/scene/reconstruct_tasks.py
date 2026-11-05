@@ -1,6 +1,7 @@
 """분리 프로세스에서 실행하는 복원 단계. CLI/실험과 동일한 scene 구현을 사용한다."""
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import sys
@@ -71,7 +72,14 @@ def mapanything(root: Path) -> None:
         raise ReconstructionError("STATIC_MAPANYTHING_TOOL_FAILED", "MapAnything 추론 실패")
 
 
-def align_to_calibration(root: Path) -> np.ndarray:
+ALIGN_MAX_CENTER_M = 0.10
+ALIGN_MAX_ROTATION_DEG = 5.0
+log = logging.getLogger(__name__)
+
+
+def align_to_calibration(
+    root: Path, *, max_center_m: float = ALIGN_MAX_CENTER_M, max_rotation_deg: float = ALIGN_MAX_ROTATION_DEG,
+) -> np.ndarray:
     """카메라 회전·중심을 이용한 similarity. 보정 문서는 읽기만 한다."""
     cal = read_json(root / "calibration.json")
     cams = {c["camera_id"]: c for c in cal["cameras"]}
@@ -103,8 +111,15 @@ def align_to_calibration(root: Path) -> np.ndarray:
     shift = dst.mean(0) - scale * Q @ src.mean(0)
     residual = np.linalg.norm(scale * src @ Q.T + shift - dst, axis=1)
     angles = [np.arccos(np.clip((np.trace(Q.T @ r) - 1) / 2, -1, 1)) for r in rotations]
-    if scale <= 0 or not np.isfinite(scale) or residual.max() > .10 or max(angles) > np.deg2rad(5):
-        raise ReconstructionError("STATIC_WORLD_ALIGNMENT_FAILED", "카메라 중심 0.10m·회전 5도 일치 조건 미달")
+    if scale <= 0 or not np.isfinite(scale) or residual.max() > max_center_m or max(angles) > np.deg2rad(max_rotation_deg):
+        details = ", ".join(
+            f"{view['name']}: center={center:.4f}m rotation={np.degrees(angle):.3f}deg"
+            for view, center, angle in zip(views, residual, angles)
+        )
+        message = (f"카메라 일치 조건 미달 (center<={max_center_m:g}m rotation<={max_rotation_deg:g}deg): "
+                   f"scale={scale:.6g}; {details}")
+        log.warning("%s", message)
+        raise ReconstructionError("STATIC_WORLD_ALIGNMENT_FAILED", message)
     M = np.eye(4)
     M[:3, :3], M[:3, 3] = scale * Q, shift
     write_json(root / "world_alignment.json", {"format": "simai.world_alignment", "status": "OK",

@@ -27,6 +27,8 @@ from __future__ import annotations
 import enum
 import logging
 import math
+import os
+import re
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -48,6 +50,19 @@ from .handlers import JobContext, JobFailed, JobHandler
 
 log = logging.getLogger("services.worker")
 _MESSAGE_LIMIT = 500
+
+
+def _safe_failure_text(value: object) -> str:
+    """기존 예외 요약 규칙으로 인증값·URL·줄바꿈을 제거한다."""
+    text = str(value)
+    for name, secret in os.environ.items():
+        if secret and any(key in name.upper() for key in ("TOKEN", "SECRET", "PASSWORD", "API_KEY")):
+            text = text.replace(secret, "<REDACTED>")
+    text = re.sub(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s\"'<>]+", "<URL>", text)
+    text = re.sub(r"(?i)bearer\s+[^\s,;\"']+", "Bearer <REDACTED>", text)
+    text = re.sub(r"(?i)((?:[\w-]*(?:token|secret|password|signature|api[_-]?key)|authorization)[\"']?\s*[:=]\s*)"
+                  r"(?:[\"'][^\"']*[\"']|[^\s,;]+)", r"\1<REDACTED>", text)
+    return " ".join(text.split())[:400]
 
 
 class HandlerStuck(Exception):
@@ -424,6 +439,9 @@ class Worker:
         error: Mapping[str, Any] | None = None,
         deadline: float,
     ) -> Outcome:
+        if status == "FAILED" and error is not None:
+            log.warning("작업 %s 실패 code=%s message=%s", lease.job_id,
+                        _safe_failure_text(error.get("code", "")), _safe_failure_text(error.get("message", "")))
         message = self.client.callback_message(
             lease,
             status,

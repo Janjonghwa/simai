@@ -263,3 +263,13 @@ def test_cameras_are_scaled_to_the_uploaded_frame_size():
     assert cams["cam1"].image_size == (2304, 1296)  # 원본 보정은 그대로(사본만 바꾼다)
     same = _fit_cameras_to_frames(cams, {"cam1": type("F", (), {"pixels": np.zeros((1296, 2304, 3), np.uint8)})()})
     assert same["cam1"] is cams["cam1"]
+
+
+def test_open_client_respects_remaining_time_and_preserves_settings():
+    handler = VlmZoneDraftHandler(client_factory=lambda settings: settings, env={
+        "SIMAI_VLM_TIMEOUT_S": "30", "SIMAI_VLLM_PORT": "8123", "SIMAI_VLM_REPETITION_PENALTY": "1.2",
+    })
+    settings = handler._open_client(4.5)
+    assert settings.timeout_s == 4.5
+    assert settings.port == 8123 and settings.repetition_penalty == 1.2
+    assert handler._open_client(60).timeout_s == 30

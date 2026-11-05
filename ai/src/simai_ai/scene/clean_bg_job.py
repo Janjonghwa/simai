@@ -872,14 +872,22 @@ def prepare_from_bundle(
         raise CleanBgJobError("clean_backgrounds.json 의 cameras 는 2~16대여야 한다")
 
     complete_cids = complete_doc.get("camera_ids")
-    if not isinstance(complete_cids, list) or list(complete_cids) != list(cameras_meta.keys()):
+    # Tier 0 는 COMPLETE 에 정렬된 목록을, cameras 사전은 표본 도착 순서로 쓴다(12차: A,B,C,D vs B,A,C,D).
+    # 같은 카메라 집합인지만 보고, 뒤 순서는 COMPLETE 순서로 고정한다.
+    if (
+        not isinstance(complete_cids, list)
+        or not all(isinstance(cid, str) for cid in complete_cids)
+        or len(set(complete_cids)) != len(complete_cids)
+        or sorted(complete_cids) != sorted(cameras_meta.keys())
+    ):
         raise CleanBgJobError("COMPLETE 의 camera_ids 와 clean_backgrounds.json 의 cameras 목록이 일치하지 않는다")
 
     bundle_root = bundle_dir.resolve()
     prepared: list[PreparedImage] = []
     cam_qualities: dict[str, dict[str, float]] = {}
     has_quality_fields = False
-    for cid, entry in cameras_meta.items():
+    for cid in complete_cids:
+        entry = cameras_meta[cid]
         if cid not in cal_cameras:
             raise CleanBgJobError(f"배경 묶음 카메라 {cid!r} 가 보정 문서에 없다")
         if not isinstance(entry, dict) or entry.get("camera_id") != cid:

@@ -518,6 +518,13 @@ def write_scene(scene: Path, tex: dict[str, dict[str, Any]], poses: dict[str, np
 # --------------------------------------------------------------------------- 1·2층: 굽기
 
 
+def record_texrecon_times(times: dict[str, float], term: str, seconds: dict[str, float]) -> None:
+    """단계별 실행 시간과 그 합계를 함께 기록한다."""
+    times[f"texrecon_{term}_s"] = round(sum(seconds.values()), 3)
+    for stage, duration in seconds.items():
+        times[f"texrecon_{term}_{stage}_s"] = duration
+
+
 @dataclass
 class Bake:
     tag: str
@@ -880,7 +887,7 @@ def _run(a: argparse.Namespace, cfg: Config, out: Path, tr: Texrecon, tr_rec: di
             b = bake(tr, bdir / "all", out / "scene", out / "mesh" / "mesh.ply", V, F, costs, entries, views, cfg, pairs, term, scale,
                      plane_faces)
             bakes[term] = b
-            times[f"texrecon_{term}_s"] = round(float(b.seconds), 3)
+            record_texrecon_times(times, term, b.seconds)
             t_prov = time.perf_counter()
             files, maps, covered = write_provenance(b, bdir / "all")
             times[f"provenance_{term}_s"] = round(time.perf_counter() - t_prov, 3)
