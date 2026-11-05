@@ -1,6 +1,6 @@
 import type { WorkUnit } from '@/features/history/types';
 import { useWorks } from '@/features/history/useWorkReplay';
-import { formatDate, groupByDate, timeRange, worksLoadingLine } from '@/features/history/works';
+import { formatDate, groupByDate, worksLoadingLine, workTimeRange } from '@/features/history/works';
 import { PageTitle } from '@/features/layout/PageTitle';
 import { cn } from '@simai/ui/lib/utils';
 import { useNavigate } from '@tanstack/react-router';
@@ -9,7 +9,7 @@ import { useMemo } from 'react';
 
 // 작업 한 줄의 칸: 시간대 · 이름 · 장소 · 계획 인원 · 이벤트 수 · 화살표.
 const WORK_ROW =
-  'grid w-full cursor-pointer grid-cols-[120px_minmax(0,1.4fr)_minmax(0,1fr)_96px_minmax(0,1fr)_20px] items-center gap-4 rounded-[12px] bg-card px-4 py-3 text-left ring-1 ring-border ring-inset hover:bg-surface-2';
+  'grid w-full cursor-pointer grid-cols-[140px_minmax(0,1.4fr)_minmax(0,1fr)_96px_minmax(0,1fr)_20px] items-center gap-4 rounded-[12px] bg-card px-4 py-3 text-left ring-1 ring-border ring-inset hover:bg-surface-2';
 
 function EventCounts({ counts }: { counts: WorkUnit['event_counts'] }) {
   if (!counts) return <span className="text-muted-foreground">—</span>;
@@ -38,7 +38,7 @@ function WorkItem({ work }: { work: WorkUnit }) {
         onClick={() => void navigate({ to: '/history/$workId', params: { workId: work.work_id } })}
         className={WORK_ROW}
       >
-        <span className="font-mono">{timeRange(work.from_ms, work.to_ms)}</span>
+        <span className="font-mono">{workTimeRange(work)}</span>
         <span className="truncate font-semibold">{work.name}</span>
         <span className="truncate text-muted-foreground">{work.place ?? '—'}</span>
         <span>계획 {work.planned_people}명</span>
@@ -72,7 +72,7 @@ function WorkGroups({ works }: { works: readonly WorkUnit[] }) {
   );
 }
 
-/** 히스토리 목록: 시작한 최근 TBM 작업을 날짜별로 보인다. 누르면 그 작업 구간을 다시 본다. */
+/** 히스토리 목록: 시작한 최근 TBM 작업을 날짜별로 보인다(실제 작업 시간대). 누르면 그 작업 구간을 다시 본다. */
 export function HistoryListPage() {
   const { works, failed } = useWorks();
 

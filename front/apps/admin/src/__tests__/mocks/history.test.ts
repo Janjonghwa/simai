@@ -14,6 +14,7 @@ import {
 import { allGap, frameAt, indexReplay, noDataAt } from '@/features/history/replayIndex';
 import { replayResponseSchema } from '@/features/history/types';
 import { TBM_TASKS } from '@/features/tbm/tbmDemo';
+import type { TbmWorkUnit } from '@/features/tbm/types';
 import { parseReplayLog } from '@/features/viewer3d/replay/replayLog';
 import { ApiError, createHttp } from '@/lib/http';
 import { createHistoryMock, hasNoRecord, historyReplay, historyWorks } from '@/mocks/history';
@@ -40,6 +41,13 @@ const OUTAGE_MS = 2 * 60_000;
 const EMPTY_ROOM_MS = 60_000;
 const at40 = (work: { from_ms: number; to_ms: number }) =>
   work.from_ms + Math.floor((work.to_ms - work.from_ms) * 0.4);
+/** 같은 날 hh:mm 의 ms. */
+const at = (day: number, hhmm: string) => {
+  const d = new Date(day);
+  const [h, m] = hhmm.split(':').map(Number);
+  d.setHours(h ?? 0, m ?? 0, 0, 0);
+  return d.getTime();
+};
 const at20 = (work: { from_ms: number; to_ms: number }) =>
   work.from_ms + Math.floor((work.to_ms - work.from_ms) * 0.2);
 
@@ -85,11 +93,79 @@ describe('히스토리 mock: 작업 목록', () => {
     expect(none[0]!.event_counts).toBeNull();
   });
 
+  it('작업마다 상태와 실제 시작·종료를 서버처럼 준다(시작 전은 둘 다 없고 진행 중은 종료만 없다)', () => {
+    const today = works.filter((w) => w.date === '2026-10-29');
+    expect(today.map((w) => [w.status, w.actual_started_at, w.actual_ended_at])).toEqual([
+      ['IN_PROGRESS', today[0]!.from_ms, null],
+      ['IN_PROGRESS', today[1]!.from_ms, null],
+      ['PLANNED', null, null],
+    ]);
+    const past = works.filter((w) => w.date !== '2026-10-29');
+    expect(past.every((w) => w.status === 'DONE')).toBe(true);
+    expect(
+      past.every((w) => w.actual_started_at === w.from_ms && w.actual_ended_at === w.to_ms),
+    ).toBe(true);
+  });
+
   it('작업 목록을 주고, 로그인하지 않았으면 401 이다', async () => {
     const body = await (await get('/api/work-units?days=7')).json();
     expect(body).not.toHaveProperty('contract');
     expect(body.works).toHaveLength(works.length);
     expect((await get('/api/work-units?days=7', null)).status).toBe(401);
+  });
+});
+
+describe('히스토리 mock: 오늘 작업은 TBM 목의 작업을 따른다(liveWorks)', () => {
+  const liveWork = (patch: Partial<TbmWorkUnit>): TbmWorkUnit => ({
+    work_id: 'live-1',
+    date: '2026-10-29',
+    name: '관제에서 시작한 작업',
+    from_ms: at(NOW, '13:00'),
+    to_ms: at(NOW, '15:00'),
+    zone_id: null,
+    place: '북서쪽 바닥',
+    planned_people: 2,
+    lead: null,
+    layout_id: null,
+    work_type: null,
+    status: 'PLANNED',
+    ...patch,
+  });
+  const listOf = async (live: TbmWorkUnit[]) => {
+    server.resetHandlers(...createHistoryMock({ now: () => NOW, liveWorks: () => live }).handlers);
+    return (await (await get('/api/work-units?days=7')).json()).works as Record<string, unknown>[];
+  };
+
+  it('오늘 작업은 그 목의 작업이고 지난 이틀은 끝난 데모 작업이다. 시작 전 작업은 시작 기록이 없다', async () => {
+    const list = await listOf([liveWork({})]);
+    const today = list.filter((w) => w.date === '2026-10-29');
+    expect(today).toHaveLength(1);
+    expect(today[0]).toMatchObject({
+      work_id: 'live-1',
+      status: 'PLANNED',
+      actual_started_at: null,
+      actual_ended_at: null,
+    });
+    expect(list.filter((w) => w.date !== '2026-10-29').length).toBe(2 * TBM_TASKS.length);
+  });
+
+  it('시작한 작업은 시작 시각이 따라오고, 그 구간의 기록과 이벤트 수를 준다', async () => {
+    const startedAt = NOW - 30 * 60_000;
+    const live = liveWork({
+      from_ms: NOW - HOUR,
+      to_ms: NOW + HOUR,
+      status: 'IN_PROGRESS',
+      actual_started_at: startedAt,
+    });
+    const list = await listOf([live]);
+    expect(list[0]).toMatchObject({ status: 'IN_PROGRESS', actual_started_at: startedAt });
+    expect(list[0]!.actual_ended_at).toBeNull();
+    expect(list[0]!.event_counts).not.toBeNull();
+
+    const body = await (
+      await get(`/api/replay?from=${startedAt}&to=${NOW}&step_ms=${chooseStep(startedAt, NOW)}`)
+    ).json();
+    expect(replayResponseSchema.parse(body).world_states.length).toBeGreaterThan(0);
   });
 });
 

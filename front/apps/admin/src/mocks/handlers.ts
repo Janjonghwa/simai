@@ -131,6 +131,6 @@ export const handlers = [
   ...createFloorPlanMock().handlers,
   ...tbmMock.handlers,
   ...setupMock.handlers,
-  // 히스토리 작업 목록·구간 기록(그때그때 합성한다).
-  ...createHistoryMock().handlers,
+  // 히스토리 작업 목록·구간 기록(그때그때 합성한다). 오늘 작업은 TBM 목의 작업이라 시작·종료가 따라온다.
+  ...createHistoryMock({ liveWorks: () => tbmMock.works }).handlers,
 ];

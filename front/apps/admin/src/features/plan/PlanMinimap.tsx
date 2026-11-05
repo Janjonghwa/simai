@@ -1,3 +1,4 @@
+import { useMonitorStandby } from '@/features/monitor/useTodayWorks';
 import { LivePlan } from '@/features/plan/LivePlan';
 import { useFloatSpot } from '@/hooks/useFloatSpot';
 import { clamp, FLOAT_MARGIN } from '@/lib/floatSpot';
@@ -21,6 +22,8 @@ export function PlanMinimap({
 }) {
   const [open, setOpen] = useState(false);
   const [width, setWidth] = useState(DEFAULT_WIDTH);
+  // 대기 화면이 덮는 동안은 Tab 으로도 눌리지 않게 한다(이미 열어 둔 큰 창은 그대로 둔다).
+  const standby = useMonitorStandby();
   const box = useRef<HTMLDivElement>(null);
   const { style, handlers, reset, refit } = useFloatSpot(box, 'bottom', FLOAT_MARGIN);
   const resize = useRef<{ x: number; width: number } | null>(null);
@@ -67,6 +70,7 @@ export function PlanMinimap({
       <div
         ref={box}
         data-testid="plan-minimap"
+        inert={standby}
         style={{ width, ...style }}
         {...handlers}
         className="absolute bottom-3.5 left-3.5 z-[3] touch-none rounded-[14px] bg-card/82 shadow-float ring-1 ring-border backdrop-blur-[8px] select-none ring-inset hover:ring-point-soft"

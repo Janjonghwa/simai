@@ -21,7 +21,7 @@ import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from '
 
 /** 기본 자리: 오른쪽 위(PANEL_TOP·PANEL_GAP 과 같다). 폭은 --event-panel-width 이고, 상단 알림·2D 창이 오른쪽에서 비키는 간격(--event-panel-inset)이 이 폭에 맞춰 정해진다(index.css). */
 const PANEL_CLASS =
-  'absolute top-[72px] right-3.5 bottom-3.5 z-[5] flex w-(--event-panel-width) flex-col gap-2 rounded-[16px] bg-card/82 p-2.5 shadow-float ring-1 ring-border backdrop-blur-[8px] ring-inset';
+  'absolute top-[72px] right-3.5 bottom-3.5 z-[6] flex w-(--event-panel-width) flex-col gap-2 rounded-[16px] bg-card/82 p-2.5 shadow-float ring-1 ring-border backdrop-blur-[8px] ring-inset';
 
 const NOTE_CLASS = 'mx-2 my-4 text-sm text-faint';
 

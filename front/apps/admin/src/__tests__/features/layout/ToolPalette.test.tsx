@@ -1,8 +1,12 @@
 import { ToolPalette } from '@/features/layout/spatialHost/ToolPalette';
 import { setSetupWorkUnitId, useSetupFlowStore } from '@/features/setup/setup.store';
+import { TBM_WORKS_KEY } from '@/features/tbm/api';
+import { todayIsoDate } from '@/features/tbm/taskInput';
+import type { TbmWorkUnit } from '@/features/tbm/types';
 import { useSessionStore, type Role } from '@/store/session.store';
 import { updateZoneDraft, useZoneEditStore } from '@/store/zoneEdit.store';
 import { startZoneEdit, stopZoneEdit, useZoneEditModeStore } from '@/store/zoneEditMode.store';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -28,11 +32,31 @@ vi.mock('@/features/layout/useSceneRegenerate', () => ({
 const onResetView = vi.fn();
 const onRetry3d = vi.fn();
 
+/** 오늘 작업 하나(대기 화면 판정용). */
+const todayWork = (status: 'PLANNED' | 'IN_PROGRESS' | 'DONE'): TbmWorkUnit => ({
+  work_id: '1',
+  status,
+  date: todayIsoDate(),
+  name: '작업',
+  from_ms: 0,
+  to_ms: 1,
+  zone_id: null,
+  place: null,
+  planned_people: 1,
+  lead: null,
+  layout_id: null,
+  work_type: null,
+});
+
+/** works 를 주면 관제가 받아 둔 작업 목록이다(없으면 아직 모른다). */
 function renderPalette(
   props: Partial<React.ComponentProps<typeof ToolPalette>> = {},
   role: Role = 'ADMIN',
+  works?: TbmWorkUnit[],
 ) {
   useSessionStore.setState({ session: { accessToken: 't', user: { id: role, role } } });
+  const client = new QueryClient();
+  if (works) client.setQueryData(TBM_WORKS_KEY, works);
   return render(
     <ToolPalette
       view="3d"
@@ -41,6 +65,11 @@ function renderPalette(
       currentSceneVersion={null}
       {...props}
     />,
+    {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    },
   );
 }
 
@@ -110,6 +139,30 @@ describe('ToolPalette 틀', () => {
     fireEvent.click(screen.getByRole('button', { name: '3D 다시 시도' }));
     expect(onRetry3d).toHaveBeenCalledOnce();
     expect(button('시점 초기화')).toBeNull();
+  });
+});
+
+describe('ToolPalette: 대기 화면이 위를 덮을 때', () => {
+  const palette = () => screen.getByRole('group', { name: '도구' });
+
+  it('오늘 남은 작업이 없어 대기 화면이 뜨면 눌러도 Tab 으로도 닿지 않게 막는다(inert)', () => {
+    renderPalette({}, 'ADMIN', [todayWork('DONE')]);
+    expect(palette().hasAttribute('inert')).toBe(true);
+  });
+
+  it.each([
+    ['예정 작업이 남아 있으면', [todayWork('PLANNED')]],
+    ['진행 중인 작업이 있으면', [todayWork('IN_PROGRESS')]],
+    ['작업 목록을 아직 모르면', undefined],
+  ] as const)('%s 막지 않는다', (_name, works) => {
+    renderPalette({}, 'ADMIN', works && [...works]);
+    expect(palette().hasAttribute('inert')).toBe(false);
+  });
+
+  it('구역 편집 중에는 대기 화면을 그리지 않으므로 편집을 끌 수 있게 막지 않는다', () => {
+    act(() => startZoneEdit());
+    renderPalette({}, 'ADMIN', [todayWork('DONE')]);
+    expect(palette().hasAttribute('inert')).toBe(false);
   });
 });
 

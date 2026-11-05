@@ -1,5 +1,9 @@
 import { PlanMinimap } from '@/features/plan/PlanMinimap';
+import { TBM_WORKS_KEY } from '@/features/tbm/api';
+import { todayIsoDate } from '@/features/tbm/taskInput';
+import type { TbmWorkUnit } from '@/features/tbm/types';
 import { DRAG_THRESHOLD_PX } from '@/hooks/useFloatSpot';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -31,10 +35,32 @@ function stage() {
 const at = (x: number, y: number) => ({ clientX: x, clientY: y, button: 0, buttons: 1 });
 const opener = () => screen.getByRole('button', { name: '2D 평면 크게 보기' });
 
-function renderMinimap() {
-  render(<PlanMinimap selectedKey={null} onSelect={() => {}} />);
+/** works 가 있으면 오늘 작업 목록을 이미 받은 것으로 한다(대기 화면 여부를 캐시에서 읽는다). */
+function renderMinimap(works?: TbmWorkUnit[]) {
+  const client = new QueryClient();
+  if (works) client.setQueryData(TBM_WORKS_KEY, works);
+  render(
+    <QueryClientProvider client={client}>
+      <PlanMinimap selectedKey={null} onSelect={() => {}} />
+    </QueryClientProvider>,
+  );
   return stage();
 }
+
+const work = (status: TbmWorkUnit['status']): TbmWorkUnit => ({
+  work_id: '1',
+  status,
+  date: todayIsoDate(),
+  name: '작업',
+  from_ms: 1,
+  to_ms: 2,
+  zone_id: null,
+  place: null,
+  planned_people: 1,
+  lead: null,
+  layout_id: null,
+  work_type: null,
+});
 
 /** 몸통을 누르고 (x, y) 까지 끈 뒤 놓는다. */
 function dragBody(minimap: HTMLElement, x: number, y: number) {
@@ -49,6 +75,16 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('PlanMinimap', () => {
+  it('오늘 남은 작업이 없어 대기 화면이 덮는 동안은 inert 라 Tab 으로도 눌리지 않는다', () => {
+    expect(renderMinimap([work('DONE')]).hasAttribute('inert')).toBe(true);
+  });
+
+  it('작업 목록을 받기 전이거나 오늘 남은 작업이 있으면 inert 가 아니다', () => {
+    expect(renderMinimap().hasAttribute('inert')).toBe(false);
+    cleanup();
+    expect(renderMinimap([work('PLANNED')]).hasAttribute('inert')).toBe(false);
+  });
+
   it('왼쪽 아래 가장자리에 붙고, 처음에는 위치 스타일 없이 폭 200px 이다', () => {
     const minimap = renderMinimap();
     expect(minimap.className).toContain('bottom-3.5');

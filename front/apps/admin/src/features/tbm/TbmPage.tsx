@@ -1,6 +1,6 @@
 import { PageTitle } from '@/features/layout/PageTitle';
-import { requestSetupSession, setupSessionKey } from '@/features/setup/api';
-import { setSetupWorkUnitId, useSetupFlowStore } from '@/features/setup/setup.store';
+import { setSetupWorkUnitId } from '@/features/setup/setup.store';
+import { WRAP_UP_GENERATING_TEXT } from '@/features/tbm/constants';
 import { SignaturePanel, useSignatures } from '@/features/tbm/SignaturePanel';
 import { PILL, SWITCH } from '@/features/tbm/styles';
 import { TaskAddDialog, TaskEditDialog } from '@/features/tbm/TaskForm';
@@ -23,21 +23,18 @@ import {
 import { useMinutesForm } from '@/features/tbm/useMinutesForm';
 import { usePrint } from '@/features/tbm/usePrint';
 import { useReceiving } from '@/features/tbm/useReceiving';
+import { useSetupLookup } from '@/features/tbm/useSetupLookup';
 import { useTbmData } from '@/features/tbm/useTbmData';
 import { useTbmReport } from '@/features/tbm/useTbmReport';
 import { useWorkSession } from '@/features/tbm/useWorkSession';
-import {
-  deriveWorkStages,
-  unfinishedBeforeStart,
-  type SetupSessionLookup,
-} from '@/features/tbm/workStage';
+import { confirmWorkEnd, confirmWorkStart } from '@/features/tbm/workConfirm';
+import { deriveWorkStages, unfinishedBeforeStart } from '@/features/tbm/workStage';
 import { WorkStageBar } from '@/features/tbm/WorkStageBar';
-import { api } from '@/lib/api';
 import { createQueryClient } from '@/lib/queryClient';
 import { Button } from '@simai/ui/components/button';
 import { Card } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
-import { QueryClientContext, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { QueryClientContext, QueryClientProvider } from '@tanstack/react-query';
 import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 const EMPTY_PLACEHOLDER_TASK: TbmTask = TBM_TASKS[0]!;
@@ -110,23 +107,7 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
 
   // 단계 판정은 서버 값으로만: 작업(active_setup_session_id·status·actual_*), 세팅 세션, 최신 보고서.
   const setupSessionId = currentTask?.activeSetupSessionId ?? null;
-  const setupQuery = useQuery({
-    queryKey: setupSessionKey(setupSessionId ?? ''),
-    queryFn: ({ signal }) => requestSetupSession(api, setupSessionId!, signal),
-    enabled: !isFallback && setupSessionId !== null,
-    retry: false,
-  });
-  const zonesCommittedHere = useSetupFlowStore(
-    (s) => s.zonesCommitted && s.activeSessionId !== null && s.activeSessionId === setupSessionId,
-  );
-  const setupLookup: SetupSessionLookup =
-    setupSessionId === null
-      ? { kind: 'none' }
-      : setupQuery.data
-        ? { kind: 'ready', session: setupQuery.data }
-        : setupQuery.isError
-          ? { kind: 'error' }
-          : { kind: 'loading' };
+  const { setup: setupLookup, zonesCommittedHere } = useSetupLookup(setupSessionId, !isFallback);
   const stageResult = deriveWorkStages({
     task: {
       status: currentTask?.status,
@@ -142,21 +123,10 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
 
   const startWork = () => {
     // 세팅·구역이 끝나지 않았어도 막지 않고 확인만 한다.
-    const unfinished = unfinishedBeforeStart(stageResult.stages);
-    if (unfinished.length > 0) {
-      const names = unfinished.map((s) => `${s.label}(${s.detail})`).join(', ');
-      if (
-        !window.confirm(
-          `아직 끝나지 않은 단계가 있습니다: ${names}\n그래도 작업을 시작하시겠습니까?`,
-        )
-      ) {
-        return;
-      }
-    }
-    void session.run('start');
+    if (confirmWorkStart(unfinishedBeforeStart(stageResult.stages))) void session.run('start');
   };
   const endWork = () => {
-    if (window.confirm('작업을 종료하시겠습니까?')) void session.run('end');
+    if (confirmWorkEnd()) void session.run('end');
   };
 
   const interferences = useMemo(() => tbmInterferences(tasks), [tasks]);
@@ -415,7 +385,11 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
             />
           )}
           <p role="status">
-            {report?.wrap_up_summary ? `작업 마무리: ${report.wrap_up_summary}` : session.message}
+            {report?.wrap_up_summary
+              ? `작업 마무리: ${report.wrap_up_summary}`
+              : report?.wrap_up_status === 'GENERATING'
+                ? WRAP_UP_GENERATING_TEXT
+                : session.message}
           </p>
           <p role="status" className="text-[13px] text-point-soft empty:hidden">
             {message}

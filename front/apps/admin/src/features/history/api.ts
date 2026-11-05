@@ -22,8 +22,9 @@ import { ApiError, type Http } from '@/lib/http';
 
 // 히스토리 조회. http 를 인자로 받는다(테스트가 env 없이 createHttp 로 부를 수 있게 한다).
 
-export const WORKS_KEY = ['history', 'works'] as const;
-export const replayKey = (workId: string) => ['history', 'replay', workId] as const;
+/** 구간이 키에 들어 있어, 진행 중이던 작업이 끝나 구간이 바뀌면 다시 받는다. */
+export const replayKey = (workId: string, range: Span) =>
+  ['history', 'replay', workId, range.from, range.to] as const;
 
 /** 최근 작업(새 날짜부터). */
 export function requestWorks(http: Http, signal?: AbortSignal) {

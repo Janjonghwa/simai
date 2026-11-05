@@ -37,6 +37,9 @@ export const OUTSIDE_ZONE_TEXT = '구역 밖';
 /** 수동 등록 작업의 장비 글자. */
 export const GEAR_UNSET_TEXT = '장비 미입력';
 
+/** 작업을 끝낸 뒤 서버가 작업 마무리를 만드는 동안의 안내. */
+export const WRAP_UP_GENERATING_TEXT = '작업 마무리 작성 중';
+
 // 서식(TbmFormSheet)이 쪽 나눔(paginate)에 알리는 표시: 칸 · 구역 제목 줄 · 안내 글.
 export const FIELD_ATTR = 'data-tbm-field';
 export const BAR_ATTR = 'data-tbm-bar';

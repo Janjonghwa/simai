@@ -1,4 +1,5 @@
 import { TBM_TASKS, TBM_ZONES } from '@/features/tbm/tbmDemo';
+import type { TbmWorkUnit } from '@/features/tbm/types';
 import { problem, readLiveUser, unauthorized } from '@/mocks/problem';
 import { EVENT_CYCLE_MS, riskEventsBetween, worldStateAt } from '@/mocks/realtimeScenario';
 import { http, HttpResponse } from 'msw/http';
@@ -68,6 +69,10 @@ export interface HistoryMockWork {
   name: string;
   from_ms: number;
   to_ms: number;
+  status: 'PLANNED' | 'IN_PROGRESS' | 'DONE';
+  /** 실제 시작·종료(서버 work_unit.actual_*). 시작 전이면 둘 다 null, 진행 중이면 종료만 null 이다. */
+  actual_started_at: number | null;
+  actual_ended_at: number | null;
   zone_id: string | null;
   place: string | null;
   planned_people: number;
@@ -87,37 +92,82 @@ function countEvents(from: number, to: number): { CRITICAL: number; HIGH: number
   };
 }
 
-/**
- * 최근 DAYS 일의 TBM 작업(서버처럼 아직 시작하지 않은 오늘 작업도 준다). 가장 오래된 날의 마지막 작업은 기록이 없다
- * (다른 작업과 겹치지 않는다).
- */
-export function historyWorks(now: number): HistoryMockWork[] {
-  const works: HistoryMockWork[] = [];
-  for (let d = 0; d < DAYS; d++) {
-    const day = now - d * DAY_MS;
-    TBM_TASKS.forEach((task, i) => {
-      const from = at(day, task.from);
-      const to = at(day, task.to);
-      const noRecord = d === DAYS - 1 && i === TBM_TASKS.length - 1;
-      works.push({
-        work_id: `${dateOf(day)}-${task.id}`,
-        date: dateOf(day),
-        name: task.name,
-        from_ms: from,
-        to_ms: to,
-        zone_id: task.zone,
-        place: TBM_ZONES.find((z) => z.id === task.zone)?.name ?? task.area ?? null,
-        planned_people: task.people,
-        event_counts: noRecord ? null : countEvents(from, Math.min(to, now)),
-      });
-    });
-  }
-  return works;
+/** 날짜 하나의 TBM 데모 작업. 계획 시각이 지났으면 시작했고 계획 종료가 지났으면 끝난 것으로 한다(실제 = 계획). */
+function scenarioWorks(day: number, now: number, lastHasNoRecord: boolean): HistoryMockWork[] {
+  return TBM_TASKS.map((task, i) => {
+    const from = at(day, task.from);
+    const to = at(day, task.to);
+    const started = from <= now;
+    const ended = to <= now;
+    const noRecord = lastHasNoRecord && i === TBM_TASKS.length - 1;
+    return {
+      work_id: `${dateOf(day)}-${task.id}`,
+      date: dateOf(day),
+      name: task.name,
+      from_ms: from,
+      to_ms: to,
+      status: ended ? 'DONE' : started ? 'IN_PROGRESS' : 'PLANNED',
+      actual_started_at: started ? from : null,
+      actual_ended_at: ended ? to : null,
+      zone_id: task.zone,
+      place: TBM_ZONES.find((z) => z.id === task.zone)?.name ?? task.area ?? null,
+      planned_people: task.people,
+      event_counts: noRecord ? null : countEvents(from, Math.min(to, now)),
+    };
+  });
 }
+
+const msOrNull = (value: string | number | null | undefined) =>
+  typeof value === 'number' ? value : null;
+
+/** TBM 목(/api/work-units)의 작업을 히스토리 응답 모양으로. 시작·종료는 그 목이 기록한 값이다. */
+function liveWork(work: TbmWorkUnit, now: number): HistoryMockWork {
+  const started = msOrNull(work.actual_started_at);
+  const ended = msOrNull(work.actual_ended_at);
+  return {
+    work_id: work.work_id,
+    date: work.date,
+    name: work.name,
+    from_ms: work.from_ms,
+    to_ms: work.to_ms,
+    status: work.status ?? 'PLANNED',
+    actual_started_at: started,
+    actual_ended_at: ended,
+    zone_id: work.zone_id,
+    place: work.place ?? null,
+    planned_people: work.planned_people,
+    event_counts:
+      started === null
+        ? countEvents(work.from_ms, Math.min(work.to_ms, now))
+        : countEvents(started, Math.min(ended ?? now, now)),
+  };
+}
+
+/**
+ * 최근 DAYS 일의 TBM 작업(서버처럼 아직 시작하지 않은 작업도 준다). 어제 이전은 모두 끝난 작업이고, 가장 오래된 날의
+ * 마지막 작업은 기록이 없다(다른 작업과 겹치지 않는다). 오늘 작업은 live(TBM 목의 지금 작업)가 있으면 그것이고,
+ * 없으면 계획 시각을 따르는 데모 작업이다.
+ */
+export function historyWorks(now: number, live?: readonly TbmWorkUnit[]): HistoryMockWork[] {
+  const today = live ? live.map((work) => liveWork(work, now)) : scenarioWorks(now, now, false);
+  const past = Array.from({ length: DAYS - 1 }, (_, i) =>
+    scenarioWorks(now - (i + 1) * DAY_MS, now, i === DAYS - 2),
+  );
+  return [...today, ...past.flat()];
+}
+
+/** 작업의 실제 구간(시작 전이면 계획 구간). 진행 중이면 끝이 null 이다(지금까지). */
+const spanOf = (work: HistoryMockWork) =>
+  work.actual_started_at === null
+    ? { from: work.from_ms, to: work.to_ms }
+    : { from: work.actual_started_at, to: work.actual_ended_at };
 
 /** 어느 작업의 구간인가(창이 들어 있는 첫 작업. 겹치는 작업은 먼저 나온 쪽). 없으면 요청 구간 자체를 한 작업으로 본다. */
 const workOf = (works: readonly HistoryMockWork[], from: number, to: number) =>
-  works.find((w) => w.from_ms <= from && to <= w.to_ms);
+  works.find((w) => {
+    const span = spanOf(w);
+    return span.from <= from && (span.to === null || to <= span.to);
+  });
 
 /** 같은 시각이면 같은 msg_id 다(서버가 저장된 원래 msg_id 를 주므로 같은 구간을 다시 읽어도 같다). */
 const stableWorld = (ot: number) => {
@@ -187,7 +237,12 @@ export function historyReplay(
 ) {
   const work = workOf(works, from, to);
   const empty = work !== undefined && hasNoRecord(work);
-  const quiet = quietStarts(work ?? { from_ms: from, to_ms: to });
+  const span = work && spanOf(work);
+  const quiet = quietStarts(
+    work && span
+      ? { from_ms: span.from, to_ms: span.to ?? work.to_ms }
+      : { from_ms: from, to_ms: to },
+  );
   const until = Math.min(to, now);
   return {
     from,
@@ -217,8 +272,14 @@ function readReplayQuery(url: URL) {
   return valid ? { from, to, step } : null;
 }
 
-/** 작업 목록(GET /api/work-units)과 구간 기록(GET /api/replay). 로그인만 하면 볼 수 있다(열람). */
-export function createHistoryMock({ now = Date.now }: { now?: () => number } = {}) {
+/**
+ * 작업 목록(GET /api/work-units?days=)과 구간 기록(GET /api/replay). 로그인만 하면 볼 수 있다(열람).
+ * liveWorks 를 주면 오늘 작업은 그 목(TBM 목)의 지금 작업이라, 거기서 시작·종료한 것이 목록에 따라온다.
+ */
+export function createHistoryMock({
+  now = Date.now,
+  liveWorks,
+}: { now?: () => number; liveWorks?: () => readonly TbmWorkUnit[] } = {}) {
   const deny = (request: Request) => (readLiveUser(request, now()) ? undefined : unauthorized());
   const tooLarge = () => problem(400, CODE_TOO_LARGE, '한 번에 받을 수 있는 기록보다 많습니다');
 
@@ -226,7 +287,7 @@ export function createHistoryMock({ now = Date.now }: { now?: () => number } = {
     http.get('*/api/work-units', ({ request }) => {
       const denied = deny(request);
       if (denied) return denied;
-      return HttpResponse.json({ works: historyWorks(now()) });
+      return HttpResponse.json({ works: historyWorks(now(), liveWorks?.()) });
     }),
     http.get('*/api/replay', ({ request }) => {
       const denied = deny(request);
@@ -237,7 +298,7 @@ export function createHistoryMock({ now = Date.now }: { now?: () => number } = {
       if (to - from > MAX_RANGE_MS || Math.floor((to - from) / step) + 1 > MAX_FRAMES)
         return tooLarge();
       const t = now();
-      const body = historyReplay(historyWorks(t), from, to, step, t);
+      const body = historyReplay(historyWorks(t, liveWorks?.()), from, to, step, t);
       if (body.events.length > MAX_TRANSITIONS || body.world_states.length > MAX_FRAMES)
         return tooLarge();
       return HttpResponse.json(body);

@@ -776,6 +776,22 @@ describe('작업 세션과 서명', () => {
     vi.restoreAllMocks();
   });
 
+  it('다른 화면에서 종료하고 들어와도 마무리를 만드는 중이면 작성 중이라고 알린다', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    // 마무리가 끝나지 않은 채로 두려고 보고서 완성을 늦춘다(목은 id 로 받을 때마다 한 번씩 센다).
+    tbmMock = createTbmMock({ pollsBeforeComplete: 99 });
+    server.resetHandlers(...tbmMock.handlers, ...geometryHandlers);
+    const first = render(<TbmPage />);
+    fireEvent.click(await screen.findByRole('button', { name: '작업 시작' }));
+    fireEvent.click(await screen.findByRole('button', { name: '작업 종료' }));
+    expect(await screen.findByText('작업 마무리 작성 중')).toBeTruthy();
+    // 이 화면의 안내(session.message)는 사라지고, 서버가 마무리를 만드는 중인 보고서만 남는다.
+    first.unmount();
+    render(<TbmPage />);
+    expect(await screen.findByText('작업 마무리 작성 중')).toBeTruthy();
+    vi.restoreAllMocks();
+  });
+
   it('다른 작업이 진행 중이면 409 안내를 표시한다', async () => {
     // 세팅·구역 전 시작 경고(확인)는 계속 진행으로 답한다.
     vi.spyOn(window, 'confirm').mockReturnValue(true);

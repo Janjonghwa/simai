@@ -3,9 +3,6 @@
 /** 목록에 보일 날짜 수(오늘 포함). */
 export const HISTORY_DAYS = 7;
 
-/** 시작한 작업을 다시 거르는 간격(ms). 작업 시작 시각이 지나면 이 안에 목록에 나타난다. */
-export const STARTED_RECHECK_MS = 60_000;
-
 // 서버가 한 번에 주는 양(docs/design/server-replay.md). 넘으면 잘라 주지 않고 400 REPLAY_RANGE_TOO_LARGE 다.
 /** 구간 길이 상한(1시간). */
 export const REPLAY_MAX_RANGE_MS = 3_600_000;
