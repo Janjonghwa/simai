@@ -1,3 +1,4 @@
+import { adaptZones } from '@/features/viewer3d/data/contractAdapter';
 import { requestZones } from '@/features/zones/api';
 import { boxToPolygon, readZones, toViewerZones } from '@/features/zones/zones';
 import { createHttp } from '@/lib/http';
@@ -150,18 +151,43 @@ describe('상자 ↔ 다각형', () => {
     expect(read(zone('z', polygon, [0, 2.4]))[0]).toMatchObject({ ...box, shapeEditable: true });
   });
 
-  it('3D 뷰어에는 상자 형식(DEMO)으로 넘긴다', () => {
-    expect(toViewerZones(read(zone('z', rect(1, 2, 3, 4))))).toEqual({
-      contract: 'DEMO_UNCONFIRMED',
-      zones: [
-        {
-          zone_id: 'z',
-          name: 'z',
-          severity: 'HIGH',
-          aabb: { min_xyz: [1, 2, 0], max_xyz: [3, 4, 2] },
-        },
-      ],
+  it('3D 뷰어에는 서버 응답 형식(정식 구역) 그대로 넘긴다', () => {
+    const item = zone('z', rect(1, 2, 3, 4));
+    expect(toViewerZones(read(item))).toEqual([item]);
+  });
+
+  describe('3D 뷰어가 읽은 모양', () => {
+    const shapeOf = (item: unknown) => {
+      const [view] = adaptZones(toViewerZones(read(item)), 0).zones;
+      return view?.shape;
+    };
+
+    it('축에 맞춘 입체 직사각형은 상자로 읽는다(손잡이·이름표·위험 표시가 그대로다)', () => {
+      expect(shapeOf(zone('z', rect(1, 2, 3, 4)))).toBe('BOX');
     });
+
+    it('회전한 직사각형은 실제 모양의 기둥으로 읽고, 꼭짓점을 그대로 싣는다', () => {
+      const rotated = [
+        [5, 1],
+        [6, 2],
+        [5, 3],
+        [4, 2],
+      ];
+      const [view] = adaptZones(toViewerZones(read(zone('z', rotated))), 0).zones;
+      expect(view?.shape).toBe('PRISM');
+      expect(view?.official?.polygonXy).toEqual(rotated);
+    });
+
+    it('바닥 판정 구역은 바닥 면으로 읽는다', () => {
+      expect(shapeOf({ ...zone('z', rect(1, 2, 3, 4)), eval_type: 'GROUND_FOOTPRINT' })).toBe(
+        'FOOTPRINT',
+      );
+    });
+  });
+
+  it('입체 판정이 아닌 구역은 상자 편집기로 형상을 고칠 수 없다', () => {
+    const footprint = { ...zone('z', rect(1, 2, 3, 4)), eval_type: 'GROUND_FOOTPRINT' };
+    expect(read(footprint)[0]?.shapeEditable).toBe(false);
   });
 });
 

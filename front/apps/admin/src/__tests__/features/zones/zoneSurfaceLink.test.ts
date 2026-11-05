@@ -1,6 +1,6 @@
 import { zoneOf } from '@/__tests__/features/zones/zoneFixture';
 import type { SurfaceGeometry } from '@/features/surfaces/types';
-import { linkSurfaces, pickedSurface, pointInPolygon } from '@/features/zones/zoneSurfaceLink';
+import { linkSurfaces, pickedSurface } from '@/features/zones/zoneSurfaceLink';
 import { describe, expect, it } from 'vitest';
 
 const surfaceOf = (objectId: string, zoneId: string | null) => ({ objectId, zoneId });
@@ -10,37 +10,6 @@ const geometryAt = (cx: number, cy: number): SurfaceGeometry => ({
   sizeXy: [1, 1],
   yawRad: 0,
   topHeightM: 0.4,
-});
-
-const SQUARE = [
-  [0, 0],
-  [4, 0],
-  [4, 4],
-  [0, 4],
-] as const;
-
-describe('pointInPolygon', () => {
-  it('안·밖·경계 위(경계는 안)를 가른다', () => {
-    expect(pointInPolygon([2, 2], SQUARE)).toBe(true);
-    expect(pointInPolygon([5, 2], SQUARE)).toBe(false);
-    expect(pointInPolygon([-0.01, 2], SQUARE)).toBe(false);
-    expect(pointInPolygon([4, 2], SQUARE)).toBe(true);
-    expect(pointInPolygon([0, 0], SQUARE)).toBe(true);
-  });
-
-  it('오목 다각형(L 모양)의 파인 곳은 밖이다', () => {
-    const l = [
-      [0, 0],
-      [4, 0],
-      [4, 2],
-      [2, 2],
-      [2, 4],
-      [0, 4],
-    ] as const;
-    expect(pointInPolygon([1, 3], l)).toBe(true);
-    expect(pointInPolygon([3, 1], l)).toBe(true);
-    expect(pointInPolygon([3, 3], l)).toBe(false);
-  });
 });
 
 describe('linkSurfaces(서버가 작업면에 저장한 zone_id 로 잇는다)', () => {

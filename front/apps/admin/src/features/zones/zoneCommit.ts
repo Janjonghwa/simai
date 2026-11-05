@@ -1,6 +1,5 @@
 import { bodyOf as surfaceBodyOf } from '@/features/surfaces/surfaces';
 import type { WorkSurface } from '@/features/surfaces/types';
-import type { ViewerEditBox } from '@/features/viewer3d';
 import type { Zone, ZoneCommitRequest, ZoneCommitSurface } from '@/features/zones/types';
 import type { SurfaceDraft } from '@/features/zones/zoneEditModel';
 import {
@@ -8,6 +7,7 @@ import {
   newZoneBodyOf,
   bodyOf as zoneBodyOf,
   type ZoneForm,
+  type ZoneShape,
 } from '@/features/zones/zoneForm';
 
 // 구역 편집 저장 요청 본문(순수 계산). 구역·작업면 변경을 POST /api/zones/commit 요청 하나로 만든다. 보낼 것이 없으면 null 이다.
@@ -42,9 +42,9 @@ function surfacePartOf(
 export interface SaveRequestInput {
   zone: Zone;
   form: ZoneForm;
-  /** 고친 구역 상자(고치지 않았으면 null). */
-  box: ViewerEditBox | null;
-  /** 구역 속성이나 상자를 고쳤는지. 작업면만 고쳤으면 구역은 KEEP 이라 새 버전을 만들지 않는다. */
+  /** 새로 정한 구역 모양(바꾸지 않았으면 null이고 받은 모양을 그대로 보낸다). */
+  shape: ZoneShape | null;
+  /** 구역 속성이나 모양을 새 버전으로 저장할지(부르는 쪽이 정한다). 아니면 구역은 KEEP 이라 새 버전을 만들지 않는다. */
   zoneChanged: boolean;
   linked: WorkSurface | null;
   surface: SurfaceDraft | null | undefined;
@@ -53,11 +53,11 @@ export interface SaveRequestInput {
 
 /** 기존 구역 저장(구역 새 버전·작업면 바꾸기). 바뀐 것이 없으면 null. */
 export function saveRequestOf(input: SaveRequestInput): ZoneCommitRequest | null {
-  const { zone, form, box, zoneChanged, linked, surface, surfaceChanged } = input;
+  const { zone, form, shape, zoneChanged, linked, surface, surfaceChanged } = input;
   const surfacePart = surfacePartOf(linked, surface, surfaceChanged);
   if (!zoneChanged && !surfacePart) return null;
   const zonePart = zoneChanged
-    ? ({ op: 'UPDATE', zone_id: zone.zoneId, body: zoneBodyOf(zone, form, box) } as const)
+    ? ({ op: 'UPDATE', zone_id: zone.zoneId, body: zoneBodyOf(zone, form, shape) } as const)
     : ({ op: 'KEEP', zone_id: zone.zoneId } as const);
   return surfacePart ? { zone: zonePart, surface: surfacePart } : { zone: zonePart };
 }
@@ -74,13 +74,13 @@ export const renameRequestOf = (zone: Zone, name: string): ZoneCommitRequest => 
   },
 });
 
-/** 새 구역 만들기. 구역 몸체는 상자·양식 그대로다. 작업면 초안이 있으면 새 작업면도 함께 만든다. */
+/** 새 구역 만들기. 구역 몸체는 모양·양식 그대로다. 작업면 초안이 있으면 새 작업면도 함께 만든다. */
 export function createRequestOf(input: {
   form: ZoneForm;
-  box: ViewerEditBox;
+  shape: ZoneShape;
   surface: SurfaceDraft | null | undefined;
 }): ZoneCommitRequest {
-  const zone = { op: 'CREATE', body: newZoneBodyOf(input.form, input.box) } as const;
+  const zone = { op: 'CREATE', body: newZoneBodyOf(input.form, input.shape) } as const;
   const surfacePart = surfacePartOf(null, input.surface, true);
   return surfacePart ? { zone, surface: surfacePart } : { zone };
 }

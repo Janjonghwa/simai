@@ -59,6 +59,54 @@ describe('2D 평면 방 범위', () => {
   });
 });
 
+describe('2D 평면 구역 모양', () => {
+  const bounds = { minX: -0.5, minY: -1, maxX: 12.5, maxY: 7 };
+  /** 회전한 직사각형(마름모) 구역. 둘레 상자는 [4,1]~[6,3]. */
+  const rotated: PlanZone = {
+    zoneId: 'z-r',
+    name: '회전',
+    min: [4, 1, 0],
+    max: [6, 3, 2],
+    polygon: [
+      [5, 1],
+      [6, 2],
+      [5, 3],
+      [4, 2],
+    ],
+  };
+
+  it('회전했거나 직사각형이 아닌 구역은 실제 모양의 다각형으로 그린다(범위를 적용한 평면 좌표)', () => {
+    const { container } = plan({ bounds, zones: [rotated] });
+    const polygon = container.querySelector('polygon[data-zone="z-r"]')!;
+    expect(container.querySelector('rect[data-zone="z-r"]')).toBeNull();
+    // x = 값 + 0.5, y = 7 - 값
+    expect(polygon.getAttribute('points')).toBe('5.5,6 6.5,5 5.5,4 4.5,5');
+  });
+
+  it('다각형 구역도 색·점선·선택이 같은 규칙을 따른다', () => {
+    const critical = { ...rotated, severity: 'CRITICAL', judgeType: 'VOLUME_3D' } as const;
+    const { container } = plan({ bounds, zones: [critical], selectedKey: 'zone:z-r' });
+    const polygon = container.querySelector('polygon[data-zone="z-r"]')!;
+    expect(polygon.getAttribute('class')).toContain('stroke-sev-critical');
+    expect(polygon.getAttribute('fill-opacity')).toBe('0.24');
+  });
+
+  it('축에 맞춘 직사각형 다각형은 지금처럼 상자(rect)로 그린다', () => {
+    const axis: PlanZone = {
+      ...zone,
+      polygon: [
+        [2, 3],
+        [4, 3],
+        [4, 5],
+        [2, 5],
+      ],
+    };
+    const { container } = plan({ bounds, zones: [axis] });
+    expect(container.querySelector('rect[data-zone="z-1"]')).not.toBeNull();
+    expect(container.querySelector('polygon[data-zone="z-1"]')).toBeNull();
+  });
+});
+
 describe('2D 평면 구역 색', () => {
   const zoneRect = (zoneProps: Partial<PlanZone>, selectedKey: string | null = null) => {
     const { container } = plan({ zones: [{ ...zone, ...zoneProps }], selectedKey });

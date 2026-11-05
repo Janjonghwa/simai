@@ -20,7 +20,7 @@ type Polygon = readonly (readonly [number, number])[];
  * 바닥 다각형이 축에 맞춘 직사각형(네 꼭짓점이 x 두 값·y 두 값의 조합)인지. 끝점이 첫 점과 같은 닫힌 고리(5점)도
  * 받는다(GeoJSON·PostGIS 방식).
  */
-function isAxisRect(polygon: Polygon): boolean {
+export function isAxisRect(polygon: Polygon): boolean {
   const [first, last] = [polygon[0], polygon[polygon.length - 1]];
   const closed =
     polygon.length === CLOSED_RECT_POINTS &&
@@ -60,7 +60,7 @@ function toZone(item: ZoneItem): Zone | null {
     hasGuardrail: item.has_guardrail ?? null,
     requirements: item.requirements ?? null,
     validFrom: item.valid_from,
-    shapeEditable: zRange !== null && isAxisRect(item.polygon_xy),
+    shapeEditable: item.eval_type === 'VOLUME_3D' && zRange !== null && isAxisRect(item.polygon_xy),
   };
 }
 
@@ -95,15 +95,25 @@ export function boxToPolygon(box: Pick<ZoneBox, 'min' | 'max'>): [number, number
   ];
 }
 
-/** 3D 뷰어 Source 에 넘길 상자 형식. 뷰어는 서버 형식이 아니라 이 형식을 검사한다. */
+/**
+ * 3D 뷰어 Source 에 넘길 구역: 서버 응답 형식(정식 구역) 그대로다. 축 정렬 직사각형은 상자로, 회전한 직사각형 같은 다각형은
+ * 실제 모양의 기둥으로 그려진다. 앱 구역 목록(readZones)을 거친 구역이라 3D 와 앱이 같은 구역을 본다.
+ */
 export function toViewerZones(zones: readonly Zone[]): ViewerZones {
-  return {
-    contract: 'DEMO_UNCONFIRMED',
-    zones: zones.map((zone) => ({
-      zone_id: zone.zoneId,
-      name: zone.name,
-      severity: zone.severity,
-      aabb: { min_xyz: zone.min, max_xyz: zone.max },
-    })),
-  };
+  return zones.map((zone) => ({
+    zone_id: zone.zoneId,
+    zone_version: zone.version,
+    name: zone.name,
+    zone_kind: zone.zoneType,
+    eval_type: zone.judgeType,
+    polygon_xy: zone.polygon.map(([x, y]) => [x, y] as [number, number]),
+    z_min_m: zone.zBounds[0],
+    z_max_m: zone.zBounds[1],
+    severity: zone.severity,
+    requirements: zone.requirements,
+    has_guardrail: zone.hasGuardrail,
+    valid_from: zone.validFrom,
+    // 지금 유효한 버전만 읽으므로 valid_to 는 없다.
+    valid_to: null,
+  }));
 }

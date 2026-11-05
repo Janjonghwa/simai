@@ -8,8 +8,9 @@ import { ZoneAttributesCard } from '@/features/zones/ZoneAttributesCard';
 import { NOTE_CLASS, PANEL_CLASS, WARNING_CLASS } from '@/features/zones/zonePanelStyle';
 import { ZoneSelect } from '@/features/zones/ZoneSelect';
 
-/** 직사각형이 아니거나 높이가 없어 3D 손잡이로 고칠 수 없는 구역을 골랐을 때 알림. */
-const SHAPE_LOCKED_TEXT = '직사각형이 아니거나 높이가 없는 구역은 형상을 고칠 수 없습니다.';
+/** 직사각형이 아니거나 높이가 없거나 바닥 판정이라 3D 손잡이로 고칠 수 없는 구역을 골랐을 때 알림. */
+const SHAPE_LOCKED_TEXT =
+  '직사각형이 아니거나 높이가 없거나 바닥 판정인 구역은 형상을 고칠 수 없습니다.';
 
 /**
  * 구역 편집 도구(명세 FR-15·FR-16): 3D 위 왼쪽 패널. 관리자가 아니면 아무것도 그리지 않는다(실시간 관제의 편집 모드는
@@ -28,7 +29,7 @@ export function ZonesPage() {
 function ZoneEditPanel() {
   const edit = useZoneEditing();
   // 작업면 카드가 구역 양식을 가린 동안에는 가려진 구역의 형상 경고를 띄우지 않는다.
-  const shapeLocked = edit.orphan === null && edit.zone?.shapeEditable === false;
+  const shapeLocked = edit.orphan === null && edit.shapeLocked;
   const warning = edit.notice ?? (shapeLocked ? SHAPE_LOCKED_TEXT : null);
 
   return (
