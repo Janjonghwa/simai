@@ -117,3 +117,45 @@ GLB: 채움 노드 `estimated_{floor|wall_k}_fill`(텍스처 재질, doubleSided
 cos 0.15(-505 + 스윕: 0.25 는 먼 바닥이 지워짐, 0.15 는 0.6 %), 닫힘 0.6 m·벽 허용 6 cm·직교 8°(-505 한 방 값), 광선 도달 2.5 m(명세에 없어 정함: -505 에서 닫힘 밖 가장자리가 남던 문제를 벽 클립과 함께 풀기 위한 값, 눈 확인 필요), 색 일치 55/255(카메라 노출 이득 ±20 % 흡수), 가시성 렌더 긴 변 1152(4대 9 s). 버린 대안: 긴 변 기준 기본 삭제(평평한 큰 면 오삭제), lenient 기본(가구 번짐), 벽 범위 ±10 cm 여유(끝에 가짜 띠).
 ### 잔여 위험·넘긴 일
 벽 없는 방향의 바닥 과대, 개구부(문·유리창) 메움, Z=0 대 메시 바닥 계단, 카메라가 적으면 늘어난 면 오삭제(한 대 빼기 22~25 %), 인페인팅 결과 되돌려 쓰기와 `GENERATED` 출처는 다음 티켓.
+
+
+## S15P31A101-514: 평면 구멍 인페인팅 및 GLB 되돌려 쓰기 (`glb_inpaint.py`)
+관련 명세 5.3, 규칙 2·7(관측 텍셀 불변, 생성 텍셀 `GENERATED` 출처 분리, 시각 전용 `safety_use:false`).
+코드: `ai/src/simai_ai/scene/glb_inpaint.py`(진입 `inpaint_sidecar_to_glb`·`inpaint_plane`), 출처 상수 `ai/src/simai_ai/scene/texture_provenance.py`(`GENERATED = 4`, `FILL_SURFACE_VALUES`), 연결 `glb_enhance.enhance_file`·`reconstruct_tasks.bake`·`reconstruct.validate_input`, 시험 `ai/tests/scene/test_glb_inpaint.py`·`ai/tests/scene/test_reconstruct_tasks.py`, 실측 스크립트 `ai/experiments/texrecon_opt/inpaint_real.py`.
+
+### 1. 인터페이스 및 동작 (`<이름>_fill/` → GLB)
+`glb_enhance.enhance_file` 이 `-511` 의 `write_sidecar` 직후 `inpaint_sidecar_to_glb(glb_path, sidecar_dir, config=..., fill_report=...)` 를 호출한다(독립 CLI `python -m simai_ai.scene.glb_inpaint --glb ... --sidecar ...` 도 지원).
+- **입력**: 사이드카 폴더 `<이름>_fill/` 의 `fill_atlas.json` 및 평면별 `<role>_albedo.png`(RGB), `<role>_inpaint_mask.png`(`255` = 채움 칸 안이면서 사진 근거 없는 미관측 영역, `0` = 관측 투영 또는 채움 칸 밖), `<role>_surface_source.png`(`0` = `UNOBSERVED`, `3` = `ESTIMATED_PLANE`).
+- **관측 불변**: `inpaint_mask == 0` 인 모든 텍셀은 백엔드 출력과 무관하게 원본 바이트 그대로 유지한다(`out_img[~target] = albedo[~target]`, `np.array_equal` 검증).
+- **출처(`GENERATED = 4`) 기록**: 마스크(`inpaint_mask > 0`) 안의 채워진 텍셀은 `<role>_surface_source.png` 와 GLB 의 `estimated_<role>_surface_source` 이미지에서 `GENERATED`(`4`)로 기록한다. 평면별·전체 채움 면의 `texel_ratios` 와 `fill_area_m2` / `fill_ratio` 는 `ESTIMATED_PLANE`(`3`, 카메라 사진 투영), `GENERATED`(`4`, 인페인팅 생성), `UNOBSERVED`(`0`, 폴백/비활성 회색) 세 값으로 집계해 `fill_atlas.json`, GLB `extras.simai`, `bake.json enhance` 에 남긴다.
+- **GLB 되돌려 쓰기**: 원본 메시·텍스처 바이너리 접두사(`g.bin[:len(orig)]`)는 건드리지 않고, 인페인팅된 `<role>_inpainted.png` 와 갱신된 `<role>_surface_source.png` 바이트를 새 `bufferView` 로 BIN 끝에 덧붙여 `estimated_<role>_albedo` 및 `estimated_<role>_surface_source` 이미지가 가리키게 한다. 원본 `<role>_albedo.png` 와 `<role>_inpaint_mask.png` 는 사이드카에 그대로 보존해 추후 GPU 세션에서 `diffusion` 백엔드로 재실행할 수 있게 한다.
+
+### 2. 백엔드 3단 폴백 및 큰 평면 타일링
+설정 스위치: 환경변수 `SIMAI_GLB_INPAINT=off|classic|diffusion` 또는 작업 옵션 `options.inpaint` (`"off"` | `"classic"` | `"diffusion"` | `bool`, 기본 `"classic"`, GPU 세션에서는 `"diffusion"`).
+1. **`diffusion` (GPU 확산 모델 인페인팅)**:
+   - `torch`·`diffusers` 를 함수 안에서 지연 import 해 CPU 전용 환경이나 기본 `pyproject.toml`/`uv.lock` 에 무거운 GPU 의존성을 강제하지 않는다.
+   - `SIMAI_INPAINT_MODEL_ID`(기본 `diffusers/stable-diffusion-xl-1.0-inpainting-0.1`, FLUX 계열 ID/경로면 `FluxFillPipeline` 자동 선택) 또는 `SIMAI_INPAINT_MODEL_PATH`, `SIMAI_INPAINT_SEED`(기본 `42`), `SIMAI_INPAINT_STEPS`(기본 `20`), 역할별 프롬프트(`SIMAI_INPAINT_PROMPT_FLOOR` / `SIMAI_INPAINT_PROMPT_WALL`, 기본 `"same floor/wall material, seamless, uniform lighting..."`)를 환경변수·옵션으로 받는다.
+   - 구멍 내부에 회색(128) 대신 관측 텍셀 다중 스케일 조화 전파 바탕을 조건 영상으로 넣어 타일 내부에서도 주변 바닥·벽 색조가 유지되게 한다.
+2. **`classic` (전통 인페인팅, 기본값)**:
+   - 평면 밖 배경(`surface_source == 0 & inpaint_mask == 0`, 값 128)이 구멍 안으로 번지지 않도록 먼저 진짜 관측 텍셀(`inpaint_mask == 0 & surface_source == 3`)에서만 거리 변환 + 다중 스케일 가우스 블러(`σ=6, 24`)로 조화 기저를 만든 뒤 `cv2.inpaint(..., cv2.INPAINT_TELEA)` 로 경계 기울기를 잇는다.
+   - 이어서 같은 평면의 관측 영역에서 추출한 패치(`patch_size=16`)의 영평균 결 변이(detail)를 50% 겹침 코사인(Hann) 창으로 합성해 단색 번짐 대신 주변 바닥·벽 질감이 이어지게 한다.
+3. **`gray_fallback` (회색 유지 폴백)**:
+   - 앞선 백엔드가 예외를 내면 단계 전체를 실패시키지 않고 중립 회색(`128`, `UNOBSERVED = 0`)과 원본 평면 텍스처를 그대로 유지하며 `fallback_from` 과 오류 요약을 남긴다.
+- **큰 평면 타일링(`inpaint_tiled`)**: 한 변 최대 `4096 px` 평면을 `tile_size`(기본 `1024 px`)와 `tile_overlap`(기본 `128 px`)의 겹침 타일로 나누고, 겹침 구간에 2D 코사인 가중치(`0.5 - 0.5·cos(πt)`)를 곱해 타일 경계 단차 없이 합친다.
+
+### 3. Bake `texture` 옵션 (`texrecon` | `none`)
+`reconstruct_tasks.bake` 및 `reconstruct.validate_input` 에 `options.texture` (또는 `SIMAI_BAKE_TEXTURE`) 옵션을 추가했다:
+- `"texrecon"` (기본): 기존 TSDF + `texrecon` 텍스처 굽기 + `-511` 평면 채우기 + `-514` 인페인팅.
+- `"none"`: `texrecon`·Open3D TSDF 를 생략하고 MapAnything 깊이·정점색 메시(`preview_scene` 빌더 재사용, 기본 `stride=1`)를 `textured/scene.glb` 로 만든 뒤 같은 `-511` 평면 채우기 + `-514` 인페인팅을 적용한다(`bake.json` 에 `texture: "none"`, `fallback_reason: null` 기록). 같은 입력에서 두 경로를 나란히 돌려 비교할 수 있다.
+
+### 4. 비활성화 스위치 및 GPU 세션 실행 방법
+- **끄기**: `SIMAI_GLB_INPAINT=off` (또는 `options={"inpaint": "off"}` / `False`) 설정 시 인페인팅을 건너뛰고 `-511` 의 중립 회색(`128`, `UNOBSERVED=0`)을 그대로 둔다.
+- **GPU 세션에서 diffusion 실행**:
+  ```bash
+  uv pip install diffusers transformers accelerate safetensors
+  # 단일 GLB + 사이드카에 diffusion 인페인팅 적용
+  SIMAI_GLB_INPAINT=diffusion SIMAI_INPAINT_MODEL_ID=diffusers/stable-diffusion-xl-1.0-inpainting-0.1 \
+    uv run python -m simai_ai.scene.glb_inpaint --glb path/to/scene.glb --sidecar path/to/scene_fill --report path/to/inpaint.json
+  # 12차 실제 맵 4단 비교(before | -511 gray | classic | diffusion) 생성
+  cd ai && SIMAI_GLB_INPAINT=diffusion uv run python -m experiments.texrecon_opt.inpaint_real --include-diffusion
+  ```

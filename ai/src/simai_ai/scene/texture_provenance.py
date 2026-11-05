@@ -5,8 +5,8 @@ numpy 만 쓴다(Open3D·OpenCV·Docker 없이 시험이 돈다). 설계·정한
 
 출처 값(EXP-02 아바타 표면 출처 지도와 같은 값, contracts avatar_asset surface_source.mask_uri): 2 = OBSERVED(실제 관측 픽셀),
 1 = INTERPOLATED(작은 구멍을 둘레 관측으로 보간), 0 = UNOBSERVED(관측 없음, 중립 기본 재질), 3 = ESTIMATED_PLANE(색은 관측 픽셀이나
-형상을 맞춘 수평 평면에 올린 면, S15P31A101-314 --plane-cleanup 일 때만). 4 = GENERATED 는 값 자리만 예약하고 내지 않는다(같은 평면 복사·
-확산 inpainting 은 만들지 않는다, AGENTS 규칙 2·7). 얼굴 비트(+128)는 배경에 없다.
+형상을 맞춘 수평 평면에 올린 면, S15P31A101-314 --plane-cleanup 및 S15P31A101-511 평면 사진 투영). 4 = GENERATED 는 texrecon 굽기에서는
+내지 않고 평면 채움 인페인팅(S15P31A101-514, glb_inpaint.py, FILL_SURFACE_VALUES)으로 채운 마스크 영역 텍셀에 기록해 관측(2·3)과 구분한다(AGENTS 규칙 2·7). 얼굴 비트(+128)는 배경에 없다.
 겹치는 텍셀은 신뢰가 낮은 값을 남긴다(TRUST: 미관측 < 생성 < 보간 < 추정 평면 < 관측. 관측으로 승격되지 않게).
 
 좌표: 카메라는 OpenCV(+x 오른쪽, +y 아래, +z 앞) cam2world 4×4, 픽셀 정수 = 픽셀 중심.

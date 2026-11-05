@@ -108,6 +108,8 @@ class EnhanceConfig:
     fill_wall_ransac_iter: int = 1500
     fill_wall_max_height_m: float = 3.5
     fill_wall_max_fill_frac: float = 0.85
+    # (D) 평면 인페인팅(S15P31A101-514, glb_inpaint.py). 사이드카 마스크(255)만 메워 GLB 에 되돌려 쓴다
+    inpaint_mode: str = "classic"  # off | classic | diffusion (SIMAI_GLB_INPAINT)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, options: Mapping[str, Any] | None = None) -> EnhanceConfig:
@@ -134,6 +136,16 @@ class EnhanceConfig:
             kw["enabled"] = options["enhance"]
         if options and isinstance(options.get("fill"), bool):
             kw["fill_enabled"] = options["fill"]
+        if (raw := env.get("SIMAI_GLB_INPAINT", "").strip()) != "":
+            low = raw.lower()
+            kw["inpaint_mode"] = "off" if low in ("0", "false", "off", "no", "none", "disabled") else low
+        if options and "inpaint" in options and options["inpaint"] is not None:
+            v = options["inpaint"]
+            if isinstance(v, bool):
+                kw["inpaint_mode"] = "classic" if v else "off"
+            else:
+                low = str(v).strip().lower()
+                kw["inpaint_mode"] = "off" if low in ("0", "false", "off", "no", "none", "disabled") else low
         return replace(cfg, **kw) if kw else cfg
 
 
@@ -1024,7 +1036,7 @@ def _config_dict(cfg: EnhanceConfig) -> dict[str, Any]:
 
 
 def enhance_file(path: Path, *, config: EnhanceConfig | None = None, cameras: Sequence[CheckCamera] | None = None,
-                 atlas_dir: Path | None = None) -> dict[str, Any]:
+                 atlas_dir: Path | None = None, options: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """파일을 제자리에서 보강한다. 적용될 때만 임시 파일을 원자적으로 바꿔 쓴다. report 를 돌려준다.
     채움 평면이 있으면 평면별 이미지·인페인팅 마스크를 atlas_dir(기본: GLB 옆 `<이름>_fill/`)에 저장한다(실패해도 GLB 는 유지)."""
     res = enhance_glb(Path(path).read_bytes(), config=config, cameras=cameras)
@@ -1038,6 +1050,13 @@ def enhance_file(path: Path, *, config: EnhanceConfig | None = None, cameras: Se
             try:
                 write_sidecar(res.fills, d)
                 res.report["fill_atlas"] = {"dir": d.name, "index": "fill_atlas.json", "planes": [f.role for f in res.fills]}
+                from .glb_inpaint import InpaintConfig, inpaint_sidecar_to_glb
+                inp_opts = dict(options or {})
+                if config is not None and "inpaint" not in inp_opts:
+                    if config.inpaint_mode != "classic" or not os.environ.get("SIMAI_GLB_INPAINT", "").strip():
+                        inp_opts["inpaint"] = config.inpaint_mode
+                inp_cfg = InpaintConfig.from_env(options=inp_opts)
+                res.report["inpaint"] = inpaint_sidecar_to_glb(path, d, config=inp_cfg, fill_report=res.report.get("fill"))
             except OSError as e:
                 res.report["fill_atlas"] = {"error": type(e).__name__}
     return res.report

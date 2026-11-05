@@ -106,6 +106,10 @@ def validate_input(inp: Mapping[str, Any]) -> None:
             "preview_stride",
             "target_faces",
             "num_threads",
+            "texture",
+            "enhance",
+            "fill",
+            "inpaint",
         }
         if set(opts) - allowed_opts:
             raise ValueError("모르는 복원 옵션")
@@ -131,6 +135,14 @@ def validate_input(inp: Mapping[str, Any]) -> None:
             nt = opts["num_threads"]
             if isinstance(nt, bool) or not isinstance(nt, int) or nt < 0:
                 raise ValueError("num_threads 는 0 이상 정수")
+        if opts.get("texture", "texrecon") not in ("texrecon", "none"):
+            raise ValueError("texture 는 texrecon 또는 none")
+        if not isinstance(opts.get("enhance", True), bool):
+            raise ValueError("enhance 는 bool")
+        if not isinstance(opts.get("fill", True), bool):
+            raise ValueError("fill 은 bool")
+        if "inpaint" in opts and not isinstance(opts["inpaint"], bool) and opts["inpaint"] not in ("off", "classic", "diffusion"):
+            raise ValueError("inpaint 는 off·classic·diffusion 또는 bool")
     except (TypeError, KeyError, ValueError) as e:
         raise ReconstructionError("STATIC_INPUT_INVALID", str(e)) from e
 
@@ -312,7 +324,7 @@ class StaticReconstructor:
             "assets": [], "quality": {"wall_deviation_m": None, "observed_surface_ratio": bake["observed_surface_ratio"],
                 "notes": "벽 GT 미측정. 출처·축척 점검·지표: metrics.json"
                 + ("; scene_tier=PREVIEW; preview_scene=true" if mode == "preview" else (f"; scene_tier=FULL; replaces_preview_scene={preview_emitted['scene_version']}" if preview_emitted is not None else ""))
-                + "; texture=" + ("null: " + bake["fallback_reason"] if bake.get("fallback_reason") else "texrecon")
+                + "; texture=" + ("null: " + bake["fallback_reason"] if bake.get("fallback_reason") else str(bake.get("texture") or "texrecon"))
                 + _enhance_note(bake.get("enhance")),
                 **regenerate_quality_fields(inp)},
         }
