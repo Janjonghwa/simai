@@ -108,7 +108,8 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | K. 확장: 워치 | `watch_connection` | 확장 | 일반 | 워치 I4 연결 기록(연결·끊김 경계, 끝 사유). 열린 연결은 워치마다 하나(V28, S15P31A101-336) | V28 추가 | `I4 /ws/watch`, `/topic/health`(watches) | 곽나혁 |
 | K. 확장: 워치 | `watch_alert` | 확장 | 일반 | 워치 진동 알림과 ACK·격상(V35, LIVE 만) | 수정 16 추가 | `I4 watch_alert`·`watch_ack`, `/topic/watch`(watch_escalation) | 곽나혁 |
 | K. 확장: 워치 | `watch_impact` | 확장 | 일반 | 워치 충격 이벤트(낙상 추가 근거) | 수정 16 추가 | `I4 impact` |  |
-| L. 확장: PPE·정적 공간 변화 | `ppe_state` | 확장 | hypertable | World ID 별 PPE 판정 | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
+| L. 확장: PPE·정적 공간 변화 | `ppe_state` | M3 | hypertable | World ID 별 PPE 판정 이력(추가만, V43) | 있음 | `I1 ppe_state` |  |
+| L. 확장: PPE·정적 공간 변화 | `ppe_current_state` | M3 | 일반 | 사람별 현재 PPE 상태(화면용, V43) | V43 추가 | `I1 ppe_state` |  |
 | L. 확장: PPE·정적 공간 변화 | `region_state` | 확장 | 일반 | 정적 공간 변화 영역(임시 형상·불확실 점유) | 있음 | 없음(다른 테이블이 참조하거나 I1·I5 수신으로 채움) | 이연주 |
 
 "수정 16 추가"는 ERD 1단계에서 새로 정해 기획서 v1.3 수정 16(S15P31A101-207)로 11장·부록 C 에 넣은 테이블이다.
@@ -1628,19 +1629,55 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 
 부록 C.7·C.8. ppe_state·region_state.
 
-#### `ppe_state` — World ID 별 PPE 판정
+#### `ppe_state` — World ID 별 PPE 판정 이력
 
-- 단계 **확장** · hypertable · 근거: 11.2 ppe_state, 부록 C.7, R9 · 검토: 이연주
+- 단계 **M3**(5.5, PPE MVP 전환) · hypertable · 근거: 11장 ppe_state, 12.3, 계약 `ppe_state` 1.0.0 · V43(S15P31A101-516, `docs/design/ppe-state-ingest.md`)
+- 메시지의 `people` 항목 하나가 한 행이다. 추가만 한다. 1일 청크, 7일 뒤 압축, 상시 삭제 없음(`world_track_state` 와 같음, 11.5). 이미지·crop·얼굴은 싣지 않는다.
+- 신호수 표식(`signaler_marker`)은 확장(부록 C)이라 이 판에 없다.
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
-| `observed_at` | ts | PK(1), NN |  |  |
-| `world_id` | text | PK(2) |  |  |
-| `helmet` | text | NN, CK(WORN·NOT_WORN·UNKNOWN) |  |  |
-| `vest` | text | CK(WORN·NOT_WORN·UNKNOWN) |  |  |
-| `signaler_marker` | boolean |  |  | 신호수 표식 |
-| `confidence` | real |  |  |  |
-| `model_version` | text | NN |  | PPE 모델(YOLO26) 버전. crop 은 저장하지 않음(11.5) |
+| `observation_at` | ts | PK(1), NN | `people[].capture_time_ms` | 그 사람 상태의 촬영 시각(Tier 0 시계) |
+| `source_id` | text | PK(2), NN | 봉투 `source_id` | 멱등 키 |
+| `stream_epoch` | bigint | PK(3), NN | `stream_epoch` | PPE 프로세스 시작 시각(ms). 멱등 키 |
+| `state_sequence` | bigint | PK(4), NN | `state_sequence` | 멱등 키 |
+| `world_id` | text | PK(5), NN | `people[].world_id` |  |
+| `msg_id` | uuid | NN | 봉투 `msg_id` |  |
+| `identity_revision` | int | NN | `people[].identity_revision` |  |
+| `helmet_state`·`vest_state` | text | NN, CK(WORN·NOT_WORN·UNKNOWN) | `helmet.state`·`vest.state` |  |
+| `helmet_reason`·`vest_reason` | text | NN | `*.reason` | 사유 코드 |
+| `helmet_valid_cells`·`vest_valid_cells` | int | NN | `*.valid_cells` | 유효 칸 수 |
+| `helmet_support_ratio`·`vest_support_ratio` | real | NN | `*.support_ratio` | 지원 비율 |
+| `helmet_last_evidence_at`·`vest_last_evidence_at` | ts |  | `*.last_evidence_at_ms` | 근거가 없으면 null |
+| `helmet_expires_at`·`vest_expires_at` | ts |  | `*.expires_at_ms` | 근거가 없으면 null |
+| `helmet_evidence`·`vest_evidence` | jsonb | NN | `*.evidence` | 프레임 키·local ID·후보 상태·confidence·영역 품질 |
+| `model_version` | text | NN | `model_version` |  |
+| `checkpoint_sha256` | text | NN | `checkpoint_sha256` |  |
+| `policy_version` | text | NN | `policy_version` |  |
+| `input_mode` | text | NN | `input_mode` | FULL_FRAME |
+| `input_provenance` | jsonb | NN | `input_provenance` | 관측·추정 구분(AGENTS 규칙 7) |
+| `received_at` | ts | NN |  | EC2 수신 시각 |
+
+#### `ppe_current_state` — 사람별 현재 PPE 상태(화면용)
+
+- 단계 **M3** · 일반 · 근거: 12.3 "화면용 현재 상태를 따로 둔다" · V43(S15P31A101-516)
+- `(identity_revision, observation_at, stream_epoch, state_sequence)` 가 더 큰 메시지만 덮는다. 촬영 시각이 수신보다 10초 넘게 이른 상태는 덮지 않는다. 읽는 쪽은 `*_expires_at` 이 지났으면 UNKNOWN 으로 보고, 현재 `world_state` 의 `identity_revision` 과 다르면 그 사람에게 붙이지 않는다.
+
+| 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
+|---|---|---|---|---|
+| `source_id` | text | PK(1) | 봉투 `source_id` |  |
+| `world_id` | text | PK(2) | `people[].world_id` |  |
+| `identity_revision` | int | NN | `people[].identity_revision` |  |
+| `observation_at` | ts | NN | `people[].capture_time_ms` |  |
+| `stream_epoch` | bigint | NN | `stream_epoch` |  |
+| `state_sequence` | bigint | NN | `state_sequence` |  |
+| `helmet_state`·`vest_state` | text | NN, CK(WORN·NOT_WORN·UNKNOWN) | `*.state` |  |
+| `helmet_reason`·`vest_reason` | text | NN | `*.reason` |  |
+| `helmet_last_evidence_at`·`vest_last_evidence_at` | ts |  | `*.last_evidence_at_ms` |  |
+| `helmet_expires_at`·`vest_expires_at` | ts |  | `*.expires_at_ms` |  |
+| `model_version` | text | NN | `model_version` |  |
+| `policy_version` | text | NN | `policy_version` |  |
+| `updated_at` | ts | NN |  | 이 상태를 쓴 메시지의 EC2 수신 시각 |
 
 #### `region_state` — 정적 공간 변화 영역(임시 형상·불확실 점유)
 

@@ -891,13 +891,21 @@ erDiagram
 
 | 테이블 | 단계 | 종류 |
 |---|---|---|
-| `ppe_state` | 확장 | hypertable |
+| `ppe_state` | M3 | hypertable |
+| `ppe_current_state` | M3 | 일반 |
 | `region_state` | 확장 | 일반 |
 
 ```mermaid
 erDiagram
     ppe_state {
-        timestamptz observed_at PK
+        timestamptz observation_at PK
+        text source_id PK
+        bigint stream_epoch PK
+        bigint state_sequence PK
+        text world_id PK
+    }
+    ppe_current_state {
+        text source_id PK
         text world_id PK
     }
     region_state {
