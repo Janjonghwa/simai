@@ -1,0 +1,42 @@
+{
+  "schema_version": "2.0.0",
+  "run_id": "exp01-grtmesh-poc-20261105-0001",
+  "experiment_id": "EXP-01",
+  "jira_key": "S15P31A101-501",
+  "owner": "S15P31A101-501 Owner",
+  "git_commit": "55d4356",
+  "branch": "S15P31A101-501-grtmesh-poc",
+  "dirty_worktree": true,
+  "env_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "model_version": "grtmesh@initial-4-commits+cuda12.4.1+gcc12+sm89",
+  "config": {
+    "path": "ai/experiments/grtmesh_poc/wsl/exp.sh",
+    "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "input_provenance": {
+    "frames": { "source": "FILE", "dataset_id": "session12-lobby-clean-bg-cal-lobby-init-f0ab1c6b-jba2-2f6cc097" },
+    "calibration": { "source": "G1_AUTO", "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097" },
+    "is_upper_bound": true
+  },
+  "gpu": { "model": "NVIDIA GeForce RTX 4050 Laptop 6GB", "driver": "591.44", "cuda": "12.4", "provider": "LOCAL", "shared_with_tier0": false },
+  "started_at": 1793860000000,
+  "status": "SUCCEEDED",
+  "experiment_state": "BENCHMARK",
+  "metrics": {
+    "baseline_mae_valid_mean": 0.18209,
+    "baseline_mae_covered_mean": 0.17112,
+    "grtmesh_v0.02_mae_valid_mean": 0.1123,
+    "grtmesh_v0.02_mae_covered_mean": 0.0843,
+    "grtmesh_v0.03_mae_covered_mean": 0.08825,
+    "grtmesh_v0.04_mae_covered_mean": 0.0918,
+    "grtmesh_v0.04_mae_valid_mean": 0.12013
+  },
+  "performance": {
+    "stage_latency_ms": { "grtmesh_total_v0.02": { "p50": 173.3, "p95": 173.3 }, "grtmesh_total_v0.04": { "p50": 64.1, "p95": 64.1 } },
+    "vram_peak_mb": 2418
+  },
+  "results": [
+    { "kind": "REPORT", "uri": "file://ai/experiments/grtmesh_poc/REPORT.md" }
+  ],
+  "notes": "깊이는 현재 GLB 에서 렌더(MapAnything 출력 아님)라 텍스처링만 비교. 1프레임, 4대, 정답 아님(is_upper_bound). env_hash·config.sha256 는 자리표시값."
+}
