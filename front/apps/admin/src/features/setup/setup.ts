@@ -79,6 +79,14 @@ export const DIRECTION_LABEL: Record<GuideDirection, string> = {
   NONE: '방향 미상',
 };
 
+/** 안내 문장용 방향(조사 포함). 받침 유무로 '으로/로'가 갈려서 방향마다 적는다. */
+const DIRECTION_TOWARD: Record<Exclude<GuideDirection, 'NONE'>, string> = {
+  LEFT: '왼쪽으로',
+  RIGHT: '오른쪽으로',
+  UP: '위로',
+  DOWN: '아래로',
+};
+
 export const MAGNITUDE_LABEL: Record<GuideMagnitude, string> = {
   SMALL: '조금',
   MORE: '더',
@@ -109,10 +117,10 @@ export function formatGuideItem(guide: CoverageGuideItem): string {
   if (guide.direction === 'NONE' || guide.reason_code === 'NO_OVERLAP_VISIBLE') {
     return `${guide.camera_id} · ${pairText} 공통 시야 없음 — 각도를 조정해 주세요`;
   }
-  const dir = DIRECTION_LABEL[guide.direction];
+  const dir = DIRECTION_TOWARD[guide.direction];
   const mag = MAGNITUDE_LABEL[guide.magnitude];
   const magPart = mag ? `${mag} ` : '';
-  return `${guide.camera_id} 카메라를 ${dir}으로 ${magPart}돌려 주세요 (${pairText})`;
+  return `${guide.camera_id} 카메라를 ${dir} ${magPart}돌려 주세요 (${pairText})`;
 }
 
 export interface CoverageCameraView {

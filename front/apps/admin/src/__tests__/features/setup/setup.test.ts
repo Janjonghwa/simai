@@ -158,6 +158,20 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
       }),
     ).toBe('cam2 · cam2–cam3 공통 시야 없음 — 각도를 조정해 주세요');
 
+    // 받침 없는 방향(위·아래)은 '로', 받침 있는 방향(왼쪽·오른쪽)은 '으로'.
+    const toward = (direction: 'LEFT' | 'RIGHT' | 'UP' | 'DOWN') =>
+      formatGuideItem({
+        camera_id: 'cam_A',
+        pair: ['cam_A', 'cam_C'],
+        direction,
+        magnitude: 'MORE',
+        reason_code: 'WEAK_PAIR_EDGE_CLUSTER',
+      });
+    expect(toward('UP')).toBe('cam_A 카메라를 위로 더 돌려 주세요 (cam_A–cam_C)');
+    expect(toward('DOWN')).toBe('cam_A 카메라를 아래로 더 돌려 주세요 (cam_A–cam_C)');
+    expect(toward('LEFT')).toBe('cam_A 카메라를 왼쪽으로 더 돌려 주세요 (cam_A–cam_C)');
+    expect(toward('RIGHT')).toBe('cam_A 카메라를 오른쪽으로 더 돌려 주세요 (cam_A–cam_C)');
+
     const errorView = deriveStep1Coverage(undefined, true);
     expect(errorView.calculationFailed).toBe(true);
     expect(errorView.connectivity).toBe('UNKNOWN');
