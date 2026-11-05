@@ -3,8 +3,8 @@
 규칙:
 1. YOLO26x-pose 추론·삼각측량·위험 판정 루프(10 Hz)를 절대 막지 않는다.
    - `submit_observation` 은 디코딩된 프레임에서 품질 게이트(최소 검출 신뢰도, 최소 bbox 크기, 최소 신체 가시성)와
-     로컬 트랙별 갱신 주기(`update_interval_ms`, 기본 750 ms; 첫 등장은 즉시)를 통과한 crop 만 잘라
-     유계 대기열(`max_queue_size`)에 넣고 즉시 반환한다.
+     로컬 트랙별 갱신 주기(새/불확실 트랙 750 ms, 혼자 안정적인 확정 트랙 3000 ms)를 통과한
+     프레임 참조·박스만 유계 대기열에 넣는다. 자르기·복사·색변환은 작업 스레드에서 한다.
    - 별도 데몬 스레드(`tier0-reid`)가 대기열에서 최대 `batch_size`(기본 8)개씩 꺼내 COPE 배치 추론을 수행하고
      `LocalTrackFeatureCache` 에 `(camera_id, local_track_id)` 별 최신 임베딩·가시성·품질 점수를 갱신한다.
    - 원본 프레임·사람 crop 이미지는 추론 직후 메모리에서 버리고 디스크에 절대 저장하지 않는다(명세 11.5).
@@ -29,6 +29,8 @@ from typing import Any
 
 import cv2
 import numpy as np
+
+from simai_ai.tracking.stage_timing import StageTiming
 
 from simai_ai.reid.embedder import COPEConfig, COPEEmbedder, Embedder
 from simai_ai.reid.face import (
@@ -128,6 +130,8 @@ class ReidCollectorConfig:
     fp16: bool = True
     batch_size: int = DEFAULT_BATCH_SIZE
     update_interval_ms: int = DEFAULT_UPDATE_INTERVAL_MS
+    stable_update_interval_ms: int = 3000
+    max_crops_per_second: int = 8
     min_det_score: float = DEFAULT_MIN_DET_SCORE
     min_bbox_width_px: int = DEFAULT_MIN_BBOX_WIDTH_PX
     min_bbox_height_px: int = DEFAULT_MIN_BBOX_HEIGHT_PX
@@ -140,6 +144,10 @@ class ReidCollectorConfig:
     def __post_init__(self) -> None:
         if self.batch_size < 1:
             raise ValueError("batch_size 는 1 이상이어야 합니다.")
+        if self.stable_update_interval_ms < self.update_interval_ms:
+            raise ValueError("stable_update_interval_ms 는 update_interval_ms 이상이어야 합니다.")
+        if self.max_crops_per_second < 1:
+            raise ValueError("max_crops_per_second 는 1 이상이어야 합니다.")
         if self.update_interval_ms < 0:
             raise ValueError("update_interval_ms 는 0 이상이어야 합니다.")
         if not 0.0 <= self.min_det_score <= 1.0:
@@ -169,6 +177,10 @@ class ReidCollectorConfig:
             kwargs["batch_size"] = int(src["SIMAI_REID_BATCH_SIZE"])
         if "SIMAI_REID_UPDATE_INTERVAL_MS" in src:
             kwargs["update_interval_ms"] = int(src["SIMAI_REID_UPDATE_INTERVAL_MS"])
+        for key in ("stable_update_interval_ms", "max_crops_per_second"):
+            env_key = "SIMAI_REID_" + key.upper()
+            if env_key in src:
+                kwargs[key] = int(src[env_key])
         kwargs.update(overrides)
         return cls(**kwargs)
 
@@ -398,12 +410,14 @@ class _CropTask:
     local_track_id: str
     frame_sequence: int
     capture_time_ms: int
-    crop_rgb: np.ndarray
+    people: int
+    image_bgr: np.ndarray
+    crop_bounds: tuple[int, int, int, int]
+    keypoints: Any
     visibility: PartVisibility
     det_score: float
     orientation_bin: int | None
     bbox_xyxy: tuple[float, float, float, float]
-    face_crop_bgr: np.ndarray | None = None
 
 
 def _bbox_iou(box_a: Sequence[float], box_b: Sequence[float]) -> float:
@@ -431,8 +445,16 @@ class AsyncReidCollector:
         face_embedder: FaceEmbedder | None = None,
         cache: LocalTrackFeatureCache | None = None,
         start_worker: bool = True,
+        monotonic: Any = time.monotonic,
     ) -> None:
         self.config = config or ReidCollectorConfig()
+        self.timing = StageTiming()
+        self._monotonic = monotonic
+        self._rate_times: deque[float] = deque()
+        self._sampling = (-1, frozenset())
+        self.people = 0
+        self.dropped_rate_limit = 0
+        self.dropped_stable_cooldown = 0
         self.cache = cache or LocalTrackFeatureCache(feature_ttl_ms=self.config.feature_ttl_ms)
         self._embedder: Embedder | None = None
         self._face_embedder: FaceEmbedder | None = face_embedder
@@ -538,7 +560,28 @@ class AsyncReidCollector:
     ) -> LocalTrackFeature | None:
         if not self.config.enabled:
             return None
-        return self.cache.lookup(camera_id, local_track_id, now_ms)
+        with self.timing.measure("reid_lookup", self.people):
+            return self.cache.lookup(camera_id, local_track_id, now_ms)
+
+    def update_sampling(self, frame: Any) -> None:
+        """World 정본이 만든 불변 스냅샷만 읽는다. 새 키·가림·근접·경쟁·오래된 상태는 빠른 주기 유지.
+
+        DORMANT 재입장으로 새 로컬 키가 생기면 stable 집합에 없으므로 첫 임베딩을 생략하지 않는다.
+        갤러리/위치/ID를 변경하지 않는다. 다음 제출부터 적용한다.
+        """
+        tracks = [tr for tr in frame.tracks if str(tr.lifecycle) != "LOST"]
+        self.people = len(tracks)
+        stable = set()
+        for tr in tracks:
+            if (str(tr.lifecycle) != "CONFIRMED" or tr.identity_flags
+                    or str(tr.identity_confidence) not in {"HIGH", "MEDIUM"}
+                    or tr.t_last_valid != frame.t):
+                continue
+            if any(other.world_id != tr.world_id and
+                   np.linalg.norm(np.subtract(other.position_xy, tr.position_xy)) <= 1.0 for other in tracks):
+                continue
+            stable.update(tr.local_keys)
+        self._sampling = (frame.t, frozenset(stable))
 
     def submit_observation(self, frame: Any, obs: Any) -> int:
         """디코딩된 `Frame` 과 `Observation2DFrame` 에서 유효한 crop 을 비동기 큐에 넣는다 (비차단)."""
@@ -554,15 +597,26 @@ class AsyncReidCollector:
         cfg = self.config
         enqueued = 0
 
+        snapshot_t, stable = self._sampling
+        # 카메라 epoch 변경/긴 입력 정지 뒤에는 이전 정책을 재사용하지 않는다.
+        stable = stable if 0 <= cap_ms - snapshot_t <= 500 else frozenset()
         tasks_to_add: list[_CropTask] = []
         with self._cond:
             if self._closed:
                 return 0
+            expired = [key for key, t in self._last_queued_ms.items() if cap_ms - t > cfg.feature_ttl_ms]
+            for key in expired:
+                self._last_queued_ms.pop(key, None)
             for td in getattr(obs, "detections", ()):
                 ltid = str(td.local_track_id)
                 key = (cam_id, ltid)
                 last_ms = self._last_queued_ms.get(key)
-                if last_ms is not None and 0 <= cap_ms - last_ms < cfg.update_interval_ms:
+                interval = cfg.update_interval_ms
+                if key in stable and self.cache.lookup(cam_id, ltid, cap_ms) is not None:
+                    interval = cfg.stable_update_interval_ms
+                if last_ms is not None and 0 <= cap_ms - last_ms < interval:
+                    if interval > cfg.update_interval_ms:
+                        self.dropped_stable_cooldown += 1
                     self.dropped_cooldown += 1
                     continue
                 det = td.detection
@@ -587,24 +641,6 @@ class AsyncReidCollector:
                     self.dropped_low_quality += 1
                     continue
 
-                crop_bgr = image[y1:y2, x1:x2]
-                crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-                face_crop_bgr: np.ndarray | None = None
-                if self._face_embedder is not None and kps is not None:
-                    face_cand = estimate_face_region_from_pose(
-                        kps,
-                        person_bbox_xyxy=bbox,
-                        image_shape_hw=(h_img, w_img),
-                        config=self._face_embedder.config,
-                    )
-                    if face_cand is not None and face_cand.passes_size_gate:
-                        fx1, fy1, fx2, fy2 = (int(round(v)) for v in face_cand.bbox_xyxy)
-                        fx1, fy1 = max(0, fx1), max(0, fy1)
-                        fx2, fy2 = min(w_img, max(fx1 + 1, fx2)), min(h_img, max(fy1 + 1, fy2))
-                        if (fx2 - fx1) >= 16 and (fy2 - fy1) >= 16:
-                            # 얼굴 백엔드(face.py)는 BGR 을 받아 스스로 RGB 로 바꾼다(S15P31A101-472)
-                            face_crop_bgr = np.ascontiguousarray(image[fy1:fy2, fx1:fx2])
-
                 orient_bin = estimate_orientation_bin_2d(kps, bbox, image_width_px=float(w_img))
                 tasks_to_add.append(
                     _CropTask(
@@ -612,19 +648,21 @@ class AsyncReidCollector:
                         local_track_id=ltid,
                         frame_sequence=fseq,
                         capture_time_ms=cap_ms,
-                        crop_rgb=crop_rgb,
+                        people=len(obs.detections),
+                        image_bgr=image,
+                        crop_bounds=(x1, y1, x2, y2),
+                        keypoints=kps,
                         visibility=vis,
                         det_score=score,
                         orientation_bin=orient_bin,
                         bbox_xyxy=(float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])),
-                        face_crop_bgr=face_crop_bgr,
                     )
                 )
                 self._last_queued_ms[key] = cap_ms
 
             for task in tasks_to_add:
                 if len(self._queue) >= cfg.max_queue_size:
-                    self._queue.popleft()
+                    self._forget_task(self._queue.popleft())
                     self.dropped_queue_full += 1
                 self._queue.append(task)
                 self.submitted_crops += 1
@@ -640,9 +678,7 @@ class AsyncReidCollector:
         with self._cond:
             if not self._queue:
                 return 0
-            batch: list[_CropTask] = []
-            while self._queue and len(batch) < self.config.batch_size:
-                batch.append(self._queue.popleft())
+            batch = self._take_batch()
             self._busy = True
         try:
             return self._run_batch(batch)
@@ -662,16 +698,60 @@ class AsyncReidCollector:
                 self._cond.wait(timeout=min(0.05, remaining))
             return not self._queue and not self._busy
 
+    def _forget_task(self, task: _CropTask) -> None:
+        key = (task.camera_id, task.local_track_id)
+        if self._last_queued_ms.get(key) == task.capture_time_ms:
+            self._last_queued_ms.pop(key, None)
+
+    def _take_batch(self) -> list[_CropTask]:
+        """cond 안: 최근 1초 임베딩 시작 수 제한. 넘친 오래된 대기 작업부터 버린다."""
+        now = self._monotonic()
+        while self._rate_times and now - self._rate_times[0] >= 1.0:
+            self._rate_times.popleft()
+        available = max(0, self.config.max_crops_per_second - len(self._rate_times))
+        while len(self._queue) > available:
+            self._forget_task(self._queue.popleft())
+            self.dropped_rate_limit += 1
+        batch = [self._queue.popleft() for _ in range(min(len(self._queue), self.config.batch_size))]
+        self._rate_times.extend([now] * len(batch))
+        return batch
+
+    def _prepare_crops(self, batch: list[_CropTask]):
+        """프레임 참조가 수명을 보장한다. 잘라내기/색변환/얼굴 복사는 모델 작업 스레드에서만 실행."""
+        crops, faces = [], []
+        for task in batch:
+            x1, y1, x2, y2 = task.crop_bounds
+            crops.append(cv2.cvtColor(task.image_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2RGB))
+            face = None
+            if self._face_embedder is not None and task.keypoints is not None:
+                h, w = task.image_bgr.shape[:2]
+                candidate = estimate_face_region_from_pose(task.keypoints, person_bbox_xyxy=task.bbox_xyxy,
+                                                          image_shape_hw=(h, w), config=self._face_embedder.config)
+                if candidate is not None and candidate.passes_size_gate:
+                    fx1, fy1, fx2, fy2 = (int(round(v)) for v in candidate.bbox_xyxy)
+                    fx1, fy1 = max(0, fx1), max(0, fy1)
+                    fx2, fy2 = min(w, max(fx1 + 1, fx2)), min(h, max(fy1 + 1, fy2))
+                    if fx2 - fx1 >= 16 and fy2 - fy1 >= 16:
+                        face = task.image_bgr[fy1:fy2, fx1:fx2].copy()
+            faces.append(face)
+        return crops, faces
+
     def _run_batch(self, batch: list[_CropTask]) -> int:
         assert self._embedder is not None
         t0 = time.perf_counter()
-        crops = [task.crop_rgb for task in batch]
+        if not batch:
+            return 0
+        people = max(task.people for task in batch)
+        with self.timing.measure("reid_crop", people):
+            crops, faces = self._prepare_crops(batch)
         try:
             embed_with_scores = getattr(self._embedder, "embed_with_scores", None)
             if callable(embed_with_scores):
-                embeddings, p_scores = embed_with_scores(crops)
+                with self.timing.measure("reid_embedding", people):
+                    embeddings, p_scores = embed_with_scores(crops)
             else:
-                embeddings = self._embedder.embed(crops)
+                with self.timing.measure("reid_embedding", people):
+                    embeddings = self._embedder.embed(crops)
                 p_scores = np.ones((len(batch),), dtype=np.float32)
         except Exception:  # noqa: BLE001 - Re-ID 추론 오류가 Tier 0 를 멈추지 않는다
             with self._cond:
@@ -684,11 +764,12 @@ class AsyncReidCollector:
             vis_ratio = task.visibility.visible_ratio(self.config.part_weights)
             q_score = float(np.clip(0.5 * float(p_scores[i]) + 0.3 * vis_ratio + 0.2 * task.det_score, 0.0, 1.0))
             face_emb: np.ndarray | None = None
-            if task.face_crop_bgr is not None and self._face_embedder is not None:
+            face_crop = faces[i]
+            if face_crop is not None and self._face_embedder is not None:
                 try:
-                    face_emb = self._face_embedder.embed_single(task.face_crop_bgr)
+                    face_emb = self._face_embedder.embed_single(face_crop)
                 except AttributeError:
-                    res = self._face_embedder.embed([task.face_crop_bgr])
+                    res = self._face_embedder.embed([face_crop])
                     if res is not None and len(res) > 0:
                         face_emb = res[0]
                 except Exception:  # noqa: BLE001
@@ -720,13 +801,15 @@ class AsyncReidCollector:
                     self._cond.wait(timeout=0.5)
                 if self._closed:
                     return
-                batch: list[_CropTask] = []
-                while self._queue and len(batch) < self.config.batch_size:
-                    batch.append(self._queue.popleft())
+                batch = self._take_batch()
                 self._busy = True
             try:
                 if batch:
                     self._run_batch(batch)
+            except Exception:  # noqa: BLE001 - crop/특징 형식 실패도 보조 작업만 버린다
+                with self._cond:
+                    self.errors += 1
+                log.warning("Re-ID 작업 실패(기하 판정은 계속한다)", exc_info=True)
             finally:
                 with self._cond:
                     self._busy = False
@@ -749,6 +832,11 @@ class AsyncReidCollector:
                 "reason": self.reason,
                 "batch_size": self.config.batch_size,
                 "update_interval_ms": self.config.update_interval_ms,
+                "stable_update_interval_ms": self.config.stable_update_interval_ms,
+                "max_crops_per_second": self.config.max_crops_per_second,
+                "dropped_rate_limit": self.dropped_rate_limit,
+                "dropped_stable_cooldown": self.dropped_stable_cooldown,
+                "timing": self.timing.summary(),
                 "submitted_crops": self.submitted_crops,
                 "embedded_crops": self.embedded_crops,
                 "dropped_low_quality": self.dropped_low_quality,

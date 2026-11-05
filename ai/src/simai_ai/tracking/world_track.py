@@ -1005,6 +1005,7 @@ class WorldTrackManager:
         self.input_provenance = dict(input_provenance) if input_provenance is not None else None
         self.appearance_cost_fn = appearance_cost_fn
         self.feature_lookup = feature_lookup
+        self._tick_features: dict[TrackKey, LocalTrackFeature | None] = {}
         self.galleries = ReidGalleryStore(
             GalleryConfig(dormant_ttl_ms=max(1, self.config.reid_dormant_ttl_ms))
         )
@@ -1153,6 +1154,12 @@ class WorldTrackManager:
             raise TypeError("sync_invalid_cameras 는 카메라 ID 모음이어야 한다")
         excluded = frozenset(sync_invalid_cameras)
         _check_clusters(frame)
+        # 비동기 결과는 tick 경계에서 로컬 키당 한 번만 읽는다. 같은 tick의 후보/갤러리가
+        # 서로 다른 임베딩을 보지 않으며, 이후 도착한 결과는 다음 tick에 반영한다(-499).
+        self._tick_features = {}
+        if self.feature_lookup is not None and cfg.reid_enabled:
+            for key in sorted({key for cluster in frame.clusters for key in cluster.keys}):
+                self._tick_features[key] = self.feature_lookup(key[0], key[1], t)
         self._last_t = t
         self._restore_step(t)
 
@@ -2108,7 +2115,7 @@ class WorldTrackManager:
             return []
         out: list[LocalTrackFeature] = []
         for k in cluster.keys:
-            feat = self.feature_lookup(k[0], k[1], t)
+            feat = self._tick_features.get(k)
             if feat is not None:
                 out.append(feat)
         return out

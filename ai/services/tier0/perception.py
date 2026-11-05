@@ -46,6 +46,7 @@ from simai_ai.io import ResultGate, SimObservationFrameSource
 from simai_ai.providers.base import Frame
 from simai_ai.tracking.cross_view import AssociationFrame, CrossViewAssociator, LocalTrackletBuffer
 from simai_ai.tracking.diagnostics import TrackingDiagnostics, window_log_line
+from simai_ai.tracking.stage_timing import StageTiming
 from simai_ai.tracking.local_tracker import (
     CameraDetections,
     MultiCameraLocalTracker,
@@ -267,6 +268,8 @@ class DetectorFeed:
         self.avatar_enabled = False
         self.camera_streams: dict[str, CameraObservation] = {}
         self.stats = DetectorFeedStats()
+        self.timing = StageTiming()
+        self.people = 0
         self.observe_decoded: Callable[[Frame, CameraDetections], Any] | None = None
 
     @property
@@ -296,7 +299,8 @@ class DetectorFeed:
             with self._lock:
                 self._in_flight += 1
             try:
-                batch = [getattr(t, "frame", t) for t in self._tickets()]
+                with self.timing.measure("frame_dequeue", lambda: self.people):
+                    batch = [getattr(t, "frame", t) for t in self._tickets()]
                 if not batch:
                     with self._lock:
                         self._stepped = True
@@ -313,7 +317,9 @@ class DetectorFeed:
                     self.stats.batches += 1
                     self.stats.frames += len(batch)
                 try:
-                    results = list(self._detector.detect(batch))
+                    with self.timing.measure("detect_trt", lambda: self.people):
+                        results = list(self._detector.detect(batch))
+                        self.people = max((len(r.detections) for r in results), default=0)
                 except Exception:  # noqa: BLE001 - 검출기 오류가 판정 루프를 멈추지 않는다(모듈 설명)
                     with self._lock:
                         self.stats.detector_errors += 1
@@ -346,7 +352,8 @@ class DetectorFeed:
                             self.observe_decoded(frame, result)
                         except Exception:
                             log.exception("배경 프레임 전달 실패(판정은 계속한다)")
-                observations = self._tracker.update_batch(accepted) if accepted else []
+                with self.timing.measure("local_track_2d", self.people):
+                    observations = self._tracker.update_batch(accepted) if accepted else []
                 avatar_f: dict[str, Frame] = {}
                 avatar_o: dict[str, Observation2DFrame] = {}
                 need_images = (self.avatar_enabled or self.reid_collector is not None) and bool(observations)
@@ -379,7 +386,15 @@ class DetectorFeed:
                             try:
                                 self._reid_queue.put_nowait((frame_obj, obs))
                             except queue.Full:
-                                self.reid_submission_dropped += 1
+                                # 오래된 프레임 참조를 먼저 해제하고 최신 작업을 보존한다.
+                                try:
+                                    self._reid_queue.get_nowait()
+                                    self._reid_queue.task_done()
+                                except queue.Empty:
+                                    pass
+                                else:
+                                    self.reid_submission_dropped += 1
+                                self._reid_queue.put_nowait((frame_obj, obs))
                 return len(batch)
             finally:
                 with self._lock:
@@ -392,7 +407,8 @@ class DetectorFeed:
             except queue.Empty:
                 continue
             try:
-                self.reid_collector.submit_observation(frame, obs)
+                with self.timing.measure("reid_submit", len(obs.detections)):
+                    self.reid_collector.submit_observation(frame, obs)
             except Exception:
                 log.debug("Re-ID 특징 수집 요청 실패(판정은 계속한다)", exc_info=True)
             finally:
@@ -428,6 +444,12 @@ class DetectorFeed:
 
     def close(self) -> None:
         self._reid_stop.set()
+        while True:
+            try:
+                self._reid_queue.get_nowait()
+                self._reid_queue.task_done()
+            except queue.Empty:
+                break
         if self._reid_worker is not None:
             self._reid_worker.join(timeout=1.0)
         if self.reid_collector is not None:
@@ -481,6 +503,8 @@ class Perception:
         if missing:
             raise ValueError(f"보정 {rig.calibration_version} 에 없는 입력 카메라: {missing}")
         self.rig = rig
+        self.timing = StageTiming()
+        self.people = 0
         self.feed = feed
         self.scene_version = scene_version
         self.time_config = time_config
@@ -569,7 +593,8 @@ class Perception:
 
     def step(self, now_ms: int, surfaces: SurfaceSet, sync_invalid: Sequence[str] = ()) -> Perceived | None:
         """입력을 받아 공통 시각 t 의 World Track·접지·world_state payload 를 만든다. 새 시각이 없으면 None."""
-        self.ingest(self.feed.poll(now_ms))
+        with self.timing.measure("observation_poll", lambda: self.people):
+            self.ingest(self.feed.poll(now_ms))
         fusion = self.choose_t()
         t_latest = self.t_latest_global()
         last = self.manager.last_t
@@ -585,12 +610,14 @@ class Perception:
             self.lagging_ticks[c] += 1
         views, drops = self.buffer.views_at(t)
         self._observe(lambda d: (d.observe_tick(t, fusion.lagging), d.observe_views(views, drops)))
-        assoc = self.associator.associate(
-            t,
-            views,
-            exclude_cameras=tuple(sync_invalid),
-            prior_groups=self.manager.temporal_prior_groups(t, self.associator.config.temporal_prior_ttl_ms),
-        )
+        self.people = max((sum(v.camera_id == c for v in views) for c in self.feed.camera_ids), default=0)
+        with self.timing.measure("cross_view_2d_triangulation", self.people):
+            assoc = self.associator.associate(
+                t,
+                views,
+                exclude_cameras=tuple(sync_invalid),
+                prior_groups=self.manager.temporal_prior_groups(t, self.associator.config.temporal_prior_ttl_ms),
+            )
         self._observe(lambda d: d.observe_association(assoc))
         if self.observe_association is not None:
             try:
@@ -598,10 +625,15 @@ class Perception:
             except Exception:
                 log.exception("보정 감시 표본 공급 실패(판정은 계속한다)")
         self.buffer.prune(t)
-        frame = self.manager.update(assoc, self.rig, tuple(sync_invalid))
+        with self.timing.measure("world_track", self.people):
+            frame = self.manager.update(assoc, self.rig, tuple(sync_invalid))
+        collector = getattr(self.feed, "reid_collector", None)
+        if collector is not None and hasattr(collector, "update_sampling"):
+            collector.update_sampling(frame)
         self._observe(lambda d: d.observe_world(frame, self.manager.diag))
         self._observe(lambda d: d.window_due(t) and log.info("%s", window_log_line(d.take_window(t))))
-        contacts = self.contact.update(frame, surfaces)
+        with self.timing.measure("contact", self.people):
+            contacts = self.contact.update(frame, surfaces)
         payload = world_state_payload(
             frame, t_latest, self.scene_version, contacts=contacts.contacts(), time_config=self.time_config
         )

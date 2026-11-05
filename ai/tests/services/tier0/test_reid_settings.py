@@ -48,3 +48,10 @@ def test_reid_face_aux_switch(tmp_path):
     assert load_settings(_config(tmp_path), env={"SIMAI_TIER0_REID_FACE": "1"}).reid.use_face_aux
     assert load_settings(_config(tmp_path, {"use_face_aux": True}), env={}).reid.use_face_aux
     assert not load_settings(_config(tmp_path, {"use_face_aux": True}), env={"SIMAI_TIER0_REID_FACE": "0"}).reid.use_face_aux
+
+
+def test_reid_demand_sampling_defaults_and_overrides(tmp_path):
+    r = load_settings(_config(tmp_path)).reid
+    assert (r.stable_update_interval_ms, r.max_crops_per_second) == (3000, 8)
+    r = load_settings(_config(tmp_path, {"stable_update_interval_ms": 5000, "max_crops_per_second": 4})).reid
+    assert (r.stable_update_interval_ms, r.max_crops_per_second) == (5000, 4)

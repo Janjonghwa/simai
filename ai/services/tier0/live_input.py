@@ -40,6 +40,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from services.tier0.video_ingest import VideoConsumer, VideoIngestServer
+from simai_ai.tracking.stage_timing import StageTiming
 from simai_ai.io import I0Ingest, I0Message
 from simai_ai.io.messages import codec_info_from_contract, frame_from_contract
 
@@ -57,6 +58,7 @@ class I0Bridge:
 
     def __init__(self, ingest: I0Ingest) -> None:
         self._ingest = ingest
+        self.timing = StageTiming()
         self._clips: Callable[[I0Message], None] | None = None
         self._lock = threading.Lock()  # 집계만
         self.errors: dict[str, dict[str, int]] = {c: {"ingest": 0, "clips": 0} for c in ingest.camera_ids}
@@ -80,7 +82,8 @@ class I0Bridge:
             except Exception as e:  # noqa: BLE001 - 링 버퍼 오류가 디코딩 경로를 막지 않는다
                 self._count(camera_id, "clips", e)
         try:
-            self._ingest.receive(message)
+            with self.timing.measure("frame_receive_decode"):
+                self._ingest.receive(message)
         except Exception as e:  # noqa: BLE001 - 다음 기록은 계속 받는다(CameraIngest 가 스스로 복구한다)
             self._count(camera_id, "ingest", e)
 
