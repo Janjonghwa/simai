@@ -75,6 +75,8 @@ simai:
     ack-within: 10s
     # 기한이 지난 알림을 살피는 간격
     escalation-interval: 1s
+    # 움직임 대조(워치 걸음 특징 ↔ World 트랙)로 1:1 배정을 다시 계산하는 간격(S15P31A101-340). 워치가 걸음 창을 2초마다 보낸다
+    match-interval: 2s
   cctv-remote:
     # 관제 화면 CCTV 원격 시청(S15P31A101-400, 설계 docs/design/cctv-remote-view.md). 게이트웨이 영상 중계가 올린 H.264 를 저장 없이
     # 관리자 브라우저에 나눠 준다. 동시 시청 상한, 월(UTC) 송출 상한(80 GB = 80×10^9 바이트, 넘으면 모두 닫고 막음)

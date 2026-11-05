@@ -381,11 +381,13 @@ class MediaClipIntegrationTest {
     }
 
     private void insertEvent(UUID event, String severity) {
+        // raised_at 은 JVM 시계로 넣는다. 서버가 적는 received_at 도 JVM 시계라, DB now()(DB 컨테이너 시계·트랜잭션 시작 시각)를
+        // 쓰면 Jenkins 에서 두 시계가 어긋날 때 먼저 받은 클립이 이벤트보다 늦게 보인다(Jenkins #556)
         jdbc.update("""
                 INSERT INTO risk_event (event_id, source, gateway_id, rule_id, rule_version, lifecycle, verification, severity, confidence,
                     needs_check, world_ids, metrics, resume_count, raised_at, retention_hold)
-                VALUES (?, 'LIVE', ?, 'R2', 1, 'RAISED', 'VERIFIED', ?, 'HIGH', false, '{}', '{}'::jsonb, 0, now(), false)
-                """, event, gatewayId, severity);
+                VALUES (?, 'LIVE', ?, 'R2', 1, 'RAISED', 'VERIFIED', ?, 'HIGH', false, '{}', '{}'::jsonb, 0, ?, false)
+                """, event, gatewayId, severity, java.sql.Timestamp.from(java.time.Instant.now()));
         jdbc.update("""
                 INSERT INTO risk_event_update (event_id, event_sequence, msg_id, gateway_id, journal_offset, transition, occurred_at,
                     observation_at, evaluated_at, rule_id, rule_version, config_version, calibration_version, scene_version, source,

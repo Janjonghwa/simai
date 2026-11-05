@@ -51,7 +51,7 @@ S15P31A101-336. 명세 부록 C.6(채널 상태 BOUND·UNBOUND·LOST, I4 wss·�
 | 연결 중 폐기·회전 | 다음 하트비트에서 닫는다(4003 `token_invalid`). 이 연결을 연 토큰의 SHA-256 을 세션에 두고 `device.token_hash` 와 대조 | 관리 명령은 다른 프로세스라 EC2 에 알림을 줄 수 없다. 하트비트마다 이미 쓰는 UPDATE 한 번에 조건을 붙여 추가 조회 없음 |
 | DB 장애 중 하트비트 | 답하고 연결을 둔다 | 개인 알림 채널을 DB 때문에 끊지 않는다. 토큰은 업그레이드 때 확인했다. 다음 하트비트에 다시 본다 |
 | 틀린 메시지 | 버리고 연결 유지(봉투 오류·판 다름·source_id 다름·계약 위반) | I1 과 같은 까닭(끊으면 다시 붙어 되풀이). 계속 틀리면 하트비트가 없으니 60초 뒤 닫힌다 |
-| watch_ack·gait_features | 받기만 한다 | 격상은 -338, 걸음 특징 저장·배정은 -340 |
+| watch_ack·gait_features | 계약 검사 뒤 이벤트로 넘긴다 | 격상은 -338, 걸음 특징 저장·배정은 -340(`server-watch-match.md`) |
 | System Health 반영 | `viewer_health.watches`(선택 필드, 마이너). `system_health`·`remote_state`·장애 기록(`system_outage`)에는 넣지 않는다 | 워치는 개인 보조 채널(C.6)이다. 워치 하나가 끊겼다고 관제 정지·UNSAFE 로 보이면 안 된다 |
 | LOST 와 한 번도 안 붙음 | 둘 다 LOST(`last_heartbeat_at` 으로 구분: 받은 적 없으면 null) | C.6 상태 셋(BOUND·UNBOUND·LOST)에 연결 단계 값은 LOST 뿐. 화면은 시각으로 구분할 수 있다 |
 | 배터리·전송 경로 | CONNECTED 일 때만, 그 밖 null | 끊긴 워치의 옛 배터리를 지금 값처럼 보이지 않게 |
@@ -87,6 +87,6 @@ S15P31A101-336. 명세 부록 C.6(채널 상태 BOUND·UNBOUND·LOST, I4 wss·�
 - 실제 워치(갤럭시워치6)를 운영 EC2 에 붙여 보는 확인은 워치 앱 스토리(-337 W4)·측정(-341)에서 한다. 이 이슈는 시험용 클라이언트로만 확인했다.
 - 운영 EC2 에 워치 토큰 등록(`admin device register --kind WATCH`)과 워치 앱 설정 입구로 넣기.
 - -338: `watch_alert` 보내기(`WatchHub` 에 기기별 송신 추가), `watch_ack` 처리·격상, `watch_alert` 표.
-- -340: `gait_features` 저장(`watch_feature`)·배정(`watch_binding`·`channel_state`), BOUND·UNBOUND.
+- -340(완료, `server-watch-match.md`): `gait_features` 저장(`watch_feature`)·배정(`watch_binding`·`channel_state`), BOUND·UNBOUND.
 - -342: 관제 화면이 `watches` 를 읽어 활성 워치 수·LOST 표시.
 - LOST 를 반장 PWA 로 Web Push 하는 것은 Web Push 이슈 몫(지금은 관제 화면 `/topic/health` 만).
