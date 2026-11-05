@@ -150,17 +150,9 @@ export interface Zone extends ZoneBox {
   requirements: Readonly<Record<string, unknown>> | null;
   /** 이 버전이 유효해진 시각(ms). 마지막 묶음보다 늦으면 아직 발행하지 않은 것이다. */
   validFrom: number;
-  /** 바닥이 축에 맞춘 직사각형이고 높이가 있어야 상자 편집기로 형상을 고칠 수 있다. */
+  /** 입체 판정이고 바닥이 축에 맞춘 직사각형이며 높이가 있어야 상자 편집기로 형상을 고칠 수 있다. */
   shapeEditable: boolean;
 }
 
-/** 3D 뷰어 Source 가 받는 구역 형식(뷰어 contractAdapter 의 DEMO 상자). 서버 형식을 바꿔 넘긴다. */
-export interface ViewerZones {
-  contract: 'DEMO_UNCONFIRMED';
-  zones: {
-    zone_id: string;
-    name: string;
-    severity: Severity;
-    aabb: { min_xyz: Point; max_xyz: Point };
-  }[];
-}
+/** 3D 뷰어 Source 가 받는 구역 형식: 정식 구역 응답(zoneItemSchema) 배열. 뷰어(contractAdapter)가 다시 검사한다. */
+export type ViewerZones = ZoneItem[];

@@ -1,4 +1,5 @@
 import {
+  planPoints,
   severityTone,
   toPlan,
   zoneKey,
@@ -8,6 +9,7 @@ import {
   type PlanZone,
 } from '@/features/plan/plan';
 import { ALARM_BLINK, RING_TONE, type Bind } from '@/features/plan/planDraw';
+import { isAxisRect } from '@/features/zones/zones';
 import { cn } from '@simai/ui/lib/utils';
 import { memo } from 'react';
 
@@ -64,24 +66,30 @@ export const PlanZones = memo(function PlanZones({
         const selected = selectedKey === key;
         // 입체 판정은 점선, 바닥 판정은 실선이다(관제 데모와 같다).
         const dash = zone.judgeType === 'GROUND_FOOTPRINT' ? undefined : ZONE_DASH;
-        return (
+        const shared = {
+          'data-zone': zone.zoneId,
+          strokeWidth: mark?.alarming || selected ? STROKE_STRONG : STROKE,
+          strokeDasharray: eventTone || selected ? undefined : dash,
+          fillOpacity: fillOpacityOf(eventTone, selected),
+          onClick: onSelect && (() => onSelect(key)),
+          ...bind(key),
+          className: cn(
+            eventTone ? RING_TONE[eventTone] : baseClass,
+            mark?.alarming && ALARM_BLINK,
+            onSelect && 'cursor-pointer',
+          ),
+        };
+        // 축에 맞춘 직사각형은 상자로, 회전했거나 직사각형이 아닌 구역은 실제 모양으로 그린다(판정 범위와 같다).
+        return zone.polygon && !isAxisRect(zone.polygon) ? (
+          <polygon key={zone.zoneId} points={planPoints(zone.polygon, bounds)} {...shared} />
+        ) : (
           <rect
             key={zone.zoneId}
-            data-zone={zone.zoneId}
             x={x}
             y={y}
             width={zone.max[0] - zone.min[0]}
             height={zone.max[1] - zone.min[1]}
-            strokeWidth={mark?.alarming || selected ? STROKE_STRONG : STROKE}
-            strokeDasharray={eventTone || selected ? undefined : dash}
-            fillOpacity={fillOpacityOf(eventTone, selected)}
-            onClick={onSelect && (() => onSelect(key))}
-            {...bind(key)}
-            className={cn(
-              eventTone ? RING_TONE[eventTone] : baseClass,
-              mark?.alarming && ALARM_BLINK,
-              onSelect && 'cursor-pointer',
-            )}
+            {...shared}
           />
         );
       })}

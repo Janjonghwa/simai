@@ -1,7 +1,7 @@
 import {
   boundsDepth,
   boundsWidth,
-  toPlan,
+  planPoints,
   type PlanBackdrop,
   type PlanBounds,
 } from '@/features/plan/plan';
@@ -48,9 +48,7 @@ export const PlanRoom = memo(function PlanRoom({
   const width = boundsWidth(bounds);
   const depth = boundsDepth(bounds);
   const image = backdrop?.imageUrl;
-  const outline = backdrop?.outline
-    ?.map((point) => toPlan(point[0], point[1], bounds).join(','))
-    .join(' ');
+  const outline = backdrop?.outline && planPoints(backdrop.outline, bounds);
   return (
     <g>
       <rect width={width} height={depth} rx={CORNER_RADIUS} className="fill-surface-2" />

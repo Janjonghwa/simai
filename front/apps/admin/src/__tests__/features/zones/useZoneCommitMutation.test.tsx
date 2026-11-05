@@ -2,7 +2,6 @@ import { STATIC_OBJECTS_KEY } from '@/features/surfaces/api';
 import { bodyOf as surfaceBodyOf } from '@/features/surfaces/surfaces';
 import type { SurfaceGeometry, WorkSurface } from '@/features/surfaces/types';
 import { useWorkSurfaces } from '@/features/surfaces/useWorkSurfaces';
-import type { ViewerEditBox } from '@/features/viewer3d';
 import { BUNDLES_KEY, requestBundles, ZONES_KEY } from '@/features/zones/api';
 import { CommitBlockedError } from '@/features/zones/commitErrors';
 import type { Zone, ZoneCommitRequest } from '@/features/zones/types';
@@ -11,6 +10,7 @@ import { useZones } from '@/features/zones/useZones';
 import {
   formOf,
   newZoneBodyOf,
+  shapeOfBox,
   bodyOf as zoneBodyOf,
   type ZoneForm,
 } from '@/features/zones/zoneForm';
@@ -140,7 +140,7 @@ const NEW_FORM: ZoneForm = {
   zoneType: 'OPENING',
   severity: 'HIGH',
 };
-const NEW_BOX: ViewerEditBox = { min: [0, 0, 0], max: [2, 2, 2] };
+const NEW_SHAPE = shapeOfBox({ min: [0, 0, 0], max: [2, 2, 2] });
 const GEOMETRY: SurfaceGeometry = {
   centerXy: [8, 2],
   sizeXy: [1.2, 0.6],
@@ -158,11 +158,13 @@ const zoneUpdateRequest = (zone: Zone, patch?: Partial<ZoneForm>) =>
 const keep = (zoneId: string) => ({ op: 'KEEP', zone_id: zoneId }) as const;
 const createBoth = () =>
   ({
-    zone: { op: 'CREATE', body: newZoneBodyOf(NEW_FORM, NEW_BOX) },
+    zone: { op: 'CREATE', body: newZoneBodyOf(NEW_FORM, NEW_SHAPE) },
     surface: { op: 'CREATE', body: surfaceBodyOf(null, '새 책상', GEOMETRY) },
   }) satisfies ZoneCommitRequest;
 const createZoneOnly = () =>
-  ({ zone: { op: 'CREATE', body: newZoneBodyOf(NEW_FORM, NEW_BOX) } }) satisfies ZoneCommitRequest;
+  ({
+    zone: { op: 'CREATE', body: newZoneBodyOf(NEW_FORM, NEW_SHAPE) },
+  }) satisfies ZoneCommitRequest;
 const surfaceUpdate = (surface: WorkSurface, op: 'UPDATE' | 'REPLACE' = 'UPDATE') =>
   ({
     op,
@@ -585,7 +587,7 @@ describe('useZoneCommitMutation: 저장 실패', () => {
     const view = await run();
     const before = snapshot();
     const request = {
-      zone: { op: 'CREATE', body: newZoneBodyOf(NEW_FORM, NEW_BOX) },
+      zone: { op: 'CREATE', body: newZoneBodyOf(NEW_FORM, NEW_SHAPE) },
       surface: {
         op: 'CREATE',
         body: { ...surfaceBodyOf(null, '책상', GEOMETRY), top_height_m: 0 },

@@ -83,10 +83,11 @@ export function formErrors(
   return errors;
 }
 
-type ZoneShape = Pick<ZoneBody, 'polygon_xy' | 'z_min_m' | 'z_max_m'>;
+/** 구역 몸체의 모양 칸: 바닥 다각형(World x·y)과 최저·최고 높이. */
+export type ZoneShape = Pick<ZoneBody, 'polygon_xy' | 'z_min_m' | 'z_max_m'>;
 
 /** 고친 상자의 바닥 직사각형과 높이. */
-const shapeOfBox = (box: ViewerEditBox): ZoneShape => ({
+export const shapeOfBox = (box: ViewerEditBox): ZoneShape => ({
   polygon_xy: boxToPolygon(box),
   z_min_m: box.min[2],
   z_max_m: box.max[2],
@@ -101,15 +102,15 @@ const shapeOfZone = (zone: Zone): ZoneShape => ({
 
 /**
  * 새 버전 본문. 서버는 기록을 통째로 바꾸므로 화면에서 고치지 않는 칸(has_guardrail·requirements)도 받은 값을 그대로 보낸다.
- * 상자(box)를 고쳤으면 그 바닥 직사각형과 높이를, 아니면 받은 다각형·높이를 그대로 보낸다(속성만 고쳐도 직사각형이 아닌
+ * 새 모양(shape)을 정했으면 그 다각형과 높이를, 아니면 받은 다각형·높이를 그대로 보낸다(속성만 고쳐도 직사각형이 아닌
  * 다각형을 상자로 덮지 않고, 한쪽만 있는 높이도 지우지 않는다). 이름을 고치지 않았으면 받은 이름을 그대로 보낸다.
  */
-export function bodyOf(zone: Zone, form: ZoneForm, box: ViewerEditBox | null): ZoneBody {
+export function bodyOf(zone: Zone, form: ZoneForm, shape: ZoneShape | null): ZoneBody {
   return {
     name: form.name === zone.name ? zone.name : form.name.trim(),
     zone_kind: form.zoneType,
     eval_type: form.judgeType,
-    ...(box ? shapeOfBox(box) : shapeOfZone(zone)),
+    ...(shape ?? shapeOfZone(zone)),
     severity: form.severity,
     has_guardrail: zone.hasGuardrail,
     requirements: zone.requirements && { ...zone.requirements },
@@ -124,12 +125,12 @@ export function newZoneErrors(form: ZoneForm): ZoneFormErrors {
 }
 
 /** 새 구역(v1) 본문. */
-export function newZoneBodyOf(form: ZoneForm, box: ViewerEditBox): ZoneBody {
+export function newZoneBodyOf(form: ZoneForm, shape: ZoneShape): ZoneBody {
   return {
     name: form.name.trim(),
     zone_kind: form.zoneType,
     eval_type: form.judgeType,
-    ...shapeOfBox(box),
+    ...shape,
     severity: form.severity,
     has_guardrail: null,
     requirements: null,

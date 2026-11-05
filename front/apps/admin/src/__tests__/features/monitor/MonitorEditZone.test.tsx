@@ -269,15 +269,13 @@ describe('관제 관리자 편집 모드', () => {
     expect(severityTone('CAUTION')).toBe('caution');
   });
 
-  it('고소 작업면을 그리면 작업면 OBB 와 둘레 0.30 m 구역(기본 HIGH, 바꿀 수 있음)을 함께 만들어 POST /api/zones/commit 한 번으로 발행한다', async () => {
+  it('고소 작업면을 그리면 작업면 OBB 와 둘레 0.30 m 구역(HIGH 고정, 등급 칸 없음)을 함께 만들어 POST /api/zones/commit 한 번으로 발행한다', async () => {
     renderMonitor(true);
     await screen.findByTestId('viewer3d');
     await screen.findByRole('option', { name: /개구부 구역/ });
 
     act(() => screen.getByRole('button', { name: '+ 고소 작업면 추가' }).click());
-    const severity = screen.getByRole('combobox', { name: '심각도' }) as HTMLSelectElement;
-    expect(severity.value).toBe('HIGH');
-    expect(severity.disabled).toBe(false);
+    expect(screen.queryByRole('combobox', { name: '심각도' })).toBeNull();
     expect(useBoxEditStore.getState().boxEdit?.kind).toBe('surface');
 
     act(() =>

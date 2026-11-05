@@ -1,5 +1,4 @@
 import type { WorkSurface } from '@/features/surfaces/types';
-import type { ViewerEditBox } from '@/features/viewer3d';
 import { commitErrorText } from '@/features/zones/commitErrors';
 import type { Zone, ZoneCommitRequest } from '@/features/zones/types';
 import { useArmedDelete } from '@/features/zones/useArmedDelete';
@@ -10,13 +9,14 @@ import { archiveErrorText, useSurfaceArchive } from '@/features/zones/useSurface
 import { useZoneCommitMutation, type CommitDone } from '@/features/zones/useZoneCommitMutation';
 import type { ZoneTarget } from '@/features/zones/useZoneTarget';
 import { archiveRequestOf, createRequestOf, saveRequestOf } from '@/features/zones/zoneCommit';
-import { editedBox, NEW_KEY, type TargetDraft } from '@/features/zones/zoneEditModel';
-import type { ZoneForm } from '@/features/zones/zoneForm';
+import { NEW_KEY, type TargetDraft } from '@/features/zones/zoneEditModel';
+import type { ZoneForm, ZoneShape } from '@/features/zones/zoneForm';
 import { removeZoneDraft } from '@/store/zoneEdit.store';
 
 export interface ZoneCommitInput {
   zone: Zone | null;
-  zoneBox: ViewerEditBox;
+  /** 저장할 구역 모양. 기존 구역을 고치지 않았으면 null(받은 모양 그대로)이고, 새 구역은 늘 있다. */
+  shape: ZoneShape | null;
   form: ZoneForm;
   draft: TargetDraft | undefined;
   linked: WorkSurface | null;
@@ -39,7 +39,7 @@ export interface ZoneCommitInput {
  * 통째로 지우고, 실패하면 서버에 아무것도 저장되지 않았으니 초안을 그대로 남겨 다시 저장할 수 있게 한다.
  */
 export function useZoneCommit(input: ZoneCommitInput) {
-  const { zone, zoneBox, form, draft, linked, orphan, target } = input;
+  const { zone, shape, form, draft, linked, orphan, target } = input;
   const commit = useZoneCommitMutation();
   const archive = useSurfaceArchive();
   const { busy, run } = useExclusiveRun();
@@ -76,27 +76,23 @@ export function useZoneCommit(input: ZoneCommitInput) {
     const request = saveRequestOf({
       zone,
       form,
-      box: editedBox(zone, draft),
+      shape,
       zoneChanged: input.zoneDirty,
       linked,
       surface: draft?.surface,
       surfaceChanged: input.surfaceDirty,
     });
     if (!request) return;
-    await send(request, () => {
-      // 저장한 값이 새 기준이라 그 구역의 초안과 되돌리기 기록을 모두 버린다.
-      removeZoneDraft(zone.zoneId);
-      if (request.surface) target.setSurfaceMode(false);
-    });
+    // 저장한 값이 새 기준이라 그 구역의 초안과 되돌리기 기록을 모두 버린다.
+    await send(request, () => removeZoneDraft(zone.zoneId));
   };
 
   const add = async () => {
-    if (zone || !input.addReady || busy) return;
-    const request = createRequestOf({ form, box: zoneBox, surface: draft?.surface });
+    if (zone || !shape || !input.addReady || busy) return;
+    const request = createRequestOf({ form, shape, surface: draft?.surface });
     await send(request, ({ result }) => {
       // 만든 구역을 고르고 새 구역 양식은 처음 값으로 돌린다.
       removeZoneDraft(NEW_KEY);
-      target.setSurfaceMode(false);
       target.openZone(result.zone_id);
     });
   };
@@ -111,7 +107,6 @@ export function useZoneCommit(input: ZoneCommitInput) {
     disarm();
     await send(archiveRequestOf(zone.zoneId), () => {
       removeZoneDraft(zone.zoneId);
-      target.setSurfaceMode(false);
       target.openNew();
     });
   };

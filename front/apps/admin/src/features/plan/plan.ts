@@ -26,7 +26,8 @@ export const boundsWidth = (bounds: PlanBounds) => bounds.maxX - bounds.minX;
 export const boundsDepth = (bounds: PlanBounds) => bounds.maxY - bounds.minY;
 
 /** 2D 에 그리는 구역. 서버 구역이면 판정 유형·유형·등급으로 색과 말풍선을 정한다. */
-export type PlanZone = ZoneBox & Partial<Pick<Zone, 'judgeType' | 'zoneType' | 'severity'>>;
+export type PlanZone = ZoneBox &
+  Partial<Pick<Zone, 'judgeType' | 'zoneType' | 'severity' | 'polygon'>>;
 
 /** 평면도(BEV) 바탕. 이미지는 bounds 를 덮는다. */
 export interface PlanBackdrop {
@@ -56,6 +57,10 @@ export const toPlan = (
   y: number,
   bounds: PlanBounds = ROOM_BOUNDS,
 ): readonly [number, number] => [x - bounds.minX, bounds.maxY - y];
+
+/** World 꼭짓점들 → SVG polygon 의 points 속성(평면 좌표). */
+export const planPoints = (points: readonly PlanPoint[], bounds: PlanBounds): string =>
+  points.map(([x, y]) => toPlan(x, y, bounds).join(',')).join(' ');
 
 /** 사람 표시 모양(명세 13.2 관측 상태 표시를 따른다). */
 export type TrackLook = 'observed' | 'predicted' | 'unknown';

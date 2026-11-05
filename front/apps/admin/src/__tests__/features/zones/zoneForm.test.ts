@@ -9,6 +9,7 @@ import {
   nameError,
   newZoneBodyOf,
   newZoneErrors,
+  shapeOfBox,
   type ZoneForm,
 } from '@/features/zones/zoneForm';
 import { DEFAULT_ROOM_LIMIT } from '@/lib/roomLimit';
@@ -102,9 +103,9 @@ describe('zoneForm', () => {
     expect(newZoneErrors(NEW_ZONE_FORM).severity).toBeUndefined();
   });
 
-  it('형상을 고쳤으면 그 상자를 서버 형식(eval_type·zone_kind·z_min_m·z_max_m)으로 보내고, 고치지 않는 칸은 받은 값을 그대로 보낸다', () => {
+  it('새 모양을 정했으면 그 모양을 서버 형식(eval_type·zone_kind·z_min_m·z_max_m)으로 보내고, 고치지 않는 칸은 받은 값을 그대로 보낸다', () => {
     const form = { ...formOf(ZONE), name: ' 새 이름 ', zoneType: 'LIFTING' };
-    expect(bodyOf(ZONE, form, { min: [1, 1, 0.5], max: [4, 2, 3] })).toEqual({
+    expect(bodyOf(ZONE, form, shapeOfBox({ min: [1, 1, 0.5], max: [4, 2, 3] }))).toEqual({
       name: '새 이름',
       zone_kind: 'LIFTING',
       eval_type: 'VOLUME_3D',
@@ -173,7 +174,9 @@ describe('zoneForm', () => {
   it('새 구역은 기존 구역들의 가운데 바닥에 2×2 m, 높이 2 m 로 고른 유형으로 만든다', () => {
     const body = newZoneBodyOf(
       { ...NEW_ZONE_FORM, zoneType: 'LIFTING' },
-      defaultNewBox([ZONE, { ...ZONE, min: [6, 7, 0], max: [8, 9, 1] }], DEFAULT_ROOM_LIMIT),
+      shapeOfBox(
+        defaultNewBox([ZONE, { ...ZONE, min: [6, 7, 0], max: [8, 9, 1] }], DEFAULT_ROOM_LIMIT),
+      ),
     );
     expect(body.polygon_xy).toEqual([
       [3, 3.5],
@@ -201,7 +204,7 @@ describe('새 구역 양식', () => {
     expect(box.max[2]).toBe(2);
     const body = newZoneBodyOf(
       { ...NEW_ZONE_FORM, zoneType: 'LIFTING', severity: 'CRITICAL' },
-      box,
+      shapeOfBox(box),
     );
     expect(body).toMatchObject({
       name: '새 구역',

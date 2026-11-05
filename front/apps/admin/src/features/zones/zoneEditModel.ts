@@ -1,8 +1,8 @@
 import { sameGeometry, sameName } from '@/features/surfaces/surfaces';
 import type { SurfaceGeometry, WorkSurface } from '@/features/surfaces/types';
 import type { ViewerBoxEdit, ViewerBoxGhost, ViewerEditBox } from '@/features/viewer3d';
-import type { Severity, Zone, ZoneBox } from '@/features/zones/types';
-import type { ZoneForm } from '@/features/zones/zoneForm';
+import type { JudgeType, Severity, Zone, ZoneBox } from '@/features/zones/types';
+import type { ZoneForm, ZoneShape } from '@/features/zones/zoneForm';
 import type { RoomLimit } from '@/lib/roomLimit';
 
 // 구역 편집 화면의 초안 모델(순수 계산). 이름·심각도 고침, 구역 상자, 작업면 하나를 구역(또는 새 구역) 하나의 초안으로 묶는다.
@@ -13,6 +13,10 @@ export const NEW_KEY = '__new__';
 export const NEW_ZONE_KIND = 'OPENING';
 export const NEW_EVAL_TYPE = 'VOLUME_3D';
 export const NEW_ZONE_SEVERITY: Severity = 'HIGH';
+/** 작업면이 붙은 구역의 심각도(늘 경고). 사용자가 고르지 못하고 저장할 때 이 값으로 맞춘다. */
+export const SURFACE_ZONE_SEVERITY: Severity = 'HIGH';
+/** 작업면이 붙은 구역의 판정 유형(높이가 있는 입체). 저장할 때 이 값으로 맞춘다. */
+export const SURFACE_ZONE_JUDGE_TYPE: JudgeType = NEW_EVAL_TYPE;
 /** 이름을 정하지 않은 새 구역의 기본 이름 앞부분(`구역 1`, `구역 2`…). */
 const NEW_ZONE_NAME_PREFIX = '구역';
 
@@ -25,7 +29,9 @@ export const SEVERITY_LABEL: Record<Severity, string> = {
 
 const NEW_ZONE_SIZE_M = 2;
 const NEW_ZONE_HEIGHT_M = 2;
-/** 작업면을 붙인 새 구역이 작업면 둘레에 남기는 여유(m). */
+/** 작업면이 붙은 구역의 최소 높이(m). 상판이 이보다 높으면 상판까지 올린다. */
+const SURFACE_ZONE_MIN_HEIGHT_M = 2;
+/** 작업면이 붙은 구역이 작업면 둘레에 남기는 여유(m). */
 const SURFACE_ZONE_MARGIN_M = 0.3;
 /** 새 작업면의 크기·상판 높이(m, 관제 데모와 같다). */
 const NEW_SURFACE_SIZE_M = 1;
@@ -34,9 +40,6 @@ const NEW_SURFACE_TOP_M = 0.4;
 const SAME_EPS = 1e-6;
 /** 좌표를 맞추는 배율(0.001 m 단위). */
 const ROUND_SCALE = 1000;
-
-/** 작업면을 새로 만들거나 바꿀 때 중심이 구역 밖이면 그 구역의 작업면이 아니라 저장하지 않는다. */
-export const SURFACE_OUTSIDE_TEXT = '작업면 중심이 구역 안에 있어야 합니다.';
 
 const r3 = (v: number) => Math.round(v * ROUND_SCALE) / ROUND_SCALE;
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
@@ -97,25 +100,72 @@ export function defaultNewBox(zones: readonly ZoneBox[], limit: RoomLimit): View
   return { min: [cx - half, cy - half, 0], max: [cx + half, cy + half, NEW_ZONE_HEIGHT_M] };
 }
 
+/** 작업면이 붙은 구역의 반쪽 크기(가로·세로): 작업면 반쪽 크기에 여유를 더한 값. */
+const surfaceZoneHalf = (g: SurfaceGeometry): [number, number] => [
+  g.sizeXy[0] / 2 + SURFACE_ZONE_MARGIN_M,
+  g.sizeXy[1] / 2 + SURFACE_ZONE_MARGIN_M,
+];
+
+/** 작업면이 붙은 구역의 높이: 바닥에서 최소 높이와 상판 중 큰 값까지. */
+const surfaceZoneTop = (g: SurfaceGeometry) =>
+  r3(Math.max(SURFACE_ZONE_MIN_HEIGHT_M, g.topHeightM));
+
 /**
- * 작업면을 붙인 새 구역의 처음 상자: 회전한 작업면 발자국을 감싼 축 정렬 상자에 여유(SURFACE_ZONE_MARGIN_M)를 더하고, 바닥에서
- * 새 구역 높이와 상판 중 큰 값까지. 구역 상자는 직사각형이라 회전한 발자국은 감싸는 상자로 잡는다. 3D 손잡이의 범위 밖에서
- * 시작하지 않게 defaultNewBox 처럼 교실 범위(limit) 안으로 자른다.
+ * 작업면이 붙은 구역의 모양: 작업면 발자국을 사방으로 SURFACE_ZONE_MARGIN_M 넓힌 직사각형(작업면이 회전했으면 같이 회전한
+ * 다각형, 반시계)과 바닥(0)부터의 높이. 서버 판정은 이 다각형으로 한다.
  */
-export function surfaceZoneBox(g: SurfaceGeometry, limit: RoomLimit): ViewerEditBox {
+export function surfaceZoneShape(g: SurfaceGeometry): ZoneShape {
   const [cx, cy] = g.centerXy;
-  const [width, depth] = g.sizeXy;
-  const cos = Math.abs(Math.cos(g.yawRad));
-  const sin = Math.abs(Math.sin(g.yawRad));
-  const halfX = (width * cos + depth * sin) / 2 + SURFACE_ZONE_MARGIN_M;
-  const halfY = (width * sin + depth * cos) / 2 + SURFACE_ZONE_MARGIN_M;
+  const [halfX, halfY] = surfaceZoneHalf(g);
+  const cos = Math.cos(g.yawRad);
+  const sin = Math.sin(g.yawRad);
+  const corners = [
+    [-halfX, -halfY],
+    [halfX, -halfY],
+    [halfX, halfY],
+    [-halfX, halfY],
+  ] as const;
   return {
-    min: [r3(Math.max(cx - halfX, limit.min[0])), r3(Math.max(cy - halfY, limit.min[1])), 0],
-    max: [
-      r3(Math.min(cx + halfX, limit.max[0])),
-      r3(Math.min(cy + halfY, limit.max[1])),
-      r3(Math.min(Math.max(NEW_ZONE_HEIGHT_M, g.topHeightM), limit.max[2])),
-    ],
+    polygon_xy: corners.map(
+      ([dx, dy]) =>
+        [r3(cx + dx * cos - dy * sin), r3(cy + dx * sin + dy * cos)] as [number, number],
+    ),
+    z_min_m: 0,
+    z_max_m: surfaceZoneTop(g),
+  };
+}
+
+/** 받은 구역이 이미 작업면 구역의 모양·높이·등급·판정 유형 그대로인지(그러면 작업면만 고쳐도 새 구역 버전이 필요 없다). */
+export function zoneFollowsSurface(zone: Zone, shape: ZoneShape): boolean {
+  const samePoints =
+    zone.polygon.length === shape.polygon_xy.length &&
+    zone.polygon.every(
+      ([x, y], i) =>
+        Math.abs(x - shape.polygon_xy[i]![0]) <= SAME_EPS &&
+        Math.abs(y - shape.polygon_xy[i]![1]) <= SAME_EPS,
+    );
+  return (
+    samePoints &&
+    zone.zBounds[0] === shape.z_min_m &&
+    zone.zBounds[1] === shape.z_max_m &&
+    zone.severity === SURFACE_ZONE_SEVERITY &&
+    zone.judgeType === SURFACE_ZONE_JUDGE_TYPE
+  );
+}
+
+/** 높이가 있는 입체 판정 구역인지(작업면을 지우면 이런 구역만 감싸는 상자로 고친다). */
+export const isSolidZone = (zone: Zone) => zone.judgeType === 'VOLUME_3D' && zone.zRange !== null;
+
+/**
+ * 작업면이 붙은 구역을 3D 에 윤곽으로 보일 상자. 회전한 작업면은 구역이 직사각형이 아니라 윤곽을 두지 않는다(null).
+ */
+function surfaceZoneOutline(g: SurfaceGeometry): ViewerEditBox | null {
+  if (!surfaceBoxEditable(g)) return null;
+  const [cx, cy] = g.centerXy;
+  const [halfX, halfY] = surfaceZoneHalf(g);
+  return {
+    min: [r3(cx - halfX), r3(cy - halfY), 0],
+    max: [r3(cx + halfX), r3(cy + halfY), surfaceZoneTop(g)],
   };
 }
 
@@ -163,33 +213,6 @@ export const surfaceDraftOf = (surface: LinkedSurface): SurfaceDraft => ({
     ...surface.geometry,
     centerXy: [...surface.geometry.centerXy],
     sizeXy: [...surface.geometry.sizeXy],
-  },
-});
-
-/**
- * 크기를 그대로 두고 바닥(X·Y)만 옮긴 상자면 그 이동량(m), 아니면 null. 구역을 옮기면 이은 작업면도 같이 옮겨 중심이
- * 구역 안에 남게 한다(크기를 바꾸면 작업면은 그대로 두고, 중심이 구역 밖이 되면 저장을 막는다).
- */
-export function floorShift(from: ViewerEditBox, to: ViewerEditBox): [number, number] | null {
-  const sizeKept = [0, 1, 2].every(
-    (axis) =>
-      Math.abs(to.max[axis]! - to.min[axis]! - (from.max[axis]! - from.min[axis]!)) < SAME_EPS,
-  );
-  const heightKept = Math.abs(to.min[2] - from.min[2]) < SAME_EPS;
-  if (!sizeKept || !heightKept) return null;
-  const shift: [number, number] = [r3(to.min[0] - from.min[0]), r3(to.min[1] - from.min[1])];
-  return shift[0] === 0 && shift[1] === 0 ? null : shift;
-}
-
-/** 작업면을 바닥에서 shift 만큼 옮긴 초안. */
-const shiftedSurface = (surface: SurfaceDraft, shift: readonly [number, number]): SurfaceDraft => ({
-  ...surface,
-  geometry: {
-    ...surface.geometry,
-    centerXy: [
-      r3(surface.geometry.centerXy[0] + shift[0]),
-      r3(surface.geometry.centerXy[1] + shift[1]),
-    ],
   },
 });
 
@@ -328,22 +351,16 @@ export function withSurfaceBox(
   return withSurface(prev, { ...surface, geometry: surfaceOfBox(box, surface.geometry) });
 }
 
-/**
- * 3D 에서 구역 상자를 끈 초안. 원본(zone)과 같아지면 고친 상자를 지운다. 크기 그대로 옮겼으면 이은 작업면도 같이 옮긴다
- * (그대로 두면 중심이 구역 밖에 남는다). before 는 끌기 전 상자다.
- */
+/** 3D 에서 구역 상자를 끈 초안. 원본(zone)과 같아지면 고친 상자를 지운다. */
 export function withZoneBox(
   prev: TargetDraft | undefined,
   zone: Zone | null,
-  surface: SurfaceDraft | null,
-  before: ViewerEditBox,
   box: ViewerEditBox,
 ): TargetDraft {
-  const shift = surface ? floorShift(before, box) : null;
   return {
     patch: prev?.patch ?? {},
     box: zone && sameEditBox(box, boxOfZone(zone)) ? null : box,
-    ...(surface && shift ? { surface: shiftedSurface(surface, shift) } : keepSurface(prev)),
+    ...keepSurface(prev),
   };
 }
 
@@ -362,40 +379,42 @@ export function withoutUnchangedSurface(
 // ---- 3D 로 내려 줄 값 ---------------------------------------------------------------------------
 
 /**
- * 3D 손잡이가 고칠 상자. 작업면을 고르는 중이면 작업면 상자(회전한 작업면·형상 오류가 있으면 없음), 아니면 구역 상자다.
- * 형상을 못 고치는 구역이면 null 이다.
+ * 3D 손잡이가 고칠 상자. 작업면이 있으면 작업면 상자다(구역은 작업면에서 계산하므로 손잡이가 없다. 회전한 작업면·형상 오류가
+ * 있으면 없음). 작업면이 없으면 구역 상자이고, 형상을 못 고치는 구역이면 null 이다. 단 저장된 작업면을 지운 구역(unlinking)은
+ * 구역 모양이 작업면에서 풀려나므로 직사각형이 아니어도 감싸는 상자로 고칠 수 있다.
  */
 export function boxEditOf(input: {
-  surfMode: boolean;
   key: string;
   zone: Zone | null;
   zoneBox: ViewerEditBox;
   surface: SurfaceDraft | null;
   surfaceValid: boolean;
+  unlinking: boolean;
 }): ViewerBoxEdit | null {
-  const { surfMode, key, zone, zoneBox, surface, surfaceValid } = input;
-  if (surfMode) {
-    return surface && surfaceBoxEditable(surface.geometry) && surfaceValid
+  const { key, zone, zoneBox, surface, surfaceValid, unlinking } = input;
+  if (surface) {
+    return surfaceBoxEditable(surface.geometry) && surfaceValid
       ? { id: `surface:${key}`, kind: 'surface', box: surfaceBox(surface.geometry) }
       : null;
   }
-  return !zone || zone.shapeEditable ? { id: key, kind: 'zone', box: zoneBox } : null;
+  return !zone || zone.shapeEditable || unlinking ? { id: key, kind: 'zone', box: zoneBox } : null;
 }
 
 /**
- * 윤곽만 보이는 보관 초안(다른 구역의 고친 상자). 작업면을 조절하는 동안은 이 구역의 고친 상자도 윤곽으로 남긴다.
- * 없어진 구역의 초안은 건너뛴다.
+ * 윤곽만 보이는 보관 초안. 작업면이 붙은 구역은 작업면에서 계산한 구역 윤곽(지금 구역도 손잡이가 작업면이라 구역이 어떻게
+ * 따라가는지 보인다), 작업면이 없는 다른 구역은 고친 상자다. 없어진 구역의 초안은 건너뛴다.
  */
 export function ghostsOf(
   drafts: Readonly<Record<string, TargetDraft>>,
   key: string,
-  surfMode: boolean,
   zones: readonly ZoneBox[],
+  links: ReadonlyMap<string, LinkedSurface>,
 ): ViewerBoxGhost[] {
   return Object.entries(drafts).flatMap(([id, draft]) => {
-    if (!draft.box || (id === key && !surfMode)) return [];
     if (id !== NEW_KEY && !zones.some((z) => z.zoneId === id)) return [];
-    return [{ id, box: draft.box }];
+    const surface = currentSurface(draft, links.get(id) ?? null);
+    const box = surface ? surfaceZoneOutline(surface.geometry) : id === key ? null : draft.box;
+    return box ? [{ id, box }] : [];
   });
 }
 

@@ -10,9 +10,8 @@ import {
   saveRequestOf,
   type SaveRequestInput,
 } from '@/features/zones/zoneCommit';
-import { newSurfaceDraft, surfaceDraftOf, surfaceZoneBox } from '@/features/zones/zoneEditModel';
-import { formOf, newZoneBodyOf, bodyOf as zoneBodyOf } from '@/features/zones/zoneForm';
-import { DEFAULT_ROOM_LIMIT } from '@/lib/roomLimit';
+import { newSurfaceDraft, surfaceDraftOf } from '@/features/zones/zoneEditModel';
+import { formOf, newZoneBodyOf, shapeOfBox, bodyOf as zoneBodyOf } from '@/features/zones/zoneForm';
 import { describe, expect, it } from 'vitest';
 
 const zone = zoneOf({ zoneId: 'z-04', name: '개구부', min: [5.8, 1.2, 0], max: [8.6, 3.8, 2.4] });
@@ -32,7 +31,7 @@ const form = { ...formOf(zone), name: '새 이름' };
 const base: SaveRequestInput = {
   zone,
   form,
-  box: null,
+  shape: null,
   zoneChanged: true,
   linked,
   surface: undefined,
@@ -77,9 +76,9 @@ describe('saveRequestOf(기존 구역 저장)', () => {
       expected: { zone: zoneUpdate },
     },
     {
-      name: '구역 상자를 고침: UPDATE 본문이 고친 상자의 바닥·높이다',
-      request: saveRequestOf({ ...base, box: MOVED_BOX }),
-      expected: { zone: { ...zoneUpdate, body: zoneBodyOf(zone, form, MOVED_BOX) } },
+      name: '새 모양을 정함: UPDATE 본문이 그 모양의 바닥·높이다',
+      request: saveRequestOf({ ...base, shape: shapeOfBox(MOVED_BOX) }),
+      expected: { zone: { ...zoneUpdate, body: zoneBodyOf(zone, form, shapeOfBox(MOVED_BOX)) } },
     },
     {
       name: '작업면만 고침: 구역 KEEP + 작업면 UPDATE(같은 object_id)',
@@ -251,23 +250,28 @@ describe('createRequestOf(새 구역)', () => {
     severity: 'HIGH',
   } as const;
   const newBox: ViewerEditBox = { min: [4, 4, 0], max: [6, 6, 2] };
-  const newBody = newZoneBodyOf(newForm, newBox);
+  const newShape = shapeOfBox(newBox);
+  const newBody = newZoneBodyOf(newForm, newShape);
   const named = { ...newSurfaceDraft(newBox), name: '단상' };
   const cases: Case[] = [
     {
       name: '작업면 초안이 undefined: 구역 CREATE 만, 작업면 키 없음',
-      request: createRequestOf({ form: newForm, box: newBox, surface: undefined }),
+      request: createRequestOf({ form: newForm, shape: newShape, surface: undefined }),
       expected: { zone: { op: 'CREATE', body: newBody } },
     },
     {
       name: '작업면 초안이 null: 구역 CREATE 만, 작업면 키 없음',
-      request: createRequestOf({ form: newForm, box: newBox, surface: null }),
+      request: createRequestOf({ form: newForm, shape: newShape, surface: null }),
       expected: { zone: { op: 'CREATE', body: newBody } },
     },
     {
       name: '작업면 초안이 있으면 구역 CREATE + 작업면 CREATE(이름 없음은 null)',
-      request: createRequestOf({ form: newForm, box: newBox, surface: newSurfaceDraft(newBox) }),
-      // 구역 몸체는 작업면이 있어도 상자·양식 그대로다(다각형·심각도·높이를 덮어쓰지 않는다).
+      request: createRequestOf({
+        form: newForm,
+        shape: newShape,
+        surface: newSurfaceDraft(newBox),
+      }),
+      // 구역 몸체는 받은 모양·양식 그대로다(작업면에서 계산한 모양은 호출하는 쪽이 정해 넘긴다).
       expected: {
         zone: { op: 'CREATE', body: newBody },
         surface: {
@@ -278,7 +282,7 @@ describe('createRequestOf(새 구역)', () => {
     },
     {
       name: '이름이 있는 작업면 초안은 그 이름을 보낸다',
-      request: createRequestOf({ form: newForm, box: newBox, surface: named }),
+      request: createRequestOf({ form: newForm, shape: newShape, surface: named }),
       expected: {
         zone: { op: 'CREATE', body: newBody },
         surface: { op: 'CREATE', body: surfaceBodyOf(null, '단상', named.geometry) },
@@ -288,19 +292,8 @@ describe('createRequestOf(새 구역)', () => {
 
   it.each(cases)('$name', expectRequest);
 
-  it('작업면이 회전해 있어도 고른 심각도와 상자 그대로 보낸다(경고로 바꾸지 않는다)', () => {
-    const surface = { ...named, geometry: { ...named.geometry, yawRad: Math.PI / 2 } };
-    const box = surfaceZoneBox(surface.geometry, DEFAULT_ROOM_LIMIT);
-    const request = createRequestOf({ form: { ...newForm, severity: 'CRITICAL' }, box, surface });
-    expect(request.surface).toMatchObject({ op: 'CREATE', body: { kind: 'WORK_SURFACE' } });
-    if (request.zone.op !== 'CREATE') throw new Error('expected CREATE');
-    expect(request.zone.body).toEqual(newZoneBodyOf({ ...newForm, severity: 'CRITICAL' }, box));
-    expect(request.zone.body.severity).toBe('CRITICAL');
-    expect(request.publish).toBeUndefined();
-  });
-
   it('본문은 이름 앞뒤 공백을 뺀 새 구역(v1)과 새 작업면이다', () => {
-    const request = createRequestOf({ form: newForm, box: newBox, surface: named });
+    const request = createRequestOf({ form: newForm, shape: newShape, surface: named });
     expect(request.zone).toMatchObject({
       op: 'CREATE',
       body: { name: '새 구역', polygon_xy: expect.any(Array), z_min_m: 0, z_max_m: 2 },

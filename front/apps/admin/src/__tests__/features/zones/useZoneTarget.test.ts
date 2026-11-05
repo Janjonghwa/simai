@@ -18,12 +18,12 @@ const viewportOf = (selectedZoneId: string | null) =>
     clearSelection: vi.fn(),
   }) as unknown as SpatialViewportValue;
 
-/** 처음 그린 때의 대상(키와 작업면 모드)과, 끝난 뒤의 대상. */
+/** 처음 그린 때의 대상 키와, 끝난 뒤의 대상. */
 function renderTarget(selectedZoneId: string | null, pickedSurfaceZone: string | null) {
-  const first: { key: string; surfMode: boolean }[] = [];
+  const first: string[] = [];
   const { result } = renderHook(() => {
     const target = useZoneTarget(viewportOf(selectedZoneId), pickedSurfaceZone);
-    first.push({ key: target.key, surfMode: target.surfMode });
+    first.push(target.key);
     return target;
   });
   return { first: first[0]!, result };
@@ -32,23 +32,22 @@ function renderTarget(selectedZoneId: string | null, pickedSurfaceZone: string |
 describe('useZoneTarget 처음 고른 대상', () => {
   it('아무것도 고르지 않았으면 새 구역이다', () => {
     const { first } = renderTarget(null, null);
-    expect(first).toEqual({ key: NEW_KEY, surfMode: false });
+    expect(first).toBe(NEW_KEY);
   });
 
   it('구역이 골라져 있으면 처음 그릴 때부터 그 구역이다', () => {
     const { first } = renderTarget('z-04', null);
-    expect(first).toEqual({ key: 'z-04', surfMode: false });
+    expect(first).toBe('z-04');
   });
 
-  it('이어진 작업면이 골라져 있으면 처음 그릴 때부터 그 구역을 작업면 모드로 연다', () => {
+  it('이어진 작업면이 골라져 있으면 처음 그릴 때부터 그 구역을 연다', () => {
     const { first } = renderTarget(null, 'z-02');
-    expect(first).toEqual({ key: 'z-02', surfMode: true });
+    expect(first).toBe('z-02');
   });
 
-  it('구역과 작업면이 함께 골라져 있으면 구역이 먼저이고 작업면 모드는 작업면의 구역에 건다', () => {
+  it('구역과 작업면이 함께 골라져 있으면 구역이 먼저다', () => {
     const { first, result } = renderTarget('z-04', 'z-02');
-    expect(first.key).toBe('z-04');
+    expect(first).toBe('z-04');
     expect(result.current.zone?.zoneId).toBe('z-04');
-    expect(result.current.surfMode).toBe(false);
   });
 });

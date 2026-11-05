@@ -47,7 +47,6 @@ interface BoxTarget {
   zone: Zone | null;
   linked: WorkSurface | null;
   surface: SurfaceDraft | null;
-  surfMode: boolean;
   zoneBox: ViewerEditBox;
 }
 
@@ -97,7 +96,7 @@ function useDragRecord() {
 }
 
 /**
- * 뷰어가 올린 상자(끄는 동안 0.05 m 단위)를 초안에 넣는 처리기. 작업면 조절이면 작업면 형상으로, 아니면 구역 상자로 넣는다.
+ * 뷰어가 올린 상자(끄는 동안 0.05 m 단위)를 초안에 넣는 처리기. 작업면이 있으면 작업면 형상으로, 없으면 구역 상자로 넣는다.
  * 처리기 모양은 하나로 두고 고른 대상은 ref 로 읽는다(끄는 동안 3D 가 낡은 처리기를 부르지 않게).
  */
 export function useBoxChange(target: BoxTarget) {
@@ -108,15 +107,14 @@ export function useBoxChange(target: BoxTarget) {
   const trackDrag = useDragRecord();
   return useCallback(
     (box: ViewerEditBox) => {
-      const { key, zone, linked, surface, surfMode, zoneBox } = latest.current;
-      if (!surfMode) {
+      const { key, zone, linked, surface, zoneBox } = latest.current;
+      if (!surface) {
         trackDrag(key, zoneBox, box);
         updateZoneDraft(key, (prev) =>
-          withoutUnchangedSurface(withZoneBox(prev, zone, surface, zoneBox, box), linked),
+          withoutUnchangedSurface(withZoneBox(prev, zone, box), linked),
         );
         return;
       }
-      if (!surface) return;
       trackDrag(key, surfaceBox(surface.geometry), box);
       updateZoneDraft(key, (prev) =>
         withoutUnchangedSurface(withSurfaceBox(prev, surface, box), linked),
