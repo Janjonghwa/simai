@@ -1,0 +1,97 @@
+{
+  "schema_version": "2.2.0",
+  "run_id": "exp01-map-quality-poc-20261105-0001",
+  "experiment_id": "EXP-01",
+  "jira_key": "S15P31A101-505",
+  "owner": "S15P31A101-505 Owner",
+  "git_commit": "e1e137e7",
+  "branch": "S15P31A101-505-map-quality-poc",
+  "dirty_worktree": true,
+  "env_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "model_version": "openreco-style-bake(xatlas 0.0.11)+floor-wall-fill@poc",
+  "config": {
+    "path": "ai/experiments/map_quality_poc/run.py",
+    "sha256": "sha256:fb0d04ed11b7716be7abcd0b49a9e27793442306fdd8bf73d48926f11d6a09ec"
+  },
+  "input_provenance": {
+    "frames": {
+      "source": "FILE",
+      "dataset_id": "session12-lobby-clean-bg-cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+    },
+    "calibration": {
+      "source": "G1_AUTO",
+      "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+    },
+    "is_upper_bound": true
+  },
+  "gpu": {
+    "model": "none (CPU only)",
+    "driver": "n/a",
+    "cuda": "n/a",
+    "provider": "LOCAL",
+    "shared_with_tier0": false
+  },
+  "started_at": 1793862000000,
+  "finished_at": 1793865000000,
+  "status": "SUCCEEDED",
+  "experiment_state": "BENCHMARK",
+  "metrics": {
+    "OR_mae_covered": 0.13849,
+    "OR_mae_valid": 0.1652,
+    "OR_coverage": 0.79812,
+    "OR_2_mae_covered": 0.13833,
+    "OR_2_mae_valid": 0.16663,
+    "OR_2_coverage": 0.79413,
+    "OR_2_3_mae_covered": 0.14075,
+    "OR_2_3_mae_valid": 0.16255,
+    "OR_2_3_coverage": 0.80989,
+    "OR_2_3_4_mae_covered": 0.14161,
+    "OR_2_3_4_mae_valid": 0.15867,
+    "OR_2_3_4_coverage": 0.82038,
+    "ORc_mae_covered": 0.14531,
+    "ORc_mae_valid": 0.17052,
+    "ORc_coverage": 0.79812,
+    "ORc_2_3_4_mae_covered": 0.1481,
+    "ORc_2_3_4_mae_valid": 0.16389,
+    "ORc_2_3_4_coverage": 0.82038,
+    "OR_insample_4cam_mae_covered": 0.05437,
+    "OR_insample_4cam_mae_valid": 0.09821,
+    "OR_insample_4cam_coverage": 0.79812,
+    "ORc_insample_4cam_mae_covered": 0.09966,
+    "ORc_insample_4cam_mae_valid": 0.13395,
+    "ORc_insample_4cam_coverage": 0.79812,
+    "TEX_insample_4cam_mae_covered": 0.17112,
+    "TEX_insample_4cam_mae_valid": 0.1821,
+    "TEX_insample_4cam_coverage": 0.82651,
+    "TEX_2_insample_4cam_mae_covered": 0.16891,
+    "TEX_2_insample_4cam_mae_valid": 0.19005,
+    "TEX_2_insample_4cam_coverage": 0.7973,
+    "stretched_faces_removed": 832,
+    "wall_planes_accepted": 3,
+    "floor_fill_m2": 7.920000000000002,
+    "atlas_charts": 21677
+  },
+  "performance": {
+    "stage_latency_ms": {
+      "visibility_4cam": {
+        "p50": 27126,
+        "p95": 35000
+      },
+      "xatlas_4chunks": {
+        "p50": 14830,
+        "p95": 14830
+      },
+      "bake_4cam": {
+        "p50": 15514,
+        "p95": 15514
+      }
+    }
+  },
+  "results": [
+    {
+      "kind": "REPORT",
+      "uri": "file://ai/experiments/map_quality_poc/REPORT.md"
+    }
+  ],
+  "notes": "texrecon 한 대 빼기는 미실행(바이너리 없음). 기하는 4대 기반이라 한 대 빼기 덮임은 낙관적. 1프레임, 정답 아님. env_hash 는 자리표시값."
+}
