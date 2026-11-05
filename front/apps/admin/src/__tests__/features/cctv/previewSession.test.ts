@@ -236,6 +236,7 @@ describe('카메라별 디코딩', () => {
     expect(useCctvStore.getState().views.cam1).toMatchObject({
       phase: 'playing',
       lastCaptureMs: T0 + 51 * 40,
+      lastDecodedMs: T0,
     });
   });
 
@@ -285,7 +286,7 @@ describe('카메라별 디코딩', () => {
     expect(t.decoders[1].chunks[0].type).toBe('key');
   });
 
-  it('화면 상태의 촬영 시각은 카메라마다 0.25초에 한 번까지만 바꾼다', () => {
+  it('화면 상태의 촬영 시각과 받은 시각은 카메라마다 0.25초에 한 번까지만 바꾼다', () => {
     const t = setup();
     t.socket().open();
     t.socket().text(codec('cam1'));
@@ -294,11 +295,17 @@ describe('카메라별 디코딩', () => {
     d.emit();
     t.socket().frame('cam1', 1, false);
     d.emit();
-    expect(useCctvStore.getState().views.cam1?.lastCaptureMs).toBe(T0);
+    expect(useCctvStore.getState().views.cam1).toMatchObject({
+      lastCaptureMs: T0,
+      lastDecodedMs: T0,
+    });
     t.advance(250);
     t.socket().frame('cam1', 2, false);
     d.emit();
-    expect(useCctvStore.getState().views.cam1?.lastCaptureMs).toBe(T0 + 80);
+    expect(useCctvStore.getState().views.cam1).toMatchObject({
+      lastCaptureMs: T0 + 80,
+      lastDecodedMs: T0 + 250,
+    });
     expect(t.rendered).toHaveLength(3); // 그리기는 프레임마다
   });
 });

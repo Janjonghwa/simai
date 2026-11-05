@@ -78,13 +78,17 @@ export function stateText(state: CameraState, lastClock?: string): string {
   return STATE_LABEL[state];
 }
 
-/** LIVE 점은 영상 프레임이 실제로 들어올 때만 켠다(디코딩해 그리는 중이고 마지막 프레임이 지연되지 않음). */
+/**
+ * LIVE 점은 영상 프레임이 실제로 들어올 때만 켠다(디코딩해 그리는 중이고 새 프레임이 끊기지 않음).
+ * sinceFrameSec 는 브라우저가 마지막 프레임을 받은 뒤 지난 초다. 촬영 시각 기준 나이는 원격 시청에서 전송 지연과
+ * 두 기계의 시계 차이가 섞여 기준(STALE_SEC) 근처를 오가므로 쓰지 않는다.
+ */
 export function framesArriving(
   phase: CameraPhase | undefined,
   link: PreviewLink,
-  ageSec: number | undefined,
+  sinceFrameSec: number | undefined,
 ): boolean {
-  return link === 'open' && phase === 'playing' && !isStale(ageSec);
+  return link === 'open' && phase === 'playing' && !isStale(sinceFrameSec);
 }
 
 /** 원격 시청 안내 한 줄과 "다시 보기"를 보일지. 로컬이거나 원격이 잘 보이는 중이면 null. */
