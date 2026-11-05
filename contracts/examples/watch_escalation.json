@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "msg_type": "watch_escalation",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000338",
   "sent_at": 1760342411200,

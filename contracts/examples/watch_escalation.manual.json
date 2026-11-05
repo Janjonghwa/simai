@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.1.0",
+  "msg_type": "watch_escalation",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000475",
+  "sent_at": 1760342411200,
+  "source_id": "ec2",
+  "payload": {
+    "origin": "MANUAL",
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-00000000e475",
+    "event_sequence": 1,
+    "alert_msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000a475",
+    "device_id": "watch-01",
+    "world_id": null,
+    "severity": "CRITICAL",
+    "reason": "NO_ACK",
+    "sent_at": 1760342401100,
+    "escalated_at": 1760342411150
+  }
+}

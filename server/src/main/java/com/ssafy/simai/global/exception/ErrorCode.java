@@ -214,7 +214,12 @@ public sealed interface ErrorCode {
         WATCH_NOT_FOUND(HttpStatus.NOT_FOUND, "등록된(폐기되지 않은) 워치가 아닙니다"),
         INVALID_WORLD_ID(HttpStatus.BAD_REQUEST, "world_id 는 1~64자여야 합니다"),
         BINDING_NOT_FOUND(HttpStatus.NOT_FOUND, "이 워치의 배정이 없습니다"),
-        BINDING_CONFLICT(HttpStatus.CONFLICT, "같은 워치나 World ID 를 동시에 배정하고 있습니다. 다시 시도하세요");
+        BINDING_CONFLICT(HttpStatus.CONFLICT, "같은 워치나 World ID 를 동시에 배정하고 있습니다. 다시 시도하세요"),
+        WATCH_NOT_CONNECTED(HttpStatus.CONFLICT, "워치가 EC2 에 연결돼 있지 않아 보낼 수 없습니다"),
+        WATCH_SEND_FAILED(HttpStatus.BAD_GATEWAY, "보내는 사이 워치 연결이 끊겨 보내지 못했습니다. 알림은 SEND_FAILED 로 남아 관리자 화면에 격상됩니다"),
+        INVALID_ALERT(HttpStatus.BAD_REQUEST,
+                "severity 는 CRITICAL·HIGH·CAUTION, word 는 1~8자(앞뒤 공백은 지움, 가운데 공백·줄바꿈 불가), direction 은 FRONT·BACK·LEFT·RIGHT, "
+                        + "ack_within_ms 는 1000~600000 이어야 합니다");
 
         private final HttpStatus status;
         private final String message;

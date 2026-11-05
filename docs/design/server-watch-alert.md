@@ -2,11 +2,12 @@
 
 S15P31A101-338. 명세 부록 C.6(BOUND 워치 개인 진동, ACK 없으면 격상), FR-45(등급별 진동·한 단어), FR-46(ACK·격상), 7.3(워치 개인 채널:
 BOUND 작업자에게 CRITICAL·HIGH·CAUTION), 7.4·11.4-3(LIVE 만), 12.4(`/topic/watch`). 계약 `watch_alert`·`watch_ack` 1.0.0(-334),
-`watch_escalation` 1.0.0(이 이슈, 계약 묶음 7.7.0). 연결은 [`server-watch-link.md`](server-watch-link.md)(-336).
+`watch_escalation` 1.0.0(이 이슈, 계약 묶음 7.7.0) → 1.1.0(수동 알림, S15P31A101-475, 7.12.0). 연결은 [`server-watch-link.md`](server-watch-link.md)(-336).
+수동 알림·조회 API 는 아래 "수동 알림" 절(-475).
 
-- 코드: `server/.../domain/watch/` — `WatchAlertService`(보내기·ACK·격상), `WatchBindings`·`WatchBindingController`(임시 수동 배정),
-  `WatchHub.send`·`isConnected`, `WatchAckReceived`
-- 표: V35 `watch_binding`·`watch_alert`
+- 코드: `server/.../domain/watch/` — `WatchAlertService`(보내기·ACK·격상·수동 발송·조회), `WatchBindings`·`WatchBindingController`(임시 수동 배정),
+  `WatchAlertController`(수동 알림·조회, -475), `WatchHub.send`·`isConnected`, `WatchAckReceived`
+- 표: V35 `watch_binding`·`watch_alert`, V39 `watch_alert.origin`·`requested_by_user_id`(-475)
 - 시험: `server/src/test/.../domain/watch/WatchAlertIntegrationTest.java`
 
 ## 흐름
@@ -62,6 +63,35 @@ BOUND 작업자에게 CRITICAL·HIGH·CAUTION), 7.4·11.4-3(LIVE 만), 12.4(`/to
 - 해소 뒤 다시 활성(resume_count 증가)이면 같은 등급이라도 다시 알림
 - CONFIRMED 만 온 알림·해소된 이벤트의 알림은 기한 뒤에도 격상하지 않음
 
+## 수동 알림·조회 API (S15P31A101-475)
+
+알림이 Tier 0 위험 이벤트로만 나가면 사람이 작업자를 직접 부를 길(비상·호출)도, Tier 0 없이 워치 경로를 시연·시험할 길도 없다(사용자 요청
+2026-11-04). 수동 배정과 같은 명세 밖 운영 입구라 계약(contracts/)에는 두지 않고 REST 로만 연다.
+
+- `POST /api/watch-alerts`(ADMIN·FOREMAN) `{"device_id","severity","word","direction"?,"ack_within_ms"?,"needs_check"?}` → 보낸 `watch_alert` 행.
+  등록 안 된 워치 404 `WATCH_NOT_FOUND`, 연결 안 됨 409 `WATCH_NOT_CONNECTED`, 값 오류 400 `INVALID_ALERT`
+- `GET /api/watch-alerts?device_id=&limit=`(열람 이상, 기본 20·최대 200, `sent_at` 내림차순) → 최근 알림과 진동(`acked_at`·`ack_received_at`)·
+  확인(`confirmed_at`·`confirm_received_at`)·격상(`escalated_at`·`escalation_reason`) 시각. 시연·시험에서 "ACK 가 돌아왔나" 를 여기서 본다
+
+| 항목 | 정한 값 | 근거 |
+|---|---|---|
+| 누가 | ADMIN·FOREMAN 이 보내고, 조회는 열람 이상 | 반장 PWA 가 현장에서 작업자를 부를 수 있어야 한다. 이벤트 조회(`EventController`)와 같은 역할 조합. 조회는 STOMP 토픽과 같이 열람 이상(14장) |
+| 배정 | 필요 없다. 배정이 있으면 `world_id` 를 싣는다 | 수동 알림은 사람이 워치를 고른 것이다. Tier 0 없이도 보내야 한다(시험 입구) |
+| 연결 안 된 워치 | 사전 검사에 걸리면 409 `WATCH_NOT_CONNECTED`(행 없음). 보내는 사이 끊기면 행이 SEND_FAILED 로 남아 격상되고 502 `WATCH_SEND_FAILED` | 보낼 수 없는 알림을 대기열에 두지 않는다(워치가 붙었을 때 몰아서 울리지 않게). 두 경우를 코드로 갈라 호출자가 재시도할지(409) 격상을 볼지(502) 정하게 한다 |
+| 표 | 같은 `watch_alert` 에 `origin` MANUAL, `source` NULL, `event_id` 는 그 알림만의 UUIDv7, `event_sequence` 1, `resume_count` 0, `requested_by_user_id` | 계약 `watch_alert.event_id` 가 필수(UUIDv7)라 워치 쪽은 바꾸지 않는다. 복합 FK 는 MATCH SIMPLE 이라 `source` NULL 이면 검사하지 않는다(별도 표를 두면 ACK·격상 경로가 둘이 된다) |
+| 격상 | 이벤트 알림과 같은 NO_ACK·SEND_FAILED, `/topic/watch` `watch_escalation` 1.1.0(`origin`, `world_id` null 가능) | 보낸 사람이 "작업자가 못 느꼈다" 를 알아야 한다. MANUAL 은 이벤트가 없어 해소 여부 조건을 건너뛴다 |
+| 검증 | 등급 CRITICAL·HIGH·CAUTION, 단어는 앞뒤 공백을 지운 뒤 계약 정규식(`^\S(.*\S)?$`, 가운데 공백·줄바꿈 불가)·코드포인트 1~8자, 방향 FRONT·BACK·LEFT·RIGHT, 기한 1000~600000 ms(기본 `simai.watch.ack-within`). 조회 `limit` 은 1~200 으로 끌어온다 | 계약 `watch_alert` 의 범위 그대로(앞뒤 공백만 지워 준다: 사람이 치는 값). 기한 하한 1초: 왕복보다 짧은 기한은 정상 전송도 NO_ACK 로 격상된다 |
+| 격상 창 | 기한이 지난 뒤 10분까지만 격상(`sent_at + ack_within_ms > now − 10분`) | 전에는 `sent_at` 기준 10분이라 기한 10분짜리 수동 알림은 격상 조건과 동시에 성립할 수 없었다(리뷰). EC2 재기동 뒤 지난 알림을 한꺼번에 격상하지 않는 뜻은 그대로 |
+| 계약 1.1.0 | `origin` 선택(없으면 EVENT), `world_id` 는 MANUAL 에서만 null(if/else) | 필드 추가는 마이너. 1.0.0 수신자(아직 없음, -342)는 `origin` 없이 EVENT 로 읽는다 |
+
+시험(`WatchAlertIntegrationTest` 수동 알림 절): 열람 403·토큰 없음 401·반장 200, 워치가 계약 `watch_alert`(방향 포함, `event_sequence` 1)를 받고
+VIBRATED·CONFIRMED 가 조회에 보이며 기한 뒤 격상 없음; 연결 없는 워치 409(행 없음)·없는 워치 404·등급/단어(길이·줄바꿈)/방향/기한(1초 미만) 오류 400;
+ACK 없으면 기한 뒤 `watch_escalation`(origin MANUAL, 배정된 `world_id`, 계약 1.1.0 통과)과 조회의 NO_ACK; 배정 없는 워치의 기한 10분 알림도
+격상되고 `world_id` null 이 계약을 통과하며 기기 없는 조회는 전체를 준다.
+
+리뷰에서 두기로 한 것(-475): 같은 요청 연타에 멱등 키·빈도 제한이 없다(관리자·반장만 부르고 `requested_by_user_id` 로 남는다. 필요하면 후속);
+격상 뒤 도착한 ACK 는 기록만 되고 격상은 철회되지 않는다(이벤트 알림과 같음); 삭제된 사용자의 유효 JWT 는 FK 위반으로 500(토큰 수명 30분 안의 드문 경우).
+
 ## 리뷰에서 두기로 한 것
 
 - `/topic/watch` 를 열람 계정도 구독한다: 명세 14장이 토픽 조회를 열람 이상으로 두고 관리자 전용 토픽을 두지 않는다(-411 에서 지움). 익명 World ID·기기 ID 만 싣는다.
@@ -69,6 +99,8 @@ BOUND 작업자에게 CRITICAL·HIGH·CAUTION), 7.4·11.4-3(LIVE 만), 12.4(`/to
 ## 남은 일
 
 - 실제 워치로 '위험 진입 → 진동 → ACK 기록' 을 끝까지 돌리는 확인(이슈 완료 조건 2): 운영 EC2 에 워치 토큰 등록·배정 뒤 -341 과 함께. 이 이슈는 시험용 클라이언트로만 확인했다.
+  2026-11-04 갤럭시워치6 1대를 운영 EC2(`wss://simai.live/ws/watch`)에 등록해 붙였고(`EC2 연결됨`, 서버 재시작 뒤 자동 재연결), 알림 경로는 -475 의
+  `POST /api/watch-alerts` 로 Tier 0 없이 확인한다.
 - CAUTION 이벤트의 현장 경보 격상: EC2 → Tier 0(또는 노트북) 경보 명령 계약이 필요하다(사용자 결정으로 이번에는 두지 않음).
 - 방향(`direction`): 트랙 `velocity` 로 작업자 기준 방향을 내는 규칙과 속도 임계값.
 - 지연 측정(C.6 '진입 → 진동 p95 1.5초'): `ack_received_at − sent_at` 은 왕복 상한이다. 워치 시계 차이(`gait_features.clock_offset_ms`, -340 저장)로 `acked_at` 을 EC2 시각으로 바꿔 재는 것은 -341.

@@ -4,8 +4,12 @@ import com.ssafy.simai.domain.realtime.RealtimePublisher;
 import com.ssafy.simai.domain.realtime.RealtimeTopics;
 import com.ssafy.simai.domain.tier0.event.RiskEventsDelivered;
 import com.ssafy.simai.domain.tier0.i1.I1Envelope;
+import com.ssafy.simai.global.exception.BusinessException;
+import com.ssafy.simai.global.exception.ErrorCode;
 import java.sql.Array;
+import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -13,12 +17,14 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -48,13 +54,37 @@ import tools.jackson.databind.node.ObjectNode;
  * 해소된 이벤트·10분 넘은 알림은 격상하지 않는다. CONFIRMED 만 와도(VIBRATED 를 잃어도) 받은 것으로 본다. 보내기는 송신 버퍼에 넣으면
  * 끝나 반쯤 끊긴 연결로 보낸 것은 SEND_FAILED 가 아니라 기한 뒤 NO_ACK 로 잡힌다. 해소 뒤 다시 활성(resumed)이면 새로 알린다.
  * 워치 ACK·격상은 운영자 확인(3.2)이 아니고 이벤트 상태를 바꾸지 않는다. CRITICAL·HIGH 의 현장 경보는 Tier 0·노트북이 이미 울린다.
+ * <p>
+ * 수동 알림(S15P31A101-475, 명세 밖 운영 입구): 관리자·반장이 POST /api/watch-alerts 로 워치 하나에 등급·한 단어(·방향)를 직접 보낸다(비상 호출,
+ * 시연·시험). 위험 이벤트가 없으므로 origin MANUAL 로 같은 표에 남기고(event_id 는 그 알림만의 UUIDv7, world_id 는 배정이 있으면 그 값),
+ * ACK 기록·기한 초과 NO_ACK 격상은 이벤트 알림과 같은 경로를 탄다. 연결되지 않은 워치에는 보내지 않는다(409).
  */
 @Service
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class WatchAlertService implements AutoCloseable {
 
     static final String ALERT_VERSION = "1.0.0";
-    static final String ESCALATION_VERSION = "1.0.0";
+    static final String ESCALATION_VERSION = "1.1.0";
+
+    /** 수동 알림 요청(컨트롤러가 JSON 을 옮긴 값. 검증은 sendManual 이 한다) */
+    public record ManualRequest(String deviceId, String severity, String word, String direction, Integer ackWithinMs, Boolean needsCheck) {
+    }
+
+    /** watch_alert 한 행(조회 API·수동 발송 응답). 시각은 EC2 시계, acked_at·confirmed_at 만 워치 시계 */
+    public record AlertRow(long alertId, UUID alertMsgId, String origin, UUID eventId, int eventSequence, String deviceId, String worldId,
+            String severity, String vibrationPattern, String direction, String word, boolean needsCheck, int ackWithinMs, Instant sentAt,
+            Instant ackedAt, Instant ackReceivedAt, Instant confirmedAt, Instant confirmReceivedAt, Instant escalatedAt,
+            String escalationReason, Long requestedByUserId) {
+    }
+
+    private static final Set<String> DIRECTIONS = Set.of("FRONT", "BACK", "LEFT", "RIGHT");
+    /** 계약 watch_alert.word: 앞뒤 공백 없이(가운데 공백·줄바꿈도 없이) 1~8자(코드포인트) */
+    private static final Pattern WORD = Pattern.compile("^\\S(.*\\S)?$");
+    private static final int MAX_WORD_LENGTH = 8;
+    /** 수동 알림 확인 기한. 계약 하한은 1 ms 지만 왕복보다 짧은 기한은 정상 전송도 격상되므로 1초부터 받는다 */
+    private static final int MIN_ACK_WITHIN_MS = 1_000;
+    private static final int MAX_ACK_WITHIN_MS = 600_000;
+    private static final int MAX_LIST = 200;
 
     private static final Logger log = LoggerFactory.getLogger(WatchAlertService.class);
 
@@ -70,13 +100,21 @@ public class WatchAlertService implements AutoCloseable {
     private static final String RANK_SQL = "CASE %s WHEN 'CAUTION' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'CRITICAL' THEN 3 ELSE 0 END";
 
     private static final String ESCALATED_COLUMNS = """
-            RETURNING event_id, event_sequence, alert_msg_id, device_id, world_id, severity, sent_at, escalated_at, escalation_reason""";
+            RETURNING origin, event_id, event_sequence, alert_msg_id, device_id, world_id, severity, sent_at, escalated_at, escalation_reason""";
+
+    private static final String ROW_COLUMNS = """
+            alert_id, alert_msg_id, origin, event_id, event_sequence, device_id, world_id, severity, vibration_pattern, direction, word,
+            needs_check, ack_within_ms, sent_at, acked_at, ack_received_at, confirmed_at, confirm_received_at, escalated_at,
+            escalation_reason, requested_by_user_id""";
 
     private record LiveEvent(UUID eventId, int sequence, int resumeCount, String severity, boolean needsCheck, String ruleId,
             List<String> worldIds) {
     }
 
-    /** 이만큼 오래된 대기 알림은 격상하지 않는다(EC2 가 오래 내려갔다 뜰 때 지난 위험을 한꺼번에 알리지 않게, 알림 대기열 max-age 와 같은 10분) */
+    /**
+     * 기한이 지난 뒤 이만큼 더 지난 대기 알림은 격상하지 않는다(EC2 가 오래 내려갔다 뜰 때 지난 위험을 한꺼번에 알리지 않게, 알림 대기열 max-age 와
+     * 같은 10분). 기한(ack_within_ms) 뒤부터 세므로 기한이 긴 수동 알림(최대 10분)도 격상된다
+     */
     private static final String ESCALATION_MAX_AGE = "10 minutes";
 
     private final NamedParameterJdbcTemplate jdbc;
@@ -146,9 +184,9 @@ public class WatchAlertService implements AutoCloseable {
         String word = WORDS.getOrDefault(event.ruleId(), "위험");
         // 같은 이벤트·워치에 같거나 높은 등급을 이미 보냈으면 넣지 않는다(재발행·요약 갱신·ACK 로 다시 와도 진동은 한 번, 등급이 오르면 다시)
         List<Long> inserted = jdbc.queryForList("""
-                INSERT INTO watch_alert (alert_msg_id, event_id, source, event_sequence, resume_count, device_id, world_id, severity,
+                INSERT INTO watch_alert (origin, alert_msg_id, event_id, source, event_sequence, resume_count, device_id, world_id, severity,
                     vibration_pattern, word, needs_check, ack_within_ms, sent_at)
-                SELECT :msgId, :eventId, 'LIVE', :sequence, :resumeCount, :device, :world, :severity, :pattern, :word, :needsCheck,
+                SELECT 'EVENT', :msgId, :eventId, 'LIVE', :sequence, :resumeCount, :device, :world, :severity, :pattern, :word, :needsCheck,
                     :ackWithin, :now
                 WHERE NOT EXISTS (SELECT 1 FROM watch_alert WHERE event_id = :eventId AND resume_count = :resumeCount
                                   AND device_id = :device AND escalation_reason IS DISTINCT FROM 'SEND_FAILED'
@@ -164,24 +202,114 @@ public class WatchAlertService implements AutoCloseable {
         if (inserted.isEmpty()) {
             return;
         }
-        ObjectNode payload = mapper.createObjectNode();
-        payload.put("event_id", event.eventId().toString());
-        payload.put("event_sequence", event.sequence());
-        payload.put("severity", event.severity());
-        payload.put("vibration_pattern", PATTERNS.get(event.severity()));
-        payload.put("word", word);
-        payload.put("ack_within_ms", ackWithinMs);
-        payload.put("needs_check", event.needsCheck());
-        ObjectNode message = I1Envelope.outbound(mapper, now.toEpochMilli(), "watch_alert", ALERT_VERSION, payload);
-        message.put("msg_id", msgId.toString()); // 알림 ID = 봉투 msg_id(watch_ack.alert_msg_id 로 돌아온다)
+        ObjectNode message = alertMessage(msgId, now, event.eventId(), event.sequence(), event.severity(), word, null, ackWithinMs,
+                event.needsCheck());
         if (hub.send(deviceId, message)) {
             log.info("워치 알림 보냄: event={} device={} severity={}", event.eventId(), deviceId, event.severity());
         } else {
-            escalate("""
-                    UPDATE watch_alert SET escalated_at = :now, escalation_reason = 'SEND_FAILED'
-                    WHERE alert_id = :id AND escalated_at IS NULL AND ack_received_at IS NULL AND confirm_received_at IS NULL
-                    """ + ESCALATED_COLUMNS, new MapSqlParameterSource("id", inserted.getFirst()));
+            sendFailed(inserted.getFirst());
         }
+    }
+
+    /**
+     * 관리자·반장이 워치 하나에 직접 보내는 알림(POST /api/watch-alerts, S15P31A101-475). 요청 스레드에서 바로 보내고 결과 행을 돌려준다.
+     * 등록된 워치가 아니면 WATCH_NOT_FOUND, 연결돼 있지 않거나 보내지 못하면 WATCH_NOT_CONNECTED(보내지 못한 행은 SEND_FAILED 로 남아 격상된다).
+     */
+    public AlertRow sendManual(ManualRequest request, long userId) {
+        String severity = request.severity();
+        String word = request.word() == null ? null : request.word().strip();
+        String direction = request.direction();
+        int ackWithinMs = request.ackWithinMs() == null ? (int) properties.ackWithin().toMillis() : request.ackWithinMs();
+        boolean needsCheck = Boolean.TRUE.equals(request.needsCheck());
+        if (severity == null || !PATTERNS.containsKey(severity) || word == null || !WORD.matcher(word).matches()
+                || word.codePointCount(0, word.length()) > MAX_WORD_LENGTH || (direction != null && !DIRECTIONS.contains(direction))
+                || ackWithinMs < MIN_ACK_WITHIN_MS || ackWithinMs > MAX_ACK_WITHIN_MS) {
+            throw new BusinessException(ErrorCode.Watch.INVALID_ALERT);
+        }
+        String deviceId = request.deviceId();
+        Integer watches = deviceId == null ? null : jdbc.queryForObject("""
+                SELECT count(*) FROM device WHERE device_id = :id AND kind = 'WATCH' AND revoked_at IS NULL
+                """, new MapSqlParameterSource("id", deviceId), Integer.class);
+        if (watches == null || watches == 0) {
+            throw new BusinessException(ErrorCode.Watch.WATCH_NOT_FOUND);
+        }
+        if (!hub.isConnected(deviceId)) {
+            throw new BusinessException(ErrorCode.Watch.WATCH_NOT_CONNECTED);
+        }
+        // 배정이 있으면 격상 메시지에 익명 World ID 를 싣는다(없어도 보낸다: 수동 알림은 사람이 워치를 고른 것이다)
+        String worldId = jdbc.queryForList("""
+                SELECT world_id FROM watch_binding WHERE device_id = :device AND unbound_at IS NULL
+                """, new MapSqlParameterSource("device", deviceId), String.class).stream().findFirst().orElse(null);
+        UUID msgId = UUID.randomUUID();
+        UUID eventId = uuid7(); // 이벤트가 없다: 계약 watch_alert.event_id(UUIDv7 필수)를 이 알림만의 ID 로 채운다
+        Instant now = clock.instant();
+        Long alertId = jdbc.queryForObject("""
+                INSERT INTO watch_alert (origin, alert_msg_id, event_id, source, event_sequence, resume_count, device_id, world_id, severity,
+                    vibration_pattern, direction, word, needs_check, ack_within_ms, sent_at, requested_by_user_id)
+                VALUES ('MANUAL', :msgId, :eventId, NULL, 1, 0, :device, :world, :severity, :pattern, :direction, :word, :needsCheck,
+                    :ackWithin, :now, :user)
+                RETURNING alert_id
+                """, new MapSqlParameterSource().addValue("msgId", msgId).addValue("eventId", eventId).addValue("device", deviceId)
+                        .addValue("world", worldId).addValue("severity", severity).addValue("pattern", PATTERNS.get(severity))
+                        .addValue("direction", direction).addValue("word", word).addValue("needsCheck", needsCheck)
+                        .addValue("ackWithin", ackWithinMs).addValue("now", utc(now)).addValue("user", userId), Long.class);
+        long id = alertId == null ? -1 : alertId;
+        ObjectNode message = alertMessage(msgId, now, eventId, 1, severity, word, direction, ackWithinMs, needsCheck);
+        if (hub.send(deviceId, message)) {
+            log.info("수동 워치 알림 보냄: device={} severity={} user={}", deviceId, severity, userId);
+        } else {
+            sendFailed(id); // 그 사이 끊겼다. 행은 SEND_FAILED 로 남아 관리자 화면에 격상된다(사전 검사의 409 와 구분해 재시도 판단을 맡긴다)
+            throw new BusinessException(ErrorCode.Watch.WATCH_SEND_FAILED);
+        }
+        return jdbc.query("SELECT " + ROW_COLUMNS + " FROM watch_alert WHERE alert_id = :id", new MapSqlParameterSource("id", id), row())
+                .getFirst();
+    }
+
+    /** 최근 알림(sent_at 내림차순). deviceId 가 null 이면 모든 워치. limit 은 1~200 으로 끌어온다(밖의 값은 거부하지 않는다) */
+    public List<AlertRow> list(String deviceId, int limit) {
+        int n = Math.max(1, Math.min(MAX_LIST, limit));
+        MapSqlParameterSource params = new MapSqlParameterSource().addValue("limit", n);
+        // 워치별 조회는 (device_id, sent_at) 색인을 타게 조건을 따로 둔다(OR 로 합치면 generic plan 에서 색인을 못 쓴다)
+        String where = deviceId == null ? "" : " WHERE device_id = :device";
+        if (deviceId != null) {
+            params.addValue("device", deviceId);
+        }
+        return jdbc.query("SELECT " + ROW_COLUMNS + " FROM watch_alert" + where + " ORDER BY sent_at DESC, alert_id DESC LIMIT :limit",
+                params, row());
+    }
+
+    /** 워치에 보내는 watch_alert 봉투. 알림 ID = 봉투 msg_id(watch_ack.alert_msg_id 로 돌아온다). direction 은 있을 때만 싣는다 */
+    private ObjectNode alertMessage(UUID msgId, Instant now, UUID eventId, int sequence, String severity, String word, String direction,
+            int ackWithinMs, boolean needsCheck) {
+        ObjectNode payload = mapper.createObjectNode();
+        payload.put("event_id", eventId.toString());
+        payload.put("event_sequence", sequence);
+        payload.put("severity", severity);
+        payload.put("vibration_pattern", PATTERNS.get(severity));
+        if (direction != null) {
+            payload.put("direction", direction);
+        }
+        payload.put("word", word);
+        payload.put("ack_within_ms", ackWithinMs);
+        payload.put("needs_check", needsCheck);
+        ObjectNode message = I1Envelope.outbound(mapper, now.toEpochMilli(), "watch_alert", ALERT_VERSION, payload);
+        message.put("msg_id", msgId.toString());
+        return message;
+    }
+
+    private void sendFailed(long alertId) {
+        escalate("""
+                UPDATE watch_alert SET escalated_at = :now, escalation_reason = 'SEND_FAILED'
+                WHERE alert_id = :id AND escalated_at IS NULL AND ack_received_at IS NULL AND confirm_received_at IS NULL
+                """ + ESCALATED_COLUMNS, new MapSqlParameterSource("id", alertId));
+    }
+
+    /** 계약 event_id 는 UUIDv7(시각 48비트 + 판 7 + 무작위). 수동 알림의 이벤트 ID 로만 쓴다 */
+    static UUID uuid7() {
+        UUID random = UUID.randomUUID();
+        long high = (System.currentTimeMillis() << 16) | 0x7000L | (random.getMostSignificantBits() & 0x0FFFL);
+        long low = (random.getLeastSignificantBits() & 0x3FFFFFFFFFFFFFFFL) | 0x8000000000000000L;
+        return new UUID(high, low);
     }
 
     /** watch_ack 를 받은 WebSocket 스레드를 DB 가 붙잡지 않게 보내기 스레드로 넘긴다(느린 DB 가 그 워치의 하트비트 처리를 밀지 않게) */
@@ -225,13 +353,13 @@ public class WatchAlertService implements AutoCloseable {
         try {
             escalate("""
                     UPDATE watch_alert w SET escalated_at = :now, escalation_reason = 'NO_ACK'
-                    FROM risk_event r
-                    WHERE r.event_id = w.event_id AND r.source = w.source AND r.lifecycle <> 'RESOLVED'
-                      AND w.ack_received_at IS NULL AND w.confirm_received_at IS NULL AND w.escalated_at IS NULL
+                    WHERE w.ack_received_at IS NULL AND w.confirm_received_at IS NULL AND w.escalated_at IS NULL
                       AND w.sent_at + w.ack_within_ms * interval '1 millisecond' <= :now
-                      AND w.sent_at > CAST(:now AS timestamptz) - interval '%s'
+                      AND w.sent_at + w.ack_within_ms * interval '1 millisecond' > CAST(:now AS timestamptz) - interval '%s'
+                      AND (w.origin = 'MANUAL' OR EXISTS (SELECT 1 FROM risk_event r
+                                                          WHERE r.event_id = w.event_id AND r.source = w.source AND r.lifecycle <> 'RESOLVED'))
                     """.formatted(ESCALATION_MAX_AGE) + """
-                    RETURNING w.event_id, w.event_sequence, w.alert_msg_id, w.device_id, w.world_id, w.severity, w.sent_at,
+                    RETURNING w.origin, w.event_id, w.event_sequence, w.alert_msg_id, w.device_id, w.world_id, w.severity, w.sent_at,
                         w.escalated_at, w.escalation_reason""", new MapSqlParameterSource());
         } catch (RuntimeException e) {
             log.warn("워치 알림 격상 판정 실패", e);
@@ -243,11 +371,12 @@ public class WatchAlertService implements AutoCloseable {
         params.addValue("now", utc(clock.instant()));
         List<ObjectNode> escalated = jdbc.query(sql, params, (rs, i) -> {
             ObjectNode payload = mapper.createObjectNode();
+            payload.put("origin", rs.getString("origin"));
             payload.put("event_id", rs.getObject("event_id", UUID.class).toString());
             payload.put("event_sequence", rs.getInt("event_sequence"));
             payload.put("alert_msg_id", rs.getObject("alert_msg_id", UUID.class).toString());
             payload.put("device_id", rs.getString("device_id"));
-            payload.put("world_id", rs.getString("world_id"));
+            payload.put("world_id", rs.getString("world_id")); // MANUAL 은 배정이 없으면 null(계약 1.1.0)
             payload.put("severity", rs.getString("severity"));
             payload.put("reason", rs.getString("escalation_reason"));
             payload.put("sent_at", rs.getTimestamp("sent_at").toInstant().toEpochMilli());
@@ -273,6 +402,20 @@ public class WatchAlertService implements AutoCloseable {
             return new LiveEvent(rs.getObject("event_id", UUID.class), rs.getInt("event_sequence"), rs.getInt("resume_count"),
                     rs.getString("severity"), rs.getBoolean("needs_check"), rs.getString("rule_id"), worldIds);
         };
+    }
+
+    private static RowMapper<AlertRow> row() {
+        return (rs, i) -> new AlertRow(rs.getLong("alert_id"), rs.getObject("alert_msg_id", UUID.class), rs.getString("origin"),
+                rs.getObject("event_id", UUID.class), rs.getInt("event_sequence"), rs.getString("device_id"), rs.getString("world_id"),
+                rs.getString("severity"), rs.getString("vibration_pattern"), rs.getString("direction"), rs.getString("word"),
+                rs.getBoolean("needs_check"), rs.getInt("ack_within_ms"), instant(rs, "sent_at"), instant(rs, "acked_at"),
+                instant(rs, "ack_received_at"), instant(rs, "confirmed_at"), instant(rs, "confirm_received_at"),
+                instant(rs, "escalated_at"), rs.getString("escalation_reason"), rs.getObject("requested_by_user_id", Long.class));
+    }
+
+    private static Instant instant(ResultSet rs, String column) throws SQLException {
+        Timestamp ts = rs.getTimestamp(column);
+        return ts == null ? null : ts.toInstant();
     }
 
     private static OffsetDateTime utc(Instant instant) {
