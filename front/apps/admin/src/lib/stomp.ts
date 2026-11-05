@@ -9,7 +9,11 @@ import {
   type RealtimeState,
   type RealtimeStore,
 } from '@/store/realtime.store';
-import { validateMessage, type RiskEventPayload } from '@simai/contracts';
+import {
+  validateMessage,
+  type RiskEventPayload,
+  type WatchEscalationPayload,
+} from '@simai/contracts';
 import { Client, ReconnectionTimeMode, type IMessage } from '@stomp/stompjs';
 
 /** 토픽 이름(명세 12.4, 14장). mock 도 같은 값을 쓴다. */
@@ -17,8 +21,12 @@ export const WORLD_TOPIC = '/topic/world';
 export const HEALTH_TOPIC = '/topic/health';
 export const EVENTS_TOPIC = '/topic/events';
 export const AVATAR_TOPIC = '/topic/avatar';
+/** 워치 진동 알림 격상(watch_escalation, 확장 부록 C.6, S15P31A101-338·-342). 3D 뷰어 입력이 아니다. */
+export const WATCH_TOPIC = '/topic/watch';
 /** 로그인한 계정이면 누구나 구독하는 토픽. */
-export const TOPICS = [WORLD_TOPIC, HEALTH_TOPIC, EVENTS_TOPIC, AVATAR_TOPIC] as const;
+export const TOPICS = [WORLD_TOPIC, HEALTH_TOPIC, EVENTS_TOPIC, AVATAR_TOPIC, WATCH_TOPIC] as const;
+/** 3D 뷰어(Source)에 넘기지 않는 토픽. 뷰어 계약 입력(world_state·risk_event·viewer_health·avatar_frame)이 아니다. */
+const APP_ONLY_TOPICS: ReadonlySet<string> = new Set([WATCH_TOPIC]);
 
 /** 연결에서 화면 쪽으로 알리는 일. 화면 데이터(Query 캐시 등)는 받는 쪽이 정한다. */
 export interface RealtimeListeners {
@@ -26,6 +34,8 @@ export interface RealtimeListeners {
   riskEvent: (event: RiskEventPayload, receivedAt: number) => void;
   /** 연결이 열릴 때마다(처음·재연결). 끊긴 사이 놓친 상태를 다시 받는 데 쓴다. */
   open: () => void;
+  /** /topic/watch 로 받아 계약 검사를 통과한 watch_escalation(진동 뒤 확인 없음·보내지 못함). */
+  watchEscalation: (escalation: WatchEscalationPayload, receivedAt: number) => void;
 }
 
 /** STOMP 하트비트 주기(ms). 들어오는 쪽·나가는 쪽이 같다. */
@@ -192,6 +202,7 @@ function createListenerRegistry() {
   const listeners: { [K in keyof RealtimeListeners]: Set<RealtimeListeners[K]> } = {
     riskEvent: new Set(),
     open: new Set(),
+    watchEscalation: new Set(),
   };
 
   function on<K extends keyof RealtimeListeners>(type: K, listener: RealtimeListeners[K]) {
@@ -249,6 +260,15 @@ const TOPIC_HANDLERS = new Map<string, TopicHandler>([
       if (!event.ok) return store.getState().reject();
       rememberEvent(replay.events, event.message.payload, received);
       emit('riskEvent', event.message.payload, received.receivedAt);
+    },
+  ],
+  [
+    WATCH_TOPIC,
+    (received, { store, emit }) => {
+      // 격상은 그때 한 번 알리는 것이다. 재연결 때 다시 보내지 않는다(놓친 격상은 서버 기록에 남는다).
+      const escalation = validateMessage('watch_escalation', received.raw);
+      if (!escalation.ok) return store.getState().reject();
+      emit('watchEscalation', escalation.message.payload, received.receivedAt);
     },
   ],
   [
@@ -460,7 +480,7 @@ export function createRealtime({
         // 3D 뷰어는 받은 본문을 직접 계약으로 검사하고 순서를 정리한다(viewer3d 의 Source 입력).
         // 앱 처리 뒤에 넘기고 실패를 가둔다. 3D 가 고장 나도 2D 평면·경보는 계속 받는다.
         const { source } = connection;
-        if (source) safely(() => source.push(raw, receivedAt));
+        if (source && !APP_ONLY_TOPICS.has(topic)) safely(() => source.push(raw, receivedAt));
       }
     };
 

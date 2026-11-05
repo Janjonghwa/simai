@@ -115,6 +115,7 @@ export function ViewerShell({
   children,
   dataStore,
   personModelUrl = null,
+  personBadges,
   avatarMesh = 'auto',
   avatarMeshFetch = fetchAvatarMesh,
   zoneApplyState = 'UNVERIFIED',
@@ -135,6 +136,7 @@ export function ViewerShell({
     const created = createViewerStore(initialMode);
     // 첫 장면부터 레이어 값을 따른다(기본값으로 한 번 그렸다가 숨기지 않게).
     created.getState().setLayers(layers);
+    created.getState().setPersonBadges(personBadges);
     created.getState().setTopView(topView);
     return created;
   });
@@ -244,6 +246,10 @@ export function ViewerShell({
   useEffect(() => {
     store.getState().setLayers(layers);
   }, [store, layers]);
+
+  useEffect(() => {
+    store.getState().setPersonBadges(personBadges);
+  }, [store, personBadges]);
 
   useEffect(() => {
     planned.getState().setInput(plannedLayout);

@@ -19,6 +19,16 @@ import type {
 } from '@/features/viewer3d/types';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 
+const NO_BADGES: Readonly<Record<string, string>> = Object.freeze({});
+
+function sameBadges(
+  a: Readonly<Record<string, string>>,
+  b: Readonly<Record<string, string>>,
+): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
+}
+
 export interface FocusRequest {
   target: ViewerTarget;
 }
@@ -50,6 +60,8 @@ export interface ViewerState {
   topView: boolean;
   /** 레이어별 표시·피킹(-234). 기본값은 모두 interactive(기존 동작). */
   layers: ResolvedLayers;
+  /** 사람 이름표 뒤에 붙일 글(World ID → 글, -342). */
+  personBadges: Readonly<Record<string, string>>;
   /** 기다리는 선택 요청(-234). 하나뿐이다. */
   pendingSelect: PendingSelect | null;
   /** 기다리는 선택의 마지막 진행. 바뀔 때마다 새 객체라 구독자가 알린다. */
@@ -65,6 +77,8 @@ export interface ViewerState {
   focusOn(input: unknown): CommandResult;
   setMode(input: unknown): CommandResult;
   setLayers(input: unknown): void;
+  /** 내용이 같으면 바꾸지 않는다. 비우면 모두 지운다. */
+  setPersonBadges(input: Readonly<Record<string, string>> | undefined): void;
   markReady(): void;
   markError(error: ViewerError): void;
   /** 뷰어가 내려갈 때 기다리던 선택을 UNMOUNTED 로 끝내고 타이머를 푼다. */
@@ -150,6 +164,7 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       activated: null,
       targets: new Map(),
       layers: DEFAULT_LAYERS,
+      personBadges: NO_BADGES,
       pendingSelect: null,
       selectRequest: null,
       theme: 'dark',
@@ -259,6 +274,11 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       setLayers: (input) => {
         const layers = resolveLayers(input);
         if (!sameLayers(layers, get().layers)) set({ layers });
+      },
+
+      setPersonBadges: (input) => {
+        const next = input ?? NO_BADGES;
+        if (!sameBadges(next, get().personBadges)) set({ personBadges: next });
       },
 
       markReady: () => {

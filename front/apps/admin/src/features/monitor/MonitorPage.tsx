@@ -1,5 +1,6 @@
 import { MonitorStandby } from '@/features/monitor/MonitorStandby';
 import { useZoneEditActive } from '@/features/monitor/useZoneEditActive';
+import { WatchPanel } from '@/features/watch/WatchPanel';
 import { ZonesPage } from '@/features/zones/ZonesPage';
 import { stopZoneEdit } from '@/store/zoneEditMode.store';
 import { useEffect } from 'react';
@@ -17,6 +18,7 @@ export function MonitorPage() {
       <h1 className="sr-only">실시간 관제</h1>
       {editing && <ZonesPage />}
       {!editing && <MonitorStandby />}
+      {!editing && <WatchPanel />}
     </>
   );
 }

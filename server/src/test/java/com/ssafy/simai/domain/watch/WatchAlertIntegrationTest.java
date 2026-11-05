@@ -144,6 +144,10 @@ class WatchAlertIntegrationTest {
     @Test
     void 배정_API_는_관리자만_쓰고_1대1로_잇는다() throws Exception {
         assertThat(put(watchId, worldId, jwt("VIEWER")).statusCode()).isEqualTo(403);
+        // 조회는 열람 이상(-342 관제 화면 이름표)
+        assertThat(send(HttpRequest.newBuilder(api("")).header(HttpHeaders.AUTHORIZATION, "Bearer " + jwt("VIEWER")).GET())
+                .statusCode()).isEqualTo(200);
+        assertThat(send(HttpRequest.newBuilder(api("")).GET()).statusCode()).isEqualTo(401);
         assertThat(put(watchId, worldId, null).statusCode()).isEqualTo(401);
 
         HttpResponse<String> bound = put(watchId, worldId, jwt("ADMIN"));

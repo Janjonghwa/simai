@@ -164,10 +164,13 @@ function PersonAvatar({
   envMap: Texture;
 }) {
   const store = useSpatialDataStore();
+  const viewerStore = useViewerStore();
   const selected = useStore(
-    useViewerStore(),
+    viewerStore,
     (s) => s.selected?.type === 'person' && s.selected.id === worldId,
   );
+  // 호스트가 붙인 글(-342 워치 채널 상태). 있으면 이름표를 늘 보인다.
+  const badge = useStore(viewerStore, (s) => s.personBadges[worldId] ?? null);
   // 관측 상태·위치 근거·연결이 바뀔 때만 다시 그린다.
   useSpatialData((s) => statusKey(s, worldId));
   // 위험 강조는 이벤트가 바뀔 때만 달라진다. 위치·동작 기록(motion)은 그대로 둔다.
@@ -396,7 +399,7 @@ function PersonAvatar({
           )}
           {/* 이름표는 사람 ID 만 늘 보인다. 위험이면 글자 색만 위험 색이고, 예측·확인 불가는 몸 색·투명도로 보인다. */}
           <LabelSprite
-            text={track.worldId}
+            text={badge ? `${track.worldId} · ${badge}` : track.worldId}
             y={pose.kind === 'BODY' ? LABEL_Y : COLUMN_TOP + 0.2}
             height={0.24}
             color={risk ? riskStyle(risk, palette).labelColor : palette.label[tone]}

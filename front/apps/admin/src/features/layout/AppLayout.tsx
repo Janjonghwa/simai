@@ -9,6 +9,7 @@ import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
 import { TopBar } from '@/features/layout/TopBar';
 import { useHealthSnapshot } from '@/features/layout/useHealthSnapshot';
 import { WorkSessionBar } from '@/features/monitor/WorkSessionBar';
+import { WatchEscalationNotice } from '@/features/watch/WatchEscalationNotice';
 import { cn } from '@simai/ui/lib/utils';
 import { Outlet, useMatches } from '@tanstack/react-router';
 import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
@@ -72,6 +73,7 @@ function Notices({
       <ReSetupBanner />
       <AlarmBanner withPanel={eventPanel} />
       {eventPanel && <WorkSessionBar />}
+      <WatchEscalationNotice />
     </div>
   );
 }
