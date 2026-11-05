@@ -91,6 +91,26 @@ describe('카메라 각도 표시', () => {
       response: {
         ...fresh,
         latest: buildCoverageGuidePayload({
+          connectivity: 'DISCONNECTED',
+          guides: [
+            {
+              camera_id: 'cam1',
+              pair: ['cam1', 'cam2'],
+              direction: 'RIGHT',
+              magnitude: 'SMALL',
+              reason_code: 'WEAK_PAIR_EDGE_CLUSTER',
+            },
+          ],
+        }),
+      },
+      error: false,
+      expected: 'cam1 카메라를 오른쪽으로 조금 돌려 주세요 (cam1–cam2)',
+    },
+    {
+      label: 'CONNECTED + 선택 보강만',
+      response: {
+        ...fresh,
+        latest: buildCoverageGuidePayload({
           guides: [
             {
               camera_id: 'cam1',
@@ -103,7 +123,7 @@ describe('카메라 각도 표시', () => {
         }),
       },
       error: false,
-      expected: 'cam1 카메라를 오른쪽으로 조금 돌려 주세요 (cam1–cam2)',
+      expected: '각도 양호',
     },
   ])('$label', ({ response, error, expected }) => {
     render(<CameraPanel coverage={deriveStep1Coverage(response, error)} />);

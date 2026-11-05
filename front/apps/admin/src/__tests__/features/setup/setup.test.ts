@@ -67,6 +67,49 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
     expect(view.cameras.every((c) => c.statusLabel === '정상')).toBe(true);
   });
 
+  it('CONNECTED 의 선택 보강(OPTIONAL_IMPROVE)은 돌리라는 지시로 보이지 않는다', () => {
+    const optional = (camera_id: string, pair: [string, string]) => ({
+      camera_id,
+      pair,
+      direction: 'UP' as const,
+      magnitude: 'MORE' as const,
+      reason_code: 'OPTIONAL_IMPROVE' as const,
+    });
+    const latest = buildCoverageGuidePayload({
+      connectivity: 'CONNECTED',
+      guides: [
+        optional('cam1', ['cam1', 'cam3']),
+        optional('cam3', ['cam1', 'cam3']),
+        optional('cam2', ['cam2', 'cam4']),
+      ],
+    });
+    const view = deriveStep1Coverage(
+      {
+        calibration_version: 'cal-8',
+        guides: latest.guides,
+        site_id: 'lobby',
+        status: 'OK',
+        stale: false,
+        received_at_ms: 1_793_690_000_100,
+        age_ms: 100,
+        latest,
+      },
+      false,
+    );
+
+    expect(view.canProceedCleanly).toBe(true);
+    expect(view.directionLine).toBe(
+      '4대 카메라 시야가 하나로 연결되었습니다 · 그대로 진행하세요 (겹침이 약한 쌍 cam1–cam3, cam2–cam4 은 돌리지 않아도 됩니다)',
+    );
+    expect(view.cameras.map((c) => c.guideText)).toEqual([null, null, null, null]);
+    expect(view.cameras.map((c) => c.angleLabel)).toEqual([
+      '각도 양호',
+      '각도 양호',
+      '각도 양호',
+      '각도 양호',
+    ]);
+  });
+
   it('DISCONNECTED 와 한 줄 방향 안내 문구를 만들고 그대로 진행 버튼을 낸다', () => {
     const latest = buildCoverageGuidePayload({
       connectivity: 'DISCONNECTED',

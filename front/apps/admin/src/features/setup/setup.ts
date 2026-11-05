@@ -202,8 +202,19 @@ export function deriveStep1Coverage(
     latest !== null &&
     latest.connectivity !== 'UNKNOWN';
 
+  // OPTIONAL_IMPROVE 는 이미 4대가 연결된 뒤의 선택 보강이다(계약 coverage_guide). 지시로 보이면
+  // "정상"인데 "돌려 주세요"가 같이 뜨고, 약한 쌍 점수가 기준선 근처라 결과마다 바뀌어 헷갈린다.
+  const requiredGuides = (latest?.guides ?? []).filter((g) => g.reason_code !== 'OPTIONAL_IMPROVE');
+  const optionalPairs = [
+    ...new Set(
+      (latest?.guides ?? [])
+        .filter((g) => g.reason_code === 'OPTIONAL_IMPROVE')
+        .map((g) => `${g.pair[0]}–${g.pair[1]}`),
+    ),
+  ];
+
   const guideByCam = new Map<string, string>();
-  for (const g of latest?.guides ?? []) {
+  for (const g of requiredGuides) {
     if (!guideByCam.has(g.camera_id)) {
       guideByCam.set(g.camera_id, formatGuideItem(g));
     }
@@ -264,14 +275,17 @@ export function deriveStep1Coverage(
   });
 
   let directionLine: string;
-  if (latest && latest.guides.length > 0) {
-    directionLine = latest.guides.map(formatGuideItem).join(' · ');
+  if (latest && requiredGuides.length > 0) {
+    directionLine = requiredGuides.map(formatGuideItem).join(' · ');
   } else if (fetchError) {
     directionLine = '카메라 각도 안내 계산 실패 · 각도를 직접 확인하거나 그대로 진행할 수 있습니다';
   } else if (empty) {
     directionLine = '카메라 각도 안내 대기 중 · 그대로 진행할 수 있습니다';
   } else if (connectivity === 'CONNECTED') {
-    directionLine = '4대 카메라 시야가 하나로 연결되었습니다';
+    directionLine =
+      optionalPairs.length > 0
+        ? `4대 카메라 시야가 하나로 연결되었습니다 · 그대로 진행하세요 (겹침이 약한 쌍 ${optionalPairs.join(', ')} 은 돌리지 않아도 됩니다)`
+        : '4대 카메라 시야가 하나로 연결되었습니다';
   } else if (connectivity === 'DISCONNECTED') {
     directionLine =
       '겹치는 시야가 부족한 카메라 쌍이 있습니다 · 각도를 조정하거나 그대로 진행하세요';
