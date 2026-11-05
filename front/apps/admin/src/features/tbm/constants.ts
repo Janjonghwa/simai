@@ -18,9 +18,6 @@ export const PREVIEW_SCALE_INITIAL = 0.5;
 /** 보이는 영역이 없어도 0 이 되지 않게 하는 최소 축소율. */
 export const PREVIEW_SCALE_MIN = 0.01;
 
-/** 작업을 고르면 회의록을 받는 동안(흉내) 빈 양식을 흐리게 보이는 시간(ms). */
-export const RECEIVE_MS = 700;
-
 /** 잠재위험요인 · 대책 · 안전조치 확인 줄 수(① ~ ③). */
 export const FORM_ROWS = 3;
 /** 참석자 서명 줄 하나에 놓는 사람 수. */

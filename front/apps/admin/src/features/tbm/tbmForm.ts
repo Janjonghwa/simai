@@ -93,10 +93,12 @@ function fillHeader(form: TbmForm, task: TbmTask, report?: TbmReport | null) {
     date: `${dateLabel} ${from} ~ ${to}`,
     same: true,
     name,
-    content: `${place} · ${people}명 · 반장 ${lead} · ${task.gear} · 배치 ${items || '없음'}`,
+    content: [place, `${people}명`, lead && `반장 ${lead}`, task.gear, `배치 ${items || '없음'}`]
+      .filter(Boolean)
+      .join(' · '),
     place,
     riskDone,
-    leadOrg: `반장 ${lead}`,
+    leadOrg: lead ? `반장 ${lead}` : '',
     leadRole: '반장',
   });
 }

@@ -1141,7 +1141,8 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
         zone_id: typeof body.zone_id === 'string' ? body.zone_id : null,
         place: typeof body.place === 'string' ? body.place : null,
         planned_people: typeof body.planned_people === 'number' ? body.planned_people : 1,
-        lead: typeof body.lead === 'string' ? body.lead : 'A조',
+        // 서버처럼 조 이름을 받지 않으면 비워 둔다(지어내지 않는다).
+        lead: typeof body.lead === 'string' && body.lead !== '' ? body.lead : null,
         layout_id: typeof body.layout_id === 'number' ? body.layout_id : null,
         work_type: typeof body.work_type === 'string' ? body.work_type : null,
         event_counts: { CRITICAL: 0, HIGH: 0 },

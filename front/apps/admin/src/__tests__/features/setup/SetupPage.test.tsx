@@ -1,4 +1,5 @@
 import { useCctvStore } from '@/features/cctv/cctv.store';
+import { useSpatialViewport } from '@/features/layout/SpatialViewportHost';
 import { requestCameraHeightDefaults } from '@/features/setup/api';
 import {
   markSetupZonesCommitted,
@@ -6,9 +7,17 @@ import {
   useSetupFlowStore,
 } from '@/features/setup/setup.store';
 import { SetupPage } from '@/features/setup/SetupPage';
+import type {
+  Viewer3DHandle,
+  Viewer3DProps,
+  ViewerStatus,
+  ViewerTarget,
+} from '@/features/viewer3d';
 import { api } from '@/lib/api';
 import { createRulesMock } from '@/mocks/rules';
+import { sceneHandlers } from '@/mocks/scenes';
 import { buildCoverageGuidePayload, createSetupMock } from '@/mocks/setup';
+import { createStaticObjectsMock } from '@/mocks/staticObjects';
 import { createZonesMock } from '@/mocks/zones';
 import { useZoneEditStore } from '@/store/zoneEdit.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -24,8 +33,64 @@ vi.mock('@/lib/api', async () => {
 });
 const navigateMock = vi.hoisted(() => vi.fn());
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigateMock }));
+// 3D 뷰어 대역: 준비를 한 번 알리고 마지막 props 를 남긴다. 고르기·초점 명령을 기록하고, 고르면 3D 클릭처럼 선택을 알린다.
+const fakeViewer = vi.hoisted(() => ({
+  props: null as Viewer3DProps | null,
+  select: vi.fn(),
+  focus: vi.fn(),
+}));
+vi.mock('@/features/viewer3d', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/features/viewer3d')>();
+  const { useEffect, useImperativeHandle, useRef } = await import('react');
+  function FakeViewer(props: Viewer3DProps) {
+    const { ref, onStatusChange, onSelectionChange } = props;
+    fakeViewer.props = props;
+    useImperativeHandle(
+      ref,
+      () =>
+        ({
+          select: (target: ViewerTarget) => {
+            fakeViewer.select(target);
+            onSelectionChange?.(target);
+            return { ok: true };
+          },
+          focus: (target: ViewerTarget) => {
+            fakeViewer.focus(target);
+            return { ok: true };
+          },
+          clearSelection: () => ({ ok: true }),
+        }) as unknown as Viewer3DHandle,
+    );
+    const reported = useRef(false);
+    useEffect(() => {
+      if (reported.current) return;
+      reported.current = true;
+      onStatusChange?.({ phase: 'ready', mode: 'LIVE', error: null } as ViewerStatus);
+    }, [onStatusChange]);
+    return <div data-testid="viewer3d" />;
+  }
+  return { ...actual, Viewer3D: FakeViewer };
+});
+// 구역 편집 도구 대역: 세팅의 구역 단계가 준 3D 틀 값(SpatialViewportContext)을 읽어 보인다.
 vi.mock('@/features/zones/ZonesPage', () => ({
-  ZonesPage: () => <div data-testid="zones-page-stub">구역 편집 도구(-456 재사용)</div>,
+  ZonesPage: ({ placement }: { placement?: string }) => {
+    const viewport = useSpatialViewport();
+    return (
+      <div
+        data-testid="zones-page-stub"
+        data-placement={placement}
+        data-viewer-ready={String(viewport?.viewerReady)}
+        data-zones={viewport?.zones.length ?? 0}
+        data-selected={viewport?.selectedKey ?? ''}
+      >
+        <button
+          onClick={() => viewport?.selectTarget({ type: 'zone', id: 'z-04' }, { focus: true })}
+        >
+          z-04 고르기
+        </button>
+      </div>
+    );
+  },
 }));
 vi.mock('@/features/cctv/useCctvPreview', () => ({
   useCctvPreview: () => ({ attach: vi.fn(), retry: vi.fn() }),
@@ -34,14 +99,20 @@ vi.mock('@/features/cctv/useCctvPreview', () => ({
 let setupMock = createSetupMock();
 const rulesMock = createRulesMock({ profile: 'CLASSROOM_TEST' });
 const zonesMock = createZonesMock();
+// 구역 단계 3D 가 받는 현재 배경·정적 객체.
+const sceneMocks = [...sceneHandlers, ...createStaticObjectsMock().handlers];
+const baseHandlers = () => [...rulesMock.handlers, ...zonesMock.handlers, ...sceneMocks];
 
-const server = setupServer(...rulesMock.handlers, ...zonesMock.handlers, ...setupMock.handlers);
+const server = setupServer(...baseHandlers(), ...setupMock.handlers);
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 beforeEach(() => {
   useCctvStore.getState().reset();
   resetSetupFlowStore();
   useZoneEditStore.getState().clear();
   navigateMock.mockReset();
+  fakeViewer.props = null;
+  fakeViewer.select.mockReset();
+  fakeViewer.focus.mockReset();
   setupMock = createSetupMock({
     cameraHeightsM: {
       cam1: 2.25,
@@ -62,7 +133,7 @@ beforeEach(() => {
       ],
     }),
   });
-  server.resetHandlers(...rulesMock.handlers, ...zonesMock.handlers, ...setupMock.handlers);
+  server.resetHandlers(...baseHandlers(), ...setupMock.handlers);
 });
 afterEach(cleanup);
 afterAll(() => server.close());
@@ -104,7 +175,7 @@ describe('세팅 화면 재진입', () => {
   it('작업에 진행 중 세션이 있으면 새로 시작하지 않고 이어받아 그 세션 대기 화면을 연다', async () => {
     const resumeId = '019a0000-0000-7000-8000-0000000000aa';
     const resumeMock = createSetupMock({ workUnitSessionId: resumeId });
-    server.resetHandlers(...rulesMock.handlers, ...zonesMock.handlers, ...resumeMock.handlers);
+    server.resetHandlers(...baseHandlers(), ...resumeMock.handlers);
     renderSetupPage(5);
     await waitFor(() => expect(useSetupFlowStore.getState().activeSessionId).toBe(resumeId));
     expect(resumeMock.submittedBodies).toHaveLength(0);
@@ -237,7 +308,7 @@ describe('설치 · 보정 1단계 화면', () => {
         ],
       }),
     });
-    server.resetHandlers(...rulesMock.handlers, ...zonesMock.handlers, ...setupMock.handlers);
+    server.resetHandlers(...baseHandlers(), ...setupMock.handlers);
 
     renderSetupPage();
 
@@ -453,7 +524,31 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     expect(screen.getByText('초안 반영됨 (발행 전)')).toBeTruthy();
   }, 25_000);
 
-  it('AI 초안은 점선 다각형으로 겹쳐 보이고, 수락하면 편집 초안으로 옮기고 버리면 목록에서 뺀다(AI 의견 없음은 회색)', async () => {
+  it('구역 단계는 왼쪽 3D 와 오른쪽 구역 편집 도구(옆 칸)가 같은 선택을 쓴다: 패널에서 고르면 3D 가 고르고 초점을 옮기고, 3D 에서 고르면 패널이 따른다', async () => {
+    const { sessionId } = await startSetupSession();
+    setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
+
+    const panel = await screen.findByTestId('zones-page-stub', undefined, POLL_WAIT);
+    expect(panel.getAttribute('data-placement')).toBe('inline');
+    // 3D 코드는 구역 단계에 와서야 받는다(무거운 묶음이라 기다림을 넉넉히 둔다).
+    expect(await screen.findByTestId('viewer3d', undefined, POLL_WAIT)).toBeTruthy();
+    await waitFor(() => expect(panel.getAttribute('data-viewer-ready')).toBe('true'), POLL_WAIT);
+    expect(fakeViewer.props?.layers).toMatchObject({ workSurfaces: 'interactive' });
+    expect(screen.getByRole('heading', { name: '미리보기 맵 · scene-preview-1' })).toBeTruthy();
+
+    // 구역 목록을 받은 뒤 패널에서 고르면 3D 가 고르고 초점을 옮긴다.
+    await waitFor(() => expect(panel.getAttribute('data-zones')).not.toBe('0'), POLL_WAIT);
+    fireEvent.click(within(panel).getByRole('button', { name: 'z-04 고르기' }));
+    expect(fakeViewer.select).toHaveBeenCalledWith({ type: 'zone', id: 'z-04' });
+    expect(fakeViewer.focus).toHaveBeenCalledWith({ type: 'zone', id: 'z-04' });
+    expect(panel.getAttribute('data-selected')).toBe('zone:z-04');
+
+    // 3D 에서 다른 구역을 누르면 패널이 읽는 선택이 바뀐다.
+    act(() => fakeViewer.props?.onSelectionChange?.({ type: 'zone', id: 'z-02' }));
+    expect(panel.getAttribute('data-selected')).toBe('zone:z-02');
+  }, 20_000);
+
+  it('AI 초안은 3D 점선 윤곽으로 겹쳐 보이고, 수락하면 편집 초안으로 옮기고 버리면 목록·3D 에서 뺀다(AI 의견 없음은 회색)', async () => {
     const { sessionId } = await startSetupSession();
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
 
@@ -463,36 +558,89 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     expect(items[0]!.getAttribute('data-no-opinion')).toBe('false');
     expect(items[1]!.getAttribute('data-no-opinion')).toBe('true');
     expect(items[1]!.textContent).toContain('AI 의견 없음');
-    expect(screen.getByLabelText('AI 구역 초안 다각형')).toBeTruthy();
-    expect(screen.getByLabelText('AI 초안 창가 개구부 추락 주의')).toBeTruthy();
-    expect(screen.getByLabelText('AI 초안 전면 단상 작업면 후보 (AI 의견 없음)')).toBeTruthy();
+    const [opening, podium] = items.map((item) => item.getAttribute('data-candidate-id')!);
+    const ghostIds = () => (fakeViewer.props?.boxGhosts ?? []).map((ghost) => ghost.id);
+    await waitFor(
+      () => expect(ghostIds()).toEqual([`ai-draft:${opening}`, `ai-draft:${podium}`]),
+      POLL_WAIT,
+    );
 
     fireEvent.click(screen.getByRole('button', { name: '창가 개구부 추락 주의 수락' }));
     const draft = useZoneEditStore.getState().drafts.__new__;
     expect(draft?.patch).toEqual({ name: '창가 개구부 추락 주의', severity: 'CRITICAL' });
     expect(draft?.box).toEqual({ min: [7, 8, 0], max: [8.6, 8.8, 2] });
     expect(within(items[0]!).getByText('초안 반영됨 (발행 전)')).toBeTruthy();
-    expect(zonesMock).toBeTruthy();
+    // 수락한 초안은 AI 윤곽에서 빠지고 구역 편집 초안(새 구역)으로 보인다.
+    expect(ghostIds()).toEqual([`ai-draft:${podium}`]);
 
     fireEvent.click(screen.getByRole('button', { name: '전면 단상 작업면 후보 버리기' }));
     await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(1));
-    expect(screen.queryByLabelText('AI 초안 전면 단상 작업면 후보 (AI 의견 없음)')).toBeNull();
-    expect(screen.getByLabelText('AI 초안 창가 개구부 추락 주의')).toBeTruthy();
+    expect(ghostIds()).toEqual([]);
   }, 20_000);
 
-  it('구역 발행이 끝나면 작업 관리(TBM) 화면으로 이동하는 버튼을 보인다', async () => {
+  it('머리글에는 구역 편집(관제 이동) 단추가 없고, 구역을 발행하면 맨 오른쪽에 작업 관리로 하나만 생긴다', async () => {
     const { sessionId } = await startSetupSession();
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
     await screen.findByTestId('zones-page-stub', undefined, POLL_WAIT);
 
-    expect(screen.queryByRole('button', { name: '작업 관리(TBM)로 이동' })).toBeNull();
+    const steps = within(screen.getByRole('list', { name: '보정 단계' })).getAllByRole('button');
+    expect(steps).toHaveLength(3);
+    expect(steps[2]!.textContent).toBe('3구역');
+    expect(steps[2]!.getAttribute('aria-current')).toBe('step');
+    expect(screen.queryByRole('button', { name: '구역 편집' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '작업 관리로' })).toBeNull();
 
     act(() => markSetupZonesCommitted());
 
-    expect(screen.getByRole('status', { name: '구역 발행 완료 안내' })).toBeTruthy();
-    const buttons = screen.getAllByRole('button', { name: '작업 관리(TBM)로 이동' });
-    expect(buttons.length).toBeGreaterThan(0);
-    fireEvent.click(buttons[0]!);
+    const restart = screen.getByRole('button', { name: '다시 보정' });
+    const toWork = screen.getByRole('button', { name: '작업 관리로' });
+    expect(screen.getAllByRole('button', { name: /작업 관리/ })).toHaveLength(1);
+    expect(restart.nextElementSibling).toBe(toWork);
+    expect(toWork.nextElementSibling).toBeNull();
+    fireEvent.click(toWork);
     expect(navigateMock).toHaveBeenCalledWith({ to: '/work', search: { workUnitId: '1' } });
+  }, 20_000);
+
+  it('작업 관리에서 다시 열면(이 브라우저에 세션이 남은 채) 맵이 준비된 세션은 곧바로 구역 단계로 연다', async () => {
+    const { sessionId } = await startSetupSession();
+    setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
+    await screen.findByTestId('zones-page-stub', undefined, POLL_WAIT);
+    cleanup();
+
+    renderSetupPage();
+    expect(await screen.findByTestId('zones-page-stub', undefined, POLL_WAIT)).toBeTruthy();
+    expect(screen.queryByLabelText('cam1 높이 (m)')).toBeNull();
+    expect(setupMock.submittedBodies).toHaveLength(1);
+  }, 20_000);
+
+  it('높이 경고가 남았어도 구역을 이미 발행한 세션은 보정 검증에 머물지 않고 구역 단계로 연다', async () => {
+    const { sessionId } = await startSetupSession();
+    setupMock.updateSession(sessionId, {
+      ...PREVIEW_PATCH,
+      height_checks: {
+        cam1: {
+          input_height_m: 2.44,
+          restored_height_m: 2.36,
+          difference_cm: -8,
+          within_tolerance: false,
+          guidance: 'cam1 높이가 8 cm 안 맞음',
+        },
+      },
+      zones_committed_at: 1_793_848_135_600,
+    });
+
+    expect(await screen.findByTestId('zones-page-stub', undefined, POLL_WAIT)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '보정 확정' })).toBeNull();
+    expect(screen.getByRole('button', { name: '작업 관리로' })).toBeTruthy();
+  }, 20_000);
+
+  it('이 브라우저에 남은 세션이 다른 작업의 것이면 버리고 그 작업의 세팅을 처음부터 연다', async () => {
+    await startSetupSession();
+    cleanup();
+
+    renderSetupPage(5);
+    expect(await screen.findByLabelText('cam1 높이 (m)', undefined, POLL_WAIT)).toBeTruthy();
+    await waitFor(() => expect(useSetupFlowStore.getState().activeSessionId).toBeNull());
+    expect(screen.queryByTestId('zones-page-stub')).toBeNull();
   }, 20_000);
 });

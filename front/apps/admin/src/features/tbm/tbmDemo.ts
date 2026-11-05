@@ -36,6 +36,8 @@ export interface TbmTask {
   activeSetupSessionId?: string | null;
   /** 작업 날짜(YYYY-MM-DD). */
   date?: string;
+  /** 작업 중 사건 수(서버 work_unit.event_counts: 위험 · 경고). 모르면 없다. */
+  eventCounts?: { CRITICAL?: number; HIGH?: number } | null;
   name: string;
   from: string;
   to: string;
@@ -59,7 +61,6 @@ interface TbmZone extends Rect {
   name: string;
 }
 
-export const TBM_DAY = '10/16(금)';
 export const TBM_DATE = '2026년 10월 16일';
 
 /** 작업 구역. 관제 mock 구역(z-04 · z-02)과 같은 자리다. */
@@ -70,8 +71,6 @@ export const TBM_ZONES: readonly TbmZone[] = [
 
 export const TBM_OPENING: Rect = { x: 7.2, y: 1.2, w: 1.2, h: 0.6 };
 export const TBM_DOOR: Rect = { x: 4.4, y: -0.14, w: 0.9, h: 0.28 };
-
-export const TBM_LEADS = ['A조', 'B조', 'C조'] as const;
 
 export const TBM_TASKS: readonly TbmTask[] = [
   {

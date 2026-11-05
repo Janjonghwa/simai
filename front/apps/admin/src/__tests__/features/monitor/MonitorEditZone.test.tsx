@@ -3,7 +3,6 @@ import { Dock } from '@/features/layout/Dock';
 import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
 import { MonitorPage } from '@/features/monitor/MonitorPage';
 import { severityTone } from '@/features/plan/plan';
-import { SetupPage } from '@/features/setup/SetupPage';
 import type {
   Viewer3DHandle,
   Viewer3DProps,
@@ -17,7 +16,6 @@ import { NEW_KEY } from '@/features/zones/zoneEditModel';
 import { handlers } from '@/mocks/handlers';
 import { createStaticObjectsMock } from '@/mocks/staticObjects';
 import { createZonesMock } from '@/mocks/zones';
-import { Route as IndexRoute } from '@/routes/_app/index';
 import { useBoxEditStore } from '@/store/boxEdit.store';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore, type Role } from '@/store/session.store';
@@ -362,7 +360,7 @@ describe('관제 관리자 편집 모드', () => {
     );
   }, 20_000);
 
-  it('/zones 라우트 제거 뒤에도 도크 링크·세팅 구역 편집 이동·검색 파라미터가 깨지지 않는다', () => {
+  it('/zones 라우트 제거 뒤에도 도크 링크가 깨지지 않는다', () => {
     render(<Dock />);
     const nav = screen.getByRole('navigation', { name: '주 메뉴' });
     const hrefs = within(nav)
@@ -370,24 +368,5 @@ describe('관제 관리자 편집 모드', () => {
       .map((a) => a.getAttribute('href'));
     expect(hrefs).toEqual(['/', '/cctv', '/work', '/history']);
     expect(hrefs).not.toContain('/zones');
-    cleanup();
-
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(
-      <QueryClientProvider client={qc}>
-        <SetupPage workUnitId={1} />
-      </QueryClientProvider>,
-    );
-    act(() => screen.getByRole('button', { name: /3완료/ }).click());
-    act(() => screen.getByRole('button', { name: '구역 편집' }).click());
-    expect(navigateMock).toHaveBeenCalledWith({ to: '/', search: { edit: true } });
-
-    const validateSearch = IndexRoute.options.validateSearch;
-    if (typeof validateSearch !== 'function') throw new Error('expected validateSearch function');
-    expect(validateSearch({ edit: true })).toEqual({ edit: true });
-    expect(validateSearch({ edit: 'true' })).toEqual({ edit: true });
-    expect(validateSearch({ edit: '0' })).toEqual({
-      edit: undefined,
-    });
   });
 });

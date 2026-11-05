@@ -16,3 +16,7 @@ export function confirmWorkStart(unfinished: readonly WorkStage[]): boolean {
 
 /** 종료 전 확인. */
 export const confirmWorkEnd = () => window.confirm('작업을 종료하시겠습니까?');
+
+/** 작업 삭제 전 확인. */
+export const confirmWorkDelete = (label: string) =>
+  window.confirm(`${label} 작업을 삭제하시겠습니까?`);

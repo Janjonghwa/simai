@@ -114,11 +114,28 @@ afterAll(() => {
   server.close();
 });
 
-/** 작업을 고른 뒤 회의록을 받는 중(700ms 흉내)이 끝나게 한다. */
-const received = () =>
-  act(() => {
-    vi.advanceTimersByTime(800);
-  });
+/** 고른 작업의 ⋯ 메뉴에서 항목(작업 수정 · 작업 삭제)을 연다. */
+const pickTaskMenu = (taskId: string, item: '작업 수정' | '작업 삭제') => {
+  fireEvent.click(screen.getByRole('button', { name: `${taskId} 작업 메뉴` }));
+  fireEvent.click(screen.getByRole('menuitem', { name: item }));
+};
+
+/** 법령 근거 블록(가운데). */
+const legalPanel = () => screen.findByRole('region', { name: '법령 근거' });
+
+/** 작업 한 건을 종료 상태로 만든다(서명 · 결재 패널은 종료한 작업에만 열린다). */
+const endWork = (workId = '1') => {
+  const work = tbmMock.works.find((w) => w.work_id === workId)!;
+  work.status = 'DONE';
+  work.actual_started_at = Date.now() - 3_600_000;
+  work.actual_ended_at = Date.now();
+};
+
+/** 단계 줄의 서명하기로 서명 · 결재 패널을 펼친다. */
+const openSignPanel = async () => {
+  fireEvent.click(await screen.findByRole('button', { name: '서명하기' }));
+  return screen.findByRole('region', { name: '참석자 서명' });
+};
 
 describe('왼쪽 패널', () => {
   it('처음에는 레이아웃을 크게 보이고 오른쪽 위 단추 하나로 평가 · 간섭 보기와 바꾼다', async () => {
@@ -126,16 +143,17 @@ describe('왼쪽 패널', () => {
     const panel = await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
     expect(within(panel).getByRole('img', { name: /평면 도식/ })).toBeTruthy();
     expect(within(panel).queryByRole('table')).toBeNull();
-    // 한 화면에 단추는 하나뿐이고 글자가 보기 전환을 알린다.
+    // 머리에는 3D 레이아웃 편집과 보기 전환 단추 둘뿐이고 글자가 보기 전환을 알린다.
     const toggle = within(panel).getByRole('button', { name: '평가 · 간섭 보기' });
-    expect(within(panel).getAllByRole('button')).toHaveLength(1);
+    expect(within(panel).getByRole('button', { name: '3D 레이아웃 편집' })).toBeTruthy();
+    expect(within(panel).getAllByRole('button')).toHaveLength(2);
 
     fireEvent.click(toggle);
     const detail = screen.getByRole('region', { name: 'T1 평가 · 간섭' });
     expect(within(detail).getByRole('table')).toBeTruthy();
     expect(within(detail).queryByRole('img', { name: /평면 도식/ })).toBeNull();
     expect(within(detail).getByText('T1 ↔ T2')).toBeTruthy();
-    expect(within(detail).getAllByRole('button')).toHaveLength(1);
+    expect(within(detail).getAllByRole('button')).toHaveLength(2);
 
     fireEvent.click(within(detail).getByRole('button', { name: '레이아웃 보기' }));
     expect(screen.getByRole('region', { name: 'T1 가상 레이아웃' })).toBeTruthy();
@@ -151,11 +169,9 @@ describe('왼쪽 패널', () => {
 });
 
 describe('작업 등록 · 수정 모달', () => {
-  it('+ 작업 등록은 모달 창을 열고, 공종·가상 레이아웃을 골라 등록하면 새 작업을 고른다', async () => {
+  it('+ 작업 등록은 모달 창을 열고, 작업명·시작·끝·공종·인원만 받아 등록하면 새 작업을 고른다', async () => {
     render(<TbmPage />);
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: '보고서 재생성' })).toBeTruthy();
-    });
+    await screen.findByRole('button', { name: '보고서 재작성' });
 
     expect(screen.queryByRole('dialog')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '+ 작업 등록' }));
@@ -164,14 +180,18 @@ describe('작업 등록 · 수정 모달', () => {
 
     const name = within(dialog).getByLabelText('작업명');
     const workTypeSelect = within(dialog).getByLabelText('공종');
-    const layoutSelect = within(dialog).getByLabelText('가상 레이아웃');
+    for (const label of ['시작', '끝', '인원'])
+      expect(within(dialog).getByLabelText(label)).toBeTruthy();
+    // 구역은 세팅 뒤 구역 단계에서, 가상 레이아웃은 3D 레이아웃 편집에서 정한다. 반장은 받지 않는다.
+    for (const label of ['구역', '반장', '가상 레이아웃']) {
+      expect(within(dialog).queryByLabelText(label)).toBeNull();
+    }
     expect(within(dialog).getByRole('button', { name: '등록' }).hasAttribute('disabled')).toBe(
       true,
     );
 
     fireEvent.change(name, { target: { value: '전기 배선' } });
     fireEvent.change(workTypeSelect, { target: { value: 'OPENING_WORK' } });
-    fireEvent.change(layoutSelect, { target: { value: '102' } });
     fireEvent.click(within(dialog).getByRole('button', { name: '등록' }));
 
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -182,31 +202,31 @@ describe('작업 등록 · 수정 모달', () => {
       const createdInMock = tbmMock.works.find((w) => w.name === '전기 배선');
       expect(createdInMock).toMatchObject({
         work_type: 'OPENING_WORK',
-        layout_id: 102,
+        zone_id: null,
+        lead: null,
+        layout_id: null,
       });
     });
   });
 
-  it('작업 수정은 선택한 작업의 공종·가상 레이아웃을 PUT /api/work-units/{id} 로 갱신한다', async () => {
+  it('작업 수정은 공종·인원을 PUT /api/work-units/{id} 로 갱신하고, 폼에 없는 구역·반장·레이아웃은 그대로 둔다', async () => {
     render(<TbmPage />);
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: '보고서 재생성' })).toBeTruthy();
-    });
+    await screen.findByRole('button', { name: '보고서 재작성' });
 
-    fireEvent.click(screen.getByRole('button', { name: '작업 수정' }));
+    pickTaskMenu('T1', '작업 수정');
     const dialog = screen.getByRole('dialog', { name: '작업 수정' });
-    const workTypeSelect = within(dialog).getByLabelText('공종');
-    const layoutSelect = within(dialog).getByLabelText('가상 레이아웃');
-
-    fireEvent.change(workTypeSelect, { target: { value: 'HIGH_PLACE' } });
-    fireEvent.change(layoutSelect, { target: { value: '103' } });
+    fireEvent.change(within(dialog).getByLabelText('공종'), { target: { value: 'HIGH_PLACE' } });
+    fireEvent.change(within(dialog).getByLabelText('인원'), { target: { value: '5' } });
     fireEvent.click(within(dialog).getByRole('button', { name: '저장' }));
 
     await waitFor(() => {
       expect(screen.getByText(/T1 수정됨/)).toBeTruthy();
       expect(tbmMock.works[0]).toMatchObject({
         work_type: 'HIGH_PLACE',
-        layout_id: 103,
+        planned_people: 5,
+        zone_id: 'z-04',
+        lead: 'A조',
+        layout_id: 101,
       });
     });
   });
@@ -240,21 +260,17 @@ describe('작업 등록 · 수정 모달', () => {
 });
 
 describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 폴백', () => {
-  it('대책·법령 근거(sections·citations), 법령 지식 그래프 SVG(노드 클릭 상세), 생성 단계(steps)를 표시한다', async () => {
+  it('법령 근거 블록이 인용 조문(citations)·법령 지식 그래프 SVG(노드 클릭 상세)·생성 단계(steps)를 표시하고 sections 카드는 그리지 않는다', async () => {
     render(<TbmPage />);
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: '보고서 재생성' })).toBeTruthy();
-    });
+    const detail = await legalPanel();
+    await within(detail).findByTestId('report-citation-OSH-STD-A43');
 
-    fireEvent.click(screen.getByRole('button', { name: '평가 · 간섭 보기' }));
-    const detail = screen.getByRole('region', { name: 'T1 평가 · 간섭' });
-
-    // sections(hazards, measures, focus, legal) 및 citations 확인
-    expect(within(detail).getByTestId('report-section-hazards')).toBeTruthy();
-    expect(within(detail).getByTestId('report-section-measures')).toBeTruthy();
-    expect(within(detail).getByTestId('report-section-focus')).toBeTruthy();
-    expect(within(detail).getByTestId('report-section-legal')).toBeTruthy();
-    expect(within(detail).getByTestId('report-citation-OSH-STD-A43')).toBeTruthy();
+    // 대책·위험 sections 카드는 어디에도 없다(회의록 문서가 그 글을 담는다)
+    expect(screen.queryByTestId('report-section-hazards')).toBeNull();
+    expect(screen.queryByTestId('report-section-measures')).toBeNull();
+    expect(screen.queryByTestId('report-section-focus')).toBeNull();
+    expect(screen.queryByTestId('report-section-legal')).toBeNull();
+    expect(within(detail).getByRole('region', { name: '인용 법령 조문' })).toBeTruthy();
 
     // 법령 지식 그래프 SVG: cited 강조(data-cited="true"), hop 구분(0 vs 1), 노드 클릭 시 상세 발췌문 전환
     const citedNode = within(detail).getByTestId('graph-node-OSH-STD-A43');
@@ -287,13 +303,16 @@ describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 �
     );
   });
 
-  it('보고서 생성 요청(POST 202) → 2초 간격 폴링(GET /api/reports/tbm/{id}) → 완료(SUCCEEDED) 흐름이 동작한다', async () => {
+  it('보고서 재작성 요청(POST 202) → 2초 간격 폴링(GET /api/reports/tbm/{id}) → 완료(SUCCEEDED) 흐름이 동작한다', async () => {
     render(<TbmPage />);
-    const regenBtn = await screen.findByRole('button', { name: '보고서 재생성' });
+    const regenBtn = await screen.findByRole('button', { name: '보고서 재작성' });
 
     fireEvent.click(regenBtn);
+    // 만드는 중에는 재작성 단추가 막히고 생성 단계 목록이 보인다.
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: '보고서 생성 중…' })).toBeTruthy();
+      expect(
+        (screen.getByRole('button', { name: '보고서 재작성' }) as HTMLButtonElement).disabled,
+      ).toBe(true);
     });
 
     // 2초 간격 폴링 실행
@@ -302,10 +321,13 @@ describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 �
     });
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: '보고서 재생성' })).toBeTruthy();
+      expect(
+        (screen.getByRole('button', { name: '보고서 재작성' }) as HTMLButtonElement).disabled,
+      ).toBe(false);
       const versionSelect = screen.getByLabelText('보고서 버전') as HTMLSelectElement;
       expect(versionSelect.textContent).toContain('v2 (SUCCEEDED)');
     });
+    expect(screen.getByRole('region', { name: 'T1 TBM 회의록' }).textContent).toContain('v2');
   });
 
   it('FAILED 상태 보고서는 failure_reason 안내 문구를 표시하고 지어낸 문장으로 채우지 않는다', async () => {
@@ -315,11 +337,13 @@ describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 �
     });
 
     render(<TbmPage />);
-    const regenBtn = await screen.findByRole('button', { name: '보고서 재생성' });
+    const regenBtn = await screen.findByRole('button', { name: '보고서 재작성' });
     fireEvent.click(regenBtn);
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: '보고서 생성 중…' })).toBeTruthy();
+      expect(
+        (screen.getByRole('button', { name: '보고서 재작성' }) as HTMLButtonElement).disabled,
+      ).toBe(true);
     });
 
     await act(async () => {
@@ -331,52 +355,43 @@ describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 �
       expect(alert.textContent).toContain('CITATION_VIOLATION');
     });
 
-    // 평가·간섭 패널에서도 지어낸 sections 본문 없이 실패 사유만 보인다
-    fireEvent.click(screen.getByRole('button', { name: '평가 · 간섭 보기' }));
-    const detail = screen.getByRole('region', { name: 'T1 평가 · 간섭' });
-    expect(within(detail).queryByTestId('report-section-measures')).toBeNull();
+    // 법령 근거 블록에서도 지어낸 인용 · 본문 없이 실패 사유만 보인다
+    const detail = screen.getByRole('region', { name: '법령 근거' });
+    expect(within(detail).queryByRole('region', { name: '인용 법령 조문' })).toBeNull();
+    expect(within(detail).queryByTestId('report-citation-OSH-STD-A43')).toBeNull();
     expect(within(detail).getByRole('alert').textContent).toContain('CITATION_VIOLATION');
   });
 
   it('409 응답(WORK_HAS_NO_LAYOUT · REPORT_IN_PROGRESS)을 구분해 안내한다', async () => {
-    // 1) WORK_HAS_NO_LAYOUT: 레이아웃 미연결 작업 등록 후 보고서 생성 요청
+    // 1) WORK_HAS_NO_LAYOUT: 가상 레이아웃이 끊긴 작업(T1)에 보고서 재작성 요청
     tbmMock = createTbmMock({ pollsBeforeComplete: 2 });
     server.resetHandlers(...tbmMock.handlers, ...geometryHandlers);
+    tbmMock.works[0]!.layout_id = null;
 
     render(<TbmPage />);
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: '보고서 재생성' })).toBeTruthy();
-    });
+    await screen.findByRole('button', { name: '보고서 재작성' });
 
-    // T1 의 가상 레이아웃을 '연결 안 함'으로 수정한 뒤 보고서 생성 시도
-    fireEvent.click(screen.getByRole('button', { name: '작업 수정' }));
-    const editDialog = screen.getByRole('dialog', { name: '작업 수정' });
-    fireEvent.change(within(editDialog).getByLabelText('가상 레이아웃'), {
-      target: { value: '' },
-    });
-    fireEvent.click(within(editDialog).getByRole('button', { name: '저장' }));
-
-    await waitFor(() => {
-      expect(tbmMock.works[0]?.layout_id).toBeNull();
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: '보고서 재생성' }));
+    fireEvent.click(screen.getByRole('button', { name: '보고서 재작성' }));
     await waitFor(() => {
       expect(screen.getByTestId('tbm-request-error').textContent).toContain('WORK_HAS_NO_LAYOUT');
     });
 
-    // 2) REPORT_IN_PROGRESS: T2(레이아웃 연결됨) 선택 후 생성 시작(GENERATING) 중 중복 생성 요청
+    // 2) REPORT_IN_PROGRESS: T2(레이아웃 연결됨) 선택 후, 다른 화면이 먼저 생성을 시작한 상태에서 재작성 요청
     fireEvent.click(screen.getByRole('button', { name: /^T2 자재 반입/ }));
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: '보고서 재생성' })).toBeTruthy();
+      expect(
+        (screen.getByRole('button', { name: '보고서 재작성' }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    });
+    const t2Reports = tbmMock.reportsByWork.get('2')!;
+    t2Reports.push({
+      ...t2Reports.at(-1)!,
+      report_id: 999,
+      report_version: 2,
+      status: 'GENERATING',
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '보고서 재생성' }));
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: '보고서 생성 중…' })).toBeTruthy();
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: '보고서 생성 중…' }));
+    fireEvent.click(screen.getByRole('button', { name: '보고서 재작성' }));
     await waitFor(() => {
       expect(screen.getByTestId('tbm-request-error').textContent).toContain('REPORT_IN_PROGRESS');
     });
@@ -393,7 +408,7 @@ describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 �
     );
 
     render(<TbmPage />);
-    const regenBtn = await screen.findByRole('button', { name: '보고서 재생성' });
+    const regenBtn = await screen.findByRole('button', { name: '보고서 재작성' });
     fireEvent.click(regenBtn);
 
     await waitFor(() => {
@@ -423,7 +438,7 @@ describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 �
     render(<TbmPage />);
     const emptyState = await screen.findByTestId('tbm-empty-state');
     await waitFor(() => {
-      expect(emptyState.textContent).toContain('등록된 작업이 없습니다 — 작업 추가');
+      expect(emptyState.textContent).toContain('등록된 작업이 없습니다');
     });
     expect(screen.queryByTestId('tbm-demo-badge')).toBeNull();
     expect(screen.queryByRole('region', { name: 'T1 가상 레이아웃' })).toBeNull();
@@ -471,7 +486,7 @@ describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 �
     expect(screen.getByRole('region', { name: 'T1 가상 레이아웃' })).toBeTruthy();
 
     // 2) 작업 수정 실패 → 롤백 및 오류 안내
-    fireEvent.click(screen.getByRole('button', { name: '작업 수정' }));
+    pickTaskMenu('T1', '작업 수정');
     const editDialog = screen.getByRole('dialog', { name: '작업 수정' });
     fireEvent.change(within(editDialog).getByLabelText('작업명'), {
       target: { value: '수정 실패 이름' },
@@ -486,9 +501,9 @@ describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 �
     expect(screen.queryByRole('button', { name: /수정 실패 이름/ })).toBeNull();
 
     // 3) 작업 삭제 실패 → 롤백 및 오류 안내 (T1 이 그대로 남아 있음)
-    fireEvent.click(screen.getByRole('button', { name: '작업 수정' }));
-    const deleteDialog = screen.getByRole('dialog', { name: '작업 수정' });
-    fireEvent.click(within(deleteDialog).getByRole('button', { name: '작업 삭제' }));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    pickTaskMenu('T1', '작업 삭제');
+    expect(confirm.mock.calls[0]![0]).toContain('작업을 삭제하시겠습니까?');
 
     await waitFor(() => {
       expect(screen.getByTestId('tbm-mutation-error').textContent).toContain(
@@ -666,21 +681,40 @@ describe('3D 가상 레이아웃 편집기', () => {
 });
 
 describe('회의록', () => {
-  it('A4 쪽 미리보기를 보이고, 받는 중에는 편집할 수 없다', async () => {
+  it('A4 쪽 미리보기를 보이고, 보고서가 없으면 편집·되돌리기·출력을 막는다', async () => {
+    // T1 은 보고서가 없는 작업으로 둔다
+    tbmMock.reportsByWork.delete('1');
     render(<TbmPage />);
-    await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
-    expect(screen.getByRole('button', { name: '편집' }).hasAttribute('disabled')).toBe(true);
-    received();
-    expect(screen.getByRole('button', { name: '편집' }).hasAttribute('disabled')).toBe(false);
-    const preview = screen.getByRole('group', { name: 'TBM 회의록 미리보기' });
+    const blank = await screen.findByRole('region', { name: 'T1 TBM 회의록' });
+    await within(await legalPanel()).findByRole('button', { name: '보고서 작성' });
+    for (const name of ['편집', '되돌리기', '출력']) {
+      expect((within(blank).getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(
+        true,
+      );
+    }
+
+    // 보고서가 있는 작업을 고르면 편집·출력이 열리고 제목에 판 번호가 붙는다
+    fireEvent.click(screen.getByRole('button', { name: /^T2 자재 반입/ }));
+    const minutes = await screen.findByRole('region', { name: 'T2 TBM 회의록' });
+    await waitFor(() => {
+      expect(
+        (within(minutes).getByRole('button', { name: '편집' }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    });
+    expect(minutes.textContent).toContain('TBM 회의록 · v1');
+    const preview = within(minutes).getByRole('group', { name: 'TBM 회의록 미리보기' });
     expect(preview.textContent).toContain('Tool Box Meeting 회의록');
-    expect(preview.textContent).toContain('개구부 옆 비계 설치');
+    expect(preview.textContent).toContain('자재 반입');
   });
 
   it('편집은 모달 창에서 하고 고친 칸은 저장소에 남는다(자동 저장)', async () => {
     render(<TbmPage />);
     await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
-    received();
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: '편집' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
     fireEvent.click(screen.getByRole('button', { name: '편집' }));
     const dialog = screen.getByRole('dialog', { name: 'TBM 회의록 편집' });
     const boxes = within(dialog).getAllByRole('textbox');
@@ -703,7 +737,11 @@ describe('회의록', () => {
   it('편집 창의 되돌리기는 고친 칸을 버린다', async () => {
     render(<TbmPage />);
     await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
-    received();
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: '편집' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
     fireEvent.click(screen.getByRole('button', { name: '편집' }));
     const dialog = screen.getByRole('dialog', { name: 'TBM 회의록 편집' });
     const undo = within(dialog).getByRole('button', { name: '되돌리기' });
@@ -724,7 +762,11 @@ describe('회의록', () => {
     vi.stubGlobal('print', print);
     render(<TbmPage />);
     await screen.findByRole('region', { name: 'T1 가상 레이아웃' });
-    received();
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: '편집' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
     fireEvent.click(screen.getByRole('button', { name: '출력' }));
     await waitFor(() => expect(print).toHaveBeenCalledTimes(1));
     expect(document.body.textContent).not.toContain('@page');
@@ -772,7 +814,10 @@ describe('작업 세션과 서명', () => {
     await act(async () => {
       vi.advanceTimersByTime(2200);
     });
-    expect(await screen.findByText(/작업 마무리: 작업 구간의 위험 이벤트 집계/)).toBeTruthy();
+    // 마무리 문단은 따로 줄을 두지 않고 작업 중 사건 띠 안에 들어간다.
+    const band = await screen.findByRole('status', { name: '작업 중 사건' });
+    expect(await within(band).findByText(/작업 구간의 위험 이벤트 집계/)).toBeTruthy();
+    expect(screen.queryByText(/작업 마무리:/)).toBeNull();
     vi.restoreAllMocks();
   });
 
@@ -806,8 +851,9 @@ describe('작업 세션과 서명', () => {
 
   it('서명 등록에 빠진 실명·서명·고지를 각각 안내한다', async () => {
     mockSignatureCanvas();
-    render(<TbmPage />);
-    const panel = await screen.findByRole('region', { name: '참석자 서명' });
+    endWork();
+    render(<TbmPage initialWorkId="1" />);
+    const panel = await openSignPanel();
     const notice = () => within(panel).queryByText(/서명 등록을 위해 필요:/);
     expect(notice()?.textContent).toContain('실명 · 서명 · 고지 확인');
     fireEvent.change(within(panel).getByLabelText('서명자 실명'), { target: { value: '홍길동' } });
@@ -834,8 +880,9 @@ describe('작업 세션과 서명', () => {
           HttpResponse.json({ code: 'REPORT_VERSION_STALE' }, { status: 409 }),
         ),
       );
-    render(<TbmPage />);
-    const panel = await screen.findByRole('region', { name: '참석자 서명' });
+    endWork();
+    render(<TbmPage initialWorkId="1" />);
+    const panel = await openSignPanel();
     fireEvent.change(within(panel).getByLabelText('서명자 실명'), { target: { value: '홍길동' } });
     fireEvent.pointerDown(within(panel).getByLabelText('서명 패드'), {
       clientX: 10,
@@ -872,8 +919,9 @@ describe('관리자 최종 결재', () => {
           .then((body: unknown) => bodies.push(body));
       }
     });
-    render(<TbmPage />);
-    const panel = await screen.findByRole('region', { name: '참석자 서명' });
+    endWork();
+    render(<TbmPage initialWorkId="1" />);
+    const panel = await openSignPanel();
     await within(panel).findByText('참석자 서명 0명');
     if (count) {
       fillSignature(panel);
@@ -914,7 +962,7 @@ describe('관리자 최종 결재', () => {
     server.events.removeAllListeners('request:start');
   });
 
-  it('결재한 버전은 인쇄본에 결재란을 넣고 종료 새 버전은 다시 결재한다', async () => {
+  it('결재한 버전은 인쇄본에 결재란을 넣고 보고서를 다시 작성한 새 버전은 다시 결재한다', async () => {
     mockSignatureCanvas();
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     const print = vi.spyOn(window, 'print').mockImplementation(() => {
@@ -923,26 +971,37 @@ describe('관리자 최종 결재', () => {
       expect(printed?.textContent).toContain('결재 완료 · admin');
       expect(printed?.querySelector('img[alt="결재 실명 결재 서명"]')).toBeTruthy();
     });
-    render(<TbmPage />);
-    const firstPanel = await screen.findByRole('region', { name: '참석자 서명' });
+    endWork();
+    render(<TbmPage initialWorkId="1" />);
+    const firstPanel = await openSignPanel();
     await within(firstPanel).findByText('참석자 서명 0명');
     fillSignature(firstPanel, '결재 실명');
     fireEvent.click(within(firstPanel).getByRole('button', { name: '관리자 결재' }));
     await within(firstPanel).findByText('결재 완료');
     const approved = tbmMock.reportsByWork.get('1')?.[0];
     const firstApprovedAt = approved?.approved_at;
-    received();
     fireEvent.click(screen.getByRole('button', { name: '출력' }));
     await waitFor(() => expect(print).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole('button', { name: '작업 시작' }));
-    fireEvent.click(await screen.findByRole('button', { name: '작업 종료' }));
+
+    // 결재 뒤 보고서를 다시 작성하면 새 버전이 생기고 그 버전은 결재 전이다.
+    fireEvent.click(screen.getByRole('button', { name: '보고서 재작성' }));
     await waitFor(() =>
-      expect(screen.getByRole('combobox', { name: '보고서 버전' }).textContent).toContain('v2'),
+      expect(
+        (screen.getByRole('button', { name: '보고서 재작성' }) as HTMLButtonElement).disabled,
+      ).toBe(true),
     );
     await act(async () => {
       vi.advanceTimersByTime(2200);
     });
-    const secondPanel = screen.getByRole('region', { name: '참석자 서명' });
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: '보고서 버전' }).textContent).toContain('v2'),
+    );
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('button', { name: '보고서 재작성' }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    const secondPanel = await openSignPanel();
     await within(secondPanel).findByText('참석자 서명 0명');
     expect(within(secondPanel).queryByText('결재 완료')).toBeNull();
     fillSignature(secondPanel, '두 번째 결재 실명');
@@ -966,8 +1025,9 @@ describe('관리자 최종 결재', () => {
         return HttpResponse.json({ code: 'REPORT_APPROVED' }, { status: 409 });
       }),
     );
-    render(<TbmPage />);
-    const panel = await screen.findByRole('region', { name: '참석자 서명' });
+    endWork();
+    render(<TbmPage initialWorkId="1" />);
+    const panel = await openSignPanel();
     fillSignature(panel);
     fireEvent.click(within(panel).getByRole('button', { name: '서명 등록' }));
     await within(panel).findByText('이미 관리자 결재가 완료된 보고서입니다.');

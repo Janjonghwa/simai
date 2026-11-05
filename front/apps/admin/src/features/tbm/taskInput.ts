@@ -29,9 +29,9 @@ export const TASK_INPUT_DEFAULT: TaskInput = {
   name: '',
   from: '13:00',
   to: '15:00',
-  zone: 'z-02',
+  zone: '',
   people: '2',
-  lead: 'B조',
+  lead: '',
   workType: 'GENERAL',
   layoutId: '',
 };
@@ -91,17 +91,18 @@ export function inputToWorkUnitBody(
     zone_id: input.zone || null,
     place: input.zone ? null : OUTSIDE_ZONE_TEXT,
     planned_people: clampPeople(input.people),
-    lead: input.lead,
+    lead: input.lead.trim() || null,
     layout_id: layoutNum !== null && Number.isFinite(layoutNum) ? layoutNum : null,
     work_type: input.workType && input.workType.trim() !== '' ? input.workType.trim() : null,
   };
 }
 
-/** 수동 입력으로 작업을 만든다. 배치·평가는 아직 없다. */
-export function createTask(tasks: readonly TbmTask[], input: TaskInput): TbmTask {
+/** 수동 입력으로 작업을 만든다(date 는 작업 날짜 YYYY-MM-DD). 배치·평가는 아직 없다. */
+export function createTask(tasks: readonly TbmTask[], input: TaskInput, date?: string): TbmTask {
   const layoutNum = input.layoutId && input.layoutId.trim() !== '' ? Number(input.layoutId) : null;
   return {
     id: nextTaskId(tasks),
+    ...(date ? { date } : {}),
     name: input.name.trim(),
     from: input.from,
     to: input.to,

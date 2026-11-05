@@ -10,7 +10,7 @@ function WorkRoute() {
       key={workUnitId ?? ''}
       initialWorkId={workUnitId}
       onOpenSetup={(id) => void navigate({ to: '/setup', search: { workUnitId: id } })}
-      onOpenZones={() => void navigate({ to: '/', search: { edit: true } })}
+      onOpenMonitor={() => void navigate({ to: '/' })}
     />
   );
 }

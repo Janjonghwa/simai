@@ -13,7 +13,7 @@ import type {
   ZoneDraftCandidateKind,
   ZoneDraftItem,
 } from '@/features/setup/types';
-import type { ViewerEditBox } from '@/features/viewer3d';
+import type { ViewerBoxGhost, ViewerEditBox } from '@/features/viewer3d';
 import type { ViewerHealthPayload } from '@simai/contracts';
 
 // 설치 · 보정 1단계(카메라 연결·각도·높이 확인, S15P31A101-448) 및 단계 상태 순수 계산.
@@ -21,15 +21,17 @@ import type { ViewerHealthPayload } from '@simai/contracts';
 
 export type Point = readonly [number, number];
 
-export const STEPS = ['카메라 · 높이 확인', '보정 검증', '완료'] as const;
-export type Stage = 0 | 1 | 2 | 3;
+export const STEPS = ['카메라 · 높이 확인', '보정 검증', '구역'] as const;
+export type Stage = 0 | 1 | 2;
 
-export const MAP_TITLE: readonly string[] = [
-  '카메라 쌍 시야 연결',
-  '검증 지점',
-  'BEV 평면도 · cal-8',
-  'BEV 평면도 · cal-8',
-];
+/** 구역 단계(마지막 단계). 맵이 준비되면 넘어가 3D 위에서 구역을 고치고 발행한다. */
+export const ZONE_STAGE: Stage = 2;
+
+export const MAP_TITLE: Record<Stage, string> = {
+  0: '카메라 쌍 시야 연결',
+  1: '검증 지점',
+  2: '3D 맵',
+};
 
 export type CalibrationState = ViewerHealthPayload['calibration_state'];
 
@@ -421,7 +423,7 @@ export function validateHeightFields(fields: readonly HeightFieldView[]): Height
 export const formatClock = (secs: number): string =>
   `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
 
-// 2단계 이후(보정 검증·완료) 표시용 상수(-453 에서 대기 화면·구역 편집 이동으로 교체 예정).
+// 2단계(보정 검증) 표시용 상수.
 export const HEAD_ERR_MAX_CM = 15;
 export const headErrorPass = (cm: number): boolean => cm <= HEAD_ERR_MAX_CM;
 
@@ -451,15 +453,13 @@ export const PODIUM: PlanRect = { x: 3.5, y: 0.4, width: 3, depth: 0.6 };
 export const OPENING: PlanRect = { x: 7.2, y: 8.2, width: 1.2, depth: 0.6 };
 export const DOOR = { x: 4.4, width: 0.9 } as const;
 export const PAIR_MISMATCH = '최대 6cm';
-export const RESULT = { reprojection: '1.7 · 3.9px', floorDiff: '1.8cm' } as const;
 
-export type ActionKey = 'start' | 'confirm' | 'restart' | 'zones';
+export type ActionKey = 'start' | 'confirm' | 'restart';
 
 export const ACTION_LABEL: Record<ActionKey, string> = {
   start: '다음',
   confirm: '보정 확정',
   restart: '다시 보정',
-  zones: '구역 편집',
 };
 
 export const SECONDARY_ACTIONS: ReadonlySet<ActionKey> = new Set(['restart']);
@@ -784,4 +784,25 @@ export function boxOfDraftItem(item: ZoneDraftItem): ViewerEditBox {
     min: [minX, minY, minZ],
     max: [maxX, maxY, maxZ],
   };
+}
+
+/** 구역 단계 3D 칸 제목: 미리보기 맵·정밀 3D 맵과 그 Scene 버전. 세팅 맵이 아직이면 지금 현장 맵이다. */
+export function zoneMapTitle(sceneTier: SceneTierStatusView): string {
+  if (sceneTier.tier === 'NONE') return MAP_TITLE[ZONE_STAGE];
+  const version = sceneTier.finalSceneVersion ?? sceneTier.previewSceneVersion;
+  return version ? `${sceneTier.label} · ${version}` : sceneTier.label;
+}
+
+/**
+ * 아직 수락·버리기 전인 AI 구역 초안을 3D 의 읽기 전용 점선 윤곽으로 바꾼다. 수락한 초안은 구역 편집 초안(새 구역)으로
+ * 보이므로 뺀다. id 는 구역 편집 초안 윤곽과 겹치지 않게 앞머리를 붙인다.
+ */
+export function draftGhostsOf(
+  drafts: readonly ZoneDraftItem[],
+  acceptedIds: readonly string[],
+  discardedIds: readonly string[],
+): ViewerBoxGhost[] {
+  return drafts
+    .filter((d) => !acceptedIds.includes(d.candidate_id) && !discardedIds.includes(d.candidate_id))
+    .map((d) => ({ id: `ai-draft:${d.candidate_id}`, box: boxOfDraftItem(d) }));
 }

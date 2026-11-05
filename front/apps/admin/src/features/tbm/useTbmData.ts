@@ -18,6 +18,7 @@ import {
   clampPeople,
   createTask,
   inputToWorkUnitBody,
+  todayIsoDate,
   type TaskInput,
 } from '@/features/tbm/taskInput';
 import { TBM_TASKS, type TbmTask } from '@/features/tbm/tbmDemo';
@@ -54,7 +55,8 @@ export interface UseTbmDataResult {
   /** 오류 안내 초기화. */
   clearMutationError: () => void;
   /** 작업 등록(POST /api/work-units 또는 데모 상태 추가). */
-  addTask: (input: TaskInput) => Promise<TbmTask>;
+  /** date 는 작업 날짜(YYYY-MM-DD, 없으면 오늘). */
+  addTask: (input: TaskInput, date?: string) => Promise<TbmTask>;
   /** 작업 수정(PUT /api/work-units/{id} 또는 데모 상태 수정). */
   editTask: (task: TbmTask, input: TaskInput) => Promise<TbmTask>;
   /** 작업 삭제(DELETE /api/work-units/{id} 또는 데모 상태 삭제). */
@@ -151,16 +153,16 @@ export function useTbmData(): UseTbmDataResult {
   }, [isFallback, serverWorks, demoTasks, layoutById, latestReportByWorkId]);
 
   const addTask = useCallback(
-    async (input: TaskInput): Promise<TbmTask> => {
+    async (input: TaskInput, date: string = todayIsoDate()): Promise<TbmTask> => {
       setMutationError(null);
       if (isFallback) {
-        const localCreated = createTask(tasks, input);
+        const localCreated = createTask(tasks, input, date);
         setDemoTasks((prev) => [...prev, localCreated]);
         return localCreated;
       }
 
-      const localCreated = createTask(tasks, input);
-      const body = inputToWorkUnitBody(input);
+      const localCreated = createTask(tasks, input, date);
+      const body = inputToWorkUnitBody(input, date);
       const optimisticWorkId = localCreated.id.replace(/^T/, '');
       const optimisticWork: TbmWorkUnit = {
         work_id: optimisticWorkId,

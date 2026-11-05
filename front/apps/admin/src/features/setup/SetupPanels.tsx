@@ -11,13 +11,11 @@ import {
   HEAD_ERR_MAX_CM,
   MAX_CAMERA_HEIGHT_M,
   PAIR_MISMATCH,
-  RESULT,
   type HeightFieldView,
   type HeightWarningItem,
   type SceneTierStatusView,
   type SetupTone,
   type SetupWaitingView,
-  type Stage,
   type Step1CoverageView,
 } from '@/features/setup/setup';
 import type { SetupZoneDraftsResponse, ZoneDraftItem } from '@/features/setup/types';
@@ -493,25 +491,21 @@ export function WaitingPanel({
   );
 }
 
-/** 미리보기 맵 · 정밀 Scene 상태 배지 및 AI 위험 구역 초안(수락·버리기·발행 뒤 TBM 이동) 패널. */
+/** 미리보기 맵 · 정밀 Scene 상태 배지 및 AI 위험 구역 초안(수락·버리기) 패널. */
 export function AiZoneDraftsPanel({
   sceneTier,
   draftsResponse,
   acceptedDraftIds,
   discardedDraftIds,
-  zonesCommitted,
   onAcceptDraft,
   onDiscardDraft,
-  onNavigateTbm,
 }: {
   sceneTier: SceneTierStatusView;
   draftsResponse: SetupZoneDraftsResponse | null;
   acceptedDraftIds: readonly string[];
   discardedDraftIds: readonly string[];
-  zonesCommitted: boolean;
   onAcceptDraft: (item: ZoneDraftItem) => void;
   onDiscardDraft: (candidateId: string) => void;
-  onNavigateTbm: () => void;
 }) {
   const allDrafts = draftsResponse?.drafts ?? [];
   const visibleDrafts = allDrafts.filter((d) => !discardedDraftIds.includes(d.candidate_id));
@@ -543,13 +537,9 @@ export function AiZoneDraftsPanel({
       </div>
 
       {draftsResponse?.status === 'QUEUED' || draftsResponse?.status === 'NOT_REQUESTED' ? (
-        <p className="text-xs text-muted-foreground">
-          AI 위험 구역 초안을 분석하고 있습니다 · 준비되는 대로 점선 다각형으로 표시됩니다
-        </p>
+        <p className="text-xs text-muted-foreground">AI 구역 초안 분석 중</p>
       ) : visibleDrafts.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
-          표시할 AI 구역 초안이 없습니다. 구역 편집 도구에서 직접 구역을 추가하거나 수정하세요.
-        </p>
+        <p className="text-xs text-muted-foreground">AI 구역 초안 없음</p>
       ) : (
         <ul aria-label="AI 구역 초안 목록" className="flex flex-col gap-2.5">
           {visibleDrafts.map((item) => {
@@ -632,26 +622,12 @@ export function AiZoneDraftsPanel({
           })}
         </ul>
       )}
-
-      {zonesCommitted && (
-        <div
-          role="status"
-          aria-label="구역 발행 완료 안내"
-          className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-ok/15 px-3.5 py-2.5 text-xs text-ok"
-        >
-          <span className="font-semibold">
-            구역 발행이 완료되었습니다. 작업 전 안전점검(TBM)으로 이동해 세션을 시작하세요.
-          </span>
-          <Button size="sm" onClick={onNavigateTbm}>
-            작업 관리(TBM)로 이동
-          </Button>
-        </div>
-      )}
     </Panel>
   );
 }
 
-function CheckPanel() {
+/** 세팅 세션이 없을 때 보정 검증 단계의 검증 지점 요약. */
+export function CheckPanel() {
   const maxErrorCm = Math.max(...CHECKS.map((c) => c.errorCm));
   return (
     <Panel title={`보정 검증 · 머리 높이 오차 ${HEAD_ERR_MAX_CM}cm 이하`}>
@@ -672,26 +648,4 @@ function CheckPanel() {
       />
     </Panel>
   );
-}
-
-function ResultPanel({ cameraCount }: { cameraCount: number }) {
-  const maxErrorCm = Math.max(...CHECKS.map((c) => c.errorCm));
-  return (
-    <Panel title="보정 결과">
-      <Stats
-        items={[
-          { label: '재투영 중앙 · p95', value: RESULT.reprojection },
-          { label: '머리 높이 오차', value: `최대 ${maxErrorCm}cm`, ok: true },
-          { label: '바닥 평면 차이', value: RESULT.floorDiff },
-          { label: '스케일 근거', value: `카메라 높이 ${cameraCount}대` },
-          { label: '검증 지점', value: `${CHECKS.length} / ${CHECKS.length}` },
-        ]}
-      />
-    </Panel>
-  );
-}
-
-export function StagePanel({ stage, cameraCount }: { stage: Stage; cameraCount: number }) {
-  if (stage === 1) return <CheckPanel />;
-  return <ResultPanel cameraCount={cameraCount} />;
 }

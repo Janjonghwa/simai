@@ -1,5 +1,5 @@
 import { ToolPalette } from '@/features/layout/spatialHost/ToolPalette';
-import { setSetupWorkUnitId, useSetupFlowStore } from '@/features/setup/setup.store';
+import { useSetupFlowStore } from '@/features/setup/setup.store';
 import { TBM_WORKS_KEY } from '@/features/tbm/api';
 import { todayIsoDate } from '@/features/tbm/taskInput';
 import type { TbmWorkUnit } from '@/features/tbm/types';
@@ -9,11 +9,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const navigate = vi.hoisted(() => vi.fn());
-vi.mock('@tanstack/react-router', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
-  useNavigate: () => navigate,
-}));
 // 맵 재생성 도구의 서버 연결은 이 시험의 관심 밖이다(자체 시험이 있다).
 vi.mock('@/features/layout/useSceneRegenerate', () => ({
   useSceneRegenerate: () => ({
@@ -76,7 +71,6 @@ function renderPalette(
 const button = (name: string) => screen.queryByRole('button', { name });
 
 beforeEach(() => {
-  navigate.mockReset();
   onResetView.mockReset();
   onRetry3d.mockReset();
   onToggleCctv.mockReset();
@@ -85,7 +79,6 @@ afterEach(() => {
   cleanup();
   stopZoneEdit();
   useSetupFlowStore.setState({ zonesCommitted: false });
-  setSetupWorkUnitId(null);
   useSessionStore.setState({ session: undefined });
 });
 
@@ -222,31 +215,12 @@ describe('ToolPalette 맵 재생성 도구 숨기기', () => {
 });
 
 describe('ToolPalette 작업 관리 이동', () => {
-  it('편집 중이고 세팅에서 구역을 발행한 뒤에만 보인다', () => {
-    renderPalette();
-    expect(button('작업 관리(TBM)로 이동')).toBeNull();
-
-    act(() => startZoneEdit());
-    expect(button('작업 관리(TBM)로 이동')).toBeNull();
-
-    act(() => useSetupFlowStore.setState({ zonesCommitted: true }));
-    expect(button('작업 관리(TBM)로 이동')).toBeTruthy();
-
-    act(() => stopZoneEdit());
-    expect(button('작업 관리(TBM)로 이동')).toBeNull();
-  });
-
-  it('작업이 정해져 있으면 그 작업으로, 아니면 작업 관리 목록으로 간다', () => {
+  it('세팅에서 구역을 발행한 뒤 편집 중이어도 작업 관리 이동 버튼을 두지 않는다(세팅 구역 단계가 작업 관리로 돌려보낸다)', () => {
     renderPalette();
     act(() => {
       startZoneEdit();
       useSetupFlowStore.setState({ zonesCommitted: true });
     });
-    fireEvent.click(screen.getByRole('button', { name: '작업 관리(TBM)로 이동' }));
-    expect(navigate).toHaveBeenLastCalledWith({ to: '/work', search: {} });
-
-    act(() => setSetupWorkUnitId(7));
-    fireEvent.click(screen.getByRole('button', { name: '작업 관리(TBM)로 이동' }));
-    expect(navigate).toHaveBeenLastCalledWith({ to: '/work', search: { workUnitId: '7' } });
+    expect(button('작업 관리(TBM)로 이동')).toBeNull();
   });
 });
