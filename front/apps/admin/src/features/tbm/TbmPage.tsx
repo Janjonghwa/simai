@@ -2,34 +2,31 @@ import { PageTitle } from '@/features/layout/PageTitle';
 import { setSetupWorkUnitId } from '@/features/setup/setup.store';
 import { WRAP_UP_GENERATING_TEXT } from '@/features/tbm/constants';
 import { SignaturePanel, useSignatures } from '@/features/tbm/SignaturePanel';
-import { PILL, SWITCH } from '@/features/tbm/styles';
+import { ALERT, PILL, SWITCH } from '@/features/tbm/styles';
 import { TaskAddDialog, TaskEditDialog } from '@/features/tbm/TaskForm';
-import { createTask, taskToInput, type TaskInput } from '@/features/tbm/taskInput';
+import { createTask, taskToInput, todayIsoDate, type TaskInput } from '@/features/tbm/taskInput';
 import { TaskList } from '@/features/tbm/TaskList';
-import { clockText, tbmInterferences } from '@/features/tbm/tbm';
+import { tbmInterferences } from '@/features/tbm/tbm';
 import { TBM_TASKS, type TbmTask } from '@/features/tbm/tbmDemo';
 import { TbmPrint } from '@/features/tbm/TbmDocument';
 import { TbmEditDialog } from '@/features/tbm/TbmEditDialog';
 import { TbmFormSheet } from '@/features/tbm/TbmFormSheet';
 import { TbmLayoutEditorDialog } from '@/features/tbm/TbmLayoutEditorDialog';
 import { TbmLeftPanel } from '@/features/tbm/TbmLeftPanel';
+import { TbmLegalPanel } from '@/features/tbm/TbmLegalPanel';
 import { TbmMinutesPanel } from '@/features/tbm/TbmMinutesPanel';
-import {
-  displayTaskId,
-  tbmFailureReasonText,
-  workTypeLabelOf,
-  type LayoutDetail,
-} from '@/features/tbm/types';
+import { displayTaskId, workTypeLabelOf, type LayoutDetail } from '@/features/tbm/types';
 import { useMinutesForm } from '@/features/tbm/useMinutesForm';
 import { usePrint } from '@/features/tbm/usePrint';
-import { useReceiving } from '@/features/tbm/useReceiving';
 import { useSetupLookup } from '@/features/tbm/useSetupLookup';
 import { useTbmData } from '@/features/tbm/useTbmData';
 import { useTbmReport } from '@/features/tbm/useTbmReport';
 import { useWorkSession } from '@/features/tbm/useWorkSession';
-import { confirmWorkEnd, confirmWorkStart } from '@/features/tbm/workConfirm';
-import { deriveWorkStages, unfinishedBeforeStart } from '@/features/tbm/workStage';
+import { confirmWorkDelete, confirmWorkEnd, confirmWorkStart } from '@/features/tbm/workConfirm';
+import { dayText, WorkDateNav } from '@/features/tbm/WorkDateNav';
+import { deriveWorkStages, unfinishedBeforeStart, type StageKey } from '@/features/tbm/workStage';
 import { WorkStageBar } from '@/features/tbm/WorkStageBar';
+import { WorkRunningCard, WrapUpBand } from '@/features/tbm/WorkStatusCards';
 import { createQueryClient } from '@/lib/queryClient';
 import { Button } from '@simai/ui/components/button';
 import { Card } from '@simai/ui/components/card';
@@ -39,29 +36,39 @@ import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 const EMPTY_PLACEHOLDER_TASK: TbmTask = TBM_TASKS[0]!;
 
-/** 기본 선택: 진행 중 → 예정 → 상태 값이 없는 작업(데모·폴백). 끝난 작업만 있으면 선택 없음. */
-function defaultSelectedTask(tasks: readonly TbmTask[]): TbmTask | undefined {
+/**
+ * 그날의 기본 선택: 진행 중 → 예정 → 상태 값이 없는 작업(데모·폴백). 지난 날은 끝난 작업을 돌아보는 곳이라 끝난 작업도
+ * 고른다. 오늘·앞날에 끝난 작업만 있으면 고르지 않는다(새 작업 등록 빈 상태).
+ */
+function defaultSelectedTask(tasks: readonly TbmTask[], past: boolean): TbmTask | undefined {
   return (
     tasks.find((t) => t.status === 'IN_PROGRESS') ??
     tasks.find((t) => t.status === 'PLANNED') ??
-    tasks.find((t) => t.status === undefined)
+    tasks.find((t) => t.status === undefined) ??
+    (past ? tasks[0] : undefined)
   );
 }
 
-// 작업 관리(/work). 작업마다 단계(세팅 → 구역 → TBM 보고서 → 시작 → 종료 → 마무리·서명)를 보이고, 가상 레이아웃 · 위험성 평가 ·
-// 법령 지식 그래프 · 동시 작업 간섭을 보이며 TBM 회의록을 채워 반장에게 보낸다. 예전 이름은 레이아웃 · TBM 보고서(계획 모드). 작업마다 가상 레이아웃 · 위험성 평가 · 법령 지식 그래프 · 동시 작업 간섭을 보이고
-// TBM 회의록을 채워 반장에게 보낸다. 서버 API 실패(네트워크 끊김·5xx) 때만 tbmDemo 로 대체 화면을 그린다.
+// 작업 관리(/work). 위쪽 두 줄: 날짜(◀ 날짜 ▶ · 오늘)와 그날 작업, 고른 작업의 단계 줄(세팅 → 구역 → TBM 보고서 → 시작 → 종료 →
+// 마무리·서명)과 다음 행동 단추. 본문은 고른 작업의 상태에 따라 바뀐다:
+// - 계획: 가상 레이아웃 · 법령 근거(RAG) · TBM 회의록 3블록(1:1:1)
+// - 진행 중: 시작 · 경과 · 사건 수와 실시간 관제로 가기 · 작업 종료(TBM 3블록은 접어 둔다)
+// - 종료: 작업 중 사건 집계 띠 + 3블록. 서명 · 결재 패널은 단계 줄의 서명하기로 펼친다.
+// 서버 API 실패(네트워크 끊김·5xx) 때만 tbmDemo 로 대체 화면을 그린다.
 
 export interface TbmPageProps {
   /** 처음 선택할 작업 id(세팅 화면에서 돌아올 때 /work?workUnitId=). */
   initialWorkId?: string;
-  /** 이 작업의 현장 세팅 화면으로 간다(/setup?workUnitId=). */
+  /**
+   * 이 작업의 현장 세팅 화면으로 간다(/setup?workUnitId=). 구역 단계도 세팅 화면의 마지막 단계라 같은 곳으로 간다(맵이
+   * 준비된 세션이면 세팅 화면이 구역 단계로 연다).
+   */
   onOpenSetup?: (workUnitId: number) => void;
-  /** 구역 설정(관제 화면 구역 편집)으로 간다. */
-  onOpenZones?: () => void;
+  /** 실시간 관제로 간다. */
+  onOpenMonitor?: () => void;
 }
 
-function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProps) {
+function TbmPageContent({ initialWorkId, onOpenSetup, onOpenMonitor }: TbmPageProps) {
   const {
     tasks,
     workTypes,
@@ -74,25 +81,40 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
     editTask,
     deleteTask,
   } = useTbmData();
-  // 선택 없음(null)이면 기본 선택(진행 중 → 예정)을 쓰고, 목록이 뜬 뒤 한 번 굳힌다. 사용자가 고른 선택은 덮지 않는다.
-  const [selected, setSelected] = useState<string | null>(
-    initialWorkId ? displayTaskId(initialWorkId) : null,
-  );
+  const today = todayIsoDate(new Date());
+  /** 고른 날짜. 고르기 전에는 처음 고른 작업(?workUnitId=)의 날짜, 그것도 없으면 오늘. */
+  const [pickedDay, setDay] = useState<string | null>(null);
+  const [selected, setSelected] = useState(initialWorkId ? displayTaskId(initialWorkId) : null);
   const [adding, setAdding] = useState(false);
   const [editingTask, setEditingTask] = useState(false);
   const [editingLayout, setEditingLayout] = useState(false);
   const [editingLayoutInitialId, setEditingLayoutInitialId] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
-  /** 왼쪽 패널을 레이아웃 대신 평가 · 간섭으로 바꿔 보는지(기본은 레이아웃). */
+  /** 왼쪽 블록을 레이아웃 대신 평가 · 간섭으로 바꿔 보는지(기본은 레이아웃). */
   const [detail, setDetail] = useState(false);
-  /** 작업마다 반장 PWA 로 보낸 시각. */
-  const [sentAt, setSentAt] = useState<Record<string, string>>({});
+  /** 종료한 작업의 서명 · 결재 패널을 펼쳤는지. */
+  const [signOpen, setSignOpen] = useState(false);
+  /** 진행 중 작업의 접어 둔 TBM 3블록을 펼쳤는지. */
+  const [showTbm, setShowTbm] = useState(false);
   const [message, setMessage] = useState('');
 
-  const defaultTask = defaultSelectedTask(tasks);
+  const initialTask = initialWorkId
+    ? tasks.find((t) => t.id === displayTaskId(initialWorkId))
+    : undefined;
+  const day = pickedDay ?? initialTask?.date ?? today;
+
+  // 그날 작업(계획 시작 시각순). 날짜가 없는 대체 화면 작업은 오늘로 본다.
+  const dayTasks = useMemo(
+    () =>
+      tasks.filter((t) => (t.date ?? today) === day).sort((a, b) => a.from.localeCompare(b.from)),
+    [tasks, day, today],
+  );
+  const defaultTask = defaultSelectedTask(dayTasks, day < today);
   const currentTask =
-    (selected !== null ? tasks.find((t) => t.id === selected) : undefined) ?? defaultTask ?? null;
-  // 목록이 뜬 첫 순간의 기본 선택을 굳힌다(렌더 중 갱신). 그 뒤 작업 상태가 바뀌어도 선택이 옮겨 가지 않는다.
+    (selected !== null ? dayTasks.find((t) => t.id === selected) : undefined) ??
+    defaultTask ??
+    null;
+  // 그날 목록이 뜬 첫 순간의 기본 선택을 굳힌다(렌더 중 갱신). 그 뒤 작업 상태가 바뀌어도 선택이 옮겨 가지 않는다.
   if (selected === null && defaultTask) setSelected(defaultTask.id);
   const task = currentTask ?? EMPTY_PLACEHOLDER_TASK;
   const workId = currentTask ? (currentTask.workId ?? currentTask.id.replace(/^T/, '')) : undefined;
@@ -111,13 +133,12 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
 
   const session = useWorkSession(workId, selectVersion);
 
-  // 세팅 화면·구역 편집에서 어느 작업인지 알 수 있게 선택한 작업을 남긴다(숫자 id 만).
+  // 세팅 화면에서 어느 작업인지 알 수 있게 선택한 작업을 남긴다(숫자 id 만).
   const numericWorkId = workId !== undefined && /^\d+$/.test(workId) ? Number(workId) : null;
+  const canOpenSetup = numericWorkId !== null && numericWorkId > 0;
   useEffect(() => {
-    if (!isFallback && numericWorkId !== null && numericWorkId > 0) {
-      setSetupWorkUnitId(numericWorkId);
-    }
-  }, [isFallback, numericWorkId]);
+    if (!isFallback && canOpenSetup) setSetupWorkUnitId(numericWorkId);
+  }, [isFallback, canOpenSetup, numericWorkId]);
 
   // 단계 판정은 서버 값으로만: 작업(active_setup_session_id·status·actual_*), 세팅 세션, 최신 보고서.
   const setupSessionId = currentTask?.activeSetupSessionId ?? null;
@@ -133,7 +154,7 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
     report: latestReport,
     reportKnown: reportLoaded,
   });
-  const signRef = useRef<HTMLDivElement>(null);
+  const legalRef = useRef<HTMLDivElement>(null);
 
   const startWork = () => {
     // 세팅·구역이 끝나지 않았어도 막지 않고 확인만 한다.
@@ -143,24 +164,33 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
     if (confirmWorkEnd()) void session.run('end');
   };
 
-  const interferences = useMemo(() => tbmInterferences(tasks), [tasks]);
-  const { receiving, restart } = useReceiving(task.id);
+  const interferences = useMemo(() => tbmInterferences(dayTasks), [dayTasks]);
   const { edits, filled, canUndo, save, undo } = useMinutesForm(task, report);
   const signatures = useSignatures(report);
-  const { printing, items, print, error: printError } = usePrint(tasks, task, edits, report);
+  const { printing, items, print, error: printError } = usePrint(dayTasks, task, edits, report);
 
-  const select = (id: string) => {
-    if (id !== currentTask?.id) {
-      setSelected(id);
-      restart();
-    }
+  /** 작업이나 날짜를 바꾸면 열려 있던 창과 펼친 패널을 닫는다. */
+  const resetView = () => {
     setEditing(false);
     setEditingTask(false);
     setEditingLayout(false);
     setAdding(false);
+    setSignOpen(false);
+    setShowTbm(false);
     setMessage('');
     clearError();
     clearMutationError();
+  };
+
+  const select = (id: string) => {
+    setSelected(id);
+    resetView();
+  };
+
+  const changeDay = (next: string) => {
+    setDay(next);
+    setSelected(null);
+    resetView();
   };
 
   const openAdd = () => {
@@ -183,10 +213,9 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
 
   const add = (input: TaskInput) => {
     const previousSelected = currentTask?.id ?? null;
-    const optimistic = createTask(tasks, input);
+    const optimistic = createTask(tasks, input, day);
     setAdding(false);
     setSelected(optimistic.id);
-    restart();
     clearError();
     clearMutationError();
     setMessage(
@@ -194,7 +223,7 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
         optimistic.layoutId ? `가상 레이아웃 #${optimistic.layoutId} 연결` : '배치는 아직 없음'
       }`,
     );
-    void addTask(input)
+    void addTask(input, day)
       .then((created) => {
         if (created.id !== optimistic.id) {
           setSelected(created.id);
@@ -224,15 +253,12 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
   };
 
   const handleDeleteTask = () => {
-    if (!currentTask) return;
+    if (!currentTask || !confirmWorkDelete(`${currentTask.id} · ${currentTask.name}`)) return;
     const deletedId = currentTask.id;
-    const remaining = tasks.filter((t) => t.id !== deletedId);
     setEditingTask(false);
     void deleteTask(currentTask)
       .then(() => {
-        if (remaining[0]) {
-          setSelected(remaining[0].id);
-        }
+        setSelected(null);
         setMessage(`${deletedId} 삭제됨`);
       })
       .catch(() => {
@@ -266,214 +292,200 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
     void generate();
   };
 
-  const send = () => {
-    setSentAt({ ...sentAt, [task.id]: clockText(new Date()) });
-    setMessage(`${task.id} 회의록을 반장 ${task.lead} PWA로 보냄`);
+  const openSetup = () => {
+    if (canOpenSetup) onOpenSetup?.(numericWorkId);
+  };
+
+  /** 단계 줄의 단계를 누르면 그 단계 화면으로 간다. */
+  const openStage = (key: StageKey) => {
+    if (key === 'setup' || key === 'zones') openSetup();
+    else if (key === 'start' || key === 'end') onOpenMonitor?.();
+    else if (key === 'sign') setSignOpen(task.status === 'DONE');
+    else {
+      setShowTbm(true);
+      legalRef.current?.scrollIntoView?.({ block: 'nearest' });
+    }
   };
 
   const closeEditor = () => setEditing(false);
 
-  const reportButtonLabel = isGenerating
-    ? '보고서 생성 중…'
-    : report
-      ? '보고서 재생성'
-      : '보고서 생성';
+  // 작업 마무리 문단은 따로 줄을 두지 않고 작업 중 사건 띠 안에 넣는다.
+  const wrapUpNote =
+    report?.wrap_up_summary ||
+    (report?.wrap_up_status === 'GENERATING' ? WRAP_UP_GENERATING_TEXT : null);
+
+  // 세팅·구역이 아직이고 보고서도 없으면 3블록은 빈 칸뿐이다. 흐리게 덮고 가운데에 다음 단계 단추를 크게 둔다(둘 다 세팅
+  // 화면을 연다. 구역은 세팅 화면의 마지막 단계다).
+  const gate =
+    isFallback || report
+      ? null
+      : stageResult.current === 'setup'
+        ? setupSessionId !== null
+          ? '세팅 이어가기'
+          : '세팅 시작'
+        : stageResult.current === 'zones'
+          ? '구역 설정'
+          : null;
+
+  const blocks = (
+    <div className="relative flex min-h-[450px] flex-1 flex-col">
+      <div
+        inert={gate !== null}
+        className={cn(
+          'grid min-h-0 flex-1 grid-cols-3 grid-rows-[minmax(0,1fr)] gap-3.5',
+          gate && 'pointer-events-none opacity-50 blur-[3px] select-none',
+        )}
+      >
+        <TbmLeftPanel
+          task={task}
+          tasks={dayTasks}
+          interferences={interferences}
+          detail={detail}
+          report={report}
+          onSwitch={() => setDetail(!detail)}
+          onEditLayout={() => openLayoutEditor(task.layoutId ?? null)}
+        />
+        <div ref={legalRef} className="flex min-h-0 min-w-0 flex-col">
+          <TbmLegalPanel
+            report={report}
+            versions={versions}
+            selectedReportId={selectedReportId}
+            generating={isGenerating}
+            onSelectVersion={selectVersion}
+            onGenerate={handleGenerate}
+          />
+        </div>
+        <TbmMinutesPanel
+          task={task}
+          form={filled}
+          blank={!report}
+          version={report?.report_version}
+          canUndo={canUndo}
+          onEdit={() => setEditing(true)}
+          onUndo={undo}
+          onPrint={() => print(false, closeEditor)}
+        />
+      </div>
+      {gate && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <Button
+            disabled={!canOpenSetup}
+            onClick={openSetup}
+            className="h-14 rounded-xl px-9 text-lg font-bold shadow-float"
+          >
+            {gate}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <>
       <PageTitle>작업 관리</PageTitle>
+      <div className="flex flex-none items-center gap-3">
+        <WorkDateNav day={day} today={today} onChange={changeDay} />
+        <TaskList
+          tasks={dayTasks}
+          selectedId={currentTask?.id ?? null}
+          dayLabel={dayText(day)}
+          onSelect={select}
+          onAdd={openAdd}
+          onEdit={() => {
+            setEditingTask(true);
+            setAdding(false);
+          }}
+          onDelete={handleDeleteTask}
+        />
+        {isFallback && (
+          <span
+            role="status"
+            data-testid="tbm-demo-badge"
+            className={cn(PILL, 'bg-amber-500/20 font-semibold text-amber-300 ring-amber-400/50')}
+          >
+            데모 데이터
+          </span>
+        )}
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={dayTasks.length === 0}
+          onClick={() => print(true, closeEditor)}
+          className={SWITCH}
+        >
+          묶음 출력
+        </Button>
+      </div>
       {currentTask ? (
         <>
-          <div className="flex flex-none flex-wrap items-center gap-2.5">
-            <TaskList
-              tasks={tasks}
-              selectedId={task.id}
-              sentAt={sentAt}
-              onSelect={select}
-              onAdd={openAdd}
-            >
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                aria-haspopup="dialog"
-                onClick={() => {
-                  setEditingTask(true);
-                  setAdding(false);
-                }}
-                className={SWITCH}
-              >
-                작업 수정
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                aria-haspopup="dialog"
-                onClick={() => openLayoutEditor(task.layoutId ?? null)}
-                className={SWITCH}
-              >
-                3D 레이아웃 편집
-              </Button>
-              {isFallback && (
-                <span
-                  role="status"
-                  data-testid="tbm-demo-badge"
-                  className={cn(
-                    PILL,
-                    'bg-amber-500/20 font-semibold text-amber-300 ring-amber-400/50',
-                  )}
-                >
-                  데모 데이터
-                </span>
-              )}
-              <span className={cn(PILL, 'ml-auto')}>계획 모드</span>
-              {versions.length > 0 && (
-                <select
-                  aria-label="보고서 버전"
-                  value={selectedReportId ?? versions[0]!.report_id}
-                  onChange={(e) => selectVersion(Number(e.target.value))}
-                  className="h-9 rounded-lg border border-border bg-surface-2 px-2.5 text-xs font-semibold text-foreground outline-none"
-                >
-                  {versions.map((v) => (
-                    <option key={v.report_id} value={v.report_id}>
-                      v{v.report_version} ({v.status})
-                    </option>
-                  ))}
-                </select>
-              )}
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={handleGenerate}
-                className={cn(SWITCH, isGenerating && 'animate-pulse')}
-              >
-                {reportButtonLabel}
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => print(true, closeEditor)}
-                className={SWITCH}
-              >
-                하루치 묶음 PDF
-              </Button>
-            </TaskList>
-          </div>
-          <div className="flex flex-wrap items-center gap-3 text-sm">
-            <span>
-              상태:{' '}
-              {task.status === 'IN_PROGRESS'
-                ? '진행'
-                : task.status === 'DONE'
-                  ? '종료'
-                  : task.status === 'PLANNED'
-                    ? '계획'
-                    : '알 수 없음'}
-            </span>
-            <span>
-              실제 시작:{' '}
-              {task.actualStartedAt ? new Date(task.actualStartedAt).toLocaleString() : '—'}
-            </span>
-            <span>
-              실제 종료: {task.actualEndedAt ? new Date(task.actualEndedAt).toLocaleString() : '—'}
-            </span>
-          </div>
           {!isFallback && (
             <WorkStageBar
               result={stageResult}
               status={task.status}
               hasSetupSession={setupSessionId !== null}
-              canOpenSetup={numericWorkId !== null && numericWorkId > 0}
+              canOpenSetup={canOpenSetup}
               generating={isGenerating}
               pending={session.pending}
-              onOpenSetup={() => {
-                if (numericWorkId !== null) onOpenSetup?.(numericWorkId);
-              }}
-              onOpenZones={() => onOpenZones?.()}
+              onStep={openStage}
+              onOpenSetup={openSetup}
               onGenerate={handleGenerate}
               onStart={startWork}
-              onEnd={endWork}
-              onSign={() => signRef.current?.scrollIntoView?.({ block: 'start' })}
+              onSign={() => setSignOpen(true)}
+              hideNext={gate !== null}
+              canSign={Boolean(report)}
             />
           )}
-          <p role="status">
-            {report?.wrap_up_summary
-              ? `작업 마무리: ${report.wrap_up_summary}`
-              : report?.wrap_up_status === 'GENERATING'
-                ? WRAP_UP_GENERATING_TEXT
-                : session.message}
+          <p role="status" className="flex-none text-sm empty:hidden">
+            {session.message}
           </p>
-          <p role="status" className="text-[13px] text-point-soft empty:hidden">
+          <p role="status" className="flex-none text-[13px] text-point-soft empty:hidden">
             {message}
           </p>
           {printError && <p role="alert">{printError}</p>}
           {mutationError && (
-            <div
-              role="alert"
-              data-testid="tbm-mutation-error"
-              className="rounded-lg bg-destructive/15 px-3.5 py-2 text-[13px] text-destructive ring-1 ring-destructive/40 ring-inset"
-            >
+            <div role="alert" data-testid="tbm-mutation-error" className={ALERT}>
               {mutationError}
             </div>
           )}
           {requestError && (
-            <div
-              role="alert"
-              data-testid="tbm-request-error"
-              className="rounded-lg bg-destructive/15 px-3.5 py-2 text-[13px] text-destructive ring-1 ring-destructive/40 ring-inset"
-            >
+            <div role="alert" data-testid="tbm-request-error" className={ALERT}>
               {requestError}
             </div>
           )}
-          {report?.status === 'FAILED' && (
-            <div
-              role="alert"
-              data-testid="tbm-report-failed"
-              className="rounded-lg bg-destructive/15 px-3.5 py-2 text-[13px] text-destructive ring-1 ring-destructive/40 ring-inset"
-            >
-              {tbmFailureReasonText(report.failure_reason)}
-            </div>
+          {task.status === 'IN_PROGRESS' && (
+            <WorkRunningCard
+              task={task}
+              pending={session.pending}
+              showTbm={showTbm}
+              onMonitor={() => onOpenMonitor?.()}
+              onEnd={endWork}
+              onToggleTbm={() => setShowTbm(!showTbm)}
+            />
           )}
-          {report && !isFallback && (
-            <div ref={signRef}>
+          {task.status === 'DONE' && <WrapUpBand task={task} summary={wrapUpNote} />}
+          {task.status === 'DONE' && signOpen && report && !isFallback && (
+            <div className="relative flex-none">
               <SignaturePanel
                 key={`${report.report_id}-${report.report_version}`}
                 report={report}
                 signatures={signatures}
               />
+              <button
+                type="button"
+                aria-label="서명 닫기"
+                onClick={() => setSignOpen(false)}
+                className="absolute top-3 right-3 inline-flex size-8 items-center justify-center rounded-md bg-surface-2 text-muted-foreground hover:bg-surface-3 hover:text-foreground"
+              >
+                ×
+              </button>
             </div>
           )}
-          <div className="[container-type:size] flex min-h-[560px] flex-1 gap-3.5">
-            <TbmLeftPanel
-              task={task}
-              tasks={tasks}
-              interferences={interferences}
-              detail={detail}
-              report={report}
-              onSwitch={() => setDetail(!detail)}
-            />
-            <TbmMinutesPanel
-              task={task}
-              form={filled}
-              receiving={receiving}
-              canUndo={canUndo}
-              onEdit={() => setEditing(true)}
-              onUndo={undo}
-              onPrint={() => print(false, closeEditor)}
-              onSend={send}
-            />
-          </div>
+          {(task.status !== 'IN_PROGRESS' || showTbm) && blocks}
         </>
       ) : (
-        <div className="flex min-h-[560px] flex-1 flex-col gap-3">
+        <div className="flex min-h-[420px] flex-1 flex-col gap-3">
           {mutationError && (
-            <div
-              role="alert"
-              data-testid="tbm-mutation-error"
-              className="rounded-lg bg-destructive/15 px-3.5 py-2 text-[13px] text-destructive ring-1 ring-destructive/40 ring-inset"
-            >
+            <div role="alert" data-testid="tbm-mutation-error" className={ALERT}>
               {mutationError}
             </div>
           )}
@@ -483,32 +495,16 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
           >
             {isLoading ? (
               <p className="text-sm text-muted-foreground">작업 목록을 불러오는 중입니다…</p>
-            ) : tasks.length > 0 ? (
+            ) : dayTasks.length > 0 ? (
               <>
                 <p className="text-base font-semibold text-foreground">진행 중인 작업이 없습니다</p>
-                <p className="text-xs text-muted-foreground">등록하면 1. 세팅부터 시작합니다</p>
                 <Button type="button" onClick={openAdd} className="font-bold">
                   새 작업 등록
                 </Button>
-                <div className="flex flex-wrap items-center justify-center gap-2.5">
-                  <TaskList
-                    tasks={tasks}
-                    selectedId=""
-                    sentAt={sentAt}
-                    onSelect={select}
-                    onAdd={openAdd}
-                    hideAdd
-                  />
-                </div>
               </>
             ) : (
               <>
-                <p className="text-base font-semibold text-foreground">
-                  등록된 작업이 없습니다 — 작업 추가
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  새 작업을 등록하고 가상 레이아웃을 배치해 TBM 보고서를 생성하세요.
-                </p>
+                <p className="text-base font-semibold text-foreground">등록된 작업이 없습니다</p>
                 <Button type="button" onClick={openAdd} className="font-bold">
                   + 작업 등록
                 </Button>
@@ -518,25 +514,15 @@ function TbmPageContent({ initialWorkId, onOpenSetup, onOpenZones }: TbmPageProp
         </div>
       )}
       {adding && (
-        <TaskAddDialog
-          workTypes={workTypes}
-          layouts={layouts}
-          serverZones={!isFallback}
-          onAdd={add}
-          onCancel={() => setAdding(false)}
-          onOpenLayoutEditor={(layoutId) => openLayoutEditor(layoutId)}
-        />
+        <TaskAddDialog workTypes={workTypes} onAdd={add} onCancel={() => setAdding(false)} />
       )}
       {editingTask && currentTask && (
         <TaskEditDialog
           task={currentTask}
           workTypes={workTypes}
-          layouts={layouts}
-          serverZones={!isFallback}
           onSave={saveTaskEdit}
           onCancel={() => setEditingTask(false)}
           onDelete={handleDeleteTask}
-          onOpenLayoutEditor={(layoutId) => openLayoutEditor(layoutId)}
         />
       )}
       {editingLayout && (

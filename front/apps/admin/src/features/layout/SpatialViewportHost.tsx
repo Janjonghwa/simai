@@ -1,53 +1,34 @@
 import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { CamSplitPanel } from '@/features/cctv/CamSplitPanel';
 import { CctvFloat } from '@/features/cctv/CctvFloat';
-import { PLAN_FALLBACK_MS } from '@/features/layout/spatialHost/constants';
+import {
+  MONITOR_LAYERS,
+  PLAN_FALLBACK_MS,
+  ZONE_EDIT_LAYERS,
+} from '@/features/layout/spatialHost/constants';
 import { HostEventPanel } from '@/features/layout/spatialHost/HostEventPanel';
 import { PlanOverlay } from '@/features/layout/spatialHost/PlanOverlay';
 import { ToolPalette } from '@/features/layout/spatialHost/ToolPalette';
 import { useBoxEditProps } from '@/features/layout/spatialHost/useBoxEditProps';
-import { useSpatialSnapshots } from '@/features/layout/spatialHost/useSpatialSnapshots';
 import {
   importViewer,
-  useViewerMode,
   type SpatialViewMode,
   type ViewerModule,
 } from '@/features/layout/spatialHost/useViewerMode';
-import { useViewerSelection } from '@/features/layout/spatialHost/useViewerSelection';
+import { useViewportHost } from '@/features/layout/spatialHost/useViewportHost';
 import { ZoneEditFade } from '@/features/layout/spatialHost/ZoneEditFade';
 import { useThemeStore } from '@/features/layout/theme.store';
-import { useCurrentScene } from '@/features/layout/useCurrentScene';
 import { useZoneEditActive } from '@/features/monitor/useZoneEditActive';
 import { ViewerLoadBoundary } from '@/features/monitor/ViewerLoadBoundary';
 import { PlanMinimap } from '@/features/plan/PlanMinimap';
-import type {
-  CommandResult,
-  Viewer3DHandle,
-  ViewerLayers,
-  ViewerSceneStatus,
-  ViewerStatus,
-  ViewerTarget,
-} from '@/features/viewer3d';
+import type { CommandResult, ViewerTarget } from '@/features/viewer3d';
 import { useWatchBadges, useWatchBindDetector } from '@/features/watch/useWatch';
 import { useWatchBindEffectStore } from '@/features/watch/watchBindEffect.store';
 import type { ViewerZones, Zone } from '@/features/zones/types';
-import { useZones } from '@/features/zones/useZones';
 import { avatarMeshFetch } from '@/lib/avatarMeshFetch';
-import { usableScanBounds } from '@/lib/roomLimit';
 import { useRealtimeStore } from '@/store/realtime.store';
-import { useRoomBoundsStore } from '@/store/roomBounds.store';
 import { cn } from '@simai/ui/lib/utils';
-import {
-  createContext,
-  Suspense,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react';
+import { createContext, Suspense, useContext, useState, type ReactNode } from 'react';
 
 export interface SpatialViewportValue {
   view: SpatialViewMode;
@@ -72,21 +53,6 @@ function readSceneVersion(scene: unknown): string | null {
 }
 
 /**
- * 뷰어가 알린 장면 상태에서 보이는 스캔의 경계를 꺼내 호스트 저장소에 올린다(새 구역 자리·머리글이 읽는다).
- * 스캔이 숨겨졌거나 쓸 수 없거나 3D 를 보고 있지 않을 때, 그리고 호스트가 내려갈 때는 비워 목업 교실로 돌아간다.
- */
-function usePublishRoomBounds(view: SpatialViewMode, sceneStatus: ViewerSceneStatus | null) {
-  const shown =
-    view === '3d' && sceneStatus && sceneStatus.display !== 'HIDDEN'
-      ? usableScanBounds(sceneStatus.boundsWorld)
-      : null;
-  useEffect(() => {
-    useRoomBoundsStore.getState().set(shown);
-  }, [shown]);
-  useEffect(() => () => useRoomBoundsStore.getState().set(null), []);
-}
-
-/**
  * 실시간 관제(/)의 3D World · 2D 비상 평면 · 도구 모음 · 우측 이벤트 패널 호스트. 관리자 편집 모드(구역 편집)도
  * 이 화면 위에서 한다. AppLayout 이 fullBleed 인 화면(관제 하나뿐)에서만 마운트하므로 다른 화면으로 가면 내려가고,
  * 돌아오면 3D 를 새로 띄운다.
@@ -106,93 +72,43 @@ export function SpatialViewportHost({
 }) {
   const source = useRealtimeStore((s) => s.source);
   const theme = useThemeStore((s) => s.theme);
-  const viewer = useRef<Viewer3DHandle>(null);
-  const { zones, raw: zonesRaw, failed: zonesFailed } = useZones();
-  const { scene, sceneStatus, onSceneStatusChange } = useCurrentScene();
-  const boxEditProps = useBoxEditProps();
-  const editing = useZoneEditActive();
-  const [cctvOpen, setCctvOpen] = useState(false);
-  const split = useCamSplitStore((s) => s.split);
   const {
+    viewer,
+    scene,
+    sceneStatus,
+    onSceneStatusChange,
     view,
     viewerReady,
     showPlan,
     Viewer3D,
     loadAttempt,
-    onViewerReady,
-    onViewerError,
     onLoadError,
     show3d,
-  } = useViewerMode(loadViewer, planFallbackMs);
-  usePublishRoomBounds(view, sceneStatus);
-  const pushSnapshots = useSpatialSnapshots(view, zonesRaw);
-  const {
     selectedKey,
-    selectedZoneId,
     setSelectedKey,
-    selectTarget,
-    clearSelection,
     selectIncident,
     onViewerSelect,
-  } = useViewerSelection({ viewer, view, viewerReady, zones, zonesRaw });
-
-  const onViewerStatus = useCallback(
-    (status: ViewerStatus) => {
-      if (status.phase === 'error') {
-        onViewerError();
-      } else if (status.phase === 'ready') {
-        onViewerReady();
-        pushSnapshots();
-      }
-    },
-    [onViewerError, onViewerReady, pushSnapshots],
-  );
-
-  const viewportValue = useMemo<SpatialViewportValue>(
-    () => ({
-      view,
-      viewerReady,
-      selectedKey,
-      selectedZoneId,
-      zones,
-      zonesRaw,
-      zonesFailed,
-      selectTarget,
-      clearSelection,
-    }),
-    [
-      view,
-      viewerReady,
-      selectedKey,
-      selectedZoneId,
-      zones,
-      zonesRaw,
-      zonesFailed,
-      selectTarget,
-      clearSelection,
-    ],
-  );
+    onViewerStatus,
+    viewport,
+  } = useViewportHost({ source, loadViewer, planFallbackMs });
+  const boxEditProps = useBoxEditProps();
+  const editing = useZoneEditActive();
+  const [cctvOpen, setCctvOpen] = useState(false);
+  const split = useCamSplitStore((s) => s.split);
 
   // 편집 모드에서는 이벤트 패널·카메라 분할 창·2D 미니맵을 두지 않고 구역 편집에 화면을 준다(맵 재생성은 도구 모음이 숨긴다).
   const showEventPanel = eventPanel && !editing;
-  // 작업면은 관리자 편집 모드(이벤트 패널이 없는 호스트도 같다)에서 고르고 고친다(구역 없는 작업면을 지우려면 골라야 한다).
-  // 관제에서는 보이기만 해 사람·구역 선택을 가로막지 않는다. 장애물은 고치는 화면이 없어 어디서도 고르지 않는다.
+  // 작업면은 관리자 편집 모드(이벤트 패널이 없는 호스트도 같다)에서 고르고 고친다. 관제에서는 보이기만 한다.
+  const layers = editing || !eventPanel ? ZONE_EDIT_LAYERS : MONITOR_LAYERS;
   // 사람 이름표 뒤 워치 채널 상태(-342). 배정·연결이 바뀔 때만 새 객체다
   const personBadges = useWatchBadges();
   // 손 흔들어 워치가 새로 이어진 사람 강조(-509). 편집 모드에서는 숨긴다
   useWatchBindDetector();
   const bindHighlights = useWatchBindEffectStore((s) => s.highlights);
   const personHighlights = editing ? undefined : bindHighlights;
-  const layers = useMemo<ViewerLayers>(
-    () => ({
-      workSurfaces: editing || !eventPanel ? 'interactive' : 'visible',
-      obstacles: 'visible',
-    }),
-    [eventPanel, editing],
-  );
 
   return (
-    <SpatialViewportContext value={viewportValue}>
+    <SpatialViewportContext value={viewport}>
       <main aria-label="실시간 관제" className="relative flex-1 bg-background">
         {view === '3d' &&
           (sceneStatus?.provisionalBackground || sceneStatus?.regenerationRequired) && (

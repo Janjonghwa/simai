@@ -1,5 +1,6 @@
 import { resetSetupFlowStore, useSetupFlowStore } from '@/features/setup/setup.store';
 import type { SetupSessionResponse } from '@/features/setup/types';
+import { todayIsoDate } from '@/features/tbm/taskInput';
 import { TaskList } from '@/features/tbm/TaskList';
 import { TBM_TASKS } from '@/features/tbm/tbmDemo';
 import { TbmPage } from '@/features/tbm/TbmPage';
@@ -202,9 +203,11 @@ describe('작업 종료 안내', () => {
       <TaskList
         tasks={[{ ...task, status: 'DONE' }]}
         selectedId=""
-        sentAt={{}}
+        dayLabel="오늘"
         onSelect={() => {}}
         onAdd={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
       />,
     );
     expect(screen.getByRole('button', { name: /작업 종료/ }).textContent).not.toContain('위험');
@@ -213,20 +216,54 @@ describe('작업 종료 안내', () => {
       <TaskList
         tasks={[{ ...task, status: 'IN_PROGRESS' }]}
         selectedId=""
-        sentAt={{}}
+        dayLabel="오늘"
         onSelect={() => {}}
         onAdd={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
       />,
     );
     expect(screen.getByRole('button', { name: /CRITICAL/ }).textContent).toContain('▲');
   });
 
-  it('종료 후 결재 전 단계에 서명과 결재 순서를 안내한다', () => {
+  it('종료 후 결재 전 단계는 서명하기가 다음 행동이고 단계를 누르면 onStep 으로 알린다', () => {
     const result = deriveWorkStages({
       ...BASE,
       task: { status: 'DONE' },
       report: { status: 'SUCCEEDED', approved_at: null },
     });
+    const noop = () => {};
+    const onStep = vi.fn();
+    const onSign = vi.fn();
+    render(
+      <WorkStageBar
+        result={result}
+        status="DONE"
+        hasSetupSession={false}
+        canOpenSetup
+        generating={false}
+        pending={false}
+        onStep={onStep}
+        onOpenSetup={noop}
+        onGenerate={noop}
+        onStart={noop}
+        onSign={onSign}
+        canSign
+      />,
+    );
+    // 안내 문장은 없고 서명 단계가 지금 단계다. 작업 종료 단추도 이 줄에 없다.
+    expect(screen.queryByText(/참석자 서명을 확인한 뒤/)).toBeNull();
+    expect(screen.queryByRole('button', { name: '작업 종료' })).toBeNull();
+    const sign = screen.getByTestId('work-stage-bar').querySelector('[data-stage="sign"]')!;
+    expect(sign.getAttribute('aria-current')).toBe('step');
+    fireEvent.click(sign.querySelector('button')!);
+    expect(onStep).toHaveBeenCalledWith('sign');
+    fireEvent.click(screen.getByRole('button', { name: '서명하기' }));
+    expect(onSign).toHaveBeenCalledTimes(1);
+  });
+
+  it('보고서 없이 끝난 작업은 서명할 수 없어 서명하기를 보이지 않는다', () => {
+    const result = deriveWorkStages({ ...BASE, task: { status: 'DONE' }, report: null });
     const noop = () => {};
     render(
       <WorkStageBar
@@ -236,15 +273,15 @@ describe('작업 종료 안내', () => {
         canOpenSetup
         generating={false}
         pending={false}
+        onStep={noop}
         onOpenSetup={noop}
-        onOpenZones={noop}
         onGenerate={noop}
         onStart={noop}
-        onEnd={noop}
         onSign={noop}
+        canSign={false}
       />,
     );
-    expect(screen.getByText(/참석자 서명을 확인한 뒤 관리자 결재까지/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '서명하기' })).toBeNull();
   });
 });
 
@@ -288,7 +325,7 @@ function serveWork(opts: { sessionId?: string | null; session?: SetupSessionResp
   const work = {
     work_id: '77',
     status: 'PLANNED',
-    date: '2026-10-16',
+    date: todayIsoDate(),
     name: '단계 시험 작업',
     from_ms: 1_760_572_800_000,
     to_ms: 1_760_583_600_000,
@@ -328,13 +365,13 @@ describe('작업 관리 화면', () => {
     expect(onOpenSetup).toHaveBeenCalledWith(77);
   });
 
-  it('세팅이 끝난 작업은 구역 단계가 아직으로 강조되고 구역 설정이 다음 행동이다', async () => {
+  it('세팅이 끝난 작업은 구역 단계가 아직으로 강조되고 구역 설정이 다음 행동이다(세팅 화면의 구역 단계로 간다)', async () => {
     serveWork({
       sessionId: 'ss-77',
       session: SESSION({ setup_session_id: 'ss-77', work_unit_id: 77, status: 'READY_FOR_ZONES' }),
     });
-    const onOpenZones = vi.fn();
-    render(<TbmPage onOpenZones={onOpenZones} />);
+    const onOpenSetup = vi.fn();
+    render(<TbmPage onOpenSetup={onOpenSetup} />);
     await waitFor(async () =>
       expect((await stageOf('setup')).getAttribute('data-state')).toBe('done'),
     );
@@ -342,7 +379,11 @@ describe('작업 관리 화면', () => {
     expect(zones.getAttribute('data-state')).toBe('todo');
     expect(zones.getAttribute('aria-current')).toBe('step');
     fireEvent.click(screen.getByRole('button', { name: '구역 설정' }));
-    expect(onOpenZones).toHaveBeenCalledTimes(1);
+    expect(onOpenSetup).toHaveBeenLastCalledWith(77);
+    // 단계 줄의 구역 단계를 눌러도 같은 세팅 화면(/setup?workUnitId=77)으로 간다.
+    fireEvent.click(zones.querySelector('button')!);
+    expect(onOpenSetup).toHaveBeenCalledTimes(2);
+    expect(onOpenSetup).toHaveBeenLastCalledWith(77);
   });
 
   it('세션의 zones_committed_at 이 있으면 구역이 끝남이고 지금 단계는 TBM 보고서다', async () => {
@@ -448,7 +489,7 @@ describe('작업 관리 화면', () => {
 const serverWork = (id: string, status: string, name: string) => ({
   work_id: id,
   status,
-  date: '2026-10-16',
+  date: todayIsoDate(),
   name,
   from_ms: 1_760_572_800_000,
   to_ms: 1_760_583_600_000,
@@ -489,10 +530,12 @@ describe('작업 칩 정렬', () => {
           { ...b!, id: 'T2', status: 'PLANNED' },
           { ...c!, id: 'T3', status: 'IN_PROGRESS' },
         ]}
-        selectedId=""
-        sentAt={{}}
+        selectedId={null}
+        dayLabel="오늘"
         onSelect={() => {}}
         onAdd={() => {}}
+        onEdit={() => {}}
+        onDelete={() => {}}
       />,
     );
     expect(chipNames()).toEqual(['T3', 'T2', 'T1']);
@@ -507,7 +550,8 @@ describe('작업 관리 기본 선택과 빈 상태', () => {
       serverWork('3', 'IN_PROGRESS', '진행 작업'),
     ]);
     render(<TbmPage />);
-    expect(await screen.findByRole('region', { name: 'T3 가상 레이아웃' })).toBeTruthy();
+    // 진행 중 작업은 TBM 3블록 대신 진행 카드를 보인다.
+    expect(await screen.findByRole('region', { name: 'T3 진행 중' })).toBeTruthy();
     expect(screen.queryByTestId('tbm-empty-state')).toBeNull();
   });
 
@@ -521,8 +565,7 @@ describe('작업 관리 기본 선택과 빈 상태', () => {
     serveWorks([serverWork('1', 'DONE', '끝난 작업')]);
     render(<TbmPage />);
     await screen.findByText('진행 중인 작업이 없습니다');
-    const empty = screen.getByTestId('tbm-empty-state');
-    expect(empty.textContent).toContain('등록하면 1. 세팅부터 시작합니다');
+    expect(screen.getByTestId('tbm-empty-state')).toBeTruthy();
     expect(screen.queryByTestId('work-stage-bar')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '새 작업 등록' }));
     expect(screen.getByRole('dialog', { name: '작업 등록' })).toBeTruthy();
@@ -533,6 +576,15 @@ describe('작업 관리 기본 선택과 빈 상태', () => {
     render(<TbmPage />);
     await screen.findByText('진행 중인 작업이 없습니다');
     fireEvent.click(screen.getByRole('button', { name: /^T1 끝난 작업/ }));
+    expect(await screen.findByRole('region', { name: 'T1 가상 레이아웃' })).toBeTruthy();
+    expect(screen.queryByTestId('tbm-empty-state')).toBeNull();
+  });
+
+  it('지난 날은 끝난 작업만 있어도 빈 상태 대신 그 작업을 고른다', async () => {
+    const yesterday = todayIsoDate(new Date(Date.now() - 86_400_000));
+    serveWorks([{ ...serverWork('1', 'DONE', '어제 끝난 작업'), date: yesterday }]);
+    render(<TbmPage />);
+    fireEvent.click(await screen.findByRole('button', { name: '전날' }));
     expect(await screen.findByRole('region', { name: 'T1 가상 레이아웃' })).toBeTruthy();
     expect(screen.queryByTestId('tbm-empty-state')).toBeNull();
   });

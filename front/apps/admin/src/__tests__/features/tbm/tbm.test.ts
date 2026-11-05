@@ -35,6 +35,7 @@ import {
   isFallbackApiError,
   tbmFailureReasonText,
   tbmReportRequestErrorText,
+  tbmReportSchema,
   type TbmReport,
 } from '@/features/tbm/types';
 import { ApiError, NETWORK_ERROR } from '@/lib/http';
@@ -346,6 +347,20 @@ describe('TBM 회의록 칸', () => {
     expect(tbmFill(T1).closing).toBe('');
   });
 
+  it('작업 마무리가 글 하나만 든 JSON 으로 감싸 왔으면 글만 꺼내고, 다른 모양은 받은 그대로 둔다', () => {
+    const summaryOf = (raw: string) =>
+      tbmReportSchema.parse({ ...wrapUpReport(null), work_id: 1, wrap_up_summary: raw })
+        .wrap_up_summary;
+    expect(summaryOf('{"message":"전체 이벤트 0건. 작업 외 진입 0건."}')).toBe(
+      '전체 이벤트 0건. 작업 외 진입 0건.',
+    );
+    expect(summaryOf(' {"text": "위험 이벤트 2건"} ')).toBe('위험 이벤트 2건');
+    expect(summaryOf('위험 이벤트 2건을 확인했습니다.')).toBe('위험 이벤트 2건을 확인했습니다.');
+    expect(summaryOf('{"message":"가","detail":"나"}')).toBe('{"message":"가","detail":"나"}');
+    expect(summaryOf('{"count":3}')).toBe('{"count":3}');
+    expect(summaryOf('{ 깨진 글')).toBe('{ 깨진 글');
+  });
+
   it('작업 마무리로 채운 종료 미팅 칸도 손으로 고친 값이 이긴다', () => {
     const report = wrapUpReport('서버 마무리');
     expect(formOf(T1, {}, report).closing).toBe('서버 마무리');
@@ -421,11 +436,21 @@ describe('작업 등록 · 수정 변환 및 오류 문구', () => {
       items: [],
       evals: [],
     });
+    // 등록 폼은 구역을 받지 않는다(구역은 세팅 뒤 구역 단계에서 그린다): 처음 값은 구역 없음이다.
     expect(createTask(TBM_TASKS, { ...TASK_INPUT_DEFAULT, name: 'a' })).toMatchObject({
-      zone: 'z-02',
+      zone: null,
+      area: '구역 밖',
       people: 2,
+      lead: '',
     });
-    expect(createTask(TBM_TASKS, { ...TASK_INPUT_DEFAULT, name: 'a' })).not.toHaveProperty('area');
+    expect(
+      createTask(TBM_TASKS, { ...TASK_INPUT_DEFAULT, name: 'a', zone: 'z-02' }),
+    ).not.toHaveProperty('area');
+    expect(createTask(TBM_TASKS, { ...TASK_INPUT_DEFAULT, name: 'a' }, '2026-11-06')).toMatchObject(
+      {
+        date: '2026-11-06',
+      },
+    );
   });
 
   it('TaskInput 과 WorkUnitWriteBody 를 서로 변환한다', () => {

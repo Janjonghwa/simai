@@ -8,7 +8,8 @@ import { Button } from '@simai/ui/components/button';
 import { Card } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
 
-// 왼쪽 패널: 기본은 가상 레이아웃을 크게 보이고, 오른쪽 위 단추 하나로 평가 · 간섭 보기와 바꾼다(토글이 아니라 화면 전환).
+// 왼쪽 블록: 기본은 가상 레이아웃을 크게 보이고, 오른쪽 위 단추 하나로 평가 · 간섭 보기와 바꾼다(토글이 아니라 화면 전환).
+// 머리에 3D 레이아웃 편집 단추를 둔다.
 
 export function TbmLeftPanel({
   task,
@@ -17,29 +18,36 @@ export function TbmLeftPanel({
   detail,
   report,
   onSwitch,
+  onEditLayout,
 }: {
   task: TbmTask;
+  /** 같은 날 작업. */
   tasks: readonly TbmTask[];
-  /** 모든 작업의 동시 작업 간섭. */
+  /** 같은 날 작업의 동시 작업 간섭. */
   interferences: readonly Interference[];
   /** 레이아웃 대신 평가 · 간섭을 보이는지. */
   detail: boolean;
   report?: TbmReport | null;
   onSwitch: () => void;
+  onEditLayout: () => void;
 }) {
   const mine = interferencesOf(interferences, task.id);
   const title = detail ? '평가 · 간섭' : '가상 레이아웃';
   return (
-    <Card
-      role="region"
-      aria-label={`${task.id} ${title}`}
-      className={cn(PANEL, 'min-h-0 min-w-0 flex-1')}
-    >
-      <div className="flex flex-none items-center gap-2.5">
-        <h2 className={H2}>
-          {task.id} {title}
-        </h2>
-        <Button variant="secondary" size="sm" onClick={onSwitch} className={cn(SWITCH, 'ml-auto')}>
+    <Card role="region" aria-label={`${task.id} ${title}`} className={cn(PANEL, 'min-h-0 min-w-0')}>
+      <div className="flex flex-none items-center gap-2">
+        <h2 className={cn(H2, 'whitespace-nowrap')}>{title}</h2>
+        <span className="ml-auto" />
+        <Button
+          variant="secondary"
+          size="sm"
+          aria-haspopup="dialog"
+          onClick={onEditLayout}
+          className={SWITCH}
+        >
+          3D 레이아웃 편집
+        </Button>
+        <Button variant="secondary" size="sm" onClick={onSwitch} className={SWITCH}>
           {detail ? '레이아웃 보기' : '평가 · 간섭 보기'}
         </Button>
       </div>

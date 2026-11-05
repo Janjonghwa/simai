@@ -8,6 +8,7 @@ import {
   deriveSceneTierStatus,
   deriveStep1Coverage,
   deriveWaitingView,
+  draftGhostsOf,
   estimateRemainingSeconds,
   formatClock,
   formatGuideItem,
@@ -20,14 +21,17 @@ import {
   STEPS,
   validateHeightFields,
   WAITING_STAGES,
+  ZONE_STAGE,
+  zoneMapTitle,
 } from '@/features/setup/setup';
 import { setupZoneDraftsResponseSchema, type SetupSessionResponse } from '@/features/setup/types';
 import { buildCoverageGuidePayload, buildSetupZoneDraftsResponse } from '@/mocks/setup';
 import { describe, expect, it } from 'vitest';
 
 describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 안내 계산', () => {
-  it('보정 단계 순서에서 1단계는 카메라 · 높이 확인이고 걷기 보정 단계가 없다', () => {
-    expect(STEPS).toEqual(['카메라 · 높이 확인', '보정 검증', '완료']);
+  it('보정 단계 순서에서 1단계는 카메라 · 높이 확인이고 마지막은 구역이며 걷기 보정 단계가 없다', () => {
+    expect(STEPS).toEqual(['카메라 · 높이 확인', '보정 검증', '구역']);
+    expect(STEPS[ZONE_STAGE]).toBe('구역');
     expect(DEFAULT_CAMERA_IDS).toEqual(['cam1', 'cam2', 'cam3', 'cam4']);
     expect(CAMERA_CORNERS).toHaveLength(4);
   });
@@ -460,5 +464,36 @@ describe('설치 · 보정 2단계 이후: 대기 단계·진행률·높이 경�
       min: [7.0, 8.0, 0],
       max: [8.6, 8.8, 2.0],
     });
+  });
+
+  it('수락·버리기 전 AI 초안만 3D 점선 윤곽(편집 초안과 겹치지 않는 id)으로 바꾼다', () => {
+    const { drafts } = setupZoneDraftsResponseSchema.parse(
+      buildSetupZoneDraftsResponse('019a0000-0000-7000-8000-000000000001'),
+    );
+    const [first, second] = drafts;
+    expect(draftGhostsOf(drafts, [], [])).toEqual([
+      { id: `ai-draft:${first!.candidate_id}`, box: boxOfDraftItem(first!) },
+      { id: `ai-draft:${second!.candidate_id}`, box: boxOfDraftItem(second!) },
+    ]);
+    expect(draftGhostsOf(drafts, [first!.candidate_id], [])).toHaveLength(1);
+    expect(draftGhostsOf(drafts, [first!.candidate_id], [second!.candidate_id])).toEqual([]);
+  });
+
+  it('구역 단계 3D 칸 제목은 세팅 맵 단계와 Scene 버전이고, 세팅 맵이 아직이면 3D 맵이다', () => {
+    expect(zoneMapTitle(deriveSceneTierStatus(baseSession))).toBe('3D 맵');
+    const preview: SetupSessionResponse = {
+      ...baseSession,
+      status: 'READY_FOR_ZONES',
+      stage: 'READY_FOR_ZONES',
+      preview_scene_version: 'scene-preview-1',
+    };
+    expect(zoneMapTitle(deriveSceneTierStatus(preview))).toBe('미리보기 맵 · scene-preview-1');
+    const final: SetupSessionResponse = {
+      ...preview,
+      status: 'COMPLETED',
+      stage: 'COMPLETED',
+      scene_version: 'scene-final-1',
+    };
+    expect(zoneMapTitle(deriveSceneTierStatus(final))).toBe('정밀 3D 맵 · scene-final-1');
   });
 });

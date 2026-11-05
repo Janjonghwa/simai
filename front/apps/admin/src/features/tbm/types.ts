@@ -119,7 +119,8 @@ export interface WorkUnitWriteBody {
   zone_id: string | null;
   place: string | null;
   planned_people: number;
-  lead: string;
+  /** 담당 조 이름. 등록 폼에서 받지 않으면 null. */
+  lead: string | null;
   layout_id: number | null;
   work_type: string | null;
 }
@@ -273,11 +274,28 @@ const reportWorkTypeField = z
   .nullish()
   .default(null);
 
+/**
+ * 작업 마무리 문단. 모델이 문단을 JSON 으로 감싸 보낸 값({"message": "…"})이 그대로 저장된 판이 있어, 글 하나만 든
+ * JSON 객체면 그 글을 꺼낸다. 다른 모양은 받은 그대로 둔다.
+ */
+function wrapUpText(raw: string): string {
+  const text = raw.trim();
+  if (!text.startsWith('{')) return raw;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return raw;
+    const values = Object.values(parsed);
+    return values.length === 1 && typeof values[0] === 'string' ? values[0] : raw;
+  } catch {
+    return raw;
+  }
+}
+
 export const tbmReportSchema = z.object({
   report_id: z.number().int(),
   work_id: idString,
   report_version: z.number().int(),
-  wrap_up_summary: z.string().nullish(),
+  wrap_up_summary: z.string().transform(wrapUpText).nullish(),
   wrap_up_status: z.string().nullish(),
   locked_at: z.union([z.string(), z.number()]).nullish(),
   content_sha256: z.string().nullish(),
@@ -476,13 +494,14 @@ export function workUnitToTbmTask(
     actualEndedAt: work.actual_ended_at,
     activeSetupSessionId: work.active_setup_session_id ?? null,
     date: work.date,
+    eventCounts: work.event_counts ?? null,
     name: work.name,
     from: msToHhmm(work.from_ms),
     to: msToHhmm(work.to_ms),
     zone: work.zone_id,
     ...(work.zone_id ? {} : { area: work.place ?? OUTSIDE_ZONE_TEXT }),
     people: work.planned_people,
-    lead: work.lead ?? 'A조',
+    lead: work.lead ?? '',
     gear,
     layoutId: work.layout_id ?? null,
     workType: work.work_type ?? null,

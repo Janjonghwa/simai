@@ -5,7 +5,6 @@ import { useStaticObjectsQuery } from '@/features/surfaces/useWorkSurfaces';
 import type { ExternalSpatialSource, SnapshotPushOptions } from '@/features/viewer3d';
 import { ZONES_KEY } from '@/features/zones/api';
 import type { ViewerZones } from '@/features/zones/types';
-import { useRealtimeStore } from '@/store/realtime.store';
 import { useCallback, useEffect } from 'react';
 
 /**
@@ -38,13 +37,16 @@ function pushSnapshot(
 }
 
 /**
- * 구역·정적 객체(작업면·장애물) 응답 원문을 3D Source 에 넘긴다. 3D 를 보이는 동안 응답이 바뀔 때마다 넣고,
- * 돌려주는 함수는 3D 가 준비됐을 때 둘 다 다시 넣는다. 받기 전·실패면 넘기지 않아 구역·사람은 그대로 보인다(다시 받는다).
- * 정적 객체는 모든 화면에서 이 틀이 한 곳에서 넣는다. 작업면 등록 화면은 넣지 않는다(같은 채널에 작업면만 담은 묶음을 넣으면
+ * 구역·정적 객체(작업면·장애물) 응답 원문을 3D Source(관제는 실시간 Source, 세팅의 구역 단계는 그 화면의 Source)에
+ * 넘긴다. 3D 를 보이는 동안 응답이 바뀔 때마다 넣고, 돌려주는 함수는 3D 가 준비됐을 때 둘 다 다시 넣는다. 받기 전·실패면
+ * 넘기지 않아 구역·사람은 그대로 보인다(다시 받는다). 정적 객체는 모든 화면에서 이 틀이 한 곳에서 넣는다. 작업면 등록 화면은 넣지 않는다(같은 채널에 작업면만 담은 묶음을 넣으면
  * 장애물이 사라지고, 요청 시각 없는 응답과 섞이면 늦은 응답을 거르지 못한다).
  */
-export function useSpatialSnapshots(view: SpatialViewMode, zonesRaw: ViewerZones | undefined) {
-  const source = useRealtimeStore((s) => s.source);
+export function useSpatialSnapshots(
+  source: ExternalSpatialSource | null,
+  view: SpatialViewMode,
+  zonesRaw: ViewerZones | undefined,
+) {
   const { data: staticObjects } = useStaticObjectsQuery();
   const zonesRequestedAt = useRequestedAt(ZONES_KEY);
   const staticObjectsRequestedAt = useRequestedAt(STATIC_OBJECTS_KEY);

@@ -10,7 +10,7 @@ import { create } from 'zustand';
 
 interface SetupFlowState {
   activeSessionId: string | null;
-  /** 세팅 화면이 열려 있는 작업(구역 편집 화면의 '작업 관리로 이동'이 그 작업을 고르게 한다). */
+  /** 작업 관리·세팅 화면에서 고른 작업(머리글의 '설치 · 보정'이 그 작업의 세팅을 연다). */
   workUnitId: number | null;
   acceptedDraftIds: string[];
   discardedDraftIds: string[];
@@ -31,15 +31,19 @@ export const useSetupFlowStore = create<SetupFlowState>(() => ({
   ...INITIAL_STATE,
 }));
 
+/** 세팅 세션을 고른다. 다른 세션으로 바뀌면 지난 세션의 초안 수락·버리기와 구역 발행 표시를 잊는다. */
 export function setActiveSetupSessionId(sessionId: string | null) {
-  useSetupFlowStore.setState((state) => ({
-    ...state,
-    activeSessionId: sessionId,
-    acceptedDraftIds: sessionId === state.activeSessionId ? state.acceptedDraftIds : [],
-    discardedDraftIds: sessionId === state.activeSessionId ? state.discardedDraftIds : [],
-    lastAcceptedCandidateId:
-      sessionId === state.activeSessionId ? state.lastAcceptedCandidateId : null,
-  }));
+  useSetupFlowStore.setState((state) => {
+    if (sessionId === state.activeSessionId) return state;
+    return {
+      ...state,
+      activeSessionId: sessionId,
+      acceptedDraftIds: [],
+      discardedDraftIds: [],
+      lastAcceptedCandidateId: null,
+      zonesCommitted: false,
+    };
+  });
 }
 
 /**

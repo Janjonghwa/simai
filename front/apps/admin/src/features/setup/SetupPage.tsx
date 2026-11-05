@@ -1,9 +1,4 @@
 import { PageTitle } from '@/features/layout/PageTitle';
-import {
-  SpatialViewportContext,
-  useSpatialViewport,
-  type SpatialViewportValue,
-} from '@/features/layout/SpatialViewportHost';
 import { RulesPanel } from '@/features/rules/RulesPanel';
 import {
   cancelSetupSession,
@@ -16,11 +11,14 @@ import {
   deriveHeightFields,
   deriveStep1Coverage,
   deriveWaitingView,
+  draftGhostsOf,
   MAP_TITLE,
   resolveHeightCameraIds,
   SECONDARY_ACTIONS,
   STEPS,
   validateHeightFields,
+  ZONE_STAGE,
+  zoneMapTitle,
   type ActionKey,
   type CalibrationState,
   type SetupTone,
@@ -38,10 +36,12 @@ import {
   AiZoneDraftsPanel,
   CameraHeightPanel,
   CameraPanel,
+  CheckPanel,
   SetupCctvPanel,
-  StagePanel,
   WaitingPanel,
 } from '@/features/setup/SetupPanels';
+import { SetupZoneStep } from '@/features/setup/SetupZoneStep';
+import type { ZoneDraftItem } from '@/features/setup/types';
 import {
   useCameraHeightDefaults,
   useCoverageGuides,
@@ -50,8 +50,6 @@ import {
   useSetupSession,
   useSetupZoneDrafts,
 } from '@/features/setup/useSetupStep1';
-import type { CommandResult, ViewerTarget } from '@/features/viewer3d';
-import { useZones } from '@/features/zones/useZones';
 import { ZonesPage } from '@/features/zones/ZonesPage';
 import { api } from '@/lib/api';
 import { Alert } from '@simai/ui/components/alert';
@@ -62,15 +60,15 @@ import { cn } from '@simai/ui/lib/utils';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { Check } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // 설치 · 보정(명세 8.1·13.4·18.1, S15P31A101-448·-453):
 // 1단계: CCTV 4칸 실시간 미리보기, 카메라 각도 헬퍼(2~3초 폴링), 카메라별 실측 높이 입력.
 // 2단계(대기 화면): POST /api/setup-sessions 후 GET /api/setup-sessions/{id} 2초 주기 조회,
 // 단계(배경 수집 → 3D 공간·좌표계 → 카메라 정밀 보정 → 미리보기 맵·구역 초안)·진행률·남은 시간(목표 약 1분 30초),
 // 실패 시 사유 + 다시 시도(POST /api/setup-sessions/{id}/retry), 높이 불일치 경고 시 1단계 높이 칸 복귀 후 재시도.
-// 3단계(미리보기 맵 도착 → 구역 편집): 미리보기 Scene 준비 시 구역 편집 도구(ZonesPage, -456 재사용) 및
-// AI 위험 구역 초안(GET /api/setup-sessions/{id}/zone-drafts, 점선 다각형, 수락·버리기, AI 의견 없음 회색 표시),
+// 3단계(구역): 미리보기 Scene 이 준비되면 넘어가 왼쪽 큰 3D(SetupZoneStep)에서 구역 상자를 손잡이로 고치고, 오른쪽에
+// 구역 편집 도구(ZonesPage) 및 AI 위험 구역 초안(GET /api/setup-sessions/{id}/zone-drafts, 3D 점선 윤곽, 수락·버리기)을 둔다.
 // 고화질 정식 Scene 도착 시 자동 교체(편집 초안 유지), 구역 발행(POST /api/zones/commit) 뒤 작업 관리(/work?workUnitId=) 복귀.
 
 const STATE_TONE: Record<CalibrationState, string> = {
@@ -87,45 +85,19 @@ const TONE_BADGE: Record<SetupTone, string> = {
   idle: 'bg-surface-3 text-muted-foreground',
 };
 
-const STAGE_CALIBRATION: readonly { state: CalibrationState; version: string }[] = [
-  { state: 'UNCALIBRATED', version: '세팅 1단계 · 카메라 확인' },
-  { state: 'PROVISIONAL', version: '' },
-  { state: 'CALIBRATED', version: '' },
-  { state: 'CALIBRATED', version: '' },
-];
+const STAGE_CALIBRATION: Record<Stage, { state: CalibrationState; version: string }> = {
+  0: { state: 'UNCALIBRATED', version: '세팅 1단계 · 카메라 확인' },
+  1: { state: 'PROVISIONAL', version: '' },
+  2: { state: 'CALIBRATED', version: '' },
+};
 
-function SetupZoneEditorHost({ children }: { children: ReactNode }) {
-  const existing = useSpatialViewport();
-  const { zones, raw: zonesRaw, failed: zonesFailed } = useZones();
-  const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
+const STAGE_ACTIONS: Record<Stage, readonly ActionKey[]> = {
+  0: [],
+  1: ['confirm'],
+  2: ['restart'],
+};
 
-  const selectTarget = useCallback((target: ViewerTarget): CommandResult => {
-    if (target.type === 'zone') setSelectedZoneId(target.id);
-    return { ok: true };
-  }, []);
-
-  const clearSelection = useCallback(() => {
-    setSelectedZoneId(null);
-  }, []);
-
-  const fallbackValue = useMemo<SpatialViewportValue>(
-    () => ({
-      view: '2d',
-      viewerReady: false,
-      selectedKey: selectedZoneId ? `zone:${selectedZoneId}` : null,
-      selectedZoneId,
-      zones,
-      zonesRaw,
-      zonesFailed,
-      selectTarget,
-      clearSelection,
-    }),
-    [selectedZoneId, zones, zonesRaw, zonesFailed, selectTarget, clearSelection],
-  );
-
-  if (existing) return <>{children}</>;
-  return <SpatialViewportContext value={fallbackValue}>{children}</SpatialViewportContext>;
-}
+const NO_DRAFTS: readonly ZoneDraftItem[] = [];
 
 /** 작업 없이 세팅 화면을 열면 어느 작업의 세팅인지 모르므로 작업 관리로 돌려보낸다(작업 id 를 지어내지 않는다). */
 function SetupNeedsWork() {
@@ -156,7 +128,11 @@ export function SetupPage({ workUnitId }: { workUnitId?: number } = {}) {
 
 function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
   useEffect(() => setSetupWorkUnitId(workUnitId), [workUnitId]);
-  const [stage, setStage] = useState<Stage>(0);
+  // 이어 온 세팅 세션이 있으면 대기 화면에서 시작한다. 맵이 이미 준비됐으면 곧바로 구역 단계로 넘어간다(작업 관리의 구역
+  // 단계도 이 화면을 연다).
+  const [stage, setStage] = useState<Stage>(() =>
+    useSetupFlowStore.getState().activeSessionId === null ? 0 : 1,
+  );
   const [heightEdits, setHeightEdits] = useState<Record<string, string>>({});
   const [returnForHeightRetry, setReturnForHeightRetry] = useState(false);
   const navigate = useNavigate();
@@ -188,10 +164,7 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
   const coverageQuery = useCoverageGuides(step1Active);
   const heightDefaultsQuery = useCameraHeightDefaults();
 
-  const go = useCallback((next: Stage) => {
-    const clamped = Math.min(next, (STEPS.length - 1) as Stage) as Stage;
-    setStage(clamped);
-  }, []);
+  const go = useCallback((next: Stage) => setStage(next), []);
 
   const createSession = useCreateSetupSession(() => {
     setHeightEdits({});
@@ -216,6 +189,14 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
 
   const waiting = useMemo(() => deriveWaitingView(currentSession), [currentSession]);
 
+  // 이 브라우저에 남은 세션이 다른 작업의 것이면 버리고 이 작업의 세션을 서버에서 다시 찾는다(위 이어받기). 찾기 전에는
+  // 1단계에서 기다린다.
+  const foreignSession = currentSession !== null && currentSession.work_unit_id !== workUnitId;
+  if (foreignSession && stage !== 0) setStage(0);
+  useEffect(() => {
+    if (foreignSession) setActiveSetupSessionId(null);
+  }, [foreignSession]);
+
   // 워커가 죽거나 작업이 멈춰 같은 현장의 새 세팅이 409 로 막힐 때 관리자가 진행 중 세션을 취소한다.
   const queryClient = useQueryClient();
   const cancelMutation = useMutation({
@@ -235,22 +216,32 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
     cancelMutation.mutate(sessionId);
   }, [sessionId, cancelMutation]);
 
+  // 이 세션의 구역을 발행했다(이 브라우저에서 방금, 또는 서버 기록).
+  const zonesPublished = zonesCommitted || currentSession?.zones_committed_at != null;
+
+  // 높이 경고가 있으면 보정 검증에 머물러 확인을 받는다. 이미 구역을 발행한 세션은 그 확인을 지났으므로 구역 단계로 간다.
+  const calibrationAccepted = !waiting.hasHeightWarning || zonesPublished;
   const autoMovedSessionRef = useRef<string | null>(null);
   useEffect(() => {
     if (
       stage === 1 &&
       waiting.previewReady &&
-      !waiting.hasHeightWarning &&
+      calibrationAccepted &&
       currentSession?.setup_session_id &&
       autoMovedSessionRef.current !== currentSession.setup_session_id
     ) {
       autoMovedSessionRef.current = currentSession.setup_session_id;
-      go(2);
+      go(ZONE_STAGE);
     }
-  }, [stage, waiting.previewReady, waiting.hasHeightWarning, currentSession?.setup_session_id, go]);
+  }, [stage, waiting.previewReady, calibrationAccepted, currentSession?.setup_session_id, go]);
 
-  const draftsEnabled = Boolean(sessionId) && (waiting.previewReady || stage >= 2);
+  const draftsEnabled = Boolean(sessionId) && (waiting.previewReady || stage === ZONE_STAGE);
   const zoneDraftsQuery = useSetupZoneDrafts(sessionId, draftsEnabled);
+  const draftsList = zoneDraftsQuery.data?.drafts ?? NO_DRAFTS;
+  const draftGhosts = useMemo(
+    () => draftGhostsOf(draftsList, acceptedDraftIds, discardedDraftIds),
+    [draftsList, acceptedDraftIds, discardedDraftIds],
+  );
 
   const cameraIds = useMemo(
     () => resolveHeightCameraIds(heightDefaultsQuery.data, coverageQuery.data),
@@ -332,21 +323,17 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
     void navigate({ to: '/work', search: { workUnitId: String(workUnitId) } });
   }, [navigate, workUnitId]);
 
-  const stageActions: ActionKey[] =
-    stage === 0 ? [] : stage === 1 ? ['confirm'] : ['restart', 'zones'];
-  const stageMeta = STAGE_CALIBRATION[stage] ?? STAGE_CALIBRATION[0]!;
+  const stageActions = STAGE_ACTIONS[stage];
+  const stageMeta = STAGE_CALIBRATION[stage];
 
-  const run: Record<ActionKey | 'rewalk', () => void> = {
+  const run: Record<ActionKey, () => void> = {
     start: submitStep1,
-    rewalk: () => go(1),
-    confirm: () => go(3),
+    confirm: () => go(ZONE_STAGE),
     restart: () => go(0),
-    zones: () => void navigate({ to: '/', search: { edit: true } }),
   };
 
   const step1Pending = createSession.pending || retrySession.pending;
   const step1Error = retrySession.error ?? createSession.error;
-  const draftsList = zoneDraftsQuery.data?.drafts ?? [];
 
   return (
     <div className="flex shrink-0 flex-col gap-3 pb-[90px]">
@@ -422,20 +409,20 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
             </Button>
           ) : (
             <>
-              {stageActions.map((key) => {
-                const secondary = SECONDARY_ACTIONS.has(key);
-                return (
+              {/* 보조 단추를 먼저, 다음 단계로 가는 단추를 맨 오른쪽에 둔다(단계가 바뀌어도 자리가 같다). */}
+              {stageActions
+                .filter((key) => SECONDARY_ACTIONS.has(key))
+                .map((key) => (
                   <Button
                     key={key}
                     size="lg"
-                    variant={secondary ? 'secondary' : 'default'}
-                    className={cn('px-4', secondary && 'bg-surface-3 hover:bg-surface-3/70')}
+                    variant="secondary"
+                    className="bg-surface-3 px-4 hover:bg-surface-3/70"
                     onClick={run[key]}
                   >
                     {ACTION_LABEL[key]}
                   </Button>
-                );
-              })}
+                ))}
               {stage === 1 && sessionRunning && (
                 <Button
                   size="lg"
@@ -447,9 +434,16 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
                   세팅 취소
                 </Button>
               )}
-              {zonesCommitted && (
+              {stageActions
+                .filter((key) => !SECONDARY_ACTIONS.has(key))
+                .map((key) => (
+                  <Button key={key} size="lg" className="px-4" onClick={run[key]}>
+                    {ACTION_LABEL[key]}
+                  </Button>
+                ))}
+              {stage === ZONE_STAGE && zonesPublished && (
                 <Button size="lg" className="px-4" onClick={handleNavigateTbm}>
-                  작업 관리(TBM)로 이동
+                  작업 관리로
                 </Button>
               )}
             </>
@@ -566,58 +560,35 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
             ) : (
               <>
                 <CameraPanel coverage={coverage} />
-                <StagePanel stage={stage} cameraCount={cameraIds.length} />
+                <CheckPanel />
               </>
             )}
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-[minmax(0,1.25fr)_minmax(320px,1fr)] items-start gap-3">
-          <div className="flex flex-col gap-3">
-            <Card size="sm">
-              <CardHeader>
-                <CardTitle>
-                  <h2>
-                    {waiting.sceneTier.tier === 'FINAL'
-                      ? `정밀 3D 맵 · ${waiting.sceneTier.finalSceneVersion ?? 'cal-8'}`
-                      : waiting.sceneTier.tier === 'PREVIEW'
-                        ? `미리보기 맵 · ${waiting.sceneTier.previewSceneVersion ?? 'cal-8'}`
-                        : MAP_TITLE[stage]}
-                  </h2>
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <SetupMap
-                  stage={stage}
-                  coverage={coverage}
-                  drafts={draftsList}
-                  acceptedDraftIds={acceptedDraftIds}
-                  discardedDraftIds={discardedDraftIds}
-                />
-              </CardContent>
-            </Card>
-            <AiZoneDraftsPanel
-              sceneTier={waiting.sceneTier}
-              draftsResponse={zoneDraftsQuery.data}
+        <SetupZoneStep
+          title={zoneMapTitle(waiting.sceneTier)}
+          draftGhosts={draftGhosts}
+          plan={
+            <SetupMap
+              stage={stage}
+              coverage={coverage}
+              drafts={draftsList}
               acceptedDraftIds={acceptedDraftIds}
               discardedDraftIds={discardedDraftIds}
-              zonesCommitted={zonesCommitted}
-              onAcceptDraft={acceptSetupZoneDraft}
-              onDiscardDraft={discardSetupZoneDraft}
-              onNavigateTbm={handleNavigateTbm}
             />
-          </div>
-          <div className="flex flex-col gap-3">
-            {currentSession && (
-              <SetupZoneEditorHost>
-                <div className="relative min-h-[420px]">
-                  <ZonesPage />
-                </div>
-              </SetupZoneEditorHost>
-            )}
-            <StagePanel stage={stage} cameraCount={cameraIds.length} />
-          </div>
-        </div>
+          }
+        >
+          {currentSession && <ZonesPage placement="inline" />}
+          <AiZoneDraftsPanel
+            sceneTier={waiting.sceneTier}
+            draftsResponse={zoneDraftsQuery.data}
+            acceptedDraftIds={acceptedDraftIds}
+            discardedDraftIds={discardedDraftIds}
+            onAcceptDraft={acceptSetupZoneDraft}
+            onDiscardDraft={discardSetupZoneDraft}
+          />
+        </SetupZoneStep>
       )}
 
       <RulesPanel />
