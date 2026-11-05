@@ -12,10 +12,12 @@ import {
 import { useCctvStore, type PreviewLink } from '@/features/cctv/cctv.store';
 import { CctvDemo } from '@/features/cctv/CctvDemo';
 import { CctvWall, type WallTile } from '@/features/cctv/CctvWall';
+import { isZoomed, panZoomTransform, visibleRect, type PanZoomView } from '@/features/cctv/panZoom';
 import { frameAgeSec } from '@/features/cctv/protocol';
-import { DIMMED, LIVE_DOT, TILE_FRAME, tileZoom } from '@/features/cctv/tileStyle';
+import { DIMMED, LIVE_DOT, TILE_FRAME, tilePan, tileZoom } from '@/features/cctv/tileStyle';
 import { useCameraStates } from '@/features/cctv/useCameraStates';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
+import { usePanZoom } from '@/features/cctv/usePanZoom';
 import { useRemoteStatus } from '@/features/cctv/useRemoteStatus';
 import { PageTitle } from '@/features/layout/PageTitle';
 import { useNow } from '@/features/layout/useNow';
@@ -29,6 +31,7 @@ import { useCallback } from 'react';
 // (S15P31A101-400, 저장 없이 나눠 줌, 보는 사람이 있을 때만 게이트웨이가 올림)으로 받는다. 영상은 알림·판정에 쓰지 않는다.
 // 영상은 관리자만 본다. 다른 역할은 카메라 상태(실시간·끊김·정지)만 본다.
 // 관리자인데 이어지지 않은 동안(연결 중·붙지 못함·끊김·WebCodecs 없음·원격 멈춤)은 상태 한 줄과 그 아래 모의 화면을 보인다.
+// 영상 칸은 휠로 확대하고 확대 중에는 끌어서 옮긴다(usePanZoom). 캔버스에 CSS transform 만 주므로 그리기는 그대로다.
 
 type Attach = (cameraId: string, canvas: HTMLCanvasElement | null) => void;
 
@@ -86,6 +89,31 @@ function StateBadge({
   );
 }
 
+const toPercent = (ratio: number) => `${ratio * 100}%`;
+
+/** 확대 중 오른쪽 아래에 지금 보는 자리를 작은 상자로 보인다. */
+function ZoomMap({ view }: { view: PanZoomView }) {
+  if (!isZoomed(view)) return null;
+  const { left, top, width, height } = visibleRect(view);
+  return (
+    <span
+      role="img"
+      aria-label="확대한 자리"
+      className="pointer-events-none absolute right-2 bottom-2 aspect-video w-24 rounded-sm bg-card/80 ring-1 ring-border backdrop-blur-[4px]"
+    >
+      <i
+        className="absolute bg-primary/35 ring-1 ring-primary"
+        style={{
+          left: toPercent(left),
+          top: toPercent(top),
+          width: toPercent(width),
+          height: toPercent(height),
+        }}
+      />
+    </span>
+  );
+}
+
 /** 카메라 영상 칸. 이 화면의 4분할과 실시간 관제의 「cam 으로 확인」 패널이 함께 쓴다. */
 export function CameraTile({
   cameraId,
@@ -104,6 +132,7 @@ export function CameraTile({
   const phase = useCctvStore((s) => s.views[cameraId]?.phase);
   const link = useCctvStore((s) => s.link);
   const playing = link === 'open' && phase === 'playing';
+  const { ref: tileRef, view, zoomed, dragging, handlers } = usePanZoom();
   const ref = useCallback(
     (canvas: HTMLCanvasElement | null) => attach(cameraId, canvas),
     [attach, cameraId],
@@ -115,7 +144,12 @@ export function CameraTile({
         aria-label={`${cameraId} 영상`}
         // 흐리게는 영상 자체가 멈췄을 때만. Tier 0 상태(정지·끊김)는 오른쪽 위 배지로 알린다 —
         // Pod 가 없을 때 들어오는 영상까지 45% 로 흐려 물빠진 색으로 보였다(2026-11-02)
-        className={cn('size-full object-contain', !playing && DIMMED)}
+        className={cn(
+          'size-full origin-top-left object-contain',
+          zoomed && 'will-change-transform',
+          !playing && DIMMED,
+        )}
+        style={{ transform: panZoomTransform(view) }}
       />
       <span className={cn(CAPTION, 'top-2 left-2')}>
         <span className="font-mono font-semibold">{cameraId}</span>
@@ -123,15 +157,25 @@ export function CameraTile({
         <FrameAge cameraId={cameraId} />
       </span>
       <StateBadge cameraId={cameraId} state={state} lastClock={lastClock} />
+      <ZoomMap view={view} />
     </>
   );
-  if (!wall) return <div className={cn(TILE_FRAME, 'bg-surface-2')}>{content}</div>;
+  const pan = zoomed && tilePan(dragging);
+  if (!wall) {
+    return (
+      <div ref={tileRef} {...handlers} className={cn(TILE_FRAME, 'bg-surface-2', pan)}>
+        {content}
+      </div>
+    );
+  }
   return (
     <button
+      ref={tileRef}
+      {...handlers}
       type="button"
       onClick={wall.toggle}
       aria-label={`${cameraId} ${wall.focused ? '작게 보기' : '크게 보기'}`}
-      className={cn(TILE_FRAME, 'bg-surface-2', tileZoom(wall.focused))}
+      className={cn(TILE_FRAME, 'bg-surface-2', tileZoom(wall.focused), pan)}
     >
       {content}
     </button>
