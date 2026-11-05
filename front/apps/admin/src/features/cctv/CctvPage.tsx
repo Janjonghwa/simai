@@ -41,15 +41,18 @@ const FRAME_AGE_TICK_MS = 250;
 const CAPTION =
   'absolute flex items-center gap-2 rounded-md bg-card/80 px-2 py-1 text-sm backdrop-blur-[4px]';
 
-/** 마지막 프레임이 몇 초 전인지. 이 훅을 쓰는 칸만 다시 그린다. */
-function useFrameAge(cameraId: string): number | undefined {
+/** 칸의 마지막 프레임 시각(field)이 몇 초 전인지. 이 훅을 쓰는 칸만 다시 그린다. */
+function useSecondsSince(
+  cameraId: string,
+  field: 'lastCaptureMs' | 'lastDecodedMs',
+): number | undefined {
   const now = useNow(FRAME_AGE_TICK_MS);
-  const last = useCctvStore((s) => s.views[cameraId]?.lastCaptureMs);
-  return frameAgeSec(last, now);
+  const at = useCctvStore((s) => s.views[cameraId]?.[field]);
+  return frameAgeSec(at, now);
 }
 
 function FrameAge({ cameraId }: { cameraId: string }) {
-  const age = useFrameAge(cameraId);
+  const age = useSecondsSince(cameraId, 'lastCaptureMs');
   if (age === undefined) return null;
   return (
     <span className={cn('font-mono tabular-nums', isStale(age) && 'text-delay')}>
@@ -68,10 +71,10 @@ function StateBadge({
   state: CameraState;
   lastClock?: string;
 }) {
-  const age = useFrameAge(cameraId);
+  const sinceFrameSec = useSecondsSince(cameraId, 'lastDecodedMs');
   const phase = useCctvStore((s) => s.views[cameraId]?.phase);
   const link = useCctvStore((s) => s.link);
-  const live = state === 'live' && framesArriving(phase, link, age);
+  const live = state === 'live' && framesArriving(phase, link, sinceFrameSec);
   return (
     <span
       className={cn(CAPTION, 'top-2 right-2', state !== 'live' && 'font-semibold')}

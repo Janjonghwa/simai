@@ -75,7 +75,7 @@ export interface PreviewSink {
   hello: (cameras: string[]) => void;
   codec: (cameraId: string, width: number, height: number) => void;
   waitKeyframe: (cameraId: string) => void;
-  played: (cameraId: string, captureMs: number) => void;
+  played: (cameraId: string, captureMs: number, decodedMs: number) => void;
   decodeError: (cameraId: string) => void;
   /** 원격 시청 상태(EC2 가 보낸 status). 로컬 미리보기는 보내지 않는다. */
   status?: (message: StatusMessage) => void;
@@ -133,7 +133,7 @@ export function startPreviewSession(
           if (cam.phase !== 'playing' || now - cam.lastPushMs >= PLAYED_PUSH_MS) {
             cam.phase = 'playing';
             cam.lastPushMs = now;
-            sink.played(cameraId, frame.timestamp / 1000);
+            sink.played(cameraId, frame.timestamp / 1000, now);
           }
         },
         () => {

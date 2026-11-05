@@ -60,7 +60,7 @@ function openRelay() {
   store.setLink('open');
   store.hello(CAMS);
   store.codec('cam1', 2304, 1296);
-  store.played('cam1', Date.now());
+  store.played('cam1', Date.now(), Date.now());
 }
 
 const badge = (id: string) =>
@@ -122,9 +122,38 @@ describe('CctvPage 관리자 · 중계가 이어졌을 때', () => {
   });
 
   it('프레임이 1초 넘게 끊기면 LIVE 점을 끈다', () => {
-    useCctvStore.getState().played('cam1', Date.now() - 2_000);
+    const now = Date.now();
+    useCctvStore.getState().played('cam1', now, now - 2_000);
     render(<CctvPage />);
     expect(badge('cam1').textContent).toBe('실시간');
+  });
+
+  it('촬영 시각이 2초 늦어도 방금 받은 프레임이면 LIVE 이고 지연은 왼쪽 나이에만 보인다', () => {
+    const now = Date.now();
+    useCctvStore.getState().played('cam1', now - 2_000, now);
+    render(<CctvPage />);
+    expect(badge('cam1').textContent).toBe('LIVE');
+    expect(screen.getByText(/^2\.[01]초$/).className).toContain('text-delay');
+  });
+
+  it('프레임을 받은 뒤 0.9초면 LIVE 이고 1.3초면 실시간이다', () => {
+    vi.useFakeTimers();
+    try {
+      const now = Date.now();
+      useCctvStore.getState().played('cam1', now, now);
+      render(<CctvPage />);
+      act(() => {
+        vi.advanceTimersByTime(900);
+      });
+      expect(badge('cam1').textContent).toBe('LIVE');
+      act(() => {
+        // 다시 재는 간격(0.25초)이 있어, 기준(1초)을 한 번 이상 지난 뒤 잰 값이 나오도록 넉넉히 넘긴다.
+        vi.advanceTimersByTime(400);
+      });
+      expect(badge('cam1').textContent).toBe('실시간');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('칸을 누르면 그 칸을 크게 보고 같은 칸을 다시 누르면 4분할로 돌아간다', () => {

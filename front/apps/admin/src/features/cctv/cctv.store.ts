@@ -2,7 +2,7 @@ import type { RemoteState, StatusMessage } from '@/features/cctv/types';
 import { create } from 'zustand';
 
 // CCTV 미리보기(로컬·원격) 화면 상태. 프레임마다 바꾸지 않는다: 그리기는 캔버스가 직접 하고, 여기에는 연결·카메라 단계와
-// 마지막으로 그린 프레임의 촬영 시각(카메라마다 0.25초에 한 번까지)만 둔다.
+// 마지막으로 그린 프레임의 촬영 시각·받은 시각(카메라마다 0.25초에 한 번까지)만 둔다.
 
 /**
  * connecting: 여는 중(처음·다시), open: 중계(로컬) 또는 EC2(원격)와 이어짐, unavailable: 붙지 못함(다시 시도 중),
@@ -34,6 +34,8 @@ export interface CameraView {
   height?: number;
   /** 마지막으로 그린 프레임의 추정 촬영 시각(UTC ms). */
   lastCaptureMs?: number;
+  /** 마지막으로 그린 프레임을 디코더가 내놓은 시각(브라우저 시계 ms). 촬영 시각과 달리 전송 지연·기계 간 시계 차이가 없다. */
+  lastDecodedMs?: number;
 }
 
 interface CctvState {
@@ -54,7 +56,7 @@ interface CctvState {
   hello: (cameras: string[]) => void;
   codec: (cameraId: string, width: number, height: number) => void;
   waitKeyframe: (cameraId: string) => void;
-  played: (cameraId: string, captureMs: number) => void;
+  played: (cameraId: string, captureMs: number, decodedMs: number) => void;
   decodeError: (cameraId: string) => void;
   reset: () => void;
 }
@@ -107,9 +109,13 @@ export const useCctvStore = create<CctvState>()((set) => ({
         ? s
         : { views: patch(s.views, cameraId, { phase: 'waiting_keyframe' }) },
     ),
-  played: (cameraId, captureMs) =>
+  played: (cameraId, captureMs, decodedMs) =>
     set((s) => ({
-      views: patch(s.views, cameraId, { phase: 'playing', lastCaptureMs: captureMs }),
+      views: patch(s.views, cameraId, {
+        phase: 'playing',
+        lastCaptureMs: captureMs,
+        lastDecodedMs: decodedMs,
+      }),
     })),
   decodeError: (cameraId) =>
     set((s) => ({ views: patch(s.views, cameraId, { phase: 'decode_error' }) })),
