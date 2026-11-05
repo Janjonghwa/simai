@@ -30,6 +30,7 @@ class SoundPattern:
 
     name: str
     tones: tuple[tuple[int, int], ...]
+    repeat: bool = True
 
     @property
     def period_ms(self) -> int:
@@ -40,10 +41,14 @@ class SoundPattern:
 CRITICAL = SoundPattern("CRITICAL", ((1400, 160), (0, 40), (1000, 160), (0, 40)) * 3 + ((0, 200),))
 HIGH = SoundPattern("HIGH", ((880, 300), (0, 200), (880, 300), (0, 700)))
 TEST = SoundPattern("TEST", ((660, 250), (0, 250), (660, 250), (0, 1250)))
-PATTERNS = {p.name: p for p in (CRITICAL, HIGH, TEST)}
+HIGH_ONCE = SoundPattern("HIGH_ONCE", HIGH.tones, repeat=False)
+CRITICAL_ONCE = SoundPattern("CRITICAL_ONCE", CRITICAL.tones, repeat=False)
+PATTERNS = {p.name: p for p in (CRITICAL, HIGH, TEST, HIGH_ONCE, CRITICAL_ONCE)}
 
 
-def pattern_for(severity: str) -> SoundPattern:
+def pattern_for(severity: str, once: bool = False) -> SoundPattern:
+    if once:
+        return CRITICAL_ONCE if severity == "CRITICAL" else HIGH_ONCE
     return CRITICAL if severity == "CRITICAL" else HIGH
 
 
@@ -117,7 +122,7 @@ class WinSoundBackend:
             write_wav(path, pattern)
             self._files[pattern.name] = path
         try:
-            ws.PlaySound(str(path), ws.SND_FILENAME | ws.SND_ASYNC | ws.SND_LOOP | ws.SND_NODEFAULT)
+            ws.PlaySound(str(path), ws.SND_FILENAME | ws.SND_ASYNC | (ws.SND_LOOP if pattern.repeat else 0) | ws.SND_NODEFAULT)
         except RuntimeError as e:
             raise SoundError(f"소리 재생 실패: {e}") from e
 

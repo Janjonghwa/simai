@@ -92,6 +92,7 @@ class ActiveAlert:
     last_received_ms: int
     # 지금 경보 단계를 시작한 event_sequence: 처음 받은 경보·등급 상향·재개(목록으로 확인이 풀렸으면 그 목록의 값).
     # 확인 대상 sequence 가 이보다 낮은 alarm_stop 은 이 경보를 멈추지 않는다.
+    sound_mode: str = "REPEAT"
     alarm_sequence: int = 0
     # 이 경보를 마지막으로 켜거나 갱신한 local_alert 의 봉투 sent_at(Tier 0 시계). 목록으로만 알면 None.
     last_sent_at: int | None = None
@@ -100,7 +101,7 @@ class ActiveAlert:
 
     @property
     def sounding(self) -> bool:
-        return not self.acknowledged
+        return not self.acknowledged and self.sound_mode != "SILENT"
 
 
 @dataclass(frozen=True)
@@ -154,6 +155,7 @@ _SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1}
 class SiteAlertCore:
     def __init__(self, sound: SoundBackend, *, laptop_id: str, clock: Clock | None = None) -> None:
         self._sound = sound
+        self._once_played: dict[tuple[str, int], int] = {}
         self._clock = clock or SystemClock()
         self.laptop_id = laptop_id
         self._lock = threading.RLock()
@@ -279,6 +281,7 @@ class SiteAlertCore:
                 event_id=msg.event_id,
                 event_sequence=msg.event_sequence,
                 severity=msg.severity,
+                sound_mode=msg.sound_mode,
                 summary=msg.summary,
                 rule_id=msg.rule_id,
                 zone_id=msg.zone_id,
@@ -396,6 +399,7 @@ class SiteAlertCore:
                 event_id=event_id,
                 event_sequence=item.event_sequence,
                 severity=item.severity,
+                sound_mode=item.sound_mode,
                 summary=item.summary,
                 rule_id=item.rule_id,
                 zone_id=item.zone_id,
@@ -414,7 +418,7 @@ class SiteAlertCore:
             return True
         if item.event_sequence < alert.event_sequence:
             return False  # 노트북이 더 새 상태를 받았다(목록 뒤에 보낸 local_alert). 되돌리지 않는다
-        new = alert
+        new = replace(alert, sound_mode=item.sound_mode)
         escalated = False
         if item.event_sequence > alert.event_sequence:
             escalated = _SEVERITY_RANK[item.severity] < _SEVERITY_RANK[alert.severity]
@@ -422,6 +426,7 @@ class SiteAlertCore:
                 new,
                 event_sequence=item.event_sequence,
                 severity=item.severity,
+                sound_mode=item.sound_mode,
                 summary=item.summary,
                 rule_id=item.rule_id or alert.rule_id,
                 zone_id=item.zone_id if item.zone_id is not None else alert.zone_id,
@@ -535,10 +540,17 @@ class SiteAlertCore:
     # ---- 소리 판단 ---------------------------------------------------------------------------------------------
 
     def _target(self) -> SoundPattern | None:
-        sounding = [a for a in self._active.values() if a.sounding]
+        now = self._clock.now_ms()
+        active_ids = set(self._active)
+        self._once_played = {k: t for k, t in self._once_played.items() if k[0] in active_ids}
+        sounding = [a for a in self._active.values() if a.sounding and (
+            a.sound_mode != "ONCE" or (a.event_id, a.alarm_sequence) not in self._once_played
+            or now - self._once_played[(a.event_id, a.alarm_sequence)] < pattern_for(a.severity).period_ms
+        )]
         if sounding:
             top = min(sounding, key=lambda a: _SEVERITY_RANK[a.severity])
-            return pattern_for(top.severity)
+            once = all(a.sound_mode == "ONCE" for a in sounding if a.severity == top.severity)
+            return pattern_for(top.severity, once=once)
         if self._test is not None and self._test.active:
             return TEST
         return None
@@ -552,7 +564,11 @@ class SiteAlertCore:
     def _reconcile(self, received_mono: float | None) -> float | None:
         """목표 소리와 지금 소리를 맞춘다. 이 호출로 소리 시작을 걸었고 received_mono 가 있으면 지연(초)을 돌려준다."""
         target = self._target()
-        if target is self._playing and (target is None or self._sound_fault is None):
+        new_once = target is not None and not target.repeat and any(
+            a.sounding and a.sound_mode == "ONCE" and (a.event_id, a.alarm_sequence) not in self._once_played
+            and pattern_for(a.severity, once=True) is target for a in self._active.values()
+        )
+        if target is self._playing and not new_once and (target is None or self._sound_fault is None):
             return None
         if target is None:
             try:
@@ -568,6 +584,10 @@ class SiteAlertCore:
             self._set_fault(e)
             return None
         self._playing = target
+        if not target.repeat:
+            for alert in self._active.values():
+                if alert.sounding and alert.sound_mode == "ONCE" and pattern_for(alert.severity, once=True) is target:
+                    self._once_played.setdefault((alert.event_id, alert.alarm_sequence), self._clock.now_ms())
         if self._check_failed:
             # 재생 호출이 성공해도 장치 확인이 실패한 상태면 소리가 실제로 나는지 알 수 없다. 다시 확인해 본다.
             try:
@@ -594,7 +614,10 @@ class SiteAlertCore:
         """laptop_heartbeat.alarm 형식 (반복 소리 중 / 표시 중 event_id)."""
         with self._lock:
             return {
-                "sounding_event_ids": [a.event_id for a in self._active.values() if a.sounding],
+                "sounding_event_ids": [a.event_id for a in self._active.values() if a.sounding and (
+                    a.sound_mode != "ONCE" or (a.event_id, a.alarm_sequence) not in self._once_played
+                    or self._clock.now_ms() - self._once_played[(a.event_id, a.alarm_sequence)] < pattern_for(a.severity).period_ms
+                )],
                 "displayed_event_ids": list(self._active),
             }
 

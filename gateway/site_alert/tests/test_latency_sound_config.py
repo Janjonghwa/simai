@@ -28,7 +28,7 @@ def test_percentile_nearest_rank() -> None:
 
 def test_patterns_differ_by_severity() -> None:
     assert len({CRITICAL.tones, HIGH.tones, TEST.tones}) == 3
-    assert set(PATTERNS) == {"CRITICAL", "HIGH", "TEST"}
+    assert set(PATTERNS) == {"CRITICAL", "HIGH", "TEST", "HIGH_ONCE", "CRITICAL_ONCE"}
     assert CRITICAL.period_ms < HIGH.period_ms * 2
 
 
@@ -61,7 +61,7 @@ def test_winsound_backend_prepares_wavs(tmp_path: Path) -> None:
     from simai_site_alert.sound import WinSoundBackend
 
     WinSoundBackend(tmp_path)
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["critical.wav", "high.wav", "test.wav"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["critical.wav", "critical_once.wav", "high.wav", "high_once.wav", "test.wav"]
 
 
 SETTING_KEYS = ("SIMAI_LAPTOP_ID", "SIMAI_EC2_BASE_URL", "SIMAI_DEVICE_TOKEN", "SIMAI_TIER0_PINNED_SPKI_SHA256",

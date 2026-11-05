@@ -51,7 +51,7 @@ from simai_ai.tracking.time_model import SAME_CLOCK, CaptureClock, TimeModelConf
 
 log = logging.getLogger("services.tier0.health")
 
-HEALTH_SCHEMA_VERSION = "2.2.0"
+HEALTH_SCHEMA_VERSION = "2.3.0"
 """health 계약이 마지막으로 바뀐 버전 (2.0.0: pipeline_lag_ms null·하한, tier0_warnings, cameras[].sync_valid, -179.
 2.1.0: tier0_warnings code LIVE_MARKER_WRITE_FAILED, -197. 2.2.0: re_setup 재세팅 필요 카메라, -480).
 봉투에 이 값을 쓰는 것은 송신 모듈(i1_client.MESSAGE_SCHEMA_VERSIONS, i0_control.DOWNSTREAM_VERSIONS)이다"""

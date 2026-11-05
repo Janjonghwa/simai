@@ -113,6 +113,7 @@ from simai_ai.risk.engine import Evaluation
 from simai_ai.risk.event_id import EventIdFactory
 from simai_ai.risk.rule import Finding, FindingTarget
 from simai_ai.risk.rules.r7_monitoring import R7_RULE_ID
+from simai_ai.risk.sound_ladder import SoundLadder
 from simai_ai.risk.world import IdentityConfidence, ObservationState, WorldState, WorldTrack
 
 _log = logging.getLogger(__name__)
@@ -459,6 +460,7 @@ class EventState:
     identity_revisions: Mapping[str, int] = field(hash=False)
     acks: tuple[AckRecord, ...] = ()
     related_event_id: str | None = None
+    sound_mode: str = "REPEAT"  # 내부 복구 상태와 I0 전용, I1 payload 에는 싣지 않음
     local_alerted: bool = False
     confidence_reasons: tuple[ConfidenceReason, ...] = ()
     resume_count: int = 0  # 해소 후 재개한 횟수(6.4)
@@ -469,6 +471,8 @@ class EventState:
     escalation_floor: Severity | None = None
 
     def __post_init__(self) -> None:
+        if self.sound_mode not in ("REPEAT", "ONCE", "SILENT"):
+            raise RiskInputError("EventState.sound_mode: 모르는 소리 모드")
         # 확인 필요 = 이유 목록이 비어 있지 않음(7.1). 이유 없는 needs_check(이전 체크포인트)도 여기서 맞춘다.
         needs_check, reasons = normalize_confidence(
             self.needs_check, self.confidence_reasons, f"EventState {self.key.rule_id}"
@@ -546,6 +550,8 @@ class EventState:
         from_record 로 같은 EventState 를 되살린다. 계약 형식이 아니라 Tier 0 내부 형식이다.
         """
         doc = self.to_payload()
+        if self.sound_mode != "REPEAT":
+            doc["sound_mode"] = self.sound_mode
         doc["key"] = {"rule_id": self.key.rule_id, "world_ids": list(self.key.world_ids), "zone_id": self.key.zone_id}
         if self.escalation_floor is not None:  # 상향이 없으면 싣지 않는다(이전 체크포인트·저널 기록과 같은 형식)
             doc["escalation_floor"] = str(self.escalation_floor)
@@ -559,7 +565,7 @@ class EventState:
         rule_id, source)와 확인 필요 이유가 원래 값과 어긋난 기록(손상)은 받지 않는다.
         """
         doc = as_mapping(doc, where)
-        reject_unknown_keys(doc, set(_STATE_KEYS) | {"escalation_floor"}, where)
+        reject_unknown_keys(doc, set(_STATE_KEYS) | {"escalation_floor", "sound_mode"}, where)
         for key in _STATE_KEYS:
             require(doc, key, where)
         key_doc = as_mapping(doc["key"], f"{where}.key")
@@ -613,6 +619,7 @@ class EventState:
                     for i, a in enumerate(_sequence(doc["acks"], f"{where}.acks"))
                 ),
                 related_event_id=as_opt_str(doc["related_event_id"], f"{where}.related_event_id"),
+                sound_mode=as_str(doc.get("sound_mode", "REPEAT"), f"{where}.sound_mode"),
                 local_alerted=as_bool(doc["local_alerted"], f"{where}.local_alerted"),
                 confidence_reasons=tuple(
                     as_enum(ConfidenceReason, r, f"{where}.confidence_reasons[{i}]")
@@ -1004,6 +1011,7 @@ class LifecycleTracker:
         self._pending: dict[EventKey, _Pending] = {}  # 발생 지속 조건을 세는 중인 키
         # 활성 이벤트가 없는 키에 대해 처음 얻은 이전 이벤트 연결(재시작 복구). 발생하면 싣고, 대기가 끝나면 버린다.
         self._related_hint: dict[EventKey, str] = {}
+        self._sound_ladder = SoundLadder()
         self._resolved: dict[EventKey, _Resolved] = {}  # 재개 시간 안의 해소 이벤트(6.4)
         self._last_evaluated_at = -1
         self._last_observation_time: int | None = None
@@ -1105,6 +1113,10 @@ class LifecycleTracker:
             else:
                 finding = _maintaining(findings, active.state) if findings else None
                 self._advance(active, finding, world, tracks, frame, transitions, signals)
+        transitions = [
+            replace(t, state=replace(t.state, sound_mode=self._by_id[t.event_id].state.sound_mode))
+            if t.event_id in self._by_id else t for t in transitions
+        ]
         return LifecycleStep(tuple(transitions), tuple(signals))
 
     def pending(self) -> Mapping[EventKey, int]:
@@ -1454,6 +1466,8 @@ class LifecycleTracker:
             target_sequence=target,
             channel=channel,
         )
+        if state.site_alarm_sequence is None or target >= state.site_alarm_sequence:
+            self._sound_ladder.acknowledge(state.world_ids, state.zone_id, str(state.severity), ack.acked_at)
         active.update(acks=state.acks + (ack,), event_sequence=state.event_sequence + 1, lifecycle=Lifecycle.UPDATED)
         active.mark_emitted()
         transition = EventTransition(
@@ -1704,6 +1718,7 @@ class LifecycleTracker:
         return sorted(self._by_key.values(), key=lambda a: a.state.key.sort_key)
 
     def _drop(self, active: _Active) -> None:
+        self._sound_ladder.active.pop(active.state.event_id, None)
         del self._by_key[active.state.key]
         del self._by_id[active.state.event_id]
 
@@ -1738,7 +1753,19 @@ class LifecycleTracker:
         plan = channels_for(state.severity, state.confidence, state.origin)
         if Channel.LOCAL_ALERT not in plan.channels or (state.local_alerted and not force):
             return state, None
-        state = replace(state, local_alerted=True, site_alarm_sequence=state.event_sequence)
+        for eid, (_, level) in list(self._sound_ladder.active.items()):
+            if eid in self._by_id:
+                self._sound_ladder.active[eid] = (self._by_id[eid].state.world_ids, level)
+        sound_mode = self._sound_ladder.decide(
+            state.event_id, state.world_ids, state.zone_id, str(state.severity),
+            state.rule_id, occurred_at, set(self._by_id),
+        )
+        if sound_mode != "SILENT":
+            for active in self._by_id.values():
+                if active.state.event_id != state.event_id and set(active.state.world_ids).intersection(state.world_ids):
+                    if _rank(active.state.severity) <= _rank(state.severity):
+                        active.update(sound_mode="SILENT")
+        state = replace(state, local_alerted=True, site_alarm_sequence=state.event_sequence, sound_mode=sound_mode)
         return state, LocalAlert(
             **self._signal_fields(state, occurred_at),
             rule_id=state.rule_id,

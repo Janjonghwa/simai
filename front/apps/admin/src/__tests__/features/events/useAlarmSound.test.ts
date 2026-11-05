@@ -1,3 +1,4 @@
+import { createAlarmPolicy } from '@/features/events/alarmPolicy';
 import { AlarmSoundLoop } from '@/features/events/AlarmSoundLoop';
 import { useEventClearStore } from '@/features/events/eventClear.store';
 import { mergeEvent, type EventEntry } from '@/features/events/events';
@@ -69,10 +70,10 @@ describe('ringingSeverity', () => {
     expect(ringingSeverity([critical, high], true)).toBe('CRITICAL');
   });
 
-  it('높은 등급을 확인하면 남은 경보 등급으로 내려간다', () => {
+  it('높은 등급을 확인해도 같은 사람의 낮은 경보를 다시 울리지 않는다', () => {
     const high = entry({ event_id: 'e-h', severity: 'HIGH' });
     const criticalAcked = acked({ event_id: 'e-c' });
-    expect(ringingSeverity([high, criticalAcked], true)).toBe('HIGH');
+    expect(ringingSeverity([high, criticalAcked], true)).toBeNull();
     expect(
       ringingSeverity([acked({ event_id: 'e-h', severity: 'HIGH' }), criticalAcked], true),
     ).toBeNull();
@@ -132,7 +133,7 @@ describe('useAlarmSound', () => {
     expect(ring.mock.calls.length).toBe(calls);
 
     rerender({ entries: [high, acked({ event_id: 'e-c' })] });
-    expect(ring).toHaveBeenLastCalledWith('HIGH');
+    expect(ring).toHaveBeenLastCalledWith(null);
   });
 
   it('연결이 끊겨도 확인(ACK)될 때까지 멈추지 않는다', () => {
@@ -202,7 +203,13 @@ describe('AlarmSoundLoop 모두 지우기', () => {
 
     live.entries = [
       entry(),
-      entry({ event_id: 'e-2', severity: 'HIGH', raised_at: T + 1_000, updated_at: T + 1_000 }),
+      entry({
+        event_id: 'e-2',
+        severity: 'HIGH',
+        world_ids: ['other'],
+        raised_at: T + 1_000,
+        updated_at: T + 1_000,
+      }),
     ];
     view.rerender(createElement(AlarmSoundLoop));
     expect(ring).toHaveBeenLastCalledWith('HIGH');
@@ -214,5 +221,115 @@ describe('AlarmSoundLoop 모두 지우기', () => {
     render(createElement(AlarmSoundLoop));
     expect(ring).toHaveBeenLastCalledWith(null);
     expect(ring).not.toHaveBeenCalledWith('CRITICAL');
+  });
+});
+
+describe('소리 사다리 정책', () => {
+  it('R3는 1회이며 같은 사람의 같거나 낮은 등급은 억제하고 상향은 알린다', () => {
+    const decide = createAlarmPolicy();
+    const r3 = entry({ rule_id: 'R3', severity: 'HIGH' });
+    expect(decide([r3], true)).toMatchObject({ severity: 'HIGH', once: true });
+    const lower = entry({ event_id: 'e-2', severity: 'HIGH' });
+    expect(decide([r3, lower], true)?.once).toBe(true);
+    const critical = entry({ event_id: 'e-3', raised_at: T + 2000 });
+    expect(decide([r3, lower, critical], true)).toMatchObject({
+      severity: 'CRITICAL',
+      once: false,
+    });
+    expect(
+      decide(
+        [
+          r3,
+          lower,
+          acked({
+            event_id: 'e-3',
+            raised_at: T + 2000,
+            updated_at: T + 3000,
+            acks: [{ ...ack[0]!, acked_at: T + 3000 }],
+          }),
+        ],
+        true,
+      ),
+    ).toBeNull();
+  });
+
+  it('ACK 30초 안의 같은 사람·구역 재발생만 억제하며 상향과 30초 경계는 울린다', () => {
+    const decide = createAlarmPolicy();
+    const resolved = acked({ severity: 'HIGH', lifecycle: 'RESOLVED', resolved_at: T + 2000 });
+    expect(decide([resolved], true)).toBeNull();
+    const again = (at: number, change: Partial<EventItem> = {}) =>
+      entry({ event_id: 'again', severity: 'HIGH', raised_at: at, updated_at: at, ...change });
+    expect(decide([resolved, again(T + 30_999)], true)).toBeNull();
+    expect(decide([resolved, again(T + 30_999, { severity: 'CRITICAL' })], true)?.severity).toBe(
+      'CRITICAL',
+    );
+    const other = createAlarmPolicy();
+    expect(other([resolved, again(T + 2000, { zone_id: 'else' })], true)?.severity).toBe('HIGH');
+    const boundary = createAlarmPolicy();
+    expect(boundary([resolved, again(T + 31_000)], true)?.severity).toBe('HIGH');
+  });
+
+  it('같은 사람·구역·규칙은 소리 낸 뒤 60초 동안 화면만, 상향·다른 규칙·위험(CRITICAL)은 울린다', () => {
+    const decide = createAlarmPolicy();
+    const first = entry({
+      event_id: 'c-1',
+      rule_id: 'R1',
+      severity: 'HIGH',
+      raised_at: T,
+      updated_at: T,
+    });
+    expect(decide([first], true)?.severity).toBe('HIGH');
+    const gone = {
+      ...first,
+      event: { ...first.event, lifecycle: 'RESOLVED' as const, resolved_at: T + 1000 },
+    };
+    const again = (id: string, at: number, change: Partial<EventItem> = {}) =>
+      entry({
+        event_id: id,
+        rule_id: 'R1',
+        severity: 'HIGH',
+        raised_at: at,
+        updated_at: at,
+        ...change,
+      });
+    expect(decide([gone, again('c-2', T + 59_999)], true)).toBeNull();
+    expect(decide([gone, again('c-3', T + 59_999, { rule_id: 'R3' })], true)?.severity).toBe(
+      'HIGH',
+    );
+    expect(decide([gone, again('c-4', T + 60_000)], true)?.severity).toBe('HIGH');
+
+    const critical = createAlarmPolicy();
+    const c1 = entry({
+      event_id: 'k-1',
+      rule_id: 'R2',
+      severity: 'CRITICAL',
+      raised_at: T,
+      updated_at: T,
+    });
+    expect(critical([c1], true)?.severity).toBe('CRITICAL');
+    const c1Gone = {
+      ...c1,
+      event: { ...c1.event, lifecycle: 'RESOLVED' as const, resolved_at: T + 1000 },
+    };
+    const c2 = entry({
+      event_id: 'k-2',
+      rule_id: 'R2',
+      severity: 'CRITICAL',
+      raised_at: T + 2000,
+      updated_at: T + 2000,
+    });
+    expect(critical([c1Gone, c2], true)?.severity).toBe('CRITICAL');
+  });
+
+  it('다른 사람은 독립적이며 재개·메트릭 갱신으로 R3 1회 키가 바뀌지 않는다', () => {
+    const decide = createAlarmPolicy();
+    const r3 = entry({ rule_id: 'R3', severity: 'HIGH' });
+    const initial = decide([r3], true);
+    const updated = mergeEvent(r3, { ...r3.event, event_sequence: 2, updated_at: T + 1000 });
+    expect(decide([updated], true)?.key).toBe(initial?.key);
+    expect(decide([r3, entry({ event_id: 'else', world_ids: ['other'] })], true)?.severity).toBe(
+      'CRITICAL',
+    );
+    expect(createAlarmPolicy()([entry({ source: 'REPLAY' })], true)).toBeNull();
   });
 });

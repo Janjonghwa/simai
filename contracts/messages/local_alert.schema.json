@@ -34,6 +34,7 @@
           "description": "판정에 쓴 관측의 촬영 시각. capture_to_site_alert 는 이 시각부터 잰다 (6.6)"
         },
         "evaluated_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        "sound_mode": { "enum": ["REPEAT", "ONCE", "SILENT"], "description": "Tier 0 소리 결정. ONCE 는 현재 경보 단계에서 한 묶음만, SILENT 는 표시만. 없거나 모르는 값은 기존 반복 동작. 등급·확인·해소 상태는 바꾸지 않는다(S15P31A101-497)" },
         "acknowledged": {
           "type": "boolean",
           "description": "이미 확인된 이벤트의 갱신이면 true. 노트북은 반복 소리를 다시 켜지 않고 표시만 갱신한다. 지금 경보 단계(마지막 발생·등급 상향·해소 후 재개) 이후 상태를 대상으로 한 확인만 센다. 상향 전 상태에 대한 확인은 저널에 남지만 여기서는 false 다(alarm_stop.event_sequence, 3.10)"

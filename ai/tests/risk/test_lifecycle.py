@@ -771,3 +771,41 @@ def test_snapshot_payload_is_json_ready(harness):
     (state,) = h.tracker.active()
     payload = json.loads(json.dumps(state.to_payload()))
     assert payload["acknowledged"] is True and payload["lifecycle"] == "UPDATED" and payload["local_alerted"] is True
+
+
+def test_sound_modes_keep_severity_and_roundtrip(harness):
+    from simai_ai.risk.lifecycle import EventState
+    from simai_ai.risk.site_alerts import local_alert_payload
+    h = harness()
+    raised = h.step([finding(rule_id="R3")]).transitions[0].state
+    assert raised.severity is Severity.HIGH
+    assert local_alert_payload(raised)["sound_mode"] == "ONCE"
+    assert EventState.from_record(raised.to_record()).sound_mode == "ONCE"
+    lower = h.step([finding(rule_id="R3"), finding(rule_id="R1")])
+    r1 = next(t.state for t in lower.transitions if t.state.rule_id == "R1")
+    assert r1.sound_mode == "SILENT"
+    h.tracker.acknowledge(raised.event_id, AckActor.ADMIN, "admin", h.clock.now_ms())
+    critical = h.step([finding(rule_id="R3", severity=Severity.CRITICAL)])
+    assert critical.transitions[0].state.sound_mode == "ONCE"
+
+
+@pytest.mark.parametrize(("elapsed", "mode"), [(29_999, "SILENT"), (59_999, "SILENT"), (60_000, "ONCE")])
+def test_ack_recurrence_quiet_until_sound_cooldown_keeps_display(harness, elapsed, mode):
+    from simai_ai.risk.site_alerts import build_active_site_alerts
+    h = harness(policy=legacy(clear_hold_ms=0))
+    raised = h.step([finding(rule_id="R3")]).transitions[0].state
+    h.tracker.acknowledge(raised.event_id, AckActor.ADMIN, "admin", h.clock.now_ms())
+    h.step([])
+    reopened = h.step([finding(rule_id="R3")], dt=elapsed - 100).transitions[0].state
+    assert reopened.severity is Severity.HIGH
+    assert reopened.sound_mode == mode
+    assert build_active_site_alerts(h.tracker.active())[0]["sound_mode"] == mode
+    assert "sound_mode" not in reopened.to_payload()  # I1 이벤트 계약은 그대로
+
+
+def test_same_tick_higher_alarm_silences_lower_payload(harness):
+    from simai_ai.risk.site_alerts import local_alert_payload
+    h = harness()
+    step = h.step([finding(rule_id="R1"), finding(rule_id="R2", severity=Severity.CRITICAL)])
+    modes = {t.state.rule_id: local_alert_payload(t.state)["sound_mode"] for t in step.transitions}
+    assert modes == {"R1": "SILENT", "R2": "REPEAT"}

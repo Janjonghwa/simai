@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.3.0",
+  "msg_type": "local_alert",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000010f",
+  "sent_at": 1760342400345,
+  "source_id": "tier0-01",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-3c4b5a6d7e8f",
+    "event_sequence": 1,
+    "lifecycle": "RAISED",
+    "source": "LIVE",
+    "severity": "CRITICAL",
+    "confidence": "HIGH",
+    "needs_check": false,
+    "rule_id": "R2",
+    "zone_id": "z-04",
+    "world_ids": [
+      "w-0012"
+    ],
+    "summary": "R2 가장자리 근접 0.82m (높이차 2.1m)",
+    "observation_time": 1760342400100,
+    "evaluated_at": 1760342400340,
+    "acknowledged": false,
+    "sound_mode": "ONCE"
+  }
+}

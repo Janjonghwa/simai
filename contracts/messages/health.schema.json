@@ -148,7 +148,8 @@
         "severity": { "enum": ["CRITICAL", "HIGH"], "description": "현장 경보는 CRITICAL·HIGH 만 (7.3)" },
         "summary": { "type": "string", "minLength": 1, "description": "규칙 근거 한 줄. local_alert.summary 와 같다" },
         "rule_id": { "type": "string", "minLength": 1 },
-        "zone_id": { "type": ["string", "null"], "minLength": 1 }
+        "zone_id": { "type": ["string", "null"], "minLength": 1 },
+        "sound_mode": { "enum": ["REPEAT", "ONCE", "SILENT"], "description": "Tier 0 소리 결정. ONCE 는 현재 경보 단계에서 한 묶음만, SILENT 는 표시만. 없거나 모르는 값은 기존 반복 동작. 등급·확인·해소 상태는 바꾸지 않는다(S15P31A101-497)" }
       }
     },
     "clock_offset_estimate": {

@@ -71,6 +71,7 @@ class LocalAlert:
     observation_time: int | None
     evaluated_at: int | None
     sent_at: int | None
+    sound_mode: str = "REPEAT"
     contract_warnings: tuple[str, ...] = field(default=())
 
 
@@ -105,6 +106,7 @@ class SiteAlertItem:
     summary: str
     rule_id: str | None
     zone_id: str | None
+    sound_mode: str = "REPEAT"
 
 
 @dataclass(frozen=True)
@@ -218,6 +220,7 @@ def parse_local_alert(env: Envelope) -> LocalAlert:
         event_id=event_id,
         event_sequence=seq,
         lifecycle=lifecycle,
+        sound_mode=p.get("sound_mode") if p.get("sound_mode") in ("ONCE", "SILENT") else "REPEAT",
         severity=severity,
         acknowledged=acknowledged,
         confidence=confidence,
@@ -291,7 +294,8 @@ def _parse_site_alert_item(raw: Any) -> SiteAlertItem | str | None:
     zone_id = zone_id if isinstance(zone_id, str) and zone_id else None
     summary = raw.get("summary")
     summary = summary if isinstance(summary, str) and summary else (rule_id or "현장 경보")
-    return SiteAlertItem(event_id, seq, acknowledged, severity, summary, rule_id, zone_id)
+    return SiteAlertItem(event_id, seq, acknowledged, severity, summary, rule_id, zone_id,
+                         raw.get("sound_mode") if raw.get("sound_mode") in ("ONCE", "SILENT") else "REPEAT")
 
 
 SYSTEM_HEALTHS = ("NOMINAL", "DEGRADED", "UNSAFE_UNKNOWN")

@@ -1,6 +1,8 @@
 # contracts
 
-v7.13.0 — S15P31A101-492: `site_setup` 1.4.0 (`job_callback` 2.11.0, `job_heartbeat` 2.4.0) 선택 홀드아웃 전후 통계와 허용 오차를 추가한다.
+S15P31A101-497: **v7.14.0**(마이너, v7.13.0 -492 다음). Lead 2차 지시에 따라 I0 `local_alert` 1.3.0 및 재동기화용 `health.active_site_alerts`(health 2.3.0)에 선택 `sound_mode`(REPEAT/ONCE/SILENT)를 추가한다. 필드가 없거나 모르는 값이면 기존 반복. I1 위험 이벤트·World 계약은 변경하지 않는다. ONCE 는 경보 단계별 한 묶음, SILENT 는 표시만이며 ACK 의미는 그대로다.
+
+이전 판 v7.13.0 — S15P31A101-492: `site_setup` 1.4.0 (`job_callback` 2.11.0, `job_heartbeat` 2.4.0) 선택 홀드아웃 전후 통계와 허용 오차를 추가한다.
 
 S15P31A101-483 설명 정리: `coverage_guide`의 STALE 설명을 헬퍼 신선도 설정(`SIMAI_CAMERA_HELPER_STALE_MS`, 기본 5000 ms)에 맞췄다. 프레임 신선도 초과라는 상태 의미·필드·enum·검증 제약은 그대로이고 운영 임계값만 조정하므로 메시지 1.0.0·계약 묶음 7.11.0을 유지한다. 예시·생성 타입 변경 없음. 명세 §4.3의 2초 표기는 후속 정리 대상이다.
 
