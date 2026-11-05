@@ -1,6 +1,6 @@
 """배경 특징점 기반 카메라 순수 회전 감지·복구 워커 (명세 4.4, S15P31A101-454).
 
-판정 틱 밖의 전용 저우선순위 스레드에서 카메라별 기준 배경과 최근 배경을 비교한다.
+판정 틱 밖의 전용 스레드가 상주 CPU 작업자에 카메라별 기준·최근 배경 비교를 맡긴다.
 순수 회전은 CandidateConfirmation(2회 연속 확인) → tick 경계 교체 → SwapProbation(60초 감시)을 거치고,
 위치 이동·시차·허용각 초과(REQUIRES_SETUP)는 자동 복구 없이 DRIFTED 및 '현장 세팅 다시 하기' 경고를 올린다.
 """
@@ -8,28 +8,24 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import os
+import pickle
+import queue
+import subprocess
+import sys
 import threading
-import time
 import uuid
 from collections.abc import Callable, Mapping
-from pathlib import Path
 from typing import Any
-
-import cv2
 
 from services.tier0.clean_background import BackgroundCleanBackground
 from services.tier0.settings import RotationRecoverySettings
 from simai_ai.calibration.drift import DriftFinding, DriftReason
 from simai_ai.calibration.live_safety import CandidateConfirmation
 from simai_ai.calibration.monitor import CameraMonitorReport, MonitorReport, MonitorStatus
-from simai_ai.calibration.rotation_recovery import (
-    Features,
-    consistent_rotation,
-    extract_features,
-    make_candidate,
-)
+from simai_ai.calibration.rotation_recovery import consistent_rotation
 
 log = logging.getLogger("services.tier0.rotation_recovery")
 
@@ -63,11 +59,11 @@ class BackgroundRotationRecovery:
         on_requires_setup: Callable[[str, str], None] | None = None,
         in_probation: Callable[[], bool] = lambda: False,
         reference_document: Callable[[], Mapping[str, Any]] | None = None,
-        cpu_clock_s: Callable[[], float] = time.thread_time,
     ) -> None:
         self.document = copy.deepcopy(document)
         self.provenance = copy.deepcopy(provenance)
         self.clean_background = clean_background
+        self.clean_background.configure_rotation_samples(settings.config.max_image_side)
         self.settings = settings
         self.safety_enabled = settings.safety_enabled
         self.confirmation = CandidateConfirmation()
@@ -81,12 +77,11 @@ class BackgroundRotationRecovery:
         self._on_drift_report = on_drift_report
         self._on_requires_setup = on_requires_setup
         self._in_probation = in_probation
-        self._cpu_clock_s = cpu_clock_s
+        self._process = None
+        self.worker_pid = None
         self._run_lock = threading.Lock()
         self._cycle_generation = 0
         self._next_run_ms = now_ms() + settings.interval_ms
-        self._ref_cache: dict[str, tuple[Path, Features]] = {}
-        self._recent_cache: dict[str, tuple[tuple[int, int, int], Features]] = {}
         self._last_signatures: dict[str, tuple[int, int, int]] | None = None
         self._last_candidate_report: dict[str, Any] | None = None
         self.running = False
@@ -95,6 +90,8 @@ class BackgroundRotationRecovery:
         self.last_status: str | None = None
         self.last_error: str | None = None
         self.last_report: dict[str, Any] | None = None
+        self.last_cpu_ms: dict[str, float] = {}
+        self.feature_sides: dict[str, int] = {}
 
     def activate(self, document: Mapping[str, Any], provenance: Mapping[str, Any]) -> None:
         self.document = copy.deepcopy(document)
@@ -110,7 +107,6 @@ class BackgroundRotationRecovery:
         self.confirmation.reset()
         self._last_candidate_report = None
         self._last_signatures = None
-        self._recent_cache.pop(camera_id, None)
 
     def block(self, reason: str) -> None:
         self.generation += 1
@@ -119,70 +115,78 @@ class BackgroundRotationRecovery:
         self._last_candidate_report = None
         log.warning("회전 복구 보류: %s", reason)
 
-    def _load_references(self, config, check_budget: Callable[[], None]) -> dict[str, tuple[dict[str, Any], Features]] | None:
+    def _load_references(self) -> dict | None:
         ref_doc = self._reference_source()
-        ref_cameras = {c["camera_id"]: c for c in ref_doc["cameras"]}
-        references: dict[str, tuple[dict[str, Any], Features]] = {}
-        for cam in self.document["cameras"]:
-            cid = cam["camera_id"]
-            ref_entry = self.clean_background._reference.get(cid)
-            if ref_entry is None or cid not in ref_cameras:
+        cameras = {c["camera_id"]: c for c in ref_doc["cameras"]}
+        references = {}
+        for camera in self.document["cameras"]:
+            cid = camera["camera_id"]
+            entry = self.clean_background._reference.get(cid)
+            if entry is None or cid not in cameras:
                 return None
-            folder, meta = ref_entry
-            ref_cam = ref_cameras[cid]
-            cached = self._ref_cache.get(cid)
-            if cached is not None and cached[0] == folder:
-                references[cid] = ref_cam, cached[1]
-                continue
-            check_budget()
-            rec = meta["cameras"][cid]
-            image = cv2.imread(str(folder / rec["image"]))
-            mask = cv2.imread(str(folder / rec["valid_mask"]), cv2.IMREAD_GRAYSCALE)
-            if image is None or mask is None:
-                return None
-            features = extract_features(image, mask, ref_cam, config)
-            self._ref_cache[cid] = folder, features
-            references[cid] = ref_cam, features
+            folder, meta = entry
+            record = meta["cameras"][cid]
+            ref_camera = cameras[cid]
+            key = (str(folder), meta.get("camera_generations", {}).get(cid),
+                   ref_doc["calibration_version"], json.dumps(ref_camera, sort_keys=True),
+                   json.dumps(record, sort_keys=True))
+            references[cid] = {"key": key, "camera": copy.deepcopy(ref_camera),
+                               "image": str(folder / record["image"]),
+                               "mask": str(folder / record["valid_mask"])}
         return references
 
-    def _load_recent(
-        self, config, check_budget: Callable[[], None]
-    ) -> tuple[dict[str, Features], dict[str, int], dict[str, tuple[int, int, int]]] | None:
-        signatures: dict[str, tuple[int, int, int]] = {}
-        for cam in self.document["cameras"]:
-            cid = cam["camera_id"]
-            sig = self.clean_background.recent_signature(cid)
-            if sig is None:
-                return None
-            signatures[cid] = sig
-        if self._last_signatures == signatures:
-            return None
-        features: dict[str, Features] = {}
-        recent_ms: dict[str, int] = {}
-        for cam in self.document["cameras"]:
-            cid = cam["camera_id"]
-            sig = signatures[cid]
-            cached = self._recent_cache.get(cid)
-            if cached is not None and cached[0] == sig:
-                features[cid] = cached[1]
-                recent_ms[cid] = sig[2]
-                continue
-            check_budget()
-            synthesized = self.clean_background.synthesize_recent(cid)
-            if synthesized is None:
-                return None
-            bg, valid, end_ms = synthesized
-            check_budget()
+    def _compute(self, request):
+        if self._process is None or self._process.poll() is not None:
+            self.close()
+            # 자식에만 적용한다. 부모의 OpenCV/BLAS 전역 설정이나 환경은 바꾸지 않는다.
+            env = dict(os.environ)
+            env.update(OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1",
+                       VECLIB_MAXIMUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
+            self._process = subprocess.Popen(
+                [sys.executable, "-m", "simai_ai.calibration.rotation_worker"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+        process = self._process
+        pickle.dump(request, process.stdin, protocol=pickle.HIGHEST_PROTOCOL)
+        process.stdin.flush()
+        responses = queue.Queue(maxsize=1)
+        def receive():
             try:
-                feat = extract_features(bg, valid, cam, config)
-            except ValueError as exc:
-                if str(exc).startswith("STREAM_CHANGED"):
-                    raise ValueError(f"STREAM_CHANGED:{cid}:{exc}") from exc
-                raise
-            self._recent_cache[cid] = sig, feat
-            features[cid] = feat
-            recent_ms[cid] = end_ms
-        return features, recent_ms, signatures
+                responses.put(pickle.load(process.stdout))
+            except Exception as exc:  # noqa: BLE001 -- IPC 오류도 부모에게 전달해 무한 대기를 막는다.
+                responses.put(exc)
+        reader = threading.Thread(target=receive, name="rotation-result", daemon=True)
+        reader.start()
+        while True:
+            if self._stop.is_set():
+                self.close()
+                reader.join(timeout=1)
+                raise BudgetExceededError("중지 신호 수신")
+            try:
+                result = responses.get(timeout=.05)
+            except queue.Empty:
+                if process.poll() is not None:
+                    raise RuntimeError("회전 복구 작업자 종료") from None
+                continue
+            if isinstance(result, Exception):
+                raise RuntimeError("회전 복구 작업자 응답 실패") from result
+            return result
+
+    def close(self) -> None:
+        """판정 tick 밖에서 종료한다. 응답 없는 작업자도 서비스 종료를 붙잡지 않는다."""
+        process = self._process
+        self._process = None
+        if process is not None:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1)
+            process.stdin.close()
+            process.stdout.close()
 
     def _emit_monitor_report(
         self,
@@ -255,7 +259,6 @@ class BackgroundRotationRecovery:
             rotations=rotations,
         )
         self.clean_background.reset_camera(cid)
-        self._recent_cache.pop(cid, None)
 
     def run_once(self) -> dict[str, Any] | None:
         if not self._run_lock.acquire(blocking=False):
@@ -263,37 +266,40 @@ class BackgroundRotationRecovery:
         self._cycle_generation = self.generation
         self.running = True
         now = self._now_ms()
-        cpu_start = self._cpu_clock_s()
-        budget_s = self.settings.cpu_budget_ms / 1000.0
-        config = self.settings.config
-
-        def check_budget() -> None:
-            if self._stop.is_set():
-                raise BudgetExceededError("중지 신호 수신")
-            if self._cpu_clock_s() - cpu_start > budget_s:
-                raise BudgetExceededError(f"CPU 시간 예산 초과 ({self.settings.cpu_budget_ms}ms)")
-
         try:
-            references = self._load_references(config, check_budget)
-            if references is None:
+            if self._stop.is_set():
+                return None
+            references = self._load_references()
+            recent = self.clean_background.rotation_snapshot()
+            if references is None or recent is None:
                 self.last_status = "NOT_READY"
                 return {"status": "NOT_READY"}
-            loaded = self._load_recent(config, check_budget)
-            if loaded is None:
-                self.last_status = self.last_status or "NOT_READY"
+            signatures = {cid: data["signature"] for cid, data in recent.items()}
+            if self._last_signatures == signatures:
                 return {"status": "WAITING_NEW_SAMPLES"}
-            features, recent_ms, signatures = loaded
-            version = f"cal-rot-{now}-{self.cycles + 1}-{uuid.uuid4().hex[:8]}"
-            candidate, report = make_candidate(
-                self.document,
-                references,
-                features,
-                recent_ms,
-                at_ms=now,
-                version=version,
-                config=config,
-                check_budget=check_budget,
-            )
+            recent_ms = {cid: sig[2] for cid, sig in signatures.items()}
+            result = self._compute({
+                "document": copy.deepcopy(self.document), "references": references, "recent": recent,
+                "recent_ms": recent_ms, "config": self.settings.config,
+                "budget_ms": self.settings.cpu_budget_ms, "now_ms": now,
+                "version": f"cal-rot-{now}-{self.cycles + 1}-{uuid.uuid4().hex[:8]}",
+            })
+            self.last_cpu_ms = result["timings"]
+            self.worker_pid = result.get("worker_pid")
+            self.feature_sides = result.get("feature_sides", {})
+            if self._cycle_generation != self.generation:
+                return None
+            if any(self.clean_background.recent_signature(cid) != sig for cid, sig in signatures.items()):
+                return {"status": "WAITING_NEW_SAMPLES"}
+            if result["status"] == "BUDGET_DEFERRED":
+                raise BudgetExceededError(result["reason"])
+            if result["status"] == "ERROR":
+                raise ValueError(result["reason"])
+            if result["status"] != "COMPLETED":
+                self.last_status = result["status"]
+                return {"status": self.last_status}
+            candidate, report = result["candidate"], result["report"]
+            config = self.settings.config
             if self._cycle_generation != self.generation:
                 return None
             self._last_signatures = signatures
@@ -351,7 +357,6 @@ class BackgroundRotationRecovery:
             if accepted:
                 for cid in report["changed_camera_ids"]:
                     self.clean_background.reset_camera(cid)
-                    self._recent_cache.pop(cid, None)
                 self.last_status = "PROPOSED"
                 self.last_error = None
             else:
@@ -389,10 +394,13 @@ class BackgroundRotationRecovery:
 
     def run(self) -> None:
         _lower_thread_priority()
-        while not self._stop.wait(0.1):
-            if self._now_ms() >= self._next_run_ms:
-                self.run_once()
-                self._next_run_ms = self._now_ms() + self.settings.interval_ms
+        try:
+            while not self._stop.wait(0.1):
+                if self._now_ms() >= self._next_run_ms:
+                    self.run_once()
+                    self._next_run_ms = self._now_ms() + self.settings.interval_ms
+        finally:
+            self.close()
 
     def status(self) -> dict[str, Any]:
         return {
@@ -402,6 +410,10 @@ class BackgroundRotationRecovery:
             "budget_deferrals": self.budget_deferrals,
             "last_status": self.last_status,
             "last_error": self.last_error,
+            "last_cpu_ms": dict(self.last_cpu_ms),
+            "cpu_scope": "ROTATION_WORKER_PROCESS",
+            "worker_pid": self.worker_pid,
+            "feature_sides": dict(self.feature_sides),
             "blocked_reason": self.blocked_reason,
             "safety_enabled": self.safety_enabled,
             "confirmation_count": self.confirmation.count,

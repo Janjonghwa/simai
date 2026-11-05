@@ -79,8 +79,8 @@ $$
 
 - `BackgroundRotationRecovery`는 전용 저우선순위 데몬 스레드 `tier0-rotation-recovery`(POSIX `os.nice(10)`)에서 주기적(`interval_ms = 15000`)으로 돈다.
 - 판정 틱(`judge.tick()`)은 `_begin_calibration_tick`에서 이미 준비된 `_pending_calibration` 포인터만 확인할 뿐, 배경 합성·SIFT 추출·호모그래피 적합·파일 I/O를 절대 기다리지 않는다.
-- 최근 배경 합성(`BackgroundCleanBackground.synthesize_recent`)은 디스크 I/O 없이 메모리 내 최근 `min_samples_per_camera` 표본을 그레이스케일로 변환해 행 묶음(`np.partition` 중앙값 + 분산 마스크)으로 빠르게 합성한다.
-- 기준 배경 특징점(`_ref_cache`)과 최근 배경 서명별 특징점(`_recent_cache`)을 카메라별로 캐시하며, 매 단계 `time.thread_time()` 기반 `cpu_budget_ms`(`500 ms`)를 검사한다. 예산을 넘기면 완료된 카메라의 특징점 캐시만 남긴 채 `BUDGET_DEFERRED`로 양보하고 다음 주기에 이어서 처리한다.
+- 배경 스레드가 누적기의 불변 표본을 재사용해 새 표본만 축소한다. 준비 게이트는 `min_samples_per_camera`(기본 20장)를 유지하고, 회전 판단에는 최근 최대 10장을 사용한다. 작업자는 축소 표본의 관측 중앙값과 채널별 분산 마스크를 계산한다. 미관측 영역은 유효 특징에서 제외한다.
+- **S15P31A101-494**: 무거운 계산은 `simai_ai.calibration.rotation_worker` 상주 프로세스 하나가 맡는다. CPU 예산은 이 작업자의 `time.process_time()`으로 입력 역직렬화부터 계산 완료까지 측정한다. Tier 0 검출·판정 스레드의 CPU는 섞이지 않는다. OpenCV·BLAS 스레드 제한은 자식 프로세스에만 적용하며 부모 설정은 바꾸지 않는다. 예산 초과 시 `BUDGET_DEFERRED`로 응답하고 완료한 기준·최근 특징과 합성을 보관한다. 서비스 종료 시 자식을 회수한다.
 
 ## 초기 임계값 설정 (`Tier0Settings.rotation_recovery`)
 
@@ -91,7 +91,7 @@ Tier 0 설정 파일(`tier0.json`)의 `rotation_recovery` 객체로 노출되며
 | `enabled` | `true` | 배경 기반 회전 자동 복구 워커 활성화 여부 |
 | `safety_enabled` | `true` | 2회 연속 확인(`CandidateConfirmation`) 및 교체 후 60초 감시(`SwapProbation`) 적용 |
 | `interval_ms` | `15000` (15초) | 회전 감시·복구 스레드 실행 주기 |
-| `cpu_budget_ms` | `500` (500ms) | 1회 주기당 스레드 CPU 시간 예산 (`time.thread_time()` 기준, 초과 시 다음 주기로 이월) |
+| `cpu_budget_ms` | `500` (500ms) | 회전 전용 작업자 프로세스 CPU 시간 예산. 단계 경계에서 검사하고 초과 시 이월 |
 | `min_angle_rad` | `0.0087266` (`0.5°`) | 노이즈와 구분해 회전 복구를 발동하는 최소 회전각 |
 | `max_angle_rad` | `0.2617994` (`15.0°`) | 자동 복구를 허용하는 최대 회전각 (초과 시 `REQUIRES_SETUP`) |
 | `max_residual_px` | `3.0` | 홀드아웃 1/5 대응점의 $H$ 및 $K \Delta R K^{-1}$ 95분위 투영 잔차 상한 (px) |
@@ -100,7 +100,7 @@ Tier 0 설정 파일(`tier0.json`)의 `rotation_recovery` 객체로 노출되며
 | `min_matches` | `40` | 단일 카메라 및 인접 카메라 쌍 최소 특징점 매칭 수 |
 | `min_coverage` | `0.12` | 매칭된 특징점 경계 상자의 화면 면적 비율 하한 |
 | `max_features` | `1600` | 카메라당 SIFT 최대 특징점 수 |
-| `max_image_side` | `960` | SIFT 특징점 추출 전 긴 변 축소 해상도 (px) |
+| `max_image_side` | `960` | SIFT 해상도 상한(px). 기준 특징이 충분하면 320px, 부족하면 이 상한으로 복귀 |
 | `max_pair_p95_px` | `5.0` | 회전 복구 후 인접 카메라 쌍 2-뷰 삼각측량 재투영 95분위 상한 (px) |
 | `min_pair_gain` | `0.10` (`10%`) | 회전 카메라 인접 쌍들의 재투영 중앙값 합 최소 개선율 |
 | `max_pair_worsening_px` | `0.5` | 비회전 카메라 쌍의 재투영 중앙값 허용 악화 폭 (px) |
@@ -190,3 +190,15 @@ Tier 0 설정 파일(`tier0.json`)의 `rotation_recovery` 객체로 노출되며
 - `re_setup`은 새 보정이 활성화되거나 세팅 보정이 채택될 때만 풀린다. 카메라를 원위치로 되돌려 배경이 다시 기준과 맞아도(`STABLE`) 자동으로 풀리지 않는다 — 회전 복구 판정 로직을 건드리지 않는다는 이번 범위 때문이다(기존 `re_setup_required`와 같은 동작). 필요하면 별도 티켓에서 `STABLE` 연속 확인 뒤 해소를 설계한다.
 - Tier 0가 재시작하면 메모리의 재세팅 필요 목록이 비어 배너가 사라진다(재시작 뒤 첫 판정 주기에 다시 `REQUIRES_SETUP`이 나오면 다시 뜬다). 체크포인트에 싣지 않았다.
 - 사유(`reason`)는 회전 복구가 낸 문장 그대로라 `STREAM_CHANGED: …` 같은 내부 표기가 보일 수 있다. 화면 문구 정리는 후속이다.
+
+
+## S15P31A101-494: 실행 비용과 안전성 보완
+
+- 계약 `calibration.schema.json`의 `NONE`, `OPENCV_PINHOLE`, `OPENCV_FISHEYE`를 수용한다. 예전 내부 별칭 `OPENCV`는 pinhole과 같은 계산을 한다. fisheye는 전용 `cv2.fisheye.undistortPoints`를 사용한다. 계약 변경은 없다.
+- 기준 캐시 키에는 폴더·배경 세대·보정 버전·카메라 파라미터·이미지/마스크 메타·설정을 넣는다. 최근 캐시는 표본 서명(세대·시작·끝 시각)과 카메라 파라미터·추출 설정을 따른다. 새 서명으로 무효화되며 같은 서명의 이월 작업은 합성/추출을 다시 하지 않는다.
+- 320px에서 기준 특징이 `max(80, 2 * min_matches)`개 이상이면 그 카메라의 합성·SIFT를 같은 크기로 수행한다. 부족하면 기존 상한 960px를 쓴다. 원본 크기 불일치는 축소 전에 거부한다. 특징 좌표는 원본 픽셀로 되돌리고 기존 3px 잔차·시차·중심 고정·이웃 쌍 개선·2회 확인·롤백 게이트를 유지한다. 무조건 480px로 줄이는 대안은 기존 회전 시험의 매칭 부족으로 버렸다.
+- 누적기에서 원본 표본·사람 마스크를 그대로 공유한다. 기존 완성 JPEG 배경은 현재 창과 생성 시점/해상도가 다르고 손실 압축이 있으므로 최근 배경 대신 재사용하지 않는다. 부모는 새 표본의 상한 해상도 축소를, 작업자는 선택 해상도 축소를 각각 표본 시각별로 캐시한다(카메라당 최대 10장). 판정 tick은 이 연산과 IPC를 기다리지 않는다.
+- 마스크는 면적 축소 시 완전히 관측된 셀만 남긴다. 관측 수는 `max(2, ceil(n/2))`, 채널별 시간 분산은 225 이하를 적용한다. 전체 관측 시 작은 표본 축의 `np.partition`, 부분 관측 시 미관측 값을 제외한 정렬 중앙값을 쓴다. 색 변화만 있는 영역도 거부한다.
+- 상태의 `last_cpu_ms`: `reference_read`, `reference_extract`, `recent_prepare`, `recent_extract`, `matching`, `estimation`, `total`. `cpu_scope=ROTATION_WORKER_PROCESS`, `worker_pid`, `feature_sides`로 작업 경계를 확인한다. 총 CPU에는 역직렬화·작은 조립 비용도 포함되므로 단계 합과 차이가 날 수 있다.
+- 시험: `ai/tests/services/tier0/test_rotation_recovery.py`, `test_clean_background.py`. 수동 벤치: `PYTHONPATH=. .venv/Scripts/python tests/services/tier0/bench_rotation_recovery.py --temp-root C:/Users/SSAFY/simai-local/codex-tmp/494`(ai/에서, 2304×1296 합성 4대, seed=494). 측정·환경 한계는 `.agy/notes.md`, `.agy/run_record.json`에 기록한다. 합성 자료의 CPU 측정이며 G1/G2 제품 정확도 근거로 쓰지 않는다.
+- 잔여 위험: 960px 복귀 장면·많은 특징/부분 가림·회전 후보의 추가 이웃 쌍 검사 비용은 500ms를 넘을 수 있다. 단계 검사는 단일 OpenCV 호출 중간에 끊지 못한다. 실제 로비의 렌즈·조명·가림·연속 표본 갱신 조건에서 예산 이월과 복구 수렴을 확인해야 한다.
