@@ -85,6 +85,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"simai-wait-tier0: --env-file 을 읽지 못함 ({type(e).__name__})", file=sys.stderr)
             return 2
 
+    validated = os.environ.get("SIMAI_VALIDATED_WORKER_FRACTION")
+    if validated is not None:
+        try:
+            if float(env.get("SIMAI_WORKER_TORCH_MEMORY_FRACTION", "")) != float(validated):
+                raise ValueError
+        except ValueError:
+            print("simai-wait-tier0: 워커 GPU 상한이 기동 시 검증한 값과 다르다. 기동기를 다시 시작한다", file=sys.stderr)
+            return 2
+
     if args.no_tier0:
         if args.marker.exists():
             print(f"simai-wait-tier0: --no-tier0 인데 Tier 0 표시 파일이 있다({args.marker}). 띄우지 않는다", file=sys.stderr)

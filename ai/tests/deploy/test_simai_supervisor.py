@@ -1,7 +1,7 @@
 """simai-bootstrap 감시 프로세스·가중치 이어받기·검증 스탬프 (S15P31A101-246). GPU·네트워크를 쓰지 않는다.
 
 반례: Tier 0 준비 전에는 워커 가중치·vLLM 을 시작하지 않음, vLLM /health 전에는 워커를 띄우지 않음, 워커·vLLM 장애는 그룹 정리 후 백오프
-재기동(Tier 0 에 신호 없음), 재기동도 Tier 0 가 준비 상태일 때만, 빨리 죽음이 이어지면 포기, vLLM 이 시한 안에 안 뜨면 그룹 SIGKILL,
+재기동(Tier 0 에 신호 없음), 재기동도 Tier 0 가 준비 상태일 때만, 워커·아바타는 계속 재시도, vLLM 이 시한 안에 안 뜨면 그룹 SIGKILL,
 워커 가중치 실패는 Tier 0 를 멈추지 않음, Tier 0 종료 → 워커·vLLM 내리고 같은 코드, 신호 → 워커 → vLLM → Tier 0 순서,
 HF 토큰은 워커 가중치 첫 요청에만(자식 환경 없음), 48GB 미만 GPU 는 Tier 0 단독, SIMAI_SERVICES 오타는 받기 전에 64,
 끊긴 받기는 Range 로 이어받고 Range 를 무시하는 원본·416·해시 불일치는 처음부터(깨진 파일을 잇지 않음), 다시 해도 같은 4xx 는 한 번만,
@@ -164,16 +164,18 @@ def _marker(root: Path, written_at, pid, phase="running") -> None:
 
 def test_avatar_opt_in_weights_and_total_worker_budget(bs, tmp_path, monkeypatch):
     w = World()
+    env_file = tmp_path / "worker-settings"
+    env_file.write_text("# empty\n", encoding="utf-8")
     sup = _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "vllm", "worker", "avatar"),
-               env={"SIMAI_WORKER_ENV_FILE": "/runtime/worker.env", "SIMAI_AVATAR_WEIGHTS_SET": "vlm"})
+               env={"SIMAI_WORKER_ENV_FILE": str(env_file), "SIMAI_AVATAR_WEIGHTS_SET": "vlm"})
     _start(sup, w)
     assert w.envs["tier0"]["SIMAI_AVATAR_SHARE"] == "1"
     w.ready = w.healthy = True
     _settle(sup, w, 12)
     assert "avatar" in w.spawned and sup.weight_calls == [["m", "m"]]
     assert "services.avatar" in w.argvs["avatar"]
-    assert w.argvs["avatar"][:3] == ["simai-wait-tier0", "--env-file", "/runtime/worker.env"]
-    assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(.05)
+    assert w.argvs["avatar"][:3] == ["simai-wait-tier0", "--env-file", str(env_file)]
+    assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(.10)
     assert float(w.envs["avatar"]["SIMAI_AVATAR_GPU_MEMORY_FRACTION"]) == pytest.approx(.10)
     w.signals.clear()
     sup._stop_sidecars()
@@ -406,7 +408,7 @@ def test_fast_failures_give_up_after_limit_and_tier0_keeps_running(bs, tmp_path,
         if sup.svc["worker"].proc is not None:
             sup.svc["worker"].proc.rc = 1  # 처리기 없음 같은 즉시 종료(1초 안)
         _settle(sup, w, 1, dt=1)
-    assert w.spawned.count("worker") == 3 and sup.svc["worker"].given_up
+    assert w.spawned.count("worker") > 3 and not sup.svc["worker"].given_up
     assert sup.svc["vllm"].proc is not None and w.last("tier0").rc is None
     assert not [s for s in w.signals if s[0] == "tier0"]
 
@@ -429,7 +431,7 @@ def test_long_running_failure_resets_backoff(bs, tmp_path, monkeypatch):
 
 
 def test_after_long_run_fast_failure_count_starts_from_zero(bs, tmp_path, monkeypatch):
-    """리뷰 -246 권장 2: 오래 돌다 끝난 뒤에는 빠른 실패를 max_fast 번 다 채워야 포기한다(한 번 적게 포기하지 않는다)."""
+    """오래 돌면 빠른 실패 수를 초기화하고 다시 실패해도 계속 재시도한다."""
     w = World()
     sup = _sup(bs, tmp_path, monkeypatch, w, env={"SIMAI_SUPERVISE_MAX_FAST_FAILURES": "3"})
     _start(sup, w)
@@ -445,7 +447,7 @@ def test_after_long_run_fast_failure_count_starts_from_zero(bs, tmp_path, monkey
         if sup.svc["worker"].proc is not None:
             sup.svc["worker"].proc.rc = 1
         _settle(sup, w, 1, dt=1)
-    assert sup.svc["worker"].given_up and w.spawned.count("worker") - spawned == 3
+    assert not sup.svc["worker"].given_up and w.spawned.count("worker") - spawned > 3
 
 
 def test_vllm_not_healthy_in_time_is_group_killed_and_retried(bs, tmp_path, monkeypatch):
@@ -1123,10 +1125,10 @@ def _test_cert_pem() -> bytes:
 
 
 def test_worker_torch_memory_fraction_is_capped_even_without_avatar(bs, tmp_path, monkeypatch):
-    """avatar 가 꺼진 기본 구성(tier0,vllm,worker)에서도 worker 상한은 0.15(0.70 - 0.55)로 묶여야 한다 (S15P31A101-382)."""
+    """avatar 가 꺼진 기본 구성(tier0,vllm,worker)에서도 worker 상한은 0.20(0.70 - 0.50)으로 묶여야 한다 (S15P31A101-382)."""
     w = World()
     sup = _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "vllm", "worker"))
-    assert float(sup.svc["worker"].env["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(0.15)
+    assert float(sup.svc["worker"].env["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(0.20)
     assert sup.svc["worker"].env["SIMAI_TIER0_MARKER"] == str(tmp_path / "simai" / "state" / "tier0.live")
     assert sup.svc["worker"].env["SIMAI_TIER0_WEIGHTS"] == str(tmp_path / "simai" / "weights" / "yolo" / "yolo26x-pose.pt")
     assert sup.svc["worker"].env["SIMAI_VLLM_PORT"] == "8000"
@@ -1232,7 +1234,7 @@ def test_lobby_mode_prepares_work_runs_supervisor_and_propagates_nonzero_exit_co
     assert endpoint["public_host"] == "203.0.113.77"
 
     # GPU 상한 및 아바타 채널 검증
-    assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(0.05)
+    assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(0.10)
     assert float(w.envs["avatar"]["SIMAI_AVATAR_GPU_MEMORY_FRACTION"]) == pytest.approx(0.10)
     assert w.envs["tier0"]["SIMAI_AVATAR_SHARE"] == "1"
     assert w.envs["avatar"]["SIMAI_AVATAR_CHANNEL"] == "wss://127.0.0.1:19446"
@@ -1295,7 +1297,7 @@ def test_check_preflight_verifies_multiple_sets_budget_and_runtime_and_fails_non
     out = json.loads(capsys.readouterr().out)
     assert rc == 0 and out["exit"] == 0
     assert set(out["sets"]) == {"tier0", "avatar", "static", "vlm"}
-    assert out["gpu_budget"]["worker_fraction"] == pytest.approx(0.05)
+    assert out["gpu_budget"]["worker_fraction"] == pytest.approx(0.10)
     assert out["runtime"]["modules"] == {"json": True, "math": True}
 
     # 2) 필수 바이너리 누락 → 종료 코드 2 (chain-s9.sh 처럼 0 으로 삼키지 않는다)
@@ -1404,7 +1406,7 @@ def test_preflight_budgets_lobby_services_and_reports_py_spy_without_failing(bs,
     cap = capsys.readouterr()
     out = json.loads(cap.out)
     assert rc == 0 and out["exit"] == 0
-    assert out["gpu_budget"]["worker_fraction"] == pytest.approx(0.05)  # avatar 0.10 을 뺀 값
+    assert out["gpu_budget"]["worker_fraction"] == pytest.approx(0.10)  # avatar 0.10 을 뺀 값
     assert out["diagnostics"]["py_spy"]["status"] == "unavailable"
     assert "내장 계측" in cap.err and "실패 아님" in cap.err
 
@@ -1429,3 +1431,14 @@ def test_lobby_explicit_services_without_avatar_warns_and_bad_worker_id_stops_be
     assert "--worker-id" in capsys.readouterr().err
     bs._warn_lobby_services("tier0,vllm,worker", None, ["tier0", "vllm", "worker"])
     assert "아바타를 띄우지 않는다" in capsys.readouterr().err
+
+
+def test_worker_env_fraction_priority_and_budget_validation(bs, tmp_path, monkeypatch):
+    path = tmp_path / "worker-settings"
+    path.write_text("SIMAI_WORKER_TORCH_MEMORY_FRACTION=0.08\n", encoding="utf-8")
+    env = {"SIMAI_WORKER_ENV_FILE": str(path), "SIMAI_WORKER_TORCH_MEMORY_FRACTION": "0.09"}
+    sup = _sup(bs, tmp_path, monkeypatch, World(), services=("tier0", "vllm", "worker", "avatar"), env=env)
+    assert float(sup.svc["worker"].env["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(0.08)
+    path.write_text("SIMAI_WORKER_TORCH_MEMORY_FRACTION=0.11\n", encoding="utf-8")
+    with pytest.raises(bs.BootstrapError):
+        _sup(bs, tmp_path, monkeypatch, World(), services=("tier0", "vllm", "worker", "avatar"), env=env)

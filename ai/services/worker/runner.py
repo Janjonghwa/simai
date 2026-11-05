@@ -115,6 +115,7 @@ class Worker:
         self.pause_s = pause_s
         self.live_poll_s = live_poll_s
         self._sleep = sleep if sleep is not None else threading.Event().wait
+        self._last_filtered: tuple[str, ...] | None = None
         self._last_admit: bool | None = None
         self._closed_since: float | None = None
         self._closed_reported: float | None = None
@@ -142,6 +143,11 @@ class Worker:
         while not should_stop():
             adm = self._admission()
             types = adm.allowed_types(sorted(self.handlers))
+            filtered = tuple(sorted(set(self.handlers) & adm.blocked_types)) if adm.live else ()
+            if filtered != self._last_filtered:
+                self._last_filtered = filtered
+                if filtered:
+                    log.warning("LIVE 관제 중 작업 유형 접수 제외: %s. 관제 종료 후 simai-bootstrap after-live 실행", ", ".join(filtered))
             if not types:
                 self._sleep(self.pause_s)
                 return Outcome.PAUSED
