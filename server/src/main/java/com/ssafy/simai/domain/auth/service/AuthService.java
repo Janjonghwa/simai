@@ -9,6 +9,7 @@ import com.ssafy.simai.global.exception.ErrorCode;
 import com.ssafy.simai.global.security.AccessTokenIssuer;
 import com.ssafy.simai.global.security.PasswordPolicy;
 import java.util.Optional;
+import java.util.UUID;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -52,11 +53,11 @@ public class AuthService {
     /** 갱신 토큰을 새 access·갱신 토큰으로 바꾼다. 막힌 계정이면 쓴 토큰만 폐기하고 거부한다. */
     @Transactional(noRollbackFor = BusinessException.class)
     public AuthTokens refresh(String refreshToken) {
-        Long userId = refreshTokens.consume(refreshToken);
-        AppUser user = users.findById(userId)
+        RefreshTokenService.ConsumedRefreshToken consumed = refreshTokens.consume(refreshToken);
+        AppUser user = users.findById(consumed.userId())
                 .filter(u -> !u.isDisabled())
                 .orElseThrow(() -> new BusinessException(ErrorCode.Auth.INVALID_REFRESH_TOKEN));
-        return issueTokens(user);
+        return issueTokens(user, consumed.familyId());
     }
 
     @Transactional
@@ -65,8 +66,13 @@ public class AuthService {
     }
 
     private AuthTokens issueTokens(AppUser user) {
+        return issueTokens(user, null);
+    }
+
+    private AuthTokens issueTokens(AppUser user, UUID familyId) {
         AccessTokenIssuer.IssuedToken access = accessTokens.issue(user);
-        RefreshTokenService.IssuedRefreshToken refresh = refreshTokens.issue(user.getId());
+        RefreshTokenService.IssuedRefreshToken refresh = familyId == null
+                ? refreshTokens.issue(user.getId()) : refreshTokens.issue(user.getId(), familyId);
         TokenResponse body = new TokenResponse(
                 access.value(), "Bearer", access.ttl().toSeconds(), TokenResponse.User.from(user));
         return new AuthTokens(body, refresh.value(), refresh.ttl());

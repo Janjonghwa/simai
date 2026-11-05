@@ -15,7 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * 갱신 토큰 발급·교체·폐기. 토큰은 JWT 가 아닌 무작위 값(256비트)이고 DB 에는 SHA-256 해시만 남긴다.
- * 갱신할 때마다 쓴 토큰을 폐기하고 새 토큰을 준다. 폐기된 토큰이 다시 오면 그 계정 토큰을 모두 폐기한다.
+ * 갱신할 때마다 쓴 토큰을 폐기하고 새 토큰을 준다. 폐기된 토큰이 다시 오면 그 로그인 계보의 토큰을 폐기한다.
  */
 @Service
 public class RefreshTokenService {
@@ -35,26 +35,31 @@ public class RefreshTokenService {
 
     @Transactional
     public IssuedRefreshToken issue(Long userId) {
+        return issue(userId, UUID.randomUUID());
+    }
+
+    @Transactional
+    public IssuedRefreshToken issue(Long userId, UUID familyId) {
         String value = TokenHashes.newToken();
         Instant now = clock.instant();
-        tokens.save(new RefreshToken(UUID.randomUUID(), userId, hash(value), now, now.plus(ttl)));
+        tokens.save(new RefreshToken(UUID.randomUUID(), userId, familyId, hash(value), now, now.plus(ttl)));
         return new IssuedRefreshToken(value, ttl);
     }
 
     /**
-     * 쓴 토큰을 폐기하고 그 계정의 user_id 를 돌려준다. 새 토큰 발급은 부르는 쪽이 한다.
+     * 쓴 토큰을 폐기하고 계정과 계보 ID 를 돌려준다. 새 토큰 발급은 부르는 쪽이 한다.
      * 실패해도 재사용 감지로 한 폐기는 남겨야 하므로 롤백하지 않는다.
      */
     @Transactional(noRollbackFor = BusinessException.class)
-    public Long consume(String value) {
+    public ConsumedRefreshToken consume(String value) {
         RefreshToken token = tokens.findByTokenHash(hash(value)).orElseThrow(RefreshTokenService::invalid);
         Instant now = clock.instant();
         if (token.isRevoked()) {
             if (rotatedJustNow(token, now)) {
                 throw rotated();
             }
-            // 오래전에 폐기된 토큰이 다시 왔다. 유출로 보고 그 계정의 살아 있는 토큰을 모두 폐기한다
-            tokens.revokeAllActive(token.getUserId(), now);
+            // 오래전에 폐기된 토큰이 다시 왔다. 유출로 보고 그 계보의 살아 있는 토큰을 폐기한다
+            tokens.revokeFamilyActive(token.getFamilyId(), now);
             throw invalid();
         }
         if (token.isExpired(now)) {
@@ -64,7 +69,7 @@ public class RefreshTokenService {
             // 조회와 폐기 사이에 같은 쿠키를 든 다른 요청이 먼저 교체했다
             throw rotated();
         }
-        return token.getUserId();
+        return new ConsumedRefreshToken(token.getUserId(), token.getFamilyId());
     }
 
     /** 로그아웃. 없거나 이미 폐기된 토큰이어도 조용히 끝낸다(토큰이 있는지 알리지 않는다). */
@@ -77,7 +82,7 @@ public class RefreshTokenService {
     private boolean rotatedJustNow(RefreshToken token, Instant now) {
         Instant revokedAt = token.getRevokedAt();
         return now.isBefore(revokedAt.plus(ROTATION_GRACE))
-                && tokens.existsByUserIdAndIssuedAtGreaterThanEqual(token.getUserId(), revokedAt);
+                && tokens.existsByFamilyIdAndIdNotAndIssuedAtGreaterThanEqual(token.getFamilyId(), token.getId(), revokedAt);
     }
 
     private static BusinessException invalid() {
@@ -96,6 +101,9 @@ public class RefreshTokenService {
 
     private static String hash(String value) {
         return TokenHashes.sha256Hex(value);
+    }
+
+    public record ConsumedRefreshToken(Long userId, UUID familyId) {
     }
 
     public record IssuedRefreshToken(String value, Duration ttl) {
