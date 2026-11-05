@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 워치 임시 수동 배정 API(관리자만, S15P31A101-338). 명세 밖 임시안이라 계약(contracts/)에 두지 않는다: 시연 경로를 먼저 열고 -340 이
+ * 워치 수동 배정 API(잇기·풀기는 관리자만, 조회는 열람 이상, S15P31A101-338·-342). 명세 밖 임시안이라 계약(contracts/)에 두지 않는다: 시연 경로를 먼저 열고 -340 이
  * 움직임 대조로 바꾼다. 이름 없이 익명 World ID ↔ 워치 기기 ID 만 다룬다.
  * <ul>
  *   <li>GET /api/watch-bindings: 지금 배정과 채널 상태(BOUND 워치 연결 중, LOST 끊김)
@@ -46,8 +46,8 @@ class WatchBindingController {
         this.hub = hub;
     }
 
+    /** 조회는 열람 이상(14장 조회 권한): 관제 화면 이름표·워치 패널이 쓴다. 익명 World ID·기기 ID 만 싣는다(-342) */
     @GetMapping(API)
-    @PreAuthorize("hasRole('ADMIN')")
     List<BindingResponse> list() {
         return bindings.active().stream().map(this::response).toList();
     }

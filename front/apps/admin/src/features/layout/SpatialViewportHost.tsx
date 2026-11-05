@@ -26,6 +26,7 @@ import type {
   ViewerStatus,
   ViewerTarget,
 } from '@/features/viewer3d';
+import { useWatchBadges } from '@/features/watch/useWatch';
 import type { ViewerZones, Zone } from '@/features/zones/types';
 import { useZones } from '@/features/zones/useZones';
 import { avatarMeshFetch } from '@/lib/avatarMeshFetch';
@@ -170,6 +171,8 @@ export function SpatialViewportHost({
   const showEventPanel = eventPanel && !editing;
   // 작업면은 관리자 편집 모드(이벤트 패널이 없는 호스트도 같다)에서 고르고 고친다(구역 없는 작업면을 지우려면 골라야 한다).
   // 관제에서는 보이기만 해 사람·구역 선택을 가로막지 않는다. 장애물은 고치는 화면이 없어 어디서도 고르지 않는다.
+  // 사람 이름표 뒤 워치 채널 상태(-342). 배정·연결이 바뀔 때만 새 객체다
+  const personBadges = useWatchBadges();
   const layers = useMemo<ViewerLayers>(
     () => ({
       workSurfaces: editing || !eventPanel ? 'interactive' : 'visible',
@@ -202,6 +205,7 @@ export function SpatialViewportHost({
                 avatarMeshFetch={avatarMeshFetch}
                 scene={scene}
                 layers={layers}
+                personBadges={personBadges}
                 onSceneStatusChange={onSceneStatusChange}
                 onSelectionChange={onViewerSelect}
                 onStatusChange={onViewerStatus}

@@ -214,6 +214,11 @@ export interface Viewer3DProps {
    */
   avatarMesh?: 'auto' | 'off';
   /**
+   * 사람 이름표 뒤에 붙일 짧은 글(World ID → 글, -342 워치 채널 상태 등, 선택 사항). 사람 이름표(사람 ID) 끝에 ` · 글` 로 붙는다.
+   * 렌더마다 새 객체를 넘겨도 내용이 같으면 다시 그리지 않는다. 사람 이름을 넣지 않는다(익명 World ID 원칙).
+   */
+  personBadges?: Readonly<Record<string, string>>;
+  /**
    * 아바타 자산(mesh_url, 같은 출처 /api/avatars/...) 내려받기(선택 사항). FE 가 인증된 요청 함수를 넘긴다.
    * 없으면 fetch(url, { credentials: 'same-origin' }). 렌더마다 새 함수를 만들지 말고 고정해 넘긴다.
    */

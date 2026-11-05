@@ -217,6 +217,46 @@ describe('createRealtime', () => {
     offOpen();
   });
 
+  it('/topic/watch 의 watch_escalation 은 계약을 검사해 알리고 3D 뷰어 Source 로 넘기지 않는다(-342)', async () => {
+    const escalations: string[] = [];
+    const off = realtime.on('watchEscalation', (e) =>
+      escalations.push(`${e.device_id}:${e.reason}`),
+    );
+    realtime.start({ userId: 'u-1', getToken: () => 't-1' });
+    const viewer = await watchSource();
+    await until(() => useRealtimeStore.getState().phase === 'OPEN');
+    const escalation = {
+      schema_version: '1.0.0',
+      msg_type: 'watch_escalation',
+      msg_id: '0192a6f0-7c1e-7b3a-9f2d-000000000338',
+      sent_at: Date.now(),
+      source_id: 'ec2',
+      payload: {
+        event_id: '0192a6f0-7c1e-7b3a-9f2d-00000000e338',
+        event_sequence: 2,
+        alert_msg_id: '0192a6f0-7c1e-7b3a-9f2d-00000000a338',
+        device_id: 'watch-01',
+        world_id: 'w-17',
+        severity: 'HIGH',
+        reason: 'NO_ACK',
+        sent_at: 1760342401100,
+        escalated_at: 1760342411150,
+      },
+    };
+    await until(() => {
+      broker.publish('/topic/watch', escalation);
+      return escalations.length > 0;
+    });
+    expect(escalations[0]).toBe('watch-01:NO_ACK');
+    const rejected = useRealtimeStore.getState().rejected;
+    broker.publish('/topic/watch', { msg_type: 'watch_escalation', payload: {} });
+    await until(() => useRealtimeStore.getState().rejected === rejected + 1);
+    expect(
+      viewer.messages.some((m) => (m as { msg_type?: string }).msg_type === 'watch_escalation'),
+    ).toBe(false);
+    off();
+  });
+
   it('3D 뷰어가 받다가 실패해도 앱은 world·health 를 계속 받는다', async () => {
     const rethrown: unknown[] = [];
     const original = globalThis.queueMicrotask;
