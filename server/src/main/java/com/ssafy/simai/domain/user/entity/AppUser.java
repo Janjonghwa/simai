@@ -56,6 +56,10 @@ public class AppUser {
         return disabledAt != null;
     }
 
+    public void changePassword(String passwordHash) {
+        this.passwordHash = passwordHash;
+    }
+
     public void disable(Instant at) {
         this.disabledAt = at;
     }

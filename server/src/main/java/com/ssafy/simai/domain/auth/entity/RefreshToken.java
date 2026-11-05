@@ -31,6 +31,9 @@ public class RefreshToken implements Persistable<UUID> {
     @Column(name = "user_id", nullable = false)
     private Long userId;
 
+    @Column(name = "family_id", nullable = false)
+    private UUID familyId;
+
     @Column(name = "token_hash", nullable = false, unique = true)
     private String tokenHash;
 
@@ -47,9 +50,10 @@ public class RefreshToken implements Persistable<UUID> {
     @Getter(AccessLevel.NONE)
     private boolean newEntity = true;
 
-    public RefreshToken(UUID id, Long userId, String tokenHash, Instant issuedAt, Instant expiresAt) {
+    public RefreshToken(UUID id, Long userId, UUID familyId, String tokenHash, Instant issuedAt, Instant expiresAt) {
         this.id = id;
         this.userId = userId;
+        this.familyId = familyId;
         this.tokenHash = tokenHash;
         this.issuedAt = issuedAt;
         this.expiresAt = expiresAt;

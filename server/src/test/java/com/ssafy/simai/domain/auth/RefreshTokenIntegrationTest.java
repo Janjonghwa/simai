@@ -124,20 +124,38 @@ class RefreshTokenIntegrationTest {
     }
 
     @Test
-    void 오래전에_폐기된_토큰이_오면_유출로_보고_그_계정_토큰을_모두_폐기한다() throws Exception {
-        AppUser user = saveUser("viewer-1", Role.VIEWER);
-        String leaked = "leaked-refresh-token-for-test";
-        Instant longAgo = Instant.now().minusSeconds(3600);
-        RefreshToken old = refreshTokens.saveAndFlush(new RefreshToken(
-                UUID.randomUUID(), user.getId(), sha256(leaked), longAgo, longAgo.plusSeconds(14 * 24 * 3600)));
-        refreshTokens.revokeIfActive(old.getId(), longAgo.plusSeconds(60));
-        String current = refreshCookie(login("viewer-1"));
-
-        refresh(leaked)
-                .andExpect(status().isUnauthorized())
+    void 오래된_토큰_재사용은_해당_계보만_폐기한다() throws Exception {
+        saveUser("viewer-1", Role.VIEWER);
+        String first = refreshCookie(login("viewer-1"));
+        String other = refreshCookie(login("viewer-1"));
+        String next = refreshCookie(refresh(first).andExpect(status().isOk()));
+        RefreshToken old = refreshTokens.findByTokenHash(sha256(first)).orElseThrow();
+        RefreshToken successor = refreshTokens.findByTokenHash(sha256(next)).orElseThrow();
+        RefreshToken separate = refreshTokens.findByTokenHash(sha256(other)).orElseThrow();
+        assertThat(successor.getFamilyId()).isEqualTo(old.getFamilyId()).isNotEqualTo(separate.getFamilyId());
+        // 유예 경과를 DB에서 재현한다.
+        refreshTokens.revokeIfActive(successor.getId(), Instant.now().minusSeconds(60));
+        String latest = refreshCookie(login("viewer-1"));
+        // 교체 계보의 활성 토큰을 직접 준비한다.
+        String familyToken = "family-token-for-test";
+        Instant now = Instant.now();
+        refreshTokens.saveAndFlush(new RefreshToken(UUID.randomUUID(), old.getUserId(), old.getFamilyId(),
+                sha256(familyToken), now, now.plusSeconds(3600)));
+        refresh(next).andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("INVALID_REFRESH_TOKEN"));
+        refresh(familyToken).andExpect(status().isUnauthorized());
+        refresh(other).andExpect(status().isOk());
+        refresh(latest).andExpect(status().isOk());
+    }
 
-        refresh(current).andExpect(status().isUnauthorized());
+    @Test
+    void 다른_로그인_계보는_로그아웃_토큰의_유예_근거가_되지_않는다() throws Exception {
+        saveUser("viewer-1", Role.VIEWER);
+        String token = refreshCookie(login("viewer-1"));
+        mvc.perform(post("/api/auth/logout").cookie(new Cookie(COOKIE, token))).andExpect(status().isNoContent());
+        String other = refreshCookie(login("viewer-1"));
+        refresh(token).andExpect(status().isUnauthorized());
+        refresh(other).andExpect(status().isOk());
     }
 
     @Test
@@ -157,7 +175,7 @@ class RefreshTokenIntegrationTest {
         String raw = "expired-refresh-token-for-test";
         Instant past = Instant.now().minusSeconds(60);
         refreshTokens.saveAndFlush(new RefreshToken(
-                UUID.randomUUID(), user.getId(), sha256(raw), past.minusSeconds(3600), past));
+                UUID.randomUUID(), user.getId(), UUID.randomUUID(), sha256(raw), past.minusSeconds(3600), past));
 
         refresh(raw).andExpect(status().isUnauthorized());
     }

@@ -86,6 +86,38 @@ class AdminCommandsTest {
     }
 
     @Test
+    void set_password는_비밀번호를_바꾸고_모든_갱신_토큰을_폐기한다() throws Exception {
+        run(List.of("create-user", "--login", "viewer-1", "--role", "VIEWER"), "long-password", "long-password");
+        Cookie first = login("viewer-1", "long-password").andReturn().getResponse().getCookie("simai_refresh");
+        Cookie second = login("viewer-1", "long-password").andReturn().getResponse().getCookie("simai_refresh");
+        assertThat(run(List.of("set-password", "--login", "viewer-1"), "new-password", "new-password"))
+                .isEqualTo(AdminCommand.OK);
+        login("viewer-1", "long-password").andExpect(status().isUnauthorized());
+        login("viewer-1", "new-password").andExpect(status().isOk());
+        mvc.perform(post("/api/auth/refresh").cookie(first)).andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/auth/refresh").cookie(second)).andExpect(status().isUnauthorized());
+        assertThat(text(out)).doesNotContain("new-password");
+    }
+
+    @Test
+    void set_password의_확인과_비밀번호_규칙을_검사한다() {
+        run(List.of("create-user", "--login", "viewer-1", "--role", "VIEWER"), "long-password", "long-password");
+        String before = users.findByLoginId("viewer-1").orElseThrow().getPasswordHash();
+        assertThat(run(List.of("set-password", "--login", "viewer-1"), "new-password", "different"))
+                .isEqualTo(AdminCommand.FAILED);
+        assertThat(run(List.of("set-password", "--login", "viewer-1"), "short", "short"))
+                .isEqualTo(AdminCommand.FAILED);
+        String longPassword = "가".repeat(25);
+        assertThat(run(List.of("set-password", "--login", "viewer-1"), longPassword, longPassword))
+                .isEqualTo(AdminCommand.FAILED);
+        assertThat(run(List.of("set-password", "--login", "missing"), "new-password", "new-password"))
+                .isEqualTo(AdminCommand.FAILED);
+        assertThat(run(List.of("set-password", "--login", "viewer-1", "--password", "secret")))
+                .isEqualTo(AdminCommand.USAGE);
+        assertThat(users.findByLoginId("viewer-1").orElseThrow().getPasswordHash()).isEqualTo(before);
+    }
+
+    @Test
     void 이미_막힌_계정을_다시_막아도_처음_시각을_둔다() {
         run(List.of("create-user", "--login", "viewer-1", "--role", "VIEWER"), "long-password", "long-password");
         run(List.of("disable-user", "--login", "viewer-1"));
@@ -183,7 +215,7 @@ class AdminCommandsTest {
     void 모르는_명령이면_사용법을_보여준다() {
         assertThat(run(List.of("drop-everything"))).isEqualTo(AdminCommand.USAGE);
         assertThat(run(List.of())).isEqualTo(AdminCommand.USAGE);
-        assertThat(text(err)).contains("create-user");
+        assertThat(text(err)).contains("create-user", "set-password");
     }
 
     private int run(List<String> args, String... secrets) {
