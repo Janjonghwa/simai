@@ -1,4 +1,9 @@
-import { CONFIDENCE_REASON, METRIC_LABEL, RULE_NAME } from '@/features/events/constants';
+import {
+  CONFIDENCE_REASON,
+  METRIC_LABEL,
+  RULE_NAME,
+  RULE_NAME_BY_SEVERITY,
+} from '@/features/events/constants';
 import { isActive, type EntryStatus } from '@/features/events/entries';
 import type { EventItem } from '@/features/events/types';
 import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
@@ -17,6 +22,10 @@ export const formatTime = (ms: number | null | undefined) =>
   ms === null || ms === undefined ? '—' : TIME.format(ms);
 
 export const ruleName = (ruleId: string) => RULE_NAME[ruleId] ?? ruleId;
+
+/** 이벤트의 규칙 이름: 등급에 따라 이름이 달라지는 규칙(R1 주의)이면 그 이름, 아니면 `ruleName`. */
+export const eventRuleName = (event: Pick<EventItem, 'rule_id' | 'severity'>) =>
+  RULE_NAME_BY_SEVERITY[event.rule_id]?.[event.severity] ?? ruleName(event.rule_id);
 
 /** 이벤트 대상 문구: 사람 ID, 사람이 없으면 구역 이름(모르면 `구역`). */
 export const eventSubject = (event: EventItem, zoneName: ZoneNameOf) =>

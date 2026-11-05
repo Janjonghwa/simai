@@ -1,7 +1,7 @@
 import { SEVERITY_LABEL } from '@/features/events/constants';
 import { isActive } from '@/features/events/entries';
 import { isProposalDecided, useCanEscalate } from '@/features/events/escalation';
-import { ruleName } from '@/features/events/format';
+import { eventRuleName } from '@/features/events/format';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import type { EscalationDecision, EventItem } from '@/features/events/types';
 import { useEscalateEvent } from '@/features/events/useEscalateEvent';
@@ -63,7 +63,7 @@ export function EscalationControl({ event }: { event: EventItem }) {
           className="flex flex-col gap-2 rounded-[10px] bg-background p-3 text-xs ring-1 ring-border"
         >
           <p className="flex flex-wrap items-center gap-1.5 font-medium text-foreground">
-            <span>{ruleName(event.rule_id)} 상향 의견</span>
+            <span>{eventRuleName(event)} 상향 의견</span>
             <SeverityBadge severity={proposed} />
             <span>
               {isApprove

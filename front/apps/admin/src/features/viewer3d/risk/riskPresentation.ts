@@ -19,10 +19,13 @@ export const MODE_EVENT_SOURCE: Record<ViewerMode, EventSource> = {
   REPLAY: 'REPLAY',
 };
 
-/** 3D 강조 대상 등급. 관제 경보 대상(명세 12.4 /topic/events: CRITICAL·HIGH)만 강하게 표시한다. */
-export type RiskLevel = 'CRITICAL' | 'HIGH';
+/**
+ * 3D 강조 등급. 위험·경고(관제 경보 대상, 명세 12.4 /topic/events)는 사람과 구역에, 주의(-497 사다리 1단계)는 사람 발밑 노란 링에만 보인다.
+ * 소리·배너가 없는 주의가 경보 등급처럼 보이지 않게 구역은 위험·경고만 강조한다.
+ */
+export type RiskLevel = 'CRITICAL' | 'HIGH' | 'CAUTION';
 
-const LEVEL_RANK: Record<RiskLevel, number> = { CRITICAL: 2, HIGH: 1 };
+const LEVEL_RANK: Record<RiskLevel, number> = { CRITICAL: 3, HIGH: 2, CAUTION: 1 };
 
 export interface RiskHighlight {
   /** 이 대상에 걸린 활성 이벤트 중 가장 높은 등급(severity). proposed_severity(VLM 의견)는 쓰지 않는다. */
@@ -53,7 +56,7 @@ export interface UnlinkedTarget {
 }
 
 export type SkipReason =
-  /** CAUTION·INFO. 관제 경보 등급으로 위장하지 않는다. */
+  /** INFO, 또는 가리킬 사람이 없는 CAUTION(주의는 사람 링으로만 보인다). 관제 경보 등급으로 위장하지 않는다. */
   | 'LOW_SEVERITY'
   /** 재동기화 중 해소돼 감사 기록으로만 복원된 LIVE 이벤트. */
   | 'AUDIT_ONLY';
@@ -87,7 +90,11 @@ export const NO_RISK: RiskPresentation = {
 };
 
 const isRiskLevel = (severity: RiskEventView['severity']): severity is RiskLevel =>
-  severity === 'CRITICAL' || severity === 'HIGH';
+  severity === 'CRITICAL' || severity === 'HIGH' || severity === 'CAUTION';
+
+/** 구역에 강조를 얹는 등급. 주의는 구역을 강조하지 않는다. */
+const ZONE_LEVELS: ReadonlySet<RiskLevel> = new Set<RiskLevel>(['CRITICAL', 'HIGH']);
+const isZoneLevel = (level: RiskLevel) => ZONE_LEVELS.has(level);
 
 function merge(
   map: Map<string, RiskHighlight>,
@@ -141,11 +148,13 @@ export function riskPresentation(input: RiskInput): RiskPresentation {
       continue;
     }
     const level = event.severity;
-    if (!isRiskLevel(level)) {
+    // 주의는 사람 링으로만 보이므로, 가리킬 사람이 없는 주의는 강조할 곳이 없다.
+    if (!isRiskLevel(level) || (!isZoneLevel(level) && event.worldIds.length === 0)) {
       skipped.push({ eventId: event.eventId, reason: 'LOW_SEVERITY' });
       continue;
     }
-    const targets = [...event.worldIds, ...(event.zoneId === null ? [] : [event.zoneId])];
+    const zoneTarget = event.zoneId !== null && isZoneLevel(level) ? event.zoneId : null;
+    const targets = [...event.worldIds, ...(zoneTarget === null ? [] : [zoneTarget])];
     const scene = event.sceneVersion;
     const world = input.worldSceneVersion;
     if (scene !== null && world !== null && scene !== world) {
@@ -170,20 +179,16 @@ export function riskPresentation(input: RiskInput): RiskPresentation {
     for (const track of input.tracks) {
       if (eventTargetsTrack(event, track)) merge(people, track.worldId, event, level, flags);
     }
-    if (event.zoneId !== null) {
-      if (zoneIds.has(event.zoneId)) merge(zones, event.zoneId, event, level, flags);
+    if (zoneTarget !== null) {
+      if (zoneIds.has(zoneTarget)) merge(zones, zoneTarget, event, level, flags);
       else
-        unlinked.push({
-          eventId: event.eventId,
-          target: event.zoneId,
-          reason: 'ZONE_NOT_IN_SCENE',
-        });
+        unlinked.push({ eventId: event.eventId, target: zoneTarget, reason: 'ZONE_NOT_IN_SCENE' });
     }
   }
   return { source, people, zones, unlinked, skipped };
 }
 
-/** 표시 모양. CRITICAL 빨강 이중선·HIGH 주황, 실시간 관측이 아니면(계획·재생·마지막 수신) 점선. */
+/** 표시 모양. CRITICAL 빨강 이중선·HIGH 주황·CAUTION 노랑 한 줄, 실시간 관측이 아니면(계획·재생·마지막 수신) 점선. */
 export interface RiskStyle {
   color: number;
   labelColor: string;

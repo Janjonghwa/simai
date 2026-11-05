@@ -7,7 +7,7 @@ import { CONFIDENCE_REASON } from '@/features/events/constants';
 import { entryStatus, needsConfirmation, type EventEntry } from '@/features/events/entries';
 import { escalationStatusLabel, mergedEscalations } from '@/features/events/escalation';
 import { EscalationControl } from '@/features/events/EscalationControl';
-import { formatTime, metricLabels, ruleName, statusText } from '@/features/events/format';
+import { eventRuleName, formatTime, metricLabels, statusText } from '@/features/events/format';
 import type { Incident } from '@/features/events/incidents';
 import { IncidentSummaryControl } from '@/features/events/IncidentSummaryControl';
 import { incidentTimeline } from '@/features/events/incidentView';
@@ -63,7 +63,7 @@ function RuleRow({
       <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
         <SeverityBadge severity={event.severity} />
         <b>
-          {event.rule_id} {ruleName(event.rule_id)}
+          {event.rule_id} {eventRuleName(event)}
         </b>
         <span className="text-[13px] text-muted-foreground">
           {zone && `${zone} · `}
@@ -166,7 +166,7 @@ export function AiPanel({
           return (
             <div key={event.event_id} className="flex flex-col gap-1.5 text-sm">
               {ai.length > 1 && (
-                <span className="text-muted-foreground">{ruleName(event.rule_id)}</span>
+                <span className="text-muted-foreground">{eventRuleName(event)}</span>
               )}
               {event.rationale && <p>{event.rationale}</p>}
               {event.proposed_severity && (
@@ -197,7 +197,7 @@ export function ClipsPanel({ entries }: EntriesProps) {
         <None />
       ) : (
         clipEntries.map(({ event }) => (
-          <EventClips key={event.event_id} event={event} title={ruleName(event.rule_id)} />
+          <EventClips key={event.event_id} event={event} title={eventRuleName(event)} />
         ))
       )}
     </DetailPanel>
@@ -217,7 +217,7 @@ export function ProcessPanel({ entries }: EntriesProps) {
               className="flex flex-wrap items-center justify-between gap-2"
             >
               <span className="flex flex-wrap items-center gap-2 text-sm">
-                <span>{ruleName(entry.event.rule_id)}</span>
+                <span>{eventRuleName(entry.event)}</span>
                 <span
                   className={
                     status.kind === 'alarm'

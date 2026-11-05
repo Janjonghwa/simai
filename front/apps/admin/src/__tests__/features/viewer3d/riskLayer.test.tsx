@@ -109,6 +109,20 @@ async function playUntil(until: number) {
   });
 }
 
+/** tick 10 의 첫 위험 이벤트(w-0001·z-01)를 주의 등급으로 바꾼 메시지. */
+function cautionEvent() {
+  const out = scenarioTick('risk-lifecycle', 10, T0).find(
+    (o) => o.type === 'message' && (o.raw as { msg_type: string }).msg_type === 'risk_event',
+  );
+  const raw = structuredClone((out as { raw: unknown }).raw) as {
+    msg_id: string;
+    payload: { severity: string };
+  };
+  raw.msg_id = mockMsgId('risk-lifecycle', 10, 9);
+  raw.payload.severity = 'CAUTION';
+  return raw;
+}
+
 const named = (name: string) => scene!.getObjectByName(name);
 const count = (prefix: string) => {
   const names: string[] = [];
@@ -168,6 +182,15 @@ describe('위험 표식(같은 장면)', () => {
 
     await playUntil(66);
     expect(count('risk-')).toEqual([]);
+  });
+
+  it('주의는 사람 발밑에 링 하나만 그리고 구역 표식은 만들지 않는다', async () => {
+    await mount();
+    await playUntil(10);
+    await act(async () => data.getState().ingest(cautionEvent(), at(10)));
+    expect(count('risk-')).toEqual(['risk-person:w-0001']);
+    expect(info('risk-person:w-0001')).toMatchObject({ level: 'CAUTION', kind: 'BODY' });
+    expect(named('risk-person:w-0001')!.children).toHaveLength(1);
   });
 
   it('PLANNED 모드에서는 계획 이벤트만 보이고 LIVE 로 돌아오면 원래대로다', async () => {
