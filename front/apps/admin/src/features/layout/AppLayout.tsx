@@ -98,7 +98,7 @@ export function AppLayout() {
   return (
     <div
       ref={root}
-      className="relative flex h-svh min-h-[760px] min-w-[1280px] flex-col overflow-hidden bg-background text-[15px] leading-[22px]"
+      className="relative flex h-svh min-h-[600px] min-w-[1280px] flex-col overflow-hidden bg-background text-[15px] leading-[22px]"
     >
       <div className={cn('relative z-[7] flex-none', fullBleed && 'absolute inset-x-0 top-0')}>
         <TopBar floating={fullBleed} />
