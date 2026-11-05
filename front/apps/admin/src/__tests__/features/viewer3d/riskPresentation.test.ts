@@ -179,14 +179,40 @@ function run(events: RiskEventView[], patch: Partial<RiskInput> = {}) {
 }
 
 describe('출처·등급 필터', () => {
-  it('CAUTION·INFO 는 강조하지 않고 이유를 남긴다', () => {
-    const [c, i] = [ev({ severity: 'CAUTION' }), ev({ severity: 'INFO' })];
-    const risk = run([c, i]);
+  it('INFO 는 강조하지 않고 이유를 남긴다', () => {
+    const i = ev({ severity: 'INFO' });
+    const risk = run([i]);
     expect(risk.people.size + risk.zones.size).toBe(0);
-    expect(risk.skipped).toEqual([
-      { eventId: c.eventId, reason: 'LOW_SEVERITY' },
-      { eventId: i.eventId, reason: 'LOW_SEVERITY' },
-    ]);
+    expect(risk.skipped).toEqual([{ eventId: i.eventId, reason: 'LOW_SEVERITY' }]);
+  });
+
+  it('CAUTION 은 사람 발밑 강조만 하고 구역은 강조하지 않는다', () => {
+    const c = ev({ severity: 'CAUTION' });
+    const risk = run([c]);
+    expect(flat(risk.people)).toEqual([['w-0001', 'CAUTION', [c.eventId]]]);
+    expect(risk.zones.size).toBe(0);
+    expect(risk.skipped).toEqual([]);
+  });
+
+  it('CAUTION 의 구역이 장면에 없거나 Scene 이 달라도 구역을 unlinked 로 남기지 않는다', () => {
+    const missing = run([ev({ severity: 'CAUTION', zoneId: 'z-99' })]);
+    expect(missing.unlinked).toEqual([]);
+    const mismatch = run([ev({ severity: 'CAUTION', sceneVersion: 'other-scene' })]);
+    expect(mismatch.unlinked.map((u) => u.target)).toEqual(['w-0001']);
+  });
+
+  it('가리킬 사람이 없는 CAUTION 은 강조하지 않고 이유를 남긴다', () => {
+    const c = ev({ severity: 'CAUTION', worldIds: [], zoneId: 'z-01' });
+    const risk = run([c]);
+    expect(risk.people.size + risk.zones.size).toBe(0);
+    expect(risk.skipped).toEqual([{ eventId: c.eventId, reason: 'LOW_SEVERITY' }]);
+  });
+
+  it('같은 사람에게 경고와 주의가 함께 걸리면 경고로 묶고, 구역은 경고만 강조한다', () => {
+    const [high, caution] = [ev({ severity: 'HIGH' }), ev({ severity: 'CAUTION', zoneId: 'z-02' })];
+    const risk = run([high, caution]);
+    expect(flat(risk.people)).toEqual([['w-0001', 'HIGH', [high.eventId, caution.eventId].sort()]]);
+    expect(flat(risk.zones)).toEqual([['z-01', 'HIGH', [high.eventId]]]);
   });
 
   it('proposed_severity(VLM 의견)로 등급을 올리지 않는다', () => {

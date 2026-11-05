@@ -101,6 +101,13 @@ describe('IncidentCard', () => {
     expect(within(card).queryByText(/회 발생/)).toBeNull();
   });
 
+  it('R1 주의 묶음은 규칙 이름을 위험 구역 근접으로 보인다', () => {
+    const { card } = renderCard([entry({ rule_id: 'R1', severity: 'CAUTION', zone_id: 'z-04' })]);
+
+    expect(within(card).getByText('위험 구역 근접 · 개구부 구역')).toBeTruthy();
+    expect(card.textContent).not.toContain('위험 구역 진입');
+  });
+
   it('개구부 수치와 나머지 규칙·구역은 카드에 없다(상세에만 있다)', () => {
     const { card } = renderCard([
       entry(),

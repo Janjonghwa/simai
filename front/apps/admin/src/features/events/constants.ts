@@ -106,6 +106,11 @@ export const RULE_NAME: Record<string, string> = {
   R9: '보호구 미착용',
 };
 
+/** 등급에 따라 이름이 달라지는 규칙. R1 주의는 구역 안이 아니라 근접 띠에 있다(-497). */
+export const RULE_NAME_BY_SEVERITY: Record<string, Partial<Record<Severity, string>>> = {
+  R1: { CAUTION: '위험 구역 근접' },
+};
+
 /** 지표 키의 화면 이름. 없는 키는 키에서 단위 꼬리표를 뗀 이름으로 보인다. */
 export const METRIC_LABEL: Record<string, string> = {
   edge_distance_m: '가장자리',

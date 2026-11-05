@@ -7,7 +7,7 @@ import {
   isAlarmSeverity,
   isAlarming,
 } from '@/features/events/entries';
-import { formatTime, ruleName } from '@/features/events/format';
+import { eventRuleName, formatTime } from '@/features/events/format';
 import { topEntry, type Incident } from '@/features/events/incidents';
 import type { EventItem } from '@/features/events/types';
 import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
@@ -31,10 +31,10 @@ export const targetFont = (target: Incident['target']) =>
  * 이름을 모르는 구역은 뺀다.
  */
 export function cardTitle(incident: Incident, zoneName: ZoneNameOf): string {
-  const { rule_id, zone_id } = topEntry(incident).event;
+  const event = topEntry(incident).event;
   const own = incident.target?.type === 'zone' ? incident.target.id : null;
-  const name = zone_id === own ? null : zoneName(zone_id);
-  return `${ruleName(rule_id)}${name ? ` · ${name}` : ''}`;
+  const name = event.zone_id === own ? null : zoneName(event.zone_id);
+  return `${eventRuleName(event)}${name ? ` · ${name}` : ''}`;
 }
 
 /** 모두 해소된 묶음의 마지막 해소 시각 문구: "해소 12:03:41". */
@@ -79,7 +79,7 @@ export interface TimelineItem {
 
 /** 규칙 하나의 타임라인 항목: 발생, 확인들, 해소(운영자 종료). */
 function ruleTimeline(event: EventItem): TimelineItem[] {
-  const rule = ruleName(event.rule_id);
+  const rule = eventRuleName(event);
   const items: TimelineItem[] = [];
   if (event.raised_at !== undefined) {
     items.push({ at: event.raised_at, who: '시스템', text: `${rule} 발생` });

@@ -1,6 +1,6 @@
 import { useCanAck } from '@/features/events/ack';
 import { entryStatus, type EventEntry } from '@/features/events/entries';
-import { eventSubject, ruleName } from '@/features/events/format';
+import { eventRuleName, eventSubject } from '@/features/events/format';
 import type { EventItem } from '@/features/events/types';
 import { useAckEvent } from '@/features/events/useAckEvent';
 import type { ZoneNameOf } from '@/features/zones/zoneName';
@@ -25,7 +25,7 @@ function AckControl({
         disabled={pending}
         focusableWhenDisabled
         // 목록에 「확인」이 여러 개라 어느 경보인지 함께 읽힌다.
-        aria-label={`${ruleName(event.rule_id)} ${eventSubject(event, zoneName)} ${text}`}
+        aria-label={`${eventRuleName(event)} ${eventSubject(event, zoneName)} ${text}`}
         onClick={() => ack(event.event_sequence)}
       >
         {text}
