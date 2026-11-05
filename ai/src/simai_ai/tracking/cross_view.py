@@ -95,6 +95,7 @@ class RejectReason(StrEnum):
 
     FEW_COMMON_JOINTS = "FEW_COMMON_JOINTS"
     """두 view 모두 신뢰도 기준 이상인 관절이 너무 적다"""
+    NO_FOV_OVERLAP = "NO_FOV_OVERLAP"
     EPIPOLAR = "EPIPOLAR"
     TRIANGULATION = "TRIANGULATION"
     """두 view 로 서로 맞게 삼각측량된 관절 비율이 낮다 (해 없음·카메라 뒤·이상치)"""
@@ -385,6 +386,9 @@ class CrossViewAssociator:
         self._previous: dict[str, frozenset[TrackKey]] = {}
         self._issued = 0
         self._last_t: int | None = None
+        from simai_ai.geometry.overlap import disjoint_camera_pairs
+
+        self.skipped_camera_pairs = disjoint_camera_pairs(rig)
 
     # ------------------------------------------------------------------ 공개
 
@@ -392,6 +396,9 @@ class CrossViewAssociator:
         """tick 경계에서 호출한다. 트랙 연속성은 유지하고 보정 의존 기하 캐시만 비운다."""
         self.rig = rig
         self._essential.clear()
+        from simai_ai.geometry.overlap import disjoint_camera_pairs
+
+        self.skipped_camera_pairs = disjoint_camera_pairs(rig)
         self._pair_residuals.clear()
 
     def pair_residual_thresholds(self, cam_a: str, cam_b: str) -> tuple[float, float]:
@@ -576,6 +583,8 @@ class CrossViewAssociator:
         stacks = {cid: _ViewStack.of([prepared[k] for k in by_camera[cid]]) for cid in cams}
         found: dict[tuple[str, str], tuple[list[list[int]], list[list[float]], dict[tuple[int, int], PairEvidence]]] = {}
         for cam_a, cam_b in itertools.combinations(cams, 2):
+            if (cam_a, cam_b) in self.skipped_camera_pairs:
+                continue
             pas = [prepared[k] for k in by_camera[cam_a]]
             pbs = [prepared[k] for k in by_camera[cam_b]]
             epi, common = self._epipolar_matrix(pas, pbs)
@@ -591,6 +600,10 @@ class CrossViewAssociator:
         for c, cam_a in enumerate(cams):
             for i, ka in enumerate(by_camera[cam_a]):
                 for cam_b in cams[c + 1 :]:
+                    if (cam_a, cam_b) in self.skipped_camera_pairs:
+                        for kb in by_camera[cam_b]:
+                            out[(ka, kb)] = PairEvidence(ka, kb, 0, reject=RejectReason.NO_FOV_OVERLAP)
+                        continue
                     counts_ab, epi_ab, evidence = found[(cam_a, cam_b)]
                     for k, kb in enumerate(by_camera[cam_b]):
                         n = counts_ab[i][k]

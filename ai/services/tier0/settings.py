@@ -163,6 +163,8 @@ class ReidSettings:
     enabled: bool = True
     batch_size: int = 8
     update_interval_ms: int = 750
+    stable_update_interval_ms: int = 3000
+    max_crops_per_second: int = 8
     max_queue_size: int = 32
     cope_root: Path | None = None
     weights_path: Path | None = None
@@ -349,6 +351,8 @@ def _reid(doc: Any, base: Path, env: Mapping[str, str]) -> ReidSettings:
         enabled = env_enabled == "1"
     batch_size = _int(doc, "batch_size", 8, minimum=1)
     update_interval_ms = _int(doc, "update_interval_ms", 750, minimum=0)
+    stable_update_interval_ms = _int(doc, "stable_update_interval_ms", 3000, minimum=update_interval_ms)
+    max_crops_per_second = _int(doc, "max_crops_per_second", 8, minimum=1)
     max_queue_size = _int(doc, "max_queue_size", 32, minimum=1)
     # 설정 파일에 없으면 환경변수(Pod 템플릿·세션 준비 스크립트가 넣는다). 둘 다 없으면 None(임베더 기본값, S15P31A101-471)
     def _reid_path(key: str, env_key: str) -> Path | None:
@@ -372,6 +376,8 @@ def _reid(doc: Any, base: Path, env: Mapping[str, str]) -> ReidSettings:
         enabled=enabled,
         batch_size=batch_size,
         update_interval_ms=update_interval_ms,
+        stable_update_interval_ms=stable_update_interval_ms,
+        max_crops_per_second=max_crops_per_second,
         max_queue_size=max_queue_size,
         cope_root=cope_root,
         weights_path=weights_path,

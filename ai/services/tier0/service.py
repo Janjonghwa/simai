@@ -801,6 +801,8 @@ class Tier0Service:
             enabled=r.enabled,
             batch_size=r.batch_size,
             update_interval_ms=r.update_interval_ms,
+            stable_update_interval_ms=r.stable_update_interval_ms,
+            max_crops_per_second=r.max_crops_per_second,
             max_queue_size=r.max_queue_size,
             cope_root=r.cope_root,
             weights_path=r.weights_path,
@@ -1322,7 +1324,7 @@ class Tier0Service:
             self._stop.wait(delay)
 
     def _run_housekeeping(self) -> None:
-        last_status = last_marker = time.monotonic()
+        last_status = last_marker = last_timing = time.monotonic()
         while not self._stop.wait(HOUSEKEEPING_S):
             try:
                 if self.clock_sync is not None and self.control is not None and self.control.connected:
@@ -1341,6 +1343,15 @@ class Tier0Service:
                     self._check_warnings()
                     if self.drift_watch is not None:
                         save_baselines(self.settings.baselines_file, self.drift_watch.baselines())
+                if now - last_timing >= 30.0:
+                    last_timing = now
+                    log.info("[tier0] stage_timing %s", json.dumps({
+                        "judge": self.perception.timing.summary(),
+                        "detector": (self.perception.feed.timing.summary()
+                                     if isinstance(self.perception.feed, DetectorFeed) else None),
+                        "input": None if self.live_input is None else self.live_input.bridge.timing.summary(),
+                        "reid": None if self.reid_collector is None else self.reid_collector.status(),
+                    }))
                 if now - last_marker >= MARKER_EVERY_S:
                     last_marker = now
                     self._write_marker()
@@ -1430,6 +1441,11 @@ class Tier0Service:
             "reid_submission": (self.perception.feed.reid_submission_status()
                                 if isinstance(getattr(self.perception, "feed", None), DetectorFeed) else None),
             # 추적 계측 누계(S15P31A101-413, 판정에 쓰지 않음): 늦은 카메라 시간 비율·보간 탈락·카메라 쌍 거부·World Track 생명주기
+            "input_timing": None if self.live_input is None else self.live_input.bridge.timing.summary(),
+            "stage_timing": self.perception.timing.summary(),
+            "detector_timing": (self.perception.feed.timing.summary()
+                                if isinstance(self.perception.feed, DetectorFeed) else None),
+            "skipped_camera_pairs": sorted("/".join(pair) for pair in self.perception.associator.skipped_camera_pairs),
             "tracking_diagnostics": (None if getattr(self, "perception", None) is None
                                      else self.perception.diagnostics.summary()),
             # 카메라 쌍별 지금 재투영 문턱·표본 수·출처(S15P31A101-476, 판정에 쓰지 않음)

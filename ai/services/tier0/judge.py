@@ -169,6 +169,9 @@ class JudgmentLoop:
         self._observe_progress = observe_progress
         self._restore_link = restore_link  # 재시작 뒤 이전 이벤트 연결(services.tier0.restore_link.RestoreLink, -178)
         self._new_msg_id = new_msg_id
+        from simai_ai.tracking.stage_timing import StageTiming
+
+        self.timing = getattr(perception, "timing", StageTiming())
         self._begin_tick = begin_tick
         self._last_calibration_state = "UNCALIBRATED"
         self._coverage_key: tuple[str, str] | None = None
@@ -212,14 +215,15 @@ class JudgmentLoop:
         feed = getattr(self.perception, "feed", None)
         if isinstance(feed, DetectorFeed) and not feed.async_mode:
             feed.detect_once()  # 비동기 검출 스레드가 없는 경로(단건 tick·녹화 재생)도 검출·로컬추적은 판정 lock 밖에서 한다
-        with self.lock:
+        with self.timing.measure("judge_tick", lambda: getattr(self.perception, "people", 0)), self.lock:
             self.stats.ticks += 1
             if self._begin_tick is not None:
                 self._begin_tick()  # 보정도 인지 전에 같은 경계에서만 전환한다(-344)
             active = self.config_sync.begin_tick()  # 1) 구성 묶음 전환 경계
             self.active_config = active
             surfaces = SurfaceSet.from_active_config(active)
-            perceived = self.perception.step(self._now_ms(), surfaces)  # 2) 인지
+            with self.timing.measure("perception", lambda: getattr(self.perception, "people", 0)):
+                perceived = self.perception.step(self._now_ms(), surfaces)  # 2) 인지
             if self._observe_progress is not None:
                 self._observe_progress(self.perception.t_latest_global())
             if perceived is None:
@@ -228,7 +232,8 @@ class JudgmentLoop:
                 self._publish_views()
                 return result
             self.stats.perceived += 1
-            result = self._judge(perceived, active)
+            with self.timing.measure("judgment_and_output", lambda: getattr(self.perception, "people", 0)):
+                result = self._judge(perceived, active)
             self._publish_views()
             return result
 
@@ -294,17 +299,19 @@ class JudgmentLoop:
             self.stats.no_config_ticks += 1
         else:
             world = WorldState.from_payload(payload)
-            evaluation = active.evaluate(world, self.tracker.origin, monitoring=self._monitoring(active),
-                                         calibration_state=self._last_calibration_state)  # 4) 판정(작업면·보정 상태 포함)
-            step = self.tracker.apply(evaluation, world, config_version=active.config_version, evidence_ref=msg_id,
-                                      related=related)
+            with self.timing.measure("risk_evaluate", len(payload["tracks"])):
+                evaluation = active.evaluate(world, self.tracker.origin, monitoring=self._monitoring(active),
+                                             calibration_state=self._last_calibration_state)  # 4) 판정(작업면·보정 상태 포함)
+                step = self.tracker.apply(evaluation, world, config_version=active.config_version, evidence_ref=msg_id,
+                                          related=related)
             self.stats.evaluated += 1
             self._record(step)
             steps.append(step)
             self._note_risk(evaluation)
         self._last = (payload, msg_id)
         if self._offer_world_state is not None:  # 6) world_state (msg_id = 이 tick 의 evidence_ref)
-            self._offer_world_state(payload, msg_id=msg_id)
+            with self.timing.measure("i1_offer", len(payload["tracks"])):
+                self._offer_world_state(payload, msg_id=msg_id)
         if self._checkpoint_inputs is not None:
             self._checkpoint_inputs(
                 config_version=None if active is None else active.config_version,
@@ -385,6 +392,10 @@ class JudgmentLoop:
     # --- 내부 ------------------------------------------------------------------------
 
     def _record(self, step: LifecycleStep, *, ack_id: str | None = None, submitted: bool = False) -> None:
+        with self.timing.measure("journal_and_alert_submit", lambda: getattr(self.perception, "people", 0)):
+            self._record_impl(step, ack_id=ack_id, submitted=submitted)
+
+    def _record_impl(self, step: LifecycleStep, *, ack_id: str | None = None, submitted: bool = False) -> None:
         """submitted: 이미 저널에 제출한 단계(운영자 종료·상향은 추적기가 상태를 바꾸기 전에 제출한다)."""
         if not step.transitions and not step.local_signals:
             return

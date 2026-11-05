@@ -26,7 +26,6 @@ from simai_ai.tracking.cross_view import ViewCluster
 from simai_ai.tracking.world_state import world_state_message, world_state_payload
 from simai_ai.tracking.world_track import (
     IdentityConfidence,
-    RevisionKind,
     TrackLifecycle,
     WorldIdIssuer,
     WorldTrackConfig,
@@ -398,6 +397,71 @@ def test_lost_to_dormant_not_exported_and_reentry_within_30min_inherits_world_id
     assert snap.lifecycle is TrackLifecycle.CONFIRMED
     assert mgr.diag.get("reid.reentry_reconnected", 0) == 1
     assert wid_orig in frame_reentry.reassociations
+
+
+@pytest.mark.parametrize("people", [1, 4])
+def test_demand_collector_preserves_dormant_reentry_ids(rig, people):
+    """-499: 3초 갱신·8/s 상한을 거친 실제 collector 특징으로 재입장 ID 비율 100%를 유지한다(SIM)."""
+    from types import SimpleNamespace
+
+    from simai_ai.reid.collector import AsyncReidCollector, ReidCollectorConfig
+    from simai_ai.tracking.local_tracker import Observation2DFrame, PoseDetection, TrackedDetection
+
+    class Model:
+        def embed(self, crops):
+            return np.stack([_ortho_basis(int(crop[0, 0, 0])) for crop in crops])
+
+    mono = [0.]
+    collector = AsyncReidCollector(ReidCollectorConfig(), embedder=Model(), start_worker=False,
+                                   monotonic=lambda: mono[0])
+    manager = WorldTrackManager(WorldIdIssuer("sampling"), WorldTrackConfig(reid_enabled=True),
+                                feature_lookup=collector.lookup)
+    cams = wt.ALL[:3]  # 2시점만이면 TWO_VIEW 경쟁 표지가 붙어 갤러리가 비므로 3시점. 사람 1명(3크롭)씩 1초 간격으로 제출해 8/s 안
+    locations = [(1.5 + i * 1.8, 3.) for i in range(people)]
+
+    def collect(t, ids):
+        for i, local in enumerate(ids):
+            for cam in cams:
+                # 서로 다른 외형을 가진 한 사람씩 제출, 촬영 시각/품질은 같음.
+                image = np.full((240, 160, 3), i + 1, np.uint8)
+                bbox = (10., 10., 100., 200.)
+                kps = tuple((50., 15. + j * 10, .95) for j in range(17))
+                obs = Observation2DFrame(cam, 1, t, t, "SIM", 0., (
+                    TrackedDetection(local[cam], PoseDetection(bbox, .95, kps)),))
+                collector.submit_observation(SimpleNamespace(image=image), obs)
+            collector.process_pending_once()
+            mono[0] += 1.0  # 한 사람 3크롭씩 초당 상한(8) 안
+
+    def clusters(t, ids):
+        return [_cluster(rig, str(i), t, x, y, keys) for i, ((x, y), keys) in enumerate(zip(locations, ids))]
+
+    initial = [{c: f"{c}-p{i}" for c in cams} for i in range(people)]
+    try:
+        collect(T, initial)
+        for k in range(5):
+            t = T + k * DT
+            frame = manager.update(wt._frame(rig, t, clusters(t, initial)), rig)
+            collector.update_sampling(frame)
+        original = {tr.world_id for tr in frame.tracks}
+        assert len(original) == people
+        assert all(manager.galleries.get(w) and len(manager.galleries.get(w)) for w in original), [
+            (tr.world_id, tr.identity_flags, len(manager.galleries.get(tr.world_id) or ())) for tr in frame.tracks]
+        absent = manager.update(wt._frame(rig, T + 15_000, []), rig)
+        collector.update_sampling(absent)
+        absent = manager.update(wt._frame(rig, T + 16_000, []), rig)
+        collector.update_sampling(absent)
+        assert not absent.tracks
+        mono[0] = 300.
+        t = T + 300_000
+        returning = [{c: f"{c}-return{i}" for c in cams} for i in range(people)]
+        collect(t, returning)
+        frame = manager.update(wt._frame(rig, t, clusters(t, returning)), rig)
+        assert {tr.world_id for tr in frame.tracks} == original
+        assert set(frame.reassociations) == original
+        assert collector.embedded_crops == people * 6
+        assert collector.dropped_rate_limit == 0
+    finally:
+        collector.close()
 
 
 def test_avatar_update_hold_set_on_uncertain_and_cleared_when_confirmed_high(rig) -> None:
