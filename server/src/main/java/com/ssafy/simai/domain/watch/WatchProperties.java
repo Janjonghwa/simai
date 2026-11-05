@@ -12,9 +12,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param ackWithin watch_alert 의 확인 기한 ack_within_ms(초기 10 s, 계약 1 ms~10분). 이 안에 VIBRATED ACK 가 EC2 에 닿지 않으면
  *        관리자에게 격상한다(S15P31A101-338). 10초는 '진입 → 진동 p95 1.5초' 와 재연결 백오프(최대 30초)를 함께 본 초깃값(watch-i4-contract.md)
  * @param escalationInterval ACK 기한이 지난 알림을 살피는 간격(초기 1 s). 격상은 기한 + 이 값 안에 난다
+ * @param matchInterval 움직임 대조·배정을 다시 계산하는 간격(초기 2 s, 워치가 걸음 특징 창을 보내는 주기와 같다, S15P31A101-340)
  */
 @ConfigurationProperties("simai.watch")
-public record WatchProperties(Duration heartbeatInterval, Duration sweepInterval, Duration ackWithin, Duration escalationInterval) {
+public record WatchProperties(Duration heartbeatInterval, Duration sweepInterval, Duration ackWithin, Duration escalationInterval,
+        Duration matchInterval) {
 
     /** 계약 watch_heartbeat.interval_ms 범위 */
     static final long MIN_INTERVAL_MS = 1_000;
@@ -32,6 +34,7 @@ public record WatchProperties(Duration heartbeatInterval, Duration sweepInterval
         sweepInterval = positive(sweepInterval, Duration.ofSeconds(1));
         ackWithin = positive(ackWithin, Duration.ofSeconds(10));
         escalationInterval = positive(escalationInterval, Duration.ofSeconds(1));
+        matchInterval = positive(matchInterval, Duration.ofSeconds(2));
         if (ackWithin.toMillis() < 1 || ackWithin.toMillis() > 600_000) {
             throw new IllegalArgumentException("simai.watch.ack-within 은 1 ms~10분이어야 한다(계약 ack_within_ms)");
         }

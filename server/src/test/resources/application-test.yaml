@@ -44,6 +44,8 @@ simai:
     # 격상 판정은 시험이 직접 부른다(WatchAlertIntegrationTest). 시험 컨텍스트가 여럿이라 다른 컨텍스트의 주기 판정이 같은 DB 의
     # 알림을 가져가 그 컨텍스트의 브로커로 보내지 않게 길게 둔다
     escalation-interval: 1h
+    # 움직임 대조도 시험이 직접 부른다(WatchMotionMatchIntegrationTest). 같은 이유로 주기 계산을 끈다
+    match-interval: 1h
   cctv-remote:
     # 시험은 시청자 상한·수요 끄기를 빨리 본다(CctvRemoteIntegrationTest). 사용 기록은 시험이 직접 부른다
     max-viewers: 2

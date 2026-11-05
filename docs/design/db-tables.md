@@ -1540,7 +1540,7 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 #### `watch_binding` — 익명 World ID ↔ 워치 배정 이력
 
 - 단계 **확장** · 일반 · 근거: 11.3 watch_binding, 부록 C.6 1:1 배정 (V35, S15P31A101-338) · 검토: 곽나혁(워치 트랙 전담)
-- 지금은 관리자 임시 수동 배정(`MANUAL`, `/api/watch-bindings`)만 쓴다. 움직임 대조 배정(`MOTION_MATCH`)은 -340.
+- 움직임 대조 배정(`MOTION_MATCH`, -340 `WatchMotionMatcher`, `docs/design/server-watch-match.md`)이 기본이고, 관리자 수동 배정(`MANUAL`, `/api/watch-bindings`)은 덮어쓰기다: 수동 배정이 걸린 워치·World ID 는 대조가 건드리지 않는다.
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
@@ -1552,19 +1552,20 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 | `bound_by_user_id` | bigint | FK>app_user.user_id, CHECK(manual) |  | 수동 배정한 관리자. MANUAL 이면 필수 |
 | `bound_at` | ts | NN |  |  |
 | `unbound_at` | ts | CHECK(end) |  |  |
-| `unbind_reason` | text | CK(RELEASED·REPLACED), CHECK(end) |  | 관리자가 풂, 같은 워치·World ID 의 새 배정. end: unbound_at 과 함께 채우거나 함께 비운다 |
+| `unbind_reason` | text | CK(RELEASED·REPLACED·MATCH_LOST·IDENTITY_CHANGED), CHECK(end) |  | 관리자가 풂, 같은 워치·World ID 의 새 배정, 대조 점수가 떨어지거나 트랙이 사라짐(V39), World ID 병합·분할(V39). end: unbound_at 과 함께 채우거나 함께 비운다 |
 
 #### `channel_state` — World ID 별 개인 채널 상태
 
 - 단계 **확장** · hypertable · 근거: 11.2 channel_state, 부록 C.6 · 검토: 곽나혁
+- V39(S15P31A101-340). 상태가 바뀐 때만 한 행을 쓴다(10 Hz 마다 쓰지 않는다). 최신 상태는 World ID 의 마지막 행이다.
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
-| `observed_at` | ts | PK(1), NN |  |  |
+| `observed_at` | ts | PK(1), NN |  | 바뀐 때의 World 시각(`world_state.t_latest_global`) |
 | `world_id` | text | PK(2) |  |  |
-| `state` | text | NN, CK(BOUND·UNBOUND·LOST) |  |  |
-| `device_id` | text |  |  |  |
-| `confidence` | real |  |  |  |
+| `state` | text | NN, CK(BOUND·UNBOUND·LOST) |  | BOUND 배정·워치 연결, LOST 배정·워치 끊김, UNBOUND 그 밖(워치 없음·미확정·신뢰도 부족·ID 교정 직후) |
+| `device_id` | text |  |  | BOUND·LOST 일 때 배정된 워치 |
+| `confidence` | real |  |  | 배정 `score`(대조 0~1, 수동 1) |
 
 #### `watch_feature` — 워치 가속도 특징
 
@@ -1572,7 +1573,7 @@ I5 작업 대여(12.5). 11장에 없어 추가.
 
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
-| `measured_at` | ts | PK(1), NN |  |  |
+| `measured_at` | ts | PK(1), NN |  | 창 시작을 EC2 시각으로 바꾼 값(`window_start_ms − clock_offset_ms`, 모르면 받은 시각 − 창 길이). V39(S15P31A101-340) |
 | `device_id` | text | PK(2) |  |  |
 | `features` | jsonb | NN | `gait_features` payload 그대로 | 걸음 시점·시작/멈춤 전환·0.5~3 Hz 대역 크기 시계열. 시각은 워치 시계(`clock_basis` WATCH)이고 `clock_offset_ms` 로 환산한다(-334) |
 | `received_at` | ts | NN |  |  |

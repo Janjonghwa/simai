@@ -190,8 +190,15 @@ public class WatchHub implements AutoCloseable {
                 }
                 events.publishEvent(new WatchAckReceived(link.deviceId, envelope, clock.instant()));
             }
-            // 받기만 한다: 걸음 특징 저장과 배정(-340)
-            case "gait_features" -> log.debug("워치 메시지 받음: device={} msg_type={}", link.deviceId, envelope.msgType());
+            case "gait_features" -> {
+                List<String> violations = schemas.violations("messages/gait_features", text);
+                if (!violations.isEmpty()) {
+                    log.warn("gait_features 계약 위반이라 버림: device={} violations={}", link.deviceId, violations.size());
+                    return;
+                }
+                // 저장과 움직임 대조는 WatchMotionMatcher 가 자기 스레드에서 한다(-340)
+                events.publishEvent(new GaitFeaturesReceived(link.deviceId, envelope.payload(), clock.instant()));
+            }
             default -> log.warn("모르는 워치 메시지를 버림: device={} msg_type={}", link.deviceId, envelope.msgType());
         }
     }

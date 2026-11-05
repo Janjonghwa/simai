@@ -72,5 +72,5 @@ BOUND 작업자에게 CRITICAL·HIGH·CAUTION), 7.4·11.4-3(LIVE 만), 12.4(`/to
 - CAUTION 이벤트의 현장 경보 격상: EC2 → Tier 0(또는 노트북) 경보 명령 계약이 필요하다(사용자 결정으로 이번에는 두지 않음).
 - 방향(`direction`): 트랙 `velocity` 로 작업자 기준 방향을 내는 규칙과 속도 임계값.
 - 지연 측정(C.6 '진입 → 진동 p95 1.5초'): `ack_received_at − sent_at` 은 왕복 상한이다. 워치 시계 차이(`gait_features.clock_offset_ms`, -340 저장)로 `acked_at` 을 EC2 시각으로 바꿔 재는 것은 -341.
-- -340: 움직임 대조 배정(`MOTION_MATCH`)과 `channel_state` 기록, 수동 배정 API 정리.
+- -340(완료, [`server-watch-match.md`](server-watch-match.md)): 움직임 대조 배정(`MOTION_MATCH`)과 `channel_state` 기록. 수동 배정 API 는 관리자 덮어쓰기로 남겼다.
 - -342: 관제 화면이 `/topic/watch` 를 받아 격상 표시, 배정 화면.
