@@ -156,7 +156,17 @@ def _enhance_summary(rep: dict) -> dict:
     chk = rep.get("check") or {}
     fl = rep.get("floor") or {}
     rc = rep.get("recolor") or {}
-    out = {"applied": bool(rep.get("applied")), "reason": rep.get("reason"), "purpose": "VISUAL_ONLY", "safety_use": False,
+    fi = rep.get("fill") or {}
+    ss = fi.get("surface_source") or {}
+    out = {"fill_applied": bool(fi.get("applied")) and bool(rep.get("applied")), "fill_reason": fi.get("reason"),
+           "stretched_removed_faces": (fi.get("stretched") or {}).get("removed_faces"),
+           "stretched_removed_area_ratio": (fi.get("stretched") or {}).get("removed_area_ratio"),
+           "fill_added_triangles": fi.get("added_triangles"),
+           "fill_area_m2": ss.get("fill_area_m2"),
+           "fill_ratio": ss.get("fill_ratio"),  # ESTIMATED_PLANE = 사진 투영(관측색·추정 평면), UNOBSERVED = 회색
+           "fill_share_of_surface": ss.get("fill_share_of_surface"),
+           "wall_planes_accepted": len(((fi.get("wall_planes") or {}).get("accepted")) or []),
+           "applied": bool(rep.get("applied")), "reason": rep.get("reason"), "purpose": "VISUAL_ONLY", "safety_use": False,
            "check_mode": chk.get("mode"), "check_accepted": chk.get("accepted"),
            "check_mae_before": chk.get("mae_mean_before"), "check_mae_after": chk.get("mae_mean_after"),
            "floor_filled_area_m2": fl.get("filled_area_m2") if fl.get("applied") else None,
@@ -216,8 +226,8 @@ def bake(root: Path) -> None:
     geo = rec.get("geometry") or {}
     tri_count = b.get("glb_triangles") if "glb_triangles" in b else geo.get("faces")
     enhance = _enhance_summary(enhance_visual_glb(root, glb, opts))
-    if enhance["applied"] and tri_count is not None and (enhance["detail"].get("floor") or {}).get("applied"):
-        tri_count = int(tri_count) + 2
+    if enhance["applied"] and tri_count is not None:  # 채움 면·옛 바닥 사각형은 더하고 지운 늘어난 면은 뺀다(report.triangles_delta)
+        tri_count = int(tri_count) + int(enhance["detail"].get("triangles_delta") or 0)
     gltf_asset: dict[str, object] = {"kind": "GLTF_VISUAL", "path": glb.relative_to(root).as_posix(), "content_type": "model/gltf-binary"}
     if tri_count is not None:
         gltf_asset["triangle_count"] = int(tri_count)
@@ -234,7 +244,9 @@ def bake(root: Path) -> None:
         "observed_surface_ratio": ratios["OBSERVED"], "postprocess": [*post, "TEXTURE", "WORLD_ALIGNMENT"], "metrics": rec, "enhance": enhance,
         "target_faces": target_faces, "num_threads": tm.resolve_num_threads(num_threads),
         "stage_times": rec.get("times"),
-        "auxiliary": [p.relative_to(root).as_posix() for p in sorted(glb.parent.glob("observed_camera_*.png"))]})
+        "auxiliary": [p.relative_to(root).as_posix() for p in sorted(glb.parent.glob("observed_camera_*.png"))]
+                     + [p.relative_to(root).as_posix() for p in sorted((glb.parent / ((enhance["detail"].get("fill_atlas") or {}).get("dir") or "-")).glob("*"))
+                        if p.is_file()]})
 
 
 def _load_colored_fuse_views(root: Path) -> list:

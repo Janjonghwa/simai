@@ -33,7 +33,7 @@ import numpy as np
 
 from .texture_mesh import GLTF_Y_UP, to_glb_points
 
-ENHANCE_VERSION = "1.0.0"
+ENHANCE_VERSION = "1.1.0"
 NEUTRAL_NAMES = ("unobserved_neutral",)
 UNSUPPORTED_REQUIRED = {"EXT_meshopt_compression", "KHR_draco_mesh_compression", "KHR_texture_basisu"}
 
@@ -83,6 +83,31 @@ class EnhanceConfig:
     check_near_m: float = 0.05
     check_background_rgb: tuple[int, int, int] = (0, 0, 0)  # 메시가 없는 픽셀을 뷰어 바탕색으로 본다
     time_budget_s: float | None = None
+    # (C) 늘어난 면 제거·바닥·벽 평면 채우기(S15P31A101-511, glb_fill.py). 보정 카메라·사진이 있을 때만 돈다
+    fill_enabled: bool = True
+    fill_stretched: bool = True
+    fill_floor: bool = True
+    fill_walls: bool = True
+    fill_cos_slant: float = 0.15  # 보이는 모든 시선에서 |cos| 가 이보다 작은 면(약 81° 이상 사선)을 지운다(-505: 0.25 는 먼 바닥이 점점이 지워짐)
+    fill_long_edge_m: float = 0.0  # > 0 이면 긴 변이 이보다 긴 면도 지운다(기본 끔: 단순화된 평평한 큰 면과 구분되지 않는다)
+    fill_vis_long_side: int = 1152  # 면 가시성·깊이 버퍼 렌더 해상도(긴 변)
+    fill_cell_m: float = 0.05  # 채움 면 격자
+    fill_texel_m: float = 0.01  # 채움 텍스처 텍셀
+    fill_floor_close_m: float = 0.6  # 바닥 칸 닫힘 반경
+    fill_floor_reach_m: float = 2.5  # 카메라 광선 근거로 메시 바닥에서 더 넓힐 수 있는 거리
+    fill_floor_ray_range_m: float = 30.0
+    fill_floor_snap_m: float = 0.08  # |바닥 중앙값| 이하면 채움 평면을 World Z=0 에 둔다
+    fill_color_mode: str = "consistent"  # strict | consistent | lenient (glb_fill.project_colors)
+    fill_consistency_max_diff: int = 55  # consistent: 보이는 카메라 색 최대 채널 차이 허용(0~255)
+    fill_wall_dist_tol_m: float = 0.06
+    fill_wall_min_area_m2: float = 3.0
+    fill_wall_min_len_m: float = 1.5
+    fill_wall_max_outside: float = 0.08
+    fill_wall_manhattan_deg: float = 8.0
+    fill_wall_max_planes: int = 8
+    fill_wall_ransac_iter: int = 1500
+    fill_wall_max_height_m: float = 3.5
+    fill_wall_max_fill_frac: float = 0.85
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, options: Mapping[str, Any] | None = None) -> EnhanceConfig:
@@ -97,11 +122,18 @@ class EnhanceConfig:
             ("SIMAI_ENHANCE_NEIGHBOR_K", "neighbor_k", int),
             ("SIMAI_ENHANCE_CHECK_TOLERANCE_MEAN", "check_tolerance_mean", float),
             ("SIMAI_ENHANCE_CHECK_TOLERANCE_CAMERA", "check_tolerance_camera", float),
+            ("SIMAI_FILL_COS_SLANT", "fill_cos_slant", float),
+            ("SIMAI_FILL_COLOR_MODE", "fill_color_mode", str),
+            ("SIMAI_FILL_FLOOR_REACH_M", "fill_floor_reach_m", float),
         ):
             if (raw := env.get(name, "").strip()) != "":
                 kw[field_name] = cast(raw)
+        if (raw := env.get("SIMAI_GLB_FILL", "").strip()) != "":
+            kw["fill_enabled"] = raw.lower() not in ("0", "false", "off", "no")
         if options and isinstance(options.get("enhance"), bool):
             kw["enabled"] = options["enhance"]
+        if options and isinstance(options.get("fill"), bool):
+            kw["fill_enabled"] = options["fill"]
         return replace(cfg, **kw) if kw else cfg
 
 
@@ -717,9 +749,58 @@ def serialize_glb(g: GlbFile) -> bytes:
             + struct.pack("<I4s", len(g.bin), b"BIN\x00") + bytes(g.bin))
 
 
-def write_enhanced(g: GlbFile, model: SceneModel, recolors: Sequence[Recolor], floor: FloorPlane | None, enhanced_meta: dict[str, Any]) -> bytes:
-    """원본 문서에 덧붙여 보강 glb 를 만든다. 관측 메시·텍스처·좌표는 그대로 둔다."""
+def _write_fill(g: GlbFile, model: SceneModel, fill: Any) -> None:
+    """glb_fill 결과를 문서에 덧붙인다: 늘어난 면을 뺀 새 색인, 채움 면(텍스처 + 출처 지도 PNG)."""
+    from .glb_fill import SRC_GRAY, SRC_PROJECTED, encode_png
+
     doc = g.doc
+    model_prims = model.prims
+    for k, idx in fill.new_idx.items():
+        prim = model_prims[k]
+        src = doc["meshes"][prim.mesh_index]["primitives"][prim.prim_index]
+        data = np.ascontiguousarray(idx.reshape(-1), dtype="<u4").tobytes()
+        src["indices"] = _add_accessor(g, _add_view(g, data, 34963), 5125, int(idx.size), "SCALAR")
+    if not fill.fills:
+        return
+    materials = doc.setdefault("materials", [])
+    samplers = doc.setdefault("samplers", [])
+    samplers.append({"magFilter": 9729, "minFilter": 9729, "wrapS": 33071, "wrapT": 33071})
+    sampler = len(samplers) - 1
+    for fp in fill.fills:
+        images = doc.setdefault("images", [])
+        images.append({"bufferView": _add_view(g, encode_png(fp.image), None), "mimeType": "image/png", "name": f"estimated_{fp.role}_albedo"})
+        albedo = len(images) - 1
+        images.append({"bufferView": _add_view(g, encode_png(fp.source), None), "mimeType": "image/png", "name": f"estimated_{fp.role}_surface_source"})
+        source = len(images) - 1
+        textures = doc.setdefault("textures", [])
+        textures.append({"source": albedo, "sampler": sampler})
+        tex = len(textures) - 1
+        materials.append({"name": f"estimated_{fp.role}_fill", "doubleSided": True,
+                          "pbrMetallicRoughness": {"baseColorTexture": {"index": tex}, "metallicFactor": 0.0, "roughnessFactor": 1.0}})
+        V = to_glb_points(np.eye(4), fp.prim.pos)  # World → glTF 변환은 이 어댑터 한 곳
+        nrm = np.tile((np.asarray(fp.normal_world, float) @ GLTF_Y_UP.T)[None, :], (len(V), 1))
+        pos_acc = _add_accessor(g, _add_view(g, np.ascontiguousarray(V, dtype="<f4").tobytes(), 34962), 5126, len(V), "VEC3",
+                                min=[float(x) for x in V.min(0)], max=[float(x) for x in V.max(0)])
+        nrm_acc = _add_accessor(g, _add_view(g, np.ascontiguousarray(nrm, dtype="<f4").tobytes(), 34962), 5126, len(V), "VEC3")
+        uv_acc = _add_accessor(g, _add_view(g, np.ascontiguousarray(fp.prim.uv, dtype="<f4").tobytes(), 34962), 5126, len(V), "VEC2")
+        idx_acc = _add_accessor(g, _add_view(g, np.ascontiguousarray(fp.prim.idx.reshape(-1), dtype="<u4").tobytes(), 34963), 5125,
+                                int(fp.prim.idx.size), "SCALAR")
+        doc.setdefault("meshes", []).append({"name": f"estimated_{fp.role}_fill", "primitives": [
+            {"attributes": {"POSITION": pos_acc, "NORMAL": nrm_acc, "TEXCOORD_0": uv_acc}, "indices": idx_acc, "material": len(materials) - 1, "mode": 4}]})
+        ratios = {"ESTIMATED_PLANE": fp.stats["projected_ratio"], "UNOBSERVED": fp.stats["gray_ratio"]}
+        doc["nodes"].append({"name": f"estimated_{fp.role}_fill", "mesh": len(doc["meshes"]) - 1, "extras": {"simai": {
+            "surface_source": "ESTIMATED_PLANE", "geometry_role": "VISUAL", "safety_use": False, "source_map_image": source,
+            "source_values": {"ESTIMATED_PLANE": SRC_PROJECTED, "UNOBSERVED": SRC_GRAY}, "texel_ratios": ratios,
+            "fill_area_m2": fp.stats["fill_m2"], "color_mode": fp.stats["color_mode"]}}})
+        doc["scenes"][doc.get("scene", 0)].setdefault("nodes", []).append(len(doc["nodes"]) - 1)
+
+
+def write_enhanced(g: GlbFile, model: SceneModel, recolors: Sequence[Recolor], floor: FloorPlane | None, enhanced_meta: dict[str, Any],
+                   fill: Any = None) -> bytes:
+    """원본 문서에 덧붙여 보강 glb 를 만든다. 관측 메시·텍스처·좌표는 그대로 둔다(늘어난 면 제거는 색인만 새로 쓴다)."""
+    doc = g.doc
+    if fill is not None:
+        _write_fill(g, model, fill)
     materials = doc.setdefault("materials", [])
     for rc in recolors:
         prim = model.prims[rc.prim_index]
@@ -769,6 +850,7 @@ def write_enhanced(g: GlbFile, model: SceneModel, recolors: Sequence[Recolor], f
 class EnhanceResult:
     glb: bytes | None  # 보강본 바이트. 적용하지 않으면 None(원본 유지)
     report: dict[str, Any]
+    fills: list[Any] = field(default_factory=list)  # 적용된 채움 평면(glb_fill.FillPrim), 사이드카 저장용
 
 
 def _round(x: Any, n: int = 5) -> Any:
@@ -794,9 +876,23 @@ def enhance_glb(raw: bytes, *, config: EnhanceConfig | None = None, cameras: Seq
         vcols = {i: prim_vertex_colors(g, model, p, deadline) for i, p in enumerate(model.prims) if p.kind == "observed"}
         original = list(model.prims)
         steps: list[str] = []
+        # (C) 늘어난 면 제거·바닥·벽 평면 채우기(보정 카메라·사진이 있을 때만). 실패해도 나머지 보강은 계속한다
+        fill = None
+        if cfg.fill_enabled and cameras:
+            from .glb_fill import run_fill
+            try:
+                fill = run_fill(model, list(cameras), cfg, deadline)
+                report["fill"] = {"applied": True, **fill.report}
+                steps += fill.steps
+            except EnhanceSkip as e:
+                report["fill"] = {"applied": False, "reason": e.reason, "detail": str(e)}
+        else:
+            report["fill"] = {"applied": False, "reason": "DISABLED" if not cfg.fill_enabled else "NO_CAMERAS"}
         # (A)
         floor: FloorPlane | None = None
         try:
+            if fill is not None and any(f.role == "floor" for f in fill.fills):
+                raise EnhanceSkip("REPLACED_BY_FILL", "바닥은 구멍 채움(fill.floor)이 대신한다")
             floor = build_floor_plane(model, vcols, cfg)
             rect = floor.rect
             cov_before = top_down_coverage(original, rect, cfg.coverage_cell_m, deadline)
@@ -840,13 +936,20 @@ def enhance_glb(raw: bytes, *, config: EnhanceConfig | None = None, cameras: Seq
                 recolors = []
         else:
             report["recolor"] = {"applied": False, "reason": "NO_UNOBSERVED_MESH"}
+        report["triangles_delta"] = (2 if floor is not None else 0) + (fill.triangles_delta if fill is not None else 0)
         if not steps:
             report["reason"] = "NOTHING_TO_DO"
             return EnhanceResult(None, report)
         # 보강본 모델
         enhanced = list(original)
+        if fill is not None:
+            for k, idx in fill.new_idx.items():
+                enhanced[k] = replace(original[k], idx=idx)
+            for f in fill.fills:
+                enhanced.append(f.prim)
+                model.images[f.prim.image] = f.image
         for r in recolors:
-            enhanced[r.prim_index] = replace(original[r.prim_index], col=r.col, factor=np.ones(3))
+            enhanced[r.prim_index] = replace(enhanced[r.prim_index], col=r.col, factor=np.ones(3))
         if floor is not None:
             enhanced.append(floor_prim(floor))
         # 채택 검사
@@ -873,11 +976,14 @@ def enhance_glb(raw: bytes, *, config: EnhanceConfig | None = None, cameras: Seq
             meta["estimated_floor_plane"] = {k: report["floor"][k] for k in ("rect_xy_m", "z_m", "area_m2", "color_srgb8", "surface_source", "filled_area_m2")}
         if report["recolor"].get("applied"):
             meta["neutral_recolor"] = {k: report["recolor"][k] for k in ("radius_m", "k", "recolored_area_m2", "surface_source", "color_source")}
+        if fill is not None:
+            meta["fill"] = {"steps": fill.steps, "removed_faces": fill.report["removed_faces"], "added_triangles": fill.report["added_triangles"],
+                            "color_mode": cfg.fill_color_mode, "surface_source": fill.report["surface_source"]}
         if check["mode"] == "RENDER_MAE":
             meta["check"] = {k: check[k] for k in ("mae_mean_before", "mae_mean_after")}
-        out = write_enhanced(g, model, recolors, floor, meta)
+        out = write_enhanced(g, model, recolors, floor, meta, fill)
         report.update(applied=True, reason=None, output_bytes=len(out))
-        return EnhanceResult(out, report)
+        return EnhanceResult(out, report, list(fill.fills) if fill is not None else [])
     except EnhanceSkip as e:
         report["reason"] = e.reason
         report["detail"] = str(e)
@@ -894,6 +1000,9 @@ def enhance_glb(raw: bytes, *, config: EnhanceConfig | None = None, cameras: Seq
 def _mesh_metrics_accept(report: Mapping[str, Any]) -> bool:
     """검사 입력이 없을 때: 빈 바닥 비율이나 미관측 회색 면적이 줄고 어느 쪽도 늘지 않으면 채택."""
     improved = False
+    fi = report.get("fill") or {}
+    if fi.get("applied") and fi.get("added_triangles", 0) > 0:
+        improved = True  # 채움 면이 구멍을 메운다(채움 자체가 빈 곳에만 만든다)
     fl = report.get("floor", {})
     if fl.get("applied"):
         if fl["empty_ratio_after"] > fl["empty_ratio_before"]:
@@ -914,13 +1023,23 @@ def _config_dict(cfg: EnhanceConfig) -> dict[str, Any]:
     return d
 
 
-def enhance_file(path: Path, *, config: EnhanceConfig | None = None, cameras: Sequence[CheckCamera] | None = None) -> dict[str, Any]:
-    """파일을 제자리에서 보강한다. 적용될 때만 임시 파일을 원자적으로 바꿔 쓴다. report 를 돌려준다."""
+def enhance_file(path: Path, *, config: EnhanceConfig | None = None, cameras: Sequence[CheckCamera] | None = None,
+                 atlas_dir: Path | None = None) -> dict[str, Any]:
+    """파일을 제자리에서 보강한다. 적용될 때만 임시 파일을 원자적으로 바꿔 쓴다. report 를 돌려준다.
+    채움 평면이 있으면 평면별 이미지·인페인팅 마스크를 atlas_dir(기본: GLB 옆 `<이름>_fill/`)에 저장한다(실패해도 GLB 는 유지)."""
     res = enhance_glb(Path(path).read_bytes(), config=config, cameras=cameras)
     if res.glb is not None:
         tmp = Path(str(path) + ".enhance.tmp")
         tmp.write_bytes(res.glb)
         os.replace(tmp, path)
+        if res.fills:
+            from .glb_fill import write_sidecar
+            d = Path(atlas_dir) if atlas_dir is not None else Path(path).with_name(Path(path).stem + "_fill")
+            try:
+                write_sidecar(res.fills, d)
+                res.report["fill_atlas"] = {"dir": d.name, "index": "fill_atlas.json", "planes": [f.role for f in res.fills]}
+            except OSError as e:
+                res.report["fill_atlas"] = {"error": type(e).__name__}
     return res.report
 
 
