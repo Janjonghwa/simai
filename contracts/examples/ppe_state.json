@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.0.0",
+  "msg_type": "ppe_state",
+  "msg_id": "7f1c2a10-4b6e-4c1d-9a2b-000000000491",
+  "sent_at": 1760342400460,
+  "source_id": "tier0-01",
+  "payload": {
+    "stream_epoch": 1760342000000,
+    "state_sequence": 731,
+    "model_version": "T1-v4-ALL-seed20261021-e08-e373a1048057",
+    "checkpoint_sha256": "sha256:e373a104805765417502e34d21586be2607126bbdd8499b935896ca333eb103c",
+    "policy_version": "ppe-policy-0.1.0",
+    "input_mode": "FULL_FRAME",
+    "input_provenance": {
+      "frames": { "source": "LIVE", "camera_ids": ["cam1", "cam2", "cam3", "cam4"] },
+      "calibration": { "source": "G1_AUTO", "calibration_version": "cal-7" },
+      "tracks": { "source": "TIER0_LIVE", "provider_version": "tier0-0.1.0" },
+      "is_upper_bound": false
+    },
+    "people": [
+      {
+        "world_id": "w-0012",
+        "identity_revision": 2,
+        "capture_time_ms": 1760342400400,
+        "helmet": {
+          "state": "WORN",
+          "reason": "WINDOW_WORN",
+          "valid_cells": 6,
+          "support_ratio": 1.0,
+          "last_evidence_at_ms": 1760342400400,
+          "expires_at_ms": 1760342410400,
+          "evidence": [
+            { "camera_id": "cam2", "stream_epoch": 3, "frame_sequence": 90211, "capture_time_ms": 1760342400400, "local_track_id": "c2-17", "candidate_state": "WORN", "confidence": 0.91, "region_quality": 0.88 },
+            { "camera_id": "cam1", "stream_epoch": 3, "frame_sequence": 90198, "capture_time_ms": 1760342399900, "local_track_id": "c1-41", "candidate_state": "WORN", "confidence": 0.84, "region_quality": 0.72 }
+          ]
+        },
+        "vest": {
+          "state": "NOT_WORN",
+          "reason": "WINDOW_NOT_WORN",
+          "valid_cells": 5,
+          "support_ratio": 0.8,
+          "last_evidence_at_ms": 1760342400400,
+          "expires_at_ms": 1760342410400,
+          "evidence": [
+            { "camera_id": "cam2", "stream_epoch": 3, "frame_sequence": 90211, "capture_time_ms": 1760342400400, "local_track_id": "c2-17", "candidate_state": "NOT_WORN", "confidence": 0.86, "region_quality": 0.9 }
+          ]
+        }
+      },
+      {
+        "world_id": "w-0013",
+        "identity_revision": 0,
+        "capture_time_ms": 1760342400400,
+        "helmet": {
+          "state": "UNKNOWN",
+          "reason": "REGION_NOT_OBSERVABLE",
+          "valid_cells": 0,
+          "support_ratio": 0,
+          "last_evidence_at_ms": null,
+          "expires_at_ms": null,
+          "evidence": []
+        },
+        "vest": {
+          "state": "UNKNOWN",
+          "reason": "NO_DETECTION",
+          "valid_cells": 2,
+          "support_ratio": 0,
+          "last_evidence_at_ms": null,
+          "expires_at_ms": null,
+          "evidence": []
+        }
+      }
+    ]
+  }
+}

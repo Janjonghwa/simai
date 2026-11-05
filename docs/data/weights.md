@@ -127,3 +127,28 @@ S15P31A101-362부터 아바타 루프도 HMR·텍스처 마스크로 쓰며 `dep
 
 획득 기록: 2026-10-23 노트북에서 transformers 5.9.0 이 위 revision 으로 받은 캐시 스냅숏의 파일을 `sha256sum` 으로 쟀다(받기 약 8 분, 약 5 MB/s).
 `pytorch_model.bin` 의 값은 캐시 blob 이름(HF LFS oid)과 같다.
+
+## T1-v4-ALL PPE 검출 (안전모·조끼 4클래스, 묶음 `ppe`, S15P31A101-491)
+
+| 항목 | 값 |
+|---|---|
+| 저장 경로 | `$SIMAI_ROOT/weights/ppe/T1-v4-ALL-seed20261021-epoch08.pt` |
+| 원본 | HF 비공개 저장소 `simai-s15p31a101/simai-ppe-helmet-vest`, revision `36e3ebb10d44c38b46ab430d769b8d4334bdb5f4`, 파일 `T1-v4-ALL-seed20261021-epoch08.pt` |
+| sha256 | `e373a104805765417502e34d21586be2607126bbdd8499b935896ca333eb103c` |
+| 크기 | 471,779,845 바이트 |
+| model_version | `T1-v4-ALL-seed20261021-e08-e373a1048057` |
+| 구조·추론 | YOLO26x detect, 클래스 0 HELMET·1 NO_HELMET·2 VEST·3 NO_VEST(불러올 때 명세 이름 `helmet_head`·`no_helmet_head`·`vest_torso`·`no_vest_torso` 로 바꿈), 전체 화면 640, FP32, conf 0.5, iou 0.7 |
+| 라이선스 | AGPL-3.0 (Ultralytics YOLO26x 미세조정 파생). 학습 데이터는 팀 내부 녹화(팀원 촬영)라 비공개 저장소에서 팀 내부 용도로만 쓴다 |
+| 접근 | 비공개. 읽기 권한 계정의 `HF_TOKEN` 필요. RunPod Secret `hf_token` 계정(`jonghwa2`)을 조직에 READ 로 넣었다(2026-11-05). 그 토큰은 Fine-grained 라 토큰에 조직 `simai-s15p31a101` 저장소 읽기 권한을 더해야 받는다(미완료) |
+| 쓰는 곳 | PPE 프로세스(명세 5.5, `simai_ai.ppe.detector.PpeDetector`), 환경 변수 `SIMAI_PPE_WEIGHTS` |
+
+획득 기록:
+
+- 2026-11-04 H200 학습 서버에서 세 세션 전체 재학습(T1 corrected-v4, seed 20261021, epoch 8 고정) checkpoint
+  `native-checkpoints/epoch-0008.pt` 를 해시했다(`checked_at_utc` 2026-11-04T23:47:53Z). 시드는 먼저 등록한 시드라는 사전 규칙으로
+  정했고 점수로 고르지 않았다. 같은 조건의 seed 20261022(`80603b71…`)는 비교용으로만 보존한다.
+- 2026-11-05 RunPod `simai-tier0` 템플릿(H100, torch 2.11.0+cu130, ultralytics 8.4.178)에서 기준 12장 추론이 학습 환경 예측과
+  비트 단위로 같았다(RunPod 동일성 확인 PASS).
+- 2026-11-05 위 파일을 HF 비공개 저장소에 올렸다. HF API LFS oid(Bearspur 계정, 2026-11-05)가 위 sha256·크기와 같음을 확인했다(private=true, main 최신 revision `36e3ebb10d44c38b46ab430d769b8d4334bdb5f4`).
+- 이 checkpoint 는 학습에서 뺀 세션이 없어 자체 외부 평가 수치가 없다. 같은 학습 방식의 세션 제외 폴드 mAP50 79.6~93.6%(두 시드 평균)가
+  일반화 추정이다. 정답은 사람 전수 검토가 아닌 v4 기계 보정 + 육안 교정이다.

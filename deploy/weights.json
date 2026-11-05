@@ -1,5 +1,5 @@
 {
-  "_doc": "가중치 목록 (S15P31A101-205). simai-bootstrap 이 sets 가 맞는 항목(묶음: tier0, exp02 = HMR 이미지, static = MapAnything 이미지, vlm = 분석 워커 VLM Cosmos3-Nano(통합 이미지 2단계에서 쓴다, S15P31A101-235))을 $SIMAI_ROOT/<path> 에 받고 sha256 을 확인한다. 다르면 시작하지 않는다(종료 코드 2). 가중치 파일은 커밋하지 않는다(AGENTS.md). 덮어쓰지 않고 새 이름으로 더한다. source 는 url 또는 hf {repo, file, revision}(HF 토큰은 환경 변수 HF_TOKEN 만). env 를 주면 그 환경 변수(경로)와 <env>_SHA256 을 비어 있을 때 채운다. sha256 이 빈 항목은 받지 않고 시작하지 않는다(값을 모르면 비운다, S15P31A101-207).",
+  "_doc": "가중치 목록 (S15P31A101-205). simai-bootstrap 이 sets 가 맞는 항목(묶음: tier0, exp02 = HMR 이미지, static = MapAnything 이미지, vlm = 분석 워커 VLM Cosmos3-Nano(통합 이미지 2단계에서 쓴다, S15P31A101-235), ppe = PPE 프로세스 안전모·조끼 검출(HF 비공개 저장소, S15P31A101-491))을 $SIMAI_ROOT/<path> 에 받고 sha256 을 확인한다. 다르면 시작하지 않는다(종료 코드 2). 가중치 파일은 커밋하지 않는다(AGENTS.md). 덮어쓰지 않고 새 이름으로 더한다. source 는 url 또는 hf {repo, file, revision}(HF 토큰은 환경 변수 HF_TOKEN 만). env 를 주면 그 환경 변수(경로)와 <env>_SHA256 을 비어 있을 때 채운다. sha256 이 빈 항목은 받지 않고 시작하지 않는다(값을 모르면 비운다, S15P31A101-207).",
   "manifest_version": 1,
   "weights": [
     {
@@ -255,6 +255,16 @@
       "sha256": "b0c0f719fcf5f2cdadb676701477c236020713657976592ad046583707a6a95a",
       "license": "OpenMDW-1.1 (NVIDIA. HF API gated=false, 2026-10-22)",
       "hash_from": "HF API LFS oid (2026-10-22, docs/data/weights.md \"Cosmos3-Nano\")"
+    },
+    {
+      "name": "ppe-t1-v4-all-e08",
+      "sets": ["ppe"],
+      "path": "weights/ppe/T1-v4-ALL-seed20261021-epoch08.pt",
+      "source": {"hf": {"repo": "simai-s15p31a101/simai-ppe-helmet-vest", "revision": "36e3ebb10d44c38b46ab430d769b8d4334bdb5f4", "file": "T1-v4-ALL-seed20261021-epoch08.pt"}},
+      "sha256": "e373a104805765417502e34d21586be2607126bbdd8499b935896ca333eb103c",
+      "license": "AGPL-3.0 (Ultralytics YOLO26x 미세조정 파생). 학습 데이터는 팀 내부 녹화(팀원 촬영)라 비공개 저장소에서 팀 내부 용도로만 쓴다. HF 비공개 저장소: 읽기 권한 계정의 HF_TOKEN 필요",
+      "env": "SIMAI_PPE_WEIGHTS",
+      "hash_from": "HF API LFS oid(Bearspur 계정, 2026-11-05, docs/data/weights.md \"T1-v4-ALL PPE 검출\"), model.lock.json 과 일치"
     }
   ]
 }
