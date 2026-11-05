@@ -20,8 +20,10 @@ import {
   formatDate,
   groupByDate,
   readWorks,
+  replayRange,
   startedWorks,
   timeRange,
+  workTimeRange,
 } from '@/features/history/works';
 import type { ReplayLog } from '@/features/viewer3d';
 import { ApiError } from '@/lib/http';
@@ -39,6 +41,8 @@ const work = (overrides: Partial<WorkUnit> = {}): WorkUnit => ({
   name: '작업',
   from_ms: T0,
   to_ms: T0 + 60_000,
+  actual_started_at: null,
+  actual_ended_at: null,
   zone_id: null,
   planned_people: 2,
   ...overrides,
@@ -62,21 +66,37 @@ describe('작업 다시 보기 계산', () => {
     expect(readWorks(items).map((w) => w.work_id)).toEqual(['w']);
   });
 
-  it('시작한 작업만 남기고(시작 시각이 지금 이전), 작업은 같은 객체로 돌려준다', () => {
-    const early = work({ work_id: 'early', from_ms: T0 - 1 });
-    const exact = work({ work_id: 'exact', from_ms: T0 });
-    const later = work({ work_id: 'later', from_ms: T0 + 1 });
-    const started = startedWorks([later, early, exact], T0);
-    expect(started.map((w) => w.work_id)).toEqual(['early', 'exact']);
-    expect(started[0]).toBe(early);
-    expect(startedWorks([], T0)).toEqual([]);
+  it('실제 시작 기록이 있는 작업만 남기고(진행 중·끝난 작업), 작업은 같은 객체로 돌려준다', () => {
+    const planned = work({ work_id: 'planned', from_ms: T0 - 1 });
+    const running = work({ work_id: 'running', actual_started_at: T0 });
+    const done = work({ work_id: 'done', actual_started_at: T0 - 5, actual_ended_at: T0 });
+    const started = startedWorks([planned, running, done]);
+    expect(started.map((w) => w.work_id)).toEqual(['running', 'done']);
+    expect(started[0]).toBe(running);
+    expect(startedWorks([])).toEqual([]);
+  });
+
+  it('다시 볼 구간은 실제 시작부터 실제 종료까지이고, 진행 중이면 지금까지다', () => {
+    const done = work({ actual_started_at: T0 + 10, actual_ended_at: T0 + 500 });
+    expect(replayRange(done, T0 + 9_999)).toEqual({ from: T0 + 10, to: T0 + 500 });
+    const running = work({ actual_started_at: T0 + 10 });
+    expect(replayRange(running, T0 + 700)).toEqual({ from: T0 + 10, to: T0 + 700 });
+  });
+
+  it('시작 전이거나 구간 길이가 0 이면 다시 볼 구간이 없다', () => {
+    expect(replayRange(work(), T0 + 1)).toBeNull();
+    const justStarted = work({ actual_started_at: T0 + 10 });
+    expect(replayRange(justStarted, T0 + 10)).toBeNull();
+    expect(replayRange(justStarted, T0)).toBeNull();
+    const zeroLength = work({ actual_started_at: T0 + 10, actual_ended_at: T0 + 10 });
+    expect(replayRange(zeroLength, T0 + 99)).toBeNull();
   });
 
   it('날짜별로 새 날짜부터 묶고, 날짜 안에서는 시작 시각순이다', () => {
     const groups = groupByDate([
-      work({ work_id: 'a2', date: '2026-10-28', from_ms: T0 + 2 }),
+      work({ work_id: 'a2', date: '2026-10-28', actual_started_at: T0 + 2 }),
       work({ work_id: 'b', date: '2026-10-29' }),
-      work({ work_id: 'a1', date: '2026-10-28', from_ms: T0 + 1 }),
+      work({ work_id: 'a1', date: '2026-10-28', actual_started_at: T0 + 1 }),
     ]);
     expect(groups.map((g) => [g.date, g.works.map((w) => w.work_id)])).toEqual([
       ['2026-10-29', ['b']],
@@ -90,6 +110,12 @@ describe('작업 다시 보기 계산', () => {
     const at = (h: number, m: number) => new Date(2026, 9, 29, h, m).getTime();
     expect(timeRange(at(9, 0), at(12, 5))).toBe('09:00–12:05');
     expect(timeRange(at(0, 0), at(23, 59))).toBe('00:00–23:59');
+    // 목록의 시간대는 실제 시작~종료이고, 끝나지 않았으면 진행 중이다. 시작 기록이 없으면 계획 시간대다.
+    const planned = { from_ms: at(9, 0), to_ms: at(12, 0) };
+    expect(workTimeRange(work(planned))).toBe('09:00–12:00');
+    const running = work({ ...planned, actual_started_at: at(9, 2) });
+    expect(workTimeRange(running)).toBe('09:02–진행 중');
+    expect(workTimeRange({ ...running, actual_ended_at: at(11, 48) })).toBe('09:02–11:48');
   });
 });
 

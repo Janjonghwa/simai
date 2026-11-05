@@ -61,7 +61,6 @@ interface TbmZone extends Rect {
 
 export const TBM_DAY = '10/16(금)';
 export const TBM_DATE = '2026년 10월 16일';
-export const TBM_ISO_DATE = '2026-10-16';
 
 /** 작업 구역. 관제 mock 구역(z-04 · z-02)과 같은 자리다. */
 export const TBM_ZONES: readonly TbmZone[] = [

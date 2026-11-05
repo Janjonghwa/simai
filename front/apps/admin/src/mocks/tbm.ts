@@ -1,4 +1,4 @@
-import { TBM_ISO_DATE } from '@/features/tbm/tbmDemo';
+import { todayIsoDate } from '@/features/tbm/taskInput';
 import {
   dateHhmmToMs,
   type LayoutDetail,
@@ -185,13 +185,14 @@ function validateLayoutPayload(body: Record<string, unknown> | null):
   return { ok: true, name, items, revision };
 }
 
-const INITIAL_WORKS: readonly TbmWorkUnit[] = [
+/** 처음에 있는 작업. 날짜는 오늘이라 개발 서버를 언제 열어도 오늘 작업 목록이 채워진다. */
+const initialWorks = (date: string): TbmWorkUnit[] => [
   {
     work_id: '1',
-    date: TBM_ISO_DATE,
+    date,
     name: '개구부 옆 비계 설치',
-    from_ms: dateHhmmToMs(TBM_ISO_DATE, '09:00'),
-    to_ms: dateHhmmToMs(TBM_ISO_DATE, '12:00'),
+    from_ms: dateHhmmToMs(date, '09:00'),
+    to_ms: dateHhmmToMs(date, '12:00'),
     zone_id: 'z-04',
     place: null,
     planned_people: 4,
@@ -202,10 +203,10 @@ const INITIAL_WORKS: readonly TbmWorkUnit[] = [
   },
   {
     work_id: '2',
-    date: TBM_ISO_DATE,
+    date,
     name: '자재 반입 · 정리',
-    from_ms: dateHhmmToMs(TBM_ISO_DATE, '10:00'),
-    to_ms: dateHhmmToMs(TBM_ISO_DATE, '11:30'),
+    from_ms: dateHhmmToMs(date, '10:00'),
+    to_ms: dateHhmmToMs(date, '11:30'),
     zone_id: 'z-02',
     place: null,
     planned_people: 3,
@@ -216,10 +217,10 @@ const INITIAL_WORKS: readonly TbmWorkUnit[] = [
   },
   {
     work_id: '3',
-    date: TBM_ISO_DATE,
+    date,
     name: '바닥 마감',
-    from_ms: dateHhmmToMs(TBM_ISO_DATE, '13:00'),
-    to_ms: dateHhmmToMs(TBM_ISO_DATE, '17:00'),
+    from_ms: dateHhmmToMs(date, '13:00'),
+    to_ms: dateHhmmToMs(date, '17:00'),
     zone_id: null,
     place: '북서쪽 바닥',
     planned_people: 2,
@@ -802,7 +803,8 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
       created_at: l.updated_at ?? l.created_at ?? 1760572800000,
     });
   }
-  const works: TbmWorkUnit[] = INITIAL_WORKS.map((w) => ({ ...w, status: 'PLANNED' }));
+  const today = todayIsoDate();
+  const works: TbmWorkUnit[] = initialWorks(today).map((w) => ({ ...w, status: 'PLANNED' }));
 
   let nextLayoutSeq = 104;
   let nextWorkSeq = 4;
@@ -1132,11 +1134,10 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
       const created: TbmWorkUnit = {
         work_id: String(nextWorkSeq++),
         status: 'PLANNED',
-        date: typeof body.date === 'string' ? body.date : TBM_ISO_DATE,
+        date: typeof body.date === 'string' ? body.date : today,
         name: body.name,
-        from_ms:
-          typeof body.from_ms === 'number' ? body.from_ms : dateHhmmToMs(TBM_ISO_DATE, '09:00'),
-        to_ms: typeof body.to_ms === 'number' ? body.to_ms : dateHhmmToMs(TBM_ISO_DATE, '12:00'),
+        from_ms: typeof body.from_ms === 'number' ? body.from_ms : dateHhmmToMs(today, '09:00'),
+        to_ms: typeof body.to_ms === 'number' ? body.to_ms : dateHhmmToMs(today, '12:00'),
         zone_id: typeof body.zone_id === 'string' ? body.zone_id : null,
         place: typeof body.place === 'string' ? body.place : null,
         planned_people: typeof body.planned_people === 'number' ? body.planned_people : 1,

@@ -5,6 +5,7 @@ import { TBM_TASKS } from '@/features/tbm/tbmDemo';
 import type { ReplaySpatialSource } from '@/features/viewer3d';
 import { ZONES_KEY } from '@/features/zones/api';
 import { ApiError } from '@/lib/http';
+import { HISTORY_WORKS_KEY } from '@/lib/queryKeys';
 import { MOCK_ZONES } from '@/mocks/zones';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -26,6 +27,12 @@ const server = vi.hoisted(() => ({
   replayError: null as unknown,
   /** 있으면 구간 기록 응답을 이 함수가 고친 것으로 바꾼다. */
   reshape: null as ((body: Record<string, unknown>) => Record<string, unknown>) | null,
+  /** 있으면 작업 목록(과 구간 기록이 찾는 작업)을 이 함수가 고친 것으로 바꾼다. */
+  patchWorks: null as
+    | ((
+        works: import('@/mocks/history').HistoryMockWork[],
+      ) => import('@/mocks/history').HistoryMockWork[])
+    | null,
 }));
 
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
@@ -35,10 +42,11 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
 // 작업 목록·구간 기록은 mock 합성 함수가 답한다(서버 실제 응답 모양). 요청은 화면이 창으로 나눠 보내고 합친다.
 vi.mock('@/lib/api', async () => {
   const { historyReplay, historyWorks } = await import('@/mocks/history');
-  const works = historyWorks(NOW);
+  const base = historyWorks(NOW);
   return {
     api: (path: string) => {
       const url = new URL(path, 'http://api.test');
+      const works = server.patchWorks ? server.patchWorks(base) : base;
       if (url.pathname === '/api/work-units') return Promise.resolve({ works });
       if (url.pathname === '/api/replay') {
         if (server.replayError !== null) return Promise.reject(server.replayError);
@@ -77,6 +85,7 @@ function renderPage(workId: string, { zones = true } = {}) {
       <WorkReplayPage workId={workId} />
     </QueryClientProvider>,
   );
+  return client;
 }
 
 interface Work {
@@ -157,6 +166,7 @@ afterEach(() => {
   server.requests = [];
   server.replayError = null;
   server.reshape = null;
+  server.patchWorks = null;
 });
 
 describe('작업 다시 보기', () => {
@@ -490,6 +500,93 @@ describe('작업 다시 보기: 기록이 없을 때', () => {
     renderPage(`2026-10-29-${later.id}`);
     expect(await screen.findByText('작업을 찾을 수 없습니다.')).toBeTruthy();
     expect(screen.queryAllByRole('img', { name: /카메라 영상/ })).toHaveLength(0);
+  });
+
+  it(
+    '진행 중인 작업은 실제 시작부터 지금까지를 다시 본다',
+    async () => {
+      // 오늘 11시: 09시 작업은 계획대로 시작했고 아직 끝나지 않았다.
+      vi.useFakeTimers({ now: NOW, toFake: ['Date'] });
+      renderPage('2026-10-29-T1');
+      expect(await ready()).toHaveLength(4);
+      expect(screen.getByRole('heading', { name: TBM_TASKS[0]!.name })).toBeTruthy();
+      expect(screen.getByText('09:00–진행 중')).toBeTruthy();
+      const windows = [...server.requests].sort((a, b) => a.from - b.from);
+      expect(windows[0]!.from).toBe(at(29, '09:00'));
+      expect(windows.at(-1)!.to).toBe(NOW);
+      expect(slider().getAttribute('min')).toBe(String(at(29, '09:00')));
+      expect(slider().getAttribute('max')).toBe(String(NOW));
+    },
+    SLOW_MS,
+  );
+
+  it(
+    '끝난 작업은 계획이 아니라 실제 시작~종료 구간을 다시 본다',
+    async () => {
+      const started = at(28, '10:05');
+      const ended = at(28, '11:00');
+      server.patchWorks = (works) =>
+        works.map((w) =>
+          w.work_id === T2_ID ? { ...w, actual_started_at: started, actual_ended_at: ended } : w,
+        );
+      renderPage(T2_ID);
+      expect(await ready()).toHaveLength(4);
+      const header = screen.getByRole('heading', { name: TBM_TASKS[1]!.name }).parentElement!;
+      expect(within(header).getByText('10:05–11:00')).toBeTruthy();
+      expect(server.requests).toEqual([
+        { from: started, to: ended, step: chooseStep(started, ended) },
+      ]);
+      expect(slider().getAttribute('min')).toBe(String(started));
+      expect(slider().getAttribute('max')).toBe(String(ended));
+    },
+    SLOW_MS,
+  );
+
+  it(
+    '화면을 연 뒤에 시작한 작업은 시작부터 그 작업이 보인 때까지를 다시 본다',
+    async () => {
+      vi.useFakeTimers({ now: NOW, toFake: ['Date'] });
+      const later = TBM_TASKS.find((t) => t.from > '11:00')!;
+      const laterId = `2026-10-29-${later.id}`;
+      const client = renderPage(laterId);
+      expect(await screen.findByText('작업을 찾을 수 없습니다.')).toBeTruthy();
+
+      // 5분 뒤 목록을 다시 받으니 그 작업이 1분 전에 시작해 있다.
+      const started = NOW + 4 * 60_000;
+      const seen = NOW + 5 * 60_000;
+      vi.setSystemTime(seen);
+      server.patchWorks = (works) =>
+        works.map((w) =>
+          w.work_id === laterId
+            ? { ...w, status: 'IN_PROGRESS', actual_started_at: started, actual_ended_at: null }
+            : w,
+        );
+      await act(() => client.invalidateQueries({ queryKey: HISTORY_WORKS_KEY }));
+
+      // 구간이 1분이라 mock 이 사람 기록을 주지 않을 수 있다. 받은 구간만 본다.
+      await screen.findByRole('slider', { name: '재생 시각' }, LOAD);
+      expect(slider().getAttribute('min')).toBe(String(started));
+      expect(slider().getAttribute('max')).toBe(String(seen));
+      expect(server.requests.map(({ from, to }) => ({ from, to }))).toEqual([
+        { from: started, to: seen },
+      ]);
+    },
+    SLOW_MS,
+  );
+
+  it('방금 시작해 구간 길이가 없는 작업은 다시 볼 구간이 없다고 하고 기록을 받지 않는다', async () => {
+    vi.useFakeTimers({ now: NOW, toFake: ['Date'] });
+    server.patchWorks = (works) =>
+      works.map((w) =>
+        w.work_id === '2026-10-29-T1'
+          ? { ...w, status: 'IN_PROGRESS', actual_started_at: NOW, actual_ended_at: null }
+          : w,
+      );
+    renderPage('2026-10-29-T1');
+    expect(await screen.findByText('아직 다시 볼 구간이 없습니다.')).toBeTruthy();
+    expect(screen.getByText('11:00–진행 중')).toBeTruthy();
+    expect(screen.queryAllByRole('img', { name: /카메라 영상/ })).toHaveLength(0);
+    expect(server.requests).toEqual([]);
   });
 
   it('없는 작업이면 찾을 수 없다고 하고, 작업 목록으로 돌아간다', async () => {

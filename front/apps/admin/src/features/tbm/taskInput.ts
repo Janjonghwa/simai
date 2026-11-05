@@ -71,7 +71,7 @@ export function taskToInput(task: TbmTask): TaskInput {
   };
 }
 
-/** 이 브라우저(현장) 시각의 오늘 날짜 YYYY-MM-DD. 서버 작업 날짜 기본값(데모 날짜 TBM_ISO_DATE 를 쓰지 않는다). */
+/** 이 브라우저(현장) 시각의 오늘 날짜 YYYY-MM-DD. 서버 작업 날짜 기본값. */
 export function todayIsoDate(now: Date = new Date()): string {
   const p = (n: number) => String(n).padStart(2, '0');
   return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`;

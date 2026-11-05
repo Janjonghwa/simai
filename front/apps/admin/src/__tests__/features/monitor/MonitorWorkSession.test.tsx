@@ -5,6 +5,7 @@ import type { EventItem } from '@/features/events/types';
 import { HostEventPanel } from '@/features/layout/spatialHost/HostEventPanel';
 import { MonitorPage } from '@/features/monitor/MonitorPage';
 import { WorkSessionBar } from '@/features/monitor/WorkSessionBar';
+import { todayIsoDate } from '@/features/tbm/taskInput';
 import { useSessionStore } from '@/store/session.store';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -27,6 +28,10 @@ vi.mock('@/features/zones/useZones', () => ({
 }));
 
 const MIN = 60_000;
+const DAY = 24 * 60 * MIN;
+/** 오늘 날짜(작업 날짜). 관제의 오늘 작업 판정이 브라우저 시각의 오늘을 쓴다. */
+const TODAY = todayIsoDate();
+const YESTERDAY = todayIsoDate(new Date(Date.now() - DAY));
 /** 작업 시작 시각. 이벤트는 이 시각을 기준으로 앞뒤에 둔다. */
 const STARTED = Date.now() - 60 * MIN;
 
@@ -50,7 +55,7 @@ function serverWork(patch: Record<string, unknown> = {}) {
   return {
     work_id: '12',
     status: 'PLANNED',
-    date: '2026-11-04',
+    date: TODAY,
     name: '양중 작업',
     from_ms: STARTED - 30 * MIN,
     to_ms: STARTED + 240 * MIN,
@@ -70,6 +75,15 @@ function serverWork(patch: Record<string, unknown> = {}) {
 
 const inProgress = (patch: Record<string, unknown> = {}) =>
   serverWork({ status: 'IN_PROGRESS', actual_started_at: STARTED, ...patch });
+
+/** 오늘 끝난 작업. */
+const done = (patch: Record<string, unknown> = {}) =>
+  serverWork({
+    status: 'DONE',
+    actual_started_at: STARTED - 300 * MIN,
+    actual_ended_at: STARTED - 60 * MIN,
+    ...patch,
+  });
 
 const serveWorks = (works: unknown[]) =>
   server.use(
@@ -149,11 +163,8 @@ describe('세션 바', () => {
     expect(bar.textContent).toContain('작업 구역 구역 밖');
   });
 
-  it('진행 중인 작업이 없으면 세션 바 대신 대기 화면을 보인다', async () => {
-    serveWorks([
-      serverWork({ work_id: '5', status: 'DONE', actual_started_at: STARTED - 300 * MIN }),
-      serverWork({ work_id: '6' }),
-    ]);
+  it('오늘 남은 작업이 없으면 세션 바 대신 대기 화면을 보인다', async () => {
+    serveWorks([done({ work_id: '5' }), done({ work_id: '6' })]);
     renderMonitor();
 
     const waiting = await screen.findByRole('region', { name: '관제 대기' });
@@ -163,6 +174,27 @@ describe('세션 바', () => {
 
     fireEvent.click(within(waiting).getByRole('button', { name: '작업 관리로' }));
     expect(navigate).toHaveBeenCalledWith({ to: '/work' });
+  });
+
+  it('오늘 예정 작업이 남아 있으면 진행 중인 작업이 없어도 대기 화면은 없다', async () => {
+    serveWorks([done({ work_id: '5' }), serverWork({ work_id: '6' })]);
+    renderMonitor();
+    await waitFor(() => expect(sessionBar()).toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(standby()).toBeNull();
+  });
+
+  it('오늘 날짜가 아닌 예정 작업은 남은 작업으로 세지 않아 대기 화면을 보인다', async () => {
+    serveWorks([serverWork({ work_id: '7', date: YESTERDAY })]);
+    renderMonitor();
+    expect(await screen.findByRole('region', { name: '관제 대기' })).toBeTruthy();
+  });
+
+  it('어제 시작해 아직 끝나지 않은 진행 중 작업이 있으면 대기 화면은 없다', async () => {
+    serveWorks([inProgress({ work_id: '8', date: YESTERDAY })]);
+    renderMonitor();
+    expect(await screen.findByRole('region', { name: '작업 세션' })).toBeTruthy();
+    expect(standby()).toBeNull();
   });
 
   it('작업 목록을 받지 못하면 작업이 없다고 단정하지 않는다(대기 화면도 세션 바도 없다)', async () => {
@@ -215,7 +247,7 @@ describe('이벤트 목록 필터', () => {
   });
 
   it('진행 중인 작업이 없으면 거르지 않는다', async () => {
-    serveWorks([serverWork()]);
+    serveWorks([done()]);
     renderMonitor([
       item({ event_id: 'old', world_ids: ['w-0011'], raised_at: STARTED - 30 * MIN }),
       item({ event_id: 'new', world_ids: ['w-0012'], raised_at: STARTED + 10 * MIN }),
@@ -256,11 +288,50 @@ describe('작업 외 진입 배지', () => {
   });
 
   it('진행 중인 작업이 없을 때 난 이벤트에도 붙는다', async () => {
-    serveWorks([serverWork()]);
+    serveWorks([done()]);
     renderMonitor([item({ event_id: 'idle', world_ids: ['w-0012'], zone_id: 'z-04' })]);
 
     await screen.findByRole('region', { name: '관제 대기' });
     await waitFor(() => expect(within(card('w-0012 이벤트')).queryByText(BADGE)).toBeTruthy());
+  });
+});
+
+describe('대기 화면이 아래 층을 막는다', () => {
+  const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
+
+  it('오늘 남은 작업이 없으면 작업 목록 칼럼과 워치 패널은 대기 화면보다 앞에서 inert 로 막힌다', async () => {
+    serveWorks([done({ work_id: '5' })]);
+    renderMonitor();
+
+    const waiting = await screen.findByRole('region', { name: '관제 대기' });
+    const works = await screen.findByRole('region', { name: '오늘 작업' });
+    const watch = screen.getByRole('region', { name: '워치' });
+    for (const layer of [works, watch]) {
+      expect(layer.closest('[inert]')).not.toBeNull();
+      expect(layer.compareDocumentPosition(waiting) & FOLLOWING).toBeTruthy();
+    }
+    // 대기 화면 자체는 눌려야 한다(작업 관리로).
+    expect(waiting.closest('[inert]')).toBeNull();
+  });
+
+  it('오늘 예정 작업이 있으면 칼럼에서 작업을 시작할 수 있고 아무것도 막히지 않는다', async () => {
+    serveWorks([serverWork({ work_id: '6' })]);
+    renderMonitor();
+
+    const works = await screen.findByRole('region', { name: '오늘 작업' });
+    expect(within(works).getByRole('button', { name: '작업 시작' })).toBeTruthy();
+    expect(works.closest('[inert]')).toBeNull();
+    expect(screen.getByRole('region', { name: '워치' }).closest('[inert]')).toBeNull();
+    expect(standby()).toBeNull();
+  });
+
+  it('대기 중에도 경보 배너와 이벤트 패널은 막히지 않는다', async () => {
+    serveWorks([]);
+    renderMonitor([item({ event_id: 'alarm', world_ids: ['w-0015'], severity: 'CRITICAL' })]);
+
+    await screen.findByRole('region', { name: '관제 대기' });
+    expect(screen.getByRole('group', { name: '확인 대기 경보' }).closest('[inert]')).toBeNull();
+    expect(screen.getByRole('complementary', { name: '이벤트' }).closest('[inert]')).toBeNull();
   });
 });
 

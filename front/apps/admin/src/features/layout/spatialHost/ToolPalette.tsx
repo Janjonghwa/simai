@@ -7,6 +7,7 @@ import {
 } from '@/features/layout/spatialHost/toolIcons';
 import { ToolTooltip } from '@/features/layout/spatialHost/ToolTooltip';
 import type { SpatialViewMode } from '@/features/layout/spatialHost/useViewerMode';
+import { useMonitorStandby } from '@/features/monitor/useTodayWorks';
 import { useZoneEditActive } from '@/features/monitor/useZoneEditActive';
 import { useSetupFlowStore } from '@/features/setup/setup.store';
 import { useFloatSpot } from '@/hooks/useFloatSpot';
@@ -153,6 +154,8 @@ export function ToolPalette({
 }: ToolPaletteProps) {
   const isAdmin = useCurrentRole() === 'ADMIN';
   const editing = useZoneEditActive();
+  // 대기 화면이 위를 덮는 동안은 눌러도 Tab 으로도 닿지 않게 한다.
+  const standby = useMonitorStandby();
   const zonesCommitted = useSetupFlowStore((s) => s.zonesCommitted);
   const [open, setOpen] = useState(true);
   const palette = useRef<HTMLDivElement>(null);
@@ -166,6 +169,7 @@ export function ToolPalette({
         ref={palette}
         role="group"
         aria-label="도구"
+        inert={standby}
         style={spot.style}
         className="absolute top-[72px] left-3.5 z-[6] flex items-center gap-1 rounded-[14px] bg-card/94 p-1 shadow-float backdrop-blur-[8px]"
       >

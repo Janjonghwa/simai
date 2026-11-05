@@ -1,4 +1,4 @@
-import { workUnitSchema, type WorkUnit } from '@/features/history/types';
+import { workUnitSchema, type Span, type WorkUnit } from '@/features/history/types';
 
 // 작업 목록의 계산: 받은 목록 읽기, 날짜로 묶기, 날짜·시각 보이기.
 
@@ -22,11 +22,25 @@ export function readWorks(items: readonly unknown[]): WorkUnit[] {
 }
 
 /**
- * 시작한 작업만 남긴다. 서버에 작업 시작 기록이 아직 없어 계획 시작 시각이 지난 것을 시작한 것으로 본다(임시 기준).
- * 서버 시작 기록이 생기면 이 판정만 바꾼다. 작업은 같은 객체로 돌려줘 다시 보기가 다시 만들어지지 않는다.
+ * 시작한 작업만 남긴다(서버 시작 기록 actual_started_at 이 있는 것: 진행 중·끝난 작업).
+ * 작업은 같은 객체로 돌려줘 다시 보기가 다시 만들어지지 않는다.
  */
-export const startedWorks = (works: readonly WorkUnit[], now: number): WorkUnit[] =>
-  works.filter((work) => work.from_ms <= now);
+export const startedWorks = (works: readonly WorkUnit[]): WorkUnit[] =>
+  works.filter((work) => work.actual_started_at != null);
+
+/**
+ * 다시 볼 구간: 실제 시작부터 실제 종료까지(진행 중이면 now 까지). 시작 전이거나 길이가 없으면 null 이다
+ * (방금 시작했거나 시작과 같은 시각에 끝난 작업은 서버도 구간으로 받지 않는다: from < to).
+ */
+export function replayRange(work: WorkUnit, now: number): Span | null {
+  const from = work.actual_started_at;
+  if (from == null) return null;
+  const to = work.actual_ended_at ?? now;
+  return to > from ? { from, to } : null;
+}
+
+/** 작업을 시작한 시각(정렬용). 시작 기록이 없으면 계획 시작 시각이다. */
+const startOf = (work: WorkUnit) => work.actual_started_at ?? work.from_ms;
 
 /** 작업 목록을 받기 전의 안내 한 줄. */
 export const worksLoadingLine = (failed: boolean) =>
@@ -48,6 +62,14 @@ export const formatClock = (ms: number) => CLOCK.format(ms);
 /** 작업 시간대 "09:00–12:00". */
 export const timeRange = (from: number, to: number) => `${formatClock(from)}–${formatClock(to)}`;
 
+/** 실제 작업 시간대 "09:02–11:48". 아직 끝나지 않았으면 "09:02–진행 중". */
+export const workTimeRange = (work: WorkUnit) =>
+  work.actual_started_at == null
+    ? timeRange(work.from_ms, work.to_ms)
+    : `${formatClock(work.actual_started_at)}–${
+        work.actual_ended_at == null ? '진행 중' : formatClock(work.actual_ended_at)
+      }`;
+
 /** 날짜별로 묶는다(새 날짜부터, 날짜 안에서는 시작 시각순). */
 export function groupByDate(works: readonly WorkUnit[]): { date: string; works: WorkUnit[] }[] {
   const byDate = new Map<string, WorkUnit[]>();
@@ -58,5 +80,5 @@ export function groupByDate(works: readonly WorkUnit[]): { date: string; works: 
   }
   return [...byDate.entries()]
     .sort(([a], [b]) => b.localeCompare(a))
-    .map(([date, list]) => ({ date, works: list.sort((a, b) => a.from_ms - b.from_ms) }));
+    .map(([date, list]) => ({ date, works: list.sort((a, b) => startOf(a) - startOf(b)) }));
 }

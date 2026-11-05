@@ -151,12 +151,19 @@ function fillRisks(form: TbmForm, task: TbmTask, report?: TbmReport | null) {
   }
 }
 
+/** 작업을 끝낼 때 서버가 쓴 작업 마무리(wrap_up_summary)를 '작업 후 종료 미팅' 칸에 옮긴다. 아직 없으면 비워 둔다. */
+function fillClosing(form: TbmForm, report?: TbmReport | null) {
+  const summary = report?.wrap_up_summary?.trim();
+  if (summary) form.closing = summary;
+}
+
 /** 작업(+최신 보고서) → 회의록 칸(받은 내용). 작업이 없으면 빈 양식이다. */
 export function tbmFill(task: TbmTask | null, report?: TbmReport | null): TbmForm {
   const form = emptyForm();
   if (!task) return form;
   fillHeader(form, task, report);
   fillRisks(form, task, report);
+  fillClosing(form, report);
   return form;
 }
 

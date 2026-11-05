@@ -160,6 +160,39 @@ describe('동시 작업 간섭', () => {
   });
 });
 
+/** 작업 마무리(wrap_up_summary)만 다른 성공한 보고서. 위험·대책 칸은 비어 있다. */
+const wrapUpReport = (summary: string | null): TbmReport => ({
+  report_id: 303,
+  work_id: '1',
+  report_version: 2,
+  status: 'SUCCEEDED',
+  failure_reason: null,
+  layout_id: 101,
+  layout_revision: 3,
+  work_type: null,
+  wrap_up_summary: summary,
+  header: {
+    date: '2026-10-16',
+    name: '개구부 옆 비계 설치',
+    from_ms: dateHhmmToMs('2026-10-16', '09:00'),
+    to_ms: dateHhmmToMs('2026-10-16', '12:00'),
+    zone_id: 'z-04',
+    place: null,
+    planned_people: 4,
+    lead: 'A조',
+  },
+  rule_version: 3,
+  risk_items: [],
+  zone_history: [],
+  sections: [],
+  citations: [],
+  subgraph: { nodes: [], edges: [] },
+  steps: [],
+  llm_model: 'gpt-4o-mini',
+  created_at_ms: 1760573100000,
+  completed_at_ms: 1760573102000,
+});
+
 describe('TBM 회의록 칸', () => {
   it('작업이 없으면 빈 양식이다', () => {
     const f = tbmFill(null);
@@ -302,6 +335,22 @@ describe('TBM 회의록 칸', () => {
     expect(f.m0).toBe('');
     expect(f.focusMeasure).toBe('');
     expect(f.daily).toBe('');
+  });
+
+  it('작업 마무리(wrap_up_summary)는 작업 후 종료 미팅 칸에 들어가고, 없거나 비었으면 비워 둔다', () => {
+    expect(tbmFill(T1, wrapUpReport(' 위험 이벤트 2건을 확인했습니다. ')).closing).toBe(
+      '위험 이벤트 2건을 확인했습니다.',
+    );
+    expect(tbmFill(T1, wrapUpReport(null)).closing).toBe('');
+    expect(tbmFill(T1, wrapUpReport('   ')).closing).toBe('');
+    expect(tbmFill(T1).closing).toBe('');
+  });
+
+  it('작업 마무리로 채운 종료 미팅 칸도 손으로 고친 값이 이긴다', () => {
+    const report = wrapUpReport('서버 마무리');
+    expect(formOf(T1, {}, report).closing).toBe('서버 마무리');
+    const edits = withEdit({}, 'T1', 'closing', '반장이 고친 마무리', '서버 마무리');
+    expect(formOf(T1, edits, report).closing).toBe('반장이 고친 마무리');
   });
 
   it('참석자 서명 줄은 세 명씩, 적어도 네 줄이다', () => {

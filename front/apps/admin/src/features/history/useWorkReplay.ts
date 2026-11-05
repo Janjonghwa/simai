@@ -1,5 +1,5 @@
-import { replayKey, requestReplay, requestWorks, WORKS_KEY } from '@/features/history/api';
-import { STARTED_RECHECK_MS } from '@/features/history/constants';
+import { ec2Now } from '@/features/events/format';
+import { replayKey, requestReplay, requestWorks } from '@/features/history/api';
 import { chooseStep, fitLog, holdFor, replayFiles } from '@/features/history/replay';
 import {
   frameAt,
@@ -8,27 +8,26 @@ import {
   type Frame,
   type ReplayIndex,
 } from '@/features/history/replayIndex';
-import type { ReplayResponse, WorkUnit, WorkUnitsResponse } from '@/features/history/types';
-import { readWorks, startedWorks } from '@/features/history/works';
-import { useNow } from '@/features/layout/useNow';
+import type { ReplayResponse, Span, WorkUnit, WorkUnitsResponse } from '@/features/history/types';
+import { readWorks, replayRange, startedWorks } from '@/features/history/works';
 import type { ReplaySpatialSource, ReplayStatus } from '@/features/viewer3d';
 import { api } from '@/lib/api';
+import { HISTORY_WORKS_KEY } from '@/lib/queryKeys';
+import { useRealtimeStore } from '@/store/realtime.store';
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
-/** 응답에서 형식이 맞는 작업만 고른다. 함수가 바뀌지 않아야 받은 목록을 렌더마다 다시 검사하지 않는다. */
-const selectWorks = (response: WorkUnitsResponse) => readWorks(response.works);
+/** 응답에서 형식이 맞고 시작한 작업만 고른다. 함수가 바뀌지 않아야 받은 목록을 렌더마다 다시 검사하지 않는다. */
+const selectStartedWorks = (response: WorkUnitsResponse) => startedWorks(readWorks(response.works));
 
-/** 시작한 최근 작업 목록(STARTED_RECHECK_MS 마다 다시 거른다). 받기 전이면 works 가 undefined. */
+/** 시작한 최근 작업 목록(서버 시작 기록 기준). 받기 전이면 works 가 undefined. */
 export function useWorks() {
   const query = useQuery({
-    queryKey: WORKS_KEY,
+    queryKey: HISTORY_WORKS_KEY,
     queryFn: ({ signal }) => requestWorks(api, signal),
-    select: selectWorks,
+    select: selectStartedWorks,
   });
-  const now = useNow(STARTED_RECHECK_MS);
-  const works = useMemo(() => query.data && startedWorks(query.data, now), [query.data, now]);
-  return { works, failed: query.isError };
+  return { works: query.data, failed: query.isError };
 }
 
 // 재생 엔진은 three.js 를 끌고 오는 입구에 있어 값은 동적 import 로 부른다(CONVENTION).
@@ -65,43 +64,35 @@ const playheadOf = (replay: ReplaySpatialSource | null) => replay?.getStatus().p
  * 구간 기록으로 재생 Source·화면 목록을 만든다.
  * 기록의 LIVE 이벤트는 replayFiles 가 REPLAY 출처로 바꿔 넣는다(엔진은 REPLAY 만 받는다).
  */
-function buildReplay(viewer: Viewer, data: ReplayResponse, work: WorkUnit, holdMs: number): Built {
-  const log = fitLog(viewer.parseReplayLog(replayFiles(data)), {
-    from: work.from_ms,
-    to: work.to_ms,
-  });
+function buildReplay(viewer: Viewer, data: ReplayResponse, range: Span, holdMs: number): Built {
+  const log = fitLog(viewer.parseReplayLog(replayFiles(data)), range);
   const replay = viewer.createReplaySource(log, { gapMs: holdMs, autoplay: false });
   return { data, replay, index: indexReplay(log, data.gaps), holdMs };
 }
 
-/** 작업 구간 기록(GET /api/replay). 한 번 받으면 다시 받지 않는다. */
-function useReplayData(work: WorkUnit | undefined, stepMs: number) {
+/** 작업 구간 기록(GET /api/replay). 같은 구간은 한 번 받으면 다시 받지 않는다. */
+function useReplayData(work: WorkUnit | undefined, range: Span | null, stepMs: number) {
   return useQuery({
-    queryKey: replayKey(work?.work_id ?? ''),
-    queryFn: ({ signal }) =>
-      requestReplay(api, { from: work!.from_ms, to: work!.to_ms, stepMs }, signal),
-    enabled: work !== undefined,
+    queryKey: replayKey(work?.work_id ?? '', range ?? { from: 0, to: 0 }),
+    queryFn: ({ signal }) => requestReplay(api, { ...range!, stepMs }, signal),
+    enabled: work !== undefined && range !== null,
     staleTime: Infinity,
   });
 }
 
 /** 받은 기록으로 재생 Source 를 만든다(재생 엔진 입구를 받은 뒤). 기록이 바뀌면 새로 만들고, 만들지 못하면 loadFailed 다. */
-function useBuiltReplay(
-  work: WorkUnit | undefined,
-  stepMs: number,
-  data: ReplayResponse | undefined,
-) {
+function useBuiltReplay(range: Span | null, stepMs: number, data: ReplayResponse | undefined) {
   const [built, setBuilt] = useState<Built | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
-    if (!data || !work) return;
+    if (!data || !range) return;
     let alive = true;
     // 서버가 요청보다 넓은 간격으로 줄 수 있다. 요청 간격으로 잡으면 기록 사이가 비어 보인다.
     const holdMs = holdFor(Math.max(stepMs, data.step_ms));
     loadViewer().then(
       (viewer) => {
-        if (alive) setBuilt(buildReplay(viewer, data, work, holdMs));
+        if (alive) setBuilt(buildReplay(viewer, data, range, holdMs));
       },
       () => {
         if (alive) setLoadFailed(true);
@@ -110,7 +101,7 @@ function useBuiltReplay(
     return () => {
       alive = false;
     };
-  }, [data, work, stepMs]);
+  }, [data, range, stepMs]);
 
   return { built, loadFailed };
 }
@@ -126,6 +117,8 @@ function useReplayPlayback(built: Built | null) {
 
 /** 작업 구간 다시 보기의 상태. 기록을 다 만들기 전이면 replay·index 가 null 이다. */
 export interface WorkReplay {
+  /** 다시 보는 구간(실제 시작~종료, 진행 중이면 연 시각까지). 길이가 없으면 null 이다. */
+  range: Span | null;
   stepMs: number;
   holdMs: number;
   loading: boolean;
@@ -135,21 +128,40 @@ export interface WorkReplay {
   index: ReplayIndex | null;
 }
 
+/** 지금의 EC2 시각(화면 시계에 서버와의 차이를 더한다). */
+const ec2Clock = () => ec2Now(Date.now(), useRealtimeStore.getState().health?.clockOffsetMs);
+
+/** 작업이 처음 보인 때의 EC2 시각. 작업이 보이기 전이면 null 이다(목록을 받는 중이거나 아직 시작하지 않은 작업). */
+function useSeenAt(workId: string | undefined): number | null {
+  const [seen, setSeen] = useState<{ workId: string; at: number } | null>(null);
+  // 렌더 중 맞춤(WatchPanel 과 같은 방식): 그 작업이 보이는 첫 렌더에서 한 번만 정한다(다른 작업으로 바뀌면 다시 정한다).
+  if (workId !== undefined && seen?.workId !== workId) setSeen({ workId, at: ec2Clock() });
+  return seen !== null && seen.workId === workId ? seen.at : null;
+}
+
 /**
- * 작업 구간 다시 보기. 구간 기록을 받아 재생 Source(-187)를 만든다.
+ * 작업 구간 다시 보기. 실제 시작~종료 구간의 기록을 받아 재생 Source(-187)를 만든다.
+ * 진행 중인 작업은 그 작업이 화면에 처음 보인 때(EC2 시계)까지를 보고(화면을 연 뒤에 시작한 작업도 시작 뒤 구간이 된다),
+ * 끝나 작업이 바뀌면 끝난 구간으로 다시 받는다.
  * 기록 간격은 구간 길이로 정한다(chooseStep). 화면을 떠나면 멈춘다. 재생 상태는 useReplayStatus 로 따로 읽는다.
  */
 export function useWorkReplay(work: WorkUnit | undefined): WorkReplay {
-  const stepMs = work ? chooseStep(work.from_ms, work.to_ms) : 0;
-  const query = useReplayData(work, stepMs);
-  const { built, loadFailed } = useBuiltReplay(work, stepMs, query.data);
+  const seenAt = useSeenAt(work?.work_id);
+  const range = useMemo(
+    () => (work && seenAt !== null ? replayRange(work, seenAt) : null),
+    [work, seenAt],
+  );
+  const stepMs = range ? chooseStep(range.from, range.to) : 0;
+  const query = useReplayData(work, range, stepMs);
+  const { built, loadFailed } = useBuiltReplay(range, stepMs, query.data);
   useReplayPlayback(built);
 
   const ready = built !== null && built.data === query.data;
   return {
+    range,
     stepMs,
     holdMs: ready ? built.holdMs : holdFor(stepMs),
-    loading: work !== undefined && !ready && !query.isError && !loadFailed,
+    loading: range !== null && !ready && !query.isError && !loadFailed,
     failed: query.isError || loadFailed,
     error: query.error,
     replay: ready ? built.replay : null,

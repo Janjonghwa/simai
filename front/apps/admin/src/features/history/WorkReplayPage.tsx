@@ -3,7 +3,7 @@ import { ReplayLists, ReplayTimeline, seekTo } from '@/features/history/ReplayPa
 import { ReplayStage } from '@/features/history/ReplayStage';
 import type { WorkUnit } from '@/features/history/types';
 import { useWorkReplay, useWorks } from '@/features/history/useWorkReplay';
-import { formatDate, timeRange, worksLoadingLine } from '@/features/history/works';
+import { formatDate, workTimeRange, worksLoadingLine } from '@/features/history/works';
 import { PageTitle } from '@/features/layout/PageTitle';
 import { Button } from '@simai/ui/components/button';
 import { useNavigate } from '@tanstack/react-router';
@@ -30,8 +30,7 @@ function WorkHeader({ work }: { work: WorkUnit }) {
       <BackButton />
       <h2 className="text-[17px] font-bold">{work.name}</h2>
       <span className="text-muted-foreground">
-        {formatDate(work.date)} ·{' '}
-        <span className="font-mono">{timeRange(work.from_ms, work.to_ms)}</span>
+        {formatDate(work.date)} · <span className="font-mono">{workTimeRange(work)}</span>
         {' · '}
         {work.place ?? '—'}
       </span>
@@ -45,7 +44,7 @@ export function WorkReplayPage({ workId }: { workId: string }) {
   const work = works?.find((w) => w.work_id === workId);
   const session = useWorkReplay(work);
   const [selected, setSelected] = useState<string | null>(null);
-  const { replay, index } = session;
+  const { replay, index, range } = session;
 
   const pickEvent = useCallback(
     (event: EventRow) => {
@@ -68,6 +67,16 @@ export function WorkReplayPage({ workId }: { workId: string }) {
     );
   }
 
+  if (!range) {
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <PageTitle>작업 다시 보기</PageTitle>
+        <WorkHeader work={work} />
+        <p className="text-muted-foreground">아직 다시 볼 구간이 없습니다.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       <PageTitle>작업 다시 보기</PageTitle>
@@ -76,15 +85,15 @@ export function WorkReplayPage({ workId }: { workId: string }) {
         replay={replay}
         index={index}
         holdMs={session.holdMs}
-        from={work.from_ms}
-        to={work.to_ms}
+        from={range.from}
+        to={range.to}
         stepMs={session.stepMs}
         disabled={replay === null || (index !== null && isEmptyReplay(index))}
         onJump={pickEvent}
       />
       <div className={BODY}>
         <section aria-label="CCTV 다시 보기" className={STAGE}>
-          <ReplayStage session={session} range={{ from: work.from_ms, to: work.to_ms }} />
+          <ReplayStage session={session} range={range} />
         </section>
         <ReplayLists
           replay={replay}
