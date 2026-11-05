@@ -65,6 +65,39 @@ final class MotionMatch {
         return a;
     }
 
+    /** 중력 가속도(m/s²). 워치 |g + a| 를 World 관절로 다시 만들 때 +Z 로 더한다 */
+    static final double GRAVITY = 9.80665;
+
+    /**
+     * 손목 3D 위치(m, RATE_HZ 간격)에서 워치가 재는 가속도 크기 |g + a| 를 다시 만든다(S15P31A101-508 손 흔들기). a 는 위치의
+     * 2차 차분이고 g 는 +Z 로 더한다. 크기는 센서 방향에 무관해 워치 자세를 몰라도 되고, 걸을 때의 연직 근사와 달리 흔들기처럼
+     * a 가 g 만큼 크고 수평 성분이 큰 움직임에도 맞는다. 어느 축이든 NaN 이면 그 표본은 NaN. 대역 통과는 호출자가 한다.
+     */
+    static double[] specificForceMagnitude(double[] x, double[] y, double[] z) {
+        double[] ax = secondDifference(x);
+        double[] ay = secondDifference(y);
+        double[] az = secondDifference(z);
+        double[] m = new double[ax.length];
+        for (int i = 0; i < m.length; i++) {
+            m[i] = Double.isNaN(ax[i]) || Double.isNaN(ay[i]) || Double.isNaN(az[i]) ? Double.NaN
+                    : Math.sqrt(ax[i] * ax[i] + ay[i] * ay[i] + (az[i] + GRAVITY) * (az[i] + GRAVITY));
+        }
+        return m;
+    }
+
+    /** 유효 표본의 RMS(평균은 빼지 않는다). 유효 표본이 없으면 NaN */
+    static double rms(double[] x) {
+        double sum = 0;
+        int n = 0;
+        for (double v : x) {
+            if (!Double.isNaN(v)) {
+                sum += v * v;
+                n++;
+            }
+        }
+        return n == 0 ? Double.NaN : Math.sqrt(sum / n);
+    }
+
     /** 유효(NaN 아님) 표본 비율 */
     static double coverage(double[] x) {
         if (x.length == 0) {
