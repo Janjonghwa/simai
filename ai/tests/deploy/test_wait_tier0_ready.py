@@ -82,3 +82,13 @@ def test_no_tier0_mode_refuses_when_tier0_marker_exists(tmp_path):
     m.unlink()
     r = run("--no-tier0", "--marker", str(m), "--", sys.executable, "-c", "print('dev run')")
     assert r.returncode == 0 and "dev run" in r.stdout
+
+
+def test_changed_worker_fraction_is_rejected_before_start(tmp_path):
+    settings = tmp_path / "settings"
+    settings.write_text("SIMAI_WORKER_TORCH_MEMORY_FRACTION=0.20\n", encoding="utf-8")
+    r = run("--no-tier0", "--marker", str(tmp_path / "missing"), "--env-file", str(settings), "--",
+            sys.executable, "-c", "print('should not run')",
+            env={"SIMAI_VALIDATED_WORKER_FRACTION": "0.10", "SIMAI_WORKER_TORCH_MEMORY_FRACTION": "0.10"})
+    assert r.returncode == 2 and "should not run" not in r.stdout
+    assert "검증한 값과 다르다" in r.stderr

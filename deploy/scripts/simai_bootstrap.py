@@ -45,7 +45,7 @@
     (SIMAI_MAPANYTHING_MODEL, 기본 $SIMAI_ROOT/weights/map-anything) 항목만, 이미 있으면 건너뛴다(S15P31A101-473). 워커 시작을 막지 않고, 실패하면
     경고만 남긴다(그 상태로 세팅하면 STATIC_MODEL_MISSING. 'simai-bootstrap preflight' 로 확인). 끄려면 SIMAI_WORKER_SETUP_WEIGHTS=0.
   - vLLM·워커가 죽으면 그 프로세스 그룹을 SIGKILL 로 정리하고(vLLM EngineCore 같은 손자 포함), 지수 백오프 뒤 Tier 0 가 준비 상태일 때만
-    다시 띄운다. 빨리 죽는 일이 연달아 SIMAI_SUPERVISE_MAX_FAST_FAILURES(기본 5)번이면 그 프로세스는 포기한다. Tier 0 는 건드리지 않는다.
+    다시 띄운다. 워커·아바타는 계속 재시도하고 vLLM 은 빠른 실패가 연달아 SIMAI_SUPERVISE_MAX_FAST_FAILURES(기본 5)번이면 포기한다. Tier 0 는 건드리지 않는다.
   - Tier 0 가 끝나면 워커 → vLLM 을 내리고 Tier 0 종료 코드 그대로 끝낸다. SIGTERM·SIGINT 를 받으면 워커 → vLLM → Tier 0 순서로
     그룹에 SIGTERM, SIMAI_STOP_GRACE_S(기본 15)초 안에 안 끝나면 그룹 SIGKILL. docker stop 은 -t 60 이상으로 준다.
   - 출력은 줄마다 [tier0]·[vllm]·[worker] 접두로 표준 오류에, 원문은 $SIMAI_ROOT/logs/<이름>.log 에 덧붙인다.
@@ -211,11 +211,12 @@ def _file_value(path: Path | None, key: str) -> str | None:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return None
+    result = None
     for line in lines:
         k, sep, v = line.strip().partition("=")
         if sep and k.strip().removeprefix("export ").strip() == key:
-            return v.strip().strip("'\"") or None
-    return None
+            result = v.strip().strip("'\"")
+    return result
 
 
 def resolve_worker_id(explicit: str | None, env: dict[str, str], token_file: Path | None = None,
@@ -934,11 +935,12 @@ def sidecar_cpus(spec: str | None, avail: list[int], quota: float | None = None)
 def compute_gpu_fractions(services: list[str], env: dict[str, str]) -> dict[str, float]:
     """서비스 목록에 맞춰 GPU 메모리 상한(vllm·avatar·worker)을 계산·검증한다 (S15P31A101-382).
 
-    분석 워커 전체 예산(budget.worker_fraction, 기본 0.70) 안에서 vLLM(기본 0.55)·avatar(기본 0.10)·worker(남은 몫)의 합이
-    예산을 넘지 않게 나눈다. avatar 가 꺼져 있어도(tier0,vllm,worker) worker 상한을 남은 예산(0.15)으로 묶는다.
+    분석 예산 0.70 안에서 vLLM 0.50·avatar 0.10·worker 나머지를 나눈다. 명시 값은 예산 안에서 우선한다.
     """
     from simai_ai.gpu.budget import BudgetError, WorkerGpuSettings
 
+    env = dict(env)
+    env.setdefault("SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION", "0.50")
     try:
         budget = WorkerGpuSettings.from_env(env).budget
     except BudgetError as e:
@@ -1053,7 +1055,18 @@ class Supervisor:
         )
         if tier0_token:
             _extra_secrets.add(tier0_token)
-        fractions = compute_gpu_fractions(services, env) if any(s in services for s in ("vllm", "worker", "avatar")) else None
+        budget_env = dict(env)
+        env_path = worker_env.get("SIMAI_WORKER_ENV_FILE")
+        if not env_path and (default := self.root.parent / ".simai-private" / "worker.env").is_file():
+            env_path = str(default)
+        if env_path:
+            path = Path(env_path)
+            if not path.is_file():
+                raise BootstrapError(EXIT_STORAGE, "워커 env 파일을 읽을 수 없다")
+            value = _file_value(path, "SIMAI_WORKER_TORCH_MEMORY_FRACTION")
+            if value is not None:
+                budget_env["SIMAI_WORKER_TORCH_MEMORY_FRACTION"] = value
+        fractions = compute_gpu_fractions(services, budget_env) if any(s in services for s in ("vllm", "worker", "avatar")) else None
         self.svc: dict[str, Service] = {}
         for name in services:
             e = dict(base)
@@ -1070,6 +1083,7 @@ class Supervisor:
                         e["SIMAI_AVATAR_CHANNEL"] = f"wss://127.0.0.1:{e['SIMAI_AVATAR_PORT']}"
                 if name == "worker":
                     e["SIMAI_WORKER_TORCH_MEMORY_FRACTION"] = str(fractions["worker_fraction"])
+                    e["SIMAI_VALIDATED_WORKER_FRACTION"] = str(fractions["worker_fraction"])
                     e.setdefault("SIMAI_TIER0_WEIGHTS", str(self.root / "weights" / "yolo" / "yolo26x-pose.pt"))
                     e.setdefault("SIMAI_VLLM_PORT", str(self.port))
                     e.setdefault("SIMAI_VLM_MODEL", env.get("SIMAI_VLLM_SERVED_NAME") or "cosmos3-nano")
@@ -1117,7 +1131,7 @@ class Supervisor:
         return [*shlex.split(env.get("SIMAI_VLLM_CMD") or "vllm"), "serve", model,
                 "--served-model-name", env.get("SIMAI_VLLM_SERVED_NAME") or "cosmos3-nano",
                 "--hf-overrides", VLLM_HF_OVERRIDES,
-                "--gpu-memory-utilization", env.get("SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION") or "0.55",
+                "--gpu-memory-utilization", env.get("SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION") or "0.50",
                 "--max-num-seqs", env.get("SIMAI_WORKER_VLLM_MAX_NUM_SEQS") or "4",
                 *max_len,
                 "--host", "127.0.0.1", "--port", str(self.port),
@@ -1269,11 +1283,11 @@ class Supervisor:
     def _failed(self, s: Service, now: float, fast: bool, why: str) -> None:
         # 오래 돌다 끝났으면 연속 빠른 실패를 0 부터 다시 센다(포기는 그 뒤 빠른 실패 max_fast 번), 백오프는 처음 값
         s.fails = s.fails + 1 if fast else 0
-        if fast and s.fails >= self.max_fast:
+        if s.name == "vllm" and fast and s.fails >= self.max_fast:
             s.given_up = True
             log(f"{s.name} {why}: 빨리 끝남이 {s.fails}번 이어져 다시 띄우지 않는다(Tier 0 는 그대로)")
             return
-        delay = min(self.backoff_max_s, self.backoff_s * 2 ** max(0, s.fails - 1))
+        delay = min(self.backoff_max_s, self.backoff_s * 2 ** min(30, max(0, s.fails - 1)))
         s.next_at = now + delay
         log(f"{s.name} {why} → {delay:.0f}s 뒤 다시 띄운다(연속 빠른 실패 {s.fails}번, Tier 0 는 그대로)")
 
@@ -2329,6 +2343,8 @@ def lobby(rest: list[str]) -> int:
         log(f"GPU VRAM {rec['gpu']['memory_total_mb']:.0f} MiB < 48GB급({MIN_WORKER_VRAM_MB} MiB): 분석 부하를 같은 GPU 에 올리지 않는다 "
             f"→ Tier 0 단독 ({','.join(services)} 무시, 명세 3.12)")
         services = ["tier0"]
+    if len(services) > 1 and rec["gpu"]["memory_total_mb"] < 76000:
+        log("주의: 80GB 미만 GPU 의 동시 VLM·MapAnything 예산은 검증되지 않았다; OOM 가능")
     wait_scene_released(root)
 
     work = args.work or (root / "runs" / "lobby-live")
@@ -2521,6 +2537,8 @@ def main(argv: list[str] | None = None) -> int:
         log(f"GPU VRAM {rec['gpu']['memory_total_mb']:.0f} MiB < 48GB급({MIN_WORKER_VRAM_MB} MiB): 분석 부하를 같은 GPU 에 올리지 않는다 "
             f"→ Tier 0 단독 ({SERVICES_ENV}={','.join(services)} 무시, 명세 3.12)")
         services = ["tier0"]
+    if len(services) > 1 and rec["gpu"]["memory_total_mb"] < 76000:
+        log("주의: 80GB 미만 GPU 의 동시 VLM·MapAnything 예산은 검증되지 않았다; OOM 가능")
     wait_scene_released(Path(os.environ["SIMAI_ROOT"]))  # 장면 작업이 멈춰 VRAM 을 돌려줄 때까지(상한 있음)
     if services == ["tier0"]:
         execvp([TIER0_CMD, *rest])  # Tier 0 단독: 감시 프로세스 없이 지금까지와 같다
