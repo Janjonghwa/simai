@@ -122,11 +122,14 @@ afterEach(() => {
   useSessionStore.setState({ session: undefined });
 });
 
-async function renderPage({ surfaces = true }: { surfaces?: boolean } = {}) {
+async function renderPage({
+  surfaces = true,
+  onCommitted,
+}: { surfaces?: boolean; onCommitted?: () => void } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={client}>
-      <ZonesPage />
+      <ZonesPage onCommitted={onCommitted} />
     </QueryClientProvider>,
   );
   await screen.findByRole('option', { name: /개구부 구역/ });
@@ -610,6 +613,38 @@ describe('구역 편집 화면', () => {
     expect(commits[0]).not.toHaveProperty('surface');
     expect(useZoneEditStore.getState().drafts['z-04']).toBeUndefined();
     expect(screen.queryByRole('button', { name: '다시 보내기' })).toBeNull();
+  });
+
+  it('저장·추가가 발행까지 끝나면 onCommitted 를 한 번씩 부른다', async () => {
+    const onCommitted = vi.fn();
+    await renderPage({ onCommitted });
+    pick('z-04');
+    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+    rename('개구부 B');
+    act(() => button('저장').click());
+    await waitFor(() => expect(onCommitted).toHaveBeenCalledTimes(1));
+
+    pick(NEW_KEY);
+    fireEvent.change(screen.getByRole('textbox', { name: '이름' }), {
+      target: { value: '또 만든 구역' },
+    });
+    fireEvent.change(screen.getByRole('combobox', { name: '심각도' }), {
+      target: { value: 'CRITICAL' },
+    });
+    act(() => button('구역 추가').click());
+    await waitFor(() => expect(onCommitted).toHaveBeenCalledTimes(2));
+  });
+
+  it('저장은 됐지만 발행이 안 되면 onCommitted 를 부르지 않아 다시 보내기가 남는다', async () => {
+    const onCommitted = vi.fn();
+    await renderPage({ onCommitted });
+    pick('z-04');
+    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+    zonesMock.failNextPublish('CALIBRATION_MISSING');
+    rename('개구부 B');
+    act(() => button('저장').click());
+    await screen.findByText(RETRY_TEXT);
+    expect(onCommitted).not.toHaveBeenCalled();
   });
 
   it('구역·작업면을 함께 고쳐 저장하면 구역 UPDATE + 작업면 UPDATE 한 요청이고, 저장하면 저장 전·발행 전이 사라진다', async () => {

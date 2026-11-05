@@ -90,7 +90,7 @@ export function useFloatSpot(
   useEffect(() => {
     if (!placed) return undefined;
     window.addEventListener('resize', refit);
-    // 옮긴 뒤 상자 크기가 바뀌어도(도구가 펼쳐지거나 붙고, 지도 크기를 바꾸면) 화면 밖으로 넘치지 않게 한다.
+    // 옮긴 뒤 상자 크기가 바뀌어도(창 크기를 바꾸면) 화면 밖으로 넘치지 않게 한다.
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(refit);
     if (target.current) observer?.observe(target.current);
     return () => {

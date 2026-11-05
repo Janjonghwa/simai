@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react';
 
-// 떠 있는 상자(이벤트 패널·도구 모음·2D 지도)의 자리를 재고 끌어 옮기는 계산. 자리 재기 외에는 화면 컴포넌트 없이 시험한다.
+// 떠 있는 상자(이벤트 패널·CCTV 창)의 자리를 재고 끌어 옮기는 계산. 자리 재기 외에는 화면 컴포넌트 없이 시험한다.
 
 /** 상자 자리와 크기(부모 기준 px). */
 export interface FloatBox {
@@ -23,7 +23,7 @@ export interface FloatMargin {
   bottom: number;
 }
 
-/** 떠 있는 상자가 화면 가장자리에 남기는 틈. 상단 바(60px) 아래에서 시작하고 이벤트 패널·도구 모음·2D 지도가 같이 쓴다. */
+/** 떠 있는 상자가 화면 가장자리에 남기는 틈. 상단 바(60px) 아래에서 시작하고 이벤트 패널·CCTV 창이 같이 쓴다. */
 export const FLOAT_MARGIN: FloatMargin = { top: 72, side: 14, bottom: 14 };
 
 /** 어느 가장자리를 기준으로 자리를 잡는지. 위에 붙는 상자는 top, 아래에 붙는 상자는 bottom. */

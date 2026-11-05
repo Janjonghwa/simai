@@ -31,6 +31,8 @@ export interface ZoneCommitInput {
   pendingCount: number;
   publish: () => Promise<unknown>;
   target: ZoneTarget;
+  /** 저장·추가가 끝나고 현장 판정으로 발행까지 됐을 때 부른다(발행이 실패하면 다시 보내기를 보이도록 부르지 않는다). */
+  onCommitted?: () => void;
 }
 
 /**
@@ -71,6 +73,11 @@ export function useZoneCommit(input: ZoneCommitInput) {
     onSaved(done);
   };
 
+  /** 발행까지 끝났으면 편집을 끝내라고 알린다. 발행이 실패했으면 편집 패널에 남아 다시 보낼 수 있게 한다. */
+  const finish = ({ publishError }: CommitDone) => {
+    if (publishError === null) input.onCommitted?.();
+  };
+
   const save = async () => {
     if (!zone || !input.saveReady || busy) return;
     const request = saveRequestOf({
@@ -84,16 +91,20 @@ export function useZoneCommit(input: ZoneCommitInput) {
     });
     if (!request) return;
     // 저장한 값이 새 기준이라 그 구역의 초안과 되돌리기 기록을 모두 버린다.
-    await send(request, () => removeZoneDraft(zone.zoneId));
+    await send(request, (done) => {
+      removeZoneDraft(zone.zoneId);
+      finish(done);
+    });
   };
 
   const add = async () => {
     if (zone || !shape || !input.addReady || busy) return;
     const request = createRequestOf({ form, shape, surface: draft?.surface });
-    await send(request, ({ result }) => {
+    await send(request, (done) => {
       // 만든 구역을 고르고 새 구역 양식은 처음 값으로 돌린다.
       removeZoneDraft(NEW_KEY);
-      target.openZone(result.zone_id);
+      target.openZone(done.result.zone_id);
+      finish(done);
     });
   };
 

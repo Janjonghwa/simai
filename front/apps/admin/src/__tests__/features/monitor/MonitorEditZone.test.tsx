@@ -13,6 +13,7 @@ import type {
 import { PALETTE } from '@/features/viewer3d/palette';
 import { zoneStyle } from '@/features/viewer3d/zones/zonePresentation';
 import { SEVERITY_CHOICES, type ZoneCommitRequest } from '@/features/zones/types';
+import { NEW_KEY } from '@/features/zones/zoneEditModel';
 import { handlers } from '@/mocks/handlers';
 import { createStaticObjectsMock } from '@/mocks/staticObjects';
 import { createZonesMock } from '@/mocks/zones';
@@ -160,13 +161,22 @@ describe('관제 관리자 편집 모드', () => {
     stopZoneEdit();
   });
 
-  it('관리자(ADMIN)만 편집 모드를 열고 끌 수 있으며, 기즈모·초안 정리가 동작한다', async () => {
+  it('관리자(ADMIN)가 구역 목록으로 편집 모드를 열고 편집 끝내기로 끌 수 있으며, 기즈모·초안 정리가 동작한다', async () => {
     renderMonitor();
     await screen.findByTestId('viewer3d');
     expect(screen.queryByRole('region', { name: '구역 편집 도구' })).toBeNull();
+    // 도구 모음에는 편집 버튼이 없다. 편집은 구역 목록에서 들어간다.
+    expect(screen.queryByRole('button', { name: '관리자 편집 모드' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '편집 끝내기' })).toBeNull();
 
-    act(() => screen.getByRole('button', { name: '관리자 편집 모드' }).click());
-    expect(screen.getByRole('region', { name: '구역 편집 도구' })).toBeTruthy();
+    // 작업면이 붙지 않은 구역을 고르면 구역 상자를 고친다.
+    const list = await screen.findByRole('region', { name: '위험 구역' });
+    act(() =>
+      within(list)
+        .getByRole('button', { name: /개구부 구역$/ })
+        .click(),
+    );
+    expect(await screen.findByRole('region', { name: '구역 편집 도구' })).toBeTruthy();
     await waitFor(() => expect(useBoxEditStore.getState().boxEdit?.kind).toBe('zone'));
 
     fireEvent.change(screen.getByRole('textbox', { name: '이름' }), {
@@ -175,12 +185,12 @@ describe('관제 관리자 편집 모드', () => {
     expect(Object.keys(useZoneEditStore.getState().drafts).length).toBeGreaterThan(0);
 
     // 고치던 초안이 있으면 끄기 전에 묻는다: 계속 편집이면 그대로 둔다.
-    fireEvent.click(screen.getByRole('button', { name: '관리자 편집 모드' }));
+    fireEvent.click(screen.getByRole('button', { name: '편집 끝내기' }));
     fireEvent.click(await screen.findByRole('button', { name: '계속 편집' }));
     expect(screen.getByRole('region', { name: '구역 편집 도구' })).toBeTruthy();
     expect(Object.keys(useZoneEditStore.getState().drafts).length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByRole('button', { name: '관리자 편집 모드' }));
+    fireEvent.click(screen.getByRole('button', { name: '편집 끝내기' }));
     fireEvent.click(await screen.findByRole('button', { name: '수정 버리고 끄기' }));
     expect(screen.queryByRole('region', { name: '구역 편집 도구' })).toBeNull();
     expect(useZoneEditStore.getState().drafts).toEqual({});
@@ -188,10 +198,10 @@ describe('관제 관리자 편집 모드', () => {
 
     for (const role of ['VIEWER', 'FOREMAN'] as const) {
       act(() => signInAs(role));
-      expect(screen.queryByRole('button', { name: '관리자 편집 모드' })).toBeNull();
+      expect(screen.queryByRole('button', { name: '편집 끝내기' })).toBeNull();
       expect(screen.queryByRole('region', { name: '구역 편집 도구' })).toBeNull();
     }
-  });
+  }, 20_000);
 
   it('편집 모드에서는 이벤트 패널·2D 지도·맵 재생성을 숨기고 가장자리 번짐을 보인다', async () => {
     renderMonitor();
@@ -290,6 +300,8 @@ describe('관제 관리자 편집 모드', () => {
     act(() => addBtn.click());
 
     await waitFor(() => expect(commits).toHaveLength(1));
+    // 추가가 발행까지 끝나면 편집 모드가 저절로 끝난다.
+    await waitFor(() => expect(useZoneEditModeStore.getState().editing).toBe(false));
     expect(commits[0]).toMatchObject({
       zone: {
         op: 'CREATE',
@@ -320,6 +332,35 @@ describe('관제 관리자 편집 모드', () => {
       publish: true,
     });
   });
+
+  it('기존 구역을 고쳐 저장하면 발행까지 끝난 뒤 편집 모드가 저절로 끝나고, 다시 + 로 열면 새 구역 양식이다', async () => {
+    renderMonitor();
+    await screen.findByTestId('viewer3d');
+    const list = await screen.findByRole('region', { name: '위험 구역' });
+    act(() =>
+      within(list)
+        .getByRole('button', { name: /개구부 구역$/ })
+        .click(),
+    );
+    await screen.findByRole('region', { name: '구역 편집 도구' });
+    fireEvent.change(screen.getByRole('textbox', { name: '이름' }), {
+      target: { value: '개구부 B' },
+    });
+    act(() => screen.getByRole('button', { name: '저장' }).click());
+
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: '구역 편집 도구' })).toBeNull(),
+    );
+    expect(commits).toHaveLength(1);
+    expect(commits[0]).toMatchObject({ zone: { op: 'UPDATE', zone_id: 'z-04' }, publish: true });
+
+    // 저장한 구역이 선택돼 있어도 + 는 그 구역이 아니라 새 구역 양식을 연다.
+    act(() => screen.getByRole('button', { name: '새 구역 추가' }).click());
+    expect(await screen.findByRole('combobox', { name: '구역 선택' })).toHaveProperty(
+      'value',
+      NEW_KEY,
+    );
+  }, 20_000);
 
   it('/zones 라우트 제거 뒤에도 도크 링크·세팅 구역 편집 이동·검색 파라미터가 깨지지 않는다', () => {
     render(<Dock />);

@@ -33,8 +33,8 @@ export function useTodayWorks(options: { passive?: boolean } = {}): TodayWorks {
 }
 
 /**
- * 대기 화면이 떠 있어 아래 층(도구 모음·워치·2D 지도)을 막아야 하는지. 구역 편집 중에는 대기 화면을 그리지 않으므로
- * false 다(편집을 끝낼 도구 모음이 막히지 않게). 캐시만 읽어 요청하지 않는다.
+ * 대기 화면이 떠 있어 아래 층(도구 모음·칼럼·2D 지도)을 막아야 하는지. 구역 편집 중에는 대기 화면을 그리지 않으므로
+ * false 다(편집 패널의 편집 끝내기가 막히지 않게). 캐시만 읽어 요청하지 않는다.
  */
 export function useMonitorStandby(): boolean {
   const works = useTodayWorks({ passive: true });

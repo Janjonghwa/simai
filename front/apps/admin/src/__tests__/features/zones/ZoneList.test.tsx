@@ -125,6 +125,8 @@ async function renderList() {
     </QueryClientProvider>,
   );
   await screen.findByRole('region', { name: '위험 구역' });
+  // 관리자에게는 구역을 받기 전에도 패널(새 구역 추가 버튼)이 있으므로 행이 나올 때까지 기다린다.
+  await screen.findAllByRole('listitem');
   return view;
 }
 
@@ -154,16 +156,48 @@ describe('구역 목록', () => {
     expect(rowButton(/단상 구역/).className).toContain('border-sev-high');
   });
 
-  it('구역이 없고 목록 받기도 실패하지 않았으면 아무것도 그리지 않는다', async () => {
+  async function renderEmptyList() {
     server.use(http.get('*/api/zones', () => HttpResponse.json([])));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const { container } = render(
+    const view = render(
       <QueryClientProvider client={client}>
         <ZoneList />
       </QueryClientProvider>,
     );
     await waitFor(() => expect(client.getQueryData(['zones'])).toEqual([]));
+    return view;
+  }
+
+  it('구역이 없고 목록 받기도 실패하지 않았으면 관리자가 아닌 역할에게는 아무것도 그리지 않는다', async () => {
+    signInAs('VIEWER');
+    const { container } = await renderEmptyList();
     expect(container.innerHTML).toBe('');
+  });
+
+  it('구역이 없어도 관리자는 새 구역 추가 버튼으로 편집 모드에 들어간다', async () => {
+    await renderEmptyList();
+    expect(screen.queryAllByRole('listitem')).toHaveLength(0);
+    act(() => screen.getByRole('button', { name: '새 구역 추가' }).click());
+    expect(useZoneEditModeStore.getState().editing).toBe(true);
+    expect(viewport.selectCalls).toEqual([]);
+  });
+
+  it('새 구역 추가 버튼은 이미 골라 둔 구역을 풀고 편집 모드를 켠다(편집 패널이 그 구역이 아니라 새 구역으로 열리게)', async () => {
+    viewport.selectedKey = 'zone:z-04';
+    await renderList();
+    act(() => screen.getByRole('button', { name: '새 구역 추가' }).click());
+    expect(viewport.clearCalls).toBe(1);
+    expect(viewport.selectCalls).toEqual([]);
+    expect(useZoneEditModeStore.getState().editing).toBe(true);
+  });
+
+  it('구역이 있어도 관리자에게만 새 구역 추가 버튼이 보인다', async () => {
+    await renderList();
+    expect(screen.getByRole('button', { name: '새 구역 추가' })).toBeTruthy();
+    cleanup();
+    signInAs('VIEWER');
+    await renderList();
+    expect(screen.queryByRole('button', { name: '새 구역 추가' })).toBeNull();
   });
 
   it('목록을 받지 못하면 그 알림을 보인다', async () => {

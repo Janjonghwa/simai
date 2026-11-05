@@ -79,8 +79,9 @@ function usePendingPublish(
  * 구역·작업면·구성 묶음 발행을 요청 하나로 보낸다(useZoneCommit). 고친 것은 구역마다 초안으로 남아 다른 구역으로 옮겨도
  * 잃지 않는다. 3D 손잡이는 편집 상자를 boxEdit 저장소로 내려 SpatialViewportHost 가 뷰어에 넘긴다. 3D 에서 작업면을 누르면
  * 이은 구역의 작업면 모드로 열고, 어느 구역에도 이어지지 않은 작업면이면 삭제할 수 있게 orphan 으로 알린다.
+ * onCommitted 는 저장·추가가 발행까지 끝났을 때 부른다(관제는 이때 편집 모드를 끝낸다).
  */
-export function useZoneEditing() {
+export function useZoneEditing(onCommitted?: () => void) {
   const viewport = useSpatialViewport()!;
   const { zones, zonesRaw, zonesFailed } = viewport;
   const surfaceList = useWorkSurfaces();
@@ -180,6 +181,7 @@ export function useZoneEditing() {
     pendingCount,
     publish: () => apply.publish.mutateAsync(),
     target,
+    onCommitted,
   });
 
   // ---- 고치기 -------------------------------------------------------------------------------

@@ -3,13 +3,11 @@ import type { ViewerHealthPayload } from '@simai/contracts';
 
 export type HealthWatches = NonNullable<ViewerHealthPayload['watches']>;
 
-/** 워치 한 대의 화면 줄. 연결은 health(1초마다)가 정본이고, 배정은 REST 로 받는다. */
+/** 워치 한 대의 줄. 연결은 health(1초마다)가 정본이고, 배정은 REST 로 받는다. */
 export interface WatchRow {
   deviceId: string;
   connected: boolean;
-  batteryPct: number | null;
   worldId: string | null;
-  method: string | null;
 }
 
 /**
@@ -27,9 +25,7 @@ export function watchRows(
     rows.set(item.device_id, {
       deviceId: item.device_id,
       connected: item.link === 'CONNECTED',
-      batteryPct: item.battery_pct,
       worldId: b?.world_id ?? null,
-      method: b?.method ?? null,
     });
   }
   for (const b of bindings) {
@@ -37,9 +33,7 @@ export function watchRows(
       rows.set(b.device_id, {
         deviceId: b.device_id,
         connected: b.channel_state === 'BOUND',
-        batteryPct: null,
         worldId: b.world_id,
-        method: b.method,
       });
     }
   }
@@ -89,10 +83,4 @@ export function watchesOfLinkKey(key: string): HealthWatches | undefined {
     connected: items.filter((i) => i.link === 'CONNECTED').length,
     items,
   } as HealthWatches;
-}
-
-/** 채널 상태(부록 C.6): 배정·연결 BOUND, 배정·끊김 LOST, 배정 없음 UNBOUND */
-export function channelOf(row: WatchRow | undefined): 'BOUND' | 'LOST' | 'UNBOUND' {
-  if (!row?.worldId) return 'UNBOUND';
-  return row.connected ? 'BOUND' : 'LOST';
 }

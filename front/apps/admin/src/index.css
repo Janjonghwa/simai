@@ -85,6 +85,17 @@
   --cam-split-inset: calc(var(--cam-split-width) + var(--panel-clearance));
 }
 
+/*
+ * 실시간 관제 왼쪽 칼럼(구역 목록 → 작업 목록)과 그 아래 2D 지도. 지도는 칼럼 폭의 정사각형이고, 낮은 화면(최소 높이 600px)
+ * 에서 목록 자리가 남도록 화면 높이의 34% 까지만 커진다(600px 에서 204px, 목록 칼럼 250px). 칼럼의 아래 끝은 지도 위다
+ * (지도가 바닥에서 띄운 14px + 지도 + 지도와 칼럼 사이 8px).
+ */
+:root {
+  --side-column-width: 260px;
+  --minimap-size: min(var(--side-column-width), 34svh);
+  --side-column-bottom: calc(14px + var(--minimap-size) + 8px);
+}
+
 @theme inline {
   --color-surface-4: var(--surface-4);
   --color-primary-hover: var(--primary-hover);

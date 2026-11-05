@@ -299,17 +299,14 @@ describe('작업 외 진입 배지', () => {
 describe('대기 화면이 아래 층을 막는다', () => {
   const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
 
-  it('오늘 남은 작업이 없으면 작업 목록 칼럼과 워치 패널은 대기 화면보다 앞에서 inert 로 막힌다', async () => {
+  it('오늘 남은 작업이 없으면 작업 목록 칼럼은 대기 화면보다 앞에서 inert 로 막힌다', async () => {
     serveWorks([done({ work_id: '5' })]);
     renderMonitor();
 
     const waiting = await screen.findByRole('region', { name: '관제 대기' });
     const works = await screen.findByRole('region', { name: '오늘 작업' });
-    const watch = screen.getByRole('region', { name: '워치' });
-    for (const layer of [works, watch]) {
-      expect(layer.closest('[inert]')).not.toBeNull();
-      expect(layer.compareDocumentPosition(waiting) & FOLLOWING).toBeTruthy();
-    }
+    expect(works.closest('[inert]')).not.toBeNull();
+    expect(works.compareDocumentPosition(waiting) & FOLLOWING).toBeTruthy();
     // 대기 화면 자체는 눌려야 한다(작업 관리로).
     expect(waiting.closest('[inert]')).toBeNull();
   });
@@ -321,7 +318,6 @@ describe('대기 화면이 아래 층을 막는다', () => {
     const works = await screen.findByRole('region', { name: '오늘 작업' });
     expect(within(works).getByRole('button', { name: '작업 시작' })).toBeTruthy();
     expect(works.closest('[inert]')).toBeNull();
-    expect(screen.getByRole('region', { name: '워치' }).closest('[inert]')).toBeNull();
     expect(standby()).toBeNull();
   });
 

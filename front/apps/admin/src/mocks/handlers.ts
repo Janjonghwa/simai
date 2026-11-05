@@ -39,9 +39,6 @@ export const staticObjectsMock = createStaticObjectsMock();
 export const tbmMock = createTbmMock({ deferDaysToHistory: true });
 export const setupMock = createSetupMock();
 
-// 워치 배정(-342). 개발 mock 은 권한을 보지 않고 메모리에만 둔다(서버는 잇기·풀기를 관리자만 받는다).
-const watchBindings = new Map<string, { world_id: string; bound_at: number }>();
-
 // 경로 앞의 * 는 VITE_API_BASE_URL 이 무엇이든 맞추려는 것이다.
 export const handlers = [
   http.get('*/api/sites/current', () =>
@@ -53,48 +50,8 @@ export const handlers = [
       created_at_ms: 1_793_690_000_000,
     }),
   ),
-  http.get('*/api/watch-bindings', () =>
-    HttpResponse.json(
-      [...watchBindings].map(([device_id, b], i) => ({
-        binding_id: i + 1,
-        device_id,
-        world_id: b.world_id,
-        method: 'MANUAL',
-        bound_at: b.bound_at,
-        channel_state: 'LOST',
-      })),
-    ),
-  ),
-  http.put('*/api/watch-bindings/:deviceId', async ({ params, request }) => {
-    const body: unknown = await request.json().catch(() => undefined);
-    const world =
-      typeof body === 'object' && body !== null ? Reflect.get(body, 'world_id') : undefined;
-    if (typeof world !== 'string' || world.trim() === '') {
-      return HttpResponse.json(
-        { status: 400, code: 'INVALID_WORLD_ID', detail: 'World ID 가 비었습니다' },
-        { status: 400 },
-      );
-    }
-    const device = String(params.deviceId);
-    for (const [d, b] of watchBindings) if (b.world_id === world) watchBindings.delete(d);
-    watchBindings.set(device, { world_id: world, bound_at: Date.now() });
-    return HttpResponse.json({
-      binding_id: 1,
-      device_id: device,
-      world_id: world,
-      method: 'MANUAL',
-      bound_at: Date.now(),
-      channel_state: 'LOST',
-    });
-  }),
-  http.delete('*/api/watch-bindings/:deviceId', ({ params }) =>
-    watchBindings.delete(String(params.deviceId))
-      ? new HttpResponse(null, { status: 204 })
-      : HttpResponse.json(
-          { status: 404, code: 'BINDING_NOT_FOUND', detail: '이 워치의 배정이 없습니다' },
-          { status: 404 },
-        ),
-  ),
+  // 워치 배정(-342)은 개발 mock 에 배정이 없다(잇기·풀기 화면이 없다).
+  http.get('*/api/watch-bindings', () => HttpResponse.json([])),
   http.post('*/api/auth/login', async ({ request }) => {
     const credentials = readCredentials(await request.json().catch(() => undefined));
     const account =
