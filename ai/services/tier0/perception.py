@@ -35,6 +35,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import logging
 from pathlib import Path
+import queue
 import threading
 from typing import Any, Protocol
 
@@ -247,6 +248,13 @@ class DetectorFeed:
         self._max_queued_per_camera = max_queued_per_camera
         self.async_mode = async_mode
         self.reid_collector = reid_collector
+        self._reid_queue: queue.Queue[tuple[Frame, Observation2DFrame]] = queue.Queue(maxsize=4)
+        self._reid_stop = threading.Event()
+        self._reid_worker: threading.Thread | None = None
+        self.reid_submission_dropped = 0
+        if reid_collector is not None:
+            self._reid_worker = threading.Thread(target=self._submit_reid, name="tier0-reid-crop", daemon=True)
+            self._reid_worker.start()
         self._lock = threading.Lock()
         self._detect_lock = threading.Lock()
         self._queued_observations: dict[str, deque[Observation2DFrame]] = {
@@ -273,6 +281,9 @@ class DetectorFeed:
         """검출·로컬추적을 마치고 판정 루프가 아직 꺼내 가지 않은 관측 수."""
         with self._lock:
             return sum(len(q) for q in self._queued_observations.values())
+
+    def reid_submission_status(self) -> dict[str, int]:
+        return {"queued": self._reid_queue.qsize(), "dropped": self.reid_submission_dropped}
 
     def drained(self) -> bool:
         """진행 중인 검출 묶음이 없고 대기 중인 관측도 모두 소비됐다."""
@@ -346,15 +357,6 @@ class DetectorFeed:
                         if key in images:
                             avatar_f[obs.camera_id] = images[key]
                             avatar_o[obs.camera_id] = obs
-                if self.reid_collector is not None and observations:
-                    for obs in observations:
-                        key = (obs.camera_id, obs.stream_epoch, obs.frame_sequence, obs.estimated_capture_time_ms)
-                        frame_obj = images.get(key)
-                        if frame_obj is not None:
-                            try:
-                                self.reid_collector.submit_observation(frame_obj, obs)
-                            except Exception:
-                                log.debug("Re-ID 특징 수집 요청 실패(판정은 계속한다)", exc_info=True)
                 with self._lock:
                     self.stats.mismatched += mismatched
                     self.stats.stale_results += stale
@@ -368,10 +370,33 @@ class DetectorFeed:
                             self.stats.dropped_observations += 1
                         q.append(obs)
                     self._stepped = True
+                # 관측을 먼저 공개해 보조 크롭 준비가 현재 판정을 지연시키지 않게 한다.
+                if self.reid_collector is not None and observations:
+                    for obs in observations:
+                        key = (obs.camera_id, obs.stream_epoch, obs.frame_sequence, obs.estimated_capture_time_ms)
+                        frame_obj = images.get(key)
+                        if frame_obj is not None:
+                            try:
+                                self._reid_queue.put_nowait((frame_obj, obs))
+                            except queue.Full:
+                                self.reid_submission_dropped += 1
                 return len(batch)
             finally:
                 with self._lock:
                     self._in_flight -= 1
+
+    def _submit_reid(self) -> None:
+        while not self._reid_stop.is_set():
+            try:
+                frame, obs = self._reid_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                self.reid_collector.submit_observation(frame, obs)
+            except Exception:
+                log.debug("Re-ID 특징 수집 요청 실패(판정은 계속한다)", exc_info=True)
+            finally:
+                self._reid_queue.task_done()
 
     def poll(self, now_ms: int) -> list[Observation2DFrame]:
         if not self.async_mode:
@@ -402,6 +427,9 @@ class DetectorFeed:
         return {"source": self._source, "camera_ids": list(self._camera_ids)}
 
     def close(self) -> None:
+        self._reid_stop.set()
+        if self._reid_worker is not None:
+            self._reid_worker.join(timeout=1.0)
         if self.reid_collector is not None:
             try:
                 self.reid_collector.close()
