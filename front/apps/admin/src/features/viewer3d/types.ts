@@ -219,6 +219,11 @@ export interface Viewer3DProps {
    */
   personBadges?: Readonly<Record<string, string>>;
   /**
+   * 사람 강조(World ID → 큰 이름표 글, -509, 선택 사항). 있는 동안 그 사람 발밑에 고리 펄스와 큰 이름표를 보인다.
+   * 시간은 호스트가 정한다(키를 빼면 바로 사라진다). 내용이 같으면 다시 그리지 않고, 화면에 없는 사람은 그리지 않는다.
+   */
+  personHighlights?: Readonly<Record<string, string>>;
+  /**
    * 아바타 자산(mesh_url, 같은 출처 /api/avatars/...) 내려받기(선택 사항). FE 가 인증된 요청 함수를 넘긴다.
    * 없으면 fetch(url, { credentials: 'same-origin' }). 렌더마다 새 함수를 만들지 말고 고정해 넘긴다.
    */

@@ -28,7 +28,8 @@ import type {
   ViewerStatus,
   ViewerTarget,
 } from '@/features/viewer3d';
-import { useWatchBadges } from '@/features/watch/useWatch';
+import { useWatchBadges, useWatchBindDetector } from '@/features/watch/useWatch';
+import { useWatchBindEffectStore } from '@/features/watch/watchBindEffect.store';
 import type { ViewerZones, Zone } from '@/features/zones/types';
 import { useZones } from '@/features/zones/useZones';
 import { avatarMeshFetch } from '@/lib/avatarMeshFetch';
@@ -178,6 +179,10 @@ export function SpatialViewportHost({
   // 관제에서는 보이기만 해 사람·구역 선택을 가로막지 않는다. 장애물은 고치는 화면이 없어 어디서도 고르지 않는다.
   // 사람 이름표 뒤 워치 채널 상태(-342). 배정·연결이 바뀔 때만 새 객체다
   const personBadges = useWatchBadges();
+  // 손 흔들어 워치가 새로 이어진 사람 강조(-509). 편집 모드에서는 숨긴다
+  useWatchBindDetector();
+  const bindHighlights = useWatchBindEffectStore((s) => s.highlights);
+  const personHighlights = editing ? undefined : bindHighlights;
   const layers = useMemo<ViewerLayers>(
     () => ({
       workSurfaces: editing || !eventPanel ? 'interactive' : 'visible',
@@ -211,6 +216,7 @@ export function SpatialViewportHost({
                 scene={scene}
                 layers={layers}
                 personBadges={personBadges}
+                personHighlights={personHighlights}
                 onSceneStatusChange={onSceneStatusChange}
                 onSelectionChange={onViewerSelect}
                 onStatusChange={onViewerStatus}
