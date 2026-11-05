@@ -874,6 +874,13 @@ class Tier0Service:
         link_ref["link"] = link
         self.calibration.ensure_scene_snapshot(effective_at=self.clock.now_ms(), msg_id=self._new_msg_id())
         link.publisher.add_source(self._calibration_messages)
+        if env.get("SIMAI_PPE_RELAY") == "1":
+            # PPE 프로세스(같은 GPU 인스턴스, 5.5)의 ppe_state 를 이 I1 연결로 대신 보낸다(S15P31A101-507).
+            # PPE 가 같은 source_id 로 연결을 따로 열면 EC2 의 운영자 명령이 그 연결로 갈 수 있다.
+            from simai_ai.io.ppe_outbox import PpeOutboxReader, ppe_outbox_path
+
+            root = Path(env.get("SIMAI_ROOT") or "/workspace/simai")
+            link.publisher.add_source(PpeOutboxReader(ppe_outbox_path(env, root), source_id=s.gateway_id).take)
         return link
 
     # --- 검증된 보정 후보(-344). 후보 계산은 -345의 백그라운드 실행기가 한다. ----------------

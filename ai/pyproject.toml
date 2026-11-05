@@ -295,6 +295,7 @@ source_modules = [
     "simai_ai.reid",
     # PPE 프로세스는 Tier 0 와 같은 GPU 인스턴스에서 돈다(명세 5.5)
     "simai_ai.ppe",
+    "services.ppe",
 ]
 forbidden_modules = [
     "vllm",

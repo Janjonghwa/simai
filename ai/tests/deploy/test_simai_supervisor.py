@@ -198,6 +198,88 @@ def test_avatar_weight_set_contains_hmr_model_rig_and_seg(bs):
     assert bs.parse_services("tier0,avatar") == ["tier0", "avatar"]
 
 
+PPE_SHA = "e373a104805765417502e34d21586be2607126bbdd8499b935896ca333eb103c"
+
+
+def _ppe_manifest(tmp_path) -> Path:
+    path = tmp_path / "weights-ppe.json"
+    path.write_text(json.dumps({"weights": [
+        {"name": "m", "sets": ["vlm"], "path": "weights/m.bin", "source": {"url": "x"}, "sha256": "0" * 64},
+        {"name": "ppe-ckpt", "sets": ["ppe"], "path": "weights/ppe/p.pt", "source": {"url": "x"}, "sha256": PPE_SHA,
+         "env": "SIMAI_PPE_WEIGHTS"}]}), encoding="utf-8")
+    return path
+
+
+def test_ppe_opt_in_starts_after_tier0_ready_with_share_relay_and_weights(bs, tmp_path, monkeypatch):
+    """S15P31A101-507: ppe 는 Tier 0 준비 뒤 ppe 묶음을 받고 띄운다. Tier 0 는 입력 공유·outbox 대신 송신을 켠다."""
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "ppe"),
+               env={"SIMAI_WEIGHTS_MANIFEST": str(_ppe_manifest(tmp_path))})
+    _start(sup, w)
+    assert w.envs["tier0"]["SIMAI_AVATAR_SHARE"] == "1" and w.envs["tier0"]["SIMAI_PPE_RELAY"] == "1"
+    _settle(sup, w, 3)
+    assert w.spawned == ["tier0"] and sup.weight_calls == []  # 준비 전에는 받지도 띄우지도 않는다
+    w.ready = True
+    _settle(sup, w, 4)
+    assert w.spawned == ["tier0", "ppe"] and sup.weight_calls == [["ppe-ckpt"]]
+    assert w.argvs["ppe"][1:] == ["-m", "services.ppe"]  # 워커 토큰(simai-wait-tier0 --env-file)을 거치지 않는다
+    ppe = w.envs["ppe"]
+    assert ppe["SIMAI_PPE_WEIGHTS"] == str(tmp_path / "simai" / "weights" / "ppe" / "p.pt")
+    assert ppe["SIMAI_PPE_WEIGHTS_SHA256"] == PPE_SHA
+    assert float(ppe["SIMAI_PPE_GPU_MEMORY_FRACTION"]) == pytest.approx(0.05)
+    assert "HF_TOKEN" not in ppe and "SIMAI_TIER0_TOKEN" not in ppe
+    assert w.last("ppe").nice == 10
+    w.signals.clear()
+    sup._stop_sidecars()
+    assert [n for n, s in w.signals if s == signal.SIGTERM] == ["ppe"]
+
+
+def test_ppe_stops_before_other_sidecars_and_avatar_share_is_not_duplicated(bs, tmp_path, monkeypatch):
+    w = World()
+    sup = _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "vllm", "worker", "avatar", "ppe"),
+               env={"SIMAI_WEIGHTS_MANIFEST": str(_ppe_manifest(tmp_path)), "SIMAI_AVATAR_WEIGHTS_SET": "vlm"})
+    _start(sup, w)
+    w.ready = w.healthy = True
+    _settle(sup, w, 12)
+    assert {"avatar", "ppe", "worker"} <= set(w.spawned)
+    assert sup.weight_calls == [["m", "m", "ppe-ckpt"]]
+    # PPE 몫은 분석 워커 예산(0.70) 밖이다: worker 는 avatar 를 뺀 0.10 그대로
+    assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(.10)
+    w.signals.clear()
+    sup._stop_sidecars()
+    assert [n for n, s in w.signals if s == signal.SIGTERM] == ["ppe", "avatar", "worker", "vllm"]
+
+
+@pytest.mark.parametrize("env", [
+    {"SIMAI_PPE_GPU_MEMORY_FRACTION": "0.06"},  # 0.20 + 0.70 + 0.06 > 0.95
+    {"SIMAI_PPE_GPU_MEMORY_FRACTION": "0"},
+    {"SIMAI_GPU_TIER0_FRACTION": "0.25"},
+])
+def test_ppe_budget_overflow_refused_before_spawn(bs, tmp_path, monkeypatch, env):
+    w = World()
+    with pytest.raises(bs.BootstrapError) as e:
+        _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "ppe"),
+             env={"SIMAI_WEIGHTS_MANIFEST": str(_ppe_manifest(tmp_path)), **env})
+    assert e.value.code == bs.EXIT_USAGE and w.spawned == []
+
+
+def test_ppe_requires_manifest_entry_with_weights_env(bs, tmp_path, monkeypatch):
+    w = World()
+    manifest = tmp_path / "no-env.json"
+    manifest.write_text(json.dumps({"weights": [{"name": "p", "sets": ["ppe"], "path": "weights/p.pt",
+                                                 "source": {"url": "x"}, "sha256": PPE_SHA}]}), encoding="utf-8")
+    with pytest.raises(bs.BootstrapError) as e:
+        _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "ppe"), env={"SIMAI_WEIGHTS_MANIFEST": str(manifest)})
+    assert e.value.code == bs.EXIT_STORAGE
+
+
+def test_ppe_is_opt_in_and_repository_manifest_has_its_checkpoint(bs):
+    assert bs.parse_services("tier0,ppe") == ["tier0", "ppe"]
+    assert "ppe" not in bs.LOBBY_SERVICES.split(",") and "ppe" not in bs.PREFLIGHT_SETS
+    [entry] = bs.load_manifest(REPO / "deploy" / "weights.json", "ppe")
+    assert entry["env"] == "SIMAI_PPE_WEIGHTS" and entry["sha256"] == PPE_SHA
+
+
 def test_stale_running_marker_from_previous_run_is_not_ready_until_this_tier0_writes(bs, tmp_path, monkeypatch, capsys):
     """리뷰 -246 필수: 이전 실행이 비정상 종료로 남긴 running·OK 표시(mtime 새것)를 이번 Tier 0 의 준비로 보지 않는다.
     진입점이 엔진을 다시 만드는 동안(약 550초) vLLM·워커가 GPU 를 먼저 잡으면 안 된다. 표시 파일은 지우지 않는다(previous_unclean)."""

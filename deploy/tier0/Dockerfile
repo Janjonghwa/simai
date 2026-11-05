@@ -227,6 +227,7 @@ RUN sed -i '1c#!/opt/simai/ai/.venv/bin/python' /usr/local/bin/simai-bootstrap
 COPY deploy/weights.json /opt/simai/deploy/weights.json
 
 # SIMAI_SERVICES: simai-bootstrap tier0 가 띄울 프로세스(Tier 0 → vLLM 서버 → 분석 워커). 'tier0' 로 주면 Tier 0 단독(tier0 이미지와 같은 동작).
+#   avatar·ppe 는 명시 선택이다(ppe: 입력 공유 파일·outbox 로 Tier 0 I1 을 거쳐 ppe_state 를 보낸다, deploy/README.md "감시 프로세스" 5).
 # SIMAI_WORKER_WEIGHTS_SET: Tier 0 준비 뒤에 받는 워커 가중치 묶음(Cosmos3-Nano 약 31.5GB, 받는 동안에도 Tier 0 는 돈다).
 # NVIDIA_DRIVER_CAPABILITIES 는 합집합: video(NVDEC 선택 디코더) + graphics(pyrender EGL, HMR).
 # SIMAI_MAPANYTHING_REPO·_COMMIT: MapAnything 이미지(deploy/mapanything)와 같은 이름. 장면 준비 모드(simai-bootstrap scene)는 static 묶음을 받는다

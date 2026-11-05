@@ -2,7 +2,7 @@
 """simai-bootstrap: 어느 GPU·지역·사이트(RunPod·Vast.ai·엘리스 GPU VM)에서든 같은 순서로 이미지를 준비한다 (S15P31A101-205·-207·-246·-250·-382·-414).
 
     simai-bootstrap tier0 [Tier 0 인자...]      준비 → simai-tier0 (엔진 준비 engine_cache ensure → python -m services.tier0). 옵션으로 시작해도(--config ...) tier0
-                                                SIMAI_SERVICES 에 vllm·worker·avatar 가 있으면 감시 프로세스로 Tier 0 → vLLM 서버 → 분석 워커·아바타 (아래)
+                                                SIMAI_SERVICES 에 vllm·worker·avatar·ppe 가 있으면 감시 프로세스로 Tier 0 → vLLM 서버 → 분석 워커·아바타·PPE (아래)
     simai-bootstrap                             (인자 없음) 이 사용법만 보이고 64 로 끝난다(아무것도 띄우지 않음. 이미지 기본 CMD 는 tier0 를 명시한다)
     simai-bootstrap lobby [로비 인자...]        로비 LIVE 통합 기동: endpoint.json·tier0-live.json·pod.jsonl 준비 → 단일 Supervisor 로
                                                 Tier 0·vLLM·worker·avatar 를 한 번에 띄우고 Tier 0 종료 코드 그대로 끝난다. 프로세스는 --services(기본 넷 다)만 따르고
@@ -58,6 +58,10 @@
     vLLM 은 표시 파일이 phase=running·reserve OK 일 때만 띄우므로 Tier 0 의 TensorRT 엔진 빌드·적재와 GPU 선확보가 끝난 뒤다(진입점이 엔진을 준비한 뒤에 서비스가 표시 파일을 쓴다). 워커 토큰 파일(SIMAI_WORKER_ENV_FILE, 없으면
     $SIMAI_ROOT/../.simai-private/worker.env 가 있을 때)은 simai-wait-tier0 --env-file 로 워커 환경에만 넣는다.
     워커 인자는 SIMAI_WORKER_ARGS(예: --config <워커 설정>: 받을 작업 유형 VLM·hmr_refine 등의 처리기)를 덧붙인다.
+  - ppe(명시 선택, lobby 기본에 없음, 명세 5.5, S15P31A101-507): Tier 0 준비 뒤 ppe 가중치 묶음(SIMAI_PPE_WEIGHTS_SET, 기본 ppe)을 워커 가중치와
+    함께 받고 python -m services.ppe 를 띄운다. Tier 0 환경에 SIMAI_AVATAR_SHARE=1(입력 공유 파일)·SIMAI_PPE_RELAY=1(PPE outbox 를 Tier 0 I1 로 대신
+    송신)을, PPE 환경에 SIMAI_PPE_WEIGHTS·SIMAI_PPE_WEIGHTS_SHA256·SIMAI_PPE_GPU_MEMORY_FRACTION(기본 0.05, 분석 워커 예산 밖)을 넣는다.
+    GPU 예산은 Tier 0 + 분석 워커 + PPE ≤ 0.95 를 보고, 넘으면 64 로 시작하지 않는다(명세 3.2). PPE 는 I1 연결·워커 토큰을 쓰지 않는다.
 
 장면 준비 모드(S15P31A101-250, simai-bootstrap scene): MapAnything 같은 준비 단계 일회성 작업을 LIVE 서비스(Tier 0·vLLM·워커)와 겹치지 않게 돌린다.
   - 가중치 묶음은 SIMAI_WEIGHTS_SET 과 상관없이 static(MapAnything 기본·apache)이다. SIMAI_SERVICES(이미지 기본 tier0,vllm,worker)는 tier0 명령만 쓰므로 보지 않는다.
@@ -139,7 +143,9 @@ TIER0_CMD = "simai-tier0"
 SET_ENV = "SIMAI_WEIGHTS_SET"  # check·queue·run 이 받을 가중치 묶음(이미지 ENV). 없으면 tier0
 SERVICES_ENV = "SIMAI_SERVICES"  # tier0 명령이 띄울 프로세스. 없으면 tier0(단독)
 WORKER_SET_ENV = "SIMAI_WORKER_WEIGHTS_SET"  # 감시 모드에서 Tier 0 준비 뒤 받는 묶음. 없으면 vlm
-SERVICES = ("tier0", "vllm", "worker", "avatar")  # avatar는 명시 선택, 기본은 꺼짐(lobby 는 기본으로 켠다)
+# avatar는 명시 선택, 기본은 꺼짐(lobby 는 기본으로 켠다). ppe 도 명시 선택이고 lobby 기본에도 없다(G9 전, S15P31A101-507)
+SERVICES = ("tier0", "vllm", "worker", "avatar", "ppe")
+PPE_FRACTION_DEFAULT = 0.05  # 명세 3.2: PPE 는 분석 워커 밖의 별도 몫. Tier 0 + 분석 워커 + PPE ≤ 0.95
 LOBBY_SERVICES = "tier0,vllm,worker,avatar"  # lobby·preflight 기본. 아바타는 시연 필수(S15P31A101-414)
 IMAGE_AI_DIR = Path("/opt/simai/ai")  # 이미지 WORKDIR: services 패키지(설치하지 않음)가 여기 있다. SIMAI_AI_DIR 로 바꾼다
 WORKER_ID_ENV = "SIMAI_WORKER_ID"
@@ -678,7 +684,7 @@ def parse_services(text: str | None) -> list[str]:
     names = [s.strip() for s in (text or "tier0").split(",") if s.strip()]
     if not names or "tier0" not in names or len(set(names)) != len(names) or set(names) - set(SERVICES):
         hint = " (scene 은 서비스가 아니다: 장면 준비는 LIVE 와 따로 'simai-bootstrap scene <명령>')" if "scene" in names else ""
-        raise BootstrapError(EXIT_USAGE, f"{SERVICES_ENV}={text!r} 오류: tier0 를 넣고 tier0·vllm·worker·avatar 중에서 쉼표로 고른다{hint}")
+        raise BootstrapError(EXIT_USAGE, f"{SERVICES_ENV}={text!r} 오류: tier0 를 넣고 tier0·vllm·worker·avatar·ppe 중에서 쉼표로 고른다{hint}")
     return [n for n in SERVICES if n in names]
 
 
@@ -933,11 +939,12 @@ def sidecar_cpus(spec: str | None, avail: list[int], quota: float | None = None)
 
 
 def compute_gpu_fractions(services: list[str], env: dict[str, str]) -> dict[str, float]:
-    """서비스 목록에 맞춰 GPU 메모리 상한(vllm·avatar·worker)을 계산·검증한다 (S15P31A101-382).
+    """서비스 목록에 맞춰 GPU 메모리 상한(vllm·avatar·worker·ppe)을 계산·검증한다 (S15P31A101-382).
 
     분석 예산 0.70 안에서 vLLM 0.50·avatar 0.10·worker 나머지를 나눈다. 명시 값은 예산 안에서 우선한다.
+    ppe 는 분석 워커 예산 밖의 별도 몫(기본 0.05)이고 Tier 0 + 분석 워커 + PPE ≤ 0.95 를 본다(명세 3.2, S15P31A101-507).
     """
-    from simai_ai.gpu.budget import BudgetError, WorkerGpuSettings
+    from simai_ai.gpu.budget import HEADROOM_FRACTION, BudgetError, WorkerGpuSettings
 
     env = dict(env)
     env.setdefault("SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION", "0.50")
@@ -959,11 +966,20 @@ def compute_gpu_fractions(services: list[str], env: dict[str, str]) -> dict[str,
         or ("worker" in services and not 0 < worker_fraction <= remaining)
     ):
         raise BootstrapError(EXIT_USAGE, "avatar·vLLM·worker GPU 상한 합이 분석 워커 예산을 넘는다")
+    ppe_fraction = _env_float(env, "SIMAI_PPE_GPU_MEMORY_FRACTION", PPE_FRACTION_DEFAULT) if "ppe" in services else 0.0
+    if "ppe" in services:
+        limit = 1 - HEADROOM_FRACTION
+        if not 0 < ppe_fraction <= 1:
+            raise BootstrapError(EXIT_USAGE, f"SIMAI_PPE_GPU_MEMORY_FRACTION={ppe_fraction} 는 0 초과 1 이하다")
+        if budget.tier0_fraction + budget.worker_fraction + ppe_fraction > limit + 1e-9:
+            raise BootstrapError(EXIT_USAGE, f"Tier 0 {budget.tier0_fraction} + 분석 워커 {budget.worker_fraction} + PPE "
+                                             f"{ppe_fraction} 이 {limit:.2f} 을 넘는다(명세 3.2)")
     return {
         "budget_worker_fraction": budget.worker_fraction,
         "vllm_fraction": vllm_fraction,
         "avatar_fraction": avatar_fraction,
         "worker_fraction": worker_fraction,
+        "ppe_fraction": ppe_fraction,
     }
 
 
@@ -1008,6 +1024,7 @@ class Supervisor:
         self.tick_s = _env_float(env, "SIMAI_SUPERVISE_TICK_S", 0.5)
         self.worker_set = env.get(WORKER_SET_ENV) or "vlm"
         self.avatar_set = env.get("SIMAI_AVATAR_WEIGHTS_SET") or "avatar"
+        self.ppe_set = env.get("SIMAI_PPE_WEIGHTS_SET") or "ppe"
         # 현장 세팅(site_setup) MapAnything 모델 폴더(reconstruct_tasks.mapanything 과 같은 규칙). 워커를 띄울 때만 뒤에서 받는다(-473)
         self.setup_model_dir = Path(env.get("SIMAI_MAPANYTHING_MODEL") or root / "weights" / "map-anything")
         self.setup_weights = (env.get("SIMAI_WORKER_SETUP_WEIGHTS") or "1").strip() not in ("0", "false", "no", "off")
@@ -1066,7 +1083,15 @@ class Supervisor:
             value = _file_value(path, "SIMAI_WORKER_TORCH_MEMORY_FRACTION")
             if value is not None:
                 budget_env["SIMAI_WORKER_TORCH_MEMORY_FRACTION"] = value
-        fractions = compute_gpu_fractions(services, budget_env) if any(s in services for s in ("vllm", "worker", "avatar")) else None
+        fractions = (compute_gpu_fractions(services, budget_env)
+                     if any(s in services for s in ("vllm", "worker", "avatar", "ppe")) else None)
+        # PPE 체크포인트(가중치 목록 ppe 묶음 중 env SIMAI_PPE_WEIGHTS 항목): 경로·sha256 을 PPE 환경에 넣는다(받기는 Tier 0 준비 뒤)
+        ppe_weights = None
+        if "ppe" in services:
+            ppe_weights = next((w for w in load_manifest(self.manifest, self.ppe_set) if w.get("env") == "SIMAI_PPE_WEIGHTS"),
+                               None)
+            if ppe_weights is None:
+                raise BootstrapError(EXIT_STORAGE, f"가중치 목록 {self.manifest} 의 {self.ppe_set} 묶음에 SIMAI_PPE_WEIGHTS 항목이 없다")
         self.svc: dict[str, Service] = {}
         for name in services:
             e = dict(base)
@@ -1081,6 +1106,14 @@ class Supervisor:
                         e["SIMAI_AVATAR_SHARE"] = "1"
                     if name == "avatar" and not e.get("SIMAI_AVATAR_CHANNEL") and e.get("SIMAI_AVATAR_PORT"):
                         e["SIMAI_AVATAR_CHANNEL"] = f"wss://127.0.0.1:{e['SIMAI_AVATAR_PORT']}"
+                if "ppe" in services:
+                    if name == "tier0":
+                        e["SIMAI_AVATAR_SHARE"] = "1"  # PPE 입력도 아바타 입력 공유 파일이다(아바타가 꺼져 있어도 켠다)
+                        e["SIMAI_PPE_RELAY"] = "1"  # PPE outbox 를 Tier 0 I1 로 대신 보낸다
+                    if name == "ppe":
+                        e["SIMAI_PPE_GPU_MEMORY_FRACTION"] = str(fractions["ppe_fraction"])
+                        e["SIMAI_PPE_WEIGHTS"] = str(self.root / ppe_weights["path"])
+                        e["SIMAI_PPE_WEIGHTS_SHA256"] = str(ppe_weights["sha256"])
                 if name == "worker":
                     e["SIMAI_WORKER_TORCH_MEMORY_FRACTION"] = str(fractions["worker_fraction"])
                     e["SIMAI_VALIDATED_WORKER_FRACTION"] = str(fractions["worker_fraction"])
@@ -1099,7 +1132,8 @@ class Supervisor:
                 e.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
                 e["HF_HUB_OFFLINE"] = "1"  # 모델은 확인한 로컬 폴더만. 토큰 없이 HF 로 나가지 않는다
             argv = {"tier0": tier0_argv, "vllm": self._vllm_argv(worker_env), "worker": self._worker_argv(worker_env),
-                    "avatar": self._worker_argv(worker_env, avatar=True)}[name]
+                    "avatar": self._worker_argv(worker_env, avatar=True),
+                    "ppe": [sys.executable, "-m", "services.ppe"]}[name]  # 워커 토큰 필요 없음(I1 은 Tier 0 가 보낸다)
             self.svc[name] = Service(name, argv, e)
         self.phase = "wait_tier0"  # → weights → run | off(워커 쪽 포기)
         self.last_why = ""
@@ -1171,6 +1205,8 @@ class Supervisor:
             entries = load_manifest(self.manifest, self.worker_set) if "vllm" in self.svc else []
             if "avatar" in self.svc:
                 entries += load_manifest(self.manifest, self.avatar_set)
+            if "ppe" in self.svc:
+                entries += load_manifest(self.manifest, self.ppe_set)
             rec["weights"] = ensure_weights(self.root, entries)
             rec["exit"] = EXIT_OK
             log(f"워커 가중치 {self.worker_set} 준비: " + ", ".join(f"{w['name']} {w['status']}" for w in rec["weights"]))
@@ -1214,7 +1250,7 @@ class Supervisor:
         self._record_pod_marker()
         if self.phase == "wait_tier0" and self._tier0_ready():
             log("Tier 0 준비됨(phase=running, reserve OK) → 워커 쪽 준비")
-            if "vllm" in self.svc or "avatar" in self.svc:
+            if "vllm" in self.svc or "avatar" in self.svc or "ppe" in self.svc:
                 self.phase = "weights"
                 self._weights = threading.Thread(target=self._prepare_worker_weights, name="worker-weights", daemon=True)
                 self._weights.start()
@@ -1228,7 +1264,7 @@ class Supervisor:
                 self.phase = "run"
         if self.phase == "run":
             self._start_setup_weights()  # 워커 가중치(VLM) 다음에 받아 대역을 다투지 않는다. 워커 시작은 막지 않는다
-            for name in ("vllm", "worker", "avatar"):
+            for name in ("vllm", "worker", "avatar", "ppe"):
                 if name in self.svc:
                     self._tend(self.svc[name], now)
 
@@ -1307,7 +1343,7 @@ class Supervisor:
         return rc
 
     def _stop_sidecars(self) -> None:
-        for name in ("avatar", "worker", "vllm"):  # 아바타도 Tier 0 전에 정리한다
+        for name in ("ppe", "avatar", "worker", "vllm"):  # 아바타·PPE 도 Tier 0 전에 정리한다
             if name in self.svc:
                 self._stop(self.svc[name])
 
@@ -2004,7 +2040,7 @@ def run_check(rest: list[str], *, preflight: bool = False) -> int:
             rec["weights"] = all_weights
         try:
             svc_list = parse_services(services_str)
-            if any(s in svc_list for s in ("vllm", "worker", "avatar")):
+            if any(s in svc_list for s in ("vllm", "worker", "avatar", "ppe")):
                 rec["gpu_budget"] = compute_gpu_fractions(svc_list, dict(os.environ))
         except BootstrapError as e:
             rec["gpu_budget"] = {"status": "error", "exit": e.code, "error": _redact(str(e))}
