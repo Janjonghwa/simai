@@ -5,6 +5,7 @@ import {
   type TargetDraft,
 } from '@/features/zones/zoneEditModel';
 import {
+  dropZoneDraftName,
   HISTORY_LIMIT,
   lastZoneRecord,
   useHasZoneDrafts,
@@ -150,6 +151,40 @@ describe('zoneEdit.store 되돌리기', () => {
     useZoneEditStore.getState().clear();
     expect(drafts()).toEqual({});
     expect(useZoneEditStore.getState().history).toEqual({});
+  });
+});
+
+describe('dropZoneDraftName', () => {
+  beforeEach(() => useZoneEditStore.setState(useZoneEditStore.getInitialState(), true));
+
+  it('이름만 고친 초안은 지우고 되돌리기 기록도 비운다', () => {
+    edit('z-1', 'a');
+    edit('z-1', 'b');
+    dropZoneDraftName('z-1');
+    expect(drafts()['z-1']).toBeUndefined();
+    expect(steps('z-1')).toBe(0);
+  });
+
+  it('다른 칸을 고친 초안은 이름 고침만 빼고 남긴다', () => {
+    const store = useZoneEditStore.getState();
+    store.record('z-1');
+    store.update('z-1', () => ({ patch: { name: 'a', severity: 'CRITICAL' }, box: null }));
+    dropZoneDraftName('z-1');
+    expect(drafts()['z-1']).toEqual({ patch: { severity: 'CRITICAL' }, box: null });
+    expect(steps('z-1')).toBe(0);
+  });
+
+  it('이름 고침이 없는 초안과 다른 구역의 초안은 건드리지 않는다', () => {
+    const store = useZoneEditStore.getState();
+    store.record('z-1');
+    store.update('z-1', () => ({ patch: { severity: 'CRITICAL' }, box: null }));
+    edit('z-2', 'b');
+    dropZoneDraftName('z-1');
+    expect(steps('z-1')).toBe(1);
+    expect(drafts()['z-1']).toEqual({ patch: { severity: 'CRITICAL' }, box: null });
+    expect(drafts()['z-2']).toEqual(named('b'));
+    dropZoneDraftName('z-9');
+    expect(Object.keys(drafts())).toEqual(['z-1', 'z-2']);
   });
 });
 

@@ -1,7 +1,7 @@
 import { SEVERITY_CHOICES, type Severity } from '@/features/zones/types';
 import type { ZoneEditing } from '@/features/zones/useZoneEditing';
 import { SEVERITY_LABEL } from '@/features/zones/zoneEditModel';
-import { isSeverityChoice, NAME_MAX } from '@/features/zones/zoneForm';
+import { isSeverityChoice, NAME_INPUT_MAX } from '@/features/zones/zoneForm';
 import {
   CARD_CLASS,
   FIELD_CLASS,
@@ -11,9 +11,6 @@ import {
   SELECT_CLASS,
 } from '@/features/zones/zonePanelStyle';
 import { Input } from '@simai/ui/components/input';
-
-/** 입력 칸은 검사 한도보다 이만큼 더 받는다(넘으면 검사 문구가 알려 준다). */
-const NAME_INPUT_SLACK = 10;
 
 /** 이름·심각도. 보내는 중이면 잠근다. */
 export function ZoneAttributesCard({ edit }: { edit: ZoneEditing }) {
@@ -25,7 +22,7 @@ export function ZoneAttributesCard({ edit }: { edit: ZoneEditing }) {
         <Input
           aria-label="이름"
           value={form.name}
-          maxLength={NAME_MAX + NAME_INPUT_SLACK}
+          maxLength={NAME_INPUT_MAX}
           onChange={(event) => edit.setName(event.target.value)}
           className={INPUT_CLASS}
         />

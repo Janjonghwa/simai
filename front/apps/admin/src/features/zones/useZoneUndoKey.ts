@@ -1,3 +1,4 @@
+import { isComposing } from '@/lib/imeKey';
 import { useEffect, useRef } from 'react';
 
 /** 이 안에서 누른 Ctrl+Z 는 브라우저의 글자 되돌리기에 맡긴다. */
@@ -7,9 +8,6 @@ const NATIVE_UNDO_FIELDS =
 /** Ctrl(Mac 은 ⌘)+Z. 한글 자판에서도 되도록 글자(key)가 아니라 자판 위치(code)로 본다. */
 const isUndoShortcut = (event: KeyboardEvent) =>
   (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.code === 'KeyZ';
-
-/** 한글 조합 중인 키인지. */
-const isComposing = (event: KeyboardEvent) => event.isComposing || event.keyCode === 229;
 
 const inNativeUndoField = (event: KeyboardEvent) =>
   event

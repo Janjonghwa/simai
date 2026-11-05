@@ -22,6 +22,7 @@ import {
   surfaceOfBox,
   surfaceZoneBox,
   targetChanged,
+  withoutName,
   withoutUnchangedSurface,
   withPatch,
   withSurface,
@@ -315,6 +316,23 @@ describe('surfaceZoneBox', () => {
     // 스캔 범위처럼 다른 범위도 그대로 따른다.
     const limit = roomLimitFrom({ min: [2, 2, 0], max: [6, 6, 3] });
     expect(surfaceZoneBox(geometry(), limit)).toEqual({ min: [3.7, 3.2, 0], max: [6, 4.8, 2] });
+  });
+});
+
+describe('withoutName(이름 고침만 빼기)', () => {
+  it('이름 고침만 빼고 심각도·상자·작업면은 그대로 둔다', () => {
+    const box: ViewerEditBox = { min: [1, 1, 0], max: [2, 2, 1] };
+    const draft: TargetDraft = {
+      patch: { name: '고치는 중', severity: 'CRITICAL' },
+      box,
+      surface: surfaceDraftOf(linked),
+    };
+    expect(withoutName(draft)).toEqual({ ...draft, patch: { severity: 'CRITICAL' } });
+    expect(draft.patch.name).toBe('고치는 중');
+  });
+
+  it('이름만 고친 초안은 비어 저장소에서 지워질 초안이 된다', () => {
+    expect(isEmptyDraft(withoutName({ patch: { name: '고치는 중' }, box: null }))).toBe(true);
   });
 });
 
