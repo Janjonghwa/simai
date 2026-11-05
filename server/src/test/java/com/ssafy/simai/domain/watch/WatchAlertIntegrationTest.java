@@ -626,12 +626,13 @@ class WatchAlertIntegrationTest {
             throw new AssertionError(msgType + " 가 5초 안에 와야 한다");
         }
 
-        /** 하트비트 답이 아닌 메시지 */
+        /** 하트비트 답·배정 알림(연결 때 붙는 동기화, -510)이 아닌 메시지 */
         JsonNode poll(long millis) throws InterruptedException {
             long deadline = System.nanoTime() + millis * 1_000_000L;
             while (System.nanoTime() < deadline) {
                 JsonNode m = received.poll(50, TimeUnit.MILLISECONDS);
-                if (m != null && !"watch_heartbeat".equals(m.path("msg_type").asString())) {
+                if (m != null && !"watch_heartbeat".equals(m.path("msg_type").asString())
+                        && !"watch_binding_notice".equals(m.path("msg_type").asString())) {
                     return m;
                 }
             }

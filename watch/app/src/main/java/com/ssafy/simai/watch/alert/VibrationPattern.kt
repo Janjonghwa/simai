@@ -5,7 +5,9 @@ private const val LONG_OFF_MS = 200L
 private const val SHORT_ON_MS = 150L
 private const val SHORT_GAP_MS = 120L
 private const val WEAK_ON_MS = 120L
+private const val BOUND_ON_MS = 400L
 private const val FULL = 255
+private const val MEDIUM = 128
 private const val WEAK = 80
 private const val OFF = 0
 
@@ -15,6 +17,8 @@ private const val OFF = 0
  * - DANGER_LONG: 위험. 길게 연속. 확인하거나 기한이 지날 때까지 되풀이한다
  * - CAUTION_DOUBLE: 경고. 짧게 두 번
  * - CAUTION_WEAK: 주의. 약하게 한 번. 명세의 vibration_pattern 값(DB 표)에는 없고 앱 안에서만 쓴다
+ * - BOUND_CONFIRM: 경보가 아니다. 사람 배정이 생겼다는 확인(S15P31A101-510). 중간 세기로 400 ms 한 번.
+ *   경보 패턴과 길이·횟수가 달라(위험 800 ms 반복, 경고 150 ms 두 번, 주의 120 ms 약하게) 손목에서 구별된다
  */
 enum class VibrationPattern(
     val timingsMs: List<Long>,
@@ -30,6 +34,7 @@ enum class VibrationPattern(
         repeatFrom = null,
     ),
     CAUTION_WEAK(listOf(0L, WEAK_ON_MS), listOf(OFF, WEAK), repeatFrom = null),
+    BOUND_CONFIRM(listOf(0L, BOUND_ON_MS), listOf(OFF, MEDIUM), repeatFrom = null),
     ;
 
     companion object {

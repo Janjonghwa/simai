@@ -5,6 +5,8 @@ import com.ssafy.simai.watch.alert.AckRecord
 import com.ssafy.simai.watch.alert.AlertDirection
 import com.ssafy.simai.watch.alert.AlertSeverity
 import com.ssafy.simai.watch.alert.VibrationPattern
+import com.ssafy.simai.watch.binding.BindingMethod
+import com.ssafy.simai.watch.binding.BindingState
 import com.ssafy.simai.watch.gait.GaitFeatures
 import com.ssafy.simai.watch.gait.MotionKind
 import com.ssafy.simai.watch.gait.MotionTransition
@@ -159,5 +161,45 @@ class I4CodecTest {
         assertTrue(UUID_PATTERN.matches(doc.getString("msg_id")))
         assertEquals(sentAt, doc.getLong("sent_at"))
         assertEquals("watch-01", doc.getString("source_id"))
+    }
+
+    @Test
+    fun parsesTheContractBindingNoticeExamples() {
+        val bound = (codec.parse(example("watch_binding_notice.json")) as Incoming.Binding).notice
+        assertEquals(BindingState.BOUND, bound.state)
+        assertEquals(BindingMethod.WAVE, bound.method)
+        assertEquals("w-17", bound.worldId)
+        assertNull(bound.unbindReason)
+        assertEquals(1760342431250L, bound.sentAtMs)
+
+        val unbound = (codec.parse(example("watch_binding_notice.unbound.json")) as Incoming.Binding).notice
+        assertEquals(BindingState.UNBOUND, unbound.state)
+        assertNull(unbound.method)
+        assertNull(unbound.worldId)
+        assertNull(unbound.unbindReason)
+
+        val released = (codec.parse(example("watch_binding_notice.released.json")) as Incoming.Binding).notice
+        assertEquals(BindingState.UNBOUND, released.state)
+        assertEquals("RELEASED", released.unbindReason)
+    }
+
+    @Test
+    fun rejectsTheBindingNoticeCounterexamplesThatBreakTheShape() {
+        // 상태가 틀리거나 BOUND 에 World ID 가 없으면 버린다. 방식이 모르는 값이면 받되 방식만 모른다(수신 측은 너그럽게)
+        for (name in listOf("unknown_state", "bound_without_world")) {
+            assertThrows(name, IllegalArgumentException::class.java) { codec.parse(example("invalid/watch_binding_notice.$name.json")) }
+        }
+        val unknownMethod = (codec.parse(example("invalid/watch_binding_notice.unknown_method.json")) as Incoming.Binding).notice
+        assertNull(unknownMethod.method)
+        assertEquals(BindingState.BOUND, unknownMethod.state)
+    }
+
+    @Test
+    fun bindingConfirmVibrationDiffersFromEveryAlertPattern() {
+        val confirm = VibrationPattern.BOUND_CONFIRM
+        assertNull("한 번만, 되풀이하지 않는다", confirm.repeatFrom)
+        for (alert in listOf(VibrationPattern.DANGER_LONG, VibrationPattern.CAUTION_DOUBLE, VibrationPattern.CAUTION_WEAK)) {
+            assertTrue(alert.name, alert.timingsMs != confirm.timingsMs || alert.amplitudes != confirm.amplitudes)
+        }
     }
 }

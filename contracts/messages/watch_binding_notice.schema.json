@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/watch_binding_notice.schema.json",
+  "title": "I4 watch_binding_notice",
+  "description": "EC2 → 워치(I4 WebSocket wss, 기기별 토큰). 그 워치에 사람(익명 World ID) 배정이 생겼는지 풀렸는지 알린다(S15P31A101-510, 시연 체크인 장면). 워치가 연결됐는데 배정이 없으면(UNBOUND) 워치는 '워치 찬 손을 3초 흔들어 주세요' 안내를 보이고, 배정이 생기면(BOUND) 짧게 진동하고 '연결됨' 을 보인다. EC2 는 배정이 생기거나 풀릴 때 연결된 그 워치에 한 번, 워치가 (재)연결되면 지금 상태를 한 번(초기 동기화) 보낸다. 같은 상태를 반복해 보내지 않고 끊긴 워치에는 보내지 않는다(다시 이어질 때의 동기화로 충분하다). 경보(watch_alert)가 먼저다: 워치는 알림이 떠 있으면 이 메시지로 화면을 가리지 않고 진동하지 않는다. 사람 이름·직원 정보를 싣지 않는다(닫힌 객체, 명세 11.4-5). 1.0.0 신설(S15P31A101-510).",
+  "allOf": [{ "$ref": "envelope.schema.json" }],
+  "type": "object",
+  "properties": {
+    "msg_type": { "const": "watch_binding_notice" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "method", "world_id", "sent_at"],
+      "properties": {
+        "state": {
+          "enum": ["BOUND", "UNBOUND"],
+          "description": "BOUND: 이 워치에 사람이 배정돼 있다. UNBOUND: 배정이 없다(처음부터 없거나 풀렸다)"
+        },
+        "method": {
+          "oneOf": [
+            {"type": "string", "enum": ["MOTION_MATCH", "WAVE", "MANUAL"]},
+            { "type": "null" }
+          ],
+          "description": "배정 방식. MOTION_MATCH 걸음·움직임 대조(S15P31A101-340), WAVE 손 흔들기 체크인(S15P31A101-508), MANUAL 관리자 수동 배정(-338). UNBOUND 면 null"
+        },
+        "world_id": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 64 },
+            { "type": "null" }
+          ],
+          "description": "배정된 익명 World ID. UNBOUND 면 null. 사람 이름·직원 정보가 아니다"
+        },
+        "unbind_reason": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z_]{0,31}$",
+          "description": "UNBOUND 일 때 직전 배정이 끝난 사유(watch_binding.unbind_reason: RELEASED·REPLACED·MATCH_LOST·IDENTITY_CHANGED 등. 새 사유가 생기므로 닫힌 enum 이 아니다, 모르는 값은 표시하지 않고 무시). 연결 직후 초기 동기화처럼 사유를 모르면 싣지 않는다. BOUND 에는 싣지 않는다"
+        },
+        "sent_at": {
+          "$ref": "../common/defs.schema.json#/$defs/timestamp_ms",
+          "description": "EC2 가 이 상태를 정한(보낸) 시각"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "BOUND" } }, "required": ["state"] },
+          "then": {
+            "properties": {
+              "world_id": { "type": "string" },
+              "method": { "type": "string" }
+            },
+            "not": { "required": ["unbind_reason"] }
+          },
+          "else": {
+            "properties": {
+              "world_id": { "type": "null" },
+              "method": { "type": "null" }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

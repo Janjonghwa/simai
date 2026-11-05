@@ -265,6 +265,16 @@ EC2 쪽 대조·배정은 -340.
 - 정지 중 하트비트 20초 간격: -336 의 끊김 판정을 3×주기보다 넉넉히(예: 60초) 두거나, 워치가 AlarmManager 로 깨워 보내는 방식을 검토
 - 나머지 워치 2대, 휴대폰 경유(블루투스) 지연 비교(-337 에서 이어짐)
 
+## 배정 안내 (S15P31A101-510)
+
+시연 체크인 장면의 워치 쪽. EC2 가 `watch_binding_notice` 를 보내면(계약 1.0.0, `docs/design/server-watch-alert.md` 배정 알림 절):
+
+- **UNBOUND**(연결됨·배정 없음): 기본 화면 첫 칸이 "워치 찬 손을 3초 흔들어 주세요" 안내(손을 좌우로 흔드는 그림, `ui/WaveGuide.kt`)로 바뀐다. 연결 상태가 CONNECTED 가 아니거나 확인 대기 알림이 있으면 보이지 않는다(경보 우선. 알림 화면은 별도 Activity 라 가려지지도 않는다). 상태 알림 줄도 같은 문장으로 바꾼다.
+- **BOUND**: UNBOUND 였다가 BOUND 가 됐을 때만 짧게 한 번 진동한다(`VibrationPattern.BOUND_CONFIRM`: 400 ms 한 번, 세기 중간). 경보 패턴(DANGER_LONG 800 ms 반복, CAUTION_DOUBLE 짧게 두 번, CAUTION_WEAK 120 ms 약하게 한 번)과 길이·횟수가 달라 구별된다. "연결됨" 표시는 3초 보이고 평소 화면으로 돌아간다. 처음 받는 상태가 BOUND(앱 재시작·재연결 동기화)면 표시만 하고 울리지 않는다. 같은 BOUND 가 되풀이돼도 반복하지 않는다.
+- 확인 대기 알림이 있으면 BOUND 진동·표시는 건너뛴다(알림의 진동을 끊지 않는다).
+- 구현: 순수 값 `binding/BindingNotice.kt`(파싱 결과)·`BindingView`·`BindingTracker`(상태 전이와 진동 여부, JVM 시험), `I4Codec` 가 `Incoming.Binding` 으로 파싱(모르는 값은 버린다), `I4Service.onBinding` 이 진동·`AlertCenter.binding` 발행, `StatusScreen` 이 구독. 시험: `BindingTrackerTest`·`I4CodecTest` 의 배정 알림 항목(계약 예시 파일을 읽는다).
+- **빌드 미검증**: 이 PC 에 Android SDK 가 없어 `testDebugUnitTest`·`assembleDebug` 를 돌리지 못했다. 기존 코드 패턴만 썼지만 Android SDK 가 있는 PC 에서 먼저 돌린다. 실기기 확인은 하지 않았다.
+
 ## Jenkins
 
 넣는다. `watch/` 가 바뀐 MR 과 모든 dev push 빌드에서 `watch` 단계가 `assembleDebug testDebugUnitTest` 를 돈다(`docs/design/ci-pipeline.md`).

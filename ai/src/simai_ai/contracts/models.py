@@ -2182,10 +2182,35 @@ class WatchAlert(Envelope):
 
 
 class WorldId(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+
+
+class Payload45(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    state: Literal['BOUND', 'UNBOUND']
+    method: Literal['MOTION_MATCH', 'WAVE', 'MANUAL'] | None
+    world_id: WorldId | None
+    unbind_reason: Annotated[StrictStr | MISSING, Field(pattern='^[A-Z][A-Z_]{0,31}$')] = (
+        MISSING
+    )
+    sent_at: DefsTimestampMs
+
+
+class WatchBindingNotice(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['watch_binding_notice'], Field(min_length=1)]
+    payload: Payload45
+
+
+class WorldId1(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(min_length=1)]
 
 
-class Payload44(BaseModel):
+class Payload46(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -2194,7 +2219,7 @@ class Payload44(BaseModel):
     event_sequence: Annotated[StrictInt, Field(ge=1)]
     alert_msg_id: DefsUuid
     device_id: DefsInstanceId
-    world_id: WorldId | None
+    world_id: WorldId1 | None
     severity: Literal['CRITICAL', 'HIGH', 'CAUTION']
     reason: Literal['NO_ACK', 'SEND_FAILED']
     sent_at: DefsTimestampMs
@@ -2206,7 +2231,7 @@ class WatchEscalation(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_escalation'], Field(min_length=1)]
-    payload: Payload45
+    payload: Payload46
 
 
 class Echo(BaseModel):
@@ -2226,7 +2251,7 @@ class Watch(BaseModel):
     app_version: Annotated[StrictStr | MISSING, Field(min_length=1)] = MISSING
 
 
-class Payload46(BaseModel):
+class Payload47(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -2241,7 +2266,7 @@ class WatchHeartbeat(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['watch_heartbeat'], Field(min_length=1)]
-    payload: Payload46
+    payload: Payload47
 
 
 class WorldStateHeadZUncertain1x(RootModel[Any]):
@@ -3624,7 +3649,7 @@ class VlmZoneDraftResult(BaseModel):
     drafts: Annotated[list[VlmZoneDraftDraftItem], Field(max_length=64)]
 
 
-class Payload47(BaseModel):
+class Payload48(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
@@ -3641,7 +3666,7 @@ class WorldState(Envelope):
         extra='allow',
     )
     msg_type: Annotated[Literal['world_state'], Field(min_length=1)]
-    payload: Payload47
+    payload: Payload48
 
 
 class Track(WorldStateWorldTrack):
@@ -4183,6 +4208,7 @@ class Contracts(BaseModel):
     vlm_zone_draft: VlmZoneDraft | MISSING = MISSING
     watch_ack: WatchAck | MISSING = MISSING
     watch_alert: WatchAlert | MISSING = MISSING
+    watch_binding_notice: WatchBindingNotice | MISSING = MISSING
     watch_escalation: WatchEscalation | MISSING = MISSING
     watch_heartbeat: WatchHeartbeat | MISSING = MISSING
     world_state: WorldState | MISSING = MISSING

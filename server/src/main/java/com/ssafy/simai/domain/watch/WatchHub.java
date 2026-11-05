@@ -154,6 +154,8 @@ public class WatchHub implements AutoCloseable {
         }
         log.info("워치 연결: device={} session={}", deviceId, raw.getId());
         health.watchesChanged();
+        // 지금 배정 상태를 한 번 보내게 한다(WatchBindingNotifier, S15P31A101-510)
+        events.publishEvent(new WatchConnected(deviceId));
     }
 
     void received(WebSocketSession raw, String text) {

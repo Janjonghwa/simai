@@ -32,6 +32,7 @@ import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.ScreenScaffold
 import androidx.wear.compose.material3.Text
 import com.ssafy.simai.watch.BuildConfig
+import com.ssafy.simai.watch.binding.BindingView
 import com.ssafy.simai.watch.config.WatchConfig
 import com.ssafy.simai.watch.config.WorkerLabel
 import com.ssafy.simai.watch.i4.ConnectionStatus
@@ -78,10 +79,12 @@ fun StatusScreen(
     ambient: AmbientState?,
     tickMs: Long,
     status: ConnectionStatus = ConnectionStatus(),
+    binding: BindingView = BindingView(),
+    alertPending: Boolean = false,
 ) {
     MaterialTheme {
         if (ambient == null) {
-            InteractiveScreen(config, lastAlertAtMs, label, tickMs, status)
+            InteractiveScreen(config, lastAlertAtMs, label, tickMs, status, binding, alertPending)
         } else {
             AmbientScreen(label, ambient, tickMs)
         }
@@ -89,7 +92,15 @@ fun StatusScreen(
 }
 
 @Composable
-private fun InteractiveScreen(config: WatchConfig?, lastAlertAtMs: Long?, label: WorkerLabel?, tickMs: Long, status: ConnectionStatus) {
+private fun InteractiveScreen(
+    config: WatchConfig?,
+    lastAlertAtMs: Long?,
+    label: WorkerLabel?,
+    tickMs: Long,
+    status: ConnectionStatus,
+    binding: BindingView,
+    alertPending: Boolean,
+) {
     // 큰 시계가 있어서 위쪽 기본 시계는 끈다
     AppScaffold(timeText = {}) {
         val scroll = rememberScrollState()
@@ -101,7 +112,12 @@ private fun InteractiveScreen(config: WatchConfig?, lastAlertAtMs: Long?, label:
                     modifier = Modifier.fillMaxSize().verticalScroll(scroll),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Face(label, u, Modifier.height(faceHeight), ambient = null, tickMs = tickMs)
+                    // 첫 칸: 연결됐는데 배정이 없으면 손 흔들기 안내, 배정된 직후엔 "연결됨", 아니면 시계(S15P31A101-510). 확인 대기 알림이 있으면 안내하지 않는다
+                    when {
+                        binding.showGuide(status.state == LinkState.CONNECTED, alertPending) -> WaveGuide(u, Modifier.height(faceHeight))
+                        binding.showConnected(alertPending) -> BoundConfirm(u, Modifier.height(faceHeight))
+                        else -> Face(label, u, Modifier.height(faceHeight), ambient = null, tickMs = tickMs)
+                    }
                     DevLines(config, lastAlertAtMs, status, u)
                 }
             }

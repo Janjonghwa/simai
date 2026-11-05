@@ -92,6 +92,18 @@ ACK 없으면 기한 뒤 `watch_escalation`(origin MANUAL, 배정된 `world_id`,
 리뷰에서 두기로 한 것(-475): 같은 요청 연타에 멱등 키·빈도 제한이 없다(관리자·반장만 부르고 `requested_by_user_id` 로 남는다. 필요하면 후속);
 격상 뒤 도착한 ACK 는 기록만 되고 격상은 철회되지 않는다(이벤트 알림과 같음); 삭제된 사용자의 유효 JWT 는 FK 위반으로 500(토큰 수명 30분 안의 드문 경우).
 
+## 배정 알림 (S15P31A101-510)
+
+시연 체크인 장면: 워치가 연결됐는데 배정이 없으면 워치가 "워치 찬 손을 3초 흔들어 주세요"를 보이고, 손을 흔들어 배정되면 짧게 진동하며 "연결됨"으로 바뀐다. 이를 위해 EC2 → 워치 `watch_binding_notice` 1.0.0(계약 묶음 7.15.0)을 둔다.
+
+- **계약**: `state` BOUND·UNBOUND, `method` MOTION_MATCH·WAVE·MANUAL(UNBOUND 면 null. WAVE 는 -508 손 흔들기 체크인용으로 미리 둔 값), `world_id`(익명, UNBOUND 면 null), 선택 `unbind_reason`(UNBOUND 만. 닫힌 enum 이 아니라 대문자 문자열 — -508 이 사유를 더해도 계약을 올리지 않으려는 것), `sent_at`. 닫힌 객체라 사람 이름 같은 키는 못 싣는다(11.4-5).
+- **구성**: `WatchBindings`(배정이 생기고 끝나는 지점: 수동 배정·대조 배정·대조 해제·관리자 풀기)가 `WatchBindingChanged(deviceId, 풀린 사유)` 를, `WatchHub` 가 연결이 열릴 때 `WatchConnected(deviceId)` 를 이벤트로 낸다. 보내는 쪽은 별도 클래스 `WatchBindingNotifier` 다(대조기 `WatchMotionMatcher`·`MotionMatch` 는 건드리지 않았다. -508 이 `WatchBindings` 에 새 배정·이동 메서드를 더해도 같은 이벤트만 내면 알림이 붙는다).
+- **보내는 규칙**: 이벤트는 "이 워치를 다시 보라"는 신호이고 지금 상태는 알림 스레드(한 줄)가 DB 에서 다시 읽는다. 연결된 워치에만 보내고, 보낸 상태 키(`BOUND|world_id` 또는 `UNBOUND`)가 마지막으로 보낸 것과 같으면 보내지 않는다(같은 World ID 를 다시 이어 REPLACED→새 행이 되어도, 방식만 MOTION_MATCH→MANUAL 로 바뀌어도 반복 없음). 끊긴 워치에는 보내지 않고 보낸 기록을 지운다. 워치가 (재)연결되면 같은 상태여도 한 번 보낸다(초기 동기화: 워치 쪽 상태는 사라졌을 수 있다). 배정이 다른 워치로 옮겨 가면 옛 워치는 UNBOUND(REPLACED), 새 워치는 BOUND 를 받는다.
+- **워치의 몫**: 알림(`watch_alert`)이 떠 있으면 안내·진동으로 가리지 않는다(경보 우선). 새로 BOUND 가 된 때만 한 번 진동하므로(UNBOUND→BOUND), 앱이 다시 뜨거나 재연결 동기화로 같은 BOUND 를 받아도 울리지 않는다. `docs/design/watch-app.md` 배정 안내 절.
+- **시험**: `WatchBindingNoticeIntegrationTest`(연결 때 UNBOUND 1회, 배정·풀기·대조 배정·대조 해제 각 1회와 계약 검사, 같은 상태 반복 없음, 다른 워치로 이동, 끊긴 동안은 보내지 않고 재연결 동기화 1회). 기존 워치 시험의 시험용 클라이언트는 연결 직후 오는 이 알림을 건너뛴다.
+- **버린 대안**: (1) `WatchBindings` 가 `WatchHub` 로 직접 보내기 — 배정을 만드는 대조 스레드·REST 트랜잭션이 WebSocket 송신·DB 재조회에 묶이고 `WatchHub`↔`WatchBindings` 순환이 생긴다. (2) 이벤트에 상태를 싣기 — 같은 순간 겹친 변경(REPLACED 후 재배정)에서 낡은 상태를 보낼 수 있어 받는 쪽이 DB 에서 다시 읽는다.
+- **남은 위험**: 배정 이벤트는 커밋 뒤에 나가 지연이 한 스레드 큐 길이만큼이다(수 ms). 알림 스레드가 DB 에서 막히면 이후 알림이 줄 선다(워치 알림 `WatchAlertService` 와 스레드가 달라 위험 알림은 밀리지 않는다). 폐기된 워치는 `isConnected` 가 이미 거짓이라 보내지 않는다.
+
 ## 리뷰에서 두기로 한 것
 
 - `/topic/watch` 를 열람 계정도 구독한다: 명세 14장이 토픽 조회를 열람 이상으로 두고 관리자 전용 토픽을 두지 않는다(-411 에서 지움). 익명 World ID·기기 ID 만 싣는다.
