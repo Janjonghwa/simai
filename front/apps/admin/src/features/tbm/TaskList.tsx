@@ -33,12 +33,13 @@ function TaskChip({
   sentAt?: string;
   onSelect: () => void;
 }) {
-  const peak = taskPeak(task);
+  const peak = task.status === 'DONE' ? null : taskPeak(task);
+  const summary = task.status === 'DONE' ? '작업 종료' : peak ? SEVERITY_TEXT[peak] : '평가 없음';
   return (
     <button
       type="button"
       title={chipTitle(task, sentAt)}
-      aria-label={`${task.id} ${task.name} · ${task.from}–${task.to} · ${peak ? SEVERITY_TEXT[peak] : '평가 없음'}`}
+      aria-label={`${task.id} ${task.name} · ${task.from}–${task.to} · ${summary}`}
       aria-pressed={pressed}
       onClick={onSelect}
       className={cn(

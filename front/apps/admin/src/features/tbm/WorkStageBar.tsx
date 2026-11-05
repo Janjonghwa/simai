@@ -98,6 +98,11 @@ export function WorkStageBar(props: WorkStageBarProps) {
           </li>
         ))}
       </ol>
+      {current === 'sign' && (
+        <p className="text-sm text-muted-foreground">
+          참석자 서명을 확인한 뒤 관리자 결재까지 완료해야 일지가 확정됩니다.
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         {next}
         {status === 'PLANNED' && (
