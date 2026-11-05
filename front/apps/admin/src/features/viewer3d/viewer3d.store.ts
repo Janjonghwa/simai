@@ -62,6 +62,8 @@ export interface ViewerState {
   layers: ResolvedLayers;
   /** 사람 이름표 뒤에 붙일 글(World ID → 글, -342). */
   personBadges: Readonly<Record<string, string>>;
+  /** 사람 강조 큰 이름표 글(World ID → 글, -509). */
+  personHighlights: Readonly<Record<string, string>>;
   /** 기다리는 선택 요청(-234). 하나뿐이다. */
   pendingSelect: PendingSelect | null;
   /** 기다리는 선택의 마지막 진행. 바뀔 때마다 새 객체라 구독자가 알린다. */
@@ -79,6 +81,7 @@ export interface ViewerState {
   setLayers(input: unknown): void;
   /** 내용이 같으면 바꾸지 않는다. 비우면 모두 지운다. */
   setPersonBadges(input: Readonly<Record<string, string>> | undefined): void;
+  setPersonHighlights(input: Readonly<Record<string, string>> | undefined): void;
   markReady(): void;
   markError(error: ViewerError): void;
   /** 뷰어가 내려갈 때 기다리던 선택을 UNMOUNTED 로 끝내고 타이머를 푼다. */
@@ -165,6 +168,7 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       targets: new Map(),
       layers: DEFAULT_LAYERS,
       personBadges: NO_BADGES,
+      personHighlights: NO_BADGES,
       pendingSelect: null,
       selectRequest: null,
       theme: 'dark',
@@ -279,6 +283,11 @@ export function createViewerStore(initialMode: ViewerMode = 'LIVE'): ViewerStore
       setPersonBadges: (input) => {
         const next = input ?? NO_BADGES;
         if (!sameBadges(next, get().personBadges)) set({ personBadges: next });
+      },
+
+      setPersonHighlights: (input) => {
+        const next = input ?? NO_BADGES;
+        if (!sameBadges(next, get().personHighlights)) set({ personHighlights: next });
       },
 
       markReady: () => {

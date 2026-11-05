@@ -38,6 +38,7 @@ import {
   type AvatarModel,
 } from '@/features/viewer3d/people/avatarModel';
 import { applyPose, PosePlayer } from '@/features/viewer3d/people/avatarPose';
+import { PersonHighlight } from '@/features/viewer3d/people/PersonHighlight';
 import {
   approach,
   approachAngle,
@@ -171,6 +172,8 @@ function PersonAvatar({
   );
   // 호스트가 붙인 글(-342 워치 채널 상태). 있으면 이름표를 늘 보인다.
   const badge = useStore(viewerStore, (s) => s.personBadges[worldId] ?? null);
+  // 호스트가 잠깐 켜는 강조(-509 워치 연결 순간). 고리 펄스와 큰 이름표
+  const highlight = useStore(viewerStore, (s) => s.personHighlights[worldId] ?? null);
   // 관측 상태·위치 근거·연결이 바뀔 때만 다시 그린다.
   useSpatialData((s) => statusKey(s, worldId));
   // 위험 강조는 이벤트가 바뀔 때만 달라진다. 위치·동작 기록(motion)은 그대로 둔다.
@@ -404,6 +407,7 @@ function PersonAvatar({
             height={0.24}
             color={risk ? riskStyle(risk, palette).labelColor : palette.label[tone]}
           />
+          {highlight && <PersonHighlight text={highlight} labelY={LABEL_Y + 0.4} />}
         </group>
       </Selectable>
       {risk && (

@@ -84,3 +84,37 @@ export function watchesOfLinkKey(key: string): HealthWatches | undefined {
     items,
   } as HealthWatches;
 }
+
+/** 새로 이어진 배정을 알릴 때 쓰는 방식 표시. 서버가 모르는 값(손 흔들기 등)을 내면 '자동'으로 본다 */
+export type BindMethodLabel = 'AUTO' | 'MANUAL';
+
+export const BIND_METHOD_TEXT: Record<BindMethodLabel, string> = { AUTO: '자동', MANUAL: '수동' };
+
+export function bindMethodOf(method: string): BindMethodLabel {
+  return method === 'MANUAL' ? 'MANUAL' : 'AUTO';
+}
+
+/** 배정 하나의 식별: 워치와 World ID 가 모두 같아야 같은 배정이다(워치가 다른 사람으로 옮겨가면 새 배정) */
+export function bindKeyOf(b: Pick<WatchBinding, 'device_id' | 'world_id'>): string {
+  return `${b.device_id}\u0000${b.world_id}`;
+}
+
+export interface NewBind {
+  deviceId: string;
+  worldId: string;
+  method: BindMethodLabel;
+}
+
+/**
+ * 이전 조회와 비교해 새로 이어진 (워치, World ID) 만 돌려준다. prev 가 null(처음 불러옴)이면 없다.
+ * 같은 배정 유지·재로드는 효과 없음. 워치가 연결 상태(BOUND)일 때만 센다(끊긴 배정은 '연결됨'이 아니다).
+ */
+export function newBinds(
+  prev: ReadonlySet<string> | null,
+  bindings: readonly WatchBinding[],
+): NewBind[] {
+  if (prev === null) return [];
+  return bindings
+    .filter((b) => b.channel_state === 'BOUND' && !prev.has(bindKeyOf(b)))
+    .map((b) => ({ deviceId: b.device_id, worldId: b.world_id, method: bindMethodOf(b.method) }));
+}
