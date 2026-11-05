@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import math
 import json
 import logging
+import math
 import shutil
 import threading
 import uuid
+import weakref
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,6 +64,42 @@ class BackgroundCleanBackground:
         self.dropped = 0
         self.last_error: str | None = None
         self._retry = False
+        self._rotation_side: int | None = None
+        self._rotation_samples: dict[str, dict[int, tuple[Any, np.ndarray, np.ndarray]]] = {}
+        self._rotation_lock = threading.Lock()
+        self._rotation_views: dict[str, dict] = {}
+
+    def configure_rotation_samples(self, max_side: int) -> None:
+        with self._rotation_lock:
+            if self._rotation_side != max_side:
+                self._rotation_side = max_side
+                self._rotation_samples.clear()
+                self._rotation_views = {}
+
+    def _small_samples(self, cid: str, samples: list) -> list:
+        import cv2
+
+        with self._rotation_lock:
+            side = self._rotation_side
+            assert side is not None
+            cache = self._rotation_samples.setdefault(cid, {})
+            retained = {}
+            result = []
+            for sample in samples:
+                key = id(sample)
+                entry = cache.get(key)
+                if entry is None or entry[0]() is not sample:
+                    h, w = sample.reveal_mask.shape
+                    scale = min(1.0, side / max(h, w))
+                    size = (round(w * scale), round(h * scale))
+                    gray = cv2.resize(sample.frame_bgr, size, interpolation=cv2.INTER_LINEAR)
+                    # 축소 영역에 가린 픽셀이 하나라도 있으면 보간된 값도 사용하지 않는다.
+                    mask = cv2.resize(sample.reveal_mask.astype(np.float32), size, interpolation=cv2.INTER_AREA) >= 0.999999
+                    entry = (weakref.ref(sample), gray, mask)
+                retained[key] = entry
+                result.append(entry)
+            self._rotation_samples[cid] = retained
+            return result
 
     def offer(self, frame, detections) -> bool:
         """디코더가 소유권을 넘긴 불변 프레임을 참조한다. lock/큐가 바쁘면 기다리지 않는다."""
@@ -125,6 +162,7 @@ class BackgroundCleanBackground:
                           and previous.generations.get(cid) == ctx.generations.get(cid) and cid in ctx.generations}
         self._complete = None
         self._active = ctx
+        self._rotation_views = {}
         log.info("clean_background context version=%s generations=%s", ctx.version, ctx.generations)
         return True
 
@@ -144,6 +182,8 @@ class BackgroundCleanBackground:
             if ctx.generations.get(cid) == generation:
                 changed |= self.accumulator.add_frame(cid, frame.estimated_capture_time, frame.image, detections)
                 self._expire_samples(cid, frame.estimated_capture_time)
+                if self._rotation_side is not None:
+                    self._publish_rotation(cid)
         self._regenerate(ctx)
         if changed:
             self._export_ready(ctx)
@@ -193,63 +233,50 @@ class BackgroundCleanBackground:
             while samples and samples[0].capture_time_ms < now_ms - horizon:
                 samples.popleft()
 
-    def recent_signature(self, cid: str) -> tuple[int, int, int] | None:
+    def _publish_rotation(self, cid: str) -> None:
+        """배경 스레드에서 새 표본만 축소한다. 회전 작업자는 불변 스냅샷을 참조한다."""
         ctx = self._active
         q = self.accumulator._samples.get(cid)
-        n = self.settings.min_samples_per_camera
-        if ctx is None or self._context is not ctx or not q or len(q) < n:
-            return None
-        samples = list(q)[-n:]
-        revealed = np.logical_or.reduce([s.reveal_mask for s in samples])
+        if ctx is None or self._context is not ctx or not q or len(q) < self.settings.min_samples_per_camera:
+            self._rotation_views = {k: v for k, v in self._rotation_views.items() if k != cid}
+            return
+        # 준비 게이트(기본 20장)는 유지하고 회전 판단은 최근 최대 10장으로 한다.
+        # 오래된 자세 혼합을 줄이며, 관측 과반·분산 게이트는 이 창에 그대로 적용한다.
+        samples = list(q)[-min(10, self.settings.min_samples_per_camera):]
+        if len({s.frame_bgr.shape for s in samples}) != 1:
+            self._rotation_views = {k: v for k, v in self._rotation_views.items() if k != cid}
+            return
+        small = self._small_samples(cid, samples)
+        revealed = np.logical_or.reduce([s[2] for s in small])
         if 1.0 - float(revealed.mean()) >= self.accumulator.config.max_unrevealed_ratio:
+            self._rotation_views = {k: v for k, v in self._rotation_views.items() if k != cid}
+            return
+        view = {"signature": (ctx.generations[cid], samples[0].capture_time_ms, samples[-1].capture_time_ms),
+                "size": samples[-1].frame_bgr.shape[1::-1],
+                "sample_times": [s.capture_time_ms for s in samples],
+                "samples": [(s[1], s[2]) for s in small]}
+        self._rotation_views = {**self._rotation_views, cid: view}
+
+    def rotation_snapshot(self) -> dict | None:
+        ctx = self._active
+        views = self._rotation_views
+        if ctx is None or self._context is not ctx or set(views) != set(ctx.generations):
             return None
-        return ctx.generations[cid], samples[0].capture_time_ms, samples[-1].capture_time_ms
+        return views
+
+    def recent_signature(self, cid: str) -> tuple[int, int, int] | None:
+        views = self.rotation_snapshot()
+        return views[cid]["signature"] if views is not None and cid in views else None
 
     def synthesize_recent(self, cid: str) -> tuple[np.ndarray, np.ndarray, int] | None:
-        import cv2
-        from simai_ai.calibration.world_frame.clean_background import compute_masked_median_background
+        from simai_ai.calibration.rotation_worker import synthesize_samples
 
-        if self.recent_signature(cid) is None:
+        views = self.rotation_snapshot()
+        if views is None or cid not in views:
             return None
-        samples = list(self.accumulator._samples[cid])[-self.settings.min_samples_per_camera:]
-        grays = [cv2.cvtColor(s.frame_bgr, cv2.COLOR_BGR2GRAY) if s.frame_bgr.ndim == 3 else s.frame_bgr for s in samples]
-        h, w = samples[0].reveal_mask.shape
-        bg = np.empty((h, w), dtype=np.uint8)
-        valid = np.empty((h, w), dtype=np.uint8)
-        n = len(samples)
-        minimum = max(2, math.ceil(n * 0.5))
-        step = max(self.accumulator.config.rows_per_chunk, 256)
-        for start in range(0, h, step):
-            end = min(h, start + step)
-            masks = np.stack([s.reveal_mask[start:end] for s in samples], axis=0)
-            pixels = np.stack([g[start:end] for g in grays], axis=0)
-            if masks.all():
-                k = n // 2
-                if n % 2 == 1:
-                    bg[start:end] = np.partition(pixels, k, axis=0)[k]
-                else:
-                    part = np.partition(pixels, (k - 1, k), axis=0)
-                    bg[start:end] = ((part[k - 1].astype(np.uint16) + part[k].astype(np.uint16) + 1) >> 1).astype(np.uint8)
-                f32 = pixels.astype(np.float32)
-                mean = f32.mean(axis=0)
-                variance = (f32 * f32).mean(axis=0) - mean * mean
-                valid[start:end] = (variance <= 225.0).astype(np.uint8) * 255
-            else:
-                chunk_bg, _ = compute_masked_median_background(
-                    [g[start:end] for g in grays],
-                    [s.reveal_mask[start:end] for s in samples],
-                    rows_per_chunk=end - start,
-                )
-                bg[start:end] = chunk_bg
-                f32 = pixels.astype(np.float32)
-                count = masks.sum(axis=0)
-                weights = masks.astype(np.float32)
-                denom = np.maximum(count, 1).astype(np.float32)
-                mean = (f32 * weights).sum(axis=0) / denom
-                variance = (((f32 - mean) ** 2) * weights).sum(axis=0) / denom
-                valid[start:end] = ((count >= minimum) & (variance <= 225.0)).astype(np.uint8) * 255
-        bg[valid == 0] = 0
-        return bg, valid, samples[-1].capture_time_ms
+        view = views[cid]
+        bg, valid = synthesize_samples(view["samples"])
+        return bg, valid, view["signature"][2]
 
     def _mask_unknown(self, folder: Path, cid: str, doc: dict[str, Any]) -> None:
         """관측 횟수가 부족하거나 시간에 따라 변하는 픽셀은 유효 마스크에서 제외한다."""

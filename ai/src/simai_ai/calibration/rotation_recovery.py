@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
@@ -53,28 +54,32 @@ class Features:
     size: tuple[int, int]
 
 
-def extract_features(image, mask, camera, config: RotationConfig) -> Features:
-    if tuple(image.shape[1::-1]) != tuple(camera["image_size"]):
+def extract_features(image, mask, camera, config: RotationConfig, *, original_size=None) -> Features:
+    source_size = tuple(image.shape[1::-1]) if original_size is None else tuple(original_size)
+    if source_size != tuple(camera["image_size"]):
         raise ValueError("STREAM_CHANGED: 배경과 내부 파라미터의 해상도가 다름")
     h, w = image.shape[:2]
     scale = min(1., config.max_image_side / max(w, h))
     size = (round(w * scale), round(h * scale))
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-    gray = cv2.resize(gray, size)
+    small = cv2.resize(image, size, interpolation=cv2.INTER_LINEAR)
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY) if small.ndim == 3 else small
     valid = cv2.resize(mask, size, interpolation=cv2.INTER_NEAREST)
     # 마스크 경계의 descriptor patch도 관측된 정적 배경만 쓴다.
     valid = cv2.erode(valid, np.ones((9, 9), np.uint8))
     keypoints, descriptors = cv2.SIFT_create(nfeatures=config.max_features).detectAndCompute(gray, valid)
     points = np.array([k.pt for k in keypoints], dtype=np.float64).reshape(-1, 2)
-    points /= np.array([size[0] / w, size[1] / h])
+    points *= np.array([source_size[0] / size[0], source_size[1] / size[1]])
     distortion = camera["distortion"]
-    if distortion["model"] not in ("NONE", "OPENCV"):
+    if distortion["model"] not in ("NONE", "OPENCV", "OPENCV_PINHOLE", "OPENCV_FISHEYE"):
         raise ValueError("지원하지 않는 렌즈 왜곡 모델")
     if len(points):
         K = np.asarray(camera["K"], dtype=float)
         coeffs = np.asarray(distortion["coeffs"], dtype=float)
-        points = cv2.undistortPoints(points[:, None], K, coeffs if coeffs.size else None, P=K)[:, 0]
-    return Features(points, descriptors, (w, h))
+        if distortion["model"] == "OPENCV_FISHEYE":
+            points = cv2.fisheye.undistortPoints(points[:, None], K, coeffs, P=K)[:, 0]
+        elif distortion["model"] != "NONE":
+            points = cv2.undistortPoints(points[:, None], K, coeffs if coeffs.size else None, P=K)[:, 0]
+    return Features(points, descriptors, source_size)
 
 
 def match_features(a: Features, b: Features):
@@ -165,7 +170,8 @@ def pair_reprojection(a, b, p, q):
     return {"median_px": float(np.median(residual)), "p95_px": float(np.percentile(residual, 95))}
 
 
-def evaluate_pairs(previous, candidate, features, changed, config: RotationConfig, check_budget=lambda: None):
+def evaluate_pairs(previous, candidate, features, changed, config: RotationConfig, check_budget=lambda: None,
+                   measure=lambda _stage: nullcontext()):
     old = {c["camera_id"]: c for c in previous["cameras"]}
     new = {c["camera_id"]: c for c in candidate["cameras"]}
     metrics = {}
@@ -175,16 +181,19 @@ def evaluate_pairs(previous, candidate, features, changed, config: RotationConfi
             if a not in changed and b not in changed:
                 continue
             check_budget()
-            p, q = match_features(features[a], features[b])
+            with measure("matching"):
+                p, q = match_features(features[a], features[b])
             if len(p) < config.min_matches:
                 continue  # 대각 쌍은 원래 매칭되지 않는다. 인접 쌍을 자동 선택한다.
-            _, mask = cv2.findFundamentalMat(p, q, cv2.FM_RANSAC, 2., .999)
+            with measure("estimation"):
+                _, mask = cv2.findFundamentalMat(p, q, cv2.FM_RANSAC, 2., .999)
             if mask is None or int(mask.sum()) < config.min_matches:
                 continue
             p, q = p[mask.ravel() != 0], q[mask.ravel() != 0]
-            metrics[f"{a}/{b}"] = {"camera_ids": [a, b], "matches": len(p),
-                                     "before": pair_reprojection(old[a], old[b], p, q),
-                                     "after": pair_reprojection(new[a], new[b], p, q)}
+            with measure("estimation"):
+                metrics[f"{a}/{b}"] = {"camera_ids": [a, b], "matches": len(p),
+                                         "before": pair_reprojection(old[a], old[b], p, q),
+                                         "after": pair_reprojection(new[a], new[b], p, q)}
     return metrics
 
 
@@ -213,15 +222,18 @@ def consistent_rotation(previous: Mapping[str, Any] | None, current: Mapping[str
     return True
 
 
-def make_candidate(previous, references, features, recent, *, at_ms, version, config, check_budget=lambda: None):
+def make_candidate(previous, references, features, recent, *, at_ms, version, config, check_budget=lambda: None,
+                   measure=lambda _stage: nullcontext()):
     document = copy.deepcopy(previous)
     rotations, changed, failed = {}, [], None
     for i, active in enumerate(document["cameras"]):
         cid = active["camera_id"]
         reference, ref_features = references[cid]
         check_budget()
-        p, q = match_features(ref_features, features[cid])
-        fit = fit_rotation(p, q, reference["K"], ref_features.size, config)
+        with measure("matching"):
+            p, q = match_features(ref_features, features[cid])
+        with measure("estimation"):
+            fit = fit_rotation(p, q, reference["K"], ref_features.size, config)
         rotations[cid] = fit
         if fit["status"] != "ROTATION":
             if failed is None:
@@ -243,7 +255,7 @@ def make_candidate(previous, references, features, recent, *, at_ms, version, co
     document.update(calibration_version=version, created_at=at_ms, state="PROVISIONAL")
     document.pop("validation", None)
     document["content_hash"] = content_hash(document)
-    pairs = evaluate_pairs(previous, document, features, changed, config, check_budget)
+    pairs = evaluate_pairs(previous, document, features, changed, config, check_budget, measure)
     accepted = pairs_improve(pairs, changed, config)
     return document if accepted else None, {
         "status": "PROPOSED" if accepted else "REQUIRES_SETUP",

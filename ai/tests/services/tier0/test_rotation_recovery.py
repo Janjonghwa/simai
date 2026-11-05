@@ -23,12 +23,10 @@ for path in (HERE, HERE.parents[2]):
         sys.path.insert(0, str(path))
 
 from test_calibration_swap import candidate, recording, site  # noqa: E402, F401
-from test_clean_background import make_feed  # noqa: E402
 from test_tier0_service import _settings  # noqa: E402
 from services.tier0.clean_background import BackgroundCleanBackground  # noqa: E402
 from services.tier0.i1_client import Envelope  # noqa: E402
 from services.tier0.rotation_recovery import BackgroundRotationRecovery  # noqa: E402
-from services.tier0.service import Tier0Service  # noqa: E402
 from services.tier0.settings import (  # noqa: E402
     CleanBackgroundSettings,
     RotationRecoverySettings,
@@ -47,6 +45,140 @@ from simai_ai.calibration.rotation_recovery import (  # noqa: E402
 from simai_ai.providers.base import Frame  # noqa: E402
 from simai_ai.providers.contract import schema_errors  # noqa: E402
 from simai_ai.tracking.local_tracker import CameraDetections  # noqa: E402
+
+
+@pytest.mark.parametrize("model,coeffs", [
+    ("NONE", []), ("OPENCV", [0.1, 0, 0, 0]),
+    ("OPENCV_PINHOLE", [0.1, 0, 0, 0]), ("OPENCV_FISHEYE", [0.1, 0, 0, 0]),
+])
+def test_extract_features_contract_distortion(model, coeffs):
+    rng = np.random.default_rng(494)
+    image = rng.integers(0, 256, (256, 256), dtype=np.uint8)
+    camera = {"image_size": [256, 256], "K": [[200, 0, 128], [0, 200, 128], [0, 0, 1]],
+              "distortion": {"model": model, "coeffs": coeffs}}
+    result = extract_features(image, np.full_like(image, 255), camera, RotationConfig())
+    assert len(result.points) > 0
+    raw = extract_features(image, np.full_like(image, 255),
+                           {**camera, "distortion": {"model": "NONE", "coeffs": []}}, RotationConfig())
+    if model != "NONE":
+        points = raw.points[:, None]
+        k = np.asarray(camera["K"], dtype=float)
+        d = np.asarray(coeffs, dtype=float)
+        expected = (cv2.fisheye.undistortPoints(points, k, d, P=k) if model == "OPENCV_FISHEYE"
+                    else cv2.undistortPoints(points, k, d, P=k))[:, 0]
+        np.testing.assert_allclose(result.points, expected)
+
+
+def test_scaled_recent_background_respects_occlusion_and_variance():
+    from types import SimpleNamespace
+    from simai_ai.calibration.world_frame.clean_background import _Sample
+
+    frames = []
+    for i in range(4):
+        image = np.full((128, 128), 80, np.uint8)
+        mask = np.ones_like(image, dtype=bool)
+        if i < 2:
+            image[20:40, 20:40] = 250
+            mask[20:40, 20:40] = False
+        if i < 3:
+            mask[90:110, 90:110] = False
+        image[60:80, 60:80] = 0 if i < 2 else 200
+        frames.append(_Sample(frame_bgr=image, reveal_mask=mask, capture_time_ms=i, person_cover_ratio=0, byte_size=0))
+    worker = BackgroundCleanBackground.__new__(BackgroundCleanBackground)
+    worker._rotation_side = 64
+    worker._rotation_lock = threading.Lock()
+    worker._rotation_samples = {}
+    worker.accumulator = SimpleNamespace(_samples={"a": frames}, config=SimpleNamespace(rows_per_chunk=64))
+    worker.settings = SimpleNamespace(min_samples_per_camera=4)
+    small = worker._small_samples("a", frames)
+    from simai_ai.calibration.rotation_worker import synthesize_samples
+    bg, valid = synthesize_samples([(s[1], s[2]) for s in small])
+    end = frames[-1].capture_time_ms
+    assert end == 3 and bg.shape == (64, 64)
+    assert bg[15, 15] == 80 and valid[15, 15] == 255
+    assert bg[35, 35] == 0 and valid[35, 35] == 0
+    assert bg[50, 50] == 0 and valid[50, 50] == 0
+    assert worker._small_samples("a", frames)[0] is small[0]
+
+
+def test_reference_cache_changes_with_version_and_camera(monkeypatch, tmp_path):
+    from simai_ai.calibration.rotation_worker import RotationComputation
+
+    cam = {"camera_id": "a", "image_size": [2, 2], "K": [1]}
+    req = {"document": {"calibration_version": "v1", "cameras": [cam]},
+           "references": {"a": {"key": ("v1", 0), "camera": cam, "image": "image", "mask": "mask"}},
+           "recent": {"a": {"signature": (0, 0, 3), "size": (2, 2),
+                              "samples": [(np.zeros((2, 2), np.uint8), np.ones((2, 2), bool))] * 3}},
+           "recent_ms": {"a": 3}, "now_ms": 3, "version": "out", "config": RotationConfig(), "budget_ms": 500}
+    computation = RotationComputation()
+    calls = []
+    monkeypatch.setattr(cv2, "imread", lambda *_: np.zeros((2, 2), dtype=np.uint8))
+    monkeypatch.setattr("simai_ai.calibration.rotation_worker.extract_features",
+                        lambda *_, **kw: calls.append(1) or object())
+    monkeypatch.setattr("simai_ai.calibration.rotation_worker.reference_features",
+                        lambda *_, **kw: (calls.append(1) or object(), RotationConfig()))
+    monkeypatch.setattr("simai_ai.calibration.rotation_worker.make_candidate", lambda *_, **kw: (None, {"status": "STABLE"}))
+    assert computation.compute(req)["status"] == "COMPLETED"
+    computation.compute(req)
+    assert len(calls) == 2  # 기준과 최근 각 한 번
+    req["references"]["a"]["key"] = ("v2", 0)
+    computation.compute(req)
+    assert len(calls) == 3
+    req["references"]["a"]["key"] = ("v2", 1)
+    computation.compute(req)
+    assert len(calls) == 4
+    req["recent"]["a"]["signature"] = (0, 1, 4)
+    computation.compute(req)
+    assert len(calls) == 5
+    cam["K"] = [2]
+    computation.compute(req)
+    assert len(calls) == 6
+
+    # 추출 직후 예산을 넘겨도 같은 서명은 다음 주기에 완료한 특징을 재사용한다.
+    computation.recent.clear()
+    fake_cpu = [0.]
+    computation.clock = lambda: fake_cpu[0]
+    def costly_extract(*args, **kwargs):
+        calls.append(1)
+        fake_cpu[0] += .6
+        return object()
+    monkeypatch.setattr("simai_ai.calibration.rotation_worker.extract_features", costly_extract)
+    assert computation.compute(req)["status"] == "BUDGET_DEFERRED"
+    assert len(calls) == 7
+    assert computation.compute(req)["status"] == "COMPLETED"
+    assert len(calls) == 7
+
+
+@pytest.mark.parametrize("coarse_count,expected", [(120, 320), (0, 960)])
+def test_reference_uses_coarse_features_only_when_sufficient(monkeypatch, coarse_count, expected):
+    from types import SimpleNamespace
+    from simai_ai.calibration.rotation_worker import reference_features
+    calls = []
+    def extract(image, mask, camera, config, **kwargs):
+        calls.append(config.max_image_side)
+        return SimpleNamespace(points=np.zeros((coarse_count if len(calls) == 1 else 120, 2)))
+    monkeypatch.setattr("simai_ai.calibration.rotation_worker.extract_features", extract)
+    image = np.zeros((540, 960, 3), np.uint8)
+    mask = np.full((540, 960), 255, np.uint8)
+    _, config = reference_features(image, mask, {"image_size": [960, 540]}, RotationConfig())
+    assert config.max_image_side == expected
+    assert calls == ([320] if expected == 320 else [320, 960])
+    with pytest.raises(ValueError, match="STREAM_CHANGED"):
+        reference_features(image, mask, {"image_size": [1920, 1080]}, RotationConfig())
+
+
+def test_synthesis_rejects_chromatic_changes_and_masked_outliers():
+    from simai_ai.calibration.rotation_worker import synthesize_samples
+    a = np.full((16, 16, 3), (255, 0, 0), np.uint8)
+    b = np.full_like(a, (0, 49, 0))  # 거의 같은 회색조, 크게 다른 색
+    mask = np.ones((16, 16), bool)
+    _, valid = synthesize_samples([(a, mask), (a, mask), (b, mask), (b, mask)])
+    assert not valid.any()
+    partial = mask.copy()
+    partial[:, :8] = False
+    bg, valid = synthesize_samples([(a, mask), (a, mask), (b, partial), (b, partial)])
+    assert (valid[:, :8] == 255).all() and not valid[:, 8:].any()
+    assert (bg[:, :8] == cv2.cvtColor(a, cv2.COLOR_BGR2GRAY)[:, :8]).all()
 
 
 def _euler_matrix(rx_deg: float = 0.0, ry_deg: float = 0.0, rz_deg: float = 0.0) -> np.ndarray:
@@ -204,7 +336,7 @@ def test_synthetic_homography_rotation_recovery_accuracy(site, angles_deg):
     candidate_doc, report = make_candidate(
         doc, references, recent_features, recent_ms, at_ms=10_000, version="cal-rot-test", config=config
     )
-    assert candidate_doc is not None
+    assert candidate_doc is not None, report
     assert report["status"] == "PROPOSED"
     assert report["changed_camera_ids"] == [target_cid]
     fit = report["rotations"][target_cid]
@@ -236,8 +368,17 @@ def test_synthetic_homography_rotation_recovery_accuracy(site, angles_deg):
 
 @pytest.fixture(autouse=True)
 def _no_background_daemon_loops(monkeypatch):
+    workers = []
+    original = BackgroundRotationRecovery.__init__
+    def initialize(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        workers.append(self)
+    monkeypatch.setattr(BackgroundRotationRecovery, "__init__", initialize)
     monkeypatch.setattr(BackgroundCleanBackground, "run", lambda self: None)
     monkeypatch.setattr(BackgroundRotationRecovery, "run", lambda self: None)
+    yield
+    for worker in workers:
+        worker.close()
 
 
 def _setup_service_with_rotation_worker(site):
@@ -287,8 +428,14 @@ def test_translation_and_large_rotation_require_setup_without_auto_overwrite(sit
     site.elapsed[0] = t_ms - 1_760_342_400_000
 
     # 기준 배경(STABLE) 확인
+    parent_threads = cv2.getNumThreads()
     res0 = rot.run_once()
     assert res0["status"] == "STABLE"
+    import os
+    assert rot.worker_pid != os.getpid()
+    assert rot.status()["cpu_scope"] == "ROTATION_WORKER_PROCESS"
+    assert cv2.getNumThreads() == parent_threads
+    pid = rot.worker_pid
 
     target_cid = "cam3"
     target_cam = next(c for c in doc["cameras"] if c["camera_id"] == target_cid)
@@ -302,6 +449,7 @@ def test_translation_and_large_rotation_require_setup_without_auto_overwrite(sit
     site.elapsed[0] = t_ms - 1_760_342_400_000
 
     res = rot.run_once()
+    assert rot.worker_pid == pid
     assert res["status"] == "REQUIRES_SETUP"
     assert res["camera_id"] == target_cid
     assert service._pending_calibration is None
@@ -416,23 +564,25 @@ def test_judgment_tick_never_blocked_and_cpu_budget_defers_cleanly(site, monkeyp
     worker: threading.Thread | None = None
     try:
         # 1) CPU 예산 초과 시 예외로 죽지 않고 BUDGET_DEFERRED로 다음 주기에 이월하는지 검증
+        from simai_ai.calibration.rotation_worker import RotationComputation
         fake_cpu = [0.0]
-
-        def step_cpu() -> float:
-            val = fake_cpu[0]
-            fake_cpu[0] += 0.006  # 2번째 호출에서 10ms 예산 초과
-            return val
-
-        rot._cpu_clock_s = step_cpu
+        def step_cpu():
+            fake_cpu[0] += .006
+            return fake_cpu[0]
+        computation = RotationComputation(cpu_clock=step_cpu)
+        monkeypatch.setattr(rot, "_compute", computation.compute)
         ref_images = {cam["camera_id"]: _render_plane_view(cam) for cam in doc["cameras"]}
         t_ms = _feed_clean_background(cb, ref_images, start_ms=service.clock.now_ms(), count=3)
         site.elapsed[0] = t_ms - 1_760_342_400_000
         deferred = rot.run_once()
         assert deferred["status"] == "BUDGET_DEFERRED"
         assert rot.budget_deferrals == 1
+        assert set(rot.status()["last_cpu_ms"]) == {
+            "reference_read", "reference_extract", "recent_prepare", "recent_extract",
+            "matching", "estimation", "total",
+        }
 
         # 2) 회전 복구 스레드가 무거운 계산 중이어도 판정 tick은 절대 기다리지 않는다
-        rot._cpu_clock_s = lambda: 0.0
 
         def slow_load_references(*args, **kwargs):
             entered.set()
