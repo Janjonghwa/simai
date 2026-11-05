@@ -208,6 +208,34 @@ describe('관제 관리자 편집 모드', () => {
     expect(screen.getByTestId('zone-edit-fade')).toBeTruthy();
   });
 
+  it('왼쪽 구역 목록 칼럼은 편집 모드가 아닐 때 모든 역할에게 보이고 편집 모드에서는 숨긴다', async () => {
+    renderMonitor();
+    await screen.findByTestId('viewer3d');
+    expect(await screen.findByRole('region', { name: '위험 구역' })).toBeTruthy();
+    for (const role of ['VIEWER', 'FOREMAN'] as const) {
+      act(() => signInAs(role));
+      expect(screen.getByRole('region', { name: '위험 구역' })).toBeTruthy();
+    }
+    act(() => signInAs('ADMIN'));
+    act(() => startZoneEdit());
+    expect(screen.queryByRole('region', { name: '위험 구역' })).toBeNull();
+  });
+
+  it('관리자가 구역 목록의 행을 누르면 편집 모드가 켜지고 그 구역이 열린다', async () => {
+    renderMonitor();
+    await screen.findByTestId('viewer3d');
+    const list = await screen.findByRole('region', { name: '위험 구역' });
+    act(() =>
+      within(list)
+        .getByRole('button', { name: /^경고\s*단상 구역$/ })
+        .click(),
+    );
+
+    expect(await screen.findByRole('region', { name: '구역 편집 도구' })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: '위험 구역' })).toBeNull();
+    expect(screen.getByRole('combobox', { name: '구역 선택' })).toHaveProperty('value', 'z-02');
+  });
+
   it('관제 화면을 떠나면 편집 모드만 끄고 고치던 초안은 남긴다', async () => {
     const view = renderMonitor(true);
     await screen.findByTestId('viewer3d');

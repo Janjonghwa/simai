@@ -282,6 +282,13 @@ export function targetChanged(
 export const isEmptyDraft = (draft: TargetDraft): boolean =>
   Object.keys(draft.patch).length === 0 && draft.box === null && draft.surface === undefined;
 
+/** 이름 고침만 뺀 초안(목록에서 이름을 저장해 그 이름이 새 기준이 된 때). */
+export function withoutName(draft: TargetDraft): TargetDraft {
+  const patch = { ...draft.patch };
+  delete patch.name;
+  return { ...draft, patch };
+}
+
 /** 작업면 칸을 그대로 이어받는 값(건드리지 않았으면 칸을 두지 않는다). */
 const keepSurface = (prev: TargetDraft | undefined) =>
   prev?.surface === undefined ? {} : { surface: prev.surface };

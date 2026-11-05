@@ -3,7 +3,9 @@ import type { ViewerEditBox } from '@/features/viewer3d';
 import { commitErrorText } from '@/features/zones/commitErrors';
 import type { Zone, ZoneCommitRequest } from '@/features/zones/types';
 import { useArmedDelete } from '@/features/zones/useArmedDelete';
+import { useCommitNotice } from '@/features/zones/useCommitNotice';
 import { publishErrorText } from '@/features/zones/useConfigApply';
+import { useExclusiveRun } from '@/features/zones/useExclusiveRun';
 import { archiveErrorText, useSurfaceArchive } from '@/features/zones/useSurfaceArchive';
 import { useZoneCommitMutation, type CommitDone } from '@/features/zones/useZoneCommitMutation';
 import type { ZoneTarget } from '@/features/zones/useZoneTarget';
@@ -11,28 +13,6 @@ import { archiveRequestOf, createRequestOf, saveRequestOf } from '@/features/zon
 import { editedBox, NEW_KEY, type TargetDraft } from '@/features/zones/zoneEditModel';
 import type { ZoneForm } from '@/features/zones/zoneForm';
 import { removeZoneDraft } from '@/store/zoneEdit.store';
-import { useRef, useState } from 'react';
-
-/**
- * 한 번에 하나만 보낸다. isPending 은 다음 턴에 바뀌어 같은 턴에 두 번 눌리면 두 번 보내므로, 보내는 중이면 여기서 바로
- * 막는다(막힌 호출은 undefined).
- */
-function useExclusiveRun() {
-  const sending = useRef(false);
-  const [busy, setBusy] = useState(false);
-  const run = async <T>(job: () => Promise<T>): Promise<T | undefined> => {
-    if (sending.current) return undefined;
-    sending.current = true;
-    setBusy(true);
-    try {
-      return await job();
-    } finally {
-      sending.current = false;
-      setBusy(false);
-    }
-  };
-  return { busy, run };
-}
 
 export interface ZoneCommitInput {
   zone: Zone | null;
@@ -64,15 +44,14 @@ export function useZoneCommit(input: ZoneCommitInput) {
   const archive = useSurfaceArchive();
   const { busy, run } = useExclusiveRun();
   const { armedKey, arm, disarm } = useArmedDelete();
-  const [notice, setNotice] = useState<string | null>(null);
-  // 마지막 발행이 실패했는지(원인은 notice 에도 문구로 남는다). 다시 보내 성공하면 지운다.
-  const [publishFailed, setPublishFailed] = useState(false);
-
-  /** 결과를 화면에 반영한다: 알림·발행 실패 표시. 초안은 호출한 쪽이 정리한다. */
-  const show = (text: string | null, failedPublish: boolean) => {
-    setNotice(text);
-    setPublishFailed(failedPublish);
-  };
+  // 결과를 화면에 반영한다: 알림·발행 실패 표시. 초안은 호출한 쪽이 정리한다.
+  const {
+    notice,
+    publishFailed,
+    show,
+    publishAndShow: showPublish,
+    clearNotice,
+  } = useCommitNotice();
 
   /**
    * 요청 하나를 보낸다. 저장되면 알림을 정리하고 onSaved 를 부른다(묶음만 만들지 못했어도 저장은 된 것이다). 실패하면 알림만
@@ -137,15 +116,7 @@ export function useZoneCommit(input: ZoneCommitInput) {
     });
   };
 
-  /** 구성 묶음을 발행하고 결과를 알림에 반영한다: 성공이면 알림을 지우고, 실패하면 원인과 다시 보내기를 띄운다. */
-  const publishAndShow = async () => {
-    try {
-      await input.publish();
-      show(null, false);
-    } catch (error) {
-      show(publishErrorText(error), true);
-    }
-  };
+  const publishAndShow = () => showPublish(input.publish);
 
   // 어느 구역에도 이어지지 않은 작업면 삭제: 처음 누르면 확인 단계, 한 번 더 누르면 보관하고(DELETE /api/static-objects/{id})
   // 선택을 풀고 구성 묶음을 발행한다. 보관만으로는 다음 묶음에서 빠질 뿐이라 발행해야 현장에서도 사라진다.
@@ -181,7 +152,7 @@ export function useZoneCommit(input: ZoneCommitInput) {
     // 저장했지만 현장 판정으로 보내지 못한 경우: 방금 발행이 실패했거나, 마지막 묶음에 실리지 않은 저장이 남아 있다.
     showRetry: !busy && (publishFailed || input.pendingCount > 0),
     disarm,
-    clearNotice: () => setNotice(null),
+    clearNotice,
     save,
     add,
     remove,

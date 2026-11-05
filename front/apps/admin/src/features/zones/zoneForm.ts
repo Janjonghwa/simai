@@ -24,6 +24,10 @@ export interface ZoneForm {
 /** 구역 이름 최대 글자 수(화면 제한). */
 export const NAME_MAX = 40;
 
+/** 이름 입력 칸은 검사 한도보다 이만큼 더 받는다(넘으면 검사 문구가 알려 준다). */
+const NAME_INPUT_SLACK = 10;
+export const NAME_INPUT_MAX = NAME_MAX + NAME_INPUT_SLACK;
+
 /** 계약 설명에 있는 유형 예. */
 export const ZONE_TYPE_LABEL: Record<string, string> = {
   OPENING: '개구부',
@@ -53,17 +57,24 @@ export interface ZoneFormErrors {
   severity?: string;
 }
 
+/** 이름 검사 문구. 저장해도 되면 undefined. savedName 은 받은 구역의 이름이다. */
+export function nameError(name: string, savedName: string): string | undefined {
+  const trimmed = name.trim();
+  if (trimmed === '') return '이름을 입력하세요.';
+  // 길이 제한은 서버에 없는 화면 제한이라 새로 고친 이름에만 둔다(받은 긴 이름이 다른 칸 저장을 막지 않는다).
+  if (trimmed !== savedName.trim() && trimmed.length > NAME_MAX)
+    return `이름은 ${NAME_MAX}자까지입니다.`;
+  return undefined;
+}
+
 /** saved 는 받은 구역의 값, hasHeight 는 높이(z_min_m·z_max_m)가 있는지다. */
 export function formErrors(
   form: ZoneForm,
   { saved, hasHeight }: { saved: ZoneForm; hasHeight: boolean },
 ): ZoneFormErrors {
   const errors: ZoneFormErrors = {};
-  const name = form.name.trim();
-  if (name === '') errors.name = '이름을 입력하세요.';
-  // 길이 제한은 서버에 없는 화면 제한이라 새로 고친 이름에만 둔다(받은 긴 이름이 다른 칸 저장을 막지 않는다).
-  else if (name !== saved.name.trim() && name.length > NAME_MAX)
-    errors.name = `이름은 ${NAME_MAX}자까지입니다.`;
+  const name = nameError(form.name, saved.name);
+  if (name) errors.name = name;
   // 서버(INVALID_Z_RANGE)·계약: VOLUME_3D 는 높이가 있어야 한다.
   if (form.judgeType === 'VOLUME_3D' && !hasHeight)
     errors.judgeType = '높이가 없는 구역은 입체로 판정할 수 없습니다.';

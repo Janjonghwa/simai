@@ -1,4 +1,4 @@
-import { isEmptyDraft, type TargetDraft } from '@/features/zones/zoneEditModel';
+import { isEmptyDraft, withoutName, type TargetDraft } from '@/features/zones/zoneEditModel';
 import { create } from 'zustand';
 
 type Drafts = Readonly<Record<string, TargetDraft>>;
@@ -102,6 +102,18 @@ export const updateZoneDraft = (
 
 /** 컴포넌트 밖에서 초안 하나와 그 되돌리기 기록을 버린다. */
 export const removeZoneDraft = (key: string) => useZoneEditStore.getState().remove(key);
+
+/**
+ * 컴포넌트 밖에서 한 구역 초안의 이름 고침만 버린다(다른 곳에서 이름을 저장해 새 이름이 기준이 된 때). 이름이 섞인
+ * 되돌리기 기록은 비운다. 이름 고침이 없는 초안은 건드리지 않는다.
+ */
+export function dropZoneDraftName(key: string) {
+  const { drafts, update, resetHistory } = useZoneEditStore.getState();
+  const draft = drafts[key];
+  if (draft?.patch.name === undefined) return;
+  update(key, () => withoutName(draft));
+  resetHistory(key);
+}
 
 /** 컴포넌트 밖에서, 고치기 직전의 초안을 되돌릴 단계로 남긴다. */
 export const recordZoneDraft = (key: string, group?: string) =>

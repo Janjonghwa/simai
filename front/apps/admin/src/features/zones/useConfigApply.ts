@@ -20,6 +20,9 @@ const PENDING_POLL_MS = 3_000;
 /** 발행 mutation 키. */
 const PUBLISH_MUTATION_KEY = [...BUNDLES_KEY, 'publish'] as const;
 
+/** 저장은 했지만 구성 묶음을 현장으로 보내지 못했을 때의 문구(다시 보내기 버튼과 함께 보인다). */
+export const UNPUBLISHED_TEXT = '반영했지만 현장 판정으로 보내지 못했습니다.';
+
 const FORBIDDEN_TEXT = '현장에 반영할 권한이 없습니다.';
 const FALLBACK_TEXT = '현장에 반영하지 못했습니다. 다시 시도하세요.';
 
@@ -117,6 +120,19 @@ export function removedItemCount(
   }).length;
 }
 
+/** 구성 묶음 발행(POST /api/config-bundles). 응답(새 묶음, 적용 대기)은 묶음 목록 맨 앞에 넣는다. */
+export function usePublishBundle() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationKey: PUBLISH_MUTATION_KEY,
+    mutationFn: () => publishBundle(api),
+    onSuccess: (bundle) => {
+      putBundle(queryClient, bundle);
+      markSetupZonesCommitted();
+    },
+  });
+}
+
 /**
  * 현장 적용 상태와 발행. 상태는 최근 묶음 목록(GET /api/config-bundles)의 첫 묶음으로 보이고, 적용 대기 동안 다시 받는다.
  * 발행 응답(새 묶음, 적용 대기)은 목록 맨 앞에 넣는다(응답 뒤에 그린다, 낙관적 갱신 아님).
@@ -139,14 +155,7 @@ export function useConfigApply(zones: readonly Zone[], surfaces?: readonly Publi
       readBundles(q.state.data ?? [])[0]?.status === 'PENDING' ? PENDING_POLL_MS : false,
   });
   const latest = query.data ? (query.data[0] ?? null) : undefined;
-  const publish = useMutation({
-    mutationKey: PUBLISH_MUTATION_KEY,
-    mutationFn: () => publishBundle(api),
-    onSuccess: (bundle) => {
-      putBundle(queryClient, bundle);
-      markSetupZonesCommitted();
-    },
-  });
+  const publish = usePublishBundle();
   const unpublished = useMemo(() => unpublishedZoneIds(zones, latest), [zones, latest]);
   const unpublishedSurfaces = useMemo(
     () => (surfaces === undefined ? null : unpublishedSurfaceIds(surfaces, latest)),

@@ -1,18 +1,12 @@
 import { useCurrentRole } from '@/features/auth/useCurrentRole';
 import { OrphanSurfaceCard } from '@/features/zones/OrphanSurfaceCard';
 import { SurfaceCard } from '@/features/zones/SurfaceCard';
+import { UnpublishedRetry } from '@/features/zones/UnpublishedRetry';
 import { useZoneEditing } from '@/features/zones/useZoneEditing';
 import { ZoneActions } from '@/features/zones/ZoneActions';
 import { ZoneAttributesCard } from '@/features/zones/ZoneAttributesCard';
-import {
-  BUTTON_CLASS,
-  NOTE_CLASS,
-  PANEL_CLASS,
-  RETRY_CLASS,
-  WARNING_CLASS,
-} from '@/features/zones/zonePanelStyle';
+import { NOTE_CLASS, PANEL_CLASS, WARNING_CLASS } from '@/features/zones/zonePanelStyle';
 import { ZoneSelect } from '@/features/zones/ZoneSelect';
-import { Button } from '@simai/ui/components/button';
 
 /** 직사각형이 아니거나 높이가 없어 3D 손잡이로 고칠 수 없는 구역을 골랐을 때 알림. */
 const SHAPE_LOCKED_TEXT = '직사각형이 아니거나 높이가 없는 구역은 형상을 고칠 수 없습니다.';
@@ -47,18 +41,7 @@ function ZoneEditPanel() {
         </p>
       )}
 
-      {edit.showRetry && (
-        <div role="alert" className={RETRY_CLASS}>
-          <span className="min-w-0">반영했지만 현장 판정으로 보내지 못했습니다.</span>
-          <Button
-            variant="secondary"
-            onClick={() => void edit.republish()}
-            className={BUTTON_CLASS}
-          >
-            다시 보내기
-          </Button>
-        </div>
-      )}
+      {edit.showRetry && <UnpublishedRetry onRetry={() => void edit.republish()} />}
 
       {warning && (
         <p role="status" className={WARNING_CLASS}>

@@ -4,6 +4,9 @@ import {
   bodyOf,
   formErrors,
   formOf,
+  NAME_INPUT_MAX,
+  NAME_MAX,
+  nameError,
   newZoneBodyOf,
   newZoneErrors,
   type ZoneForm,
@@ -41,6 +44,26 @@ const ZONE: Zone = {
   validFrom: 100,
   shapeEditable: true,
 };
+
+describe('nameError', () => {
+  it('비었거나 공백뿐이면 입력하라고, 고친 이름이 40자를 넘으면 길이 제한을 알린다', () => {
+    expect(nameError('', '개구부')).toBe('이름을 입력하세요.');
+    expect(nameError('   ', '개구부')).toBe('이름을 입력하세요.');
+    expect(nameError('ㄱ'.repeat(41), '개구부')).toBe(`이름은 ${NAME_MAX}자까지입니다.`);
+    expect(nameError(` ${'ㄱ'.repeat(40)} `, '개구부')).toBeUndefined();
+  });
+
+  it('받은 이름이 이미 길면 그 이름은 그대로 저장할 수 있다', () => {
+    const saved = 'ㄱ'.repeat(50);
+    expect(nameError(saved, saved)).toBeUndefined();
+    expect(nameError(`${saved} `, saved)).toBeUndefined();
+    expect(nameError('ㄴ'.repeat(41), saved)).toBeDefined();
+  });
+
+  it('입력 칸은 검사 한도보다 조금 더 받는다', () => {
+    expect(NAME_INPUT_MAX).toBeGreaterThan(NAME_MAX);
+  });
+});
 
 describe('zoneForm', () => {
   it('이름은 비우거나 40자를 넘길 수 없다', () => {

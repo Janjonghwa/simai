@@ -3,7 +3,12 @@ import type { WorkSurface } from '@/features/surfaces/types';
 import type { ViewerEditBox } from '@/features/viewer3d';
 import type { Zone, ZoneCommitRequest, ZoneCommitSurface } from '@/features/zones/types';
 import type { SurfaceDraft } from '@/features/zones/zoneEditModel';
-import { newZoneBodyOf, bodyOf as zoneBodyOf, type ZoneForm } from '@/features/zones/zoneForm';
+import {
+  formOf,
+  newZoneBodyOf,
+  bodyOf as zoneBodyOf,
+  type ZoneForm,
+} from '@/features/zones/zoneForm';
 
 // 구역 편집 저장 요청 본문(순수 계산). 구역·작업면 변경을 POST /api/zones/commit 요청 하나로 만든다. 보낼 것이 없으면 null 이다.
 // 보내기·실패 처리는 useZoneCommitMutation 이 맡는다.
@@ -56,6 +61,18 @@ export function saveRequestOf(input: SaveRequestInput): ZoneCommitRequest | null
     : ({ op: 'KEEP', zone_id: zone.zoneId } as const);
   return surfacePart ? { zone: zonePart, surface: surfacePart } : { zone: zonePart };
 }
+
+/**
+ * 이름만 바꾸는 저장(구역 새 버전, 작업면은 건드리지 않는다). 서버가 기록을 통째로 바꾸므로 모양·심각도·종류는 받은
+ * 값을 그대로 보낸다.
+ */
+export const renameRequestOf = (zone: Zone, name: string): ZoneCommitRequest => ({
+  zone: {
+    op: 'UPDATE',
+    zone_id: zone.zoneId,
+    body: zoneBodyOf(zone, { ...formOf(zone), name }, null),
+  },
+});
 
 /** 새 구역 만들기. 구역 몸체는 상자·양식 그대로다. 작업면 초안이 있으면 새 작업면도 함께 만든다. */
 export function createRequestOf(input: {

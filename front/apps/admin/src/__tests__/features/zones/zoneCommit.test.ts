@@ -6,6 +6,7 @@ import type { ZoneCommitRequest } from '@/features/zones/types';
 import {
   archiveRequestOf,
   createRequestOf,
+  renameRequestOf,
   saveRequestOf,
   type SaveRequestInput,
 } from '@/features/zones/zoneCommit';
@@ -307,6 +308,54 @@ describe('createRequestOf(새 구역)', () => {
     expect(request.surface).toMatchObject({
       op: 'CREATE',
       body: { name: '단상', top_height_sigma_m: null },
+    });
+  });
+});
+
+describe('renameRequestOf(목록에서 이름만 바꾸기)', () => {
+  const polygonZone = zoneOf(
+    { zoneId: 'z-05', name: '삼각', min: [1, 1, 0], max: [3, 3, 2] },
+    {
+      severity: 'CAUTION',
+      polygon: [
+        [1, 1],
+        [3, 1],
+        [2, 3],
+      ],
+      hasGuardrail: true,
+      requirements: { helmet: true },
+    },
+  );
+
+  it('구역 UPDATE 하나만 보내고 작업면 키는 붙이지 않는다. 이름은 다듬어 보낸다', () => {
+    const request = renameRequestOf(zone, '  새 이름 ');
+    expect(request).toEqual({
+      zone: {
+        op: 'UPDATE',
+        zone_id: 'z-04',
+        body: { ...zoneBodyOf(zone, formOf(zone), null), name: '새 이름' },
+      },
+    });
+    expect(request).not.toHaveProperty('surface');
+  });
+
+  it('모양·심각도·종류·요구 조건은 받은 값 그대로 보낸다(직사각형이 아닌 구역도, 주의 등급도)', () => {
+    const { zone: part } = renameRequestOf(polygonZone, '이름');
+    if (part.op !== 'UPDATE') throw new Error('expected UPDATE');
+    expect(part.body).toMatchObject({
+      name: '이름',
+      polygon_xy: [
+        [1, 1],
+        [3, 1],
+        [2, 3],
+      ],
+      z_min_m: 0,
+      z_max_m: 2,
+      severity: 'CAUTION',
+      zone_kind: 'OPENING',
+      eval_type: 'VOLUME_3D',
+      has_guardrail: true,
+      requirements: { helmet: true },
     });
   });
 });
