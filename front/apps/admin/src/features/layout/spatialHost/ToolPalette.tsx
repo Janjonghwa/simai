@@ -18,6 +18,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@simai/ui/components/po
 import { TooltipProvider } from '@simai/ui/components/tooltip';
 import { cn } from '@simai/ui/lib/utils';
 import { useNavigate } from '@tanstack/react-router';
+import { Video } from 'lucide-react';
 import { useRef, useState } from 'react';
 
 interface ToolPaletteProps {
@@ -27,6 +28,8 @@ interface ToolPaletteProps {
   currentSceneVersion: string | null;
   /** 현재 Scene 조회 응답 본문(맵 재생성 품질 표시용). */
   currentScene?: unknown;
+  onToggleCctv?: () => void;
+  cctvOpen?: boolean;
 }
 
 /** 3D 는 처음 시점으로 돌리고, 3D 가 멈춰 2D 를 보고 있으면 3D 를 다시 띄운다(관제 데모와 같다). */
@@ -145,6 +148,8 @@ export function ToolPalette({
   onRetry3d,
   currentSceneVersion,
   currentScene,
+  onToggleCctv,
+  cctvOpen,
 }: ToolPaletteProps) {
   const isAdmin = useCurrentRole() === 'ADMIN';
   const editing = useZoneEditActive();
@@ -185,6 +190,22 @@ export function ToolPalette({
         {open && (
           <>
             <ViewTool view={view} onResetView={onResetView} onRetry3d={onRetry3d} />
+            {onToggleCctv && (
+              <ToolTooltip
+                label="CCTV 창"
+                trigger={
+                  <Button
+                    variant="ghost"
+                    size={TOOL_BUTTON_SIZE}
+                    aria-label="CCTV 창"
+                    aria-pressed={cctvOpen}
+                    onClick={onToggleCctv}
+                  />
+                }
+              >
+                <Video aria-hidden className={TOOL_ICON_CLASS} />
+              </ToolTooltip>
+            )}
             {isAdmin && <EditTool editing={editing} />}
             {editing && zonesCommitted && <TbmNavigateTool />}
           </>

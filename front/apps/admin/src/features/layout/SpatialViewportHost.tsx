@@ -1,4 +1,6 @@
+import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { CamSplitPanel } from '@/features/cctv/CamSplitPanel';
+import { CctvFloat } from '@/features/cctv/CctvFloat';
 import { PLAN_FALLBACK_MS } from '@/features/layout/spatialHost/constants';
 import { HostEventPanel } from '@/features/layout/spatialHost/HostEventPanel';
 import { PlanOverlay } from '@/features/layout/spatialHost/PlanOverlay';
@@ -42,6 +44,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
 } from 'react';
 
@@ -107,6 +110,8 @@ export function SpatialViewportHost({
   const { scene, sceneStatus, onSceneStatusChange } = useCurrentScene();
   const boxEditProps = useBoxEditProps();
   const editing = useZoneEditActive();
+  const [cctvOpen, setCctvOpen] = useState(false);
+  const split = useCamSplitStore((s) => s.split);
   const {
     view,
     viewerReady,
@@ -229,6 +234,15 @@ export function SpatialViewportHost({
           onRetry3d={show3d}
           currentSceneVersion={readSceneVersion(scene)}
           currentScene={scene?.ok ? scene.raw : undefined}
+          onToggleCctv={
+            eventPanel && !editing
+              ? () => {
+                  if (split) useCamSplitStore.getState().close();
+                  setCctvOpen((open) => (split ? true : !open));
+                }
+              : undefined
+          }
+          cctvOpen={cctvOpen && !split && !editing}
         />
         {children}
         {showEventPanel && view === '3d' && (
@@ -240,6 +254,9 @@ export function SpatialViewportHost({
           onSelect={selectIncident}
         />
         {showEventPanel && <CamSplitPanel />}
+        {showEventPanel && cctvOpen && !split && (
+          <CctvFloat selectedKey={selectedKey} onClose={() => setCctvOpen(false)} />
+        )}
       </main>
     </SpatialViewportContext>
   );
