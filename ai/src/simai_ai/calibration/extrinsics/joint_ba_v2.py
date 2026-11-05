@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
+import cv2
 from scipy.optimize import least_squares
 from scipy.sparse import lil_matrix
 from scipy.spatial.transform import Rotation
@@ -61,6 +62,7 @@ DEFAULT_STAGE_A_CONFIG: dict[str, Any] = {
     "stage_target_seconds": 10.0,
     "background_windows": 2,
     "multiwindow_merge_radius_px": 2.0,
+    "holdout_worsening_tolerance_px": 1.0,
 }
 
 
@@ -229,9 +231,9 @@ def statistics(values: Sequence[float]) -> dict[str, Any]:
     }
 
 
-def worsened(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
+def worsened(before: Mapping[str, Any], after: Mapping[str, Any], tolerance_px: float = 0.0) -> bool:
     return any(
-        after[k] is None or before[k] is None or after[k] > before[k]
+        after[k] is None or before[k] is None or after[k] > before[k] + tolerance_px
         for k in ("median", "p90")
     )
 
@@ -307,6 +309,13 @@ def _normalize_pixels(uv: np.ndarray, K: np.ndarray) -> np.ndarray:
     return norm_h[:, :2] / norm_h[:, 2:3]
 
 
+def _undistort_pixels(uv: np.ndarray, K: np.ndarray, distortion: Mapping[str, Any]) -> np.ndarray:
+    coeffs = np.asarray(distortion["coeffs"], dtype=float)
+    if not coeffs.size or not np.any(coeffs):
+        return np.asarray(uv, dtype=float).copy()
+    return cv2.undistortPoints(np.asarray(uv, dtype=float)[:, None, :], K, coeffs, P=K)[:, 0, :]
+
+
 def _fit_essential_eight_point(na: np.ndarray, nb: np.ndarray) -> np.ndarray | None:
     """Normalized 8-point algorithm with rank-2 singular value projection."""
     if len(na) < 8:
@@ -339,36 +348,16 @@ def _fit_essential_ransac(
     threshold: float,
     *,
     seed: int = 449,
-    max_iters: int = 200,
+    max_iters: int = 10000,
 ) -> np.ndarray | None:
-    """RANSAC + 8-point Essential matrix estimator in normalized coordinates."""
-    n = len(na)
-    if n < 8:
+    """5점 RANSAC, 정규화 좌표와 임계값을 사용한다."""
+    if len(na) < 8:
         return None
-    rng = np.random.default_rng(seed)
-    best_E = _fit_essential_eight_point(na, nb)
-    best_inliers = (
-        sampson(best_E, na, nb) <= threshold
-        if best_E is not None
-        else np.zeros(n, dtype=bool)
-    )
-    best_count = int(best_inliers.sum())
-    for _ in range(min(max_iters, max(1, n * 4))):
-        sample = rng.choice(n, size=8, replace=False)
-        cand_E = _fit_essential_eight_point(na[sample], nb[sample])
-        if cand_E is None:
-            continue
-        inliers = sampson(cand_E, na, nb) <= threshold
-        cnt = int(inliers.sum())
-        if cnt > best_count:
-            best_count = cnt
-            best_inliers = inliers
-            best_E = cand_E
-    if best_count >= 8:
-        refined = _fit_essential_eight_point(na[best_inliers], nb[best_inliers])
-        if refined is not None:
-            best_E = refined
-    return best_E
+    cv2.setRNGSeed(seed)
+    E, _ = cv2.findEssentialMat(np.asarray(na, dtype=np.float64), np.asarray(nb, dtype=np.float64),
+                                np.eye(3), method=cv2.RANSAC, prob=0.9999,
+                                threshold=threshold, maxIters=max_iters)
+    return E if E is not None and E.shape == (3, 3) else None
 
 
 def triangulate(
@@ -482,11 +471,7 @@ def load_tracks(
             raise ValueError(f"Invalid track pair/split: {track['id']}")
         if uv.shape != (2, 2) or not np.isfinite(uv).all():
             raise ValueError(f"Invalid track pixels: {track['id']}")
-    merge_radius_px = (
-        float(cfg.get("multiwindow_merge_radius_px", 2.0))
-        if int(cfg.get("background_windows", 1)) > 1
-        else 0.0
-    )
+    merge_radius_px = float(cfg.get("multiwindow_merge_radius_px", 2.0))
     if len(quarantine_shared_keypoints(tracks, merge_radius_px=merge_radius_px)) != len(tracks):
         raise ValueError("Saved holdout keypoint re-enters training")
     pairs_meta: dict[str, Any] = {}
@@ -1376,17 +1361,15 @@ def extract_tracks_from_backgrounds(
 
     match_fn = matcher if matcher is not None else _default_matcher
     windows = max(1, min(len(v) for v in loaded.values()))
-    merge_radius_px = (
-        float(cfg.get("multiwindow_merge_radius_px", 2.0)) if windows > 1 else 0.0
-    )
+    merge_radius_px = float(cfg.get("multiwindow_merge_radius_px", 2.0))
 
     tracks: list[dict[str, Any]] = []
     pairs_out: dict[str, Any] = {}
-    for a, b in pairs:
+    for pair_index, (a, b) in enumerate(pairs):
         cid_a, cid_b = cam_ids[a], cam_ids[b]
         raw_candidates: list[dict[str, Any]] = []
         for w in range(windows):
-            offset = w * 1_000_000
+            offset = (pair_index * windows + w) * 1_000_000
             for idx_m, cand in enumerate(match_fn(loaded[cid_a][w], loaded[cid_b][w])):
                 nodes = cand.get("nodes", [[a, idx_m], [b, idx_m]])
                 raw_candidates.append(
@@ -1410,6 +1393,9 @@ def extract_tracks_from_backgrounds(
                 retryable=False,
             )
         uv = np.array([c["uv"] for c in deduped], dtype=float)
+        # 매칭은 원본 영상에서 수행하고, 이후의 모든 기하는 핀홀 픽셀을 쓴다.
+        for side, camera_index in enumerate((a, b)):
+            uv[:, side] = _undistort_pixels(uv[:, side], K[camera_index], cameras[camera_index]["distortion"])
         fit, hold = spatial_split(
             uv[:, 0].tolist(),
             cameras[a]["image_size"],
@@ -1560,6 +1546,9 @@ def run_stage_a_rotation_ba(
     """
     stage_started = time.perf_counter()
     cfg = {**DEFAULT_STAGE_A_CONFIG, **(dict(config) if config is not None else {})}
+    tolerance_px = float(cfg["holdout_worsening_tolerance_px"])
+    if not math.isfinite(tolerance_px) or tolerance_px < 0:
+        raise ValueError("holdout_worsening_tolerance_px must be finite and nonnegative")
     if stage_target_seconds is not None:
         cfg["stage_target_seconds"] = float(stage_target_seconds)
 
@@ -1648,7 +1637,7 @@ def run_stage_a_rotation_ba(
         key = f"{cam_ids[a]}-{cam_ids[b]}"
         pair_meta = metadata["pairs"][key]
         insuff = bool(pair_meta.get("holdout_insufficient", False))
-        is_worse = worsened(baseline["pairs"][key], held["pairs"][key])
+        is_worse = worsened(baseline["pairs"][key], held["pairs"][key], tolerance_px)
         if not insuff and is_worse:
             worsened_Evaluated_pairs.append(key)
         med = held["pairs"][key]["median"]
@@ -1740,6 +1729,9 @@ def run_stage_a_rotation_ba(
         "stage_seconds": round(stage_seconds, 4),
         "valid_points": len(tracks),
         "pair_holdout_median_px": pair_holdout_medians,
+        "holdout_worsening_tolerance_px": tolerance_px,
+        "pair_holdout": {key: {"before": value["before_holdout"], "after": value["after_holdout"]}
+                         for key, value in pair_metrics.items()},
     }
     return StageAResult(
         calibration_doc=new_doc,

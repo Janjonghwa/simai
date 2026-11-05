@@ -417,7 +417,7 @@ def test_run_stage_a_raises_insufficient_features_on_empty_tracks() -> None:
     assert exc_info.value.code == "INSUFFICIENT_FEATURES"
 
 
-def test_extract_tracks_from_backgrounds_with_injected_matcher() -> None:
+def test_extract_tracks_from_backgrounds_with_injected_matcher(tmp_path: Path) -> None:
     calib_doc, tracks_doc = synthetic_calibration_and_tracks()
     fake_imgs = {cid: [np.zeros((1296, 2304, 3), dtype=np.uint8)] for cid in CAMS}
     by_pair = {
@@ -435,11 +435,13 @@ def test_extract_tracks_from_backgrounds_with_injected_matcher() -> None:
     extracted = extract_tracks_from_backgrounds(
         fake_imgs,
         calib_doc,
-        config={"background_windows": 1},
         matcher=_matcher,
     )
     assert len(extracted["tracks"]) >= 60
-    res = run_stage_a_rotation_ba(calib_doc, extracted, anchor_camera_id="cam_D")
+    import json
+    saved = tmp_path / "tracks.json"
+    saved.write_text(json.dumps(extracted), encoding="utf-8")
+    res = run_stage_a_rotation_ba(calib_doc, saved, anchor_camera_id="cam_D")
     assert res.converged is True
 
 

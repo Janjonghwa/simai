@@ -45,6 +45,7 @@ from simai_ai.scene.reconstruct import (
 )
 
 from .auto_static import AutoStaticSettings, calibration_document_path
+from simai_ai.calibration.extrinsics.feature_matching import match_sift
 from .handlers import JobContext, JobFailed
 from .objects import ObjectStore, ObjectStoreError
 from .site_setup import (
@@ -481,6 +482,7 @@ class ProductionSiteSetupHandler:
                     ctx, self.store, self.settings, self.stages, Path(tmp), clock_ms=self._clock_ms,
                 )
                 handler = SiteSetupHandler(
+                    feature_matcher=match_sift,
                     background_collector=s.collect, world_initializer=s.initialize, calibration_publisher=s.publish,
                     preview_builder=s.preview, texture_baker=s.bake, frame_publisher=s.publish_frames,
                     object_cross_checker=self._cross,

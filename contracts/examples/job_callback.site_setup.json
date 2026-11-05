@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.10.0",
+  "schema_version": "2.11.0",
   "msg_type": "job_callback",
   "msg_id": "0192a6f0-7c1e-7b3a-9f2d-00000000031a",
   "sent_at": 1760342460100,
@@ -60,6 +60,13 @@
           "converged": true,
           "stage_seconds": 0.34,
           "valid_points": 506,
+          "holdout_worsening_tolerance_px": 1.0,
+          "pair_holdout": {
+            "cam1-cam2": {
+              "before": {"n": 6, "invalid": 0, "median": 1.4, "p90": 2.1, "p95": 2.2},
+              "after": {"n": 6, "invalid": 0, "median": 1.24, "p90": 1.9, "p95": 2.0}
+            }
+          },
           "pair_holdout_median_px": {
             "cam1-cam2": 1.24,
             "cam2-cam3": 1.09,

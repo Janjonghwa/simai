@@ -205,6 +205,25 @@ def test_handler_without_bundle_fails_retryably_and_cleans_work_folder(tmp_path:
     assert list(work.iterdir()) == []
 
 
+def test_production_handler_connects_sift(tmp_path: Path, monkeypatch) -> None:
+    from services.worker import site_setup_stages
+    from simai_ai.calibration.extrinsics.feature_matching import match_sift
+
+    seen = {}
+
+    class Handler:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def __call__(self, ctx):
+            return {}
+
+    monkeypatch.setattr(site_setup_stages, "SiteSetupHandler", Handler)
+    handler = ProductionSiteSetupHandler(_Store(), _settings(tmp_path), _Stages(), workspace=tmp_path, clock_ms=lambda: 1)
+    assert handler(_ctx()) == {}
+    assert seen["feature_matcher"] is match_sift
+
+
 def test_load_active_calibration_reads_tier0_store_and_ignores_unreadable(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     assert load_active_calibration(settings) is None
