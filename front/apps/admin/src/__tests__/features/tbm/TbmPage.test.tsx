@@ -786,8 +786,9 @@ describe('작업 세션과 서명', () => {
     fireEvent.click(await screen.findByRole('button', { name: '작업 종료' }));
     expect(await screen.findByText('작업 마무리 작성 중')).toBeTruthy();
     // 이 화면의 안내(session.message)는 사라지고, 서버가 마무리를 만드는 중인 보고서만 남는다.
+    // 끝난 작업은 기본 선택에서 빠지므로(진행·예정 우선) 그 작업을 initialWorkId 로 연다.
     first.unmount();
-    render(<TbmPage />);
+    render(<TbmPage initialWorkId="1" />);
     expect(await screen.findByText('작업 마무리 작성 중')).toBeTruthy();
     vi.restoreAllMocks();
   });
