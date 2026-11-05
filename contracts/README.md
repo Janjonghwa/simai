@@ -1,8 +1,10 @@
 # contracts
 
+v7.13.0 — S15P31A101-492: `site_setup` 1.4.0 (`job_callback` 2.11.0, `job_heartbeat` 2.4.0) 선택 홀드아웃 전후 통계와 허용 오차를 추가한다.
+
 S15P31A101-483 설명 정리: `coverage_guide`의 STALE 설명을 헬퍼 신선도 설정(`SIMAI_CAMERA_HELPER_STALE_MS`, 기본 5000 ms)에 맞췄다. 프레임 신선도 초과라는 상태 의미·필드·enum·검증 제약은 그대로이고 운영 임계값만 조정하므로 메시지 1.0.0·계약 묶음 7.11.0을 유지한다. 예시·생성 타입 변경 없음. 명세 §4.3의 2초 표기는 후속 정리 대상이다.
 
-구간 계약의 정본(JSON Schema, draft 2020-12). 명세 12장, 20.4, 21.2 기준. **v7.12.0** — S15P31A101-475(마이너, v7.11.0 -480 다음): I2 `messages/watch_escalation` 1.1.0 — 관리자·반장이 `POST /api/watch-alerts` 로 직접 보낸 수동 알림의 격상도 같은 메시지로 온다. 선택 `origin`(EVENT·MANUAL, 없으면 EVENT)을 더하고, MANUAL 은 위험 이벤트가 없어 `event_id` 가 그 알림만의 ID·`event_sequence` 1 이며 `world_id` 는 배정이 없으면 null(EVENT 는 if/else 로 여전히 필수). 예시 `watch_escalation.manual`, 반례 `watch_escalation.event_without_world`, 기존 예시 1.1.0. TS 생성 모델 갱신. 다른 계약 변경 없음. 설계 `docs/design/server-watch-alert.md` 수동 알림 절.
+구간 계약의 정본(JSON Schema, draft 2020-12). 명세 12장, 20.4, 21.2 기준. 이전 판 **v7.12.0** — S15P31A101-475(마이너, v7.11.0 -480 다음): I2 `messages/watch_escalation` 1.1.0 — 관리자·반장이 `POST /api/watch-alerts` 로 직접 보낸 수동 알림의 격상도 같은 메시지로 온다. 선택 `origin`(EVENT·MANUAL, 없으면 EVENT)을 더하고, MANUAL 은 위험 이벤트가 없어 `event_id` 가 그 알림만의 ID·`event_sequence` 1 이며 `world_id` 는 배정이 없으면 null(EVENT 는 if/else 로 여전히 필수). 예시 `watch_escalation.manual`, 반례 `watch_escalation.event_without_world`, 기존 예시 1.1.0. TS 생성 모델 갱신. 다른 계약 변경 없음. 설계 `docs/design/server-watch-alert.md` 수동 알림 절.
 
 이전 판 v7.11.0 — S15P31A101-480(마이너, v7.10.0 -479 선점): I1 `health` 2.2.0 선택 `re_setup`(회전 자동 복구가 '현장 세팅 다시 하기'를 요구한 카메라마다 `camera_id`·사유 `reason`·감지 시각 `detected_at`, 해소되면 빈 배열, 없으면 모름) 추가, I2 `viewer_health` 1.3.0 선택 `re_setup`(Tier 0 연결 중 마지막 health 의 값, 관리자 상단 배너용) 추가. 경보·`system_health` 판정은 바꾸지 않는다. 예시 `health.re_setup`·`viewer_health.re_setup`, 반례 `health.re_setup_missing_reason`·`viewer_health.re_setup_extra_field`.
 
