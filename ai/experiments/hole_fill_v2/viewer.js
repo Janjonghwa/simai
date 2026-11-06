@@ -70,6 +70,34 @@ const VARIANT_SPECS = {
     sub: "사진 깊이일치 투영 + OpenCV Telea + NS 다중 해상도",
     color: "#fbbf24",
   },
+  r2_12th_hybrid: {
+    key: "r2_12th_hybrid",
+    file: "scene_r2_12th_hybrid.glb",
+    title: "② 2차(12차 메시, 평면 걷어내기 + 바닥톤·벽LaMa)",
+    sub: "평면 6cm/25° 메시 제거 + 경계 Lab 색통계 매칭 + 10cm 페더링",
+    color: "#38bdf8",
+  },
+  r2_12th_tone: {
+    key: "r2_12th_tone",
+    file: "scene_r2_12th_tone.glb",
+    title: "② 2차(12차 메시, 평면 걷어내기 + 전체 자연 톤)",
+    sub: "평면 6cm/25° 메시 제거 + 경계 Lab 색통계 매칭 + 10cm 페더링",
+    color: "#38bdf8",
+  },
+  r2_da3_hybrid: {
+    key: "r2_da3_hybrid",
+    file: "scene_r2_da3_hybrid.glb",
+    title: "③ 2차(DA3 정리 메시, 평면 걷어내기 + 바닥톤·벽LaMa)",
+    sub: "-528 DA3 clean 메시 + 평면 6cm/25° 제거 + 경계 Lab 매칭",
+    color: "#34d399",
+  },
+  r2_da3_tone: {
+    key: "r2_da3_tone",
+    file: "scene_r2_da3_tone.glb",
+    title: "③ 2차(DA3 정리 메시, 평면 걷어내기 + 전체 자연 톤)",
+    sub: "-528 DA3 clean 메시 + 평면 6cm/25° 제거 + 전체 톤",
+    color: "#34d399",
+  },
 };
 
 const variantScenes = {};
@@ -401,6 +429,73 @@ export function captureSplit2DataUrl(
   return outCanvas.toDataURL(mimeType, quality);
 }
 
+/**
+ * 3칸 가로 비교 [① 1차 결과 | ② 2차(12차 메시) | ③ 2차(DA3 정리 메시)] 캡처 DataURL 반환
+ */
+export function captureSplit3DataUrl(
+  k1 = "tone",
+  k2 = "r2_12th_hybrid",
+  k3 = "r2_da3_hybrid",
+  mimeType = "image/jpeg",
+  quality = 0.94,
+  customTitles = null
+) {
+  const fullW = window.innerWidth;
+  const fullH = window.innerHeight;
+  const w1 = Math.floor(fullW / 3);
+  const w2 = Math.floor((fullW * 2) / 3) - w1;
+  const w3 = fullW - w1 - w2;
+
+  renderer.setScissorTest(true);
+  renderPane(k1, 0, 0, w1, fullH);
+  renderPane(k2, w1, 0, w2, fullH);
+  renderPane(k3, w1 + w2, 0, w3, fullH);
+  renderer.setScissorTest(false);
+
+  const w = canvas.width;
+  const h = canvas.height;
+  const outCanvas = document.createElement("canvas");
+  outCanvas.width = w;
+  outCanvas.height = h;
+  const ctx = outCanvas.getContext("2d");
+  ctx.drawImage(canvas, 0, 0);
+
+  const x1 = Math.floor(w / 3);
+  const x2 = Math.floor((w * 2) / 3);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.58)";
+  ctx.fillRect(x1 - 1, 0, 2, h);
+  ctx.fillRect(x2 - 1, 0, 2, h);
+
+  const scale = Math.max(1, w / 1600);
+  const pad = Math.round(10 * scale);
+  const boxH = Math.round(28 * scale);
+  ctx.font = `600 ${Math.round(12.5 * scale)}px "Segoe UI", "Malgun Gothic", sans-serif`;
+
+  const s1 = VARIANT_SPECS[k1] || VARIANT_SPECS.tone;
+  const s2 = VARIANT_SPECS[k2] || VARIANT_SPECS.r2_12th_hybrid;
+  const s3 = VARIANT_SPECS[k3] || VARIANT_SPECS.r2_da3_hybrid;
+  const t1 = customTitles ? customTitles[0] : `① 1차 결과 (${s1.file})`;
+  const t2 = customTitles ? customTitles[1] : s2.title;
+  const t3 = customTitles ? customTitles[2] : s3.title;
+
+  const labels = [
+    { text: `${t1} | ${currentViewKey}`, color: "#fbbf24", cx: pad, cy: pad, maxW: x1 - pad * 2 },
+    { text: `${t2} | ${currentViewKey}`, color: s2.color, cx: x1 + pad, cy: pad, maxW: x2 - x1 - pad * 2 },
+    { text: `${t3} | ${currentViewKey}`, color: s3.color, cx: x2 + pad, cy: pad, maxW: w - x2 - pad * 2 },
+  ];
+
+  for (const lb of labels) {
+    const tw = Math.min(lb.maxW, ctx.measureText(lb.text).width + 18 * scale);
+    ctx.fillStyle = "rgba(15, 23, 42, 0.88)";
+    ctx.fillRect(lb.cx, lb.cy, tw, boxH);
+    ctx.fillStyle = lb.color;
+    ctx.fillText(lb.text, lb.cx + 9 * scale, lb.cy + 19 * scale);
+  }
+
+  renderSingleFrame();
+  return outCanvas.toDataURL(mimeType, quality);
+}
+
 async function init() {
   const params = new URLSearchParams(window.location.search);
   const dataPrefix = params.get("data") || ".";
@@ -423,13 +518,27 @@ async function init() {
       loader.load(url, resolve, undefined, reject);
     });
 
-  // 5종 GLB 병렬 로드
-  const keys = Object.keys(VARIANT_SPECS);
+  const autoMode = params.get("autoshots");
+  let keys;
+  if (autoMode === "r2") {
+    keys = ["lama", "tone", "r2_12th_hybrid", "r2_12th_tone", "r2_da3_hybrid", "r2_da3_tone"];
+  } else if (autoMode === "1") {
+    keys = ["orig", "tone", "tone_grid", "lama", "classic"];
+  } else {
+    keys = Object.keys(VARIANT_SPECS);
+  }
+
   const gltfs = await Promise.all(
-    keys.map((k) => loadGlb(`${dataPrefix}/${VARIANT_SPECS[k].file}`))
+    keys.map((k) =>
+      loadGlb(`${dataPrefix}/${VARIANT_SPECS[k].file}`).catch((err) => {
+        console.warn(`Optional GLB skip (${k}):`, err);
+        return null;
+      })
+    )
   );
 
   keys.forEach((k, idx) => {
+    if (!gltfs[idx]) return;
     const sc = createStandardScene();
     const root = gltfs[idx].scene;
     root.updateMatrixWorld(true);
@@ -516,11 +625,14 @@ async function init() {
     },
     captureGrid4DataUrl,
     captureSplit2DataUrl,
+    captureSplit3DataUrl,
     renderSingleFrame,
   };
 
   if (params.get("autoshots") === "1") {
     await runAutoShots();
+  } else if (params.get("autoshots") === "r2") {
+    await runAutoShotsR2();
   }
 }
 
@@ -567,6 +679,78 @@ async function runAutoShots() {
   const stdFile = "compare_obl1_pbr_standard.jpg";
   await postJson("/__save_shot", { filename: stdFile, dataUrl: dataUrlStd });
   savedFiles.push(stdFile);
+
+  await postJson("/__done", { ok: true, count: savedFiles.length, files: savedFiles });
+}
+
+async function runAutoShotsR2() {
+  const views = [
+    "cam_A",
+    "cam_B",
+    "cam_C",
+    "cam_D",
+    "top",
+    "obl1",
+    "obl2",
+    "obl3",
+    "wall_close",
+  ];
+  const savedFiles = [];
+
+  // 1. 9개 시점 3칸 비교 캡처: [① 1차 결과 (바닥톤+벽LaMa) | ② 2차(12차 메시) | ③ 2차(DA3 정리 메시)]
+  for (const v of views) {
+    setCameraView(v);
+    await new Promise((r) => setTimeout(r, 90));
+    const dataUrl = captureSplit3DataUrl(
+      "lama",
+      "r2_12th_hybrid",
+      "r2_da3_hybrid",
+      "image/jpeg",
+      0.95,
+      [
+        "① 1차 결과 (바닥톤+벽LaMa, 평면중복)",
+        "② 2차 (12차 메시 + 평면단일화·톤일치)",
+        "③ 2차 (DA3 정리 메시 -528 + 평면단일화)",
+      ]
+    );
+    const filename = `compare_r2_${v}.jpg`;
+    await postJson("/__save_shot", { filename, dataUrl });
+    savedFiles.push(filename);
+  }
+
+  // 2. 핵심 시점 3칸 비교 캡처 (전체 자연 톤 기준): [① 1차 톤 | ② 2차(12차 톤) | ③ 2차(DA3 톤)]
+  for (const v of ["wall_close", "obl1", "top", "cam_D"]) {
+    setCameraView(v);
+    await new Promise((r) => setTimeout(r, 80));
+    const dataUrl = captureSplit3DataUrl(
+      "tone",
+      "r2_12th_tone",
+      "r2_da3_tone",
+      "image/jpeg",
+      0.95,
+      [
+        "① 1차 결과 (자연 톤, 평면중복)",
+        "② 2차 (12차 메시 + 전체 자연 톤)",
+        "③ 2차 (DA3 정리 메시 + 전체 자연 톤)",
+      ]
+    );
+    const filename = `compare_r2_tone_${v}.jpg`;
+    await postJson("/__save_shot", { filename, dataUrl });
+    savedFiles.push(filename);
+  }
+
+  // 3. 나무 벽 클로즈업(wall_close)에서 방안 1(바닥톤+벽LaMa) vs 방안 2(전체 톤) 2칸 비교
+  setCameraView("wall_close");
+  await new Promise((r) => setTimeout(r, 80));
+  const dataUrlWall = captureSplit2DataUrl(
+    "r2_da3_hybrid",
+    "r2_da3_tone",
+    "image/jpeg",
+    0.95
+  );
+  const wallFile = "compare_r2_da3_hybrid_vs_tone_wall_close.jpg";
+  await postJson("/__save_shot", { filename: wallFile, dataUrl: dataUrlWall });
+  savedFiles.push(wallFile);
 
   await postJson("/__done", { ok: true, count: savedFiles.length, files: savedFiles });
 }
