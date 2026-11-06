@@ -1,7 +1,6 @@
 import { type MockAccount, MOCK_ACCOUNTS } from '@/mocks/accounts';
 import { createFloorPlanMock } from '@/mocks/floorPlan';
 import { createHistoryMock } from '@/mocks/history';
-import { createRulesMock } from '@/mocks/rules';
 import { sceneHandlers } from '@/mocks/scenes';
 import { createSetupMock } from '@/mocks/setup';
 import { createStaticObjectsMock } from '@/mocks/staticObjects';
@@ -84,7 +83,6 @@ export const handlers = [
   // 구성 묶음 발행·ACK 는 startBackend 의 구역 mock 이 맡는다.
   ...staticObjectsMock.handlers,
   ...sceneHandlers,
-  ...createRulesMock().handlers,
   ...createFloorPlanMock().handlers,
   ...tbmMock.handlers,
   ...setupMock.handlers,

@@ -1,6 +1,6 @@
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { deriveStep1Coverage } from '@/features/setup/setup';
-import { CameraPanel, SetupCctvPanel } from '@/features/setup/SetupPanels';
+import { CameraMapPanel, CameraPanel } from '@/features/setup/SetupPanels';
 import type { CoverageGuidesResponse } from '@/features/setup/types';
 import { buildCoverageGuidePayload } from '@/mocks/setup';
 import { cleanup, render, screen, within } from '@testing-library/react';
@@ -15,27 +15,47 @@ afterEach(() => {
   useCctvStore.getState().reset();
 });
 
-describe('세팅 CCTV 높이', () => {
+/** 기본 카메라 4대(cam1~cam4)로 만든 1단계 카메라 목록. */
+const defaultCoverage = () => deriveStep1Coverage(undefined);
+
+describe('세팅 카메라 지도와 영상', () => {
   it.each([false, true])(
-    '실시간 연결 %s 에서 size 컨테이너까지 높이와 flex 를 전달한다',
+    '실시간 연결 %s 에서도 영상 4칸을 지도 양옆에 그 카메라 모서리 높이대로 놓는다',
     (live) => {
       if (live) {
         useCctvStore.getState().hello(['cam1', 'cam2', 'cam3', 'cam4']);
         useCctvStore.getState().setLink('open');
       }
-      const { container } = render(<SetupCctvPanel />);
-      const sizeContainer = container.querySelector('[class*="container-type:size"]')!;
-      const wall = sizeContainer.parentElement!;
-      const frame = live ? wall.parentElement! : wall.parentElement!.parentElement!;
-      expect(frame.className).toContain('h-[clamp(260px,40vh,520px)]');
-      expect(frame.classList.contains('flex')).toBe(true);
-      expect(frame.classList.contains('flex-col')).toBe(true);
-      if (!live) expect(wall.parentElement!.classList.contains('flex-1')).toBe(true);
-      expect(
-        live ? container.querySelectorAll('canvas') : container.querySelectorAll('svg[viewBox]'),
-      ).toHaveLength(4);
+      render(<CameraMapPanel coverage={defaultCoverage()} />);
+      const canvasIds = (group: HTMLElement) =>
+        within(group)
+          .getAllByLabelText(/영상$/)
+          .map((canvas) => canvas.getAttribute('aria-label'));
+      // 위쪽 모서리(cam1·cam2) 영상이 위, 아래쪽 모서리(cam4·cam3) 영상이 아래다.
+      expect(canvasIds(screen.getByRole('group', { name: '왼쪽 카메라 영상' }))).toEqual([
+        'cam1 영상',
+        'cam4 영상',
+      ]);
+      expect(canvasIds(screen.getByRole('group', { name: '오른쪽 카메라 영상' }))).toEqual([
+        'cam2 영상',
+        'cam3 영상',
+      ]);
+      expect(screen.getByRole('img', { name: /위에서 본 보정 화면/ })).toBeTruthy();
+      expect(screen.getAllByRole('heading', { name: '카메라 시야 · 실시간 영상' })).toHaveLength(1);
     },
   );
+
+  it('영상이 오지 않는 칸은 흐리게 두고 상태를 글로 보인다', () => {
+    render(<CameraMapPanel coverage={defaultCoverage()} />);
+    const tile = screen.getByLabelText('cam1 영상');
+    expect(tile.className).toContain('opacity-45');
+    expect(tile.parentElement!.textContent).toContain('cam1');
+  });
+
+  it('영상 칸은 누르는 단추가 아니다(크게 보기 없음)', () => {
+    render(<CameraMapPanel coverage={defaultCoverage()} />);
+    expect(screen.queryByRole('button', { name: /크게 보기|작게 보기/ })).toBeNull();
+  });
 });
 
 const latest = buildCoverageGuidePayload({ connectivity: 'CONNECTED', guides: [] });

@@ -1,16 +1,14 @@
 import { tileLabel } from '@/features/cctv/cctv';
 import { useCctvStore } from '@/features/cctv/cctv.store';
-import { CctvDemo } from '@/features/cctv/CctvDemo';
-import { CctvWall, type WallTile } from '@/features/cctv/CctvWall';
-import { DIMMED, TILE_FRAME, tileZoom } from '@/features/cctv/tileStyle';
+import { DIMMED, TILE_FRAME } from '@/features/cctv/tileStyle';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
+import { ROOM } from '@/features/plan/plan';
 import {
   CAMERA_HEIGHT_HELP,
   CANDIDATE_KIND_LABEL,
-  CHECKS,
-  HEAD_ERR_MAX_CM,
+  MAP_TITLE,
   MAX_CAMERA_HEIGHT_M,
-  PAIR_MISMATCH,
+  type CoverageCameraView,
   type HeightFieldView,
   type HeightWarningItem,
   type SceneTierStatusView,
@@ -18,6 +16,7 @@ import {
   type SetupWaitingView,
   type Step1CoverageView,
 } from '@/features/setup/setup';
+import { SetupMap } from '@/features/setup/SetupMap';
 import type { SetupZoneDraftsResponse, ZoneDraftItem } from '@/features/setup/types';
 import { DEFAULT_CCTV_PREVIEW_URL } from '@/lib/parseEnv';
 import { Badge } from '@simai/ui/components/badge';
@@ -26,7 +25,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@simai/ui/components/c
 import { cn } from '@simai/ui/lib/utils';
 import { useCallback, type ReactNode } from 'react';
 
-// 세팅 화면 패널: 1단계 CCTV 4분할(기존 디코딩 재사용)·카메라 연결/방향 안내·카메라 높이 입력, 이후 단계 요약.
+// 세팅 화면 패널: 1단계 2D 지도 양옆의 카메라 영상(기존 디코딩 재사용)·카메라 연결/방향 안내·카메라 높이 입력, 이후 단계 요약.
 // 색은 위험 등급색(sev-critical·sev-high·sev-caution)과 겹치지 않는 토큰만 쓴다.
 
 const DOT: Record<SetupTone, string> = {
@@ -63,119 +62,169 @@ function Dot({ tone }: { tone: SetupTone }) {
   return <i aria-hidden className={cn('size-2 flex-none rounded-full', DOT[tone])} />;
 }
 
-function Panel({ title, children }: { title: string; children: ReactNode }) {
+function Panel({
+  title,
+  children,
+  dense = false,
+  fill = 0,
+}: {
+  title: string;
+  children: ReactNode;
+  /** 세로 공간이 모자랄 때: 안쪽 간격을 줄인다. */
+  dense?: boolean;
+  /**
+   * 놓인 칸의 남은 높이를 나눠 갖는 비율(같은 칸의 다른 패널과의 비). 0 이면 내용 높이 그대로다. 내용보다 작아지지는 않는다.
+   */
+  fill?: number;
+}) {
   return (
-    <Card size="sm">
+    <Card
+      size="sm"
+      className={cn(fill > 0 && 'shrink-0')}
+      style={fill > 0 ? { flexGrow: fill } : undefined}
+    >
       <CardHeader>
         <CardTitle>
           <h2>{title}</h2>
         </CardTitle>
       </CardHeader>
-      <CardContent className="flex flex-col gap-3">{children}</CardContent>
+      <CardContent className={cn('flex flex-col', dense ? 'gap-2' : 'gap-3', fill > 0 && 'grow')}>
+        {children}
+      </CardContent>
     </Card>
   );
 }
 
 function Rows({ children }: { children: ReactNode }) {
-  return <ul className="divide-y divide-border">{children}</ul>;
+  return <ul className="flex flex-1 flex-col divide-y divide-border">{children}</ul>;
 }
 
 function Row({ children }: { children: ReactNode }) {
-  return <li className="flex items-center gap-2.5 px-0.5 py-2 text-sm">{children}</li>;
+  return <li className="flex flex-1 items-center gap-2.5 px-0.5 py-1 text-sm">{children}</li>;
 }
 
-interface Stat {
-  label: string;
-  value: string | null;
-  ok?: boolean;
-}
+/** 영상 칸 비율: 보통 16:9 이고, 폭이 모자라면 4:3 까지 좁아진다(영상은 칸 안에 비율대로 담겨 위아래에 빈 띠가 생긴다). */
+const TILE_ASPECT = 16 / 9;
+const TILE_MIN_ASPECT = 4 / 3;
+/** 같은 쪽 영상 두 칸 사이 간격과, 영상 열·지도 사이 간격(px). */
+const TILE_GAP_PX = 12;
+const SIDE_GAP_PX = 16;
+/** 영상 칸 높이 = (지도 높이 − 칸 간격) / 2. 위쪽 칸은 지도 위 끝, 아래쪽 칸은 지도 아래 끝에 맞는다. */
+const TILE_HEIGHT = `calc((var(--h) - ${TILE_GAP_PX}px) / 2)`;
+/** 영상 열 폭: 16:9 로 맞추되 지도와 양옆 열이 컨테이너에 들어가는 폭을 넘지 않는다. */
+const TILE_COLUMN_WIDTH = `min(calc(${TILE_HEIGHT} * ${TILE_ASPECT}), calc((100cqw - var(--h) - ${2 * SIDE_GAP_PX}px) / 2))`;
+/** 영상 열이 가장 좁은 4:3 일 때 전체 폭 = 지도 높이 × (1 + 4/3) − 칸 간격 × 4/3 + 열 간격 2개. */
+const MIN_ASPECT_FIXED_WIDTH_PX = 2 * SIDE_GAP_PX - TILE_GAP_PX * TILE_MIN_ASPECT;
+/** 지도 높이: 카드 안 남은 높이에 맞추되, 그 폭에 영상 두 열(최소 4:3)과 지도가 들어가는 높이를 넘지 않는다. */
+const MAP_HEIGHT = `min(100cqh, calc((100cqw - ${MIN_ASPECT_FIXED_WIDTH_PX}px) / ${1 + TILE_MIN_ASPECT}))`;
 
-function Stats({ items }: { items: Stat[] }) {
-  return (
-    <dl className="grid grid-cols-2 gap-2.5">
-      {items.map((item) => (
-        <div key={item.label} className="grid gap-0.5 rounded-lg bg-surface-2 px-3 py-2.5">
-          <dt className="text-xs text-muted-foreground">{item.label}</dt>
-          <dd className={cn('font-mono text-[17px] font-semibold', item.ok && 'text-ok')}>
-            {item.value ?? (
-              <>
-                <span aria-hidden>—</span>
-                <span className="sr-only">값 없음</span>
-              </>
-            )}
-          </dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-function LiveSetupTile({
-  cameraId,
+/** 카메라 영상 한 칸(16:9). 영상이 오지 않을 때는 흐리게 두고 이유를 글로 보인다. */
+function CameraTile({
+  camera,
   attach,
-  wall,
 }: {
-  cameraId: string;
+  camera: CoverageCameraView;
   attach: (cameraId: string, canvas: HTMLCanvasElement | null) => void;
-  wall: WallTile;
 }) {
-  const phase = useCctvStore((s) => s.views[cameraId]?.phase);
+  const phase = useCctvStore((s) => s.views[camera.id]?.phase);
   const link = useCctvStore((s) => s.link);
   const playing = link === 'open' && phase === 'playing';
   const ref = useCallback(
-    (canvas: HTMLCanvasElement | null) => attach(cameraId, canvas),
-    [attach, cameraId],
+    (canvas: HTMLCanvasElement | null) => attach(camera.id, canvas),
+    [attach, camera.id],
   );
   return (
-    <button
-      type="button"
-      onClick={wall.toggle}
-      aria-label={`${cameraId} ${wall.focused ? '작게 보기' : '크게 보기'}`}
-      className={cn(TILE_FRAME, 'bg-surface-2', tileZoom(wall.focused))}
-    >
-      <canvas
-        ref={ref}
-        aria-label={`${cameraId} 영상`}
-        className={cn('size-full object-contain', !playing && DIMMED)}
-      />
-      <span className={cn(CAPTION, 'top-2 left-2')}>
-        <span className="font-mono font-semibold">{cameraId}</span>
-        <span>{tileLabel(phase, link)}</span>
-      </span>
-    </button>
+    <div className="w-full" style={{ height: TILE_HEIGHT }}>
+      <div className={cn(TILE_FRAME, 'bg-surface-2')}>
+        <canvas
+          ref={ref}
+          aria-label={`${camera.id} 영상`}
+          className={cn('size-full object-contain', !playing && DIMMED)}
+        />
+        <span className={cn(CAPTION, 'top-2 left-2')}>
+          <Dot tone={camera.tone} />
+          <span className="font-mono font-semibold">{camera.id}</span>
+          <span>{tileLabel(phase, link)}</span>
+        </span>
+      </div>
+    </div>
   );
 }
 
-/** 1단계 실시간 CCTV 4칸(기존 CCTV WebCodecs 디코딩·모의 화면 재사용). */
-export function SetupCctvPanel() {
+/** 지도 한쪽 옆의 영상 칸들. 카메라가 지도 위쪽 모서리에 있으면 위, 아래쪽 모서리에 있으면 아래에 붙는다. */
+function CameraTileColumn({
+  label,
+  cameras,
+  attach,
+}: {
+  label: string;
+  cameras: readonly CoverageCameraView[];
+  attach: (cameraId: string, canvas: HTMLCanvasElement | null) => void;
+}) {
+  return (
+    <div role="group" aria-label={label} className="flex flex-col justify-between gap-3">
+      {cameras.map((camera) => (
+        <div
+          key={camera.id}
+          className={cn(cameras.length === 1 && camera.corner[1] < ROOM.depth / 2 && 'mt-auto')}
+        >
+          <CameraTile camera={camera} attach={attach} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 모서리 위치로 나눈 카메라 목록(왼쪽·오른쪽, 각각 위에서 아래로). */
+function camerasBySide(cameras: readonly CoverageCameraView[]) {
+  const top = (a: CoverageCameraView, b: CoverageCameraView) => b.corner[1] - a.corner[1];
+  const isLeft = (camera: CoverageCameraView) => camera.corner[0] < ROOM.width / 2;
+  return {
+    left: cameras.filter(isLeft).sort(top),
+    right: cameras.filter((camera) => !isLeft(camera)).sort(top),
+  };
+}
+
+/**
+ * 1단계 2D 지도와 카메라 영상을 한 카드로 묶는다. 지도는 가운데, 카메라 영상은 그 카메라가 있는 모서리 쪽 양옆에 둔다
+ * (위쪽 카메라 영상은 지도 위 끝, 아래쪽 카메라 영상은 지도 아래 끝에 맞춘다). 카드는 놓인 칸의 높이를 꽉 채우고, 지도는
+ * 그 안에서 가능한 크게 가운데에 둔다. 영상이 오지 않는 칸은 흐리게 두고 상태를 글로 보인다.
+ */
+export function CameraMapPanel({ coverage }: { coverage: Step1CoverageView }) {
   const { localUrl, stompUrl } = readPreviewUrls();
   const { attach } = useCctvPreview(localUrl, stompUrl);
-  const link = useCctvStore((s) => s.link);
-  const cameras = useCctvStore((s) => s.cameras);
-
+  const { left, right } = camerasBySide(coverage.cameras);
   return (
-    <Panel title="실시간 CCTV 4칸">
-      <div className="flex h-[clamp(260px,40vh,520px)] flex-col">
-        {link === 'open' && cameras.length > 0 ? (
-          <CctvWall
-            ids={cameras}
-            tile={(id, wall) => <LiveSetupTile cameraId={id} attach={attach} wall={wall} />}
-          />
-        ) : (
-          <div className="flex min-h-0 flex-1 flex-col gap-2">
-            <p className="text-xs text-muted-foreground">{tileLabel(undefined, link)}</p>
-            <CctvDemo />
+    <Card size="sm">
+      <CardHeader>
+        <CardTitle>
+          <h2>{MAP_TITLE[0]}</h2>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="[container-type:size] min-h-0 flex-1">
+        <div
+          className="flex size-full items-center justify-center"
+          style={{ gap: SIDE_GAP_PX, ['--h' as string]: MAP_HEIGHT }}
+        >
+          <div style={{ height: 'var(--h)', width: TILE_COLUMN_WIDTH }}>
+            <CameraTileColumn label="왼쪽 카메라 영상" cameras={left} attach={attach} />
           </div>
-        )}
-      </div>
-    </Panel>
+          <div style={{ height: 'var(--h)', width: 'var(--h)' }}>
+            <SetupMap stage={0} coverage={coverage} className="h-full max-h-none" />
+          </div>
+          <div style={{ height: 'var(--h)', width: TILE_COLUMN_WIDTH }}>
+            <CameraTileColumn label="오른쪽 카메라 영상" cameras={right} attach={attach} />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
-/** 1단계 카메라별 수신 상태·회전 방향 안내 및 6쌍 매칭 등급. */
+/** 1단계 카메라별 수신 상태·회전 방향 안내. 카메라 쌍 등급은 2D 지도의 연결선에 보인다. 칸이 남으면 행 사이 여백이 고르게 늘어난다. */
 export function CameraPanel({ coverage }: { coverage: Step1CoverageView }) {
   return (
-    <Panel title="카메라 연결 · 방향 안내">
+    <Panel title="카메라 연결 · 방향 안내" dense fill={2}>
       <Rows>
         {coverage.cameras.map((cam) => (
           <Row key={cam.id}>
@@ -195,31 +244,6 @@ export function CameraPanel({ coverage }: { coverage: Step1CoverageView }) {
           </Row>
         ))}
       </Rows>
-
-      <div className="grid grid-cols-2 gap-2" role="list" aria-label="카메라 쌍 매칭 등급">
-        {coverage.pairs.map((pair) => (
-          <div
-            key={pair.key}
-            role="listitem"
-            className="flex items-center justify-between gap-2 rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs"
-          >
-            <span className="font-mono font-medium">{pair.key}</span>
-            <span className="flex items-center gap-1.5">
-              {pair.inliers !== null && (
-                <span className="font-mono text-muted-foreground">{pair.inliers}점</span>
-              )}
-              <Badge
-                className={cn(
-                  'h-auto rounded px-1.5 py-0.5 font-mono text-xs font-semibold',
-                  TONE_BADGE[pair.tone],
-                )}
-              >
-                {pair.gradeLabel}
-              </Badge>
-            </span>
-          </div>
-        ))}
-      </div>
     </Panel>
   );
 }
@@ -246,7 +270,7 @@ export function CameraHeightPanel({
 }) {
   const warnedCamIds = new Set(heightWarnings.map((w) => w.cameraId));
   return (
-    <Panel title="카메라 높이 입력 (바닥~렌즈 중심, m)">
+    <Panel title="카메라 높이 입력 (바닥~렌즈 중심, m)" dense fill={1}>
       <p className="text-xs text-muted-foreground">{CAMERA_HEIGHT_HELP}</p>
       {heightWarnings.length > 0 && (
         <div
@@ -264,7 +288,7 @@ export function CameraHeightPanel({
           ))}
         </div>
       )}
-      <div className="grid grid-cols-2 gap-2.5">
+      <div className="grid flex-1 auto-rows-fr grid-cols-2 gap-2">
         {fields.map((field) => {
           const inputId = `camera-height-${field.cameraId}`;
           const needsInput = field.required || field.missing;
@@ -273,7 +297,7 @@ export function CameraHeightPanel({
             <div
               key={field.cameraId}
               className={cn(
-                'flex flex-col gap-1 rounded-lg bg-surface-2 px-3 py-2',
+                'flex flex-col justify-center gap-1 rounded-lg bg-surface-2 px-3 py-1.5',
                 isWarned && 'ring-1 ring-delay',
               )}
             >
@@ -313,7 +337,7 @@ export function CameraHeightPanel({
                 value={field.rawValue}
                 onChange={(e) => onChange(field.cameraId, e.target.value)}
                 className={cn(
-                  'h-8 w-full rounded-md border bg-card px-2.5 font-mono text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  'h-7 w-full rounded-md border bg-card px-2.5 font-mono text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   field.missing || field.invalid || isWarned ? 'border-delay' : 'border-border',
                 )}
               />
@@ -356,7 +380,7 @@ export function WaitingPanel({
   onReturnToStep1?: () => void;
 }) {
   return (
-    <Panel title="현장 자동 보정 · 3D 공간 생성 대기">
+    <Panel title="현장 자동 보정 · 3D 공간 생성 대기" fill={1}>
       <div className="flex flex-col gap-2 rounded-lg bg-surface-2 px-3.5 py-3">
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
           <span className="font-semibold text-foreground">{waiting.stageLabel}</span>
@@ -423,7 +447,7 @@ export function WaitingPanel({
       </ol>
 
       {waiting.backgroundCollection.length > 0 && (
-        <div className="grid grid-cols-4 gap-2" aria-label="카메라별 배경 수집 진행률">
+        <div className="mt-auto grid grid-cols-4 gap-2" aria-label="카메라별 배경 수집 진행률">
           {waiting.backgroundCollection.map((cam) => (
             <div
               key={cam.cameraId}
@@ -514,7 +538,7 @@ export function AiZoneDraftsPanel({
   const activeSceneVersion = sceneTier.finalSceneVersion ?? sceneTier.previewSceneVersion;
 
   return (
-    <Panel title="AI 위험 구역 초안 · 배경 맵 상태">
+    <Panel title="AI 위험 구역 초안 · 배경 맵 상태" fill={1}>
       <div
         role="status"
         aria-label="배경 맵 단계 상태"
@@ -622,30 +646,6 @@ export function AiZoneDraftsPanel({
           })}
         </ul>
       )}
-    </Panel>
-  );
-}
-
-/** 세팅 세션이 없을 때 보정 검증 단계의 검증 지점 요약. */
-export function CheckPanel() {
-  const maxErrorCm = Math.max(...CHECKS.map((c) => c.errorCm));
-  return (
-    <Panel title={`보정 검증 · 머리 높이 오차 ${HEAD_ERR_MAX_CM}cm 이하`}>
-      <Rows>
-        {CHECKS.map((check, n) => (
-          <Row key={n}>
-            <Dot tone="ok" />
-            <span>{n + 1}번 지점</span>
-            <span className="ml-auto font-mono">{`${check.errorCm}cm`}</span>
-          </Row>
-        ))}
-      </Rows>
-      <Stats
-        items={[
-          { label: '최대 오차', value: `${maxErrorCm}cm`, ok: true },
-          { label: '카메라 쌍 불일치', value: PAIR_MISMATCH },
-        ]}
-      />
     </Panel>
   );
 }
