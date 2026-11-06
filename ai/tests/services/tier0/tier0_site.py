@@ -93,9 +93,10 @@ class _DictFetcher:
 
 def bundle_message(
     calibration: dict[str, Any], version: str, issued_at: int, *, zones=None, rules=RULES, fetcher: _DictFetcher | None = None,
-    work_surfaces=(),
+    work_surfaces=(), ppe_policy: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], _DictFetcher]:
-    """EC2 처럼 구성 요소 → 매니페스트 → config_bundle 알림을 만든다(바이트는 fetcher 에). work_surfaces: 작업면(R2·R3)."""
+    """EC2 처럼 구성 요소 → 매니페스트 → config_bundle 알림을 만든다(바이트는 fetcher 에). work_surfaces: 작업면(R2·R3).
+    ppe_policy: 선택 구성 요소 ppe_policy 내용(config_bundle 1.3.0, R9). None 이면 싣지 않는다."""
     from simai_ai.config import sha256_of
 
     fetcher = fetcher or _DictFetcher()
@@ -107,6 +108,8 @@ def bundle_message(
         "operational_geometry": {"version": f"geom-{version}", "work_surfaces": list(work_surfaces),
                                  "static_objects": []},
     }
+    if ppe_policy is not None:
+        docs["ppe_policy"] = ppe_policy
     components = {}
     for name, doc in docs.items():
         data = _dumps(doc)

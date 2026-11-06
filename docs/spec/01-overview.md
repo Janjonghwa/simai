@@ -48,7 +48,7 @@ simai는 고정 카메라 4대로 작업 공간의 사람·장비·정적 구조
 | F-06 입체 Geo-fencing | 다각형 + 높이 범위 구역. 판정은 Risk Engine, VLM 근거는 첨부만 |
 | F-02 TBM 리스크 보고서 | 가상 레이아웃에 위험 규칙 적용 + RAG·LLM 보고서 |
 | F-10 기록·최소 리플레이 | Spatial DB 저장, 시각 슬라이더로 world_track_state·risk_event 재생 |
-| F-11 PPE 판정 | World ID 별 안전모·조끼 착용 상태(WORN/NOT_WORN/UNKNOWN)를 판정해 관제 화면에 표시하고, 안전모 요구 구역의 미착용은 R9(CAUTION) 주의 이벤트로 관제 화면에 안내 |
+| F-11 PPE 판정 | World ID 별 안전모·조끼 착용 상태(WORN/NOT_WORN/UNKNOWN)를 판정해 관제 화면에 표시하고, 진행 중 작업이 있을 때의 안전모 미착용은 R9(CAUTION) 주의 이벤트로 관제 화면에 안내 |
 
 **MVP 통합 단계.** 기능을 줄이지 않고 통합 순서를 나눈다.
 

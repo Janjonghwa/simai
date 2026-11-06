@@ -1,0 +1,38 @@
+{
+  "schema_version": "2.2.0",
+  "msg_type": "risk_event_transition",
+  "msg_id": "0192a6f0-7c1e-7b3a-9f2d-000000000519",
+  "sent_at": 1760342412400,
+  "source_id": "tier0-01",
+  "payload": {
+    "event_id": "0192a6f0-7c1e-7b3a-9f2d-5190a5190519",
+    "event_sequence": 2,
+    "journal_offset": 2051,
+    "transition": "UPDATED",
+    "occurred_at": 1760342412350,
+    "gateway_id": "tier0-01",
+    "observation_time": 1760342412100,
+    "evaluated_at": 1760342412340,
+    "rule_id": "R9",
+    "rule_version": 1,
+    "config_version": "cfg-14",
+    "calibration_version": "cal-7",
+    "scene_version": "scene-3",
+    "source": "LIVE",
+    "severity": "CAUTION",
+    "confidence": "LOW",
+    "verification": "VERIFIED",
+    "needs_check": true,
+    "confidence_reasons": [
+      "PPE_UNKNOWN"
+    ],
+    "world_ids": [
+      "w-0012"
+    ],
+    "zone_id": null,
+    "metrics": {},
+    "evidence_ref": "0192a6f0-7c1e-7b3a-9f2d-000000000518",
+    "resent": false,
+    "resumed": false
+  }
+}

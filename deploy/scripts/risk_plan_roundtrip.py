@@ -32,7 +32,7 @@ def _load(examples: Path, name: str) -> dict:
 def cases(examples: Path) -> list[tuple[str, dict, dict, int]]:
     """(이름, 요청, 기대 결과, HTTP 상태)."""
     unknown = _load(examples, "risk_plan_request.json")
-    unknown["payload"]["rules"]["rule_versions"] = [{"rule_id": "R9", "rule_version": 1}]
+    unknown["payload"]["rules"]["rule_versions"] = [{"rule_id": "R8", "rule_version": 1}]
     unreadable = _load(examples, "risk_plan_request.json")
     unreadable["payload"].pop("request_id")
     empty = _load(examples, "risk_plan_request.generated_positions.json")

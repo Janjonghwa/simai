@@ -117,8 +117,8 @@ class FakePerception:
         return Perceived(t=t, frame=frame, payload=payload, t_latest_global=t)
 
 
-def _bundle(version: str, issued_at: int):
-    message, fetcher = ts.bundle_message(CALIBRATION, version, issued_at, rules=(("R1", 1),))
+def _bundle(version: str, issued_at: int, *, rules=(("R1", 1),), ppe_policy=None):
+    message, fetcher = ts.bundle_message(CALIBRATION, version, issued_at, rules=rules, ppe_policy=ppe_policy)
     geometry = json.loads(fetcher.blobs[message["payload"]["components"]["operational_geometry"]["uri"]])
     assert geometry["version"] == f"geom-{version}"
     return message, fetcher
@@ -126,12 +126,13 @@ def _bundle(version: str, issued_at: int):
 
 class Site:
     def __init__(self, tmp: Path, *, start_writer: bool = True, loop_cls=JudgmentLoop, policy=POLICY,
-                 verification=None, fsync=None, calibration_state=None) -> None:
+                 verification=None, fsync=None, calibration_state=None, rules=(("R1", 1),), ppe_policy=None,
+                 ppe_snapshot=None) -> None:
         import threading
 
         self.clock = FixedClock(T0)
         self.rig = CameraRig.from_provider(FileCalibrationProvider(CAL_FILE))
-        message, self.fetcher = _bundle("cfg-1", T0 - 10)
+        message, self.fetcher = _bundle("cfg-1", T0 - 10, rules=rules, ppe_policy=ppe_policy)
         verifier = BundleVerifier(self.fetcher, default_registry(), lambda v: v == CALIBRATION["calibration_version"],
                                   self.clock)
         self.config_sync = ConfigSync(verifier, self.clock, source_id=ts.GATEWAY, restored=verifier.verify(message),
@@ -152,6 +153,7 @@ class Site:
             calibration_state=calibration_state or (lambda: str(self.rig.state)),
             send_i0=lambda kind, payload: self.i0.append((kind, payload)) or True,
             offer_world_state=lambda payload, msg_id: self.offered.append((payload, msg_id)),
+            **({} if ppe_snapshot is None else {"ppe_snapshot": ppe_snapshot}),
         )
 
     def tick(self, people: dict, revisions=()):
@@ -714,3 +716,71 @@ def test_unknown_calibration_state_is_judged_as_uncalibrated(tmp_path, monkeypat
     assert seen == ["UNCALIBRATED"] * 3
     assert s.loop.stats.calibration_state_unknown == 3 and s.loop.stats.evaluated == 2
 
+
+
+# --- R9: PPE 중계 저장소 → 판정 → 저널 (명세 7.2 R9, 5.5, S15P31A101-519) ---------------------------
+
+PPE_WORK = {"format_version": "1.0.0", "version": "ppe-3", "work_id": 7, "effective_from_ms": T0 - 60_000,
+            "helmet": "REQUIRED"}
+PPE_EXAMPLE = json.loads((AI_DIR.parent / "contracts" / "examples" / "ppe_state.json").read_text(encoding="utf-8"))
+
+
+def _ppe_message(seq: int, world_id: str, state: str, t: int) -> dict:
+    person = dict(PPE_EXAMPLE["payload"]["people"][0])
+    helmet = dict(person["helmet"]) | {"state": state, "last_evidence_at_ms": t, "expires_at_ms": t + 10_000,
+                                       "evidence": [dict(person["helmet"]["evidence"][0]) | {"candidate_state": state}]}
+    person |= {"world_id": world_id, "identity_revision": 0, "capture_time_ms": t, "helmet": helmet}
+    payload = dict(PPE_EXAMPLE["payload"]) | {"state_sequence": seq, "people": [person]}
+    return dict(PPE_EXAMPLE) | {"payload": payload}
+
+
+def test_r9_runs_from_relayed_ppe_state_without_site_alert(tmp_path) -> None:
+    """중계한 ppe_state 로 R9 가 나고(CAUTION: 현장 경보 없음, 7.3), WORN 이 오면 그 판정에 해소된다."""
+    from simai_ai.risk import PpeStateStore
+
+    store = PpeStateStore()
+    s = Site(tmp_path, rules=(("R1", 1), ("R9", 1)), ppe_policy=PPE_WORK, ppe_snapshot=store.snapshot)
+    try:
+        assert store.offer(_ppe_message(1, "w-1", "NOT_WORN", T0))
+        s.tick({"w-1": (OUTSIDE, 0)})
+        [event] = [e for e in s.tracker.active() if e.rule_id == "R9"]
+        assert event.world_ids == ("w-1",) and event.zone_id is None and str(event.severity) == "CAUTION"
+        assert store.offer(_ppe_message(2, "w-1", "WORN", T0 + 100))
+        s.tick({"w-1": (OUTSIDE, 0)})
+        assert [e for e in s.tracker.active() if e.rule_id == "R9"] == []
+        entries = [e.payload for e in s.flush()]
+    finally:
+        s.close()
+    assert [(p["rule_id"], p["transition"], p["verification"]) for p in entries] == [
+        ("R9", "RAISED", "VERIFIED"), ("R9", "RESOLVED", "VERIFIED")]
+    assert [k for k, _ in s.i0 if k == "local_alert"] == []  # CAUTION 은 노트북 로컬 경보로 내지 않는다
+
+
+def test_r9_off_when_bundle_has_no_r9(tmp_path) -> None:
+    """기본 꺼짐(8.10·15.1): 묶음 rules 에 R9 가 없으면 작업 중 NOT_WORN 이어도 이벤트가 없다."""
+    from simai_ai.risk import PpeStateStore
+
+    store = PpeStateStore()
+    s = Site(tmp_path, ppe_policy=PPE_WORK, ppe_snapshot=store.snapshot)
+    try:
+        store.offer(_ppe_message(1, "w-1", "NOT_WORN", T0))
+        for _ in range(3):
+            s.tick({"w-1": (OUTSIDE, 0)})
+        assert s.tracker.active() == ()
+    finally:
+        s.close()
+
+
+def test_ppe_snapshot_failure_does_not_lose_the_tick(tmp_path) -> None:
+    """안전모 상태를 읽지 못하면 그 tick 은 모름(빈 상태)으로 판정하고 tick 을 잃지 않는다(R9 새로 안 냄)."""
+
+    def broken():
+        raise RuntimeError("boom")
+
+    s = Site(tmp_path, rules=(("R1", 1), ("R9", 1)), ppe_policy=PPE_WORK, ppe_snapshot=broken)
+    try:
+        s.tick({"w-1": (INSIDE, 0)})
+        assert s.loop.stats.evaluated == 1
+        assert [e.rule_id for e in s.tracker.active()] == ["R1"]
+    finally:
+        s.close()

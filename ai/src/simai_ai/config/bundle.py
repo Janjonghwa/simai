@@ -12,6 +12,7 @@ EC2 가 보내는 알림(I1 `config_bundle`)의 정본은 `contracts/messages/co
 | rules | `{"version", "rule_versions": [{"rule_id", "rule_version"}, ...]}`. 알림의 rule_versions 와 같아야 한다 |
 | calibration | `contracts/providers/calibration.schema.json` 보정 문서. calibration_version 이 구성 요소 version 과 같다 |
 | operational_geometry | `{"version", "work_surfaces"?: [{"surface_id", ...}], "static_objects"?: [{"object_id", ...}]}`. 나머지 필드는 그대로 보관 |
+| ppe_policy(선택, config_bundle 1.3.0) | 계약 `contracts/data/ppe_policy.schema.json`(임시 형식 아님). 없으면 안전모 요구 없음(명세 7.2 R9) |
 
 검증을 통과한 묶음(ConfigBundle)은 읽기 전용이다. 묶음은 덮어쓰지 않고 새 config_version 으로만 바뀐다(AGENTS 규칙 6).
 """
@@ -24,10 +25,17 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
-from simai_ai.risk import Rule, Zone
+from simai_ai.risk import PpePolicy, Rule, Zone
 
 COMPONENT_NAMES = ("zones", "rules", "calibration", "operational_geometry")
 """구성 요소 이름(계약 config_bundle.payload.components 의 필수 키)"""
+OPTIONAL_COMPONENT_NAMES = ("ppe_policy",)
+"""선택 구성 요소 이름(config_bundle 1.3.0, S15P31A101-517·-519). 실려 있으면 필수 구성 요소처럼 내려받아 검사한다"""
+
+
+def component_names(components: Mapping[str, Any]) -> tuple[str, ...]:
+    """이 묶음에 실린 구성 요소 이름(필수 전부 + 실린 선택 구성 요소). 순서는 고정이다."""
+    return COMPONENT_NAMES + tuple(n for n in OPTIONAL_COMPONENT_NAMES if n in components)
 
 
 def sha256_of(data: bytes) -> str:
@@ -83,7 +91,7 @@ class BundleNotice:
         comps = payload["components"]
         refs = {
             name: ComponentRef(name, comps[name]["version"], comps[name]["sha256"], comps[name]["uri"])
-            for name in COMPONENT_NAMES
+            for name in component_names(comps)
         }
         rule_versions = tuple((r["rule_id"], r["rule_version"]) for r in comps["rules"]["rule_versions"])
         return cls(
@@ -112,6 +120,7 @@ class ConfigBundle:
     - blobs: 내려받은 원본 바이트(해시 → 바이트). 보관소(archive)가 그대로 저장해 재시작 때 다시 검증한다.
     - setup_calibration: 보정 버전이 Tier 0 저장소에 없지만 세팅 보정 채택 조건(verify.SetupCalibrationGate)을 통과했다(-467).
       Tier 0 는 이 묶음을 적용하는 판정 경계에서 그 보정 문서(blobs)를 새 World 기준으로 채택한다. 채택에 실패하면 묶음을 거부한다.
+    - ppe_policy: 안전모 요구(선택 구성 요소, 명세 7.2 R9·12.3). None 은 묶음에 ppe_policy 가 없다는 뜻이고 요구 없음으로 판정한다.
     """
 
     notice: BundleNotice
@@ -126,6 +135,7 @@ class ConfigBundle:
     verified_at: int = 0
     blobs: Mapping[str, bytes] = field(default_factory=lambda: MappingProxyType({}), hash=False, repr=False)
     setup_calibration: bool = False
+    ppe_policy: PpePolicy | None = None
 
     @property
     def config_version(self) -> str:

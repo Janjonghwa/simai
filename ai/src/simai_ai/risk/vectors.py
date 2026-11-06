@@ -8,9 +8,9 @@
 벡터 형식(JSON, format_version 1.x). 형식은 ai/tests/risk/vectors/README.md 에도 적는다.
 1.1 은 생명주기(lifecycle) 시나리오를, 1.2 는 단계별 감시 상태(monitoring, R7 입력)를, 1.3 은 발생 지속 조건·재개
 설정과 확인 필요 이유(confidence_reasons)를, 1.4 는 등록 작업면(work_surfaces, R2·R3·R5 입력)을, 1.5 는 보정 상태
-(calibration_state, R2·R3·R4 의 PROVISIONAL_CALIB 입력)를 더했다. 이전 벡터는 그대로 읽힌다.
-monitoring 키는 format_version 1.2 이상에서만, 1.3 키는 1.3 이상에서만, work_surfaces 는 1.4 이상에서만, calibration_state 는
-1.5 이상에서만 받는다(낮은 버전에 있으면 오류).
+(calibration_state, R2·R3·R4 의 PROVISIONAL_CALIB 입력)를, 1.6 은 안전모 요구·상태(ppe_policy·ppe_state, R9 입력)를 더했다.
+이전 벡터는 그대로 읽힌다. monitoring 키는 format_version 1.2 이상에서만, 1.3 키는 1.3 이상에서만, work_surfaces 는 1.4 이상에서만,
+calibration_state 는 1.5 이상에서만, ppe_policy·ppe_state 는 1.6 이상에서만 받는다(낮은 버전에 있으면 오류).
 
     {
       "format_version": "1.0.0",
@@ -75,6 +75,12 @@ Geometry)이다. 형식은 simai_ai.risk.work_surface.WorkSurface.from_json(Cont
 보정 상태(1.5, 선택). 최상위 calibration_state 는 모든 단계의 world 위치를 만든 보정의 상태(명세 4.4, RuleContext.calibration_state)다.
 없거나 null 이면 보정 상태가 적용되지 않는 입력(PLANNED 계획 위치와 같다)으로 판정해 PROVISIONAL_CALIB 가 붙지 않는다.
 steps[].calibration_state(선택, 1.5)는 그 단계부터가 아니라 그 단계만의 값으로 최상위 값을 대신한다(운영 중 보정 상태 전환 시험).
+
+안전모 요구·상태(1.6, 선택, R9 입력, 명세 7.2·12.3). 최상위 ppe_policy 는 모든 단계의 구성 묶음 구성 요소 ppe_policy 내용
+(contracts/data/ppe_policy 문서, null 이면 묶음에 ppe_policy 가 없음 = 요구 없음)이고, 없으면 null 과 같다.
+steps[].ppe_policy(선택)는 그 단계만의 값으로 최상위 값을 대신한다(작업 시작·종료 묶음 전환 시험).
+steps[].ppe_state(선택)는 그 단계 판정 전에 받은 I1 ppe_state payload 목록이다. 받은 상태는 뒤 단계에도 남고(Tier 0 의
+PpeStateStore 처럼 사람별 최신 상태, 만료는 expires_at_ms), 한 번도 받지 않은 사람은 UNKNOWN 이다.
 """
 
 import argparse
@@ -114,6 +120,7 @@ from simai_ai.risk.lifecycle import (
     Persistence,
 )
 from simai_ai.risk.monitoring import MonitoringState
+from simai_ai.risk.ppe import HelmetObservation, PpePolicy, PpeSnapshot
 from simai_ai.risk.registry import RuleRegistry, default_registry
 from simai_ai.risk.rule import Finding
 from simai_ai.risk.work_surface import WorkSurface, check_unique_ids
@@ -125,6 +132,7 @@ MONITORING_MIN_MINOR = 2  # steps[].monitoring 을 더한 마이너 버전
 PERSISTENCE_MIN_MINOR = 3  # 발생 지속 조건·재개 설정, confidence_reasons 를 더한 마이너 버전
 WORK_SURFACES_MIN_MINOR = 4  # 최상위 work_surfaces(등록 작업면, R2·R3·R5 입력)를 더한 마이너 버전
 CALIBRATION_STATE_MIN_MINOR = 5  # 최상위 calibration_state(보정 상태, R2·R3·R4 의 PROVISIONAL_CALIB 입력)를 더한 마이너 버전
+PPE_MIN_MINOR = 6  # ppe_policy·ppe_state(안전모 요구·상태, R9 입력)를 더한 마이너 버전
 METRIC_ABS_TOL = 1e-9
 
 
@@ -148,6 +156,8 @@ class VectorStep:
     expected_transitions: tuple[Mapping[str, Any], ...] | None = None
     expected_signals: tuple[Mapping[str, Any], ...] | None = None
     calibration_state: str | None = None  # 이 단계의 보정 상태(steps[].calibration_state, 없으면 최상위 값)
+    ppe_policy: PpePolicy | None = None  # 이 단계의 안전모 요구(steps[].ppe_policy, 없으면 최상위 값)
+    ppe_received: tuple[HelmetObservation, ...] = ()  # 이 단계 판정 전에 받은 안전모 상태(steps[].ppe_state)
 
 
 @dataclass(frozen=True)
@@ -189,7 +199,7 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
     reject_unknown_keys(
         obj,
         {"format_version", "vector_id", "description", "origin", "rules", "zones", "work_surfaces", "steps"}
-        | {"lifecycle", "calibration_state"},
+        | {"lifecycle", "calibration_state", "ppe_policy"},
         where,
     )
 
@@ -225,6 +235,9 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
             f"{where}.calibration_state: format_version {FORMAT_MAJOR}.{CALIBRATION_STATE_MIN_MINOR} 이상에서만 쓴다(이 벡터 {version})"
         )
     calibration_state = _parse_calibration_state(obj.get("calibration_state"), f"{where}.calibration_state")
+    if "ppe_policy" in obj and minor < PPE_MIN_MINOR:
+        raise RiskInputError(f"{where}.ppe_policy: format_version {FORMAT_MAJOR}.{PPE_MIN_MINOR} 이상에서만 쓴다(이 벡터 {version})")
+    ppe_policy = _parse_ppe_policy(obj.get("ppe_policy"), f"{where}.ppe_policy")
     transition_keys = _TRANSITION_KEYS + (("confidence_reasons",) if minor >= PERSISTENCE_MIN_MINOR else ())
 
     steps = []
@@ -232,7 +245,7 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
     for i, s in enumerate(as_list(require(obj, "steps", where), f"{where}.steps")):
         at = f"{where}.steps[{i}]"
         s = as_mapping(s, at)
-        step_keys = {"clock_ms", "world_state", "monitoring", "expect", "calibration_state"}
+        step_keys = {"clock_ms", "world_state", "monitoring", "expect", "calibration_state", "ppe_policy", "ppe_state"}
         if lifecycle is not None:
             step_keys |= {"inject_findings", "acks"}
         reject_unknown_keys(s, step_keys, at)
@@ -240,6 +253,11 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
             raise RiskInputError(
                 f"{at}.calibration_state: format_version {FORMAT_MAJOR}.{CALIBRATION_STATE_MIN_MINOR} 이상에서만 쓴다(이 벡터 {version})"
             )
+        for key in ("ppe_policy", "ppe_state"):
+            if key in s and minor < PPE_MIN_MINOR:
+                raise RiskInputError(
+                    f"{at}.{key}: format_version {FORMAT_MAJOR}.{PPE_MIN_MINOR} 이상에서만 쓴다(이 벡터 {version})"
+                )
         if "monitoring" in s and minor < MONITORING_MIN_MINOR:
             raise RiskInputError(
                 f"{at}.monitoring: format_version {FORMAT_MAJOR}.{MONITORING_MIN_MINOR} 이상에서만 쓴다(이 벡터 {version})"
@@ -261,6 +279,10 @@ def parse_vector(obj: Any, path: Path | None = None) -> Vector:
                 if "calibration_state" in s
                 else calibration_state
             ),
+            ppe_policy=(
+                _parse_ppe_policy(s["ppe_policy"], f"{at}.ppe_policy") if "ppe_policy" in s else ppe_policy
+            ),
+            ppe_received=_parse_ppe_state(s.get("ppe_state", []), f"{at}.ppe_state"),
             expected=_parse_findings(require(expect, "findings", f"{at}.expect"), f"{at}.expect.findings", minor),
         )
         if lifecycle is not None:
@@ -308,6 +330,18 @@ def _parse_calibration_state(value: Any, where: str) -> str | None:
     return state
 
 
+def _parse_ppe_policy(value: Any, where: str) -> PpePolicy | None:
+    return None if value is None else PpePolicy.from_json(value, where)
+
+
+def _parse_ppe_state(value: Any, where: str) -> tuple[HelmetObservation, ...]:
+    out: list[HelmetObservation] = []
+    for i, payload in enumerate(as_list(value, where)):
+        people = as_list(require(as_mapping(payload, f"{where}[{i}]"), "people", f"{where}[{i}]"), f"{where}[{i}].people")
+        out.extend(HelmetObservation.from_person(p, f"{where}[{i}].people[{j}]") for j, p in enumerate(people))
+    return tuple(out)
+
+
 def load_vector(path: Path) -> Vector:
     with open(path, encoding="utf-8") as f:
         return parse_vector(json.load(f), path)
@@ -320,8 +354,10 @@ def run_vector(vector: Vector, registry: RuleRegistry | None = None) -> VectorRe
     lifecycle = None if vector.lifecycle is None else _LifecycleRun(vector, vector.lifecycle, clock)
 
     mismatches: list[str] = []
+    received: list[HelmetObservation] = []  # 받은 안전모 상태(Tier 0 PpeStateStore 처럼 쌓는다)
     for i, step in enumerate(vector.steps):
         clock.set(step.clock_ms)
+        received.extend(step.ppe_received)
         evaluation = engine.evaluate(
             step.world_state,
             vector.zones,
@@ -329,6 +365,8 @@ def run_vector(vector: Vector, registry: RuleRegistry | None = None) -> VectorRe
             monitoring=step.monitoring,
             work_surfaces=vector.work_surfaces,
             calibration_state=step.calibration_state,
+            ppe_policy=step.ppe_policy,
+            ppe=PpeSnapshot.from_observations(received),
         )
         mismatches += [f"steps[{i}]: {m}" for m in _compare(evaluation, step)]
         if lifecycle is not None:
@@ -531,7 +569,10 @@ def _parse_lifecycle(obj: Any, where: str, minor: int) -> LifecycleSpec:
     reject_unknown_keys(policy, keys, at)
     # 1.3 미만은 지속 조건·재개 없는 설정, 1.3 이상은 제품 기본값에서 적은 값만 바꾼다.
     default = LifecyclePolicy() if with_persistence else LEGACY_IMMEDIATE_POLICY
-    by_rule = as_mapping(policy.get("clear_hold_ms_by_rule", {}), f"{at}.clear_hold_ms_by_rule")
+    # 적지 않으면 기본값(R9 0, LifecyclePolicy)을 쓴다. 적으면 그 값이 규칙별 해소 유지 시간 전체다.
+    by_rule = as_mapping(
+        policy.get("clear_hold_ms_by_rule", default.clear_hold_ms_by_rule), f"{at}.clear_hold_ms_by_rule"
+    )
     persistence = default.persistence
     if "persistence" in policy:
         persistence = _parse_persistence(policy["persistence"], f"{at}.persistence")

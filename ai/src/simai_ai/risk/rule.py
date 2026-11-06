@@ -31,6 +31,7 @@ from simai_ai.risk.common import (
     normalize_confidence,
 )
 from simai_ai.risk.monitoring import MonitoringState
+from simai_ai.risk.ppe import EMPTY_PPE, PpePolicy, PpeSnapshot
 from simai_ai.risk.work_surface import WorkSurface
 from simai_ai.risk.world import WorldState, WorldTrack
 from simai_ai.risk.zone import Zone
@@ -179,6 +180,10 @@ class RuleContext:
     calibration_state). world_state 계약에 없는 판정 문맥이라 감시 상태처럼 따로 받는다(Tier 0 는 health 와 같은 활성 보정
     상태를 넣는다). None 은 보정 상태가 적용되지 않는 입력이다(PLANNED 계획 위치는 측정이 아니다). R2·R3·R4 는
     calibration_confidence() 로 PROVISIONAL_CALIB 를 붙인다(D-G3-03).
+
+    ppe_policy: 활성 구성 묶음의 안전모 요구(구성 요소 ppe_policy, 명세 7.2 R9·12.3). None 은 묶음에 ppe_policy 가 없다는
+    뜻이고 요구 없음(NOT_REQUIRED)으로 읽는다(“PPE 요구 미수신” 표시는 EC2 가 한다). ppe: 같은 판정의 사람별 최신 안전모
+    상태(PPE 프로세스의 ppe_state). 둘 다 world_state 계약에 없는 판정 문맥이라 감시 상태처럼 따로 받는다. R9 만 읽는다.
     """
 
     now_ms: int
@@ -189,6 +194,8 @@ class RuleContext:
     work_surfaces: tuple[WorkSurface, ...] = ()
     state: RuleStateView = field(default_factory=RuleStateView, compare=False)
     calibration_state: str | None = None
+    ppe_policy: PpePolicy | None = None
+    ppe: PpeSnapshot = EMPTY_PPE
 
     def __post_init__(self) -> None:
         if self.calibration_state is not None and self.calibration_state not in CALIBRATION_STATES:
@@ -230,3 +237,21 @@ class ZoneClearEvidence(Protocol):
     """
 
     def clear_zones(self, ctx: RuleContext) -> Iterable[str]: ...
+
+
+@runtime_checkable
+class PersonClearEvidence(Protocol):
+    """사람 대상 규칙의 선택 확장: 위치 관측이 아닌 근거로 조건이 사라졌다고 확인한 사람 (명세 7.2 R9, 6.4).
+
+    사람 대상 이벤트의 해소는 기본으로 그 사람의 위치 관측(OBSERVED·최신)으로 확인한다(lifecycle.ObservedTracksPolicy). R9 의
+    조건은 위치가 아니라 안전모 상태와 구성(요구)이라 착용(WORN) 관측이나 요구 해제(작업 종료 묶음)가 해소 근거다.
+    - clear_world_ids: 조건이 없다고 확인한 World ID(R9: 요구 중 안전모 WORN).
+    - clears_all: 이 판정에서 이 규칙의 조건이 모든 사람에게 없다고 구성으로 확정됐다(R9: 요구 NOT_REQUIRED·ppe_policy 없음).
+      트랙이 사라진 사람의 이벤트도 해소된다(요구 해제는 사람 관측과 관계없는 사실, 7.2).
+    엔진이 Evaluation.person_clear_evidence·rules_cleared_for_all 로 모으고, lifecycle 은 그 규칙의 판정이 없는 사람 대상
+    이벤트를 이 근거가 있으면 VERIFIED 로 본다.
+    """
+
+    def clear_world_ids(self, ctx: RuleContext) -> Iterable[str]: ...
+
+    def clears_all(self, ctx: RuleContext) -> bool: ...

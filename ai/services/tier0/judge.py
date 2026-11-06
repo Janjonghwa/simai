@@ -150,8 +150,11 @@ class JudgmentLoop:
         restore_link: Any | None = None,
         new_msg_id: Callable[[], str] = lambda: str(uuid.uuid4()),
         begin_tick: Callable[[], Any] | None = None,
+        ppe_snapshot: Callable[[], Any] | None = None,
     ) -> None:
         self.lock = lock
+        # 사람별 최신 안전모 상태(R9 입력, 명세 5.5·7.2, S15P31A101-519). 없으면 빈 스냅샷(모두 UNKNOWN: R9 는 새로 내지 않는다)
+        self._ppe_snapshot = ppe_snapshot
         self._now_ms = now_ms
         self.config_sync = config_sync
         self.perception = perception
@@ -248,13 +251,23 @@ class JudgmentLoop:
                  if payload["calibration_version"] == self.perception.rig.calibration_version
                  else self._last_calibration_state)
         evaluation = active.evaluate(world, self.tracker.origin, monitoring=self._monitoring(active),
-                                     calibration_state=state)
+                                     calibration_state=state, ppe=self._ppe())
         step = self.tracker.apply(evaluation, world, config_version=active.config_version, evidence_ref=msg_id,
                                   related=self._related(self._last_frame))
         self.stats.frozen_evaluations += 1
         self._record(step)
         self._note_risk(evaluation)
         return TickResult(None, version, msg_id, (step,))
+
+    def _ppe(self) -> Any:
+        """이 tick 의 안전모 상태 스냅샷. 읽기 실패는 빈 스냅샷(모름)이다: 판정 tick 을 잃지 않고 모르는 착용을 지어내지 않는다."""
+        if self._ppe_snapshot is None:
+            return None
+        try:
+            return self._ppe_snapshot()
+        except Exception:  # noqa: BLE001 - 판정 tick 을 잃지 않는다
+            log.exception("안전모 상태 스냅샷을 읽지 못했다: 이 tick 은 모름으로 판정한다")
+            return None
 
     def _active_calibration_state(self) -> str:
         """판정에 넘길 활성 보정 상태. 읽기 실패(예외·None·모르는 값)는 UNCALIBRATED 다: LIVE 에서 '해당 없음(None)'은 PLANNED 전용이라
@@ -301,7 +314,8 @@ class JudgmentLoop:
             world = WorldState.from_payload(payload)
             with self.timing.measure("risk_evaluate", len(payload["tracks"])):
                 evaluation = active.evaluate(world, self.tracker.origin, monitoring=self._monitoring(active),
-                                             calibration_state=self._last_calibration_state)  # 4) 판정(작업면·보정 상태 포함)
+                                             calibration_state=self._last_calibration_state,
+                                             ppe=self._ppe())  # 4) 판정(작업면·보정 상태·안전모 상태 포함)
                 step = self.tracker.apply(evaluation, world, config_version=active.config_version, evidence_ref=msg_id,
                                           related=related)
             self.stats.evaluated += 1

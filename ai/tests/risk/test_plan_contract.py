@@ -315,18 +315,18 @@ def _cases():
     )
     yield (
         "replay_and_unknown_rule",
-        _mut(lambda p: (p.__setitem__("source", "REPLAY"), _rules(("R9", 1))(p))),
+        _mut(lambda p: (p.__setitem__("source", "REPLAY"), _rules(("R8", 1))(p))),
         "SOURCE_NOT_PLANNED",
     )
     yield "no_source", _mut(lambda p: p.pop("source")), "INVALID_REQUEST"
     # 같은 (ID, 버전) 두 번은 스키마 위반(400), 같은 ID 다른 버전은 규칙 묶음 오류(422)
     yield "exact_duplicate_rule", _mut(_rules(("R1", 1), ("R1", 1))), "INVALID_REQUEST"
     yield "same_id_other_version", _mut(_rules(("R2", 1), ("R2", 1001))), "UNKNOWN_RULE"
-    yield "unregistered_rule", _mut(_rules(("R9", 1))), "UNKNOWN_RULE"
+    yield "unregistered_rule", _mut(_rules(("R8", 1))), "UNKNOWN_RULE"
     # 규칙 묶음이 레이아웃보다 먼저
     yield (
         "unknown_rule_and_bad_zone",
-        _mut(lambda p: (_rules(("R9", 1))(p), _zone(1, z_range=[4.0, 0.0])(p))),
+        _mut(lambda p: (_rules(("R8", 1))(p), _zone(1, z_range=[4.0, 0.0])(p))),
         "UNKNOWN_RULE",
     )
     yield "reversed_z_range", _mut(_zone(1, z_range=[4.0, 0.0])), "INVALID_LAYOUT"

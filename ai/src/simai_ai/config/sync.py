@@ -52,6 +52,7 @@ from simai_ai.risk import (
     EventIdFactory,
     MonitoringState,
     Origin,
+    PpeSnapshot,
     RiskEngine,
     RuleState,
     WorkSurfaceSet,
@@ -115,8 +116,10 @@ class ActiveConfig:
         *,
         monitoring: MonitoringState | None = None,
         calibration_state: str | None = None,
+        ppe: PpeSnapshot | None = None,
     ) -> Evaluation:
-        """이 묶음의 규칙·구역·등록 작업면으로 판정한다. calibration_state 는 world 를 만든 보정의 상태다(RiskEngine.evaluate)."""
+        """이 묶음의 규칙·구역·등록 작업면·안전모 요구로 판정한다. calibration_state 는 world 를 만든 보정의 상태, ppe 는
+        사람별 최신 안전모 상태다(RiskEngine.evaluate, R9)."""
         return self.engine.evaluate(
             world,
             self.bundle.zones,
@@ -124,6 +127,8 @@ class ActiveConfig:
             monitoring=monitoring,
             work_surfaces=self.work_surfaces.surfaces,
             calibration_state=calibration_state,
+            ppe_policy=self.bundle.ppe_policy,
+            ppe=ppe,
         )
 
 

@@ -70,10 +70,12 @@ class BundleKit:
         geometry=None,
         manifest_patch=None,
         tamper=None,
+        ppe_policy=None,
     ):
         """묶음 하나를 발행하고 알림 메시지를 돌려준다.
 
         tamper: 올린 뒤 바꿀 구성 요소 이름 또는 "manifest"(해시가 어긋나게 된다).
+        ppe_policy: 선택 구성 요소 ppe_policy 의 내용 문서(config_bundle 1.3.0). None 이면 싣지 않는다.
         """
         issued_at = self.clock.now_ms() if issued_at is None else issued_at
         base = f"s3://simai-site/config/{version}"
@@ -98,6 +100,8 @@ class BundleKit:
                 "static_objects": [],
             },
         }
+        if ppe_policy is not None:
+            docs["ppe_policy"] = ppe_policy
         components = {}
         for name, doc in docs.items():
             data = dumps(doc)

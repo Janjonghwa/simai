@@ -117,7 +117,7 @@ def test_rejected_bundle_keeps_previous_and_reports(kit, tamper):
 
 def test_reference_broken_rejected(kit):
     sync = connected_sync_with(kit, "cfg-12")
-    result = sync.receive(kit.publish("cfg-13", rule_versions=(("R9", 1),)))
+    result = sync.receive(kit.publish("cfg-13", rule_versions=(("R8", 1),)))
     assert result.reason is RejectReason.REFERENCE_INVALID
     assert sync.begin_tick().config_version == "cfg-12"
 
@@ -370,7 +370,7 @@ def _random_run(kit, rng):
             n += 1
             bad = rng.choice([None, None, "manifest", "zones", "ref"])
             if bad == "ref":
-                message = kit.publish(f"cfg-r{n}", rule_versions=(("R9", 1),))
+                message = kit.publish(f"cfg-r{n}", rule_versions=(("R8", 1),))
             else:
                 message = kit.publish(f"cfg-r{n}", tamper=bad)
             before = sync.active

@@ -247,8 +247,8 @@ def test_rule_errors():
     p["rules"]["rule_versions"] = [{"rule_id": "R2", "rule_version": 1}, {"rule_id": "R2", "rule_version": 1001}]
     with pytest.raises(PlanRuleError, match="R2"):
         evaluate_plan(p)
-    p["rules"]["rule_versions"] = [{"rule_id": "R9", "rule_version": 1}]
-    with pytest.raises(PlanRuleError, match="R9 v1"):
+    p["rules"]["rule_versions"] = [{"rule_id": "R8", "rule_version": 1}]
+    with pytest.raises(PlanRuleError, match="R8 v1"):
         evaluate_plan(p)
 
 

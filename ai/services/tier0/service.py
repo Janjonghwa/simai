@@ -81,7 +81,14 @@ from simai_ai.io.freshness import SkipReason
 from simai_ai.providers.files import FileCalibrationProvider
 from simai_ai.providers.provenance import build_input_provenance
 from simai_ai.recovery import Checkpointer, CheckpointStore, RecoveryHealthGate, RecoveryResult, recover
-from simai_ai.risk import LifecycleTracker, ObservedTracksPolicy, Origin, ack_from_contract, default_registry
+from simai_ai.risk import (
+    LifecycleTracker,
+    ObservedTracksPolicy,
+    Origin,
+    PpeStateStore,
+    ack_from_contract,
+    default_registry,
+)
 from simai_ai.risk._parse import RiskInputError
 from simai_ai.tracking.clock_sync import Tier0Clock, Tier0ClockSync
 from simai_ai.tracking.decision_time import ClockAwareVerification, DecisionClock
@@ -492,6 +499,8 @@ class Tier0Service:
             active_states=lambda: self.judge.active_states(), send=self._send_laptop_health, clock=self.clock,
             lock=self.judge_lock, ready=lambda: self._restored,
         )
+        # R9 입력: PPE outbox 를 중계(SIMAI_PPE_RELAY=1)할 때 같은 메시지로 채운다. 없으면 비어 있어 R9 는 새로 나지 않는다
+        self.ppe_states = PpeStateStore()
         self.link = self._build_link() if s.i1 is not None else None
         if s.event_frames_enabled and s.input_mode == "live" and self.link is not None:
             try:
@@ -539,6 +548,7 @@ class Tier0Service:
             observe_progress=lambda t: self.watchdog.observe(t, self._mono_ns()), restore_link=self.restore_link,
             new_msg_id=self._new_msg_id,
             begin_tick=self._begin_calibration_tick,
+            ppe_snapshot=self.ppe_states.snapshot,
         )
         if not s.human_calibration_enabled:
             log.info("사람 관절 보정 꺼짐")
@@ -880,7 +890,17 @@ class Tier0Service:
             from simai_ai.io.ppe_outbox import PpeOutboxReader, ppe_outbox_path
 
             root = Path(env.get("SIMAI_ROOT") or "/workspace/simai")
-            link.publisher.add_source(PpeOutboxReader(ppe_outbox_path(env, root), source_id=s.gateway_id).take)
+            reader = PpeOutboxReader(ppe_outbox_path(env, root), source_id=s.gateway_id)
+
+            def relay_ppe() -> list[dict[str, Any]]:
+                # 같은 메시지를 R9 판정 입력(사람별 최신 안전모 상태)으로도 쓴다(명세 5.5·7.2, S15P31A101-519).
+                # outbox 를 읽는 곳은 여기 하나다(읽은 파일은 지운다).
+                messages = reader.take()
+                for message in messages:
+                    self.ppe_states.offer(message)
+                return messages
+
+            link.publisher.add_source(relay_ppe)
         return link
 
     # --- 검증된 보정 후보(-344). 후보 계산은 -345의 백그라운드 실행기가 한다. ----------------

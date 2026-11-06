@@ -108,7 +108,8 @@ def test_vector_ids_are_unique():
 
 
 def test_default_registry_rules():
-    # R1(S15P31A101-71, R6 으로 감쌈), R2·R3(S15P31A101-93), R4(S15P31A101-96), R5(S15P31A101-98), R7(S15P31A101-73).
+    # R1(S15P31A101-71, R6 으로 감쌈), R2·R3(S15P31A101-93), R4(S15P31A101-96), R5(S15P31A101-98), R7(S15P31A101-73),
+    # R9(S15P31A101-519, 기본 꺼짐: 시드에서 빠짐).
     # R6 은 구역 규칙을 감싸므로 따로 등록하지 않는다. 높이 규칙과 그 가장자리를 예측하는 R5 는 교실 시험 프로파일(버전 + 1000, 명세 7.4)도 등록한다.
     assert list(default_registry()) == [
         ("R1", 1),
@@ -120,6 +121,7 @@ def test_default_registry_rules():
         ("R5", 1),
         ("R5", 1001),
         ("R7", 1),
+        ("R9", 1),
     ]
 
 
