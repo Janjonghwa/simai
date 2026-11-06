@@ -146,11 +146,6 @@ describe('saveRequestOf(기존 구역 저장)', () => {
       },
     },
     {
-      name: '작업면 삭제: 구역 KEEP + 작업면 ARCHIVE',
-      request: saveRequestOf({ ...base, zoneChanged: false, surface: null, surfaceChanged: true }),
-      expected: { zone: zoneKeep, surface: { op: 'ARCHIVE', object_id: 'ws-1' } },
-    },
-    {
       name: '구역과 작업면 둘 다 고침: 구역 UPDATE + 작업면 op 하나',
       request: saveRequestOf({ ...base, surface: raised, surfaceChanged: true }),
       expected: {
@@ -161,11 +156,6 @@ describe('saveRequestOf(기존 구역 저장)', () => {
           body: surfaceBodyOf(linked, '단상', raised.geometry),
         },
       },
-    },
-    {
-      name: '구역 UPDATE + 작업면 삭제',
-      request: saveRequestOf({ ...base, surface: null, surfaceChanged: true }),
-      expected: { zone: zoneUpdate, surface: { op: 'ARCHIVE', object_id: 'ws-1' } },
     },
     {
       name: '바뀐 것 없음(구역·작업면 모두): null',
@@ -193,19 +183,8 @@ describe('saveRequestOf(기존 구역 저장)', () => {
       expected: null,
     },
     {
-      name: '초안도 이은 작업면도 null 이면 surfaceChanged 가 참이어도 작업면 op 가 없다: null',
-      request: saveRequestOf({
-        ...base,
-        zoneChanged: false,
-        linked: null,
-        surface: null,
-        surfaceChanged: true,
-      }),
-      expected: null,
-    },
-    {
-      name: '초안도 이은 작업면도 null 인데 구역은 고쳤다: UPDATE, 작업면 키 없음',
-      request: saveRequestOf({ ...base, linked: null, surface: null, surfaceChanged: true }),
+      name: '초안도 이은 작업면도 없는데 구역은 고쳤다: UPDATE, 작업면 키 없음',
+      request: saveRequestOf({ ...base, linked: null, surface: undefined, surfaceChanged: true }),
       expected: { zone: zoneUpdate },
     },
   ];
@@ -255,12 +234,7 @@ describe('createRequestOf(새 구역)', () => {
   const named = { ...newSurfaceDraft(newBox), name: '단상' };
   const cases: Case[] = [
     {
-      name: '작업면 초안이 undefined: 구역 CREATE 만, 작업면 키 없음',
-      request: createRequestOf({ form: newForm, shape: newShape, surface: undefined }),
-      expected: { zone: { op: 'CREATE', body: newBody } },
-    },
-    {
-      name: '작업면 초안이 null: 구역 CREATE 만, 작업면 키 없음',
+      name: '작업면 초안이 null(세팅의 AI 초안 수락): 구역 CREATE 만, 작업면 키 없음',
       request: createRequestOf({ form: newForm, shape: newShape, surface: null }),
       expected: { zone: { op: 'CREATE', body: newBody } },
     },

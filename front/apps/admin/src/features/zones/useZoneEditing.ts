@@ -21,7 +21,6 @@ import {
   editedBox,
   formWithPatch,
   ghostsOf,
-  isSolidZone,
   newSurfaceDraft,
   newZoneForm,
   nextZoneName,
@@ -100,22 +99,24 @@ export function useZoneEditing(onCommitted?: () => void) {
   // ---- 고르고 있는 대상의 값 ----------------------------------------------------------------
   const linked = zone ? (links.get(zone.zoneId) ?? null) : null;
   const draft: TargetDraft | undefined = drafts[key];
-  const surface = useMemo(() => currentSurface(draft, linked), [draft, linked]);
+  const roomLimit = useRoomLimit();
+  // 작업면이 없는 구역의 상자. 새 구역은 방 가운데에서 시작하고, 새 구역의 작업면도 이 상자 가운데에 놓인다.
+  const draftBox = draft?.box ?? null;
+  const zoneBox = useMemo(
+    () => draftBox ?? (zone ? boxOfZone(zone) : defaultNewBox(zones, roomLimit)),
+    [draftBox, zone, zones, roomLimit],
+  );
+  // 새 구역은 늘 작업면과 함께 시작한다(작업면은 지우거나 따로 더하지 않는다). 작업면 없이 만든 기존 구역은 작업면이 없다.
+  const surface = useMemo(
+    () => currentSurface(draft, linked) ?? (zone ? null : newSurfaceDraft(zoneBox)),
+    [draft, linked, zone, zoneBox],
+  );
   // 작업면이 있으면 구역은 작업면에서 계산한다(모양은 작업면 둘레, 심각도는 경고, 판정 유형은 입체로 고정). 3D 손잡이도
   // 작업면을 고친다.
   const bound = surface !== null;
   const surfaceShape = useMemo(
     () => (surface ? surfaceZoneShape(surface.geometry) : null),
     [surface],
-  );
-  // 저장된 작업면을 이번 초안에서 지웠다: 입체 구역은 모양이 작업면에서 풀려나 직사각형이 아니어도 감싸는 상자로 고칠 수 있다.
-  const unlinking = draft?.surface === null && zone !== null && isSolidZone(zone);
-  const roomLimit = useRoomLimit();
-  // 작업면이 없는 구역의 상자. 새 구역은 방 가운데에서 시작하고, 손잡이로 고치면 그 상자가 남는다.
-  const draftBox = draft?.box ?? null;
-  const zoneBox = useMemo(
-    () => draftBox ?? (zone ? boxOfZone(zone) : defaultNewBox(zones, roomLimit)),
-    [draftBox, zone, zones, roomLimit],
   );
   const patchedForm = zone
     ? formWithPatch(zone, draft?.patch ?? {})
@@ -156,8 +157,8 @@ export function useZoneEditing(onCommitted?: () => void) {
   // ---- 3D 와 주고받기 -----------------------------------------------------------------------
   // 구역 없는 작업면을 골랐을 때는 고치는 상자가 없다(삭제만 한다).
   const boxEdit = useMemo(
-    () => (orphan ? null : boxEditOf({ key, zone, zoneBox, surface, surfaceValid, unlinking })),
-    [orphan, key, zone, zoneBox, surface, surfaceValid, unlinking],
+    () => (orphan ? null : boxEditOf({ key, zone, zoneBox, surface, surfaceValid })),
+    [orphan, key, zone, zoneBox, surface, surfaceValid],
   );
   const ghosts = useMemo(() => ghostsOf(drafts, key, zones, links), [drafts, key, zones, links]);
   const onBoxChange = useBoxChange({ key, zone, linked, surface, zoneBox });
@@ -169,6 +170,7 @@ export function useZoneEditing(onCommitted?: () => void) {
     shape,
     form,
     draft,
+    surface,
     linked,
     orphan,
     zoneDirty,
@@ -192,9 +194,6 @@ export function useZoneEditing(onCommitted?: () => void) {
     edit((prev) => withPatch(prev, zone, patch), group);
   const setName = (name: string) => setPatch({ name }, NAME_EDIT_GROUP);
   const setSeverity = (severity: Severity) => setPatch({ severity });
-  const addSurface = () => edit((prev) => withSurface(prev, newSurfaceDraft(zoneBox)));
-  // 저장된 작업면이면 구역 저장 때 보관하고, 이번에 만든 것이면 그냥 버린다.
-  const removeSurface = () => edit((prev) => withSurface(prev, linked ? null : undefined));
   const setSurfaceTop = (top: number) => {
     if (!surface) return;
     const geometry = { ...surface.geometry, topHeightM: top };
@@ -214,9 +213,9 @@ export function useZoneEditing(onCommitted?: () => void) {
   // 구역 없는 작업면 카드가 양식을 가린 동안에는 숨은 초안을 되돌리지 않는다.
   useZoneUndoKey(!commit.busy && orphan === null, () => undoZoneDraft(key));
 
-  // 형상을 고칠 수 없는 구역(입체 판정이 아니거나, 높이가 없거나, 직사각형이 아님). 작업면이 붙었거나 입체 구역의 작업면을
-  // 지우는 중이면 모양이 작업면에서 정해지거나 풀리므로 해당하지 않는다.
-  const shapeLocked = zone !== null && !zone.shapeEditable && !bound && !unlinking;
+  // 형상을 고칠 수 없는 구역(입체 판정이 아니거나, 높이가 없거나, 직사각형이 아님). 작업면이 붙었으면 모양이 작업면에서
+  // 정해지므로 해당하지 않는다.
+  const shapeLocked = zone !== null && !zone.shapeEditable && !bound;
 
   return {
     zones,
@@ -243,8 +242,6 @@ export function useZoneEditing(onCommitted?: () => void) {
     pick,
     setName,
     setSeverity,
-    addSurface,
-    removeSurface,
     setSurfaceTop,
     save: commit.save,
     add: commit.add,

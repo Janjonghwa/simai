@@ -9,7 +9,7 @@ import { archiveErrorText, useSurfaceArchive } from '@/features/zones/useSurface
 import { useZoneCommitMutation, type CommitDone } from '@/features/zones/useZoneCommitMutation';
 import type { ZoneTarget } from '@/features/zones/useZoneTarget';
 import { archiveRequestOf, createRequestOf, saveRequestOf } from '@/features/zones/zoneCommit';
-import { NEW_KEY, type TargetDraft } from '@/features/zones/zoneEditModel';
+import { NEW_KEY, type SurfaceDraft, type TargetDraft } from '@/features/zones/zoneEditModel';
 import type { ZoneForm, ZoneShape } from '@/features/zones/zoneForm';
 import { removeZoneDraft } from '@/store/zoneEdit.store';
 
@@ -19,6 +19,8 @@ export interface ZoneCommitInput {
   shape: ZoneShape | null;
   form: ZoneForm;
   draft: TargetDraft | undefined;
+  /** 지금 보이는 작업면. 새 구역은 늘 있다(고치지 않았으면 기본 작업면). */
+  surface: SurfaceDraft | null;
   linked: WorkSurface | null;
   /** 3D 에서 고른, 어느 구역에도 이어지지 않은 작업면. */
   orphan: WorkSurface | null;
@@ -41,7 +43,7 @@ export interface ZoneCommitInput {
  * 통째로 지우고, 실패하면 서버에 아무것도 저장되지 않았으니 초안을 그대로 남겨 다시 저장할 수 있게 한다.
  */
 export function useZoneCommit(input: ZoneCommitInput) {
-  const { zone, shape, form, draft, linked, orphan, target } = input;
+  const { zone, shape, form, draft, surface, linked, orphan, target } = input;
   const commit = useZoneCommitMutation();
   const archive = useSurfaceArchive();
   const { busy, run } = useExclusiveRun();
@@ -98,8 +100,8 @@ export function useZoneCommit(input: ZoneCommitInput) {
   };
 
   const add = async () => {
-    if (zone || !shape || !input.addReady || busy) return;
-    const request = createRequestOf({ form, shape, surface: draft?.surface });
+    if (zone || !shape || !surface || !input.addReady || busy) return;
+    const request = createRequestOf({ form, shape, surface });
     await send(request, (done) => {
       // 만든 구역을 고르고 새 구역 양식은 처음 값으로 돌린다.
       removeZoneDraft(NEW_KEY);

@@ -18,15 +18,14 @@ const nameOf = (draft: SurfaceDraft) => draft.name ?? '';
 
 /**
  * 이은 작업면(linked)과 초안(draft)의 차이를 작업면 op 하나로. 건드리지 않았거나(undefined·changed 거짓) 바꿀 것이 없으면
- * undefined 다. 새 작업면이 이은 작업면을 대신하면(지우고 다시 추가) REPLACE 다(구역에는 작업면 하나).
+ * undefined 다. 이은 작업면이 아닌 다른 작업면 초안이 이은 작업면을 대신하면 REPLACE 다(구역에는 작업면 하나).
  */
 function surfacePartOf(
   linked: WorkSurface | null,
-  draft: SurfaceDraft | null | undefined,
+  draft: SurfaceDraft | undefined,
   changed: boolean,
 ): ZoneCommitSurface | undefined {
   if (draft === undefined || !changed) return undefined;
-  if (draft === null) return linked ? { op: 'ARCHIVE', object_id: linked.objectId } : undefined;
   if (linked === null) {
     return { op: 'CREATE', body: surfaceBodyOf(null, nameOf(draft), draft.geometry) };
   }
@@ -47,7 +46,7 @@ export interface SaveRequestInput {
   /** 구역 속성이나 모양을 새 버전으로 저장할지(부르는 쪽이 정한다). 아니면 구역은 KEEP 이라 새 버전을 만들지 않는다. */
   zoneChanged: boolean;
   linked: WorkSurface | null;
-  surface: SurfaceDraft | null | undefined;
+  surface: SurfaceDraft | undefined;
   surfaceChanged: boolean;
 }
 
@@ -74,14 +73,17 @@ export const renameRequestOf = (zone: Zone, name: string): ZoneCommitRequest => 
   },
 });
 
-/** 새 구역 만들기. 구역 몸체는 모양·양식 그대로다. 작업면 초안이 있으면 새 작업면도 함께 만든다. */
+/**
+ * 새 구역 만들기. 구역 몸체는 모양·양식 그대로다. 작업면이 있으면 새 작업면도 함께 만든다(구역 편집 화면의 새 구역은 늘
+ * 작업면이 있고, 작업면 없이 만드는 쪽은 세팅의 AI 초안 수락이다).
+ */
 export function createRequestOf(input: {
   form: ZoneForm;
   shape: ZoneShape;
-  surface: SurfaceDraft | null | undefined;
+  surface: SurfaceDraft | null;
 }): ZoneCommitRequest {
   const zone = { op: 'CREATE', body: newZoneBodyOf(input.form, input.shape) } as const;
-  const surfacePart = surfacePartOf(null, input.surface, true);
+  const surfacePart = surfacePartOf(null, input.surface ?? undefined, true);
   return surfacePart ? { zone, surface: surfacePart } : { zone };
 }
 

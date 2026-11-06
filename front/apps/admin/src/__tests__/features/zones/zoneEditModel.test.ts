@@ -10,7 +10,6 @@ import {
   formWithPatch,
   ghostsOf,
   isEmptyDraft,
-  isSolidZone,
   NEW_KEY,
   newSurfaceDraft,
   newZoneForm,
@@ -132,11 +131,9 @@ describe('저장 전에 고친 것', () => {
     expect(zoneChanged(zone, undefined)).toBe(false);
   });
 
-  it('작업면: 건드리지 않음 · 같은 값 · 지움 · 새로 만듦 · 값을 바꿈', () => {
+  it('작업면: 건드리지 않음 · 같은 값 · 새로 만듦 · 값을 바꿈', () => {
     expect(surfaceChanged(undefined, linked)).toBe(false);
     expect(surfaceChanged(surfaceDraftOf(linked), linked)).toBe(false);
-    expect(surfaceChanged(null, linked)).toBe(true);
-    expect(surfaceChanged(null, null)).toBe(false);
     expect(surfaceChanged(newSurfaceDraft({ min: [0, 0, 0], max: [2, 2, 2] }), null)).toBe(true);
     const taller = surfaceDraftOf(linked);
     taller.geometry.topHeightM = 0.9;
@@ -147,13 +144,16 @@ describe('저장 전에 고친 것', () => {
 
   it('지금 보이는 작업면: 건드렸으면 그 값, 아니면 이은 작업면', () => {
     expect(currentSurface(undefined, linked)?.id).toBe('ws-1');
-    expect(currentSurface({ patch: {}, box: null, surface: null }, linked)).toBeNull();
+    const edited = { ...surfaceDraftOf(linked), name: '고침' };
+    expect(currentSurface({ patch: {}, box: null, surface: edited }, linked)).toBe(edited);
     expect(currentSurface(undefined, null)).toBeNull();
   });
 
   it('구역이나 작업면 하나라도 고쳤으면 고친 대상이다', () => {
+    const taller = surfaceDraftOf(linked);
+    taller.geometry.topHeightM = 0.9;
     expect(targetChanged(zone, undefined, linked)).toBe(false);
-    expect(targetChanged(zone, { patch: {}, box: null, surface: null }, linked)).toBe(true);
+    expect(targetChanged(zone, { patch: {}, box: null, surface: taller }, linked)).toBe(true);
     expect(targetChanged(zone, { patch: { name: 'x' }, box: null }, null)).toBe(true);
   });
 });
@@ -169,11 +169,17 @@ describe('초안 갱신', () => {
     expect(withPatch(undefined, null, { name: zone.name }).patch).toEqual({ name: zone.name });
   });
 
-  it('작업면: undefined 는 작업면 칸을 지우고, null 은 지운다고 적는다', () => {
-    const kept: TargetDraft = { patch: {}, box: null, surface: null };
-    expect(withSurface(kept, undefined)).toEqual({ patch: {}, box: null });
-    expect(withSurface(undefined, null)).toEqual({ patch: {}, box: null, surface: null });
-    expect(withPatch(kept, zone, { name: 'x' }).surface).toBeNull();
+  it('작업면을 고치면 작업면 칸만 바뀌고 이름·상자 초안은 그대로다', () => {
+    const next = surfaceDraftOf(linked);
+    expect(withSurface(undefined, next)).toEqual({ patch: {}, box: null, surface: next });
+    expect(withSurface({ patch: { name: 'x' }, box: MOVED }, next)).toEqual({
+      patch: { name: 'x' },
+      box: MOVED,
+      surface: next,
+    });
+    expect(withPatch({ patch: {}, box: null, surface: next }, zone, { name: 'x' }).surface).toBe(
+      next,
+    );
   });
 
   it('작업면 상자를 끌면 그 형상만 바뀌고 회전은 그대로다', () => {
@@ -195,11 +201,12 @@ describe('초안 갱신', () => {
   });
 
   it('구역 상자를 끌어도 이름 고침과 작업면 초안은 그대로 이어받는다', () => {
-    const prev: TargetDraft = { patch: { name: 'x' }, box: null, surface: null };
+    const surface = surfaceDraftOf(linked);
+    const prev: TargetDraft = { patch: { name: 'x' }, box: null, surface };
     expect(withZoneBox(prev, zone, MOVED)).toEqual({
       patch: { name: 'x' },
       box: MOVED,
-      surface: null,
+      surface,
     });
   });
 
@@ -207,8 +214,6 @@ describe('초안 갱신', () => {
     expect(isEmptyDraft({ patch: {}, box: null })).toBe(true);
     expect(isEmptyDraft({ patch: { name: 'x' }, box: null })).toBe(false);
     expect(isEmptyDraft({ patch: {}, box: MOVED })).toBe(false);
-    // 작업면 칸이 null 이면 저장된 작업면을 지우겠다는 초안이라 비지 않았다
-    expect(isEmptyDraft({ patch: {}, box: null, surface: null })).toBe(false);
     expect(isEmptyDraft({ patch: {}, box: null, surface: surfaceDraftOf(linked) })).toBe(false);
   });
 
@@ -333,12 +338,6 @@ describe('작업면 구역과 받은 구역 비교', () => {
       false,
     );
   });
-
-  it('높이가 있는 입체 판정 구역만 입체 구역이다', () => {
-    expect(isSolidZone(matching)).toBe(true);
-    expect(isSolidZone({ ...matching, judgeType: 'GROUND_FOOTPRINT' })).toBe(false);
-    expect(isSolidZone({ ...matching, zRange: null })).toBe(false);
-  });
 });
 
 describe('withoutName(이름 고침만 빼기)', () => {
@@ -368,11 +367,9 @@ describe('withoutUnchangedSurface(바뀐 것만 초안)', () => {
     expect(withoutUnchangedSurface(draft, linked)).toEqual({ patch: { name: 'x' }, box: null });
   });
 
-  it('고친 작업면·지운 작업면·새 작업면 초안은 그대로 둔다', () => {
+  it('고친 작업면·새 작업면 초안은 그대로 둔다', () => {
     const edited: TargetDraft = { patch: {}, box: null, surface: raised };
     expect(withoutUnchangedSurface(edited, linked)).toBe(edited);
-    const removed: TargetDraft = { patch: {}, box: null, surface: null };
-    expect(withoutUnchangedSurface(removed, linked)).toBe(removed);
     const created: TargetDraft = { patch: {}, box: null, surface: added };
     expect(withoutUnchangedSurface(created, null)).toBe(created);
     expect(withoutUnchangedSurface(created, linked)).toBe(created);
@@ -397,7 +394,6 @@ describe('3D 로 내려 줄 값', () => {
     zoneBox: BOX,
     surface: null,
     surfaceValid: true,
-    unlinking: false,
   };
   const withSurfaceOf = (geometry: SurfaceGeometry) => ({
     ...base,
@@ -417,14 +413,8 @@ describe('3D 로 내려 줄 값', () => {
     expect(boxEditOf(withSurfaceOf({ ...linked.geometry, yawRad: 0.5 }))).toBeNull();
   });
 
-  it('형상을 못 고치는 구역은 손잡이가 없지만, 저장된 작업면을 지우는 중이면 감싸는 상자로 고친다', () => {
-    const locked = { ...base, zone: { ...zone, shapeEditable: false } };
-    expect(boxEditOf(locked)).toBeNull();
-    expect(boxEditOf({ ...locked, unlinking: true })).toEqual({
-      id: 'z-04',
-      kind: 'zone',
-      box: BOX,
-    });
+  it('작업면이 없고 형상을 못 고치는 구역은 손잡이가 없다', () => {
+    expect(boxEditOf({ ...base, zone: { ...zone, shapeEditable: false } })).toBeNull();
   });
 
   it('새 구역은 형상 제한이 없다', () => {
@@ -465,11 +455,6 @@ describe('3D 로 내려 줄 값', () => {
       expect(ghosts(withBox, 'z-04')[0]?.box.max[2]).toBe(2);
       const rotated = surfaceDraftOf({ ...linked, geometry: { ...linked.geometry, yawRad: 0.5 } });
       expect(ghosts({ 'z-02': { patch: {}, box: BOX, surface: rotated } }, 'z-04')).toEqual([]);
-    });
-
-    it('저장된 작업면을 지우는 초안은 다시 고친 상자(없으면 윤곽 없음)를 따른다', () => {
-      expect(ghosts({ 'z-02': { patch: {}, box: null, surface: null } }, 'z-04')).toEqual([]);
-      expect(ghosts({ 'z-02': { patch: {}, box: BOX, surface: null } }, 'z-04')[0]?.box).toBe(BOX);
     });
   });
 });

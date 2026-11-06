@@ -247,7 +247,7 @@ describe('관제 관리자 편집 모드', () => {
   it('관제 화면을 떠나면 편집 모드만 끄고 고치던 초안은 남긴다', async () => {
     const view = renderMonitor(true);
     await screen.findByTestId('viewer3d');
-    await waitFor(() => expect(useBoxEditStore.getState().boxEdit?.kind).toBe('zone'));
+    await waitFor(() => expect(useBoxEditStore.getState().boxEdit?.kind).toBe('surface'));
     fireEvent.change(screen.getByRole('textbox', { name: '이름' }), {
       target: { value: '임시 초안' },
     });
@@ -260,6 +260,15 @@ describe('관제 관리자 편집 모드', () => {
   it('구역 등급 선택지는 CRITICAL(빨강)·HIGH(주황) 2종뿐이고 이벤트 CAUTION 표시는 유지된다', async () => {
     renderMonitor(true);
     await screen.findByTestId('viewer3d');
+    // 새 구역은 작업면과 함께 시작해 등급 칸이 없다. 작업면 없이 만든 기존 구역(z-04)을 열어 본다.
+    expect(screen.queryByRole('combobox', { name: '심각도' })).toBeNull();
+    await screen.findByRole('option', { name: /개구부 구역/ });
+    act(
+      () =>
+        void fireEvent.change(screen.getByRole('combobox', { name: '구역 선택' }), {
+          target: { value: 'z-04' },
+        }),
+    );
     const severity = screen.getByRole('combobox', { name: '심각도' });
     const options = within(severity).getAllByRole('option') as HTMLOptionElement[];
     expect(SEVERITY_CHOICES).toEqual(['CRITICAL', 'HIGH']);
@@ -277,12 +286,11 @@ describe('관제 관리자 편집 모드', () => {
     expect(severityTone('CAUTION')).toBe('caution');
   });
 
-  it('고소 작업면을 그리면 작업면 OBB 와 둘레 0.30 m 구역(HIGH 고정, 등급 칸 없음)을 함께 만들어 POST /api/zones/commit 한 번으로 발행한다', async () => {
+  it('새 구역은 작업면과 함께 시작해 작업면 OBB 와 둘레 0.30 m 구역(HIGH 고정, 등급 칸 없음)을 함께 만들어 POST /api/zones/commit 한 번으로 발행한다', async () => {
     renderMonitor(true);
     await screen.findByTestId('viewer3d');
     await screen.findByRole('option', { name: /개구부 구역/ });
 
-    act(() => screen.getByRole('button', { name: '+ 고소 작업면 추가' }).click());
     expect(screen.queryByRole('combobox', { name: '심각도' })).toBeNull();
     expect(useBoxEditStore.getState().boxEdit?.kind).toBe('surface');
 
