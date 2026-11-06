@@ -57,10 +57,6 @@ export const PRIMARY_BUTTON_CLASS = cn(
   BUTTON_CLASS,
   'bg-primary font-semibold text-primary-foreground hover:bg-primary-hover',
 );
-export const GHOST_BUTTON_CLASS = cn(
-  BUTTON_CLASS,
-  'bg-transparent text-muted-foreground hover:bg-foreground/10 hover:text-foreground dark:hover:bg-foreground/10',
-);
 export const DANGER_BUTTON_CLASS = cn(BUTTON_CLASS, 'text-destructive');
 /** 삭제 확인 단계의 삭제 버튼. */
 export const ARMED_DELETE_CLASS = cn(

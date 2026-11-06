@@ -222,8 +222,9 @@ const failCommit = (status: number, code: string) =>
       return HttpResponse.json({ status, detail: 'x', code }, { status });
     }),
   );
-const surfaceDeleteButton = () =>
-  within(screen.getByRole('region', { name: '고소 작업면' })).getByRole('button', { name: '삭제' });
+/** 작업면 없이 만든 구역(z-04)을 고른 화면: 고소 작업면 카드가 없다. */
+const noSurfaceCard = () =>
+  expect(screen.queryByRole('region', { name: '고소 작업면' })).toBeNull();
 const SHAPE_LOCKED_TEXT =
   '직사각형이 아니거나 높이가 없거나 바닥 판정인 구역은 형상을 고칠 수 없습니다.';
 const nameInput = () => screen.getByRole('textbox', { name: '이름' }) as HTMLInputElement;
@@ -267,7 +268,7 @@ describe('구역 편집 화면', () => {
     expect(log).toEqual([]);
   });
 
-  it('드롭다운은 「새 구역 추가」가 먼저이고 기존 구역은 이름만(구역 번호 없음)이다. 고르는 칸은 이름과 심각도뿐이다', async () => {
+  it('드롭다운은 「새 구역 추가」가 먼저이고 기존 구역은 이름만(구역 번호 없음)이다. 새 구역은 이름과 고소 작업면만 고른다', async () => {
     await renderPage();
     expect(optionTexts()).toEqual(['새 구역 추가', '개구부 구역', '단상 구역']);
     expect(screen.queryByText(/z-0\d/)).toBeNull();
@@ -275,17 +276,17 @@ describe('구역 편집 화면', () => {
     expect(screen.getByRole('textbox', { name: '이름' })).toHaveProperty('value', '구역 1');
     // 편집 도구에 제목(h1)은 없다. 화면 제목은 실시간 관제 화면이 가진다.
     expect(screen.queryByRole('heading')).toBeNull();
-    const severity = screen.getByRole('combobox', { name: '심각도' });
-    expect(
-      within(severity)
-        .getAllByRole('option')
-        .map((o) => o.textContent),
-    ).toEqual(['위험', '경고']);
+    // 새 구역은 작업면과 함께 시작하므로 심각도는 고르지 않는다(구역은 작업면에서 계산한다).
+    expect(screen.queryByRole('combobox', { name: '심각도' })).toBeNull();
     // 구역 종류·판정 유형은 화면에 없다.
     expect(screen.queryByLabelText('판정 유형')).toBeNull();
     expect(screen.queryByLabelText('유형')).toBeNull();
     expect(button('구역 추가')).toBeTruthy();
-    expect(button('+ 고소 작업면 추가')).toBeTruthy();
+    // 고소 작업면은 처음부터 있고, 지우거나 따로 더하는 단추가 없다.
+    const surfaceCard = screen.getByRole('region', { name: '고소 작업면' });
+    expect(within(surfaceCard).getByLabelText('높이(m)')).toHaveProperty('value', '0.40');
+    expect(within(surfaceCard).queryByRole('button')).toBeNull();
+    expect(screen.queryByRole('button', { name: '+ 고소 작업면 추가' })).toBeNull();
   });
 
   it('이미 저장된 주의 구역은 지금 값을 비활성 선택지로 보이고, 위험이나 경고를 다시 골라야 저장한다', async () => {
@@ -300,7 +301,7 @@ describe('구역 편집 화면', () => {
     );
     await renderPage();
     pick('z-04');
-    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+    await waitFor(noSurfaceCard);
     const options = within(severitySelect()).getAllByRole('option') as HTMLOptionElement[];
     expect(options.map((o) => [o.textContent, o.disabled])).toEqual([
       ['주의', true],
@@ -316,13 +317,10 @@ describe('구역 편집 화면', () => {
     expect((button('저장') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('새 구역은 OPENING·VOLUME_3D 로 만들고 저장과 발행을 /commit 한 번(CREATE, publish)으로 보낸다', async () => {
+  it('새 구역은 작업면과 함께 OPENING·VOLUME_3D·경고로 만들고 저장과 발행을 /commit 한 번(구역 CREATE + 작업면 CREATE, publish)으로 보낸다', async () => {
     await renderPage();
     fireEvent.change(screen.getByRole('textbox', { name: '이름' }), {
       target: { value: '새로 만든 구역' },
-    });
-    fireEvent.change(screen.getByRole('combobox', { name: '심각도' }), {
-      target: { value: 'CRITICAL' },
     });
     act(() => button('구역 추가').click());
     await waitFor(() => expect(picker().value).toBe('z-00000001'));
@@ -335,18 +333,23 @@ describe('구역 편집 화면', () => {
           name: '새로 만든 구역',
           zone_kind: 'OPENING',
           eval_type: 'VOLUME_3D',
-          severity: 'CRITICAL',
+          severity: 'HIGH',
           z_min_m: 0,
           z_max_m: 2,
         },
       },
+      surface: { op: 'CREATE', body: { kind: 'WORK_SURFACE', top_height_m: 0.4 } },
       publish: true,
     });
-    // 새 구역에는 ID 도 작업면도 보내지 않는다.
+    // 새 구역에는 ID 도 작업면 ID 도 보내지 않는다.
     expect(commits[0]!.zone).not.toHaveProperty('zone_id');
-    expect(commits[0]).not.toHaveProperty('surface');
+    expect(commits[0]!.surface).not.toHaveProperty('object_id');
     expect(await fetchList('/api/zones')).toContainEqual(
       expect.objectContaining({ zone_id: 'z-00000001', name: '새로 만든 구역' }),
+    );
+    // 서버가 새 작업면을 새 구역에 이었다.
+    expect(await fetchList('/api/static-objects')).toContainEqual(
+      expect.objectContaining({ kind: 'WORK_SURFACE', zone_id: 'z-00000001', object_version: 1 }),
     );
     // 만든 구역은 바로 고를 수 있고, 새 구역 초안은 비었으며, 발행 전이 아니다(응답의 묶음이 목록에 들어갔다).
     expect(optionTexts()).toContain('새로 만든 구역');
@@ -354,27 +357,31 @@ describe('구역 편집 화면', () => {
     expect(screen.queryByRole('button', { name: '다시 보내기' })).toBeNull();
   });
 
-  it('새 구역에 작업면을 더하면 구역 CREATE + 작업면 CREATE 를 한 요청으로 보내고, 만든 작업면은 서버 연결로 보인다', async () => {
+  it('새 구역의 작업면 높이를 고쳐 추가하면 그 높이의 작업면을 만들고, 작업면 카드는 서버가 이은 작업면으로 그려진다', async () => {
     await renderPage();
-    act(() => button('+ 고소 작업면 추가').click());
-    expect(screen.getByLabelText('높이(m)')).toHaveProperty('value', '0.40');
+    const height = screen.getByLabelText('높이(m)');
+    fireEvent.change(height, { target: { value: '0.9' } });
+    fireEvent.keyDown(height, { key: 'Enter' });
     act(() => button('구역 추가').click());
     await waitFor(() => expect(picker().value).toBe('z-00000001'));
-    expect(writes()).toEqual([COMMIT]);
     expect(commits).toHaveLength(1);
     expect(commits[0]).toMatchObject({
       zone: { op: 'CREATE' },
-      surface: { op: 'CREATE', body: { kind: 'WORK_SURFACE', top_height_m: 0.4 } },
+      surface: { op: 'CREATE', body: { kind: 'WORK_SURFACE', top_height_m: 0.9 } },
       publish: true,
     });
-    expect(commits[0]!.surface).not.toHaveProperty('object_id');
-    // 서버가 새 작업면을 새 구역에 이었다.
     expect(await fetchList('/api/static-objects')).toContainEqual(
-      expect.objectContaining({ kind: 'WORK_SURFACE', zone_id: 'z-00000001', object_version: 1 }),
+      expect.objectContaining({
+        kind: 'WORK_SURFACE',
+        zone_id: 'z-00000001',
+        top_height_m: expect.closeTo(0.9, 5),
+      }),
     );
-    // 초안은 모두 지웠고, 작업면 카드는 서버가 이은 작업면으로 그려진다.
+    // 초안은 모두 지웠다.
     expect(useZoneEditStore.getState().drafts).toEqual({});
-    await waitFor(() => expect(screen.getByLabelText('높이(m)')).toHaveProperty('value', '0.40'));
+    await waitFor(() =>
+      expect(Number((screen.getByLabelText('높이(m)') as HTMLInputElement).value)).toBeCloseTo(0.9),
+    );
     expect(optionTexts()).toContain('구역 1');
   });
 
@@ -392,19 +399,18 @@ describe('구역 편집 화면', () => {
     expect(screen.queryByRole('button', { name: '구역' })).toBeNull();
   });
 
-  it('작업면이 없는 구역은 추가 버튼만 보이고, 추가하면 구역 상자 가운데에 놓고 작업면 손잡이로 넘긴다', async () => {
+  it('작업면 없이 만든 기존 구역은 작업면 카드와 추가 단추가 없고, 구역 상자 손잡이로 고친다', async () => {
     await renderPage();
     pick('z-04');
-    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+    await waitFor(noSurfaceCard);
     expect(screen.queryByLabelText('높이(m)')).toBeNull();
-    act(() => button('+ 고소 작업면 추가').click());
-    expect(screen.getByLabelText('높이(m)')).toHaveProperty('value', '0.40');
+    expect(screen.queryByRole('button', { name: '+ 고소 작업면 추가' })).toBeNull();
+    expect(severitySelect().value).toBe('CRITICAL');
     expect(useBoxEditStore.getState().boxEdit).toMatchObject({
-      id: 'surface:z-04',
-      kind: 'surface',
-      box: { min: [6.7, 2, 0], max: [7.7, 3, 0.4] },
+      id: 'z-04',
+      kind: 'zone',
+      box: Z04_BOX,
     });
-    expect(optionTexts()).toContain('개구부 구역 · 저장 전');
   });
 
   it('구역과 작업면은 서버가 저장한 zone_id 로만 이어진다: 위치가 구역 안이어도 zone_id 가 없으면 잇지 않는다', async () => {
@@ -416,7 +422,7 @@ describe('구역 편집 화면', () => {
     });
     await renderPage();
     pick('z-04');
-    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+    await waitFor(noSurfaceCard);
     expect(screen.queryByLabelText('높이(m)')).toBeNull();
   });
 
@@ -597,7 +603,7 @@ describe('구역 편집 화면', () => {
   it('구역 이름만 고쳐 저장하면 저장 전 확인(GET) 뒤 /commit 한 번(구역 UPDATE, 작업면 없음, publish)을 보내고 초안을 지운다', async () => {
     await renderPage();
     pick('z-04');
-    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+    await waitFor(noSurfaceCard);
     rename('개구부 B');
     expect(optionTexts()).toContain('개구부 구역 · 저장 전');
     log.splice(0, log.length);
@@ -619,7 +625,7 @@ describe('구역 편집 화면', () => {
     const onCommitted = vi.fn();
     await renderPage({ onCommitted });
     pick('z-04');
-    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+    await waitFor(noSurfaceCard);
     rename('개구부 B');
     act(() => button('저장').click());
     await waitFor(() => expect(onCommitted).toHaveBeenCalledTimes(1));
@@ -627,9 +633,6 @@ describe('구역 편집 화면', () => {
     pick(NEW_KEY);
     fireEvent.change(screen.getByRole('textbox', { name: '이름' }), {
       target: { value: '또 만든 구역' },
-    });
-    fireEvent.change(screen.getByRole('combobox', { name: '심각도' }), {
-      target: { value: 'CRITICAL' },
     });
     act(() => button('구역 추가').click());
     await waitFor(() => expect(onCommitted).toHaveBeenCalledTimes(2));
@@ -639,7 +642,7 @@ describe('구역 편집 화면', () => {
     const onCommitted = vi.fn();
     await renderPage({ onCommitted });
     pick('z-04');
-    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+    await waitFor(noSurfaceCard);
     zonesMock.failNextPublish('CALIBRATION_MISSING');
     rename('개구부 B');
     act(() => button('저장').click());
@@ -729,107 +732,10 @@ describe('구역 편집 화면', () => {
     );
   });
 
-  it('작업면이 없는 구역에 작업면을 더해 저장하면 구역 UPDATE(작업면 둘레·경고) + 작업면 CREATE 한 요청이고 서버 연결로 이어진다', async () => {
-    await renderPage();
-    pick('z-04');
-    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
-    expect(severitySelect().value).toBe('CRITICAL');
-    act(() => button('+ 고소 작업면 추가').click());
-    // 작업면을 붙이면 등급 칸이 사라지고 구역은 경고로 저장된다(위험 구역이었어도).
-    expect(screen.queryByRole('combobox', { name: '심각도' })).toBeNull();
-    act(() => button('저장').click());
-    await waitFor(() => expect(optionTexts()).toContain('개구부 구역'));
-    expect(writes()).toEqual([COMMIT]);
-    expect(commits).toHaveLength(1);
-    expect(commits[0]).toMatchObject({
-      zone: {
-        op: 'UPDATE',
-        zone_id: 'z-04',
-        body: {
-          severity: 'HIGH',
-          polygon_xy: [
-            [6.4, 1.7],
-            [8, 1.7],
-            [8, 3.3],
-            [6.4, 3.3],
-          ],
-          z_min_m: 0,
-          z_max_m: 2,
-        },
-      },
-      surface: { op: 'CREATE', body: { kind: 'WORK_SURFACE', top_height_m: 0.4 } },
-      publish: true,
-    });
-    expect(await fetchList('/api/static-objects')).toContainEqual(
-      expect.objectContaining({ kind: 'WORK_SURFACE', zone_id: 'z-04', object_version: 1 }),
-    );
-    expect(await fetchList('/api/zones')).toContainEqual(
-      expect.objectContaining({ zone_id: 'z-04', zone_version: 2, severity: 'HIGH' }),
-    );
-    // 초안은 지워졌고, 카드는 서버가 이은 작업면으로 남는다.
-    expect(useZoneEditStore.getState().drafts['z-04']).toBeUndefined();
-    expect(screen.getByLabelText('높이(m)')).toHaveProperty('value', '0.40');
-  });
-
-  it('이은 작업면을 지우고 저장하면 구역 KEEP + 작업면 ARCHIVE 한 요청이다', async () => {
-    await renderPage();
-    pick('z-02');
-    await screen.findByLabelText('높이(m)');
-    act(() => surfaceDeleteButton().click());
-    expect(screen.queryByLabelText('높이(m)')).toBeNull();
-    expect(optionTexts()).toContain('단상 구역 · 저장 전');
-    act(() => button('저장').click());
-    await waitFor(() => expect(optionTexts()).toContain('단상 구역'));
-    expect(writes()).toEqual([COMMIT]);
-    expect(commits).toEqual([
-      {
-        zone: { op: 'KEEP', zone_id: 'z-02' },
-        surface: { op: 'ARCHIVE', object_id: 'ws-0a0c0001' },
-        publish: true,
-      },
-    ]);
-    // 보관한 작업면은 목록에서 빠지고 구역에는 다시 추가 버튼이 보인다.
-    expect((await fetchList('/api/static-objects')).map((o) => o.object_id)).toEqual([
-      'ws-0a0c0002',
-    ]);
-    expect(await screen.findByRole('button', { name: '+ 고소 작업면 추가' })).toBeTruthy();
-    expect(useZoneEditStore.getState().drafts['z-02']).toBeUndefined();
-  });
-
-  it('작업면을 지우고 다시 추가해 저장하면 구역 UPDATE + 작업면 REPLACE(옛 작업면 보관 뒤 새로 잇기) 한 요청이다', async () => {
-    await renderPage();
-    pick('z-02');
-    await screen.findByLabelText('높이(m)');
-    act(() => surfaceDeleteButton().click());
-    act(() => button('+ 고소 작업면 추가').click());
-    expect(optionTexts()).toContain('단상 구역 · 저장 전');
-    act(() => button('저장').click());
-    await waitFor(() => expect(optionTexts()).toContain('단상 구역'));
-    expect(writes()).toEqual([COMMIT]);
-    expect(commits).toHaveLength(1);
-    expect(commits[0]).toMatchObject({
-      zone: { op: 'UPDATE', zone_id: 'z-02', body: { severity: 'HIGH', z_max_m: 2 } },
-      surface: {
-        op: 'REPLACE',
-        object_id: 'ws-0a0c0001',
-        body: { kind: 'WORK_SURFACE', obb: { size: [1, 1, 0.4] } },
-      },
-      publish: true,
-    });
-    // 옛 작업면은 보관되고, 새 작업면(v1)이 z-02 에 이어진다. 구역에는 지금 작업면이 하나다.
-    const surfaces = await fetchList('/api/static-objects');
-    expect(surfaces.map((o) => o.object_id)).not.toContain('ws-0a0c0001');
-    const ofZone = surfaces.filter((o) => o.zone_id === 'z-02');
-    expect(ofZone).toHaveLength(1);
-    expect(ofZone[0]).toMatchObject({ object_version: 1, obb: { size: [1, 1, 0.4] } });
-    expect(useZoneEditStore.getState().drafts['z-02']).toBeUndefined();
-    expect(screen.getByLabelText('높이(m)')).toHaveProperty('value', '0.40');
-  });
-
   it('다른 관리자가 먼저 저장해 /commit 이 409(CONCURRENT_EDIT)면 최신 구역을 다시 받고, 초안은 남기고, 묶음 없이 다시 보내지 않는다', async () => {
     await renderPage();
     pick('z-04');
-    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+    await waitFor(noSurfaceCard);
     failCommit(409, 'CONCURRENT_EDIT');
     rename('내 이름');
     log.splice(0, log.length);
@@ -855,7 +761,7 @@ describe('구역 편집 화면', () => {
   it('고치는 사이 다른 관리자가 새 버전을 저장했으면 /commit 을 보내지 않고 최신 구역을 보이며, 초안은 남긴다', async () => {
     await renderPage();
     pick('z-04');
-    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+    await waitFor(noSurfaceCard);
     rename('내 이름');
     // 다른 관리자가 z-04 의 새 버전(v2)을 저장한다.
     const z04 = (await fetchList('/api/zones')).find((z) => z.zone_id === 'z-04')!;
@@ -887,7 +793,7 @@ describe('구역 편집 화면', () => {
   it('묶음을 못 만들면(409) 같은 본문을 publish:false 로 한 번 더 보내 저장만 하고, 한 줄·다시 보내기를 띄운다. 발행 전은 묶음 items 로 센다', async () => {
     await renderPage();
     pick('z-04');
-    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+    await waitFor(noSurfaceCard);
     zonesMock.failNextPublish('CALIBRATION_MISSING');
     rename('개구부 B');
     act(() => button('저장').click());
@@ -926,7 +832,7 @@ describe('구역 편집 화면', () => {
     async (code, reason) => {
       await renderPage();
       pick('z-04');
-      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      await waitFor(noSurfaceCard);
       zonesMock.failNextPublish(code);
       rename('개구부 B');
       act(() => button('저장').click());
@@ -941,7 +847,7 @@ describe('구역 편집 화면', () => {
   it('묶음 오류가 아닌 서버 오류(SITE_NOT_SINGLE)는 다시 보내지 않고 저장 실패로 알리며, 아무것도 저장되지 않고 초안은 남는다', async () => {
     await renderPage();
     pick('z-04');
-    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+    await waitFor(noSurfaceCard);
     zonesMock.failNextPublish('SITE_NOT_SINGLE');
     rename('개구부 B');
     act(() => button('저장').click());
@@ -992,7 +898,7 @@ describe('구역 편집 화면', () => {
   it('작업면이 없는 구역을 삭제해도 구역 ARCHIVE 한 요청(publish)만 보낸다', async () => {
     await renderPage();
     pick('z-04');
-    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+    await waitFor(noSurfaceCard);
     const deleteButton = () => button(/^삭제( 확인)?$/);
     act(() => deleteButton().click());
     act(() => deleteButton().click());
@@ -1051,9 +957,8 @@ describe('구역 편집 화면', () => {
       expect(nameInput().value).toBe('개구부 초안');
     });
 
-    it('작업면을 붙인 새 구역은 구역 손잡이·등급 칸이 없고, 작업면 둘레(0.30 m) 직사각형·경고로 만든다', async () => {
+    it('새 구역은 구역 손잡이·등급 칸이 없고, 작업면 둘레(0.30 m) 직사각형·경고로 만든다', async () => {
       await renderPage();
-      act(() => button('+ 고소 작업면 추가').click());
       expect(screen.queryByRole('combobox', { name: '심각도' })).toBeNull();
       expect(screen.queryByRole('button', { name: '구역' })).toBeNull();
       const start = useBoxEditStore.getState().boxEdit!;
@@ -1099,17 +1004,6 @@ describe('구역 편집 화면', () => {
       });
     });
 
-    it('바닥 판정 구역의 작업면을 지워도 상자 손잡이를 열지 않고 형상 잠김을 알린다', async () => {
-      await addZone({ name: '바닥 구역', eval_type: 'GROUND_FOOTPRINT' });
-      await linkDeskTo('z-00000001');
-      await renderPage();
-      pick('z-00000001');
-      await screen.findByLabelText('높이(m)');
-      act(() => surfaceDeleteButton().click());
-      expect(await screen.findByText(SHAPE_LOCKED_TEXT)).toBeTruthy();
-      expect(useBoxEditStore.getState().boxEdit).toBeNull();
-    });
-
     it('이미 저장된 주의 구역에 작업면이 붙으면 경고로 맞춰 저장한다', async () => {
       await addZone({ name: '주의 구역', severity: 'CAUTION' });
       await linkDeskTo('z-00000001');
@@ -1124,7 +1018,7 @@ describe('구역 편집 화면', () => {
       expect(commits[0]).toMatchObject({ zone: { op: 'UPDATE', body: { severity: 'HIGH' } } });
     });
 
-    it('직사각형이 아닌 구역에 작업면이 붙으면 형상 잠김 알림이 없고, 작업면을 지우면 감싸는 상자로 고친다', async () => {
+    it('직사각형이 아닌 구역에 작업면이 붙으면 형상 잠김 알림이 없다', async () => {
       await addTriangleZone();
       await linkDeskTo('z-00000001');
       await renderPage();
@@ -1133,14 +1027,6 @@ describe('구역 편집 화면', () => {
       expect(screen.queryByText(SHAPE_LOCKED_TEXT)).toBeNull();
       // 책상은 회전해 있어 3D 손잡이가 없다(높이 칸만 고친다).
       expect(useBoxEditStore.getState().boxEdit).toBeNull();
-
-      act(() => surfaceDeleteButton().click());
-      expect(screen.queryByText(SHAPE_LOCKED_TEXT)).toBeNull();
-      expect(useBoxEditStore.getState().boxEdit).toMatchObject({
-        id: 'z-00000001',
-        kind: 'zone',
-        box: { min: [1, 1, 0], max: [3, 3, 2] },
-      });
     });
   });
 
@@ -1328,7 +1214,7 @@ describe('구역 편집 화면', () => {
     it('작업면 카드가 구역 양식을 가린 동안 Ctrl+Z 는 가려진 구역의 초안을 되돌리지 않는다', async () => {
       await renderPage();
       pick('z-04');
-      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      await waitFor(noSurfaceCard);
       rename('고치는 중');
       selectInViewer('object:ws-0a0c0002');
       await screen.findByRole('region', { name: '작업면' });
@@ -1370,7 +1256,7 @@ describe('구역 편집 화면', () => {
   it('구역을 바꿔도 고치던 초안은 남는다', async () => {
     await renderPage();
     pick('z-04');
-    await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+    await waitFor(noSurfaceCard);
     fireEvent.change(screen.getByRole('textbox', { name: '이름' }), {
       target: { value: '고치는 중' },
     });
@@ -1386,7 +1272,7 @@ describe('구역 편집 화면', () => {
     it('이름·심각도를 고친 것을 한 단계씩 되돌린다', async () => {
       await renderPage();
       pick('z-04');
-      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      await waitFor(noSurfaceCard);
       const savedName = nameInput().value;
       const savedSeverity = severitySelect().value;
       rename('다른 이름');
@@ -1411,7 +1297,7 @@ describe('구역 편집 화면', () => {
     it('이름을 연달아 입력한 것은 한 단계이고, 다른 고침이 끼면 새 단계다', async () => {
       await renderPage();
       pick('z-04');
-      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      await waitFor(noSurfaceCard);
       const savedName = nameInput().value;
       rename('개');
       rename('개구');
@@ -1484,7 +1370,7 @@ describe('구역 편집 화면', () => {
     it('상한에 닿은 기록에서도 끄는 중 쌓인 다른 단계를 버리지 않는다', async () => {
       await renderPage();
       pick('z-04');
-      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      await waitFor(noSurfaceCard);
       for (let i = 0; i < HISTORY_LIMIT; i++) {
         rename(`이름 ${i}`);
         fireEvent.change(severitySelect(), { target: { value: i % 2 ? 'HIGH' : 'CRITICAL' } });
@@ -1555,26 +1441,23 @@ describe('구역 편집 화면', () => {
       expect(screen.getByLabelText('높이(m)')).toHaveProperty('value', '0.40');
     });
 
-    it('작업면 추가를 되돌리면 3D 손잡이가 구역으로 돌아온다', async () => {
+    it('새 구역의 작업면 높이를 고친 것도 되돌리면 기본 높이로 돌아온다', async () => {
       await renderPage();
-      pick('z-04');
-      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
-      act(() => button('+ 고소 작업면 추가').click());
-      expect(useBoxEditStore.getState().boxEdit?.kind).toBe('surface');
+      const height = screen.getByLabelText('높이(m)');
+      fireEvent.change(height, { target: { value: '0.9' } });
+      fireEvent.keyDown(height, { key: 'Enter' });
+      fireEvent.blur(height);
+      expect(screen.getByLabelText('높이(m)')).toHaveProperty('value', '0.90');
 
       pressUndo();
-      expect(screen.queryByLabelText('높이(m)')).toBeNull();
-      expect(button('+ 고소 작업면 추가')).toBeTruthy();
-      expect(useBoxEditStore.getState().boxEdit).toMatchObject({ id: 'z-04', kind: 'zone' });
-      // 다시 추가하면 손잡이가 작업면으로 간다.
-      act(() => button('+ 고소 작업면 추가').click());
+      expect(screen.getByLabelText('높이(m)')).toHaveProperty('value', '0.40');
       expect(useBoxEditStore.getState().boxEdit?.kind).toBe('surface');
     });
 
     it('이름·심각도·높이 입력칸 안의 Ctrl+Z 는 초안을 건드리지 않고 브라우저 기본 동작에 맡긴다', async () => {
       await renderPage();
       pick('z-04');
-      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      await waitFor(noSurfaceCard);
       rename('다른 이름');
       fireEvent.change(severitySelect(), { target: { value: 'HIGH' } });
 
@@ -1602,7 +1485,7 @@ describe('구역 편집 화면', () => {
     it('한글 조합 중이거나 시프트·알트와 함께 누른 키는 무시하고, 한글 자판이어도 자판 위치로 되돌린다', async () => {
       await renderPage();
       pick('z-04');
-      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      await waitFor(noSurfaceCard);
       rename('다른 이름');
 
       pressUndo(window, { isComposing: true });
@@ -1619,7 +1502,7 @@ describe('구역 편집 화면', () => {
     it('저장한 뒤에는 저장 전 값으로 되돌리지 않는다', async () => {
       await renderPage();
       pick('z-04');
-      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      await waitFor(noSurfaceCard);
       rename('개구부 B');
       expect(useZoneEditStore.getState().history['z-04']).toHaveLength(1);
       act(() => button('저장').click());
@@ -1654,7 +1537,7 @@ describe('구역 편집 화면', () => {
     it('구역을 바꿔도 구역마다 기록이 남아 각자 되돌린다', async () => {
       await renderPage();
       pick('z-04');
-      await screen.findByRole('button', { name: '+ 고소 작업면 추가' });
+      await waitFor(noSurfaceCard);
       rename('개구부 B');
       pick('z-02');
       await screen.findByLabelText('높이(m)');

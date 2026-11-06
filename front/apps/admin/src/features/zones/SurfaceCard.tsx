@@ -1,49 +1,24 @@
 import { SurfaceHeightField } from '@/features/zones/SurfaceHeightField';
 import type { ZoneEditing } from '@/features/zones/useZoneEditing';
-import {
-  BUTTON_CLASS,
-  CARD_CLASS,
-  FIELD_LABEL_CLASS,
-  GHOST_BUTTON_CLASS,
-} from '@/features/zones/zonePanelStyle';
-import { Button } from '@simai/ui/components/button';
+import { CARD_CLASS, FIELD_LABEL_CLASS } from '@/features/zones/zonePanelStyle';
 
-/** 고소 작업면(구역에 하나): 상판 높이, 추가·삭제. 구역은 작업면에서 계산하므로 3D 손잡이는 작업면을 고친다. */
+/**
+ * 고소 작업면(구역에 하나): 상판 높이. 구역은 작업면에서 계산하므로 작업면은 지우거나 따로 더하지 않는다(새 구역은 작업면과
+ * 함께 시작한다). 3D 손잡이는 작업면을 고친다. 작업면 없이 만든 기존 구역은 카드를 보이지 않는다.
+ */
 export function SurfaceCard({ edit }: { edit: ZoneEditing }) {
   const { surface, busy } = edit;
+  if (!surface) return null;
   return (
     <section aria-label="고소 작업면" className={CARD_CLASS}>
-      {surface ? (
-        <>
-          <div className="flex items-center justify-between gap-2">
-            <b className={FIELD_LABEL_CLASS}>고소 작업면</b>
-            <Button
-              variant="ghost"
-              disabled={busy}
-              onClick={edit.removeSurface}
-              className={GHOST_BUTTON_CLASS}
-            >
-              삭제
-            </Button>
-          </div>
-          <SurfaceHeightField
-            key={`${edit.zoneKey}:${surface.id ?? 'new'}`}
-            value={surface.geometry.topHeightM}
-            bad={edit.surfaceErrors !== null}
-            disabled={busy}
-            onCommit={edit.setSurfaceTop}
-          />
-        </>
-      ) : (
-        <Button
-          variant="secondary"
-          disabled={busy}
-          onClick={edit.addSurface}
-          className={`${BUTTON_CLASS} w-full`}
-        >
-          + 고소 작업면 추가
-        </Button>
-      )}
+      <b className={FIELD_LABEL_CLASS}>고소 작업면</b>
+      <SurfaceHeightField
+        key={`${edit.zoneKey}:${surface.id ?? 'new'}`}
+        value={surface.geometry.topHeightM}
+        bad={edit.surfaceErrors !== null}
+        disabled={busy}
+        onCommit={edit.setSurfaceTop}
+      />
     </section>
   );
 }

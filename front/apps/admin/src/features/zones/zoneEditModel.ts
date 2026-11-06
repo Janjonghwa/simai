@@ -62,12 +62,12 @@ export interface ZonePatch {
 
 /**
  * 구역(또는 새 구역) 하나의 저장 전 초안. box 는 고친 구역 상자(안 고쳤으면 null), surface 는 undefined 가 건드리지 않음,
- * null 이 저장된 작업면을 지움, 객체가 만들었거나 고친 작업면이다.
+ * 객체가 고친 작업면(새 구역의 기본 작업면을 고친 것 포함)이다. 작업면은 지우지 않는다.
  */
 export interface TargetDraft {
   patch: ZonePatch;
   box: ViewerEditBox | null;
-  surface?: SurfaceDraft | null;
+  surface?: SurfaceDraft;
 }
 
 export function boxOfZone(zone: ZoneBox): ViewerEditBox {
@@ -154,9 +154,6 @@ export function zoneFollowsSurface(zone: Zone, shape: ZoneShape): boolean {
   );
 }
 
-/** 높이가 있는 입체 판정 구역인지(작업면을 지우면 이런 구역만 감싸는 상자로 고친다). */
-export const isSolidZone = (zone: Zone) => zone.judgeType === 'VOLUME_3D' && zone.zRange !== null;
-
 /**
  * 작업면이 붙은 구역을 3D 에 윤곽으로 보일 상자. 회전한 작업면은 구역이 직사각형이 아니라 윤곽을 두지 않는다(null).
  */
@@ -222,11 +219,10 @@ export const surfaceBoxEditable = (g: SurfaceGeometry) => Math.abs(g.yawRad) < S
 
 /** 이은 저장 작업면과 다른지. 같은 작업면이면 값이 같을 때 바뀐 것이 아니다. */
 export function surfaceChanged(
-  draft: SurfaceDraft | null | undefined,
+  draft: SurfaceDraft | undefined,
   linked: LinkedSurface | null,
 ): boolean {
   if (draft === undefined) return false;
-  if (draft === null) return linked !== null;
   if (linked === null || linked.objectId !== draft.id) return true;
   return !sameName(draft.name ?? '', linked.name) || !sameGeometry(draft.geometry, linked.geometry);
 }
@@ -338,15 +334,12 @@ export function withPatch(
   };
 }
 
-/** 작업면을 바꾼 초안(undefined 는 건드리지 않음, null 은 지움). */
-export function withSurface(
-  prev: TargetDraft | undefined,
-  next: SurfaceDraft | null | undefined,
-): TargetDraft {
+/** 작업면을 고친 초안. */
+export function withSurface(prev: TargetDraft | undefined, next: SurfaceDraft): TargetDraft {
   return {
     patch: prev?.patch ?? {},
     box: prev?.box ?? null,
-    ...(next === undefined ? {} : { surface: next }),
+    surface: next,
   };
 }
 
@@ -388,8 +381,7 @@ export function withoutUnchangedSurface(
 
 /**
  * 3D 손잡이가 고칠 상자. 작업면이 있으면 작업면 상자다(구역은 작업면에서 계산하므로 손잡이가 없다. 회전한 작업면·형상 오류가
- * 있으면 없음). 작업면이 없으면 구역 상자이고, 형상을 못 고치는 구역이면 null 이다. 단 저장된 작업면을 지운 구역(unlinking)은
- * 구역 모양이 작업면에서 풀려나므로 직사각형이 아니어도 감싸는 상자로 고칠 수 있다.
+ * 있으면 없음). 작업면이 없으면(작업면 없이 만든 기존 구역) 구역 상자이고, 형상을 못 고치는 구역이면 null 이다.
  */
 export function boxEditOf(input: {
   key: string;
@@ -397,15 +389,14 @@ export function boxEditOf(input: {
   zoneBox: ViewerEditBox;
   surface: SurfaceDraft | null;
   surfaceValid: boolean;
-  unlinking: boolean;
 }): ViewerBoxEdit | null {
-  const { key, zone, zoneBox, surface, surfaceValid, unlinking } = input;
+  const { key, zone, zoneBox, surface, surfaceValid } = input;
   if (surface) {
     return surfaceBoxEditable(surface.geometry) && surfaceValid
       ? { id: `surface:${key}`, kind: 'surface', box: surfaceBox(surface.geometry) }
       : null;
   }
-  return !zone || zone.shapeEditable || unlinking ? { id: key, kind: 'zone', box: zoneBox } : null;
+  return !zone || zone.shapeEditable ? { id: key, kind: 'zone', box: zoneBox } : null;
 }
 
 /**
