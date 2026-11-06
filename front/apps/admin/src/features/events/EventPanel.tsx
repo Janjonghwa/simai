@@ -11,6 +11,7 @@ import { movePanel, PANEL_GAP, PANEL_TOP } from '@/features/events/panelBox';
 import { PanelGrip } from '@/features/events/PanelGrip';
 import type { EventItem } from '@/features/events/types';
 import { useAutoFold } from '@/features/events/useAutoFold';
+import { useAvoidCctv } from '@/features/events/useAvoidCctv';
 import { useFloatingBox } from '@/features/events/useFloatingBox';
 import { usePanelDrag } from '@/features/events/usePanelDrag';
 import { measure, type FloatBox, type Measured } from '@/lib/floatSpot';
@@ -179,6 +180,9 @@ export function EventPanel({
   const { box, setBox, reset } = useFloatingBox(panel);
   // 목록을 받았는데 진행·최근 해소가 모두 0이면 접는다. 목록을 못 받았거나 받는 중이면 접지 않는다(실패 문구를 가리지 않는다).
   const { folded, setFolded } = useAutoFold(loaded && !hasCards(sections));
+  // 떠 있는 CCTV 창이 가리면 창 위·아래 넓은 빈칸으로 비켜 선다. 비켜 선 채 끌거나 크기를 바꾸면 그 자리가 새 기준(box)이다.
+  const avoided = useAvoidCctv(panel, box, folded);
+  const shown = avoided ?? box;
   // 끌기 시작 자리. 접힌 패널은 머리줄 높이로 재지므로 펼친 높이(옮긴 높이, 없으면 기본 자리 높이)로 바꾼다.
   const startOf = (): Measured => {
     const now = measure(panel.current);
@@ -195,7 +199,7 @@ export function EventPanel({
       <aside
         ref={panel}
         aria-label="이벤트"
-        style={box ? boxStyle(box, folded) : undefined}
+        style={shown ? boxStyle(shown, folded) : undefined}
         className={cn(PANEL_CLASS, folded && 'bottom-auto')}
       >
         <div

@@ -9,6 +9,7 @@ import { targetOfKey } from '@/features/layout/spatialHost/selectionKey';
 import { useFloatSpot } from '@/hooks/useFloatSpot';
 import { env } from '@/lib/env';
 import { FLOAT_MARGIN, type FloatSpot } from '@/lib/floatSpot';
+import { useReportCctvFloatBox } from '@/store/cctvFloatBox.store';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -213,6 +214,9 @@ export function CctvFloat({
   const saveSpot = useCallback((spot: FloatSpot) => saveSettings({ spot }), []);
   const spot = useFloatSpot(box, 'top', FLOAT_MARGIN, initial.spot ?? null, saveSpot);
   const [collapsed, setCollapsed] = useState(false);
+  // 이벤트 패널이 이 창을 비켜 서도록 자리를 알린다(끄는 동안은 알리지 않고 놓은 뒤에, 접으면 비운다).
+  const layoutKey = `${spot.style?.left},${spot.style?.top},${size.width}x${size.height}`;
+  useReportCctvFloatBox(box, { dragging: spot.dragging, collapsed, layoutKey });
   const isAdmin = useCurrentRole() === 'ADMIN';
   useEffect(() => {
     if (requestedCamera) {
