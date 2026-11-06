@@ -37,7 +37,7 @@ def find_browser() -> Path:
     raise FileNotFoundError("Chrome 또는 Edge 실행 파일을 찾을 수 없다.")
 
 
-def run_capture(vdt_dir: Path, timeout_s: float = 90.0) -> dict[str, Any]:
+def run_capture(vdt_dir: Path, timeout_s: float = 150.0) -> dict[str, Any]:
     here = Path(__file__).resolve().parent
     for fname in ("index.html", "vdt.js"):
         src = here / fname
@@ -105,7 +105,7 @@ def run_capture(vdt_dir: Path, timeout_s: float = 90.0) -> dict[str, Any]:
             str(browser),
             "--headless=new",
             f"--user-data-dir={profile_dir}",
-            "--window-size=1920,1080",
+            "--window-size=1900,1000",
             "--enable-webgl",
             "--ignore-gpu-blocklist",
             "--disable-gpu-vsync",

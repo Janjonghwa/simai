@@ -272,8 +272,12 @@
             <input type="checkbox" id="chk-color-corr" checked />
             색 보정(노출 맞춤)
           </label>
-          <label class="chk" title="texrecon 이 비워 둔 미관측 TSDF 면에도 가림·법선 통과 시 실제 사진 투영">
-            <input type="checkbox" id="chk-project-unobs" checked />
+          <label class="chk" title="후보 카메라들의 색 메도이드(2대면 구운 텍스처 3번째 표)와 크게 다른 외톨이 카메라(의자·탁자 다리 등)를 제거해 반투명 잔상 억제">
+            <input type="checkbox" id="chk-outlier-removal" checked />
+            카메라 간 일치(외톨이 제거)
+          </label>
+          <label class="chk" title="texrecon 이 비워 둔 미관측 TSDF 면에도 깊이 5cm 일치 게이트 통과 시 실제 사진 투영 (기본 끔)">
+            <input type="checkbox" id="chk-project-unobs" />
             미관측 TSDF 면도 투영
           </label>
           <label class="chk" title="카메라 프러스텀 및 위치 표시">
