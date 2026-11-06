@@ -61,10 +61,10 @@ def prepare(root: Path) -> None:
 
 
 def mapanything(root: Path) -> None:
-    from . import run_mapanything
     model = os.environ.get("SIMAI_MAPANYTHING_MODEL") or str(Path(os.environ.get("SIMAI_ROOT", "/workspace/simai")) / "weights" / "map-anything")
     if not Path(model).is_dir():
         raise ReconstructionError("STATIC_MODEL_MISSING", "MapAnything 가중치 폴더 없음")
+    from . import run_mapanything
     # 기존 prepared 모드와 같은 K 전용 추론. 모델 세계를 보정 세계로 정렬하는 것은 다음 단계다.
     sys.argv = ["mapanything", "--run-id", "mapanything", "--runs-dir", str(root), "--mode", "prepared",
                 "--prepared", str(root / "prepared"), "--model", model, "--repeat", "1"]
@@ -74,20 +74,153 @@ def mapanything(root: Path) -> None:
 
 ALIGN_MAX_CENTER_M = 0.10
 ALIGN_MAX_ROTATION_DEG = 5.0
+ALIGN_FLOOR_W_NORMAL = 120.0
+ALIGN_FLOOR_W_HEIGHT = 4.0
+ALIGN_ROT_PRIOR_EPS = 1e-3
+ALIGN_TRUST_REGION_RATIO = 0.95
 log = logging.getLogger(__name__)
 
 
+def _resolve_floor_constraint(job_doc: dict, explicit: bool | None) -> bool:
+    """바닥 평면 제약 활성화 여부를 결정한다(기본값 True, job options 또는 환경변수로 재정의 가능)."""
+    if explicit is not None:
+        return bool(explicit)
+    opts = (job_doc.get("input") or {}).get("options") or {}
+    if "floor_constraint" in opts and opts["floor_constraint"] is not None:
+        return bool(opts["floor_constraint"])
+    env = os.environ.get("SIMAI_ALIGN_FLOOR_CONSTRAINT", "").strip().lower()
+    if env in ("0", "false", "no", "off"):
+        return False
+    if env in ("1", "true", "yes", "on"):
+        return True
+    return True
+
+
+def _extract_floor_plane_ma(
+    root: Path, src: np.ndarray, cam2world_list: list[np.ndarray]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """MapAnything 점구름(`raw.npz` 또는 `pointcloud.npz`)이 있으면 RANSAC 바닥 평면을 찾는다."""
+    from simai_ai.calibration.world_frame.frame import WorldFrameConfig, _up_prior, find_floor
+
+    ma_dir = root / "mapanything"
+    pts: np.ndarray | None = None
+    raw_path = ma_dir / "raw.npz"
+    pc_path = ma_dir / "pointcloud.npz"
+    try:
+        if raw_path.is_file():
+            from simai_ai.calibration.world_frame.inputs import load_mapanything_run, load_prepared
+
+            prep_json = root / "prepared" / "prepared.json"
+            prepared = load_prepared(root / "prepared") if prep_json.is_file() else None
+            pts = load_mapanything_run(ma_dir, prepared=prepared).all_points()
+        elif pc_path.is_file():
+            with np.load(pc_path) as pc:
+                if "points_xyz" in pc.files:
+                    pts = np.asarray(pc["points_xyz"], dtype=float)
+    except Exception:  # noqa: BLE001 - 점구름 보조 읽기 실패 시 카메라 중심 정렬로 안전하게 폴백
+        return None
+    if pts is None or len(pts) < 50:
+        return None
+    cfg = WorldFrameConfig()
+    try:
+        up0 = _up_prior(cam2world_list)
+        floor_plane, _ = find_floor(pts, src, up0, cfg, np.random.default_rng(cfg.seed))
+    except Exception:  # noqa: BLE001
+        return None
+    if floor_plane is None:
+        return None
+    inl = np.abs(floor_plane.distance(pts)) < cfg.plane_tol_m
+    floor_pts = pts[inl] if np.count_nonzero(inl) >= 10 else pts
+    cam_mean = src.mean(axis=0)
+    floor_ref = cam_mean - float(floor_plane.distance(cam_mean.reshape(1, 3))[0]) * floor_plane.normal
+    return floor_plane.normal, floor_ref, floor_pts
+
+
+def _solve_similarity_alignment(
+    src: np.ndarray,
+    dst: np.ndarray,
+    rotations: list[np.ndarray],
+    floor_info: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
+    *,
+    max_center_m: float,
+) -> tuple[np.ndarray, float, np.ndarray, dict[str, object]]:
+    """카메라 중심 변위 + 미소 회전 사전값 + 선택적 바닥 법선(+Z)·높이(Z=0) 제약으로 (Q, scale, shift)를 구한다.
+
+    Stage A 회전 전용 BA 로 인해 카메라 회전 행렬 평균(Q_rot)과 카메라 중심 배치(Q_cen)가 ~1.5° 어긋날 때
+    발생하던 12~15 cm 팔 길이(lever-arm) 중심 오차를 제거하고, 바닥 점구름이 있으면 카메라 중심 게이트의
+    신뢰 영역(0.95 * max_center_m) 안에서 바닥 법선(+Z)과 바닥 높이(Z=0)를 함께 수평 정렬한다(S15P31A101-535).
+    """
+    x, y = src - src.mean(0), dst - dst.mean(0)
+    denom = float(np.sum(x * x))
+    H_base = y.T @ x + ALIGN_ROT_PRIOR_EPS * np.sum(rotations, axis=0)
+
+    if floor_info is None:
+        u, _, vt = np.linalg.svd(H_base)
+        Q = u @ np.diag([1.0, 1.0, np.linalg.det(u @ vt)]) @ vt
+        scale = float(np.sum((x @ Q.T) * y) / denom) if denom > 1e-8 else 0.0
+        shift = dst.mean(0) - scale * (Q @ src.mean(0))
+        return Q, scale, shift, {"floor_constrained": False}
+
+    floor_normal_ma, floor_ref_ma, floor_pts_ma = floor_info
+    ez = np.array([0.0, 0.0, 1.0])
+    H_floor = np.outer(ez, floor_normal_ma)
+
+    def eval_wn(wn: float) -> tuple[np.ndarray, float, np.ndarray, float]:
+        u, _, vt = np.linalg.svd(H_base + wn * H_floor)
+        Q_w = u @ np.diag([1.0, 1.0, np.linalg.det(u @ vt)]) @ vt
+        s_w = float(np.sum((x @ Q_w.T) * y) / denom) if denom > 1e-8 else 0.0
+        sh_w = dst.mean(0) - s_w * (Q_w @ src.mean(0))
+        if wn > 0.0 and ALIGN_FLOOR_W_HEIGHT > 0.0:
+            w_z = ALIGN_FLOOR_W_HEIGHT * min(1.0, wn / ALIGN_FLOOR_W_NORMAL)
+            z_floor = float(s_w * (Q_w[2, :] @ floor_ref_ma) + sh_w[2])
+            sh_w[2] -= (w_z / (len(src) + w_z)) * z_floor
+        max_r = float(np.linalg.norm(s_w * (src @ Q_w.T) + sh_w - dst, axis=1).max())
+        return Q_w, s_w, sh_w, max_r
+
+    _, _, _, r0 = eval_wn(0.0)
+    budget = max(ALIGN_TRUST_REGION_RATIO * max_center_m, r0 + 1e-4)
+    Q_hi, s_hi, sh_hi, r_hi = eval_wn(ALIGN_FLOOR_W_NORMAL)
+    if r_hi <= budget:
+        Q, scale, shift, used_wn = Q_hi, s_hi, sh_hi, ALIGN_FLOOR_W_NORMAL
+    else:
+        lo, hi = 0.0, ALIGN_FLOOR_W_NORMAL
+        for _ in range(24):
+            mid = 0.5 * (lo + hi)
+            if eval_wn(mid)[3] <= budget:
+                lo = mid
+            else:
+                hi = mid
+        Q, scale, shift, _ = eval_wn(lo)
+        used_wn = lo
+
+    n_world = Q @ floor_normal_ma
+    tilt_deg = float(np.degrees(np.arccos(np.clip(abs(float(n_world[2])), -1.0, 1.0))))
+    fz = (scale * (floor_pts_ma @ Q.T) + shift)[:, 2]
+    return Q, scale, shift, {
+        "floor_constrained": bool(used_wn > 0.0),
+        "floor_w_normal": round(float(used_wn), 4),
+        "floor_tilt_deg": round(tilt_deg, 4),
+        "floor_z_median_m": round(float(np.median(fz)), 5),
+        "floor_z_iqr_m": round(float(np.percentile(fz, 75) - np.percentile(fz, 25)), 5),
+    }
+
+
 def align_to_calibration(
-    root: Path, *, max_center_m: float = ALIGN_MAX_CENTER_M, max_rotation_deg: float = ALIGN_MAX_ROTATION_DEG,
+    root: Path,
+    *,
+    max_center_m: float = ALIGN_MAX_CENTER_M,
+    max_rotation_deg: float = ALIGN_MAX_ROTATION_DEG,
+    floor_constraint: bool | None = None,
 ) -> np.ndarray:
-    """카메라 회전·중심을 이용한 similarity. 보정 문서는 읽기만 한다."""
+    """카메라 중심·회전과 선택적 바닥 평면(+Z, Z=0) 제약을 이용한 similarity. 보정 문서는 읽기만 한다."""
     cal = read_json(root / "calibration.json")
     cams = {c["camera_id"]: c for c in cal["cameras"]}
     views = read_json(root / "mapanything" / "cameras.json")["views"]
-    requested = {im["camera_id"] for im in read_json(root / "job.json")["input"]["images"]}
+    job_doc = read_json(root / "job.json")
+    requested = {im["camera_id"] for im in job_doc["input"]["images"]}
     if {v["name"] for v in views} != requested:
         raise ReconstructionError("STATIC_WORLD_ALIGNMENT_FAILED", "모델 출력과 입력 카메라 불일치")
-    rotations, src, dst = [], [], []
+    rotations, src, dst, cam2world_list = [], [], [], []
     for v in views:
         c = cams[v["name"]]
         T = np.asarray(v["cam2world"], float)
@@ -100,15 +233,15 @@ def align_to_calibration(
         rotations.append(R.T @ T[:3, :3].T)
         src.append(T[:3, 3])
         dst.append(-R.T @ np.asarray(c["t"], float))
+        cam2world_list.append(T)
     if len(src) < 2 or len(src) != len({v["name"] for v in views}):
         raise ReconstructionError("STATIC_WORLD_ALIGNMENT_FAILED", "독립 카메라 2대 필요")
-    u, _, vt = np.linalg.svd(np.sum(rotations, axis=0))
-    Q = u @ np.diag([1., 1., np.linalg.det(u @ vt)]) @ vt
     src, dst = np.asarray(src), np.asarray(dst)
-    x, y = src - src.mean(0), dst - dst.mean(0)
-    denom = float(np.sum(x * x))
-    scale = float(np.sum((x @ Q.T) * y) / denom) if denom > 1e-8 else 0
-    shift = dst.mean(0) - scale * Q @ src.mean(0)
+    use_floor = _resolve_floor_constraint(job_doc, floor_constraint)
+    floor_info = _extract_floor_plane_ma(root, src, cam2world_list) if use_floor else None
+    Q, scale, shift, floor_meta = _solve_similarity_alignment(
+        src, dst, rotations, floor_info, max_center_m=max_center_m
+    )
     residual = np.linalg.norm(scale * src @ Q.T + shift - dst, axis=1)
     angles = [np.arccos(np.clip((np.trace(Q.T @ r) - 1) / 2, -1, 1)) for r in rotations]
     if scale <= 0 or not np.isfinite(scale) or residual.max() > max_center_m or max(angles) > np.deg2rad(max_rotation_deg):
@@ -125,7 +258,7 @@ def align_to_calibration(
     write_json(root / "world_alignment.json", {"format": "simai.world_alignment", "status": "OK",
         "cameras_json_sha256": sha256((root / "mapanything" / "cameras.json").read_bytes()),
         "mapanything_to_world": M.tolist(), "calibration": cal,
-        "max_center_residual_m": float(residual.max()), "scale": scale})
+        "max_center_residual_m": float(residual.max()), "scale": scale, **floor_meta})
     return M
 
 

@@ -501,3 +501,125 @@ def test_bake_texture_none_skips_texrecon_and_runs_enhance_and_inpaint(tmp_path,
     validate_input(base_inp)
     with pytest.raises(ReconstructionError):
         validate_input({**base_inp, "options": {"texture": "invalid"}})
+
+
+def _rot_x(deg: float) -> np.ndarray:
+    rad = np.deg2rad(deg)
+    c, s = float(np.cos(rad)), float(np.sin(rad))
+    return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]], dtype=float)
+
+
+def _rot_y(deg: float) -> np.ndarray:
+    rad = np.deg2rad(deg)
+    c, s = float(np.cos(rad)), float(np.sin(rad))
+    return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]], dtype=float)
+
+
+def test_floor_constrained_alignment_levels_tilted_floor_and_handles_stage_a_rotation(tmp_path, monkeypatch):
+    """-535: Stage A 회전 보정(1.5°)과 맵 바닥 기울기(0.9°)가 함께 있을 때 카메라 중심 잔차(<=0.10m)와 바닥 수평을 동시에 만족한다."""
+    K = [[80.0, 0.0, 32.0], [0.0, 80.0, 24.0], [0.0, 0.0, 1.0]]
+    # World 기준 4대 모서리 카메라(7m x 6m 방, 높이 2.45m). OpenCV 카메라 -Y 축이 World +Z(위쪽)를 향하도록 기본 자세 구성
+    R_base_c2w = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]], dtype=float)
+    corners_w = {
+        "cam_A": np.array([7.0, 6.0, 2.45]),
+        "cam_B": np.array([7.0, 0.0, 2.45]),
+        "cam_C": np.array([0.0, 0.0, 2.45]),
+        "cam_D": np.array([0.0, 6.0, 2.45]),
+    }
+    # Stage A 회전 전용 BA 가 카메라 회전만 +1.55° 피치 회전시킨 상황(기존 회전 전용 Q_rot 방식이면 팔 길이 4.6m * sin(1.55°) = 12.5cm > 10cm 실패)
+    R_stage_a_bias = _rot_x(1.55)
+    # MapAnything 내부에서 카메라 배열 대비 바닥 평면이 +0.85° 기울어져 있는 상황
+    R_floor_warp = _rot_y(0.85)
+
+    cams, images, views = [], [], []
+    for cid, c_w in corners_w.items():
+        R_cal_w2c = (R_stage_a_bias @ R_base_c2w).T
+        t_cal_w2c = -R_cal_w2c @ c_w
+        cams.append({
+            "camera_id": cid,
+            "K": K,
+            "R": R_cal_w2c.tolist(),
+            "t": t_cal_w2c.tolist(),
+            "image_size": [64, 48],
+            "distortion": {"model": "NONE", "coeffs": []},
+        })
+        images.append({"camera_id": cid, "kind": "CLEAN_BACKGROUND"})
+
+        # MapAnything 출력 카메라: 카메라 중심이 바닥 대비 R_floor_warp 만큼 기울어진 좌표계
+        T_ma = np.eye(4, dtype=float)
+        T_ma[:3, :3] = R_floor_warp @ R_base_c2w
+        T_ma[:3, 3] = R_floor_warp @ c_w
+        views.append({
+            "name": cid,
+            "cam2world": T_ma.tolist(),
+            "model_input_hw": [48, 64],
+            "intrinsics_model_res": K,
+        })
+
+    # MapAnything 바닥 점구름: Z_ma = -0.025m 평면(법선 +Z_ma = [0, 0, 1])에 놓인 900개 격자점
+    gx, gy = np.meshgrid(np.linspace(0.0, 7.0, 30), np.linspace(0.0, 6.0, 30))
+    pts_floor_ma = np.column_stack([gx.ravel(), gy.ravel(), np.full(gx.size, -0.025, dtype=float)])
+    cols = np.full((len(pts_floor_ma), 3), [120, 120, 120], dtype=np.uint8)
+
+    write_json(tmp_path / "calibration.json", {"cameras": cams})
+    write_json(tmp_path / "job.json", {"input": {"images": images, "input_provenance": {"frames": {"source": "SIM"}, "is_upper_bound": True}}})
+    (tmp_path / "mapanything").mkdir()
+    write_json(tmp_path / "mapanything" / "cameras.json", {"convention": "cam2world 4x4, OpenCV", "views": views})
+    np.savez(tmp_path / "mapanything" / "pointcloud.npz", points_xyz=pts_floor_ma, colors_rgb=cols)
+
+    # 1) 바닥 제약 비활성화(floor_constraint=False): 카메라 중심 Umeyama 만으로 게이트 통과하지만 바닥은 0.85° 기울어지고 Z=-2.5cm 오프셋 유지
+    M_no_floor = tasks.align_to_calibration(tmp_path, floor_constraint=False)
+    doc_no_floor = read_json(tmp_path / "world_alignment.json")
+    assert doc_no_floor["floor_constrained"] is False
+    assert doc_no_floor["max_center_residual_m"] < 0.01
+    pts_w_no_floor = (M_no_floor[:3, :3] @ pts_floor_ma.T).T + M_no_floor[:3, 3]
+    n_w_no_floor = M_no_floor[:3, :3] @ np.array([0.0, 0.0, 1.0])
+    tilt_no_floor = float(np.degrees(np.arccos(np.clip(n_w_no_floor[2] / np.linalg.norm(n_w_no_floor), -1.0, 1.0))))
+    assert pytest.approx(tilt_no_floor, abs=0.05) == 0.85
+
+    # 2) 기본 바닥 제약 활성화(floor_constraint=True): 게이트(<=0.10m, <=5°) 통과 + 바닥 기울기 및 Z=0 오프셋 대폭 감소
+    M_floor = tasks.align_to_calibration(tmp_path)
+    doc_floor = read_json(tmp_path / "world_alignment.json")
+    assert doc_floor["floor_constrained"] is True
+    assert doc_floor["max_center_residual_m"] <= tasks.ALIGN_MAX_CENTER_M
+    assert doc_floor["floor_tilt_deg"] < 0.25  # 0.85° -> 0.20° 미만으로 수평화
+    assert abs(doc_floor["floor_z_median_m"]) < 0.015  # -2.5cm -> Z=0 근처로 수렴
+    pts_w_floor = (M_floor[:3, :3] @ pts_floor_ma.T).T + M_floor[:3, 3]
+    assert np.percentile(pts_w_floor[:, 2], 75) - np.percentile(pts_w_floor[:, 2], 25) < (
+        np.percentile(pts_w_no_floor[:, 2], 75) - np.percentile(pts_w_no_floor[:, 2], 25)
+    )
+
+    # 3) 환경변수 SIMAI_ALIGN_FLOOR_CONSTRAINT=0 도 동일하게 바닥 제약을 끈다
+    monkeypatch.setenv("SIMAI_ALIGN_FLOOR_CONSTRAINT", "0")
+    tasks.align_to_calibration(tmp_path)
+    assert read_json(tmp_path / "world_alignment.json")["floor_constrained"] is False
+
+
+def test_real_session12_ma_single_alignment_passes_gate_and_levels_floor(tmp_path):
+    """-535: 실제 12차 배경 단일 세트(`align-535/ma_single`)에서 기존 실패(0.1506m)가 해소되고 바닥 기울기·IQR이 감소한다."""
+    from pathlib import Path
+    import shutil
+
+    src_root = Path("C:/Users/SSAFY/simai-local/align-535/ma_single")
+    if not (src_root / "mapanything" / "raw.npz").is_file():
+        pytest.skip("로컬 12차 align-535/ma_single 데이터가 없을 때는 건너뛴다")
+
+    shutil.copy2(src_root / "calibration.json", tmp_path / "calibration.json")
+    shutil.copy2(src_root / "job.json", tmp_path / "job.json")
+    (tmp_path / "prepared").mkdir()
+    shutil.copy2(src_root / "prepared" / "prepared.json", tmp_path / "prepared" / "prepared.json")
+    (tmp_path / "mapanything").mkdir()
+    shutil.copy2(src_root / "mapanything" / "cameras.json", tmp_path / "mapanything" / "cameras.json")
+    shutil.copy2(src_root / "mapanything" / "raw.npz", tmp_path / "mapanything" / "raw.npz")
+
+    M = tasks.align_to_calibration(tmp_path)
+    assert M.shape == (4, 4)
+    doc = read_json(tmp_path / "world_alignment.json")
+    assert doc["status"] == "OK"
+    assert doc["floor_constrained"] is True
+    assert doc["max_center_residual_m"] <= tasks.ALIGN_MAX_CENTER_M
+    assert doc["floor_tilt_deg"] < 0.85  # 제약 없는 Umeyama(1.582°) 및 기존(1.119°) 대비 수평화
+    assert abs(doc["floor_z_median_m"]) < 0.005  # 바닥 중앙값 Z ≈ 0m (±5mm 이내)
+    assert doc["floor_z_iqr_m"] < 0.035  # 기존(0.0791m) 대비 절반 이하
+
+
