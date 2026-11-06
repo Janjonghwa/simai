@@ -13,7 +13,6 @@ import {
   tbmLayoutDetailKey,
   tbmReportsByWorkKey,
 } from '@/features/tbm/api';
-import { OUTSIDE_ZONE_TEXT } from '@/features/tbm/constants';
 import {
   clampPeople,
   createTask,
@@ -33,6 +32,7 @@ import {
   type TbmWorkUnit,
   type WorkTypeOption,
 } from '@/features/tbm/types';
+import { storedPlaceOf } from '@/features/tbm/workPlace';
 import { api } from '@/lib/api';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useMemo, useState } from 'react';
@@ -207,7 +207,6 @@ export function useTbmData(): UseTbmDataResult {
         from: input.from,
         to: input.to,
         zone: input.zone || null,
-        ...(input.zone ? {} : { area: OUTSIDE_ZONE_TEXT }),
         people: clampPeople(input.people),
         lead: input.lead,
         layoutId: layoutNum !== null && Number.isFinite(layoutNum) ? layoutNum : null,
@@ -219,7 +218,7 @@ export function useTbmData(): UseTbmDataResult {
         return updatedLocal;
       }
 
-      const body = inputToWorkUnitBody(input, task.date);
+      const body = inputToWorkUnitBody(input, task.date, storedPlaceOf(task));
       const previousWorks = queryClient.getQueryData<TbmWorkUnit[]>(TBM_WORKS_KEY);
       queryClient.setQueryData<TbmWorkUnit[]>(TBM_WORKS_KEY, (prev) =>
         prev ? prev.map((w) => (w.work_id === task.workId ? { ...w, ...body } : w)) : prev,

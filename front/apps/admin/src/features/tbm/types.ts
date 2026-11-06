@@ -1,7 +1,7 @@
 import type { Severity } from '@/features/events/types';
-import { OUTSIDE_ZONE_TEXT } from '@/features/tbm/constants';
 import { fromMin } from '@/features/tbm/tbm';
 import { TBM_ZONES, type LayoutItem, type TaskEval, type TbmTask } from '@/features/tbm/tbmDemo';
+import { workPlaceLabel } from '@/features/tbm/workPlace';
 import { ApiError, NETWORK_ERROR } from '@/lib/http';
 import { z } from 'zod';
 
@@ -499,7 +499,7 @@ export function workUnitToTbmTask(
     from: msToHhmm(work.from_ms),
     to: msToHhmm(work.to_ms),
     zone: work.zone_id,
-    ...(work.zone_id ? {} : { area: work.place ?? OUTSIDE_ZONE_TEXT }),
+    area: workPlaceLabel(work),
     people: work.planned_people,
     lead: work.lead ?? '',
     gear,

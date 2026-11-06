@@ -38,6 +38,7 @@ import {
   tbmReportSchema,
   type TbmReport,
 } from '@/features/tbm/types';
+import { storedPlaceOf } from '@/features/tbm/workPlace';
 import { ApiError, NETWORK_ERROR } from '@/lib/http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -122,9 +123,9 @@ describe('동시 작업 간섭', () => {
   });
 
   it('배치가 안 겹쳐도 같은 구역 같은 시간대면 CAUTION, 시간대가 안 겹치면 간섭이 아니다', () => {
-    const a = task({ id: 'A', zone: 'z-02', from: '09:00', to: '11:00' });
-    const b = task({ id: 'B', zone: 'z-02', from: '10:00', to: '12:00' });
-    const c = task({ id: 'C', zone: 'z-02', from: '11:00', to: '12:00' });
+    const a = task({ id: 'A', zone: 'z-02', area: '단상 구역', from: '09:00', to: '11:00' });
+    const b = task({ id: 'B', zone: 'z-02', area: '단상 구역', from: '10:00', to: '12:00' });
+    const c = task({ id: 'C', zone: 'z-02', area: '단상 구역', from: '11:00', to: '12:00' });
     const all = tbmInterferences([a, b, c]);
     expect(all).toEqual([
       {
@@ -133,7 +134,7 @@ describe('동시 작업 간섭', () => {
         from: '10:00',
         to: '11:00',
         sev: 'CAUTION',
-        why: '같은 구역 z-02에서 동시 작업',
+        why: '단상 구역에서 동시 작업',
         spot: null,
       },
       {
@@ -142,7 +143,7 @@ describe('동시 작업 간섭', () => {
         from: '11:00',
         to: '12:00',
         sev: 'CAUTION',
-        why: '같은 구역 z-02에서 동시 작업',
+        why: '단상 구역에서 동시 작업',
         spot: null,
       },
     ]);
@@ -154,10 +155,10 @@ describe('동시 작업 간섭', () => {
     expect(taskPeak(task({}))).toBeNull();
   });
 
-  it('구역이 없으면 적어 둔 장소를 보인다', () => {
-    expect(taskPlace(T1)).toBe('개구부 구역 (z-04)');
+  it('구역 작업은 구역 이름(번호 없이), 구역 없는 작업은 적어 둔 장소 또는 현장 전체를 보인다', () => {
+    expect(taskPlace(T1)).toBe('개구부 구역');
     expect(taskPlace(T3)).toBe('북서쪽 바닥');
-    expect(taskPlace(task({}))).toBe('구역 밖');
+    expect(taskPlace(task({}))).toBe('현장 전체');
   });
 });
 
@@ -207,7 +208,7 @@ describe('TBM 회의록 칸', () => {
     expect(f.date).toBe('2026년 10월 16일 09:00 ~ 12:00');
     expect(f.same).toBe(true);
     expect(f.riskDone).toBe(true);
-    expect(f.content).toBe('개구부 구역 (z-04) · 4명 · 반장 A조 · 장비 없음 · 배치 비계 S1 2.4m');
+    expect(f.content).toBe('개구부 구역 · 4명 · 반장 A조 · 장비 없음 · 배치 비계 S1 2.4m');
     expect(f.r0).toBe('비계 S1 ↔ 개구부 · R2 · ▲▲ CRITICAL · 수평 0.6m · 높이 차 2.1m');
     expect(f.c1).toBe(evalText(T1.evals[1]!));
     expect(f.m0).toBe(T1.measures[0]);
@@ -413,7 +414,7 @@ describe('작업 등록 · 수정 변환 및 오류 문구', () => {
     ).toBe(false);
   });
 
-  it('다음 번호로 만들고, 구역이 없으면 구역 밖이다', () => {
+  it('다음 번호로 만들고, 구역이 없으면 현장 전체다', () => {
     expect(nextTaskId(TBM_TASKS)).toBe('T4');
     expect(nextTaskId([])).toBe('T1');
     const created = createTask(TBM_TASKS, {
@@ -428,7 +429,7 @@ describe('작업 등록 · 수정 변환 및 오류 문구', () => {
       id: 'T4',
       name: '전기 배선',
       zone: null,
-      area: '구역 밖',
+      area: '현장 전체',
       people: 1,
       gear: '장비 미입력',
       workType: 'OPENING_WORK',
@@ -439,13 +440,17 @@ describe('작업 등록 · 수정 변환 및 오류 문구', () => {
     // 등록 폼은 구역을 받지 않는다(구역은 세팅 뒤 구역 단계에서 그린다): 처음 값은 구역 없음이다.
     expect(createTask(TBM_TASKS, { ...TASK_INPUT_DEFAULT, name: 'a' })).toMatchObject({
       zone: null,
-      area: '구역 밖',
+      area: '현장 전체',
       people: 2,
       lead: '',
     });
-    expect(
-      createTask(TBM_TASKS, { ...TASK_INPUT_DEFAULT, name: 'a', zone: 'z-02' }),
-    ).not.toHaveProperty('area');
+    // 구역을 주면 이름을 모르므로 이름 없는 구역 글자다(번호는 보이지 않는다).
+    expect(createTask(TBM_TASKS, { ...TASK_INPUT_DEFAULT, name: 'a', zone: 'z-02' })).toMatchObject(
+      {
+        zone: 'z-02',
+        area: '구역',
+      },
+    );
     expect(createTask(TBM_TASKS, { ...TASK_INPUT_DEFAULT, name: 'a' }, '2026-11-06')).toMatchObject(
       {
         date: '2026-11-06',
@@ -478,6 +483,27 @@ describe('작업 등록 · 수정 변환 및 오류 문구', () => {
       work_type: 'SCAFFOLD_INSTALL',
       layout_id: 101,
     });
+  });
+
+  it('구역 없는 작업은 장소를 비워 보내고, 수정은 적어 둔 장소만 돌려보낸다(현장 전체 글자는 저장하지 않는다)', () => {
+    const input = { ...TASK_INPUT_DEFAULT, name: '전기 배선' };
+    expect(inputToWorkUnitBody(input).place).toBeNull();
+    expect(inputToWorkUnitBody(input, '2026-11-06', storedPlaceOf(T3)).place).toBe('북서쪽 바닥');
+    expect(inputToWorkUnitBody(input, '2026-11-06', storedPlaceOf(task({}))).place).toBeNull();
+    expect(
+      inputToWorkUnitBody({ ...input, zone: 'z-04' }, '2026-11-06', '북서쪽 바닥').place,
+    ).toBeNull();
+  });
+
+  it('보고서 머리의 장소: 서버가 구역 작업의 place 를 비우면 그 작업의 구역 이름을 쓴다', () => {
+    expect(tbmFill(T1, wrapUpReport(null)).place).toBe('개구부 구역');
+    const withHeader = (zone_id: string | null, place: string | null) => {
+      const report = wrapUpReport(null);
+      return { ...report, header: { ...report.header!, zone_id, place } };
+    };
+    expect(tbmFill(T3, withHeader(null, '북서쪽 바닥')).place).toBe('북서쪽 바닥');
+    expect(tbmFill(task({}), withHeader(null, null)).place).toBe('현장 전체');
+    expect(tbmFill(task({}), withHeader(null, '구역 밖')).place).toBe('현장 전체');
   });
 
   it('409 · FAILED · 폴백 오류를 올바르게 구분한다', () => {

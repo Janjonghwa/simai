@@ -1,13 +1,7 @@
 import { SEVERITY_RANK } from '@/features/events/events';
 import type { Severity } from '@/features/events/types';
-import { OUTSIDE_ZONE_TEXT } from '@/features/tbm/constants';
-import {
-  TBM_ZONES,
-  type LayoutItem,
-  type Rect,
-  type TaskEval,
-  type TbmTask,
-} from '@/features/tbm/tbmDemo';
+import { SITE_WIDE_TEXT } from '@/features/tbm/constants';
+import type { LayoutItem, Rect, TaskEval, TbmTask } from '@/features/tbm/tbmDemo';
 
 // 레이아웃 · TBM 보고서의 계산. 시간대 겹침과 동시 작업 간섭, 작업 평가 글자를 화면 없이 한다.
 // 회의록 칸은 tbmForm.ts, 작업 등록은 taskInput.ts 에 있다.
@@ -85,7 +79,7 @@ export function tbmInterferences(tasks: readonly TbmTask[]): Interference[] {
       const hit = firstHit(a, b);
       if (hit) out.push({ ...slot, sev: 'HIGH', ...hit });
       else if (a.zone && a.zone === b.zone)
-        out.push({ ...slot, sev: 'CAUTION', why: `같은 구역 ${a.zone}에서 동시 작업`, spot: null });
+        out.push({ ...slot, sev: 'CAUTION', why: `${taskPlace(a)}에서 동시 작업`, spot: null });
     }
   }
   return out;
@@ -121,13 +115,8 @@ export function taskPeak(task: Pick<TbmTask, 'evals'>): Severity | null {
   return peak;
 }
 
-const zoneName = (id: string) => {
-  const zone = TBM_ZONES.find((z) => z.id === id);
-  return zone ? `${zone.name} (${zone.id})` : id;
-};
-
-export const taskPlace = (task: Pick<TbmTask, 'zone' | 'area'>) =>
-  task.zone ? zoneName(task.zone) : (task.area ?? OUTSIDE_ZONE_TEXT);
+/** 작업의 장소 글자(구역 작업은 구역 이름, 구역 없는 작업은 장소 또는 '현장 전체'). */
+export const taskPlace = (task: Pick<TbmTask, 'area'>) => task.area ?? SITE_WIDE_TEXT;
 
 export const SEVERITY_TEXT: Record<Severity, string> = {
   CRITICAL: '▲▲ CRITICAL',

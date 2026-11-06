@@ -1,17 +1,13 @@
-import {
-  ATTENDEES_PER_ROW,
-  FORM_ROWS,
-  MIN_ATTENDEE_ROWS,
-  OUTSIDE_ZONE_TEXT,
-} from '@/features/tbm/constants';
+import { ATTENDEES_PER_ROW, FORM_ROWS, MIN_ATTENDEE_ROWS } from '@/features/tbm/constants';
 import { evalText, itemHeight, taskPeak, taskPlace } from '@/features/tbm/tbm';
-import { TBM_DATE, TBM_ZONES, type TbmTask } from '@/features/tbm/tbmDemo';
+import { TBM_DATE, type TbmTask } from '@/features/tbm/tbmDemo';
 import {
   extractReportMeasures,
   msToHhmm,
   riskItemToEval,
   type TbmReport,
 } from '@/features/tbm/types';
+import { workPlaceLabel } from '@/features/tbm/workPlace';
 
 // TBM 회의록 칸. 작업·보고서로 칸을 채우고, 사람이 고친 칸을 받은 값 위에 덮어 관리한다(화면 없이).
 
@@ -32,12 +28,9 @@ function formatKoreanDate(isoDate?: string | null): string {
   return `${Number(m[1])}년 ${Number(m[2])}월 ${Number(m[3])}일`;
 }
 
-function headerPlaceText(zoneId: string | null, place?: string | null): string {
-  if (zoneId) {
-    const z = TBM_ZONES.find((zone) => zone.id === zoneId);
-    return z ? `${z.name} (${z.id})` : zoneId;
-  }
-  return place || OUTSIDE_ZONE_TEXT;
+/** 보고서 머리의 장소. 서버는 구역 작업의 place 를 비워 주므로 그때는 그 작업의 장소 글자(구역 이름)를 쓴다. */
+function headerPlaceText(task: TbmTask, hdr: NonNullable<TbmReport['header']>): string {
+  return hdr.zone_id && !hdr.place ? taskPlace(task) : workPlaceLabel(hdr);
 }
 
 /** 아무것도 채우지 않은 빈 양식. */
@@ -82,7 +75,7 @@ function fillHeader(form: TbmForm, task: TbmTask, report?: TbmReport | null) {
   const from = hdr ? msToHhmm(hdr.from_ms) : task.from;
   const to = hdr ? msToHhmm(hdr.to_ms) : task.to;
   const name = hdr?.name ?? task.name;
-  const place = hdr ? headerPlaceText(hdr.zone_id, hdr.place) : taskPlace(task);
+  const place = hdr ? headerPlaceText(task, hdr) : taskPlace(task);
   const people = hdr?.planned_people ?? task.people;
   const lead = hdr?.lead ?? task.lead;
   const riskDone = report

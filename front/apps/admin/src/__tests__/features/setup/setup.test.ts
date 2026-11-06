@@ -29,7 +29,7 @@ import { describe, expect, it } from 'vitest';
 
 describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 안내 계산', () => {
   it('보정 단계 순서에서 1단계는 카메라 · 높이 확인이고 마지막은 구역이며 걷기 보정 단계가 없다', () => {
-    expect(STEPS).toEqual(['카메라 · 높이 확인', '보정 검증', '구역']);
+    expect(STEPS).toEqual(['카메라 · 높이 확인', '자동 보정', '구역']);
     expect(STEPS[ZONE_STAGE]).toBe('구역');
     expect(DEFAULT_CAMERA_IDS).toEqual(['cam1', 'cam2', 'cam3', 'cam4']);
     expect(CAMERA_CORNERS).toHaveLength(4);

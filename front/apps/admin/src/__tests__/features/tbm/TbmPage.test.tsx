@@ -260,6 +260,15 @@ describe('작업 등록 · 수정 모달', () => {
 });
 
 describe('TBM 보고서 수명주기 · 법령 지식 그래프 · 오류 및 폴백', () => {
+  it('법령 근거 블록의 최근 사건 반영은 구역 번호 대신 이름만 보인다(이름을 모르면 구역)', async () => {
+    render(<TbmPage />);
+    const detail = await legalPanel();
+    const recent = await within(detail).findByRole('region', { name: '최근 사건 반영' });
+    expect(recent.textContent).toContain('구역');
+    expect(recent.textContent).toContain('5건');
+    expect(recent.textContent).not.toContain('z-04');
+  });
+
   it('법령 근거 블록이 인용 조문(citations)·법령 지식 그래프 SVG(노드 클릭 상세)·생성 단계(steps)를 표시하고 sections 카드는 그리지 않는다', async () => {
     render(<TbmPage />);
     const detail = await legalPanel();

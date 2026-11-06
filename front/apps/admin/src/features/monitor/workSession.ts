@@ -1,7 +1,7 @@
 import { eventTime, isAlarming, type EventEntry } from '@/features/events/entries';
 import type { EventItem } from '@/features/events/types';
-import { OUTSIDE_ZONE_TEXT } from '@/features/tbm/constants';
 import type { TbmWorkUnit } from '@/features/tbm/types';
+import { workPlaceLabel } from '@/features/tbm/workPlace';
 
 // 관제 화면의 작업 세션 계산(S15P31A101-457): 진행 중 작업 고르기, 시작 이전 이벤트 거르기, "작업 외 진입" 판정.
 // 화면 없이 시험한다. 서버가 준 값만 쓰고, 모르는 것은 지어내지 않는다(판정 불가면 배지를 달지 않는다).
@@ -96,11 +96,9 @@ export function isOutsideWork(
   return !during.some((work) => work.zone_id === event.zone_id);
 }
 
-/** 세션 바의 작업 구역: 구역 작업은 구역 이름(서버 place), 구역 밖 작업은 장소 또는 "구역 밖". */
-export function workZoneLabel(work: Pick<TbmWorkUnit, 'zone_id' | 'place'>): string {
-  if (work.zone_id) return work.place ?? work.zone_id;
-  return work.place ?? OUTSIDE_ZONE_TEXT;
-}
+/** 세션 바의 작업 구역: 구역 작업은 구역 이름(서버 place), 구역 없는 작업은 장소 또는 "현장 전체". */
+export const workZoneLabel = (work: Pick<TbmWorkUnit, 'zone_id' | 'place'>): string =>
+  workPlaceLabel(work);
 
 /** 작업 경과: 1분 미만 "N초", 1시간 미만 "N분 S초", 그 뒤 "H시간 M분". */
 export function workElapsedLabel(ms: number): string {

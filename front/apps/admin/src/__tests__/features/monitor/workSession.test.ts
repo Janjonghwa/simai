@@ -216,11 +216,11 @@ describe('isOutsideWork 작업 외 진입 판정', () => {
 });
 
 describe('표시 문구', () => {
-  it('작업 구역: 구역 작업은 서버 place(구역 이름), 이름이 없으면 구역 ID, 구역 밖 작업은 장소 또는 구역 밖', () => {
+  it('작업 구역: 구역 작업은 서버 place(구역 이름, 없으면 구역), 구역 없는 작업은 장소 또는 현장 전체', () => {
     expect(workZoneLabel({ zone_id: 'z-04', place: '개구부 구역' })).toBe('개구부 구역');
-    expect(workZoneLabel({ zone_id: 'z-04', place: null })).toBe('z-04');
+    expect(workZoneLabel({ zone_id: 'z-04', place: null })).toBe('구역');
     expect(workZoneLabel({ zone_id: null, place: '교실' })).toBe('교실');
-    expect(workZoneLabel({ zone_id: null, place: null })).toBe('구역 밖');
+    expect(workZoneLabel({ zone_id: null, place: null })).toBe('현장 전체');
   });
 
   it('경과: 1분 미만 초, 1시간 미만 분·초, 그 뒤 시간·분', () => {

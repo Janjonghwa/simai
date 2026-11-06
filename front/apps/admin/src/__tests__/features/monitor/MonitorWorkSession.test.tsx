@@ -156,11 +156,11 @@ describe('세션 바', () => {
     expect(navigate).toHaveBeenCalledWith({ to: '/work', search: { workUnitId: '12' } });
   });
 
-  it('구역 밖 작업은 작업 구역에 장소(없으면 구역 밖)를 보인다', async () => {
+  it('구역 없는 작업은 작업 구역에 장소(없으면 현장 전체)를 보인다', async () => {
     serveWorks([inProgress({ zone_id: null, place: null })]);
     renderMonitor();
     const bar = await screen.findByRole('region', { name: '작업 세션' });
-    expect(bar.textContent).toContain('작업 구역 구역 밖');
+    expect(bar.textContent).toContain('작업 구역 현장 전체');
   });
 
   it('오늘 남은 작업이 없으면 세션 바 대신 대기 화면을 보인다', async () => {
