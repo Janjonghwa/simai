@@ -4,11 +4,12 @@ import { groupIncidents, mergeEvent, type EventEntry } from '@/features/events/e
 import type { EventItem } from '@/features/events/types';
 import { ZONES_KEY } from '@/features/zones/api';
 import { MOCK_ZONES } from '@/mocks/zones';
+import { useCctvFloatBoxStore } from '@/store/cctvFloatBox.store';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore } from '@/store/session.store';
 import type { WorldStatePayload } from '@simai/contracts';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -277,6 +278,61 @@ describe('EventPanel 모두 지우기', () => {
     view.rerender([]);
     expect(fold().getAttribute('aria-expanded')).toBe('false');
     expect(clearButton()).toBeNull();
+  });
+});
+
+describe('EventPanel 떠 있는 CCTV 창 비켜 서기', () => {
+  // jsdom 은 배치를 하지 않는다. 관제 장면(1440×900)과 패널 폭(340)을 심으면 기본 자리는 left 1086, top 72, 아래 끝 886 이다.
+  const scene = document.createElement('div');
+  Object.defineProperties(scene, {
+    clientWidth: { get: () => 1440 },
+    clientHeight: { get: () => 900 },
+  });
+  const spies: { mockRestore: () => void }[] = [];
+  beforeEach(() => {
+    spies.push(
+      vi.spyOn(HTMLElement.prototype, 'offsetParent', 'get').mockReturnValue(scene),
+      vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(340),
+    );
+  });
+  afterEach(() => {
+    spies.splice(0).forEach((spy) => spy.mockRestore());
+    useCctvFloatBoxStore.setState({ box: null });
+  });
+  const panel = () => screen.getByRole('complementary', { name: '이벤트' });
+  const placed = () => {
+    const { left, top, height } = panel().style;
+    return { left, top, height };
+  };
+  const cctvAt = (left: number, top: number, width = 480, height = 360) =>
+    act(() => useCctvFloatBoxStore.setState({ box: { left, top, width, height } }));
+
+  it('창이 패널 아래쪽을 가리면 패널 아래 끝이 창 위로 올라가고, 창을 치우면 다시 길어진다', () => {
+    renderPanel([entry()]);
+    expect(panel().style.height).toBe('');
+
+    cctvAt(1000, 500);
+    expect(placed()).toEqual({ left: '1086px', top: '72px', height: '414px' });
+
+    cctvAt(96, 500);
+    expect(panel().style.height).toBe('');
+  });
+
+  it('창이 패널 위쪽을 가리면 패널이 창 아래에서 시작하고, 창이 닫히면 제자리다', () => {
+    renderPanel([entry()]);
+    cctvAt(1000, 80, 480, 300);
+    expect(placed()).toEqual({ left: '1086px', top: '394px', height: '492px' });
+
+    act(() => useCctvFloatBoxStore.setState({ box: null }));
+    expect(panel().style.top).toBe('');
+  });
+
+  it('접은 패널은 비켜 서지 않는다', () => {
+    renderPanel([entry()]);
+    cctvAt(1000, 500);
+    fireEvent.click(fold());
+    expect(panel().style.height).toBe('');
+    expect(panel().style.top).toBe('');
   });
 });
 

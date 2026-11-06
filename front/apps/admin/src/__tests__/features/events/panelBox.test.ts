@@ -1,4 +1,6 @@
 import {
+  avoidBox,
+  defaultPanelBox,
   fitPanel,
   movePanel,
   PANEL_GAP,
@@ -75,5 +77,61 @@ describe('fitPanel', () => {
     const fitted = fitPanel({ ...start, left: 1200 }, { width: 900, height: 600 });
     expect(fitted.left + fitted.width).toBeLessThanOrEqual(900 - PANEL_GAP);
     expect(fitted.top + fitted.height).toBeLessThanOrEqual(600 - PANEL_GAP);
+  });
+});
+
+describe('defaultPanelBox', () => {
+  it('오른쪽 위(위 72, 오른쪽 14)에서 화면 아래 14 까지다', () => {
+    expect(defaultPanelBox(bounds, 340)).toEqual(start);
+  });
+});
+
+describe('avoidBox(CCTV 창 비켜 서기)', () => {
+  // 패널 아래 끝은 760 - 14 = 746 이다.
+  const cctv = (left: number, top: number, width = 480, height = 360) => ({
+    left,
+    top,
+    width,
+    height,
+  });
+
+  it('창이 패널 아래쪽을 가리면 패널 아래 끝을 창 위로 올린다', () => {
+    expect(avoidBox(start, cctv(800, 400))).toEqual({
+      ...start,
+      height: 400 - PANEL_GAP - PANEL_TOP,
+    });
+  });
+
+  it('창이 패널 위쪽을 가리면 패널을 창 아래에서 시작한다', () => {
+    expect(avoidBox(start, cctv(800, 80, 480, 200))).toEqual({
+      ...start,
+      top: 280 + PANEL_GAP,
+      height: 746 - 280 - PANEL_GAP,
+    });
+  });
+
+  it('위·아래 빈칸 중 넓은 쪽을 고른다', () => {
+    // 위 빈칸 300-14-72=214, 아래 빈칸 746-500-14=232 → 아래.
+    expect(avoidBox(start, cctv(800, 300, 480, 200))).toMatchObject({ top: 514, height: 232 });
+    // 위 빈칸 350-14-72=264, 아래 빈칸 746-550-14=182 → 위.
+    expect(avoidBox(start, cctv(800, 350, 480, 200))).toMatchObject({ top: 72, height: 264 });
+  });
+
+  it('가로로 겹치지 않거나 창이 없으면 그대로 둔다(null)', () => {
+    expect(avoidBox(start, cctv(96, 128))).toBeNull();
+    expect(avoidBox(start, cctv(start.left - 480, 128))).toBeNull();
+    expect(avoidBox(start, null)).toBeNull();
+  });
+
+  it('넓은 쪽 빈칸도 최소 높이보다 좁으면 그대로 둔다(null)', () => {
+    expect(avoidBox(start, cctv(800, 72 + PANEL_MIN_HEIGHT - 1, 480, 600))).toBeNull();
+  });
+
+  it('옮긴 패널도 그 자리 기준으로 비켜 선다', () => {
+    const moved = { left: 400, top: 200, width: 340, height: 400 };
+    expect(avoidBox(moved, cctv(300, 450, 480, 300))).toEqual({
+      ...moved,
+      height: 450 - PANEL_GAP - 200,
+    });
   });
 });

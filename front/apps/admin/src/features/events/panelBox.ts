@@ -43,6 +43,38 @@ export function resizePanel(
   return { left: right - width, top: start.top, width, height };
 }
 
+/** 기본 자리(오른쪽 위에서 화면 아래까지)의 패널 상자. */
+export function defaultPanelBox(bounds: FloatBounds, width: number): FloatBox {
+  return {
+    left: bounds.width - PANEL_GAP - width,
+    top: PANEL_TOP,
+    width,
+    height: bounds.height - PANEL_TOP - PANEL_GAP,
+  };
+}
+
+/**
+ * 패널(panel)이 가리는 상자(cover, 떠 있는 CCTV 창)와 겹치면, 가리는 상자의 위·아래 빈칸 중 넓은 쪽에 맞춘 패널 상자.
+ * 가리는 상자와는 PANEL_GAP 만큼 띄운다. 겹치지 않거나 넓은 쪽도 PANEL_MIN_HEIGHT 보다 좁으면 null(그대로 둔다).
+ */
+export function avoidBox(panel: FloatBox, cover: FloatBox | null): FloatBox | null {
+  if (!cover) return null;
+  const panelBottom = panel.top + panel.height;
+  const coverBottom = cover.top + cover.height;
+  const overlaps =
+    cover.left < panel.left + panel.width &&
+    panel.left < cover.left + cover.width &&
+    cover.top < panelBottom &&
+    panel.top < coverBottom;
+  if (!overlaps) return null;
+  const above = cover.top - PANEL_GAP - panel.top;
+  const below = panelBottom - coverBottom - PANEL_GAP;
+  if (Math.max(above, below) < PANEL_MIN_HEIGHT) return null;
+  return above >= below
+    ? { ...panel, height: above }
+    : { ...panel, top: coverBottom + PANEL_GAP, height: below };
+}
+
 /** 창 크기가 바뀌어도 패널이 화면 밖으로 나가지 않게 다시 맞춘다. */
 export function fitPanel(box: FloatBox, bounds: FloatBounds): FloatBox {
   const width = Math.min(box.width, Math.max(PANEL_MIN_WIDTH, bounds.width - 2 * PANEL_GAP));

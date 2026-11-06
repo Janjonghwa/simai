@@ -1,9 +1,10 @@
 import { CctvFloat } from '@/features/cctv/CctvFloat';
 import { useCctvStore } from '@/features/cctv/cctv.store';
 import { useCctvPreview } from '@/features/cctv/useCctvPreview';
+import { CCTV_BOX_SETTLE_MS, useCctvFloatBoxStore } from '@/store/cctvFloatBox.store';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { useSessionStore } from '@/store/session.store';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { useEffect } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -72,6 +73,34 @@ describe('떠 있는 CCTV', () => {
     });
     render(<CctvFloat selectedKey="person:p1" onClose={vi.fn()} />);
     expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
+  });
+
+  it('연 창의 자리를 이벤트 패널에 알리고, 창이 내려가면 비운다', () => {
+    // jsdom 은 배치를 하지 않아 창 자리를 심는다(기본 자리 top-32 left-24, 480×360).
+    const scene = document.createElement('div');
+    const spies = [
+      vi.spyOn(HTMLElement.prototype, 'offsetParent', 'get').mockReturnValue(scene),
+      vi.spyOn(HTMLElement.prototype, 'offsetLeft', 'get').mockReturnValue(96),
+      vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockReturnValue(128),
+      vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(480),
+      vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(360),
+    ];
+    vi.useFakeTimers();
+    try {
+      const view = render(<CctvFloat selectedKey={null} onClose={vi.fn()} />);
+      act(() => vi.advanceTimersByTime(CCTV_BOX_SETTLE_MS));
+      expect(useCctvFloatBoxStore.getState().box).toEqual({
+        left: 96,
+        top: 128,
+        width: 480,
+        height: 360,
+      });
+      view.unmount();
+      expect(useCctvFloatBoxStore.getState().box).toBeNull();
+    } finally {
+      vi.useRealTimers();
+      spies.forEach((spy) => spy.mockRestore());
+    }
   });
 
   it('3D 카메라 마커 클릭 요청(requestedCamera)으로 열리거나 이미 열린 창의 카메라를 바꾸고 4분할 버튼도 유지한다', () => {
