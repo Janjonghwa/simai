@@ -25,7 +25,7 @@ from simai_ai.gpu.admission import (
     clean_stop_record,
     marker_section,
 )
-from simai_ai.gpu.budget import BudgetError, GpuBudget, WorkerGpuSettings
+from simai_ai.gpu.budget import MIN_WORKER_TORCH_FRACTION, BudgetError, GpuBudget, WorkerGpuSettings
 
 TYPES = ["calibration_ba", "hmr_refine", "static_reconstruct", "tbm_report", "vlm_rationale"]
 
@@ -461,7 +461,8 @@ def test_budget_defaults_are_consistent_and_env_overrides():
     s = WorkerGpuSettings.from_env({"SIMAI_ROOT": "/v/simai"})
     assert s.marker == Path("/v/simai/state/tier0.live")
     assert s.policy.lag_budget_ms == 600 and s.policy.live_blocked_types == DEFAULT_LIVE_BLOCKED
-    assert s.budget.vllm_gpu_memory_utilization == 0.55
+    assert s.budget.vllm_gpu_memory_utilization == 0.30
+    assert MIN_WORKER_TORCH_FRACTION == 0.10
     assert s.policy.allow_without_marker is False  # 기본: 표시 파일 없음 = 모름
     assert s.policy.resume_after_s == 10.0 and s.policy.max_queue_wait_exceeded == 2
     s = WorkerGpuSettings.from_env({"SIMAI_WORKER_LIVE_BLOCKED_TYPES": "-", "SIMAI_WORKER_LAG_BUDGET_MS": "500",

@@ -473,3 +473,27 @@ S15P31A101-246 이 위 "2단계" 로 처리한 것: 통합 Dockerfile·opencv-py
    - `lobby_live_s9.py` 마지막 줄이 `return 0` 으로 고정돼 Tier 0 비정상 종료 코드를 삼키던 버그를 없애고 `Supervisor.run()` 이 `exit_code(rc)` 를 그대로 반환한다.
 4. **기동 전 일괄 점검 (`simai-bootstrap preflight` / `check --preflight`)**
    - `tier0,avatar,static,vlm` 다중 가중치 묶음, GPU 예산 합산, `texrecon` 실행 파일 및 `open3d`·`ultralytics` 모듈을 한 번에 점검하고 하나라도 실패하면 비-0 종료 코드(2·3·64)를 반환한다.
+
+## 5단계: VLM FP8 온라인 양자화 기본화 및 GPU 예산 0.30·워커 최소 보장 비율 0.10 (S15P31A101-525)
+
+12차 GPU 세션에서 VLM `0.55` + 아바타 `0.10` 조합으로 분석 워커(`SIMAI_WORKER_TORCH_MEMORY_FRACTION`) 몫이 `0.05`(~4 GB on H100 80 GB)로 줄어 `site_setup` 의 MapAnything(피크 할당 6.4 GB)이 CUDA OOM 으로 실패했다.
+2026-11-06 GPU PoC(H200, vLLM 0.21.0 + `vllm-cosmos3`, `--gpu-memory-utilization 0.3`, `--max-model-len 32768`, `--max-num-seqs 4`, `VLLM_USE_FLASHINFER_SAMPLER=0`)로 BF16 과 FP8(`--quantization fp8`, `Fp8OnlineLinearMethod` / `CutlassFP8ScaledMMLinearKernel`)을 비교 측정했다.
+
+| 항목 | BF16 (양자화 없음) | FP8 (`--quantization fp8`) | 비고 |
+|---|---|---|---|
+| 모델 가중치 적재 메모리 | 16.79 GiB (3.69 s) | **10.05 GiB** (4.38 s, 가중치 적재 3.12 s) | **-6.74 GiB (-40.1%)** 절감 |
+| CUDA graph 메모리 | 0.03 GiB (추정 0.04 GiB) | 0.03 GiB (추정 0.04 GiB) | 동일 |
+| H200 `0.30` 기준 남는 KV 캐시 | 22.38 GiB (162,976 토큰, 32k 기준 동시 4.97x) | **29.07 GiB** (211,664 토큰, 32k 기준 동시 6.46x) | +6.69 GiB (+48,688 토큰) |
+| 실제 프롬프트 1 (2,945 prompt tokens) | 1.73 s (100 completion tokens) | **1.57 s** (89 completion tokens) | 한국어 위험 판정·근거 요지 동등 |
+| 실제 프롬프트 2 (2,926 prompt tokens) | 0.20 s (17 completion tokens) | **0.18 s** (17 completion tokens) | 답변 동일(`"네, 라바콘은 화면 오른쪽에 있습니다."`) |
+
+### 결정
+- **`simai-bootstrap` vLLM 양자화 스위치 (`SIMAI_VLLM_QUANTIZATION`, 기본값 `fp8`)**:
+  - `Supervisor._vllm_argv` 가 기본적으로 `--quantization fp8` 을 전달한다.
+  - `SIMAI_VLLM_QUANTIZATION` 이 `none` 또는 빈 값이면 `--quantization` 을 넣지 않고(BF16 복귀 스위치), `SIMAI_VLLM_EXTRA_ARGS` 에 이미 `--quantization` 또는 `-q` 가 있으면 중복 전달하지 않는다.
+- **VLM 기본 `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION = 0.30` 정합화**:
+  - H100 80 GiB 의 `0.30` = `24 GiB`: FP8 가중치 `10.05 GiB` + CUDA graph(`0.03~0.04 GiB`)·인코더/활성화 여유 + KV 캐시 약 `13 GiB`(약 `9.4만 토큰`, 32,768 상한 기준 동시 `2.9x`, 실제 요청당 약 `2,950 토큰` × 동시 4 요청 ≈ `1.2만 토큰` 대비 `7~8배` 이상 여유).
+  - `deploy/scripts/simai_bootstrap.py`(`compute_gpu_fractions`, `_vllm_argv`, `preflight`), `ai/src/simai_ai/gpu/budget.py`(`GpuBudget`, `WorkerGpuSettings`), `deploy/compose.yaml` 모두 `0.30` 으로 통일했다.
+- **분석 워커 몫 확대 및 최소 보장 비율(`MIN_WORKER_TORCH_FRACTION = 0.10`) 검증**:
+  - Tier 0 `0.20`·아바타 `0.10` 은 그대로 두고, 분석 예산 `0.70` 에서 vLLM `0.30`·아바타 `0.10` 을 뺀 분석 워커 기본 몫은 `0.30`(H100 80 GiB 기준 24 GiB, 아바타 미사용 시 `0.40` = 32 GiB)이 된다.
+  - `compute_gpu_fractions` 는 `"worker" in services` 일 때 계산되거나 명시된 `worker_fraction` 이 `MIN_WORKER_TORCH_FRACTION`(`0.10`, H100 80 GB 기준 ~8 GB, MapAnything 피크 할당 6.4 GB 대비 약 1.6 GB 여유) 미만이면 기동 전에 종료 코드 64(`EXIT_USAGE`)로 거부하여 12차 세션과 같은 `0.05`(~4 GB) OOM 재발을 막는다.

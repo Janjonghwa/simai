@@ -175,7 +175,7 @@ def test_avatar_opt_in_weights_and_total_worker_budget(bs, tmp_path, monkeypatch
     assert "avatar" in w.spawned and sup.weight_calls == [["m", "m"]]
     assert "services.avatar" in w.argvs["avatar"]
     assert w.argvs["avatar"][:3] == ["simai-wait-tier0", "--env-file", str(env_file)]
-    assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(.10)
+    assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(.30)
     assert float(w.envs["avatar"]["SIMAI_AVATAR_GPU_MEMORY_FRACTION"]) == pytest.approx(.10)
     w.signals.clear()
     sup._stop_sidecars()
@@ -186,7 +186,7 @@ def test_avatar_budget_overflow_refused_before_spawn(bs, tmp_path, monkeypatch):
     w = World()
     with pytest.raises(bs.BootstrapError):
         _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "vllm", "worker", "avatar"),
-             env={"SIMAI_AVATAR_GPU_MEMORY_FRACTION": "0.20"})
+             env={"SIMAI_AVATAR_GPU_MEMORY_FRACTION": "0.35"})
     assert w.spawned == []
 
 
@@ -243,8 +243,8 @@ def test_ppe_stops_before_other_sidecars_and_avatar_share_is_not_duplicated(bs, 
     _settle(sup, w, 12)
     assert {"avatar", "ppe", "worker"} <= set(w.spawned)
     assert sup.weight_calls == [["m", "m", "ppe-ckpt"]]
-    # PPE 몫은 분석 워커 예산(0.70) 밖이다: worker 는 avatar 를 뺀 0.10 그대로
-    assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(.10)
+    # PPE 몫은 분석 워커 예산(0.70) 밖이다: worker 는 vLLM(0.30)·avatar(0.10) 를 뺀 0.30 그대로
+    assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(.30)
     w.signals.clear()
     sup._stop_sidecars()
     assert [n for n, s in w.signals if s == signal.SIGTERM] == ["ppe", "avatar", "worker", "vllm"]
@@ -339,6 +339,7 @@ def test_children_get_no_token_own_caches_thread_limits_and_vllm_budget_flags(bs
     assert flags["--gpu-memory-utilization"] == "0.5" and flags["--max-num-seqs"] == "2" and flags["--host"] == "127.0.0.1"
     assert flags["--port"] == "8123" and "Cosmos3ReasonerForConditionalGeneration" in flags["--hf-overrides"]
     assert flags["--max-model-len"] == "32768"  # 모델 기본 262,144 는 0.55 의 KV 에 안 들어간다(3차 GPU 세션)
+    assert flags["--quantization"] == "fp8"  # S15P31A101-525 기본 FP8 온라인 양자화
     assert w.envs["vllm"]["VLLM_USE_FLASHINFER_SAMPLER"] == "0" and w.envs["vllm"]["VLLM_USE_DEEP_GEMM"] == "0"
     assert "VLLM_USE_FLASHINFER_SAMPLER" not in w.envs["tier0"] and "VLLM_USE_FLASHINFER_SAMPLER" not in w.envs["worker"]
     assert w.argvs["worker"][-2:] == ["-m", "services.worker"]
@@ -1207,10 +1208,10 @@ def _test_cert_pem() -> bytes:
 
 
 def test_worker_torch_memory_fraction_is_capped_even_without_avatar(bs, tmp_path, monkeypatch):
-    """avatar 가 꺼진 기본 구성(tier0,vllm,worker)에서도 worker 상한은 0.20(0.70 - 0.50)으로 묶여야 한다 (S15P31A101-382)."""
+    """avatar 가 꺼진 기본 구성(tier0,vllm,worker)에서도 worker 상한은 0.40(0.70 - 0.30)으로 묶여야 한다 (S15P31A101-382·-525)."""
     w = World()
     sup = _sup(bs, tmp_path, monkeypatch, w, services=("tier0", "vllm", "worker"))
-    assert float(sup.svc["worker"].env["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(0.20)
+    assert float(sup.svc["worker"].env["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(0.40)
     assert sup.svc["worker"].env["SIMAI_TIER0_MARKER"] == str(tmp_path / "simai" / "state" / "tier0.live")
     assert sup.svc["worker"].env["SIMAI_TIER0_WEIGHTS"] == str(tmp_path / "simai" / "weights" / "yolo" / "yolo26x-pose.pt")
     assert sup.svc["worker"].env["SIMAI_VLLM_PORT"] == "8000"
@@ -1228,7 +1229,7 @@ def test_worker_torch_memory_fraction_is_capped_even_without_avatar(bs, tmp_path
 
     with pytest.raises(bs.BootstrapError) as exc2:
         _sup(bs, tmp_path, monkeypatch, World(), services=("tier0", "vllm", "worker"),
-             env={"SIMAI_WORKER_TORCH_MEMORY_FRACTION": "0.25"})
+             env={"SIMAI_WORKER_TORCH_MEMORY_FRACTION": "0.45"})
     assert exc2.value.code == bs.EXIT_USAGE
 
 
@@ -1316,7 +1317,7 @@ def test_lobby_mode_prepares_work_runs_supervisor_and_propagates_nonzero_exit_co
     assert endpoint["public_host"] == "203.0.113.77"
 
     # GPU 상한 및 아바타 채널 검증
-    assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(0.10)
+    assert float(w.envs["worker"]["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(0.30)
     assert float(w.envs["avatar"]["SIMAI_AVATAR_GPU_MEMORY_FRACTION"]) == pytest.approx(0.10)
     assert w.envs["tier0"]["SIMAI_AVATAR_SHARE"] == "1"
     assert w.envs["avatar"]["SIMAI_AVATAR_CHANNEL"] == "wss://127.0.0.1:19446"
@@ -1379,7 +1380,7 @@ def test_check_preflight_verifies_multiple_sets_budget_and_runtime_and_fails_non
     out = json.loads(capsys.readouterr().out)
     assert rc == 0 and out["exit"] == 0
     assert set(out["sets"]) == {"tier0", "avatar", "static", "vlm"}
-    assert out["gpu_budget"]["worker_fraction"] == pytest.approx(0.10)
+    assert out["gpu_budget"]["worker_fraction"] == pytest.approx(0.30)
     assert out["runtime"]["modules"] == {"json": True, "math": True}
 
     # 2) 필수 바이너리 누락 → 종료 코드 2 (chain-s9.sh 처럼 0 으로 삼키지 않는다)
@@ -1488,7 +1489,7 @@ def test_preflight_budgets_lobby_services_and_reports_py_spy_without_failing(bs,
     cap = capsys.readouterr()
     out = json.loads(cap.out)
     assert rc == 0 and out["exit"] == 0
-    assert out["gpu_budget"]["worker_fraction"] == pytest.approx(0.10)  # avatar 0.10 을 뺀 값
+    assert out["gpu_budget"]["worker_fraction"] == pytest.approx(0.30)  # 0.70 - vllm(0.30) - avatar(0.10)
     assert out["diagnostics"]["py_spy"]["status"] == "unavailable"
     assert "내장 계측" in cap.err and "실패 아님" in cap.err
 
@@ -1516,11 +1517,62 @@ def test_lobby_explicit_services_without_avatar_warns_and_bad_worker_id_stops_be
 
 
 def test_worker_env_fraction_priority_and_budget_validation(bs, tmp_path, monkeypatch):
+    """워커 torch 상한 우선순위(worker.env > 환경 변수 > 계산값 0.30)와 남은 예산(0.30)·최소 보장 비율(0.10) 검증 (S15P31A101-493·-525)."""
     path = tmp_path / "worker-settings"
-    path.write_text("SIMAI_WORKER_TORCH_MEMORY_FRACTION=0.08\n", encoding="utf-8")
-    env = {"SIMAI_WORKER_ENV_FILE": str(path), "SIMAI_WORKER_TORCH_MEMORY_FRACTION": "0.09"}
+    path.write_text("SIMAI_WORKER_TORCH_MEMORY_FRACTION=0.15\n", encoding="utf-8")
+    env = {"SIMAI_WORKER_ENV_FILE": str(path), "SIMAI_WORKER_TORCH_MEMORY_FRACTION": "0.20"}
     sup = _sup(bs, tmp_path, monkeypatch, World(), services=("tier0", "vllm", "worker", "avatar"), env=env)
-    assert float(sup.svc["worker"].env["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(0.08)
-    path.write_text("SIMAI_WORKER_TORCH_MEMORY_FRACTION=0.11\n", encoding="utf-8")
-    with pytest.raises(bs.BootstrapError):
+    assert float(sup.svc["worker"].env["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(0.15)  # worker.env 가 환경 변수보다 우선
+
+    # worker.env 에 없으면 환경 변수(0.20)가 기본 계산값(0.30)보다 우선
+    path.write_text("# empty\n", encoding="utf-8")
+    sup_env = _sup(bs, tmp_path, monkeypatch, World(), services=("tier0", "vllm", "worker", "avatar"), env=env)
+    assert float(sup_env.svc["worker"].env["SIMAI_WORKER_TORCH_MEMORY_FRACTION"]) == pytest.approx(0.20)
+
+    # 남은 예산(0.70 - 0.30 - 0.10 = 0.30)을 넘으면 기동 전에 거부한다
+    path.write_text("SIMAI_WORKER_TORCH_MEMORY_FRACTION=0.31\n", encoding="utf-8")
+    with pytest.raises(bs.BootstrapError) as exc_over:
         _sup(bs, tmp_path, monkeypatch, World(), services=("tier0", "vllm", "worker", "avatar"), env=env)
+    assert exc_over.value.code == bs.EXIT_USAGE
+
+    # 최소 보장 비율(MIN_WORKER_TORCH_FRACTION=0.10, MapAnything 피크 6.4GB OOM 방지) 미만이면 기동 전에 거부한다
+    path.write_text("SIMAI_WORKER_TORCH_MEMORY_FRACTION=0.05\n", encoding="utf-8")
+    with pytest.raises(bs.BootstrapError) as exc_low:
+        _sup(bs, tmp_path, monkeypatch, World(), services=("tier0", "vllm", "worker", "avatar"), env=env)
+    assert exc_low.value.code == bs.EXIT_USAGE
+
+    # 12차 GPU 세션 재발 방지: vLLM=0.55·avatar=0.10 으로 워커 몫이 0.05(< 0.10)만 남는 구성도 기동 전에 거부한다
+    with pytest.raises(bs.BootstrapError) as exc_s12:
+        _sup(bs, tmp_path, monkeypatch, World(), services=("tier0", "vllm", "worker", "avatar"),
+             env={"SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION": "0.55"})
+    assert exc_s12.value.code == bs.EXIT_USAGE
+
+
+def test_vllm_fp8_quantization_default_disable_override_and_extra_args_dedup(bs, tmp_path, monkeypatch):
+    """S15P31A101-525: vLLM 기본 --quantization fp8 과 --gpu-memory-utilization 0.30, none/빈 값 비활성, EXTRA_ARGS 중복 방지."""
+    sup_default = _sup(bs, tmp_path, monkeypatch, World())
+    argv_default = sup_default.svc["vllm"].argv
+    assert argv_default[argv_default.index("--gpu-memory-utilization") + 1] == "0.30"
+    assert argv_default.count("--quantization") == 1
+    assert argv_default[argv_default.index("--quantization") + 1] == "fp8"
+
+    # none·NONE·빈 문자열이면 --quantization 을 넣지 않는다(BF16 복귀 스위치)
+    for disabled in ("none", "NONE", " None ", "", "   "):
+        sup_off = _sup(bs, tmp_path, monkeypatch, World(), env={"SIMAI_VLLM_QUANTIZATION": disabled})
+        argv_off = sup_off.svc["vllm"].argv
+        assert "--quantization" not in argv_off and "-q" not in argv_off
+
+    # 다른 양자화 방식을 명시하면 그 값을 전달한다
+    sup_custom = _sup(bs, tmp_path, monkeypatch, World(), env={"SIMAI_VLLM_QUANTIZATION": "awq"})
+    argv_custom = sup_custom.svc["vllm"].argv
+    assert argv_custom.count("--quantization") == 1
+    assert argv_custom[argv_custom.index("--quantization") + 1] == "awq"
+
+    # SIMAI_VLLM_EXTRA_ARGS 에 이미 --quantization 또는 -q 가 있으면 중복 전달하지 않는다
+    for extra in ("--quantization fp8", "--quantization=awq", "-q fp8", "-q=gptq"):
+        sup_extra = _sup(bs, tmp_path, monkeypatch, World(),
+                         env={"SIMAI_VLLM_EXTRA_ARGS": extra, "SIMAI_VLLM_QUANTIZATION": "fp8"})
+        argv_extra = sup_extra.svc["vllm"].argv
+        quant_flags = [x for x in argv_extra if x.split("=", 1)[0].replace("_", "-") in ("--quantization", "-q")]
+        assert len(quant_flags) == 1
+        assert argv_extra[-len(extra.split()):] == extra.split()

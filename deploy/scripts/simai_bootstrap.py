@@ -53,8 +53,10 @@
     CPU 고정(SIMAI_SIDECAR_CPUS, 기본 auto = 쓸 수 있는 vCPU n = min(affinity 개수, cgroup 할당량 올림)이 8 이상이면 affinity 뒤쪽 n//2 개,
     none·'4-7,10'. 계산 결과는 시작 로그 한 줄), 세 프로세스 모두 다른
     TRITON_CACHE_DIR·TORCHINDUCTOR_CACHE_DIR·CUDA_CACHE_PATH(SIMAI_CACHE_ROOT, 기본 /tmp/simai-cache/<이름>/)로 띄운다.
-    vLLM 기본값: --max-model-len SIMAI_WORKER_VLLM_MAX_MODEL_LEN(32768, SIMAI_VLLM_EXTRA_ARGS 에 있으면 그 값), 환경 VLLM_USE_DEEP_GEMM=0·
-    VLLM_USE_FLASHINFER_SAMPLER=0(환경에 주면 그 값)·HF_HUB_OFFLINE=1.
+    vLLM 기본값: --max-model-len SIMAI_WORKER_VLLM_MAX_MODEL_LEN(32768, SIMAI_VLLM_EXTRA_ARGS 에 있으면 그 값),
+    --quantization SIMAI_VLLM_QUANTIZATION(fp8, none·빈 값이면 비활성, SIMAI_VLLM_EXTRA_ARGS 에 --quantization/-q 가 있으면 그 값, S15P31A101-525),
+    --gpu-memory-utilization SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION(0.30, H100 80 GiB 기준 24 GiB = FP8 가중치 10.05 GiB + CUDA graph·활성화 여유 + KV 캐시),
+    환경 VLLM_USE_DEEP_GEMM=0·VLLM_USE_FLASHINFER_SAMPLER=0(환경에 주면 그 값)·HF_HUB_OFFLINE=1.
     vLLM 은 표시 파일이 phase=running·reserve OK 일 때만 띄우므로 Tier 0 의 TensorRT 엔진 빌드·적재와 GPU 선확보가 끝난 뒤다(진입점이 엔진을 준비한 뒤에 서비스가 표시 파일을 쓴다). 워커 토큰 파일(SIMAI_WORKER_ENV_FILE, 없으면
     $SIMAI_ROOT/../.simai-private/worker.env 가 있을 때)은 simai-wait-tier0 --env-file 로 워커 환경에만 넣는다.
     워커 인자는 SIMAI_WORKER_ARGS(예: --config <워커 설정>: 받을 작업 유형 VLM·hmr_refine 등의 처리기)를 덧붙인다.
@@ -172,7 +174,10 @@ RETRY_HTTP = {408, 425, 429, 500, 502, 503, 504}
 LOCK_DIR = ("weights", ".locks")  # 항목마다 지우지 않는 잠금 파일(Codex 리뷰 R1)
 STAMP_DIR = ("weights", ".verified")  # 모델 폴더 밖(vLLM 이 읽는 weights/cosmos3-nano/ 에 섞이지 않게), Tier 0 state/ 밖
 VLLM_HF_OVERRIDES = '{"architectures": ["Cosmos3ReasonerForConditionalGeneration"]}'  # Reasoner 탑만 싣는다(docs/design/unified-env.md)
-VLLM_MAX_MODEL_LEN = "32768"  # H100·0.55 에서 KV 23.99 GiB = 174,688 토큰 → 32,768 기준 동시 5.33x ≥ --max-num-seqs 4 (3차 GPU 세션, unified-env.md)
+VLLM_MAX_MODEL_LEN = "32768"  # H100·0.30(FP8 가중치 10.05 GiB)에서 KV 약 13 GiB ≈ 9.4만 토큰(동시 4 × 실사용 ~3k 토큰/요청 충분), H200·0.30 에서는 KV 29.07 GiB = 211,664 토큰(32k 기준 동시 6.46x, 11-06 GPU PoC)
+VLLM_GPU_MEMORY_UTILIZATION = "0.30"  # 11-06 GPU PoC FP8(S15P31A101-525): H100 80 GiB 의 0.30 = 24 GiB = 가중치 10.05 GiB + CUDA graph(0.03~0.04 GiB)·활성화 여유 + KV 캐시
+VLLM_QUANTIZATION = "fp8"  # 11-06 GPU PoC(S15P31A101-525): FP8 온라인 양자화(가중치 16.79 → 10.05 GiB, 첫 응답 1.73 → 1.57 s). SIMAI_VLLM_QUANTIZATION=none·빈 값이면 비활성
+MIN_WORKER_TORCH_FRACTION = 0.10  # H100 80GB 기준 ~8GB: 12차 GPU 세션에서 워커 몫 0.05(~4GB)로 MapAnything(피크 6.4GB)이 OOM 난 문제 재발 방지(S15P31A101-525)
 KILL = getattr(signal, "SIGKILL", 9)  # Windows(노트북 시험)에는 SIGKILL 이 없다(Proc.signal 이 kill() 로 바꾼다)
 _out_lock = threading.Lock()
 
@@ -939,15 +944,16 @@ def sidecar_cpus(spec: str | None, avail: list[int], quota: float | None = None)
 
 
 def compute_gpu_fractions(services: list[str], env: dict[str, str]) -> dict[str, float]:
-    """서비스 목록에 맞춰 GPU 메모리 상한(vllm·avatar·worker·ppe)을 계산·검증한다 (S15P31A101-382).
+    """서비스 목록에 맞춰 GPU 메모리 상한(vllm·avatar·worker·ppe)을 계산·검증한다 (S15P31A101-382·-525).
 
-    분석 예산 0.70 안에서 vLLM 0.50·avatar 0.10·worker 나머지를 나눈다. 명시 값은 예산 안에서 우선한다.
+    분석 예산 0.70 안에서 vLLM 0.30·avatar 0.10·worker 나머지(0.30, 아바타 없으면 0.40)를 나눈다. 명시 값은 예산 안에서 우선한다.
+    워커가 켜진 구성에서는 워커 몫이 최소 보장 비율(MIN_WORKER_TORCH_FRACTION=0.10, 80GB 기준 ~8GB) 이상이어야 한다(12차 GPU 세션 MapAnything 6.4GB OOM 방지).
     ppe 는 분석 워커 예산 밖의 별도 몫(기본 0.05)이고 Tier 0 + 분석 워커 + PPE ≤ 0.95 를 본다(명세 3.2, S15P31A101-507).
     """
     from simai_ai.gpu.budget import HEADROOM_FRACTION, BudgetError, WorkerGpuSettings
 
     env = dict(env)
-    env.setdefault("SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION", "0.50")
+    env.setdefault("SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION", VLLM_GPU_MEMORY_UTILIZATION)
     try:
         budget = WorkerGpuSettings.from_env(env).budget
     except BudgetError as e:
@@ -966,6 +972,12 @@ def compute_gpu_fractions(services: list[str], env: dict[str, str]) -> dict[str,
         or ("worker" in services and not 0 < worker_fraction <= remaining)
     ):
         raise BootstrapError(EXIT_USAGE, "avatar·vLLM·worker GPU 상한 합이 분석 워커 예산을 넘는다")
+    if "worker" in services and worker_fraction + 1e-9 < MIN_WORKER_TORCH_FRACTION:
+        raise BootstrapError(
+            EXIT_USAGE,
+            f"분석 워커 GPU 몫({worker_fraction:.2f})이 최소 보장 비율({MIN_WORKER_TORCH_FRACTION:.2f})보다 작다 "
+            f"(vllm={vllm_fraction:.2f}, avatar={avatar_fraction:.2f}, 남은 예산={remaining:.2f}; MapAnything 6.4GB OOM 방지)",
+        )
     ppe_fraction = _env_float(env, "SIMAI_PPE_GPU_MEMORY_FRACTION", PPE_FRACTION_DEFAULT) if "ppe" in services else 0.0
     if "ppe" in services:
         limit = 1 - HEADROOM_FRACTION
@@ -1159,15 +1171,20 @@ class Supervisor:
     def _vllm_argv(self, env: dict) -> list[str]:
         model = env.get("SIMAI_VLLM_MODEL") or str(self.root / "weights" / "cosmos3-nano")
         extra = shlex.split(env.get("SIMAI_VLLM_EXTRA_ARGS") or "")
-        # 모델 기본 262,144 토큰은 한 요청 KV 36 GiB 라 0.55 에서 남는 KV(약 24 GiB)를 넘어 기동이 실패한다(3차 GPU 세션). EXTRA_ARGS 값이 우선
+        # 모델 기본 262,144 토큰은 한 요청 KV 36 GiB 라 기동이 실패한다(3차 GPU 세션). EXTRA_ARGS 값이 우선
         given = any(a.split("=", 1)[0].replace("_", "-") == "--max-model-len" for a in extra)
         max_len = [] if given else ["--max-model-len", env.get("SIMAI_WORKER_VLLM_MAX_MODEL_LEN") or VLLM_MAX_MODEL_LEN]
+        # FP8 온라인 양자화(11-06 GPU PoC: 가중치 16.79 → 10.05 GiB, S15P31A101-525). none·빈 값이면 끄고, EXTRA_ARGS 에 이미 있으면 중복하지 않는다
+        raw_quant = (env["SIMAI_VLLM_QUANTIZATION"] if "SIMAI_VLLM_QUANTIZATION" in env else VLLM_QUANTIZATION).strip()
+        given_quant = any(a.split("=", 1)[0].replace("_", "-") in ("--quantization", "-q") for a in extra)
+        quant = [] if (given_quant or not raw_quant or raw_quant.lower() == "none") else ["--quantization", raw_quant]
         return [*shlex.split(env.get("SIMAI_VLLM_CMD") or "vllm"), "serve", model,
                 "--served-model-name", env.get("SIMAI_VLLM_SERVED_NAME") or "cosmos3-nano",
                 "--hf-overrides", VLLM_HF_OVERRIDES,
-                "--gpu-memory-utilization", env.get("SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION") or "0.50",
+                "--gpu-memory-utilization", env.get("SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION") or VLLM_GPU_MEMORY_UTILIZATION,
                 "--max-num-seqs", env.get("SIMAI_WORKER_VLLM_MAX_NUM_SEQS") or "4",
                 *max_len,
+                *quant,
                 "--host", "127.0.0.1", "--port", str(self.port),
                 "--mm-encoder-tp-mode", "data", "--async-scheduling",
                 *extra]

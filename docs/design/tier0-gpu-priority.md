@@ -7,7 +7,7 @@ Tier 0 와 분석 워커가 GPU Pod 하나를 나눠 쓸 때 Tier 0 를 먼저 �
 | 규칙(명세 3.2) | 구현 |
 |---|---|
 | Tier 0 가 GPU 메모리를 먼저 확보 | `simai_ai.gpu.reserve.GpuReservation`: Tier 0 기동 첫 단계에서 torch CUDA 캐시에 `gpu.reserve_mb`(기본 8192, `SIMAI_TIER0_GPU_RESERVE_MB`)를 잡아 둔다 |
-| 분석 워커는 상한 안에서 | 분석 워커 시작 때 `torch.cuda.set_per_process_memory_fraction`(기본 0.70), VLM 은 vLLM `gpu_memory_utilization`(기본 0.55)·`max_num_seqs`(4) — `simai_ai.gpu.budget` |
+| 분석 워커는 상한 안에서 | 분석 워커 시작 때 `torch.cuda.set_per_process_memory_fraction`(예산 기본 0.70, 동시 실행 시 워커 몫 0.30/0.40·최소 보장 0.10), VLM 은 vLLM `gpu_memory_utilization`(기본 0.30, FP8 가중치 10.05 GiB)·`max_num_seqs`(4) — `simai_ai.gpu.budget` |
 | 지연이 목표를 넘으면 새 작업을 멈춤 | Tier 0 가 표시 파일에 지연 표본을 싣고, 분석 워커가 대여 요청 전·작업 시작 전에 읽는다(`AdmissionGate`) |
 | LIVE 중 EXP 금지 | GPU 실험 큐(`gpu_queue.py` LIVE 보호)와 분석 워커(LIVE 중 `static_reconstruct`·`hmr_*` 를 받지 않음·도는 것은 멈춤) |
 | 분석 워커가 죽어도 Tier 0 계속 | 별도 프로세스, 신호는 파일 하나뿐(Tier 0 는 분석 워커를 기다리지 않는다) |
@@ -94,17 +94,20 @@ Tier 0 와 분석 워커가 GPU Pod 하나를 나눠 쓸 때 Tier 0 를 먼저 �
 
 시험: `tests/gpu/test_avatar_admission.py`(끝단 5초·낮은 처리 부하 통과, 처리 초과·모름·예약 실패·표시 파일 만료 차단, 진행 중/실패한 처리 표본), `tests/services/tier0/test_tier0_gpu_priority.py`(실제 Tier 0 표시 파일 조립), 기존 분석 워커 우선 보호 회귀 시험. 실제 GPU에서 1/4인 동시 HMR·외형을 켜고 처리 창·포즈 주기·Tier 0 p95를 재측정해야 한다.
 
-## GPU 메모리 예산 (초기값, G0 실측으로 고친다)
+## GPU 메모리 예산 (G0·11-06 FP8 PoC 반영, S15P31A101-525)
 
 H100 80GB 기준. 비율은 GPU 전체 메모리 대비.
 
 | 프로세스 | 상한 | 설정 |
 |---|---|---|
 | Tier 0 | 0.20 (16GB): 엔진 + 디코더 4개 + torch 선확보 8GB | `SIMAI_TIER0_GPU_RESERVE_MB`, 검사용 `SIMAI_GPU_TIER0_FRACTION` |
-| 분석 워커 전체(torch) | 0.70 | `SIMAI_WORKER_GPU_MEMORY_FRACTION` |
-| VLM(vLLM) | 0.55, 동시 요청 4 | `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION`, `SIMAI_WORKER_VLLM_MAX_NUM_SEQS` |
+| 분석 워커 전체 예산 | 0.70 (vLLM + 아바타 + 워커 합산 상한) | `SIMAI_WORKER_GPU_MEMORY_FRACTION` |
+| VLM(vLLM, FP8) | 0.30 (24GB: FP8 가중치 10.05 GiB + CUDA graph·활성화 여유 + KV 약 13 GiB), 동시 요청 4 | `SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION`, `SIMAI_VLLM_QUANTIZATION`(`fp8`), `SIMAI_WORKER_VLLM_MAX_NUM_SEQS` |
+| 상시 아바타 | 0.10 (8GB, 실사용 4.0~5.1GB) | `SIMAI_AVATAR_GPU_MEMORY_FRACTION` |
+| 분석 워커 프로세스(torch) | 0.30 (아바타 켬, 24GB) / 0.40 (아바타 끔, 32GB), **최소 보장 0.10 (8GB, MapAnything 피크 6.4GB OOM 방지)** | `SIMAI_WORKER_TORCH_MEMORY_FRACTION` (`MIN_WORKER_TORCH_FRACTION=0.10`) |
 
-불변식(시작 때 검사, 틀리면 워커가 시작하지 않음): Tier 0 + 분석 워커 ≤ 0.95, vLLM ≤ 분석 워커.
+불변식(시작 때 검사, 틀리면 기동 전 거부): Tier 0 + 분석 워커 전체 ≤ 0.95 (PPE 켜면 + PPE 0.05 ≤ 0.95), vLLM + 아바타 + 워커 프로세스 ≤ 분석 워커 전체, 워커 프로세스 ≥ 0.10.
+11-06 GPU PoC(H200, vLLM 0.21 + vllm-cosmos3, `--quantization fp8`)에서 가중치가 `16.79 → 10.05 GiB`, 첫 응답이 `1.73 → 1.57 s`(입력 약 2,900 토큰/요청, 한국어 판정·근거 품질 동등)로 확인되어 VLM 기본 비율을 `0.55`/`0.50` 에서 `0.30` 으로 낮추고 12차 GPU 세션의 MapAnything OOM(`worker_fraction=0.05` ≈ 4GB < 피크 6.4GB)을 막았다.
 
 ## 운영 순서와 한계
 
