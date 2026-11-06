@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>S15P31A101-527 시점 의존 텍스처(View-Dependent Texture) PoC</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+        }
+      }
+    </script>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0f17;
+        --panel: rgba(15, 23, 42, 0.88);
+        --border: rgba(148, 163, 184, 0.22);
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --accent: #38bdf8;
+        --accent-active: #0284c7;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+        font-size: 13px;
+      }
+      #viewport-container {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+      }
+      #webgl-canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      #split-line {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 50%;
+        width: 2px;
+        margin-left: -1px;
+        background: rgba(255, 255, 255, 0.35);
+        pointer-events: none;
+        z-index: 5;
+      }
+      .pane-badge {
+        position: absolute;
+        top: 14px;
+        padding: 6px 12px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        pointer-events: none;
+        z-index: 6;
+        backdrop-filter: blur(6px);
+      }
+      #badge-left {
+        left: 16px;
+      }
+      #badge-right {
+        left: calc(50% + 16px);
+        border-color: rgba(56, 189, 248, 0.45);
+      }
+      .pane-badge span.sub {
+        font-weight: 400;
+        color: var(--muted);
+        margin-left: 6px;
+        font-size: 12px;
+      }
+      #control-bar {
+        position: absolute;
+        bottom: 16px;
+        left: 16px;
+        right: 16px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 14px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        z-index: 10;
+        backdrop-filter: blur(8px);
+      }
+      .ctrl-group {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+      }
+      .ctrl-label {
+        color: var(--muted);
+        font-weight: 600;
+        margin-right: 4px;
+        font-size: 12px;
+      }
+      button,
+      select {
+        background: rgba(30, 41, 59, 0.9);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 5px 10px;
+        font-size: 12px;
+        font-family: inherit;
+        cursor: pointer;
+        transition: background 0.12s, border-color 0.12s;
+      }
+      button:hover,
+      select:hover {
+        background: rgba(51, 65, 85, 0.95);
+        border-color: rgba(148, 163, 184, 0.45);
+      }
+      button.active {
+        background: var(--accent-active);
+        border-color: var(--accent);
+        color: #fff;
+        font-weight: 600;
+      }
+      button.action-btn {
+        background: rgba(2, 132, 199, 0.25);
+        border-color: rgba(56, 189, 248, 0.45);
+      }
+      button.action-btn:hover {
+        background: rgba(2, 132, 199, 0.45);
+      }
+      label.chk {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 4px 8px;
+        border-radius: 6px;
+        background: rgba(30, 41, 59, 0.65);
+        border: 1px solid var(--border);
+        cursor: pointer;
+        user-select: none;
+        font-size: 12px;
+      }
+      #status-box {
+        position: absolute;
+        top: 14px;
+        right: 16px;
+        padding: 8px 12px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        z-index: 10;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        backdrop-filter: blur(6px);
+      }
+      #legend-box {
+        position: absolute;
+        top: 54px;
+        left: calc(50% + 16px);
+        display: none;
+        gap: 10px;
+        align-items: center;
+        padding: 6px 10px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        z-index: 8;
+        font-size: 12px;
+      }
+      #legend-box.visible {
+        display: flex;
+      }
+      .dot {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        margin-right: 4px;
+        vertical-align: middle;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="viewport-container">
+      <canvas id="webgl-canvas"></canvas>
+      <div id="split-line"></div>
+
+      <div id="badge-left" class="pane-badge">
+        원래 맵 (12차 texrecon 구운 텍스처)
+        <span class="sub">고정 UV 아틀라스</span>
+      </div>
+
+      <div id="badge-right" class="pane-badge">
+        시점 의존 텍스처 (View-Dependent Texture)
+        <span class="sub" id="vdt-sub-label">4대 카메라 실시간 깊이 가림·각도 가중 투영</span>
+      </div>
+
+      <div id="legend-box">
+        <span><i class="dot" style="background: #ef4444"></i>cam_A</span>
+        <span><i class="dot" style="background: #22c55e"></i>cam_B</span>
+        <span><i class="dot" style="background: #3b82f6"></i>cam_C</span>
+        <span><i class="dot" style="background: #f59e0b"></i>cam_D</span>
+        <span><i class="dot" style="background: #475569"></i>미관측(원래 텍스처 유지)</span>
+      </div>
+
+      <div id="status-box">
+        <div>FPS: <strong id="fps-val">--</strong> | 시점: <strong id="view-name">초기화 중...</strong></div>
+        <div id="meta-info" style="color: var(--muted)">로딩 중...</div>
+      </div>
+
+      <div id="control-bar">
+        <div class="ctrl-group">
+          <span class="ctrl-label">카메라 시점:</span>
+          <button data-view="cam_A">cam_A</button>
+          <button data-view="cam_B">cam_B</button>
+          <button data-view="cam_C">cam_C</button>
+          <button data-view="cam_D">cam_D</button>
+          <span class="ctrl-label" style="margin-left: 8px">자유 시점:</span>
+          <button data-view="top">위에서 보기 (Top)</button>
+          <button data-view="obl1">비스듬히 1 (Obl1)</button>
+          <button data-view="obl2">비스듬히 2 (Obl2)</button>
+          <button data-view="obl3">비스듬히 3 (Obl3)</button>
+        </div>
+
+        <div class="ctrl-group">
+          <label class="chk" title="카메라별 투영 가중치를 색상(A:빨강, B:초록, C:파랑, D:노랑)으로 표시">
+            <input type="checkbox" id="chk-weights" />
+            가중치 시각화
+          </label>
+          <label class="chk" title="관측이 겹치는 영역의 평균색으로 계산한 카메라별 노출·색온도 보정 적용">
+            <input type="checkbox" id="chk-color-corr" checked />
+            색 보정(노출 맞춤)
+          </label>
+          <label class="chk" title="texrecon 이 비워 둔 미관측 TSDF 면에도 가림·법선 통과 시 실제 사진 투영">
+            <input type="checkbox" id="chk-project-unobs" checked />
+            미관측 TSDF 면도 투영
+          </label>
+          <label class="chk" title="카메라 프러스텀 및 위치 표시">
+            <input type="checkbox" id="chk-frustums" />
+            카메라 위치 표시
+          </label>
+
+          <span class="ctrl-label" style="margin-left: 4px">상위 섞기:</span>
+          <select id="sel-topk">
+            <option value="2">상위 2대</option>
+            <option value="3" selected>상위 3대</option>
+          </select>
+
+          <span class="ctrl-label" style="margin-left: 4px">그림자 맵:</span>
+          <select id="sel-shadow-res">
+            <option value="1024">1024 px</option>
+            <option value="1536" selected>1536 px</option>
+            <option value="2048">2048 px</option>
+          </select>
+
+          <button id="btn-capture" class="action-btn">캡처 저장</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./vdt.js"></script>
+  </body>
+</html>
