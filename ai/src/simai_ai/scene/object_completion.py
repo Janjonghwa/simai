@@ -82,15 +82,21 @@ class CompletionSkip(Exception):
 
 @dataclass(frozen=True)
 class SignboardConfig:
-    """안내판 정형 평판 치수 설정(None 이면 관측 점에서 추정하되 범위 안으로 클램프)."""
+    """안내판 정형 평판 치수 및 분류 문턱 설정(None 이면 관측 점에서 추정하되 범위 안으로 클램프)."""
 
     width_m: float | None = None
     height_m: float | None = None
     thickness_m: float = 0.04
-    min_width_m: float = 0.30
-    max_width_m: float = 1.20
-    min_height_m: float = 0.40
-    max_height_m: float = 1.60
+    min_width_m: float = 0.10
+    max_width_m: float = 0.65
+    min_height_m: float = 0.12
+    max_height_m: float = 0.85
+    max_thickness_m: float = 0.12
+    min_diagonal_m: float = 0.14
+    max_floor_gap_m: float = 0.18
+    min_wall_distance_m: float = 0.35
+    min_color_std: float = 10.0
+    min_color_chroma: float = 25.0
 
 
 @dataclass(frozen=True)
@@ -111,7 +117,7 @@ class ObjectCompletionConfig:
     """물체 완성 전체 설정. 환경 변수(`from_env`) 또는 작업 옵션으로 제어한다."""
 
     enabled: bool = True
-    backend: str = "convex_hull"  # "3d_fixer" | "convex_hull"
+    backend: str = "3d_fixer"  # "3d_fixer" (본선 기본, 불가·실패 시 원본 유지) | "convex_hull" (시험·시각화 전용)
     mask_backend: str = "projection"  # "projection" | "color_refined" | "sam"
     # 평면 제거·후보 분리
     floor_snap_m: float = 0.05
@@ -525,6 +531,10 @@ def _classify_candidate(
     face_rgb: np.ndarray,
     is_cone_seed: bool,
     cfg: ObjectCompletionConfig,
+    *,
+    floor_z_m: float = 0.0,
+    walls: Sequence[Mapping[str, Any]] = (),
+    interior_xy: tuple[float, float, float, float] | None = None,
 ) -> str:
     mn, mx = pts.min(axis=0), pts.max(axis=0)
     sz = mx - mn
@@ -540,19 +550,43 @@ def _classify_candidate(
     )
     if orange.mean() >= 0.22 and xy_span <= cfg.cone_max_xy_span_m and 0.20 <= height <= 0.90:
         return "traffic_cone"
-    # 수평 단면 PCA로 얇은 수직 평판(안내판) 판정
+    # 바닥에 세워진 얇은 안내판(signboard) 판정:
+    # 1) 바닥 접촉(허공에 뜬 창틀·기둥 조각 배제), 2) 주변 벽·방 경계로부터 이격,
+    # 3) 크기·높이·대각선·두께(PCA 단면), 4) 색 대비(단색 흰/회색 벽·기둥 조각 배제)
+    floor_gap = float(mn[2] - floor_z_m)
+    center_xy = 0.5 * (mn[:2] + mx[:2])
+    near_wall = any(
+        abs(float(center_xy @ np.asarray(w["n"], float)) - float(w["d"])) < cfg.signboard.min_wall_distance_m
+        for w in walls
+    )
+    near_boundary = False
+    if interior_xy is not None:
+        x0, y0, x1, y1 = interior_xy
+        b_margin = min(0.25, 0.10 * min(max(x1 - x0, 0.0), max(y1 - y0, 0.0)))
+        near_boundary = bool(
+            center_xy[0] < x0 + b_margin
+            or center_xy[0] > x1 - b_margin
+            or center_xy[1] < y0 + b_margin
+            or center_xy[1] > y1 - b_margin
+        )
     xy = pts[:, :2] - pts[:, :2].mean(axis=0)
-    if len(xy) >= 6:
+    if len(xy) >= 6 and (-0.06 <= floor_gap <= cfg.signboard.max_floor_gap_m) and not (near_wall or near_boundary):
         cov = (xy.T @ xy) / max(len(xy), 1)
-        eigvals, eigvecs = np.linalg.eigh(cov)
+        _, eigvecs = np.linalg.eigh(cov)
         proj = xy @ eigvecs
         span_minor = float(np.percentile(proj[:, 0], 98) - np.percentile(proj[:, 0], 2))
         span_major = float(np.percentile(proj[:, 1], 98) - np.percentile(proj[:, 1], 2))
+        diag_m = math.hypot(span_major, height)
+        rgb_f = np.asarray(face_rgb, dtype=np.float64)
+        color_std = float(np.std(rgb_f, axis=0).mean()) if len(rgb_f) else 0.0
+        chroma_p90 = float(np.percentile(rgb_f.max(axis=1) - rgb_f.min(axis=1), 90)) if len(rgb_f) else 0.0
+        has_color_contrast = (color_std >= cfg.signboard.min_color_std) or (chroma_p90 >= cfg.signboard.min_color_chroma)
         if (
             cfg.signboard.min_width_m <= span_major <= cfg.signboard.max_width_m
             and cfg.signboard.min_height_m <= height <= cfg.signboard.max_height_m
-            and span_minor <= max(0.26, 0.42 * span_major)
-            and mn[2] >= 0.30
+            and diag_m >= cfg.signboard.min_diagonal_m
+            and span_minor <= min(cfg.signboard.max_thickness_m, 0.38 * span_major)
+            and has_color_contrast
         ):
             return "signboard"
     return "general"
@@ -564,6 +598,10 @@ def _build_candidate_from_faces(
     mesh: MergedSceneMesh,
     is_cone_seed: bool,
     cfg: ObjectCompletionConfig,
+    *,
+    floor_z_m: float = 0.0,
+    walls: Sequence[Mapping[str, Any]] = (),
+    interior_xy: tuple[float, float, float, float] | None = None,
 ) -> ObjectCandidate:
     sub_F_global = mesh.F[fids]
     uniq_v, inv = np.unique(sub_F_global, return_inverse=True)
@@ -571,7 +609,15 @@ def _build_candidate_from_faces(
     F_c = inv.reshape(-1, 3)
     v_col = np.clip(np.rint(mesh.vert_rgb_srgb[uniq_v]), 0, 255).astype(np.uint8)
     f_obs = mesh.is_observed[fids]
-    category = _classify_candidate(V_c, mesh.face_rgb_srgb[fids], is_cone_seed, cfg)
+    category = _classify_candidate(
+        V_c,
+        mesh.face_rgb_srgb[fids],
+        is_cone_seed,
+        cfg,
+        floor_z_m=floor_z_m,
+        walls=walls,
+        interior_xy=interior_xy,
+    )
 
     # 관측 점 우선 추출(없으면 전체 정점 + 면 중심)
     obs_v = np.unique(F_c[f_obs]) if f_obs.any() else np.arange(len(V_c))
@@ -817,8 +863,26 @@ def extract_object_candidates(
         if not is_cone_seed and xy_span > cfg.max_candidate_xy_span_m:
             rejected_clusters.append({"faces": int(len(fids)), "xy_span_m": round(xy_span, 3), "reason": "TOO_LARGE_SPAN"})
             continue
+        floor_gap_cluster = float(mn[2] - z0)
+        if not is_cone_seed and (height > cfg.max_object_height_m or floor_gap_cluster > 0.40):
+            rejected_clusters.append({
+                "faces": int(len(fids)),
+                "z_min_m": round(float(mn[2]), 3),
+                "z_max_m": round(float(mx[2]), 3),
+                "reason": "WALL_OR_PILLAR_FRAGMENT",
+            })
+            continue
         cid = f"obj_{len(candidates):04d}"
-        cand = _build_candidate_from_faces(cid, fids, mesh, is_cone_seed, cfg)
+        cand = _build_candidate_from_faces(
+            cid,
+            fids,
+            mesh,
+            is_cone_seed,
+            cfg,
+            floor_z_m=z0,
+            walls=walls,
+            interior_xy=(x0, y0, x1, y1),
+        )
         candidates.append(cand)
 
     # 면적 및 관측 점 수 기준 상위 max_candidates 개 유지 (라바콘·안내판은 우선 보존)
@@ -1261,7 +1325,10 @@ class ThreeDFixerBackend:
         }
 
     def _ensure_pipeline(self) -> Any:
-        import torch
+        try:
+            import torch
+        except ImportError as exc:
+            raise CompletionSkip("TORCH_NOT_INSTALLED", f"PyTorch 미설치(3D-Fixer GPU 백엔드 불가): {exc}") from exc
 
         if not torch.cuda.is_available():
             raise CompletionSkip("CUDA_NOT_AVAILABLE", "3D-Fixer는 Linux CUDA GPU가 필요하다")
@@ -1284,9 +1351,27 @@ class ThreeDFixerBackend:
 
         model_source = self.cfg.fixer_model_dir or self.cfg.fixer_model_id
         compile_flag = os.environ.get("SIMAI_3DFIXER_COMPILE", "0").strip() in ("1", "true", "yes")
-        self._pipeline = ThreeDFixerPipeline.from_pretrained(model_source, compile=compile_flag)
-        self._pipeline.cuda()
+        try:
+            self._pipeline = ThreeDFixerPipeline.from_pretrained(model_source, compile=compile_flag)
+            self._pipeline.cuda()
+        except Exception as exc:
+            raise CompletionSkip("THREEDFIXER_LOAD_FAILED", f"3D-Fixer 모델 적재 실패: {type(exc).__name__}: {exc}") from exc
         return self._pipeline
+
+    def unload(self) -> None:
+        """GPU 파이프라인을 명시적으로 해제하고 CUDA 캐시를 비운다."""
+        if self._pipeline is not None:
+            self._pipeline = None
+            import gc
+
+            gc.collect()
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
 
     def complete(self, inp: CompletionInput) -> CompletionOutput:
         if inp.best_camera is None or inp.mask_2d is None:
@@ -1322,30 +1407,42 @@ class ThreeDFixerBackend:
             "cfg_interval": [0.5, 1.0],
             "rescale_t": 3.0,
         }
-        outputs, coarse_trans, coarse_scale, fine_trans, fine_scale = pipeline.run(
-            inst_t,
-            scene_image_masked=scene_t,
-            seed=self.cfg.fixer_seed,
-            extrinsics=extr_t,
-            intrinsics=intr_t,
-            points=pts,
-            points_mask=pmask,
-            sparse_structure_sampler_params=sampler_params,
-            slat_sampler_params=sampler_params,
-        )
-        with torch.enable_grad():
-            tmesh = postprocessing_utils.to_glb(
-                outputs["gaussian"][0],
-                outputs["mesh"][0],
-                simplify=0.95,
-                texture_size=max(512, self.cfg.texture_size),
-                transform_fn=lambda x: transform_vertices(
-                    x,
-                    ops=["scale", "translation", "scale", "translation"],
-                    params=[fine_scale, fine_trans[None], coarse_scale, coarse_trans[None]],
-                ),
-                verbose=False,
+        torch.cuda.synchronize(device)
+        torch.cuda.reset_peak_memory_stats(device)
+        t_infer0 = time.monotonic()
+        try:
+            outputs, coarse_trans, coarse_scale, fine_trans, fine_scale = pipeline.run(
+                inst_t,
+                scene_image_masked=scene_t,
+                seed=self.cfg.fixer_seed,
+                extrinsics=extr_t,
+                intrinsics=intr_t,
+                points=pts,
+                points_mask=pmask,
+                sparse_structure_sampler_params=sampler_params,
+                slat_sampler_params=sampler_params,
             )
+            with torch.enable_grad():
+                tmesh = postprocessing_utils.to_glb(
+                    outputs["gaussian"][0],
+                    outputs["mesh"][0],
+                    simplify=0.95,
+                    texture_size=max(512, self.cfg.texture_size),
+                    transform_fn=lambda x: transform_vertices(
+                        x,
+                        ops=["scale", "translation", "scale", "translation"],
+                        params=[fine_scale, fine_trans[None], coarse_scale, coarse_trans[None]],
+                    ),
+                    verbose=False,
+                )
+        except CompletionSkip:
+            raise
+        except Exception as exc:
+            raise CompletionSkip("THREEDFIXER_INFERENCE_FAILED", f"{type(exc).__name__}: {exc}") from exc
+        torch.cuda.synchronize(device)
+        infer_elapsed_s = time.monotonic() - t_infer0
+        peak_mem_mb = float(torch.cuda.max_memory_allocated(device) / (1024**2))
+        reserved_mem_mb = float(torch.cuda.max_memory_reserved(device) / (1024**2))
 
         gen_V = np.asarray(tmesh.vertices, dtype=np.float64)
         gen_F = np.asarray(tmesh.faces, dtype=np.int64)
@@ -1377,6 +1474,9 @@ class ThreeDFixerBackend:
                 "model_id": self.cfg.fixer_model_dir or self.cfg.fixer_model_id,
                 "coarse_scale": float(coarse_scale),
                 "fine_scale": float(fine_scale),
+                "gpu_max_memory_allocated_mb": round(peak_mem_mb, 2),
+                "gpu_max_memory_reserved_mb": round(reserved_mem_mb, 2),
+                "infer_seconds": round(infer_elapsed_s, 4),
             },
         )
 
@@ -2093,6 +2193,7 @@ def complete_glb_objects(
         report["seconds"] = round(clock() - started, 4)
         return ObjectCompletionResult(None, report)
 
+    owns_backend = backend is None
     try:
         g = parse_glb(raw)
         model = load_scene_for_objects(g)
@@ -2108,12 +2209,15 @@ def complete_glb_objects(
         if backend is None:
             if cfg.backend == "3d_fixer":
                 backend = ThreeDFixerBackend(cfg)
-            else:
+            elif cfg.backend == "convex_hull":
                 backend = ConvexHullCompletionBackend(obs_preserve_tol_m=cfg.obs_preserve_tol_m, texture_size=cfg.texture_size)
+            else:
+                raise CompletionSkip("UNKNOWN_BACKEND", f"지원하지 않는 물체 완성 백엔드: {cfg.backend}")
 
         cam_by_id = {c.camera_id: c for c in cams}
         accepted_nodes: list[CompletedObjectNode] = []
         object_reports: list[dict[str, Any]] = []
+        peak_gpu_mb_all = 0.0
 
         for cand in candidates:
             t0 = clock()
@@ -2148,6 +2252,8 @@ def complete_glb_objects(
 
                 elapsed = clock() - t0
                 val = validate_completed_object(cand, aligned, cams, floor_z_m, elapsed, cfg)
+                obj_gpu_mb = float(aligned.meta.get("gpu_max_memory_allocated_mb", 0.0) or 0.0)
+                peak_gpu_mb_all = max(peak_gpu_mb_all, obj_gpu_mb)
                 obj_rep = {
                     "candidate_id": cand.candidate_id,
                     "category": cand.category,
@@ -2160,6 +2266,7 @@ def complete_glb_objects(
                     "alignment": align_info,
                     "validation": val,
                     "meta": aligned.meta,
+                    "preserved_original_mesh": not bool(val["accepted"]),
                 }
                 object_reports.append(obj_rep)
                 if val["accepted"]:
@@ -2169,6 +2276,7 @@ def complete_glb_objects(
                     "candidate_id": cand.candidate_id,
                     "category": cand.category,
                     "accepted": False,
+                    "preserved_original_mesh": True,
                     "skipped_reason": skip_exc.reason,
                     "detail": str(skip_exc),
                 })
@@ -2176,6 +2284,7 @@ def complete_glb_objects(
         report["objects"] = object_reports
         report["accepted_count"] = len(accepted_nodes)
         report["rejected_count"] = len(candidates) - len(accepted_nodes)
+        report["gpu_max_memory_allocated_mb"] = round(peak_gpu_mb_all, 2)
         if not accepted_nodes:
             report["reason"] = "ALL_CANDIDATES_REJECTED"
             return ObjectCompletionResult(None, report, candidates=candidates)
@@ -2189,6 +2298,7 @@ def complete_glb_objects(
             "surface_values": SURFACE_VALUE_TABLE,
             "accepted_count": len(accepted_nodes),
             "rejected_count": len(candidates) - len(accepted_nodes),
+            "gpu_max_memory_allocated_mb": round(peak_gpu_mb_all, 2),
             "objects": [
                 {
                     "candidate_id": n.candidate.candidate_id,
@@ -2214,6 +2324,8 @@ def complete_glb_objects(
         report["reason"] = f"OBJECT_COMPLETION_ERROR:{type(exc).__name__}"
         report["detail"] = str(exc)[:300]
     finally:
+        if owns_backend and backend is not None and hasattr(backend, "unload"):
+            backend.unload()
         report["seconds"] = round(clock() - started, 4)
     return ObjectCompletionResult(None, report)
 

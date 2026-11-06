@@ -264,3 +264,9 @@ def test_classic_backend_inpainting_fills_hole_from_observed_pattern(tmp_path: P
     assert 145 <= mean_rgb[0] <= 185 and 110 <= mean_rgb[1] <= 145 and 70 <= mean_rgb[2] <= 100
     assert (res.source[mask] == GENERATED).all()
     assert (res.source[~mask] == source[~mask]).all()
+
+    # 양자화(8bit) 설정 및 명시적 파이프라인 해제(unload_diffusion_pipeline) 동작 확인
+    cfg_q = gi.InpaintConfig.from_env({"SIMAI_GLB_INPAINT": "diffusion", "SIMAI_INPAINT_QUANTIZATION": "8bit"})
+    assert cfg_q.mode == "diffusion"
+    assert cfg_q.quantization == "8bit"
+    gi.unload_diffusion_pipeline()
