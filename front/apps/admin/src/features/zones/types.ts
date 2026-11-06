@@ -75,6 +75,17 @@ const bundleItemSchema = z.object({
 });
 export type BundleItem = z.infer<typeof bundleItemSchema>;
 
+/**
+ * 묶음에 실은 안전모 요구 요약(서버 -518, docs/design/server-ppe-policy-publish.md D3). 진행 중 작업이 있으면 REQUIRED 와
+ * 그 작업 ID, 없으면 NOT_REQUIRED 와 null 이다(계약 contracts/data/ppe_policy). effective_from_ms 는 표시·기록용이다.
+ */
+const ppePolicySummarySchema = z.object({
+  helmet: z.enum(['REQUIRED', 'NOT_REQUIRED']),
+  work_id: z.number().int().nullable(),
+  effective_from_ms: z.number(),
+});
+export type PpePolicySummary = z.infer<typeof ppePolicySummarySchema>;
+
 export const configBundleSchema = z.object({
   config_version: z.string().min(1),
   issued_at: z.number(),
@@ -89,6 +100,9 @@ export const configBundleSchema = z.object({
     .nullish(),
   // 발행 때 실린 구역·규칙·작업면의 ID 와 버전. 화면이 시각을 비교하지 않고 이 목록으로 발행 전을 가린다. 없으면 빈 목록이다.
   items: z.array(bundleItemSchema).default([]),
+  // 안전모 요구 요약. null 이면 이 묶음에 ppe_policy 가 없다(Tier 0 는 요구 없음으로 본다, 명세 7.2 R9). 칸이 없으면(-518 이전
+  // 서버) 실렸는지 모른다(undefined). 요약 모양이 틀려도 묶음은 버리지 않고 모름으로 둔다(구역 발행 상태는 계속 보인다).
+  ppe_policy: ppePolicySummarySchema.nullish().catch(undefined),
 });
 export type ConfigBundle = z.infer<typeof configBundleSchema>;
 

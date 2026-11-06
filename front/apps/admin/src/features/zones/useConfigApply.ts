@@ -1,21 +1,16 @@
 import { markSetupZonesCommitted } from '@/features/setup/setup.store';
 import type { WorkSurface } from '@/features/surfaces/types';
-import { BUNDLES_KEY, publishBundle, requestBundles, ZONES_KEY } from '@/features/zones/api';
+import { BUNDLES_KEY, publishBundle, ZONES_KEY } from '@/features/zones/api';
 import { putBundle } from '@/features/zones/commitCache';
-import {
-  configBundleSchema,
-  type BundleItem,
-  type ConfigBundle,
-  type Zone,
-} from '@/features/zones/types';
+import type { BundleItem, ConfigBundle, Zone } from '@/features/zones/types';
+import { useRecentBundles } from '@/features/zones/useRecentBundles';
 import { api } from '@/lib/api';
 import { ApiError } from '@/lib/http';
 import { HTTP_FORBIDDEN } from '@/lib/writeFailure';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo } from 'react';
 
-/** 적용 대기 동안 적용 상태를 다시 받는 간격(ms). 서버는 Tier 0 의 config_ack 를 받으면 상태를 바꾼다. */
-const PENDING_POLL_MS = 3_000;
+export { readBundles } from '@/features/zones/useRecentBundles';
 
 /** 발행 mutation 키. */
 const PUBLISH_MUTATION_KEY = [...BUNDLES_KEY, 'publish'] as const;
@@ -43,14 +38,6 @@ export function publishErrorText(error: unknown): string {
   if (!(error instanceof ApiError)) return FALLBACK_TEXT;
   if (error.status === HTTP_FORBIDDEN) return FORBIDDEN_TEXT;
   return CODE_TEXT.get(error.code ?? '') ?? FALLBACK_TEXT;
-}
-
-/** 받은 묶음 목록(새것부터)에서 형식이 맞는 것만 고른다. */
-export function readBundles(items: readonly unknown[]): ConfigBundle[] {
-  return items.flatMap((item) => {
-    const parsed = configBundleSchema.safeParse(item);
-    return parsed.success ? [parsed.data] : [];
-  });
 }
 
 /** 발행 전 판단에 쓰는 작업면 칸(features/surfaces 의 WorkSurface). */
@@ -147,13 +134,7 @@ export function useConfigApply(zones: readonly Zone[], surfaces?: readonly Publi
   useEffect(() => {
     void queryClient.invalidateQueries({ queryKey: ZONES_KEY }, { cancelRefetch: false });
   }, [queryClient]);
-  const query = useQuery({
-    queryKey: BUNDLES_KEY,
-    queryFn: ({ signal }) => requestBundles(api, signal),
-    select: readBundles,
-    refetchInterval: (q) =>
-      readBundles(q.state.data ?? [])[0]?.status === 'PENDING' ? PENDING_POLL_MS : false,
-  });
+  const query = useRecentBundles();
   const latest = query.data ? (query.data[0] ?? null) : undefined;
   const publish = usePublishBundle();
   const unpublished = useMemo(() => unpublishedZoneIds(zones, latest), [zones, latest]);

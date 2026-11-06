@@ -9,7 +9,9 @@ import {
 } from '@/features/events/entries';
 import { eventRuleName, formatTime } from '@/features/events/format';
 import { topEntry, type Incident } from '@/features/events/incidents';
+import { R9_RELEASE_LABEL, r9ReleaseOf } from '@/features/events/ppePolicy';
 import type { EventItem } from '@/features/events/types';
+import type { ConfigBundle } from '@/features/zones/types';
 import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
 
 // 묶음(Incident)을 카드·상세에 보이는 값으로 바꾸는 계산. 화면 없이 시험한다.
@@ -77,8 +79,11 @@ export interface TimelineItem {
   text: string;
 }
 
-/** 규칙 하나의 타임라인 항목: 발생, 확인들, 해소(운영자 종료). */
-function ruleTimeline(event: EventItem): TimelineItem[] {
+/** 규칙 하나의 타임라인 항목: 발생, 확인들, 해소(운영자 종료). 해소된 R9 는 묶음으로 가린 해소 원인을 쓴다. */
+function ruleTimeline(
+  event: EventItem,
+  bundles: readonly ConfigBundle[] | undefined,
+): TimelineItem[] {
   const rule = eventRuleName(event);
   const items: TimelineItem[] = [];
   if (event.raised_at !== undefined) {
@@ -94,15 +99,22 @@ function ruleTimeline(event: EventItem): TimelineItem[] {
   const resolvedAt = isActive(event) ? null : (event.resolved_at ?? eventTime(event));
   if (resolvedAt !== null) {
     const closed = event.resolution?.kind === 'OPERATOR_CLOSED';
+    const release = closed ? null : r9ReleaseOf(event, bundles);
     items.push({
       at: resolvedAt,
       who: closed ? '운영자' : '시스템',
-      text: `${rule} ${closed ? '종료' : '해소'}`,
+      text: `${rule} ${closed ? '종료' : release ? R9_RELEASE_LABEL[release] : '해소'}`,
     });
   }
   return items;
 }
 
-/** 사건 상세 타임라인: 규칙마다 발생·확인·해소(운영자 종료)를 시각 순으로. 받은 이벤트 값만으로 만든다. */
-export const incidentTimeline = (incident: Incident): TimelineItem[] =>
-  incident.entries.flatMap((e) => ruleTimeline(e.event)).sort((a, b) => a.at - b.at);
+/**
+ * 사건 상세 타임라인: 규칙마다 발생·확인·해소(운영자 종료)를 시각 순으로. 받은 이벤트 값만으로 만든다. bundles(최근 구성 묶음)를
+ * 주면 해소된 R9 의 해소 원인(작업 종료·착용 확인)을 가린다.
+ */
+export const incidentTimeline = (
+  incident: Incident,
+  bundles?: readonly ConfigBundle[],
+): TimelineItem[] =>
+  incident.entries.flatMap((e) => ruleTimeline(e.event, bundles)).sort((a, b) => a.at - b.at);

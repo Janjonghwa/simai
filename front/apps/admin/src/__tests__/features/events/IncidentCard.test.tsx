@@ -152,11 +152,15 @@ describe('IncidentCard', () => {
     expect(card.querySelector('[data-chip]')).toBeNull();
   });
 
-  it('보호구 미착용(R9)은 주의 배지와 규칙 이름으로 보이고 처리 칩이 없다', () => {
-    const { card } = renderCard([entry({ rule_id: 'R9', severity: 'CAUTION', metrics: {} })]);
+  it('작업 중 안전모 미착용(R9)은 구역 없이 주의 배지와 규칙 이름으로 보이고 처리 칩이 없다', () => {
+    // R9 는 사람 단위라 zone_id 가 없다(-519).
+    const { card } = renderCard([
+      entry({ rule_id: 'R9', severity: 'CAUTION', metrics: {}, zone_id: null }),
+    ]);
 
     expect(within(card).getByText('주의')).toBeTruthy();
-    expect(within(card).getByText('보호구 미착용 · 개구부 구역')).toBeTruthy();
+    expect(within(card).getByText('작업 중 안전모 미착용')).toBeTruthy();
+    expect(card.textContent).not.toMatch(/구역/);
     expect(card.querySelector('[data-chip]')).toBeNull();
   });
 

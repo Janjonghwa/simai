@@ -8,6 +8,7 @@ import { ReSetupBanner } from '@/features/layout/ReSetupBanner';
 import { SpatialViewportHost } from '@/features/layout/SpatialViewportHost';
 import { TopBar } from '@/features/layout/TopBar';
 import { useHealthSnapshot } from '@/features/layout/useHealthSnapshot';
+import { PpePolicyNotice } from '@/features/monitor/PpePolicyNotice';
 import { WorkSessionBar } from '@/features/monitor/WorkSessionBar';
 import { WatchEscalationNotice } from '@/features/watch/WatchEscalationNotice';
 import { cn } from '@simai/ui/lib/utils';
@@ -73,6 +74,7 @@ function Notices({
       <ReSetupBanner />
       <AlarmBanner withPanel={eventPanel} />
       {eventPanel && <WorkSessionBar />}
+      {eventPanel && <PpePolicyNotice />}
       <WatchEscalationNotice />
     </div>
   );
