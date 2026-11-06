@@ -84,7 +84,8 @@ class EnhanceConfig:
     check_background_rgb: tuple[int, int, int] = (0, 0, 0)  # 메시가 없는 픽셀을 뷰어 바탕색으로 본다
     time_budget_s: float | None = None
     # (C) 늘어난 면 제거·바닥·벽 평면 채우기(S15P31A101-511, glb_fill.py). 보정 카메라·사진이 있을 때만 돈다
-    fill_enabled: bool = True
+    # 기본 끔(S15P31A101-526): 채운 바닥·벽이 12차 texrecon 맵보다 어색하다는 사용자 판단(11-06). SIMAI_GLB_FILL=on 으로 켠다
+    fill_enabled: bool = False
     fill_stretched: bool = True
     fill_floor: bool = True
     fill_walls: bool = True
@@ -109,7 +110,8 @@ class EnhanceConfig:
     fill_wall_max_height_m: float = 3.5
     fill_wall_max_fill_frac: float = 0.85
     # (D) 평면 인페인팅(S15P31A101-514, glb_inpaint.py). 사이드카 마스크(255)만 메워 GLB 에 되돌려 쓴다
-    inpaint_mode: str = "classic"  # off | classic | diffusion (SIMAI_GLB_INPAINT)
+    # 기본 끔(S15P31A101-526). SIMAI_GLB_INPAINT=classic|diffusion 으로 켠다(채우기가 꺼져 있으면 인페인팅할 사이드카도 없다)
+    inpaint_mode: str = "off"  # off | classic | diffusion (SIMAI_GLB_INPAINT)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, options: Mapping[str, Any] | None = None) -> EnhanceConfig:
