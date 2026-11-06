@@ -240,6 +240,30 @@
         </div>
 
         <div class="ctrl-group">
+          <span class="ctrl-label">2차 개선 토글:</span>
+          <label class="chk" title="1. 모든 삼각형을 단색(#b8c4d0, DoubleSide)으로 칠하고 밝은 배경(#e2e8f0)을 깔아 12차 GLB 검은 영역이 TSDF 형상 구멍임을 확인">
+            <input type="checkbox" id="chk-diag" />
+            1. 단색 진단 보기
+          </label>
+          <label class="chk" title="2. 완전 검정 대신 교실 톤에 맞는 어두운 슬레이트-블루 그라데이션 + 완만한 거리 안개 적용">
+            <input type="checkbox" id="chk-bg-tone" checked />
+            2. 배경 톤+안개
+          </label>
+          <label class="chk" title="3. World Z=0 아래(-1.5cm) 바닥 평면: 깊이 맵에 형상이 있고 깊이가 5cm 안으로 일치할 때만 실제 사진 투영, 빈 곳은 차분한 바닥 톤 + 1m 격자">
+            <input type="checkbox" id="chk-floor-layer" checked />
+            3. 바닥 미관측 표시 층
+          </label>
+          <label class="chk" title="4. find_wall_planes 수용 경계 벽 3면: 깊이 맵에 형상이 있고 깊이가 5cm 안으로 일치할 때만 실제 사진 투영, 빈 곳은 벽 톤 + 1m 격자">
+            <input type="checkbox" id="chk-wall-layer" checked />
+            4. 벽 미관측 표시 층(3면)
+          </label>
+          <label class="chk" title="5. 메시 구멍 가장자리(열린 경계 모서리) 11cm 구간을 아래 표시 층·배경 톤과 부드럽게 섞어 들쭉날쭉한 삼각형 경계 완화">
+            <input type="checkbox" id="chk-edge-feather" checked />
+            5. 구멍 경계 부드럽게 섞기
+          </label>
+        </div>
+
+        <div class="ctrl-group">
           <label class="chk" title="카메라별 투영 가중치를 색상(A:빨강, B:초록, C:파랑, D:노랑)으로 표시">
             <input type="checkbox" id="chk-weights" />
             가중치 시각화

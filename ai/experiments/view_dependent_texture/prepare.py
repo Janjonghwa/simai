@@ -235,7 +235,201 @@ def compute_multiview_color_gains(
             for k in range(num_cams)
         },
     }
-    return gains, stats
+    return gains, stats, mesh, valid_obs, colors
+
+
+def _intersect_2d_lines(n1: np.ndarray, d1: float, n2: np.ndarray, d2: float) -> np.ndarray:
+    """2D 직선 n1·xy = d1 과 n2·xy = d2 의 교점 (x, y) 를 반환한다."""
+    A = np.array([[n1[0], n1[1]], [n2[0], n2[1]]], dtype=np.float64)
+    b = np.array([d1, d2], dtype=np.float64)
+    return np.linalg.solve(A, b)
+
+
+def build_floor_and_wall_layers(
+    mesh: gf.Merged,
+    valid_obs: np.ndarray,
+    colors: np.ndarray,
+    gains: np.ndarray,
+) -> dict[str, Any]:
+    """2차 지시(3·4번): 바닥 미관측 표시 층(World Z=-0.015m)과 find_wall_planes 경계 벽 평면(3면)을 계산한다."""
+    G = GLTF_Y_UP
+    cfg = ge.EnhanceConfig()
+    keep = np.ones(len(mesh.F), dtype=bool)
+
+    z0, floor_info = gf.floor_level(mesh, keep, cfg)
+    planes, rejected = gf.find_wall_planes(mesh, keep, z0, cfg)
+
+    # 카메라 노출 보정이 적용된 삼각형별 관측 평균색 (0..1 sRGB)
+    corr_colors = colors * gains[:, None, :]
+    obs_count = valid_obs.sum(axis=0)
+    has_obs = obs_count >= 1
+    face_mean_rgb255 = np.zeros((len(mesh.F), 3), dtype=np.float64)
+    face_mean_rgb255[has_obs] = (
+        np.where(valid_obs[:, has_obs, None], corr_colors[:, has_obs, :], 0.0).sum(axis=0)
+        / np.maximum(obs_count[has_obs, None], 1)
+    )
+    face_mean_srgb = np.clip(face_mean_rgb255 / 255.0, 0.0, 1.0)
+
+    # 1) 바닥 미관측 표시 층 (World Z = z0 - 0.015m, TSDF 바닥 중앙값 +4.61cm 와 z-fighting 방지)
+    z_floor_world = float(z0 - 0.015)
+    near_floor = keep & (np.abs(mesh.n[:, 2]) > 0.70) & (np.abs(mesh.cen[:, 2] - z0) < 0.12)
+    floor_xy = mesh.V[mesh.F[near_floor]][:, :, :2].reshape(-1, 2)
+    xy_min = floor_xy.min(axis=0)
+    xy_max = floor_xy.max(axis=0)
+
+    floor_obs = near_floor & has_obs
+    if int(floor_obs.sum()) >= 20:
+        # 이상치(테이블 반사 등) 영향을 줄이기 위해 중앙값(median) 톤 사용
+        raw_floor_srgb = np.median(face_mean_srgb[floor_obs], axis=0)
+    else:
+        raw_floor_srgb = np.array([0.28, 0.30, 0.34], dtype=np.float64)
+    # 미관측 표시 층임을 정직하게 나타내도록 약간 차분하게 감쇠한 단색 톤
+    calm_floor_srgb = np.clip(raw_floor_srgb * 0.88, 0.14, 0.55)
+
+    # 수용된 3개 벽 평면(좌 x≈0.07, 우 x≈8.24, 뒤 y≈-0.16)과 앞쪽 열린 경계(바닥 bounds + 여유 0.45m)로 바닥 사각형 구성
+    wall_offset_m = 0.018
+    margin_open_m = 0.45
+    x_lo = float(xy_min[0] - margin_open_m)
+    x_hi = float(xy_max[0] + margin_open_m)
+    y_lo = float(xy_min[1] - margin_open_m)
+    y_hi = float(xy_max[1] + margin_open_m)
+
+    # 수용된 벽 평면을 방향별로 분류 (방 안쪽을 향하는 법선 n 기준)
+    left_pl = next((p for p in planes if p["n"][0] > 0.7), None)
+    right_pl = next((p for p in planes if p["n"][0] < -0.7), None)
+    back_pl = next((p for p in planes if p["n"][1] > 0.7), None)
+    front_pl = next((p for p in planes if p["n"][1] < -0.7), None)
+
+    n_left = np.array(left_pl["n"], dtype=np.float64) if left_pl else np.array([1.0, 0.0])
+    d_left = float(left_pl["d"]) - wall_offset_m if left_pl else x_lo
+
+    n_right = np.array(right_pl["n"], dtype=np.float64) if right_pl else np.array([-1.0, 0.0])
+    d_right = float(right_pl["d"]) - wall_offset_m if right_pl else -x_hi
+
+    n_back = np.array(back_pl["n"], dtype=np.float64) if back_pl else np.array([0.0, 1.0])
+    d_back = float(back_pl["d"]) - wall_offset_m if back_pl else y_lo
+
+    if front_pl:
+        n_front = np.array(front_pl["n"], dtype=np.float64)
+        d_front = float(front_pl["d"]) - wall_offset_m
+    else:
+        # 열린 +Y 방향은 뒤쪽 벽과 평행하게 맵 바닥 최대 범위 + 여유(또는 좌측 벽 최대 u 범위)까지 덮음
+        n_front = -n_back
+        max_wall_y = max([ float(xy_max[1] + margin_open_m) ] + [ float(p["u_range"][1]) for p in planes if abs(p["t"][1]) > 0.7 ])
+        d_front = -max_wall_y
+
+    # 반시계 방향(위에서 볼 때 +Z 법선) 바닥 꼭짓점 4개: 뒤-좌 -> 뒤-우 -> 앞-우 -> 앞-좌
+    c_bl = _intersect_2d_lines(n_left, d_left, n_back, d_back)
+    c_br = _intersect_2d_lines(n_right, d_right, n_back, d_back)
+    c_fr = _intersect_2d_lines(n_right, d_right, n_front, d_front)
+    c_fl = _intersect_2d_lines(n_left, d_left, n_front, d_front)
+
+    floor_corners_world = [
+        [round(float(c[0]), 4), round(float(c[1]), 4), round(z_floor_world, 4)]
+        for c in (c_bl, c_br, c_fr, c_fl)
+    ]
+    floor_corners_glb = [
+        [round(float(v), 4) for v in (G @ np.array(cw, dtype=np.float64))]
+        for cw in floor_corners_world
+    ]
+    floor_normal_world = [0.0, 0.0, 1.0]
+    floor_normal_glb = [round(float(v), 4) for v in (G @ np.array(floor_normal_world))]
+
+    # 2) 수용된 벽 평면 (find_wall_planes 결과 그대로, 수용 평면이 없는 방향에는 만들지 않음)
+    wall_entries: list[dict[str, Any]] = []
+    for idx, pl in enumerate(planes):
+        n2 = np.asarray(pl["n"], dtype=np.float64)
+        t2 = np.asarray(pl["t"], dtype=np.float64)
+        d_orig = float(pl["d"])
+        d_render = d_orig - wall_offset_m  # TSDF 벽면보다 1.8cm 바깥쪽에 두어 z-fighting 방지
+        u0, u1 = float(pl["u_range"][0]), float(pl["u_range"][1])
+        z_bot = z_floor_world
+        z_top = min(float(pl["z_top"]), float(z0 + cfg.fill_wall_max_height_m))
+
+        # 해당 벽 근처 관측 삼각형들의 대표 색상 계산
+        dist_to_wall = np.abs(mesh.V[:, :2] @ n2 - d_orig)
+        near_wall = keep & (dist_to_wall[mesh.F] < 0.12).all(axis=1) & (np.abs(mesh.n[:, 2]) < 0.35)
+        wall_obs = near_wall & has_obs
+        if int(wall_obs.sum()) >= 20:
+            raw_wall_srgb = np.median(face_mean_srgb[wall_obs], axis=0)
+        else:
+            raw_wall_srgb = np.array([0.42, 0.44, 0.47], dtype=np.float64)
+        calm_wall_srgb = np.clip(raw_wall_srgb * 0.85, 0.18, 0.65)
+
+        # 벽 사각형 꼭짓점 4개: (u0, z_bot), (u1, z_bot), (u1, z_top), (u0, z_top)
+        def _wall_pt_world(u_val: float, z_val: float) -> list[float]:
+            wx = n2[0] * d_render + t2[0] * u_val
+            wy = n2[1] * d_render + t2[1] * u_val
+            return [round(float(wx), 4), round(float(wy), 4), round(float(z_val), 4)]
+
+        w_corners_world = [
+            _wall_pt_world(u0, z_bot),
+            _wall_pt_world(u1, z_bot),
+            _wall_pt_world(u1, z_top),
+            _wall_pt_world(u0, z_top),
+        ]
+        w_corners_glb = [
+            [round(float(v), 4) for v in (G @ np.array(cw, dtype=np.float64))]
+            for cw in w_corners_world
+        ]
+        w_normal_world = [round(float(n2[0]), 6), round(float(n2[1]), 6), 0.0]
+        w_normal_glb = [round(float(v), 6) for v in (G @ np.array(w_normal_world))]
+        w_u_axis_world = [round(float(t2[0]), 6), round(float(t2[1]), 6), 0.0]
+        w_u_axis_glb = [round(float(v), 6) for v in (G @ np.array(w_u_axis_world))]
+
+        wall_entries.append(
+            {
+                "wall_id": f"wall_{idx}",
+                "index": idx,
+                "n_world_xy": [round(float(n2[0]), 6), round(float(n2[1]), 6)],
+                "t_world_xy": [round(float(t2[0]), 6), round(float(t2[1]), 6)],
+                "d_world_m": round(d_orig, 4),
+                "d_render_world_m": round(d_render, 4),
+                "u_range_m": [round(u0, 4), round(u1, 4)],
+                "z_range_m": [round(z_bot, 4), round(z_top, 4)],
+                "n_faces": int(pl["n_faces"]),
+                "area_m2": float(pl["area_m2"]),
+                "length_m": float(pl["length_m"]),
+                "normal_world": w_normal_world,
+                "normal_glb": w_normal_glb,
+                "u_axis_world": w_u_axis_world,
+                "u_axis_glb": w_u_axis_glb,
+                "corners_world": w_corners_world,
+                "corners_glb": w_corners_glb,
+                "observed_median_srgb": [round(float(x), 4) for x in raw_wall_srgb],
+                "calm_indicator_srgb": [round(float(x), 4) for x in calm_wall_srgb],
+                "near_observed_faces": int(wall_obs.sum()),
+            }
+        )
+
+    return {
+        "format": "simai.vdt_walls",
+        "format_version": "0.1.0",
+        "jira_key": "S15P31A101-527",
+        "source_module": "simai_ai.scene.glb_fill.find_wall_planes",
+        "floor_level_info": floor_info,
+        "floor_plane": {
+            "z_world_m": round(z_floor_world, 4),
+            "y_glb_m": round(z_floor_world, 4),
+            "mesh_floor_median_z_world_m": round(float(floor_info.get("area_weighted_median_z_m", 0.0461)), 4),
+            "offset_below_world_zero_m": 0.015,
+            "observed_xy_bounds_world_m": {
+                "min": [round(float(xy_min[0]), 4), round(float(xy_min[1]), 4)],
+                "max": [round(float(xy_max[0]), 4), round(float(xy_max[1]), 4)],
+            },
+            "normal_world": floor_normal_world,
+            "normal_glb": floor_normal_glb,
+            "corners_world": floor_corners_world,
+            "corners_glb": floor_corners_glb,
+            "observed_median_srgb": [round(float(x), 4) for x in raw_floor_srgb],
+            "calm_indicator_srgb": [round(float(x), 4) for x in calm_floor_srgb],
+            "grid_step_m": 1.0,
+        },
+        "accepted_wall_count": len(wall_entries),
+        "wall_planes": wall_entries,
+        "rejected_wall_candidates": rejected,
+    }
+
 
 
 def convert_camera_to_glb(
@@ -409,7 +603,12 @@ def main() -> None:
         )
 
     # 4. 다중 시점 겹침 영역 기반 카메라별 노출/색 보정 계수 계산
-    gains, color_stats = compute_multiview_color_gains(args.glb, check_cams)
+    gains, color_stats, merged_mesh, valid_obs, cam_colors = compute_multiview_color_gains(args.glb, check_cams)
+
+    # 4-2. 2차 지시: 바닥 미관측 표시 층(World Z=-0.015m) + find_wall_planes 수용 벽 평면(3면) 내보내기
+    walls_doc = build_floor_and_wall_layers(merged_mesh, valid_obs, cam_colors, gains)
+    walls_json_path = out_dir / "walls.json"
+    walls_json_path.write_text(json.dumps(walls_doc, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 5. GLB 좌표계 기준 cameras.json 작성
     cameras_out = []
@@ -461,6 +660,7 @@ def main() -> None:
             shutil.copy2(src_f, out_dir / fname)
 
     print(f"[prepare] 완료: {cameras_json_path}")
+    print(f"[prepare] 바닥·벽 평면 완료: {walls_json_path} (벽 {walls_doc['accepted_wall_count']}면 수용)")
     print(f"[prepare] GLB 복사: {dst_glb} ({dst_glb.stat().st_size / (1024*1024):.2f} MB)")
     for c in cameras_out:
         print(
