@@ -1,5 +1,4 @@
 import { PageTitle } from '@/features/layout/PageTitle';
-import { RulesPanel } from '@/features/rules/RulesPanel';
 import {
   cancelSetupSession,
   requestWorkUnitSetupSessionId,
@@ -35,9 +34,8 @@ import { SetupMap } from '@/features/setup/SetupMap';
 import {
   AiZoneDraftsPanel,
   CameraHeightPanel,
+  CameraMapPanel,
   CameraPanel,
-  CheckPanel,
-  SetupCctvPanel,
   WaitingPanel,
 } from '@/features/setup/SetupPanels';
 import { SetupZoneStep } from '@/features/setup/SetupZoneStep';
@@ -63,7 +61,7 @@ import { Check } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // 설치 · 보정(명세 8.1·13.4·18.1, S15P31A101-448·-453):
-// 1단계: CCTV 4칸 실시간 미리보기, 카메라 각도 헬퍼(2~3초 폴링), 카메라별 실측 높이 입력.
+// 1단계: CCTV 4칸 실시간 미리보기, 카메라 각도 헬퍼(2~3초 폴링), 카메라별 실측 높이 입력. 세션이 생기기 전에는 2·3단계로 갈 수 없다.
 // 2단계(대기 화면): POST /api/setup-sessions 후 GET /api/setup-sessions/{id} 2초 주기 조회,
 // 단계(배경 수집 → 3D 공간·좌표계 → 카메라 정밀 보정 → 미리보기 맵·구역 초안)·진행률·남은 시간(목표 약 1분 30초),
 // 실패 시 사유 + 다시 시도(POST /api/setup-sessions/{id}/retry), 높이 불일치 경고 시 1단계 높이 칸 복귀 후 재시도.
@@ -336,7 +334,7 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
   const step1Error = retrySession.error ?? createSession.error;
 
   return (
-    <div className="flex shrink-0 flex-col gap-3 pb-[90px]">
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
       <PageTitle>설치 · 보정</PageTitle>
       <div className="flex flex-wrap items-center gap-3">
         {stage === 0 ? (
@@ -460,6 +458,7 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
               <Button
                 variant="ghost"
                 aria-current={cur ? 'step' : undefined}
+                disabled={k > 0 && !currentSession}
                 onClick={() => go(k as Stage)}
                 className={cn(
                   'h-auto w-full justify-start gap-2.5 rounded-lg bg-card px-3.5 py-2.5 text-left font-normal text-muted-foreground',
@@ -483,39 +482,9 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
         })}
       </ol>
 
-      {stage === 0 && (
-        <Alert
-          role="status"
-          aria-label="카메라 방향 안내"
-          className={cn(
-            'flex flex-wrap items-center justify-between gap-2 rounded-[10px] border-0 px-4 py-2.5 text-sm',
-            coverage.stale || !coverage.canProceedCleanly
-              ? 'bg-delay/15 text-delay'
-              : 'bg-primary/15 text-point-soft',
-          )}
-        >
-          <span>{coverage.directionLine}</span>
-          {coverage.statusNotices.length > 0 && (
-            <span className="font-mono text-xs">{coverage.statusNotices.join(' · ')}</span>
-          )}
-        </Alert>
-      )}
-
       {stage === 0 ? (
-        <div className="grid grid-cols-[minmax(0,1.25fr)_minmax(320px,1fr)] items-start gap-3">
-          <div className="flex flex-col gap-3">
-            <SetupCctvPanel />
-            <Card size="sm">
-              <CardHeader>
-                <CardTitle>
-                  <h2>{MAP_TITLE[0]}</h2>
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <SetupMap stage={0} coverage={coverage} />
-              </CardContent>
-            </Card>
-          </div>
+        <div className="grid flex-1 grid-cols-[minmax(0,1fr)_minmax(320px,420px)] gap-3">
+          <CameraMapPanel coverage={coverage} />
           <div className="flex flex-col gap-3">
             <CameraPanel coverage={coverage} />
             <CameraHeightPanel
@@ -531,25 +500,28 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
           </div>
         </div>
       ) : stage === 1 ? (
-        <div className="grid grid-cols-[minmax(0,1.25fr)_minmax(320px,1fr)] items-start gap-3">
+        <div className="grid flex-1 grid-cols-[minmax(0,1fr)_minmax(320px,420px)] gap-3">
           <Card size="sm">
             <CardHeader>
               <CardTitle>
                 <h2>{MAP_TITLE[stage]}</h2>
               </CardTitle>
             </CardHeader>
-            <CardContent>
-              <SetupMap
-                stage={stage}
-                coverage={coverage}
-                drafts={draftsList}
-                acceptedDraftIds={acceptedDraftIds}
-                discardedDraftIds={discardedDraftIds}
-              />
+            <CardContent className="[container-type:size] min-h-0 flex-1">
+              <div className="flex size-full items-center justify-center">
+                <SetupMap
+                  stage={stage}
+                  coverage={coverage}
+                  drafts={draftsList}
+                  acceptedDraftIds={acceptedDraftIds}
+                  discardedDraftIds={discardedDraftIds}
+                  className="h-full max-h-none"
+                />
+              </div>
             </CardContent>
           </Card>
-          <div className="flex flex-col gap-3">
-            {currentSession ? (
+          <div className="flex min-h-0 flex-col gap-3">
+            {currentSession && (
               <WaitingPanel
                 waiting={waiting}
                 onRetry={handleRetryFailedSession}
@@ -557,11 +529,6 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
                 retryError={retrySession.error}
                 onReturnToStep1={handleReturnToStep1ForHeight}
               />
-            ) : (
-              <>
-                <CameraPanel coverage={coverage} />
-                <CheckPanel />
-              </>
             )}
           </div>
         </div>
@@ -590,8 +557,6 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
           />
         </SetupZoneStep>
       )}
-
-      <RulesPanel />
     </div>
   );
 }

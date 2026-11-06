@@ -14,7 +14,6 @@ import type {
   ViewerTarget,
 } from '@/features/viewer3d';
 import { api } from '@/lib/api';
-import { createRulesMock } from '@/mocks/rules';
 import { sceneHandlers } from '@/mocks/scenes';
 import { buildCoverageGuidePayload, createSetupMock } from '@/mocks/setup';
 import { createStaticObjectsMock } from '@/mocks/staticObjects';
@@ -97,11 +96,10 @@ vi.mock('@/features/cctv/useCctvPreview', () => ({
 }));
 
 let setupMock = createSetupMock();
-const rulesMock = createRulesMock({ profile: 'CLASSROOM_TEST' });
 const zonesMock = createZonesMock();
 // 구역 단계 3D 가 받는 현재 배경·정적 객체.
 const sceneMocks = [...sceneHandlers, ...createStaticObjectsMock().handlers];
-const baseHandlers = () => [...rulesMock.handlers, ...zonesMock.handlers, ...sceneMocks];
+const baseHandlers = () => [...zonesMock.handlers, ...sceneMocks];
 
 const server = setupServer(...baseHandlers(), ...setupMock.handlers);
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
@@ -184,21 +182,35 @@ describe('세팅 화면 재진입', () => {
 });
 
 describe('설치 · 보정 1단계 화면', () => {
-  it('본문은 줄어들지 않는 한 덩어리로 묶고 하단 주 메뉴 여백을 둔다', () => {
+  it('본문은 남은 높이를 채우는 한 덩어리로 묶고 자기 아래 여백은 두지 않는다(주 메뉴 여백은 틀이 둔다)', () => {
     const { container } = renderSetupPage();
     const page = container.firstElementChild!;
-    expect(page.classList.contains('shrink-0')).toBe(true);
-    expect(page.className).toContain('pb-[90px]');
+    expect(page.classList.contains('flex-1')).toBe(true);
+    expect(page.classList.contains('min-h-0')).toBe(true);
+    expect(page.className).not.toContain('pb-[');
     expect(page.contains(screen.getByLabelText('cam1 높이 (m)'))).toBe(true);
   });
 
-  it('보정 단계 아래에 규칙 현황과 실시간 CCTV 4칸을 보인다(관리자가 아닌 역할도)', async () => {
+  it('보정 단계 아래에 지도와 카메라 영상을 한 카드로 보이고 규칙 표는 두지 않는다(관리자가 아닌 역할도)', async () => {
     renderSetupPage();
-    expect(await screen.findByRole('table')).toBeTruthy();
-    expect(screen.getByRole('heading', { name: '규칙' })).toBeTruthy();
-    expect(screen.getByText('시험 프로파일')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: '카메라 시야 · 실시간 영상' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: '실시간 CCTV 4칸' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: '카메라 쌍 시야 연결' })).toBeNull();
     expect(screen.getByRole('list', { name: '보정 단계' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: '실시간 CCTV 4칸' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: '규칙' })).toBeNull();
+    expect(screen.queryByRole('table')).toBeNull();
+  });
+
+  it('세션이 생기기 전에는 2·3단계로 갈 수 없어 카메라 연결 안내가 한 번만 보인다', async () => {
+    renderSetupPage();
+    await screen.findByLabelText('cam1 높이 (m)');
+    const steps = within(screen.getByRole('list', { name: '보정 단계' })).getAllByRole('button');
+    expect((steps[0] as HTMLButtonElement).disabled).toBe(false);
+    expect((steps[1] as HTMLButtonElement).disabled).toBe(true);
+    expect((steps[2] as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(steps[1]!);
+    expect(screen.getAllByRole('heading', { name: '카메라 연결 · 방향 안내' })).toHaveLength(1);
+    expect(screen.getByLabelText('cam1 높이 (m)')).toBeTruthy();
   });
 
   it('카메라 높이 기본값을 자동으로 채우고 값 없는 카메라만 입력 필수 상태로 둔다', async () => {
@@ -273,9 +285,12 @@ describe('설치 · 보정 1단계 화면', () => {
     expect(
       screen.getAllByText('cam3 카메라를 오른쪽으로 조금 돌려 주세요 (cam3–cam4)').length,
     ).toBeGreaterThan(0);
-    expect(screen.getAllByText('충분').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('약함').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('부족').length).toBeGreaterThan(0);
+    // 쌍 등급은 목록 없이 지도의 연결선에만 보인다.
+    const edges = within(screen.getByLabelText('카메라 쌍 연결 선'));
+    expect(edges.getAllByLabelText(/충분$/).length).toBeGreaterThan(0);
+    expect(edges.getAllByLabelText(/약함$/).length).toBeGreaterThan(0);
+    expect(edges.getAllByLabelText(/부족$/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('list', { name: '카메라 쌍 매칭 등급' })).toBeNull();
 
     // CONNECTED 상태로 바꾸면 "CONNECTED · 4대 시야 연결됨" 과 "다음" 버튼을 보인다
     cleanup();
@@ -315,7 +330,14 @@ describe('설치 · 보정 1단계 화면', () => {
     expect(await screen.findByText('STALE · 오래된 결과')).toBeTruthy();
     expect(screen.getByText('UNKNOWN · 연결 확인 불가')).toBeTruthy();
     expect(screen.getByText('계산 실패')).toBeTruthy();
-    expect(screen.getByText(/영상 없음: cam2/)).toBeTruthy();
+    // 카메라별 상태·안내는 오른쪽 카메라 패널 행에 보인다.
+    const cameraPanel = within(
+      screen.getByRole('heading', { name: '카메라 연결 · 방향 안내' }).closest('[data-slot=card]')!,
+    );
+    expect(cameraPanel.getByText('영상 없음')).toBeTruthy();
+    expect(
+      cameraPanel.getByText('cam2 · cam2–cam3 공통 시야 없음 — 각도를 조정해 주세요'),
+    ).toBeTruthy();
 
     const proceedButton = screen.getByRole('button', { name: '그대로 진행' }) as HTMLButtonElement;
     await waitFor(() => expect(proceedButton.disabled).toBe(false));

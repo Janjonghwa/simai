@@ -1,6 +1,5 @@
 import { PLAN_MARGIN, ROOM, toPlan } from '@/features/plan/plan';
 import {
-  CHECKS,
   DESKS,
   DOOR,
   OPENING,
@@ -166,64 +165,6 @@ function PairEdges({ pairs }: { pairs: readonly CoveragePairView[] }) {
   );
 }
 
-function Checks({ checked }: { checked: number }) {
-  return (
-    <g>
-      {CHECKS.map((check, n) => {
-        const [x, y] = toPlan(...check.at);
-        const done = n < checked;
-        const cur = n === checked;
-        return (
-          <g key={n}>
-            {cur && (
-              <circle
-                cx={x}
-                cy={y}
-                r={0.5}
-                strokeWidth={0.05}
-                className="fill-primary/15 stroke-primary motion-safe:animate-pulse"
-              />
-            )}
-            <circle
-              cx={x}
-              cy={y}
-              r={0.3}
-              strokeWidth={0.05}
-              strokeDasharray={done || cur ? undefined : '0.1 0.07'}
-              className={done ? 'fill-ok' : cur ? 'fill-primary' : 'fill-surface-2 stroke-faint'}
-            />
-            <text
-              x={x}
-              y={y + 0.1}
-              fontSize={0.28}
-              fontWeight={700}
-              textAnchor="middle"
-              className={cn(
-                'font-mono',
-                done || cur ? 'fill-primary-foreground' : 'fill-muted-foreground',
-              )}
-            >
-              {n + 1}
-            </text>
-            {done && (
-              <text
-                x={x + 0.42}
-                y={y + 0.1}
-                fontSize={0.26}
-                fontWeight={600}
-                {...HALO}
-                className={cn(HALO_CLASS, 'fill-ok font-mono')}
-              >
-                {check.errorCm}cm
-              </text>
-            )}
-          </g>
-        );
-      })}
-    </g>
-  );
-}
-
 function Cameras({ cameras }: { cameras: readonly CoverageCameraView[] }) {
   return (
     <g>
@@ -324,12 +265,15 @@ export function SetupMap({
   drafts = [],
   acceptedDraftIds = [],
   discardedDraftIds = [],
+  className,
 }: {
   stage: Stage;
   coverage: Step1CoverageView;
   drafts?: readonly ZoneDraftItem[];
   acceptedDraftIds?: readonly string[];
   discardedDraftIds?: readonly string[];
+  /** 지도 상자 크기를 바꿀 때(기본은 폭 가득, 높이 340px 이하). */
+  className?: string;
 }) {
   const size = (n: number) => n + PLAN_MARGIN * 2;
   return (
@@ -338,13 +282,12 @@ export function SetupMap({
       preserveAspectRatio="xMidYMid meet"
       role="img"
       aria-label={`교실 ${ROOM.width}×${ROOM.depth}m 위에서 본 보정 화면`}
-      className="block max-h-[340px] w-full"
+      className={cn('block max-h-[340px] w-full', className)}
     >
       <Room grid={stage < 2} />
       {stage >= 2 && <Furniture />}
       <Walls />
       {stage === 0 && <PairEdges pairs={coverage.pairs} />}
-      {stage === 1 && <Checks checked={CHECKS.length} />}
       {drafts.length > 0 && (
         <DraftPolygons
           drafts={drafts}

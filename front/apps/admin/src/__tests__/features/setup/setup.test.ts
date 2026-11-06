@@ -13,7 +13,6 @@ import {
   formatClock,
   formatGuideItem,
   formatRemainingKorean,
-  headErrorPass,
   isPreviewSceneReady,
   MAX_CAMERA_HEIGHT_M,
   resolveHeightCameraIds,
@@ -59,7 +58,6 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
     expect(view.connectivityLabel).toBe('4대 시야 연결됨');
     expect(view.canProceedCleanly).toBe(true);
     expect(view.submitLabel).toBe('다음');
-    expect(view.directionLine).toBe('4대 카메라 시야가 하나로 연결되었습니다');
     expect(view.pairs.map((p) => p.gradeLabel)).toEqual([
       '충분',
       '부족',
@@ -102,9 +100,6 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
     );
 
     expect(view.canProceedCleanly).toBe(true);
-    expect(view.directionLine).toBe(
-      '4대 카메라 시야가 하나로 연결되었습니다 · 그대로 진행하세요 (겹침이 약한 쌍 cam1–cam3, cam2–cam4 은 돌리지 않아도 됩니다)',
-    );
     expect(view.cameras.map((c) => c.guideText)).toEqual([null, null, null, null]);
     expect(view.cameras.map((c) => c.angleLabel)).toEqual([
       '각도 양호',
@@ -143,12 +138,49 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
 
     expect(view.connectivity).toBe('DISCONNECTED');
     expect(view.connectivityLabel).toBe('시야 분리됨');
-    expect(view.directionLine).toBe('cam3 카메라를 오른쪽으로 조금 돌려 주세요 (cam3–cam4)');
     expect(view.cameras.find((c) => c.id === 'cam3')?.guideText).toBe(
       'cam3 카메라를 오른쪽으로 조금 돌려 주세요 (cam3–cam4)',
     );
     expect(view.canProceedCleanly).toBe(false);
     expect(view.submitLabel).toBe('그대로 진행');
+  });
+
+  it('한 카메라에 돌릴 안내가 둘이면 카메라 칸에 모두 이어 붙여 보인다', () => {
+    const latest = buildCoverageGuidePayload({
+      connectivity: 'DISCONNECTED',
+      guides: [
+        {
+          camera_id: 'cam3',
+          pair: ['cam3', 'cam4'],
+          direction: 'RIGHT',
+          magnitude: 'SMALL',
+          reason_code: 'WEAK_PAIR_EDGE_CLUSTER',
+        },
+        {
+          camera_id: 'cam3',
+          pair: ['cam2', 'cam3'],
+          direction: 'LEFT',
+          magnitude: 'SMALL',
+          reason_code: 'WEAK_PAIR_EDGE_CLUSTER',
+        },
+      ],
+    });
+    const view = deriveStep1Coverage(
+      {
+        calibration_version: null,
+        guides: latest.guides,
+        site_id: 'classroom-1',
+        status: 'OK',
+        stale: false,
+        received_at_ms: 1_793_690_000_100,
+        age_ms: 100,
+        latest,
+      },
+      false,
+    );
+    expect(view.cameras.find((c) => c.id === 'cam3')?.angleLabel).toBe(
+      'cam3 카메라를 오른쪽으로 조금 돌려 주세요 (cam3–cam4) · cam3 카메라를 왼쪽으로 조금 돌려 주세요 (cam2–cam3)',
+    );
   });
 
   it('NO_VIDEO·STALE·계산 실패(UNKNOWN) 상태를 구분하고 진행을 막지 않는다', () => {
@@ -188,11 +220,6 @@ describe('설치 · 보정 1단계 카메라 연결 상태·쌍 등급·방향 �
     expect(staleView.staleCameras).toEqual(['cam4']);
     expect(staleView.cameras.find((c) => c.id === 'cam2')?.statusLabel).toBe('영상 없음');
     expect(staleView.cameras.find((c) => c.id === 'cam4')?.statusLabel).toBe('오래된 결과(STALE)');
-    expect(staleView.statusNotices).toEqual([
-      '오래된 결과(STALE) · 최근 수신된 각도 안내입니다',
-      '영상 없음: cam2',
-      '계산 실패 · 연결 상태를 확인할 수 없습니다',
-    ]);
     expect(staleView.submitLabel).toBe('그대로 진행');
 
     expect(
@@ -332,8 +359,6 @@ describe('카메라 높이 기본값 채움·검증', () => {
       '거치대 기둥을 늘 같은 길이로 펴고(테이프 표시 권장), 바꿨을 때만 다시 재세요',
     );
     expect(formatClock(80)).toBe('1:20');
-    expect(headErrorPass(15)).toBe(true);
-    expect(headErrorPass(16)).toBe(false);
   });
 });
 

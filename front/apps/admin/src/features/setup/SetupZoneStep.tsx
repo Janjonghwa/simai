@@ -39,7 +39,8 @@ function useZoneStepSource() {
 /**
  * 세팅의 구역 단계: 왼쪽 큰 3D(세팅 맵 위 구역·작업면·장애물, 편집 상자 손잡이, AI 초안 점선 윤곽), 오른쪽 칸(구역 편집 패널·AI
  * 초안 목록). 관제 틀과 같은 공통 동작(useViewportHost)으로 3D 선택과 패널 선택을 맞춘다: 3D 에서 구역을 누르면 패널이 그 구역을
- * 열고, 패널에서 구역을 고르면 3D 가 그 구역으로 초점을 옮긴다. 3D 를 띄우지 못하면 plan(2D 평면)을 대신 보인다.
+ * 열고, 패널에서 구역을 고르면 3D 가 그 구역으로 초점을 옮긴다. 3D 를 띄우지 못하면 plan(2D 평면)을 대신 보인다. 1·2단계처럼 남은 화면 높이를 꽉 채우고, 오른쪽 칸이 길면 그 칸 안에서만
+ * 스크롤한다.
  */
 export function SetupZoneStep({
   title,
@@ -79,7 +80,7 @@ export function SetupZoneStep({
 
   return (
     <SpatialViewportContext value={viewport}>
-      <div className="grid grid-cols-[minmax(0,1fr)_380px] items-start gap-3">
+      <div className="grid min-h-[420px] flex-1 grid-cols-[minmax(0,1fr)_minmax(320px,420px)] grid-rows-[minmax(0,1fr)] gap-3">
         <Card size="sm">
           <CardHeader>
             <CardTitle>
@@ -102,11 +103,11 @@ export function SetupZoneStep({
               </CardAction>
             )}
           </CardHeader>
-          <CardContent>
+          <CardContent className="min-h-0 flex-1">
             {view === '3d' ? (
               <div
                 data-testid="setup-zone-viewport"
-                className="relative h-[clamp(420px,calc(100svh-320px),860px)] overflow-hidden rounded-lg bg-background"
+                className="relative size-full overflow-hidden rounded-lg bg-background"
               >
                 <ViewerLoadBoundary key={loadAttempt} onError={onLoadError}>
                   <Suspense fallback={null}>
@@ -129,11 +130,13 @@ export function SetupZoneStep({
                 </ViewerLoadBoundary>
               </div>
             ) : (
-              plan
+              <div className="flex size-full items-center justify-center">{plan}</div>
             )}
           </CardContent>
         </Card>
-        <div className="flex min-w-0 flex-col gap-3">{children}</div>
+        <div className="flex min-h-0 min-w-0 flex-col gap-3 overflow-y-auto [&>*]:shrink-0">
+          {children}
+        </div>
       </div>
     </SpatialViewportContext>
   );

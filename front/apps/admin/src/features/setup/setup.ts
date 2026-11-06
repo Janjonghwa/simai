@@ -28,7 +28,7 @@ export type Stage = 0 | 1 | 2;
 export const ZONE_STAGE: Stage = 2;
 
 export const MAP_TITLE: Record<Stage, string> = {
-  0: '카메라 쌍 시야 연결',
+  0: '카메라 시야 · 실시간 영상',
   1: '검증 지점',
   2: '3D 맵',
 };
@@ -144,8 +144,6 @@ export interface CoveragePairView {
   isDiagonal: boolean;
   grade: PairGrade;
   gradeLabel: string;
-  inliers: number | null;
-  inlierRatio: number | null;
   tone: SetupTone;
 }
 
@@ -158,8 +156,6 @@ export interface Step1CoverageView {
   calculationFailed: boolean;
   noVideoCameras: string[];
   staleCameras: string[];
-  directionLine: string;
-  statusNotices: string[];
   cameras: CoverageCameraView[];
   pairs: CoveragePairView[];
   canProceedCleanly: boolean;
@@ -215,20 +211,13 @@ export function deriveStep1Coverage(
   // OPTIONAL_IMPROVE 는 이미 4대가 연결된 뒤의 선택 보강이다(계약 coverage_guide). 지시로 보이면
   // "정상"인데 "돌려 주세요"가 같이 뜨고, 약한 쌍 점수가 기준선 근처라 결과마다 바뀌어 헷갈린다.
   const requiredGuides = (latest?.guides ?? []).filter((g) => g.reason_code !== 'OPTIONAL_IMPROVE');
-  const optionalPairs = [
-    ...new Set(
-      (latest?.guides ?? [])
-        .filter((g) => g.reason_code === 'OPTIONAL_IMPROVE')
-        .map((g) => `${g.pair[0]}–${g.pair[1]}`),
-    ),
-  ];
 
-  const guideByCam = new Map<string, string>();
+  // 한 카메라에 안내가 둘 이상이면 모두 이어 붙인다(따로 모아 보이는 줄이 없어 이 칸이 유일한 안내다).
+  const guidesByCam = new Map<string, string[]>();
   for (const g of requiredGuides) {
-    if (!guideByCam.has(g.camera_id)) {
-      guideByCam.set(g.camera_id, formatGuideItem(g));
-    }
+    guidesByCam.set(g.camera_id, [...(guidesByCam.get(g.camera_id) ?? []), formatGuideItem(g)]);
   }
+  const guideByCam = new Map([...guidesByCam].map(([id, texts]) => [id, texts.join(' · ')]));
 
   const cameras: CoverageCameraView[] = cameraIds.map((id, idx) => {
     const item = latest?.cameras.find((c) => c.camera_id === id);
@@ -278,41 +267,9 @@ export function deriveStep1Coverage(
       isDiagonal,
       grade: p.grade,
       gradeLabel: PAIR_GRADE_LABEL[p.grade],
-      inliers: p.inliers,
-      inlierRatio: p.inlier_ratio,
       tone: pairTone(p.grade),
     };
   });
-
-  let directionLine: string;
-  if (latest && requiredGuides.length > 0) {
-    directionLine = requiredGuides.map(formatGuideItem).join(' · ');
-  } else if (fetchError) {
-    directionLine = '카메라 각도 안내 계산 실패 · 각도를 직접 확인하거나 그대로 진행할 수 있습니다';
-  } else if (empty) {
-    directionLine = '카메라 각도 안내 대기 중 · 그대로 진행할 수 있습니다';
-  } else if (connectivity === 'CONNECTED') {
-    directionLine =
-      optionalPairs.length > 0
-        ? `4대 카메라 시야가 하나로 연결되었습니다 · 그대로 진행하세요 (겹침이 약한 쌍 ${optionalPairs.join(', ')} 은 돌리지 않아도 됩니다)`
-        : '4대 카메라 시야가 하나로 연결되었습니다';
-  } else if (connectivity === 'DISCONNECTED') {
-    directionLine =
-      '겹치는 시야가 부족한 카메라 쌍이 있습니다 · 각도를 조정하거나 그대로 진행하세요';
-  } else {
-    directionLine = '카메라 시야 연결을 계산할 수 없습니다 · 그대로 진행할 수 있습니다';
-  }
-
-  const statusNotices: string[] = [];
-  if (stale) {
-    statusNotices.push('오래된 결과(STALE) · 최근 수신된 각도 안내입니다');
-  }
-  if (noVideoCameras.length > 0) {
-    statusNotices.push(`영상 없음: ${noVideoCameras.join(', ')}`);
-  }
-  if (calculationFailed) {
-    statusNotices.push('계산 실패 · 연결 상태를 확인할 수 없습니다');
-  }
 
   const canProceedCleanly =
     !fetchError && !empty && !stale && connectivity === 'CONNECTED' && noVideoCameras.length === 0;
@@ -326,8 +283,6 @@ export function deriveStep1Coverage(
     calculationFailed,
     noVideoCameras,
     staleCameras,
-    directionLine,
-    statusNotices,
     cameras,
     pairs,
     canProceedCleanly,
@@ -423,18 +378,6 @@ export function validateHeightFields(fields: readonly HeightFieldView[]): Height
 export const formatClock = (secs: number): string =>
   `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
 
-// 2단계(보정 검증) 표시용 상수.
-export const HEAD_ERR_MAX_CM = 15;
-export const headErrorPass = (cm: number): boolean => cm <= HEAD_ERR_MAX_CM;
-
-export const CHECKS: readonly { at: Point; errorCm: number }[] = [
-  { at: [2.4, 2.6], errorCm: 4 },
-  { at: [5.2, 5.4], errorCm: 7 },
-  { at: [8.1, 7.6], errorCm: 11 },
-  { at: [8.0, 2.4], errorCm: 6 },
-  { at: [2.6, 7.8], errorCm: 9 },
-];
-
 export interface PlanRect {
   x: number;
   y: number;
@@ -452,7 +395,6 @@ export const DESKS: readonly PlanRect[] = [
 export const PODIUM: PlanRect = { x: 3.5, y: 0.4, width: 3, depth: 0.6 };
 export const OPENING: PlanRect = { x: 7.2, y: 8.2, width: 1.2, depth: 0.6 };
 export const DOOR = { x: 4.4, width: 0.9 } as const;
-export const PAIR_MISMATCH = '최대 6cm';
 
 export type ActionKey = 'start' | 'confirm' | 'restart';
 
