@@ -43,6 +43,8 @@ _OKLAB_M2 = np.array(
     ],
     dtype=np.float64,
 )
+_OKLAB_M1_INV = np.linalg.inv(_OKLAB_M1)
+_OKLAB_M2_INV = np.linalg.inv(_OKLAB_M2)
 
 
 def smoothstep(edge0: float, edge1: float, x: np.ndarray | float) -> np.ndarray:
@@ -57,6 +59,14 @@ def srgb_to_oklab(srgb: np.ndarray) -> np.ndarray:
     lin = srgb_to_linear(np.clip(np.asarray(srgb, dtype=np.float64), 0.0, 1.0))
     lms = np.maximum(lin @ _OKLAB_M1.T, 0.0) ** (1.0 / 3.0)
     return lms @ _OKLAB_M2.T
+
+
+def oklab_to_srgb(lab: np.ndarray) -> np.ndarray:
+    """Oklab `(..., 3)` 배열을 sRGB `[0, 1]` 배열 `(..., 3)` 로 역변환한다."""
+    lms_cbrt = np.asarray(lab, dtype=np.float64) @ _OKLAB_M2_INV.T
+    lms = np.maximum(lms_cbrt, 0.0) ** 3.0
+    lin = np.clip(lms @ _OKLAB_M1_INV.T, 0.0, 1.0)
+    return np.clip(linear_to_srgb(lin), 0.0, 1.0)
 
 
 def compute_neighbor_observed_median_srgb(
@@ -896,3 +906,238 @@ def blend_unobserved_vertex_colors(
     new_srgb = cur_srgb * (1.0 - w_blend) + target_srgb * w_blend
     out_lin[m_idx] = srgb_to_linear(np.clip(new_srgb, 0.0, 1.0))
     return out_lin, int(active.sum())
+
+
+def match_fill_to_boundary_lab(
+    obs_albedo: np.ndarray,
+    filled_albedo: np.ndarray,
+    inpaint_mask: np.ndarray,
+    *,
+    band_m: float = 0.12,
+    texel_m: float = 0.005,
+    spatial_sigma_m: float = 0.35,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """채움 텍셀(톤·LaMa·고전)의 Oklab 색 통계(평균·표준편차)를 경계 근처 관측 텍셀(`band_m` = 12 cm)에 맞춰 보정한다.
+
+    2차 지시 2-(b) 구현 근거:
+    - LaMa 또는 고전 인페인팅이 생성한 채움 영역은 주변 관측 영역과 평균 밝기(L)나 색조(a, b),
+      또는 대비(표준편차)가 미세하게 어긋나 경계에서 톤 차이가 보일 수 있다.
+    - 경계 바깥쪽 관측 대역(`0 < dist_to_hole <= band_m`)과 경계 안쪽 채움 대역(`0 < dist_to_obs <= band_m`)의
+      Oklab 채널별 평균·표준편차를 맞추고, 추가로 최근접 관측 경계의 로컬 평균 오프셋(저주파 드리프트)을
+      부드럽게 보정하여 관측 ↔ 채움 색감을 하나로 통일한다.
+    """
+    obs_u8 = np.ascontiguousarray(obs_albedo, dtype=np.uint8)
+    fill_u8 = np.ascontiguousarray(filled_albedo, dtype=np.uint8)
+    target = inpaint_mask > 0
+    obs = ~target
+    if not target.any() or not obs.any():
+        return fill_u8.copy(), {"applied": False}
+
+    band_px = max(4.0, float(band_m) / max(float(texel_m), 1e-5))
+    dist_to_obs, (iy_obs, ix_obs) = ndi.distance_transform_edt(target, return_indices=True)
+    dist_to_hole = ndi.distance_transform_edt(obs)
+
+    obs_band = obs & (dist_to_hole <= band_px)
+    fill_band = target & (dist_to_obs <= band_px)
+    if int(obs_band.sum()) < 32 or int(fill_band.sum()) < 32:
+        obs_band = obs
+        fill_band = target
+
+    obs_srgb = obs_u8.astype(np.float64) / 255.0
+    fill_srgb = fill_u8.astype(np.float64) / 255.0
+    obs_lab = srgb_to_oklab(obs_srgb)
+    fill_lab = srgb_to_oklab(fill_srgb)
+
+    mu_obs = obs_lab[obs_band].mean(axis=0)
+    sd_obs = np.maximum(obs_lab[obs_band].std(axis=0), 1e-4)
+    mu_fill = fill_lab[fill_band].mean(axis=0)
+    sd_fill = np.maximum(fill_lab[fill_band].std(axis=0), 1e-4)
+
+    # 과도한 대비 증폭이나 채도 왜곡을 막기 위해 표준편차 배율을 L 은 [0.55, 1.25], a/b 는 [0.50, 1.15] 로 클램프
+    gain_lab = np.clip(sd_obs / sd_fill, [0.55, 0.50, 0.50], [1.25, 1.15, 1.15])
+
+    corrected_lab = fill_lab.copy()
+    corrected_lab[target] = (fill_lab[target] - mu_fill[None, :]) * gain_lab[None, :] + mu_obs[None, :]
+
+    # 로컬 경계 드리프트 보정: 경계 각 지점에서 최근접 관측 텍셀(블러링된 로컬 Lab)과 채움 경계 Lab 의 차이를 구멍 내부로 완만히 전파
+    sigma_local = max(6.0, float(spatial_sigma_m) / max(float(texel_m), 1e-5))
+    sigma_local = min(sigma_local, 42.0)
+    obs_nearest_lab = obs_lab[iy_obs, ix_obs]
+    fill_self_nearest_idx = ndi.distance_transform_edt(~fill_band, return_indices=True)[1]
+    fill_edge_lab = corrected_lab[fill_self_nearest_idx[0], fill_self_nearest_idx[1]]
+    local_delta_lab = gaussian_blur(obs_nearest_lab - fill_edge_lab, sigma_local)
+    # 구멍 경계에서는 로컬 드리프트를 70% 반영하고 깊은 내부로 갈수록 전역 통계 매칭으로 수렴
+    w_local = np.exp(-dist_to_obs / max(band_px * 2.5, 12.0))[:, :, None] * 0.70
+    corrected_lab[target] = corrected_lab[target] + (local_delta_lab * w_local)[target]
+
+    out_srgb = obs_srgb.copy()
+    out_srgb[target] = oklab_to_srgb(corrected_lab[target])
+    out_u8 = np.clip(np.rint(out_srgb * 255.0), 0, 255).astype(np.uint8)
+    out_u8[obs] = obs_u8[obs]
+    return out_u8, {
+        "applied": True,
+        "band_m": float(band_m),
+        "obs_band_texels": int(obs_band.sum()),
+        "fill_band_texels": int(fill_band.sum()),
+        "mu_obs_lab": [round(float(x), 4) for x in mu_obs],
+        "mu_fill_before_lab": [round(float(x), 4) for x in mu_fill],
+        "gain_lab": [round(float(x), 4) for x in gain_lab],
+    }
+
+
+def strip_planar_mesh_faces(
+    V: np.ndarray,
+    F: np.ndarray,
+    keep_face: np.ndarray,
+    floor_info: dict[str, Any],
+    wall_infos: list[dict[str, Any]],
+    *,
+    dist_tol_m: float = 0.06,
+    angle_tol_deg: float = 25.0,
+    post_min_faces: int = 150,
+    post_min_area_m2: float = 0.12,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """받침 평면(바닥·벽 3면)에서 거리 `<= dist_tol_m`(기본 6 cm)이고 법선 각도 차이 `<= angle_tol_deg`(기본 25°)인 메시 면을 걷어낸다.
+
+    2차 지시 1번 근거:
+    - 평면 RANSAC inlier 허용치(4 cm) 및 TSDF/스테레오 노이즈를 감안해 받침 평면의 로컬 기준 표면으로부터
+      `|d| <= 6 cm` 이고 법선이 `<= 25°` 인 삼각형들을 제거하면, 벽·바닥 위의 구겨진 삼각형과 노출 얼룩이 사라지고
+      그 자리에 받침 평면(깨끗한 카메라 정투영 + 채움 텍스처)이 단일 평면으로 드러난다.
+    - 벽에서 6 cm 넘게 돌출된 가구·기둥·오목 창틀 구조물은 그대로 남으며, 얇은 액자·안내판(`<= 5.5 cm`)은
+      받침 평면의 `5 mm/texel` 카메라 정투영 사진에 선명하게 찍히므로 함께 걷어내어 Z-fighting 과 이중 윤곽을 방지한다.
+    - 평면 면을 걷어낸 뒤 공중에 고립된 작은 조각(`faces < post_min_faces` 또는 `area < post_min_area_m2`)도 함께 정리한다.
+    """
+    V = np.asarray(V, dtype=np.float64)
+    F = np.asarray(F, dtype=np.int64)
+    keep_in = np.asarray(keep_face, dtype=bool).copy()
+    m = len(F)
+    if m == 0 or not keep_in.any():
+        return keep_in, {"removed_faces": 0, "removed_face_ratio": 0.0, "removed_area_m2": 0.0, "removed_area_ratio": 0.0}
+
+    v0, v1, v2 = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
+    cen = (v0 + v1 + v2) / 3.0
+    fn = np.cross(v1 - v0, v2 - v0)
+    areas = 0.5 * np.linalg.norm(fn, axis=1)
+    nrm = fn / np.maximum(2.0 * areas[:, None], 1e-12)
+    total_area = float(areas.sum())
+    cos_th = float(np.cos(np.deg2rad(angle_tol_deg)))
+
+    # 1) 바닥 평면 위 메시 걷어내기
+    z_med = float(floor_info.get("mesh_floor_median_z_world_m", 0.0461))
+    near_f = keep_in & (np.abs(nrm[:, 2]) > 0.78) & (cen[:, 2] > -0.15) & (cen[:, 2] < 0.16)
+    if int(near_f.sum()) >= 32:
+        tree_f = cKDTree(cen[near_f, :2])
+        df, idx_f = tree_f.query(cen[:, :2], k=min(16, int(near_f.sum())))
+        wf = 1.0 / np.maximum(df, 0.05)
+        z_surf = (cen[near_f, 2][idx_f] * wf).sum(axis=1) / wf.sum(axis=1)
+    else:
+        z_surf = np.full(m, z_med, dtype=np.float64)
+
+    v_z = np.stack([v0[:, 2], v1[:, 2], v2[:, 2]], axis=1)
+    v_f_res = np.abs(v_z - z_surf[:, None])
+    floor_strip = (
+        keep_in
+        & (
+            (
+                (np.abs(cen[:, 2] - z_surf) <= float(dist_tol_m))
+                & (np.abs(nrm[:, 2]) >= cos_th)
+                & (v_z.max(axis=1) <= z_surf + float(dist_tol_m) + 0.02)
+            )
+            | (v_f_res.max(axis=1) <= max(0.06, float(dist_tol_m)))
+        )
+    )
+
+    # 2) 벽 3면 위 메시 걷어내기
+    wall_strips: dict[str, np.ndarray] = {}
+    wall_strip_all = np.zeros(m, dtype=bool)
+    for wp in wall_infos:
+        wid = str(wp["wall_id"])
+        n2 = np.asarray(wp["n_world_xy"], dtype=np.float64)
+        t2 = np.asarray(wp["t_world_xy"], dtype=np.float64)
+        d0 = float(wp["d_world_m"])
+        u0, u1 = float(wp["u_range_m"][0]), float(wp["u_range_m"][1])
+        z0, z1 = float(wp["z_range_m"][0]), float(wp["z_range_m"][1])
+
+        sd = cen[:, :2] @ n2 - d0
+        u = cen[:, :2] @ t2
+        z = cen[:, 2]
+        n_dot = np.abs(nrm[:, :2] @ n2)
+
+        near_w = keep_in & (np.abs(sd) < 0.26) & (n_dot > 0.78) & (u >= u0 - 0.10) & (u <= u1 + 0.10)
+        if int(near_w.sum()) >= 32:
+            tree_w = cKDTree(np.column_stack([u[near_w], z[near_w]]))
+            dw, iw = tree_w.query(np.column_stack([u, z]), k=min(16, int(near_w.sum())))
+            ww = 1.0 / np.maximum(dw, 0.05)
+            sd_surf = (sd[near_w][iw] * ww).sum(axis=1) / ww.sum(axis=1)
+        else:
+            sd_surf = np.zeros(m, dtype=np.float64)
+
+        v_sd = np.stack([v0[:, :2] @ n2 - d0, v1[:, :2] @ n2 - d0, v2[:, :2] @ n2 - d0], axis=1)
+        v_res = np.abs(v_sd - sd_surf[:, None])
+        in_box = (u >= u0 + 0.01) & (u <= u1 - 0.01) & (z >= z0 - 0.02) & (z <= z1 + 0.04)
+
+        # (거리 <= dist_tol_m 이고 법선 각도 <= angle_tol_deg) 또는 세 정점 모두 벽 표면 5.5 cm 이내에 붙어 있는 얇은 액자 테두리/구겨진 삼각형
+        w_hit = (
+            keep_in
+            & ~floor_strip
+            & in_box
+            & (((np.abs(sd - sd_surf) <= float(dist_tol_m)) & (n_dot >= cos_th)) | (v_res.max(axis=1) <= max(0.055, float(dist_tol_m) - 0.005)))
+        )
+        wall_strips[wid] = w_hit
+        wall_strip_all |= w_hit
+
+    keep_after_planes = keep_in & ~floor_strip & ~wall_strip_all
+
+    # 3) 평면을 걷어낸 뒤 공중에 고립된 잔여 소형 조각 정리
+    if keep_after_planes.any() and (post_min_faces > 0 or post_min_area_m2 > 0.0):
+        rem_indices = np.flatnonzero(keep_after_planes)
+        keep_sub, post_rep = filter_small_connected_components(
+            V, F[rem_indices], min_faces=post_min_faces, min_area_m2=post_min_area_m2
+        )
+        keep_final = np.zeros(m, dtype=bool)
+        keep_final[rem_indices[keep_sub]] = True
+        post_removed_mask = keep_after_planes & ~keep_final
+    else:
+        keep_final = keep_after_planes
+        post_removed_mask = np.zeros(m, dtype=bool)
+        post_rep = {"removed_components": 0, "removed_faces": 0, "removed_area_m2": 0.0}
+
+    total_stripped_mask = keep_in & ~keep_final
+    per_plane_stats: dict[str, Any] = {
+        "floor": {
+            "removed_faces": int(floor_strip.sum()),
+            "removed_face_ratio": round(float(floor_strip.sum() / max(m, 1)), 5),
+            "removed_area_m2": round(float(areas[floor_strip].sum()), 3),
+            "removed_area_ratio": round(float(areas[floor_strip].sum() / max(total_area, 1e-12)), 5),
+        }
+    }
+    for wid, w_mask in wall_strips.items():
+        per_plane_stats[wid] = {
+            "removed_faces": int(w_mask.sum()),
+            "removed_face_ratio": round(float(w_mask.sum() / max(m, 1)), 5),
+            "removed_area_m2": round(float(areas[w_mask].sum()), 3),
+            "removed_area_ratio": round(float(areas[w_mask].sum() / max(total_area, 1e-12)), 5),
+        }
+
+    return keep_final, {
+        "dist_tol_m": float(dist_tol_m),
+        "angle_tol_deg": float(angle_tol_deg),
+        "total_mesh_faces": int(m),
+        "total_mesh_area_m2": round(total_area, 3),
+        "plane_stripped_faces": int((floor_strip | wall_strip_all).sum()),
+        "plane_stripped_face_ratio": round(float((floor_strip | wall_strip_all).sum() / max(m, 1)), 5),
+        "plane_stripped_area_m2": round(float(areas[floor_strip | wall_strip_all].sum()), 3),
+        "plane_stripped_area_ratio": round(float(areas[floor_strip | wall_strip_all].sum() / max(total_area, 1e-12)), 5),
+        "post_strip_orphan_faces": int(post_removed_mask.sum()),
+        "post_strip_orphan_area_m2": round(float(areas[post_removed_mask].sum()), 3),
+        "post_strip_orphan_components": int(post_rep.get("removed_components", 0)),
+        "total_removed_faces": int(total_stripped_mask.sum()),
+        "total_removed_face_ratio": round(float(total_stripped_mask.sum() / max(m, 1)), 5),
+        "total_removed_area_m2": round(float(areas[total_stripped_mask].sum()), 3),
+        "total_removed_area_ratio": round(float(areas[total_stripped_mask].sum() / max(total_area, 1e-12)), 5),
+        "kept_faces": int(keep_final.sum()),
+        "kept_face_ratio": round(float(keep_final.sum() / max(m, 1)), 5),
+        "kept_area_m2": round(float(areas[keep_final].sum()), 3),
+        "kept_area_ratio": round(float(areas[keep_final].sum() / max(total_area, 1e-12)), 5),
+        "per_plane": per_plane_stats,
+    }

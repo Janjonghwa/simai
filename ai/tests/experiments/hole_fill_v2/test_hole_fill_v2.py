@@ -23,6 +23,10 @@ from experiments.hole_fill_v2.core import (  # noqa: E402
     feather_observed_filled_boundary,
     filter_small_connected_components,
     inpaint_tone_plane,
+    match_fill_to_boundary_lab,
+    oklab_to_srgb,
+    srgb_to_oklab,
+    strip_planar_mesh_faces,
 )
 from simai_ai.scene import glb_enhance as ge  # noqa: E402
 from simai_ai.scene import glb_fill as gf  # noqa: E402
@@ -331,3 +335,107 @@ def test_open_boundary_distances_and_boundary_blending() -> None:
     )
     assert n_mod_px > 0
     assert int(blended_atlas.max()) > 40
+
+
+def test_oklab_roundtrip_and_match_fill_to_boundary_lab() -> None:
+    """2차 지시 2-(b): Oklab 정·역변환 정확도 및 채움 영역 경계 Lab 평균·표준편차 보정 검증."""
+    rng = np.random.default_rng(7)
+    srgb_samples = rng.uniform(0.05, 0.95, size=(128, 3))
+    lab = srgb_to_oklab(srgb_samples)
+    recovered = oklab_to_srgb(lab)
+    np.testing.assert_allclose(recovered, srgb_samples, atol=1e-5)
+
+    # 관측 영역은 따뜻한 우드월 톤(평균 ~ [195, 170, 135]), 채움 영역은 초기 편차가 있는 어두운 톤(~ [145, 125, 100])
+    H, W = 64, 64
+    obs_albedo = np.broadcast_to(np.array([195, 170, 135], dtype=np.uint8), (H, W, 3)).copy()
+    filled_albedo = obs_albedo.copy()
+    inpaint_mask = np.zeros((H, W), dtype=np.uint8)
+    inpaint_mask[18:46, 18:46] = 255
+    filled_albedo[18:46, 18:46] = np.array([145, 125, 100], dtype=np.uint8)
+
+    corrected, meta = match_fill_to_boundary_lab(
+        obs_albedo,
+        filled_albedo,
+        inpaint_mask,
+        band_m=0.12,
+        texel_m=0.01,
+    )
+    assert meta["applied"] is True
+    # 관측 픽셀은 바이트 단위로 불변이어야 함
+    np.testing.assert_array_equal(corrected[inpaint_mask == 0], obs_albedo[inpaint_mask == 0])
+    # 보정 뒤 채움 영역의 평균 RGB가 관측 우드월 톤([195, 170, 135])과 3 이내로 일치해야 함
+    fill_mean_after = corrected[inpaint_mask > 0].mean(axis=0)
+    np.testing.assert_allclose(fill_mean_after, [195.0, 170.0, 135.0], atol=3.0)
+
+
+def test_strip_planar_mesh_faces_strips_floor_and_wall_preserves_furniture() -> None:
+    """2차 지시 1번: 바닥·벽 받침 평면 위 메시(거리 <= 6cm, 법선 <= 25도)는 걷어내고 3D 가구는 보존하는지 검증."""
+    # 1) 바닥 메시 (z = 0.02m, 40개 삼각형)
+    xs = np.linspace(0.5, 2.5, 6)
+    ys = np.linspace(0.5, 2.5, 5)
+    xv, yv = np.meshgrid(xs, ys, indexing="xy")
+    V_floor = np.stack([xv.ravel(), yv.ravel(), np.full(xv.size, 0.02)], axis=1)
+    F_floor_list = []
+    for j in range(4):
+        for i in range(5):
+            v00 = j * 6 + i
+            F_floor_list.append([v00, v00 + 1, v00 + 7])
+            F_floor_list.append([v00, v00 + 7, v00 + 6])
+    F_floor = np.array(F_floor_list, dtype=np.int64)
+
+    # 2) 벽 메시 (x = 0.01m, u=y in [1.0, 3.0], z in [0.2, 2.0], 40개 삼각형)
+    uy = np.linspace(1.0, 3.0, 6)
+    uz = np.linspace(0.2, 2.0, 5)
+    ug, zg = np.meshgrid(uy, uz, indexing="xy")
+    V_wall = np.stack([np.full(ug.size, 0.01), ug.ravel(), zg.ravel()], axis=1)
+    F_wall = F_floor + len(V_floor)
+
+    # 3) 3D 가구 메시 (x in [1.0, 2.0], y in [1.0, 2.0], z = 0.75m 상판, 200개 삼각형, 면적 1.0 m^2)
+    fx = np.linspace(1.0, 2.0, 11)
+    fy = np.linspace(1.0, 2.0, 11)
+    fxg, fyg = np.meshgrid(fx, fy, indexing="xy")
+    V_furn = np.stack([fxg.ravel(), fyg.ravel(), np.full(fxg.size, 0.75)], axis=1)
+    F_furn_list = []
+    base = len(V_floor) + len(V_wall)
+    for j in range(10):
+        for i in range(10):
+            v00 = base + j * 11 + i
+            F_furn_list.append([v00, v00 + 1, v00 + 12])
+            F_furn_list.append([v00, v00 + 12, v00 + 11])
+    F_furn = np.array(F_furn_list, dtype=np.int64)
+
+    V_all = np.vstack([V_floor, V_wall, V_furn])
+    F_all = np.vstack([F_floor, F_wall, F_furn])
+    keep_in = np.ones(len(F_all), dtype=bool)
+
+    floor_info = {"mesh_floor_median_z_world_m": 0.02}
+    wall_infos = [
+        {
+            "wall_id": "wall_0",
+            "n_world_xy": [1.0, 0.0],
+            "t_world_xy": [0.0, 1.0],
+            "d_world_m": 0.0,
+            "u_range_m": [0.5, 3.5],
+            "z_range_m": [0.0, 2.5],
+        }
+    ]
+
+    keep_out, rep = strip_planar_mesh_faces(
+        V_all,
+        F_all,
+        keep_in,
+        floor_info,
+        wall_infos,
+        dist_tol_m=0.06,
+        angle_tol_deg=25.0,
+        post_min_faces=50,
+        post_min_area_m2=0.10,
+    )
+    n_fl = len(F_floor)
+    n_wl = len(F_wall)
+    assert not np.any(keep_out[:n_fl]), "바닥 평면 위 삼각형은 모두 걷어내져야 함"
+    assert not np.any(keep_out[n_fl : n_fl + n_wl]), "벽 평면 위 삼각형은 모두 걷어내져야 함"
+    assert np.all(keep_out[n_fl + n_wl :]), "3D 가구 상판 삼각형은 100% 유지되어야 함"
+    assert rep["per_plane"]["floor"]["removed_faces"] == n_fl
+    assert rep["per_plane"]["wall_0"]["removed_faces"] == n_wl
+

@@ -46,7 +46,8 @@ def find_browser() -> Path:
 def run_capture(
     data_dir: Path,
     vdt_dir: Path,
-    timeout_s: float = 150.0,
+    timeout_s: float = 180.0,
+    round2: bool = False,
 ) -> dict[str, Any]:
     here = Path(__file__).resolve().parent
     data_dir = data_dir.resolve()
@@ -63,7 +64,7 @@ def run_capture(
     if not cam_dst.is_file() and (vdt_dir / "cameras.json").is_file():
         shutil.copy2(vdt_dir / "cameras.json", cam_dst)
 
-    shots_dir = data_dir / "shots"
+    shots_dir = data_dir / ("shots_r2" if round2 else "shots")
     shots_dir.mkdir(parents=True, exist_ok=True)
 
     done_event = threading.Event()
@@ -122,7 +123,8 @@ def run_capture(
     srv_thread.start()
 
     browser = find_browser()
-    url = f"http://127.0.0.1:{port}/index.html?autoshots=1"
+    auto_param = "r2" if round2 else "1"
+    url = f"http://127.0.0.1:{port}/index.html?autoshots={auto_param}"
     print(f"[capture] 브라우저 실행: {browser.name} -> {url}", flush=True)
 
     with tempfile.TemporaryDirectory(
@@ -173,8 +175,13 @@ def main() -> None:
         type=Path,
         default=Path(os.environ.get("SIMAI_VDT_DIR", str(DEFAULT_VDT_DIR))),
     )
+    parser.add_argument(
+        "--round2",
+        action="store_true",
+        help="2차(평면 단일화·톤 일치·DA3 정리 메시 비교) 3칸 스크린샷을 shots_r2/에 캡처",
+    )
     args = parser.parse_args()
-    res = run_capture(args.data_dir, args.vdt_dir)
+    res = run_capture(args.data_dir, args.vdt_dir, round2=args.round2)
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
 

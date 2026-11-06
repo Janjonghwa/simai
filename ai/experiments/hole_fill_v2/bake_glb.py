@@ -51,8 +51,10 @@ from experiments.hole_fill_v2.core import (  # noqa: E402
     filter_small_connected_components,
     inpaint_lama_plane,
     inpaint_tone_plane,
+    match_fill_to_boundary_lab,
     select_camera_colors_with_outlier_removal,
     smoothstep,
+    strip_planar_mesh_faces,
 )
 from simai_ai.scene import glb_enhance as ge  # noqa: E402
 from simai_ai.scene import glb_fill as gf  # noqa: E402
@@ -64,14 +66,20 @@ LOCAL_ROOT = Path("C:/Users/SSAFY/simai-local")
 DEFAULT_VDT_DIR = LOCAL_ROOT / "vdt"
 DEFAULT_OUT_DIR = LOCAL_ROOT / "hole-fill-v2"
 DEFAULT_LAMA_WEIGHTS = DEFAULT_OUT_DIR / "weights" / "big-lama.pt"
+DEFAULT_DA3_GLB = LOCAL_ROOT / "geometry-bench" / "v2_clean" / "v2_da3_clean" / "all" / "textured.glb"
 POSE_CUDA_PYTHON = LOCAL_ROOT / "pose-cuda" / "Scripts" / "python.exe"
 
 TEXEL_M = 0.005  # 5.0 mm / 텍셀 (카메라 3.5~6m 거리에서 1 px ≈ 3.3~5.7 mm 물리 해상도에 정합)
 GRID_CELL_M = 0.06  # 받침 평면 기하 격자 간격 (6 cm: TSDF 곡률/창문 오목부 뒤로 안전하게 물림)
 DEPTH_MATCH_TOL_M = 0.05  # 카메라 깊이 맵과 5 cm 이내 일치 게이트
 COLOR_SIGMA_OKLAB = 0.056  # 카메라 간 Oklab 색 거리 σ (겹침 인라이어 p75=0.0506, 전체 쌍 p50=0.0542 근거)
-PLANE_FEATHER_M = 0.04  # 평면 내 관측 ↔ 채움 경계 페더링 폭 (4 cm = 8 텍셀)
-MESH_BOUNDARY_FEATHER_M = 0.08  # TSDF 메시 열린 구멍 경계 소프트 블렌딩 폭 (8 cm)
+PLANE_FEATHER_M = 0.04  # 1차 평면 내 관측 ↔ 채움 경계 페더링 폭 (4 cm = 8 텍셀)
+PLANE_FEATHER_R2_M = 0.10  # 2차 지시 2-(b) 평면 내 관측 ↔ 채움 경계 페더링 폭 (10 cm = 20 텍셀)
+LAB_MATCH_BAND_M = 0.12  # 2차 지시 2-(b) 경계 근처 관측 텍셀 Lab 색 통계 맞춤 폭 (12 cm)
+MESH_BOUNDARY_FEATHER_M = 0.08  # 1차 TSDF 메시 열린 구멍 경계 소프트 블렌딩 폭 (8 cm)
+MESH_BOUNDARY_FEATHER_R2_M = 0.10  # 2차 남은 메시(평면 밖)와 평면 사이 경계 연결 폭 (10 cm)
+PLANE_STRIP_DIST_M = 0.06  # 2차 지시 1번: 받침 평면에서 거리 <= 6 cm (RANSAC inlier 4 cm + TSDF 노이즈)
+PLANE_STRIP_ANGLE_DEG = 25.0  # 2차 지시 1번: 받침 평면 법선과 각도 <= 25 deg
 MIN_COMPONENT_FACES = 300
 MIN_COMPONENT_AREA_M2 = 0.25
 
@@ -246,10 +254,10 @@ def build_wall_backing_spec(
     #    (10m 길이에 걸친 미세 회전 편차를 따라가도록 진짜 벽면 삼각형들의 완만한 표면 d_surf 를 구함)
     near_wall_surf = (
         keep_face
-        & (np.abs(sd_cen) < 0.08)
+        & (np.abs(sd_cen) < 0.26)
         & (np.abs(mesh.n[:, :2] @ n2) > 0.78)
-        & (u_cen >= u0 - 0.15)
-        & (u_cen <= u1 + 0.15)
+        & (u_cen >= u0 - 0.10)
+        & (u_cen <= u1 + 0.10)
     )
     tree_surf = cKDTree(np.column_stack([u_cen[near_wall_surf], z_cen[near_wall_surf]]))
     surf_d_vals = d_orig + sd_cen[near_wall_surf]
@@ -262,16 +270,17 @@ def build_wall_backing_spec(
     z_grid = z1 - vg * height_m  # vg=0 -> z1(상단), vg=1 -> z0(하단)
 
     if role == "wall_0":
-        # wall_0(우드월)은 돌출 창틀이 없는 평면 벽이며 cam_C(d=0.0042m)가 벽 바로 앞에 위치하므로,
-        # 로컬 벽 표면(d_surf_grid)에서 2.2cm 뒤로 물리되 [d_orig - 0.038, d_nom] 범위로 유지하여
-        # 우드월 액자를 가리지 않으면서 cam_C 뒤로 접히지 않게 한다.
+        # wall_0(우드월)은 돌출 창틀이 없는 평면 벽이며 cam_C(d=0.0042m, u≈7.9, z≈2.55)가 우측 상단 벽 앞에 위치하므로,
+        # 로컬 벽 표면(d_surf_grid)에서 2.2cm 뒤로 물리되 cam_C 주변에서만 cam_C 앞으로 접히지 않게 클램프한다.
         d_g_knn, i_g_knn = tree_surf.query(np.column_stack([u_grid.reshape(-1), z_grid.reshape(-1)]), k=16)
         w_g_knn = 1.0 / np.maximum(d_g_knn, 0.05)
         d_surf_grid = ((surf_d_vals[i_g_knn] * w_g_knn).sum(axis=1) / w_g_knn.sum(axis=1)).reshape(ny_g + 1, nx_g + 1)
         d_surf_grid = ndi.gaussian_filter(d_surf_grid, sigma=3.0)
-        d_grid = np.clip(d_surf_grid - max(0.022, wall_offset_m), d_orig - 0.038, d_nom)
-        d_grid = ndi.gaussian_filter(d_grid, sigma=2.5)
-        d_grid = np.clip(d_grid, d_orig - 0.038, d_nom)
+        d_grid = d_surf_grid - max(0.022, wall_offset_m)
+        near_cam_c = (u_grid > 7.1) & (z_grid > 2.0)
+        d_grid = np.where(near_cam_c, np.clip(d_grid, d_orig - 0.038, d_nom), d_grid)
+        d_grid = ndi.gaussian_filter(d_grid, sigma=2.0)
+        d_grid = np.where(near_cam_c, np.clip(d_grid, d_orig - 0.038, d_nom), d_grid)
     else:
         # wall_1, wall_2 는 벽면 바깥쪽(sd < 0)으로 오목하게 들어간 창문 베이(recessed window bay)가 있으므로,
         # TSDF 메시가 존재하는 영역에서는 그 최외곽 깊이보다 wall_offset_m 만큼 더 바깥쪽으로 물러나 창문을 절대 가리지 않고,
@@ -372,7 +381,7 @@ def bake_plane_observed_texture(
     cand_geom_w = np.zeros((num_cams, n_pts), dtype=np.float64)
 
     min_cos = 0.08 if is_floor else 0.15
-    neighbor_depth_tol = 0.09 if is_floor else 0.065
+    neighbor_depth_tol = max(0.09 if is_floor else 0.065, float(depth_tol_m) + 0.025)
 
     for k, cv in enumerate(vis_list):
         cam = cv.cam
@@ -620,6 +629,9 @@ def assemble_variant_glb(
     wall_infos: list[dict[str, Any]],
     variant_key: str,
     extra_report: dict[str, Any],
+    *,
+    mesh_feather_m: float = MESH_BOUNDARY_FEATHER_M,
+    plane_feather_m: float = PLANE_FEATHER_M,
 ) -> tuple[bytes, dict[str, Any]]:
     """TSDF 메시(작은 조각 제거 + 구멍 경계 8 cm 아틀라스/정점색 블렌딩)와 받침 평면 4개(바닥 + 벽 3면)를 합쳐 표준 GLB 를 만든다."""
     g = ge.parse_glb(raw_glb)
@@ -656,7 +668,7 @@ def assemble_variant_glb(
         if prim.kind == "estimated" or prim.name == "estimated_floor_plane":
             continue
 
-        # 해당 프리미티브에서 유지할 삼각형 색인 업데이트 (떠다니는 조각 제거 반영)
+        # 해당 프리미티브에서 유지할 삼각형 색인 업데이트 (떠다니는 조각 제거 및 평면 걷어내기 반영)
         sel_merged = merged_mesh.face_prim == p_idx
         keep_local = keep_face_merged[sel_merged]
         new_prim_idx = prim.idx[keep_local]
@@ -684,7 +696,7 @@ def assemble_variant_glb(
                 floor_tex,
                 wall_infos,
                 wall_texs,
-                feather_band_m=MESH_BOUNDARY_FEATHER_M,
+                feather_band_m=mesh_feather_m,
             )
             updated_images[prim.image] = new_atlas
             modified_atlas_texels += n_mod
@@ -699,13 +711,18 @@ def assemble_variant_glb(
                 floor_tex,
                 wall_infos,
                 wall_texs,
-                feather_band_m=MESH_BOUNDARY_FEATHER_M,
+                feather_band_m=mesh_feather_m,
             )
             modified_unobs_verts += n_vmod
             col_bytes = np.ascontiguousarray(new_col, dtype="<f4").tobytes()
             gltf_prim["attributes"]["COLOR_0"] = ge._add_accessor(
                 g, ge._add_view(g, col_bytes, 34962), 5126, len(new_col), "VEC3"
             )
+            if "material" in gltf_prim and gltf_prim["material"] < len(doc.get("materials", [])):
+                mat_u = doc["materials"][gltf_prim["material"]]
+                pbr_u = mat_u.setdefault("pbrMetallicRoughness", {})
+                old_fac = pbr_u.get("baseColorFactor", [1.0, 1.0, 1.0, 1.0])
+                pbr_u["baseColorFactor"] = [1.0, 1.0, 1.0, float(old_fac[3]) if len(old_fac) > 3 else 1.0]
 
     # 수정된 아틀라스 이미지를 GLB bufferView 에 기록
     for img_idx, arr_u8 in updated_images.items():
@@ -839,8 +856,8 @@ def assemble_variant_glb(
         },
         "per_plane": plane_summaries,
         "boundary_blend": {
-            "plane_feather_m": PLANE_FEATHER_M,
-            "mesh_hole_feather_m": MESH_BOUNDARY_FEATHER_M,
+            "plane_feather_m": plane_feather_m,
+            "mesh_hole_feather_m": mesh_feather_m,
             "modified_atlas_texels": int(modified_atlas_texels),
             "modified_unobserved_vertices": int(modified_unobs_verts),
         },
@@ -910,11 +927,272 @@ def save_plane_comparison_sheet(
     cv2.imwrite(str(out_path), sheet[:, :, ::-1], [cv2.IMWRITE_JPEG_QUALITY, 93])
 
 
+def preprocess_da3_clean_glb(raw_da3: bytes) -> tuple[bytes, dict[str, Any]]:
+    """`-528` DA3 정리 메시의 `"unobserved"` 재질을 `glb_enhance` 가 인식하는 `"unobserved_neutral"` 로 정규화하고 이웃 정점색을 채운다."""
+    g = ge.parse_glb(raw_da3)
+    for m in g.doc.get("materials", []):
+        if m.get("name") == "unobserved":
+            m["name"] = "unobserved_neutral"
+    raw_mod = ge.serialize_glb(g)
+    res = ge.enhance_glb(raw_mod, config=ge.EnhanceConfig(fill_enabled=False))
+    if res.glb is not None:
+        return res.glb, res.report.get("recolor", {})
+    return raw_mod, res.report.get("recolor", {})
+
+
+def bake_r2_for_input_mesh(
+    mesh_key: str,
+    input_glb_path: Path,
+    raw_glb: bytes,
+    walls_doc: dict[str, Any],
+    check_cams: list[ge.CheckCamera],
+    gains_srgb: np.ndarray,
+    lama_weights: Path,
+    out_dir: Path,
+    planes_dir: Path,
+) -> dict[str, Any]:
+    """2차 지시(평면 위 메시 걷어내기 + 경계 Lab 색 통계 맞춤 + 10 cm 페더링)를 입력 메시에 대해 수행하고 `hybrid` / `tone` GLB 를 저장한다."""
+    t_m0 = time.perf_counter()
+    recolor_meta: dict[str, Any] = {}
+    if mesh_key == "da3":
+        raw_glb, recolor_meta = preprocess_da3_clean_glb(raw_glb)
+
+    g_init = ge.parse_glb(raw_glb)
+    simai_init = (g_init.doc.get("extras") or {}).get("simai")
+    if isinstance(simai_init, dict):
+        simai_init.pop("enhanced", None)
+    model = ge.load_scene(g_init)
+    merged_mesh = gf.merge_mesh(model.prims)
+
+    # 1) 초기 떠다니는 작은 조각 제거
+    keep_comp, comp_rep = filter_small_connected_components(
+        merged_mesh.V, merged_mesh.F, min_faces=MIN_COMPONENT_FACES, min_area_m2=MIN_COMPONENT_AREA_M2
+    )
+
+    # 2) 카메라 깊이 맵 및 받침 평면 관측 투영 (걷어내기 전 온전한 평면 기하 기준)
+    t_vis0 = time.perf_counter()
+    vis_list = [gf.render_visibility(merged_mesh, c, 1536, keep=keep_comp) for c in check_cams]
+    vis_seconds = round(time.perf_counter() - t_vis0, 3)
+
+    floor_spec = build_floor_backing_spec(merged_mesh, keep_comp, walls_doc["floor_plane"], texel_m=TEXEL_M)
+    wall_specs = [build_wall_backing_spec(merged_mesh, keep_comp, wp, texel_m=TEXEL_M) for wp in walls_doc["wall_planes"]]
+    plane_specs = [floor_spec, *wall_specs]
+
+    baked_planes: list[dict[str, Any]] = []
+    t_obs0 = time.perf_counter()
+    for sp in plane_specs:
+        bp = bake_plane_observed_texture(sp, vis_list, gains_srgb, depth_tol_m=0.065)
+        baked_planes.append(bp)
+    shared_obs_seconds = round(vis_seconds + (time.perf_counter() - t_obs0), 3)
+
+    # 3) 평면 위 메시 걷어내기 (거리 <= 6 cm, 법선 <= 25 deg + 잔여 고립 조각 정리)
+    keep_stripped, strip_rep = strip_planar_mesh_faces(
+        merged_mesh.V,
+        merged_mesh.F,
+        keep_comp,
+        walls_doc["floor_plane"],
+        walls_doc["wall_planes"],
+        dist_tol_m=PLANE_STRIP_DIST_M,
+        angle_tol_deg=PLANE_STRIP_ANGLE_DEG,
+        post_min_faces=150,
+        post_min_area_m2=0.12,
+    )
+    print(
+        f"[r2:{mesh_key}] 평면 위 메시 걷어내기 완료: 평면 {strip_rep['plane_stripped_faces']}면({strip_rep['plane_stripped_area_m2']} m2) + "
+        f"고립파편 {strip_rep['post_strip_orphan_faces']}면({strip_rep['post_strip_orphan_area_m2']} m2) 제거 -> "
+        f"유지 {strip_rep['kept_faces']}/{strip_rep['total_mesh_faces']}면 ({strip_rep['kept_face_ratio']*100:.1f}%)",
+        flush=True,
+    )
+
+    # 4) 걷어낸 뒤 남은 메시(가구·창틀·기둥)와 받침 평면이 만나는 새 열린 경계 거리(10 cm) 계산
+    kept_F_r2 = merged_mesh.F[keep_stripped]
+    bdist_r2, bdist_r2_stats = compute_open_boundary_distances(merged_mesh.V, kept_F_r2, weld_tol_m=0.001, max_dist_m=0.14)
+
+    # 5) 평면별 채움(tone / lama) + 경계 근처 관측 텍셀 Lab 평균·표준편차 매칭 + 10 cm 페더링
+    tone_results: list[dict[str, Any]] = []
+    lama_results: list[dict[str, Any]] = []
+    hybrid_results: list[dict[str, Any]] = []
+    lab_match_stats: dict[str, Any] = {}
+    tone_inpaint_s = 0.0
+    lama_inpaint_s = 0.0
+    hybrid_inpaint_s = 0.0
+
+    for sp, bp in zip(plane_specs, baked_planes):
+        role = sp["role"]
+        obs_albedo = bp["albedo"]
+        inpaint_mask = bp["inpaint_mask"]
+        obs_source = bp["source"]
+        texel_m = float(sp["texel_m"])
+
+        # (i) Tone + Lab 경계 보정 + 10 cm 페더링
+        t0 = time.perf_counter()
+        raw_tone = inpaint_tone_plane(obs_albedo, inpaint_mask, obs_source, texel_m=texel_m, with_grid=False)
+        matched_tone, t_lab_meta = match_fill_to_boundary_lab(
+            obs_albedo, raw_tone, inpaint_mask, band_m=LAB_MATCH_BAND_M, texel_m=texel_m
+        )
+        feath_tone, src_tone = feather_observed_filled_boundary(
+            obs_albedo, matched_tone, inpaint_mask, feather_m=PLANE_FEATHER_R2_M, texel_m=texel_m
+        )
+        dt_tone = time.perf_counter() - t0
+        tone_inpaint_s += dt_tone
+        t_entry = {
+            "role": role,
+            "image": feath_tone,
+            "source": src_tone,
+            "surface_source_summary": compute_surface_source_summary(src_tone, "tone", texel_m),
+        }
+        tone_results.append(t_entry)
+
+        # (ii) LaMa + Lab 경계 보정 + 10 cm 페더링
+        t0 = time.perf_counter()
+        raw_lama, l_meta = run_lama_via_pose_cuda_or_local(
+            obs_albedo,
+            inpaint_mask,
+            obs_source,
+            lama_weights,
+            out_dir / f"_tmp_lama_r2_{mesh_key}",
+            role=f"{mesh_key}_{role}",
+            existing_plane_png=None,
+        )
+        matched_lama, l_lab_meta = match_fill_to_boundary_lab(
+            obs_albedo, raw_lama, inpaint_mask, band_m=LAB_MATCH_BAND_M, texel_m=texel_m
+        )
+        feath_lama, src_lama = feather_observed_filled_boundary(
+            obs_albedo, matched_lama, inpaint_mask, feather_m=PLANE_FEATHER_R2_M, texel_m=texel_m
+        )
+        dt_lama = float(l_meta.get("measured_seconds", time.perf_counter() - t0))
+        lama_inpaint_s += dt_lama
+        l_entry = {
+            "role": role,
+            "image": feath_lama,
+            "source": src_lama,
+            "surface_source_summary": compute_surface_source_summary(src_lama, "lama", texel_m),
+        }
+        lama_results.append(l_entry)
+
+        # (iii) Hybrid: 바닥은 tone, 벽 3면은 lama (`hybrid_tone_lama`)
+        if role == "floor":
+            hybrid_results.append(
+                {
+                    "role": role,
+                    "image": feath_tone,
+                    "source": src_tone,
+                    "surface_source_summary": compute_surface_source_summary(src_tone, "hybrid_tone_lama", texel_m),
+                }
+            )
+            hybrid_inpaint_s += dt_tone
+        else:
+            hybrid_results.append(
+                {
+                    "role": role,
+                    "image": feath_lama,
+                    "source": src_lama,
+                    "surface_source_summary": compute_surface_source_summary(src_lama, "hybrid_tone_lama", texel_m),
+                }
+            )
+            hybrid_inpaint_s += dt_lama
+
+        lab_match_stats[role] = {"tone": t_lab_meta, "lama": l_lab_meta}
+        cv2.imwrite(str(planes_dir / f"r2_{mesh_key}_{role}_tone.png"), feath_tone[:, :, ::-1])
+        cv2.imwrite(str(planes_dir / f"r2_{mesh_key}_{role}_lama.png"), feath_lama[:, :, ::-1])
+
+    shutil.rmtree(out_dir / f"_tmp_lama_r2_{mesh_key}", ignore_errors=True)
+
+    # 6) 2종 GLB 조립 및 저장: `scene_r2_{mesh_key}_hybrid.glb` (기본), `scene_r2_{mesh_key}_tone.glb`
+    r2_variants_table: list[dict[str, Any]] = []
+    for vk_sub, res_list, inp_s, canon_lbl in [
+        ("hybrid", hybrid_results, hybrid_inpaint_s, "hybrid_tone_lama"),
+        ("tone", tone_results, tone_inpaint_s, "tone"),
+    ]:
+        t_asm0 = time.perf_counter()
+        glb_bytes, surf_meta = assemble_variant_glb(
+            raw_glb,
+            copy.deepcopy(model),
+            keep_stripped,
+            merged_mesh,
+            bdist_r2,
+            plane_specs,
+            res_list,
+            walls_doc["floor_plane"],
+            walls_doc["wall_planes"],
+            canon_lbl,
+            extra_report={
+                "round": 2,
+                "mesh_source": mesh_key,
+                "sub_variant": vk_sub,
+                "floating_fragment_removal": comp_rep,
+                "plane_stripping": strip_rep,
+                "open_boundary_stats_after_strip": bdist_r2_stats,
+                "lab_boundary_match": lab_match_stats,
+                "da3_recolor": recolor_meta,
+            },
+            mesh_feather_m=MESH_BOUNDARY_FEATHER_R2_M,
+            plane_feather_m=PLANE_FEATHER_R2_M,
+        )
+        asm_s = time.perf_counter() - t_asm0
+        fname = f"scene_r2_{mesh_key}_{vk_sub}.glb"
+        (out_dir / fname).write_bytes(glb_bytes)
+
+        total_s = round(shared_obs_seconds + inp_s + asm_s, 3)
+        glb_mb = round(len(glb_bytes) / (1024.0 * 1024.0), 2)
+        filled_key = f"filled_{canon_lbl}"
+        row = {
+            "mesh_source": mesh_key,
+            "variant": f"r2_{mesh_key}_{vk_sub}",
+            "fill_mode": canon_lbl,
+            "glb_filename": fname,
+            "glb_bytes": len(glb_bytes),
+            "glb_size_mb": glb_mb,
+            "shared_projection_seconds": shared_obs_seconds,
+            "inpaint_and_assemble_seconds": round(inp_s + asm_s, 3),
+            "total_bake_seconds": total_s,
+            "observed_projection_ratio": surf_meta["area_ratios"]["observed_projection"],
+            "filled_ratio": surf_meta["area_ratios"][filled_key],
+            "kept_mesh_faces": strip_rep["kept_faces"],
+            "stripped_mesh_faces": strip_rep["total_removed_faces"],
+            "stripped_mesh_face_ratio": strip_rep["total_removed_face_ratio"],
+            "stripped_mesh_area_m2": strip_rep["total_removed_area_m2"],
+            "stripped_mesh_area_ratio": strip_rep["total_removed_area_ratio"],
+        }
+        r2_variants_table.append(row)
+        print(
+            f"[r2:{mesh_key}] GLB 저장 완료: {fname} ({glb_mb} MB, 총 {total_s}s, "
+            f"남은 메시={strip_rep['kept_faces']}면, 걷어낸 면적={strip_rep['total_removed_area_m2']} m2)",
+            flush=True,
+        )
+
+    return {
+        "mesh_source": mesh_key,
+        "input_glb": str(input_glb_path.as_posix()),
+        "input_glb_size_mb": round(input_glb_path.stat().st_size / (1024.0 * 1024.0), 2),
+        "floating_fragment_removal": comp_rep,
+        "plane_stripping": strip_rep,
+        "open_boundary_after_strip": bdist_r2_stats,
+        "plane_observation_stats": [
+            {
+                "role": bp["role"],
+                "tex_size_wh": [plane_specs[i]["tex_hw"][1], plane_specs[i]["tex_hw"][0]],
+                "area_m2": plane_specs[i]["area_m2"],
+                "observed_ratio": bp["observed_ratio"],
+                "unobserved_ratio": bp["unobserved_ratio"],
+                "bake_observed_seconds": bp["bake_observed_seconds"],
+                "outlier_stats": bp["outlier_stats"],
+            }
+            for i, bp in enumerate(baked_planes)
+        ],
+        "lab_boundary_match": lab_match_stats,
+        "variants": r2_variants_table,
+        "elapsed_seconds": round(time.perf_counter() - t_m0, 3),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="S15P31A101-532 받침 평면 굽기 및 미관측 채움 변형 비교")
     parser.add_argument("--vdt-dir", type=Path, default=DEFAULT_VDT_DIR)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--lama-weights", type=Path, default=DEFAULT_LAMA_WEIGHTS)
+    parser.add_argument("--da3-glb", type=Path, default=DEFAULT_DA3_GLB)
+    parser.add_argument("--round2-only", action="store_true", help="1차 GLB가 이미 있을 때 2차(평면 걷어내기 + 색 일관성 + DA3)만 빠르게 실행")
     args = parser.parse_args()
 
     out_dir: Path = args.out_dir
@@ -925,11 +1203,67 @@ def main() -> None:
     t_start = time.perf_counter()
     raw_glb, cams_doc, walls_doc, check_cams, gains_srgb = load_vdt_inputs(args.vdt_dir)
 
-    # 비교 뷰어를 위해 원본 GLB 및 cameras.json 복사
+    # 비교 뷰어를 위해 원본 GLB 및 cameras.json 복사 (wall_close 근접 시점 추가)
     orig_glb_dst = out_dir / "scene_orig.glb"
     shutil.copy2(args.vdt_dir / "current-scene-textured.glb", orig_glb_dst)
-    shutil.copy2(args.vdt_dir / "cameras.json", out_dir / "cameras.json")
+    cams_out_doc = copy.deepcopy(cams_doc)
+    cams_out_doc.setdefault("free_views", {})["wall_close"] = {
+        "name": "wall_close",
+        "position_glb": [2.85, 1.38, -4.15],
+        "target_glb": [0.05, 1.28, -4.35],
+        "up_glb": [0.0, 1.0, 0.0],
+        "hfov_deg": 75.0,
+        "vfov_deg": 48.0,
+        "position_world": [2.85, 4.15, 1.38],
+        "target_world": [0.05, 4.35, 1.28],
+    }
+    (out_dir / "cameras.json").write_text(json.dumps(cams_out_doc, ensure_ascii=False, indent=2), encoding="utf-8")
     shutil.copy2(args.vdt_dir / "walls.json", out_dir / "walls.json")
+
+    prev_rep_path = out_dir / "report.json"
+    if args.round2_only and prev_rep_path.is_file():
+        report_doc = json.loads(prev_rep_path.read_text(encoding="utf-8"))
+        r2_12th = bake_r2_for_input_mesh(
+            "12th",
+            args.vdt_dir / "current-scene-textured.glb",
+            raw_glb,
+            walls_doc,
+            check_cams,
+            gains_srgb,
+            args.lama_weights,
+            out_dir,
+            planes_dir,
+        )
+        r2_da3 = None
+        if args.da3_glb.is_file():
+            r2_da3 = bake_r2_for_input_mesh(
+                "da3",
+                args.da3_glb,
+                args.da3_glb.read_bytes(),
+                walls_doc,
+                check_cams,
+                gains_srgb,
+                args.lama_weights,
+                out_dir,
+                planes_dir,
+            )
+        report_doc["round2"] = {
+            "parameters": {
+                "plane_strip_dist_m": PLANE_STRIP_DIST_M,
+                "plane_strip_angle_deg": PLANE_STRIP_ANGLE_DEG,
+                "lab_match_band_m": LAB_MATCH_BAND_M,
+                "plane_feather_r2_m": PLANE_FEATHER_R2_M,
+                "mesh_boundary_feather_r2_m": MESH_BOUNDARY_FEATHER_R2_M,
+                "camera_color_gains_srgb": {
+                    check_cams[k].camera_id: [round(float(x), 4) for x in gains_srgb[k]] for k in range(len(check_cams))
+                },
+            },
+            "mesh_12th": r2_12th,
+            "mesh_da3_clean": r2_da3,
+        }
+        prev_rep_path.write_text(json.dumps(report_doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[done:round2] 2차 보고서 갱신 완료: {prev_rep_path} (총 {round(time.perf_counter() - t_start, 3)}s)", flush=True)
+        return
 
     g_init = ge.parse_glb(raw_glb)
     simai_init = (g_init.doc.get("extras") or {}).get("simai")
@@ -1209,8 +1543,47 @@ def main() -> None:
             for i, bp in enumerate(baked_planes)
         ],
         "variant_comparison_table": variant_summary_table,
-        "total_pipeline_seconds": round(time.perf_counter() - t_start, 3),
     }
+
+    r2_12th = bake_r2_for_input_mesh(
+        "12th",
+        args.vdt_dir / "current-scene-textured.glb",
+        raw_glb,
+        walls_doc,
+        check_cams,
+        gains_srgb,
+        args.lama_weights,
+        out_dir,
+        planes_dir,
+    )
+    r2_da3 = None
+    if args.da3_glb.is_file():
+        r2_da3 = bake_r2_for_input_mesh(
+            "da3",
+            args.da3_glb,
+            args.da3_glb.read_bytes(),
+            walls_doc,
+            check_cams,
+            gains_srgb,
+            args.lama_weights,
+            out_dir,
+            planes_dir,
+        )
+    report_doc["round2"] = {
+        "parameters": {
+            "plane_strip_dist_m": PLANE_STRIP_DIST_M,
+            "plane_strip_angle_deg": PLANE_STRIP_ANGLE_DEG,
+            "lab_match_band_m": LAB_MATCH_BAND_M,
+            "plane_feather_r2_m": PLANE_FEATHER_R2_M,
+            "mesh_boundary_feather_r2_m": MESH_BOUNDARY_FEATHER_R2_M,
+            "camera_color_gains_srgb": {
+                check_cams[k].camera_id: [round(float(x), 4) for x in gains_srgb[k]] for k in range(len(check_cams))
+            },
+        },
+        "mesh_12th": r2_12th,
+        "mesh_da3_clean": r2_da3,
+    }
+    report_doc["total_pipeline_seconds"] = round(time.perf_counter() - t_start, 3)
 
     report_path = out_dir / "report.json"
     report_path.write_text(json.dumps(report_doc, ensure_ascii=False, indent=2), encoding="utf-8")
