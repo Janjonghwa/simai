@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/providers/calibration.schema.json",
   "title": "CalibrationProvider 출력",
-  "description": "보정 한 버전 (명세 4장, 20.4 입력 대체 계약). G1 자동 보정과 대체 구현(DATASET_GT, SIM, MODEL_ESTIMATE)이 같은 형식을 낸다. 2.0.0 의미 변경(메이저): v1.3 에서 쓰지 않는 마커 보정·평면도 대응점 출처 값(common/defs calibration_source)과 마커·실측 평면도 스케일 근거 값(scale_basis)을 뺐다. 2.1.0(필드 추가, S15P31A101-277): World 축 출처 `world_axes_source`(선택), scale_basis 값 `MEASURED_CAMERA_HEIGHT`. 2.2.0(필드 추가, S15P31A101-467): 세팅 출처 `setup_session_id`·계보 `previous_calibration_version`(선택, content_hash 제외).",
+  "description": "보정 한 버전 (명세 4장, 20.4 입력 대체 계약). G1 자동 보정과 대체 구현(DATASET_GT, SIM, MODEL_ESTIMATE)이 같은 형식을 낸다. 2.0.0 의미 변경(메이저): v1.3 에서 쓰지 않는 마커 보정·평면도 대응점 출처 값(common/defs calibration_source)과 마커·실측 평면도 스케일 근거 값(scale_basis)을 뺐다. 2.1.0(필드 추가, S15P31A101-277): World 축 출처 `world_axes_source`(선택), scale_basis 값 `MEASURED_CAMERA_HEIGHT`. 2.2.0(필드 추가, S15P31A101-467): 세팅 출처 `setup_session_id`·계보 `previous_calibration_version`(선택, content_hash 제외). 2.3.0(필드 추가, S15P31A101-462): 스케일 결정 출처 `scale_source`·카메라 높이+실측 정물 공동 스케일 추정 및 잔차 기록 `scale_estimation`(선택).",
   "type": "object",
   "required": [
     "schema_version", "calibration_version", "provider_source", "state",
@@ -17,6 +17,14 @@
     "created_at": { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
     "coordinate_frame": { "$ref": "../common/defs.schema.json#/$defs/coordinate_frame" },
     "scale_basis": { "$ref": "#/$defs/scale_basis", "description": "스케일을 정한 주 근거" },
+    "scale_source": {
+      "$ref": "#/$defs/scale_source",
+      "description": "2.3.0(선택, S15P31A101-462): 보정에 최종 적용된 스케일 결정 출처(HEIGHT_ONLY 카메라 높이 단독 · JOINT 카메라 높이+실측 정물 공동 최소제곱 · PROP_ONLY 실측 정물 단독 · MODEL_ESTIMATE 모델 자체 추정). 생략은 기록 없음이다"
+    },
+    "scale_estimation": {
+      "$ref": "#/$defs/scale_estimation",
+      "description": "2.3.0(선택, S15P31A101-462): 카메라 높이 실측과 현장 안전 소품(라바콘·개구부 안내판) 공동 스케일 추정 결과, 근거별 배율((a) 높이 단독, (b) 정물 단독, (c) 공동 추정), 바닥 높이 오프셋, 불일치 경고 및 잔차 기록"
+    },
     "world_axes_source": {
       "enum": ["WALLS", "WALL_AND_FLOOR", "MANUAL_FLOOR_POINTS", "CAMERA_LAYOUT"],
       "description": "World 원점·X·Y 축을 정한 근거 (명세 4.1, 4.3 2단계, 2.1.0). 우선순위 MANUAL_FLOOR_POINTS > WALLS > WALL_AND_FLOOR. WALLS = 서로 수직인 경계 벽 두 묶음과 바닥의 모서리(자동), WALL_AND_FLOOR = 경계 벽이 한 방향뿐인 열린 공간에서 지지 점이 가장 많은 경계 벽의 안쪽 법선을 X 로, 원점은 그 벽·바닥 교선 위 카메라 중심 평균의 수선 발(자동, 원점은 카메라 배치에 따름), MANUAL_FLOOR_POINTS = 설치자가 카메라 그림에서 찍은 바닥 두 점(원점, +X 방향 점, 선택 입력, 주면 벽보다 우선), CAMERA_LAYOUT = 카메라 배치 기준(예약, 아직 내지 않음). Z 는 언제나 바닥 법선(상방)이다. 2.0.0 문서와 대체 구현(DATASET_GT·SIM)은 생략할 수 있고, 생략은 '기록 없음'이지 WALLS 가 아니다"
@@ -102,11 +110,145 @@
 
   "$defs": {
     "scale_basis": {
+      "type": "string",
       "enum": [
         "MEASURED_OBJECT", "MEASURED_CAMERA_HEIGHT", "KNOWN_PERSON_HEIGHT", "HUMAN_HEIGHT_STATS", "STANDARD_OBJECT",
         "MODEL_ESTIMATE", "DATASET_GT"
       ],
       "description": "스케일 근거 (명세 4.3 우선순위: 실측 정물 > 카메라 높이 실측 > 키를 아는 사람 > 사람 키 통계 > 표준 사물 크기 > 모델 자체 추정). MEASURED_OBJECT = 치수를 미리 잰 정물(안전봉·라바콘 등), MEASURED_CAMERA_HEIGHT = 줄자로 잰 바닥 → 렌즈 중심 높이와 보정 바닥 평면에서 잰 카메라 높이의 비(2대 이상, 카메라끼리 일치해야 씀, 2.1.0), KNOWN_PERSON_HEIGHT = 키를 미리 잰 사람의 보정 걷기, HUMAN_HEIGHT_STATS = 지나간 여러 사람의 키 통계, STANDARD_OBJECT = 문·책상 같은 표준 사물 크기, MODEL_ESTIMATE = 모델(MapAnything 등) 메트릭 추정, DATASET_GT = 공개 데이터 정답. 2.0.0 에서 마커 보드 값과 실측 평면도 값(수정 6 에서 제거)을 뺐다"
+    },
+    "scale_source": {
+      "type": "string",
+      "enum": [
+        "HEIGHT_ONLY",
+        "JOINT",
+        "PROP_ONLY",
+        "MODEL_ESTIMATE"
+      ],
+      "description": "보정에 최종 적용된 스케일 결정 방식 (2.3.0, S15P31A101-462). HEIGHT_ONLY = 줄자로 잰 카메라 높이 단독(정물 미검출 또는 불일치 경고 시 보수적 유지), JOINT = 카메라 높이 + 현장 안전 소품(라바콘·개구부 안내판) 단일 최소제곱 공동 추정, PROP_ONLY = 실측 정물 단독, MODEL_ESTIMATE = 모델 자체 추정"
+    },
+    "scale_prop_residual": {
+      "type": "object",
+      "required": [
+        "kind",
+        "dimension",
+        "expected_m",
+        "measured_m",
+        "residual_cm"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "TRAFFIC_CONE",
+            "OPENING_SIGN"
+          ]
+        },
+        "dimension": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "expected_m": {
+          "type": "number",
+          "minimum": 0
+        },
+        "measured_m": {
+          "type": "number"
+        },
+        "residual_cm": {
+          "type": "number"
+        },
+        "cameras": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "../common/defs.schema.json#/$defs/camera_id"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "scale_residuals": {
+      "type": "object",
+      "properties": {
+        "camera_heights_cm": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          },
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "props": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scale_prop_residual"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "scale_estimation": {
+      "type": "object",
+      "required": [
+        "scale_source",
+        "applied_scale",
+        "height_only_scale"
+      ],
+      "properties": {
+        "scale_source": {
+          "$ref": "#/$defs/scale_source"
+        },
+        "applied_scale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "height_only_scale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "prop_only_scale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "joint_scale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "floor_offset_m": {
+          "type": "number"
+        },
+        "disagreement_ratio": {
+          "type": "number",
+          "minimum": 0
+        },
+        "disagreement_tolerance": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "disagreement_warning": {
+          "type": "boolean"
+        },
+        "warning_message": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "outliers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "residuals": {
+          "$ref": "#/$defs/scale_residuals"
+        }
+      },
+      "additionalProperties": false
     },
     "camera_calibration": {
       "type": "object",

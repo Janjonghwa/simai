@@ -29,6 +29,12 @@ from scipy.sparse import lil_matrix
 from scipy.spatial.transform import Rotation
 
 from simai_ai.calibration.document import content_hash
+from simai_ai.calibration.world_frame.scale_props import (
+    TriangulatedCone,
+    build_object_cross_checks_from_cone,
+    detect_and_triangulate_cone_from_images,
+    estimate_joint_scale_and_floor,
+)
 from simai_ai.geometry.rig import RigCamera
 from simai_ai.geometry.triangulation import triangulate_normalized_many
 from simai_ai.providers.contract import schema_errors
@@ -103,6 +109,9 @@ class StageAResult:
     object_cross_checks: list[dict[str, Any]]
     solver_info: dict[str, Any]
     summary_metrics: dict[str, Any]
+    scale_source: str | None = None
+    scale_estimation: dict[str, Any] | None = None
+    cone_observation: TriangulatedCone | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1299,6 +1308,11 @@ def evaluate_object_cross_checks(
         }
         if item.get("message"):
             entry["message"] = str(item["message"])[:500]
+        for num_key in ("scale", "measured_m", "expected_m", "residual_cm", "floor_z_m"):
+            if item.get(num_key) is not None:
+                entry[num_key] = float(item[num_key])
+        if item.get("cameras"):
+            entry["cameras"] = [str(c) for c in item["cameras"]]
         results.append(entry)
     return results
 
@@ -1537,6 +1551,10 @@ def run_stage_a_rotation_ba(
     config: Mapping[str, Any] | None = None,
     stage_target_seconds: float | None = None,
     object_cross_checker: ObjectScaleCrossChecker | None = None,
+    backgrounds_by_cam: Mapping[str, Sequence[np.ndarray | Path | str] | np.ndarray | Path | str] | None = None,
+    cone_observation: TriangulatedCone | None = None,
+    disagreement_tolerance: float = 0.05,
+    record_scale_estimation: bool = False,
 ) -> StageAResult:
     """Run V2 Stage A rotation-only Projected Joint BA (`center_sigma=None`).
 
@@ -1682,14 +1700,42 @@ def run_stage_a_rotation_ba(
         new_doc["created_at"] = int(created_at_ms)
 
     cam_idx_by_id = {cid: idx for idx, cid in enumerate(cam_ids)}
+    cone = cone_observation
+    if cone is None and backgrounds_by_cam:
+        rot_doc = copy.deepcopy(doc_in)
+        for cam_entry in rot_doc["cameras"]:
+            cid = str(cam_entry["camera_id"])
+            idx = cam_idx_by_id[cid]
+            R_new = R_a[idx]
+            t_new = -R_new @ C0[idx]
+            cam_entry["R"] = [[float(v) for v in row] for row in R_new]
+            cam_entry["t"] = [float(v) for v in t_new]
+        cone, _ = detect_and_triangulate_cone_from_images(rot_doc, backgrounds_by_cam)
+
+    scale_est = estimate_joint_scale_and_floor(
+        restored_heights,
+        heights_m,
+        cone=cone,
+        disagreement_tolerance=disagreement_tolerance,
+        height_tolerance_cm=height_tolerance_cm,
+    )
+    if cone is not None:
+        s_applied = float(scale_est["applied_scale"])
+        dz_applied = float(scale_est["floor_offset_m"])
+        C_final = s_applied * C_a - np.array([0.0, 0.0, dz_applied], dtype=float)
+        restored_heights = {cam_ids[i]: float(C_final[i, 2]) for i in range(len(cam_ids))}
+        poses_diff = pose_change(R_a, C_final, R0, C0, heights_m, cameras=cam_ids)
+    else:
+        C_final = C0
+
     for cam_entry in new_doc["cameras"]:
         cid = str(cam_entry["camera_id"])
         idx = cam_idx_by_id[cid]
         R_new = R_a[idx]
-        t_new = -R_new @ C0[idx]
+        t_new = -R_new @ C_final[idx]
         cam_entry["R"] = [[float(v) for v in row] for row in R_new]
         cam_entry["t"] = [float(v) for v in t_new]
-        cam_entry["camera_height_m"] = round(float(C0[idx, 2]), 4)
+        cam_entry["camera_height_m"] = round(float(C_final[idx, 2]), 4)
         cam_stat = held["cameras"][cid]
         if cam_stat["median"] is None:
             cam_stat = all_after["cameras"][cid]
@@ -1698,6 +1744,15 @@ def run_stage_a_rotation_ba(
                 "median": round(float(cam_stat["median"]), 4),
                 "p95": round(float(cam_stat["p95"]), 4),
             }
+
+    if cone is not None or record_scale_estimation:
+        new_doc["scale_source"] = str(scale_est["scale_source"])
+        new_doc["scale_estimation"] = scale_est
+        if scale_est["scale_source"] == "JOINT":
+            cross_basis = [str(x) for x in new_doc.get("scale_cross_check_basis", [])]
+            if "MEASURED_OBJECT" not in cross_basis:
+                cross_basis.append("MEASURED_OBJECT")
+            new_doc["scale_cross_check_basis"] = cross_basis
 
     new_doc["content_hash"] = content_hash(new_doc)
     resolved_version = (
@@ -1719,11 +1774,14 @@ def run_stage_a_rotation_ba(
         restored_heights,
         tolerance_cm=height_tolerance_cm,
     )
-    object_checks = evaluate_object_cross_checks(
-        new_doc,
-        checker=object_cross_checker,
+    object_checks = build_object_cross_checks_from_cone(cone, scale_est)
+    object_checks.extend(
+        evaluate_object_cross_checks(
+            new_doc,
+            checker=object_cross_checker,
+        )
     )
-    summary_metrics = {
+    summary_metrics: dict[str, Any] = {
         "anchor_camera_id": anchor_name,
         "converged": converged,
         "stage_seconds": round(stage_seconds, 4),
@@ -1733,6 +1791,9 @@ def run_stage_a_rotation_ba(
         "pair_holdout": {key: {"before": value["before_holdout"], "after": value["after_holdout"]}
                          for key, value in pair_metrics.items()},
     }
+    if cone is not None or record_scale_estimation:
+        summary_metrics["scale_source"] = str(scale_est["scale_source"])
+        summary_metrics["scale_estimation"] = scale_est
     return StageAResult(
         calibration_doc=new_doc,
         calibration_version=resolved_version,
@@ -1748,4 +1809,7 @@ def run_stage_a_rotation_ba(
         object_cross_checks=object_checks,
         solver_info=info,
         summary_metrics=summary_metrics,
+        scale_source=str(scale_est["scale_source"]),
+        scale_estimation=scale_est,
+        cone_observation=cone,
     )

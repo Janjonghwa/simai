@@ -43,10 +43,55 @@
                 "s_min": 45, "v_min": 185, "v_levels": [185, 210, 235], "min_area_px": 600, "opening_px": 3},
    "measurement": {"kind": "STOOL_TOP", "top_edge": "top_width", "height_m": 0.425},
    "aggregation": {"min_samples": 3, "agreement_tolerance": 0.07, "max_outlier_fraction": 0.34}
+  },
+  {
+   "id": "traffic_cone",
+   "name": "주황·흰색 반사띠 안전 라바콘",
+   "dimensions_m": {"height": 0.675, "base_side": 0.37, "top_diameter": 0.045},
+   "edges": [
+    {"name": "height", "length_m": 0.675, "condition": "바닥 밑판 기준 꼭대기 높이(67.5 cm)"},
+    {"name": "base_side", "length_m": 0.37, "condition": "정사각 밑판 한 변(37 cm, 둥근 모서리 무시)"},
+    {"name": "top_diameter", "length_m": 0.045, "condition": "꼭대기 원형 단면 지름(4.5 cm)"}
+   ],
+   "measured": {
+    "date": "2026-11-06", "by": "사용자", "method": "높이·정사각 밑판 한 변·꼭대기 지름 실측",
+    "source": "2026-11-06 사용자 실측, S15P31A101-462"
+   },
+   "population": "현장에 놓인 동일 규격 안전 라바콘(1개 이상). 2대 이상 카메라에 보일 때만 꼭대기·밑판 모서리를 삼각측량해 쓴다",
+   "role": "현장 고정 배치 후 Stage A(joint_ba_v2)에서 실측 카메라 높이와 한 최소제곱식에서 축척·바닥 오프셋을 공동 추정하거나 교차 검증",
+   "detector": {"kind": "HSV_TRAFFIC_CONE", "h_max_low": 16, "h_min_high": 170, "s_min": 110, "v_min": 110, "min_area_px": 400},
+   "measurement": {"kind": "TRAFFIC_CONE", "height_edge": "height", "base_edge": "base_side", "top_diameter_edge": "top_diameter"},
+   "aggregation": {"min_samples": 1, "agreement_tolerance": 0.05, "max_outlier_fraction": 0.0}
+  },
+  {
+   "id": "opening_sign",
+   "name": "개구부 추락주의 오각형 안내판",
+   "dimensions_m": {
+    "width": 0.30,
+    "height": 0.385,
+    "side_edge": 0.335,
+    "bottom_diagonal": 0.16,
+    "edge_band": 0.02
+   },
+   "edges": [
+    {"name": "width", "length_m": 0.30, "condition": "전체 가로 폭(30 cm, 1차 치수)"},
+    {"name": "height", "length_m": 0.385, "condition": "전체 세로 높이(38.5 cm, 1차 치수)"},
+    {"name": "side_edge", "length_m": 0.335, "condition": "옆 수직 변 길이(33.5 × 2 cm 테두리)"},
+    {"name": "bottom_diagonal", "length_m": 0.16, "condition": "아래 대각선 변 길이(16 × 2 cm 테두리)"}
+   ],
+   "measured": {
+    "date": "2026-11-06", "by": "사용자", "method": "전체 가로·세로 및 옆변·아래 대각선 변 실측",
+    "source": "2026-11-06 사용자 실측, S15P31A101-462"
+   },
+   "population": "개구부 앞에 세우거나 부착하는 안내판. 현장에 세워져 두 카메라 이상에서 독립 정물로 검출될 때만 쓰고 없으면 조용히 건너뛴다",
+   "role": "보조 안전 소품 정물(1차 치수 가로 30 cm × 세로 38.5 cm)",
+   "detector": {"kind": "HSV_OPENING_SIGN", "min_area_px": 500},
+   "measurement": {"kind": "OPENING_SIGN", "width_edge": "width", "height_edge": "height",
+                   "side_edge": "side_edge", "bottom_diagonal_edge": "bottom_diagonal"},
+   "aggregation": {"min_samples": 1, "agreement_tolerance": 0.05, "max_outlier_fraction": 0.0}
   }
  ],
  "pending": [
-  {"name": "라바콘", "status": "배송 중(2026-10-23 기준). 오면 높이·밑면을 재서 objects 에 추가"},
   {"name": "안전봉", "status": "배송 중(2026-10-23 기준). 오면 길이를 재서 objects 에 추가"},
   {"name": "안전모", "dimensions_m": {"footprint_width": 0.225, "footprint_length_with_brim": 0.275, "height": 0.15},
    "measured": {"date": "2026-11-02", "by": "사용자", "method": "아래에서 본 단면 가로·세로(챙 포함)와 높이 실측(도구 기록 없음)",

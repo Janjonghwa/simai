@@ -611,3 +611,20 @@ C–D 쌍은 여전히 4 px 이다(트랙이 적은 쌍, 11.2 와 같은 위험)
 
 시험: `ai/tests/services/worker/test_site_setup.py`(프레임이 미리보기 스냅샷부터 `camera_frames` 로 실림·계약 적합, 못 올려도 세팅 유지·취소는 전파, 세션 밖 카메라·중복 제거), `test_site_setup_stages.py`(카메라별 JPEG·긴 변 1280·sha256·같은 배경 → 같은 바이트, 못 쓰는 배경 건너뜀, 저장소 실패 매핑), `test_vlm_zone_draft.py`(워커가 올린 프레임 → 입력 `frames` → 기본 디코더로 후보별 크롭이 VLM 에 들어감, 줄인 프레임에 맞춘 `K` 축소), 서버 `SetupResultRegisterIntegrationTest`(프레임 등록·`frames` 입력·같은 대여 프레임 선택·멱등, 프레임 없으면 `frames` 없음, 해시·JPEG·경로·카메라 집합·중복 거부). 계약 `job_heartbeat.site_setup_preview_frames`·`job_callback.site_setup`, 반례 `job_heartbeat.site_setup_bad_frame_policy`.
 
+### 13.10 카메라 실측 높이와 현장 정물(라바콘·개구부 안내판) 공동 축척·바닥 오프셋 추정 (`S15P31A101-462`)
+
+현장 세팅 화면 단계는 추가하지 않고, 기본 축척 근거는 **카메라 실측 높이(`MEASURED_CAMERA_HEIGHT`)**로 유지하되 현장에 놓인 안전 비품(라바콘 `TRAFFIC_CONE` 높이 `67.5 cm`·밑판 `37.0 cm`·상단 `4.5 cm`, 개구부 안내판 `OPENING_SIGN` `30.0 × 38.5 cm`)이 **2대 이상 카메라**에서 검출·삼각측량되면 Stage A(`JOINT_BA_AND_VERIFY`)에서 카메라 높이와 단일 최소제곱 문제로 공동 축척(`scale_source: "JOINT"`) 및 바닥 오프셋($\delta z_{\text{floor}}$)을 추정한다.
+
+- **계약 확장 (v7.19.0)**:
+  - `contracts/providers/calibration.schema.json` `2.3.0`: `quality.scale_source` (`HEIGHT_ONLY` | `JOINT` | `PROP_ONLY` | `MODEL_ESTIMATE`) 및 `quality.scale_estimation` (`height_only_scale`, `prop_only_scale`, `joint_scale`, `applied_scale`, `floor_offset_m`, `disagreement_pct`, `disagreement_threshold_pct`, `camera_height_residuals_cm`, `prop_residuals`, `outliers`, `warning_message`) 선택 필드 추가.
+  - `contracts/messages/site_setup.schema.json` `1.5.0` (`job_heartbeat` `2.5.0`, `job_callback` `2.12.0`): 스냅샷과 결과 `metrics.joint_ba` 에 `scale_source` 및 `scale_estimation` 보고 필드 추가.
+- **공동 추정 및 5% 불일치 보호 규칙**:
+  1. 정물이 없거나 1대 카메라에서만 보이면 기존과 동일하게 `scale_source = "HEIGHT_ONLY"` 로 동작한다.
+  2. 2대 이상 카메라에서 삼각측량된 정물이 있고 카메라 높이 단독 축척(`height_only_scale`)과 정물 단독 축척(`prop_only_scale`)의 차이가 **`5.0%` 이하**이면, 공동 최소제곱 해(`joint_scale`, `floor_offset_m`)를 채택(`scale_source = "JOINT"`)하여 카메라 중심 좌표계를 $\mathbf{C}_i \leftarrow s_{\text{joint}}\mathbf{C}_i - [0, 0, \delta z_{\text{floor}}]^\top$ 로 갱신한다.
+  3. 두 근거의 차이가 **`5.0%` 초과**이면 억지로 평균내지 않고, 어느 카메라 높이나 어느 정물이 이상치(`outliers`)인지 경고(`warning_message`)로 표시하며 **적용 축척은 보수적으로 `HEIGHT_ONLY` 를 유지**하고 공동 추정값(`joint_scale`)은 참고용으로만 기록한다.
+- **12차 GPU 세션 실데이터 검증 (`cal-lobby-init-f0ab1c6b-jba2-2f6cc097`)**:
+  - 4대 카메라 깨끗한 배경에서 라바콘 꼭대기(4-view, 재투영 오차 $\le 1.15\text{ px}$)와 밑판 모서리 3점(`SW, NE, NW`)을 자동 검출·삼각측량하여 높이 **`67.39 cm`**(실측 `67.50 cm` 대비 **`-0.11 cm` / `-0.16%`**)를 복원했다.
+  - `(a) height_only_scale = 0.999417`, `(b) prop_only_scale = 1.002137` (`+0.27%`), `(c) joint_scale = 1.003054` (`+0.36%`, $\delta z_{\text{floor}} = +0.97\text{ cm}$)로 세 방법 모두 **0.36% 이내**에서 일치했다.
+  - 12차 세션에서 4대 카메라 높이 경고가 일제히 `5.8~8.1 cm` 로 뜬 원인은 전역 축척 오차가 아니라 바닥 RANSAC 평면의 $X$축 방향 약 $-1.057^\circ$ 미세 기울기($X \approx 0\text{ m}$ 벽 `cam_C, cam_D` 에서 $+6.73\text{ cm}$, $X \approx 7.4\text{ m}$ 벽 `cam_A, cam_B` 에서 $-6.94\text{ cm}$) 때문임이 확인되었다(`ai/experiments/scale_props/REPORT.md`).
+
+

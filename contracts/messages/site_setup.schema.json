@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simai.dev/contracts/messages/site_setup.schema.json",
-  "title": "I5 site_setup 1.4.0 입력·단계·결과",
+  "title": "I5 site_setup 1.5.0 입력·단계·결과",
   "$defs": {
     "input": {
       "type": "object",
@@ -134,6 +134,12 @@
         "height_checks": {
           "$ref": "#/$defs/height_checks"
         },
+        "scale_source": {
+          "$ref": "../providers/calibration.schema.json#/$defs/scale_source"
+        },
+        "scale_estimation": {
+          "$ref": "../providers/calibration.schema.json#/$defs/scale_estimation"
+        },
         "object_cross_checks": {
           "type": "array",
           "items": {
@@ -144,6 +150,7 @@
             ],
             "properties": {
               "kind": {
+                "type": "string",
                 "enum": [
                   "TRAFFIC_CONE",
                   "OPENING_SIGN"
@@ -155,6 +162,31 @@
               "message": {
                 "type": "string",
                 "maxLength": 500
+              },
+              "scale": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "measured_m": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "expected_m": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "residual_cm": {
+                "type": "number"
+              },
+              "floor_z_m": {
+                "type": "number"
+              },
+              "cameras": {
+                "type": "array",
+                "minItems": 2,
+                "items": {
+                  "$ref": "../common/defs.schema.json#/$defs/camera_id"
+                }
               }
             },
             "additionalProperties": false
@@ -249,6 +281,12 @@
         "height_checks": {
           "$ref": "#/$defs/height_checks"
         },
+        "scale_source": {
+          "$ref": "../providers/calibration.schema.json#/$defs/scale_source"
+        },
+        "scale_estimation": {
+          "$ref": "../providers/calibration.schema.json#/$defs/scale_estimation"
+        },
         "object_cross_checks": {
           "type": "array",
           "items": {
@@ -259,6 +297,7 @@
             ],
             "properties": {
               "kind": {
+                "type": "string",
                 "enum": [
                   "TRAFFIC_CONE",
                   "OPENING_SIGN"
@@ -270,6 +309,31 @@
               "message": {
                 "type": "string",
                 "maxLength": 500
+              },
+              "scale": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "measured_m": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "expected_m": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "residual_cm": {
+                "type": "number"
+              },
+              "floor_z_m": {
+                "type": "number"
+              },
+              "cameras": {
+                "type": "array",
+                "minItems": 2,
+                "items": {
+                  "$ref": "../common/defs.schema.json#/$defs/camera_id"
+                }
               }
             },
             "additionalProperties": false
@@ -411,6 +475,12 @@
                 ],
                 "minimum": 0
               }
+            },
+            "scale_source": {
+              "$ref": "../providers/calibration.schema.json#/$defs/scale_source"
+            },
+            "scale_estimation": {
+              "$ref": "../providers/calibration.schema.json#/$defs/scale_estimation"
             }
           },
           "additionalProperties": false

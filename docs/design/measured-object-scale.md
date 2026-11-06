@@ -226,3 +226,32 @@ w1 은 원본(펴진) 2304×1296 을 518×294 로 넣어 점 하나가 원본 4.
 - 높이 0.425 평면은 대응의 사전값이며 입력 축척·바닥 오차가 크면 대응을 놓친다. 단안 추정은 독립 축척 근거가 아니다. 이 제한을 숨기려고 재투영·수평·최소 표본 기준을 낮추지 않았다.
 - 부분집합 선택은 최소 두 카메라를 유지하지만 두 카메라가 같은 방향으로 틀리면 남을 수 있다. 작은 표본의 MAD/SE는 전체 보정 오차나 신뢰구간이 아니다.
 - Lead 후속: 윗면이 깨끗이 보이는 스툴 3개 이상을 두 카메라 이상에서 동시 관측하는 사진을 확보하고, 같은 입력의 노트북·실측 카메라 높이와 교차 확인한다. 사람 제거 배경은 정물 이동 여부를 원본에서 확인하기 전 참고용으로만 쓴다.
+
+## S15P31A101-462 — 라바콘·개구부 안내판 등록 및 카메라 높이 공동 축척·바닥 오프셋 추정 (2026-11-06)
+
+실측 치수가 확정된 현장 안전 비품 2종을 `ai/src/simai_ai/calibration/data/measured_objects.json` 에 정식 등록하고(`pending[]` 의 `"라바콘"` 제거), 현장 세팅(`site_setup`, `joint_ba_v2`)에서 카메라 실측 높이와 정물 삼각측량을 단일 최소제곱 문제로 공동 추정하도록 확장했다.
+
+### 1. 등록 정물 및 검출·측정 모듈 (`world_frame/scale_props.py`)
+
+| ID | 이름 | 실측 치수 (`dimensions_m`) | 기준 변 (`edges[]`) | 검출기 (`detector.kind`) | 측정기 (`measurement.kind`) |
+|---|---|---|---|---|---|
+| `traffic_cone` | 라바콘 | 높이 `0.675 m` (`67.5 cm`), 밑판 한 변 `0.370 m` (`37.0 cm`), 상단 지름 `0.045 m` (`4.5 cm`) | `height: 0.675`, `base_side: 0.370`, `top_diameter: 0.045` | `HSV_TRAFFIC_CONE` (주황 몸통 HSV + 하양 반사띠 2줄 + 검정 사각 밑판 결합) | `TRAFFIC_CONE` (2대 이상 카메라 끝점 삼각측량 우선, `measure-objects` 호환) |
+| `opening_sign` | 개구부 주의 안내판 | 가로 `0.300 m` (`30.0 cm`), 세로 `0.385 m` (`38.5 cm`), 옆 사선 `0.335 m`, 하단 대각 `0.160 m`, 테두리 `0.020 m` | `width: 0.300`, `height: 0.385`, `side_edge: 0.335`, `bottom_diagonal: 0.160` | `HSV_OPENING_SIGN` (노란 삼각 테두리 + 내부 밝은 영역 사다리꼴/사각형) | `OPENING_SIGN` (`IMAGE_EDGE` + `POINT_CLOUD`) |
+
+- **2대 이상 카메라 가시성 원칙**: 끝점 삼각측량은 반드시 **2대 이상 카메라에서 동시에 관측된 끝점**만 사용한다(광선 교차각 $\ge 5^\circ$, 광선 간 거리 $\le 4\text{ cm}$). 단일 카메라로만 보이는 정물은 축척 추정에 쓰지 않는다.
+- **라바콘 밑판 인접 변 판별**: 꼭대기 수직 투영점 주위 방위각 차이가 $62^\circ \le \Delta\theta \le 118^\circ$ 인 인접 모서리 쌍만 밑판 한 변(`37.0 cm`)으로 채택하고 대각선($\sim 52.3\text{ cm}$)은 제외한다.
+
+### 2. 카메라 높이 + 정물 공동 최소제곱 축척·바닥 오프셋 추정
+
+초기 보정 좌표계의 전역 축척 배율 $s$ 와 바닥 $Z$ 영점 오프셋 $\delta z_{\text{floor}}$ 를 다음 선형 최소제곱으로 동시에 푼다:
+
+$$\min_{s,\,\delta z_{\text{floor}}} \sum_{i=1}^{N_{\text{cam}}} w_{\text{cam}}\left(z_i^{(0)} s - \delta z_{\text{floor}} - h_i^{\text{meas}}\right)^2 + \sum_{m \in \mathcal{M}_{\text{prop}}} w_m \left(L_m^{(0)} s - L_m^{\text{ref}}\right)^2$$
+
+- 라바콘 높이는 카메라 중심과 동일하게 바닥 평면($Z = \delta z_{\text{floor}}$)을 기준으로 하므로 $(z_{\text{apex}}^{(0)} - \bar{z}_{\text{base}}^{(0)}) s = 0.675\text{ m}$ 와 밑판 기하 구속을 통해 전역 축척 $s$ 와 바닥 오프셋 $\delta z_{\text{floor}}$ 의 결합(coupling)을 분리한다.
+- **5% 불일치 안전 게이트**: 카메라 높이만 쓴 축척(`height_only_scale`)과 정물만 쓴 축척(`prop_only_scale`)이 **5% 초과**로 어긋나면 두 근거를 평균내지 않고, 어느 카메라 높이나 어느 정물이 이상치(`outliers`)인지 경고(`warning_message`)로 알리며 **적용 축척은 보수적으로 `HEIGHT_ONLY` 를 유지**하고 공동 추정 결과(`joint_scale`)는 참고용으로만 기록한다.
+- **12차 GPU 세션 실데이터 검증 (`cal-lobby-init-f0ab1c6b-jba2-2f6cc097`)**:
+  - 4대 카메라 모두에서 라바콘 꼭대기 삼각측량 성공(최대 재투영 오차 `1.15 px`), 밑판 모서리 3개(`SW, NE, NW`) 다시점 삼각측량 성공.
+  - 복원 라바콘 높이 **`67.39 cm`**(실측 `67.50 cm` 대비 **`-0.11 cm` / `-0.16%`**), 밑판 인접 두 변 `36.87 cm`, `34.97 cm`(실측 `37.00 cm`).
+  - `(a) height_only_scale = 0.999417` (`1.000016` 중앙값), `(b) prop_only_scale = 1.002137` (`+0.27%`), `(c) joint_scale = 1.003054` (`+0.36%`, $\delta z_{\text{floor}} = +0.97\text{ cm}$). 불일치율 `0.27% ≤ 5.0%` 로 `scale_source = "JOINT"` 채택.
+  - 12차 세션에서 4대 카메라 높이 경고가 일제히 `5.8~8.1 cm` 로 뜬 원인은 전역 축척 오차가 아니라 **바닥 RANSAC 평면이 $+X$ 방향($0\text{ m} \to 7.4\text{ m}$)으로 약 $-1.057^\circ$ 기울어져** $X \approx 0\text{ m}$ 벽(`cam_C, cam_D`)에서 $+6.73\text{ cm}$, $X \approx 7.4\text{ m}$ 벽(`cam_A, cam_B`)에서 $-6.94\text{ cm}$ 의 반대 부호 잔차가 생겼기 때문임이 규명되었다(상세 표와 분석은 `ai/experiments/scale_props/REPORT.md` 참조).
+
