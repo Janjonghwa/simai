@@ -13,9 +13,18 @@ import {
   SceneLoaderContext,
   SceneStoreContext,
   SceneTextureLoaderContext,
+  SceneVdtTextureLoaderContext,
   type SceneStore,
   type SceneTextureLoader,
 } from '@/features/viewer3d/scene/sceneStore';
+import { convertVdtCameraToThree } from '@/features/viewer3d/scene/vdtMath';
+import {
+  bakeVdtShadowMaps,
+  collectVdtMeshes,
+  mountVdtOnSceneRoot,
+  type BakedShadowMaps,
+  type MountedVdtScene,
+} from '@/features/viewer3d/scene/vdtShader';
 import { threeToWorld, toThreePoint } from '@/features/viewer3d/worldCoordinates';
 import { useThree } from '@react-three/fiber';
 import { useContext, useEffect, useMemo, useRef, useState } from 'react';
@@ -349,8 +358,10 @@ function Background({ store }: { store: SceneStore }) {
   const gl = useThree((s) => s.gl);
   const loader = useContext(SceneLoaderContext);
   const textureLoader = useContext(SceneTextureLoaderContext);
+  const vdtTextureLoader = useContext(SceneVdtTextureLoaderContext);
   const input = useStore(store, (s) => s.input);
   const load = useStore(store, (s) => s.load);
+  const vdtOptions = useStore(store, (s) => s.vdtOptions);
   const worldScene = useSpatialData((s) => s.world?.sceneVersion ?? null);
   const worldCalibration = useSpatialData((s) => s.world?.calibrationVersion ?? null);
   const compatibility = useSpatialData((s) => s.health?.scene.compatibility);
@@ -437,15 +448,133 @@ function Background({ store }: { store: SceneStore }) {
   }).display;
   const shown: SceneDisplay = loaded && loaded.sceneVersion === sceneVersion ? display : 'HIDDEN';
 
+  const vdtConfig = scene?.vdt ?? null;
+  const vdtEnabled = Boolean(vdtOptions.enabled && vdtConfig && loaded);
+  const shadowMapSize = vdtOptions.shadowMapSize ?? 1536;
+  const vdtOptionsRef = useRef(vdtOptions);
+  useEffect(() => {
+    vdtOptionsRef.current = vdtOptions;
+  }, [vdtOptions]);
+
+  const camerasThree = useMemo(() => {
+    if (!vdtEnabled || !vdtConfig) return null;
+    return vdtConfig.cameras.map((c) =>
+      convertVdtCameraToThree(c, vdtConfig.nearM, vdtConfig.farM),
+    );
+  }, [vdtEnabled, vdtConfig]);
+
+  const [vdtIndicatorGroup, setVdtIndicatorGroup] = useState<Object3D | null>(null);
+  const mountedVdtRef = useRef<MountedVdtScene | null>(null);
+  const bakedShadowsRef = useRef<BakedShadowMaps | null>(null);
+  const lastBakedShadowSizeRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!vdtEnabled || !loaded || !vdtConfig || !camerasThree) {
+      return;
+    }
+    let alive = true;
+    let loadedCamTextures: Texture[] | null = null;
+    const urls = vdtConfig.cameras.map((c) => c.imageUrl);
+
+    vdtTextureLoader(urls).then(
+      (textures) => {
+        if (!alive) {
+          for (const t of textures) t.dispose();
+          return;
+        }
+        loadedCamTextures = textures;
+        const initShadowSize = vdtOptionsRef.current.shadowMapSize ?? 1536;
+        const { shadowMeshes } = collectVdtMeshes(loaded.root);
+        const baked = bakeVdtShadowMaps(
+          gl,
+          shadowMeshes,
+          camerasThree,
+          initShadowSize,
+          vdtConfig.farM,
+        );
+        bakedShadowsRef.current = baked;
+        lastBakedShadowSizeRef.current = initShadowSize;
+        const mounted = mountVdtOnSceneRoot({
+          root: loaded.root,
+          vdtConfig,
+          camerasThree,
+          cameraTextures: textures,
+          bakedShadows: baked,
+          options: vdtOptionsRef.current,
+        });
+        mountedVdtRef.current = mounted;
+        setVdtIndicatorGroup(mounted.indicatorGroup);
+      },
+      () => {
+        // VDT 카메라 텍스처 로드 실패 시 원래 구운 텍스처(MeshBasicMaterial) 경로를 그대로 유지한다.
+      },
+    );
+
+    return () => {
+      alive = false;
+      setVdtIndicatorGroup(null);
+      lastBakedShadowSizeRef.current = null;
+      if (mountedVdtRef.current) {
+        mountedVdtRef.current.dispose();
+        mountedVdtRef.current = null;
+      }
+      if (bakedShadowsRef.current) {
+        bakedShadowsRef.current.dispose();
+        bakedShadowsRef.current = null;
+      }
+      if (loadedCamTextures) {
+        for (const t of loadedCamTextures) t.dispose();
+        loadedCamTextures = null;
+      }
+    };
+  }, [vdtEnabled, loaded, vdtConfig, camerasThree, gl, vdtTextureLoader]);
+
+  // VDT 가 이미 마운트된 상태에서 토글 옵션만 바뀔 때는 그림자 맵 재렌더 없이 유니폼/가시성만 즉시 갱신한다.
+  useEffect(() => {
+    if (mountedVdtRef.current) {
+      mountedVdtRef.current.updateOptions(vdtOptions);
+    }
+  }, [vdtOptions]);
+
+  // 그림자 맵 해상도 설정이 바뀌었을 때만 정적 깊이 그림자 맵을 다시 굽는다.
+  useEffect(() => {
+    if (
+      !mountedVdtRef.current ||
+      !loaded ||
+      !vdtConfig ||
+      !camerasThree ||
+      lastBakedShadowSizeRef.current === shadowMapSize
+    ) {
+      return;
+    }
+    const { shadowMeshes } = collectVdtMeshes(loaded.root);
+    const nextBaked = bakeVdtShadowMaps(
+      gl,
+      shadowMeshes,
+      camerasThree,
+      shadowMapSize,
+      vdtConfig.farM,
+    );
+    const prevBaked = bakedShadowsRef.current;
+    bakedShadowsRef.current = nextBaked;
+    lastBakedShadowSizeRef.current = shadowMapSize;
+    mountedVdtRef.current.updateShadowMaps(nextBaked);
+    prevBaked?.dispose();
+  }, [shadowMapSize, loaded, vdtConfig, camerasThree, gl]);
+
+  const activeVdtIndicatorGroup = vdtEnabled ? vdtIndicatorGroup : null;
+
   useEffect(() => {
     if (loaded) applyDisplay(loaded.root, shown);
+    if (activeVdtIndicatorGroup) applyDisplay(activeVdtIndicatorGroup, shown);
     store.getState().setDisplay(shown);
-  }, [store, loaded, shown]);
+  }, [store, loaded, activeVdtIndicatorGroup, shown]);
   useEffect(() => () => store.getState().setDisplay('HIDDEN'), [store]);
 
   if (!loaded) return null;
   return (
     <group name="scene-background-layer">
+      {activeVdtIndicatorGroup ? <primitive object={activeVdtIndicatorGroup} /> : null}
       <primitive object={loaded.root} />
     </group>
   );

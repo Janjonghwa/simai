@@ -38,15 +38,20 @@ import {
 } from '@/features/viewer3d/scene/sceneContract';
 import {
   createSceneStore,
+  DEFAULT_VDT_OPTIONS,
   loadGltfScene,
   loadSceneTexture,
   SceneLoaderContext,
   SceneStoreContext,
   SceneTextureLoaderContext,
+  SceneVdtTextureLoaderContext,
   sceneVersionsOf,
   type SceneAssetLoader,
   type SceneTextureLoader,
+  type SceneVdtTextureLoader,
 } from '@/features/viewer3d/scene/sceneStore';
+import { loadVdtCameraTextures } from '@/features/viewer3d/scene/vdtShader';
+import type { ViewerVdtOptions } from '@/features/viewer3d/scene/vdtTypes';
 import type {
   Viewer3DProps,
   ViewerBoxGhost,
@@ -88,7 +93,19 @@ export interface ViewerShellProps extends Viewer3DProps {
   sceneLoader?: SceneAssetLoader;
   /** 배경 보조 텍스처(SURFACE_SOURCE_MAP 등) 읽기 함수. 시험만 바꿔 끼운다. */
   sceneTextureLoader?: SceneTextureLoader;
+  /** VDT 카메라 사진 텍스처 읽기 함수. 시험만 바꿔 끼운다. */
+  sceneVdtTextureLoader?: SceneVdtTextureLoader;
   /** 개발 검수 전용: 정합 근거 없는 배경도 불투명하게 그린다(판정·상태는 그대로). 운영 화면은 넘기지 않는다. */
+}
+
+function resolveVdtOptions(vdt: boolean | ViewerVdtOptions | undefined): ViewerVdtOptions {
+  if (typeof vdt === 'boolean') {
+    return { ...DEFAULT_VDT_OPTIONS, enabled: vdt };
+  }
+  if (vdt && typeof vdt === 'object') {
+    return { ...DEFAULT_VDT_OPTIONS, ...vdt };
+  }
+  return DEFAULT_VDT_OPTIONS;
 }
 
 /** 뷰어 상태·명령·알림과 데이터 입력을 묶는다. 인스턴스가 살아 있는 동안 store 와 Canvas 는 하나다. */
@@ -127,8 +144,10 @@ export function ViewerShell({
   onSceneStatusChange,
   sceneLoader = loadGltfScene,
   sceneTextureLoader = loadSceneTexture,
+  sceneVdtTextureLoader = loadVdtCameraTextures,
   postProcessing = false,
   topView = false,
+  vdt = false,
   theme = 'dark',
 }: ViewerShellProps) {
   // 호스트가 쥔 상자 편집(controlled). 뷰어 안 편집 세션과 따로이며 Canvas 안 BoxEditGizmo 가 읽는다.
@@ -169,7 +188,11 @@ export function ViewerShell({
   });
   const [edit] = useState(() => createEditStore(store, data, planned));
   // 정적 배경 Scene(-59). 입력은 FE 가 받은 /api/scenes/current 결과 그대로다.
-  const [sceneStore] = useState(createSceneStore);
+  const [sceneStore] = useState(() => {
+    const created = createSceneStore();
+    created.getState().setVdtOptions(resolveVdtOptions(vdt));
+    return created;
+  });
   const mode = useStore(store, (s) => s.mode);
   const phase = useStore(store, (s) => s.phase);
   const isTopView = useStore(store, (s) => s.topView);
@@ -275,6 +298,10 @@ export function ViewerShell({
   useEffect(() => {
     sceneStore.getState().setInput(scene);
   }, [sceneStore, scene]);
+
+  useEffect(() => {
+    sceneStore.getState().setVdtOptions(resolveVdtOptions(vdt));
+  }, [sceneStore, vdt]);
 
   // 배경 상태는 입력·읽기 단계·World·Health 버전이 바뀔 때만 알린다(10 Hz World 마다 알리지 않는다).
   useEffect(() => {
@@ -384,15 +411,17 @@ export function ViewerShell({
                       <SceneStoreContext value={sceneStore}>
                         <SceneLoaderContext value={sceneLoader}>
                           <SceneTextureLoaderContext value={sceneTextureLoader}>
-                            <PlannedStoreContext value={planned}>
-                              <BoxEditContext value={boxEditBinding}>
-                                <CameraClickContext value={onCameraClick}>
-                                  <PostProcessingContext value={resolvedPostProcessing}>
-                                    <ViewerCanvas>{children}</ViewerCanvas>
-                                  </PostProcessingContext>
-                                </CameraClickContext>
-                              </BoxEditContext>
-                            </PlannedStoreContext>
+                            <SceneVdtTextureLoaderContext value={sceneVdtTextureLoader}>
+                              <PlannedStoreContext value={planned}>
+                                <BoxEditContext value={boxEditBinding}>
+                                  <CameraClickContext value={onCameraClick}>
+                                    <PostProcessingContext value={resolvedPostProcessing}>
+                                      <ViewerCanvas>{children}</ViewerCanvas>
+                                    </PostProcessingContext>
+                                  </CameraClickContext>
+                                </BoxEditContext>
+                              </PlannedStoreContext>
+                            </SceneVdtTextureLoaderContext>
                           </SceneTextureLoaderContext>
                         </SceneLoaderContext>
                       </SceneStoreContext>

@@ -22,6 +22,7 @@ import type { ViewerLayers } from '@/features/viewer3d/layers';
 import type { PlannedLayoutInput } from '@/features/viewer3d/planned/plannedLayout';
 import type { ViewerPostProcessingInput } from '@/features/viewer3d/PostProcessingLayer';
 import type { ViewerSceneInput, ViewerSceneStatus } from '@/features/viewer3d/scene/sceneContract';
+import type { ViewerVdtOptions } from '@/features/viewer3d/scene/vdtTypes';
 import type { Ref } from 'react';
 
 // FE 와 주고받는 값의 모양이다. FE 통합(S15P31A101-193 완료 조건) 때 함께 확정하며, 아직 팀 공통 계약이 아니다.
@@ -305,5 +306,11 @@ export interface Viewer3DProps {
    * true 로 바뀌면 위에서 내려다보는 시점으로 옮기고, false 로 바뀌면 이전 시점(또는 기본 시점)으로 돌아간다.
    */
   topView?: boolean;
+  /**
+   * 시점 의존 텍스처(VDT, -534, 선택 사항). 장면 배경에 카메라 4대 실제 사진을 시점 각도·깊이 가림 검사·외톨이 제거에 따라
+   * 실시간 투영하고 바닥·벽 미관측 표시 층 및 구멍 경계 페더링을 적용한다.
+   * 기능 플래그 기본값은 false(끔)이며, 꺼져 있을 때는 기존 구운 텍스처(MeshBasicMaterial) 경로를 그대로 사용한다.
+   */
+  vdt?: boolean | ViewerVdtOptions;
   className?: string;
 }

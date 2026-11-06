@@ -160,6 +160,31 @@ export type {
   ViewerSceneStatus,
 } from '@/features/viewer3d/scene/sceneContract';
 export {
+  buildOpenGlProjectionMatrix,
+  convertVdtCameraToThree,
+  convertVdtFreeViewToThree,
+  convertVdtQuadToThree,
+  evaluateCameraWeightCpu,
+  parseExperimentVdtDocs,
+  readSceneVdtConfig,
+  resolveVdtOutliersAndBlendCpu,
+  srgbToOklab,
+} from '@/features/viewer3d/scene/vdtMath';
+export type {
+  SceneVdtConfig,
+  VdtCameraInput,
+  VdtCameraThree,
+  VdtFloorPlaneInput,
+  VdtFreeViewInput,
+  VdtMatrix3,
+  VdtQuadCornersWorld,
+  VdtRenderMode,
+  VdtVec2,
+  VdtVec3,
+  VdtWallPlaneInput,
+  ViewerVdtOptions,
+} from '@/features/viewer3d/scene/vdtTypes';
+export {
   OFFICIAL_STATIC_OBJECT_CONTRACT,
   adaptGeometry,
   adaptOfficialStaticObjects,

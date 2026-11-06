@@ -1,7 +1,8 @@
 import brokenSceneUrl from '@/features/viewer3d/dev-harness/fixtures/scene-broken.gltf?url';
 import demoSceneUrl from '@/features/viewer3d/dev-harness/fixtures/scene-demo.gltf?url';
-import { DEV_LOBBY_GLB_URL } from '@/features/viewer3d/dev-harness/lobbyPreview';
+import { DEV_LOBBY_GLB_URL, DEV_VDT_GLB_URL } from '@/features/viewer3d/dev-harness/lobbyPreview';
 import type { ViewerSceneInput, ViewerSceneStatus } from '@/features/viewer3d/scene/sceneContract';
+import type { SceneVdtConfig } from '@/features/viewer3d/scene/vdtTypes';
 
 // 개발 화면 전용 배경 Scene 입력(S15P31A101-59). FE 가 GET /api/scenes/current 로 받는 본문을 흉내 내 ViewerShell 에 넘긴다.
 // 자산(scene-demo.gltf)은 DEMO 10×10m 교실의 바닥·벽·단상·책상을 World 좌표대로 GLTF_Y_UP 으로 구운 시험용이다.
@@ -20,6 +21,7 @@ export const SCENE_OPTIONS = [
   { key: 'rejected', label: '배경 · 응답 형식 오류' },
   { key: 'not-found', label: '배경 · 조회 실패(404 SCENE_NOT_FOUND)' },
   { key: 'lobby-preview', label: '배경 · 실측 로비 재구성(로컬 프리뷰)' },
+  { key: 'vdt-s12', label: '배경 · 12차 로비 (VDT 시점 의존 텍스처)' },
 ] as const;
 
 export type SceneOptionKey = (typeof SCENE_OPTIONS)[number]['key'];
@@ -43,7 +45,11 @@ export function withSceneOption(href: string, key: SceneOptionKey): string {
 const absolute = (path: string) => new URL(path, window.location.href).href;
 
 /** 고른 경우의 조회 결과. 시나리오 World 는 scene-demo-1·cal-demo 다(dev-harness/scenarios.ts VERSIONS). */
-export function sceneInputOf(key: SceneOptionKey, now: number): ViewerSceneInput | null {
+export function sceneInputOf(
+  key: SceneOptionKey,
+  now: number,
+  vdtConfig: SceneVdtConfig | null = null,
+): ViewerSceneInput | null {
   const committed = (patch: Record<string, unknown> = {}) => ({
     ok: true as const,
     raw: {
@@ -100,6 +106,7 @@ export function sceneInputOf(key: SceneOptionKey, now: number): ViewerSceneInput
         calibration_version: null,
         committed_at_ms: null,
         gltf_url: absolute(DEV_LOBBY_GLB_URL),
+        ...(vdtConfig ? { vdt: vdtConfig } : {}),
         ...(withSourceMap
           ? {
               surface_source_map_urls: Array.from({ length: 8 }, (_, i) =>
@@ -109,6 +116,16 @@ export function sceneInputOf(key: SceneOptionKey, now: number): ViewerSceneInput
               ),
             }
           : {}),
+      });
+    }
+    case 'vdt-s12': {
+      return committed({
+        scene_version: 'scene-demo-1',
+        state: 'COMMITTED',
+        default: false,
+        calibration_version: 'cal-demo',
+        gltf_url: absolute(DEV_VDT_GLB_URL),
+        ...(vdtConfig ? { vdt: vdtConfig } : {}),
       });
     }
   }

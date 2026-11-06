@@ -6,6 +6,8 @@ import {
   type SceneVersions,
   type ViewerSceneInput,
 } from '@/features/viewer3d/scene/sceneContract';
+import { loadVdtCameraTextures } from '@/features/viewer3d/scene/vdtShader';
+import type { ViewerVdtOptions } from '@/features/viewer3d/scene/vdtTypes';
 import { createContext, useContext } from 'react';
 import { TextureLoader, type Object3D, type Texture, type WebGLRenderer } from 'three';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
@@ -16,14 +18,31 @@ import { createStore, type StoreApi } from 'zustand/vanilla';
 
 // 뷰어 인스턴스마다 하나 두는 배경 Scene 상태. 입력(FE 조회 결과)과 읽기 단계, 장면에 보이는 방식만 둔다.
 
+export const DEFAULT_VDT_OPTIONS: ViewerVdtOptions = {
+  enabled: false,
+  shadowMapSize: 1536,
+  projectUnobserved: false,
+  outlierRemoval: true,
+  edgeFeather: true,
+  floorLayer: true,
+  wallLayer: true,
+  bgTone: true,
+  colorCorrection: true,
+  topK: 3,
+  renderMode: 'vdt',
+};
+
 export interface SceneStoreState {
   input: ViewerSceneInput | null;
   load: SceneLoad;
   /** 배경이 장면에 어떻게 보이는지. 기본 바닥은 HIDDEN 일 때만 채운다. */
   display: SceneDisplay;
+  /** 시점 의존 텍스처(VDT, -534) 실행 옵션(기능 플래그 기본 끔). */
+  vdtOptions: ViewerVdtOptions;
   setInput(input: ViewerSceneInput | null): void;
   setLoad(load: SceneLoad): void;
   setDisplay(display: SceneDisplay): void;
+  setVdtOptions(options: ViewerVdtOptions): void;
 }
 
 export type SceneStore = StoreApi<SceneStoreState>;
@@ -33,12 +52,20 @@ export function createSceneStore(): SceneStore {
     input: null,
     load: IDLE_LOAD,
     display: 'HIDDEN',
+    vdtOptions: DEFAULT_VDT_OPTIONS,
     setInput: (input) => {
       if (get().input !== input) set({ input });
     },
     setLoad: (load) => set({ load }),
     setDisplay: (display) => {
       if (get().display !== display) set({ display });
+    },
+    setVdtOptions: (options) => {
+      const next: ViewerVdtOptions = { ...DEFAULT_VDT_OPTIONS, ...options };
+      const cur = get().vdtOptions;
+      if (JSON.stringify(cur) !== JSON.stringify(next)) {
+        set({ vdtOptions: next });
+      }
     },
   }));
 }
@@ -190,6 +217,12 @@ export type SceneTextureLoader = (url: string) => Promise<Texture>;
 export const loadSceneTexture: SceneTextureLoader = (url) => new TextureLoader().loadAsync(url);
 
 export const SceneTextureLoaderContext = createContext<SceneTextureLoader>(loadSceneTexture);
+
+/** VDT 카메라 사진 텍스처 배열을 읽는다. 시험은 이 함수를 바꿔 끼운다. */
+export type SceneVdtTextureLoader = (urls: readonly string[]) => Promise<Texture[]>;
+
+export const SceneVdtTextureLoaderContext =
+  createContext<SceneVdtTextureLoader>(loadVdtCameraTextures);
 
 /** 정합 판정에 쓰는 지금 버전. World·Health 가 없으면 null. */
 export const sceneVersionsOf = (state: SpatialDataState): SceneVersions => ({

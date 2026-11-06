@@ -2,6 +2,14 @@
 
 공개 입구(`index.ts`)와 그 타입을 바꾸면 여기에 적는다. 깨지는 변경은 FE 리뷰를 받은 뒤에만 한다.
 
+## S15P31A101-534 시점 의존 텍스처(VDT) 모듈 통합
+
+모두 더하기이며 하위 호환이다(기능 플래그 기본값 `false`). 설계 문서는 `docs/design/viewer-view-dependent-texture.md` 에 있다.
+
+- 추가: `vdt`(`boolean | ViewerVdtOptions`, 기본 `false`) prop, `CurrentScene.vdt`(`SceneVdtConfig | null` 선택 필드).
+- 추가 export: `readSceneVdtConfig`, `parseExperimentVdtDocs`, `convertVdtCameraToThree`, `convertVdtQuadToThree`, `convertVdtFreeViewToThree`, `buildOpenGlProjectionMatrix`, `evaluateCameraWeightCpu`, `resolveVdtOutliersAndBlendCpu`, `srgbToOklab`, `SceneVdtConfig`, `VdtCameraInput`, `VdtCameraThree`, `VdtFloorPlaneInput`, `VdtWallPlaneInput`, `VdtFreeViewInput`, `ViewerVdtOptions`, `VdtRenderMode`, `VdtMatrix3`, `VdtQuadCornersWorld`, `VdtVec2`, `VdtVec3`.
+- 그대로: `vdt` 가 `false`(기본)일 때는 기존 `MeshBasicMaterial` + `SURFACE_SOURCE_MAP` 렌더 경로가 한 줄도 바뀌지 않고 그대로 동작하며, 사람·아바타·구역·작업면·접지 그림자 레이어는 영향을 받지 않는다.
+
 ## S15P31A101-522 보정 카메라 마커·시야 절두체 및 CCTV 연동
 
 모두 더하기이며 하위 호환이다.

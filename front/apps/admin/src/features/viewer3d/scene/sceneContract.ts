@@ -1,5 +1,7 @@
 import type { ViewerHealthMessage } from '@simai/contracts';
 import { z } from 'zod';
+import { readSceneVdtConfig } from './vdtMath';
+import type { SceneVdtConfig } from './vdtTypes';
 
 export type SceneCompatibility = NonNullable<
   ViewerHealthMessage['payload']['scene']['compatibility']
@@ -68,6 +70,8 @@ export interface CurrentScene {
   gltfExpiresAtMs: number | null;
   /** 선택: scene_output 2.1.0 SURFACE_SOURCE_MAP 서명 주소(서버가 함께 내려줄 때만 채운다). */
   surfaceSourceMapUrls?: SurfaceSourceMapUrls;
+  /** 선택: 시점 의존 텍스처(VDT, -534) 카메라 K·R·t·배경 사진 URL 및 바닥·벽 표시 층 평면. */
+  vdt?: SceneVdtConfig | null;
 }
 
 export type SceneReadResult = { ok: true; scene: CurrentScene } | { ok: false; reason: string };
@@ -154,6 +158,14 @@ export function readCurrentScene(raw: unknown): SceneReadResult {
   if (sourceMaps === 'INVALID') {
     return { ok: false, reason: 'surface_source_map_urls 형식이 틀렸다' };
   }
+  const vdtRaw = field(raw, 'vdt');
+  let parsedVdt: SceneVdtConfig | null = null;
+  if (vdtRaw !== undefined && vdtRaw !== null) {
+    parsedVdt = readSceneVdtConfig(vdtRaw);
+    if (!parsedVdt || !parsedVdt.cameras.every((c) => readableUrl(c.imageUrl))) {
+      return { ok: false, reason: 'vdt 형식이 틀렸다' };
+    }
+  }
   const compatibility = field(raw, 'compatibility');
   const parsed = compatibility === undefined ? null : compatibilitySchema.safeParse(compatibility);
   if (parsed && (!parsed.success || parsed.data.scene_version !== sceneVersion)) {
@@ -178,6 +190,9 @@ export function readCurrentScene(raw: unknown): SceneReadResult {
   if (typeof calibrationState === 'string') scene.calibrationState = calibrationState;
   if (sourceMaps !== null) {
     scene.surfaceSourceMapUrls = sourceMaps;
+  }
+  if (parsedVdt !== null) {
+    scene.vdt = parsedVdt;
   }
   return {
     ok: true,

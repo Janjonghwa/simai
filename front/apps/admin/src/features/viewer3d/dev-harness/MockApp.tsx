@@ -30,8 +30,14 @@ import {
 } from '@/features/viewer3d/dev-harness/harnessSource';
 import {
   DevCameraPoseApplier,
+  DevVdtViewApplier,
   readCamPose,
+  readVdtParam,
+  readVdtViewParam,
   useDevCameraPose,
+  useDevVdtConfig,
+  withVdtParam,
+  withVdtViewParam,
 } from '@/features/viewer3d/dev-harness/lobbyPreview';
 import { DebugProbe, SpatialDiagnostics } from '@/features/viewer3d/dev-harness/MockDebug';
 import { MockNav } from '@/features/viewer3d/dev-harness/MockNav';
@@ -146,15 +152,36 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
   const [postProcessing, setPostProcessing] = useState(() =>
     readPostProcessingParam(window.location.search),
   );
+  const [vdtEnabled, setVdtEnabled] = useState(() => readVdtParam(window.location.search));
+  const [vdtView, setVdtView] = useState(() => readVdtViewParam(window.location.search));
   // 배경 Scene 입력(-59). FE 가 GET /api/scenes/current 로 받는 본문을 흉내 낸다.
   const [sceneKey, setSceneKey] = useState(() => readSceneOption(window.location.search));
+  const needsVdtMeta = sceneKey === 'vdt-s12' || sceneKey === 'lobby-preview';
+  const vdtConfig = useDevVdtConfig(needsVdtMeta);
   // 실측 로비 프리뷰를 원본 카메라 시점에서 비교(?camPose=cam_A). 처음 한 번만 옮기고 이후 조작은 자유다.
   const [camPoseId] = useState(() => readCamPose(window.location.search));
   const camPose = useDevCameraPose(sceneKey === 'lobby-preview' ? camPoseId : null);
   // 만료 시각은 고른 순간 기준이다(렌더 중에 시각을 읽지 않는다).
-  const [sceneInput, setSceneInput] = useState(() => sceneInputOf(sceneKey, Date.now()));
+  const [sceneInput, setSceneInput] = useState(() => sceneInputOf(sceneKey, Date.now(), null));
   const sceneSwap = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sceneStatus, setSceneStatus] = useState<ViewerSceneStatus | null>(null);
+
+  const effectiveSceneInput = useMemo(() => {
+    if (!sceneInput) return null;
+    if (
+      needsVdtMeta &&
+      vdtConfig &&
+      sceneInput.ok &&
+      sceneInput.raw &&
+      typeof sceneInput.raw === 'object'
+    ) {
+      return {
+        ...sceneInput,
+        raw: { ...(sceneInput.raw as Record<string, unknown>), vdt: vdtConfig },
+      };
+    }
+    return sceneInput;
+  }, [sceneInput, needsVdtMeta, vdtConfig]);
   // 3D 편집 소비 예시(-195). 받은 초안·결과를 보여 주기만 한다.
   const [editPreview, setEditPreview] = useState<ViewerEditPreview | null>(null);
   const [editResult, setEditResult] = useState<ViewerEditResult | null>(null);
@@ -175,7 +202,8 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
     }
   };
   // 입력 없음이면 예전 고정 작업자·구역을, 입력이 있으면 Provider 의 사람·구역을 쓴다(둘을 함께 그리지 않는다).
-  const legacy = sourceKey === 'off';
+  // 단, VDT 전용 12회차 장면(scene=vdt-s12)에서 source=off 일 때는 순수 배경 장면만 볼 수 있도록 예전 고정 캡슐·구역을 끈다.
+  const legacy = sourceKey === 'off' && !needsVdtMeta;
   const roster = useRoster(dataStore, legacy, status?.mode ?? 'LIVE');
   // 입력을 바꾸거나 처음부터 다시 재생할 때만 새 Source 를 만든다(epoch 는 재시작 표시).
   const harness = useMemo(
@@ -230,13 +258,30 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
     );
   };
 
+  const changeVdt = (next: boolean) => {
+    setVdtEnabled(next);
+    window.history.replaceState(window.history.state, '', withVdtParam(window.location.href, next));
+  };
+
+  const changeVdtView = (next: string) => {
+    setVdtView(next);
+    window.history.replaceState(
+      window.history.state,
+      '',
+      withVdtViewParam(window.location.href, next),
+    );
+  };
+
   const changeScene = (next: SceneOptionKey) => {
     setSceneKey(next);
     // 시험 경우 여럿이 같은 scene_version 을 쓴다. 뷰어는 같은 버전이면 읽은 자산을 유지하므로(계약),
     // 입력을 한 번 비워 각 경우를 새로 읽게 한다. 실제 FE 는 이렇게 할 필요가 없다.
     setSceneInput(null);
     if (sceneSwap.current) clearTimeout(sceneSwap.current);
-    sceneSwap.current = setTimeout(() => setSceneInput(sceneInputOf(next, Date.now())), 0);
+    sceneSwap.current = setTimeout(
+      () => setSceneInput(sceneInputOf(next, Date.now(), vdtConfig)),
+      0,
+    );
     window.history.replaceState(
       window.history.state,
       '',
@@ -291,15 +336,22 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
           dataStore={dataStore}
           personModelUrl={avatar === 'xbot' ? DEV_XBOT_URL : null}
           zoneApplyState={zoneApply}
-          scene={sceneInput}
+          scene={effectiveSceneInput}
           onSceneStatusChange={setSceneStatus}
           postProcessing={postProcessing}
+          vdt={vdtEnabled}
         >
           <MockScene colors={colors} selected={selected} legacy={legacy} />
           {spatial && <WorldReference />}
           <DebugProbe />
           <EditProbe />
           <DevCameraPoseApplier pose={camPose} />
+          <DevVdtViewApplier
+            vdtConfig={vdtConfig}
+            viewKey={vdtView}
+            onChangeVdt={changeVdt}
+            onChangeViewKey={changeVdtView}
+          />
         </ViewerShell>
       </div>
 
@@ -354,6 +406,14 @@ export function MockApp({ mockApi = null, restBase = null }: MockAppProps) {
                 onChange={(e) => changePostProcessing(e.target.checked)}
               />
               후처리(AO·SMAA)
+            </label>
+            <label className="smk-check">
+              <input
+                type="checkbox"
+                checked={vdtEnabled}
+                onChange={(e) => changeVdt(e.target.checked)}
+              />
+              시점 의존 텍스처(VDT)
             </label>
           </div>
           <p className="smk-data-dim smk-mono" data-testid="scene-status">
