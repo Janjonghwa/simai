@@ -113,6 +113,7 @@ from simai_ai.risk.engine import Evaluation
 from simai_ai.risk.event_id import EventIdFactory
 from simai_ai.risk.rule import Finding, FindingTarget
 from simai_ai.risk.rules.r7_monitoring import R7_RULE_ID
+from simai_ai.risk.rules.r9_helmet import R9_RULE_ID
 from simai_ai.risk.sound_ladder import SoundLadder
 from simai_ai.risk.world import IdentityConfidence, ObservationState, WorldState, WorldTrack
 
@@ -814,6 +815,12 @@ def _default_persistence_by_rule() -> dict[str, Persistence]:
     return {R7_RULE_ID: IMMEDIATE}
 
 
+def _default_clear_hold_by_rule() -> dict[str, int]:
+    # R9 는 안전모 WORN 관측이나 요구 해제로 위험 조건이 사라지면 그 판정에 닫는다(명세 7.2 R9 '그 tick 의 판정 해소').
+    # PPE 상태 자체가 3초 창(5.5)으로 이미 걸러진 값이라 해소 유지 시간을 더 두지 않는다.
+    return {R9_RULE_ID: 0}
+
+
 @dataclass(frozen=True)
 class LifecyclePolicy:
     """생명주기 설정(초기 예시값, 7장 머리말: 실제 안전 기준이 아니며 시나리오 데이터셋으로 조정한다).
@@ -825,17 +832,22 @@ class LifecyclePolicy:
       (기본 R7 즉시). 비우면 모든 규칙이 persistence 를 쓴다.
     - resume_window_ms: 해소 후 이 시간(관측 시각 기준, 이하) 안의 재발생은 기존 이벤트를 재개한다(6.4, 초기값 10초).
       None 이면 재개하지 않는다(항상 새 이벤트).
+    - clear_hold_ms_by_rule 기본값: R9 는 0(그 판정에 해소, 7.2).
+    - pending_loss_exempt_rules: 지속 대기 중 관측 상실·정지로 미리 발생시키지 않는 규칙. 기본 R9: 근거가 위치 관측이 아니라
+      PPE 상태이고, 상태를 모르면(UNKNOWN) 새 R9 를 내지 않는다(7.2). 대기 중 판정이 사라지면 이벤트 없이 끝난다.
     """
 
     clear_hold_ms: int = 3000
-    clear_hold_ms_by_rule: Mapping[str, int] = field(default_factory=dict, hash=False)
+    clear_hold_ms_by_rule: Mapping[str, int] = field(default_factory=_default_clear_hold_by_rule, hash=False)
     metrics_update_interval_ms: int = 1000
     persistence: Persistence = Persistence()
     persistence_by_rule: Mapping[str, Persistence] = field(default_factory=_default_persistence_by_rule, hash=False)
     resume_window_ms: int | None = 10_000
+    pending_loss_exempt_rules: frozenset[str] = frozenset({R9_RULE_ID})
 
     def __post_init__(self) -> None:
         as_int(self.clear_hold_ms, "LifecyclePolicy.clear_hold_ms", minimum=0)
+        object.__setattr__(self, "pending_loss_exempt_rules", frozenset(self.pending_loss_exempt_rules))
         as_int(self.metrics_update_interval_ms, "LifecyclePolicy.metrics_update_interval_ms", minimum=0)
         if self.resume_window_ms is not None:
             as_int(self.resume_window_ms, "LifecyclePolicy.resume_window_ms", minimum=0)
@@ -1157,6 +1169,8 @@ class LifecycleTracker:
                 return None
         if pending is None or not was_pending or pending.last is None:
             return None
+        if key.rule_id in self._policy.pending_loss_exempt_rules:
+            return None  # R9: 관측 상실로 미리 발생시키지 않는다(LifecyclePolicy.pending_loss_exempt_rules)
         if (raising and advancing) or self._verification.verifiable(key, key.world_ids, world, now_ms):
             return None
         # 지속 대기 중 관측 상실·정지: 발생 판정이 사라진(또는 새로 나지 않는) 까닭이 위험이 사라져서인지 보이지 않아서인지
@@ -1335,6 +1349,18 @@ class LifecycleTracker:
             # 아니다. 판정이 계속 오는 동안의 검증 상태는 기존 정책 그대로이고(정상 경로의 전이 불변), 복원 이벤트만
             # 판정 중에도 근거를 요구한다(명세 3.2 복원 이벤트 자동 해소 금지, -174 동작 유지).
             verified = (state.rule_id, state.key.zone_id) in evaluation.zone_clear_evidence
+        if (
+            finding is None
+            and state.key.target is FindingTarget.PERSON
+            and not partner_condition
+            and (
+                state.rule_id in evaluation.rules_cleared_for_all
+                or all((state.rule_id, w) in evaluation.person_clear_evidence for w in state.world_ids + partners)
+            )
+        ):
+            # 위치 관측이 아닌 해소 근거(rule.PersonClearEvidence, R9): 요구 해제는 구성으로 확정된 사실이고 착용(WORN)은
+            # PPE 관측이라, 그 사람이 지금 위치로 관측되지 않아도 VERIFIED 로 해소를 센다(명세 7.2 R9, v1.3 수정 67).
+            verified = True
         verification = Verification.VERIFIED if verified else Verification.UNVERIFIABLE
         if verification is not state.verification:
             changes.add(Change.VERIFICATION)

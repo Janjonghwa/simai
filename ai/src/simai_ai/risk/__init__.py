@@ -71,9 +71,18 @@ from simai_ai.risk.lifecycle import (
 )
 from simai_ai.risk.monitoring import CameraMonitor, CameraStatus, MonitoringState
 from simai_ai.risk.registry import RuleRegistry, UnknownRuleError, default_registry
+from simai_ai.risk.ppe import (
+    HelmetObservation,
+    HelmetRequirement,
+    PpePolicy,
+    PpeSnapshot,
+    PpeStateStore,
+    WearState,
+)
 from simai_ai.risk.rule import (
     Finding,
     FindingTarget,
+    PersonClearEvidence,
     Rule,
     RuleContext,
     RuleSpec,
@@ -88,6 +97,7 @@ from simai_ai.risk.rules.r3_elevated_position import ElevatedPositionRule
 from simai_ai.risk.rules.r5_entry_prediction import EntryPredictionRule
 from simai_ai.risk.rules.r6_observation_loss import ObservationLossHold
 from simai_ai.risk.rules.r7_monitoring import ZoneMonitoringRule
+from simai_ai.risk.rules.r9_helmet import HelmetRequiredRule
 from simai_ai.risk.site_alerts import build_active_site_alerts, default_summary, is_site_alert, local_alert_payload
 from simai_ai.risk.work_surface import WorkSurface, WorkSurfaceSet, work_surfaces_from_operational_geometry
 from simai_ai.risk.world import WorldState, WorldTrack
@@ -128,6 +138,9 @@ __all__ = [
     "FindingTarget",
     "FixedClock",
     "HeightProfile",
+    "HelmetObservation",
+    "HelmetRequiredRule",
+    "HelmetRequirement",
     "HorizontalRange",
     "IdentityCorrection",
     "IdentitySplit",
@@ -144,6 +157,10 @@ __all__ = [
     "ObservedTracksPolicy",
     "Origin",
     "Persistence",
+    "PersonClearEvidence",
+    "PpePolicy",
+    "PpeSnapshot",
+    "PpeStateStore",
     "RelatedEventFn",
     "RiskEngine",
     "Rule",
@@ -159,6 +176,7 @@ __all__ = [
     "UnknownRuleError",
     "Verification",
     "VerificationPolicy",
+    "WearState",
     "WorkSurface",
     "WorkSurfaceSet",
     "WorldState",

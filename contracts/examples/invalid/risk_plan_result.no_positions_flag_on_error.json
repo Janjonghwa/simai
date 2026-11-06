@@ -12,7 +12,7 @@
     "engine_version": "0.1.0",
     "error": {
       "code": "UNKNOWN_RULE",
-      "message": "등록되지 않은 규칙이다: R9 v1",
+      "message": "등록되지 않은 규칙이다: R8 v1",
       "retryable": false
     },
     "no_evaluated_positions": true

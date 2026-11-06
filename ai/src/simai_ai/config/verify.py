@@ -20,6 +20,8 @@
   채택(저장소 추가·전환)은 검증이 아니라 적용 경계에서 한다(ConfigSync before_apply).
 - 구역: 같은 구역 ID 의 유효 구간이 겹치지 않는다(겹치면 판정 중 엔진이 멈춘다. 반쪽 실패를 검증에서 막는다).
 - 작업면·정적 객체: ID 가 비지 않고 겹치지 않는다.
+- ppe_policy(선택): 계약 `contracts/data/ppe_policy` 스키마(SCHEMA_INVALID), 내용 version = 참조 version(REFERENCE_INVALID). 형식이
+  틀리면 묶음 전체를 거부하고 이전 묶음을 계속 쓴다(명세 7.2 R9). 없으면 통과하고 요구 없음이다(ConfigBundle.ppe_policy None).
 
 jsonschema 는 extras calibration(tier0 에 포함)과 dev 그룹에 있다. 없으면 import 때 실패한다(형식 검사 없이 묶음을
 적용하는 경로를 남기지 않는다. calibration.structure 와 같은 방식).
@@ -46,16 +48,16 @@ except ImportError as e:  # pragma: no cover - extras 없는 설치
     raise ImportError(INSTALL_HINT) from e
 
 from simai_ai.config.bundle import (
-    COMPONENT_NAMES,
     BundleNotice,
     ComponentRef,
     ConfigBundle,
+    component_names,
     freeze_json,
     sha256_of,
     thaw_json,
 )
 from simai_ai.providers.contract import schema_violations
-from simai_ai.risk import Clock, RiskEngine, RuleContractError, RuleRegistry, UnknownRuleError, Zone
+from simai_ai.risk import Clock, PpePolicy, RiskEngine, RuleContractError, RuleRegistry, UnknownRuleError, Zone
 from simai_ai.risk._parse import RiskInputError
 
 
@@ -219,7 +221,7 @@ class BundleVerifier:
 
         blobs: dict[str, bytes] = {computed: manifest_bytes}
         docs: dict[str, Mapping[str, Any]] = {}
-        for name in COMPONENT_NAMES:
+        for name in component_names(notice.components):
             ref = notice.components[name]
             data = self._fetch(ref.uri, name, computed)
             if sha256_of(data) != ref.sha256:
@@ -235,6 +237,11 @@ class BundleVerifier:
         geometry_version = self._geometry(
             notice.components["operational_geometry"], docs["operational_geometry"], computed
         )
+        ppe_policy = (
+            self._ppe_policy(notice.components["ppe_policy"], docs["ppe_policy"], computed)
+            if "ppe_policy" in docs
+            else None
+        )
         return ConfigBundle(
             notice=notice,
             bundle_hash=computed,
@@ -248,6 +255,7 @@ class BundleVerifier:
             verified_at=self._clock.now_ms(),
             blobs=freeze_json(blobs),
             setup_calibration=setup_calibration,
+            ppe_policy=ppe_policy,
         )
 
     # --- 단계 -----------------------------------------------------------------------
@@ -333,6 +341,16 @@ class BundleVerifier:
                 digest,
             )
         return version, True
+
+    def _ppe_policy(self, ref: ComponentRef, doc: Mapping[str, Any], digest: str) -> PpePolicy:
+        problems = schema_violations(dict(doc), "ppe_policy", check_formats=False)
+        if problems:
+            raise BundleRejected(RejectReason.SCHEMA_INVALID, "ppe_policy: " + "; ".join(problems), digest)
+        _version_of(doc, "version", ref, digest)
+        try:
+            return PpePolicy.from_json(doc)
+        except RiskInputError as e:  # 스키마와 같은 규칙이라 정상이면 오지 않는다(두 번 막기)
+            raise BundleRejected(RejectReason.SCHEMA_INVALID, str(e), digest) from None
 
     def _geometry(self, ref: ComponentRef, doc: Mapping[str, Any], digest: str) -> str:
         version = _version_of(doc, "version", ref, digest)

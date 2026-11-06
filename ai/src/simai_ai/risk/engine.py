@@ -18,7 +18,16 @@ from simai_ai.risk._parse import RiskInputError
 from simai_ai.risk.clock import Clock
 from simai_ai.risk.common import Origin
 from simai_ai.risk.monitoring import MonitoringState
-from simai_ai.risk.rule import Finding, Rule, RuleContext, RuleSpec, RuleState, ZoneClearEvidence
+from simai_ai.risk.ppe import EMPTY_PPE, PpePolicy, PpeSnapshot
+from simai_ai.risk.rule import (
+    Finding,
+    PersonClearEvidence,
+    Rule,
+    RuleContext,
+    RuleSpec,
+    RuleState,
+    ZoneClearEvidence,
+)
 from simai_ai.risk.work_surface import WorkSurface, check_unique_ids
 from simai_ai.risk.world import WorldState
 from simai_ai.risk.zone import Zone
@@ -61,6 +70,10 @@ class Evaluation:
       (rule.ZoneClearEvidence, R7: 정상 관측 카메라 확보). 판정 시각에 유효한 구역만 들어가고, 같은 규칙이 같은 구역에
       판정을 냈으면 넣지 않는다. lifecycle 이 구역 대상 이벤트의 해소 근거로 쓴다(복원 이벤트 S15P31A101-174, 전체 -180).
       직접 만든 Evaluation 은 기본으로 비어 있다(근거 없음: 구역 대상 이벤트는 판정이 사라져도 해소를 세지 않는다).
+    - person_clear_evidence: (rule_id, world_id) 쌍. 그 규칙이 위치 관측이 아닌 근거로 그 사람에게 조건이 없다고 확인했다
+      (rule.PersonClearEvidence, R9: 요구 중 안전모 WORN). 같은 규칙이 그 사람에게 판정을 냈으면 넣지 않는다.
+    - rules_cleared_for_all: 이 판정에서 조건이 모든 사람에게 없다고 구성으로 확정된 규칙 ID(R9: 요구 해제·ppe_policy 없음).
+      lifecycle 이 그 규칙의 사람 대상 이벤트를 관측과 관계없이 VERIFIED 로 본다(명세 7.2 R9, S15P31A101-519).
     """
 
     origin: Origin
@@ -72,6 +85,8 @@ class Evaluation:
     zones: tuple[Zone, ...]
     findings: tuple[Finding, ...]
     zone_clear_evidence: frozenset[tuple[str, str]] = frozenset()
+    person_clear_evidence: frozenset[tuple[str, str]] = frozenset()
+    rules_cleared_for_all: frozenset[str] = frozenset()
 
     @property
     def alertable(self) -> bool:
@@ -123,6 +138,8 @@ class RiskEngine:
         monitoring: MonitoringState | None = None,
         work_surfaces: Iterable[WorkSurface] = (),
         calibration_state: str | None = None,
+        ppe_policy: PpePolicy | None = None,
+        ppe: PpeSnapshot | None = None,
     ) -> Evaluation:
         """monitoring 은 같은 판정 시각의 감시 상태(R7 입력)다. 없으면 None 으로 규칙에 넘긴다.
 
@@ -134,6 +151,9 @@ class RiskEngine:
 
         calibration_state 는 world 위치를 만든 보정의 상태(명세 4.4, RuleContext.calibration_state)다. None 은 보정 상태가
         적용되지 않는 입력(PLANNED)이다. 카메라 입력(Tier 0 LIVE·REPLAY)은 호출부가 활성 보정 상태를 넣는다.
+
+        ppe_policy 는 활성 구성 묶음의 안전모 요구(없으면 None = 요구 없음), ppe 는 사람별 최신 안전모 상태(없으면 빈 스냅샷 =
+        모두 UNKNOWN)다(명세 7.2 R9, RuleContext).
         """
         origin = Origin(origin)
         now_ms = self._clock.now_ms()
@@ -156,14 +176,19 @@ class RiskEngine:
             work_surfaces=surfaces,
             state=self._state.view(origin),
             calibration_state=calibration_state,
+            ppe_policy=ppe_policy,
+            ppe=EMPTY_PPE if ppe is None else ppe,
         )
 
         findings: list[Finding] = []
         cleared: set[tuple[str, str]] = set()
+        person_cleared: set[tuple[str, str]] = set()
+        cleared_for_all: set[str] = set()
         active_set = set(active_ids)
         for rule in self._rules:
             spec = rule.spec
             judged: set[str | None] = set()
+            judged_people: set[str] = set()
             for finding in rule.evaluate(ctx):
                 if (finding.rule_id, finding.rule_version) != spec.key:
                     raise RuleContractError(
@@ -172,6 +197,14 @@ class RiskEngine:
                     )
                 findings.append(finding)
                 judged.add(finding.zone_id)
+                judged_people.update(finding.world_ids)
+            if isinstance(rule, PersonClearEvidence):
+                # 사람 대상 해소 근거(R9). 같은 규칙이 판정을 낸 사람은 받지 않는다(판정이 이긴다).
+                if rule.clears_all(ctx) and not judged_people:
+                    cleared_for_all.add(spec.rule_id)
+                person_cleared |= {
+                    (spec.rule_id, world_id) for world_id in rule.clear_world_ids(ctx) if world_id not in judged_people
+                }
             if isinstance(rule, ZoneClearEvidence):
                 # 조건이 없다는 근거는 판정 시각에 유효한 구역이고 같은 규칙이 판정을 내지 않은 구역만 받는다(판정이 이긴다).
                 cleared |= {
@@ -190,4 +223,6 @@ class RiskEngine:
             zones=active,
             findings=tuple(sorted(findings, key=lambda f: f.sort_key)),
             zone_clear_evidence=frozenset(cleared),
+            person_clear_evidence=frozenset(person_cleared),
+            rules_cleared_for_all=frozenset(cleared_for_all),
         )

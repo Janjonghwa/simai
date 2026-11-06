@@ -88,6 +88,16 @@ world_state 계약에 없는 판정 문맥이라 따로 둔다(Tier 0 는 health
 - `steps[].calibration_state`(선택)는 그 단계만의 값으로 최상위 값을 대신한다(운영 중 상태 전환 시험).
 - `calibration_state` 키(최상위·단계)는 `format_version` 1.5 이상에서만 쓴다.
 
+## 안전모 요구·상태 (format_version 1.6, 선택, R9)
+
+R9 입력(명세 7.2 R9, 5.5, 12.3, S15P31A101-519). world_state 계약에 없는 판정 문맥이라 따로 둔다.
+
+- 최상위 `ppe_policy` 는 구성 묶음 구성 요소 `ppe_policy` 의 내용(`contracts/data/ppe_policy` 문서)이다. null 이거나 없으면 묶음에 `ppe_policy` 가 없다는 뜻이고 요구 없음으로 판정한다(“PPE 요구 미수신”).
+- `steps[].ppe_policy`(선택)는 그 단계만의 값으로 최상위 값을 대신한다(작업 시작·종료 묶음 전환 시험).
+- `steps[].ppe_state`(선택)는 그 단계 판정 전에 받은 I1 `ppe_state` payload 목록이다. 받은 상태는 뒤 단계에도 남고(Tier 0 `PpeStateStore` 처럼 사람별 최신, identity_revision 이 크거나 촬영 시각이 늦은 것), 만료는 `expires_at_ms` 와 `t_latest_global` 로 본다. 받은 적 없는 사람은 UNKNOWN 이다.
+- 생명주기 기본값: R9 해소 유지 0(그 판정에 해소), 지속 대기 중 관측 상실로 미리 발생시키지 않음(`pending_loss_exempt_rules`). `policy.clear_hold_ms_by_rule` 을 적으면 그 값이 규칙별 해소 유지 시간 전체다(적지 않으면 기본값).
+- 두 키는 `format_version` 1.6 이상에서만 쓴다.
+
 ## 현재 벡터
 
 | 파일 | 확인하는 것 |
@@ -142,5 +152,10 @@ world_state 계약에 없는 판정 문맥이라 따로 둔다(Tier 0 는 health
 | `lifecycle_pending_observation_lost.json`, `lifecycle_pending_observation_lost_what_if.json` | 1.3 지속 대기 중 관측 상실: 발생 판정 한 프레임 뒤 관측 상실 → 바로 발생(UNVERIFIABLE, PREDICTED), 1분 동안 자동 해소 0건, 관측되며 판정이 사라진 사람은 이벤트 0건. WHAT_IF 는 현장 경보 신호 0건 |
 | `lifecycle_pending_stall.json`, `lifecycle_pending_stall_replay.json` | 1.3 지속 대기 중 영상 전체 정지: 같은 관측 재판정은 프레임으로 세지 않지만 lag 600ms 를 넘는 첫 판정 주기에 발생(UNVERIFIABLE, PREDICTED), 정지 1분 자동 해소 0건. REPLAY 는 현장 경보 신호 0건 |
 | `lifecycle_resume_pending_lost.json` | LIVE 1.3 재개 대기 중 트랙 소실 → 같은 이벤트 재개(UNVERIFIABLE, PREDICTED, 다시 울림) |
+| `r9_live_raise_resolve.json`, `r9_replay_raise_resolve.json` | 1.6 R9: 작업 중 안전모 NOT_WORN 3프레임 중 2 → CAUTION 발생(현장 경보 없음), UNKNOWN → 등급 유지·`PPE_UNKNOWN`, WORN → 그 판정에 VERIFIED 해소. 상태 없는 사람은 유지 판정만. REPLAY 는 알림 후보 0건 (7.2, 7.3) |
+| `r9_work_end_release.json` | 1.6 R9 요구 해제: 사람이 사라지면 UNVERIFIABLE 로 남고, 작업 종료 묶음(NOT_REQUIRED) 판정에서 관측과 관계없이 VERIFIED 해소 (7.2, v1.3 수정 67) |
+| `r9_unknown_never_raises.json` | 1.6 R9: UNKNOWN·만료된 NOT_WORN·다른 identity_revision 상태로는 새 R9 없음 (7.2, D-G6-10) |
+| `r9_no_policy.json` | 1.6 R9: `ppe_policy` 없음·NOT_REQUIRED 면 NOT_WORN 이어도 판정 없음 (7.2) |
+| `r9_off_by_default.json` | 1.6 R9 기본 꺼짐: 묶음 rules 에 R9 가 없으면 판정·이벤트 없음 (8.10, 15.1) |
 
 R2·R3·R5 가장자리 벡터는 1.4 형식(`work_surfaces`)이다. R6 은 구역 규칙을 감싸는 방식(`ObservationLossHold`)이라 등록부의 R1 v1 이 `ObservationLossHold(ZoneEntryRule())` 이고(S15P31A101-71), R6 벡터도 실제 R1 판정을 쓴다. R1·R6 벡터는 1.3 형식(기본 생명주기 정책, 판정·전이에 `confidence_reasons`)이다. 다른 구체 규칙도 등록되면 해당 이슈에서 규칙별 벡터를 이 디렉터리에 추가한다.

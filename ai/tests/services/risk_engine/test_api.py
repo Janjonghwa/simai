@@ -67,7 +67,7 @@ def _post(client, body) -> tuple[int, dict]:
 
 def _unknown_rule_request():
     doc = load_example("risk_plan_request.json")
-    doc["payload"]["rules"]["rule_versions"] = [{"rule_id": "R9", "rule_version": 1}]
+    doc["payload"]["rules"]["rule_versions"] = [{"rule_id": "R8", "rule_version": 1}]
     return doc
 
 

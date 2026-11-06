@@ -24,7 +24,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from simai_ai.config.bundle import COMPONENT_NAMES, ConfigBundle, thaw_json
+from simai_ai.config.bundle import ConfigBundle, component_names, thaw_json
 from simai_ai.config.verify import BundleVerifier, CalibrationKnown, FetchError
 from simai_ai.risk import Clock, RuleRegistry
 
@@ -49,7 +49,7 @@ class _LocalFetcher:
         payload = notice["payload"]
         self._folder = folder
         self._by_uri = {payload["bundle_uri"]: "manifest"}
-        for name in COMPONENT_NAMES:
+        for name in component_names(payload["components"]):
             self._by_uri[payload["components"][name]["uri"]] = name
 
     def fetch(self, uri: str) -> bytes:
@@ -64,7 +64,7 @@ class _LocalFetcher:
 
 def _files(bundle: ConfigBundle) -> dict[str, bytes]:
     out = {"manifest": bundle.blobs[bundle.bundle_hash]}
-    for name in COMPONENT_NAMES:
+    for name in component_names(bundle.notice.components):
         out[name] = bundle.blobs[bundle.notice.components[name].sha256]
     return out
 
