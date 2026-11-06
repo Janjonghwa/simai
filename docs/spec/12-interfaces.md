@@ -91,6 +91,8 @@ EC2 내부: Spring ↔ Risk Engine Python 컨테이너(`deploy/risk-engine`)는 
 
 `video_segment` 는 상시 영상 조각(카메라 하나 × 일정 길이)을 임시 업로드 주소(목적 `VIDEO_SEGMENT`, `segment_id`)로 올린 뒤 객체 키, 촬영 시각 구간, stream_epoch, 해시·크기, 구간 안 빈칸, 삭제 예정일을 보낸다. 영상은 싣지 않는다. 이벤트와 묶이지 않고 보존 표시가 없다(5.1, 11.5, v1.3 수정 36).
 
+`config_bundle` 1.3.0 은 선택 구성 요소 `ppe_policy`(다른 구성 요소와 같은 `version`·`sha256`·`uri`)를 더한다(S15P31A101-517). 내용 형식은 `contracts/data/ppe_policy` 1.0.0 이다: `format_version`(형식 버전), `version`(구성 요소 version 과 같음), `work_id`(진행 중 작업, 없으면 null), `effective_from_ms`, `helmet`(`work_id` 가 있으면 REQUIRED, null 이면 NOT_REQUIRED). EC2 는 작업 시작·종료 때 새 `config_version` 으로 발행한다(8.10). Tier 0 는 다른 구성 요소처럼 내려받아 해시·형식을 검사하고, 맞지 않으면 묶음을 거부한다. `ppe_policy` 가 없는 묶음은 요구 없음으로 본다(7.2 R9). `components` 는 닫힌 객체라 1.2.0 계약만 아는 Tier 0 는 `ppe_policy` 가 실린 묶음을 통째로 거부한다. 그래서 Tier 0 를 1.3.0 으로 먼저 올린 뒤에 EC2 가 `ppe_policy` 를 싣는다. 이름의 policy 는 착용 요구이고, `ppe_state.policy_version`(PPE 판정 규칙 판)과 다르다.
+
 `ppe_state`(계약 `contracts/messages/ppe_state` 1.0.0, S15P31A101-491)는 PPE 프로세스의 사람별 판정 결과를 `world_state` 와 따로 보낸다. `world_state` 의 좌표·ID 의미는 바꾸지 않는다. 필드는 순서·멱등(PPE 프로세스 시작 시각 `stream_epoch`, 메시지 순번 `state_sequence`. 멱등 키는 `source_id`·`stream_epoch`·`state_sequence`, 제안의 `session_id` 를 대신한다), 재현(모델·체크포인트 sha256, 규칙 판 `policy_version`, 입력 방식 `input_mode`, `input_provenance`), 사람별 정체성·시각(`world_id`, `identity_revision`, `capture_time_ms`), 장비별 결과(안전모·조끼 각각 상태·사유 코드·유효 칸 수·지원 비율·`last_evidence_at_ms`·`expires_at_ms`), 근거(프레임 키·local ID·영역 품질·검출 confidence)다. WORN·NOT_WORN 은 같은 상태의 근거가 있어야 한다. 이미지·crop 은 싣지 않고, 검출 없음은 NOT_WORN 이 아니다. EC2 는 버전·멱등·시각·만료·`identity_revision` 을 검사해 추가 전용으로 저장하고 화면용 현재 상태를 따로 둔다. 과거·만료된 메시지는 현재 상태를 덮지 않는다. 관제 화면 전달 채널(I2 토픽)은 아직 정하지 않았다(19.1).
 
 `risk_event_transition`은 RunPod Tier 0 서비스가 전이를 확정할 때마다 저널·outbox를 거쳐 보낸다(3.2).
@@ -209,7 +211,7 @@ VLM 을 부르는 작업(`vlm_rationale`·`incident_summary`·`vlm_zone_draft`)�
 | GET | /api/sites/current | 현장(MVP 하나) 조회 | 열람 |
 | POST · PUT | /api/sites · /api/sites/current | 현장 등록(없을 때만)·수정(이름·원점 근거, 구성이 붙기 전이면 `site_id`) | 관리자 |
 | GET · POST · PUT · DELETE | /api/work-units, /api/work-units/\{id\} | 작업 관리 목록(`?days=`, 구간 LIVE 이벤트 수·상태 `PLANNED`\|`IN_PROGRESS`\|`DONE`·활성 현장 세팅 `active_setup_session_id`·실제 시작/종료 시각 포함)·단건 조회·등록·수정·삭제. 작업마다 현장 세팅·구역 발행 뒤 확정된 대상 구역(`zone_id`), 가상 레이아웃(`layout_id`), 공종(`work_type`)을 연결한다(8.3, `docs/design/server-work-units.md`·`docs/design/work-session-flow.md`·`docs/design/site-setup-pipeline.md`) | 조회는 열람, 쓰기는 관리자 |
-| POST | /api/work-units/\{id\}/start · /api/work-units/\{id\}/end | 작업 시작(`PLANNED` → `IN_PROGRESS`, 해당 작업의 현장 세팅·구역 발행이 완료된 경우에만 허용, `actual_started_at` 기록 및 관제 화면 세션 연동) · 작업 종료(`IN_PROGRESS` → `DONE`, `actual_ended_at` 기록 후 진행 구간·구역의 실제 LIVE `risk_event` 집계 사실로 EC2 Python 컨테이너가 TBM 보고서 “작업 마무리” 문단을 작성해 새 `report_version` 저장, 8.3) | 관리자 |
+| POST | /api/work-units/\{id\}/start · /api/work-units/\{id\}/end | 작업 시작(`PLANNED` → `IN_PROGRESS`, 해당 작업의 현장 세팅·구역 발행이 완료된 경우에만 허용, `actual_started_at` 기록 및 관제 화면 세션 연동, 안전모 요구 `ppe_policy` 를 실은 새 구성 묶음 발행, 8.10) · 작업 종료(`IN_PROGRESS` → `DONE`, `actual_ended_at` 기록, 요구 해제 `ppe_policy` 를 실은 새 구성 묶음 발행 후 진행 구간·구역의 실제 LIVE `risk_event` 집계 사실로 EC2 Python 컨테이너가 TBM 보고서 “작업 마무리” 문단을 작성해 새 `report_version` 저장, 8.3) | 관리자 |
 | GET · POST | /api/layouts | 가상 레이아웃 | 관리자 |
 | GET · PUT | /api/layouts/\{id\} | 가상 레이아웃 조회·수정 | 조회는 열람, 수정은 관리자 |
 | POST | /api/layouts/\{id\}/evaluate | 계획 모드 단독 평가(확장, 부록 C.4. M3 TBM 보고서는 아래 `/api/reports/tbm` 안에서 계산) | 관리자 |

@@ -1,0 +1,8 @@
+{
+  "_expect_error": "진행 중 작업이 없는데 안전모를 요구한다. 작업이 없으면 R9 를 내지 않는다 (명세 7.2 R9)",
+  "format_version": "1.0.0",
+  "version": "ppe-4",
+  "work_id": null,
+  "effective_from_ms": 1760346100000,
+  "helmet": "REQUIRED"
+}

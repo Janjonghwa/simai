@@ -1,0 +1,8 @@
+{
+  "_expect_error": "안전모 요구는 REQUIRED·NOT_REQUIRED 중 하나다 (옛 시험 데이터 {helmet: true} 형식 아님)",
+  "format_version": "1.0.0",
+  "version": "ppe-3",
+  "work_id": 12,
+  "effective_from_ms": 1760342499000,
+  "helmet": true
+}

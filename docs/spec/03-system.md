@@ -105,7 +105,7 @@
 
 **구성 묶음과 연결 단절 시 동작.** Tier 0 서비스가 판정하려면 판정 기준이 그 서비스 안에 있어야 한다.
 
-- 구성 묶음(config bundle) = 구역, 규칙 버전, 보정 버전, Operational Geometry(바닥 평면·등록 정적 객체·작업면 OBB, 7.5), 각 버전 ID와 해시.
+- 구성 묶음(config bundle) = 구역, 규칙 버전, 보정 버전, Operational Geometry(바닥 평면·등록 정적 객체·작업면 OBB, 7.5), PPE 요구(`ppe_policy`, 선택, 7.2 R9·8.10), 각 버전 ID와 해시.
 - EC2가 새 묶음을 발행하면 Tier 0 서비스가 내려받아 스키마·해시·참조 무결성을 검증하고 원자적으로 전환한 뒤, 적용 시각과 함께 ACK(`config_ack`)한다. EC2는 ACK 후에만 “현장 적용됨”으로 표시하고, 그 전에는 뷰어에 “적용 대기”를 표시한다.
 - EC2와 연결이 끊기면 마지막 검증 묶음으로 계속 판정하고 Config Sync를 UNVERIFIED로 표시한다. EC2 는 I1 이 (재)연결될 때 최신 묶음 알림(`config_bundle`)을 다시 보내고, Tier 0 는 그 알림을 받기 전까지 UNVERIFIED 로 둔다. 알림의 묶음이 활성 묶음과 다르면 STALE(불일치가 확인됨)로 바꾸고 검증·전환(PENDING)을 거쳐 CURRENT 가 된다(6.2). STALE 은 EC2 가 알린 묶음과 다르다는 것이 확인된 상태이며 경과 시간만으로 STALE 로 바꾸지 않는다. 검증에서 거부한 묶음이 마지막 알림이면 STALE 로 남는다. 어느 상태든 판정은 멈추지 않는다.
 - 판정 한 번(tick)은 한 묶음으로만 한다(tick 도중에 전환하지 않는다). 모든 이벤트와 `world_state` 에 그 tick 의 `config_version`을 기록하고(`world_state` 는 선택 필드), 리플레이·What-if는 그 시각에 적용돼 있던 버전을 쓴다.

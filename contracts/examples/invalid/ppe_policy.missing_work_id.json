@@ -1,0 +1,7 @@
+{
+  "_expect_error": "work_id 는 늘 싣는다. 작업이 없으면 null (지어내거나 빼지 않는다)",
+  "format_version": "1.0.0",
+  "version": "ppe-3",
+  "effective_from_ms": 1760342499000,
+  "helmet": "REQUIRED"
+}
