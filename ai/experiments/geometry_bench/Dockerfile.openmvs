@@ -1,0 +1,7 @@
+# S15P31A101-528: OpenMVS runtime image pinned by digest (no :latest per AGENTS.md Rule 1).
+# Build:
+#   docker build -f ai/experiments/geometry_bench/Dockerfile.openmvs -t simai/openmvs:fcb172bd8490 .
+FROM openmvs/openmvs-ubuntu@sha256:fcb172bd84903d679684e618b45dc6f7a7621de0da87e6dc40f8fb084016e35a
+
+ENV PATH="/usr/local/bin/OpenMVS:${PATH}"
+WORKDIR /work

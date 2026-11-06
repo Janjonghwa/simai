@@ -1,0 +1,114 @@
+{
+  "schema_version": "2.2.0",
+  "run_id": "exp01-20261106-s12-geometry-texture-bench",
+  "experiment_id": "EXP-01",
+  "e_gate": "E-GATE-1",
+  "jira_key": "S15P31A101-528",
+  "owner": "Argon",
+  "git_commit": "27d0377",
+  "branch": "S15P31A101-528-geometry-texture-bench",
+  "dirty_worktree": true,
+  "env_hash": "sha256:fcb172bd84900000000000000000000000000000000000000000000000000000",
+  "model_version": "mapanything-518+tsdf+texrecon-f3374298+openmvs-fcb172bd8490",
+  "config": {
+    "path": "ai/experiments/geometry_bench/run_bench.py",
+    "sha256": "sha256:6362b68860fb879bad18b8e2cc150b8f06ba78080c24c1ef416c12a8b8b654ef",
+    "overrides": {
+      "mode": "laptop-bench",
+      "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097",
+      "variants": [
+        "v0_texrecon",
+        "v4_openmvs_tex",
+        "v3_refine_texrecon",
+        "v4_refine_openmvs_tex"
+      ]
+    }
+  },
+  "input_provenance": {
+    "frames": {
+      "source": "FILE",
+      "dataset_id": "session12/bundle-393d5fbdabad41749559af4526a0a2ce",
+      "dataset_hash": "sha256:6362b68860fb879bad18b8e2cc150b8f06ba78080c24c1ef416c12a8b8b654ef",
+      "camera_ids": [
+        "cam_A",
+        "cam_B",
+        "cam_C",
+        "cam_D"
+      ]
+    },
+    "calibration": {
+      "source": "G1_AUTO",
+      "calibration_version": "cal-lobby-init-f0ab1c6b-jba2-2f6cc097"
+    },
+    "is_upper_bound": false
+  },
+  "gpu": {
+    "model": "CPU-Local-Docker-OpenMVS-Texrecon",
+    "driver": "N/A",
+    "cuda": "N/A",
+    "provider": "LOCAL",
+    "shared_with_tier0": false
+  },
+  "started_at": 1793940000000,
+  "finished_at": 1793940081510,
+  "status": "SUCCEEDED",
+  "experiment_state": "BENCHMARK",
+  "metrics": {
+    "input_mesh_faces": 149997,
+    "v0_texrecon_self_psnr_db": 16.654,
+    "v0_texrecon_self_ssim": 0.7098,
+    "v0_texrecon_loo_psnr_db": 13.694,
+    "v0_texrecon_loo_psnr_blur8_db": 17.132,
+    "v0_texrecon_loo_ssim": 0.4815,
+    "v0_texrecon_edge_grad_cos_sim": 0.6749,
+    "v0_texrecon_edge_f1_px2": 0.7556,
+    "v0_texrecon_cross_view_abs_rel_p50": 0.00079,
+    "v0_texrecon_area_ratio_observed": 0.69393,
+    "v0_texrecon_glb_bytes": 12634700,
+    "v4_openmvs_tex_self_psnr_db": 16.618,
+    "v4_openmvs_tex_self_ssim": 0.6692,
+    "v4_openmvs_tex_loo_psnr_db": 13.251,
+    "v4_openmvs_tex_loo_psnr_blur8_db": 16.92,
+    "v4_openmvs_tex_loo_ssim": 0.3837,
+    "v4_openmvs_tex_edge_grad_cos_sim": 0.6497,
+    "v4_openmvs_tex_edge_f1_px2": 0.6638,
+    "v4_openmvs_tex_cross_view_abs_rel_p50": 0.0009,
+    "v4_openmvs_tex_area_ratio_observed": 0.99938,
+    "v4_openmvs_tex_glb_bytes": 16357216,
+    "v3_refine_texrecon_faces": 150370,
+    "v3_refine_texrecon_self_psnr_db": 15.61,
+    "v3_refine_texrecon_self_ssim": 0.6264,
+    "v3_refine_texrecon_loo_psnr_db": 13.259,
+    "v3_refine_texrecon_loo_psnr_blur8_db": 16.598,
+    "v3_refine_texrecon_loo_ssim": 0.4935,
+    "v3_refine_texrecon_edge_f1_px2": 0.7359,
+    "v4_refine_openmvs_tex_self_psnr_db": 16.81,
+    "v4_refine_openmvs_tex_self_ssim": 0.6803,
+    "v4_refine_openmvs_tex_loo_psnr_db": 13.428,
+    "v4_refine_openmvs_tex_loo_psnr_blur8_db": 16.942,
+    "v4_refine_openmvs_tex_loo_ssim": 0.4181,
+    "v4_refine_openmvs_tex_edge_f1_px2": 0.6672
+  },
+  "results": [
+    {
+      "kind": "SCENE_OUTPUT",
+      "uri": "file:///C:/Users/SSAFY/simai-local/geometry-bench/laptop_v0_texrecon/all/textured.glb",
+      "sha256": "sha256:0cb135174fb475269ddc2a8ce4d5382c82c3c2f4401ab75dd9f40fe289fd8523"
+    },
+    {
+      "kind": "SCENE_OUTPUT",
+      "uri": "file:///C:/Users/SSAFY/simai-local/geometry-bench/laptop_v4_openmvs_tex/all/textured.glb",
+      "sha256": "sha256:511d3a80de45a2d3d649b2d69d6cf77ac4bd4322a550cb61881edb13b026fc62"
+    },
+    {
+      "kind": "REPORT",
+      "uri": "file:///C:/Users/SSAFY/orca/workspaces/S15P31A101/S15P31A101-528-geometry-texture-bench/ai/experiments/geometry_bench/REPORT.md"
+    },
+    {
+      "kind": "OTHER",
+      "uri": "file:///C:/Users/SSAFY/simai-local/geometry-bench/s12_geometry_bench_input.tar.gz",
+      "sha256": "sha256:6362b68860fb879bad18b8e2cc150b8f06ba78080c24c1ef416c12a8b8b654ef"
+    }
+  ],
+  "notes": "S15P31A101-528 laptop CPU comparison of texrecon vs OpenMVS TextureMesh and OpenMVS RefineMesh on the 12th session mesh (149,997 faces), plus GPU session input bundle and MapAnything A/B/C/D mask & TSDF loss analysis runner."
+}
