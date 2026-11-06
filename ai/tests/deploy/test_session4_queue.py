@@ -197,7 +197,8 @@ def test_exp_job_metrics_name_guards_finished_depth_and_keeps_oom_record(ej, tmp
 @pytest.fixture
 def vi(monkeypatch):
     module = load_script("vlm_int")
-    for k in ("SIMAI_VLLM_EXTRA_ARGS", "SIMAI_WORKER_VLLM_MAX_MODEL_LEN", "VLLM_USE_FLASHINFER_SAMPLER", "SIMAI_SIDECAR_CPUS"):
+    for k in ("SIMAI_VLLM_EXTRA_ARGS", "SIMAI_VLLM_QUANTIZATION", "SIMAI_WORKER_VLLM_GPU_MEMORY_UTILIZATION",
+              "SIMAI_WORKER_VLLM_MAX_MODEL_LEN", "VLLM_USE_FLASHINFER_SAMPLER", "SIMAI_SIDECAR_CPUS"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setattr(module.bs, "usable_cpus", lambda: list(range(224)))  # 3차 세션 Pod: affinity 224, cgroup 23.8
     monkeypatch.setattr(module.bs, "cgroup_vcpu", lambda read=None: (23.8, "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us"))
