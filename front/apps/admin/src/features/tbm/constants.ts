@@ -29,8 +29,10 @@ export const MIN_ATTENDEE_ROWS = 4;
 export const MIN_PEOPLE = 1;
 export const MAX_PEOPLE = 10;
 
-/** 구역이 없는 작업의 장소 글자. */
-export const OUTSIDE_ZONE_TEXT = '구역 밖';
+/** 구역이 없는 작업(현장 전체를 대상으로 하는 작업)의 장소 글자. */
+export const SITE_WIDE_TEXT = '현장 전체';
+/** 예전 등록 폼이 구역 없는 작업에 장소로 자동 저장하던 글자. 읽을 때 SITE_WIDE_TEXT 로 본다. */
+export const LEGACY_OUTSIDE_ZONE_TEXT = '구역 밖';
 /** 수동 등록 작업의 장비 글자. */
 export const GEAR_UNSET_TEXT = '장비 미입력';
 

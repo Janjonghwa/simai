@@ -1,12 +1,8 @@
-import {
-  GEAR_UNSET_TEXT,
-  MAX_PEOPLE,
-  MIN_PEOPLE,
-  OUTSIDE_ZONE_TEXT,
-} from '@/features/tbm/constants';
+import { GEAR_UNSET_TEXT, MAX_PEOPLE, MIN_PEOPLE } from '@/features/tbm/constants';
 import { toMin } from '@/features/tbm/tbm';
 import { type TbmTask } from '@/features/tbm/tbmDemo';
 import { dateHhmmToMs, type WorkUnitWriteBody } from '@/features/tbm/types';
+import { workPlaceLabel } from '@/features/tbm/workPlace';
 
 // 작업 등록·수정(수동 입력). 입력값 검사와 새 작업 만들기를 화면 없이 한다.
 
@@ -14,7 +10,7 @@ export interface TaskInput {
   name: string;
   from: string;
   to: string;
-  /** 빈 글자면 구역 밖이다. */
+  /** 빈 글자면 구역이 없는(현장 전체) 작업이다. */
   zone: string;
   people: string;
   lead: string;
@@ -77,10 +73,14 @@ export function todayIsoDate(now: Date = new Date()): string {
   return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`;
 }
 
-/** TaskInput 을 POST/PUT /api/work-units 요청 본문으로 바꾼다. */
+/**
+ * TaskInput 을 POST/PUT /api/work-units 요청 본문으로 바꾼다. place 는 구역 없는 작업이 이미 가진 장소(storedPlaceOf)를
+ * 수정 때 그대로 돌려보내는 자리다(수정은 전체 교체라 안 보내면 지워진다). 새 작업은 비워 둔다.
+ */
 export function inputToWorkUnitBody(
   input: TaskInput,
   date: string = todayIsoDate(),
+  place: string | null = null,
 ): WorkUnitWriteBody {
   const layoutNum = input.layoutId && input.layoutId.trim() !== '' ? Number(input.layoutId) : null;
   return {
@@ -89,7 +89,7 @@ export function inputToWorkUnitBody(
     from_ms: dateHhmmToMs(date, input.from),
     to_ms: dateHhmmToMs(date, input.to),
     zone_id: input.zone || null,
-    place: input.zone ? null : OUTSIDE_ZONE_TEXT,
+    place: input.zone ? null : place,
     planned_people: clampPeople(input.people),
     lead: input.lead.trim() || null,
     layout_id: layoutNum !== null && Number.isFinite(layoutNum) ? layoutNum : null,
@@ -107,7 +107,7 @@ export function createTask(tasks: readonly TbmTask[], input: TaskInput, date?: s
     from: input.from,
     to: input.to,
     zone: input.zone || null,
-    ...(input.zone ? {} : { area: OUTSIDE_ZONE_TEXT }),
+    area: workPlaceLabel({ zone_id: input.zone || null }),
     people: clampPeople(input.people),
     lead: input.lead,
     gear: GEAR_UNSET_TEXT,

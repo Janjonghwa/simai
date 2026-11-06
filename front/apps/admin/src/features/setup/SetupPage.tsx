@@ -11,7 +11,6 @@ import {
   deriveStep1Coverage,
   deriveWaitingView,
   draftGhostsOf,
-  MAP_TITLE,
   resolveHeightCameraIds,
   SECONDARY_ACTIONS,
   STEPS,
@@ -19,7 +18,6 @@ import {
   ZONE_STAGE,
   zoneMapTitle,
   type ActionKey,
-  type CalibrationState,
   type SetupTone,
   type Stage,
 } from '@/features/setup/setup';
@@ -41,6 +39,7 @@ import { SetupZoneStep } from '@/features/setup/SetupZoneStep';
 import type { ZoneDraftItem } from '@/features/setup/types';
 import { useAcceptZoneDraft } from '@/features/setup/useAcceptZoneDraft';
 import {
+  submitErrorText,
   useCameraHeightDefaults,
   useCoverageGuides,
   useCreateSetupSession,
@@ -53,7 +52,6 @@ import { api } from '@/lib/api';
 import { Alert } from '@simai/ui/components/alert';
 import { Badge } from '@simai/ui/components/badge';
 import { Button } from '@simai/ui/components/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
@@ -69,13 +67,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 구역 편집 도구(ZonesPage) 및 AI 위험 구역 초안(GET /api/setup-sessions/{id}/zone-drafts, 3D 점선 윤곽, 수락하면 바로 구역 저장·버리기)을 둔다.
 // 고화질 정식 Scene 도착 시 자동 교체(편집 초안 유지), 구역 발행(POST /api/zones/commit) 뒤 작업 관리(/work?workUnitId=) 복귀.
 
-const STATE_TONE: Record<CalibrationState, string> = {
-  UNCALIBRATED: 'bg-surface-3 text-muted-foreground',
-  PROVISIONAL: 'bg-primary/15 text-point-soft',
-  DRIFTED: 'bg-delay/15 text-delay',
-  CALIBRATED: 'bg-ok/15 text-ok',
-};
-
 const TONE_BADGE: Record<SetupTone, string> = {
   ok: 'bg-ok/15 text-ok',
   active: 'bg-primary/15 text-point-soft',
@@ -83,11 +74,8 @@ const TONE_BADGE: Record<SetupTone, string> = {
   idle: 'bg-surface-3 text-muted-foreground',
 };
 
-const STAGE_CALIBRATION: Record<Stage, { state: CalibrationState; version: string }> = {
-  0: { state: 'UNCALIBRATED', version: '세팅 1단계 · 카메라 확인' },
-  1: { state: 'PROVISIONAL', version: '' },
-  2: { state: 'CALIBRATED', version: '' },
-};
+/** 세션이 아직 없는 1단계 머리에 보이는 글자. */
+const STEP1_LABEL = '세팅 1단계 · 카메라 확인';
 
 const STAGE_ACTIONS: Record<Stage, readonly ActionKey[]> = {
   0: [],
@@ -268,18 +256,36 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
     setHeightEdits((prev) => ({ ...prev, [cameraId]: value }));
   }, []);
 
-  const submitRetryWithHeights = useCallback(() => {
-    if (!sessionId || !heightValidation.valid || retrySession.pending) return;
-    retrySession.retry({
-      setupSessionId: sessionId,
-      body: { camera_heights_m: heightValidation.cameraHeightsM },
-    });
-  }, [sessionId, heightValidation, retrySession]);
+  const restartPending = createSession.pending || retrySession.pending || cancelMutation.isPending;
+
+  /**
+   * 높이를 고쳐 세팅을 다시 시작한다. 서버 규칙(SetupService)에 맞춰 세션 상태로 가른다: 서버 retry 는 실패한 세션만 받고
+   * 끝난 세션은 새로 시작하며, 진행 중인 세션이 있으면 새로 시작할 수 없어 먼저 취소한 뒤 재시도한다.
+   */
+  const restartWithHeights = useCallback(() => {
+    if (!sessionId || !currentSession || !heightValidation.valid || restartPending) return;
+    const cameraHeights = heightValidation.cameraHeightsM;
+    const retry = () =>
+      retrySession.retry({ setupSessionId: sessionId, body: { camera_heights_m: cameraHeights } });
+    if (currentSession.status === 'FAILED') retry();
+    else if (currentSession.status === 'COMPLETED')
+      createSession.submit({ work_unit_id: workUnitId, camera_heights_m: cameraHeights });
+    else cancelMutation.mutate(sessionId, { onSuccess: retry });
+  }, [
+    sessionId,
+    currentSession,
+    heightValidation,
+    restartPending,
+    retrySession,
+    createSession,
+    cancelMutation,
+    workUnitId,
+  ]);
 
   const submitStep1 = useCallback(() => {
     if (!heightValidation.valid) return;
     if (returnForHeightRetry && sessionId) {
-      submitRetryWithHeights();
+      restartWithHeights();
       return;
     }
     if (createSession.pending) return;
@@ -291,7 +297,7 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
     heightValidation,
     returnForHeightRetry,
     sessionId,
-    submitRetryWithHeights,
+    restartWithHeights,
     createSession,
     workUnitId,
   ]);
@@ -323,7 +329,6 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
   }, [navigate, workUnitId]);
 
   const stageActions = STAGE_ACTIONS[stage];
-  const stageMeta = STAGE_CALIBRATION[stage];
 
   const run: Record<ActionKey, () => void> = {
     start: submitStep1,
@@ -331,8 +336,8 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
     restart: () => go(0),
   };
 
-  const step1Pending = createSession.pending || retrySession.pending;
-  const step1Error = retrySession.error ?? createSession.error;
+  const step1Error =
+    retrySession.error ?? createSession.error ?? submitErrorText(cancelMutation.error);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -368,14 +373,6 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
           </>
         ) : (
           <>
-            <Badge
-              className={cn(
-                'h-auto rounded-md px-2.5 py-0.5 font-mono text-[13px] font-semibold',
-                STATE_TONE[stageMeta.state],
-              )}
-            >
-              {stageMeta.state}
-            </Badge>
             {waiting.sceneTier.tier !== 'NONE' && (
               <Badge
                 aria-label={`맵 단계 ${waiting.sceneTier.label}`}
@@ -394,14 +391,16 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
             ? `세션 ${currentSession.setup_session_id}${
                 currentSession.calibration_version ? ` · ${currentSession.calibration_version}` : ''
               }`
-            : stageMeta.version}
+            : stage === 0
+              ? STEP1_LABEL
+              : ''}
         </span>
         <div className="ml-auto flex flex-wrap gap-2">
           {stage === 0 ? (
             <Button
               size="lg"
               className="px-4"
-              disabled={!heightValidation.valid || step1Pending}
+              disabled={!heightValidation.valid || restartPending}
               onClick={run.start}
             >
               {coverage.submitLabel}
@@ -494,44 +493,23 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
               submitError={step1Error}
               heightWarnings={waiting.heightWarnings}
               retrySessionId={returnForHeightRetry ? sessionId : null}
-              onRetryWithHeights={submitRetryWithHeights}
-              retryPending={retrySession.pending}
+              onRetryWithHeights={restartWithHeights}
+              retryPending={restartPending}
               canSubmitHeights={heightValidation.valid}
             />
           </div>
         </div>
       ) : stage === 1 ? (
-        <div className="grid flex-1 grid-cols-[minmax(0,1fr)_minmax(320px,420px)] gap-3">
-          <Card size="sm">
-            <CardHeader>
-              <CardTitle>
-                <h2>{MAP_TITLE[stage]}</h2>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="[container-type:size] min-h-0 flex-1">
-              <div className="flex size-full items-center justify-center">
-                <SetupMap
-                  stage={stage}
-                  coverage={coverage}
-                  drafts={draftsList}
-                  acceptedDraftIds={acceptedDraftIds}
-                  discardedDraftIds={discardedDraftIds}
-                  className="h-full max-h-none"
-                />
-              </div>
-            </CardContent>
-          </Card>
-          <div className="flex min-h-0 flex-col gap-3">
-            {currentSession && (
-              <WaitingPanel
-                waiting={waiting}
-                onRetry={handleRetryFailedSession}
-                retryPending={retrySession.pending}
-                retryError={retrySession.error}
-                onReturnToStep1={handleReturnToStep1ForHeight}
-              />
-            )}
-          </div>
+        <div className="mx-auto flex min-h-0 w-full max-w-[960px] flex-1 flex-col">
+          {currentSession && (
+            <WaitingPanel
+              waiting={waiting}
+              onRetry={handleRetryFailedSession}
+              retryPending={retrySession.pending}
+              retryError={retrySession.error}
+              onReturnToStep1={handleReturnToStep1ForHeight}
+            />
+          )}
         </div>
       ) : (
         <SetupZoneStep

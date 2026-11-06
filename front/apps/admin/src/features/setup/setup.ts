@@ -14,26 +14,23 @@ import type {
   ZoneDraftItem,
 } from '@/features/setup/types';
 import type { ViewerBoxGhost, ViewerEditBox } from '@/features/viewer3d';
-import type { ViewerHealthPayload } from '@simai/contracts';
 
 // 설치 · 보정 1단계(카메라 연결·각도·높이 확인, S15P31A101-448) 및 단계 상태 순수 계산.
 // 걷기 보정과 실측 정물 배치 단계는 폐기되었으며(명세 v1.3 수정 54·56), 색은 위험 등급(sev-*)과 겹치지 않는다.
 
 export type Point = readonly [number, number];
 
-export const STEPS = ['카메라 · 높이 확인', '보정 검증', '구역'] as const;
+export const STEPS = ['카메라 · 높이 확인', '자동 보정', '구역'] as const;
 export type Stage = 0 | 1 | 2;
 
 /** 구역 단계(마지막 단계). 맵이 준비되면 넘어가 3D 위에서 구역을 고치고 발행한다. */
-export const ZONE_STAGE: Stage = 2;
+export const ZONE_STAGE = 2 satisfies Stage;
 
-export const MAP_TITLE: Record<Stage, string> = {
+/** 지도 카드 제목. 2단계(자동 보정)는 대기 패널만 있어 지도가 없다. */
+export const MAP_TITLE: Record<Exclude<Stage, 1>, string> = {
   0: '카메라 시야 · 실시간 영상',
-  1: '검증 지점',
   2: '3D 맵',
 };
-
-export type CalibrationState = ViewerHealthPayload['calibration_state'];
 
 /** 위험 등급색(sev-critical·sev-high·sev-caution)과 겹치지 않는 세팅 화면 전용 톤. */
 export type SetupTone = 'ok' | 'active' | 'delay' | 'idle';
@@ -400,7 +397,7 @@ export type ActionKey = 'start' | 'confirm' | 'restart';
 
 export const ACTION_LABEL: Record<ActionKey, string> = {
   start: '다음',
-  confirm: '보정 확정',
+  confirm: '구역으로',
   restart: '다시 보정',
 };
 

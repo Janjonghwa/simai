@@ -13,6 +13,7 @@ import {
   type WorkTypeOption,
 } from '@/features/tbm/types';
 import { readMockUser } from '@/mocks/mockUser';
+import { MOCK_ZONES } from '@/mocks/zones';
 import { http, HttpResponse } from 'msw/http';
 
 // TBM 화면(작업·공종·가상 레이아웃·보고서) MSW 핸들러.
@@ -783,6 +784,12 @@ export interface CreateTbmMockOptions {
   };
 }
 
+/** 서버처럼(WorkUnitRepository) 구역 작업의 place 가 비어 있으면 구역의 이름을 채워 내려 준다. */
+const withZonePlace = (work: TbmWorkUnit): TbmWorkUnit =>
+  work.place === null && work.zone_id !== null
+    ? { ...work, place: MOCK_ZONES.find((zone) => zone.zone_id === work.zone_id)?.name ?? null }
+    : work;
+
 export function createTbmMock(options: CreateTbmMockOptions = {}) {
   const workTypes: WorkTypeOption[] = WORK_TYPE_OPTIONS.map((w) => ({
     ...w,
@@ -1120,7 +1127,7 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
       if (options.deferDaysToHistory && url.searchParams.has('days')) {
         return undefined;
       }
-      return HttpResponse.json({ works });
+      return HttpResponse.json({ works: works.map(withZonePlace) });
     }),
 
     http.post('*/api/work-units', async ({ request }) => {
@@ -1148,7 +1155,7 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
         event_counts: { CRITICAL: 0, HIGH: 0 },
       };
       works.push(created);
-      return HttpResponse.json(created, { status: 201 });
+      return HttpResponse.json(withZonePlace(created), { status: 201 });
     }),
 
     http.put('*/api/work-units/:id', async ({ params, request }) => {
@@ -1190,7 +1197,7 @@ export function createTbmMock(options: CreateTbmMockOptions = {}) {
             : prev.work_type,
       };
       works[idx] = updated;
-      return HttpResponse.json(updated);
+      return HttpResponse.json(withZonePlace(updated));
     }),
 
     http.delete('*/api/work-units/:id', ({ params }) => {

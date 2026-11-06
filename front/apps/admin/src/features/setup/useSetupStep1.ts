@@ -53,7 +53,7 @@ export function useCameraHeightDefaults(enabled = true) {
   };
 }
 
-function submitErrorText(error: unknown): string | null {
+export function submitErrorText(error: unknown): string | null {
   if (!error) return null;
   if (
     error instanceof ApiError &&

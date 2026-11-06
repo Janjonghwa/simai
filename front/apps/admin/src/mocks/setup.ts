@@ -365,6 +365,13 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       if (typeof workUnitId !== 'number' || !Number.isInteger(workUnitId) || workUnitId < 1) {
         return problem(400, 'INVALID_SETUP_REQUEST', '유효한 작업 단위 ID가 필요합니다');
       }
+      // 서버처럼(SetupService.create) 끝나지 않은 세션이 있으면 새로 시작할 수 없다.
+      const running = [...sessions.values()].some(
+        (session) => session.status !== 'COMPLETED' && session.status !== 'FAILED',
+      );
+      if (running) {
+        return problem(409, 'SETUP_ALREADY_IN_PROGRESS', '이미 진행 중인 세팅 세션이 있습니다');
+      }
 
       const submittedHeights: Record<string, number> = {};
       if (typeof rawHeights === 'object' && rawHeights !== null) {
@@ -479,6 +486,10 @@ export function createSetupMock(options: SetupMockOptions = {}) {
       const prevSession = sessions.get(prevId);
       if (!prevSession) {
         return problem(404, 'SETUP_SESSION_NOT_FOUND', '세팅 세션을 찾을 수 없습니다');
+      }
+      // 서버처럼(SetupService.retry) 실패한 세션만 재시도할 수 있다. 끝났거나 진행 중이면 새로 시작하거나 취소해야 한다.
+      if (prevSession.status !== 'FAILED') {
+        return problem(409, 'SETUP_RETRY_NOT_ALLOWED', '실패한 세팅 세션만 재시도할 수 있습니다');
       }
 
       const raw: unknown = await request.json().catch(() => ({}));

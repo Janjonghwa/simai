@@ -7,6 +7,7 @@ import {
   useSetupFlowStore,
 } from '@/features/setup/setup.store';
 import { SetupPage } from '@/features/setup/SetupPage';
+import type { SetupSessionResponse } from '@/features/setup/types';
 import type {
   Viewer3DHandle,
   Viewer3DProps,
@@ -387,6 +388,37 @@ const PREVIEW_PATCH = {
   calibration_version: 'cal-8',
 } as const;
 
+/** 카메라 2번 높이만 41cm 어긋난 높이 검산(서버 height_checks). */
+const HEIGHT_MISMATCH = {
+  height_checks: {
+    cam1: {
+      input_height_m: 2.25,
+      restored_height_m: 2.26,
+      difference_cm: 1,
+      within_tolerance: true,
+      guidance: null,
+    },
+    cam2: {
+      input_height_m: 2.3,
+      restored_height_m: 2.71,
+      difference_cm: 41,
+      within_tolerance: false,
+      guidance: 'cam2 높이를 다시 재서 입력해 주세요',
+    },
+  },
+} as const;
+
+/** 높이 불일치 경고를 띄우고 1단계 높이 칸으로 돌아가 cam2 높이를 2.7 로 고친다('다시 시도' 직전까지). */
+async function fixCam2Height(sessionId: string, patch: Partial<SetupSessionResponse>) {
+  setupMock.updateSession(sessionId, { ...HEIGHT_MISMATCH, ...patch });
+  const warning = await screen.findByRole('alert', { name: '카메라 높이 불일치 경고' }, POLL_WAIT);
+  expect(warning.textContent).toContain('cam2 높이를 다시 재서 입력해 주세요');
+  fireEvent.click(within(warning).getByRole('button', { name: '1단계 높이 수정' }));
+  const cam2Input = (await screen.findByLabelText('cam2 높이 (m)')) as HTMLInputElement;
+  expect(cam2Input.value).toBe('2.3');
+  fireEvent.change(cam2Input, { target: { value: '2.7' } });
+}
+
 describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI 초안·발행 뒤)', () => {
   it('대기 화면에 4단계 중 현재 단계·진행률·남은 시간(목표 90초)을 2초 주기로 갱신해 보인다', async () => {
     const { sessionId } = await startSetupSession();
@@ -460,57 +492,75 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     ).toBe('0');
   }, 20_000);
 
-  it('높이 불일치 경고는 어느 카메라인지 보이고, 1단계 높이 칸으로 돌아가 고쳐 재시도한다', async () => {
+  it('높이 불일치 경고는 어느 카메라인지 보이고, 진행 중이면 세션을 취소한 뒤 고친 높이로 재시도한다', async () => {
     const { sessionId } = await startSetupSession();
 
-    setupMock.updateSession(sessionId, {
+    await fixCam2Height(sessionId, {
       stage: 'JOINT_BA_AND_VERIFY',
       status: 'JOINT_BA_AND_VERIFY',
       progress_pct: 62,
-      height_checks: {
-        cam1: {
-          input_height_m: 2.25,
-          restored_height_m: 2.26,
-          difference_cm: 1,
-          within_tolerance: true,
-          guidance: null,
-        },
-        cam2: {
-          input_height_m: 2.3,
-          restored_height_m: 2.71,
-          difference_cm: 41,
-          within_tolerance: false,
-          guidance: 'cam2 높이를 다시 재서 입력해 주세요',
-        },
-      },
     });
-
-    const warning = await screen.findByRole(
-      'alert',
-      { name: '카메라 높이 불일치 경고' },
-      POLL_WAIT,
-    );
-    expect(warning.textContent).toContain('cam2');
-    expect(warning.textContent).toContain('cam2 높이를 다시 재서 입력해 주세요');
-
-    fireEvent.click(within(warning).getByRole('button', { name: '1단계 높이 수정' }));
-
-    const cam2Input = (await screen.findByLabelText('cam2 높이 (m)')) as HTMLInputElement;
-    expect(cam2Input.value).toBe('2.3');
     expect(
       screen.getByRole('alert', { name: '카메라 높이 불일치 수정 안내' }).textContent,
     ).toContain('cam2');
 
-    fireEvent.change(cam2Input, { target: { value: '2.7' } });
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
 
+    // 서버 retry 는 실패한 세션만 받으므로 진행 중인 세션은 먼저 취소(→ FAILED)한 뒤 재시도한다.
     await waitFor(() => expect(setupMock.retryRequests).toHaveLength(1));
+    expect(setupMock.sessions.get(sessionId)?.failure_code).toBe('CANCELLED_BY_ADMIN');
     expect(setupMock.retryRequests[0]!.sessionId).toBe(sessionId);
     expect(setupMock.retryRequests[0]!.body.camera_heights_m?.cam2).toBe(2.7);
     expect(
       await screen.findByText(`세션 ${setupMock.retryRequests[0]!.retriedSessionId}`),
     ).toBeTruthy();
     expect(screen.getByRole('list', { name: '세팅 대기 세부 단계' })).toBeTruthy();
+  }, 20_000);
+
+  it('높이 경고가 있는 채 끝난 세션은 고친 높이로 새 세션을 시작한다(서버 retry 는 실패한 세션만 받는다)', async () => {
+    const { sessionId } = await startSetupSession();
+
+    await fixCam2Height(sessionId, { stage: 'COMPLETED', status: 'COMPLETED', progress_pct: 100 });
+    fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
+
+    await waitFor(() => expect(setupMock.submittedBodies).toHaveLength(2));
+    expect(setupMock.submittedBodies[1]!.camera_heights_m.cam2).toBe(2.7);
+    expect(setupMock.retryRequests).toHaveLength(0);
+    expect(setupMock.sessions.size).toBe(2);
+    expect(screen.queryByRole('alert', { name: '카메라 높이 불일치 수정 안내' })).toBeNull();
+  }, 20_000);
+
+  it('실패한 세션은 취소 없이 고친 높이로 곧바로 재시도한다', async () => {
+    const { sessionId } = await startSetupSession();
+
+    await fixCam2Height(sessionId, {
+      stage: 'FAILED',
+      status: 'FAILED',
+      failure_code: 'VALIDATION_REJECTED',
+      failure_message: '검증에 실패했습니다',
+    });
+    fireEvent.click(screen.getByRole('button', { name: '다시 시도' }));
+
+    await waitFor(() => expect(setupMock.retryRequests).toHaveLength(1));
+    expect(setupMock.retryRequests[0]!.body.camera_heights_m?.cam2).toBe(2.7);
+    expect(setupMock.sessions.get(sessionId)?.failure_code).toBe('VALIDATION_REJECTED');
+    expect(setupMock.submittedBodies).toHaveLength(1);
+  }, 20_000);
+
+  it('2단계는 자동 보정 대기 패널만 보이고 지도 카드와 고정 상태 배지는 없으며 단추는 구역으로 이동한다', async () => {
+    await startSetupSession();
+
+    const steps = within(screen.getByRole('list', { name: '보정 단계' })).getAllByRole('button');
+    expect(steps[1]!.textContent).toBe('2자동 보정');
+    expect(steps[1]!.getAttribute('aria-current')).toBe('step');
+    expect(screen.getByRole('list', { name: '세팅 대기 세부 단계' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: '검증 지점' })).toBeNull();
+    expect(screen.queryByRole('img', { name: /위에서 본 보정 화면/ })).toBeNull();
+    expect(screen.queryByText('PROVISIONAL')).toBeNull();
+    expect(screen.queryByRole('button', { name: '보정 확정' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '구역으로' }));
+    expect(await screen.findByTestId('zones-page-stub')).toBeTruthy();
   }, 20_000);
 
   it('미리보기 맵이 도착하면 구역 편집 도구로 넘어가고, 정식 Scene 이 오면 자동 교체해도 수락해 만든 구역이 남는다', async () => {
@@ -666,7 +716,7 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     expect(setupMock.submittedBodies).toHaveLength(1);
   }, 20_000);
 
-  it('높이 경고가 남았어도 구역을 이미 발행한 세션은 보정 검증에 머물지 않고 구역 단계로 연다', async () => {
+  it('높이 경고가 남았어도 구역을 이미 발행한 세션은 자동 보정에 머물지 않고 구역 단계로 연다', async () => {
     const { sessionId } = await startSetupSession();
     setupMock.updateSession(sessionId, {
       ...PREVIEW_PATCH,
@@ -683,7 +733,7 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     });
 
     expect(await screen.findByTestId('zones-page-stub', undefined, POLL_WAIT)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '보정 확정' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '구역으로' })).toBeNull();
     expect(screen.getByRole('button', { name: '작업 관리로' })).toBeTruthy();
   }, 20_000);
 

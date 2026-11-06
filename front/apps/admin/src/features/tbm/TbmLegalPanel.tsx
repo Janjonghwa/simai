@@ -6,14 +6,20 @@ import {
   type TbmReport,
   type TbmReportVersionSummary,
 } from '@/features/tbm/types';
+import { useZones } from '@/features/zones/useZones';
+import { zoneNameOf, zoneNameOrDefault } from '@/features/zones/zoneName';
 import { Button } from '@simai/ui/components/button';
 import { Card } from '@simai/ui/components/card';
 import { cn } from '@simai/ui/lib/utils';
+import { useMemo } from 'react';
 
 // 가운데 블록: 법령 근거(RAG). 보고서가 없으면 보고서 작성 단추, 만드는 중이면 단계, 판이 있으면 최근 사건 반영 · 인용 조문 ·
 // 법령 지식 그래프와 생성 · 검증 단계를 보인다. 머리 오른쪽에 판 고르기와 보고서 재작성 단추를 둔다.
 
 function ZoneHistory({ report }: { report: TbmReport }) {
+  // 작업 관리를 바로 열어도 이름이 나오도록 구역을 직접 받는다(이미 받았으면 캐시를 쓴다).
+  const { zones } = useZones();
+  const zoneName = useMemo(() => zoneNameOf(zones), [zones]);
   const rows = report.zone_history.filter((h) => h.live_event_count > 0);
   if (!rows.length) return null;
   return (
@@ -24,7 +30,7 @@ function ZoneHistory({ report }: { report: TbmReport }) {
       <h3 className={H3}>최근 사건 반영</h3>
       {rows.map((h) => (
         <div key={h.zone_id} className="flex flex-wrap items-center gap-2 text-[13px]">
-          <span className="font-mono">{h.zone_id}</span>
+          <span className="font-medium">{zoneNameOrDefault(h.zone_id, zoneName)}</span>
           <span className="text-muted-foreground">최근 {h.days ?? 7}일</span>
           {h.max_severity && <SeverityBadge severity={h.max_severity} />}
           <b className="font-mono">{h.live_event_count}건</b>

@@ -41,8 +41,9 @@ export interface TbmTask {
   name: string;
   from: string;
   to: string;
-  /** 구역 밖 작업이면 null 이고 area 로 장소를 적는다. */
+  /** 구역 작업의 구역 ID. 구역 없는 작업이면 null. */
   zone: string | null;
+  /** 화면에 보일 장소: 구역 작업은 구역 이름, 구역 없는 작업은 적은 장소 또는 '현장 전체'. */
   area?: string;
   people: number;
   lead: string;
@@ -79,6 +80,7 @@ export const TBM_TASKS: readonly TbmTask[] = [
     from: '09:00',
     to: '12:00',
     zone: 'z-04',
+    area: '개구부 구역',
     people: 4,
     lead: 'A조',
     gear: '장비 없음',
@@ -97,6 +99,7 @@ export const TBM_TASKS: readonly TbmTask[] = [
     from: '10:00',
     to: '11:30',
     zone: 'z-02',
+    area: '단상 구역',
     people: 3,
     lead: 'B조',
     gear: '지게차 1',
