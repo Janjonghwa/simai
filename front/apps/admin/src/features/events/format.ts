@@ -5,6 +5,7 @@ import {
   RULE_NAME_BY_SEVERITY,
 } from '@/features/events/constants';
 import { isActive, type EntryStatus } from '@/features/events/entries';
+import { R9_RELEASE_LABEL, type R9Release } from '@/features/events/ppePolicy';
 import type { EventItem } from '@/features/events/types';
 import { zoneNameOrDefault, type ZoneNameOf } from '@/features/zones/zoneName';
 
@@ -31,8 +32,8 @@ export const eventRuleName = (event: Pick<EventItem, 'rule_id' | 'severity'>) =>
 export const eventSubject = (event: EventItem, zoneName: ZoneNameOf) =>
   event.world_ids[0] ?? (event.zone_id ? zoneNameOrDefault(event.zone_id, zoneName) : '');
 
-/** 규칙 하나의 처리 상태 문구. */
-export function statusText(status: EntryStatus) {
+/** 규칙 하나의 처리 상태 문구. release 가 있으면(해소된 R9) "해소" 대신 해소 원인을 보인다. */
+export function statusText(status: EntryStatus, release: R9Release | null = null) {
   switch (status.kind) {
     case 'alarm':
       return '확인 대기';
@@ -40,8 +41,10 @@ export function statusText(status: EntryStatus) {
       return `확인 ${formatTime(status.at)}`;
     case 'notice':
       return '안내';
-    case 'resolved':
-      return `${status.closed ? '운영자 종료' : '해소'} ${formatTime(status.at)}`;
+    case 'resolved': {
+      const word = status.closed ? '운영자 종료' : release ? R9_RELEASE_LABEL[release] : '해소';
+      return `${word} ${formatTime(status.at)}`;
+    }
   }
 }
 

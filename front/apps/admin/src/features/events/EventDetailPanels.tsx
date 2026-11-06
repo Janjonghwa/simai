@@ -11,11 +11,18 @@ import { eventRuleName, formatTime, metricLabels, statusText } from '@/features/
 import type { Incident } from '@/features/events/incidents';
 import { IncidentSummaryControl } from '@/features/events/IncidentSummaryControl';
 import { incidentTimeline } from '@/features/events/incidentView';
+import {
+  needsBundlesForRelease,
+  PERSON_ONLY_RULES,
+  r9ReleaseOf,
+} from '@/features/events/ppePolicy';
 import { SeverityBadge } from '@/features/events/SeverityBadge';
 import { canRequestSummary, latestSummary } from '@/features/events/summary';
 import type { EventEscalation } from '@/features/events/types';
 import { useEscalationHistory } from '@/features/events/useEscalateEvent';
 import { useSummaryState } from '@/features/events/useIncidentSummary';
+import type { ConfigBundle } from '@/features/zones/types';
+import { useRecentBundles } from '@/features/zones/useRecentBundles';
 import { useZoneName } from '@/features/zones/useZoneName';
 import type { ZoneNameOf } from '@/features/zones/zoneName';
 import { cn } from '@simai/ui/lib/utils';
@@ -37,19 +44,33 @@ const None = () => <p className="text-sm text-muted-foreground">—</p>;
 /** 구역이 없는 이벤트의 구역 칸 문구. */
 const NO_ZONE_TEXT = '구역 없음';
 
+/**
+ * 해소된 R9 의 해소 원인을 가릴 최근 구성 묶음. 해소된 LIVE R9 가 없으면 받지 않는다(캐시에 있으면 그것을 쓴다).
+ * 묶음을 모르면 undefined 이고 "해소"로만 보인다.
+ */
+function useReleaseBundles(entries: readonly EventEntry[]): readonly ConfigBundle[] | undefined {
+  return useRecentBundles(needsBundlesForRelease(entries.map((e) => e.event))).data;
+}
+
 /** 규칙 하나의 근거 줄: 등급 · 규칙 · 구역 · 발생 · 상태, 지표, 확인 필요 이유. */
 function RuleRow({
   entry,
   current,
   zoneName,
+  bundles,
 }: {
   entry: EventEntry;
   current: boolean;
   zoneName: ZoneNameOf;
+  bundles: readonly ConfigBundle[] | undefined;
 }) {
   const { event } = entry;
-  // 구역이 있는데 이름을 모르면 칸을 뺀다(구역 번호를 보이지 않는다).
-  const zone = event.zone_id ? zoneName(event.zone_id) : NO_ZONE_TEXT;
+  // 구역이 있는데 이름을 모르면 칸을 뺀다(구역 번호를 보이지 않는다). 사람 단위 규칙(R9)은 구역을 보지 않아 칸이 없다.
+  const zone = event.zone_id
+    ? zoneName(event.zone_id)
+    : PERSON_ONLY_RULES.has(event.rule_id)
+      ? null
+      : NO_ZONE_TEXT;
   const reasons = event.confidence_reasons ?? [];
   const metrics = metricLabels(event.metrics);
   return (
@@ -68,7 +89,7 @@ function RuleRow({
         <span className="text-[13px] text-muted-foreground">
           {zone && `${zone} · `}
           <span className="font-mono">{formatTime(event.raised_at)}</span> 발생 ·{' '}
-          {statusText(entryStatus(entry))}
+          {statusText(entryStatus(entry), r9ReleaseOf(event, bundles))}
         </span>
       </span>
       {metrics.length > 0 && (
@@ -100,6 +121,7 @@ export function RulesPanel({
   openEventId: string;
 }) {
   const zoneName = useZoneName();
+  const bundles = useReleaseBundles(entries);
   return (
     <DetailPanel title="규칙과 근거">
       <ul className="flex flex-col">
@@ -109,6 +131,7 @@ export function RulesPanel({
             entry={entry}
             current={entry.event.event_id === openEventId}
             zoneName={zoneName}
+            bundles={bundles}
           />
         ))}
       </ul>
@@ -206,6 +229,7 @@ export function ClipsPanel({ entries }: EntriesProps) {
 
 export function ProcessPanel({ entries }: EntriesProps) {
   const zoneName = useZoneName();
+  const bundles = useReleaseBundles(entries);
   return (
     <DetailPanel title="처리">
       <ul className="flex flex-col gap-2">
@@ -225,7 +249,7 @@ export function ProcessPanel({ entries }: EntriesProps) {
                       : 'text-muted-foreground'
                   }
                 >
-                  {statusText(status)}
+                  {statusText(status, r9ReleaseOf(entry.event, bundles))}
                 </span>
               </span>
               <AckButton entry={entry} label="경보 확인(ACK)" zoneName={zoneName} />
@@ -238,7 +262,8 @@ export function ProcessPanel({ entries }: EntriesProps) {
 }
 
 export function TimelinePanel({ incident }: { incident: Incident }) {
-  const timeline = incidentTimeline(incident);
+  const bundles = useReleaseBundles(incident.entries);
+  const timeline = incidentTimeline(incident, bundles);
   return (
     <DetailPanel title="타임라인">
       {timeline.length === 0 ? (

@@ -27,6 +27,7 @@ vi.mock('@/features/events/AlarmSoundLoop', () => ({ AlarmSoundLoop: () => null 
 vi.mock('@/features/monitor/WorkSessionBar', () => ({
   WorkSessionBar: () => <div data-testid="session" />,
 }));
+vi.mock('@/features/monitor/PpePolicyNotice', () => ({ PpePolicyNotice: () => null }));
 vi.mock('@/features/layout/useHealthSnapshot', () => ({ useHealthSnapshot: vi.fn() }));
 vi.mock('@/features/layout/FailureBand', () => ({
   FailureBand: () => (route.failure ? <div data-testid="failure" /> : null),

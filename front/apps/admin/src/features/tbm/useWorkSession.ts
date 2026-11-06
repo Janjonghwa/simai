@@ -1,5 +1,6 @@
 import { endTbmWork, startTbmWork, TBM_WORKS_KEY, tbmReportsByWorkKey } from '@/features/tbm/api';
 import { WRAP_UP_GENERATING_TEXT } from '@/features/tbm/constants';
+import { BUNDLES_KEY } from '@/features/zones/api';
 import { api } from '@/lib/api';
 import { ApiError } from '@/lib/http';
 import { HISTORY_WORKS_KEY } from '@/lib/queryKeys';
@@ -38,6 +39,8 @@ export function useWorkSession(workId?: string, onWrapUp?: (id: number) => void)
         client.invalidateQueries({ queryKey: TBM_WORKS_KEY }),
         client.invalidateQueries({ queryKey: tbmReportsByWorkKey(target) }),
         client.invalidateQueries({ queryKey: HISTORY_WORKS_KEY }),
+        // 서버는 작업 시작·종료 때 안전모 요구(ppe_policy)를 실은 새 구성 묶음을 발행한다(-518). 적용 상태를 다시 받는다.
+        client.invalidateQueries({ queryKey: BUNDLES_KEY }),
       ]);
       return true;
     } catch (error) {
