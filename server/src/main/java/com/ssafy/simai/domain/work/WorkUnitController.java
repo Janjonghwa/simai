@@ -70,15 +70,15 @@ class WorkUnitController {
 
     @PostMapping("/{workId}/start")
     @PreAuthorize("hasRole('ADMIN')")
-    ObjectNode start(@PathVariable long workId) {
-        return sessions.start(workId);
+    ObjectNode start(@PathVariable long workId, @AuthenticationPrincipal Jwt jwt) {
+        return sessions.start(workId, Long.parseLong(jwt.getSubject()));
     }
 
     @PostMapping("/{workId}/end")
     @ResponseStatus(HttpStatus.ACCEPTED)
     @PreAuthorize("hasRole('ADMIN')")
-    ObjectNode end(@PathVariable long workId) {
-        return sessions.end(workId);
+    ObjectNode end(@PathVariable long workId, @AuthenticationPrincipal Jwt jwt) {
+        return sessions.end(workId, Long.parseLong(jwt.getSubject()));
     }
 
     @ExceptionHandler(WorkAlreadyInProgressException.class)

@@ -332,7 +332,7 @@ S15P31A101-210. 관계 그림은 [`db-erd.md`](db-erd.md), 검증은 [`db-verifi
 | 컬럼 | 타입 | 키·제약 | 출처 계약 필드 | 설명 |
 |---|---|---|---|---|
 | `config_version` | text | PK(1), FK>config_bundle.config_version |  |  |
-| `name` | text | PK(2), CK(manifest·zones·rules·calibration·operational_geometry) |  | 매니페스트 또는 구성 요소 이름 |
+| `name` | text | PK(2), CK(manifest·zones·rules·calibration·operational_geometry·ppe_policy, V44) |  | 매니페스트 또는 구성 요소 이름 |
 | `content` | bytea | NN |  | EC2 가 발행한 바이트 그대로(같은 주소는 늘 같은 바이트). Tier 0 가 서명 주소로 내려받아 해시를 검사한다 |
 | `sha256` | text | NN |  |  |
 

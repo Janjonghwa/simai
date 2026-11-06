@@ -33,7 +33,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * 구성 묶음 발행(명세 3.2 구성 묶음, 11.1, 계약 config_bundle). 발행 때 지금 유효한 구역·규칙·보정·작업면을 묶어 새 config_version 을
- * 만든다(덮어쓰지 않는다). 묶음 파일(매니페스트와 구성 요소 4개)의 바이트·해시를 저장하고, 커밋 뒤 연결된 Tier 0 에 알린다.
+ * 만든다(덮어쓰지 않는다). 묶음 파일(매니페스트와 구성 요소 5개)의 바이트·해시를 저장하고, 커밋 뒤 연결된 Tier 0 에 알린다.
  * Tier 0 는 파일을 서명 주소로 내려받아 해시·형식·참조를 검사하고 원자적으로 전환한 뒤 config_ack 로 답한다. 그 전까지는 '적용 대기'다.
  *
  * <p>구성 요소 내용 형식은 계약 범위 밖이라 Tier 0 의 임시 형식(ai/src/simai_ai/config/bundle.py 표)을 따른다.
@@ -43,6 +43,7 @@ import tools.jackson.databind.node.ObjectNode;
  *       교실 시험 버전이 없으면 운영 버전)
  *   <li>calibration: 가장 최근에 올린 보정 문서 원문
  *   <li>operational_geometry: {"version", "work_surfaces": [...], "static_objects": [...]}. 작업면은 OBB 바닥 투영과 상판 높이
+ *   <li>ppe_policy: 계약 data/ppe_policy 1.0.0(임시 형식 아님). 그때 작업 상태로 만든 안전모 요구(S15P31A101-518)
  * </ul>
  */
 @Service
@@ -199,12 +200,14 @@ public class ConfigBundleService {
         ObjectNode zonesDoc = zones(siteId, configVersion + "-zones", items);
         ObjectNode rulesDoc = rules(profile, configVersion + "-rules", items);
         ObjectNode geometryDoc = geometry(siteId, configVersion + "-geometry", items);
+        ObjectNode ppeDoc = ppePolicy(siteId, configVersion + "-ppe", issuedAt);
 
         Map<String, byte[]> files = new LinkedHashMap<>();
         files.put("zones", mapper.writeValueAsBytes(zonesDoc));
         files.put("rules", mapper.writeValueAsBytes(rulesDoc));
         files.put("calibration", calibration.content());
         files.put("operational_geometry", mapper.writeValueAsBytes(geometryDoc));
+        files.put(ConfigFiles.PPE_POLICY, mapper.writeValueAsBytes(ppeDoc));
 
         ObjectNode components = mapper.createObjectNode();
         for (String name : ConfigFiles.COMPONENTS) {
@@ -213,7 +216,9 @@ public class ConfigBundleService {
                 case "zones" -> zonesDoc.get("version").asString();
                 case "rules" -> rulesDoc.get("version").asString();
                 case "calibration" -> calibration.version();
-                default -> geometryDoc.get("version").asString();
+                case "operational_geometry" -> geometryDoc.get("version").asString();
+                case ConfigFiles.PPE_POLICY -> ppeDoc.get("version").asString();
+                default -> throw new IllegalStateException("모르는 구성 요소: " + name);
             });
             ref.put("sha256", ConfigFiles.sha256(files.get(name)));
             ref.put("uri", signer.url(configVersion, name));
@@ -369,6 +374,42 @@ public class ConfigBundleService {
             throw new BusinessException(ErrorCode.Config.RULES_MISSING);
         }
         return doc;
+    }
+
+    /**
+     * 안전모 요구(계약 data/ppe_policy 1.0.0, 명세 7.2 R9·8.10·12.3). 진행 중(IN_PROGRESS) 작업이 있으면 REQUIRED, 없으면 NOT_REQUIRED.
+     * 발행 잠금 뒤에 읽어 같은 트랜잭션의 작업 시작·종료와, 먼저 커밋된 다른 트랜잭션의 시작·종료를 본다. 어느 경로로 발행해도 싣는다.
+     * effective_from_ms 는 진행 중 작업의 실제 시작 시각, 없으면 가장 최근 실제 종료 시각, 끝난 작업도 없으면 발행 시각이다
+     * (작업 시작·종료 묶음이면 그 시각과 같다, docs/design/server-ppe-policy-publish.md)
+     */
+    private ObjectNode ppePolicy(String siteId, String version, Instant issuedAt) {
+        MapSqlParameterSource site = new MapSqlParameterSource("site", siteId);
+        Map<String, Object> active = jdbc.queryForList("""
+                SELECT work_id, actual_started_at FROM work_unit WHERE site_id = :site AND status = 'IN_PROGRESS'
+                ORDER BY actual_started_at DESC LIMIT 1
+                """, site).stream().findFirst().orElse(null);
+        ObjectNode doc = mapper.createObjectNode();
+        doc.put("format_version", "1.0.0");
+        doc.put("version", version);
+        if (active != null) {
+            doc.put("work_id", ((Number) active.get("work_id")).longValue());
+            doc.put("effective_from_ms", millisOf(active.get("actual_started_at")));
+            doc.put("helmet", "REQUIRED");
+            return doc;
+        }
+        Object lastEnd = jdbc.queryForObject("SELECT max(actual_ended_at) FROM work_unit WHERE site_id = :site", site, Object.class);
+        doc.putNull("work_id");
+        doc.put("effective_from_ms", lastEnd == null ? issuedAt.toEpochMilli() : millisOf(lastEnd));
+        doc.put("helmet", "NOT_REQUIRED");
+        return doc;
+    }
+
+    private static long millisOf(Object timestamp) {
+        return switch (timestamp) {
+            case java.sql.Timestamp t -> t.getTime();
+            case OffsetDateTime t -> t.toInstant().toEpochMilli();
+            default -> throw new IllegalStateException("시각 형식을 모른다: " + timestamp.getClass());
+        };
     }
 
     /** 작업면은 Tier 0 work_surfaces 형식(OBB 바닥 투영 + 상판 높이), 장애물은 static_objects 에 OBB 그대로 */

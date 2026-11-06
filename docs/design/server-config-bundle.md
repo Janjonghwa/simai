@@ -9,7 +9,7 @@ S15P31A101-120(구역 CRUD·구성 묶음 발행·config_ack 수신)·S15P31A101
 1. 관리자가 구역(`/api/zones`)·작업면(`/api/static-objects`)을 만들거나 새 버전을 더한다. 수정은 지금 버전을 닫고(`valid_to`) 다음 버전을 더한다.
    잘못 만든 항목은 `DELETE /api/zones/{id}`·`DELETE /api/static-objects/{id}` 로 보관한다(지금 버전만 닫고 새 버전을 더하지 않는다).
 2. 관리자가 Tier 0 의 보정 문서를 올린다(`POST /api/calibrations`). EC2 는 계약(`contracts/providers/calibration`)과 현장을 검사해 `calibration_version`·`calibration_document` 에 둔다.
-3. 관리자가 묶음을 발행한다(`POST /api/config-bundles`). EC2 는 지금 유효한 구역·규칙·최근 보정·작업면으로 파일 5개(매니페스트 + 구성 요소 4개)를 만들어 바이트·해시를 저장하고, 열린 I1 연결에 `config_bundle` 을 보낸다.
+3. 관리자가 묶음을 발행한다(`POST /api/config-bundles`). EC2 는 지금 유효한 구역·규칙·최근 보정·작업면으로 파일 6개(매니페스트 + 구성 요소 5개, 안전모 요구 `ppe_policy` 포함, `docs/design/server-ppe-policy-publish.md`)를 만들어 바이트·해시를 저장하고, 열린 I1 연결에 `config_bundle` 을 보낸다.
 4. Tier 0 는 서명 주소로 파일을 받아 해시·형식·참조를 검사하고 원자적으로 전환한 뒤 `config_ack` 로 답한다. EC2 는 APPLIED 이고 해시가 같을 때만 `applied_at` 을 채운다. 그 전까지 상태는 PENDING(적용 대기)이다.
 
 ## 명세가 비워 둔 곳에서 정한 것
@@ -22,7 +22,7 @@ S15P31A101-120(구역 CRUD·구성 묶음 발행·config_ack 수신)·S15P31A101
 | 작업면·정적 객체 본문 | `kind`(WORK_SURFACE·OBSTACLE), `name`, `obb`{`center`[x,y,z], `size`[가로,세로,높이], `yaw_rad`}, `top_height_m`(작업면은 > 0 필수), `top_height_sigma_m`(선택) | Tier 0 work_surface 형식(OBB 바닥 투영 + 상판 높이) |
 | 객체 ID | 작업면 `ws-<8 hex>`, 그 밖 `so-<8 hex>` | |
 | 보정 문서 | 관리자가 올린다. 같은 버전은 같은 문서(해시)만 다시 받고, 다르면 409 | Tier 0 는 보정을 주소·해시로만 알려 EC2 에 본문이 없다(사용자 결정 2026-10-26) |
-| 묶음 버전 | `cfg-<n>`(1부터), 구성 요소 버전 `cfg-<n>-zones`·`-rules`·`-geometry`, 보정은 `calibration_version` | 발행을 advisory lock 으로 한 줄로 세운다 |
+| 묶음 버전 | `cfg-<n>`(1부터), 구성 요소 버전 `cfg-<n>-zones`·`-rules`·`-geometry`·`-ppe`, 보정은 `calibration_version` | 발행을 advisory lock 으로 한 줄로 세운다 |
 | 묶음에 넣는 구역·작업면 | 지금 유효한 버전만(`valid_to` 없음) | Tier 0 는 같은 ID 의 유효 구간이 겹치면 거부한다 |
 | 규칙 | `rule_profile` OPERATION·CLASSROOM_TEST. 규칙 ID 마다 하나: 교실 시험이면 그 규칙의 교실 시험 버전, 없으면 운영 버전. 없으면 이전 묶음의 프로필, 처음은 OPERATION | 7.4 별도 rule_version, 등록부(R__rule_versions) |
 | 구성 요소 내용 형식 | Tier 0 임시 형식(`ai/src/simai_ai/config/bundle.py` 표) 그대로. 구역은 `Zone.from_json` 키만(`zone_version` 은 문자열) | 내용 형식은 계약 범위 밖 |

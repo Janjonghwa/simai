@@ -13,6 +13,8 @@ import com.ssafy.simai.domain.user.repository.AppUserRepository;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
@@ -55,6 +57,7 @@ import tools.jackson.databind.node.ObjectNode;
 class WorkSessionIntegrationTest {
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
     private static final String PASSWORD = "correct-horse";
+    private static final Path CONTRACTS = Path.of(System.getProperty("simai.contracts.dir", "../contracts"));
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired AppUserRepository users;
@@ -89,6 +92,13 @@ class WorkSessionIntegrationTest {
                     """, id, site);
         }
         admin = token("admin", Role.ADMIN);
+        // 작업 시작·종료는 안전모 요구를 실은 구성 묶음을 만든다(S15P31A101-518). 묶음에 실을 보정 문서를 올려 둔다
+        ObjectNode calibration = (ObjectNode) MAPPER.readTree(Files.readString(CONTRACTS.resolve("examples/calibration.json")));
+        calibration.put("calibration_version", "cal-session-" + suffix);
+        ObjectNode upload = MAPPER.createObjectNode().put("reason", "시험 보정");
+        upload.set("document", calibration);
+        mvc.perform(post("/api/calibrations").header(HttpHeaders.AUTHORIZATION, admin).contentType(MediaType.APPLICATION_JSON)
+                .content(MAPPER.writeValueAsString(upload))).andExpect(status().isCreated());
         engine = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         engineThreads = Executors.newVirtualThreadPerTaskExecutor();
         engine.setExecutor(engineThreads);
@@ -124,6 +134,16 @@ class WorkSessionIntegrationTest {
         jdbc.update("DELETE FROM report WHERE work_id IN (SELECT work_id FROM work_unit WHERE name = ?)", "개인정보작업-" + suffix);
         jdbc.update("DELETE FROM work_unit WHERE name = ?", "개인정보작업-" + suffix);
         jdbc.update("DELETE FROM zone WHERE zone_id IN (?, ?)", zone, outside);
+        String users = "SELECT user_id FROM app_user WHERE login_id LIKE '%" + suffix + "'";
+        List<String> versions = jdbc.queryForList("SELECT config_version FROM config_bundle WHERE issued_by IN (" + users
+                + ") ORDER BY CAST(substring(config_version FROM 5) AS integer) DESC", String.class);
+        for (String version : versions) {
+            for (String table : List.of("config_ack", "config_bundle_file", "config_bundle_item", "config_bundle")) {
+                jdbc.update("DELETE FROM " + table + " WHERE config_version = ?", version);
+            }
+        }
+        jdbc.update("DELETE FROM calibration_document WHERE calibration_version = ?", "cal-session-" + suffix);
+        jdbc.update("DELETE FROM calibration_version WHERE calibration_version = ?", "cal-session-" + suffix);
         jdbc.update("DELETE FROM refresh_token WHERE user_id IN (SELECT user_id FROM app_user WHERE login_id LIKE ?)", "%" + suffix);
         jdbc.update("DELETE FROM app_user WHERE login_id LIKE ?", "%" + suffix);
         clock.now.set(Instant.now());

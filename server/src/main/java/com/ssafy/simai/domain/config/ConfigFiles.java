@@ -9,8 +9,12 @@ import java.util.List;
 public final class ConfigFiles {
 
     public static final String MANIFEST = "manifest";
-    /** 계약 config_bundle.payload.components 의 키 */
-    public static final List<String> COMPONENTS = List.of("zones", "rules", "calibration", "operational_geometry");
+    public static final String PPE_POLICY = "ppe_policy";
+    /**
+     * 계약 config_bundle.payload.components 의 키. ppe_policy 는 1.3.0 의 선택 구성 요소지만 EC2 는 늘 싣는다
+     * (빠지면 Tier 0 가 안전모 요구 없음으로 본다, 명세 7.2 R9, S15P31A101-518)
+     */
+    public static final List<String> COMPONENTS = List.of("zones", "rules", "calibration", "operational_geometry", PPE_POLICY);
 
     private ConfigFiles() {
     }
