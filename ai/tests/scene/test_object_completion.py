@@ -105,11 +105,11 @@ def _partial_cone(
 def _partial_signboard(
     cx: float,
     cy: float,
-    width: float = 0.48,
-    z0: float = 0.38,
-    z1: float = 1.05,
+    width: float = 0.44,
+    z0: float = 0.03,
+    z1: float = 0.62,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """얇은 평판형 안내판 부분 메시를 만든다 (`z_min >= 0.30` 조건 충족)."""
+    """바닥에 세워진 얇은 평판형 안내판 부분 메시를 만든다 (`floor_gap <= 0.18 m`, `height <= 0.85 m`)."""
     verts: list[list[float]] = []
     faces: list[list[int]] = []
     nx, nz = 7, 9
@@ -130,7 +130,7 @@ def _partial_signboard(
 
 
 def _synthetic_scene_glb() -> bytes:
-    """바닥(4x4 m) + 수직 벽(x=0) + 일반 상자 의자 + 주황 라바콘 + 평판 안내판으로 이루어진 합성 GLB."""
+    """바닥(4x4 m) + 수직 벽(x=0) + 일반 상자 의자 + 주황 라바콘 + 바닥 거치형 안내판으로 이루어진 합성 GLB."""
     # 1. Floor (0..4, 0..4, z=0.0)
     nf = 25
     xs = np.linspace(0.0, 4.0, nf)
@@ -171,14 +171,14 @@ def _synthetic_scene_glb() -> bytes:
     # 3. Objects
     V_box, F_box = _box_open_back(1.3, 1.7, 1.3, 1.7, 0.03, 0.45)
     V_cone, F_cone = _partial_cone(2.8, 1.5, height=0.58)
-    V_sign, F_sign = _partial_signboard(1.6, 3.1, width=0.48, z0=0.38, z1=1.05)
+    V_sign, F_sign = _partial_signboard(1.8, 2.8, width=0.44, z0=0.03, z1=0.62)
 
     parts = [
         (V_floor, F_floor, (130, 125, 115)),
         (V_wall, F_wall, (180, 180, 175)),
         (V_box, F_box, (45, 95, 195)),
         (V_cone, F_cone, (238, 82, 32)),
-        (V_sign, F_sign, (215, 210, 195)),
+        (V_sign, F_sign, (235, 195, 35)),
     ]
 
     blob = bytearray()
@@ -569,3 +569,88 @@ def test_traffic_cone_and_signboard_template_dimensions():
     fixer = oc.ThreeDFixerBackend(cfg)
     with pytest.raises((oc.CompletionSkip, ImportError)):
         fixer.complete(inp)
+
+
+def test_signboard_rejects_wall_pillar_and_default_backend_preserves_original():
+    """7. 창가 기둥·벽 파편(`sign_00`) 오분류 방지, 16 cm 대각선 바닥 안내판 분류, 본선 기본 `3d_fixer` 실패 시 원본 유지 시험."""
+    cfg = oc.ObjectCompletionConfig()
+    # 1) 본선 기본 백엔드는 "3d_fixer" 이어야 한다
+    assert cfg.backend == "3d_fixer"
+
+    # 2) 12차 로비에서 오분류됐던 창가 흰 기둥 조각(bbox_min=[7.185, 0.428, 0.642], bbox_max=[7.579, 0.623, 1.754], 단색 흰색)은
+    #    바닥에서 떠 있고(z_min=0.642), 높이가 크며(1.112m), 벽 근처이고, 색 대비가 없으므로 절대 안내판으로 분류되지 않는다.
+    V_pillar, _ = _partial_signboard(7.318, 0.543, width=0.39, z0=0.642, z1=1.754)
+    rgb_white = np.full((len(V_pillar), 3), 255.0, dtype=np.float64)
+    cat_pillar = oc._classify_candidate(
+        V_pillar,
+        rgb_white,
+        is_cone_seed=False,
+        cfg=cfg,
+        floor_z_m=0.025,
+        walls=[{"n": [-0.996, -0.094], "d": -7.503}, {"n": [0.0, -1.0], "d": -0.371}],
+        interior_xy=(0.254, 0.371, 7.365, 8.059),
+    )
+    assert cat_pillar == "general"
+
+    # 바닥에 닿아 있더라도 단색 흰색/회색 벽면 조각이거나 벽에 가까우면 안내판으로 분류하지 않는다(모르면 비운다)
+    V_near_wall, _ = _partial_signboard(0.15, 2.0, width=0.40, z0=0.03, z1=0.60)
+    rgb_contrast = np.tile(np.array([[240.0, 200.0, 20.0], [30.0, 30.0, 30.0]]), (30, 1))
+    assert (
+        oc._classify_candidate(
+            V_near_wall,
+            rgb_contrast,
+            is_cone_seed=False,
+            cfg=cfg,
+            floor_z_m=0.0,
+            walls=[{"n": [1.0, 0.0], "d": 0.0}],
+            interior_xy=(0.0, 0.0, 4.0, 4.0),
+        )
+        == "general"
+    )
+    V_floor_mono, _ = _partial_signboard(2.0, 2.0, width=0.40, z0=0.03, z1=0.60)
+    assert (
+        oc._classify_candidate(
+            V_floor_mono,
+            np.full((60, 3), 210.0),
+            is_cone_seed=False,
+            cfg=cfg,
+            floor_z_m=0.0,
+            interior_xy=(0.0, 0.0, 4.0, 4.0),
+        )
+        == "general"
+    )
+
+    # 3) 바닥에 세워진 ~16 cm 대각선(폭 11.5 cm x 높이 12.5 cm -> 대각선 17.0 cm) 고대비 표지판은 signboard로 분류된다
+    V_small_sign, _ = _partial_signboard(2.0, 2.0, width=0.115, z0=0.02, z1=0.145)
+    assert (
+        oc._classify_candidate(
+            V_small_sign,
+            rgb_contrast,
+            is_cone_seed=False,
+            cfg=cfg,
+            floor_z_m=0.0,
+            interior_xy=(0.0, 0.0, 4.0, 4.0),
+        )
+        == "signboard"
+    )
+
+    # 4) 기본 백엔드("3d_fixer")로 실행했을 때 GPU/3D-Fixer가 없으면 일반 물체는 convex_hull로 대체하지 않고
+    #    CompletionSkip 처리하며 원본 메시 삼각형을 그대로 유지한다.
+    raw = _synthetic_scene_glb()
+    cams = _four_cameras_for_scene(raw)
+    res_def = oc.complete_glb_objects(
+        raw,
+        cameras=cams,
+        config=oc.ObjectCompletionConfig(thresholds=oc.ValidationThresholds(min_reprojection_iou=0.25)),
+    )
+    gen_reports = [r for r in res_def.report["objects"] if r["category"] == "general"]
+    assert len(gen_reports) == 1
+    assert gen_reports[0]["accepted"] is False
+    assert gen_reports[0]["preserved_original_mesh"] is True
+    assert "skipped_reason" in gen_reports[0]
+    # 정형 도형(라바콘·안내판)만 템플릿 노드로 추가되고 일반 물체는 completed_ 노드가 생기지 않아야 한다
+    assert res_def.glb is not None
+    g_def = ge.parse_glb(res_def.glb)
+    node_names = [str(n.get("name", "")) for n in g_def.doc["nodes"]]
+    assert not any(name.startswith("completed_") for name in node_names)
+    assert any(name.startswith("template_cone_") for name in node_names)

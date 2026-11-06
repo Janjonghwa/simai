@@ -62,6 +62,7 @@ class InpaintConfig:
     strength: float = 0.99
     diffusion_infer_size: int = 1024
     device: str = "cuda"
+    quantization: str = "none"  # "none" | "8bit" | "bitsandbytes" | "torchao"
     tile_size: int = 1024
     tile_overlap: int = 128
     max_plane_side: int = 4096
@@ -104,6 +105,7 @@ class InpaintConfig:
             ("SIMAI_INPAINT_STRENGTH", "strength", float),
             ("SIMAI_INPAINT_INFER_SIZE", "diffusion_infer_size", int),
             ("SIMAI_INPAINT_DEVICE", "device", str),
+            ("SIMAI_INPAINT_QUANTIZATION", "quantization", str),
             ("SIMAI_INPAINT_TILE_SIZE", "tile_size", int),
             ("SIMAI_INPAINT_TILE_OVERLAP", "tile_overlap", int),
             ("SIMAI_INPAINT_TELEA_RADIUS", "telea_radius", int),
@@ -133,6 +135,7 @@ class InpaintConfig:
                 ("inpaint_prompt_floor", "prompt_floor", str),
                 ("inpaint_prompt_wall", "prompt_wall", str),
                 ("inpaint_seed", "seed", int),
+                ("inpaint_quantization", "quantization", str),
                 ("inpaint_tile_size", "tile_size", int),
                 ("inpaint_tile_overlap", "tile_overlap", int),
             ):
@@ -496,13 +499,30 @@ def prompt_for_role(role: str, cfg: InpaintConfig) -> str:
     return cfg.prompt_floor if role.startswith("floor") else cfg.prompt_wall
 
 
+def unload_diffusion_pipeline() -> None:
+    """캐시된 확산 모델 파이프라인을 해제하고 GPU VRAM 캐시를 비운다."""
+    if _DIFFUSION_PIPE_CACHE:
+        _DIFFUSION_PIPE_CACHE.clear()
+        import gc
+
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _load_diffusion_pipeline(cfg: InpaintConfig) -> Any:
-    """diffusers 인페인팅 파이프라인을 지연 로드한다(FLUX.1 Fill dev 또는 SDXL/SD Inpaint)."""
+    """diffusers 인페인팅 파이프라인을 지연 로드한다(FLUX.1 Fill dev 8-bit 양자화 또는 SDXL/SD Inpaint)."""
     import torch
     from diffusers import AutoPipelineForInpainting
 
     model_ref = cfg.model_path or cfg.model_id
-    cache_key = (model_ref, cfg.device)
+    quant = (cfg.quantization or "none").strip().lower()
+    cache_key = (model_ref, cfg.device, quant)
     if cache_key in _DIFFUSION_PIPE_CACHE:
         return _DIFFUSION_PIPE_CACHE[cache_key]
 
@@ -512,13 +532,67 @@ def _load_diffusion_pipeline(cfg: InpaintConfig) -> Any:
     dtype = torch.bfloat16 if (cfg.device.startswith("cuda") and "flux" in model_ref.lower()) else (
         torch.float16 if cfg.device.startswith("cuda") else torch.float32
     )
+    use_8bit = quant in ("8bit", "int8", "bitsandbytes", "bnb", "torchao")
+    pipe = None
+
     if "flux" in model_ref.lower():
         from diffusers import FluxFillPipeline
 
-        pipe = FluxFillPipeline.from_pretrained(model_ref, torch_dtype=dtype)
+        if use_8bit and quant != "torchao":
+            try:
+                from diffusers.quantizers import PipelineQuantizationConfig
+
+                q_cfg = PipelineQuantizationConfig(
+                    quant_backend="bitsandbytes_8bit",
+                    quant_kwargs={"load_in_8bit": True},
+                    components_to_quantize=["transformer", "text_encoder_2"],
+                )
+                pipe = FluxFillPipeline.from_pretrained(model_ref, quantization_config=q_cfg, torch_dtype=dtype)
+            except Exception:  # noqa: BLE001
+                try:
+                    from diffusers import BitsAndBytesConfig as DiffusersBnBConfig
+                    from diffusers import FluxTransformer2DModel
+
+                    bnb_cfg = DiffusersBnBConfig(load_in_8bit=True)
+                    transformer = FluxTransformer2DModel.from_pretrained(
+                        model_ref,
+                        subfolder="transformer",
+                        quantization_config=bnb_cfg,
+                        torch_dtype=dtype,
+                    )
+                    pipe = FluxFillPipeline.from_pretrained(model_ref, transformer=transformer, torch_dtype=dtype)
+                except Exception:  # noqa: BLE001
+                    pipe = None
+
+        if pipe is None:
+            pipe = FluxFillPipeline.from_pretrained(model_ref, torch_dtype=dtype)
+            if use_8bit:
+                try:
+                    from torchao.quantization import int8_weight_only, quantize_
+
+                    if getattr(pipe, "transformer", None) is not None:
+                        quantize_(pipe.transformer, int8_weight_only())
+                except Exception:  # noqa: BLE001
+                    pass
     else:
         pipe = AutoPipelineForInpainting.from_pretrained(model_ref, torch_dtype=dtype)
-    pipe = pipe.to(cfg.device)
+
+    cpu_offload = os.environ.get("SIMAI_INPAINT_CPU_OFFLOAD", "0").strip().lower() in ("1", "true", "yes")
+    if cpu_offload and hasattr(pipe, "enable_model_cpu_offload"):
+        pipe.enable_model_cpu_offload()
+    else:
+        try:
+            pipe = pipe.to(cfg.device)
+        except ValueError:
+            # bitsandbytes 8-bit 컴포넌트가 이미 CUDA에 배치된 경우 비양자화 서브모듈만 디바이스로 이동
+            for comp_name in ("vae", "text_encoder", "text_encoder_2", "transformer", "unet"):
+                comp = getattr(pipe, comp_name, None)
+                if comp is not None and not getattr(comp, "is_loaded_in_8bit", False):
+                    try:
+                        comp.to(cfg.device)
+                    except Exception:  # noqa: BLE001
+                        pass
+
     if hasattr(pipe, "set_progress_bar_config"):
         pipe.set_progress_bar_config(disable=True)
     _DIFFUSION_PIPE_CACHE[cache_key] = pipe
@@ -887,6 +961,16 @@ def inpaint_sidecar_to_glb(
             "seconds": round(time.monotonic() - t0, 3),
         }
 
+    if cfg.mode == "diffusion" and cfg.device.startswith("cuda"):
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.reset_peak_memory_stats()
+        except Exception:  # noqa: BLE001
+            pass
+
     results: list[PlaneInpaintResult] = []
     for entry in plane_entries:
         role = str(entry["role"])
@@ -938,6 +1022,19 @@ def inpaint_sidecar_to_glb(
     primary_backend = backends_used[0] if len(backends_used) == 1 else ("+".join(backends_used) if backends_used else (results[0].backend_used if results else None))
     any_applied = any(r.applied for r in results)
 
+    gpu_peak_mb = 0.0
+    gpu_reserved_mb = 0.0
+    if cfg.mode == "diffusion" and cfg.device.startswith("cuda"):
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                gpu_peak_mb = round(float(torch.cuda.max_memory_allocated() / (1024**2)), 2)
+                gpu_reserved_mb = round(float(torch.cuda.max_memory_reserved() / (1024**2)), 2)
+        except Exception:  # noqa: BLE001
+            pass
+
     summary: dict[str, Any] = {
         "applied": any_applied,
         "reason": None if any_applied else (results[0].backend_used.upper() if results else "NO_PLANES"),
@@ -962,12 +1059,15 @@ def inpaint_sidecar_to_glb(
             }
             for r in results
         },
+        "gpu_max_memory_allocated_mb": gpu_peak_mb,
+        "gpu_max_memory_reserved_mb": gpu_reserved_mb,
         "seconds": round(time.monotonic() - t0, 3),
     }
     atlas["inpaint"] = {
         "applied": any_applied,
         "mode": cfg.mode,
         "backend_used": primary_backend,
+        "gpu_max_memory_allocated_mb": gpu_peak_mb,
         "seconds": summary["seconds"],
     }
     atlas_path.write_text(json.dumps(atlas, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -1006,6 +1106,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--out", type=Path, help="결과 GLB 를 다른 경로로 저장할 때 지정")
     ap.add_argument("--mode", choices=["off", "classic", "diffusion"], help="인페인팅 백엔드 모드(기본: SIMAI_GLB_INPAINT 또는 classic)")
     ap.add_argument("--model-id", help="diffusion 모델 ID 또는 로컬 가중치 경로")
+    ap.add_argument("--quantization", choices=["none", "8bit", "bitsandbytes", "torchao"], help="확산 모델 양자화 설정(기본: SIMAI_INPAINT_QUANTIZATION 또는 none)")
     ap.add_argument("--seed", type=int, help="시드 고정값")
     ap.add_argument("--tile-size", type=int, help="타일 한 변 크기(px)")
     ap.add_argument("--tile-overlap", type=int, help="타일 겹침 폭(px)")
@@ -1017,6 +1118,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         opts["inpaint"] = args.mode
     if args.model_id:
         opts["inpaint_model_id"] = args.model_id
+    if args.quantization:
+        opts["inpaint_quantization"] = args.quantization
     if args.seed is not None:
         opts["inpaint_seed"] = args.seed
     if args.tile_size is not None:
@@ -1031,11 +1134,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.out.write_bytes(args.glb.read_bytes())
         target_glb = args.out
     sidecar = args.sidecar if args.sidecar is not None else args.glb.with_name(args.glb.stem + "_fill")
-    rep = inpaint_sidecar_to_glb(target_glb, sidecar, config=cfg)
+    try:
+        rep = inpaint_sidecar_to_glb(target_glb, sidecar, config=cfg)
+    finally:
+        unload_diffusion_pipeline()
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(rep, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({k: rep.get(k) for k in ("applied", "mode", "backend_used", "seconds")}, ensure_ascii=False))
+    print(json.dumps({k: rep.get(k) for k in ("applied", "mode", "backend_used", "gpu_max_memory_allocated_mb", "seconds")}, ensure_ascii=False))
     return 0
 
 
@@ -1062,6 +1168,7 @@ __all__ = [
     "prompt_for_role",
     "summarize_surface_source",
     "tile_boxes",
+    "unload_diffusion_pipeline",
 ]
 
 

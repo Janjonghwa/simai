@@ -26,6 +26,33 @@ DEFAULT_PHOTO_DIR = Path(
     "bundle-393d5fbdabad41749559af4526a0a2ce"
 )
 DEFAULT_OUT_DIR = Path("C:/Users/SSAFY/simai-local/object-completion")
+DEFAULT_GPU_POC_DIR = Path("C:/Users/SSAFY/simai-local/gpu-poc-map")
+
+
+def _strip_enhanced_nodes(raw: bytes) -> bytes:
+    """이미 `-511` 보강(`estimated_*`)이 적용된 GLB에서 추정 평면 노드를 걷어내 순수 TSDF 원본 GLB를 복원한다."""
+    import copy
+
+    g = ge.parse_glb(raw)
+    doc = copy.deepcopy(g.doc)
+    est_nodes = {
+        i
+        for i, n in enumerate(doc.get("nodes", []))
+        if str(n.get("name", "")).startswith("estimated_")
+        or ((n.get("extras") or {}).get("simai") or {}).get("surface_source") == "ESTIMATED_PLANE"
+    }
+    for s in doc.get("scenes", []):
+        if "nodes" in s:
+            s["nodes"] = [n for n in s["nodes"] if n not in est_nodes]
+    for n in doc.get("nodes", []):
+        if "children" in n:
+            n["children"] = [c for c in n["children"] if c not in est_nodes]
+    simai = (doc.get("extras") or {}).get("simai")
+    if isinstance(simai, dict):
+        simai.pop("enhanced", None)
+        simai.pop("object_completion", None)
+    g.doc = doc
+    return ge.serialize_glb(g)
 
 
 PALETTE_BGR = [
@@ -430,15 +457,32 @@ def _save_zoom_and_provenance(
 def _export_gpu_bundle(
     raw_glb: bytes,
     calib_path: Path,
+    photo_dir: Path,
     cameras: list[ge.CheckCamera],
     candidates: list[oc.ObjectCandidate],
     out_dir: Path,
-) -> Path:
-    """GPU Pod(H100)에서 Lead가 명령 한 줄로 3D-Fixer를 실행할 수 있도록 12차 입력 번들을 생성·압축한다."""
+    gpu_poc_dir: Path = DEFAULT_GPU_POC_DIR,
+) -> tuple[Path, Path]:
+    """GPU Pod(H100)에서 Lead가 명령 한 줄로 3D-Fixer(`-515`)와 평면 인페인팅(`-514` FLUX.1-Fill-dev 8-bit)을
+    연속 실행할 수 있도록 12차 입력 번들을 생성·압축한다.
+    """
+    import shutil
+
+    baseline_glb = _strip_enhanced_nodes(raw_glb)
     bundle_dir = out_dir / "s12_3dfixer_bundle"
+    if bundle_dir.exists():
+        shutil.rmtree(bundle_dir)
     bundle_dir.mkdir(parents=True, exist_ok=True)
     (bundle_dir / "current-scene-textured.glb").write_bytes(raw_glb)
+    (bundle_dir / "current-scene-baseline.glb").write_bytes(baseline_glb)
     (bundle_dir / "calibration.json").write_text(calib_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    raw_img_dir = bundle_dir / "images_raw"
+    raw_img_dir.mkdir(exist_ok=True)
+    for cid in ("cam_A", "cam_B", "cam_C", "cam_D"):
+        src_jpg = photo_dir / f"{cid}.jpg"
+        if src_jpg.is_file():
+            shutil.copy2(src_jpg, raw_img_dir / f"{cid}.jpg")
 
     images_dir = bundle_dir / "images_undistorted"
     images_dir.mkdir(exist_ok=True)
@@ -485,7 +529,17 @@ def _export_gpu_bundle(
     tar_path = out_dir / "s12_3dfixer_bundle.tar.gz"
     with tarfile.open(tar_path, "w:gz") as tf:
         tf.add(bundle_dir, arcname="s12_3dfixer_bundle")
-    return tar_path
+
+    # 지시서 3) 노트북에서 미리 올려둘 통합 GPU 입력 묶음 (C:/Users/SSAFY/simai-local/gpu-poc-map/)
+    gpu_poc_dir.mkdir(parents=True, exist_ok=True)
+    poc_bundle_dir = gpu_poc_dir / "s12_gpu_poc_input"
+    if poc_bundle_dir.exists():
+        shutil.rmtree(poc_bundle_dir)
+    shutil.copytree(bundle_dir, poc_bundle_dir)
+    poc_tar_path = gpu_poc_dir / "s12_gpu_poc_input.tar.gz"
+    with tarfile.open(poc_tar_path, "w:gz") as tf:
+        tf.add(poc_bundle_dir, arcname="s12_gpu_poc_input")
+    return tar_path, poc_tar_path
 
 
 def main() -> int:
@@ -497,6 +551,23 @@ def main() -> int:
     photos = {cid: DEFAULT_PHOTO_DIR / f"{cid}.jpg" for cid in ("cam_A", "cam_B", "cam_C", "cam_D")}
     cameras = ge.cameras_from_raw(calib, photos)
 
+    # 1) 본선 기본 백엔드("3d_fixer") 동작 검증: 노트북(6GB VRAM)에서는 3d_fixer가 일반 물체를 CompletionSkip 하고
+    #    convex_hull로 대체하지 않은 채 원본 메시 조각을 보존(정형 도형인 라바콘만 교체)하는지 확인한다.
+    default_cfg = oc.ObjectCompletionConfig()
+    assert default_cfg.backend == "3d_fixer", f"Expected default backend '3d_fixer', got {default_cfg.backend}"
+    res_default = oc.complete_glb_objects(raw_glb, config=default_cfg, cameras=cameras)
+    assert res_default.report["candidate_summary"]["by_category"]["signboard"] == 0, (
+        f"Signboard misclassification remained: {res_default.report['candidate_summary']}"
+    )
+    gen_objs_default = [o for o in res_default.report["objects"] if o["category"] == "general"]
+    assert all(not o.get("accepted", False) and o.get("preserved_original_mesh") is True for o in gen_objs_default), (
+        "Default 3d_fixer backend must preserve original mesh on skip, never substitute convex_hull"
+    )
+    (out_dir / "session12-default-3dfixer-skip-report.json").write_text(
+        json.dumps(res_default.report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    # 2) 노트북 시각화 확인용 명시적 convex_hull 실행
     cfg = oc.ObjectCompletionConfig(
         backend="convex_hull",
         mask_backend="color_refined",
@@ -504,6 +575,9 @@ def main() -> int:
     )
     res = oc.complete_glb_objects(raw_glb, config=cfg, cameras=cameras)
     assert res.glb is not None, f"Object completion was not applied: {res.report}"
+    assert res.report["candidate_summary"]["by_category"]["signboard"] == 0, (
+        f"Signboard misclassification remained: {res.report['candidate_summary']}"
+    )
 
     out_glb_path = out_dir / "session12-objects-completed.glb"
     out_rep_path = out_dir / "session12-report.json"
@@ -538,11 +612,16 @@ def main() -> int:
         out_dir / "04_cone_and_objects_zoom.png",
         out_dir / "05_surface_source_provenance.png",
     )
-    tar_path = _export_gpu_bundle(raw_glb, DEFAULT_CALIB, cameras, res.candidates, out_dir)
+    tar_path, poc_tar_path = _export_gpu_bundle(
+        raw_glb, DEFAULT_CALIB, DEFAULT_PHOTO_DIR, cameras, res.candidates, out_dir
+    )
 
     print(
         json.dumps(
             {
+                "default_backend": default_cfg.backend,
+                "default_accepted_count": res_default.report["accepted_count"],
+                "viz_backend": cfg.backend,
                 "applied": res.report["applied"],
                 "candidates_found": res.report["candidate_summary"]["candidates_found"],
                 "by_category": res.report["candidate_summary"]["by_category"],
@@ -551,6 +630,7 @@ def main() -> int:
                 "seconds": res.report["seconds"],
                 "output_glb": str(out_glb_path),
                 "gpu_bundle": str(tar_path),
+                "gpu_poc_input_tar": str(poc_tar_path),
             },
             ensure_ascii=False,
             indent=2,

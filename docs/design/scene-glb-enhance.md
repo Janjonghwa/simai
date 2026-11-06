@@ -40,22 +40,27 @@ texrecon 으로 굽은 `textured.glb` 는 면의 약 46%가 미관측 회색(`un
 
 관련 명세: 5.3(정적 3D 복원·시각 자산), 규칙 1·3·7(시각용은 Tier 0 값·위험 판정에 쓰지 않으며 관측으로 승격하지 않는다).
 코드: `ai/src/simai_ai/scene/object_completion.py`, `ai/src/simai_ai/scene/texture_provenance.py`(`GENERATED = 4`).
-실험·GPU 스크립트: `ai/experiments/object_completion/verify_session12_notebook.py`, `ai/experiments/object_completion/gpu/install_3dfixer.sh`, `ai/experiments/object_completion/gpu/run_3dfixer_s12.sh`.
+실험·GPU 스크립트: `ai/experiments/object_completion/verify_session12_notebook.py`, `ai/experiments/object_completion/gpu/install_3dfixer.sh`, `ai/experiments/object_completion/gpu/run_3dfixer_s12.sh`, `ai/experiments/object_completion/gpu/run_all_s12.sh`, `ai/experiments/object_completion/gpu/README.md`.
 시험: `ai/tests/scene/test_object_completion.py`.
 
 ## 하는 일
 4대 고정 카메라 TSDF·texrecon으로 만든 정적 배경 GLB에서 바닥·벽 평면을 뺀 나머지 메시를 연결 성분과 높이·색상으로 묶어 물체 후보(`traffic_cone`, `signboard`, `general`)로 분리하고, 카메라 뒤에 가려 뚫린 뒷면·옆면·바닥 지지부를 제자리(World 좌표계)에서 완성해 단일 GLB 안에 물체별 노드로 합친다.
 
 1. **물체 후보 분리 및 2D 마스크**:
-   - `-511`(`glb_fill`)과 호환되는 바닥 높이(`z0`) 및 수직 벽 평면 순차 RANSAC으로 바닥·벽·천장 면을 제거한다.
-   - 주황색 원뿔 시드(`traffic_cone`), 수평 단면 PCA 기반 얇은 평판(`signboard`), 일반 입체 물체(`general`)로 후보를 분리한다.
+   - `-511`(`glb_fill`)과 호환되는 바닥 높이(`z0`) 및 수직 벽 평면 순차 RANSAC으로 바닥·벽·천장 면을 제거하고, 바닥에서 높게 떠 있거나(`z_min - z0 > 0.40 m`) 천장 기준(`max_object_height_m`)을 넘는 창틀·기둥 파편(`WALL_OR_PILLAR_FRAGMENT`)은 물체 후보에서 배제한다.
+   - 주황색 원뿔 시드(`traffic_cone`), 바닥 거치형 얇은 고대비 평판(`signboard`), 일반 입체 물체(`general`)로 후보를 분리한다.
+   - **안내판(`signboard`) 분류 기준(`SignboardConfig`·`_classify_candidate`)**: 창가 흰 기둥/벽 조각(예: 12차 로비 `(7.318, 0.543)`, `z_min = 0.642 m`, 단색 흰색)이 안내판으로 오분류되지 않도록 아래 4가지 조건을 모두 만족할 때만 `signboard`로 분류하고, 확신이 없으면 안내판으로 분류하지 않고 일반 물체/원본을 유지한다(규칙 2 "모르면 비운다"):
+     1) **바닥 접촉(`max_floor_gap_m = 0.18 m`)**: `-0.06 m <= z_min - floor_z_m <= 0.18 m` (허공에 뜬 창틀·기둥 조각 배제).
+     2) **주변 벽·방 경계 이격(`min_wall_distance_m = 0.35 m`)**: 검출된 모든 벽 평면으로부터 `>= 0.35 m`, 방 내부 경계(`interior_xy`)로부터 `>= 0.25 m` 이격.
+     3) **크기·높이·대각선·두께**: 폭 `0.10 ~ 0.65 m`, 높이 `0.12 ~ 0.85 m`, 표지면 대각선 $\sqrt{w^2 + h^2} \ge 0.14\text{ m}$ (16 cm 대각선 소형 표지판 포함), 수평 단면 PCA 두께 `<= min(0.12 m, 0.38 × 폭)`.
+     4) **색 대비(`min_color_std = 10.0`, `min_color_chroma = 25.0`)**: 면 색상 표준편차 `>= 10` 또는 90분위 채도(`max(R,G,B) - min(R,G,B)`) `>= 25` (단색 흰/회색 기둥·벽 파편 배제).
    - 4대 보정 카메라(`K·R·t`, 왜곡 보정 배경 사진)에 장면 전체 z-버퍼와 함께 투영해 가림을 반영한 2D 마스크(`masks_2d`)와 최적 시점(`best_camera_id`)을 고른다(`SIMAI_OBJECT_MASK_BACKEND=projection|color_refined|sam`).
-2. **완성 백엔드 인터페이스 (`CompletionBackend`)**:
+2. **완성 백엔드 인터페이스 (`CompletionBackend`) 및 본선 기본값**:
    - 입력(`CompletionInput`): 최적 시점 사진·2D 마스크·4대 카메라 내외부 파라미터·관측 부분 점(`observed_points_world`)과 경계 마스크(`points_mask`: 중심 1.0, 외곽 15% 0.5)·관측 메시 조각.
    - 출력(`CompletionOutput`): World 좌표계(`+Z` 상방, 바닥 `Z=0`, 미터) 완성 정점·면·UV·텍스처·면/텍셀 출처 지도.
    - 구현 백엔드:
-     - `ThreeDFixerBackend` (`3d_fixer`): 1순위 GPU 백엔드(`HorizonRobotics/3D-Fixer`, CVPR 2026, TRELLIS 기반). 무거운 의존성(`torch`, `threeDFixer`)은 함수 안에서만 지연 import 하며 GPU VRAM 최소 기준(기본 20 GB, 공식 요구 24 GB) 미달 시 즉시 건너뛴다.
-     - `ConvexHullCompletionBackend` (`convex_hull`): 노트북·단위 시험용 가짜 백엔드. 관측 표면 조각(`OBSERVED=2`)은 그대로 보존하고 미관측 뒷면·바닥 지지부는 관측 점 + 바닥 투영점의 3D 볼록 껍질(`GENERATED=4`)과 가림 고려 다중 시점 사진 투영으로 제자리 완성한다.
+     - `ThreeDFixerBackend` (`3d_fixer`, **본선 기본값** `ObjectCompletionConfig.backend = "3d_fixer"`): 1순위 GPU 백엔드(`HorizonRobotics/3D-Fixer`, CVPR 2026, TRELLIS 기반). 무거운 의존성(`torch`, `threeDFixer`)은 함수 안에서만 지연 import 하며, GPU/패키지 미설치·VRAM 최소 기준(기본 20 GB, 공식 요구 24 GB) 미달·추론 실패 시 `convex_hull`로 대체하지 않고 `CompletionSkip`을 발생시켜 **해당 물체의 원본 메시 조각을 그대로 유지**(`preserved_original_mesh: true`)한다. 물체별 추론 시 `torch.cuda.max_memory_allocated` 피크 메모리(`gpu_max_memory_allocated_mb`)와 소요 시간(`infer_seconds`)을 기록하며 완료 후 `unload()`로 GPU 메모리를 해제한다.
+     - `ConvexHullCompletionBackend` (`convex_hull`, **단위 시험·노트북 시각화 전용**): 단위 시험이나 `verify_session12_notebook.py`에서 `backend="convex_hull"`을 명시적으로 지정했을 때만 사용한다. 관측 표면 조각(`OBSERVED=2`)은 보존하고 미관측 뒷면·바닥 지지부는 관측 점 + 바닥 투영점의 3D 볼록 껍질(`GENERATED=4`)과 가림 고려 다중 시점 사진 투영으로 완성한다.
    - 정형 도형 템플릿:
      - **라바콘(`traffic_cone`)**: 높이 `67.5 cm`(`0.675 m`), 밑면 한 변 `37 cm`(`0.37 m`) 정사각형(모서리 둥글림 무시), 꼭대기 지름 `4.5 cm`(`0.045 m`). 관측 전면 점들이 원뿔 옆면 반지름 $r(z)$에 맞도록 중심축과 밑판 방향을 정합하고 관측 사진을 투영한다.
      - **안내판(`signboard`)**: 관측 점(또는 `SignboardConfig`)에서 폭·높이·주축 방향을 맞춘 평판 도형에 관측 사진을 투영한다.
@@ -77,17 +82,22 @@ texrecon 으로 굽은 `textured.glb` 는 면의 약 46%가 미관측 회색(`un
 - 각 물체 노드의 `extras.simai`에 `safety_use: false`, `geometry_role: "VISUAL"`, `surface_source: "GENERATED"`, `face_source_ratios_area`, `source_map_image`(텍셀별 출처 PNG 이미지 인덱스), `alignment`, `validation`을 기록하고, 최상위 `extras.simai.object_completion`에 전체 요약을 남긴다.
 - 비활성화 스위치: `SIMAI_GLB_OBJECTS=off`(`0`, `false`, `no`, `disabled`) 또는 옵션 `{"objects": False}` 이면 물체 완성을 건너뛰고 원본 GLB를 유지한다.
 
-## GPU Pod (H100) 실행 방법 및 3D-Fixer 입력 주의사항
-노트북에서 만든 12차 로비 입력 번들(`C:/Users/SSAFY/simai-local/object-completion/s12_3dfixer_bundle.tar.gz`)을 GPU Pod(Linux, CUDA >= 11.8, VRAM >= 24 GB)에 복사한 뒤 아래 두 스크립트로 한 번에 설치·실행한다.
+## GPU Pod (H100) 일괄 실행 방법 및 3D-Fixer 입력 주의사항
+노트북에 미리 준비한 단일 통합 입력 번들(`C:/Users/SSAFY/simai-local/gpu-poc-map/s12_gpu_poc_input.tar.gz`)을 GPU Pod(Linux, CUDA >= 11.8, VRAM >= 24 GB)에 복사한 뒤 `run_all_s12.sh` 하나로 (a) 3D-Fixer 및 확산 모델 양자화 의존성 설치, (b) `3d_fixer` 물체 완성(독립 프로세스 #1), (c) `-514` `FLUX.1-Fill-dev` 8-bit 평면 인페인팅 및 평면·물체 통합 GLB 생성(독립 프로세스 #2), (d) 단일 결과 압축본(`s12_gpu_poc_results.tar.gz`) 패키징을 순차 실행한다.
 
 ```bash
-# 1. HorizonRobotics/3D-Fixer 설치 및 Hugging Face 가중치 다운로드
-bash ai/experiments/object_completion/gpu/install_3dfixer.sh
+# 1. H100 Pod에서 3D-Fixer + FLUX.1-Fill-dev 8-bit 평면 인페인팅 일괄 순차 실행
+export HF_TOKEN="<HUGGINGFACE_TOKEN>"
+bash ai/experiments/object_completion/gpu/run_all_s12.sh \
+  /workspace/s12_gpu_poc_input.tar.gz \
+  /workspace/s12_gpu_poc_run
 
-# 2. 12차 로비 번들로 3D-Fixer 실행 -> 완성 GLB 및 리포트 생성
-bash ai/experiments/object_completion/gpu/run_3dfixer_s12.sh /workspace/s12_3dfixer_bundle.tar.gz /workspace/s12_3dfixer_run
+# (개별 실행 시)
+bash ai/experiments/object_completion/gpu/install_3dfixer.sh
+bash ai/experiments/object_completion/gpu/run_3dfixer_s12.sh /workspace/s12_gpu_poc_input.tar.gz /workspace/s12_3dfixer_run
 ```
 
+- **한 시점 단일 모델 적재 및 메모리·시간 기록**: `run_all_s12.sh`는 `3d_fixer` 단계와 `FLUX.1-Fill-dev` 8-bit 단계를 별도 Python 서브프로세스로 분리하고 각 단계 끝에서 `unload()` / `unload_diffusion_pipeline()` 및 `torch.cuda.empty_cache()`를 호출해 GPU VRAM을 완전히 반환한 뒤 다음 모델을 적재한다. 각 단계·물체별 `gpu_max_memory_allocated_mb`(`torch.cuda.max_memory_allocated`)와 소요 시간(`seconds`)은 `gpu_session_summary.json` 및 각 단계 리포트 JSON에 기록된다.
 - **3D-Fixer 공식 저장소 입력 규약 주의사항**: `threeDFixer/pipelines/threeD_fixer.py`의 `project_uv`는 `utils3d.torch.project_cv(pts, torch.inverse(extrinsics), intrinsics)`를 호출한 뒤 `[0, 1]` UV를 `[-1, 1]`로 변환해 `grid_sample`에 전달한다. 따라서 `extrinsics`는 OpenCV `cam2world` 4×4 행렬(`R_c2w = R.T`, `t_c2w = -R.T @ t`)이어야 하고, `intrinsics`는 이미지 해상도 `[W, H]`로 정규화된 3×3 행렬(`fx/W, fy/H, cx/W, cy/H`)이어야 한다(`inference_ours_testset.py`의 `intrinsics_from_fov_xy`와 일치; 공식 `app.py` 데모의 비정규화 픽셀 `K` 전달은 업스트림 데모 스크립트의 불일치 사항이므로 `ThreeDFixerBackend.prepare_conditioning_tensors`에서 정규화 `K`를 생성하도록 구현함).
 
 ## Pixal3D를 뒤로 미룬 까닭
@@ -132,9 +142,10 @@ cos 0.15(-505 + 스윕: 0.25 는 먼 바닥이 지워짐, 0.15 는 0.6 %), 닫�
 
 ### 2. 백엔드 3단 폴백 및 큰 평면 타일링
 설정 스위치: 환경변수 `SIMAI_GLB_INPAINT=off|classic|diffusion` 또는 작업 옵션 `options.inpaint` (`"off"` | `"classic"` | `"diffusion"` | `bool`, 기본 `"classic"`, GPU 세션에서는 `"diffusion"`).
-1. **`diffusion` (GPU 확산 모델 인페인팅)**:
+1. **`diffusion` (GPU 확산 모델 인페인팅 및 8-bit 양자화)**:
    - `torch`·`diffusers` 를 함수 안에서 지연 import 해 CPU 전용 환경이나 기본 `pyproject.toml`/`uv.lock` 에 무거운 GPU 의존성을 강제하지 않는다.
-   - `SIMAI_INPAINT_MODEL_ID`(기본 `diffusers/stable-diffusion-xl-1.0-inpainting-0.1`, FLUX 계열 ID/경로면 `FluxFillPipeline` 자동 선택) 또는 `SIMAI_INPAINT_MODEL_PATH`, `SIMAI_INPAINT_SEED`(기본 `42`), `SIMAI_INPAINT_STEPS`(기본 `20`), 역할별 프롬프트(`SIMAI_INPAINT_PROMPT_FLOOR` / `SIMAI_INPAINT_PROMPT_WALL`, 기본 `"same floor/wall material, seamless, uniform lighting..."`)를 환경변수·옵션으로 받는다.
+   - `SIMAI_INPAINT_MODEL_ID`(기본 `diffusers/stable-diffusion-xl-1.0-inpainting-0.1`, FLUX 계열 ID/경로면 `FluxFillPipeline` 자동 선택), `SIMAI_INPAINT_QUANTIZATION`(`none|8bit|bitsandbytes|torchao`, H100 세션에서 `FLUX.1-Fill-dev` 사용 시 `8bit` 양자화로 VRAM 절감), `SIMAI_INPAINT_MODEL_PATH`, `SIMAI_INPAINT_SEED`(기본 `42`), `SIMAI_INPAINT_STEPS`(기본 `20`), 역할별 프롬프트(`SIMAI_INPAINT_PROMPT_FLOOR` / `SIMAI_INPAINT_PROMPT_WALL`, 기본 `"same floor/wall material, seamless, uniform lighting..."`)를 환경변수·옵션으로 받는다.
+   - 실행 시 `torch.cuda.max_memory_allocated` 피크 메모리(`gpu_max_memory_allocated_mb`)와 소요 시간을 보고서에 기록하고, `unload_diffusion_pipeline()` 으로 파이프라인 캐시와 CUDA 메모리를 명시적으로 해제한다.
    - 구멍 내부에 회색(128) 대신 관측 텍셀 다중 스케일 조화 전파 바탕을 조건 영상으로 넣어 타일 내부에서도 주변 바닥·벽 색조가 유지되게 한다.
 2. **`classic` (전통 인페인팅, 기본값)**:
    - 평면 밖 배경(`surface_source == 0 & inpaint_mask == 0`, 값 128)이 구멍 안으로 번지지 않도록 먼저 진짜 관측 텍셀(`inpaint_mask == 0 & surface_source == 3`)에서만 거리 변환 + 다중 스케일 가우스 블러(`σ=6, 24`)로 조화 기저를 만든 뒤 `cv2.inpaint(..., cv2.INPAINT_TELEA)` 로 경계 기울기를 잇는다.
@@ -150,12 +161,12 @@ cos 0.15(-505 + 스윕: 0.25 는 먼 바닥이 지워짐, 0.15 는 0.6 %), 닫�
 
 ### 4. 비활성화 스위치 및 GPU 세션 실행 방법
 - **끄기**: `SIMAI_GLB_INPAINT=off` (또는 `options={"inpaint": "off"}` / `False`) 설정 시 인페인팅을 건너뛰고 `-511` 의 중립 회색(`128`, `UNOBSERVED=0`)을 그대로 둔다.
-- **GPU 세션에서 diffusion 실행**:
+- **GPU 세션에서 diffusion(FLUX.1-Fill-dev 8-bit) 실행**:
   ```bash
-  uv pip install diffusers transformers accelerate safetensors
-  # 단일 GLB + 사이드카에 diffusion 인페인팅 적용
-  SIMAI_GLB_INPAINT=diffusion SIMAI_INPAINT_MODEL_ID=diffusers/stable-diffusion-xl-1.0-inpainting-0.1 \
+  uv pip install "diffusers>=0.31.0" "transformers>=4.44.0" "accelerate>=0.33.0" bitsandbytes sentencepiece protobuf
+  # 단일 GLB + 사이드카에 FLUX.1-Fill-dev 8-bit 인페인팅 적용
+  SIMAI_GLB_INPAINT=diffusion SIMAI_INPAINT_MODEL_ID=black-forest-labs/FLUX.1-Fill-dev SIMAI_INPAINT_QUANTIZATION=8bit \
     uv run python -m simai_ai.scene.glb_inpaint --glb path/to/scene.glb --sidecar path/to/scene_fill --report path/to/inpaint.json
-  # 12차 실제 맵 4단 비교(before | -511 gray | classic | diffusion) 생성
-  cd ai && SIMAI_GLB_INPAINT=diffusion uv run python -m experiments.texrecon_opt.inpaint_real --include-diffusion
+  # 12차 로비 3D-Fixer + FLUX.1-Fill-dev 8-bit 통합 일괄 실행
+  bash ai/experiments/object_completion/gpu/run_all_s12.sh /workspace/s12_gpu_poc_input.tar.gz /workspace/s12_gpu_poc_run
   ```
