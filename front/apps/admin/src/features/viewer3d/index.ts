@@ -1,5 +1,19 @@
 // viewer3d 의 입구. 바깥에서는 여기서만 import 한다(front/CONVENTION.md 「의존 방향」).
 // 공개 계약과 변경 이력은 같은 폴더의 CONTRACT.md·CHANGELOG.md 에 둔다. 여기서 빼거나 모양을 바꾸면 FE 리뷰가 필요하다.
+export {
+  CAMERA_FRUSTUM_ASPECT,
+  CAMERA_FRUSTUM_LENGTH_M,
+  cameraFrustumDimensions,
+  cameraMarkerTransform,
+  highlightedCameraIds,
+  readCalibrationCameraPoses,
+  sameCalibratedCameraPoses,
+} from '@/features/viewer3d/cameras/cameraMarkers';
+export type {
+  CalibratedCameraPose,
+  CameraFrustumDimensions,
+  CameraMarkerTransform,
+} from '@/features/viewer3d/cameras/cameraMarkers';
 export { adaptZones } from '@/features/viewer3d/data/contractAdapter';
 export type {
   OfficialZoneInfo,
@@ -189,7 +203,15 @@ export type {
 } from '@/features/viewer3d/types';
 export { Viewer3D } from '@/features/viewer3d/Viewer3D';
 export { MAX_SELECT_WAIT_MS } from '@/features/viewer3d/viewer3d.store';
-export { toWorldPoint, worldPoint, type WorldPoint } from '@/features/viewer3d/worldCoordinates';
+export {
+  toWorldPoint,
+  toWorldUnitVector,
+  worldDirectionToThree,
+  worldPoint,
+  worldToThree,
+  type ThreePoint,
+  type WorldPoint,
+} from '@/features/viewer3d/worldCoordinates';
 export {
   MAX_ZONE_VERTICES,
   OFFICIAL_ZONE_CONTRACT,

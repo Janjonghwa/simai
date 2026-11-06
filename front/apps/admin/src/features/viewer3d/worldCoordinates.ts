@@ -78,6 +78,25 @@ export function threeToWorld([x, y, z]: ThreePoint): WorldPoint {
   return [x, 0 - z, y] as WorldPoint;
 }
 
+/**
+ * 바깥에서 온 방향 벡터를 World 단위 벡터로 받는다. 모양이 틀리거나 영벡터에 가까우면 null.
+ * 길이가 1 에서 조금 벗어나도 정규화하고, 너무 벗어난 값(< 0.9 또는 > 1.1)은 거부한다.
+ */
+export function toWorldUnitVector(value: unknown): WorldPoint | null {
+  const raw = finiteTriple(value);
+  if (!raw) return null;
+  const [dx, dy, dz] = raw;
+  const norm = Math.hypot(dx, dy, dz);
+  if (!Number.isFinite(norm) || norm < 0.9 || norm > 1.1) return null;
+  const clean = (v: number) => (Math.abs(v) < 1e-12 ? 0 : v);
+  return [clean(dx / norm), clean(dy / norm), clean(dz / norm)] as WorldPoint;
+}
+
+/** World 방향 벡터(단위 벡터)를 Three.js 방향 벡터로 옮긴다. 회전 변환(행렬식 +1)이라 길이는 그대로다. */
+export function worldDirectionToThree(direction: WorldPoint): ThreePoint {
+  return worldToThree(direction);
+}
+
 export interface ThreeBox {
   /** 상자 중심(Three). */
   position: ThreePoint;

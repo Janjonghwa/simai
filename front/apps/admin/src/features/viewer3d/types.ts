@@ -1,3 +1,4 @@
+import type { CalibratedCameraPose } from '@/features/viewer3d/cameras/cameraMarkers';
 import type { SpatialSource } from '@/features/viewer3d/data/spatialSource';
 import type {
   ViewerBeginEditOptions,
@@ -223,6 +224,14 @@ export interface Viewer3DProps {
    * 시간은 호스트가 정한다(키를 빼면 바로 사라진다). 내용이 같으면 다시 그리지 않고, 화면에 없는 사람은 그리지 않는다.
    */
   personHighlights?: Readonly<Record<string, string>>;
+  /**
+   * 보정된 카메라 마커 목록(-522, 선택 사항). LIVE 모드에서 카메라 본체·렌즈, 카메라 ID 이름표, 약 1.5 m 시야 절두체를 그린다.
+   * 구역·작업면 편집 중에는 자동으로 숨기고, 사람이 선택되면 그 트랙의 cameras 에 포함된 카메라 마커를 강조 표시한다.
+   * 렌더마다 새 배열을 넘겨도 값이 같으면 다시 그리지 않는다.
+   */
+  cameraPoses?: readonly CalibratedCameraPose[];
+  /** 3D 카메라 마커를 클릭했을 때 부른다(-522, 선택 사항). 호스트가 떠 있는 CCTV 창을 열어 해당 카메라로 맞춘다. */
+  onCameraClick?: (cameraId: string) => void;
   /**
    * 아바타 자산(mesh_url, 같은 출처 /api/avatars/...) 내려받기(선택 사항). FE 가 인증된 요청 함수를 넘긴다.
    * 없으면 fetch(url, { credentials: 'same-origin' }). 렌더마다 새 함수를 만들지 말고 고정해 넘긴다.

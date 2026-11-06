@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simai.dev/contracts/messages/calibration_status.schema.json",
+  "title": "보정 상태 및 카메라 자세 조회 응답 (calibration_status)",
+  "description": "EC2 → 관제 앱 GET /api/calibrations/current 응답(열람 이상 권한, 명세 4.4·4.5·12.6, S15P31A101-263·-522). Tier 0 가 가장 늦게 알린 calibration_update 상태·버전·재투영 오차 요약과 함께, 현재 calibration_version 의 보정 문서(calibration_document, contracts/providers/calibration.schema.json)가 업로드돼 있고 읽을 수 있으면 관제 3D 카메라 마커·시야 절두체 표시용 요약(camera_poses: camera_id, position_xyz, forward_xyz, hfov_rad)만 추출해 내려준다. 원본 R·t·K·왜곡 계수는 싣지 않으며(닫힌 값 객체), 보정 문서가 없거나 읽을 수 없으면 camera_poses 는 빈 배열이다(지어내지 않음). 1.0.0 신설(S15P31A101-522).",
+  "type": "object",
+  "required": [
+    "calibration_state",
+    "calibration_version",
+    "previous_calibration_version",
+    "provider_source",
+    "reason",
+    "effective_at",
+    "updated_at",
+    "cameras",
+    "document_uploaded",
+    "latest_uploaded_version",
+    "camera_poses"
+  ],
+  "properties": {
+    "calibration_state": {
+      "$ref": "../common/defs.schema.json#/$defs/calibration_state"
+    },
+    "calibration_version": {
+      "oneOf": [
+        { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        { "type": "null" }
+      ],
+      "description": "현재 활성 보정 버전. Tier 0 알림을 받은 적이 없으면 null"
+    },
+    "previous_calibration_version": {
+      "oneOf": [
+        { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        { "type": "null" }
+      ],
+      "description": "이전 보정 버전. 첫 보정이거나 알림이 없으면 null"
+    },
+    "provider_source": {
+      "oneOf": [
+        { "$ref": "../common/defs.schema.json#/$defs/calibration_source" },
+        { "type": "null" }
+      ]
+    },
+    "reason": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": ["INITIAL", "RECALIBRATED", "STATE_CHANGED", "DRIFT_DETECTED", "STREAM_CHANGED"]
+        },
+        { "type": "null" }
+      ]
+    },
+    "effective_at": {
+      "oneOf": [
+        { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        { "type": "null" }
+      ],
+      "description": "Tier 0 가 이 보정 버전으로 전환한 시각(UTC epoch ms)"
+    },
+    "updated_at": {
+      "oneOf": [
+        { "$ref": "../common/defs.schema.json#/$defs/timestamp_ms" },
+        { "type": "null" }
+      ],
+      "description": "이 상태를 알린 calibration_update 의 sent_at 시각(UTC epoch ms)"
+    },
+    "cameras": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/calibration_reprojection_item"
+      },
+      "description": "calibration_update 에 실린 카메라별 운영 중 재투영 오차"
+    },
+    "document_uploaded": {
+      "type": "boolean",
+      "description": "현재 calibration_version 의 보정 문서 원문이 EC2 calibration_document 에 업로드돼 있는지"
+    },
+    "latest_uploaded_version": {
+      "oneOf": [
+        { "$ref": "../common/defs.schema.json#/$defs/version_id" },
+        { "type": "null" }
+      ],
+      "description": "가장 최근에 EC2 에 업로드된 보정 문서의 버전"
+    },
+    "camera_poses": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/calibrated_camera_pose"
+      },
+      "description": "현재 calibration_version 의 보정 문서에서 추출한 카메라별 World 위치·정면 방향·수평 시야각. 문서가 없거나 읽을 수 없으면 빈 배열"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "description": "현재 보정 문서가 업로드되지 않았으면 camera_poses 는 비어 있어야 한다(지어내지 않음)",
+      "if": {
+        "properties": { "document_uploaded": { "const": false } },
+        "required": ["document_uploaded"]
+      },
+      "then": {
+        "properties": {
+          "camera_poses": { "maxItems": 0 }
+        }
+      }
+    },
+    {
+      "description": "활성 보정 버전이 없으면(null) 문서 업로드 여부는 false 이고 camera_poses 는 빈 배열이다",
+      "if": {
+        "properties": { "calibration_version": { "type": "null" } },
+        "required": ["calibration_version"]
+      },
+      "then": {
+        "properties": {
+          "document_uploaded": { "const": false },
+          "camera_poses": { "maxItems": 0 }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "calibration_reprojection_item": {
+      "type": "object",
+      "required": ["camera_id", "reprojection_error_px"],
+      "properties": {
+        "camera_id": {
+          "$ref": "../common/defs.schema.json#/$defs/camera_id"
+        },
+        "reprojection_error_px": {
+          "type": "object",
+          "required": ["median", "p95"],
+          "properties": {
+            "median": { "type": "number", "minimum": 0 },
+            "p95": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "calibrated_camera_pose": {
+      "type": "object",
+      "description": "보정 문서(OPENCV_WORLD_TO_CAMERA, x_cam = R x_world + t)에서 계산한 카메라 1대의 표시용 자세·시야각 요약",
+      "required": ["camera_id", "position_xyz", "forward_xyz", "hfov_rad"],
+      "properties": {
+        "camera_id": {
+          "$ref": "../common/defs.schema.json#/$defs/camera_id"
+        },
+        "position_xyz": {
+          "$ref": "../common/defs.schema.json#/$defs/world_xyz",
+          "description": "카메라 중심의 World 좌표 [x, y, z] (m, 오른손, +Z 상방). C = -R^T t"
+        },
+        "forward_xyz": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "number",
+            "minimum": -1,
+            "maximum": 1
+          },
+          "description": "카메라가 바라보는 정면(+Z_cam) 단위 벡터 [fx, fy, fz] (World 기준, R 의 셋째 행 정규화)"
+        },
+        "hfov_rad": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 3.141592653589793,
+          "description": "카메라 수평 시야각(라디안). K[0][0](fx)과 image_size[0](width)으로 계산한 2 * atan(width / (2 * fx))"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

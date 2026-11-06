@@ -2,6 +2,14 @@
 
 공개 입구(`index.ts`)와 그 타입을 바꾸면 여기에 적는다. 깨지는 변경은 FE 리뷰를 받은 뒤에만 한다.
 
+## S15P31A101-522 보정 카메라 마커·시야 절두체 및 CCTV 연동
+
+모두 더하기이며 하위 호환이다.
+
+- 추가: `cameraPoses`(`readonly CalibratedCameraPose[]`) · `onCameraClick`(`(cameraId: string) => void`) prop.
+- 추가 export: `readCalibrationCameraPoses`, `sameCalibratedCameraPoses`, `cameraMarkerTransform`, `cameraFrustumDimensions`, `highlightedCameraIds`, `CAMERA_FRUSTUM_LENGTH_M`, `CAMERA_FRUSTUM_ASPECT`, `CalibratedCameraPose`, `CameraMarkerTransform`, `CameraFrustumDimensions`, `toWorldUnitVector`, `worldDirectionToThree`, `worldToThree`, `ThreePoint`.
+- 동작: LIVE 모드에서 카메라 본체·렌즈, `cameraId` 이름표, 약 1.5 m 시야 절두체를 그린다. 편집 모드에서는 숨기고, 사람이 선택되면 그 트랙의 `cameras` 에 속한 카메라 마커를 강조하며, 마커 클릭 시 `onCameraClick(cameraId)` 를 호출한다.
+
 ## S15P31A101-509 사람 강조(워치 연결 순간)
 
 더하기이며 하위 호환이다.

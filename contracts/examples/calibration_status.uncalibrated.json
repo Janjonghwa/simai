@@ -1,0 +1,13 @@
+{
+  "calibration_state": "UNCALIBRATED",
+  "calibration_version": null,
+  "previous_calibration_version": null,
+  "provider_source": null,
+  "reason": null,
+  "effective_at": null,
+  "updated_at": null,
+  "cameras": [],
+  "document_uploaded": false,
+  "latest_uploaded_version": null,
+  "camera_poses": []
+}

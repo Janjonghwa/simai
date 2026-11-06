@@ -3,8 +3,10 @@ import {
   threeToWorld,
   toThreePoint,
   toWorldPoint,
+  toWorldUnitVector,
   WORLD_TO_THREE_MATRIX,
   worldBoxToThree,
+  worldDirectionToThree,
   worldPoint,
   worldToThree,
   type Matrix3,
@@ -168,5 +170,26 @@ describe('worldBoxToThree', () => {
   it('min 이 max 보다 크면 null', () => {
     expect(worldBoxToThree(worldPoint(1, 0, 0), worldPoint(0, 1, 1))).toBeNull();
     expect(worldBoxToThree(worldPoint(0, 0, 1), worldPoint(1, 1, 0))).toBeNull();
+  });
+});
+
+describe('World 단위 방향 벡터 변환(toWorldUnitVector · worldDirectionToThree)', () => {
+  it('유효한 단위 방향 벡터를 정규화하고 Three.js 방향 (dx, dz, -dy) 로 변환한다', () => {
+    const dir = toWorldUnitVector([0.7574, 0.5581, -0.3388])!;
+    expect(dir).not.toBeNull();
+    expect(Math.hypot(dir[0], dir[1], dir[2])).toBeCloseTo(1, 6);
+
+    const threeDir = worldDirectionToThree(dir);
+    expect(threeDir[0]).toBeCloseTo(dir[0], 12);
+    expect(threeDir[1]).toBeCloseTo(dir[2], 12);
+    expect(threeDir[2]).toBeCloseTo(-dir[1], 12);
+    expect(Math.hypot(threeDir[0], threeDir[1], threeDir[2])).toBeCloseTo(1, 6);
+  });
+
+  it('영벡터나 길이가 1 에서 크게 벗어난 벡터·비유한 값은 null 로 거부한다', () => {
+    expect(toWorldUnitVector([0, 0, 0])).toBeNull();
+    expect(toWorldUnitVector([0.2, 0, 0])).toBeNull();
+    expect(toWorldUnitVector([2, 0, 0])).toBeNull();
+    expect(toWorldUnitVector([1, Number.NaN, 0])).toBeNull();
   });
 });

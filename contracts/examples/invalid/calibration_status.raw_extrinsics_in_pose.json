@@ -1,0 +1,22 @@
+{
+  "_expect_error": "camera_poses 항목은 닫힌 값 객체라 원본 R·t·K 행렬을 실을 수 없다",
+  "calibration_state": "CALIBRATED",
+  "calibration_version": "cal-1",
+  "previous_calibration_version": null,
+  "provider_source": "G1_AUTO",
+  "reason": "INITIAL",
+  "effective_at": 1760342000600,
+  "updated_at": 1760342000000,
+  "cameras": [],
+  "document_uploaded": true,
+  "latest_uploaded_version": "cal-1",
+  "camera_poses": [
+    {
+      "camera_id": "cam1",
+      "position_xyz": [0.0, 0.0, 2.5],
+      "forward_xyz": [0.0, 1.0, 0.0],
+      "hfov_rad": 1.53,
+      "R": [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    }
+  ]
+}

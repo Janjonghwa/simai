@@ -35,6 +35,11 @@ export function requestCurrentScene(http: Http, signal?: AbortSignal) {
   return http('/api/scenes/current', { schema: z.unknown(), signal });
 }
 
+/** 현재 보정 상태·카메라 마커 자세(GET /api/calibrations/current, S15P31A101-522). 형식 검사는 뷰어(readCalibrationCameraPoses)가 맡는다. */
+export function requestCurrentCalibration(http: Http, signal?: AbortSignal) {
+  return http('/api/calibrations/current', { schema: z.unknown(), signal });
+}
+
 // ── 3D 배경(Scene) 재생성 (S15P31A101-428) ─────────────────────────────────
 
 export const SCENE_REGENERATE_POLL_INTERVAL_MS = 2000;

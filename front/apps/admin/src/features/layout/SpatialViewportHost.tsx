@@ -1,6 +1,6 @@
 import { useCamSplitStore } from '@/features/cctv/camSplit.store';
 import { CamSplitPanel } from '@/features/cctv/CamSplitPanel';
-import { CctvFloat } from '@/features/cctv/CctvFloat';
+import { CctvFloat, saveCctvFloatCamera, type CctvCameraRequest } from '@/features/cctv/CctvFloat';
 import {
   MONITOR_LAYERS,
   PLAN_FALLBACK_MS,
@@ -18,6 +18,7 @@ import {
 import { useViewportHost } from '@/features/layout/spatialHost/useViewportHost';
 import { ZoneEditFade } from '@/features/layout/spatialHost/ZoneEditFade';
 import { useThemeStore } from '@/features/layout/theme.store';
+import { useCurrentCalibration } from '@/features/layout/useCurrentCalibration';
 import { useZoneEditActive } from '@/features/monitor/useZoneEditActive';
 import { ViewerLoadBoundary } from '@/features/monitor/ViewerLoadBoundary';
 import { PlanMinimap } from '@/features/plan/PlanMinimap';
@@ -28,7 +29,7 @@ import type { ViewerZones, Zone } from '@/features/zones/types';
 import { avatarMeshFetch } from '@/lib/avatarMeshFetch';
 import { useRealtimeStore } from '@/store/realtime.store';
 import { cn } from '@simai/ui/lib/utils';
-import { createContext, Suspense, useContext, useState, type ReactNode } from 'react';
+import { createContext, Suspense, useCallback, useContext, useState, type ReactNode } from 'react';
 
 export interface SpatialViewportValue {
   view: SpatialViewMode;
@@ -94,7 +95,9 @@ export function SpatialViewportHost({
   const boxEditProps = useBoxEditProps();
   const editing = useZoneEditActive();
   const [cctvOpen, setCctvOpen] = useState(false);
+  const [requestedCamera, setRequestedCamera] = useState<CctvCameraRequest | null>(null);
   const split = useCamSplitStore((s) => s.split);
+  const { cameraPoses: calibratedCameraPoses } = useCurrentCalibration();
 
   // 편집 모드에서는 이벤트 패널·카메라 분할 창·2D 미니맵을 두지 않고 구역 편집에 화면을 준다(맵 재생성은 도구 모음이 숨긴다).
   const showEventPanel = eventPanel && !editing;
@@ -106,6 +109,18 @@ export function SpatialViewportHost({
   useWatchBindDetector();
   const bindHighlights = useWatchBindEffectStore((s) => s.highlights);
   const personHighlights = editing ? undefined : bindHighlights;
+  const cameraPoses = editing ? undefined : calibratedCameraPoses;
+
+  const handleCameraClick = useCallback(
+    (cameraId: string) => {
+      if (!eventPanel || editing) return;
+      if (useCamSplitStore.getState().split) useCamSplitStore.getState().close();
+      saveCctvFloatCamera(cameraId);
+      setRequestedCamera((prev) => ({ cameraId, seq: (prev?.seq ?? 0) + 1 }));
+      setCctvOpen(true);
+    },
+    [eventPanel, editing],
+  );
 
   return (
     <SpatialViewportContext value={viewport}>
@@ -133,6 +148,8 @@ export function SpatialViewportHost({
                 layers={layers}
                 personBadges={personBadges}
                 personHighlights={personHighlights}
+                cameraPoses={cameraPoses}
+                onCameraClick={handleCameraClick}
                 onSceneStatusChange={onSceneStatusChange}
                 onSelectionChange={onViewerSelect}
                 onStatusChange={onViewerStatus}
@@ -177,7 +194,11 @@ export function SpatialViewportHost({
         />
         {showEventPanel && <CamSplitPanel />}
         {showEventPanel && cctvOpen && !split && (
-          <CctvFloat selectedKey={selectedKey} onClose={() => setCctvOpen(false)} />
+          <CctvFloat
+            selectedKey={selectedKey}
+            requestedCamera={requestedCamera}
+            onClose={() => setCctvOpen(false)}
+          />
         )}
       </main>
     </SpatialViewportContext>
