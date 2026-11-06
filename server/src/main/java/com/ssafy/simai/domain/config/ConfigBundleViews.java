@@ -22,7 +22,8 @@ import tools.jackson.databind.node.ObjectNode;
  * 구성 묶음 적용 상태(GET /api/config-bundles). status 는 가장 늦게 받은 config_ack 로 정한다: 없으면 PENDING(적용 대기),
  * APPLIED·REJECTED 는 그 응답대로, APPLIED 인데 해시가 발행한 것과 다르면 MISMATCH 다. 화면에는 내려받기 주소(서명)를 싣지 않는다.
  * items 는 발행 때 묶음에 넣은 구역·규칙·작업면·정적 객체의 ID·버전(config_bundle_item)이다. 화면이 항목마다 어느 묶음에 실렸는지,
- * 그 묶음이 현장에 적용됐는지를 시각 비교 없이 맞춘다.
+ * 그 묶음이 현장에 적용됐는지를 시각 비교 없이 맞춘다. ppe_policy 는 그 묶음에 실은 안전모 요구 요약(helmet·work_id·effective_from_ms)이고
+ * 실리지 않은 묶음이면 null 이다.
  */
 @Repository
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -32,7 +33,9 @@ public class ConfigBundleViews {
             SELECT b.config_version, b.previous_config_version, b.issued_at, b.bundle_hash, b.components::text AS components,
                 b.calibration_version, b.rule_profile, b.applied_at,
                 a.result, a.bundle_hash AS ack_hash, a.applied_at AS ack_applied_at, a.reject_reason, a.reject_detail,
-                a.active_config_version, a.gateway_id, a.received_at
+                a.active_config_version, a.gateway_id, a.received_at,
+                (SELECT f.content FROM config_bundle_file f WHERE f.config_version = b.config_version AND f.name = 'ppe_policy')
+                    AS ppe_policy
             FROM config_bundle b
             LEFT JOIN LATERAL (SELECT * FROM config_ack c WHERE c.config_version = b.config_version
                 ORDER BY c.received_at DESC LIMIT 1) a ON true
@@ -126,6 +129,18 @@ public class ConfigBundleViews {
             ObjectNode c = components.putObject(name);
             c.set("version", stored.get(name).get("version"));
             c.set("sha256", stored.get(name).get("sha256"));
+        }
+        // 안전모 요구 요약(S15P31A101-518). 이 묶음에 ppe_policy 가 없으면(이전 발행분) null 이다. Tier 0 는 그런 묶음을 적용하면
+        // 요구 없음으로 판정하므로, 화면은 적용 중 묶음의 이 값이 null 이면 'PPE 요구 미수신'을 보인다(명세 7.2 R9, -520)
+        byte[] ppe = rs.getBytes("ppe_policy");
+        if (ppe == null) {
+            b.putNull("ppe_policy");
+        } else {
+            JsonNode doc = mapper.readTree(ppe);
+            ObjectNode summary = b.putObject("ppe_policy");
+            summary.set("helmet", doc.get("helmet"));
+            summary.set("work_id", doc.get("work_id"));
+            summary.set("effective_from_ms", doc.get("effective_from_ms"));
         }
         String result = rs.getString("result");
         // APPLIED 인데 Tier 0 가 계산한 해시가 발행한 것과 다르면 현장 적용으로 보지 않는다(applied_at 도 비어 있다)

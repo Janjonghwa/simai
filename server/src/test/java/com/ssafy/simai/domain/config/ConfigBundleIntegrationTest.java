@@ -1,11 +1,13 @@
 package com.ssafy.simai.domain.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doReturn;
 
 import com.networknt.schema.InputFormat;
 import com.networknt.schema.JsonSchemaFactory;
 import com.networknt.schema.SchemaLocation;
 import com.networknt.schema.SpecVersion;
+import com.ssafy.simai.domain.calibration.CalibrationViews;
 import com.ssafy.simai.domain.tier0.Tier0Paths;
 import com.ssafy.simai.global.config.JwtConfig;
 import com.ssafy.simai.global.security.AccessTokenIssuer;
@@ -19,6 +21,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -38,6 +41,7 @@ import org.springframework.security.oauth2.jwt.JwtClaimsSet;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketHttpHeaders;
 import org.springframework.web.socket.WebSocketSession;
@@ -74,6 +78,10 @@ class ConfigBundleIntegrationTest {
     @Autowired
     JwtEncoder jwtEncoder;
 
+    /** 기본은 실제 동작. 묶음 만들기 실패 시험만 지금 보정 버전을 바꾼다(시험마다 초기화) */
+    @MockitoSpyBean
+    CalibrationViews calibrations;
+
     private final HttpClient http = HttpClient.newHttpClient();
     private final String tag = UUID.randomUUID().toString().substring(0, 8);
     private final String gatewayId = "tier0-config-" + tag;
@@ -88,12 +96,21 @@ class ConfigBundleIntegrationTest {
 
     @AfterEach
     void cleanUp() {
+        // 작업 시작·종료·구역 저장이 만든 묶음도 지운다(발행자 = 이 시험 관리자)
+        for (String version : jdbc.queryForList("SELECT config_version FROM config_bundle WHERE issued_by = ?", String.class, adminId)) {
+            if (!bundles.contains(version)) {
+                bundles.add(version);
+            }
+        }
+        bundles.sort(java.util.Comparator.comparingInt(v -> Integer.parseInt(v.substring(4))));
         for (String version : bundles.reversed()) {
             jdbc.update("DELETE FROM config_ack WHERE config_version = ?", version);
             jdbc.update("DELETE FROM config_bundle_file WHERE config_version = ?", version);
             jdbc.update("DELETE FROM config_bundle_item WHERE config_version = ?", version);
             jdbc.update("DELETE FROM config_bundle WHERE config_version = ?", version);
         }
+        jdbc.update("DELETE FROM report WHERE work_id IN (SELECT work_id FROM work_unit WHERE name = ?)", workName());
+        jdbc.update("DELETE FROM work_unit WHERE name = ?", workName());
         jdbc.update("DELETE FROM system_health WHERE gateway_id = ?", gatewayId);
         jdbc.update("DELETE FROM zone WHERE created_by = ?", adminId);
         jdbc.update("DELETE FROM static_object WHERE created_by = ?", adminId);
@@ -213,6 +230,8 @@ class ConfigBundleIntegrationTest {
                 String key = name.equals("calibration") ? "calibration_version" : "version";
                 assertThat(doc.get(key).asString()).as(name).isEqualTo(ref.get("version").asString());
             }
+            JsonNode ppe = MAPPER.readTree(download(p.at("/components/ppe_policy/uri").asString()));
+            assertThat(dataViolations("ppe_policy", ppe)).isEmpty();
             JsonNode zones = MAPPER.readTree(download(p.at("/components/zones/uri").asString()));
             JsonNode mine = zones.get("zones").valueStream()
                     .filter(z -> z.get("zone_id").asString().equals(zone.get("zone_id").asString())).findFirst().orElseThrow();
@@ -252,6 +271,85 @@ class ConfigBundleIntegrationTest {
             assertThat(jdbc.queryForObject("SELECT count(*) FROM config_bundle_item WHERE config_version = ? AND item_id IN (?, ?)",
                     Integer.class, version, zone.get("zone_id").asString(), surface.get("object_id").asString())).isEqualTo(2);
         }
+    }
+
+    /** S15P31A101-518: 작업 시작·종료가 ppe_policy 를 실은 새 묶음을 발행하고, 다른 경로의 묶음도 그때 작업 상태를 싣는다 */
+    @Test
+    void 작업_시작_종료는_안전모_요구를_실은_새_묶음을_내고_다른_경로의_묶음도_요구를_싣는다() throws Exception {
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM work_unit WHERE status = 'IN_PROGRESS'", Integer.class))
+                .as("다른 시험이 남긴 진행 중 작업").isZero();
+        long work = createWork();
+        call("POST", "/api/calibrations", admin(), upload(calibration("cal-test-" + tag + "-p")), 201);
+
+        try (Tier0 tier0 = tier0()) {
+            tier0.send(health());
+            Thread.sleep(300);
+            // 작업 전 발행: 요구 없음
+            JsonNode before = publish(null);
+            assertThat(before.at("/ppe_policy/helmet").asString()).isEqualTo("NOT_REQUIRED");
+            assertThat(before.at("/ppe_policy/work_id").isNull()).isTrue();
+
+            JsonNode started = call("POST", "/api/work-units/" + work + "/start", admin(), null, 200);
+            long startedAt = started.get("actual_started_at").longValue();
+            String startVersion = latestVersion();
+            assertThat(startVersion).isNotEqualTo(before.get("config_version").asString());
+            JsonNode startNotice = tier0.await("config_bundle", startVersion);
+            assertThat(schemaViolations("config_bundle", startNotice)).isEmpty();
+            assertThat(startNotice.get("schema_version").asString()).isEqualTo("1.3.0");
+            assertThat(startNotice.at("/payload/previous_config_version").asString()).isEqualTo(before.get("config_version").asString());
+            JsonNode startPolicy = ppeDocument(startNotice);
+            assertThat(startPolicy.get("helmet").asString()).isEqualTo("REQUIRED");
+            assertThat(startPolicy.get("work_id").longValue()).isEqualTo(work);
+            assertThat(startPolicy.get("effective_from_ms").longValue()).isEqualTo(startedAt);
+            JsonNode startView = call("GET", "/api/config-bundles/" + startVersion, viewer(), null, 200);
+            assertThat(startView.get("status").asString()).isEqualTo("PENDING");
+            assertThat(startView.at("/ppe_policy/helmet").asString()).isEqualTo("REQUIRED");
+            assertThat(startView.at("/components/ppe_policy/sha256").asString())
+                    .isEqualTo(startNotice.at("/payload/components/ppe_policy/sha256").asString());
+
+            // 작업 중 다른 경로(직접 발행, 구역 저장)도 요구를 싣는다
+            JsonNode during = publish(null);
+            assertThat(during.at("/ppe_policy/helmet").asString()).isEqualTo("REQUIRED");
+            assertThat(during.at("/ppe_policy/work_id").longValue()).isEqualTo(work);
+            ObjectNode commit = MAPPER.createObjectNode();
+            commit.putObject("zone").put("op", "CREATE").set("body", zone("작업 중 저장", 3.0));
+            JsonNode committed = call("POST", "/api/zones/commit", admin(), commit, 200);
+            String commitVersion = committed.at("/bundle/config_version").asString();
+            assertThat(committed.at("/bundle/ppe_policy/helmet").asString()).isEqualTo("REQUIRED");
+            JsonNode commitPolicy = ppeDocument(tier0.await("config_bundle", commitVersion));
+            assertThat(commitPolicy.get("helmet").asString()).isEqualTo("REQUIRED");
+            assertThat(commitPolicy.get("effective_from_ms").longValue()).isEqualTo(startedAt);
+
+            JsonNode ended = call("POST", "/api/work-units/" + work + "/end", admin(), null, 202);
+            long endedAt = ended.at("/work_unit/actual_ended_at").longValue();
+            String endVersion = latestVersion();
+            assertThat(endVersion).isNotEqualTo(commitVersion);
+            JsonNode endNotice = tier0.await("config_bundle", endVersion);
+            assertThat(schemaViolations("config_bundle", endNotice)).isEmpty();
+            JsonNode endPolicy = ppeDocument(endNotice);
+            assertThat(endPolicy.get("helmet").asString()).isEqualTo("NOT_REQUIRED");
+            assertThat(endPolicy.get("work_id").isNull()).isTrue();
+            assertThat(endPolicy.get("effective_from_ms").longValue()).isEqualTo(endedAt);
+
+            // 작업이 끝난 뒤 발행: 요구 없음, 유효 시각은 마지막 종료 시각
+            JsonNode after = publish(null);
+            assertThat(after.at("/ppe_policy/helmet").asString()).isEqualTo("NOT_REQUIRED");
+            assertThat(after.at("/ppe_policy/effective_from_ms").longValue()).isEqualTo(endedAt);
+        }
+    }
+
+    /** 묶음을 만들지 못하면(보정 문서 없음) 작업을 시작하지 않고 묶음도 남기지 않는다(S15P31A101-518 D1) */
+    @Test
+    void 묶음을_만들지_못하면_작업_시작을_되돌린다() throws Exception {
+        long work = createWork();
+        call("POST", "/api/calibrations", admin(), upload(calibration("cal-test-" + tag + "-f")), 201);
+        // Tier 0 가 알린 지금 보정의 문서가 없는 상태: 묶음 만들기가 상태를 바꾼 뒤(같은 트랜잭션) 실패한다
+        doReturn(Optional.of("cal-test-" + tag + "-not-uploaded")).when(calibrations).currentVersion();
+        Integer before = jdbc.queryForObject("SELECT count(*) FROM config_bundle", Integer.class);
+        JsonNode error = call("POST", "/api/work-units/" + work + "/start", admin(), null, 409);
+        assertThat(error.get("code").asString()).isEqualTo("CURRENT_CALIBRATION_MISSING");
+        assertThat(jdbc.queryForObject("SELECT status FROM work_unit WHERE work_id = ?", String.class, work)).isEqualTo("PLANNED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM config_bundle", Integer.class)).isEqualTo(before);
     }
 
     @Test
@@ -408,6 +506,44 @@ class ConfigBundleIntegrationTest {
     private List<String> schemaViolations(String msgType, JsonNode message) {
         return SCHEMAS.getSchema(SchemaLocation.of("https://simai.dev/contracts/messages/" + msgType + ".schema.json"))
                 .validate(MAPPER.writeValueAsString(message), InputFormat.JSON).stream().map(Object::toString).toList();
+    }
+
+    private List<String> dataViolations(String name, JsonNode doc) {
+        return SCHEMAS.getSchema(SchemaLocation.of("https://simai.dev/contracts/data/" + name + ".schema.json"))
+                .validate(MAPPER.writeValueAsString(doc), InputFormat.JSON).stream().map(Object::toString).toList();
+    }
+
+    /** 알림의 ppe_policy 를 Tier 0 처럼 받아 해시·버전·계약을 맞춰 본 문서 */
+    private JsonNode ppeDocument(JsonNode notice) throws Exception {
+        JsonNode ref = notice.at("/payload/components/ppe_policy");
+        byte[] bytes = download(ref.get("uri").asString());
+        assertThat(ConfigFiles.sha256(bytes)).isEqualTo(ref.get("sha256").asString());
+        JsonNode doc = MAPPER.readTree(bytes);
+        assertThat(doc.get("version").asString()).isEqualTo(ref.get("version").asString());
+        assertThat(dataViolations("ppe_policy", doc)).isEmpty();
+        return doc;
+    }
+
+    private String latestVersion() {
+        return jdbc.queryForObject("""
+                SELECT config_version FROM config_bundle WHERE config_version ~ '^cfg-[0-9]+$'
+                ORDER BY CAST(substring(config_version FROM 5) AS integer) DESC LIMIT 1
+                """,
+                String.class);
+    }
+
+    private String workName() {
+        return "ppe-work-" + tag;
+    }
+
+    private long createWork() throws Exception {
+        long now = Instant.now().toEpochMilli();
+        ObjectNode body = MAPPER.createObjectNode();
+        body.put("date", Instant.now().atOffset(java.time.ZoneOffset.UTC).toLocalDate().toString());
+        body.put("name", workName());
+        body.put("from_ms", now - 3_600_000).put("to_ms", now + 3_600_000);
+        body.put("planned_people", 2).put("work_type", "OPENING_WORK");
+        return Long.parseLong(call("POST", "/api/work-units", admin(), body, 201).get("work_id").asString());
     }
 
     private ObjectNode zone(String name, double zMax) {
