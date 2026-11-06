@@ -73,4 +73,31 @@ describe('떠 있는 CCTV', () => {
     render(<CctvFloat selectedKey="person:p1" onClose={vi.fn()} />);
     expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
   });
+
+  it('3D 카메라 마커 클릭 요청(requestedCamera)으로 열리거나 이미 열린 창의 카메라를 바꾸고 4분할 버튼도 유지한다', () => {
+    const view = render(
+      <CctvFloat
+        selectedKey={null}
+        requestedCamera={{ cameraId: 'cam_B', seq: 1 }}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
+    expect(screen.queryByLabelText('cam_A 영상')).toBeNull();
+
+    // 4분할로 전환했다가 다시 카메라 마커 클릭 요청이 오면 해당 카메라 단일 보기로 전환한다
+    fireEvent.click(screen.getByRole('button', { name: '4분할' }));
+    expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
+    expect(screen.getByLabelText('cam_B 영상')).toBeTruthy();
+
+    view.rerender(
+      <CctvFloat
+        selectedKey={null}
+        requestedCamera={{ cameraId: 'cam_A', seq: 2 }}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText('cam_A 영상')).toBeTruthy();
+    expect(screen.queryByLabelText('cam_B 영상')).toBeNull();
+  });
 });

@@ -1,0 +1,21 @@
+{
+  "_expect_error": "document_uploaded 가 false 면 camera_poses 를 지어내어 실을 수 없다",
+  "calibration_state": "CALIBRATED",
+  "calibration_version": "cal-1",
+  "previous_calibration_version": null,
+  "provider_source": "G1_AUTO",
+  "reason": "INITIAL",
+  "effective_at": 1760342000600,
+  "updated_at": 1760342000000,
+  "cameras": [],
+  "document_uploaded": false,
+  "latest_uploaded_version": null,
+  "camera_poses": [
+    {
+      "camera_id": "cam1",
+      "position_xyz": [0.0, 0.0, 2.5],
+      "forward_xyz": [0.0, 1.0, 0.0],
+      "hfov_rad": 1.53
+    }
+  ]
+}

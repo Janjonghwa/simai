@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.ssafy.simai.domain.tier0.Tier0Paths;
 import com.ssafy.simai.global.config.JwtConfig;
+import com.ssafy.simai.global.contract.ContractSchemas;
 import com.ssafy.simai.global.security.AccessTokenIssuer;
+import org.assertj.core.data.Offset;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.net.URI;
@@ -73,6 +75,9 @@ class CalibrationStatusIntegrationTest {
     @Autowired
     MeterRegistry meters;
 
+    @Autowired
+    ContractSchemas schemas;
+
     private final HttpClient http = HttpClient.newHttpClient();
     private final String tag = UUID.randomUUID().toString().substring(0, 8);
     private final String gatewayId = "tier0-cal-" + tag;
@@ -126,6 +131,9 @@ class CalibrationStatusIntegrationTest {
         assertThat(current.get("cameras").get(0).get("camera_id").asString()).isEqualTo("cam2");
         assertThat(current.get("cameras").get(0).at("/reprojection_error_px/p95").asDouble()).isEqualTo(8.9);
         assertThat(current.get("document_uploaded").asBoolean()).isFalse();
+        assertThat(current.get("camera_poses").isArray()).isTrue();
+        assertThat(current.get("camera_poses")).isEmpty();
+        assertThat(schemas.violations("messages/calibration_status", MAPPER.writeValueAsString(current))).isEmpty();
         assertThat(jdbc.queryForObject("SELECT state FROM calibration_version WHERE calibration_version = ?", String.class,
                 prefix + "-a")).isEqualTo("PROVISIONAL");
     }
@@ -434,6 +442,84 @@ class CalibrationStatusIntegrationTest {
                 assertThat(rest.path("calibration_state").asString()).isEqualTo("PROVISIONAL");
             }
         }
+    }
+
+    @Test
+    void 현재_보정_문서가_있으면_카메라_위치_정면_수평시야각을_주고_없거나_깨졌으면_빈_목록을_준다() throws Exception {
+        String version = prefix + "-g1";
+        ObjectNode doc = read("calibration.g1_auto.json");
+        doc.put("calibration_version", version);
+        call("POST", "/api/calibrations", admin(), upload(doc), 201);
+        String uploadedHash = jdbc.queryForObject(
+                "SELECT calibration_hash FROM calibration_version WHERE calibration_version = ?",
+                String.class,
+                version);
+
+        try (Tier0 tier0 = tier0()) {
+            ObjectNode msg = update(version, null, "CALIBRATED", "INITIAL", base);
+            ((ObjectNode) msg.get("payload")).put("calibration_hash", uploadedHash);
+            tier0.send(msg);
+        }
+        awaitCount(() -> messages(version), 1);
+
+        // 권한 확인: 토큰 없으면 401, VIEWER/ADMIN 은 200
+        HttpRequest unauth = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/calibrations/current"))
+                .GET().build();
+        assertThat(http.send(unauth, HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(401);
+
+        JsonNode current = call("/api/calibrations/current", viewer(), 200);
+        JsonNode asAdmin = call("/api/calibrations/current", admin(), 200);
+        assertThat(asAdmin).isEqualTo(current);
+        assertThat(schemas.violations("messages/calibration_status", MAPPER.writeValueAsString(current))).isEmpty();
+        assertThat(current.get("calibration_version").asString()).isEqualTo(version);
+        assertThat(current.get("document_uploaded").asBoolean()).isTrue();
+
+        JsonNode poses = current.get("camera_poses");
+        assertThat(poses).hasSize(4);
+        JsonNode cam1 = poses.get(0);
+        assertThat(cam1.get("camera_id").asString()).isEqualTo("cam1");
+        // C = -R^T t -> (0.20, 0.20, 2.50) m
+        assertThat(cam1.get("position_xyz").get(0).asDouble()).isCloseTo(0.2001, Offset.offset(1e-3));
+        assertThat(cam1.get("position_xyz").get(1).asDouble()).isCloseTo(0.2001, Offset.offset(1e-3));
+        assertThat(cam1.get("position_xyz").get(2).asDouble()).isCloseTo(2.4998, Offset.offset(1e-3));
+        // 정면 단위 벡터 R[2]
+        double fx = cam1.get("forward_xyz").get(0).asDouble();
+        double fy = cam1.get("forward_xyz").get(1).asDouble();
+        double fz = cam1.get("forward_xyz").get(2).asDouble();
+        assertThat(fx).isCloseTo(0.7574, Offset.offset(1e-3));
+        assertThat(fy).isCloseTo(0.5581, Offset.offset(1e-3));
+        assertThat(fz).isCloseTo(-0.3388, Offset.offset(1e-3));
+        assertThat(Math.sqrt(fx * fx + fy * fy + fz * fz)).isCloseTo(1.0, Offset.offset(1e-6));
+        // hfov_rad = 2 * atan(1920 / (2 * 1010.0))
+        assertThat(cam1.get("hfov_rad").asDouble())
+                .isCloseTo(2.0 * Math.atan(1920.0 / (2.0 * 1010.0)), Offset.offset(1e-6));
+        // 원문 R, t, K, distortion 은 노출하지 않는다
+        assertThat(cam1.has("R")).isFalse();
+        assertThat(cam1.has("t")).isFalse();
+        assertThat(cam1.has("K")).isFalse();
+        assertThat(cam1.has("distortion")).isFalse();
+
+        JsonNode cam2 = poses.get(1);
+        assertThat(cam2.get("camera_id").asString()).isEqualTo("cam2");
+        assertThat(cam2.get("position_xyz").get(0).asDouble()).isCloseTo(7.7996, Offset.offset(1e-3));
+        assertThat(cam2.get("position_xyz").get(1).asDouble()).isCloseTo(0.2004, Offset.offset(1e-3));
+        assertThat(cam2.get("position_xyz").get(2).asDouble()).isCloseTo(2.4994, Offset.offset(1e-3));
+        assertThat(cam2.get("hfov_rad").asDouble())
+                .isCloseTo(2.0 * Math.atan(1920.0 / (2.0 * 1010.0)), Offset.offset(1e-6));
+
+        // 저장된 문서의 회전 행렬이 비직교이거나 JSON 이 깨졌으면 지어내지 않고 빈 배열을 준다
+        ObjectNode badRotation = doc.deepCopy();
+        ((ObjectNode) badRotation.get("cameras").get(0)).set("R",
+                MAPPER.valueToTree(new int[][] {{1, 0, 0}, {0, 1, 0}, {0, 0, 0}}));
+        jdbc.update("UPDATE calibration_document SET content = ? WHERE calibration_version = ?",
+                MAPPER.writeValueAsBytes(badRotation), version);
+        JsonNode afterBadR = call("/api/calibrations/current", viewer(), 200);
+        assertThat(afterBadR.get("camera_poses")).isEmpty();
+
+        jdbc.update("UPDATE calibration_document SET content = ? WHERE calibration_version = ?",
+                "{broken-json".getBytes(StandardCharsets.UTF_8), version);
+        JsonNode afterCorrupt = call("/api/calibrations/current", viewer(), 200);
+        assertThat(afterCorrupt.get("camera_poses")).isEmpty();
     }
 
     // ---- 도우미

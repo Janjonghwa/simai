@@ -1,0 +1,21 @@
+{
+  "_expect_error": "hfov_rad 는 라디안 (0, π) 범위여야 한다(도 단위로 90 등을 넣으면 거부)",
+  "calibration_state": "CALIBRATED",
+  "calibration_version": "cal-1",
+  "previous_calibration_version": null,
+  "provider_source": "G1_AUTO",
+  "reason": "INITIAL",
+  "effective_at": 1760342000600,
+  "updated_at": 1760342000000,
+  "cameras": [],
+  "document_uploaded": true,
+  "latest_uploaded_version": "cal-1",
+  "camera_poses": [
+    {
+      "camera_id": "cam1",
+      "position_xyz": [0.0, 0.0, 2.5],
+      "forward_xyz": [0.0, 1.0, 0.0],
+      "hfov_rad": 90.0
+    }
+  ]
+}

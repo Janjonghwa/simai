@@ -1,3 +1,4 @@
+import { CameraClickContext } from '@/features/viewer3d/cameras/CameraLayer';
 import {
   createSpatialDataStore,
   type SpatialDataStore,
@@ -117,6 +118,8 @@ export function ViewerShell({
   personModelUrl = null,
   personBadges,
   personHighlights,
+  cameraPoses,
+  onCameraClick,
   avatarMesh = 'auto',
   avatarMeshFetch = fetchAvatarMesh,
   zoneApplyState = 'UNVERIFIED',
@@ -139,6 +142,7 @@ export function ViewerShell({
     created.getState().setLayers(layers);
     created.getState().setPersonBadges(personBadges);
     created.getState().setPersonHighlights(personHighlights);
+    created.getState().setCameraPoses(cameraPoses);
     created.getState().setTopView(topView);
     return created;
   });
@@ -256,6 +260,10 @@ export function ViewerShell({
   useEffect(() => {
     store.getState().setPersonHighlights(personHighlights);
   }, [store, personHighlights]);
+
+  useEffect(() => {
+    store.getState().setCameraPoses(cameraPoses);
+  }, [store, cameraPoses]);
 
   useEffect(() => {
     planned.getState().setInput(plannedLayout);
@@ -378,9 +386,11 @@ export function ViewerShell({
                           <SceneTextureLoaderContext value={sceneTextureLoader}>
                             <PlannedStoreContext value={planned}>
                               <BoxEditContext value={boxEditBinding}>
-                                <PostProcessingContext value={resolvedPostProcessing}>
-                                  <ViewerCanvas>{children}</ViewerCanvas>
-                                </PostProcessingContext>
+                                <CameraClickContext value={onCameraClick}>
+                                  <PostProcessingContext value={resolvedPostProcessing}>
+                                    <ViewerCanvas>{children}</ViewerCanvas>
+                                  </PostProcessingContext>
+                                </CameraClickContext>
                               </BoxEditContext>
                             </PlannedStoreContext>
                           </SceneTextureLoaderContext>

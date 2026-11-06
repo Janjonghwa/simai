@@ -123,6 +123,14 @@ push 의 반환값(`ACCEPTED`·`STALE_REQUEST`·`SCOPE_MISMATCH`)은 새로 생�
 - 강조 시간은 호스트가 정한다(키를 빼면 바로 사라진다). 내용이 같으면 Store 를 바꾸지 않는다. 화면에 없는 사람은 그리지 않는다.
 - 관제 앱은 워치가 새로 이어진 순간(손 흔들기 등)에 4 s 넣는다. 편집 모드에서는 넘기지 않는다. 사람 이름을 넣지 않는다.
 
+## 보정 카메라 마커·시야 절두체(`cameraPoses` · `onCameraClick` prop, -522)
+
+- 입력: `readCalibrationCameraPoses(raw)` 로 `GET /api/calibrations/current` 응답 본문(`camera_poses`)을 검사해 `CalibratedCameraPose[]`(`{ cameraId, position, forward, hfovRad }`)로 바꾼 뒤 `cameraPoses` prop 으로 넘긴다.
+- 표시: LIVE 모드에서 카메라마다 `worldToThree(position)` 위치에 작은 카메라 본체·렌즈 메시, `cameraId` 이름표(`LabelSprite`), 그리고 `worldDirectionToThree(forward)` 방향·`hfovRad` 수평 시야각으로 길이 약 1.5 m(`CAMERA_FRUSTUM_LENGTH_M`)의 옅은 시야 절두체를 그린다.
+- 숨김·성능: 구역·작업면 편집 중(`boxEdit` 또는 뷰어 안 편집 세션)에는 숨긴다. 내용이 같으면 Store 를 바꾸지 않으며, 1 Hz `viewer_health` 갱신으로 다시 그리지 않는다.
+- 사람 선택 강조: 사람이 선택돼 있으면(`selected?.type === 'person'`) 그 트랙의 `cameras` 에 든 카메라 마커·절두체·이름표를 강조 색으로 표시한다.
+- 클릭: 카메라 본체·렌즈를 클릭하면 `onCameraClick(cameraId)` 를 부른다(시야 절두체는 뒤의 사람·구역 클릭을 가리지 않게 광선 검사를 끈다).
+
 ## 기타 공개 항목
 
 - `personModelUrl`: 사람 모델 GLB 주소(선택). 읽지 못하면 캡슐로 그린다. 에셋 권리와 배포 경로는 미정이다.

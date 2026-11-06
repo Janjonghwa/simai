@@ -51,6 +51,52 @@ export const handlers = [
   ),
   // 워치 배정(-342)은 개발 mock 에 배정이 없다(잇기·풀기 화면이 없다).
   http.get('*/api/watch-bindings', () => HttpResponse.json([])),
+  // 현재 보정 상태와 카메라 마커 자세(-522).
+  http.get('*/api/calibrations/current', () =>
+    HttpResponse.json({
+      calibration_state: 'CALIBRATED',
+      calibration_version: 'cal-7',
+      previous_calibration_version: 'cal-6',
+      provider_source: 'G1_AUTO',
+      reason: 'INITIAL',
+      effective_at: 1_760_342_400_000,
+      updated_at: 1_760_342_400_000,
+      cameras: [
+        { camera_id: 'cam1', reprojection_error_px: { median: 1.2, p95: 3.4 } },
+        { camera_id: 'cam2', reprojection_error_px: { median: 1.4, p95: 3.9 } },
+        { camera_id: 'cam3', reprojection_error_px: { median: 1.1, p95: 3.1 } },
+        { camera_id: 'cam4', reprojection_error_px: { median: 1.6, p95: 4.2 } },
+      ],
+      document_uploaded: true,
+      latest_uploaded_version: 'cal-7',
+      camera_poses: [
+        {
+          camera_id: 'cam1',
+          position_xyz: [0.2, 0.2, 2.5],
+          forward_xyz: [0.7574, 0.5581, -0.3388],
+          hfov_rad: 1.5204,
+        },
+        {
+          camera_id: 'cam2',
+          position_xyz: [7.8, 0.2, 2.5],
+          forward_xyz: [-0.7574, 0.5581, -0.3388],
+          hfov_rad: 1.5204,
+        },
+        {
+          camera_id: 'cam3',
+          position_xyz: [7.8, 5.8, 2.5],
+          forward_xyz: [-0.7574, -0.5581, -0.3388],
+          hfov_rad: 1.5204,
+        },
+        {
+          camera_id: 'cam4',
+          position_xyz: [0.2, 5.8, 2.5],
+          forward_xyz: [0.7574, -0.5581, -0.3388],
+          hfov_rad: 1.5204,
+        },
+      ],
+    }),
+  ),
   http.post('*/api/auth/login', async ({ request }) => {
     const credentials = readCredentials(await request.json().catch(() => undefined));
     const account =

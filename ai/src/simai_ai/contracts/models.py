@@ -132,6 +132,10 @@ class CalibrationScaleBasis(
     root: Literal['MEASURED_OBJECT', 'MEASURED_CAMERA_HEIGHT', 'KNOWN_PERSON_HEIGHT', 'HUMAN_HEIGHT_STATS', 'STANDARD_OBJECT', 'MODEL_ESTIMATE', 'DATASET_GT']
 
 
+class ForwardXyzItem(RootModel[StrictFloat]):
+    root: Annotated[StrictFloat, Field(ge=-1.0, le=1.0)]
+
+
 class ReprojectionErrorPx1(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -2458,6 +2462,24 @@ class RoomOutline(BaseModel):
     openings: None
 
 
+class CalibrationStatusCalibratedCameraPose(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    position_xyz: DefsWorldXyz
+    forward_xyz: Annotated[list[ForwardXyzItem], Field(max_length=3, min_length=3)]
+    hfov_rad: Annotated[StrictFloat, Field(gt=0.0, lt=3.141592653589793)]
+
+
+class CalibrationStatusCalibrationReprojectionItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_id: DefsCameraId
+    reprojection_error_px: ReprojectionErrorPx1
+
+
 class Camera(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -3861,6 +3883,25 @@ class CalibrationCameraCalibration(BaseModel):
     reprojection_error_px: ReprojectionErrorPx | MISSING = MISSING
 
 
+class CalibrationStatus(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    calibration_state: DefsCalibrationState
+    calibration_version: DefsVersionId | None
+    previous_calibration_version: DefsVersionId | None
+    provider_source: DefsCalibrationSource | None
+    reason: Literal['INITIAL', 'RECALIBRATED', 'STATE_CHANGED', 'DRIFT_DETECTED', 'STREAM_CHANGED'] | None
+    effective_at: DefsTimestampMs | None
+    updated_at: DefsTimestampMs | None
+    cameras: list[CalibrationStatusCalibrationReprojectionItem]
+    document_uploaded: StrictBool
+    latest_uploaded_version: DefsVersionId | None
+    camera_poses: Annotated[
+        list[CalibrationStatusCalibratedCameraPose], Field(max_length=16)
+    ]
+
+
 class CameraPose(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -4166,6 +4207,7 @@ class Contracts(BaseModel):
     avatar_pose_batch: AvatarPoseBatch | MISSING = MISSING
     bev_floorplan: BevFloorplan | MISSING = MISSING
     calibration: Calibration | MISSING = MISSING
+    calibration_status: CalibrationStatus | MISSING = MISSING
     calibration_update: CalibrationUpdate | MISSING = MISSING
     cctv_preview: CctvPreview | MISSING = MISSING
     cctv_remote_control: CctvRemoteControl | MISSING = MISSING
