@@ -119,6 +119,9 @@ const vdtFragmentShader = /* glsl */ `
   uniform int uShowWallLayer;       // 1: 2차 지시 #4 벽 표시 층 켜짐
   uniform int uEdgeFeather;         // 1: 2차 지시 #5 메시 구멍 경계 부드럽게 섞기
   uniform int uIndicatorDepthMatch; // 1: 3차 지시 #1 표시 층 깊이 일치(5cm 이내 + 형상 존재)일 때만 사진 투영
+  uniform int uUnobsDepthMatch;     // 1: 4차 지시 #1 미관측 TSDF 면 투영 시에도 깊이 5cm 일치 게이트 적용
+  uniform int uOutlierRemoval;      // 1: 4차 지시 #2 카메라 간 사진 일치(외톨이 제거)
+  uniform float uColorSigma;        // 카메라 간 Oklab 색 거리 σ (겹침 인라이어 p75=0.0506, 전체 중앙값=0.0542 기반 0.058)
   uniform int uFeatherPass;         // 0: 단일 패스, 1: 불투명 내부 패스, 2: 반투명 구멍 테두리 패스
   uniform int uTopK;                // 2 또는 3 (상위 K대 카메라 블렌딩)
   uniform float uFar;
@@ -165,6 +168,34 @@ const vdtFragmentShader = /* glsl */ `
     return mix(lo, hi, step(vec3(0.0031308), c));
   }
 
+  vec3 srgbToLinear(vec3 srgb) {
+    vec3 c = clamp(srgb, 0.0, 1.0);
+    vec3 lo = c / 12.92;
+    vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));
+    return mix(lo, hi, step(vec3(0.04045), c));
+  }
+
+  // sRGB [0,1] -> 지각적 균일 색공간 Oklab (Lab 근사)
+  vec3 srgbToOklab(vec3 srgb) {
+    vec3 lin = srgbToLinear(srgb);
+    float l = 0.4122214708 * lin.r + 0.5363325363 * lin.g + 0.0514459929 * lin.b;
+    float m = 0.2119034982 * lin.r + 0.6806995451 * lin.g + 0.1073969566 * lin.b;
+    float s = 0.0883024619 * lin.r + 0.2817188376 * lin.g + 0.6299787005 * lin.b;
+    float l_ = pow(max(l, 0.0), 1.0 / 3.0);
+    float m_ = pow(max(m, 0.0), 1.0 / 3.0);
+    float s_ = pow(max(s, 0.0), 1.0 / 3.0);
+    return vec3(
+      0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+      1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+      0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_
+    );
+  }
+
+  vec3 trimDarkRef(vec3 refLab, vec3 floorObsLab) {
+    float darkW = smoothstep(0.030, 0.075, floorObsLab.x - refLab.x);
+    return mix(refLab, floorObsLab, darkW * 0.88);
+  }
+
   vec3 getOriginalBaseColor(vec3 N) {
     if (uHasBaseMap == 1) {
       return texture2D(uBaseMap, vUv).rgb;
@@ -178,8 +209,19 @@ const vdtFragmentShader = /* glsl */ `
     vec3 srgb = linearToSrgb(lin);
     if (uIsEstimatedPlane == 0) {
       vec3 lightDir = normalize(vec3(0.35, 0.88, 0.32));
-      float shade = 0.78 + 0.22 * abs(dot(N, lightDir));
-      srgb *= shade;
+      // 5차(uOutlierRemoval == 1, uRenderMode == 1): 미관측 정점색(vColor) 삼각형이 인접 텍스처 면 대비
+      // 어둡거나 각져 조각나 보이지 않도록 과도한 법선 음영(0.78~1.0)을 완화하고 평균 카메라 노출 게인을 맞춘다.
+      if (uRenderMode == 1 && uOutlierRemoval == 1) {
+        float shade = 0.95 + 0.05 * abs(dot(N, lightDir));
+        srgb *= shade;
+        if (uColorCorrection == 1) {
+          vec3 avgGain = 0.25 * (uCamGain[0] + uCamGain[1] + uCamGain[2] + uCamGain[3]);
+          srgb = clamp(srgb * avgGain, 0.0, 1.0);
+        }
+      } else {
+        float shade = 0.78 + 0.22 * abs(dot(N, lightDir));
+        srgb *= shade;
+      }
     }
     return srgb;
   }
@@ -220,16 +262,30 @@ const vdtFragmentShader = /* glsl */ `
     return c;
   }
 
+  // 5차: 카펫 직조 미세 결이나 텍셀 노이즈로 인해 픽셀마다 선택 카메라/가중치가 흔들리지 않도록
+  // 색 거리(Oklab) 판정 전용으로만 사용하는 5-tap 공간 저역통과(low-pass) 샘플러 (실제 렌더링 색 c0..c3 는 선명한 원본 유지)
+  vec3 readCamPhotoLowPass(int idx, vec2 uv) {
+    vec2 stepUv = vec2(3.0 / 2048.0, 3.0 / 1152.0);
+    vec3 c = readCamPhoto(idx, uv) * 0.36;
+    c += readCamPhoto(idx, uv + vec2(stepUv.x, 0.0)) * 0.16;
+    c += readCamPhoto(idx, uv - vec2(stepUv.x, 0.0)) * 0.16;
+    c += readCamPhoto(idx, uv + vec2(0.0, stepUv.y)) * 0.16;
+    c += readCamPhoto(idx, uv - vec2(0.0, stepUv.y)) * 0.16;
+    return c;
+  }
+
   float evaluateCameraWeight(
     int idx,
     vec3 P,
     vec3 N,
     vec3 viewDir,
     out vec2 outUv,
-    out float outAbsDepthDiff
+    out float outGeomW,
+    out float outWView
   ) {
     outUv = vec2(0.0);
-    outAbsDepthDiff = 99.0;
+    outGeomW = 0.0;
+    outWView = 0.0;
 
     // 1. GLB 월드 점 P -> OpenCV 카메라 좌표 p_cv = R * P + t
     vec3 pCv = uCamR[idx] * P + uCamT[idx];
@@ -262,7 +318,9 @@ const vdtFragmentShader = /* glsl */ `
 
     vec3 toCam = normalize(uCamPos[idx] - P);
     float cosNorm = dot(effN, toCam);
-    float minCosNorm = isFloor ? 0.08 : ((uHasBaseMap == 1 || uIsIndicatorPlane == 1) ? 0.15 : 0.45);
+    float minCosNorm = isFloor
+      ? 0.08
+      : ((uHasBaseMap == 1 || uIsIndicatorPlane == 1) ? 0.15 : ((uOutlierRemoval == 1) ? 0.20 : 0.45));
     if (cosNorm <= minCosNorm) {
       return 0.0;
     }
@@ -279,32 +337,45 @@ const vdtFragmentShader = /* glsl */ `
 
     float minSignedDiff = min(zCv - d0, min(min(zCv - d1, zCv - d2), min(zCv - d3, zCv - d4)));
     float dMin = min(d0, min(min(d1, d2), min(d3, d4)));
-    outAbsDepthDiff = min(abs(zCv - d0), min(abs(zCv - d1), abs(zCv - d2)));
 
     float wDepth = 1.0;
+    bool useStrict5cmGate =
+      (uIsIndicatorPlane == 1 && uIndicatorDepthMatch == 1) ||
+      (uIsIndicatorPlane == 0 && uHasBaseMap == 0 && uUnobsDepthMatch == 1 && (uOutlierRemoval != 1 || !isFloor));
 
-    if (uIsIndicatorPlane == 1 && uIndicatorDepthMatch == 1) {
-      // 3차 지시 #1: 바닥·벽 표시 층에 사진을 비출 때는 그 카메라의 깊이 그림자 맵에 맵 형상이 있고
-      // (d < uFar - 0.5), 그 깊이가 표시 층 점의 깊이와 5cm(0.05m) 안으로 일치할 때만 비춘다.
-      // 깊이 맵이 비어 있으면(형상 없음 = 카메라가 무엇을 봤는지 모름) 사진을 쓰지 않고 차분한 톤+격자만 표시한다.
-      // 근거: TSDF 바닥면 높이 사분위 편차(±2.5cm) 및 RANSAC 벽 평면 inlier 허용치(4cm)를 감안한 물리 정합 임계값 = 5cm(0.05m).
+    if (useStrict5cmGate) {
+      // 3차 지시 #1 & 4차 지시 #1 & 5차 보완:
+      // 바닥·벽 표시 층(uIsIndicatorPlane == 1) 또는 미관측 TSDF 면(uHasBaseMap == 0)에 사진을 비출 때는
+      // 그 카메라의 깊이 그림자 맵에 맵 형상이 있고(d < uFar - 0.5), 깊이가 5cm(0.05m) 안으로 일치할 때만 비춘다.
       const float INDICATOR_DEPTH_MATCH_TOL = 0.05;
       bool hasMapGeom = (d0 < uFar - 0.5) && (d1 < uFar - 0.5) && (d2 < uFar - 0.5) && (d3 < uFar - 0.5) && (d4 < uFar - 0.5);
-      float maxAbsDiff5 = max(
-        abs(zCv - d0),
-        max(max(abs(zCv - d1), abs(zCv - d2)), max(abs(zCv - d3), abs(zCv - d4)))
-      );
-      if (!hasMapGeom || maxAbsDiff5 > INDICATOR_DEPTH_MATCH_TOL) {
-        return 0.0;
+      if (uOutlierRemoval == 1 && uIsIndicatorPlane == 0 && uHasBaseMap == 0) {
+        // 5차 비바닥 미관측 면: 이웃 탭(d1..d4)이 모서리 밖 배경 구멍에 걸려 검은 테두리가 생기지 않도록
+        // 중심 탭(d0)의 표면 수직 깊이 오차(5.5cm)만 검사하여 obl2 의 가려진 공중 조각만 차단하고 가구·창틀 경계는 매끄럽게 잇는다.
+        float perpScale = max(cosNorm, 0.22);
+        float centerPerpDiff = abs(zCv - d0) * perpScale;
+        if ((d0 >= uFar - 0.5) || centerPerpDiff > 0.055) {
+          return 0.0;
+        }
+        wDepth = 1.0 - smoothstep(0.025, 0.055, centerPerpDiff);
+      } else {
+        float centerAbsDiff = abs(zCv - d0);
+        float neighborTol = (uIsIndicatorPlane == 0 && isFloor) ? 0.09 : INDICATOR_DEPTH_MATCH_TOL;
+        float maxNeighborDiff = max(max(abs(zCv - d1), abs(zCv - d2)), max(abs(zCv - d3), abs(zCv - d4)));
+        if (!hasMapGeom || centerAbsDiff > INDICATOR_DEPTH_MATCH_TOL || maxNeighborDiff > neighborTol) {
+          return 0.0;
+        }
+        wDepth = 1.0 - smoothstep(INDICATOR_DEPTH_MATCH_TOL * 0.5, INDICATOR_DEPTH_MATCH_TOL, centerAbsDiff);
       }
-      wDepth = 1.0 - smoothstep(INDICATOR_DEPTH_MATCH_TOL * 0.5, INDICATOR_DEPTH_MATCH_TOL, maxAbsDiff5);
     } else {
+      // 5차에서 바닥(isFloor)은 uHasBaseMap == 0 과 uHasBaseMap == 1 이 3차와 완전히 동일한 깊이 검사를 수행해
+      // 두 메시 경계나 TSDF 구멍 외곽에서 가중치 단차(줄무늬·조각)가 절대 발생하지 않게 한다.
       float slopeScale = 1.0 / max(cosNorm, 0.20);
       float tolOccl = (uIsIndicatorPlane == 1)
         ? (isFloor ? max(0.45, 0.065 * zCv * slopeScale) : max(0.22, 0.040 * zCv * slopeScale))
         : (isFloor
             ? max(0.25, 0.045 * zCv * slopeScale)
-            : ((uHasBaseMap == 1)
+            : ((uHasBaseMap == 1 || uOutlierRemoval == 1)
                 ? max(0.085, 0.024 * zCv * slopeScale)
                 : max(0.045, 0.012 * zCv * slopeScale)));
       if (minSignedDiff > tolOccl) {
@@ -332,13 +403,15 @@ const vdtFragmentShader = /* glsl */ `
 
     // 6. 시점 각도 가중치 (Unstructured Lumigraph)
     float cosAngle = clamp(dot(viewDir, toCam), -1.0, 1.0);
-    float wView = exp(8.5 * (cosAngle - 1.0)) / max(1.0 - cosAngle, 0.001);
+    float wView = exp(8.5 * (cosAngle - 1.0)) / max(1.0 - cosAngle, 0.001) + ((uOutlierRemoval == 2) ? 0.005 : 0.001);
 
     // 거리 감쇠
     float dist = length(uCamPos[idx] - P);
     float wDist = 1.0 / (1.0 + 0.05 * dist * dist);
 
-    return wDepth * wNorm * wBorder * wView * wDist;
+    outGeomW = wDepth * wNorm * wBorder * wDist;
+    outWView = wView;
+    return outGeomW * wView;
   }
 
   vec3 applySceneFog(vec3 col, float viewDist) {
@@ -389,27 +462,60 @@ const vdtFragmentShader = /* glsl */ `
     vec3 indicatorBaseColor = evalCalmGridColor(gridCoord, uIndicatorCalmColor, viewDist);
     vec3 floorGridAtPos = evalCalmGridColor(worldXY, uFloorCalmColorShared, viewDist);
 
-    vec3 origColor = (uIsIndicatorPlane == 1) ? indicatorBaseColor : getOriginalBaseColor(N);
+    vec3 rawOrigColor = (uIsIndicatorPlane == 1) ? indicatorBaseColor : getOriginalBaseColor(N);
+    vec3 origColor = rawOrigColor;
+    bool isMeshFloor = (uIsIndicatorPlane == 0) && ((vWorldPos.y < 0.18) || (vWorldPos.y < 0.30 && abs(N.y) > 0.40));
+    const float FEATHER_COLOR_BAND = 0.11; // 열린 구멍 경계 11cm 폭 소프트 블렌딩
 
-    // 모드 0(원래 맵) 또는 기존 estimated_floor_plane 또는 미관측 투영 비활성화
-    if (uRenderMode == 0 || uIsEstimatedPlane == 1 || (uIsIndicatorPlane == 0 && uHasBaseMap == 0 && uProjectUnobserved == 0)) {
+    // 모드 0(원래 맵) 또는 기존 estimated_floor_plane 또는 3차/4차에서 미관측 투영 비활성화 시 조기 반환
+    // (5차 uOutlierRemoval == 1 에서는 미관측 삼각형 중 다중 카메라 수직 깊이·색상 합의가 검증된 내부 카펫/가구 띠에
+    //  부드럽게 투영을 이어 주어 4차에서 발생한 대각선 줄무늬와 조각난 가구 표면을 없애고, obl2 구멍 조각만 억제한다.)
+    bool earlyReturnUnobs = (uIsIndicatorPlane == 0 && uHasBaseMap == 0 && uProjectUnobserved == 0 && uOutlierRemoval != 1);
+    if (uRenderMode == 0 || uIsEstimatedPlane == 1 || earlyReturnUnobs) {
       if (uRenderMode == 2) {
         float luma = dot(origColor, vec3(0.2126, 0.7152, 0.0722));
         gl_FragColor = vec4(vec3(luma * 0.35 + 0.08), 1.0);
+      } else if (uRenderMode == 1 && uIsEstimatedPlane == 0 && uHasBaseMap == 0) {
+        vec3 colOut = origColor;
+        if (isMeshFloor) {
+          float lum = dot(colOut, vec3(0.2126, 0.7152, 0.0722));
+          float darkW = 1.0 - smoothstep(0.18, 0.37, lum);
+          colOut = mix(colOut, uIndicatorObsColor * 0.88, darkW * 0.90);
+        }
+        gl_FragColor = vec4(applySceneFog(colOut, viewDist), 1.0);
       } else {
         gl_FragColor = vec4(origColor, 1.0);
       }
       return;
     }
 
-    // 2차 지시 #5: 구멍 경계 섞기 켜짐 시, 바닥/벽의 미관측 삼각형 폴백 색상을
-    // 하부 표시 층(바닥·벽 단색+격자) 톤에 맞춰 들쭉날쭉한 톱니 단차와 어두운 구운 그림자 조각을 해소
-    bool isMeshFloor = (uIsIndicatorPlane == 0) && ((vWorldPos.y < 0.18) || (vWorldPos.y < 0.30 && abs(N.y) > 0.40));
-    if (uIsIndicatorPlane == 0 && uEdgeFeather == 1) {
-      if (isMeshFloor && uShowFloorLayer == 1) {
-        origColor = mix(origColor, floorGridAtPos, (uHasBaseMap == 0) ? 0.95 : 0.85);
-      } else if (uHasBaseMap == 0 && uUseBgTone == 1) {
-        origColor = mix(origColor, vec3(0.28, 0.31, 0.36), 0.45);
+    // 2차 지시 #5: 구멍 경계 섞기 켜짐 시, 구운 텍스처가 없는 미관측 삼각형(uHasBaseMap == 0)의 폴백 색상 보정
+    // 걸레받이·하단 수직 벽면(y >= 7.5cm 또는 abs(N.y) <= 0.55)은 제외하고 실제 수평 카펫 바닥만 바닥 기준색으로 보정
+    bool isTrueHorizontalFloor = (uIsIndicatorPlane == 0) && (vWorldPos.y < 0.075) && (abs(N.y) > 0.55);
+    if (uIsIndicatorPlane == 0 && uEdgeFeather == 1 && uHasBaseMap == 0) {
+      if (uOutlierRemoval == 1) {
+        if (isTrueHorizontalFloor) {
+          vec3 avgGain = (uColorCorrection == 1)
+            ? (0.25 * (uCamGain[0] + uCamGain[1] + uCamGain[2] + uCamGain[3]))
+            : vec3(1.0);
+          vec3 brightFloorRef = clamp(uIndicatorObsColor * avgGain, 0.0, 1.0);
+          origColor = brightFloorRef;
+          if (uShowFloorLayer == 1 && vBoundaryDist < FEATHER_COLOR_BAND) {
+            float tHole = 1.0 - smoothstep(0.0, FEATHER_COLOR_BAND, vBoundaryDist);
+            origColor = mix(origColor, floorGridAtPos, tHole * 0.90);
+          }
+        } else if (uUseBgTone == 1) {
+          // 정점색(vColor)에 아틀라스 검은 여백(0,0,0)이 섞여 들어간 모서리가 검은 테두리로 보이지 않도록 중성 회청 톤으로 보정
+          float lum = dot(origColor, vec3(0.2126, 0.7152, 0.0722));
+          float blackLift = 1.0 - smoothstep(0.05, 0.32, lum);
+          origColor = mix(origColor, vec3(0.38, 0.41, 0.46), max(0.35, blackLift * 0.92));
+        }
+      } else {
+        if (isMeshFloor && uShowFloorLayer == 1) {
+          origColor = mix(origColor, floorGridAtPos, 0.90);
+        } else if (uUseBgTone == 1) {
+          origColor = mix(origColor, vec3(0.28, 0.31, 0.36), 0.45);
+        }
       }
     }
 
@@ -423,13 +529,361 @@ const vdtFragmentShader = /* glsl */ `
     }
 
     vec2 uv0, uv1, uv2, uv3;
-    float ad0, ad1, ad2, ad3;
-    float w0 = evaluateCameraWeight(0, projPos, N, viewDir, uv0, ad0);
-    float w1 = evaluateCameraWeight(1, projPos, N, viewDir, uv1, ad1);
-    float w2 = evaluateCameraWeight(2, projPos, N, viewDir, uv2, ad2);
-    float w3 = evaluateCameraWeight(3, projPos, N, viewDir, uv3, ad3);
+    float geomW0, geomW1, geomW2, geomW3;
+    float wView0, wView1, wView2, wView3;
+    float w0 = evaluateCameraWeight(0, projPos, N, viewDir, uv0, geomW0, wView0);
+    float w1 = evaluateCameraWeight(1, projPos, N, viewDir, uv1, geomW1, wView1);
+    float w2 = evaluateCameraWeight(2, projPos, N, viewDir, uv2, geomW2, wView2);
+    float w3 = evaluateCameraWeight(3, projPos, N, viewDir, uv3, geomW3, wView3);
 
-    // 4개 가중치 내림차순 정렬 네트워크 (sw0 >= sw1 >= sw2 >= sw3)
+    float rawSw0 = max(max(w0, w1), max(w2, w3));
+    float maxSurvivingA = 1.0;
+    float unobsConsensusGate = 1.0;
+
+    bool v0 = (geomW0 > 0.002);
+    bool v1 = (geomW1 > 0.002);
+    bool v2 = (geomW2 > 0.002);
+    bool v3 = (geomW3 > 0.002);
+    if (!v0) { w0 = 0.0; geomW0 = 0.0; wView0 = 0.0; }
+    if (!v1) { w1 = 0.0; geomW1 = 0.0; wView1 = 0.0; }
+    if (!v2) { w2 = 0.0; geomW2 = 0.0; wView2 = 0.0; }
+    if (!v3) { w3 = 0.0; geomW3 = 0.0; wView3 = 0.0; }
+
+    vec3 c0 = v0 ? readCamPhoto(0, uv0) : vec3(0.0);
+    vec3 c1 = v1 ? readCamPhoto(1, uv1) : vec3(0.0);
+    vec3 c2 = v2 ? readCamPhoto(2, uv2) : vec3(0.0);
+    vec3 c3 = v3 ? readCamPhoto(3, uv3) : vec3(0.0);
+
+    // -----------------------------------------------------------------------
+    // 5차 (uOutlierRemoval == 1):
+    // - 완화된 σ (바닥 0.095, 비바닥 0.22) + 인라이어 불감대(deadzone 0.040)
+    // - 외톨이를 버릴 때 가중치를 0 으로 끊지 않고 최소 바닥값(0.08) 위로 부드럽게 감쇠하며,
+    //   시점 가중치(wView)를 비선형 왜곡하지 않아 후보 수가 1대로 줄어도 가중치가 튀지 않게 함
+    // - 5-tap 공간 저역통과(readCamPhotoLowPass) 색상과 연속 소프트 메도이드(soft-medoid) 가중 평균으로
+    //   기준(refLab)을 구해 픽셀마다 선택 카메라가 바뀌어 생기는 얼룩을 원천 제거
+    // -----------------------------------------------------------------------
+    if (uOutlierRemoval == 1) {
+      float p0 = smoothstep(0.002, 0.025, geomW0);
+      float p1 = smoothstep(0.002, 0.025, geomW1);
+      float p2 = smoothstep(0.002, 0.025, geomW2);
+      float p3 = smoothstep(0.002, 0.025, geomW3);
+
+      vec3 lab0 = v0 ? srgbToOklab(readCamPhotoLowPass(0, uv0)) : vec3(0.0);
+      vec3 lab1 = v1 ? srgbToOklab(readCamPhotoLowPass(1, uv1)) : vec3(0.0);
+      vec3 lab2 = v2 ? srgbToOklab(readCamPhotoLowPass(2, uv2)) : vec3(0.0);
+      vec3 lab3 = v3 ? srgbToOklab(readCamPhotoLowPass(3, uv3)) : vec3(0.0);
+
+      // 수평 바닥 면(걸레받이·하단 벽면 제외: y < 7.5cm & 법선 상향)만 카펫 합의 대상으로 지정
+      bool isFloorTarget = isTrueHorizontalFloor || (uIsIndicatorPlane == 1 && uIndicatorKind == 0);
+
+      // 후보 카메라들의 기하 가중 평균 노출 게인
+      float gSum = geomW0 + geomW1 + geomW2 + geomW3;
+      vec3 avgGain = (uColorCorrection == 1)
+        ? ((gSum > 1e-4)
+            ? ((geomW0 * uCamGain[0] + geomW1 * uCamGain[1] + geomW2 * uCamGain[2] + geomW3 * uCamGain[3]) / gSum)
+            : (0.25 * (uCamGain[0] + uCamGain[1] + uCamGain[2] + uCamGain[3])))
+        : vec3(1.0);
+
+      vec3 floorObsGainRgb = clamp(uIndicatorObsColor * avgGain, 0.0, 1.0);
+      vec3 floorObsLab = srgbToOklab(floorObsGainRgb);
+
+      vec3 corrOrigRgb = (uHasBaseMap == 1)
+        ? clamp(rawOrigColor * avgGain, 0.0, 1.0)
+        : origColor;
+
+      // 바닥 면에서는 uHasBaseMap == 0 과 uHasBaseMap == 1 의 구분 없이 동일한 공간 연속 카펫 기준색(floorObsGainRgb)을
+      // 사전 분포(priorRgb)로 사용하여, 두 메시 경계나 UV 아틀라스 차트 경계에서 색상/가중치 단차가 전혀 생기지 않게 한다.
+      vec3 priorRgb = isFloorTarget ? floorObsGainRgb : corrOrigRgb;
+      vec3 thirdVoteLab = isFloorTarget ? floorObsLab : srgbToOklab(priorRgb);
+
+      // 비바닥(벽·액자·간판)의 구운 텍스처 UV 미세 오차 허용을 위한 5-tap 최소 거리
+      vec2 baseUvStep = (uHasBaseMap == 1 && !isFloorTarget) ? clamp(fwidth(vUv) * 2.2, vec2(0.0005), vec2(0.006)) : vec2(0.0);
+      vec3 thirdLabxp = (uHasBaseMap == 1 && !isFloorTarget) ? srgbToOklab(clamp(texture2D(uBaseMap, vUv + vec2(baseUvStep.x, 0.0)).rgb * avgGain, 0.0, 1.0)) : thirdVoteLab;
+      vec3 thirdLabxm = (uHasBaseMap == 1 && !isFloorTarget) ? srgbToOklab(clamp(texture2D(uBaseMap, vUv - vec2(baseUvStep.x, 0.0)).rgb * avgGain, 0.0, 1.0)) : thirdVoteLab;
+      vec3 thirdLabyp = (uHasBaseMap == 1 && !isFloorTarget) ? srgbToOklab(clamp(texture2D(uBaseMap, vUv + vec2(0.0, baseUvStep.y)).rgb * avgGain, 0.0, 1.0)) : thirdVoteLab;
+      vec3 thirdLabym = (uHasBaseMap == 1 && !isFloorTarget) ? srgbToOklab(clamp(texture2D(uBaseMap, vUv - vec2(0.0, baseUvStep.y)).rgb * avgGain, 0.0, 1.0)) : thirdVoteLab;
+
+      float db0 = v0 ? min(length(lab0 - thirdVoteLab), min(min(length(lab0 - thirdLabxp), length(lab0 - thirdLabxm)), min(length(lab0 - thirdLabyp), length(lab0 - thirdLabym)))) : 0.0;
+      float db1 = v1 ? min(length(lab1 - thirdVoteLab), min(min(length(lab1 - thirdLabxp), length(lab1 - thirdLabxm)), min(length(lab1 - thirdLabyp), length(lab1 - thirdLabym)))) : 0.0;
+      float db2 = v2 ? min(length(lab2 - thirdVoteLab), min(min(length(lab2 - thirdLabxp), length(lab2 - thirdLabxm)), min(length(lab2 - thirdLabyp), length(lab2 - thirdLabym)))) : 0.0;
+      float db3 = v3 ? min(length(lab3 - thirdVoteLab), min(min(length(lab3 - thirdLabxp), length(lab3 - thirdLabxm)), min(length(lab3 - thirdLabyp), length(lab3 - thirdLabym)))) : 0.0;
+
+      // 바닥에서 검은 스툴/탁자 다리 잔상(강한 암부: L 이 카펫 기준보다 0.055 이상 어두움)과
+      // 고채도 전경 오투영(빨간 전선·청록색 스툴 좌석: 채도 차이가 0.038 이상)에만 연속 소프트 페널티 부여
+      // (일반 카펫의 조명·결 변화에는 0 이 되어 원래 카펫 질감을 100% 보존)
+      float carpetPen0 = 0.0, carpetPen1 = 0.0, carpetPen2 = 0.0, carpetPen3 = 0.0;
+      if (isFloorTarget) {
+        carpetPen0 = max(0.0, (thirdVoteLab.x - 0.055) - lab0.x) * 2.10 +
+                     max(0.0, length(lab0.yz - thirdVoteLab.yz) - 0.038) * 2.40;
+        carpetPen1 = max(0.0, (thirdVoteLab.x - 0.055) - lab1.x) * 2.10 +
+                     max(0.0, length(lab1.yz - thirdVoteLab.yz) - 0.038) * 2.40;
+        carpetPen2 = max(0.0, (thirdVoteLab.x - 0.055) - lab2.x) * 2.10 +
+                     max(0.0, length(lab2.yz - thirdVoteLab.yz) - 0.038) * 2.40;
+        carpetPen3 = max(0.0, (thirdVoteLab.x - 0.055) - lab3.x) * 2.10 +
+                     max(0.0, length(lab3.yz - thirdVoteLab.yz) - 0.038) * 2.40;
+        db0 += carpetPen0;
+        db1 += carpetPen1;
+        db2 += carpetPen2;
+        db3 += carpetPen3;
+      }
+
+      float d01 = (v0 && v1) ? length(lab0 - lab1) : 0.0;
+      float d02 = (v0 && v2) ? length(lab0 - lab2) : 0.0;
+      float d03 = (v0 && v3) ? length(lab0 - lab3) : 0.0;
+      float d12 = (v1 && v2) ? length(lab1 - lab2) : 0.0;
+      float d13 = (v1 && v3) ? length(lab1 - lab3) : 0.0;
+      float d23 = (v2 && v3) ? length(lab2 - lab3) : 0.0;
+
+      // 이산 분기(if sum1 < bestSum) 없이 모든 후보 수(4, 3, 2, 1대)에서 연속적으로 작동하는 소프트 메도이드 합의(refLab)
+      // (m_i 에 p_i [0..1] 를 사용하여 비스듬한 바닥에서 priorM 상수가 카메라 합의를 덮어쓰지 않도록 정규화)
+      float tieW = isFloorTarget ? 0.65 : 0.25;
+      float s0 = v0 ? ((p1 * d01 + p2 * d02 + p3 * d03 + tieW * db0) / (p1 + p2 + p3 + tieW)) : 10.0;
+      float s1 = v1 ? ((p0 * d01 + p2 * d12 + p3 * d13 + tieW * db1) / (p0 + p2 + p3 + tieW)) : 10.0;
+      float s2 = v2 ? ((p0 * d02 + p1 * d12 + p3 * d23 + tieW * db2) / (p0 + p1 + p3 + tieW)) : 10.0;
+      float s3 = v3 ? ((p0 * d03 + p1 * d13 + p2 * d23 + tieW * db3) / (p0 + p1 + p2 + tieW)) : 10.0;
+
+      float temp = isFloorTarget ? 0.080 : 0.135;
+      float m0 = p0 * exp(-s0 / temp);
+      float m1 = p1 * exp(-s1 / temp);
+      float m2 = p2 * exp(-s2 / temp);
+      float m3 = p3 * exp(-s3 / temp);
+      float priorM = isFloorTarget ? 0.060 : 0.020;
+
+      vec3 refLab = (m0 * lab0 + m1 * lab1 + m2 * lab2 + m3 * lab3 + priorM * thirdVoteLab) /
+                    max(m0 + m1 + m2 + m3 + priorM, 1e-5);
+
+      // 5차 완화된 σ (바닥 0.095, 비바닥 0.22) 및 인라이어 불감대(deadzone)
+      float sigma5 = isFloorTarget ? 0.095 : 0.220;
+      float deadzone = isFloorTarget ? 0.042 : 0.065;
+      float minWeightFactor = 0.08; // 가중치를 0으로 끊지 않고 부드럽게 줄임
+
+      float dist0 = v0 ? (length(lab0 - refLab) + carpetPen0 * 0.75) : 0.0;
+      float dist1 = v1 ? (length(lab1 - refLab) + carpetPen1 * 0.75) : 0.0;
+      float dist2 = v2 ? (length(lab2 - refLab) + carpetPen2 * 0.75) : 0.0;
+      float dist3 = v3 ? (length(lab3 - refLab) + carpetPen3 * 0.75) : 0.0;
+
+      float dn0 = max(0.0, dist0 - deadzone) / sigma5;
+      float dn1 = max(0.0, dist1 - deadzone) / sigma5;
+      float dn2 = max(0.0, dist2 - deadzone) / sigma5;
+      float dn3 = max(0.0, dist3 - deadzone) / sigma5;
+
+      float a0 = v0 ? mix(minWeightFactor, 1.0, exp(-dn0 * dn0)) : 0.0;
+      float a1 = v1 ? mix(minWeightFactor, 1.0, exp(-dn1 * dn1)) : 0.0;
+      float a2 = v2 ? mix(minWeightFactor, 1.0, exp(-dn2 * dn2)) : 0.0;
+      float a3 = v3 ? mix(minWeightFactor, 1.0, exp(-dn3 * dn3)) : 0.0;
+
+      // wView 를 비선형 왜곡하지 않고 순수하게 a_i 만 곱해 후보 카메라 수가 바뀔 때도 가중치가 튀지 않게 유지
+      w0 *= a0;
+      w1 *= a1;
+      w2 *= a2;
+      w3 *= a3;
+
+      // 바닥 면에서 강한 외톨이(a_i < 0.70 인 다리 잔상 등)가 시점 가중치(wView) 우세로 남을 때만
+      // 다른 인라이어 카메라들의 실제 카펫 텍스처(cw_k = m_k * a_k^2)로 부드럽게 수렴시킨다.
+      // (cwPrior 를 0.008 로 두어 인라이어 카메라가 1대라도 있으면 단색 얼룩 없이 실제 카펫 결을 99% 유지)
+      if (isFloorTarget) {
+        float cw0 = m0 * a0 * a0;
+        float cw1 = m1 * a1 * a1;
+        float cw2 = m2 * a2 * a2;
+        float cw3 = m3 * a3 * a3;
+        float cwPrior = 0.008;
+        vec3 consensusRgb = (cw0 * c0 + cw1 * c1 + cw2 * c2 + cw3 * c3 + cwPrior * priorRgb) /
+                            max(cw0 + cw1 + cw2 + cw3 + cwPrior, 1e-5);
+        c0 = mix(consensusRgb, c0, smoothstep(0.12, 0.70, a0));
+        c1 = mix(consensusRgb, c1, smoothstep(0.12, 0.70, a1));
+        c2 = mix(consensusRgb, c2, smoothstep(0.12, 0.70, a2));
+        c3 = mix(consensusRgb, c3, smoothstep(0.12, 0.70, a3));
+        origColor = consensusRgb;
+      }
+
+      // 미관측 TSDF 면(uHasBaseMap == 0)에서 uProjectUnobserved == 0 일 때:
+      // 바닥(isMeshFloor)은 uHasBaseMap == 1 과 완전히 동일하게(unobsConsensusGate = 1.0) 두어 삼각형 경계가 절대 보이지 않게 하고,
+      // 비바닥(!isMeshFloor)은 obl2 공중 고립 조각만 부드럽게 감쇠한다.
+      if (uIsIndicatorPlane == 0 && uHasBaseMap == 0 && uProjectUnobserved == 0 && !isMeshFloor) {
+        float sumInlierGeomW = geomW0 * a0 + geomW1 * a1 + geomW2 * a2 + geomW3 * a3;
+        unobsConsensusGate = smoothstep(0.018, 0.075, sumInlierGeomW);
+      }
+    } else if (uOutlierRemoval == 2) {
+      // ---------------------------------------------------------------------
+      // 4차 (uOutlierRemoval == 2): [3차 | 4차 | 5차] 비교 캡처의 가운데 칸 재현용 4차 원본 로직
+      // ---------------------------------------------------------------------
+      bool v4_0 = (geomW0 > 0.005);
+      bool v4_1 = (geomW1 > 0.005);
+      bool v4_2 = (geomW2 > 0.005);
+      bool v4_3 = (geomW3 > 0.005);
+      if (!v4_0) { w0 = 0.0; geomW0 = 0.0; wView0 = 0.0; }
+      if (!v4_1) { w1 = 0.0; geomW1 = 0.0; wView1 = 0.0; }
+      if (!v4_2) { w2 = 0.0; geomW2 = 0.0; wView2 = 0.0; }
+      if (!v4_3) { w3 = 0.0; geomW3 = 0.0; wView3 = 0.0; }
+
+      int nCand = (v4_0 ? 1 : 0) + (v4_1 ? 1 : 0) + (v4_2 ? 1 : 0) + (v4_3 ? 1 : 0);
+      vec3 lab0 = v4_0 ? srgbToOklab(c0) : vec3(0.0);
+      vec3 lab1 = v4_1 ? srgbToOklab(c1) : vec3(0.0);
+      vec3 lab2 = v4_2 ? srgbToOklab(c2) : vec3(0.0);
+      vec3 lab3 = v4_3 ? srgbToOklab(c3) : vec3(0.0);
+
+      vec3 floorObsLab = srgbToOklab(uIndicatorObsColor);
+      vec3 bakedLab = srgbToOklab(rawOrigColor);
+      vec3 thirdVoteLab = (uHasBaseMap == 1) ? bakedLab : floorObsLab;
+
+      if (isMeshFloor && uHasBaseMap == 1) {
+        float maxCandL = max(max(v4_0 ? lab0.x : 0.0, v4_1 ? lab1.x : 0.0), max(v4_2 ? lab2.x : 0.0, v4_3 ? lab3.x : 0.0));
+        float darkContam = smoothstep(0.030, 0.070, (floorObsLab.x - bakedLab.x)) *
+                           smoothstep(0.025, 0.065, (maxCandL - bakedLab.x));
+        thirdVoteLab = mix(bakedLab, floorObsLab, darkContam * 0.90);
+      }
+
+      bool isFloorTarget = isMeshFloor || (uIsIndicatorPlane == 1 && uIndicatorKind == 0);
+      float sigmaEff = isFloorTarget ? uColorSigma : (uColorSigma * 2.25);
+
+      vec2 baseUvStep = (uHasBaseMap == 1) ? clamp(fwidth(vUv) * 2.2, vec2(0.0005), vec2(0.006)) : vec2(0.0);
+      vec3 thirdLabxp = (uHasBaseMap == 1 && !isFloorTarget) ? srgbToOklab(texture2D(uBaseMap, vUv + vec2(baseUvStep.x, 0.0)).rgb) : thirdVoteLab;
+      vec3 thirdLabxm = (uHasBaseMap == 1 && !isFloorTarget) ? srgbToOklab(texture2D(uBaseMap, vUv - vec2(baseUvStep.x, 0.0)).rgb) : thirdVoteLab;
+      vec3 thirdLabyp = (uHasBaseMap == 1 && !isFloorTarget) ? srgbToOklab(texture2D(uBaseMap, vUv + vec2(0.0, baseUvStep.y)).rgb) : thirdVoteLab;
+      vec3 thirdLabym = (uHasBaseMap == 1 && !isFloorTarget) ? srgbToOklab(texture2D(uBaseMap, vUv - vec2(0.0, baseUvStep.y)).rgb) : thirdVoteLab;
+
+      float db0 = v4_0 ? min(length(lab0 - thirdVoteLab), min(min(length(lab0 - thirdLabxp), length(lab0 - thirdLabxm)), min(length(lab0 - thirdLabyp), length(lab0 - thirdLabym)))) : 0.0;
+      float db1 = v4_1 ? min(length(lab1 - thirdVoteLab), min(min(length(lab1 - thirdLabxp), length(lab1 - thirdLabxm)), min(length(lab1 - thirdLabyp), length(lab1 - thirdLabym)))) : 0.0;
+      float db2 = v4_2 ? min(length(lab2 - thirdVoteLab), min(min(length(lab2 - thirdLabxp), length(lab2 - thirdLabxm)), min(length(lab2 - thirdLabyp), length(lab2 - thirdLabym)))) : 0.0;
+      float db3 = v4_3 ? min(length(lab3 - thirdVoteLab), min(min(length(lab3 - thirdLabxp), length(lab3 - thirdLabxm)), min(length(lab3 - thirdLabyp), length(lab3 - thirdLabym)))) : 0.0;
+
+      if (nCand >= 3) {
+        float d01 = (v4_0 && v4_1) ? length(lab0 - lab1) : 0.0;
+        float d02 = (v4_0 && v4_2) ? length(lab0 - lab2) : 0.0;
+        float d03 = (v4_0 && v4_3) ? length(lab0 - lab3) : 0.0;
+        float d12 = (v4_1 && v4_2) ? length(lab1 - lab2) : 0.0;
+        float d13 = (v4_1 && v4_3) ? length(lab1 - lab3) : 0.0;
+        float d23 = (v4_2 && v4_3) ? length(lab2 - lab3) : 0.0;
+
+        float tieW = isFloorTarget ? 0.65 : 0.10;
+        float sum0 = v4_0 ? (d01 + d02 + d03 + tieW * db0) : 999.0;
+        float sum1 = v4_1 ? (d01 + d12 + d13 + tieW * db1) : 999.0;
+        float sum2 = v4_2 ? (d02 + d12 + d23 + tieW * db2) : 999.0;
+        float sum3 = v4_3 ? (d03 + d13 + d23 + tieW * db3) : 999.0;
+
+        vec3 refLab = lab0;
+        float bestSum = sum0;
+        if (sum1 < bestSum) { bestSum = sum1; refLab = lab1; }
+        if (sum2 < bestSum) { bestSum = sum2; refLab = lab2; }
+        if (sum3 < bestSum) { bestSum = sum3; refLab = lab3; }
+
+        if (v4_0) {
+          float dn0 = length(lab0 - refLab) / sigmaEff;
+          float g0 = isFloorTarget ? (1.0 - smoothstep(1.05, 1.55, dn0)) : (1.0 - smoothstep(1.80, 2.80, dn0));
+          float a0 = exp(-dn0 * dn0) * g0 * g0;
+          w0 = isFloorTarget ? (geomW0 * mix(0.25, wView0 + 0.25, a0) * a0) : (w0 * a0);
+        }
+        if (v4_1) {
+          float dn1 = length(lab1 - refLab) / sigmaEff;
+          float g1 = isFloorTarget ? (1.0 - smoothstep(1.05, 1.55, dn1)) : (1.0 - smoothstep(1.80, 2.80, dn1));
+          float a1 = exp(-dn1 * dn1) * g1 * g1;
+          w1 = isFloorTarget ? (geomW1 * mix(0.25, wView1 + 0.25, a1) * a1) : (w1 * a1);
+        }
+        if (v4_2) {
+          float dn2 = length(lab2 - refLab) / sigmaEff;
+          float g2 = isFloorTarget ? (1.0 - smoothstep(1.05, 1.55, dn2)) : (1.0 - smoothstep(1.80, 2.80, dn2));
+          float a2 = exp(-dn2 * dn2) * g2 * g2;
+          w2 = isFloorTarget ? (geomW2 * mix(0.25, wView2 + 0.25, a2) * a2) : (w2 * a2);
+        }
+        if (v4_3) {
+          float dn3 = length(lab3 - refLab) / sigmaEff;
+          float g3 = isFloorTarget ? (1.0 - smoothstep(1.05, 1.55, dn3)) : (1.0 - smoothstep(1.80, 2.80, dn3));
+          float a3 = exp(-dn3 * dn3) * g3 * g3;
+          w3 = isFloorTarget ? (geomW3 * mix(0.25, wView3 + 0.25, a3) * a3) : (w3 * a3);
+        }
+        maxSurvivingA = 1.0;
+      } else if (nCand == 2) {
+        float d01 = (v4_0 && v4_1) ? length(lab0 - lab1) : 0.0;
+        float d02 = (v4_0 && v4_2) ? length(lab0 - lab2) : 0.0;
+        float d03 = (v4_0 && v4_3) ? length(lab0 - lab3) : 0.0;
+        float d12 = (v4_1 && v4_2) ? length(lab1 - lab2) : 0.0;
+        float d13 = (v4_1 && v4_3) ? length(lab1 - lab3) : 0.0;
+        float d23 = (v4_2 && v4_3) ? length(lab2 - lab3) : 0.0;
+
+        float domBias0 = (!isFloorTarget && w0 >= rawSw0 * 0.99) ? -0.15 : 0.0;
+        float domBias1 = (!isFloorTarget && w1 >= rawSw0 * 0.99) ? -0.15 : 0.0;
+        float domBias2 = (!isFloorTarget && w2 >= rawSw0 * 0.99) ? -0.15 : 0.0;
+        float domBias3 = (!isFloorTarget && w3 >= rawSw0 * 0.99) ? -0.15 : 0.0;
+
+        float sum0 = v4_0 ? (d01 + d02 + d03 + db0 + domBias0) : 999.0;
+        float sum1 = v4_1 ? (d01 + d12 + d13 + db1 + domBias1) : 999.0;
+        float sum2 = v4_2 ? (d02 + d12 + d23 + db2 + domBias2) : 999.0;
+        float sum3 = v4_3 ? (d03 + d13 + d23 + db3 + domBias3) : 999.0;
+
+        vec3 refLab = lab0;
+        float bestSum = sum0;
+        if (sum1 < bestSum) { bestSum = sum1; refLab = lab1; }
+        if (sum2 < bestSum) { bestSum = sum2; refLab = lab2; }
+        if (sum3 < bestSum) { bestSum = sum3; refLab = lab3; }
+
+        if (v4_0) {
+          float dn0 = length(lab0 - refLab) / sigmaEff;
+          float g0 = isFloorTarget ? (1.0 - smoothstep(1.05, 1.55, dn0)) : (1.0 - smoothstep(1.80, 2.80, dn0));
+          float a0 = exp(-dn0 * dn0) * g0 * g0;
+          w0 = isFloorTarget ? (geomW0 * mix(0.25, wView0 + 0.25, a0) * a0) : (w0 * a0);
+        }
+        if (v4_1) {
+          float dn1 = length(lab1 - refLab) / sigmaEff;
+          float g1 = isFloorTarget ? (1.0 - smoothstep(1.05, 1.55, dn1)) : (1.0 - smoothstep(1.80, 2.80, dn1));
+          float a1 = exp(-dn1 * dn1) * g1 * g1;
+          w1 = isFloorTarget ? (geomW1 * mix(0.25, wView1 + 0.25, a1) * a1) : (w1 * a1);
+        }
+        if (v4_2) {
+          float dn2 = length(lab2 - refLab) / sigmaEff;
+          float g2 = isFloorTarget ? (1.0 - smoothstep(1.05, 1.55, dn2)) : (1.0 - smoothstep(1.80, 2.80, dn2));
+          float a2 = exp(-dn2 * dn2) * g2 * g2;
+          w2 = isFloorTarget ? (geomW2 * mix(0.25, wView2 + 0.25, a2) * a2) : (w2 * a2);
+        }
+        if (v4_3) {
+          float dn3 = length(lab3 - refLab) / sigmaEff;
+          float g3 = isFloorTarget ? (1.0 - smoothstep(1.05, 1.55, dn3)) : (1.0 - smoothstep(1.80, 2.80, dn3));
+          float a3 = exp(-dn3 * dn3) * g3 * g3;
+          w3 = isFloorTarget ? (geomW3 * mix(0.25, wView3 + 0.25, a3) * a3) : (w3 * a3);
+        }
+        maxSurvivingA = 1.0;
+      } else if (nCand == 1) {
+        if (uHasBaseMap == 1 && uIsIndicatorPlane == 0 && isFloorTarget) {
+          maxSurvivingA = 0.0;
+          float singleSigma = uColorSigma * 1.20;
+          if (v4_0) {
+            vec3 ref0 = (uColorCorrection == 1) ? srgbToOklab(clamp(rawOrigColor * uCamGain[0], 0.0, 1.0)) : thirdVoteLab;
+            float dn0 = length(lab0 - trimDarkRef(ref0, floorObsLab)) / singleSigma;
+            float a0 = exp(-dn0 * dn0) * (1.0 - smoothstep(1.25, 1.85, dn0));
+            w0 *= a0; maxSurvivingA = a0;
+          }
+          if (v4_1) {
+            vec3 ref1 = (uColorCorrection == 1) ? srgbToOklab(clamp(rawOrigColor * uCamGain[1], 0.0, 1.0)) : thirdVoteLab;
+            float dn1 = length(lab1 - trimDarkRef(ref1, floorObsLab)) / singleSigma;
+            float a1 = exp(-dn1 * dn1) * (1.0 - smoothstep(1.25, 1.85, dn1));
+            w1 *= a1; maxSurvivingA = a1;
+          }
+          if (v4_2) {
+            vec3 ref2 = (uColorCorrection == 1) ? srgbToOklab(clamp(rawOrigColor * uCamGain[2], 0.0, 1.0)) : thirdVoteLab;
+            float dn2 = length(lab2 - trimDarkRef(ref2, floorObsLab)) / singleSigma;
+            float a2 = exp(-dn2 * dn2) * (1.0 - smoothstep(1.25, 1.85, dn2));
+            w2 *= a2; maxSurvivingA = a2;
+          }
+          if (v4_3) {
+            vec3 ref3 = (uColorCorrection == 1) ? srgbToOklab(clamp(rawOrigColor * uCamGain[3], 0.0, 1.0)) : thirdVoteLab;
+            float dn3 = length(lab3 - trimDarkRef(ref3, floorObsLab)) / singleSigma;
+            float a3 = exp(-dn3 * dn3) * (1.0 - smoothstep(1.25, 1.85, dn3));
+            w3 *= a3; maxSurvivingA = a3;
+          }
+          if (maxSurvivingA < 0.99) {
+            vec3 corrBaked = rawOrigColor;
+            if (uColorCorrection == 1) {
+              vec3 g = v4_0 ? uCamGain[0] : (v4_1 ? uCamGain[1] : (v4_2 ? uCamGain[2] : uCamGain[3]));
+              corrBaked = clamp(rawOrigColor * g, 0.0, 1.0);
+            }
+            float lumB = dot(corrBaked, vec3(0.2126, 0.7152, 0.0722));
+            float darkB = 1.0 - smoothstep(0.18, 0.36, lumB);
+            origColor = mix(corrBaked, uIndicatorObsColor * 0.88, darkB * 0.88);
+          }
+        }
+      }
+    }
+
+    // 외톨이 제거 후 살아남은 4개 가중치 내림차순 정렬 네트워크 (sw0 >= sw1 >= sw2 >= sw3)
     float sw0 = w0, sw1 = w1, sw2 = w2, sw3 = w3;
     float tmp;
     if (sw0 < sw1) { tmp = sw0; sw0 = sw1; sw1 = tmp; }
@@ -451,21 +905,17 @@ const vdtFragmentShader = /* glsl */ `
       sumW = tw0 + tw1 + tw2 + tw3;
     }
 
-    const float FEATHER_COLOR_BAND = 0.11; // 열린 구멍 경계 11cm 폭 소프트 블렌딩
-
     if (sumW <= 1e-6) {
       if (uRenderMode == 2) {
         float luma = dot(origColor, vec3(0.2126, 0.7152, 0.0722));
         gl_FragColor = vec4(vec3(luma * 0.35 + 0.08), 1.0);
       } else {
         vec3 fallbackCol = origColor;
-        if (uIsIndicatorPlane == 0 && uEdgeFeather == 1) {
+        if (uIsIndicatorPlane == 0 && uEdgeFeather == 1 && vBoundaryDist < FEATHER_COLOR_BAND) {
+          float tCol = smoothstep(0.0, FEATHER_COLOR_BAND, vBoundaryDist);
           if (isMeshFloor && uShowFloorLayer == 1) {
-            // 카메라가 전혀 못 보는 바닥 구멍 주변 삼각형은 바닥 표시 층 톤으로 매끄럽게 통합
-            float tCol = smoothstep(0.0, FEATHER_COLOR_BAND, vBoundaryDist);
-            fallbackCol = mix(floorGridAtPos, mix(floorGridAtPos, fallbackCol, 0.20), tCol);
-          } else if (vBoundaryDist < FEATHER_COLOR_BAND) {
-            float tCol = smoothstep(0.0, FEATHER_COLOR_BAND, vBoundaryDist);
+            fallbackCol = mix(floorGridAtPos, fallbackCol, tCol);
+          } else {
             fallbackCol = mix(vec3(0.157, 0.204, 0.271), fallbackCol, tCol);
           }
         }
@@ -486,13 +936,16 @@ const vdtFragmentShader = /* glsl */ `
       return;
     }
 
-    vec3 c0 = (nw0 > 0.0) ? readCamPhoto(0, uv0) : vec3(0.0);
-    vec3 c1 = (nw1 > 0.0) ? readCamPhoto(1, uv1) : vec3(0.0);
-    vec3 c2 = (nw2 > 0.0) ? readCamPhoto(2, uv2) : vec3(0.0);
-    vec3 c3 = (nw3 > 0.0) ? readCamPhoto(3, uv3) : vec3(0.0);
-
-    vec3 vdtColor = nw0 * c0 + nw1 * c1 + nw2 * c2 + nw3 * c3;
-    float confidence = clamp(sw0 * 25.0, 0.0, 1.0);
+    vec3 vdtColor = nw0 * c0 + nw1 * c1 + nw2 * c2 + nw3 * c2 * 0.0 + nw3 * c3;
+    float rawConfidence = clamp(rawSw0 * 25.0, 0.0, 1.0);
+    float confidence;
+    if (uOutlierRemoval == 2 && uIsIndicatorPlane == 0) {
+      confidence = rawConfidence * clamp(maxSurvivingA * 2.0, 0.0, 1.0);
+    } else if (uOutlierRemoval == 1 && uIsIndicatorPlane == 0) {
+      confidence = rawConfidence * unobsConsensusGate;
+    } else {
+      confidence = clamp(sw0 * 25.0, 0.0, 1.0);
+    }
 
     // -----------------------------------------------------------------------
     // 2차 지시 #3 & #4: 바닥·벽 미관측 표시 층의 사진 투영
@@ -586,13 +1039,16 @@ dummyTex.needsUpdate = true;
 // 모든 VDT 재질이 공유하는 유니폼
 const sharedUniforms = {
   uRenderMode: { value: 1 },
-  uProjectUnobserved: { value: 1 },
+  uProjectUnobserved: { value: 0 }, // 4차 지시 #1: 기본값 0 (끔)
   uColorCorrection: { value: 1 },
   uUseBgTone: { value: 1 },
   uShowFloorLayer: { value: 1 },
   uShowWallLayer: { value: 1 },
   uEdgeFeather: { value: 1 },
   uIndicatorDepthMatch: { value: 1 },
+  uUnobsDepthMatch: { value: 1 }, // 4차 지시 #1: 미관측 투영 켰을 때도 5cm 깊이 일치 게이트 적용
+  uOutlierRemoval: { value: 1 }, // 4차 지시 #2: 카메라 간 사진 일치(외톨이 제거) 기본 켬
+  uColorSigma: { value: 0.056 }, // 4차 지시 #2: 색 보정 후 겹침 인라이어 Oklab p75(0.0506)·전체 쌍 중앙값(0.0542) 기반 σ=0.056
   uFeatherPass: { value: 0 },
   uTopK: { value: 3 },
   uFar: { value: 25.0 },
@@ -1130,6 +1586,8 @@ function updateRightBadgeSubtitle() {
   if (document.getElementById("chk-floor-layer")?.checked) activeNums.push("3:바닥층");
   if (document.getElementById("chk-wall-layer")?.checked) activeNums.push("4:벽3면");
   if (document.getElementById("chk-edge-feather")?.checked) activeNums.push("5:경계섞기");
+  if (document.getElementById("chk-outlier-removal")?.checked) activeNums.push("외톨이제거");
+  if (document.getElementById("chk-project-unobs")?.checked) activeNums.push("미관측투영(5cm)");
   rightSubLabelEl.textContent =
     activeNums.length > 0
       ? `실시간 카메라 투영 + [${activeNums.join(" + ")}]`
@@ -1189,6 +1647,10 @@ export function renderViewportWithConfig(x, y, w, h, cfg) {
   sharedUniforms.uShowWallLayer.value = cfg.wallLayer ? 1 : 0;
   sharedUniforms.uEdgeFeather.value = cfg.edgeFeather ? 1 : 0;
   sharedUniforms.uIndicatorDepthMatch.value = cfg.indicatorDepthMatch === false ? 0 : 1;
+  sharedUniforms.uProjectUnobserved.value = cfg.projectUnobserved ? 1 : 0;
+  sharedUniforms.uUnobsDepthMatch.value = cfg.unobsDepthMatch === false ? 0 : 1;
+  sharedUniforms.uOutlierRemoval.value =
+    typeof cfg.outlierRemoval === "number" ? cfg.outlierRemoval : cfg.outlierRemoval === false ? 0 : 1;
   sharedUniforms.uFeatherPass.value = 0;
 
   // 가시성 설정
@@ -1241,6 +1703,9 @@ export function getCurrentRightConfig() {
     wallLayer: Boolean(document.getElementById("chk-wall-layer")?.checked),
     edgeFeather: Boolean(document.getElementById("chk-edge-feather")?.checked),
     indicatorDepthMatch: true,
+    projectUnobserved: Boolean(document.getElementById("chk-project-unobs")?.checked),
+    unobsDepthMatch: true,
+    outlierRemoval: Boolean(document.getElementById("chk-outlier-removal")?.checked),
   };
 }
 
@@ -1260,6 +1725,9 @@ export function renderSingleFrame() {
     wallLayer: false,
     edgeFeather: false,
     indicatorDepthMatch: true,
+    projectUnobserved: false,
+    unobsDepthMatch: true,
+    outlierRemoval: true,
   };
   renderViewportWithConfig(0, 0, halfW, fullH, leftCfg);
 
@@ -1270,6 +1738,9 @@ export function renderSingleFrame() {
 }
 
 function describeConfigLabel(cfg) {
+  if (cfg.labelOverride) {
+    return `${cfg.labelOverride}  |  ${currentViewKey}`;
+  }
   if (cfg.renderMode === 0) {
     return `원래 맵 (12차 texrecon 구운 텍스처)  |  ${currentViewKey}`;
   }
@@ -1287,9 +1758,14 @@ function describeConfigLabel(cfg) {
   if (tags.length === 0) {
     return `시점 의존 텍스처 (기본 VDT, 토글 끔)  |  ${currentViewKey}`;
   }
-  const prefix = cfg.indicatorDepthMatch === false ? "수정 전 ②③④⑤ (단순 가림)" : "수정 후 ②③④⑤ (깊이 5cm 일치)";
   if (cfg.bgTone && cfg.floorLayer && cfg.wallLayer && cfg.edgeFeather) {
-    return `${prefix}  |  ${currentViewKey}`;
+    if (cfg.indicatorDepthMatch === false) {
+      return `수정 전 ②③④⑤ (단순 가림)  |  ${currentViewKey}`;
+    }
+    if (cfg.outlierRemoval === false && cfg.projectUnobserved === true && cfg.unobsDepthMatch === false) {
+      return `3차 결과 (미관측투영 켬 · 외톨이제거 없음)  |  ${currentViewKey}`;
+    }
+    return `4차 결과 (미관측투영 ${cfg.projectUnobserved ? "5cm켬" : "끔"} · 카메라간 일치 외톨이제거)  |  ${currentViewKey}`;
   }
   return `시점 의존 + [${tags.join(" + ")}]  |  ${currentViewKey}`;
 }
@@ -1454,6 +1930,114 @@ export function captureFourStageGridDataUrl(mimeType = "image/jpeg", quality = 0
   return outCanvas.toDataURL(mimeType, quality);
 }
 
+/**
+ * 5차 지시: 한 시점에 대해 [3차 | 4차 | 5차] 세 칸을 나란히 렌더링하여
+ * 바닥(카펫)·가구 표면의 매끄러움과 잔상 제거를 동시에 비교하는 DataURL 을 생성한다.
+ */
+export function captureThreeStageR5DataUrl(mimeType = "image/jpeg", quality = 0.94) {
+  const fullW = window.innerWidth;
+  const fullH = window.innerHeight;
+  const w1 = Math.floor(fullW / 3);
+  const w2 = Math.floor(fullW / 3);
+  const w3 = fullW - w1 - w2;
+
+  const cols = [
+    {
+      title: `3차 (외톨이제거 전) | ${currentViewKey}`,
+      color: "#e2e8f0",
+      x: 0,
+      w: w1,
+      cfg: {
+        renderMode: 1,
+        bgTone: true,
+        floorLayer: true,
+        wallLayer: true,
+        edgeFeather: true,
+        indicatorDepthMatch: true,
+        projectUnobserved: true,
+        unobsDepthMatch: false,
+        outlierRemoval: 0,
+      },
+    },
+    {
+      title: `4차 (강한 외톨이제거) | ${currentViewKey}`,
+      color: "#fbbf24",
+      x: w1,
+      w: w2,
+      cfg: {
+        renderMode: 1,
+        bgTone: true,
+        floorLayer: true,
+        wallLayer: true,
+        edgeFeather: true,
+        indicatorDepthMatch: true,
+        projectUnobserved: false,
+        unobsDepthMatch: true,
+        outlierRemoval: 2,
+      },
+    },
+    {
+      title: `5차 (완화된 σ·소프트 감쇠·공간 매끄러움) | ${currentViewKey}`,
+      color: "#34d399",
+      x: w1 + w2,
+      w: w3,
+      cfg: {
+        renderMode: 1,
+        bgTone: true,
+        floorLayer: true,
+        wallLayer: true,
+        edgeFeather: true,
+        indicatorDepthMatch: true,
+        projectUnobserved: false,
+        unobsDepthMatch: true,
+        outlierRemoval: 1,
+      },
+    },
+  ];
+
+  renderer.setScissorTest(true);
+  for (const col of cols) {
+    renderViewportWithConfig(col.x, 0, col.w, fullH, col.cfg);
+  }
+  renderer.setScissorTest(false);
+
+  const cw = canvas.width;
+  const ch = canvas.height;
+  const outCanvas = document.createElement("canvas");
+  outCanvas.width = cw;
+  outCanvas.height = ch;
+  const ctx = outCanvas.getContext("2d");
+  ctx.drawImage(canvas, 0, 0);
+
+  const c1 = Math.floor(cw / 3);
+  const c2 = Math.floor((cw * 2) / 3);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.58)";
+  ctx.fillRect(c1 - 1, 0, 2, ch);
+  ctx.fillRect(c2 - 1, 0, 2, ch);
+
+  const scale = Math.max(1, cw / 1600);
+  const pad = Math.round(10 * scale);
+  const boxH = Math.round(30 * scale);
+  ctx.font = `600 ${Math.round(13 * scale)}px "Segoe UI", "Malgun Gothic", sans-serif`;
+
+  const badges = [
+    { text: cols[0].title, color: cols[0].color, bx: pad, maxW: c1 - pad * 2 },
+    { text: cols[1].title, color: cols[1].color, bx: c1 + pad, maxW: c2 - c1 - pad * 2 },
+    { text: cols[2].title, color: cols[2].color, bx: c2 + pad, maxW: cw - c2 - pad * 2 },
+  ];
+
+  for (const b of badges) {
+    const tw = Math.min(b.maxW, ctx.measureText(b.text).width + 20 * scale);
+    ctx.fillStyle = "rgba(15, 23, 42, 0.88)";
+    ctx.fillRect(b.bx, pad, tw, boxH);
+    ctx.fillStyle = b.color;
+    ctx.fillText(b.text, b.bx + 10 * scale, pad + 20 * scale);
+  }
+
+  renderSingleFrame();
+  return outCanvas.toDataURL(mimeType, quality);
+}
+
 export function setToggles(opts = {}) {
   const map = {
     diag: "chk-diag",
@@ -1462,6 +2046,8 @@ export function setToggles(opts = {}) {
     wallLayer: "chk-wall-layer",
     edgeFeather: "chk-edge-feather",
     weights: "chk-weights",
+    outlierRemoval: "chk-outlier-removal",
+    projectUnobserved: "chk-project-unobs",
   };
   for (const [k, id] of Object.entries(map)) {
     if (opts[k] !== undefined) {
@@ -1581,6 +2167,7 @@ async function init() {
     renderSingleFrame,
     captureComparisonDataUrl,
     captureFourStageGridDataUrl,
+    captureThreeStageR5DataUrl,
     setToggles,
     setCustomLeftConfig(cfg) {
       customLeftConfig = cfg;
@@ -1631,8 +2218,14 @@ document.getElementById("chk-color-corr").addEventListener("change", (e) => {
   sharedUniforms.uColorCorrection.value = e.target.checked ? 1 : 0;
 });
 
+document.getElementById("chk-outlier-removal")?.addEventListener("change", (e) => {
+  sharedUniforms.uOutlierRemoval.value = e.target.checked ? 1 : 0;
+  updateRightBadgeSubtitle();
+});
+
 document.getElementById("chk-project-unobs").addEventListener("change", (e) => {
   sharedUniforms.uProjectUnobserved.value = e.target.checked ? 1 : 0;
+  updateRightBadgeSubtitle();
 });
 
 document.getElementById("chk-frustums").addEventListener("change", (e) => {
@@ -1721,74 +2314,54 @@ async function runAutoShotsIfRequested() {
     savedFiles.push(filename);
   }
 
-  // 1) 단색 진단 보기 (#1): [원래 맵 | 1. 단색 진단 보기 (#b8c4d0 + 밝은 배경)]
-  window.__vdtApp.setCustomLeftConfig(null);
-  setToggles({ diag: true, weights: false });
-  for (const v of ["top", "obl1", "obl2", "obl3", "cam_A", "cam_C"]) {
-    applyPresetView(v);
-    await waitFrames(2);
-    await saveShot(`compare_${v}_diag.jpg`, captureComparisonDataUrl("image/jpeg", 0.94));
-  }
-
-  // 2) [시점의존(기본) | 수정 후 시점의존+2(배경톤)+3(바닥층)+5(경계섞기)] 비교 (전 시점)
-  window.__vdtApp.setCustomLeftConfig({
-    renderMode: 1,
-    bgTone: false,
-    floorLayer: false,
-    wallLayer: false,
-    edgeFeather: false,
-    indicatorDepthMatch: true,
-  });
-  setToggles({ diag: false, weights: false, bgTone: true, floorLayer: true, wallLayer: false, edgeFeather: true });
+  // 0) 5차 지시 핵심 확인: [3차 | 4차 | 5차] 세 칸 비교 캡처 (shots/compare_{view}_r5.jpg)
+  // - 왼쪽(3차): 외톨이 제거 전 (미관측 투영 켬, 5cm 게이트 없음)
+  // - 가운데(4차): 강한 외톨이 제거 (σ=0.056, 가중치 0 절삭, 이산 메도이드 → 바닥 줄무늬·얼룩)
+  // - 오른쪽(5차): 완화된 σ(0.095)·소프트 감쇠(최소 바닥값 유지)·연속 소프트 메도이드 합의 (바닥 매끄러움 + 잔상 제거)
   for (const v of views) {
     applyPresetView(v);
     await waitFrames(2);
-    await saveShot(`compare_${v}_vdt_235.jpg`, captureComparisonDataUrl("image/jpeg", 0.94));
+    await saveShot(`compare_${v}_r5.jpg`, captureThreeStageR5DataUrl("image/jpeg", 0.94));
   }
 
-  // 3) [수정 전 ②③④⑤ (단순 가림) | 수정 후 ②③④⑤ (깊이 5cm 일치만 투영)] 비교 (전 시점)
-  window.__vdtApp.setCustomLeftConfig({
-    renderMode: 1,
+  // 1) [원래 맵 | 5차 수정 후 ②③④⑤ (전체 개선 적용)] 기본 비교 이미지 갱신 (전 시점)
+  window.__vdtApp.setCustomLeftConfig(null);
+  setToggles({
+    diag: false,
+    weights: false,
     bgTone: true,
     floorLayer: true,
     wallLayer: true,
     edgeFeather: true,
-    indicatorDepthMatch: false,
+    outlierRemoval: true,
+    projectUnobserved: false,
   });
-  setToggles({ diag: false, weights: false, bgTone: true, floorLayer: true, wallLayer: true, edgeFeather: true });
-  for (const v of views) {
-    applyPresetView(v);
-    await waitFrames(2);
-    await saveShot(`compare_${v}_vdt_2345.jpg`, captureComparisonDataUrl("image/jpeg", 0.94));
-  }
-
-  // 4) [원래 맵 | 수정 후 ②③④⑤ (전체 개선 적용)] 기본 비교 이미지 갱신 (전 시점)
-  window.__vdtApp.setCustomLeftConfig(null);
-  setToggles({ diag: false, weights: false, bgTone: true, floorLayer: true, wallLayer: true, edgeFeather: true });
   for (const v of views) {
     applyPresetView(v);
     await waitFrames(2);
     await saveShot(`compare_${v}.jpg`, captureComparisonDataUrl("image/jpeg", 0.94));
   }
 
-  // 5) 4단계(원래 / 시점의존 / 수정 전 ②③④⑤ / 수정 후 ②③④⑤) 2x2 한눈에 보기 그리드 (전 시점)
-  for (const v of views) {
-    applyPresetView(v);
-    await waitFrames(2);
-    await saveShot(`compare_${v}_stages.jpg`, captureFourStageGridDataUrl("image/jpeg", 0.94));
-  }
-
-  // 6) 카메라 가중치 시각화 캡처
+  // 2) 카메라 가중치 시각화 캡처
   window.__vdtApp.setCustomLeftConfig(null);
   setToggles({ diag: false, weights: true });
-  for (const v of ["top", "obl1", "obl2", "cam_A"]) {
+  for (const v of ["top", "obl1", "obl2", "obl3", "cam_A"]) {
     applyPresetView(v);
     await waitFrames(2);
     await saveShot(`compare_${v}_weights.jpg`, captureComparisonDataUrl("image/jpeg", 0.94));
   }
 
-  // 7) 전체 토글(+2+3+4+5) 켠 상태에서 그림자 맵 해상도별(1024, 1536, 2048) FPS 및 렌더 시간 재측정
-  setToggles({ diag: false, weights: false, bgTone: true, floorLayer: true, wallLayer: true, edgeFeather: true });
+  // 3) 전체 토글(+2+3+4+5 + 5차 외톨이제거) 상태에서 그림자 맵 해상도별(1024, 1536, 2048) FPS 및 렌더 시간 재측정
+  setToggles({
+    diag: false,
+    weights: false,
+    bgTone: true,
+    floorLayer: true,
+    wallLayer: true,
+    edgeFeather: true,
+    outlierRemoval: true,
+    projectUnobserved: false,
+  });
   const perfByShadowRes = {};
   const gl = renderer.getContext();
   const debugInfo = gl.getExtension("WEBGL_debug_renderer_info");

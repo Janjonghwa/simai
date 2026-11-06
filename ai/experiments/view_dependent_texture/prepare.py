@@ -86,6 +86,11 @@ def sha256_file(path: Path) -> str:
 
 
 def find_latest_calibration(bundles_dir: Path) -> tuple[Path, dict[str, Any]]:
+    # 12차 맵(current-scene-textured.glb) 정합 기준 보정 번들 우선 사용
+    preferred = bundles_dir / "cal-lobby-init-da3-exrinsic-fix_20260416_120329/calibration.json"
+    if preferred.is_file():
+        raw = json.loads(preferred.read_text(encoding="utf-8"))
+        return preferred, raw.get("payload", raw)
     candidates = sorted(bundles_dir.glob("*/calibration.json"), key=lambda p: p.stat().st_mtime)
     if not candidates:
         raise FileNotFoundError(f"calibration.json 을 찾을 수 없다: {bundles_dir}")
@@ -220,6 +225,65 @@ def compute_multiview_color_gains(
                     gains[k] = mean_c[sel].mean(axis=0) / np.maximum(colors[k, sel].mean(axis=0), 1e-6)
             gains /= np.prod(gains, axis=0, keepdims=True) ** (1.0 / num_cams)
 
+    # 색 보정 뒤 겹침 영역에서 카메라 간 쌍별 색 거리(sRGB, 선형 RGB, Oklab 근사) 분포 측정 (4차 지시 σ 근거)
+    corr_srgb = np.clip((colors * gains[:, None, :]) / 255.0, 0.0, 1.0)
+    corr_lin = np.where(corr_srgb <= 0.04045, corr_srgb / 12.92, ((corr_srgb + 0.055) / 1.055) ** 2.4)
+
+    # Oklab (선형 RGB -> LMS^(1/3) -> Lab)
+    M1 = np.array(
+        [
+            [0.4122214708, 0.5363325363, 0.0514459929],
+            [0.2119034982, 0.6806995451, 0.1073969566],
+            [0.0883024619, 0.2817188376, 0.6299787005],
+        ],
+        dtype=np.float64,
+    )
+    M2 = np.array(
+        [
+            [0.2104542553, 0.7936177850, -0.0040720468],
+            [1.9779984951, -2.4285922050, 0.4505937099],
+            [0.0259040371, 0.7827717662, -0.8086757660],
+        ],
+        dtype=np.float64,
+    )
+    lms = np.maximum(corr_lin @ M1.T, 0.0) ** (1.0 / 3.0)
+    corr_lab = lms @ M2.T
+
+    pair_dists_srgb = []
+    pair_dists_lin = []
+    pair_dists_lab = []
+    for i in range(num_cams):
+        for j in range(i + 1, num_cams):
+            both = valid_obs[i] & valid_obs[j]
+            if int(both.sum()) > 0:
+                d_srgb = np.linalg.norm(corr_srgb[i, both] - corr_srgb[j, both], axis=1)
+                d_lin = np.linalg.norm(corr_lin[i, both] - corr_lin[j, both], axis=1)
+                d_lab = np.linalg.norm(corr_lab[i, both] - corr_lab[j, both], axis=1)
+                pair_dists_srgb.append(d_srgb)
+                pair_dists_lin.append(d_lin)
+                pair_dists_lab.append(d_lab)
+    all_d_srgb = np.concatenate(pair_dists_srgb) if pair_dists_srgb else np.array([0.12])
+    all_d_lin = np.concatenate(pair_dists_lin) if pair_dists_lin else np.array([0.08])
+    all_d_lab = np.concatenate(pair_dists_lab) if pair_dists_lab else np.array([0.08])
+
+    # 3대 이상 관측된 면에서 메도이드(기준 카메라)와 두 번째로 가까운 카메라(외톨이가 아닌 정상 인라이어) 사이의 색 거리 분포
+    vis3_mask = valid_obs.sum(axis=0) >= 3
+    inlier_lab = []
+    inlier_lin = []
+    for f_idx in np.flatnonzero(vis3_mask):
+        cams_f = np.flatnonzero(valid_obs[:, f_idx])
+        pts_lab = corr_lab[cams_f, f_idx]
+        pts_lin = corr_lin[cams_f, f_idx]
+        dmat_lab = np.linalg.norm(pts_lab[:, None, :] - pts_lab[None, :, :], axis=2)
+        med_i = int(np.argmin(dmat_lab.sum(axis=1)))
+        other_d_lab = np.sort(np.delete(dmat_lab[med_i], med_i))
+        inlier_lab.append(float(other_d_lab[0]))
+        dmat_lin = np.linalg.norm(pts_lin[:, None, :] - pts_lin[None, :, :], axis=2)
+        other_d_lin = np.sort(np.delete(dmat_lin[med_i], med_i))
+        inlier_lin.append(float(other_d_lin[0]))
+    inlier_lab_arr = np.array(inlier_lab) if inlier_lab else np.array([0.06])
+    inlier_lin_arr = np.array(inlier_lin) if inlier_lin else np.array([0.08])
+
     stats = {
         "overlapping_faces": int(overlap.sum()),
         "total_faces": int(num_faces),
@@ -233,6 +297,26 @@ def compute_multiview_color_gains(
         "per_camera_gain_srgb": {
             check_cams[k].camera_id: [round(float(x), 4) for x in gains[k]]
             for k in range(num_cams)
+        },
+        "pairwise_color_dist_srgb": {
+            "count": int(all_d_srgb.size),
+            "p50": round(float(np.percentile(all_d_srgb, 50)), 4),
+            "p75": round(float(np.percentile(all_d_srgb, 75)), 4),
+            "p90": round(float(np.percentile(all_d_srgb, 90)), 4),
+        },
+        "pairwise_color_dist_linear": {
+            "count": int(all_d_lin.size),
+            "p50": round(float(np.percentile(all_d_lin, 50)), 4),
+            "p75": round(float(np.percentile(all_d_lin, 75)), 4),
+            "p90": round(float(np.percentile(all_d_lin, 90)), 4),
+            "medoid_inlier_p75": round(float(np.percentile(inlier_lin_arr, 75)), 4),
+        },
+        "pairwise_color_dist_oklab": {
+            "count": int(all_d_lab.size),
+            "p50": round(float(np.percentile(all_d_lab, 50)), 4),
+            "p75": round(float(np.percentile(all_d_lab, 75)), 4),
+            "p90": round(float(np.percentile(all_d_lab, 90)), 4),
+            "medoid_inlier_p75": round(float(np.percentile(inlier_lab_arr, 75)), 4),
         },
     }
     return gains, stats, mesh, valid_obs, colors
