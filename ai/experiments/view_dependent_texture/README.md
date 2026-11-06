@@ -1,80 +1,125 @@
-# 시점 의존 텍스처 (View-Dependent Texture, S15P31A101-527) PoC
+# 시점 의존 텍스처(View-Dependent Texture) 및 미관측 구멍 자연화 PoC (`S15P31A101-527`)
 
-고정 CCTV 카메라 4대(`cam_A`~`cam_D`)의 실제 배경 사진(왜곡 폄)을 12차 맵(`current-scene-textured.glb`) 형상 위에 **관제 뷰어가 보는 시점 각도에 따라** 실시간 투영·혼합(Unstructured Lumigraph 방식)하는 PoC 다.
+고정 카메라 4대(`cam_A`~`cam_D`)의 왜곡 보정 배경 사진과 12차 보정 파라미터(`calibration.json`)를 사용해, 기존 12차 맵 GLB(`current-scene-textured.glb`)의 고정 UV 아틀라스 텍스처 대신 **보는 시점(뷰어 카메라)에 따라 최적 카메라 사진을 실시간 투영·블렌딩**하고(1차 지시), 나아가 **TSDF 형상 구멍(검은 영역)을 지어내지 않고 자연스럽게 메우는 5종 토글**(2차 지시)을 구현·검증한 실험 패키지다.
 
 ---
 
 ## 1. 파일 구성 및 산출물 위치
 
-- 실험 코드 (`ai/experiments/view_dependent_texture/`):
-  - `prepare.py`: 보정(`calibration.json`) 및 사람 없는 배경 사진(`cam_{A..D}.jpg`) 왜곡 펴기(새 `K`), 긴 변 2048(`2048x1152`) JPEG 저장, GLB 좌표계(`GLTF_Y_UP`) 기준 외부 파라미터·Three.js 행렬·다중 시점 겹침 기반 색 보정 계수(`color_gain_srgb`)를 `cameras.json` 에 기록, GLB 및 뷰어 파일 복사.
-  - `index.html`, `vdt.js`: Three.js(`three@0.170.0` CDN importmap) 기반 좌/우 동기화 비교 뷰어 (`[원래 구운 텍스처 | 시점 의존 텍스처]`).
-  - `capture_shots.py`: 로컬 HTTP 서버 + 헤드리스 브라우저(WebGL)로 8개 시점(`cam_A`~`cam_D`, `top`, `obl1`~`obl3`) 및 가중치 시각화 비교 이미지를 자동 캡처하고 그림자 맵 해상도별 FPS 를 측정.
-- 산출물 (`C:/Users/SSAFY/simai-local/vdt/`, 저장소 밖):
-  - `cameras.json`: GLB 좌표계 기준 카메라 4대 내부·외부 파라미터 및 색 보정 계수
-  - `images/cam_{A..D}.jpg`: 왜곡을 편 `2048x1152` JPEG 배경 사진
-  - `current-scene-textured.glb`: 12차 맵 GLB 사본
-  - `shots/compare_{cam_A..D,top,obl1..3}.jpg`, `shots/compare_*_weights.jpg`, `shots/metrics.json`
+### 코드 (`ai/experiments/view_dependent_texture/`)
+- [`prepare.py`](file:///C:/Users/SSAFY/orca/workspaces/S15P31A101/S15P31A101-527-view-dependent-texture/ai/experiments/view_dependent_texture/prepare.py):
+  1. 최신 보정(`cal-lobby-init-da3-exrinsic-fix_20260416_120329`)과 사람 없는 배경 사진(`cam_{A..D}.jpg`, `2304×1296`) 로드
+  2. 렌즈 왜곡(`OPENCV_PINHOLE`, $k_1 \approx -0.29$) 보정 및 긴 변 `2048 px`(`2048×1152`) JPEG 저장
+  3. `GLTF_Y_UP` 좌표계 기준 카메라 행렬(`K, R, t`, Three.js `viewMatrix`/`projectionMatrix`) 및 다중 시점 노출 보정 계수(`color_gain_srgb`)를 계산해 `cameras.json` 저장
+  4. `ai/src/simai_ai/scene/glb_fill.py` 의 `floor_level` 및 `find_wall_planes` (RANSAC 벽 평면 검출)를 호출해 바닥 표시 층(`World Z = -0.015 m`)과 수용된 경계 벽 평면 3면을 `walls.json` 으로 저장
+- [`index.html`](file:///C:/Users/SSAFY/orca/workspaces/S15P31A101/S15P31A101-527-view-dependent-texture/ai/experiments/view_dependent_texture/index.html) / [`vdt.js`](file:///C:/Users/SSAFY/orca/workspaces/S15P31A101/S15P31A101-527-view-dependent-texture/ai/experiments/view_dependent_texture/vdt.js):
+  - Three.js(`three@0.170.0`) 기반 좌우 분할 비교 뷰어 (`[원래 맵 | 시점 의존 텍스처 + 2차 개선 토글 1~5]`)
+- [`capture_shots.py`](file:///C:/Users/SSAFY/orca/workspaces/S15P31A101/S15P31A101-527-view-dependent-texture/ai/experiments/view_dependent_texture/capture_shots.py):
+  - 로컬 HTTP 서버 및 헤드리스 Chrome(WebGL 하드웨어 가속)으로 8개 시점(`cam_A`~`cam_D`, `top`, `obl1`~`obl3`)의 단계별 비교 이미지 42장과 해상도별 FPS 벤치마크(`shots/metrics.json`) 자동 생성
+
+### 실행 산출물 (`C:/Users/SSAFY/simai-local/vdt/`)
+- `current-scene-textured.glb`: 12차 맵 GLB 사본 (`10.40 MB`, 삼각형 `150,247`개, 열린 경계 모서리 `8,659`개)
+- `cameras.json`: GLB 좌표계 기준 4대 카메라 내부·외부 파라미터, 노출 보정 계수, 자유 시점 프리셋
+- `walls.json`: 바닥 미관측 표시 층(`World Z = -0.015 m`) 및 `find_wall_planes` 수용 벽 평면 3면(`wall_0`, `wall_1`, `wall_2`)의 좌표·법선·관측 대표 톤
+- `images/cam_{A..D}.jpg`: 왜곡 보정 및 `2048×1152` 리사이즈된 배경 사진 4장
+- `shots/`:
+  - `compare_{view}_diag.jpg`: **1. 단색 진단 보기** 비교 (`원래 맵 | #b8c4d0 단색 + 밝은 배경`)
+  - `compare_{view}_vdt_235.jpg`: `[기본 VDT | 수정 후 VDT + 2(배경톤) + 3(바닥층) + 5(경계섞기)]` 비교
+  - `compare_{view}_vdt_2345.jpg`: `[수정 전 ②③④⑤ (단순 가림 → 구멍에 의자·탁자 비침) | 수정 후 ②③④⑤ (깊이 5cm 일치만 투영, 빈 곳은 톤+격자)]` 비교
+  - `compare_{view}.jpg`: `[원래 맵 | 수정 후 VDT+2+3+4+5 (전체 적용)]` 비교
+  - `compare_{view}_stages.jpg`: 한 시점의 **4단계(`① 원래 맵 / ② 시점 의존 / ③ 수정 전 ②③④⑤ / ④ 수정 후 ②③④⑤`) 2×2 한눈에 보기**
+  - `compare_{view}_weights.jpg`: 카메라별 가중치 시각화 (`A:빨강, B:초록, C:파랑, D:노랑`)
+  - `metrics.json`: 전체 토글 활성화 상태의 그림자 맵 해상도별 FPS 및 렌더 시간 측정치
 
 ---
 
-## 2. 실행 및 로컬 서버로 띄우는 방법
+## 2. 로컬 실행 방법
 
-### (1) 입력 준비 (`prepare.py`)
 ```powershell
+# 1. 입력 데이터 준비 (왜곡 보정 이미지 + cameras.json + walls.json 생성)
 uv run --project ai --with opencv-python-headless python ai/experiments/view_dependent_texture/prepare.py
-```
 
-### (2) 로컬 웹 서버로 시험 페이지 띄우기 (`python -m http.server`)
-`prepare.py` 가 `C:/Users/SSAFY/simai-local/vdt/` 안에 `index.html`, `vdt.js`, `cameras.json`, `current-scene-textured.glb`, `images/` 를 모두 준비하므로 아래 명령 한 줄로 띄운다:
+# 2. 브라우저 확인용 로컬 정적 서버 실행 (C:/Users/SSAFY/simai-local/vdt)
+python -m http.server 8080 --directory C:/Users/SSAFY/simai-local/vdt
+# 브라우저에서 http://127.0.0.1:8080/index.html 접속
 
-```powershell
-python -m http.server 8765 --directory C:/Users/SSAFY/simai-local/vdt
-```
-브라우저에서 `http://localhost:8765/index.html` 을 열면 좌/우 비교 화면이 뜬다.
-- 화면 하단 버튼으로 `cam_A`~`cam_D`, `위에서 보기(Top)`, `비스듬히 1~3(Obl1~3)` 시점 이동, `가중치 시각화`, `색 보정(노출 맞춤)`, `상위 2/3대 섞기`, `그림자 맵 해상도(1024/1536/2048)`, `캡처 저장`을 바로 조작할 수 있다.
-
-### (3) 확인 이미지 일괄 캡처 및 성능 측정 (`capture_shots.py`)
-```powershell
+# 3. 비교 스크린샷 일괄 캡처 및 FPS 재측정
 uv run --project ai python ai/experiments/view_dependent_texture/capture_shots.py
 ```
 
 ---
 
-## 3. 방법 (알고리즘 및 좌표 변환)
+## 3. 1차 지시 요약 — 좌표계 변환 및 실시간 시점 의존 투영
 
-1. **좌표 규약 일치 (`GLTF_Y_UP`)**:
-   - `ai/src/simai_ai/scene/texture_mesh.py` 의 `GLTF_Y_UP = [[1,0,0],[0,0,1],[0,-1,0]]` ($G$) 규약에 따라 World($+Z$ 상방) 정점 $p_{\text{world}}$ 는 GLB($+Y$ 상방) 정점 $p_{\text{glb}} = G \, p_{\text{world}} = (x, z, -y)^T$ 로 저장된다.
-   - 따라서 $p_{\text{world}} = G^T p_{\text{glb}}$ 이고, OpenCV 월드→카메라 변환 $p_{\text{cv}} = R_{\text{w2c}} p_{\text{world}} + t_{\text{w2c}}$ 는 GLB 정점 기준 $p_{\text{cv}} = (R_{\text{w2c}} G^T) p_{\text{glb}} + t_{\text{w2c}}$ ($R = R_{\text{w2c}} G^T, t = t_{\text{w2c}}$)가 된다.
-2. **카메라별 깊이 그림자 맵 (Depth Shadow Map)**:
-   - GLB 로드 시 4대 카메라 각각의 핀홀 내부 행렬 `K` 와 외부 행렬로 구성한 Three.js 카메라에서 선형 깊이($z_{\text{cv}} / Z_{\text{far}}$)를 `packDepthToRGBA` 32비트로 `WebGLRenderTarget` 에 1회 굽는다(카메라와 배경 메시가 고정이므로 매 프레임 다시 그리지 않아 60+ fps 유지).
-3. **조각(Fragment)별 후보 판정 및 가중치 (Unstructured Lumigraph)**:
-   - 각 조각의 GLB 월드 위치 $P$ 를 4대 카메라에 투영해 화면 안($u, v \in (0.005, 0.995)$), 정면 법선($\cos \theta_{\text{norm}} = N \cdot \vec{v}_{\text{cam}} > \cos_{\min}$), 깊이 그림자 일치(가림 없음 및 전경 실루엣 단차 차단)를 모두 통과한 카메라만 후보로 남긴다.
-   - 가중치:
-     $$W_i = w_{\text{depth}, i} \times w_{\text{norm}, i} \times w_{\text{border}, i} \times w_{\text{view}, i} \times w_{\text{dist}, i}$$
-     여기서 $w_{\text{view}, i} = \frac{\exp(8.5 (\cos \alpha_i - 1))}{\max(1 - \cos \alpha_i, 0.001)}$ ($\cos \alpha_i = \vec{v}_{\text{eye}} \cdot \vec{v}_{\text{cam}, i}$)로, 실제 카메라 시점 근처에서는 해당 카메라 가중치가 99.9% 이상 지배적(epipolar consistency)이 되어 원본 CCTV 사진 수준의 선명도를 내고, 카메라 사이 자유 시점에서는 상위 2~3대 카메라를 $(K+1)$번째 가중치 문턱값 차감($C^0$ 연속 블렌딩)으로 부드럽게 섞는다.
-   - **폴백(지어내지 않음, 규칙 2·7)**: 어느 카메라에서도 가림·법선 조건을 통과하지 못하는 영역과 추정 바닥 평면(`estimated_floor_plane`)은 원래 구운 텍스처(또는 원래 정점색)를 그대로 유지한다.
-4. **카메라 간 노출·색 보정**:
-   - 2대 이상 카메라에 동시에 가림 없이 관측되는 메시 삼각형(약 5.5만 개) 중심의 평균색이 일치하도록 카메라별 RGB 이득(`color_gain_srgb`)을 계산해 투영 시 곱한다.
+- **GLB ↔ OpenCV 카메라 좌표 변환**:
+  - `texture_mesh.py` 의 `GLTF_Y_UP` 회전 행렬 $G = \begin{bmatrix} 1 & 0 & 0 \\ 0 & 0 & 1 \\ 0 & -1 & 0 \end{bmatrix}$ ($\det(G) = +1$)에 의해 $\mathbf{p}_{\text{world}} = G^T \mathbf{p}_{\text{glb}}$ 이므로,
+    $$\mathbf{p}_{\text{cam,cv}} = (R_{\text{w2c}} G^T)\,\mathbf{p}_{\text{glb}} + \mathbf{t}_{\text{w2c}} = R_{\text{glb2cv}}\,\mathbf{p}_{\text{glb}} + \mathbf{t}_{\text{glb2cv}}$$
+- **실시간 가림 검사 및 각도 가중 블렌딩**:
+  - 4대 카메라 시점의 선형 깊이 그림자 맵(`uCamDepth0..3`, 기본 `1536×864`)으로 가구·벽에 가려진 카메라를 제외하고, Unstructured Lumigraph 각도 가중치 $w_{\text{view}} = \frac{\exp(8.5(\cos\alpha - 1))}{\max(1 - \cos\alpha, 0.001)}$ 와 $(K+1)$번째 문턱값 차감으로 상위 2~3대 카메라를 $C^0$ 연속 블렌딩한다.
 
 ---
 
-## 4. 눈으로 본 판단 및 한계
+## 4. 2차 지시 구현 상세 — 검은 구멍을 자연스럽게, 지어내지 않고
 
-- **개선된 점**:
-  - `cam_A`~`cam_D` 근처 시점에서 보면 기존 12차 texrecon 아틀라스에서 뭉개지거나 흐려졌던 벽면 액자, 창틀·블라인드, `SSAFY`·`SELF CAFE`·`LOCKER` 글자, 바닥 콘센트, 라바콘, 책상 위 홍보물·노트북·의자 윤곽이 원본 CCTV 사진에 가깝게 선명해진다.
-  - 카메라 사이 비스듬한 시점(`obl1`~`obl3`)과 위에서 본 시점(`top`)에서도 벽면과 바닥 카펫 결이 훨씬 또렷하며, 가중치 문턱값 차감과 노출 맞춤 덕분에 카메라 전환 경계의 급격한 색 단차가 줄어든다.
-- **한계 (형상 정밀도 의존성)**:
-  - **형상 오차가 큰 곳에서의 투영 미끄러짐(고스팅)**: 원형 테이블 상판 가장자리, 얇은 의자 다리·등받이, 창가 책상처럼 TSDF 메시 형상 자체가 실제 물체보다 부풀거나 깎인 곳(수 cm~십수 cm 오차)에서는 해당 카메라 시점에서는 맞더라도 다른 각도에서 볼 때 전경 색이 살짝 어긋나거나 두 카메라의 투영이 겹쳐 보이는 한계가 있다. 즉 시점 의존 텍스처는 **메시 형상 정밀도 개선과 반드시 함께 봐야 한다**.
-  - **깊이 잔물결 및 사선 시선**: 카메라에서 7~10 m 떨어진 바닥·모서리는 시선이 15° 이하의 사선(grazing angle)이라 TSDF 의 2~4 cm 잔물결에도 법선·깊이가 흔들리기 쉽다. 바닥 법선 안정화(`+Y` 혼합)와 5탭 깊이 허용폭으로 대폭 완화했으나, 근본적으로는 바닥·벽 평면 정합(`--plane-cleanup` 등)이 선행될수록 품질이 올라간다.
+### ① 단색 진단 보기 (`1. 단색 진단 보기` 토글)
+- 모든 TSDF 삼각형을 단색(`#b8c4d0`, `DoubleSide`, 완만한 양면 법선 음영)으로 칠하고 배경을 밝은 슬레이트 백색(`#e2e8f0`)으로 렌더링한다 (`shots/compare_*_diag.jpg`).
+- **진단 결과**: 12차 GLB 에서 검게 보이던 바닥 구멍(원형 테이블 주변, 기둥 뒤쪽)과 벽 하단 구멍(노란 벽 테이블 뒤, 창문 아래)에서 밝은 `#e2e8f0` 배경이 그대로 투과되어 보인다. 즉 해당 검은 영역은 **텍스처 누락이 아니라 TSDF 형상 자체에 삼각형이 없는 열린 구멍(missing geometry)** 임을 눈으로 명확히 확인했다.
+
+### ② 배경 톤 (`2. 배경 톤+안개` 토글)
+- 완전 검정(`#0b0f17`) 대신 교실 분위기·카펫 톤과 어울리는 어두운 슬레이트-블루 수직 그라데이션(`#18202c` 상단 → `#283445` 중앙 → `#1e2735` 하단)을 풀스크린 쿼드로 깔고, `8 m ~ 25 m` 구간에 완만한 거리 안개(`#253041`, 최대 `38%`)를 적용해 외곽 절단면이 검게 튀지 않게 했다.
+
+### ③ 바닥 미관측 표시 층 (`3. 바닥 미관측 표시 층` 토글)
+- **위치**: `World Z = 0` 기준 `1.5 cm` 아래인 `z_world = -0.015 m` (`GLB Y = -0.015 m`)에 방 바닥 범위(수용된 3개 벽 평면 경계 + 열린 `+Y` 방향 여유 `0.45 m`) 사각형 평면을 배치했다. 맵 TSDF 바닥면 중앙값(`+0.0461 m`)보다 `6.1 cm` 아래에 있어 z-fighting 이 전혀 발생하지 않는다.
+- **스타일 (미관측 사각지대)**: 가짜 카펫 텍스처를 지어내지 않고, 관측된 바닥 삼각형 중앙값 색(`sRGB [0.412, 0.437, 0.488]`)에 맞춘 차분한 단색(`sRGB [0.348, 0.369, 0.412]`) 위에 화면 미분(`fwidth`) 기반 모아레 없는 **1 m 주 격자선 + 0.5 m 보조 격자선**을 그려 미관측 영역임을 정직하게 표시한다.
+- **실제 사진 투영 조건 (3차 지시 반영: 깊이 5 cm 일치 + 형상 존재 검사)**:
+  - 2차 지시(수정 전)에서는 단순히 전경 가림(`zCv - d > tolOccl`)만 검사했기 때문에, 원래 의자·탁자가 있던 자리인데 TSDF 맵에 의자·탁자 형상이 빠져 깊이 그림자 맵이 비어 있는 곳(`d = uFar = 25 m`)에서도 가림 검사를 통과해 의자·탁자 사진이 바닥·벽 표시 층에 납작하게 달라붙는 문제("섞여 들어간 느낌")가 발생했다.
+  - **3차 지시 해결**:
+    1. **깊이 그림자 맵에 전체 TSDF 형상 기록**: 바닥·벽·가구의 모든 TSDF 삼각형을 카메라별 깊이 그림자 맵(`uCamDepth0..3`)에 기록하고, 형상이 없는 구멍 픽셀만 클리어 값(`d = uFar = 25.0 m`)으로 남긴다.
+    2. **표시 층 깊이 5 cm 일치 게이트 (`INDICATOR_DEPTH_MATCH_TOL = 0.05 m`)**: 바닥·벽 표시 층(`uIsIndicatorPlane == 1`)에 카메라 사진을 비출 때는 5-tap 깊이 그림자 맵에 **맵 형상이 실제로 존재(`d < uFar - 0.5`)**하고, 그 깊이가 표시 층 표면 위치(`projPos`)의 카메라 깊이와 **`5 cm`(`0.05 m`) 이내로 일치(`max |zCv - d_i| <= 0.05 m`)**할 때만 사진을 투영한다.
+    3. **5 cm 근거**: TSDF 바닥면 높이 사분위 편차(`±2.5 cm`)와 `find_wall_planes` 의 RANSAC 평면 inlier 허용치(`4 cm`)를 포괄하는 최소 물리 정합 임계값이 `5 cm` 다. 깊이 맵이 비어 있거나(형상 없음 = 카메라가 무엇을 봤는지 모름) 깊이 차가 `5 cm` 를 넘으면 사진을 쓰지 않고 **차분한 단색 톤 + 1 m 격자**만 표시한다. 원래 맵 메시(관측 면, `uIsIndicatorPlane == 0`)의 시점 의존 텍스처는 그대로 유지한다.
+    4. **표시 층 전용 `clearDepth` 패스 분리**: 바닥·벽 표시 층(`indicatorScene`)을 먼저 그린 뒤 깊이 버퍼만 비우고(`renderer.clearDepth()`) TSDF 본 메시(`scene`)를 그린다. 이를 통해 벽면보다 바깥으로 오목하게 들어간 창문(`obl2`, `obl3`)이나 곡률이 있는 TSDF 벽·바닥을 표시 층 평면이 절대 가리지 않으며, 오직 TSDF 기하가 비어 있는 구멍 픽셀에만 표시 층이 노출된다.
+
+### ④ 벽 미관측 표시 층 (`4. 벽 미관측 표시 층(3면)` 토글)
+- `prepare.py` 에서 `simai_ai.scene.glb_fill.find_wall_planes` 를 호출해 수용된 **방 경계 벽 평면 3면**을 `C:/Users/SSAFY/simai-local/vdt/walls.json` 으로 내보냈다:
+  - `wall_0` (좌측 노란 벽, $x \approx 0.07\text{ m}$, 길이 $9.67\text{ m}$, 높이 $2.55\text{ m}$, 관측 중앙 톤 `[0.683, 0.611, 0.508]`)
+  - `wall_1` (우측 창가 벽, $x \approx 8.24\text{ m}$, 길이 $5.62\text{ m}$, 높이 $2.51\text{ m}$, 관측 중앙 톤 `[0.725, 0.654, 0.554]`)
+  - `wall_2` (후면 사물함/SSAFY 벽, $y \approx -0.16\text{ m}$, 길이 $6.71\text{ m}$, 높이 $2.45\text{ m}$, 관측 중앙 톤 `[0.576, 0.642, 0.707]`)
+  - 열린 `+Y` 방향과 방 내부 파티션 후보 3개(`NOT_ROOM_BOUNDARY`, `DUPLICATE`)는 기각되어 **수용 평면이 없는 방향에는 평면을 만들지 않는다**.
+- 방 안쪽을 향하는 단면(`dot(N, viewDir) > 0.02`)으로만 렌더링하여 벽 근처에 설치된 `cam_C`·`cam_D` 의 시야를 뒷면이 가리지 않게 했다.
+- 바닥과 동일하게 깊이 그림자 맵에 형상이 있고 깊이가 `5 cm` 안으로 일치할 때만 벽 사진을 투영하며, 형상이 없는 벽 구멍은 해당 벽의 평균 톤 단색 + 1 m 격자로 표시한다.
+
+### ⑤ 구멍 경계 부드럽게 섞기 (`5. 구멍 경계 부드럽게 섞기` 토글) — 방법 및 선택 근거
+- **선택한 방법 (위상 정점 용접 기반 열린 경계 거리장 `aBoundaryDist` + 셰이더 11 cm 연속 색상 페더링)**:
+  1. GLB 로드 시 UV 아틀라스 경계로 분리된 정점들을 `1 mm` 공간 해시 격자로 용접(weld)한 뒤, 공유 삼각형이 **정확히 1개뿐인 무방향 간선**(`8,659`개)을 찾아 진짜 TSDF 형상 구멍 테두리 정점(`8,477`개)과 간선 중점을 추출한다.
+  2. `8 cm` 3차원 공간 해시 격자로 모든 정점에서 가장 가까운 열린 구멍 경계까지의 유클리드 거리 `aBoundaryDist` (최대 `0.12 m` 캡)를 계산해 정점 속성(`BufferAttribute`)으로 바인딩한다(초기화 소요 시간 `< 15 ms`).
+  3. 프래그먼트 셰이더에서 열린 구멍 경계로부터 `11 cm` 구간(`vBoundaryDist < 0.11 m`)에 대해 `t = smoothstep(0.0, 0.11, vBoundaryDist)` 가중치로 하부 표시 층(바닥/벽 단색+격자) 및 슬레이트 배경 톤과 연속 블렌딩하고, 바닥의 미관측 삼각형(`unobserved_neutral`) 폴백 톤도 바닥 표시 층 톤에 일치시킨다.
+- **선택 근거 (기각한 대안과의 비교)**:
+  - *기각한 대안*: 경계 정점의 알파를 `0` 으로 두는 하드웨어 알파 블렌딩 / `discard` 방식은 폭이 좁은 삼각형 브리지(3개 정점이 모두 구멍 경계에 접한 삼각형) 전체의 알파가 `0` 이 되어 멀쩡한 바닥 삼각형이 뚫리는 부작용이 발생했다.
+  - *채택 근거*: 정점별 열린 경계 거리(`vBoundaryDist`)를 따라 하부 표시 층의 색상(`floorGridAtPos` / 배경 톤)으로 색상을 $C^0$ 연속 수렴시키면, 좁은 삼각형 형상을 조금도 손실하지 않으면서 구멍 테두리의 톱니 모양 단차와 밝은 회색(`unobserved_neutral`) 띠가 매끄럽게 사라진다.
 
 ---
 
-## 5. 운영 뷰어(`front/apps/admin/.../viewer3d`)에 붙일 때 할 일
+## 5. 브라우저 렌더 성능 재측정 결과 (기본 토글 ②③④⑤ 켬, ① 끔)
 
-1. **카메라 파라미터 공급 (`-522` API 재사용)**:
-   - 운영 서버·뷰어의 카메라 위치·자세·내부 파라미터 API(`S15P31A101-522`)가 내려주는 현재 활성 보정(`calibration_version`)의 `K`, `R`, `t`, `distortion` 을 그대로 받아 뷰어 어댑터(`worldCoordinates.ts`)의 `WORLD_TO_THREE_MATRIX` 규약으로 변환해 셰이더 유니폼에 주입한다.
-2. **투영 소스 사진 (세팅 배경 프레임)**:
-   - 세팅 완료 시 만들어진 사람 없는 배경 번들(`clean_backgrounds`: `cam_{A..D}.jpg` 왜곡 폄본)을 Scene 자산과 함께 서명 URL(또는 정적 자산)로 내려받아 4장의 텍스처로 바인딩한다.
-3. **SceneBackground 재질 확장**:
-   - `SceneBackground.tsx` 의 `prepareSceneRoot` 에서 GLB 로드 직후 1회 4대 카메라 깊이 그림자 `WebGLRenderTarget`(`1536x864`)을 굽고, `attachPhotoShader` 에 시점 의존 투영 분기(VDT 켜기/끄기 토글 포함)를 통합한다. 그림자 맵은 정적 배경이므로 최초 1회만 렌더되어 실시간 관제(30 FPS 이상)에 프레임 부하를 거의 주지 않는다(측정 평균 프레임 렌더 0.27 ms).
+- **측정 환경**: Windows 헤드리스 Chrome (`1894×980` 듀얼 뷰포트), GPU `ANGLE (Intel(R) Arc(TM) Graphics Direct3D11)`
+- **결과 요약** (`C:/Users/SSAFY/simai-local/vdt/shots/metrics.json`):
+
+| 그림자 맵 해상도 (4대 각각) | 초기 그림자 맵 굽기 (1회) | 프레임당 GPU 렌더 시간 (평균 / P95) | 브라우저 rAF FPS | 순수 렌더 처리량 |
+|---|---:|---:|---:|---:|
+| `1024 × 576` | `9.1 ms` | `0.33 ms` / `0.60 ms` | **`66.6 fps`** | `3,030 fps` |
+| `1536 × 864` (기본) | `45.4 ms` | `0.32 ms` / `0.60 ms` | **`62.8 fps`** | `3,125 fps` |
+| `2048 × 1152` | `31.2 ms` | `0.30 ms` / `0.60 ms` | **`60.0 fps`** | `3,333 fps` |
+
+- 바닥 표시 층(삼각형 2개), 벽 표시 층 3면(삼각형 6개), 배경 그라데이션 쿼드(삼각형 2개), 정점별 경계 거리 보간(`vBoundaryDist`)은 모두 가벼운 셰이더 연산으로 처리되어 **60 fps 이상 실시간 렌더링**을 유지한다.
+
+---
+
+## 6. 시점별 비교 평가 및 남은 한계 (`원래 / 시점의존 / 수정 전 ②③④⑤ / 수정 후 ②③④⑤`)
+
+- **시각 비교 요약 (`shots/compare_*_stages.jpg`, `shots/compare_*_vdt_2345.jpg`)**:
+  - `obl2` (비스듬히 2): 수정 전(`③`)에는 원형 테이블과 긴 갈색 테이블 사이·기둥 앞 바닥 구멍 자리에 의자 등받이와 파란 다리 사진이 납작하게 달라붙어 섞여 들어간 느낌이 있었으나, 수정 후(`④`)에는 깊이 맵이 비어 있는 구멍 자리에 사진 투영이 차단되어 **차분한 바닥 톤 + 1 m 격자**로 깔끔하게 정리됨.
+  - `obl3` (비스듬히 3): 수정 전(`③`)에는 우측 노란 벽(`wall_0`) 하단 구멍 자리에 흰 원형 테이블 상판과 의자 사진이 벽 평면에 납작하게 비쳤으나, 수정 후(`④`)에는 벽 평균 톤 단색 + 1 m 격자로 정직하게 표시되며 창문·액자 등 관측 TSDF 면은 선명하게 유지됨.
+  - `top` (위에서 보기): 원형 테이블과 갈색 벤치 주변의 구멍 자리에 납작하게 늘어나 붙던 의자·테이블 가장자리 잔상이 사라지고, 관측된 카펫과 미관측 격자 층이 11 cm 페더링 경계를 통해 자연스럽게 이어짐.
+  - `cam_A` ~ `cam_D`, `obl1`: 모든 카메라·대각선 시점에서 원래 맵 메시(관측 면)의 선명한 시점 의존 텍스처는 그대로 유지되면서, 형상이 없는 구멍 자리만 차분한 바닥·벽 톤 + 1 m 격자로 표현됨.
+- **남은 한계**:
+  - 방 내부 독립 기둥(`obl2` 중앙 기둥 뒷면)이나 정수기/파티션(`obl1` `SELF CAFE` 뒷면)처럼 방 경계 벽 평면(3면)이나 바닥 평면에 속하지 않는 **실내 구조물 자체의 뒷면 형상 결손**은 평면 표시 층의 대상이 아니므로 슬레이트 배경 톤과 경계 페더링으로만 완화된다.
