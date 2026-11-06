@@ -11,7 +11,7 @@ from simai_ai.scene import glb_enhance as ge
 from simai_ai.scene import glb_fill as gf
 
 PHOTO = (90, 160, 70)
-CFG = ge.EnhanceConfig(fill_vis_long_side=320, fill_wall_ransac_iter=300, check_tolerance_mean=1.0, check_tolerance_camera=1.0)
+CFG = ge.EnhanceConfig(fill_enabled=True, fill_vis_long_side=320, fill_wall_ransac_iter=300, check_tolerance_mean=1.0, check_tolerance_camera=1.0)
 
 
 def grid(origin, u, v, nu, nv, cell, skip=None):
@@ -330,3 +330,13 @@ def test_sidecar_atlas_written_per_plane_with_inpaint_mask(tmp_path):
         assert not m[f.source == gf.SRC_PROJECTED].any() and not m[~f.region].any()
         assert (m.sum() / max(f.region.sum(), 1)) == pytest.approx(f.stats["gray_ratio"], abs=1e-3)
         assert (f.image[m] == 128).all()  # 채울 곳은 회색 자리표시
+
+
+def test_fill_and_inpaint_are_off_by_default_like_session12():
+    """S15P31A101-526: 기본은 12차와 같은 texrecon 맵(채우기·인페인팅 끔), 설정으로만 켠다."""
+    cfg = ge.EnhanceConfig.from_env(env={})
+    assert cfg.fill_enabled is False
+    assert cfg.inpaint_mode == "off"
+    on = ge.EnhanceConfig.from_env(env={"SIMAI_GLB_FILL": "on", "SIMAI_GLB_INPAINT": "classic"})
+    assert on.fill_enabled is True
+    assert on.inpaint_mode == "classic"

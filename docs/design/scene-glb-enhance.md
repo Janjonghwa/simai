@@ -96,9 +96,11 @@ bash ai/experiments/object_completion/gpu/run_3dfixer_s12.sh /workspace/s12_3dfi
 
 ## S15P31A101-511: 늘어난 면 제거 + 바닥·벽 평면 채우기 (`glb_fill.py`, enhance 1.1.0)
 관련 명세 5.3. 코드: `ai/src/simai_ai/scene/glb_fill.py`(진입 `run_fill`), 연결 `glb_enhance.enhance_glb`·`enhance_file`, 시험 `ai/tests/scene/test_glb_fill.py`, 근거·실측 `ai/experiments/texrecon_opt/REPORT.md`(-505 PoC 를 운영화).
+**기본값 변경(S15P31A101-526, 11-06)**: 12차 GPU PoC 를 본 사용자 판단으로 채우기·평면 인페인팅은 기본 끔(12차 texrecon 맵과 같은 결과). 채운 회색·번진 질감이 원래 사진 텍스처보다 어색했다. 코드는 두고 설정으로만 켠다. 맵 품질은 지어내지 않는 쪽(형상 정밀도, 시점 의존 텍스처 -527)으로 보강한다.
+
 **범위 결정(Lead 11-05)**: 맵은 평면 사진 투영 + AI 인페인팅 + 물체 AI 3D 로 가고 texrecon 은 뺀다. texrecon 설정 비교·관제 중 부하 제한(B)은 중단했고 `texture_mesh`/`bake` 기본값은 그대로다.
 
-### 하는 일(보정 카메라·사진이 있을 때만, 기본 켬, `SIMAI_GLB_FILL=off` / `options.fill=false` / `EnhanceConfig.fill_enabled`)
+### 하는 일(보정 카메라·사진이 있을 때만, **기본 끔(S15P31A101-526)**, `SIMAI_GLB_FILL=on` / `options.fill=true` / `EnhanceConfig.fill_enabled`)
 1. 늘어난 면 제거: 보이는 면 중 보이는 모든 카메라에서 |cos(법선, 시선)| < `fill_cos_slant`(0.15)인 면을 지운다(색인만 새로 씀, 정점·텍스처 바이트 불변). 안 보인 면은 지우지 않는다. 긴 변 기준은 기본 끔(`fill_long_edge_m`=0; 단순화된 평평한 큰 면과 구분 안 됨).
 2. 바닥: World Z=0(바닥 중앙값이 ±8 cm 안일 때, 밖이면 중앙값). 영역 = 메시 바닥 칸 닫힘(0.6 m) ∪ (카메라 광선이 가림 없이 Z=0 에 닿는 칸 ∩ 메시 바닥에서 2.5 m 안) → 구멍 메움 → 채택된 벽 평면 안쪽으로 자름. 메시가 이미 있는 칸은 건드리지 않고 구멍에만 5 cm 격자 면.
 3. 벽: 수직 면 순차 RANSAC. 통과 조건(전부): 길이≥1.5 m·넓이≥3 m², 지배 방향 직교(±8°, 방향은 ±2° 안 면의 넓이 가중으로 다듬음), 높이 구간 5/8 이상 점유·높이 1.5 m 이상, 방 경계(바닥이 평면 반대쪽에 8 % 초과면 방 안 구조물 → 기각), 중복 병합. 평면의 u 범위(지지 정점 0.5~99.5 분위)·높이 안의 구멍만 채우고 평면이 없는 방향은 만들지 않는다. 구멍 비율 85 % 초과(지지 부족)면 건너뜀.
