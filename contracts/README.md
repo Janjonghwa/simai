@@ -1,6 +1,8 @@
 # contracts
 
-S15P31A101-510: **v7.15.0**(마이너, v7.14.0 -497 다음). I4 `messages/watch_binding_notice` 1.0.0 신설 — EC2 → 워치, 그 워치에 사람(익명 World ID) 배정이 생겼는지(BOUND) 풀렸는지(UNBOUND)를 알린다. 배정이 생기거나 풀릴 때 연결된 그 워치에 한 번, 워치가 (재)연결되면 지금 상태를 한 번 보내고 같은 상태는 반복하지 않는다. 워치는 UNBOUND 에 '워치 찬 손을 3초 흔들어 주세요' 안내를, BOUND 에 짧은 진동과 '연결됨' 을 보이며 경보가 떠 있으면 가리지 않는다. 필드: `state`·`method`(MOTION_MATCH·WAVE·MANUAL, UNBOUND 면 null; WAVE 는 -508 손 흔들기 체크인용으로 미리 둠)·`world_id`(UNBOUND 면 null)·선택 `unbind_reason`(UNBOUND 만)·`sent_at`. 닫힌 객체라 사람 이름 같은 키를 싣지 못한다. 예시 `watch_binding_notice`·`.unbound`·`.released`, 반례 `.person_name`·`.bound_without_world`·`.unbound_with_world`·`.unknown_state`·`.unknown_method`·`.bound_with_reason`. Python 생성 모델 갱신. 다른 계약 변경 없음. 설계 `docs/design/server-watch-alert.md` 배정 알림 절.
+S15P31A101-517: **v7.16.0**(마이너, v7.15.0 -510 다음). I1 `messages/config_bundle` 1.3.0 — 선택 구성 요소 `components.ppe_policy`(version·sha256·uri)를 더한다(I1 LIVE 계약, 이원준 승인 2026-11-06, PPE 전담). 내용 문서 `data/ppe_policy` 1.0.0 신설: `format_version`·`version`·`work_id`(진행 중 작업, 없으면 null)·`effective_from_ms`·`helmet`(REQUIRED·NOT_REQUIRED). 안전모 요구는 작업 기준이라 `work_id` 가 있으면 REQUIRED, null 이면 NOT_REQUIRED 를 스키마가 강제하고, 구역별 요구·예외와 조끼 요구는 닫힌 객체로 막는다(명세 7.2 R9·8.10, v1.3 수정 66). EC2 는 작업 시작·종료 때 새 `config_version` 으로 발행한다. `components` 가 닫힌 객체라 1.2.0 만 아는 Tier 0 는 `ppe_policy` 가 실린 묶음을 거부하므로 Tier 0 를 먼저 올린 뒤 EC2 가 싣는다. 예시 `config_bundle.ppe_policy`·`ppe_policy`·`ppe_policy.no_work`, 반례 `config_bundle.ppe_policy_without_sha`·`.unknown_component`, `ppe_policy.work_without_helmet`·`.helmet_without_work`·`.zone_override`·`.vest_requirement`·`.missing_work_id`·`.bool_helmet`. Python 생성 모델 갱신. 다른 계약 변경 없음.
+
+이전 판 v7.15.0 — S15P31A101-510: **v7.15.0**(마이너, v7.14.0 -497 다음). I4 `messages/watch_binding_notice` 1.0.0 신설 — EC2 → 워치, 그 워치에 사람(익명 World ID) 배정이 생겼는지(BOUND) 풀렸는지(UNBOUND)를 알린다. 배정이 생기거나 풀릴 때 연결된 그 워치에 한 번, 워치가 (재)연결되면 지금 상태를 한 번 보내고 같은 상태는 반복하지 않는다. 워치는 UNBOUND 에 '워치 찬 손을 3초 흔들어 주세요' 안내를, BOUND 에 짧은 진동과 '연결됨' 을 보이며 경보가 떠 있으면 가리지 않는다. 필드: `state`·`method`(MOTION_MATCH·WAVE·MANUAL, UNBOUND 면 null; WAVE 는 -508 손 흔들기 체크인용으로 미리 둠)·`world_id`(UNBOUND 면 null)·선택 `unbind_reason`(UNBOUND 만)·`sent_at`. 닫힌 객체라 사람 이름 같은 키를 싣지 못한다. 예시 `watch_binding_notice`·`.unbound`·`.released`, 반례 `.person_name`·`.bound_without_world`·`.unbound_with_world`·`.unknown_state`·`.unknown_method`·`.bound_with_reason`. Python 생성 모델 갱신. 다른 계약 변경 없음. 설계 `docs/design/server-watch-alert.md` 배정 알림 절.
 
 S15P31A101-497: **v7.14.0**(마이너, v7.13.0 -492 다음). Lead 2차 지시에 따라 I0 `local_alert` 1.3.0 및 재동기화용 `health.active_site_alerts`(health 2.3.0)에 선택 `sound_mode`(REPEAT/ONCE/SILENT)를 추가한다. 필드가 없거나 모르는 값이면 기존 반복. I1 위험 이벤트·World 계약은 변경하지 않는다. ONCE 는 경보 단계별 한 묶음, SILENT 는 표시만이며 ACK 의미는 그대로다.
 
@@ -58,7 +60,7 @@ S15P31A101-483 설명 정리: `coverage_guide`의 STALE 설명을 헬퍼 신선�
 | `messages/event_frame_ready.schema.json` | I1 Tier 0 → EC2 이벤트 프레임 업로드 완료(주소만). 1.1.0(-408): 같은 Pod 로컬 사본 `local_copy`(선택). 있는 프레임은 S3 업로드 완료 전에 알릴 수 있다(객체가 잠시 없을 수 있음, 없는 프레임은 1.0.0 처럼 업로드 뒤) | 5.4, 12.3 |
 | `messages/ppe_state.schema.json` | I1 PPE 프로세스(Tier 0 와 같은 GPU) → EC2 사람별 안전모·조끼 상태(WORN·NOT_WORN·UNKNOWN), 사유·유효 칸 수·지원 비율·마지막 근거·만료 시각·근거(프레임·local ID·confidence·영역 품질), 모델·체크포인트·규칙 판·입력 출처. 멱등 키 `stream_epoch`·`state_sequence`. 이미지·위치 없음. 1.0.0 신설(-491) | 5.5, 6장, 11.2, 12.3 |
 | `messages/tier0_endpoint.schema.json` | I1 Tier 0 → EC2 Pod 엔드포인트 등록(공개 IP·포트·공개키 지문). 노트북 조회 응답도 이 형식 | 3.12, 12.6, 12.7 |
-| `messages/config_bundle.schema.json` | I1 EC2 → Tier 0 구성 묶음 발행 | 3.2, 11.1 |
+| `messages/config_bundle.schema.json` | I1 EC2 → Tier 0 구성 묶음 발행. 1.3.0 선택 구성 요소 `ppe_policy`(내용은 `data/ppe_policy`) | 3.2, 11.1, 12.3 |
 | `messages/config_ack.schema.json` | I1 Tier 0 → EC2 구성 묶음 적용·거부 | 3.2 |
 | `messages/event_ack.schema.json` | I1 EC2 → Tier 0 운영자 확인(관리자·반장) | 3.2 |
 | `messages/event_close.schema.json` | I1 EC2 → Tier 0 관제 화면 관리자의 구역 대상 이벤트 종료(멱등 키 `close_id`, 누가·왜). 1.0.0 신설(-200) | 6.4, 12.2 |
@@ -109,6 +111,7 @@ S15P31A101-483 설명 정리: `coverage_guide`의 STALE 설명을 헬퍼 신선�
 | `experiments/human_mesh_output.schema.json` | EXP-02 `avatar_asset` / `pose_frame` (2.0.0 메이저: 공통 보정 출처 값 삭제) | 5.6, 20.3, 20.4 |
 | `experiments/run_record.schema.json` | 실험 Run 기록 (2.0.0 메이저: 공통 보정 출처 값 삭제). 2.1.0(-197): `experiment_id` `VAL-01`(운영 경로 검증 Run, `e_gate` 불가). 2.2.0(-208): `gpu.provider` 에 `VAST`·`OTHER` 추가 | 20.5 |
 | `data/recording_manifest.schema.json` | 4대 동기화 녹화 세션 manifest(파일·해시·프레임 수·시각 범위·카메라 설정·동의·보관·저장 위치). 프레임 사이드카 한 줄은 `$defs/frame_line`(`frame_header` 재사용). 메시지·Provider 출력이 아닌 저장 문서라 `data/`에 둔다(설명은 `docs/data/`) | 11.5, 12.7, 15.3, 21.1 |
+| `data/ppe_policy.schema.json` | 구성 묶음 구성 요소 `ppe_policy` 내용 문서. 안전모 착용 요구(작업 진행 중이면 REQUIRED, 아니면 NOT_REQUIRED). 구역별 요구·조끼 요구 없음. 내려받는 문서라 공통 봉투를 쓰지 않는다 | 7.2, 8.10, 12.3 |
 
 I4(워치, 확장)는 `watch_alert`·`watch_heartbeat`·`watch_ack`·`gait_features` 가 정본이다(부록 C.6, 6.10.0). 워치 메시지의 봉투 `source_id` 는 워치 기기 ID(`watch-01` 꼴, `device.device_id`) 또는 `ec2` 이고, 연결·토큰·끊김 판정은 `docs/design/watch-i4-contract.md`. I2 `/topic/world` 는 I1 `world_state` 를 형식 그대로 다시 싣는다(EC2 가 봉투만 새로 쓰고 `source_id` 는 `ec2`, payload 는 바꾸지 않음, 명세 12.4). I5 `vlm_rationale`·`incident_summary`·`bev_floorplan` 외 작업 유형의 `input`·`result` 형식은 각 작업 티켓에서 정한다.
 
@@ -151,6 +154,7 @@ I4(워치, 확장)는 `watch_alert`·`watch_heartbeat`·`watch_ack`·`gait_featu
 - `event_id`는 UUIDv7. 관측 해소(RESOLVED, `resolution` 없음)는 `verification`이 VERIFIED일 때만(운영자 종료 `resolution` 은 2.0.0 부터 RESOLVED 에만, 검증 상태·근거를 요구하지 않음), 재동기화 스냅샷에는 활성 이벤트만. 스냅샷 `journal_offset` 이 null(아직 저널 기록 없음)이면 활성 이벤트는 빈 배열
 - I1 전이의 `evidence_ref` 키는 늘 싣는다. RAISED·관측 RESOLVED·재개(`resumed`)는 null 불가, 판정이 아닌 전이(확인·복원·ID 교정)는 근거를 모르면 null, 운영자 종료(`resolution`)도 판정이 아닌 전이처럼 직전 판정 근거를 싣고 모르면 null
 - PPE 상태(`ppe_state`)는 WORN·NOT_WORN 이면 같은 상태(`candidate_state`)의 근거가 하나 이상 있고 마지막 근거·만료 시각이 수다(검출이 없는 것은 미착용이 아님). 입력 방식은 `FULL_FRAME` 만. 사람·장비·근거 객체가 닫혀 위치·이미지·crop 을 실을 수 없다. 스키마 밖 계약 시험: 한 메시지에 같은 `world_id` 하나, `expires_at_ms` ≥ `last_evidence_at_ms`, 근거 촬영 시각 ≤ 사람의 `capture_time_ms`
+- PPE 요구(`ppe_policy`)는 `work_id` 가 있으면 안전모 REQUIRED, null 이면 NOT_REQUIRED 다. `work_id` 는 늘 싣고, 구역별 요구·조끼 요구 같은 다른 키는 받지 않는다.
 - 이벤트 클립(`media_clip`)은 LIVE·CRITICAL·HIGH 만, 영상은 객체 키로만(스킴·쿼리 있는 주소 불가, payload 닫힘), 삭제 예정일 필수, 흐림 없음(NONE)이면 `redactor_version` null·흐림이면 필수. 보존 표시 추가 기록(`media_clip_retention`)은 붙이기만(true), CRITICAL 자동 보존은 CRITICAL 만
 - 운영자 확인은 누가(`actor_role`·`actor_id`)·어디서(`channel`) 했는지 필수. 현장 확인 버튼은 `site_ack`로만, 관제 화면·PWA 확인은 `event_ack`로만
 - 운영자 상향(`event_escalate`, 전이·이벤트의 `escalation(s)`)은 관제 화면 관리자만, 근거는 VLM 상향 의견(`VLM_PROPOSAL`)뿐이고 올릴 등급은 CRITICAL·HIGH·CAUTION(INFO 불가, 값 객체 닫힘). 전이에는 재개가 아닌 UPDATED 에만, 이벤트 기록은 LIVE 에만. 결과의 거부 사유는 REJECTED 에만
@@ -190,7 +194,7 @@ uv run contracts/scripts/validate_examples.py
 
 | 언어 | 대상 | 생성 위치(커밋 여부) | 재생성 | 커밋과 같은지 확인 |
 |---|---|---|---|---|
-| Python (pydantic v2) | `common/defs` 를 뺀 모든 스키마(68개, `contracts/**/*.schema.json` 파일 수에서 defs 를 뺀 값). 스키마 이름 → 모델은 `Contracts.model_fields['<이름>']`(예: `world_state` → `WorldState`) | `ai/src/simai_ai/contracts/models.py`(커밋) | `cd ai && uv run python ../contracts/scripts/generate_python_models.py` | 같은 명령에 `--check`(종료 1 이면 다름). `ai/tests/contracts/test_models.py` 가 함께 돈다 |
+| Python (pydantic v2) | `common/defs` 를 뺀 모든 스키마(70개, `contracts/**/*.schema.json` 파일 수에서 defs 를 뺀 값). 스키마 이름 → 모델은 `Contracts.model_fields['<이름>']`(예: `world_state` → `WorldState`) | `ai/src/simai_ai/contracts/models.py`(커밋) | `cd ai && uv run python ../contracts/scripts/generate_python_models.py` | 같은 명령에 `--check`(종료 1 이면 다름). `ai/tests/contracts/test_models.py` 가 함께 돈다 |
 | Java (jsonschema2pojo, Jackson 3) | `messages/*` 에서 `envelope` 를 뺀 메시지(60개, `server/contracts.gradle` 의 `messageNames` 와 같은 규칙으로 `contracts/messages/*.schema.json` 파일 수에서 envelope 를 뺀 값). `com.ssafy.simai.contracts.WorldState`·`WorldStatePayload` 꼴 | `server/build/generated-sources/js2p`(커밋 안 함, 빌드 산출물) | `cd server && ./gradlew compileJava`(스키마가 바뀌면 다시 만든다) | 해당 없음(커밋하지 않음). `ContractExamplesRoundTripTest` 가 예시 왕복을 본다 |
 | TypeScript | 관제 앱이 받는 I2 메시지(`world_state`, `risk_event`, `viewer_health`, `avatar_frame`) 타입·검증기 | `front/packages/contracts/src/generated`(커밋) | `cd front && pnpm --filter @simai/contracts generate` | `pnpm --filter @simai/contracts check:generated` |
 

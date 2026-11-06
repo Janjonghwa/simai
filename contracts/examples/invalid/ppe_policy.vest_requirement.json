@@ -1,0 +1,9 @@
+{
+  "_expect_error": "조끼 요구는 두지 않는다. 조끼는 표시만 (명세 8.10)",
+  "format_version": "1.0.0",
+  "version": "ppe-3",
+  "work_id": 12,
+  "effective_from_ms": 1760342499000,
+  "helmet": "REQUIRED",
+  "vest": "REQUIRED"
+}

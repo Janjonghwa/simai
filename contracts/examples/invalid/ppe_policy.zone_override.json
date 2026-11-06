@@ -1,0 +1,11 @@
+{
+  "_expect_error": "구역별 요구·예외는 두지 않는다 (명세 8.2, 8.10)",
+  "format_version": "1.0.0",
+  "version": "ppe-3",
+  "work_id": 12,
+  "effective_from_ms": 1760342499000,
+  "helmet": "REQUIRED",
+  "zones": {
+    "z-01": "EXEMPT"
+  }
+}

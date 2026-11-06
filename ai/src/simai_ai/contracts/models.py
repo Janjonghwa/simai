@@ -1095,6 +1095,21 @@ class ObservationSummaryCameraSummary(BaseModel):
     last_capture: DefsTimestampMs | None | MISSING = MISSING
 
 
+class WorkId(RootModel[StrictInt]):
+    root: Annotated[StrictInt, Field(ge=1)]
+
+
+class PpePolicy(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    format_version: Annotated[StrictStr, Field(pattern='^1\\.\\d+\\.\\d+$')]
+    version: DefsVersionId
+    work_id: WorkId | None
+    effective_from_ms: DefsTimestampMs
+    helmet: Literal['REQUIRED', 'NOT_REQUIRED']
+
+
 class PpeStateEvidence(DefsFrameKey):
     model_config = ConfigDict(
         extra='forbid',
@@ -3915,6 +3930,7 @@ class Components(BaseModel):
     rules: Rules
     calibration: ConfigBundleComponent
     operational_geometry: ConfigBundleComponent
+    ppe_policy: ConfigBundleComponent | MISSING = MISSING
 
 
 class Payload8(BaseModel):
@@ -4184,6 +4200,7 @@ class Contracts(BaseModel):
     media_clip_retention: MediaClipRetention | MISSING = MISSING
     observation_batch: ObservationBatch | MISSING = MISSING
     observation_summary: ObservationSummary | MISSING = MISSING
+    ppe_policy: PpePolicy | MISSING = MISSING
     ppe_state: PpeState | MISSING = MISSING
     recording_manifest: RecordingManifest | MISSING = MISSING
     risk_alert: RiskAlert | MISSING = MISSING
