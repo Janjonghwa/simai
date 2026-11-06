@@ -1,5 +1,5 @@
-"""EXP-01 혼합 경로(run_hybrid_depth.py, S15P31A101-283): 합성 상자 교실(SIM, 상한, 제품 성능 아님)로 깊이 다시 표본·정합·
-카메라 간 일관성·융합·가장자리 지표와 가짜 어댑터 끝까지 경로(GPU·torch·OpenCV 없음).
+"""EXP-01 혼합 경로(run_hybrid_depth.py, S15P31A101-283, S15P31A101-537): 합성 상자 교실(SIM, 상한, 제품 성능 아님)로 깊이 다시 표본·정합·
+카메라 간 일관성·융합·가장자리 지표와 가짜 어댑터·WorldMirror 2.0/1.0·Pi3X 어댑터 끝까지 경로(GPU·torch·OpenCV 없음).
 
 반례: 불연속을 가로질러 섞지 않음, 이상점 25% 에서도 축척 복원, 표본 부족·인라이어 부족은 정합 실패(1 로 채우지 않음),
 한 카메라 깊이 5% 어긋남은 일관성 지표가 잡음, 빈 공간에 뜬 점은 융합이 뺌, 퍼진 가장자리는 떠 있는 점 비율이 높음,
@@ -14,12 +14,14 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
 
 AI = Path(__file__).resolve().parents[3]
 SCRIPT = AI / "experiments" / "static_scene" / "run_hybrid_depth.py"
+IC_SCRIPT = AI / "experiments" / "static_scene" / "intrinsics_check.py"
 ROOM = (8.0, 6.5, 2.9)  # 상자 교실 X·Y·Z(m), 바닥 Z = 0
 NAMES = ["cam_A", "cam_B", "cam_C"]
 
@@ -97,7 +99,9 @@ def test_resample_depth_matches_render_at_original_resolution(hd):
 
 def test_sample_depth_does_not_mix_across_step(hd):
     src = np.array([[2.0, 2.0, 4.0, 4.0]] * 3, np.float32)
-    val, ok = hd.sample_depth(src, np.ones_like(src, bool), np.array([1.4, 1.6, 0.5]), np.array([1.0, 1.0, 1.0]))
+    val, ok = hd.sample_depth(
+        src, np.ones_like(src, bool), np.array([1.4, 1.6, 0.5]), np.array([1.0, 1.0, 1.0])
+    )
     assert ok.all()
     assert val.tolist() == [2.0, 4.0, 2.0]  # 가운데 3 m(떠 있는 점)를 만들지 않음, 매끈하면 보간
 
@@ -149,7 +153,9 @@ def test_register_to_reference_recovers_camera_scale(hd):
     Km, Ko = _K(84, 48), _K(336, 192)
     ref = _render(T, Km, (48, 84))
     pred = _render(T, Ko, (192, 336)) / 1.1
-    r = hd.register_to_reference(pred, np.ones_like(pred, bool), Ko, ref, np.ones_like(ref, bool), Km, "scale")
+    r = hd.register_to_reference(
+        pred, np.ones_like(pred, bool), Ko, ref, np.ones_like(ref, bool), Km, "scale"
+    )
     assert r.status == "OK" and abs(r.scale - 1.1) < 0.002 and r.inlier_ratio > 0.95
 
 
@@ -188,13 +194,21 @@ def test_visibility_filter_drops_points_floating_in_free_space(hd):
     kept_a = kept[0]["xyz"]
     dist = np.min(np.linalg.norm(kept_a[:, None, :] - X_blob[None, ::25], axis=-1), axis=0)
     assert np.all(dist > 1e-6)  # 뜬 점은 하나도 남지 않음
-    assert rec["cam_A"]["kept"] >= rec["cam_A"]["points"] - int(blob.sum()) - int(0.01 * rec["cam_A"]["points"])
+    assert (
+        rec["cam_A"]["kept"]
+        >= rec["cam_A"]["points"] - int(blob.sum()) - int(0.01 * rec["cam_A"]["points"])
+    )
     assert rec["cam_B"]["dropped_conflict_ratio"] == 0.0  # 스치는 천장·모서리의 보간 오차를 충돌로 보지 않음
 
 
 def test_voxel_merge_averages_within_cell(hd):
-    chunks = [{"xyz": np.array([[0.001, 0.001, 0.001], [0.003, 0.003, 0.003], [0.5, 0.5, 0.5]]),
-               "rgb": np.array([[0, 0, 0], [100, 100, 100], [10, 20, 30]], np.uint8), "support": None}]
+    chunks = [
+        {
+            "xyz": np.array([[0.001, 0.001, 0.001], [0.003, 0.003, 0.003], [0.5, 0.5, 0.5]]),
+            "rgb": np.array([[0, 0, 0], [100, 100, 100], [10, 20, 30]], np.uint8),
+            "support": None,
+        }
+    ]
     xyz, rgb, cnt = hd.voxel_merge(chunks, 0.01)
     assert len(xyz) == 2 and sorted(cnt.tolist()) == [1, 2]
     i = int(np.argmax(cnt))
@@ -228,17 +242,34 @@ def test_k_for_depth_grid_and_pose_difference(hd):
 
 def test_predict_side_imports_only_stdlib_and_numpy():
     """predict 는 깊이 모델 전용 가상환경(simai_ai 없음)에서도 돈다: 모듈 최상위 import 는 표준 라이브러리와 numpy 뿐."""
-    # 실험 진입점은 scene 라이브러리를 재사용한다. 무거운 모델 import 지연은 구현에서 검사한다.
-    library = AI / "src" / "simai_ai" / "scene" / "run_hybrid_depth.py"
-    tree = ast.parse(library.read_text(encoding="utf-8"))
-    names = set()
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            names |= {a.name.split(".")[0] for a in node.names}
-        elif isinstance(node, ast.ImportFrom):
-            names.add((node.module or "").split(".")[0])
-    assert names <= {"__future__", "argparse", "hashlib", "json", "math", "os", "sys", "time", "dataclasses", "datetime",
-                     "pathlib", "typing", "numpy"}
+    allowed = {
+        "__future__",
+        "argparse",
+        "hashlib",
+        "json",
+        "math",
+        "os",
+        "sys",
+        "time",
+        "dataclasses",
+        "datetime",
+        "pathlib",
+        "typing",
+        "numpy",
+    }
+    for py_file in (
+        SCRIPT,
+        IC_SCRIPT,
+        AI / "src" / "simai_ai" / "scene" / "run_hybrid_depth.py",
+    ):
+        tree = ast.parse(py_file.read_text(encoding="utf-8"))
+        names = set()
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                names |= {a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                names.add((node.module or "").split(".")[0])
+        assert names <= allowed, f"{py_file} has disallowed top-level imports: {names - allowed}"
 
 
 # --------------------------------------------------------------------------- 끝까지(가짜 어댑터, CLI)
@@ -250,32 +281,84 @@ def _write_inputs(root: Path) -> tuple[Path, Path]:
     ma.mkdir()
     prep.mkdir()
     Km, Ko = _K(84, 48), _K(336, 192)
-    views = [{"name": n, "image": f"{n}.jpg", "image_size": [336, 192], "K_undistorted": Ko.tolist()} for n in NAMES]
-    pdoc = {"format": "simai.mapanything_inputs", "format_version": "0.1.0",
-            "input_provenance": {"frames": {"source": "SIM", "dataset_id": "synthetic-box"}, "is_upper_bound": True},
-            "views": views}
+    views = [
+        {"name": n, "image": f"{n}.jpg", "image_size": [336, 192], "K_undistorted": Ko.tolist()}
+        for n in NAMES
+    ]
+    pdoc = {
+        "format": "simai.mapanything_inputs",
+        "format_version": "0.1.0",
+        "input_provenance": {
+            "frames": {"source": "SIM", "dataset_id": "synthetic-box"},
+            "is_upper_bound": True,
+        },
+        "views": views,
+    }
     raw_p = json.dumps(pdoc).encode()
     (prep / "prepared.json").write_bytes(raw_p)
     raw, cams = {"names": np.array(NAMES)}, []
     for n in NAMES:
         d = _render(CAMS[n], Km, (48, 84))
-        raw |= {f"{n}__depth_z": d, f"{n}__conf": np.full(d.shape, 5.0, np.float32), f"{n}__mask": np.ones(d.shape, bool),
-                f"{n}__intrinsics": Km, f"{n}__camera_pose": CAMS[n]}
-        cams.append({"name": n, "model_input_hw": [48, 84], "intrinsics_model_res": Km.tolist(), "cam2world": CAMS[n].tolist()})
+        raw |= {
+            f"{n}__depth_z": d,
+            f"{n}__conf": np.full(d.shape, 5.0, np.float32),
+            f"{n}__mask": np.ones(d.shape, bool),
+            f"{n}__intrinsics": Km,
+            f"{n}__camera_pose": CAMS[n],
+        }
+        cams.append(
+            {
+                "name": n,
+                "model_input_hw": [48, 84],
+                "intrinsics_model_res": Km.tolist(),
+                "cam2world": CAMS[n].tolist(),
+            }
+        )
     np.savez_compressed(ma / "raw.npz", **raw)
-    (ma / "cameras.json").write_text(json.dumps({"run_id": "SIM", "convention": "cam2world 4x4, OpenCV, MapAnything world, m",
-                                                 "views": cams}), encoding="utf-8")
-    (ma / "metrics.json").write_text(json.dumps({"run_id": "SIM", "result": "SUCCESS", "model_input_hw": [48, 84],
-                                                 "prepared_sha256": "sha256:" + hashlib.sha256(raw_p).hexdigest()}),
-                                     encoding="utf-8")
+    (ma / "cameras.json").write_text(
+        json.dumps(
+            {
+                "run_id": "SIM",
+                "convention": "cam2world 4x4, OpenCV, MapAnything world, m",
+                "views": cams,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (ma / "metrics.json").write_text(
+        json.dumps(
+            {
+                "run_id": "SIM",
+                "result": "SUCCESS",
+                "model_input_hw": [48, 84],
+                "prepared_sha256": "sha256:" + hashlib.sha256(raw_p).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
     return ma, prep
 
 
 def test_all_with_fake_adapter_end_to_end(hd, tmp_path):
     ma, prep = _write_inputs(tmp_path)
     out = tmp_path / "out"
-    args = ["all", "--ma-run", str(ma), "--prepared", str(prep), "--adapter", "fake", "--fake-scale", "cam_B=1.08",
-            "--out", str(out), "--no-color", "--no-mesh", "--voxel", "0.02"]
+    args = [
+        "all",
+        "--ma-run",
+        str(ma),
+        "--prepared",
+        str(prep),
+        "--adapter",
+        "fake",
+        "--fake-scale",
+        "cam_B=1.08",
+        "--out",
+        str(out),
+        "--no-color",
+        "--no-mesh",
+        "--voxel",
+        "0.02",
+    ]
     assert hd.main(args) == hd.EXIT_OK
     rec = json.loads((out / "fused" / "hybrid_metrics.json").read_text(encoding="utf-8"))
     regs = rec["registration"]["cameras"]
@@ -297,23 +380,80 @@ def test_all_with_fake_adapter_end_to_end(hd, tmp_path):
 def test_fuse_world_alignment_and_mismatched_inputs(hd, tmp_path):
     ma, prep = _write_inputs(tmp_path)
     depth = tmp_path / "depth"
-    assert hd.main(["predict", "--ma-run", str(ma), "--prepared", str(prep), "--adapter", "fake", "--out", str(depth)]) == 0
+    assert (
+        hd.main(
+            [
+                "predict",
+                "--ma-run",
+                str(ma),
+                "--prepared",
+                str(prep),
+                "--adapter",
+                "fake",
+                "--out",
+                str(depth),
+            ]
+        )
+        == 0
+    )
     sha = "sha256:" + hashlib.sha256((ma / "cameras.json").read_bytes()).hexdigest()
     wa = tmp_path / "wa.json"
-    wa.write_text(json.dumps({"format": "simai.world_alignment", "status": "OK", "cameras_json_sha256": sha,
-                              "mapanything_to_world": np.eye(4).tolist(), "calibration": {"state": "PROVISIONAL"}}), encoding="utf-8")
-    base = ["fuse", "--ma-run", str(ma), "--prepared", str(prep), "--depth", str(depth), "--no-color", "--no-mesh",
-            "--voxel", "0.02"]
+    wa.write_text(
+        json.dumps(
+            {
+                "format": "simai.world_alignment",
+                "status": "OK",
+                "cameras_json_sha256": sha,
+                "mapanything_to_world": np.eye(4).tolist(),
+                "calibration": {"state": "PROVISIONAL"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    base = [
+        "fuse",
+        "--ma-run",
+        str(ma),
+        "--prepared",
+        str(prep),
+        "--depth",
+        str(depth),
+        "--no-color",
+        "--no-mesh",
+        "--voxel",
+        "0.02",
+    ]
     assert hd.main(base + ["--out", str(tmp_path / "w"), "--world-alignment", str(wa)]) == 0
     rec = json.loads((tmp_path / "w" / "hybrid_metrics.json").read_text(encoding="utf-8"))
     assert rec["output_frame"]["frame"] == "WORLD" and rec["floor"]["world_z0_rms"] < 0.015
     # 다른 MapAnything 실행으로 만든 World 정렬
-    wa.write_text(json.dumps({"format": "simai.world_alignment", "status": "OK", "cameras_json_sha256": "sha256:other",
-                              "mapanything_to_world": np.eye(4).tolist()}), encoding="utf-8")
-    assert hd.main(base + ["--out", str(tmp_path / "w2"), "--world-alignment", str(wa)]) == hd.EXIT_CONFIG
+    wa.write_text(
+        json.dumps(
+            {
+                "format": "simai.world_alignment",
+                "status": "OK",
+                "cameras_json_sha256": "sha256:other",
+                "mapanything_to_world": np.eye(4).tolist(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        hd.main(base + ["--out", str(tmp_path / "w2"), "--world-alignment", str(wa)])
+        == hd.EXIT_CONFIG
+    )
     # FAILED World 정렬은 MapAnything world 그대로(World 로 쓰지 않음)
-    wa.write_text(json.dumps({"format": "simai.world_alignment", "status": "FAILED", "reason": "AXES_AMBIGUOUS",
-                              "cameras_json_sha256": sha}), encoding="utf-8")
+    wa.write_text(
+        json.dumps(
+            {
+                "format": "simai.world_alignment",
+                "status": "FAILED",
+                "reason": "AXES_AMBIGUOUS",
+                "cameras_json_sha256": sha,
+            }
+        ),
+        encoding="utf-8",
+    )
     assert hd.main(base + ["--out", str(tmp_path / "w3"), "--world-alignment", str(wa)]) == 0
     rec3 = json.loads((tmp_path / "w3" / "hybrid_metrics.json").read_text(encoding="utf-8"))
     assert rec3["output_frame"]["frame"] == "MAPANYTHING_WORLD" and "world_z0_rms" not in rec3["floor"]
@@ -342,5 +482,204 @@ def test_predict_failure_is_recorded_and_not_fused(hd, tmp_path):
         hd.run_predict(Boom(), ma, hd.load_prepared(prep), depth)
     doc = json.loads((depth / "depth.json").read_text(encoding="utf-8"))
     assert doc["result"] == "ERROR" and "MemoryError" in doc["error"]
-    assert hd.main(["fuse", "--ma-run", str(ma), "--prepared", str(prep), "--depth", str(depth), "--out", str(tmp_path / "o"),
-                    "--no-color", "--no-mesh"]) == hd.EXIT_CONFIG
+    assert (
+        hd.main(
+            [
+                "fuse",
+                "--ma-run",
+                str(ma),
+                "--prepared",
+                str(prep),
+                "--depth",
+                str(depth),
+                "--out",
+                str(tmp_path / "o"),
+                "--no-color",
+                "--no-mesh",
+            ]
+        )
+        == hd.EXIT_CONFIG
+    )
+
+
+# --------------------------------------------------------------------------- WorldMirror 2.0 / 1.0 · Pi3X 어댑터 (S15P31A101-537)
+
+
+def test_multiview_conditioning_prep_and_resolutions(hd, tmp_path):
+    """12차 세션 해상도(2304×1296)에서 모델별 14 배수 처리 해상도와 c2w 상대 변환·사전 깊이 준비를 검증한다."""
+    assert hd.compute_patch_aligned_hw((1296, 2304), 952, patch_size=14) == (532, 952)
+    assert hd.compute_patch_aligned_hw((1296, 2304), 518, patch_size=14) == (294, 518)
+    assert hd.compute_patch_aligned_hw((1296, 2304), 672, patch_size=14) == (378, 672)
+
+    ma, prep = _write_inputs(tmp_path)
+    pdoc = hd.load_prepared(prep)
+    views = hd.predict_views(ma, pdoc)
+    cond = hd.prepare_multiview_conditioning(
+        views,
+        process_res=168,
+        patch_size=14,
+        use_pose=True,
+        ma_run=ma,
+        use_prior_depth=True,
+    )
+    h_p, w_p = cond["proc_hw"]
+    assert (h_p, w_p) == (98, 168)
+    assert cond["cond_flags"] == [1, 1, 1]
+    np.testing.assert_allclose(cond["c2w_rel"][0], np.eye(4, dtype=np.float32), atol=1e-6)
+    expected_rel_b = np.linalg.inv(CAMS["cam_A"]) @ CAMS["cam_B"]
+    np.testing.assert_allclose(cond["c2w_rel"][1], expected_rel_b, atol=1e-5)
+    assert cond["depth_prior"] is not None
+    assert cond["depth_prior"].shape == (3, h_p, w_p)
+    assert np.all(np.isfinite(cond["depth_prior"]))
+    assert float(cond["depth_prior"].min()) >= 0.0
+    assert float((cond["depth_prior"] > 0).mean()) > 0.9
+
+    cond_no_pose = hd.prepare_multiview_conditioning(
+        views,
+        process_res=168,
+        patch_size=14,
+        use_pose=False,
+        ma_run=ma,
+        use_prior_depth=False,
+    )
+    assert cond_no_pose["cond_flags"] == [0, 0, 0]
+    assert cond_no_pose["depth_prior"] is None
+
+
+@pytest.mark.parametrize("variant", ["worldmirror2", "worldmirror1"])
+@pytest.mark.parametrize("use_prior_depth", [False, True])
+def test_worldmirror_adapter_predict_and_fuse(hd, tmp_path, variant: str, use_prior_depth: bool):
+    """WorldMirror 2.0 / 1.0 어댑터가 입력 변환 후 simai.hybrid_depth 형식을 내고 fuse 까지 이어지는지 검증한다."""
+    ma, prep = _write_inputs(tmp_path)
+    pdoc = hd.load_prepared(prep)
+    unit_cube_scale = 0.25  # WorldMirror 내부 [0, 1] 정규화 스케일 모사
+    captured: dict[str, Any] = {}
+
+    def _fake_wm_runner(cond: dict[str, Any], _imgs_chw: np.ndarray) -> dict[str, Any]:
+        captured["cond"] = cond
+        proc_hw = cond["proc_hw"]
+        k_center = cond["k_proc_center"]
+        depths = []
+        for i, n in enumerate(NAMES):
+            d_true = _render(CAMS[n], k_center[i], proc_hw)
+            depths.append(d_true * unit_cube_scale)
+        depth_arr = np.stack(depths, axis=0).astype(np.float32)
+        conf_arr = np.full_like(depth_arr, 0.95, dtype=np.float32)
+        c2w_pred = cond["c2w_rel"].copy().astype(np.float64)
+        c2w_pred[:, :3, 3] *= unit_cube_scale
+        return {
+            "depth": depth_arr,
+            "conf": conf_arr,
+            "camera_intrs_edge": cond["k_proc_edge"].copy(),
+            "camera_poses": c2w_pred,
+            "load_s": 0.2,
+            "infer_ms": [42.0],
+            "peak_alloc_mb": 512.0,
+        }
+
+    adapter = hd.WorldMirrorAdapter(
+        variant=variant,
+        model=f"/tmp/weights/{variant}",
+        process_res=168,
+        use_pose=True,
+        use_prior_depth=use_prior_depth,
+        ma_run=ma,
+        runner=_fake_wm_runner,
+    )
+    depth_dir = tmp_path / f"depth_{variant}_{int(use_prior_depth)}"
+    doc = hd.run_predict(adapter, ma, pdoc, depth_dir)
+    assert doc["format"] == hd.DEPTH_FORMAT
+    assert doc["result"] == "SUCCESS"
+    assert doc["adapter"]["adapter"] == variant
+    assert doc["adapter"]["pose_conditioned"] is True
+    assert doc["adapter"]["prior_depth_conditioned"] is use_prior_depth
+    assert doc["adapter"]["cond_flags"] == [1, 1 if use_prior_depth else 0, 1]
+    assert doc["adapter"]["intrinsics_check"]["status"] == "OK"
+    assert len(doc["adapter"]["pose_check_aligned_pred_vs_input"]) == 3
+    for pc in doc["adapter"]["pose_check_aligned_pred_vs_input"]:
+        assert pc["rot_deg"] < 0.05 and pc["center_rel"] < 1e-4
+
+    # fuse 로 정합·융합 검증 (1 / 0.25 = 4.0 배율 복원)
+    fused_dir = tmp_path / f"fused_{variant}_{int(use_prior_depth)}"
+    rec = hd.run_fuse(
+        ma,
+        pdoc,
+        depth_dir,
+        fused_dir,
+        hd.FuseConfig(align="scale", voxel=0.02, colors=False, mesh=False),
+    )
+    assert rec["status"] == "OK"
+    for n in NAMES:
+        assert abs(rec["registration"]["cameras"][n]["scale"] - (1.0 / unit_cube_scale)) < 0.02
+
+
+@pytest.mark.parametrize("use_prior_depth", [False, True])
+def test_pi3x_adapter_predict_and_fuse(hd, tmp_path, use_prior_depth: bool):
+    """Pi3X 어댑터가 local_points[..., 2] Z-depth 와 sigmoid(conf) 를 추출해 simai.hybrid_depth 형식을 내고 fuse 되는지 검증한다."""
+    ma, prep = _write_inputs(tmp_path)
+    pdoc = hd.load_prepared(prep)
+    metric_scale = 0.80
+
+    def _fake_pi3x_runner(cond: dict[str, Any], _imgs_chw: np.ndarray) -> dict[str, Any]:
+        h_p, w_p = cond["proc_hw"]
+        k_center = cond["k_proc_center"]
+        v_grid, u_grid = np.mgrid[0:h_p, 0:w_p]
+        local_pts_list = []
+        for i, n in enumerate(NAMES):
+            z = _render(CAMS[n], k_center[i], (h_p, w_p)) * metric_scale
+            fx, fy, cx, cy = (
+                k_center[i, 0, 0],
+                k_center[i, 1, 1],
+                k_center[i, 0, 2],
+                k_center[i, 1, 2],
+            )
+            x = (u_grid - cx) / fx * z
+            y = (v_grid - cy) / fy * z
+            local_pts_list.append(np.stack([x, y, z], axis=-1))
+        local_pts = np.stack(local_pts_list, axis=0).astype(np.float32)
+        conf_logits = np.full((len(NAMES), h_p, w_p), 2.0, dtype=np.float32)
+        c2w_pred = cond["c2w_rel"].copy().astype(np.float64)
+        c2w_pred[:, :3, 3] *= metric_scale
+        return {
+            "local_points": local_pts,
+            "conf_logits": conf_logits,
+            "camera_poses": c2w_pred,
+            "metric_scale": metric_scale,
+            "load_s": 0.2,
+            "infer_ms": [35.0],
+            "peak_alloc_mb": 480.0,
+        }
+
+    adapter = hd.Pi3XAdapter(
+        model="/tmp/weights/pi3x",
+        process_res=168,
+        use_pose=True,
+        use_prior_depth=use_prior_depth,
+        ma_run=ma,
+        runner=_fake_pi3x_runner,
+    )
+    depth_dir = tmp_path / f"depth_pi3x_{int(use_prior_depth)}"
+    doc = hd.run_predict(adapter, ma, pdoc, depth_dir)
+    assert doc["format"] == hd.DEPTH_FORMAT
+    assert doc["result"] == "SUCCESS"
+    assert doc["adapter"]["adapter"] == "pi3x"
+    assert doc["adapter"]["pose_conditioned"] is True
+    assert doc["adapter"]["prior_depth_conditioned"] is use_prior_depth
+    assert doc["adapter"]["intrinsics_check"]["status"] == "OK"
+    npz_a = np.load(depth_dir / "cam_A.depth.npz")
+    assert "depth" in npz_a and "valid" in npz_a and "conf" in npz_a
+    expected_conf = 1.0 / (1.0 + np.exp(-2.0))
+    valid_conf = npz_a["conf"][npz_a["valid"]]
+    assert np.allclose(valid_conf, expected_conf, atol=1e-3)
+
+    fused_dir = tmp_path / f"fused_pi3x_{int(use_prior_depth)}"
+    rec = hd.run_fuse(
+        ma,
+        pdoc,
+        depth_dir,
+        fused_dir,
+        hd.FuseConfig(align="scale", voxel=0.02, colors=False, mesh=False),
+    )
+    assert rec["status"] == "OK"
+    for n in NAMES:
+        assert abs(rec["registration"]["cameras"][n]["scale"] - (1.0 / metric_scale)) < 0.02
