@@ -45,6 +45,60 @@
           "within_tolerance": true
         }
       },
+      "scale_source": "JOINT",
+      "scale_estimation": {
+        "scale_source": "JOINT",
+        "applied_scale": 0.9964,
+        "height_only_scale": 1.0,
+        "prop_only_scale": 0.9932,
+        "joint_scale": 0.9964,
+        "floor_offset_m": -0.0042,
+        "disagreement_ratio": 0.0068,
+        "disagreement_tolerance": 0.05,
+        "disagreement_warning": false,
+        "outliers": [],
+        "residuals": {
+          "camera_heights_cm": {
+            "cam1": 2.0,
+            "cam2": 2.0,
+            "cam3": 2.0,
+            "cam4": 2.0
+          },
+          "props": [
+            {
+              "kind": "TRAFFIC_CONE",
+              "dimension": "height",
+              "expected_m": 0.675,
+              "measured_m": 0.6774,
+              "residual_cm": 0.24,
+              "cameras": [
+                "cam1",
+                "cam2",
+                "cam3",
+                "cam4"
+              ]
+            }
+          ]
+        }
+      },
+      "object_cross_checks": [
+        {
+          "kind": "TRAFFIC_CONE",
+          "passed": true,
+          "message": "라바콘 높이 67.7 cm (실측 67.5 cm 대비 +0.2 cm, 4대 삼각측량)",
+          "scale": 0.9932,
+          "measured_m": 0.6774,
+          "expected_m": 0.675,
+          "residual_cm": 0.24,
+          "floor_z_m": 0.0012,
+          "cameras": [
+            "cam1",
+            "cam2",
+            "cam3",
+            "cam4"
+          ]
+        }
+      ],
       "metrics": {
         "stage_seconds": {
           "COLLECTING_BACKGROUND": 0.42,

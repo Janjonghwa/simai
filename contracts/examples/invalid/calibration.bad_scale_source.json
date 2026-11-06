@@ -1,0 +1,69 @@
+{
+  "_expect_error": "scale_source 는 HEIGHT_ONLY, JOINT, PROP_ONLY, MODEL_ESTIMATE 중 하나여야 한다",
+  "schema_version": "2.3.0",
+  "calibration_version": "cal-bad-scale-source",
+  "provider_source": "G1_AUTO",
+  "state": "PROVISIONAL",
+  "created_at": 1760598000000,
+  "coordinate_frame": {
+    "frame": "WORLD",
+    "unit": "m",
+    "handedness": "right",
+    "up_axis": "+Z"
+  },
+  "scale_basis": "MEASURED_CAMERA_HEIGHT",
+  "scale_source": "AVERAGE_BOTH",
+  "extrinsic_convention": "OPENCV_WORLD_TO_CAMERA",
+  "cameras": [
+    {
+      "camera_id": "cam1",
+      "image_size": [
+        1920,
+        1080
+      ],
+      "K": [
+        [
+          1000.0,
+          0.0,
+          960.0
+        ],
+        [
+          0.0,
+          1000.0,
+          540.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion": {
+        "model": "NONE",
+        "coeffs": []
+      },
+      "R": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "t": [
+        0.0,
+        0.0,
+        -2.0
+      ]
+    }
+  ]
+}

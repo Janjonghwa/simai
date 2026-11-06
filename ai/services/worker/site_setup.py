@@ -635,6 +635,7 @@ class SiteSetupHandler:
                 created_at_ms=created_at_ms,
                 stage_target_seconds=self._stage_a_target_s,
                 object_cross_checker=self._object_cross_checker,
+                backgrounds_by_cam=bg_bundle.frames_by_cam if bg_bundle.frames_by_cam else None,
             )
         except StageAError as exc:
             raise JobFailed(exc.code, exc.message, retryable=exc.retryable) from exc
@@ -662,6 +663,10 @@ class SiteSetupHandler:
                 "joint_ba": stage_a.summary_metrics,
             },
         }
+        if stage_a.scale_source is not None:
+            joint_ba_snapshot["scale_source"] = stage_a.scale_source
+        if stage_a.scale_estimation is not None:
+            joint_ba_snapshot["scale_estimation"] = stage_a.scale_estimation
         if stage_a.object_cross_checks:
             joint_ba_snapshot["object_cross_checks"] = stage_a.object_cross_checks
         if artifacts:
@@ -696,6 +701,10 @@ class SiteSetupHandler:
                 "joint_ba": stage_a.summary_metrics,
             },
         }
+        if stage_a.scale_source is not None:
+            preview_snapshot["scale_source"] = stage_a.scale_source
+        if stage_a.scale_estimation is not None:
+            preview_snapshot["scale_estimation"] = stage_a.scale_estimation
         if preview.zone_drafts_ref is not None:
             preview_snapshot["zone_drafts_ref"] = preview.zone_drafts_ref
         if stage_a.object_cross_checks:
@@ -777,6 +786,10 @@ class SiteSetupHandler:
                 "joint_ba": stage_a.summary_metrics,
             },
         }
+        if stage_a.scale_source is not None:
+            result["scale_source"] = stage_a.scale_source
+        if stage_a.scale_estimation is not None:
+            result["scale_estimation"] = stage_a.scale_estimation
         if preview.zone_drafts_ref is not None:
             result["zone_drafts_ref"] = preview.zone_drafts_ref
         if stage_a.object_cross_checks:

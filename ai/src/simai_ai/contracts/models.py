@@ -132,6 +132,16 @@ class CalibrationScaleBasis(
     root: Literal['MEASURED_OBJECT', 'MEASURED_CAMERA_HEIGHT', 'KNOWN_PERSON_HEIGHT', 'HUMAN_HEIGHT_STATS', 'STANDARD_OBJECT', 'MODEL_ESTIMATE', 'DATASET_GT']
 
 
+class Outlier(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+
+
+class CalibrationScaleSource(
+    RootModel[Literal['HEIGHT_ONLY', 'JOINT', 'PROP_ONLY', 'MODEL_ESTIMATE']]
+):
+    root: Literal['HEIGHT_ONLY', 'JOINT', 'PROP_ONLY', 'MODEL_ESTIMATE']
+
+
 class ForwardXyzItem(RootModel[StrictFloat]):
     root: Annotated[StrictFloat, Field(ge=-1.0, le=1.0)]
 
@@ -1744,34 +1754,6 @@ PairHoldoutMedianPxAdditionalProperty = TypeAliasType(
 )
 
 
-class JointBa(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    anchor_camera_id: Annotated[StrictStr, Field(max_length=160, min_length=1)]
-    converged: StrictBool
-    stage_seconds: Annotated[StrictFloat, Field(ge=0.0)]
-    valid_points: Annotated[StrictInt, Field(ge=0)]
-    holdout_worsening_tolerance_px: Annotated[StrictFloat | MISSING, Field(ge=0.0)] = (
-        MISSING
-    )
-    pair_holdout: dict[str, PairHoldout] | MISSING = MISSING
-    pair_holdout_median_px: (
-        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}-[A-Za-z0-9_-]{1,64}$', strict=True), PairHoldoutMedianPxAdditionalProperty] | MISSING
-    ) = MISSING
-
-
-class SiteSetupMetrics(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    stage_seconds: dict[Literal['COLLECTING_BACKGROUND', 'INITIAL_POSE_AND_WORLD', 'JOINT_BA_AND_VERIFY', 'PREVIEW_AND_VLM_DRAFT', 'READY_FOR_ZONES', 'BAKING_TEXTURE'], StageSecondsAdditionalProperty] | MISSING = (
-        MISSING
-    )
-    total_seconds: Annotated[StrictFloat | MISSING, Field(ge=0.0)] = MISSING
-    joint_ba: JointBa | MISSING = MISSING
-
-
 class SiteSetupObjectRef(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1794,6 +1776,12 @@ class ObjectCrossCheck(BaseModel):
     kind: Literal['TRAFFIC_CONE', 'OPENING_SIGN']
     passed: StrictBool
     message: Annotated[StrictStr | MISSING, Field(max_length=500)] = MISSING
+    scale: Annotated[StrictFloat | MISSING, Field(gt=0.0)] = MISSING
+    measured_m: Annotated[StrictFloat | MISSING, Field(gt=0.0)] = MISSING
+    expected_m: Annotated[StrictFloat | MISSING, Field(gt=0.0)] = MISSING
+    residual_cm: StrictFloat | MISSING = MISSING
+    floor_z_m: StrictFloat | MISSING = MISSING
+    cameras: Annotated[list[DefsCameraId] | MISSING, Field(min_length=2)] = MISSING
 
 
 class Image(BaseModel):
@@ -2460,6 +2448,28 @@ class RoomOutline(BaseModel):
     accuracy: Literal['NOT_CLAIMED']
     polygon_xy: Annotated[list[DefsVec2], Field(min_length=3)]
     openings: None
+
+
+class CalibrationScalePropResidual(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    kind: Literal['TRAFFIC_CONE', 'OPENING_SIGN']
+    dimension: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    expected_m: Annotated[StrictFloat, Field(ge=0.0)]
+    measured_m: StrictFloat
+    residual_cm: StrictFloat
+    cameras: Annotated[list[DefsCameraId] | MISSING, Field(min_length=2)] = MISSING
+
+
+class CalibrationScaleResiduals(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    camera_heights_cm: (
+        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}$', strict=True), StrictFloat] | MISSING
+    ) = MISSING
+    props: list[CalibrationScalePropResidual] | MISSING = MISSING
 
 
 class CalibrationStatusCalibratedCameraPose(BaseModel):
@@ -3454,62 +3464,6 @@ class SiteSetupArtifacts(BaseModel):
     ] = MISSING
 
 
-class SiteSetupProgress(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    setup_session_id: DefsUuid
-    status: Literal['COLLECTING_BACKGROUND', 'INITIAL_POSE_AND_WORLD', 'JOINT_BA_AND_VERIFY', 'PREVIEW_AND_VLM_DRAFT', 'READY_FOR_ZONES', 'BAKING_TEXTURE', 'COMPLETED']
-    progress_pct: Annotated[StrictFloat, Field(ge=0.0, le=100.0)]
-    background_collection_pct: dict[str, BackgroundCollectionPctAdditionalProperty] | MISSING = (
-        MISSING
-    )
-    calibration_version: Annotated[
-        StrictStr | MISSING, Field(max_length=160, min_length=1)
-    ] = MISSING
-    preview_scene_version: Annotated[
-        StrictStr | MISSING, Field(max_length=160, min_length=1)
-    ] = MISSING
-    scene_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
-        MISSING
-    )
-    config_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
-        MISSING
-    )
-    zone_drafts_ref: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
-        MISSING
-    )
-    height_checks: SiteSetupHeightChecks | MISSING = MISSING
-    object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
-    metrics: SiteSetupMetrics | MISSING = MISSING
-    artifacts: SiteSetupArtifacts | MISSING = MISSING
-
-
-class SiteSetupResult(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    setup_session_id: DefsUuid
-    status: Literal['COMPLETED']
-    progress_pct: Literal[100]
-    background_collection_pct: dict[str, BackgroundCollectionPctAdditionalProperty] | MISSING = (
-        MISSING
-    )
-    calibration_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
-    preview_scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
-    scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
-    config_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
-        MISSING
-    )
-    zone_drafts_ref: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
-        MISSING
-    )
-    height_checks: SiteSetupHeightChecks
-    object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
-    metrics: SiteSetupMetrics | MISSING = MISSING
-    artifacts: SiteSetupArtifacts | MISSING = MISSING
-
-
 class Input(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -3883,6 +3837,26 @@ class CalibrationCameraCalibration(BaseModel):
     reprojection_error_px: ReprojectionErrorPx | MISSING = MISSING
 
 
+class CalibrationScaleEstimation(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    scale_source: CalibrationScaleSource
+    applied_scale: Annotated[StrictFloat, Field(gt=0.0)]
+    height_only_scale: Annotated[StrictFloat, Field(gt=0.0)]
+    prop_only_scale: Annotated[StrictFloat | MISSING, Field(gt=0.0)] = MISSING
+    joint_scale: Annotated[StrictFloat | MISSING, Field(gt=0.0)] = MISSING
+    floor_offset_m: StrictFloat | MISSING = MISSING
+    disagreement_ratio: Annotated[StrictFloat | MISSING, Field(ge=0.0)] = MISSING
+    disagreement_tolerance: Annotated[StrictFloat | MISSING, Field(gt=0.0, le=1.0)] = (
+        MISSING
+    )
+    disagreement_warning: StrictBool | MISSING = MISSING
+    warning_message: Annotated[StrictStr | MISSING, Field(max_length=500)] = MISSING
+    outliers: list[Outlier] | MISSING = MISSING
+    residuals: CalibrationScaleResiduals | MISSING = MISSING
+
+
 class CalibrationStatus(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -4040,24 +4014,6 @@ class HumanMeshOutputAvatarAsset(HumanMeshOutputCommonFields):
     consent_ref: StrictStr | MISSING = MISSING
 
 
-class Payload19(BaseModel):
-    model_config = ConfigDict(
-        extra='allow',
-    )
-    job_id: Annotated[StrictStr, Field(min_length=1)]
-    lease_id: DefsUuid
-    progress: Annotated[StrictFloat | None | MISSING, Field(ge=0.0, le=1.0)] = MISSING
-    site_setup: SiteSetupProgress | MISSING = MISSING
-
-
-class JobHeartbeat(Envelope):
-    model_config = ConfigDict(
-        extra='allow',
-    )
-    msg_type: Annotated[Literal['job_heartbeat'], Field(min_length=1)]
-    payload: Payload19
-
-
 class Payload28(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -4115,6 +4071,96 @@ class RiskPlanRequest(Envelope):
     payload: Payload34
 
 
+class JointBa(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    anchor_camera_id: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    converged: StrictBool
+    stage_seconds: Annotated[StrictFloat, Field(ge=0.0)]
+    valid_points: Annotated[StrictInt, Field(ge=0)]
+    holdout_worsening_tolerance_px: Annotated[StrictFloat | MISSING, Field(ge=0.0)] = (
+        MISSING
+    )
+    pair_holdout: dict[str, PairHoldout] | MISSING = MISSING
+    pair_holdout_median_px: (
+        dict[constr(pattern=r'^[A-Za-z0-9_-]{1,64}-[A-Za-z0-9_-]{1,64}$', strict=True), PairHoldoutMedianPxAdditionalProperty] | MISSING
+    ) = MISSING
+    scale_source: CalibrationScaleSource | MISSING = MISSING
+    scale_estimation: CalibrationScaleEstimation | MISSING = MISSING
+
+
+class SiteSetupMetrics(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    stage_seconds: dict[Literal['COLLECTING_BACKGROUND', 'INITIAL_POSE_AND_WORLD', 'JOINT_BA_AND_VERIFY', 'PREVIEW_AND_VLM_DRAFT', 'READY_FOR_ZONES', 'BAKING_TEXTURE'], StageSecondsAdditionalProperty] | MISSING = (
+        MISSING
+    )
+    total_seconds: Annotated[StrictFloat | MISSING, Field(ge=0.0)] = MISSING
+    joint_ba: JointBa | MISSING = MISSING
+
+
+class SiteSetupProgress(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    setup_session_id: DefsUuid
+    status: Literal['COLLECTING_BACKGROUND', 'INITIAL_POSE_AND_WORLD', 'JOINT_BA_AND_VERIFY', 'PREVIEW_AND_VLM_DRAFT', 'READY_FOR_ZONES', 'BAKING_TEXTURE', 'COMPLETED']
+    progress_pct: Annotated[StrictFloat, Field(ge=0.0, le=100.0)]
+    background_collection_pct: dict[str, BackgroundCollectionPctAdditionalProperty] | MISSING = (
+        MISSING
+    )
+    calibration_version: Annotated[
+        StrictStr | MISSING, Field(max_length=160, min_length=1)
+    ] = MISSING
+    preview_scene_version: Annotated[
+        StrictStr | MISSING, Field(max_length=160, min_length=1)
+    ] = MISSING
+    scene_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    config_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    zone_drafts_ref: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    height_checks: SiteSetupHeightChecks | MISSING = MISSING
+    scale_source: CalibrationScaleSource | MISSING = MISSING
+    scale_estimation: CalibrationScaleEstimation | MISSING = MISSING
+    object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
+    metrics: SiteSetupMetrics | MISSING = MISSING
+    artifacts: SiteSetupArtifacts | MISSING = MISSING
+
+
+class SiteSetupResult(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    setup_session_id: DefsUuid
+    status: Literal['COMPLETED']
+    progress_pct: Literal[100]
+    background_collection_pct: dict[str, BackgroundCollectionPctAdditionalProperty] | MISSING = (
+        MISSING
+    )
+    calibration_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    preview_scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    scene_version: Annotated[StrictStr, Field(max_length=160, min_length=1)]
+    config_version: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    zone_drafts_ref: Annotated[StrictStr | MISSING, Field(max_length=160, min_length=1)] = (
+        MISSING
+    )
+    height_checks: SiteSetupHeightChecks
+    scale_source: CalibrationScaleSource | MISSING = MISSING
+    scale_estimation: CalibrationScaleEstimation | MISSING = MISSING
+    object_cross_checks: list[ObjectCrossCheck] | MISSING = MISSING
+    metrics: SiteSetupMetrics | MISSING = MISSING
+    artifacts: SiteSetupArtifacts | MISSING = MISSING
+
+
 class Payload2(BaseModel):
     model_config = ConfigDict(
         extra='allow',
@@ -4143,6 +4189,8 @@ class Calibration(BaseModel):
     created_at: DefsTimestampMs
     coordinate_frame: DefsCoordinateFrame
     scale_basis: CalibrationScaleBasis
+    scale_source: CalibrationScaleSource | MISSING = MISSING
+    scale_estimation: CalibrationScaleEstimation | MISSING = MISSING
     world_axes_source: Literal['WALLS', 'WALL_AND_FLOOR', 'MANUAL_FLOOR_POINTS', 'CAMERA_LAYOUT'] | MISSING = (
         MISSING
     )
@@ -4167,6 +4215,24 @@ class HumanMeshOutput1(HumanMeshOutputAvatarAsset):
 
 class HumanMeshOutput(RootModel[HumanMeshOutput1 | HumanMeshOutput2]):
     root: HumanMeshOutput1 | HumanMeshOutput2
+
+
+class Payload19(BaseModel):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    job_id: Annotated[StrictStr, Field(min_length=1)]
+    lease_id: DefsUuid
+    progress: Annotated[StrictFloat | None | MISSING, Field(ge=0.0, le=1.0)] = MISSING
+    site_setup: SiteSetupProgress | MISSING = MISSING
+
+
+class JobHeartbeat(Envelope):
+    model_config = ConfigDict(
+        extra='allow',
+    )
+    msg_type: Annotated[Literal['job_heartbeat'], Field(min_length=1)]
+    payload: Payload19
 
 
 class RecordingManifest(

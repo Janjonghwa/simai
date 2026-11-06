@@ -38,6 +38,12 @@ import numpy as np
 
 from simai_ai.calibration.world_frame.frame import Plane, WorldFrameConfig, _up_prior, find_floor
 from simai_ai.calibration.world_frame.inputs import MapAnythingRun, View, mask_to_model_res, prepared_to_model_px
+from simai_ai.calibration.world_frame.scale_props import (
+    HSVOpeningSignDetector,
+    HSVTrafficConeDetector,
+    OpeningSignMeasurer,
+    TrafficConeMeasurer,
+)
 from simai_ai.calibration.world_frame.stool_tops import HSVStoolDetector, StoolTopMeasurer
 
 CATALOG_FORMAT = "simai.measured_objects"
@@ -195,6 +201,8 @@ def _ultralytics_seg(spec: Mapping[str, Any], weights_dir: Path | None, device: 
 DETECTORS: dict[str, Callable[[Mapping[str, Any], Path | None, str | None], ObjectDetector]] = {
     "ULTRALYTICS_SEG": _ultralytics_seg,
     "HSV_STOOL": lambda spec, weights_dir, device: HSVStoolDetector(spec),
+    "HSV_TRAFFIC_CONE": lambda spec, weights_dir, device: HSVTrafficConeDetector(spec),
+    "HSV_OPENING_SIGN": lambda spec, weights_dir, device: HSVOpeningSignDetector(spec),
 }
 
 
@@ -473,9 +481,12 @@ class LaptopLidMeasurer:
         return done(CLOSED, C, scales, None)
 
 
-# measurement.kind → 재는 쪽. 라바콘(꼭대기·바닥 끝점 높이)은 여기에 하나 더한다
-MEASURERS: dict[str, LaptopLidMeasurer | StoolTopMeasurer] = {
-    "LAPTOP_LID": LaptopLidMeasurer(), "STOOL_TOP": StoolTopMeasurer(),
+# measurement.kind → 재는 쪽. 라바콘(꼭대기·바닥 끝점 높이)·개구부 안내판은 여기에 둔다
+MEASURERS: dict[str, LaptopLidMeasurer | StoolTopMeasurer | TrafficConeMeasurer | OpeningSignMeasurer] = {
+    "LAPTOP_LID": LaptopLidMeasurer(),
+    "STOOL_TOP": StoolTopMeasurer(),
+    "TRAFFIC_CONE": TrafficConeMeasurer(),
+    "OPENING_SIGN": OpeningSignMeasurer(),
 }
 
 
@@ -871,6 +882,10 @@ def measure_object(
     measurer = MEASURERS[obj.measurement["kind"]]
     if isinstance(measurer, StoolTopMeasurer):
         return _measure_stool_run(obj, points_run, floor, detections, image_sizes, person_masks)
+    if isinstance(measurer, TrafficConeMeasurer):
+        return _measure_cone_run(obj, points_run, floor, detections, image_sizes, person_masks)
+    if isinstance(measurer, OpeningSignMeasurer):
+        return _measure_opening_sign_run(obj, detections)
     cfg = measurer.config(obj.measurement)
     ms: list[Measurement] = []
     for view in points_run.views:
@@ -953,6 +968,71 @@ def _measure_stool_run(obj: MeasuredObject, run: MapAnythingRun, floor: Plane,
             "distortion": {"model": "NONE", "coeffs": []},
         })
     return measure_stools(obj, cameras, detections, normal=floor.normal, offset=-floor.offset, person_masks=person_masks)
+
+
+def _measure_cone_run(obj: MeasuredObject, run: MapAnythingRun, floor: Plane,
+                      detections: Mapping[str, Sequence[Detection]], image_sizes: Mapping[str, Sequence[int]],
+                      person_masks: Mapping[str, np.ndarray] | None) -> tuple[float | None, int, dict[str, Any]]:
+    """MapAnything 모델 K 를 준비 영상 해상도로 옮겨 라바콘 측정기에 전달한다."""
+    from simai_ai.calibration.world_frame.scale_props import measure_traffic_cones_for_catalog
+    from simai_ai.geometry.rig import RigCamera
+
+    cameras = {}
+    for view in run.views:
+        w, h = image_sizes[view.camera_id]
+        p = prepared_to_model_px(np.array([[0., 0.], [1., 0.], [0., 1.]]), (w, h), view.depth.shape)
+        A = np.array([[p[1, 0] - p[0, 0], 0, p[0, 0]], [0, p[2, 1] - p[0, 1], p[0, 1]], [0, 0, 1.]])
+        K = np.linalg.solve(A, view.K)
+        R = view.cam2world[:3, :3].T
+        t = -R @ view.cam2world[:3, 3]
+        cameras[view.camera_id] = RigCamera.from_calibration({
+            "camera_id": view.camera_id, "image_size": [w, h], "K": K.tolist(), "R": R.tolist(), "t": t.tolist(),
+            "distortion": {"model": "NONE", "coeffs": []},
+        })
+    return measure_traffic_cones_for_catalog(
+        obj, cameras, detections, person_masks=person_masks,
+    )
+
+
+def _measure_opening_sign_run(
+    obj: MeasuredObject,
+    detections: Mapping[str, Sequence[Detection]],
+) -> tuple[float | None, int, dict[str, Any]]:
+    """개구부 안내판 측정(독립 정물로 잡히지 않으면 조용히 건너뛴다)."""
+    det_count = sum(len(v) for v in detections.values())
+    agg = {
+        "samples": 0,
+        "min_samples": obj.min_samples,
+        "tolerance": obj.agreement_tolerance,
+        "max_outlier_fraction": obj.max_outlier_fraction,
+        "sample_scales": [],
+        "rejected": f"TOO_FEW_SAMPLES: 독립 표본 0개 < {obj.min_samples}개",
+    }
+    by_m = {
+        "IMAGE_EDGE": {
+            "status": STATUS_REJECTED,
+            "reason": agg["rejected"],
+            "accepted": 0,
+            "rejected_by_reason": {},
+            "groups": [],
+            "aggregation": agg,
+        }
+    }
+    rec = {
+        "id": obj.id,
+        "method": "IMAGE_EDGE",
+        "status": STATUS_REJECTED,
+        "reason": agg["rejected"],
+        "detections": det_count,
+        "accepted": 0,
+        "rejected_by_reason": {},
+        "groups": [],
+        "aggregation": agg,
+        "by_method": by_m,
+        "config": OpeningSignMeasurer.config(obj.measurement).__dict__.copy(),
+        "measurements": [],
+    }
+    return None, 0, rec
 
 
 def build_evidence(
