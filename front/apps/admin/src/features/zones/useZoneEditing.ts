@@ -25,9 +25,8 @@ import {
   newSurfaceDraft,
   newZoneForm,
   nextZoneName,
-  SURFACE_ZONE_JUDGE_TYPE,
-  SURFACE_ZONE_SEVERITY,
   surfaceChanged,
+  surfaceZoneForm,
   surfaceZoneShape,
   targetChanged,
   withoutUnchangedSurface,
@@ -121,9 +120,7 @@ export function useZoneEditing(onCommitted?: () => void) {
   const patchedForm = zone
     ? formWithPatch(zone, draft?.patch ?? {})
     : newZoneForm(draft?.patch ?? {}, nextZoneName(zones));
-  const form = bound
-    ? { ...patchedForm, severity: SURFACE_ZONE_SEVERITY, judgeType: SURFACE_ZONE_JUDGE_TYPE }
-    : patchedForm;
+  const form = bound ? surfaceZoneForm(patchedForm) : patchedForm;
   // 저장할 구역 모양: 작업면이 있으면 작업면에서 계산한 모양, 없으면 고친 상자(새 구역은 지금 상자). 기존 구역을 고치지 않았으면
   // null 이고 받은 모양을 그대로 보낸다.
   const savedBox = zone ? editedBox(zone, draft) : zoneBox;

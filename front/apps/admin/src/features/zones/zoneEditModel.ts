@@ -31,8 +31,8 @@ const NEW_ZONE_SIZE_M = 2;
 const NEW_ZONE_HEIGHT_M = 2;
 /** 작업면이 붙은 구역의 최소 높이(m). 상판이 이보다 높으면 상판까지 올린다. */
 const SURFACE_ZONE_MIN_HEIGHT_M = 2;
-/** 작업면이 붙은 구역이 작업면 둘레에 남기는 여유(m). */
-const SURFACE_ZONE_MARGIN_M = 0.3;
+/** 작업면이 붙은 구역이 작업면 둘레에 남기는 여유(m). AI 개구부·가장자리 초안도 이만큼 바깥으로 민다. */
+export const SURFACE_ZONE_MARGIN_M = 0.3;
 /** 새 작업면의 크기·상판 높이(m, 관제 데모와 같다). */
 const NEW_SURFACE_SIZE_M = 1;
 const NEW_SURFACE_TOP_M = 0.4;
@@ -41,7 +41,8 @@ const SAME_EPS = 1e-6;
 /** 좌표를 맞추는 배율(0.001 m 단위). */
 const ROUND_SCALE = 1000;
 
-const r3 = (v: number) => Math.round(v * ROUND_SCALE) / ROUND_SCALE;
+/** 좌표(m)를 0.001 m 단위로 맞춘다. */
+export const r3 = (v: number) => Math.round(v * ROUND_SCALE) / ROUND_SCALE;
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
 
 type LinkedSurface = Pick<WorkSurface, 'objectId' | 'name' | 'geometry'>;
@@ -269,6 +270,13 @@ export function newZoneForm(patch: ZonePatch, defaultName: string): ZoneForm {
     severity: patch.severity ?? NEW_ZONE_SEVERITY,
   };
 }
+
+/** 작업면이 붙은 구역의 양식: 심각도·판정 유형은 고르지 못하고 작업면 구역 값으로 맞춘다. */
+export const surfaceZoneForm = (form: ZoneForm): ZoneForm => ({
+  ...form,
+  severity: SURFACE_ZONE_SEVERITY,
+  judgeType: SURFACE_ZONE_JUDGE_TYPE,
+});
 
 /** 저장된 값과 같은 칸은 고친 것이 아니다. */
 export function changedPatch(zone: Zone, next: ZonePatch): ZonePatch {

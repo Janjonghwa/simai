@@ -27,7 +27,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 vi.mock('@/lib/api', async () => {
   const { createHttp } = await import('@/lib/http');
   return {
-    api: createHttp({ baseUrl: 'http://api.invalid', getToken: () => 'mock-token.foreman' }),
+    // 세팅(초안 수락으로 구역 저장 포함)은 관리자가 한다.
+    api: createHttp({ baseUrl: 'http://api.invalid', getToken: () => 'mock-token.admin' }),
   };
 });
 const navigateMock = vi.hoisted(() => vi.fn());
@@ -96,10 +97,12 @@ vi.mock('@/features/cctv/useCctvPreview', () => ({
 }));
 
 let setupMock = createSetupMock();
-const zonesMock = createZonesMock();
-// 구역 단계 3D 가 받는 현재 배경·정적 객체.
-const sceneMocks = [...sceneHandlers, ...createStaticObjectsMock().handlers];
-const baseHandlers = () => [...zonesMock.handlers, ...sceneMocks];
+// 구역·정적 객체 mock 은 초안 수락이 구역을 저장하므로 시험마다 새로 만든다. 구역 단계 3D 는 현재 배경·정적 객체를 받는다.
+const baseHandlers = () => {
+  const objects = createStaticObjectsMock();
+  const zonesMock = createZonesMock({ staticObjects: objects.store });
+  return [...zonesMock.handlers, ...sceneHandlers, ...objects.handlers];
+};
 
 const server = setupServer(...baseHandlers(), ...setupMock.handlers);
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
@@ -133,7 +136,10 @@ beforeEach(() => {
   });
   server.resetHandlers(...baseHandlers(), ...setupMock.handlers);
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  server.events.removeAllListeners();
+});
 afterAll(() => server.close());
 
 function renderSetupPage(workUnitId: number | null = 1) {
@@ -507,7 +513,7 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     expect(screen.getByRole('list', { name: '세팅 대기 세부 단계' })).toBeTruthy();
   }, 20_000);
 
-  it('미리보기 맵이 도착하면 구역 편집 도구로 넘어가고, 정식 Scene 이 오면 자동 교체해도 수락한 초안이 남는다', async () => {
+  it('미리보기 맵이 도착하면 구역 편집 도구로 넘어가고, 정식 Scene 이 오면 자동 교체해도 수락해 만든 구역이 남는다', async () => {
     const { sessionId, client } = await startSetupSession();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     expect(screen.queryByTestId('zones-page-stub')).toBeNull();
@@ -523,7 +529,7 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     );
 
     fireEvent.click(await screen.findByRole('button', { name: '창가 개구부 추락 주의 수락' }));
-    expect(useZoneEditStore.getState().drafts.__new__).toBeTruthy();
+    expect(await screen.findByText('반영됨', undefined, POLL_WAIT)).toBeTruthy();
 
     invalidate.mockClear();
     setupMock.updateSession(sessionId, {
@@ -542,8 +548,7 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     );
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['scenes', 'current'] });
     expect(screen.getByTestId('zones-page-stub')).toBeTruthy();
-    expect(useZoneEditStore.getState().drafts.__new__).toBeTruthy();
-    expect(screen.getByText('초안 반영됨 (발행 전)')).toBeTruthy();
+    expect(screen.getByText('반영됨')).toBeTruthy();
   }, 25_000);
 
   it('구역 단계는 왼쪽 3D 와 오른쪽 구역 편집 도구(옆 칸)가 같은 선택을 쓴다: 패널에서 고르면 3D 가 고르고 초점을 옮기고, 3D 에서 고르면 패널이 따른다', async () => {
@@ -570,7 +575,16 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     expect(panel.getAttribute('data-selected')).toBe('zone:z-02');
   }, 20_000);
 
-  it('AI 초안은 3D 점선 윤곽으로 겹쳐 보이고, 수락하면 편집 초안으로 옮기고 버리면 목록·3D 에서 뺀다(AI 의견 없음은 회색)', async () => {
+  it('AI 초안은 3D 점선 윤곽으로 겹쳐 보이고, 수락하면 0.3 m 민 구역을 바로 저장하고 버리면 목록·3D 에서 뺀다(AI 의견 없음은 회색)', async () => {
+    const commits: unknown[] = [];
+    server.events.on('request:start', ({ request }) => {
+      if (request.method === 'POST' && new URL(request.url).pathname === '/api/zones/commit') {
+        void request
+          .clone()
+          .json()
+          .then((body) => commits.push(body));
+      }
+    });
     const { sessionId } = await startSetupSession();
     setupMock.updateSession(sessionId, { ...PREVIEW_PATCH });
 
@@ -588,12 +602,29 @@ describe('설치 · 보정 2단계 이후(대기 화면·미리보기 맵·AI �
     );
 
     fireEvent.click(screen.getByRole('button', { name: '창가 개구부 추락 주의 수락' }));
-    const draft = useZoneEditStore.getState().drafts.__new__;
-    expect(draft?.patch).toEqual({ name: '창가 개구부 추락 주의', severity: 'CRITICAL' });
-    expect(draft?.box).toEqual({ min: [7, 8, 0], max: [8.6, 8.8, 2] });
-    expect(within(items[0]!).getByText('초안 반영됨 (발행 전)')).toBeTruthy();
-    // 수락한 초안은 AI 윤곽에서 빠지고 구역 편집 초안(새 구역)으로 보인다.
+    expect(await within(items[0]!).findByText('반영됨', undefined, POLL_WAIT)).toBeTruthy();
+    await waitFor(() => expect(commits).toHaveLength(1));
+    expect(commits[0]).toMatchObject({
+      zone: {
+        op: 'CREATE',
+        body: {
+          name: '창가 개구부 추락 주의',
+          severity: 'CRITICAL',
+          polygon_xy: [
+            [6.7, 7.7],
+            [8.9, 7.7],
+            [8.9, 9.1],
+            [6.7, 9.1],
+          ],
+        },
+      },
+    });
+    // 수락한 초안은 구역이 되어 AI 윤곽에서 빠지고, 다시 수락·버릴 단추가 없다.
     expect(ghostIds()).toEqual([`ai-draft:${podium}`]);
+    expect(
+      within(items[0]!).queryByRole('button', { name: '창가 개구부 추락 주의 수락' }),
+    ).toBeNull();
+    expect(useZoneEditStore.getState().drafts.__new__).toBeUndefined();
 
     fireEvent.click(screen.getByRole('button', { name: '전면 단상 작업면 후보 버리기' }));
     await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(1));

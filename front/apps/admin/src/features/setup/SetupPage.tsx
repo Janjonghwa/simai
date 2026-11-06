@@ -24,7 +24,6 @@ import {
   type Stage,
 } from '@/features/setup/setup';
 import {
-  acceptSetupZoneDraft,
   discardSetupZoneDraft,
   setActiveSetupSessionId,
   setSetupWorkUnitId,
@@ -40,6 +39,7 @@ import {
 } from '@/features/setup/SetupPanels';
 import { SetupZoneStep } from '@/features/setup/SetupZoneStep';
 import type { ZoneDraftItem } from '@/features/setup/types';
+import { useAcceptZoneDraft } from '@/features/setup/useAcceptZoneDraft';
 import {
   useCameraHeightDefaults,
   useCoverageGuides,
@@ -66,7 +66,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 단계(배경 수집 → 3D 공간·좌표계 → 카메라 정밀 보정 → 미리보기 맵·구역 초안)·진행률·남은 시간(목표 약 1분 30초),
 // 실패 시 사유 + 다시 시도(POST /api/setup-sessions/{id}/retry), 높이 불일치 경고 시 1단계 높이 칸 복귀 후 재시도.
 // 3단계(구역): 미리보기 Scene 이 준비되면 넘어가 왼쪽 큰 3D(SetupZoneStep)에서 구역 상자를 손잡이로 고치고, 오른쪽에
-// 구역 편집 도구(ZonesPage) 및 AI 위험 구역 초안(GET /api/setup-sessions/{id}/zone-drafts, 3D 점선 윤곽, 수락·버리기)을 둔다.
+// 구역 편집 도구(ZonesPage) 및 AI 위험 구역 초안(GET /api/setup-sessions/{id}/zone-drafts, 3D 점선 윤곽, 수락하면 바로 구역 저장·버리기)을 둔다.
 // 고화질 정식 Scene 도착 시 자동 교체(편집 초안 유지), 구역 발행(POST /api/zones/commit) 뒤 작업 관리(/work?workUnitId=) 복귀.
 
 const STATE_TONE: Record<CalibrationState, string> = {
@@ -136,7 +136,6 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
   const navigate = useNavigate();
 
   const activeSessionId = useSetupFlowStore((s) => s.activeSessionId);
-  const acceptedDraftIds = useSetupFlowStore((s) => s.acceptedDraftIds);
   const discardedDraftIds = useSetupFlowStore((s) => s.discardedDraftIds);
   const zonesCommitted = useSetupFlowStore((s) => s.zonesCommitted);
 
@@ -236,6 +235,8 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
   const draftsEnabled = Boolean(sessionId) && (waiting.previewReady || stage === ZONE_STAGE);
   const zoneDraftsQuery = useSetupZoneDrafts(sessionId, draftsEnabled);
   const draftsList = zoneDraftsQuery.data?.drafts ?? NO_DRAFTS;
+  const draftAccept = useAcceptZoneDraft(draftsList);
+  const acceptedDraftIds = draftAccept.acceptedIds;
   const draftGhosts = useMemo(
     () => draftGhostsOf(draftsList, acceptedDraftIds, discardedDraftIds),
     [draftsList, acceptedDraftIds, discardedDraftIds],
@@ -552,7 +553,9 @@ function SetupWorkPage({ workUnitId }: { workUnitId: number }) {
             draftsResponse={zoneDraftsQuery.data}
             acceptedDraftIds={acceptedDraftIds}
             discardedDraftIds={discardedDraftIds}
-            onAcceptDraft={acceptSetupZoneDraft}
+            pendingDraftId={draftAccept.pendingId}
+            acceptFailure={draftAccept.failure}
+            onAcceptDraft={(item) => void draftAccept.accept(item)}
             onDiscardDraft={discardSetupZoneDraft}
           />
         </SetupZoneStep>

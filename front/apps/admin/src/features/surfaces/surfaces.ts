@@ -20,7 +20,7 @@ const FLOOR_ID = 'floor';
 const SAME_EPS = 1e-6;
 
 /** -π~π 로 감는다. 이미 범위 안이면 그대로 둔다. */
-function wrapYaw(yaw: number): number {
+export function wrapYaw(yaw: number): number {
   return Math.abs(yaw) <= Math.PI ? yaw : Math.atan2(Math.sin(yaw), Math.cos(yaw));
 }
 
