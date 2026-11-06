@@ -18,6 +18,7 @@ import {
 } from '@/features/setup/setup';
 import { SetupMap } from '@/features/setup/SetupMap';
 import type { SetupZoneDraftsResponse, ZoneDraftItem } from '@/features/setup/types';
+import type { DraftAcceptFailure } from '@/features/setup/useAcceptZoneDraft';
 import { DEFAULT_CCTV_PREVIEW_URL } from '@/lib/parseEnv';
 import { Badge } from '@simai/ui/components/badge';
 import { Button } from '@simai/ui/components/button';
@@ -521,13 +522,19 @@ export function AiZoneDraftsPanel({
   draftsResponse,
   acceptedDraftIds,
   discardedDraftIds,
+  pendingDraftId,
+  acceptFailure,
   onAcceptDraft,
   onDiscardDraft,
 }: {
   sceneTier: SceneTierStatusView;
   draftsResponse: SetupZoneDraftsResponse | null;
+  /** 구역으로 만든 초안. */
   acceptedDraftIds: readonly string[];
   discardedDraftIds: readonly string[];
+  /** 구역으로 만드는 중인 초안. 그동안 다른 초안은 수락하지 않는다. */
+  pendingDraftId: string | null;
+  acceptFailure: DraftAcceptFailure | null;
   onAcceptDraft: (item: ZoneDraftItem) => void;
   onDiscardDraft: (candidateId: string) => void;
 }) {
@@ -610,7 +617,7 @@ export function AiZoneDraftsPanel({
                     )}
                     {isAccepted && (
                       <Badge className="h-auto rounded bg-primary/15 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-point-soft">
-                        초안 반영됨 (발행 전)
+                        반영됨
                       </Badge>
                     )}
                   </div>
@@ -624,23 +631,33 @@ export function AiZoneDraftsPanel({
 
                 <p className="text-xs text-muted-foreground">{item.rationale}</p>
 
-                <div className="flex items-center justify-end gap-2">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    aria-label={`${item.recommended_name} 버리기`}
-                    onClick={() => onDiscardDraft(item.candidate_id)}
-                  >
-                    버리기
-                  </Button>
-                  <Button
-                    size="sm"
-                    aria-label={`${item.recommended_name} 수락`}
-                    onClick={() => onAcceptDraft(item)}
-                  >
-                    {isAccepted ? '다시 수락' : '수락'}
-                  </Button>
-                </div>
+                {acceptFailure?.candidateId === item.candidate_id && (
+                  <p role="alert" className="text-xs font-medium text-delay">
+                    {acceptFailure.text}
+                  </p>
+                )}
+
+                {!isAccepted && (
+                  <div className="flex items-center justify-end gap-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      aria-label={`${item.recommended_name} 버리기`}
+                      disabled={pendingDraftId === item.candidate_id}
+                      onClick={() => onDiscardDraft(item.candidate_id)}
+                    >
+                      버리기
+                    </Button>
+                    <Button
+                      size="sm"
+                      aria-label={`${item.recommended_name} 수락`}
+                      disabled={pendingDraftId !== null}
+                      onClick={() => onAcceptDraft(item)}
+                    >
+                      수락
+                    </Button>
+                  </div>
+                )}
               </li>
             );
           })}
