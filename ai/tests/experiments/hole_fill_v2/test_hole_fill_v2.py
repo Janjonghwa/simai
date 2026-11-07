@@ -16,15 +16,21 @@ if str(AI_ROOT / "src") not in sys.path:
 from experiments.hole_fill_v2.bake_glb import bake_plane_observed_texture  # noqa: E402
 from experiments.hole_fill_v2.core import (  # noqa: E402
     SRC_FILLED,
+    SRC_SEE_THROUGH,
     blend_atlas_at_hole_boundary,
     blend_unobserved_vertex_colors,
+    compute_camera_image_quality_maps,
     compute_open_boundary_distances,
     compute_surface_source_summary,
+    extract_and_bake_horizontal_furniture_planes,
     feather_observed_filled_boundary,
     filter_small_connected_components,
     inpaint_tone_plane,
     match_fill_to_boundary_lab,
     oklab_to_srgb,
+    optimize_wall_camera_seam_weights,
+    recolor_remaining_furniture_faces,
+    select_camera_colors_with_outlier_removal,
     srgb_to_oklab,
     strip_planar_mesh_faces,
 )
@@ -438,4 +444,281 @@ def test_strip_planar_mesh_faces_strips_floor_and_wall_preserves_furniture() -> 
     assert np.all(keep_out[n_fl + n_wl :]), "3D 가구 상판 삼각형은 100% 유지되어야 함"
     assert rep["per_plane"]["floor"]["removed_faces"] == n_fl
     assert rep["per_plane"]["wall_0"]["removed_faces"] == n_wl
+
+
+def test_strip_planar_mesh_faces_only_strips_where_backing_observed_ge_90pct() -> None:
+    """3차 지시 2번: 받침 평면이 observed_projection >= 90% 인 구간의 삼각형만 걷어내고 미관측(filled) 위 삼각형은 남기는지 검증."""
+    # 벽 메시: u=y in [1.0, 3.0], z in [0.5, 1.5], x = 0.01 m
+    # 왼쪽 절반 u in [1.0, 1.8] 은 받침 평면이 미관측(False, 왼쪽 끝 액자 상황), 오른쪽 절반 u in [2.2, 3.0] 은 관측(True)
+    V_left = np.array(
+        [
+            [0.01, 1.1, 0.6],
+            [0.01, 1.7, 0.6],
+            [0.01, 1.7, 1.4],
+            [0.01, 1.1, 1.4],
+        ],
+        dtype=np.float64,
+    )
+    F_left = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int64)
+
+    V_right = np.array(
+        [
+            [0.01, 2.3, 0.6],
+            [0.01, 2.9, 0.6],
+            [0.01, 2.9, 1.4],
+            [0.01, 2.3, 1.4],
+        ],
+        dtype=np.float64,
+    )
+    F_right = np.array([[4, 5, 6], [4, 6, 7]], dtype=np.int64)
+
+    V_all = np.vstack([V_left, V_right])
+    F_all = np.vstack([F_left, F_right])
+    keep_in = np.ones(len(F_all), dtype=bool)
+
+    floor_info = {
+        "mesh_floor_median_z_world_m": 0.0,
+        "corners_world": [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 4.0, 0.0], [0.0, 4.0, 0.0]],
+    }
+    wall_infos = [
+        {
+            "wall_id": "wall_0",
+            "n_world_xy": [1.0, 0.0],
+            "t_world_xy": [0.0, 1.0],
+            "d_world_m": 0.0,
+            "u_range_m": [1.0, 3.0],
+            "z_range_m": [0.0, 2.0],
+        }
+    ]
+    obs_mask_wall = np.zeros((64, 64), dtype=bool)
+    obs_mask_wall[:, 32:] = True  # 우측 절반(u >= 2.0)만 observed_projection
+
+    keep_out, rep = strip_planar_mesh_faces(
+        V_all,
+        F_all,
+        keep_in,
+        floor_info,
+        wall_infos,
+        dist_tol_m=0.06,
+        angle_tol_deg=25.0,
+        post_min_faces=50,
+        post_min_area_m2=0.50,
+        plane_obs_masks={"wall_0": obs_mask_wall},
+        min_obs_coverage=0.90,
+    )
+    assert np.all(keep_out[:2]), "받침 평면이 미관측(filled)인 왼쪽 삼각형 2개는 고립 조각 제거에서도 보호되어 남아야 함"
+    assert not np.any(keep_out[2:]), "받침 평면이 100% 관측(observed_projection)인 오른쪽 삼각형 2개는 걷어내져야 함"
+    assert rep["kept_unobserved_backing_faces"] == 2
+    assert rep["plane_stripped_faces"] == 2
+
+
+def test_see_through_opening_and_sharp_camera_selection() -> None:
+    """3차 지시 3번·추가: 단일 최우수 카메라 지배적 선택(sharp_exponent) 및 개구부(see_through) 보존 검증."""
+    # 1) 두 카메라 후보(정면 가중치 0.90 vs 측면 가중치 0.35)에서 sharp_exponent=12 적용 시 정면 카메라 색이 99% 이상 지배
+    cand_mask = np.array([[True], [True]], dtype=bool)
+    cand_srgb = np.array([[[0.10, 0.35, 0.85]], [[0.20, 0.40, 0.75]]], dtype=np.float64)
+    cand_w = np.array([[0.90], [0.35]], dtype=np.float64)
+    nb_srgb = np.array([[0.12, 0.36, 0.82]], dtype=np.float64)
+
+    soft_rgb, _, _ = select_camera_colors_with_outlier_removal(
+        cand_mask, cand_srgb, cand_w, nb_srgb, is_floor=False, sharp_exponent=1.0
+    )
+    sharp_rgb, _, _ = select_camera_colors_with_outlier_removal(
+        cand_mask, cand_srgb, cand_w, nb_srgb, is_floor=False, sharp_exponent=12.0
+    )
+    # sharp_exponent=12 일 때 정면 카메라(cam 0)와의 색 오차가 soft 평균보다 훨씬 작아야 함
+    err_soft = float(np.linalg.norm(soft_rgb[0] - cand_srgb[0, 0]))
+    err_sharp = float(np.linalg.norm(sharp_rgb[0] - cand_srgb[0, 0]))
+    assert err_sharp < err_soft * 0.05
+
+    # 2) see_through 마스크가 있을 때 채우지 않고 SRC_SEE_THROUGH(5) 출처로 기록되는지 검증
+    H, W = 32, 32
+    obs_albedo = np.full((H, W, 3), 180, dtype=np.uint8)
+    fill_albedo = np.full((H, W, 3), 140, dtype=np.uint8)
+    inpaint_mask = np.zeros((H, W), dtype=np.uint8)
+    inpaint_mask[8:16, 8:16] = 255  # 일반 채움 대상 구멍
+    see_through_mask = np.zeros((H, W), dtype=bool)
+    see_through_mask[20:28, 20:28] = True  # 문·창문 개구부 (inpaint_mask 에서는 0)
+
+    out_img, src_map = feather_observed_filled_boundary(
+        obs_albedo,
+        fill_albedo,
+        inpaint_mask,
+        feather_m=0.04,
+        texel_m=0.005,
+        see_through_mask=see_through_mask,
+    )
+    assert np.all(src_map[see_through_mask] == SRC_SEE_THROUGH)
+    assert np.all(src_map[8:16, 8:16] == SRC_FILLED)
+    summary = compute_surface_source_summary(src_map, "lama", 0.003)
+    assert summary["texel_counts"]["see_through"] == 64
+    assert summary["texel_counts"]["filled_lama"] == 64
+    assert summary["source_codes"]["see_through"] == int(SRC_SEE_THROUGH)
+
+
+def test_compute_camera_image_quality_maps_sharpness_and_exposure() -> None:
+    """4차 지시 3번: 패치 단위 라플라시안 선명도와 과노출·저노출 포화 픽셀 비율이 사진 품질 가중치에 반영되는지 검증."""
+    H, W = 64, 64
+    img = np.full((H, W, 3), 140, dtype=np.uint8)
+    # 좌상단(4..28, 4..28): 선명한 고주파 체커보드 패턴 (정상 노출 80 / 180)
+    yy, xx = np.mgrid[4:28, 4:28]
+    checker = ((yy + xx) % 2) == 0
+    patch_sharp = np.where(checker[:, :, None], 180, 80).astype(np.uint8)
+    img[4:28, 4:28] = patch_sharp
+
+    # 우하단(36..60, 36..60): 과노출 포화 하이라이트 (254, 254, 254)
+    img[36:60, 36:60] = 254
+
+    qmaps = compute_camera_image_quality_maps(img, patch_size_px=9)
+    w_sharp = qmaps["w_sharp_map"]
+    w_exp = qmaps["w_exposure_map"]
+    w_photo = qmaps["w_photo_map"]
+
+    # 선명한 체커 패치 중심(16, 16)이 평탄한 영역(16, 48)보다 w_sharp 가 높아야 함
+    assert float(w_sharp[16, 16]) > float(w_sharp[16, 48]) + 0.30
+    # 과노출 포화 패치 중심(48, 48)은 정상 노출 패치(16, 16)보다 w_exposure 가 크게 낮아야 함
+    assert float(w_exp[48, 48]) < float(w_exp[16, 16]) * 0.35
+    assert float(w_photo[16, 16]) > float(w_photo[48, 48]) * 2.5
+
+
+def test_optimize_wall_camera_seam_weights_avoids_high_gradient_sign() -> None:
+    """3차 추가(ssafy_sign): 두 카메라 전환 이음새가 고주파 안내판 구간을 피하고 평탄한 벽 열에 놓여 단일 카메라로 하드 선택되는지 검증."""
+    H, W = 48, 240
+    N = H * W
+    cand_mask = np.ones((2, N), dtype=bool)
+    cand_srgb = np.full((2, N, 3), 0.85, dtype=np.float64)
+    # 열 70..130 에 고주파 글자/안내판(카메라 0 과 카메라 1 사이 시차 오차 포함) 배치, 열 150..210 은 평탄한 흰 벽
+    srgb_3d = cand_srgb.reshape(2, H, W, 3)
+    yy, xx = np.mgrid[12:36, 70:130]
+    stripes0 = ((xx % 4) < 2)[:, :, None]
+    stripes1 = (((xx + 2) % 4) < 2)[:, :, None]  # 시차로 2픽셀 어긋난 두 번째 카메라 투영
+    srgb_3d[0, 12:36, 70:130] = np.where(stripes0, 0.10, 0.92)
+    srgb_3d[1, 12:36, 70:130] = np.where(stripes1, 0.10, 0.92)
+
+    # 기본 기하 가중치는 열 100(안내판 한가운데)에서 교차하도록 설정
+    x_grid = np.broadcast_to(np.linspace(0.0, 1.0, W)[None, :], (H, W))
+    w0 = np.clip(1.0 - 0.8 * x_grid, 0.1, 1.0)
+    w1 = np.clip(0.2 + 0.8 * x_grid, 0.1, 1.0)
+    cand_w = np.stack([w0.ravel(), w1.ravel()], axis=0)
+
+    new_w, meta = optimize_wall_camera_seam_weights(
+        cand_mask, cand_srgb, cand_w, (H, W)
+    )
+    assert meta["seam_optimized"] is True
+    seam_col = int(meta["seam_column"])
+    # 이음새가 고주파 안내판 구간(70..130) 내부에 놓이지 않고 평탄한 벽면 바깥 열에 놓여야 함
+    assert not (70 <= seam_col <= 130), f"seam_col={seam_col} 이 안내판 내부에 놓임"
+
+    # 안내판 구간(열 70..130) 전체에서 단일 카메라(cam 0) 가중치가 지배적이어야 함
+    w_3d = new_w.reshape(2, H, W)
+    sign_ratio = float(np.mean(w_3d[0, 12:36, 70:130] > w_3d[1, 12:36, 70:130] * 100.0))
+    assert sign_ratio == 1.0
+
+
+def test_extract_and_bake_horizontal_furniture_planes_and_recolor_remaining() -> None:
+    """5차 지시 2-(a),(b): 수평 가구 상판 평면 추출·단일 카메라 베이킹 및 남은 가구 면 다중 카메라 일관성 재선택 검증."""
+    # 1) 원형 테이블 상판(z ≈ 0.73m, 1.0m x 1.0m 격자, 중앙에 TSDF 움푹 패임 2개 포함) + 수직 다리 측면 삼각형 4개
+    nx, ny = 9, 9
+    xs = np.linspace(-0.45, 0.45, nx)
+    ys = np.linspace(-0.45, 0.45, ny)
+    xv, yv = np.meshgrid(xs, ys, indexing="xy")
+    zv = np.full(xv.size, 0.73, dtype=np.float64)
+    # 중앙 정점 하나는 TSDF 오차로 3cm 아래로 패여 법선이 기울어진 상태
+    center_idx = (ny // 2) * nx + (nx // 2)
+    zv[center_idx] = 0.70
+    V_top = np.stack([xv.ravel(), yv.ravel(), zv], axis=1)
+    faces_top = []
+    for iy in range(ny - 1):
+        for ix in range(nx - 1):
+            i00 = iy * nx + ix
+            i10 = i00 + 1
+            i01 = (iy + 1) * nx + ix
+            i11 = i01 + 1
+            faces_top.append([i00, i10, i11])
+            faces_top.append([i00, i11, i01])
+    F_top = np.array(faces_top, dtype=np.int64)
+
+    # 상판 외곽(x = -0.45)에서 아래(z = 0.45m)로 내려가는 수직 측면(비평면 가구 면)
+    base_v = len(V_top)
+    V_side = np.array(
+        [
+            [-0.45, -0.20, 0.73],
+            [-0.45, 0.20, 0.73],
+            [-0.45, 0.20, 0.45],
+            [-0.45, -0.20, 0.45],
+        ],
+        dtype=np.float64,
+    )
+    # 상판 외곽 정점(0, nx)과 공유하는 정점 2개를 직접 연결해 수밀 경계 보존을 함께 검증
+    F_side = np.array(
+        [
+            [0, nx, base_v + 2],
+            [0, base_v + 2, base_v + 3],
+        ],
+        dtype=np.int64,
+    )
+    V_all = np.vstack([V_top, V_side])
+    F_all = np.vstack([F_top, F_side])
+    keep_mask = np.ones(len(F_all), dtype=bool)
+
+    H, W = 64, 64
+    # 카메라 0(정면 상공 2.0m): 깨끗한 흰 상판(230, 230, 228) 관측
+    img0 = np.full((H, W, 3), 230, dtype=np.uint8)
+    depth0 = np.full((H, W), 2.0 - 0.73, dtype=np.float32)
+    # 카메라 1(측면 상공): 파란 의자 등받이(35, 70, 210)가 일부 투영선에 끼어든 오염 카메라
+    img1 = np.full((H, W, 3), 228, dtype=np.uint8)
+    img1[20:44, 20:44] = np.array([35, 70, 210], dtype=np.uint8)
+    depth1 = np.full((H, W), 2.0 - 0.73, dtype=np.float32)
+
+    cv0 = _make_synthetic_cam_vis("cam_A", (0.0, 0.0, 2.0), img0, depth0)
+    cv1 = _make_synthetic_cam_vis("cam_B", (0.05, 0.0, 2.0), img1, depth1)
+    cams = [cv0.cam, cv1.cam]
+    depths = [cv0.depth, cv1.depth]
+
+    keep_after, fplanes, freport = extract_and_bake_horizontal_furniture_planes(
+        V_all,
+        F_all,
+        keep_mask,
+        cams,
+        depths,
+        min_area_m2=0.10,
+        room_xy_bounds_m=(-1.0, 1.0, -1.0, 1.0),
+    )
+    assert freport["num_furniture_planes"] == 1
+    # 상판 삼각형(내부 움푹 패인 중앙 삼각형 포함)은 모두 수평 가구 평면으로 추출되고 측면 2개만 남아야 함
+    assert not np.any(keep_after[: len(F_top)])
+    assert np.all(keep_after[len(F_top) :])
+    # 로컬 평면 메시의 내부 정점은 평탄화되어 Z ≈ 0.73m 로 매끈해짐
+    fp_v_local = fplanes[0]["V_world"]
+    assert float(np.min(fp_v_local[:, 2])) > 0.718
+
+    # 구워진 상판 텍스처에 파란 의자 색(B - R > 80)이 유입되지 않고 흰 상판 톤이 유지되어야 함
+    fp_tex = fplanes[0]["image"]
+    fp_foot = fplanes[0]["foot_mask"]
+    obs_pixels = fp_tex[fp_foot].astype(np.int32)
+    assert int(np.max(obs_pixels[:, 2] - obs_pixels[:, 0])) < 25
+    assert float(obs_pixels.mean()) > 200.0
+
+    # 2-(b) 남은 가구 면(측면/림 F_side)의 오염 색상/다중 카메라 일관성 재선택 검증
+    V_test = V_all.copy()
+    V_test[base_v + 2] = [-0.47, -0.3375, 0.71]
+    V_test[base_v + 3] = [-0.47, -0.45, 0.71]
+    recolored_srgb, is_furn, r_stats = recolor_remaining_furniture_faces(
+        V_test,
+        F_all,
+        keep_after,
+        cams,
+        depths,
+        furniture_planes=fplanes,
+        room_xy_bounds_m=(-1.0, 1.0, -1.0, 1.0),
+    )
+    assert r_stats["furniture_faces"] == 2
+    assert r_stats["observed_faces"] >= 1
+    assert int(is_furn.sum()) == 2
+    # 측면 가구 면이 흰 상판 테두리 톤(> 0.80)으로 일관되게 선택되어야 함
+    assert float(recolored_srgb[is_furn].mean()) > 0.80
+
+
+
+
 
