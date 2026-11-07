@@ -1,0 +1,21 @@
+# kakaocorp/kanana-2-v-decide-3b-2611 공식 고정 의존성 (HuggingFace 저장소 requirements.txt 기준)
+torch==2.10.0
+torchvision==0.25.0
+transformers==5.5.3
+pillow==12.1.1
+einops==0.8.2
+safetensors==0.7.0
+
+# 벤치마크 스크립트 및 운영 PpeDetector(T1-v4-ALL YOLO26x) 실행 보조 의존성
+# (ultralytics 본체는 torch/opencv-python 덮어쓰기를 막기 위해 pod_decide.sh 에서 --no-deps 로 설치)
+huggingface-hub>=0.30.0
+numpy>=1.26.0
+opencv-python-headless>=4.9.0
+pyyaml>=6.0
+scipy>=1.11.0
+tqdm>=4.66.0
+matplotlib>=3.8.0
+psutil>=5.9.0
+requests>=2.31.0
+ultralytics-thop>=2.0.18
+lap>=0.5.12
